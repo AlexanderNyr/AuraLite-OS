@@ -22,6 +22,7 @@ CFLAGS      := --target=$(TARGET) \
                -std=c11 -ffreestanding -fno-stack-protector \
                -fno-pie -fno-pic -mcmodel=kernel -mno-red-zone \
                -mno-mmx -mno-sse -mno-sse2 \
+               -fno-omit-frame-pointer \
                -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
                -O2 -g \
                -DARCH_X86_64 -I . -I $(LIMINE_DIR)
@@ -33,6 +34,10 @@ LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
 
 KERNEL_SRCS := $(shell find kernel drivers -name '*.c')
 KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
+# NOTE: a .c and .asm file MUST NOT share a base name (e.g. foo.c + foo.asm),
+# because both compile to the same object path build/.../foo.o, which would
+# collide and double-link. Keep assembly stubs named distinctly (e.g.
+# foo_stubs.asm). ISR stubs live in isr_stubs.asm for this reason.
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 

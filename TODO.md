@@ -8,12 +8,7 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 - [ ] Replace the embedded 8x8 font with a PSF2 8x16 font for sharper text
       (deferred to the GUI phase).
 
-## Phase 2 — Interrupts & Exceptions
-- [ ] `idt.c`: 256-entry IDT, `lidt`.
-- [ ] `isr.asm`: macro-generated stubs, push error code / dummy.
-- [ ] Exception handlers (0–31) with a register dump.
-- [ ] `irq.c`: 8259A PIC remap, IRQ 0–15 → IDT 32–47; dispatch table.
-- [ ] `PANIC()` with stack trace.
+## Phase 2 — DONE ✅ (2026-06-20)
 
 ## Phase 3 — Physical Memory Manager
 - [ ] Consume the Limine memmap (already requested) into a bitmap PMM.
@@ -29,6 +24,13 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 - Heap, timer/APIC, scheduler, Ring 3 + ELF loader, syscalls, VFS + initrd,
   init + shell, SMP, networking, GUI. See the master roadmap.
 
+## Phase 2 follow-ups
+- [ ] Add a TSS + IST for the double-fault handler (#DF) so a kernel stack
+      overflow cannot escalate to a triple fault. Needed before userspace.
+- [ ] Wire up the PIT timer (IRQ 0) as a periodic heartbeat once the scheduler
+      lands (depends on Phase 6).
+- [ ] Remove the divide-by-zero self-test from `kmain` once a scheduler exists.
+
 ## Known issues
-- None blocking. The kernel halts at the end of `kmain` by design (no
-  scheduler yet).
+- No IST/TSS: a kernel stack overflow would triple-fault. Tracked above.
+- The kernel halts at the end of `kmain` by design (no scheduler yet).

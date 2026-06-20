@@ -18,9 +18,37 @@ kmain (kernel.c)
    ├── uart_init()        COM1 @ 115200 baud
    ├── fb_init()          console on the Limine framebuffer (8x8 font)
    ├── gdt_init()         flat GDT + segment reload (far return)
-   ├── kprintf(...)       banner + diagnostics → UART + framebuffer
-   └── kernel_halt()      cli; hlt loop (no scheduler yet)
+   ├── idt_init()         256-entry IDT + LIDT
+   ├── pic_init()         8259A remap (IRQ 0-15 -> 32-47), all masked
+   ├── sti                enable maskable interrupts
+   ├── kprintf(...)       banner + diagnostics -> UART + framebuffer
+   └── test_exception_handling()  divide-by-zero -> dump -> halt
 ```
+
+## Interrupt handling (Phase 2)
+
+```
+CPU raises exception/IRQ
+   │  pushes SS,RSP,RFLAGS,CS,RIP (+ error code where applicable)
+   ▼
+isrNN (isr_stubs.asm)        vector stub chosen by the IDT gate
+   │  push dummy error code (if NOERR) ; push vector number
+   │  jmp isr_common_stub
+   ▼
+isr_common_stub
+   │  push rax..r15 (15 GPRs)        -> uniform registers_t on the stack
+   │  mov rdi, rsp ; cld ; call isr_handler
+   ▼
+isr_handler (isr.c)
+   ├── vector < 32  : exception -> dump registers + stack trace + CR2 (if #PF)
+   │                              -> kernel_halt()
+   └── vector 32-47 : IRQ -> irq_dispatch(irq) -> registered handler + EOI
+```
+
+The 256 vector stubs and their addresses are macro-generated; `isr_table[]`
+(an address array in `.rodata`) is consumed by `idt_init()` to fill every gate.
+Vectors that push an error code (8, 10-14, 17) use `ISR_ERR`; the rest push a
+dummy zero so `registers_t` is always the same shape.
 
 ## Limine protocol bridge
 

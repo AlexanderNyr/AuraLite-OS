@@ -31,7 +31,12 @@ cat "$SERIAL"
 pass=1
 grep -q "Hello from NovOS kernel!" "$SERIAL" || pass=0
 grep -q "GDT loaded"               "$SERIAL" || pass=0
+grep -q "IDT installed: 256 gates" "$SERIAL" || pass=0
+grep -q "PIC remapped"             "$SERIAL" || pass=0
 grep -q "HHDM offset: 0xffff800000000000" "$SERIAL" || pass=0
+# Phase 2 gate: divide-by-zero must be caught and dumped (not a silent reboot).
+grep -q "\[EXCEPTION\] Division by Zero" "$SERIAL" || pass=0
+grep -q "RIP=0x"                       "$SERIAL" || pass=0
 
 rm -f "$SERIAL"
 

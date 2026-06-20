@@ -2,6 +2,27 @@
 
 All notable changes to NovOS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 2 — Interrupts & Exceptions] 2026-06-20
+
+### Added
+- 256-entry Interrupt Descriptor Table (`idt.c`/`idt.h`) with LIDT load.
+- Macro-generated 256 ISR stubs (`isr_stubs.asm`): separate `ISR_NOERR` and
+  `ISR_ERR` macros for the uniform stack frame, plus an `isr_table[]` address
+  table that drives IDT population.
+- Top-level dispatcher (`isr.c`/`isr.h`): exception classification, full
+  GPR + RIP/CS/RFLAGS/RSP/SS register dump, a bounded frame-pointer stack
+  trace, and CR2 reporting for page faults.
+- 8259A PIC driver (`irq.c`/`irq.h`): remap IRQ 0-15 -> vectors 32-47, per-IRQ
+  mask/unmask, End-Of-Interrupt, and a handler dispatch table
+  (`irq_register_handler`).
+- Divide-by-zero self-test in `kmain` demonstrating the gate criterion.
+- `-fno-omit-frame-pointer` for meaningful stack traces.
+
+### Fixed
+- Makefile object-path collision: `isr.c` and `isr.asm` both compiled to
+  `isr.o` and double-linked. Renamed the stubs to `isr_stubs.asm` and
+  documented the base-name-uniqueness constraint for `.c`/`.asm` pairs.
+
 ## [Phase 1 — Hello Kernel] 2026-06-20
 
 ### Added

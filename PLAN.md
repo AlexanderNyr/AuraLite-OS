@@ -1,8 +1,57 @@
 # NovOS Development Plan
 
-## Current Phase: 1 — "Hello from Kernel" (MVP)
+## Current Phase: 2 — Interrupt & Exception Handling
 
 ### Status: COMPLETE ✅ (2026-06-20)
+
+### Objective
+
+Give the kernel a working Interrupt Descriptor Table so that CPU exceptions
+produce a readable register dump instead of a silent reset, and lay the PIC
+groundwork for hardware interrupts. Gate criterion: a divide-by-zero prints a
+formatted exception dump and halts — not a reboot.
+
+### Tasks
+
+- [x] `idt.c`/`idt.h`: 256-entry IDT descriptor table + LIDT load
+- [x] `isr_stubs.asm`: macro-generated 256 ISR stubs + uniform stack frame,
+      plus an `isr_table[]` of handler addresses used to populate the IDT
+- [x] Error-code vectors (8,10,11,12,13,14,17) use a separate `ISR_ERR` macro
+- [x] `isr.c`/`isr.h`: top-level dispatcher, full register dump + stack trace,
+      CR2 reporting for page faults
+- [x] `irq.c`/`irq.h`: 8259A PIC remap (IRQ 0-15 -> vectors 32-47), mask/unmask,
+      EOI, per-IRQ handler dispatch table
+- [x] Verified: divide-by-zero (no-error-code path) → formatted dump, halt
+- [x] Verified: page fault (error-code path) → formatted dump + correct CR2, halt
+- [x] CI gate extended to assert the exception dump
+
+### Design notes
+
+- In 64-bit mode the CPU always pushes `SS, RSP, RFLAGS, CS, RIP` (+ optional
+  error code), so `registers_t` is uniform regardless of privilege level.
+- Stack alignment for the C call: CPU frame (6 qwords) + stub header (2) +
+  15 GPRs = 22 qwords ≡ 0 mod 16 at `call`, satisfying the System V ABI.
+- Stack trace is bounded + range-checked (kernel higher half only) so a bad
+  pointer cannot fault inside the exception handler (which would triple-fault).
+- No IST/TSS yet: a stack overflow would escalate to a triple fault. IST
+  support arrives with the TSS in the process/scheduler phase.
+
+### Phase 1 status: COMPLETE ✅ (2026-06-20)
+
+### Phase 0 status: COMPLETE ✅
+
+### Definition of Done — Phase 2
+
+- [x] QEMU boots, divides by zero, and shows a full `[EXCEPTION]` register dump
+- [x] No reboot / triple fault (QEMU keeps running until the test timeout)
+- [x] Error-code path independently verified via a page-fault test (CR2 correct)
+
+### Next Phase
+
+**Phase 3 — Physical Memory Manager**: consume the Limine memory map (already
+requested) into a bitmap allocator over 4 KiB frames, with `pmm_alloc_frame` /
+`pmm_free_frame` / `pmm_alloc_contiguous` and boot-time memory statistics. Gate
+criterion: allocate 1000 unique frames with no collision.
 
 ### Objective
 
