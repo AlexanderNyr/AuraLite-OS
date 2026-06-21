@@ -36,5 +36,28 @@ so the kernel can reach any physical address as
 
 ## Physical memory (from Limine memmap)
 
-QEMU `-m 512M` reports ~510 MiB `LIMINE_MEMMAP_USABLE`. Phase 3 will consume
-this map into a bitmap physical memory manager.
+QEMU `-m 512M` reports ~510 MiB `LIMINE_MEMMAP_USABLE`. The Phase 3 PMM consumes
+this map into a bitmap over 4 KiB frames.
+
+### PMM bitmap
+
+| Property       | Value (example, QEMU 512M)        |
+|----------------|-----------------------------------|
+| Physical base  | `0x0000000000001000` (bootloader-reclaimable) |
+| Size           | 16 384 bytes (4 frames)           |
+| Tracked frames | 130 925 (~511 MiB)                |
+| Usable frames  | 130 671 (~510 MiB)                |
+| Free at boot   | 130 671 (== usable → bitmap stole none) |
+
+The bitmap is reached through the HHDM as `0xFFFF800000000000 + bitmap_phys`.
+It is placed in **bootloader-reclaimable** memory when available (falling back
+to usable), so it does not reduce the usable pool. Allocation returns a physical
+address; the caller maps it via the VMM (Phase 4) to actually use it.
+
+### Memory-map types consumed by the PMM
+
+| Type                              | PMM treatment                       |
+|-----------------------------------|-------------------------------------|
+| `LIMINE_MEMMAP_USABLE` (0)        | free / allocatable                  |
+| `LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE` (5) | preferred bitmap storage    |
+| everything else                   | marked used (not allocatable)       |

@@ -1,8 +1,61 @@
 # NovOS Development Plan
 
-## Current Phase: 2 — Interrupt & Exception Handling
+## Current Phase: 3 — Physical Memory Manager
 
 ### Status: COMPLETE ✅ (2026-06-20)
+
+### Objective
+
+Track all physical RAM with a bitmap over 4 KiB frames and provide a
+single-frame / contiguous allocator plus boot-time statistics. Gate criterion:
+allocate 1000 unique non-overlapping frames (verified both by a host unit test
+and an in-kernel self-test in QEMU).
+
+### Tasks
+
+- [x] Extend the Limine bridge with `limine_get_memmap()` (full entry list)
+- [x] `kernel/lib/bitmap.h`: pure-C bit ops + first-free + contiguous-run search
+      (header-only, host-testable)
+- [x] `kernel/lib/spinlock.{c,h}`: LOCK CMPXCHG spinlock with irqsave variant
+- [x] `kernel/mm/pmm.{c,h}`: bitmap PMM
+      - sizes the bitmap from the highest usable address
+      - carves the bitmap out of bootloader-reclaimable RAM (preserving usable)
+      - initialises from the Limine memmap; tracks free/usable frames
+      - `pmm_alloc_frame` / `pmm_alloc_contiguous` / `pmm_free_frame`
+      - `pmm_dump_stats` + live counters
+- [x] In-kernel self-test: 1000 unique frames, no leak, contiguous alloc OK
+- [x] Host unit test `tests/unit/test_pmm.c` + `make test-unit`
+- [x] CI gate extended to assert the PMM PASS line
+
+### Design notes
+
+- **Bitmap storage via HHDM:** the bitmap size is data-dependent, so it cannot
+  live in `.bss`. It is carved from memory and reached through Limine's
+  higher-half direct map (`0xFFFF800000000000 + phys`).
+- **Bootloader-reclaimable preference:** the bitmap is placed in BLR memory
+  first, falling back to usable. Verified by `free_frames == usable_frames` at
+  boot — i.e. zero usable RAM consumed by the bitmap.
+- **OOM sentinel:** physical address 0 is never handed out (frame 0 / IVT is
+  reserved), so a return of 0 unambiguously means out-of-memory.
+- **Locking:** allocations serialised by an irqsave spinlock (defensive; only
+  `kmain` calls the PMM today).
+- Removed the Phase 2 deliberate divide-by-zero from the boot path (it halts);
+  the IDT stays installed and active.
+
+### Phases 0, 1, 2: COMPLETE ✅
+
+### Definition of Done — Phase 3
+
+- [x] `pmm_alloc_frame()` returns 1000 unique non-overlapping page-aligned addrs
+- [x] `pmm_free_frame()` returns frames with no leak (free count restored)
+- [x] Boot statistics printed (tracked/usable/free frames + MiB)
+- [x] Host unit test passes; integration CI gate passes
+
+### Next Phase
+
+**Phase 4 — Virtual Memory & Paging**: 4-level paging walker, `paging_map/unmap`
+with `invlpg`, per-process address spaces, and NX for data pages. Builds on the
+PMM (allocating page tables) and the HHDM (which Limine already provides).
 
 ### Objective
 

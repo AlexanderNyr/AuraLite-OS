@@ -70,5 +70,16 @@ debug: iso
 	@echo "Attach with: gdb $(KERNEL_ELF) -ex 'target remote :1234'"
 	@bash tools/debug_qemu.sh $(ISO_IMAGE)
 
+# ---- Host-side unit tests (built with the host compiler, no freestanding) ----
+HOST_CC      := cc
+UNIT_TESTS   := $(BUILD_DIR)/test_pmm
+
+test-unit: $(UNIT_TESTS)
+	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+
+$(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
 clean:
 	rm -rf $(BUILD_DIR)

@@ -6,8 +6,8 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phase 0 (bootstrap) and Phase 1 ("Hello from kernel") are
-> **complete and QEMU-verified.** See [PLAN.md](PLAN.md).
+> **Status:** Phases 0–3 (bootstrap, hello-kernel, interrupts, physical memory
+> manager) are **complete and QEMU-verified.** See [PLAN.md](PLAN.md).
 
 ---
 
@@ -16,9 +16,9 @@ networked system with a shell.
 - **Limine v12.3.3** loads the kernel into the higher half
   (`0xFFFFFFFF80100000`) and hands off in 64-bit long mode with paging,
   a higher-half direct map, a memory map, and a linear framebuffer ready.
-- The kernel zeroes `.bss`, loads its own flat GDT, initialises the COM1 UART,
-  brings up the framebuffer console, and prints a banner + boot diagnostics,
-  then halts.
+- The kernel zeroes `.bss`, loads its own flat GDT, installs a 256-entry IDT
+  and remaps the PIC, brings up the UART + framebuffer console, and runs a
+  bitmap physical memory manager that allocates/frees frames via the HHDM.
 
 ## Toolchain
 
@@ -62,6 +62,14 @@ limine: Loading executable `boot():/boot/kernel.elf`...
 [mm]    usable memory: 535289856 bytes (522744 KiB / 510 MiB)
 [mm]    HHDM offset: 0xffff800000000000
 
+[boot] initialising physical memory manager...
+[pmm] bitmap at phys 0x0000000000001000, 16384 bytes (4 frames)
+[pmm] tracked frames: 130925 (511 MiB)
+[pmm] usable frames: 130671 (510 MiB)
+[pmm] free frames:   130671 (510 MiB)
+[pmm] self-test: allocating 1000 frames...
+[pmm] PASS: 1000 unique frames, no leak, contiguous alloc OK
+
 [kernel] reached end of kmain; halting.
 ```
 
@@ -70,12 +78,13 @@ capturing the QEMU framebuffer and decoding it).
 
 ## Other targets
 
-| Target        | Action                                            |
-|---------------|---------------------------------------------------|
-| `make kernel` | Compile + link `build/kernel.elf` only            |
-| `make iso`    | Build the bootable `build/novos.iso`              |
-| `make run`    | Boot the ISO in QEMU                              |
-| `make clean`  | Remove `build/`                                    |
+| Target         | Action                                            |
+|----------------|---------------------------------------------------|
+| `make kernel`  | Compile + link `build/kernel.elf` only            |
+| `make iso`     | Build the bootable `build/novos.iso`              |
+| `make run`     | Boot the ISO in QEMU                              |
+| `make test-unit` | Build + run host-side unit tests (PMM bitmap)   |
+| `make clean`   | Remove `build/`                                    |
 
 ## Headless debugging helpers (`tools/`)
 
@@ -93,8 +102,9 @@ These run QEMU as a managed subprocess because the sandbox has no display.
 novos/
 ├── boot/limine/limine.conf     # Limine boot config
 ├── kernel/
-│   ├── arch/x86_64/            # boot.asm entry, GDT (+flush), port I/O
-│   ├── lib/                    # kprintf, freestanding string, assert
+│   ├── arch/x86_64/            # boot.asm entry, GDT, IDT, ISR, PIC, port I/O
+│   ├── mm/                     # physical memory manager (bitmap PMM)
+│   ├── lib/                    # kprintf, string, bitmap, spinlock, assert
 │   ├── limine_requests.{c,h}   # Limine protocol request bridge
 │   ├── kernel.{c,h}            # kmain()
 ├── drivers/

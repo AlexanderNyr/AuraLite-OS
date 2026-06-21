@@ -22,7 +22,8 @@ kmain (kernel.c)
    ├── pic_init()         8259A remap (IRQ 0-15 -> 32-47), all masked
    ├── sti                enable maskable interrupts
    ├── kprintf(...)       banner + diagnostics -> UART + framebuffer
-   └── test_exception_handling()  divide-by-zero -> dump -> halt
+   ├── pmm_init()         build bitmap from Limine memmap (via HHDM)
+   └── pmm_self_test()    alloc 1000 frames, free, verify no leak; halt
 ```
 
 ## Interrupt handling (Phase 2)
@@ -88,3 +89,24 @@ far return. This is prerequisite for our own IDT and syscall entries later.
   the `0xB8000` text buffer is no longer scanned for display.
 - **Clang `--target=x86_64-elf`** over a hand-built cross-GCC: same-arch host,
   correct freestanding output, no lengthy binutils+gcc build.
+
+## Physical memory management (Phase 3)
+
+```
+Limine memmap  ──►  pmm_init()
+                     │  highest usable addr -> bitmap size
+                     │  carve bitmap from bootloader-reclaimable RAM
+                     │  reach it via HHDM (0xFFFF800000000000 + phys)
+                     │  memset 0xFF (all used); clear USABLE regions
+                     ▼
+                 bitmap: bit SET = used, bit CLEAR = free
+                     │
+   pmm_alloc_frame()         first clear bit -> phys addr (0 = OOM)
+   pmm_alloc_contiguous(n)   first run of n clear bits -> base phys
+   pmm_free_frame(phys)      clear bit, double-free guarded
+                     all serialised by an irqsave spinlock
+```
+
+The allocation algorithms (first-free bit, contiguous-run search) live in the
+pure-C, kernel-independent `kernel/lib/bitmap.h`, so the *same code* is unit
+tested on the host (`tests/unit/test_pmm.c`) and used in the kernel.

@@ -2,6 +2,30 @@
 
 All notable changes to NovOS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 3 — Physical Memory Manager] 2026-06-20
+
+### Added
+- Limine bridge: `limine_get_memmap()` exposes the full memory-map entry list.
+- `kernel/lib/bitmap.h`: header-only, pure-C bitmap with single-bit ops,
+  byte-granular `bm_first_free`, and a linear `bm_find_contiguous` run search.
+- `kernel/lib/spinlock.{c,h}`: test-and-set (LOCK CMPXCHG) spinlock with a
+  `pause`-yielding slow path and an irqsave acquire/restore variant.
+- `kernel/mm/pmm.{c,h}`: bitmap physical memory manager.
+  - Sizes the bitmap from the highest usable address.
+  - Places it in bootloader-reclaimable memory (usable as fallback) and reaches
+    it via the Limine HHDM — consuming zero usable RAM.
+  - `pmm_alloc_frame` / `pmm_alloc_contiguous` / `pmm_free_frame`, serialised by
+    an irqsave spinlock; double-free / bad-address detection.
+  - `pmm_dump_stats` + `pmm_get_free_frames` / `pmm_get_usable_frames`.
+  - In-kernel self-test: 1000 unique frames, no leak, contiguous alloc.
+- `tests/unit/test_pmm.c` host unit test + `make test-unit` Makefile target.
+
+### Changed
+- Removed the Phase 2 deliberate divide-by-zero from the boot path (it halts and
+  would block later phases); the IDT remains installed and active.
+- CI gate now asserts PMM initialisation + self-test PASS (Phase 2 exception
+  checks relaxed to structural IDT/PIC assertions).
+
 ## [Phase 2 — Interrupts & Exceptions] 2026-06-20
 
 ### Added

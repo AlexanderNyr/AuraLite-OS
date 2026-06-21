@@ -12,9 +12,17 @@
  */
 
 struct limine_framebuffer;
+struct limine_memmap_entry;
 
 /* First available framebuffer, or NULL if the request failed / none exist. */
 struct limine_framebuffer *limine_get_framebuffer(void);
+
+/*
+ * Hand back the Limine memory map as its array-of-pointers plus entry count.
+ * Returns NULL (and sets *out_count = 0) if the request was not honoured.
+ * Each entry is { uint64_t base; uint64_t length; uint64_t type; }.
+ */
+struct limine_memmap_entry **limine_get_memmap(uint64_t *out_count);
 
 /* Total bytes of LIMINE_MEMMAP_USABLE memory, or 0 if unavailable. */
 uint64_t limine_get_usable_memory(void);

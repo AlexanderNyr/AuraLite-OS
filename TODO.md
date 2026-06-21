@@ -10,10 +10,7 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 
 ## Phase 2 — DONE ✅ (2026-06-20)
 
-## Phase 3 — Physical Memory Manager
-- [ ] Consume the Limine memmap (already requested) into a bitmap PMM.
-- [ ] `pmm_alloc_frame` / `pmm_free_frame` / `pmm_alloc_contiguous`.
-- [ ] Boot-time memory statistics.
+## Phase 3 — DONE ✅ (2026-06-20)
 
 ## Phase 4 — Paging / VMM
 - [ ] 4-level paging walker, `paging_map/unmap`, `invlpg`.
@@ -29,7 +26,14 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
       overflow cannot escalate to a triple fault. Needed before userspace.
 - [ ] Wire up the PIT timer (IRQ 0) as a periodic heartbeat once the scheduler
       lands (depends on Phase 6).
-- [ ] Remove the divide-by-zero self-test from `kmain` once a scheduler exists.
+
+## Phase 3 follow-ups
+- [ ] ASSERT that the Limine memory regions are page-aligned (currently assumed
+      — true for Limine, but a page-aligned bitmap base matters for correctness).
+- [ ] Word-level (8-byte) bitmap scanning for faster `bm_first_free`.
+- [ ] Track per-region provenance so `/proc/meminfo`-style reporting can break
+      memory down by usable / ACPI / reserved.
+- [ ] Add a PMM "used" region registry so the heap/VMM can claim named ranges.
 
 ## Known issues
 - No IST/TSS: a kernel stack overflow would triple-fault. Tracked above.

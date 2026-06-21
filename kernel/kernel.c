@@ -5,6 +5,7 @@
 #include "kernel/arch/x86_64/gdt.h"
 #include "kernel/arch/x86_64/idt.h"
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
 #include "drivers/uart/uart.h"
@@ -16,24 +17,6 @@ void kernel_halt(void) {
         __asm__ volatile ("cli");
         __asm__ volatile ("hlt");
     }
-}
-
-/*
- * Phase 2 gate test: a real divide-by-zero. Volatile operands prevent the
- * compiler from folding the division to a constant, so a genuine idiv executes
- * and raises #DE (vector 0). The IDT handler prints the register dump and the
- * kernel halts. (This self-test is removed once a scheduler exists.)
- */
-static void test_exception_handling(void) {
-    kprintf("[kernel] testing exception handling: dividing by zero...\n");
-    /* A real divide-by-zero. Volatile operands stop the compiler folding this
-       to a constant, so a genuine idiv executes and raises #DE (vector 0).
-       The IDT handler prints the register dump and the kernel then halts.
-       (This self-test is removed once a scheduler exists.) */
-    volatile int divisor  = 0;
-    volatile int dividend = 1;
-    int quotient = dividend / divisor;
-    kprintf("[kernel] UNREACHABLE: quotient = %d\n", quotient);   /* never runs */
 }
 
 void kmain(void) {
@@ -82,7 +65,10 @@ void kmain(void) {
 
     kprintf("\n[kernel] interrupts enabled, exception handling online.\n");
 
-    test_exception_handling();
+    kprintf("[boot] initialising physical memory manager...\n");
+    pmm_init();
+    pmm_self_test();
 
+    kprintf("\n[kernel] reached end of kmain; halting.\n");
     kernel_halt();
 }

@@ -70,6 +70,22 @@ uint64_t limine_get_usable_memory(void) {
     return total;
 }
 
+struct limine_memmap_entry **limine_get_memmap(uint64_t *out_count) {
+    volatile struct limine_memmap_response *r = memmap_request.response;
+    if (r == NULL) {
+        if (out_count) {
+            *out_count = 0;
+        }
+        return NULL;
+    }
+    if (out_count) {
+        *out_count = r->entry_count;
+    }
+    /* Reading a member of a volatile-qualified struct yields the member's
+       declared (non-volatile) type, so this needs no qualifier-discarding cast. */
+    return r->entries;
+}
+
 uint64_t limine_get_hhdm_offset(void) {
     volatile struct limine_hhdm_response *r = hhdm_request.response;
     if (r == NULL) {
