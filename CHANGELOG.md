@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [UDP + DNS + Per-Process Address Spaces] 2026-06-21
+
+### Added — Per-Process Address Spaces
+- `kernel/proc/process.{c,h}`: `do_fork()`, `do_execve()`, `do_wait4()`,
+  `process_spawn()`. Each user process gets its own PML4 (kernel half shared).
+- `paging_clone_user_space()`: deep-copy of user-space pages for fork().
+- `paging_switch_to()`: CR3 switch (only when entering a user process — never
+  when switching back, since the kernel half is shared).
+- `fork_return.asm`: SYSRET for fork children (returns to user mode with RAX=0).
+- Scheduler switches CR3 based on the TCB's `pml4_phys` field.
+- New syscalls: SYS_FORK (57), SYS_EXECVE (59), SYS_WAIT4 (61), SYS_SPAWN (81).
+- Shell `run <prog>` command: spawns a program in an isolated address space.
+- Process self-test: spawns /hello in its own address space and verifies output.
+
+### Added — UDP + DNS
+- `net_udp_send()` / `net_udp_recv()`: send/receive UDP datagrams over IPv4.
+- `net_dns_resolve()`: DNS resolver via UDP to QEMU's proxy (10.0.2.3:53).
+  Encodes hostname to DNS label format, sends query, parses A-record response.
+- New syscall: SYS_DNS (82) — userspace `dns_resolve()` wrapper.
+- Shell `nslookup <hostname>` command (e.g. `nslookup google.com`).
+- Verified: `example.com → 172.66.147.243`, `google.com → 142.250.107.102`.
+
+### Changed
+- Shell now runs in its own address space (not the kernel's).
+- TCB extended with `pml4_phys`, `exit_code`, `parent`, `waited_on`.
+- `thread_exit()` clears `parent->waited_on` to unblock wait4.
+
 ## [Phases 13–14 — Networking + GUI] 2026-06-21
 
 ### Added — Phase 13: Networking

@@ -15,6 +15,7 @@
 #define SYS_EXECVE 59
 #define SYS_WAIT4  61
 #define SYS_SPAWN  81   /* non-standard: spawn in new address space */
+#define SYS_DNS    82   /* non-standard: resolve a hostname */
 #define SYS_LISTDIR 80   /* non-standard: list a directory */
 
 typedef int64_t ssize_t;
@@ -38,5 +39,6 @@ pid_t   spawn(const char *path);
 
 /* AuraLite extension: list files in a directory path. */
 void    listdir(const char *path);
+uint32_t dns_resolve(const char *hostname);
 
 #endif /* AURALITE_LIBC_UNISTD_H */

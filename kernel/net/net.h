@@ -30,4 +30,13 @@ int net_ping(uint32_t target_ip);
 /* Gate self-test: ARP-resolve 10.0.2.2, then ping it. */
 void net_self_test(void);
 
+/*
+ * Resolve a hostname to an IPv4 address via QEMU's DNS proxy (10.0.2.3:53).
+ * Uses UDP. Returns the IP in host byte order, or 0 on failure.
+ */
+uint32_t net_dns_resolve(const char *hostname);
+
+/* DNS self-test: resolve 'example.com'. */
+void net_dns_self_test(void);
+
 #endif /* AURALITE_NET_NET_H */

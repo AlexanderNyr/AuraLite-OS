@@ -70,6 +70,8 @@ restored before SYSRET.
 | 39     | `getpid`   | `getpid()` → `pid_t`                        | Returns the current thread ID      |
 | 60     | `exit`     | `exit(code)` → `noreturn`                   | Terminates the calling thread      |
 | 80     | `listdir`  | `listdir(path)`                             | Non-standard: lists a directory    |
+| 81     | `spawn`    | `spawn(path)` → `pid_t`                     | Non-standard: new process + address space |
+| 82     | `dns`      | `dns_resolve(hostname)` → `uint32_t`        | Non-standard: DNS A-record lookup  |
 
 ## User-space libc interface
 

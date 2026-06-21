@@ -85,6 +85,7 @@ static void cmd_help(void) {
     puts("  pwd         - print working directory");
     puts("  uname       - print OS information");
     puts("  free        - print memory usage");
+    puts("  nslookup    - resolve a hostname via DNS");
     puts("  ps          - list processes (stub)");
     puts("  help        - show this help");
     puts("  exit        - exit shell");
@@ -104,6 +105,21 @@ static void cmd_run(const char *prog) {
     printf("[shell] child PID %d, waiting...\n", (int)pid);
     wait(NULL);
     printf("[shell] child exited\n");
+}
+
+static void cmd_nslookup(const char *hostname) {
+    if (!hostname) {
+        puts("nslookup: missing hostname");
+        return;
+    }
+    uint32_t ip = dns_resolve(hostname);
+    if (ip != 0) {
+        printf("%s -> %u.%u.%u.%u\n", hostname,
+               (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+               (ip >> 8) & 0xFF, ip & 0xFF);
+    } else {
+        printf("nslookup: failed to resolve %s\n", hostname);
+    }
 }
 
 static void cmd_ps(void) {
@@ -143,6 +159,8 @@ static void process_command(char *line) {
         cmd_free();
     } else if (strcmp(cmd, "help") == 0) {
         cmd_help();
+    } else if (strcmp(cmd, "nslookup") == 0) {
+        cmd_nslookup(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "run") == 0) {
         cmd_run(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "ps") == 0) {

@@ -138,6 +138,7 @@ void kmain(void) {
     kprintf("[boot] initialising network stack...\n");
     net_init();
     net_self_test();
+    net_dns_self_test();
 
     /* ---- Phase 14: GUI demo on the framebuffer ---- */
     kprintf("[boot] initialising graphics + keyboard...\n");

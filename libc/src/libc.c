@@ -43,6 +43,10 @@ void listdir(const char *path) {
     syscall(SYS_LISTDIR, (uint64_t)path, 0, 0, 0, 0, 0);
 }
 
+uint32_t dns_resolve(const char *hostname) {
+    return (uint32_t)syscall(SYS_DNS, (uint64_t)hostname, 0, 0, 0, 0, 0);
+}
+
 pid_t fork(void) {
     return (pid_t)syscall(SYS_FORK, 0, 0, 0, 0, 0, 0);
 }
