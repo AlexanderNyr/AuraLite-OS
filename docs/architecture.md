@@ -26,7 +26,8 @@ kmain (kernel.c)
    ├── pmm_self_test()    alloc 1000 frames, free, verify no leak
    ├── paging_init()      read PML4 from CR3; enable EFER.NXE
    ├── paging_self_test() map/unmap test (safe; no deliberate fault)
-   └── kheap_init() + kheap_self_test()  on-demand heap; 10k cycles
+   ├── kheap_init() + kheap_self_test()  on-demand heap; 10k cycles
+   └── pit_init(100) + timer_self_test()  100 Hz tick; 1s accuracy check
 ```
 
 ## Interrupt handling (Phase 2)

@@ -2,6 +2,22 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 6 — Timer & PIT] 2026-06-21
+
+### Added
+- `drivers/timer/pit.{c,h}`: 8254 Programmable Interval Timer driver.
+  - Programs channel 0 in mode 3 (square wave) with a divisor derived from the
+    1193182 Hz base clock; records the divisor-rounded actual frequency.
+  - IRQ 0 handler (registered via the Phase 2 IRQ layer) increments a global
+    `volatile` monotonic tick counter.
+  - `timer_get_ticks` / `timer_get_frequency` / `timer_sleep_ms`.
+  - `timer_sleep_ms` spins with `hlt` (idles the CPU between ticks).
+  - Self-test: sleeps 1 second and verifies the tick count is within ±5%.
+
+### Fixed
+- `kprintf` `%f` unsupported under `-mno-sse`; timer self-test now reports
+  accuracy via integer percentage instead of floating point.
+
 ## [Rename + Phase 5 — Kernel Heap] 2026-06-21
 
 ### Renamed

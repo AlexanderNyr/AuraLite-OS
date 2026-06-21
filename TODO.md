@@ -16,7 +16,12 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 
 ## Phase 5 — DONE ✅ (2026-06-21)
 
-## Phase 6 — Timer & PIT/APIC
+## Phase 6 — DONE ✅ (2026-06-21)
+
+## Phase 6 follow-ups
+- [ ] LAPIC timer calibration using the PIT as reference (needed for SMP Phase 12).
+- [ ] Detect HPET for higher-resolution timing.
+- [ ] Add `timer_get_uptime_ms` and sub-tick precision via TSC.
 
 ## Phase 2 follow-ups
 - [ ] Add a TSS + IST for the double-fault handler (#DF) so a kernel stack

@@ -43,6 +43,8 @@ grep -q "\[pmm\] PASS: 1000 unique frames, no leak, contiguous alloc OK" "$SERIA
 grep -q "\[vmm\] PASS: map / read / write / unmap all correct" "$SERIAL" || pass=0
 # Phase 5 gate: kernel heap must pass 10000 alloc/free cycles.
 grep -q "\[heap\] PASS: 10000 cycles, no corruption, no leak, realloc OK" "$SERIAL" || pass=0
+# Phase 6 gate: PIT timer must measure ~1 second accurately (within +/-5%).
+grep -q "\[timer\] PASS:" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"
 

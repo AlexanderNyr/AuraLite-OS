@@ -12,6 +12,7 @@
 #include "kernel/limine_requests.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
+#include "drivers/timer/pit.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
 void kernel_halt(void) {
@@ -78,6 +79,10 @@ void kmain(void) {
     kprintf("[boot] initialising kernel heap...\n");
     kheap_init();
     kheap_self_test();
+
+    kprintf("[boot] initialising timer (PIT @ 100 Hz)...\n");
+    pit_init(100);
+    timer_self_test();
 
     kprintf("\n[kernel] reached end of kmain; halting.\n");
     kernel_halt();

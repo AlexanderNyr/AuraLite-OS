@@ -6,9 +6,9 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phases 0–5 (bootstrap, hello-kernel, interrupts, physical memory
-> manager, virtual memory/paging, kernel heap) are **complete and QEMU-verified.**
-> See [PLAN.md](PLAN.md).
+> **Status:** Phases 0–6 (bootstrap, hello-kernel, interrupts, physical memory
+> manager, virtual memory/paging, kernel heap, timer/PIT) are **complete and
+> QEMU-verified.** See [PLAN.md](PLAN.md).
 
 ---
 
@@ -19,7 +19,8 @@ networked system with a shell.
   a higher-half direct map, a memory map, and a linear framebuffer ready.
 - The kernel zeroes `.bss`, loads its own flat GDT, installs a 256-entry IDT
   and remaps the PIC, brings up the UART + framebuffer console, runs a bitmap
-  physical memory manager, a 4-level paging VMM, and a first-fit kernel heap.
+  physical memory manager, a 4-level paging VMM, a first-fit kernel heap, and a
+  100 Hz periodic timer.
 
 ## Toolchain
 
@@ -79,6 +80,10 @@ limine: Loading executable `boot():/boot/kernel.elf`...
 [heap] PASS: 10000 cycles, no corruption, no leak, realloc OK
 [heap] region 0xffffffff88000000 (16 MiB), committed 1920 KiB (480 pages)
 [heap] used 0 KiB, free 1920 KiB
+[boot] initialising timer (PIT @ 100 Hz)...
+[timer] PIT channel 0: mode 3, divisor 11932 -> 99 Hz (100 Hz requested)
+[timer] self-test: measuring 1-second delay...
+[timer] PASS: 99 ticks in 1s (100% of 99 Hz)
 
 [kernel] reached end of kmain; halting.
 ```

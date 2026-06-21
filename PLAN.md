@@ -1,15 +1,58 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 5 — Kernel Heap
+## Current Phase: 6 — Timer & PIT
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-A dynamic kernel allocator (`kmalloc`/`kfree`/`krealloc`) backed by the PMM +
-VMM, with first-fit allocation and boundary-tag coalescing. Gate criterion:
-10 000 alloc/free cycles with no corruption and no leak (verified by both a host
-unit test and an in-kernel self-test).
+A periodic timer interrupt driving a global monotonic tick counter, with a
+`timer_sleep_ms` busy-wait. Gate criterion: a 1-second delay measured via the
+tick counter is accurate within ±5%.
+
+### Tasks
+
+- [x] `drivers/timer/pit.{c,h}`: 8254 PIT driver
+  - channel 0, mode 3 (square wave), divisor from the 1193182 Hz base clock
+  - IRQ 0 handler registered via the Phase 2 IRQ layer (unmask + EOI handled)
+  - global `volatile uint64_t` monotonic tick counter
+- [x] `timer_get_ticks` / `timer_get_frequency` / `timer_sleep_ms`
+  - `timer_sleep_ms` spins with `hlt` (idles the CPU between ticks)
+- [x] Self-test: sleep 1 second, verify the measured tick count is within ±5%
+- [x] CI gate asserts the timer PASS line
+
+### Design notes
+
+- **PIT channel 0 → IRQ 0:** the PIC (Phase 2) already remaps IRQ 0 to CPU
+  vector 32 and `irq_register_handler` handles unmasking; `irq_dispatch` sends
+  the EOI after the handler returns. The handler does minimal work (one counter
+  bump) per safety rule 9 (no blocking/allocation in interrupt context).
+- **Frequency accuracy:** the PIT base clock is 1193182 Hz; for 100 Hz the
+  divisor rounds to 11932, giving an actual 99.998 Hz — well within ±5%. We
+  record the divisor-rounded actual frequency as `timer_freq_hz` so the
+  self-test band is computed against what the hardware truly produces.
+- **`hlt` in the spin loop:** instead of burning 100% CPU, `timer_sleep_ms`
+  halts the processor until the next tick interrupt wakes it — correct and
+  power-efficient.
+- **LAPIC timer deferred:** per-CPU timer calibration is needed for SMP
+  (Phase 12); the PIT satisfies the single-CPU gate criterion and is more
+  reliable. Tracked as a Phase 6 follow-up.
+
+### Phases 0–5: COMPLETE ✅
+
+### Definition of Done — Phase 6
+
+- [x] PIT configured and IRQ 0 ticking at ~100 Hz
+- [x] `timer_sleep_ms(1000)` advances the counter by ~100 ticks (within ±5%)
+- [x] No deadlock or missed ticks
+
+### Next Phase
+
+**Phase 7 — Multitasking & Scheduler**: preemptive kernel threads with a TCB,
+`context_switch` (callee-saved register save/restore), a round-robin run queue,
+timer-driven preemption, an idle thread, and spinlock-protected shared state.
+Gate criterion: two kernel threads printing alternating messages without
+deadlock or missed prints.
 
 ### Tasks
 
