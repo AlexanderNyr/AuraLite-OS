@@ -2,6 +2,27 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Mouse + Window Manager] 2026-06-21
+
+### Added
+- `drivers/mouse/mouse.{c,h}`: PS/2 mouse driver (8042 auxiliary channel,
+  IRQ 12). Initialises the mouse via the 8042 command interface, parses 3-byte
+  relative-movement packets, maintains absolute cursor position clamped to
+  screen bounds, and tracks button states.
+- `drivers/framebuffer/wm.{c,h}`: minimal window manager with:
+  - Z-ordered windows with title bars, borders, and content areas.
+  - Compositing: renders all visible windows bottom-to-top into the back
+    buffer, then draws the mouse cursor on top and flips.
+  - Mouse interaction: click a title bar to focus + drag, release to drop.
+  - `wm_draw_text`, `wm_clear_window`, `wm_fill_window_rect` for content.
+  - Window demo: "AuraLite Terminal", "System Info", and "Tip" windows.
+- Mouse cursor rendering (arrow shape with outline).
+
+### Changed
+- kmain now calls `mouse_init()` and `wm_demo()` alongside the graphics init.
+- CI gate message updated to match the new "[gfx] framebuffer GUI + window
+  manager rendered" output.
+
 ## [UDP + DNS + Per-Process Address Spaces] 2026-06-21
 
 ### Added — Per-Process Address Spaces
