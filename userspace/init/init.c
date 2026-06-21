@@ -102,7 +102,7 @@ static void cmd_run(const char *prog) {
         printf("run: failed to spawn %s\n", prog);
         return;
     }
-    printf("[shell] child PID %d, waiting...\n", (int)pid);
+    printf("[shell] child PID %lld, waiting...\n", (long long)pid);
     wait(NULL);
     printf("[shell] child exited\n");
 }

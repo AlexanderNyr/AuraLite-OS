@@ -105,9 +105,7 @@ static void fork_child_entry(void *arg) {
 
 int64_t do_fork(void) {
     /* Save the user-mode state (it's in globals from syscall_entry). */
-    uint64_t user_rip   = syscall_saved_rcx;
-    uint64_t user_rflags = syscall_saved_r11;
-    uint64_t user_rsp   = syscall_saved_rsp;
+    uint64_t user_rip = syscall_saved_rcx;
 
     kprintf("[proc] fork: cloning address space (user RIP=0x%llx)\n",
             (unsigned long long)user_rip);

@@ -117,25 +117,40 @@ static void kvprintf(const char *fmt, va_list ap) {
             print_str(va_arg(ap, const char *));
             break;
         case 'd': {
-            int64_t v = va_arg(ap, int64_t);
+            int64_t v;
+            if (is_long >= 2) {
+                v = va_arg(ap, int64_t);
+            } else if (is_long == 1) {
+                v = va_arg(ap, long);
+            } else {
+                v = va_arg(ap, int);
+            }
             if (v < 0) {
                 kputchar('-');
-                /* (uint64_t)(-(v+1)) + 1 avoids overflow on INT64_MIN. */
                 print_uint((uint64_t)(-(v + 1)) + 1, 10, 0, width, zero_pad);
             } else {
                 print_uint((uint64_t)v, 10, 0, width, zero_pad);
             }
             break;
         }
-        case 'u':
-            print_uint(va_arg(ap, uint64_t), 10, 0, width, zero_pad);
+        case 'u': {
+            uint64_t v = (is_long >= 1) ? va_arg(ap, uint64_t)
+                                        : (uint64_t)va_arg(ap, unsigned int);
+            print_uint(v, 10, 0, width, zero_pad);
             break;
-        case 'x':
-            print_uint(va_arg(ap, uint64_t), 16, 0, width, zero_pad);
+        }
+        case 'x': {
+            uint64_t v = (is_long >= 1) ? va_arg(ap, uint64_t)
+                                        : (uint64_t)va_arg(ap, unsigned int);
+            print_uint(v, 16, 0, width, zero_pad);
             break;
-        case 'X':
-            print_uint(va_arg(ap, uint64_t), 16, 1, width, zero_pad);
+        }
+        case 'X': {
+            uint64_t v = (is_long >= 1) ? va_arg(ap, uint64_t)
+                                        : (uint64_t)va_arg(ap, unsigned int);
+            print_uint(v, 16, 1, width, zero_pad);
             break;
+        }
         case 'p':
             kputchar('0');
             kputchar('x');

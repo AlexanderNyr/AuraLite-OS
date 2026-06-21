@@ -129,13 +129,9 @@ void mouse_init(void) {
     outb(KB_CMD, 0x20);   /* read config */
     uint8_t config = mouse_read();
 
-    /* Enable aux interrupts (bit 1), aux clock (bit 5), and IRQ12 pass-through. */
-    config |= 0x22;       /* bit 1 = aux interrupt enable, bit 5 = aux clock */
-    config &= ~0x20;      /* Actually, bit 5 should be SET for clock enable... */
-    /* The correct approach: set bit 1 (mouse IRQ) and bit 5 (translation off).
-     * Actually for raw mode, we want: bit 1 = enable aux IRQ, bit 5 = aux clock. */
-    config |= (1 << 1);   /* enable aux interrupt */
-    config |= (1 << 5);   /* enable aux clock */
+    /* Enable aux interrupt (bit 1) and aux clock (bit 5). */
+    config |= (1u << 1);
+    config |= (1u << 5);
 
     mouse_wait_write();
     outb(KB_CMD, 0x60);   /* write config */

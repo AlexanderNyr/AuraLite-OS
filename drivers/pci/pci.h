@@ -42,7 +42,7 @@ void pci_enable_bus_master(uint8_t bus, uint8_t dev, uint8_t func);
 
 /*
  * Scan PCI bus 0 for a device matching the given vendor/device IDs.
- * Sets *out_bus/*out_dev/*out_func on success. Returns 0 on found, -1 if not.
+ * Sets out_bus / out_dev / out_func on success. Returns 0 on found.
  */
 int pci_find_device(uint16_t vendor, uint16_t device,
                     uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func);

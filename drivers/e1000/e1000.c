@@ -201,8 +201,8 @@ int e1000_init(void) {
     {
         uint64_t ring_phys = pmm_alloc_contiguous(
             (sizeof(struct tx_desc) * E1000_NUM_TX_DESC + 0xFFF) / 0x1000);
-        tx_ring = (struct tx_desc *)(uintptr_t)(hhdm + ring_phys);
-        memset(tx_ring, 0, sizeof(struct tx_desc) * E1000_NUM_TX_DESC);
+        tx_ring = (volatile struct tx_desc *)(uintptr_t)(hhdm + ring_phys);
+        memset((void *)tx_ring, 0, sizeof(struct tx_desc) * E1000_NUM_TX_DESC);
         for (int i = 0; i < E1000_NUM_TX_DESC; i++) {
             uint64_t buf_phys = pmm_alloc_frame();
             tx_buffers[i] = (uint8_t *)(uintptr_t)(hhdm + buf_phys);
@@ -221,8 +221,8 @@ int e1000_init(void) {
     {
         uint64_t ring_phys = pmm_alloc_contiguous(
             (sizeof(struct rx_desc) * E1000_NUM_RX_DESC + 0xFFF) / 0x1000);
-        rx_ring = (struct rx_desc *)(uintptr_t)(hhdm + ring_phys);
-        memset(rx_ring, 0, sizeof(struct rx_desc) * E1000_NUM_RX_DESC);
+        rx_ring = (volatile struct rx_desc *)(uintptr_t)(hhdm + ring_phys);
+        memset((void *)rx_ring, 0, sizeof(struct rx_desc) * E1000_NUM_RX_DESC);
         for (int i = 0; i < E1000_NUM_RX_DESC; i++) {
             uint64_t buf_phys = pmm_alloc_frame();
             rx_buffers[i] = (uint8_t *)(uintptr_t)(hhdm + buf_phys);

@@ -126,10 +126,8 @@ int vfs_close(int fd) {
 }
 
 void vfs_list(const char *path) {
-    /* For the initrd root, walk and print. This is a debug helper that uses the
-     * initrd's own listing function (declared in initrd.h). */
     extern void initrd_list(void);
-    if (memcmp(path, "/", 2) == 0) {
+    if (strcmp(path, "/") == 0) {
         initrd_list();
     }
 }
