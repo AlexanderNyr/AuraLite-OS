@@ -138,7 +138,10 @@ debug: iso
 
 # ---- Host-side unit tests (built with the host compiler, no freestanding) ----
 HOST_CC      := cc
-UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap
+UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
+                $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
+                $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
+                $(BUILD_DIR)/test_libc
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -150,6 +153,26 @@ $(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
 $(BUILD_DIR)/test_heap: tests/unit/test_heap.c kernel/mm/heap.c kernel/mm/heap.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_heap.c kernel/mm/heap.c -o $@
+
+$(BUILD_DIR)/test_string: tests/unit/test_string.c kernel/lib/string.c kernel/lib/string.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_bitmap: tests/unit/test_bitmap.c kernel/lib/bitmap.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_net: tests/unit/test_net.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_kprintf: tests/unit/test_kprintf.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_libc: tests/unit/test_libc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)
