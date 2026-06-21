@@ -1,5 +1,5 @@
-#ifndef NOVOS_ARCH_X86_64_PORTIO_H
-#define NOVOS_ARCH_X86_64_PORTIO_H
+#ifndef AURALITE_ARCH_X86_64_PORTIO_H
+#define AURALITE_ARCH_X86_64_PORTIO_H
 
 #include <stdint.h>
 
@@ -28,4 +28,4 @@ static inline void io_wait(void) {
     outb(0x80, 0x00);
 }
 
-#endif /* NOVOS_ARCH_X86_64_PORTIO_H */
+#endif /* AURALITE_ARCH_X86_64_PORTIO_H */

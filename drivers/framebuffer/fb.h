@@ -1,5 +1,5 @@
-#ifndef NOVOS_DRIVERS_FRAMEBUFFER_FB_H
-#define NOVOS_DRIVERS_FRAMEBUFFER_FB_H
+#ifndef AURALITE_DRIVERS_FRAMEBUFFER_FB_H
+#define AURALITE_DRIVERS_FRAMEBUFFER_FB_H
 
 #include <stdint.h>
 
@@ -17,4 +17,4 @@ void fb_init(void);
 void fb_putchar(char c);
 void fb_clear(void);
 
-#endif /* NOVOS_DRIVERS_FRAMEBUFFER_FB_H */
+#endif /* AURALITE_DRIVERS_FRAMEBUFFER_FB_H */

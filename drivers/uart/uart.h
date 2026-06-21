@@ -1,5 +1,5 @@
-#ifndef NOVOS_DRIVERS_UART_UART_H
-#define NOVOS_DRIVERS_UART_UART_H
+#ifndef AURALITE_DRIVERS_UART_UART_H
+#define AURALITE_DRIVERS_UART_UART_H
 
 #include <stdint.h>
 
@@ -30,4 +30,4 @@ void uart_init(void);
 void uart_putchar(char c);
 void uart_puts(const char *s);
 
-#endif /* NOVOS_DRIVERS_UART_UART_H */
+#endif /* AURALITE_DRIVERS_UART_UART_H */

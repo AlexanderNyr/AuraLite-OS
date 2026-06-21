@@ -1,4 +1,4 @@
-# NovOS Virtual Memory Map (x86_64)
+# AuraLite OS Virtual Memory Map (x86_64)
 
 The address space is established by Limine at load time; the kernel will take
 full ownership in Phase 4.

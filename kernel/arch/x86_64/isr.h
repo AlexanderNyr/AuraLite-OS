@@ -1,5 +1,5 @@
-#ifndef NOVOS_ARCH_X86_64_ISR_H
-#define NOVOS_ARCH_X86_64_ISR_H
+#ifndef AURALITE_ARCH_X86_64_ISR_H
+#define AURALITE_ARCH_X86_64_ISR_H
 
 #include <stdint.h>
 
@@ -23,4 +23,4 @@ struct registers {
 /* Invoked by isr_common_stub in isr.asm with rdi = &registers. */
 void isr_handler(struct registers *regs);
 
-#endif /* NOVOS_ARCH_X86_64_ISR_H */
+#endif /* AURALITE_ARCH_X86_64_ISR_H */

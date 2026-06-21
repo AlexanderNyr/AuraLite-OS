@@ -1,4 +1,4 @@
-# NovOS Architecture
+# AuraLite OS Architecture
 
 ## Boot flow
 
@@ -25,7 +25,8 @@ kmain (kernel.c)
    ├── pmm_init()         build bitmap from Limine memmap (via HHDM)
    ├── pmm_self_test()    alloc 1000 frames, free, verify no leak
    ├── paging_init()      read PML4 from CR3; enable EFER.NXE
-   └── paging_self_test() map/unmap test, then deliberate #PF -> halt
+   ├── paging_self_test() map/unmap test (safe; no deliberate fault)
+   └── kheap_init() + kheap_self_test()  on-demand heap; 10k cycles
 ```
 
 ## Interrupt handling (Phase 2)
@@ -136,3 +137,25 @@ already has long-mode paging enabled with the kernel mapped higher-half. The
 VMM extends Limine's page tables, reaching newly-allocated table frames through
 the HHDM. This avoids the classic chicken-and-egg of "map a table to manage
 tables."
+
+## Kernel heap (Phase 5)
+
+```
+heap_alloc(size)
+   │  first-fit search of the free list
+   │  if a free block >= need: split (optional), mark used, remove from list
+   │  else: expand() -> map PMM frames into the heap region (VMM, NX set)
+   │        -> add the new span as one free block -> retry search
+   ▼
+heap_free(ptr)
+   │  mark free; coalesce NEXT neighbour (in range, via its header)
+   │  coalesce PREVIOUS neighbour (via the boundary-tag footer before it)
+   │  insert into the free list (unless absorbed into the previous block)
+```
+
+The allocator core (`heap.c`) is deliberately freestanding — it depends only on
+`<stdint.h>`, with page-backed expansion injected as a callback. So the *same*
+object file is linked into both the kernel (wrapped by `kheap.c`) and the host
+unit test (`tests/unit/test_heap.c`), which pre-commits a buffer instead of
+mapping pages. Every block carries a 32-byte header + 16-byte footer (boundary
+tag); a distinct magic encodes used vs free, keeping payloads 16-aligned.

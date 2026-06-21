@@ -1,5 +1,5 @@
 /*
- * kernel.ld — NovOS kernel linker script for x86_64 higher-half (Limine-loaded).
+ * kernel.ld — AuraLite OS kernel linker script for x86_64 higher-half (Limine-loaded).
  *
  * The kernel is linked at virtual address 0xFFFFFFFF80100000 (higher half).
  * Limine reads the PT_LOAD program headers, allocates physical pages, copies

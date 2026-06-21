@@ -1,5 +1,5 @@
-#ifndef NOVOS_LIB_KPRINTF_H
-#define NOVOS_LIB_KPRINTF_H
+#ifndef AURALITE_LIB_KPRINTF_H
+#define AURALITE_LIB_KPRINTF_H
 
 #include <stddef.h>
 
@@ -16,4 +16,4 @@ void kprintf(const char *fmt, ...);
 void kputchar(char c);
 void kputs(const char *s);
 
-#endif /* NOVOS_LIB_KPRINTF_H */
+#endif /* AURALITE_LIB_KPRINTF_H */

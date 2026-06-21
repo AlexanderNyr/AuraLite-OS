@@ -8,13 +8,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-ISO="${1:-build/novos.iso}"
+ISO="${1:-build/auralite.iso}"
 SERIAL="$(mktemp)"
 
 if [ ! -f "$ISO" ]; then
     echo "[ci] building ISO first..."
     make iso >/dev/null
-    ISO="build/novos.iso"
+    ISO="build/auralite.iso"
 fi
 
 echo "[ci] booting $ISO (10s budget)..."
@@ -29,7 +29,7 @@ echo "[ci] serial output:"
 cat "$SERIAL"
 
 pass=1
-grep -q "Hello from NovOS kernel!" "$SERIAL" || pass=0
+grep -q "Hello from AuraLite OS kernel!" "$SERIAL" || pass=0
 grep -q "GDT loaded"               "$SERIAL" || pass=0
 grep -q "IDT installed: 256 gates" "$SERIAL" || pass=0
 grep -q "PIC remapped"             "$SERIAL" || pass=0
@@ -39,9 +39,10 @@ grep -q "IDT installed: 256 gates" "$SERIAL" || pass=0
 grep -q "PIC remapped"             "$SERIAL" || pass=0
 # Phase 3 gate: PMM must initialise and allocate 1000 unique frames.
 grep -q "\[pmm\] PASS: 1000 unique frames, no leak, contiguous alloc OK" "$SERIAL" || pass=0
-# Phase 4 gate: VMM must map/unmap correctly and then fault on unmapped access.
+# Phase 4 gate: VMM must map/unmap correctly.
 grep -q "\[vmm\] PASS: map / read / write / unmap all correct" "$SERIAL" || pass=0
-grep -q "CR2=0x0000006000000000 (faulting address)" "$SERIAL" || pass=0
+# Phase 5 gate: kernel heap must pass 10000 alloc/free cycles.
+grep -q "\[heap\] PASS: 10000 cycles, no corruption, no leak, realloc OK" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"
 

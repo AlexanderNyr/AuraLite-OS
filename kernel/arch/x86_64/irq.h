@@ -1,5 +1,5 @@
-#ifndef NOVOS_ARCH_X86_64_IRQ_H
-#define NOVOS_ARCH_X86_64_IRQ_H
+#ifndef AURALITE_ARCH_X86_64_IRQ_H
+#define AURALITE_ARCH_X86_64_IRQ_H
 
 #include <stdint.h>
 #include "kernel/arch/x86_64/isr.h"
@@ -27,4 +27,4 @@ void pic_unmask(int irq);
 void irq_register_handler(int irq, irq_handler_t handler);
 void irq_dispatch(int irq, struct registers *regs);
 
-#endif /* NOVOS_ARCH_X86_64_IRQ_H */
+#endif /* AURALITE_ARCH_X86_64_IRQ_H */

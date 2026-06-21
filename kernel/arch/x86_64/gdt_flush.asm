@@ -13,15 +13,15 @@ default rel
 
 section .text
 
-NOVOS_SEL_NULL  equ 0x00
-NOVOS_SEL_CODE  equ 0x08        ; GDT entry 1
-NOVOS_SEL_DATA  equ 0x10        ; GDT entry 2
+AURALITE_SEL_NULL  equ 0x00
+AURALITE_SEL_CODE  equ 0x08        ; GDT entry 1
+AURALITE_SEL_DATA  equ 0x10        ; GDT entry 2
 
 global gdt_flush
 gdt_flush:
     lgdt [rdi]                 ; load the GDT register from the descriptor
 
-    mov ax, NOVOS_SEL_DATA
+    mov ax, AURALITE_SEL_DATA
     mov ds, ax
     mov es, ax
     mov fs, ax
@@ -29,10 +29,10 @@ gdt_flush:
     mov ss, ax
 
     ; Reload CS via far return: push new CS, then push target RIP, then retfq.
-    push NOVOS_SEL_CODE
+    push AURALITE_SEL_CODE
     lea rax, [.reload_cs]
     push rax
-    retfq                      ; RIP <- [.reload_cs], CS <- NOVOS_SEL_CODE
+    retfq                      ; RIP <- [.reload_cs], CS <- AURALITE_SEL_CODE
 
 .reload_cs:
     ret

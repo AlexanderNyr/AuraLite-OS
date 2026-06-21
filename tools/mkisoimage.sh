@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # mkisoimage.sh — assemble a hybrid BIOS/UEFI bootable ISO containing the
-# NovOS kernel plus the Limine bootloader, then install Limine's BIOS stages.
+# AuraLite OS kernel plus the Limine bootloader, then install Limine's BIOS stages.
 #
 # Usage: mkisoimage.sh <kernel.elf> <out.iso> <limine_dir>
 set -euo pipefail

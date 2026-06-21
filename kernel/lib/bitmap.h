@@ -1,5 +1,5 @@
-#ifndef NOVOS_LIB_BITMAP_H
-#define NOVOS_LIB_BITMAP_H
+#ifndef AURALITE_LIB_BITMAP_H
+#define AURALITE_LIB_BITMAP_H
 
 /*
  * Header-only bitmap used by the physical memory manager. Deliberately pure C
@@ -80,4 +80,4 @@ static inline int64_t bm_find_contiguous(const uint8_t *bm, uint64_t nframes,
     return -1;
 }
 
-#endif /* NOVOS_LIB_BITMAP_H */
+#endif /* AURALITE_LIB_BITMAP_H */

@@ -1,6 +1,33 @@
 # Changelog
 
-All notable changes to NovOS. Dates are ISO 8601 (Europe/Moscow local).
+All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+
+## [Rename + Phase 5 — Kernel Heap] 2026-06-21
+
+### Renamed
+- Project renamed **NovOS → AuraLite OS** throughout:
+  - display name, `AURALITE_NAME` / `AURALITE_VERSION`
+  - all include guards `NOVOS_*` → `AURALITE_*`, macros, GDT selectors
+  - project directory `novos/` → `auralite/`, ISO `novos.iso` → `auralite.iso`
+  - all docs, Makefile, tooling scripts, Limine entry (`/AuraLite`)
+
+### Added — Phase 5: Kernel Heap
+- `kernel/mm/heap.{c,h}`: generic freestanding first-fit allocator with
+  boundary-tag (header+footer) coalescing, a doubly-linked free list, splitting,
+  and `heap_alloc`/`heap_free`/`heap_realloc`. No kernel deps (only `<stdint.h>`);
+  expansion is injected as a callback so the same code is host-unit-tested.
+- `kernel/mm/kheap.{c,h}`: kernel wrapper backing the allocator with PMM frames
+  mapped on demand by the VMM into a 16 MiB region at `0xFFFFFFFF88000000`.
+  `kmalloc`/`kfree`/`krealloc`/`kheap_dump`.
+- `tests/unit/test_heap.c`: host tests (basic, alignment, coalescing, realloc,
+  10 000-cycle stress, leak check).
+- In-kernel self-test: 10 000 alloc/free cycles, no corruption, no leak.
+
+### Changed
+- `paging_self_test` no longer deliberately faults at boot (it would halt before
+  the heap runs); the #PF demonstration remains documented from Phase 4.
+- Heap frames mapped No-Execute.
+- CI gate extended to assert the heap PASS line.
 
 ## [Phase 4 — Virtual Memory & Paging] 2026-06-21
 

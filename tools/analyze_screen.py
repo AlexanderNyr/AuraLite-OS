@@ -7,7 +7,7 @@ import struct
 import sys
 import zlib
 
-PATH = "/home/user/novos/build/screen.png"
+PATH = "/home/user/auralite/build/screen.png"
 
 
 def decode_png(path):

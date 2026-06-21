@@ -1,5 +1,5 @@
-#ifndef NOVOS_LIMINE_REQUESTS_H
-#define NOVOS_LIMINE_REQUESTS_H
+#ifndef AURALITE_LIMINE_REQUESTS_H
+#define AURALITE_LIMINE_REQUESTS_H
 
 #include <stdint.h>
 
@@ -33,4 +33,4 @@ uint64_t limine_get_hhdm_offset(void);
 /* Non-zero if the requested Limine base revision is supported by the loader. */
 int limine_base_revision_supported(void);
 
-#endif /* NOVOS_LIMINE_REQUESTS_H */
+#endif /* AURALITE_LIMINE_REQUESTS_H */

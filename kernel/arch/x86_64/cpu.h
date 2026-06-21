@@ -1,5 +1,5 @@
-#ifndef NOVOS_ARCH_X86_64_CPU_H
-#define NOVOS_ARCH_X86_64_CPU_H
+#ifndef AURALITE_ARCH_X86_64_CPU_H
+#define AURALITE_ARCH_X86_64_CPU_H
 
 #include <stdint.h>
 
@@ -65,4 +65,4 @@ static inline void invlpg(uint64_t virt) {
     __asm__ volatile ("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
-#endif /* NOVOS_ARCH_X86_64_CPU_H */
+#endif /* AURALITE_ARCH_X86_64_CPU_H */

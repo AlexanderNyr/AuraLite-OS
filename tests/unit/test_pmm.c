@@ -106,7 +106,7 @@ static void test_alloc_uniqueness(void) {
 }
 
 int main(void) {
-    printf("=== NovOS PMM bitmap unit tests ===\n");
+    printf("=== AuraLite OS PMM bitmap unit tests ===\n");
     test_basic_ops();
     test_first_free();
     test_contiguous();

@@ -1,4 +1,4 @@
-# NovOS
+# AuraLite OS
 
 A from-scratch x86_64 operating system kernel — bootable today from a Limine
 BIOS ISO, printing to the serial console and to a linear framebuffer. This is
@@ -6,8 +6,8 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phases 0–4 (bootstrap, hello-kernel, interrupts, physical memory
-> manager, virtual memory/paging) are **complete and QEMU-verified.**
+> **Status:** Phases 0–5 (bootstrap, hello-kernel, interrupts, physical memory
+> manager, virtual memory/paging, kernel heap) are **complete and QEMU-verified.**
 > See [PLAN.md](PLAN.md).
 
 ---
@@ -19,7 +19,7 @@ networked system with a shell.
   a higher-half direct map, a memory map, and a linear framebuffer ready.
 - The kernel zeroes `.bss`, loads its own flat GDT, installs a 256-entry IDT
   and remaps the PIC, brings up the UART + framebuffer console, runs a bitmap
-  physical memory manager, and a 4-level paging VMM that maps/unmaps pages.
+  physical memory manager, a 4-level paging VMM, and a first-fit kernel heap.
 
 ## Toolchain
 
@@ -53,11 +53,11 @@ limine: Loading executable `boot():/boot/kernel.elf`...
 [boot] GDT loaded (flat 64-bit segments)
 
 ==============================================
- Hello from NovOS kernel!
+ Hello from AuraLite OS kernel!
   x86_64 long mode, booted via Limine
 ==============================================
 
-[kernel] NovOS version 0.1.0
+[kernel] AuraLite OS version 0.1.0
 [kernel] build: Jun 20 2026 17:02:39
 [limine] requested base revision supported
 [mm]    usable memory: 535289856 bytes (522744 KiB / 510 MiB)
@@ -74,10 +74,13 @@ limine: Loading executable `boot():/boot/kernel.elf`...
 [vmm] PML4 at phys 0x000000001ff85000, HHDM 0xffff800000000000, NXE enabled
 [vmm] self-test: mapping 0x0000006000000000...
 [vmm] PASS: map / read / write / unmap all correct
-[vmm] self-test: accessing unmapped page (expect #PF + halt)...
+[boot] initialising kernel heap...
+[heap] self-test: 10000 alloc/free cycles...
+[heap] PASS: 10000 cycles, no corruption, no leak, realloc OK
+[heap] region 0xffffffff88000000 (16 MiB), committed 1920 KiB (480 pages)
+[heap] used 0 KiB, free 1920 KiB
 
-[EXCEPTION] Page Fault (vector 14, error code 0x0000000000000000)
-  CR2=0x0000006000000000 (faulting address)
+[kernel] reached end of kmain; halting.
 ```
 
 The same text is also rendered to the on-screen framebuffer (verified by
@@ -88,7 +91,7 @@ capturing the QEMU framebuffer and decoding it).
 | Target         | Action                                            |
 |----------------|---------------------------------------------------|
 | `make kernel`  | Compile + link `build/kernel.elf` only            |
-| `make iso`     | Build the bootable `build/novos.iso`              |
+| `make iso`     | Build the bootable `build/auralite.iso`              |
 | `make run`     | Boot the ISO in QEMU                              |
 | `make test-unit` | Build + run host-side unit tests (PMM bitmap)   |
 | `make clean`   | Remove `build/`                                    |
@@ -106,11 +109,11 @@ These run QEMU as a managed subprocess because the sandbox has no display.
 ## Project layout
 
 ```
-novos/
+auralite/
 ├── boot/limine/limine.conf     # Limine boot config
 ├── kernel/
 │   ├── arch/x86_64/            # boot, GDT, IDT, ISR, PIC, paging, CPU, port I/O
-│   ├── mm/                     # physical memory manager (bitmap PMM)
+│   ├── mm/                     # PMM (bitmap), kernel heap (first-fit)
 │   ├── lib/                    # kprintf, string, bitmap, spinlock, assert
 │   ├── limine_requests.{c,h}   # Limine protocol request bridge
 │   ├── kernel.{c,h}            # kmain()

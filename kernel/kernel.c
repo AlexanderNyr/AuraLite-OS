@@ -7,6 +7,7 @@
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/mm/kheap.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
 #include "drivers/uart/uart.h"
@@ -42,12 +43,12 @@ void kmain(void) {
 
     kprintf("\n");
     kprintf("==============================================\n");
-    kprintf(" Hello from NovOS kernel!                     \n");
+    kprintf(" Hello from AuraLite OS kernel!                     \n");
     kprintf("  x86_64 long mode, booted via Limine         \n");
     kprintf("==============================================\n");
     kprintf("\n");
 
-    kprintf("[kernel] %s version %s\n", NOVOS_NAME, NOVOS_VERSION);
+    kprintf("[kernel] %s version %s\n", AURALITE_NAME, AURALITE_VERSION);
     kprintf("[kernel] build: %s %s\n", __DATE__, __TIME__);
 
     if (limine_base_revision_supported()) {
@@ -73,6 +74,10 @@ void kmain(void) {
     kprintf("[boot] initialising virtual memory manager...\n");
     paging_init();
     paging_self_test();
+
+    kprintf("[boot] initialising kernel heap...\n");
+    kheap_init();
+    kheap_self_test();
 
     kprintf("\n[kernel] reached end of kmain; halting.\n");
     kernel_halt();

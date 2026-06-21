@@ -1,5 +1,5 @@
-#ifndef NOVOS_ARCH_X86_64_IDT_H
-#define NOVOS_ARCH_X86_64_IDT_H
+#ifndef AURALITE_ARCH_X86_64_IDT_H
+#define AURALITE_ARCH_X86_64_IDT_H
 
 #include <stdint.h>
 
@@ -39,4 +39,4 @@ struct idt_ptr {
 void idt_init(void);
 void idt_set_gate(int n, uint64_t handler, uint8_t flags);
 
-#endif /* NOVOS_ARCH_X86_64_IDT_H */
+#endif /* AURALITE_ARCH_X86_64_IDT_H */

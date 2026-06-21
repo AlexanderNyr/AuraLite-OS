@@ -1,5 +1,5 @@
-#ifndef NOVOS_MM_PMM_H
-#define NOVOS_MM_PMM_H
+#ifndef AURALITE_MM_PMM_H
+#define AURALITE_MM_PMM_H
 
 #include <stdint.h>
 
@@ -49,4 +49,4 @@ void pmm_dump_stats(void);
 /* Gate self-test: allocate 1000 unique frames, free them, verify no leak. */
 void pmm_self_test(void);
 
-#endif /* NOVOS_MM_PMM_H */
+#endif /* AURALITE_MM_PMM_H */

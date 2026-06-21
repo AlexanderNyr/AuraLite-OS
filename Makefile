@@ -1,5 +1,5 @@
 # =============================================================================
-# NovOS — Top-level Makefile
+# AuraLite OS — Top-level Makefile
 # Toolchain: Clang (--target=x86_64-elf) + LLD + NASM, booted by Limine.
 # =============================================================================
 
@@ -12,7 +12,7 @@ AS          := nasm
 BUILD_DIR   := build
 LIMINE_DIR  := limine
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
-ISO_IMAGE   := $(BUILD_DIR)/novos.iso
+ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
 
 # -mcmodel=kernel: code lives in the top 2 GiB (negative addresses); required so
 #   clang emits relocations valid for the higher-half link address.
@@ -72,7 +72,7 @@ debug: iso
 
 # ---- Host-side unit tests (built with the host compiler, no freestanding) ----
 HOST_CC      := cc
-UNIT_TESTS   := $(BUILD_DIR)/test_pmm
+UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -80,6 +80,10 @@ test-unit: $(UNIT_TESTS)
 $(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_heap: tests/unit/test_heap.c kernel/mm/heap.c kernel/mm/heap.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_heap.c kernel/mm/heap.c -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)

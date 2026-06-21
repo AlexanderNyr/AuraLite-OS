@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot NovOS in a managed QEMU subprocess, capture a framebuffer screenshot
+"""Boot AuraLite OS in a managed QEMU subprocess, capture a framebuffer screenshot
 and the serial log, for headless debugging in the sandbox.
 
 Produces build/screen.png (from QEMU screendump, PPM->PNG if needed) and prints
@@ -13,8 +13,8 @@ import sys
 import time
 import zlib
 
-ROOT = "/home/user/novos"
-ISO = ROOT + "/build/novos.iso"
+ROOT = "/home/user/auralite"
+ISO = ROOT + "/build/auralite.iso"
 SOCK = ROOT + "/build/qmon.sock"
 SER = ROOT + "/build/serial.log"
 PPM = ROOT + "/build/screen.ppm"

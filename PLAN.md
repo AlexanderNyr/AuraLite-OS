@@ -1,16 +1,62 @@
-# NovOS Development Plan
+# AuraLite OS Development Plan
 
-## Current Phase: 4 — Virtual Memory & Paging
+## Current Phase: 5 — Kernel Heap
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-A 4-level paging (PML4→PDPT→PD→PT) virtual memory manager that can map/unmap
-pages, translate virtual→physical, and create new address spaces — building on
-Limine's existing paging setup and the Phase 3 PMM. Gate criterion: map a page
-and verify R/W through both the virtual address and the HHDM; unmap; then access
-the unmapped address triggers a clean page fault with CR2 printed.
+A dynamic kernel allocator (`kmalloc`/`kfree`/`krealloc`) backed by the PMM +
+VMM, with first-fit allocation and boundary-tag coalescing. Gate criterion:
+10 000 alloc/free cycles with no corruption and no leak (verified by both a host
+unit test and an in-kernel self-test).
+
+### Tasks
+
+- [x] `kernel/mm/heap.{c,h}`: generic, freestanding first-fit allocator
+  - 32-byte header + 16-byte footer (boundary tag) per block
+  - doubly-linked free list, O(1) coalescing both ways, splitting
+  - `heap_alloc` / `heap_free` / `heap_realloc`
+  - on-demand expansion via a callback (decouples allocator from paging)
+- [x] `kernel/mm/kheap.{c,h}`: kernel wrapper
+  - backs the allocator with PMM frames mapped on demand by the VMM
+  - 16 MiB region at `0xFFFFFFFF88000000`, grows in 64 KiB chunks
+  - `kmalloc` / `kfree` / `krealloc` / `kheap_dump`
+- [x] In-kernel self-test: 10 000 alloc/free cycles + realloc round-trip
+- [x] Host unit test `tests/unit/test_heap.c` (basic, alignment, coalescing,
+      realloc, 10 000-cycle stress, leak check) + `make test-unit`
+- [x] CI gate asserts the heap PASS line
+
+### Design notes
+
+- **Testability via decoupling:** the allocator core (`heap.c`) depends only on
+  `<stdint.h>`; page-backed expansion is injected as a callback. So the *same*
+  allocator object compiles into both the kernel and the host unit test.
+- **Boundary tags:** every block carries a footer mirroring its size+magic, so
+  freeing a block finds its previous neighbour in O(1) (read the footer just
+  before its header) and coalesces both neighbours.
+- **Magic-as-state:** used vs free is encoded in distinct magic values, keeping
+  the header a clean 32 bytes / 16-aligned (payload always 16-aligned).
+- **Lazy backing:** the heap region starts at 0 committed pages and maps frames
+  from the PMM only as `heap_alloc` exhausts the free list. Verified: the test
+  grew it to 1920 KiB then returned to `used 0 / free 1920 KiB` (no leak).
+- **NX on heap pages:** heap frames are mapped No-Execute, so a wild jump into
+  heap data triggers a clean #PF rather than executing attacker data.
+
+### Phases 0–4: COMPLETE ✅
+
+### Definition of Done — Phase 5
+
+- [x] `kmalloc`/`kfree` survive 10 000 mixed-size cycles with no corruption
+- [x] Freeing everything returns the whole region to one coalesced free block
+- [x] `krealloc` preserves data on grow/shrink
+- [x] Host unit tests pass; integration CI gate passes
+
+### Next Phase
+
+**Phase 6 — Timer & PIT/APIC**: configure the 8254 PIT (and later LAPIC timer)
+for a periodic tick, a global monotonic counter, and `timer_sleep_ms`. Gate
+criterion: a 1-second delay measured via the tick counter is accurate within ±5%.
 
 ### Tasks
 
@@ -198,7 +244,7 @@ fault. Achieved together with Phase 1.
 
 ### Definition of Done — Phase 1
 
-- [x] QEMU shows "Hello from NovOS kernel!" on serial (`-serial stdio`)
+- [x] QEMU shows "Hello from AuraLite OS kernel!" on serial (`-serial stdio`)
 - [x] Same text rendered to the on-screen framebuffer
 - [x] No triple fault; clean halt at end of `kmain`
 

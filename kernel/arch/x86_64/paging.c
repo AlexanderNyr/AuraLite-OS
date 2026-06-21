@@ -200,13 +200,8 @@ void paging_self_test(void) {
 
     kprintf(VMM_TAG "PASS: map / read / write / unmap all correct\n");
 
-    /* 9) Deliberately access the now-unmapped page.  The #PF handler (Phase 2)
-     *    prints a register dump including CR2 and halts — proving that an
-     *    unmapped access is caught cleanly instead of triple-faulting.
-     *    If we somehow reach the next line, the test FAILED (no fault). */
-    kprintf(VMM_TAG "self-test: accessing unmapped page (expect #PF + halt)...\n");
-    volatile uint64_t *should_fault = (volatile uint64_t *)test_virt;
-    uint64_t leaked = *should_fault;          /* MUST fault here */
-    kprintf(VMM_TAG "FAIL: expected page fault but read 0x%016llx\n",
-            (unsigned long long)leaked);
+    /* The deliberate #PF on the unmapped address was demonstrated in Phase 4.
+     * We no longer trigger it at boot (it would halt before later phases run).
+     * The Phase 2 IDT + CR2 reporting remain live, so any real unmapped access
+     * would still produce a clean fault dump. */
 }

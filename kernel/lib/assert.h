@@ -1,5 +1,5 @@
-#ifndef NOVOS_LIB_ASSERT_H
-#define NOVOS_LIB_ASSERT_H
+#ifndef AURALITE_LIB_ASSERT_H
+#define AURALITE_LIB_ASSERT_H
 
 /*
  * Kernel panic / assertion helpers. A full register dump + stack trace arrives
@@ -29,4 +29,4 @@ void kernel_halt(void) __attribute__((noreturn));
         kernel_halt();                                                       \
     } while (0)
 
-#endif /* NOVOS_LIB_ASSERT_H */
+#endif /* AURALITE_LIB_ASSERT_H */

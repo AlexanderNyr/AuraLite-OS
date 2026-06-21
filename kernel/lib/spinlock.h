@@ -1,5 +1,5 @@
-#ifndef NOVOS_LIB_SPINLOCK_H
-#define NOVOS_LIB_SPINLOCK_H
+#ifndef AURALITE_LIB_SPINLOCK_H
+#define AURALITE_LIB_SPINLOCK_H
 
 #include <stdint.h>
 
@@ -30,4 +30,4 @@ void spinlock_release(spinlock_t *lock);
 uint64_t spinlock_acquire_irqsave(spinlock_t *lock);
 void     spinlock_release_irqrestore(spinlock_t *lock, uint64_t rflags);
 
-#endif /* NOVOS_LIB_SPINLOCK_H */
+#endif /* AURALITE_LIB_SPINLOCK_H */

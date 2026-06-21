@@ -1,5 +1,5 @@
-#ifndef NOVOS_ARCH_X86_64_GDT_H
-#define NOVOS_ARCH_X86_64_GDT_H
+#ifndef AURALITE_ARCH_X86_64_GDT_H
+#define AURALITE_ARCH_X86_64_GDT_H
 
 /*
  * Minimal flat Global Descriptor Table for long mode.
@@ -31,4 +31,4 @@ struct gdt_ptr {
    reload is performed by gdt_flush() in gdt_flush.asm. */
 void gdt_init(void);
 
-#endif /* NOVOS_ARCH_X86_64_GDT_H */
+#endif /* AURALITE_ARCH_X86_64_GDT_H */

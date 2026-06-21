@@ -1,5 +1,5 @@
 ; =============================================================================
-; boot.asm — NovOS 64-bit kernel entry point, invoked by Limine.
+; boot.asm — AuraLite OS 64-bit kernel entry point, invoked by Limine.
 ;
 ; Limine hands control in long mode, paging enabled, higher-half mapped, with a
 ; usable stack. We establish our own stack, defensively zero the .bss, and call

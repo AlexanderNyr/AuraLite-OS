@@ -5,7 +5,7 @@ rendered text can be read directly. fg (bright) pixels -> '#', bg -> '.'.
 import sys
 from analyze_screen import decode_png  # reuse the decoder
 
-PNG = "/home/user/novos/build/screen.png"
+PNG = "/home/user/auralite/build/screen.png"
 
 
 def main():

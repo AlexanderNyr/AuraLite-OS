@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# run_qemu.sh — launch NovOS in QEMU with the serial console on stdio.
+# run_qemu.sh — launch AuraLite OS in QEMU with the serial console on stdio.
 #
-# Usage: run_qemu.sh <novos.iso>
+# Usage: run_qemu.sh <auralite.iso>
 set -euo pipefail
-ISO="${1:?usage: $0 <novos.iso>}"
+ISO="${1:?usage: $0 <auralite.iso>}"
 
 exec qemu-system-x86_64 \
     -cdrom "$ISO" \

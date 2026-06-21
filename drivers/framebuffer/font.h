@@ -1,5 +1,5 @@
-#ifndef NOVOS_DRIVERS_FRAMEBUFFER_FONT_H
-#define NOVOS_DRIVERS_FRAMEBUFFER_FONT_H
+#ifndef AURALITE_DRIVERS_FRAMEBUFFER_FONT_H
+#define AURALITE_DRIVERS_FRAMEBUFFER_FONT_H
 
 /*
  * 8x8 monochrome bitmap font (Public Domain, font8x8 by Daniel Hepper, based on
@@ -12,4 +12,4 @@
 
 extern char font8x8_basic[128][8];
 
-#endif /* NOVOS_DRIVERS_FRAMEBUFFER_FONT_H */
+#endif /* AURALITE_DRIVERS_FRAMEBUFFER_FONT_H */

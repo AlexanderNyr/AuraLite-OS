@@ -1,5 +1,5 @@
-#ifndef NOVOS_ARCH_X86_64_PAGING_H
-#define NOVOS_ARCH_X86_64_PAGING_H
+#ifndef AURALITE_ARCH_X86_64_PAGING_H
+#define AURALITE_ARCH_X86_64_PAGING_H
 
 #include <stdint.h>
 
@@ -80,4 +80,4 @@ uint64_t paging_new_address_space(void);
  * address to demonstrate clean #PF handling. */
 void paging_self_test(void);
 
-#endif /* NOVOS_ARCH_X86_64_PAGING_H */
+#endif /* AURALITE_ARCH_X86_64_PAGING_H */
