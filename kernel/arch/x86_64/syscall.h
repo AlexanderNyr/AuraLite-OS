@@ -17,6 +17,11 @@
 
 void syscall_init(void);
 
+/* Set the kernel stack that the SYSCALL handler switches to (must be called
+ * before entering Ring 3). This prevents the kernel from running on the
+ * user's stack, which would corrupt user data. */
+void set_syscall_stack(uint64_t stack_top);
+
 /* The C-level syscall dispatch (called from syscall_entry.asm). */
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6);

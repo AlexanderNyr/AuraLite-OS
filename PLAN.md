@@ -1,15 +1,65 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 8 — Processes & User Mode
+## Current Phase: 9 — System Calls
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-Run code in Ring 3 (userspace), with SYSCALL/SYSRET for kernel calls, and
-recover gracefully from userspace faults. Gate criterion: a hardcoded user
-binary runs in Ring 3; a privileged instruction (`cli`) causes a clean #GP that
-the kernel recovers from by killing the user thread.
+A compiled user program, linked against a minimal libc with syscall wrappers and
+loaded by an in-kernel ELF64 loader, calling `write(1, "hello\n", 6)` via
+SYSCALL. Gate criterion: `write(1, "hello\n", 6)` from a compiled userspace
+binary works (text appears on console).
+
+### Tasks
+
+- [x] Minimal libc: `libc/include/unistd.h`, `libc/src/libc.c` (write/read/
+      _exit/getpid wrappers), `libc/src/syscall.asm` (generic syscall wrapper),
+      `libc/crt/crt0.asm` (`_start` → `main` → `_exit`)
+- [x] `libc/user.ld`: user linker script (links at `0x40000000`)
+- [x] `userspace/hello/hello.c`: the gate-test program
+- [x] `kernel/proc/elf.{c,h}`: ELF64 loader (validates Ehdr, maps PT_LOAD
+      segments with USER perms, zero-fills .bss, skips already-mapped pages)
+- [x] `tools/gen_user_binary.py`: converts the compiled ELF to a C array for
+      kernel embedding
+- [x] Makefile: `user` target builds the ELF, generates the header, then builds
+      the kernel (which includes it)
+- [x] Expanded syscalls: SYS_WRITE, SYS_READ, SYS_EXIT, SYS_GETPID
+- [x] SYSCALL handler switches to a kernel stack (`set_syscall_stack()`) to
+      avoid corrupting the user stack
+- [x] Fixed SYSRET to use 64-bit operand size (`o64 sysret`)
+
+### Design notes
+
+- **SYSCALL stack switch:** SYSCALL does NOT switch stacks (unlike interrupts).
+  Without manual switching, the kernel C handler would run on the user's stack,
+  corrupting the user's return addresses. `set_syscall_stack()` records the
+  thread's kernel stack top; `syscall_entry` saves RSP, loads the kernel stack,
+  processes, and restores before SYSRET.
+- **ELF segment co-location:** text and rodata often share the same page (e.g.
+  at `0x40000000`). The loader checks `paging_get_phys()` before mapping and
+  skips pages already mapped by a previous segment.
+- **Binary embedding:** the compiled `hello.elf` is converted to a C array
+  (`hello_bin[]`) by `gen_user_binary.py` and `#include`d by the kernel. The
+  ELF loader parses it at boot and maps the segments.
+- **`o64 sysret`:** NASM's plain `sysret` generates `0F 07` (32-bit operand
+  size), which sets `CS = STAR[63:48] | 3` (without the +0x10 offset). The
+  64-bit version `48 0F 07` correctly sets `CS = (STAR[63:48] + 0x10) | 3`.
+
+### Phases 0–8: COMPLETE ✅
+
+### Definition of Done — Phase 9
+
+- [x] Compiled C program linked with libc runs in Ring 3
+- [x] `write(1, "hello\n", 6)` prints "hello" on the console
+- [x] Program exits cleanly via SYS_EXIT (no page fault or crash)
+- [x] kmain resumes after the user thread terminates
+
+### Next Phase
+
+**Phase 10 — File System & VFS**: virtual file system abstraction, a USTAR
+initrd parser, `/dev` (null, zero), and per-process file descriptor tables.
+Gate criterion: `vfs_open("/init")` reads a file from the initrd.
 
 ### Tasks
 

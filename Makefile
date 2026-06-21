@@ -25,7 +25,7 @@ CFLAGS      := --target=$(TARGET) \
                -fno-omit-frame-pointer \
                -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
                -O2 -g \
-               -DARCH_X86_64 -I . -I $(LIMINE_DIR)
+               -DARCH_X86_64 -I . -I $(LIMINE_DIR) -I $(BUILD_DIR)
 
 ASFLAGS     := -f elf64
 
@@ -55,10 +55,54 @@ $(BUILD_DIR)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(KERNEL_ELF): $(KERNEL_OBJS) kernel.ld
+$(KERNEL_ELF): $(KERNEL_OBJS) kernel.ld $(USER_BIN_H)
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) $(KERNEL_OBJS) -o $@
 	@echo "[link] $(KERNEL_ELF)"
+
+# ---- User-space program build (compiled with host cc, linked with LLD) ----
+# The hello binary is a freestanding static ELF linked at 0x40000000, embedded
+# into the kernel as a C array via tools/gen_user_binary.py.
+USER_BUILD   := $(BUILD_DIR)/user
+USER_ELF     := $(USER_BUILD)/hello.elf
+USER_BIN_H   := $(BUILD_DIR)/hello_bin.h
+
+USER_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
+                -O2 -Wall -Wextra -Werror -I libc/include
+USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
+
+USER_OBJS := $(USER_BUILD)/hello.o $(USER_BUILD)/crt0.o \
+             $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o
+
+user: $(USER_ELF)
+
+$(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/libc.o: libc/src/libc.c libc/include/unistd.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/crt0.o: libc/crt/crt0.asm
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(USER_BUILD)/syscall.o: libc/src/syscall.asm
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(USER_ELF): $(USER_OBJS) libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_OBJS) -o $@
+	@echo "[link] $(USER_ELF)"
+
+$(USER_BIN_H): $(USER_ELF) tools/gen_user_binary.py
+	@mkdir -p $(dir $@)
+	python3 tools/gen_user_binary.py $(USER_ELF) $@ hello_bin
+
+# user.c includes the generated hello_bin.h; ensure it exists first.
+$(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
 
 iso: kernel
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_DIR)

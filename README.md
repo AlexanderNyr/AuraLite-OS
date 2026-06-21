@@ -6,9 +6,9 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phases 0–8 (bootstrap, hello-kernel, interrupts, PMM, paging,
-> heap, timer, multitasking, **user mode/Ring 3**) are **complete and
-> QEMU-verified.** See [PLAN.md](PLAN.md).
+> **Status:** Phases 0–9 (bootstrap, hello-kernel, interrupts, PMM, paging,
+> heap, timer, multitasking, user mode, **system calls + ELF loader**) are
+> **complete and QEMU-verified.** See [PLAN.md](PLAN.md).
 
 ---
 
@@ -20,7 +20,8 @@ networked system with a shell.
 - The kernel brings up GDT (with user segments + TSS), IDT, PIC, UART,
   framebuffer, a bitmap PMM, a 4-level paging VMM, a first-fit kernel heap,
   a 100 Hz timer, a preemptive round-robin scheduler, SYSCALL/SYSRET, and
-  drops into Ring 3 (userspace).
+  runs a **compiled C program** (`hello.c` + libc) in Ring 3 that prints
+  `hello` and exits cleanly.
 
 ## Toolchain
 
@@ -51,7 +52,11 @@ Expected serial output:
 limine: Loading executable `boot():/boot/kernel.elf`...
 [boot] UART (COM1) initialised @ 115200 baud
 [boot] framebuffer console initialised
-[boot] GDT loaded (flat 64-bit segments)
+[boot] GDT loaded (kernel + user segments + TSS)
+[boot] IDT installed: 256 gates
+[boot] PIC remapped (IRQs -> vectors 32-47), all masked
+[boot] TSS loaded (RSP0 + IST1 for #DF)
+[boot] SYSCALL/SYSRET configured
 
 ==============================================
  Hello from AuraLite OS kernel!
@@ -89,6 +94,13 @@ limine: Loading executable `boot():/boot/kernel.elf`...
 [sched] thread-B: message 0 (tid 2, tick 100)
 ...
 [sched] PASS: two threads interleaved correctly
+[boot] testing user mode (Ring 3)...
+[user] self-test: loading compiled ELF binary...
+[elf]  loaded 2 segment(s), entry 0x40000020
+[user] entering Ring 3 at 0x40000020 (stack top 0x7ffff0000000)
+hello
+[thread] 'hello' (tid 3) exited
+[user] PASS: compiled ELF ran in Ring 3, write() worked
 
 [kernel] reached end of kmain; halting.
 ```
@@ -122,16 +134,22 @@ These run QEMU as a managed subprocess because the sandbox has no display.
 auralite/
 ├── boot/limine/limine.conf     # Limine boot config
 ├── kernel/
-│   ├── arch/x86_64/            # boot, GDT, IDT, ISR, PIC, paging, CPU, port I/O
+│   ├── arch/x86_64/            # boot, GDT, IDT, ISR, PIC, paging, CPU, TSS,
+│   │                           #   syscall, port I/O
 │   ├── mm/                     # PMM (bitmap), kernel heap (first-fit)
+│   ├── proc/                   # scheduler, threads, user-mode, ELF loader
 │   ├── lib/                    # kprintf, string, bitmap, spinlock, assert
 │   ├── limine_requests.{c,h}   # Limine protocol request bridge
 │   ├── kernel.{c,h}            # kmain()
 ├── drivers/
 │   ├── uart/                   # 16550 COM1 serial
-│   └── framebuffer/            # linear FB console + 8x8 font
+│   ├── framebuffer/            # linear FB console + 8x8 font
+│   └── timer/                  # 8254 PIT (100 Hz tick)
+├── libc/                       # minimal user-space libc (crt0, syscall, wrappers)
+├── userspace/hello/            # compiled test program
 ├── kernel.ld                   # higher-half linker script (Limine-aware)
-├── Makefile                    # Clang/LLD/NASM build
+├── libc/user.ld                # user-space linker script (0x40000000)
+├── Makefile                    # Clang/LLD/NASM build (+ user binary pipeline)
 ├── limine/                     # vendored Limine 12.3.3 (binary + limine.h)
 └── tools/                      # ISO build, QEMU launch, debug capture
 ```

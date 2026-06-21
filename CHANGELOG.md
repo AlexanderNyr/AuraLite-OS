@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 9 — System Calls] 2026-06-21
+
+### Added
+- Minimal libc for user programs:
+  - `libc/include/unistd.h`: syscall number constants + POSIX-style declarations.
+  - `libc/src/syscall.asm`: generic 7-arg syscall wrapper (remaps C ABI → SYSCALL ABI).
+  - `libc/src/libc.c`: `write`/`read`/`_exit`/`getpid` wrappers.
+  - `libc/crt/crt0.asm`: `_start` → `main` → `_exit`.
+  - `libc/user.ld`: user linker script (links at `0x40000000`).
+- `userspace/hello/hello.c`: the Phase 9 gate-test program (`write(1, "hello\n", 6)`).
+- `kernel/proc/elf.{c,h}`: ELF64 loader (validates Ehdr, maps PT_LOAD segments
+  with USER perms, skips already-mapped pages for co-located segments, zero-fills .bss).
+- `tools/gen_user_binary.py`: converts compiled ELF → C array for kernel embedding.
+- Makefile `user` target: builds hello.elf → generates `hello_bin.h` → kernel.
+- Expanded syscalls: SYS_READ, SYS_WRITE, SYS_EXIT, SYS_GETPID.
+
+### Changed
+- `user_mode_self_test` now loads the compiled `hello.elf` via the ELF loader
+  instead of the Phase 8 hand-assembled program.
+- SYSCALL handler now switches to a dedicated kernel stack (`set_syscall_stack`)
+  before processing, preventing user-stack corruption.
+- CI gate updated to check for "hello" output + new PASS message.
+
+### Fixed
+- **SYSRET wrong CS:** NASM `sysret` (32-bit operand) set `CS = STAR[63:48] | 3`
+  instead of `(STAR[63:48] + 0x10) | 3`. Fixed with `o64 sysret` (`48 0F 07`).
+- **SYSCALL stack corruption:** SYSCALL doesn't switch stacks, so the C handler
+  ran on the user's RSP and corrupted return addresses. Fixed by manually
+  switching to a kernel stack at `syscall_entry`.
+- **ELF segment co-location:** two PT_LOAD segments sharing a page caused the
+  second mapping to overwrite the first. Fixed by skipping already-mapped pages.
+
 ## [Phase 8 — Processes & User Mode] 2026-06-21
 
 ### Added

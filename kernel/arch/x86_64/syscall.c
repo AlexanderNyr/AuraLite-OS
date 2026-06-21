@@ -1,7 +1,8 @@
 /* syscall.c — system call dispatch.
  *
- * Minimal Phase 8 set: just SYS_WRITE (1) so the user test can print, and
- * SYS_EXIT (60) so it can terminate. A full POSIX subset arrives in Phase 9.
+ * Phase 9: expanded set. SYS_WRITE and SYS_EXIT from Phase 8, plus SYS_READ
+ * (stub — no input device yet) and SYS_GETPID. The dispatch signature matches
+ * the Linux ABI: rax=num, then up to 6 arguments.
  */
 
 #include <stdint.h>
@@ -10,15 +11,19 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 
-#define SYS_WRITE 1
+#define SYS_READ   0
+#define SYS_WRITE  1
 #define SYS_EXIT  60
+
+/* Alternative getpid numbers used by different libcs. */
+#define SYS_GETPID  39
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
     switch (num) {
     case SYS_WRITE: {
-        /* a1 = fd (only stdout=1 supported), a2 = buffer, a3 = length. */
+        /* a1 = fd, a2 = buffer, a3 = length. Only fd=1 (stdout) supported. */
         if (a1 != 1) {
             return (uint64_t)-1;
         }
@@ -28,11 +33,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
         return a3;
     }
+    case SYS_READ:
+        /* No input device yet; return 0 (EOF). */
+        return 0;
     case SYS_EXIT:
-        kprintf("[syscall] user process exited (code %llu)\n",
-                (unsigned long long)a1);
         thread_exit();
         return 0;   /* unreachable */
+    case SYS_GETPID: {
+        tcb_t *cur = sched_current();
+        return cur ? cur->id : 0;
+    }
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
         return (uint64_t)-1;

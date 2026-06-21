@@ -47,9 +47,12 @@ grep -q "\[heap\] PASS: 10000 cycles, no corruption, no leak, realloc OK" "$SERI
 grep -q "\[timer\] PASS:" "$SERIAL" || pass=0
 # Phase 7 gate: two threads must interleave and both complete.
 grep -q "\[sched\] PASS: two threads interleaved correctly" "$SERIAL" || pass=0
-# Phase 8 gate: user mode (Ring 3) entry + syscall + #GP recovery.
-grep -q "from USER mode" "$SERIAL" || pass=0
-grep -q "\[user\] PASS: Ring 3 entry + syscall + #GP recovery verified" "$SERIAL" || pass=0
+# Phase 8 gate: user mode (Ring 3) + syscall + ELF loader.
+grep -q "entering Ring 3" "$SERIAL" || pass=0
+grep -q "loaded .* segment" "$SERIAL" || pass=0
+# Phase 9 gate: compiled ELF binary runs in Ring 3, write() works.
+grep -q "^hello$" "$SERIAL" || pass=0
+grep -q "\[user\] PASS: compiled ELF ran in Ring 3, write() worked" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"
 

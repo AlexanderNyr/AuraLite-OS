@@ -1,14 +1,13 @@
 ; =============================================================================
 ; syscall_entry.asm — SYSCALL handler entry point.
 ;
+; CRITICAL: SYSCALL does NOT switch stacks (unlike interrupts). The kernel
+; handler runs on the USER's RSP, which would corrupt the user's stack data.
+; So we manually switch to a kernel stack at entry, and restore the user RSP
+; before SYSRET.
+;
 ; SYSCALL convention: rax=sysno, rdi=a1, rsi=a2, rdx=a3, r10=a4, r8=a5, r9=a6
 ; C ABI:             rdi=arg1, rsi=arg2, rdx=arg3, rcx=arg4, r8=arg5, r9=arg6
-;
-; The dispatch function signature is:
-;   uint64_t syscall_dispatch(uint64_t num, uint64_t a1, ..., uint64_t a6);
-; So we need: rdi=num(rax), rsi=a1(rdi), rdx=a2(rsi), rcx=a3(rdx), r8=a5, r9=a6
-;
-; On SYSCALL: RCX = return RIP, R11 = saved RFLAGS (preserve for SYSRET).
 ; =============================================================================
 
 bits 64
@@ -16,18 +15,27 @@ default rel
 
 section .data
 align 8
-syscall_saved_rcx: dq 0
-syscall_saved_r11: dq 0
+syscall_saved_rcx:   dq 0      ; user return RIP (saved by CPU in RCX)
+syscall_saved_r11:   dq 0      ; user RFLAGS (saved by CPU in R11)
+syscall_saved_rsp:   dq 0      ; user RSP (we save it manually)
+syscall_kstack:      dq 0      ; kernel stack top for syscall processing
 
 section .text
 extern syscall_dispatch
 global syscall_init
 global syscall_entry
+global set_syscall_stack
 
 %define MSR_STAR   0xC0000081
 %define MSR_LSTAR  0xC0000082
 %define MSR_FMASK  0xC0000084
 %define MSR_EFER   0xC0000080
+
+; Called by the kernel before jumping to user mode: sets the kernel stack
+; that syscall_entry will switch to. C prototype: void set_syscall_stack(uint64_t).
+set_syscall_stack:
+    mov [rel syscall_kstack], rdi
+    ret
 
 syscall_init:
     ; LSTAR = full 64-bit address of syscall_entry (EDX:EAX for WRMSR).
@@ -50,7 +58,7 @@ syscall_init:
     xor edx, edx
     wrmsr
 
-    ; Enable SCE (syscall/sysret) in EFER.
+    ; Enable SCE in EFER.
     mov ecx, MSR_EFER
     rdmsr
     or eax, 1
@@ -58,29 +66,34 @@ syscall_init:
     ret
 
 syscall_entry:
-    ; Save RCX (return RIP) and R11 (saved RFLAGS) before the C call clobbers them.
+    ; The CPU set: RCX=user RIP, R11=user RFLAGS. RSP is still the USER's stack.
     mov [rel syscall_saved_rcx], rcx
     mov [rel syscall_saved_r11], r11
+    mov [rel syscall_saved_rsp], rsp     ; save user RSP
 
-    ; ---- Remap registers: insert rax(sysno) at front, shift the rest ----
+    ; Switch to the kernel stack so our C call doesn't clobber user data.
+    mov rsp, [rel syscall_kstack]
+
+    ; Remap SYSCALL args -> C ABI: insert sysno at front, shift the rest.
     ; in:  rax=sysno  rdi=a1  rsi=a2  rdx=a3  r10=a4  r8=a5  r9=a6
-    ; out: rdi=sysno  rsi=a1  rdx=a2  rcx=a3  r8=a5   r9=a6
-    ; Strategy: push rdi,rsi,rdx (the values that must shift), then reload.
+    ; out: rdi=sysno  rsi=a1  rdx=a2  rcx=a3
     push rdi          ; save a1
     push rsi          ; save a2
     push rdx          ; save a3
 
     mov rdi, rax      ; arg0 <- sysno
-    mov rsi, [rsp+16] ; arg1 <- a1 (was rdi, at rsp+16)
-    mov rdx, [rsp+8]  ; arg2 <- a2 (was rsi, at rsp+8)
-    mov rcx, [rsp+0]  ; arg3 <- a3 (was rdx, at rsp+0)
-    ; r8 and r9 are already a5 and a6 — no change needed.
+    mov rsi, [rsp+16] ; arg1 <- a1
+    mov rdx, [rsp+8]  ; arg2 <- a2
+    mov rcx, [rsp+0]  ; arg3 <- a3
 
     cld
     call syscall_dispatch
 
-    add rsp, 24       ; pop the 3 saved values (3 * 8)
+    add rsp, 24       ; pop the 3 saved values
 
-    mov rcx, [rel syscall_saved_rcx]   ; restore return RIP
-    mov r11, [rel syscall_saved_r11]   ; restore RFLAGS
-    sysret                              ; NASM mnemonic for SYSRET (0F 07)
+    ; Restore the user RSP (RAX holds the syscall return value).
+    mov rsp, [rel syscall_saved_rsp]
+    mov rcx, [rel syscall_saved_rcx]     ; restore return RIP
+    mov r11, [rel syscall_saved_r11]     ; restore RFLAGS
+    o64 sysret                            ; 64-bit operand SYSRET (48 0F 07):
+                                         ; CS = STAR[63:48]+0x10|RPL3 = 0x1B
