@@ -47,4 +47,17 @@ void pci_enable_bus_master(uint8_t bus, uint8_t dev, uint8_t func);
 int pci_find_device(uint16_t vendor, uint16_t device,
                     uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func);
 
+/* Read the subclass byte (offset 0x09 of config space). */
+uint8_t pci_get_subclass(uint8_t bus, uint8_t dev, uint8_t func);
+
+/* Read the programming interface byte (offset 0x0A). */
+uint8_t pci_get_prog_if(uint8_t bus, uint8_t dev, uint8_t func);
+
+/*
+ * Scan PCI bus 0 for a device matching the given class + subclass.
+ * Returns 0 on found, -1 if not.
+ */
+int pci_find_class(uint8_t class_code, uint8_t subclass,
+                   uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func);
+
 #endif /* AURALITE_DRIVERS_PCI_PCI_H */

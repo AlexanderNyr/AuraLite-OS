@@ -17,6 +17,20 @@ if [ ! -f "$ISO" ]; then
     ISO="build/auralite.iso"
 fi
 
+# Create a test disk image for AHCI if it doesn't exist.
+if [ ! -f "build/disk.img" ]; then
+    echo "[ci] creating test disk image..."
+    dd if=/dev/zero of=build/disk.img bs=1M count=4 status=none
+    python3 -c "
+data = bytearray(512)
+data[0:4] = b'AURO'
+data[510] = 0x55
+data[511] = 0xAA
+with open('build/disk.img', 'r+b') as f:
+    f.write(data)
+"
+fi
+
 echo "[ci] booting $ISO with shell commands (15s budget)..."
 
 # Send commands with delays so the polling-based serial read doesn't miss chars.
@@ -24,7 +38,12 @@ set +e
 (sleep 5; printf 'ls\n'; sleep 1; printf 'exit\n') | \
 timeout 15 qemu-system-x86_64 \
     -cdrom "$ISO" -m 512M -smp 4 -vga std -display none \
-    -serial stdio -no-reboot -cpu qemu64 > "$SERIAL" 2>&1
+    -serial stdio -no-reboot -cpu qemu64 -boot order=d \
+    -netdev user,id=net0 \
+    -device e1000,netdev=net0 \
+    -drive file=build/disk.img,format=raw,if=none,id=ahcidisk \
+    -device ahci,id=ahci0 \
+    -device ide-hd,drive=ahcidisk,bus=ahci0.0 > "$SERIAL" 2>&1
 set -e
 
 echo "[ci] serial output (tail):"
@@ -44,18 +63,13 @@ grep -q "entering Ring 3" "$SERIAL" || pass=0
 grep -q "loaded .* segment" "$SERIAL" || pass=0
 grep -q "\[initrd\] parsed .* file" "$SERIAL" || pass=0
 grep -q "\[vfs\] PASS: VFS layer functional" "$SERIAL" || pass=0
-# Phase 11 gate: interactive shell with ls.
 grep -q "auralite#" "$SERIAL" || pass=0
 grep -q "/init" "$SERIAL" || pass=0
 grep -q "/hello" "$SERIAL" || pass=0
 grep -q "init shell running in Ring 3" "$SERIAL" || pass=0
-# Phase 12 gate: SMP — multiple CPUs come online.
 grep -q "\[smp\].*PASS:" "$SERIAL" || pass=0
-# Phase 13 gate: networking — ping the QEMU gateway.
 grep -q "\[net\] PASS: ping 10.0.2.2 successful" "$SERIAL" || pass=0
-# TCP gate: three-way handshake + data transfer + clean close.
 grep -q "\[tcp\] PASS: TCP connect + send + close all worked" "$SERIAL" || pass=0
-# Phase 14 gate: framebuffer GUI + window manager.
 grep -q "\[gfx\] framebuffer GUI + window manager rendered" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"

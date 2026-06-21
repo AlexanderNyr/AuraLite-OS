@@ -7,9 +7,13 @@ limitations. See [PLAN.md](PLAN.md) for the completed milestone history.
 
 ## Known Limitations
 
-- **Single address space:** the user program shares the kernel's address space.
-  Per-process page tables (`paging_new_address_space`) are implemented but
-  unused. No `fork`/`execve`.
+- **AHCI sector read/write:** the PxCI command-issue write triggers a triple
+  fault. The controller detection, port init, and command table setup all work;
+  the issue is specifically when telling the controller to start processing a
+  command. Likely causes: (1) QEMU's AHCI generates an interrupt on PxCI write
+  that routes to an unconfigured vector despite PxIE=0, (2) TLB invalidation
+  issue after per-process address-space switching leaves the ABAR MMIO mapping
+  stale. Needs GDB debugging with `-s -S`.
 - **Global FD table:** file descriptors are a global pool, not per-process.
 - **No thread reaping:** dead threads' TCBs + stacks are leaked (no GC).
 - **APs idle:** application processors load the GDT/IDT and halt; they don't

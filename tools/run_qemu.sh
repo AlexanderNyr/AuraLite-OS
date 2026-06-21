@@ -16,4 +16,7 @@ exec qemu-system-x86_64 \
     -no-shutdown \
     -cpu qemu64 \
     -netdev user,id=net0 \
-    -device e1000,netdev=net0
+    -device e1000,netdev=net0 \
+    -drive file="$(dirname "$ISO")/disk.img",if=none,id=ahcidisk \
+    -device ahci,id=ahci0 \
+    -device ide-hd,drive=ahcidisk,bus=ahci0.0

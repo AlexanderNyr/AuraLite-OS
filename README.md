@@ -112,7 +112,7 @@ auralite/
 │   ├── keyboard/            # PS/2 keyboard (scan-code set 1, IRQ 1)
 │   ├── mouse/               # PS/2 mouse (8042 aux, IRQ 12)
 │   ├── timer/               # 8254 PIT (100 Hz)
-│   ├── pci/                 # PCI config-space access (0xCF8/0xCFC)
+│   ├── ahci/               # AHCI SATA driver (PCI, port enumeration, DMA — WIP)
 │   └── e1000/               # Intel 82540EM NIC (MMIO, TX/RX descriptor rings)
 ├── libc/                    # user-space libc (crt0, syscall wrappers, printf, string)
 ├── userspace/

@@ -23,6 +23,22 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [AHCI SATA Driver] 2026-06-21
+
+### Added
+- `drivers/ahci/ahci.{c,h}`: AHCI SATA driver skeleton. PCI class-code scan
+  (0x01/0x06) to find the AHCI controller, ABAR (BAR5) MMIO mapping, port
+  enumeration via PI register, device detection via SSTS/SIG, per-port command
+  list + FIS receive + command table setup (all PMM-allocated for DMA).
+- `pci_find_class()` and `pci_get_subclass()` added to the PCI driver.
+- QEMU launch scripts updated with `-device ahci,id=ahci0 -device ide-hd`.
+
+### Status
+- Controller detection, port init, and command table setup all verified working.
+- The PxCI command-issue write triggers a triple fault (investigation ongoing —
+  likely a QEMU AHCI interrupt delivery interaction or TLB invalidation issue
+  after address-space switching). The self-test is disabled until resolved.
+
 ## [DHCP] 2026-06-21
 
 ### Added

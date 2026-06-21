@@ -64,3 +64,30 @@ int pci_find_device(uint16_t vendor, uint16_t device,
     }
     return -1;
 }
+
+uint8_t pci_get_subclass(uint8_t bus, uint8_t dev, uint8_t func) {
+    return (uint8_t)(pci_config_read(bus, dev, func, 0x08) >> 16) & 0xFF;
+}
+
+uint8_t pci_get_prog_if(uint8_t bus, uint8_t dev, uint8_t func) {
+    return (uint8_t)(pci_config_read(bus, dev, func, 0x08) >> 8) & 0xFF;
+}
+
+int pci_find_class(uint8_t class_code, uint8_t subclass,
+                   uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func) {
+    for (uint8_t bus = 0; bus < 1; bus++) {
+        for (uint8_t dev = 0; dev < 32; dev++) {
+            for (uint8_t func = 0; func < 8; func++) {
+                if (pci_get_vendor(bus, dev, func) == 0xFFFF) continue;
+                if (pci_get_class(bus, dev, func) == class_code &&
+                    pci_get_subclass(bus, dev, func) == subclass) {
+                    if (out_bus)  *out_bus  = bus;
+                    if (out_dev)  *out_dev  = dev;
+                    if (out_func) *out_func = func;
+                    return 0;
+                }
+            }
+        }
+    }
+    return -1;
+}

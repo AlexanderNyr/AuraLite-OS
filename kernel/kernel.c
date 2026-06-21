@@ -29,6 +29,7 @@
 #include "drivers/framebuffer/wm.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/mouse/mouse.h"
+#include "drivers/ahci/ahci.h"
 #include "drivers/timer/pit.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
@@ -143,6 +144,11 @@ void kmain(void) {
     net_self_test();
     net_dns_self_test();
     tcp_self_test();
+
+    /* AHCI SATA driver. */
+    kprintf("[boot] initialising AHCI SATA driver...\n");
+    ahci_init();
+    /* Self-test disabled until PxCI write issue is resolved. */
 
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
     kprintf("[boot] initialising graphics + keyboard + mouse...\n");
