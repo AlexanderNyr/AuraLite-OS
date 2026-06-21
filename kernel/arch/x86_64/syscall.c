@@ -15,6 +15,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/process.h"
 #include "kernel/fs/vfs.h"
 #include "drivers/uart/uart.h"
 
@@ -23,7 +24,11 @@
 #define SYS_OPEN    2
 #define SYS_CLOSE   3
 #define SYS_GETPID 39
+#define SYS_FORK   57
+#define SYS_EXECVE 59
 #define SYS_EXIT   60
+#define SYS_WAIT4  61
+#define SYS_SPAWN  81   /* non-standard: spawn a program in a new address space */
 #define SYS_LISTDIR 80
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
@@ -81,6 +86,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         tcb_t *cur = sched_current();
         return cur ? cur->id : 0;
     }
+    case SYS_FORK:
+        return do_fork();
+    case SYS_EXECVE:
+        return do_execve((const char *)a1);
+    case SYS_WAIT4:
+        return do_wait4((int64_t *)a1);
+    case SYS_SPAWN:
+        return process_spawn((const char *)a1);
     case SYS_LISTDIR:
         vfs_list((const char *)a1);
         return 0;

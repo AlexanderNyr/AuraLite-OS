@@ -81,11 +81,34 @@ static void cmd_help(void) {
     puts("  ls [path]   - list directory contents");
     puts("  cat <file>  - print file contents");
     puts("  echo <...>  - print arguments");
+    puts("  run <prog>  - run a program in its own address space");
     puts("  pwd         - print working directory");
     puts("  uname       - print OS information");
     puts("  free        - print memory usage");
+    puts("  ps          - list processes (stub)");
     puts("  help        - show this help");
     puts("  exit        - exit shell");
+}
+
+static void cmd_run(const char *prog) {
+    if (!prog) {
+        puts("run: missing program name");
+        return;
+    }
+    printf("running %s in isolated address space...\n", prog);
+    pid_t pid = spawn(prog);
+    if (pid < 0) {
+        printf("run: failed to spawn %s\n", prog);
+        return;
+    }
+    printf("[shell] child PID %d, waiting...\n", (int)pid);
+    wait(NULL);
+    printf("[shell] child exited\n");
+}
+
+static void cmd_ps(void) {
+    printf("  PID  NAME\n");
+    printf("  1    init (shell)\n");
 }
 
 /* ---- Shell main loop ---- */
@@ -120,6 +143,10 @@ static void process_command(char *line) {
         cmd_free();
     } else if (strcmp(cmd, "help") == 0) {
         cmd_help();
+    } else if (strcmp(cmd, "run") == 0) {
+        cmd_run(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "ps") == 0) {
+        cmd_ps();
     } else if (strcmp(cmd, "exit") == 0) {
         puts("Goodbye!");
         _exit(0);

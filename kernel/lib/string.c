@@ -81,3 +81,11 @@ int strcmp(const char *a, const char *b) {
     }
     return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
+
+char *strcpy(char *dst, const char *src) {
+    char *d = dst;
+    while ((*d++ = *src++)) {
+        /* copy until NUL */
+    }
+    return dst;
+}

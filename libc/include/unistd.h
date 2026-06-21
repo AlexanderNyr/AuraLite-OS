@@ -11,6 +11,10 @@
 #define SYS_CLOSE   3
 #define SYS_GETPID 39
 #define SYS_EXIT   60
+#define SYS_FORK   57
+#define SYS_EXECVE 59
+#define SYS_WAIT4  61
+#define SYS_SPAWN  81   /* non-standard: spawn in new address space */
 #define SYS_LISTDIR 80   /* non-standard: list a directory */
 
 typedef int64_t ssize_t;
@@ -27,6 +31,10 @@ int     open(const char *path);
 int     close(int fd);
 void    _exit(int code);
 pid_t   getpid(void);
+pid_t   fork(void);
+int     execve(const char *path);
+pid_t   wait(int *status);
+pid_t   spawn(const char *path);
 
 /* AuraLite extension: list files in a directory path. */
 void    listdir(const char *path);

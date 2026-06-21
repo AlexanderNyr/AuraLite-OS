@@ -17,8 +17,12 @@ default rel
 
 section .data
 align 8
+global syscall_saved_rcx
+global syscall_saved_r11
+global syscall_saved_rsp
 syscall_saved_rcx:   dq 0      ; user return RIP (saved by CPU in RCX)
 syscall_saved_r11:   dq 0      ; user RFLAGS (saved by CPU in R11)
+syscall_saved_rsp:   dq 0      ; user RSP (saved manually, for fork())
 
 section .text
 extern syscall_dispatch
@@ -64,9 +68,10 @@ syscall_init:
     ret
 
 syscall_entry:
-    ; The CPU set: RCX=user RIP, R11=user RFLAGS.
+    ; The CPU set: RCX=user RIP, R11=user RFLAGS. RSP is still the user's.
     mov [rel syscall_saved_rcx], rcx
     mov [rel syscall_saved_r11], r11
+    mov [rel syscall_saved_rsp], rsp    ; save user RSP for fork()
 
     ; Remap SYSCALL args -> C ABI: insert sysno at front, shift the rest.
     ; in:  rax=sysno  rdi=a1  rsi=a2  rdx=a3  r10=a4  r8=a5  r9=a6

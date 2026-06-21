@@ -12,6 +12,8 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "drivers/timer/pit.h"
@@ -80,6 +82,17 @@ void schedule(void) {
 
     current_thread = next;
     next->state = THREAD_RUNNING;
+
+    /* Switch address space if the new thread has its own PML4. */
+    if (next->pml4_phys != 0) {
+        /* Only switch CR3 when entering a user process (needs its own user
+         * half). We never switch BACK to the kernel PML4 when going to a
+         * kernel thread, because the kernel half is shared across ALL address
+         * spaces — kernel code/heap/stacks are identical and accessible
+         * regardless of which user PML4 is active. The next user-process
+         * switch will load the correct CR3. */
+        paging_switch_to(next->pml4_phys);
+    }
 
     if (old != next && old != NULL) {
         context_switch(old, next);

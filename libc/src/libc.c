@@ -43,6 +43,22 @@ void listdir(const char *path) {
     syscall(SYS_LISTDIR, (uint64_t)path, 0, 0, 0, 0, 0);
 }
 
+pid_t fork(void) {
+    return (pid_t)syscall(SYS_FORK, 0, 0, 0, 0, 0, 0);
+}
+
+int execve(const char *path) {
+    return (int)syscall(SYS_EXECVE, (uint64_t)path, 0, 0, 0, 0, 0);
+}
+
+pid_t wait(int *status) {
+    return (pid_t)syscall(SYS_WAIT4, (uint64_t)status, 0, 0, 0, 0, 0);
+}
+
+pid_t spawn(const char *path) {
+    return (pid_t)syscall(SYS_SPAWN, (uint64_t)path, 0, 0, 0, 0, 0);
+}
+
 /* ---- String functions ---- */
 
 void *memset(void *dst, int c, size_t n) {

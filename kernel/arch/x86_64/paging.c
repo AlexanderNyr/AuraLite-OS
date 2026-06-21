@@ -22,6 +22,7 @@
 
 static uint64_t  hhdm;    /* higher-half direct-map offset (from Limine)     */
 static uint64_t *pml4;    /* HHDM pointer to the current PML4 (from CR3)    */
+static uint64_t  kernel_pml4_phys;  /* the kernel's PML4 (for switching back) */
 
 /* Convert a physical address to a writable HHDM virtual pointer. */
 static inline void *phys_to_ptr(uint64_t phys) {
@@ -37,7 +38,8 @@ void paging_init(void) {
 
     /* Record the current PML4 (Limine set up paging before handing off). */
     uint64_t cr3 = read_cr3();
-    pml4 = (uint64_t *)phys_to_ptr(cr3 & PAGE_ADDR_MASK);
+    kernel_pml4_phys = cr3 & PAGE_ADDR_MASK;
+    pml4 = (uint64_t *)phys_to_ptr(kernel_pml4_phys);
 
     /* Enable the NX (No-Execute) execution-disable bit in page tables. */
     uint64_t efer = read_msr(MSR_EFER);
@@ -133,6 +135,79 @@ uint64_t paging_new_address_space(void) {
        in every address space.  The user half (0-255) starts empty. */
     for (int i = PML4_USER_TOP; i < 512; i++) {
         new_pml4[i] = pml4[i];
+    }
+    return new_pml4_phys;
+}
+
+/*
+ * Switch the active address space: update CR3 and the VMM's pml4 pointer.
+ * Safe because the kernel half (PML4 entries 256-511) is shared, so kernel
+ * code, the heap, and all kernel stacks remain accessible after the switch.
+ */
+void paging_switch_to(uint64_t new_pml4_phys) {
+    if (new_pml4_phys == 0) {
+        return;
+    }
+    write_cr3(new_pml4_phys);
+    pml4 = (uint64_t *)phys_to_ptr(new_pml4_phys);
+}
+
+/* Update only the pml4 pointer (used after a manual CR3 write in scheduler). */
+void paging_update_pml4_ptr(uint64_t phys) {
+    pml4 = (uint64_t *)phys_to_ptr(phys);
+}
+
+uint64_t paging_get_kernel_pml4(void) {
+    return kernel_pml4_phys;
+}
+
+/*
+ * Clone all user-space pages from the current address space into a new one.
+ * Walks PML4 entries 0-255, then PDPT, PD, PT; for each present leaf PTE,
+ * allocates a new frame, copies the page content, and maps it with the same
+ * flags. Used by fork().
+ */
+uint64_t paging_clone_user_space(void) {
+    uint64_t new_pml4_phys = paging_new_address_space();
+    if (new_pml4_phys == 0) return 0;
+    uint64_t *new_pml4 = phys_to_ptr(new_pml4_phys);
+
+    for (int i4 = 0; i4 < PML4_USER_TOP; i4++) {
+        if (!(pml4[i4] & PAGE_FLAG_PRESENT)) continue;
+        uint64_t *o_pdpt = phys_to_ptr(pml4[i4] & PAGE_ADDR_MASK);
+        uint64_t n_pdpt_p = pmm_alloc_frame();
+        if (!n_pdpt_p) return 0;
+        uint64_t *n_pdpt = phys_to_ptr(n_pdpt_p);
+        memset(n_pdpt, 0, PAGE_SIZE_BYTES);
+        new_pml4[i4] = n_pdpt_p | PAGE_FLAG_PRESENT|PAGE_FLAG_WRITABLE|PAGE_FLAG_USER;
+        for (int i3 = 0; i3 < 512; i3++) {
+            if (!(o_pdpt[i3] & PAGE_FLAG_PRESENT)) continue;
+            uint64_t *o_pd = phys_to_ptr(o_pdpt[i3] & PAGE_ADDR_MASK);
+            uint64_t n_pd_p = pmm_alloc_frame();
+            if (!n_pd_p) return 0;
+            uint64_t *n_pd = phys_to_ptr(n_pd_p);
+            memset(n_pd, 0, PAGE_SIZE_BYTES);
+            n_pdpt[i3] = n_pd_p | PAGE_FLAG_PRESENT|PAGE_FLAG_WRITABLE|PAGE_FLAG_USER;
+            for (int i2 = 0; i2 < 512; i2++) {
+                if (!(o_pd[i2] & PAGE_FLAG_PRESENT)) continue;
+                uint64_t *o_pt = phys_to_ptr(o_pd[i2] & PAGE_ADDR_MASK);
+                uint64_t n_pt_p = pmm_alloc_frame();
+                if (!n_pt_p) return 0;
+                uint64_t *n_pt = phys_to_ptr(n_pt_p);
+                memset(n_pt, 0, PAGE_SIZE_BYTES);
+                n_pd[i2] = n_pt_p | PAGE_FLAG_PRESENT|PAGE_FLAG_WRITABLE|PAGE_FLAG_USER;
+                for (int i1 = 0; i1 < 512; i1++) {
+                    uint64_t opte = o_pt[i1];
+                    if (!(opte & PAGE_FLAG_PRESENT)) continue;
+                    uint64_t old_phys = opte & PAGE_ADDR_MASK;
+                    uint64_t new_phys = pmm_alloc_frame();
+                    if (!new_phys) return 0;
+                    memcpy(phys_to_ptr(new_phys), phys_to_ptr(old_phys),
+                           PAGE_SIZE_BYTES);
+                    n_pt[i1] = new_phys | (opte & ~PAGE_ADDR_MASK);
+                }
+            }
+        }
     }
     return new_pml4_phys;
 }

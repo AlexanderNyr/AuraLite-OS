@@ -75,6 +75,19 @@ uint64_t paging_get_phys(uint64_t virt);
  */
 uint64_t paging_new_address_space(void);
 
+/* Switch CR3 to a different address space (updates the VMM's active PML4). */
+void paging_switch_to(uint64_t new_pml4_phys);
+
+/* Update only the VMM's pml4 pointer (after a manual CR3 write). */
+void paging_update_pml4_ptr(uint64_t phys);
+
+/* Return the kernel's PML4 physical address (for switching back). */
+uint64_t paging_get_kernel_pml4(void);
+
+/* Clone all user-space pages from the current address space into a new one.
+ * Returns the new PML4 physical address, or 0 on failure. Used by fork(). */
+uint64_t paging_clone_user_space(void);
+
 /* Gate self-test: map a page, verify R/W via both virt and HHDM, unmap,
  * confirm the translation is gone, then deliberately fault on the unmapped
  * address to demonstrate clean #PF handling. */

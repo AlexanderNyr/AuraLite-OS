@@ -14,6 +14,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/user.h"
+#include "kernel/proc/process.h"
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/smp.h"
@@ -168,6 +169,10 @@ void kmain(void) {
 
     gfx_flip();
     kprintf("[gfx] framebuffer GUI rendered (double-buffered flip)\n");
+
+    /* Phase 15: per-process address spaces — self-test. */
+    kprintf("[boot] testing per-process address spaces...\n");
+    process_self_test();
 
     kprintf("[boot] starting init shell (Ring 3)...\n");
     user_mode_self_test();

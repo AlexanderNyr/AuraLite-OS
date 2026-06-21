@@ -103,6 +103,13 @@ void thread_exit(void) {
     kprintf("[thread] '%s' (tid %llu) exited\n",
             self->name, (unsigned long long)self->id);
 
+    /* If a parent is waiting in wait4(), clear the flag so its busy-wait
+     * loop exits. We do NOT add it to the queue — sched_yield already keeps
+     * it cycling through the queue. */
+    if (self->parent && self->parent->waited_on) {
+        self->parent->waited_on = 0;
+    }
+
     /* schedule() picks the next thread and switches; since we're DEAD, we are
        not re-added to the queue.  We never return here. */
     schedule();

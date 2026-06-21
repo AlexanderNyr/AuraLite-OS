@@ -70,22 +70,23 @@ static int map_user_stack(void) {
 static void user_test_thread(void *arg) {
     (void)arg;
 
+    uint64_t shell_pml4 = paging_new_address_space();
+    if (shell_pml4 == 0) {
+        kprintf("[user] FAIL: could not create address space\n");
+        return;
+    }
+    paging_switch_to(shell_pml4);
+
+    tcb_t *cur = sched_current();
+    if (cur) cur->pml4_phys = shell_pml4;
+
     uint64_t entry = elf_load(init_bin, init_bin_size);
-    if (entry == 0) {
-        kprintf("[user] FAIL: ELF load failed\n");
-        return;
-    }
+    if (entry == 0) { kprintf("[user] FAIL: ELF load failed\n"); return; }
+    if (!map_user_stack()) return;
 
-    if (!map_user_stack()) {
-        return;
-    }
-
-    kprintf("[user] entering Ring 3 at 0x%llx (stack top 0x%llx)\n",
-            (unsigned long long)entry,
-            (unsigned long long)USER_STACK_TOP);
-
+    kprintf("[user] shell in isolated address space (CR3=0x%llx)\n",
+            (unsigned long long)shell_pml4);
     jump_to_user(entry, USER_STACK_TOP - 16, 0);
-    /* The init shell runs interactively; it exits when the user types "exit". */
 }
 
 void user_mode_self_test(void) {
