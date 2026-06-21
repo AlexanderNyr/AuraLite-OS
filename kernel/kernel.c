@@ -20,6 +20,7 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
+#include "kernel/net/net.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
 #include "drivers/timer/pit.h"
@@ -130,6 +131,10 @@ void kmain(void) {
 
     /* Quick VFS sanity check. */
     vfs_self_test();
+
+    kprintf("[boot] initialising network stack...\n");
+    net_init();
+    net_self_test();
 
     kprintf("[boot] starting init shell (Ring 3)...\n");
     user_mode_self_test();

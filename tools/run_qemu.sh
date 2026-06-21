@@ -8,9 +8,12 @@ ISO="${1:?usage: $0 <auralite.iso>}"
 exec qemu-system-x86_64 \
     -cdrom "$ISO" \
     -m 512M \
+    -smp 4 \
     -vga std \
     -display none \
     -serial stdio \
     -no-reboot \
     -no-shutdown \
-    -cpu qemu64
+    -cpu qemu64 \
+    -netdev user,id=net0 \
+    -device e1000,netdev=net0
