@@ -20,11 +20,31 @@ Exact addresses vary slightly per build; inspect with
 | Region | Address / offset                    | Source request     |
 |--------|-------------------------------------|--------------------|
 | HHDM   | base `0xFFFF800000000000`           | `LIMINE_HHDM_REQUEST` |
+| PML4   | phys `0x1FF85000` (QEMU 512M)       | CR3 (read by VMM)  |
 | FB     | physical `0xFD000000` (QEMU stdvga) | `LIMINE_FRAMEBUFFER_REQUEST` |
 
 The HHDM is a direct map of **all** physical memory at a fixed virtual offset,
 so the kernel can reach any physical address as
-`physical + HHDM_offset`. Reported at boot as "HHDM offset".
+`physical + HHDM_offset`. Reported at boot as "HHDM offset". The VMM uses it to
+read and write page-table frames without first mapping them.
+
+### Paging (Phase 4)
+
+The VMM walks the 4-level hierarchy (`PML4 → PDPT → PD → PT`) starting from the
+PML4 physical base in CR3 (set by Limine). Virtual addresses decompose as:
+
+| Bits      | Field        |
+|-----------|--------------|
+| 47–39     | PML4 index   |
+| 38–30     | PDPT index   |
+| 29–21     | PD index     |
+| 20–12     | PT index     |
+| 11–0      | page offset  |
+
+Each PTE is 8 bytes; bits 12–51 hold the next-level table's physical address.
+The NX bit (bit 63) is enabled via EFER.NXE. Intermediate entries created by
+`walk_pte()` carry Present|Writable|User; the final PTE gets the caller's full
+flag set.
 
 ## Intended full layout (target)
 

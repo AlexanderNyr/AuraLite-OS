@@ -2,6 +2,24 @@
 
 All notable changes to NovOS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 4 — Virtual Memory & Paging] 2026-06-21
+
+### Added
+- `kernel/arch/x86_64/cpu.h`: consolidated low-level primitives for control
+  registers (CR0/2/3/4), MSRs (read/write), and `invlpg` (single-page TLB flush).
+- `kernel/arch/x86_64/paging.{c,h}`: 4-level paging VMM.
+  - Reads the current PML4 from CR3 (Limine-set); enables NX via EFER.NXE.
+  - `walk_pte()`: walks PML4→PDPT→PD→PT, allocating and zeroing missing
+    intermediate tables from the PMM, accessed through the HHDM.
+  - `paging_map` / `paging_unmap` (with `invlpg`) / `paging_get_phys`.
+  - `paging_new_address_space()`: allocates a fresh PML4 and copies the kernel
+    half (entries 256–511) for future process creation.
+  - In-kernel self-test: map→seed→read→write→verify→unmap→deliberate #PF.
+- Consolidated `read_cr2` from `isr.c` into the shared `cpu.h`.
+
+### Changed
+- `kmain` now initialises the VMM after the PMM and runs the paging self-test.
+
 ## [Phase 3 — Physical Memory Manager] 2026-06-20
 
 ### Added

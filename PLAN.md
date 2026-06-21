@@ -1,8 +1,62 @@
 # NovOS Development Plan
 
-## Current Phase: 3 — Physical Memory Manager
+## Current Phase: 4 — Virtual Memory & Paging
 
-### Status: COMPLETE ✅ (2026-06-20)
+### Status: COMPLETE ✅ (2026-06-21)
+
+### Objective
+
+A 4-level paging (PML4→PDPT→PD→PT) virtual memory manager that can map/unmap
+pages, translate virtual→physical, and create new address spaces — building on
+Limine's existing paging setup and the Phase 3 PMM. Gate criterion: map a page
+and verify R/W through both the virtual address and the HHDM; unmap; then access
+the unmapped address triggers a clean page fault with CR2 printed.
+
+### Tasks
+
+- [x] `kernel/arch/x86_64/cpu.h`: consolidated CR/MSR/`invlpg` primitives
+- [x] `kernel/arch/x86_64/paging.{c,h}`: VMM
+  - reads PML4 from CR3; enables NX via EFER.NXE
+  - `walk_pte()`: 4-level walker that creates intermediate tables from the PMM,
+    reached through the HHDM (avoids table-to-map-table chicken-and-egg)
+  - `paging_map` / `paging_unmap` / `paging_get_phys`
+  - `paging_new_address_space()` (copies kernel half; untested until Phase 8)
+- [x] Consolidated `read_cr2` from `isr.c` into `cpu.h`
+- [x] In-kernel self-test: map → seed → read via virt → write via virt → verify
+      via HHDM → unmap → confirm gone → deliberate #PF
+- [x] CI gate asserts VMM PASS + CR2 match
+
+### Design notes
+
+- **Limine already enables paging.** The VMM does not build paging from scratch;
+  it walks/extends Limine's PML4. Page-table frames are reached through the HHDM
+  (`phys + 0xFFFF800000000000`), which Limine maps writable.
+- **NX enabled:** `EFER.NXE` is set in `paging_init()` so `PAGE_FLAG_NO_EXEC`
+  (bit 63) is honoured. Without NXE, setting bit 63 would cause a reserved-bit
+  page fault.
+- **Intermediate-table flags:** created entries get Present|Writable|User so the
+  page is accessible from ring 0 now and ring 3 once the final PTE also carries
+  User (preparing for Phase 8 userspace).
+- **TLB discipline:** both `paging_map` and `paging_unmap` call `invlpg` to flush
+  the specific TLB entry (essential for unmap; harmless for fresh maps).
+- Page-table frames are tested in-kernel only (hardware-coupled; not host-testable
+  without mocking the HHDM/PMM). The bitmap primitives used for allocation remain
+  host-tested via `test_pmm.c`.
+
+### Phases 0, 1, 2, 3: COMPLETE ✅
+
+### Definition of Done — Phase 4
+
+- [x] Map a page, read/write through both virtual address and HHDM (same data)
+- [x] Unmap; translation reports "not present"
+- [x] Access the unmapped address → #PF with CR2 = exact address, clean halt
+- [x] NXE enabled; no reserved-bit faults
+
+### Next Phase
+
+**Phase 5 — Kernel Heap**: slab or first-fit `kmalloc`/`kfree`/`krealloc` over a
+region of the kernel virtual address space, backed by the PMM + VMM. Gate
+criterion: 10 000 alloc/free cycles with no corruption or leak.
 
 ### Objective
 

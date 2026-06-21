@@ -23,7 +23,9 @@ kmain (kernel.c)
    ├── sti                enable maskable interrupts
    ├── kprintf(...)       banner + diagnostics -> UART + framebuffer
    ├── pmm_init()         build bitmap from Limine memmap (via HHDM)
-   └── pmm_self_test()    alloc 1000 frames, free, verify no leak; halt
+   ├── pmm_self_test()    alloc 1000 frames, free, verify no leak
+   ├── paging_init()      read PML4 from CR3; enable EFER.NXE
+   └── paging_self_test() map/unmap test, then deliberate #PF -> halt
 ```
 
 ## Interrupt handling (Phase 2)
@@ -110,3 +112,27 @@ Limine memmap  ──►  pmm_init()
 The allocation algorithms (first-free bit, contiguous-run search) live in the
 pure-C, kernel-independent `kernel/lib/bitmap.h`, so the *same code* is unit
 tested on the host (`tests/unit/test_pmm.c`) and used in the kernel.
+
+## Virtual memory (Phase 4)
+
+```
+paging_init()
+   │  read CR3 -> PML4 (set up by Limine)
+   │  set EFER.NXE (enable No-Execute bit in PTEs)
+   ▼
+paging_map(virt, phys, flags)
+   │  walk_pte(virt, create=1)
+   │     PML4 -> PDPT -> PD -> PT   (allocate + zero missing tables via PMM)
+   │     tables reached via HHDM (phys + 0xFFFF800000000000)
+   │  *PTE = phys | flags
+   │  invlpg(virt)
+   ▼
+paging_unmap(virt)
+   │  walk_pte(virt, create=0) -> *PTE = 0 ; invlpg(virt)
+```
+
+Key design point: the VMM does **not** build paging from scratch — Limine
+already has long-mode paging enabled with the kernel mapped higher-half. The
+VMM extends Limine's page tables, reaching newly-allocated table frames through
+the HHDM. This avoids the classic chicken-and-egg of "map a table to manage
+tables."

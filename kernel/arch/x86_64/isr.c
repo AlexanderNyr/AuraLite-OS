@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/assert.h"
 
@@ -23,12 +24,6 @@ static const char *exception_messages[32] = {
     "Unknown", "Unknown", "Unknown", "Unknown",
     "Unknown", "Unknown"
 };
-
-static inline uint64_t read_cr2(void) {
-    uint64_t v;
-    __asm__ volatile ("mov %%cr2, %0" : "=r"(v));
-    return v;
-}
 
 /*
  * Best-effort frame-pointer stack walk. Compiled with -fno-omit-frame-pointer,

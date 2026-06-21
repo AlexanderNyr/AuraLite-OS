@@ -6,8 +6,9 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phases 0–3 (bootstrap, hello-kernel, interrupts, physical memory
-> manager) are **complete and QEMU-verified.** See [PLAN.md](PLAN.md).
+> **Status:** Phases 0–4 (bootstrap, hello-kernel, interrupts, physical memory
+> manager, virtual memory/paging) are **complete and QEMU-verified.**
+> See [PLAN.md](PLAN.md).
 
 ---
 
@@ -17,8 +18,8 @@ networked system with a shell.
   (`0xFFFFFFFF80100000`) and hands off in 64-bit long mode with paging,
   a higher-half direct map, a memory map, and a linear framebuffer ready.
 - The kernel zeroes `.bss`, loads its own flat GDT, installs a 256-entry IDT
-  and remaps the PIC, brings up the UART + framebuffer console, and runs a
-  bitmap physical memory manager that allocates/frees frames via the HHDM.
+  and remaps the PIC, brings up the UART + framebuffer console, runs a bitmap
+  physical memory manager, and a 4-level paging VMM that maps/unmaps pages.
 
 ## Toolchain
 
@@ -69,8 +70,14 @@ limine: Loading executable `boot():/boot/kernel.elf`...
 [pmm] free frames:   130671 (510 MiB)
 [pmm] self-test: allocating 1000 frames...
 [pmm] PASS: 1000 unique frames, no leak, contiguous alloc OK
+[boot] initialising virtual memory manager...
+[vmm] PML4 at phys 0x000000001ff85000, HHDM 0xffff800000000000, NXE enabled
+[vmm] self-test: mapping 0x0000006000000000...
+[vmm] PASS: map / read / write / unmap all correct
+[vmm] self-test: accessing unmapped page (expect #PF + halt)...
 
-[kernel] reached end of kmain; halting.
+[EXCEPTION] Page Fault (vector 14, error code 0x0000000000000000)
+  CR2=0x0000006000000000 (faulting address)
 ```
 
 The same text is also rendered to the on-screen framebuffer (verified by
@@ -102,7 +109,7 @@ These run QEMU as a managed subprocess because the sandbox has no display.
 novos/
 ├── boot/limine/limine.conf     # Limine boot config
 ├── kernel/
-│   ├── arch/x86_64/            # boot.asm entry, GDT, IDT, ISR, PIC, port I/O
+│   ├── arch/x86_64/            # boot, GDT, IDT, ISR, PIC, paging, CPU, port I/O
 │   ├── mm/                     # physical memory manager (bitmap PMM)
 │   ├── lib/                    # kprintf, string, bitmap, spinlock, assert
 │   ├── limine_requests.{c,h}   # Limine protocol request bridge

@@ -5,6 +5,7 @@
 #include "kernel/arch/x86_64/gdt.h"
 #include "kernel/arch/x86_64/idt.h"
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
@@ -68,6 +69,10 @@ void kmain(void) {
     kprintf("[boot] initialising physical memory manager...\n");
     pmm_init();
     pmm_self_test();
+
+    kprintf("[boot] initialising virtual memory manager...\n");
+    paging_init();
+    paging_self_test();
 
     kprintf("\n[kernel] reached end of kmain; halting.\n");
     kernel_halt();

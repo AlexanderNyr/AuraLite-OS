@@ -34,13 +34,14 @@ grep -q "GDT loaded"               "$SERIAL" || pass=0
 grep -q "IDT installed: 256 gates" "$SERIAL" || pass=0
 grep -q "PIC remapped"             "$SERIAL" || pass=0
 grep -q "HHDM offset: 0xffff800000000000" "$SERIAL" || pass=0
-# Phase 2 (structural): IDT and PIC must initialise. (Exception handling is
-# verified by the Phase 2 historical record; we no longer deliberately trigger
-# an exception at boot because it would halt before later phases run.)
+# Phase 2 (structural): IDT and PIC must initialise.
 grep -q "IDT installed: 256 gates" "$SERIAL" || pass=0
 grep -q "PIC remapped"             "$SERIAL" || pass=0
 # Phase 3 gate: PMM must initialise and allocate 1000 unique frames.
 grep -q "\[pmm\] PASS: 1000 unique frames, no leak, contiguous alloc OK" "$SERIAL" || pass=0
+# Phase 4 gate: VMM must map/unmap correctly and then fault on unmapped access.
+grep -q "\[vmm\] PASS: map / read / write / unmap all correct" "$SERIAL" || pass=0
+grep -q "CR2=0x0000006000000000 (faulting address)" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"
 

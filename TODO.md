@@ -12,12 +12,9 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 
 ## Phase 3 — DONE ✅ (2026-06-20)
 
-## Phase 4 — Paging / VMM
-- [ ] 4-level paging walker, `paging_map/unmap`, `invlpg`.
-- [ ] Switch off Limine's initial identity mapping where appropriate.
-- [ ] Enable NX (XD) for data pages; map `.rodata` read-only + no-exec.
+## Phase 4 — DONE ✅ (2026-06-21)
 
-## Phase 5–14
+## Phase 5 — Kernel Heap
 - Heap, timer/APIC, scheduler, Ring 3 + ELF loader, syscalls, VFS + initrd,
   init + shell, SMP, networking, GUI. See the master roadmap.
 
@@ -34,6 +31,16 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 - [ ] Track per-region provenance so `/proc/meminfo`-style reporting can break
       memory down by usable / ACPI / reserved.
 - [ ] Add a PMM "used" region registry so the heap/VMM can claim named ranges.
+
+## Phase 4 follow-ups
+- [ ] Remap `.rodata` read-only + no-exec (currently RW in the data segment by
+      Limine's initial mapping).
+- [ ] Add IST/TSS for #DF before the stack can overflow into page tables.
+- [ ] Implement `paging_map_range` (multi-page convenience) and large-page
+      (2 MiB / 1 GiB) support for performance-critical regions (HHDM, heap).
+- [ ] Make the page-table walk host-testable by injecting alloc/HHDM callbacks.
+- [ ] Reference-count shared page tables when `paging_new_address_space()` is
+      used (kernel tables are shared via copy, not COW yet).
 
 ## Known issues
 - No IST/TSS: a kernel stack overflow would triple-fault. Tracked above.
