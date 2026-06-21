@@ -67,7 +67,7 @@ static void cmd_pwd(void) {
 }
 
 static void cmd_uname(void) {
-    puts("AuraLite OS 0.1.0 x86_64");
+    puts("AuraLite OS 1.0.0 x86_64");
 }
 
 static void cmd_free(void) {
@@ -131,7 +131,7 @@ static void process_command(char *line) {
 int main(void) {
     printf("\n");
     printf("==============================================\n");
-    printf("   AuraLite OS v0.1.0 — Interactive Shell     \n");
+    printf("   AuraLite OS v1.0.0 — Interactive Shell     \n");
     printf("   Type 'help' for available commands         \n");
     printf("==============================================\n");
     printf("\n");

@@ -1,90 +1,67 @@
 # AuraLite OS TODO
 
-Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
+All 14 phases are complete. This file tracks future enhancements and known
+limitations. See [PLAN.md](PLAN.md) for the completed milestone history.
 
-## Phase 1 (cleanup)
-- [ ] Decide on `limine.conf` verbosity policy per environment (dev vs release).
-- [ ] Add a unit-test shim for host-side testing of `string.c` / `kprintf`.
-- [ ] Replace the embedded 8x8 font with a PSF2 8x16 font for sharper text
-      (deferred to the GUI phase).
+---
 
-## Phase 2 — DONE ✅ (2026-06-20)
+## Known Limitations
 
-## Phase 3 — DONE ✅ (2026-06-20)
+- **Single address space:** the user program shares the kernel's address space.
+  Per-process page tables (`paging_new_address_space`) are implemented but
+  unused. No `fork`/`execve`.
+- **Global FD table:** file descriptors are a global pool, not per-process.
+- **No thread reaping:** dead threads' TCBs + stacks are leaked (no GC).
+- **APs idle:** application processors load the GDT/IDT and halt; they don't
+  participate in the scheduler (no per-CPU run queues or work stealing).
+- **Read-only initrd:** the VFS has no write-capable filesystem.
+- **No errno:** syscalls return `-1` on error without a detailed errno code.
+- **Polling I/O:** no interrupt-driven device I/O (e1000 and keyboard poll).
+- **8×8 font:** no scalable font (PSF2) for higher-resolution text.
 
-## Phase 4 — DONE ✅ (2026-06-21)
+## Future Enhancements
 
-## Phase 5 — DONE ✅ (2026-06-21)
+### Memory management
+- [ ] Per-process address spaces (switch CR3 on context switch)
+- [ ] Copy-on-write `fork`
+- [ ] Slab allocator for common fixed sizes (TCBs, page tables)
+- [ ] Guard pages around the kernel heap for overflow detection
+- [ ] Large-page (2 MiB) support for the HHDM and heap
+- [ ] Remap `.rodata` read-only + NX (currently mapped RW by Limine)
 
-## Phase 6 — DONE ✅ (2026-06-21)
+### Scheduling
+- [ ] Per-CPU run queues + work stealing (integrate APs into the scheduler)
+- [ ] Thread reaping (free TCB + stack on exit)
+- [ ] BLOCKED state + wait queues (for sleep / IO wait)
+- [ ] `kthread_join(tid)`
+- [ ] Migrate from round-robin to CFS
 
-## Phase 7 — DONE ✅ (2026-06-21)
+### File system
+- [ ] Per-process FD tables (with a PCB)
+- [ ] tmpfs (write-capable in-memory filesystem)
+- [ ] ext2 read-only driver
+- [ ] Directory vnodes + `readdir` syscall
 
-## Phase 8 — DONE ✅ (2026-06-21)
+### Networking
+- [ ] UDP and TCP state machines
+- [ ] BSD socket API (`socket`, `bind`, `listen`, `accept`, `connect`)
+- [ ] Interrupt-driven e1000 RX (instead of polling)
+- [ ] DHCP client for automatic IP configuration
 
-## Phase 9 — DONE ✅ (2026-06-21)
+### Userspace
+- [ ] `fork` + `execve` for multi-process support
+- [ ] User-space `mmap`/`brk` for heap growth
+- [ ] Apply ELF segment `p_flags` (R/W/X) per segment
+- [ ] Separate user programs as external binaries (not embedded)
 
-## Phase 10 — DONE ✅ (2026-06-21)
+### Graphics
+- [ ] PSF2 8×16 font for sharper text
+- [ ] Window manager (z-order, focus, drag)
+- [ ] Mouse driver (PS/2)
+- [ ] Widget toolkit (button, label, text input)
 
-## Phase 10 follow-ups
-- [ ] Per-process FD tables (currently a global pool).
-- [ ] Directory listing (`readdir`) and directory vnodes.
-- [ ] Ext2 read-only driver.
-- [ ] Write support in tmpfs (for pipes, sockets).
-- [ ] Apply ELF segment p_flags to VFS-loaded files.
-
-## Phase 9 follow-ups
-- [ ] Create per-process address spaces via `paging_new_address_space()`
-      (currently the hello binary shares the kernel's address space).
-- [ ] Add a proper PCB (Process Control Block) wrapping TCB + address space + fds.
-- [ ] Implement `fork` (COW), `execve`, `wait4` for multi-process support.
-- [ ] Add user-space `mmap`/`brk`/`sbrk` for heap growth.
-- [ ] Apply p_flags (R/W/X) per ELF segment instead of mapping all as RW+X.
-- [ ] Free user pages on thread exit (currently leaked).
-
-## Phase 7 follow-ups
-- [ ] Reap dead threads: free their TCB + stack (currently leaked).
-- [ ] Add BLOCKED state + wait queues (for sleep/IO/wait).
-- [ ] Implement `kthread_join(tid)` to wait for thread completion.
-- [ ] Migrate from round-robin to CFS (Completely Fair Scheduler).
-- [ ] Add per-CPU run queues + work stealing for SMP (Phase 12).
-- [ ] Use TSS IST for the scheduler/timer interrupt stack.
-
-## Phase 6 follow-ups
-- [ ] LAPIC timer calibration using the PIT as reference (needed for SMP Phase 12).
-- [ ] Detect HPET for higher-resolution timing.
-- [ ] Add `timer_get_uptime_ms` and sub-tick precision via TSC.
-
-## Phase 2 follow-ups
-- [ ] Add a TSS + IST for the double-fault handler (#DF) so a kernel stack
-      overflow cannot escalate to a triple fault. Needed before userspace.
-- [ ] Wire up the PIT timer (IRQ 0) as a periodic heartbeat once the scheduler
-      lands (depends on Phase 6).
-
-## Phase 3 follow-ups
-- [ ] ASSERT that the Limine memory regions are page-aligned (currently assumed
-      — true for Limine, but a page-aligned bitmap base matters for correctness).
-- [ ] Word-level (8-byte) bitmap scanning for faster `bm_first_free`.
-- [ ] Track per-region provenance so `/proc/meminfo`-style reporting can break
-      memory down by usable / ACPI / reserved.
-- [ ] Add a PMM "used" region registry so the heap/VMM can claim named ranges.
-
-## Phase 4 follow-ups
-- [ ] Remap `.rodata` read-only + no-exec (currently RW in the data segment by
-      Limine's initial mapping).
-- [ ] Add IST/TSS for #DF before the stack can overflow into page tables.
-- [ ] Implement `paging_map_range` (multi-page convenience) and large-page
-      (2 MiB / 1 GiB) support for performance-critical regions (HHDM, heap).
-- [ ] Make the page-table walk host-testable by injecting alloc/HHDM callbacks.
-- [ ] Reference-count shared page tables when `paging_new_address_space()` is
-      used (kernel tables are shared via copy, not COW yet).
-
-## Phase 5 follow-ups
-- [ ] Slab layer for common fixed sizes (task structs, page tables, buffers).
-- [ ] Guard pages around the heap region for overflow detection.
-- [ ] Allocation tracking/quota per-subsystem; poison freed memory in debug.
-- [ ] Make `krealloc` try in-place grow into a free neighbour before allocating.
-
-## Known issues
-- No IST/TSS: a kernel stack overflow would triple-fault. Tracked above.
-- Dead threads' TCBs + stacks are leaked (no reaper yet). Tracked above.
+### Infrastructure
+- [ ] LAPIC timer (per-CPU, calibrated against the PIT)
+- [ ] HPET detection for higher-resolution timing
+- [ ] GDB pretty-printers for kernel data structures
+- [ ] GitHub Actions CI pipeline

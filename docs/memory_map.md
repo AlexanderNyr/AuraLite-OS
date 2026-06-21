@@ -1,37 +1,61 @@
 # AuraLite OS Virtual Memory Map (x86_64)
 
-The address space is established by Limine at load time; the kernel will take
-full ownership in Phase 4.
+The address space is established by Limine at load time and extended by the
+kernel's VMM.
 
 ## Kernel image (higher half)
 
-| Region          | Virtual address              | Notes                         |
-|-----------------|------------------------------|-------------------------------|
-| `.text`         | `0xFFFFFFFF80100000`         | Entry `_start` lives here; R+X|
-| `.rodata`       | `0xFFFFFFFF80102000` region  | R                             |
-| `.data`         | `0xFFFFFFFF80103000` region  | R+W (Limine requests live here)|
-| `.bss` (+stack) | immediately after `.data`    | R+W; 64 KiB stack at the top  |
+| Region          | Virtual address              | Flags       | Notes                          |
+|-----------------|------------------------------|-------------|--------------------------------|
+| `.text`         | `0xFFFFFFFF80100000`         | R + X       | Entry `_start` lives here      |
+| `.rodata`       | `~0xFFFFFFFF80102000`        | R           | Read-only data                 |
+| `.data`         | `~0xFFFFFFFF80103000`        | R + W       | Limine request structs live here |
+| `.bss`          | after `.data`                | R + W       | Zero-initialised globals       |
+| Boot stack      | top of `.bss`                | R + W       | 64 KiB, set in `boot.asm`      |
 
-Exact addresses vary slightly per build; inspect with
-`readelf -lW build/kernel.elf`.
+Exact addresses vary per build; inspect with `readelf -lW build/kernel.elf`.
+
+## Kernel heap
+
+| Region      | Virtual address              | Size    | Flags       |
+|-------------|------------------------------|---------|-------------|
+| Kernel heap | `0xFFFFFFFF88000000`         | 16 MiB  | R + W + NX  |
+
+The heap grows on demand: `kheap_expand()` maps PMM frames via the VMM in 64 KiB
+chunks as `kmalloc` exhausts the free list. Pages are mapped No-Execute.
 
 ## Limine-provided regions
 
-| Region | Address / offset                    | Source request     |
-|--------|-------------------------------------|--------------------|
-| HHDM   | base `0xFFFF800000000000`           | `LIMINE_HHDM_REQUEST` |
-| PML4   | phys `0x1FF85000` (QEMU 512M)       | CR3 (read by VMM)  |
-| FB     | physical `0xFD000000` (QEMU stdvga) | `LIMINE_FRAMEBUFFER_REQUEST` |
+| Region | Address / offset               | Source request              |
+|--------|--------------------------------|-----------------------------|
+| HHDM   | base `0xFFFF800000000000`      | `LIMINE_HHDM_REQUEST`       |
+| PML4   | phys `0x1FF85000` (QEMU 512M)  | CR3 (read by VMM at init)   |
+| FB     | phys `0xFD000000` (QEMU stdvga)| `LIMINE_FRAMEBUFFER_REQUEST`|
+| Initrd | passed as a module             | `LIMINE_MODULE_REQUEST`     |
 
-The HHDM is a direct map of **all** physical memory at a fixed virtual offset,
-so the kernel can reach any physical address as
-`physical + HHDM_offset`. Reported at boot as "HHDM offset". The VMM uses it to
-read and write page-table frames without first mapping them.
+The HHDM is a direct map of **all physical RAM** at a fixed virtual offset.
+The kernel reaches any physical address as `physical + HHDM_offset`.
 
-### Paging (Phase 4)
+> **Important:** the HHDM only covers physical RAM. Device MMIO (e.g. the
+> e1000 NIC's BAR0 at `0xFEBC0000`) lives beyond the RAM range and must be
+> explicitly mapped via `paging_map()`.
 
-The VMM walks the 4-level hierarchy (`PML4 → PDPT → PD → PT`) starting from the
-PML4 physical base in CR3 (set by Limine). Virtual addresses decompose as:
+## User space (Ring 3)
+
+| Region       | Virtual address              | Size    | Notes                           |
+|--------------|------------------------------|---------|---------------------------------|
+| User code    | `0x40000000`                 | varies  | ELF PT_LOAD segments (RWX+User) |
+| User data    | `~0x40000120`                | varies  | rodata + .bss (co-located)      |
+| User stack   | `0x7FFFF0000000` – top       | 64 KiB  | Grows down, USER + RW           |
+
+The ELF loader maps segments at their `p_vaddr` (linked at `0x40000000` via
+`libc/user.ld`). The user stack is mapped just below the 128 TiB canonical
+boundary.
+
+## Paging (VMM)
+
+The VMM walks the 4-level hierarchy (`PML4 → PDPT → PD → PT`) starting from
+the PML4 physical base in CR3. Virtual address decomposition:
 
 | Bits      | Field        |
 |-----------|--------------|
@@ -41,23 +65,13 @@ PML4 physical base in CR3 (set by Limine). Virtual addresses decompose as:
 | 20–12     | PT index     |
 | 11–0      | page offset  |
 
-Each PTE is 8 bytes; bits 12–51 hold the next-level table's physical address.
-The NX bit (bit 63) is enabled via EFER.NXE. Intermediate entries created by
-`walk_pte()` carry Present|Writable|User; the final PTE gets the caller's full
-flag set.
-
-## Intended full layout (target)
-
-```
-0x0000000000000000 – 0x00007FFFFFFFFFFF   User space (128 TiB)        [later]
-0xFFFF800000000000 – 0xFFFFBFFFFFFFFFFF   Direct physical map (HHDM)  [provided]
-0xFFFFFFFF80000000 – 0xFFFFFFFFFFFFFFFF   Kernel image + heap + stacks[current]
-```
+Each PTE is 8 bytes; bits 12–51 hold the physical frame address. The NX bit
+(bit 63) is enabled via EFER.NXE. Intermediate entries created by `walk_pte()`
+carry Present|Writable|User; the final PTE gets the caller's full flag set.
 
 ## Physical memory (from Limine memmap)
 
-QEMU `-m 512M` reports ~510 MiB `LIMINE_MEMMAP_USABLE`. The Phase 3 PMM consumes
-this map into a bitmap over 4 KiB frames.
+QEMU `-m 512M` reports ~510 MiB `LIMINE_MEMMAP_USABLE`.
 
 ### PMM bitmap
 
@@ -69,11 +83,6 @@ this map into a bitmap over 4 KiB frames.
 | Usable frames  | 130 671 (~510 MiB)                |
 | Free at boot   | 130 671 (== usable → bitmap stole none) |
 
-The bitmap is reached through the HHDM as `0xFFFF800000000000 + bitmap_phys`.
-It is placed in **bootloader-reclaimable** memory when available (falling back
-to usable), so it does not reduce the usable pool. Allocation returns a physical
-address; the caller maps it via the VMM (Phase 4) to actually use it.
-
 ### Memory-map types consumed by the PMM
 
 | Type                              | PMM treatment                       |
@@ -81,3 +90,14 @@ address; the caller maps it via the VMM (Phase 4) to actually use it.
 | `LIMINE_MEMMAP_USABLE` (0)        | free / allocatable                  |
 | `LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE` (5) | preferred bitmap storage    |
 | everything else                   | marked used (not allocatable)       |
+
+## Device MMIO
+
+The e1000 NIC's BAR0 is mapped explicitly by `e1000_init()`:
+
+| Region | Physical address      | Size    | Notes                            |
+|--------|-----------------------|---------|----------------------------------|
+| e1000  | `0xFEBC0000`          | 128 KiB | Mapped at `HHDM + phys` via paging |
+
+TX/RX descriptor rings and packet buffers are allocated from the PMM (physical
+frames) so the NIC can DMA to them. The kernel accesses them through the HHDM.
