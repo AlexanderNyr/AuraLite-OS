@@ -1,13 +1,15 @@
 ; =============================================================================
 ; syscall_entry.asm — SYSCALL handler entry point.
 ;
-; CRITICAL: SYSCALL does NOT switch stacks (unlike interrupts). The kernel
-; handler runs on the USER's RSP, which would corrupt the user's stack data.
-; So we manually switch to a kernel stack at entry, and restore the user RSP
-; before SYSRET.
-;
 ; SYSCALL convention: rax=sysno, rdi=a1, rsi=a2, rdx=a3, r10=a4, r8=a5, r9=a6
 ; C ABI:             rdi=arg1, rsi=arg2, rdx=arg3, rcx=arg4, r8=arg5, r9=arg6
+;
+; The dispatch runs on the USER's stack (SYSCALL does not switch stacks). This is
+; safe because:
+;   - The user stack is mapped writable + user-accessible.
+;   - Timer/IRQ interrupts switch to the TSS.RSP0 kernel stack, which is
+;     DIFFERENT from the user stack, so no conflict.
+;   - iretq from the timer handler restores the user RSP.
 ; =============================================================================
 
 bits 64
@@ -17,8 +19,6 @@ section .data
 align 8
 syscall_saved_rcx:   dq 0      ; user return RIP (saved by CPU in RCX)
 syscall_saved_r11:   dq 0      ; user RFLAGS (saved by CPU in R11)
-syscall_saved_rsp:   dq 0      ; user RSP (we save it manually)
-syscall_kstack:      dq 0      ; kernel stack top for syscall processing
 
 section .text
 extern syscall_dispatch
@@ -31,10 +31,8 @@ global set_syscall_stack
 %define MSR_FMASK  0xC0000084
 %define MSR_EFER   0xC0000080
 
-; Called by the kernel before jumping to user mode: sets the kernel stack
-; that syscall_entry will switch to. C prototype: void set_syscall_stack(uint64_t).
+; Placeholder — kept for API compatibility but does nothing now.
 set_syscall_stack:
-    mov [rel syscall_kstack], rdi
     ret
 
 syscall_init:
@@ -46,10 +44,10 @@ syscall_init:
     wrmsr
 
     ; STAR[47:32]=0x08 (SYSCALL -> CS=0x08, SS=0x10)
-    ; STAR[63:48]=0x08 (SYSRET  -> CS=0x18|3=0x1B, SS=0x10|3=0x13)
+    ; STAR[63:48]=0x10 (SYSRET  -> CS=0x10+0x10=0x20|3=0x23, SS=0x10+0x08=0x18|3=0x1B)
     mov ecx, MSR_STAR
     xor eax, eax
-    mov edx, 0x00080008
+    mov edx, 0x00100008
     wrmsr
 
     ; FMASK: clear IF (bit 9) on SYSCALL entry.
@@ -66,13 +64,9 @@ syscall_init:
     ret
 
 syscall_entry:
-    ; The CPU set: RCX=user RIP, R11=user RFLAGS. RSP is still the USER's stack.
+    ; The CPU set: RCX=user RIP, R11=user RFLAGS.
     mov [rel syscall_saved_rcx], rcx
     mov [rel syscall_saved_r11], r11
-    mov [rel syscall_saved_rsp], rsp     ; save user RSP
-
-    ; Switch to the kernel stack so our C call doesn't clobber user data.
-    mov rsp, [rel syscall_kstack]
 
     ; Remap SYSCALL args -> C ABI: insert sysno at front, shift the rest.
     ; in:  rax=sysno  rdi=a1  rsi=a2  rdx=a3  r10=a4  r8=a5  r9=a6
@@ -91,9 +85,7 @@ syscall_entry:
 
     add rsp, 24       ; pop the 3 saved values
 
-    ; Restore the user RSP (RAX holds the syscall return value).
-    mov rsp, [rel syscall_saved_rsp]
-    mov rcx, [rel syscall_saved_rcx]     ; restore return RIP
-    mov r11, [rel syscall_saved_r11]     ; restore RFLAGS
-    o64 sysret                            ; 64-bit operand SYSRET (48 0F 07):
-                                         ; CS = STAR[63:48]+0x10|RPL3 = 0x1B
+    mov rcx, [rel syscall_saved_rcx]   ; restore return RIP
+    mov r11, [rel syscall_saved_r11]   ; restore RFLAGS
+    o64 sysret                          ; 64-bit SYSRET (48 0F 07):
+                                        ; CS = STAR[63:48]+0x10|RPL3 = 0x1B

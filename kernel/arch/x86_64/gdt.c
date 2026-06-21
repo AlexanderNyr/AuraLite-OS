@@ -63,9 +63,10 @@ void gdt_init(void) {
     gdt_set_entry(0, 0, 0,         0x00, 0x00);   /* null              */
     gdt_set_entry(1, 0, 0xFFFFF,   0x9A, 0xA0);   /* kernel code (64b) */
     gdt_set_entry(2, 0, 0xFFFFF,   0x92, 0xC0);   /* kernel data       */
-    /* User segments: DPL=3 (0x60 sets the DPL bits in the access byte). */
-    gdt_set_entry(3, 0, 0xFFFFF,   0x9A | 0x60, 0xA0);  /* user code (64b) */
-    gdt_set_entry(4, 0, 0xFFFFF,   0x92 | 0x60, 0xC0);  /* user data       */
+    /* User segments: DPL=3 (0x60 sets the DPL bits). Swapped order (data
+     * before code) so SYSRET's formula (SS=base+8, CS=base+16) matches. */
+    gdt_set_entry(3, 0, 0xFFFFF,   0x92 | 0x60, 0xC0);  /* user data       */
+    gdt_set_entry(4, 0, 0xFFFFF,   0x9A | 0x60, 0xA0);  /* user code (64b) */
     /* Index 5: TSS descriptor — filled by tss_init via gdt_set_tss(). */
 
     gdt_flush((uint64_t)(uintptr_t)&gdtr);

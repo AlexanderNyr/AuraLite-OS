@@ -29,3 +29,12 @@ void uart_puts(const char *s) {
         uart_putchar(*s++);
     }
 }
+
+int uart_has_data(void) {
+    return (inb(UART_COM1 + UART_LSR) & UART_LSR_DR) != 0;
+}
+
+char uart_getchar(void) {
+    /* RBR and THR share port 0x3F8; reading it returns the received byte. */
+    return (char)inb(UART_COM1 + UART_THR);
+}

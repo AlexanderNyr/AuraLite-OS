@@ -24,13 +24,18 @@
 
 #define GDT_NUM_ENTRIES 7   /* +1 for the upper half of the 16-byte TSS desc */
 
-/* Segment selectors (index | RPL). */
+/* Segment selectors (index | RPL).
+ *
+ * NOTE: SYSRET loads CS = STAR[63:48]+0x10 and SS = STAR[63:48]+0x08.
+ * We set STAR[63:48] = 0x10, so SYSRET produces CS=0x20|RPL3 and SS=0x18|RPL3.
+ * Therefore user DATA must be at index 3 (0x18) and user CODE at index 4 (0x20).
+ */
 #define GDT_SEL_KCODE  0x08
 #define GDT_SEL_KDATA  0x10
-#define GDT_SEL_UCODE  0x18        /* user code segment, RPL=0 here */
-#define GDT_SEL_UCODE_R3 0x1B      /* user code segment, RPL=3 */
-#define GDT_SEL_UDATA  0x20
-#define GDT_SEL_UDATA_R3 0x23      /* user data segment, RPL=3 */
+#define GDT_SEL_UDATA  0x18        /* user data segment (index 3) */
+#define GDT_SEL_UCODE  0x20        /* user code segment (index 4) */
+#define GDT_SEL_UCODE_R3 0x23      /* user code segment, RPL=3 */
+#define GDT_SEL_UDATA_R3 0x1B      /* user data segment, RPL=3 */
 #define GDT_SEL_TSS    0x28
 
 struct gdt_entry {

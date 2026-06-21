@@ -61,26 +61,34 @@ $(KERNEL_ELF): $(KERNEL_OBJS) kernel.ld $(USER_BIN_H)
 	@echo "[link] $(KERNEL_ELF)"
 
 # ---- User-space program build (compiled with host cc, linked with LLD) ----
-# The hello binary is a freestanding static ELF linked at 0x40000000, embedded
-# into the kernel as a C array via tools/gen_user_binary.py.
+# Two ELF binaries:
+#   init.elf  — the interactive shell, embedded in the kernel AND in the initrd
+#   hello.elf — a simple test program, in the initrd only
 USER_BUILD   := $(BUILD_DIR)/user
-USER_ELF     := $(USER_BUILD)/hello.elf
-USER_BIN_H   := $(BUILD_DIR)/hello_bin.h
+INIT_ELF     := $(USER_BUILD)/init.elf
+HELLO_ELF    := $(USER_BUILD)/hello.elf
+USER_BIN_H   := $(BUILD_DIR)/init_bin.h
 
 USER_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
                 -O2 -Wall -Wextra -Werror -I libc/include
 USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 
-USER_OBJS := $(USER_BUILD)/hello.o $(USER_BUILD)/crt0.o \
-             $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o
+# Common objects shared by all user programs.
+USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o
 
-user: $(USER_ELF)
+user: $(INIT_ELF) $(HELLO_ELF)
 
 $(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/libc.o: libc/src/libc.c libc/include/unistd.h
+$(USER_BUILD)/init.o: userspace/init/init.c libc/include/unistd.h \
+                       libc/include/string.h libc/include/stdio.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/libc.o: libc/src/libc.c libc/include/unistd.h libc/include/string.h \
+                       libc/include/stdio.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -92,16 +100,22 @@ $(USER_BUILD)/syscall.o: libc/src/syscall.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(USER_ELF): $(USER_OBJS) libc/user.ld
+$(INIT_ELF): $(USER_BUILD)/init.o $(USER_COMMON) libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_OBJS) -o $@
-	@echo "[link] $(USER_ELF)"
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/init.o $(USER_COMMON) -o $@
+	@echo "[link] $(INIT_ELF)"
 
-$(USER_BIN_H): $(USER_ELF) tools/gen_user_binary.py
+$(HELLO_ELF): $(USER_BUILD)/hello.o $(USER_COMMON) libc/user.ld
 	@mkdir -p $(dir $@)
-	python3 tools/gen_user_binary.py $(USER_ELF) $@ hello_bin
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/hello.o $(USER_COMMON) -o $@
+	@echo "[link] $(HELLO_ELF)"
 
-# user.c includes the generated hello_bin.h; ensure it exists first.
+# Embed init.elf into the kernel as a C array.
+$(USER_BIN_H): $(INIT_ELF) tools/gen_user_binary.py
+	@mkdir -p $(dir $@)
+	python3 tools/gen_user_binary.py $(INIT_ELF) $@ init_bin
+
+# user.c includes the generated init_bin.h; ensure it exists first.
 $(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
 
 iso: kernel $(BUILD_DIR)/initrd.tar
@@ -109,9 +123,10 @@ iso: kernel $(BUILD_DIR)/initrd.tar
 
 # Build the initrd (USTAR tarball of userspace binaries).
 INITRD_DIR := $(USER_BUILD)/initrd_root
-$(BUILD_DIR)/initrd.tar: $(USER_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF)
 	@mkdir -p $(INITRD_DIR)
-	@cp $(USER_ELF) $(INITRD_DIR)/init
+	@cp $(INIT_ELF) $(INITRD_DIR)/init
+	@cp $(HELLO_ELF) $(INITRD_DIR)/hello
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso

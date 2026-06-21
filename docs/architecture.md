@@ -35,7 +35,9 @@ kmain (kernel.c)
    ├── vfs_init()           mount table + FD table
    ├── initrd_init()        parse USTAR module -> mount at "/"
    ├── devfs_init()         /dev/null, /dev/zero -> mount at "/dev"
-   └── vfs_self_test()      exercise /dev + /init
+   ├── vfs_self_test()      exercise /dev + /init
+   └── user_mode_self_test()  load init.elf (shell) -> Ring 3
+      kmain then yields forever, letting the shell run interactively
 ```
 
 ## Interrupt handling (Phase 2)

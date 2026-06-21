@@ -22,6 +22,7 @@
 #define UART_DL_HI 1  /* Divisor Latch High (when DLAB=1) */
 
 #define UART_LSR_THRE 0x20   /* Transmit Holding Register Empty */
+#define UART_LSR_DR   0x01   /* Data Ready (a byte is available to read) */
 
 /* Baud rate = 115200 / divisor. 1 => 115200 baud (the QEMU default). */
 #define UART_BAUD_DIVISOR 1
@@ -29,5 +30,11 @@
 void uart_init(void);
 void uart_putchar(char c);
 void uart_puts(const char *s);
+
+/* Check if a byte is available to read from the UART. */
+int  uart_has_data(void);
+
+/* Read one byte from the UART (caller must check uart_has_data first). */
+char uart_getchar(void);
 
 #endif /* AURALITE_DRIVERS_UART_UART_H */

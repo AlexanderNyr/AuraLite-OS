@@ -103,9 +103,6 @@ void kmain(void) {
     sched_init();
     scheduler_self_test();
 
-    kprintf("[boot] testing user mode (Ring 3)...\n");
-    user_mode_self_test();
-
     kprintf("[boot] initialising virtual file system...\n");
     vfs_init();
 
@@ -126,9 +123,16 @@ void kmain(void) {
     devfs_init();
     vfs_mount("/dev", &devfs_ops, NULL);
 
-    /* VFS gate test: open /init (or the first file) and read it. */
+    /* Quick VFS sanity check. */
     vfs_self_test();
 
-    kprintf("\n[kernel] reached end of kmain; halting.\n");
-    kernel_halt();
+    kprintf("[boot] starting init shell (Ring 3)...\n");
+    user_mode_self_test();
+
+    /* The shell is now running interactively. kmain yields forever, giving
+     * the shell scheduling slots. When the shell exits, kmain + idle remain. */
+    kprintf("\n[kernel] shell active; kmain idling.\n");
+    for (;;) {
+        sched_yield();
+    }
 }

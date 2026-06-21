@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 11 — init, Shell & Utilities] 2026-06-21
+
+### Added
+- Expanded syscalls: SYS_OPEN (2), SYS_CLOSE (3), serial-input SYS_READ (0,
+  fd=0 polls UART with sched_yield), SYS_LISTDIR (80).
+- UART receive: `uart_has_data()`, `uart_getchar()`.
+- Expanded libc: `printf` (%s %d %u %x %c %% with width/zero-pad), `puts`,
+  `putchar`, `strtok`, `strcmp`, `strncmp`, `strcpy`, `memset`, `memcpy`,
+  `strlen`, `memcmp`.
+- `libc/include/stdio.h`, `libc/include/string.h`.
+- `userspace/init/init.c`: interactive shell with built-in commands (ls, cat,
+  echo, pwd, uname, free, help, exit). Reads from serial input (stdin=fd 0).
+- Two separate user ELFs: init.elf (shell, embedded in kernel) and hello.elf
+  (simple test, in initrd only).
+
+### Changed
+- The embedded user binary is now the init shell (not hello). The initrd
+  contains both /init and /hello.
+- kmain yields forever after starting the shell (instead of halting).
+- CI test now sends shell commands via serial and verifies output.
+- VFS initialisation moved before user-mode init (shell needs VFS for ls/cat).
+
+### Fixed
+- **IF leakage in context_switch:** RFLAGS (including IF) wasn't saved/restored,
+  so the interrupt flag leaked between threads. A timer firing mid-SYSCALL
+  corrupted the stack. Fix: pushfq/popfq in context.asm.
+- **SYSRET SS DPL mismatch:** GDT had user code (index 3) before user data
+  (index 4). SYSRET's formula loaded SS from the kernel data segment (DPL=0)
+  with RPL=3, failing the CPL check. Fix: swapped user code/data in the GDT,
+  set STAR[63:48]=0x10 so SYSRET produces SS=0x1B and CS=0x23 (both DPL-3).
+- Stack frame for new threads updated to include RFLAGS slot (matching the
+  pushfq/popfq in context_switch).
+
 ## [Phase 10 — File System & VFS] 2026-06-21
 
 ### Added

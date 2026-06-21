@@ -17,8 +17,8 @@ default rel
 section .text
 global jump_to_user_asm
 
-%define USER_CS 0x1B
-%define USER_SS 0x23
+%define USER_CS 0x23        ; user code (index 4 | RPL 3)
+%define USER_SS 0x1B        ; user data (index 3 | RPL 3)
 
 jump_to_user_asm:
     ; Build RFLAGS with IF set (so interrupts work in Ring 3).

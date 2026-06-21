@@ -43,15 +43,24 @@ static void setup_initial_stack(tcb_t *tcb, void (*fn)(void *), void *arg) {
 
     uint64_t *sp = (uint64_t *)((uint8_t *)tcb->kernel_stack + THREAD_STACK_SIZE);
 
-    /* High address (stack grows down): */
-    sp--; *sp = 0;                      /* alignment padding (16→0 mod 16) */
-    sp--; *sp = (uint64_t)thread_entry; /* return address for ret          */
-    sp--; *sp = 0;                      /* rbx (saved by context_switch)   */
-    sp--; *sp = 0;                      /* rbp                             */
-    sp--; *sp = 0;                      /* r12                             */
-    sp--; *sp = 0;                      /* r13                             */
-    sp--; *sp = 0;                      /* r14                             */
-    sp--; *sp = 0;                      /* r15 (lowest — saved RSP points here) */
+    /* Layout (high address first, stack grows down):
+     *   alignment padding
+     *   return address (thread_entry)
+     *   rbx, rbp, r12, r13, r14, r15  (callee-saved, all 0)
+     *   RFLAGS (0x202 = IF set, so the new thread starts with interrupts on)
+     * The saved RSP points at RFLAGS (lowest).
+     * Total: 9 qwords = 0 mod 8, but must also be 0 mod 16 after the
+     * eventual popfq+6 pops+ret. 9 qwords is odd, so add one more padding. */
+    sp--; *sp = 0;                      /* extra alignment padding          */
+    sp--; *sp = 0;                      /* alignment padding                */
+    sp--; *sp = (uint64_t)thread_entry; /* return address for ret           */
+    sp--; *sp = 0;                      /* rbx                              */
+    sp--; *sp = 0;                      /* rbp                              */
+    sp--; *sp = 0;                      /* r12                              */
+    sp--; *sp = 0;                      /* r13                              */
+    sp--; *sp = 0;                      /* r14                              */
+    sp--; *sp = 0;                      /* r15                              */
+    sp--; *sp = 0x202;                  /* RFLAGS (IF set)                  */
 
     tcb->rsp = (uint64_t)sp;
 }

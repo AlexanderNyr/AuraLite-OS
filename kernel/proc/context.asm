@@ -5,13 +5,10 @@
 ;   rdi = pointer to old thread's TCB (rsp field is at offset 0)
 ;   rsi = pointer to new thread's TCB (rsp field is at offset 0)
 ;
-; Only the callee-saved registers (rbx, rbp, r12-r15) are saved/restored —
-; caller-saved registers are the responsibility of the callers.  RSP is saved
-; into old->rsp and loaded from new->rsp.  The `ret` instruction pops the new
-; thread's saved RIP (or, for a freshly-created thread, the thread_entry
-; trampoline address), effectively "returning" into the new thread.
-;
-; Called with interrupts disabled (the caller manages the interrupt state).
+; Saves/restores callee-saved registers (rbx, rbp, r12-r15) + RSP + RFLAGS.
+; RFLAGS is saved so the interrupt-enable flag (IF) doesn't leak between
+; threads (critical: a thread running with IF=0 in a SYSCALL handler must
+; not inherit IF=1 from a thread it was switched from).
 ; =============================================================================
 
 bits 64
@@ -21,21 +18,19 @@ section .text
 global context_switch
 
 context_switch:
-    ; ---- Save callee-saved registers onto the current (old) stack ----
     push rbx
     push rbp
     push r12
     push r13
     push r14
     push r15
+    pushfq                     ; save RFLAGS (including IF)
 
-    ; ---- Save old RSP into old_tcb->rsp (field at offset 0) ----
-    mov [rdi], rsp
+    mov [rdi], rsp             ; save old RSP into old_tcb->rsp
 
-    ; ---- Load new RSP from new_tcb->rsp (field at offset 0) ----
-    mov rsp, [rsi]
+    mov rsp, [rsi]             ; load new RSP from new_tcb->rsp
 
-    ; ---- Restore callee-saved registers from the new stack ----
+    popfq                      ; restore RFLAGS
     pop r15
     pop r14
     pop r13
@@ -43,5 +38,4 @@ context_switch:
     pop rbp
     pop rbx
 
-    ; ---- "Return" into the new thread (pops saved RIP / trampoline addr) ----
-    ret
+    ret                        ; "return" into the new thread

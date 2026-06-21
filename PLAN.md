@@ -1,14 +1,13 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 10 — File System & VFS
+## Current Phase: 11 — init, Shell & Utilities
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-A virtual file system abstraction with a USTAR initrd mounted at `/` and a devfs
-at `/dev` providing `/dev/null` and `/dev/zero`. Gate criterion: `vfs_open("/init")`
-reads a file from the initrd.
+An interactive shell (PID 1 / init) that accepts serial input and runs built-in
+commands. Gate criterion: full boot to shell; `ls /` lists files.
 
 ### Tasks
 
@@ -56,52 +55,53 @@ reads a file from the initrd.
 
 ### Tasks
 
-- [x] `kernel/fs/vfs.{c,h}`: VFS layer (mount table, path resolution, FD table,
-      open/read/write/close)
-- [x] `kernel/fs/initrd.{c,h}`: USTAR tar parser (512-byte headers, octal sizes,
-      `./` prefix stripping), read-only access
-- [x] `kernel/fs/devfs.{c,h}`: `/dev/null` (EOF on read, discards writes) and
-      `/dev/zero` (zero-filled reads, discards writes)
-- [x] Limine module request to receive the initrd as a boot module
-- [x] `tools/mkinitrd.sh`: packs userspace binaries into a USTAR tarball
-- [x] `limine.conf` + `mkisoimage.sh`: include the initrd in the ISO
-- [x] Makefile: build the initrd before the ISO
-- [x] Self-test: open/read/write /dev/null, /dev/zero, and /init
-- [x] CI gate asserts VFS PASS
+- [x] Expanded syscalls: SYS_OPEN, SYS_CLOSE, serial-input SYS_READ, SYS_LISTDIR
+- [x] UART receive capability (`uart_has_data`, `uart_getchar`)
+- [x] Expanded libc: printf, puts, putchar, strtok, strcmp, strncmp, strcpy,
+      memset, memcpy, strlen
+- [x] `userspace/init/init.c`: interactive shell with built-in commands
+      (ls, cat, echo, pwd, uname, free, help, exit)
+- [x] `libc/crt/crt0.asm`: `_start` → `main` → `_exit`
+- [x] Two separate user ELFs: init.elf (shell, embedded) + hello.elf (initrd)
+- [x] Fixed GDT layout for SYSRET (user data at index 3, user code at index 4)
+- [x] Fixed context_switch to save/restore RFLAGS (prevents IF leakage)
+- [x] CI gate sends shell commands via serial and verifies output
 
 ### Design notes
 
-- **Longest-prefix mount matching:** `resolve_path()` finds the mount whose path
-  is the longest prefix of the requested path, then delegates the remainder to
-  that FS's `lookup()`. So `/dev/null` matches the `/dev` mount and looks up
-  `null` within devfs.
-- **USTAR `./` stripping:** GNU tar stores paths as `./init`; the parser strips
-  the leading `./` so `vfs_open("/init")` works.
-- **Global FD table:** a simple array of file handles (per-process FD tables
-  arrive with the PCB in Phase 11).
-- **Initrd is read-only:** `initrd_write` returns -1.
+- **Serial input:** SYS_READ(fd=0) polls the UART character-by-character with
+  sched_yield between polls (blocking, cooperative). CR→LF translation + echo.
+- **Built-in commands** rather than fork+execve (per-process address spaces are
+  a follow-up). The shell dispatches commands itself.
+- **GDT SYSRET layout:** user DATA at index 3 (0x18) and user CODE at index 4
+  (0x20), so SYSRET's formula (SS=STAR[63:48]+8, CS=STAR[63:48]+16) with
+  STAR[63:48]=0x10 produces SS=0x1B and CS=0x23 — both DPL-3 selectors.
 
-### Bug found and fixed
+### Bugs found and fixed
 
-- **`/init` not found:** GNU tar stores file paths with a `./` prefix (e.g.
-  `./init`), so the raw header name didn't match `init`. Fixed by stripping
-  the leading `./` during USTAR parsing.
+- **IF leakage:** context_switch didn't save/restore RFLAGS, so the interrupt
+  flag leaked between threads. After switching from kmain (IF=on) to the init
+  thread (IF should be off in SYSCALL handler), the timer could fire mid-syscall
+  and corrupt the stack. Fix: pushfq/popfq in context_switch.
+- **SYSRET SS DPL mismatch:** the GDT had user code before user data, so SYSRET
+  loaded SS=0x13 (kernel data | RPL3, DPL=0) which fails the CPL check.
+  Fix: swapped user code/data in the GDT and set STAR[63:48]=0x10.
 
-### Phases 0–9: COMPLETE ✅
+### Phases 0–10: COMPLETE ✅
 
-### Definition of Done — Phase 10
+### Definition of Done — Phase 11
 
-- [x] VFS layer with mount table and open/read/write/close
-- [x] USTAR initrd parsed and mounted at "/"
-- [x] `/dev/null` and `/dev/zero` work correctly
-- [x] `vfs_open("/init")` reads the initrd's init binary
+- [x] Shell boots and prints a prompt (`auralite#`)
+- [x] `ls` lists files from the initrd
+- [x] `echo`, `help`, `uname`, `exit` work
+- [x] User types commands; shell processes and responds
 
 ### Next Phase
 
-**Phase 11 — init, Shell & Utilities**: PID 1 (init), an interactive shell
-(tokenizer + parser, builtins, external command execution via fork+execve),
-and core POSIX utilities (cat, ls, echo, ps). Gate criterion: full boot to
-shell; `ls /` lists files.
+**Phase 12 — SMP (Symmetric Multi-Processing)**: parse ACPI MADT, wake
+application processors via INIT-SIPI-SIPI, per-CPU data structures, and
+per-CPU run queues with work stealing. Gate criterion: QEMU `-smp 4` shows 4
+CPUs online.
 
 ### Tasks
 

@@ -166,14 +166,16 @@ static void setup_stack(tcb_t *tcb, void (*fn)(void *), void *arg) {
     tcb->entry = fn;
     tcb->arg   = arg;
     uint64_t *sp = (uint64_t *)((uint8_t *)tcb->kernel_stack + THREAD_STACK_SIZE);
+    sp--; *sp = 0;                      /* extra alignment padding        */
     sp--; *sp = 0;                      /* alignment padding              */
-    sp--; *sp = (uint64_t)thread_entry; /* ret target (trampoline) */
+    sp--; *sp = (uint64_t)thread_entry; /* ret target (trampoline)        */
     sp--; *sp = 0;  /* rbx */
     sp--; *sp = 0;  /* rbp */
     sp--; *sp = 0;  /* r12 */
     sp--; *sp = 0;  /* r13 */
     sp--; *sp = 0;  /* r14 */
     sp--; *sp = 0;  /* r15 */
+    sp--; *sp = 0x202;  /* RFLAGS (IF set) */
     tcb->rsp = (uint64_t)sp;
 }
 
