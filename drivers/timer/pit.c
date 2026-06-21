@@ -10,6 +10,7 @@
 #include "drivers/timer/pit.h"
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/proc/scheduler.h"
 #include "kernel/lib/kprintf.h"
 
 #define TIMER_TAG "[timer] "
@@ -27,12 +28,13 @@
 static volatile uint64_t timer_ticks    = 0;
 static uint32_t          timer_freq_hz  = 0;
 
-/* IRQ 0 handler: bump the monotonic counter.  The PIC EOI is sent by
- * irq_dispatch() after this returns, so we only touch the counter here.
- * Minimal work at interrupt level (safety rule 9). */
+/* IRQ 0 handler: bump the monotonic counter, then drive the scheduler.
+ * Minimal work at interrupt level (safety rule 9): just a counter increment
+ * and a quantum check.  sched_tick is a no-op until the scheduler is ready. */
 static void timer_irq_handler(struct registers *regs) {
     (void)regs;
     timer_ticks++;
+    sched_tick();
 }
 
 void pit_init(uint32_t frequency) {

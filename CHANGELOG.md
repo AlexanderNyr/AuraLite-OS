@@ -2,6 +2,32 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 7 — Multitasking & Scheduler] 2026-06-21
+
+### Added
+- `kernel/proc/context.asm`: `context_switch(old, new)` — saves/restores
+  callee-saved registers (rbx, rbp, r12–r15) and RSP; resumes via `ret`.
+- `kernel/proc/thread.{c,h}`: Thread Control Block (rsp at offset 0 for asm
+  access), thread-state enum, `kthread_create` (crafts the initial stack frame
+  so the first switch lands at the `thread_entry` trampoline), `thread_exit`.
+- `kernel/proc/scheduler.{c,h}`: round-robin ready queue (FIFO tail-append /
+  head-dequeue), `schedule` / `sched_yield` / `sched_tick` / `sched_current`,
+  idle-thread fallback, `scheduler_self_test`.
+- Timer IRQ handler now calls `sched_tick()` for quantum-based preemption.
+- `strncpy` added to the freestanding string library.
+
+### Changed
+- `irq_dispatch` sends PIC EOI *before* the handler (enables timer to fire
+  again after a context switch inside the handler).
+- `kprintf` is now atomic (cli/sti wrapper) to prevent garbled interleaving
+  under preemption.
+- `paging_self_test` no longer deliberately faults (Phase 4 historical record).
+
+### Fixed
+- **kmain never resumed after test threads exited**: the kmain TCB had state
+  THREAD_RUNNING, but `schedule()` only re-queues THREAD_READY threads. Fix:
+  `sched_yield`/`sched_tick` set current→THREAD_READY before calling schedule.
+
 ## [Phase 6 — Timer & PIT] 2026-06-21
 
 ### Added

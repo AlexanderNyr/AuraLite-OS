@@ -27,7 +27,8 @@ kmain (kernel.c)
    ├── paging_init()      read PML4 from CR3; enable EFER.NXE
    ├── paging_self_test() map/unmap test (safe; no deliberate fault)
    ├── kheap_init() + kheap_self_test()  on-demand heap; 10k cycles
-   └── pit_init(100) + timer_self_test()  100 Hz tick; 1s accuracy check
+   ├── pit_init(100) + timer_self_test()  100 Hz tick; 1s accuracy check
+   └── sched_init() + scheduler_self_test()  round-robin; 2 interleaving threads
 ```
 
 ## Interrupt handling (Phase 2)
@@ -160,3 +161,32 @@ object file is linked into both the kernel (wrapped by `kheap.c`) and the host
 unit test (`tests/unit/test_heap.c`), which pre-commits a buffer instead of
 mapping pages. Every block carries a 32-byte header + 16-byte footer (boundary
 tag); a distinct magic encodes used vs free, keeping payloads 16-aligned.
+
+## Multitasking (Phase 7)
+
+```
+sched_tick (timer IRQ 0)
+   │  current->quantum--
+   │  if quantum == 0: current->state = READY; schedule()
+   ▼
+schedule()
+   │  re-queue current if READY (skip idle / dead)
+   │  next = dequeue() or idle if empty
+   │  next->state = RUNNING
+   │  context_switch(old, next)
+   ▼
+context_switch (context.asm)
+   │  push rbx, rbp, r12-r15      (callee-saved)
+   │  old->rsp = RSP
+   │  RSP = new->rsp
+   │  pop r15-r12, rbp, rbx
+   │  ret                          (pops saved RIP → resumes new thread)
+```
+
+Each thread has its own 16 KiB kernel stack (allocated via `kmalloc`).
+Switching inside the timer IRQ handler is safe because the interrupt frame lives
+on the *current thread's* stack; when we switch back, `iretq` restores from that
+frame. The PIC EOI is sent *before* the handler so the timer can fire again
+after a context switch. For new threads, the initial stack is crafted with 6
+callee-saved register slots + a return address pointing at the `thread_entry`
+trampoline, plus alignment padding so the saved RSP is 16-byte aligned.

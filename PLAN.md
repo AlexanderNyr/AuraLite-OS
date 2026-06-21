@@ -1,58 +1,76 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 6 — Timer & PIT
+## Current Phase: 7 — Multitasking & Scheduler
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-A periodic timer interrupt driving a global monotonic tick counter, with a
-`timer_sleep_ms` busy-wait. Gate criterion: a 1-second delay measured via the
-tick counter is accurate within ±5%.
+Preemptive multitasking: kernel threads with a TCB, `context_switch` (callee-
+saved register save/restore), a round-robin run queue, timer-driven preemption,
+an idle thread, and cooperative `sched_yield`. Gate criterion: two kernel
+threads printing alternating messages without deadlock or missed prints.
 
 ### Tasks
 
-- [x] `drivers/timer/pit.{c,h}`: 8254 PIT driver
-  - channel 0, mode 3 (square wave), divisor from the 1193182 Hz base clock
-  - IRQ 0 handler registered via the Phase 2 IRQ layer (unmask + EOI handled)
-  - global `volatile uint64_t` monotonic tick counter
-- [x] `timer_get_ticks` / `timer_get_frequency` / `timer_sleep_ms`
-  - `timer_sleep_ms` spins with `hlt` (idles the CPU between ticks)
-- [x] Self-test: sleep 1 second, verify the measured tick count is within ±5%
-- [x] CI gate asserts the timer PASS line
+- [x] `kernel/proc/context.asm`: `context_switch(old, new)` — save/restore
+      callee-saved registers + RSP, resume via `ret`
+- [x] `kernel/proc/thread.{c,h}`: TCB (rsp at offset 0), thread states,
+      `kthread_create` (stack frame craft for the trampoline), `thread_exit`
+- [x] `kernel/proc/scheduler.{c,h}`: round-robin ready queue (FIFO),
+      `schedule` / `sched_yield` / `sched_tick` / `sched_current`,
+      idle thread fallback, `scheduler_self_test`
+- [x] Timer IRQ calls `sched_tick` → quantum-based preemption
+- [x] Moved PIC EOI before handler in `irq_dispatch` (enables timer to fire
+      again after a context switch)
+- [x] Made `kprintf` atomic (cli/sti wrapper) to prevent garbled output
+- [x] Added `strncpy` to the freestanding string library
+- [x] Gate test: two threads interleave 4 messages each, both exit cleanly
 
 ### Design notes
 
-- **PIT channel 0 → IRQ 0:** the PIC (Phase 2) already remaps IRQ 0 to CPU
-  vector 32 and `irq_register_handler` handles unmasking; `irq_dispatch` sends
-  the EOI after the handler returns. The handler does minimal work (one counter
-  bump) per safety rule 9 (no blocking/allocation in interrupt context).
-- **Frequency accuracy:** the PIT base clock is 1193182 Hz; for 100 Hz the
-  divisor rounds to 11932, giving an actual 99.998 Hz — well within ±5%. We
-  record the divisor-rounded actual frequency as `timer_freq_hz` so the
-  self-test band is computed against what the hardware truly produces.
-- **`hlt` in the spin loop:** instead of burning 100% CPU, `timer_sleep_ms`
-  halts the processor until the next tick interrupt wakes it — correct and
-  power-efficient.
-- **LAPIC timer deferred:** per-CPU timer calibration is needed for SMP
-  (Phase 12); the PIT satisfies the single-CPU gate criterion and is more
-  reliable. Tracked as a Phase 6 follow-up.
+- **Context switch saves only callee-saved registers** (rbx, rbp, r12–r15) +
+  RSP. The `ret` instruction pops the saved RIP, resuming the switched-to
+  thread at its previous `schedule()` call site (or, for new threads, at the
+  `thread_entry` trampoline).
+- **Switching inside the IRQ handler is safe** because each thread has its own
+  kernel stack with its own interrupt frame. When we switch from A→B inside
+  A's timer handler, B resumes at its own saved `context_switch` return point,
+  which unwinds back through B's own timer handler → `iretq`.
+- **EOI before handler:** the PIC End-Of-Interrupt is sent before the handler
+  runs, so the timer can deliver the next tick after a context switch.
+- **No spinlock across context_switch:** that would deadlock. Instead,
+  interrupt-disabled critical sections (cli/sti) protect scheduler state —
+  correct for single-CPU.
+- **Stack alignment:** the saved RSP is crafted to be ≡ 0 mod 16 (8 qwords:
+  6 callee-saved + ret target + padding), so the ABI's RSP ≡ 8 mod 16 at
+  function entry is satisfied.
+- **Thread state transitions:** a yielding/preempted thread is set to
+  THREAD_READY before `schedule()` so it gets re-queued; the picked thread is
+  marked THREAD_RUNNING. A dead thread (THREAD_DEAD) is never re-queued.
 
-### Phases 0–5: COMPLETE ✅
+### Bug found and fixed
 
-### Definition of Done — Phase 6
+- **kmain never resumed after test threads exited.** Root cause: the kmain TCB
+  was initialised with state THREAD_RUNNING, but `schedule()` only re-queues
+  THREAD_READY threads. When kmain yielded, it was switched away from but never
+  put back in the queue. Fix: sched_yield/sched_tick set current→THREAD_READY
+  before calling schedule.
 
-- [x] PIT configured and IRQ 0 ticking at ~100 Hz
-- [x] `timer_sleep_ms(1000)` advances the counter by ~100 ticks (within ±5%)
-- [x] No deadlock or missed ticks
+### Phases 0–6: COMPLETE ✅
+
+### Definition of Done — Phase 7
+
+- [x] Two kernel threads print alternating messages (A, B, A, B, ...)
+- [x] Both threads exit cleanly; kmain resumes and prints PASS
+- [x] No deadlock, no triple fault
 
 ### Next Phase
 
-**Phase 7 — Multitasking & Scheduler**: preemptive kernel threads with a TCB,
-`context_switch` (callee-saved register save/restore), a round-robin run queue,
-timer-driven preemption, an idle thread, and spinlock-protected shared state.
-Gate criterion: two kernel threads printing alternating messages without
-deadlock or missed prints.
+**Phase 8 — Processes & User Mode**: process control block, TSS (RSP0 for
+ring transitions), SYSCALL/SYSRET MSRs, `iretq` to Ring 3, and a minimal ELF64
+loader. Gate criterion: a hardcoded user binary runs in Ring 3; privileged
+instructions cause a clean #GP.
 
 ### Tasks
 

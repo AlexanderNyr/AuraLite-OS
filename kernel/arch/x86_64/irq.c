@@ -68,8 +68,12 @@ void irq_register_handler(int irq, irq_handler_t handler) {
 }
 
 void irq_dispatch(int irq, struct registers *regs) {
+    /* Acknowledge the interrupt BEFORE running the handler.  This is essential
+     * for preemptive scheduling: the timer handler may context-switch away,
+     * and the PIC must be free to deliver the next tick when we eventually
+     * return.  For edge-triggered IRQs (like the PIT) early EOI is safe. */
+    pic_eoi(irq);
     if (irq >= 0 && irq < NUM_IRQS && irq_handlers[irq] != NULL) {
         irq_handlers[irq](regs);
     }
-    pic_eoi(irq);   /* always acknowledge, even if unhandled */
 }

@@ -147,9 +147,19 @@ static void kvprintf(const char *fmt, va_list ap) {
     }
 }
 
+/*
+ * Atomic output: disable interrupts for the duration of the formatted print
+ * so that preempted threads cannot interleave characters on the console.
+ * If interrupts were already off (e.g. inside an IRQ handler), they stay off.
+ */
 void kprintf(const char *fmt, ...) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
     va_list ap;
     va_start(ap, fmt);
     kvprintf(fmt, ap);
     va_end(ap);
+    if (rflags & 0x200ULL) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
 }

@@ -6,9 +6,9 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phases 0–6 (bootstrap, hello-kernel, interrupts, physical memory
-> manager, virtual memory/paging, kernel heap, timer/PIT) are **complete and
-> QEMU-verified.** See [PLAN.md](PLAN.md).
+> **Status:** Phases 0–7 (bootstrap, hello-kernel, interrupts, PMM, paging,
+> heap, timer, multitasking/scheduler) are **complete and QEMU-verified.**
+> See [PLAN.md](PLAN.md).
 
 ---
 
@@ -17,10 +17,9 @@ networked system with a shell.
 - **Limine v12.3.3** loads the kernel into the higher half
   (`0xFFFFFFFF80100000`) and hands off in 64-bit long mode with paging,
   a higher-half direct map, a memory map, and a linear framebuffer ready.
-- The kernel zeroes `.bss`, loads its own flat GDT, installs a 256-entry IDT
-  and remaps the PIC, brings up the UART + framebuffer console, runs a bitmap
-  physical memory manager, a 4-level paging VMM, a first-fit kernel heap, and a
-  100 Hz periodic timer.
+- The kernel brings up GDT, IDT, PIC, UART, framebuffer, a bitmap PMM, a 4-level
+  paging VMM, a first-fit kernel heap, a 100 Hz timer, and a preemptive
+  round-robin scheduler with kernel threads.
 
 ## Toolchain
 
@@ -84,6 +83,11 @@ limine: Loading executable `boot():/boot/kernel.elf`...
 [timer] PIT channel 0: mode 3, divisor 11932 -> 99 Hz (100 Hz requested)
 [timer] self-test: measuring 1-second delay...
 [timer] PASS: 99 ticks in 1s (100% of 99 Hz)
+[boot] initialising scheduler...
+[sched] thread-A: message 0 (tid 1, tick 100)
+[sched] thread-B: message 0 (tid 2, tick 100)
+...
+[sched] PASS: two threads interleaved correctly
 
 [kernel] reached end of kmain; halting.
 ```

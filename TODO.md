@@ -18,6 +18,16 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 
 ## Phase 6 — DONE ✅ (2026-06-21)
 
+## Phase 7 — DONE ✅ (2026-06-21)
+
+## Phase 7 follow-ups
+- [ ] Reap dead threads: free their TCB + stack (currently leaked).
+- [ ] Add BLOCKED state + wait queues (for sleep/IO/wait).
+- [ ] Implement `kthread_join(tid)` to wait for thread completion.
+- [ ] Migrate from round-robin to CFS (Completely Fair Scheduler).
+- [ ] Add per-CPU run queues + work stealing for SMP (Phase 12).
+- [ ] Use TSS IST for the scheduler/timer interrupt stack.
+
 ## Phase 6 follow-ups
 - [ ] LAPIC timer calibration using the PIT as reference (needed for SMP Phase 12).
 - [ ] Detect HPET for higher-resolution timing.
@@ -55,4 +65,4 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 
 ## Known issues
 - No IST/TSS: a kernel stack overflow would triple-fault. Tracked above.
-- The kernel halts at the end of `kmain` by design (no scheduler yet).
+- Dead threads' TCBs + stacks are leaked (no reaper yet). Tracked above.
