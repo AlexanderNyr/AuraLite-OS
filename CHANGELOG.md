@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 8 — Processes & User Mode] 2026-06-21
+
+### Added
+- Expanded GDT with user code/data segments (DPL=3) and a 64-bit TSS descriptor
+  (7 entries: the TSS descriptor occupies 16 bytes / 2 slots).
+- `kernel/arch/x86_64/tss.{c,h}`: TSS setup with RSP0 (the kernel stack loaded
+  on Ring 3→0 transitions) and IST1 (a dedicated stack for the #DF handler).
+- `kernel/arch/x86_64/syscall.{c,h}` + `syscall_entry.asm`: SYSCALL/SYSRET
+  MSR configuration (STAR, LSTAR, SFMASK, EFER.SCE) + a C dispatch with
+  SYS_WRITE and SYS_EXIT.
+- `kernel/proc/user.{c,h}` + `user_entry.asm`: `iretq` to Ring 3, an embedded
+  user program (syscall write + cli), and the Phase 8 gate test.
+
+### Changed
+- Exception handler now detects the faulting privilege level (CS & 3) and, for
+  user-mode faults, recovers by killing the user thread instead of halting.
+- `gdt_set_tss()` correctly writes the upper 32 bits of the higher-half TSS
+  base into the 16-byte descriptor's second half.
+- The user test runs as its own kernel thread so its kernel stack (TSS.RSP0)
+  is isolated from kmain.
+
+### Fixed
+- TSS #GP on LTR: GDT expanded to 7 entries (16-byte TSS descriptor).
+- LSTAR truncated to 32 bits: `mov rdx,rax; shr rdx,32` before WRMSR.
+- `sysretq` → `sysret` (NASM mnemonic).
+- User program RIP-relative offset corrected to point at the message.
+
 ## [Phase 7 — Multitasking & Scheduler] 2026-06-21
 
 ### Added

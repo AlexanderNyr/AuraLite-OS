@@ -1,76 +1,75 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 7 — Multitasking & Scheduler
+## Current Phase: 8 — Processes & User Mode
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-Preemptive multitasking: kernel threads with a TCB, `context_switch` (callee-
-saved register save/restore), a round-robin run queue, timer-driven preemption,
-an idle thread, and cooperative `sched_yield`. Gate criterion: two kernel
-threads printing alternating messages without deadlock or missed prints.
+Run code in Ring 3 (userspace), with SYSCALL/SYSRET for kernel calls, and
+recover gracefully from userspace faults. Gate criterion: a hardcoded user
+binary runs in Ring 3; a privileged instruction (`cli`) causes a clean #GP that
+the kernel recovers from by killing the user thread.
 
 ### Tasks
 
-- [x] `kernel/proc/context.asm`: `context_switch(old, new)` — save/restore
-      callee-saved registers + RSP, resume via `ret`
-- [x] `kernel/proc/thread.{c,h}`: TCB (rsp at offset 0), thread states,
-      `kthread_create` (stack frame craft for the trampoline), `thread_exit`
-- [x] `kernel/proc/scheduler.{c,h}`: round-robin ready queue (FIFO),
-      `schedule` / `sched_yield` / `sched_tick` / `sched_current`,
-      idle thread fallback, `scheduler_self_test`
-- [x] Timer IRQ calls `sched_tick` → quantum-based preemption
-- [x] Moved PIC EOI before handler in `irq_dispatch` (enables timer to fire
-      again after a context switch)
-- [x] Made `kprintf` atomic (cli/sti wrapper) to prevent garbled output
-- [x] Added `strncpy` to the freestanding string library
-- [x] Gate test: two threads interleave 4 messages each, both exit cleanly
+- [x] Expanded GDT: user code/data segments (DPL=3) + 64-bit TSS descriptor
+- [x] `kernel/arch/x86_64/tss.{c,h}`: TSS with RSP0 (Ring 3→0 stack) + IST1 (#DF)
+- [x] `gdt_set_tss()`: correctly encodes the 16-byte 64-bit TSS descriptor,
+      including the upper 32 bits of the higher-half base
+- [x] `kernel/arch/x86_64/syscall.{c,h}` + `syscall_entry.asm`:
+      SYSCALL/SYSRET MSR config (STAR, LSTAR, SFMASK, EFER.SCE) + dispatch
+- [x] `kernel/proc/user.{c,h}` + `user_entry.asm`: `iretq` to Ring 3,
+      embedded user program (write + cli), gate test
+- [x] Exception handler: detects Ring-3 origin (CS & 3), recovers by killing
+      the faulting user thread instead of halting
+- [x] SYS_WRITE (1) and SYS_EXIT (60) syscalls
+- [x] Gate test: user writes "in user mode!" via syscall, then `cli` → #GP
 
 ### Design notes
 
-- **Context switch saves only callee-saved registers** (rbx, rbp, r12–r15) +
-  RSP. The `ret` instruction pops the saved RIP, resuming the switched-to
-  thread at its previous `schedule()` call site (or, for new threads, at the
-  `thread_entry` trampoline).
-- **Switching inside the IRQ handler is safe** because each thread has its own
-  kernel stack with its own interrupt frame. When we switch from A→B inside
-  A's timer handler, B resumes at its own saved `context_switch` return point,
-  which unwinds back through B's own timer handler → `iretq`.
-- **EOI before handler:** the PIC End-Of-Interrupt is sent before the handler
-  runs, so the timer can deliver the next tick after a context switch.
-- **No spinlock across context_switch:** that would deadlock. Instead,
-  interrupt-disabled critical sections (cli/sti) protect scheduler state —
-  correct for single-CPU.
-- **Stack alignment:** the saved RSP is crafted to be ≡ 0 mod 16 (8 qwords:
-  6 callee-saved + ret target + padding), so the ABI's RSP ≡ 8 mod 16 at
-  function entry is satisfied.
-- **Thread state transitions:** a yielding/preempted thread is set to
-  THREAD_READY before `schedule()` so it gets re-queued; the picked thread is
-  marked THREAD_RUNNING. A dead thread (THREAD_DEAD) is never re-queued.
+- **User test runs as a kernel thread** (not directly from kmain) so that when
+  #GP fires from Ring 3, the CPU lands on THIS thread's kernel stack (TSS.RSP0),
+  and killing the thread cleanly removes it without disrupting kmain.
+- **Ring 3 entry via `iretq`** (in pure assembly — inline asm is too fragile
+  for the iret frame): push SS, RSP, RFLAGS, CS, RIP onto the kernel stack;
+  `iretq` atomically drops to Ring 3.
+- **TSS.RSP0** gives the CPU a known kernel stack when an interrupt/exception
+  fires from Ring 3. Set per-thread before the iretq.
+- **SYSCALL/SYSRET** via MSRs: STAR (segment bases), LSTAR (handler RIP),
+  SFMASK (RFLAGS bits to clear), EFER.SCE (enable). Register convention is
+  Linux-compatible (rax=sysno, rdi/rsi/rdx/r10/r8/r9=args).
 
-### Bug found and fixed
+### Bugs found and fixed
 
-- **kmain never resumed after test threads exited.** Root cause: the kmain TCB
-  was initialised with state THREAD_RUNNING, but `schedule()` only re-queues
-  THREAD_READY threads. When kmain yielded, it was switched away from but never
-  put back in the queue. Fix: sched_yield/sched_tick set current→THREAD_READY
-  before calling schedule.
+- **TSS descriptor #GP on LTR:** the 64-bit TSS descriptor is 16 bytes; the GDT
+  needed 7 entries (6 + the upper half). Also `gdt_set_tss` was zeroing the
+  upper base instead of writing bits 32-63 of the higher-half address.
+- **LSTAR truncated to 32 bits:** `xor edx,edx` before WRMSR zeroed the high
+  half of the syscall entry address. Fix: `mov rdx,rax; shr rdx,32`.
+- **`sysretq` not a NASM mnemonic:** NASM uses `sysret` (→ `0F 07`); `sysretq`
+  was silently treated as a label, emitting no instruction.
+- **Syscall register remapping:** rewrote the entry to correctly insert the
+  syscall number at the front of the C ABI argument list.
+- **User program RIP-relative offset:** hand-computed the `lea rsi,[rip+N]`
+  displacement to point at the embedded message string.
 
-### Phases 0–6: COMPLETE ✅
+### Phases 0–7: COMPLETE ✅
 
-### Definition of Done — Phase 7
+### Definition of Done — Phase 8
 
-- [x] Two kernel threads print alternating messages (A, B, A, B, ...)
-- [x] Both threads exit cleanly; kmain resumes and prints PASS
-- [x] No deadlock, no triple fault
+- [x] User binary executes in Ring 3 (CS low bits = 3, verified)
+- [x] SYSCALL from Ring 3 works (writes "in user mode!")
+- [x] Privileged instruction (`cli`) in Ring 3 → #GP, detected as USER-mode
+- [x] Kernel recovers by killing the user thread (does not halt)
+- [x] kmain resumes and prints PASS
 
 ### Next Phase
 
-**Phase 8 — Processes & User Mode**: process control block, TSS (RSP0 for
-ring transitions), SYSCALL/SYSRET MSRs, `iretq` to Ring 3, and a minimal ELF64
-loader. Gate criterion: a hardcoded user binary runs in Ring 3; privileged
-instructions cause a clean #GP.
+**Phase 9 — System Calls**: a full POSIX-compatible syscall table (read, write,
+open, close, mmap, brk, getpid, fork, execve, exit, wait4, pipe) with the libc
+syscall wrappers, so userspace programs can do real I/O. Gate criterion:
+`write(1, "hello\n", 6)` from userspace works.
 
 ### Tasks
 

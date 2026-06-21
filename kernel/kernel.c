@@ -12,6 +12,9 @@
 #include "kernel/limine_requests.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/user.h"
+#include "kernel/arch/x86_64/syscall.h"
+#include "kernel/arch/x86_64/tss.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
 #include "drivers/timer/pit.h"
@@ -34,7 +37,7 @@ void kmain(void) {
     kprintf("[boot] framebuffer console initialised\n");
 
     gdt_init();
-    kprintf("[boot] GDT loaded (flat 64-bit segments)\n");
+    kprintf("[boot] GDT loaded (kernel + user segments + TSS)\n");
 
     idt_init();
     kprintf("[boot] IDT installed: 256 gates\n");
@@ -43,6 +46,12 @@ void kmain(void) {
     kprintf("[boot] PIC remapped (IRQs -> vectors 32-47), all masked\n");
 
     __asm__ volatile ("sti");   /* interrupts on; exceptions fire regardless */
+
+    tss_init();
+    kprintf("[boot] TSS loaded (RSP0 + IST1 for #DF)\n");
+
+    syscall_init();
+    kprintf("[boot] SYSCALL/SYSRET configured\n");
 
     kprintf("\n");
     kprintf("==============================================\n");
@@ -89,6 +98,9 @@ void kmain(void) {
     kprintf("[boot] initialising scheduler...\n");
     sched_init();
     scheduler_self_test();
+
+    kprintf("[boot] testing user mode (Ring 3)...\n");
+    user_mode_self_test();
 
     kprintf("\n[kernel] reached end of kmain; halting.\n");
     kernel_halt();

@@ -4,6 +4,8 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/proc/scheduler.h"
+#include "kernel/proc/thread.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/assert.h"
 
@@ -84,12 +86,37 @@ static void dump_registers(const struct registers *r) {
 
 void isr_handler(struct registers *r) {
     if (r->int_no < 32) {
-        /* CPU exception: fatal for now. Print a full dump and halt. */
         const char *msg = exception_messages[r->int_no];
-        kprintf("\n[EXCEPTION] %s (vector %llu, error code 0x%016llx)\n",
+
+        /* Determine whether this fault came from Ring 3 (user mode). CS & 3
+         * gives the CPL: 0 = kernel, 3 = user. */
+        int from_user = ((r->cs & 3) == 3);
+
+        kprintf("\n[EXCEPTION] %s (vector %llu, error code 0x%016llx) "
+                "from %s mode\n",
                 msg, (unsigned long long)r->int_no,
-                (unsigned long long)r->err_code);
+                (unsigned long long)r->err_code,
+                from_user ? "USER" : "KERNEL");
+
+        /* For user-mode faults, we don't dump the full kernel context (the
+         * saved user registers are shown via dump_registers). Recover by
+         * killing the faulting user thread rather than halting the kernel. */
         dump_registers(r);
+
+        if (from_user) {
+            kprintf("[exception] killing user thread (tid %llu)\n",
+                    (unsigned long long)(sched_current() ? sched_current()->id : 0));
+            tcb_t *cur = sched_current();
+            if (cur) {
+                cur->state = THREAD_DEAD;
+            }
+            schedule();    /* switch to another thread; never returns here */
+            for (;;) {
+                __asm__ volatile ("cli; hlt");
+            }
+        }
+
+        /* Kernel-mode exception: truly fatal. */
         kernel_halt();
     } else if (r->int_no < 48) {
         /* Hardware IRQ (PIC-remapped vectors 32-47). */

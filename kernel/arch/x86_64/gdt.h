@@ -1,16 +1,37 @@
 #ifndef AURALITE_ARCH_X86_64_GDT_H
 #define AURALITE_ARCH_X86_64_GDT_H
 
+#include <stdint.h>
+
 /*
- * Minimal flat Global Descriptor Table for long mode.
+ * Global Descriptor Table for long mode.
  *
  * In 64-bit mode segmentation is mostly disabled: code uses a 64-bit segment
  * (L=1) and data segments cover the whole address space. We still need a valid
- * GDT so that segment selectors (CS=0x08, DS/SS=0x10) resolve correctly, which
- * is required for our own interrupt/syscall entries later.
+ * GDT so that segment selectors resolve correctly. Phase 8 adds user-mode
+ * segments (Ring 3) and a TSS descriptor.
+ *
+ *   Index 0: null
+ *   Index 1: kernel code (64-bit)     selector 0x08
+ *   Index 2: kernel data              selector 0x10
+ *   Index 3: user code (64-bit)       selector 0x18 | RPL3 = 0x1B
+ *   Index 4: user data                selector 0x20 | RPL3 = 0x23
+ *   Index 5: 64-bit TSS descriptor    selector 0x28
+ *
+ * NOTE: a 64-bit TSS descriptor is 16 bytes (occupies 2 slots), so the table
+ * needs 7 entries total (indices 0-5 for code/data/TSS-lo, +6 for TSS-hi).
  */
 
-#define GDT_NUM_ENTRIES 3   /* null, kernel code, kernel data */
+#define GDT_NUM_ENTRIES 7   /* +1 for the upper half of the 16-byte TSS desc */
+
+/* Segment selectors (index | RPL). */
+#define GDT_SEL_KCODE  0x08
+#define GDT_SEL_KDATA  0x10
+#define GDT_SEL_UCODE  0x18        /* user code segment, RPL=0 here */
+#define GDT_SEL_UCODE_R3 0x1B      /* user code segment, RPL=3 */
+#define GDT_SEL_UDATA  0x20
+#define GDT_SEL_UDATA_R3 0x23      /* user data segment, RPL=3 */
+#define GDT_SEL_TSS    0x28
 
 struct gdt_entry {
     uint16_t limit_low;
@@ -27,8 +48,14 @@ struct gdt_ptr {
     uint64_t base;
 } __attribute__((packed));
 
-/* Build the GDT and load it. Defined in gdt.c; the actual LGDT + segment
-   reload is performed by gdt_flush() in gdt_flush.asm. */
+/* Build the GDT and load it. */
 void gdt_init(void);
+
+/* Encode a 64-bit TSS descriptor at the given GDT index (16 bytes, so it
+ * occupies index and index+1). Used by tss.c. */
+void gdt_set_tss(int index, uint64_t base, uint32_t limit);
+
+/* Encoded by gdt.c for tss.c to reference. */
+extern struct gdt_entry gdt[GDT_NUM_ENTRIES];
 
 #endif /* AURALITE_ARCH_X86_64_GDT_H */

@@ -20,6 +20,18 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 
 ## Phase 7 — DONE ✅ (2026-06-21)
 
+## Phase 8 — DONE ✅ (2026-06-21)
+
+## Phase 8 follow-ups
+- [ ] Implement the ELF64 loader (parse Ehdr/Phdr, map PT_LOAD segments,
+      jump to e_entry) so arbitrary user binaries can run.
+- [ ] Create per-process address spaces via `paging_new_address_space()`
+      (kernel half shared; user half per-process).
+- [ ] Add a proper PCB (Process Control Block) wrapping TCB + address space.
+- [ ] Implement user-space `sbrk`/`brk` for heap growth.
+- [ ] Copy-on-write fork.
+- [ ] Add IST for #PF and #SS so nested faults are robust.
+
 ## Phase 7 follow-ups
 - [ ] Reap dead threads: free their TCB + stack (currently leaked).
 - [ ] Add BLOCKED state + wait queues (for sleep/IO/wait).

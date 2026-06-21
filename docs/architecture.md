@@ -28,7 +28,8 @@ kmain (kernel.c)
    ├── paging_self_test() map/unmap test (safe; no deliberate fault)
    ├── kheap_init() + kheap_self_test()  on-demand heap; 10k cycles
    ├── pit_init(100) + timer_self_test()  100 Hz tick; 1s accuracy check
-   └── sched_init() + scheduler_self_test()  round-robin; 2 interleaving threads
+   ├── sched_init() + scheduler_self_test()  round-robin; 2 interleaving threads
+   └── user_mode_self_test()  Ring 3 entry, syscall, #GP recovery
 ```
 
 ## Interrupt handling (Phase 2)
@@ -190,3 +191,37 @@ frame. The PIC EOI is sent *before* the handler so the timer can fire again
 after a context switch. For new threads, the initial stack is crafted with 6
 callee-saved register slots + a return address pointing at the `thread_entry`
 trampoline, plus alignment padding so the saved RSP is 16-byte aligned.
+
+## User mode (Phase 8)
+
+```
+kthread_create(user_test_thread)
+   │  ... scheduling ...
+   ▼
+user_test_thread (Ring 0)
+   │  map user code + stack pages (USER flags)
+   │  tss_set_rsp0(this thread's kernel stack)
+   ▼
+jump_to_user_asm (user_entry.asm)
+   │  push SS(0x23), RSP(user), RFLAGS(IF=1), CS(0x1B), RIP(entry)
+   │  iretq  --> Ring 3
+   ▼
+user program (Ring 3)
+   │  mov eax,1; mov edi,1; lea rsi,[msg]; mov edx,14; syscall
+   │       --> SYS_WRITE: kernel prints "in user mode!"
+   │  cli  --> #GP (privileged instruction in Ring 3)
+   ▼
+#GP handler (Ring 0, on TSS.RSP0 stack)
+   │  CS & 3 == 3  =>  from USER mode
+   │  kill the user thread (state = DEAD)
+   │  schedule()  --> switch to next thread
+```
+
+The user test runs as its own kernel thread so that when #GP fires from Ring 3,
+the CPU lands on that thread's kernel stack (TSS.RSP0) and killing the thread
+removes it without disrupting kmain. The TSS also provides IST1 for the #DF
+handler so a kernel-stack overflow cannot escalate to a triple fault.
+
+SYSCALL/SYSRET is configured via MSRs (STAR for segment bases, LSTAR for the
+handler address, SFMASK for RFLAGS masking, EFER.SCE to enable). The calling
+convention is Linux-compatible: rax=syscall number, rdi/rsi/rdx/r10/r8/r9=args.
