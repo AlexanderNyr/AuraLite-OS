@@ -129,12 +129,6 @@ static void eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
         memset(frame + total, 0, 60 - total);
         total = 60;   /* minimum Ethernet frame size */
     }
-    /* Debug: dump the first 42 bytes of the frame. */
-    kprintf("[net] TX %u bytes:", total);
-    for (uint32_t i = 0; i < total && i < 42; i++) {
-        kprintf(" %02x", frame[i]);
-    }
-    kprintf("\n");
     e1000_send(frame, total);
 }
 

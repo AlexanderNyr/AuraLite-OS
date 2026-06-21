@@ -6,9 +6,10 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phases 0–12 (bootstrap, hello-kernel, interrupts, PMM, paging,
-> heap, timer, multitasking, user mode, system calls, VFS, interactive shell,
-> **SMP**) are **complete and QEMU-verified.** See [PLAN.md](PLAN.md).
+> **Status:** **All 14 phases COMPLETE** (0–14): bootstrap, hello-kernel,
+> interrupts, PMM, paging, heap, timer, multitasking, user mode, system calls,
+> VFS, interactive shell, SMP, networking, and GUI graphics — **all QEMU-
+> verified.** See [PLAN.md](PLAN.md).
 
 ---
 

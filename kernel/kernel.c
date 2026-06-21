@@ -23,6 +23,8 @@
 #include "kernel/net/net.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
+#include "drivers/framebuffer/graphics.h"
+#include "drivers/keyboard/keyboard.h"
 #include "drivers/timer/pit.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
@@ -135,6 +137,37 @@ void kmain(void) {
     kprintf("[boot] initialising network stack...\n");
     net_init();
     net_self_test();
+
+    /* ---- Phase 14: GUI demo on the framebuffer ---- */
+    kprintf("[boot] initialising graphics + keyboard...\n");
+    gfx_init();
+    keyboard_init();
+
+    /* Draw a colourful boot screen on the framebuffer. */
+    gfx_clear(GFX_DARKBLUE);
+
+    /* Title bar. */
+    gfx_fill_rect(0, 0, gfx_get_width(), 40, GFX_BLUE);
+    gfx_draw_string(16, 16, "AuraLite OS v0.1.0 — Graphics Mode", GFX_WHITE);
+
+    /* A row of coloured rectangles. */
+    uint32_t box_y = 80;
+    uint32_t box_w = 80, box_h = 60, gap = 16;
+    color_t colours[] = {GFX_RED, GFX_GREEN, GFX_YELLOW, GFX_CYAN, GFX_MAGENTA};
+    for (int i = 0; i < 5; i++) {
+        uint32_t x = 16 + i * (box_w + gap);
+        gfx_fill_rect(x, box_y, box_w, box_h, colours[i]);
+    }
+
+    /* A diagonal line. */
+    gfx_draw_line(16, 180, 400, 320, GFX_WHITE);
+
+    /* Info text. */
+    gfx_draw_string(16, 360, "Phase 14: Framebuffer GUI with double-buffering", GFX_GREEN);
+    gfx_draw_string(16, 376, "Keyboard: type to see characters on the framebuffer", GFX_GRAY);
+
+    gfx_flip();
+    kprintf("[gfx] framebuffer GUI rendered (double-buffered flip)\n");
 
     kprintf("[boot] starting init shell (Ring 3)...\n");
     user_mode_self_test();

@@ -37,6 +37,8 @@ kmain (kernel.c)
    ├── initrd_init()        parse USTAR module -> mount at "/"
    ├── devfs_init()         /dev/null, /dev/zero -> mount at "/dev"
    ├── vfs_self_test()      exercise /dev + /init
+   ├── gfx_init() + keyboard_init()  2D graphics + PS/2 keyboard
+   ├── gfx demo            draw boot screen (rectangles, lines, text)
    └── user_mode_self_test()  load init.elf (shell) -> Ring 3
       kmain then yields forever, letting the shell run interactively
 ```

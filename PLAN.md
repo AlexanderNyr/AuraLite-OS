@@ -1,13 +1,16 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 12 — SMP (Symmetric Multi-Processing)
+## Current Phase: 14 — GUI (Graphics)
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-Wake application processors (APs) and have them run kernel code. Gate
-criterion: QEMU `-smp 4` shows 4 CPUs online.
+A framebuffer-based graphics layer with 2D drawing, double-buffering, and PS/2
+keyboard input. Gate criterion: framebuffer renders text and graphics
+correctly (double-buffered).
+
+Phases 13 (Networking) and 14 (GUI) are both COMPLETE.
 
 ### Tasks
 

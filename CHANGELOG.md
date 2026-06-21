@@ -2,6 +2,41 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phases 13–14 — Networking + GUI] 2026-06-21
+
+### Added — Phase 13: Networking
+- `drivers/pci/pci.{c,h}`: PCI config space access (0xCF8/0xCFC), bus scan,
+  device lookup, BAR read, bus-master enable.
+- `drivers/e1000/e1000.{c,h}`: Intel 82540EM NIC driver. MMIO register
+  access, legacy TX/RX descriptor rings, polling-based send/recv.
+- `kernel/net/net.{c,h}`: Ethernet + ARP + IPv4 + ICMP stack. ARP resolution
+  with cache, RFC 1071 internet checksum, ICMP echo request/reply.
+- 32-bit port I/O (`inl`/`outl`) added to `portio.h`.
+- MMIO region explicitly mapped via paging (HHDM doesn't cover device MMIO).
+- TX/RX descriptors and buffers allocated from the PMM (DMA needs physical
+  addresses; descriptors marked volatile for DMA visibility).
+- `net_ping()` and `net_self_test()`: ARP-resolve 10.0.2.2, send ICMP echo,
+  poll for reply.
+
+### Added — Phase 14: GUI
+- `drivers/framebuffer/graphics.{c,h}`: 2D graphics library with double-
+  buffering. Pixel plotting, filled/outlined rectangles, Bresenham line,
+  bitmap-font text, back-buffer flip.
+- `drivers/keyboard/keyboard.{c,h}`: PS/2 keyboard driver (IRQ 1, scan-code
+  set 1, ring buffer, ASCII translation).
+- Boot screen demo: title bar, coloured rectangles, diagonal line, info text.
+
+### Fixed
+- **EEPROM read hang:** QEMU's e1000 doesn't reliably set EERD_DONE. Added
+  timeout + RAL/RAH fallback.
+- **MMIO unmapped:** the e1000's BAR0 lives at ~4GB, beyond the HHDM's RAM
+  range. Fix: explicitly map 128 KiB of MMIO via paging.
+- **TX descriptor layout:** corrected the 16-byte legacy descriptor field
+  layout (cso/cmd/status/css are bytes, not uint16s).
+- **RX descriptor polling:** QEMU advances RDH but the descriptor status byte
+  may not be visible through the HHDM due to DMA ordering. Fix: poll RDH via
+  MMIO instead of reading descriptor status.
+
 ## [Phase 12 — SMP] 2026-06-21
 
 ### Added
