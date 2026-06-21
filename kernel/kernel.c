@@ -10,11 +10,15 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
+#include "limine/limine.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/user.h"
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/tss.h"
+#include "kernel/fs/vfs.h"
+#include "kernel/fs/initrd.h"
+#include "kernel/fs/devfs.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
 #include "drivers/timer/pit.h"
@@ -101,6 +105,29 @@ void kmain(void) {
 
     kprintf("[boot] testing user mode (Ring 3)...\n");
     user_mode_self_test();
+
+    kprintf("[boot] initialising virtual file system...\n");
+    vfs_init();
+
+    /* Mount the initrd (USTAR) at "/" if Limine provided a module. */
+    {
+        uint64_t mod_count = 0;
+        struct limine_file *mod = limine_get_modules(&mod_count);
+        if (mod != NULL && mod_count >= 1) {
+            initrd_init((uint64_t)(uintptr_t)mod->address, mod->size);
+            vfs_mount("/", &initrd_ops, NULL);
+            vfs_list("/");
+        } else {
+            kprintf("[vfs] WARNING: no initrd module loaded\n");
+        }
+    }
+
+    /* Mount devfs at "/dev". */
+    devfs_init();
+    vfs_mount("/dev", &devfs_ops, NULL);
+
+    /* VFS gate test: open /init (or the first file) and read it. */
+    vfs_self_test();
 
     kprintf("\n[kernel] reached end of kmain; halting.\n");
     kernel_halt();

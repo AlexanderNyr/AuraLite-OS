@@ -24,6 +24,15 @@ Open work, ordered by phase. Checked items live in [PLAN.md](PLAN.md).
 
 ## Phase 9 — DONE ✅ (2026-06-21)
 
+## Phase 10 — DONE ✅ (2026-06-21)
+
+## Phase 10 follow-ups
+- [ ] Per-process FD tables (currently a global pool).
+- [ ] Directory listing (`readdir`) and directory vnodes.
+- [ ] Ext2 read-only driver.
+- [ ] Write support in tmpfs (for pipes, sockets).
+- [ ] Apply ELF segment p_flags to VFS-loaded files.
+
 ## Phase 9 follow-ups
 - [ ] Create per-process address spaces via `paging_new_address_space()`
       (currently the hello binary shares the kernel's address space).

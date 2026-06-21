@@ -1,15 +1,14 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 9 — System Calls
+## Current Phase: 10 — File System & VFS
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-A compiled user program, linked against a minimal libc with syscall wrappers and
-loaded by an in-kernel ELF64 loader, calling `write(1, "hello\n", 6)` via
-SYSCALL. Gate criterion: `write(1, "hello\n", 6)` from a compiled userspace
-binary works (text appears on console).
+A virtual file system abstraction with a USTAR initrd mounted at `/` and a devfs
+at `/dev` providing `/dev/null` and `/dev/zero`. Gate criterion: `vfs_open("/init")`
+reads a file from the initrd.
 
 ### Tasks
 
@@ -55,11 +54,54 @@ binary works (text appears on console).
 - [x] Program exits cleanly via SYS_EXIT (no page fault or crash)
 - [x] kmain resumes after the user thread terminates
 
+### Tasks
+
+- [x] `kernel/fs/vfs.{c,h}`: VFS layer (mount table, path resolution, FD table,
+      open/read/write/close)
+- [x] `kernel/fs/initrd.{c,h}`: USTAR tar parser (512-byte headers, octal sizes,
+      `./` prefix stripping), read-only access
+- [x] `kernel/fs/devfs.{c,h}`: `/dev/null` (EOF on read, discards writes) and
+      `/dev/zero` (zero-filled reads, discards writes)
+- [x] Limine module request to receive the initrd as a boot module
+- [x] `tools/mkinitrd.sh`: packs userspace binaries into a USTAR tarball
+- [x] `limine.conf` + `mkisoimage.sh`: include the initrd in the ISO
+- [x] Makefile: build the initrd before the ISO
+- [x] Self-test: open/read/write /dev/null, /dev/zero, and /init
+- [x] CI gate asserts VFS PASS
+
+### Design notes
+
+- **Longest-prefix mount matching:** `resolve_path()` finds the mount whose path
+  is the longest prefix of the requested path, then delegates the remainder to
+  that FS's `lookup()`. So `/dev/null` matches the `/dev` mount and looks up
+  `null` within devfs.
+- **USTAR `./` stripping:** GNU tar stores paths as `./init`; the parser strips
+  the leading `./` so `vfs_open("/init")` works.
+- **Global FD table:** a simple array of file handles (per-process FD tables
+  arrive with the PCB in Phase 11).
+- **Initrd is read-only:** `initrd_write` returns -1.
+
+### Bug found and fixed
+
+- **`/init` not found:** GNU tar stores file paths with a `./` prefix (e.g.
+  `./init`), so the raw header name didn't match `init`. Fixed by stripping
+  the leading `./` during USTAR parsing.
+
+### Phases 0–9: COMPLETE ✅
+
+### Definition of Done — Phase 10
+
+- [x] VFS layer with mount table and open/read/write/close
+- [x] USTAR initrd parsed and mounted at "/"
+- [x] `/dev/null` and `/dev/zero` work correctly
+- [x] `vfs_open("/init")` reads the initrd's init binary
+
 ### Next Phase
 
-**Phase 10 — File System & VFS**: virtual file system abstraction, a USTAR
-initrd parser, `/dev` (null, zero), and per-process file descriptor tables.
-Gate criterion: `vfs_open("/init")` reads a file from the initrd.
+**Phase 11 — init, Shell & Utilities**: PID 1 (init), an interactive shell
+(tokenizer + parser, builtins, external command execution via fork+execve),
+and core POSIX utilities (cat, ls, echo, ps). Gate criterion: full boot to
+shell; `ls /` lists files.
 
 ### Tasks
 

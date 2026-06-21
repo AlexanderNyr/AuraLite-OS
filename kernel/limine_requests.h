@@ -13,6 +13,7 @@
 
 struct limine_framebuffer;
 struct limine_memmap_entry;
+struct limine_file;
 
 /* First available framebuffer, or NULL if the request failed / none exist. */
 struct limine_framebuffer *limine_get_framebuffer(void);
@@ -29,6 +30,13 @@ uint64_t limine_get_usable_memory(void);
 
 /* Higher-Half Direct Map offset, or 0 if unavailable. */
 uint64_t limine_get_hhdm_offset(void);
+
+/*
+ * Retrieve the boot modules (the initrd). Returns a pointer to the first
+ * module's file descriptor, or NULL if no modules were loaded.
+ * On success, *out_count is set to the number of modules.
+ */
+struct limine_file *limine_get_modules(uint64_t *out_count);
 
 /* Non-zero if the requested Limine base revision is supported by the loader. */
 int limine_base_revision_supported(void);

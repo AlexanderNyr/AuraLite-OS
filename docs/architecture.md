@@ -30,6 +30,12 @@ kmain (kernel.c)
    ├── pit_init(100) + timer_self_test()  100 Hz tick; 1s accuracy check
    ├── sched_init() + scheduler_self_test()  round-robin; 2 interleaving threads
    └── user_mode_self_test()  ELF loader + compiled hello in Ring 3
+
+   # Phase 10:
+   ├── vfs_init()           mount table + FD table
+   ├── initrd_init()        parse USTAR module -> mount at "/"
+   ├── devfs_init()         /dev/null, /dev/zero -> mount at "/dev"
+   └── vfs_self_test()      exercise /dev + /init
 ```
 
 ## Interrupt handling (Phase 2)

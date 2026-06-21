@@ -53,6 +53,10 @@ grep -q "loaded .* segment" "$SERIAL" || pass=0
 # Phase 9 gate: compiled ELF binary runs in Ring 3, write() works.
 grep -q "^hello$" "$SERIAL" || pass=0
 grep -q "\[user\] PASS: compiled ELF ran in Ring 3, write() worked" "$SERIAL" || pass=0
+# Phase 10 gate: VFS with initrd + devfs.
+grep -q "\[initrd\] parsed .* file" "$SERIAL" || pass=0
+grep -q "/init: opened" "$SERIAL" || pass=0
+grep -q "\[vfs\] PASS: VFS layer functional" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"
 

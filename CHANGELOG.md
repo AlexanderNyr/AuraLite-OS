@@ -2,6 +2,27 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 10 — File System & VFS] 2026-06-21
+
+### Added
+- `kernel/fs/vfs.{c,h}`: virtual file system with a mount table (longest-prefix
+  matching), vnode abstraction, a global FD table, and `vfs_open`/`read`/`write`/
+  `close`.
+- `kernel/fs/initrd.{c,h}`: USTAR (POSIX tar) initrd parser. Walks 512-byte
+  headers, parses octal sizes, strips `./` prefixes, exposes files read-only
+  via VFS ops.
+- `kernel/fs/devfs.{c,h}`: `/dev/null` (EOF on read, discards writes) and
+  `/dev/zero` (zero-filled reads, discards writes).
+- Limine module request to receive the initrd as a boot module.
+- `tools/mkinitrd.sh`: packs userspace binaries into a USTAR tarball.
+- `limine.conf` + `mkisoimage.sh`: the initrd is included in the ISO as a module.
+- `strcmp` added to the freestanding string library.
+- VFS self-test (dev/null write, dev/zero read, /init read).
+
+### Fixed
+- **`/init` not found:** GNU tar stores paths with a `./` prefix; the USTAR
+  parser now strips it.
+
 ## [Phase 9 — System Calls] 2026-06-21
 
 ### Added

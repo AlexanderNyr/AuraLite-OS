@@ -17,6 +17,10 @@ rm -rf "$ISO_ROOT"
 mkdir -p "$ISO_ROOT/boot/limine" "$ISO_ROOT/EFI/BOOT"
 
 cp -v "$KERNEL_ELF"                 "$ISO_ROOT/boot/kernel.elf"
+# Include the initrd (USTAR tarball of userspace binaries) if it was built.
+if [ -f "$ROOT/build/initrd.tar" ]; then
+    cp -v "$ROOT/build/initrd.tar"  "$ISO_ROOT/boot/initrd.tar"
+fi
 cp -v "$ROOT/boot/limine/limine.conf"   "$ISO_ROOT/boot/limine/"
 cp -v "$LIMINE_DIR/limine-bios.sys"    "$ISO_ROOT/boot/limine/"
 cp -v "$LIMINE_DIR/limine-bios-cd.bin" "$ISO_ROOT/boot/limine/"

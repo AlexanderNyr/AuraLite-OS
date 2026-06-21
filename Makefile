@@ -104,8 +104,15 @@ $(USER_BIN_H): $(USER_ELF) tools/gen_user_binary.py
 # user.c includes the generated hello_bin.h; ensure it exists first.
 $(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
 
-iso: kernel
+iso: kernel $(BUILD_DIR)/initrd.tar
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_DIR)
+
+# Build the initrd (USTAR tarball of userspace binaries).
+INITRD_DIR := $(USER_BUILD)/initrd_root
+$(BUILD_DIR)/initrd.tar: $(USER_ELF)
+	@mkdir -p $(INITRD_DIR)
+	@cp $(USER_ELF) $(INITRD_DIR)/init
+	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
 	@bash tools/run_qemu.sh $(ISO_IMAGE)

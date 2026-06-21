@@ -13,5 +13,6 @@ int    memcmp(const void *a, const void *b, size_t n);
 
 size_t strlen(const char *s);
 char  *strncpy(char *dst, const char *src, size_t n);
+int    strcmp(const char *a, const char *b);
 
 #endif /* AURALITE_LIB_STRING_H */

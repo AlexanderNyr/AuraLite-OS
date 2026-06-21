@@ -73,3 +73,11 @@ char *strncpy(char *dst, const char *src, size_t n) {
     }
     return dst;
 }
+
+int strcmp(const char *a, const char *b) {
+    while (*a && (*a == *b)) {
+        a++;
+        b++;
+    }
+    return (int)(unsigned char)*a - (int)(unsigned char)*b;
+}

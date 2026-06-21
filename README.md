@@ -6,8 +6,8 @@ the foundation of a long-term project to build a complete OS, one milestone at a
 time, from "Hello from kernel" up to a multi-process, file-system-capable,
 networked system with a shell.
 
-> **Status:** Phases 0–9 (bootstrap, hello-kernel, interrupts, PMM, paging,
-> heap, timer, multitasking, user mode, **system calls + ELF loader**) are
+> **Status:** Phases 0–10 (bootstrap, hello-kernel, interrupts, PMM, paging,
+> heap, timer, multitasking, user mode, system calls, **VFS + initrd**) are
 > **complete and QEMU-verified.** See [PLAN.md](PLAN.md).
 
 ---
@@ -16,12 +16,13 @@ networked system with a shell.
 
 - **Limine v12.3.3** loads the kernel into the higher half
   (`0xFFFFFFFF80100000`) and hands off in 64-bit long mode with paging,
-  a higher-half direct map, a memory map, and a linear framebuffer ready.
+  a higher-half direct map, a memory map, a linear framebuffer, and a USTAR
+  initrd module ready.
 - The kernel brings up GDT (with user segments + TSS), IDT, PIC, UART,
   framebuffer, a bitmap PMM, a 4-level paging VMM, a first-fit kernel heap,
-  a 100 Hz timer, a preemptive round-robin scheduler, SYSCALL/SYSRET, and
-  runs a **compiled C program** (`hello.c` + libc) in Ring 3 that prints
-  `hello` and exits cleanly.
+  a 100 Hz timer, a preemptive round-robin scheduler, SYSCALL/SYSRET, runs a
+  compiled C program in Ring 3, and mounts a virtual file system (USTAR
+  initrd at `/`, devfs at `/dev`).
 
 ## Toolchain
 

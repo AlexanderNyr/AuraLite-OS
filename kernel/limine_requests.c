@@ -42,6 +42,14 @@ static volatile struct limine_hhdm_request hhdm_request = {
     .response = NULL
 };
 
+/* ---- Module: the initial RAM disk (USTAR initrd) for the VFS (Phase 10) ---- */
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_module_request module_request = {
+    .id       = LIMINE_MODULE_REQUEST_ID,
+    .revision = 0,
+    .response = NULL
+};
+
 /* ---- End marker: 2 qwords (stops the scanner) ---- */
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t requests_end_marker[2] = LIMINE_REQUESTS_END_MARKER;
@@ -92,6 +100,20 @@ uint64_t limine_get_hhdm_offset(void) {
         return 0;
     }
     return r->offset;
+}
+
+struct limine_file *limine_get_modules(uint64_t *out_count) {
+    volatile struct limine_module_response *r = module_request.response;
+    if (r == NULL || r->module_count < 1) {
+        if (out_count) {
+            *out_count = 0;
+        }
+        return NULL;
+    }
+    if (out_count) {
+        *out_count = r->module_count;
+    }
+    return r->modules[0];
 }
 
 int limine_base_revision_supported(void) {
