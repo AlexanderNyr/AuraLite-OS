@@ -17,6 +17,14 @@
                                      /* Actually stored in host order; see net.c */
 #define NET_GATEWAY   0x0A000202UL   /* 10.0.2.15 → gateway 10.0.2.2          */
 
+/*
+ * Perform a DHCP exchange (DISCOVER → OFFER → REQUEST → ACK) to obtain an
+ * IP address, netmask, gateway, and DNS server from the DHCP server
+ * (QEMU's built-in SLIRP). Updates our_ip and gateway_ip on success.
+ * Returns 0 on success, -1 on failure.
+ */
+int net_dhcp(void);
+
 /* Initialise the network stack (calls e1000_init internally). */
 int net_init(void);
 

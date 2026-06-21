@@ -100,6 +100,8 @@ static uint32_t htonl_(uint32_t v) {
     return ((v >> 24) & 0xFF) | ((v >> 8) & 0xFF00) |
            ((v << 8) & 0xFF0000) | ((v << 24) & 0xFF000000);
 }
+static uint32_t ntohl_(uint32_t v) { return htonl_(v); }
+static uint16_t ntohs_(uint16_t v) { return htons_(v); }
 
 /* Pack 4 octets into a host-order uint32. */
 static uint32_t ip_from_octets(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
@@ -520,7 +522,371 @@ void net_dns_self_test(void) {
     }
 }
 
+/* ---- DHCP client ---- */
+
+#define DHCP_SERVER_PORT 67
+#define DHCP_CLIENT_PORT 68
+#define DHCP_BOOTREQUEST  1
+#define DHCP_BOOTREPLY    2
+
+/* DHCP message types. */
+#define DHCP_DISCOVER 1
+#define DHCP_OFFER    2
+#define DHCP_REQUEST  3
+#define DHCP_ACK      5
+
+/* DHCP options. */
+#define DHCP_OPT_SUBNET_MASK  1
+#define DHCP_OPT_ROUTER       3
+#define DHCP_OPT_DNS_SERVER   6
+#define DHCP_OPT_REQUESTED_IP 50
+#define DHCP_OPT_LEASE_TIME   51
+#define DHCP_OPT_MSG_TYPE     53
+#define DHCP_OPT_SERVER_ID    54
+#define DHCP_OPT_PARAM_LIST   55
+#define DHCP_OPT_END          255
+
+/* The DHCP magic cookie: identifies DHCP (vs plain BOOTP). */
+#define DHCP_MAGIC_COOKIE 0x63825363
+
+/*
+ * DHCP packet layout (RFC 2131):
+ *   op(1), htype(1), hlen(1), hops(1), xid(4), secs(2), flags(2),
+ *   ciaddr(4), yiaddr(4), siaddr(4), giaddr(4),
+ *   chaddr(16), sname(64), file(128), cookie(4), options(variable)
+ */
+#define DHCP_MIN_PKT_SIZE 300
+
+struct dhcp_pkt {
+    uint8_t  op;
+    uint8_t  htype;
+    uint8_t  hlen;
+    uint8_t  hops;
+    uint32_t xid;
+    uint16_t secs;
+    uint16_t flags;
+    uint32_t ciaddr;
+    uint32_t yiaddr;
+    uint32_t siaddr;
+    uint32_t giaddr;
+    uint8_t  chaddr[16];
+    uint8_t  sname[64];
+    uint8_t  file[128];
+    uint32_t cookie;
+    uint8_t  options[0];
+} __attribute__((packed));
+
+/* Append a DHCP option to `buf` at position `pos`. Returns new pos. */
+static int dhcp_add_option(uint8_t *buf, int pos, uint8_t code,
+                           const void *data, uint8_t data_len) {
+    buf[pos++] = code;
+    if (code != DHCP_OPT_END) {
+        buf[pos++] = data_len;
+        memcpy(buf + pos, data, data_len);
+        pos += data_len;
+    }
+    return pos;
+}
+
+/* Find a DHCP option in the options field. Returns pointer to its value
+ * (after the length byte), or NULL if not found. Sets *out_len. */
+static const uint8_t *dhcp_find_option(const uint8_t *opts, int opts_len,
+                                       uint8_t code, int *out_len) {
+    int i = 0;
+    while (i < opts_len) {
+        uint8_t c = opts[i];
+        if (c == DHCP_OPT_END) break;
+        if (c == 0) { i++; continue; }   /* padding */
+        if (i + 1 >= opts_len) break;
+        uint8_t l = opts[i + 1];
+        if (c == code) {
+            if (out_len) *out_len = l;
+            return opts + i + 2;
+        }
+        i += 2 + l;
+    }
+    return NULL;
+}
+
+/* Helper to extract a uint32 from a big-endian byte array (for IP options). */
+static uint32_t be32_to_host(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+int net_dhcp(void) {
+    kprintf("[dhcp] starting DHCP discovery...\n");
+
+    /* The DHCP server is at the broadcast address (255.255.255.255).
+     * At the Ethernet layer, we broadcast to FF:FF:FF:FF:FF:FF. */
+    uint32_t dhcp_server_ip = ip_from_octets(255, 255, 255, 255);
+    uint32_t client_ip      = ip_from_octets(0, 0, 0, 0);
+    uint32_t dhcp_xid       = 0x12345678;
+
+    /* --- Step 1: Send DHCPDISCOVER --- */
+    uint8_t discover[576];
+    memset(discover, 0, sizeof(discover));
+    struct dhcp_pkt *dhcp = (struct dhcp_pkt *)discover;
+    dhcp->op    = DHCP_BOOTREQUEST;
+    dhcp->htype = 1;        /* Ethernet */
+    dhcp->hlen  = 6;        /* MAC address length */
+    dhcp->xid   = htonl_(dhcp_xid);
+    dhcp->flags = htons_(0x8000);   /* broadcast reply requested */
+    memcpy(dhcp->chaddr, our_mac, 6);
+    dhcp->cookie = htonl_(DHCP_MAGIC_COOKIE);
+
+    /* Options. */
+    int opt_pos = 0;
+    uint8_t msg_type = DHCP_DISCOVER;
+    opt_pos = dhcp_add_option(dhcp->options, opt_pos, DHCP_OPT_MSG_TYPE,
+                              &msg_type, 1);
+    /* Parameter request list: subnet mask, router, DNS. */
+    uint8_t param_list[] = { DHCP_OPT_SUBNET_MASK, DHCP_OPT_ROUTER,
+                             DHCP_OPT_DNS_SERVER };
+    opt_pos = dhcp_add_option(dhcp->options, opt_pos, DHCP_OPT_PARAM_LIST,
+                              param_list, sizeof(param_list));
+    dhcp->options[opt_pos++] = DHCP_OPT_END;
+
+    /* For DISCOVER, the IP layer src must be 0.0.0.0 and dst broadcast.
+     * But our net_udp_send does ARP for the dst — broadcast won't ARP.
+     * So we build the raw Ethernet+IP+UDP frame ourselves. */
+    {
+        uint8_t bcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        uint32_t udp_len = 8 + sizeof(struct dhcp_pkt) + opt_pos;
+        uint32_t ip_len  = 20 + udp_len;
+        uint32_t frame_len = 14 + ip_len;
+
+        uint8_t frame[700];
+        /* Ethernet. */
+        struct eth_hdr *eh = (struct eth_hdr *)frame;
+        memcpy(eh->dst_mac, bcast_mac, 6);
+        memcpy(eh->src_mac, our_mac, 6);
+        eh->ethertype = htons_(ETHERTYPE_IPV4);
+
+        /* IP. */
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + 14);
+        ip->version_ihl = (4 << 4) | 5;
+        ip->total_length= htons_((uint16_t)ip_len);
+        ip->ident       = htons_(0x1234);
+        ip->ttl         = 64;
+        ip->protocol    = IP_PROTO_UDP;
+        ip->src_ip      = htonl_(client_ip);      /* 0.0.0.0 */
+        ip->dst_ip      = htonl_(dhcp_server_ip); /* 255.255.255.255 */
+        ip->checksum    = 0;
+        ip->checksum    = checksum(ip, 20);
+
+        /* UDP. */
+        struct udp_hdr *udp = (struct udp_hdr *)(frame + 14 + 20);
+        udp->src_port = htons_(DHCP_CLIENT_PORT);
+        udp->dst_port = htons_(DHCP_SERVER_PORT);
+        udp->length   = htons_((uint16_t)udp_len);
+        udp->checksum = 0;
+
+        /* DHCP payload. */
+        memcpy(frame + 14 + 20 + 8, discover, sizeof(struct dhcp_pkt) + opt_pos);
+
+        if (frame_len < 60) {
+            memset(frame + frame_len, 0, 60 - frame_len);
+            frame_len = 60;
+        }
+        e1000_send(frame, frame_len);
+    }
+    kprintf("[dhcp] DISCOVER sent (xid=0x%08x)\n", dhcp_xid);
+
+    /* --- Step 2: Wait for DHCPOFFER --- */
+    uint8_t rbuf[2048];
+    struct dhcp_pkt *offer = NULL;
+    uint32_t offered_ip = 0;
+    uint32_t server_id  = 0;
+    uint32_t subnet_mask = 0;
+    uint32_t dns_ip     = 0;
+
+    for (int poll = 0; poll < 30000000; poll++) {
+        int n = e1000_recv(rbuf, sizeof(rbuf));
+        if (n <= 0) continue;
+        if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
+        struct eth_hdr *eh = (struct eth_hdr *)rbuf;
+        if (htons_(eh->ethertype) != ETHERTYPE_IPV4) continue;
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(rbuf + 14);
+        if (ip->protocol != IP_PROTO_UDP) continue;
+        struct udp_hdr *udp = (struct udp_hdr *)(rbuf + 14 + 20);
+        if (htons_(udp->src_port) != DHCP_SERVER_PORT) continue;
+        if (htons_(udp->dst_port) != DHCP_CLIENT_PORT) continue;
+
+        offer = (struct dhcp_pkt *)(rbuf + 14 + 20 + 8);
+
+        /* Check it's a DHCP OFFER. */
+        int opts_len = n - (14 + 20 + 8 + (int)sizeof(struct dhcp_pkt));
+        if (opts_len < 4) continue;
+        int mt_len;
+        const uint8_t *mt = dhcp_find_option(offer->options, opts_len,
+                                             DHCP_OPT_MSG_TYPE, &mt_len);
+        if (!mt || mt_len != 1 || *mt != DHCP_OFFER) continue;
+
+        /* Extract the offered IP (yiaddr, network byte order). */
+        offered_ip = ntohl_(offer->yiaddr);
+
+        /* Extract server ID, subnet mask, DNS from options. */
+        int sid_len;
+        const uint8_t *sid = dhcp_find_option(offer->options, opts_len,
+                                               DHCP_OPT_SERVER_ID, &sid_len);
+        if (sid && sid_len == 4) server_id = be32_to_host(sid);
+
+        int sm_len;
+        const uint8_t *sm = dhcp_find_option(offer->options, opts_len,
+                                             DHCP_OPT_SUBNET_MASK, &sm_len);
+        if (sm && sm_len == 4) subnet_mask = be32_to_host(sm);
+
+        int dns_len;
+        const uint8_t *dns = dhcp_find_option(offer->options, opts_len,
+                                              DHCP_OPT_DNS_SERVER, &dns_len);
+        if (dns && dns_len >= 4) dns_ip = be32_to_host(dns);
+
+        break;
+    }
+
+    if (!offer) {
+        kprintf("[dhcp] FAIL: no OFFER received\n");
+        return -1;
+    }
+
+    kprintf("[dhcp] OFFER: IP %u.%u.%u.%u, server %u.%u.%u.%u\n",
+            (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
+            (offered_ip >> 8) & 0xFF, offered_ip & 0xFF,
+            (server_id >> 24) & 0xFF, (server_id >> 16) & 0xFF,
+            (server_id >> 8) & 0xFF, server_id & 0xFF);
+
+    /* --- Step 3: Send DHCPREQUEST --- */
+    memset(discover, 0, sizeof(discover));
+    dhcp->op    = DHCP_BOOTREQUEST;
+    dhcp->htype = 1;
+    dhcp->hlen  = 6;
+    dhcp->xid   = htonl_(dhcp_xid);
+    dhcp->flags = htons_(0x0000);   /* unicast reply OK */
+    memcpy(dhcp->chaddr, our_mac, 6);
+    dhcp->cookie = htonl_(DHCP_MAGIC_COOKIE);
+
+    opt_pos = 0;
+    msg_type = DHCP_REQUEST;
+    opt_pos = dhcp_add_option(dhcp->options, opt_pos, DHCP_OPT_MSG_TYPE,
+                              &msg_type, 1);
+    /* Requested IP address. */
+    uint32_t be_offered_ip = htonl_(offered_ip);
+    opt_pos = dhcp_add_option(dhcp->options, opt_pos, DHCP_OPT_REQUESTED_IP,
+                              &be_offered_ip, 4);
+    /* Server identifier. */
+    uint32_t be_server_id = htonl_(server_id);
+    opt_pos = dhcp_add_option(dhcp->options, opt_pos, DHCP_OPT_SERVER_ID,
+                              &be_server_id, 4);
+    dhcp->options[opt_pos++] = DHCP_OPT_END;
+
+    {
+        uint8_t bcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        uint32_t udp_len = 8 + sizeof(struct dhcp_pkt) + opt_pos;
+        uint32_t ip_len  = 20 + udp_len;
+        uint32_t frame_len = 14 + ip_len;
+
+        uint8_t frame[700];
+        struct eth_hdr *eh = (struct eth_hdr *)frame;
+        memcpy(eh->dst_mac, bcast_mac, 6);
+        memcpy(eh->src_mac, our_mac, 6);
+        eh->ethertype = htons_(ETHERTYPE_IPV4);
+
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + 14);
+        ip->version_ihl = (4 << 4) | 5;
+        ip->total_length= htons_((uint16_t)ip_len);
+        ip->ident       = htons_(0x1235);
+        ip->ttl         = 64;
+        ip->protocol    = IP_PROTO_UDP;
+        ip->src_ip      = htonl_(client_ip);       /* 0.0.0.0 */
+        ip->dst_ip      = htonl_(dhcp_server_ip);  /* 255.255.255.255 */
+        ip->checksum    = 0;
+        ip->checksum    = checksum(ip, 20);
+
+        struct udp_hdr *udp = (struct udp_hdr *)(frame + 14 + 20);
+        udp->src_port = htons_(DHCP_CLIENT_PORT);
+        udp->dst_port = htons_(DHCP_SERVER_PORT);
+        udp->length   = htons_((uint16_t)udp_len);
+        udp->checksum = 0;
+
+        memcpy(frame + 14 + 20 + 8, discover, sizeof(struct dhcp_pkt) + opt_pos);
+
+        if (frame_len < 60) {
+            memset(frame + frame_len, 0, 60 - frame_len);
+            frame_len = 60;
+        }
+        e1000_send(frame, frame_len);
+    }
+    kprintf("[dhcp] REQUEST sent (requesting %u.%u.%u.%u)\n",
+            (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
+            (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
+
+    /* --- Step 4: Wait for DHCPACK --- */
+    for (int poll = 0; poll < 20000000; poll++) {
+        int n = e1000_recv(rbuf, sizeof(rbuf));
+        if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
+        struct eth_hdr *eh = (struct eth_hdr *)rbuf;
+        if (htons_(eh->ethertype) != ETHERTYPE_IPV4) continue;
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(rbuf + 14);
+        if (ip->protocol != IP_PROTO_UDP) continue;
+        struct udp_hdr *udp = (struct udp_hdr *)(rbuf + 14 + 20);
+        if (htons_(udp->src_port) != DHCP_SERVER_PORT) continue;
+        if (htons_(udp->dst_port) != DHCP_CLIENT_PORT) continue;
+
+        struct dhcp_pkt *ack = (struct dhcp_pkt *)(rbuf + 14 + 20 + 8);
+        if (ntohl_(ack->xid) != dhcp_xid) continue;
+
+        int opts_len = n - (14 + 20 + 8 + (int)sizeof(struct dhcp_pkt));
+        if (opts_len < 4) continue;
+        int mt_len;
+        const uint8_t *mt = dhcp_find_option(ack->options, opts_len,
+                                             DHCP_OPT_MSG_TYPE, &mt_len);
+        if (!mt || mt_len != 1) continue;
+        if (*mt == DHCP_ACK) {
+            /* Success! Extract the assigned IP. */
+            uint32_t acked_ip = ntohl_(ack->yiaddr);
+            if (acked_ip != 0) {
+                offered_ip = acked_ip;
+            }
+
+            /* Check for router option in the ACK. */
+            int r_len;
+            const uint8_t *rtr = dhcp_find_option(ack->options, opts_len,
+                                                   DHCP_OPT_ROUTER, &r_len);
+            if (rtr && r_len >= 4) {
+                gateway_ip = be32_to_host(rtr);
+            }
+
+            our_ip = offered_ip;
+            if (subnet_mask) {
+                kprintf("[dhcp] subnet mask: %u.%u.%u.%u\n",
+                        (subnet_mask >> 24) & 0xFF, (subnet_mask >> 16) & 0xFF,
+                        (subnet_mask >> 8) & 0xFF, subnet_mask & 0xFF);
+            }
+            if (dns_ip) {
+                kprintf("[dhcp] DNS server: %u.%u.%u.%u\n",
+                        (dns_ip >> 24) & 0xFF, (dns_ip >> 16) & 0xFF,
+                        (dns_ip >> 8) & 0xFF, dns_ip & 0xFF);
+            }
+            kprintf("[dhcp] PASS: IP %u.%u.%u.%u, gateway %u.%u.%u.%u\n",
+                    (our_ip >> 24) & 0xFF, (our_ip >> 16) & 0xFF,
+                    (our_ip >> 8) & 0xFF, our_ip & 0xFF,
+                    (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF,
+                    (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
+            return 0;
+        }
+        if (*mt == 6 /* DHCPNAK */) {
+            kprintf("[dhcp] FAIL: server NAK'd the request\n");
+            return -1;
+        }
+    }
+
+    kprintf("[dhcp] FAIL: no ACK received\n");
+    return -1;
+}
+
 int net_init(void) {
+    /* Start with the hardcoded QEMU defaults as fallback. */
     our_ip     = ip_from_octets(OUR_IP_O0, OUR_IP_O1, OUR_IP_O2, OUR_IP_O3);
     gateway_ip = ip_from_octets(GW_IP_O0, GW_IP_O1, GW_IP_O2, GW_IP_O3);
 
@@ -530,9 +896,19 @@ int net_init(void) {
     }
 
     e1000_get_mac(our_mac);
+
+    /* Try DHCP to get a real IP. If it fails, fall back to the hardcoded
+     * QEMU defaults (10.0.2.15 / 10.0.2.2). */
+    if (net_dhcp() != 0) {
+        kprintf("[net] DHCP failed, using hardcoded IP %u.%u.%u.%u\n",
+                OUR_IP_O0, OUR_IP_O1, OUR_IP_O2, OUR_IP_O3);
+    }
+
     kprintf("[net] our IP: %u.%u.%u.%u, gateway: %u.%u.%u.%u\n",
-            OUR_IP_O0, OUR_IP_O1, OUR_IP_O2, OUR_IP_O3,
-            GW_IP_O0, GW_IP_O1, GW_IP_O2, GW_IP_O3);
+            (our_ip >> 24) & 0xFF, (our_ip >> 16) & 0xFF,
+            (our_ip >> 8) & 0xFF, our_ip & 0xFF,
+            (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF,
+            (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
     return 0;
 }
 

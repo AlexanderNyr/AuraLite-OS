@@ -23,6 +23,24 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [DHCP] 2026-06-21
+
+### Added
+- DHCP client (`net_dhcp()`): full DORA exchange (DISCOVER → OFFER → REQUEST →
+  ACK) over UDP broadcast (port 67/68). Parses the DHCP options to extract the
+  assigned IP, subnet mask, gateway, and DNS server. Updates `our_ip` and
+  `gateway_ip` on success. Falls back to the hardcoded QEMU defaults on failure.
+- `net_init()` now calls `net_dhcp()` before the self-tests, so all subsequent
+  network operations use the DHCP-assigned address.
+- DHCP option parser: `dhcp_find_option()` walks the variable-length options
+  field, handling padding (0x00) and termination (0xFF).
+
+### Fixed
+- **e1000 broadcast acceptance (RCTL_BAM):** the NIC was configured with
+  unicast promiscuous mode but NOT broadcast accept mode (bit 15 of RCTL).
+  DHCP OFFER packets (sent to the broadcast MAC) were silently dropped. Fix:
+  added `RCTL_BAM` to the receive control register.
+
 ## [TCP] 2026-06-21
 
 ### Added

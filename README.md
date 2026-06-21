@@ -102,7 +102,7 @@ auralite/
 │   ├── proc/                # scheduler, threads, context_switch, ELF loader,
 │   │                        #   user-mode entry (iretq to Ring 3)
 │   ├── fs/                  # VFS, USTAR initrd, devfs (/dev/null, /dev/zero)
-│   ├── net/                 # Ethernet, ARP, IPv4, ICMP, UDP, DNS, TCP
+│   ├── net/                 # Ethernet, ARP, IPv4, ICMP, UDP, DNS, TCP, DHCP
 │   ├── lib/                 # kprintf, string, bitmap, spinlock, assert
 │   ├── limine_requests.{c,h}# Limine boot-protocol bridge
 │   └── kernel.{c,h}         # kmain() — orchestrates all subsystems

@@ -37,6 +37,7 @@
 /* RCTL bits */
 #define RCTL_EN       (1u << 1)    /* Receiver Enable */
 #define RCTL_SECRC    (1u << 26)   /* Strip Ethernet CRC */
+#define RCTL_BAM      (1u << 15)   /* Broadcast Accept Mode (accept broadcasts) */
 #define RCTL_BSIZE_2048  0          /* BSIZE=00 -> 2048 bytes */
 
 /* TCTL bits */
@@ -249,8 +250,9 @@ int e1000_init(void) {
     mmio_write(E1000_RAL, ral);
     mmio_write(E1000_RAH, rah);
 
-    /* Enable RX: EN=1, SECRC=1 (strip CRC), BSIZE=0 (2048), unicast promiscuous. */
-    mmio_write(E1000_RCTL, RCTL_EN | RCTL_SECRC | RCTL_BSIZE_2048 | (1u << 3) | (1u << 4));
+    /* Enable RX: EN=1, SECRC=1 (strip CRC), BSIZE=0 (2048), BAM=1 (accept
+     * broadcasts — needed for DHCP), UPE=1 (unicast promiscuous). */
+    mmio_write(E1000_RCTL, RCTL_EN | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_BAM | (1u << 3));
 
     kprintf("[e1000] TX/RX rings initialised, RCTL=0x%08x\n",
             mmio_read(E1000_RCTL));
@@ -303,14 +305,18 @@ static uint32_t rx_packet_count = 0;
 static uint32_t last_rdh = 0;
 
 int e1000_recv(void *buf, uint32_t bufsize) {
-    /* Poll the RDH MMIO register instead of the descriptor status byte.
-     * QEMU's e1000 advances RDH when a packet arrives; the descriptor status
-     * may not be visible through the HHDM mapping due to DMA ordering. */
+    /* Poll the RDH MMIO register. QEMU's e1000 advances RDH when a packet
+     * arrives. We track our own read pointer (last_rdh) independently.
+     *
+     * RDH can jump ahead by multiple positions (multiple packets received
+     * between polls). We process one at a time, advancing our pointer by 1
+     * each call. We handle wraparound by comparing modular values. */
     uint32_t rdh = mmio_read(E1000_RDH);
     if (rdh == last_rdh) {
         return 0;
     }
 
+    /* Process the packet at our current read position. */
     uint32_t idx = last_rdh % E1000_NUM_RX_DESC;
     last_rdh = (last_rdh + 1) % E1000_NUM_RX_DESC;
 
