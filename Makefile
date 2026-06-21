@@ -76,14 +76,56 @@ USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 # Common objects shared by all user programs.
 USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o
 
-user: $(INIT_ELF) $(HELLO_ELF)
+USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h
+
+# Application ELFs.
+USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
+             $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
+             $(USER_BUILD)/clock.elf $(USER_BUILD)/guess.elf \
+             $(USER_BUILD)/snake.elf
+
+user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
+
+# Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
+$(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON) -o $@
+	@echo "[link] $@"
+
+# Compile rules for each application.
+$(USER_BUILD)/calc.o: userspace/calc/calc.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/sysinfo.o: userspace/sysinfo/sysinfo.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/editor.o: userspace/editor/editor.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/http.o: userspace/http/http.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/clock.o: userspace/clock/clock.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/guess.o: userspace/guess/guess.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/snake.o: userspace/snake/snake.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/init.o: userspace/init/init.c libc/include/unistd.h \
-                       libc/include/string.h libc/include/stdio.h
+$(USER_BUILD)/init.o: userspace/init/init.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -123,10 +165,17 @@ iso: kernel $(BUILD_DIR)/initrd.tar
 
 # Build the initrd (USTAR tarball of userspace binaries).
 INITRD_DIR := $(USER_BUILD)/initrd_root
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@mkdir -p $(INITRD_DIR)
 	@cp $(INIT_ELF) $(INITRD_DIR)/init
 	@cp $(HELLO_ELF) $(INITRD_DIR)/hello
+	@cp $(USER_BUILD)/calc.elf $(INITRD_DIR)/calc
+	@cp $(USER_BUILD)/sysinfo.elf $(INITRD_DIR)/sysinfo
+	@cp $(USER_BUILD)/editor.elf $(INITRD_DIR)/editor
+	@cp $(USER_BUILD)/http.elf $(INITRD_DIR)/http
+	@cp $(USER_BUILD)/clock.elf $(INITRD_DIR)/clock
+	@cp $(USER_BUILD)/guess.elf $(INITRD_DIR)/guess
+	@cp $(USER_BUILD)/snake.elf $(INITRD_DIR)/snake
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso

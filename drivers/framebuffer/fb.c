@@ -1,31 +1,33 @@
-/* fb.c — linear framebuffer console with an 8x8 bitmap font. */
+/* fb.c — linear framebuffer console with PSF 8x16 font.
+ *
+ * Updated from the original 8x8 font to a PSF1 8x16 font (lat0-16.psf) for
+ * much sharper and more readable text at the 1280x800 framebuffer resolution.
+ * The PSF font data is in psf_font.h; the renderer is in psf.c.
+ */
 
 #include <stdint.h>
 #include <stddef.h>
 #include "drivers/framebuffer/fb.h"
-#include "drivers/framebuffer/font.h"
+#include "drivers/framebuffer/psf.h"
 #include "limine/limine.h"
 #include "kernel/limine_requests.h"
-
-#define FONT_WIDTH   8
-#define FONT_HEIGHT  8
 
 static uint32_t *fb_addr     = NULL;
 static uint64_t  fb_width    = 0;
 static uint64_t  fb_height   = 0;
-static uint64_t  fb_pitch    = 0;   /* bytes per scanline */
+static uint64_t  fb_pitch    = 0;
 
-static uint32_t fb_fg;              /* foreground colour (text) */
-static uint32_t fb_bg;              /* background colour */
+static uint32_t fb_fg;              /* foreground colour (packed) */
+static uint32_t fb_bg;              /* background colour (packed) */
 
 static int fb_cursor_col;
 static int fb_cursor_row;
-static int fb_cols;                 /* characters per line  */
-static int fb_rows;                 /* lines on the screen  */
+static int fb_cols;
+static int fb_rows;
 
 static uint8_t fb_r_shift, fb_g_shift, fb_b_shift;
+static uint32_t font_width, font_height;
 
-/* Pack an RGB triplet into a framebuffer pixel using Limine's mask shifts. */
 static uint32_t make_color(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t)r << fb_r_shift)
          | ((uint32_t)g << fb_g_shift)
@@ -33,7 +35,6 @@ static uint32_t make_color(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static inline uint32_t *pixel_addr(uint32_t x, uint32_t y) {
-    /* pitch is in bytes; we index a uint32_t (4-byte) array. */
     return fb_addr + y * (fb_pitch / 4) + x;
 }
 
@@ -44,28 +45,21 @@ static void fb_putpixel(uint32_t x, uint32_t y, uint32_t color) {
 }
 
 static void fb_draw_char(unsigned char c, uint32_t origin_x, uint32_t origin_y) {
-    const char *glyph = font8x8_basic[c & 0x7F];
-    for (int gy = 0; gy < FONT_HEIGHT; gy++) {
-        uint8_t bits = (uint8_t)glyph[gy];
-        for (int gx = 0; gx < FONT_WIDTH; gx++) {
-            fb_putpixel(origin_x + (uint32_t)gx, origin_y + (uint32_t)gy,
-                        (bits & (1 << gx)) ? fb_fg : fb_bg);
-        }
-    }
+    /* Use the PSF renderer for individual glyphs. */
+    psf_draw_glyph(origin_x, origin_y, (char)c, fb_fg, fb_bg);
 }
 
 static void fb_scroll(void) {
-    /* Shift the whole framebuffer up by one glyph row, then blank the last row. */
     uint32_t pitch32 = (uint32_t)(fb_pitch / 4);
 
-    for (uint32_t y = FONT_HEIGHT; y < fb_height; y++) {
+    for (uint32_t y = font_height; y < fb_height; y++) {
         uint32_t *src = fb_addr + y * pitch32;
-        uint32_t *dst = fb_addr + (y - FONT_HEIGHT) * pitch32;
+        uint32_t *dst = fb_addr + (y - font_height) * pitch32;
         for (uint32_t x = 0; x < fb_width; x++) {
             dst[x] = src[x];
         }
     }
-    for (uint32_t y = fb_height - FONT_HEIGHT; y < fb_height; y++) {
+    for (uint32_t y = fb_height - font_height; y < fb_height; y++) {
         uint32_t *row = fb_addr + y * pitch32;
         for (uint32_t x = 0; x < fb_width; x++) {
             row[x] = fb_bg;
@@ -76,9 +70,15 @@ static void fb_scroll(void) {
 void fb_init(void) {
     struct limine_framebuffer *fb = limine_get_framebuffer();
     if (fb == NULL || fb->bpp != 32 || fb->memory_model != LIMINE_FRAMEBUFFER_RGB) {
-        fb_addr = NULL;   /* no usable framebuffer; fb_putchar will be a no-op */
+        fb_addr = NULL;
         return;
     }
+
+    /* Initialise the PSF font. */
+    psf_init();
+    const struct psf_font *f = psf_get_font();
+    font_width  = f->width;
+    font_height = f->height;
 
     fb_addr   = (uint32_t *)fb->address;
     fb_width  = fb->width;
@@ -89,11 +89,11 @@ void fb_init(void) {
     fb_g_shift = fb->green_mask_shift;
     fb_b_shift = fb->blue_mask_shift;
 
-    fb_fg = make_color(220, 220, 220);   /* light grey text  */
-    fb_bg = make_color(16,  16,  28);    /* near-black blue  */
+    fb_fg = make_color(220, 220, 220);
+    fb_bg = make_color(16,  16,  28);
 
-    fb_cols = (int)(fb_width  / FONT_WIDTH);
-    fb_rows = (int)(fb_height / FONT_HEIGHT);
+    fb_cols = (int)(fb_width  / font_width);
+    fb_rows = (int)(fb_height / font_height);
     fb_cursor_col = 0;
     fb_cursor_row = 0;
 
@@ -101,9 +101,7 @@ void fb_init(void) {
 }
 
 void fb_clear(void) {
-    if (!fb_addr) {
-        return;
-    }
+    if (!fb_addr) return;
     uint32_t pitch32 = (uint32_t)(fb_pitch / 4);
     for (uint32_t y = 0; y < fb_height; y++) {
         uint32_t *row = fb_addr + y * pitch32;
@@ -116,9 +114,7 @@ void fb_clear(void) {
 }
 
 void fb_putchar(char c) {
-    if (!fb_addr) {
-        return;
-    }
+    if (!fb_addr) return;
     unsigned char uc = (unsigned char)c;
 
     switch (uc) {
@@ -142,8 +138,8 @@ void fb_putchar(char c) {
             fb_cursor_row++;
         }
         fb_draw_char(uc,
-                     (uint32_t)fb_cursor_col * FONT_WIDTH,
-                     (uint32_t)fb_cursor_row * FONT_HEIGHT);
+                     (uint32_t)fb_cursor_col * font_width,
+                     (uint32_t)fb_cursor_row * font_height);
         fb_cursor_col++;
         break;
     }

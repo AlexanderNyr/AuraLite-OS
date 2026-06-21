@@ -2,7 +2,7 @@
  * libc.c — C library implementations for AuraLite OS user programs.
  *
  * Compiled with the host compiler and linked into user binaries. Provides
- * syscall wrappers, string functions, and printf.
+ * syscall wrappers, string functions, stdlib, and printf.
  */
 
 #include <stdint.h>
@@ -10,6 +10,7 @@
 #include "unistd.h"
 #include "string.h"
 #include "stdio.h"
+#include "stdlib.h"
 
 /* ---- Syscall wrappers ---- */
 
@@ -61,6 +62,58 @@ pid_t wait(int *status) {
 
 pid_t spawn(const char *path) {
     return (pid_t)syscall(SYS_SPAWN, (uint64_t)path, 0, 0, 0, 0, 0);
+}
+
+/* ---- stdlib ---- */
+
+int atoi(const char *s) {
+    int sign = 1, result = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { sign = -1; s++; }
+    else if (*s == '+') s++;
+    while (*s >= '0' && *s <= '9') {
+        result = result * 10 + (*s - '0');
+        s++;
+    }
+    return result * sign;
+}
+
+long strtol(const char *s, char **end, int base) {
+    long result = 0;
+    int sign = 1;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { sign = -1; s++; }
+    else if (*s == '+') s++;
+    if (base == 0) {
+        if (*s == '0' && (s[1] == 'x' || s[1] == 'X')) { base = 16; s += 2; }
+        else if (*s == '0') { base = 8; s++; }
+        else base = 10;
+    }
+    for (;;) {
+        int digit;
+        if (*s >= '0' && *s <= '9') digit = *s - '0';
+        else if (*s >= 'a' && *s <= 'f') digit = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'F') digit = *s - 'A' + 10;
+        else break;
+        if (digit >= base) break;
+        result = result * base + digit;
+        s++;
+    }
+    if (end) *end = (char *)s;
+    return result * sign;
+}
+
+static unsigned int rng_seed = 1;
+
+void srand(unsigned int seed) {
+    rng_seed = seed ? seed : 1;
+}
+
+int rand(void) {
+    rng_seed ^= rng_seed << 13;
+    rng_seed ^= rng_seed >> 17;
+    rng_seed ^= rng_seed << 5;
+    return (int)(rng_seed & 0x7FFFFFFF);
 }
 
 /* ---- String functions ---- */
@@ -116,14 +169,11 @@ int strncmp(const char *a, const char *b, size_t n) {
     return n ? (int)(unsigned char)*a - (int)(unsigned char)*b : 0;
 }
 
-/* strtok: standard semantics, non-reentrant. */
 static char *strtok_save = 0;
 
 char *strtok(char *s, const char *delim) {
     if (s) strtok_save = s;
     if (!strtok_save || !*strtok_save) return 0;
-
-    /* Skip leading delimiters. */
     char *p = strtok_save;
     while (*p) {
         const char *d = delim;
@@ -132,9 +182,7 @@ char *strtok(char *s, const char *delim) {
         p++;
     }
     if (!*p) { strtok_save = p; return 0; }
-
     char *tok = p;
-    /* Find the next delimiter. */
     while (*p) {
         const char *d = delim;
         while (*d) { if (*p == *d) { *p = '\0'; strtok_save = p + 1; return tok; } d++; }
@@ -158,7 +206,6 @@ int puts(const char *s) {
     return 0;
 }
 
-/* Minimal printf: %s %d %u %x %c %% with optional width/zero-pad. */
 static void print_uint(uint64_t val, unsigned base, int upper, int width, int zero) {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char buf[32];
@@ -179,6 +226,10 @@ int printf(const char *fmt, ...) {
         int zero = 0, width = 0;
         while (*fmt == '0') { zero = 1; fmt++; }
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+        /* Parse length modifiers (l, ll, h). */
+        int is_long = 0;
+        while (*fmt == 'l') { is_long++; fmt++; }
+        while (*fmt == 'h') { fmt++; }
         switch (*fmt) {
         case '%': putchar('%'); break;
         case 'c': putchar(va_arg(ap, int)); break;
@@ -189,13 +240,30 @@ int printf(const char *fmt, ...) {
             break;
         }
         case 'd': {
-            int64_t v = va_arg(ap, int64_t);
+            int64_t v = is_long ? va_arg(ap, int64_t)
+                                : (int64_t)(int)va_arg(ap, int);
             if (v < 0) { putchar('-'); print_uint((uint64_t)(-(v+1))+1, 10, 0, width, zero); }
             else print_uint((uint64_t)v, 10, 0, width, zero);
             break;
         }
-        case 'u': print_uint(va_arg(ap, uint64_t), 10, 0, width, zero); break;
-        case 'x': print_uint(va_arg(ap, uint64_t), 16, 0, width, zero); break;
+        case 'u': {
+            uint64_t v = is_long ? va_arg(ap, uint64_t)
+                                 : (uint64_t)(unsigned)va_arg(ap, unsigned);
+            print_uint(v, 10, 0, width, zero);
+            break;
+        }
+        case 'x': {
+            uint64_t v = is_long ? va_arg(ap, uint64_t)
+                                 : (uint64_t)(unsigned)va_arg(ap, unsigned);
+            print_uint(v, 16, 0, width, zero);
+            break;
+        }
+        case 'X': {
+            uint64_t v = is_long ? va_arg(ap, uint64_t)
+                                 : (uint64_t)(unsigned)va_arg(ap, unsigned);
+            print_uint(v, 16, 1, width, zero);
+            break;
+        }
         case '\0': fmt--; break;
         default: putchar('%'); putchar(*fmt); break;
         }

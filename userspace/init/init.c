@@ -89,6 +89,16 @@ static void cmd_help(void) {
     puts("  ps          - list processes (stub)");
     puts("  help        - show this help");
     puts("  exit        - exit shell");
+    puts("");
+    puts("Applications:");
+    puts("  run /calc     - interactive calculator");
+    puts("  run /sysinfo  - system information");
+    puts("  run /editor   - text editor");
+    puts("  run /clock    - clock display");
+    puts("  run /guess    - number guessing game");
+    puts("  run /snake    - snake game");
+    puts("  run /hello    - hello world");
+    puts("  run /http     - HTTP client stub");
 }
 
 static void cmd_run(const char *prog) {

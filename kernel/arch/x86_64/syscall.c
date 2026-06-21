@@ -52,29 +52,26 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         /* a1 = fd, a2 = buffer, a3 = count. */
         int fd = (int)a1;
         if (fd == 0) {
-            /* stdin: serial line input. Block until a line is available. */
-            char *buf = (char *)a2;
+            /* stdin: serial line input. Poll the UART directly without
+             * yielding (sched_yield from a SYSCALL handler that runs on the
+             * user stack causes context-switch corruption). */
+            char *cbuf = (char *)a2;
             uint64_t count = a3;
             uint64_t got = 0;
             while (got < count) {
-                /* Poll the UART, yielding to other threads while idle. */
+                /* Spin-wait for UART data. This is acceptable for the serial
+                 * console; the alternative (interrupt-driven) is a TODO. */
                 while (!uart_has_data()) {
-                    sched_yield();
+                    __asm__ volatile ("pause");
                 }
                 char c = uart_getchar();
-                /* Translate CR to LF (terminals send \r on Enter). */
-                if (c == '\r') {
-                    c = '\n';
-                }
-                buf[got++] = c;
-                kputchar(c);   /* echo the character */
-                if (c == '\n') {
-                    break;      /* line complete */
-                }
+                if (c == '\r') c = '\n';
+                cbuf[got++] = c;
+                kputchar(c);   /* echo */
+                if (c == '\n') break;
             }
             return got;
         }
-        /* fd 3+: read from a VFS file. */
         return (uint64_t)vfs_read(fd, (void *)a2, a3);
     }
     case SYS_OPEN:

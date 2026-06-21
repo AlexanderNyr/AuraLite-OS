@@ -23,6 +23,53 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [PSF2 Font Support] 2026-06-21
+
+### Added
+- `drivers/framebuffer/psf.{c,h}`: PSF (PC Screen Font) parser and renderer.
+  Supports PSF1 format (8xN glyphs). Renders glyphs with proper MSB-first bit
+  ordering and configurable fg/bg colours.
+- `drivers/framebuffer/psf_font.h`: the lat0-16.psf PSF1 8x16 font embedded
+  as a C array (256 glyphs × 16 bytes = 4 KiB). Replaces the previous 8x8
+  font for much sharper, more readable text.
+- `psf_draw_glyph()` and `psf_draw_string()` for rendering text at arbitrary
+  pixel positions with the PSF font.
+
+### Changed
+- `drivers/framebuffer/fb.c`: now uses the PSF 8x16 font instead of the old
+  8x8 font8x8_basic. The console cursor metrics (cols/rows) are derived from
+  the font dimensions at init time.
+- The framebuffer console now shows 80×50 characters (was 160×100 with 8x8)
+  — fewer but much more readable characters at the 1280×800 resolution.
+
+## [Applications + libc Fixes] 2026-06-21
+
+### Added — User-space applications
+- `userspace/calc/calc.c`: interactive calculator with recursive-descent parser
+  supporting +, -, *, /, %, parentheses, and negative numbers. Correct operator
+  precedence verified: `2+3*4=14`, `(2+3)*4=20`, `100/7=14`.
+- `userspace/sysinfo/sysinfo.c`: system information display (OS version, arch,
+  features, subsystem checklist, PID).
+- `userspace/editor/editor.c`: line-based text editor (:p print, :d N delete,
+  :q quit, type to append).
+- `userspace/http/http.c`: HTTP client stub (TCP syscalls not yet exposed).
+- `userspace/clock/clock.c`: clock/uptime display with 5-second countdown demo.
+- `userspace/guess/guess.c`: number guessing game (1-100, xorshift RNG,
+  higher/lower feedback, attempt scoring).
+- `userspace/snake/snake.c`: turn-based terminal Snake game (wasd controls,
+  20x10 grid, food, score, wall/self collision detection).
+- `libc/include/stdlib.h`: atoi, strtol, srand, rand (xorshift32).
+- All 7 new apps (plus init + hello = 9 total) packaged in the initrd.
+
+### Fixed
+- **User-space printf %ld format:** the printf didn't parse length modifiers
+  (`l`/`ll`), so `%ld` printed literally. Added length modifier support that
+  reads the correct 32-bit or 64-bit va_arg based on the modifier.
+- **SYS_READ sched_yield crash:** SYS_READ called sched_yield() from within the
+  SYSCALL handler (which runs on the user stack), corrupting the context switch.
+  Fixed: SYS_READ now spin-polls the UART directly without yielding.
+- **libdeps:** removed unused `buf` from sysinfo.c and unused `n` from http.c.
+
 ## [AHCI SATA Driver] 2026-06-21
 
 ### Added
