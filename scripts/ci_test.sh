@@ -53,6 +53,8 @@ grep -q "init shell running in Ring 3" "$SERIAL" || pass=0
 grep -q "\[smp\].*PASS:" "$SERIAL" || pass=0
 # Phase 13 gate: networking — ping the QEMU gateway.
 grep -q "\[net\] PASS: ping 10.0.2.2 successful" "$SERIAL" || pass=0
+# TCP gate: three-way handshake + data transfer + clean close.
+grep -q "\[tcp\] PASS: TCP connect + send + close all worked" "$SERIAL" || pass=0
 # Phase 14 gate: framebuffer GUI + window manager.
 grep -q "\[gfx\] framebuffer GUI + window manager rendered" "$SERIAL" || pass=0
 

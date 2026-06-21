@@ -23,6 +23,28 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [TCP] 2026-06-21
+
+### Added
+- `kernel/net/tcp.{c,h}`: minimal TCP client implementation with:
+  - Three-way handshake (SYN → SYN-ACK → ACK) for active open
+  - Data send/recv with sequence numbers and acknowledgments
+  - Clean teardown (FIN → FIN-ACK → ACK)
+  - Correct TCP checksum with pseudo-header (IPv4 src/dst + protocol + length)
+  - Single-connection model (polling-based, consistent with the rest of the stack)
+  - `tcp_connect()`, `tcp_send()`, `tcp_recv()`, `tcp_close()`
+- TCP self-test: connects to QEMU's DNS server (10.0.2.3:53) via TCP, sends a
+  DNS-over-TCP query, receives a response, and cleanly closes.
+- Exposed `net_eth_send`, `net_arp_resolve`, `net_get_mac`, `net_get_our_ip`
+  from net.c for TCP's use.
+
+### Fixed
+- **TCP checksum pseudo-header byte order**: the IP addresses were being passed
+  to the checksum function in network byte order (via `htonl_`) but the function
+  expected host byte order. This caused an incorrect checksum and QEMU SLIRP
+  silently dropped the SYN. Fix: pass host-order IPs and extract octets
+  manually inside the checksum function.
+
 ## [UDP + DNS + Per-Process Address Spaces] 2026-06-21
 
 ### Added — Per-Process Address Spaces

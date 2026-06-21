@@ -22,6 +22,7 @@
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
 #include "kernel/net/net.h"
+#include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
 #include "drivers/framebuffer/graphics.h"
@@ -141,6 +142,7 @@ void kmain(void) {
     net_init();
     net_self_test();
     net_dns_self_test();
+    tcp_self_test();
 
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
     kprintf("[boot] initialising graphics + keyboard + mouse...\n");

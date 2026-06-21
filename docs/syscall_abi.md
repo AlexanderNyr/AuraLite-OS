@@ -68,7 +68,10 @@ restored before SYSRET.
 | 2      | `open`     | `open(path)` → `int`                        | Opens a file from the VFS          |
 | 3      | `close`    | `close(fd)` → `int`                         | Closes a file descriptor           |
 | 39     | `getpid`   | `getpid()` → `pid_t`                        | Returns the current thread ID      |
+| 57     | `fork`     | `fork()` → `pid_t`                          | Clone address space + TCB          |
+| 59     | `execve`   | `execve(path)` → `int`                      | Replace address space with new ELF |
 | 60     | `exit`     | `exit(code)` → `noreturn`                   | Terminates the calling thread      |
+| 61     | `wait4`    | `wait4(status)` → `pid_t`                   | Wait for a child to exit           |
 | 80     | `listdir`  | `listdir(path)`                             | Non-standard: lists a directory    |
 | 81     | `spawn`    | `spawn(path)` → `pid_t`                     | Non-standard: new process + address space |
 | 82     | `dns`      | `dns_resolve(hostname)` → `uint32_t`        | Non-standard: DNS A-record lookup  |

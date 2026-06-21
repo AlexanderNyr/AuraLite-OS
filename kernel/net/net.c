@@ -81,6 +81,15 @@ static uint8_t  our_mac[6];
 static uint32_t our_ip;
 static uint32_t gateway_ip;
 
+/* Accessors for TCP (tcp.c). */
+void net_get_mac(uint8_t mac[6]) {
+    memcpy(mac, our_mac, 6);
+}
+
+uint32_t net_get_our_ip(void) {
+    return our_ip;
+}
+
 /* ARP cache (single entry for the gateway). */
 static uint8_t  gateway_mac[6];
 static int      gateway_mac_known = 0;
@@ -117,7 +126,7 @@ static uint16_t checksum(const void *data, uint32_t len) {
 }
 
 /* ---- Ethernet send: wrap payload in an Ethernet frame and transmit. ---- */
-static void eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
+void net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
                      const void *payload, uint32_t plen) {
     uint8_t frame[1518];
     struct eth_hdr *eh = (struct eth_hdr *)frame;
@@ -134,7 +143,7 @@ static void eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
 }
 
 /* ---- ARP: resolve an IP address to a MAC. ---- */
-static int arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
+int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
     /* If we already know it, return immediately. */
     if (target_ip == gateway_ip && gateway_mac_known) {
         memcpy(out_mac, gateway_mac, 6);
@@ -154,7 +163,7 @@ static int arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
     memset(arp.target_mac, 0, 6);
     arp.target_ip  = htonl_(target_ip);
 
-    eth_send(broadcast, ETHERTYPE_ARP, &arp, sizeof(arp));
+    net_eth_send(broadcast, ETHERTYPE_ARP, &arp, sizeof(arp));
     kprintf("[net] ARP request sent for %u.%u.%u.%u\n",
             (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
             (target_ip >> 8) & 0xFF, target_ip & 0xFF);
@@ -199,7 +208,7 @@ static int arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
 int net_ping(uint32_t target_ip) {
     /* 1) Resolve the MAC via ARP. */
     uint8_t dst_mac[6];
-    if (arp_resolve(target_ip, dst_mac) != 0) {
+    if (net_arp_resolve(target_ip, dst_mac) != 0) {
         kprintf("[net] ping: ARP resolution failed\n");
         return -1;
     }
@@ -290,7 +299,7 @@ struct udp_hdr {
 static int net_udp_send(uint32_t dst_ip, uint16_t dst_port,
                         uint16_t src_port, const void *data, uint32_t data_len) {
     uint8_t dst_mac[6];
-    if (arp_resolve(dst_ip, dst_mac) != 0) {
+    if (net_arp_resolve(dst_ip, dst_mac) != 0) {
         return -1;
     }
 
