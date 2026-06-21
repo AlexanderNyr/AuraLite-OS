@@ -24,6 +24,15 @@ extern __bss_end
 _start:
     cli                        ; no interrupts until the IDT is up (Phase 2)
 
+    ; ---- Enable SSE (needed for float in the 3D renderer) ----
+    mov rax, cr0
+    and ax, 0xFFFB             ; clear EM (Emulation) bit
+    or ax, 0x2                 ; set MP (Monitor coProcessor) bit
+    mov cr0, rax
+    mov rax, cr4
+    or ax, 3 << 9              ; set OSFXSR (bit 9) + OSXMMEXCPT (bit 10)
+    mov cr4, rax
+
     ; Establish our own, deterministically-sized stack.
     lea rsp, [rel stack_top]
 

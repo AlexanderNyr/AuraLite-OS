@@ -27,6 +27,7 @@
 #include "drivers/framebuffer/fb.h"
 #include "drivers/framebuffer/graphics.h"
 #include "drivers/framebuffer/wm.h"
+#include "drivers/framebuffer/render3d.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/mouse/mouse.h"
 #include "drivers/ahci/ahci.h"
@@ -172,6 +173,11 @@ void kmain(void) {
     /* Window manager demo with draggable windows. */
     wm_demo();
     kprintf("[gfx] framebuffer GUI + window manager rendered\n");
+
+    /* 3D renderer demo: rotating cube + pyramid (30 frames). */
+    kprintf("[3d] rendering 3D demo...\n");
+    r3d_demo(30);
+    kprintf("[3d] demo complete\n");
 
     /* Phase 15: per-process address spaces — self-test. */
     kprintf("[boot] testing per-process address spaces...\n");

@@ -51,6 +51,11 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Special rule for render3d.c: needs SSE for float math.
+$(BUILD_DIR)/drivers/framebuffer/render3d.o: drivers/framebuffer/render3d.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -msse -msse2 -mfpmath=sse -c $< -o $@
+
 $(BUILD_DIR)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@

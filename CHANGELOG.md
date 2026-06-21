@@ -23,6 +23,24 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [3D Software Renderer] 2026-06-21
+
+### Added
+- `drivers/framebuffer/render3d.{c,h}`: software 3D renderer with:
+  - `vec3` vector math: add, sub, scale, dot, cross, length, normalize
+  - 4x4 `mat4` matrices: identity, multiply, rotation (X/Y/Z), translation,
+    perspective projection
+  - Freestanding `sin`/`cos`/`sqrt`/`tan` (Taylor series, no `<math.h>`)
+  - Perspective projection (3D world → 2D screen coordinates)
+  - Wireframe mesh rendering (`r3d_draw_mesh_wire`)
+  - Filled triangle rasterisation with flat shading + painter's algorithm
+    depth sort + backface culling (`r3d_draw_mesh_filled`)
+  - Built-in meshes: cube (8 verts, 12 tris) and pyramid (5 verts, 6 tris)
+  - Demo: 30-frame animation of a rotating filled cube + wireframe cube +
+    wireframe pyramid with directional lighting
+- SSE enabled in boot.asm (CR0.MP, CR4.OSFXSR) for floating-point math
+- render3d.c compiled with `-msse -msse2 -mfpmath=sse` (per-file override)
+
 ## [PSF2 Font Support] 2026-06-21
 
 ### Added

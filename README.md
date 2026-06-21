@@ -108,7 +108,7 @@ auralite/
 │   └── kernel.{c,h}         # kmain() — orchestrates all subsystems
 ├── drivers/
 │   ├── uart/                # 16550 COM1 serial (TX + RX)
-│   ├── framebuffer/         # linear FB console, PSF 8×16 font, 2D graphics (double-buffered), window manager
+│   ├── framebuffer/         # linear FB console, PSF 8×16 font, 2D graphics, 3D renderer, window manager
 │   ├── keyboard/            # PS/2 keyboard (scan-code set 1, IRQ 1)
 │   ├── mouse/               # PS/2 mouse (8042 aux, IRQ 12)
 │   ├── timer/               # 8254 PIT (100 Hz)
