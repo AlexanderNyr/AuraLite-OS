@@ -23,6 +23,46 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [Boot from USB] 2026-06-21
+
+### Added
+- `make usb` target: creates a bootable USB image (`build/usb.img`) from the
+  ISOhybrid Limine ISO. The resulting image can be:
+  - Booted in QEMU: `qemu-system-x86_64 -drive file=usb.img,format=raw`
+  - Written to a real USB stick: `sudo dd if=usb.img of=/dev/sdX bs=4M`
+- `tools/mkusbimage.sh`: documents the USB image creation process.
+- `boot/limine/limine-usb.conf`: boot config for USB/HDD boot (uses `boot():`
+  for partition-relative paths).
+
+### Verified
+- Full boot from USB image in QEMU with `-drive file=usb.img,format=raw`:
+  - Limine loads the kernel + initrd module
+  - All subsystem self-tests pass (PMM, VMM, heap, timer, scheduler, VFS,
+    DHCP, ping, DNS, TCP, UHCI)
+  - USB keyboard + mouse detected on UHCI ports 0 and 1
+  - Interactive shell available
+- The ISOhybrid image boots from both CD-ROM (`-cdrom`) and hard drive
+  (`-drive`) positions.
+
+## [USB UHCI Driver] 2026-06-21
+
+### Added
+- `drivers/usb/uhci.{c,h}`: UHCI (USB 1.1) host controller driver.
+  - PCI detection (class 0x0C/0x03 or vendor 0x8086:0x7020 for PIIX3)
+  - Controller reset + global reset sequence
+  - 1024-entry frame list (PMM-allocated, 4 KiB) with idle QH per entry
+  - Port enumeration: detects attached devices, reports speed (low/full)
+  - Port reset sequence (50ms reset pulse, port enable, status clear)
+  - Frame counter verification (proves the controller is actively scheduling)
+  - UHCI data structures: Transfer Descriptor (TD), Queue Head (QH)
+- Verified: detects USB keyboard (full-speed) + USB mouse (full-speed)
+  in QEMU with `-usb -device usb-kbd -device usb-mouse`.
+
+### QEMU configuration
+```
+-usb -device usb-kbd -device usb-mouse
+```
+
 ## [3D Software Renderer] 2026-06-21
 
 ### Added

@@ -41,7 +41,7 @@ KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 
-.PHONY: all kernel iso run clean
+.PHONY: all kernel iso usb run clean
 
 all: iso
 
@@ -165,8 +165,16 @@ $(USER_BIN_H): $(INIT_ELF) tools/gen_user_binary.py
 # user.c includes the generated init_bin.h; ensure it exists first.
 $(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
 
+USB_IMAGE   := $(BUILD_DIR)/usb.img
+
 iso: kernel $(BUILD_DIR)/initrd.tar
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_DIR)
+
+usb: iso
+	@cp $(ISO_IMAGE) $(USB_IMAGE)
+	@echo "[usb] wrote $(USB_IMAGE) ($(shell du -h $(USB_IMAGE) | cut -f1))"
+	@echo "[usb] Boot: qemu-system-x86_64 -drive file=$(USB_IMAGE),format=raw -m 512M -serial stdio"
+	@echo "[usb] Or write to USB: sudo dd if=$(USB_IMAGE) of=/dev/sdX bs=4M"
 
 # Build the initrd (USTAR tarball of userspace binaries).
 INITRD_DIR := $(USER_BUILD)/initrd_root
