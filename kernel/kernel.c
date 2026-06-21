@@ -16,6 +16,7 @@
 #include "kernel/proc/user.h"
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/tss.h"
+#include "kernel/arch/x86_64/smp.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
@@ -94,6 +95,10 @@ void kmain(void) {
     kprintf("[boot] initialising kernel heap...\n");
     kheap_init();
     kheap_self_test();
+
+    kprintf("[boot] initialising SMP...\n");
+    smp_init();
+    smp_self_test();
 
     kprintf("[boot] initialising timer (PIT @ 100 Hz)...\n");
     pit_init(100);

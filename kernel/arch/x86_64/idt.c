@@ -6,8 +6,9 @@
 /* 256 handler entry-point addresses, laid out in isr.asm (.rodata). */
 extern uint64_t isr_table[IDT_ENTRIES];
 
-static struct idt_entry idt[IDT_ENTRIES] __attribute__((aligned(16)));
-static struct idt_ptr   idtp;
+/* Non-static so smp.c can reload the IDT on application processors. */
+struct idt_entry idt[IDT_ENTRIES] __attribute__((aligned(16)));
+struct idt_ptr   idtp;
 
 static inline void lidt_load(const struct idt_ptr *p) {
     /* Intel SDM Vol.2, LGDT/LIDT: load the IDTR from a 10-byte pseudo-descriptor. */

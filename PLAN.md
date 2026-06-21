@@ -1,13 +1,13 @@
 # AuraLite OS Development Plan
 
-## Current Phase: 11 — init, Shell & Utilities
+## Current Phase: 12 — SMP (Symmetric Multi-Processing)
 
 ### Status: COMPLETE ✅ (2026-06-21)
 
 ### Objective
 
-An interactive shell (PID 1 / init) that accepts serial input and runs built-in
-commands. Gate criterion: full boot to shell; `ls /` lists files.
+Wake application processors (APs) and have them run kernel code. Gate
+criterion: QEMU `-smp 4` shows 4 CPUs online.
 
 ### Tasks
 
@@ -96,12 +96,54 @@ commands. Gate criterion: full boot to shell; `ls /` lists files.
 - [x] `echo`, `help`, `uname`, `exit` work
 - [x] User types commands; shell processes and responds
 
+### Tasks
+
+- [x] Limine MP request to enumerate application processors
+- [x] `kernel/arch/x86_64/smp.{c,h}`: wake APs via goto_address, per-CPU stacks
+- [x] Each AP loads the shared GDT/IDT, switches to its own stack, reports online
+- [x] BSP waits for all APs to come online with a spin-wait
+- [x] SMP-safe `kprintf` (global print spinlock)
+- [x] Exposed `gdtr`/`idtp` for APs to reload
+- [x] Self-test: detects multi-core vs single-core
+
+### Design notes
+
+- **Limine MP protocol:** Limine's MP request hands us a list of CPUs (including
+  the BSP). Each CPU has a `goto_address` field — when set, Limine wakes the AP
+  and calls that function in 64-bit mode with paging enabled and a temporary
+  stack. This avoids manual INIT-SIPI-SIPI.
+- **BSP filtering:** the cpus[] array includes the BSP (matching lapic_id). We
+  skip it to avoid setting goto_address on the already-running BSP.
+- **AP lifecycle:** switch to own stack → load GDT/IDT → print "online" →
+  increment atomic counter → idle loop (hlt). APs don't participate in the
+  scheduler yet (per-CPU run queues are a follow-up).
+- **Volatile writes:** the goto_address/extra_argument fields are polled by
+  Limine, so we cast through volatile + mfence to ensure visibility.
+- **Print safety:** cli/sti is per-CPU under SMP, so a global spinlock was added
+  to kprintf to prevent garbled interleaved output.
+
+### Bugs found and fixed
+
+- **BSP in cpus[] array:** Limine includes the BSP in the MP response's cpus[]
+  array. Setting goto_address on the BSP entry is a no-op (it's already running),
+  causing one AP to never wake. Fix: skip entries matching bsp_lapic_id.
+- **Non-volatile goto_address writes:** the Limine bridge returned a non-volatile
+  pointer, so the compiler could optimize away the goto_address store. Fix: cast
+  through volatile + mfence.
+
+### Phases 0–11: COMPLETE ✅
+
+### Definition of Done — Phase 12
+
+- [x] QEMU `-smp 4` boots with 4 CPUs online
+- [x] QEMU `-smp 1` still works (single-CPU path)
+- [x] Shell + all prior tests pass with SMP enabled
+
 ### Next Phase
 
-**Phase 12 — SMP (Symmetric Multi-Processing)**: parse ACPI MADT, wake
-application processors via INIT-SIPI-SIPI, per-CPU data structures, and
-per-CPU run queues with work stealing. Gate criterion: QEMU `-smp 4` shows 4
-CPUs online.
+**Phase 13 — Networking (VirtIO / e1000)**: VirtIO network device driver,
+Ethernet/ARP/IP/ICMP/UDP/TCP stack, and a BSD socket API. Gate criterion:
+`ping 10.0.2.2` gets ICMP echo replies in QEMU.
 
 ### Tasks
 

@@ -14,6 +14,7 @@
 struct limine_framebuffer;
 struct limine_memmap_entry;
 struct limine_file;
+struct limine_mp_info;
 
 /* First available framebuffer, or NULL if the request failed / none exist. */
 struct limine_framebuffer *limine_get_framebuffer(void);
@@ -37,6 +38,13 @@ uint64_t limine_get_hhdm_offset(void);
  * On success, *out_count is set to the number of modules.
  */
 struct limine_file *limine_get_modules(uint64_t *out_count);
+
+/*
+ * Retrieve the SMP (multi-processor) info from Limine. Returns a pointer to
+ * the MP response's CPU info array, or NULL if the request was not honoured.
+ * On success, *out_count is set to the number of CPUs (including the BSP).
+ */
+struct limine_mp_info *limine_get_smp_info(uint64_t *out_count, uint32_t *out_bsp_lapic_id);
 
 /* Non-zero if the requested Limine base revision is supported by the loader. */
 int limine_base_revision_supported(void);

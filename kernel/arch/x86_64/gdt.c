@@ -11,9 +11,10 @@
 /* Implemented in gdt_flush.asm: void gdt_flush(uint64_t gdtr_ptr); */
 extern void gdt_flush(uint64_t gdtr_ptr);
 
-/* Made non-static so tss.c can write the TSS descriptor (index 5). */
+/* Made non-static so tss.c can write the TSS descriptor (index 5) and smp.c
+ * can reload the GDT on application processors. */
 struct gdt_entry gdt[GDT_NUM_ENTRIES];
-static struct gdt_ptr gdtr;
+struct gdt_ptr   gdtr;
 
 static void gdt_set_entry(int index, uint32_t base, uint32_t limit,
                           uint8_t access, uint8_t flags) {

@@ -2,6 +2,24 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase 12 — SMP] 2026-06-21
+
+### Added
+- `kernel/arch/x86_64/smp.{c,h}`: multi-processor bringup via Limine's MP
+  request. Each AP gets a goto_address function that loads the shared GDT/IDT,
+  switches to its own stack, reports online atomically, and idles (hlt).
+- Limine MP request added to the boot-protocol bridge.
+- Exposed `gdtr` (gdt.c) and `idtp` (idt.c) as non-static so APs can reload them.
+- SMP-safe `kprintf`: global print spinlock (cli/sti is per-CPU under SMP).
+- `smp_self_test()`: detects single-core vs multi-core and reports CPU count.
+
+### Fixed
+- **BSP in cpus[] array:** Limine includes the BSP in the MP response. Setting
+  goto_address on the BSP was a no-op, leaving one AP asleep. Fix: skip entries
+  matching bsp_lapic_id.
+- **Volatile visibility:** the goto_address/extra_argument writes needed volatile
+  access + mfence to be visible to Limine's AP polling.
+
 ## [Phase 11 — init, Shell & Utilities] 2026-06-21
 
 ### Added

@@ -3,8 +3,13 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/spinlock.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
+
+/* SMP-safe output: a spinlock ensures only one CPU prints at a time. cli/sti
+ * alone is not sufficient under SMP (it's per-CPU). */
+static spinlock_t print_lock;
 
 /* Output sink: each character is duplicated to every console. */
 void kputchar(char c) {
@@ -155,10 +160,12 @@ static void kvprintf(const char *fmt, va_list ap) {
 void kprintf(const char *fmt, ...) {
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    spinlock_acquire(&print_lock);
     va_list ap;
     va_start(ap, fmt);
     kvprintf(fmt, ap);
     va_end(ap);
+    spinlock_release(&print_lock);
     if (rflags & 0x200ULL) {
         __asm__ volatile ("sti" ::: "memory");
     }

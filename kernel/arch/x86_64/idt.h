@@ -39,4 +39,7 @@ struct idt_ptr {
 void idt_init(void);
 void idt_set_gate(int n, uint64_t handler, uint8_t flags);
 
+/* Exposed for smp.c to reload the IDT on application processors. */
+extern struct idt_ptr idtp;
+
 #endif /* AURALITE_ARCH_X86_64_IDT_H */

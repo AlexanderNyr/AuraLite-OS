@@ -23,7 +23,7 @@ echo "[ci] booting $ISO with shell commands (15s budget)..."
 set +e
 (sleep 5; printf 'ls\n'; sleep 1; printf 'exit\n') | \
 timeout 15 qemu-system-x86_64 \
-    -cdrom "$ISO" -m 512M -vga std -display none \
+    -cdrom "$ISO" -m 512M -smp 4 -vga std -display none \
     -serial stdio -no-reboot -cpu qemu64 > "$SERIAL" 2>&1
 set -e
 
@@ -49,6 +49,8 @@ grep -q "auralite#" "$SERIAL" || pass=0
 grep -q "/init" "$SERIAL" || pass=0
 grep -q "/hello" "$SERIAL" || pass=0
 grep -q "init shell running in Ring 3" "$SERIAL" || pass=0
+# Phase 12 gate: SMP — multiple CPUs come online.
+grep -q "\[smp\].*PASS:" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"
 

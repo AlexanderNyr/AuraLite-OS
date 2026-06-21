@@ -50,6 +50,14 @@ static volatile struct limine_module_request module_request = {
     .response = NULL
 };
 
+/* ---- SMP: multi-processor info for waking application processors (Phase 12) ---- */
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_mp_request mp_request = {
+    .id       = LIMINE_MP_REQUEST_ID,
+    .revision = 0,
+    .response = NULL
+};
+
 /* ---- End marker: 2 qwords (stops the scanner) ---- */
 __attribute__((used, section(".limine_requests_end")))
 static volatile uint64_t requests_end_marker[2] = LIMINE_REQUESTS_END_MARKER;
@@ -118,4 +126,16 @@ struct limine_file *limine_get_modules(uint64_t *out_count) {
 
 int limine_base_revision_supported(void) {
     return LIMINE_BASE_REVISION_SUPPORTED(base_revision);
+}
+
+struct limine_mp_info *limine_get_smp_info(uint64_t *out_count,
+                                            uint32_t *out_bsp_lapic_id) {
+    volatile struct limine_mp_response *r = mp_request.response;
+    if (r == NULL || r->cpu_count == 0) {
+        if (out_count) *out_count = 0;
+        return NULL;
+    }
+    if (out_count) *out_count = r->cpu_count;
+    if (out_bsp_lapic_id) *out_bsp_lapic_id = r->bsp_lapic_id;
+    return r->cpus[0];
 }

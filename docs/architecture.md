@@ -28,6 +28,7 @@ kmain (kernel.c)
    ├── paging_self_test() map/unmap test (safe; no deliberate fault)
    ├── kheap_init() + kheap_self_test()  on-demand heap; 10k cycles
    ├── pit_init(100) + timer_self_test()  100 Hz tick; 1s accuracy check
+   ├── smp_init()          wake APs via Limine MP (4 CPUs online)
    ├── sched_init() + scheduler_self_test()  round-robin; 2 interleaving threads
    └── user_mode_self_test()  ELF loader + compiled hello in Ring 3
 

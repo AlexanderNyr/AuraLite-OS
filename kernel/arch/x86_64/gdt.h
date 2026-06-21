@@ -62,5 +62,6 @@ void gdt_set_tss(int index, uint64_t base, uint32_t limit);
 
 /* Encoded by gdt.c for tss.c to reference. */
 extern struct gdt_entry gdt[GDT_NUM_ENTRIES];
+extern struct gdt_ptr   gdtr;
 
 #endif /* AURALITE_ARCH_X86_64_GDT_H */
