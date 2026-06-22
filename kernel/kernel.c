@@ -33,6 +33,8 @@
 #include "drivers/ahci/ahci.h"
 #include "drivers/usb/uhci.h"
 #include "drivers/usb/ohci.h"
+#include "drivers/usb/ehci.h"
+#include "drivers/usb/xhci.h"
 #include "drivers/usb/msc.h"
 #include "drivers/timer/pit.h"
 
@@ -154,7 +156,7 @@ void kmain(void) {
     ahci_init();
     /* Self-test disabled until PxCI write issue is resolved. */
 
-    /* USB UHCI + OHCI drivers. */
+    /* USB UHCI + OHCI + EHCI drivers. */
     kprintf("[boot] initialising USB (UHCI) driver...\n");
     uhci_init();
     uhci_self_test();
@@ -162,6 +164,14 @@ void kmain(void) {
     kprintf("[boot] initialising USB (OHCI) driver...\n");
     ohci_init();
     ohci_self_test();
+
+    kprintf("[boot] initialising USB (EHCI) driver...\n");
+    ehci_init();
+    ehci_self_test();
+
+    kprintf("[boot] initialising USB (xHCI) driver...\n");
+    xhci_init();
+    xhci_self_test();
 
     /* USB Mass Storage. */
     kprintf("[boot] initialising USB Mass Storage...\n");

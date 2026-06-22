@@ -16,6 +16,8 @@
 #include "drivers/usb/msc.h"
 #include "drivers/usb/uhci.h"
 #include "drivers/usb/ohci.h"
+#include "drivers/usb/ehci.h"
+#include "drivers/usb/xhci.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
@@ -145,17 +147,20 @@ static int msc_exec_scsi(const uint8_t *scsi_cmd, uint8_t cmd_len,
 }
 
 int msc_init(void) {
-    /* Check that a UHCI or OHCI controller is present with at least one port. */
+    /* Check that a USB controller is present with at least one port. */
     int ports_uhci = uhci_get_port_count();
     int ports_ohci = ohci_get_port_count();
-    int ports = ports_uhci > ports_ohci ? ports_uhci : ports_ohci;
+    int ports_ehci = ehci_get_port_count();
+    int ports_xhci = xhci_get_port_count();
+    int ports = ports_uhci + ports_ohci + ports_ehci + ports_xhci;
     if (ports == 0) {
         kprintf("[msc] no USB host controller or no ports\n");
         return -1;
     }
 
-    kprintf("[msc] scanning for USB mass storage devices (%d UHCI + %d OHCI ports)...\n",
-            ports_uhci, ports_ohci);
+    kprintf("[msc] scanning for USB mass storage devices "
+            "(UHCI=%d OHCI=%d EHCI=%d xHCI=%d ports)...\n",
+            ports_uhci, ports_ohci, ports_ehci, ports_xhci);
 
     /* In a full implementation, we would:
      * 1. Enumerate all USB devices on each port (SET_ADDRESS, GET_DESCRIPTOR)

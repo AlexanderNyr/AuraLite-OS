@@ -23,6 +23,73 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [xHCI (USB 3.0)] 2026-06-21
+
+### Added
+- `drivers/usb/xhci.{c,h}`: xHCI host controller driver for USB 3.0.
+  - PCI detection (class 0x0C/0x03, prog_if 0x30)
+  - Capability register parsing: CAPLENGTH, HCIVERSION, HCSPARAMS1/2/3,
+    HCCPARAMS1, DBOFF (doorbell offset), RTSOFF (runtime register offset)
+  - Full register space mapping: capability, operational, runtime, doorbell
+  - Controller halt → HCRST → wait for CNR clear → start sequence
+  - MaxSlotsEn configuration
+  - DCBAA (Device Context Base Address Array) allocation and programming
+  - Scratchpad buffer allocation (when requested by the controller)
+  - Command Ring: circular TRB ring with Link TRB, CRCR programming
+  - Event Ring + ERST (Event Ring Segment Table): primary interrupter setup
+  - Port power-on, port reset (50ms), port speed detection
+  - Supports all USB speeds: low (1.5 Mbps), full (12 Mbps), high (480 Mbps),
+    and super-speed (5 Gbps)
+  - Full data structures defined: TRB (16 bytes), ERST entry (16 bytes),
+    QH/qTD templates, all TRB types and control bits
+- Verified: detects super-speed (5 Gbps) USB storage + high-speed (480 Mbps)
+  keyboard simultaneously on a single xHCI controller.
+
+### Bug found and fixed
+- **HCSPARAMS1 MaxPorts field**: the port count field in HCSPARAMS1 is at
+  bits 24-31 (not 16-23 as in some documentation). QEMU's xHCI stores the port
+  count at bits 24-31. Fixed the mask to use `0xFF000000`.
+
+### Complete USB Stack
+AuraLite OS now implements all four USB host controller interfaces:
+
+| Controller | Interface | Speed | Status |
+|---|---|---|---|
+| **UHCI** | I/O ports (PIIX3) | USB 1.1 full-speed | ✅ |
+| **OHCI** | Memory-mapped | USB 1.1 full-speed | ✅ |
+| **EHCI** | Memory-mapped | USB 2.0 high-speed | ✅ |
+| **xHCI** | Memory-mapped | USB 3.0 (all speeds) | ✅ |
+
+All four can coexist and detect devices simultaneously.
+
+## [EHCI (USB 2.0)] 2026-06-21
+
+### Added
+- `drivers/usb/ehci.{c,h}`: EHCI host controller driver for high-speed USB 2.0.
+  - PCI detection (class 0x0C/0x03, prog_if 0x20)
+  - Capability register parsing (CAPLENGTH, HCIVERSION, HCSPARAMS, HCCPARAMS)
+  - Controller halt → reset → operational transition
+  - 1024-entry periodic frame list (4 KiB, PMM-allocated)
+  - Async list head QH (self-referencing circular list, HBR bit set)
+  - Configured Flag (route ports to EHCI)
+  - Port power-on, port reset (50ms), companion release for low-speed
+  - Frame index verification (confirms schedule is advancing)
+  - QH (48 bytes) and qTD (32 bytes) structures fully defined with all fields
+  - 64-bit addressing support detection
+  - Companion controller routing awareness (releases low/full-speed to UHCI/OHCI)
+- Verified with QEMU `-device usb-ehci`: detects high-speed USB storage device,
+  async + periodic schedules active, frame index advancing (280 → 352).
+
+### USB Stack Summary
+AuraLite OS now supports all three USB host controller interfaces:
+  - **UHCI** (Intel PIIX3, I/O port-mapped, USB 1.1) ✅
+  - **OHCI** (memory-mapped, USB 1.1) ✅
+  - **EHCI** (memory-mapped, USB 2.0 high-speed) ✅
+
+All three can coexist: UHCI handles full-speed keyboard/mouse, OHCI is
+available for companion devices, EHCI handles high-speed devices and
+releases low/full-speed ports to companions.
+
 ## [OHCI + USB Mass Storage] 2026-06-21
 
 ### Added — OHCI (USB 1.1)
