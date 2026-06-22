@@ -1,7 +1,10 @@
 # AuraLite OS Virtual Memory Map (x86_64)
 
 The address space is established by Limine at load time and extended by the
-kernel's VMM.
+kernel's VMM. The kernel half is shared into every user process address space;
+user-space PML4 entries are process-local for spawned programs.
+
+For feature-completeness details, see [`status.md`](status.md).
 
 ## Kernel image (higher half)
 
@@ -52,6 +55,10 @@ The ELF loader maps segments at their `p_vaddr` (linked at `0x40000000` via
 `libc/user.ld`). The user stack is mapped just below the 128 TiB canonical
 boundary.
 
+Current caveat: PT_LOAD segments are mapped writable/user-accessible during
+loading, and final segment `p_flags` are not yet enforced as strict R/W/X
+permissions. User pointer validation for syscalls is also future work.
+
 ## Paging (VMM)
 
 The VMM walks the 4-level hierarchy (`PML4 → PDPT → PD → PT`) starting from
@@ -93,11 +100,17 @@ QEMU `-m 512M` reports ~510 MiB `LIMINE_MEMMAP_USABLE`.
 
 ## Device MMIO
 
-The e1000 NIC's BAR0 is mapped explicitly by `e1000_init()`:
+The HHDM covers physical RAM, not arbitrary PCI MMIO windows. Device BARs must
+therefore be explicitly mapped with `paging_map()` before use.
 
-| Region | Physical address      | Size    | Notes                            |
-|--------|-----------------------|---------|----------------------------------|
-| e1000  | `0xFEBC0000`          | 128 KiB | Mapped at `HHDM + phys` via paging |
+Known MMIO users:
 
-TX/RX descriptor rings and packet buffers are allocated from the PMM (physical
-frames) so the NIC can DMA to them. The kernel accesses them through the HHDM.
+| Driver | Region | Typical size | Notes |
+|---|---|---:|---|
+| e1000 | BAR0 | 128 KiB | Register file for Intel 8254x NICs. |
+| AHCI | BAR5 / ABAR | at least 8 KiB in current driver | HBA global + per-port registers. |
+| OHCI/EHCI/xHCI | PCI MMIO BARs | controller-dependent | Used during USB controller bring-up. |
+
+TX/RX descriptor rings, USB transfer descriptors and similar DMA-visible
+structures are allocated from PMM physical frames. The device sees physical
+addresses; the kernel accesses the same memory through `HHDM + phys`.

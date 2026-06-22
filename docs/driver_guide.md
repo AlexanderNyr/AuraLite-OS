@@ -1,130 +1,283 @@
 # AuraLite OS Driver Guide
 
+This guide describes the drivers and low-level protocol layers currently present
+in the tree. Some entries are complete runtime drivers; others are protocol
+frameworks or controller bring-up code intended for later expansion.
+
+See also [`status.md`](status.md) for a feature matrix.
+
 ## Driver inventory
 
-| Driver | Location | Phase | Purpose |
-|--------|----------|-------|---------|
-| UART (16550) | `drivers/uart/` | 1 | COM1 serial console (TX + RX) |
-| Framebuffer | `drivers/framebuffer/fb.c` | 1 | Linear FB text console (8×8 font) |
-| Graphics | `drivers/framebuffer/graphics.c` | 14 | Double-buffered 2D rendering |
-| Keyboard | `drivers/keyboard/` | 14 | PS/2 scan-code set 1 (IRQ 1) |
-| PIT (8254) | `drivers/timer/` | 6 | 100 Hz periodic timer (IRQ 0) |
-| PCI bus | `drivers/pci/` | 13 | Config-space access, device scan |
-| e1000 NIC | `drivers/e1000/` | 13 | Intel 82540EM TX/RX |
+| Area | Location | Status | Purpose |
+|---|---|---:|---|
+| UART 16550 | `drivers/uart/` | ✅ | COM1 serial console and stdin source. |
+| Framebuffer console | `drivers/framebuffer/fb.c` | ✅ | Text output on Limine framebuffer. |
+| 2D graphics | `drivers/framebuffer/graphics.c` | ✅ | Double-buffered pixel/rect/line/text drawing. |
+| Boot splash | `drivers/framebuffer/bootsplash.c` | 🧪 | Animated graphical boot screen helpers. |
+| Window manager | `drivers/framebuffer/wm.c` | ✅/🧪 | Demo compositor, windows, widgets, mouse interaction. |
+| 3D renderer | `drivers/framebuffer/render3d.c` | 🧪 | Software mesh/wireframe/flat-shaded demo. |
+| PS/2 keyboard | `drivers/keyboard/` | ✅ | IRQ 1, scan-code set 1, ASCII ring buffer. |
+| PS/2 mouse | `drivers/mouse/` | ✅ | IRQ 12, 3-byte packet parser, cursor state. |
+| PIT | `drivers/timer/` | ✅ | 100 Hz system tick and sleeps. |
+| PCI | `drivers/pci/` | ✅ | Config-space reads/writes and simple scanning. |
+| e1000 NIC | `drivers/e1000/` | ✅ | Intel 8254x legacy TX/RX rings. |
+| AHCI | `drivers/ahci/` | 🚧 | SATA controller/port setup; sector I/O disabled. |
+| UHCI | `drivers/usb/uhci.c` | ✅/🧪 | USB 1.1 controller + CONTROL/BULK TD/QH transfers. |
+| OHCI | `drivers/usb/ohci.c` | 🚧 | Controller/port bring-up. |
+| EHCI | `drivers/usb/ehci.c` | 🚧 | Controller/port bring-up. |
+| xHCI | `drivers/usb/xhci.c` | 🚧 | Controller/ring scaffolding and port detection. |
+| USB core | `drivers/usb/usb_core.c` | 🧪 | UHCI enumeration + descriptor framework; other backends WIP. |
+| USB MSC | `drivers/usb/msc.c` | 🧪 | Bulk-Only/SCSI read/write path through UHCI. |
+| Bluetooth HCI | `drivers/bluetooth/` | 🚧 | HCI command/event protocol over USB. |
+| Wi-Fi 802.11 | `drivers/wifi/` | 🚧 | MAC management layer; no chipset driver by default. |
 
-## UART (16550)
+## UART
 
-Port-mapped I/O at `0x3F8`. Initialised at 115200 baud (divisor 1).
+Location: `drivers/uart/`
 
-- `uart_putchar(char)` — busy-waits for THRE (transmit holding register empty),
-  then writes to THR.
-- `uart_has_data()` / `uart_getchar()` — poll LSR bit 0 (data ready) and read RBR.
-- Used by `kprintf` for serial output and by the shell's `SYS_READ(fd=0)` for input.
+- Port base: `0x3F8` (COM1).
+- Baud rate: 115200.
+- Used by `kprintf` and as shell stdin via `SYS_READ(fd=0)`.
+- Driver model is polling-based.
 
-## Framebuffer
-
-Limine provides a 32-bpp RGB linear framebuffer. The console driver renders an
-8×8 public-domain bitmap font into it. `kputchar()` fans out to both UART and
-framebuffer.
-
-## Graphics library (Phase 14)
-
-Built on top of the raw framebuffer, adds double-buffering:
-
-- A back buffer is allocated via `kmalloc` (same size as the framebuffer).
-- All drawing operations (`gfx_putpixel`, `gfx_fill_rect`, `gfx_draw_line`,
-  `gfx_draw_string`) write to the back buffer.
-- `gfx_flip()` copies the back buffer to the visible framebuffer with `memcpy`,
-  avoiding tearing during multi-element redraws.
-
-Colour packing: `make_color(rgb)` converts a `0x00RRGGBB` value to the
-framebuffer's actual mask layout (red/green/blue shifts from Limine).
-
-## PS/2 keyboard (Phase 14)
-
-Uses scan-code set 1 (the default). IRQ 1 (vector 33) fires when a byte is
-available at port `0x60`.
-
-- Extended codes (`0xE0` prefix) are tracked.
-- Key-release (high bit set) is ignored.
-- Press events are translated to ASCII via a US QWERTY scancode table and
-  stored in a ring buffer (`keyboard_getchar()`).
-
-## PIT timer (Phase 6)
-
-Channel 0 in mode 3 (square wave), divisor = `1193182 / 100 ≈ 11932`, giving
-~100 Hz. IRQ 0 handler bumps a global tick counter and calls `sched_tick()`
-for preemptive scheduling.
-
-## PCI (Phase 13)
-
-Type-0 configuration access via I/O ports `0xCF8` (address) / `0xCFC` (data):
-
-```
-addr = (1 << 31) | (bus << 16) | (dev << 11) | (func << 8) | (offset & 0xFC)
-```
-
-`pci_find_device(vendor, device, ...)` scans bus 0 for a matching device.
-`pci_enable_bus_master()` sets the command register so the device can DMA.
-
-## e1000 NIC (Phase 13)
-
-The Intel 82540EM is QEMU's default NIC (`-device e1000`).
-
-### MMIO
-
-The NIC's register file is at BAR0 (physical `0xFEBC0000`). Since this is beyond
-the HHDM's RAM range, it is explicitly mapped via `paging_map()`:
+Important functions:
 
 ```c
-for (off = 0; off < 0x20000; off += 0x1000)
-    paging_map(hhdm + mmio_phys + off, mmio_phys + off, RW);
-mmio = (volatile uint32_t *)(hhdm + mmio_phys);
+void uart_init(void);
+void uart_putchar(char c);
+int  uart_has_data(void);
+char uart_getchar(void);
 ```
 
-### Descriptor rings
+## Framebuffer and graphics
 
-Legacy (non-split) TX/RX descriptor rings, each with 8 entries of 16 bytes.
-Both the rings and the packet buffers are allocated from the PMM (physical
-frames) so the NIC can DMA to them. The kernel accesses them through the HHDM.
+Limine provides a linear 32-bpp framebuffer. AuraLite has two layers on top:
 
-Descriptors are declared `volatile` because the NIC writes to them via DMA.
+1. `fb.c` — console text output, used by `kputchar`.
+2. `graphics.c` — double-buffered drawing API for GUI demos.
 
-### RX polling
+The graphics layer allocates a back buffer with `kmalloc` and flips to the
+front buffer using `memcpy`.
 
-The recv function polls the RDH MMIO register (not the descriptor status byte,
-which is unreliable through the HHDM due to DMA ordering):
+Core functions:
 
 ```c
-uint32_t rdh = mmio_read(E1000_RDH);
-if (rdh == last_rdh) return 0;   // no new packet
+void gfx_putpixel(uint32_t x, uint32_t y, color_t color);
+void gfx_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t c);
+void gfx_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t c);
+void gfx_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, color_t c);
+void gfx_draw_string(uint32_t x, uint32_t y, const char *s, color_t c);
+void gfx_flip(void);
 ```
 
-### TX
+Compatibility helpers such as circles, gradients and centred text are provided
+for the boot splash and GUI code.
 
-Copies the packet into a pre-allocated buffer, sets `cmd = 0x0B` (EOP + IFCS +
-RS), writes TDT, and polls the descriptor status for the DD (descriptor done) bit.
+## Keyboard
 
-### MAC address
+Location: `drivers/keyboard/`
 
-Read from the EEPROM (3 × 16-bit words). Falls back to RAL/RAH registers, then
-the QEMU default MAC if both fail.
+- PS/2 keyboard, scan-code set 1.
+- IRQ 1 through the PIC layer.
+- Key releases are ignored.
+- ASCII characters are stored in a ring buffer.
 
-## Network stack (`kernel/net/net.c`)
+Limitations:
 
+- no modifier state for Shift/Ctrl/Alt in the current ASCII map;
+- no keyboard layout switching;
+- no USB HID keyboard input path yet.
+
+## Mouse
+
+Location: `drivers/mouse/`
+
+- PS/2 auxiliary device through the 8042 controller.
+- IRQ 12.
+- Parses 3-byte relative movement packets.
+- Maintains absolute cursor position clamped to framebuffer bounds.
+
+Used by the window-manager demo for focus, dragging and close buttons.
+
+## PIT timer
+
+Location: `drivers/timer/pit.c`
+
+- Uses PIT channel 0 in mode 3.
+- Default frequency: 100 Hz.
+- IRQ 0 increments a global tick counter and drives scheduler preemption.
+
+Future work:
+
+- LAPIC timer per CPU;
+- HPET or TSC-deadline timer for higher precision.
+
+## PCI
+
+Location: `drivers/pci/`
+
+Config access uses I/O ports:
+
+```text
+0xCF8  PCI_CONFIG_ADDR
+0xCFC  PCI_CONFIG_DATA
 ```
-Application: net_ping(target_ip)
-   │
-   ├── ARP: eth_send(broadcast, ARP_REQUEST)
-   │        poll e1000_recv() for ARP_REPLY → cache gateway MAC
-   │
-   ├── Build ICMP echo request (type 8, ident 0x1234, seq 1)
-   ├── Build IPv4 header (version 4, IHL 5, TTL 64, protocol ICMP)
-   │        checksum per RFC 1071
-   ├── Build Ethernet frame (dst=gateway MAC, ethertype 0x0800)
-   ├── e1000_send(frame)
-   │
-   └── Poll e1000_recv() for ICMP_ECHO_REPLY (type 0)
-```
 
-Our IP: `10.0.2.15` (QEMU user-mode default). Gateway: `10.0.2.2`.
+Current scanning is intentionally simple and scans bus 0 only. This is enough
+for the default QEMU/VirtualBox/VMware test VMs, but not for complex PCIe
+hierarchies.
+
+## e1000 networking
+
+Location: `drivers/e1000/`
+
+The driver supports common virtual Intel 8254x adapters:
+
+| Device | PCI ID | Common source |
+|---|---|---|
+| 82540EM | `8086:100e` | QEMU, VirtualBox PRO/1000 MT Desktop |
+| 82545EM | `8086:100f` | VMware e1000, VirtualBox PRO/1000 MT Server |
+| 82543GC | `8086:1004` | VirtualBox PRO/1000 T Server |
+
+Implementation notes:
+
+- legacy TX/RX descriptor rings;
+- descriptor rings and packet buffers are PMM-allocated for DMA;
+- MMIO BAR0 is explicitly mapped because device MMIO is not covered by HHDM;
+- I/O is polling-based;
+- RX polls RDH rather than relying only on descriptor status visibility.
+
+Unsupported virtual NICs:
+
+- virtio-net;
+- VMware vmxnet3;
+- Intel e1000e unless a dedicated compatible path is added;
+- VirtualBox PCnet adapters.
+
+## AHCI
+
+Location: `drivers/ahci/`
+
+Current implemented pieces:
+
+- PCI class-code detection for SATA AHCI;
+- ABAR MMIO mapping;
+- AHCI enable bit;
+- implemented-port scan;
+- SATA signature detection;
+- command list, FIS receive area and command table allocation.
+
+Known issue:
+
+- issuing a command through `PxCI` currently triggers a fault in the known QEMU
+  test path, so the AHCI self-test is disabled.
+
+Do not rely on AHCI sector read/write until this is fixed.
+
+## USB
+
+Locations:
+
+- `drivers/usb/uhci.c`
+- `drivers/usb/ohci.c`
+- `drivers/usb/ehci.c`
+- `drivers/usb/xhci.c`
+- `drivers/usb/usb_core.c`
+- `drivers/usb/msc.c`
+
+### UHCI
+
+UHCI is the first USB path with a working class-driver data path:
+
+- PCI detection;
+- I/O base setup;
+- controller reset/start;
+- frame list allocation;
+- root-port reset/enumeration;
+- TD/QH structures;
+- multi-packet control transfers;
+- bulk transfers with persistent DATA toggle tracking;
+- USB Mass Storage Bulk-Only Transport support.
+
+### OHCI/EHCI/xHCI
+
+These drivers currently provide controller detection, register mapping, basic
+initialisation and port reporting. Their transfer engines are not fully wired to
+`usb_core.c` yet.
+
+### USB core
+
+The core layer contains:
+
+- USB setup packet structures;
+- standard request builders;
+- descriptor structures and parser helpers;
+- global USB device table;
+- class detection for HID/MSC/hub-like devices.
+
+For UHCI ports, `usb_enumerate_all()` now performs the normal standard-device
+sequence: `SET_ADDRESS`, full device descriptor, configuration descriptor parse,
+and `SET_CONFIGURATION`. For OHCI/EHCI/xHCI, attached devices are still recorded
+for diagnostics, but class drivers cannot use them until those controller
+transfer backends are implemented.
+
+### Mass Storage
+
+`msc.c` implements:
+
+- CBW and CSW structures;
+- SCSI INQUIRY, TEST UNIT READY, REQUEST SENSE, READ CAPACITY, READ(10),
+  WRITE(10) builders;
+- Bulk-Only Transport execution over UHCI bulk endpoints;
+- persistent bulk IN/OUT DATA toggle tracking;
+- capacity detection and a sector-0 read self-test;
+- high-level `msc_read` / `msc_write` APIs.
+
+Current limitation: the working MSC backend is UHCI. Mass-storage devices behind
+OHCI/EHCI/xHCI are detected/reported but not usable until those host-controller
+transfer backends are completed.
+
+## Bluetooth HCI
+
+Location: `drivers/bluetooth/`
+
+Implemented protocol pieces:
+
+- HCI command packet builder;
+- HCI event parser basics;
+- Reset, Read BD_ADDR, Read Local Version, Inquiry commands.
+
+Current limitation:
+
+- depends on working USB device enumeration and bulk/control transfers.
+
+## Wi-Fi 802.11
+
+Location: `drivers/wifi/`
+
+Implemented protocol pieces:
+
+- 802.11 frame-control structures;
+- management frame headers;
+- Probe Request construction;
+- Beacon/Probe Response IE parser;
+- open-system authentication and association request construction;
+- Ethernet-to-802.11 data-frame conversion;
+- abstract `wifi_driver_t` callback interface.
+
+Current limitation:
+
+- no actual Intel/Realtek/Atheros chipset driver is registered by default.
+
+## Adding a new driver
+
+Recommended pattern:
+
+1. Put code under `drivers/<name>/`.
+2. Keep hardware register definitions local to the driver `.c` unless shared.
+3. Add a small `<name>_init()` and `<name>_self_test()` if possible.
+4. Use PMM frames for DMA buffers and HHDM pointers for CPU access.
+5. Explicitly map device MMIO with `paging_map`; do not assume HHDM covers MMIO.
+6. Avoid blocking forever on hardware bits; always use timeouts and print useful
+   diagnostics.
+7. Update this guide and `docs/status.md`.

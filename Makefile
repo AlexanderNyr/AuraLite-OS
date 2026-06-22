@@ -41,7 +41,7 @@ KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 
-.PHONY: all kernel iso usb run clean
+.PHONY: all kernel iso usb vbox vmware vm-configs run run-usb-msc clean
 
 all: iso
 
@@ -180,6 +180,17 @@ usb: iso
 	@echo "[usb] Boot: qemu-system-x86_64 -drive file=$(USB_IMAGE),format=raw -m 512M -serial stdio"
 	@echo "[usb] Or write to USB: sudo dd if=$(USB_IMAGE) of=/dev/sdX bs=4M"
 
+# Generate host-VM launcher/configuration files for desktop hypervisors.
+# VirtualBox uses Intel PRO/1000 MT Desktop (82540EM); VMware uses e1000
+# (usually 82545EM). Both IDs are accepted by the kernel e1000 driver.
+vbox: iso
+	@bash tools/mkvbox.sh $(ISO_IMAGE)
+
+vmware: iso
+	@bash tools/mkvmware.sh $(ISO_IMAGE)
+
+vm-configs: vbox vmware
+
 # Build the initrd (USTAR tarball of userspace binaries).
 INITRD_DIR := $(USER_BUILD)/initrd_root
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
@@ -198,6 +209,9 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 
 run: iso
 	@bash tools/run_qemu.sh $(ISO_IMAGE)
+
+run-usb-msc: iso
+	@bash tools/run_qemu_usb_msc.sh $(ISO_IMAGE)
 
 debug: iso
 	@echo "Attach with: gdb $(KERNEL_ELF) -ex 'target remote :1234'"

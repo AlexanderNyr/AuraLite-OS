@@ -27,8 +27,9 @@
 #include "kernel/limine_requests.h"
 
 /* Link to the UHCI transfer layer. */
-extern int uhci_control_transfer(uint8_t dev_addr, int low_speed,
-                                 const void *setup, void *data, uint16_t data_len);
+extern int uhci_control_transfer_ex(uint8_t dev_addr, int low_speed,
+                                    const void *setup, void *data,
+                                    uint16_t data_len, uint8_t max_packet0);
 
 /* Global device table. */
 usb_device_t usb_devices[USB_MAX_DEVICES];
@@ -74,8 +75,9 @@ int usb_control_transfer(usb_device_t *dev, const struct usb_setup_pkt *setup,
 
     switch (dev->controller) {
     case USB_CTRL_UHCI:
-        return uhci_control_transfer(dev->address, low_speed,
-                                     setup, data, data_len);
+        return uhci_control_transfer_ex(dev->address, low_speed,
+                                        setup, data, data_len,
+                                        dev->max_packet_size0);
     case USB_CTRL_OHCI:
         /* OHCI transfer layer uses ED/TD chains (similar to UHCI).
          * Not yet connected — would use ohci_control_transfer(). */
@@ -242,6 +244,10 @@ static int enumerate_device(usb_ctrl_type_t ctrl, int port, usb_speed_t speed) {
         return -1;
     }
     dev->address = addr;
+    /* Give the device a moment to latch the new address. */
+    for (volatile int d = 0; d < 100000; d++) {
+        __asm__ volatile ("pause");
+    }
 
     /* Step 3: Read full device descriptor (18 bytes) at the new address. */
     struct usb_device_desc full_desc;
@@ -265,18 +271,34 @@ static int enumerate_device(usb_ctrl_type_t ctrl, int port, usb_speed_t speed) {
             full_desc.bDeviceClass, class_name(full_desc.bDeviceClass),
             full_desc.bMaxPacketSize0, speed_name(speed));
 
-    /* Step 4: Read configuration descriptor (first 255 bytes). */
+    /* Step 4: Read configuration descriptor. Do it in two phases so the UHCI
+     * control transfer queues exactly the bytes the device will return. A
+     * blanket 255-byte request may short-packet and leave extra IN TDs queued. */
     uint8_t config_buf[256];
-    ret = usb_get_descriptor(dev, USB_DESC_CONFIGURATION, 0, config_buf, 255);
+    memset(config_buf, 0, sizeof(config_buf));
+    ret = usb_get_descriptor(dev, USB_DESC_CONFIGURATION, 0,
+                             config_buf, sizeof(struct usb_config_desc));
     if (ret >= (int)sizeof(struct usb_config_desc)) {
         struct usb_config_desc *cfg = (struct usb_config_desc *)config_buf;
-        kprintf("[usb]   config %d: %d interfaces, %d bytes\n",
-                cfg->bConfigurationValue, cfg->bNumInterfaces, cfg->wTotalLength);
-        parse_config(dev, config_buf, ret);
+        uint16_t total_len = cfg->wTotalLength;
+        if (total_len > sizeof(config_buf)) total_len = sizeof(config_buf);
+        if (total_len < sizeof(struct usb_config_desc)) {
+            total_len = sizeof(struct usb_config_desc);
+        }
+        ret = usb_get_descriptor(dev, USB_DESC_CONFIGURATION, 0,
+                                 config_buf, total_len);
+        if (ret >= (int)sizeof(struct usb_config_desc)) {
+            cfg = (struct usb_config_desc *)config_buf;
+            kprintf("[usb]   config %d: %d interfaces, %d bytes\n",
+                    cfg->bConfigurationValue, cfg->bNumInterfaces, cfg->wTotalLength);
+            parse_config(dev, config_buf, total_len);
+        }
     }
 
     /* Step 5: SET_CONFIGURATION (activate configuration 1). */
-    usb_set_configuration(dev, 1);
+    if (usb_set_configuration(dev, 1) >= 0) {
+        dev->config_value = 1;
+    }
 
     kprintf("[usb] device enumeration complete: addr=%d class=%s\n",
             addr, class_name(dev->interface_class));
@@ -288,100 +310,60 @@ static int enumerate_device(usb_ctrl_type_t ctrl, int port, usb_speed_t speed) {
 int usb_enumerate_all(void) {
     int found = 0;
 
-    /* Collect device info from all controllers. The controller drivers report
-     * ports with devices — we need to enumerate each. */
     kprintf("[usb] enumerating devices across all controllers...\n");
 
-    /* Note: actual enumeration (SET_ADDRESS, GET_DESCRIPTOR) requires the
-     * transfer layer to be functional. For now, we record the ports and
-     * print what was detected by each controller. */
-    int uhci_ports = uhci_get_port_count();
+    /* UHCI is the first controller with a working transfer backend. Perform a
+     * real standard enumeration sequence for each attached UHCI root port. */
+    for (int p = 0; p < UHCI_MAX_PORTS && found < USB_MAX_DEVICES; p++) {
+        if (!uhci_port_has_device(p)) continue;
+        usb_speed_t speed = uhci_port_is_low_speed(p) ? USB_SPEED_LOW : USB_SPEED_FULL;
+        if (enumerate_device(USB_CTRL_UHCI, p, speed) == 0) {
+            found++;
+        } else {
+            kprintf("[usb] UHCI port %d: enumeration failed\n", p);
+        }
+    }
+
+    /* Other host-controller drivers currently expose detection/port bring-up
+     * but do not yet provide usb_control_transfer()/bulk backends. Record the
+     * presence of devices so diagnostics show what the hypervisor exposed, but
+     * leave them unenumerated for class drivers. */
     int ohci_ports = ohci_get_port_count();
     int ehci_ports = ehci_get_port_count();
     int xhci_ports = xhci_get_port_count();
-    int total = uhci_ports + ohci_ports + ehci_ports + xhci_ports;
 
-    kprintf("[usb] UHCI=%d OHCI=%d EHCI=%d xHCI=%d ports = %d total\n",
-            uhci_ports, ohci_ports, ehci_ports, xhci_ports, total);
-
-    /* Enumerate UHCI devices. */
-    for (int p = 0; p < uhci_ports && found < USB_MAX_DEVICES; p++) {
-        int low_speed = uhci_port_is_low_speed(p);
+    for (int p = 0; p < ohci_ports && found < USB_MAX_DEVICES; p++) {
         usb_device_t *dev = alloc_device();
         if (!dev) break;
-        dev->controller = USB_CTRL_UHCI;
+        dev->controller = USB_CTRL_OHCI;
         dev->port = p;
-        dev->speed = low_speed ? USB_SPEED_LOW : USB_SPEED_FULL;
-        dev->max_packet_size0 = low_speed ? 8 : 64;
-
-        uint8_t assigned_addr = dev->address;
-        dev->address = 0;
-
-        /* SET_ADDRESS first. */
-        struct usb_setup_pkt set_addr = {
-            .bmRequestType = 0x00,
-            .bRequest = USB_SET_ADDRESS,
-            .wValue = assigned_addr,
-            .wIndex = 0,
-            .wLength = 0,
-        };
-        int ret = usb_control_transfer(dev, &set_addr, NULL, 0);
-        dev->address = assigned_addr;
-
-        if (ret >= 0) {
-            /* GET_DESCRIPTOR(DEVICE) at new address. */
-            struct usb_device_desc desc;
-            struct usb_setup_pkt get_desc = {
-                .bmRequestType = 0x80,
-                .bRequest = USB_GET_DESCRIPTOR,
-                .wValue = (USB_DESC_DEVICE << 8),
-                .wIndex = 0,
-                .wLength = sizeof(desc),
-            };
-            ret = usb_control_transfer(dev, &get_desc, &desc, sizeof(desc));
-            if (ret >= 0) {
-                dev->vendor_id = desc.idVendor;
-                dev->product_id = desc.idProduct;
-                dev->interface_class = desc.bDeviceClass;
-                dev->max_packet_size0 = desc.bMaxPacketSize0;
-                kprintf("[usb] UHCI port %d: addr=%d VID=0x%04x PID=0x%04x "
-                        "class=0x%02x (%s) %s\n",
-                        p, dev->address, desc.idVendor, desc.idProduct,
-                        desc.bDeviceClass, class_name(desc.bDeviceClass),
-                        low_speed ? "low-speed" : "full-speed");
-            }
-        }
-
-        if (ret < 0) {
-            kprintf("[usb] UHCI port %d: device at addr %d (%s)\n",
-                    p, dev->address, low_speed ? "low-speed" : "full-speed");
-        }
+        dev->speed = USB_SPEED_FULL;
+        kprintf("[usb] OHCI port %d: device present (transfer backend WIP, addr %d)\n",
+                p, dev->address);
+        found++;
+    }
+    for (int p = 0; p < ehci_ports && found < USB_MAX_DEVICES; p++) {
+        usb_device_t *dev = alloc_device();
+        if (!dev) break;
+        dev->controller = USB_CTRL_EHCI;
+        dev->port = p;
+        dev->speed = USB_SPEED_HIGH;
+        kprintf("[usb] EHCI port %d: high-speed device present "
+                "(transfer backend WIP, addr %d)\n", p, dev->address);
+        found++;
+    }
+    for (int p = 0; p < xhci_ports && found < USB_MAX_DEVICES; p++) {
+        usb_device_t *dev = alloc_device();
+        if (!dev) break;
+        dev->controller = USB_CTRL_XHCI;
+        dev->port = p;
+        dev->speed = USB_SPEED_SUPER;
+        kprintf("[usb] xHCI port %d: device present "
+                "(transfer backend WIP, addr %d)\n", p, dev->address);
         found++;
     }
 
-    for (int p = 0; p < ehci_ports && found < USB_MAX_DEVICES; p++, found++) {
-        usb_device_t *dev = alloc_device();
-        if (dev) {
-            dev->controller = USB_CTRL_EHCI;
-            dev->port = p;
-            dev->speed = USB_SPEED_HIGH;
-            kprintf("[usb] EHCI port %d: high-speed device (addr %d)\n",
-                    p, dev->address);
-        }
-    }
-    for (int p = 0; p < xhci_ports && found < USB_MAX_DEVICES; p++, found++) {
-        usb_device_t *dev = alloc_device();
-        if (dev) {
-            dev->controller = USB_CTRL_XHCI;
-            dev->port = p;
-            dev->speed = USB_SPEED_SUPER;
-            kprintf("[usb] xHCI port %d: device (addr %d)\n",
-                    p, dev->address);
-        }
-    }
-
-    kprintf("[usb] %d device(s) recorded (full enumeration needs transfer layer)\n",
-            found);
+    kprintf("[usb] %d device record(s); UHCI devices are fully enumerated\n", found);
     return found;
 }
 
@@ -429,5 +411,5 @@ void usb_core_self_test(void) {
     kprintf("[usb] classes: HID (0x03), MSC (0x08), Hub (0x09)\n");
     kprintf("[usb] devices recorded: %d\n", usb_device_count());
     usb_dump_devices();
-    kprintf("[usb] PASS: enumeration framework ready (transfer layer WIP)\n");
+    kprintf("[usb] PASS: UHCI enumeration ready; OHCI/EHCI/xHCI transfer backends WIP\n");
 }

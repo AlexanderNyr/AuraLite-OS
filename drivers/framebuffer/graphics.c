@@ -124,6 +124,84 @@ void gfx_draw_string(uint32_t x, uint32_t y, const char *s, color_t color) {
     }
 }
 
+void gfx_draw_text(uint32_t x, uint32_t y, const char *s, color_t color) {
+    gfx_draw_string(x, y, s, color);
+}
+
+uint32_t gfx_text_width(const char *s) {
+    uint32_t w = 0;
+    while (s && *s) {
+        if (*s == '\n') break;
+        w += 8;
+        s++;
+    }
+    return w;
+}
+
+void gfx_draw_text_centered(uint32_t y, const char *s, color_t color) {
+    uint32_t tw = gfx_text_width(s);
+    uint32_t x = (tw < fb_width) ? ((fb_width - tw) / 2) : 0;
+    gfx_draw_string(x, y, s, color);
+}
+
+color_t gfx_blend(color_t a, color_t b, uint8_t t) {
+    uint32_t ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+    uint32_t br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+    uint32_t r = (ar * (255u - t) + br * t) / 255u;
+    uint32_t g = (ag * (255u - t) + bg * t) / 255u;
+    uint32_t bl = (ab * (255u - t) + bb * t) / 255u;
+    return (r << 16) | (g << 8) | bl;
+}
+
+void gfx_gradient_v(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    color_t top, color_t bottom) {
+    if (!back_fb || h == 0) return;
+    for (uint32_t row = 0; row < h; row++) {
+        uint8_t t = (h > 1) ? (uint8_t)((row * 255u) / (h - 1u)) : 0;
+        color_t c = gfx_blend(top, bottom, t);
+        gfx_fill_rect(x, y + row, w, 1, c);
+    }
+}
+
+void gfx_draw_circle(uint32_t cx, uint32_t cy, uint32_t r, color_t color) {
+    int32_t x = (int32_t)r;
+    int32_t y = 0;
+    int32_t err = 0;
+    int32_t icx = (int32_t)cx;
+    int32_t icy = (int32_t)cy;
+    while (x >= y) {
+        gfx_putpixel((uint32_t)(icx + x), (uint32_t)(icy + y), color);
+        gfx_putpixel((uint32_t)(icx + y), (uint32_t)(icy + x), color);
+        gfx_putpixel((uint32_t)(icx - y), (uint32_t)(icy + x), color);
+        gfx_putpixel((uint32_t)(icx - x), (uint32_t)(icy + y), color);
+        gfx_putpixel((uint32_t)(icx - x), (uint32_t)(icy - y), color);
+        gfx_putpixel((uint32_t)(icx - y), (uint32_t)(icy - x), color);
+        gfx_putpixel((uint32_t)(icx + y), (uint32_t)(icy - x), color);
+        gfx_putpixel((uint32_t)(icx + x), (uint32_t)(icy - y), color);
+        if (err <= 0) {
+            y++;
+            err += 2 * y + 1;
+        }
+        if (err > 0) {
+            x--;
+            err -= 2 * x + 1;
+        }
+    }
+}
+
+void gfx_fill_circle(uint32_t cx, uint32_t cy, uint32_t r, color_t color) {
+    int32_t rr = (int32_t)r;
+    int32_t icx = (int32_t)cx;
+    int32_t icy = (int32_t)cy;
+    for (int32_t dy = -rr; dy <= rr; dy++) {
+        for (int32_t dx = -rr; dx <= rr; dx++) {
+            if (dx * dx + dy * dy <= rr * rr) {
+                gfx_putpixel((uint32_t)(icx + dx), (uint32_t)(icy + dy), color);
+            }
+        }
+    }
+}
+
 void gfx_flip(void) {
     if (!back_fb || !front_fb) {
         return;

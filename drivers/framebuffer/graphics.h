@@ -41,8 +41,18 @@ void gfx_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t color
 /* Draw a line from (x0,y0) to (x1,y1) using Bresenham's algorithm. */
 void gfx_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, color_t color);
 
-/* Draw a centred string at pixel position (x, y) in `color`. */
+/* Draw a string at pixel position (x, y) in `color`. */
 void gfx_draw_string(uint32_t x, uint32_t y, const char *s, color_t color);
+
+/* Compatibility helpers used by the boot splash / GUI code. */
+void gfx_draw_text(uint32_t x, uint32_t y, const char *s, color_t color);
+void gfx_draw_text_centered(uint32_t y, const char *s, color_t color);
+uint32_t gfx_text_width(const char *s);
+color_t gfx_blend(color_t a, color_t b, uint8_t t);
+void gfx_gradient_v(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    color_t top, color_t bottom);
+void gfx_draw_circle(uint32_t cx, uint32_t cy, uint32_t r, color_t color);
+void gfx_fill_circle(uint32_t cx, uint32_t cy, uint32_t r, color_t color);
 
 /* Flip the back buffer to the front (copy to the visible framebuffer). */
 void gfx_flip(void);

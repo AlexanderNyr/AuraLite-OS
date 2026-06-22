@@ -1,119 +1,168 @@
 # AuraLite OS Syscall ABI
 
-## Convention (Linux-compatible)
+AuraLite uses the x86_64 `SYSCALL`/`SYSRET` mechanism with a Linux-like register
+calling convention. The ABI is intentionally small and currently tailored to the
+init shell, bundled user programs and networking demos.
 
-System calls use the fast `SYSCALL`/`SYSRET` mechanism. Arguments are passed
-in registers:
+## Register convention
 
-| Register | Role                                       |
-|----------|--------------------------------------------|
-| `RAX`    | syscall number (in) / return value (out)   |
-| `RDI`    | arg 1                                      |
-| `RSI`    | arg 2                                      |
-| `RDX`    | arg 3                                      |
-| `R10`    | arg 4                                      |
-| `R8`     | arg 5                                      |
-| `R9`     | arg 6                                      |
-| `RCX`    | destroyed (holds user RIP for SYSRET)      |
-| `R11`    | destroyed (holds user RFLAGS for SYSRET)   |
+| Register | Role |
+|---|---|
+| `RAX` | Syscall number on entry; return value on exit. |
+| `RDI` | Argument 1. |
+| `RSI` | Argument 2. |
+| `RDX` | Argument 3. |
+| `R10` | Argument 4. |
+| `R8` | Argument 5. |
+| `R9` | Argument 6. |
+| `RCX` | Clobbered by CPU; contains user RIP during syscall entry. |
+| `R11` | Clobbered by CPU; contains user RFLAGS during syscall entry. |
 
-Return value: a non-negative value on success; `-1`
-(`0xFFFFFFFFFFFFFFFF`) on error.
+Return convention:
 
-## MSR configuration (set in `syscall_init`)
+- non-negative value: success;
+- `-1` (`0xFFFFFFFFFFFFFFFF`): generic failure.
 
-| MSR      | Value                                              |
-|----------|----------------------------------------------------|
-| `STAR`   | `[47:32]=0x08` (SYSCALL CS), `[63:48]=0x10` (SYSRET base) |
-| `LSTAR`  | full 64-bit address of `syscall_entry`             |
-| `SFMASK` | `0x200` — clears IF on entry                       |
-| `EFER`   | bit 0 (SCE) set to enable SYSCALL/SYSRET           |
+AuraLite does not yet implement `errno`.
 
-### Why STAR[63:48] = 0x10
+## User-space wrapper
 
-SYSRET loads `CS = STAR[63:48] + 0x10` and `SS = STAR[63:48] + 0x08`.
-With `STAR[63:48] = 0x10`:
+`libc/src/syscall.asm` exposes:
 
-- `CS = 0x10 + 0x10 = 0x20 | RPL3 = 0x23` — our user code segment (GDT index 4)
-- `SS = 0x10 + 0x08 = 0x18 | RPL3 = 0x1B` — our user data segment (GDT index 3)
+```c
+int64_t syscall(int64_t num,
+                uint64_t a1, uint64_t a2, uint64_t a3,
+                uint64_t a4, uint64_t a5, uint64_t a6);
+```
 
-This is why the GDT has user **data** at index 3 (0x18) and user **code** at
-index 4 (0x20) — the reverse of the conventional layout. Getting this wrong
-causes a #GP because SYSRET would load SS from a DPL-0 (kernel) segment.
+The wrapper remaps the System V AMD64 C ABI to the syscall ABI:
 
-SYSRET uses the **64-bit operand size** form (`o64 sysret`, opcode `48 0F 07`).
-NASM's plain `sysret` generates `0F 07` (32-bit), which sets `CS = STAR[63:48]`
-*without* the +0x10 offset — producing a wrong selector.
+```text
+C ABI:       rdi=num rsi=a1 rdx=a2 rcx=a3 r8=a4 r9=a5 [rsp+8]=a6
+SYSCALL ABI: rax=num rdi=a1 rsi=a2 rdx=a3 r10=a4 r8=a5 r9=a6
+```
+
+## MSR configuration
+
+Configured by `kernel/arch/x86_64/syscall_entry.asm` through `syscall_init`.
+
+| MSR | Purpose | Value/meaning |
+|---|---|---|
+| `STAR` | Segment selectors | syscall CS base `0x08`, sysret base `0x10`. |
+| `LSTAR` | Kernel syscall RIP | Address of `syscall_entry`. |
+| `SFMASK` | RFLAGS mask | Clears IF (`0x200`) on syscall entry. |
+| `EFER` | Extended features | Sets SCE to enable `SYSCALL`. |
+
+### GDT selector layout for SYSRET
+
+`SYSRET` derives user selectors from `STAR[63:48]`:
+
+```text
+CS = STAR[63:48] + 0x10 | RPL3
+SS = STAR[63:48] + 0x08 | RPL3
+```
+
+AuraLite sets `STAR[63:48] = 0x10`, therefore:
+
+```text
+CS = 0x23  # user code selector
+SS = 0x1B  # user data selector
+```
+
+This is why the GDT stores user data before user code.
+
+`syscall_entry.asm` uses `o64 sysret`, not plain `sysret`, so the 64-bit SYSRET
+selector formula is used.
 
 ## Stack handling
 
-SYSCALL does **not** switch stacks — the handler runs on the user's RSP. This
-is safe because:
+`SYSCALL` does **not** switch stacks. In the current implementation, the syscall
+handler initially runs on the user's `RSP`; `syscall_dispatch()` is called from
+that context.
 
-- The user stack is mapped writable + user-accessible.
-- Timer/IRQ interrupts switch to the TSS.RSP0 kernel stack (a different stack),
-  so there is no conflict.
-- `iretq` from the timer handler restores the user RSP.
+Interrupts use the TSS/RSP0 path when transitioning from Ring 3 to Ring 0, so
+timer IRQs and exceptions do not reuse the user stack in the same way.
 
-The dispatch function (`syscall_dispatch`) runs on the user stack directly.
-RCX/R11 (user RIP/RFLAGS) are saved to global variables before the C call and
-restored before SYSRET.
+Current caveats:
 
-## Implemented syscalls
+- saved `RCX`, `R11` and user `RSP` are stored in globals, so this path is not
+  suitable for true SMP syscall concurrency yet;
+- user pointers are not validated before the kernel dereferences them;
+- blocking syscalls are mostly polling/spin-based.
 
-| Number | Name       | Signature                                   | Notes                              |
-|--------|------------|---------------------------------------------|------------------------------------|
-| 0      | `read`     | `read(fd, buf, count)` → `ssize_t`          | fd=0: serial line input (polling UART with sched_yield, CR→LF, echo). fd≥3: VFS read. |
-| 1      | `write`    | `write(fd, buf, count)` → `ssize_t`         | fd=1 (stdout) and fd=2 (stderr)    |
-| 2      | `open`     | `open(path)` → `int`                        | Opens a file from the VFS          |
-| 3      | `close`    | `close(fd)` → `int`                         | Closes a file descriptor           |
-| 39     | `getpid`   | `getpid()` → `pid_t`                        | Returns the current thread ID      |
-| 57     | `fork`     | `fork()` → `pid_t`                          | Clone address space + TCB          |
-| 59     | `execve`   | `execve(path)` → `int`                      | Replace address space with new ELF |
-| 60     | `exit`     | `exit(code)` → `noreturn`                   | Terminates the calling thread      |
-| 61     | `wait4`    | `wait4(status)` → `pid_t`                   | Wait for a child to exit           |
-| 80     | `listdir`  | `listdir(path)`                             | Non-standard: lists a directory    |
-| 81     | `spawn`    | `spawn(path)` → `pid_t`                     | Non-standard: new process + address space |
-| 82     | `dns`      | `dns_resolve(hostname)` → `uint32_t`        | Non-standard: DNS A-record lookup  |
+## Syscall table
 
-## User-space libc interface
+| Number | Name | Prototype | Status | Notes |
+|---:|---|---|---|---|
+| 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads from serial stdin; `fd>=3` reads VFS files. |
+| 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1` stdout and `fd=2` stderr. |
+| 2 | `open` | `open(path)` | ✅ | Opens VFS path and returns global FD. |
+| 3 | `close` | `close(fd)` | ✅ | Closes global FD. |
+| 39 | `getpid` | `getpid()` | ✅ | Returns current TCB ID. |
+| 57 | `fork` | `fork()` | 🧪 | Deep-copies user address space; simplified semantics. |
+| 59 | `execve` | `execve(path)` | 🧪 | Replaces current address space with a new ELF. No argv/envp. |
+| 60 | `exit` | `exit(code)` | ✅/🧪 | Terminates current thread; exit code handling is incomplete. |
+| 61 | `wait4` | `wait4(status)` | 🧪 | Yield-polling wait; not POSIX-complete. |
+| 80 | `listdir` | `listdir(path)` | 🧪 | Non-standard; currently prints through kernel/VFS path. |
+| 81 | `spawn` | `spawn(path)` | 🧪 | Non-standard; creates process and loads ELF from VFS. |
+| 82 | `dns` | `dns_resolve(hostname)` | 🧪 | Returns IPv4 A record in host-order integer form. |
+| 83 | `net_connect` | `net_connect(ip, port)` | 🧪 | Opens the single global TCP client connection. |
+| 84 | `net_send` | `net_send(buf, len)` | 🧪 | Sends on global TCP connection. |
+| 85 | `net_recv` | `net_recv(buf, len)` | 🧪 | Polling receive on global TCP connection. |
+| 86 | `net_close` | `net_close()` | 🧪 | Closes global TCP connection. |
+| 87 | `net_ping` | `net_ping(ip)` | 🧪 | ICMP echo via kernel networking stack. |
 
-User programs link against the minimal libc (`libc/`) which provides:
+## libc wrappers
 
-- **`libc/src/syscall.asm`** — generic `syscall(num, a1..a6)` wrapper that
-  remaps the C ABI (rdi, rsi, rdx, rcx, r8, r9) to the SYSCALL ABI
-  (rax, rdi, rsi, rdx, r10, r8, r9).
-- **`libc/src/libc.c`** — POSIX-style wrappers (`write`, `read`, `open`,
-  `close`, `_exit`, `getpid`, `listdir`) plus string functions (`strlen`,
-  `strcmp`, `strtok`, `strcpy`, `memset`, `memcpy`, `memcmp`) and `printf`.
-- **`libc/crt/crt0.asm`** — `_start` entry: clears RBP, calls `main`, calls
-  `_exit` with the return value.
+Defined in `libc/include/unistd.h` and implemented in `libc/src/libc.c`:
 
-## Syscall entry code path
-
+```c
+ssize_t write(int fd, const void *buf, size_t count);
+ssize_t read(int fd, void *buf, size_t count);
+int     open(const char *path);
+int     close(int fd);
+void    _exit(int code);
+pid_t   getpid(void);
+pid_t   fork(void);
+int     execve(const char *path);
+pid_t   wait(int *status);
+pid_t   spawn(const char *path);
+void    listdir(const char *path);
+uint32_t dns_resolve(const char *hostname);
+int     net_connect(uint32_t ip, uint16_t port);
+int     net_send(const void *data, uint32_t len);
+int     net_recv(void *buf, uint32_t bufsize);
+int     net_close(void);
+int     net_ping(uint32_t ip);
 ```
-user:  mov rax, num; mov rdi..r9, args; syscall
-            │
-            ▼  (CPU: CS←0x08, SS←0x10, RIP←LSTAR, RFLAGS←(R11 & ~SFMASK))
-kernel: syscall_entry (syscall_entry.asm)
-            │  save RCX, R11
-            │  push rdi/rsi/rdx ; remap to C ABI (rdi=num, rsi=a1, rdx=a2, rcx=a3)
-            │  call syscall_dispatch
-            │  add rsp, 24
-            │  restore RCX, R11
-            │  o64 sysret
-            ▼
-user:  RAX = return value
-```
 
-## Planned syscalls (not yet implemented)
+## File descriptor model
 
-| Number | Name     | Purpose                          |
-|--------|----------|----------------------------------|
-| 9      | `mmap`   | Map memory into user space       |
-| 11     | `munmap` | Unmap memory                     |
-| 12     | `brk`    | Adjust program break             |
-| 57     | `fork`   | Fork the process (needs COW)     |
-| 59     | `execve` | Execute a new program            |
-| 61     | `wait4`  | Wait for a child process         |
-| 22     | `pipe`   | Create a pipe                    |
+File descriptors are currently global kernel objects, not per-process objects.
+This means:
+
+- unrelated processes share the same FD namespace;
+- there is no `dup`, `pipe`, close-on-exec or per-process descriptor lifetime;
+- future work should move the FD table into a process structure.
+
+## Planned or missing syscalls
+
+| Name | Purpose |
+|---|---|
+| `mmap`, `munmap` | User memory mappings. |
+| `brk` | User heap growth. |
+| `pipe` | IPC pipe. |
+| `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv` | BSD-style socket API. |
+| `readdir` | Structured directory iteration. |
+| `stat` | File metadata. |
+| `nanosleep` / `clock_gettime` | Time APIs. |
+
+## Security / robustness TODOs
+
+Before treating the syscall layer as robust, add:
+
+1. canonical-address checks for all user pointers;
+2. page-table permission checks before copying to/from user buffers;
+3. `copy_from_user` / `copy_to_user` helpers;
+4. per-process syscall state instead of global saved `RCX/R11/RSP`;
+5. structured error codes (`errno`-style or negative error numbers).

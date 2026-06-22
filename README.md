@@ -1,163 +1,282 @@
 # AuraLite OS
 
-A from-scratch x86_64 operating system — bootable from a Limine BIOS ISO, with
-preemptive multitasking, a Ring 3 user mode, a virtual file system, an
-interactive shell, symmetric multi-processing, TCP/IP networking, and a
-double-buffered framebuffer GUI. Built one phase at a time, every component
-verified in QEMU.
+AuraLite OS is a from-scratch **x86_64 hobby operating system** booted by
+Limine. It includes a higher-half kernel, preemptive multitasking, Ring 3 user
+programs, a small libc, an initrd-backed VFS, networking, framebuffer graphics,
+a window-manager demo, and several experimental device/protocol layers.
 
-> **Status: All 14 phases complete and QEMU-verified.**
-> See [PLAN.md](PLAN.md) for the full milestone history.
+The project is intentionally incremental and educational: most subsystems have
+small self-tests, host-side unit tests, and documentation explaining the design
+trade-offs.
 
 ---
 
-## What boots right now
+## Current status
 
-```
-Limine v12.3.3 → 64-bit long mode, higher-half kernel
-  ├── GDT (kernel/user segments + TSS)
-  ├── IDT (256 gates, exception dump + stack trace)
-  ├── PIC (8259A, IRQ remap)
-  ├── UART (COM1, 115200 baud)
-  ├── Framebuffer console (8×8 font on linear FB)
-  ├── PMM (bitmap, ~510 MiB managed)
-  ├── VMM (4-level paging, NX enabled)
-  ├── Kernel heap (first-fit, boundary-tag coalescing)
-  ├── Timer (8254 PIT, 100 Hz tick)
-  ├── Scheduler (preemptive round-robin, context_switch)
-  ├── SMP (4 CPUs via Limine MP)
-  ├── VFS (USTAR initrd at /, devfs at /dev)
-  ├── Networking (e1000 NIC, ARP/IPv4/ICMP)
-  ├── Graphics (double-buffered 2D + PS/2 keyboard)
-  └── Interactive shell in Ring 3 (ls, cat, echo, help, ...)
-```
+The original 14-phase roadmap is complete, and the repository now contains
+additional post-phase extensions.
+
+### Stable / exercised in normal builds
+
+- Limine BIOS/UEFI ISO boot path.
+- x86_64 long mode, higher-half kernel.
+- GDT, IDT, PIC IRQ dispatch, TSS, SYSCALL/SYSRET.
+- Physical memory manager, virtual memory manager, kernel heap.
+- Preemptive round-robin scheduler and kernel threads.
+- Ring 3 ELF loading and minimal libc.
+- Initrd + VFS + `/dev/null` and `/dev/zero`.
+- e1000 networking with ARP, IPv4, ICMP, DHCP, UDP DNS and minimal TCP client.
+- Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo.
+- Host-side unit tests for core algorithms and protocol helpers.
+
+### Experimental / partial
+
+- Per-process address spaces, `spawn`, `fork`, `execve`, `wait4` are present but
+  simplified.
+- USB host-controller support is uneven: UHCI has working control/bulk
+  transfers and can drive USB Mass Storage; OHCI, EHCI and xHCI currently focus
+  on controller/port bring-up and detection.
+- USB Mass Storage is ready through the UHCI backend. MSC behind OHCI/EHCI/xHCI
+  remains future work.
+- AHCI detects and initialises ports, but sector I/O is disabled because PxCI
+  command issue currently faults under the known test setup.
+- Bluetooth HCI and Wi-Fi 802.11 layers are protocol frameworks that require
+  working lower-level USB/chipset drivers.
+
+See [`docs/status.md`](docs/status.md) for a detailed support matrix.
+
+---
 
 ## Quickstart
 
+### Install dependencies
+
+Debian/Ubuntu:
+
 ```bash
-sudo apt install clang lld nasm qemu-system-x86 xorriso   # Debian/Ubuntu
-make iso      # build kernel + user programs + bootable ISO
-make run      # boot in QEMU with 4 CPUs + e1000 networking
-make test-unit  # run host-side unit tests (PMM bitmap, heap allocator)
+sudo apt update
+sudo apt install clang lld nasm qemu-system-x86 xorriso
 ```
 
-Expected serial output (abridged — see [PLAN.md](PLAN.md) for full trace):
+### Build the bootable ISO
 
-```
-[boot] GDT loaded (kernel + user segments + TSS)
-[boot] SYSCALL/SYSRET configured
-[smp] all 4 CPUs online
-[pmm] PASS: 1000 unique frames, no leak, contiguous alloc OK
-[vmm] PASS: map / read / write / unmap all correct
-[heap] PASS: 10000 cycles, no corruption, no leak, realloc OK
-[timer] PASS: 99 ticks in 1s (100% of 99 Hz)
-[sched] PASS: two threads interleaved correctly
-[vfs] PASS: VFS layer functional
-[net] PASS: ping 10.0.2.2 successful (ICMP echo reply received)
-[gfx] framebuffer GUI rendered (double-buffered flip)
-
-==============================================
-   AuraLite OS v0.1.0 — Interactive Shell
-==============================================
-auralite# ls
-  /init  (10240 bytes)
-  /hello  (8608 bytes)
-auralite# echo hello_world
-hello_world
-auralite# exit
-Goodbye!
+```bash
+make iso
 ```
 
-## Toolchain
+Output:
 
-| Component  | Version                          |
-|------------|----------------------------------|
-| Compiler   | Clang 19 (`--target=x86_64-elf`) |
-| Linker     | LLD 19 (`ld.lld`)                |
-| Assembler  | NASM 2.16                         |
-| Emulator   | QEMU 10                           |
-| Bootloader | Limine 12.3.3 (vendored binary)  |
-| ISO tool   | xorriso                           |
+```text
+build/auralite.iso
+```
+
+A convenience copy may also be placed at:
+
+```text
+auralite.iso
+```
+
+### Run in QEMU
+
+```bash
+make run
+```
+
+Manual equivalent:
+
+```bash
+qemu-system-x86_64 \
+  -cdrom build/auralite.iso \
+  -m 512M \
+  -smp 4 \
+  -vga std \
+  -display none \
+  -serial stdio \
+  -no-reboot \
+  -cpu qemu64 \
+  -netdev user,id=net0 \
+  -device e1000,netdev=net0
+```
+
+> Note: `tools/run_qemu.sh` also attaches an AHCI test disk. If you use it
+> directly and `build/disk.img` does not exist, create one first or use the
+> simpler command above.
+
+### Run unit tests
+
+```bash
+make test-unit
+```
+
+---
+
+## VirtualBox and VMware
+
+AuraLite can boot in desktop hypervisors as long as the virtual hardware matches
+currently implemented drivers.
+
+### VirtualBox
+
+```bash
+make vbox
+```
+
+If `VBoxManage` is installed, this creates/updates a VM named `AuraLite-OS`.
+Otherwise it writes manual setup notes to:
+
+```text
+vm/virtualbox/README-VirtualBox.txt
+```
+
+Recommended NIC: **Intel PRO/1000 MT Desktop (82540EM)**.
+
+### VMware Workstation / Fusion / Player
+
+```bash
+make vmware
+```
+
+Open:
+
+```text
+vm/vmware/AuraLite-OS.vmwarevm/AuraLite-OS.vmx
+```
+
+Recommended NIC: **legacy `e1000`**, not `vmxnet3` or `e1000e`.
+
+More details: [`docs/virtual_machines.md`](docs/virtual_machines.md).
+
+---
 
 ## Make targets
 
-| Target          | Action                                                      |
-|-----------------|-------------------------------------------------------------|
-| `make iso`      | Build user ELFs + initrd + kernel + bootable `build/auralite.iso` |
-| `make usb`      | Create bootable USB image (`build/usb.img`) — `dd` to a real USB stick |
-| `make kernel`   | Compile + link `build/kernel.elf` only                      |
-| `make user`     | Build user-space programs (`init.elf`, `hello.elf`)         |
-| `make run`      | Boot in QEMU (`-smp 4`, e1000, serial stdio)                |
-| `make debug`    | Boot paused, waiting for GDB on `localhost:1234`            |
-| `make test-unit`| Build + run host-side unit tests (PMM, heap)                |
-| `make clean`    | Remove `build/`                                             |
+| Target | Description |
+|---|---|
+| `make iso` | Build user programs, initrd, kernel and bootable `build/auralite.iso`. |
+| `make kernel` | Build `build/kernel.elf` only. |
+| `make user` | Build user-space ELF programs. |
+| `make run` | Boot the ISO in QEMU with serial output and e1000 networking. |
+| `make run-usb-msc` | Boot QEMU with a UHCI USB mass-storage test disk attached. |
+| `make debug` | Boot QEMU paused and wait for GDB on port `1234`. |
+| `make usb` | Copy the hybrid ISO to `build/usb.img` for USB/HDD-style booting. |
+| `make vbox` | Build ISO and create/update VirtualBox configuration. |
+| `make vmware` | Build ISO and generate a VMware `.vmx`. |
+| `make vm-configs` | Generate both VirtualBox and VMware configs. |
+| `make test-unit` | Build and run host-side unit tests. |
+| `make clean` | Remove `build/`. |
 
-## Project layout
+---
 
-```
-auralite/
-├── kernel/
-│   ├── arch/x86_64/         # boot.asm, GDT, IDT, ISR, PIC, paging, TSS,
-│   │                        #   SYSCALL/SYSRET, SMP, CPU, port I/O
-│   ├── mm/                  # PMM (bitmap), heap (first-fit), kheap wrapper
-│   ├── proc/                # scheduler, threads, context_switch, ELF loader,
-│   │                        #   user-mode entry (iretq to Ring 3)
-│   ├── fs/                  # VFS, USTAR initrd, devfs (/dev/null, /dev/zero)
-│   ├── net/                 # Ethernet, ARP, IPv4, ICMP, UDP, DNS, TCP, DHCP
-│   ├── lib/                 # kprintf, string, bitmap, spinlock, assert
-│   ├── limine_requests.{c,h}# Limine boot-protocol bridge
-│   └── kernel.{c,h}         # kmain() — orchestrates all subsystems
+## Repository layout
+
+```text
+AuraLite-OS/
+├── boot/limine/              # Limine boot configs
+├── docs/                     # Architecture, ABI, drivers, VM setup, status
 ├── drivers/
-│   ├── uart/                # 16550 COM1 serial (TX + RX)
-│   ├── framebuffer/         # linear FB console, PSF 8×16 font, 2D graphics, 3D renderer, window manager
-│   ├── keyboard/            # PS/2 keyboard (scan-code set 1, IRQ 1)
-│   ├── mouse/               # PS/2 mouse (8042 aux, IRQ 12)
-│   ├── timer/               # 8254 PIT (100 Hz)
-│   ├── usb/                # UHCI + OHCI + EHCI + xHCI (USB 1.1/2.0/3.0), Mass Storage
-│   └── e1000/               # Intel 82540EM NIC (MMIO, TX/RX descriptor rings)
-├── libc/                    # user-space libc (crt0, syscall wrappers, printf, string)
-├── userspace/
-│   ├── init/                # interactive shell (built-in commands)
-│   ├── hello/               # simple test program
-│   ├── calc/                # calculator (recursive-descent expression parser)
-│   ├── sysinfo/             # system information display
-│   ├── editor/              # line-based text editor
-│   ├── clock/               # clock/uptime display
-│   ├── guess/               # number guessing game
-│   ├── snake/               # terminal snake game
-│   ├── http/                # HTTP client
-│   └── browser/             # web browser (fetch + render HTML)
-├── tests/unit/              # host-side unit tests (PMM bitmap, heap allocator)
-├── tools/                   # ISO build, QEMU launch, initrd, binary embedding,
-│                            #   framebuffer screenshot + analysis
-├── scripts/                 # CI integration gate
-├── docs/                    # architecture, memory map, syscall ABI, driver guide
-├── boot/limine/limine.conf  # Limine boot configuration
-├── kernel.ld                # higher-half linker script
-├── libc/user.ld             # user-space linker script (0x40000000)
-├── Makefile                 # Clang/LLD/NASM build system
-└── limine/                  # vendored Limine 12.3.3 (binary + limine.h)
+│   ├── ahci/                 # AHCI SATA controller/port bring-up, I/O WIP
+│   ├── bluetooth/            # Bluetooth HCI protocol layer
+│   ├── e1000/                # Intel 8254x/e1000 NIC driver
+│   ├── framebuffer/          # Console, 2D graphics, PSF font, WM, 3D demo
+│   ├── keyboard/             # PS/2 keyboard
+│   ├── mouse/                # PS/2 mouse
+│   ├── pci/                  # PCI config-space access
+│   ├── timer/                # PIT timer
+│   ├── uart/                 # COM1 serial
+│   ├── usb/                  # UHCI/OHCI/EHCI/xHCI + USB core + MSC layer
+│   └── wifi/                 # 802.11 MAC management layer
+├── kernel/
+│   ├── arch/x86_64/          # CPU, GDT, IDT, IRQ, paging, syscall, SMP, TSS
+│   ├── fs/                   # VFS, initrd, devfs
+│   ├── lib/                  # kprintf, string, bitmap, spinlock, assert
+│   ├── mm/                   # PMM, heap core, kernel heap wrapper
+│   ├── net/                  # Ethernet/ARP/IPv4/ICMP/UDP/DNS/TCP
+│   ├── proc/                 # Threads, scheduler, ELF loader, processes
+│   └── kernel.c              # kmain() orchestration
+├── libc/                     # Minimal user-space libc and crt0
+├── limine/                   # Vendored Limine binaries and header
+├── scripts/                  # CI/integration helper
+├── tests/unit/               # Host-side unit tests
+├── tools/                    # ISO/initrd/VM/QEMU helper scripts
+├── userspace/                # init shell and user programs
+├── kernel.ld                 # Kernel linker script
+├── Makefile                  # Build system
+└── README.md
 ```
 
-## Architecture notes
+---
 
-- **Limine** over GRUB/multiboot2: drops us into long mode, higher-half, with
-  a memory map, HHDM, framebuffer, and module (initrd) — minimal boot assembly.
-- **Framebuffer** over VGA text mode: Limine programs a VBE graphics mode, so we
-  render to the linear framebuffer with an embedded font. Phase 14 adds a
-  double-buffered 2D graphics layer.
-- **Segment permissions**: Limine refuses to map two PT_LOAD segments of
-  differing permissions onto the same page. `kernel.ld` page-aligns every
-  segment boundary and keeps the Limine request structs inside the writable
-  `.data` segment.
-- **SYSCALL/SYSRET**: The GDT has user data at index 3 and user code at index 4
-  (swapped order) so that SYSRET's formula `CS=base+0x10`, `SS=base+0x08`
-  produces correct DPL-3 selectors with `STAR[63:48]=0x10`.
-- **DMA addresses**: the e1000 NIC requires physical addresses for its TX/RX
-  descriptor rings and packet buffers. These are allocated from the PMM and
-  accessed through the HHDM.
+## User-space programs
 
-See [docs/architecture.md](docs/architecture.md),
-[docs/memory_map.md](docs/memory_map.md),
-[docs/syscall_abi.md](docs/syscall_abi.md), and
-[docs/driver_guide.md](docs/driver_guide.md) for details.
+The initrd currently packages:
+
+| Path | Purpose |
+|---|---|
+| `/init` | Interactive shell. |
+| `/hello` | Hello-world test program. |
+| `/calc` | Calculator. |
+| `/sysinfo` | System information. |
+| `/editor` | Simple line editor. |
+| `/clock` | Clock/uptime demo. |
+| `/guess` | Number guessing game. |
+| `/snake` | Terminal snake game. |
+| `/http` | HTTP client. |
+| `/browser` | Text web browser with simple HTML rendering. |
+
+Common shell commands:
+
+```text
+help
+ls /
+cat /hello
+echo hello
+run /calc
+run /sysinfo
+nslookup example.com
+ping example.com
+exit
+```
+
+---
+
+## Documentation map
+
+Start here:
+
+- [`docs/README.md`](docs/README.md) — documentation index.
+- [`docs/build_and_run.md`](docs/build_and_run.md) — build/run/troubleshooting.
+- [`docs/status.md`](docs/status.md) — current feature and limitation matrix.
+- [`docs/architecture.md`](docs/architecture.md) — kernel architecture.
+- [`docs/memory_map.md`](docs/memory_map.md) — virtual/physical memory layout.
+- [`docs/syscall_abi.md`](docs/syscall_abi.md) — syscall ABI and numbers.
+- [`docs/driver_guide.md`](docs/driver_guide.md) — driver inventory and notes.
+- [`docs/virtual_machines.md`](docs/virtual_machines.md) — VirtualBox/VMware setup.
+- [`PLAN.md`](PLAN.md) — historical phase plan.
+- [`TODO.md`](TODO.md) — known limitations and future work.
+- [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
+
+---
+
+## Known limitations
+
+Short version:
+
+- AHCI sector read/write is not enabled.
+- USB Mass Storage transport is incomplete.
+- Scheduler is not SMP-safe; APs are brought online but not used for general
+  scheduling.
+- File descriptors are global, not per-process.
+- User pointers passed to syscalls are not yet validated.
+- `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
+- Networking is polling-based and TCP supports one client connection at a time.
+- There is no persistent writable filesystem yet.
+
+See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
+
+---
+
+## License notes
+
+This repository vendors Limine binaries and `limine.h`; see `limine/LICENSE` for
+Limine licensing. Font assets and third-party snippets are documented in their
+respective source files where applicable.

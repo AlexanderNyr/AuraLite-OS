@@ -113,14 +113,46 @@ static uint16_t eeprom_read(uint8_t word) {
     return (uint16_t)(mmio_read(E1000_EERD) >> 16);
 }
 
+static const char *e1000_device_name(uint16_t device_id) {
+    switch (device_id) {
+    case E1000_DEVICE_82540EM: return "82540EM / PRO/1000 MT Desktop";
+    case E1000_DEVICE_82545EM: return "82545EM / PRO/1000 MT Server";
+    case E1000_DEVICE_82543GC: return "82543GC / PRO/1000 T Server";
+    default:                  return "unknown e1000-compatible";
+    }
+}
+
+static int e1000_find_supported_device(uint8_t *out_bus, uint8_t *out_dev,
+                                       uint8_t *out_func, uint16_t *out_id) {
+    static const uint16_t supported[] = {
+        E1000_DEVICE_82540EM,  /* QEMU + VirtualBox default recommendation */
+        E1000_DEVICE_82545EM,  /* VMware e1000 + VirtualBox server adapter */
+        E1000_DEVICE_82543GC,  /* VirtualBox T Server adapter */
+    };
+
+    for (uint32_t i = 0; i < sizeof(supported) / sizeof(supported[0]); i++) {
+        if (pci_find_device(E1000_VENDOR_ID, supported[i],
+                            out_bus, out_dev, out_func) == 0) {
+            if (out_id) *out_id = supported[i];
+            return 0;
+        }
+    }
+    return -1;
+}
+
 int e1000_init(void) {
-    /* 1) Find the e1000 on the PCI bus. */
-    if (pci_find_device(E1000_VENDOR_ID, E1000_DEVICE_ID,
-                        &pci_bus, &pci_dev, &pci_func) != 0) {
-        kprintf("[e1000] NIC not found on PCI bus\n");
+    /* 1) Find an e1000-compatible NIC on the PCI bus. QEMU, VirtualBox and
+     * VMware expose slightly different 8254x device IDs, so accept the common
+     * legacy variants instead of only QEMU's 82540EM (0x100E). */
+    uint16_t device_id = 0;
+    if (e1000_find_supported_device(&pci_bus, &pci_dev, &pci_func,
+                                    &device_id) != 0) {
+        kprintf("[e1000] NIC not found on PCI bus "
+                "(supported: 82540EM/82545EM/82543GC)\n");
         return -1;
     }
-    kprintf("[e1000] found at PCI %u:%u.%u\n",
+    kprintf("[e1000] found %s (0x%04x) at PCI %u:%u.%u\n",
+            e1000_device_name(device_id), device_id,
             pci_bus, pci_dev, pci_func);
 
     /* 2) Enable bus mastering + memory space. */

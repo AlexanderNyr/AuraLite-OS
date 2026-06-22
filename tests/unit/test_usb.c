@@ -57,6 +57,17 @@ static uint32_t make_token(uint8_t pid, uint8_t addr, uint8_t ep, int dt, uint32
     return t;
 }
 
+/* ---- SCSI helpers ---- */
+static uint32_t be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static int advance_toggle(int start, uint32_t len, uint32_t max_packet) {
+    uint32_t packets = (len + max_packet - 1) / max_packet;
+    return (start ^ (int)(packets & 1));
+}
+
 /* ---- SCSI READ(10) builder ---- */
 static void scsi_read10(uint8_t *c, uint32_t lba, uint16_t cnt) {
     memset(c,0,10);
@@ -187,6 +198,17 @@ void t_scsi_read10_lba0(void){
     uint8_t c[10]; scsi_read10(c,0,1);
     for(int i=2;i<6;i++) CHECK_EQ(c[i],0);
 }
+void t_read_capacity_parse(void){
+    uint8_t cap[8]={0x00,0x00,0x7F,0xFF, 0x00,0x00,0x02,0x00};
+    CHECK_EQ(be32(cap), 32767);
+    CHECK_EQ(be32(cap+4), 512);
+}
+void t_bulk_toggle_31(void){
+    CHECK_EQ(advance_toggle(0,31,64), 1); /* CBW: one OUT packet */
+}
+void t_bulk_toggle_512(void){
+    CHECK_EQ(advance_toggle(0,512,64), 0); /* sector: eight packets */
+}
 
 /* Device descriptor field offsets */
 void t_dev_desc_offsets(void){
@@ -231,6 +253,10 @@ int main(void){
 
     printf("--- SCSI ---\n");
     RUN(t_scsi_read10_lba);RUN(t_scsi_read10_count);RUN(t_scsi_read10_lba0);
+    RUN(t_read_capacity_parse);
+
+    printf("--- bulk toggles ---\n");
+    RUN(t_bulk_toggle_31);RUN(t_bulk_toggle_512);
 
     printf("--- descriptors ---\n");
     RUN(t_dev_desc_offsets);RUN(t_endpoint_addr_in);RUN(t_endpoint_addr_out);

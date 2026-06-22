@@ -42,6 +42,13 @@ int uhci_port_is_low_speed(int port);
 int uhci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data, uint16_t data_len);
 
+/* Same as uhci_control_transfer(), but lets USB core provide endpoint 0's
+ * discovered max packet size. This is required for devices whose EP0 max packet
+ * is 8/16/32 rather than 64 bytes. */
+int uhci_control_transfer_ex(uint8_t dev_addr, int low_speed,
+                             const void *setup, void *data, uint16_t data_len,
+                             uint8_t max_packet0);
+
 /*
  * Execute a USB bulk transfer via UHCI.
  *
@@ -53,6 +60,12 @@ int uhci_control_transfer(uint8_t dev_addr, int low_speed,
  */
 int uhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len);
+
+/* Bulk transfer with explicit DATA toggle tracking. `*toggle_io` is the DATA
+ * toggle to use for the first packet and is advanced for each packet queued.
+ * Class drivers with persistent endpoints (MSC, HID) should use this form. */
+int uhci_bulk_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
+                          void *data, uint32_t len, int *toggle_io);
 
 /* Gate self-test: reset, detect ports, report device count. */
 void uhci_self_test(void);

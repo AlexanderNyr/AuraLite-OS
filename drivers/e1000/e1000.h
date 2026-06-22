@@ -11,7 +11,20 @@
  */
 
 #define E1000_VENDOR_ID  0x8086
-#define E1000_DEVICE_ID  0x100E
+
+/* Intel e1000 variants commonly exposed by emulators/hypervisors:
+ *   0x100E — 82540EM  (QEMU, VirtualBox PRO/1000 MT Desktop)
+ *   0x100F — 82545EM  (VMware e1000, VirtualBox PRO/1000 MT Server)
+ *   0x1004 — 82543GC  (VirtualBox PRO/1000 T Server)
+ *
+ * The driver uses the legacy 8254x register/descriptor interface shared by
+ * these adapters. Prefer 0x100E/0x100F in VM settings; e1000e/vmxnet3 are not
+ * supported by this driver.
+ */
+#define E1000_DEVICE_82540EM 0x100E
+#define E1000_DEVICE_82545EM 0x100F
+#define E1000_DEVICE_82543GC 0x1004
+#define E1000_DEVICE_ID      E1000_DEVICE_82540EM
 
 #define E1000_NUM_TX_DESC  8
 #define E1000_NUM_RX_DESC  8

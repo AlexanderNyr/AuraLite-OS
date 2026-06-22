@@ -281,124 +281,155 @@ static int uhci_schedule_tds(volatile struct uhci_td *first_td,
     return 0;
 }
 
-int uhci_control_transfer(uint8_t dev_addr, int low_speed,
-                          const void *setup_pkt, void *data, uint16_t data_len) {
+int uhci_control_transfer_ex(uint8_t dev_addr, int low_speed,
+                             const void *setup_pkt, void *data, uint16_t data_len,
+                             uint8_t max_packet0) {
     if (iobase == 0) return -1;
 
     uint64_t hhdm = limine_get_hhdm_offset();
 
-    /* Allocate DMA buffers for the setup packet and data. */
-    uint64_t setup_phys = pmm_alloc_frame();
-    uint64_t data_phys = (data_len > 0) ? pmm_alloc_frame() : 0;
-    if (setup_phys == 0) return -1;
+    uint32_t max_packet = low_speed ? 8u : (uint32_t)max_packet0;
+    if (max_packet != 8 && max_packet != 16 && max_packet != 32 && max_packet != 64) {
+        max_packet = low_speed ? 8u : 8u;
+    }
+    uint32_t data_packets = (data_len > 0) ? ((data_len + max_packet - 1) / max_packet) : 0;
+    uint32_t td_count = 1 + data_packets + 1;  /* SETUP + DATA* + STATUS */
+    if (td_count * sizeof(struct uhci_td) > 4096) {
+        kprintf("[uhci] control transfer too large (%u TDs)\n", td_count);
+        return -1;
+    }
 
-    /* Allocate 3 TDs (SETUP, DATA, STATUS) from one frame. */
+    uint64_t setup_phys = pmm_alloc_frame();
+    uint64_t data_phys = (data_len > 0) ? pmm_alloc_contiguous((data_len + 0xFFF) / 0x1000) : 0;
     uint64_t td_phys = pmm_alloc_frame();
-    if (td_phys == 0) return -1;
+    if (setup_phys == 0 || td_phys == 0 || (data_len > 0 && data_phys == 0)) {
+        return -1;
+    }
+
     volatile struct uhci_td *tds =
         (volatile struct uhci_td *)(uintptr_t)(hhdm + td_phys);
-    memset((void *)tds, 0, 48);  /* 3 × 16 bytes */
+    memset((void *)tds, 0, 4096);
 
-    /* Copy setup packet to DMA buffer. */
     memcpy((void *)(uintptr_t)(hhdm + setup_phys), setup_pkt, 8);
-    /* Copy data to DMA buffer if writing. */
-    if (data && data_len > 0 && data_phys) {
+    if (data && data_len > 0) {
+        /* For OUT transfers this seeds the DMA buffer. For IN transfers it is
+         * harmless and gives deterministic contents if the device short-packets. */
         memcpy((void *)(uintptr_t)(hhdm + data_phys), data, data_len);
     }
 
-    /* Determine direction from the setup packet. */
     const uint8_t *setup_bytes = (const uint8_t *)setup_pkt;
     int data_in = (setup_bytes[0] & 0x80) ? 1 : 0;
 
-    /* TD 0: SETUP phase. */
-    tds[0].link   = (uint32_t)(td_phys + 16);  /* link to TD1 */
-    tds[0].ctrl   = make_td_ctrl(low_speed, 0);
-    tds[0].token  = make_td_token(PID_SETUP, dev_addr, 0, 0, 8);
-    tds[0].buffer = (uint32_t)setup_phys;
+    uint32_t td = 0;
 
-    /* TD 1: DATA phase (if any). */
-    if (data_len > 0) {
+    /* SETUP phase is always DATA0. */
+    tds[td].link   = (td_count > 1) ? (uint32_t)(td_phys + (td + 1) * 16) : 0x1;
+    tds[td].ctrl   = make_td_ctrl(low_speed, 0);
+    tds[td].token  = make_td_token(PID_SETUP, dev_addr, 0, 0, 8);
+    tds[td].buffer = (uint32_t)setup_phys;
+    td++;
+
+    /* Optional DATA phase. First data packet is DATA1 and then alternates. */
+    uint32_t remaining = data_len;
+    uint32_t offset = 0;
+    int toggle = 1;
+    while (remaining > 0) {
+        uint32_t chunk = remaining > max_packet ? max_packet : remaining;
         uint8_t data_pid = data_in ? PID_IN : PID_OUT;
-        tds[1].link   = (uint32_t)(td_phys + 32);  /* link to TD2 */
-        tds[1].ctrl   = make_td_ctrl(low_speed, 0) | TD_CTRL_SPD;
-        tds[1].token  = make_td_token(data_pid, dev_addr, 0, 1, data_len);
-        tds[1].buffer = (uint32_t)data_phys;
-    } else {
-        /* No data phase: TD1 is the STATUS phase (zero-length IN).
-         * Link directly to terminate since there's no TD2 needed. */
-        tds[1].link   = 0x1;  /* terminate */
-        tds[1].ctrl   = make_td_ctrl(low_speed, 1);
-        tds[1].token  = make_td_token(PID_IN, dev_addr, 0, 1, 0);
-        tds[1].buffer = 0;
+        tds[td].link   = (uint32_t)(td_phys + (td + 1) * 16);
+        tds[td].ctrl   = make_td_ctrl(low_speed, 0) | TD_CTRL_SPD;
+        tds[td].token  = make_td_token(data_pid, dev_addr, 0, toggle, chunk);
+        tds[td].buffer = (uint32_t)(data_phys + offset);
+        td++;
+        toggle ^= 1;
+        offset += chunk;
+        remaining -= chunk;
     }
 
-    /* TD 2: STATUS phase (if data phase exists, TD2 is status). */
-    if (data_len > 0) {
-        tds[2].link   = 0x1;  /* terminate */
-        /* Status direction is opposite of data. */
-        uint8_t status_pid = data_in ? PID_OUT : PID_IN;
-        tds[2].ctrl   = make_td_ctrl(low_speed, 1);
-        tds[2].token  = make_td_token(status_pid, dev_addr, 0, 1, 0);
-        tds[2].buffer = 0;
-    } else {
-        tds[2].link   = 0x1;
-        tds[2].ctrl   = 0;  /* unused */
-        tds[2].token  = 0;
-        tds[2].buffer = 0;
-    }
+    /* STATUS phase is opposite direction and always DATA1. */
+    uint8_t status_pid = data_len > 0 ? (data_in ? PID_OUT : PID_IN) : PID_IN;
+    tds[td].link   = 0x1;
+    tds[td].ctrl   = make_td_ctrl(low_speed, 1);
+    tds[td].token  = make_td_token(status_pid, dev_addr, 0, 1, 0);
+    tds[td].buffer = 0;
 
-    /* Schedule and wait. */
-    int ret = uhci_schedule_tds(&tds[0], data_len > 0 ? &tds[2] : &tds[1],
-                                (uint32_t)td_phys);
+    int ret = uhci_schedule_tds(&tds[0], &tds[td], (uint32_t)td_phys);
     if (ret < 0) {
         return -1;
     }
 
-    /* If data was read (IN direction), copy from DMA buffer to caller. */
-    if (data && data_len > 0 && data_in && data_phys) {
+    if (data && data_len > 0 && data_in) {
         memcpy(data, (void *)(uintptr_t)(hhdm + data_phys), data_len);
     }
 
     return (int)data_len;
 }
 
-int uhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
-                       void *data, uint32_t len) {
-    if (iobase == 0 || len == 0) return -1;
+int uhci_control_transfer(uint8_t dev_addr, int low_speed,
+                          const void *setup_pkt, void *data, uint16_t data_len) {
+    return uhci_control_transfer_ex(dev_addr, low_speed, setup_pkt, data,
+                                    data_len, low_speed ? 8 : 64);
+}
+
+int uhci_bulk_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
+                          void *data, uint32_t len, int *toggle_io) {
+    if (iobase == 0 || len == 0 || data == NULL) return -1;
 
     uint64_t hhdm = limine_get_hhdm_offset();
     int is_in = (endpoint & 0x80) ? 1 : 0;
     uint8_t ep = endpoint & 0x0F;
     uint8_t pid = is_in ? PID_IN : PID_OUT;
 
-    /* Allocate DMA buffer + TD. */
+    const uint32_t max_packet = 64;  /* full-speed bulk max packet */
+    uint32_t packets = (len + max_packet - 1) / max_packet;
+    if (packets == 0 || packets * sizeof(struct uhci_td) > 4096) {
+        return -1;
+    }
+
     uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
     uint64_t td_phys = pmm_alloc_frame();
     if (buf_phys == 0 || td_phys == 0) return -1;
 
-    volatile struct uhci_td *td =
+    volatile struct uhci_td *tds =
         (volatile struct uhci_td *)(uintptr_t)(hhdm + td_phys);
-    memset((void *)td, 0, sizeof(*td));
+    memset((void *)tds, 0, 4096);
 
-    /* Copy data to DMA buffer if writing. */
     if (!is_in) {
         memcpy((void *)(uintptr_t)(hhdm + buf_phys), data, len);
+    } else {
+        memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
     }
 
-    td->link   = 0x1;  /* terminate */
-    td->ctrl   = make_td_ctrl(0, 1) | TD_CTRL_SPD;  /* full-speed, SPD */
-    td->token  = make_td_token(pid, dev_addr, ep, 1, len);
-    td->buffer = (uint32_t)buf_phys;
+    int toggle = toggle_io ? (*toggle_io & 1) : 0;
+    uint32_t remaining = len;
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < packets; i++) {
+        uint32_t chunk = remaining > max_packet ? max_packet : remaining;
+        tds[i].link   = (i + 1 < packets) ? (uint32_t)(td_phys + (i + 1) * 16) : 0x1;
+        tds[i].ctrl   = make_td_ctrl(0, 1) | TD_CTRL_SPD;
+        tds[i].token  = make_td_token(pid, dev_addr, ep, toggle, chunk);
+        tds[i].buffer = (uint32_t)(buf_phys + offset);
+        toggle ^= 1;
+        offset += chunk;
+        remaining -= chunk;
+    }
 
-    int ret = uhci_schedule_tds(td, td, (uint32_t)td_phys);
+    int ret = uhci_schedule_tds(&tds[0], &tds[packets - 1], (uint32_t)td_phys);
     if (ret < 0) return -1;
 
-    /* Copy data from DMA buffer if reading. */
     if (is_in) {
         memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), len);
     }
-
+    if (toggle_io) {
+        *toggle_io = toggle;
+    }
     return (int)len;
+}
+
+int uhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
+                       void *data, uint32_t len) {
+    int toggle = 0;
+    return uhci_bulk_transfer_ex(dev_addr, endpoint, data, len, &toggle);
 }
 
 /* ---- Public API ---- */

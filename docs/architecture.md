@@ -1,5 +1,12 @@
 # AuraLite OS Architecture
 
+This document explains the kernel architecture and boot-time subsystem order.
+It originated during the 14-phase bring-up plan, but the current tree also
+contains post-phase extensions: per-process address spaces, DHCP/DNS/TCP,
+USB/AHCI scaffolding, Bluetooth/Wi-Fi protocol layers, a full GUI demo and a
+3D renderer. For a precise feature-completeness table, see
+[`status.md`](status.md).
+
 ## Boot flow
 
 ```
@@ -30,9 +37,16 @@ kmain (kernel.c)
    ├── pit_init(100)         100 Hz timer (IRQ 0)
    ├── sched_init()          round-robin scheduler + idle thread
    ├── vfs_init() + initrd   USTAR initrd at /, devfs at /dev
-   ├── net_init()            e1000 NIC + ARP + ICMP
+   ├── net_init()            e1000 NIC + DHCP + ARP + ICMP + DNS + TCP tests
+   ├── ahci_init()           AHCI controller/port detection (sector I/O disabled)
+   ├── usb init              UHCI/OHCI/EHCI/xHCI + USB core + MSC protocol layer
+   ├── bt_init()/wifi_init() Bluetooth HCI / 802.11 protocol frameworks
    ├── gfx_init()            double-buffered 2D graphics
    ├── keyboard_init()       PS/2 keyboard (IRQ 1)
+   ├── mouse_init()          PS/2 mouse (IRQ 12)
+   ├── wm_demo()             framebuffer window-manager demo
+   ├── r3d_demo()            software 3D renderer demo
+   ├── process_self_test()   spawn /hello in isolated address space
    ├── user_mode_self_test() load init.elf (shell) → Ring 3
    └── yield forever         shell runs interactively
 ```
@@ -222,8 +236,13 @@ syscall_entry (Ring 0, runs on the user stack)
 
 ### Implemented syscalls
 
-`read` (0), `write` (1), `open` (2), `close` (3), `getpid` (39), `exit` (60),
-`listdir` (80). See [docs/syscall_abi.md](syscall_abi.md) for details.
+The syscall table now includes console/file I/O, process-management helpers and
+networking extensions: `read`, `write`, `open`, `close`, `getpid`, `fork`,
+`execve`, `exit`, `wait4`, `listdir`, `spawn`, `dns`, `net_connect`,
+`net_send`, `net_recv`, `net_close`, and `net_ping`.
+
+Some of these are experimental and intentionally simplified. See
+[`syscall_abi.md`](syscall_abi.md) for the exact numbers and caveats.
 
 ### Critical SYSCALL/SYSRET details
 

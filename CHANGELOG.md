@@ -2,6 +2,45 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [USB Mass Storage over UHCI] 2026-06-22
+
+### Added
+- Completed the first working USB Mass Storage path through UHCI:
+  - multi-packet UHCI control transfers using the actual EP0 max-packet size;
+  - UHCI bulk transfers with persistent DATA toggle tracking;
+  - real UHCI device enumeration via `SET_ADDRESS`, device/config descriptors,
+    endpoint parsing, and `SET_CONFIGURATION`;
+  - MSC Bulk-Only Transport: CBW → optional data → CSW;
+  - SCSI `TEST UNIT READY`, `REQUEST SENSE`, `INQUIRY`, `READ CAPACITY`,
+    `READ(10)`, and `WRITE(10)` plumbing;
+  - capacity detection and sector-0 read self-test.
+- Added `tools/run_qemu_usb_msc.sh` and `make run-usb-msc` for a QEMU boot with
+  a UHCI `usb-storage` disk image.
+
+### Verified
+- QEMU boot with attached UHCI USB storage enumerates the device as Mass Storage,
+  reads capacity, and reads sector 0 successfully:
+  - VID/PID: `0x46f4:0x0001`
+  - endpoints: bulk IN `0x81`, bulk OUT `0x02`
+  - capacity: 32768 sectors × 512 bytes
+  - sector 0 starts with the test signature `AURALUSB`
+
+## [Documentation refresh + VM guide] 2026-06-22
+
+### Changed
+- Rewrote the top-level README to reflect the current post-phase repository
+  state, including stable vs experimental subsystems, VM support, known
+  limitations, and documentation map.
+- Added `docs/README.md` as the documentation index.
+- Added `docs/build_and_run.md` with build, QEMU, VirtualBox, VMware and
+  troubleshooting instructions.
+- Added `docs/status.md` with a feature-completeness matrix.
+- Updated `docs/syscall_abi.md` to include process and networking syscalls.
+- Updated `docs/driver_guide.md` to cover AHCI, USB, mouse, Bluetooth, Wi-Fi,
+  VirtualBox/VMware e1000 variants and WIP status.
+- Updated architecture and memory-map docs with post-phase subsystem notes and
+  current caveats.
+
 ## [Full GUI] 2026-06-21
 
 ### Upgraded - Window Manager
