@@ -86,6 +86,7 @@ static void cmd_help(void) {
     puts("  uname       - print OS information");
     puts("  free        - print memory usage");
     puts("  nslookup    - resolve a hostname via DNS");
+    puts("  ping <host> - ping a hostname via ICMP");
     puts("  ps          - list processes (stub)");
     puts("  help        - show this help");
     puts("  exit        - exit shell");
@@ -98,7 +99,8 @@ static void cmd_help(void) {
     puts("  run /guess    - number guessing game");
     puts("  run /snake    - snake game");
     puts("  run /hello    - hello world");
-    puts("  run /http     - HTTP client stub");
+    puts("  run /http     - HTTP client");
+    puts("  run /browser  - web browser (fetch + render HTML)");
 }
 
 static void cmd_run(const char *prog) {
@@ -115,6 +117,37 @@ static void cmd_run(const char *prog) {
     printf("[shell] child PID %lld, waiting...\n", (long long)pid);
     wait(NULL);
     printf("[shell] child exited\n");
+}
+
+static void cmd_ping(const char *host) {
+    if (!host) {
+        puts("ping: missing hostname");
+        return;
+    }
+    printf("Resolving %s...\n", host);
+    uint32_t ip = dns_resolve(host);
+    if (ip == 0) {
+        printf("ping: could not resolve %s\n", host);
+        return;
+    }
+    char ipstr[20];
+    /* Simple IP to string. */
+    int pos = 0;
+    unsigned o;
+    for (int i = 3; i >= 0; i--) {
+        o = (ip >> (i * 8)) & 0xFF;
+        if (o >= 100) ipstr[pos++] = '0' + o / 100;
+        if (o >= 10) ipstr[pos++] = '0' + (o / 10) % 10;
+        ipstr[pos++] = '0' + o % 10;
+        if (i > 0) ipstr[pos++] = '.';
+    }
+    ipstr[pos] = 0;
+    printf("Pinging %s (%s)...\n", host, ipstr);
+    if (net_ping(ip) == 0) {
+        printf("Reply received from %s!\n", ipstr);
+    } else {
+        printf("No reply from %s\n", ipstr);
+    }
 }
 
 static void cmd_nslookup(const char *hostname) {
@@ -171,6 +204,8 @@ static void process_command(char *line) {
         cmd_help();
     } else if (strcmp(cmd, "nslookup") == 0) {
         cmd_nslookup(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "ping") == 0) {
+        cmd_ping(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "run") == 0) {
         cmd_run(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "ps") == 0) {

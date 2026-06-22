@@ -87,7 +87,7 @@ USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdi
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/clock.elf $(USER_BUILD)/guess.elf \
-             $(USER_BUILD)/snake.elf
+             $(USER_BUILD)/snake.elf $(USER_BUILD)/browser.elf
 
 user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 
@@ -123,6 +123,10 @@ $(USER_BUILD)/guess.o: userspace/guess/guess.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/snake.o: userspace/snake/snake.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/browser.o: userspace/browser/browser.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -189,6 +193,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/clock.elf $(INITRD_DIR)/clock
 	@cp $(USER_BUILD)/guess.elf $(INITRD_DIR)/guess
 	@cp $(USER_BUILD)/snake.elf $(INITRD_DIR)/snake
+	@cp $(USER_BUILD)/browser.elf $(INITRD_DIR)/browser
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
@@ -203,7 +208,8 @@ HOST_CC      := cc
 UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
-                $(BUILD_DIR)/test_libc
+                $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
+                $(BUILD_DIR)/test_usb $(BUILD_DIR)/test_wm
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -238,3 +244,15 @@ $(BUILD_DIR)/test_libc: tests/unit/test_libc.c
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+$(BUILD_DIR)/test_3d: tests/unit/test_3d.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@ -lm
+
+$(BUILD_DIR)/test_usb: tests/unit/test_usb.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_wm: tests/unit/test_wm.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@

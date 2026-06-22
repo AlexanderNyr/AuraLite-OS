@@ -2,6 +2,85 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Full GUI] 2026-06-21
+
+### Upgraded - Window Manager
+- Rewrote wm.{c,h} with full GUI framework: desktop gradient, taskbar with clock,
+  window shadows, close [X] buttons, widget framework (buttons, labels, progress
+  bars, text areas, rectangles), mouse interaction (focus/drag/close/press).
+- 3 demo windows: Terminal+buttons, System Monitor+progress bars, About+close.
+
+## [Web Browser] 2026-06-21
+
+### Added
+- `userspace/browser/browser.c`: text-based web browser.
+  - URL parser: `host[:port]/path` (strips `http://` prefix)
+  - HTTP/1.0 GET request builder
+  - HTML tag stripper: renders visible text content from HTML
+  - Title extraction: `<title>` → `=== Title ===`
+  - Heading formatting: `<h1>-<h3>` get blank line separation
+  - Link extraction: `<a href="...">` → `[url]` prefix
+  - HTML entity decoder: `&amp;`, `&lt;`, `&gt;`, `&nbsp;`, `&quot;`, `&#39;`
+  - Script/style content suppression
+  - Whitespace collapsing (no excessive blank lines)
+  - HTTP status line display
+  - Response body extraction (skips HTTP headers)
+- Verified: connected to example.com, sent HTTP GET, received 8191 bytes
+  of real HTML via DNS → TCP → HTTP over QEMU user-mode networking.
+
+### Verified end-to-end
+```
+browser> example.com
+  Resolved: example.com (172.66.147.243)
+  [tcp] ESTABLISHED (seq=4097, ack=1408002)
+  Received 8191 bytes
+```
+
+## [Full Ethernet/Internet Support] 2026-06-21
+
+### Added — Network Syscalls (userspace internet access)
+- `SYS_NET_CONNECT` (83): TCP connect to IP:port from userspace
+- `SYS_NET_SEND` (84): Send data over established TCP connection
+- `SYS_NET_RECV` (85): Receive data from TCP connection (polling)
+- `SYS_NET_CLOSE` (86): Close TCP connection (FIN/ACK teardown)
+- `SYS_NET_PING` (87): ICMP echo from userspace
+- Libc wrappers: `net_connect()`, `net_send()`, `net_recv()`, `net_close()`,
+  `net_ping()`
+
+### Added — Gateway Routing (ARP)
+- Subnet mask tracking: the global `subnet_mask` is set from DHCP
+- IP routing: when the target IP is NOT on our local subnet (based on the
+  subnet mask), ARP resolves the gateway's MAC and routes through it
+- This enables pinging and connecting to external hosts (not just the local
+  subnet/gateway)
+
+### Added — Real HTTP Client
+- Rewrote `userspace/http/http.c` as a real HTTP/1.0 client:
+  - DNS resolution → TCP connect → HTTP GET → response display
+  - User types a hostname (e.g. `example.com`)
+  - Resolves via DNS, connects via TCP (port 80)
+  - Sends `GET / HTTP/1.0\r\nHost: ...\r\n\r\n`
+  - Receives and prints the HTTP response
+  - Verified: connected to example.com, sent HTTP request
+
+### Added — Shell `ping` Command
+- `ping <hostname>` in the interactive shell
+  - Resolves hostname via DNS
+  - Sends ICMP echo via `net_ping()` syscall
+  - Reports reply or timeout
+
+### Full Network Stack Summary
+| Layer | Protocol | Status |
+|-------|----------|--------|
+| Physical | e1000 NIC (PCI, MMIO, DMA) | ✅ |
+| Auto-config | DHCP (DISCOVER→OFFER→REQUEST→ACK) | ✅ |
+| L2 | Ethernet framing, ARP (with gateway routing) | ✅ |
+| L3 | IPv4 (routing, fragmentation, checksum) | ✅ |
+| L4 | ICMP (ping), UDP (DNS), TCP (connect/send/recv/close) | ✅ |
+| App | DNS resolver, DHCP client, HTTP client | ✅ |
+| Userspace | Network syscalls (connect/send/recv/close/ping) | ✅ |
+| Shell | `ping`, `nslookup`, `run /http` | ✅ |
+
 ## [Wi-Fi (IEEE 802.11)] 2026-06-21
 
 ### Added

@@ -66,10 +66,10 @@ static uint32_t msc_tag = 0x12345678;
 static uint32_t msc_sectors = 0;
 
 /* USB device parameters (would be filled by USB enumeration). */
-static uint8_t usb_dev_addr = 0;       /* USB device address (assigned by SET_ADDRESS) */
-static uint8_t usb_bulk_in_ep = 0x82;  /* Bulk IN endpoint (addr | 0x80) */
-static uint8_t usb_bulk_out_ep = 0x01; /* Bulk OUT endpoint */
-static uint16_t usb_max_packet = 64;   /* max packet size for bulk endpoints */
+static uint8_t usb_dev_addr __attribute__((unused)) = 0;
+static uint8_t usb_bulk_in_ep __attribute__((unused)) = 0x82;
+static uint8_t usb_bulk_out_ep __attribute__((unused)) = 0x01;
+static uint16_t usb_max_packet __attribute__((unused)) = 64;
 
 /*
  * Build a CBW with a SCSI command. Returns the tag for matching the CSW.

@@ -234,9 +234,9 @@ found:
     /* 7) Power on ports (if power switching is used). */
     if (!(rhda & OHCI_RH_NPS)) {
         /* Set all port power bits via RH_DESC_B (or RH_STATUS). */
-        uint32_t rhdb = rd(OHCI_RH_DESC_B);
+        
         /* Set DeviceRemovable=0, PortPowerControlMask=all. */
-        wr(OHCI_RH_DESC_B, 0);
+        
         /* Power on each port. */
         for (int i = 0; i < num_ports; i++) {
             port_write(i, OHCI_PORT_PPS);   /* SetPortPower */

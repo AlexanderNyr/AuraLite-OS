@@ -102,7 +102,6 @@ struct uhci_qh {
 static uint16_t iobase = 0;             /* I/O port base (BAR4) */
 static uint32_t *frame_list = NULL;     /* HHDM pointer to the frame list */
 static struct uhci_qh *async_qh = NULL; /* HHDM pointer to the async QH */
-static struct uhci_td *idle_td = NULL;  /* HHDM pointer to an idle TD */
 static int port_count = 0;
 static uint8_t pci_bus_u, pci_dev_u, pci_func_u;
 
@@ -273,7 +272,6 @@ static int uhci_schedule_tds(volatile struct uhci_td *first_td,
     }
 
     /* Extract actual bytes transferred from the last TD's token field. */
-    uint32_t maxlen_field = (last_td->token >> TD_TOKEN_LEN_SHIFT) & 0x7FF;
     /* Actual length = maxlen_field - (remaining bits in token[21..31]).
      * UHCI stores the actual length in the same field after completion:
      * the HC writes (maxlen - actual_len) into the field. So:

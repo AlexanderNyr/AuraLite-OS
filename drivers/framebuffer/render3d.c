@@ -57,9 +57,9 @@ static float r3d_tanf(float x) {
 #define DEG2RAD(x) ((x) * PI_F / 180.0f)
 
 /* ---- Camera state ---- */
-static float cam_fov   = 60.0f * PI_F / 180.0f;
+
 static float cam_near  = 0.1f;
-static float cam_far   = 100.0f;
+
 static float cam_dist  = 4.0f;   /* distance from camera to origin */
 
 /* ---- Vector operations ---- */
@@ -182,7 +182,6 @@ void r3d_project(vec3 world, int *out_x, int *out_y) {
 
     /* Perspective divide. */
     float scale = 1.0f / z;
-    float aspect = (float)gfx_get_width() / (float)gfx_get_height();
 
     /* Map to screen coordinates. */
     int sx = (int)((world.x * scale * (float)gfx_get_height() * 0.5f)
@@ -412,8 +411,6 @@ const mesh mesh_pyramid = {
 /* ---- Demo ---- */
 
 void r3d_demo(int frames) {
-    uint32_t screen_w = gfx_get_width();
-    uint32_t screen_h = gfx_get_height();
 
     vec3 light = vec3_normalize(vec3_make(0.5f, -0.7f, -0.5f));
 

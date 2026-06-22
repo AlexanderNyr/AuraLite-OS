@@ -48,6 +48,26 @@ uint32_t dns_resolve(const char *hostname) {
     return (uint32_t)syscall(SYS_DNS, (uint64_t)hostname, 0, 0, 0, 0, 0);
 }
 
+int net_connect(uint32_t ip, uint16_t port) {
+    return (int)syscall(SYS_NET_CONNECT, ip, port, 0, 0, 0, 0);
+}
+
+int net_send(const void *data, uint32_t len) {
+    return (int)syscall(SYS_NET_SEND, (uint64_t)data, len, 0, 0, 0, 0);
+}
+
+int net_recv(void *buf, uint32_t bufsize) {
+    return (int)syscall(SYS_NET_RECV, (uint64_t)buf, bufsize, 0, 0, 0, 0);
+}
+
+int net_close(void) {
+    return (int)syscall(SYS_NET_CLOSE, 0, 0, 0, 0, 0, 0);
+}
+
+int net_ping(uint32_t ip) {
+    return (int)syscall(SYS_NET_PING, ip, 0, 0, 0, 0, 0);
+}
+
 pid_t fork(void) {
     return (pid_t)syscall(SYS_FORK, 0, 0, 0, 0, 0, 0);
 }

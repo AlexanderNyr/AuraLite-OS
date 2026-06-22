@@ -54,8 +54,8 @@ static int bt_ready = 0;
  * endpoint (for sending commands). These would be parsed from the USB
  * configuration descriptor during enumeration. */
 static uint8_t bt_bulk_in = 0x82;   /* default: endpoint 2 IN */
-static uint8_t bt_bulk_out = 0x02;  /* default: endpoint 2 OUT */
-static uint16_t bt_max_pkt = 64;
+static uint8_t bt_bulk_out __attribute__((unused)) = 0x02;
+static uint16_t bt_max_pkt __attribute__((unused)) = 64;
 
 /*
  * Send an HCI command via USB control transfer (endpoint 0).

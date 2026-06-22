@@ -80,7 +80,7 @@ struct icmp_hdr {
 static uint8_t  our_mac[6];
 static uint32_t our_ip;
 static uint32_t gateway_ip;
-
+static uint32_t subnet_mask = 0;  /* set by DHCP */
 /* Accessors for TCP (tcp.c). */
 void net_get_mac(uint8_t mac[6]) {
     memcpy(mac, our_mac, 6);
@@ -146,6 +146,52 @@ void net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
 
 /* ---- ARP: resolve an IP address to a MAC. ---- */
 int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
+    /* If the target is NOT on our local subnet, route through the gateway. */
+    if (subnet_mask != 0 && (target_ip & subnet_mask) != (our_ip & subnet_mask)) {
+        /* Target is remote — use the gateway's MAC. */
+        if (!gateway_mac_known) {
+            /* Resolve the gateway MAC first. */
+            uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+            struct arp_pkt arp;
+            arp.hw_type    = htons_(1);
+            arp.proto_type = htons_(0x0800);
+            arp.hw_len     = 6;
+            arp.proto_len  = 4;
+            arp.opcode     = htons_(ARP_REQUEST);
+            memcpy(arp.sender_mac, our_mac, 6);
+            arp.sender_ip  = htonl_(our_ip);
+            memset(arp.target_mac, 0, 6);
+            arp.target_ip  = htonl_(gateway_ip);
+
+            net_eth_send(broadcast, ETHERTYPE_ARP, &arp, sizeof(arp));
+            kprintf("[net] ARP (gateway) for %u.%u.%u.%u\n",
+                    (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF,
+                    (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
+
+            uint8_t buf[2048];
+            for (int poll = 0; poll < 10000000; poll++) {
+                int n = e1000_recv(buf, sizeof(buf));
+                if (n < (int)(14 + sizeof(struct arp_pkt))) continue;
+                struct eth_hdr *eh = (struct eth_hdr *)buf;
+                if (htons_(eh->ethertype) != ETHERTYPE_ARP) continue;
+                struct arp_pkt *rp = (struct arp_pkt *)(buf + 14);
+                if (htons_(rp->opcode) != ARP_REPLY) continue;
+                memcpy(gateway_mac, rp->sender_mac, 6);
+                gateway_mac_known = 1;
+                kprintf("[net] ARP reply: gateway is %02x:%02x:%02x:%02x:%02x:%02x\n",
+                        gateway_mac[0], gateway_mac[1], gateway_mac[2],
+                        gateway_mac[3], gateway_mac[4], gateway_mac[5]);
+                break;
+            }
+        }
+        if (gateway_mac_known) {
+            memcpy(out_mac, gateway_mac, 6);
+            return 0;
+        }
+        return -1;
+    }
+
+    /* Local subnet: resolve directly. */
     /* If we already know it, return immediately. */
     if (target_ip == gateway_ip && gateway_mac_known) {
         memcpy(out_mac, gateway_mac, 6);
@@ -698,7 +744,6 @@ int net_dhcp(void) {
     struct dhcp_pkt *offer = NULL;
     uint32_t offered_ip = 0;
     uint32_t server_id  = 0;
-    uint32_t subnet_mask = 0;
     uint32_t dns_ip     = 0;
 
     for (int poll = 0; poll < 30000000; poll++) {

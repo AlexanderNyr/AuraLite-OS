@@ -16,6 +16,11 @@
 #define SYS_WAIT4  61
 #define SYS_SPAWN  81   /* non-standard: spawn in new address space */
 #define SYS_DNS    82   /* non-standard: resolve a hostname */
+#define SYS_NET_CONNECT 83
+#define SYS_NET_SEND    84
+#define SYS_NET_RECV    85
+#define SYS_NET_CLOSE   86
+#define SYS_NET_PING    87
 #define SYS_LISTDIR 80   /* non-standard: list a directory */
 
 typedef int64_t ssize_t;
@@ -40,5 +45,12 @@ pid_t   spawn(const char *path);
 /* AuraLite extension: list files in a directory path. */
 void    listdir(const char *path);
 uint32_t dns_resolve(const char *hostname);
+
+/* ---- Network syscalls ---- */
+int     net_connect(uint32_t ip, uint16_t port);
+int     net_send(const void *data, uint32_t len);
+int     net_recv(void *buf, uint32_t bufsize);
+int     net_close(void);
+int     net_ping(uint32_t ip);
 
 #endif /* AURALITE_LIBC_UNISTD_H */

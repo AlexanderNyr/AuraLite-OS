@@ -44,7 +44,7 @@ static void build_mgmt_hdr(struct wifi_mgmt_hdr *hdr, uint8_t subtype,
                            const uint8_t dst[6], const uint8_t bssid[6]) {
     memset(hdr, 0, sizeof(*hdr));
     hdr->fc.protocol = 0;
-    hdr->fc.type = WIFI_FRAME_TYPE_MGMT;
+    hdr->fc.type = 0; /* type=0=Mgmt */
     hdr->fc.subtype = subtype;
     memcpy(hdr->addr1, dst, 6);     /* DA = destination */
     memcpy(hdr->addr2, our_mac, 6); /* SA = source (our MAC) */
@@ -321,7 +321,7 @@ int wifi_send_data(const void *eth_frame, uint32_t len) {
     uint8_t wifi_frame[1518];
     struct wifi_mgmt_hdr *whdr = (struct wifi_mgmt_hdr *)wifi_frame;
     memset(whdr, 0, sizeof(*whdr));
-    whdr->fc.type = WIFI_FRAME_TYPE_DATA;
+    whdr->fc.type = 2; /* type=2=Data (2-bit field) */
     whdr->fc.subtype = 0;
     whdr->fc.to_ds = 1;    /* going to the DS (AP) */
     whdr->fc.from_ds = 0;

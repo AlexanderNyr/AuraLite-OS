@@ -18,6 +18,7 @@
 #include "kernel/proc/process.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/net/net.h"
+#include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
 
 #define SYS_READ    0
@@ -31,6 +32,11 @@
 #define SYS_WAIT4  61
 #define SYS_SPAWN  81   /* non-standard: spawn a program in a new address space */
 #define SYS_DNS    82   /* non-standard: resolve a hostname */
+#define SYS_NET_CONNECT 83  /* non-standard: TCP connect */
+#define SYS_NET_SEND    84  /* non-standard: TCP send */
+#define SYS_NET_RECV    85  /* non-standard: TCP recv */
+#define SYS_NET_CLOSE   86  /* non-standard: TCP close */
+#define SYS_NET_PING    87  /* non-standard: ICMP ping */
 #define SYS_LISTDIR 80
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
@@ -98,6 +104,19 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return 0;
     case SYS_DNS:
         return net_dns_resolve((const char *)a1);
+    case SYS_NET_CONNECT:
+        /* a1 = IP (host order), a2 = port */
+        return (uint64_t)tcp_connect(a1, (uint16_t)a2);
+    case SYS_NET_SEND:
+        /* a1 = data ptr, a2 = len */
+        return (uint64_t)tcp_send((const void *)a1, (uint32_t)a2);
+    case SYS_NET_RECV:
+        /* a1 = buf ptr, a2 = bufsize */
+        return (uint64_t)tcp_recv((void *)a1, (uint32_t)a2);
+    case SYS_NET_CLOSE:
+        return (uint64_t)tcp_close();
+    case SYS_NET_PING:
+        return (uint64_t)net_ping(a1);
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
         return (uint64_t)-1;

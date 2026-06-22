@@ -125,7 +125,8 @@ auralite/
 │   ├── clock/               # clock/uptime display
 │   ├── guess/               # number guessing game
 │   ├── snake/               # terminal snake game
-│   └── http/                # HTTP client stub
+│   ├── http/                # HTTP client
+│   └── browser/             # web browser (fetch + render HTML)
 ├── tests/unit/              # host-side unit tests (PMM bitmap, heap allocator)
 ├── tools/                   # ISO build, QEMU launch, initrd, binary embedding,
 │                            #   framebuffer screenshot + analysis
