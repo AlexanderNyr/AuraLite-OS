@@ -2,6 +2,17 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Bluetooth HCI] 2026-06-21
+
+### Added
+- `drivers/bluetooth/bt.{c,h}`: Bluetooth HCI driver.
+  - USB device detection (class 0xE0 or vendor 0x0A12)
+  - HCI command builder + packet structures
+  - Commands: Reset, Read BD_ADDR, Read Local Version, Inquiry
+  - Event parser: Command Complete, Command Status, Inquiry Result
+  - USB transport via usb_control_transfer + uhci_bulk_transfer
+  - `bt_init()`, `bt_inquiry()`, `bt_get_bd_addr()`
+
 ## [Mouse + Window Manager] 2026-06-21
 
 ### Added

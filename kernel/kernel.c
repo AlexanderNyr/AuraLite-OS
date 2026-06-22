@@ -37,6 +37,7 @@
 #include "drivers/usb/xhci.h"
 #include "drivers/usb/usb_core.h"
 #include "drivers/usb/msc.h"
+#include "drivers/bluetooth/bt.h"
 #include "drivers/timer/pit.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
@@ -182,6 +183,11 @@ void kmain(void) {
     kprintf("[boot] initialising USB Mass Storage...\n");
     msc_init();
     msc_self_test();
+
+    /* Bluetooth. */
+    kprintf("[boot] initialising Bluetooth HCI...\n");
+    bt_init();
+    bt_self_test();
 
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
     kprintf("[boot] initialising graphics + keyboard + mouse...\n");
