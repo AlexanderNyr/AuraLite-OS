@@ -59,7 +59,7 @@ Legend:
 | VFS mount table | ✅ | Longest-prefix mount matching. |
 | USTAR initrd | ✅ | Read-only root with user ELFs. |
 | DevFS | ✅ | `/dev/null`, `/dev/zero`. |
-| Writable filesystem | ✅/🧪 | `/tmp` tmpfs and tiny persistent `/disk` AHCI filesystem support create/read/write. |
+| Writable filesystem | ✅/🧪 | `/tmp` tmpfs, tiny `/disk`, and flat FAT32 `/fat` support create/read/write. |
 | Directory vnodes/readdir | 🚧 | `listdir` is special-cased for initrd root. |
 
 ## Syscalls
@@ -86,7 +86,7 @@ Legend:
 | DNS resolver | ✅ | A-record lookup. |
 | TCP client | 🧪 | One connection, no retransmission/sliding window. |
 | BSD sockets | ❌ | Future work. |
-| virtio-net / vmxnet3 / e1000e | ❌ | Not supported. Use legacy e1000. |
+| virtio-net / vmxnet3 / e1000e | 🚧 | Recognised by the virtual-driver probe, but no data path yet. Use legacy e1000. |
 
 ## Graphics and input
 
@@ -141,7 +141,7 @@ Legend:
 1. Validate user pointers in all syscalls.
 2. Add per-process FD tables.
 3. Reap dead threads/processes.
-4. Replace the tiny `/disk` demo filesystem with a larger real filesystem or extend it with directories/free-space management.
+4. Extend FAT32 with directories, long filenames, timestamps and free-space accounting.
 5. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
 6. Replace single global TCP connection with per-connection/socket objects.
 7. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.

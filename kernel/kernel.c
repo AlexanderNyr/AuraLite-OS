@@ -9,6 +9,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/klog.h"
 #include "kernel/limine_requests.h"
 #include "limine/limine.h"
 #include "kernel/proc/scheduler.h"
@@ -23,6 +24,7 @@
 #include "kernel/fs/devfs.h"
 #include "kernel/fs/tmpfs.h"
 #include "kernel/fs/diskfs.h"
+#include "kernel/fs/fat32.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
@@ -42,6 +44,7 @@
 #include "drivers/bluetooth/bt.h"
 #include "drivers/wifi/wifi.h"
 #include "drivers/timer/pit.h"
+#include "drivers/vm/virtual_drivers.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
 void kernel_halt(void) {
@@ -127,6 +130,9 @@ void kmain(void) {
     sched_init();
     scheduler_self_test();
 
+    kprintf("[boot] probing virtual machine hardware catalog...\n");
+    virtual_drivers_init();
+
     kprintf("[boot] initialising virtual file system...\n");
     vfs_init();
 
@@ -174,6 +180,10 @@ void kmain(void) {
     if (diskfs_init() == 0) {
         vfs_mount("/disk", &diskfs_ops, NULL);
         diskfs_self_test();
+    }
+    if (fat32_init() == 0) {
+        vfs_mount("/fat", &fat32_ops, NULL);
+        fat32_self_test();
     }
 
     /* USB UHCI + OHCI + EHCI drivers. */
@@ -251,6 +261,7 @@ void kmain(void) {
      * the shell scheduling slots. When the shell exits, kmain + idle remain. */
     kprintf("\n[kernel] shell active; kmain idling.\n");
     for (;;) {
+        klog_flush();
         sched_yield();
     }
 }

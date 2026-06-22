@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FAT32 persistent logging] 2026-06-22
+
+### Added
+- Added `kernel/fs/fat32.{c,h}`: a compact AHCI-backed FAT32 implementation.
+  - Formats/mounts a small FAT32 volume at LBA 64 when an AHCI disk is present.
+  - Mounts the volume at `/fat`.
+  - Supports flat 8.3 files with create/read/write through VFS.
+  - Appends kernel logs to `/fat/AURALOG.TXT`.
+- Added kernel log buffering/sink support in `kernel/lib/klog.{c,h}`.
+  - Early boot logs are buffered in memory.
+  - When FAT32 is mounted, the backlog is flushed to `AURALOG.TXT`.
+  - Later logs are flushed from the idle loop.
+
+### Verified
+- QEMU AHCI disk contains a FAT32 signature and root entries for
+  `AURALOG.TXT` and `TEST.TXT`.
+- `AURALOG.TXT` contains early boot log lines starting with UART/framebuffer/GDT
+  initialization.
+
+## [Virtual hardware driver catalog] 2026-06-22
+
+### Added
+- Added `drivers/vm/virtual_drivers.{c,h}`: a compatibility/probe layer for
+  common QEMU, VirtualBox and VMware PCI devices.
+- The boot log now reports the detected hypervisor vendor string and known
+  virtual devices with driver status (`active`, `partial`, `boot framebuffer`,
+  or `known / no data path`).
+- Added recognition entries for many common VM devices: e1000/e1000e, PCnet,
+  RTL8139, VMXNET3, virtio-net/block/scsi/gpu/balloon/rng/console, AHCI, PIIX
+  IDE, VMware PVSCSI/VMCI/SVGA, LSI SCSI/SAS, BusLogic, VirtualBox Guest Device,
+  VBox/VMSVGA, QEMU VGA/QXL, AC'97, HDA, ES1371 and common USB controllers.
+- Added `docs/virtual_driver_matrix.md`.
+
 ## [VirtualBox stdin noise fix] 2026-06-22
 
 ### Fixed

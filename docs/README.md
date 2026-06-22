@@ -14,6 +14,7 @@ This directory contains the technical documentation for AuraLite OS.
 6. [`driver_guide.md`](driver_guide.md) — driver inventory and implementation
    notes.
 7. [`virtual_machines.md`](virtual_machines.md) — VirtualBox and VMware setup.
+8. [`virtual_driver_matrix.md`](virtual_driver_matrix.md) — virtual hardware compatibility matrix.
 
 ## Other root-level docs
 

@@ -130,12 +130,15 @@ void vfs_list(const char *path) {
     extern void initrd_list(void);
     extern void tmpfs_list(void);
     extern void diskfs_list(void);
+    extern void fat32_list(void);
     if (strcmp(path, "/") == 0) {
         initrd_list();
     } else if (strcmp(path, "/tmp") == 0 || strcmp(path, "/tmp/") == 0) {
         tmpfs_list();
     } else if (strcmp(path, "/disk") == 0 || strcmp(path, "/disk/") == 0) {
         diskfs_list();
+    } else if (strcmp(path, "/fat") == 0 || strcmp(path, "/fat/") == 0) {
+        fat32_list();
     }
 }
 

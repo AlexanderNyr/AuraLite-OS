@@ -8,6 +8,7 @@ boot tests. The image is a Limine hybrid ISO.
 - AHCI DMA sector read/write support.
 - `/tmp` writable in-memory tmpfs.
 - `/disk` tiny persistent AHCI-backed read/write filesystem when an AHCI disk is attached.
+- `/fat` FAT32 volume with persistent kernel log at `/fat/AURALOG.TXT`.
 - UHCI USB Mass Storage read path.
 - e1000 networking for QEMU/VirtualBox/VMware legacy Intel adapters.
 

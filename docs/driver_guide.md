@@ -30,6 +30,7 @@ See also [`status.md`](status.md) for a feature matrix.
 | USB MSC | `drivers/usb/msc.c` | 🧪 | Bulk-Only/SCSI read/write path through UHCI. |
 | Bluetooth HCI | `drivers/bluetooth/` | 🚧 | HCI command/event protocol over USB. |
 | Wi-Fi 802.11 | `drivers/wifi/` | 🚧 | MAC management layer; no chipset driver by default. |
+| Virtual hardware catalog | `drivers/vm/` | ✅ | Detects common QEMU/VirtualBox/VMware PCI devices and reports driver status. |
 
 ## UART
 
@@ -174,6 +175,8 @@ Current status:
   reads it back;
 - `kernel/fs/diskfs.c` mounts a tiny persistent AHCI-backed filesystem at
   `/disk` when a SATA disk is present;
+- `kernel/fs/fat32.c` mounts a FAT32 volume at `/fat` and stores persistent
+  kernel logs in `/fat/AURALOG.TXT`;
 - broader real-hardware and non-QEMU hypervisor coverage is still experimental.
 
 The earlier PxCI issue was fixed by programming the command header PRDTL field
@@ -274,6 +277,27 @@ Implemented protocol pieces:
 Current limitation:
 
 - no actual Intel/Realtek/Atheros chipset driver is registered by default.
+
+## Virtual hardware compatibility probe
+
+Location: `drivers/vm/`
+
+This module detects common devices exposed by QEMU, VirtualBox and VMware and
+prints a boot-time compatibility report. It recognises a large set of known
+virtual devices including e1000/e1000e, PCnet, RTL8139, VMXNET3, virtio-net,
+AHCI, PIIX IDE, virtio-blk/scsi, VMware PVSCSI, LSI SCSI/SAS, QEMU/Bochs VGA,
+VirtualBox VMSVGA/VBoxVGA, VMware SVGA II, QXL, virtio-gpu, AC'97, HDA,
+VirtualBox Guest Device, VMware VMCI and virtio balloon/RNG/console devices.
+
+Statuses are:
+
+- `active` — AuraLite has a usable data path;
+- `partial` — detection/bring-up exists, but the full transfer/data path is WIP;
+- `boot framebuffer` — usable through Limine framebuffer, without native GPU acceleration;
+- `known / no data path` — recognised so users can change VM settings or choose
+  the next driver to implement.
+
+See [`virtual_driver_matrix.md`](virtual_driver_matrix.md) for the full matrix.
 
 ## Adding a new driver
 

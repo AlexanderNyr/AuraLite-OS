@@ -100,7 +100,7 @@ static void cmd_help(void) {
     puts("  ls [path]   - list directory contents");
     puts("  cat <file>  - print file contents");
     puts("  echo <...>  - print arguments");
-    puts("  write <file> <text> - create/overwrite writable file (/tmp or /disk)");
+    puts("  write <file> <text> - create/overwrite writable file (/tmp, /disk, /fat)");
     puts("  run <prog>  - run a program in its own address space");
     puts("  pwd         - print working directory");
     puts("  uname       - print OS information");

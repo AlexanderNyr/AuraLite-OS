@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
+#include "kernel/lib/klog.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
 
@@ -15,6 +16,7 @@ static spinlock_t print_lock;
 void kputchar(char c) {
     uart_putchar(c);
     fb_putchar(c);
+    klog_putchar(c);
 }
 
 void kputs(const char *s) {

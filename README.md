@@ -39,7 +39,7 @@ additional post-phase extensions.
 - USB Mass Storage is ready through the UHCI backend. MSC behind OHCI/EHCI/xHCI
   remains future work.
 - AHCI detects/initialises ports and DMA read/write passes the QEMU AHCI test
-  disk self-test. A tiny persistent AHCI-backed filesystem is mounted at `/disk`.
+  disk self-test. Writable storage mounts include `/disk` and `/fat`.
 - Bluetooth HCI and Wi-Fi 802.11 layers are protocol frameworks that require
   working lower-level USB/chipset drivers.
 
@@ -251,6 +251,7 @@ Start here:
 - [`docs/syscall_abi.md`](docs/syscall_abi.md) — syscall ABI and numbers.
 - [`docs/driver_guide.md`](docs/driver_guide.md) — driver inventory and notes.
 - [`docs/virtual_machines.md`](docs/virtual_machines.md) — VirtualBox/VMware setup.
+- [`docs/virtual_driver_matrix.md`](docs/virtual_driver_matrix.md) — QEMU/VirtualBox/VMware device compatibility matrix.
 - [`PLAN.md`](PLAN.md) — historical phase plan.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
@@ -263,8 +264,8 @@ Short version:
 
 - AHCI sector read/write is enabled and self-tested on the QEMU AHCI test disk;
   broader hardware coverage is still experimental.
-- `/tmp` is a writable tmpfs and `/disk` is a tiny persistent AHCI-backed
-  read/write filesystem for simple files.
+- `/tmp` is a writable tmpfs, `/disk` is a tiny AHCI-backed filesystem, and
+  `/fat` is a FAT32 volume used for persistent files and kernel logs.
 - Scheduler is not SMP-safe; APs are brought online but not used for general
   scheduling.
 - File descriptors are global, not per-process.
@@ -272,8 +273,9 @@ Short version:
 - `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
 - Networking is polling-based and TCP supports one client connection at a time.
 - The persistent `/disk` filesystem is intentionally tiny: flat namespace,
-  8 files maximum, 4 KiB per file. It is a working AHCI/VFS demonstration,
-  not a general-purpose filesystem yet.
+  8 files maximum, 4 KiB per file. `/fat` supports flat 8.3 FAT32 files and
+  automatically receives kernel logs in `/fat/AURALOG.TXT`; directories and
+  long filenames are future work.
 
 See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 
