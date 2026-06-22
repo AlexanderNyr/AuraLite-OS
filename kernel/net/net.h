@@ -25,7 +25,9 @@
  */
 int net_dhcp(void);
 
-/* Initialise the network stack (calls e1000_init internally). */
+/* Initialise the network stack (calls e1000_init internally).
+ * Returns 0 when DHCP succeeded, >0 when fallback static addressing is active,
+ * and <0 when the NIC/link is unavailable. */
 int net_init(void);
 
 /*

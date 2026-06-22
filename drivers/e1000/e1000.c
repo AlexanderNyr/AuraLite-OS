@@ -34,6 +34,13 @@
 #define E1000_RAH     0x5404   /* Receive Address High */
 #define E1000_EERD    0x0014   /* EEPROM Read */
 
+/* CTRL bits */
+#define CTRL_FD       (1u << 0)    /* Full Duplex */
+#define CTRL_SLU      (1u << 6)    /* Set Link Up (useful on emulated NICs) */
+
+/* STATUS bits */
+#define STATUS_LU     (1u << 1)    /* Link Up */
+
 /* RCTL bits */
 #define RCTL_EN       (1u << 1)    /* Receiver Enable */
 #define RCTL_SECRC    (1u << 26)   /* Strip Ethernet CRC */
@@ -180,11 +187,18 @@ int e1000_init(void) {
     while ((mmio_read(E1000_CTRL) & (1u << 26)) && reset_to-- > 0) {
         __asm__ volatile ("pause");
     }
-    /* Configure speed/duplex: FD=1 (full duplex), speed bits for 1 Gbps.
-     * Actually, just let auto-negotiation work — set FRCSPD=0, FRCDPLX=0. */
+
+    /* Force the emulated link up where supported. VirtualBox/VMware legacy
+     * e1000 adapters sometimes report LU=0 until CTRL.SLU/FD is asserted; if
+     * the VM cable is genuinely disconnected this will still remain down. */
+    mmio_write(E1000_CTRL, mmio_read(E1000_CTRL) | CTRL_FD | CTRL_SLU);
+    int link_wait = 100000;
+    while (!(mmio_read(E1000_STATUS) & STATUS_LU) && link_wait-- > 0) {
+        __asm__ volatile ("pause");
+    }
     kprintf("[e1000] STATUS=0x%08x (LU=%u)\n",
             mmio_read(E1000_STATUS),
-            (mmio_read(E1000_STATUS) >> 1) & 1);
+            (mmio_read(E1000_STATUS) & STATUS_LU) ? 1 : 0);
 
     /* 4) Read the MAC address. QEMU's EEPROM emulation can be unreliable, so
      *    we try EEPROM first, then RAL/RAH, and fall back to the QEMU default. */
@@ -295,6 +309,10 @@ void e1000_get_mac(uint8_t mac[6]) {
     memcpy(mac, mac_addr, 6);
 }
 
+int e1000_link_up(void) {
+    return (mmio != NULL && (mmio_read(E1000_STATUS) & STATUS_LU)) ? 1 : 0;
+}
+
 volatile uint32_t *e1000_get_mmio(void) {
     return mmio;
 }
@@ -305,6 +323,9 @@ volatile uint8_t *e1000_get_rx_desc0(void) {
 }
 
 int e1000_send(const void *data, uint32_t len) {
+    if (!e1000_link_up()) {
+        return -1;
+    }
     if (len > E1000_PKT_BUF_SIZE) {
         len = E1000_PKT_BUF_SIZE;
     }
@@ -320,7 +341,7 @@ int e1000_send(const void *data, uint32_t len) {
     mmio_write(E1000_TDT, tx_tail);
 
     /* Wait for the descriptor to be done (DD bit in status). */
-    int timeout = 1000000;
+    int timeout = 100000;
     while ((tx_ring[old_tail].status & 0x01) == 0 && timeout-- > 0) {
         __asm__ volatile ("pause");
     }

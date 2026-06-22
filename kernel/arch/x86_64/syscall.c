@@ -20,6 +20,7 @@
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
+#include "drivers/keyboard/keyboard.h"
 
 #define SYS_READ    0
 #define SYS_WRITE   1
@@ -59,20 +60,54 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         /* a1 = fd, a2 = buffer, a3 = count. */
         int fd = (int)a1;
         if (fd == 0) {
-            /* stdin: serial line input. Poll the UART directly without
-             * yielding (sched_yield from a SYSCALL handler that runs on the
-             * user stack causes context-switch corruption). */
+            /* stdin: line input from PS/2 keyboard and/or serial UART.
+             *
+             * VirtualBox can expose COM1 in a state where bogus bytes appear
+             * readable even when no serial terminal is attached. Filter invalid
+             * UART bytes and also accept PS/2 keyboard input so the shell is
+             * usable from the VM window. */
             char *cbuf = (char *)a2;
             uint64_t count = a3;
             uint64_t got = 0;
             while (got < count) {
-                /* Spin-wait for UART data. This is acceptable for the serial
-                 * console; the alternative (interrupt-driven) is a TODO. */
-                while (!uart_has_data()) {
-                    __asm__ volatile ("pause");
+                int have = 0;
+                unsigned char raw = 0;
+
+                int kc = keyboard_getchar();
+                if (kc >= 0) {
+                    raw = (unsigned char)kc;
+                    have = 1;
+                } else if (uart_has_data()) {
+                    raw = (unsigned char)uart_getchar();
+                    have = 1;
                 }
-                char c = uart_getchar();
+
+                if (!have) {
+                    __asm__ volatile ("pause");
+                    continue;
+                }
+
+                /* Drop floating/noise bytes often seen on unattached serial
+                 * ports. Only ASCII line input is supported here. */
+                if (raw == 0x00 || raw == 0xFF || raw > 0x7E) {
+                    continue;
+                }
+
+                char c = (char)raw;
                 if (c == '\r') c = '\n';
+
+                if (c == '\b' || raw == 0x7F) {
+                    if (got > 0) {
+                        got--;
+                        kputchar('\b'); kputchar(' '); kputchar('\b');
+                    }
+                    continue;
+                }
+
+                if (c != '\n' && c != '\t' && (c < 0x20 || c > 0x7E)) {
+                    continue;
+                }
+
                 cbuf[got++] = c;
                 kputchar(c);   /* echo */
                 if (c == '\n') break;

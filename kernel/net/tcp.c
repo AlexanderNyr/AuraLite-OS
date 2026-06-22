@@ -30,6 +30,7 @@
 
 #define TCP_WINDOW  64240   /* a generous window */
 #define TCP_MSS     1460    /* max segment size (typical Ethernet) */
+#define TCP_RECV_POLLS 1000000
 
 /* ---- TCP header (20 bytes minimum) ---- */
 struct tcp_hdr {
@@ -132,8 +133,8 @@ static uint32_t our_ip;
 extern void net_get_mac(uint8_t mac[6]);
 extern uint32_t net_get_our_ip(void);
 extern int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]);
-extern void net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
-                         const void *payload, uint32_t plen);
+extern int net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
+                        const void *payload, uint32_t plen);
 
 /* ---- Send a TCP segment ---- */
 static void tcp_send_segment(uint8_t flags, const void *data, uint32_t data_len) {
@@ -212,7 +213,7 @@ static void tcp_send_segment(uint8_t flags, const void *data, uint32_t data_len)
 static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
                             uint32_t max_data, int *out_data_len) {
     uint8_t buf[2048];
-    for (int poll = 0; poll < 20000000; poll++) {
+    for (int poll = 0; poll < TCP_RECV_POLLS; poll++) {
         int n = e1000_recv(buf, sizeof(buf));
         if (n < (int)(14 + 20 + 20)) continue;
 

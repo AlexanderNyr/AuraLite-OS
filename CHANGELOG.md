@@ -2,6 +2,28 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [VirtualBox stdin noise fix] 2026-06-22
+
+### Fixed
+- Fixed infinite `auralite# ... : command not found` loops caused by bogus bytes
+  from unattached/floating COM1 serial ports in VirtualBox.
+- `SYS_READ(fd=0)` now accepts PS/2 keyboard input as well as serial input, and
+  filters invalid UART bytes (`0x00`, `0xFF`, non-ASCII/control noise).
+- The init shell sanitises command lines defensively before tokenising them.
+
+## [VirtualBox network boot-timeout tuning] 2026-06-22
+
+### Changed
+- Shortened DHCP/ARP/ICMP/UDP/TCP polling budgets so a disconnected or
+  unsupported VM network does not stall boot for a long time.
+- The e1000 driver now forces `CTRL.SLU`/full-duplex on emulated adapters and
+  exposes link-state detection.
+- If the link is down, networking skips DHCP entirely and boot continues.
+- If DHCP fails, AuraLite keeps fallback static addressing but skips online
+  ping/DNS/TCP self-tests to avoid repeated ARP delays during boot.
+- DHCP DISCOVER/REQUEST and ARP requests now fail fast when TX fails instead of
+  waiting for receive timeouts.
+
 ## [AHCI read/write + tmpfs writable files] 2026-06-22
 
 ### Added

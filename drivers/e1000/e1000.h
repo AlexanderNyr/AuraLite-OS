@@ -37,6 +37,9 @@ int e1000_init(void);
 /* Get our MAC address (6 bytes written into mac[6]). */
 void e1000_get_mac(uint8_t mac[6]);
 
+/* Return non-zero when the emulated NIC reports link-up. */
+int e1000_link_up(void);
+
 /* Send a packet. Returns bytes sent, or -1 on error. */
 int e1000_send(const void *data, uint32_t len);
 

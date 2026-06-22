@@ -76,6 +76,17 @@ struct icmp_hdr {
     uint16_t seq;
 } __attribute__((packed));
 
+/* ---- Poll budgets ----
+ * Keep boot responsive on hypervisors with disconnected/unsupported virtual
+ * networking. QEMU/VirtualBox/VMware NAT replies arrive quickly when link is
+ * healthy; long multi-second spin loops only delay boot when packets cannot be
+ * transmitted or received. */
+#define NET_ARP_POLLS       1000000
+#define NET_ICMP_POLLS      1000000
+#define NET_UDP_POLLS       1000000
+#define NET_DHCP_OFFER_POLLS 1500000
+#define NET_DHCP_ACK_POLLS  1000000
+
 /* ---- State ---- */
 static uint8_t  our_mac[6];
 static uint32_t our_ip;
@@ -128,8 +139,8 @@ static uint16_t checksum(const void *data, uint32_t len) {
 }
 
 /* ---- Ethernet send: wrap payload in an Ethernet frame and transmit. ---- */
-void net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
-                     const void *payload, uint32_t plen) {
+int net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
+                 const void *payload, uint32_t plen) {
     uint8_t frame[1518];
     struct eth_hdr *eh = (struct eth_hdr *)frame;
     memcpy(eh->dst_mac, dst_mac, 6);
@@ -141,7 +152,7 @@ void net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
         memset(frame + total, 0, 60 - total);
         total = 60;   /* minimum Ethernet frame size */
     }
-    e1000_send(frame, total);
+    return e1000_send(frame, total);
 }
 
 /* ---- ARP: resolve an IP address to a MAC. ---- */
@@ -163,13 +174,16 @@ int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
             memset(arp.target_mac, 0, 6);
             arp.target_ip  = htonl_(gateway_ip);
 
-            net_eth_send(broadcast, ETHERTYPE_ARP, &arp, sizeof(arp));
+            if (net_eth_send(broadcast, ETHERTYPE_ARP, &arp, sizeof(arp)) < 0) {
+                kprintf("[net] ARP gateway request TX failed\n");
+                return -1;
+            }
             kprintf("[net] ARP (gateway) for %u.%u.%u.%u\n",
                     (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF,
                     (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
 
             uint8_t buf[2048];
-            for (int poll = 0; poll < 10000000; poll++) {
+            for (int poll = 0; poll < NET_ARP_POLLS; poll++) {
                 int n = e1000_recv(buf, sizeof(buf));
                 if (n < (int)(14 + sizeof(struct arp_pkt))) continue;
                 struct eth_hdr *eh = (struct eth_hdr *)buf;
@@ -211,14 +225,19 @@ int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
     memset(arp.target_mac, 0, 6);
     arp.target_ip  = htonl_(target_ip);
 
-    net_eth_send(broadcast, ETHERTYPE_ARP, &arp, sizeof(arp));
+    if (net_eth_send(broadcast, ETHERTYPE_ARP, &arp, sizeof(arp)) < 0) {
+        kprintf("[net] ARP request TX failed for %u.%u.%u.%u\n",
+                (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
+                (target_ip >> 8) & 0xFF, target_ip & 0xFF);
+        return -1;
+    }
     kprintf("[net] ARP request sent for %u.%u.%u.%u\n",
             (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
             (target_ip >> 8) & 0xFF, target_ip & 0xFF);
 
     /* Poll for the ARP reply. */
     uint8_t buf[2048];
-    for (int poll = 0; poll < 10000000; poll++) {
+    for (int poll = 0; poll < NET_ARP_POLLS; poll++) {
         int n = e1000_recv(buf, sizeof(buf));
         if (n < (int)(14 + sizeof(struct arp_pkt))) {
             continue;
@@ -297,14 +316,17 @@ int net_ping(uint32_t target_ip) {
     memcpy(eh->src_mac, our_mac, 6);
     eh->ethertype = htons_(ETHERTYPE_IPV4);
 
-    e1000_send(pkt, 14 + 20 + 8 + 32);
+    if (e1000_send(pkt, 14 + 20 + 8 + 32) < 0) {
+        kprintf("[net] ICMP echo request TX failed\n");
+        return -1;
+    }
     kprintf("[net] ICMP echo request sent to %u.%u.%u.%u\n",
             (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
             (target_ip >> 8) & 0xFF, target_ip & 0xFF);
 
     /* 5) Poll for the ICMP echo reply. */
     uint8_t buf[2048];
-    for (int poll = 0; poll < 10000000; poll++) {
+    for (int poll = 0; poll < NET_ICMP_POLLS; poll++) {
         int n = e1000_recv(buf, sizeof(buf));
         if (n < (int)(14 + 20 + 8)) {
             continue;
@@ -391,7 +413,9 @@ static int net_udp_send(uint32_t dst_ip, uint16_t dst_port,
         memset(pkt + frame_len, 0, 60 - frame_len);
         frame_len = 60;
     }
-    e1000_send(pkt, frame_len);
+    if (e1000_send(pkt, frame_len) < 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -402,7 +426,7 @@ static int net_udp_send(uint32_t dst_ip, uint16_t dst_port,
 static int net_udp_recv(uint32_t src_ip, uint16_t src_port,
                         void *buf, uint32_t bufsize) {
     uint8_t rbuf[2048];
-    for (int poll = 0; poll < 20000000; poll++) {
+    for (int poll = 0; poll < NET_UDP_POLLS; poll++) {
         int n = e1000_recv(rbuf, sizeof(rbuf));
         if (n < (int)(14 + 20 + 8)) continue;
         struct eth_hdr *eh = (struct eth_hdr *)rbuf;
@@ -735,7 +759,10 @@ int net_dhcp(void) {
             memset(frame + frame_len, 0, 60 - frame_len);
             frame_len = 60;
         }
-        e1000_send(frame, frame_len);
+        if (e1000_send(frame, frame_len) < 0) {
+            kprintf("[dhcp] FAIL: DISCOVER transmit failed (link down or TX timeout)\n");
+            return -1;
+        }
     }
     kprintf("[dhcp] DISCOVER sent (xid=0x%08x)\n", dhcp_xid);
 
@@ -746,7 +773,7 @@ int net_dhcp(void) {
     uint32_t server_id  = 0;
     uint32_t dns_ip     = 0;
 
-    for (int poll = 0; poll < 30000000; poll++) {
+    for (int poll = 0; poll < NET_DHCP_OFFER_POLLS; poll++) {
         int n = e1000_recv(rbuf, sizeof(rbuf));
         if (n <= 0) continue;
         if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
@@ -860,14 +887,17 @@ int net_dhcp(void) {
             memset(frame + frame_len, 0, 60 - frame_len);
             frame_len = 60;
         }
-        e1000_send(frame, frame_len);
+        if (e1000_send(frame, frame_len) < 0) {
+            kprintf("[dhcp] FAIL: REQUEST transmit failed (link down or TX timeout)\n");
+            return -1;
+        }
     }
     kprintf("[dhcp] REQUEST sent (requesting %u.%u.%u.%u)\n",
             (offered_ip >> 24) & 0xFF, (offered_ip >> 16) & 0xFF,
             (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
 
     /* --- Step 4: Wait for DHCPACK --- */
-    for (int poll = 0; poll < 20000000; poll++) {
+    for (int poll = 0; poll < NET_DHCP_ACK_POLLS; poll++) {
         int n = e1000_recv(rbuf, sizeof(rbuf));
         if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
         struct eth_hdr *eh = (struct eth_hdr *)rbuf;
@@ -942,9 +972,15 @@ int net_init(void) {
 
     e1000_get_mac(our_mac);
 
+    if (!e1000_link_up()) {
+        kprintf("[net] link is down; skipping DHCP and network self-tests\n");
+        return -1;
+    }
+
     /* Try DHCP to get a real IP. If it fails, fall back to the hardcoded
      * QEMU defaults (10.0.2.15 / 10.0.2.2). */
-    if (net_dhcp() != 0) {
+    int dhcp_ok = (net_dhcp() == 0);
+    if (!dhcp_ok) {
         kprintf("[net] DHCP failed, using hardcoded IP %u.%u.%u.%u\n",
                 OUR_IP_O0, OUR_IP_O1, OUR_IP_O2, OUR_IP_O3);
     }
@@ -954,7 +990,10 @@ int net_init(void) {
             (our_ip >> 8) & 0xFF, our_ip & 0xFF,
             (gateway_ip >> 24) & 0xFF, (gateway_ip >> 16) & 0xFF,
             (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
-    return 0;
+
+    /* Return 0 only when DHCP succeeded. If DHCP failed, the stack remains
+     * usable with fallback addressing, but boot skips slow online self-tests. */
+    return dhcp_ok ? 0 : 1;
 }
 
 void net_self_test(void) {

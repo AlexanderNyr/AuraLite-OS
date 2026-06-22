@@ -193,6 +193,15 @@ static void cmd_ps(void) {
 /* ---- Shell main loop ---- */
 
 static void process_command(char *line) {
+    /* Defensive sanitising: VM serial ports can occasionally feed garbage when
+     * no terminal is attached. Treat non-printable/non-ASCII bytes as spaces so
+     * they never become bogus commands like "        : command not found". */
+    for (char *p = line; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\r') *p = '\n';
+        else if (c != '\n' && c != '\t' && (c < 0x20 || c > 0x7E)) *p = ' ';
+    }
+
     /* Tokenize the line into command + arguments. */
     int argc = 0;
     char *tok = strtok(line, " \t\n");

@@ -156,10 +156,16 @@ void kmain(void) {
     vfs_self_test();
 
     kprintf("[boot] initialising network stack...\n");
-    net_init();
-    net_self_test();
-    net_dns_self_test();
-    tcp_self_test();
+    int net_status = net_init();
+    if (net_status == 0) {
+        net_self_test();
+        net_dns_self_test();
+        tcp_self_test();
+    } else if (net_status > 0) {
+        kprintf("[net] fallback IP active; skipping online self-tests to keep boot fast\n");
+    } else {
+        kprintf("[net] network unavailable; continuing boot without online self-tests\n");
+    }
 
     /* AHCI SATA driver. */
     kprintf("[boot] initialising AHCI SATA driver...\n");
