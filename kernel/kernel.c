@@ -21,6 +21,8 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
+#include "kernel/fs/tmpfs.h"
+#include "kernel/fs/diskfs.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
@@ -145,6 +147,11 @@ void kmain(void) {
     devfs_init();
     vfs_mount("/dev", &devfs_ops, NULL);
 
+    /* Mount writable tmpfs at "/tmp". */
+    tmpfs_init();
+    vfs_mount("/tmp", &tmpfs_ops, NULL);
+    tmpfs_self_test();
+
     /* Quick VFS sanity check. */
     vfs_self_test();
 
@@ -157,7 +164,11 @@ void kmain(void) {
     /* AHCI SATA driver. */
     kprintf("[boot] initialising AHCI SATA driver...\n");
     ahci_init();
-    /* Self-test disabled until PxCI write issue is resolved. */
+    ahci_self_test();
+    if (diskfs_init() == 0) {
+        vfs_mount("/disk", &diskfs_ops, NULL);
+        diskfs_self_test();
+    }
 
     /* USB UHCI + OHCI + EHCI drivers. */
     kprintf("[boot] initialising USB (UHCI) driver...\n");

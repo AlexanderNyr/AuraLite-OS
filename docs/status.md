@@ -59,7 +59,7 @@ Legend:
 | VFS mount table | ✅ | Longest-prefix mount matching. |
 | USTAR initrd | ✅ | Read-only root with user ELFs. |
 | DevFS | ✅ | `/dev/null`, `/dev/zero`. |
-| Writable filesystem | ❌ | No tmpfs/ext2/FAT yet. |
+| Writable filesystem | ✅/🧪 | `/tmp` tmpfs and tiny persistent `/disk` AHCI filesystem support create/read/write. |
 | Directory vnodes/readdir | 🚧 | `listdir` is special-cased for initrd root. |
 
 ## Syscalls
@@ -105,8 +105,8 @@ Legend:
 
 | Feature | Status | Notes |
 |---|---:|---|
-| AHCI detection/init | 🚧 | Controller/port setup works. |
-| AHCI sector read/write | ❌ | Disabled; PxCI issue causes fault in known test setup. |
+| AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
+| AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
 | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |
 | OHCI controller | 🚧 | Detection/init/port logic; transfer layer not wired to USB core. |
 | EHCI controller | 🚧 | Detection/init/port logic; transfer layer not wired to USB core. |
@@ -141,7 +141,7 @@ Legend:
 1. Validate user pointers in all syscalls.
 2. Add per-process FD tables.
 3. Reap dead threads/processes.
-4. Fix AHCI PxCI fault and enable sector I/O self-test.
-5. Complete USB bulk/control transfer paths across host controllers.
+4. Replace the tiny `/disk` demo filesystem with a larger real filesystem or extend it with directories/free-space management.
+5. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
 6. Replace single global TCP connection with per-connection/socket objects.
 7. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.

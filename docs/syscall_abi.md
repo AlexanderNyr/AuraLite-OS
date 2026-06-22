@@ -95,7 +95,7 @@ Current caveats:
 | Number | Name | Prototype | Status | Notes |
 |---:|---|---|---|---|
 | 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads from serial stdin; `fd>=3` reads VFS files. |
-| 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1` stdout and `fd=2` stderr. |
+| 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write, including `/tmp` tmpfs files. |
 | 2 | `open` | `open(path)` | ✅ | Opens VFS path and returns global FD. |
 | 3 | `close` | `close(fd)` | ✅ | Closes global FD. |
 | 39 | `getpid` | `getpid()` | ✅ | Returns current TCB ID. |

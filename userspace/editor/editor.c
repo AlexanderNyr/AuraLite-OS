@@ -2,7 +2,7 @@
  * editor.c — simple line-based text editor for AuraLite OS.
  *
  * Commands:
- *   :w <filename>  - write buffer to file (not yet supported; prints to stdout)
+ *   :w <filename>  - write buffer to a writable file (for example /tmp/note)
  *   :q             - quit
  *   :p             - print all lines
  *   :d <n>         - delete line n
@@ -38,12 +38,31 @@ static void cmd_delete(int n) {
     printf("Deleted line %d\n", n);
 }
 
+static void cmd_write_file(const char *path) {
+    if (!path || !*path) {
+        puts("usage: :w <filename>");
+        return;
+    }
+    int fd = open(path);
+    if (fd < 0) {
+        printf("Could not open/create %s\n", path);
+        return;
+    }
+    for (int i = 0; i < line_count; i++) {
+        write(fd, lines[i], strlen(lines[i]));
+        write(fd, "\n", 1);
+    }
+    close(fd);
+    printf("Wrote %d line(s) to %s\n", line_count, path);
+}
+
 int main(void) {
     puts("AuraLite Text Editor");
     puts("Type text to add lines. Commands start with ':'.");
-    puts("  :p    print all lines");
-    puts("  :d N  delete line N");
-    puts("  :q    quit");
+    puts("  :p        print all lines");
+    puts("  :d N      delete line N");
+    puts("  :w FILE   write buffer to FILE");
+    puts("  :q        quit");
 
     for (;;) {
         printf("[%d] > ", line_count + 1);
@@ -62,7 +81,13 @@ int main(void) {
                 cmd_delete(ln);
                 continue;
             }
-            puts("Unknown command. :p :d N :q");
+            if (input[1] == 'w') {
+                const char *path = input + 2;
+                while (*path == ' ' || *path == '\t') path++;
+                cmd_write_file(path);
+                continue;
+            }
+            puts("Unknown command. :p :d N :w FILE :q");
             continue;
         }
 

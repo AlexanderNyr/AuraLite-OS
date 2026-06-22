@@ -38,7 +38,8 @@ kmain (kernel.c)
    ├── sched_init()          round-robin scheduler + idle thread
    ├── vfs_init() + initrd   USTAR initrd at /, devfs at /dev
    ├── net_init()            e1000 NIC + DHCP + ARP + ICMP + DNS + TCP tests
-   ├── ahci_init()           AHCI controller/port detection (sector I/O disabled)
+   ├── ahci_init()           AHCI controller/port detection + DMA read/write self-test
+   ├── diskfs_init()         mount tiny persistent AHCI filesystem at /disk
    ├── usb init              UHCI/OHCI/EHCI/xHCI + USB core + MSC protocol layer
    ├── bt_init()/wifi_init() Bluetooth HCI / 802.11 protocol frameworks
    ├── gfx_init()            double-buffered 2D graphics

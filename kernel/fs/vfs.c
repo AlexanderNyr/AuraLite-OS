@@ -33,54 +33,55 @@ int vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data) {
     return -1;
 }
 
-/*
- * Resolve a path to a vnode. Finds the longest matching mount and delegates
- * the remainder of the path to the filesystem's lookup().
- */
-static struct vnode *resolve_path(const char *path) {
-    if (path[0] != '/') {
-        return NULL;
-    }
-
+/* Find the longest matching mount for a path. */
+static int find_mount(const char *path, const char **out_rel) {
+    if (path[0] != '/') return -1;
     int best_mount = -1;
     size_t best_len = 0;
+    size_t path_len = strlen(path);
     for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
-        if (!mounts[i].in_use) {
-            continue;
-        }
+        if (!mounts[i].in_use) continue;
         size_t mlen = strlen(mounts[i].mount_path);
-        if (mlen > strlen(path)) {
-            continue;
-        }
+        if (mlen > path_len) continue;
         if (memcmp(mounts[i].mount_path, path, mlen) == 0) {
+            /* Avoid matching /tmpfile to /tmp. Root is a special prefix. */
+            if (mlen > 1 && path[mlen] != '\0' && path[mlen] != '/') continue;
             if (mlen > best_len) {
                 best_len = mlen;
                 best_mount = i;
             }
         }
     }
-
-    if (best_mount < 0) {
-        return NULL;
-    }
-
-    /* The remaining path is what follows the mount path.
-     * For "/", the root mount, the remaining path is the full path. */
+    if (best_mount < 0) return -1;
     const char *rel = path + best_len;
-    if (*rel == '/') {
-        rel++;
-    }
-    /* If the path IS the mount point itself (e.g. "/dev"), lookup "" . */
-    return mounts[best_mount].ops->lookup(rel);
+    if (*rel == '/') rel++;
+    if (out_rel) *out_rel = rel;
+    return best_mount;
+}
+
+/* Resolve a path to a vnode. */
+static struct vnode *resolve_path(const char *path) {
+    const char *rel = NULL;
+    int m = find_mount(path, &rel);
+    if (m < 0) return NULL;
+    return mounts[m].ops->lookup(rel);
 }
 
 int vfs_open(const char *path) {
     struct vnode *vn = resolve_path(path);
     if (vn == NULL) {
-        return -1;
+        const char *rel = NULL;
+        int m = find_mount(path, &rel);
+        if (m >= 0 && mounts[m].ops->create) {
+            vn = mounts[m].ops->create(rel);
+        }
+        if (vn == NULL) {
+            return -1;
+        }
     }
 
-    for (int i = 0; i < VFS_MAX_FDS; i++) {
+    /* Reserve fd 0/1/2 for stdin/stdout/stderr syscall semantics. */
+    for (int i = 3; i < VFS_MAX_FDS; i++) {
         if (!fd_table[i].in_use) {
             fd_table[i].vn     = vn;
             fd_table[i].pos    = 0;
@@ -127,8 +128,14 @@ int vfs_close(int fd) {
 
 void vfs_list(const char *path) {
     extern void initrd_list(void);
+    extern void tmpfs_list(void);
+    extern void diskfs_list(void);
     if (strcmp(path, "/") == 0) {
         initrd_list();
+    } else if (strcmp(path, "/tmp") == 0 || strcmp(path, "/tmp/") == 0) {
+        tmpfs_list();
+    } else if (strcmp(path, "/disk") == 0 || strcmp(path, "/disk/") == 0) {
+        diskfs_list();
     }
 }
 
@@ -175,6 +182,30 @@ void vfs_self_test(void) {
     }
     vfs_close(fd);
     kprintf("[vfs]   /dev/zero: read OK (4 zero bytes)\n");
+
+    /* Test writable tmpfs through the VFS descriptor path. */
+    fd = vfs_open("/tmp/vfs.txt");
+    if (fd < 0) {
+        kprintf("[vfs] FAIL: cannot create /tmp/vfs.txt\n");
+        return;
+    }
+    const char *tmsg = "vfs writable path";
+    n = vfs_write(fd, tmsg, strlen(tmsg));
+    if (n != (int64_t)strlen(tmsg)) {
+        kprintf("[vfs] FAIL: tmpfs write returned %lld\n", (long long)n);
+        vfs_close(fd);
+        return;
+    }
+    vfs_close(fd);
+    fd = vfs_open("/tmp/vfs.txt");
+    char tbuf[32] = {0};
+    n = vfs_read(fd, tbuf, sizeof(tbuf) - 1);
+    vfs_close(fd);
+    if (n != (int64_t)strlen(tmsg) || strcmp(tbuf, tmsg) != 0) {
+        kprintf("[vfs] FAIL: tmpfs readback mismatch '%s'\n", tbuf);
+        return;
+    }
+    kprintf("[vfs]   /tmp/vfs.txt: create/write/read OK\n");
 
     /* Test the initrd: try to open "/init" (or whatever the first file is). */
     fd = vfs_open("/init");

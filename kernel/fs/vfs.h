@@ -15,6 +15,7 @@
  * For now the VFS supports:
  *   - initrd (USTAR) mounted at "/"          (read-only)
  *   - devfs mounted at "/dev"                (/dev/null, /dev/zero)
+ *   - tmpfs mounted at "/tmp"                (writable in-memory files)
  */
 
 #define VFS_MAX_MOUNTS   8
@@ -33,6 +34,9 @@ struct file;
 struct vfs_ops {
     /* Resolve a path relative to this mount's root; returns the vnode or NULL. */
     struct vnode *(*lookup)(const char *path);
+    /* Create a regular file relative to this mount's root. Optional; read-only
+     * filesystems leave this NULL. */
+    struct vnode *(*create)(const char *path);
     /* Read up to `count` bytes from `vnode` at `pos` into `buf`.
      * Returns bytes read (0 = EOF), or -1 on error. */
     int64_t (*read)(struct vnode *vn, uint64_t pos, void *buf, uint64_t count);

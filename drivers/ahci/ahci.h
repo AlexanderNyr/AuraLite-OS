@@ -35,6 +35,9 @@ int ahci_write(uint32_t port, uint64_t lba, uint32_t count, const void *buf);
 /* Get the number of detected AHCI ports with devices attached. */
 int ahci_get_port_count(void);
 
+/* Return the first detected SATA port, or -1 if no disk is present. */
+int ahci_get_first_port(void);
+
 /* Gate self-test: read sector 0 (MBR) and verify it's non-empty. */
 void ahci_self_test(void);
 

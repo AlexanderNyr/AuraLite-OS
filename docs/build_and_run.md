@@ -68,7 +68,11 @@ build/kernel.elf
 make run
 ```
 
-This uses `tools/run_qemu.sh`.
+This uses `tools/run_qemu.sh`. The script creates a small raw AHCI test disk at
+`build/disk.img` if needed and attaches it through a QEMU AHCI controller. The
+kernel AHCI self-test reads sector 0 and verifies write/readback on scratch
+sector 1. If AHCI is present, AuraLite also mounts a tiny persistent filesystem
+at `/disk` and runs a create/write/read self-test.
 
 If you want a simpler command without the AHCI test disk:
 

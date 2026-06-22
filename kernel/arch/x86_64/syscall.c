@@ -44,15 +44,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     (void)a4; (void)a5; (void)a6;
     switch (num) {
     case SYS_WRITE: {
-        /* a1 = fd, a2 = buffer, a3 = length. fd 1 (stdout) and 2 (stderr). */
-        if (a1 != 1 && a1 != 2) {
-            return (uint64_t)-1;
+        /* a1 = fd, a2 = buffer, a3 = length. fd 1/2 go to console; fd >= 3
+         * writes through the VFS (tmpfs/devfs/etc.). */
+        if (a1 == 1 || a1 == 2) {
+            const char *buf = (const char *)a2;
+            for (uint64_t i = 0; i < a3; i++) {
+                kputchar(buf[i]);
+            }
+            return a3;
         }
-        const char *buf = (const char *)a2;
-        for (uint64_t i = 0; i < a3; i++) {
-            kputchar(buf[i]);
-        }
-        return a3;
+        return (uint64_t)vfs_write((int)a1, (const void *)a2, a3);
     }
     case SYS_READ: {
         /* a1 = fd, a2 = buffer, a3 = count. */

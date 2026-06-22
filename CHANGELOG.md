@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [AHCI read/write + tmpfs writable files] 2026-06-22
+
+### Added
+- Fixed and enabled AHCI DMA sector I/O:
+  - command header PRDTL is now written to the high 16 bits of DW0;
+  - port interrupt/error state is cleared before command issue;
+  - command issue waits for BSY/DRQ to clear;
+  - AHCI self-test now reads sector 0, writes scratch sector 1, and reads it
+    back to verify DMA read/write.
+- `tools/run_qemu.sh` now creates a small raw AHCI test disk automatically and
+  forces CD boot order.
+- Added `tmpfs`, a writable in-memory filesystem mounted at `/tmp`.
+- Added `diskfs`, a tiny persistent AHCI-backed filesystem mounted at `/disk`
+  when a SATA disk is available (8 flat files, 4 KiB each).
+- VFS can now create files on filesystems that provide a `create` operation.
+- VFS file descriptors start at 3, preserving stdin/stdout/stderr semantics.
+- `SYS_WRITE` now writes to VFS descriptors `fd >= 3` in addition to console
+  stdout/stderr.
+- Shell command `write <file> <text>` demonstrates writable files, e.g.
+  `write /tmp/note hello` then `cat /tmp/note`.
+- The userspace editor now supports `:w <filename>` for saving to writable files.
+
+### Verified
+- QEMU AHCI self-test passes: sector 0 read + sector 1 write/readback.
+- tmpfs self-test passes at boot.
+- diskfs self-test passes: create/write/read `/disk/persist.txt`.
+
 ## [USB Mass Storage over UHCI] 2026-06-22
 
 ### Added

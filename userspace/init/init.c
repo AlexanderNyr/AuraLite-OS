@@ -62,6 +62,25 @@ static void cmd_echo(int argc, char **argv) {
     putchar('\n');
 }
 
+static void cmd_write_file(int argc, char **argv) {
+    if (argc < 3) {
+        puts("usage: write <file> <text>");
+        return;
+    }
+    int fd = open(argv[1]);
+    if (fd < 0) {
+        printf("write: cannot open/create %s\n", argv[1]);
+        return;
+    }
+    for (int i = 2; i < argc; i++) {
+        if (i > 2) write(fd, " ", 1);
+        write(fd, argv[i], strlen(argv[i]));
+    }
+    write(fd, "\n", 1);
+    close(fd);
+    printf("wrote %s\n", argv[1]);
+}
+
 static void cmd_pwd(void) {
     puts("/");
 }
@@ -81,6 +100,7 @@ static void cmd_help(void) {
     puts("  ls [path]   - list directory contents");
     puts("  cat <file>  - print file contents");
     puts("  echo <...>  - print arguments");
+    puts("  write <file> <text> - create/overwrite writable file (/tmp or /disk)");
     puts("  run <prog>  - run a program in its own address space");
     puts("  pwd         - print working directory");
     puts("  uname       - print OS information");
@@ -194,6 +214,8 @@ static void process_command(char *line) {
         cmd_cat(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "echo") == 0) {
         cmd_echo(argc, cmd_argv);
+    } else if (strcmp(cmd, "write") == 0) {
+        cmd_write_file(argc, cmd_argv);
     } else if (strcmp(cmd, "pwd") == 0) {
         cmd_pwd();
     } else if (strcmp(cmd, "uname") == 0) {

@@ -21,7 +21,7 @@ See also [`status.md`](status.md) for a feature matrix.
 | PIT | `drivers/timer/` | ✅ | 100 Hz system tick and sleeps. |
 | PCI | `drivers/pci/` | ✅ | Config-space reads/writes and simple scanning. |
 | e1000 NIC | `drivers/e1000/` | ✅ | Intel 8254x legacy TX/RX rings. |
-| AHCI | `drivers/ahci/` | 🚧 | SATA controller/port setup; sector I/O disabled. |
+| AHCI | `drivers/ahci/` | ✅/🧪 | SATA controller/port setup and DMA sector read/write self-test. |
 | UHCI | `drivers/usb/uhci.c` | ✅/🧪 | USB 1.1 controller + CONTROL/BULK TD/QH transfers. |
 | OHCI | `drivers/usb/ohci.c` | 🚧 | Controller/port bring-up. |
 | EHCI | `drivers/usb/ehci.c` | 🚧 | Controller/port bring-up. |
@@ -167,12 +167,18 @@ Current implemented pieces:
 - SATA signature detection;
 - command list, FIS receive area and command table allocation.
 
-Known issue:
+Current status:
 
-- issuing a command through `PxCI` currently triggers a fault in the known QEMU
-  test path, so the AHCI self-test is disabled.
+- DMA `READ DMA EXT` and `WRITE DMA EXT` work in the QEMU AHCI test setup;
+- the boot self-test reads sector 0, writes a scratch signature to sector 1 and
+  reads it back;
+- `kernel/fs/diskfs.c` mounts a tiny persistent AHCI-backed filesystem at
+  `/disk` when a SATA disk is present;
+- broader real-hardware and non-QEMU hypervisor coverage is still experimental.
 
-Do not rely on AHCI sector read/write until this is fixed.
+The earlier PxCI issue was fixed by programming the command header PRDTL field
+correctly and by clearing sticky port error/interrupt state before issuing the
+command.
 
 ## USB
 

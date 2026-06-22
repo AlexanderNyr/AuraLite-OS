@@ -38,8 +38,8 @@ additional post-phase extensions.
   on controller/port bring-up and detection.
 - USB Mass Storage is ready through the UHCI backend. MSC behind OHCI/EHCI/xHCI
   remains future work.
-- AHCI detects and initialises ports, but sector I/O is disabled because PxCI
-  command issue currently faults under the known test setup.
+- AHCI detects/initialises ports and DMA read/write passes the QEMU AHCI test
+  disk self-test. A tiny persistent AHCI-backed filesystem is mounted at `/disk`.
 - Bluetooth HCI and Wi-Fi 802.11 layers are protocol frameworks that require
   working lower-level USB/chipset drivers.
 
@@ -261,15 +261,19 @@ Start here:
 
 Short version:
 
-- AHCI sector read/write is not enabled.
-- USB Mass Storage transport is incomplete.
+- AHCI sector read/write is enabled and self-tested on the QEMU AHCI test disk;
+  broader hardware coverage is still experimental.
+- `/tmp` is a writable tmpfs and `/disk` is a tiny persistent AHCI-backed
+  read/write filesystem for simple files.
 - Scheduler is not SMP-safe; APs are brought online but not used for general
   scheduling.
 - File descriptors are global, not per-process.
 - User pointers passed to syscalls are not yet validated.
 - `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
 - Networking is polling-based and TCP supports one client connection at a time.
-- There is no persistent writable filesystem yet.
+- The persistent `/disk` filesystem is intentionally tiny: flat namespace,
+  8 files maximum, 4 KiB per file. It is a working AHCI/VFS demonstration,
+  not a general-purpose filesystem yet.
 
 See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 
