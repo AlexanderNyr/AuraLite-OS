@@ -2,6 +2,30 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Wi-Fi (IEEE 802.11)] 2026-06-21
+
+### Added
+- `drivers/wifi/wifi.{c,h}`: IEEE 802.11 Wi-Fi MAC layer management.
+  - **802.11 frame structures**: Frame Control (type/subtype bit fields),
+    Management header (24 bytes), Beacon/Probe Response body, Authentication
+    body, Association Request/Response body
+  - **Active scanning**: builds Probe Request frames with SSID wildcard,
+    Supported Rates, and DS Parameter IEs; sends on channels 1-11
+  - **Information Element parser**: extracts SSID, channel, RSN (WPA2)
+    from Beacon/Probe Response frames
+  - **Connection state machine**: DISCONNECTED → SCANNING → AUTHENTICATING →
+    ASSOCIATING → CONNECTED → ERROR
+  - **Authentication**: Open System auth frame construction
+  - **Association**: Association Request with capability, listen interval,
+    SSID IE, and Supported Rates IE
+  - **Data frame conversion**: Ethernet → 802.11 Data frame with LLC/SNAP
+    header, addr1=BSSID, addr2=our MAC, addr3=destination
+  - **Driver interface**: `wifi_driver_t` with `tx_raw`, `set_channel`,
+    `get_mac` callbacks — any wireless NIC chipset driver (Intel iwlwifi,
+    Realtek rtl8188, Atheros ath9k) can register
+  - `wifi_init()`, `wifi_scan()`, `wifi_connect()`, `wifi_send_data()`,
+    `wifi_get_state()`, `wifi_get_bssid()`
+
 ## [Bluetooth HCI] 2026-06-21
 
 ### Added

@@ -38,6 +38,7 @@
 #include "drivers/usb/usb_core.h"
 #include "drivers/usb/msc.h"
 #include "drivers/bluetooth/bt.h"
+#include "drivers/wifi/wifi.h"
 #include "drivers/timer/pit.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
@@ -188,6 +189,11 @@ void kmain(void) {
     kprintf("[boot] initialising Bluetooth HCI...\n");
     bt_init();
     bt_self_test();
+
+    /* Wi-Fi. */
+    kprintf("[boot] initialising Wi-Fi (802.11) subsystem...\n");
+    wifi_init();
+    wifi_self_test();
 
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
     kprintf("[boot] initialising graphics + keyboard + mouse...\n");
