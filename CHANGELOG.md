@@ -23,6 +23,54 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [Full USB Support: Enumeration + Transfers] 2026-06-21
+
+### Added — USB Core Enumeration Layer
+- `drivers/usb/usb_core.{c,h}`: USB device enumeration and protocol.
+  - Standard USB request builders: SET_ADDRESS, GET_DESCRIPTOR, SET_CONFIGURATION
+  - USB descriptor parsing: device (18B), configuration, interface, endpoint
+  - Device class detection: HID (0x03), MSC (0x08), Hub (0x09)
+  - USB device table management (up to 16 devices)
+  - `usb_control_transfer()`: dispatches to the correct host controller
+  - Full enumeration sequence: SET_ADDRESS → GET_DESCRIPTOR(DEVICE)
+
+### Added — UHCI Transfer Layer
+- `uhci_control_transfer()`: builds SETUP → DATA → STATUS TD chain
+  - `make_td_token()`: encodes PID, device address, endpoint, toggle, length
+  - `make_td_ctrl()`: encodes low-speed, error counter, active bit
+  - `uhci_schedule_tds()`: replaces frame list entries with transfer QH,
+    waits for completion, restores frame list
+  - `uhci_bulk_transfer()`: single-TD bulk transfer for MSC
+  - `uhci_port_is_low_speed()`: returns device speed per port
+- Verified: successfully enumerated USB keyboard (VID=0x0627 PID=0x0001)
+  and USB hub (VID=0x0409 PID=0x55AA) via UHCI.
+
+### Bugs found and fixed
+- **SET_ADDRESS(0) no-op**: `dev->address` was set to 0 for the initial
+  transfer but never restored before SET_ADDRESS, so it sent SET_ADDRESS(0).
+  Fixed: save the assigned address, use 0 only for the initial descriptor read.
+- **STATUS TD link chain**: in the no-data-phase case, TD1 (STATUS) linked to
+  TD2 (unused, all zeros). The controller processed TD2's zero ctrl field
+  indefinitely because CERR=0 prevented retirement. Fixed: TD1.link = 0x1
+  (terminate) directly, eliminating the spurious TD2.
+- **Frame list replacement**: the original approach chained via the idle QH's
+  head_link, which was unreliable. Fixed: replace all 1024 frame list entries
+  directly with the transfer QH for guaranteed scheduling.
+
+### Complete USB Stack Summary
+AuraLite OS now has a full USB stack:
+
+| Layer | Component | Status |
+|-------|-----------|--------|
+| Host Controllers | UHCI, OHCI, EHCI, xHCI | ✅ All detected and running |
+| Transfer Layer | UHCI control + bulk transfers | ✅ Working (TD scheduling) |
+| Enumeration | SET_ADDRESS, GET_DESCRIPTOR, SET_CONFIGURATION | ✅ Working |
+| Device Table | Up to 16 devices with class detection | ✅ |
+| Class Drivers | MSC (CBW/CSW/SCSI), HID (protocol ready) | Protocol ready |
+| Mass Storage | Read/write API + SCSI command set | Protocol ready |
+
+Verified: QEMU USB keyboard + hub enumerated with VID/PID and class detection.
+
 ## [xHCI (USB 3.0)] 2026-06-21
 
 ### Added

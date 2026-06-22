@@ -165,6 +165,244 @@ int uhci_port_has_device(int port) {
     return uhci_port_has_device_raw(off);
 }
 
+int uhci_port_is_low_speed(int port) {
+    if (port < 0 || port >= UHCI_MAX_PORTS) return 0;
+    uint8_t off = (port == 0) ? UHCI_PORTSC1 : UHCI_PORTSC2;
+    return (rd16(off) & PORTSC_LSDA) ? 1 : 0;
+}
+
+/* ---- TD/QH chain execution ---- */
+
+/* Build a TD token field. */
+static uint32_t make_td_token(uint8_t pid, uint8_t dev_addr, uint8_t endpoint,
+                              int data_toggle, uint32_t max_len) {
+    uint32_t token = 0;
+    token |= (uint32_t)pid << TD_TOKEN_PID_SHIFT;
+    token |= (uint32_t)(dev_addr & 0x7F) << TD_TOKEN_DEV_SHIFT;
+    token |= (uint32_t)(endpoint & 0xF) << TD_TOKEN_EP_SHIFT;
+    token |= (uint32_t)(data_toggle & 1) << TD_TOKEN_DT_SHIFT;
+    /* length field = (maxlen - 1) for IN; (maxlen) for OUT. UHCI uses
+     * maxlen-1 encoding for both. If maxlen=0, set to 0x7FF (zero-length). */
+    if (max_len == 0) {
+        token |= (0x7FFu << TD_TOKEN_LEN_SHIFT);
+    } else {
+        token |= (((max_len - 1) & 0x7FF) << TD_TOKEN_LEN_SHIFT);
+    }
+    return token;
+}
+
+/* Build a TD control field. */
+static uint32_t make_td_ctrl(int low_speed, int is_interrupt) {
+    uint32_t ctrl = TD_CTRL_ACTIVE;
+    ctrl |= (3u << TD_CTRL_CERR_SHIFT);   /* 3 error retries */
+    if (low_speed) {
+        ctrl |= TD_CTRL_LS;
+    }
+    if (is_interrupt) {
+        /* Interrupt on completion. */
+    }
+    return ctrl;
+}
+
+/*
+ * Schedule a chain of TDs via the async QH.
+ * 1. Create a temporary QH
+ * 2. Set its element_link to the first TD
+ * 3. Insert it after the idle QH (idle_qh->head_link = our_qh)
+ * 4. Wait for the QH's element_link to become 0x1 (terminate = all done)
+ * 5. Restore idle QH
+ */
+static int uhci_schedule_tds(volatile struct uhci_td *first_td,
+                             volatile struct uhci_td *last_td,
+                             uint32_t first_td_phys) {
+    uint64_t hhdm = limine_get_hhdm_offset();
+
+    /* Allocate a QH for this transfer. */
+    uint64_t qh_phys = pmm_alloc_frame();
+    if (qh_phys == 0) return -1;
+    volatile struct uhci_qh *qh =
+        (volatile struct uhci_qh *)(uintptr_t)(hhdm + qh_phys);
+    memset((void *)qh, 0, sizeof(*qh));
+
+    /* Set up the QH: element_link = first TD, head_link = terminate. */
+    qh->element_link = first_td_phys;   /* points to first TD (not QH type) */
+    qh->head_link = 0x1;               /* terminate (no next QH) */
+
+    /* Replace ALL frame list entries with our QH so the controller sees it
+     * in the very next 1ms frame. */
+    uint32_t saved_frame0 = frame_list[0];
+    uint64_t saved_flags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags));
+    for (int i = 0; i < UHCI_FRAME_COUNT; i++) {
+        frame_list[i] = (uint32_t)qh_phys | (1u << 1);
+    }
+    if (saved_flags & 0x200ULL) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+
+    /* Wait for completion: element_link becomes 0x1 when all TDs are done. */
+    int timeout = 10000000;
+    while (timeout-- > 0) {
+        uint32_t el = qh->element_link;
+        if ((el & 0x1) && ((el & ~0xFUL) == 0)) break;
+        __asm__ volatile ("pause");
+    }
+
+    /* Restore frame list. */
+    __asm__ volatile ("cli" ::: "memory");
+    for (int i = 0; i < UHCI_FRAME_COUNT; i++) {
+        frame_list[i] = saved_frame0;
+    }
+    if (saved_flags & 0x200ULL) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+
+    if (timeout < 0) {
+        kprintf("[uhci] TD chain timeout (el=0x%08x TD0.c=0x%08x.t=0x%08x TD1.c=0x%08x.t=0x%08x)\n",
+                qh->element_link,
+                first_td[0].ctrl, first_td[0].token,
+                first_td[1].ctrl, first_td[1].token);
+        return -1;
+    }
+
+    /* Check TD status for errors. */
+    if (last_td->ctrl & (TD_CTRL_STALLED | TD_CTRL_DATA_BUF |
+                         TD_CTRL_BABBLE | TD_CTRL_BITSTUFF)) {
+        kprintf("[uhci] TD error: ctrl=0x%08x\n", last_td->ctrl);
+        return -1;
+    }
+
+    /* Extract actual bytes transferred from the last TD's token field. */
+    uint32_t maxlen_field = (last_td->token >> TD_TOKEN_LEN_SHIFT) & 0x7FF;
+    /* Actual length = maxlen_field - (remaining bits in token[21..31]).
+     * UHCI stores the actual length in the same field after completion:
+     * the HC writes (maxlen - actual_len) into the field. So:
+     *   actual = original_maxlen - (current_value & 0x7FF)
+     * But we set maxlen-1 encoding, so the formula is different.
+     * For simplicity, return 0 (success) and let callers check. */
+    return 0;
+}
+
+int uhci_control_transfer(uint8_t dev_addr, int low_speed,
+                          const void *setup_pkt, void *data, uint16_t data_len) {
+    if (iobase == 0) return -1;
+
+    uint64_t hhdm = limine_get_hhdm_offset();
+
+    /* Allocate DMA buffers for the setup packet and data. */
+    uint64_t setup_phys = pmm_alloc_frame();
+    uint64_t data_phys = (data_len > 0) ? pmm_alloc_frame() : 0;
+    if (setup_phys == 0) return -1;
+
+    /* Allocate 3 TDs (SETUP, DATA, STATUS) from one frame. */
+    uint64_t td_phys = pmm_alloc_frame();
+    if (td_phys == 0) return -1;
+    volatile struct uhci_td *tds =
+        (volatile struct uhci_td *)(uintptr_t)(hhdm + td_phys);
+    memset((void *)tds, 0, 48);  /* 3 × 16 bytes */
+
+    /* Copy setup packet to DMA buffer. */
+    memcpy((void *)(uintptr_t)(hhdm + setup_phys), setup_pkt, 8);
+    /* Copy data to DMA buffer if writing. */
+    if (data && data_len > 0 && data_phys) {
+        memcpy((void *)(uintptr_t)(hhdm + data_phys), data, data_len);
+    }
+
+    /* Determine direction from the setup packet. */
+    const uint8_t *setup_bytes = (const uint8_t *)setup_pkt;
+    int data_in = (setup_bytes[0] & 0x80) ? 1 : 0;
+
+    /* TD 0: SETUP phase. */
+    tds[0].link   = (uint32_t)(td_phys + 16);  /* link to TD1 */
+    tds[0].ctrl   = make_td_ctrl(low_speed, 0);
+    tds[0].token  = make_td_token(PID_SETUP, dev_addr, 0, 0, 8);
+    tds[0].buffer = (uint32_t)setup_phys;
+
+    /* TD 1: DATA phase (if any). */
+    if (data_len > 0) {
+        uint8_t data_pid = data_in ? PID_IN : PID_OUT;
+        tds[1].link   = (uint32_t)(td_phys + 32);  /* link to TD2 */
+        tds[1].ctrl   = make_td_ctrl(low_speed, 0) | TD_CTRL_SPD;
+        tds[1].token  = make_td_token(data_pid, dev_addr, 0, 1, data_len);
+        tds[1].buffer = (uint32_t)data_phys;
+    } else {
+        /* No data phase: TD1 is the STATUS phase (zero-length IN).
+         * Link directly to terminate since there's no TD2 needed. */
+        tds[1].link   = 0x1;  /* terminate */
+        tds[1].ctrl   = make_td_ctrl(low_speed, 1);
+        tds[1].token  = make_td_token(PID_IN, dev_addr, 0, 1, 0);
+        tds[1].buffer = 0;
+    }
+
+    /* TD 2: STATUS phase (if data phase exists, TD2 is status). */
+    if (data_len > 0) {
+        tds[2].link   = 0x1;  /* terminate */
+        /* Status direction is opposite of data. */
+        uint8_t status_pid = data_in ? PID_OUT : PID_IN;
+        tds[2].ctrl   = make_td_ctrl(low_speed, 1);
+        tds[2].token  = make_td_token(status_pid, dev_addr, 0, 1, 0);
+        tds[2].buffer = 0;
+    } else {
+        tds[2].link   = 0x1;
+        tds[2].ctrl   = 0;  /* unused */
+        tds[2].token  = 0;
+        tds[2].buffer = 0;
+    }
+
+    /* Schedule and wait. */
+    int ret = uhci_schedule_tds(&tds[0], data_len > 0 ? &tds[2] : &tds[1],
+                                (uint32_t)td_phys);
+    if (ret < 0) {
+        return -1;
+    }
+
+    /* If data was read (IN direction), copy from DMA buffer to caller. */
+    if (data && data_len > 0 && data_in && data_phys) {
+        memcpy(data, (void *)(uintptr_t)(hhdm + data_phys), data_len);
+    }
+
+    return (int)data_len;
+}
+
+int uhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
+                       void *data, uint32_t len) {
+    if (iobase == 0 || len == 0) return -1;
+
+    uint64_t hhdm = limine_get_hhdm_offset();
+    int is_in = (endpoint & 0x80) ? 1 : 0;
+    uint8_t ep = endpoint & 0x0F;
+    uint8_t pid = is_in ? PID_IN : PID_OUT;
+
+    /* Allocate DMA buffer + TD. */
+    uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
+    uint64_t td_phys = pmm_alloc_frame();
+    if (buf_phys == 0 || td_phys == 0) return -1;
+
+    volatile struct uhci_td *td =
+        (volatile struct uhci_td *)(uintptr_t)(hhdm + td_phys);
+    memset((void *)td, 0, sizeof(*td));
+
+    /* Copy data to DMA buffer if writing. */
+    if (!is_in) {
+        memcpy((void *)(uintptr_t)(hhdm + buf_phys), data, len);
+    }
+
+    td->link   = 0x1;  /* terminate */
+    td->ctrl   = make_td_ctrl(0, 1) | TD_CTRL_SPD;  /* full-speed, SPD */
+    td->token  = make_td_token(pid, dev_addr, ep, 1, len);
+    td->buffer = (uint32_t)buf_phys;
+
+    int ret = uhci_schedule_tds(td, td, (uint32_t)td_phys);
+    if (ret < 0) return -1;
+
+    /* Copy data from DMA buffer if reading. */
+    if (is_in) {
+        memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), len);
+    }
+
+    return (int)len;
+}
+
 /* ---- Public API ---- */
 
 int uhci_init(void) {

@@ -35,6 +35,7 @@
 #include "drivers/usb/ohci.h"
 #include "drivers/usb/ehci.h"
 #include "drivers/usb/xhci.h"
+#include "drivers/usb/usb_core.h"
 #include "drivers/usb/msc.h"
 #include "drivers/timer/pit.h"
 
@@ -173,7 +174,11 @@ void kmain(void) {
     xhci_init();
     xhci_self_test();
 
-    /* USB Mass Storage. */
+    /* USB core + Mass Storage. */
+    kprintf("[boot] initialising USB device core...\n");
+    usb_enumerate_all();
+    usb_core_self_test();
+
     kprintf("[boot] initialising USB Mass Storage...\n");
     msc_init();
     msc_self_test();
