@@ -113,7 +113,7 @@ auralite/
 │   ├── keyboard/            # PS/2 keyboard (scan-code set 1, IRQ 1)
 │   ├── mouse/               # PS/2 mouse (8042 aux, IRQ 12)
 │   ├── timer/               # 8254 PIT (100 Hz)
-│   ├── usb/                # UHCI (USB 1.1) host controller driver
+│   ├── usb/                # UHCI + OHCI (USB 1.1), Mass Storage (MSC/CBW/SCSI)
 │   └── e1000/               # Intel 82540EM NIC (MMIO, TX/RX descriptor rings)
 ├── libc/                    # user-space libc (crt0, syscall wrappers, printf, string)
 ├── userspace/

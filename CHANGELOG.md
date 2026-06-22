@@ -23,6 +23,37 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 - CI gate message updated to match the new "[gfx] framebuffer GUI + window
   manager rendered" output.
 
+## [OHCI + USB Mass Storage] 2026-06-21
+
+### Added — OHCI (USB 1.1)
+- `drivers/usb/ohci.{c,h}`: OHCI host controller driver for memory-mapped USB.
+  - PCI detection (class 0x0C/0x03, prog_if 0x10)
+  - Controller reset, HCCA allocation (256-byte DMA structure)
+  - Frame interval, periodic start, low-speed threshold setup
+  - Root hub port enumeration (up to 15 ports)
+  - Port reset, port enable, power-on sequencing
+  - Operational state transition (RESET → OPERATIONAL)
+  - ED (Endpoint Descriptor) and TD (Transfer Descriptor) structures defined
+  - Frame counter verification
+  - Verified: detects USB device on OHCI port in QEMU with `-device pci-ohci`
+
+### Added — USB Mass Storage (MSC)
+- `drivers/usb/msc.{c,h}`: USB Mass Storage Class (Bulk-Only Transport).
+  - CBW (Command Block Wrapper) builder with correct 31-byte layout
+  - CSW (Command Status Wrapper) parser
+  - SCSI command builders: INQUIRY, READ_CAPACITY, READ(10), WRITE(10),
+    TEST_UNIT_READY, REQUEST_SENSE
+  - `msc_exec_scsi()` transport function (stub — needs USB bulk transfer layer)
+  - Reads from both UHCI and OHCI controllers for device detection
+  - Full block-device API: `msc_read()`, `msc_write()`, `msc_get_sector_count()`
+
+### Status
+- **OHCI**: Controller detection, reset, port enumeration, and operational
+  transition all verified working. Frame counter advancing confirms scheduling.
+- **MSC**: CBW/CSW protocol layer and SCSI command set are fully implemented
+  and unit-testable. Actual USB bulk transfers require the UHCI/OHCI TD
+  scheduling layer to complete the data path.
+
 ## [Boot from USB] 2026-06-21
 
 ### Added

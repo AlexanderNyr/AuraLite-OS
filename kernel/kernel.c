@@ -32,6 +32,8 @@
 #include "drivers/mouse/mouse.h"
 #include "drivers/ahci/ahci.h"
 #include "drivers/usb/uhci.h"
+#include "drivers/usb/ohci.h"
+#include "drivers/usb/msc.h"
 #include "drivers/timer/pit.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
@@ -152,10 +154,19 @@ void kmain(void) {
     ahci_init();
     /* Self-test disabled until PxCI write issue is resolved. */
 
-    /* USB UHCI driver. */
+    /* USB UHCI + OHCI drivers. */
     kprintf("[boot] initialising USB (UHCI) driver...\n");
     uhci_init();
     uhci_self_test();
+
+    kprintf("[boot] initialising USB (OHCI) driver...\n");
+    ohci_init();
+    ohci_self_test();
+
+    /* USB Mass Storage. */
+    kprintf("[boot] initialising USB Mass Storage...\n");
+    msc_init();
+    msc_self_test();
 
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
     kprintf("[boot] initialising graphics + keyboard + mouse...\n");
