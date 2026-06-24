@@ -2,6 +2,67 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Full desktop GUI] 2026-06-24
+
+### Added — kernel GUI subsystem (`kernel/gui/`, ~1100 lines)
+- Window manager with Z-ordering, focus, drag/resize/minimize/maximize/close,
+  per-window back buffer, full-screen compositor running in a dedicated
+  kernel thread (~30 Hz).
+- Per-window event ring (mouse + keyboard, 64 events deep) with double-click
+  detection, scroll-wheel deltas, modifier state.
+- Mouse cursor with 7 distinct shapes (arrow, ibeam, hand, h/v/diagonal
+  resize, wait).
+- Themed window decorations + taskbar with start button, window list and
+  live wall-clock.
+- Desktop gradient background.
+
+### Added — GUI syscalls
+- `SYS_GUI_CALL (200)` — packed dispatcher for 21 window-lifecycle &
+  drawing ops (create/destroy/show/hide/move/resize/title/focus/min/max/
+  restore/clear/fill_rect/draw_rect/draw_line/draw_text/draw_pixel/
+  invalidate/render/set_cursor/get_size).
+- `SYS_GUI_EVENT (201)` — non-blocking and blocking event poll.
+- **Bug fix**: rewrote `syscall_entry.asm` to properly pass all 6 SYSCALL
+  arguments to `syscall_dispatch` via the SysV ABI (previously a4..a6 were
+  garbage; the bug was latent because no syscall used >3 args before).
+
+### Added — libauragui user-space toolkit (~700 lines)
+- Thin C wrappers around GUI syscalls (`ag_window_*`, `ag_draw_*`).
+- Widget framework: label, button, textbox, checkbox, slider, progress,
+  listbox, panel.
+- Layout helper (`ag_view_t`) with auto-dispatch, focus tracking and
+  Tab/Shift+Tab traversal.
+- Modal helpers: `ag_alert()`, `ag_confirm()`.
+- Blocking event loop `ag_view_run()`.
+
+### Added — keyboard/mouse driver upgrades
+- Keyboard: full modifier tracking (Shift/Ctrl/Alt/CapsLock), F1-F12,
+  arrows/Home/End/PgUp/PgDn/Delete; new rich `keyboard_get_event()` ring.
+- Mouse: IntelliMouse 4-byte mode probe → scroll-wheel deltas; new
+  `mouse_get_event()` queue.
+
+### Added — 7 bundled GUI applications (~700 lines)
+- `gcalc` — graphical calculator
+- `gedit` — text editor with VFS load/save
+- `gfiles` — file manager (browses /, /tmp, /fat, /ext2)
+- `gterm` — GUI terminal emulator
+- `gsysmon` — animated system monitor
+- `gabout` — about box
+- `glaunch` — application launcher (auto-spawned by the shell via `gui`)
+
+### Added — integration test
+- `tests/integration/cases/test_gui.sh` (9 asserts): boots AuraLite under
+  QEMU VNC, asserts the kernel GUI self-test, captures two screenshots
+  via `vncdotool`, verifies the desktop is non-black and that launching
+  an app changes the framebuffer.
+
+### Verified
+- `make test-integration` → **14/14 cases, 99+ assertions PASSED**.
+- Visual confirmation: full Application Launcher window with Calculator,
+  Text Editor, File Manager, Terminal, System Monitor, About buttons
+  alongside the GUI self-test windows, taskbar with 4 entries and live
+  clock.  Screenshot captured via VNC at boot.
+
 ## [Full FAT32 + ext2 filesystems] 2026-06-24
 
 ### Added — FAT32

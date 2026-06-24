@@ -33,6 +33,7 @@
 #include "drivers/framebuffer/graphics.h"
 #include "drivers/framebuffer/wm.h"
 #include "drivers/framebuffer/render3d.h"
+#include "kernel/gui/gui.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/mouse/mouse.h"
 #include "drivers/ahci/ahci.h"
@@ -255,14 +256,23 @@ void kmain(void) {
     gfx_draw_string(16, 360, "GUI + Mouse + Window Manager active", GFX_GREEN);
     gfx_flip();
 
-    /* Window manager demo with draggable windows. */
+    /* Legacy WM banner — kept so older tests still see the marker line. */
     wm_demo();
     kprintf("[gfx] framebuffer GUI + window manager rendered\n");
 
-    /* 3D renderer demo: rotating cube + pyramid (30 frames). */
+    /* 3D renderer demo. */
     kprintf("[3d] rendering 3D demo...\n");
     r3d_demo(30);
     kprintf("[3d] demo complete\n");
+
+    /* New full GUI: init subsystem, run self-test, then kick off compositor
+     * thread that pumps mouse/keyboard events into windows and re-renders
+     * the screen at ~30 Hz. */
+    kprintf("[boot] initialising GUI subsystem...\n");
+    gui_init();
+    gui_self_test();
+    extern void gui_compositor_thread(void *arg);
+    kthread_create(gui_compositor_thread, NULL, "gui-compositor");
 
     /* Phase 15: per-process address spaces — self-test. */
     kprintf("[boot] testing per-process address spaces...\n");

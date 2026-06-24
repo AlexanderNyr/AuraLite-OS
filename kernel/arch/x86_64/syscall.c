@@ -21,6 +21,7 @@
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
 #include "drivers/keyboard/keyboard.h"
+#include "kernel/gui/gui_syscalls.h"
 
 #define SYS_READ    0
 #define SYS_WRITE   1
@@ -174,6 +175,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)vfs_truncate((const char *)a1, a2);
     case SYS_STAT:
         return (uint64_t)vfs_stat((const char *)a1, (struct vfs_stat *)a2);
+
+    /* GUI syscalls. */
+    case SYS_GUI_CALL:
+        return syscall_gui_call(a1, a2, a3, a4, a5);
+    case SYS_GUI_EVENT:
+        return syscall_gui_event(a1, a2, a3);
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
         return (uint64_t)-1;

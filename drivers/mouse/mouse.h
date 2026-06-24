@@ -4,24 +4,40 @@
 #include <stdint.h>
 
 /*
- * PS/2 mouse driver (8042 auxiliary channel, IRQ 12 → vector 44).
+ * PS/2 mouse driver (8042 auxiliary channel, IRQ 12).
  *
- * Parses 3-byte relative-movement packets and maintains an absolute cursor
- * position clamped to the framebuffer bounds. The IRQ handler reads bytes
- * from port 0x60 as they arrive; every 3 bytes completes one mouse sample.
+ * Tries to enable IntelliMouse (scroll wheel) 4-byte packet mode.  Falls back
+ * to 3-byte packets if the device doesn't accept the magic 200/100/80 sample-
+ * rate sequence.  Reports an absolute cursor position clamped to the screen
+ * and a separate event queue that includes scroll-wheel ticks.
  */
 
-/* Initialise the PS/2 mouse: enable the aux channel, set defaults, register IRQ 12. */
+#define MOUSE_BTN_LEFT    0x01
+#define MOUSE_BTN_RIGHT   0x02
+#define MOUSE_BTN_MIDDLE  0x04
+
+typedef struct {
+    int16_t  dx;          /* relative motion since previous event */
+    int16_t  dy;
+    int16_t  abs_x;       /* current absolute position */
+    int16_t  abs_y;
+    int8_t   wheel;       /* scroll: -ve = up, +ve = down */
+    uint8_t  buttons;     /* MOUSE_BTN_* bitmask */
+    uint8_t  pressed;     /* bits that changed 0->1 in this event */
+    uint8_t  released;    /* bits that changed 1->0 in this event */
+} mouse_event_t;
+
 void mouse_init(void);
-
-/* Get the current cursor position. Returns 0 if the mouse is unavailable. */
-int mouse_get_position(int *out_x, int *out_y);
-
-/* Get mouse button states (bit 0 = left, bit 1 = right, bit 2 = middle). */
+int  mouse_get_position(int *out_x, int *out_y);
 uint8_t mouse_get_buttons(void);
 
-/* Check if a mouse movement or click event has occurred since the last call.
- * Returns 1 if there was an event, 0 otherwise. Clears the flag. */
+/* Legacy edge poll (used by the old WM). */
 int mouse_poll_event(void);
+
+/* Rich event queue.  Returns 1 + fills *out if available. */
+int mouse_get_event(mouse_event_t *out);
+
+/* Double-click time window (in PIT ticks @ 100 Hz). */
+#define MOUSE_DBLCLICK_TICKS 40
 
 #endif /* AURALITE_DRIVERS_MOUSE_MOUSE_H */

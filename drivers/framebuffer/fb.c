@@ -14,6 +14,7 @@ static uint32_t fb_fg, fb_bg;
 static int fb_cursor_col, fb_cursor_row, fb_cols, fb_rows;
 static uint8_t fb_r_shift, fb_g_shift, fb_b_shift;
 static uint32_t font_width, font_height;
+static int fb_console_on = 1;   /* turned off when the GUI compositor owns the screen */
 
 static uint32_t make_color(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t)r << fb_r_shift) | ((uint32_t)g << fb_g_shift) | ((uint32_t)b << fb_b_shift);
@@ -83,8 +84,11 @@ void fb_clear(void) {
     fb_cursor_col = fb_cursor_row = 0;
 }
 
+void fb_set_console_enabled(int on) { fb_console_on = on ? 1 : 0; }
+int  fb_console_enabled(void)       { return fb_console_on; }
+
 void fb_putchar(char c) {
-    if (!fb_addr) return;
+    if (!fb_addr || !fb_console_on) return;
     unsigned char uc = c;
     switch (uc) {
     case '\n': fb_cursor_col = 0; fb_cursor_row++; break;

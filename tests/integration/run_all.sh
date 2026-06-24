@@ -53,6 +53,7 @@ ALL_CASES=(
     test_http_get
     test_graphics
     test_smp
+    test_gui
 )
 
 # Slow ones we skip in --fast mode.

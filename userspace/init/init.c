@@ -307,6 +307,9 @@ static void process_command(char *line) {
         cmd_stat(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "touch") == 0) {
         cmd_touch(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "gui") == 0) {
+        spawn("/glaunch");
+        puts("[gui] launcher spawned");
     } else if (strcmp(cmd, "exit") == 0) {
         puts("Goodbye!");
         _exit(0);

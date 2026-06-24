@@ -68,29 +68,46 @@ syscall_init:
     ret
 
 syscall_entry:
-    ; The CPU set: RCX=user RIP, R11=user RFLAGS. RSP is still the user's.
+    ; CPU set: RCX=user RIP, R11=user RFLAGS.  RSP is still the user stack.
     mov [rel syscall_saved_rcx], rcx
     mov [rel syscall_saved_r11], r11
-    mov [rel syscall_saved_rsp], rsp    ; save user RSP for fork()
+    mov [rel syscall_saved_rsp], rsp
 
-    ; Remap SYSCALL args -> C ABI: insert sysno at front, shift the rest.
-    ; in:  rax=sysno  rdi=a1  rsi=a2  rdx=a3  r10=a4  r8=a5  r9=a6
-    ; out: rdi=sysno  rsi=a1  rdx=a2  rcx=a3
-    push rdi          ; save a1
-    push rsi          ; save a2
-    push rdx          ; save a3
+    ; Stash all SYSCALL arg registers on the stack (in reverse order so the
+    ; SysV slots line up neatly).  After these pushes:
+    ;   [rsp+0]  = num (rax)
+    ;   [rsp+8]  = a1  (rdi)
+    ;   [rsp+16] = a2  (rsi)
+    ;   [rsp+24] = a3  (rdx)
+    ;   [rsp+32] = a4  (r10)
+    ;   [rsp+40] = a5  (r8)
+    ;   [rsp+48] = a6  (r9)
+    push r9
+    push r8
+    push r10
+    push rdx
+    push rsi
+    push rdi
+    push rax
 
-    mov rdi, rax      ; arg0 <- sysno
-    mov rsi, [rsp+16] ; arg1 <- a1
-    mov rdx, [rsp+8]  ; arg2 <- a2
-    mov rcx, [rsp+0]  ; arg3 <- a3
+    ; Reload into C ABI registers.  rsp+0 = num.
+    mov  rdi, [rsp + 0]    ; num
+    mov  rsi, [rsp + 8]    ; a1
+    mov  rdx, [rsp + 16]   ; a2
+    mov  rcx, [rsp + 24]   ; a3
+    mov  r8 , [rsp + 32]   ; a4
+    mov  r9 , [rsp + 40]   ; a5
+    ; The 7th arg (a6) must live on the stack at [rsp] when call executes.
+    mov  rax, [rsp + 48]
+    push rax               ; [rsp]  = a6  (7th C arg)
+    sub  rsp, 8            ; keep 16-byte alignment for `call`
 
     cld
     call syscall_dispatch
 
-    add rsp, 24       ; pop the 3 saved values
+    add  rsp, 16           ; drop alignment pad + a6
+    add  rsp, 7*8          ; drop the 7 pushed sources
 
-    mov rcx, [rel syscall_saved_rcx]   ; restore return RIP
-    mov r11, [rel syscall_saved_r11]   ; restore RFLAGS
-    o64 sysret                          ; 64-bit SYSRET (48 0F 07):
-                                        ; CS = STAR[63:48]+0x10|RPL3 = 0x1B
+    mov rcx, [rel syscall_saved_rcx]
+    mov r11, [rel syscall_saved_r11]
+    o64 sysret

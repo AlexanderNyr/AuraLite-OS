@@ -17,4 +17,10 @@ void fb_init(void);
 void fb_putchar(char c);
 void fb_clear(void);
 
+/* Disable / enable framebuffer console output (UART logging continues).
+ * The GUI compositor owns the framebuffer once it starts, so the console
+ * stops scribbling on top of windows. */
+void fb_set_console_enabled(int on);
+int  fb_console_enabled(void);
+
 #endif /* AURALITE_DRIVERS_FRAMEBUFFER_FB_H */

@@ -83,19 +83,29 @@ USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o
 
 USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h
+# Augment include path so user apps can include "auragui.h".
+USER_CFLAGS += -I libauragui/include
 
 # Application ELFs.
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/clock.elf $(USER_BUILD)/guess.elf \
-             $(USER_BUILD)/snake.elf $(USER_BUILD)/browser.elf
+             $(USER_BUILD)/snake.elf $(USER_BUILD)/browser.elf \
+             $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
+             $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
+             $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
+             $(USER_BUILD)/glaunch.elf
+
+# auragui object linked into every GUI app.
+USER_GUI_OBJ := $(USER_BUILD)/auragui.o
 
 user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
-$(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) libc/user.ld
+# GUI apps additionally link the libauragui object.
+$(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) $(USER_GUI_OBJ) libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON) -o $@
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
 
 # Compile rules for each application.
@@ -130,6 +140,26 @@ $(USER_BUILD)/snake.o: userspace/snake/snake.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/browser.o: userspace/browser/browser.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# ---- GUI applications and libauragui ----
+$(USER_BUILD)/auragui.o: libauragui/src/auragui.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/gcalc.o:   userspace/gui-calc/gcalc.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gedit.o:   userspace/gui-edit/gedit.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gfiles.o:  userspace/gui-files/gfiles.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gterm.o:   userspace/gui-term/gterm.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gsysmon.o: userspace/gui-sysmon/gsysmon.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gabout.o:  userspace/gui-about/gabout.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/glaunch.o: userspace/gui-launcher/glaunch.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
 	@mkdir -p $(dir $@)
@@ -206,6 +236,13 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/guess.elf $(INITRD_DIR)/guess
 	@cp $(USER_BUILD)/snake.elf $(INITRD_DIR)/snake
 	@cp $(USER_BUILD)/browser.elf $(INITRD_DIR)/browser
+	@cp $(USER_BUILD)/gcalc.elf   $(INITRD_DIR)/gcalc
+	@cp $(USER_BUILD)/gedit.elf   $(INITRD_DIR)/gedit
+	@cp $(USER_BUILD)/gfiles.elf  $(INITRD_DIR)/gfiles
+	@cp $(USER_BUILD)/gterm.elf   $(INITRD_DIR)/gterm
+	@cp $(USER_BUILD)/gsysmon.elf $(INITRD_DIR)/gsysmon
+	@cp $(USER_BUILD)/gabout.elf  $(INITRD_DIR)/gabout
+	@cp $(USER_BUILD)/glaunch.elf $(INITRD_DIR)/glaunch
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
