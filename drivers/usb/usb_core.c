@@ -79,17 +79,17 @@ int usb_control_transfer(usb_device_t *dev, const struct usb_setup_pkt *setup,
                                         setup, data, data_len,
                                         dev->max_packet_size0);
     case USB_CTRL_OHCI:
-        /* OHCI transfer layer uses ED/TD chains (similar to UHCI).
-         * Not yet connected — would use ohci_control_transfer(). */
-        return -1;
+        return ohci_control_transfer(dev->address, low_speed,
+                                     setup, data, data_len,
+                                     dev->max_packet_size0);
     case USB_CTRL_EHCI:
-        /* EHCI transfer layer uses async QH/qTD chains.
-         * Not yet connected — would use ehci_control_transfer(). */
-        return -1;
+        return ehci_control_transfer(dev->address, low_speed,
+                                     setup, data, data_len,
+                                     dev->max_packet_size0);
     case USB_CTRL_XHCI:
-        /* xHCI uses TRB rings + doorbells.
-         * Not yet connected — would use xhci_control_transfer(). */
-        return -1;
+        return xhci_control_transfer(dev->address, low_speed,
+                                     setup, data, data_len,
+                                     dev->max_packet_size0);
     }
     return -1;
 }

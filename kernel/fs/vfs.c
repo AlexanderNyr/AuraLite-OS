@@ -10,13 +10,23 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/proc/scheduler.h"
+#include "kernel/proc/thread.h"
 
 static struct vfs_mount mounts[VFS_MAX_MOUNTS];
-static struct file      fd_table[VFS_MAX_FDS];
+/* Fallback table for early boot or unusual calls before sched_init().  Normal
+ * threads/processes use tcb_t::fd_table, so fd numbers are process-local. */
+static struct file      fallback_fd_table[VFS_MAX_FDS];
+
+static struct file *current_fd_table(void) {
+    tcb_t *cur = sched_current();
+    if (cur) return cur->fd_table;
+    return fallback_fd_table;
+}
 
 void vfs_init(void) {
     memset(mounts, 0, sizeof(mounts));
-    memset(fd_table, 0, sizeof(fd_table));
+    memset(fallback_fd_table, 0, sizeof(fallback_fd_table));
 }
 
 int vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data) {
@@ -80,6 +90,7 @@ int vfs_open(const char *path) {
         }
     }
 
+    struct file *fd_table = current_fd_table();
     /* Reserve fd 0/1/2 for stdin/stdout/stderr syscall semantics. */
     for (int i = 3; i < VFS_MAX_FDS; i++) {
         if (!fd_table[i].in_use) {
@@ -93,6 +104,7 @@ int vfs_open(const char *path) {
 }
 
 int64_t vfs_read(int fd, void *buf, uint64_t count) {
+    struct file *fd_table = current_fd_table();
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
     struct file *f = &fd_table[fd];
     if (!f->vn->ops->read) return -1;
@@ -102,6 +114,7 @@ int64_t vfs_read(int fd, void *buf, uint64_t count) {
 }
 
 int64_t vfs_write(int fd, const void *buf, uint64_t count) {
+    struct file *fd_table = current_fd_table();
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
     struct file *f = &fd_table[fd];
     if (!f->vn->ops->write) return -1;
@@ -111,6 +124,7 @@ int64_t vfs_write(int fd, const void *buf, uint64_t count) {
 }
 
 int64_t vfs_lseek(int fd, int64_t offset, int whence) {
+    struct file *fd_table = current_fd_table();
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
     struct file *f = &fd_table[fd];
     int64_t new_pos;
@@ -126,6 +140,7 @@ int64_t vfs_lseek(int fd, int64_t offset, int whence) {
 }
 
 int vfs_close(int fd) {
+    struct file *fd_table = current_fd_table();
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
     fd_table[fd].in_use = 0;
     fd_table[fd].vn     = NULL;

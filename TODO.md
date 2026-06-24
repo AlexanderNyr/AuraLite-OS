@@ -13,8 +13,10 @@ for the feature matrix.
 
 - **Scheduler is not SMP-safe.** Application processors are brought online and
   load the shared tables, but they idle instead of running the normal scheduler.
-- **No thread/process reaping.** Dead TCBs, kernel stacks and some process
-  resources are leaked after exit.
+- **Address-space reaping is incomplete.** Dead TCBs and kernel stacks are now
+  deferred-reaped from a safe stack, and process FDs are closed on exit, but
+  user page-table/address-space frames are still leaked until the VMM grows a
+  full address-space free walker.
 - **Blocking model is primitive.** Waits are mostly yield/poll loops; there are
   no general wait queues or sleepable locks.
 - **PIC/PIT legacy interrupt model.** LAPIC/IOAPIC and per-CPU LAPIC timers are
@@ -22,8 +24,10 @@ for the feature matrix.
 
 ### Security / syscall robustness
 
-- **No user pointer validation.** Syscalls trust pointers supplied by Ring 3.
-  Robust `copy_from_user` / `copy_to_user` helpers are still needed.
+- **User pointer validation is basic.** Syscall dispatch now uses
+  `validate_user_range`, `copy_from_user` and `copy_to_user`, but AuraLite still
+  lacks a fault-recovering uaccess mechanism and a full audit of every future
+  user-pointer path.
 - **No `errno` or structured negative error codes.** Most failures return `-1`.
 - **SYSCALL state uses globals.** Saved user `RCX/R11/RSP` state is not designed
   for true concurrent SMP syscalls.
@@ -32,7 +36,9 @@ for the feature matrix.
 
 ### Processes and file descriptors
 
-- **Global FD table.** File descriptors are system-wide, not per-process.
+- **FD semantics are simplified.** FD numbers are now per-process, but there is
+  still no `dup`, `pipe`, close-on-exec or precise POSIX shared-open-file
+  description behavior after `fork`.
 - **`fork`, `execve`, `wait4` are simplified.** They are sufficient for the
   bundled demos/tests, but not POSIX-complete.
 - **No user heap management syscalls.** `mmap`, `munmap`, `brk` are missing.
@@ -60,8 +66,9 @@ for the feature matrix.
 ### Networking
 
 - **Polling I/O.** e1000 RX/TX and the higher network stack are polling-based.
-- **Minimal TCP.** Single client connection, no retransmission strategy,
-  congestion control, sliding windows or BSD sockets.
+- **Minimal TCP.** User space now has process-owned socket-style handles, but
+  the underlying TCP transport still supports one active stream, with no
+  retransmission strategy, congestion control or sliding windows.
 - **DHCP can fall back in QEMU SLIRP.** Integration tests tolerate fallback
   static addressing for deterministic boots.
 
@@ -70,7 +77,8 @@ for the feature matrix.
 - **Framebuffer-only graphics.** VirtualBox/VMware/QEMU native GPU acceleration
   is not implemented; Limine's framebuffer is used.
 - **GUI is educational.** The kernel compositor, GUI syscalls and `libauragui`
-  are functional in tests, but not a protected multi-client production desktop.
+  are functional in tests, and windows are cleaned up on client exit, but it is
+  not yet a protected multi-client production desktop.
 
 ---
 
@@ -79,7 +87,8 @@ for the feature matrix.
 ### Memory management
 
 - [ ] Strict per-segment user ELF permissions and NX for user data/stack.
-- [ ] User pointer validation and safe copy helpers.
+- [x] Basic user pointer validation and safe copy helpers for syscall dispatch.
+- [ ] Fault-recovering user access and continued audits for new syscall paths.
 - [ ] Copy-on-write `fork`.
 - [ ] User `mmap` / `munmap` / `brk`.
 - [ ] Slab allocator for common fixed-size kernel objects.
@@ -89,10 +98,12 @@ for the feature matrix.
 ### Scheduling and processes
 
 - [ ] SMP-aware scheduler with per-CPU run queues or explicit AP-off normal mode.
-- [ ] Thread/process reaper and resource lifetime management.
+- [x] Deferred TCB/kernel-stack reaper and missed-wakeup-safe wait notifications.
+- [ ] Full address-space/page-table reaping and stronger parent/child lifetime management.
 - [ ] BLOCKED state, wait queues and sleepable kernel primitives.
 - [ ] Real parent/child process table and precise `waitpid` semantics.
-- [ ] Per-process FD tables with close-on-exec, `dup`, pipes and inheritance.
+- [x] Basic per-process FD tables.
+- [ ] Close-on-exec, `dup`, pipes and precise FD inheritance/lifetime semantics.
 - [ ] Signals or another process notification mechanism.
 
 ### Filesystems and storage
@@ -107,25 +118,28 @@ for the feature matrix.
 ### Networking
 
 - [ ] Interrupt-driven e1000 RX/TX.
-- [ ] Multiple TCP sockets/connections.
-- [ ] BSD socket API (`socket`, `bind`, `listen`, `accept`, `connect`, `send`,
-      `recv`).
+- [x] Process-owned socket-style client handles (`socket/connect/send/recv/close`).
+- [ ] Multiple simultaneous TCP connections in the transport layer.
+- [ ] Full BSD socket ABI including `sockaddr`, `bind`, `listen` and `accept`.
 - [ ] UDP user sockets.
 - [ ] Retransmission, timeouts and better packet queues.
 - [ ] virtio-net / vmxnet3 / e1000e data-path drivers.
 
 ### USB and wireless
 
-- [ ] Complete OHCI transfer scheduling and wire it into `usb_core`.
-- [ ] Complete EHCI async/control/bulk transfers and MSC backend.
-- [ ] Complete xHCI command/event/transfer rings and endpoint contexts.
+- [x] Add stable OHCI/EHCI/xHCI control/bulk backend API hooks into `usb_core`.
+- [ ] Complete OHCI ED/TD transfer scheduling.
+- [ ] Complete EHCI async/control/bulk qTD transfers and MSC backend.
+- [ ] Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts.
 - [ ] USB HID keyboard/mouse class drivers.
 - [ ] Real Bluetooth USB transport and at least one tested HCI controller path.
 - [ ] Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer.
 
 ### GUI and userspace
 
-- [ ] Better process isolation for GUI clients and compositor state.
+- [x] Clean up GUI windows when the owning process exits.
+- [x] Basic GUI process ownership enforcement for user-facing window syscalls.
+- [ ] Stronger compositor/client isolation and permission model for GUI internals.
 - [ ] More complete text input, clipboard and focus behavior.
 - [ ] Persisted user settings/theme.
 - [ ] More GUI apps and richer file editor/terminal behavior.
@@ -138,4 +152,5 @@ for the feature matrix.
 - [ ] Add GDB helper scripts / pretty-printers for kernel structures.
 - [ ] Reduce integration-test timing flakiness around process spawn and serial
       input pacing.
+- [x] Add fsck-style FAT32/ext2 churn + reboot regression test case (`test_fs_stress.sh`).
 - [ ] Add CI artifacts for screenshots and QEMU serial logs on every failure.

@@ -1,4 +1,4 @@
-/* thread.c — kernel thread creation, initial stack setup, and exit.
+/* thread.c — kernel thread creation, initial stack setup, exit and reaping.
  *
  * A new thread's stack is crafted so that context_switch's first "restore +
  * ret" sequence lands at thread_entry(), which calls fn(arg) and then
@@ -11,11 +11,21 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/gui/gui.h"
+#include "kernel/net/socket.h"
+#include "drivers/timer/pit.h"
 
 /* Implemented in context.asm */
 extern void context_switch(tcb_t *old, tcb_t *new);
 
 static uint64_t next_tid = 1;
+
+/* Dead threads cannot be freed by thread_exit() itself because it is still
+ * running on the exiting thread's kernel stack.  They are linked here and
+ * later freed by thread_reap_zombies() from another thread's context. */
+static tcb_t *zombie_head = NULL;
+static volatile uint64_t zombies_queued = 0;
+static volatile uint64_t zombies_reaped = 0;
 
 /*
  * Trampoline: this is the "return address" planted on a new thread's stack.
@@ -76,6 +86,7 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     void *stack = kmalloc(THREAD_STACK_SIZE);
     if (stack == NULL) {
         kprintf("[thread] FATAL: kmalloc failed for stack\n");
+        kfree(tcb);
         return NULL;
     }
 
@@ -85,12 +96,61 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     tcb->quantum      = SCHED_QUANTUM;
     if (name != NULL) {
         strncpy(tcb->name, name, THREAD_NAME_MAX - 1);
+        tcb->name[THREAD_NAME_MAX - 1] = 0;
     }
 
     setup_initial_stack(tcb, fn, arg);
 
     sched_add_thread(tcb);
     return tcb;
+}
+
+static void close_process_fds(tcb_t *t) {
+    if (!t) return;
+    for (int fd = 3; fd < VFS_MAX_FDS; fd++) {
+        t->fd_table[fd].in_use = 0;
+        t->fd_table[fd].vn = NULL;
+        t->fd_table[fd].pos = 0;
+    }
+}
+
+static void zombie_enqueue(tcb_t *t) {
+    t->next = zombie_head;
+    zombie_head = t;
+    zombies_queued++;
+}
+
+void thread_reap_zombies(void) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+
+    tcb_t *current = sched_current();
+    tcb_t *reap = NULL;
+    tcb_t **pp = &zombie_head;
+    while (*pp) {
+        tcb_t *z = *pp;
+        if (z == current) {
+            pp = &z->next;
+            continue;
+        }
+        *pp = z->next;
+        z->next = reap;
+        reap = z;
+    }
+
+    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+
+    while (reap) {
+        tcb_t *z = reap;
+        reap = z->next;
+        kprintf("[thread] reaped '%s' (tid %llu)\n",
+                z->name, (unsigned long long)z->id);
+        if (z->kernel_stack) kfree(z->kernel_stack);
+        /* TODO(iteration 3+): free user page tables/address-space frames once
+         * the VMM grows a page-table walker/free routine. */
+        kfree(z);
+        zombies_reaped++;
+    }
 }
 
 void thread_exit(void) {
@@ -100,15 +160,20 @@ void thread_exit(void) {
 
     tcb_t *self = sched_current();
     self->state = THREAD_DEAD;
+    gui_cleanup_process(self->id);
+    socket_close_process(self->id);
+    close_process_fds(self);
     kprintf("[thread] '%s' (tid %llu) exited\n",
             self->name, (unsigned long long)self->id);
 
-    /* If a parent is waiting in wait4(), clear the flag so its busy-wait
-     * loop exits. We do NOT add it to the queue — sched_yield already keeps
-     * it cycling through the queue. */
-    if (self->parent && self->parent->waited_on) {
-        self->parent->waited_on = 0;
+    /* Wake or record a waiting parent.  child_exit_pending closes the classic
+     * missed-wakeup race where the child exits before the parent enters wait4. */
+    if (self->parent) {
+        self->parent->child_exit_pending++;
+        if (self->parent->waited_on) self->parent->waited_on = 0;
     }
+
+    zombie_enqueue(self);
 
     /* schedule() picks the next thread and switches; since we're DEAD, we are
        not re-added to the queue.  We never return here. */

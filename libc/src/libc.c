@@ -68,6 +68,29 @@ int net_ping(uint32_t ip) {
     return (int)syscall(SYS_NET_PING, ip, 0, 0, 0, 0, 0);
 }
 
+int socket(int domain, int type, int protocol) {
+    return (int)syscall(SYS_SOCKET, (uint64_t)domain, (uint64_t)type,
+                        (uint64_t)protocol, 0, 0, 0);
+}
+
+int connect(int sock, uint32_t ip, uint16_t port) {
+    return (int)syscall(SYS_SOCKET_CONNECT, (uint64_t)sock, ip, port, 0, 0, 0);
+}
+
+int send(int sock, const void *data, uint32_t len) {
+    return (int)syscall(SYS_SOCKET_SEND, (uint64_t)sock, (uint64_t)data,
+                        len, 0, 0, 0);
+}
+
+int recv(int sock, void *buf, uint32_t bufsize) {
+    return (int)syscall(SYS_SOCKET_RECV, (uint64_t)sock, (uint64_t)buf,
+                        bufsize, 0, 0, 0);
+}
+
+int closesocket(int sock) {
+    return (int)syscall(SYS_SOCKET_CLOSE, (uint64_t)sock, 0, 0, 0, 0, 0);
+}
+
 int mkdir(const char *path) {
     return (int)syscall(SYS_MKDIR, (uint64_t)path, 0, 0, 0, 0, 0);
 }

@@ -213,6 +213,13 @@ handler is safe because the interrupt frame lives on the *current thread's*
 stack. The initial stack for a new thread includes an RFLAGS slot (0x202 = IF
 set) so new threads start with interrupts enabled.
 
+Exited threads are not freed on their own stack. `thread_exit()` marks the TCB
+`THREAD_DEAD`, cleans up GUI windows owned by the exiting process, closes its
+per-process FDs, records a wait notification for the parent and links the TCB
+onto a zombie list. Later `thread_reap_zombies()` runs
+from another thread's stack and frees the TCB plus kernel stack. Full user
+address-space/page-table freeing is still future work.
+
 ## User mode and system calls
 
 ```

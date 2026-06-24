@@ -299,6 +299,24 @@ int ohci_get_port_count(void) {
     return port_count;
 }
 
+int ohci_control_transfer(uint8_t dev_addr, int low_speed,
+                          const void *setup, void *data,
+                          uint16_t data_len, uint8_t max_packet0) {
+    (void)dev_addr; (void)low_speed; (void)setup; (void)data;
+    (void)data_len; (void)max_packet0;
+    if (mmio == NULL) return -1;
+    kprintf("[ohci] control transfer backend not yet implemented (ED/TD scheduling pending)\n");
+    return -1;
+}
+
+int ohci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
+                       void *data, uint32_t len, int in, uint16_t max_packet) {
+    (void)dev_addr; (void)endpoint; (void)data; (void)len; (void)in; (void)max_packet;
+    if (mmio == NULL) return -1;
+    kprintf("[ohci] bulk transfer backend not yet implemented (ED/TD scheduling pending)\n");
+    return -1;
+}
+
 void ohci_self_test(void) {
     if (mmio == NULL) {
         kprintf("[ohci] self-test: no controller\n");

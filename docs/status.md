@@ -34,7 +34,7 @@ Legend:
 | Kernel heap | ✅ | First-fit allocator with coalescing. |
 | Per-process PML4 | 🧪 | Implemented for spawned user processes. |
 | Copy-on-write | ❌ | `fork` deep-copies user pages. |
-| User pointer validation | ❌ | Syscalls currently trust user pointers. |
+| User pointer validation | 🧪 | `validate_user_range`, `copy_from_user`, `copy_to_user` are used by syscall dispatch; not yet a fault-recovering uaccess layer. |
 | Slab allocator | ❌ | Future work. |
 
 ## Scheduling and processes
@@ -49,8 +49,8 @@ Legend:
 | `fork` | 🧪 | Deep-copy implementation, simplified semantics. |
 | `execve` | 🧪 | Replaces current address space, simplified. |
 | `wait4` / `wait` | 🧪 | Yield-polling, no precise child PID semantics. |
-| Thread/process reaping | ❌ | Dead TCBs/stacks are leaked. |
-| Per-process FD tables | ❌ | FD table is global. |
+| Thread/process reaping | 🧪 | Dead TCBs/stacks are deferred-reaped from a safe stack; user page-table frames are still leaked. |
+| Per-process FD tables | 🧪 | Each TCB has its own FD table; `fork` shallow-copies entries. Lifetime/inheritance semantics remain simplified. |
 
 ## Filesystems
 
@@ -72,7 +72,7 @@ Legend:
 | Console/file I/O | ✅ | `read`, `write`, `open`, `close`. |
 | Process basics | 🧪 | `getpid`, `exit`, `spawn`, `fork`, `execve`, `wait4`. |
 | Directory/path ops | ✅/🧪 | `listdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`. |
-| Networking | 🧪 | DNS, ping and single TCP connection syscalls. |
+| Networking | 🧪 | DNS, ping, legacy TCP calls and process-owned socket-style syscalls. |
 | GUI | 🧪 | `SYS_GUI_CALL` and `SYS_GUI_EVENT` power `libauragui` apps. |
 | Memory syscalls | ❌ | No `mmap`, `munmap`, `brk`. |
 | Sockets | ❌ | No BSD socket API. |
@@ -89,7 +89,7 @@ Legend:
 | UDP | ✅ | Used by DNS. |
 | DNS resolver | ✅ | A-record lookup. |
 | TCP client | 🧪 | One connection, no retransmission/sliding window. |
-| BSD sockets | ❌ | Future work. |
+| Socket API | 🧪 | AF_INET/SOCK_STREAM process-owned handles exist; underlying TCP transport still allows one active stream. |
 | virtio-net / vmxnet3 / e1000e | 🚧 | Recognised by the virtual-driver probe, but no data path yet. Use legacy e1000. |
 
 ## Graphics and input
@@ -102,7 +102,7 @@ Legend:
 | Window manager demo | ✅ | Windows, widgets, taskbar, mouse interaction. |
 | PS/2 keyboard | ✅ | Scan-code set 1, ASCII + rich key-event queues. |
 | PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
-| Kernel GUI/compositor | 🧪 | Window manager, taskbar, event queues, GUI syscalls and `libauragui` apps. |
+| Kernel GUI/compositor | 🧪 | Window manager, taskbar, event queues, owner-checked GUI syscalls, process-exit window cleanup and `libauragui` apps. |
 | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
 | Native VBox/VMware SVGA drivers | ❌ | Limine framebuffer is used instead. |
 
@@ -113,9 +113,9 @@ Legend:
 | AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
 | AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
 | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |
-| OHCI controller | 🚧 | Detection/init/port logic; transfer layer not wired to USB core. |
-| EHCI controller | 🚧 | Detection/init/port logic; transfer layer not wired to USB core. |
-| xHCI controller | 🚧 | Detection/init/ring scaffolding; full enumeration not complete. |
+| OHCI controller | 🚧 | Detection/init/port logic plus stable control/bulk backend API; ED/TD scheduling still pending. |
+| EHCI controller | 🚧 | Detection/init/port logic plus stable control/bulk backend API; async qTD scheduling still pending. |
+| xHCI controller | 🚧 | Detection/init/ring scaffolding plus stable control/bulk backend API; slot/address/endpoints still pending. |
 | USB device enumeration | 🧪 | UHCI devices are enumerated through standard requests; other controllers are reported only. |
 | USB Mass Storage | 🧪 | Bulk-Only/SCSI path works through UHCI; OHCI/EHCI/xHCI MSC backends remain future work. |
 
@@ -144,10 +144,10 @@ Legend:
 
 ## Highest-priority gaps
 
-1. Validate user pointers in all syscalls and add safe user-copy helpers.
-2. Add per-process FD tables.
-3. Reap dead threads/processes and free their stacks/address spaces.
-4. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
-5. Replace the single global TCP connection with per-connection/socket objects.
-6. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
-7. Enforce strict user ELF segment permissions and add user memory syscalls.
+1. Finish full address-space/page-table reaping for exited user processes.
+2. Extend user-copy into a fault-recovering uaccess layer and audit remaining kernel-internal callers.
+3. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
+4. Replace the single global TCP connection with per-connection/socket objects.
+5. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
+6. Enforce strict user ELF segment permissions and add user memory syscalls.
+7. Tighten FD inheritance/lifetime semantics around `fork`, `execve` and process exit.

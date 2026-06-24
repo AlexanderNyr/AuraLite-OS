@@ -30,6 +30,15 @@ int ehci_init(void);
 /* Get the number of ports with devices attached. */
 int ehci_get_port_count(void);
 
+/* Transfer backend API.  EHCI async QH/qTD scheduling is scaffolded but not
+ * yet complete; these functions return -1 until the scheduler is wired up.
+ */
+int ehci_control_transfer(uint8_t dev_addr, int low_speed,
+                          const void *setup, void *data,
+                          uint16_t data_len, uint8_t max_packet0);
+int ehci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
+                       void *data, uint32_t len, int in, uint16_t max_packet);
+
 /* Gate self-test. */
 void ehci_self_test(void);
 

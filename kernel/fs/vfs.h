@@ -109,7 +109,8 @@ struct vnode {
     uint64_t inode_id;      /* fs-specific id (cluster for FAT, inode # for ext2) */
 };
 
-/* An open file handle. */
+/* An open file handle.  File tables live in tcb_t, so fd numbers are
+ * per-process; vfs.c keeps a fallback table for early boot before sched_init. */
 struct file {
     struct vnode *vn;
     uint64_t      pos;

@@ -223,8 +223,11 @@ UHCI is the first USB path with a working class-driver data path:
 ### OHCI/EHCI/xHCI
 
 These drivers currently provide controller detection, register mapping, basic
-initialisation and port reporting. Their transfer engines are not fully wired to
-`usb_core.c` yet.
+initialisation and port reporting. They also expose a stable control/bulk
+backend API (`*_control_transfer`, `*_bulk_transfer`) so `usb_core` and class
+drivers can dispatch to them uniformly. The functions currently return `-1`
+with explicit diagnostics until the real ED/TD, qTD or TRB scheduling paths are
+completed.
 
 ### USB core
 
@@ -305,7 +308,10 @@ Current implemented pieces:
 - GUI syscalls `SYS_GUI_CALL` and `SYS_GUI_EVENT`;
 - `libauragui` user-space wrappers, drawing helpers and simple widgets;
 - bundled GUI apps: calculator, editor, file manager, terminal-style demo,
-  system monitor, about dialog and launcher.
+  system monitor, about dialog and launcher;
+- windows are tagged with their creating process ID, user-facing GUI syscalls
+  check ownership before mutating/polling a window, and owned windows are
+  cleaned up automatically when that process exits.
 
 Current limitation: GUI state is protected enough for the demo/integration path,
 but it is still an educational in-kernel desktop rather than a production

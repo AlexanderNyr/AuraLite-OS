@@ -123,6 +123,14 @@ uint64_t paging_get_phys(uint64_t virt) {
     return *pte & PAGE_ADDR_MASK;
 }
 
+uint64_t paging_get_flags(uint64_t virt) {
+    uint64_t *pte = walk_pte(virt, 0);
+    if (pte == NULL || !(*pte & PAGE_FLAG_PRESENT)) {
+        return 0;
+    }
+    return *pte & ~PAGE_ADDR_MASK;
+}
+
 uint64_t paging_new_address_space(void) {
     uint64_t new_pml4_phys = pmm_alloc_frame();
     if (new_pml4_phys == 0) {

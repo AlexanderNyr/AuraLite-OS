@@ -28,6 +28,14 @@
 #define SYS_RENAME   103
 #define SYS_TRUNCATE 104
 #define SYS_STAT     105
+#define SYS_SOCKET         300
+#define SYS_SOCKET_CONNECT 301
+#define SYS_SOCKET_SEND    302
+#define SYS_SOCKET_RECV    303
+#define SYS_SOCKET_CLOSE   304
+
+#define AF_INET      2
+#define SOCK_STREAM  1
 
 /* Subset of struct stat we expose to user space.  Field layout must match
  * `struct vfs_stat` in the kernel (kernel/fs/vfs.h). */
@@ -74,6 +82,13 @@ int     net_send(const void *data, uint32_t len);
 int     net_recv(void *buf, uint32_t bufsize);
 int     net_close(void);
 int     net_ping(uint32_t ip);
+
+/* Socket-style network API. */
+int     socket(int domain, int type, int protocol);
+int     connect(int sock, uint32_t ip, uint16_t port);
+int     send(int sock, const void *data, uint32_t len);
+int     recv(int sock, void *buf, uint32_t bufsize);
+int     closesocket(int sock);
 
 /* Filesystem extensions. */
 int     mkdir(const char *path);

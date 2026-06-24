@@ -89,7 +89,8 @@ Current caveats:
 
 - saved `RCX`, `R11` and user `RSP` are stored in globals, so this path is not
   suitable for true SMP syscall concurrency yet;
-- user pointers are not validated before the kernel dereferences them;
+- syscall handlers use `validate_user_range`, `copy_from_user` and
+  `copy_to_user`, but this is not yet a fault-recovering uaccess layer;
 - blocking syscalls are mostly polling/spin-based.
 
 ## Syscall table
@@ -98,8 +99,8 @@ Current caveats:
 |---:|---|---|---|---|
 | 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads line input from PS/2 keyboard and/or serial; `fd>=3` reads VFS files. |
 | 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write. |
-| 2 | `open` | `open(path)` | ✅ | Opens or creates a VFS path when the mounted FS supports creation; returns a global FD. |
-| 3 | `close` | `close(fd)` | ✅ | Closes global FD. |
+| 2 | `open` | `open(path)` | ✅ | Opens or creates a VFS path when the mounted FS supports creation; returns a per-process FD. |
+| 3 | `close` | `close(fd)` | ✅ | Closes a per-process FD. |
 | 39 | `getpid` | `getpid()` | ✅ | Returns current TCB ID. |
 | 57 | `fork` | `fork()` | 🧪 | Deep-copies user address space; simplified semantics. |
 | 59 | `execve` | `execve(path)` | 🧪 | Replaces current address space with a new ELF. No argv/envp. |
@@ -112,7 +113,7 @@ Current caveats:
 | 84 | `net_send` | `net_send(buf, len)` | 🧪 | Sends on the global TCP connection. |
 | 85 | `net_recv` | `net_recv(buf, len)` | 🧪 | Polling receive on the global TCP connection. |
 | 86 | `net_close` | `net_close()` | 🧪 | Closes the global TCP connection. |
-| 87 | `net_ping` | `net_ping(ip)` | 🧪 | ICMP echo via kernel networking stack. |
+| 87 | `net_ping` | `net_ping(ip)` | 🧪 | Legacy ICMP echo via kernel networking stack. |
 | 100 | `mkdir` | `mkdir(path)` | ✅/🧪 | Creates a directory when the mounted FS supports it (`/fat`, `/ext2`). |
 | 101 | `rmdir` | `rmdir(path)` | ✅/🧪 | Removes an empty directory. |
 | 102 | `unlink` | `unlink(path)` | ✅/🧪 | Removes a regular file. |
@@ -121,6 +122,11 @@ Current caveats:
 | 105 | `stat` | `stat(path, struct stat*)` | ✅/🧪 | Fills the AuraLite `struct stat` subset. |
 | 200 | `gui_call` | packed GUI dispatcher | 🧪 | Window lifecycle, drawing, invalidation, render and cursor operations. Used through `libauragui`. |
 | 201 | `gui_event` | `gui_event(wid, out, block)` | 🧪 | Polls or waits for GUI events for a window. Used through `libauragui`. |
+| 300 | `socket` | `socket(domain, type, protocol)` | 🧪 | Creates a process-owned AF_INET/SOCK_STREAM socket handle. |
+| 301 | `socket_connect` | `connect(sock, ip, port)` | 🧪 | Connects a socket to an IPv4 endpoint. TCP transport is still one active stream internally. |
+| 302 | `socket_send` | `send(sock, buf, len)` | 🧪 | Sends bytes on a connected socket with user-copy validation. |
+| 303 | `socket_recv` | `recv(sock, buf, len)` | 🧪 | Receives bytes from a connected socket. |
+| 304 | `socket_close` | `closesocket(sock)` | 🧪 | Closes a process-owned socket and underlying TCP stream if active. |
 
 ## libc wrappers
 
@@ -144,6 +150,11 @@ int     net_send(const void *data, uint32_t len);
 int     net_recv(void *buf, uint32_t bufsize);
 int     net_close(void);
 int     net_ping(uint32_t ip);
+int     socket(int domain, int type, int protocol);
+int     connect(int sock, uint32_t ip, uint16_t port);
+int     send(int sock, const void *data, uint32_t len);
+int     recv(int sock, void *buf, uint32_t bufsize);
+int     closesocket(int sock);
 int     mkdir(const char *path);
 int     rmdir(const char *path);
 int     unlink(const char *path);
@@ -158,12 +169,19 @@ event and widget APIs rather than invoking `SYS_GUI_CALL` directly.
 
 ## File descriptor model
 
-File descriptors are currently global kernel objects, not per-process objects.
-This means:
+File descriptors are stored in each `tcb_t` / process.  FD numbers are therefore
+local to the current process; unrelated processes can both use fd `3` without
+colliding.  `fork()` currently shallow-copies the parent's table into the child,
+so both processes initially refer to the same vnodes with copied offsets.  New
+`spawn()`ed processes start with an empty table, while fd `0/1/2` remain special
+syscall-level stdin/stdout/stderr handles rather than VFS entries.
 
-- unrelated processes share the same FD namespace;
-- there is no `dup`, `pipe`, close-on-exec or per-process descriptor lifetime;
-- future work should move the FD table into a process structure.
+Current caveats:
+
+- no `dup`, `pipe` or close-on-exec;
+- `fork()` does not yet model POSIX shared open-file descriptions precisely;
+- process-exit cleanup now closes process FDs and deferred-reaps TCBs/stacks,
+  but full page-table/address-space reaping is still future work.
 
 ## Planned or missing syscalls
 
@@ -172,7 +190,8 @@ This means:
 | `mmap`, `munmap` | User memory mappings. |
 | `brk` | User heap growth. |
 | `pipe` | IPC pipe. |
-| `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv` | BSD-style socket API. |
+| `bind`, `listen`, `accept` | Server-side socket API. |
+| full BSD `sockaddr` ABI | Current socket calls pass IPv4/port directly. |
 | structured `readdir` syscall | `listdir` prints through the kernel; no buffer-returning directory syscall yet. |
 | `nanosleep` / `clock_gettime` | Time APIs. |
 
@@ -180,8 +199,7 @@ This means:
 
 Before treating the syscall layer as robust, add:
 
-1. canonical-address checks for all user pointers;
-2. page-table permission checks before copying to/from user buffers;
-3. `copy_from_user` / `copy_to_user` helpers;
-4. per-process syscall state instead of global saved `RCX/R11/RSP`;
-5. structured error codes (`errno`-style or negative error numbers).
+1. fault-recovering user access so a race/unmap cannot still fault the kernel;
+2. a full audit of any remaining direct user-pointer paths outside syscall dispatch;
+3. per-process syscall state instead of global saved `RCX/R11/RSP`;
+4. structured error codes (`errno`-style or negative error numbers).

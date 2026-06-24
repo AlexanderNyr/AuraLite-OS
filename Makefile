@@ -91,6 +91,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/clock.elf $(USER_BUILD)/guess.elf \
              $(USER_BUILD)/snake.elf $(USER_BUILD)/browser.elf \
+             $(USER_BUILD)/selftest.elf \
              $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
              $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
              $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
@@ -138,6 +139,10 @@ $(USER_BUILD)/snake.o: userspace/snake/snake.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/browser.o: userspace/browser/browser.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/selftest.o: userspace/selftest/selftest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -236,6 +241,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/guess.elf $(INITRD_DIR)/guess
 	@cp $(USER_BUILD)/snake.elf $(INITRD_DIR)/snake
 	@cp $(USER_BUILD)/browser.elf $(INITRD_DIR)/browser
+	@cp $(USER_BUILD)/selftest.elf $(INITRD_DIR)/selftest
 	@cp $(USER_BUILD)/gcalc.elf   $(INITRD_DIR)/gcalc
 	@cp $(USER_BUILD)/gedit.elf   $(INITRD_DIR)/gedit
 	@cp $(USER_BUILD)/gfiles.elf  $(INITRD_DIR)/gfiles

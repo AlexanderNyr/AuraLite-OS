@@ -13,11 +13,13 @@ tests/integration/
     ├── test_boot_to_shell.sh        Phase 0 → 11 reach an interactive prompt
     ├── test_shell_commands.sh       help/ls/cat/echo/pwd/free/run …
     ├── test_syscalls.sh             read/write/open/listdir/getpid
+    ├── test_selftest.sh             usercopy + FD + socket syscall regression app
     ├── test_user_processes.sh       spawn(), isolated address spaces
     ├── test_ahci_rw.sh              AHCI DMA + /disk + /fat write/read
     ├── test_fat32_persistence.sh    write file → reboot → still there
     ├── test_fat32_full.sh           FAT32 subdirs/LFN/mkdir/rmdir/rm/mv/stat
     ├── test_ext2.sh                 Linux-mkfs ext2 + in-kernel mkfs + debugfs
+    ├── test_fs_stress.sh            FAT32/ext2 churn + reboot persistence checks
     ├── test_usb_msc.sh              UHCI + USB MSC READ(10) sector 0
     ├── test_networking.sh           e1000 + ARP + ICMP + DNS + TCP
     ├── test_http_get.sh             HTTP userspace path against a local httpd
@@ -30,7 +32,7 @@ tests/integration/
 
 ```bash
 make test-integration              # all cases
-make test-integration-fast         # skip slow cases (FAT32 persist, HTTP, ext2)
+make test-integration-fast         # skip slow cases (FAT32 persist, HTTP, ext2, fs_stress)
 tests/integration/run_all.sh ahci  # only cases matching 'ahci'
 NO_COLOR=1 tests/integration/run_all.sh   # plain text
 ```

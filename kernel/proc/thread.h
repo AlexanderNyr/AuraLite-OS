@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "kernel/fs/vfs.h"
 
 /*
  * Thread Control Block (also serves as the Process Control Block).
@@ -44,6 +45,8 @@ typedef struct tcb {
     int       exit_code;         /* exit status for wait4                    */
     struct tcb *parent;          /* parent process (NULL for kernel threads) */
     volatile int waited_on;      /* non-zero if a parent is blocked in wait4 */
+    volatile int child_exit_pending; /* wait4 notifications not yet consumed */
+    struct file fd_table[VFS_MAX_FDS]; /* per-process FD table (0/1/2 reserved) */
 } tcb_t;
 
 /*
@@ -57,5 +60,9 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name);
  * parent, and switches to the next runnable thread.  Never returns.
  */
 void thread_exit(void) __attribute__((noreturn));
+
+/* Free THREAD_DEAD TCBs/stacks that have already switched off their own stack.
+ * Safe to call from normal kernel-thread context; it never frees current. */
+void thread_reap_zombies(void);
 
 #endif /* AURALITE_PROC_THREAD_H */

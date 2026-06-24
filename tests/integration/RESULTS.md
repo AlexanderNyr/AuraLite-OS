@@ -4,26 +4,33 @@ Reference run on Debian 13 / QEMU 10.0.8 / clang 19 / 2 CPU / 512 MiB RAM.
 Full ext2 and GUI visual assertions require `e2fsprogs` and `vncdotool`.
 
 ```bash
-make test-integration
+make test-unit && make test-integration
 ```
+
+## Latest full run
 
 | # | Case                        | Asserts | Time | Status |
 |--:|-----------------------------|--------:|-----:|:------:|
 | 1 | `test_boot_to_shell`        | 17 / 17 |  12s | ✅ PASS |
 | 2 | `test_shell_commands`       | 10 / 10 |  30s | ✅ PASS |
 | 3 | `test_syscalls`             |   4 / 4 |  20s | ✅ PASS |
-| 4 | `test_user_processes`       |   4 / 4 |  25s | ✅ PASS |
-| 5 | `test_ahci_rw`              |   9 / 9 |  25s | ✅ PASS |
-| 6 | `test_fat32_persistence`    |   5 / 5 |  50s | ✅ PASS |
-| 7 | `test_fat32_full`           | 12 / 12 |  35s | ✅ PASS |
-| 8 | `test_ext2`                 | 14 / 14 |  66s | ✅ PASS |
-| 9 | `test_usb_msc`              |   7 / 7 |  25s | ✅ PASS |
-|10 | `test_networking`           |   6 / 6 |  25s | ✅ PASS |
-|11 | `test_http_get`             |   4 / 4 |  45s | ✅ PASS¹ |
-|12 | `test_graphics`             |   4 / 4 |  25s | ✅ PASS |
-|13 | `test_smp`                  |   3 / 3 |  15s | ✅ PASS |
-|14 | `test_gui`                  |   9 / 9 |  17s | ✅ PASS² |
-|   | **TOTAL**                   | **108/108** | **415s** | **✅** |
+| 4 | `test_selftest`             | 13 / 13 |  35s | ✅ PASS |
+| 5 | `test_user_processes`       |   4 / 4 |  25s | ✅ PASS |
+| 6 | `test_ahci_rw`              |   9 / 9 |  25s | ✅ PASS |
+| 7 | `test_fat32_persistence`    |   5 / 5 |  50s | ✅ PASS |
+| 8 | `test_fat32_full`           | 12 / 12 |  35s | ✅ PASS |
+| 9 | `test_ext2`                 | 14 / 14 |  66s | ✅ PASS |
+|10 | `test_fs_stress`            | 13 / 13 |  80s | ✅ PASS |
+|11 | `test_usb_msc`              |   7 / 7 |  25s | ✅ PASS |
+|12 | `test_networking`           |   6 / 6 |  25s | ✅ PASS |
+|13 | `test_http_get`             |   4 / 4 |  45s | ✅ PASS¹ |
+|14 | `test_graphics`             |   4 / 4 |  25s | ✅ PASS |
+|15 | `test_smp`                  |   3 / 3 |  15s | ✅ PASS |
+|16 | `test_gui`                  |   9 / 9 |  17s | ✅ PASS² |
+|   | **TOTAL**                   | **134/134** | **530s** | **✅** |
+
+Unit tests in the same run also passed: PMM, heap, string, bitmap, net helpers,
+kprintf, libc, 3D math, USB protocol structures and WM helpers.
 
 ¹ Soft-pass when QEMU SLIRP DHCP does not complete in time; the kernel falls
 back to a static IP by design and skips online TCP self-tests. On a host where
@@ -50,6 +57,13 @@ Shell surface: `help`, `uname`, `pwd`, `free`, `ls` output for key initrd apps,
 
 `listdir`, `open + read` returning ELF magic from `/hello`, serial-input
 `read`, and no unexpected user-thread kill.
+
+### `test_selftest` — 13 asserts
+
+Runs `/selftest`, a bundled userspace regression program.  It verifies that
+invalid user pointers are rejected by `write`, `open` and `stat`, that valid
+`stat/open/read/write` paths still work, and that the new socket-style API can
+create and close process-owned socket handles without kernel faults.
 
 ### `test_user_processes` — 4 asserts
 
@@ -80,6 +94,11 @@ Two-pass ext2 coverage:
    files/dirs, and verify them on the host through `debugfs`.
 2. Boot with a blank disk, let AuraLite run its in-kernel `mkfs.ext2`, run the
    kernel self-test, and verify Linux recognises the resulting filesystem.
+
+### `test_fs_stress` — 13 asserts, 2 boots
+
+A heavier FAT32/ext2 churn regression: nested directories, write/read, rename,
+unlink, stat, reboot persistence and optional host `debugfs` inspection for ext2.
 
 ### `test_usb_msc` — 7 asserts
 
@@ -119,8 +138,8 @@ checks before/after launching a GUI app.
 
 ```bash
 make test-integration-fast                 # skip slow cases
-FILTER=ext2 tests/integration/run_all.sh   # env filter
-bash tests/integration/cases/test_smp.sh   # single case
+FILTER=fs_stress tests/integration/run_all.sh
+bash tests/integration/cases/test_selftest.sh
 ```
 
 ## CI

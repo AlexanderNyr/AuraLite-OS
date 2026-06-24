@@ -100,6 +100,8 @@ void schedule(void) {
 }
 
 void sched_yield(void) {
+    /* Free dead threads from a safe stack before voluntarily switching away. */
+    thread_reap_zombies();
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
     if (current_thread != NULL && current_thread != idle_thread) {

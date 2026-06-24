@@ -504,6 +504,24 @@ int xhci_get_port_count(void) {
     return port_count;
 }
 
+int xhci_control_transfer(uint8_t dev_addr, int low_speed,
+                          const void *setup, void *data,
+                          uint16_t data_len, uint8_t max_packet0) {
+    (void)dev_addr; (void)low_speed; (void)setup; (void)data;
+    (void)data_len; (void)max_packet0;
+    if (op_regs == NULL) return -1;
+    kprintf("[xhci] control transfer backend not yet implemented (slot/address + endpoint rings pending)\n");
+    return -1;
+}
+
+int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
+                       void *data, uint32_t len, int in, uint16_t max_packet) {
+    (void)dev_addr; (void)endpoint; (void)data; (void)len; (void)in; (void)max_packet;
+    if (op_regs == NULL) return -1;
+    kprintf("[xhci] bulk transfer backend not yet implemented (endpoint transfer rings pending)\n");
+    return -1;
+}
+
 void xhci_self_test(void) {
     if (cap_regs == NULL) {
         kprintf("[xhci] self-test: no controller\n");

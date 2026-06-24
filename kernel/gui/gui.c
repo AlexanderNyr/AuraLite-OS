@@ -22,6 +22,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/scheduler.h"
+#include "kernel/proc/thread.h"
 #include "drivers/framebuffer/graphics.h"
 #include "drivers/framebuffer/fb.h"
 #include "drivers/framebuffer/font.h"
@@ -172,6 +173,8 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     win->x = x; win->y = y;
     win->w = w; win->h = h;
     win->flags = flags;
+    tcb_t *owner = sched_current();
+    win->owner_pid = owner ? (int)owner->id : 0;
     win->visible = 0;
     win->minimized = 0;
     win->maximized = 0;
@@ -212,6 +215,44 @@ int gui_destroy_window(int wid) {
     dirty = 1;
     spinlock_release(&gui_lock);
     return 0;
+}
+
+int gui_window_owned_by(int wid, uint64_t owner_pid) {
+    if (wid < 0 || wid >= GUI_MAX_WINDOWS || !windows[wid].in_use) return 0;
+    return (uint64_t)(uint32_t)windows[wid].owner_pid == owner_pid;
+}
+
+uint64_t gui_window_owner(int wid) {
+    if (wid < 0 || wid >= GUI_MAX_WINDOWS || !windows[wid].in_use) return (uint64_t)-1;
+    return (uint64_t)(uint32_t)windows[wid].owner_pid;
+}
+
+void gui_cleanup_process(uint64_t owner_pid) {
+    /* PID 0 is kmain/kernel-owned in AuraLite; keep those demo windows until
+     * explicit destruction. */
+    if (owner_pid == 0) return;
+
+    int cleaned = 0;
+    spinlock_acquire(&gui_lock);
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (!windows[i].in_use) continue;
+        if ((uint64_t)(uint32_t)windows[i].owner_pid != owner_pid) continue;
+        if (windows[i].back) kfree(windows[i].back);
+        memset(&windows[i], 0, sizeof(windows[i]));
+        if (focused == i) focused = -1;
+        if (drag_wid == i) { drag_wid = -1; drag_mode = 0; }
+        cleaned++;
+    }
+    if (cleaned) {
+        recompute_focus();
+        dirty = 1;
+    }
+    spinlock_release(&gui_lock);
+
+    if (cleaned) {
+        kprintf("[gui] cleaned %d window(s) for pid %llu\n",
+                cleaned, (unsigned long long)owner_pid);
+    }
 }
 
 int gui_show_window(int wid) {

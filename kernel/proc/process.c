@@ -127,6 +127,9 @@ int64_t do_fork(void) {
     }
     child->pml4_phys = child_pml4;
     child->parent    = parent;
+    if (parent) {
+        memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
+    }
 
     /* 3) The parent returns the child PID. */
     kprintf("[proc] fork: parent returns child PID %llu\n",
@@ -188,16 +191,19 @@ int64_t do_wait4(int64_t *exit_code) {
     tcb_t *self = sched_current();
     if (self == NULL) return -1;
 
-    /* Use sched_yield in a loop until the child clears waited_on.
-     * We can't use BLOCKED+schedule() because that would require the child
-     * to already be in the ready queue — which it is, since process_spawn
-     * added it before we got here. But to be safe, yield-based polling works
-     * correctly: each yield gives the child a scheduling slot. */
-    self->waited_on = 1;
-    while (self->waited_on) {
-        sched_yield();
+    /* If a child already exited before we entered wait4(), consume the pending
+     * notification immediately.  Otherwise mark ourselves as waiting and yield
+     * until thread_exit() records a child completion. */
+    if (self->child_exit_pending <= 0) {
+        self->waited_on = 1;
+        while (self->waited_on && self->child_exit_pending <= 0) {
+            sched_yield();
+        }
     }
+    self->waited_on = 0;
+    if (self->child_exit_pending > 0) self->child_exit_pending--;
     if (exit_code) *exit_code = 0;
+    thread_reap_zombies();
     return 0;
 }
 

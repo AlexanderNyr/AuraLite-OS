@@ -85,6 +85,12 @@ void gui_init(void);
 void gui_compositor_tick(void);   /* called from a kernel thread */
 void gui_request_redraw(void);    /* mark whole screen dirty */
 
+/* Destroy every window owned by a process/thread.  Called from thread_exit()
+ * so GUI resources do not survive after their client exits. */
+void gui_cleanup_process(uint64_t owner_pid);
+int  gui_window_owned_by(int wid, uint64_t owner_pid);
+uint64_t gui_window_owner(int wid);
+
 /* Create a window.  Title is copied.  Returns wid >= 0 or -1.
  * The window starts hidden; call gui_show_window(wid) to make it visible. */
 int  gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,

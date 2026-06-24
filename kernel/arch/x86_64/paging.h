@@ -67,6 +67,12 @@ void paging_unmap(uint64_t virt);
  */
 uint64_t paging_get_phys(uint64_t virt);
 
+/* Return the raw leaf PTE flags for a mapped virtual address, or 0 if the
+ * address is not mapped.  The physical address bits are stripped, leaving only
+ * flag bits such as PRESENT/WRITABLE/USER/NX.
+ */
+uint64_t paging_get_flags(uint64_t virt);
+
 /*
  * Allocate and initialise a fresh PML4 for a new process, copying the kernel
  * half (entries 256-511) from the current address space so the kernel remains

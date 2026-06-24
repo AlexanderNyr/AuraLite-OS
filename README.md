@@ -244,6 +244,7 @@ The initrd currently packages:
 | `/snake` | Terminal snake game. |
 | `/http` | HTTP client. |
 | `/browser` | Text web browser with simple HTML rendering. |
+| `/selftest` | Userspace regression checks for usercopy, FD and socket syscalls. |
 | `/gcalc` | Graphical calculator. |
 | `/gedit` | Graphical text editor. |
 | `/gfiles` | Graphical file manager. |
@@ -298,11 +299,12 @@ Short version:
   physical-hardware coverage is still experimental.
 - Scheduler state is not SMP-safe; APs are brought online and idle rather than
   participating in general scheduling.
-- File descriptors are global, not per-process.
-- User pointers passed to syscalls are not yet validated.
+- File descriptors are now per-process, but descriptor inheritance/lifetime semantics are still simplified.
+- User pointers passed to syscalls now go through basic range/permission validation and copy helpers, but there is not yet a fault-recovering uaccess layer.
 - `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
-- Dead thread/process control blocks are not reaped yet.
-- Networking is polling-based and TCP supports one client connection at a time.
+- Dead TCBs and kernel stacks are deferred-reaped, but full user address-space/page-table reaping is not implemented yet.
+- Networking is polling-based. User space has process-owned socket-style handles,
+  but the underlying TCP transport still supports one active client stream at a time.
 - `/disk` is intentionally tiny: flat namespace, 8 files maximum, 4 KiB per file.
 - FAT32 and ext2 are featureful enough for integration tests, but their hardware
   coverage is primarily QEMU/AHCI and they should still be treated as hobby OS
