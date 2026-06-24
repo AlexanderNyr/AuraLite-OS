@@ -5,7 +5,8 @@ This directory contains the technical documentation for AuraLite OS.
 ## Recommended reading order
 
 1. [`build_and_run.md`](build_and_run.md) — how to build the ISO, run it in QEMU,
-   VirtualBox or VMware, and troubleshoot toolchain issues.
+   VirtualBox or VMware, run unit/integration tests, and troubleshoot toolchain
+   issues.
 2. [`status.md`](status.md) — what is implemented, what is experimental, and
    what is known to be incomplete.
 3. [`architecture.md`](architecture.md) — boot flow and core kernel design.
@@ -31,6 +32,9 @@ This directory contains the technical documentation for AuraLite OS.
   complete or not regularly exercised on all targets.
 - **WIP** means the file contains scaffolding/protocol code but the full data
   path is intentionally unfinished.
+- **Full integration suite** means the QEMU black-box tests in
+  `tests/integration/` currently pass in the documented toolchain environment; it
+  does not imply production hardware support.
 
 When updating code, update the matching status table and driver notes in this
 folder at the same time.

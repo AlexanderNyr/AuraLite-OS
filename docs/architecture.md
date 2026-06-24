@@ -3,8 +3,9 @@
 This document explains the kernel architecture and boot-time subsystem order.
 It originated during the 14-phase bring-up plan, but the current tree also
 contains post-phase extensions: per-process address spaces, DHCP/DNS/TCP,
-USB/AHCI scaffolding, Bluetooth/Wi-Fi protocol layers, a full GUI demo and a
-3D renderer. For a precise feature-completeness table, see
+working QEMU AHCI sector I/O, FAT32/ext2 filesystems, UHCI-backed USB Mass
+Storage, Bluetooth/Wi-Fi protocol layers, a GUI syscall layer, bundled GUI
+applications and a 3D renderer. For a precise feature-completeness table, see
 [`status.md`](status.md).
 
 ## Boot flow
@@ -41,13 +42,15 @@ kmain (kernel.c)
    ├── ahci_init()           AHCI controller/port detection + DMA read/write self-test
    ├── diskfs_init()         mount tiny persistent AHCI filesystem at /disk
    ├── fat32_init()          mount FAT32 at /fat and enable /fat/AURALOG.TXT logs
+   ├── ext2_init()           mount /ext2 when a second AHCI disk is present
    ├── usb init              UHCI/OHCI/EHCI/xHCI + USB core + MSC protocol layer
    ├── bt_init()/wifi_init() Bluetooth HCI / 802.11 protocol frameworks
    ├── gfx_init()            double-buffered 2D graphics
-   ├── keyboard_init()       PS/2 keyboard (IRQ 1)
-   ├── mouse_init()          PS/2 mouse (IRQ 12)
+   ├── keyboard_init()       PS/2 keyboard (IRQ 1, rich key-event ring)
+   ├── mouse_init()          PS/2 mouse (IRQ 12, scroll-wheel event support)
    ├── wm_demo()             framebuffer window-manager demo
    ├── r3d_demo()            software 3D renderer demo
+   ├── gui_init()            kernel GUI compositor + GUI syscall subsystem
    ├── process_self_test()   spawn /hello in isolated address space
    ├── user_mode_self_test() load init.elf (shell) → Ring 3
    └── yield forever         shell runs interactively
@@ -238,10 +241,12 @@ syscall_entry (Ring 0, runs on the user stack)
 
 ### Implemented syscalls
 
-The syscall table now includes console/file I/O, process-management helpers and
-networking extensions: `read`, `write`, `open`, `close`, `getpid`, `fork`,
-`execve`, `exit`, `wait4`, `listdir`, `spawn`, `dns`, `net_connect`,
-`net_send`, `net_recv`, `net_close`, and `net_ping`.
+The syscall table includes console/file I/O, process-management helpers, VFS
+path operations, networking extensions and GUI calls: `read`, `write`, `open`,
+`close`, `getpid`, `fork`, `execve`, `exit`, `wait4`, `listdir`, `spawn`,
+`dns`, `net_connect`, `net_send`, `net_recv`, `net_close`, `net_ping`,
+`mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`, `SYS_GUI_CALL`, and
+`SYS_GUI_EVENT`.
 
 Some of these are experimental and intentionally simplified. See
 [`syscall_abi.md`](syscall_abi.md) for the exact numbers and caveats.
@@ -267,7 +272,11 @@ mfence for visibility.
 
 The VFS uses longest-prefix mount matching: `/dev/null` matches the `/dev`
 mount and delegates `null` to devfs's lookup. The USTAR initrd is mounted at
-`/` (read-only). DevFS provides `/dev/null` and `/dev/zero`.
+`/` (read-only). DevFS provides `/dev/null` and `/dev/zero`; tmpfs is mounted at
+`/tmp`; AHCI-backed writable filesystems are mounted at `/disk`, `/fat`, and,
+when a second AHCI disk is present, `/ext2`. FAT32 supports subdirectories and
+VFAT long names; ext2 supports Linux-mkfs images and in-kernel formatting for
+blank test disks.
 
 ## Networking (Phase 13)
 
@@ -277,10 +286,19 @@ PMM-allocated (physical frames for DMA). The network stack implements Ethernet
 framing, ARP (with cache), IPv4 (RFC 1071 checksum), and ICMP echo. RX polls
 the RDH MMIO register rather than the descriptor status byte.
 
-## Graphics (Phase 14)
+## Graphics and GUI (Phase 14+)
 
 A double-buffered 2D library renders to an off-screen back buffer
 (`kmalloc`-allocated) and flips it to the visible framebuffer via `memcpy`,
 avoiding tearing. Provides pixel plotting, filled/outlined rectangles,
-Bresenham lines, and bitmap-font text. A PS/2 keyboard driver (IRQ 1,
-scan-code set 1) feeds a ring buffer of decoded ASCII characters.
+Bresenham lines, and bitmap/PSF-font text.
+
+The legacy framebuffer window-manager demo remains for compatibility tests. The
+newer kernel GUI layer (`kernel/gui/`) manages windows, Z-order, focus,
+drag/resize/minimize/maximize/close state, per-window event rings, cursor shapes
+and a compositor thread. User GUI applications talk to it through `SYS_GUI_CALL`
+and `SYS_GUI_EVENT`, wrapped by `libauragui` widgets and drawing helpers.
+
+Keyboard input now has both ASCII and rich event paths (modifiers, navigation
+keys, function keys). The PS/2 mouse driver reports movement, buttons and wheel
+events for the compositor.

@@ -1,103 +1,131 @@
 # QEMU Integration Test Results
 
 Reference run on Debian 13 / QEMU 10.0.8 / clang 19 / 2 CPU / 512 MiB RAM.
+Full ext2 and GUI visual assertions require `e2fsprogs` and `vncdotool`.
 
-```
-$ make test-integration
+```bash
+make test-integration
 ```
 
 | # | Case                        | Asserts | Time | Status |
-|--:|----------------------------|--------:|-----:|:------:|
+|--:|-----------------------------|--------:|-----:|:------:|
 | 1 | `test_boot_to_shell`        | 17 / 17 |  12s | ✅ PASS |
 | 2 | `test_shell_commands`       | 10 / 10 |  30s | ✅ PASS |
 | 3 | `test_syscalls`             |   4 / 4 |  20s | ✅ PASS |
 | 4 | `test_user_processes`       |   4 / 4 |  25s | ✅ PASS |
 | 5 | `test_ahci_rw`              |   9 / 9 |  25s | ✅ PASS |
 | 6 | `test_fat32_persistence`    |   5 / 5 |  50s | ✅ PASS |
-| 7 | `test_usb_msc`              |   7 / 7 |  25s | ✅ PASS |
-| 8 | `test_networking`           |   6 / 6 |  25s | ✅ PASS |
-| 9 | `test_http_get`             |   4 / 4 |  45s | ✅ PASS¹|
-|10 | `test_graphics`             |   4 / 4 |  25s | ✅ PASS |
-|11 | `test_smp`                  |   3 / 3 |  15s | ✅ PASS |
-|   | **TOTAL**                  | **73/73** | **298s** | **✅** |
+| 7 | `test_fat32_full`           | 12 / 12 |  35s | ✅ PASS |
+| 8 | `test_ext2`                 | 14 / 14 |  66s | ✅ PASS |
+| 9 | `test_usb_msc`              |   7 / 7 |  25s | ✅ PASS |
+|10 | `test_networking`           |   6 / 6 |  25s | ✅ PASS |
+|11 | `test_http_get`             |   4 / 4 |  45s | ✅ PASS¹ |
+|12 | `test_graphics`             |   4 / 4 |  25s | ✅ PASS |
+|13 | `test_smp`                  |   3 / 3 |  15s | ✅ PASS |
+|14 | `test_gui`                  |   9 / 9 |  17s | ✅ PASS² |
+|   | **TOTAL**                   | **108/108** | **415s** | **✅** |
 
-¹ Soft-pass when QEMU SLIRP DHCP doesn't complete in time; the kernel
-falls back to a static IP by design and skips its online TCP self-test.
-On a host where DHCP completes, all four asserts become strict.
+¹ Soft-pass when QEMU SLIRP DHCP does not complete in time; the kernel falls
+back to a static IP by design and skips online TCP self-tests. On a host where
+DHCP completes, the HTTP body/marker path is asserted strictly.
 
-## What each test actually verifies
+² With `vncdotool` installed, the GUI case captures VNC screenshots and checks
+that the framebuffer is non-black. Without it, visual assertions are soft-skipped
+and serial-level GUI checks still run.
 
-### test_boot_to_shell  (17 asserts)
-Limine → kmain banner, IDT/PIC/TSS init, SYSCALL MSR, HHDM offset, PMM/VMM/
-Heap/Timer/Sched/VFS self-tests all PASS, Ring 3 init reached, interactive
-`auralite#` prompt visible, no panic, no triple-fault, no unhandled exception.
+## What each test verifies
 
-### test_ahci_rw  (9 asserts)
-- AHCI controller detects the QEMU SATA disk.
-- DMA read sector 0 + write/readback sector 1 succeed.
-- `diskfs` mounts at `/disk`, `fat32` mounts at `/fat`.
-- From userspace: `write /disk/ci.txt <marker>` + `cat` round-trips.
-- From userspace: `write /fat/CI.TXT <marker>` + `cat` round-trips.
-- No `[ahci] FAIL`, `[diskfs] FAIL`, `[fat32] FAIL` lines.
+### `test_boot_to_shell` — 17 asserts
 
-### test_usb_msc  (7 asserts)
-- UHCI controller enumerates the `usb-storage` device.
-- USB core completes standard descriptor requests.
-- MSC `READ CAPACITY` returns sector count + sector size.
-- MSC `READ(10)` of sector 0 succeeds and returns our pre-seeded magic.
-- No `[uhci] FAIL`, `[msc] FAIL` lines.
+Limine → `kmain` banner, IDT/PIC/TSS init, SYSCALL MSRs, HHDM offset,
+PMM/VMM/heap/timer/scheduler/VFS self-tests, Ring 3 init shell, visible
+`auralite#` prompt, no panic/triple-fault/unhandled exception.
 
-### test_http_get  (4 asserts)
-- A local Python HTTP server is spun up; QEMU forwards a port to it.
-- The user-mode `/http` client launches inside the guest.
-- Asserts the kernel didn't panic / take an unhandled exception.
-- If TCP roundtrip completed: asserts the response marker appears on serial.
-- Otherwise: soft-passes with a warning (kernel intentionally skips TCP
-  self-tests on DHCP failure to keep boot fast; user-mode app still runs).
+### `test_shell_commands` — 10 asserts
 
-### test_fat32_persistence  (5 asserts, 2 boots)
-- Boot #1: writes a unique marker to `/fat/PERSIST.TXT` and reads it back.
-- VM powers off (QEMU is killed).
-- Boot #2: reuses the same `disk.img`, lists `/fat`, `cat`s the file.
-- The marker from boot #1 is still there → FAT32 writes really hit disk.
+Shell surface: `help`, `uname`, `pwd`, `free`, `ls` output for key initrd apps,
+`echo` round-trip, and spawning `/hello` plus `/sysinfo`.
 
-### test_networking  (6 asserts)
-- Asserts the network stack initialised and didn't crash the kernel.
-- Branches on DHCP outcome:
-  - DHCP PASS → strict asserts on ICMP, DNS, TCP self-tests.
-  - DHCP FAIL → asserts the static-IP fallback path activated cleanly.
+### `test_syscalls` — 4 asserts
 
-### test_smp  (3 asserts)
-Boots with `-smp 4`; asserts the SMP subsystem ran, its self-test PASSed,
-and at least one AP printed an "online" line.
+`listdir`, `open + read` returning ELF magic from `/hello`, serial-input
+`read`, and no unexpected user-thread kill.
 
-### test_graphics  (4 asserts)
-Framebuffer console init, gfx/kbd/mouse init, WM demo rendered,
-3D demo finished.
+### `test_user_processes` — 4 asserts
 
-### test_user_processes  (4 asserts)
-Kernel `[proc] PASS: /hello ran in isolated address space`, user `/hello`
-output via `spawn()`, shell survives multiple spawns, no exception.
+Kernel process self-test, `/hello` via `spawn()`, shell remains alive after
+multiple spawns, and no exception in the process path.
 
-### test_syscalls  (4 asserts)
-`listdir`, `open + read` (ELF magic returned from `/hello`), serial-input
-`read`, no user thread killed unexpectedly.
+### `test_ahci_rw` — 9 asserts
 
-### test_shell_commands  (10 asserts)
-help, uname, pwd, free, ls (/init, /hello, /calc), echo round-trip,
-spawn `/hello` and `/sysinfo`.
+AHCI detects a QEMU SATA disk, DMA read/write self-test passes, `/disk` and
+`/fat` mount, userspace write/read round-trips through both filesystems, and no
+AHCI/diskfs/FAT32 failure lines appear.
+
+### `test_fat32_persistence` — 5 asserts, 2 boots
+
+Boot #1 writes a unique marker to `/fat/PERSIST.TXT`; boot #2 reuses the same
+image and reads the marker back, proving persistence across VM power-off.
+
+### `test_fat32_full` — 12 asserts
+
+FAT32 subdirectories, VFAT long-name visibility, `mkdir`, nested `write/cat`,
+`stat`, `mv`, `rm`, `rmdir`, and absence of exceptions during those operations.
+
+### `test_ext2` — 14 asserts
+
+Two-pass ext2 coverage:
+
+1. Mount a Linux-`mkfs.ext2` image, read a Linux-created file, write AuraLite
+   files/dirs, and verify them on the host through `debugfs`.
+2. Boot with a blank disk, let AuraLite run its in-kernel `mkfs.ext2`, run the
+   kernel self-test, and verify Linux recognises the resulting filesystem.
+
+### `test_usb_msc` — 7 asserts
+
+UHCI enumeration, USB core descriptor flow, MSC `READ CAPACITY`, ready state,
+`READ(10)` sector 0, and no UHCI/MSC failure lines.
+
+### `test_networking` — 6 asserts
+
+Network stack initialises cleanly. The test branches on DHCP:
+
+- DHCP success: asserts ICMP/DNS/TCP self-tests.
+- DHCP fallback: asserts static-IP fallback activated cleanly.
+
+### `test_http_get` — 4 asserts
+
+Starts a local Python HTTP server, launches user-mode `/http`, checks that the
+kernel/user path does not panic or fault, and strictly checks the body marker
+when DHCP/TCP completes. DHCP fallback is a documented soft pass.
+
+### `test_graphics` — 4 asserts
+
+Framebuffer console init, graphics/keyboard/mouse init, framebuffer WM demo
+rendered, and 3D demo completed.
+
+### `test_smp` — 3 asserts
+
+Boots with SMP enabled and checks that the SMP subsystem ran, self-test passed,
+and AP online messages appeared.
+
+### `test_gui` — 9 asserts
+
+Kernel GUI self-test, framebuffer/input initialisation, no panic/exception, and
+when VNC tooling is available, screenshot capture plus non-black framebuffer
+checks before/after launching a GUI app.
 
 ## Running a subset
 
 ```bash
-make test-integration-fast              # skip persist + http (~3 min → ~2 min)
-tests/integration/run_all.sh ahci usb   # only matching names
-bash tests/integration/cases/test_smp.sh  # single case
+make test-integration-fast                 # skip slow cases
+FILTER=ext2 tests/integration/run_all.sh   # env filter
+bash tests/integration/cases/test_smp.sh   # single case
 ```
 
 ## CI
 
 A GitHub Actions workflow lives at `.github/workflows/integration.yml`. It
-installs the toolchain, builds the ISO, runs host unit tests and the
-fast subset of integration tests on every push/PR, and uploads
-`build/integration-logs/` as an artifact when anything fails.
+installs the toolchain, builds the ISO, runs host unit tests and the fast subset
+of integration tests on every push/PR, and uploads `build/integration-logs/` as
+an artifact when anything fails.

@@ -50,6 +50,7 @@ Recommended manual settings:
 | Network | NAT |
 | Adapter type | **Intel PRO/1000 MT Desktop (82540EM)** |
 | Serial | COM1 redirected to `serial.log` |
+| Storage | SATA/AHCI disk if you want `/disk`, `/fat` or `/ext2` |
 
 The 82540EM adapter has PCI ID `8086:100e`, which AuraLite's `e1000` driver
 supports.
@@ -109,12 +110,15 @@ Unsupported for now:
 - VMware vmxnet3
 - Intel e1000e unless tested and explicitly added
 
-## Display, input and USB storage
+## Display, input, storage and USB
 
 AuraLite uses the framebuffer supplied by Limine, so it does not require a
-native VirtualBox/VMware SVGA driver for basic graphics. PS/2 keyboard and mouse
-are used for input; USB controllers may also be exposed for the USB stack's
-probing and enumeration tests.
+native VirtualBox/VMware SVGA driver for basic graphics or the built-in GUI.
+PS/2 keyboard and mouse are used for normal input; USB controllers may also be
+exposed for the USB stack's probing and enumeration tests.
+
+Writable storage is best exercised with AHCI/SATA disks. The first AHCI disk is
+used for `/disk` and `/fat`; a second AHCI disk enables `/ext2`.
 
 USB Mass Storage is currently ready through the UHCI backend. In QEMU this is
 exercised by:

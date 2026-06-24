@@ -16,8 +16,8 @@ See also [`status.md`](status.md) for a feature matrix.
 | Boot splash | `drivers/framebuffer/bootsplash.c` | 🧪 | Animated graphical boot screen helpers. |
 | Window manager | `drivers/framebuffer/wm.c` | ✅/🧪 | Demo compositor, windows, widgets, mouse interaction. |
 | 3D renderer | `drivers/framebuffer/render3d.c` | 🧪 | Software mesh/wireframe/flat-shaded demo. |
-| PS/2 keyboard | `drivers/keyboard/` | ✅ | IRQ 1, scan-code set 1, ASCII ring buffer. |
-| PS/2 mouse | `drivers/mouse/` | ✅ | IRQ 12, 3-byte packet parser, cursor state. |
+| PS/2 keyboard | `drivers/keyboard/` | ✅ | IRQ 1, scan-code set 1, ASCII and rich key-event rings. |
+| PS/2 mouse | `drivers/mouse/` | ✅ | IRQ 12, packet parser, buttons, cursor state and wheel-event support. |
 | PIT | `drivers/timer/` | ✅ | 100 Hz system tick and sleeps. |
 | PCI | `drivers/pci/` | ✅ | Config-space reads/writes and simple scanning. |
 | e1000 NIC | `drivers/e1000/` | ✅ | Intel 8254x legacy TX/RX rings. |
@@ -30,6 +30,7 @@ See also [`status.md`](status.md) for a feature matrix.
 | USB MSC | `drivers/usb/msc.c` | 🧪 | Bulk-Only/SCSI read/write path through UHCI. |
 | Bluetooth HCI | `drivers/bluetooth/` | 🚧 | HCI command/event protocol over USB. |
 | Wi-Fi 802.11 | `drivers/wifi/` | 🚧 | MAC management layer; no chipset driver by default. |
+| Kernel GUI | `kernel/gui/` | 🧪 | Window compositor, event queues and GUI syscall backend. |
 | Virtual hardware catalog | `drivers/vm/` | ✅ | Detects common QEMU/VirtualBox/VMware PCI devices and reports driver status. |
 
 ## UART
@@ -80,13 +81,13 @@ Location: `drivers/keyboard/`
 
 - PS/2 keyboard, scan-code set 1.
 - IRQ 1 through the PIC layer.
-- Key releases are ignored.
-- ASCII characters are stored in a ring buffer.
+- ASCII characters are stored in a legacy ring buffer for shell/stdin.
+- A richer key-event ring tracks key down/up, Shift/Ctrl/Alt/CapsLock,
+  navigation keys and function keys for the GUI.
 
 Limitations:
 
-- no modifier state for Shift/Ctrl/Alt in the current ASCII map;
-- no keyboard layout switching;
+- no keyboard layout switching yet;
 - no USB HID keyboard input path yet.
 
 ## Mouse
@@ -95,10 +96,13 @@ Location: `drivers/mouse/`
 
 - PS/2 auxiliary device through the 8042 controller.
 - IRQ 12.
-- Parses 3-byte relative movement packets.
+- Parses PS/2 relative movement packets and attempts IntelliMouse 4-byte mode for
+  scroll-wheel deltas.
 - Maintains absolute cursor position clamped to framebuffer bounds.
+- Exposes both simple cursor/button state and queued mouse events for the GUI.
 
-Used by the window-manager demo for focus, dragging and close buttons.
+Used by the framebuffer window-manager demo and the newer kernel GUI compositor
+for focus, dragging, resizing, close buttons and scroll-wheel events.
 
 ## PIT timer
 
@@ -175,8 +179,10 @@ Current status:
   reads it back;
 - `kernel/fs/diskfs.c` mounts a tiny persistent AHCI-backed filesystem at
   `/disk` when a SATA disk is present;
-- `kernel/fs/fat32.c` mounts a FAT32 volume at `/fat` and stores persistent
-  kernel logs in `/fat/AURALOG.TXT`;
+- `kernel/fs/fat32.c` mounts a FAT32 volume at `/fat`, supports subdirectories,
+  VFAT long filenames and directory/file mutation operations, and stores
+  persistent kernel logs in `/fat/AURALOG.TXT`;
+- `kernel/fs/ext2.c` mounts ext2 at `/ext2` when a second AHCI disk is present;
 - broader real-hardware and non-QEMU hypervisor coverage is still experimental.
 
 The earlier PxCI issue was fixed by programming the command header PRDTL field
@@ -277,6 +283,27 @@ Implemented protocol pieces:
 Current limitation:
 
 - no actual Intel/Realtek/Atheros chipset driver is registered by default.
+
+
+## Kernel GUI subsystem
+
+Location: `kernel/gui/` with user wrappers in `libauragui/`
+
+Current implemented pieces:
+
+- in-kernel window manager/compositor with Z-order, focus, move/resize,
+  minimize/maximize/restore and close handling;
+- per-window back buffers and event rings;
+- themed decorations, taskbar and desktop background;
+- cursor shapes and mouse/keyboard event dispatch;
+- GUI syscalls `SYS_GUI_CALL` and `SYS_GUI_EVENT`;
+- `libauragui` user-space wrappers, drawing helpers and simple widgets;
+- bundled GUI apps: calculator, editor, file manager, terminal-style demo,
+  system monitor, about dialog and launcher.
+
+Current limitation: GUI state is protected enough for the demo/integration path,
+but it is still an educational in-kernel desktop rather than a production
+multi-client graphics server.
 
 ## Virtual hardware compatibility probe
 

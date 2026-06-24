@@ -16,18 +16,21 @@ tests/integration/
     ├── test_user_processes.sh       spawn(), isolated address spaces
     ├── test_ahci_rw.sh              AHCI DMA + /disk + /fat write/read
     ├── test_fat32_persistence.sh    write file → reboot → still there
+    ├── test_fat32_full.sh           FAT32 subdirs/LFN/mkdir/rmdir/rm/mv/stat
+    ├── test_ext2.sh                 Linux-mkfs ext2 + in-kernel mkfs + debugfs
     ├── test_usb_msc.sh              UHCI + USB MSC READ(10) sector 0
     ├── test_networking.sh           e1000 + ARP + ICMP + DNS + TCP
-    ├── test_http_get.sh             real HTTP/1.0 GET to a python httpd
+    ├── test_http_get.sh             HTTP userspace path against a local httpd
     ├── test_graphics.sh             framebuffer + WM + 3D demo render
-    └── test_smp.sh                  Limine MP brings up ≥ 1 AP
+    ├── test_smp.sh                  Limine MP brings up ≥ 1 AP
+    └── test_gui.sh                  GUI compositor + VNC screenshot checks
 ```
 
 ## Running
 
 ```bash
 make test-integration              # all cases
-make test-integration-fast         # skip the slow ones (FAT32 persist, HTTP)
+make test-integration-fast         # skip slow cases (FAT32 persist, HTTP, ext2)
 tests/integration/run_all.sh ahci  # only cases matching 'ahci'
 NO_COLOR=1 tests/integration/run_all.sh   # plain text
 ```
@@ -47,11 +50,14 @@ bash tests/integration/cases/test_ahci_rw.sh
 | `nasm`                | Building assembly stubs                      |
 | `xorriso`             | Creating the ISO                             |
 | `python3`             | Disk-image bootstrap + HTTP test server      |
+| `e2fsprogs`           | Optional/full: ext2 `mkfs.ext2` + `debugfs`  |
+| `vncdotool`           | Optional/full: GUI VNC screenshot assertions |
 
 Install on Debian/Ubuntu:
 
 ```bash
 sudo apt install clang lld nasm xorriso qemu-system-x86 python3
+sudo apt install e2fsprogs vncdotool   # optional, for full ext2/GUI coverage
 ```
 
 ## How a case is structured
@@ -89,9 +95,14 @@ relevant line of the log. The full log is preserved for post-mortem.
 - `test_fat32_persistence` reuses a single disk image across two boots —
   the first boot **writes** it, the second **reads** it. It removes the
   image at the start to ensure a clean run.
+- `test_ext2` needs `mkfs.ext2` and `debugfs`; if they are missing, it soft-skips
+  after reporting the missing dependency.
 - `test_http_get` spins up a temporary Python HTTP server on a free
   loopback port; if your CI box already has port 80 forwarded, override
-  `HTTP_PORT=…`.
+  `HTTP_PORT=…`. The test soft-passes when DHCP falls back and the HTTP body is
+  not observable, as long as the path runs without kernel/user exceptions.
+- `test_gui` uses QEMU VNC plus `vncdotool` screenshots when available. Without
+  `vncdotool`, it keeps serial-level GUI assertions and soft-skips visual ones.
 - The kernel's USB self-test calls `READ(10)` on sector 0 of the attached
   `usb-storage`. We pre-seed sector 0 with the magic `AURALUSB\x55\xAA`
   so the test is hermetic (no reliance on whatever was on the image).

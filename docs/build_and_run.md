@@ -9,6 +9,9 @@ Debian/Ubuntu:
 ```bash
 sudo apt update
 sudo apt install clang lld nasm qemu-system-x86 xorriso
+
+# Optional, but needed for the complete integration suite:
+sudo apt install e2fsprogs vncdotool
 ```
 
 Tool purposes:
@@ -19,7 +22,9 @@ Tool purposes:
 | `ld.lld` | Static ELF linking with custom linker scripts. |
 | `nasm` | x86_64 assembly files. |
 | `xorriso` | Bootable ISO creation. |
-| `qemu-system-x86_64` | Local integration testing. |
+| `qemu-system-x86_64` | Local booting and integration testing. |
+| `e2fsprogs` | Optional: `mkfs.ext2`/`debugfs` for ext2 integration tests. |
+| `vncdotool` + Pillow | Optional: GUI/VNC screenshot assertions. |
 
 ## Build ISO
 
@@ -68,11 +73,11 @@ build/kernel.elf
 make run
 ```
 
-This uses `tools/run_qemu.sh`. The script creates a small raw AHCI test disk at
-`build/disk.img` if needed and attaches it through a QEMU AHCI controller. The
-kernel AHCI self-test reads sector 0 and verifies write/readback on scratch
-sector 1. If AHCI is present, AuraLite also mounts `/disk` and a FAT32 volume
-at `/fat`; kernel logs are appended to `/fat/AURALOG.TXT`.
+This uses `tools/run_qemu.sh`. The script creates AHCI test disks as needed and
+attaches them through a QEMU AHCI controller. The kernel AHCI self-test reads
+sector 0 and verifies write/readback on scratch sector 1. If AHCI is present,
+AuraLite mounts `/disk` and a FAT32 volume at `/fat`; with a second AHCI disk it
+also mounts ext2 at `/ext2`. Kernel logs are appended to `/fat/AURALOG.TXT`.
 
 If you want a simpler command without the AHCI test disk:
 
@@ -113,7 +118,9 @@ Then attach from another terminal:
 gdb build/kernel.elf -ex 'target remote :1234'
 ```
 
-## Unit tests
+## Tests
+
+### Unit tests
 
 ```bash
 make test-unit
@@ -131,6 +138,33 @@ The host-side unit tests cover:
 - 3D math helpers.
 - USB protocol structures.
 - Window-manager hit-testing/layout helpers.
+
+### QEMU integration tests
+
+```bash
+make test-integration-fast   # faster subset, skips slow cases
+make test-integration        # full black-box suite
+make test                    # unit tests + full integration suite
+```
+
+The integration harness boots the real ISO in QEMU and asserts on serial output
+and, for the GUI case, VNC screenshots. The full suite covers boot-to-shell,
+shell commands, syscalls, process spawning/address spaces, AHCI `/disk` +
+`/fat`, FAT32 persistence, FAT32 subdirs/LFN, ext2 cross-OS round-trips, USB
+Mass Storage through UHCI, e1000 networking, HTTP path exercise, graphics, SMP
+and GUI.
+
+Logs are written to:
+
+```text
+build/integration-logs/
+```
+
+Optional packages for all assertions:
+
+- `e2fsprogs` — ext2 tests use `mkfs.ext2` and `debugfs`.
+- `vncdotool` — GUI test captures VNC screenshots; without it, the test keeps
+  serial-level checks and soft-skips visual assertions.
 
 ## USB image
 
@@ -235,6 +269,22 @@ Make the vendored Limine tool executable:
 
 ```bash
 chmod +x limine/limine
+```
+
+### `mkfs.ext2` or `debugfs` missing during integration tests
+
+Install e2fsprogs:
+
+```bash
+sudo apt install e2fsprogs
+```
+
+### GUI integration test skips visual assertions
+
+Install VNC tooling:
+
+```bash
+sudo apt install vncdotool
 ```
 
 ### `psf_font.inc file not found`

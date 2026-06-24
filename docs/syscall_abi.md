@@ -2,7 +2,8 @@
 
 AuraLite uses the x86_64 `SYSCALL`/`SYSRET` mechanism with a Linux-like register
 calling convention. The ABI is intentionally small and currently tailored to the
-init shell, bundled user programs and networking demos.
+init shell, bundled user programs, networking demos, filesystem tests and GUI
+applications.
 
 ## Register convention
 
@@ -23,7 +24,8 @@ Return convention:
 - non-negative value: success;
 - `-1` (`0xFFFFFFFFFFFFFFFF`): generic failure.
 
-AuraLite does not yet implement `errno`.
+AuraLite does not yet implement `errno`; user-space wrappers generally expose
+`-1` as failure.
 
 ## User-space wrapper
 
@@ -94,23 +96,31 @@ Current caveats:
 
 | Number | Name | Prototype | Status | Notes |
 |---:|---|---|---|---|
-| 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads from serial stdin; `fd>=3` reads VFS files. |
-| 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write, including `/tmp` tmpfs files. |
-| 2 | `open` | `open(path)` | ✅ | Opens VFS path and returns global FD. |
+| 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads line input from PS/2 keyboard and/or serial; `fd>=3` reads VFS files. |
+| 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write. |
+| 2 | `open` | `open(path)` | ✅ | Opens or creates a VFS path when the mounted FS supports creation; returns a global FD. |
 | 3 | `close` | `close(fd)` | ✅ | Closes global FD. |
 | 39 | `getpid` | `getpid()` | ✅ | Returns current TCB ID. |
 | 57 | `fork` | `fork()` | 🧪 | Deep-copies user address space; simplified semantics. |
 | 59 | `execve` | `execve(path)` | 🧪 | Replaces current address space with a new ELF. No argv/envp. |
-| 60 | `exit` | `exit(code)` | ✅/🧪 | Terminates current thread; exit code handling is incomplete. |
-| 61 | `wait4` | `wait4(status)` | 🧪 | Yield-polling wait; not POSIX-complete. |
-| 80 | `listdir` | `listdir(path)` | 🧪 | Non-standard; currently prints through kernel/VFS path. |
-| 81 | `spawn` | `spawn(path)` | 🧪 | Non-standard; creates process and loads ELF from VFS. |
+| 60 | `exit` | `exit(code)` | ✅/🧪 | Terminates current thread; exit-code reporting is incomplete. |
+| 61 | `wait4` | `wait4(status)` | 🧪 | Yield-polling wait; not POSIX-complete and not PID-specific. |
+| 80 | `listdir` | `listdir(path)` | 🧪 | Non-standard; prints a directory listing through the kernel/VFS path. |
+| 81 | `spawn` | `spawn(path)` | 🧪 | Non-standard; creates a process and loads an ELF from VFS. |
 | 82 | `dns` | `dns_resolve(hostname)` | 🧪 | Returns IPv4 A record in host-order integer form. |
 | 83 | `net_connect` | `net_connect(ip, port)` | 🧪 | Opens the single global TCP client connection. |
-| 84 | `net_send` | `net_send(buf, len)` | 🧪 | Sends on global TCP connection. |
-| 85 | `net_recv` | `net_recv(buf, len)` | 🧪 | Polling receive on global TCP connection. |
-| 86 | `net_close` | `net_close()` | 🧪 | Closes global TCP connection. |
+| 84 | `net_send` | `net_send(buf, len)` | 🧪 | Sends on the global TCP connection. |
+| 85 | `net_recv` | `net_recv(buf, len)` | 🧪 | Polling receive on the global TCP connection. |
+| 86 | `net_close` | `net_close()` | 🧪 | Closes the global TCP connection. |
 | 87 | `net_ping` | `net_ping(ip)` | 🧪 | ICMP echo via kernel networking stack. |
+| 100 | `mkdir` | `mkdir(path)` | ✅/🧪 | Creates a directory when the mounted FS supports it (`/fat`, `/ext2`). |
+| 101 | `rmdir` | `rmdir(path)` | ✅/🧪 | Removes an empty directory. |
+| 102 | `unlink` | `unlink(path)` | ✅/🧪 | Removes a regular file. |
+| 103 | `rename` | `rename(from, to)` | ✅/🧪 | Renames/moves within supported filesystems. |
+| 104 | `truncate` | `truncate(path, size)` | ✅/🧪 | Shrinks or extends supported regular files. |
+| 105 | `stat` | `stat(path, struct stat*)` | ✅/🧪 | Fills the AuraLite `struct stat` subset. |
+| 200 | `gui_call` | packed GUI dispatcher | 🧪 | Window lifecycle, drawing, invalidation, render and cursor operations. Used through `libauragui`. |
+| 201 | `gui_event` | `gui_event(wid, out, block)` | 🧪 | Polls or waits for GUI events for a window. Used through `libauragui`. |
 
 ## libc wrappers
 
@@ -134,7 +144,17 @@ int     net_send(const void *data, uint32_t len);
 int     net_recv(void *buf, uint32_t bufsize);
 int     net_close(void);
 int     net_ping(uint32_t ip);
+int     mkdir(const char *path);
+int     rmdir(const char *path);
+int     unlink(const char *path);
+int     rename(const char *from, const char *to);
+int     truncate(const char *path, uint64_t new_size);
+int     stat(const char *path, struct stat *out);
 ```
+
+GUI wrappers are defined in `libauragui/include/auragui.h` and implemented in
+`libauragui/src/auragui.c`. Applications should use the `ag_*` window, drawing,
+event and widget APIs rather than invoking `SYS_GUI_CALL` directly.
 
 ## File descriptor model
 
@@ -153,8 +173,7 @@ This means:
 | `brk` | User heap growth. |
 | `pipe` | IPC pipe. |
 | `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv` | BSD-style socket API. |
-| `readdir` | Structured directory iteration. |
-| `stat` | File metadata. |
+| structured `readdir` syscall | `listdir` prints through the kernel; no buffer-returning directory syscall yet. |
 | `nanosleep` / `clock_gettime` | Time APIs. |
 
 ## Security / robustness TODOs

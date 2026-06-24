@@ -1,9 +1,11 @@
 # AuraLite OS
 
 AuraLite OS is a from-scratch **x86_64 hobby operating system** booted by
-Limine. It includes a higher-half kernel, preemptive multitasking, Ring 3 user
-programs, a small libc, an initrd-backed VFS, networking, framebuffer graphics,
-a window-manager demo, and several experimental device/protocol layers.
+Limine. It includes a higher-half kernel, preemptive multitasking, Ring 3 ELF
+user programs, a small libc, an initrd-backed VFS, writable tmpfs/FAT32/ext2
+storage, e1000 networking, AHCI, USB Mass Storage through UHCI, framebuffer
+graphics, a kernel GUI/window compositor, a small user-space GUI toolkit, and
+several experimental device/protocol layers.
 
 The project is intentionally incremental and educational: most subsystems have
 small self-tests, host-side unit tests, and documentation explaining the design
@@ -24,10 +26,14 @@ additional post-phase extensions.
 - Physical memory manager, virtual memory manager, kernel heap.
 - Preemptive round-robin scheduler and kernel threads.
 - Ring 3 ELF loading and minimal libc.
-- Initrd + VFS + `/dev/null` and `/dev/zero`.
-- e1000 networking with ARP, IPv4, ICMP, DHCP, UDP DNS and minimal TCP client.
-- Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo.
-- Host-side unit tests for core algorithms and protocol helpers.
+- Initrd-backed VFS plus `/dev/null`, `/dev/zero`, writable `/tmp`, `/disk`,
+  full FAT32 at `/fat`, and ext2 at `/ext2` when a second AHCI disk is present.
+- AHCI SATA sector read/write on QEMU-style AHCI disks.
+- e1000 networking with ARP, IPv4, ICMP, DHCP/fallback addressing, UDP DNS and
+  a minimal single-connection TCP client.
+- Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
+  kernel GUI compositor, GUI syscalls and bundled GUI applications.
+- Host-side unit tests and QEMU integration tests for the main subsystems.
 
 ### Experimental / partial
 
@@ -36,12 +42,14 @@ additional post-phase extensions.
 - USB host-controller support is uneven: UHCI has working control/bulk
   transfers and can drive USB Mass Storage; OHCI, EHCI and xHCI currently focus
   on controller/port bring-up and detection.
-- USB Mass Storage is ready through the UHCI backend. MSC behind OHCI/EHCI/xHCI
-  remains future work.
 - AHCI detects/initialises ports and DMA read/write passes the QEMU AHCI test
-  disk self-test. Writable storage mounts include `/disk` and `/fat`.
+  disk self-test; broader real-hardware coverage remains experimental.
+- USB Mass Storage is ready through UHCI. MSC devices behind OHCI/EHCI/xHCI
+  remain future work until those transfer backends are completed.
 - Bluetooth HCI and Wi-Fi 802.11 layers are protocol frameworks that require
   working lower-level USB/chipset drivers.
+- GUI is functional in the framebuffer/VNC integration tests, but it is still a
+  compact in-kernel educational desktop rather than a production graphics stack.
 
 See [`docs/status.md`](docs/status.md) for a detailed support matrix.
 
@@ -56,6 +64,8 @@ Debian/Ubuntu:
 ```bash
 sudo apt update
 sudo apt install clang lld nasm qemu-system-x86 xorriso
+# Optional but needed for the full integration suite:
+sudo apt install e2fsprogs vncdotool
 ```
 
 ### Build the bootable ISO
@@ -98,15 +108,21 @@ qemu-system-x86_64 \
   -device e1000,netdev=net0
 ```
 
-> Note: `tools/run_qemu.sh` also attaches an AHCI test disk. If you use it
-> directly and `build/disk.img` does not exist, create one first or use the
-> simpler command above.
+> Note: `tools/run_qemu.sh` creates/attaches AHCI test disks automatically so
+> `/disk`, `/fat` and `/ext2` can be exercised. The simpler manual command above
+> boots without those writable/persistent mounts.
 
-### Run unit tests
+### Run tests
 
 ```bash
-make test-unit
+make test-unit              # host-side unit tests
+make test-integration-fast  # QEMU smoke/integration subset
+make test-integration       # full QEMU integration suite
 ```
+
+The full suite currently boots QEMU for 14 black-box cases, including AHCI,
+FAT32 persistence, ext2 cross-OS round-trips, USB MSC, networking, SMP, graphics
+and GUI/VNC checks.
 
 ---
 
@@ -163,6 +179,9 @@ More details: [`docs/virtual_machines.md`](docs/virtual_machines.md).
 | `make vmware` | Build ISO and generate a VMware `.vmx`. |
 | `make vm-configs` | Generate both VirtualBox and VMware configs. |
 | `make test-unit` | Build and run host-side unit tests. |
+| `make test-integration-fast` | Run the faster QEMU integration subset. |
+| `make test-integration` | Run the full QEMU black-box integration suite. |
+| `make test` | Run unit tests and then full integration tests. |
 | `make clean` | Remove `build/`. |
 
 ---
@@ -174,7 +193,7 @@ AuraLite-OS/
 ├── boot/limine/              # Limine boot configs
 ├── docs/                     # Architecture, ABI, drivers, VM setup, status
 ├── drivers/
-│   ├── ahci/                 # AHCI SATA controller/port bring-up, I/O WIP
+│   ├── ahci/                 # AHCI SATA detection and DMA sector I/O
 │   ├── bluetooth/            # Bluetooth HCI protocol layer
 │   ├── e1000/                # Intel 8254x/e1000 NIC driver
 │   ├── framebuffer/          # Console, 2D graphics, PSF font, WM, 3D demo
@@ -187,16 +206,19 @@ AuraLite-OS/
 │   └── wifi/                 # 802.11 MAC management layer
 ├── kernel/
 │   ├── arch/x86_64/          # CPU, GDT, IDT, IRQ, paging, syscall, SMP, TSS
-│   ├── fs/                   # VFS, initrd, devfs
+│   ├── fs/                   # VFS, initrd, devfs, tmpfs, diskfs, FAT32, ext2
+│   ├── gui/                  # Kernel GUI, compositor and GUI syscalls
 │   ├── lib/                  # kprintf, string, bitmap, spinlock, assert
 │   ├── mm/                   # PMM, heap core, kernel heap wrapper
 │   ├── net/                  # Ethernet/ARP/IPv4/ICMP/UDP/DNS/TCP
 │   ├── proc/                 # Threads, scheduler, ELF loader, processes
 │   └── kernel.c              # kmain() orchestration
+├── libauragui/               # User-space GUI toolkit wrappers/widgets
 ├── libc/                     # Minimal user-space libc and crt0
 ├── limine/                   # Vendored Limine binaries and header
 ├── scripts/                  # CI/integration helper
 ├── tests/unit/               # Host-side unit tests
+├── tests/integration/        # QEMU black-box integration tests
 ├── tools/                    # ISO/initrd/VM/QEMU helper scripts
 ├── userspace/                # init shell and user programs
 ├── kernel.ld                 # Kernel linker script
@@ -222,6 +244,13 @@ The initrd currently packages:
 | `/snake` | Terminal snake game. |
 | `/http` | HTTP client. |
 | `/browser` | Text web browser with simple HTML rendering. |
+| `/gcalc` | Graphical calculator. |
+| `/gedit` | Graphical text editor. |
+| `/gfiles` | Graphical file manager. |
+| `/gterm` | Graphical terminal-style demo. |
+| `/gsysmon` | Graphical system monitor demo. |
+| `/gabout` | Graphical about dialog. |
+| `/glaunch` | GUI application launcher. |
 
 Common shell commands:
 
@@ -230,10 +259,13 @@ help
 ls /
 cat /hello
 echo hello
+write /tmp/note hello
+cat /tmp/note
 run /calc
 run /sysinfo
 nslookup example.com
 ping example.com
+gui
 exit
 ```
 
@@ -262,20 +294,21 @@ Start here:
 
 Short version:
 
-- AHCI sector read/write is enabled and self-tested on the QEMU AHCI test disk;
-  broader hardware coverage is still experimental.
-- `/tmp` is a writable tmpfs, `/disk` is a tiny AHCI-backed filesystem, and
-  `/fat` is a FAT32 volume used for persistent files and kernel logs.
-- Scheduler is not SMP-safe; APs are brought online but not used for general
-  scheduling.
+- AHCI sector read/write is enabled and self-tested on QEMU AHCI disks; broader
+  physical-hardware coverage is still experimental.
+- Scheduler state is not SMP-safe; APs are brought online and idle rather than
+  participating in general scheduling.
 - File descriptors are global, not per-process.
 - User pointers passed to syscalls are not yet validated.
 - `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
+- Dead thread/process control blocks are not reaped yet.
 - Networking is polling-based and TCP supports one client connection at a time.
-- The persistent `/disk` filesystem is intentionally tiny: flat namespace,
-  8 files maximum, 4 KiB per file. `/fat` supports flat 8.3 FAT32 files and
-  automatically receives kernel logs in `/fat/AURALOG.TXT`; directories and
-  long filenames are future work.
+- `/disk` is intentionally tiny: flat namespace, 8 files maximum, 4 KiB per file.
+- FAT32 and ext2 are featureful enough for integration tests, but their hardware
+  coverage is primarily QEMU/AHCI and they should still be treated as hobby OS
+  filesystems rather than production-grade implementations.
+- USB MSC currently uses the UHCI backend; OHCI/EHCI/xHCI transfer engines are
+  not wired to class drivers yet.
 
 See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 

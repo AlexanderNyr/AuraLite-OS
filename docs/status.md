@@ -45,7 +45,7 @@ Legend:
 | Preemptive round-robin | ✅ | PIT tick, quantum-based scheduling. |
 | Ring 3 user mode | ✅ | ELF entry via `iretq`. |
 | ELF loader | ✅ | Loads PT_LOAD segments at linked virtual addresses. |
-| `spawn` | 🧪 | Used by shell `run <prog>`. |
+| `spawn` | 🧪 | Used by shell `run <prog>` and integration-tested. |
 | `fork` | 🧪 | Deep-copy implementation, simplified semantics. |
 | `execve` | 🧪 | Replaces current address space, simplified. |
 | `wait4` / `wait` | 🧪 | Yield-polling, no precise child PID semantics. |
@@ -71,8 +71,9 @@ Legend:
 |---|---:|---|
 | Console/file I/O | ✅ | `read`, `write`, `open`, `close`. |
 | Process basics | 🧪 | `getpid`, `exit`, `spawn`, `fork`, `execve`, `wait4`. |
-| Directory listing | 🧪 | Non-standard `listdir`. |
+| Directory/path ops | ✅/🧪 | `listdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`. |
 | Networking | 🧪 | DNS, ping and single TCP connection syscalls. |
+| GUI | 🧪 | `SYS_GUI_CALL` and `SYS_GUI_EVENT` power `libauragui` apps. |
 | Memory syscalls | ❌ | No `mmap`, `munmap`, `brk`. |
 | Sockets | ❌ | No BSD socket API. |
 
@@ -99,8 +100,9 @@ Legend:
 | PSF/bitmap font rendering | ✅ | Embedded console font. |
 | 2D graphics | ✅ | Double-buffered drawing. |
 | Window manager demo | ✅ | Windows, widgets, taskbar, mouse interaction. |
-| PS/2 keyboard | ✅ | Scan-code set 1. |
-| PS/2 mouse | ✅ | 3-byte packets, IRQ 12. |
+| PS/2 keyboard | ✅ | Scan-code set 1, ASCII + rich key-event queues. |
+| PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
+| Kernel GUI/compositor | 🧪 | Window manager, taskbar, event queues, GUI syscalls and `libauragui` apps. |
 | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
 | Native VBox/VMware SVGA drivers | ❌ | Limine framebuffer is used instead. |
 
@@ -128,7 +130,7 @@ Legend:
 
 | App | Status | Notes |
 |---|---:|---|
-| `/init` shell | ✅ | Interactive serial shell. |
+| `/init` shell | ✅ | Interactive serial/keyboard shell. |
 | `/hello` | ✅ | Smoke test app. |
 | `/calc` | ✅ | Calculator. |
 | `/sysinfo` | ✅ | Feature info display. |
@@ -138,13 +140,14 @@ Legend:
 | `/snake` | ✅ | Terminal snake. |
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
+| `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch` | 🧪 | GUI apps using `libauragui`. |
 
 ## Highest-priority gaps
 
-1. Validate user pointers in all syscalls.
+1. Validate user pointers in all syscalls and add safe user-copy helpers.
 2. Add per-process FD tables.
-3. Reap dead threads/processes.
-4. Extend FAT32 with directories, long filenames, timestamps and free-space accounting.
-5. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
-6. Replace single global TCP connection with per-connection/socket objects.
-7. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
+3. Reap dead threads/processes and free their stacks/address spaces.
+4. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
+5. Replace the single global TCP connection with per-connection/socket objects.
+6. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
+7. Enforce strict user ELF segment permissions and add user memory syscalls.
