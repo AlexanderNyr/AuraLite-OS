@@ -41,7 +41,8 @@ KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 
-.PHONY: all kernel iso usb vbox vmware vm-configs run run-usb-msc clean
+.PHONY: all kernel iso usb vbox vmware vm-configs run run-usb-msc clean \
+        test-unit test-integration test-integration-fast test
 
 all: iso
 
@@ -270,3 +271,15 @@ $(BUILD_DIR)/test_usb: tests/unit/test_usb.c
 $(BUILD_DIR)/test_wm: tests/unit/test_wm.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# ---- QEMU integration tests ----
+# Each case in tests/integration/cases/ boots the ISO in QEMU and asserts on
+# the serial console.  Logs are written to build/integration-logs/.
+test-integration: iso
+	@bash tests/integration/run_all.sh
+
+test-integration-fast: iso
+	@bash tests/integration/run_all.sh --fast
+
+# Convenience: run host unit tests AND QEMU integration tests.
+test: test-unit test-integration

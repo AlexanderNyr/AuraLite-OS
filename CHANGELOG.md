@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [QEMU integration test harness] 2026-06-24
+
+### Added
+- Added `tests/integration/` — a black-box QEMU test harness that boots the
+  real ISO and asserts on the serial console.
+- `tests/integration/lib/lib.sh`: shared helpers (qemu launcher with stdin
+  pumping, raw-disk image bootstrap, colored asserts, log capture).
+- 11 self-contained test cases in `tests/integration/cases/`:
+  - `test_boot_to_shell`        — phases 0..11 reach Ring 3 init shell.
+  - `test_shell_commands`       — help/ls/cat/echo/pwd/free/ps/run.
+  - `test_syscalls`             — read/write/open/listdir/getpid surface.
+  - `test_user_processes`       — spawn + isolated address space.
+  - `test_ahci_rw`              — AHCI DMA + `/disk` + `/fat` write/read.
+  - `test_fat32_persistence`    — write file → reboot → still there.
+  - `test_usb_msc`              — UHCI + USB MSC READ(10) sector 0.
+  - `test_networking`           — e1000 + ICMP + DNS + TCP (DHCP-branched).
+  - `test_http_get`             — user-mode `/http` against a local httpd.
+  - `test_graphics`             — framebuffer + WM + 3D demo render.
+  - `test_smp`                  — Limine MP brings up application processors.
+- `tests/integration/run_all.sh`: orchestrator with summary, timings,
+  `--fast` mode, name-pattern filter, and `NO_COLOR=1` support.
+- Makefile targets `make test-integration`, `make test-integration-fast`,
+  and umbrella `make test` (host unit + QEMU integration).
+- `.github/workflows/integration.yml`: CI job that installs the toolchain,
+  builds the ISO, runs host unit tests + fast integration subset, and
+  uploads `build/integration-logs/` as an artifact on failure.
+- `tests/integration/README.md` and `tests/integration/RESULTS.md`
+  document the harness and a reference run.
+
+### Verified
+- Full run on Debian 13 / QEMU 10.0.8 / clang 19 (2 vCPU, 512 MiB):
+  **11/11 cases PASSed, 73/73 assertions, ~5 min wall-time.**
+- FAT32 persistence: a marker written in boot #1 is read back in boot #2
+  from the same disk image.
+- USB Mass Storage: kernel completes UHCI control transfers, INQUIRY,
+  READ CAPACITY, and READ(10) of sector 0 in a single boot.
+- AHCI DMA: kernel self-test + userspace `/disk` and `/fat` round-trip a
+  user-provided string through the VFS.
+
+
 ## [FAT32 persistent logging] 2026-06-22
 
 ### Added

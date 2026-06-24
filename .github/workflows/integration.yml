@@ -1,0 +1,38 @@
+name: integration
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  qemu-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld nasm xorriso qemu-system-x86 python3 make
+
+      - name: Build ISO
+        run: make iso
+
+      - name: Run host unit tests
+        run: make test-unit
+
+      - name: Run QEMU integration tests (fast subset on CI)
+        run: make test-integration-fast
+        env:
+          NO_COLOR: "1"
+
+      - name: Upload serial logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: build/integration-logs/
+          if-no-files-found: ignore
