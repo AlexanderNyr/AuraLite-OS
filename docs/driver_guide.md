@@ -84,6 +84,9 @@ Location: `drivers/keyboard/`
 - ASCII characters are stored in a legacy ring buffer for shell/stdin.
 - A richer key-event ring tracks key down/up, Shift/Ctrl/Alt/CapsLock,
   navigation keys and function keys for the GUI.
+- Common extended keys are handled explicitly: arrows, Home/End, PgUp/PgDn,
+  Insert/Delete, keypad Enter, keypad `/`, PrintScreen and Pause/Break.
+- Queue overflow counters are exposed for diagnostics.
 
 Limitations:
 
@@ -96,10 +99,13 @@ Location: `drivers/mouse/`
 
 - PS/2 auxiliary device through the 8042 controller.
 - IRQ 12.
+- Uses bounded waits and ACK/RESEND handling for PS/2 device commands.
+- Correctly enables the 8042 auxiliary clock/IRQ path before device setup.
 - Parses PS/2 relative movement packets and attempts IntelliMouse 4-byte mode for
   scroll-wheel deltas.
 - Maintains absolute cursor position clamped to framebuffer bounds.
 - Exposes both simple cursor/button state and queued mouse events for the GUI.
+- Exposes readiness, packet-drop and event-drop diagnostics.
 
 Used by the framebuffer window-manager demo and the newer kernel GUI compositor
 for focus, dragging, resizing, close buttons and scroll-wheel events.

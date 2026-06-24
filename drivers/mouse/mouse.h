@@ -37,6 +37,11 @@ int mouse_poll_event(void);
 /* Rich event queue.  Returns 1 + fills *out if available. */
 int mouse_get_event(mouse_event_t *out);
 
+/* Diagnostics. */
+int      mouse_is_ready(void);
+uint32_t mouse_get_packet_drops(void);
+uint32_t mouse_get_event_drops(void);
+
 /* Double-click time window (in PIT ticks @ 100 Hz). */
 #define MOUSE_DBLCLICK_TICKS 40
 

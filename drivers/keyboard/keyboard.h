@@ -46,12 +46,19 @@
 #define KB_KEY_F10        0x119
 #define KB_KEY_F11        0x11A
 #define KB_KEY_F12        0x11B
+#define KB_KEY_PRINTSCR   0x11C
+#define KB_KEY_PAUSE      0x11D
+#define KB_KEY_LSHIFT     0x120
+#define KB_KEY_RSHIFT     0x121
+#define KB_KEY_CTRL       0x122
+#define KB_KEY_ALT        0x123
+#define KB_KEY_CAPSLOCK   0x124
 #define KB_KEY_ESC        0x1B   /* matches ASCII */
 
 /* A key event delivered to GUI clients. */
 typedef struct {
     uint32_t key;       /* ASCII printable OR one of KB_KEY_* */
-    uint16_t scancode;  /* raw scan code (set 1) */
+    uint16_t scancode;  /* raw scan code (set 1; E0/E1 encoded in high bits) */
     uint8_t  mods;      /* KB_MOD_* bitmask at time of event */
     uint8_t  pressed;   /* 1 = key down, 0 = key release */
 } kb_event_t;
@@ -67,5 +74,10 @@ int  keyboard_get_event(kb_event_t *out);
 
 /* Current modifier state (snapshot). */
 uint8_t keyboard_get_mods(void);
+
+/* Diagnostics: number of dropped entries because the corresponding ring was
+ * full.  Useful when tuning GUI/input polling frequency. */
+uint32_t keyboard_get_ascii_drops(void);
+uint32_t keyboard_get_event_drops(void);
 
 #endif /* AURALITE_DRIVERS_KEYBOARD_KEYBOARD_H */
