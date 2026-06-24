@@ -108,6 +108,12 @@ static void cmd_help(void) {
     puts("  nslookup    - resolve a hostname via DNS");
     puts("  ping <host> - ping a hostname via ICMP");
     puts("  ps          - list processes (stub)");
+    puts("  mkdir <dir> - create a directory  (FAT32 / ext2)");
+    puts("  rmdir <dir> - remove an empty directory");
+    puts("  rm <file>   - delete a file");
+    puts("  mv <a> <b>  - rename a file or directory");
+    puts("  touch <file>- create an empty file");
+    puts("  stat <path> - show file metadata");
     puts("  help        - show this help");
     puts("  exit        - exit shell");
     puts("");
@@ -190,6 +196,54 @@ static void cmd_ps(void) {
     printf("  1    init (shell)\n");
 }
 
+static void cmd_mkdir(const char *path) {
+    if (!path) { puts("mkdir: missing path"); return; }
+    if (mkdir(path) == 0) printf("mkdir: created %s\n", path);
+    else                  printf("mkdir: failed %s\n", path);
+}
+
+static void cmd_rmdir(const char *path) {
+    if (!path) { puts("rmdir: missing path"); return; }
+    if (rmdir(path) == 0) printf("rmdir: removed %s\n", path);
+    else                  printf("rmdir: failed %s (must be empty)\n", path);
+}
+
+static void cmd_rm(const char *path) {
+    if (!path) { puts("rm: missing path"); return; }
+    if (unlink(path) == 0) printf("rm: removed %s\n", path);
+    else                   printf("rm: failed %s\n", path);
+}
+
+static void cmd_mv(int argc, char **argv) {
+    if (argc < 3) { puts("usage: mv <from> <to>"); return; }
+    if (rename(argv[1], argv[2]) == 0) printf("mv: %s -> %s\n", argv[1], argv[2]);
+    else                                printf("mv: failed\n");
+}
+
+static void cmd_stat(const char *path) {
+    if (!path) { puts("stat: missing path"); return; }
+    struct stat st;
+    if (stat(path, &st) != 0) { printf("stat: %s: not found\n", path); return; }
+    const char *type =
+        st.st_type == ST_TYPE_DIR  ? "directory" :
+        st.st_type == ST_TYPE_FILE ? "regular file" : "other";
+    printf("  Path:    %s\n", path);
+    printf("  Type:    %s\n", type);
+    printf("  Size:    %llu bytes\n", (unsigned long long)st.st_size);
+    printf("  Inode:   %llu\n",       (unsigned long long)st.st_inode);
+    printf("  Mode:    0%o\n",        (unsigned)st.st_mode);
+    printf("  Links:   %u\n",         (unsigned)st.st_nlink);
+    printf("  Blocks:  %u\n",         (unsigned)st.st_blocks);
+}
+
+static void cmd_touch(const char *path) {
+    if (!path) { puts("touch: missing path"); return; }
+    int fd = open(path);
+    if (fd < 0) { printf("touch: cannot create %s\n", path); return; }
+    close(fd);
+    printf("touch: %s\n", path);
+}
+
 /* ---- Shell main loop ---- */
 
 static void process_command(char *line) {
@@ -241,6 +295,18 @@ static void process_command(char *line) {
         cmd_run(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "ps") == 0) {
         cmd_ps();
+    } else if (strcmp(cmd, "mkdir") == 0) {
+        cmd_mkdir(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "rmdir") == 0) {
+        cmd_rmdir(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "rm") == 0) {
+        cmd_rm(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "mv") == 0) {
+        cmd_mv(argc, cmd_argv);
+    } else if (strcmp(cmd, "stat") == 0) {
+        cmd_stat(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "touch") == 0) {
+        cmd_touch(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "exit") == 0) {
         puts("Goodbye!");
         _exit(0);

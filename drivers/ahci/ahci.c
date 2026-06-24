@@ -336,6 +336,18 @@ int ahci_get_first_port(void) {
     return -1;
 }
 
+int ahci_get_nth_port(int n) {
+    if (n < 0) return -1;
+    int seen = 0;
+    for (int i = 0; i < AHCI_MAX_PORTS; i++) {
+        if (ports[i].present) {
+            if (seen == n) return i;
+            seen++;
+        }
+    }
+    return -1;
+}
+
 void ahci_self_test(void) {
     if (port_count == 0) {
         kprintf("[ahci] self-test: no devices\n");

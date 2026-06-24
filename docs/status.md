@@ -57,10 +57,13 @@ Legend:
 | Feature | Status | Notes |
 |---|---:|---|
 | VFS mount table | ✅ | Longest-prefix mount matching. |
+| `readdir` / `mkdir` / `unlink` / `rename` / `stat` | ✅ | Generic VFS ops + matching syscalls (`100..105`). |
 | USTAR initrd | ✅ | Read-only root with user ELFs. |
 | DevFS | ✅ | `/dev/null`, `/dev/zero`. |
-| Writable filesystem | ✅/🧪 | `/tmp` tmpfs, tiny `/disk`, and flat FAT32 `/fat` support create/read/write. |
-| Directory vnodes/readdir | 🚧 | `listdir` is special-cased for initrd root. |
+| `tmpfs` | ✅ | Writable in-memory `/tmp`, supports `unlink` and `truncate`. |
+| Tiny diskfs | ✅ | Persistent `/disk` (8 files × 4 KiB, AHCI port 0). |
+| **FAT32 — full** | ✅ | `/fat`: subdirs, **LFN (UCS-2 read+write)**, mkdir/rmdir/unlink/rename/truncate, FSInfo, FAT date/time stamps. |
+| **ext2 — full** | ✅ | `/ext2`: mounts existing Linux-mkfs images **and** formats blank disks in-kernel.  Direct + single/double/triple indirect blocks; mkdir/rmdir/unlink/rename; cross-OS round-trip verified with `debugfs`. |
 
 ## Syscalls
 

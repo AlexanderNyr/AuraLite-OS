@@ -7,53 +7,109 @@
 /*
  * Virtual File System.
  *
- * A minimal vnode-based VFS that abstracts over multiple backing filesystems.
- * Each filesystem registers a set of operations (lookup, read, write, readdir).
- * Files are opened via vfs_open() which returns a "file handle" carrying a
- * position and a pointer to the underlying vnode.
+ * A vnode-based VFS that abstracts over multiple backing filesystems.  Each
+ * filesystem registers a set of operations; the VFS dispatches by longest-
+ * prefix mount match.
  *
- * For now the VFS supports:
- *   - initrd (USTAR) mounted at "/"          (read-only)
- *   - devfs mounted at "/dev"                (/dev/null, /dev/zero)
- *   - tmpfs mounted at "/tmp"                (writable in-memory files)
+ * Currently mounted:
+ *   "/"      USTAR initrd                       (read-only)
+ *   "/dev"   devfs                              (/dev/null, /dev/zero)
+ *   "/tmp"   tmpfs                              (writable, in-memory)
+ *   "/disk"  diskfs                             (tiny persistent, AHCI)
+ *   "/fat"   fat32                              (full FAT32 with LFN + subdirs)
+ *   "/ext2"  ext2                               (full ext2 with indirect blocks)
+ *
+ * Most ops are optional — read-only filesystems simply leave them NULL and
+ * the VFS returns -ENOTSUP-equivalent (-1).
  */
 
 #define VFS_MAX_MOUNTS   8
 #define VFS_PATH_MAX     256
 #define VFS_MAX_FDS      64
+#define VFS_MAX_DIRENTS  256          /* per readdir() call */
 
 #define VFS_TYPE_FILE     1
 #define VFS_TYPE_DIR      2
 #define VFS_TYPE_CHARDEV  3
+#define VFS_TYPE_SYMLINK  4
+
+/* Permission bits (POSIX subset).  Filesystems that don't track perms
+ * report 0o755 for directories and 0o644 for files by convention. */
+#define VFS_PERM_USR_R  0400
+#define VFS_PERM_USR_W  0200
+#define VFS_PERM_USR_X  0100
 
 /* Forward declarations. */
 struct vnode;
 struct file;
 
-/* Filesystem operations — implemented by each backing FS. */
-struct vfs_ops {
-    /* Resolve a path relative to this mount's root; returns the vnode or NULL. */
-    struct vnode *(*lookup)(const char *path);
-    /* Create a regular file relative to this mount's root. Optional; read-only
-     * filesystems leave this NULL. */
-    struct vnode *(*create)(const char *path);
-    /* Read up to `count` bytes from `vnode` at `pos` into `buf`.
-     * Returns bytes read (0 = EOF), or -1 on error. */
-    int64_t (*read)(struct vnode *vn, uint64_t pos, void *buf, uint64_t count);
-    /* Write `count` bytes to `vnode` at `pos` from `buf`. Returns bytes written. */
-    int64_t (*write)(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count);
+/* A directory entry returned by readdir(). */
+struct vfs_dirent {
+    char     name[VFS_PATH_MAX];
+    uint32_t type;          /* VFS_TYPE_FILE | VFS_TYPE_DIR | … */
+    uint64_t size;          /* file size; 0 for directories */
+    uint64_t inode;         /* filesystem-specific identifier */
 };
 
-/* A virtual inode — the unit a file handle points at. */
+/* Stat information for stat(). */
+struct vfs_stat {
+    uint32_t type;
+    uint32_t mode;          /* perm bits, low 12 bits used */
+    uint64_t size;          /* in bytes */
+    uint64_t inode;         /* fs-specific inode/cluster id */
+    uint32_t nlink;         /* hard link count (1 if unknown) */
+    uint32_t blocks;        /* allocated blocks (fs unit) */
+    uint64_t mtime;         /* modification time (Unix epoch, 0 if unknown) */
+    uint64_t ctime;         /* creation time */
+    uint64_t atime;         /* access time */
+};
+
+/* Filesystem operations.  All paths passed in are relative to the mount root,
+ * without a leading slash (e.g. "subdir/file.txt").  Optional ops can be NULL. */
+struct vfs_ops {
+    /* Required: resolve a path to a vnode, or return NULL. */
+    struct vnode *(*lookup)(void *fs_data, const char *path);
+
+    /* Optional: create a regular file. */
+    struct vnode *(*create)(void *fs_data, const char *path);
+
+    /* Required for files: read/write. */
+    int64_t (*read)(struct vnode *vn, uint64_t pos, void *buf, uint64_t count);
+    int64_t (*write)(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count);
+
+    /* Optional: list directory entries.  out[] is caller-provided.  Returns
+     * number of entries written, or -1 on error. */
+    int (*readdir)(struct vnode *vn, struct vfs_dirent *out, int max);
+
+    /* Optional: directory mutation. */
+    int (*mkdir)(void *fs_data, const char *path);
+    int (*rmdir)(void *fs_data, const char *path);
+    int (*unlink)(void *fs_data, const char *path);
+    int (*rename)(void *fs_data, const char *from, const char *to);
+
+    /* Optional: stat (default fills from vnode if NULL). */
+    int (*stat)(struct vnode *vn, struct vfs_stat *out);
+
+    /* Optional: truncate to given size (extends with zeros or shrinks). */
+    int (*truncate)(struct vnode *vn, uint64_t new_size);
+
+    /* Optional: sync any cached metadata. */
+    int (*sync)(void *fs_data);
+};
+
+/* A virtual inode. */
 struct vnode {
     char     name[VFS_PATH_MAX];
     uint32_t type;          /* VFS_TYPE_* */
-    uint64_t size;          /* file size in bytes (0 for devices) */
+    uint32_t mode;          /* permission bits */
+    uint64_t size;
     const struct vfs_ops *ops;
-    void     *fs_data;      /* filesystem-private data (e.g. initrd data ptr) */
+    void    *fs_data;       /* fs-private (e.g. inode struct pointer) */
+    void    *mount_data;    /* mount-private (e.g. superblock) */
+    uint64_t inode_id;      /* fs-specific id (cluster for FAT, inode # for ext2) */
 };
 
-/* An open file handle — tracks position within a vnode. */
+/* An open file handle. */
 struct file {
     struct vnode *vn;
     uint64_t      pos;
@@ -64,39 +120,36 @@ struct file {
 struct vfs_mount {
     char     mount_path[VFS_PATH_MAX];
     const struct vfs_ops *ops;
-    void    *fs_data;       /* filesystem-private mount data */
+    void    *fs_data;
     int      in_use;
 };
 
 /* ---- Lifecycle ---- */
-
-/* Initialise the VFS subsystem and its mount table. */
 void vfs_init(void);
+int  vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data);
 
-/* Mount a filesystem at `path` with the given ops and private data. */
-int vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data);
-
-/*
- * Open a file by path. Returns a file descriptor (>= 0) on success, or -1.
- * The file handle is allocated from a global pool (per-process tables arrive
- * with the PCB; for now a global FD table suffices).
- */
-int vfs_open(const char *path);
-
-/* Read from an open file descriptor. Returns bytes read or -1. */
+/* ---- FD-based file I/O ---- */
+int     vfs_open(const char *path);
 int64_t vfs_read(int fd, void *buf, uint64_t count);
-
-/* Write to an open file descriptor. Returns bytes written or -1. */
 int64_t vfs_write(int fd, const void *buf, uint64_t count);
+int64_t vfs_lseek(int fd, int64_t offset, int whence);  /* whence: 0=SET 1=CUR 2=END */
+int     vfs_close(int fd);
 
-/* Close a file descriptor. Returns 0 on success, -1 on error. */
-int vfs_close(int fd);
+/* ---- Path operations (no FD needed) ---- */
+int vfs_mkdir(const char *path);
+int vfs_rmdir(const char *path);
+int vfs_unlink(const char *path);
+int vfs_rename(const char *from, const char *to);
+int vfs_truncate(const char *path, uint64_t new_size);
+int vfs_stat(const char *path, struct vfs_stat *out);
 
-/* List the files in a directory path (debugging / VFS test). */
+/* readdir: pass a path; entries are written into out[].  Returns count or -1. */
+int vfs_readdir(const char *path, struct vfs_dirent *out, int max);
+
+/* Pretty-print a directory listing (for `ls`). */
 void vfs_list(const char *path);
 
-/* Phase 10 gate test: open /dev/null, write to it, open /dev/zero, read zeros.
- * If an initrd file exists, also open and read it. */
+/* Phase 10 gate test. */
 void vfs_self_test(void);
 
 #endif /* AURALITE_FS_VFS_H */

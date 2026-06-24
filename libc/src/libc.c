@@ -68,6 +68,25 @@ int net_ping(uint32_t ip) {
     return (int)syscall(SYS_NET_PING, ip, 0, 0, 0, 0, 0);
 }
 
+int mkdir(const char *path) {
+    return (int)syscall(SYS_MKDIR, (uint64_t)path, 0, 0, 0, 0, 0);
+}
+int rmdir(const char *path) {
+    return (int)syscall(SYS_RMDIR, (uint64_t)path, 0, 0, 0, 0, 0);
+}
+int unlink(const char *path) {
+    return (int)syscall(SYS_UNLINK, (uint64_t)path, 0, 0, 0, 0, 0);
+}
+int rename(const char *from, const char *to) {
+    return (int)syscall(SYS_RENAME, (uint64_t)from, (uint64_t)to, 0, 0, 0, 0);
+}
+int truncate(const char *path, uint64_t new_size) {
+    return (int)syscall(SYS_TRUNCATE, (uint64_t)path, new_size, 0, 0, 0, 0);
+}
+int stat(const char *path, struct stat *out) {
+    return (int)syscall(SYS_STAT, (uint64_t)path, (uint64_t)out, 0, 0, 0, 0);
+}
+
 pid_t fork(void) {
     return (pid_t)syscall(SYS_FORK, 0, 0, 0, 0, 0, 0);
 }
@@ -270,6 +289,12 @@ int printf(const char *fmt, ...) {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
             print_uint(v, 10, 0, width, zero);
+            break;
+        }
+        case 'o': {
+            uint64_t v = is_long ? va_arg(ap, uint64_t)
+                                 : (uint64_t)(unsigned)va_arg(ap, unsigned);
+            print_uint(v, 8, 0, width, zero);
             break;
         }
         case 'x': {

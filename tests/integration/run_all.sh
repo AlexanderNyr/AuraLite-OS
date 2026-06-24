@@ -46,6 +46,8 @@ ALL_CASES=(
     test_user_processes
     test_ahci_rw
     test_fat32_persistence
+    test_fat32_full
+    test_ext2
     test_usb_msc
     test_networking
     test_http_get
@@ -54,7 +56,7 @@ ALL_CASES=(
 )
 
 # Slow ones we skip in --fast mode.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get'
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2'
 
 # ---- prereqs ----
 need=(qemu-system-x86_64 python3 xorriso clang ld.lld nasm)

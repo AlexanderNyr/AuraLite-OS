@@ -25,6 +25,7 @@
 #include "kernel/fs/tmpfs.h"
 #include "kernel/fs/diskfs.h"
 #include "kernel/fs/fat32.h"
+#include "kernel/fs/ext2.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
@@ -184,6 +185,19 @@ void kmain(void) {
     if (fat32_init() == 0) {
         vfs_mount("/fat", &fat32_ops, NULL);
         fat32_self_test();
+    }
+
+    /* ext2 prefers the *second* AHCI disk so /fat and /ext2 stay independent.
+     * If only one disk is present, ext2 falls back to it (but skips formatting
+     * to avoid clobbering FAT32). */
+    if (ahci_get_nth_port(1) >= 0) {
+        if (ext2_init(-1) == 0) {
+            vfs_mount("/ext2", &ext2_ops, NULL);
+            ext2_self_test();
+        }
+    } else {
+        kprintf("[ext2] no second AHCI disk; /ext2 not mounted "
+                "(pass two -drive options to QEMU to enable)\n");
     }
 
     /* USB UHCI + OHCI + EHCI drivers. */

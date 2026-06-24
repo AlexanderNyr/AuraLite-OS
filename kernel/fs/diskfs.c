@@ -134,7 +134,16 @@ static struct diskfs_entry *entry_from_vnode(struct vnode *vn) {
     return (struct diskfs_entry *)vn->fs_data;
 }
 
-static struct vnode *diskfs_lookup(const char *path) {
+static struct vnode diskfs_root_vnode;
+
+static struct vnode *diskfs_lookup(void *fs_data, const char *path) {
+    (void)fs_data;
+    if (path[0] == '\0') {
+        diskfs_root_vnode.type = VFS_TYPE_DIR;
+        diskfs_root_vnode.size = 0;
+        diskfs_root_vnode.ops  = &diskfs_ops;
+        return &diskfs_root_vnode;
+    }
     for (int i = 0; i < DISKFS_MAX_FILES; i++) {
         if (entries[i].in_use && strcmp(entries[i].name, path) == 0) {
             vnodes[i].size = entries[i].size;
@@ -144,9 +153,10 @@ static struct vnode *diskfs_lookup(const char *path) {
     return NULL;
 }
 
-static struct vnode *diskfs_create(const char *path) {
+static struct vnode *diskfs_create(void *fs_data, const char *path) {
+    (void)fs_data;
     if (!valid_name(path)) return NULL;
-    struct vnode *existing = diskfs_lookup(path);
+    struct vnode *existing = diskfs_lookup(NULL, path);
     if (existing) return existing;
     for (int i = 0; i < DISKFS_MAX_FILES; i++) {
         if (!entries[i].in_use) {
@@ -200,11 +210,41 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     return (int64_t)count;
 }
 
+static int diskfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
+    (void)vn;
+    int n = 0;
+    for (int i = 0; i < DISKFS_MAX_FILES && n < max; i++) {
+        if (!entries[i].in_use) continue;
+        memset(&out[n], 0, sizeof(out[n]));
+        strncpy(out[n].name, entries[i].name, VFS_PATH_MAX - 1);
+        out[n].type = VFS_TYPE_FILE;
+        out[n].size = entries[i].size;
+        out[n].inode = (uint64_t)i;
+        n++;
+    }
+    return n;
+}
+
+static int diskfs_unlink(void *fs_data, const char *path) {
+    (void)fs_data;
+    for (int i = 0; i < DISKFS_MAX_FILES; i++) {
+        if (entries[i].in_use && strcmp(entries[i].name, path) == 0) {
+            memset(&entries[i], 0, sizeof(entries[i]));
+            sync_table();
+            rebuild_vnodes();
+            return 0;
+        }
+    }
+    return -1;
+}
+
 const struct vfs_ops diskfs_ops = {
-    .lookup = diskfs_lookup,
-    .create = diskfs_create,
-    .read = diskfs_read,
-    .write = diskfs_write,
+    .lookup  = diskfs_lookup,
+    .create  = diskfs_create,
+    .read    = diskfs_read,
+    .write   = diskfs_write,
+    .readdir = diskfs_readdir,
+    .unlink  = diskfs_unlink,
 };
 
 void diskfs_list(void) {
@@ -218,7 +258,7 @@ void diskfs_list(void) {
 void diskfs_self_test(void) {
     if (disk_port < 0) return;
     kprintf("[diskfs] self-test: create/write/read /disk/persist.txt...\n");
-    struct vnode *vn = diskfs_create("persist.txt");
+    struct vnode *vn = diskfs_create(NULL, "persist.txt");
     if (!vn) { kprintf("[diskfs] FAIL: create failed\n"); return; }
     const char *msg = "hello persistent ahci fs";
     if (diskfs_write(vn, 0, msg, strlen(msg)) != (int64_t)strlen(msg)) {

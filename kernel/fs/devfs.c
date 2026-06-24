@@ -51,13 +51,37 @@ void devfs_init(void) {
     kprintf("[devfs] registered %d device(s): null, zero\n", state.count);
 }
 
-static struct vnode *devfs_lookup(const char *path) {
+static struct vnode *devfs_lookup(void *fs_data, const char *path) {
+    (void)fs_data;
+    /* Empty path = root of /dev → return any vnode marker (none means dir). */
+    if (path[0] == '\0') {
+        /* Synthesize a tiny stack-static dir vnode. */
+        static struct vnode root_vn;
+        root_vn.type = VFS_TYPE_DIR;
+        root_vn.size = 0;
+        root_vn.ops = &devfs_ops;
+        return &root_vn;
+    }
     for (int i = 0; i < state.count; i++) {
         if (strcmp(path, state.vnodes[i].name) == 0) {
             return &state.vnodes[i];
         }
     }
     return NULL;
+}
+
+static int devfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
+    (void)vn;
+    int n = 0;
+    for (int i = 0; i < state.count && n < max; i++) {
+        memset(&out[n], 0, sizeof(out[n]));
+        strncpy(out[n].name, state.vnodes[i].name, VFS_PATH_MAX - 1);
+        out[n].type = state.vnodes[i].type;
+        out[n].size = 0;
+        out[n].inode = (uint64_t)(uintptr_t)&state.vnodes[i];
+        n++;
+    }
+    return n;
 }
 
 static int64_t devfs_read(struct vnode *vn, uint64_t pos,
@@ -81,7 +105,8 @@ static int64_t devfs_write(struct vnode *vn, uint64_t pos,
 }
 
 const struct vfs_ops devfs_ops = {
-    .lookup = devfs_lookup,
-    .read   = devfs_read,
-    .write  = devfs_write,
+    .lookup  = devfs_lookup,
+    .read    = devfs_read,
+    .write   = devfs_write,
+    .readdir = devfs_readdir,
 };

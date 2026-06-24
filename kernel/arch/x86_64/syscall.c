@@ -39,6 +39,13 @@
 #define SYS_NET_CLOSE   86  /* non-standard: TCP close */
 #define SYS_NET_PING    87  /* non-standard: ICMP ping */
 #define SYS_LISTDIR 80
+/* Filesystem extensions (non-standard numbers). */
+#define SYS_MKDIR    100
+#define SYS_RMDIR    101
+#define SYS_UNLINK   102
+#define SYS_RENAME   103
+#define SYS_TRUNCATE 104
+#define SYS_STAT     105
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
@@ -153,6 +160,20 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)tcp_close();
     case SYS_NET_PING:
         return (uint64_t)net_ping(a1);
+
+    /* Filesystem extensions. */
+    case SYS_MKDIR:
+        return (uint64_t)vfs_mkdir((const char *)a1);
+    case SYS_RMDIR:
+        return (uint64_t)vfs_rmdir((const char *)a1);
+    case SYS_UNLINK:
+        return (uint64_t)vfs_unlink((const char *)a1);
+    case SYS_RENAME:
+        return (uint64_t)vfs_rename((const char *)a1, (const char *)a2);
+    case SYS_TRUNCATE:
+        return (uint64_t)vfs_truncate((const char *)a1, a2);
+    case SYS_STAT:
+        return (uint64_t)vfs_stat((const char *)a1, (struct vfs_stat *)a2);
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
         return (uint64_t)-1;

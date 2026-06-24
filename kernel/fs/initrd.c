@@ -108,12 +108,17 @@ void initrd_init(uint64_t address, uint64_t size) {
 
 /* ---- VFS ops ---- */
 
-static struct vnode *initrd_lookup(const char *path) {
-    /* If path is empty, return the root "directory". */
-    if (path[0] == '\0') {
-        return NULL;   /* initrd root listing handled separately */
-    }
+static struct vnode initrd_root_vnode;
 
+static struct vnode *initrd_lookup(void *fs_data, const char *path) {
+    (void)fs_data;
+    /* Empty path = root directory. */
+    if (path[0] == '\0') {
+        initrd_root_vnode.type = VFS_TYPE_DIR;
+        initrd_root_vnode.size = 0;
+        initrd_root_vnode.ops  = &initrd_ops;
+        return &initrd_root_vnode;
+    }
     for (int i = 0; i < initrd.file_count; i++) {
         if (strcmp(path, initrd.files[i].name) == 0) {
             strncpy(initrd_vnodes[i].name, initrd.files[i].name,
@@ -122,6 +127,20 @@ static struct vnode *initrd_lookup(const char *path) {
         }
     }
     return NULL;
+}
+
+static int initrd_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
+    (void)vn;
+    int n = 0;
+    for (int i = 0; i < initrd.file_count && n < max; i++) {
+        memset(&out[n], 0, sizeof(out[n]));
+        strncpy(out[n].name, initrd.files[i].name, VFS_PATH_MAX - 1);
+        out[n].type = VFS_TYPE_FILE;
+        out[n].size = initrd.files[i].size;
+        out[n].inode = (uint64_t)i;
+        n++;
+    }
+    return n;
 }
 
 static int64_t initrd_read(struct vnode *vn, uint64_t pos,
@@ -145,9 +164,10 @@ static int64_t initrd_write(struct vnode *vn, uint64_t pos,
 }
 
 const struct vfs_ops initrd_ops = {
-    .lookup = initrd_lookup,
-    .read   = initrd_read,
-    .write  = initrd_write,
+    .lookup  = initrd_lookup,
+    .read    = initrd_read,
+    .write   = initrd_write,
+    .readdir = initrd_readdir,
 };
 
 void initrd_list(void) {

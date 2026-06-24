@@ -2,6 +2,90 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Full FAT32 + ext2 filesystems] 2026-06-24
+
+### Added — FAT32
+- Completely rewrote `kernel/fs/fat32.c` (~880 LOC) into a production-grade
+  driver with full BPB parsing and:
+  - **Sub-directories** (arbitrary nesting) — both read and write.
+  - **VFAT Long File Names** — UCS-2 encoded LFN entries for both creation
+    (8.3 + LFN slot chains with correct checksum) and lookup.
+  - **Sectors-per-cluster ≥ 1** with cluster-sized scratch buffer.
+  - **FSInfo** sector updates (free cluster count + next-free hint) so
+    repeated allocations stay fast and survive reboots.
+  - `mkdir` / `rmdir` (with empty-dir check) / `unlink` / `rename` /
+    `truncate` — all via on-disk dir-entry rewriting + cluster chain ops.
+  - `.` / `..` entries on every non-root directory; correct parent links.
+  - FAT date/time stamping on create/modify.
+  - Open-vnode interning so re-lookups of the same path share state.
+- `fat32_append_log()` shim retained, so the existing kernel-log sink to
+  `/fat/AURALOG.TXT` keeps working.
+
+### Added — ext2
+- Brand-new `kernel/fs/ext2.{c,h}` (~990 LOC):
+  - Mounts an existing **Linux mkfs.ext2** filesystem from a raw AHCI disk
+    (block sizes 1024 / 2048 / 4096; dynamic-rev superblock).
+  - Includes an **in-kernel mkfs.ext2** that builds a single-group volume
+    when no ext2 magic is present (so a blank QEMU disk Just Works).
+  - Full block-bitmap + inode-bitmap allocators with group-descriptor /
+    superblock writeback.
+  - **Direct + single + double + triple indirect** block addressing —
+    files can grow well past the 12 × block_size direct-block limit.
+    All indirect-block scratch buffers live on the kernel heap so the
+    16 KiB kernel stack is not stressed.
+  - Variable-length directory entries with **rec_len-coalescing** on
+    delete, and dir-entry inserts that prefer splitting existing slack
+    over growing the directory.
+  - `create` / `read` / `write` / `truncate` / `unlink` / `mkdir` /
+    `rmdir` (empty-check + link-count bookkeeping) / `rename`
+    (including cross-directory moves with link-count fixups) / `stat`.
+  - Mounted at **`/ext2`** by `kmain` when a second AHCI disk is present.
+- Cross-OS round-trip verified:
+  - AuraLite can read files Linux's `mkfs.ext2` + `debugfs` wrote.
+  - Linux `debugfs` can read files + directories AuraLite created.
+  - Disk images formatted by AuraLite's mkfs are recognised by Linux.
+
+### Added — VFS extension
+- Extended `struct vfs_ops` with optional `readdir`, `mkdir`, `rmdir`,
+  `unlink`, `rename`, `stat`, `truncate`, `sync`.  Existing FS drivers
+  (devfs, initrd, tmpfs, diskfs) updated; lookup/create signatures now
+  take an `fs_data` parameter (no longer relying on globals).
+- Added `vfs_readdir`, `vfs_mkdir`, `vfs_rmdir`, `vfs_unlink`,
+  `vfs_rename`, `vfs_truncate`, `vfs_stat`, `vfs_lseek` to the public
+  VFS API.  `vfs_list` now uses readdir whenever the underlying fs
+  supports it (uniform output across mounts).
+- New `struct vfs_dirent` and `struct vfs_stat` types exposed to user
+  space via `libc/include/unistd.h`.
+
+### Added — syscalls + libc + shell
+- New kernel syscalls: `SYS_MKDIR (100)`, `SYS_RMDIR (101)`,
+  `SYS_UNLINK (102)`, `SYS_RENAME (103)`, `SYS_TRUNCATE (104)`,
+  `SYS_STAT (105)`.
+- libc wrappers: `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`,
+  `stat`.  `printf` gained `%o` (octal) for the new `stat` shell output.
+- Shell now ships with `mkdir`, `rmdir`, `rm`, `mv`, `touch`, `stat`.
+
+### Added — AHCI multi-disk
+- New `ahci_get_nth_port(int n)` to enumerate every detected SATA port,
+  enabling `/fat` and `/ext2` on different disks.
+
+### Added — integration tests
+- `tests/integration/cases/test_fat32_full.sh` — 12 assertions covering
+  subdirs, LFN, mkdir/rmdir/rm/mv/stat from the shell.
+- `tests/integration/cases/test_ext2.sh` — 14 assertions:
+  - mounts a Linux-`mkfs.ext2`-formatted disk;
+  - exercises read/write/mkdir/cat through the shell;
+  - asserts cross-OS round-trip via `debugfs`;
+  - asserts the in-kernel mkfs path on a blank disk.
+- Updated `tools/run_qemu.sh` to attach a second AHCI disk for ext2,
+  with optional auto-mkfs on first run.
+
+### Verified
+- `make test-unit`            → 10/10 host suites still PASS.
+- `make test-integration`     → **13/13 cases, 99/99 assertions PASS**,
+  including the new FAT32 full and ext2 cases.
+- AuraLite mounts disks formatted by Linux 6.x `mkfs.ext2 1.47`.
+
 ## [QEMU integration test harness] 2026-06-24
 
 ### Added

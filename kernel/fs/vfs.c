@@ -1,8 +1,8 @@
 /* vfs.c — virtual file system: mount table, path resolution, FD management.
  *
  * Path resolution: find the longest matching mount point, then call the FS's
- * lookup() with the remaining relative path. For example, "/dev/null" matches
- * the "/dev" mount and calls devfs_lookup("null").
+ * lookup() with the remaining relative path.  For example, "/dev/null" matches
+ * the "/dev" mount and calls devfs_lookup(fs_data, "null").
  */
 
 #include <stdint.h>
@@ -59,12 +59,12 @@ static int find_mount(const char *path, const char **out_rel) {
     return best_mount;
 }
 
-/* Resolve a path to a vnode. */
+/* Resolve a path to a vnode (no creation). */
 static struct vnode *resolve_path(const char *path) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return NULL;
-    return mounts[m].ops->lookup(rel);
+    return mounts[m].ops->lookup(mounts[m].fs_data, rel);
 }
 
 int vfs_open(const char *path) {
@@ -73,7 +73,7 @@ int vfs_open(const char *path) {
         const char *rel = NULL;
         int m = find_mount(path, &rel);
         if (m >= 0 && mounts[m].ops->create) {
-            vn = mounts[m].ops->create(rel);
+            vn = mounts[m].ops->create(mounts[m].fs_data, rel);
         }
         if (vn == NULL) {
             return -1;
@@ -89,44 +89,134 @@ int vfs_open(const char *path) {
             return i;
         }
     }
-    return -1;   /* too many open files */
+    return -1;
 }
 
 int64_t vfs_read(int fd, void *buf, uint64_t count) {
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) {
-        return -1;
-    }
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
     struct file *f = &fd_table[fd];
+    if (!f->vn->ops->read) return -1;
     int64_t n = f->vn->ops->read(f->vn, f->pos, buf, count);
-    if (n > 0) {
-        f->pos += (uint64_t)n;
-    }
+    if (n > 0) f->pos += (uint64_t)n;
     return n;
 }
 
 int64_t vfs_write(int fd, const void *buf, uint64_t count) {
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) {
-        return -1;
-    }
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
     struct file *f = &fd_table[fd];
+    if (!f->vn->ops->write) return -1;
     int64_t n = f->vn->ops->write(f->vn, f->pos, buf, count);
-    if (n > 0) {
-        f->pos += (uint64_t)n;
-    }
+    if (n > 0) f->pos += (uint64_t)n;
     return n;
 }
 
-int vfs_close(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) {
-        return -1;
+int64_t vfs_lseek(int fd, int64_t offset, int whence) {
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
+    struct file *f = &fd_table[fd];
+    int64_t new_pos;
+    switch (whence) {
+        case 0: new_pos = offset; break;
+        case 1: new_pos = (int64_t)f->pos + offset; break;
+        case 2: new_pos = (int64_t)f->vn->size + offset; break;
+        default: return -1;
     }
+    if (new_pos < 0) return -1;
+    f->pos = (uint64_t)new_pos;
+    return new_pos;
+}
+
+int vfs_close(int fd) {
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
     fd_table[fd].in_use = 0;
     fd_table[fd].vn     = NULL;
     fd_table[fd].pos    = 0;
     return 0;
 }
 
+/* ---- Path operations ---- */
+
+int vfs_mkdir(const char *path) {
+    const char *rel = NULL;
+    int m = find_mount(path, &rel);
+    if (m < 0) return -1;
+    if (!mounts[m].ops->mkdir) return -1;
+    return mounts[m].ops->mkdir(mounts[m].fs_data, rel);
+}
+
+int vfs_rmdir(const char *path) {
+    const char *rel = NULL;
+    int m = find_mount(path, &rel);
+    if (m < 0) return -1;
+    if (!mounts[m].ops->rmdir) return -1;
+    return mounts[m].ops->rmdir(mounts[m].fs_data, rel);
+}
+
+int vfs_unlink(const char *path) {
+    const char *rel = NULL;
+    int m = find_mount(path, &rel);
+    if (m < 0) return -1;
+    if (!mounts[m].ops->unlink) return -1;
+    return mounts[m].ops->unlink(mounts[m].fs_data, rel);
+}
+
+int vfs_rename(const char *from, const char *to) {
+    const char *rel_from = NULL, *rel_to = NULL;
+    int m_from = find_mount(from, &rel_from);
+    int m_to   = find_mount(to,   &rel_to);
+    if (m_from < 0 || m_to < 0 || m_from != m_to) return -1;
+    if (!mounts[m_from].ops->rename) return -1;
+    return mounts[m_from].ops->rename(mounts[m_from].fs_data, rel_from, rel_to);
+}
+
+int vfs_truncate(const char *path, uint64_t new_size) {
+    struct vnode *vn = resolve_path(path);
+    if (!vn || !vn->ops->truncate) return -1;
+    return vn->ops->truncate(vn, new_size);
+}
+
+int vfs_stat(const char *path, struct vfs_stat *out) {
+    if (!out) return -1;
+    struct vnode *vn = resolve_path(path);
+    if (!vn) return -1;
+    if (vn->ops->stat) return vn->ops->stat(vn, out);
+    /* Default stat: pull from vnode fields. */
+    memset(out, 0, sizeof(*out));
+    out->type  = vn->type;
+    out->mode  = vn->mode ? vn->mode : (vn->type == VFS_TYPE_DIR ? 0755 : 0644);
+    out->size  = vn->size;
+    out->inode = vn->inode_id;
+    out->nlink = 1;
+    return 0;
+}
+
+int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
+    if (!out || max <= 0) return -1;
+    struct vnode *vn = resolve_path(path);
+    if (!vn) return -1;
+    if (vn->type != VFS_TYPE_DIR) return -1;
+    if (!vn->ops->readdir) return -1;
+    return vn->ops->readdir(vn, out, max);
+}
+
 void vfs_list(const char *path) {
+    /* Try the generic readdir path first.  If the underlying fs supports it,
+     * we get a uniform listing.  Otherwise fall back to fs-specific shims. */
+    struct vfs_dirent ents[64];
+    int n = vfs_readdir(path, ents, 64);
+    if (n >= 0) {
+        for (int i = 0; i < n; i++) {
+            const char *suffix = (ents[i].type == VFS_TYPE_DIR) ? "/" : "";
+            if (ents[i].type == VFS_TYPE_DIR) {
+                kprintf("  %s%s\n", ents[i].name, suffix);
+            } else {
+                kprintf("  %s  (%llu bytes)\n",
+                        ents[i].name, (unsigned long long)ents[i].size);
+            }
+        }
+        return;
+    }
+
+    /* Legacy per-fs print helpers (for filesystems without readdir). */
     extern void initrd_list(void);
     extern void tmpfs_list(void);
     extern void diskfs_list(void);
@@ -142,62 +232,39 @@ void vfs_list(const char *path) {
     }
 }
 
-/*
- * Phase 10 gate test.
- * 1. Open /dev/null, write data, confirm the write succeeds (data discarded).
- * 2. Open /dev/zero, read 4 bytes, confirm they are all zero.
- * 3. If the initrd has files, open the first one and read a few bytes.
- */
 void vfs_self_test(void) {
     kprintf("[vfs] self-test: exercising /dev and initrd...\n");
 
-    /* Test /dev/null: writing should succeed. */
     int fd = vfs_open("/dev/null");
-    if (fd < 0) {
-        kprintf("[vfs] FAIL: cannot open /dev/null\n");
-        return;
-    }
+    if (fd < 0) { kprintf("[vfs] FAIL: cannot open /dev/null\n"); return; }
     const char *msg = "hello /dev/null";
     int64_t n = vfs_write(fd, msg, 15);
     if (n != 15) {
-        kprintf("[vfs] FAIL: write to /dev/null returned %lld\n",
-                (long long)n);
-        vfs_close(fd);
-        return;
+        kprintf("[vfs] FAIL: write to /dev/null returned %lld\n", (long long)n);
+        vfs_close(fd); return;
     }
     vfs_close(fd);
     kprintf("[vfs]   /dev/null: write OK (15 bytes discarded)\n");
 
-    /* Test /dev/zero: reading should return zero bytes. */
     fd = vfs_open("/dev/zero");
-    if (fd < 0) {
-        kprintf("[vfs] FAIL: cannot open /dev/zero\n");
-        return;
-    }
+    if (fd < 0) { kprintf("[vfs] FAIL: cannot open /dev/zero\n"); return; }
     uint8_t zbuf[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
     n = vfs_read(fd, zbuf, 4);
-    if (n != 4 || zbuf[0] != 0 || zbuf[1] != 0 ||
-        zbuf[2] != 0 || zbuf[3] != 0) {
+    if (n != 4 || zbuf[0] || zbuf[1] || zbuf[2] || zbuf[3]) {
         kprintf("[vfs] FAIL: /dev/zero read = %lld, buf=%02x%02x%02x%02x\n",
                 (long long)n, zbuf[0], zbuf[1], zbuf[2], zbuf[3]);
-        vfs_close(fd);
-        return;
+        vfs_close(fd); return;
     }
     vfs_close(fd);
     kprintf("[vfs]   /dev/zero: read OK (4 zero bytes)\n");
 
-    /* Test writable tmpfs through the VFS descriptor path. */
     fd = vfs_open("/tmp/vfs.txt");
-    if (fd < 0) {
-        kprintf("[vfs] FAIL: cannot create /tmp/vfs.txt\n");
-        return;
-    }
+    if (fd < 0) { kprintf("[vfs] FAIL: cannot create /tmp/vfs.txt\n"); return; }
     const char *tmsg = "vfs writable path";
     n = vfs_write(fd, tmsg, strlen(tmsg));
     if (n != (int64_t)strlen(tmsg)) {
         kprintf("[vfs] FAIL: tmpfs write returned %lld\n", (long long)n);
-        vfs_close(fd);
-        return;
+        vfs_close(fd); return;
     }
     vfs_close(fd);
     fd = vfs_open("/tmp/vfs.txt");
@@ -205,21 +272,15 @@ void vfs_self_test(void) {
     n = vfs_read(fd, tbuf, sizeof(tbuf) - 1);
     vfs_close(fd);
     if (n != (int64_t)strlen(tmsg) || strcmp(tbuf, tmsg) != 0) {
-        kprintf("[vfs] FAIL: tmpfs readback mismatch '%s'\n", tbuf);
-        return;
+        kprintf("[vfs] FAIL: tmpfs readback mismatch '%s'\n", tbuf); return;
     }
     kprintf("[vfs]   /tmp/vfs.txt: create/write/read OK\n");
 
-    /* Test the initrd: try to open "/init" (or whatever the first file is). */
     fd = vfs_open("/init");
     if (fd >= 0) {
         char fbuf[32] = { 0 };
         n = vfs_read(fd, fbuf, sizeof(fbuf) - 1);
         kprintf("[vfs]   /init: opened, read %lld byte(s)\n", (long long)n);
-        if (n > 0) {
-            fbuf[n < (int64_t)sizeof(fbuf) - 1 ? n : (int64_t)sizeof(fbuf) - 1] = '\0';
-            kprintf("[vfs]   content: \"%s\"\n", fbuf);
-        }
         vfs_close(fd);
     } else {
         kprintf("[vfs]   /init: not found (initrd may be empty)\n");

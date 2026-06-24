@@ -38,6 +38,9 @@ int ahci_get_port_count(void);
 /* Return the first detected SATA port, or -1 if no disk is present. */
 int ahci_get_first_port(void);
 
+/* Return the N-th detected SATA port (0 = first, 1 = second, …), or -1. */
+int ahci_get_nth_port(int n);
+
 /* Gate self-test: read sector 0 (MBR) and verify it's non-empty. */
 void ahci_self_test(void);
 

@@ -22,6 +22,28 @@
 #define SYS_NET_CLOSE   86
 #define SYS_NET_PING    87
 #define SYS_LISTDIR 80   /* non-standard: list a directory */
+#define SYS_MKDIR    100
+#define SYS_RMDIR    101
+#define SYS_UNLINK   102
+#define SYS_RENAME   103
+#define SYS_TRUNCATE 104
+#define SYS_STAT     105
+
+/* Subset of struct stat we expose to user space.  Field layout must match
+ * `struct vfs_stat` in the kernel (kernel/fs/vfs.h). */
+struct stat {
+    uint32_t st_type;
+    uint32_t st_mode;
+    uint64_t st_size;
+    uint64_t st_inode;
+    uint32_t st_nlink;
+    uint32_t st_blocks;
+    uint64_t st_mtime;
+    uint64_t st_ctime;
+    uint64_t st_atime;
+};
+#define ST_TYPE_FILE 1
+#define ST_TYPE_DIR  2
 
 typedef int64_t ssize_t;
 typedef int64_t pid_t;
@@ -52,5 +74,13 @@ int     net_send(const void *data, uint32_t len);
 int     net_recv(void *buf, uint32_t bufsize);
 int     net_close(void);
 int     net_ping(uint32_t ip);
+
+/* Filesystem extensions. */
+int     mkdir(const char *path);
+int     rmdir(const char *path);
+int     unlink(const char *path);
+int     rename(const char *from, const char *to);
+int     truncate(const char *path, uint64_t new_size);
+int     stat(const char *path, struct stat *out);
 
 #endif /* AURALITE_LIBC_UNISTD_H */

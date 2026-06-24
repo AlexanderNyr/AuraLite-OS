@@ -48,12 +48,22 @@ static struct tmpfs_file *find_file(const char *path) {
     return NULL;
 }
 
-static struct vnode *tmpfs_lookup(const char *path) {
+static struct vnode tmpfs_root_vnode;
+
+static struct vnode *tmpfs_lookup(void *fs_data, const char *path) {
+    (void)fs_data;
+    if (path[0] == '\0') {
+        tmpfs_root_vnode.type = VFS_TYPE_DIR;
+        tmpfs_root_vnode.size = 0;
+        tmpfs_root_vnode.ops  = &tmpfs_ops;
+        return &tmpfs_root_vnode;
+    }
     struct tmpfs_file *f = find_file(path);
     return f ? &f->vnode : NULL;
 }
 
-static struct vnode *tmpfs_create(const char *path) {
+static struct vnode *tmpfs_create(void *fs_data, const char *path) {
+    (void)fs_data;
     if (!valid_name(path)) return NULL;
     struct tmpfs_file *existing = find_file(path);
     if (existing) return &existing->vnode;
@@ -113,11 +123,55 @@ static int64_t tmpfs_write(struct vnode *vn, uint64_t pos,
     return (int64_t)count;
 }
 
+static int tmpfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
+    (void)vn;
+    int n = 0;
+    for (int i = 0; i < TMPFS_MAX_FILES && n < max; i++) {
+        if (!files[i].in_use) continue;
+        memset(&out[n], 0, sizeof(out[n]));
+        strncpy(out[n].name, files[i].name, VFS_PATH_MAX - 1);
+        out[n].type = VFS_TYPE_FILE;
+        out[n].size = files[i].size;
+        out[n].inode = (uint64_t)i;
+        n++;
+    }
+    return n;
+}
+
+static int tmpfs_unlink(void *fs_data, const char *path) {
+    (void)fs_data;
+    struct tmpfs_file *f = find_file(path);
+    if (!f) return -1;
+    if (f->data) kfree(f->data);
+    memset(f, 0, sizeof(*f));
+    return 0;
+}
+
+static int tmpfs_truncate(struct vnode *vn, uint64_t new_size) {
+    struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
+    if (!f) return -1;
+    if (new_size > f->capacity) {
+        if (ensure_capacity(f, new_size) != 0) return -1;
+    }
+    if (new_size < f->size) {
+        /* shrinking: data above new_size becomes garbage; zero it. */
+        memset(f->data + new_size, 0, f->size - new_size);
+    } else if (new_size > f->size) {
+        memset(f->data + f->size, 0, new_size - f->size);
+    }
+    f->size = new_size;
+    f->vnode.size = new_size;
+    return 0;
+}
+
 const struct vfs_ops tmpfs_ops = {
-    .lookup = tmpfs_lookup,
-    .create = tmpfs_create,
-    .read = tmpfs_read,
-    .write = tmpfs_write,
+    .lookup   = tmpfs_lookup,
+    .create   = tmpfs_create,
+    .read     = tmpfs_read,
+    .write    = tmpfs_write,
+    .readdir  = tmpfs_readdir,
+    .unlink   = tmpfs_unlink,
+    .truncate = tmpfs_truncate,
 };
 
 void tmpfs_list(void) {
@@ -131,7 +185,7 @@ void tmpfs_list(void) {
 
 void tmpfs_self_test(void) {
     kprintf("[tmpfs] self-test: create/write/read /tmp/hello.txt...\n");
-    struct vnode *vn = tmpfs_create("hello.txt");
+    struct vnode *vn = tmpfs_create(NULL, "hello.txt");
     if (!vn) {
         kprintf("[tmpfs] FAIL: create failed\n");
         return;
