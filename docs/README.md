@@ -22,8 +22,6 @@ This directory contains the technical documentation for AuraLite OS.
 - [`../PLAN.md`](../PLAN.md) — historical milestone plan.
 - [`../TODO.md`](../TODO.md) — future work and known limitations.
 - [`../CHANGELOG.md`](../CHANGELOG.md) — chronological changes.
-- [`../PROJECT_STUDY.md`](../PROJECT_STUDY.md) — repository study notes created
-  during review.
 
 ## Documentation conventions
 
