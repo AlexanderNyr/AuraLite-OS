@@ -44,4 +44,8 @@ int ahci_get_nth_port(int n);
 /* Gate self-test: read sector 0 (MBR) and verify it's non-empty. */
 void ahci_self_test(void);
 
+/* Single-sector wrappers for buffer cache. */
+int ahci_read_sector(uint32_t port, uint64_t lba, void *buf);
+int ahci_write_sector(uint32_t port, uint64_t lba, const void *buf);
+
 #endif /* AURALITE_DRIVERS_AHCI_AHCI_H */

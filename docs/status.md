@@ -64,6 +64,12 @@ Legend:
 | Tiny diskfs | ✅ | Persistent `/disk` (8 files × 4 KiB, AHCI port 0). |
 | **FAT32 — full** | ✅ | `/fat`: subdirs, **LFN (UCS-2 read+write)**, mkdir/rmdir/unlink/rename/truncate, FSInfo, FAT date/time stamps. |
 | **ext2 — full** | ✅ | `/ext2`: mounts existing Linux-mkfs images **and** formats blank disks in-kernel.  Direct + single/double/triple indirect blocks; mkdir/rmdir/unlink/rename; cross-OS round-trip verified with `debugfs`. |
+| buffer cache | 🧪 | Buffer cache layer for block I/O caching and synchronization. |
+| exFAT | 🚧 | skeleton |
+| NTFS | 🚧 | skeleton |
+| ext4 | 🚧 | experimental ext4-like |
+| Btrfs | 🚧 | experimental CoW prototype |
+| F2FS | 🚧 | experimental log-structured prototype |
 
 ## Syscalls
 

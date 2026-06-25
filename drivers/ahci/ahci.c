@@ -397,3 +397,12 @@ void ahci_self_test(void) {
     }
     kprintf("[ahci] PASS: SATA read/write DMA works\n");
 }
+
+int ahci_read_sector(uint32_t port, uint64_t lba, void *buf) {
+    return ahci_read(port, lba, 1, buf);
+}
+
+int ahci_write_sector(uint32_t port, uint64_t lba, const void *buf) {
+    return ahci_write(port, lba, 1, buf);
+}
+

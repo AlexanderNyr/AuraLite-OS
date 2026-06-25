@@ -824,7 +824,7 @@ static int64_t ext4_write(struct vnode *vn, uint64_t pos, const void *buf, uint6
     uint64_t new_size = pos + count;
     inode.i_size_lo = (uint32_t)new_size;
     inode.i_size_high = (uint32_t)(new_size >> 32);
-    inode.i_mtime = (uint32_t)(__builtin_bitreverse32((uint32_t)(pos >> 32))); /* pseudo time */
+    inode.i_mtime = 1337 + (uint32_t)pos; /* pseudo time */
     inode.i_blocks_lo += (uint32_t)(count / 512);
 
     if (write_inode(v->inode, &inode) != 0) return -1;
@@ -1268,9 +1268,9 @@ static int format_ext4(void) {
     /* Block bitmap: mark first few blocks as used */
     ext4_cluster_buf[0] = 0x07; /* blocks 0,1,2 taken by sb+gdt+bitmap */
     for (uint32_t i = 3; i < gdt_blocks; i++) ext4_cluster_buf[i/8] |= (1 << (i%8));
-    ext4_cluster_buf[(block_base + 0) / 8] |= 1 << ((block_base + 0) % 8);
-    ext4_cluster_buf[(block_base + 1) / 8] |= 1 << ((block_base + 1) % 8);
-    ext4_cluster_buf[(block_base + 2) / 8] |= 1 << ((block_base + 2) % 8);
+    ext4_cluster_buf[0 / 8] |= 1 << (0 % 8);
+    ext4_cluster_buf[1 / 8] |= 1 << (1 % 8);
+    ext4_cluster_buf[2 / 8] |= 1 << (2 % 8);
 
     if (write_block(first_data + 0, ext4_cluster_buf) != 0) return -1; /* block bitmap */
 

@@ -37,6 +37,12 @@ additional post-phase extensions.
 
 ### Experimental / partial
 
+- **Advanced Storage / Filesystems**:
+  - `buffer_cache`: Synchronized block cache layer.
+  - `ext4`: Experimental ext4-like driver with extent tree parsing (`/ext4`).
+  - `btrfs`: Experimental Copy-on-Write B-tree filesystem prototype (`/btrfs`).
+  - `f2fs`: Experimental Flash-Friendly File System log-structured prototype (`/f2fs`).
+  - `exfat` & `ntfs`: Skeleton/scaffolding drivers (`/exfat`, `/ntfs`).
 - Per-process address spaces, `spawn`, `fork`, `execve`, `wait4` are present but
   simplified.
 - USB host-controller support is uneven: UHCI has working control/bulk

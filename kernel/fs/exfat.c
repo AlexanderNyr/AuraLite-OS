@@ -1,6 +1,7 @@
 #include "kernel/fs/exfat.h"
 #include "kernel/fs/buffer_cache.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/mm/kheap.h"
 #include <string.h>
 
 static int exfat_dev_id = -1;

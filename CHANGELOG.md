@@ -2,6 +2,21 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Advanced Storage Edition: ext4, btrfs, f2fs, exfat, ntfs, buffer_cache] 2026-06-25
+
+### Added
+- `buffer_cache`: Block buffer cache layer (`bc_get`, `bc_release`, `bc_sync`, `bc_flush`) with spinlock synchronization and AHCI read/write wrappers.
+- `ext4`: Experimental ext4-like driver supporting extents (`struct ext4_extent_header`, `struct ext4_extent`), block groups, and basic journaling. Mounted at `/ext4`.
+- `btrfs`: Experimental CoW (Copy-on-Write) filesystem prototype with B-tree node/leaf searching and checksum structures. Mounted at `/btrfs`.
+- `f2fs`: Experimental log-structured Flash-Friendly File System prototype supporting SIT/NAT tables, segment management, and summary blocks. Mounted at `/f2fs`.
+- `exfat`: Scaffolding/skeleton driver for exFAT directory entries and cluster chains. Mounted at `/exfat`.
+- `ntfs`: Scaffolding/skeleton driver for NTFS boot sectors, MFT records, and cluster lookup. Mounted at `/ntfs`.
+- Experimental filesystem smoke tests (`test_buffer_cache`, `test_ext4_smoke`, `test_btrfs_smoke`, `test_f2fs_smoke`, `test_exfat_detect`, `test_ntfs_detect`) available for verification.
+
+### Changed
+- Restored full legacy `ext2` driver with complete read/write, direct, and single/double/triple indirect block compatibility.
+- Updated `kernel.c` boot flow to preserve all original stable self-tests/mounts (`net_init`, `fat32_init`, `diskfs_init`, `usbfs_init`, `gui_init`, `integration markers`) while attaching new experimental filesystems on separate AHCI ports to prevent auto-format collisions.
+
 ## [Userspace dynamic allocation, Readdir, GUI enhancements, Docs update] 2026-06-25
 
 ### Added

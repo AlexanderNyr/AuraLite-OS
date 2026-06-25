@@ -22,6 +22,8 @@ typedef struct {
     volatile uint8_t locked;
 } spinlock_t;
 
+#define SPINLOCK_UNLOCKED {0}
+
 void spinlock_init(spinlock_t *lock);
 void spinlock_acquire(spinlock_t *lock);
 void spinlock_release(spinlock_t *lock);

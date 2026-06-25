@@ -871,7 +871,6 @@ static int format_btrfs(void) {
     /* Create root tree leaf (with root item for FS_TREE and ROOT_TREE) */
     memset(btrfs_node_buf, 0, BTRFS_NODE_SIZE);
     struct btrfs_header *h = (struct btrfs_header *)btrfs_node_buf;
-    memcpy(h->magic, BTRFS_MAGIC, 8);
     h->level = 0;
     w64((uint8_t*)h + 32, btrfs_m.generation); /* generation */
     w32(btrfs_node_buf + sizeof(struct btrfs_header), BTRFS_NODE_SIZE - sizeof(struct btrfs_header) - 12);

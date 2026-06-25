@@ -1,6 +1,7 @@
 #include "kernel/fs/ntfs.h"
 #include "kernel/fs/buffer_cache.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/mm/kheap.h"
 #include <string.h>
 
 static int ntfs_dev_id = -1;
