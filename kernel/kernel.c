@@ -30,6 +30,9 @@
 #include "kernel/fs/exfat.h"
 #include "kernel/fs/ntfs.h"
 #include "kernel/fs/usbfs.h"
+#include "kernel/fs/ext4.h"
+#include "kernel/fs/btrfs.h"
+#include "kernel/fs/f2fs.h"
 #include "kernel/fs/buffer_cache.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
@@ -110,11 +113,25 @@ void kmain(void) {
         // exFAT
         exfat_init(port);
         vfs_mount("/exfat", &exfat_ops, NULL);
-        
-        // ext4/ext2
+
+        // ext4 (full journaling filesystem with extents)
+        ext4_init(port);
+        vfs_mount("/ext4", &ext4_ops, NULL);
+        ext4_self_test();
+
+        // btrfs (Copy-on-write filesystem with checksums)
+        btrfs_init(port);
+        vfs_mount("/btrfs", &btrfs_ops, NULL);
+        btrfs_self_test();
+
+        // f2fs (Flash-Friendly File System for NAND/SSD)
+        f2fs_init(port);
+        vfs_mount("/f2fs", &f2fs_ops, NULL);
+        f2fs_self_test();
+
+        // ext2 fallback
         ext2_init(port);
-        vfs_mount("/ext4", &ext2_ops, NULL);
-        
+
         // NTFS
         ntfs_init(port);
         vfs_mount("/ntfs", &ntfs_ops, NULL);
