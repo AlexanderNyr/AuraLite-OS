@@ -22,6 +22,8 @@
 /* Initialise the MSC layer: enumerate USB devices and find the first MSC device.
  * Returns 0 on success. */
 int msc_init(void);
+int msc_attach_device(void *usb_dev);
+void msc_detach_device(void *usb_dev);
 
 /* Read sectors from the USB mass storage device.
  * @param lba     starting LBA
@@ -35,6 +37,7 @@ int msc_write(uint64_t lba, uint32_t count, const void *buf);
 
 /* Get the total number of sectors on the device. */
 uint32_t msc_get_sector_count(void);
+int      msc_is_present(void);
 
 /* Gate self-test. */
 void msc_self_test(void);

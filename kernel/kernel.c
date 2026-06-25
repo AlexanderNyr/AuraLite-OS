@@ -27,6 +27,7 @@
 #include "kernel/fs/diskfs.h"
 #include "kernel/fs/fat32.h"
 #include "kernel/fs/ext2.h"
+#include "kernel/fs/usbfs.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
@@ -44,6 +45,7 @@
 #include "drivers/usb/xhci.h"
 #include "drivers/usb/usb_core.h"
 #include "drivers/usb/msc.h"
+#include "drivers/usb/hid.h"
 #include "drivers/bluetooth/bt.h"
 #include "drivers/wifi/wifi.h"
 #include "drivers/timer/pit.h"
@@ -168,6 +170,10 @@ void kmain(void) {
     vfs_mount("/tmp", &tmpfs_ops, NULL);
     tmpfs_self_test();
 
+    /* Mount usbfs at "/usb". It shows the active hotplug USB mass-storage device. */
+    usbfs_init();
+    vfs_mount("/usb", &usbfs_ops, NULL);
+
     /* Quick VFS sanity check. */
     vfs_self_test();
 
@@ -250,6 +256,9 @@ void kmain(void) {
     gfx_init();
     keyboard_init();
     mouse_init();
+    usb_hid_init();
+    usb_hid_self_test();
+    usb_hotplug_start();
 
     /* Boot screen. */
     gfx_clear(GFX_DARKBLUE);

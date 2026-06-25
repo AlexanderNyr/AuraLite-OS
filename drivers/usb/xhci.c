@@ -106,11 +106,11 @@
 
 /* ---- Runtime registers (offset = RTSOFF from BAR0) ---- */
 /* Interrupter Register Set N: offset = RTSOFF + (0x20 * N) */
-#define XHCI_RT_IR_IMAN(n)    (0x00 + 0x20 * n)  /* Interrupter Management */
-#define XHCI_RT_IR_IMOD(n)    (0x04 + 0x20 * n)  /* Interrupter Moderation */
-#define XHCI_RT_IR_ERSTSZ(n)  (0x08 + 0x20 * n)  /* Event Ring Segment Table Size */
-#define XHCI_RT_IR_ERSTBA(n)  (0x10 + 0x20 * n)  /* Event Ring Segment Table BA */
-#define XHCI_RT_IR_ERDP(n)    (0x18 + 0x20 * n)  /* Event Ring Dequeue Pointer */
+#define XHCI_RT_IR_IMAN(n)    (0x20 + 0x20 * n)  /* Interrupter Management */
+#define XHCI_RT_IR_IMOD(n)    (0x24 + 0x20 * n)  /* Interrupter Moderation */
+#define XHCI_RT_IR_ERSTSZ(n)  (0x28 + 0x20 * n)  /* Event Ring Segment Table Size */
+#define XHCI_RT_IR_ERSTBA(n)  (0x30 + 0x20 * n)  /* Event Ring Segment Table BA */
+#define XHCI_RT_IR_ERDP(n)    (0x38 + 0x20 * n)  /* Event Ring Dequeue Pointer */
 
 #define XHCI_IR_IMAN_IE       (1u << 1)    /* Interrupt Enable */
 #define XHCI_IR_IMAN_IP       (1u << 0)    /* Interrupt Pending */
@@ -166,11 +166,13 @@ struct xhci_trb {
 #define XHCI_TRB_DATA_STAGE   3
 #define XHCI_TRB_STATUS_STAGE 4
 #define XHCI_TRB_LINK         6
-#define XHCI_TRB_EVENT        32
+#define XHCI_TRB_TRANSFER_EVENT 32
+#define XHCI_TRB_CMD_COMPLETION 33
 #define XHCI_TRB_CMD_NOOP     23
 #define XHCI_TRB_CMD_ENABLE_SLOT  9
 #define XHCI_TRB_CMD_DISABLE_SLOT 10
 #define XHCI_TRB_CMD_ADDRESS_DEVICE 11
+#define XHCI_TRB_CMD_CONFIGURE_ENDPOINT 12
 
 /* TRB cycle bit */
 #define XHCI_TRB_CYCLE       (1u << 0)
@@ -212,6 +214,39 @@ static struct xhci_erst_entry *erst = NULL;
 static int cmd_ring_cycle = 1;
 static int event_ring_cycle = 1;
 static int event_ring_idx = 0;
+static uint32_t event_ring_phys32 = 0;
+static uint32_t cmd_ring_phys32 = 0;
+static int cmd_ring_idx = 0;
+
+#define XHCI_MAX_DEVS 16
+#define XHCI_RING_TRBS 256
+#define XHCI_CTX_BYTES 2048
+#define XHCI_EP_CONTROL 4
+#define XHCI_EP_BULK_OUT 2
+#define XHCI_EP_BULK_IN  6
+#define XHCI_EP_INTR_OUT 3
+#define XHCI_EP_INTR_IN  7
+
+typedef struct {
+    int in_use;
+    uint8_t usb_addr;
+    uint8_t slot_id;
+    int port;
+    uint8_t root_port;
+    uint32_t route_string;
+    int speed;
+    uint64_t dev_ctx_phys;
+    uint64_t input_ctx_phys;
+    uint64_t ep_ring_phys[32];
+    struct xhci_trb *ep_ring[32];
+    uint16_t ep_max_packet[32];
+    uint8_t ep_type[32];
+    int ep_cycle[32];
+    int ep_idx[32];
+    int ep_configured[32];
+} xhci_dev_t;
+
+static xhci_dev_t xdevs[XHCI_MAX_DEVS];
 
 /* ---- MMIO helpers ---- */
 static inline uint32_t cap_rd32(uint32_t off) {
@@ -236,7 +271,7 @@ static inline void rt_wr(uint32_t off, uint32_t val) {
     rt_regs[off / 4] = val;
 }
 static inline void db_wr(int slot, uint32_t val) {
-    db_regs[slot * 2] = val;
+    db_regs[slot] = val;
 }
 
 /* ---- Port helpers ---- */
@@ -332,11 +367,11 @@ int xhci_init(void) {
     /* 2) Reset the HC. */
     op_wr(XHCI_OP_USBCMD, XHCI_USBCMD_HCRST);
     t = 1000000;
-    while ((op_rd(XHCI_OP_USBSTS) & XHCI_USBSTS_CNR) && t-- > 0) {
+    while ((op_rd(XHCI_OP_USBCMD) & XHCI_USBCMD_HCRST) && t-- > 0) {
         __asm__ volatile ("pause");
     }
     if (t < 0) {
-        kprintf("[xhci] reset timeout (CNR still set)\n");
+        kprintf("[xhci] reset timeout (HCRST still set)\n");
         return -1;
     }
 
@@ -388,9 +423,9 @@ int xhci_init(void) {
         kprintf("[xhci] allocated %d scratchpad buffers\n", max_scratchpads);
     }
 
-    /* Set the DCBAAP register. */
+    /* Set the DCBAAP register (64-bit register pair; DMA is below 4 GiB). */
     op_wr(XHCI_OP_DCBAAP, (uint32_t)dcbaa_phys);
-    /* For 64-bit: the high 32 bits are in the next register. We use < 4 GiB. */
+    op_wr(XHCI_OP_DCBAAP + 4, 0);
 
     /* 7) Allocate the Command Ring (1 page = 256 TRBs). */
     uint64_t cmd_ring_phys = pmm_alloc_frame();
@@ -398,6 +433,8 @@ int xhci_init(void) {
         kprintf("[xhci] OOM for command ring\n");
         return -1;
     }
+    cmd_ring_phys32 = (uint32_t)cmd_ring_phys;
+    cmd_ring_idx = 0;
     cmd_ring = (struct xhci_trb *)(uintptr_t)(hhdm + cmd_ring_phys);
     memset(cmd_ring, 0, 4096);
 
@@ -405,12 +442,14 @@ int xhci_init(void) {
     /* Segment size = 256 TRBs (4096 / 16). Link at TRB[255]. */
     cmd_ring[255].param = (uint32_t)cmd_ring_phys;
     cmd_ring[255].status = 0;
-    cmd_ring[255].control = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC;
+    cmd_ring[255].control = 0;
+    cmd_ring[255].flags = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC;
     cmd_ring_cycle = 1;
 
     /* Program the CRCR (Command Ring Control Register).
      * CRCR = ring_base_phys | RCS (initial cycle state = 1). */
     op_wr(XHCI_OP_CRCR, (uint32_t)cmd_ring_phys | XHCI_CRCR_RCS);
+    op_wr(XHCI_OP_CRCR + 4, 0);
 
     /* 8) Allocate the Event Ring (1 page = 256 TRBs) + ERST. */
     uint64_t evt_ring_phys = pmm_alloc_frame();
@@ -418,6 +457,7 @@ int xhci_init(void) {
         kprintf("[xhci] OOM for event ring\n");
         return -1;
     }
+    event_ring_phys32 = (uint32_t)evt_ring_phys;
     event_ring = (struct xhci_trb *)(uintptr_t)(hhdm + evt_ring_phys);
     memset(event_ring, 0, 4096);
 
@@ -438,7 +478,9 @@ int xhci_init(void) {
     /* Program the primary interrupter (Interrupter 0). */
     rt_wr(XHCI_RT_IR_ERSTSZ(0), 1);   /* 1 segment */
     rt_wr(XHCI_RT_IR_ERSTBA(0), (uint32_t)erst_phys);
+    rt_wr(XHCI_RT_IR_ERSTBA(0) + 4, 0);
     rt_wr(XHCI_RT_IR_ERDP(0), (uint32_t)evt_ring_phys);
+    rt_wr(XHCI_RT_IR_ERDP(0) + 4, 0);
     rt_wr(XHCI_RT_IR_IMAN(0), XHCI_IR_IMAN_IE);   /* Enable interrupter */
     rt_wr(XHCI_RT_IR_IMOD(0), 0);     /* No moderation */
 
@@ -504,22 +546,381 @@ int xhci_get_port_count(void) {
     return port_count;
 }
 
+int xhci_port_has_device(int port) {
+    if (op_regs == NULL || port < 0 || port >= num_ports) return 0;
+    return (port_rd(port) & XHCI_PORTSC_CCS) ? 1 : 0;
+}
+
+
+int xhci_reset_port(int port) {
+    if (op_regs == NULL || port < 0 || port >= num_ports) return -1;
+    if (!(port_rd(port) & XHCI_PORTSC_CCS)) return -1;
+    port_wr(port, port_rd(port) | XHCI_PORTSC_PR);
+    int t = 5000000;
+    while ((port_rd(port) & XHCI_PORTSC_PR) && t-- > 0) __asm__ volatile ("pause");
+    port_wr(port, port_rd(port) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC | XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
+    return (port_rd(port) & XHCI_PORTSC_CCS) ? 0 : -1;
+}
+
+int xhci_port_speed(int port) {
+    if (op_regs == NULL || port < 0 || port >= num_ports) return 0;
+    return (int)((port_rd(port) >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK);
+}
+
+static uint32_t trb_type(const struct xhci_trb *t) {
+    return (t->flags >> XHCI_TRB_TYPE_SHIFT) & XHCI_TRB_TYPE_MASK;
+}
+static uint32_t trb_cc(const struct xhci_trb *t) {
+    return (t->control >> 24) & 0xFF;
+}
+
+static int xhci_poll_event(uint32_t want_type, struct xhci_trb *out) {
+    int timeout = 10000000;
+    while (timeout-- > 0) {
+        struct xhci_trb *e = &event_ring[event_ring_idx];
+        if ((e->flags & XHCI_TRB_CYCLE) == (uint32_t)event_ring_cycle) {
+            if (out) *out = *e;
+            uint32_t type = trb_type(e);
+            event_ring_idx++;
+            if (event_ring_idx >= 256) {
+                event_ring_idx = 0;
+                event_ring_cycle ^= 1;
+            }
+            uint32_t erdp = event_ring_phys32 + (uint32_t)event_ring_idx * sizeof(struct xhci_trb);
+            /* Acknowledge by writing the dequeue pointer with EHB. */
+            rt_wr(XHCI_RT_IR_ERDP(0), erdp | XHCI_ERDP_BUSY);
+            if (!want_type || type == want_type) return 0;
+        }
+        __asm__ volatile ("pause");
+    }
+    return -1;
+}
+
+static int xhci_cmd_submit(struct xhci_trb trb, struct xhci_trb *event_out) {
+    if (!cmd_ring) return -1;
+    int idx = cmd_ring_idx;
+    trb.flags |= (uint32_t)cmd_ring_cycle;
+    cmd_ring[idx] = trb;
+    cmd_ring_idx++;
+    if (cmd_ring_idx >= 255) {
+        cmd_ring[255].param = cmd_ring_phys32;
+        cmd_ring[255].status = 0;
+        cmd_ring[255].control = 0;
+        cmd_ring[255].flags = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) |
+                              XHCI_TRB_TC | (uint32_t)cmd_ring_cycle;
+        cmd_ring_idx = 0;
+        cmd_ring_cycle ^= 1;
+    }
+    db_wr(0, 0);
+    struct xhci_trb ev;
+    if (xhci_poll_event(XHCI_TRB_CMD_COMPLETION, &ev) != 0) {
+        kprintf("[xhci] command timeout type=%u usbsts=0x%08x iman=0x%08x ev0={%08x,%08x,%08x,%08x}\n",
+                (trb.flags >> XHCI_TRB_TYPE_SHIFT) & 0x3F,
+                op_rd(XHCI_OP_USBSTS), rt_rd(XHCI_RT_IR_IMAN(0)),
+                event_ring[0].param, event_ring[0].status,
+                event_ring[0].control, event_ring[0].flags);
+        return -1;
+    }
+    uint32_t cc = trb_cc(&ev);
+    if (cc != 1) {
+        kprintf("[xhci] command completion cc=%u type=%u slot=%u\n",
+                cc, (trb.flags >> XHCI_TRB_TYPE_SHIFT) & 0x3F, ev.flags >> 24);
+        return -1;
+    }
+    if (event_out) *event_out = ev;
+    return 0;
+}
+
+static uint32_t *ctx_ptr(void *base, int ctx_index) {
+    return (uint32_t *)((uint8_t *)base + (uint32_t)ctx_index * (uint32_t)context_size);
+}
+
+static xhci_dev_t *find_xdev(uint8_t usb_addr) {
+    for (int i = 0; i < XHCI_MAX_DEVS; i++)
+        if (xdevs[i].in_use && xdevs[i].usb_addr == usb_addr) return &xdevs[i];
+    return 0;
+}
+
+static xhci_dev_t *alloc_xdev(uint8_t usb_addr) {
+    for (int i = 0; i < XHCI_MAX_DEVS; i++) {
+        if (!xdevs[i].in_use) {
+            memset(&xdevs[i], 0, sizeof(xdevs[i]));
+            xdevs[i].in_use = 1;
+            xdevs[i].usb_addr = usb_addr;
+            return &xdevs[i];
+        }
+    }
+    return 0;
+}
+
+static uint16_t xhci_default_max_packet(int speed, uint8_t mps0) {
+    if (mps0) return mps0;
+    if (speed == XHCI_SPEED_SUPER) return 512;
+    if (speed == XHCI_SPEED_HIGH) return 64;
+    return 8;
+}
+
+/* Decode usb_core's pseudo-port encoding for devices behind hubs.
+ * Root devices use port=0..N-1. Hub children use ((root+1)<<4)|route_nibbles,
+ * where route_nibbles is the xHCI route string (1 nibble per hub depth). */
+static void xhci_decode_port_route(int port, uint8_t *root_port, uint32_t *route) {
+    if (port >= 16) {
+        uint32_t enc = (uint32_t)port;
+        uint32_t root = (enc >> 4) & 0x0F;
+        *root_port = root ? (uint8_t)root : 1;
+        /* Current usb_core encoding stores the root port in the high nibble and
+         * the first downstream hub port in the low nibble.  For xHCI the route
+         * string contains only downstream hub ports, not the root port. */
+        *route = enc & 0x0Fu;
+    } else {
+        *root_port = (uint8_t)(port + 1);
+        *route = 0;
+    }
+}
+
+static int xhci_alloc_ep_ring(xhci_dev_t *xd, int ep_id) {
+    if (xd->ep_ring[ep_id]) return 0;
+    uint64_t phys = pmm_alloc_frame();
+    if (!phys) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    xd->ep_ring_phys[ep_id] = phys;
+    xd->ep_ring[ep_id] = (struct xhci_trb *)(uintptr_t)(hhdm + phys);
+    memset(xd->ep_ring[ep_id], 0, 4096);
+    xd->ep_ring[ep_id][255].param = (uint32_t)phys;
+    xd->ep_ring[ep_id][255].status = 0;
+    xd->ep_ring[ep_id][255].control = 0;
+    xd->ep_ring[ep_id][255].flags = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC | 1;
+    xd->ep_cycle[ep_id] = 1;
+    xd->ep_idx[ep_id] = 0;
+    return 0;
+}
+
+int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packet0) {
+    if (!op_regs || !dcbaa) return -1;
+    xhci_dev_t *xd = alloc_xdev(usb_addr);
+    if (!xd) return -1;
+    xd->port = port;
+    xhci_decode_port_route(port, &xd->root_port, &xd->route_string);
+    xd->speed = speed;
+
+    struct xhci_trb cmd = {0}, ev;
+    cmd.flags = (XHCI_TRB_CMD_ENABLE_SLOT << XHCI_TRB_TYPE_SHIFT);
+    if (xhci_cmd_submit(cmd, &ev) != 0) return -1;
+    uint8_t slot = (uint8_t)(ev.flags >> 24);
+    if (!slot) return -1;
+    xd->slot_id = slot;
+
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t dev_ctx_phys = pmm_alloc_contiguous((XHCI_CTX_BYTES + 0xFFF) / 0x1000);
+    uint64_t in_ctx_phys  = pmm_alloc_contiguous((XHCI_CTX_BYTES + 0xFFF) / 0x1000);
+    if (!dev_ctx_phys || !in_ctx_phys) return -1;
+    xd->dev_ctx_phys = dev_ctx_phys;
+    xd->input_ctx_phys = in_ctx_phys;
+    memset((void *)(uintptr_t)(hhdm + dev_ctx_phys), 0, XHCI_CTX_BYTES);
+    memset((void *)(uintptr_t)(hhdm + in_ctx_phys), 0, XHCI_CTX_BYTES);
+    dcbaa[slot] = dev_ctx_phys;
+
+    if (xhci_alloc_ep_ring(xd, 1) != 0) return -1;
+    xd->ep_max_packet[1] = xhci_default_max_packet(speed, max_packet0);
+    xd->ep_type[1] = XHCI_EP_CONTROL;
+    xd->ep_configured[1] = 1;
+
+    void *inctx = (void *)(uintptr_t)(hhdm + in_ctx_phys);
+    uint32_t *icc = ctx_ptr(inctx, 0);
+    icc[0] = 0;
+    icc[1] = 0x3; /* add slot + ep0 */
+    uint32_t *slot_ctx = ctx_ptr(inctx, 1);
+    slot_ctx[0] = (xd->route_string & 0xFFFFFu) | ((uint32_t)(speed & 0xF) << 20) | (1u << 27); /* ContextEntries=1 */
+    slot_ctx[1] = ((uint32_t)xd->root_port << 16);
+    uint32_t *ep0 = ctx_ptr(inctx, 2);
+    ep0[0] = 0;
+    ep0[1] = (3u << 1) | (XHCI_EP_CONTROL << 3) |
+             ((uint32_t)xd->ep_max_packet[1] << 16);
+    ep0[2] = (uint32_t)xd->ep_ring_phys[1] | 1u;
+    ep0[3] = 0;
+    ep0[4] = 8;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.param = (uint32_t)in_ctx_phys;
+    cmd.status = 0;
+    cmd.flags = (XHCI_TRB_CMD_ADDRESS_DEVICE << XHCI_TRB_TYPE_SHIFT) |
+                ((uint32_t)slot << 24);
+    if (xhci_cmd_submit(cmd, &ev) != 0) return -1;
+    kprintf("[xhci] addressed device: usb_addr=%u slot=%u port=%d speed=%d mps0=%u\n",
+            usb_addr, slot, port, speed, xd->ep_max_packet[1]);
+    return 0;
+}
+
+static int xhci_configure_ep(xhci_dev_t *xd, uint8_t endpoint, uint16_t max_packet, int forced_type) {
+    int ep_num = endpoint & 0x0F;
+    int is_in = endpoint & 0x80;
+    int ep_id = ep_num * 2 + (is_in ? 1 : 0);
+    if (ep_id <= 1 || ep_id >= 32) return -1;
+    if (xd->ep_configured[ep_id]) return 0;
+    if (xhci_alloc_ep_ring(xd, ep_id) != 0) return -1;
+    if (!max_packet) max_packet = (xd->speed == XHCI_SPEED_HIGH || xd->speed == XHCI_SPEED_SUPER) ? 512 : 64;
+    xd->ep_max_packet[ep_id] = max_packet;
+    xd->ep_type[ep_id] = forced_type ? (uint8_t)forced_type : (is_in ? XHCI_EP_BULK_IN : XHCI_EP_BULK_OUT);
+
+    uint64_t hhdm = limine_get_hhdm_offset();
+    void *inctx = (void *)(uintptr_t)(hhdm + xd->input_ctx_phys);
+    memset(inctx, 0, XHCI_CTX_BYTES);
+    uint32_t *icc = ctx_ptr(inctx, 0);
+    icc[1] = (1u << ep_id) | 0x1; /* add ep + slot */
+    uint32_t *slot_ctx = ctx_ptr(inctx, 1);
+    uint32_t entries = (uint32_t)ep_id;
+    slot_ctx[0] = (xd->route_string & 0xFFFFFu) | ((uint32_t)(xd->speed & 0xF) << 20) | (entries << 27);
+    slot_ctx[1] = ((uint32_t)xd->root_port << 16);
+    uint32_t *ep = ctx_ptr(inctx, 1 + ep_id);
+    ep[0] = 0;
+    ep[1] = (3u << 1) | ((uint32_t)xd->ep_type[ep_id] << 3) |
+            ((uint32_t)max_packet << 16);
+    ep[2] = (uint32_t)xd->ep_ring_phys[ep_id] | 1u;
+    ep[3] = 0;
+    ep[4] = max_packet;
+
+    struct xhci_trb cmd = {0}, ev;
+    cmd.param = (uint32_t)xd->input_ctx_phys;
+    cmd.status = 0;
+    cmd.flags = (XHCI_TRB_CMD_CONFIGURE_ENDPOINT << XHCI_TRB_TYPE_SHIFT) |
+                ((uint32_t)xd->slot_id << 24);
+    if (xhci_cmd_submit(cmd, &ev) != 0) return -1;
+    xd->ep_configured[ep_id] = 1;
+    kprintf("[xhci] configured ep 0x%02x slot=%u ep_id=%d maxpkt=%u\n",
+            endpoint, xd->slot_id, ep_id, max_packet);
+    return 0;
+}
+
+static int xhci_ring_enqueue(xhci_dev_t *xd, int ep_id, struct xhci_trb trb) {
+    int idx = xd->ep_idx[ep_id];
+    trb.flags |= (uint32_t)xd->ep_cycle[ep_id];
+    xd->ep_ring[ep_id][idx] = trb;
+    xd->ep_idx[ep_id]++;
+    if (xd->ep_idx[ep_id] >= 255) {
+        xd->ep_ring[ep_id][255].param = (uint32_t)xd->ep_ring_phys[ep_id];
+        xd->ep_ring[ep_id][255].status = 0;
+        xd->ep_ring[ep_id][255].control = 0;
+        xd->ep_ring[ep_id][255].flags = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_TRB_TC | (uint32_t)xd->ep_cycle[ep_id];
+        xd->ep_idx[ep_id] = 0;
+        xd->ep_cycle[ep_id] ^= 1;
+    }
+    return 0;
+}
+
+static int xhci_wait_transfer(uint8_t slot, int ep_id, int silent_timeout) {
+    db_wr(slot, (uint32_t)ep_id);
+    struct xhci_trb ev;
+    if (xhci_poll_event(XHCI_TRB_TRANSFER_EVENT, &ev) != 0) {
+        if (!silent_timeout) kprintf("[xhci] transfer timeout slot=%u ep=%d\n", slot, ep_id);
+        return -1;
+    }
+    uint32_t cc = trb_cc(&ev);
+    if (cc != 1 && cc != 13) { /* 13 short packet is acceptable */
+        kprintf("[xhci] transfer event cc=%u slot=%u ep=%u\n",
+                cc, ev.flags >> 24, (ev.flags >> 16) & 0x1F);
+        return -1;
+    }
+    return 0;
+}
+
 int xhci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data,
                           uint16_t data_len, uint8_t max_packet0) {
-    (void)dev_addr; (void)low_speed; (void)setup; (void)data;
-    (void)data_len; (void)max_packet0;
-    if (op_regs == NULL) return -1;
-    kprintf("[xhci] control transfer backend not yet implemented (slot/address + endpoint rings pending)\n");
-    return -1;
+    (void)low_speed; (void)max_packet0;
+    if (op_regs == NULL || setup == NULL) return -1;
+    const uint8_t *sb = (const uint8_t *)setup;
+    /* USB SET_ADDRESS is handled by xhci_address_device(), not sent as a
+     * normal control transfer. */
+    if (sb[1] == 5) return 0;
+    xhci_dev_t *xd = find_xdev(dev_addr);
+    if (!xd) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t setup_phys = pmm_alloc_frame();
+    uint64_t data_phys = data_len ? pmm_alloc_contiguous((data_len + 0xFFF) / 0x1000) : 0;
+    if (!setup_phys || (data_len && !data_phys)) return -1;
+    memcpy((void *)(uintptr_t)(hhdm + setup_phys), setup, 8);
+    if (data_len && data) memcpy((void *)(uintptr_t)(hhdm + data_phys), data, data_len);
+    int data_in = (sb[0] & 0x80) ? 1 : 0;
+    struct xhci_trb trb;
+    memset(&trb, 0, sizeof(trb));
+    uint32_t *sp = (uint32_t *)(uintptr_t)(hhdm + setup_phys);
+    trb.param = sp[0]; trb.status = sp[1]; trb.control = 8;
+    uint32_t trt = data_len ? (data_in ? 3u : 2u) : 0u;
+    trb.flags = (XHCI_TRB_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT) | (1u << 6) | (trt << 16);
+    xhci_ring_enqueue(xd, 1, trb);
+    if (data_len) {
+        memset(&trb, 0, sizeof(trb));
+        trb.param = (uint32_t)data_phys; trb.status = 0; trb.control = data_len;
+        trb.flags = (XHCI_TRB_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) | (data_in ? (1u << 16) : 0);
+        xhci_ring_enqueue(xd, 1, trb);
+    }
+    memset(&trb, 0, sizeof(trb));
+    trb.flags = (XHCI_TRB_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_IOC |
+                ((data_len == 0 || !data_in) ? (1u << 16) : 0);
+    xhci_ring_enqueue(xd, 1, trb);
+    int ret = xhci_wait_transfer(xd->slot_id, 1, 0);
+    if (ret == 0 && data_len && data && data_in) memcpy(data, (void *)(uintptr_t)(hhdm + data_phys), data_len);
+    if (data_phys) for (uint32_t i=0;i<(data_len+0xFFF)/0x1000;i++) pmm_free_frame(data_phys+i*4096ULL);
+    pmm_free_frame(setup_phys);
+    return ret == 0 ? (int)data_len : -1;
 }
 
 int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
-    (void)dev_addr; (void)endpoint; (void)data; (void)len; (void)in; (void)max_packet;
-    if (op_regs == NULL) return -1;
-    kprintf("[xhci] bulk transfer backend not yet implemented (endpoint transfer rings pending)\n");
-    return -1;
+    if (op_regs == NULL || data == NULL || len == 0) return -1;
+    xhci_dev_t *xd = find_xdev(dev_addr);
+    if (!xd) return -1;
+    int ep_num = endpoint & 0x0F;
+    int ep_id = ep_num * 2 + ((endpoint & 0x80) ? 1 : 0);
+    if (xhci_configure_ep(xd, endpoint, max_packet, in ? XHCI_EP_BULK_IN : XHCI_EP_BULK_OUT) != 0) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
+    if (!buf_phys) return -1;
+    if (!in) memcpy((void *)(uintptr_t)(hhdm + buf_phys), data, len);
+    else memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
+    struct xhci_trb trb;
+    memset(&trb, 0, sizeof(trb));
+    trb.param = (uint32_t)buf_phys;
+    trb.status = 0;
+    trb.control = len;
+    trb.flags = (XHCI_TRB_NORMAL << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_IOC;
+    xhci_ring_enqueue(xd, ep_id, trb);
+    int ret = xhci_wait_transfer(xd->slot_id, ep_id, 0);
+    if (ret == 0 && in) memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), len);
+    for (uint32_t i=0;i<(len+0xFFF)/0x1000;i++) pmm_free_frame(buf_phys+i*4096ULL);
+    return ret == 0 ? (int)len : -1;
+}
+
+
+int xhci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
+                            int low_speed, uint16_t max_packet,
+                            void *data, uint16_t len, int *toggle_io) {
+    (void)low_speed; (void)toggle_io;
+    if (op_regs == NULL || data == NULL || len == 0 || !(endpoint & 0x80)) return -1;
+    xhci_dev_t *xd = find_xdev(dev_addr);
+    if (!xd) return -1;
+    int ep_num = endpoint & 0x0F;
+    int ep_id = ep_num * 2 + 1;
+    if (xhci_configure_ep(xd, endpoint, max_packet ? max_packet : len, XHCI_EP_INTR_IN) != 0) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t buf_phys = pmm_alloc_frame();
+    if (!buf_phys) return -1;
+    memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
+    struct xhci_trb trb;
+    memset(&trb, 0, sizeof(trb));
+    trb.param = (uint32_t)buf_phys;
+    trb.status = 0;
+    trb.control = len;
+    trb.flags = (XHCI_TRB_NORMAL << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_IOC;
+    xhci_ring_enqueue(xd, ep_id, trb);
+    int ret = xhci_wait_transfer(xd->slot_id, ep_id, 1);
+    if (ret == 0) {
+        memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), len);
+        ret = (int)len;
+    }
+    pmm_free_frame(buf_phys);
+    return ret;
 }
 
 void xhci_self_test(void) {

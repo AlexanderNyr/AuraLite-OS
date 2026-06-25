@@ -31,6 +31,7 @@
 #define USB_REQ_RCPT_DEV  0x00
 #define USB_REQ_RCPT_IF   0x01
 #define USB_REQ_RCPT_EP   0x02
+#define USB_REQ_RCPT_OTHER 0x03
 
 /* Standard request codes */
 #define USB_GET_STATUS        0
@@ -51,6 +52,9 @@
 #define USB_DESC_STRING       3
 #define USB_DESC_INTERFACE    4
 #define USB_DESC_ENDPOINT     5
+#define USB_DESC_HID          0x21
+#define USB_DESC_REPORT       0x22
+#define USB_DESC_HUB          0x29
 
 /* Device class codes */
 #define USB_CLASS_USE_DEVICE   0x00   /* use interface class */
@@ -157,9 +161,10 @@ typedef struct {
     usb_speed_t     speed;
     uint8_t         address;          /* USB device address (1-127) */
     uint8_t         config_value;     /* active configuration */
-    uint8_t         interface_class;  /* device class */
+    uint8_t         interface_class;  /* active/primary interface class */
     uint8_t         interface_subclass;
     uint8_t         interface_protocol;
+    uint8_t         interface_number;
     uint8_t         max_packet_size0; /* endpoint 0 max packet size */
     uint16_t        vendor_id;
     uint16_t        product_id;
@@ -167,6 +172,16 @@ typedef struct {
     uint8_t         bulk_in_ep;
     uint8_t         bulk_out_ep;
     uint16_t        bulk_max_packet;
+    /* Interrupt endpoints for HID input. */
+    uint8_t         interrupt_in_ep;
+    uint8_t         interrupt_out_ep;
+    uint16_t        interrupt_max_packet;
+    uint8_t         interrupt_interval;
+    uint16_t        hid_report_desc_len;
+    /* Hub bookkeeping. */
+    uint8_t         hub_scanned;
+    uint8_t         parent_hub_addr;
+    uint8_t         parent_hub_port;
 } usb_device_t;
 
 /* Global device table. */
@@ -186,6 +201,12 @@ extern usb_device_t usb_devices[USB_MAX_DEVICES];
  */
 int usb_control_transfer(usb_device_t *dev, const struct usb_setup_pkt *setup,
                          void *data, uint16_t data_len);
+
+/* Poll an interrupt endpoint (used by HID boot keyboard/mouse). `endpoint`
+ * includes the direction bit. Returns bytes copied into `data`, 0 for no data
+ * (e.g. NAK/no-change), or -1 for a hard error. */
+int usb_interrupt_transfer(usb_device_t *dev, uint8_t endpoint,
+                           void *data, uint16_t data_len, int *toggle_io);
 
 /* ---- Enumeration API ---- */
 
@@ -208,6 +229,12 @@ int usb_device_count(void);
 
 /* Find the first device matching a class code. Returns NULL if none. */
 usb_device_t *usb_find_device_by_class(uint8_t class_code);
+
+/* Hotplug/re-enumeration support.  The monitor polls root ports and known hubs
+ * for connect/disconnect changes and attaches supported class drivers for new
+ * devices. */
+void usb_hotplug_poll(void);
+int  usb_hotplug_start(void);
 
 /* Full USB subsystem self-test. */
 void usb_core_self_test(void);

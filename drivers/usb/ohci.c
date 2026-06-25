@@ -125,6 +125,22 @@ struct ohci_td {
  *   bits 23-26: delay interrupt
  *   bits 27-31: condition code (0=OK, etc.) + CC field */
 
+#define OHCI_ED_DIR_FROM_TD 0u
+#define OHCI_ED_DIR_OUT     1u
+#define OHCI_ED_DIR_IN      2u
+#define OHCI_ED_SKIP        (1u << 14)
+
+#define OHCI_TD_R           (1u << 18)
+#define OHCI_TD_DP_SETUP    0u
+#define OHCI_TD_DP_OUT      1u
+#define OHCI_TD_DP_IN       2u
+#define OHCI_TD_DI_SHIFT    21
+#define OHCI_TD_T_SHIFT     24
+#define OHCI_TD_T_DATA0     0u
+#define OHCI_TD_T_DATA1     1u
+#define OHCI_TD_CC_SHIFT    28
+#define OHCI_TD_CC_MASK     0xFu
+
 /* ---- Driver state ---- */
 static volatile uint32_t *mmio = NULL;
 static struct ohci_hcca *hcca = NULL;   /* HHDM pointer */
@@ -148,7 +164,8 @@ int ohci_init(void) {
 
     /* Find OHCI: class 0x0C (Serial Bus), subclass 0x03 (USB),
      * prog_if 0x10 (OHCI). */
-    if (pci_find_class(0x0C, 0x03, &bus, &dev, &func) != 0) {
+    if (pci_find_class(0x0C, 0x03, &bus, &dev, &func) != 0 ||
+        pci_get_prog_if(bus, dev, func) != 0x10) {
         /* Try PCI class scan with prog_if check. */
         for (uint8_t b = 0; b < 1; b++) {
             for (uint8_t d = 0; d < 32; d++) {
@@ -299,22 +316,285 @@ int ohci_get_port_count(void) {
     return port_count;
 }
 
+int ohci_port_has_device(int port) {
+    if (mmio == NULL || port < 0 || port >= num_ports) return 0;
+    return (port_status(port) & OHCI_PORT_CCS) ? 1 : 0;
+}
+
+
+int ohci_reset_port(int port) {
+    if (mmio == NULL || port < 0 || port >= num_ports) return -1;
+    if (!(port_status(port) & OHCI_PORT_CCS)) return -1;
+    port_write(port, OHCI_PORT_PRS);
+    int t = 10000000;
+    while ((port_status(port) & OHCI_PORT_PRS) && t-- > 0) __asm__ volatile ("pause");
+    port_write(port, OHCI_PORT_PRSC);
+    port_write(port, OHCI_PORT_PES);
+    return (port_status(port) & OHCI_PORT_PES) ? 0 : -1;
+}
+
+int ohci_port_is_low_speed(int port) {
+    if (mmio == NULL || port < 0 || port >= num_ports) return 0;
+    return (port_status(port) & OHCI_PORT_LSDA) ? 1 : 0;
+}
+
+static uint32_t ohci_ed_flags(uint8_t dev_addr, uint8_t endpoint,
+                              uint8_t dir, int low_speed, uint16_t max_packet) {
+    uint32_t f = 0;
+    if (max_packet == 0) max_packet = low_speed ? 8 : 64;
+    f |= (uint32_t)(dev_addr & 0x7F);
+    f |= (uint32_t)(endpoint & 0x0F) << 7;
+    f |= (uint32_t)(dir & 0x03) << 11;
+    if (low_speed) f |= (1u << 13);
+    f |= ((uint32_t)max_packet & 0x7FFu) << 16;
+    return f;
+}
+
+static uint32_t ohci_td_flags(uint8_t pid, uint8_t toggle, int irq_on_done,
+                              int allow_short) {
+    uint32_t f = 0;
+    if (allow_short) f |= OHCI_TD_R;
+    f |= ((uint32_t)pid & 0x03u) << 19;
+    f |= (irq_on_done ? 0u : 7u) << OHCI_TD_DI_SHIFT;
+    f |= ((uint32_t)toggle & 0x03u) << OHCI_TD_T_SHIFT;
+    return f;
+}
+
+static void ohci_td_buffer(volatile struct ohci_td *td, uint64_t phys,
+                           uint32_t len) {
+    if (len == 0) {
+        td->cbp = 0;
+        td->be = 0;
+    } else {
+        td->cbp = (uint32_t)phys;
+        td->be = (uint32_t)(phys + len - 1);
+    }
+}
+
+static int ohci_wait_ed_done(volatile struct ohci_ed *ed, uint32_t tail_phys,
+                             volatile struct ohci_td *tds, uint32_t td_count,
+                             int is_bulk) {
+    if (is_bulk) wr(OHCI_COMMAND_STATUS, OHCI_CMD_BLF);
+    else         wr(OHCI_COMMAND_STATUS, OHCI_CMD_CLF);
+
+    int timeout = 10000000;
+    while (timeout-- > 0) {
+        uint32_t head = ed->head_td;
+        if ((head & ~0xFu) == (tail_phys & ~0xFu)) break;
+        __asm__ volatile ("pause");
+    }
+    if (timeout < 0) {
+        kprintf("[ohci] ED/TD timeout head=0x%08x tail=0x%08x\n",
+                ed->head_td, tail_phys);
+        return -1;
+    }
+    if (ed->head_td & 0x1) {
+        kprintf("[ohci] ED halted head=0x%08x\n", ed->head_td);
+        return -1;
+    }
+    for (uint32_t i = 0; i < td_count; i++) {
+        uint32_t cc = (tds[i].flags >> OHCI_TD_CC_SHIFT) & OHCI_TD_CC_MASK;
+        if (cc != 0) {
+            /* CC=4 (NAK) on one-shot interrupt IN means no report available. */
+            if (cc == 4 && td_count == 1) return 0;
+            kprintf("[ohci] TD%u error cc=%u flags=0x%08x\n", i, cc, tds[i].flags);
+            return -1;
+        }
+    }
+    return 1;
+}
+
+static int ohci_run_transfer(uint8_t dev_addr, uint8_t endpoint, uint8_t ed_dir,
+                             int low_speed, uint16_t max_packet,
+                             volatile struct ohci_td *tds, uint32_t td_count,
+                             uint32_t first_td_phys, uint32_t tail_td_phys,
+                             int is_bulk) {
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t ed_phys = pmm_alloc_frame();
+    if (!ed_phys) return -1;
+    volatile struct ohci_ed *ed = (volatile struct ohci_ed *)(uintptr_t)(hhdm + ed_phys);
+    memset((void *)ed, 0, 4096);
+    ed->flags = ohci_ed_flags(dev_addr, endpoint, ed_dir, low_speed, max_packet);
+    ed->tail_td = tail_td_phys;
+    ed->head_td = first_td_phys;
+    ed->next_ed = 0;
+
+    if (is_bulk) wr(OHCI_BULK_HEAD_ED, (uint32_t)ed_phys);
+    else         wr(OHCI_CONTROL_HEAD_ED, (uint32_t)ed_phys);
+
+    uint32_t ctrl = rd(OHCI_CONTROL);
+    ctrl |= is_bulk ? OHCI_CTRL_BLE : OHCI_CTRL_CLE;
+    wr(OHCI_CONTROL, ctrl);
+
+    int ret = ohci_wait_ed_done(ed, tail_td_phys, tds, td_count, is_bulk);
+
+    if (is_bulk) wr(OHCI_BULK_HEAD_ED, 0);
+    else         wr(OHCI_CONTROL_HEAD_ED, 0);
+    pmm_free_frame(ed_phys);
+    return ret;
+}
+
 int ohci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data,
                           uint16_t data_len, uint8_t max_packet0) {
-    (void)dev_addr; (void)low_speed; (void)setup; (void)data;
-    (void)data_len; (void)max_packet0;
-    if (mmio == NULL) return -1;
-    kprintf("[ohci] control transfer backend not yet implemented (ED/TD scheduling pending)\n");
-    return -1;
+    if (mmio == NULL || setup == NULL) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint16_t max_packet = max_packet0 ? max_packet0 : (low_speed ? 8 : 64);
+    uint32_t data_packets = data_len ? ((data_len + max_packet - 1) / max_packet) : 0;
+    uint32_t td_count = 1 + data_packets + 1;
+    if (td_count > 64) return -1;
+
+    uint64_t setup_phys = pmm_alloc_frame();
+    uint64_t data_phys = data_len ? pmm_alloc_contiguous((data_len + 0xFFF) / 0x1000) : 0;
+    uint64_t td_phys = pmm_alloc_frame();
+    uint64_t tail_phys = pmm_alloc_frame();
+    if (!setup_phys || !td_phys || !tail_phys || (data_len && !data_phys)) return -1;
+    memcpy((void *)(uintptr_t)(hhdm + setup_phys), setup, 8);
+    if (data_len && data) memcpy((void *)(uintptr_t)(hhdm + data_phys), data, data_len);
+
+    volatile struct ohci_td *tds = (volatile struct ohci_td *)(uintptr_t)(hhdm + td_phys);
+    memset((void *)tds, 0, 4096);
+    volatile struct ohci_td *tail = (volatile struct ohci_td *)(uintptr_t)(hhdm + tail_phys);
+    memset((void *)tail, 0, 4096);
+
+    const uint8_t *setup_bytes = (const uint8_t *)setup;
+    int data_in = (setup_bytes[0] & 0x80) ? 1 : 0;
+    uint32_t n = 0;
+    tds[n].flags = ohci_td_flags(OHCI_TD_DP_SETUP, OHCI_TD_T_DATA0, 0, 0);
+    ohci_td_buffer(&tds[n], setup_phys, 8);
+    tds[n].next_td = (uint32_t)(td_phys + (n + 1) * sizeof(struct ohci_td));
+    n++;
+
+    uint32_t remaining = data_len, off = 0;
+    uint8_t toggle = OHCI_TD_T_DATA1;
+    while (remaining) {
+        uint32_t chunk = remaining > max_packet ? max_packet : remaining;
+        tds[n].flags = ohci_td_flags(data_in ? OHCI_TD_DP_IN : OHCI_TD_DP_OUT,
+                                     toggle, 0, data_in);
+        ohci_td_buffer(&tds[n], data_phys + off, chunk);
+        tds[n].next_td = (uint32_t)(td_phys + (n + 1) * sizeof(struct ohci_td));
+        toggle = (toggle == OHCI_TD_T_DATA1) ? OHCI_TD_T_DATA0 : OHCI_TD_T_DATA1;
+        remaining -= chunk;
+        off += chunk;
+        n++;
+    }
+
+    tds[n].flags = ohci_td_flags(data_len ? (data_in ? OHCI_TD_DP_OUT : OHCI_TD_DP_IN)
+                                          : OHCI_TD_DP_IN,
+                                 OHCI_TD_T_DATA1, 1, 0);
+    ohci_td_buffer(&tds[n], 0, 0);
+    tds[n].next_td = (uint32_t)tail_phys;
+    n++;
+
+    int ret = ohci_run_transfer(dev_addr, 0, OHCI_ED_DIR_FROM_TD, low_speed,
+                                max_packet, tds, n, (uint32_t)td_phys,
+                                (uint32_t)tail_phys, 0);
+    if (ret > 0 && data_len && data && data_in) {
+        memcpy(data, (void *)(uintptr_t)(hhdm + data_phys), data_len);
+    }
+    pmm_free_frame(tail_phys);
+    pmm_free_frame(td_phys);
+    if (data_phys) for (uint32_t i = 0; i < (data_len + 0xFFF) / 0x1000; i++) pmm_free_frame(data_phys + i * 4096ULL);
+    pmm_free_frame(setup_phys);
+    return ret > 0 ? (int)data_len : ret;
 }
 
 int ohci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
-    (void)dev_addr; (void)endpoint; (void)data; (void)len; (void)in; (void)max_packet;
-    if (mmio == NULL) return -1;
-    kprintf("[ohci] bulk transfer backend not yet implemented (ED/TD scheduling pending)\n");
-    return -1;
+    if (mmio == NULL || data == NULL || len == 0) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    if (max_packet == 0) max_packet = 64;
+    uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
+    uint64_t td_phys = pmm_alloc_frame();
+    uint64_t tail_phys = pmm_alloc_frame();
+    if (!buf_phys || !td_phys || !tail_phys) return -1;
+    if (!in) memcpy((void *)(uintptr_t)(hhdm + buf_phys), data, len);
+    else memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
+    volatile struct ohci_td *td = (volatile struct ohci_td *)(uintptr_t)(hhdm + td_phys);
+    memset((void *)td, 0, 4096);
+    volatile struct ohci_td *tail = (volatile struct ohci_td *)(uintptr_t)(hhdm + tail_phys);
+    memset((void *)tail, 0, 4096);
+    td[0].flags = ohci_td_flags(in ? OHCI_TD_DP_IN : OHCI_TD_DP_OUT,
+                                OHCI_TD_T_DATA0, 1, in);
+    ohci_td_buffer(&td[0], buf_phys, len);
+    td[0].next_td = (uint32_t)tail_phys;
+    int ret = ohci_run_transfer(dev_addr, endpoint & 0x0F,
+                                in ? OHCI_ED_DIR_IN : OHCI_ED_DIR_OUT,
+                                0, max_packet, td, 1, (uint32_t)td_phys,
+                                (uint32_t)tail_phys, 1);
+    if (ret > 0 && in) memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), len);
+    pmm_free_frame(tail_phys);
+    pmm_free_frame(td_phys);
+    for (uint32_t i = 0; i < (len + 0xFFF) / 0x1000; i++) pmm_free_frame(buf_phys + i * 4096ULL);
+    return ret > 0 ? (int)len : ret;
+}
+
+int ohci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
+                            int low_speed, uint16_t max_packet,
+                            void *data, uint16_t len, int *toggle_io) {
+    if (mmio == NULL || data == NULL || len == 0 || !(endpoint & 0x80)) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    if (max_packet == 0) max_packet = low_speed ? 8 : 8;
+    if (len > max_packet) len = max_packet;
+    uint64_t buf_phys = pmm_alloc_frame();
+    uint64_t td_phys = pmm_alloc_frame();
+    uint64_t tail_phys = pmm_alloc_frame();
+    if (!buf_phys || !td_phys || !tail_phys) return -1;
+    memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
+    volatile struct ohci_td *td = (volatile struct ohci_td *)(uintptr_t)(hhdm + td_phys);
+    memset((void *)td, 0, 4096);
+    volatile struct ohci_td *tail = (volatile struct ohci_td *)(uintptr_t)(hhdm + tail_phys);
+    memset((void *)tail, 0, 4096);
+    uint8_t tog = toggle_io ? (*toggle_io ? OHCI_TD_T_DATA1 : OHCI_TD_T_DATA0) : OHCI_TD_T_DATA0;
+    td[0].flags = ohci_td_flags(OHCI_TD_DP_IN, tog, 1, 1);
+    ohci_td_buffer(&td[0], buf_phys, len);
+    td[0].next_td = (uint32_t)tail_phys;
+
+    uint64_t ed_phys = pmm_alloc_frame();
+    if (!ed_phys) {
+        pmm_free_frame(tail_phys);
+        pmm_free_frame(td_phys);
+        pmm_free_frame(buf_phys);
+        return -1;
+    }
+    volatile struct ohci_ed *ed = (volatile struct ohci_ed *)(uintptr_t)(hhdm + ed_phys);
+    memset((void *)ed, 0, 4096);
+    ed->flags = ohci_ed_flags(dev_addr, endpoint & 0x0F, OHCI_ED_DIR_IN,
+                              low_speed, max_packet);
+    ed->tail_td = (uint32_t)tail_phys;
+    ed->head_td = (uint32_t)td_phys;
+    ed->next_ed = 0;
+
+    uint32_t old_table[32];
+    for (int i = 0; i < 32; i++) {
+        old_table[i] = hcca->int_table[i];
+        hcca->int_table[i] = (uint32_t)ed_phys;
+    }
+    wr(OHCI_CONTROL, rd(OHCI_CONTROL) | OHCI_CTRL_PLE);
+
+    int timeout = 200000;
+    while (timeout-- > 0) {
+        if ((ed->head_td & ~0xFu) == ((uint32_t)tail_phys & ~0xFu)) break;
+        __asm__ volatile ("pause");
+    }
+    for (int i = 0; i < 32; i++) hcca->int_table[i] = old_table[i];
+
+    int ret = 0;
+    uint32_t cc = (td[0].flags >> OHCI_TD_CC_SHIFT) & OHCI_TD_CC_MASK;
+    if (timeout < 0 || cc == 4) {
+        ret = 0; /* no interrupt report ready */
+    } else if (cc != 0 || (ed->head_td & 0x1)) {
+        ret = -1;
+    } else {
+        memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), len);
+        if (toggle_io) *toggle_io ^= 1;
+        ret = (int)len;
+    }
+    pmm_free_frame(ed_phys);
+    pmm_free_frame(tail_phys);
+    pmm_free_frame(td_phys);
+    pmm_free_frame(buf_phys);
+    return ret;
 }
 
 void ohci_self_test(void) {

@@ -70,12 +70,16 @@ static void load_dir(const char *path) {
     static const char *known_disk[]    = {"persist.txt", "ci.txt", 0};
     static const char *known_fat[]     = {"AURALOG.TXT", "TEST.TXT", "CI.TXT", "PERSIST.TXT", "ALongFileName.txt", "SUBDIR", 0};
     static const char *known_ext2[]    = {"lost+found", "TEST.TXT", "DIR", "BIG.BIN", "RENAMED.TXT", "HELLO.TXT", "from_aura.txt", "aura_dir", 0};
+    static const char *known_usb[]     = {"info", "sector0.bin", "disk.img", "fat", 0};
+    static const char *known_usbfat[]  = {"HELLO.TXT", "README.TXT", 0};
     const char **src = known_root;
     if (strcmp(path, "/") != 0) {
         if (strcmp(path, "/tmp") == 0)  src = known_tmp;
         else if (strcmp(path, "/disk") == 0) src = known_disk;
         else if (strcmp(path, "/fat") == 0)  src = known_fat;
         else if (strcmp(path, "/ext2") == 0) src = known_ext2;
+        else if (strcmp(path, "/usb") == 0)  src = known_usb;
+        else if (strcmp(path, "/usb/fat") == 0) src = known_usbfat;
     }
     for (int i = 0; src[i] && np < AG_MAX_LIST_ITEMS; i++) {
         int l = (int)strlen(src[i]);

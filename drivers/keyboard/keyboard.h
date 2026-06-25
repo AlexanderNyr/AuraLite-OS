@@ -80,4 +80,10 @@ uint8_t keyboard_get_mods(void);
 uint32_t keyboard_get_ascii_drops(void);
 uint32_t keyboard_get_event_drops(void);
 
+/* Injection API used by USB HID and future non-PS/2 input backends.  `usb_mods`
+ * is the USB boot-keyboard modifier byte. */
+void keyboard_inject_usb_modifier(uint8_t usb_mod_bit, uint8_t pressed,
+                                  uint8_t usb_mods);
+void keyboard_inject_usb_key(uint8_t usage, uint8_t pressed, uint8_t usb_mods);
+
 #endif /* AURALITE_DRIVERS_KEYBOARD_KEYBOARD_H */

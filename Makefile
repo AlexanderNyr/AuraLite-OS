@@ -101,7 +101,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/apm.elf $(USER_BUILD)/matrix.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
              $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
-             $(USER_BUILD)/gbrowser.elf
+             $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf
 
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
@@ -195,6 +195,8 @@ $(USER_BUILD)/glaunch.o: userspace/gui-launcher/glaunch.c libauragui/include/aur
 $(USER_BUILD)/gaudio.o: userspace/gui-audio/gaudio.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gbrowser.o: userspace/gui-browser/gbrowser.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gusb.o: userspace/gui-usb/gusb.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
@@ -298,6 +300,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/play.elf    $(INITRD_DIR)/play
 	@cp $(USER_BUILD)/gaudio.elf  $(INITRD_DIR)/gaudio
 	@cp $(USER_BUILD)/gbrowser.elf $(INITRD_DIR)/gbrowser
+	@cp $(USER_BUILD)/gusb.elf    $(INITRD_DIR)/gusb
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso

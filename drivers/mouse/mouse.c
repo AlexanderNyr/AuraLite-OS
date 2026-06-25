@@ -270,3 +270,68 @@ int mouse_get_event(mouse_event_t *out) {
 int mouse_is_ready(void) { return mouse_ready; }
 uint32_t mouse_get_packet_drops(void) { return mouse_packet_drops; }
 uint32_t mouse_get_event_drops(void) { return mouse_event_drops; }
+
+void mouse_inject_relative(int16_t dx, int16_t dy, int8_t wheel,
+                           uint8_t buttons) {
+    uint8_t old_btn = mouse_buttons;
+    uint8_t new_btn = buttons & 0x07;
+    mouse_buttons = new_btn;
+
+    mouse_x += dx;
+    mouse_y += dy;
+    uint32_t w = gfx_get_width();
+    uint32_t h = gfx_get_height();
+    if (w && h) {
+        if (mouse_x < 0) mouse_x = 0;
+        if (mouse_y < 0) mouse_y = 0;
+        if (mouse_x >= (int32_t)w) mouse_x = (int32_t)w - 1;
+        if (mouse_y >= (int32_t)h) mouse_y = (int32_t)h - 1;
+    }
+
+    if (dx || dy || wheel || (old_btn != new_btn)) {
+        mouse_event_t e = {0};
+        e.dx = dx;
+        e.dy = dy;
+        e.abs_x = (int16_t)mouse_x;
+        e.abs_y = (int16_t)mouse_y;
+        e.wheel = wheel;
+        e.buttons = new_btn;
+        e.pressed  = (uint8_t)((~old_btn) & new_btn);
+        e.released = (uint8_t)(old_btn & (~new_btn));
+        evt_push(&e);
+        mouse_has_event = 1;
+    }
+}
+
+void mouse_inject_absolute(int16_t x, int16_t y, int8_t wheel,
+                           uint8_t buttons) {
+    uint8_t old_btn = mouse_buttons;
+    uint8_t new_btn = buttons & 0x07;
+    mouse_buttons = new_btn;
+    int32_t old_x = mouse_x;
+    int32_t old_y = mouse_y;
+    mouse_x = x;
+    mouse_y = y;
+    uint32_t w = gfx_get_width();
+    uint32_t h = gfx_get_height();
+    if (w && h) {
+        if (mouse_x < 0) mouse_x = 0;
+        if (mouse_y < 0) mouse_y = 0;
+        if (mouse_x >= (int32_t)w) mouse_x = (int32_t)w - 1;
+        if (mouse_y >= (int32_t)h) mouse_y = (int32_t)h - 1;
+    }
+    int16_t dx = (int16_t)(mouse_x - old_x);
+    int16_t dy = (int16_t)(mouse_y - old_y);
+    if (dx || dy || wheel || (old_btn != new_btn)) {
+        mouse_event_t e = {0};
+        e.dx = dx; e.dy = dy;
+        e.abs_x = (int16_t)mouse_x;
+        e.abs_y = (int16_t)mouse_y;
+        e.wheel = wheel;
+        e.buttons = new_btn;
+        e.pressed  = (uint8_t)((~old_btn) & new_btn);
+        e.released = (uint8_t)(old_btn & (~new_btn));
+        evt_push(&e);
+        mouse_has_event = 1;
+    }
+}

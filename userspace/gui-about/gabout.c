@@ -17,7 +17,8 @@ int main(void) {
     ag_add_label(&v, 32, 88, "Filesystems: initrd / devfs / tmpfs", AG_DARK);
     ag_add_label(&v, 32, 102, "             diskfs / fat32 / ext2", AG_DARK);
     ag_add_label(&v, 32, 126, "Networking: e1000 + ARP + DHCP + TCP", AG_DARK);
-    ag_add_label(&v, 32, 146, "GUI: kernel WM + libauragui toolkit", AG_DARK);
+    ag_add_label(&v, 32, 146, "USB: UHCI/OHCI/EHCI/xHCI + hotplug", AG_DARK);
+    ag_add_label(&v, 32, 160, "GUI: kernel WM + libauragui toolkit", AG_DARK);
 
     ag_add_button(&v, 140, 180, 80, 28, "OK", 0, 0);
     ag_view_run(&v, 0, 0);

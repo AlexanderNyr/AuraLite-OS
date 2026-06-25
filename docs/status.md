@@ -113,11 +113,14 @@ Legend:
 | AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
 | AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
 | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |
-| OHCI controller | 🚧 | Detection/init/port logic plus stable control/bulk backend API; ED/TD scheduling still pending. |
-| EHCI controller | 🚧 | Detection/init/port logic plus stable control/bulk backend API; async qTD scheduling still pending. |
-| xHCI controller | 🚧 | Detection/init/ring scaffolding plus stable control/bulk backend API; slot/address/endpoints still pending. |
-| USB device enumeration | 🧪 | UHCI devices are enumerated through standard requests; other controllers are reported only. |
-| USB Mass Storage | 🧪 | Bulk-Only/SCSI path works through UHCI; OHCI/EHCI/xHCI MSC backends remain future work. |
+| OHCI controller | 🧪 | Detection/init/root-port reset plus ED/TD control, bulk and interrupt scheduling works in QEMU for HID/MSC. |
+| EHCI controller | 🧪 | Detection/init/root-port reset plus async qTD control/bulk scheduling works in QEMU for high-speed MSC. Periodic interrupt and split transactions are pending. |
+| xHCI controller | 🧪 | QEMU xHCI slot/address/device-context setup, endpoint contexts, command/event rings, control/bulk/interrupt transfer rings are implemented for HID/MSC. |
+| USB device enumeration | 🧪 | UHCI/OHCI/EHCI/xHCI devices are enumerated through standard requests/controller-specific address setup. |
+| USB HID keyboard/mouse | 🧪 | Boot Protocol/generic keyboards and pointer devices work through UHCI, OHCI, xHCI and high-speed EHCI polling; generic HID parser handles keyboard reports and mouse/tablet pointer reports (QEMU `usb-kbd`/`usb-mouse`/`usb-tablet` tested). EHCI full/low-speed split transactions remain future work. |
+| USB hubs | 🧪 | Standard hub descriptor/status, port power/reset and downstream child enumeration work in QEMU, including xHCI route-string addressing for devices behind a hub. |
+| USB hotplug monitor | 🧪 | Polling monitor scans root ports and known hubs, marks removed records and dynamically attaches HID and MSC class drivers for newly enumerated devices. QEMU xHCI HID and MSC attach/detach are integration-tested. |
+| USB Mass Storage | 🧪 | Bulk-Only/SCSI path works through UHCI, OHCI, high-speed EHCI and xHCI in QEMU, including runtime hotplug attach/read/detach. Active media is exposed through `/usb` via usbfs (`info`, `sector0.bin`, `disk.img`) and FAT32 superfloppy/partition root files are auto-detected read-only under `/usb/fat`. |
 
 ## Wireless and Bluetooth
 
@@ -140,7 +143,7 @@ Legend:
 | `/snake` | ✅ | Terminal snake. |
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
-| `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch` | 🧪 | GUI apps using `libauragui`. |
+| `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui`; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. |
 
 ## Highest-priority gaps
 

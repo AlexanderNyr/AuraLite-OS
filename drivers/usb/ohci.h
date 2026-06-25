@@ -21,16 +21,19 @@ int ohci_init(void);
 
 /* Get the number of ports with devices attached. */
 int ohci_get_port_count(void);
+int ohci_port_has_device(int port);
+int ohci_port_is_low_speed(int port);
+int ohci_reset_port(int port);
 
-/* Transfer backend API.  The current OHCI driver has controller/port bring-up;
- * these functions provide a stable interface for usb_core/class drivers and
- * return -1 until ED/TD scheduling is completed.
- */
+/* Transfer backend API. */
 int ohci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data,
                           uint16_t data_len, uint8_t max_packet0);
 int ohci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet);
+int ohci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
+                            int low_speed, uint16_t max_packet,
+                            void *data, uint16_t len, int *toggle_io);
 
 /* Gate self-test. */
 void ohci_self_test(void);

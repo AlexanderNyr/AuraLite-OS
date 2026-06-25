@@ -265,3 +265,114 @@ int keyboard_get_event(kb_event_t *out) {
 uint8_t keyboard_get_mods(void) { return mods; }
 uint32_t keyboard_get_ascii_drops(void) { return kb_ascii_drops; }
 uint32_t keyboard_get_event_drops(void) { return kb_event_drops; }
+
+/* ---- Non-PS/2 input injection (USB HID boot keyboard) ---- */
+
+static void apply_usb_mods(uint8_t usb_mods) {
+    uint8_t keep_caps = mods & KB_MOD_CAPS;
+    uint8_t new_mods = keep_caps;
+    if (usb_mods & (0x02 | 0x20)) new_mods |= KB_MOD_SHIFT;
+    if (usb_mods & (0x01 | 0x10)) new_mods |= KB_MOD_CTRL;
+    if (usb_mods & (0x04 | 0x40)) new_mods |= KB_MOD_ALT;
+    mods = new_mods;
+}
+
+static uint32_t usb_modifier_key(uint8_t usb_mod_bit) {
+    switch (usb_mod_bit) {
+    case 0x02: return KB_KEY_LSHIFT;
+    case 0x20: return KB_KEY_RSHIFT;
+    case 0x01: case 0x10: return KB_KEY_CTRL;
+    case 0x04: case 0x40: return KB_KEY_ALT;
+    default: return 0;
+    }
+}
+
+static uint32_t usb_usage_special(uint8_t u) {
+    if (u >= 0x3A && u <= 0x45) return KB_KEY_F1 + (u - 0x3A);
+    switch (u) {
+    case 0x28: return '\n';
+    case 0x29: return KB_KEY_ESC;
+    case 0x2A: return '\b';
+    case 0x2B: return '\t';
+    case 0x39: return KB_KEY_CAPSLOCK;
+    case 0x49: return KB_KEY_INSERT;
+    case 0x4A: return KB_KEY_HOME;
+    case 0x4B: return KB_KEY_PGUP;
+    case 0x4C: return KB_KEY_DELETE;
+    case 0x4D: return KB_KEY_END;
+    case 0x4E: return KB_KEY_PGDN;
+    case 0x4F: return KB_KEY_RIGHT;
+    case 0x50: return KB_KEY_LEFT;
+    case 0x51: return KB_KEY_DOWN;
+    case 0x52: return KB_KEY_UP;
+    default: return 0;
+    }
+}
+
+static char usb_usage_ascii(uint8_t u) {
+    static const char num_lo[] = "1234567890";
+    static const char num_hi[] = "!@#$%^&*()";
+    int shift = (mods & KB_MOD_SHIFT) ? 1 : 0;
+
+    if (u >= 0x04 && u <= 0x1D) {
+        char c = (char)('a' + (u - 0x04));
+        int upper = shift ? 1 : 0;
+        if (mods & KB_MOD_CAPS) upper ^= 1;
+        if (upper) c = (char)(c - 'a' + 'A');
+        return c;
+    }
+    if (u >= 0x1E && u <= 0x27) {
+        int idx = (u == 0x27) ? 9 : (int)(u - 0x1E);
+        return shift ? num_hi[idx] : num_lo[idx];
+    }
+
+    switch (u) {
+    case 0x28: return '\n';
+    case 0x2A: return '\b';
+    case 0x2B: return '\t';
+    case 0x2C: return ' ';
+    case 0x2D: return shift ? '_' : '-';
+    case 0x2E: return shift ? '+' : '=';
+    case 0x2F: return shift ? '{' : '[';
+    case 0x30: return shift ? '}' : ']';
+    case 0x31: return shift ? '|' : '\\';
+    case 0x33: return shift ? ':' : ';';
+    case 0x34: return shift ? '"' : '\'';
+    case 0x35: return shift ? '~' : '`';
+    case 0x36: return shift ? '<' : ',';
+    case 0x37: return shift ? '>' : '.';
+    case 0x38: return shift ? '?' : '/';
+    default: return 0;
+    }
+}
+
+void keyboard_inject_usb_modifier(uint8_t usb_mod_bit, uint8_t pressed,
+                                  uint8_t usb_mods) {
+    apply_usb_mods(usb_mods);
+    uint32_t key = usb_modifier_key(usb_mod_bit);
+    if (key) {
+        evt_enqueue(key, (uint16_t)(0xF000u | usb_mod_bit), pressed ? 1 : 0);
+    }
+}
+
+void keyboard_inject_usb_key(uint8_t usage, uint8_t pressed, uint8_t usb_mods) {
+    apply_usb_mods(usb_mods);
+
+    if (usage == 0x39) { /* CapsLock */
+        if (pressed) mods ^= KB_MOD_CAPS;
+        evt_enqueue(KB_KEY_CAPSLOCK, (uint16_t)(0xF100u | usage), pressed ? 1 : 0);
+        return;
+    }
+
+    char c = usb_usage_ascii(usage);
+    if (c) {
+        if (pressed) kb_enqueue(c);
+        evt_enqueue((uint32_t)(uint8_t)c, (uint16_t)(0xF100u | usage), pressed ? 1 : 0);
+        return;
+    }
+
+    uint32_t key = usb_usage_special(usage);
+    if (key) {
+        evt_enqueue(key, (uint16_t)(0xF100u | usage), pressed ? 1 : 0);
+    }
+}

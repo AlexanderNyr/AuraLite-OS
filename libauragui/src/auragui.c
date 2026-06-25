@@ -49,7 +49,12 @@ int ag_window_set_title(int wid, const char *t) {
 }
 int ag_window_invalidate(int wid)     { return (int)gui_call(GUI_OP_INVALIDATE, wid, 0, 0, 0); }
 int ag_window_get_size(int wid, uint32_t *w, uint32_t *h) {
-    uint32_t out[2] = {0, 0};
+    /* Keep the syscall output buffer out of the current user stack. AuraLite's
+     * syscall entry still runs on the issuing user stack, so copy_to_user() into
+     * a stack-local object can overlap the kernel's temporary syscall frames in
+     * deeply nested GUI calls. */
+    static uint32_t out[2];
+    out[0] = out[1] = 0;
     int r = (int)gui_call(GUI_OP_GET_SIZE, wid, (uint64_t)out, 0, 0);
     if (r == 0) { if (w) *w = out[0]; if (h) *h = out[1]; }
     return r;
@@ -487,9 +492,16 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
 
 void ag_view_run(ag_view_t *v, ag_loop_cb cb, void *user) {
     ag_view_render(v);
+    static ag_event_t e;
     for (;;) {
-        ag_event_t e;
-        if (!ag_wait_event(v->wid, &e)) continue;
+        /* Use non-blocking polling and a static event buffer. AuraLite syscalls
+         * currently execute on the issuing user stack; blocking GUI waits and
+         * copy_to_user() into stack-local event structs can overlap the kernel's
+         * temporary syscall frames. */
+        if (!ag_poll_event(v->wid, &e)) {
+            for (volatile int i = 0; i < 200000; i++) {}
+            continue;
+        }
         int quit = ag_view_dispatch(v, &e);
         if (cb) {
             if (cb(v, &e, user)) break;

@@ -54,11 +54,25 @@ ALL_CASES=(
     test_ext2
     test_fs_stress
     test_usb_msc
+    test_usb_hid
+    test_usb_ohci
+    test_usb_ehci
+    test_usb_ehci_hid
+    test_usb_xhci
+    test_usb_hub
+    test_usb_generic_hid
+    test_usb_generic_keyboard
+    test_usb_xhci_hub
+    test_usb_hotplug
+    test_usb_msc_hotplug
+    test_usbfs
+    test_usbfs_fat32
     test_networking
     test_http_get
     test_graphics
     test_smp
     test_gui
+    test_gui_usb
 )
 
 # Slow ones we skip in --fast mode.

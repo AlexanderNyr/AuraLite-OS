@@ -91,7 +91,7 @@ Location: `drivers/keyboard/`
 Limitations:
 
 - no keyboard layout switching yet;
-- no USB HID keyboard input path yet.
+- USB HID keyboards are supported in Boot Protocol/generic-report mode through UHCI, OHCI, high-speed EHCI and xHCI; generic mouse/tablet report parsing is available for common layouts; EHCI full/low-speed split HID is future work.
 
 ## Mouse
 

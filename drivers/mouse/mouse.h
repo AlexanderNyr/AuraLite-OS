@@ -42,6 +42,13 @@ int      mouse_is_ready(void);
 uint32_t mouse_get_packet_drops(void);
 uint32_t mouse_get_event_drops(void);
 
+/* Injection API used by USB HID and future non-PS/2 pointing devices.  dx/dy
+ * use screen coordinates (positive Y = down). */
+void mouse_inject_relative(int16_t dx, int16_t dy, int8_t wheel,
+                           uint8_t buttons);
+void mouse_inject_absolute(int16_t x, int16_t y, int8_t wheel,
+                           uint8_t buttons);
+
 /* Double-click time window (in PIT ticks @ 100 Hz). */
 #define MOUSE_DBLCLICK_TICKS 40
 

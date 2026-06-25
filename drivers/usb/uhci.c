@@ -159,13 +159,21 @@ static void uhci_port_reset(uint8_t port_off) {
 }
 
 int uhci_port_has_device(int port) {
-    if (port < 0 || port >= UHCI_MAX_PORTS) return 0;
+    if (iobase == 0 || port < 0 || port >= UHCI_MAX_PORTS) return 0;
     uint8_t off = (port == 0) ? UHCI_PORTSC1 : UHCI_PORTSC2;
     return uhci_port_has_device_raw(off);
 }
 
+
+int uhci_reset_port(int port) {
+    if (iobase == 0 || port < 0 || port >= UHCI_MAX_PORTS) return -1;
+    uint8_t off = (port == 0) ? UHCI_PORTSC1 : UHCI_PORTSC2;
+    uhci_port_reset(off);
+    return uhci_port_has_device(port) ? 0 : -1;
+}
+
 int uhci_port_is_low_speed(int port) {
-    if (port < 0 || port >= UHCI_MAX_PORTS) return 0;
+    if (iobase == 0 || port < 0 || port >= UHCI_MAX_PORTS) return 0;
     uint8_t off = (port == 0) ? UHCI_PORTSC1 : UHCI_PORTSC2;
     return (rd16(off) & PORTSC_LSDA) ? 1 : 0;
 }
@@ -432,15 +440,112 @@ int uhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
     return uhci_bulk_transfer_ex(dev_addr, endpoint, data, len, &toggle);
 }
 
+int uhci_interrupt_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
+                               int low_speed, uint16_t max_packet,
+                               void *data, uint16_t len, int *toggle_io) {
+    if (iobase == 0 || data == NULL || len == 0) return -1;
+    if (!(endpoint & 0x80)) return -1; /* HID input uses interrupt IN. */
+
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint8_t ep = endpoint & 0x0F;
+    if (max_packet == 0) max_packet = low_speed ? 8 : 8;
+    if (len > max_packet) len = max_packet;
+    if (len > 4096) len = 4096;
+
+    uint64_t buf_phys = pmm_alloc_frame();
+    uint64_t td_phys  = pmm_alloc_frame();
+    uint64_t qh_phys  = pmm_alloc_frame();
+    if (buf_phys == 0 || td_phys == 0 || qh_phys == 0) {
+        if (buf_phys) pmm_free_frame(buf_phys);
+        if (td_phys)  pmm_free_frame(td_phys);
+        if (qh_phys)  pmm_free_frame(qh_phys);
+        return -1;
+    }
+
+    volatile struct uhci_td *td =
+        (volatile struct uhci_td *)(uintptr_t)(hhdm + td_phys);
+    volatile struct uhci_qh *qh =
+        (volatile struct uhci_qh *)(uintptr_t)(hhdm + qh_phys);
+    memset((void *)td, 0, 4096);
+    memset((void *)qh, 0, sizeof(*qh));
+    memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
+
+    int toggle = toggle_io ? (*toggle_io & 1) : 0;
+    td[0].link   = 0x1;
+    td[0].ctrl   = make_td_ctrl(low_speed, 1) | TD_CTRL_SPD;
+    td[0].token  = make_td_token(PID_IN, dev_addr, ep, toggle, len);
+    td[0].buffer = (uint32_t)buf_phys;
+
+    qh->element_link = (uint32_t)td_phys;
+    qh->head_link = 0x1;
+
+    uint32_t saved_frame0 = frame_list[0];
+    uint64_t saved_flags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(saved_flags));
+    for (int i = 0; i < UHCI_FRAME_COUNT; i++) {
+        frame_list[i] = (uint32_t)qh_phys | (1u << 1);
+    }
+    if (saved_flags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+
+    int timeout = 200000;
+    while (timeout-- > 0) {
+        if (!(td[0].ctrl & TD_CTRL_ACTIVE)) break;
+        __asm__ volatile ("pause");
+    }
+
+    __asm__ volatile ("cli" ::: "memory");
+    for (int i = 0; i < UHCI_FRAME_COUNT; i++) {
+        frame_list[i] = saved_frame0;
+    }
+    if (saved_flags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+
+    uint32_t ctrl = td[0].ctrl;
+    int ret = 0;
+    if (timeout < 0 || (ctrl & TD_CTRL_NAK) || (ctrl & TD_CTRL_ACTIVE)) {
+        ret = 0; /* normal interrupt-IN no-change path */
+    } else if (ctrl & (TD_CTRL_STALLED | TD_CTRL_DATA_BUF | TD_CTRL_BABBLE |
+                       TD_CTRL_TIMEOUT | TD_CTRL_BITSTUFF)) {
+        ret = -1;
+    } else {
+        uint32_t act = ctrl & 0x7FFu;
+        uint32_t actual = (act == 0x7FFu) ? 0u : (act + 1u);
+        if (actual == 0 || actual > len) actual = len;
+        memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), actual);
+        if (toggle_io) *toggle_io = toggle ^ 1;
+        ret = (int)actual;
+    }
+
+    pmm_free_frame(qh_phys);
+    pmm_free_frame(td_phys);
+    pmm_free_frame(buf_phys);
+    return ret;
+}
+
 /* ---- Public API ---- */
 
 int uhci_init(void) {
     /* Find the UHCI controller on PCI.
      * Class 0x0C (Serial Bus), subclass 0x03 (USB), prog_if 0x00 (UHCI). */
-    if (pci_find_class(0x0C, 0x03, &pci_bus_u, &pci_dev_u, &pci_func_u) != 0) {
+    if (pci_find_class(0x0C, 0x03, &pci_bus_u, &pci_dev_u, &pci_func_u) != 0 ||
+        pci_get_prog_if(pci_bus_u, pci_dev_u, pci_func_u) != 0x00) {
+        int found = 0;
+        for (uint8_t b = 0; b < 1 && !found; b++) {
+            for (uint8_t d = 0; d < 32 && !found; d++) {
+                for (uint8_t f = 0; f < 8; f++) {
+                    if (pci_get_vendor(b, d, f) == 0xFFFF) continue;
+                    if (pci_get_class(b, d, f) == 0x0C &&
+                        pci_get_subclass(b, d, f) == 0x03 &&
+                        pci_get_prog_if(b, d, f) == 0x00) {
+                        pci_bus_u = b; pci_dev_u = d; pci_func_u = f;
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+        }
         /* Try by vendor/device: Intel PIIX3 USB = 0x8086:0x7020 */
-        if (pci_find_device(0x8086, 0x7020,
-                            &pci_bus_u, &pci_dev_u, &pci_func_u) != 0) {
+        if (!found && pci_find_device(0x8086, 0x7020,
+                                      &pci_bus_u, &pci_dev_u, &pci_func_u) != 0) {
             kprintf("[uhci] no UHCI controller found\n");
             return -1;
         }

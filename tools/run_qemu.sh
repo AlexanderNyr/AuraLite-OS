@@ -57,6 +57,9 @@ exec qemu-system-x86_64 \
     -boot order=d \
     -netdev user,id=net0 \
     -device e1000,netdev=net0 \
+    -device piix3-usb-uhci,id=uhci \
+    -device usb-kbd,bus=uhci.0,port=1 \
+    -device usb-mouse,bus=uhci.0,port=2 \
     -drive file="$DISK0",format=raw,if=none,id=ahcidisk \
     -device ahci,id=ahci0 \
     -device ide-hd,drive=ahcidisk,bus=ahci0.0 \

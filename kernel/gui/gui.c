@@ -61,6 +61,8 @@ static gui_cursor_t cursor = GUI_CURSOR_ARROW;
 
 /* Compositor dirty flag: 1 means screen will be redrawn next tick. */
 static volatile int dirty = 1;
+static uint64_t gui_clock_base_ticks = 0;
+static uint64_t gui_clock_last_second = (uint64_t)-1;
 
 /* Drag/resize state. */
 static int  drag_wid = -1;
@@ -95,6 +97,8 @@ void gui_init(void) {
     spinlock_init(&gui_lock);
     focused = -1;
     cursor  = GUI_CURSOR_ARROW;
+    gui_clock_base_ticks = timer_get_ticks();
+    gui_clock_last_second = (uint64_t)-1;
     dirty   = 1;
 }
 
@@ -671,9 +675,15 @@ static void draw_taskbar(void) {
         bx += 128;
     }
 
-    /* Clock + uptime, right side. */
+    /* Clock + GUI uptime, right side.  Use the configured PIT frequency and a
+     * GUI-start baseline so it begins at 00:00:00 instead of freezing at the
+     * kernel boot-time offset. */
     uint64_t ticks = timer_get_ticks();
-    uint64_t s = ticks / 100;
+    uint32_t hz = timer_get_frequency();
+    if (hz == 0) hz = 100;
+    uint64_t elapsed_ticks = (ticks >= gui_clock_base_ticks) ?
+        (ticks - gui_clock_base_ticks) : ticks;
+    uint64_t s = elapsed_ticks / hz;
     uint32_t mm = (uint32_t)((s / 60) % 60);
     uint32_t hh = (uint32_t)((s / 3600) % 24);
     uint32_t ss = (uint32_t)(s % 60);
@@ -932,6 +942,20 @@ void gui_compositor_tick(void) {
     while (mouse_get_event(&me)) route_mouse_event(&me);
     kb_event_t ke;
     while (keyboard_get_event(&ke)) route_key_event(&ke);
+
+    /* The taskbar clock changes even when there is no mouse/keyboard/window
+     * activity, so force one redraw per second. */
+    uint32_t hz = timer_get_frequency();
+    if (hz == 0) hz = 100;
+    uint64_t ticks = timer_get_ticks();
+    uint64_t elapsed_ticks = (ticks >= gui_clock_base_ticks) ?
+        (ticks - gui_clock_base_ticks) : ticks;
+    uint64_t now_sec = elapsed_ticks / hz;
+    if (now_sec != gui_clock_last_second) {
+        gui_clock_last_second = now_sec;
+        dirty = 1;
+    }
+
     if (dirty) {
         dirty = 0;
         compositor_render();

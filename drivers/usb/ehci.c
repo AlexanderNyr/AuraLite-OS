@@ -161,6 +161,7 @@ static volatile uint32_t *op_regs = NULL;   /* operational registers */
 static uint32_t op_offset = 0;              /* CAPLENGTH value */
 static uint32_t *periodic_list = NULL;      /* HHDM pointer */
 static struct ehci_qh *async_qh = NULL;     /* async list head QH */
+static uint32_t async_qh_phys = 0;
 static int num_ports = 0;
 static int port_count = 0;
 static int has_64bit = 0;
@@ -191,8 +192,10 @@ static inline void port_wr(int port, uint32_t val) {
 
 /* ---- Port operations ---- */
 
-static int ehci_port_has_device(int port) {
-    return (port_sc(port) & PORTSC_CCS) ? 1 : 0;
+int ehci_port_has_device(int port) {
+    if (op_regs == NULL || port < 0 || port >= num_ports) return 0;
+    uint32_t ps = port_sc(port);
+    return ((ps & PORTSC_CCS) && !(ps & PORTSC_OWNER)) ? 1 : 0;
 }
 
 static int ehci_port_reset(int port) {
@@ -339,6 +342,7 @@ found:
         kprintf("[ehci] OOM for async QH\n");
         return -1;
     }
+    async_qh_phys = (uint32_t)qh_phys;
     async_qh = (struct ehci_qh *)(uintptr_t)(hhdm + qh_phys);
     memset(async_qh, 0, sizeof(*async_qh));
     async_qh->next_qh = (uint32_t)qh_phys | QH_TYPE_QH;  /* circular: point to self */
@@ -409,26 +413,173 @@ found:
     return 0;
 }
 
+
+int ehci_reset_port_public(int port) {
+    if (op_regs == NULL || port < 0 || port >= num_ports) return -1;
+    return ehci_port_reset(port);
+}
+
 int ehci_get_port_count(void) {
     return port_count;
+}
+
+static void ehci_qtd_set_bufs(volatile struct ehci_qtd *qtd,
+                              uint64_t phys, uint32_t len) {
+    for (int i = 0; i < 5; i++) { qtd->buf_ptrs[i] = 0; qtd->buf_ptrs_hi[i] = 0; }
+    if (len == 0) return;
+    uint64_t p = phys;
+    for (int i = 0; i < 5; i++) {
+        qtd->buf_ptrs[i] = (uint32_t)p;
+        qtd->buf_ptrs_hi[i] = 0;
+        uint64_t next_page = (p & ~0xFFFULL) + 0x1000ULL;
+        if (next_page >= phys + len) break;
+        p = next_page;
+    }
+}
+
+static uint32_t ehci_qtd_token(uint8_t pid, uint32_t len, int toggle, int ioc) {
+    uint32_t t = QTD_STATUS_ACTIVE;
+    t |= (3u << QTD_CERR_SHIFT);
+    t |= ((uint32_t)pid & 0x3u) << QTD_CPID_SHIFT;
+    t |= (len & QTD_TOTAL_LEN_MASK) << QTD_TOTAL_LEN_SHIFT;
+    if (toggle) t |= QTD_DT;
+    if (ioc) t |= QTD_IOC;
+    return t;
+}
+
+static int ehci_run_async(uint8_t dev_addr, uint8_t endpoint, uint16_t max_packet,
+                          volatile struct ehci_qtd *qtds, uint32_t qtd_count,
+                          uint32_t first_qtd_phys, uint32_t qh_phys) {
+    uint64_t hhdm = limine_get_hhdm_offset();
+    volatile struct ehci_qh *qh = (volatile struct ehci_qh *)(uintptr_t)(hhdm + qh_phys);
+    memset((void *)qh, 0, 4096);
+    if (max_packet == 0) max_packet = 64;
+    qh->next_qh = async_qh_phys | QH_TYPE_QH;
+    qh->ep_caps1 = ((uint32_t)(dev_addr & 0x7F) << QH_CAP1_DEVADDR_SHIFT) |
+                   ((uint32_t)(endpoint & 0x0F) << QH_CAP1_EPNUM_SHIFT) |
+                   (QH_CAP1_EPS_HIGH << QH_CAP1_EPS_SHIFT) |
+                   QH_CAP1_DTC |
+                   ((uint32_t)max_packet << QH_CAP1_MPL_SHIFT);
+    qh->ep_caps2 = (1u << QH_CAP2_MULT_SHIFT);
+    qh->current_qtd = 0;
+    qh->next_qtd = first_qtd_phys;
+    qh->alt_next_qtd = QTD_TERMINATE;
+    qh->token = 0;
+
+    uint32_t saved_next = async_qh->next_qh;
+    async_qh->next_qh = qh_phys | QH_TYPE_QH;
+
+    int timeout = 10000000;
+    while (timeout-- > 0) {
+        int active = 0;
+        for (uint32_t i = 0; i < qtd_count; i++) {
+            if (qtds[i].token & QTD_STATUS_ACTIVE) { active = 1; break; }
+        }
+        if (!active) break;
+        __asm__ volatile ("pause");
+    }
+
+    async_qh->next_qh = saved_next;
+    if (timeout < 0) {
+        kprintf("[ehci] async qTD timeout token=0x%08x\n", qtds[0].token);
+        return -1;
+    }
+    for (uint32_t i = 0; i < qtd_count; i++) {
+        uint32_t tok = qtds[i].token;
+        if (tok & (QTD_STATUS_HALTED | QTD_STATUS_DATA_BUF | QTD_STATUS_BABBLE |
+                   QTD_STATUS_XACT | QTD_STATUS_MISSEDSUF | QTD_STATUS_SPLIT)) {
+            kprintf("[ehci] qTD%u error token=0x%08x\n", i, tok);
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int ehci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data,
                           uint16_t data_len, uint8_t max_packet0) {
-    (void)dev_addr; (void)low_speed; (void)setup; (void)data;
-    (void)data_len; (void)max_packet0;
-    if (op_regs == NULL) return -1;
-    kprintf("[ehci] control transfer backend not yet implemented (async qTD scheduling pending)\n");
-    return -1;
+    (void)low_speed;
+    if (op_regs == NULL || setup == NULL) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint16_t max_packet = max_packet0 ? max_packet0 : 64;
+    uint32_t data_packets = data_len ? ((data_len + max_packet - 1) / max_packet) : 0;
+    uint32_t qtd_count = 1 + data_packets + 1;
+    if (qtd_count > 64) return -1;
+    uint64_t setup_phys = pmm_alloc_frame();
+    uint64_t data_phys = data_len ? pmm_alloc_contiguous((data_len + 0xFFF) / 0x1000) : 0;
+    uint64_t qtd_phys = pmm_alloc_frame();
+    uint64_t qh_phys = pmm_alloc_frame();
+    if (!setup_phys || !qtd_phys || !qh_phys || (data_len && !data_phys)) return -1;
+    memcpy((void *)(uintptr_t)(hhdm + setup_phys), setup, 8);
+    if (data_len && data) memcpy((void *)(uintptr_t)(hhdm + data_phys), data, data_len);
+    volatile struct ehci_qtd *qtds = (volatile struct ehci_qtd *)(uintptr_t)(hhdm + qtd_phys);
+    memset((void *)qtds, 0, 4096);
+    const uint8_t *setup_bytes = (const uint8_t *)setup;
+    int data_in = (setup_bytes[0] & 0x80) ? 1 : 0;
+    uint32_t n = 0;
+    qtds[n].next_qtd = (uint32_t)(qtd_phys + (n + 1) * sizeof(struct ehci_qtd));
+    qtds[n].alt_next_qtd = QTD_TERMINATE;
+    qtds[n].token = ehci_qtd_token(QTD_PID_SETUP, 8, 0, 0);
+    ehci_qtd_set_bufs(&qtds[n], setup_phys, 8);
+    n++;
+    uint32_t rem = data_len, off = 0; int toggle = 1;
+    while (rem) {
+        uint32_t chunk = rem > max_packet ? max_packet : rem;
+        qtds[n].next_qtd = (uint32_t)(qtd_phys + (n + 1) * sizeof(struct ehci_qtd));
+        qtds[n].alt_next_qtd = QTD_TERMINATE;
+        qtds[n].token = ehci_qtd_token(data_in ? QTD_PID_IN : QTD_PID_OUT, chunk, toggle, 0);
+        ehci_qtd_set_bufs(&qtds[n], data_phys + off, chunk);
+        toggle ^= 1; rem -= chunk; off += chunk; n++;
+    }
+    qtds[n].next_qtd = QTD_TERMINATE;
+    qtds[n].alt_next_qtd = QTD_TERMINATE;
+    qtds[n].token = ehci_qtd_token(data_len ? (data_in ? QTD_PID_OUT : QTD_PID_IN) : QTD_PID_IN,
+                                   0, 1, 1);
+    n++;
+    int ret = ehci_run_async(dev_addr, 0, max_packet, qtds, n, (uint32_t)qtd_phys, (uint32_t)qh_phys);
+    if (ret == 0 && data_len && data && data_in) memcpy(data, (void *)(uintptr_t)(hhdm + data_phys), data_len);
+    pmm_free_frame(qh_phys); pmm_free_frame(qtd_phys); pmm_free_frame(setup_phys);
+    if (data_phys) for (uint32_t i=0;i<(data_len+0xFFF)/0x1000;i++) pmm_free_frame(data_phys+i*4096ULL);
+    return ret == 0 ? (int)data_len : -1;
 }
 
 int ehci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
-    (void)dev_addr; (void)endpoint; (void)data; (void)len; (void)in; (void)max_packet;
-    if (op_regs == NULL) return -1;
-    kprintf("[ehci] bulk transfer backend not yet implemented (async qTD scheduling pending)\n");
-    return -1;
+    if (op_regs == NULL || data == NULL || len == 0) return -1;
+    uint64_t hhdm = limine_get_hhdm_offset();
+    if (max_packet == 0) max_packet = 512;
+    uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
+    uint64_t qtd_phys = pmm_alloc_frame();
+    uint64_t qh_phys = pmm_alloc_frame();
+    if (!buf_phys || !qtd_phys || !qh_phys) return -1;
+    if (!in) memcpy((void *)(uintptr_t)(hhdm + buf_phys), data, len);
+    else memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
+    volatile struct ehci_qtd *qtd = (volatile struct ehci_qtd *)(uintptr_t)(hhdm + qtd_phys);
+    memset((void *)qtd, 0, 4096);
+    qtd[0].next_qtd = QTD_TERMINATE;
+    qtd[0].alt_next_qtd = QTD_TERMINATE;
+    qtd[0].token = ehci_qtd_token(in ? QTD_PID_IN : QTD_PID_OUT, len, 0, 1);
+    ehci_qtd_set_bufs(&qtd[0], buf_phys, len);
+    int ret = ehci_run_async(dev_addr, endpoint & 0x0F, max_packet, qtd, 1,
+                             (uint32_t)qtd_phys, (uint32_t)qh_phys);
+    if (ret == 0 && in) memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), len);
+    pmm_free_frame(qh_phys); pmm_free_frame(qtd_phys);
+    for (uint32_t i=0;i<(len+0xFFF)/0x1000;i++) pmm_free_frame(buf_phys+i*4096ULL);
+    return ret == 0 ? (int)len : -1;
+}
+
+
+int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
+                            int low_speed, uint16_t max_packet,
+                            void *data, uint16_t len, int *toggle_io) {
+    (void)low_speed;
+    (void)toggle_io;
+    if (!(endpoint & 0x80)) return -1;
+    /* QEMU's high-speed HID endpoints are accepted through the async qTD path
+     * as a polled one-shot IN transaction.  Full/low-speed interrupt endpoints
+     * still need split transactions through a TT and remain future work. */
+    return ehci_bulk_transfer(dev_addr, endpoint, data, len, 1,
+                              max_packet ? max_packet : len);
 }
 
 void ehci_self_test(void) {

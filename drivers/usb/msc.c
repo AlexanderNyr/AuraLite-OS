@@ -1,12 +1,11 @@
 /* msc.c — USB Mass Storage Class (Bulk-Only Transport).
  *
- * Implements SCSI-over-USB for flash drives. Uses the UHCI controller's
+ * Implements SCSI-over-USB for flash drives. Uses the active USB controller's
  * transfer primitives. Each operation is a CBW → Data → CSW sequence.
  *
- * Status: UHCI-backed MSC is implemented. The driver enumerates a Mass Storage
- * device through usb_core, sends CBW/Data/CSW over UHCI bulk endpoints, reads
- * capacity, and exposes READ(10)/WRITE(10). OHCI/EHCI/xHCI bulk backends are
- * still future work.
+ * Status: MSC is implemented over UHCI/OHCI/EHCI/xHCI bulk endpoints.
+ * The driver can attach at boot or via the hotplug monitor, sends
+ * CBW/Data/CSW, reads capacity, and exposes READ(10)/WRITE(10).
  *
  * QEMU: -drive file=disk.img,if=none,id=usbstick \
  *       -device usb-storage,drive=usbstick
@@ -19,6 +18,7 @@
 #include "drivers/usb/ohci.h"
 #include "drivers/usb/ehci.h"
 #include "drivers/usb/xhci.h"
+#include "kernel/fs/usbfs.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
@@ -140,12 +140,28 @@ static uint32_t be32(const uint8_t *p) {
 
 static int msc_bulk(uint8_t endpoint, void *data, uint32_t len) {
     if (!msc_dev || len == 0) return -1;
-    if (msc_dev->controller != USB_CTRL_UHCI) {
-        kprintf("[msc] controller backend for MSC is not ready (need UHCI)\n");
-        return -1;
-    }
     int *toggle = (endpoint & 0x80) ? &bulk_in_toggle : &bulk_out_toggle;
-    return uhci_bulk_transfer_ex(msc_dev->address, endpoint, data, len, toggle);
+    if (msc_dev->controller == USB_CTRL_UHCI) {
+        return uhci_bulk_transfer_ex(msc_dev->address, endpoint, data, len, toggle);
+    }
+    if (msc_dev->controller == USB_CTRL_OHCI) {
+        return ohci_bulk_transfer(msc_dev->address, endpoint, data, len,
+                                  (endpoint & 0x80) ? 1 : 0,
+                                  msc_dev->bulk_max_packet ? msc_dev->bulk_max_packet : 64);
+    }
+    if (msc_dev->controller == USB_CTRL_EHCI) {
+        return ehci_bulk_transfer(msc_dev->address, endpoint, data, len,
+                                  (endpoint & 0x80) ? 1 : 0,
+                                  msc_dev->bulk_max_packet ? msc_dev->bulk_max_packet : 512);
+    }
+    if (msc_dev->controller == USB_CTRL_XHCI) {
+        return xhci_bulk_transfer(msc_dev->address, endpoint, data, len,
+                                  (endpoint & 0x80) ? 1 : 0,
+                                  msc_dev->bulk_max_packet ? msc_dev->bulk_max_packet : 512);
+    }
+    kprintf("[msc] controller backend for MSC is not ready (controller=%d)\n",
+            msc_dev->controller);
+    return -1;
 }
 
 /*
@@ -207,7 +223,8 @@ static int msc_exec_scsi(const uint8_t *scsi_cmd, uint8_t cmd_len,
     return 0;
 }
 
-int msc_init(void) {
+static int msc_probe_device(usb_device_t *dev, int hotplug) {
+    if (!dev || !dev->in_use) return -1;
     msc_present = 0;
     msc_dev = NULL;
     msc_sectors = 0;
@@ -215,14 +232,8 @@ int msc_init(void) {
     bulk_in_toggle = 0;
     bulk_out_toggle = 0;
 
-    usb_device_t *dev = usb_find_device_by_class(USB_CLASS_MASS_STORAGE);
-    if (!dev) {
-        kprintf("[msc] no enumerated USB mass storage device found\n");
-        kprintf("[msc] hint: use UHCI + usb-storage for the current backend\n");
-        return -1;
-    }
-
-    if (dev->controller != USB_CTRL_UHCI) {
+    if (dev->controller != USB_CTRL_UHCI && dev->controller != USB_CTRL_OHCI &&
+        dev->controller != USB_CTRL_EHCI && dev->controller != USB_CTRL_XHCI) {
         kprintf("[msc] mass storage found at addr %d, but controller backend "
                 "is not ready for MSC (controller=%d)\n",
                 dev->address, dev->controller);
@@ -293,12 +304,43 @@ int msc_init(void) {
     }
 
     msc_present = 1;
-    kprintf("[msc] PASS: USB mass storage ready\n");
+    kprintf("[msc] PASS: USB mass storage ready%s\n", hotplug ? " (hotplug)" : "");
+    usbfs_notify_attach();
+    if (hotplug) msc_self_test();
     return 0;
 }
 
+int msc_attach_device(void *usb_dev) {
+    usb_device_t *dev = (usb_device_t *)usb_dev;
+    if (!dev || !dev->in_use || dev->interface_class != USB_CLASS_MASS_STORAGE) return -1;
+    if (msc_present && msc_dev == dev) return 0;
+    kprintf("[msc] hotplug: probing mass storage addr=%d\n", dev->address);
+    return msc_probe_device(dev, 1);
+}
+
+void msc_detach_device(void *usb_dev) {
+    usb_device_t *dev = (usb_device_t *)usb_dev;
+    if (dev && msc_dev == dev) {
+        kprintf("[msc] hotplug: detached mass storage addr=%d\n", dev->address);
+        msc_present = 0;
+        msc_dev = NULL;
+        msc_sectors = 0;
+        usbfs_notify_detach();
+    }
+}
+
+int msc_init(void) {
+    usb_device_t *dev = usb_find_device_by_class(USB_CLASS_MASS_STORAGE);
+    if (!dev) {
+        kprintf("[msc] no enumerated USB mass storage device found\n");
+        kprintf("[msc] hint: attach usb-storage on UHCI/OHCI/EHCI/xHCI to test I/O\n");
+        return -1;
+    }
+    return msc_probe_device(dev, 0);
+}
+
 int msc_read(uint64_t lba, uint32_t count, void *buf) {
-    if (!msc_present || !count || !buf) return -1;
+    if (!msc_present || !msc_dev || !msc_dev->in_use || !count || !buf) { msc_present = 0; return -1; }
     if (lba + count > msc_sectors) return -1;
     uint8_t cmd[10];
     scsi_read10(cmd, lba, (uint16_t)count);
@@ -306,7 +348,7 @@ int msc_read(uint64_t lba, uint32_t count, void *buf) {
 }
 
 int msc_write(uint64_t lba, uint32_t count, const void *buf) {
-    if (!msc_present || !count || !buf) return -1;
+    if (!msc_present || !msc_dev || !msc_dev->in_use || !count || !buf) { msc_present = 0; return -1; }
     if (lba + count > msc_sectors) return -1;
     uint8_t cmd[10];
     scsi_write10(cmd, lba, (uint16_t)count);
@@ -314,13 +356,17 @@ int msc_write(uint64_t lba, uint32_t count, const void *buf) {
 }
 
 uint32_t msc_get_sector_count(void) {
-    return msc_sectors;
+    return msc_present ? msc_sectors : 0;
+}
+
+int msc_is_present(void) {
+    return (msc_present && msc_dev && msc_dev->in_use) ? 1 : 0;
 }
 
 void msc_self_test(void) {
     if (!msc_present) {
         kprintf("[msc] self-test: no ready mass storage device\n");
-        kprintf("[msc] PASS: MSC layer loaded; attach UHCI usb-storage to test I/O\n");
+        kprintf("[msc] PASS: MSC layer loaded; attach usb-storage to test I/O\n");
         return;
     }
 

@@ -27,6 +27,7 @@ int uhci_port_has_device(int port);
 
 /* Get the low-speed flag for a port. Returns 1=low-speed, 0=full-speed. */
 int uhci_port_is_low_speed(int port);
+int uhci_reset_port(int port);
 
 /*
  * Execute a USB control transfer via UHCI.
@@ -66,6 +67,11 @@ int uhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
  * Class drivers with persistent endpoints (MSC, HID) should use this form. */
 int uhci_bulk_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
                           void *data, uint32_t len, int *toggle_io);
+
+/* Interrupt transfer with explicit DATA toggle tracking, used by HID input. */
+int uhci_interrupt_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
+                               int low_speed, uint16_t max_packet,
+                               void *data, uint16_t len, int *toggle_io);
 
 /* Gate self-test: reset, detect ports, report device count. */
 void uhci_self_test(void);

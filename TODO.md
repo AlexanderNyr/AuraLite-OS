@@ -56,10 +56,18 @@ for the feature matrix.
 
 ### USB / devices
 
-- **USB MSC works through UHCI only.** OHCI/EHCI/xHCI have detection/bring-up
-  scaffolding, but their transfer engines are not wired to class drivers.
-- **No USB HID input path.** Keyboard/mouse input is currently PS/2 for normal
-  interaction.
+- **USB class support is still intentionally narrow.** UHCI/OHCI/EHCI/xHCI now
+  have QEMU-tested paths for the supported HID/MSC cases, and hub downstream
+  enumeration works including xHCI route strings. HID and MSC runtime
+  attach/read/detach are QEMU-tested through the polling hotplug monitor, and
+  active media is exposed at `/usb` through usbfs. FAT32 superfloppy/partition
+  root files are auto-detected read-only under `/usb/fat`; writable FAT32, ext2
+  hotplug automount, isochronous devices and broader hardware recovery paths are
+  still future work.
+- **USB HID generic support is partial.** Boot keyboard/mouse works through UHCI,
+  OHCI, high-speed EHCI and xHCI; generic keyboard and mouse/tablet report
+  descriptors are parsed for common QEMU-tested layouts. Full HID collections/usages
+  and EHCI full/low-speed split transactions remain future work.
 - **Bluetooth and Wi-Fi are protocol frameworks.** No complete lower-level
   chipset/transport driver is registered by default.
 
@@ -135,7 +143,8 @@ for the feature matrix.
 - [ ] Complete OHCI ED/TD transfer scheduling.
 - [ ] Complete EHCI async/control/bulk qTD transfers and MSC backend.
 - [ ] Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts.
-- [ ] USB HID keyboard/mouse class drivers.
+- [x] USB HID keyboard/mouse class drivers for UHCI Boot Protocol devices.
+- [ ] Generic HID report parsing and OHCI/EHCI/xHCI HID transport.
 - [ ] Real Bluetooth USB transport and at least one tested HCI controller path.
 - [ ] Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer.
 
@@ -147,6 +156,7 @@ for the feature matrix.
 - [ ] Stronger compositor/client isolation and permission model for GUI internals.
 - [ ] More complete text input, clipboard and focus behavior.
 - [ ] Persisted user settings/theme.
+- [x] USB Manager GUI (`/gusb`) wired to `/usb` hotplug/storage status.
 - [ ] More GUI apps and richer file editor/terminal behavior.
 - [ ] Dynamic user-space allocation once `brk`/`mmap` exist.
 

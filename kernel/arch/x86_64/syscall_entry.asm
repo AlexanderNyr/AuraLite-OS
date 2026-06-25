@@ -119,15 +119,19 @@ syscall_entry:
     ; Restore the GLOBAL syscall_saved_rcx/r11 from this thread's TCB.  This
     ; matters when another thread issued its own syscall while we were
     ; blocked inside syscall_dispatch (e.g. wait4 yielding) and clobbered
-    ; the globals.  syscall_restore_user_frame() takes no args, returns void,
-    ; and uses the C ABI (so we must keep RSP 16-byte aligned for the call).
-    ; We stash our syscall return value in R12 across the call (R12 is
-    ; callee-saved).
+    ; the globals.  syscall_restore_user_frame() takes no args, returns void.
+    ;
+    ; IMPORTANT: preserve *all* user callee-saved registers.  This path used to
+    ; stash RAX in R12 and therefore corrupted user-space R12 across every
+    ; syscall; optimized GUI apps kept pointers in R12 and could fault after a
+    ; syscall.  Save the user's R12 first, then use R12 only as our temporary.
+    ; The push also aligns the user stack for the C call (RSP ≡ 0 mod 16 before
+    ; call, callee sees RSP ≡ 8 mod 16).
+    push r12
     mov  r12, rax
-    sub  rsp, 8                             ; align to 16 (user rsp ≡ 8 mod 16)
     call syscall_restore_user_frame
-    add  rsp, 8
     mov  rax, r12
+    pop  r12
 
     mov rcx, [rel syscall_saved_rcx]
     mov r11, [rel syscall_saved_r11]
