@@ -90,9 +90,19 @@ static void cmd_uname(void) {
 }
 
 static void cmd_free(void) {
-    /* Memory stats would come from a syscall; for now print a stub. */
-    puts("              total        used        free");
-    puts("Mem:          510MiB      ~32MiB      478MiB");
+    int fd = open("/proc/meminfo");
+    if (fd >= 0) {
+        char buf[512];
+        int64_t n = read(fd, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            write(1, buf, (size_t)n);
+        }
+        close(fd);
+    } else {
+        puts("              total        used        free");
+        puts("Mem:          510MiB      ~32MiB      478MiB");
+    }
 }
 
 static void cmd_help(void) {
@@ -114,6 +124,7 @@ static void cmd_help(void) {
     puts("  mv <a> <b>  - rename a file or directory");
     puts("  touch <file>- create an empty file");
     puts("  stat <path> - show file metadata");
+    puts("  apm [cmd]   - AuraLite Package Manager");
     puts("  help        - show this help");
     puts("  exit        - exit shell");
     puts("");
@@ -127,6 +138,9 @@ static void cmd_help(void) {
     puts("  run /hello    - hello world");
     puts("  run /http     - HTTP client");
     puts("  run /browser  - web browser (fetch + render HTML)");
+    puts("  run /gtaskmgr - GUI Task Manager");
+    puts("  run /play <song> - CLI audio player (starwars, ode)");
+    puts("  run /gaudio   - GUI music player");
 }
 
 static void cmd_run(const char *prog) {
@@ -193,7 +207,36 @@ static void cmd_nslookup(const char *hostname) {
 
 static void cmd_ps(void) {
     printf("  PID  NAME\n");
-    printf("  1    init (shell)\n");
+    int found = 0;
+    for (int pid = 1; pid < 64; pid++) {
+        char path[64];
+        char name[64];
+        /* Simple manual itoa for path */
+        int p = pid, len = 0;
+        char tmp[16];
+        while (p > 0) { tmp[len++] = '0' + (p % 10); p /= 10; }
+        strcpy(path, "/proc/");
+        int off = 6;
+        while (len > 0) path[off++] = tmp[--len];
+        path[off] = '\0';
+        strcat(path, "/cmdline");
+
+        int fd = open(path);
+        if (fd >= 0) {
+            int64_t n = read(fd, name, sizeof(name) - 1);
+            if (n > 0) {
+                name[n] = '\0';
+                /* chomp newline */
+                if (n > 0 && name[n-1] == '\n') name[n-1] = '\0';
+                printf("  %d    %s\n", pid, name);
+                found++;
+            }
+            close(fd);
+        }
+    }
+    if (!found) {
+        printf("  1    init (shell)\n");
+    }
 }
 
 static void cmd_mkdir(const char *path) {
@@ -242,6 +285,26 @@ static void cmd_touch(const char *path) {
     if (fd < 0) { printf("touch: cannot create %s\n", path); return; }
     close(fd);
     printf("touch: %s\n", path);
+}
+
+static void cmd_apm(int argc, char **argv) {
+    if (argc > 1) {
+        int fd = open("/tmp/apm.args");
+        if (fd >= 0) {
+            for (int i = 1; i < argc; i++) {
+                if (i > 1) write(fd, " ", 1);
+                write(fd, argv[i], strlen(argv[i]));
+            }
+            close(fd);
+        }
+    }
+    printf("[shell] starting apm...\n");
+    pid_t pid = spawn("/apm");
+    if (pid < 0) {
+        printf("apm: failed to launch /apm\n");
+        return;
+    }
+    wait(NULL);
 }
 
 /* ---- Shell main loop ---- */
@@ -307,6 +370,8 @@ static void process_command(char *line) {
         cmd_stat(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "touch") == 0) {
         cmd_touch(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "apm") == 0) {
+        cmd_apm(argc, cmd_argv);
     } else if (strcmp(cmd, "gui") == 0) {
         spawn("/glaunch");
         puts("[gui] launcher spawned");

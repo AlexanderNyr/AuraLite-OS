@@ -215,6 +215,9 @@ void sched_init(void) {
     strncpy(idle_thread->name, "idle", THREAD_NAME_MAX - 1);
     setup_stack(idle_thread, idle_loop, NULL);
 
+    thread_register_tcb(current_thread);
+    thread_register_tcb(idle_thread);
+
     scheduler_ready = 1;
 
     kprintf("[sched] scheduler initialised: kmain (tid %llu) + idle (tid %llu)\n",

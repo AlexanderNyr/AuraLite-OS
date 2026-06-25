@@ -110,4 +110,13 @@ void thread_exit_with_code(int code) __attribute__((noreturn));
  * Safe to call from normal kernel-thread context; it never frees current. */
 void thread_reap_zombies(void);
 
+/* Register a TCB in the global all_threads array (called on creation/init). */
+void thread_register_tcb(tcb_t *tcb);
+/* Deregister a TCB from the global all_threads array (called on free). */
+void thread_deregister_tcb(tcb_t *tcb);
+/* Get a TCB by its PID. Returns NULL if not found. */
+tcb_t *thread_get_by_pid(uint64_t pid);
+/* Get all registered TCBs. Returns count. */
+int thread_get_all(tcb_t *out_list[], int max);
+
 #endif /* AURALITE_PROC_THREAD_H */

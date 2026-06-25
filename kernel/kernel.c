@@ -22,6 +22,7 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
+#include "kernel/fs/procfs.h"
 #include "kernel/fs/tmpfs.h"
 #include "kernel/fs/diskfs.h"
 #include "kernel/fs/fat32.h"
@@ -47,6 +48,7 @@
 #include "drivers/wifi/wifi.h"
 #include "drivers/timer/pit.h"
 #include "drivers/vm/virtual_drivers.h"
+#include "kernel/audio/audio.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
 void kernel_halt(void) {
@@ -135,6 +137,9 @@ void kmain(void) {
     kprintf("[boot] probing virtual machine hardware catalog...\n");
     virtual_drivers_init();
 
+    kprintf("[boot] initialising audio subsystem...\n");
+    audio_init();
+
     kprintf("[boot] initialising virtual file system...\n");
     vfs_init();
 
@@ -154,6 +159,9 @@ void kmain(void) {
     /* Mount devfs at "/dev". */
     devfs_init();
     vfs_mount("/dev", &devfs_ops, NULL);
+
+    /* Mount procfs at "/proc". */
+    procfs_init();
 
     /* Mount writable tmpfs at "/tmp". */
     tmpfs_init();

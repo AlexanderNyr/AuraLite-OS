@@ -6,10 +6,11 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/audio/audio.h"
 
 #define DEVFS_MAX_DEVICES 8
 
-enum dev_type { DEV_NULL, DEV_ZERO };
+enum dev_type { DEV_NULL, DEV_ZERO, DEV_AUDIO };
 
 struct devfs_device {
     char     name[32];
@@ -27,6 +28,7 @@ static struct devfs_state state;
 /* Device identifiers (stable pointers for vnode.fs_data). */
 static struct devfs_device dev_null  = { "/dev/null",  DEV_NULL  };
 static struct devfs_device dev_zero  = { "/dev/zero",  DEV_ZERO  };
+static struct devfs_device dev_audio = { "/dev/audio", DEV_AUDIO };
 
 void devfs_init(void) {
     state.count = 0;
@@ -48,7 +50,15 @@ void devfs_init(void) {
     state.vnodes[state.count].fs_data = &dev_zero;
     state.count++;
 
-    kprintf("[devfs] registered %d device(s): null, zero\n", state.count);
+    /* /dev/audio */
+    strncpy(state.vnodes[state.count].name, "audio", 31);
+    state.vnodes[state.count].type    = VFS_TYPE_CHARDEV;
+    state.vnodes[state.count].size    = 0;
+    state.vnodes[state.count].ops     = &devfs_ops;
+    state.vnodes[state.count].fs_data = &dev_audio;
+    state.count++;
+
+    kprintf("[devfs] registered %d device(s): null, zero, audio\n", state.count);
 }
 
 static struct vnode *devfs_lookup(void *fs_data, const char *path) {
@@ -100,7 +110,22 @@ static int64_t devfs_read(struct vnode *vn, uint64_t pos,
 
 static int64_t devfs_write(struct vnode *vn, uint64_t pos,
                            const void *buf, uint64_t count) {
-    (void)vn; (void)pos; (void)buf;
+    (void)pos;
+    struct devfs_device *d = (struct devfs_device *)vn->fs_data;
+    if (d->type == DEV_AUDIO) {
+        const char *s = (const char *)buf;
+        if (count > 5 && memcmp(s, "BEEP ", 5) == 0) {
+            uint64_t freq = 0, dur = 0;
+            const char *p = s + 5;
+            while (*p >= '0' && *p <= '9') { freq = freq * 10 + (*p - '0'); p++; }
+            while (*p == ' ' || *p == '\t') p++;
+            while (*p >= '0' && *p <= '9') { dur = dur * 10 + (*p - '0'); p++; }
+            audio_play_tone((uint32_t)freq, (uint32_t)dur);
+        } else {
+            audio_write_buffer((const uint8_t *)buf, (uint32_t)count);
+        }
+        return (int64_t)count;
+    }
     return (int64_t)count;   /* discard data, report success */
 }
 

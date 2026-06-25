@@ -241,6 +241,13 @@ char *strncpy(char *dst, const char *src, size_t n) {
     return dst;
 }
 
+char *strcat(char *dst, const char *src) {
+    char *p = dst;
+    while (*p) p++;
+    while ((*p++ = *src++));
+    return dst;
+}
+
 int strcmp(const char *a, const char *b) {
     while (*a && (*a == *b)) { a++; b++; }
     return (int)(unsigned char)*a - (int)(unsigned char)*b;

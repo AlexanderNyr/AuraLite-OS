@@ -96,7 +96,11 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
              $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
              $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
-             $(USER_BUILD)/glaunch.elf
+             $(USER_BUILD)/gtaskmgr.elf \
+             $(USER_BUILD)/glaunch.elf \
+             $(USER_BUILD)/apm.elf $(USER_BUILD)/matrix.elf \
+             $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
+             $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf
 
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
@@ -155,6 +159,17 @@ $(USER_BUILD)/fdtest.o: userspace/fdtest/fdtest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
+$(USER_BUILD)/apm.o: userspace/apm/apm.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/matrix.o: userspace/matrix/matrix.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/life.o: userspace/life/life.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/fetch.o: userspace/fetch/fetch.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/play.o: userspace/play/play.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
 # ---- GUI applications and libauragui ----
 $(USER_BUILD)/auragui.o: libauragui/src/auragui.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
@@ -172,7 +187,11 @@ $(USER_BUILD)/gsysmon.o: userspace/gui-sysmon/gsysmon.c libauragui/include/aurag
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gabout.o:  userspace/gui-about/gabout.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gtaskmgr.o: userspace/gui-taskmgr/gtaskmgr.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/glaunch.o: userspace/gui-launcher/glaunch.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gaudio.o: userspace/gui-audio/gaudio.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
@@ -259,7 +278,14 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/gterm.elf   $(INITRD_DIR)/gterm
 	@cp $(USER_BUILD)/gsysmon.elf $(INITRD_DIR)/gsysmon
 	@cp $(USER_BUILD)/gabout.elf  $(INITRD_DIR)/gabout
+	@cp $(USER_BUILD)/gtaskmgr.elf $(INITRD_DIR)/gtaskmgr
 	@cp $(USER_BUILD)/glaunch.elf $(INITRD_DIR)/glaunch
+	@cp $(USER_BUILD)/apm.elf     $(INITRD_DIR)/apm
+	@cp $(USER_BUILD)/matrix.elf  $(INITRD_DIR)/matrix.pkg
+	@cp $(USER_BUILD)/life.elf    $(INITRD_DIR)/life.pkg
+	@cp $(USER_BUILD)/fetch.elf   $(INITRD_DIR)/fetch.pkg
+	@cp $(USER_BUILD)/play.elf    $(INITRD_DIR)/play
+	@cp $(USER_BUILD)/gaudio.elf  $(INITRD_DIR)/gaudio
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso

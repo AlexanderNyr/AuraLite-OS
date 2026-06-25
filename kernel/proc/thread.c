@@ -22,6 +22,56 @@ extern void context_switch(tcb_t *old, tcb_t *new);
 
 static uint64_t next_tid = 1;
 
+static tcb_t *all_threads[128];
+static int all_threads_count = 0;
+
+void thread_register_tcb(tcb_t *tcb) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    if (all_threads_count < 128) {
+        all_threads[all_threads_count++] = tcb;
+    }
+    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+}
+
+void thread_deregister_tcb(tcb_t *tcb) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    for (int i = 0; i < all_threads_count; i++) {
+        if (all_threads[i] == tcb) {
+            all_threads[i] = all_threads[all_threads_count - 1];
+            all_threads_count--;
+            break;
+        }
+    }
+    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+}
+
+tcb_t *thread_get_by_pid(uint64_t pid) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    tcb_t *found = NULL;
+    for (int i = 0; i < all_threads_count; i++) {
+        if (all_threads[i]->id == pid) {
+            found = all_threads[i];
+            break;
+        }
+    }
+    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+    return found;
+}
+
+int thread_get_all(tcb_t *out_list[], int max) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    int n = 0;
+    for (int i = 0; i < all_threads_count && n < max; i++) {
+        out_list[n++] = all_threads[i];
+    }
+    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+    return n;
+}
+
 /* Dead threads cannot be freed by thread_exit() itself because it is still
  * running on the exiting thread's kernel stack.  They are linked here and
  * later freed by thread_reap_zombies() from another thread's context.
@@ -113,6 +163,7 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     setup_initial_stack(tcb, fn, arg);
     /* New threads start with cloexec cleared and the fd table zeroed
      * (kmalloc + memset above). */
+    thread_register_tcb(tcb);
     sched_add_thread(tcb);
     return tcb;
 }
@@ -246,6 +297,7 @@ void thread_reap_zombies(void) {
         kprintf("[thread] reaped '%s' (tid %llu, %llu frames)\n",
                 z->name, (unsigned long long)z->id,
                 (unsigned long long)reaped_frames);
+        thread_deregister_tcb(z);
         if (z->kernel_stack) kfree(z->kernel_stack);
         kfree(z);
         zombies_reaped++;
