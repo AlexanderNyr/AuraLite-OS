@@ -44,6 +44,9 @@ ALL_CASES=(
     test_shell_commands
     test_syscalls
     test_selftest
+    test_gui_bad_pointers
+    test_process_cleanup
+    test_fd_isolation
     test_user_processes
     test_ahci_rw
     test_fat32_persistence

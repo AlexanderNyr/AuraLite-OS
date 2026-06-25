@@ -126,6 +126,26 @@ pid_t spawn(const char *path) {
     return (pid_t)syscall(SYS_SPAWN, (uint64_t)path, 0, 0, 0, 0, 0);
 }
 
+pid_t waitpid(pid_t pid, int *status) {
+    int64_t s = 0;
+    int64_t r = syscall(SYS_WAIT4, (uint64_t)pid, (uint64_t)&s, 0, 0, 0, 0);
+    if (status) *status = (int)s;
+    return (pid_t)r;
+}
+
+int dup(int oldfd) {
+    return (int)syscall(SYS_DUP, (uint64_t)oldfd, 0, 0, 0, 0, 0);
+}
+int dup2(int oldfd, int newfd) {
+    return (int)syscall(SYS_DUP2, (uint64_t)oldfd, (uint64_t)newfd, 0, 0, 0, 0);
+}
+int pipe(int fds[2]) {
+    return (int)syscall(SYS_PIPE, (uint64_t)fds, 0, 0, 0, 0, 0);
+}
+int fcntl(int fd, int cmd, int arg) {
+    return (int)syscall(SYS_FCNTL, (uint64_t)fd, (uint64_t)cmd, (uint64_t)arg, 0, 0, 0);
+}
+
 /* ---- stdlib ---- */
 
 int atoi(const char *s) {

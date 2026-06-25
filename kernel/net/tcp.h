@@ -25,32 +25,30 @@ typedef enum {
     TCP_CLOSING,
 } tcp_state_t;
 
+/* Maximum simultaneously-tracked TCP connections. */
+#define TCP_MAX_CONNS 8
+
 /*
- * Open a TCP connection to dst_ip:dst_port.
- * Performs the three-way handshake (SYN → SYN-ACK → ACK).
- * Returns 0 on success, -1 on failure (timeout, RST, unreachable).
+ * Per-connection API.  Each open() returns a tcp_handle_t (>=0) that must
+ * be passed to send/recv/close/state.
+ *
+ * Opaque handle, freed by tcp_close_h().
  */
+typedef int tcp_handle_t;
+
+tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port);
+int          tcp_send_h(tcp_handle_t h, const void *data, uint32_t len);
+int          tcp_recv_h(tcp_handle_t h, void *buf, uint32_t bufsize);
+int          tcp_close_h(tcp_handle_t h);
+tcp_state_t  tcp_state_h(tcp_handle_t h);
+
+/* Legacy single-connection API (deprecated; preserved for the in-kernel
+ * self-test and the legacy SYS_NET_* syscalls).  These map onto a single
+ * implicit handle that lives across calls. */
 int tcp_connect(uint32_t dst_ip, uint16_t dst_port);
-
-/*
- * Send data over an established TCP connection.
- * Returns bytes sent, or -1 on error.
- */
 int tcp_send(const void *data, uint32_t len);
-
-/*
- * Receive data from an established TCP connection (polling).
- * Returns bytes received (0 = no data yet), or -1 on connection closed.
- */
 int tcp_recv(void *buf, uint32_t bufsize);
-
-/*
- * Close the TCP connection (sends FIN, completes the teardown).
- * Returns 0 on clean close.
- */
 int tcp_close(void);
-
-/* Get the current connection state. */
 tcp_state_t tcp_state(void);
 
 /* TCP self-test: connect to a known service and verify the handshake. */

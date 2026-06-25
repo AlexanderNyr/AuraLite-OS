@@ -26,6 +26,7 @@ syscall_saved_rsp:   dq 0      ; user RSP (saved manually, for fork())
 
 section .text
 extern syscall_dispatch
+extern syscall_restore_user_frame
 global syscall_init
 global syscall_entry
 global set_syscall_stack
@@ -69,6 +70,13 @@ syscall_init:
 
 syscall_entry:
     ; CPU set: RCX=user RIP, R11=user RFLAGS.  RSP is still the user stack.
+    ;
+    ; We publish the user RCX/R11/RSP in three globals so do_fork() can read
+    ; them.  A nested syscall from a thread the scheduler switches to during
+    ; our call would otherwise overwrite those globals, so syscall_dispatch
+    ; copies them into the current TCB's saved_user_* fields BEFORE doing
+    ; any work that could yield; on our way back out we restore RCX/R11
+    ; from the TCB rather than from the globals.
     mov [rel syscall_saved_rcx], rcx
     mov [rel syscall_saved_r11], r11
     mov [rel syscall_saved_rsp], rsp
@@ -107,6 +115,19 @@ syscall_entry:
 
     add  rsp, 16           ; drop alignment pad + a6
     add  rsp, 7*8          ; drop the 7 pushed sources
+
+    ; Restore the GLOBAL syscall_saved_rcx/r11 from this thread's TCB.  This
+    ; matters when another thread issued its own syscall while we were
+    ; blocked inside syscall_dispatch (e.g. wait4 yielding) and clobbered
+    ; the globals.  syscall_restore_user_frame() takes no args, returns void,
+    ; and uses the C ABI (so we must keep RSP 16-byte aligned for the call).
+    ; We stash our syscall return value in R12 across the call (R12 is
+    ; callee-saved).
+    mov  r12, rax
+    sub  rsp, 8                             ; align to 16 (user rsp ≡ 8 mod 16)
+    call syscall_restore_user_frame
+    add  rsp, 8
+    mov  rax, r12
 
     mov rcx, [rel syscall_saved_rcx]
     mov r11, [rel syscall_saved_r11]

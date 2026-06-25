@@ -13,6 +13,64 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 
+/* ---- Anonymous pipe backing -------------------------------------------- */
+#define PIPE_BUF_SIZE 4096
+
+struct pipe_ring {
+    uint8_t buf[PIPE_BUF_SIZE];
+    uint32_t head;          /* next write index */
+    uint32_t tail;          /* next read  index */
+    uint32_t used;
+    int     readers;        /* number of FDs holding the read end open      */
+    int     writers;        /* number of FDs holding the write end open     */
+};
+
+static int64_t pipe_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
+    (void)pos;
+    struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
+    if (!p) return -1;
+    uint8_t *out = (uint8_t *)buf;
+    uint64_t got = 0;
+    while (got == 0) {
+        if (p->used == 0) {
+            if (p->writers == 0) return 0;     /* EOF: nobody to write more */
+            sched_yield();
+            continue;
+        }
+        while (got < count && p->used > 0) {
+            out[got++] = p->buf[p->tail];
+            p->tail = (p->tail + 1) % PIPE_BUF_SIZE;
+            p->used--;
+        }
+    }
+    return (int64_t)got;
+}
+
+static int64_t pipe_write_op(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
+    (void)pos;
+    struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
+    if (!p) return -1;
+    if (p->readers == 0) return -1;            /* broken pipe */
+    const uint8_t *in = (const uint8_t *)buf;
+    uint64_t put = 0;
+    while (put < count) {
+        if (p->used == PIPE_BUF_SIZE) {
+            if (p->readers == 0) return -1;
+            sched_yield();
+            continue;
+        }
+        while (put < count && p->used < PIPE_BUF_SIZE) {
+            p->buf[p->head] = in[put++];
+            p->head = (p->head + 1) % PIPE_BUF_SIZE;
+            p->used++;
+        }
+    }
+    return (int64_t)put;
+}
+
+static const struct vfs_ops pipe_read_ops  = { .read = pipe_read_op };
+static const struct vfs_ops pipe_write_ops = { .write = pipe_write_op };
+
 static struct vfs_mount mounts[VFS_MAX_MOUNTS];
 /* Fallback table for early boot or unusual calls before sched_init().  Normal
  * threads/processes use tcb_t::fd_table, so fd numbers are process-local. */
@@ -142,10 +200,142 @@ int64_t vfs_lseek(int fd, int64_t offset, int whence) {
 int vfs_close(int fd) {
     struct file *fd_table = current_fd_table();
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
+    struct vnode *vn = fd_table[fd].vn;
     fd_table[fd].in_use = 0;
     fd_table[fd].vn     = NULL;
     fd_table[fd].pos    = 0;
+    /* Per-process cloexec flag is also cleared. */
+    tcb_t *cur = sched_current();
+    if (cur) cur->cloexec[fd] = 0;
+
+    /* Pipe lifetime: when the last reader/writer FD closes, we can free the
+     * pipe ring + vnode.  We detect that by checking the ops pointer. */
+    if (vn) {
+        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
+        if (p && (vn->ops == &pipe_read_ops || vn->ops == &pipe_write_ops)) {
+            if (vn->ops == &pipe_read_ops)  p->readers--;
+            if (vn->ops == &pipe_write_ops) p->writers--;
+            if (p->readers <= 0 && p->writers <= 0) {
+                kfree(p);
+                kfree(vn);
+            }
+        }
+    }
     return 0;
+}
+
+/* ---- dup / dup2 / pipe / cloexec ---- */
+
+static int alloc_fd_slot(struct file *table, int starting_from) {
+    for (int i = starting_from; i < VFS_MAX_FDS; i++) {
+        if (!table[i].in_use) return i;
+    }
+    return -1;
+}
+
+int vfs_dup(int oldfd) {
+    struct file *t = current_fd_table();
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -1;
+    int nfd = alloc_fd_slot(t, 3);
+    if (nfd < 0) return -1;
+    t[nfd] = t[oldfd];
+    /* Cloexec is per-FD: dup() clears it on the new FD. */
+    tcb_t *cur = sched_current();
+    if (cur) cur->cloexec[nfd] = 0;
+
+    /* If we duped a pipe end, bump the refcount so close() handles it. */
+    struct vnode *vn = t[nfd].vn;
+    if (vn) {
+        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
+        if (p) {
+            if (vn->ops == &pipe_read_ops)  p->readers++;
+            if (vn->ops == &pipe_write_ops) p->writers++;
+        }
+    }
+    return nfd;
+}
+
+int vfs_dup2(int oldfd, int newfd) {
+    struct file *t = current_fd_table();
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -1;
+    if (newfd < 0 || newfd >= VFS_MAX_FDS) return -1;
+    if (oldfd == newfd) return newfd;
+    if (newfd < 3) return -1;                  /* protect stdin/out/err */
+    if (t[newfd].in_use) vfs_close(newfd);
+    t[newfd] = t[oldfd];
+    tcb_t *cur = sched_current();
+    if (cur) cur->cloexec[newfd] = 0;
+    struct vnode *vn = t[newfd].vn;
+    if (vn) {
+        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
+        if (p) {
+            if (vn->ops == &pipe_read_ops)  p->readers++;
+            if (vn->ops == &pipe_write_ops) p->writers++;
+        }
+    }
+    return newfd;
+}
+
+int vfs_pipe(int out_fds[2]) {
+    if (!out_fds) return -1;
+    struct file *t = current_fd_table();
+    int rfd = alloc_fd_slot(t, 3);
+    if (rfd < 0) return -1;
+    t[rfd].in_use = 1;                          /* reserve before second alloc */
+    int wfd = alloc_fd_slot(t, 3);
+    if (wfd < 0) { t[rfd].in_use = 0; return -1; }
+
+    struct pipe_ring *p = kmalloc(sizeof(*p));
+    if (!p) { t[rfd].in_use = 0; return -1; }
+    memset(p, 0, sizeof(*p));
+    p->readers = 1; p->writers = 1;
+
+    struct vnode *rvn = kmalloc(sizeof(*rvn));
+    struct vnode *wvn = kmalloc(sizeof(*wvn));
+    if (!rvn || !wvn) {
+        if (rvn) kfree(rvn);
+        if (wvn) kfree(wvn);
+        kfree(p);
+        t[rfd].in_use = 0;
+        return -1;
+    }
+    memset(rvn, 0, sizeof(*rvn));
+    memset(wvn, 0, sizeof(*wvn));
+    strncpy(rvn->name, "pipe-r", VFS_PATH_MAX - 1);
+    strncpy(wvn->name, "pipe-w", VFS_PATH_MAX - 1);
+    rvn->type = VFS_TYPE_CHARDEV; rvn->ops = &pipe_read_ops;  rvn->fs_data = p;
+    wvn->type = VFS_TYPE_CHARDEV; wvn->ops = &pipe_write_ops; wvn->fs_data = p;
+
+    t[rfd].vn = rvn; t[rfd].pos = 0; t[rfd].in_use = 1;
+    t[wfd].vn = wvn; t[wfd].pos = 0; t[wfd].in_use = 1;
+    out_fds[0] = rfd;
+    out_fds[1] = wfd;
+    return 0;
+}
+
+int vfs_set_cloexec(int fd, int on) {
+    tcb_t *cur = sched_current();
+    if (!cur) return -1;
+    if (fd < 0 || fd >= VFS_MAX_FDS) return -1;
+    cur->cloexec[fd] = on ? 1 : 0;
+    return 0;
+}
+
+int vfs_get_cloexec(int fd) {
+    tcb_t *cur = sched_current();
+    if (!cur) return 0;
+    if (fd < 0 || fd >= VFS_MAX_FDS) return 0;
+    return cur->cloexec[fd];
+}
+
+void vfs_close_on_exec(void) {
+    tcb_t *cur = sched_current();
+    if (!cur) return;
+    for (int fd = 3; fd < VFS_MAX_FDS; fd++) {
+        if (cur->cloexec[fd] && cur->fd_table[fd].in_use) {
+            vfs_close(fd);
+        }
+    }
 }
 
 /* ---- Path operations ---- */

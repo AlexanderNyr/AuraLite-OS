@@ -117,13 +117,32 @@ static uint16_t tcp_checksum(const void *tcp_seg, uint32_t tcp_len,
     return htons_((uint16_t)(~sum & 0xFFFF));
 }
 
-/* ---- Connection state (single connection at a time) ---- */
-static tcp_state_t conn_state   = TCP_CLOSED;
-static uint32_t    conn_dst_ip   = 0;     /* host byte order */
-static uint16_t    conn_dst_port = 0;
-static uint16_t    conn_src_port = 0;     /* our ephemeral port */
-static uint32_t    conn_seq      = 0;     /* our next sequence number */
-static uint32_t    conn_ack      = 0;     /* next byte we expect from peer */
+/* ---- Per-connection state -------------------------------------------- */
+typedef struct {
+    int          in_use;
+    tcp_state_t  state;
+    uint32_t     dst_ip;       /* host byte order */
+    uint16_t     dst_port;
+    uint16_t     src_port;     /* our ephemeral port */
+    uint32_t     seq;          /* our next sequence number */
+    uint32_t     ack;          /* next byte we expect from peer */
+} tcp_conn_t;
+
+static tcp_conn_t conns[TCP_MAX_CONNS];
+/* The "currently-active" handle pointed at by the unqualified static helpers
+ * below.  Set by every send/recv so the existing single-buffer pkt sender
+ * keeps working; once we send/recv per-connection this is what makes it look
+ * like there is per-connection state across calls. */
+static int active_h = -1;
+
+/* For brevity the rest of this file still talks about conn_state/conn_seq/...
+ * Those names are now thin macros over the active handle. */
+#define conn_state   (conns[active_h].state)
+#define conn_dst_ip  (conns[active_h].dst_ip)
+#define conn_dst_port (conns[active_h].dst_port)
+#define conn_src_port (conns[active_h].src_port)
+#define conn_seq     (conns[active_h].seq)
+#define conn_ack     (conns[active_h].ack)
 
 /* Our MAC and IP — read from net.c at connect time. */
 static uint8_t  our_mac[6];
@@ -250,7 +269,125 @@ static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
 
 /* ---- Public API ---- */
 
+static int alloc_handle(void) {
+    for (int i = 0; i < TCP_MAX_CONNS; i++) {
+        if (!conns[i].in_use) {
+            memset(&conns[i], 0, sizeof(conns[i]));
+            conns[i].in_use = 1;
+            conns[i].state = TCP_CLOSED;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int handle_valid(tcp_handle_t h) {
+    return (h >= 0 && h < TCP_MAX_CONNS && conns[h].in_use);
+}
+
+tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
+    int h = alloc_handle();
+    if (h < 0) {
+        kprintf("[tcp] no free connection slots\n");
+        return -1;
+    }
+    int saved = active_h;
+    active_h = h;
+
+    /* Initialise our identity from the net layer. */
+    net_get_mac(our_mac);
+    our_ip = net_get_our_ip();
+    conn_dst_ip = dst_ip;
+    conn_dst_port = dst_port;
+    /* Mix in handle to avoid two simultaneous connects landing on the same
+     * ephemeral port when the timer hasn't advanced. */
+    conn_src_port = 40000 + (uint16_t)((timer_get_ticks() + h * 17) & 0x3FF);
+    conn_seq = 0x1000 + (uint32_t)h * 0x100;
+    conn_ack = 0;
+    conn_state = TCP_SYN_SENT;
+
+    kprintf("[tcp] [h=%d] connecting to %u.%u.%u.%u:%u (src port %u)...\n",
+            h,
+            (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
+            (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
+            dst_port, conn_src_port);
+
+    tcp_send_segment(TCP_SYN, NULL, 0);
+    conn_seq += 1;
+
+    struct tcp_hdr rx;
+    int data_len;
+    if (tcp_recv_segment(&rx, NULL, 0, &data_len) != 0) {
+        kprintf("[tcp] [h=%d] timeout waiting for SYN-ACK\n", h);
+        conns[h].in_use = 0;
+        active_h = saved;
+        return -1;
+    }
+    if (rx.flags & TCP_RST) {
+        kprintf("[tcp] [h=%d] connection refused (RST)\n", h);
+        conns[h].in_use = 0;
+        active_h = saved;
+        return -1;
+    }
+    if (!(rx.flags & TCP_SYN) || !(rx.flags & TCP_ACK)) {
+        kprintf("[tcp] [h=%d] expected SYN-ACK, got flags=0x%02x\n", h, rx.flags);
+        conns[h].in_use = 0;
+        active_h = saved;
+        return -1;
+    }
+    conn_ack = ntohl_(rx.seq) + 1;
+    tcp_send_segment(TCP_ACK, NULL, 0);
+    conn_state = TCP_ESTABLISHED;
+    kprintf("[tcp] [h=%d] ESTABLISHED (seq=%u, ack=%u)\n", h, conn_seq, conn_ack);
+    /* Leave active_h pointing at this handle so the very first send/recv
+     * works out of the box. */
+    return h;
+}
+
+int tcp_send_h(tcp_handle_t h, const void *data, uint32_t len) {
+    if (!handle_valid(h)) return -1;
+    active_h = h;
+    return tcp_send(data, len);
+}
+
+int tcp_recv_h(tcp_handle_t h, void *buf, uint32_t bufsize) {
+    if (!handle_valid(h)) return -1;
+    active_h = h;
+    return tcp_recv(buf, bufsize);
+}
+
+int tcp_close_h(tcp_handle_t h) {
+    if (!handle_valid(h)) return -1;
+    active_h = h;
+    int r = tcp_close();
+    conns[h].in_use = 0;
+    if (active_h == h) active_h = -1;
+    return r;
+}
+
+tcp_state_t tcp_state_h(tcp_handle_t h) {
+    if (!handle_valid(h)) return TCP_CLOSED;
+    return conns[h].state;
+}
+
+/* Legacy global handle, allocated lazily by tcp_connect(). */
+static int legacy_h = -1;
+
 int tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
+    if (legacy_h >= 0 && handle_valid(legacy_h) &&
+        conns[legacy_h].state != TCP_CLOSED) {
+        kprintf("[tcp] legacy connect: already connected on handle %d\n", legacy_h);
+        return -1;
+    }
+    int h = tcp_open(dst_ip, dst_port);
+    if (h < 0) return -1;
+    legacy_h = h;
+    return 0;
+}
+
+/* The original tcp_connect body is preserved (for reference) but is now
+ * unreachable; tcp_open above contains the live state machine. */
+static int tcp_connect_legacy_body_unused(uint32_t dst_ip, uint16_t dst_port) {
     if (conn_state != TCP_CLOSED) {
         kprintf("[tcp] already connected (state=%d)\n", conn_state);
         return -1;
@@ -314,6 +451,10 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
 }
 
 int tcp_send(const void *data, uint32_t len) {
+    if (active_h < 0) {
+        if (legacy_h >= 0 && handle_valid(legacy_h)) active_h = legacy_h;
+        else return -1;
+    }
     if (conn_state != TCP_ESTABLISHED) {
         return -1;
     }
@@ -362,6 +503,10 @@ int tcp_send(const void *data, uint32_t len) {
 }
 
 int tcp_recv(void *buf, uint32_t bufsize) {
+    if (active_h < 0) {
+        if (legacy_h >= 0 && handle_valid(legacy_h)) active_h = legacy_h;
+        else return -1;
+    }
     if (conn_state != TCP_ESTABLISHED && conn_state != TCP_FIN_WAIT_2) {
         return -1;
     }
@@ -395,7 +540,16 @@ int tcp_recv(void *buf, uint32_t bufsize) {
 }
 
 int tcp_close(void) {
+    if (active_h < 0) {
+        if (legacy_h >= 0 && handle_valid(legacy_h)) active_h = legacy_h;
+        else return 0;
+    }
     if (conn_state == TCP_CLOSED) {
+        if (active_h == legacy_h) {
+            conns[legacy_h].in_use = 0;
+            legacy_h = -1;
+            active_h = -1;
+        }
         return 0;
     }
 
@@ -424,10 +578,19 @@ int tcp_close(void) {
 
     kprintf("[tcp] connection closed\n");
     conn_state = TCP_CLOSED;
+    if (active_h == legacy_h) {
+        if (legacy_h >= 0) conns[legacy_h].in_use = 0;
+        legacy_h = -1;
+        active_h = -1;
+    }
     return 0;
 }
 
 tcp_state_t tcp_state(void) {
+    if (active_h < 0) {
+        if (legacy_h >= 0 && handle_valid(legacy_h)) active_h = legacy_h;
+        else return TCP_CLOSED;
+    }
     return conn_state;
 }
 

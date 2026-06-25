@@ -44,10 +44,51 @@ typedef struct tcb {
     uint64_t  pml4_phys;         /* this process's PML4 physical addr (0=kernel) */
     int       exit_code;         /* exit status for wait4                    */
     struct tcb *parent;          /* parent process (NULL for kernel threads) */
-    volatile int waited_on;      /* non-zero if a parent is blocked in wait4 */
-    volatile int child_exit_pending; /* wait4 notifications not yet consumed */
+    /*
+     * Zombie / wait4 bookkeeping.  When a child enters THREAD_DEAD it stays
+     * on the global zombie list until its parent calls wait4(); only then is
+     * `waited` flipped to 1 and the next thread_reap_zombies() pass actually
+     * releases the TCB/stack and address space.  Orphaned children (whose
+     * parent exited first) get `waited` set as part of the parent's exit
+     * path so they are eligible for immediate reaping.
+     */
+    volatile int waited;
     struct file fd_table[VFS_MAX_FDS]; /* per-process FD table (0/1/2 reserved) */
+    uint8_t cloexec[VFS_MAX_FDS];      /* close-on-exec flags (FD_CLOEXEC == 1) */
+    /* Saved user-mode return frame used by fork()'s child to re-enter user
+     * space at the exact instruction that issued the SYSCALL.  Recorded by
+     * do_fork() at the moment the syscall_saved_* globals are still valid;
+     * read by fork_child_entry() once the scheduler activates this TCB. */
+    uint64_t  fork_user_rip;
+    uint64_t  fork_user_rflags;
+    uint64_t  fork_user_rsp;
+    /* Per-thread copy of the SYSCALL entry frame (RCX/R11).  Captured at the
+     * very top of syscall_dispatch() so that another thread which runs while
+     * we are blocked inside the syscall (e.g. via wait4 yields) can safely
+     * overwrite the GLOBAL syscall_saved_* without losing OUR return
+     * destination.  syscall_get_saved_return() reads these back at sysret. */
+    uint64_t  saved_user_rip;
+    uint64_t  saved_user_rflags;
 } tcb_t;
+
+/*
+ * wait4(pid, *exit_code):
+ *   pid <  0 : reap any one exited child of the current thread/process.
+ *   pid >= 0 : reap that specific child (if it has exited or once it does).
+ *   *exit_code receives the child's exit code if non-NULL.
+ * Returns the reaped child's PID, or -1 if no matching child exists.
+ */
+int64_t do_wait4_pid(int64_t pid, int64_t *exit_code);
+
+/* Find a zombie matching parent_pid + match_pid.  Internal helper for wait4. */
+tcb_t *thread_find_zombie(uint64_t parent_pid, int64_t match_pid);
+
+/*
+ * Diagnostics: number of zombies queued / reaped since boot.  Used in
+ * integration tests and the /proc-style status printers.
+ */
+uint64_t thread_zombies_queued_total(void);
+uint64_t thread_zombies_reaped_total(void);
 
 /*
  * Create a new kernel thread that will run `fn(arg)` when first scheduled.
@@ -60,6 +101,10 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name);
  * parent, and switches to the next runnable thread.  Never returns.
  */
 void thread_exit(void) __attribute__((noreturn));
+
+/* Same as thread_exit() but records the given exit code on the TCB so a
+ * subsequent wait4() can return it. */
+void thread_exit_with_code(int code) __attribute__((noreturn));
 
 /* Free THREAD_DEAD TCBs/stacks that have already switched off their own stack.
  * Safe to call from normal kernel-thread context; it never frees current. */

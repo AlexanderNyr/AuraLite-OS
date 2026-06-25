@@ -94,16 +94,20 @@ for the feature matrix.
 - [ ] Slab allocator for common fixed-size kernel objects.
 - [ ] Guard pages around kernel/user stacks and heap regions.
 - [ ] Large-page support for selected kernel mappings.
+- [x] `paging_free_address_space()` walker (user half) with PMM accounting.
+- [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land.
 
 ### Scheduling and processes
 
 - [ ] SMP-aware scheduler with per-CPU run queues or explicit AP-off normal mode.
 - [x] Deferred TCB/kernel-stack reaper and missed-wakeup-safe wait notifications.
-- [ ] Full address-space/page-table reaping and stronger parent/child lifetime management.
+- [~] Full address-space/page-table reaping (code landed; conservative gate keeps it disabled in the live path until cross-PML4 walking races are eliminated).
 - [ ] BLOCKED state, wait queues and sleepable kernel primitives.
 - [ ] Real parent/child process table and precise `waitpid` semantics.
 - [x] Basic per-process FD tables.
-- [ ] Close-on-exec, `dup`, pipes and precise FD inheritance/lifetime semantics.
+- [x] `dup`, `dup2`, `pipe`, `fcntl(F_GETFD/F_SETFD/FD_CLOEXEC)` syscalls + `execve` honouring `FD_CLOEXEC`.
+- [x] `waitpid(pid, *exit_code)` with real exit-code propagation and zombie collection on wait.
+- [ ] Precise POSIX shared-open-file description semantics across `fork`.
 - [ ] Signals or another process notification mechanism.
 
 ### Filesystems and storage
@@ -119,7 +123,7 @@ for the feature matrix.
 
 - [ ] Interrupt-driven e1000 RX/TX.
 - [x] Process-owned socket-style client handles (`socket/connect/send/recv/close`).
-- [ ] Multiple simultaneous TCP connections in the transport layer.
+- [x] Per-connection TCP state (`tcp_handle_t`, up to `TCP_MAX_CONNS=8`).  Legacy `SYS_NET_*` syscalls are now a thin shim over the per-connection layer and are formally **deprecated**.
 - [ ] Full BSD socket ABI including `sockaddr`, `bind`, `listen` and `accept`.
 - [ ] UDP user sockets.
 - [ ] Retransmission, timeouts and better packet queues.
@@ -139,6 +143,7 @@ for the feature matrix.
 
 - [x] Clean up GUI windows when the owning process exits.
 - [x] Basic GUI process ownership enforcement for user-facing window syscalls.
+- [x] Audit every GUI sub-op for out-of-range/negative wid and bad userspace pointers (with integration test).
 - [ ] Stronger compositor/client isolation and permission model for GUI internals.
 - [ ] More complete text input, clipboard and focus behavior.
 - [ ] Persisted user settings/theme.
@@ -153,4 +158,5 @@ for the feature matrix.
 - [ ] Reduce integration-test timing flakiness around process spawn and serial
       input pacing.
 - [x] Add fsck-style FAT32/ext2 churn + reboot regression test case (`test_fs_stress.sh`).
+- [x] Add integration cases for GUI bad-pointer hardening, process-exit GUI cleanup, FD lifecycle.
 - [ ] Add CI artifacts for screenshots and QEMU serial logs on every failure.

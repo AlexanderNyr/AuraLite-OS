@@ -82,10 +82,14 @@ static void fork_child_entry(void *arg) {
     (void)arg;
     /* The TCB's pml4_phys is set to the cloned address space. The scheduler
      * has already switched CR3 to it. We just need to return to user mode
-     * at the saved user RIP with RAX=0 (fork return for the child). */
-    uint64_t user_rip  = syscall_saved_rcx;
-    uint64_t user_rflags = syscall_saved_r11;
-    uint64_t user_rsp  = syscall_saved_rsp;
+     * at the saved user RIP with RAX=0 (fork return for the child).  We
+     * read the fork frame from the TCB (not from the global syscall_saved_*
+     * registers, which the parent has long since overwritten with later
+     * syscalls). */
+    tcb_t *self = sched_current();
+    uint64_t user_rip    = self ? self->fork_user_rip    : syscall_saved_rcx;
+    uint64_t user_rflags = self ? self->fork_user_rflags : syscall_saved_r11;
+    uint64_t user_rsp    = self ? self->fork_user_rsp    : syscall_saved_rsp;
 
     kprintf("[proc] fork child starting, jumping to user 0x%llx\n",
             (unsigned long long)user_rip);
@@ -119,17 +123,33 @@ int64_t do_fork(void) {
     kprintf("[proc] fork: cloned to PML4 phys 0x%llx\n",
             (unsigned long long)child_pml4);
 
-    /* 2) Create the child thread. */
+    /* 2) Create the child thread.  We do this with interrupts disabled so
+     * the scheduler can't pick up the half-initialised TCB (no pml4, no
+     * saved user frame, no FDs) between kthread_create() and the field
+     * assignments below. */
     tcb_t *parent = sched_current();
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+
     tcb_t *child = kthread_create(fork_child_entry, NULL, "fork-child");
     if (child == NULL) {
+        if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
         return -1;
     }
     child->pml4_phys = child_pml4;
     child->parent    = parent;
+    /* Snapshot the user-mode return frame NOW (it lives in globals that the
+     * parent will clobber on its very next syscall, well before the child
+     * gets a chance to run). */
+    child->fork_user_rip    = syscall_saved_rcx;
+    child->fork_user_rflags = syscall_saved_r11;
+    child->fork_user_rsp    = syscall_saved_rsp;
     if (parent) {
         memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
+        memcpy(child->cloexec,  parent->cloexec,  sizeof(child->cloexec));
     }
+
+    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
 
     /* 3) The parent returns the child PID. */
     kprintf("[proc] fork: parent returns child PID %llu\n",
@@ -141,6 +161,9 @@ int64_t do_fork(void) {
 
 int64_t do_execve(const char *path) {
     kprintf("[proc] execve('%s')\n", path);
+
+    /* 0) Close any FD marked FD_CLOEXEC.  Per POSIX, execve drops those. */
+    vfs_close_on_exec();
 
     /* 1) Open the file from the VFS and read it into kernel memory. */
     int fd = vfs_open(path);
@@ -188,23 +211,9 @@ int64_t do_execve(const char *path) {
 /* ---- wait4() ---- */
 
 int64_t do_wait4(int64_t *exit_code) {
-    tcb_t *self = sched_current();
-    if (self == NULL) return -1;
-
-    /* If a child already exited before we entered wait4(), consume the pending
-     * notification immediately.  Otherwise mark ourselves as waiting and yield
-     * until thread_exit() records a child completion. */
-    if (self->child_exit_pending <= 0) {
-        self->waited_on = 1;
-        while (self->waited_on && self->child_exit_pending <= 0) {
-            sched_yield();
-        }
-    }
-    self->waited_on = 0;
-    if (self->child_exit_pending > 0) self->child_exit_pending--;
-    if (exit_code) *exit_code = 0;
-    thread_reap_zombies();
-    return 0;
+    /* Legacy entry point: wait for any child of the current task and discard
+     * its identity.  do_wait4_pid does the heavy lifting. */
+    return do_wait4_pid(-1, exit_code);
 }
 
 /* ---- spawn() ---- */

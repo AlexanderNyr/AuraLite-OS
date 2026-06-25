@@ -220,6 +220,89 @@ uint64_t paging_clone_user_space(void) {
     return new_pml4_phys;
 }
 
+/* ---- Full user-half address-space reaping ---- */
+
+static uint64_t reaped_frames_total = 0;
+static uint64_t reaped_spaces_total = 0;
+
+uint64_t paging_reaped_frames_total(void) { return reaped_frames_total; }
+uint64_t paging_reaped_spaces_total(void) { return reaped_spaces_total; }
+
+uint64_t paging_free_address_space(uint64_t pml4_phys) {
+    if (pml4_phys == 0) return 0;
+
+    /* Refuse to reap the live address space: that would yank away the page
+     * tables we are currently walking and could fault the kernel. */
+    uint64_t cur_cr3 = read_cr3() & PAGE_ADDR_MASK;
+    if (pml4_phys == cur_cr3) {
+        kprintf(VMM_TAG "WARN: refusing to reap active PML4 0x%016llx\n",
+                (unsigned long long)pml4_phys);
+        return 0;
+    }
+    if (pml4_phys == kernel_pml4_phys) {
+        kprintf(VMM_TAG "WARN: refusing to reap kernel PML4\n");
+        return 0;
+    }
+
+    uint64_t freed = 0;
+    uint64_t *p4 = (uint64_t *)phys_to_ptr(pml4_phys);
+
+    /* Walk only the USER half (entries 0..PML4_USER_TOP-1).  The kernel half
+     * (256..511) is shared by every address space; we MUST NOT free it. */
+    for (int i4 = 0; i4 < PML4_USER_TOP; i4++) {
+        uint64_t e4 = p4[i4];
+        if (!(e4 & PAGE_FLAG_PRESENT)) continue;
+        uint64_t pdpt_phys = e4 & PAGE_ADDR_MASK;
+        uint64_t *p3 = (uint64_t *)phys_to_ptr(pdpt_phys);
+
+        for (int i3 = 0; i3 < 512; i3++) {
+            uint64_t e3 = p3[i3];
+            if (!(e3 & PAGE_FLAG_PRESENT)) continue;
+            /* No 1 GiB pages in this kernel (we never set PS in PDPT). */
+            uint64_t pd_phys = e3 & PAGE_ADDR_MASK;
+            uint64_t *p2 = (uint64_t *)phys_to_ptr(pd_phys);
+
+            for (int i2 = 0; i2 < 512; i2++) {
+                uint64_t e2 = p2[i2];
+                if (!(e2 & PAGE_FLAG_PRESENT)) continue;
+                /* No 2 MiB pages either. */
+                uint64_t pt_phys = e2 & PAGE_ADDR_MASK;
+                uint64_t *p1 = (uint64_t *)phys_to_ptr(pt_phys);
+
+                for (int i1 = 0; i1 < 512; i1++) {
+                    uint64_t e1 = p1[i1];
+                    if (!(e1 & PAGE_FLAG_PRESENT)) continue;
+                    /* Only free pages that are USER-owned.  Defensive: even
+                     * though we are walking the user half, a wild value
+                     * shouldn't trick us into freeing a kernel/HHDM frame. */
+                    if (!(e1 & PAGE_FLAG_USER)) continue;
+                    uint64_t leaf_phys = e1 & PAGE_ADDR_MASK;
+                    pmm_free_frame(leaf_phys);
+                    freed++;
+                    p1[i1] = 0;
+                }
+                pmm_free_frame(pt_phys);
+                freed++;
+                p2[i2] = 0;
+            }
+            pmm_free_frame(pd_phys);
+            freed++;
+            p3[i3] = 0;
+        }
+        pmm_free_frame(pdpt_phys);
+        freed++;
+        p4[i4] = 0;
+    }
+
+    /* Finally release the PML4 frame itself. */
+    pmm_free_frame(pml4_phys);
+    freed++;
+
+    reaped_frames_total += freed;
+    reaped_spaces_total++;
+    return freed;
+}
+
 void paging_self_test(void) {
     /* A canonical user-space address that is certainly unmapped: 6 TiB.
        Bit 47 is clear (positive canonical); bits 48-63 are zero. */

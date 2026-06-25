@@ -51,6 +51,17 @@
 #define SYS_SOCKET_RECV    303
 #define SYS_SOCKET_CLOSE   304
 
+/* File-descriptor extensions. */
+#define SYS_DUP    32
+#define SYS_DUP2   33
+#define SYS_PIPE   22
+#define SYS_FCNTL  72
+
+/* fcntl commands.  Small subset matching Linux numbers. */
+#define F_GETFD 1
+#define F_SETFD 2
+#define FD_CLOEXEC 1
+
 #define SYSCALL_PATH_MAX 256
 #define SYSCALL_IO_CHUNK 256
 
@@ -100,9 +111,38 @@ static uint64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
     return done;
 }
 
+/* Saved user-mode RIP/RFLAGS from the syscall_entry asm stub.  Defined in
+ * syscall_entry.asm; we read them once at the top of every dispatch and copy
+ * them into the current TCB so that a nested syscall from a context-switch
+ * partner can safely overwrite the globals.  On the way out we copy them
+ * back so the asm sysret prologue lands at the right user RIP. */
+extern uint64_t syscall_saved_rcx;
+extern uint64_t syscall_saved_r11;
+
+/* Called from syscall_entry.asm just before sysret.  Refreshes the
+ * syscall_saved_* globals from the current TCB's per-thread copies.  Uses the
+ * default SysV C ABI: no args, no return. */
+void syscall_restore_user_frame(void) {
+    tcb_t *cur = sched_current();
+    if (!cur) return;
+    if (cur->saved_user_rip) {
+        syscall_saved_rcx = cur->saved_user_rip;
+        syscall_saved_r11 = cur->saved_user_rflags;
+    }
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
     (void)a4; (void)a5; (void)a6;
+
+    /* Capture the user-mode return frame into the current TCB so subsequent
+     * context switches in this syscall cannot corrupt it via the globals. */
+    tcb_t *cur = sched_current();
+    if (cur) {
+        cur->saved_user_rip    = syscall_saved_rcx;
+        cur->saved_user_rflags = syscall_saved_r11;
+    }
+
     switch (num) {
     case SYS_WRITE: {
         /* a1 = fd, a2 = buffer, a3 = length. fd 1/2 go to console; fd >= 3
@@ -190,7 +230,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_CLOSE:
         return (uint64_t)vfs_close((int)a1);
     case SYS_EXIT:
-        thread_exit();
+        thread_exit_with_code((int)a1);
         return 0;   /* unreachable */
     case SYS_GETPID: {
         tcb_t *cur = sched_current();
@@ -204,10 +244,22 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return do_execve(path);
     }
     case SYS_WAIT4: {
+        /* New ABI: a1 = pid (int64_t, -1 = any child), a2 = *exit_code (or NULL).
+         * Old ABI: a1 = *exit_code, a2 = 0.
+         * For backwards compatibility, treat a1 as a pid if it is small
+         * (canonical PIDs fit in 32 bits) or negative.  If a1 looks like a
+         * userspace pointer (>= 0x1000 and < USER_VADDR_TOP) and a2 == 0 we
+         * fall back to the legacy meaning. */
+        int64_t pid = (int64_t)a1;
+        void *user_status = (void *)(uintptr_t)a2;
+        if (a2 == 0 && a1 >= 0x1000 && a1 < 0x0000800000000000ULL) {
+            pid = -1;
+            user_status = (void *)(uintptr_t)a1;
+        }
         int64_t status = 0;
-        int64_t ret = do_wait4(a1 ? &status : 0);
-        if (ret >= 0 && a1) {
-            if (copy_to_user((void *)(uintptr_t)a1, &status, sizeof(status)) != 0) {
+        int64_t ret = do_wait4_pid(pid, user_status ? &status : 0);
+        if (ret >= 0 && user_status) {
+            if (copy_to_user(user_status, &status, sizeof(status)) != 0) {
                 return (uint64_t)-1;
             }
         }
@@ -345,6 +397,36 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return syscall_gui_call(a1, a2, a3, a4, a5);
     case SYS_GUI_EVENT:
         return syscall_gui_event(a1, a2, a3);
+
+    /* dup / dup2 / pipe / fcntl. */
+    case SYS_DUP:
+        return (uint64_t)vfs_dup((int)a1);
+    case SYS_DUP2:
+        return (uint64_t)vfs_dup2((int)a1, (int)a2);
+    case SYS_PIPE: {
+        int fds[2];
+        if (!validate_user_range((void *)(uintptr_t)a1, sizeof(fds), 1)) {
+            return (uint64_t)-1;
+        }
+        int r = vfs_pipe(fds);
+        if (r != 0) return (uint64_t)-1;
+        if (copy_to_user((void *)(uintptr_t)a1, fds, sizeof(fds)) != 0) {
+            /* Roll back partially: close both ends. */
+            vfs_close(fds[0]);
+            vfs_close(fds[1]);
+            return (uint64_t)-1;
+        }
+        return 0;
+    }
+    case SYS_FCNTL: {
+        int fd = (int)a1;
+        int cmd = (int)a2;
+        switch (cmd) {
+        case F_GETFD: return (uint64_t)vfs_get_cloexec(fd);
+        case F_SETFD: return (uint64_t)vfs_set_cloexec(fd, (a3 & FD_CLOEXEC) ? 1 : 0);
+        default:      return (uint64_t)-1;
+        }
+    }
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
         return (uint64_t)-1;

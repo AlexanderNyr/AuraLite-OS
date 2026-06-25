@@ -30,10 +30,10 @@ typedef struct {
     int protocol;
     uint32_t peer_ip;
     uint16_t peer_port;
+    int tcp_handle;            /* per-connection TCP handle, -1 if none */
 } socket_t;
 
 static socket_t sockets[SOCKET_MAX];
-static int active_tcp_sid = -1;
 
 static uint64_t current_pid(void) {
     tcb_t *cur = sched_current();
@@ -58,6 +58,7 @@ int64_t socket_create(int domain, int type, int protocol) {
             sockets[i].domain = domain;
             sockets[i].type = type;
             sockets[i].protocol = protocol;
+            sockets[i].tcp_handle = -1;
             return i;
         }
     }
@@ -67,40 +68,35 @@ int64_t socket_create(int domain, int type, int protocol) {
 int64_t socket_connect(int sid, uint32_t ip, uint16_t port) {
     socket_t *s = get_owned_socket(sid);
     if (!s || s->state != SOCK_SLOT_OPEN) return -1;
-    if (active_tcp_sid >= 0 && active_tcp_sid != sid) {
-        kprintf("[socket] TCP transport busy (active socket %d)\n", active_tcp_sid);
-        return -1;
-    }
-    if (tcp_connect(ip, port) != 0) return -1;
+    int h = tcp_open(ip, port);
+    if (h < 0) return -1;
     s->state = SOCK_SLOT_CONNECTED;
     s->peer_ip = ip;
     s->peer_port = port;
-    active_tcp_sid = sid;
+    s->tcp_handle = h;
     return 0;
 }
 
 int64_t socket_send(int sid, const void *buf, uint32_t len) {
     socket_t *s = get_owned_socket(sid);
     if (!s || s->state != SOCK_SLOT_CONNECTED) return -1;
-    if (active_tcp_sid != sid) return -1;
-    return tcp_send(buf, len);
+    return tcp_send_h(s->tcp_handle, buf, len);
 }
 
 int64_t socket_recv(int sid, void *buf, uint32_t len) {
     socket_t *s = get_owned_socket(sid);
     if (!s || s->state != SOCK_SLOT_CONNECTED) return -1;
-    if (active_tcp_sid != sid) return -1;
-    return tcp_recv(buf, len);
+    return tcp_recv_h(s->tcp_handle, buf, len);
 }
 
 int64_t socket_close(int sid) {
     socket_t *s = get_owned_socket(sid);
     if (!s) return -1;
-    if (s->state == SOCK_SLOT_CONNECTED && active_tcp_sid == sid) {
-        tcp_close();
-        active_tcp_sid = -1;
+    if (s->state == SOCK_SLOT_CONNECTED && s->tcp_handle >= 0) {
+        tcp_close_h(s->tcp_handle);
     }
     memset(s, 0, sizeof(*s));
+    s->tcp_handle = -1;
     return 0;
 }
 
@@ -108,10 +104,10 @@ void socket_close_process(uint64_t owner_pid) {
     for (int i = 0; i < SOCKET_MAX; i++) {
         if (sockets[i].state == SOCK_SLOT_FREE) continue;
         if (sockets[i].owner_pid != owner_pid) continue;
-        if (sockets[i].state == SOCK_SLOT_CONNECTED && active_tcp_sid == i) {
-            tcp_close();
-            active_tcp_sid = -1;
+        if (sockets[i].state == SOCK_SLOT_CONNECTED && sockets[i].tcp_handle >= 0) {
+            tcp_close_h(sockets[i].tcp_handle);
         }
         memset(&sockets[i], 0, sizeof(sockets[i]));
+        sockets[i].tcp_handle = -1;
     }
 }

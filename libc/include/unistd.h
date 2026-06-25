@@ -34,6 +34,17 @@
 #define SYS_SOCKET_RECV    303
 #define SYS_SOCKET_CLOSE   304
 
+/* File-descriptor extensions. */
+#define SYS_DUP    32
+#define SYS_DUP2   33
+#define SYS_PIPE   22
+#define SYS_FCNTL  72
+
+/* fcntl commands. */
+#define F_GETFD    1
+#define F_SETFD    2
+#define FD_CLOEXEC 1
+
 #define AF_INET      2
 #define SOCK_STREAM  1
 
@@ -97,5 +108,14 @@ int     unlink(const char *path);
 int     rename(const char *from, const char *to);
 int     truncate(const char *path, uint64_t new_size);
 int     stat(const char *path, struct stat *out);
+
+/* File-descriptor management. */
+int     dup(int oldfd);
+int     dup2(int oldfd, int newfd);
+int     pipe(int fds[2]);
+int     fcntl(int fd, int cmd, int arg);
+
+/* waitpid: wait for a specific child (or any if pid<0). */
+pid_t   waitpid(pid_t pid, int *status);
 
 #endif /* AURALITE_LIBC_UNISTD_H */

@@ -136,6 +136,20 @@ int64_t vfs_write(int fd, const void *buf, uint64_t count);
 int64_t vfs_lseek(int fd, int64_t offset, int whence);  /* whence: 0=SET 1=CUR 2=END */
 int     vfs_close(int fd);
 
+/* dup(): allocate a new FD that refers to the same vnode/offset.  Returns
+ * the new FD or -1.  Cloexec is cleared on the returned FD (matches POSIX). */
+int     vfs_dup(int oldfd);
+/* dup2(): like dup but force the new FD number.  Closes newfd first if open. */
+int     vfs_dup2(int oldfd, int newfd);
+/* pipe(): create a unidirectional in-memory pipe; out_fds[0]=read, out_fds[1]=write. */
+int     vfs_pipe(int out_fds[2]);
+
+/* close-on-exec flag management. */
+int     vfs_set_cloexec(int fd, int on);
+int     vfs_get_cloexec(int fd);
+/* Close every FD with FD_CLOEXEC set.  Called from execve(). */
+void    vfs_close_on_exec(void);
+
 /* ---- Path operations (no FD needed) ---- */
 int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);

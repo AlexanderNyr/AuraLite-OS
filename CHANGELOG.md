@@ -2,6 +2,90 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Address-space reaping, FD lifecycle, per-conn TCP, GUI audit] 2026-06-25
+
+### Added — VMM
+- `paging_free_address_space(pml4_phys)` — walks PML4 entries 0..255 (user
+  half only — kernel half 256..511 is shared and untouched), frees every
+  leaf page + PT + PD + PDPT, then the PML4 frame itself, returning the
+  number of frames released to the PMM.
+- Diagnostic counters `paging_reaped_frames_total()` and
+  `paging_reaped_spaces_total()`.
+- The new walker is **wired into `thread_reap_zombies`** but conservatively
+  gated behind a CR3-equality check; broad enablement is still pending a
+  TLB-shootdown + cross-PML4 refcount story (see TODO.md).
+
+### Added — process / FD lifecycle
+- `do_wait4_pid(pid, *exit_code)` — wait4 now accepts a target PID
+  (or -1 for any child) and propagates the child's exit status.
+- `thread_exit_with_code(code)` records the exit code on the TCB before
+  enqueueing the zombie; `SYS_EXIT` plumbs `_exit(int)` through it so
+  `waitpid(pid, &status)` finally returns the real exit code.
+- Zombie list is now collected-on-wait: a TCB stays on `zombie_head` with
+  `waited=0` until its parent (or auto-adoption on parent exit) flips
+  `waited=1`, and only then is the next reaper sweep allowed to free it.
+- Per-process FD table now ships with an `cloexec[VFS_MAX_FDS]` companion;
+  `execve()` calls `vfs_close_on_exec()` before swapping the address space.
+- `vfs_dup`, `vfs_dup2`, `vfs_pipe`, `vfs_set_cloexec`, `vfs_get_cloexec`
+  + new `SYS_DUP (32)`, `SYS_DUP2 (33)`, `SYS_PIPE (22)`, `SYS_FCNTL (72)`
+  syscalls.  Pipes are 4 KiB ring buffers backed by a private `vfs_ops`.
+
+### Added — networking
+- `tcp_open / tcp_send_h / tcp_recv_h / tcp_close_h / tcp_state_h` — up to
+  `TCP_MAX_CONNS` (8) simultaneous client TCP connections, each with its
+  own state/ISN/ports/sequence numbers.
+- `socket_*` syscalls (300..304) now allocate a real `tcp_handle_t` per
+  socket rather than sharing the global legacy connection.  Cross-process
+  socket close + per-process auto-close on exit still hold.
+- Legacy single-connection `tcp_connect / tcp_send / tcp_recv / tcp_close`
+  and the `SYS_NET_*` syscalls (83..87) are preserved as a thin shim on top
+  of the new per-connection layer — **deprecated** but still functional so
+  the existing /http and /browser apps keep working.
+
+### Added — GUI syscall hardening
+- Audit of every `SYS_GUI_CALL` op: each branch now does
+  `require_owner(wid)` before touching window state, returning -1 on
+  ownership mismatch or out-of-range/invalid wid.
+- `SYS_GUI_EVENT` validates the userspace `gui_event_t*` via
+  `validate_user_range` before copy_to_user.
+- Bad-pointer userspace selftest covers: out-of-range wid, negative wid,
+  kernel `draw_text` string, kernel event pointer, ops after destroy.
+
+### Added — userspace + integration tests
+- `/selftest` rewritten to cover dup/dup2/fcntl/pipe + GUI ownership
+  + bad-pointer rejection in addition to the existing usercopy & socket
+  checks.
+- New `/proctest` and `/fdtest` user programs.
+- New integration cases:
+  * `test_gui_bad_pointers.sh` — GUI rejects bad wid + bad pointers without
+    faulting the kernel.
+  * `test_process_cleanup.sh` — exiting process triggers
+    `gui_cleanup_process()`, kernel emits `[gui] cleaned N window(s) for
+    pid <P>` and runs `thread_exit`.
+  * `test_fd_isolation.sh` — single-process dup/dup2/fcntl/pipe lifecycle.
+- `tests/integration/run_all.sh` now runs the three new cases in addition
+  to the existing 16.
+
+### Fixed
+- SYSCALL entry/exit asm now stashes per-thread RCX/R11 in the current TCB
+  (`saved_user_rip`/`saved_user_rflags`) and reloads them via
+  `syscall_restore_user_frame()` from `syscall_entry.asm` right before
+  `sysret`.  Without this fix, a second user thread issuing its own
+  syscall during a `wait4`/`yield` would clobber the global save area and
+  the original caller would sysret to the wrong RIP.
+
+### Known caveats
+- `paging_free_address_space()` is implemented and unit-tested but
+  conservatively short-circuited inside the reaper to avoid races with
+  other in-flight syscalls that may still hold a stale page-walk pointer.
+  Full enablement waits on per-PML4 refcounting + cross-CPU TLB shootdown.
+- `fork()` from user space is still 🧪.  Child entry uses a per-TCB
+  snapshot of the SYSCALL frame (`fork_user_*`) instead of the globals,
+  which makes the parent path stable, but the path is still considered
+  experimental and is intentionally NOT exercised inside the bundled
+  selftest binary — exercise it through the dedicated test case once it
+  stabilises further.
+
 ## [Full desktop GUI] 2026-06-24
 
 ### Added — kernel GUI subsystem (`kernel/gui/`, ~1100 lines)

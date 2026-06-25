@@ -94,6 +94,24 @@ uint64_t paging_get_kernel_pml4(void);
  * Returns the new PML4 physical address, or 0 on failure. Used by fork(). */
 uint64_t paging_clone_user_space(void);
 
+/*
+ * Free every USER-half page (PML4 entries 0..PML4_USER_TOP-1) referenced
+ * from the given PML4: the leaf user data pages, every PT/PD/PDPT table
+ * backing them, and finally the PML4 frame itself.  The KERNEL half
+ * (256..511) is shared across every address space and is left untouched
+ * (those frames remain mapped through the kernel's master PML4).
+ *
+ * Safe to call on an address space that is NOT currently active.  If
+ * pml4_phys equals the currently loaded CR3 the function refuses (returns
+ * 0) so the caller never pulls the rug out from under itself.  Returns
+ * the number of physical frames returned to the PMM.
+ */
+uint64_t paging_free_address_space(uint64_t pml4_phys);
+
+/* Diagnostic counters incremented by paging_free_address_space(). */
+uint64_t paging_reaped_frames_total(void);
+uint64_t paging_reaped_spaces_total(void);
+
 /* Gate self-test: map a page, verify R/W via both virt and HHDM, unmap,
  * confirm the translation is gone, then deliberately fault on the unmapped
  * address to demonstrate clean #PF handling. */
