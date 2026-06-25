@@ -17,6 +17,7 @@ static struct app apps[] = {
     { "System Monitor","/gsysmon" },
     { "Task Manager",  "/gtaskmgr"},
     { "Music Player",  "/gaudio"  },
+    { "Web Browser",   "/gbrowser"},
     { "About",         "/gabout"  },
 };
 

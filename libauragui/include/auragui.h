@@ -108,7 +108,7 @@ struct ag_widget;
 typedef void (*ag_callback_t)(struct ag_widget *w, void *user);
 
 #define AG_MAX_WIDGET_TEXT 128
-#define AG_MAX_LIST_ITEMS  32
+#define AG_MAX_LIST_ITEMS  128
 
 typedef struct ag_widget {
     int           kind;

@@ -200,7 +200,8 @@ void mouse_init(void) {
 
     uint8_t config = 0;
     if (ps2_write_cmd(0x20) && ps2_read_byte(&config)) {
-        config |= (1u << 1);        /* enable IRQ12 */
+        config |= (1u << 0);        /* enable IRQ1 (keyboard) */
+        config |= (1u << 1);        /* enable IRQ12 (mouse) */
         config &= (uint8_t)~(1u << 5); /* enable second-port clock */
         ps2_write_cmd(0x60);
         ps2_write_data(config);

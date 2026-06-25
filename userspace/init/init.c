@@ -138,6 +138,7 @@ static void cmd_help(void) {
     puts("  run /hello    - hello world");
     puts("  run /http     - HTTP client");
     puts("  run /browser  - web browser (fetch + render HTML)");
+    puts("  run /gbrowser - GUI web browser (clickable links)");
     puts("  run /gtaskmgr - GUI Task Manager");
     puts("  run /play <song> - CLI audio player (starwars, ode)");
     puts("  run /gaudio   - GUI music player");

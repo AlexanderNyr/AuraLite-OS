@@ -100,7 +100,8 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/glaunch.elf \
              $(USER_BUILD)/apm.elf $(USER_BUILD)/matrix.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
-             $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf
+             $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
+             $(USER_BUILD)/gbrowser.elf
 
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
@@ -193,6 +194,8 @@ $(USER_BUILD)/glaunch.o: userspace/gui-launcher/glaunch.c libauragui/include/aur
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gaudio.o: userspace/gui-audio/gaudio.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gbrowser.o: userspace/gui-browser/gbrowser.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
 	@mkdir -p $(dir $@)
@@ -237,6 +240,14 @@ USB_IMAGE   := $(BUILD_DIR)/usb.img
 
 iso: kernel $(BUILD_DIR)/initrd.tar
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_DIR)
+	@mkdir -p release
+	@cp $(ISO_IMAGE) release/auralite.iso
+	@cp $(ISO_IMAGE) release/auralite-universal.iso
+	@cp $(BUILD_DIR)/kernel.elf release/kernel.elf
+	@cp $(BUILD_DIR)/initrd.tar release/initrd.tar
+	@cd release && sha256sum auralite.iso auralite-universal.iso kernel.elf initrd.tar > SHA256SUMS
+	@cp release/SHA256SUMS SHA256SUMS
+	@echo "[release] Wrote ISO, kernel.elf, initrd.tar, and SHA256SUMS to 'release/' folder"
 
 usb: iso
 	@cp $(ISO_IMAGE) $(USB_IMAGE)
@@ -286,6 +297,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/fetch.elf   $(INITRD_DIR)/fetch.pkg
 	@cp $(USER_BUILD)/play.elf    $(INITRD_DIR)/play
 	@cp $(USER_BUILD)/gaudio.elf  $(INITRD_DIR)/gaudio
+	@cp $(USER_BUILD)/gbrowser.elf $(INITRD_DIR)/gbrowser
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso

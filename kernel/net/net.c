@@ -10,6 +10,8 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 
+extern uint64_t timer_get_ticks(void);
+
 /* ---- Protocol constants ---- */
 #define ETHERTYPE_ARP   0x0806
 #define ETHERTYPE_IPV4  0x0800
@@ -183,7 +185,8 @@ int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
                     (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
 
             uint8_t buf[2048];
-            for (int poll = 0; poll < NET_ARP_POLLS; poll++) {
+            uint64_t start_ticks = timer_get_ticks();
+            while (timer_get_ticks() - start_ticks < 100) { /* 1.0 second timeout */
                 int n = e1000_recv(buf, sizeof(buf));
                 if (n < (int)(14 + sizeof(struct arp_pkt))) continue;
                 struct eth_hdr *eh = (struct eth_hdr *)buf;
@@ -237,7 +240,8 @@ int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
 
     /* Poll for the ARP reply. */
     uint8_t buf[2048];
-    for (int poll = 0; poll < NET_ARP_POLLS; poll++) {
+    uint64_t start_ticks = timer_get_ticks();
+    while (timer_get_ticks() - start_ticks < 100) { /* 1.0 second timeout */
         int n = e1000_recv(buf, sizeof(buf));
         if (n < (int)(14 + sizeof(struct arp_pkt))) {
             continue;
@@ -326,7 +330,8 @@ int net_ping(uint32_t target_ip) {
 
     /* 5) Poll for the ICMP echo reply. */
     uint8_t buf[2048];
-    for (int poll = 0; poll < NET_ICMP_POLLS; poll++) {
+    uint64_t start_ticks = timer_get_ticks();
+    while (timer_get_ticks() - start_ticks < 200) { /* 2.0 second timeout */
         int n = e1000_recv(buf, sizeof(buf));
         if (n < (int)(14 + 20 + 8)) {
             continue;
@@ -426,7 +431,8 @@ static int net_udp_send(uint32_t dst_ip, uint16_t dst_port,
 static int net_udp_recv(uint32_t src_ip, uint16_t src_port,
                         void *buf, uint32_t bufsize) {
     uint8_t rbuf[2048];
-    for (int poll = 0; poll < NET_UDP_POLLS; poll++) {
+    uint64_t start_ticks = timer_get_ticks();
+    while (timer_get_ticks() - start_ticks < 200) { /* 2.0 second timeout */
         int n = e1000_recv(rbuf, sizeof(rbuf));
         if (n < (int)(14 + 20 + 8)) continue;
         struct eth_hdr *eh = (struct eth_hdr *)rbuf;
@@ -773,7 +779,8 @@ int net_dhcp(void) {
     uint32_t server_id  = 0;
     uint32_t dns_ip     = 0;
 
-    for (int poll = 0; poll < NET_DHCP_OFFER_POLLS; poll++) {
+    uint64_t offer_start_ticks = timer_get_ticks();
+    while (timer_get_ticks() - offer_start_ticks < 200) { /* 2.0 second timeout */
         int n = e1000_recv(rbuf, sizeof(rbuf));
         if (n <= 0) continue;
         if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
@@ -897,7 +904,8 @@ int net_dhcp(void) {
             (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
 
     /* --- Step 4: Wait for DHCPACK --- */
-    for (int poll = 0; poll < NET_DHCP_ACK_POLLS; poll++) {
+    uint64_t ack_start_ticks = timer_get_ticks();
+    while (timer_get_ticks() - ack_start_ticks < 200) { /* 2.0 second timeout */
         int n = e1000_recv(rbuf, sizeof(rbuf));
         if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
         struct eth_hdr *eh = (struct eth_hdr *)rbuf;
