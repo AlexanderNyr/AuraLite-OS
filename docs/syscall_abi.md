@@ -101,12 +101,13 @@ Current caveats:
 | 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write. |
 | 2 | `open` | `open(path)` | ✅ | Opens or creates a VFS path when the mounted FS supports creation; returns a per-process FD. |
 | 3 | `close` | `close(fd)` | ✅ | Closes a per-process FD. |
+| 12 | `brk` | `sbrk(increment)` | ✅ | Adjusts the program break (heap). |
 | 39 | `getpid` | `getpid()` | ✅ | Returns current TCB ID. |
 | 57 | `fork` | `fork()` | 🧪 | Deep-copies user address space; simplified semantics. |
 | 59 | `execve` | `execve(path)` | 🧪 | Replaces current address space with a new ELF. No argv/envp. |
 | 60 | `exit` | `exit(code)` | ✅/🧪 | Terminates current thread; exit-code reporting is incomplete. |
 | 61 | `wait4` | `wait4(status)` | 🧪 | Yield-polling wait; not POSIX-complete and not PID-specific. |
-| 80 | `listdir` | `listdir(path)` | 🧪 | Non-standard; prints a directory listing through the kernel/VFS path. |
+| 80 | `listdir` | `readdir(path, out, max)` | 🧪 | Returns or prints a directory listing through the kernel/VFS path. |
 | 81 | `spawn` | `spawn(path)` | 🧪 | Non-standard; creates a process and loads an ELF from VFS. |
 | 82 | `dns` | `dns_resolve(hostname)` | 🧪 | Returns IPv4 A record in host-order integer form. |
 | 83 | `net_connect` | `net_connect(ip, port)` | 🧪 | Opens the single global TCP client connection. |
@@ -123,7 +124,7 @@ Current caveats:
 | 200 | `gui_call` | packed GUI dispatcher | 🧪 | Window lifecycle, drawing, invalidation, render and cursor operations. Used through `libauragui`. |
 | 201 | `gui_event` | `gui_event(wid, out, block)` | 🧪 | Polls or waits for GUI events for a window. Used through `libauragui`. |
 | 300 | `socket` | `socket(domain, type, protocol)` | 🧪 | Creates a process-owned AF_INET/SOCK_STREAM socket handle. |
-| 301 | `socket_connect` | `connect(sock, ip, port)` | 🧪 | Connects a socket to an IPv4 endpoint. TCP transport is still one active stream internally. |
+| 301 | `socket_connect` | `connect(sock, ip, port)` | 🧪 | Connects a socket to an IPv4 endpoint. |
 | 302 | `socket_send` | `send(sock, buf, len)` | 🧪 | Sends bytes on a connected socket with user-copy validation. |
 | 303 | `socket_recv` | `recv(sock, buf, len)` | 🧪 | Receives bytes from a connected socket. |
 | 304 | `socket_close` | `closesocket(sock)` | 🧪 | Closes a process-owned socket and underlying TCP stream if active. |
@@ -188,11 +189,9 @@ Current caveats:
 | Name | Purpose |
 |---|---|
 | `mmap`, `munmap` | User memory mappings. |
-| `brk` | User heap growth. |
 | `pipe` | IPC pipe. |
 | `bind`, `listen`, `accept` | Server-side socket API. |
 | full BSD `sockaddr` ABI | Current socket calls pass IPv4/port directly. |
-| structured `readdir` syscall | `listdir` prints through the kernel; no buffer-returning directory syscall yet. |
 | `nanosleep` / `clock_gettime` | Time APIs. |
 
 ## Security / robustness TODOs

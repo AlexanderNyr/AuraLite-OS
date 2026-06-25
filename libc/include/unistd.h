@@ -85,6 +85,7 @@ pid_t   spawn(const char *path);
 
 /* AuraLite extension: list files in a directory path. */
 void    listdir(const char *path);
+int     readdir(const char *path, void *out, int max);
 uint32_t dns_resolve(const char *hostname);
 
 /* ---- Network syscalls ---- */
@@ -100,6 +101,13 @@ int     connect(int sock, uint32_t ip, uint16_t port);
 int     send(int sock, const void *data, uint32_t len);
 int     recv(int sock, void *buf, uint32_t bufsize);
 int     closesocket(int sock);
+
+struct dirent {
+    char     name[256];
+    uint32_t type;
+    uint64_t size;
+    uint64_t inode;
+};
 
 /* Filesystem extensions. */
 int     mkdir(const char *path);
@@ -117,5 +125,7 @@ int     fcntl(int fd, int cmd, int arg);
 
 /* waitpid: wait for a specific child (or any if pid<0). */
 pid_t   waitpid(pid_t pid, int *status);
+
+void*   sbrk(intptr_t increment);
 
 #endif /* AURALITE_LIBC_UNISTD_H */

@@ -55,6 +55,10 @@ typedef struct tcb {
     volatile int waited;
     struct file fd_table[VFS_MAX_FDS]; /* per-process FD table (0/1/2 reserved) */
     uint8_t cloexec[VFS_MAX_FDS];      /* close-on-exec flags (FD_CLOEXEC == 1) */
+    
+    /* Program break (brk) / heap tracking. */
+    uint64_t  brk;               /* Current user heap end */
+
     /* Saved user-mode return frame used by fork()'s child to re-enter user
      * space at the exact instruction that issued the SYSCALL.  Recorded by
      * do_fork() at the moment the syscall_saved_* globals are still valid;

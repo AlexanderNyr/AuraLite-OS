@@ -40,6 +40,8 @@ enum {
     GUI_OP_RENDER,          /* a2=0 (request immediate render) */
     GUI_OP_SET_CURSOR,      /* a2=cursor_id */
     GUI_OP_GET_SIZE,        /* a2=wid, a3=user u32*[2] (w, h) */
+    GUI_OP_SET_CLIPBOARD,   /* a2=char* */
+    GUI_OP_GET_CLIPBOARD,   /* a2=char*, a3=size */
 };
 
 uint64_t syscall_gui_call (uint64_t op, uint64_t a2, uint64_t a3,

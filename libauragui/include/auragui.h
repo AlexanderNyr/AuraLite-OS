@@ -74,6 +74,8 @@ int  ag_window_invalidate(int wid);
 int  ag_window_get_size(int wid, uint32_t *w, uint32_t *h);
 void ag_render_now(void);
 void ag_set_cursor(int cursor);
+int  ag_set_clipboard(const char *text);
+int  ag_get_clipboard(char *buf, uint32_t size);
 
 /* ---- Drawing ---- */
 int  ag_clear(int wid, uint32_t color);

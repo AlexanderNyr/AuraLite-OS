@@ -59,38 +59,28 @@ static void load_dir(const char *path) {
         return;
     }
 
-    /* Directory — populate listbox via SYS_LISTDIR equivalent.  We don't have
-     * a clean readdir syscall yet in user libc, so we hard-code a small set
-     * of known names for each known mount.  This is good enough for the
-     * demo: real readdir support is on the TODO list. */
+    /* Directory — populate listbox via readdir. */
     int np = 0;
     int bp = 0;
-    static const char *known_root[]    = {"init","hello","calc","sysinfo","editor","clock","guess","snake","http","browser","gcalc","gedit","gfiles","gterm","gsysmon","glaunch", 0};
-    static const char *known_tmp[]     = {"hello.txt", "notes.txt", "vfs.txt", 0};
-    static const char *known_disk[]    = {"persist.txt", "ci.txt", 0};
-    static const char *known_fat[]     = {"AURALOG.TXT", "TEST.TXT", "CI.TXT", "PERSIST.TXT", "ALongFileName.txt", "SUBDIR", 0};
-    static const char *known_ext2[]    = {"lost+found", "TEST.TXT", "DIR", "BIG.BIN", "RENAMED.TXT", "HELLO.TXT", "from_aura.txt", "aura_dir", 0};
-    static const char *known_usb[]     = {"info", "sector0.bin", "disk.img", "fat", 0};
-    static const char *known_usbfat[]  = {"HELLO.TXT", "README.TXT", 0};
-    const char **src = known_root;
-    if (strcmp(path, "/") != 0) {
-        if (strcmp(path, "/tmp") == 0)  src = known_tmp;
-        else if (strcmp(path, "/disk") == 0) src = known_disk;
-        else if (strcmp(path, "/fat") == 0)  src = known_fat;
-        else if (strcmp(path, "/ext2") == 0) src = known_ext2;
-        else if (strcmp(path, "/usb") == 0)  src = known_usb;
-        else if (strcmp(path, "/usb/fat") == 0) src = known_usbfat;
+    
+    struct dirent ents[128];
+    int nents = readdir(path, ents, 128);
+    
+    if (nents > 0) {
+        for (int i = 0; i < nents && np < AG_MAX_LIST_ITEMS; i++) {
+            int l = (int)strlen(ents[i].name);
+            if (bp + l + 1 >= (int)sizeof(names_buf)) break;
+            names_ptr[np] = &names_buf[bp];
+            memcpy(&names_buf[bp], ents[i].name, (size_t)l);
+            names_buf[bp + l] = 0;
+            ag_listbox_add(list, names_ptr[np]);
+            bp += l + 1;
+            np++;
+        }
+    } else {
+        ag_textbox_set(status, "directory empty or read failed");
     }
-    for (int i = 0; src[i] && np < AG_MAX_LIST_ITEMS; i++) {
-        int l = (int)strlen(src[i]);
-        if (bp + l + 1 >= (int)sizeof(names_buf)) break;
-        names_ptr[np] = &names_buf[bp];
-        memcpy(&names_buf[bp], src[i], (size_t)l);
-        names_buf[bp + l] = 0;
-        ag_listbox_add(list, names_ptr[np]);
-        bp += l + 1;
-        np++;
-    }
+    
     char st_str[40];
     int p = 0;
     int n = list->item_count;

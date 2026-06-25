@@ -13,6 +13,8 @@
 
 #define GUI_USER_TEXT_MAX 512
 
+static char gui_kernel_clipboard[GUI_USER_TEXT_MAX] = {0};
+
 /* Helpers to pack/unpack two int32 in one uint64. */
 static inline int32_t  lo32(uint64_t v) { return (int32_t)(v & 0xFFFFFFFFu); }
 static inline int32_t  hi32(uint64_t v) { return (int32_t)(v >> 32); }
@@ -116,8 +118,12 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
     case GUI_OP_INVALIDATE:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_invalidate_window((int)a2);
-    case GUI_OP_RENDER:     gui_render_now(); return 0;
-    case GUI_OP_SET_CURSOR: gui_set_cursor((gui_cursor_t)a2); return 0;
+    case GUI_OP_RENDER:
+        if (current_pid() > 2) return (uint64_t)-1;
+        gui_render_now(); return 0;
+    case GUI_OP_SET_CURSOR:
+        if (current_pid() > 2) return (uint64_t)-1;
+        gui_set_cursor((gui_cursor_t)a2); return 0;
     case GUI_OP_GET_SIZE: {
         if (!require_owner((int)a2)) return (uint64_t)-1;
         uint32_t wh[2];
@@ -125,6 +131,23 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
         if (copy_to_user((void *)(uintptr_t)a3, wh, sizeof(wh)) != 0) {
             return (uint64_t)-1;
         }
+        return 0;
+    }
+    case GUI_OP_SET_CLIPBOARD: {
+        if (!a2) return (uint64_t)-1;
+        if (copy_string_from_user(gui_kernel_clipboard, (const char *)(uintptr_t)a2, GUI_USER_TEXT_MAX) != 0) {
+            gui_kernel_clipboard[0] = 0;
+            return (uint64_t)-1;
+        }
+        return 0;
+    }
+    case GUI_OP_GET_CLIPBOARD: {
+        if (!a2 || a3 == 0) return (uint64_t)-1;
+        uint64_t len = strlen(gui_kernel_clipboard) + 1;
+        if (len > a3) len = a3;
+        if (copy_to_user((void *)(uintptr_t)a2, gui_kernel_clipboard, len) != 0) return (uint64_t)-1;
+        char null_byte = 0;
+        copy_to_user((void *)((uintptr_t)a2 + len - 1), &null_byte, 1);
         return 0;
     }
     }

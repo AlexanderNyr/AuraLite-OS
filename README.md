@@ -32,7 +32,7 @@ additional post-phase extensions.
 - e1000 networking with ARP, IPv4, ICMP, DHCP/fallback addressing, UDP DNS and
   a minimal single-connection TCP client.
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
-  kernel GUI compositor (guaranteed 100 FPS refresh rate with cooperative scheduler anti-freeze architecture and a 1 Hz heartbeat kick thread), GUI syscalls and bundled GUI applications.
+  kernel GUI compositor (guaranteed 100 FPS refresh rate with cooperative scheduler anti-freeze architecture), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.
 
 ### Experimental / partial
@@ -318,6 +318,7 @@ The initrd currently packages:
 | `/gsysmon` | Graphical system monitor demo. |
 | `/gabout` | Graphical about dialog. |
 | `/glaunch` | GUI application launcher. |
+| `/gtheme` | GUI Theme Manager. |
 
 Common shell commands:
 
@@ -369,8 +370,7 @@ Short version:
 - User pointers passed to syscalls now go through basic range/permission validation and copy helpers, but there is not yet a fault-recovering uaccess layer.
 - `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
 - Dead TCBs and kernel stacks are deferred-reaped, but full user address-space/page-table reaping is not implemented yet.
-- Networking is polling-based. User space has process-owned socket-style handles,
-  but the underlying TCP transport still supports one active client stream at a time.
+- Networking is polling-based. User space has process-owned socket-style handles, and the TCP transport supports per-connection state up to 8 streams.
 - `/disk` is intentionally tiny: flat namespace, 8 files maximum, 4 KiB per file.
 - FAT32 and ext2 are featureful enough for integration tests, but their hardware
   coverage is primarily QEMU/AHCI and they should still be treated as hobby OS

@@ -90,7 +90,7 @@ static int load_segment(const struct elf64_phdr *ph, const uint8_t *image) {
     return 1;
 }
 
-uint64_t elf_load(const void *image, uint64_t size) {
+uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk) {
     const struct elf64_ehdr *eh = (const struct elf64_ehdr *)image;
 
     if (!validate_elf(eh, size)) {
@@ -101,12 +101,15 @@ uint64_t elf_load(const void *image, uint64_t size) {
         (const struct elf64_phdr *)((const uint8_t *)image + eh->e_phoff);
 
     int segs_loaded = 0;
+    uint64_t highest_end = 0;
     for (int i = 0; i < eh->e_phnum; i++) {
         if (phdrs[i].p_type == PT_LOAD) {
             if (!load_segment(&phdrs[i], (const uint8_t *)image)) {
                 return 0;
             }
             segs_loaded++;
+            uint64_t end = (phdrs[i].p_vaddr + phdrs[i].p_memsz + PAGE_MASK) & ~PAGE_MASK;
+            if (end > highest_end) highest_end = end;
         }
     }
 
@@ -114,6 +117,8 @@ uint64_t elf_load(const void *image, uint64_t size) {
         kprintf(ELF_TAG "no PT_LOAD segments found\n");
         return 0;
     }
+
+    if (out_brk) *out_brk = highest_end;
 
     kprintf(ELF_TAG "loaded %d segment(s), entry 0x%llx\n",
             segs_loaded, (unsigned long long)eh->e_entry);

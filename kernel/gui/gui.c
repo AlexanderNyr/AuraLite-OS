@@ -988,19 +988,7 @@ void gui_compositor_thread(void *arg) {
 }
 
 /* Команда толчка (Kick/prod): циклично раз в секунду выполняется всегда для предотвращения зависания GUI в QEMU/Windows */
-void gui_kick_thread(void *arg) {
-    (void)arg;
-    for (;;) {
-        uint64_t target = timer_get_ticks() + 100; /* 100 ticks @ 100Hz = 1 second */
-        while (timer_get_ticks() < target) {
-            sched_yield();
-        }
-        gui_request_redraw();
-        kprintf("[gui-kick] 1Hz heartbeat prod to prevent QEMU/GUI freeze\n");
-        gfx_flip();
-        sched_yield();
-    }
-}
+
 
 /* ---- Self-test ---- */
 void gui_self_test(void) {

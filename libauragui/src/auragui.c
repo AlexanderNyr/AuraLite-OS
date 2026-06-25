@@ -5,6 +5,7 @@
 #include "unistd.h"
 #include "string.h"
 #include "stdio.h"
+#include "stdlib.h"
 
 /* Pack two int32 into uint64. */
 static uint64_t pack2(int32_t a, int32_t b) {
@@ -18,7 +19,7 @@ enum {
     GUI_OP_MINIMIZE, GUI_OP_MAXIMIZE, GUI_OP_RESTORE,
     GUI_OP_CLEAR, GUI_OP_FILL_RECT, GUI_OP_DRAW_RECT, GUI_OP_DRAW_LINE,
     GUI_OP_DRAW_TEXT, GUI_OP_DRAW_PIXEL, GUI_OP_INVALIDATE, GUI_OP_RENDER,
-    GUI_OP_SET_CURSOR, GUI_OP_GET_SIZE,
+    GUI_OP_SET_CURSOR, GUI_OP_GET_SIZE, GUI_OP_SET_CLIPBOARD, GUI_OP_GET_CLIPBOARD,
 };
 #define SYS_GUI_CALL_NUM    200
 #define SYS_GUI_EVENT_NUM   201
@@ -61,6 +62,8 @@ int ag_window_get_size(int wid, uint32_t *w, uint32_t *h) {
 }
 void ag_render_now(void)              { gui_call(GUI_OP_RENDER, 0, 0, 0, 0); }
 void ag_set_cursor(int c)             { gui_call(GUI_OP_SET_CURSOR, c, 0, 0, 0); }
+int  ag_set_clipboard(const char *text) { return (int)gui_call(GUI_OP_SET_CLIPBOARD, (uint64_t)text, 0, 0, 0); }
+int  ag_get_clipboard(char *buf, uint32_t size) { return (int)gui_call(GUI_OP_GET_CLIPBOARD, (uint64_t)buf, size, 0, 0); }
 
 int ag_clear(int wid, uint32_t color) { return (int)gui_call(GUI_OP_CLEAR, wid, color, 0, 0); }
 int ag_fill_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_t color) {
@@ -105,6 +108,18 @@ void ag_view_init(ag_view_t *v, int wid, ag_widget_t *buf, int cap, uint32_t bg)
     v->widget_cap = cap;
     v->focused_widget = -1;
     v->bg = bg ? bg : AG_PANEL;
+    
+    int fd = open("/disk/theme.txt");
+    if (fd >= 0) {
+        char thm[16];
+        int n = read(fd, thm, sizeof(thm)-1);
+        if (n > 0) {
+            thm[n] = 0;
+            v->bg = (uint32_t)strtol(thm, NULL, 16);
+        }
+        close(fd);
+    }
+    
     for (int i = 0; i < cap; i++) buf[i].kind = 0;
 }
 
@@ -448,7 +463,19 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
         } else if (v->focused_widget >= 0) {
             ag_widget_t *w = &v->widgets[v->focused_widget];
             if (w->kind == AG_W_TEXTBOX) {
-                if (e->key >= 0x20 && e->key < 0x7F) {
+                if (e->mods & 0x02 /* CTRL */) {
+                    if (e->key == 'c' || e->key == 'C') {
+                        ag_set_clipboard(w->text);
+                    } else if (e->key == 'v' || e->key == 'V') {
+                        char buf[AG_MAX_WIDGET_TEXT];
+                        if (ag_get_clipboard(buf, sizeof(buf)) == 0) {
+                            strncpy(w->text, buf, AG_MAX_WIDGET_TEXT - 1);
+                            w->text[AG_MAX_WIDGET_TEXT - 1] = '\0';
+                            w->cursor_pos = (int)strlen(w->text);
+                            if (w->on_change) w->on_change(w, w->user);
+                        }
+                    }
+                } else if (e->key >= 0x20 && e->key < 0x7F) {
                     tb_insert(w, (char)e->key);
                     if (w->on_change) w->on_change(w, w->user);
                 } else if (e->key == '\b') {

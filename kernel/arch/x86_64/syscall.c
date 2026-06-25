@@ -19,6 +19,8 @@
 #include "drivers/uart/uart.h"
 #include "drivers/keyboard/keyboard.h"
 #include "kernel/gui/gui_syscalls.h"
+#include "kernel/arch/x86_64/paging.h"
+#include "kernel/mm/pmm.h"
 
 #define SYS_READ    0
 #define SYS_WRITE   1
@@ -44,6 +46,9 @@
 #define SYS_RENAME   103
 #define SYS_TRUNCATE 104
 #define SYS_STAT     105
+#define SYS_MMAP     9
+#define SYS_MUNMAP   11
+#define SYS_BRK      12
 /* Socket-style networking API. */
 #define SYS_SOCKET        300
 #define SYS_SOCKET_CONNECT 301
@@ -273,8 +278,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_LISTDIR: {
         char path[SYSCALL_PATH_MAX];
         if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        vfs_list(path);
-        return 0;
+        if (a2 && a3 > 0) {
+            /* If a2 is non-zero, treat it as a buffer for readdir instead of legacy print */
+            int n = vfs_readdir(path, (struct vfs_dirent *)(uintptr_t)a2, (int)a3);
+            return (uint64_t)n;
+        } else {
+            vfs_list(path);
+            return 0;
+        }
     }
     case SYS_DNS: {
         char host[SYSCALL_PATH_MAX];
@@ -426,6 +437,36 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         case F_SETFD: return (uint64_t)vfs_set_cloexec(fd, (a3 & FD_CLOEXEC) ? 1 : 0);
         default:      return (uint64_t)-1;
         }
+    }
+    case SYS_BRK: {
+        tcb_t *cur = sched_current();
+        if (!cur) return (uint64_t)-1;
+        
+        if (a1 == 0) {
+            return cur->brk; /* Just return current break */
+        }
+        
+        uint64_t new_brk = (a1 + 4095) & ~4095ULL; /* Page align up */
+        if (new_brk < cur->brk) {
+            /* Shrinking not supported yet, just return current */
+            return cur->brk; 
+        }
+        
+        uint64_t pages_to_alloc = (new_brk - cur->brk) / 4096;
+        for (uint64_t i = 0; i < pages_to_alloc; i++) {
+            uint64_t virt = cur->brk + i * 4096;
+            if (paging_get_phys(virt) == 0) {
+                uint64_t phys = pmm_alloc_frame();
+                if (!phys) {
+                    /* OOM, return old break */
+                    return cur->brk;
+                }
+                paging_map(virt, phys, PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_USER);
+            }
+        }
+        
+        cur->brk = new_brk;
+        return cur->brk;
     }
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);

@@ -53,14 +53,14 @@ static void map_user_stack_pages(void) {
  */
 static void __attribute__((noreturn))
 load_and_jump(const void *elf_data, uint64_t elf_size) {
-    uint64_t entry = elf_load(elf_data, elf_size);
+    tcb_t *cur = sched_current();
+    uint64_t entry = elf_load(elf_data, elf_size, &cur->brk);
     if (entry == 0) {
         kprintf("[proc] ELF load failed\n");
         thread_exit();
     }
     map_user_stack_pages();
 
-    tcb_t *cur = sched_current();
     if (cur && cur->kernel_stack) {
         uint64_t kstack = (uint64_t)cur->kernel_stack + THREAD_STACK_SIZE;
         tss_set_rsp0(kstack);
@@ -147,6 +147,7 @@ int64_t do_fork(void) {
     if (parent) {
         memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
         memcpy(child->cloexec,  parent->cloexec,  sizeof(child->cloexec));
+        child->brk = parent->brk;
     }
 
     if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");

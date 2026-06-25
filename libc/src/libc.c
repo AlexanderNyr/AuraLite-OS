@@ -41,7 +41,11 @@ pid_t getpid(void) {
 }
 
 void listdir(const char *path) {
-    syscall(SYS_LISTDIR, (uint64_t)path, 0, 0, 0, 0, 0);
+    syscall(80, (uint64_t)path, 0, 0, 0, 0, 0); // 80 = SYS_LISTDIR
+}
+
+int readdir(const char *path, void *out, int max) {
+    return (int)syscall(80, (uint64_t)path, (uint64_t)out, max, 0, 0, 0);
 }
 
 uint32_t dns_resolve(const char *hostname) {
@@ -144,6 +148,17 @@ int pipe(int fds[2]) {
 }
 int fcntl(int fd, int cmd, int arg) {
     return (int)syscall(SYS_FCNTL, (uint64_t)fd, (uint64_t)cmd, (uint64_t)arg, 0, 0, 0);
+}
+
+void* sbrk(intptr_t increment) {
+    uint64_t cur_brk = syscall(12, 0, 0, 0, 0, 0, 0); // 12 = SYS_BRK
+    if (cur_brk == (uint64_t)-1) return (void*)-1;
+    if (increment == 0) return (void*)cur_brk;
+    
+    uint64_t new_brk = syscall(12, cur_brk + increment, 0, 0, 0, 0, 0);
+    if (new_brk == cur_brk) return (void*)-1; /* failed to increase */
+    
+    return (void*)cur_brk;
 }
 
 /* ---- stdlib ---- */

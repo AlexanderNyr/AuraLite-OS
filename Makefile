@@ -80,7 +80,7 @@ USER_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
 USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 
 # Common objects shared by all user programs.
-USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o
+USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o $(USER_BUILD)/malloc.o
 
 USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h
 # Augment include path so user apps can include "auragui.h".
@@ -96,7 +96,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
              $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
              $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
-             $(USER_BUILD)/gtaskmgr.elf \
+             $(USER_BUILD)/gtaskmgr.elf $(USER_BUILD)/gtheme.elf \
              $(USER_BUILD)/glaunch.elf \
              $(USER_BUILD)/apm.elf $(USER_BUILD)/matrix.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
@@ -198,6 +198,8 @@ $(USER_BUILD)/gbrowser.o: userspace/gui-browser/gbrowser.c libauragui/include/au
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gusb.o: userspace/gui-usb/gusb.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gtheme.o: userspace/gui-theme/theme.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
 	@mkdir -p $(dir $@)
@@ -209,6 +211,10 @@ $(USER_BUILD)/init.o: userspace/init/init.c $(USER_CFLAGS_INC)
 
 $(USER_BUILD)/libc.o: libc/src/libc.c libc/include/unistd.h libc/include/string.h \
                        libc/include/stdio.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/malloc.o: libc/src/malloc.c libc/include/stdlib.h libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 

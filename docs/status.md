@@ -74,7 +74,7 @@ Legend:
 | Directory/path ops | ✅/🧪 | `listdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`. |
 | Networking | 🧪 | DNS, ping, legacy TCP calls and process-owned socket-style syscalls. |
 | GUI | 🧪 | `SYS_GUI_CALL` and `SYS_GUI_EVENT` power `libauragui` apps. |
-| Memory syscalls | ❌ | No `mmap`, `munmap`, `brk`. |
+| Memory syscalls | 🧪 | `brk` implemented. No `mmap`, `munmap` yet. |
 | Sockets | ❌ | No BSD socket API. |
 
 ## Networking
@@ -88,8 +88,8 @@ Legend:
 | DHCP | ✅ | QEMU/VM NAT-oriented DORA flow. |
 | UDP | ✅ | Used by DNS. |
 | DNS resolver | ✅ | A-record lookup. |
-| TCP client | 🧪 | One connection, no retransmission/sliding window. |
-| Socket API | 🧪 | AF_INET/SOCK_STREAM process-owned handles exist; underlying TCP transport still allows one active stream. |
+| TCP client | 🧪 | Per-connection TCP state (up to 8 connections). Legacy `SYS_NET_*` are deprecated. |
+| Socket API | 🧪 | AF_INET/SOCK_STREAM process-owned handles exist. |
 | virtio-net / vmxnet3 / e1000e | 🚧 | Recognised by the virtual-driver probe, but no data path yet. Use legacy e1000. |
 
 ## Graphics and input
@@ -102,7 +102,7 @@ Legend:
 | Window manager demo | ✅ | Windows, widgets, taskbar, mouse interaction. |
 | PS/2 keyboard | ✅ | Scan-code set 1, ASCII + rich key-event queues. |
 | PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
-| Kernel GUI/compositor | ✅/🧪 | Guaranteed 100 FPS update, cooperative scheduling sleep loop, 1 Hz heartbeat kick thread (`gui_kick_thread`) to prevent QEMU/Windows freeze, window manager, taskbar, event queues, owner-checked GUI syscalls, process-exit window cleanup and `libauragui` apps. |
+| Kernel GUI/compositor | ✅/🧪 | Guaranteed 100 FPS update, cooperative scheduling sleep loop, window manager, taskbar, event queues, owner-checked GUI syscalls, process-exit window cleanup and `libauragui` apps. |
 | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
 | Native VBox/VMware SVGA drivers | ❌ | Limine framebuffer is used instead. |
 
@@ -150,7 +150,6 @@ Legend:
 1. Finish full address-space/page-table reaping for exited user processes.
 2. Extend user-copy into a fault-recovering uaccess layer and audit remaining kernel-internal callers.
 3. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
-4. Replace the single global TCP connection with per-connection/socket objects.
-5. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
-6. Enforce strict user ELF segment permissions and add user memory syscalls.
-7. Tighten FD inheritance/lifetime semantics around `fork`, `execve` and process exit.
+4. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
+5. Enforce strict user ELF segment permissions and add user `mmap` / `munmap`.
+6. Tighten FD inheritance/lifetime semantics around `fork`, `execve` and process exit.

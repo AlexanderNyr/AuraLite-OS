@@ -2,6 +2,19 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Userspace dynamic allocation, Readdir, GUI enhancements, Docs update] 2026-06-25
+
+### Added
+- User-space dynamic memory allocation via `SYS_BRK` (syscall 12), backed by a `malloc`/`free`/`sbrk` implementation in `libc`.
+- Full `readdir` support in `libc` (reusing `SYS_LISTDIR` interface) and updated `/gfiles` to read directory contents dynamically.
+- `gtheme`: GUI Theme Manager for dynamically customizing the `libauragui` window background colors. Persisted to `/disk/theme.txt`.
+- GUI clipboard support via `SYS_GUI_CALL` (`GUI_OP_SET_CLIPBOARD` / `GUI_OP_GET_CLIPBOARD`) enabling `CTRL+C` and `CTRL+V` inside `textbox` widgets.
+
+### Changed
+- Removed `gui_kick_thread` from the kernel compositor, reducing unnecessary UART logging and simplified the cooperative compositor architecture.
+- Added stronger isolation in the GUI compositor by restricting `GUI_OP_RENDER` and `GUI_OP_SET_CURSOR` to PID < 3.
+- Documentation fully updated (`README.md`, `docs/status.md`, `docs/syscall_abi.md`, `docs/architecture.md`) reflecting all recent changes.
+
 ## [GUI 100 FPS Guaranteed Update, Cooperative Compositor, 1Hz Heartbeat Kick] 2026-06-25
 
 ### Added — GUI & Scheduler Anti-Freeze Architecture

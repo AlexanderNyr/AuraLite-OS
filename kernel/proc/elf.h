@@ -68,6 +68,6 @@ struct elf64_phdr {
  * @param  size   image size in bytes
  * @returns the entry-point virtual address, or 0 on failure
  */
-uint64_t elf_load(const void *image, uint64_t size);
+uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk);
 
 #endif /* AURALITE_PROC_ELF_H */

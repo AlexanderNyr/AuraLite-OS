@@ -80,7 +80,9 @@ static void user_test_thread(void *arg) {
     tcb_t *cur = sched_current();
     if (cur) cur->pml4_phys = shell_pml4;
 
-    uint64_t entry = elf_load(init_bin, init_bin_size);
+    uint64_t init_brk = 0;
+    uint64_t entry = elf_load(init_bin, init_bin_size, &init_brk);
+    if (cur) cur->brk = init_brk;
     if (entry == 0) { kprintf("[user] FAIL: ELF load failed\n"); return; }
     if (!map_user_stack()) return;
 

@@ -162,7 +162,7 @@ exit /b
 ```
 
 ### Windows 10 GUI Anti-Freeze Architecture
-The underlying kernel incorporates a dedicated anti-freeze mechanism for Windows 10 hypervisors. A 1 Hz heartbeat thread (`gui_kick_thread`) writes regular keepalive prods to UART stdio and forces screen invalidation, while `gui_compositor_thread` guarantees 100 FPS updates via cooperative scheduling (`sched_yield`). This completely prevents Windows/QEMU display throttling and UI freezing.
+The underlying kernel incorporates a dedicated anti-freeze mechanism for Windows 10 hypervisors. The `gui_compositor_thread` guarantees 100 FPS updates via cooperative scheduling (`sched_yield`). This completely prevents Windows/QEMU display throttling and UI freezing.
 
 ## Run QEMU with USB Mass Storage
 
