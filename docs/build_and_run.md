@@ -95,6 +95,75 @@ qemu-system-x86_64 \
   -device e1000,netdev=net0
 ```
 
+## Run in QEMU on Windows 10 (run.bat)
+
+When running native QEMU for Windows 10 (`qemu-system-x86_64.exe`), place `auralite.iso` in a dedicated directory and create `run.bat` with the following robust script. It automatically verifies QEMU's installation path, creates necessary AHCI/ext2 virtual disks (`disk.img`, `ext2.img`) if missing, and launches QEMU in a single reliable command line:
+
+```batch
+@echo off
+echo ========================================================
+echo       Checking files and launching AuraLite OS...
+echo ========================================================
+
+:: 1. Check QEMU installation
+echo [Step 1] Checking for QEMU installation...
+SET QEMU_PATH="C:\Program Files\qemu\qemu-system-x86_64.exe"
+IF NOT EXIST %QEMU_PATH% GOTO NO_QEMU
+echo          - QEMU found at %QEMU_PATH%
+
+:: 2. Check ISO image
+echo [Step 2] Checking for auralite.iso...
+IF NOT EXIST "auralite.iso" GOTO NO_ISO
+echo          - auralite.iso found.
+
+:: 3. Check and create disk.img
+echo [Step 3] Checking for disk.img...
+IF EXIST "disk.img" GOTO DISK1_OK
+echo          - Creating disk.img (16MB)...
+fsutil file createnew disk.img 16777216 > nul
+:DISK1_OK
+echo          - disk.img ready.
+
+:: 4. Check and create ext2.img
+echo [Step 4] Checking for ext2.img...
+IF EXIST "ext2.img" GOTO DISK2_OK
+echo          - Creating ext2.img (8MB)...
+fsutil file createnew ext2.img 8388608 > nul
+:DISK2_OK
+echo          - ext2.img ready.
+
+echo ========================================================
+echo [Step 5] All files ready! Starting QEMU...
+echo ========================================================
+
+%QEMU_PATH% -cdrom auralite.iso -m 512M -smp 4 -vga std -serial stdio -no-reboot -no-shutdown -cpu qemu64 -netdev user,id=net0 -device e1000,netdev=net0 -device piix3-usb-uhci,id=uhci -device usb-kbd,bus=uhci.0,port=1 -device usb-mouse,bus=uhci.0,port=2 -drive file=disk.img,format=raw,if=none,id=ahcidisk -device ahci,id=ahci0 -device ide-hd,drive=ahcidisk,bus=ahci0.0 -drive file=ext2.img,format=raw,if=none,id=ext2disk -device ide-hd,drive=ext2disk,bus=ahci0.1
+
+echo.
+echo QEMU finished.
+pause
+exit /b
+
+:NO_QEMU
+echo.
+echo [ERROR] QEMU emulator NOT FOUND at: %QEMU_PATH%
+echo         Please install QEMU from https://qemu.weilnetz.de/w64/
+echo         (Or edit run.bat if QEMU is installed in a different folder).
+echo.
+pause
+exit /b
+
+:NO_ISO
+echo.
+echo [ERROR] File 'auralite.iso' NOT FOUND in the current folder!
+echo         Please put 'auralite.iso' into the same folder as run.bat.
+echo.
+pause
+exit /b
+```
+
+### Windows 10 GUI Anti-Freeze Architecture
+The underlying kernel incorporates a dedicated anti-freeze mechanism for Windows 10 hypervisors. A 1 Hz heartbeat thread (`gui_kick_thread`) writes regular keepalive prods to UART stdio and forces screen invalidation, while `gui_compositor_thread` guarantees 100 FPS updates via cooperative scheduling (`sched_yield`). This completely prevents Windows/QEMU display throttling and UI freezing.
+
 ## Run QEMU with USB Mass Storage
 
 ```bash

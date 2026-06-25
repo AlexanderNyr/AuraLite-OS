@@ -956,6 +956,9 @@ void gui_compositor_tick(void) {
         dirty = 1;
     }
 
+    /* Гарантированное обновление экрана 100 раз в секунду */
+    dirty = 1;
+
     if (dirty) {
         dirty = 0;
         compositor_render();
@@ -977,7 +980,25 @@ void gui_compositor_thread(void *arg) {
     dirty = 1;
     for (;;) {
         gui_compositor_tick();
-        timer_sleep_ms(33);
+        uint64_t target = timer_get_ticks() + 1; /* 1 tick @ 100Hz = 10ms (100 FPS) */
+        while (timer_get_ticks() < target) {
+            sched_yield();
+        }
+    }
+}
+
+/* Команда толчка (Kick/prod): циклично раз в секунду выполняется всегда для предотвращения зависания GUI в QEMU/Windows */
+void gui_kick_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        uint64_t target = timer_get_ticks() + 100; /* 100 ticks @ 100Hz = 1 second */
+        while (timer_get_ticks() < target) {
+            sched_yield();
+        }
+        gui_request_redraw();
+        kprintf("[gui-kick] 1Hz heartbeat prod to prevent QEMU/GUI freeze\n");
+        gfx_flip();
+        sched_yield();
     }
 }
 

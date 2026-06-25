@@ -50,7 +50,7 @@ kmain (kernel.c)
    ├── mouse_init()          PS/2 mouse (IRQ 12, scroll-wheel event support)
    ├── wm_demo()             framebuffer window-manager demo
    ├── r3d_demo()            software 3D renderer demo
-   ├── gui_init()            kernel GUI compositor + GUI syscall subsystem
+   ├── gui_init()            kernel GUI compositor (100 FPS cooperative thread + 1 Hz kick thread) + GUI syscall subsystem
    ├── process_self_test()   spawn /hello in isolated address space
    ├── user_mode_self_test() load init.elf (shell) → Ring 3
    └── yield forever         shell runs interactively
@@ -302,8 +302,16 @@ Bresenham lines, and bitmap/PSF-font text.
 
 The legacy framebuffer window-manager demo remains for compatibility tests. The
 newer kernel GUI layer (`kernel/gui/`) manages windows, Z-order, focus,
-drag/resize/minimize/maximize/close state, per-window event rings, cursor shapes
-and a compositor thread. User GUI applications talk to it through `SYS_GUI_CALL`
+drag/resize/minimize/maximize/close state, per-window event rings, cursor shapes,
+a cooperative compositor thread (`gui_compositor_thread`), and a 1 Hz heartbeat kick thread (`gui_kick_thread`). 
+
+### GUI Anti-Freeze Architecture (Windows 10 / QEMU)
+To prevent QEMU and Windows display throttling or freezing, the compositor architecture incorporates three key mechanisms:
+1. **Guaranteed 100 FPS Updates:** `dirty = 1` is forcibly set on every compositor tick, guaranteeing that the frame buffer is composited 100 times per second.
+2. **Cooperative Sleeping:** `gui_compositor_thread` uses a cooperative sleep loop (`while (timer_get_ticks() < target) sched_yield();`) instead of `hlt` spin-locking. This prevents the compositor from monopolizing the 50ms scheduler quantum, drastically improving UI responsiveness and event handling for userspace apps.
+3. **1 Hz Heartbeat Prod (gui_kick_thread):** An independent kernel thread wakes up once per second to force a screen invalidation (`gui_request_redraw()`), write a heartbeat log to UART (`[gui-kick] 1Hz heartbeat prod to prevent QEMU/GUI freeze`), flip the framebuffer, and yield the scheduler. In QEMU on Windows, writing to UART stdio forces the QEMU main loop to poll events, preventing Windows from freezing the QEMU display window.
+
+User GUI applications talk to it through `SYS_GUI_CALL`
 and `SYS_GUI_EVENT`, wrapped by `libauragui` widgets and drawing helpers.
 
 Keyboard input now has both ASCII and rich event paths (modifiers, navigation

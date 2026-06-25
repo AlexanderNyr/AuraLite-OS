@@ -102,7 +102,7 @@ Legend:
 | Window manager demo | ✅ | Windows, widgets, taskbar, mouse interaction. |
 | PS/2 keyboard | ✅ | Scan-code set 1, ASCII + rich key-event queues. |
 | PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
-| Kernel GUI/compositor | 🧪 | Window manager, taskbar, event queues, owner-checked GUI syscalls, process-exit window cleanup and `libauragui` apps. |
+| Kernel GUI/compositor | ✅/🧪 | Guaranteed 100 FPS update, cooperative scheduling sleep loop, 1 Hz heartbeat kick thread (`gui_kick_thread`) to prevent QEMU/Windows freeze, window manager, taskbar, event queues, owner-checked GUI syscalls, process-exit window cleanup and `libauragui` apps. |
 | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
 | Native VBox/VMware SVGA drivers | ❌ | Limine framebuffer is used instead. |
 

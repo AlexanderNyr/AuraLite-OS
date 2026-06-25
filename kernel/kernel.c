@@ -289,7 +289,9 @@ void kmain(void) {
     gui_init();
     gui_self_test();
     extern void gui_compositor_thread(void *arg);
+    extern void gui_kick_thread(void *arg);
     kthread_create(gui_compositor_thread, NULL, "gui-compositor");
+    kthread_create(gui_kick_thread, NULL, "gui-kick");
 
     /* Phase 15: per-process address spaces — self-test. */
     kprintf("[boot] testing per-process address spaces...\n");

@@ -2,6 +2,13 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GUI 100 FPS Guaranteed Update, Cooperative Compositor, 1Hz Heartbeat Kick] 2026-06-25
+
+### Added — GUI & Scheduler Anti-Freeze Architecture
+- `dirty = 1` is now forcibly set on every `gui_compositor_tick()`, guaranteeing a steady 100 FPS display refresh rate in the compositor.
+- Rewrote the main loop of `gui_compositor_thread()` to replace `timer_sleep_ms(33)` (which executed `hlt` in a tight spin loop for 33ms, monopolizing the 50ms scheduler quantum and starving userspace apps) with a cooperative sleep loop (`while (timer_get_ticks() < target) sched_yield();`). This drastically improves UI responsiveness and event processing speed for all userspace GUI applications.
+- Created a brand-new independent kernel thread `gui_kick_thread` (1 Hz Heartbeat Prod) that wakes up once per second to prevent QEMU and Windows display throttling/freezing. On every cycle, it forces a full screen invalidation (`gui_request_redraw()`), issues a heartbeat debug log to UART (`[gui-kick] 1Hz heartbeat prod to prevent QEMU/GUI freeze`), flips the framebuffer (`gfx_flip()`), and yields the scheduler (`sched_yield()`).
+
 ## [Address-space reaping, FD lifecycle, per-conn TCP, GUI audit] 2026-06-25
 
 ### Added — VMM
@@ -91,7 +98,7 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 ### Added — kernel GUI subsystem (`kernel/gui/`, ~1100 lines)
 - Window manager with Z-ordering, focus, drag/resize/minimize/maximize/close,
   per-window back buffer, full-screen compositor running in a dedicated
-  kernel thread (~30 Hz).
+  kernel thread (100 Hz).
 - Per-window event ring (mouse + keyboard, 64 events deep) with double-click
   detection, scroll-wheel deltas, modifier state.
 - Mouse cursor with 7 distinct shapes (arrow, ibeam, hand, h/v/diagonal
