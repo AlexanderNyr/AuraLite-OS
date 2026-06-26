@@ -18,7 +18,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang lld nasm xorriso qemu-system-x86 python3 make llvm mtools
+            clang lld nasm xorriso qemu-system-x86 python3 make llvm mtools \
+            autoconf automake libtool
 
       - name: Build ISO
         run: make iso
