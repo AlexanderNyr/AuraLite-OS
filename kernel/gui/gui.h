@@ -266,6 +266,7 @@ void gui_set_cursor(gui_cursor_t c);
 /* ---- Desktop icons ---- */
 int  gui_add_icon(int32_t x, int32_t y, const char *label, int icon_id);
 int  gui_remove_icon(int icon_idx);
+int  gui_icon_owned_by(int icon_idx, uint64_t owner_pid);
 int  gui_icon_count(void);
 
 /* ---- Notifications ---- */

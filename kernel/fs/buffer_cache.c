@@ -3,7 +3,7 @@
 #include "kernel/lib/spinlock.h"
 #include "drivers/ahci/ahci.h"
 #include "kernel/mm/kheap.h"
-#include <string.h>
+#include "kernel/lib/string.h"
 
 /* Global cache state */
 static struct buffer *bc_pool = NULL;

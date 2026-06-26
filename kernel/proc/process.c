@@ -35,14 +35,17 @@ extern uint64_t syscall_saved_rsp;   /* user RSP (saved by our asm) */
 
 static void map_user_stack_pages(void) {
     uint64_t base = USER_STACK_TOP - USER_STACK_SIZE;
+    uint64_t hhdm = limine_get_hhdm_offset();
     for (uint64_t off = 0; off < USER_STACK_SIZE; off += 0x1000) {
         uint64_t phys = pmm_alloc_frame();
         if (phys == 0) {
             kprintf("[proc] OOM mapping user stack\n");
             return;
         }
+        memset((void *)(uintptr_t)(hhdm + phys), 0, 0x1000);
         paging_map(base + off, phys,
-                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_USER);
+                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
+                   PAGE_FLAG_USER | PAGE_FLAG_NO_EXEC);
     }
 }
 

@@ -60,6 +60,11 @@ void paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 /* Unmap a single page (clear its PTE) and invalidate the TLB entry. */
 void paging_unmap(uint64_t virt);
 
+/* Update the flag bits of an existing mapping while preserving the physical
+ * frame.  Returns 0 on success, -1 if the page is not mapped.
+ */
+int paging_protect(uint64_t virt, uint64_t flags);
+
 /*
  * Translate a virtual address to its mapped physical address.
  * @returns the physical page base, or 0 if not present.

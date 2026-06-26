@@ -115,6 +115,16 @@ void paging_unmap(uint64_t virt) {
     invlpg(virt);
 }
 
+int paging_protect(uint64_t virt, uint64_t flags) {
+    uint64_t *pte = walk_pte(virt, 0);
+    if (pte == NULL || !(*pte & PAGE_FLAG_PRESENT)) {
+        return -1;
+    }
+    *pte = (*pte & PAGE_ADDR_MASK) | flags;
+    invlpg(virt);
+    return 0;
+}
+
 uint64_t paging_get_phys(uint64_t virt) {
     uint64_t *pte = walk_pte(virt, 0);
     if (pte == NULL || !(*pte & PAGE_FLAG_PRESENT)) {

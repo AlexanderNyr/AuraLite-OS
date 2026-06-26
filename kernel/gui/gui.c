@@ -701,6 +701,11 @@ int gui_remove_icon(int icon_idx) {
     return 0;
 }
 
+int gui_icon_owned_by(int icon_idx, uint64_t owner_pid) {
+    if (icon_idx < 0 || icon_idx >= GUI_MAX_ICONS || !icons[icon_idx].in_use) return 0;
+    return (uint64_t)(uint32_t)icons[icon_idx].owner_pid == owner_pid;
+}
+
 int gui_icon_count(void) {
     int n = 0;
     for (int i = 0; i < GUI_MAX_ICONS; i++) if (icons[i].in_use) n++;

@@ -35,6 +35,13 @@ int main(void) {
     r = stat("/hello", &st);
     check("stat accepts valid output pointer", r == 0 && st.st_size > 0);
 
+    r = readdir("/", (void *)0xFFFF800000000000ULL, 4);
+    check("readdir rejects kernel output pointer", r < 0);
+
+    struct dirent ents[8];
+    r = readdir("/", ents, 8);
+    check("readdir accepts valid output pointer", r > 0);
+
     fd = open("/hello");
     check("open valid file returns process fd", fd >= 3);
     if (fd >= 3) {

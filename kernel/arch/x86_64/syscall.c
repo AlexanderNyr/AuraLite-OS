@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/string.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/process.h"
@@ -21,6 +22,8 @@
 #include "kernel/gui/gui_syscalls.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/mm/kheap.h"
+#include "kernel/limine_requests.h"
 
 #define SYS_READ    0
 #define SYS_WRITE   1
@@ -69,6 +72,13 @@
 
 #define SYSCALL_PATH_MAX 256
 #define SYSCALL_IO_CHUNK 256
+
+/* Keep the heap well below the user stack so brk growth cannot collide with
+ * the fixed high-address stack mapping. */
+#define USER_STACK_TOP       0x7FFFF0000000ULL
+#define USER_STACK_SIZE      0x10000ULL
+#define USER_BRK_GUARD_GAP   (2ULL * 1024ULL * 1024ULL)
+#define USER_BRK_MAX         (USER_STACK_TOP - USER_STACK_SIZE - USER_BRK_GUARD_GAP)
 
 static int copy_user_path(char *dst, uint64_t user_path) {
     return copy_string_from_user(dst, (const char *)(uintptr_t)user_path,
@@ -279,8 +289,24 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         char path[SYSCALL_PATH_MAX];
         if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
         if (a2 && a3 > 0) {
-            /* If a2 is non-zero, treat it as a buffer for readdir instead of legacy print */
-            int n = vfs_readdir(path, (struct vfs_dirent *)(uintptr_t)a2, (int)a3);
+            int max = (int)a3;
+            if (max > VFS_MAX_DIRENTS) max = VFS_MAX_DIRENTS;
+            if (max <= 0) return (uint64_t)-1;
+            uint64_t bytes = (uint64_t)max * sizeof(struct vfs_dirent);
+            if (!validate_user_range((void *)(uintptr_t)a2, bytes, 1)) {
+                return (uint64_t)-1;
+            }
+            struct vfs_dirent *kents = kmalloc((size_t)bytes);
+            if (!kents) return (uint64_t)-1;
+            int n = vfs_readdir(path, kents, max);
+            if (n > 0) {
+                uint64_t used = (uint64_t)n * sizeof(struct vfs_dirent);
+                if (copy_to_user((void *)(uintptr_t)a2, kents, used) != 0) {
+                    kfree(kents);
+                    return (uint64_t)-1;
+                }
+            }
+            kfree(kents);
             return (uint64_t)n;
         } else {
             vfs_list(path);
@@ -443,30 +469,41 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_BRK: {
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-1;
-        
+
         if (a1 == 0) {
-            return cur->brk; /* Just return current break */
+            return cur->brk; /* Query current break */
         }
-        
-        uint64_t new_brk = (a1 + 4095) & ~4095ULL; /* Page align up */
-        if (new_brk < cur->brk) {
-            /* Shrinking not supported yet, just return current */
-            return cur->brk; 
+
+        uint64_t req_brk = a1;
+        if (req_brk < cur->brk) {
+            /* Shrinking is intentionally unsupported for now. */
+            return cur->brk;
         }
-        
-        uint64_t pages_to_alloc = (new_brk - cur->brk) / 4096;
+        if (req_brk >= USER_BRK_MAX) {
+            return cur->brk;
+        }
+
+        uint64_t new_brk = (req_brk + 4095ULL) & ~4095ULL;
+        if (new_brk < cur->brk || new_brk >= USER_BRK_MAX) {
+            return cur->brk;
+        }
+
+        uint64_t pages_to_alloc = (new_brk - cur->brk) / 4096ULL;
+        uint64_t hhdm = limine_get_hhdm_offset();
         for (uint64_t i = 0; i < pages_to_alloc; i++) {
-            uint64_t virt = cur->brk + i * 4096;
+            uint64_t virt = cur->brk + i * 4096ULL;
             if (paging_get_phys(virt) == 0) {
                 uint64_t phys = pmm_alloc_frame();
                 if (!phys) {
-                    /* OOM, return old break */
                     return cur->brk;
                 }
-                paging_map(virt, phys, PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_USER);
+                memset((void *)(uintptr_t)(hhdm + phys), 0, 4096);
+                paging_map(virt, phys,
+                           PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
+                           PAGE_FLAG_USER | PAGE_FLAG_NO_EXEC);
             }
         }
-        
+
         cur->brk = new_brk;
         return cur->brk;
     }

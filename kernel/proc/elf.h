@@ -31,6 +31,11 @@
 
 #define PT_LOAD       1
 
+/* Program-header permission bits. */
+#define PF_X          0x1
+#define PF_W          0x2
+#define PF_R          0x4
+
 /* ELF64 header (64 bytes). */
 struct elf64_ehdr {
     uint8_t  e_ident[16];

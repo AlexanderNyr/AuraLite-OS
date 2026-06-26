@@ -38,6 +38,11 @@ static int require_owner(int wid) {
     return gui_window_owned_by(wid, pid);
 }
 
+static int require_icon_owner(int icon_idx) {
+    uint64_t pid = current_pid();
+    return gui_icon_owned_by(icon_idx, pid);
+}
+
 uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5) {
     switch (op) {
@@ -177,6 +182,7 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
         return (uint64_t)gui_add_icon(lo32(a2), hi32(a2), label, (int)a4);
     }
     case GUI_OP_REMOVE_ICON:
+        if (!require_icon_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_remove_icon((int)a2);
     case GUI_OP_NOTIFY: {
         char text[128];
@@ -184,6 +190,7 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
         return (uint64_t)gui_notify(text, (uint32_t)a3, (uint32_t)a4);
     }
     case GUI_OP_GET_FLAGS:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_get_window_flags((int)a2);
     }
     return (uint64_t)-1;
