@@ -29,6 +29,7 @@ struct pmm_state {
     uint64_t  free_frames;        /* currently free (allocatable) frames      */
     uint64_t  bitmap_phys;        /* physical base of the bitmap              */
     uint64_t  bitmap_frames;      /* frames the bitmap occupies               */
+    uint64_t  hhdm;               /* cached direct-map offset                 */
     spinlock_t lock;
 };
 
@@ -97,6 +98,7 @@ void pmm_init(void) {
     }
 
     /* 2) Place the bitmap in memory (preferring bootloader-reclaimable). */
+    pmm.hhdm        = hhdm;
     pmm.bitmap_phys = find_bitmap_region(entries, entry_count);
     if (pmm.bitmap_phys == 0) {
         kprintf(PMM_TAG "FATAL: no region large enough for the bitmap (%llu B)\n",
@@ -155,7 +157,9 @@ uint64_t pmm_alloc_frame(void) {
     bm_set(pmm.bitmap, (uint64_t)idx);
     pmm.free_frames--;
     spinlock_release_irqrestore(&pmm.lock, rflags);
-    return (uint64_t)idx << PMM_PAGE_SHIFT;
+    uint64_t phys = (uint64_t)idx << PMM_PAGE_SHIFT;
+    memset((void *)(uintptr_t)(pmm.hhdm + phys), 0, PMM_PAGE_SIZE);
+    return phys;
 }
 
 uint64_t pmm_alloc_contiguous(uint64_t count) {
@@ -170,7 +174,9 @@ uint64_t pmm_alloc_contiguous(uint64_t count) {
     }
     pmm.free_frames -= count;
     spinlock_release_irqrestore(&pmm.lock, rflags);
-    return (uint64_t)idx << PMM_PAGE_SHIFT;
+    uint64_t phys = (uint64_t)idx << PMM_PAGE_SHIFT;
+    memset((void *)(uintptr_t)(pmm.hhdm + phys), 0, count * PMM_PAGE_SIZE);
+    return phys;
 }
 
 void pmm_free_frame(uint64_t phys) {

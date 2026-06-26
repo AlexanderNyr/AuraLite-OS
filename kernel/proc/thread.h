@@ -17,7 +17,9 @@
  */
 
 #define THREAD_NAME_MAX    64
-#define THREAD_STACK_SIZE  (16 * 1024)   /* 16 KiB per kernel thread */
+#define THREAD_STACK_SIZE  (16 * 1024)   /* 16 KiB usable per kernel thread */
+#define THREAD_STACK_GUARD_PAGES 1
+#define THREAD_STACK_PAGES       (THREAD_STACK_SIZE / 4096)
 #define SCHED_QUANTUM      5              /* default tick slice (50ms @100Hz) */
 
 /* Max processes (for the wait/child-tracking arrays). */
@@ -32,7 +34,10 @@ enum thread_state {
 
 typedef struct tcb {
     uint64_t  rsp;               /* offset 0: saved stack pointer            */
-    void     *kernel_stack;      /* base of the allocated stack              */
+    void     *kernel_stack;      /* base of the usable stack                 */
+    void     *kernel_stack_region; /* full mapped slot incl. guard pages      */
+    int       kernel_stack_slot; /* guarded-stack allocator slot, or -1      */
+    uint64_t  kernel_stack_phys[THREAD_STACK_PAGES]; /* backing frames       */
     uint64_t  id;                /* unique thread/process ID (= PID)         */
     char      name[THREAD_NAME_MAX];
     int       state;             /* enum thread_state                        */
@@ -73,7 +78,12 @@ typedef struct tcb {
      * destination.  syscall_get_saved_return() reads these back at sysret. */
     uint64_t  saved_user_rip;
     uint64_t  saved_user_rflags;
+    uint64_t  saved_user_rsp;
 } tcb_t;
+
+/* Allocate/free a guarded kernel stack for an already-zeroed TCB. */
+int  thread_alloc_kernel_stack(tcb_t *tcb);
+void thread_free_kernel_stack(tcb_t *tcb);
 
 /*
  * wait4(pid, *exit_code):

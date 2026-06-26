@@ -12,6 +12,7 @@
 #include "kernel/mm/heap.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 
 #define PAGE_SIZE 4096ULL
@@ -111,6 +112,13 @@ void *kmalloc(uint64_t size) {
 }
 
 void kfree(void *ptr) {
+    if (ptr) {
+        heap_block_t *b = (heap_block_t *)((char *)ptr - HEAP_HEADER_SIZE);
+        if (b->magic == HEAP_MAGIC_USED && b->size > HEAP_HEADER_SIZE + HEAP_FOOTER_SIZE) {
+            uint64_t payload = b->size - HEAP_HEADER_SIZE - HEAP_FOOTER_SIZE;
+            memset(ptr, 0, (size_t)payload);
+        }
+    }
     heap_free(&kheap, ptr);
 }
 

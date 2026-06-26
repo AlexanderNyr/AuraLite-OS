@@ -4,12 +4,12 @@
 ; SYSCALL convention: rax=sysno, rdi=a1, rsi=a2, rdx=a3, r10=a4, r8=a5, r9=a6
 ; C ABI:             rdi=arg1, rsi=arg2, rdx=arg3, rcx=arg4, r8=arg5, r9=arg6
 ;
-; The dispatch runs on the USER's stack (SYSCALL does not switch stacks). This is
-; safe because:
-;   - The user stack is mapped writable + user-accessible.
-;   - Timer/IRQ interrupts switch to the TSS.RSP0 kernel stack, which is
-;     DIFFERENT from the user stack, so no conflict.
-;   - iretq from the timer handler restores the user RSP.
+; SECURITY MODEL:
+;   - SYSCALL itself does not switch stacks, so we immediately capture the
+;     userspace RSP and switch onto a per-thread kernel stack published by
+;     set_syscall_stack().
+;   - This avoids running kernel code on attacker-controlled userspace stack
+;     memory and is a prerequisite for stronger SMAP-style hardening later.
 ; =============================================================================
 
 bits 64
@@ -20,9 +20,11 @@ align 8
 global syscall_saved_rcx
 global syscall_saved_r11
 global syscall_saved_rsp
+global syscall_kernel_rsp
 syscall_saved_rcx:   dq 0      ; user return RIP (saved by CPU in RCX)
 syscall_saved_r11:   dq 0      ; user RFLAGS (saved by CPU in R11)
 syscall_saved_rsp:   dq 0      ; user RSP (saved manually, for fork())
+syscall_kernel_rsp:  dq 0      ; per-thread kernel stack top (published on switch)
 
 section .text
 extern syscall_dispatch
@@ -36,8 +38,10 @@ global set_syscall_stack
 %define MSR_FMASK  0xC0000084
 %define MSR_EFER   0xC0000080
 
-; Placeholder — kept for API compatibility but does nothing now.
+; Publish the kernel stack top to use on SYSCALL entry.
+;   rdi = stack_top
 set_syscall_stack:
+    mov [rel syscall_kernel_rsp], rdi
     ret
 
 syscall_init:
@@ -55,9 +59,15 @@ syscall_init:
     mov edx, 0x00100008
     wrmsr
 
-    ; FMASK: clear IF (bit 9) on SYSCALL entry.
+    ; FMASK: clear sensitive flags on SYSCALL entry.
+    ;   TF  0x00000100  single-step
+    ;   IF  0x00000200  interrupt-enable
+    ;   DF  0x00000400  string direction
+    ;   NT  0x00004000  nested task
+    ;   RF  0x00010000  resume flag
+    ;   AC  0x00040000  alignment-check / SMAP override bit
     mov ecx, MSR_FMASK
-    mov eax, 0x200
+    mov eax, 0x00054700
     xor edx, edx
     wrmsr
 
@@ -70,19 +80,16 @@ syscall_init:
 
 syscall_entry:
     ; CPU set: RCX=user RIP, R11=user RFLAGS.  RSP is still the user stack.
-    ;
-    ; We publish the user RCX/R11/RSP in three globals so do_fork() can read
-    ; them.  A nested syscall from a thread the scheduler switches to during
-    ; our call would otherwise overwrite those globals, so syscall_dispatch
-    ; copies them into the current TCB's saved_user_* fields BEFORE doing
-    ; any work that could yield; on our way back out we restore RCX/R11
-    ; from the TCB rather than from the globals.
+    ; Capture the full userspace return frame, then switch immediately to the
+    ; published kernel stack so no kernel work runs on attacker-controlled user
+    ; memory.
     mov [rel syscall_saved_rcx], rcx
     mov [rel syscall_saved_r11], r11
     mov [rel syscall_saved_rsp], rsp
+    mov rsp, [rel syscall_kernel_rsp]
 
-    ; Stash all SYSCALL arg registers on the stack (in reverse order so the
-    ; SysV slots line up neatly).  After these pushes:
+    ; Stash all SYSCALL arg registers on the KERNEL stack (in reverse order so
+    ; the SysV slots line up neatly). After these pushes:
     ;   [rsp+0]  = num (rax)
     ;   [rsp+8]  = a1  (rdi)
     ;   [rsp+16] = a2  (rsi)
@@ -116,17 +123,8 @@ syscall_entry:
     add  rsp, 16           ; drop alignment pad + a6
     add  rsp, 7*8          ; drop the 7 pushed sources
 
-    ; Restore the GLOBAL syscall_saved_rcx/r11 from this thread's TCB.  This
-    ; matters when another thread issued its own syscall while we were
-    ; blocked inside syscall_dispatch (e.g. wait4 yielding) and clobbered
-    ; the globals.  syscall_restore_user_frame() takes no args, returns void.
-    ;
-    ; IMPORTANT: preserve *all* user callee-saved registers.  This path used to
-    ; stash RAX in R12 and therefore corrupted user-space R12 across every
-    ; syscall; optimized GUI apps kept pointers in R12 and could fault after a
-    ; syscall.  Save the user's R12 first, then use R12 only as our temporary.
-    ; The push also aligns the user stack for the C call (RSP ≡ 0 mod 16 before
-    ; call, callee sees RSP ≡ 8 mod 16).
+    ; Restore the GLOBAL syscall_saved_rcx/r11/rsp from this thread's TCB.
+    ; IMPORTANT: preserve user callee-saved registers such as R12.
     push r12
     mov  r12, rax
     call syscall_restore_user_frame
@@ -135,4 +133,5 @@ syscall_entry:
 
     mov rcx, [rel syscall_saved_rcx]
     mov r11, [rel syscall_saved_r11]
+    mov rsp, [rel syscall_saved_rsp]
     o64 sysret

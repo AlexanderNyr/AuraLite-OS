@@ -14,6 +14,8 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/tss.h"
+#include "kernel/arch/x86_64/syscall.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "drivers/timer/pit.h"
@@ -82,6 +84,12 @@ void schedule(void) {
 
     current_thread = next;
     next->state = THREAD_RUNNING;
+
+    if (next->kernel_stack) {
+        uint64_t kstack_top = (uint64_t)next->kernel_stack + THREAD_STACK_SIZE;
+        tss_set_rsp0(kstack_top);
+        set_syscall_stack(kstack_top);
+    }
 
     /* Switch address space if the new thread has its own PML4. */
     if (next->pml4_phys != 0) {
@@ -207,8 +215,16 @@ void sched_init(void) {
     /* 2) Create the idle thread (NOT added to the run queue — it is the
           fallback selected by schedule() when the queue is empty). */
     idle_thread = kmalloc(sizeof(tcb_t));
+    if (idle_thread == NULL) return;
     memset(idle_thread, 0, sizeof(tcb_t));
-    idle_thread->kernel_stack = kmalloc(THREAD_STACK_SIZE);
+    idle_thread->kernel_stack = NULL;
+    idle_thread->kernel_stack_region = NULL;
+    idle_thread->kernel_stack_slot = -1;
+    if (thread_alloc_kernel_stack(idle_thread) != 0) {
+        kfree(idle_thread);
+        idle_thread = NULL;
+        return;
+    }
     idle_thread->id      = tid_counter++;
     idle_thread->state   = THREAD_READY;
     idle_thread->quantum = 1;             /* switch away from idle ASAP */

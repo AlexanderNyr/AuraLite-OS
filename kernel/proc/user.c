@@ -14,6 +14,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/proc/elf.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/gdt.h"
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/syscall.h"
@@ -21,8 +22,9 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 
-#define USER_STACK_TOP  0x7FFFF0000000ULL    /* near top of user half       */
-#define USER_STACK_SIZE 0x10000ULL           /* 64 KiB                      */
+#define USER_STACK_TOP         0x7FFFF0000000ULL    /* near top of user half */
+#define USER_STACK_SIZE        0x10000ULL           /* usable bytes          */
+#define USER_STACK_GUARD_SIZE  0x1000ULL            /* low guard page        */
 
 /* Implemented in user_entry.asm — the actual iretq to Ring 3. */
 extern void jump_to_user_asm(uint64_t entry, uint64_t stack_top,
@@ -48,16 +50,22 @@ void jump_to_user(uint64_t entry, uint64_t stack_top, uint64_t stack_bottom) {
  * Map the user stack pages (USER | PRESENT | WRITABLE). The code/data segments
  * are mapped by the ELF loader.
  */
-static int map_user_stack(void) {
-    uint64_t stack_base = USER_STACK_TOP - USER_STACK_SIZE;
-    for (uint64_t off = 0; off < USER_STACK_SIZE; off += 0x1000) {
+static uint64_t choose_user_stack_top(void) {
+    uint64_t pages = read_tsc() & 0xFULL; /* small per-launch entropy */
+    return USER_STACK_TOP - pages * 0x1000ULL;
+}
+
+static int map_user_stack(uint64_t stack_top) {
+    uint64_t stack_base = stack_top - USER_STACK_SIZE - USER_STACK_GUARD_SIZE;
+    for (uint64_t off = USER_STACK_GUARD_SIZE; off < USER_STACK_GUARD_SIZE + USER_STACK_SIZE; off += 0x1000) {
         uint64_t phys = pmm_alloc_frame();
         if (phys == 0) {
             kprintf("[user] FAIL: OOM for user stack\n");
             return 0;
         }
         paging_map(stack_base + off, phys,
-                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_USER);
+                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
+                   PAGE_FLAG_USER | PAGE_FLAG_NO_EXEC);
     }
     return 1;
 }
@@ -84,11 +92,12 @@ static void user_test_thread(void *arg) {
     uint64_t entry = elf_load(init_bin, init_bin_size, &init_brk);
     if (cur) cur->brk = init_brk;
     if (entry == 0) { kprintf("[user] FAIL: ELF load failed\n"); return; }
-    if (!map_user_stack()) return;
+    uint64_t stack_top = choose_user_stack_top();
+    if (!map_user_stack(stack_top)) return;
 
     kprintf("[user] shell in isolated address space (CR3=0x%llx)\n",
             (unsigned long long)shell_pml4);
-    jump_to_user(entry, USER_STACK_TOP - 16, 0);
+    jump_to_user(entry, stack_top - 16, 0);
 }
 
 void user_mode_self_test(void) {

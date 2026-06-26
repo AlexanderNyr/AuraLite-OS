@@ -23,6 +23,10 @@ void pmm_init(void);
 
 /*
  * Allocate one free frame.
+ *
+ * Returned frames are scrubbed to zero before being handed to the caller so
+ * stale contents from prior kernel/user allocations are not re-exposed.
+ *
  * @returns its physical address (page aligned), or 0 if out of memory.
  */
 uint64_t pmm_alloc_frame(void);

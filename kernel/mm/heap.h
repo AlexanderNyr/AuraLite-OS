@@ -52,6 +52,8 @@ struct heap {
 
 #define HEAP_MAGIC_USED 0xA10CA10CA10CA10CULL
 #define HEAP_MAGIC_FREE 0xF8EEF8EEF8EEF8EEULL
+#define HEAP_HEADER_SIZE ((uint64_t)sizeof(heap_block_t))
+#define HEAP_FOOTER_SIZE (16ULL)
 
 void  heap_init(heap_t *h, uintptr_t base, uint64_t limit, heap_expand_fn expand);
 void *heap_alloc(heap_t *h, uint64_t size);

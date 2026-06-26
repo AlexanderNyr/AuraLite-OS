@@ -12,6 +12,17 @@
 #include "stdio.h"
 #include "stdlib.h"
 
+/* ---- Stack protector runtime ---- */
+
+uintptr_t __stack_chk_guard = 0x6B1F2D4CA53E9071ULL;
+
+__attribute__((noreturn)) void __stack_chk_fail(void) {
+    const char msg[] = "stack corruption detected\n";
+    write(2, msg, sizeof(msg) - 1);
+    _exit(127);
+    for (;;) { }
+}
+
 /* ---- Syscall wrappers ---- */
 
 ssize_t write(int fd, const void *buf, size_t count) {

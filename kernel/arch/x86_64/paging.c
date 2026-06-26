@@ -18,11 +18,17 @@
 #define MSR_EFER   0xC0000080
 #define EFER_NXE   (1ULL << 11)   /* enables NX bit in PTEs */
 
+#define CR4_SMEP   (1ULL << 20)
+#define CR4_SMAP   (1ULL << 21)
+#define CPUID7_EBX_SMEP (1U << 7)
+#define CPUID7_EBX_SMAP (1U << 20)
+
 #define VMM_TAG "[vmm] "
 
 static uint64_t  hhdm;    /* higher-half direct-map offset (from Limine)     */
 static uint64_t *pml4;    /* HHDM pointer to the current PML4 (from CR3)    */
 static uint64_t  kernel_pml4_phys;  /* the kernel's PML4 (for switching back) */
+volatile int cpu_smap_is_active = 0;
 
 /* Convert a physical address to a writable HHDM virtual pointer. */
 static inline void *phys_to_ptr(uint64_t phys) {
@@ -44,6 +50,23 @@ void paging_init(void) {
     /* Enable the NX (No-Execute) execution-disable bit in page tables. */
     uint64_t efer = read_msr(MSR_EFER);
     write_msr(MSR_EFER, efer | EFER_NXE);
+
+    /* Enable SMEP when the CPU advertises it so the kernel cannot execute
+     * instructions from user-mapped pages. */
+    uint32_t a, b, c, d;
+    cpuid_count(7, 0, &a, &b, &c, &d);
+    (void)a; (void)c; (void)d;
+    uint64_t cr4 = read_cr4();
+    if (b & CPUID7_EBX_SMEP) {
+        cr4 |= CR4_SMEP;
+        kprintf(VMM_TAG "SMEP enabled\n");
+    }
+    if (b & CPUID7_EBX_SMAP) {
+        cr4 |= CR4_SMAP;
+        cpu_smap_is_active = 1;
+        kprintf(VMM_TAG "SMAP enabled\n");
+    }
+    write_cr4(cr4);
 
     kprintf(VMM_TAG "PML4 at phys 0x%016llx, HHDM 0x%016llx, NXE enabled\n",
             (unsigned long long)(cr3 & PAGE_ADDR_MASK),

@@ -106,14 +106,7 @@ void isr_handler(struct registers *r) {
         if (from_user) {
             kprintf("[exception] killing user thread (tid %llu)\n",
                     (unsigned long long)(sched_current() ? sched_current()->id : 0));
-            tcb_t *cur = sched_current();
-            if (cur) {
-                cur->state = THREAD_DEAD;
-            }
-            schedule();    /* switch to another thread; never returns here */
-            for (;;) {
-                __asm__ volatile ("cli; hlt");
-            }
+            thread_exit_with_code(128 + (int)r->int_no);
         }
 
         /* Kernel-mode exception: truly fatal. */

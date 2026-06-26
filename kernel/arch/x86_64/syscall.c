@@ -75,10 +75,11 @@
 
 /* Keep the heap well below the user stack so brk growth cannot collide with
  * the fixed high-address stack mapping. */
-#define USER_STACK_TOP       0x7FFFF0000000ULL
-#define USER_STACK_SIZE      0x10000ULL
-#define USER_BRK_GUARD_GAP   (2ULL * 1024ULL * 1024ULL)
-#define USER_BRK_MAX         (USER_STACK_TOP - USER_STACK_SIZE - USER_BRK_GUARD_GAP)
+#define USER_STACK_TOP        0x7FFFF0000000ULL
+#define USER_STACK_SIZE       0x10000ULL
+#define USER_STACK_GUARD_SIZE 0x1000ULL
+#define USER_BRK_GUARD_GAP    (2ULL * 1024ULL * 1024ULL)
+#define USER_BRK_MAX          (USER_STACK_TOP - USER_STACK_SIZE - USER_STACK_GUARD_SIZE - USER_BRK_GUARD_GAP)
 
 static int copy_user_path(char *dst, uint64_t user_path) {
     return copy_string_from_user(dst, (const char *)(uintptr_t)user_path,
@@ -133,6 +134,7 @@ static uint64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
  * back so the asm sysret prologue lands at the right user RIP. */
 extern uint64_t syscall_saved_rcx;
 extern uint64_t syscall_saved_r11;
+extern uint64_t syscall_saved_rsp;
 
 /* Called from syscall_entry.asm just before sysret.  Refreshes the
  * syscall_saved_* globals from the current TCB's per-thread copies.  Uses the
@@ -143,6 +145,7 @@ void syscall_restore_user_frame(void) {
     if (cur->saved_user_rip) {
         syscall_saved_rcx = cur->saved_user_rip;
         syscall_saved_r11 = cur->saved_user_rflags;
+        syscall_saved_rsp = cur->saved_user_rsp;
     }
 }
 
@@ -156,6 +159,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     if (cur) {
         cur->saved_user_rip    = syscall_saved_rcx;
         cur->saved_user_rflags = syscall_saved_r11;
+        cur->saved_user_rsp    = syscall_saved_rsp;
     }
 
     switch (num) {

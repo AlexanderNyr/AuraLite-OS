@@ -24,8 +24,9 @@ jump_to_user_asm:
     ; Build RFLAGS with IF set (so interrupts work in Ring 3).
     pushfq
     pop rax
-    or rax, 0x200              ; set IF
-    and rax, ~0x100            ; clear TF (trap flag)
+    ; Clear TF, DF, IOPL, NT, RF, AC before exposing RFLAGS to Ring 3.
+    and rax, ~0x00054700
+    or  rax, 0x200             ; set IF
 
     ; Push the iretq frame in order (low address first):
     ;   SS, RSP, RFLAGS, CS, RIP

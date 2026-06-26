@@ -23,8 +23,9 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
 
-#define USER_STACK_TOP  0x7FFFF0000000ULL
-#define USER_STACK_SIZE 0x10000ULL
+#define USER_STACK_TOP         0x7FFFF0000000ULL
+#define USER_STACK_SIZE        0x10000ULL
+#define USER_STACK_GUARD_SIZE  0x1000ULL
 
 /* Saved user-mode state from the syscall entry (set in syscall_entry.asm). */
 extern uint64_t syscall_saved_rcx;   /* user RIP */
@@ -33,16 +34,19 @@ extern uint64_t syscall_saved_rsp;   /* user RSP (saved by our asm) */
 
 /* ---- Address-space helpers ---- */
 
-static void map_user_stack_pages(void) {
-    uint64_t base = USER_STACK_TOP - USER_STACK_SIZE;
-    uint64_t hhdm = limine_get_hhdm_offset();
-    for (uint64_t off = 0; off < USER_STACK_SIZE; off += 0x1000) {
+static uint64_t choose_user_stack_top(void) {
+    uint64_t pages = read_tsc() & 0xFULL; /* small per-exec entropy */
+    return USER_STACK_TOP - pages * 0x1000ULL;
+}
+
+static void map_user_stack_pages(uint64_t stack_top) {
+    uint64_t base = stack_top - USER_STACK_SIZE - USER_STACK_GUARD_SIZE;
+    for (uint64_t off = USER_STACK_GUARD_SIZE; off < USER_STACK_GUARD_SIZE + USER_STACK_SIZE; off += 0x1000) {
         uint64_t phys = pmm_alloc_frame();
         if (phys == 0) {
             kprintf("[proc] OOM mapping user stack\n");
             return;
         }
-        memset((void *)(uintptr_t)(hhdm + phys), 0, 0x1000);
         paging_map(base + off, phys,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
                    PAGE_FLAG_USER | PAGE_FLAG_NO_EXEC);
@@ -60,13 +64,17 @@ load_and_jump(const void *elf_data, uint64_t elf_size) {
     uint64_t entry = elf_load(elf_data, elf_size, &cur->brk);
     if (entry == 0) {
         kprintf("[proc] ELF load failed\n");
+        if (elf_data) kfree((void *)elf_data);
         thread_exit();
     }
-    map_user_stack_pages();
+    uint64_t stack_top = choose_user_stack_top();
+    map_user_stack_pages(stack_top);
+    if (elf_data) kfree((void *)elf_data);
 
     if (cur && cur->kernel_stack) {
         uint64_t kstack = (uint64_t)cur->kernel_stack + THREAD_STACK_SIZE;
         tss_set_rsp0(kstack);
+        set_syscall_stack(kstack);
     }
 
     kprintf("[proc] entering Ring 3 at 0x%llx (CR3=0x%llx)\n",
@@ -100,7 +108,9 @@ static void fork_child_entry(void *arg) {
     /* Set TSS RSP0 for this child's kernel stack. */
     tcb_t *cur = sched_current();
     if (cur && cur->kernel_stack) {
-        tss_set_rsp0((uint64_t)cur->kernel_stack + THREAD_STACK_SIZE);
+        uint64_t kstack = (uint64_t)cur->kernel_stack + THREAD_STACK_SIZE;
+        tss_set_rsp0(kstack);
+        set_syscall_stack(kstack);
     }
 
     /* Jump to user mode at the saved RIP. RAX will be set to 0 by the
@@ -111,8 +121,13 @@ static void fork_child_entry(void *arg) {
 }
 
 int64_t do_fork(void) {
-    /* Save the user-mode state (it's in globals from syscall_entry). */
-    uint64_t user_rip = syscall_saved_rcx;
+    tcb_t *self = sched_current();
+    uint64_t user_rip = self && self->saved_user_rip ? self->saved_user_rip
+                                                     : syscall_saved_rcx;
+    uint64_t user_rflags = self && self->saved_user_rip ? self->saved_user_rflags
+                                                        : syscall_saved_r11;
+    uint64_t user_rsp = self && self->saved_user_rip ? self->saved_user_rsp
+                                                     : syscall_saved_rsp;
 
     kprintf("[proc] fork: cloning address space (user RIP=0x%llx)\n",
             (unsigned long long)user_rip);
@@ -130,12 +145,13 @@ int64_t do_fork(void) {
      * the scheduler can't pick up the half-initialised TCB (no pml4, no
      * saved user frame, no FDs) between kthread_create() and the field
      * assignments below. */
-    tcb_t *parent = sched_current();
+    tcb_t *parent = self;
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
 
     tcb_t *child = kthread_create(fork_child_entry, NULL, "fork-child");
     if (child == NULL) {
+        (void)paging_free_address_space(child_pml4);
         if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
         return -1;
     }
@@ -144,9 +160,9 @@ int64_t do_fork(void) {
     /* Snapshot the user-mode return frame NOW (it lives in globals that the
      * parent will clobber on its very next syscall, well before the child
      * gets a chance to run). */
-    child->fork_user_rip    = syscall_saved_rcx;
-    child->fork_user_rflags = syscall_saved_r11;
-    child->fork_user_rsp    = syscall_saved_rsp;
+    child->fork_user_rip    = user_rip;
+    child->fork_user_rflags = user_rflags;
+    child->fork_user_rsp    = user_rsp;
     if (parent) {
         memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
         memcpy(child->cloexec,  parent->cloexec,  sizeof(child->cloexec));
@@ -197,13 +213,17 @@ int64_t do_execve(const char *path) {
         return -1;
     }
 
-    /* 3) Switch to it and load the ELF. */
+    /* 3) Switch to it and retire the old user address space. */
+    tcb_t *cur = sched_current();
+    uint64_t old_pml4 = (cur ? cur->pml4_phys : 0);
     paging_switch_to(new_pml4);
 
     /* 4) Update the current TCB to point to the new address space. */
-    tcb_t *cur = sched_current();
     if (cur) {
         cur->pml4_phys = new_pml4;
+    }
+    if (old_pml4 && old_pml4 != new_pml4) {
+        (void)paging_free_address_space(old_pml4);
     }
 
     /* 5) Load and jump (does not return). */
@@ -224,18 +244,22 @@ int64_t do_wait4(int64_t *exit_code) {
 
 /* Thread function for a spawned process. */
 static void spawn_thread(void *arg) {
-    const char *path = (const char *)arg;
+    char *path = (char *)arg;
 
     /* Read the ELF from the VFS into kernel memory. */
     int fd = vfs_open(path);
     if (fd < 0) {
         kprintf("[proc] spawn: '%s' not found\n", path);
+        memset(path, 0, strlen(path) + 1);
+        kfree(path);
         thread_exit();
     }
 
     uint8_t *buf = kmalloc(256 * 1024);
     if (!buf) {
         vfs_close(fd);
+        memset(path, 0, strlen(path) + 1);
+        kfree(path);
         thread_exit();
     }
     int64_t total = 0;
@@ -244,6 +268,7 @@ static void spawn_thread(void *arg) {
         total += n;
     }
     vfs_close(fd);
+    kfree(path);
 
     load_and_jump(buf, (uint64_t)total);
 }
@@ -277,12 +302,16 @@ int64_t process_spawn(const char *path) {
 
     /* Allocate a copy of the path string (the caller's stack might change). */
     char *path_copy = kmalloc(strlen(path) + 1);
-    if (!path_copy) return -1;
+    if (!path_copy) {
+        (void)paging_free_address_space(new_pml4);
+        return -1;
+    }
     strcpy(path_copy, path);
 
     tcb_t *child = kthread_create(spawn_thread, path_copy, path);
     if (child == NULL) {
         kfree(path_copy);
+        (void)paging_free_address_space(new_pml4);
         return -1;
     }
     child->pml4_phys = new_pml4;

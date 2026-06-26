@@ -45,6 +45,67 @@ static inline uint64_t read_cr4(void) {
     return v;
 }
 
+static inline void write_cr4(uint64_t v) {
+    __asm__ volatile ("mov %0, %%cr4" :: "r"(v) : "memory");
+}
+
+static inline void cpuid_count(uint32_t leaf, uint32_t subleaf,
+                               uint32_t *a, uint32_t *b,
+                               uint32_t *c, uint32_t *d) {
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile ("cpuid"
+                      : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                      : "a"(leaf), "c"(subleaf));
+    if (a) *a = eax;
+    if (b) *b = ebx;
+    if (c) *c = ecx;
+    if (d) *d = edx;
+}
+
+static inline uint64_t read_tsc(void) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
+
+/* Published by paging.c once CR4.SMAP is enabled. */
+extern volatile int cpu_smap_is_active;
+
+static inline uint64_t irq_save(void) {
+    uint64_t flags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags) {
+    if (flags & 0x200ULL) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+}
+
+static inline void user_access_enable(void) {
+    if (cpu_smap_is_active) {
+        __asm__ volatile ("stac" ::: "memory");
+    }
+}
+
+static inline void user_access_disable(void) {
+    if (cpu_smap_is_active) {
+        __asm__ volatile ("clac" ::: "memory");
+    }
+}
+
+static inline uint64_t user_access_begin(void) {
+    uint64_t flags = irq_save();
+    user_access_enable();
+    return flags;
+}
+
+static inline void user_access_end(uint64_t flags) {
+    user_access_disable();
+    irq_restore(flags);
+}
+
 /* ---- Model-Specific Registers (Intel SDM Vol.4) ---- */
 
 static inline uint64_t read_msr(uint32_t msr) {

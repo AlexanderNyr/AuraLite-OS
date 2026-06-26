@@ -1,5 +1,6 @@
 #include "stdlib.h"
 #include "unistd.h"
+#include "string.h"
 
 typedef struct block_meta {
     size_t size;
@@ -64,5 +65,6 @@ void *malloc(size_t size) {
 void free(void *ptr) {
     if (!ptr) return;
     block_meta *block_ptr = ((block_meta*)ptr) - 1;
+    memset(ptr, 0, block_ptr->size);
     block_ptr->free = 1;
 }

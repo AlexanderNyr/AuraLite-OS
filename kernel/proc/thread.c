@@ -9,8 +9,10 @@
 #include "kernel/proc/thread.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/pmm.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/spinlock.h"
 #include "kernel/gui/gui.h"
 #include "kernel/net/socket.h"
 #include "kernel/arch/x86_64/paging.h"
@@ -21,6 +23,13 @@
 extern void context_switch(tcb_t *old, tcb_t *new);
 
 static uint64_t next_tid = 1;
+
+#define THREAD_STACK_SLOT_SIZE  ((THREAD_STACK_PAGES + 2 * THREAD_STACK_GUARD_PAGES) * 4096ULL)
+#define THREAD_STACK_REGION_BASE 0xFFFFFFFF8A000000ULL
+#define THREAD_STACK_MAX_SLOTS   128
+
+static uint8_t thread_stack_slots[THREAD_STACK_MAX_SLOTS];
+static spinlock_t thread_stack_lock = SPINLOCK_UNLOCKED;
 
 static tcb_t *all_threads[128];
 static int all_threads_count = 0;
@@ -88,6 +97,70 @@ static volatile uint64_t zombies_reaped = 0;
 uint64_t thread_zombies_queued_total(void) { return zombies_queued; }
 uint64_t thread_zombies_reaped_total(void) { return zombies_reaped; }
 
+void thread_free_kernel_stack(tcb_t *tcb);
+
+int thread_alloc_kernel_stack(tcb_t *tcb) {
+    if (!tcb) return -1;
+    uint64_t irqf = spinlock_acquire_irqsave(&thread_stack_lock);
+    int slot = -1;
+    for (int i = 0; i < THREAD_STACK_MAX_SLOTS; i++) {
+        if (!thread_stack_slots[i]) {
+            thread_stack_slots[i] = 1;
+            slot = i;
+            break;
+        }
+    }
+    spinlock_release_irqrestore(&thread_stack_lock, irqf);
+    if (slot < 0) return -1;
+
+    uint64_t region = THREAD_STACK_REGION_BASE + (uint64_t)slot * THREAD_STACK_SLOT_SIZE;
+    uint64_t usable = region + THREAD_STACK_GUARD_PAGES * 4096ULL;
+
+    memset(tcb->kernel_stack_phys, 0, sizeof(tcb->kernel_stack_phys));
+    for (int i = 0; i < THREAD_STACK_PAGES; i++) {
+        uint64_t phys = pmm_alloc_frame();
+        if (!phys) {
+            tcb->kernel_stack = (void *)(uintptr_t)usable;
+            tcb->kernel_stack_region = (void *)(uintptr_t)region;
+            tcb->kernel_stack_slot = slot;
+            thread_free_kernel_stack(tcb);
+            return -1;
+        }
+        tcb->kernel_stack_phys[i] = phys;
+        paging_map(usable + (uint64_t)i * 4096ULL, phys,
+                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
+    }
+
+    tcb->kernel_stack = (void *)(uintptr_t)usable;
+    tcb->kernel_stack_region = (void *)(uintptr_t)region;
+    tcb->kernel_stack_slot = slot;
+    memset(tcb->kernel_stack, 0, THREAD_STACK_SIZE);
+    return 0;
+}
+
+void thread_free_kernel_stack(tcb_t *tcb) {
+    if (!tcb) return;
+    if (tcb->kernel_stack) {
+        memset(tcb->kernel_stack, 0, THREAD_STACK_SIZE);
+    }
+    uint64_t usable = (uint64_t)(uintptr_t)tcb->kernel_stack;
+    for (int i = 0; i < THREAD_STACK_PAGES; i++) {
+        if (tcb->kernel_stack_phys[i]) {
+            paging_unmap(usable + (uint64_t)i * 4096ULL);
+            pmm_free_frame(tcb->kernel_stack_phys[i]);
+            tcb->kernel_stack_phys[i] = 0;
+        }
+    }
+    if (tcb->kernel_stack_slot >= 0 && tcb->kernel_stack_slot < THREAD_STACK_MAX_SLOTS) {
+        uint64_t irqf = spinlock_acquire_irqsave(&thread_stack_lock);
+        thread_stack_slots[tcb->kernel_stack_slot] = 0;
+        spinlock_release_irqrestore(&thread_stack_lock, irqf);
+    }
+    tcb->kernel_stack = NULL;
+    tcb->kernel_stack_region = NULL;
+    tcb->kernel_stack_slot = -1;
+}
+
 /*
  * Trampoline: this is the "return address" planted on a new thread's stack.
  * context_switch's ret jumps here.  We read the current TCB (set by the
@@ -144,14 +217,15 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     }
     memset(tcb, 0, sizeof(tcb_t));
 
-    void *stack = kmalloc(THREAD_STACK_SIZE);
-    if (stack == NULL) {
-        kprintf("[thread] FATAL: kmalloc failed for stack\n");
+    tcb->kernel_stack = NULL;
+    tcb->kernel_stack_region = NULL;
+    tcb->kernel_stack_slot = -1;
+    if (thread_alloc_kernel_stack(tcb) != 0) {
+        kprintf("[thread] FATAL: could not allocate guarded kernel stack\n");
         kfree(tcb);
         return NULL;
     }
 
-    tcb->kernel_stack = stack;
     tcb->id           = next_tid++;
     tcb->state        = THREAD_READY;
     tcb->quantum      = SCHED_QUANTUM;
@@ -233,9 +307,9 @@ int64_t do_wait4_pid(int64_t pid, int64_t *exit_code) {
 static void close_process_fds(tcb_t *t) {
     if (!t) return;
     for (int fd = 3; fd < VFS_MAX_FDS; fd++) {
-        t->fd_table[fd].in_use = 0;
-        t->fd_table[fd].vn = NULL;
-        t->fd_table[fd].pos = 0;
+        if (t->fd_table[fd].in_use) {
+            vfs_close(fd);
+        }
     }
 }
 
@@ -298,7 +372,8 @@ void thread_reap_zombies(void) {
                 z->name, (unsigned long long)z->id,
                 (unsigned long long)reaped_frames);
         thread_deregister_tcb(z);
-        if (z->kernel_stack) kfree(z->kernel_stack);
+        thread_free_kernel_stack(z);
+        memset(z, 0, sizeof(*z));
         kfree(z);
         zombies_reaped++;
     }

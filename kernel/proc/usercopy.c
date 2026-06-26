@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include "kernel/proc/usercopy.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/lib/string.h"
 
 static int user_range_bounds(uint64_t start, uint64_t len, uint64_t *end_out) {
@@ -18,7 +19,8 @@ static int user_range_bounds(uint64_t start, uint64_t len, uint64_t *end_out) {
         if (end_out) *end_out = start;
         return 1;
     }
-    if (start == 0) return 0;
+    /* Reserve the first page so NULL and near-NULL pointers are never valid. */
+    if (start < PAGE_SIZE_BYTES) return 0;
     uint64_t last = start + len - 1;
     if (last < start) return 0;          /* overflow */
     if (last >= USER_VADDR_TOP) return 0;
@@ -50,7 +52,9 @@ int copy_from_user(void *kernel_dst, const void *user_src, uint64_t len) {
     if (len == 0) return 0;
     if (!kernel_dst) return -1;
     if (!validate_user_range(user_src, len, 0)) return -1;
+    uint64_t irqf = user_access_begin();
     memcpy(kernel_dst, user_src, (size_t)len);
+    user_access_end(irqf);
     return 0;
 }
 
@@ -58,7 +62,9 @@ int copy_to_user(void *user_dst, const void *kernel_src, uint64_t len) {
     if (len == 0) return 0;
     if (!kernel_src) return -1;
     if (!validate_user_range(user_dst, len, 1)) return -1;
+    uint64_t irqf = user_access_begin();
     memcpy(user_dst, kernel_src, (size_t)len);
+    user_access_end(irqf);
     return 0;
 }
 

@@ -10,6 +10,7 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/klog.h"
+#include "kernel/lib/stack_protector.h"
 #include "kernel/limine_requests.h"
 #include "limine/limine.h"
 #include "kernel/proc/scheduler.h"
@@ -136,6 +137,7 @@ void kmain(void) {
     /* Order matters for diagnosability: each subsystem prints its own status,
        so if the boot stalls or triple-faults we can see exactly how far it got. */
     uart_init();
+    stack_protector_init();
     kprintf("[boot] UART (COM1) initialised @ 115200 baud\n");
 
     fb_init();
