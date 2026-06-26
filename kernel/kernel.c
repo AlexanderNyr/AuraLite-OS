@@ -162,7 +162,7 @@ void kmain(void) {
     kprintf("[boot] framebuffer console initialised\n");
 
     gdt_init();
-    kprintf("[boot] GDT loaded (kernel + user segments + TSS)\n");
+    kprintf("[boot] GDT loaded (kernel + user segments; TSS slot pending)\n");
 
     idt_init();
     kprintf("[boot] IDT installed: 256 gates\n");
@@ -171,9 +171,6 @@ void kmain(void) {
     kprintf("[boot] PIC remapped (IRQs -> vectors 32-47), all masked\n");
 
     __asm__ volatile ("sti");   /* interrupts on; exceptions fire regardless */
-
-    tss_init();
-    kprintf("[boot] TSS loaded (RSP0 + IST1 for #DF)\n");
 
     syscall_init();
     kprintf("[boot] SYSCALL/SYSRET configured\n");
@@ -215,6 +212,9 @@ void kmain(void) {
     kprintf("[boot] initialising kernel heap...\n");
     kheap_init();
     kheap_self_test();
+
+    tss_init();
+    kprintf("[boot] TSS loaded (RSP0 + IST1 for #DF)\n");
 
     kprintf("[boot] initialising SMP...\n");
     smp_init();
