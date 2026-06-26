@@ -79,7 +79,7 @@ Legend:
 | Process basics | 🧪 | `getpid`, `exit`, `spawn`, `fork`, `execve`, `wait4`. |
 | Directory/path ops | ✅/🧪 | `listdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`. |
 | Networking | 🧪 | DNS, ping, legacy TCP calls and process-owned socket-style syscalls. |
-| GUI | 🧪 | `SYS_GUI_CALL` and `SYS_GUI_EVENT` power `libauragui` apps. |
+| GUI | ✅/🧪 | `SYS_GUI_CALL` (200), `SYS_GUI_EVENT` (201), `SYS_GUI_THEME` (202). v2.0 theme engine, icons, notifications, snap, context menus. |
 | Memory syscalls | 🧪 | `brk` implemented. No `mmap`, `munmap` yet. |
 | Sockets | ❌ | No BSD socket API. |
 
@@ -108,7 +108,7 @@ Legend:
 | Window manager demo | ✅ | Windows, widgets, taskbar, mouse interaction. |
 | PS/2 keyboard | ✅ | Scan-code set 1, ASCII + rich key-event queues. |
 | PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
-| Kernel GUI/compositor | ✅/🧪 | Guaranteed 100 FPS update, cooperative scheduling sleep loop, window manager, taskbar, event queues, owner-checked GUI syscalls, process-exit window cleanup and `libauragui` apps. |
+| Kernel GUI/compositor | ✅/🧪 | **v2.0**: Theme engine (30+ params), desktop icons (32), notifications, window snapping (left/right/top/bottom/maximize), start menu, context menus, always-on-top windows, tool windows, edge/corner resize, double-click titlebar maximize, alpha blit, explicit event ABI (#define values), 64 windows, 128-event rings. Dirty-rect tracking infrastructure (currently full-redraw). Per-process window/icon cleanup on exit. |
 | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
 | Native VBox/VMware SVGA drivers | ❌ | Limine framebuffer is used instead. |
 
@@ -149,7 +149,7 @@ Legend:
 | `/snake` | ✅ | Terminal snake. |
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
-| `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui`; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. |
+| `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
 
 ## Highest-priority gaps
 
@@ -159,3 +159,4 @@ Legend:
 4. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
 5. Enforce strict user ELF segment permissions and add user `mmap` / `munmap`.
 6. Tighten FD inheritance/lifetime semantics around `fork`, `execve` and process exit.
+7. **GUI dirty-rect compositor**: Currently forces full redraw every frame. Switch to partial redraw for performance (requires integration testing: window move leaves no artifacts, resize has no ghosting, cursor over dirty rects, notification auto-dismiss).

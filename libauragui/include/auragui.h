@@ -53,24 +53,34 @@ enum {
     AG_SNAP_MAXIMIZED,
 };
 
-/* ---- Event types (must match kernel/gui/gui.h) ---- */
-enum {
-    AG_EVT_NONE = 0,
-    AG_EVT_MOUSE_MOVE, AG_EVT_MOUSE_DOWN, AG_EVT_MOUSE_UP,
-    AG_EVT_MOUSE_DBLCLICK, AG_EVT_MOUSE_WHEEL,
-    AG_EVT_KEY_DOWN, AG_EVT_KEY_UP,
-    AG_EVT_FOCUS, AG_EVT_BLUR,
-    AG_EVT_RESIZE, AG_EVT_CLOSE_REQ,
-    AG_EVT_TIMER, AG_EVT_PAINT,
-    AG_EVT_CONTEXT_MENU,       /* right-click in client area */
-    AG_EVT_SNAP_CHANGED,       /* window snap state changed */
-    AG_EVT_DROP,               /* drag-drop (future) */
-    AG_EVT_ICON_CLICK,         /* desktop icon activated */
-    AG_EVT_MOUSE_RIGHT_DOWN,   /* right button down */
-    AG_EVT_MOUSE_RIGHT_UP,     /* right button up */
-    AG_EVT_MOUSE_MIDDLE_DOWN,  /* middle button down */
-    AG_EVT_MOUSE_MIDDLE_UP,    /* middle button up */
-};
+/* ---- Event types (must match kernel/gui/gui.h EXACTLY) ----
+ *
+ * Values are explicit #defines, not auto-increment enum, so that the
+ * kernel and user-space ABI never silently diverges.
+ */
+#define AG_EVT_NONE              0
+#define AG_EVT_MOUSE_MOVE        1
+#define AG_EVT_MOUSE_DOWN        2
+#define AG_EVT_MOUSE_UP          3
+#define AG_EVT_MOUSE_DBLCLICK    4
+#define AG_EVT_MOUSE_WHEEL       5
+#define AG_EVT_MOUSE_RIGHT_DOWN  6   /* right button down */
+#define AG_EVT_MOUSE_RIGHT_UP    7
+#define AG_EVT_MOUSE_MIDDLE_DOWN 8   /* middle button down */
+#define AG_EVT_MOUSE_MIDDLE_UP   9
+#define AG_EVT_KEY_DOWN          10
+#define AG_EVT_KEY_UP            11
+#define AG_EVT_FOCUS             12
+#define AG_EVT_BLUR              13
+#define AG_EVT_RESIZE            14
+#define AG_EVT_CLOSE_REQ         15
+#define AG_EVT_TIMER             16
+#define AG_EVT_PAINT             17
+#define AG_EVT_CONTEXT_MENU      18  /* right-click in client area */
+#define AG_EVT_SNAP_CHANGED      19  /* window snap state changed */
+#define AG_EVT_DROP              20  /* drag-drop (future) */
+#define AG_EVT_ICON_CLICK        21  /* desktop icon activated */
+#define AG_EVT_COUNT             22  /* sentinel — must be last */
 
 /* ---- Event struct (must match kernel's gui_event_t) ---- */
 typedef struct {

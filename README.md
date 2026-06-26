@@ -32,7 +32,7 @@ additional post-phase extensions.
 - e1000 networking with ARP, IPv4, ICMP, DHCP/fallback addressing, UDP DNS and
   a minimal single-connection TCP client.
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
-  kernel GUI compositor (guaranteed 100 FPS refresh rate with cooperative scheduler anti-freeze architecture), GUI syscalls and bundled GUI applications.
+  kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus, 100 FPS guaranteed refresh rate), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.
 
 ### Experimental / partial
@@ -54,8 +54,7 @@ additional post-phase extensions.
   remain future work until those transfer backends are completed.
 - Bluetooth HCI and Wi-Fi 802.11 layers are protocol frameworks that require
   working lower-level USB/chipset drivers.
-- GUI is functional in the framebuffer/VNC integration tests, but it is still a
-  compact in-kernel educational desktop rather than a production graphics stack.
+- GUI v2.0 adds a theme engine, desktop icons, notifications, window snapping, start menu, and context menus, but the dirty-rect compositor currently forces full redraws each frame (partial redraw pending integration testing).
 
 See [`docs/status.md`](docs/status.md) for a detailed support matrix.
 

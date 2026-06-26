@@ -291,12 +291,27 @@ int gui_focus_window(int wid) { return gui_raise_window(wid); }
 int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
                       const char *title, uint32_t flags) {
     if (w == 0 || h == 0) return -1;
+
+    /* Pre-compute content size to reject before allocating a slot. */
+    uint32_t bw, bh;
+    if (flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) {
+        bw = w; bh = h;
+    } else {
+        bw = w - 2 * active_theme.border_w;
+        bh = h - active_theme.titlebar_h - 2 * active_theme.border_w;
+    }
+    if (bw == 0 || bh == 0) return -1;
+
     spinlock_acquire(&gui_lock);
     int id = -1;
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
         if (!windows[i].in_use) { id = i; break; }
     }
-    if (id < 0) { spinlock_release(&gui_lock); return -1; }
+    if (id < 0) {
+        kprintf("[gui] create_window: no free slots (%d windows)\n", GUI_MAX_WINDOWS);
+        spinlock_release(&gui_lock);
+        return -1;
+    }
 
     gui_win_t *win = &windows[id];
     memset(win, 0, sizeof(*win));
@@ -316,16 +331,20 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
         strncpy(win->title, title, GUI_TITLE_MAX - 1);
         win->title[GUI_TITLE_MAX - 1] = 0;
     }
-    uint32_t bw = content_w(win), bh = content_h(win);
-    if (bw == 0 || bh == 0) {
+    win->back_w = bw;
+    win->back_h = bh;
+    size_t buf_size = (size_t)bw * bh * 4;
+    if (buf_size / 4 != (size_t)bw * bh) {
+        /* Integer overflow — reject impossibly large window. */
+        win->in_use = 0;
+        kprintf("[gui] create_window: buffer size overflow %ux%u\n", bw, bh);
         spinlock_release(&gui_lock);
         return -1;
     }
-    win->back_w = bw;
-    win->back_h = bh;
-    win->back = (uint32_t *)kmalloc((size_t)bw * bh * 4);
+    win->back = (uint32_t *)kmalloc(buf_size);
     if (!win->back) {
         win->in_use = 0;
+        kprintf("[gui] create_window: kmalloc failed for %ux%u back buffer\n", bw, bh);
         spinlock_release(&gui_lock);
         return -1;
     }
@@ -343,6 +362,7 @@ int gui_destroy_window(int wid) {
     memset(w, 0, sizeof(*w));
     if (focused == wid) focused = -1;
     if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
+    if (last_hover_wid == wid) last_hover_wid = -1;
     recompute_focus();
     full_dirty = 1;
     spinlock_release(&gui_lock);
@@ -371,7 +391,15 @@ void gui_cleanup_process(uint64_t owner_pid) {
         memset(&windows[i], 0, sizeof(windows[i]));
         if (focused == i) focused = -1;
         if (drag_wid == i) { drag_wid = -1; drag_mode = 0; }
+        if (last_hover_wid == i) last_hover_wid = -1;
         cleaned++;
+    }
+    /* Also clean up icons owned by this process. */
+    for (int i = 0; i < GUI_MAX_ICONS; i++) {
+        if (icons[i].in_use && (uint64_t)(uint32_t)icons[i].owner_pid == owner_pid) {
+            memset(&icons[i], 0, sizeof(icons[i]));
+            if (icon_selected == i) icon_selected = -1;
+        }
     }
     if (cleaned) {
         recompute_focus();
@@ -417,29 +445,56 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
     if (w < 60 || h < 40) return -1;
     spinlock_acquire(&gui_lock);
     gui_win_t *win = &windows[wid];
+    /* Compute new content size BEFORE modifying the window. */
+    uint32_t new_bw, new_bh;
+    if (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) {
+        new_bw = w; new_bh = h;
+    } else {
+        new_bw = w - 2 * active_theme.border_w;
+        new_bh = h - active_theme.titlebar_h - 2 * active_theme.border_w;
+    }
+    if (new_bw == 0 || new_bh == 0) {
+        spinlock_release(&gui_lock);
+        return -1;
+    }
     mark_window_dirty(win);
     win->w = w; win->h = h;
-    uint32_t bw = content_w(win), bh = content_h(win);
-    if (bw != win->back_w || bh != win->back_h) {
-        uint32_t *nb = (uint32_t *)kmalloc((size_t)bw * bh * 4);
-        if (!nb) { spinlock_release(&gui_lock); return -1; }
-        for (uint32_t i = 0; i < bw * bh; i++) nb[i] = active_theme.win_content;
+    if (new_bw != win->back_w || new_bh != win->back_h) {
+        size_t buf_size = (size_t)new_bw * new_bh * 4;
+        if (buf_size / 4 != (size_t)new_bw * new_bh) {
+            /* Integer overflow. */
+            win->w = win->back_w + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : 2 * active_theme.border_w);
+            win->h = win->back_h + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : active_theme.titlebar_h + 2 * active_theme.border_w);
+            kprintf("[gui] resize_window: buffer size overflow %ux%u\n", new_bw, new_bh);
+            spinlock_release(&gui_lock);
+            return -1;
+        }
+        uint32_t *nb = (uint32_t *)kmalloc(buf_size);
+        if (!nb) {
+            /* Roll back w/h to keep consistency. */
+            win->w = win->back_w + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : 2 * active_theme.border_w);
+            win->h = win->back_h + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : active_theme.titlebar_h + 2 * active_theme.border_w);
+            kprintf("[gui] resize_window: kmalloc failed for %ux%u buffer\n", new_bw, new_bh);
+            spinlock_release(&gui_lock);
+            return -1;
+        }
+        for (uint32_t i = 0; i < new_bw * new_bh; i++) nb[i] = active_theme.win_content;
         /* Copy overlapping region with optimized row copies. */
-        uint32_t cw = bw < win->back_w ? bw : win->back_w;
-        uint32_t ch = bh < win->back_h ? bh : win->back_h;
+        uint32_t cw = new_bw < win->back_w ? new_bw : win->back_w;
+        uint32_t ch = new_bh < win->back_h ? new_bh : win->back_h;
         for (uint32_t row = 0; row < ch; row++) {
-            memcpy(nb + row * bw, win->back + row * win->back_w, cw * 4);
+            memcpy(nb + row * new_bw, win->back + row * win->back_w, cw * 4);
         }
         if (win->back) kfree(win->back);
         win->back   = nb;
-        win->back_w = bw;
-        win->back_h = bh;
+        win->back_w = new_bw;
+        win->back_h = new_bh;
     }
     win->content_dirty = 1;
     mark_window_dirty(win);
     /* Post resize event. */
     gui_event_t e = { GUI_EVT_RESIZE, 0,0,0,0,0,0 };
-    e.x = (int32_t)bw; e.y = (int32_t)bh;
+    e.x = (int32_t)new_bw; e.y = (int32_t)new_bh;
     spinlock_release(&gui_lock);
     gui_post_event(wid, &e);
     return 0;
@@ -627,7 +682,8 @@ int gui_add_icon(int32_t x, int32_t y, const char *label, int icon_id) {
             strncpy(icons[i].label, label, sizeof(icons[i].label) - 1);
             icons[i].label[sizeof(icons[i].label) - 1] = 0;
             icons[i].icon_id = icon_id;
-            icons[i].owner_pid = 0;
+            tcb_t *owner = sched_current();
+            icons[i].owner_pid = owner ? (int)owner->id : 0;
             gui_mark_dirty(x, y, active_theme.icon_size + active_theme.icon_pad * 2,
                            active_theme.icon_size + 20);
             return i;

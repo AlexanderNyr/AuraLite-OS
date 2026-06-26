@@ -53,25 +53,30 @@ typedef enum {
     GUI_SNAP_MAXIMIZED,
 } gui_snap_t;
 
-/* Event types */
-#define GUI_EVT_MOUSE_DOWN       1
-#define GUI_EVT_MOUSE_UP         2
-#define GUI_EVT_MOUSE_MOVE       3
-#define GUI_EVT_KEY_DOWN         4
-#define GUI_EVT_KEY_UP           5
-#define GUI_EVT_CLOSE_REQ        6
-#define GUI_EVT_FOCUS            7
-#define GUI_EVT_BLUR             8
-#define GUI_EVT_RESIZE           9
-#define GUI_EVT_MOUSE_WHEEL      10
-#define GUI_EVT_MOUSE_DBLCLICK   11
-#define GUI_EVT_CONTEXT_MENU     12
-#define GUI_EVT_SNAP_CHANGED     13
-#define GUI_EVT_MOUSE_RIGHT_DOWN 14
-#define GUI_EVT_MOUSE_RIGHT_UP   15
-#define GUI_EVT_MOUSE_MIDDLE_DOWN 16
-#define GUI_EVT_MOUSE_MIDDLE_UP   17
-#define GUI_EVT_ICON_CLICK       18
+/* Event types — must match kernel/gui/gui.h and libauragui/include/auragui.h */
+#define GUI_EVT_NONE              0
+#define GUI_EVT_MOUSE_MOVE        1
+#define GUI_EVT_MOUSE_DOWN        2
+#define GUI_EVT_MOUSE_UP          3
+#define GUI_EVT_MOUSE_DBLCLICK    4
+#define GUI_EVT_MOUSE_WHEEL       5
+#define GUI_EVT_MOUSE_RIGHT_DOWN  6
+#define GUI_EVT_MOUSE_RIGHT_UP    7
+#define GUI_EVT_MOUSE_MIDDLE_DOWN 8
+#define GUI_EVT_MOUSE_MIDDLE_UP   9
+#define GUI_EVT_KEY_DOWN          10
+#define GUI_EVT_KEY_UP            11
+#define GUI_EVT_FOCUS             12
+#define GUI_EVT_BLUR              13
+#define GUI_EVT_RESIZE            14
+#define GUI_EVT_CLOSE_REQ         15
+#define GUI_EVT_TIMER             16
+#define GUI_EVT_PAINT             17
+#define GUI_EVT_CONTEXT_MENU      18
+#define GUI_EVT_SNAP_CHANGED      19
+#define GUI_EVT_DROP              20
+#define GUI_EVT_ICON_CLICK        21
+#define GUI_EVT_COUNT             22
 
 typedef struct {
     int type;
@@ -710,6 +715,97 @@ void t_snap_set_restore(void) {
     CHECK_EQ(windows[w].snap, GUI_SNAP_LEFT);
 }
 
+/* --- 64-window stress tests --- */
+
+void t_64_windows_create_destroy(void) {
+    gui_init();
+    int ids[GUI_MAX_WINDOWS];
+    /* Create all 64 windows. */
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        ids[i] = gui_create_window(i * 10, 0, 200, 150, "W", GUI_WIN_DEFAULT);
+        CHECK(ids[i] >= 0);
+    }
+    /* Verify all in use. */
+    int count = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (windows[i].in_use) count++;
+    }
+    CHECK_EQ(count, GUI_MAX_WINDOWS);
+    /* Destroy even-indexed windows. */
+    for (int i = 0; i < GUI_MAX_WINDOWS; i += 2) {
+        CHECK_EQ(gui_destroy_window(ids[i]), 0);
+    }
+    /* 32 should remain. */
+    count = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (windows[i].in_use) count++;
+    }
+    CHECK_EQ(count, GUI_MAX_WINDOWS / 2);
+    /* Recreate 32 more, reusing freed slots. */
+    for (int i = 0; i < GUI_MAX_WINDOWS / 2; i++) {
+        int w = gui_create_window(0, 0, 200, 150, "R", GUI_WIN_DEFAULT);
+        CHECK(w >= 0);
+    }
+    /* All 64 again. */
+    count = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (windows[i].in_use) count++;
+    }
+    CHECK_EQ(count, GUI_MAX_WINDOWS);
+    /* Overflow must fail. */
+    CHECK_EQ(gui_create_window(0, 0, 200, 150, "X", GUI_WIN_DEFAULT), -1);
+    /* Destroy all. */
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (windows[i].in_use) gui_destroy_window(i);
+    }
+    count = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (windows[i].in_use) count++;
+    }
+    CHECK_EQ(count, 0);
+}
+
+void t_64_windows_z_order(void) {
+    gui_init();
+    int ids[GUI_MAX_WINDOWS];
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        ids[i] = gui_create_window(0, 0, 400, 400, "W", GUI_WIN_DEFAULT);
+        windows[ids[i]].visible = 1;
+        windows[ids[i]].z = i;
+    }
+    /* Topmost window should be the last one (highest z). */
+    CHECK_EQ(hit_window(200, 200), ids[GUI_MAX_WINDOWS - 1]);
+    /* Destroy the topmost; now second-to-last should win. */
+    gui_destroy_window(ids[GUI_MAX_WINDOWS - 1]);
+    CHECK_EQ(hit_window(200, 200), ids[GUI_MAX_WINDOWS - 2]);
+    /* Cleanup. */
+    for (int i = 0; i < GUI_MAX_WINDOWS - 1; i++) {
+        if (windows[ids[i]].in_use) gui_destroy_window(ids[i]);
+    }
+}
+
+void t_64_windows_events(void) {
+    gui_init();
+    int ids[8];
+    for (int i = 0; i < 8; i++) {
+        ids[i] = gui_create_window(0, 0, 200, 200, "T", GUI_WIN_DEFAULT);
+    }
+    /* Post events to every window. */
+    for (int i = 0; i < 8; i++) {
+        gui_event_t e = { GUI_EVT_KEY_DOWN, 0, 0, (uint32_t)('A' + i), 0, 0, 0 };
+        CHECK_EQ(gui_post_event(ids[i], &e), 0);
+    }
+    /* Each window should have exactly one event with the right key. */
+    for (int i = 0; i < 8; i++) {
+        gui_event_t out;
+        CHECK_EQ(gui_poll_event(ids[i], &out), 1);
+        CHECK_EQ((long)out.key, (long)('A' + i));
+        CHECK_EQ(gui_poll_event(ids[i], &out), 0);  /* no more */
+    }
+    /* Cleanup. */
+    for (int i = 0; i < 8; i++) gui_destroy_window(ids[i]);
+}
+
 int main(void) {
     printf("=== GUI v2.0 Subsystem Tests ===\n\n");
 
@@ -782,6 +878,11 @@ int main(void) {
     printf("--- snap states ---\n");
     RUN(t_snap_initial_none);
     RUN(t_snap_set_restore);
+
+    printf("--- 64-window stress ---\n");
+    RUN(t_64_windows_create_destroy);
+    RUN(t_64_windows_z_order);
+    RUN(t_64_windows_events);
 
     printf("\n=== Results: %d/%d passed, %d failed ===\n", passed, tn, failed);
     return failed ? 1 : 0;

@@ -138,31 +138,37 @@ typedef enum {
     GUI_SNAP_MAXIMIZED,    /* full screen (no decor overlap) */
 } gui_snap_t;
 
-/* ---- GUI event types ---- */
-typedef enum {
-    GUI_EVT_NONE = 0,
-    GUI_EVT_MOUSE_MOVE,
-    GUI_EVT_MOUSE_DOWN,        /* left button down */
-    GUI_EVT_MOUSE_UP,
-    GUI_EVT_MOUSE_DBLCLICK,
-    GUI_EVT_MOUSE_WHEEL,
-    GUI_EVT_MOUSE_RIGHT_DOWN,  /* right button down */
-    GUI_EVT_MOUSE_RIGHT_UP,
-    GUI_EVT_MOUSE_MIDDLE_DOWN, /* middle button down */
-    GUI_EVT_MOUSE_MIDDLE_UP,
-    GUI_EVT_KEY_DOWN,
-    GUI_EVT_KEY_UP,
-    GUI_EVT_FOCUS,
-    GUI_EVT_BLUR,
-    GUI_EVT_RESIZE,            /* content area resized */
-    GUI_EVT_CLOSE_REQ,         /* user clicked [X] */
-    GUI_EVT_TIMER,
-    GUI_EVT_PAINT,
-    GUI_EVT_CONTEXT_MENU,      /* right-click in client area */
-    GUI_EVT_SNAP_CHANGED,      /* window snap state changed */
-    GUI_EVT_DROP,              /* drag-drop completed (future) */
-    GUI_EVT_ICON_CLICK,        /* desktop icon activated */
-} gui_evt_type_t;
+/* ---- GUI event types ----
+ *
+ * IMPORTANT: Values are explicit #defines so that the kernel and the
+ * user-space mirror in libauragui/include/auragui.h stay in exact lock-step.
+ * NEVER rely on auto-increment — always assign a value to every entry.
+ */
+#define GUI_EVT_NONE              0
+#define GUI_EVT_MOUSE_MOVE        1
+#define GUI_EVT_MOUSE_DOWN        2   /* left button down */
+#define GUI_EVT_MOUSE_UP          3
+#define GUI_EVT_MOUSE_DBLCLICK    4
+#define GUI_EVT_MOUSE_WHEEL       5
+#define GUI_EVT_MOUSE_RIGHT_DOWN  6   /* right button down */
+#define GUI_EVT_MOUSE_RIGHT_UP    7
+#define GUI_EVT_MOUSE_MIDDLE_DOWN 8   /* middle button down */
+#define GUI_EVT_MOUSE_MIDDLE_UP   9
+#define GUI_EVT_KEY_DOWN          10
+#define GUI_EVT_KEY_UP            11
+#define GUI_EVT_FOCUS             12
+#define GUI_EVT_BLUR              13
+#define GUI_EVT_RESIZE            14  /* content area resized */
+#define GUI_EVT_CLOSE_REQ         15  /* user clicked [X] */
+#define GUI_EVT_TIMER             16
+#define GUI_EVT_PAINT             17
+#define GUI_EVT_CONTEXT_MENU      18  /* right-click in client area */
+#define GUI_EVT_SNAP_CHANGED      19  /* window snap state changed */
+#define GUI_EVT_DROP              20  /* drag-drop completed (future) */
+#define GUI_EVT_ICON_CLICK        21  /* desktop icon activated */
+#define GUI_EVT_COUNT             22  /* sentinel — must be last */
+
+typedef uint32_t gui_evt_type_t;
 
 typedef struct {
     uint32_t type;          /* gui_evt_type_t */

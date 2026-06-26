@@ -2,6 +2,50 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GUI v2.0: Theme Engine, Desktop Icons, Notifications, Snap, Start Menu, Context Menus] 2026-06-26
+
+### Added — Core GUI rewrite
+- **Theme engine** (`gui_theme_t`): 30+ configurable parameters — colors, dimensions, shadow offset, window rounding — with runtime get/set via `SYS_GUI_THEME` (syscall 202). Default theme provides a cohesive dark-blue desktop look.
+- **Desktop icons**: Up to 32 icons on the desktop with click-to-launch detection. Default set includes Terminal, Files, Editor, Calculator, System Monitor, About. Icons are per-process owned and auto-cleaned on exit.
+- **Notification system**: Transient popup messages above the taskbar with configurable color, text, and duration. Auto-expire after timeout.
+- **Window snapping**: Drag to screen edges snaps to left/right/top/bottom half or maximize. Snap preview overlay shows target zone. `gui_snap_window()` API and `GUI_EVT_SNAP_CHANGED` event.
+- **Start menu**: Clickable "AuraLite" button in taskbar opens a dropdown application list.
+- **Context menus**: `GUI_EVT_CONTEXT_MENU` event on right-click in client area; `ag_add_contextmenu()` widget in libauragui.
+- **New window flags**: `GUI_WIN_ALWAYS_TOP` (stays above normal windows), `GUI_WIN_TOOL_WINDOW` (no taskbar entry), `GUI_WIN_BORDERLESS`.
+- **New cursor shapes**: `GUI_CURSOR_MOVE`, `GUI_CURSOR_CROSSHAIR`, `GUI_CURSOR_NOT_ALLOWED`.
+- **New event types** with **explicit #define values** (not auto-increment enum) to guarantee kernel↔userspace ABI stability: `GUI_EVT_MOUSE_RIGHT_DOWN/UP` (6,7), `GUI_EVT_MOUSE_MIDDLE_DOWN/UP` (8,9), `GUI_EVT_CONTEXT_MENU` (18), `GUI_EVT_SNAP_CHANGED` (19), `GUI_EVT_ICON_CLICK` (21).
+- **Edge/corner resize**: Windows can now be resized from any edge or corner, not just the bottom-right grip.
+- **Double-click titlebar**: Double-clicking the titlebar toggles maximize/restore.
+- **Alpha blit**: `gui_blit_alpha()` for per-pixel alpha compositing on window back buffers.
+- **Window position/rect queries**: `gui_get_window_pos()`, `gui_get_window_rect()`, `gui_get_window_flags()`.
+- **`strncmp()` added** to kernel `string.c/h` (required by NTFS driver and others).
+
+### Added — libauragui v2.0
+- New widget types: `AG_W_SCROLLAREA`, `AG_W_TAB`, `AG_W_CONTEXTMENU`.
+- `ag_window_snap()`, `ag_window_get_pos()`, `ag_theme_get/set()`, `ag_notify()`, `ag_add_icon()`, `ag_remove_icon()`.
+- Improved textbox with horizontal scrolling for long text.
+- Context menu with `ag_contextmenu_add()`, click handling, auto-dismiss.
+- Tab widget with `ag_tab_add()`, clickable tab headers, active tab switching.
+- Text buffer increased from 128 to 256 characters (`AG_MAX_WIDGET_TEXT`).
+- Event ring size doubled from 64 to 128 entries.
+
+### Changed
+- `GUI_MAX_WINDOWS` increased from 32 to 64.
+- `GUI_EVT_RING_SIZE` increased from 64 to 128.
+- Event type values are now **explicit #defines** in both kernel and libauragui headers, eliminating the auto-increment enum divergence bug.
+- `gui_create_window()` now pre-validates content size and integer overflow before allocating.
+- `gui_resize_window()` rolls back geometry on kmalloc failure instead of leaving inconsistent state.
+- `gui_cleanup_process()` now also cleans up desktop icons owned by the exiting process.
+- `gui_destroy_window()` and `gui_cleanup_process()` reset `last_hover_wid` to prevent stale references.
+- Compositor `fill_rect`/`clear` optimized with row-based `memcpy` instead of per-pixel loops.
+- Dirty-rect tracking infrastructure added (currently forced to full redraw for correctness; partial redraw TODO).
+
+### Fixed
+- **CRITICAL: Event enum mismatch** between `kernel/gui/gui.h` and `libauragui/include/auragui.h` — KEY_DOWN was 10 in kernel but 6 in userspace, causing all keyboard input, shortcuts, focus, resize, and close events to be misrouted. Both headers now use identical explicit `#define` values.
+- `gui_create_window()` no longer leaks `in_use=1` on zero content-size failure path.
+- `gui_resize_window()` no longer corrupts window geometry on kmalloc failure.
+- `gui_add_icon()` now correctly records the calling process's PID instead of hardcoded 0.
+
 ## [Advanced Storage Edition: ext4, btrfs, f2fs, exfat, ntfs, buffer_cache] 2026-06-25
 
 ### Added
