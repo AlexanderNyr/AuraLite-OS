@@ -75,7 +75,7 @@ INIT_ELF     := $(USER_BUILD)/init.elf
 HELLO_ELF    := $(USER_BUILD)/hello.elf
 USER_BIN_H   := $(BUILD_DIR)/init_bin.h
 
-USER_CFLAGS  := -ffreestanding -fstack-protector-strong -fno-pie -fno-pic \
+USER_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
                 -O2 -Wall -Wextra -Werror -I libc/include
 USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 

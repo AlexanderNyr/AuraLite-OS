@@ -33,7 +33,7 @@
  */
 
 int  btrfs_init(int prefer_port);
-void btrfs_self_test(void);
+int btrfs_self_test(void);
 
 extern const struct vfs_ops btrfs_ops;
 

@@ -81,7 +81,10 @@ load_and_jump(const void *elf_data, uint64_t elf_size) {
             (unsigned long long)entry,
             (unsigned long long)(read_cr3() & 0x000FFFFFFFFFF000ULL));
 
-    jump_to_user(entry, USER_STACK_TOP - 16, 0);
+    /* RSP must point into the topmost MAPPED page, which is
+     * stack_top - USER_STACK_GUARD_SIZE. The guard page just above
+     * is intentionally unmapped to catch stack overflows. */
+    jump_to_user(entry, stack_top - USER_STACK_GUARD_SIZE - 16, 0);
     thread_exit();   /* not reached */
 }
 

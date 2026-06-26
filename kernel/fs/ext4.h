@@ -20,7 +20,7 @@
  */
 
 int  ext4_init(int prefer_port);
-void ext4_self_test(void);
+int ext4_self_test(void);
 
 extern const struct vfs_ops ext4_ops;
 
