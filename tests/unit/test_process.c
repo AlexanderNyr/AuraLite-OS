@@ -353,6 +353,7 @@ void t_fd_exhaust(void) {
     tcb_t *t = thread_alloc();
     int fds[MAX_FDS];
     for (int i = 0; i < MAX_FDS; i++) fds[i] = fd_alloc(t);
+    (void)fds;
     CHECK_EQ(fd_alloc(t), -1);
 }
 

@@ -88,7 +88,7 @@ typedef enum {
     TCP_CLOSE_WAIT, TCP_LAST_ACK
 } tcp_state_t;
 
-static const char *tcp_state_name(tcp_state_t s) {
+/* static const char * tcp_state_name(tcp_state_t s) {
     switch (s) {
         case TCP_CLOSED:     return "CLOSED";
         case TCP_SYN_SENT:   return "SYN_SENT";
@@ -101,7 +101,7 @@ static const char *tcp_state_name(tcp_state_t s) {
         case TCP_LAST_ACK:   return "LAST_ACK";
     }
     return "UNKNOWN";
-}
+} */
 
 /* Simplified TCP state transitions */
 static tcp_state_t tcp_on_event(tcp_state_t state, const char *event) {

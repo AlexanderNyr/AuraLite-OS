@@ -25,7 +25,7 @@ static struct vnode* exfat_lookup(void *fs_data, const char *path) {
     if (!dir_buf) return NULL;
 
     struct exfat_dir_entry *entries = (struct exfat_dir_entry *)dir_buf->data;
-    for (int i = 0; i < BC_BLOCK_SIZE / sizeof(struct exfat_dir_entry); i++) {
+    for (size_t i = 0; i < BC_BLOCK_SIZE / sizeof(struct exfat_dir_entry); i++) {
         if (entries[i].type == 0x85 && strcmp((char*)entries[i].name, path) == 0) {
             struct vnode *vn = kmalloc(sizeof(struct vnode));
             vn->type = (entries[i].file_attrs & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;

@@ -371,6 +371,7 @@ static uint32_t get_free_segment(void) {
     uint32_t ssa_start = F2FS_MAIN_START_LBA + f2m.main_segments
         - f2m.ssa_segments - f2m.cp_segments;
     uint32_t nat_start = ssa_start - (f2m.main_segments / 4);
+    (void)nat_start;
 
     for (int retry = 0; retry < 32; retry++) {
         uint32_t candidate = (last_seg + 1) % f2m.main_segments;
@@ -1237,7 +1238,7 @@ int f2fs_init(int prefer_port) {
 
     f2m.page_size = sb->page_size ? sb->page_size : F2FS_PAGE_SIZE;
     f2m.sector_size = sb->sector_size ? sb->sector_size : F2FS_SECTOR_SIZE;
-    f2m.blocks_per_seg = (1 << sb->log_blocks_per_seg) ? (1 << sb->log_blocks_per_seg) : F2FS_BLOCKS_PER_SEG;
+    f2m.blocks_per_seg = sb->log_blocks_per_seg ? (1 << sb->log_blocks_per_seg) : F2FS_BLOCKS_PER_SEG;
     f2m.seg_size = (uint32_t)f2m.blocks_per_seg * f2m.page_size;
     f2m.total_segments = sb->segment_count;
     f2m.main_segments = sb->segment_count_main;

@@ -42,6 +42,7 @@ static struct vnode* ntfs_lookup(void *fs_data, const char *path) {
 static int64_t ntfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
     /* NTFS data is in $DATA attribute runs. Simplified: read from MFT base cluster. */
     struct ntfs_vnode *nvn = vn->fs_data;
+    (void)nvn;
     struct buffer *b = ntfs_get_cluster_buf(boot.mft_start_cluster);
     if (!b) return -1;
     

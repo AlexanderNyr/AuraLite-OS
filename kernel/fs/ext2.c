@@ -1333,15 +1333,20 @@ static int parse_or_format(void) {
 
 void ext2_list(void) {
     if (!es.mounted) return;
-    struct vfs_dirent ents[64];
+    struct vfs_dirent *ents = kmalloc(64 * sizeof(struct vfs_dirent));
+    if (!ents) return;
     struct ext2_vinfo *root = vinfo_get(EXT2_ROOT_INO);
-    if (!root) return;
+    if (!root) {
+        kfree(ents);
+        return;
+    }
     int n = ext2_readdir_op(&root->vnode, ents, 64);
     for (int i = 0; i < n; i++) {
         const char *slash = (ents[i].type == VFS_TYPE_DIR) ? "/" : "";
         kprintf("  /ext2/%s%s  (%llu bytes)\n",
                 ents[i].name, slash, (unsigned long long)ents[i].size);
     }
+    kfree(ents);
 }
 
 int ext2_init(int prefer_port) {

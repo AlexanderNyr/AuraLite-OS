@@ -389,6 +389,7 @@ static int read_inode(uint32_t ino, struct ext4_inode *out) {
 
     /* Try reading the group descriptor from the main copy first */
     uint32_t gdt_blocks = (m4.group_count * m4.desc_size + m4.block_size - 1) / m4.block_size;
+    (void)gdt_blocks;
     uint32_t bgd_lba = m4.first_data_block + 1 + (bg * m4.desc_size) / m4.block_size;
 
     if (read_block(bgd_lba, ext4_scratch) != 0) return -1;
@@ -413,6 +414,7 @@ static int write_inode(uint32_t ino, struct ext4_inode *in) {
     if (bg >= m4.group_count) return -1;
 
     uint32_t gdt_blocks = (m4.group_count * m4.desc_size + m4.block_size - 1) / m4.block_size;
+    (void)gdt_blocks;
     uint32_t bgd_lba = m4.first_data_block + 1 + (bg * m4.desc_size) / m4.block_size;
 
     if (read_block(bgd_lba, ext4_scratch) != 0) return -1;
@@ -437,6 +439,7 @@ static int write_inode(uint32_t ino, struct ext4_inode *in) {
 /* Find a free block in the given group. Returns block number or 0 on failure. */
 static uint32_t alloc_block_in_group(uint32_t group) {
     uint32_t gdt_blocks = (m4.group_count * m4.desc_size + m4.block_size - 1) / m4.block_size;
+    (void)gdt_blocks;
     uint32_t bgd_lba = m4.first_data_block + 1 + (group * m4.desc_size) / m4.block_size;
 
     if (read_block(bgd_lba, ext4_scratch) != 0) return 0;
@@ -445,6 +448,7 @@ static uint32_t alloc_block_in_group(uint32_t group) {
 
     /* Read block bitmap */
     uint32_t bb_lba = ext4_block_lba(gdp->bg_block_bitmap_lo);
+    (void)bb_lba;
     if (read_block(gdp->bg_block_bitmap_lo, ext4_cluster_buf) != 0) return 0;
 
     /* Find first zero bit in the bitmap */
@@ -611,6 +615,7 @@ static int journal_init(void) {
     /* Read journal superblock */
     if (read_block(m4.journal_block, ext4_scratch) != 0) return -1;
     struct ext4_journal_sb *jsb = (struct ext4_journal_sb *)ext4_scratch;
+    (void)jsb;
 
     if (r32(ext4_scratch) != EXT4_JOURNAL_MAGIC) {
         kprintf("[ext4] journal: invalid magic, formatting...\n");
@@ -786,6 +791,7 @@ static int64_t ext4_write(struct vnode *vn, uint64_t pos, const void *buf, uint6
     uint32_t start_lblock = (uint32_t)(pos / m4.block_size);
     uint32_t end_lblock = (uint32_t)((pos + count - 1) / m4.block_size);
     uint32_t needed = end_lblock - start_lblock + 1;
+    (void)needed;
 
     /* Check which blocks already exist */
     uint32_t first_new = start_lblock;
@@ -1007,6 +1013,7 @@ static struct vnode *ext4_create(void *fs_data, const char *path) {
     uint32_t new_ino = 0;
     for (uint32_t g = 0; g < m4.group_count && !new_ino; g++) {
         uint32_t gdt_blocks = (m4.group_count * m4.desc_size + m4.block_size - 1) / m4.block_size;
+        (void)gdt_blocks;
         uint32_t bgd_lba = m4.first_data_block + 1 + (g * m4.desc_size) / m4.block_size;
         if (read_block(bgd_lba, ext4_scratch) != 0) continue;
         struct ext4_bg_desc *gdp = (struct ext4_bg_desc *)

@@ -88,7 +88,6 @@ static void bootsplash_render(void) {
 
     /* OS name – large */
     gfx_draw_text_centered(cy + 70, "AuraLite OS", BS_WHITE);
-    char verbuf[64];
     /* manual version string */
     const char *ver = AURALITE_NAME;
     (void)ver;

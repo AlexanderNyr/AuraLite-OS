@@ -406,7 +406,8 @@ int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
 void vfs_list(const char *path) {
     /* Try the generic readdir path first.  If the underlying fs supports it,
      * we get a uniform listing.  Otherwise fall back to fs-specific shims. */
-    struct vfs_dirent ents[64];
+    struct vfs_dirent *ents = kmalloc(64 * sizeof(struct vfs_dirent));
+    if (!ents) return;
     int n = vfs_readdir(path, ents, 64);
     if (n >= 0) {
         for (int i = 0; i < n; i++) {
@@ -418,8 +419,10 @@ void vfs_list(const char *path) {
                         ents[i].name, (unsigned long long)ents[i].size);
             }
         }
+        kfree(ents);
         return;
     }
+    kfree(ents);
 
     /* Legacy per-fs print helpers (for filesystems without readdir). */
     extern void initrd_list(void);

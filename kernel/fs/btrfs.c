@@ -327,6 +327,7 @@ static int tree_leaf_find(uint8_t *leaf, const struct btrfs_key *key) {
         if (off + sizeof(struct btrfs_item) > btrfs_m.block_size) break;
 
         struct btrfs_item *it = (struct btrfs_item *)(leaf + off);
+        (void)it;
         struct btrfs_key k2;
         uint64_t ko = r64(leaf + off); /* key_offset is actually the key objectid */
         k2.objectid = ko;
@@ -357,6 +358,7 @@ static int tree_leaf_insert(uint8_t *leaf, const struct btrfs_key *key,
     /* Shift existing items up */
     uint32_t last_item_off = item_off + nr_items * sizeof(struct btrfs_item);
     uint32_t shift = sizeof(struct btrfs_item);
+    (void)h; (void)last_item_off; (void)shift;
 
     /* Find insertion point */
     uint32_t insert_idx = 0;
@@ -532,7 +534,6 @@ static uint64_t dir_lookup_name(uint64_t dir_ino, const char *name, int name_len
         if (size < 16) continue;
 
         struct btrfs_dir_item *di = (struct btrfs_dir_item *)data;
-        uint16_t dl = r16((uint8_t*)di + 24); /* name_len offset in dir_item */
         uint16_t dlen = r16((uint8_t*)di + 24);
 
         if (dlen == (uint16_t)name_len &&

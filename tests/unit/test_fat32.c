@@ -134,6 +134,7 @@ static uint8_t lfn_checksum(const char *short_name) {
 static uint64_t fat32_cluster_offset(uint32_t cluster, uint32_t sectors_per_cluster,
                                       uint32_t first_data_sector)
 {
+    (void)first_data_sector;
     return (uint64_t)(cluster - 2) * sectors_per_cluster * SECTOR_SIZE;
 }
 
