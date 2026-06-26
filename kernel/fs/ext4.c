@@ -1381,30 +1381,34 @@ int ext4_init(int prefer_port) {
  * SECTION 15: SELF-TEST
  * ============================================================================ */
 
-void ext4_self_test(void) {
-    if (!m4.mounted) return;
+int ext4_self_test(void) {
+    if (!m4.mounted) {
+        kprintf("[ext4] self-test: SKIPPED (not mounted)\n");
+        return -1;  /* SKIP */
+    }
     kprintf("[ext4] self-test: create, write, read, mkdir...\n");
 
     /* Create a file */
     struct vnode *f = ext4_create(NULL, "test_ext4.txt");
-    if (!f) { kprintf("[ext4] FAIL: create\n"); return; }
+    if (!f) { kprintf("[ext4] FAIL: create\n"); return -2; }
 
     const char *msg = "ext4 filesystem test successful!";
     if (ext4_write(f, 0, msg, strlen(msg)) != (int64_t)strlen(msg)) {
-        kprintf("[ext4] FAIL: write\n"); return;
+        kprintf("[ext4] FAIL: write\n"); return -3;
     }
 
     /* Read it back */
     char buf[64] = {0};
     if (ext4_read(f, 0, buf, sizeof(buf)-1) != (int64_t)strlen(msg) ||
         strcmp(buf, msg) != 0) {
-        kprintf("[ext4] FAIL: readback '%s'\n", buf); return;
+        kprintf("[ext4] FAIL: readback '%s'\n", buf); return -4;
     }
 
     /* Create a directory */
     if (ext4_mkdir(NULL, "testdir") != 0) {
-        kprintf("[ext4] FAIL: mkdir\n"); return;
+        kprintf("[ext4] FAIL: mkdir\n"); return -5;
     }
 
     kprintf("[ext4] PASS: ext4 filesystem functional\n");
+    return 0;  /* PASS */
 }

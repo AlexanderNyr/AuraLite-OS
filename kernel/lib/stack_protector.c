@@ -9,6 +9,11 @@ extern void kernel_halt(void);
 /* Compile-time bootstrap canary, reseeded during early boot. */
 uintptr_t __stack_chk_guard = 0xA84B9C2DF13E0471ULL;
 
+/* Prevent stack protector from corrupting its own canary: this function
+ * must NOT be stack-protected, otherwise the epilogue will compare the
+ * stack cookie (saved before this function runs) against the now-updated
+ * __stack_chk_guard and always fail. */
+__attribute__((no_stack_protector))
 void stack_protector_init(void) {
     volatile uint64_t local = 0;
     uint64_t seed = read_tsc() ^ read_cr3() ^ limine_get_hhdm_offset() ^

@@ -1271,29 +1271,33 @@ int f2fs_init(int prefer_port) {
  * SECTION 15: SELF-TEST
  * ============================================================================ */
 
-void f2fs_self_test(void) {
-    if (!f2m.mounted) return;
+int f2fs_self_test(void) {
+    if (!f2m.mounted) {
+        kprintf("[f2fs] self-test: SKIPPED (not mounted)\n");
+        return -1;  /* SKIP */
+    }
     kprintf("[f2fs] self-test: create, write, read, mkdir...\n");
 
     /* Create a file */
     struct vnode *f = f2fs_create(NULL, "test_f2fs.dat");
-    if (!f) { kprintf("[f2fs] FAIL: create\n"); return; }
+    if (!f) { kprintf("[f2fs] FAIL: create\n"); return -2; }
 
     const char *msg = "F2FS log-structured write test OK!";
     if (f2fs_write(f, 0, msg, strlen(msg)) != (int64_t)strlen(msg)) {
-        kprintf("[f2fs] FAIL: write\n"); return;
+        kprintf("[f2fs] FAIL: write\n"); return -3;
     }
 
     char buf[64] = {0};
     if (f2fs_read(f, 0, buf, sizeof(buf)-1) != (int64_t)strlen(msg) ||
         strcmp(buf, msg) != 0) {
-        kprintf("[f2fs] FAIL: readback '%s'\n", buf); return;
+        kprintf("[f2fs] FAIL: readback '%s'\n", buf); return -4;
     }
 
     /* Create a directory */
     if (f2fs_mkdir(NULL, "flashdir") != 0) {
-        kprintf("[f2fs] FAIL: mkdir\n"); return;
+        kprintf("[f2fs] FAIL: mkdir\n"); return -5;
     }
 
     kprintf("[f2fs] PASS: F2FS (flash-friendly) filesystem functional\n");
+    return 0;  /* PASS */
 }

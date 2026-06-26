@@ -85,20 +85,38 @@ void test_buffer_cache(void) {
 
 void test_ext4_smoke(void) {
     kprintf("[test] test_ext4_smoke: running smoke test...\n");
-    ext4_self_test();
-    kprintf("[test] test_ext4_smoke: PASS\n");
+    int result = ext4_self_test();
+    if (result == 0) {
+        kprintf("[test] test_ext4_smoke: PASS\n");
+    } else if (result == -1) {
+        kprintf("[test] test_ext4_smoke: SKIP (not mounted)\n");
+    } else {
+        kprintf("[test] test_ext4_smoke: FAIL (error %d)\n", result);
+    }
 }
 
 void test_btrfs_smoke(void) {
     kprintf("[test] test_btrfs_smoke: running smoke test...\n");
-    btrfs_self_test();
-    kprintf("[test] test_btrfs_smoke: PASS\n");
+    int result = btrfs_self_test();
+    if (result == 0) {
+        kprintf("[test] test_btrfs_smoke: PASS\n");
+    } else if (result == -1) {
+        kprintf("[test] test_btrfs_smoke: SKIP (not mounted)\n");
+    } else {
+        kprintf("[test] test_btrfs_smoke: FAIL (error %d)\n", result);
+    }
 }
 
 void test_f2fs_smoke(void) {
     kprintf("[test] test_f2fs_smoke: running smoke test...\n");
-    f2fs_self_test();
-    kprintf("[test] test_f2fs_smoke: PASS\n");
+    int result = f2fs_self_test();
+    if (result == 0) {
+        kprintf("[test] test_f2fs_smoke: PASS\n");
+    } else if (result == -1) {
+        kprintf("[test] test_f2fs_smoke: SKIP (not mounted)\n");
+    } else {
+        kprintf("[test] test_f2fs_smoke: FAIL (error %d)\n", result);
+    }
 }
 
 void test_exfat_detect(void) {

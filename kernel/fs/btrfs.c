@@ -936,24 +936,28 @@ int btrfs_init(int prefer_port) {
     return 0;
 }
 
-void btrfs_self_test(void) {
-    if (!btrfs_m.mounted) return;
+int btrfs_self_test(void) {
+    if (!btrfs_m.mounted) {
+        kprintf("[btrfs] self-test: SKIPPED (not mounted)\n");
+        return -1;  /* SKIP */
+    }
     kprintf("[btrfs] self-test: CoW write, create...\n");
 
     struct vnode *f = btrfs_create(NULL, "test_btrfs.dat");
-    if (!f) { kprintf("[btrfs] FAIL: create\n"); return; }
+    if (!f) { kprintf("[btrfs] FAIL: create\n"); return -2; }
 
     const char *msg = "Copy-on-write btrfs test OK!";
     if (btrfs_write(f, 0, msg, strlen(msg)) != (int64_t)strlen(msg)) {
-        kprintf("[btrfs] FAIL: write\n"); return;
+        kprintf("[btrfs] FAIL: write\n"); return -3;
     }
 
     char buf[64] = {0};
     int64_t n = btrfs_read(f, 0, buf, sizeof(buf) - 1);
     if (n != (int64_t)strlen(msg) || strcmp(buf, msg) != 0) {
         kprintf("[btrfs] FAIL: readback '%s' (%lld bytes)\n", buf, (long long)n);
-        return;
+        return -4;
     }
 
     kprintf("[btrfs] PASS: CoW filesystem functional\n");
+    return 0;  /* PASS */
 }
