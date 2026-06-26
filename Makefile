@@ -11,6 +11,11 @@ AS          := nasm
 
 BUILD_DIR   := build
 LIMINE_DIR  := limine
+LIMINE_SRC  := third_party/limine
+LIMINE_BIN  := $(LIMINE_SRC)/bin
+LIMINE_DEPS := $(LIMINE_BIN)/limine $(LIMINE_BIN)/limine-bios.sys \
+               $(LIMINE_BIN)/limine-uefi-cd.bin $(LIMINE_BIN)/limine-bios-cd.bin \
+               $(LIMINE_BIN)/BOOTX64.EFI
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
 
@@ -42,7 +47,7 @@ KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 
 .PHONY: all kernel iso usb vbox vmware vm-configs run run-usb-msc clean \
-        test-unit test-integration test-integration-fast test
+        test-unit test-integration test-integration-fast test limine-build
 
 all: iso
 
@@ -246,8 +251,17 @@ $(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
 
 USB_IMAGE   := $(BUILD_DIR)/usb.img
 
-iso: kernel $(BUILD_DIR)/initrd.tar
-	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_DIR)
+$(LIMINE_BIN)/limine:
+	@( cd $(LIMINE_SRC) && ([ -f configure ] || ./bootstrap) && \
+	   ./configure --enable-all && make -j$$(nproc) )
+
+$(filter-out $(LIMINE_BIN)/limine,$(LIMINE_DEPS)): $(LIMINE_BIN)/limine
+	@:
+
+limine-build: $(LIMINE_DEPS)
+
+iso: kernel $(BUILD_DIR)/initrd.tar limine-build
+	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)
 	@mkdir -p release
 	@cp $(ISO_IMAGE) release/auralite.iso
 	@cp $(ISO_IMAGE) release/auralite-universal.iso

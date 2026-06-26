@@ -11,12 +11,14 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install build & QEMU dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang lld nasm xorriso qemu-system-x86 python3 make
+            clang lld nasm xorriso qemu-system-x86 python3 make llvm mtools
 
       - name: Build ISO
         run: make iso

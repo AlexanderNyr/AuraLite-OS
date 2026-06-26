@@ -5,11 +5,14 @@
 # Usage: mkisoimage.sh <kernel.elf> <out.iso> <limine_dir>
 set -euo pipefail
 
-KERNEL_ELF="${1:?usage: $0 <kernel.elf> <out.iso> <limine_dir>}"
+KERNEL_ELF="${1:?usage: $0 <kernel.elf> <out.iso> [limine_dir]}"
 ISO_IMAGE="${2:?}"
-LIMINE_DIR="${3:?}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LIMINE_DIR="${3:-$ROOT/third_party/limine/bin}"
+if [[ "$LIMINE_DIR" != /* ]]; then
+    LIMINE_DIR="$ROOT/$LIMINE_DIR"
+fi
 ISO_ROOT="$ROOT/build/iso_root"
 
 echo "[mkisoimage] staging ISO tree at $ISO_ROOT"
