@@ -325,7 +325,11 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
-                $(BUILD_DIR)/test_usb $(BUILD_DIR)/test_wm
+                $(BUILD_DIR)/test_usb $(BUILD_DIR)/test_wm \
+                $(BUILD_DIR)/test_vfs $(BUILD_DIR)/test_network \
+                $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
+                $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
+                $(BUILD_DIR)/test_fat32
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -358,9 +362,6 @@ $(BUILD_DIR)/test_libc: tests/unit/test_libc.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-clean:
-	rm -rf $(BUILD_DIR)
-
 $(BUILD_DIR)/test_3d: tests/unit/test_3d.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@ -lm
@@ -372,6 +373,39 @@ $(BUILD_DIR)/test_usb: tests/unit/test_usb.c
 $(BUILD_DIR)/test_wm: tests/unit/test_wm.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# ---- New unit tests (Phase 15+) ----
+
+$(BUILD_DIR)/test_vfs: tests/unit/test_vfs.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_network: tests/unit/test_network.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_elf: tests/unit/test_elf.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_gui: tests/unit/test_gui.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_process: tests/unit/test_process.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_spinlock: tests/unit/test_spinlock.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@ -lpthread
+
+$(BUILD_DIR)/test_fat32: tests/unit/test_fat32.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+clean:
+	rm -rf $(BUILD_DIR)
 
 # ---- QEMU integration tests ----
 # Each case in tests/integration/cases/ boots the ISO in QEMU and asserts on
