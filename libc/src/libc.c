@@ -161,6 +161,17 @@ int fcntl(int fd, int cmd, int arg) {
     return (int)syscall(SYS_FCNTL, (uint64_t)fd, (uint64_t)cmd, (uint64_t)arg, 0, 0, 0);
 }
 
+void* mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
+    return (void *)syscall(SYS_MMAP, (uint64_t)addr, (uint64_t)length,
+                           (uint64_t)prot, (uint64_t)flags,
+                           (uint64_t)fd, offset);
+}
+
+int munmap(void *addr, size_t length) {
+    return (int)syscall(SYS_MUNMAP, (uint64_t)addr, (uint64_t)length,
+                        0, 0, 0, 0);
+}
+
 void* sbrk(intptr_t increment) {
     uint64_t cur_brk = syscall(12, 0, 0, 0, 0, 0, 0); // 12 = SYS_BRK
     if (cur_brk == (uint64_t)-1) return (void*)-1;

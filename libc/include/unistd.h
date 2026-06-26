@@ -9,6 +9,8 @@
 #define SYS_WRITE   1
 #define SYS_OPEN    2
 #define SYS_CLOSE   3
+#define SYS_MMAP    9
+#define SYS_MUNMAP  11
 #define SYS_GETPID 39
 #define SYS_EXIT   60
 #define SYS_FORK   57
@@ -47,6 +49,16 @@
 
 #define AF_INET      2
 #define SOCK_STREAM  1
+
+#define PROT_READ    0x1
+#define PROT_WRITE   0x2
+#define PROT_EXEC    0x4
+#define PROT_NONE    0x0
+#define MAP_PRIVATE  0x02
+#define MAP_FIXED    0x10
+#define MAP_ANON     0x20
+#define MAP_ANONYMOUS MAP_ANON
+#define MAP_FAILED   ((void *)-1)
 
 /* Subset of struct stat we expose to user space.  Field layout must match
  * `struct vfs_stat` in the kernel (kernel/fs/vfs.h). */
@@ -127,5 +139,7 @@ int     fcntl(int fd, int cmd, int arg);
 pid_t   waitpid(pid_t pid, int *status);
 
 void*   sbrk(intptr_t increment);
+void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);
+int     munmap(void *addr, size_t length);
 
 #endif /* AURALITE_LIBC_UNISTD_H */

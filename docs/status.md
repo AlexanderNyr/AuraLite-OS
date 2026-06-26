@@ -34,7 +34,7 @@ Legend:
 | Kernel heap | ✅ | First-fit allocator with coalescing. |
 | Per-process PML4 | 🧪 | Implemented for spawned user processes. |
 | Copy-on-write | ❌ | `fork` deep-copies user pages. |
-| User pointer validation | 🧪 | `validate_user_range`, `copy_from_user`, `copy_to_user` are used by syscall dispatch; not yet a fault-recovering uaccess layer. |
+| User pointer validation | 🧪 | `validate_user_range`, `copy_from_user`, `copy_to_user` use a #PF fixup path so TOCTOU/unmap during copy returns an error instead of panicking. |
 | Slab allocator | ❌ | Future work. |
 
 ## Scheduling and processes
@@ -80,7 +80,7 @@ Legend:
 | Directory/path ops | ✅/🧪 | `listdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`. |
 | Networking | 🧪 | DNS, ping, legacy TCP calls and process-owned socket-style syscalls. |
 | GUI | ✅/🧪 | `SYS_GUI_CALL` (200), `SYS_GUI_EVENT` (201), `SYS_GUI_THEME` (202). v2.0 theme engine, icons, notifications, snap, context menus. |
-| Memory syscalls | 🧪 | `brk` implemented. No `mmap`, `munmap` yet. |
+| Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
 | Sockets | ❌ | No BSD socket API. |
 
 ## Networking
@@ -151,12 +151,19 @@ Legend:
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
 
+## Known low-priority limitations
+
+- **Scheduler is not SMP-safe.** APs may be brought online for bring-up tests, but they idle; normal scheduling still runs on the BSP.
+- **TCP is intentionally minimal.** It is polling-oriented, supports a small fixed number of streams, and still lacks production features such as retransmission, congestion control and a sliding window.
+- **Advanced filesystems are prototypes.** `ext4`, `btrfs`, `f2fs`, `ntfs` and `exfat` are scaffolding/experimental readers, not robust general-purpose filesystem implementations.
+- **Hardware coverage is mostly virtualized.** Integration coverage is QEMU-first, with some VirtualBox/VMware-oriented device IDs; broad real-hardware validation is still pending.
+
 ## Highest-priority gaps
 
-1. Finish full address-space/page-table reaping for exited user processes.
-2. Extend user-copy into a fault-recovering uaccess layer and audit remaining kernel-internal callers.
+1. Harden address-space teardown for future SMP/TLB-shootdown support.
+2. Audit remaining kernel-internal callers and expand fault-recovering uaccess tests.
 3. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
 4. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
-5. Enforce strict user ELF segment permissions and add user `mmap` / `munmap`.
+5. Enforce strict user ELF segment permissions and grow `mmap` into lazy/shared VMAs.
 6. Tighten FD inheritance/lifetime semantics around `fork`, `execve` and process exit.
 7. **GUI dirty-rect compositor**: Currently forces full redraw every frame. Switch to partial redraw for performance (requires integration testing: window move leaves no artifacts, resize has no ghosting, cursor over dirty rects, notification auto-dismiss).

@@ -28,11 +28,20 @@ static struct vnode* exfat_lookup(void *fs_data, const char *path) {
     for (size_t i = 0; i < BC_BLOCK_SIZE / sizeof(struct exfat_dir_entry); i++) {
         if (entries[i].type == 0x85 && strcmp((char*)entries[i].name, path) == 0) {
             struct vnode *vn = kmalloc(sizeof(struct vnode));
+            if (!vn) {
+                bc_release(dir_buf);
+                return NULL;
+            }
             vn->type = (entries[i].file_attrs & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
             vn->size = entries[i].size;
             vn->inode_id = entries[i].first_cluster;
             vn->ops = &exfat_ops;
             vn->fs_data = kmalloc(sizeof(struct exfat_vnode));
+            if (!vn->fs_data) {
+                kfree(vn);
+                bc_release(dir_buf);
+                return NULL;
+            }
             ((struct exfat_vnode*)vn->fs_data)->inode_id = vn->inode_id;
             ((struct exfat_vnode*)vn->fs_data)->size = vn->size;
             

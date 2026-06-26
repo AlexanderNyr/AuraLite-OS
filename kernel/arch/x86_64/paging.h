@@ -29,6 +29,9 @@
 #define PAGE_FLAG_PRESENT  (1ULL << 0)   /* bit 0  */
 #define PAGE_FLAG_WRITABLE (1ULL << 1)   /* bit 1  */
 #define PAGE_FLAG_USER     (1ULL << 2)   /* bit 2  */
+/* Software-owned PTE bit.  Hardware ignores bits 9..11 in 4 KiB PTEs; use
+ * one to tag read-only mappings that are private and must be copied on write. */
+#define PAGE_FLAG_COW      (1ULL << 9)
 #define PAGE_FLAG_NO_EXEC  (1ULL << 63)  /* bit 63 (requires EFER.NXE) */
 
 /* ---- Constants ---- */
@@ -98,6 +101,10 @@ uint64_t paging_get_kernel_pml4(void);
 /* Clone all user-space pages from the current address space into a new one.
  * Returns the new PML4 physical address, or 0 on failure. Used by fork(). */
 uint64_t paging_clone_user_space(void);
+
+/* Resolve a user write-protection #PF on a copy-on-write page.
+ * Returns 1 if handled and execution may resume, 0 otherwise. */
+int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code);
 
 /*
  * Free every USER-half page (PML4 entries 0..PML4_USER_TOP-1) referenced

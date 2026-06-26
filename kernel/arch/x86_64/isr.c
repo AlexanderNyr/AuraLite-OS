@@ -4,8 +4,10 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/paging.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/usercopy.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/assert.h"
 
@@ -91,6 +93,20 @@ void isr_handler(struct registers *r) {
         /* Determine whether this fault came from Ring 3 (user mode). CS & 3
          * gives the CPL: 0 = kernel, 3 = user. */
         int from_user = ((r->cs & 3) == 3);
+
+        /* A write to a user COW page is a recoverable protection fault.  It
+         * may be triggered either by user code or by kernel copy_to_user(). */
+        if (r->int_no == 14 &&
+            paging_handle_cow_fault(read_cr2(), r->err_code)) {
+            return;
+        }
+
+        /* Fault-recovering uaccess: if a kernel #PF happens inside
+         * copy_from_user/copy_to_user, redirect RIP to the assembly fixup so
+         * the copy returns -1 instead of panicking the kernel. */
+        if (!from_user && r->int_no == 14 && usercopy_recover_fault(&r->rip)) {
+            return;
+        }
 
         kprintf("\n[EXCEPTION] %s (vector %llu, error code 0x%016llx) "
                 "from %s mode\n",

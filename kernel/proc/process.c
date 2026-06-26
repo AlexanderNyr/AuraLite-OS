@@ -170,6 +170,7 @@ int64_t do_fork(void) {
         memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
         memcpy(child->cloexec,  parent->cloexec,  sizeof(child->cloexec));
         child->brk = parent->brk;
+        child->mmap_next = parent->mmap_next;
     }
 
     if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
@@ -224,6 +225,7 @@ int64_t do_execve(const char *path) {
     /* 4) Update the current TCB to point to the new address space. */
     if (cur) {
         cur->pml4_phys = new_pml4;
+        cur->mmap_next = 0;
     }
     if (old_pml4 && old_pml4 != new_pml4) {
         (void)paging_free_address_space(old_pml4);

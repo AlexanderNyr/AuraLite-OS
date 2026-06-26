@@ -204,9 +204,12 @@ uint64_t paging_get_kernel_pml4(void) {
 
 /*
  * Clone all user-space pages from the current address space into a new one.
- * Walks PML4 entries 0-255, then PDPT, PD, PT; for each present leaf PTE,
- * allocates a new frame, copies the page content, and maps it with the same
- * flags. Used by fork().
+ *
+ * This is a mark-and-share copy-on-write fork(): page-table pages are copied,
+ * but leaf user frames are shared.  Writable leaves are made read-only in BOTH
+ * parent and child and tagged PAGE_FLAG_COW; the first user write takes a #PF
+ * and paging_handle_cow_fault() performs the real page copy.  Read-only leaves
+ * are shared as-is.
  */
 uint64_t paging_clone_user_space(void) {
     uint64_t new_pml4_phys = paging_new_address_space();
@@ -217,40 +220,94 @@ uint64_t paging_clone_user_space(void) {
         if (!(pml4[i4] & PAGE_FLAG_PRESENT)) continue;
         uint64_t *o_pdpt = phys_to_ptr(pml4[i4] & PAGE_ADDR_MASK);
         uint64_t n_pdpt_p = pmm_alloc_frame();
-        if (!n_pdpt_p) return 0;
+        if (!n_pdpt_p) goto fail;
         uint64_t *n_pdpt = phys_to_ptr(n_pdpt_p);
         memset(n_pdpt, 0, PAGE_SIZE_BYTES);
         new_pml4[i4] = n_pdpt_p | PAGE_FLAG_PRESENT|PAGE_FLAG_WRITABLE|PAGE_FLAG_USER;
+
         for (int i3 = 0; i3 < 512; i3++) {
             if (!(o_pdpt[i3] & PAGE_FLAG_PRESENT)) continue;
             uint64_t *o_pd = phys_to_ptr(o_pdpt[i3] & PAGE_ADDR_MASK);
             uint64_t n_pd_p = pmm_alloc_frame();
-            if (!n_pd_p) return 0;
+            if (!n_pd_p) goto fail;
             uint64_t *n_pd = phys_to_ptr(n_pd_p);
             memset(n_pd, 0, PAGE_SIZE_BYTES);
             n_pdpt[i3] = n_pd_p | PAGE_FLAG_PRESENT|PAGE_FLAG_WRITABLE|PAGE_FLAG_USER;
+
             for (int i2 = 0; i2 < 512; i2++) {
                 if (!(o_pd[i2] & PAGE_FLAG_PRESENT)) continue;
                 uint64_t *o_pt = phys_to_ptr(o_pd[i2] & PAGE_ADDR_MASK);
                 uint64_t n_pt_p = pmm_alloc_frame();
-                if (!n_pt_p) return 0;
+                if (!n_pt_p) goto fail;
                 uint64_t *n_pt = phys_to_ptr(n_pt_p);
                 memset(n_pt, 0, PAGE_SIZE_BYTES);
                 n_pd[i2] = n_pt_p | PAGE_FLAG_PRESENT|PAGE_FLAG_WRITABLE|PAGE_FLAG_USER;
+
                 for (int i1 = 0; i1 < 512; i1++) {
                     uint64_t opte = o_pt[i1];
                     if (!(opte & PAGE_FLAG_PRESENT)) continue;
+                    if (!(opte & PAGE_FLAG_USER)) continue;
+
                     uint64_t old_phys = opte & PAGE_ADDR_MASK;
-                    uint64_t new_phys = pmm_alloc_frame();
-                    if (!new_phys) return 0;
-                    memcpy(phys_to_ptr(new_phys), phys_to_ptr(old_phys),
-                           PAGE_SIZE_BYTES);
-                    n_pt[i1] = new_phys | (opte & ~PAGE_ADDR_MASK);
+                    uint64_t flags = opte & ~PAGE_ADDR_MASK;
+
+                    if (pmm_inc_frame_ref(old_phys) != 0) goto fail;
+
+                    if (flags & (PAGE_FLAG_WRITABLE | PAGE_FLAG_COW)) {
+                        flags &= ~PAGE_FLAG_WRITABLE;
+                        flags |= PAGE_FLAG_COW;
+                        o_pt[i1] = old_phys | flags;
+                        uint64_t virt = ((uint64_t)i4 << 39) |
+                                        ((uint64_t)i3 << 30) |
+                                        ((uint64_t)i2 << 21) |
+                                        ((uint64_t)i1 << 12);
+                        invlpg(virt);
+                    }
+                    n_pt[i1] = old_phys | flags;
                 }
             }
         }
     }
     return new_pml4_phys;
+
+fail:
+    (void)paging_free_address_space(new_pml4_phys);
+    return 0;
+}
+
+int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code) {
+    /* COW faults are present write-protection faults.  The U/S bit may be 0
+     * when the kernel writes to a user COW page via copy_to_user(). */
+    if ((err_code & 0x3ULL) != 0x3ULL) return 0;
+
+    uint64_t virt = fault_addr & ~(PAGE_SIZE_BYTES - 1ULL);
+    if (PML4_INDEX(virt) >= PML4_USER_TOP) return 0;
+
+    uint64_t *pte = walk_pte(virt, 0);
+    if (!pte || !(*pte & PAGE_FLAG_PRESENT) || !(*pte & PAGE_FLAG_USER) ||
+        !(*pte & PAGE_FLAG_COW)) {
+        return 0;
+    }
+
+    uint64_t old_phys = *pte & PAGE_ADDR_MASK;
+    uint64_t flags = (*pte & ~PAGE_ADDR_MASK) & ~PAGE_FLAG_COW;
+    flags |= PAGE_FLAG_WRITABLE;
+
+    uint32_t refs = pmm_get_frame_refcount(old_phys);
+    if (refs <= 1) {
+        *pte = old_phys | flags;
+        invlpg(virt);
+        return 1;
+    }
+
+    uint64_t new_phys = pmm_alloc_frame();
+    if (!new_phys) return 0;
+    memcpy(phys_to_ptr(new_phys), phys_to_ptr(old_phys), PAGE_SIZE_BYTES);
+
+    *pte = new_phys | flags;
+    invlpg(virt);
+    pmm_free_frame(old_phys); /* drop this address space's reference */
+    return 1;
 }
 
 /* ---- Full user-half address-space reaping ---- */

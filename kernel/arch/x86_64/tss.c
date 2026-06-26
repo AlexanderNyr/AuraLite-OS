@@ -13,6 +13,8 @@
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/kprintf.h"
+#include "kernel/lib/assert.h"
 
 #define TSS_STACK_SIZE (16 * 1024)   /* 16 KiB */
 
@@ -24,6 +26,9 @@ void tss_init(void) {
 
     /* Allocate a dedicated IST1 stack for the double-fault (#DF) handler. */
     ist1_stack = kmalloc(TSS_STACK_SIZE);
+    if (!ist1_stack) {
+        PANIC("OOM allocating TSS IST1 stack");
+    }
     uint64_t ist1_top = (uint64_t)ist1_stack + TSS_STACK_SIZE;
 
     tss.rsp0_low  = (uint32_t)(0);

@@ -78,8 +78,17 @@
 #define USER_STACK_TOP        0x7FFFF0000000ULL
 #define USER_STACK_SIZE       0x10000ULL
 #define USER_STACK_GUARD_SIZE 0x1000ULL
+#define USER_MMAP_BASE        0x0000400000000000ULL
+#define USER_MMAP_MAX         0x0000700000000000ULL
 #define USER_BRK_GUARD_GAP    (2ULL * 1024ULL * 1024ULL)
-#define USER_BRK_MAX          (USER_STACK_TOP - USER_STACK_SIZE - USER_STACK_GUARD_SIZE - USER_BRK_GUARD_GAP)
+#define USER_BRK_MAX          (USER_MMAP_BASE - USER_BRK_GUARD_GAP)
+
+#define PROT_READ             0x1
+#define PROT_WRITE            0x2
+#define PROT_EXEC             0x4
+#define MAP_PRIVATE           0x02
+#define MAP_FIXED             0x10
+#define MAP_ANONYMOUS         0x20
 
 static int copy_user_path(char *dst, uint64_t user_path) {
     return copy_string_from_user(dst, (const char *)(uintptr_t)user_path,
@@ -127,6 +136,137 @@ static uint64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
     return done;
 }
 
+static uint64_t align_up_u64(uint64_t v, uint64_t a) {
+    return (v + a - 1) & ~(a - 1);
+}
+
+static int user_mmap_range_ok(uint64_t addr, uint64_t len) {
+    if (len == 0) return 0;
+    if (addr & (PAGE_SIZE_BYTES - 1ULL)) return 0;
+    if (addr < USER_MMAP_BASE || addr >= USER_MMAP_MAX) return 0;
+    if (len > USER_MMAP_MAX - addr) return 0;
+    return 1;
+}
+
+static int user_range_is_free(uint64_t addr, uint64_t len) {
+    for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
+        if (paging_get_phys(addr + off) != 0) return 0;
+    }
+    return 1;
+}
+
+static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
+                             uint64_t flags, uint64_t fd, uint64_t off) {
+    tcb_t *cur = sched_current();
+    if (!cur || len == 0) return (uint64_t)-1;
+
+    /* First implementation: eager MAP_PRIVATE mappings.  Anonymous mappings
+     * are zero-filled; file-backed mappings read the file contents now (not a
+     * shared page-cache VMA yet).  PROT_NONE would need VMA fault bookkeeping,
+     * so reject it for now. */
+    int anonymous = (flags & MAP_ANONYMOUS) ? 1 : 0;
+    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || prot == 0) {
+        return (uint64_t)-1;
+    }
+    if (!(flags & MAP_PRIVATE)) return (uint64_t)-1;
+    if (anonymous) {
+        if (fd != (uint64_t)-1) return (uint64_t)-1;
+    } else {
+        if (fd == (uint64_t)-1 || (off & (PAGE_SIZE_BYTES - 1ULL)) ||
+            off > 0x7FFFFFFFFFFFFFFFULL) {
+            return (uint64_t)-1;
+        }
+    }
+
+    len = align_up_u64(len, PAGE_SIZE_BYTES);
+    if (len == 0 || len > (USER_MMAP_MAX - USER_MMAP_BASE)) return (uint64_t)-1;
+
+    if (flags & MAP_FIXED) {
+        if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-1;
+        if (!user_mmap_range_ok(addr, len) || !user_range_is_free(addr, len)) {
+            return (uint64_t)-1;
+        }
+    } else {
+        uint64_t start = cur->mmap_next ? cur->mmap_next : USER_MMAP_BASE;
+        if (addr >= USER_MMAP_BASE && addr < USER_MMAP_MAX) start = addr;
+        start = align_up_u64(start, PAGE_SIZE_BYTES);
+
+        addr = 0;
+        for (uint64_t candidate = start;
+             candidate >= USER_MMAP_BASE && candidate + len <= USER_MMAP_MAX;
+             candidate += len) {
+            if (user_range_is_free(candidate, len)) {
+                addr = candidate;
+                break;
+            }
+            if (candidate > USER_MMAP_MAX - len - PAGE_SIZE_BYTES) break;
+        }
+        if (addr == 0) return (uint64_t)-1;
+        cur->mmap_next = addr + len;
+    }
+
+    uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
+    if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;
+    if (!(prot & PROT_EXEC)) pte_flags |= PAGE_FLAG_NO_EXEC;
+
+    int64_t old_pos = -1;
+    if (!anonymous) {
+        old_pos = vfs_lseek((int)fd, 0, 1);
+        if (old_pos < 0) return (uint64_t)-1;
+        if (vfs_lseek((int)fd, (int64_t)off, 0) < 0) {
+            (void)vfs_lseek((int)fd, old_pos, 0);
+            return (uint64_t)-1;
+        }
+    }
+
+    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t mapped = 0;
+    for (; mapped < len; mapped += PAGE_SIZE_BYTES) {
+        uint64_t phys = pmm_alloc_frame();
+        if (!phys) goto fail;
+        memset((void *)(uintptr_t)(hhdm + phys), 0, PAGE_SIZE_BYTES);
+        if (!anonymous) {
+            int64_t rd = vfs_read((int)fd, (void *)(uintptr_t)(hhdm + phys),
+                                  PAGE_SIZE_BYTES);
+            if (rd < 0) {
+                pmm_free_frame(phys);
+                goto fail;
+            }
+        }
+        paging_map(addr + mapped, phys, pte_flags);
+    }
+    if (!anonymous) (void)vfs_lseek((int)fd, old_pos, 0);
+    return addr;
+
+fail:
+    if (!anonymous && old_pos >= 0) (void)vfs_lseek((int)fd, old_pos, 0);
+    for (uint64_t off2 = 0; off2 < mapped; off2 += PAGE_SIZE_BYTES) {
+        uint64_t phys = paging_get_phys(addr + off2);
+        if (phys) {
+            paging_unmap(addr + off2);
+            pmm_free_frame(phys);
+        }
+    }
+    return (uint64_t)-1;
+}
+
+static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
+    if (len == 0) return (uint64_t)-1;
+    if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-1;
+    len = align_up_u64(len, PAGE_SIZE_BYTES);
+    if (!user_mmap_range_ok(addr, len)) return (uint64_t)-1;
+
+    for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
+        uint64_t virt = addr + off;
+        uint64_t phys = paging_get_phys(virt);
+        if (phys) {
+            paging_unmap(virt);
+            pmm_free_frame(phys);
+        }
+    }
+    return 0;
+}
+
 /* Saved user-mode RIP/RFLAGS from the syscall_entry asm stub.  Defined in
  * syscall_entry.asm; we read them once at the top of every dispatch and copy
  * them into the current TCB so that a nested syscall from a context-switch
@@ -151,7 +291,6 @@ void syscall_restore_user_frame(void) {
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
-    (void)a4; (void)a5; (void)a6;
 
     /* Capture the user-mode return frame into the current TCB so subsequent
      * context switches in this syscall cannot corrupt it via the globals. */
@@ -470,6 +609,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         default:      return (uint64_t)-1;
         }
     }
+    case SYS_MMAP:
+        return syscall_mmap(a1, a2, a3, a4, a5, a6);
+    case SYS_MUNMAP:
+        return syscall_munmap(a1, a2);
     case SYS_BRK: {
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-1;

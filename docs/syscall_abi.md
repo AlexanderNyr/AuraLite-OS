@@ -90,7 +90,7 @@ Current caveats:
 - saved `RCX`, `R11` and user `RSP` are stored in globals, so this path is not
   suitable for true SMP syscall concurrency yet;
 - syscall handlers use `validate_user_range`, `copy_from_user` and
-  `copy_to_user`, but this is not yet a fault-recovering uaccess layer;
+  `copy_to_user`; the copy primitives have a #PF fixup path for TOCTOU/unmap races;
 - blocking syscalls are mostly polling/spin-based.
 
 ## Syscall table
@@ -101,9 +101,11 @@ Current caveats:
 | 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write. |
 | 2 | `open` | `open(path)` | ✅ | Opens or creates a VFS path when the mounted FS supports creation; returns a per-process FD. |
 | 3 | `close` | `close(fd)` | ✅ | Closes a per-process FD. |
+| 9 | `mmap` | `mmap(addr, len, prot, flags, fd, off)` | 🧪 | Private eager mappings: anonymous zero-fill or file contents copied at mmap time. |
+| 11 | `munmap` | `munmap(addr, len)` | 🧪 | Unmaps/free pages in the mmap window. |
 | 12 | `brk` | `sbrk(increment)` | ✅ | Adjusts the program break (heap). |
 | 39 | `getpid` | `getpid()` | ✅ | Returns current TCB ID. |
-| 57 | `fork` | `fork()` | 🧪 | Deep-copies user address space; simplified semantics. |
+| 57 | `fork` | `fork()` | 🧪 | Copy-on-write user address-space clone; simplified semantics. |
 | 59 | `execve` | `execve(path)` | 🧪 | Replaces current address space with a new ELF. No argv/envp. |
 | 60 | `exit` | `exit(code)` | ✅/🧪 | Terminates current thread; exit-code reporting is incomplete. |
 | 61 | `wait4` | `wait4(status)` | 🧪 | Yield-polling wait; not POSIX-complete and not PID-specific. |
@@ -181,14 +183,12 @@ Current caveats:
 
 - no `dup`, `pipe` or close-on-exec;
 - `fork()` does not yet model POSIX shared open-file descriptions precisely;
-- process-exit cleanup now closes process FDs and deferred-reaps TCBs/stacks,
-  but full page-table/address-space reaping is still future work.
+- process-exit cleanup now closes process FDs and deferred-reaps TCBs/stacks/address spaces.
 
 ## Planned or missing syscalls
 
 | Name | Purpose |
 |---|---|
-| `mmap`, `munmap` | User memory mappings. |
 | `pipe` | IPC pipe. |
 | `bind`, `listen`, `accept` | Server-side socket API. |
 | full BSD `sockaddr` ABI | Current socket calls pass IPv4/port directly. |
@@ -198,7 +198,6 @@ Current caveats:
 
 Before treating the syscall layer as robust, add:
 
-1. fault-recovering user access so a race/unmap cannot still fault the kernel;
 2. a full audit of any remaining direct user-pointer paths outside syscall dispatch;
 3. per-process syscall state instead of global saved `RCX/R11/RSP`;
 4. structured error codes (`errno`-style or negative error numbers).

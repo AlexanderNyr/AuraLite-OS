@@ -15,11 +15,17 @@
  */
 int validate_user_range(const void *user_ptr, uint64_t len, int write_required);
 
-/* Safe-ish user copies for the current AuraLite model.  They validate the
- * complete range before copying.  Return 0 on success, -1 on failure.
+/* Fault-recovering user copies.  They validate the complete range before
+ * copying and also recover from a kernel #PF if the mapping changes before or
+ * during the actual copy.  Return 0 on success, -1 on failure.
  */
 int copy_from_user(void *kernel_dst, const void *user_src, uint64_t len);
 int copy_to_user(void *user_dst, const void *kernel_src, uint64_t len);
+
+/* Page-fault recovery hook used by the x86_64 exception handler.  If a kernel
+ * #PF occurs while a uaccess copy primitive is active, this rewrites the saved
+ * RIP to the copy primitive's fixup label and returns 1. */
+int usercopy_recover_fault(uint64_t *saved_rip);
 
 /* Copy a NUL-terminated userspace string into kernel_dst.
  * kernel_dst_size includes the trailing NUL.  Returns 0 on success, -1 if the

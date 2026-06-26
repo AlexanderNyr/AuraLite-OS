@@ -29,10 +29,19 @@ static struct vnode* ntfs_lookup(void *fs_data, const char *path) {
 
     /* In a real NTFS driver, we would iterate attributes to find $FILE_NAME */
     struct vnode *vn = kmalloc(sizeof(struct vnode));
+    if (!vn) {
+        bc_release(b);
+        return NULL;
+    }
     vn->type = VFS_TYPE_FILE;
     vn->inode_id = 0;
     vn->ops = &ntfs_ops;
     vn->fs_data = kmalloc(sizeof(struct ntfs_vnode));
+    if (!vn->fs_data) {
+        kfree(vn);
+        bc_release(b);
+        return NULL;
+    }
     ((struct ntfs_vnode*)vn->fs_data)->mft_index = 0;
 
     bc_release(b);

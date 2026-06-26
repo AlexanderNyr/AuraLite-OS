@@ -8,6 +8,7 @@
  */
 
 #include <stdint.h>
+#include <stddef.h>
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/bitmap.h"
 #include "kernel/lib/spinlock.h"
@@ -29,6 +30,10 @@ struct pmm_state {
     uint64_t  free_frames;        /* currently free (allocatable) frames      */
     uint64_t  bitmap_phys;        /* physical base of the bitmap              */
     uint64_t  bitmap_frames;      /* frames the bitmap occupies               */
+    uint32_t *refcount;           /* per-frame sharing count for COW pages    */
+    uint64_t  refcount_bytes;     /* size of refcount array in bytes          */
+    uint64_t  refcount_phys;      /* physical base of refcount array          */
+    uint64_t  refcount_frames;    /* frames the refcount array occupies       */
     uint64_t  hhdm;               /* cached direct-map offset                 */
     spinlock_t lock;
 };
@@ -58,7 +63,7 @@ static uint64_t find_bitmap_region(struct limine_memmap_entry **entries,
             : LIMINE_MEMMAP_USABLE;
         for (uint64_t i = 0; i < count; i++) {
             if (entries[i]->type == want_type &&
-                entries[i]->length >= pmm.bitmap_bytes) {
+                entries[i]->length >= pmm.bitmap_bytes + pmm.refcount_bytes) {
                 return entries[i]->base;
             }
         }
@@ -91,6 +96,7 @@ void pmm_init(void) {
     }
     pmm.nframes       = ALIGN_UP(highest, PMM_PAGE_SIZE) >> PMM_PAGE_SHIFT;
     pmm.bitmap_bytes  = ALIGN_UP(pmm.nframes / 8, PMM_PAGE_SIZE);
+    pmm.refcount_bytes = ALIGN_UP(pmm.nframes * sizeof(uint32_t), PMM_PAGE_SIZE);
     pmm.usable_frames = usable_bytes >> PMM_PAGE_SHIFT;
     if (pmm.nframes == 0) {
         kprintf(PMM_TAG "FATAL: no usable memory detected\n");
@@ -107,6 +113,10 @@ void pmm_init(void) {
     }
     pmm.bitmap_frames = pmm.bitmap_bytes >> PMM_PAGE_SHIFT;
     pmm.bitmap        = (uint8_t *)(uintptr_t)(hhdm + pmm.bitmap_phys);
+    pmm.refcount_phys = pmm.bitmap_phys + pmm.bitmap_bytes;
+    pmm.refcount_frames = pmm.refcount_bytes >> PMM_PAGE_SHIFT;
+    pmm.refcount      = (uint32_t *)(uintptr_t)(hhdm + pmm.refcount_phys);
+    memset(pmm.refcount, 0, pmm.refcount_bytes);
 
     /* 3) Start with everything marked used, then clear USABLE regions. */
     memset(pmm.bitmap, 0xFF, pmm.bitmap_bytes);
@@ -116,8 +126,8 @@ void pmm_init(void) {
             mark_range(e->base, e->length, 0);
         }
     }
-    /* 4) Reserve the bitmap's own frames (idempotent if non-usable). */
-    mark_range(pmm.bitmap_phys, pmm.bitmap_bytes, 1);
+    /* 4) Reserve PMM metadata frames (idempotent if non-usable). */
+    mark_range(pmm.bitmap_phys, pmm.bitmap_bytes + pmm.refcount_bytes, 1);
 
     /* 5) Count free frames straight from the bitmap. */
     pmm.free_frames = 0;
@@ -136,6 +146,10 @@ void pmm_dump_stats(void) {
             (unsigned long long)pmm.bitmap_phys,
             (unsigned long long)pmm.bitmap_bytes,
             (unsigned long long)pmm.bitmap_frames);
+    kprintf(PMM_TAG "refcnt at phys 0x%016llx, %llu bytes (%llu frames)\n",
+            (unsigned long long)pmm.refcount_phys,
+            (unsigned long long)pmm.refcount_bytes,
+            (unsigned long long)pmm.refcount_frames);
     kprintf(PMM_TAG "tracked frames: %llu (%llu MiB)\n",
             (unsigned long long)pmm.nframes,
             (unsigned long long)(pmm.nframes * PMM_PAGE_SIZE / MIB));
@@ -155,6 +169,7 @@ uint64_t pmm_alloc_frame(void) {
         return 0;                                          /* out of memory */
     }
     bm_set(pmm.bitmap, (uint64_t)idx);
+    pmm.refcount[(uint64_t)idx] = 1;
     pmm.free_frames--;
     spinlock_release_irqrestore(&pmm.lock, rflags);
     uint64_t phys = (uint64_t)idx << PMM_PAGE_SHIFT;
@@ -171,6 +186,7 @@ uint64_t pmm_alloc_contiguous(uint64_t count) {
     }
     for (uint64_t i = 0; i < count; i++) {
         bm_set(pmm.bitmap, (uint64_t)idx + i);
+        pmm.refcount[(uint64_t)idx + i] = 1;
     }
     pmm.free_frames -= count;
     spinlock_release_irqrestore(&pmm.lock, rflags);
@@ -193,9 +209,43 @@ void pmm_free_frame(uint64_t phys) {
         spinlock_release_irqrestore(&pmm.lock, rflags);
         return;
     }
+    if (pmm.refcount[idx] > 1) {
+        pmm.refcount[idx]--;
+        spinlock_release_irqrestore(&pmm.lock, rflags);
+        return;
+    }
+    pmm.refcount[idx] = 0;
     bm_clear(pmm.bitmap, idx);
     pmm.free_frames++;
     spinlock_release_irqrestore(&pmm.lock, rflags);
+}
+
+int pmm_inc_frame_ref(uint64_t phys) {
+    uint64_t idx = phys >> PMM_PAGE_SHIFT;
+    if (idx == 0 || idx >= pmm.nframes) {
+        kprintf(PMM_TAG "ref: invalid physical address 0x%016llx\n",
+                (unsigned long long)phys);
+        return -1;
+    }
+    uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);
+    if (!bm_test(pmm.bitmap, idx) || pmm.refcount[idx] == 0) {
+        kprintf(PMM_TAG "ref: frame 0x%016llx is not allocated\n",
+                (unsigned long long)phys);
+        spinlock_release_irqrestore(&pmm.lock, rflags);
+        return -1;
+    }
+    pmm.refcount[idx]++;
+    spinlock_release_irqrestore(&pmm.lock, rflags);
+    return 0;
+}
+
+uint32_t pmm_get_frame_refcount(uint64_t phys) {
+    uint64_t idx = phys >> PMM_PAGE_SHIFT;
+    if (idx == 0 || idx >= pmm.nframes) return 0;
+    uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);
+    uint32_t rc = pmm.refcount[idx];
+    spinlock_release_irqrestore(&pmm.lock, rflags);
+    return rc;
 }
 
 uint64_t pmm_get_free_frames(void)   { return pmm.free_frames; }

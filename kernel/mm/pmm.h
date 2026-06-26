@@ -43,6 +43,12 @@ uint64_t pmm_alloc_contiguous(uint64_t count);
  */
 void pmm_free_frame(uint64_t phys);
 
+/* Increase/decrease/read the sharing reference count for an allocated frame.
+ * Used by copy-on-write fork(). pmm_free_frame() is refcount-aware: it only
+ * returns the frame to the free bitmap when the count reaches zero. */
+int      pmm_inc_frame_ref(uint64_t phys);
+uint32_t pmm_get_frame_refcount(uint64_t phys);
+
 /* Live counters for /proc-style reporting and tests. */
 uint64_t pmm_get_free_frames(void);
 uint64_t pmm_get_usable_frames(void);

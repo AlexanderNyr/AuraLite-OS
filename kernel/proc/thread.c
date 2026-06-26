@@ -346,25 +346,22 @@ void thread_reap_zombies(void) {
         reap = z->next;
         uint64_t reaped_frames = 0;
         if (z->pml4_phys) {
-            /* Full user-half reaping is wired up via
-             * paging_free_address_space(), but a still-active page-walk by
-             * another thread (notably the shell while a child runs under a
-             * sibling syscall) makes it unsafe to free aggressively until
-             * we add proper TLB shootdown + cross-PML4 reference counting.
-             *
-             * For now we only free zombies whose address space is currently
-             * unreachable from any other context: the PML4 must differ from
-             * the live CR3 AND from the kernel PML4.  Other zombies leak
-             * their user frames (matching previous behaviour) until that
-             * infrastructure lands.
-             */
+            /* Full user-half reaping.  This kernel's scheduler is still
+             * single-CPU, and user address spaces are not shared between live
+             * TCBs, so no remote TLB shootdown is required here.  If the CPU is
+             * currently running on the zombie's CR3 from kernel context, switch
+             * to the kernel PML4 first and then free the unreachable user half. */
             uint64_t cur_cr3 = read_cr3() & PAGE_ADDR_MASK;
             uint64_t kpml4   = paging_get_kernel_pml4();
-            if (cur_cr3 != z->pml4_phys && z->pml4_phys != kpml4) {
-                /* TEMPORARILY DISABLED — see comment above.  Re-enable once
-                 * the full reaping path is proven race-free in tests. */
-                /* reaped_frames = paging_free_address_space(z->pml4_phys); */
-                (void)kpml4;
+            if (z->pml4_phys != kpml4) {
+                /* Single-CPU scheduler: if a kernel path is still running on
+                 * the dead process' CR3, first move to the kernel PML4 so the
+                 * page-table walk/free never tears down the active CR3.  The
+                 * next user dispatch will load that thread's pml4_phys again. */
+                if (cur_cr3 == z->pml4_phys) {
+                    paging_switch_to(kpml4);
+                }
+                reaped_frames = paging_free_address_space(z->pml4_phys);
             }
             z->pml4_phys = 0;
         }

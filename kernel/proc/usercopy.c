@@ -2,9 +2,10 @@
  *
  * These helpers are intentionally conservative.  They validate against the
  * current address space's page tables before the kernel dereferences a Ring 3
- * pointer.  This is not yet a full Linux-style fault-recovering uaccess layer,
- * but it prevents the common NULL/kernel/unmapped/wrong-permission pointer
- * cases from turning into kernel page faults.
+ * pointer, then use a tiny assembly copy primitive with a #PF fixup label.
+ * If a mapping changes between validation and the actual copy, the exception
+ * handler rewrites RIP to that fixup and the copy returns -1 instead of
+ * panicking the kernel.
  */
 
 #include <stdint.h>
@@ -13,6 +14,16 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/lib/string.h"
+
+volatile uint64_t uaccess_recover_ip = 0;
+extern int64_t uaccess_copy_asm(void *dst, const void *src, uint64_t len);
+
+int usercopy_recover_fault(uint64_t *saved_rip) {
+    uint64_t fixup = uaccess_recover_ip;
+    if (!fixup || !saved_rip) return 0;
+    *saved_rip = fixup;
+    return 1;
+}
 
 static int user_range_bounds(uint64_t start, uint64_t len, uint64_t *end_out) {
     if (len == 0) {
@@ -40,6 +51,10 @@ int validate_user_range(const void *user_ptr, uint64_t len, int write_required) 
         uint64_t flags = paging_get_flags(page);
         if (!(flags & PAGE_FLAG_PRESENT)) return 0;
         if (!(flags & PAGE_FLAG_USER)) return 0;
+        if (write_required && (flags & PAGE_FLAG_COW) && !(flags & PAGE_FLAG_WRITABLE)) {
+            if (!paging_handle_cow_fault(page, 0x3)) return 0;
+            flags = paging_get_flags(page);
+        }
         if (write_required && !(flags & PAGE_FLAG_WRITABLE)) return 0;
         if (page == last_page) break;
         page += PAGE_SIZE_BYTES;
@@ -53,9 +68,9 @@ int copy_from_user(void *kernel_dst, const void *user_src, uint64_t len) {
     if (!kernel_dst) return -1;
     if (!validate_user_range(user_src, len, 0)) return -1;
     uint64_t irqf = user_access_begin();
-    memcpy(kernel_dst, user_src, (size_t)len);
+    int64_t r = uaccess_copy_asm(kernel_dst, user_src, len);
     user_access_end(irqf);
-    return 0;
+    return r == 0 ? 0 : -1;
 }
 
 int copy_to_user(void *user_dst, const void *kernel_src, uint64_t len) {
@@ -63,9 +78,9 @@ int copy_to_user(void *user_dst, const void *kernel_src, uint64_t len) {
     if (!kernel_src) return -1;
     if (!validate_user_range(user_dst, len, 1)) return -1;
     uint64_t irqf = user_access_begin();
-    memcpy(user_dst, kernel_src, (size_t)len);
+    int64_t r = uaccess_copy_asm(user_dst, kernel_src, len);
     user_access_end(irqf);
-    return 0;
+    return r == 0 ? 0 : -1;
 }
 
 int copy_string_from_user(char *kernel_dst, const char *user_src,
