@@ -5,69 +5,163 @@
 #include <stddef.h>
 
 /*
- * AuraLite GUI subsystem.
+ * AuraLite GUI subsystem — v2.0 rewrite.
  *
  * Architecture:
  *   - Each window owns a private back-buffer (in kernel heap).
  *   - User-space draws into its window via syscalls (gui_draw_*).
- *   - The compositor copies all visible windows + cursor + decorations into
- *     the framebuffer once per frame (or when invalidated).
- *   - GUI events (mouse, keyboard) are routed to the focused window's per-
- *     window event ring; user-space pulls them via gui_get_event.
- *
- * This file declares the kernel-internal API.  User-visible types and the
- * matching syscall layer live in kernel/gui/gui_syscalls.{c,h} and the
- * matching libauragui/ user library.
+ *   - The compositor composes visible windows + decorations + taskbar + cursor
+ *     onto the front framebuffer in z-order, driven by a dirty-rect tracker
+ *     that avoids full redraws when only small regions changed.
+ *   - GUI events (mouse, keyboard) are routed per tick: hover/down/up to the
+ *     window under the cursor, key events to the focused window, with
+ *     hit-tested decoration handling intercepted by the WM first.
+ *   - A theme engine controls colors, border widths, titlebar height, etc.
+ *     The default theme can be overridden at runtime.
+ *   - Desktop icons provide quick-launch shortcuts.
+ *   - A notification system pops transient messages above the taskbar.
  */
 
-#define GUI_MAX_WINDOWS     32
-#define GUI_TITLE_MAX       64
-#define GUI_EVT_RING_SIZE   64
-#define GUI_TASKBAR_H       28
-#define GUI_TITLEBAR_H      22
-#define GUI_BORDER          2
-#define GUI_RESIZE_GRIP     12
+/* ---- Limits ---- */
+#define GUI_MAX_WINDOWS       64
+#define GUI_TITLE_MAX         64
+#define GUI_EVT_RING_SIZE     128
+#define GUI_MAX_ICONS         32
+#define GUI_MAX_NOTIFICATIONS 8
+#define GUI_MAX_DIRTY_RECTS   64
 
-/* Cursor shapes. */
+/* ---- Theme ---- */
+typedef struct gui_theme {
+    /* Desktop. */
+    uint32_t desktop_top;
+    uint32_t desktop_bot;
+    /* Window. */
+    uint32_t win_bg;
+    uint32_t win_content;
+    uint32_t title_active;
+    uint32_t title_inactive;
+    uint32_t title_text;
+    uint32_t border;
+    uint32_t border_active;
+    /* Taskbar. */
+    uint32_t taskbar_bg;
+    uint32_t taskbar_border;
+    uint32_t taskbar_text;
+    uint32_t start_btn_bg;
+    uint32_t start_btn_text;
+    /* Window buttons. */
+    uint32_t close_bg;
+    uint32_t close_bg_hover;
+    uint32_t max_bg;
+    uint32_t min_bg;
+    /* Desktop icons. */
+    uint32_t icon_text;
+    uint32_t icon_selected;
+    /* Notifications. */
+    uint32_t notif_bg;
+    uint32_t notif_border;
+    uint32_t notif_text;
+    /* Shadows. */
+    uint32_t shadow_color;
+    int      shadow_offset;
+    /* Dimensions. */
+    uint32_t taskbar_h;
+    uint32_t titlebar_h;
+    uint32_t border_w;
+    uint32_t resize_grip;
+    uint32_t icon_size;
+    uint32_t icon_pad;
+    /* Rounding (0 = off). */
+    uint32_t win_round;
+} gui_theme_t;
+
+/* Default theme accessor. */
+const gui_theme_t *gui_default_theme(void);
+
+/* Set the active theme (copies the struct). */
+void gui_set_theme(const gui_theme_t *t);
+
+/* Get the active theme (read-only). */
+const gui_theme_t *gui_get_theme(void);
+
+/* ---- Layout constants (derived from theme at init) ---- */
+#define GUI_TASKBAR_H         gui_get_theme()->taskbar_h
+#define GUI_TITLEBAR_H        gui_get_theme()->titlebar_h
+#define GUI_BORDER            gui_get_theme()->border_w
+#define GUI_RESIZE_GRIP       gui_get_theme()->resize_grip
+
+/* Backward-compatible defaults for static initializers / old code. */
+#define GUI_TASKBAR_H_DEFAULT 28
+#define GUI_TITLEBAR_H_DEFAULT 22
+#define GUI_BORDER_DEFAULT     2
+#define GUI_RESIZE_GRIP_DEFAULT 12
+
+/* ---- Cursor shapes ---- */
 typedef enum {
     GUI_CURSOR_ARROW = 0,
     GUI_CURSOR_IBEAM,
     GUI_CURSOR_HAND,
     GUI_CURSOR_HRESIZE,
     GUI_CURSOR_VRESIZE,
-    GUI_CURSOR_DRESIZE,    /* diagonal SE */
-    GUI_CURSOR_WAIT
+    GUI_CURSOR_DRESIZE,
+    GUI_CURSOR_WAIT,
+    GUI_CURSOR_MOVE,
+    GUI_CURSOR_CROSSHAIR,
+    GUI_CURSOR_NOT_ALLOWED,
+    GUI_CURSOR_COUNT
 } gui_cursor_t;
 
-/* Window flags. */
-#define GUI_WIN_RESIZABLE   0x01
-#define GUI_WIN_MOVABLE     0x02
-#define GUI_WIN_HAS_TITLE   0x04
-#define GUI_WIN_HAS_CLOSE   0x08
-#define GUI_WIN_HAS_MINMAX  0x10
-#define GUI_WIN_MODAL       0x20
-#define GUI_WIN_NO_DECOR    0x40    /* desktop / taskbar / cursor layer */
+/* ---- Window flags ---- */
+#define GUI_WIN_RESIZABLE     0x001
+#define GUI_WIN_MOVABLE       0x002
+#define GUI_WIN_HAS_TITLE     0x004
+#define GUI_WIN_HAS_CLOSE     0x008
+#define GUI_WIN_HAS_MINMAX    0x010
+#define GUI_WIN_MODAL         0x020
+#define GUI_WIN_NO_DECOR      0x040
+#define GUI_WIN_ALWAYS_TOP    0x080   /* stays above normal windows */
+#define GUI_WIN_TOOL_WINDOW   0x100   /* smaller title, no taskbar entry */
+#define GUI_WIN_BORDERLESS    0x200   /* no border, but has back buffer */
+#define GUI_WIN_HAS_MENU      0x400   /* reserved: menu bar slot */
 
 /* Default flag set for an "app window". */
 #define GUI_WIN_DEFAULT (GUI_WIN_RESIZABLE | GUI_WIN_MOVABLE | \
                          GUI_WIN_HAS_TITLE | GUI_WIN_HAS_CLOSE | GUI_WIN_HAS_MINMAX)
 
-/* GUI event types delivered to client windows. */
+/* ---- Window snap states ---- */
+typedef enum {
+    GUI_SNAP_NONE = 0,
+    GUI_SNAP_LEFT,         /* snapped to left half */
+    GUI_SNAP_RIGHT,        /* snapped to right half */
+    GUI_SNAP_TOP,          /* snapped to top half */
+    GUI_SNAP_BOTTOM,       /* snapped to bottom half */
+    GUI_SNAP_MAXIMIZED,    /* full screen (no decor overlap) */
+} gui_snap_t;
+
+/* ---- GUI event types ---- */
 typedef enum {
     GUI_EVT_NONE = 0,
     GUI_EVT_MOUSE_MOVE,
-    GUI_EVT_MOUSE_DOWN,
+    GUI_EVT_MOUSE_DOWN,        /* left button down */
     GUI_EVT_MOUSE_UP,
     GUI_EVT_MOUSE_DBLCLICK,
     GUI_EVT_MOUSE_WHEEL,
+    GUI_EVT_MOUSE_RIGHT_DOWN,  /* right button down */
+    GUI_EVT_MOUSE_RIGHT_UP,
+    GUI_EVT_MOUSE_MIDDLE_DOWN, /* middle button down */
+    GUI_EVT_MOUSE_MIDDLE_UP,
     GUI_EVT_KEY_DOWN,
     GUI_EVT_KEY_UP,
-    GUI_EVT_FOCUS,         /* this window gained keyboard focus */
-    GUI_EVT_BLUR,          /* this window lost focus */
-    GUI_EVT_RESIZE,        /* content area resized; data = w<<16 | h */
-    GUI_EVT_CLOSE_REQ,     /* user clicked the [X] */
+    GUI_EVT_FOCUS,
+    GUI_EVT_BLUR,
+    GUI_EVT_RESIZE,            /* content area resized */
+    GUI_EVT_CLOSE_REQ,         /* user clicked [X] */
     GUI_EVT_TIMER,
-    GUI_EVT_PAINT,         /* compositor wants us to refresh */
+    GUI_EVT_PAINT,
+    GUI_EVT_CONTEXT_MENU,      /* right-click in client area */
+    GUI_EVT_SNAP_CHANGED,      /* window snap state changed */
+    GUI_EVT_DROP,              /* drag-drop completed (future) */
+    GUI_EVT_ICON_CLICK,        /* desktop icon activated */
 } gui_evt_type_t;
 
 typedef struct {
@@ -79,23 +173,52 @@ typedef struct {
     uint16_t data;          /* multipurpose */
 } gui_event_t;
 
-/* ---- Public kernel API (consumed by gui_syscalls and gui apps in-kernel) ---- */
+/* ---- Desktop icon ---- */
+typedef struct {
+    int    in_use;
+    int32_t x, y;
+    char   label[32];
+    int    owner_pid;       /* 0 = kernel-owned */
+    int    icon_id;         /* app identifier for routing */
+} gui_icon_t;
 
+/* ---- Notification ---- */
+typedef struct {
+    int      in_use;
+    char     text[128];
+    uint32_t color;
+    uint32_t start_tick;
+    uint32_t duration_ms;   /* 0 = default 3000ms */
+} gui_notification_t;
+
+/* ---- Dirty rectangle ---- */
+typedef struct {
+    int32_t  x, y;
+    uint32_t w, h;
+} gui_rect_t;
+
+/* ---- Public kernel API ---- */
+
+/* Init the GUI subsystem (call once before compositor thread). */
 void gui_init(void);
-void gui_compositor_tick(void);   /* called from a kernel thread */
-void gui_request_redraw(void);    /* mark whole screen dirty */
 
-/* Destroy every window owned by a process/thread.  Called from thread_exit()
- * so GUI resources do not survive after their client exits. */
+/* Compositor tick: pump inputs, recompose dirty regions. */
+void gui_compositor_tick(void);
+
+/* Force a full-screen redraw next tick. */
+void gui_request_redraw(void);
+
+/* Mark a specific rectangle dirty (screen coords). */
+void gui_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h);
+
+/* Process cleanup — destroy all windows owned by a PID. */
 void gui_cleanup_process(uint64_t owner_pid);
 int  gui_window_owned_by(int wid, uint64_t owner_pid);
 uint64_t gui_window_owner(int wid);
 
-/* Create a window.  Title is copied.  Returns wid >= 0 or -1.
- * The window starts hidden; call gui_show_window(wid) to make it visible. */
+/* ---- Window lifecycle ---- */
 int  gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
                        const char *title, uint32_t flags);
-
 int  gui_destroy_window(int wid);
 int  gui_show_window(int wid);
 int  gui_hide_window(int wid);
@@ -103,32 +226,46 @@ int  gui_move_window(int wid, int32_t x, int32_t y);
 int  gui_resize_window(int wid, uint32_t w, uint32_t h);
 int  gui_set_title(int wid, const char *title);
 int  gui_focus_window(int wid);
-int  gui_raise_window(int wid);   /* z-order to top */
+int  gui_raise_window(int wid);
 int  gui_minimize_window(int wid);
 int  gui_maximize_window(int wid);
 int  gui_restore_window(int wid);
 
-/* Window geometry queries (returns 0 on success). */
-int  gui_get_window_size(int wid, uint32_t *w, uint32_t *h);
+/* Snap window to a screen edge. */
+int  gui_snap_window(int wid, gui_snap_t snap);
 
-/* Back-buffer access for in-kernel apps; do not use across address spaces. */
+/* Get window geometry. */
+int  gui_get_window_size(int wid, uint32_t *w, uint32_t *h);
+int  gui_get_window_pos(int wid, int32_t *x, int32_t *y);
+int  gui_get_window_rect(int wid, int32_t *x, int32_t *y, uint32_t *w, uint32_t *h);
+
+/* Get window flags. */
+uint32_t gui_get_window_flags(int wid);
+
+/* Back-buffer access for in-kernel apps. */
 uint32_t *gui_window_buffer(int wid, uint32_t *out_pitch_pixels);
 
-/* Mark the window's whole content as dirty (will be composited next tick). */
+/* Invalidation. */
 int  gui_invalidate_window(int wid);
-
-/* Mark a sub-rectangle as dirty (more efficient than full invalidate). */
 int  gui_invalidate_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h);
 
 /* Event delivery. */
 int  gui_post_event(int wid, const gui_event_t *evt);
-int  gui_poll_event(int wid, gui_event_t *out);    /* non-blocking */
-int  gui_wait_event(int wid, gui_event_t *out);    /* blocking (yields) */
+int  gui_poll_event(int wid, gui_event_t *out);
+int  gui_wait_event(int wid, gui_event_t *out);
 
 /* Cursor. */
 void gui_set_cursor(gui_cursor_t c);
 
-/* ---- Drawing primitives (operate on a window's back buffer) ---- */
+/* ---- Desktop icons ---- */
+int  gui_add_icon(int32_t x, int32_t y, const char *label, int icon_id);
+int  gui_remove_icon(int icon_idx);
+int  gui_icon_count(void);
+
+/* ---- Notifications ---- */
+int  gui_notify(const char *text, uint32_t color, uint32_t duration_ms);
+
+/* ---- Drawing primitives (window back buffer) ---- */
 int gui_clear(int wid, uint32_t color);
 int gui_fill_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_t color);
 int gui_draw_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_t color);
@@ -138,8 +275,15 @@ int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color);
 int gui_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
              const uint32_t *src, uint32_t src_stride);
 
-/* Convenience: re-render desktop + windows + cursor right now. */
+/* Blit with alpha blending (src has per-pixel alpha in high byte). */
+int gui_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+                   const uint32_t *src, uint32_t src_stride);
+
+/* Convenience: re-render everything right now. */
 void gui_render_now(void);
+
+/* Compositor thread entry point. */
+void gui_compositor_thread(void *arg);
 
 /* Self-test for boot. */
 void gui_self_test(void);

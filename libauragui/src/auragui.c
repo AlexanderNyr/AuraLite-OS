@@ -1,4 +1,4 @@
-/* libauragui — user-space GUI wrappers + widget toolkit. */
+/* libauragui — user-space GUI wrappers + widget toolkit v2.0. */
 
 #include <stdint.h>
 #include "auragui.h"
@@ -17,17 +17,27 @@ enum {
     GUI_OP_CREATE = 1, GUI_OP_DESTROY, GUI_OP_SHOW, GUI_OP_HIDE,
     GUI_OP_MOVE, GUI_OP_RESIZE, GUI_OP_TITLE, GUI_OP_FOCUS,
     GUI_OP_MINIMIZE, GUI_OP_MAXIMIZE, GUI_OP_RESTORE,
+    GUI_OP_SNAP,
     GUI_OP_CLEAR, GUI_OP_FILL_RECT, GUI_OP_DRAW_RECT, GUI_OP_DRAW_LINE,
     GUI_OP_DRAW_TEXT, GUI_OP_DRAW_PIXEL, GUI_OP_INVALIDATE, GUI_OP_RENDER,
-    GUI_OP_SET_CURSOR, GUI_OP_GET_SIZE, GUI_OP_SET_CLIPBOARD, GUI_OP_GET_CLIPBOARD,
+    GUI_OP_SET_CURSOR, GUI_OP_GET_SIZE, GUI_OP_GET_POS, GUI_OP_GET_RECT,
+    GUI_OP_SET_CLIPBOARD, GUI_OP_GET_CLIPBOARD,
+    GUI_OP_BLIT, GUI_OP_BLIT_ALPHA,
+    GUI_OP_ADD_ICON, GUI_OP_REMOVE_ICON,
+    GUI_OP_NOTIFY,
+    GUI_OP_GET_FLAGS,
 };
+
 #define SYS_GUI_CALL_NUM    200
 #define SYS_GUI_EVENT_NUM   201
+#define SYS_GUI_THEME_NUM   202
 
 static int64_t gui_call(uint64_t op, uint64_t a2, uint64_t a3,
                         uint64_t a4, uint64_t a5) {
     return syscall(SYS_GUI_CALL_NUM, op, a2, a3, a4, a5, 0);
 }
+
+/* ---- Window API ---- */
 
 int ag_window_create(int32_t x, int32_t y, uint32_t w, uint32_t h,
                      const char *title, uint32_t flags) {
@@ -49,21 +59,30 @@ int ag_window_set_title(int wid, const char *t) {
     return (int)gui_call(GUI_OP_TITLE, wid, (uint64_t)t, 0, 0);
 }
 int ag_window_invalidate(int wid)     { return (int)gui_call(GUI_OP_INVALIDATE, wid, 0, 0, 0); }
+int ag_window_snap(int wid, int snap) { return (int)gui_call(GUI_OP_SNAP, wid, (uint64_t)snap, 0, 0); }
+
 int ag_window_get_size(int wid, uint32_t *w, uint32_t *h) {
-    /* Keep the syscall output buffer out of the current user stack. AuraLite's
-     * syscall entry still runs on the issuing user stack, so copy_to_user() into
-     * a stack-local object can overlap the kernel's temporary syscall frames in
-     * deeply nested GUI calls. */
     static uint32_t out[2];
     out[0] = out[1] = 0;
     int r = (int)gui_call(GUI_OP_GET_SIZE, wid, (uint64_t)out, 0, 0);
     if (r == 0) { if (w) *w = out[0]; if (h) *h = out[1]; }
     return r;
 }
+
+int ag_window_get_pos(int wid, int32_t *x, int32_t *y) {
+    static int32_t out[2];
+    out[0] = out[1] = 0;
+    int r = (int)gui_call(GUI_OP_GET_POS, wid, (uint64_t)out, 0, 0);
+    if (r == 0) { if (x) *x = out[0]; if (y) *y = out[1]; }
+    return r;
+}
+
 void ag_render_now(void)              { gui_call(GUI_OP_RENDER, 0, 0, 0, 0); }
 void ag_set_cursor(int c)             { gui_call(GUI_OP_SET_CURSOR, c, 0, 0, 0); }
 int  ag_set_clipboard(const char *text) { return (int)gui_call(GUI_OP_SET_CLIPBOARD, (uint64_t)text, 0, 0, 0); }
 int  ag_get_clipboard(char *buf, uint32_t size) { return (int)gui_call(GUI_OP_GET_CLIPBOARD, (uint64_t)buf, size, 0, 0); }
+
+/* ---- Drawing ---- */
 
 int ag_clear(int wid, uint32_t color) { return (int)gui_call(GUI_OP_CLEAR, wid, color, 0, 0); }
 int ag_fill_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_t color) {
@@ -83,7 +102,6 @@ int ag_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) {
 int ag_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color) {
     return (int)gui_call(GUI_OP_DRAW_PIXEL, wid, pack2(x, y), color, 0);
 }
-
 int ag_draw_text_centered(int wid, int32_t x, int32_t y, uint32_t w,
                           const char *s, uint32_t color) {
     int32_t tw = (int32_t)(strlen(s) * 8);
@@ -92,6 +110,8 @@ int ag_draw_text_centered(int wid, int32_t x, int32_t y, uint32_t w,
     return ag_draw_text(wid, tx, y, s, color);
 }
 
+/* ---- Events ---- */
+
 int ag_poll_event(int wid, ag_event_t *e) {
     return (int)syscall(SYS_GUI_EVENT_NUM, (uint64_t)wid, (uint64_t)e, 0, 0, 0, 0);
 }
@@ -99,7 +119,35 @@ int ag_wait_event(int wid, ag_event_t *e) {
     return (int)syscall(SYS_GUI_EVENT_NUM, (uint64_t)wid, (uint64_t)e, 1, 0, 0, 0);
 }
 
-/* ---- Toolkit / widget framework ---- */
+/* ---- Theme ---- */
+
+int ag_theme_get(ag_theme_t *out) {
+    if (!out) return -1;
+    return (int)syscall(SYS_GUI_THEME_NUM, 1, (uint64_t)out, 0, 0, 0, 0);
+}
+int ag_theme_set(const ag_theme_t *t) {
+    if (!t) return -1;
+    return (int)syscall(SYS_GUI_THEME_NUM, 2, (uint64_t)t, 0, 0, 0, 0);
+}
+
+/* ---- Desktop icons ---- */
+
+int ag_add_icon(int32_t x, int32_t y, const char *label, int icon_id) {
+    return (int)gui_call(GUI_OP_ADD_ICON, pack2(x, y), (uint64_t)label, (uint64_t)icon_id, 0);
+}
+int ag_remove_icon(int icon_idx) {
+    return (int)gui_call(GUI_OP_REMOVE_ICON, (uint64_t)icon_idx, 0, 0, 0);
+}
+
+/* ---- Notifications ---- */
+
+int ag_notify(const char *text, uint32_t color, uint32_t duration_ms) {
+    return (int)gui_call(GUI_OP_NOTIFY, (uint64_t)text, (uint64_t)color, (uint64_t)duration_ms, 0);
+}
+
+/* ===================================================================
+ * Toolkit / widget framework
+ * =================================================================== */
 
 void ag_view_init(ag_view_t *v, int wid, ag_widget_t *buf, int cap, uint32_t bg) {
     v->wid = wid;
@@ -108,7 +156,8 @@ void ag_view_init(ag_view_t *v, int wid, ag_widget_t *buf, int cap, uint32_t bg)
     v->widget_cap = cap;
     v->focused_widget = -1;
     v->bg = bg ? bg : AG_PANEL;
-    
+
+    /* Try to load a custom theme background color. */
     int fd = open("/disk/theme.txt");
     if (fd >= 0) {
         char thm[16];
@@ -119,7 +168,7 @@ void ag_view_init(ag_view_t *v, int wid, ag_widget_t *buf, int cap, uint32_t bg)
         }
         close(fd);
     }
-    
+
     for (int i = 0; i < cap; i++) buf[i].kind = 0;
 }
 
@@ -219,6 +268,41 @@ ag_widget_t *ag_add_panel(ag_view_t *v, int32_t x, int32_t y, uint32_t W, uint32
     return w;
 }
 
+ag_widget_t *ag_add_scrollarea(ag_view_t *v, int32_t x, int32_t y, uint32_t W, uint32_t H) {
+    ag_widget_t *w = alloc_widget(v);
+    if (!w) return 0;
+    w->kind = AG_W_SCROLLAREA;
+    w->x = x; w->y = y; w->w = W; w->h = H;
+    w->fg = AG_DARK; w->bg = AG_WHITE;
+    w->scroll_x = 0; w->scroll_y = 0;
+    return w;
+}
+
+ag_widget_t *ag_add_tab(ag_view_t *v, int32_t x, int32_t y, uint32_t W, uint32_t H) {
+    ag_widget_t *w = alloc_widget(v);
+    if (!w) return 0;
+    w->kind = AG_W_TAB;
+    w->x = x; w->y = y; w->w = W; w->h = H;
+    w->fg = AG_BLACK; w->bg = AG_PANEL;
+    w->active_tab = 0;
+    w->tab_count = 0;
+    return w;
+}
+
+ag_widget_t *ag_add_contextmenu(ag_view_t *v) {
+    ag_widget_t *w = alloc_widget(v);
+    if (!w) return 0;
+    w->kind = AG_W_CONTEXTMENU;
+    w->x = 0; w->y = 0; w->w = 160; w->h = 0;
+    w->fg = AG_BLACK; w->bg = AG_WHITE;
+    w->menu_count = 0;
+    w->menu_visible = 0;
+    w->visible = 0; /* hidden by default */
+    return w;
+}
+
+/* ---- Listbox helpers ---- */
+
 void ag_listbox_clear(ag_widget_t *lb) {
     lb->item_count = 0; lb->selected = -1;
 }
@@ -228,18 +312,39 @@ int ag_listbox_add(ag_widget_t *lb, const char *item) {
     return lb->item_count - 1;
 }
 
+/* ---- Tab helpers ---- */
+
+int ag_tab_add(ag_widget_t *tab, const char *label) {
+    if (tab->tab_count >= AG_MAX_TABS) return -1;
+    tab->tab_labels[tab->tab_count] = label;
+    return tab->tab_count++;
+}
+
+/* ---- Context menu helpers ---- */
+
+int ag_contextmenu_add(ag_widget_t *cm, const char *label, int id) {
+    if (cm->menu_count >= AG_MAX_MENU_ITEMS) return -1;
+    cm->menu_items[cm->menu_count].label = label;
+    cm->menu_items[cm->menu_count].id = id;
+    return cm->menu_count++;
+}
+
+/* ---- Textbox helper ---- */
+
 void ag_textbox_set(ag_widget_t *tb, const char *s) {
     strncpy(tb->text, s ? s : "", AG_MAX_WIDGET_TEXT - 1);
     tb->text[AG_MAX_WIDGET_TEXT - 1] = 0;
     tb->cursor_pos = (int)strlen(tb->text);
 }
 
-/* ---- Widget rendering ---- */
+/* ===================================================================
+ * Widget rendering
+ * =================================================================== */
 
 static void render_button(int wid, ag_widget_t *w) {
     uint32_t bg = w->bg;
-    if (w->state == 1) bg = AG_YELLOW;       /* hover (unused for now) */
-    if (w->state == 2) bg = 0x00C0A020;      /* pressed */
+    if (w->state == 1) bg = AG_YELLOW;
+    if (w->state == 2) bg = 0x00C0A020;
     ag_fill_rect(wid, w->x, w->y, w->w, w->h, bg);
     ag_draw_rect(wid, w->x, w->y, w->w, w->h, AG_DARK);
     ag_draw_text_centered(wid, w->x, w->y + (int32_t)w->h / 2 - 4, w->w, w->text, w->fg);
@@ -252,9 +357,16 @@ static void render_label(int wid, ag_widget_t *w) {
 static void render_textbox(int wid, ag_widget_t *w) {
     ag_fill_rect(wid, w->x, w->y, w->w, w->h, w->bg);
     ag_draw_rect(wid, w->x, w->y, w->w, w->h, w->focused ? AG_ACCENT : AG_DARK);
-    ag_draw_text(wid, w->x + 4, w->y + (int32_t)w->h / 2 - 4, w->text, w->fg);
+    /* Clip text to visible area. */
+    int visible_chars = ((int)w->w - 8) / 8;
+    if (visible_chars < 0) visible_chars = 0;
+    int scroll = 0;
+    if (w->cursor_pos > visible_chars) scroll = w->cursor_pos - visible_chars;
+    if (scroll < 0) scroll = 0;
+    ag_draw_text(wid, w->x + 4, w->y + (int32_t)w->h / 2 - 4,
+                 w->text + scroll, w->fg);
     if (w->focused) {
-        int32_t cx = w->x + 4 + w->cursor_pos * 8;
+        int32_t cx = w->x + 4 + (w->cursor_pos - scroll) * 8;
         ag_draw_line(wid, cx, w->y + 3, cx, w->y + (int32_t)w->h - 4, AG_ACCENT);
     }
 }
@@ -270,9 +382,7 @@ static void render_checkbox(int wid, ag_widget_t *w) {
 }
 
 static void render_slider(int wid, ag_widget_t *w) {
-    /* Track. */
     ag_fill_rect(wid, w->x, w->y + 7, w->w, 4, w->bg);
-    /* Thumb. */
     int32_t span = (int32_t)w->w - 12;
     int32_t thumb_x = w->x + (w->value_max ? (w->value * span) / w->value_max : 0);
     ag_fill_rect(wid, thumb_x, w->y, 12, 18, w->fg);
@@ -315,29 +425,73 @@ static void render_panel(int wid, ag_widget_t *w) {
     ag_draw_rect(wid, w->x, w->y, w->w, w->h, AG_DARK);
 }
 
+static void render_scrollarea(int wid, ag_widget_t *w) {
+    /* Draw the container with a subtle border and scroll indicators. */
+    ag_draw_rect(wid, w->x, w->y, w->w, w->h, AG_DARK);
+    /* Vertical scrollbar indicator on right. */
+    ag_fill_rect(wid, w->x + (int32_t)w->w - 8, w->y, 8, w->h, AG_GRAY);
+    ag_fill_rect(wid, w->x + (int32_t)w->w - 8, w->y + 2, 8, 20, AG_DARK);
+}
+
+static void render_tab(int wid, ag_widget_t *w) {
+    /* Tab header bar. */
+    int tab_w = (int)w->w / (w->tab_count > 0 ? w->tab_count : 1);
+    for (int i = 0; i < w->tab_count; i++) {
+        int32_t tx = w->x + i * tab_w;
+        uint32_t bg = (i == w->active_tab) ? AG_WHITE : AG_GRAY;
+        ag_fill_rect(wid, tx, w->y, (uint32_t)tab_w, 22, bg);
+        ag_draw_rect(wid, tx, w->y, (uint32_t)tab_w, 22, AG_DARK);
+        ag_draw_text_centered(wid, tx, w->y + 7, (uint32_t)tab_w,
+                              w->tab_labels[i] ? w->tab_labels[i] : "Tab", AG_BLACK);
+    }
+    /* Content area below tabs. */
+    ag_fill_rect(wid, w->x, w->y + 22, w->w, w->h - 22, AG_WHITE);
+    ag_draw_rect(wid, w->x, w->y + 22, w->w, w->h - 22, AG_DARK);
+}
+
+static void render_contextmenu(int wid, ag_widget_t *w) {
+    if (!w->menu_visible) return;
+    int item_h = 20;
+    w->h = (uint32_t)(w->menu_count * item_h + 4);
+    ag_fill_rect(wid, w->x, w->y, w->w, w->h, AG_WHITE);
+    ag_draw_rect(wid, w->x, w->y, w->w, w->h, AG_DARK);
+    for (int i = 0; i < w->menu_count; i++) {
+        int32_t iy = w->y + 2 + i * item_h;
+        if (w->selected == i) {
+            ag_fill_rect(wid, w->x + 2, iy, w->w - 4, (uint32_t)item_h, AG_ACCENT);
+            ag_draw_text(wid, w->x + 8, iy + 6, w->menu_items[i].label, AG_WHITE);
+        } else {
+            ag_draw_text(wid, w->x + 8, iy + 6, w->menu_items[i].label, AG_BLACK);
+        }
+    }
+}
+
 void ag_view_render(ag_view_t *v) {
-    uint32_t W, H;
-    ag_window_get_size(v->wid, &W, &H);
     ag_clear(v->wid, v->bg);
     for (int i = 0; i < v->widget_count; i++) {
         ag_widget_t *w = &v->widgets[i];
         if (!w->visible) continue;
         switch (w->kind) {
-            case AG_W_LABEL:    render_label(v->wid, w);    break;
-            case AG_W_BUTTON:   render_button(v->wid, w);   break;
-            case AG_W_TEXTBOX:  render_textbox(v->wid, w);  break;
-            case AG_W_CHECKBOX: render_checkbox(v->wid, w); break;
-            case AG_W_SLIDER:   render_slider(v->wid, w);   break;
-            case AG_W_PROGRESS: render_progress(v->wid, w); break;
-            case AG_W_LISTBOX:  render_listbox(v->wid, w);  break;
-            case AG_W_PANEL:    render_panel(v->wid, w);    break;
+            case AG_W_LABEL:       render_label(v->wid, w);       break;
+            case AG_W_BUTTON:      render_button(v->wid, w);      break;
+            case AG_W_TEXTBOX:     render_textbox(v->wid, w);     break;
+            case AG_W_CHECKBOX:    render_checkbox(v->wid, w);    break;
+            case AG_W_SLIDER:      render_slider(v->wid, w);      break;
+            case AG_W_PROGRESS:    render_progress(v->wid, w);    break;
+            case AG_W_LISTBOX:     render_listbox(v->wid, w);     break;
+            case AG_W_PANEL:       render_panel(v->wid, w);       break;
+            case AG_W_SCROLLAREA:  render_scrollarea(v->wid, w);  break;
+            case AG_W_TAB:         render_tab(v->wid, w);         break;
+            case AG_W_CONTEXTMENU: render_contextmenu(v->wid, w); break;
         }
     }
     ag_render_now();
-    (void)W; (void)H;
 }
 
-/* Hit-test. */
+/* ===================================================================
+ * Widget hit-test and event dispatch
+ * =================================================================== */
+
 static int widget_at(ag_view_t *v, int32_t mx, int32_t my) {
     for (int i = v->widget_count - 1; i >= 0; i--) {
         ag_widget_t *w = &v->widgets[i];
@@ -350,7 +504,6 @@ static int widget_at(ag_view_t *v, int32_t mx, int32_t my) {
     return -1;
 }
 
-/* Set focus to widget index (or -1 to clear). */
 static void set_focus(ag_view_t *v, int idx) {
     if (v->focused_widget == idx) return;
     if (v->focused_widget >= 0 && v->focused_widget < v->widget_count) {
@@ -381,7 +534,6 @@ static void focus_next(ag_view_t *v, int dir) {
     }
 }
 
-/* Insert character into textbox at cursor. */
 static void tb_insert(ag_widget_t *w, char c) {
     int len = (int)strlen(w->text);
     if (len + 1 >= AG_MAX_WIDGET_TEXT) return;
@@ -396,8 +548,47 @@ static void tb_backspace(ag_widget_t *w) {
     w->cursor_pos--;
 }
 
+/* Find a context menu widget in the view. */
+static ag_widget_t *find_contextmenu(ag_view_t *v) {
+    for (int i = 0; i < v->widget_count; i++) {
+        if (v->widgets[i].kind == AG_W_CONTEXTMENU) return &v->widgets[i];
+    }
+    return 0;
+}
+
 int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
     if (e->type == AG_EVT_CLOSE_REQ) return 1;
+
+    /* Handle context menu visibility. */
+    ag_widget_t *cm = find_contextmenu(v);
+
+    /* Right-click: show context menu. */
+    if (e->type == AG_EVT_CONTEXT_MENU && cm) {
+        cm->x = e->x; cm->y = e->y;
+        cm->menu_visible = 1;
+        cm->visible = 1;
+        cm->selected = -1;
+        return 0;
+    }
+
+    /* If context menu is visible, handle clicks inside it. */
+    if (cm && cm->menu_visible) {
+        if (e->type == AG_EVT_MOUSE_DOWN) {
+            if (e->x >= cm->x && e->x < cm->x + (int32_t)cm->w &&
+                e->y >= cm->y && e->y < cm->y + (int32_t)cm->h) {
+                int item_h = 20;
+                int idx = (e->y - cm->y - 2) / item_h;
+                if (idx >= 0 && idx < cm->menu_count) {
+                    /* Menu item clicked — fire on_click if set. */
+                    cm->selected = idx;
+                    if (cm->on_click) cm->on_click(cm, cm->user);
+                }
+            }
+            cm->menu_visible = 0;
+            cm->visible = 0;
+            return 0;
+        }
+    }
 
     if (e->type == AG_EVT_MOUSE_DOWN || e->type == AG_EVT_MOUSE_DBLCLICK) {
         int idx = widget_at(v, e->x, e->y);
@@ -416,12 +607,12 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                     break;
                 case AG_W_TEXTBOX:
                     set_focus(v, idx);
-                    /* Position cursor by mouse X. */
-                    int rel = (e->x - w->x - 4) / 8;
-                    if (rel < 0) rel = 0;
-                    int len = (int)strlen(w->text);
-                    if (rel > len) rel = len;
-                    w->cursor_pos = rel;
+                    { int rel = (e->x - w->x - 4) / 8;
+                      if (rel < 0) rel = 0;
+                      int len = (int)strlen(w->text);
+                      if (rel > len) rel = len;
+                      w->cursor_pos = rel;
+                    }
                     break;
                 case AG_W_LISTBOX: {
                     int row_h = 14;
@@ -434,7 +625,6 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                     break;
                 }
                 case AG_W_SLIDER: {
-                    /* Map x to value. */
                     int32_t span = (int32_t)w->w - 12;
                     int32_t rel  = e->x - w->x - 6;
                     if (rel < 0) rel = 0;
@@ -444,13 +634,18 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                     set_focus(v, idx);
                     break;
                 }
+                case AG_W_TAB: {
+                    int tab_w = (int)w->w / (w->tab_count > 0 ? w->tab_count : 1);
+                    int tab = (e->x - w->x) / tab_w;
+                    if (tab >= 0 && tab < w->tab_count) w->active_tab = tab;
+                    break;
+                }
             }
         } else {
             set_focus(v, -1);
         }
     }
     if (e->type == AG_EVT_MOUSE_UP) {
-        /* Release button state. */
         for (int i = 0; i < v->widget_count; i++) {
             if (v->widgets[i].kind == AG_W_BUTTON && v->widgets[i].state == 2) {
                 v->widgets[i].state = 0;
@@ -459,11 +654,11 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
     }
     if (e->type == AG_EVT_KEY_DOWN) {
         if (e->key == '\t') {
-            focus_next(v, (e->mods & 0x01 /* shift */) ? -1 : 1);
+            focus_next(v, (e->mods & 0x01) ? -1 : 1);
         } else if (v->focused_widget >= 0) {
             ag_widget_t *w = &v->widgets[v->focused_widget];
             if (w->kind == AG_W_TEXTBOX) {
-                if (e->mods & 0x02 /* CTRL */) {
+                if (e->mods & 0x02) {
                     if (e->key == 'c' || e->key == 'C') {
                         ag_set_clipboard(w->text);
                     } else if (e->key == 'v' || e->key == 'V') {
@@ -481,16 +676,16 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                 } else if (e->key == '\b') {
                     tb_backspace(w);
                     if (w->on_change) w->on_change(w, w->user);
-                } else if (e->key == 0x100 /* LEFT */) {
+                } else if (e->key == 0x100) { /* LEFT */
                     if (w->cursor_pos > 0) w->cursor_pos--;
-                } else if (e->key == 0x101 /* RIGHT */) {
+                } else if (e->key == 0x101) { /* RIGHT */
                     int len = (int)strlen(w->text);
                     if (w->cursor_pos < len) w->cursor_pos++;
-                } else if (e->key == 0x104 /* HOME */) {
+                } else if (e->key == 0x104) { /* HOME */
                     w->cursor_pos = 0;
-                } else if (e->key == 0x105 /* END */) {
+                } else if (e->key == 0x105) { /* END */
                     w->cursor_pos = (int)strlen(w->text);
-                } else if (e->key == 0x109 /* DELETE */) {
+                } else if (e->key == 0x109) { /* DELETE */
                     int len = (int)strlen(w->text);
                     if (w->cursor_pos < len) {
                         for (int i = w->cursor_pos; i < len; i++) w->text[i] = w->text[i + 1];
@@ -498,11 +693,10 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                     }
                 }
             } else if (w->kind == AG_W_LISTBOX) {
-                if (e->key == 0x102 /* UP */ && w->selected > 0) {
+                if (e->key == 0x102 && w->selected > 0) {
                     w->selected--;
                     if (w->on_select) w->on_select(w, w->user);
-                } else if (e->key == 0x103 /* DOWN */ &&
-                           w->selected < w->item_count - 1) {
+                } else if (e->key == 0x103 && w->selected < w->item_count - 1) {
                     w->selected++;
                     if (w->on_select) w->on_select(w, w->user);
                 }
@@ -521,10 +715,6 @@ void ag_view_run(ag_view_t *v, ag_loop_cb cb, void *user) {
     ag_view_render(v);
     static ag_event_t e;
     for (;;) {
-        /* Use non-blocking polling and a static event buffer. AuraLite syscalls
-         * currently execute on the issuing user stack; blocking GUI waits and
-         * copy_to_user() into stack-local event structs can overlap the kernel's
-         * temporary syscall frames. */
         if (!ag_poll_event(v->wid, &e)) {
             for (volatile int i = 0; i < 200000; i++) {}
             continue;
@@ -539,7 +729,10 @@ void ag_view_run(ag_view_t *v, ag_loop_cb cb, void *user) {
     ag_window_destroy(v->wid);
 }
 
-/* ---- Modal helpers (very small) ---- */
+/* ===================================================================
+ * Modal helpers
+ * =================================================================== */
+
 void ag_alert(const char *title, const char *message) {
     int W = 320, H = 120;
     int wid = ag_window_create(200, 200, W, H, title,
@@ -565,6 +758,7 @@ void ag_alert(const char *title, const char *message) {
     }
     ag_window_destroy(wid);
 }
+
 int ag_confirm(const char *title, const char *message) {
     int W = 360, H = 130;
     int wid = ag_window_create(220, 220, W, H, title,

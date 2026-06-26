@@ -1,4 +1,4 @@
-/* gui_syscalls.c — dispatch GUI ops from user space.
+/* gui_syscalls.c — dispatch GUI v2.0 ops from user space.
  *
  * User pointers are copied/validated here rather than dereferenced directly.
  */
@@ -64,8 +64,8 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
     case GUI_OP_RESIZE:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_resize_window((int)a2,
-                                                            (uint32_t)lo32(a3),
-                                                            (uint32_t)hi32(a3));
+                                            (uint32_t)lo32(a3),
+                                            (uint32_t)hi32(a3));
     case GUI_OP_TITLE: {
         if (!require_owner((int)a2)) return (uint64_t)-1;
         char title[GUI_TITLE_MAX];
@@ -84,6 +84,9 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
     case GUI_OP_RESTORE:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_restore_window((int)a2);
+    case GUI_OP_SNAP:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        return (uint64_t)gui_snap_window((int)a2, (gui_snap_t)a3);
     case GUI_OP_CLEAR:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_clear((int)a2, (uint32_t)a3);
@@ -133,6 +136,24 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
         }
         return 0;
     }
+    case GUI_OP_GET_POS: {
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        int32_t xy[2];
+        if (gui_get_window_pos((int)a2, &xy[0], &xy[1]) != 0) return (uint64_t)-1;
+        if (copy_to_user((void *)(uintptr_t)a3, xy, sizeof(xy)) != 0) {
+            return (uint64_t)-1;
+        }
+        return 0;
+    }
+    case GUI_OP_GET_RECT: {
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        int32_t x, y; uint32_t w, h;
+        if (gui_get_window_rect((int)a2, &x, &y, &w, &h) != 0) return (uint64_t)-1;
+        /* Pack: a3 = user pointer to struct { i32 x, y; u32 w, h; } */
+        uint32_t rect[4] = { (uint32_t)x, (uint32_t)y, w, h };
+        if (copy_to_user((void *)(uintptr_t)a3, rect, sizeof(rect)) != 0) return (uint64_t)-1;
+        return 0;
+    }
     case GUI_OP_SET_CLIPBOARD: {
         if (!a2) return (uint64_t)-1;
         if (copy_string_from_user(gui_kernel_clipboard, (const char *)(uintptr_t)a2, GUI_USER_TEXT_MAX) != 0) {
@@ -150,9 +171,25 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
         copy_to_user((void *)((uintptr_t)a2 + len - 1), &null_byte, 1);
         return 0;
     }
+    case GUI_OP_ADD_ICON: {
+        char label[32];
+        if (copy_string_from_user(label, (const char *)(uintptr_t)a3, sizeof(label)) != 0) return (uint64_t)-1;
+        return (uint64_t)gui_add_icon(lo32(a2), hi32(a2), label, (int)a4);
+    }
+    case GUI_OP_REMOVE_ICON:
+        return (uint64_t)gui_remove_icon((int)a2);
+    case GUI_OP_NOTIFY: {
+        char text[128];
+        if (copy_string_from_user(text, (const char *)(uintptr_t)a2, sizeof(text)) != 0) return (uint64_t)-1;
+        return (uint64_t)gui_notify(text, (uint32_t)a3, (uint32_t)a4);
+    }
+    case GUI_OP_GET_FLAGS:
+        return (uint64_t)gui_get_window_flags((int)a2);
     }
     return (uint64_t)-1;
 }
+
+
 
 uint64_t syscall_gui_event(uint64_t wid, uint64_t user_evt, uint64_t blocking) {
     gui_event_t evt;
@@ -169,4 +206,31 @@ uint64_t syscall_gui_event(uint64_t wid, uint64_t user_evt, uint64_t blocking) {
         return (uint64_t)-1;
     }
     return (uint64_t)r;
+}
+
+uint64_t syscall_gui_theme(uint64_t subop, uint64_t a2, uint64_t a3,
+                           uint64_t a4, uint64_t a5) {
+    (void)a4; (void)a5;
+    switch (subop) {
+    case 0: /* Get theme struct size. */
+        return (uint64_t)sizeof(gui_theme_t);
+    case 1: { /* Get current theme. */
+        const gui_theme_t *t = gui_get_theme();
+        if (!a2) return (uint64_t)-1;
+        if (!validate_user_range((void *)(uintptr_t)a2, sizeof(gui_theme_t), 1))
+            return (uint64_t)-1;
+        if (copy_to_user((void *)(uintptr_t)a2, t, sizeof(gui_theme_t)) != 0)
+            return (uint64_t)-1;
+        return 0;
+    }
+    case 2: { /* Set theme. */
+        gui_theme_t t;
+        if (!a2) return (uint64_t)-1;
+        if (copy_from_user(&t, (const void *)(uintptr_t)a2, sizeof(t)) != 0)
+            return (uint64_t)-1;
+        gui_set_theme(&t);
+        return 0;
+    }
+    }
+    return (uint64_t)-1;
 }
