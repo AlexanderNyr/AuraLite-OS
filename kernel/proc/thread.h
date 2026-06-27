@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "kernel/fs/vfs.h"
+#include "kernel/proc/signal.h"
 
 /*
  * Thread Control Block (also serves as the Process Control Block).
@@ -58,8 +59,8 @@ typedef struct tcb {
      * path so they are eligible for immediate reaping.
      */
     volatile int waited;
-    struct file fd_table[VFS_MAX_FDS]; /* per-process FD table (0/1/2 reserved) */
-    uint8_t cloexec[VFS_MAX_FDS];      /* close-on-exec flags (FD_CLOEXEC == 1) */
+    struct ofd *fd_table[VFS_MAX_FDS]; /* per-process FD table: pointers to shared OFDs */
+    uint8_t cloexec[VFS_MAX_FDS];      /* per-fd close-on-exec flags (FD_CLOEXEC == 1) */
     
     /* Program break (brk) / heap tracking. */
     uint64_t  brk;               /* Current user heap end */
@@ -80,6 +81,14 @@ typedef struct tcb {
     uint64_t  saved_user_rip;
     uint64_t  saved_user_rflags;
     uint64_t  saved_user_rsp;
+
+    /* ---- P4: signal state (see kernel/proc/signal.h) ---- */
+    uint32_t  sig_pending;            /* bitmask: bit (signo-1) pending */
+    uint32_t  sig_mask;               /* blocked signals */
+    struct sigaction sig_actions[NSIG]; /* per-signal disposition (index by signo) */
+    uint64_t  alarm_deadline;         /* PIT tick at which SIGALRM fires (0 = off) */
+    int       sig_suspend_active;     /* 1 while in sigsuspend(): use sig_suspend_restore */
+    uint32_t  sig_suspend_restore;    /* mask to record in the next signal frame */
 } tcb_t;
 
 /* Allocate/free a guarded kernel stack for an already-zeroed TCB. */

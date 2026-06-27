@@ -42,6 +42,24 @@
 #define SYS_PIPE   22
 #define SYS_PIPE2  293
 #define SYS_FCNTL  72
+#define SYS_LSEEK    8
+#define SYS_PREAD64  17
+#define SYS_PWRITE64 18
+#define SYS_READV    19
+#define SYS_WRITEV   20
+#define SYS_SIGACTION   13
+#define SYS_SIGPROCMASK 14
+#define SYS_SIGRETURN   15
+#define SYS_KILL        62
+#define SYS_SIGPENDING 127
+#define SYS_PAUSE       34
+#define SYS_ALARM       37
+#define SYS_SIGSUSPEND 130
+
+/* lseek whence values. */
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
 
 /* Open flags and fcntl command/FD_CLOEXEC constants live in <fcntl.h>. */
 
@@ -90,6 +108,9 @@ int64_t syscall(int64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
 /* POSIX-style wrappers. */
 ssize_t write(int fd, const void *buf, size_t count);
 ssize_t read(int fd, void *buf, size_t count);
+int64_t lseek(int fd, int64_t offset, int whence);
+ssize_t pread(int fd, void *buf, size_t count, int64_t offset);
+ssize_t pwrite(int fd, const void *buf, size_t count, int64_t offset);
 int     open(const char *path, int flags, ...);
 int     creat(const char *path, int mode);
 int     close(int fd);

@@ -41,10 +41,44 @@ for the feature matrix.
   mostly EIO) and into `process.c`.
 
 #### P2 / open-flags follow-ups
-- **Per-FD status flags, not shared OFDs.** `access_mode`/`append`/`nonblock`
-  live in `struct file`, so `dup()`/`F_DUPFD` copy them instead of sharing.
-  POSIX requires status flags + offset to belong to the open file description;
-  fixing this (ref-counted `struct ofd`) is the P3 deliverable.
+- ~~**Per-FD status flags, not shared OFDs.**~~ **Done (P3):** ref-counted
+  `struct ofd` now holds offset + status flags, shared across dup/dup2/F_DUPFD/
+  fork; FD_CLOEXEC stays per-fd.
+
+#### P4 / signal follow-ups
+- ~~alarm/pause/sigsuspend~~ **Done:** SYS_ALARM/PAUSE/SIGSUSPEND implemented
+  (alarm via the PIT tick + signal_tick()).
+- ~~SIGCHLD on child exit~~ **Done:** posted to a living parent in
+  thread_exit_with_code (still wants a dedicated fork-based gate once fork is
+  robust against the SYSCALL-save-area race).
+- ~~SIGPIPE / -EINTR on blocking reads~~ **Done:** pipe-with-no-readers posts
+  SIGPIPE + -EPIPE; stdin/pipe yield loops abort with -EINTR (or partial count).
+- **No full SA_RESTART rewind.** Blocking calls report -EINTR rather than
+  transparently restarting (-ERESTARTSYS, RIP-=2 + reload orig RAX). signal()
+  sets SA_RESTART but the kernel does not yet act on it for restart.
+- **SA_SIGINFO siginfo_t** not populated (handler gets signo only; rsi/rdx = 0).
+- **Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT** deferred to P5 (needs the
+  TTY line discipline + foreground process group, which is P6).
+- **FP/SSE state is not saved in the signal frame** — a handler that clobbers
+  XMM corrupts interrupted code. Add FXSAVE/XSAVE area to struct signal_frame.
+- **Signal state is single-CPU safe only** (guarded by IF-disabled return
+  boundaries); SMP needs atomic sig_pending updates and locking.
+- **Job-control STOP** is treated as terminate for now (no stopped state until P6).
+- **alarm()/signal_tick() scan all threads each tick** (O(threads)); fine at
+  current scale, revisit with a timer wheel if thread counts grow.
+
+#### P3 / OFD follow-ups
+- **OFD refcounts are non-atomic.** Plain `int refcount`, safe only under the
+  single-threaded VFS. SMP/preemptive FS access needs atomic dec-and-test
+  (release/acquire ordering) plus a strict lock hierarchy (files-table → OFD
+  offset → vnode) and an fget/fput temporary reference held across blocking I/O
+  to avoid use-after-free.
+- **`close_process_fds()` assumes the exiting thread is current** (vfs_close
+  operates on `current_fd_table()`). True today (called with `self`); would be
+  wrong if ever invoked on a non-current zombie — add a table-explicit close.
+- **fork() FD-sharing integration test deferred.** Needs fork robust against the
+  per-thread SYSCALL-save-area race; dup() sharing in test_lseek validates the
+  same OFD mechanism meanwhile.
 - **O_APPEND atomicity** currently relies on the single-threaded VFS; needs a
   per-vnode write lock once FS access becomes preemptible/SMP.
 - **mkdir() still takes only a path** (no `mode_t`); POSIX `mkdir(path, mode)`

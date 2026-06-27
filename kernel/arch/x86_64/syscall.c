@@ -13,6 +13,8 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/process.h"
+#include "kernel/proc/signal.h"
+#include "kernel/arch/x86_64/isr.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/net/net.h"
@@ -54,6 +56,20 @@
 #define SYS_MMAP     9
 #define SYS_MUNMAP   11
 #define SYS_BRK      12
+#define SYS_LSEEK    8    /* P3 */
+#define SYS_SIGACTION   13   /* P4 */
+#define SYS_SIGPROCMASK 14   /* P4 */
+#define SYS_SIGRETURN   15   /* P4 */
+#define SYS_KILL        62   /* P4 */
+#define SYS_SIGPENDING 127   /* P4 */
+#define SYS_PAUSE       34   /* P4 */
+#define SYS_ALARM       37   /* P4 */
+#define SYS_SIGSUSPEND 130   /* P4 */
+#define SYS_PREAD64  17   /* P3 */
+#define SYS_PWRITE64 18   /* P3 */
+#define SYS_READV    19   /* P3 */
+#define SYS_WRITEV   20   /* P3 */
+#define SYSCALL_IOV_MAX 1024
 /* Socket-style networking API. */
 #define SYS_SOCKET        300
 #define SYS_SOCKET_CONNECT 301
@@ -157,6 +173,49 @@ static int64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
         }
         done += (uint64_t)rd;
         if ((uint64_t)rd < n) break;
+    }
+    return (int64_t)done;
+}
+
+/* Positional read: copy from VFS @offset into a user buffer, no pos change. */
+static int64_t syscall_vfs_pread(int fd, void *user_buf, uint64_t len,
+                                 int64_t offset) {
+    if (len == 0) return 0;
+    if (!validate_user_range(user_buf, len, 1)) return -EFAULT;
+    char tmp[SYSCALL_IO_CHUNK];
+    uint64_t done = 0;
+    while (done < len) {
+        uint64_t n = len - done;
+        if (n > sizeof(tmp)) n = sizeof(tmp);
+        int64_t rd = vfs_pread(fd, tmp, n, offset + (int64_t)done);
+        if (rd < 0) return (done > 0) ? (int64_t)done : rd;
+        if (rd == 0) break;
+        if (copy_to_user((uint8_t *)user_buf + done, tmp, (uint64_t)rd) != 0) {
+            return -EFAULT;
+        }
+        done += (uint64_t)rd;
+        if ((uint64_t)rd < n) break;
+    }
+    return (int64_t)done;
+}
+
+/* Positional write: copy from a user buffer to VFS @offset, no pos change. */
+static int64_t syscall_vfs_pwrite(int fd, const void *user_buf, uint64_t len,
+                                  int64_t offset) {
+    if (len == 0) return 0;
+    if (!validate_user_range(user_buf, len, 0)) return -EFAULT;
+    char tmp[SYSCALL_IO_CHUNK];
+    uint64_t done = 0;
+    while (done < len) {
+        uint64_t n = len - done;
+        if (n > sizeof(tmp)) n = sizeof(tmp);
+        if (copy_from_user(tmp, (const uint8_t *)user_buf + done, n) != 0) {
+            return -EFAULT;
+        }
+        int64_t wr = vfs_pwrite(fd, tmp, n, offset + (int64_t)done);
+        if (wr < 0) return (done > 0) ? (int64_t)done : wr;
+        done += (uint64_t)wr;
+        if ((uint64_t)wr < n) break;
     }
     return (int64_t)done;
 }
@@ -316,6 +375,47 @@ void syscall_restore_user_frame(void) {
     }
 }
 
+/* iretq slow path (kernel/arch/x86_64/syscall_sigreturn.asm). */
+extern void syscall_iret_to_user(struct registers *frame) __attribute__((noreturn));
+
+/*
+ * syscall_check_signals() — called from syscall_entry.asm just before SYSRET,
+ * with the syscall return value @retval.  If the current thread has a pending
+ * unblocked signal, synthesise a register frame from the saved syscall-return
+ * state, set up the handler frame, and return to user via IRETQ (this does not
+ * return).  Otherwise return normally and let the asm SYSRET fast path run.
+ *
+ * USER_CS/USER_SS match the syscall ABI's SYSRET target selectors.
+ */
+#define SYSCALL_USER_CS 0x23
+#define SYSCALL_USER_SS 0x1B
+
+void syscall_check_signals(uint64_t retval) {
+    tcb_t *cur = sched_current();
+    if (!cur) return;
+    if (!signal_pending_current()) return;
+
+    /* Synthesise the user-return frame the SYSRET fast path would have used. */
+    struct registers r;
+    memset(&r, 0, sizeof(r));
+    r.rip    = syscall_saved_rcx;        /* user RIP after SYSCALL */
+    r.rflags = syscall_saved_r11;        /* user RFLAGS */
+    r.rsp    = syscall_saved_rsp;        /* user RSP */
+    r.rax    = retval;                   /* syscall return value */
+    r.cs     = SYSCALL_USER_CS;
+    r.ss     = SYSCALL_USER_SS;
+    /* Caller-saved GPRs are dead across a syscall per the SysV ABI; leaving the
+     * remaining GPRs zeroed in the saved frame is acceptable for a handler that
+     * runs and returns via sigreturn (which restores exactly these values). */
+
+    if (signal_deliver_iret(&r)) {
+        /* A handler frame was installed in @r; enter it via IRETQ. */
+        syscall_iret_to_user(&r);        /* noreturn */
+    }
+    /* No deliverable signal after all (e.g. default-ignore): fall through to
+     * the normal SYSRET path. */
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
 
@@ -377,6 +477,13 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 }
 
                 if (!have) {
+                    /* A pending unblocked signal interrupts the blocking read:
+                     * return the partial line if any bytes were read, else
+                     * -EINTR (POSIX read()).  The signal is delivered at the
+                     * syscall-exit boundary. */
+                    if (signal_interrupted()) {
+                        return got ? got : (uint64_t)-EINTR;
+                    }
                     /* SYSCALL entry masks IF, so a blocking stdin read must not
                      * spin forever on the shell's kernel stack with interrupts
                      * disabled.  That starves the PIT-driven scheduler and the
@@ -665,6 +772,95 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EFAULT;
         }
         return 0;
+    }
+    case SYS_LSEEK:
+        /* a1 = fd, a2 = offset (int64_t), a3 = whence. */
+        return (uint64_t)vfs_lseek((int)a1, (int64_t)a2, (int)a3);
+
+    /* ---- P4: signals ---- */
+    case SYS_SIGACTION:
+        /* a1 = signo, a2 = const struct sigaction *act, a3 = struct sigaction *old */
+        return (uint64_t)do_sigaction((int)a1,
+                                      (const struct sigaction *)(uintptr_t)a2,
+                                      (struct sigaction *)(uintptr_t)a3);
+    case SYS_SIGPROCMASK:
+        /* a1 = how, a2 = const sigset_t *set, a3 = sigset_t *old */
+        return (uint64_t)do_sigprocmask((int)a1,
+                                        (const sigset_t *)(uintptr_t)a2,
+                                        (sigset_t *)(uintptr_t)a3);
+    case SYS_SIGPENDING:
+        return (uint64_t)do_sigpending((sigset_t *)(uintptr_t)a1);
+    case SYS_ALARM:
+        return (uint64_t)do_alarm((unsigned)a1);
+    case SYS_PAUSE:
+        return (uint64_t)do_pause();
+    case SYS_SIGSUSPEND:
+        return (uint64_t)do_sigsuspend((const sigset_t *)(uintptr_t)a1);
+    case SYS_KILL:
+        /* a1 = pid, a2 = signo */
+        return (uint64_t)signal_kill((int64_t)a1, (int)a2);
+    case SYS_SIGRETURN: {
+        /* Restore the interrupted context from the user signal frame and return
+         * to it via IRETQ (NOT sysret).  Synthesise a frame seeded from the
+         * saved syscall-return state; do_sigreturn overwrites it from the
+         * user-supplied signal_frame at the current user RSP. */
+        struct registers r;
+        memset(&r, 0, sizeof(r));
+        r.rsp    = syscall_saved_rsp;    /* points at the signal_frame */
+        r.cs     = SYSCALL_USER_CS;
+        r.ss     = SYSCALL_USER_SS;
+        do_sigreturn(&r);                /* fills r from the saved frame */
+        syscall_iret_to_user(&r);        /* noreturn */
+        return 0;                        /* unreachable */
+    }
+    case SYS_PREAD64:
+        /* a1 = fd, a2 = buf, a3 = count, a4 = offset. */
+        return (uint64_t)syscall_vfs_pread((int)a1, (void *)(uintptr_t)a2,
+                                           a3, (int64_t)a4);
+    case SYS_PWRITE64:
+        return (uint64_t)syscall_vfs_pwrite((int)a1, (const void *)(uintptr_t)a2,
+                                            a3, (int64_t)a4);
+    case SYS_READV:
+    case SYS_WRITEV: {
+        /* a1 = fd, a2 = const struct iovec *iov, a3 = iovcnt.  The userspace
+         * iovec is { void *iov_base; size_t iov_len; } == 16 bytes. */
+        int fd = (int)a1;
+        int iovcnt = (int)a3;
+        if (iovcnt <= 0 || iovcnt > SYSCALL_IOV_MAX) return (uint64_t)-EINVAL;
+        struct user_iovec { uint64_t base; uint64_t len; } ;
+        uint64_t bytes = (uint64_t)iovcnt * sizeof(struct user_iovec);
+        if (!validate_user_range((void *)(uintptr_t)a2, bytes, 0)) {
+            return (uint64_t)-EFAULT;
+        }
+        struct user_iovec *kiov = kmalloc((size_t)bytes);
+        if (!kiov) return (uint64_t)-ENOMEM;
+        if (copy_from_user(kiov, (const void *)(uintptr_t)a2, bytes) != 0) {
+            kfree(kiov);
+            return (uint64_t)-EFAULT;
+        }
+        /* Sum lengths with overflow check before any transfer (POSIX EINVAL). */
+        uint64_t total = 0;
+        for (int i = 0; i < iovcnt; i++) {
+            if (total + kiov[i].len < total ||
+                total + kiov[i].len > 0x7FFFFFFFFFFFFFFFULL) {
+                kfree(kiov);
+                return (uint64_t)-EINVAL;
+            }
+            total += kiov[i].len;
+        }
+        int64_t done = 0;
+        for (int i = 0; i < iovcnt; i++) {
+            if (kiov[i].len == 0) continue;
+            void *base = (void *)(uintptr_t)kiov[i].base;
+            int64_t n = (num == SYS_READV)
+                ? syscall_vfs_read(fd, base, kiov[i].len)
+                : syscall_vfs_write(fd, (const void *)base, kiov[i].len);
+            if (n < 0) { done = (done > 0) ? done : n; break; }
+            done += n;
+            if ((uint64_t)n < kiov[i].len) break;   /* short transfer: stop */
+        }
+        kfree(kiov);
+        return (uint64_t)done;
     }
     case SYS_MMAP:
         return syscall_mmap(a1, a2, a3, a4, a5, a6);

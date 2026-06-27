@@ -11,6 +11,7 @@
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/proc/scheduler.h"
+#include "kernel/proc/signal.h"
 #include "kernel/lib/kprintf.h"
 
 #define TIMER_TAG "[timer] "
@@ -34,6 +35,7 @@ static uint32_t          timer_freq_hz  = 0;
 static void timer_irq_handler(struct registers *regs) {
     (void)regs;
     timer_ticks++;
+    signal_tick(timer_ticks);   /* fire elapsed alarm() deadlines (SIGALRM) */
     sched_tick();
 }
 

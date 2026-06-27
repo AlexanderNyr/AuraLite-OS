@@ -7,9 +7,26 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/signal.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/assert.h"
+
+/* Map a Ring-3 CPU exception vector to the POSIX signal it raises. */
+static int exception_to_signal(uint64_t vec) {
+    switch (vec) {
+    case 0:  return SIGFPE;    /* #DE divide error */
+    case 3:  return SIGTRAP;   /* #BP breakpoint */
+    case 4:  return SIGFPE;    /* #OF overflow */
+    case 6:  return SIGILL;    /* #UD invalid opcode */
+    case 13: return SIGSEGV;   /* #GP general protection */
+    case 14: return SIGSEGV;   /* #PF page fault */
+    case 17: return SIGBUS;    /* #AC alignment check */
+    case 16:
+    case 19: return SIGFPE;    /* #MF x87 / #XM SIMD FP */
+    default: return 0;
+    }
+}
 
 /* Intel SDM Vol.3, 6-15: mnemonic for each CPU exception vector. */
 static const char *exception_messages[32] = {
@@ -114,22 +131,34 @@ void isr_handler(struct registers *r) {
                 (unsigned long long)r->err_code,
                 from_user ? "USER" : "KERNEL");
 
-        /* For user-mode faults, we don't dump the full kernel context (the
-         * saved user registers are shown via dump_registers). Recover by
-         * killing the faulting user thread rather than halting the kernel. */
-        dump_registers(r);
-
+        /* For user-mode faults, map the exception to a POSIX signal.  If the
+         * thread has a handler installed (and the signal is not blocked), build
+         * the handler frame on its user stack and return via iret; otherwise
+         * signal_raise_fault() terminates the thread (default action). */
         if (from_user) {
+            int signo = exception_to_signal(r->int_no);
+            if (signo && signal_raise_fault(r, signo)) {
+                /* Handler frame installed; return to it. */
+                return;
+            }
+            /* Unmapped exception or no handler: dump + terminate. */
+            dump_registers(r);
             kprintf("[exception] killing user thread (tid %llu)\n",
                     (unsigned long long)(sched_current() ? sched_current()->id : 0));
             thread_exit_with_code(128 + (int)r->int_no);
         }
+
+        /* Kernel-mode exception: dump full context below. */
+        dump_registers(r);
 
         /* Kernel-mode exception: truly fatal. */
         kernel_halt();
     } else if (r->int_no < 48) {
         /* Hardware IRQ (PIC-remapped vectors 32-47). */
         irq_dispatch((int)(r->int_no - 32), r);
+        /* On the way back to Ring 3, deliver any pending unblocked signal
+         * (e.g. one posted by kill() from another thread, or SIGALRM). */
+        signal_deliver_iret(r);
     } else {
         kprintf("[isr] spurious/unknown interrupt vector %llu\n",
                 (unsigned long long)r->int_no);

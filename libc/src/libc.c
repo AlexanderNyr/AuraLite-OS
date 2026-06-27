@@ -15,6 +15,8 @@
 #include "ctype.h"
 #include "math.h"
 #include "fcntl.h"
+#include "sys/uio.h"
+#include "signal.h"
 
 /* ---- errno storage ----
  *
@@ -87,6 +89,111 @@ int creat(const char *path, int mode) {
 
 int close(int fd) {
     return (int)syscall_ret(syscall(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0));
+}
+
+int64_t lseek(int fd, int64_t offset, int whence) {
+    return (int64_t)syscall_ret(syscall(SYS_LSEEK, (uint64_t)fd,
+                                        (uint64_t)offset, (uint64_t)whence,
+                                        0, 0, 0));
+}
+
+ssize_t pread(int fd, void *buf, size_t count, int64_t offset) {
+    return (ssize_t)syscall_ret(syscall(SYS_PREAD64, (uint64_t)fd,
+                                        (uint64_t)buf, (uint64_t)count,
+                                        (uint64_t)offset, 0, 0));
+}
+
+ssize_t pwrite(int fd, const void *buf, size_t count, int64_t offset) {
+    return (ssize_t)syscall_ret(syscall(SYS_PWRITE64, (uint64_t)fd,
+                                        (uint64_t)buf, (uint64_t)count,
+                                        (uint64_t)offset, 0, 0));
+}
+
+ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
+    return (ssize_t)syscall_ret(syscall(SYS_READV, (uint64_t)fd,
+                                        (uint64_t)iov, (uint64_t)iovcnt,
+                                        0, 0, 0));
+}
+
+ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
+    return (ssize_t)syscall_ret(syscall(SYS_WRITEV, (uint64_t)fd,
+                                        (uint64_t)iov, (uint64_t)iovcnt,
+                                        0, 0, 0));
+}
+
+/* ---- signals ---- */
+
+/* The kernel pushes this trampoline as the handler's return address; on
+ * handler `ret` it invokes SYS_SIGRETURN.  Defined in libc/crt/sigreturn.asm. */
+extern void __sigreturn(void);
+
+int sigemptyset(sigset_t *set) { if (set) *set = 0; return 0; }
+int sigfillset(sigset_t *set)  { if (set) *set = 0xFFFFFFFFu; return 0; }
+int sigaddset(sigset_t *set, int signo) {
+    if (!set || signo < 1 || signo >= NSIG) { errno = EINVAL; return -1; }
+    *set |= (1u << (signo - 1)); return 0;
+}
+int sigdelset(sigset_t *set, int signo) {
+    if (!set || signo < 1 || signo >= NSIG) { errno = EINVAL; return -1; }
+    *set &= ~(1u << (signo - 1)); return 0;
+}
+int sigismember(const sigset_t *set, int signo) {
+    if (!set || signo < 1 || signo >= NSIG) { errno = EINVAL; return -1; }
+    return (*set & (1u << (signo - 1))) ? 1 : 0;
+}
+
+int sigaction(int signo, const struct sigaction *act, struct sigaction *old) {
+    struct sigaction kact;
+    const struct sigaction *pass = act;
+    if (act) {
+        kact = *act;
+        kact.sa_restorer = __sigreturn;   /* libc supplies the trampoline */
+        pass = &kact;
+    }
+    return (int)syscall_ret(syscall(SYS_SIGACTION, (uint64_t)signo,
+                                    (uint64_t)pass, (uint64_t)old, 0, 0, 0));
+}
+
+void (*signal(int signo, void (*handler)(int)))(int) {
+    struct sigaction act, old;
+    act.sa_handler = handler;
+    act.sa_mask = 0;
+    act.sa_flags = SA_RESTART;            /* BSD/glibc signal() semantics */
+    act.sa_restorer = __sigreturn;
+    if (sigaction(signo, &act, &old) < 0) return SIG_ERR;
+    return old.sa_handler;
+}
+
+int kill(int64_t pid, int signo) {
+    return (int)syscall_ret(syscall(SYS_KILL, (uint64_t)pid, (uint64_t)signo,
+                                    0, 0, 0, 0));
+}
+
+int raise(int signo) {
+    return kill((int64_t)getpid(), signo);
+}
+
+int sigprocmask(int how, const sigset_t *set, sigset_t *old) {
+    return (int)syscall_ret(syscall(SYS_SIGPROCMASK, (uint64_t)how,
+                                    (uint64_t)set, (uint64_t)old, 0, 0, 0));
+}
+
+int sigpending(sigset_t *set) {
+    return (int)syscall_ret(syscall(SYS_SIGPENDING, (uint64_t)set, 0, 0, 0, 0, 0));
+}
+
+unsigned alarm(unsigned seconds) {
+    /* alarm() does not report errors; the syscall returns the remaining time. */
+    return (unsigned)syscall(SYS_ALARM, (uint64_t)seconds, 0, 0, 0, 0, 0);
+}
+
+int pause(void) {
+    /* pause() always returns -1 with errno=EINTR once a signal is delivered. */
+    return (int)syscall_ret(syscall(SYS_PAUSE, 0, 0, 0, 0, 0, 0));
+}
+
+int sigsuspend(const sigset_t *mask) {
+    return (int)syscall_ret(syscall(SYS_SIGSUSPEND, (uint64_t)mask, 0, 0, 0, 0, 0));
 }
 
 void _exit(int code) {

@@ -54,6 +54,9 @@ static int64_t pipe_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t 
     while (got == 0) {
         if (p->used == 0) {
             if (p->writers == 0) return 0;     /* EOF: nobody to write more */
+            /* Interrupted by a signal with no data buffered -> -EINTR. */
+            if (signal_interrupted()) return -EINTR;
+            __asm__ volatile ("sti" ::: "memory");
             sched_yield();
             continue;
         }
@@ -66,16 +69,27 @@ static int64_t pipe_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t 
     return (int64_t)got;
 }
 
+/* Writing to a pipe whose read ends are all closed raises SIGPIPE on the
+ * writer and fails with EPIPE (POSIX write()). */
+static int64_t pipe_broken(void) {
+    tcb_t *cur = sched_current();
+    if (cur) signal_send(cur, SIGPIPE);
+    return -EPIPE;
+}
+
 static int64_t pipe_write_op(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
     (void)pos;
     struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
-    if (!p) return -1;
-    if (p->readers == 0) return -1;            /* broken pipe */
+    if (!p) return -EIO;
+    if (p->readers == 0) return pipe_broken();
     const uint8_t *in = (const uint8_t *)buf;
     uint64_t put = 0;
     while (put < count) {
         if (p->used == PIPE_BUF_SIZE) {
-            if (p->readers == 0) return -1;
+            if (p->readers == 0) return put ? (int64_t)put : pipe_broken();
+            /* Interrupted by a signal before completing -> partial / -EINTR. */
+            if (signal_interrupted()) return put ? (int64_t)put : -EINTR;
+            __asm__ volatile ("sti" ::: "memory");
             sched_yield();
             continue;
         }
@@ -94,17 +108,84 @@ static const struct vfs_ops pipe_write_ops = { .write = pipe_write_op };
 static struct vfs_mount mounts[VFS_MAX_MOUNTS];
 /* Fallback table for early boot or unusual calls before sched_init().  Normal
  * threads/processes use tcb_t::fd_table, so fd numbers are process-local. */
-static struct file      fallback_fd_table[VFS_MAX_FDS];
+static struct ofd *fallback_fd_table[VFS_MAX_FDS];
+static uint8_t     fallback_cloexec[VFS_MAX_FDS];
 
-static struct file *current_fd_table(void) {
+static struct ofd **current_fd_table(void) {
     tcb_t *cur = sched_current();
     if (cur) return cur->fd_table;
     return fallback_fd_table;
 }
 
+/* Returns the cloexec[] array that pairs with current_fd_table(). */
+static uint8_t *current_cloexec(void) {
+    tcb_t *cur = sched_current();
+    if (cur) return cur->cloexec;
+    return fallback_cloexec;
+}
+
+/* ---- OFD lifecycle ---------------------------------------------------- */
+
+/* Forward decls of the pipe ops so close/free can detect pipe ends. */
+/* (pipe_read_ops / pipe_write_ops are defined above.) */
+
+/* Release the vnode/pipe backing an OFD whose refcount has reached 0. */
+static void ofd_release_backing(struct vnode *vn) {
+    if (!vn) return;
+    struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
+    if (p && (vn->ops == &pipe_read_ops || vn->ops == &pipe_write_ops)) {
+        /* Pipe reader/writer counts track live OFDs, not fds: decrement here,
+         * on final OFD release, exactly once per OFD. */
+        if (vn->ops == &pipe_read_ops)  p->readers--;
+        if (vn->ops == &pipe_write_ops) p->writers--;
+        if (p->readers <= 0 && p->writers <= 0) {
+            kfree(p);
+            kfree(vn);
+        }
+    }
+    /* Non-pipe vnodes are owned by their filesystem; nothing to free here. */
+}
+
+/* Allocate a new OFD referring to @vn with refcount 1. */
+static struct ofd *ofd_alloc(struct vnode *vn, int acc, int append, int nonblock) {
+    struct ofd *o = kmalloc(sizeof(*o));
+    if (!o) return NULL;
+    o->vn          = vn;
+    o->pos         = append ? vn->size : 0;
+    o->access_mode = acc;
+    o->append      = append;
+    o->nonblock    = nonblock;
+    o->refcount    = 1;
+    return o;
+}
+
+/* Drop one reference; free the OFD (and release its backing) at 0. */
+static void ofd_put(struct ofd *o) {
+    if (!o) return;
+    if (--o->refcount <= 0) {
+        ofd_release_backing(o->vn);
+        kfree(o);
+    }
+}
+
+/* Public wrapper used by the process layer (exit path). */
+void vfs_close_ofd(struct ofd *o, struct vnode *unused) {
+    (void)unused;
+    ofd_put(o);
+}
+
+/* Find the lowest free fd slot >= @start.  Returns -1 if none. */
+static int alloc_fd_slot_ptr(struct ofd **t, int start) {
+    for (int i = start; i < VFS_MAX_FDS; i++) {
+        if (t[i] == NULL) return i;
+    }
+    return -1;
+}
+
 void vfs_init(void) {
     memset(mounts, 0, sizeof(mounts));
     memset(fallback_fd_table, 0, sizeof(fallback_fd_table));
+    memset(fallback_cloexec, 0, sizeof(fallback_cloexec));
 }
 
 int vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data) {
@@ -208,156 +289,194 @@ int vfs_open(const char *path, int flags, int mode) {
         }
     }
 
-    struct file *fd_table = current_fd_table();
+    struct ofd **fd_table = current_fd_table();
     /* Reserve fd 0/1/2 for stdin/stdout/stderr syscall semantics. */
-    for (int i = 3; i < VFS_MAX_FDS; i++) {
-        if (!fd_table[i].in_use) {
-            fd_table[i].vn          = vn;
-            fd_table[i].pos         = (flags & O_APPEND) ? vn->size : 0;
-            fd_table[i].in_use      = 1;
-            fd_table[i].access_mode = acc;
-            fd_table[i].append      = (flags & O_APPEND) ? 1 : 0;
-            fd_table[i].nonblock    = (flags & O_NONBLOCK) ? 1 : 0;
-            tcb_t *cur = sched_current();
-            if (cur) cur->cloexec[i] = (flags & O_CLOEXEC) ? 1 : 0;
-            return i;
-        }
-    }
-    return -EMFILE;   /* per-process FD table is full */
+    int slot = alloc_fd_slot_ptr(fd_table, 3);
+    if (slot < 0) return -EMFILE;             /* per-process FD table is full */
+
+    struct ofd *o = ofd_alloc(vn, acc, (flags & O_APPEND) ? 1 : 0,
+                              (flags & O_NONBLOCK) ? 1 : 0);
+    if (!o) return -ENOMEM;
+    fd_table[slot] = o;
+    current_cloexec()[slot] = (flags & O_CLOEXEC) ? 1 : 0;
+    return slot;
+}
+
+/* Resolve a fd to its OFD, or NULL if the fd is not open. */
+static struct ofd *fd_to_ofd(int fd) {
+    struct ofd **t = current_fd_table();
+    if (fd < 0 || fd >= VFS_MAX_FDS) return NULL;
+    return t[fd];
+}
+
+/* True if @vn is non-seekable (pipe/FIFO/socket/chardev) -> lseek gives ESPIPE. */
+static int vnode_is_pipe_like(const struct vnode *vn) {
+    return vn && (vn->ops == &pipe_read_ops || vn->ops == &pipe_write_ops ||
+                  vn->type == VFS_TYPE_CHARDEV);
 }
 
 int64_t vfs_read(int fd, void *buf, uint64_t count) {
-    struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
-    struct file *f = &fd_table[fd];
+    struct ofd *o = fd_to_ofd(fd);
+    if (!o) return -EBADF;
     /* A fd opened O_WRONLY is not readable (POSIX: read on such fd -> EBADF). */
-    if (f->access_mode == O_WRONLY) return -EBADF;
-    if (!f->vn->ops->read) return -EINVAL;   /* object not readable */
+    if (o->access_mode == O_WRONLY) return -EBADF;
+    if (!o->vn->ops->read) return -EINVAL;   /* object not readable */
     /* O_NONBLOCK: a read that would block returns -EAGAIN instead.  For a pipe
      * with no buffered data and writers still attached, that is a would-block. */
-    if (f->nonblock && f->vn->ops == &pipe_read_ops && count > 0) {
-        struct pipe_ring *p = (struct pipe_ring *)f->vn->fs_data;
+    if (o->nonblock && o->vn->ops == &pipe_read_ops && count > 0) {
+        struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
         if (p && p->used == 0 && p->writers > 0) return -EAGAIN;
     }
-    int64_t n = f->vn->ops->read(f->vn, f->pos, buf, count);
-    if (n > 0) f->pos += (uint64_t)n;
+    int64_t n = o->vn->ops->read(o->vn, o->pos, buf, count);
+    if (n > 0) o->pos += (uint64_t)n;       /* shared OFD offset advances */
     return vfs_wrap_err(n, EIO);
 }
 
 int64_t vfs_write(int fd, const void *buf, uint64_t count) {
-    struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
-    struct file *f = &fd_table[fd];
+    struct ofd *o = fd_to_ofd(fd);
+    if (!o) return -EBADF;
     /* A fd opened O_RDONLY is not writable (POSIX: write on such fd -> EBADF). */
-    if (f->access_mode == O_RDONLY) return -EBADF;
-    if (!f->vn->ops->write) return -EINVAL;   /* object not writable */
-    /* O_NONBLOCK: a write that would block returns -EAGAIN instead.  For a pipe
-     * whose ring is full with readers still attached, that is a would-block. */
-    if (f->nonblock && f->vn->ops == &pipe_write_ops && count > 0) {
-        struct pipe_ring *p = (struct pipe_ring *)f->vn->fs_data;
+    if (o->access_mode == O_RDONLY) return -EBADF;
+    if (!o->vn->ops->write) return -EINVAL;   /* object not writable */
+    /* O_NONBLOCK: a write that would block returns -EAGAIN instead. */
+    if (o->nonblock && o->vn->ops == &pipe_write_ops && count > 0) {
+        struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
         if (p && p->used == PIPE_BUF_SIZE && p->readers > 0) return -EAGAIN;
     }
     /* O_APPEND: reposition to EOF before each write.  The single-threaded
      * VFS makes the seek-to-EOF + write atomic here; once SMP/preemptive FS
      * access lands this needs a per-vnode write lock (TODO.md). */
-    if (f->append) f->pos = f->vn->size;
-    int64_t n = f->vn->ops->write(f->vn, f->pos, buf, count);
-    if (n > 0) f->pos += (uint64_t)n;
+    if (o->append) o->pos = o->vn->size;
+    int64_t n = o->vn->ops->write(o->vn, o->pos, buf, count);
+    if (n > 0) o->pos += (uint64_t)n;
     return vfs_wrap_err(n, EIO);
 }
 
 int64_t vfs_lseek(int fd, int64_t offset, int whence) {
-    struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
-    struct file *f = &fd_table[fd];
+    struct ofd *o = fd_to_ofd(fd);
+    if (!o) return -EBADF;
+    if (vnode_is_pipe_like(o->vn)) return -ESPIPE;   /* non-seekable */
     int64_t new_pos;
     switch (whence) {
-        case 0: new_pos = offset; break;
-        case 1: new_pos = (int64_t)f->pos + offset; break;
-        case 2: new_pos = (int64_t)f->vn->size + offset; break;
+        case SEEK_SET: new_pos = offset; break;
+        case SEEK_CUR: new_pos = (int64_t)o->pos + offset; break;
+        case SEEK_END: new_pos = (int64_t)o->vn->size + offset; break;
         default: return -EINVAL;
     }
     if (new_pos < 0) return -EINVAL;
-    f->pos = (uint64_t)new_pos;
+    /* Seeking past EOF is allowed and does not extend the file. */
+    o->pos = (uint64_t)new_pos;
     return new_pos;
 }
 
-int vfs_close(int fd) {
-    struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
-    struct vnode *vn = fd_table[fd].vn;
-    fd_table[fd].in_use = 0;
-    fd_table[fd].vn     = NULL;
-    fd_table[fd].pos    = 0;
-    /* Per-process cloexec flag is also cleared. */
-    tcb_t *cur = sched_current();
-    if (cur) cur->cloexec[fd] = 0;
+int64_t vfs_pread(int fd, void *buf, uint64_t count, int64_t offset) {
+    struct ofd *o = fd_to_ofd(fd);
+    if (!o) return -EBADF;
+    if (o->access_mode == O_WRONLY) return -EBADF;
+    if (vnode_is_pipe_like(o->vn)) return -ESPIPE;
+    if (offset < 0) return -EINVAL;
+    if (!o->vn->ops->read) return -EINVAL;
+    /* Positioned read: do NOT touch the shared OFD offset. */
+    int64_t n = o->vn->ops->read(o->vn, (uint64_t)offset, buf, count);
+    return vfs_wrap_err(n, EIO);
+}
 
-    /* Pipe lifetime: when the last reader/writer FD closes, we can free the
-     * pipe ring + vnode.  We detect that by checking the ops pointer. */
-    if (vn) {
-        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
-        if (p && (vn->ops == &pipe_read_ops || vn->ops == &pipe_write_ops)) {
-            if (vn->ops == &pipe_read_ops)  p->readers--;
-            if (vn->ops == &pipe_write_ops) p->writers--;
-            if (p->readers <= 0 && p->writers <= 0) {
-                kfree(p);
-                kfree(vn);
-            }
-        }
+int64_t vfs_pwrite(int fd, const void *buf, uint64_t count, int64_t offset) {
+    struct ofd *o = fd_to_ofd(fd);
+    if (!o) return -EBADF;
+    if (o->access_mode == O_RDONLY) return -EBADF;
+    if (vnode_is_pipe_like(o->vn)) return -ESPIPE;
+    if (offset < 0) return -EINVAL;
+    if (!o->vn->ops->write) return -EINVAL;
+    /* POSIX pwrite ignores O_APPEND and writes at @offset, leaving pos alone. */
+    int64_t n = o->vn->ops->write(o->vn, (uint64_t)offset, buf, count);
+    return vfs_wrap_err(n, EIO);
+}
+
+/* IOV_MAX for AuraLite: small, matches the kernel iovec staging cap. */
+#define VFS_IOV_MAX 1024
+
+int64_t vfs_readv(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt <= 0 || iovcnt > VFS_IOV_MAX) return -EINVAL;
+    /* Sum lengths with overflow check against SSIZE_MAX before any transfer. */
+    uint64_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        uint64_t l = iov[i].iov_len;
+        if (total + l < total || total + l > 0x7FFFFFFFFFFFFFFFULL) return -EINVAL;
+        total += l;
     }
+    int64_t done = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (iov[i].iov_len == 0) continue;
+        int64_t n = vfs_read(fd, iov[i].iov_base, iov[i].iov_len);
+        if (n < 0) return (done > 0) ? done : n;      /* report error or partial */
+        done += n;
+        if ((uint64_t)n < iov[i].iov_len) break;       /* short read: stop */
+    }
+    return done;
+}
+
+int64_t vfs_writev(int fd, const struct iovec *iov, int iovcnt) {
+    if (iovcnt <= 0 || iovcnt > VFS_IOV_MAX) return -EINVAL;
+    uint64_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        uint64_t l = iov[i].iov_len;
+        if (total + l < total || total + l > 0x7FFFFFFFFFFFFFFFULL) return -EINVAL;
+        total += l;
+    }
+    int64_t done = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        if (iov[i].iov_len == 0) continue;
+        int64_t n = vfs_write(fd, iov[i].iov_base, iov[i].iov_len);
+        if (n < 0) return (done > 0) ? done : n;
+        done += n;
+        if ((uint64_t)n < iov[i].iov_len) break;       /* short write: stop */
+    }
+    return done;
+}
+
+int vfs_close(int fd) {
+    struct ofd **fd_table = current_fd_table();
+    if (fd < 0 || fd >= VFS_MAX_FDS || fd_table[fd] == NULL) return -EBADF;
+    struct ofd *o = fd_table[fd];
+    /* Clear the slot first so the fd number is immediately reusable, then drop
+     * the OFD reference.  ofd_put() frees the OFD (and releases the pipe/vnode,
+     * decrementing pipe reader/writer counts) only when refcount hits 0. */
+    fd_table[fd] = NULL;
+    current_cloexec()[fd] = 0;
+    ofd_put(o);
     return 0;
 }
 
 /* ---- dup / dup2 / pipe / cloexec ---- */
 
-static int alloc_fd_slot(struct file *table, int starting_from) {
-    for (int i = starting_from; i < VFS_MAX_FDS; i++) {
-        if (!table[i].in_use) return i;
-    }
-    return -1;
-}
-
 int vfs_dup(int oldfd) {
-    struct file *t = current_fd_table();
-    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -EBADF;
-    int nfd = alloc_fd_slot(t, 3);
+    struct ofd **t = current_fd_table();
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
+    int nfd = alloc_fd_slot_ptr(t, 3);
     if (nfd < 0) return -EMFILE;
+    /* Share the same OFD (shared offset/flags); bump its refcount.  No pipe
+     * reader/writer change: those track OFDs, and this is the same OFD. */
+    t[oldfd]->refcount++;
     t[nfd] = t[oldfd];
-    /* Cloexec is per-FD: dup() clears it on the new FD. */
-    tcb_t *cur = sched_current();
-    if (cur) cur->cloexec[nfd] = 0;
-
-    /* If we duped a pipe end, bump the refcount so close() handles it. */
-    struct vnode *vn = t[nfd].vn;
-    if (vn) {
-        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
-        if (p) {
-            if (vn->ops == &pipe_read_ops)  p->readers++;
-            if (vn->ops == &pipe_write_ops) p->writers++;
-        }
-    }
+    current_cloexec()[nfd] = 0;   /* FD_CLOEXEC is per-fd; dup() clears it */
     return nfd;
 }
 
 int vfs_dup2(int oldfd, int newfd) {
-    struct file *t = current_fd_table();
-    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -EBADF;
+    struct ofd **t = current_fd_table();
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
     if (newfd < 0 || newfd >= VFS_MAX_FDS) return -EBADF;
+    /* dup2(fd, fd) with a valid fd: no close, no refcount change, returns fd. */
     if (oldfd == newfd) return newfd;
     if (newfd < 3) return -EBADF;              /* protect stdin/out/err */
-    if (t[newfd].in_use) vfs_close(newfd);
+    /* Bump the source OFD ref BEFORE dropping the old target (handles the case
+     * where both already alias the same OFD). */
+    t[oldfd]->refcount++;
+    struct ofd *old = t[newfd];
     t[newfd] = t[oldfd];
-    tcb_t *cur = sched_current();
-    if (cur) cur->cloexec[newfd] = 0;
-    struct vnode *vn = t[newfd].vn;
-    if (vn) {
-        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
-        if (p) {
-            if (vn->ops == &pipe_read_ops)  p->readers++;
-            if (vn->ops == &pipe_write_ops) p->writers++;
-        }
-    }
+    current_cloexec()[newfd] = 0;
+    if (old) ofd_put(old);        /* close the old target after install */
     return newfd;
 }
 
@@ -365,46 +484,49 @@ int vfs_pipe2(int out_fds[2], int flags) {
     if (!out_fds) return -EFAULT;
     /* pipe2 only accepts O_CLOEXEC | O_NONBLOCK. */
     if (flags & ~(O_CLOEXEC | O_NONBLOCK)) return -EINVAL;
-    struct file *t = current_fd_table();
-    int rfd = alloc_fd_slot(t, 3);
+    struct ofd **t = current_fd_table();
+    int rfd = alloc_fd_slot_ptr(t, 3);
     if (rfd < 0) return -EMFILE;
-    t[rfd].in_use = 1;                          /* reserve before second alloc */
-    int wfd = alloc_fd_slot(t, 3);
-    if (wfd < 0) { t[rfd].in_use = 0; return -EMFILE; }
+    /* Reserve the read slot with a sentinel so the second alloc skips it. */
+    t[rfd] = (struct ofd *)(uintptr_t)1;
+    int wfd = alloc_fd_slot_ptr(t, 3);
+    if (wfd < 0) { t[rfd] = NULL; return -EMFILE; }
 
     struct pipe_ring *p = kmalloc(sizeof(*p));
-    if (!p) { t[rfd].in_use = 0; return -ENOMEM; }
+    if (!p) { t[rfd] = NULL; return -ENOMEM; }
     memset(p, 0, sizeof(*p));
-    p->readers = 1; p->writers = 1;
+    p->readers = 1; p->writers = 1;   /* one read-end OFD, one write-end OFD */
 
     struct vnode *rvn = kmalloc(sizeof(*rvn));
     struct vnode *wvn = kmalloc(sizeof(*wvn));
-    if (!rvn || !wvn) {
+    int nb = (flags & O_NONBLOCK) ? 1 : 0;
+    struct ofd *ro = NULL, *wo = NULL;
+    if (rvn && wvn) {
+        memset(rvn, 0, sizeof(*rvn));
+        memset(wvn, 0, sizeof(*wvn));
+        strncpy(rvn->name, "pipe-r", VFS_PATH_MAX - 1);
+        strncpy(wvn->name, "pipe-w", VFS_PATH_MAX - 1);
+        rvn->type = VFS_TYPE_CHARDEV; rvn->ops = &pipe_read_ops;  rvn->fs_data = p;
+        wvn->type = VFS_TYPE_CHARDEV; wvn->ops = &pipe_write_ops; wvn->fs_data = p;
+        ro = ofd_alloc(rvn, O_RDONLY, 0, nb);
+        wo = ofd_alloc(wvn, O_WRONLY, 0, nb);
+    }
+    if (!rvn || !wvn || !ro || !wo) {
+        if (ro) kfree(ro);
+        if (wo) kfree(wo);
         if (rvn) kfree(rvn);
         if (wvn) kfree(wvn);
         kfree(p);
-        t[rfd].in_use = 0;
+        t[rfd] = NULL;
         return -ENOMEM;
     }
-    memset(rvn, 0, sizeof(*rvn));
-    memset(wvn, 0, sizeof(*wvn));
-    strncpy(rvn->name, "pipe-r", VFS_PATH_MAX - 1);
-    strncpy(wvn->name, "pipe-w", VFS_PATH_MAX - 1);
-    rvn->type = VFS_TYPE_CHARDEV; rvn->ops = &pipe_read_ops;  rvn->fs_data = p;
-    wvn->type = VFS_TYPE_CHARDEV; wvn->ops = &pipe_write_ops; wvn->fs_data = p;
 
-    int nb = (flags & O_NONBLOCK) ? 1 : 0;
-    t[rfd].vn = rvn; t[rfd].pos = 0; t[rfd].in_use = 1;
-    t[rfd].access_mode = O_RDONLY; t[rfd].append = 0; t[rfd].nonblock = nb;
-    t[wfd].vn = wvn; t[wfd].pos = 0; t[wfd].in_use = 1;
-    t[wfd].access_mode = O_WRONLY; t[wfd].append = 0; t[wfd].nonblock = nb;
-
-    tcb_t *cur = sched_current();
-    if (cur) {
-        int ce = (flags & O_CLOEXEC) ? 1 : 0;
-        cur->cloexec[rfd] = ce;
-        cur->cloexec[wfd] = ce;
-    }
+    t[rfd] = ro;
+    t[wfd] = wo;
+    uint8_t *ce = current_cloexec();
+    int cflag = (flags & O_CLOEXEC) ? 1 : 0;
+    ce[rfd] = cflag;
+    ce[wfd] = cflag;
     out_fds[0] = rfd;
     out_fds[1] = wfd;
     return 0;
@@ -415,44 +537,32 @@ int vfs_pipe(int out_fds[2]) {
 }
 
 int vfs_set_cloexec(int fd, int on) {
-    tcb_t *cur = sched_current();
-    if (!cur) return -EINVAL;
     if (fd < 0 || fd >= VFS_MAX_FDS) return -EBADF;
-    cur->cloexec[fd] = on ? 1 : 0;
+    if (current_fd_table()[fd] == NULL) return -EBADF;
+    current_cloexec()[fd] = on ? 1 : 0;
     return 0;
 }
 
 int vfs_get_cloexec(int fd) {
-    tcb_t *cur = sched_current();
-    if (!cur) return 0;
     if (fd < 0 || fd >= VFS_MAX_FDS) return 0;
-    return cur->cloexec[fd];
+    return current_cloexec()[fd];
 }
 
 /*
  * dup_lowest_from() — duplicate @oldfd into the lowest free slot >= @minfd
- * (F_DUPFD semantics).  @cloexec selects the new fd's FD_CLOEXEC bit.
- * Returns the new fd, or a negative errno (EBADF / EINVAL / EMFILE).
+ * (F_DUPFD semantics): the new fd shares the same OFD.  @cloexec selects the
+ * new fd's FD_CLOEXEC bit.  Returns the new fd or a negative errno.
  */
 static int dup_lowest_from(int oldfd, int minfd, int cloexec) {
-    struct file *t = current_fd_table();
-    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -EBADF;
+    struct ofd **t = current_fd_table();
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
     if (minfd < 0 || minfd >= VFS_MAX_FDS) return -EINVAL;   /* OPEN_MAX bound */
     int start = (minfd < 3) ? 3 : minfd;   /* never hand out 0/1/2 */
-    int nfd = alloc_fd_slot(t, start);
+    int nfd = alloc_fd_slot_ptr(t, start);
     if (nfd < 0) return -EMFILE;            /* no slot >= minfd available */
+    t[oldfd]->refcount++;
     t[nfd] = t[oldfd];
-    tcb_t *cur = sched_current();
-    if (cur) cur->cloexec[nfd] = cloexec ? 1 : 0;
-    /* Bump pipe refcounts if we duped a pipe end. */
-    struct vnode *vn = t[nfd].vn;
-    if (vn) {
-        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
-        if (p) {
-            if (vn->ops == &pipe_read_ops)  p->readers++;
-            if (vn->ops == &pipe_write_ops) p->writers++;
-        }
-    }
+    current_cloexec()[nfd] = cloexec ? 1 : 0;
     return nfd;
 }
 
@@ -462,12 +572,10 @@ static int dup_lowest_from(int oldfd, int minfd, int cloexec) {
  * separate from the file-status-flags namespace (F_GETFL/F_SETFL).
  */
 int vfs_fcntl(int fd, int cmd, int arg) {
-    struct file *t = current_fd_table();
+    struct ofd **t = current_fd_table();
     /* Commands whose @fd must be a valid open descriptor. */
-    if (cmd != F_DUPFD && cmd != F_DUPFD_CLOEXEC) {
-        if (fd < 0 || fd >= VFS_MAX_FDS || !t[fd].in_use) return -EBADF;
-    }
-    struct file *f = &t[fd];
+    if (fd < 0 || fd >= VFS_MAX_FDS || t[fd] == NULL) return -EBADF;
+    struct ofd *o = t[fd];
 
     switch (cmd) {
     case F_DUPFD:
@@ -479,17 +587,19 @@ int vfs_fcntl(int fd, int cmd, int arg) {
     case F_SETFD:
         return vfs_set_cloexec(fd, (arg & FD_CLOEXEC) ? 1 : 0);
     case F_GETFL: {
-        /* access mode | live status flags (NOT FD_CLOEXEC, NOT creation flags) */
-        int r = f->access_mode;
-        if (f->append)   r |= O_APPEND;
-        if (f->nonblock) r |= O_NONBLOCK;
+        /* access mode | live status flags (NOT FD_CLOEXEC, NOT creation flags).
+         * Reads the SHARED OFD, so dup'd fds report the same status flags. */
+        int r = o->access_mode;
+        if (o->append)   r |= O_APPEND;
+        if (o->nonblock) r |= O_NONBLOCK;
         return r;
     }
     case F_SETFL:
         /* Only O_APPEND / O_NONBLOCK are changeable; access mode and creation
-         * flags in @arg are silently ignored (POSIX requirement). */
-        f->append   = (arg & O_APPEND)   ? 1 : 0;
-        f->nonblock = (arg & O_NONBLOCK) ? 1 : 0;
+         * flags in @arg are silently ignored (POSIX requirement).  Because this
+         * mutates the shared OFD, dup'd fds see the change too. */
+        o->append   = (arg & O_APPEND)   ? 1 : 0;
+        o->nonblock = (arg & O_NONBLOCK) ? 1 : 0;
         return 0;
     case F_GETLK:
     case F_SETLK:
@@ -504,9 +614,26 @@ void vfs_close_on_exec(void) {
     tcb_t *cur = sched_current();
     if (!cur) return;
     for (int fd = 3; fd < VFS_MAX_FDS; fd++) {
-        if (cur->cloexec[fd] && cur->fd_table[fd].in_use) {
+        if (cur->cloexec[fd] && cur->fd_table[fd] != NULL) {
             vfs_close(fd);
         }
+    }
+}
+
+/*
+ * vfs_fork_inherit() — share the parent's OFDs with a forked child.
+ *
+ * The child's FD table entries point at the SAME OFD objects as the parent's
+ * (so the seek offset and status flags are shared, per POSIX fork()); each
+ * inherited OFD's refcount is incremented.  FD_CLOEXEC flags are copied.  Must
+ * be called while building the child, before it becomes schedulable.
+ */
+void vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
+                      const uint8_t *src_cloexec) {
+    for (int i = 0; i < VFS_MAX_FDS; i++) {
+        dst[i] = src[i];
+        dst_cloexec[i] = src_cloexec[i];
+        if (src[i]) src[i]->refcount++;
     }
 }
 

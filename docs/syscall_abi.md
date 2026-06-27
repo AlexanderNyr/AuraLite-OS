@@ -69,6 +69,8 @@ codes are tracked in `TODO.md`.
 | `close`/`dup`/`dup2`/`fcntl` | `EBADF`; `fcntl` unknown cmd → `EINVAL`; `F_DUPFD` arg<0/≥OPEN_MAX → `EINVAL`, none free → `EMFILE`; `F_GETLK/SETLK/SETLKW` → `ENOSYS` |
 | `pipe2` | `EFAULT`, `EINVAL` (flags ∉ {O_CLOEXEC,O_NONBLOCK}), `EMFILE`, `ENOMEM` |
 | read/write access | read on O_WRONLY fd or write on O_RDONLY fd → `EBADF` |
+| `lseek`/`pread`/`pwrite` | `EBADF` (bad fd), `ESPIPE` (pipe/char device), `EINVAL` (bad whence / negative offset/result) |
+| `readv`/`writev` | `EBADF`, `EFAULT`, `EINVAL` (iovcnt ∉ [1,IOV_MAX] or Σ iov_len > SSIZE_MAX) |
 | `stat`/`unlink`/`rmdir`/`rename`/`truncate` | `EFAULT`, `ENOENT` |
 | `mkdir` | `EFAULT`, `EACCES` |
 | `pipe` | `EFAULT`, `EMFILE` |
@@ -77,6 +79,20 @@ codes are tracked in `TODO.md`.
 | `wait4` | `ECHILD` |
 | `execve`/`spawn` | `EFAULT`, `ENOENT` |
 | unknown syscall number | `ENOSYS` |
+| `kill`/`sigaction`/`sigprocmask` | `ESRCH` (no such pid), `EINVAL` (bad signo / SIGKILL/SIGSTOP catch), `EFAULT` |
+
+### Signal delivery (P4)
+
+Signals are delivered only at a return-to-user boundary with interrupts
+disabled.  On the IRQ/exception-return path the kernel rewrites the saved
+`struct registers`; on the syscall-exit path it synthesises an equivalent frame
+and returns via **IRETQ** (`syscall_sigreturn.asm`) rather than SYSRET, avoiding
+the SYSRET non-canonical-RIP hazard.  A `struct signal_frame` is pushed on the
+user stack below the 128-byte red zone and 16-aligned so the handler is entered
+with `RSP%16==8`; the handler's return address is the libc `__sigreturn`
+trampoline, which invokes `sigreturn` to restore the frame and the saved mask
+atomically.  CPU exceptions in Ring 3 map to synchronous signals
+(#PF/#GP→SIGSEGV, #UD→SIGILL, #DE→SIGFPE, #BP→SIGTRAP, #AC→SIGBUS).
 
 ## User-space wrapper
 
@@ -150,6 +166,19 @@ Current caveats:
 |---:|---|---|---|---|
 | 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads line input from PS/2 keyboard and/or serial; `fd>=3` reads VFS files. |
 | 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write. |
+| 8 | `lseek` | `lseek(fd, offset, whence)` | ✅ | Repositions the shared OFD offset (SEEK_SET/CUR/END); ESPIPE on pipes/char devices. |
+| 17 | `pread64` | `pread(fd, buf, count, off)` | ✅ | Positioned read; does not change the OFD offset. ESPIPE on non-seekable. |
+| 18 | `pwrite64` | `pwrite(fd, buf, count, off)` | ✅ | Positioned write; does not change the OFD offset (ignores O_APPEND, per POSIX). |
+| 19 | `readv` | `readv(fd, iov, iovcnt)` | ✅ | Scatter read; advances the shared offset. iovcnt∈[1,1024]; EINVAL on length overflow. |
+| 20 | `writev` | `writev(fd, iov, iovcnt)` | ✅ | Gather write; advances the shared offset. iovcnt∈[1,1024]; EINVAL on length overflow. |
+| 13 | `sigaction` | `sigaction(signo, act, old)` | ✅ | Install/query a signal disposition; libc supplies the `__sigreturn` restorer. SIGKILL/SIGSTOP → EINVAL. |
+| 14 | `sigprocmask` | `sigprocmask(how, set, old)` | ✅ | SIG_BLOCK/UNBLOCK/SETMASK; SIGKILL/SIGSTOP can never be blocked. |
+| 15 | `sigreturn` | (libc trampoline only) | ✅ | Restores the interrupted context from the user signal frame and IRETQs back; not called directly. |
+| 62 | `kill` | `kill(pid, signo)` | ✅ | pid>0 targets a process; pid≤0 broadcasts (process groups in P6). signo 0 = existence check. |
+| 127 | `sigpending` | `sigpending(set)` | ✅ | Returns the pending-and-blocked signal set. |
+| 34 | `pause` | `pause()` | ✅ | Blocks until a signal is delivered; returns -1/EINTR. |
+| 37 | `alarm` | `alarm(seconds)` | ✅ | Arms SIGALRM after N seconds (PIT-tick based); returns the previous alarm's remaining seconds. |
+| 130 | `sigsuspend` | `sigsuspend(mask)` | ✅ | Atomically installs `mask`, waits for a signal, restores the prior mask; returns -1/EINTR. |
 | 2 | `open` | `open(path, flags, mode)` | ✅ | POSIX flags: O_RDONLY/WRONLY/RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY. `mode` used only with O_CREAT. |
 | 3 | `close` | `close(fd)` | ✅ | Closes a per-process FD. |
 | 22 | `pipe` | `pipe(fds[2])` | ✅ | Unidirectional in-memory pipe; read end O_RDONLY, write end O_WRONLY. |
@@ -228,11 +257,14 @@ event and widget APIs rather than invoking `SYS_GUI_CALL` directly.
 
 ## File descriptor model
 
-File descriptors are stored in each `tcb_t` / process.  FD numbers are therefore
-local to the current process; unrelated processes can both use fd `3` without
-colliding.  `fork()` currently shallow-copies the parent's table into the child,
-so both processes initially refer to the same vnodes with copied offsets.  New
-`spawn()`ed processes start with an empty table, while fd `0/1/2` remain special
+File descriptors are stored in each `tcb_t` / process as pointers to shared
+**open-file descriptions** (`struct ofd`).  FD numbers are local to the current
+process; unrelated processes can both use fd `3` without colliding.  Since P3,
+`dup`/`dup2`/`fcntl(F_DUPFD*)` and `fork()` make the new descriptor point at the
+**same OFD** as the original — so the seek offset and status flags are shared
+(POSIX semantics); the OFD is reference-counted and freed when the last fd
+referring to it is closed.  New `spawn()`ed processes start with an empty table,
+while fd `0/1/2` remain special
 syscall-level stdin/stdout/stderr handles rather than VFS entries.
 
 Current caveats:

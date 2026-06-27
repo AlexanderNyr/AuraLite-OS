@@ -2,12 +2,27 @@
 
 #include "unistd.h"
 #include "fcntl.h"
+#include "sys/uio.h"
+#include "signal.h"
 #include "stdio.h"
 #include "string.h"
 #include "errno.h"
 #include "auragui.h"
 
 static int fails = 0;
+
+static volatile int g_sigusr1_count = 0;
+static volatile int g_last_signo = 0;
+static void sigusr1_handler(int signo) {
+    g_sigusr1_count++;
+    g_last_signo = signo;
+}
+
+static volatile int g_sigalrm_count = 0;
+static void sigalrm_handler(int signo) {
+    (void)signo;
+    g_sigalrm_count++;
+}
 
 static void check(const char *name, int cond) {
     if (cond) {
@@ -150,6 +165,161 @@ int main(void) {
         }
 
         unlink(p);
+    }
+
+    /* ---- P3: lseek / pread / pwrite / readv / writev / shared OFD ---- */
+    {
+        const char *p = "/tmp/p3io.txt";
+        unlink(p);
+        int fd = open(p, O_CREAT | O_RDWR, 0644);
+        check("p3 open rw", fd >= 3);
+        if (fd >= 3) {
+            check("write hello", write(fd, "hello", 5) == 5);
+
+            /* lseek SEEK_SET back to 0, read it back. */
+            check("lseek SEEK_SET 0", lseek(fd, 0, SEEK_SET) == 0);
+            char rb[8] = {0};
+            check("read back after lseek",
+                  read(fd, rb, 5) == 5 && memcmp(rb, "hello", 5) == 0);
+
+            /* SEEK_END / SEEK_CUR. */
+            check("lseek SEEK_END", lseek(fd, 0, SEEK_END) == 5);
+            check("lseek SEEK_CUR -2", lseek(fd, -2, SEEK_CUR) == 3);
+
+            /* pread/pwrite must NOT move the offset (currently at 3). */
+            char pb[4] = {0};
+            check("pread at offset 0", pread(fd, pb, 5, 0) == 5 &&
+                  memcmp(pb, "hello", 5) == 0);
+            check("pread did not move pos", lseek(fd, 0, SEEK_CUR) == 3);
+            check("pwrite at offset 1", pwrite(fd, "ELL", 3, 1) == 3);
+            check("pwrite did not move pos", lseek(fd, 0, SEEK_CUR) == 3);
+            char vb[8] = {0};
+            check("pwrite landed at offset 1",
+                  pread(fd, vb, 5, 0) == 5 && memcmp(vb, "hELLo", 5) == 0);
+
+            close(fd);
+        }
+
+        /* dup() shares the OFD offset: reading via the dup advances the
+         * original's offset too. */
+        int a = open(p, O_RDONLY);
+        if (a >= 3) {
+            int b = dup(a);
+            check("dup returns new fd", b >= 3 && b != a);
+            char db[4] = {0};
+            check("read 2 via dup", read(b, db, 2) == 2);
+            /* Shared OFD: original fd's offset is now 2. */
+            check("dup shares offset", lseek(a, 0, SEEK_CUR) == 2);
+            close(b); close(a);
+        }
+
+        /* lseek on a pipe -> ESPIPE. */
+        int pp[2];
+        if (pipe(pp) == 0) {
+            errno = 0;
+            check("lseek on pipe -> ESPIPE",
+                  lseek(pp[0], 0, SEEK_SET) < 0 && errno == ESPIPE);
+            close(pp[0]); close(pp[1]);
+        } else {
+            check("pipe for ESPIPE test", 0);
+        }
+
+        /* writev / readv round-trip. */
+        unlink(p);
+        int wf = open(p, O_CREAT | O_RDWR, 0644);
+        if (wf >= 3) {
+            struct iovec wv[2] = {
+                { (void *)"AB", 2 },
+                { (void *)"CDE", 3 },
+            };
+            check("writev 2+3 bytes", writev(wf, wv, 2) == 5);
+            lseek(wf, 0, SEEK_SET);
+            char r1[3] = {0}, r2[3] = {0};
+            struct iovec rv[2] = { { r1, 2 }, { r2, 3 } };
+            check("readv 2+3 bytes", readv(wf, rv, 2) == 5 &&
+                  memcmp(r1, "AB", 2) == 0 && memcmp(r2, "CDE", 3) == 0);
+            close(wf);
+        }
+        unlink(p);
+    }
+
+    /* ---- P4: signals (catch / mask / pending) ---- */
+    {
+        /* Install a SIGUSR1 handler and deliver via raise(). */
+        struct sigaction sa;
+        sa.sa_handler = sigusr1_handler;
+        sa.sa_mask = 0;
+        sa.sa_flags = 0;
+        sa.sa_restorer = 0;   /* libc fills in __sigreturn */
+        check("sigaction(SIGUSR1) installs", sigaction(SIGUSR1, &sa, 0) == 0);
+
+        g_sigusr1_count = 0;
+        g_last_signo = 0;
+        check("raise(SIGUSR1) returns 0", raise(SIGUSR1) == 0);
+        /* Delivery happens at the next return-to-user boundary; the syscall
+         * exit path (kill) or the next timer IRQ runs the handler.  Give the
+         * scheduler a chance via a few cheap syscalls. */
+        for (int i = 0; i < 1000 && g_sigusr1_count == 0; i++) (void)getpid();
+        check("got SIGUSR1", g_sigusr1_count >= 1 && g_last_signo == SIGUSR1);
+
+        /* sigaction must reject SIGKILL / SIGSTOP. */
+        errno = 0;
+        check("sigaction(SIGKILL) -> EINVAL",
+              sigaction(SIGKILL, &sa, 0) < 0 && errno == EINVAL);
+
+        /* Block SIGUSR1, raise it, confirm it is pending and NOT delivered. */
+        sigset_t block, oldset, pend;
+        sigemptyset(&block);
+        sigaddset(&block, SIGUSR1);
+        check("sigprocmask BLOCK SIGUSR1", sigprocmask(SIG_BLOCK, &block, &oldset) == 0);
+        g_sigusr1_count = 0;
+        raise(SIGUSR1);
+        for (int i = 0; i < 200; i++) (void)getpid();   /* spin; must NOT deliver */
+        check("blocked SIGUSR1 not delivered", g_sigusr1_count == 0);
+        check("sigpending reports SIGUSR1",
+              sigpending(&pend) == 0 && sigismember(&pend, SIGUSR1) == 1);
+        /* Unblock -> delivered. */
+        check("sigprocmask UNBLOCK", sigprocmask(SIG_UNBLOCK, &block, 0) == 0);
+        for (int i = 0; i < 1000 && g_sigusr1_count == 0; i++) (void)getpid();
+        check("unblocked SIGUSR1 delivered", g_sigusr1_count >= 1);
+
+        /* SIG_IGN: raise should be a no-op. */
+        struct sigaction ign = { SIG_IGN, 0, 0, 0 };
+        sigaction(SIGUSR1, &ign, 0);
+        g_sigusr1_count = 0;
+        raise(SIGUSR1);
+        for (int i = 0; i < 200; i++) (void)getpid();
+        check("SIG_IGN drops SIGUSR1", g_sigusr1_count == 0);
+        /* Restore default. */
+        struct sigaction dfl = { SIG_DFL, 0, 0, 0 };
+        sigaction(SIGUSR1, &dfl, 0);
+
+        /* alarm(1) -> SIGALRM after ~1s.  Install a handler and spin (yielding
+         * via cheap syscalls so the PIT keeps ticking) until it fires. */
+        struct sigaction al = { sigalrm_handler, 0, 0, 0 };
+        sigaction(SIGALRM, &al, 0);
+        g_sigalrm_count = 0;
+        unsigned prev = alarm(1);
+        check("alarm() returns previous (0)", prev == 0);
+        /* PIT is ~100 Hz; spin generously (a few hundred ms of syscalls). */
+        for (long i = 0; i < 50000000L && g_sigalrm_count == 0; i++) {
+            if ((i & 0xFFFF) == 0) (void)getpid();
+        }
+        check("alarm fired SIGALRM", g_sigalrm_count >= 1);
+        alarm(0);   /* cancel any stray alarm */
+
+        /* sigsuspend: block nothing extra, raise SIGUSR1 first so it's pending,
+         * then sigsuspend returns -EINTR after delivering it. */
+        struct sigaction u2 = { sigusr1_handler, 0, 0, 0 };
+        sigaction(SIGUSR1, &u2, 0);
+        sigset_t empty; sigemptyset(&empty);
+        g_sigusr1_count = 0;
+        raise(SIGUSR1);
+        int sr = sigsuspend(&empty);
+        check("sigsuspend returns -1/EINTR", sr == -1 && errno == EINTR);
+        check("sigsuspend delivered pending SIGUSR1", g_sigusr1_count >= 1);
+        sigaction(SIGUSR1, &dfl, 0);
+        sigaction(SIGALRM, &dfl, 0);
     }
 
     /* Usercopy validation: bad user pointers must fail instead of killing the

@@ -72,7 +72,7 @@
 
 /* Forward declarations. */
 struct vnode;
-struct file;
+struct ofd;
 
 /* A directory entry returned by readdir(). */
 struct vfs_dirent {
@@ -142,13 +142,26 @@ struct vnode {
 
 /* An open file handle.  File tables live in tcb_t, so fd numbers are
  * per-process; vfs.c keeps a fallback table for early boot before sched_init. */
-struct file {
+/*
+ * struct ofd — open file description (POSIX.1-2017 XBD §3.258).
+ *
+ * Holds the seek offset, file status flags (O_APPEND/O_NONBLOCK) and access
+ * mode — all of which are SHARED across file descriptors created by dup(),
+ * dup2(), fcntl(F_DUPFD) and fork().  A per-process FD table entry is just a
+ * pointer to one of these; the per-fd FD_CLOEXEC flag lives in tcb_t::cloexec,
+ * never here.
+ *
+ * refcount counts the number of FD-table slots (across all processes) pointing
+ * at this OFD.  It is distinct from the underlying vnode's lifetime: the OFD is
+ * freed when refcount reaches 0, and only then is the vnode/pipe released.
+ */
+struct ofd {
     struct vnode *vn;
-    uint64_t      pos;
-    int           in_use;
-    int           access_mode;  /* O_RDONLY / O_WRONLY / O_RDWR (the O_ACCMODE field) */
-    int           append;       /* 1 if O_APPEND (status flag) */
-    int           nonblock;     /* 1 if O_NONBLOCK (status flag) */
+    uint64_t      pos;          /* seek offset — shared via the OFD */
+    int          access_mode;   /* O_RDONLY / O_WRONLY / O_RDWR (O_ACCMODE field) */
+    int          append;        /* 1 if O_APPEND */
+    int          nonblock;      /* 1 if O_NONBLOCK */
+    int          refcount;      /* # of FD slots referencing this OFD; free at 0 */
 };
 
 /* A mount point. */
@@ -167,7 +180,29 @@ int  vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data);
 int     vfs_open(const char *path, int flags, int mode);
 int64_t vfs_read(int fd, void *buf, uint64_t count);
 int64_t vfs_write(int fd, const void *buf, uint64_t count);
-int64_t vfs_lseek(int fd, int64_t offset, int whence);  /* whence: 0=SET 1=CUR 2=END */
+/* lseek whence values. */
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+int64_t vfs_lseek(int fd, int64_t offset, int whence);  /* whence: SEEK_SET/CUR/END */
+
+/* Positional I/O: read/write at @offset WITHOUT changing the shared OFD pos. */
+int64_t vfs_pread(int fd, void *buf, uint64_t count, int64_t offset);
+int64_t vfs_pwrite(int fd, const void *buf, uint64_t count, int64_t offset);
+
+/* Scatter-gather I/O over a kernel-resident iovec array (already copied in). */
+struct iovec {
+    void  *iov_base;
+    uint64_t iov_len;       /* size_t in userspace */
+};
+int64_t vfs_readv(int fd, const struct iovec *iov, int iovcnt);
+int64_t vfs_writev(int fd, const struct iovec *iov, int iovcnt);
+
+/* OFD-table maintenance used by fork()/exit()/execve() in the process layer. */
+void    vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
+                         const uint8_t *src_cloexec);
+void    vfs_close_ofd(struct ofd *o, struct vnode *unused);
 int     vfs_close(int fd);
 
 /* dup(): allocate a new FD that refers to the same vnode/offset.  Returns

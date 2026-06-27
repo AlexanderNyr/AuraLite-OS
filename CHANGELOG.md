@@ -2,6 +2,113 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [P4 follow-up — SIGCHLD, alarm, pause, sigsuspend, SIGPIPE, EINTR] 2026-06-27
+
+### Added
+- **SIGCHLD on child exit**: `thread_exit_with_code` posts SIGCHLD to a living
+  parent.
+- **`alarm(2)`** (syscall 37): per-process `alarm_deadline` armed in PIT ticks
+  (100 Hz); `signal_tick()` (called from the timer IRQ) posts SIGALRM when a
+  deadline elapses. Returns the previous alarm's remaining seconds.
+- **`pause(2)`** (34): yields until a deliverable signal arrives, returns -EINTR.
+- **`sigsuspend(2)`** (130): atomically installs a temporary mask, waits, and
+  arranges (via `sig_suspend_restore`) that the woken signal's frame records the
+  original mask so sigreturn restores it afterward.
+- **SIGPIPE**: writing to a pipe with no readers posts SIGPIPE to the writer and
+  fails with -EPIPE (was a bare -1).
+- **-EINTR interruption**: the blocking stdin and pipe read/write yield loops now
+  abort with -EINTR (or a partial count) when a deliverable signal is pending,
+  and re-enable interrupts while waiting so signals/alarms can post.
+- libc `alarm`/`pause`/`sigsuspend` wrappers; `test_signals.c` extended with
+  alarm seconds↔ticks math; selftest P4 block extended (alarm→SIGALRM,
+  sigsuspend→EINTR).
+
+### Notes / still deferred
+- Full **SA_RESTART** rewind (-ERESTARTSYS, RIP-=2 + reload orig RAX) and
+  **SA_SIGINFO** remain deferred; AuraLite's blocking calls are yield/poll loops
+  that report -EINTR rather than transparently restarting.
+- **SIGCHLD** is generated but not yet verified by a dedicated fork-based gate
+  (selftest avoids fork due to the SYSCALL-save-area race); covered indirectly.
+- Ctrl+C/Z/\\ → signals still need the P5 TTY + P6 process groups.
+
+## [P4 (core) — signals: delivery, sigaction, kill, masks] 2026-06-27
+
+### Added
+- **Signal subsystem** (`kernel/proc/signal.{h,c}`): 32 POSIX signals, per-process
+  `sig_pending`/`sig_mask`/`sig_actions[]` in `tcb_t`, default-action table.
+- **Delivery at the return-to-user boundary**: a `struct signal_frame` is built
+  on the user stack (red zone respected, 16-aligned so the handler enters with
+  RSP%16==8) and the outgoing register frame is rewritten to enter the handler.
+  Hooked into the IRQ-return and CPU-exception-return paths (which carry a full
+  `struct registers`), and into the **syscall-exit path via a new iretq slow
+  path** (`syscall_sigreturn.asm` + `syscall_check_signals`) so signals raised
+  during a syscall are delivered without the SYSRET non-canonical-RIP hazard.
+- **Exception → signal mapping**: #DE/#MF/#XM→SIGFPE, #UD→SIGILL, #PF/#GP→SIGSEGV,
+  #BP→SIGTRAP, #AC→SIGBUS; a blocked/ignored synchronous fault forces SIG_DFL
+  (terminate) rather than re-faulting forever.
+- **Syscalls**: `sigaction(13)`, `sigprocmask(14)`, `sigreturn(15)`, `kill(62)`,
+  `sigpending(127)`. `sigreturn` validates the user frame, restores GPRs/RIP/RSP,
+  pins CS/SS to the Ring-3 selectors, whitelists RFLAGS (FIX_EFLAGS: forces IF,
+  rejects IOPL/NT), and restores the saved mask atomically.
+- **SIGKILL/SIGSTOP** are uncatchable/unblockable/unignorable, enforced in
+  sigaction, sigprocmask, the delivery mask, and sigreturn.
+- **Per-delivery mask** = old ∪ sa_mask ∪ {signo} (omitting {signo} on
+  SA_NODEFER); SA_RESETHAND one-shot supported.
+- **fork** inherits signal dispositions + mask with an empty pending set;
+  **execve** resets caught handlers to SIG_DFL (ignored stay ignored).
+- libc `signal.h` + wrappers (`signal/sigaction/kill/raise/sigprocmask/`
+  `sigpending` + `sigemptyset/fillset/addset/delset/ismember`); `sigaction`
+  auto-installs the `__sigreturn` trampoline (`libc/crt/sigreturn.asm`).
+- Tests: `tests/unit/test_signals.c` (ABI, frame geometry, mask formula,
+  FIX_EFLAGS — ALL PASS), selftest P4 block, `tests/integration/cases/test_signals.sh`.
+
+### Notes / deferred (P4 follow-up)
+- SA_RESTART/-ERESTARTSYS syscall restart + EINTR conversion, `alarm`/`pause`/
+  `sigsuspend`, SA_SIGINFO siginfo_t population, SIGCHLD-on-child-exit, and
+  Ctrl+C/Ctrl+Z/Ctrl+\ → signals (needs the P5 TTY) are deferred. See TODO.md.
+- Signal refcount/state is single-CPU safe (guarded by IF-disabled boundaries);
+  SMP needs atomics. FP/SSE state is not yet saved in the signal frame.
+
+## [P3 — shared open-file descriptions, lseek, pread/pwrite, readv/writev] 2026-06-27
+
+### Added
+- **`struct ofd`** (open-file description): ref-counted object holding the seek
+  offset, access mode and status flags (O_APPEND/O_NONBLOCK). The per-process
+  FD table changed from `struct file fd_table[64]` (by value) to
+  `struct ofd *fd_table[64]` (pointers to shared OFDs). FD_CLOEXEC stays per-fd
+  in `tcb_t::cloexec`.
+- **Shared-offset semantics**: `dup`/`dup2`/`fcntl(F_DUPFD*)` and `fork()` now
+  share the same OFD (and therefore the seek offset and status flags),
+  incrementing the OFD refcount; `close`/exit decrement and free the OFD at 0.
+  `vfs_fork_inherit()` wires fork sharing. Pipe reader/writer counts now track
+  live OFDs (decremented only on final OFD release), fixing the
+  fork-closes-write-end → premature-EOF class of bug.
+- **`lseek(2)`** (syscall 8): SEEK_SET/CUR/END on the shared OFD offset; ESPIPE
+  for pipes/char devices; EINVAL for bad whence or negative result; seeking
+  past EOF allowed without extending the file.
+- **`pread`/`pwrite`** (17/18): positioned I/O that does NOT change the OFD
+  offset; POSIX-conformant (pwrite ignores O_APPEND, writes at the offset).
+- **`readv`/`writev`** (19/20): scatter-gather I/O advancing the shared offset;
+  iovcnt bounds (1..IOV_MAX=1024) and SSIZE_MAX length-overflow → EINVAL,
+  checked before any transfer; the user iovec array is copied in once (no
+  double-fetch).
+- New libc: `lseek/pread/pwrite/readv/writev` wrappers, `sys/uio.h`
+  (`struct iovec`, IOV_MAX), SEEK_* in `unistd.h`.
+- Tests: `tests/unit/test_lseek.c` (SEEK_*/IOV_MAX/iovec-validation, ALL PASS),
+  selftest P3 block (lseek round-trip, pread/pwrite keep-pos, dup offset
+  sharing, pipe→ESPIPE, readv/writev), and `tests/integration/cases/test_lseek.sh`.
+
+### Changed
+- All FD machinery in `vfs.c` rewritten to the OFD pointer model; `process.c`
+  fork and `thread.c` exit-cleanup updated. No `struct file` references remain.
+
+### Notes / deferred
+- Refcounts are plain ints guarded by the single-threaded VFS; SMP/preemptive FS
+  access will need atomic refcounts + a per-vnode/OFD lock hierarchy (TODO.md).
+- A dedicated fork() FD-sharing integration test is deferred until fork is
+  robust against the per-thread SYSCALL-save-area race; dup() sharing validates
+  the identical OFD mechanism.
+
 ## [P2 — open(2) flags, file modes & fcntl(2)] 2026-06-27
 
 ### Added

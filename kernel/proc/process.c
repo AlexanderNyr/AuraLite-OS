@@ -167,10 +167,17 @@ int64_t do_fork(void) {
     child->fork_user_rflags = user_rflags;
     child->fork_user_rsp    = user_rsp;
     if (parent) {
-        memcpy(child->fd_table, parent->fd_table, sizeof(child->fd_table));
-        memcpy(child->cloexec,  parent->cloexec,  sizeof(child->cloexec));
+        /* Share the parent's open-file descriptions (shared seek offset/flags),
+         * incrementing each OFD refcount; copy the per-fd FD_CLOEXEC flags. */
+        vfs_fork_inherit(child->fd_table, parent->fd_table,
+                         child->cloexec, parent->cloexec);
         child->brk = parent->brk;
         child->mmap_next = parent->mmap_next;
+        /* POSIX fork(): child inherits the signal dispositions and the blocked
+         * mask, but its pending-signal set is empty. */
+        for (int s = 0; s < NSIG; s++) child->sig_actions[s] = parent->sig_actions[s];
+        child->sig_mask = parent->sig_mask;
+        child->sig_pending = 0;
     }
 
     if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
@@ -188,6 +195,20 @@ int64_t do_execve(const char *path) {
 
     /* 0) Close any FD marked FD_CLOEXEC.  Per POSIX, execve drops those. */
     vfs_close_on_exec();
+
+    /* POSIX execve(): caught signals reset to SIG_DFL; signals set to SIG_IGN
+     * stay ignored.  The blocked mask and pending set are preserved. */
+    {
+        tcb_t *cur = sched_current();
+        if (cur) {
+            for (int s = 1; s < NSIG; s++) {
+                if (cur->sig_actions[s].sa_handler != SIG_IGN)
+                    cur->sig_actions[s].sa_handler = SIG_DFL;
+                cur->sig_actions[s].sa_flags = 0;
+                cur->sig_actions[s].sa_mask = 0;
+            }
+        }
+    }
 
     /* 1) Open the file from the VFS and read it into kernel memory. */
     int fd = vfs_open(path, O_RDONLY, 0);

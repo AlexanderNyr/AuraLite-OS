@@ -29,6 +29,7 @@ syscall_kernel_rsp:  dq 0      ; per-thread kernel stack top (published on switc
 section .text
 extern syscall_dispatch
 extern syscall_restore_user_frame
+extern syscall_check_signals
 global syscall_init
 global syscall_entry
 global set_syscall_stack
@@ -128,6 +129,13 @@ syscall_entry:
     push r12
     mov  r12, rax
     call syscall_restore_user_frame
+
+    ; Signal delivery slow path: if a signal is pending, syscall_check_signals
+    ; builds a handler frame and returns to user via IRETQ (never returns here).
+    ; It takes the syscall return value (saved in r12) as its argument.
+    mov  rdi, r12
+    call syscall_check_signals
+
     mov  rax, r12
     pop  r12
 

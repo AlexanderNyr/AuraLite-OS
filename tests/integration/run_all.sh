@@ -46,6 +46,8 @@ ALL_CASES=(
     test_selftest
     test_errno
     test_open_flags
+    test_lseek
+    test_signals
     test_gui_bad_pointers
     test_process_cleanup
     test_fd_isolation
