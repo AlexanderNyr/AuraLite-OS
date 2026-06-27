@@ -18,6 +18,10 @@ trade-offs.
 The original 14-phase roadmap is complete, and the repository now contains
 additional post-phase extensions.
 
+> **Reality check:** AuraLite is still a hobby/educational OS. QEMU is the
+> primary supported target; real-hardware and many non-QEMU virtual-device paths
+> are experimental unless explicitly listed as stable below.
+
 ### Stable / exercised in normal builds
 
 - Limine BIOS/UEFI ISO boot path.
@@ -68,14 +72,26 @@ Debian/Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install clang lld nasm qemu-system-x86 xorriso
+sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake libtool git make gcc
 # Optional but needed for the full integration suite:
-sudo apt install e2fsprogs vncdotool
+sudo apt install e2fsprogs vncdotool python3-pil
 ```
+
+Clone normally, or with submodules if you want to rebuild Limine from source:
+
+```bash
+git clone https://github.com/AlexanderNyr/AuraLite-OS.git
+# Optional source-Limine checkout:
+git submodule update --init --recursive
+```
+
+The default build uses the checked-in `limine-binary.tar.gz` bundle, so a plain
+clone is enough. If that archive is removed, run the submodule command above.
 
 ### Build the bootable ISO
 
 ```bash
+make deps-check
 make iso
 ```
 

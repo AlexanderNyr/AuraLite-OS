@@ -8,10 +8,18 @@ Debian/Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install clang lld nasm qemu-system-x86 xorriso
+sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake libtool git make gcc
 
 # Optional, but needed for the complete integration suite:
-sudo apt install e2fsprogs vncdotool
+sudo apt install e2fsprogs vncdotool python3-pil
+```
+
+A normal clone is enough because `make iso` uses the bundled
+`limine-binary.tar.gz`. If you remove that bundle or want to rebuild Limine from
+source, initialise the submodule first:
+
+```bash
+git submodule update --init --recursive
 ```
 
 Tool purposes:
@@ -23,12 +31,16 @@ Tool purposes:
 | `nasm` | x86_64 assembly files. |
 | `xorriso` | Bootable ISO creation. |
 | `qemu-system-x86_64` | Local booting and integration testing. |
+| `mtools` | Rebuilding Limine's UEFI support from source. |
+| `autoconf`/`automake`/`libtool` | Rebuilding Limine from source. |
+| `git`, `make`, `gcc` | Source checkout and host helper builds. |
 | `e2fsprogs` | Optional: `mkfs.ext2`/`debugfs` for ext2 integration tests. |
 | `vncdotool` + Pillow | Optional: GUI/VNC screenshot assertions. |
 
 ## Build ISO
 
 ```bash
+make deps-check
 make iso
 ```
 
@@ -332,12 +344,29 @@ sudo apt install nasm
 sudo apt install xorriso
 ```
 
-### `limine/limine: Permission denied`
+### `mformat: command not found` or `mcopy: command not found`
 
-Make the vendored Limine tool executable:
+Install mtools. This is needed only when rebuilding Limine from source:
 
 ```bash
-chmod +x limine/limine
+sudo apt install mtools
+```
+
+### Limine submodule is missing
+
+The default build uses `limine-binary.tar.gz`. If you remove that bundle or force
+submodule Limine builds, initialise the submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
+### `autoreconf`, `aclocal`, or `libtool` missing while building Limine
+
+Install the Limine source-build dependencies:
+
+```bash
+sudo apt install autoconf automake libtool
 ```
 
 ### `mkfs.ext2` or `debugfs` missing during integration tests

@@ -8,14 +8,29 @@ TARGET      := $(ARCH)-elf
 CC          := clang
 LD          := ld.lld
 AS          := nasm
+HOST_CC     := cc
 
 BUILD_DIR   := build
 LIMINE_DIR  := limine
 LIMINE_SRC  := third_party/limine
+# Prefer the checked-in Limine binary bundle.  This keeps a normal clone buildable
+# even when the Git submodule was not initialised and avoids rebuilding the whole
+# Limine tree in CI.  If the bundle is removed, Make falls back to the submodule.
+LIMINE_ARCHIVE := limine-binary.tar.gz
+ifneq ($(wildcard $(LIMINE_ARCHIVE)),)
+LIMINE_BIN  := $(BUILD_DIR)/limine-binary
+LIMINE_MODE := bundled
+else
 LIMINE_BIN  := $(LIMINE_SRC)/bin
+LIMINE_MODE := submodule
+endif
 LIMINE_DEPS := $(LIMINE_BIN)/limine $(LIMINE_BIN)/limine-bios.sys \
                $(LIMINE_BIN)/limine-uefi-cd.bin $(LIMINE_BIN)/limine-bios-cd.bin \
                $(LIMINE_BIN)/BOOTX64.EFI
+REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar xorriso
+ifeq ($(LIMINE_MODE),submodule)
+REQUIRED_TOOLS += git autoreconf mformat mcopy
+endif
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
 
@@ -46,10 +61,24 @@ KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 
-.PHONY: all kernel iso usb vbox vmware vm-configs run run-usb-msc clean \
-        test-unit test-integration test-integration-fast test limine-build
+.PHONY: all kernel user iso usb vbox vmware vm-configs run run-usb-msc clean \
+        deps-check test-unit test-integration test-integration-fast test limine-build
 
 all: iso
+
+# Fail early with actionable messages instead of a later "command not found".
+deps-check:
+	@missing=0; \
+	for tool in $(REQUIRED_TOOLS); do \
+		if ! command -v $$tool >/dev/null 2>&1; then \
+			echo "[deps] missing required tool: $$tool"; \
+			missing=1; \
+		fi; \
+	done; \
+	if [ $$missing -ne 0 ]; then \
+		echo "[deps] Debian/Ubuntu: sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake libtool git make gcc"; \
+		exit 127; \
+	fi
 
 kernel: $(KERNEL_ELF)
 
@@ -251,16 +280,34 @@ $(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
 
 USB_IMAGE   := $(BUILD_DIR)/usb.img
 
-$(LIMINE_BIN)/limine:
-	@( cd $(LIMINE_SRC) && ([ -f configure ] || ./bootstrap) && \
-	   ./configure --enable-all && make -j$$(nproc) )
+ifeq ($(LIMINE_MODE),bundled)
+$(LIMINE_BIN)/limine: $(LIMINE_ARCHIVE)
+	@echo "[limine] using bundled Limine binary package ($<)"
+	@rm -rf $(LIMINE_BIN)
+	@mkdir -p $(BUILD_DIR)
+	@tar -xzf $< -C $(BUILD_DIR)
+	@$(MAKE) -C $(LIMINE_BIN) limine
 
 $(filter-out $(LIMINE_BIN)/limine,$(LIMINE_DEPS)): $(LIMINE_BIN)/limine
 	@:
+else
+$(LIMINE_BIN)/limine:
+	@if [ ! -d "$(LIMINE_SRC)/.git" ]; then \
+		echo "[limine] missing submodule $(LIMINE_SRC)"; \
+		echo "[limine] run: git submodule update --init --recursive"; \
+		exit 1; \
+	fi
+	@( cd $(LIMINE_SRC) && ([ -f configure ] || ./bootstrap) && \
+	   ./configure --enable-all && make -j$$(nproc) )
+
+
+$(filter-out $(LIMINE_BIN)/limine,$(LIMINE_DEPS)): $(LIMINE_BIN)/limine
+	@:
+endif
 
 limine-build: $(LIMINE_DEPS)
 
-iso: kernel $(BUILD_DIR)/initrd.tar limine-build
+iso: deps-check kernel $(BUILD_DIR)/initrd.tar limine-build
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)
 	@mkdir -p release
 	@cp $(ISO_IMAGE) release/auralite.iso
@@ -334,7 +381,6 @@ debug: iso
 	@bash tools/debug_qemu.sh $(ISO_IMAGE)
 
 # ---- Host-side unit tests (built with the host compiler, no freestanding) ----
-HOST_CC      := cc
 UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
