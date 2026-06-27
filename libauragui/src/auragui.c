@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "string.h"
 #include "stdio.h"
 #include "stdlib.h"
@@ -158,7 +159,7 @@ void ag_view_init(ag_view_t *v, int wid, ag_widget_t *buf, int cap, uint32_t bg)
     v->bg = bg ? bg : AG_PANEL;
 
     /* Try to load a custom theme background color. */
-    int fd = open("/disk/theme.txt");
+    int fd = open("/disk/theme.txt", O_RDONLY);
     if (fd >= 0) {
         char thm[16];
         int n = read(fd, thm, sizeof(thm)-1);

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "kernel/fs/procfs.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/pmm.h"
@@ -179,7 +180,7 @@ static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
         }
         return n;
     }
-    return -1;
+    return -ENOTDIR;   /* readdir on a non-directory procfs node */
 }
 
 static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {

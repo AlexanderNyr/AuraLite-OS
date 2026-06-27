@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
@@ -160,7 +161,7 @@ static int64_t initrd_read(struct vnode *vn, uint64_t pos,
 static int64_t initrd_write(struct vnode *vn, uint64_t pos,
                             const void *buf, uint64_t count) {
     (void)vn; (void)pos; (void)buf; (void)count;
-    return -1;   /* initrd is read-only */
+    return -EROFS;   /* initrd is read-only */
 }
 
 const struct vfs_ops initrd_ops = {

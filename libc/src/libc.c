@@ -11,6 +11,39 @@
 #include "string.h"
 #include "stdio.h"
 #include "stdlib.h"
+#include "errno.h"
+#include "ctype.h"
+#include "math.h"
+#include "fcntl.h"
+
+/* ---- errno storage ----
+ *
+ * Single global for now (the system is effectively single-threaded at the
+ * libc level).  Phase P9 replaces __errno_location() with a TLS-backed cell;
+ * no caller changes because errno is a macro over this accessor. */
+static int __errno_storage = 0;
+
+int *__errno_location(void) {
+    return &__errno_storage;
+}
+
+/* ---- in-band syscall return decoding ----
+ *
+ * The kernel returns results in RAX using the Linux negative-errno convention:
+ * the unsigned range [(unsigned long)-MAX_ERRNO, (unsigned long)-1] is reserved
+ * for errors.  Decode that band into errno + a -1 return; everything else is a
+ * successful value (including legitimately huge values such as large file
+ * offsets or mmap addresses).  Comparing as unsigned avoids the classic
+ * `ret < 0` bug. */
+#define SYSCALL_MAX_ERRNO 4095UL
+
+static long syscall_ret(int64_t raw) {
+    if ((unsigned long)raw >= (unsigned long)-SYSCALL_MAX_ERRNO) {
+        errno = (int)(-raw);
+        return -1;
+    }
+    return (long)raw;
+}
 
 /* ---- Stack protector runtime ---- */
 
@@ -26,21 +59,34 @@ __attribute__((noreturn)) void __stack_chk_fail(void) {
 /* ---- Syscall wrappers ---- */
 
 ssize_t write(int fd, const void *buf, size_t count) {
-    return syscall(SYS_WRITE, (uint64_t)fd, (uint64_t)buf, (uint64_t)count,
-                   0, 0, 0);
+    return (ssize_t)syscall_ret(syscall(SYS_WRITE, (uint64_t)fd, (uint64_t)buf,
+                                        (uint64_t)count, 0, 0, 0));
 }
 
 ssize_t read(int fd, void *buf, size_t count) {
-    return syscall(SYS_READ, (uint64_t)fd, (uint64_t)buf, (uint64_t)count,
-                   0, 0, 0);
+    return (ssize_t)syscall_ret(syscall(SYS_READ, (uint64_t)fd, (uint64_t)buf,
+                                        (uint64_t)count, 0, 0, 0));
 }
 
-int open(const char *path) {
-    return (int)syscall(SYS_OPEN, (uint64_t)path, 0, 0, 0, 0, 0);
+int open(const char *path, int flags, ...) {
+    /* mode is only consulted when O_CREAT is set (POSIX). */
+    int mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = va_arg(ap, int);
+        va_end(ap);
+    }
+    return (int)syscall_ret(syscall(SYS_OPEN, (uint64_t)path, (uint64_t)flags,
+                                    (uint64_t)mode, 0, 0, 0));
+}
+
+int creat(const char *path, int mode) {
+    return open(path, O_CREAT | O_WRONLY | O_TRUNC, mode);
 }
 
 int close(int fd) {
-    return (int)syscall(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_CLOSE, (uint64_t)fd, 0, 0, 0, 0, 0));
 }
 
 void _exit(int code) {
@@ -56,134 +102,453 @@ void listdir(const char *path) {
 }
 
 int readdir(const char *path, void *out, int max) {
-    return (int)syscall(80, (uint64_t)path, (uint64_t)out, max, 0, 0, 0);
+    return (int)syscall_ret(syscall(80, (uint64_t)path, (uint64_t)out, max,
+                                    0, 0, 0));
 }
 
 uint32_t dns_resolve(const char *hostname) {
+    /* Returns a raw IPv4 address (0 on failure); not an in-band errno. */
     return (uint32_t)syscall(SYS_DNS, (uint64_t)hostname, 0, 0, 0, 0, 0);
 }
 
 int net_connect(uint32_t ip, uint16_t port) {
-    return (int)syscall(SYS_NET_CONNECT, ip, port, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_NET_CONNECT, ip, port, 0, 0, 0, 0));
 }
 
 int net_send(const void *data, uint32_t len) {
-    return (int)syscall(SYS_NET_SEND, (uint64_t)data, len, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_NET_SEND, (uint64_t)data, len,
+                                    0, 0, 0, 0));
 }
 
 int net_recv(void *buf, uint32_t bufsize) {
-    return (int)syscall(SYS_NET_RECV, (uint64_t)buf, bufsize, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_NET_RECV, (uint64_t)buf, bufsize,
+                                    0, 0, 0, 0));
 }
 
 int net_close(void) {
-    return (int)syscall(SYS_NET_CLOSE, 0, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_NET_CLOSE, 0, 0, 0, 0, 0, 0));
 }
 
 int net_ping(uint32_t ip) {
-    return (int)syscall(SYS_NET_PING, ip, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_NET_PING, ip, 0, 0, 0, 0, 0));
 }
 
 int socket(int domain, int type, int protocol) {
-    return (int)syscall(SYS_SOCKET, (uint64_t)domain, (uint64_t)type,
-                        (uint64_t)protocol, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_SOCKET, (uint64_t)domain, (uint64_t)type,
+                                    (uint64_t)protocol, 0, 0, 0));
 }
 
 int connect(int sock, uint32_t ip, uint16_t port) {
-    return (int)syscall(SYS_SOCKET_CONNECT, (uint64_t)sock, ip, port, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_SOCKET_CONNECT, (uint64_t)sock, ip,
+                                    port, 0, 0, 0));
 }
 
 int send(int sock, const void *data, uint32_t len) {
-    return (int)syscall(SYS_SOCKET_SEND, (uint64_t)sock, (uint64_t)data,
-                        len, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_SOCKET_SEND, (uint64_t)sock,
+                                    (uint64_t)data, len, 0, 0, 0));
 }
 
 int recv(int sock, void *buf, uint32_t bufsize) {
-    return (int)syscall(SYS_SOCKET_RECV, (uint64_t)sock, (uint64_t)buf,
-                        bufsize, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_SOCKET_RECV, (uint64_t)sock,
+                                    (uint64_t)buf, bufsize, 0, 0, 0));
 }
 
 int closesocket(int sock) {
-    return (int)syscall(SYS_SOCKET_CLOSE, (uint64_t)sock, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_SOCKET_CLOSE, (uint64_t)sock,
+                                    0, 0, 0, 0, 0));
 }
 
 int mkdir(const char *path) {
-    return (int)syscall(SYS_MKDIR, (uint64_t)path, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_MKDIR, (uint64_t)path, 0, 0, 0, 0, 0));
 }
 int rmdir(const char *path) {
-    return (int)syscall(SYS_RMDIR, (uint64_t)path, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_RMDIR, (uint64_t)path, 0, 0, 0, 0, 0));
 }
 int unlink(const char *path) {
-    return (int)syscall(SYS_UNLINK, (uint64_t)path, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_UNLINK, (uint64_t)path, 0, 0, 0, 0, 0));
 }
 int rename(const char *from, const char *to) {
-    return (int)syscall(SYS_RENAME, (uint64_t)from, (uint64_t)to, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_RENAME, (uint64_t)from, (uint64_t)to,
+                                    0, 0, 0, 0));
 }
 int truncate(const char *path, uint64_t new_size) {
-    return (int)syscall(SYS_TRUNCATE, (uint64_t)path, new_size, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_TRUNCATE, (uint64_t)path, new_size,
+                                    0, 0, 0, 0));
 }
 int stat(const char *path, struct stat *out) {
-    return (int)syscall(SYS_STAT, (uint64_t)path, (uint64_t)out, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_STAT, (uint64_t)path, (uint64_t)out,
+                                    0, 0, 0, 0));
 }
 
 pid_t fork(void) {
-    return (pid_t)syscall(SYS_FORK, 0, 0, 0, 0, 0, 0);
+    return (pid_t)syscall_ret(syscall(SYS_FORK, 0, 0, 0, 0, 0, 0));
 }
 
 int execve(const char *path) {
-    return (int)syscall(SYS_EXECVE, (uint64_t)path, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_EXECVE, (uint64_t)path, 0, 0, 0, 0, 0));
 }
 
 pid_t wait(int *status) {
-    return (pid_t)syscall(SYS_WAIT4, (uint64_t)status, 0, 0, 0, 0, 0);
+    return (pid_t)syscall_ret(syscall(SYS_WAIT4, (uint64_t)status,
+                                      0, 0, 0, 0, 0));
 }
 
 pid_t spawn(const char *path) {
-    return (pid_t)syscall(SYS_SPAWN, (uint64_t)path, 0, 0, 0, 0, 0);
+    return (pid_t)syscall_ret(syscall(SYS_SPAWN, (uint64_t)path, 0, 0, 0, 0, 0));
 }
 
 pid_t waitpid(pid_t pid, int *status) {
     int64_t s = 0;
-    int64_t r = syscall(SYS_WAIT4, (uint64_t)pid, (uint64_t)&s, 0, 0, 0, 0);
+    long r = syscall_ret(syscall(SYS_WAIT4, (uint64_t)pid, (uint64_t)&s,
+                                 0, 0, 0, 0));
     if (status) *status = (int)s;
     return (pid_t)r;
 }
 
 int dup(int oldfd) {
-    return (int)syscall(SYS_DUP, (uint64_t)oldfd, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_DUP, (uint64_t)oldfd, 0, 0, 0, 0, 0));
 }
 int dup2(int oldfd, int newfd) {
-    return (int)syscall(SYS_DUP2, (uint64_t)oldfd, (uint64_t)newfd, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_DUP2, (uint64_t)oldfd, (uint64_t)newfd,
+                                    0, 0, 0, 0));
 }
 int pipe(int fds[2]) {
-    return (int)syscall(SYS_PIPE, (uint64_t)fds, 0, 0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_PIPE, (uint64_t)fds, 0, 0, 0, 0, 0));
 }
-int fcntl(int fd, int cmd, int arg) {
-    return (int)syscall(SYS_FCNTL, (uint64_t)fd, (uint64_t)cmd, (uint64_t)arg, 0, 0, 0);
+int pipe2(int fds[2], int flags) {
+    return (int)syscall_ret(syscall(SYS_PIPE2, (uint64_t)fds, (uint64_t)flags,
+                                    0, 0, 0, 0));
+}
+int fcntl(int fd, int cmd, ...) {
+    /* The third argument is an int for every command we implement (F_SETFD,
+     * F_SETFL, F_DUPFD*); F_GETFD/F_GETFL ignore it.  Always fetch it: passing
+     * an unused variadic int is harmless. */
+    va_list ap;
+    va_start(ap, cmd);
+    int arg = va_arg(ap, int);
+    va_end(ap);
+    return (int)syscall_ret(syscall(SYS_FCNTL, (uint64_t)fd, (uint64_t)cmd,
+                                    (uint64_t)arg, 0, 0, 0));
 }
 
 void* mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset) {
-    return (void *)syscall(SYS_MMAP, (uint64_t)addr, (uint64_t)length,
-                           (uint64_t)prot, (uint64_t)flags,
-                           (uint64_t)fd, offset);
+    /* mmap reports failure via MAP_FAILED (not -1) and sets errno from the
+     * in-band error band; a successful mapping address is never in that band. */
+    int64_t raw = syscall(SYS_MMAP, (uint64_t)addr, (uint64_t)length,
+                          (uint64_t)prot, (uint64_t)flags,
+                          (uint64_t)fd, offset);
+    if ((unsigned long)raw >= (unsigned long)-SYSCALL_MAX_ERRNO) {
+        errno = (int)(-raw);
+        return MAP_FAILED;
+    }
+    return (void *)raw;
 }
 
 int munmap(void *addr, size_t length) {
-    return (int)syscall(SYS_MUNMAP, (uint64_t)addr, (uint64_t)length,
-                        0, 0, 0, 0);
+    return (int)syscall_ret(syscall(SYS_MUNMAP, (uint64_t)addr, (uint64_t)length,
+                                    0, 0, 0, 0));
 }
 
 void* sbrk(intptr_t increment) {
-    uint64_t cur_brk = syscall(12, 0, 0, 0, 0, 0, 0); // 12 = SYS_BRK
-    if (cur_brk == (uint64_t)-1) return (void*)-1;
+    /* SYS_BRK returns the (new) break, or the unchanged break on failure; it
+     * does not use the in-band errno band, so decode it by hand. */
+    int64_t cur_raw = syscall(12, 0, 0, 0, 0, 0, 0); // 12 = SYS_BRK
+    if ((unsigned long)cur_raw >= (unsigned long)-SYSCALL_MAX_ERRNO) {
+        errno = ENOMEM;
+        return (void*)-1;
+    }
+    uint64_t cur_brk = (uint64_t)cur_raw;
     if (increment == 0) return (void*)cur_brk;
-    
-    uint64_t new_brk = syscall(12, cur_brk + increment, 0, 0, 0, 0, 0);
-    if (new_brk == cur_brk) return (void*)-1; /* failed to increase */
-    
+
+    uint64_t new_brk = (uint64_t)syscall(12, cur_brk + increment, 0, 0, 0, 0, 0);
+    if (new_brk == cur_brk) { errno = ENOMEM; return (void*)-1; }
+
     return (void*)cur_brk;
 }
 
+/* ---- strerror / perror ----
+ *
+ * POSIX.1-2017 strerror(): maps an errno value to a message string.  Need not
+ * be thread-safe; for an unknown code it formats into a static buffer that a
+ * subsequent strerror() call may overwrite, and sets errno to EINVAL (a
+ * permitted "may fail" behaviour). */
+
+/* Indexed by errno value.  Aliases (EWOULDBLOCK, EDEADLOCK, ENOTSUP) are NOT
+ * listed separately: they would be duplicate designated initializers for an
+ * index already covered by their canonical name. */
+static const char *const errmsgs[] = {
+    [0]               = "Success",
+    [EPERM]           = "Operation not permitted",
+    [ENOENT]          = "No such file or directory",
+    [ESRCH]           = "No such process",
+    [EINTR]           = "Interrupted system call",
+    [EIO]             = "Input/output error",
+    [ENXIO]           = "No such device or address",
+    [E2BIG]           = "Argument list too long",
+    [ENOEXEC]         = "Exec format error",
+    [EBADF]           = "Bad file descriptor",
+    [ECHILD]          = "No child processes",
+    [EAGAIN]          = "Resource temporarily unavailable",
+    [ENOMEM]          = "Cannot allocate memory",
+    [EACCES]          = "Permission denied",
+    [EFAULT]          = "Bad address",
+    [ENOTBLK]         = "Block device required",
+    [EBUSY]           = "Device or resource busy",
+    [EEXIST]          = "File exists",
+    [EXDEV]           = "Invalid cross-device link",
+    [ENODEV]          = "No such device",
+    [ENOTDIR]         = "Not a directory",
+    [EISDIR]          = "Is a directory",
+    [EINVAL]          = "Invalid argument",
+    [ENFILE]          = "Too many open files in system",
+    [EMFILE]          = "Too many open files",
+    [ENOTTY]          = "Inappropriate ioctl for device",
+    [ETXTBSY]         = "Text file busy",
+    [EFBIG]           = "File too large",
+    [ENOSPC]          = "No space left on device",
+    [ESPIPE]          = "Illegal seek",
+    [EROFS]           = "Read-only file system",
+    [EMLINK]          = "Too many links",
+    [EPIPE]           = "Broken pipe",
+    [EDOM]            = "Numerical argument out of domain",
+    [ERANGE]          = "Numerical result out of range",
+    [EDEADLK]         = "Resource deadlock avoided",
+    [ENAMETOOLONG]    = "File name too long",
+    [ENOLCK]          = "No locks available",
+    [ENOSYS]          = "Function not implemented",
+    [ENOTEMPTY]       = "Directory not empty",
+    [ELOOP]           = "Too many levels of symbolic links",
+    [ENOMSG]          = "No message of desired type",
+    [EIDRM]           = "Identifier removed",
+    [EOVERFLOW]       = "Value too large for defined data type",
+    [EILSEQ]          = "Invalid or incomplete multibyte or wide character",
+    [EOPNOTSUPP]      = "Operation not supported",
+    [EADDRINUSE]      = "Address already in use",
+    [EADDRNOTAVAIL]   = "Cannot assign requested address",
+    [ENETDOWN]        = "Network is down",
+    [ENETUNREACH]     = "Network is unreachable",
+    [ECONNRESET]      = "Connection reset by peer",
+    [ENOTCONN]        = "Transport endpoint is not connected",
+    [ETIMEDOUT]       = "Connection timed out",
+    [ECONNREFUSED]    = "Connection refused",
+    [EHOSTUNREACH]    = "No route to host",
+    [EALREADY]        = "Operation already in progress",
+    [EINPROGRESS]     = "Operation now in progress",
+    [ECANCELED]       = "Operation canceled",
+};
+
+#define ERRMSGS_COUNT ((int)(sizeof(errmsgs) / sizeof(errmsgs[0])))
+
+/* Format a base-10 int into dst (caller guarantees room: <= 12 chars). */
+static char *fmt_int(char *dst, int value) {
+    char tmp[12];
+    int n = 0;
+    unsigned int u;
+
+    if (value < 0) {
+        *dst++ = '-';
+        u = (unsigned int)(-(value + 1)) + 1U;   /* avoid INT_MIN overflow */
+    } else {
+        u = (unsigned int)value;
+    }
+    do {
+        tmp[n++] = (char)('0' + (u % 10U));
+        u /= 10U;
+    } while (u != 0U);
+    while (n > 0) *dst++ = tmp[--n];
+    *dst = '\0';
+    return dst;
+}
+
+char *strerror(int errnum) {
+    static char unknown[32];
+    char *p;
+
+    if (errnum >= 0 && errnum < ERRMSGS_COUNT && errmsgs[errnum]) {
+        return (char *)errmsgs[errnum];
+    }
+
+    errno = EINVAL;   /* permitted by POSIX for an unknown error number */
+    p = unknown;
+    /* "Unknown error " + signed int */
+    const char *prefix = "Unknown error ";
+    while (*prefix) *p++ = *prefix++;
+    fmt_int(p, errnum);
+    return unknown;
+}
+
+void perror(const char *s) {
+    /* Capture errno before any call (strerror may itself set it). */
+    int save = errno;
+    const char *msg = strerror(save);
+    if (s && *s) {
+        write(2, s, strlen(s));
+        write(2, ": ", 2);
+    }
+    write(2, msg, strlen(msg));
+    write(2, "\n", 1);
+    errno = save;     /* do not perturb errno across a successful perror() */
+}
+
+/* ---- math (double precision) ---- */
+
+double fabs(double x) { return __builtin_fabs(x); }
+
+double sqrt(double x) {
+    /* x86_64 has SSE2 in the baseline ABI; the builtin lowers to sqrtsd. */
+    if (x < 0.0) return NAN;
+    return __builtin_sqrt(x);
+}
+
+double floor(double x) {
+    double t = (double)(long long)x;          /* truncate toward zero */
+    return (t > x) ? t - 1.0 : t;
+}
+
+double ceil(double x) {
+    double t = (double)(long long)x;
+    return (t < x) ? t + 1.0 : t;
+}
+
+double exp(double x) {
+    /* Range-reduce x = k*ln2 + r, then Taylor-series e^r for |r| <= ln2/2. */
+    const double LN2 = 0.69314718055994530942;
+    if (x != x) return x;                      /* NaN */
+    if (x >  709.0) return HUGE_VAL;
+    if (x < -745.0) return 0.0;
+    long long k = (long long)(x / LN2 + (x >= 0 ? 0.5 : -0.5));
+    double r = x - (double)k * LN2;
+    double term = 1.0, sum = 1.0;
+    for (int n = 1; n < 18; n++) {
+        term *= r / (double)n;
+        sum  += term;
+    }
+    /* Scale by 2^k via repeated multiply (k is small after reduction). */
+    double scale = 1.0;
+    double base  = (k >= 0) ? 2.0 : 0.5;
+    long long kk = (k >= 0) ? k : -k;
+    while (kk--) scale *= base;
+    return sum * scale;
+}
+
+double log(double x) {
+    /* log(x): reduce x = m * 2^e with m in [1,2), use atanh series on
+     * s = (m-1)/(m+1):  log(m) = 2*(s + s^3/3 + s^5/5 + ...). */
+    if (x != x || x < 0.0) return NAN;
+    if (x == 0.0) return -HUGE_VAL;
+    const double LN2 = 0.69314718055994530942;
+    int e = 0;
+    while (x >= 2.0) { x *= 0.5; e++; }
+    while (x <  1.0) { x *= 2.0; e--; }
+    double s = (x - 1.0) / (x + 1.0);
+    double s2 = s * s;
+    double term = s, sum = 0.0;
+    for (int n = 1; n < 40; n += 2) {
+        sum  += term / (double)n;
+        term *= s2;
+    }
+    return 2.0 * sum + (double)e * LN2;
+}
+
+double log2(double x) {
+    const double LN2 = 0.69314718055994530942;
+    return log(x) / LN2;
+}
+
+double pow(double base, double e) {
+    if (e == 0.0) return 1.0;
+    if (base == 0.0) return (e > 0.0) ? 0.0 : HUGE_VAL;
+    /* Integer exponent: exact repeated multiply. */
+    double ip = (double)(long long)e;
+    if (ip == e) {
+        long long n = (long long)e;
+        int neg = n < 0;
+        if (neg) n = -n;
+        double r = 1.0;
+        while (n--) r *= base;
+        return neg ? 1.0 / r : r;
+    }
+    /* General case: base^e = exp(e * log(base)); negative base undefined. */
+    if (base < 0.0) return NAN;
+    return exp(e * log(base));
+}
+
+double sin(double x) {
+    /* Reduce to [-pi, pi] then 9-term Taylor series. */
+    const double TWO_PI = 6.28318530717958647692;
+    const double PI = M_PI;
+    while (x >  PI) x -= TWO_PI;
+    while (x < -PI) x += TWO_PI;
+    double x2 = x * x, term = x, sum = x;
+    for (int n = 1; n < 13; n++) {
+        term *= -x2 / (double)((2 * n) * (2 * n + 1));
+        sum  += term;
+    }
+    return sum;
+}
+
+double cos(double x) {
+    const double TWO_PI = 6.28318530717958647692;
+    const double PI = M_PI;
+    while (x >  PI) x -= TWO_PI;
+    while (x < -PI) x += TWO_PI;
+    double x2 = x * x, term = 1.0, sum = 1.0;
+    for (int n = 1; n < 13; n++) {
+        term *= -x2 / (double)((2 * n - 1) * (2 * n));
+        sum  += term;
+    }
+    return sum;
+}
+
+/* ---- ctype (C locale, ASCII) ----
+ *
+ * Each predicate returns non-zero (true) or 0 (false).  Arguments outside the
+ * unsigned char / EOF range are treated as "not a member of any class". */
+
+int isdigit(int c)  { return c >= '0' && c <= '9'; }
+int isupper(int c)  { return c >= 'A' && c <= 'Z'; }
+int islower(int c)  { return c >= 'a' && c <= 'z'; }
+int isalpha(int c)  { return isupper(c) || islower(c); }
+int isalnum(int c)  { return isalpha(c) || isdigit(c); }
+int isspace(int c)  {
+    return c == ' '  || c == '\t' || c == '\n' ||
+           c == '\v' || c == '\f' || c == '\r';
+}
+int isblank(int c)  { return c == ' ' || c == '\t'; }
+int iscntrl(int c)  { return (c >= 0 && c <= 0x1F) || c == 0x7F; }
+int isprint(int c)  { return c >= 0x20 && c <= 0x7E; }
+int isgraph(int c)  { return c > 0x20 && c <= 0x7E; }
+int ispunct(int c)  { return isgraph(c) && !isalnum(c); }
+int isxdigit(int c) {
+    return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+int tolower(int c)  { return isupper(c) ? c + ('a' - 'A') : c; }
+int toupper(int c)  { return islower(c) ? c - ('a' - 'A') : c; }
+
 /* ---- stdlib ---- */
+
+void exit(int status) {
+    _exit(status);
+    for (;;) { }   /* _exit does not return; keep the compiler happy */
+}
+
+void abort(void) {
+    static const char msg[] = "abort\n";
+    write(2, msg, sizeof(msg) - 1);
+    /* POSIX abort() would raise SIGABRT; until P4 we exit with 128 + SIGABRT
+     * (SIGABRT == 6), matching the shell's convention for signal deaths. */
+    _exit(134);
+    for (;;) { }
+}
+
+/* Backing routine for the assert() macro (libc/include/assert.h). */
+void __assert_fail(const char *expr, const char *file, int line,
+                   const char *func) {
+    printf("%s:%d: %s: Assertion `%s' failed.\n",
+           file ? file : "?", line, func ? func : "?", expr ? expr : "?");
+    abort();
+}
 
 int atoi(const char *s) {
     int sign = 1, result = 0;

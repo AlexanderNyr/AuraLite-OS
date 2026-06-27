@@ -4,6 +4,7 @@
  */
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "stdio.h"
 #include "string.h"
 
@@ -14,7 +15,7 @@ static ag_widget_t *path_box, *content_box, *status;
 
 static void on_save(ag_widget_t *w, void *u) {
     (void)w; (void)u;
-    int fd = open(path_box->text);
+    int fd = open(path_box->text, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) { ag_textbox_set(status, "save: open failed"); return; }
     int len = (int)strlen(content_box->text);
     if (write(fd, content_box->text, (size_t)len) != len) {
@@ -27,7 +28,7 @@ static void on_save(ag_widget_t *w, void *u) {
 
 static void on_load(ag_widget_t *w, void *u) {
     (void)w; (void)u;
-    int fd = open(path_box->text);
+    int fd = open(path_box->text, O_RDONLY);
     if (fd < 0) { ag_textbox_set(status, "load: open failed"); return; }
     char buf[AG_MAX_WIDGET_TEXT];
     int64_t n = read(fd, buf, sizeof(buf) - 1);

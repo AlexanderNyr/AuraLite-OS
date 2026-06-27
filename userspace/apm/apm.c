@@ -1,5 +1,6 @@
 /* apm — AuraLite Package Manager. */
 #include "unistd.h"
+#include "fcntl.h"
 #include "string.h"
 #include "stdio.h"
 
@@ -65,12 +66,12 @@ static void apm_install(const char *name) {
                 return;
             }
             printf("[apm] Installing %s (%s)...\n", repo[i].name, repo[i].version);
-            int fd_src = open(repo[i].pkg_path);
+            int fd_src = open(repo[i].pkg_path, O_RDONLY);
             if (fd_src < 0) {
                 printf("[apm] Error: source archive '%s' not found.\n", repo[i].pkg_path);
                 return;
             }
-            int fd_dst = open(repo[i].install_path);
+            int fd_dst = open(repo[i].install_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
             if (fd_dst < 0) {
                 printf("[apm] Error: cannot create target '%s'.\n", repo[i].install_path);
                 close(fd_src);
@@ -143,7 +144,7 @@ static void process_cmd(char *line) {
 
 int main(void) {
     /* Check if we were passed arguments via /tmp/apm.args */
-    int fd_args = open("/tmp/apm.args");
+    int fd_args = open("/tmp/apm.args", O_RDONLY);
     if (fd_args >= 0) {
         char argbuf[256];
         int64_t n = read(fd_args, argbuf, sizeof(argbuf) - 1);

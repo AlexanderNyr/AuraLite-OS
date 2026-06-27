@@ -28,7 +28,40 @@ for the feature matrix.
   `validate_user_range`, `copy_from_user` and `copy_to_user`, but AuraLite still
   lacks a fault-recovering uaccess mechanism and a full audit of every future
   user-pointer path.
-- **No `errno` or structured negative error codes.** Most failures return `-1`.
+- ~~**No `errno` or structured negative error codes.** Most failures return
+  `-1`.~~ **Done (P1):** in-band negative-errno ABI; kernel returns `-EXXX`,
+  libc decodes to `errno`/`-1`. See `docs/syscall_abi.md`.
+
+#### errno follow-ups (discovered during P1)
+- ~~**errno granularity is dispatch-layer, not native.**~~ **Done for `vfs.c`
+  + tmpfs/initrd/procfs:** they return specific `-Exxx` (EBADF/ENOENT/EMFILE/
+  ENOTDIR/EXDEV/ENOSYS/EROFS/ENOSPC/…); a `vfs_wrap_err()` helper maps any
+  remaining generic `-1`. Still outstanding: push native errno into the **disk
+  FS drivers** (fat32/ext2/diskfs — hundreds of internal block-I/O `-1`s,
+  mostly EIO) and into `process.c`.
+
+#### P2 / open-flags follow-ups
+- **Per-FD status flags, not shared OFDs.** `access_mode`/`append`/`nonblock`
+  live in `struct file`, so `dup()`/`F_DUPFD` copy them instead of sharing.
+  POSIX requires status flags + offset to belong to the open file description;
+  fixing this (ref-counted `struct ofd`) is the P3 deliverable.
+- **O_APPEND atomicity** currently relies on the single-threaded VFS; needs a
+  per-vnode write lock once FS access becomes preemptible/SMP.
+- **mkdir() still takes only a path** (no `mode_t`); POSIX `mkdir(path, mode)`
+  and `umask` arrive in P7. `sys/stat.h` deliberately omits the mkdir prototype.
+- **O_NONBLOCK** is honored for pipes (EAGAIN); devices/sockets that can block
+  are not yet wired to it.
+- **Socket/net syscalls return bare `-1`.** `SYS_SOCKET*` / `SYS_NET_*` failure
+  paths propagate the layer's `-1`, which libc currently decodes as `EPERM`.
+  Give them real errno values (`EBADF`, `ENOTCONN`, `ECONNREFUSED`, …).
+- ~~**P1 libc headers still missing.**~~ **Done:** `limits.h`, `stdbool.h`,
+  `assert.h`, `ctype.h` (+impl), `math.h` (+impl). `stdint.h`/`stdarg.h` use the
+  freestanding compiler headers.
+- **libm accuracy is series-based (~1e-9), not last-ULP**, and only covers the
+  ten functions listed in `math.h`; no `tan/asin/atan2/fmod/modf/frexp`, no
+  `float` variants, no errno/`HUGE_VAL` domain-error reporting. Revisit in P10.
+- **`errno` is a single global, not thread-local.** Safe while single-threaded;
+  must move behind TLS in `__errno_location()` during P9 (pthreads).
 - **SYSCALL state uses globals.** Saved user `RCX/R11/RSP` state is not designed
   for true concurrent SMP syscalls.
 - **ELF final permissions are simplified.** User segments are loaded with broad

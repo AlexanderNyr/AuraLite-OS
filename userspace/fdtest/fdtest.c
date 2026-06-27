@@ -9,6 +9,7 @@
  */
 
 #include "unistd.h"
+#include "fcntl.h"
 #include "stdio.h"
 #include "string.h"
 
@@ -19,10 +20,10 @@ static void say(const char *name, int ok) {
 }
 
 int main(void) {
-    int fd_a = open("/hello");
+    int fd_a = open("/hello", O_RDONLY);
     say("parent opens /hello", fd_a >= 3);
 
-    int fd_b = open("/hello");
+    int fd_b = open("/hello", O_RDONLY);
     say("parent opens /hello again", fd_b >= 3 && fd_b != fd_a);
 
     /* dup. */

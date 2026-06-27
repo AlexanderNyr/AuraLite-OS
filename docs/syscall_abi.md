@@ -19,13 +19,64 @@ applications.
 | `RCX` | Clobbered by CPU; contains user RIP during syscall entry. |
 | `R11` | Clobbered by CPU; contains user RFLAGS during syscall entry. |
 
-Return convention:
+Return convention (in-band negative errno, since Phase P1):
 
-- non-negative value: success;
-- `-1` (`0xFFFFFFFFFFFFFFFF`): generic failure.
+- A successful syscall returns a non-negative result in `RAX`.
+- A failing syscall returns a **negative errno** value in `RAX`, encoded as
+  two's complement. The reserved error band is the unsigned range
+  `[(unsigned long)-MAX_ERRNO, (unsigned long)-1]`, i.e.
+  `[0xFFFFFFFFFFFFF001, 0xFFFFFFFFFFFFFFFF]`, where `MAX_ERRNO == 4095`.
+- A successful syscall must **never** return a value in that band. Because
+  `mmap()` only ever hands back page-aligned addresses and the kernel never
+  maps the top page, no legitimate pointer or size can collide with it. This
+  matches the Linux `IS_ERR_VALUE` convention.
 
-AuraLite does not yet implement `errno`; user-space wrappers generally expose
-`-1` as failure.
+The kernel produces these values directly (e.g. `return -ENOENT;`); `errno` is
+purely user-space state. The errno numbers match the Linux asm-generic ABI and
+are defined in `kernel/lib/errno.h` (kernel) and `libc/include/errno.h` (libc).
+
+### User-space decode
+
+libc syscall wrappers decode the band and expose the POSIX `errno`/`-1`
+contract. The single chokepoint (`libc/src/libc.c`) is:
+
+```c
+static long syscall_ret(int64_t raw) {
+    if ((unsigned long)raw >= (unsigned long)-4095UL) {
+        errno = (int)(-raw);   /* recover positive errno */
+        return -1;
+    }
+    return (long)raw;          /* success (incl. large offsets/addresses) */
+}
+```
+
+`mmap()` is special: on error it sets `errno` from the band and returns
+`MAP_FAILED` (`(void *)-1`), not a generic `-1`. `errno` is exposed via
+`int *__errno_location(void)` with `#define errno (*__errno_location())`, so it
+can become thread-local in Phase P9 without touching any caller.
+
+### Per-syscall errno values (P1 baseline)
+
+The dispatcher maps failures to specific errno codes. Where the underlying
+VFS/process/net layer still returns a bare `-1`, the dispatcher substitutes the
+syscall's dominant errno (see `vfs_errno()` in `syscall.c`); finer-grained
+codes are tracked in `TODO.md`.
+
+| Syscall | Common failure errno |
+|---|---|
+| `read`/`write` | `EFAULT` (bad buffer), `EBADF` (bad fd) |
+| `open` | `EFAULT` (bad path ptr), `ENOENT` (missing & no O_CREAT), `EEXIST` (O_CREAT\|O_EXCL on existing), `EISDIR` (dir + write), `EROFS` (fs cannot create), `EINVAL` (bad access mode), `EMFILE` (table full) |
+| `close`/`dup`/`dup2`/`fcntl` | `EBADF`; `fcntl` unknown cmd → `EINVAL`; `F_DUPFD` arg<0/≥OPEN_MAX → `EINVAL`, none free → `EMFILE`; `F_GETLK/SETLK/SETLKW` → `ENOSYS` |
+| `pipe2` | `EFAULT`, `EINVAL` (flags ∉ {O_CLOEXEC,O_NONBLOCK}), `EMFILE`, `ENOMEM` |
+| read/write access | read on O_WRONLY fd or write on O_RDONLY fd → `EBADF` |
+| `stat`/`unlink`/`rmdir`/`rename`/`truncate` | `EFAULT`, `ENOENT` |
+| `mkdir` | `EFAULT`, `EACCES` |
+| `pipe` | `EFAULT`, `EMFILE` |
+| `mmap` | `EINVAL` (bad args), `ENOMEM` (no space), `EBADF` (bad fd) |
+| `munmap` | `EINVAL` |
+| `wait4` | `ECHILD` |
+| `execve`/`spawn` | `EFAULT`, `ENOENT` |
+| unknown syscall number | `ENOSYS` |
 
 ## User-space wrapper
 
@@ -99,8 +150,13 @@ Current caveats:
 |---:|---|---|---|---|
 | 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads line input from PS/2 keyboard and/or serial; `fd>=3` reads VFS files. |
 | 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write. |
-| 2 | `open` | `open(path)` | ✅ | Opens or creates a VFS path when the mounted FS supports creation; returns a per-process FD. |
+| 2 | `open` | `open(path, flags, mode)` | ✅ | POSIX flags: O_RDONLY/WRONLY/RDWR, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NONBLOCK, O_CLOEXEC, O_DIRECTORY. `mode` used only with O_CREAT. |
 | 3 | `close` | `close(fd)` | ✅ | Closes a per-process FD. |
+| 22 | `pipe` | `pipe(fds[2])` | ✅ | Unidirectional in-memory pipe; read end O_RDONLY, write end O_WRONLY. |
+| 32 | `dup` | `dup(oldfd)` | ✅ | Lowest free FD ≥ 3; clears FD_CLOEXEC on the new FD. |
+| 33 | `dup2` | `dup2(oldfd, newfd)` | ✅ | Forces newfd (≥ 3); closes it first if open. |
+| 72 | `fcntl` | `fcntl(fd, cmd, arg)` | ✅ | F_GETFD/SETFD (FD_CLOEXEC), F_GETFL/SETFL (status flags only), F_DUPFD/F_DUPFD_CLOEXEC; F_GETLK/SETLK/SETLKW → ENOSYS. |
+| 293 | `pipe2` | `pipe2(fds[2], flags)` | ✅ | Like `pipe` but applies O_CLOEXEC/O_NONBLOCK atomically. |
 | 9 | `mmap` | `mmap(addr, len, prot, flags, fd, off)` | 🧪 | Private eager mappings: anonymous zero-fill or file contents copied at mmap time. |
 | 11 | `munmap` | `munmap(addr, len)` | 🧪 | Unmaps/free pages in the mmap window. |
 | 12 | `brk` | `sbrk(increment)` | ✅ | Adjusts the program break (heap). |

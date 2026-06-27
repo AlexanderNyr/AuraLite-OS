@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "kernel/arch/x86_64/syscall.h"
+#include "kernel/lib/errno.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/proc/scheduler.h"
@@ -65,11 +66,10 @@
 #define SYS_DUP2   33
 #define SYS_PIPE   22
 #define SYS_FCNTL  72
+#define SYS_PIPE2  293   /* P2: pipe with O_CLOEXEC/O_NONBLOCK */
 
-/* fcntl commands.  Small subset matching Linux numbers. */
-#define F_GETFD 1
-#define F_SETFD 2
-#define FD_CLOEXEC 1
+/* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
+ * kernel/fs/vfs.h (Linux/asm-generic ABI). */
 
 #define SYSCALL_PATH_MAX 256
 #define SYSCALL_IO_CHUNK 256
@@ -96,9 +96,32 @@ static int copy_user_path(char *dst, uint64_t user_path) {
                                  SYSCALL_PATH_MAX);
 }
 
-static uint64_t syscall_vfs_write(int fd, const void *user_buf, uint64_t len) {
+/*
+ * vfs_errno() — map a generic kernel return @ret to an in-band errno value.
+ *
+ * The current VFS/process/net layers report failure with a bare -1 and do not
+ * yet distinguish causes.  Until those layers grow specific errno returns
+ * (tracked in TODO.md, "errno granularity"), the dispatcher substitutes a
+ * caller-supplied @fallback errno for any generic negative return so userspace
+ * sees a meaningful errno instead of a raw -1.  A return that is already a
+ * proper negative errno (in the reserved band) is passed through unchanged.
+ *
+ * @ret      kernel return value (>= 0 success, < 0 failure)
+ * @fallback positive errno to use when @ret is the generic -1
+ * Returns @ret on success, or a negative errno on failure.
+ */
+static int64_t vfs_errno(int64_t ret, int fallback) {
+    if (ret >= 0) return ret;
+    if (ret == -1) return -(int64_t)fallback;
+    /* Already a specific negative errno (e.g. -ENOENT). */
+    if (errno_is_err((long)ret)) return ret;
+    return -(int64_t)fallback;
+}
+
+/* Returns bytes written (>= 0) or a negative errno (-EFAULT / -EBADF). */
+static int64_t syscall_vfs_write(int fd, const void *user_buf, uint64_t len) {
     if (len == 0) return 0;
-    if (!validate_user_range(user_buf, len, 0)) return (uint64_t)-1;
+    if (!validate_user_range(user_buf, len, 0)) return -EFAULT;
 
     char tmp[SYSCALL_IO_CHUNK];
     uint64_t done = 0;
@@ -106,19 +129,20 @@ static uint64_t syscall_vfs_write(int fd, const void *user_buf, uint64_t len) {
         uint64_t n = len - done;
         if (n > sizeof(tmp)) n = sizeof(tmp);
         if (copy_from_user(tmp, (const uint8_t *)user_buf + done, n) != 0) {
-            return (uint64_t)-1;
+            return -EFAULT;
         }
         int64_t wr = vfs_write(fd, tmp, n);
-        if (wr < 0) return (uint64_t)-1;
+        if (wr < 0) return (done > 0) ? (int64_t)done : -EBADF;
         done += (uint64_t)wr;
         if ((uint64_t)wr < n) break;
     }
-    return done;
+    return (int64_t)done;
 }
 
-static uint64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
+/* Returns bytes read (>= 0) or a negative errno (-EFAULT / -EBADF). */
+static int64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
     if (len == 0) return 0;
-    if (!validate_user_range(user_buf, len, 1)) return (uint64_t)-1;
+    if (!validate_user_range(user_buf, len, 1)) return -EFAULT;
 
     char tmp[SYSCALL_IO_CHUNK];
     uint64_t done = 0;
@@ -126,15 +150,15 @@ static uint64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
         uint64_t n = len - done;
         if (n > sizeof(tmp)) n = sizeof(tmp);
         int64_t rd = vfs_read(fd, tmp, n);
-        if (rd < 0) return (uint64_t)-1;
+        if (rd < 0) return (done > 0) ? (int64_t)done : -EBADF;
         if (rd == 0) break;
         if (copy_to_user((uint8_t *)user_buf + done, tmp, (uint64_t)rd) != 0) {
-            return (uint64_t)-1;
+            return -EFAULT;
         }
         done += (uint64_t)rd;
         if ((uint64_t)rd < n) break;
     }
-    return done;
+    return (int64_t)done;
 }
 
 static uint64_t align_up_u64(uint64_t v, uint64_t a) {
@@ -159,7 +183,7 @@ static int user_range_is_free(uint64_t addr, uint64_t len) {
 static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
                              uint64_t flags, uint64_t fd, uint64_t off) {
     tcb_t *cur = sched_current();
-    if (!cur || len == 0) return (uint64_t)-1;
+    if (!cur || len == 0) return (uint64_t)-EINVAL;
 
     /* First implementation: eager MAP_PRIVATE mappings.  Anonymous mappings
      * are zero-filled; file-backed mappings read the file contents now (not a
@@ -167,25 +191,27 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
      * so reject it for now. */
     int anonymous = (flags & MAP_ANONYMOUS) ? 1 : 0;
     if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || prot == 0) {
-        return (uint64_t)-1;
+        return (uint64_t)-EINVAL;
     }
-    if (!(flags & MAP_PRIVATE)) return (uint64_t)-1;
+    if (!(flags & MAP_PRIVATE)) return (uint64_t)-EINVAL;
     if (anonymous) {
-        if (fd != (uint64_t)-1) return (uint64_t)-1;
+        if (fd != (uint64_t)-1) return (uint64_t)-EINVAL;
     } else {
         if (fd == (uint64_t)-1 || (off & (PAGE_SIZE_BYTES - 1ULL)) ||
             off > 0x7FFFFFFFFFFFFFFFULL) {
-            return (uint64_t)-1;
+            return (uint64_t)-EINVAL;
         }
     }
 
     len = align_up_u64(len, PAGE_SIZE_BYTES);
-    if (len == 0 || len > (USER_MMAP_MAX - USER_MMAP_BASE)) return (uint64_t)-1;
+    if (len == 0 || len > (USER_MMAP_MAX - USER_MMAP_BASE)) {
+        return (uint64_t)-EINVAL;
+    }
 
     if (flags & MAP_FIXED) {
-        if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-1;
+        if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
         if (!user_mmap_range_ok(addr, len) || !user_range_is_free(addr, len)) {
-            return (uint64_t)-1;
+            return (uint64_t)-ENOMEM;
         }
     } else {
         uint64_t start = cur->mmap_next ? cur->mmap_next : USER_MMAP_BASE;
@@ -202,7 +228,7 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
             }
             if (candidate > USER_MMAP_MAX - len - PAGE_SIZE_BYTES) break;
         }
-        if (addr == 0) return (uint64_t)-1;
+        if (addr == 0) return (uint64_t)-ENOMEM;
         cur->mmap_next = addr + len;
     }
 
@@ -213,10 +239,10 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     int64_t old_pos = -1;
     if (!anonymous) {
         old_pos = vfs_lseek((int)fd, 0, 1);
-        if (old_pos < 0) return (uint64_t)-1;
+        if (old_pos < 0) return (uint64_t)-EBADF;
         if (vfs_lseek((int)fd, (int64_t)off, 0) < 0) {
             (void)vfs_lseek((int)fd, old_pos, 0);
-            return (uint64_t)-1;
+            return (uint64_t)-EINVAL;
         }
     }
 
@@ -248,14 +274,14 @@ fail:
             pmm_free_frame(phys);
         }
     }
-    return (uint64_t)-1;
+    return (uint64_t)-ENOMEM;
 }
 
 static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
-    if (len == 0) return (uint64_t)-1;
-    if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-1;
+    if (len == 0) return (uint64_t)-EINVAL;
+    if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
     len = align_up_u64(len, PAGE_SIZE_BYTES);
-    if (!user_mmap_range_ok(addr, len)) return (uint64_t)-1;
+    if (!user_mmap_range_ok(addr, len)) return (uint64_t)-EINVAL;
 
     for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
         uint64_t virt = addr + off;
@@ -308,7 +334,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * writes through the VFS (tmpfs/devfs/etc.). */
         const void *user_buf = (const void *)(uintptr_t)a2;
         if (a3 != 0 && !validate_user_range(user_buf, a3, 0)) {
-            return (uint64_t)-1;
+            return (uint64_t)-EFAULT;
         }
         if (a1 == 1 || a1 == 2) {
             char tmp[SYSCALL_IO_CHUNK];
@@ -317,21 +343,21 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 uint64_t n = a3 - done;
                 if (n > sizeof(tmp)) n = sizeof(tmp);
                 if (copy_from_user(tmp, (const uint8_t *)user_buf + done, n) != 0) {
-                    return (uint64_t)-1;
+                    return (uint64_t)-EFAULT;
                 }
                 for (uint64_t i = 0; i < n; i++) kputchar(tmp[i]);
                 done += n;
             }
             return a3;
         }
-        return syscall_vfs_write((int)a1, user_buf, a3);
+        return (uint64_t)syscall_vfs_write((int)a1, user_buf, a3);
     }
     case SYS_READ: {
         /* a1 = fd, a2 = buffer, a3 = count. */
         int fd = (int)a1;
         void *user_buf = (void *)(uintptr_t)a2;
         if (a3 != 0 && !validate_user_range(user_buf, a3, 1)) {
-            return (uint64_t)-1;
+            return (uint64_t)-EFAULT;
         }
         if (fd == 0) {
             /* stdin: line input from PS/2 keyboard and/or serial UART. */
@@ -384,7 +410,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 if (c != '\n' && c != '\t' && (c < 0x20 || c > 0x7E)) continue;
 
                 if (copy_to_user((uint8_t *)user_buf + got, &c, 1) != 0) {
-                    return (uint64_t)-1;
+                    return (uint64_t)-EFAULT;
                 }
                 got++;
                 kputchar(c);   /* echo */
@@ -392,15 +418,17 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return got;
         }
-        return syscall_vfs_read(fd, user_buf, a3);
+        return (uint64_t)syscall_vfs_read(fd, user_buf, a3);
     }
     case SYS_OPEN: {
+        /* a1 = path, a2 = flags, a3 = mode.  vfs_open already returns specific
+         * errno values; vfs_errno() is an idempotent safety net. */
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        return (uint64_t)vfs_open(path);
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_open(path, (int)a2, (int)a3), ENOENT);
     }
     case SYS_CLOSE:
-        return (uint64_t)vfs_close((int)a1);
+        return (uint64_t)vfs_errno(vfs_close((int)a1), EBADF);
     case SYS_EXIT:
         thread_exit_with_code((int)a1);
         return 0;   /* unreachable */
@@ -412,8 +440,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return do_fork();
     case SYS_EXECVE: {
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        return do_execve(path);
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno((int64_t)do_execve(path), ENOENT);
     }
     case SYS_WAIT4: {
         /* New ABI: a1 = pid (int64_t, -1 = any child), a2 = *exit_code (or NULL).
@@ -432,39 +460,39 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         int64_t ret = do_wait4_pid(pid, user_status ? &status : 0);
         if (ret >= 0 && user_status) {
             if (copy_to_user(user_status, &status, sizeof(status)) != 0) {
-                return (uint64_t)-1;
+                return (uint64_t)-EFAULT;
             }
         }
-        return (uint64_t)ret;
+        return (uint64_t)vfs_errno(ret, ECHILD);
     }
     case SYS_SPAWN: {
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        return process_spawn(path);
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(process_spawn(path), ENOENT);
     }
     case SYS_LISTDIR: {
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
         if (a2 && a3 > 0) {
             int max = (int)a3;
             if (max > VFS_MAX_DIRENTS) max = VFS_MAX_DIRENTS;
-            if (max <= 0) return (uint64_t)-1;
+            if (max <= 0) return (uint64_t)-EINVAL;
             uint64_t bytes = (uint64_t)max * sizeof(struct vfs_dirent);
             if (!validate_user_range((void *)(uintptr_t)a2, bytes, 1)) {
-                return (uint64_t)-1;
+                return (uint64_t)-EFAULT;
             }
             struct vfs_dirent *kents = kmalloc((size_t)bytes);
-            if (!kents) return (uint64_t)-1;
+            if (!kents) return (uint64_t)-ENOMEM;
             int n = vfs_readdir(path, kents, max);
             if (n > 0) {
                 uint64_t used = (uint64_t)n * sizeof(struct vfs_dirent);
                 if (copy_to_user((void *)(uintptr_t)a2, kents, used) != 0) {
                     kfree(kents);
-                    return (uint64_t)-1;
+                    return (uint64_t)-EFAULT;
                 }
             }
             kfree(kents);
-            return (uint64_t)n;
+            return (uint64_t)vfs_errno(n, ENOENT);
         } else {
             vfs_list(path);
             return 0;
@@ -473,7 +501,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_DNS: {
         char host[SYSCALL_PATH_MAX];
         if (copy_string_from_user(host, (const char *)(uintptr_t)a1, sizeof(host)) != 0) {
-            return (uint64_t)-1;
+            return (uint64_t)-EFAULT;
         }
         return net_dns_resolve(host);
     }
@@ -484,13 +512,13 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_SOCKET_SEND: {
         if (a3 == 0) return 0;
         const void *user_buf = (const void *)(uintptr_t)a2;
-        if (!validate_user_range(user_buf, a3, 0)) return (uint64_t)-1;
+        if (!validate_user_range(user_buf, a3, 0)) return (uint64_t)-EFAULT;
         char tmp[SYSCALL_IO_CHUNK];
         uint64_t sent = 0;
         while (sent < a3) {
             uint64_t n = a3 - sent;
             if (n > sizeof(tmp)) n = sizeof(tmp);
-            if (copy_from_user(tmp, (const uint8_t *)user_buf + sent, n) != 0) return (uint64_t)-1;
+            if (copy_from_user(tmp, (const uint8_t *)user_buf + sent, n) != 0) return (uint64_t)-EFAULT;
             int64_t r = socket_send((int)a1, tmp, (uint32_t)n);
             if (r < 0) return (uint64_t)-1;
             sent += (uint64_t)r;
@@ -501,12 +529,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_SOCKET_RECV: {
         if (a3 == 0) return 0;
         void *user_buf = (void *)(uintptr_t)a2;
-        if (!validate_user_range(user_buf, a3, 1)) return (uint64_t)-1;
+        if (!validate_user_range(user_buf, a3, 1)) return (uint64_t)-EFAULT;
         char tmp[SYSCALL_IO_CHUNK];
         uint32_t n = (a3 > sizeof(tmp)) ? (uint32_t)sizeof(tmp) : (uint32_t)a3;
         int64_t r = socket_recv((int)a1, tmp, n);
         if (r <= 0) return (uint64_t)r;
-        if (copy_to_user(user_buf, tmp, (uint64_t)r) != 0) return (uint64_t)-1;
+        if (copy_to_user(user_buf, tmp, (uint64_t)r) != 0) return (uint64_t)-EFAULT;
         return (uint64_t)r;
     }
     case SYS_SOCKET_CLOSE:
@@ -516,14 +544,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_NET_SEND: {
         if (a2 == 0) return 0;
         const void *user_buf = (const void *)(uintptr_t)a1;
-        if (!validate_user_range(user_buf, a2, 0)) return (uint64_t)-1;
+        if (!validate_user_range(user_buf, a2, 0)) return (uint64_t)-EFAULT;
         char tmp[SYSCALL_IO_CHUNK];
         uint64_t sent = 0;
         while (sent < a2) {
             uint64_t n = a2 - sent;
             if (n > sizeof(tmp)) n = sizeof(tmp);
             if (copy_from_user(tmp, (const uint8_t *)user_buf + sent, n) != 0) {
-                return (uint64_t)-1;
+                return (uint64_t)-EFAULT;
             }
             int64_t r = tcp_send(tmp, (uint32_t)n);
             if (r < 0) return (uint64_t)-1;
@@ -535,12 +563,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_NET_RECV: {
         if (a2 == 0) return 0;
         void *user_buf = (void *)(uintptr_t)a1;
-        if (!validate_user_range(user_buf, a2, 1)) return (uint64_t)-1;
+        if (!validate_user_range(user_buf, a2, 1)) return (uint64_t)-EFAULT;
         char tmp[SYSCALL_IO_CHUNK];
         uint32_t n = (a2 > sizeof(tmp)) ? (uint32_t)sizeof(tmp) : (uint32_t)a2;
         int64_t r = tcp_recv(tmp, n);
         if (r <= 0) return (uint64_t)r;
-        if (copy_to_user(user_buf, tmp, (uint64_t)r) != 0) return (uint64_t)-1;
+        if (copy_to_user(user_buf, tmp, (uint64_t)r) != 0) return (uint64_t)-EFAULT;
         return (uint64_t)r;
     }
     case SYS_NET_CLOSE:
@@ -551,38 +579,42 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     /* Filesystem extensions. */
     case SYS_MKDIR: {
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        return (uint64_t)vfs_mkdir(path);
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_mkdir(path), EACCES);
     }
     case SYS_RMDIR: {
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        return (uint64_t)vfs_rmdir(path);
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_rmdir(path), ENOENT);
     }
     case SYS_UNLINK: {
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        return (uint64_t)vfs_unlink(path);
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_unlink(path), ENOENT);
     }
     case SYS_RENAME: {
         char from[SYSCALL_PATH_MAX], to[SYSCALL_PATH_MAX];
-        if (copy_user_path(from, a1) != 0) return (uint64_t)-1;
-        if (copy_user_path(to, a2) != 0) return (uint64_t)-1;
-        return (uint64_t)vfs_rename(from, to);
+        if (copy_user_path(from, a1) != 0) return (uint64_t)-EFAULT;
+        if (copy_user_path(to, a2) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_rename(from, to), ENOENT);
     }
     case SYS_TRUNCATE: {
         char path[SYSCALL_PATH_MAX];
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        return (uint64_t)vfs_truncate(path, a2);
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_truncate(path, a2), ENOENT);
     }
     case SYS_STAT: {
         char path[SYSCALL_PATH_MAX];
         struct vfs_stat st;
-        if (copy_user_path(path, a1) != 0) return (uint64_t)-1;
-        if (!validate_user_range((void *)(uintptr_t)a2, sizeof(st), 1)) return (uint64_t)-1;
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        if (!validate_user_range((void *)(uintptr_t)a2, sizeof(st), 1)) {
+            return (uint64_t)-EFAULT;
+        }
         int r = vfs_stat(path, &st);
-        if (r != 0) return (uint64_t)r;
-        if (copy_to_user((void *)(uintptr_t)a2, &st, sizeof(st)) != 0) return (uint64_t)-1;
+        if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        if (copy_to_user((void *)(uintptr_t)a2, &st, sizeof(st)) != 0) {
+            return (uint64_t)-EFAULT;
+        }
         return 0;
     }
 
@@ -596,32 +628,43 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
 
     /* dup / dup2 / pipe / fcntl. */
     case SYS_DUP:
-        return (uint64_t)vfs_dup((int)a1);
+        return (uint64_t)vfs_errno(vfs_dup((int)a1), EBADF);
     case SYS_DUP2:
-        return (uint64_t)vfs_dup2((int)a1, (int)a2);
+        return (uint64_t)vfs_errno(vfs_dup2((int)a1, (int)a2), EBADF);
     case SYS_PIPE: {
         int fds[2];
         if (!validate_user_range((void *)(uintptr_t)a1, sizeof(fds), 1)) {
-            return (uint64_t)-1;
+            return (uint64_t)-EFAULT;
         }
         int r = vfs_pipe(fds);
-        if (r != 0) return (uint64_t)-1;
+        if (r != 0) return (uint64_t)-EMFILE;
         if (copy_to_user((void *)(uintptr_t)a1, fds, sizeof(fds)) != 0) {
             /* Roll back partially: close both ends. */
             vfs_close(fds[0]);
             vfs_close(fds[1]);
-            return (uint64_t)-1;
+            return (uint64_t)-EFAULT;
         }
         return 0;
     }
-    case SYS_FCNTL: {
-        int fd = (int)a1;
-        int cmd = (int)a2;
-        switch (cmd) {
-        case F_GETFD: return (uint64_t)vfs_get_cloexec(fd);
-        case F_SETFD: return (uint64_t)vfs_set_cloexec(fd, (a3 & FD_CLOEXEC) ? 1 : 0);
-        default:      return (uint64_t)-1;
+    case SYS_FCNTL:
+        /* a1 = fd, a2 = cmd, a3 = arg.  vfs_fcntl handles the full subset
+         * (F_GETFD/SETFD/GETFL/SETFL/DUPFD/DUPFD_CLOEXEC) and returns errno. */
+        return (uint64_t)vfs_fcntl((int)a1, (int)a2, (int)a3);
+    case SYS_PIPE2: {
+        /* a1 = int fds[2], a2 = flags. */
+        int fds[2];
+        int flags = (int)a2;
+        if (!validate_user_range((void *)(uintptr_t)a1, sizeof(fds), 1)) {
+            return (uint64_t)-EFAULT;
         }
+        int r = vfs_pipe2(fds, flags);
+        if (r != 0) return (uint64_t)r;   /* already a negative errno */
+        if (copy_to_user((void *)(uintptr_t)a1, fds, sizeof(fds)) != 0) {
+            vfs_close(fds[0]);
+            vfs_close(fds[1]);
+            return (uint64_t)-EFAULT;
+        }
+        return 0;
     }
     case SYS_MMAP:
         return syscall_mmap(a1, a2, a3, a4, a5, a6);
@@ -629,7 +672,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return syscall_munmap(a1, a2);
     case SYS_BRK: {
         tcb_t *cur = sched_current();
-        if (!cur) return (uint64_t)-1;
+        if (!cur) return (uint64_t)-ENOMEM;
 
         if (a1 == 0) {
             return cur->brk; /* Query current break */
@@ -670,6 +713,6 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     }
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
-        return (uint64_t)-1;
+        return (uint64_t)-ENOSYS;   /* reserved for unimplemented syscall nrs */
     }
 }

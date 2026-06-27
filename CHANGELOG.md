@@ -2,6 +2,107 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [P2 — open(2) flags, file modes & fcntl(2)] 2026-06-27
+
+### Added
+- **`open()` now takes flags + mode** (POSIX `int open(const char*, int, ...)`).
+  `vfs_open(path, flags, mode)` implements O_RDONLY/WRONLY/RDWR (via O_ACCMODE),
+  O_CREAT, O_EXCL (EEXIST), O_TRUNC (regular file + writable only, processed
+  last), O_APPEND (seek-to-EOF before each write), O_NONBLOCK (pipe reads/writes
+  that would block return EAGAIN), O_CLOEXEC, and O_DIRECTORY, with POSIX errno
+  ordering (ENOENT/EEXIST/EISDIR/EROFS/EINVAL).
+- **Access-mode enforcement**: read on an O_WRONLY fd and write on an O_RDONLY
+  fd now fail with EBADF.
+- **`fcntl()` expanded** (`vfs_fcntl`): F_GETFL/F_SETFL (status flags only —
+  O_APPEND/O_NONBLOCK; access/creation bits ignored), F_DUPFD/F_DUPFD_CLOEXEC
+  (lowest fd ≥ arg; EBADF/EINVAL/EMFILE ordering), F_GETFD/F_SETFD (FD_CLOEXEC,
+  kept separate from the status-flags namespace), F_GETLK/SETLK/SETLKW → ENOSYS.
+- **`pipe2(fds, flags)`** syscall (293) — applies O_CLOEXEC/O_NONBLOCK atomically.
+- **`creat()`** = `open(path, O_CREAT|O_WRONLY|O_TRUNC, mode)`.
+- New libc headers: **`fcntl.h`** (O_*/F_*/FD_CLOEXEC + open/creat/fcntl),
+  **`sys/types.h`** (mode_t/off_t/uid_t/…), **`sys/stat.h`** (S_IF*/S_I*RWX
+  macros + S_IS* predicates).
+- `struct file` extended with `access_mode`/`append`/`nonblock`.
+- Tests: **`tests/unit/test_open_flags.c`** (ABI value + O_ACCMODE checks,
+  ALL PASS) and **`tests/integration/cases/test_open_flags.sh`** (selftest P2
+  block), registered in `run_all.sh`.
+
+### Changed
+- libc `open`/`fcntl` are now variadic; `pipe2` wrapper added.
+- All 38 userspace + libauragui `open()` call sites updated to pass explicit
+  flags (readers → O_RDONLY; writers/creators → O_CREAT|O_WRONLY|O_TRUNC or
+  O_CREAT|O_RDWR), and the 7 kernel `vfs_open()` callers (execve/spawn →
+  O_RDONLY; VFS self-test → matching intent).
+
+### Notes / deferred
+- access_mode/append/nonblock are stored **per-FD**, so dup()/F_DUPFD do not yet
+  truly share status flags between descriptors — correct shared-OFD semantics
+  arrive in P3. O_APPEND atomicity relies on the single-threaded VFS and will
+  need a per-vnode write lock once FS access is preemptible (TODO.md).
+
+## [P1 follow-up — native VFS errno + libc headers] 2026-06-27
+
+### Added
+- **`limits.h`** — integer-type ranges (LP64) + POSIX limits (`PATH_MAX`,
+  `NAME_MAX`, `ARG_MAX`, `OPEN_MAX`, `PIPE_BUF`, `NGROUPS_MAX`).
+- **`stdbool.h`** — `bool`/`true`/`false`.
+- **`assert.h`** — `assert()` with `NDEBUG` support; backed by `__assert_fail()`
+  plus new `abort()`/`exit()` in libc (`EXIT_SUCCESS`/`EXIT_FAILURE`).
+- **`ctype.h`** + impl — 14 C-locale ASCII predicates/mappings, verified against
+  the host `<ctype.h>` over the full ASCII range (`tests/unit/test_ctype.c`).
+- **`math.h`** + impl — `fabs/floor/ceil/sqrt/pow/exp/log/log2/sin/cos` and
+  `M_PI`/`M_E`/`HUGE_VAL`/`NAN`/`INFINITY`; accurate to ~1e-9 vs host libm.
+
+### Changed
+- **`kernel/fs/vfs.c` now returns native `-Exxx`** instead of bare `-1`:
+  `vfs_open` → `ENOENT`/`EMFILE`, `vfs_read/write/lseek/close` → `EBADF`
+  (`EINVAL` for non-readable/writable objects), `vfs_dup*`/`vfs_pipe` →
+  `EBADF`/`EMFILE`/`ENOMEM`/`EFAULT`, `vfs_mkdir/rmdir/unlink/rename/truncate/
+  stat/readdir` → `ENOENT`/`ENOTDIR`/`EXDEV`/`ENOSYS`/`EFAULT`/`EINVAL`. A
+  `vfs_wrap_err()` helper normalises the FS drivers' still-generic `-1`. The
+  dispatch-layer `vfs_errno()` is now an idempotent safety net. No caller
+  regressions: every `vfs_*` call site checks `< 0`/`>= 0`, never `== -1`
+  (`test_vfs` 34/34 still pass).
+
+## [P1 — errno & libc foundations] 2026-06-27
+
+### Added
+- **In-band negative-errno syscall ABI.** Kernel syscalls now return a negative
+  errno (e.g. `-ENOENT`) on failure instead of a bare `-1`. The reserved error
+  band is `[(unsigned long)-MAX_ERRNO, (unsigned long)-1]` with `MAX_ERRNO=4095`
+  (Linux `IS_ERR_VALUE` convention). Documented in `docs/syscall_abi.md`.
+- **`kernel/lib/errno.h`** — POSIX/Linux-ABI errno constants (definition-only;
+  errno is never kernel state) plus `MAX_ERRNO` and an `errno_is_err()` helper.
+- **`libc/include/errno.h`** — `errno` exposed via `int *__errno_location(void)`
+  with `#define errno (*__errno_location())` so storage can become thread-local
+  in P9 without touching callers. Full `E*` constant set + POSIX aliases
+  (`EWOULDBLOCK`, `EDEADLOCK`, `ENOTSUP`).
+- **libc `errno` storage + `syscall_ret()` decoder** in `libc/src/libc.c`; all
+  syscall wrappers now decode the error band, set `errno`, and return `-1`.
+  `mmap()` returns `MAP_FAILED` (not `-1`) on error. `sbrk()` sets `ENOMEM`.
+- **`strerror(int)`** (declared in `string.h`) — errno→message lookup table with
+  an "Unknown error N" fallback (sets `EINVAL`).
+- **`perror(const char *)`** (declared in `stdio.h`) — writes
+  `"s: strerror(errno)\n"` to stderr; preserves `errno` across the call.
+- **`tests/unit/test_errno.c`** — host unit test (wired into `make test-unit`):
+  validates errno values vs the Linux ABI, POSIX aliases, and the in-band decode
+  contract incl. the −4095/−4096 boundary. PASSES.
+- **`tests/integration/cases/test_errno.sh`** + `/selftest` errno checks — the
+  P1 QEMU gate: `open("/nonexistent")` → `errno=2 (ENOENT)`, `perror("open")`
+  → `"open: No such file or directory"`, bad-fd `read()` → `EBADF`.
+
+### Changed
+- `syscall.c` dispatch: validation/copy faults → `-EFAULT`, unknown syscall
+  number → `-ENOSYS`, and per-syscall errno mapping via a new `vfs_errno()`
+  helper (open→ENOENT, close/read/write→EBADF, mmap→EINVAL/ENOMEM, …).
+
+### Notes / deferred
+- Native `-Exxx` returns inside `vfs.c`/`process.c`/drivers (currently mapped at
+  the dispatch layer) and the additional P1 libc headers (`limits.h`, `ctype.h`,
+  `math.h`, `stdbool.h`, `assert.h`) are deferred to a P1 follow-up — see
+  `TODO.md`. The QEMU boot of the integration gate is pending the cross
+  toolchain in this build environment; logic verified on host.
+
 ## [GUI v2.0: Theme Engine, Desktop Icons, Notifications, Snap, Start Menu, Context Menus] 2026-06-26
 
 ### Added — Core GUI rewrite

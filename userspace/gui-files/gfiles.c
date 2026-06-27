@@ -1,6 +1,7 @@
 /* gfiles — GUI file manager. */
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "stdio.h"
 #include "string.h"
 
@@ -29,7 +30,7 @@ static void load_dir(const char *path) {
     }
     if (st.st_type == ST_TYPE_FILE) {
         /* It's a file — read its head into content_view. */
-        int fd = open(path);
+        int fd = open(path, O_RDONLY);
         if (fd >= 0) {
             char buf[AG_MAX_WIDGET_TEXT];
             int64_t n = read(fd, buf, sizeof(buf) - 1);

@@ -116,7 +116,9 @@ USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 # Common objects shared by all user programs.
 USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o $(USER_BUILD)/malloc.o
 
-USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h
+USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h \
+                   libc/include/errno.h libc/include/limits.h libc/include/stdbool.h \
+                   libc/include/ctype.h libc/include/math.h libc/include/assert.h
 # Augment include path so user apps can include "auragui.h".
 USER_CFLAGS += -I libauragui/include
 
@@ -244,7 +246,9 @@ $(USER_BUILD)/init.o: userspace/init/init.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/libc.o: libc/src/libc.c libc/include/unistd.h libc/include/string.h \
-                       libc/include/stdio.h
+                       libc/include/stdio.h libc/include/stdlib.h libc/include/errno.h \
+                       libc/include/ctype.h libc/include/math.h libc/include/limits.h \
+                       libc/include/stdbool.h libc/include/assert.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -389,7 +393,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_vfs $(BUILD_DIR)/test_network \
                 $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
                 $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
-                $(BUILD_DIR)/test_fat32
+                $(BUILD_DIR)/test_fat32 $(BUILD_DIR)/test_errno \
+                $(BUILD_DIR)/test_ctype $(BUILD_DIR)/test_open_flags
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -463,6 +468,19 @@ $(BUILD_DIR)/test_spinlock: tests/unit/test_spinlock.c
 $(BUILD_DIR)/test_fat32: tests/unit/test_fat32.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_errno: tests/unit/test_errno.c libc/include/errno.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_ctype: tests/unit/test_ctype.c libc/include/ctype.h \
+                         libc/include/limits.h libc/include/stdbool.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_open_flags: tests/unit/test_open_flags.c libc/include/fcntl.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)

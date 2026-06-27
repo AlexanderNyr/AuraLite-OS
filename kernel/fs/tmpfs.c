@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/tmpfs.h"
+#include "kernel/lib/errno.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
@@ -111,10 +112,10 @@ static int64_t tmpfs_read(struct vnode *vn, uint64_t pos,
 static int64_t tmpfs_write(struct vnode *vn, uint64_t pos,
                            const void *buf, uint64_t count) {
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
-    if (!f) return -1;
+    if (!f) return -EIO;
     uint64_t end = pos + count;
-    if (end < pos) return -1;
-    if (ensure_capacity(f, end) != 0) return -1;
+    if (end < pos) return -EINVAL;             /* size_t/offset overflow */
+    if (ensure_capacity(f, end) != 0) return -ENOSPC;
     memcpy(f->data + pos, buf, count);
     if (end > f->size) {
         f->size = end;
@@ -141,7 +142,7 @@ static int tmpfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
 static int tmpfs_unlink(void *fs_data, const char *path) {
     (void)fs_data;
     struct tmpfs_file *f = find_file(path);
-    if (!f) return -1;
+    if (!f) return -ENOENT;
     if (f->data) kfree(f->data);
     memset(f, 0, sizeof(*f));
     return 0;
@@ -149,9 +150,9 @@ static int tmpfs_unlink(void *fs_data, const char *path) {
 
 static int tmpfs_truncate(struct vnode *vn, uint64_t new_size) {
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
-    if (!f) return -1;
+    if (!f) return -EIO;
     if (new_size > f->capacity) {
-        if (ensure_capacity(f, new_size) != 0) return -1;
+        if (ensure_capacity(f, new_size) != 0) return -ENOSPC;
     }
     if (new_size < f->size) {
         /* shrinking: data above new_size becomes garbage; zero it. */

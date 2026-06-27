@@ -1,6 +1,7 @@
 /* gusb — USB manager GUI. */
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "stdio.h"
 #include "string.h"
 
@@ -27,7 +28,7 @@ static void make4(char *out, const char *a, const char *b, const char *c, const 
 }
 
 static int read_file(const char *path, char *buf, int max) {
-    int fd = open(path);
+    int fd = open(path, O_RDONLY);
     if (fd < 0) return -1;
     int64_t n = read(fd, buf, (size_t)(max - 1));
     close(fd);
@@ -91,7 +92,7 @@ static void refresh_usb(void) {
         set_text(fat_box, "fat32: not reported");
     }
 
-    int fd = open("/usb/sector0.bin");
+    int fd = open("/usb/sector0.bin", O_RDONLY);
     if (fd >= 0) {
         unsigned char sec[16];
         int64_t r = read(fd, sec, sizeof(sec));

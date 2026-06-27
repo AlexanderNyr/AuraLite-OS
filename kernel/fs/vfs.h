@@ -33,6 +33,37 @@
 #define VFS_TYPE_CHARDEV  3
 #define VFS_TYPE_SYMLINK  4
 
+/* open(2) flags — Linux/asm-generic ABI values (must match libc/include/fcntl.h).
+ *
+ * The access mode is a 2-bit enumerated field, NOT independent flags: because
+ * O_RDONLY == 0, never test `flags & O_RDONLY`.  Extract it with O_ACCMODE and
+ * compare against O_RDONLY/O_WRONLY/O_RDWR.  POSIX.1-2017 <fcntl.h>. */
+#define O_RDONLY    0x0000      /* access mode: read only (value 0!) */
+#define O_WRONLY    0x0001      /* access mode: write only */
+#define O_RDWR      0x0002      /* access mode: read/write */
+#define O_ACCMODE   0x0003      /* mask isolating the access-mode field */
+#define O_CREAT     0x0040      /* creation: create if absent */
+#define O_EXCL      0x0080      /* creation: with O_CREAT, fail if exists */
+#define O_TRUNC     0x0200      /* creation: truncate regular file to 0 */
+#define O_APPEND    0x0400      /* status:   append before each write */
+#define O_NONBLOCK  0x0800      /* status:   non-blocking I/O */
+#define O_DIRECTORY 0x10000     /* creation: fail if not a directory */
+#define O_CLOEXEC   0x80000     /* creation: set FD_CLOEXEC on the new fd */
+
+/* fcntl(2) commands — Linux/asm-generic ABI values. */
+#define F_DUPFD          0
+#define F_GETFD          1
+#define F_SETFD          2
+#define F_GETFL          3
+#define F_SETFL          4
+#define F_GETLK          5
+#define F_SETLK          6
+#define F_SETLKW         7
+#define F_DUPFD_CLOEXEC  1030   /* F_LINUX_SPECIFIC_BASE (1024) + 6 */
+
+/* File-descriptor flag (F_GETFD/F_SETFD namespace; separate from O_* status). */
+#define FD_CLOEXEC       1
+
 /* Permission bits (POSIX subset).  Filesystems that don't track perms
  * report 0o755 for directories and 0o644 for files by convention. */
 #define VFS_PERM_USR_R  0400
@@ -115,6 +146,9 @@ struct file {
     struct vnode *vn;
     uint64_t      pos;
     int           in_use;
+    int           access_mode;  /* O_RDONLY / O_WRONLY / O_RDWR (the O_ACCMODE field) */
+    int           append;       /* 1 if O_APPEND (status flag) */
+    int           nonblock;     /* 1 if O_NONBLOCK (status flag) */
 };
 
 /* A mount point. */
@@ -130,7 +164,7 @@ void vfs_init(void);
 int  vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data);
 
 /* ---- FD-based file I/O ---- */
-int     vfs_open(const char *path);
+int     vfs_open(const char *path, int flags, int mode);
 int64_t vfs_read(int fd, void *buf, uint64_t count);
 int64_t vfs_write(int fd, const void *buf, uint64_t count);
 int64_t vfs_lseek(int fd, int64_t offset, int whence);  /* whence: 0=SET 1=CUR 2=END */
@@ -143,6 +177,11 @@ int     vfs_dup(int oldfd);
 int     vfs_dup2(int oldfd, int newfd);
 /* pipe(): create a unidirectional in-memory pipe; out_fds[0]=read, out_fds[1]=write. */
 int     vfs_pipe(int out_fds[2]);
+/* pipe2(): like pipe() but applies O_CLOEXEC / O_NONBLOCK atomically. */
+int     vfs_pipe2(int out_fds[2], int flags);
+/* fcntl(2): F_GETFL/F_SETFL/F_DUPFD/F_DUPFD_CLOEXEC plus the F_GETFD/F_SETFD
+ * flag commands.  Returns a non-negative result or a negative errno. */
+int     vfs_fcntl(int fd, int cmd, int arg);
 
 /* close-on-exec flag management. */
 int     vfs_set_cloexec(int fd, int on);

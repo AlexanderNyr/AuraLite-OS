@@ -1,6 +1,7 @@
 /* gtheme — GUI Theme Manager. */
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "stdio.h"
 #include "string.h"
 #include "stdlib.h"
@@ -13,7 +14,7 @@ static ag_widget_t *status;
 
 static void on_apply(ag_widget_t *w, void *user) {
     (void)w; (void)user;
-    int fd = open("/disk/theme.txt");
+    int fd = open("/disk/theme.txt", O_RDONLY);
     if (fd < 0) {
         ag_textbox_set(status, "Failed to open /disk/theme.txt");
         return;

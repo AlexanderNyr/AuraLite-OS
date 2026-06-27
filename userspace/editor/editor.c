@@ -10,6 +10,7 @@
  */
 
 #include "unistd.h"
+#include "fcntl.h"
 #include "string.h"
 #include "stdio.h"
 
@@ -43,7 +44,7 @@ static void cmd_write_file(const char *path) {
         puts("usage: :w <filename>");
         return;
     }
-    int fd = open(path);
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) {
         printf("Could not open/create %s\n", path);
         return;

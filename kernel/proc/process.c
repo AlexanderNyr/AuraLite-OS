@@ -190,7 +190,7 @@ int64_t do_execve(const char *path) {
     vfs_close_on_exec();
 
     /* 1) Open the file from the VFS and read it into kernel memory. */
-    int fd = vfs_open(path);
+    int fd = vfs_open(path, O_RDONLY, 0);
     if (fd < 0) {
         kprintf("[proc] execve: '%s' not found\n", path);
         return -1;
@@ -252,7 +252,7 @@ static void spawn_thread(void *arg) {
     char *path = (char *)arg;
 
     /* Read the ELF from the VFS into kernel memory. */
-    int fd = vfs_open(path);
+    int fd = vfs_open(path, O_RDONLY, 0);
     if (fd < 0) {
         kprintf("[proc] spawn: '%s' not found\n", path);
         memset(path, 0, strlen(path) + 1);

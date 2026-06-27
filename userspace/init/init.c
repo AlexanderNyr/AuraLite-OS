@@ -17,6 +17,7 @@
  */
 
 #include "unistd.h"
+#include "fcntl.h"
 #include "string.h"
 #include "stdio.h"
 
@@ -41,7 +42,7 @@ static void cmd_cat(const char *path) {
         puts("cat: missing file");
         return;
     }
-    int fd = open(path);
+    int fd = open(path, O_RDONLY);
     if (fd < 0) {
         printf("cat: %s: no such file\n", path);
         return;
@@ -67,7 +68,7 @@ static void cmd_write_file(int argc, char **argv) {
         puts("usage: write <file> <text>");
         return;
     }
-    int fd = open(argv[1]);
+    int fd = open(argv[1], O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) {
         printf("write: cannot open/create %s\n", argv[1]);
         return;
@@ -90,7 +91,7 @@ static void cmd_uname(void) {
 }
 
 static void cmd_free(void) {
-    int fd = open("/proc/meminfo");
+    int fd = open("/proc/meminfo", O_RDONLY);
     if (fd >= 0) {
         char buf[512];
         int64_t n = read(fd, buf, sizeof(buf) - 1);
@@ -222,7 +223,7 @@ static void cmd_ps(void) {
         path[off] = '\0';
         strcat(path, "/cmdline");
 
-        int fd = open(path);
+        int fd = open(path, O_RDONLY);
         if (fd >= 0) {
             int64_t n = read(fd, name, sizeof(name) - 1);
             if (n > 0) {
@@ -282,7 +283,7 @@ static void cmd_stat(const char *path) {
 
 static void cmd_touch(const char *path) {
     if (!path) { puts("touch: missing path"); return; }
-    int fd = open(path);
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) { printf("touch: cannot create %s\n", path); return; }
     close(fd);
     printf("touch: %s\n", path);
@@ -290,7 +291,7 @@ static void cmd_touch(const char *path) {
 
 static void cmd_apm(int argc, char **argv) {
     if (argc > 1) {
-        int fd = open("/tmp/apm.args");
+        int fd = open("/tmp/apm.args", O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (fd >= 0) {
             for (int i = 1; i < argc; i++) {
                 if (i > 1) write(fd, " ", 1);

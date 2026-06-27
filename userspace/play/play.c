@@ -1,5 +1,6 @@
 /* play — CLI audio player / synthesizer. */
 #include "unistd.h"
+#include "fcntl.h"
 #include "stdio.h"
 #include "string.h"
 
@@ -21,7 +22,7 @@ static struct note ode[] = {
 
 static void play_song(const char *name, struct note *song) {
     printf("[play] Playing '%s' via /dev/audio...\n", name);
-    int fd = open("/dev/audio");
+    int fd = open("/dev/audio", O_WRONLY);
     if (fd < 0) {
         puts("[play] Error: /dev/audio not available.");
         return;

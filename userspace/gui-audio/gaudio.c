@@ -1,6 +1,7 @@
 /* gaudio — Graphical music player with animated visualizer. */
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "string.h"
 
 static int wid;
@@ -19,7 +20,7 @@ static void on_play_starwars(ag_widget_t *w, void *u) {
     (void)w; (void)u;
     strcpy(status_lbl->text, "Playing: Star Wars Theme");
     ag_view_render(&view);
-    int fd = open("/dev/audio");
+    int fd = open("/dev/audio", O_WRONLY);
     if (fd >= 0) {
         write(fd, "BEEP 440 500", 12);
         close(fd);
@@ -30,7 +31,7 @@ static void on_play_ode(ag_widget_t *w, void *u) {
     (void)w; (void)u;
     strcpy(status_lbl->text, "Playing: Ode to Joy");
     ag_view_render(&view);
-    int fd = open("/dev/audio");
+    int fd = open("/dev/audio", O_WRONLY);
     if (fd >= 0) {
         write(fd, "BEEP 330 300", 12);
         close(fd);
@@ -41,7 +42,7 @@ static void on_stop(ag_widget_t *w, void *u) {
     (void)w; (void)u;
     strcpy(status_lbl->text, "Status: Stopped");
     ag_view_render(&view);
-    int fd = open("/dev/audio");
+    int fd = open("/dev/audio", O_WRONLY);
     if (fd >= 0) {
         write(fd, "BEEP 0 10", 9);
         close(fd);

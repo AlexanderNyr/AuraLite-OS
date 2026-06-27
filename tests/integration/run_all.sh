@@ -44,6 +44,8 @@ ALL_CASES=(
     test_shell_commands
     test_syscalls
     test_selftest
+    test_errno
+    test_open_flags
     test_gui_bad_pointers
     test_process_cleanup
     test_fd_isolation

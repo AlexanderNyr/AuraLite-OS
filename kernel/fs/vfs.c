@@ -7,11 +7,31 @@
 
 #include <stdint.h>
 #include "kernel/fs/vfs.h"
+#include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+
+/*
+ * vfs_wrap_err() — normalise a filesystem op's return value to a negative
+ * errno.  Underlying FS drivers (tmpfs, devfs, ...) still report failure with a
+ * bare -1; until each grows specific errno returns (TODO.md), the VFS layer
+ * substitutes a caller-supplied @fallback errno for that generic -1.  A return
+ * that is already a specific negative errno (in the reserved band) is passed
+ * through unchanged, and any non-negative result is returned as-is.
+ *
+ * @ret      filesystem op return value (>= 0 success, < 0 failure)
+ * @fallback positive errno to use when @ret is the generic -1
+ * Returns @ret on success, or a negative errno on failure.
+ */
+static int64_t vfs_wrap_err(int64_t ret, int fallback) {
+    if (ret >= 0) return ret;
+    if (ret == -1) return -(int64_t)fallback;
+    if (errno_is_err((long)ret)) return ret;   /* already a specific -errno */
+    return -(int64_t)fallback;
+}
 
 /* ---- Anonymous pipe backing -------------------------------------------- */
 #define PIPE_BUF_SIZE 4096
@@ -98,7 +118,7 @@ int vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data) {
             return 0;
         }
     }
-    return -1;
+    return -ENOSPC;   /* mount table full */
 }
 
 /* Find the longest matching mount for a path. */
@@ -135,16 +155,56 @@ static struct vnode *resolve_path(const char *path) {
     return mounts[m].ops->lookup(mounts[m].fs_data, rel);
 }
 
-int vfs_open(const char *path) {
+/*
+ * vfs_open() — POSIX.1-2017 open(2).
+ *
+ * @flags carries the access mode (O_ACCMODE field) plus creation/status flags.
+ * @mode is the permission bits for a newly created file (consulted only with
+ * O_CREAT; AuraLite has no umask yet — applied verbatim, masked to 07777).
+ *
+ * Order of operations (POSIX.1-2017 open()):
+ *   1. validate the access-mode field;
+ *   2. resolve the final component;
+ *   3. absent + !O_CREAT -> ENOENT;  absent + O_CREAT -> create;
+ *   4. present + (O_CREAT|O_EXCL) -> EEXIST;
+ *   5. directory opened for writing -> EISDIR; O_DIRECTORY on non-dir -> ENOTDIR;
+ *   6. O_TRUNC last, only for a regular file opened writable.
+ * On any failure no file is created or modified.
+ */
+int vfs_open(const char *path, int flags, int mode) {
+    int acc = flags & O_ACCMODE;
+    if (acc == 3) return -EINVAL;              /* reserved/invalid access mode */
+
+    int writable = (acc == O_WRONLY || acc == O_RDWR);
+
     struct vnode *vn = resolve_path(path);
+    int created = 0;
+
     if (vn == NULL) {
+        if (!(flags & O_CREAT)) return -ENOENT;
         const char *rel = NULL;
         int m = find_mount(path, &rel);
-        if (m >= 0 && mounts[m].ops->create) {
-            vn = mounts[m].ops->create(mounts[m].fs_data, rel);
-        }
-        if (vn == NULL) {
-            return -1;
+        if (m < 0) return -ENOENT;
+        if (!mounts[m].ops->create) return -EROFS;   /* fs cannot create */
+        vn = mounts[m].ops->create(mounts[m].fs_data, rel);
+        if (vn == NULL) return -EACCES;
+        if (mode != 0) vn->mode = (uint32_t)(mode & 07777);
+        created = 1;
+    } else {
+        /* File exists. */
+        if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
+    }
+
+    /* Type checks against the requested access. */
+    if (vn->type == VFS_TYPE_DIR && writable) return -EISDIR;
+    if ((flags & O_DIRECTORY) && vn->type != VFS_TYPE_DIR) return -ENOTDIR;
+
+    /* O_TRUNC: only meaningful for a regular file opened writable.  POSIX
+     * leaves O_TRUNC without write access undefined — we ignore it there. */
+    if ((flags & O_TRUNC) && writable && vn->type == VFS_TYPE_FILE && !created) {
+        if (vn->ops->truncate) {
+            int64_t tr = vn->ops->truncate(vn, 0);
+            if (tr < 0) return (int)vfs_wrap_err(tr, EIO);
         }
     }
 
@@ -152,54 +212,79 @@ int vfs_open(const char *path) {
     /* Reserve fd 0/1/2 for stdin/stdout/stderr syscall semantics. */
     for (int i = 3; i < VFS_MAX_FDS; i++) {
         if (!fd_table[i].in_use) {
-            fd_table[i].vn     = vn;
-            fd_table[i].pos    = 0;
-            fd_table[i].in_use = 1;
+            fd_table[i].vn          = vn;
+            fd_table[i].pos         = (flags & O_APPEND) ? vn->size : 0;
+            fd_table[i].in_use      = 1;
+            fd_table[i].access_mode = acc;
+            fd_table[i].append      = (flags & O_APPEND) ? 1 : 0;
+            fd_table[i].nonblock    = (flags & O_NONBLOCK) ? 1 : 0;
+            tcb_t *cur = sched_current();
+            if (cur) cur->cloexec[i] = (flags & O_CLOEXEC) ? 1 : 0;
             return i;
         }
     }
-    return -1;
+    return -EMFILE;   /* per-process FD table is full */
 }
 
 int64_t vfs_read(int fd, void *buf, uint64_t count) {
     struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
     struct file *f = &fd_table[fd];
-    if (!f->vn->ops->read) return -1;
+    /* A fd opened O_WRONLY is not readable (POSIX: read on such fd -> EBADF). */
+    if (f->access_mode == O_WRONLY) return -EBADF;
+    if (!f->vn->ops->read) return -EINVAL;   /* object not readable */
+    /* O_NONBLOCK: a read that would block returns -EAGAIN instead.  For a pipe
+     * with no buffered data and writers still attached, that is a would-block. */
+    if (f->nonblock && f->vn->ops == &pipe_read_ops && count > 0) {
+        struct pipe_ring *p = (struct pipe_ring *)f->vn->fs_data;
+        if (p && p->used == 0 && p->writers > 0) return -EAGAIN;
+    }
     int64_t n = f->vn->ops->read(f->vn, f->pos, buf, count);
     if (n > 0) f->pos += (uint64_t)n;
-    return n;
+    return vfs_wrap_err(n, EIO);
 }
 
 int64_t vfs_write(int fd, const void *buf, uint64_t count) {
     struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
     struct file *f = &fd_table[fd];
-    if (!f->vn->ops->write) return -1;
+    /* A fd opened O_RDONLY is not writable (POSIX: write on such fd -> EBADF). */
+    if (f->access_mode == O_RDONLY) return -EBADF;
+    if (!f->vn->ops->write) return -EINVAL;   /* object not writable */
+    /* O_NONBLOCK: a write that would block returns -EAGAIN instead.  For a pipe
+     * whose ring is full with readers still attached, that is a would-block. */
+    if (f->nonblock && f->vn->ops == &pipe_write_ops && count > 0) {
+        struct pipe_ring *p = (struct pipe_ring *)f->vn->fs_data;
+        if (p && p->used == PIPE_BUF_SIZE && p->readers > 0) return -EAGAIN;
+    }
+    /* O_APPEND: reposition to EOF before each write.  The single-threaded
+     * VFS makes the seek-to-EOF + write atomic here; once SMP/preemptive FS
+     * access lands this needs a per-vnode write lock (TODO.md). */
+    if (f->append) f->pos = f->vn->size;
     int64_t n = f->vn->ops->write(f->vn, f->pos, buf, count);
     if (n > 0) f->pos += (uint64_t)n;
-    return n;
+    return vfs_wrap_err(n, EIO);
 }
 
 int64_t vfs_lseek(int fd, int64_t offset, int whence) {
     struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
     struct file *f = &fd_table[fd];
     int64_t new_pos;
     switch (whence) {
         case 0: new_pos = offset; break;
         case 1: new_pos = (int64_t)f->pos + offset; break;
         case 2: new_pos = (int64_t)f->vn->size + offset; break;
-        default: return -1;
+        default: return -EINVAL;
     }
-    if (new_pos < 0) return -1;
+    if (new_pos < 0) return -EINVAL;
     f->pos = (uint64_t)new_pos;
     return new_pos;
 }
 
 int vfs_close(int fd) {
     struct file *fd_table = current_fd_table();
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -1;
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].in_use) return -EBADF;
     struct vnode *vn = fd_table[fd].vn;
     fd_table[fd].in_use = 0;
     fd_table[fd].vn     = NULL;
@@ -235,9 +320,9 @@ static int alloc_fd_slot(struct file *table, int starting_from) {
 
 int vfs_dup(int oldfd) {
     struct file *t = current_fd_table();
-    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -1;
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -EBADF;
     int nfd = alloc_fd_slot(t, 3);
-    if (nfd < 0) return -1;
+    if (nfd < 0) return -EMFILE;
     t[nfd] = t[oldfd];
     /* Cloexec is per-FD: dup() clears it on the new FD. */
     tcb_t *cur = sched_current();
@@ -257,10 +342,10 @@ int vfs_dup(int oldfd) {
 
 int vfs_dup2(int oldfd, int newfd) {
     struct file *t = current_fd_table();
-    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -1;
-    if (newfd < 0 || newfd >= VFS_MAX_FDS) return -1;
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -EBADF;
+    if (newfd < 0 || newfd >= VFS_MAX_FDS) return -EBADF;
     if (oldfd == newfd) return newfd;
-    if (newfd < 3) return -1;                  /* protect stdin/out/err */
+    if (newfd < 3) return -EBADF;              /* protect stdin/out/err */
     if (t[newfd].in_use) vfs_close(newfd);
     t[newfd] = t[oldfd];
     tcb_t *cur = sched_current();
@@ -276,17 +361,19 @@ int vfs_dup2(int oldfd, int newfd) {
     return newfd;
 }
 
-int vfs_pipe(int out_fds[2]) {
-    if (!out_fds) return -1;
+int vfs_pipe2(int out_fds[2], int flags) {
+    if (!out_fds) return -EFAULT;
+    /* pipe2 only accepts O_CLOEXEC | O_NONBLOCK. */
+    if (flags & ~(O_CLOEXEC | O_NONBLOCK)) return -EINVAL;
     struct file *t = current_fd_table();
     int rfd = alloc_fd_slot(t, 3);
-    if (rfd < 0) return -1;
+    if (rfd < 0) return -EMFILE;
     t[rfd].in_use = 1;                          /* reserve before second alloc */
     int wfd = alloc_fd_slot(t, 3);
-    if (wfd < 0) { t[rfd].in_use = 0; return -1; }
+    if (wfd < 0) { t[rfd].in_use = 0; return -EMFILE; }
 
     struct pipe_ring *p = kmalloc(sizeof(*p));
-    if (!p) { t[rfd].in_use = 0; return -1; }
+    if (!p) { t[rfd].in_use = 0; return -ENOMEM; }
     memset(p, 0, sizeof(*p));
     p->readers = 1; p->writers = 1;
 
@@ -297,7 +384,7 @@ int vfs_pipe(int out_fds[2]) {
         if (wvn) kfree(wvn);
         kfree(p);
         t[rfd].in_use = 0;
-        return -1;
+        return -ENOMEM;
     }
     memset(rvn, 0, sizeof(*rvn));
     memset(wvn, 0, sizeof(*wvn));
@@ -306,17 +393,31 @@ int vfs_pipe(int out_fds[2]) {
     rvn->type = VFS_TYPE_CHARDEV; rvn->ops = &pipe_read_ops;  rvn->fs_data = p;
     wvn->type = VFS_TYPE_CHARDEV; wvn->ops = &pipe_write_ops; wvn->fs_data = p;
 
+    int nb = (flags & O_NONBLOCK) ? 1 : 0;
     t[rfd].vn = rvn; t[rfd].pos = 0; t[rfd].in_use = 1;
+    t[rfd].access_mode = O_RDONLY; t[rfd].append = 0; t[rfd].nonblock = nb;
     t[wfd].vn = wvn; t[wfd].pos = 0; t[wfd].in_use = 1;
+    t[wfd].access_mode = O_WRONLY; t[wfd].append = 0; t[wfd].nonblock = nb;
+
+    tcb_t *cur = sched_current();
+    if (cur) {
+        int ce = (flags & O_CLOEXEC) ? 1 : 0;
+        cur->cloexec[rfd] = ce;
+        cur->cloexec[wfd] = ce;
+    }
     out_fds[0] = rfd;
     out_fds[1] = wfd;
     return 0;
 }
 
+int vfs_pipe(int out_fds[2]) {
+    return vfs_pipe2(out_fds, 0);
+}
+
 int vfs_set_cloexec(int fd, int on) {
     tcb_t *cur = sched_current();
-    if (!cur) return -1;
-    if (fd < 0 || fd >= VFS_MAX_FDS) return -1;
+    if (!cur) return -EINVAL;
+    if (fd < 0 || fd >= VFS_MAX_FDS) return -EBADF;
     cur->cloexec[fd] = on ? 1 : 0;
     return 0;
 }
@@ -326,6 +427,77 @@ int vfs_get_cloexec(int fd) {
     if (!cur) return 0;
     if (fd < 0 || fd >= VFS_MAX_FDS) return 0;
     return cur->cloexec[fd];
+}
+
+/*
+ * dup_lowest_from() — duplicate @oldfd into the lowest free slot >= @minfd
+ * (F_DUPFD semantics).  @cloexec selects the new fd's FD_CLOEXEC bit.
+ * Returns the new fd, or a negative errno (EBADF / EINVAL / EMFILE).
+ */
+static int dup_lowest_from(int oldfd, int minfd, int cloexec) {
+    struct file *t = current_fd_table();
+    if (oldfd < 0 || oldfd >= VFS_MAX_FDS || !t[oldfd].in_use) return -EBADF;
+    if (minfd < 0 || minfd >= VFS_MAX_FDS) return -EINVAL;   /* OPEN_MAX bound */
+    int start = (minfd < 3) ? 3 : minfd;   /* never hand out 0/1/2 */
+    int nfd = alloc_fd_slot(t, start);
+    if (nfd < 0) return -EMFILE;            /* no slot >= minfd available */
+    t[nfd] = t[oldfd];
+    tcb_t *cur = sched_current();
+    if (cur) cur->cloexec[nfd] = cloexec ? 1 : 0;
+    /* Bump pipe refcounts if we duped a pipe end. */
+    struct vnode *vn = t[nfd].vn;
+    if (vn) {
+        struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
+        if (p) {
+            if (vn->ops == &pipe_read_ops)  p->readers++;
+            if (vn->ops == &pipe_write_ops) p->writers++;
+        }
+    }
+    return nfd;
+}
+
+/*
+ * vfs_fcntl() — POSIX fcntl(2) subset.  Returns a non-negative result or a
+ * negative errno.  Keeps the FD_CLOEXEC namespace (F_GETFD/F_SETFD) strictly
+ * separate from the file-status-flags namespace (F_GETFL/F_SETFL).
+ */
+int vfs_fcntl(int fd, int cmd, int arg) {
+    struct file *t = current_fd_table();
+    /* Commands whose @fd must be a valid open descriptor. */
+    if (cmd != F_DUPFD && cmd != F_DUPFD_CLOEXEC) {
+        if (fd < 0 || fd >= VFS_MAX_FDS || !t[fd].in_use) return -EBADF;
+    }
+    struct file *f = &t[fd];
+
+    switch (cmd) {
+    case F_DUPFD:
+        return dup_lowest_from(fd, arg, 0);
+    case F_DUPFD_CLOEXEC:
+        return dup_lowest_from(fd, arg, 1);
+    case F_GETFD:
+        return vfs_get_cloexec(fd) ? FD_CLOEXEC : 0;
+    case F_SETFD:
+        return vfs_set_cloexec(fd, (arg & FD_CLOEXEC) ? 1 : 0);
+    case F_GETFL: {
+        /* access mode | live status flags (NOT FD_CLOEXEC, NOT creation flags) */
+        int r = f->access_mode;
+        if (f->append)   r |= O_APPEND;
+        if (f->nonblock) r |= O_NONBLOCK;
+        return r;
+    }
+    case F_SETFL:
+        /* Only O_APPEND / O_NONBLOCK are changeable; access mode and creation
+         * flags in @arg are silently ignored (POSIX requirement). */
+        f->append   = (arg & O_APPEND)   ? 1 : 0;
+        f->nonblock = (arg & O_NONBLOCK) ? 1 : 0;
+        return 0;
+    case F_GETLK:
+    case F_SETLK:
+    case F_SETLKW:
+        return -ENOSYS;   /* POSIX advisory record locking — P10 territory */
+    default:
+        return -EINVAL;   /* unknown command */
+    }
 }
 
 void vfs_close_on_exec(void) {
@@ -343,47 +515,51 @@ void vfs_close_on_exec(void) {
 int vfs_mkdir(const char *path) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
-    if (m < 0) return -1;
-    if (!mounts[m].ops->mkdir) return -1;
-    return mounts[m].ops->mkdir(mounts[m].fs_data, rel);
+    if (m < 0) return -ENOENT;
+    if (!mounts[m].ops->mkdir) return -ENOSYS;
+    return (int)vfs_wrap_err(mounts[m].ops->mkdir(mounts[m].fs_data, rel), EACCES);
 }
 
 int vfs_rmdir(const char *path) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
-    if (m < 0) return -1;
-    if (!mounts[m].ops->rmdir) return -1;
-    return mounts[m].ops->rmdir(mounts[m].fs_data, rel);
+    if (m < 0) return -ENOENT;
+    if (!mounts[m].ops->rmdir) return -ENOSYS;
+    return (int)vfs_wrap_err(mounts[m].ops->rmdir(mounts[m].fs_data, rel), ENOENT);
 }
 
 int vfs_unlink(const char *path) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
-    if (m < 0) return -1;
-    if (!mounts[m].ops->unlink) return -1;
-    return mounts[m].ops->unlink(mounts[m].fs_data, rel);
+    if (m < 0) return -ENOENT;
+    if (!mounts[m].ops->unlink) return -ENOSYS;
+    return (int)vfs_wrap_err(mounts[m].ops->unlink(mounts[m].fs_data, rel), ENOENT);
 }
 
 int vfs_rename(const char *from, const char *to) {
     const char *rel_from = NULL, *rel_to = NULL;
     int m_from = find_mount(from, &rel_from);
     int m_to   = find_mount(to,   &rel_to);
-    if (m_from < 0 || m_to < 0 || m_from != m_to) return -1;
-    if (!mounts[m_from].ops->rename) return -1;
-    return mounts[m_from].ops->rename(mounts[m_from].fs_data, rel_from, rel_to);
+    if (m_from < 0 || m_to < 0) return -ENOENT;
+    if (m_from != m_to) return -EXDEV;          /* cross-device link */
+    if (!mounts[m_from].ops->rename) return -ENOSYS;
+    return (int)vfs_wrap_err(
+        mounts[m_from].ops->rename(mounts[m_from].fs_data, rel_from, rel_to),
+        ENOENT);
 }
 
 int vfs_truncate(const char *path, uint64_t new_size) {
     struct vnode *vn = resolve_path(path);
-    if (!vn || !vn->ops->truncate) return -1;
-    return vn->ops->truncate(vn, new_size);
+    if (!vn) return -ENOENT;
+    if (!vn->ops->truncate) return -EINVAL;
+    return (int)vfs_wrap_err(vn->ops->truncate(vn, new_size), EIO);
 }
 
 int vfs_stat(const char *path, struct vfs_stat *out) {
-    if (!out) return -1;
+    if (!out) return -EFAULT;
     struct vnode *vn = resolve_path(path);
-    if (!vn) return -1;
-    if (vn->ops->stat) return vn->ops->stat(vn, out);
+    if (!vn) return -ENOENT;
+    if (vn->ops->stat) return (int)vfs_wrap_err(vn->ops->stat(vn, out), EIO);
     /* Default stat: pull from vnode fields. */
     memset(out, 0, sizeof(*out));
     out->type  = vn->type;
@@ -395,12 +571,13 @@ int vfs_stat(const char *path, struct vfs_stat *out) {
 }
 
 int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
-    if (!out || max <= 0) return -1;
+    if (!out) return -EFAULT;
+    if (max <= 0) return -EINVAL;
     struct vnode *vn = resolve_path(path);
-    if (!vn) return -1;
-    if (vn->type != VFS_TYPE_DIR) return -1;
-    if (!vn->ops->readdir) return -1;
-    return vn->ops->readdir(vn, out, max);
+    if (!vn) return -ENOENT;
+    if (vn->type != VFS_TYPE_DIR) return -ENOTDIR;
+    if (!vn->ops->readdir) return -ENOSYS;
+    return (int)vfs_wrap_err(vn->ops->readdir(vn, out, max), EIO);
 }
 
 void vfs_list(const char *path) {
@@ -443,7 +620,7 @@ void vfs_list(const char *path) {
 void vfs_self_test(void) {
     kprintf("[vfs] self-test: exercising /dev and initrd...\n");
 
-    int fd = vfs_open("/dev/null");
+    int fd = vfs_open("/dev/null", O_RDWR, 0);
     if (fd < 0) { kprintf("[vfs] FAIL: cannot open /dev/null\n"); return; }
     const char *msg = "hello /dev/null";
     int64_t n = vfs_write(fd, msg, 15);
@@ -454,7 +631,7 @@ void vfs_self_test(void) {
     vfs_close(fd);
     kprintf("[vfs]   /dev/null: write OK (15 bytes discarded)\n");
 
-    fd = vfs_open("/dev/zero");
+    fd = vfs_open("/dev/zero", O_RDONLY, 0);
     if (fd < 0) { kprintf("[vfs] FAIL: cannot open /dev/zero\n"); return; }
     uint8_t zbuf[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
     n = vfs_read(fd, zbuf, 4);
@@ -466,7 +643,7 @@ void vfs_self_test(void) {
     vfs_close(fd);
     kprintf("[vfs]   /dev/zero: read OK (4 zero bytes)\n");
 
-    fd = vfs_open("/tmp/vfs.txt");
+    fd = vfs_open("/tmp/vfs.txt", O_CREAT | O_RDWR, 0644);
     if (fd < 0) { kprintf("[vfs] FAIL: cannot create /tmp/vfs.txt\n"); return; }
     const char *tmsg = "vfs writable path";
     n = vfs_write(fd, tmsg, strlen(tmsg));
@@ -475,7 +652,7 @@ void vfs_self_test(void) {
         vfs_close(fd); return;
     }
     vfs_close(fd);
-    fd = vfs_open("/tmp/vfs.txt");
+    fd = vfs_open("/tmp/vfs.txt", O_RDONLY, 0);
     char tbuf[32] = {0};
     n = vfs_read(fd, tbuf, sizeof(tbuf) - 1);
     vfs_close(fd);
@@ -484,7 +661,7 @@ void vfs_self_test(void) {
     }
     kprintf("[vfs]   /tmp/vfs.txt: create/write/read OK\n");
 
-    fd = vfs_open("/init");
+    fd = vfs_open("/init", O_RDONLY, 0);
     if (fd >= 0) {
         char fbuf[32] = { 0 };
         n = vfs_read(fd, fbuf, sizeof(fbuf) - 1);

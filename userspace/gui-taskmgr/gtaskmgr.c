@@ -1,6 +1,7 @@
 /* gtaskmgr — GUI Task Manager reading live data from /proc. */
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "string.h"
 
 static int wid;
@@ -21,7 +22,7 @@ static char *find_char(char *s, char c) {
 
 static void update_proc_data(void) {
     /* Read memory info */
-    int fd = open("/proc/meminfo");
+    int fd = open("/proc/meminfo", O_RDONLY);
     if (fd >= 0) {
         char buf[512];
         int64_t n = read(fd, buf, sizeof(buf) - 1);
@@ -54,7 +55,7 @@ static void update_proc_data(void) {
         path[off] = '\0';
         strcat(path, "/cmdline");
 
-        int fdp = open(path);
+        int fdp = open(path, O_RDONLY);
         if (fdp >= 0) {
             int64_t n = read(fdp, name, sizeof(name) - 1);
             if (n > 0) {

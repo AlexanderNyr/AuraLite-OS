@@ -40,12 +40,10 @@
 #define SYS_DUP    32
 #define SYS_DUP2   33
 #define SYS_PIPE   22
+#define SYS_PIPE2  293
 #define SYS_FCNTL  72
 
-/* fcntl commands. */
-#define F_GETFD    1
-#define F_SETFD    2
-#define FD_CLOEXEC 1
+/* Open flags and fcntl command/FD_CLOEXEC constants live in <fcntl.h>. */
 
 #define AF_INET      2
 #define SOCK_STREAM  1
@@ -76,8 +74,14 @@ struct stat {
 #define ST_TYPE_FILE 1
 #define ST_TYPE_DIR  2
 
+#ifndef AURALITE_TYPE_SSIZE_T
+#define AURALITE_TYPE_SSIZE_T
 typedef int64_t ssize_t;
+#endif
+#ifndef AURALITE_TYPE_PID_T
+#define AURALITE_TYPE_PID_T
 typedef int64_t pid_t;
+#endif
 
 /* Generic syscall: num in the first argument, up to 6 more arguments. */
 int64_t syscall(int64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
@@ -86,7 +90,8 @@ int64_t syscall(int64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
 /* POSIX-style wrappers. */
 ssize_t write(int fd, const void *buf, size_t count);
 ssize_t read(int fd, void *buf, size_t count);
-int     open(const char *path);
+int     open(const char *path, int flags, ...);
+int     creat(const char *path, int mode);
 int     close(int fd);
 void    _exit(int code);
 pid_t   getpid(void);
@@ -133,7 +138,8 @@ int     stat(const char *path, struct stat *out);
 int     dup(int oldfd);
 int     dup2(int oldfd, int newfd);
 int     pipe(int fds[2]);
-int     fcntl(int fd, int cmd, int arg);
+int     pipe2(int fds[2], int flags);
+/* fcntl() is declared (variadic) in <fcntl.h>. */
 
 /* waitpid: wait for a specific child (or any if pid<0). */
 pid_t   waitpid(pid_t pid, int *status);

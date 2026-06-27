@@ -6,6 +6,7 @@
  */
 #include "auragui.h"
 #include "unistd.h"
+#include "fcntl.h"
 #include "stdio.h"
 #include "string.h"
 
@@ -74,7 +75,7 @@ static void run_command(const char *line) {
     } else if (strcmp(cmd, "cat") == 0) {
         if (!arg[0]) { hist_push("cat: missing file"); }
         else {
-            int fd = open(arg);
+            int fd = open(arg, O_RDONLY);
             if (fd < 0) hist_push("cat: open failed");
             else {
                 char b[COLS + 1];
