@@ -571,6 +571,13 @@ static int dup_lowest_from(int oldfd, int minfd, int cloexec) {
  * negative errno.  Keeps the FD_CLOEXEC namespace (F_GETFD/F_SETFD) strictly
  * separate from the file-status-flags namespace (F_GETFL/F_SETFL).
  */
+int vfs_ioctl(int fd, unsigned long cmd, void *karg) {
+    struct ofd *o = fd_to_ofd(fd);
+    if (!o) return -EBADF;
+    if (!o->vn || !o->vn->ops->ioctl) return -ENOTTY;   /* not a device */
+    return o->vn->ops->ioctl(o->vn, cmd, karg);
+}
+
 int vfs_fcntl(int fd, int cmd, int arg) {
     struct ofd **t = current_fd_table();
     /* Commands whose @fd must be a valid open descriptor. */

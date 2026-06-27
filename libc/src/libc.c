@@ -16,7 +16,10 @@
 #include "math.h"
 #include "fcntl.h"
 #include "sys/uio.h"
+#include "sys/wait.h"
 #include "signal.h"
+#include "termios.h"
+#include "sys/ioctl.h"
 
 /* ---- errno storage ----
  *
@@ -196,6 +199,55 @@ int sigsuspend(const sigset_t *mask) {
     return (int)syscall_ret(syscall(SYS_SIGSUSPEND, (uint64_t)mask, 0, 0, 0, 0, 0));
 }
 
+/* ---- termios / ioctl ---- */
+
+int ioctl(int fd, unsigned long request, void *arg) {
+    return (int)syscall_ret(syscall(SYS_IOCTL, (uint64_t)fd, (uint64_t)request,
+                                    (uint64_t)arg, 0, 0, 0));
+}
+
+int tcgetattr(int fd, struct termios *t) {
+    return ioctl(fd, TCGETS, t);
+}
+
+int tcsetattr(int fd, int optional_actions, const struct termios *t) {
+    unsigned long cmd;
+    switch (optional_actions) {
+    case TCSANOW:   cmd = TCSETS;  break;
+    case TCSADRAIN: cmd = TCSETSW; break;
+    case TCSAFLUSH: cmd = TCSETSF; break;
+    default: errno = EINVAL; return -1;
+    }
+    /* ioctl takes a non-const pointer; the SET commands only read it. */
+    return ioctl(fd, cmd, (void *)(uintptr_t)t);
+}
+
+void cfmakeraw(struct termios *t) {
+    /* Matches the glibc/BSD definition (including VMIN/VTIME, which the real
+     * glibc cfmakeraw.c does set despite the manual historically omitting it). */
+    t->c_iflag &= ~(tcflag_t)(IGNBRK | BRKINT | PARMRK | ISTRIP |
+                              INLCR | IGNCR | ICRNL | IXON);
+    t->c_oflag &= ~(tcflag_t)OPOST;
+    t->c_lflag &= ~(tcflag_t)(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    t->c_cflag &= ~(tcflag_t)(CSIZE | PARENB);
+    t->c_cflag |=  (tcflag_t)CS8;
+    t->c_cc[VMIN]  = 1;
+    t->c_cc[VTIME] = 0;
+}
+
+/* Baud handling is a no-op on AuraLite's console/UART (fixed rate). */
+speed_t cfgetispeed(const struct termios *t) { (void)t; return 0; }
+speed_t cfgetospeed(const struct termios *t) { (void)t; return 0; }
+int cfsetispeed(struct termios *t, speed_t speed) { (void)t; (void)speed; return 0; }
+int cfsetospeed(struct termios *t, speed_t speed) { (void)t; (void)speed; return 0; }
+
+int isatty(int fd) {
+    struct termios t;
+    if (ioctl(fd, TCGETS, &t) == 0) return 1;
+    /* ioctl set errno (ENOTTY/EBADF); isatty returns 0 on non-tty. */
+    return 0;
+}
+
 void _exit(int code) {
     syscall(SYS_EXIT, (uint64_t)code, 0, 0, 0, 0, 0);
 }
@@ -296,20 +348,45 @@ int execve(const char *path) {
 }
 
 pid_t wait(int *status) {
-    return (pid_t)syscall_ret(syscall(SYS_WAIT4, (uint64_t)status,
-                                      0, 0, 0, 0, 0));
+    return waitpid((pid_t)-1, status, 0);
 }
 
 pid_t spawn(const char *path) {
     return (pid_t)syscall_ret(syscall(SYS_SPAWN, (uint64_t)path, 0, 0, 0, 0, 0));
 }
 
-pid_t waitpid(pid_t pid, int *status) {
-    int64_t s = 0;
-    long r = syscall_ret(syscall(SYS_WAIT4, (uint64_t)pid, (uint64_t)&s,
-                                 0, 0, 0, 0));
-    if (status) *status = (int)s;
-    return (pid_t)r;
+pid_t waitpid(pid_t pid, int *status, int options) {
+    /* The kernel writes a 32-bit POSIX status word directly to @status, and
+     * returns the reaped pid, 0 (WNOHANG: none ready), or a negative errno. */
+    return (pid_t)syscall_ret(syscall(SYS_WAIT4, (uint64_t)pid,
+                                      (uint64_t)status, (uint64_t)options,
+                                      0, 0, 0));
+}
+
+pid_t setsid(void) {
+    return (pid_t)syscall_ret(syscall(SYS_SETSID, 0, 0, 0, 0, 0, 0));
+}
+int setpgid(pid_t pid, pid_t pgid) {
+    return (int)syscall_ret(syscall(SYS_SETPGID, (uint64_t)pid, (uint64_t)pgid,
+                                    0, 0, 0, 0));
+}
+pid_t getpgid(pid_t pid) {
+    return (pid_t)syscall_ret(syscall(SYS_GETPGID, (uint64_t)pid, 0, 0, 0, 0, 0));
+}
+pid_t getsid(pid_t pid) {
+    return (pid_t)syscall_ret(syscall(SYS_GETSID, (uint64_t)pid, 0, 0, 0, 0, 0));
+}
+pid_t getpgrp(void) {
+    return getpgid(0);
+}
+pid_t tcgetpgrp(int fd) {
+    int pgid = 0;
+    if (ioctl(fd, TIOCGPGRP, &pgid) < 0) return -1;
+    return (pid_t)pgid;
+}
+int tcsetpgrp(int fd, pid_t pgid) {
+    int p = (int)pgid;
+    return ioctl(fd, TIOCSPGRP, &p);
 }
 
 int dup(int oldfd) {
@@ -635,7 +712,10 @@ int toupper(int c)  { return islower(c) ? c - ('a' - 'A') : c; }
 
 /* ---- stdlib ---- */
 
+void __stdio_cleanup(void);   /* defined with the FILE* layer below */
+
 void exit(int status) {
+    __stdio_cleanup();   /* flush all buffered output streams (C11 §7.22.4.4) */
     _exit(status);
     for (;;) { }   /* _exit does not return; keep the compiler happy */
 }
@@ -792,86 +872,383 @@ char *strtok(char *s, const char *delim) {
 
 /* ---- stdio ---- */
 
-int putchar(int c) {
-    char ch = (char)c;
-    write(1, &ch, 1);
-    return c;
-}
+/* ---- formatting core (callback-based, shared by printf/fprintf/snprintf) ---- */
 
-int puts(const char *s) {
-    write(1, s, strlen(s));
-    putchar('\n');
-    return 0;
-}
+struct fmt_sink {
+    void (*emit)(struct fmt_sink *s, char c);
+    int   count;        /* total chars emitted (or that would be emitted) */
+    /* For snprintf: */
+    char *out;
+    size_t cap;         /* capacity including the NUL */
+    size_t len;         /* chars actually stored */
+};
 
-static void print_uint(uint64_t val, unsigned base, int upper, int width, int zero) {
+static void fmt_emit_uint(struct fmt_sink *s, uint64_t val, unsigned base,
+                          int upper, int width, int zero) {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char buf[32];
     int i = 0;
     if (val == 0) buf[i++] = '0';
     while (val) { buf[i++] = digits[val % base]; val /= base; }
     int pad = width - i;
-    while (pad-- > 0) putchar(zero ? '0' : ' ');
-    while (i--) putchar(buf[i]);
+    while (pad-- > 0) s->emit(s, zero ? '0' : ' ');
+    while (i--) s->emit(s, buf[i]);
 }
 
-int printf(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
+static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
     for (; *fmt; fmt++) {
-        if (*fmt != '%') { putchar(*fmt); continue; }
+        if (*fmt != '%') { s->emit(s, *fmt); continue; }
         fmt++;
         int zero = 0, width = 0;
         while (*fmt == '0') { zero = 1; fmt++; }
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
-        /* Parse length modifiers (l, ll, h). */
         int is_long = 0;
         while (*fmt == 'l') { is_long++; fmt++; }
         while (*fmt == 'h') { fmt++; }
         switch (*fmt) {
-        case '%': putchar('%'); break;
-        case 'c': putchar(va_arg(ap, int)); break;
+        case '%': s->emit(s, '%'); break;
+        case 'c': s->emit(s, (char)va_arg(ap, int)); break;
         case 's': {
-            const char *s = va_arg(ap, const char *);
-            if (!s) s = "(null)";
-            write(1, s, strlen(s));
+            const char *str = va_arg(ap, const char *);
+            if (!str) str = "(null)";
+            while (*str) s->emit(s, *str++);
             break;
         }
         case 'd': {
             int64_t v = is_long ? va_arg(ap, int64_t)
                                 : (int64_t)(int)va_arg(ap, int);
-            if (v < 0) { putchar('-'); print_uint((uint64_t)(-(v+1))+1, 10, 0, width, zero); }
-            else print_uint((uint64_t)v, 10, 0, width, zero);
+            if (v < 0) { s->emit(s, '-'); fmt_emit_uint(s, (uint64_t)(-(v+1))+1, 10, 0, width, zero); }
+            else fmt_emit_uint(s, (uint64_t)v, 10, 0, width, zero);
             break;
         }
         case 'u': {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
-            print_uint(v, 10, 0, width, zero);
+            fmt_emit_uint(s, v, 10, 0, width, zero);
             break;
         }
         case 'o': {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
-            print_uint(v, 8, 0, width, zero);
+            fmt_emit_uint(s, v, 8, 0, width, zero);
+            break;
+        }
+        case 'p': {
+            void *pv = va_arg(ap, void *);
+            s->emit(s, '0'); s->emit(s, 'x');
+            fmt_emit_uint(s, (uint64_t)(uintptr_t)pv, 16, 0, 0, 0);
             break;
         }
         case 'x': {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
-            print_uint(v, 16, 0, width, zero);
+            fmt_emit_uint(s, v, 16, 0, width, zero);
             break;
         }
         case 'X': {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
-            print_uint(v, 16, 1, width, zero);
+            fmt_emit_uint(s, v, 16, 1, width, zero);
             break;
         }
         case '\0': fmt--; break;
-        default: putchar('%'); putchar(*fmt); break;
+        default: s->emit(s, '%'); s->emit(s, *fmt); break;
         }
     }
+    return s->count;
+}
+
+/* snprintf sink: store into a bounded buffer, always counting. */
+static void sink_str_emit(struct fmt_sink *s, char c) {
+    if (s->len + 1 < s->cap) s->out[s->len++] = c;
+    s->count++;
+}
+
+int vsnprintf(char *str, size_t size, const char *fmt, va_list ap) {
+    struct fmt_sink s;
+    s.emit = sink_str_emit;
+    s.count = 0; s.out = str; s.cap = size; s.len = 0;
+    int n = format_to_sink(&s, fmt, ap);
+    if (size > 0) str[(s.len < size) ? s.len : size - 1] = '\0';
+    return n;
+}
+
+int snprintf(char *str, size_t size, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(str, size, fmt, ap);
     va_end(ap);
+    return n;
+}
+
+int putchar(int c) { return fputc(c, stdout); }
+
+int puts(const char *s) {
+    fputs(s, stdout);
+    fputc('\n', stdout);
     return 0;
+}
+
+int printf(const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int n = vfprintf(stdout, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+/* ==================================================================== */
+/* FILE* stdio streams                                                   */
+/* ==================================================================== */
+
+static FILE s_stdin  = { 0, 0, _IOLBF, 0, 0, 0, 0, 0, 0, -1, {0} };
+static FILE s_stdout = { 1, 0, _IOLBF, 0, 0, 0, 0, 0, 0, -1, {0} };
+static FILE s_stderr = { 2, 0, _IONBF, 0, 0, 0, 0, 0, 0, -1, {0} };
+
+FILE *stdin  = &s_stdin;
+FILE *stdout = &s_stdout;
+FILE *stderr = &s_stderr;
+
+/* Registry of open streams for exit()-time flushing. */
+#define STDIO_MAX_STREAMS 32
+static FILE *s_open_streams[STDIO_MAX_STREAMS];
+static int   s_streams_inited = 0;
+
+static void stdio_init_once(void) {
+    if (s_streams_inited) return;
+    s_streams_inited = 1;
+    s_stdin.buf  = s_stdin.ibuf;  s_stdin.bufsz  = BUFSIZ;
+    s_stdout.buf = s_stdout.ibuf; s_stdout.bufsz = BUFSIZ;
+    s_stderr.buf = s_stderr.ibuf; s_stderr.bufsz = BUFSIZ;
+    /* stdout/stdin line-buffered iff a TTY, else fully buffered. */
+    s_stdout.bufmode = isatty(1) ? _IOLBF : _IOFBF;
+    s_stdin.bufmode  = isatty(0) ? _IOLBF : _IOFBF;
+    s_open_streams[0] = &s_stdin;
+    s_open_streams[1] = &s_stdout;
+    s_open_streams[2] = &s_stderr;
+}
+
+static void stream_register(FILE *f) {
+    stdio_init_once();
+    for (int i = 0; i < STDIO_MAX_STREAMS; i++) {
+        if (s_open_streams[i] == 0) { s_open_streams[i] = f; return; }
+    }
+}
+
+static void stream_unregister(FILE *f) {
+    for (int i = 0; i < STDIO_MAX_STREAMS; i++) {
+        if (s_open_streams[i] == f) { s_open_streams[i] = 0; return; }
+    }
+}
+
+/* Flush buffered write data to the fd. */
+int fflush(FILE *f) {
+    stdio_init_once();
+    if (f == 0) {
+        /* fflush(NULL): flush all output streams. */
+        int rc = 0;
+        for (int i = 0; i < STDIO_MAX_STREAMS; i++) {
+            FILE *s = s_open_streams[i];
+            if (s && s->dir == 2 && s->bufpos > 0) { if (fflush(s) != 0) rc = -1; }
+        }
+        return rc;
+    }
+    if (f->dir == 2 && f->bufpos > 0) {
+        int off = 0;
+        while (off < f->bufpos) {
+            ssize_t w = write(f->fd, f->buf + off, (size_t)(f->bufpos - off));
+            if (w <= 0) { f->flags |= FILE_ERR; f->bufpos = 0; return EOF; }
+            off += (int)w;
+        }
+        f->bufpos = 0;
+    }
+    return 0;
+}
+
+static void fputc_buffered(FILE *f, char c) {
+    if (!f->buf) { f->buf = f->ibuf; f->bufsz = BUFSIZ; }
+    f->dir = 2;
+    if (f->bufmode == _IONBF) {
+        write(f->fd, &c, 1);
+        return;
+    }
+    f->buf[f->bufpos++] = c;
+    if (f->bufpos >= f->bufsz) fflush(f);
+    else if (f->bufmode == _IOLBF && c == '\n') fflush(f);
+}
+
+int fputc(int c, FILE *f) {
+    stdio_init_once();
+    fputc_buffered(f, (char)c);
+    if (f->flags & FILE_ERR) return EOF;
+    return (unsigned char)c;
+}
+int putc(int c, FILE *f) { return fputc(c, f); }
+
+int fputs(const char *s, FILE *f) {
+    stdio_init_once();
+    while (*s) { fputc_buffered(f, *s++); }
+    return (f->flags & FILE_ERR) ? EOF : 0;
+}
+
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f) {
+    stdio_init_once();
+    if (size == 0 || nmemb == 0) return 0;
+    const char *p = (const char *)ptr;
+    size_t total = size * nmemb;
+    for (size_t i = 0; i < total; i++) {
+        fputc_buffered(f, p[i]);
+        if (f->flags & FILE_ERR) return i / size;
+    }
+    return nmemb;
+}
+
+/* Refill the read buffer from the fd.  Returns bytes available, 0 on EOF. */
+static int stream_fill(FILE *f) {
+    if (!f->buf) { f->buf = f->ibuf; f->bufsz = BUFSIZ; }
+    f->dir = 1;
+    ssize_t n = read(f->fd, f->buf, (size_t)f->bufsz);
+    if (n <= 0) { if (n == 0) f->flags |= FILE_EOF; else f->flags |= FILE_ERR; f->bufcap = 0; f->readpos = 0; return 0; }
+    f->bufcap = (int)n;
+    f->readpos = 0;
+    return (int)n;
+}
+
+int fgetc(FILE *f) {
+    stdio_init_once();
+    if (f->ungot != -1) { int c = f->ungot; f->ungot = -1; return c; }
+    if (f->readpos >= f->bufcap) {
+        if (stream_fill(f) == 0) return EOF;
+    }
+    return (unsigned char)f->buf[f->readpos++];
+}
+int getc(FILE *f) { return fgetc(f); }
+int getchar(void) { return fgetc(stdin); }
+
+int ungetc(int c, FILE *f) {
+    if (c == EOF) return EOF;
+    f->ungot = (unsigned char)c;
+    f->flags &= ~FILE_EOF;     /* ungetc clears the EOF indicator */
+    return (unsigned char)c;
+}
+
+char *fgets(char *s, int size, FILE *f) {
+    stdio_init_once();
+    if (size <= 0) return 0;
+    int i = 0;
+    while (i < size - 1) {
+        int c = fgetc(f);
+        if (c == EOF) break;
+        s[i++] = (char)c;
+        if (c == '\n') break;
+    }
+    if (i == 0) return 0;       /* EOF with no data */
+    s[i] = '\0';
+    return s;
+}
+
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f) {
+    stdio_init_once();
+    if (size == 0 || nmemb == 0) return 0;
+    char *p = (char *)ptr;
+    size_t total = size * nmemb;
+    size_t got = 0;
+    while (got < total) {
+        int c = fgetc(f);
+        if (c == EOF) break;
+        p[got++] = (char)c;
+    }
+    return got / size;
+}
+
+/* vfprintf sink: emit through the stream's buffered path. */
+static FILE *s_vf_target;
+static void sink_file_emit(struct fmt_sink *s, char c) {
+    fputc_buffered(s_vf_target, c);
+    s->count++;
+}
+
+int vfprintf(FILE *f, const char *fmt, va_list ap) {
+    stdio_init_once();
+    struct fmt_sink s;
+    s.emit = sink_file_emit; s.count = 0; s.out = 0; s.cap = 0; s.len = 0;
+    s_vf_target = f;
+    return format_to_sink(&s, fmt, ap);
+}
+
+int fprintf(FILE *f, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int n = vfprintf(f, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+static int parse_mode(const char *mode, int *o_flags) {
+    /* Returns 0 on success, fills O_* flags. */
+    if (!mode || !*mode) return -1;
+    int rw = 0;
+    switch (mode[0]) {
+    case 'r': rw = O_RDONLY; break;
+    case 'w': rw = O_WRONLY | O_CREAT | O_TRUNC; break;
+    case 'a': rw = O_WRONLY | O_CREAT | O_APPEND; break;
+    default: return -1;
+    }
+    if (mode[1] == '+' || (mode[1] == 'b' && mode[2] == '+')) {
+        rw = (rw & ~O_ACCMODE) | O_RDWR;
+    }
+    *o_flags = rw;
+    return 0;
+}
+
+FILE *fdopen(int fd, const char *mode) {
+    stdio_init_once();
+    (void)mode;
+    FILE *f = (FILE *)malloc(sizeof(FILE));
+    if (!f) return 0;
+    memset(f, 0, sizeof(*f));
+    f->fd = fd;
+    f->bufmode = isatty(fd) ? _IOLBF : _IOFBF;
+    f->buf = f->ibuf; f->bufsz = BUFSIZ;
+    f->ungot = -1;
+    stream_register(f);
+    return f;
+}
+
+FILE *fopen(const char *path, const char *mode) {
+    int oflags;
+    if (parse_mode(mode, &oflags) != 0) { errno = EINVAL; return 0; }
+    int fd = open(path, oflags, 0644);
+    if (fd < 0) return 0;
+    FILE *f = fdopen(fd, mode);
+    if (!f) { close(fd); return 0; }
+    f->flags |= FILE_ALLOC;
+    return f;
+}
+
+int fclose(FILE *f) {
+    if (!f) return EOF;
+    fflush(f);
+    int fd = f->fd;
+    stream_unregister(f);
+    int alloc = f->flags & FILE_ALLOC;
+    if (alloc) free(f);
+    return (close(fd) == 0) ? 0 : EOF;
+}
+
+int feof(FILE *f) { return (f->flags & FILE_EOF) ? 1 : 0; }
+int ferror(FILE *f) { return (f->flags & FILE_ERR) ? 1 : 0; }
+void clearerr(FILE *f) { f->flags &= ~(FILE_EOF | FILE_ERR); }
+int fileno(FILE *f) { return f->fd; }
+
+int setvbuf(FILE *f, char *buf, int mode, size_t size) {
+    stdio_init_once();
+    f->bufmode = mode;
+    if (buf && size > 0) { f->buf = buf; f->bufsz = (int)size; f->bufpos = 0; }
+    return 0;
+}
+
+/* Called by exit() (libc) to flush+close all streams before _exit. */
+void __stdio_cleanup(void) {
+    for (int i = 0; i < STDIO_MAX_STREAMS; i++) {
+        FILE *s = s_open_streams[i];
+        if (s) fflush(s);
+    }
 }

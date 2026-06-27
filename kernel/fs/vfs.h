@@ -126,6 +126,11 @@ struct vfs_ops {
 
     /* Optional: sync any cached metadata. */
     int (*sync)(void *fs_data);
+
+    /* Optional: device control (ioctl).  @arg is a kernel pointer to a buffer
+     * the syscall layer has copied in (and copies back out).  Returns 0 or a
+     * negative errno; absence implies the node is not an ioctl-capable device. */
+    int (*ioctl)(struct vnode *vn, unsigned long cmd, void *arg);
 };
 
 /* A virtual inode. */
@@ -217,6 +222,11 @@ int     vfs_pipe2(int out_fds[2], int flags);
 /* fcntl(2): F_GETFL/F_SETFL/F_DUPFD/F_DUPFD_CLOEXEC plus the F_GETFD/F_SETFD
  * flag commands.  Returns a non-negative result or a negative errno. */
 int     vfs_fcntl(int fd, int cmd, int arg);
+
+/* ioctl(2): route to the fd's vnode ->ioctl op.  @karg is a kernel buffer the
+ * caller has copied the user argument into; on return it holds the result to
+ * copy back.  Returns 0 or a negative errno (-ENOTTY if not ioctl-capable). */
+int     vfs_ioctl(int fd, unsigned long cmd, void *karg);
 
 /* close-on-exec flag management. */
 int     vfs_set_cloexec(int fd, int on);

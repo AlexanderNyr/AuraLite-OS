@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "kernel/proc/thread.h"
 #include "kernel/proc/scheduler.h"
+#include "kernel/lib/errno.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/string.h"
@@ -229,6 +230,11 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     tcb->id           = next_tid++;
     tcb->state        = THREAD_READY;
     tcb->quantum      = SCHED_QUANTUM;
+    /* Default: each new task is its own process group and session leader.
+     * fork()/spawn() override pgid/sid to inherit from the parent; setsid()/
+     * setpgid() change them explicitly (P6). */
+    tcb->pgid         = (int64_t)tcb->id;
+    tcb->sid          = (int64_t)tcb->id;
     if (name != NULL) {
         strncpy(tcb->name, name, THREAD_NAME_MAX - 1);
         tcb->name[THREAD_NAME_MAX - 1] = 0;
@@ -256,52 +262,80 @@ tcb_t *thread_find_zombie(uint64_t parent_pid, int64_t match_pid) {
     return NULL;
 }
 
-int64_t do_wait4_pid(int64_t pid, int64_t *exit_code) {
+/* WNOHANG / WUNTRACED option bits (match libc sys/wait.h). */
+#define WAIT_WNOHANG  1
+#define WAIT_WUNTRACED 2
+
+/* Does zombie @z match the wait selector @pid for parent @parent_id?
+ *   pid > 0  : z->id == pid
+ *   pid == 0 : z->pgid == parent's pgid
+ *   pid == -1: any child
+ *   pid < -1 : z->pgid == |pid|
+ */
+static int wait_zombie_matches(tcb_t *z, int64_t pid, uint64_t parent_id,
+                               int64_t parent_pgid) {
+    uint64_t zp = z->parent ? z->parent->id : 0;
+    if (zp != parent_id) return 0;
+    if (pid > 0)        return z->id == (uint64_t)pid;
+    if (pid == 0)       return z->pgid == parent_pgid;
+    if (pid == -1)      return 1;
+    return z->pgid == -pid;   /* pid < -1: group |pid| */
+}
+
+/* Build a POSIX wait-status word from a reaped zombie. */
+static int wait_status_of(tcb_t *z) {
+    if (z->term_signal) return z->term_signal & 0x7f;       /* WIFSIGNALED */
+    return (z->exit_code & 0xff) << 8;                       /* WIFEXITED */
+}
+
+int64_t do_waitpid(int64_t pid, int *status, int options) {
     tcb_t *self = sched_current();
-    if (!self) return -1;
+    if (!self) return -EINVAL;
     uint64_t parent_id = self->id;
+    int64_t parent_pgid = self->pgid;
 
     for (;;) {
         uint64_t rflags;
         __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-        tcb_t *z = thread_find_zombie(parent_id, pid);
 
-        if (z) {
-            int code = z->exit_code;
-            uint64_t reaped_pid = z->id;
-            /* Mark the zombie as collected; the next sched_yield() in any
-             * thread will release the TCB + stack + (eventually) address
-             * space.  We deliberately do NOT call thread_reap_zombies()
-             * synchronously here: doing so from inside the syscall path of
-             * the wait4()er has historically raced with other context
-             * switches that still reference the dying thread's metadata. */
-            z->waited = 1;
+        /* Find a matching, not-yet-collected zombie. */
+        tcb_t *match = NULL;
+        for (tcb_t *z = zombie_head; z; z = z->next) {
+            if (z->state != THREAD_DEAD || z->waited) continue;
+            if (wait_zombie_matches(z, pid, parent_id, parent_pgid)) { match = z; break; }
+        }
+        if (match) {
+            int st = wait_status_of(match);
+            uint64_t reaped = match->id;
+            match->waited = 1;                 /* reaper releases it later */
+            if (self->n_children > 0) self->n_children--;
             if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
-            if (exit_code) *exit_code = (int64_t)code;
-            return (int64_t)reaped_pid;
+            if (status) *status = st;
+            return (int64_t)reaped;
         }
 
-        /* No matching child has exited.  Decide whether one ever could. */
-        int has_living_child = 0;
-        /* We don't keep a per-parent child list; for now we scan the run queue
-         * implicitly through sched (no public API).  Treat "no zombies and the
-         * caller is asking for a specific PID that isn't queued" as a
-         * permanent miss to avoid spinning forever in the wrong place.  The
-         * common path (pid<0) yields and retries until something dies. */
-        if (pid >= 0) {
-            /* If the target PID is still on the zombie list but already
-             * waited, return -1.  Otherwise we have to keep yielding. */
-            for (tcb_t *zw = zombie_head; zw; zw = zw->next) {
-                if (zw->id == (uint64_t)pid && zw->waited) {
-                    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
-                    return -1;
-                }
-            }
-        }
-        (void)has_living_child;
+        /* No ready child.  ECHILD if we have no (live or zombie) children that
+         * could match; otherwise either return 0 (WNOHANG) or yield + retry. */
+        int have_candidate = (self->n_children > 0);
         if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+
+        if (!have_candidate) return -ECHILD;
+        if (options & WAIT_WNOHANG) return 0;   /* none ready right now */
         sched_yield();
     }
+}
+
+/* Legacy wrapper used by internal callers (process.c) — blocking, any child. */
+int64_t do_wait4_pid(int64_t pid, int64_t *exit_code) {
+    int st = 0;
+    int64_t r = do_waitpid(pid, exit_code ? &st : 0, 0);
+    if (exit_code) {
+        /* Preserve the old "raw exit code" contract for internal callers:
+         * decode the POSIX status back to the 0..255 / 128+signo form. */
+        if ((st & 0x7f) && !(st & 0xff00)) *exit_code = 128 + (st & 0x7f);
+        else *exit_code = (st >> 8) & 0xff;
+    }
+    return r;
 }
 
 static void close_process_fds(tcb_t *t) {
@@ -374,6 +408,12 @@ void thread_reap_zombies(void) {
         kfree(z);
         zombies_reaped++;
     }
+}
+
+void thread_exit_with_signal(int signo) {
+    tcb_t *self = sched_current();
+    if (self) self->term_signal = signo;
+    thread_exit_with_code(128 + signo);   /* legacy exit-code convention */
 }
 
 void thread_exit_with_code(int code) {

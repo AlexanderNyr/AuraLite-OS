@@ -43,6 +43,7 @@
 #define SYS_PIPE2  293
 #define SYS_FCNTL  72
 #define SYS_LSEEK    8
+#define SYS_IOCTL    16
 #define SYS_PREAD64  17
 #define SYS_PWRITE64 18
 #define SYS_READV    19
@@ -55,6 +56,10 @@
 #define SYS_PAUSE       34
 #define SYS_ALARM       37
 #define SYS_SIGSUSPEND 130
+#define SYS_SETPGID    109
+#define SYS_GETPGID    121
+#define SYS_SETSID     112
+#define SYS_GETSID     124
 
 /* lseek whence values. */
 #define SEEK_SET 0
@@ -114,6 +119,7 @@ ssize_t pwrite(int fd, const void *buf, size_t count, int64_t offset);
 int     open(const char *path, int flags, ...);
 int     creat(const char *path, int mode);
 int     close(int fd);
+int     isatty(int fd);
 void    _exit(int code);
 pid_t   getpid(void);
 pid_t   fork(void);
@@ -162,8 +168,16 @@ int     pipe(int fds[2]);
 int     pipe2(int fds[2], int flags);
 /* fcntl() is declared (variadic) in <fcntl.h>. */
 
-/* waitpid: wait for a specific child (or any if pid<0). */
-pid_t   waitpid(pid_t pid, int *status);
+/* waitpid() is declared in <sys/wait.h> (3-arg POSIX form). */
+
+/* Process groups / sessions (P6). */
+pid_t   setsid(void);
+int     setpgid(pid_t pid, pid_t pgid);
+pid_t   getpgid(pid_t pid);
+pid_t   getsid(pid_t pid);
+pid_t   getpgrp(void);
+pid_t   tcgetpgrp(int fd);
+int     tcsetpgrp(int fd, pid_t pgid);
 
 void*   sbrk(intptr_t increment);
 void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);

@@ -2,6 +2,86 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [P6 (kernel core) — process groups, sessions, waitpid options] 2026-06-27
+
+### Added
+- **Process groups & sessions**: `pgid`/`sid`/`is_session_leader`/`ctty` +
+  `n_children` in `tcb_t`. Every task defaults to its own group/session;
+  fork()/spawn() inherit the parent's pgid/sid/ctty (and bump `n_children`).
+- **Syscalls**: `setsid(112)` (EPERM if already a group leader; detaches ctty),
+  `setpgid(109)` (same-session, non-leader; EPERM/ESRCH/EINVAL), `getpgid(121)`,
+  `getsid(124)`. `kill(62)` now handles `pid==0` (own group), `pid<-1` (group
+  `|pid|`) and `pid==-1` (broadcast) via the new `signal_send_group()`.
+- **Real foreground-group Ctrl+C**: the P5 `tty->fg_pgid` indirection now
+  delivers SIGINT/SIGQUIT/SIGTSTP to **every process in the terminal's
+  foreground group** (`tty_send_signal_fg` → `signal_send_group`), with a
+  fall-back to the current task when no fg group is set. TIOCSPGRP/TIOCGPGRP
+  set/get it.
+- **`waitpid(pid, status, options)`**: `do_wait4_pid` rewritten to `do_waitpid`
+  with **WNOHANG** (returns 0 when no child is ready, -ECHILD when there are no
+  children) and selector matching for `pid==0` (caller's group), `pid<-1`
+  (group `|pid|`), `pid>0`, `pid==-1`. Status is now the standard POSIX word:
+  `WIFEXITED`/`WEXITSTATUS` for normal exit, `WIFSIGNALED`/`WTERMSIG` for signal
+  death (new `term_signal` in `tcb_t`, set by `thread_exit_with_signal`).
+- libc: `sys/wait.h` (`WNOHANG`/`WUNTRACED`/`W*` macros, 3-arg `waitpid`),
+  `setsid`/`setpgid`/`getpgid`/`getsid`/`getpgrp`/`tcgetpgrp`/`tcsetpgrp`.
+- Tests: `tests/unit/test_jobcontrol.c` (W* macros + status encoding + selector
+  matching, ALL PASS), selftest P6 block, `tests/integration/cases/test_jobcontrol.sh`.
+
+### Changed
+- `waitpid` is now the 3-arg POSIX form; `wait(status)` = `waitpid(-1, status, 0)`.
+  The kernel writes a 32-bit status word (was int64_t).
+
+### Notes / deferred (P6 follow-up)
+- The interactive shell job control (`cmd &`, `jobs`, `fg`, `bg`,
+  setpgid+tcsetpgrp per child) is deferred — the kernel mechanism is complete
+  and tested; the userspace shell rewrite (high regression risk, needs a QEMU
+  boot to validate interactivity) is the remaining work. WUNTRACED/stopped-state
+  job control arrives with a proper SIGSTOP stopped state.
+
+## [P5 (core) — TTY, termios, ioctl, FILE* streams] 2026-06-27
+
+### Added
+- **TTY subsystem** (`kernel/tty/{termios.h,tty.h,tty.c}`): an N_TTY line
+  discipline with canonical and raw modes, ECHO/ECHOE/ECHOCTL echo (control
+  chars as ^X, destructive backspace erase), VERASE/VKILL editing, ^D EOF
+  (empty-line→read returns 0; mid-line→commit without newline), VMIN/VTIME
+  raw read rules, ICRNL/IGNCR/INLCR input + OPOST/ONLCR output processing.
+- **ISIG → signals**: ^C/^\/^Z generate SIGINT/SIGQUIT/SIGTSTP through a
+  `tty->fg_pgid` indirection (so P6 process groups drop in cleanly); the char is
+  discarded and queues flushed unless NOFLSH. **Ctrl+C now interrupts the shell**
+  (wired into the existing console stdin path; the read returns -EINTR / partial).
+- **`/dev/tty0`**: a real openable terminal device (devfs DEV_TTY) routing
+  read/write/ioctl to the console tty.
+- **`SYS_IOCTL` (16)** with a per-cmd copy-in/out: TCGETS/TCSETS/TCSETSW/TCSETSF,
+  TIOCGWINSZ/TIOCSWINSZ (sends SIGWINCH), TIOCGPGRP/TIOCSPGRP. New optional
+  `->ioctl` op on `struct vfs_ops` (only devfs implements it) + `vfs_ioctl`.
+- **libc**: `termios.h`, `sys/ioctl.h`, `tcgetattr`/`tcsetattr`/`cfmakeraw`
+  (sets VMIN=1/VTIME=0 like real glibc)/`cfget*speed`/`isatty` (ENOTTY on
+  non-tty), `ioctl` wrapper.
+- **FILE* stdio layer**: `FILE`, `stdin`/`stdout`/`stderr` (stdout line-buffered
+  on a TTY else fully buffered, stderr unbuffered), `fopen`/`fdopen`/`fclose`/
+  `fread`/`fwrite`/`fgetc`/`getc`/`getchar`/`ungetc`/`fgets`/`fputc`/`putc`/
+  `fputs`/`fprintf`/`vfprintf`/`snprintf`/`vsnprintf`/`fflush`/`feof`/`ferror`/
+  `clearerr`/`fileno`/`setvbuf`. `printf`/`puts`/`putchar` now route through the
+  buffered `stdout` stream; the formatting core was refactored into a shared
+  callback sink. `exit()` (and crt0 on return from main) flush all streams.
+- Tests: `tests/unit/test_termios.c` (ABI + cfmakeraw + struct sizes, ALL PASS),
+  selftest P5 block (open /dev/tty0, isatty, cfmakeraw round-trip, TIOCGWINSZ,
+  FILE* fopen/fprintf/fgets), `tests/integration/cases/test_termios.sh`.
+
+### Changed
+- The shell's prompt still uses raw `write(1,...)` (unbuffered), so it appears
+  immediately; spawned programs flush their FILE* buffers on exit, preserving
+  output ordering relative to the shell.
+
+### Notes / deferred (P5 follow-up)
+- `scanf`/`fscanf`, the raw-mode `readline()` line editor (arrows/history),
+  `/dev/ttyS0`, and rewiring init (PID 1) to use /dev/tty0 as stdin/stdout/stderr
+  are deferred (the existing fd-0 console path is kept to avoid shell regressions).
+- The printf→FILE* reroute and the Ctrl+C stdin interruption especially want a
+  real QEMU boot to confirm interactive behavior (toolchain unavailable here).
+
 ## [P4 follow-up — SIGCHLD, alarm, pause, sigsuspend, SIGPIPE, EINTR] 2026-06-27
 
 ### Added

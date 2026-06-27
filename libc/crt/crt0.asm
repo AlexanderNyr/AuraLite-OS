@@ -12,6 +12,7 @@ default rel
 section .text
 global _start
 extern main
+extern exit
 extern __stack_chk_guard
 
 _start:
@@ -26,7 +27,6 @@ _start:
     xor rbp, rbp              ; clear frame pointer (ABI requirement)
     call main                 ; RSP is 16-aligned; call pushes ret addr -> RSP≡8
     mov edi, eax              ; exit code from main's return value
-    mov eax, 60               ; SYS_EXIT
-    syscall
-    ; Should never reach here — SYS_EXIT does not return.
+    call exit                 ; libc exit(): flush stdio buffers, then SYS_EXIT
+    ; Should never reach here — exit() does not return.
     ud2

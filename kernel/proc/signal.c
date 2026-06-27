@@ -79,6 +79,19 @@ void signal_send(tcb_t *target, int signo) {
     target->sig_pending |= sig_bit(signo);
 }
 
+int signal_send_group(int64_t pgid, int signo) {
+    tcb_t *list[64];
+    int n = thread_get_all(list, 64);
+    int delivered = 0;
+    for (int i = 0; i < n; i++) {
+        if (list[i]->pml4_phys == 0) continue;        /* skip kernel threads */
+        if (list[i]->pgid != pgid) continue;
+        if (signo != 0) signal_send(list[i], signo);
+        delivered = 1;
+    }
+    return delivered ? 0 : -ESRCH;
+}
+
 int signal_kill(int64_t pid, int signo) {
     if (signo < 0 || signo >= NSIG) return -EINVAL;
     if (pid > 0) {
@@ -87,19 +100,71 @@ int signal_kill(int64_t pid, int signo) {
         if (signo != 0) signal_send(t, signo);   /* signo==0: existence check */
         return 0;
     }
-    /* pid <= 0: broadcast subset (process groups arrive in P6).  Send to all
-     * user processes except the sender and pid 1 (init). */
+    if (pid == 0) {
+        /* Caller's own process group. */
+        tcb_t *self = sched_current();
+        return signal_send_group(self ? self->pgid : 0, signo);
+    }
+    if (pid < -1) {
+        /* Process group |pid|. */
+        return signal_send_group(-pid, signo);
+    }
+    /* pid == -1: broadcast to all user processes except the sender and init. */
     tcb_t *list[64];
     int n = thread_get_all(list, 64);
     tcb_t *self = sched_current();
     int delivered = 0;
     for (int i = 0; i < n; i++) {
         if (list[i] == self || list[i]->id == 1) continue;
-        if (list[i]->pml4_phys == 0) continue;    /* skip kernel threads */
+        if (list[i]->pml4_phys == 0) continue;
         if (signo != 0) signal_send(list[i], signo);
         delivered = 1;
     }
     return delivered ? 0 : -ESRCH;
+}
+
+/* ---- process groups / sessions ---- */
+
+int64_t do_setsid(void) {
+    tcb_t *t = sched_current();
+    if (!t) return -EINVAL;
+    /* EPERM if the caller is already a process group leader (pgid == pid). */
+    if (t->pgid == (int64_t)t->id) return -EPERM;
+    t->sid  = (int64_t)t->id;
+    t->pgid = (int64_t)t->id;
+    t->is_session_leader = 1;
+    t->ctty = 0;                  /* new session has no controlling terminal */
+    return (int64_t)t->id;
+}
+
+int64_t do_setpgid(int64_t pid, int64_t pgid) {
+    tcb_t *self = sched_current();
+    if (!self) return -EINVAL;
+    if (pgid < 0) return -EINVAL;
+    tcb_t *t = (pid == 0) ? self : thread_get_by_pid((uint64_t)pid);
+    if (!t) return -ESRCH;
+    /* May only change a process in the caller's own session. */
+    if (t->sid != self->sid) return -EPERM;
+    /* A session leader cannot change its process group. */
+    if (t->is_session_leader) return -EPERM;
+    t->pgid = (pgid == 0) ? (int64_t)t->id : pgid;
+    return 0;
+}
+
+int64_t do_getpgid(int64_t pid) {
+    tcb_t *self = sched_current();
+    if (!self) return -EINVAL;
+    tcb_t *t = (pid == 0) ? self : thread_get_by_pid((uint64_t)pid);
+    if (!t) return -ESRCH;
+    return t->pgid;
+}
+
+int64_t do_getsid(int64_t pid) {
+    tcb_t *self = sched_current();
+    if (!self) return -EINVAL;
+    tcb_t *t = (pid == 0) ? self : thread_get_by_pid((uint64_t)pid);
+    if (!t) return -ESRCH;
+    return t->sid;
 }
 
 int signal_pending_current(void) {
@@ -191,7 +256,7 @@ int64_t do_sigsuspend(const sigset_t *mask) {
 static void terminate_by_signal(int signo) {
     kprintf("[signal] terminate pid=%llu by signal %d\n",
             (unsigned long long)(sched_current() ? sched_current()->id : 0), signo);
-    thread_exit_with_code(128 + signo);
+    thread_exit_with_signal(signo);   /* records WIFSIGNALED status */
 }
 
 /*

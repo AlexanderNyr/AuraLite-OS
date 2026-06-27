@@ -79,7 +79,9 @@ codes are tracked in `TODO.md`.
 | `wait4` | `ECHILD` |
 | `execve`/`spawn` | `EFAULT`, `ENOENT` |
 | unknown syscall number | `ENOSYS` |
-| `kill`/`sigaction`/`sigprocmask` | `ESRCH` (no such pid), `EINVAL` (bad signo / SIGKILL/SIGSTOP catch), `EFAULT` |
+| `kill`/`sigaction`/`sigprocmask` | `ESRCH` (no such pid/group), `EINVAL` (bad signo / SIGKILL/SIGSTOP catch), `EFAULT` |
+| `waitpid` | `ECHILD` (no matching children), returns 0 under WNOHANG when none ready |
+| `setsid`/`setpgid` | `EPERM` (leader / cross-session), `ESRCH`, `EINVAL` |
 
 ### Signal delivery (P4)
 
@@ -167,6 +169,7 @@ Current caveats:
 | 0 | `read` | `read(fd, buf, count)` | ✅ | `fd=0` reads line input from PS/2 keyboard and/or serial; `fd>=3` reads VFS files. |
 | 1 | `write` | `write(fd, buf, count)` | ✅ | `fd=1/2` console; `fd>=3` VFS write. |
 | 8 | `lseek` | `lseek(fd, offset, whence)` | ✅ | Repositions the shared OFD offset (SEEK_SET/CUR/END); ESPIPE on pipes/char devices. |
+| 16 | `ioctl` | `ioctl(fd, cmd, arg)` | ✅ | TTY control on /dev/tty0: TCGETS/TCSETS{,W,F}, TIOCGWINSZ/SWINSZ, TIOCGPGRP/SPGRP. EINVAL for unsupported cmd, ENOTTY for non-tty fds. |
 | 17 | `pread64` | `pread(fd, buf, count, off)` | ✅ | Positioned read; does not change the OFD offset. ESPIPE on non-seekable. |
 | 18 | `pwrite64` | `pwrite(fd, buf, count, off)` | ✅ | Positioned write; does not change the OFD offset (ignores O_APPEND, per POSIX). |
 | 19 | `readv` | `readv(fd, iov, iovcnt)` | ✅ | Scatter read; advances the shared offset. iovcnt∈[1,1024]; EINVAL on length overflow. |
@@ -193,7 +196,11 @@ Current caveats:
 | 57 | `fork` | `fork()` | 🧪 | Copy-on-write user address-space clone; simplified semantics. |
 | 59 | `execve` | `execve(path)` | 🧪 | Replaces current address space with a new ELF. No argv/envp. |
 | 60 | `exit` | `exit(code)` | ✅/🧪 | Terminates current thread; exit-code reporting is incomplete. |
-| 61 | `wait4` | `wait4(status)` | 🧪 | Yield-polling wait; not POSIX-complete and not PID-specific. |
+| 61 | `wait4` | `waitpid(pid, status, options)` | ✅ | WNOHANG + selector matching (pid>0 / ==0 group / ==-1 any / <-1 group |pid|); POSIX W* status word. |
+| 109 | `setpgid` | `setpgid(pid, pgid)` | ✅ | Same-session, non-leader; EPERM/ESRCH/EINVAL. |
+| 112 | `setsid` | `setsid()` | ✅ | New session+group; EPERM if already a group leader; detaches ctty. |
+| 121 | `getpgid` | `getpgid(pid)` | ✅ | Process group of pid (0 = caller). |
+| 124 | `getsid` | `getsid(pid)` | ✅ | Session of pid (0 = caller). |
 | 80 | `listdir` | `readdir(path, out, max)` | 🧪 | Returns or prints a directory listing through the kernel/VFS path. |
 | 81 | `spawn` | `spawn(path)` | 🧪 | Non-standard; creates a process and loads an ELF from VFS. |
 | 82 | `dns` | `dns_resolve(hostname)` | 🧪 | Returns IPv4 A record in host-order integer form. |

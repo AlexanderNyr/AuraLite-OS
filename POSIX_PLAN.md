@@ -524,30 +524,36 @@ struct sigaction {
 `vi`, `less`, and any line editor need `termios` for raw/cooked mode, line
 discipline, echo control, and special character processing.
 
-### Status: TODO
+### Status: CORE DONE (host-verified) — /dev/tty0 N_TTY line discipline
+###         (canonical+raw, ECHO/ECHOE/ECHOCTL, VMIN/VTIME, ISIG→signal via
+###         tty->fg_pgid indirection), Ctrl+C→SIGINT in the console stdin path,
+###         SYS_IOCTL (TCGETS/TCSETS{,W,F}/TIOCGWINSZ/TIOCGPGRP), libc termios
+###         + isatty, and a FILE* stdio layer (fopen/fread/fwrite/fgets/fputs/
+###         fprintf/fflush/fclose, line/full/no buffering).  Deferred: readline
+###         line-editor, scanf/fscanf, rewiring init to /dev/tty0.
 
 ### Tasks
 
 **Kernel — TTY / line discipline layer:**
-- [ ] `kernel/tty/tty.h` / `tty.c`: new subsystem.
-- [ ] `struct tty`: line buffer, `termios` settings, read/write queues,
+- [x] `kernel/tty/tty.h` / `tty.c`: new subsystem.
+- [x] `struct tty`: line buffer, `termios` settings, read/write queues,
   associated VFS device node (`/dev/tty0`, `/dev/ttyS0`).
-- [ ] Line discipline (`N_TTY`):
+- [x] Line discipline (`N_TTY`):
   - **Canonical mode** (default): accumulate input until `\n` or `EOF` (^D);
     support `ERASE` (Backspace/^H), `KILL` (^U), `EOF` (^D), `INTR` (^C→SIGINT),
     `QUIT` (^\→SIGQUIT), `SUSP` (^Z→SIGTSTP), `NL`/`CR` handling.
   - **Raw mode** (`~ICANON`): pass each byte directly; no echo unless `ECHO` set;
     `MIN` and `TIME` parameters for `read()` blocking behavior.
   - **Echo**: if `ECHO` set, echo input characters back to output.
-- [ ] Wire PS/2 keyboard IRQ → TTY input queue.
-- [ ] Wire framebuffer console / UART → TTY output.
-- [ ] `/dev/tty0`: the current VT (framebuffer console).
+- [x] Wire PS/2 keyboard IRQ → TTY input queue.
+- [x] Wire framebuffer console / UART → TTY output.
+- [x] `/dev/tty0`: the current VT (framebuffer console).
 - [ ] `/dev/ttyS0`: UART serial.
 - [ ] `init.c` (PID 1): `open("/dev/tty0")` and use it as stdin/stdout/stderr
   instead of raw UART syscalls.
 
 **Kernel — `termios` syscalls:**
-- [ ] `SYS_IOCTL = 16`: dispatch table for TTY ioctls:
+- [x] `SYS_IOCTL = 16`: dispatch table for TTY ioctls:
   - `TCGETS` (0x5401): copy `struct termios` to userspace.
   - `TCSETS` (0x5402): copy `struct termios` from userspace, apply immediately.
   - `TCSETSW` (0x5403): apply after output drains.
@@ -577,26 +583,27 @@ struct termios {
 ```
 
 **libc side:**
-- [ ] `libc/include/termios.h`: `struct termios`, all `I/O/C/L` flag constants,
+- [x] `libc/include/termios.h`: `struct termios`, all `I/O/C/L` flag constants,
   `tcgetattr()`, `tcsetattr()`, `cfgetispeed()`, `cfsetispeed()`, `cfgetospeed()`,
   `cfsetospeed()`, `cfmakeraw()`.
-- [ ] `libc/include/sys/ioctl.h`: `ioctl()` declaration, `TIOC*` constants.
-- [ ] `libc/src/termios.c`: thin wrappers over `SYS_IOCTL`.
-- [ ] Update `libc/include/unistd.h`: `isatty(int fd)` → ioctl `TCGETS` returns 0 if TTY.
-- [ ] `libc/src/stdio/`: `printf`, `scanf` should use fd 1/0 via TTY.
+- [x] `libc/include/sys/ioctl.h`: `ioctl()` declaration, `TIOC*` constants.
+- [x] `libc/src/termios.c`: thin wrappers over `SYS_IOCTL`.
+- [x] Update `libc/include/unistd.h`: `isatty(int fd)` → ioctl `TCGETS` returns 0 if TTY.
+- [x] `printf` now routes through the line-buffered `stdout` FILE* (fd 1).
+  (`scanf` deferred.)
 - [ ] `libc/src/stdio/readline.c`: `readline()`-style line editor using raw termios:
   left/right arrows (ANSI sequences), backspace, history (simple circular buffer).
 
 **libc — `stdio` FILE streams:**
-- [ ] `FILE` type, `stdin` / `stdout` / `stderr` as global `FILE*` pointing to
+- [x] `FILE` type, `stdin` / `stdout` / `stderr` as global `FILE*` pointing to
   fd 0/1/2.
-- [ ] `fopen(path, mode)` / `fclose(FILE*)` / `fread()` / `fwrite()` / `fgets()` /
+- [x] `fopen(path, mode)` / `fclose(FILE*)` / `fread()` / `fwrite()` / `fgets()` /
   `fputs()` / `fprintf()` / `fscanf()` / `fflush()` / `feof()` / `ferror()` /
   `clearerr()` / `fileno()` / `fdopen()` / `freopen()`.
-- [ ] Internal buffering: line-buffered for TTY, fully buffered for files.
+- [x] Internal buffering: line-buffered for TTY, fully buffered for files.
 
 **Testing:**
-- [ ] `tests/integration/cases/test_termios.sh`:
+- [x] `tests/integration/cases/test_termios.sh`:
   - Program calls `cfmakeraw()`, reads one byte without echo, then restores.
   - `TIOCGWINSZ` returns nonzero rows/cols.
   - `SIGWINCH` is sent when window size changes (simulated via `TIOCSWINSZ`).
@@ -609,10 +616,11 @@ struct termios {
 | Raw mode breaks existing init/shell | Medium | Keep existing path; switch to TTY path behind `O_RDONLY` of `/dev/tty0` |
 
 ### Definition of Done
-- [ ] `tcgetattr` / `tcsetattr` work on `/dev/tty0`
+- [x] `tcgetattr` / `tcsetattr` work on `/dev/tty0`
 - [ ] Shell switches to raw mode for line editing (arrows, backspace)
-- [ ] `isatty(1)` returns 1 for terminal, 0 for pipe
-- [ ] `scanf` / `fgets` work via TTY line discipline in canonical mode
+- [x] `isatty(1)` returns 1 for terminal, 0 for pipe
+- [~] `fgets` works via the FILE* layer + canonical line discipline; `scanf`
+  is deferred to a P5 follow-up.
 
 ---
 
@@ -622,12 +630,16 @@ struct termios {
 can manage foreground/background jobs, `Ctrl+C` sends `SIGINT` to the right
 group, and `waitpid(-1)` collects any child.
 
-### Status: TODO
+### Status: KERNEL CORE DONE (host-verified) — pgid/sid/ctty + inheritance,
+###         setsid/setpgid/getpgid/getsid, signal_send_group, kill(-pgid),
+###         real foreground-group Ctrl+C routing, waitpid(options) with
+###         WNOHANG + pid==0/<-1 group matching + W* macros.  Deferred: the
+###         interactive shell jobs/fg/bg/& rewrite.
 
 ### Tasks
 
 **Kernel — process group / session fields:**
-- [ ] Add to `tcb_t`:
+- [x] Add to `tcb_t`:
 
 ```c
 pid_t  pgid;        /* process group ID (leader: pgid == pid) */
@@ -636,22 +648,22 @@ int    is_session_leader;
 struct tty *ctty;   /* controlling terminal */
 ```
 
-- [ ] `setsid()` syscall (`SYS_SETSID=112`): create new session; caller becomes
+- [x] `setsid()` syscall (`SYS_SETSID=112`): create new session; caller becomes
   leader; detach from controlling terminal.
-- [ ] `setpgid(pid, pgid)` syscall (`SYS_SETPGID=109`): move process to
+- [x] `setpgid(pid, pgid)` syscall (`SYS_SETPGID=109`): move process to
   process group `pgid` (must be in same session).
-- [ ] `getpgid(pid)` syscall (`SYS_GETPGID=121`) / `getpgrp()`.
-- [ ] `getsid(pid)` syscall (`SYS_GETSID=124`).
-- [ ] TTY ioctls `TIOCGPGRP` / `TIOCSPGRP`: get/set the foreground process group
+- [x] `getpgid(pid)` syscall (`SYS_GETPGID=121`) / `getpgrp()`.
+- [x] `getsid(pid)` syscall (`SYS_GETSID=124`).
+- [x] TTY ioctls `TIOCGPGRP` / `TIOCSPGRP`: get/set the foreground process group
   of the terminal.
-- [ ] `kill()`: when `pid < 0`: send to process group `|pid|`.
-- [ ] `signal_send_group(pgid, sig)`: iterate all TCBs with matching pgid.
-- [ ] Keyboard interrupt (`Ctrl+C`): send `SIGINT` to the **foreground** process
+- [x] `kill()`: when `pid < 0`: send to process group `|pid|`.
+- [x] `signal_send_group(pgid, sig)`: iterate all TCBs with matching pgid.
+- [x] Keyboard interrupt (`Ctrl+C`): send `SIGINT` to the **foreground** process
   group of the controlling terminal.
-- [ ] `SIGCHLD`: sent to parent when any child in its process group changes state.
+- [x] `SIGCHLD`: sent to the parent on child exit (P4 follow-up).
 
 **Kernel — `waitpid()` upgrade:**
-- [ ] `waitpid(pid_t pid, int *status, int options)`:
+- [x] `waitpid(pid_t pid, int *status, int options)`:
   - `pid > 0`: wait for specific child.
   - `pid == 0`: wait for any child in same process group.
   - `pid == -1`: wait for any child (current behavior).
@@ -662,8 +674,8 @@ struct tty *ctty;   /* controlling terminal */
     `WIFSTOPPED`, `WSTOPSIG` macros.
 
 **libc side:**
-- [ ] `libc/include/sys/wait.h`: `WNOHANG`, `WUNTRACED`, `W*` macros.
-- [ ] `libc/include/unistd.h`: `setsid()`, `setpgid()`, `getpgid()`, `getsid()`,
+- [x] `libc/include/sys/wait.h`: `WNOHANG`, `WUNTRACED`, `W*` macros.
+- [x] `libc/include/unistd.h`: `setsid()`, `setpgid()`, `getpgid()`, `getsid()`,
   `getpgrp()`, `tcgetpgrp()`, `tcsetpgrp()`.
 - [ ] Update `userspace/init/init.c` (shell): implement job control:
   - `fork()` child → `setpgid(child, child)` → `tcsetpgrp(tty, child_pgid)`.
@@ -672,16 +684,17 @@ struct tty *ctty;   /* controlling terminal */
   - `&` suffix: start child in background (don't call `tcsetpgrp`).
 
 **Testing:**
-- [ ] `tests/integration/cases/test_jobcontrol.sh`:
+- [x] `tests/integration/cases/test_jobcontrol.sh` (kernel-half assertions via
+  the selftest P6 block; shell jobs/fg/bg deferred):
   - `sleep 100 &` runs in background; `jobs` lists it.
   - `kill %1` sends SIGTERM; job disappears.
   - Ctrl+C with foreground process → only foreground process gets SIGINT.
 
 ### Definition of Done
-- [ ] `setsid()` creates new session
-- [ ] `waitpid(child, &st, WNOHANG)` returns 0 when child still running
+- [x] `setsid()` creates new session
+- [x] `waitpid(child, &st, WNOHANG)` returns 0 when child still running
 - [ ] Shell job control: `cmd &`, `fg`, `bg`, `jobs` work
-- [ ] Ctrl+C only kills foreground process group
+- [x] Ctrl+C only kills foreground process group
 
 ---
 

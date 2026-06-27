@@ -17,6 +17,8 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/tty/termios.h"
+#include "kernel/tty/tty.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "kernel/net/socket.h"
@@ -57,6 +59,7 @@
 #define SYS_MUNMAP   11
 #define SYS_BRK      12
 #define SYS_LSEEK    8    /* P3 */
+#define SYS_IOCTL   16    /* P5 */
 #define SYS_SIGACTION   13   /* P4 */
 #define SYS_SIGPROCMASK 14   /* P4 */
 #define SYS_SIGRETURN   15   /* P4 */
@@ -65,6 +68,10 @@
 #define SYS_PAUSE       34   /* P4 */
 #define SYS_ALARM       37   /* P4 */
 #define SYS_SIGSUSPEND 130   /* P4 */
+#define SYS_SETPGID    109   /* P6 */
+#define SYS_GETPGID    121   /* P6 */
+#define SYS_SETSID     112   /* P6 */
+#define SYS_GETSID     124   /* P6 */
 #define SYS_PREAD64  17   /* P3 */
 #define SYS_PWRITE64 18   /* P3 */
 #define SYS_READV    19   /* P3 */
@@ -501,6 +508,29 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                     continue;
                 }
 
+                /* ISIG: terminal signal characters (^C/^\/^Z) on the console
+                 * tty generate signals and are not added to the input line.
+                 * (Keeps the existing fd-0 stdin path; full /dev/tty0 line
+                 * discipline is used by programs that open it directly.) */
+                {
+                    struct tty *con = tty_console();
+                    if (con->termios.c_lflag & ISIG) {
+                        int sig = 0;
+                        if (raw == con->termios.c_cc[VINTR]) sig = SIGINT;
+                        else if (raw == con->termios.c_cc[VQUIT]) sig = SIGQUIT;
+                        else if (raw == con->termios.c_cc[VSUSP]) sig = SIGTSTP;
+                        if (sig) {
+                            /* Route to the console terminal's foreground process
+                             * group (P6); falls back to the current task. */
+                            tty_send_signal_fg(con, sig);
+                            /* Echo ^X then interrupt the read with -EINTR (or a
+                             * partial line if bytes were already typed). */
+                            kputchar('^'); kputchar((char)(raw + 0x40));
+                            return got ? got : (uint64_t)-EINTR;
+                        }
+                    }
+                }
+
                 if (raw == 0x00 || raw == 0xFF || raw > 0x7E) continue;
 
                 char c = (char)raw;
@@ -559,18 +589,21 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * fall back to the legacy meaning. */
         int64_t pid = (int64_t)a1;
         void *user_status = (void *)(uintptr_t)a2;
+        int options = (int)a3;
         if (a2 == 0 && a1 >= 0x1000 && a1 < 0x0000800000000000ULL) {
+            /* Legacy wait(status) form: a1 is the status pointer. */
             pid = -1;
             user_status = (void *)(uintptr_t)a1;
         }
-        int64_t status = 0;
-        int64_t ret = do_wait4_pid(pid, user_status ? &status : 0);
-        if (ret >= 0 && user_status) {
+        int status = 0;
+        int64_t ret = do_waitpid(pid, user_status ? &status : 0, options);
+        /* ret: pid (>0), 0 (WNOHANG, none ready), or negative errno. */
+        if (ret > 0 && user_status) {
             if (copy_to_user(user_status, &status, sizeof(status)) != 0) {
                 return (uint64_t)-EFAULT;
             }
         }
-        return (uint64_t)vfs_errno(ret, ECHILD);
+        return (uint64_t)ret;
     }
     case SYS_SPAWN: {
         char path[SYSCALL_PATH_MAX];
@@ -776,6 +809,33 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_LSEEK:
         /* a1 = fd, a2 = offset (int64_t), a3 = whence. */
         return (uint64_t)vfs_lseek((int)a1, (int64_t)a2, (int)a3);
+    case SYS_IOCTL: {
+        /* a1 = fd, a2 = cmd, a3 = arg pointer.  The arg size depends on cmd. */
+        int fd = (int)a1;
+        unsigned long cmd = (unsigned long)a2;
+        void *user_arg = (void *)(uintptr_t)a3;
+        uint64_t sz;
+        switch (cmd) {
+        case TCGETS: case TCSETS: case TCSETSW: case TCSETSF:
+            sz = sizeof(struct termios); break;
+        case TIOCGWINSZ: case TIOCSWINSZ:
+            sz = sizeof(struct winsize); break;
+        case TIOCGPGRP: case TIOCSPGRP:
+            sz = sizeof(int); break;
+        default:
+            return (uint64_t)-EINVAL;   /* unsupported ioctl */
+        }
+        if (sz > 256) return (uint64_t)-EINVAL;
+        char kbuf[256];
+        /* Copy the user argument in (set ops need the value; get ops are
+         * harmless to copy and then overwrite). */
+        if (!validate_user_range(user_arg, sz, 1)) return (uint64_t)-EFAULT;
+        if (copy_from_user(kbuf, user_arg, sz) != 0) return (uint64_t)-EFAULT;
+        int r = vfs_ioctl(fd, cmd, kbuf);
+        if (r < 0) return (uint64_t)r;
+        if (copy_to_user(user_arg, kbuf, sz) != 0) return (uint64_t)-EFAULT;
+        return 0;
+    }
 
     /* ---- P4: signals ---- */
     case SYS_SIGACTION:
@@ -796,6 +856,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)do_pause();
     case SYS_SIGSUSPEND:
         return (uint64_t)do_sigsuspend((const sigset_t *)(uintptr_t)a1);
+
+    /* ---- P6: process groups / sessions ---- */
+    case SYS_SETSID:
+        return (uint64_t)do_setsid();
+    case SYS_SETPGID:
+        return (uint64_t)do_setpgid((int64_t)a1, (int64_t)a2);
+    case SYS_GETPGID:
+        return (uint64_t)do_getpgid((int64_t)a1);
+    case SYS_GETSID:
+        return (uint64_t)do_getsid((int64_t)a1);
     case SYS_KILL:
         /* a1 = pid, a2 = signo */
         return (uint64_t)signal_kill((int64_t)a1, (int)a2);

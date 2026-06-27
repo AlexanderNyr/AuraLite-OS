@@ -3,14 +3,16 @@
 #include <stdint.h>
 #include "kernel/fs/devfs.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/audio/audio.h"
+#include "kernel/tty/tty.h"
 
 #define DEVFS_MAX_DEVICES 8
 
-enum dev_type { DEV_NULL, DEV_ZERO, DEV_AUDIO };
+enum dev_type { DEV_NULL, DEV_ZERO, DEV_AUDIO, DEV_TTY };
 
 struct devfs_device {
     char     name[32];
@@ -29,6 +31,7 @@ static struct devfs_state state;
 static struct devfs_device dev_null  = { "/dev/null",  DEV_NULL  };
 static struct devfs_device dev_zero  = { "/dev/zero",  DEV_ZERO  };
 static struct devfs_device dev_audio = { "/dev/audio", DEV_AUDIO };
+static struct devfs_device dev_tty0  = { "/dev/tty0",  DEV_TTY   };
 
 void devfs_init(void) {
     state.count = 0;
@@ -58,7 +61,16 @@ void devfs_init(void) {
     state.vnodes[state.count].fs_data = &dev_audio;
     state.count++;
 
-    kprintf("[devfs] registered %d device(s): null, zero, audio\n", state.count);
+    /* /dev/tty0 — the system console terminal. */
+    strncpy(state.vnodes[state.count].name, "tty0", 31);
+    state.vnodes[state.count].type    = VFS_TYPE_CHARDEV;
+    state.vnodes[state.count].size    = 0;
+    state.vnodes[state.count].ops     = &devfs_ops;
+    state.vnodes[state.count].fs_data = &dev_tty0;
+    state.count++;
+
+    kprintf("[devfs] registered %d device(s): null, zero, audio, tty0\n",
+            state.count);
 }
 
 static struct vnode *devfs_lookup(void *fs_data, const char *path) {
@@ -104,6 +116,12 @@ static int64_t devfs_read(struct vnode *vn, uint64_t pos,
     case DEV_ZERO:
         memset(buf, 0, count);
         return (int64_t)count;
+    case DEV_TTY:
+        /* Drain whatever the line discipline has committed (may be 0; the
+         * syscall layer's blocking loop re-polls + yields). */
+        return tty_read_available(tty_console(), (char *)buf, (int)count);
+    default:
+        break;
     }
     return 0;
 }
@@ -112,6 +130,9 @@ static int64_t devfs_write(struct vnode *vn, uint64_t pos,
                            const void *buf, uint64_t count) {
     (void)pos;
     struct devfs_device *d = (struct devfs_device *)vn->fs_data;
+    if (d->type == DEV_TTY) {
+        return tty_write(tty_console(), (const char *)buf, (int)count);
+    }
     if (d->type == DEV_AUDIO) {
         const char *s = (const char *)buf;
         if (count > 5 && memcmp(s, "BEEP ", 5) == 0) {
@@ -129,9 +150,18 @@ static int64_t devfs_write(struct vnode *vn, uint64_t pos,
     return (int64_t)count;   /* discard data, report success */
 }
 
+static int devfs_ioctl(struct vnode *vn, unsigned long cmd, void *arg) {
+    struct devfs_device *d = (struct devfs_device *)vn->fs_data;
+    if (d->type == DEV_TTY) {
+        return tty_ioctl(tty_console(), cmd, arg);
+    }
+    return -ENOTTY;   /* not a terminal */
+}
+
 const struct vfs_ops devfs_ops = {
     .lookup  = devfs_lookup,
     .read    = devfs_read,
     .write   = devfs_write,
     .readdir = devfs_readdir,
+    .ioctl   = devfs_ioctl,
 };

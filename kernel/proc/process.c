@@ -178,6 +178,13 @@ int64_t do_fork(void) {
         for (int s = 0; s < NSIG; s++) child->sig_actions[s] = parent->sig_actions[s];
         child->sig_mask = parent->sig_mask;
         child->sig_pending = 0;
+        /* POSIX fork(): child inherits the parent's process group, session and
+         * controlling terminal; it is never a session/group leader by birth. */
+        child->pgid = parent->pgid;
+        child->sid  = parent->sid;
+        child->ctty = parent->ctty;
+        child->is_session_leader = 0;
+        parent->n_children++;
     }
 
     if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
@@ -342,6 +349,15 @@ int64_t process_spawn(const char *path) {
     }
     child->pml4_phys = new_pml4;
     child->parent = sched_current();
+    /* The spawned child joins the spawner's process group / session and shares
+     * its controlling terminal (so a foreground spawn is killable by Ctrl+C). */
+    if (child->parent) {
+        child->pgid = child->parent->pgid;
+        child->sid  = child->parent->sid;
+        child->ctty = child->parent->ctty;
+        child->is_session_leader = 0;
+        child->parent->n_children++;
+    }
 
     return (int64_t)child->id;
 }

@@ -33,6 +33,8 @@ enum thread_state {
     THREAD_DEAD,
 };
 
+struct tty;   /* kernel/tty/tty.h — controlling terminal */
+
 typedef struct tcb {
     uint64_t  rsp;               /* offset 0: saved stack pointer            */
     void     *kernel_stack;      /* base of the usable stack                 */
@@ -89,6 +91,14 @@ typedef struct tcb {
     uint64_t  alarm_deadline;         /* PIT tick at which SIGALRM fires (0 = off) */
     int       sig_suspend_active;     /* 1 while in sigsuspend(): use sig_suspend_restore */
     uint32_t  sig_suspend_restore;    /* mask to record in the next signal frame */
+
+    /* ---- P6: process groups / sessions (POSIX §4.8) ---- */
+    int64_t   pgid;                   /* process group ID (leader: pgid == id) */
+    int64_t   sid;                    /* session ID (leader: sid == id) */
+    int       is_session_leader;
+    struct tty *ctty;                 /* controlling terminal (NULL if none) */
+    int       n_children;             /* live children (fork/spawn ++, reap --) */
+    int       term_signal;            /* signal that killed this task (0 = exited) */
 } tcb_t;
 
 /* Allocate/free a guarded kernel stack for an already-zeroed TCB. */
@@ -129,6 +139,19 @@ void thread_exit(void) __attribute__((noreturn));
 /* Same as thread_exit() but records the given exit code on the TCB so a
  * subsequent wait4() can return it. */
 void thread_exit_with_code(int code) __attribute__((noreturn));
+/* Terminate the current task because of signal @signo (sets the wait-status
+ * WIFSIGNALED encoding).  Exit code is recorded as 128+signo for legacy paths. */
+void thread_exit_with_signal(int signo) __attribute__((noreturn));
+
+/*
+ * waitpid(pid, *status, options) — POSIX child wait.
+ *   pid > 0  : that child;  pid == 0 : any child in caller's pgid;
+ *   pid == -1: any child;   pid < -1 : any child in group |pid|.
+ *   options  : WNOHANG (1) -> return 0 if no child ready; WUNTRACED (2).
+ * @status (if non-NULL) receives the POSIX wait-status word.
+ * Returns the reaped PID, 0 (WNOHANG, none ready), or -ECHILD / -EINVAL.
+ */
+int64_t do_waitpid(int64_t pid, int *status, int options);
 
 /* Free THREAD_DEAD TCBs/stacks that have already switched off their own stack.
  * Safe to call from normal kernel-thread context; it never frees current. */

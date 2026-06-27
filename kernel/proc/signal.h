@@ -95,8 +95,20 @@ static inline sigset_t sig_bit(int signo) {
 /* Mark @signo pending on @target.  Safe to call from IRQ context. */
 void signal_send(struct tcb *target, int signo);
 
-/* Send @signo to the process identified by @pid (kill(2) subset). */
+/* Send @signo to the process identified by @pid (kill(2)):
+ *   pid > 0  : that process;     pid == 0 : caller's process group;
+ *   pid == -1: all processes;    pid < -1 : process group |pid|. */
 int  signal_kill(int64_t pid, int signo);
+
+/* Send @signo to every process in process group @pgid.  Returns 0 if at least
+ * one process was found, -ESRCH otherwise.  Safe from IRQ context. */
+int  signal_send_group(int64_t pgid, int signo);
+
+/* Process-group / session syscalls. */
+int64_t do_setsid(void);
+int64_t do_setpgid(int64_t pid, int64_t pgid);
+int64_t do_getpgid(int64_t pid);
+int64_t do_getsid(int64_t pid);
 
 /* Raise a synchronous signal on the current thread from a CPU exception,
  * forcing the default action if it is blocked/ignored.  @regs is the faulting

@@ -57,8 +57,37 @@ for the feature matrix.
   transparently restarting (-ERESTARTSYS, RIP-=2 + reload orig RAX). signal()
   sets SA_RESTART but the kernel does not yet act on it for restart.
 - **SA_SIGINFO siginfo_t** not populated (handler gets signo only; rsi/rdx = 0).
-- **Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT** deferred to P5 (needs the
-  TTY line discipline + foreground process group, which is P6).
+- ~~**Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT**~~ **Done (P5):** the
+  console stdin path and /dev/tty0 line discipline generate these via ISIG and
+  the tty->fg_pgid indirection. Full per-process-group routing arrives in P6.
+
+#### P6 / job-control follow-ups
+- **Interactive shell job control not implemented.** The kernel mechanism
+  (pgid/sid, setpgid/tcsetpgrp, group signals, waitpid(WNOHANG)) is complete and
+  tested; the userspace `init` shell rewrite (`cmd &`, `jobs`, `fg`, `bg`,
+  setpgid+tcsetpgrp per spawned child, restore fg on exit) is deferred — high
+  regression risk to the interactive shell, wants a QEMU boot to validate.
+- **No stopped state / WUNTRACED.** SIGSTOP/SIGTSTP currently terminate (no
+  THREAD_STOPPED state, no SIGCONT resume); WUNTRACED is accepted but never
+  reports a stopped child. Needs a stopped scheduler state.
+- **n_children is fork/spawn-tracked but not perfectly precise** across orphan
+  adoption (a parent that exits without waiting leaves its count stale, but it
+  is dead so this is benign). Revisit if a reparent-to-init policy is added.
+
+#### P5 / TTY + stdio follow-ups
+- **scanf/fscanf** not implemented (fgets + manual parsing only).
+- **readline() line editor** (arrows/history, raw-mode shell input) deferred.
+- **/dev/ttyS0** (UART serial tty) not registered; only /dev/tty0 exists.
+- **init not rewired to /dev/tty0** — kept the existing fd-0 console path to
+  avoid shell regressions; the line discipline runs only for programs that open
+  /dev/tty0 directly. ISIG/Ctrl+C is bridged into the fd-0 path manually.
+- **printf now line-buffered via stdout FILE*** — programs that print a prompt
+  without a trailing newline must fflush(stdout) (POSIX-correct, but a behavior
+  change worth a QEMU smoke test).
+- **No column tracking** for ECHOE/tab-expansion/multi-column ^X erase; VERASE
+  of a tab or control char erases a fixed 1–2 columns, not the true width.
+- **VMIN/VTIME timers** are approximated (the syscall layer's yield loop honors
+  VMIN counts; VTIME deciseconds timing is not yet wired to the PIT).
 - **FP/SSE state is not saved in the signal frame** — a handler that clobbers
   XMM corrupts interrupted code. Add FXSAVE/XSAVE area to struct signal_frame.
 - **Signal state is single-CPU safe only** (guarded by IF-disabled return

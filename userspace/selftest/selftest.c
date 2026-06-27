@@ -4,6 +4,9 @@
 #include "fcntl.h"
 #include "sys/uio.h"
 #include "signal.h"
+#include "termios.h"
+#include "sys/ioctl.h"
+#include "sys/wait.h"
 #include "stdio.h"
 #include "string.h"
 #include "errno.h"
@@ -320,6 +323,102 @@ int main(void) {
         check("sigsuspend delivered pending SIGUSR1", g_sigusr1_count >= 1);
         sigaction(SIGUSR1, &dfl, 0);
         sigaction(SIGALRM, &dfl, 0);
+    }
+
+    /* ---- P5: termios / ioctl / isatty / FILE* ---- */
+    {
+        int tfd = open("/dev/tty0", O_RDWR);
+        check("open /dev/tty0", tfd >= 3);
+        if (tfd >= 3) {
+            check("isatty(/dev/tty0)", isatty(tfd) == 1);
+
+            struct termios t;
+            check("tcgetattr OK", tcgetattr(tfd, &t) == 0);
+            /* Console defaults: canonical + echo. */
+            check("tcgetattr canonical default", (t.c_lflag & ICANON) != 0);
+
+            struct termios raw = t;
+            cfmakeraw(&raw);
+            check("cfmakeraw clears ICANON/ECHO/ISIG",
+                  (raw.c_lflag & (ICANON | ECHO | ISIG)) == 0);
+            check("cfmakeraw sets CS8 + VMIN=1",
+                  (raw.c_cflag & CSIZE) == CS8 && raw.c_cc[VMIN] == 1);
+            check("tcsetattr raw OK", tcsetattr(tfd, TCSANOW, &raw) == 0);
+            struct termios back;
+            tcgetattr(tfd, &back);
+            check("raw mode round-trips", (back.c_lflag & ICANON) == 0);
+            /* Restore cooked mode. */
+            check("tcsetattr restore OK", tcsetattr(tfd, TCSAFLUSH, &t) == 0);
+
+            struct winsize ws;
+            check("TIOCGWINSZ", ioctl(tfd, TIOCGWINSZ, &ws) == 0 &&
+                  ws.ws_row > 0 && ws.ws_col > 0);
+            close(tfd);
+        }
+        /* isatty(1) is true (console); a regular file is not a tty. */
+        check("isatty(stdout)", isatty(1) == 1);
+        int rf = open("/hello", O_RDONLY);
+        if (rf >= 3) {
+            errno = 0;
+            check("isatty(regular file) == 0 + ENOTTY",
+                  isatty(rf) == 0 && errno == ENOTTY);
+            close(rf);
+        }
+
+        /* FILE* streams: fopen/fprintf/fgets round-trip through a tmp file. */
+        const char *fp = "/tmp/p5stdio.txt";
+        unlink(fp);
+        FILE *w = fopen(fp, "w");
+        check("fopen w", w != 0);
+        if (w) {
+            fprintf(w, "line %d\n", 42);
+            fputs("second\n", w);
+            check("fclose w", fclose(w) == 0);
+        }
+        FILE *r = fopen(fp, "r");
+        check("fopen r", r != 0);
+        if (r) {
+            char lb[64];
+            char *g1 = fgets(lb, sizeof(lb), r);
+            check("fgets line 1", g1 != 0 && strcmp(lb, "line 42\n") == 0);
+            char *g2 = fgets(lb, sizeof(lb), r);
+            check("fgets line 2", g2 != 0 && strcmp(lb, "second\n") == 0);
+            char *g3 = fgets(lb, sizeof(lb), r);
+            check("fgets EOF", g3 == 0 && feof(r));
+            fclose(r);
+        }
+        unlink(fp);
+    }
+
+    /* ---- P6: process groups / sessions ---- */
+    {
+        pid_t me = getpid();
+        pid_t pg = getpgid(0);
+        pid_t sd = getsid(0);
+        check("getpgid(0) returns a valid group", pg > 0);
+        check("getsid(0) returns a valid session", sd > 0);
+        check("getpgrp() == getpgid(0)", getpgrp() == pg);
+
+        /* setpgid(0, getpid()) makes us our own process-group leader. */
+        check("setpgid(0, getpid()) OK", setpgid(0, me) == 0);
+        check("getpgid(0) now == getpid()", getpgid(0) == me);
+
+        /* setpgid with a bad pid -> ESRCH. */
+        errno = 0;
+        check("setpgid(999999) -> ESRCH",
+              setpgid(999999, 999999) < 0 && errno == ESRCH);
+
+        /* getpgid of a nonexistent pid -> ESRCH. */
+        errno = 0;
+        check("getpgid(999999) -> ESRCH",
+              getpgid(999999) < 0 && errno == ESRCH);
+
+        /* W* status macros (no fork needed): verify encoding round-trips. */
+        int st_exit = (7 & 0xff) << 8;          /* as the kernel encodes exit 7 */
+        check("WIFEXITED/WEXITSTATUS", WIFEXITED(st_exit) && WEXITSTATUS(st_exit) == 7);
+        int st_sig = SIGINT & 0x7f;              /* killed by SIGINT */
+        check("WIFSIGNALED/WTERMSIG",
+              WIFSIGNALED(st_sig) && WTERMSIG(st_sig) == SIGINT);
     }
 
     /* Usercopy validation: bad user pointers must fail instead of killing the
