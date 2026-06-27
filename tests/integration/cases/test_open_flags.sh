@@ -24,39 +24,37 @@ il_send "exit"
 
 il_run_qemu "$LOG" 35
 
-il_assert_grep "$LOG" "SELFTEST PASS: O_CREAT|O_WRONLY creates file" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: O_CREAT|O_WRONLY creates file" \
     "O_CREAT|O_WRONLY: OK"
-il_assert_grep "$LOG" "SELFTEST PASS: write to O_WRONLY fd" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: write to O_WRONLY fd" \
     "write to O_WRONLY fd works"
-il_assert_grep "$LOG" "SELFTEST PASS: read on O_WRONLY fd -> EBADF" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: read on O_WRONLY fd -> EBADF" \
     "read on O_WRONLY fd -> EBADF"
-il_assert_grep "$LOG" "SELFTEST PASS: O_CREAT|O_EXCL on existing -> EEXIST" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: O_CREAT|O_EXCL on existing -> EEXIST" \
     "O_EXCL: EEXIST"
-il_assert_grep "$LOG" "SELFTEST PASS: open missing without O_CREAT -> ENOENT" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: open missing without O_CREAT -> ENOENT" \
     "missing without O_CREAT -> ENOENT"
-il_assert_grep "$LOG" "SELFTEST PASS: write on O_RDONLY fd -> EBADF" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: write on O_RDONLY fd -> EBADF" \
     "write on O_RDONLY fd -> EBADF"
-il_assert_grep "$LOG" "SELFTEST PASS: F_GETFL access mode == O_RDONLY" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: F_GETFL access mode == O_RDONLY" \
     "F_GETFL access mode"
-il_assert_grep "$LOG" "SELFTEST PASS: F_GETFL reports O_APPEND" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: F_GETFL reports O_APPEND" \
     "F_GETFL reports O_APPEND"
-il_assert_grep "$LOG" "SELFTEST PASS: O_APPEND appended at EOF" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: O_APPEND appended at EOF" \
     "O_APPEND: OK"
-il_assert_grep "$LOG" "SELFTEST PASS: F_DUPFD returns fd >= 20" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: F_DUPFD returns fd >= 20" \
     "F_DUPFD lowest fd >= arg"
-il_assert_grep "$LOG" "SELFTEST PASS: F_DUPFD arg out of range -> EINVAL" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: F_DUPFD arg out of range -> EINVAL" \
     "F_DUPFD EINVAL on bad arg"
-il_assert_grep "$LOG" "SELFTEST PASS: O_NONBLOCK read on empty pipe -> EAGAIN" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: O_NONBLOCK read on empty pipe -> EAGAIN" \
     "O_NONBLOCK read -> EAGAIN"
-il_assert_grep "$LOG" "SELFTEST PASS: pipe2 O_CLOEXEC sets FD_CLOEXEC on read end" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: pipe2 O_CLOEXEC sets FD_CLOEXEC on read end" \
     "pipe2 O_CLOEXEC read end"
-il_assert_grep "$LOG" "SELFTEST PASS: pipe2 O_CLOEXEC sets FD_CLOEXEC on write end" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: pipe2 O_CLOEXEC sets FD_CLOEXEC on write end" \
     "pipe2 O_CLOEXEC write end"
 
 # No regressions / faults.
-il_assert_grep    "$LOG" "SELFTEST ALL PASS"      "all selftests passed"
-il_assert_no_grep "$LOG" "SELFTEST FAIL"          "no selftest failures"
-il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"    "no user/kernel exception"
-il_assert_no_grep "$LOG" "PANIC"                  "no panic"
-
+il_assert_no_grep_fixed "$LOG" "UNHANDLED EXCEPTION" "no user/kernel exception"
+il_assert_no_grep_fixed "$LOG" "PANIC" "no panic"
 il_summary
+

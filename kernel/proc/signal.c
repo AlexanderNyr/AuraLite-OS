@@ -143,11 +143,27 @@ int64_t do_setpgid(int64_t pid, int64_t pgid) {
     if (pgid < 0) return -EINVAL;
     tcb_t *t = (pid == 0) ? self : thread_get_by_pid((uint64_t)pid);
     if (!t) return -ESRCH;
+    /* P6a: may only setpgid on self or a direct child. */
+    if (t != self && t->parent != self) return -EPERM;
     /* May only change a process in the caller's own session. */
     if (t->sid != self->sid) return -EPERM;
     /* A session leader cannot change its process group. */
     if (t->is_session_leader) return -EPERM;
-    t->pgid = (pgid == 0) ? (int64_t)t->id : pgid;
+    int64_t new_pgid = (pgid == 0) ? (int64_t)t->id : pgid;
+    /* If pgid != target pid, the target pgid must exist in the same session. */
+    if (new_pgid != (int64_t)t->id) {
+        tcb_t *list[128];
+        int n = thread_get_all(list, 128);
+        int found = 0;
+        for (int i = 0; i < n; i++) {
+            if (list[i]->pgid == new_pgid && list[i]->sid == t->sid) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return -EPERM;
+    }
+    t->pgid = new_pgid;
     return 0;
 }
 

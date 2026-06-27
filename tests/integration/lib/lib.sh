@@ -173,10 +173,29 @@ il_assert_grep() {
     fi
 }
 
+# Fixed-string variant (no regex, avoids '(' ')' '?' issues in SELFTEST output)
+il_assert_grep_fixed() {
+    local log="$1" pat="$2" desc="$3"
+    if grep -Fq -- "$pat" "$log"; then
+        il_pass "$desc"
+    else
+        il_fail "$desc  (fixed: ${C_DIM}$pat${C_RESET})"
+    fi
+}
+
 il_assert_no_grep() {
     local log="$1" pat="$2" desc="$3"
     if grep -qE "$pat" "$log"; then
         il_fail "$desc  (unexpected pattern: ${C_DIM}$pat${C_RESET})"
+    else
+        il_pass "$desc"
+    fi
+}
+
+il_assert_no_grep_fixed() {
+    local log="$1" pat="$2" desc="$3"
+    if grep -Fq -- "$pat" "$log"; then
+        il_fail "$desc  (unexpected fixed: ${C_DIM}$pat${C_RESET})"
     else
         il_pass "$desc"
     fi

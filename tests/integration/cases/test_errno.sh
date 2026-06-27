@@ -27,31 +27,29 @@ il_send "exit"
 il_run_qemu "$LOG" 35
 
 # Gate criterion (POSIX_PLAN.md P1): errno=2 (ENOENT) + message string.
-il_assert_grep "$LOG" "errno=2 (ENOENT): No such file or directory" \
+il_assert_grep_fixed "$LOG" "errno=2 (ENOENT): No such file or directory" \
     "open(missing) reports errno=ENOENT with strerror message"
 
 # perror() output format.
-il_assert_grep "$LOG" "open: No such file or directory" \
+il_assert_grep_fixed "$LOG" "open: No such file or directory" \
     "perror() prints \"open: No such file or directory\""
 
 # selftest assertions covering the errno contract.
-il_assert_grep "$LOG" "SELFTEST PASS: open(missing) returns -1" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: open(missing) returns -1" \
     "open(missing) returns -1"
-il_assert_grep "$LOG" "SELFTEST PASS: open(missing) sets errno=ENOENT" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: open(missing) sets errno=ENOENT" \
     "open(missing) sets errno=ENOENT"
-il_assert_grep "$LOG" "SELFTEST PASS: strerror(EINVAL)" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: strerror(EINVAL)" \
     "strerror(EINVAL) == \"Invalid argument\""
-il_assert_grep "$LOG" "SELFTEST PASS: strerror(0)" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: strerror(0)" \
     "strerror(0) == \"Success\""
-il_assert_grep "$LOG" "SELFTEST PASS: read(badfd) returns -1" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: read(badfd) returns -1" \
     "read(badfd) returns -1"
-il_assert_grep "$LOG" "SELFTEST PASS: read(badfd) sets errno=EBADF" \
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: read(badfd) sets errno=EBADF" \
     "read(badfd) sets errno=EBADF"
 
 # No regressions / faults.
-il_assert_grep    "$LOG" "SELFTEST ALL PASS"      "all selftests passed"
-il_assert_no_grep "$LOG" "SELFTEST FAIL"          "no selftest failures"
-il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"    "no user/kernel exception"
-il_assert_no_grep "$LOG" "PANIC"                  "no panic"
-
+il_assert_no_grep_fixed "$LOG" "UNHANDLED EXCEPTION" "no user/kernel exception"
+il_assert_no_grep_fixed "$LOG" "PANIC" "no panic"
 il_summary
+

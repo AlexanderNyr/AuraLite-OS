@@ -141,7 +141,7 @@ static int64_t vfs_errno(int64_t ret, int fallback) {
     return -(int64_t)fallback;
 }
 
-/* Returns bytes written (>= 0) or a negative errno (-EFAULT / -EBADF). */
+/* Returns bytes written (>= 0) or a negative errno (-EFAULT / ...). */
 static int64_t syscall_vfs_write(int fd, const void *user_buf, uint64_t len) {
     if (len == 0) return 0;
     if (!validate_user_range(user_buf, len, 0)) return -EFAULT;
@@ -155,14 +155,14 @@ static int64_t syscall_vfs_write(int fd, const void *user_buf, uint64_t len) {
             return -EFAULT;
         }
         int64_t wr = vfs_write(fd, tmp, n);
-        if (wr < 0) return (done > 0) ? (int64_t)done : -EBADF;
+        if (wr < 0) return (done > 0) ? (int64_t)done : wr;
         done += (uint64_t)wr;
         if ((uint64_t)wr < n) break;
     }
     return (int64_t)done;
 }
 
-/* Returns bytes read (>= 0) or a negative errno (-EFAULT / -EBADF). */
+/* Returns bytes read (>= 0) or a negative errno (-EFAULT / ...). */
 static int64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
     if (len == 0) return 0;
     if (!validate_user_range(user_buf, len, 1)) return -EFAULT;
@@ -173,7 +173,7 @@ static int64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
         uint64_t n = len - done;
         if (n > sizeof(tmp)) n = sizeof(tmp);
         int64_t rd = vfs_read(fd, tmp, n);
-        if (rd < 0) return (done > 0) ? (int64_t)done : -EBADF;
+        if (rd < 0) return (done > 0) ? (int64_t)done : rd;
         if (rd == 0) break;
         if (copy_to_user((uint8_t *)user_buf + done, tmp, (uint64_t)rd) != 0) {
             return -EFAULT;

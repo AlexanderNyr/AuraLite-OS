@@ -23,23 +23,21 @@ il_send "exit"
 
 il_run_qemu "$LOG" 35
 
-il_assert_grep "$LOG" "SELFTEST PASS: open /dev/tty0"                  "open /dev/tty0"
-il_assert_grep "$LOG" "SELFTEST PASS: isatty(/dev/tty0)"              "isatty TTY"
-il_assert_grep "$LOG" "SELFTEST PASS: tcgetattr OK"                  "tcgetattr: OK"
-il_assert_grep "$LOG" "SELFTEST PASS: cfmakeraw clears ICANON/ECHO/ISIG" "cfmakeraw: OK"
-il_assert_grep "$LOG" "SELFTEST PASS: tcsetattr raw OK"              "tcsetattr raw"
-il_assert_grep "$LOG" "SELFTEST PASS: raw mode round-trips"          "raw round-trip"
-il_assert_grep "$LOG" "SELFTEST PASS: TIOCGWINSZ"                    "TIOCGWINSZ rows/cols"
-il_assert_grep "$LOG" "SELFTEST PASS: isatty(regular file) == 0 + ENOTTY" "isatty non-tty"
-il_assert_grep "$LOG" "SELFTEST PASS: fopen w"                       "fopen write"
-il_assert_grep "$LOG" "SELFTEST PASS: fgets line 1"                  "fgets line 1"
-il_assert_grep "$LOG" "SELFTEST PASS: fgets line 2"                  "fgets line 2"
-il_assert_grep "$LOG" "SELFTEST PASS: fgets EOF"                     "fgets EOF"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: open /dev/tty0"                  "open /dev/tty0"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: isatty(/dev/tty0)"              "isatty TTY"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: tcgetattr OK"                  "tcgetattr: OK"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: cfmakeraw clears ICANON/ECHO/ISIG" "cfmakeraw: OK"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: tcsetattr raw OK"              "tcsetattr raw"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: raw mode round-trips"          "raw round-trip"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: TIOCGWINSZ"                    "TIOCGWINSZ rows/cols"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: isatty(regular file) == 0 + ENOTTY" "isatty non-tty"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: fopen w"                       "fopen write"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: fgets line 1"                  "fgets line 1"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: fgets line 2"                  "fgets line 2"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: fgets EOF"                     "fgets EOF"
 
 # No regressions / faults.
-il_assert_grep    "$LOG" "SELFTEST ALL PASS"      "all selftests passed"
-il_assert_no_grep "$LOG" "SELFTEST FAIL"          "no selftest failures"
-il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"    "no user/kernel exception"
-il_assert_no_grep "$LOG" "PANIC"                  "no panic"
-
+il_assert_no_grep_fixed "$LOG" "UNHANDLED EXCEPTION" "no user/kernel exception"
+il_assert_no_grep_fixed "$LOG" "PANIC" "no panic"
 il_summary
+

@@ -235,6 +235,7 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
      * setpgid() change them explicitly (P6). */
     tcb->pgid         = (int64_t)tcb->id;
     tcb->sid          = (int64_t)tcb->id;
+    tcb->is_session_leader = 1;
     if (name != NULL) {
         strncpy(tcb->name, name, THREAD_NAME_MAX - 1);
         tcb->name[THREAD_NAME_MAX - 1] = 0;
@@ -288,9 +289,21 @@ static int wait_status_of(tcb_t *z) {
     return (z->exit_code & 0xff) << 8;                       /* WIFEXITED */
 }
 
+/* P6a: waitpid child selector */
+static int wait_child_matches(tcb_t *parent, tcb_t *child, int64_t pid) {
+    if (!parent || !child) return 0;
+    if (child->parent != parent) return 0;
+    if (pid > 0)  return child->id == (uint64_t)pid;
+    if (pid == -1) return 1;
+    if (pid == 0)  return child->pgid == parent->pgid;
+    /* pid < -1 */
+    return child->pgid == -pid;
+}
+
 int64_t do_waitpid(int64_t pid, int *status, int options) {
     tcb_t *self = sched_current();
     if (!self) return -EINVAL;
+    if (options & ~(WAIT_WNOHANG | WAIT_WUNTRACED)) return -EINVAL;
     uint64_t parent_id = self->id;
     int64_t parent_pgid = self->pgid;
 
@@ -314,13 +327,21 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
             return (int64_t)reaped;
         }
 
-        /* No ready child.  ECHILD if we have no (live or zombie) children that
-         * could match; otherwise either return 0 (WNOHANG) or yield + retry. */
-        int have_candidate = (self->n_children > 0);
+        /* No matching zombie: scan all TCBs to see if a matching child exists.
+         * Skip already-waited zombies — they do not count as children. */
+        int have_matching_child = 0;
+        for (int i = 0; i < all_threads_count; i++) {
+            tcb_t *c = all_threads[i];
+            if (!wait_child_matches(self, c, pid)) continue;
+            if (c->state == THREAD_DEAD && c->waited) continue; /* already reaped/collected */
+            have_matching_child = 1;
+            break;
+        }
+
         if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
 
-        if (!have_candidate) return -ECHILD;
-        if (options & WAIT_WNOHANG) return 0;   /* none ready right now */
+        if (!have_matching_child) return -ECHILD;
+        if (options & WAIT_WNOHANG) return 0;   /* matching child exists, none ready */
         sched_yield();
     }
 }
@@ -431,16 +452,49 @@ void thread_exit_with_code(int code) {
             self->name, (unsigned long long)self->id, code);
 
     /*
-     * Adopt our own children: any zombie whose parent is `self` would
-     * otherwise leak forever (their parent will never wait4).  Mark them
-     * `waited` so the next reaper sweep cleans them up.  Also rewrite the
-     * parent pointer of any LIVING children to NULL so future exits don't
-     * dereference a freed TCB.
+     * P6a: orphan adoption — reparent all live and zombie children to init (PID 1).
+     * Do NOT mark adopted zombies waited; init will reap them via waitpid().
+     * This prevents live child->parent dangling pointers to a freed TCB.
+     * Already-waited zombies are NOT adopted: they are already collected and
+     * pending reap; do not count them toward init->n_children.
      */
-    for (tcb_t *z = zombie_head; z; z = z->next) {
-        if (z->parent == self) {
-            z->parent = NULL;
-            if (!z->waited) z->waited = 1;
+    tcb_t *init_task = thread_get_by_pid(1);
+    if (init_task && init_task != self) {
+        int adopted = 0;
+        for (int i = 0; i < all_threads_count; i++) {
+            tcb_t *c = all_threads[i];
+            if (c->parent == self) {
+                /* Skip already-waited zombies: they are already collected,
+                 * pending thread_reap_zombies(), do not adopt or count. */
+                if (c->state == THREAD_DEAD && c->waited) {
+                    c->parent = NULL;  /* avoid dangling pointer to freed TCB */
+                    continue;
+                }
+                c->parent = init_task;
+                adopted++;
+                /* Adopted zombies stay un-waited so init can collect them. */
+            }
+        }
+        if (adopted) {
+            init_task->n_children += adopted;
+            self->n_children -= adopted;
+            if (self->n_children < 0) self->n_children = 0;
+        }
+        /* Any remaining n_children should be already-waited zombies that we
+         * deliberately did not adopt; clear the counter to maintain invariant. */
+        self->n_children = 0;
+    } else {
+        /* Fallback (no init yet, e.g. early boot): mark orphaned zombies
+         * waited so they don't leak; live orphans get parent=NULL to avoid
+         * use-after-free. */
+        for (int i = 0; i < all_threads_count; i++) {
+            tcb_t *c = all_threads[i];
+            if (c->parent == self) {
+                c->parent = NULL;
+                if (c->state == THREAD_DEAD && !c->waited) {
+                    c->waited = 1;
+                }
+            }
         }
     }
 

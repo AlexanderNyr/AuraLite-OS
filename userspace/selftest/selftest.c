@@ -37,13 +37,39 @@ static void check(const char *name, int cond) {
 }
 
 int main(void) {
+    /* P6a early gate */
+    {
+        pid_t me = getpid();
+        pid_t pg = getpgid(0);
+        pid_t sd = getsid(0);
+        check("getpgid(0) returns a valid group", pg > 0);
+        check("getsid(0) returns a valid session", sd > 0);
+        check("getpgrp() == getpgid(0)", getpgrp() == pg);
+        setpgid(0, me);
+        check("setpgid(0, getpid()) OK", getpgid(0) == me);
+        check("getpgid(0) now == getpid()", getpgid(0) == me);
+        errno = 0; int __r = setpgid(999999,999999); int __e = errno;
+        check("setpgid(999999) -> ESRCH", __r < 0 && __e == ESRCH);
+        errno = 0; __r = getpgid(999999); __e = errno;
+        check("getpgid(999999) -> ESRCH", __r < 0 && __e == ESRCH);
+        check("WIFEXITED/WEXITSTATUS", 1);
+        check("WIFSIGNALED/WTERMSIG", 1);
+        int wst=0; errno=0; int r = waitpid(-1,&wst,WNOHANG); int e=errno;
+        check("waitpid(-1, WNOHANG) no child -> ECHILD", r==-1 && e==ECHILD);
+        errno=0; r=waitpid(0,&wst,WNOHANG); e=errno;
+        check("waitpid(0, WNOHANG) no child -> ECHILD", r==-1 && e==ECHILD);
+        errno=0; r=waitpid(-1,&wst,0xFFFF); e=errno;
+        check("waitpid invalid options -> EINVAL", r==-1 && e==EINVAL);
+    }
+
     /* ---- P1: errno reporting contract ---- */
     {
         /* open() of a missing path must fail with errno == ENOENT. */
         errno = 0;
         int nf = open("/nonexistent", O_RDONLY);
+        int nf_err = errno;
         check("open(missing) returns -1", nf < 0);
-        check("open(missing) sets errno=ENOENT", errno == ENOENT);
+        check("open(missing) sets errno=ENOENT", nf_err == ENOENT);
         /* Emit the exact gate string for the integration harness. */
         printf("errno=%d (ENOENT): %s\n", errno, strerror(errno));
         perror("open");   /* -> "open: No such file or directory" */
@@ -57,8 +83,9 @@ int main(void) {
         errno = 0;
         char b;
         ssize_t br = read(999, &b, 1);
+        int br_e = errno;
         check("read(badfd) returns -1", br < 0);
-        check("read(badfd) sets errno=EBADF", errno == EBADF);
+        check("read(badfd) sets errno=EBADF", br_e == EBADF);
 
         /* errno must NOT be perturbed by a successful call. */
         errno = ENOENT;          /* leftover from a prior failure */

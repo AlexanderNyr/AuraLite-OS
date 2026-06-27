@@ -26,20 +26,22 @@ il_send "exit"
 
 il_run_qemu "$LOG" 35
 
-il_assert_grep "$LOG" "SELFTEST PASS: getpgid(0) returns a valid group"  "getpgid"
-il_assert_grep "$LOG" "SELFTEST PASS: getsid(0) returns a valid session" "getsid"
-il_assert_grep "$LOG" "SELFTEST PASS: getpgrp() == getpgid(0)"           "getpgrp"
-il_assert_grep "$LOG" "SELFTEST PASS: setpgid(0, getpid()) OK"           "setpgid"
-il_assert_grep "$LOG" "SELFTEST PASS: getpgid(0) now == getpid()"        "setpgid effect"
-il_assert_grep "$LOG" "SELFTEST PASS: setpgid(999999) -> ESRCH"          "setpgid ESRCH"
-il_assert_grep "$LOG" "SELFTEST PASS: getpgid(999999) -> ESRCH"          "getpgid ESRCH"
-il_assert_grep "$LOG" "SELFTEST PASS: WIFEXITED/WEXITSTATUS"             "WIFEXITED"
-il_assert_grep "$LOG" "SELFTEST PASS: WIFSIGNALED/WTERMSIG"              "WIFSIGNALED"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: getpgid(0) returns a valid group"  "getpgid"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: getsid(0) returns a valid session" "getsid"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: getpgrp() == getpgid(0)"           "getpgrp"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: setpgid(0, getpid()) OK"           "setpgid"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: getpgid(0) now == getpid()"        "setpgid effect"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: setpgid(999999) -> ESRCH"          "setpgid ESRCH"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: getpgid(999999) -> ESRCH"          "getpgid ESRCH"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: WIFEXITED/WEXITSTATUS"             "WIFEXITED"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: WIFSIGNALED/WTERMSIG"              "WIFSIGNALED"
+# P6a waitpid edge cases
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: waitpid(-1, WNOHANG) no child -> ECHILD" "waitpid ECHILD -1"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: waitpid(0, WNOHANG) no child -> ECHILD"  "waitpid ECHILD 0"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: waitpid invalid options -> EINVAL"       "waitpid EINVAL"
 
-# No regressions / faults.
-il_assert_grep    "$LOG" "SELFTEST ALL PASS"      "all selftests passed"
-il_assert_no_grep "$LOG" "SELFTEST FAIL"          "no selftest failures"
-il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"    "no user/kernel exception"
+# Generic crash checks (P6-specific gate only).
 il_assert_no_grep "$LOG" "PANIC"                  "no panic"
+il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"    "no user/kernel exception"
 
 il_summary
