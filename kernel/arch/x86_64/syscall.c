@@ -19,6 +19,7 @@
 #include "kernel/net/socket.h"
 #include "drivers/uart/uart.h"
 #include "drivers/keyboard/keyboard.h"
+#include "drivers/timer/pit.h"
 #include "kernel/gui/gui_syscalls.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
@@ -350,7 +351,20 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 }
 
                 if (!have) {
-                    __asm__ volatile ("pause");
+                    /* SYSCALL entry masks IF, so a blocking stdin read must not
+                     * spin forever on the shell's kernel stack with interrupts
+                     * disabled.  That starves the PIT-driven scheduler and the
+                     * GUI/USB-HID polling threads; on QEMU/Windows this made
+                     * mouse motion appear only after serial/keyboard input
+                     * "kicked" the guest.  Restore interrupts while waiting and
+                     * yield so the compositor and input pollers keep running. */
+                    __asm__ volatile ("sti" ::: "memory");
+                    sched_yield();
+                    if (timer_get_ticks() & 1ULL) {
+                        __asm__ volatile ("hlt" ::: "memory");
+                    } else {
+                        __asm__ volatile ("pause");
+                    }
                     continue;
                 }
 

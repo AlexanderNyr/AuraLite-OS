@@ -284,6 +284,28 @@ int gui_raise_window(int wid) {
 
 int gui_focus_window(int wid) { return gui_raise_window(wid); }
 
+/* A decoration close action should make the window disappear immediately.
+ * User-owned applications still receive GUI_EVT_CLOSE_REQ first, so cooperative
+ * apps can run their normal shutdown path and destroy the already-hidden
+ * window.  Kernel/demo windows have no userspace event loop; hiding them here
+ * is what makes the [X] button visibly work for every window. */
+static void request_window_close(int wid) {
+    if (!win_alive(wid)) return;
+
+    gui_event_t e = { GUI_EVT_CLOSE_REQ, 0,0,0,0,0,0 };
+    gui_post_event(wid, &e);
+
+    gui_win_t *w = &windows[wid];
+    mark_window_dirty(w);
+    w->visible = 0;
+    w->minimized = 0;
+    if (focused == wid) focused = -1;
+    if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
+    if (last_hover_wid == wid) last_hover_wid = -1;
+    recompute_focus();
+    full_dirty = 1;
+}
+
 /* ===================================================================
  * Window lifecycle
  * =================================================================== */
@@ -1670,7 +1692,7 @@ static void route_mouse_event(const mouse_event_t *ev) {
         gui_focus_window(wid);
         switch (part) {
             case 2: /* Close */
-                { gui_event_t e = { GUI_EVT_CLOSE_REQ, 0,0,0,0,0,0 }; gui_post_event(wid, &e); }
+                request_window_close(wid);
                 return;
             case 3: /* Max/Restore */
                 if (w->maximized) gui_restore_window(wid);
@@ -1842,8 +1864,7 @@ static void route_key_event(const kb_event_t *ke) {
         /* Alt+F4 → close focused window. */
         if ((mods & 0x01) && ke->key == 0x3E) { /* F4 scancode area; approximate */
             if (focused >= 0) {
-                gui_event_t e = { GUI_EVT_CLOSE_REQ, 0,0,0,0,0,0 };
-                gui_post_event(focused, &e);
+                request_window_close(focused);
                 return;
             }
         }
