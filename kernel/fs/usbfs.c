@@ -393,6 +393,8 @@ static int usbfs_stat(struct vnode *vn, struct vfs_stat *out) {
     memset(out, 0, sizeof(*out));
     out->type = vn->type;
     out->mode = vn->mode;
+    out->uid  = vn->uid;
+    out->gid  = vn->gid;
     out->size = vn->size;
     if (vn->inode_id == USBFS_INO_DISK) out->size = (uint64_t)msc_get_sector_count() * MSC_SECTOR_SIZE;
     if (vn->inode_id == USBFS_INO_SECTOR0) out->size = msc_is_present() ? MSC_SECTOR_SIZE : 0;

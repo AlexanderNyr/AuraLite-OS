@@ -1068,6 +1068,8 @@ static int f2fs_stat(struct vnode *vn, struct vfs_stat *st) {
 
     st->type = v->is_dir ? VFS_TYPE_DIR : VFS_TYPE_FILE;
     st->mode = inode.mode & 0xFFF;
+    st->uid  = inode.uid;
+    st->gid  = inode.gid;
     st->size = inode.size;
     st->inode = v->ino;
     st->nlink = inode.links;

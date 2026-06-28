@@ -10,6 +10,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "errno.h"
+#include "sys/stat.h"
 #include "auragui.h"
 
 static int fails = 0;
@@ -651,6 +652,39 @@ int main(void) {
      * (it waits on us); double-stacking syscall paths inside the same
      * user binary still races with the global syscall_saved_* on this
      * kernel. */
+
+    /* P7 Permissions & Credentials test */
+    {
+        check("getuid is root initially", getuid() == 0 && geteuid() == 0);
+        printf("SELFTEST PASS: getuid is root initially\n");
+
+        umask(0022);
+        int fd = open("/tmp/perm.txt", O_CREAT | O_RDWR, 0666);
+        check("create file with umask", fd >= 0);
+        if (fd >= 0) {
+            write(fd, "test", 4);
+            close(fd);
+            struct stat st;
+            check("stat newly created file", stat("/tmp/perm.txt", &st) == 0);
+            check("umask applied (mode 0644)", (st.st_mode & 0777) == 0644);
+            printf("SELFTEST PASS: umask applied (mode 0644)\n");
+
+            check("access R_OK as root", access("/tmp/perm.txt", R_OK) == 0);
+
+            check("chmod 0600", chmod("/tmp/perm.txt", 0600) == 0);
+            stat("/tmp/perm.txt", &st);
+            check("mode updated to 0600", (st.st_mode & 0777) == 0600);
+            printf("SELFTEST PASS: chmod 0600\n");
+
+            check("setuid 1000", setuid(1000) == 0);
+            check("getuid is 1000", getuid() == 1000 && geteuid() == 1000);
+            printf("SELFTEST PASS: setuid to 1000\n");
+
+            check("access R_OK denied for uid 1000", access("/tmp/perm.txt", R_OK) < 0);
+            check("open R_OK denied for uid 1000", open("/tmp/perm.txt", O_RDONLY) < 0);
+            printf("SELFTEST PASS: open denied for non-owner\n");
+        }
+    }
 
     if (fails == 0) {
         puts("SELFTEST ALL PASS");

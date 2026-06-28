@@ -236,6 +236,7 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     tcb->pgid         = (int64_t)tcb->id;
     tcb->sid          = (int64_t)tcb->id;
     tcb->is_session_leader = 1;
+    tcb->umask        = 0022;
     if (name != NULL) {
         strncpy(tcb->name, name, THREAD_NAME_MAX - 1);
         tcb->name[THREAD_NAME_MAX - 1] = 0;

@@ -21,6 +21,7 @@
 #include "string.h"
 #include "stdio.h"
 #include "sys/wait.h"
+#include "signal.h"
 
 #define INPUT_MAX 256
 #define MAX_ARGS  8
@@ -28,6 +29,119 @@
 /* Line buffer and token storage (in BSS, zero-filled by the ELF loader). */
 static char input_line[INPUT_MAX];
 static char *cmd_argv[MAX_ARGS];
+
+/* ---- Job Control ---- */
+#define MAX_JOBS 16
+struct job {
+    int   id;
+    pid_t pgid;
+    char  cmd[64];
+    int   running;
+};
+static struct job job_list[MAX_JOBS];
+static int next_job_id = 1;
+static int in_subshell = 0;
+
+static void add_job(pid_t pgid, const char *cmd) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (job_list[i].id == 0) {
+            job_list[i].id = next_job_id++;
+            job_list[i].pgid = pgid;
+            strncpy(job_list[i].cmd, cmd, 63);
+            job_list[i].cmd[63] = '\0';
+            job_list[i].running = 1;
+            printf("[%d] %d\n", job_list[i].id, (int)pgid);
+            fflush(stdout);
+            return;
+        }
+    }
+}
+
+static void remove_job(pid_t pgid, int status) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (job_list[i].id != 0 && job_list[i].pgid == pgid) {
+            if (WIFSTOPPED(status)) {
+                job_list[i].running = 0;
+                printf("[%d] Stopped %s\n", job_list[i].id, job_list[i].cmd);
+            } else {
+                printf("[%d] Done %s\n", job_list[i].id, job_list[i].cmd);
+                job_list[i].id = 0;
+            }
+            fflush(stdout);
+            return;
+        }
+    }
+}
+
+static void cmd_jobs(void) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (job_list[i].id != 0) {
+            printf("[%d] %s %s &\n", job_list[i].id,
+                   job_list[i].running ? "Running" : "Stopped",
+                   job_list[i].cmd);
+        }
+    }
+    fflush(stdout);
+}
+
+static void cmd_fg(const char *arg) {
+    int target_id = -1;
+    if (arg) {
+        if (*arg == '%') arg++;
+        target_id = 0;
+        while (*arg >= '0' && *arg <= '9') { target_id = target_id * 10 + (*arg++ - '0'); }
+    }
+    struct job *j = 0;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (job_list[i].id != 0) {
+            if (target_id <= 0 || job_list[i].id == target_id) { j = &job_list[i]; break; }
+        }
+    }
+    if (!j) { puts("fg: no such job"); fflush(stdout); return; }
+    printf("%s\n", j->cmd);
+    fflush(stdout);
+    tcsetpgrp(0, j->pgid);
+    if (!j->running) kill(j->pgid, SIGCONT);
+    int status = 0;
+    waitpid(j->pgid, &status, WUNTRACED);
+    tcsetpgrp(0, getpid());
+    if (WIFSTOPPED(status)) {
+        j->running = 0;
+        printf("[%d] Stopped %s\n", j->id, j->cmd);
+    } else {
+        j->id = 0;
+    }
+    fflush(stdout);
+}
+
+static void cmd_bg(const char *arg) {
+    int target_id = -1;
+    if (arg) {
+        if (*arg == '%') arg++;
+        target_id = 0;
+        while (*arg >= '0' && *arg <= '9') { target_id = target_id * 10 + (*arg++ - '0'); }
+    }
+    struct job *j = 0;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (job_list[i].id != 0 && !job_list[i].running) {
+            if (target_id <= 0 || job_list[i].id == target_id) { j = &job_list[i]; break; }
+        }
+    }
+    if (!j) { puts("bg: no stopped job"); fflush(stdout); return; }
+    j->running = 1;
+    printf("[%d] %s &\n", j->id, j->cmd);
+    fflush(stdout);
+    kill(j->pgid, SIGCONT);
+}
+
+static void cmd_sleep(const char *arg) {
+    if (!arg) return;
+    int sec = 0;
+    while (*arg >= '0' && *arg <= '9') { sec = sec * 10 + (*arg++ - '0'); }
+    if (sec <= 0) return;
+    alarm((unsigned)sec);
+    pause();
+}
 
 /* ---- Command implementations ---- */
 
@@ -164,17 +278,25 @@ static void cmd_run(const char *prog) {
         fflush(stdout);
         return;
     }
+    setpgid(pid, pid);
+    tcsetpgrp(0, pid);
     printf("[shell] child PID %lld, waiting...\n", (long long)pid);
     fflush(stdout);
 
     int status = 0;
     pid_t got;
     do {
-        got = waitpid(pid, &status, 0);
+        got = waitpid(pid, &status, WUNTRACED);
     } while (got == 0);
+
+    tcsetpgrp(0, getpid());
 
     if (got < 0) {
         printf("[shell] waitpid failed for %s\n", prog);
+    } else if (WIFSTOPPED(status)) {
+        add_job(pid, prog);
+        job_list[next_job_id - 2].running = 0;
+        printf("\n[%d] Stopped %s\n", job_list[next_job_id - 2].id, prog);
     } else {
         printf("[shell] child exited\n");
     }
@@ -263,8 +385,8 @@ static void cmd_ps(void) {
 
 static void cmd_mkdir(const char *path) {
     if (!path) { puts("mkdir: missing path"); fflush(stdout); return; }
-    if (mkdir(path) == 0) printf("mkdir: created %s\n", path);
-    else                  printf("mkdir: failed %s\n", path);
+    if (mkdir(path, 0755) == 0) printf("mkdir: created %s\n", path);
+    else                        printf("mkdir: failed %s\n", path);
     fflush(stdout);
 }
 
@@ -359,8 +481,45 @@ static void process_command(char *line) {
         return;   /* empty line */
     }
 
+    int bg = 0;
+    size_t len = strlen(cmd_argv[argc - 1]);
+    if (len > 0 && cmd_argv[argc - 1][len - 1] == '&') {
+        bg = 1;
+        if (len == 1) {
+            cmd_argv[--argc] = 0;
+        } else {
+            cmd_argv[argc - 1][len - 1] = '\0';
+        }
+    }
+    if (argc == 0) return;
+
     const char *cmd = cmd_argv[0];
 
+    if (bg) {
+        if (strcmp(cmd, "run") == 0 && argc > 1) {
+            pid_t pid = spawn(cmd_argv[1]);
+            if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd_argv[1]); }
+            return;
+        }
+        if (cmd[0] == '/' || cmd[0] == '.') {
+            pid_t pid = spawn(cmd);
+            if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd); }
+            return;
+        }
+        pid_t pid = fork();
+        if (pid == 0) {
+            setpgid(0, 0);
+            bg = 0;
+            in_subshell = 1;
+            goto do_dispatch;
+        } else if (pid > 0) {
+            setpgid(pid, pid);
+            add_job(pid, cmd);
+            return;
+        }
+    }
+
+do_dispatch:
     if (strcmp(cmd, "ls") == 0) {
         cmd_ls(argc > 1 ? cmd_argv[1] : "/");
     } else if (strcmp(cmd, "cat") == 0) {
@@ -405,12 +564,34 @@ static void process_command(char *line) {
     } else if (strcmp(cmd, "exit") == 0) {
         puts("Goodbye!");
         _exit(0);
+    } else if (strcmp(cmd, "jobs") == 0) {
+        cmd_jobs();
+    } else if (strcmp(cmd, "fg") == 0) {
+        cmd_fg(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "bg") == 0) {
+        cmd_bg(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "sleep") == 0) {
+        cmd_sleep(argc > 1 ? cmd_argv[1] : "0");
+    } else if (cmd[0] == '/' || cmd[0] == '.') {
+        cmd_run(cmd);
     } else {
         printf("%s: command not found\n", cmd);
     }
+    if (in_subshell) _exit(0);
 }
 
+static void dummy_handler(int s) { (void)s; }
+
 int main(void) {
+    signal(SIGALRM, dummy_handler);
+
+    int fd = open("/dev/tty0", O_RDWR);
+    if (fd >= 0) {
+        if (fd != 0) { dup2(fd, 0); close(fd); }
+        dup2(0, 1);
+        dup2(0, 2);
+    }
+
     printf("\n");
     printf("==============================================\n");
     printf("   AuraLite OS v1.0.0 — Interactive Shell     \n");
@@ -419,6 +600,12 @@ int main(void) {
     printf("\n");
 
     for (;;) {
+        int st = 0;
+        pid_t reaped;
+        while ((reaped = waitpid(-1, &st, WNOHANG | WUNTRACED)) > 0) {
+            remove_job(reaped, st);
+        }
+
         /* Print the prompt. */
         write(1, "auralite#\n", 10);
 

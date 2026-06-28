@@ -9,7 +9,7 @@
  * standard S_* permission/type macros plus the stat-family prototypes.
  */
 
-#include <sys/types.h>   /* mode_t */
+#include "libc/include/sys/types.h"   /* mode_t */
 
 struct stat;             /* full definition in <unistd.h> */
 
@@ -52,7 +52,11 @@ struct stat;             /* full definition in <unistd.h> */
 #define S_IXOTH 00001
 
 int stat(const char *path, struct stat *out);
-/* NOTE: AuraLite's mkdir() currently takes only a path (see <unistd.h>); the
- * POSIX mode argument arrives with permissions in Phase P7. */
+int mkdir(const char *path, mode_t mode);
+int chmod(const char *path, mode_t mode);
+int fchmod(int fd, mode_t mode);
+int chown(const char *path, uid_t owner, gid_t group);
+int fchown(int fd, uid_t owner, gid_t group);
+mode_t umask(mode_t mask);
 
 #endif /* AURALITE_LIBC_SYS_STAT_H */

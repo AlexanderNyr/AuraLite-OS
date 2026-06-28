@@ -99,6 +99,13 @@ typedef struct tcb {
     struct tty *ctty;                 /* controlling terminal (NULL if none) */
     int       n_children;             /* live children (fork/spawn ++, reap --) */
     int       term_signal;            /* signal that killed this task (0 = exited) */
+
+    /* ---- P7: POSIX user/group credentials ---- */
+    uint32_t  uid,  euid,  suid;            /* real, effective, saved-set UID */
+    uint32_t  gid,  egid,  sgid;            /* real, effective, saved-set GID */
+    uint32_t  supplementary_gids[32];       /* supplementary groups */
+    int       ngroups;                      /* count of supplementary_gids[] */
+    uint16_t  umask;                        /* file creation mask, default 0022 */
 } tcb_t;
 
 /* Allocate/free a guarded kernel stack for an already-zeroed TCB. */

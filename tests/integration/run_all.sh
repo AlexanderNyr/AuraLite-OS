@@ -50,6 +50,7 @@ ALL_CASES=(
     test_signals
     test_termios
     test_jobcontrol
+    test_permissions
     test_gui_bad_pointers
     test_process_cleanup
     test_fd_isolation

@@ -1188,6 +1188,8 @@ static int ext4_stat(struct vnode *vn, struct vfs_stat *st) {
 
     st->type = v->is_dir ? VFS_TYPE_DIR : VFS_TYPE_FILE;
     st->mode = (inode.i_mode & 0xFFF);
+    st->uid  = inode.i_uid_lo;
+    st->gid  = inode.i_gid_lo;
     st->size = ((uint64_t)inode.i_size_high << 32) | inode.i_size_lo;
     st->inode = v->inode;
     st->nlink = inode.i_links_count;

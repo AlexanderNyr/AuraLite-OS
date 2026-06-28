@@ -184,6 +184,20 @@ int64_t do_fork(void) {
         child->sid  = parent->sid;
         child->ctty = parent->ctty;
         child->is_session_leader = 0;
+
+        /* P7: child inherits credentials and umask */
+        child->uid  = parent->uid;
+        child->euid = parent->euid;
+        child->suid = parent->suid;
+        child->gid  = parent->gid;
+        child->egid = parent->egid;
+        child->sgid = parent->sgid;
+        child->ngroups = parent->ngroups;
+        for (int i = 0; i < parent->ngroups; i++) {
+            child->supplementary_gids[i] = parent->supplementary_gids[i];
+        }
+        child->umask = parent->umask;
+
         parent->n_children++;
     }
 
@@ -222,6 +236,13 @@ int64_t do_execve(const char *path) {
     if (fd < 0) {
         kprintf("[proc] execve: '%s' not found\n", path);
         return -1;
+    }
+
+    struct vnode *vn = vfs_get_vnode(fd);
+    if (vn) {
+        tcb_t *cur = sched_current();
+        if (cur && (vn->mode & 04000)) cur->euid = vn->uid;
+        if (cur && (vn->mode & 02000)) cur->egid = vn->gid;
     }
 
     /* Read the entire file. For simplicity, assume it fits in 256 KiB. */
@@ -279,6 +300,8 @@ int64_t do_wait4(int64_t *exit_code) {
 static void spawn_thread(void *arg) {
     char *path = (char *)arg;
 
+    vfs_close_on_exec();
+
     /* Read the ELF from the VFS into kernel memory. */
     int fd = vfs_open(path, O_RDONLY, 0);
     if (fd < 0) {
@@ -286,6 +309,13 @@ static void spawn_thread(void *arg) {
         memset(path, 0, strlen(path) + 1);
         kfree(path);
         thread_exit();
+    }
+
+    struct vnode *vn = vfs_get_vnode(fd);
+    if (vn) {
+        tcb_t *cur = sched_current();
+        if (cur && (vn->mode & 04000)) cur->euid = vn->uid;
+        if (cur && (vn->mode & 02000)) cur->egid = vn->gid;
     }
 
     uint8_t *buf = kmalloc(256 * 1024);
@@ -352,10 +382,25 @@ int64_t process_spawn(const char *path) {
     /* The spawned child joins the spawner's process group / session and shares
      * its controlling terminal (so a foreground spawn is killable by Ctrl+C). */
     if (child->parent) {
+        vfs_fork_inherit(child->fd_table, child->parent->fd_table,
+                         child->cloexec, child->parent->cloexec);
         child->pgid = child->parent->pgid;
         child->sid  = child->parent->sid;
         child->ctty = child->parent->ctty;
         child->is_session_leader = 0;
+
+        child->uid  = child->parent->uid;
+        child->euid = child->parent->euid;
+        child->suid = child->parent->suid;
+        child->gid  = child->parent->gid;
+        child->egid = child->parent->egid;
+        child->sgid = child->parent->sgid;
+        child->ngroups = child->parent->ngroups;
+        for (int i = 0; i < child->parent->ngroups; i++) {
+            child->supplementary_gids[i] = child->parent->supplementary_gids[i];
+        }
+        child->umask = child->parent->umask;
+
         child->parent->n_children++;
     }
 

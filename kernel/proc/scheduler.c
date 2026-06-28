@@ -210,6 +210,7 @@ void sched_init(void) {
     current_thread->id      = tid_counter++;
     current_thread->state   = THREAD_RUNNING;
     current_thread->quantum = SCHED_QUANTUM;
+    current_thread->umask   = 0022;
     strncpy(current_thread->name, "kmain", THREAD_NAME_MAX - 1);
 
     /* 2) Create the idle thread (NOT added to the run queue — it is the
@@ -228,6 +229,7 @@ void sched_init(void) {
     idle_thread->id      = tid_counter++;
     idle_thread->state   = THREAD_READY;
     idle_thread->quantum = 1;             /* switch away from idle ASAP */
+    idle_thread->umask   = 0022;
     strncpy(idle_thread->name, "idle", THREAD_NAME_MAX - 1);
     setup_stack(idle_thread, idle_loop, NULL);
 

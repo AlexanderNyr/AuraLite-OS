@@ -817,6 +817,8 @@ static int btrfs_stat(struct vnode *vn, struct vfs_stat *st) {
 
     st->type = (v->type == BTRFS_TYPE_DIR) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
     st->mode = inode ? (uint32_t)(r64((uint8_t*)inode + 56) & 0xFFF) : 0644;
+    st->uid  = vn->uid;
+    st->gid  = vn->gid;
     st->size = v->size;
     st->inode = v->objectid;
     st->nlink = 1;

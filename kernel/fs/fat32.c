@@ -1189,6 +1189,8 @@ static int fat32_stat_op(struct vnode *vn, struct vfs_stat *st) {
     if (!v) return -1;
     st->type   = v->is_dir ? VFS_TYPE_DIR : VFS_TYPE_FILE;
     st->mode   = v->is_dir ? 0755 : 0644;
+    st->uid    = vn->uid;
+    st->gid    = vn->gid;
     st->size   = v->size;
     st->inode  = v->first_cluster;
     st->nlink  = 1;

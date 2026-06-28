@@ -403,7 +403,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_lseek \
                 $(BUILD_DIR)/test_signals \
                 $(BUILD_DIR)/test_termios \
-                $(BUILD_DIR)/test_jobcontrol
+                $(BUILD_DIR)/test_jobcontrol \
+                $(BUILD_DIR)/test_permissions
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -504,6 +505,10 @@ $(BUILD_DIR)/test_termios: tests/unit/test_termios.c libc/include/termios.h libc
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_jobcontrol: tests/unit/test_jobcontrol.c libc/include/sys/wait.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_permissions: tests/unit/test_permissions.c libc/include/unistd.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

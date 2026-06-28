@@ -256,6 +256,8 @@ static int procfs_stat(struct vnode *vn, struct vfs_stat *out) {
     memset(out, 0, sizeof(*out));
     out->type  = vn->type;
     out->mode  = vn->mode;
+    out->uid   = vn->uid;
+    out->gid   = vn->gid;
     out->size  = vn->size;
     out->inode = vn->inode_id;
     out->nlink = 1;

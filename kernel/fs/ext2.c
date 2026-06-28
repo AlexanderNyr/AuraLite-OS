@@ -815,6 +815,8 @@ static struct ext2_vinfo *vinfo_get(uint32_t ino) {
             v->vnode.type = (mode == EXT2_S_IFDIR) ? VFS_TYPE_DIR :
                             (mode == EXT2_S_IFLNK) ? VFS_TYPE_SYMLINK : VFS_TYPE_FILE;
             v->vnode.mode = v->inode.i_mode & 0xFFF;
+            v->vnode.uid  = v->inode.i_uid;
+            v->vnode.gid  = v->inode.i_gid;
             v->vnode.size = v->inode.i_size;
             v->vnode.ops  = &ext2_ops;
             v->vnode.fs_data = v;
@@ -1126,6 +1128,8 @@ static int ext2_stat_op(struct vnode *vn, struct vfs_stat *out) {
     memset(out, 0, sizeof(*out));
     out->type   = vn->type;
     out->mode   = v->inode.i_mode & 0xFFF;
+    out->uid    = v->inode.i_uid;
+    out->gid    = v->inode.i_gid;
     out->size   = v->inode.i_size;
     out->inode  = v->inode_no;
     out->nlink  = v->inode.i_links_count;
@@ -1133,6 +1137,23 @@ static int ext2_stat_op(struct vnode *vn, struct vfs_stat *out) {
     out->mtime  = v->inode.i_mtime;
     out->ctime  = v->inode.i_ctime;
     out->atime  = v->inode.i_atime;
+    return 0;
+}
+
+static int ext2_chmod_op(struct vnode *vn, uint32_t mode) {
+    struct ext2_vinfo *v = (struct ext2_vinfo *)vn->fs_data;
+    if (!v) return -1;
+    v->inode.i_mode = (v->inode.i_mode & ~0xFFFu) | (mode & 0xFFFu);
+    write_inode(v->inode_no, &v->inode);
+    return 0;
+}
+
+static int ext2_chown_op(struct vnode *vn, uint32_t uid, uint32_t gid) {
+    struct ext2_vinfo *v = (struct ext2_vinfo *)vn->fs_data;
+    if (!v) return -1;
+    if (uid != (uint32_t)-1) v->inode.i_uid = (uint16_t)uid;
+    if (gid != (uint32_t)-1) v->inode.i_gid = (uint16_t)gid;
+    write_inode(v->inode_no, &v->inode);
     return 0;
 }
 
@@ -1148,6 +1169,8 @@ const struct vfs_ops ext2_ops = {
     .rename   = ext2_rename_op,
     .stat     = ext2_stat_op,
     .truncate = ext2_truncate_op,
+    .chmod    = ext2_chmod_op,
+    .chown    = ext2_chown_op,
 };
 
 /* ---- mkfs.ext2 (in-kernel formatter) ---- */

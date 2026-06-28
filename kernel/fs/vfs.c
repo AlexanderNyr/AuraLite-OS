@@ -229,6 +229,127 @@ static int find_mount(const char *path, const char **out_rel) {
 }
 
 /* Resolve a path to a vnode (no creation). */
+static struct vnode *resolve_path(const char *path);
+
+static struct vnode *resolve_parent_vnode(const char *path) {
+    if (!path || !*path) return NULL;
+    char parent_path[VFS_PATH_MAX];
+    const char *last_slash = NULL;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+    if (!last_slash || last_slash == path) {
+        return resolve_path("/");
+    }
+    size_t len = (size_t)(last_slash - path);
+    if (len >= sizeof(parent_path)) len = sizeof(parent_path) - 1;
+    memcpy(parent_path, path, len);
+    parent_path[len] = '\0';
+    return resolve_path(parent_path);
+}
+
+int vfs_check_perm(struct vnode *vn, int access, struct tcb *tcb_ptr) {
+    if (!vn) return -ENOENT;
+    if (access == 0) return 0; /* F_OK */
+    tcb_t *tcb = (tcb_t *)tcb_ptr;
+    if (!tcb || tcb->euid == 0) return 0; /* Root always passes */
+
+    uint16_t mode = vn->mode & 0777u;
+    int granted = 0;
+    if (tcb->euid == vn->uid) {
+        if (mode & 0400u) granted |= 4;
+        if (mode & 0200u) granted |= 2;
+        if (mode & 0100u) granted |= 1;
+    } else {
+        int in_group = (tcb->egid == vn->gid);
+        if (!in_group) {
+            for (int i = 0; i < tcb->ngroups; i++) {
+                if (tcb->supplementary_gids[i] == vn->gid) {
+                    in_group = 1;
+                    break;
+                }
+            }
+        }
+        if (in_group) {
+            if (mode & 0040u) granted |= 4;
+            if (mode & 0020u) granted |= 2;
+            if (mode & 0010u) granted |= 1;
+        } else {
+            if (mode & 0004u) granted |= 4;
+            if (mode & 0002u) granted |= 2;
+            if (mode & 0001u) granted |= 1;
+        }
+    }
+    if ((granted & access) == access) return 0;
+    return -EACCES;
+}
+
+struct vnode *vfs_get_vnode(int fd) {
+    struct ofd **t = current_fd_table();
+    if (fd < 0 || fd >= VFS_MAX_FDS || !t[fd]) return NULL;
+    return t[fd]->vn;
+}
+
+int vfs_chmod(const char *path, uint32_t mode) {
+    struct vnode *vn = resolve_path(path);
+    if (!vn) return -ENOENT;
+    tcb_t *cur = sched_current();
+    if (cur && cur->euid != 0 && cur->euid != vn->uid) return -EPERM;
+    vn->mode = (vn->mode & ~07777u) | (mode & 07777u);
+    if (vn->ops && vn->ops->chmod) return (int)vfs_wrap_err(vn->ops->chmod(vn, vn->mode), EIO);
+    return 0;
+}
+
+int vfs_fchmod(int fd, uint32_t mode) {
+    struct vnode *vn = vfs_get_vnode(fd);
+    if (!vn) return -EBADF;
+    tcb_t *cur = sched_current();
+    if (cur && cur->euid != 0 && cur->euid != vn->uid) return -EPERM;
+    vn->mode = (vn->mode & ~07777u) | (mode & 07777u);
+    if (vn->ops && vn->ops->chmod) return (int)vfs_wrap_err(vn->ops->chmod(vn, vn->mode), EIO);
+    return 0;
+}
+
+int vfs_chown(const char *path, uint32_t uid, uint32_t gid) {
+    struct vnode *vn = resolve_path(path);
+    if (!vn) return -ENOENT;
+    tcb_t *cur = sched_current();
+    if (cur && cur->euid != 0) {
+        if (uid != (uint32_t)-1 && uid != cur->euid) return -EPERM;
+        if (cur->euid != vn->uid) return -EPERM;
+    }
+    if (uid != (uint32_t)-1) vn->uid = uid;
+    if (gid != (uint32_t)-1) vn->gid = gid;
+    if (vn->ops && vn->ops->chown) return (int)vfs_wrap_err(vn->ops->chown(vn, uid, gid), EIO);
+    return 0;
+}
+
+int vfs_fchown(int fd, uint32_t uid, uint32_t gid) {
+    struct vnode *vn = vfs_get_vnode(fd);
+    if (!vn) return -EBADF;
+    tcb_t *cur = sched_current();
+    if (cur && cur->euid != 0) {
+        if (uid != (uint32_t)-1 && uid != cur->euid) return -EPERM;
+        if (cur->euid != vn->uid) return -EPERM;
+    }
+    if (uid != (uint32_t)-1) vn->uid = uid;
+    if (gid != (uint32_t)-1) vn->gid = gid;
+    if (vn->ops && vn->ops->chown) return (int)vfs_wrap_err(vn->ops->chown(vn, uid, gid), EIO);
+    return 0;
+}
+
+int vfs_access(const char *path, int mode) {
+    struct vnode *vn = resolve_path(path);
+    if (!vn) return -ENOENT;
+    tcb_t *cur = sched_current();
+    uint32_t saved_euid = cur ? cur->euid : 0;
+    uint32_t saved_egid = cur ? cur->egid : 0;
+    if (cur) { cur->euid = cur->uid; cur->egid = cur->gid; }
+    int err = vfs_check_perm(vn, mode, cur);
+    if (cur) { cur->euid = saved_euid; cur->egid = saved_egid; }
+    return err;
+}
+
 static struct vnode *resolve_path(const char *path) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
@@ -263,17 +384,37 @@ int vfs_open(const char *path, int flags, int mode) {
 
     if (vn == NULL) {
         if (!(flags & O_CREAT)) return -ENOENT;
+        struct vnode *pvn = resolve_parent_vnode(path);
+        int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
+        if (err != 0) return err;
+
         const char *rel = NULL;
         int m = find_mount(path, &rel);
         if (m < 0) return -ENOENT;
         if (!mounts[m].ops->create) return -EROFS;   /* fs cannot create */
         vn = mounts[m].ops->create(mounts[m].fs_data, rel);
         if (vn == NULL) return -EACCES;
-        if (mode != 0) vn->mode = (uint32_t)(mode & 07777);
+
+        tcb_t *cur = sched_current();
+        uint16_t umask = cur ? cur->umask : 0022;
+        uint32_t masked_mode = (mode != 0 ? mode : 0666) & 07777u & ~umask;
+        vn->mode = masked_mode ? masked_mode : (0644u & ~umask);
+        if (cur) { vn->uid = cur->euid; vn->gid = cur->egid; }
+        if (vn->ops && vn->ops->chmod) vn->ops->chmod(vn, vn->mode);
+        if (vn->ops && vn->ops->chown) vn->ops->chown(vn, vn->uid, vn->gid);
+
         created = 1;
     } else {
         /* File exists. */
         if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
+
+        int req_acc = 0;
+        if (acc == O_RDONLY) req_acc = 4;
+        else if (acc == O_WRONLY) req_acc = 2;
+        else if (acc == O_RDWR) req_acc = 4 | 2;
+        if (flags & O_TRUNC) req_acc |= 2;
+        int err = vfs_check_perm(vn, req_acc, sched_current());
+        if (err != 0) return err;
     }
 
     /* Type checks against the requested access. */
@@ -291,7 +432,7 @@ int vfs_open(const char *path, int flags, int mode) {
 
     struct ofd **fd_table = current_fd_table();
     /* Reserve fd 0/1/2 for stdin/stdout/stderr syscall semantics. */
-    int slot = alloc_fd_slot_ptr(fd_table, 3);
+    int slot = alloc_fd_slot_ptr(fd_table, 0);
     if (slot < 0) return -EMFILE;             /* per-process FD table is full */
 
     struct ofd *o = ofd_alloc(vn, acc, (flags & O_APPEND) ? 1 : 0,
@@ -453,10 +594,8 @@ int vfs_close(int fd) {
 int vfs_dup(int oldfd) {
     struct ofd **t = current_fd_table();
     if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
-    int nfd = alloc_fd_slot_ptr(t, 3);
+    int nfd = alloc_fd_slot_ptr(t, 0);
     if (nfd < 0) return -EMFILE;
-    /* Share the same OFD (shared offset/flags); bump its refcount.  No pipe
-     * reader/writer change: those track OFDs, and this is the same OFD. */
     t[oldfd]->refcount++;
     t[nfd] = t[oldfd];
     current_cloexec()[nfd] = 0;   /* FD_CLOEXEC is per-fd; dup() clears it */
@@ -467,29 +606,23 @@ int vfs_dup2(int oldfd, int newfd) {
     struct ofd **t = current_fd_table();
     if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
     if (newfd < 0 || newfd >= VFS_MAX_FDS) return -EBADF;
-    /* dup2(fd, fd) with a valid fd: no close, no refcount change, returns fd. */
     if (oldfd == newfd) return newfd;
-    if (newfd < 3) return -EBADF;              /* protect stdin/out/err */
-    /* Bump the source OFD ref BEFORE dropping the old target (handles the case
-     * where both already alias the same OFD). */
     t[oldfd]->refcount++;
     struct ofd *old = t[newfd];
     t[newfd] = t[oldfd];
     current_cloexec()[newfd] = 0;
-    if (old) ofd_put(old);        /* close the old target after install */
+    if (old) ofd_put(old);
     return newfd;
 }
 
 int vfs_pipe2(int out_fds[2], int flags) {
     if (!out_fds) return -EFAULT;
-    /* pipe2 only accepts O_CLOEXEC | O_NONBLOCK. */
     if (flags & ~(O_CLOEXEC | O_NONBLOCK)) return -EINVAL;
     struct ofd **t = current_fd_table();
-    int rfd = alloc_fd_slot_ptr(t, 3);
+    int rfd = alloc_fd_slot_ptr(t, 0);
     if (rfd < 0) return -EMFILE;
-    /* Reserve the read slot with a sentinel so the second alloc skips it. */
     t[rfd] = (struct ofd *)(uintptr_t)1;
-    int wfd = alloc_fd_slot_ptr(t, 3);
+    int wfd = alloc_fd_slot_ptr(t, 0);
     if (wfd < 0) { t[rfd] = NULL; return -EMFILE; }
 
     struct pipe_ring *p = kmalloc(sizeof(*p));
@@ -557,7 +690,7 @@ static int dup_lowest_from(int oldfd, int minfd, int cloexec) {
     struct ofd **t = current_fd_table();
     if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
     if (minfd < 0 || minfd >= VFS_MAX_FDS) return -EINVAL;   /* OPEN_MAX bound */
-    int start = (minfd < 3) ? 3 : minfd;   /* never hand out 0/1/2 */
+    int start = minfd;
     int nfd = alloc_fd_slot_ptr(t, start);
     if (nfd < 0) return -EMFILE;            /* no slot >= minfd available */
     t[oldfd]->refcount++;
@@ -646,15 +779,35 @@ void vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
 
 /* ---- Path operations ---- */
 
-int vfs_mkdir(const char *path) {
+int vfs_mkdir(const char *path, uint32_t mode) {
+    struct vnode *pvn = resolve_parent_vnode(path);
+    int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
+    if (err != 0) return err;
+
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return -ENOENT;
     if (!mounts[m].ops->mkdir) return -ENOSYS;
-    return (int)vfs_wrap_err(mounts[m].ops->mkdir(mounts[m].fs_data, rel), EACCES);
+    int r = (int)vfs_wrap_err(mounts[m].ops->mkdir(mounts[m].fs_data, rel), EACCES);
+    if (r == 0) {
+        struct vnode *vn = resolve_path(path);
+        if (vn) {
+            tcb_t *cur = sched_current();
+            uint16_t umask = cur ? cur->umask : 0022;
+            vn->mode = (mode != 0 ? mode : 0777u) & 07777u & ~umask;
+            if (cur) { vn->uid = cur->euid; vn->gid = cur->egid; }
+            if (vn->ops && vn->ops->chmod) vn->ops->chmod(vn, vn->mode);
+            if (vn->ops && vn->ops->chown) vn->ops->chown(vn, vn->uid, vn->gid);
+        }
+    }
+    return r;
 }
 
 int vfs_rmdir(const char *path) {
+    struct vnode *pvn = resolve_parent_vnode(path);
+    int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
+    if (err != 0) return err;
+
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return -ENOENT;
@@ -663,6 +816,10 @@ int vfs_rmdir(const char *path) {
 }
 
 int vfs_unlink(const char *path) {
+    struct vnode *pvn = resolve_parent_vnode(path);
+    int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
+    if (err != 0) return err;
+
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return -ENOENT;
@@ -671,6 +828,13 @@ int vfs_unlink(const char *path) {
 }
 
 int vfs_rename(const char *from, const char *to) {
+    struct vnode *pvn1 = resolve_parent_vnode(from);
+    int err = vfs_check_perm(pvn1, 2 /* W_OK */, sched_current());
+    if (err != 0) return err;
+    struct vnode *pvn2 = resolve_parent_vnode(to);
+    err = vfs_check_perm(pvn2, 2 /* W_OK */, sched_current());
+    if (err != 0) return err;
+
     const char *rel_from = NULL, *rel_to = NULL;
     int m_from = find_mount(from, &rel_from);
     int m_to   = find_mount(to,   &rel_to);
@@ -698,6 +862,8 @@ int vfs_stat(const char *path, struct vfs_stat *out) {
     memset(out, 0, sizeof(*out));
     out->type  = vn->type;
     out->mode  = vn->mode ? vn->mode : (vn->type == VFS_TYPE_DIR ? 0755 : 0644);
+    out->uid   = vn->uid;
+    out->gid   = vn->gid;
     out->size  = vn->size;
     out->inode = vn->inode_id;
     out->nlink = 1;
@@ -709,6 +875,8 @@ int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
     if (max <= 0) return -EINVAL;
     struct vnode *vn = resolve_path(path);
     if (!vn) return -ENOENT;
+    int err = vfs_check_perm(vn, 4 /* R_OK */, sched_current());
+    if (err != 0) return err;
     if (vn->type != VFS_TYPE_DIR) return -ENOTDIR;
     if (!vn->ops->readdir) return -ENOSYS;
     return (int)vfs_wrap_err(vn->ops->readdir(vn, out, max), EIO);

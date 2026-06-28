@@ -86,6 +86,8 @@ struct vfs_dirent {
 struct vfs_stat {
     uint32_t type;
     uint32_t mode;          /* perm bits, low 12 bits used */
+    uint32_t uid;
+    uint32_t gid;
     uint64_t size;          /* in bytes */
     uint64_t inode;         /* fs-specific inode/cluster id */
     uint32_t nlink;         /* hard link count (1 if unknown) */
@@ -131,6 +133,10 @@ struct vfs_ops {
      * the syscall layer has copied in (and copies back out).  Returns 0 or a
      * negative errno; absence implies the node is not an ioctl-capable device. */
     int (*ioctl)(struct vnode *vn, unsigned long cmd, void *arg);
+
+    /* Optional P7: chmod and chown persistence. */
+    int (*chmod)(struct vnode *vn, uint32_t mode);
+    int (*chown)(struct vnode *vn, uint32_t uid, uint32_t gid);
 };
 
 /* A virtual inode. */
@@ -138,6 +144,8 @@ struct vnode {
     char     name[VFS_PATH_MAX];
     uint32_t type;          /* VFS_TYPE_* */
     uint32_t mode;          /* permission bits */
+    uint32_t uid;
+    uint32_t gid;
     uint64_t size;
     const struct vfs_ops *ops;
     void    *fs_data;       /* fs-private (e.g. inode struct pointer) */
@@ -235,7 +243,7 @@ int     vfs_get_cloexec(int fd);
 void    vfs_close_on_exec(void);
 
 /* ---- Path operations (no FD needed) ---- */
-int vfs_mkdir(const char *path);
+int vfs_mkdir(const char *path, uint32_t mode);
 int vfs_rmdir(const char *path);
 int vfs_unlink(const char *path);
 int vfs_rename(const char *from, const char *to);
@@ -247,6 +255,16 @@ int vfs_readdir(const char *path, struct vfs_dirent *out, int max);
 
 /* Pretty-print a directory listing (for `ls`). */
 void vfs_list(const char *path);
+
+/* P7: Permission checking & credential ops */
+struct tcb;
+int vfs_check_perm(struct vnode *vn, int access, struct tcb *tcb);
+struct vnode *vfs_get_vnode(int fd);
+int vfs_chmod(const char *path, uint32_t mode);
+int vfs_fchmod(int fd, uint32_t mode);
+int vfs_chown(const char *path, uint32_t uid, uint32_t gid);
+int vfs_fchown(int fd, uint32_t uid, uint32_t gid);
+int vfs_access(const char *path, int mode);
 
 /* Phase 10 gate test. */
 void vfs_self_test(void);

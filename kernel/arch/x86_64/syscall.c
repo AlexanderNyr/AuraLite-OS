@@ -91,6 +91,24 @@
 #define SYS_FCNTL  72
 #define SYS_PIPE2  293   /* P2: pipe with O_CLOEXEC/O_NONBLOCK */
 
+/* P7: User & Group Credentials */
+#define SYS_GETUID    500
+#define SYS_GETEUID   501
+#define SYS_GETGID    502
+#define SYS_GETEGID   503
+#define SYS_SETUID    504
+#define SYS_SETGID    505
+#define SYS_SETREUID  506
+#define SYS_SETREGID  507
+#define SYS_GETGROUPS 508
+#define SYS_SETGROUPS 509
+#define SYS_CHMOD     510
+#define SYS_CHOWN     511
+#define SYS_UMASK     512
+#define SYS_ACCESS    513
+#define SYS_FCHMOD    514
+#define SYS_FCHOWN    515
+
 /* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
 
@@ -720,7 +738,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_MKDIR: {
         char path[SYSCALL_PATH_MAX];
         if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
-        return (uint64_t)vfs_errno(vfs_mkdir(path), EACCES);
+        return (uint64_t)vfs_errno(vfs_mkdir(path, (uint32_t)a2), EACCES);
     }
     case SYS_RMDIR: {
         char path[SYSCALL_PATH_MAX];
@@ -805,6 +823,119 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EFAULT;
         }
         return 0;
+    }
+    case SYS_GETUID:
+        return cur ? (uint64_t)cur->uid : 0;
+    case SYS_GETEUID:
+        return cur ? (uint64_t)cur->euid : 0;
+    case SYS_GETGID:
+        return cur ? (uint64_t)cur->gid : 0;
+    case SYS_GETEGID:
+        return cur ? (uint64_t)cur->egid : 0;
+    case SYS_SETUID: {
+        if (!cur) return (uint64_t)-EPERM;
+        uint32_t uid = (uint32_t)a1;
+        if (cur->euid == 0) {
+            cur->uid = uid; cur->euid = uid; cur->suid = uid;
+            return 0;
+        } else if (uid == cur->uid || uid == cur->suid) {
+            cur->euid = uid;
+            return 0;
+        }
+        return (uint64_t)-EPERM;
+    }
+    case SYS_SETGID: {
+        if (!cur) return (uint64_t)-EPERM;
+        uint32_t gid = (uint32_t)a1;
+        if (cur->euid == 0) {
+            cur->gid = gid; cur->egid = gid; cur->sgid = gid;
+            return 0;
+        } else if (gid == cur->gid || gid == cur->sgid) {
+            cur->egid = gid;
+            return 0;
+        }
+        return (uint64_t)-EPERM;
+    }
+    case SYS_SETREUID: {
+        if (!cur) return (uint64_t)-EPERM;
+        uint32_t ruid = (uint32_t)a1;
+        uint32_t euid = (uint32_t)a2;
+        uint32_t new_ruid = (ruid != (uint32_t)-1) ? ruid : cur->uid;
+        uint32_t new_euid = (euid != (uint32_t)-1) ? euid : cur->euid;
+        if (cur->euid != 0) {
+            if (ruid != (uint32_t)-1 && ruid != cur->uid && ruid != cur->euid) return (uint64_t)-EPERM;
+            if (euid != (uint32_t)-1 && euid != cur->uid && euid != cur->euid && euid != cur->suid) return (uint64_t)-EPERM;
+        }
+        if (ruid != (uint32_t)-1 || (euid != (uint32_t)-1 && euid != cur->uid)) {
+            cur->suid = new_euid;
+        }
+        cur->uid = new_ruid;
+        cur->euid = new_euid;
+        return 0;
+    }
+    case SYS_SETREGID: {
+        if (!cur) return (uint64_t)-EPERM;
+        uint32_t rgid = (uint32_t)a1;
+        uint32_t egid = (uint32_t)a2;
+        uint32_t new_rgid = (rgid != (uint32_t)-1) ? rgid : cur->gid;
+        uint32_t new_egid = (egid != (uint32_t)-1) ? egid : cur->egid;
+        if (cur->euid != 0) {
+            if (rgid != (uint32_t)-1 && rgid != cur->gid && rgid != cur->egid) return (uint64_t)-EPERM;
+            if (egid != (uint32_t)-1 && egid != cur->gid && egid != cur->egid && egid != cur->sgid) return (uint64_t)-EPERM;
+        }
+        if (rgid != (uint32_t)-1 || (egid != (uint32_t)-1 && egid != cur->gid)) {
+            cur->sgid = new_egid;
+        }
+        cur->gid = new_rgid;
+        cur->egid = new_egid;
+        return 0;
+    }
+    case SYS_GETGROUPS: {
+        if (!cur) return 0;
+        int size = (int)a1;
+        void *list = (void *)(uintptr_t)a2;
+        if (size == 0) return (uint64_t)cur->ngroups;
+        if (size < cur->ngroups) return (uint64_t)-EINVAL;
+        if (!validate_user_range(list, (uint64_t)cur->ngroups * sizeof(uint32_t), 1)) return (uint64_t)-EFAULT;
+        if (copy_to_user(list, cur->supplementary_gids, (uint64_t)cur->ngroups * sizeof(uint32_t)) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)cur->ngroups;
+    }
+    case SYS_SETGROUPS: {
+        if (!cur || cur->euid != 0) return (uint64_t)-EPERM;
+        int size = (int)a1;
+        const void *list = (const void *)(uintptr_t)a2;
+        if (size < 0 || size > 32) return (uint64_t)-EINVAL;
+        if (size > 0) {
+            if (!validate_user_range(list, (uint64_t)size * sizeof(uint32_t), 0)) return (uint64_t)-EFAULT;
+            if (copy_from_user(cur->supplementary_gids, (const uint8_t *)list, (uint64_t)size * sizeof(uint32_t)) != 0) return (uint64_t)-EFAULT;
+        }
+        cur->ngroups = size;
+        return 0;
+    }
+    case SYS_CHMOD: {
+        char path[SYSCALL_PATH_MAX];
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_chmod(path, (uint32_t)a2);
+    }
+    case SYS_FCHMOD:
+        return (uint64_t)vfs_fchmod((int)a1, (uint32_t)a2);
+    case SYS_CHOWN: {
+        char path[SYSCALL_PATH_MAX];
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_chown(path, (uint32_t)a2, (uint32_t)a3);
+    }
+    case SYS_FCHOWN:
+        return (uint64_t)vfs_fchown((int)a1, (uint32_t)a2, (uint32_t)a3);
+    case SYS_UMASK: {
+        if (!cur) return 0022;
+        uint16_t old = cur->umask;
+        cur->umask = (uint16_t)(a1 & 0777u);
+        return (uint64_t)old;
+    }
+    case SYS_ACCESS: {
+        char path[SYSCALL_PATH_MAX];
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_access(path, (int)a2);
     }
     case SYS_LSEEK:
         /* a1 = fd, a2 = offset (int64_t), a3 = whence. */

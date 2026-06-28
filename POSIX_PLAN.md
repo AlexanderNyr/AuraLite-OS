@@ -703,7 +703,17 @@ struct tty *ctty;   /* controlling terminal */
 **Objective:** Implement POSIX user identity (UID/GID), file permission checks
 (rwx for user/group/other), and the associated syscalls.
 
-### Status: TODO
+### Status: IN PROGRESS
+
+**Files affected:**
+- `kernel/proc/thread.h`, `kernel/proc/thread.c`, `kernel/proc/scheduler.c`, `kernel/proc/process.c`
+- `kernel/fs/vfs.h`, `kernel/fs/vfs.c`, `kernel/fs/devfs.c`
+- `drivers/timer/pit.c`
+- `kernel/arch/x86_64/syscall.c`
+- `libc/include/unistd.h`, `libc/include/sys/stat.h`, `libc/src/libc.c`
+- `userspace/init/init.c`
+- `tests/unit/test_permissions.c`, `tests/integration/cases/test_permissions.sh`
+- `CHANGELOG.md`, `docs/syscall_abi.md`
 
 ### Tasks
 

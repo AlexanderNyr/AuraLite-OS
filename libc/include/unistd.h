@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "libc/include/sys/types.h"
 
 /* Syscall numbers (Linux-compatible subset + AuraLite extensions). */
 #define SYS_READ    0
@@ -41,6 +42,29 @@
 #define SYS_DUP2   33
 #define SYS_PIPE   22
 #define SYS_PIPE2  293
+
+/* P7: User & Group Credentials */
+#define SYS_GETUID    500
+#define SYS_GETEUID   501
+#define SYS_GETGID    502
+#define SYS_GETEGID   503
+#define SYS_SETUID    504
+#define SYS_SETGID    505
+#define SYS_SETREUID  506
+#define SYS_SETREGID  507
+#define SYS_GETGROUPS 508
+#define SYS_SETGROUPS 509
+#define SYS_CHMOD     510
+#define SYS_CHOWN     511
+#define SYS_UMASK     512
+#define SYS_ACCESS    513
+#define SYS_FCHMOD    514
+#define SYS_FCHOWN    515
+
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
 #define SYS_FCNTL  72
 #define SYS_LSEEK    8
 #define SYS_IOCTL    16
@@ -86,6 +110,8 @@
 struct stat {
     uint32_t st_type;
     uint32_t st_mode;
+    uint32_t st_uid;
+    uint32_t st_gid;
     uint64_t st_size;
     uint64_t st_inode;
     uint32_t st_nlink;
@@ -154,12 +180,25 @@ struct dirent {
 };
 
 /* Filesystem extensions. */
-int     mkdir(const char *path);
+int     mkdir(const char *path, mode_t mode);
 int     rmdir(const char *path);
 int     unlink(const char *path);
 int     rename(const char *from, const char *to);
 int     truncate(const char *path, uint64_t new_size);
 int     stat(const char *path, struct stat *out);
+int     access(const char *path, int mode);
+
+/* P7: Credentials */
+uid_t   getuid(void);
+uid_t   geteuid(void);
+gid_t   getgid(void);
+gid_t   getegid(void);
+int     setuid(uid_t uid);
+int     setgid(gid_t gid);
+int     setreuid(uid_t ruid, uid_t euid);
+int     setregid(gid_t rgid, gid_t egid);
+int     getgroups(int size, gid_t list[]);
+int     setgroups(size_t size, const gid_t *list);
 
 /* File-descriptor management. */
 int     dup(int oldfd);

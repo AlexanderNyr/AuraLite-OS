@@ -317,8 +317,8 @@ int closesocket(int sock) {
                                     0, 0, 0, 0, 0));
 }
 
-int mkdir(const char *path) {
-    return (int)syscall_ret(syscall(SYS_MKDIR, (uint64_t)path, 0, 0, 0, 0, 0));
+int mkdir(const char *path, mode_t mode) {
+    return (int)syscall_ret(syscall(SYS_MKDIR, (uint64_t)path, (uint64_t)mode, 0, 0, 0, 0));
 }
 int rmdir(const char *path) {
     return (int)syscall_ret(syscall(SYS_RMDIR, (uint64_t)path, 0, 0, 0, 0, 0));
@@ -338,6 +338,34 @@ int stat(const char *path, struct stat *out) {
     return (int)syscall_ret(syscall(SYS_STAT, (uint64_t)path, (uint64_t)out,
                                     0, 0, 0, 0));
 }
+int access(const char *path, int mode) {
+    return (int)syscall_ret(syscall(SYS_ACCESS, (uint64_t)path, (uint64_t)mode, 0, 0, 0, 0));
+}
+int chmod(const char *path, mode_t mode) {
+    return (int)syscall_ret(syscall(SYS_CHMOD, (uint64_t)path, (uint64_t)mode, 0, 0, 0, 0));
+}
+int fchmod(int fd, mode_t mode) {
+    return (int)syscall_ret(syscall(SYS_FCHMOD, (uint64_t)fd, (uint64_t)mode, 0, 0, 0, 0));
+}
+int chown(const char *path, uid_t owner, gid_t group) {
+    return (int)syscall_ret(syscall(SYS_CHOWN, (uint64_t)path, (uint64_t)owner, (uint64_t)group, 0, 0, 0));
+}
+int fchown(int fd, uid_t owner, gid_t group) {
+    return (int)syscall_ret(syscall(SYS_FCHOWN, (uint64_t)fd, (uint64_t)owner, (uint64_t)group, 0, 0, 0));
+}
+mode_t umask(mode_t mask) {
+    return (mode_t)syscall(SYS_UMASK, (uint64_t)mask, 0, 0, 0, 0, 0);
+}
+uid_t getuid(void) { return (uid_t)syscall(SYS_GETUID, 0, 0, 0, 0, 0, 0); }
+uid_t geteuid(void) { return (uid_t)syscall(SYS_GETEUID, 0, 0, 0, 0, 0, 0); }
+gid_t getgid(void) { return (gid_t)syscall(SYS_GETGID, 0, 0, 0, 0, 0, 0); }
+gid_t getegid(void) { return (gid_t)syscall(SYS_GETEGID, 0, 0, 0, 0, 0, 0); }
+int setuid(uid_t uid) { return (int)syscall_ret(syscall(SYS_SETUID, (uint64_t)uid, 0, 0, 0, 0, 0)); }
+int setgid(gid_t gid) { return (int)syscall_ret(syscall(SYS_SETGID, (uint64_t)gid, 0, 0, 0, 0, 0)); }
+int setreuid(uid_t ruid, uid_t euid) { return (int)syscall_ret(syscall(SYS_SETREUID, (uint64_t)ruid, (uint64_t)euid, 0, 0, 0, 0)); }
+int setregid(gid_t rgid, gid_t egid) { return (int)syscall_ret(syscall(SYS_SETREGID, (uint64_t)rgid, (uint64_t)egid, 0, 0, 0, 0)); }
+int getgroups(int size, gid_t list[]) { return (int)syscall_ret(syscall(SYS_GETGROUPS, (uint64_t)size, (uint64_t)list, 0, 0, 0, 0)); }
+int setgroups(size_t size, const gid_t *list) { return (int)syscall_ret(syscall(SYS_SETGROUPS, (uint64_t)size, (uint64_t)list, 0, 0, 0, 0)); }
 
 pid_t fork(void) {
     return (pid_t)syscall_ret(syscall(SYS_FORK, 0, 0, 0, 0, 0, 0));
