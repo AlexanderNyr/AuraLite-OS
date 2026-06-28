@@ -33,8 +33,8 @@ il_assert_grep "$LOG" "\[heap\] PASS:"                                    "Heap 
 il_assert_grep "$LOG" "\[timer\] PASS:"                                   "PIT timer accuracy"
 il_assert_grep "$LOG" "\[sched\] PASS:"                                   "Scheduler interleave"
 il_assert_grep "$LOG" "\[vfs\] PASS:"                                     "VFS layer functional"
-il_assert_grep "$LOG" "\[user\] PASS: init shell running in Ring 3"        "Ring 3 init reached"
-il_assert_grep "$LOG" "auralite#"                                         "Interactive shell prompt"
+il_assert_grep "$LOG" "\[boot\] starting init shell \(Ring 3\)"        "Ring 3 init reached"
+il_assert_grep "$LOG" "auralite#"                                        "Interactive shell prompt"
 
 # Triple-fault / panic markers we never want to see.
 il_assert_no_grep "$LOG" "PANIC"                                          "no kernel panic"

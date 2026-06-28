@@ -1018,9 +1018,12 @@ static void stdio_init_once(void) {
     s_stdin.buf  = s_stdin.ibuf;  s_stdin.bufsz  = BUFSIZ;
     s_stdout.buf = s_stdout.ibuf; s_stdout.bufsz = BUFSIZ;
     s_stderr.buf = s_stderr.ibuf; s_stderr.bufsz = BUFSIZ;
-    /* stdout/stdin line-buffered iff a TTY, else fully buffered. */
-    s_stdout.bufmode = isatty(1) ? _IOLBF : _IOFBF;
-    s_stdin.bufmode  = isatty(0) ? _IOLBF : _IOFBF;
+    /* Serial/stdout in AuraLite is consumed by the integration harness; keep
+     * stdout line-buffered unconditionally so user processes emit progress
+     * markers promptly even before the TTY layer is fully available. stdin can
+     * stay line-buffered as well. */
+    s_stdout.bufmode = _IOLBF;
+    s_stdin.bufmode  = _IOLBF;
     s_open_streams[0] = &s_stdin;
     s_open_streams[1] = &s_stdout;
     s_open_streams[2] = &s_stderr;

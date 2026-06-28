@@ -114,7 +114,10 @@ void user_mode_self_test(void) {
         sched_yield();
     }
 
-    kprintf("[user] PASS: init shell running in Ring 3\n");
+    /* This banner races with serial output from child user processes and can
+     * splice itself into userspace log lines (e.g. selftest), confusing the
+     * integration harness.  The shell prompt itself is the authoritative proof
+     * that Ring 3 init is alive, so keep the yield-only behaviour here. */
     /* kmain does NOT halt here — it yields forever so the shell can run
      * interactively. The scheduler keeps kmain and the shell alternating;
      * when the shell blocks on read(stdin), kmain/idle take the slack. */

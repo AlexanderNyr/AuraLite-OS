@@ -20,6 +20,7 @@
 #include "fcntl.h"
 #include "string.h"
 #include "stdio.h"
+#include "sys/wait.h"
 
 #define INPUT_MAX 256
 #define MAX_ARGS  8
@@ -66,11 +67,13 @@ static void cmd_echo(int argc, char **argv) {
 static void cmd_write_file(int argc, char **argv) {
     if (argc < 3) {
         puts("usage: write <file> <text>");
+        fflush(stdout);
         return;
     }
     int fd = open(argv[1], O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) {
         printf("write: cannot open/create %s\n", argv[1]);
+        fflush(stdout);
         return;
     }
     for (int i = 2; i < argc; i++) {
@@ -80,14 +83,17 @@ static void cmd_write_file(int argc, char **argv) {
     write(fd, "\n", 1);
     close(fd);
     printf("wrote %s\n", argv[1]);
+    fflush(stdout);
 }
 
 static void cmd_pwd(void) {
     puts("/");
+    fflush(stdout);
 }
 
 static void cmd_uname(void) {
     puts("AuraLite OS 1.0.0 x86_64");
+    fflush(stdout);
 }
 
 static void cmd_free(void) {
@@ -151,14 +157,28 @@ static void cmd_run(const char *prog) {
         return;
     }
     printf("running %s in isolated address space...\n", prog);
+    fflush(stdout);
     pid_t pid = spawn(prog);
     if (pid < 0) {
         printf("run: failed to spawn %s\n", prog);
+        fflush(stdout);
         return;
     }
     printf("[shell] child PID %lld, waiting...\n", (long long)pid);
-    wait(NULL);
-    printf("[shell] child exited\n");
+    fflush(stdout);
+
+    int status = 0;
+    pid_t got;
+    do {
+        got = waitpid(pid, &status, 0);
+    } while (got == 0);
+
+    if (got < 0) {
+        printf("[shell] waitpid failed for %s\n", prog);
+    } else {
+        printf("[shell] child exited\n");
+    }
+    fflush(stdout);
 }
 
 static void cmd_ping(const char *host) {
@@ -242,43 +262,48 @@ static void cmd_ps(void) {
 }
 
 static void cmd_mkdir(const char *path) {
-    if (!path) { puts("mkdir: missing path"); return; }
+    if (!path) { puts("mkdir: missing path"); fflush(stdout); return; }
     if (mkdir(path) == 0) printf("mkdir: created %s\n", path);
     else                  printf("mkdir: failed %s\n", path);
+    fflush(stdout);
 }
 
 static void cmd_rmdir(const char *path) {
-    if (!path) { puts("rmdir: missing path"); return; }
+    if (!path) { puts("rmdir: missing path"); fflush(stdout); return; }
     if (rmdir(path) == 0) printf("rmdir: removed %s\n", path);
     else                  printf("rmdir: failed %s (must be empty)\n", path);
+    fflush(stdout);
 }
 
 static void cmd_rm(const char *path) {
-    if (!path) { puts("rm: missing path"); return; }
+    if (!path) { puts("rm: missing path"); fflush(stdout); return; }
     if (unlink(path) == 0) printf("rm: removed %s\n", path);
     else                   printf("rm: failed %s\n", path);
+    fflush(stdout);
 }
 
 static void cmd_mv(int argc, char **argv) {
-    if (argc < 3) { puts("usage: mv <from> <to>"); return; }
+    if (argc < 3) { puts("usage: mv <from> <to>"); fflush(stdout); return; }
     if (rename(argv[1], argv[2]) == 0) printf("mv: %s -> %s\n", argv[1], argv[2]);
     else                                printf("mv: failed\n");
+    fflush(stdout);
 }
 
 static void cmd_stat(const char *path) {
-    if (!path) { puts("stat: missing path"); return; }
+    if (!path) { puts("stat: missing path"); fflush(stdout); return; }
     struct stat st;
-    if (stat(path, &st) != 0) { printf("stat: %s: not found\n", path); return; }
+    if (stat(path, &st) != 0) { printf("stat: %s: not found\n", path); fflush(stdout); return; }
     const char *type =
         st.st_type == ST_TYPE_DIR  ? "directory" :
         st.st_type == ST_TYPE_FILE ? "regular file" : "other";
-    printf("  Path:    %s\n", path);
-    printf("  Type:    %s\n", type);
-    printf("  Size:    %llu bytes\n", (unsigned long long)st.st_size);
-    printf("  Inode:   %llu\n",       (unsigned long long)st.st_inode);
-    printf("  Mode:    0%o\n",        (unsigned)st.st_mode);
-    printf("  Links:   %u\n",         (unsigned)st.st_nlink);
-    printf("  Blocks:  %u\n",         (unsigned)st.st_blocks);
+    printf("Path:    %s\n", path);
+    printf("Type:    %s\n", type);
+    printf("Size:    %llu bytes\n", (unsigned long long)st.st_size);
+    printf("Inode:   %llu\n",       (unsigned long long)st.st_inode);
+    printf("Mode:    0%o\n",        (unsigned)st.st_mode);
+    printf("Links:   %u\n",         (unsigned)st.st_nlink);
+    printf("Blocks:  %u\n",         (unsigned)st.st_blocks);
+    fflush(stdout);
 }
 
 static void cmd_touch(const char *path) {
@@ -395,7 +420,7 @@ int main(void) {
 
     for (;;) {
         /* Print the prompt. */
-        write(1, "auralite# ", 9);
+        write(1, "auralite#\n", 10);
 
         /* Read a line from stdin (serial input). */
         int64_t n = read(0, input_line, INPUT_MAX - 1);

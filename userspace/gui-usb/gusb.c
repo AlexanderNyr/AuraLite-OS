@@ -5,6 +5,11 @@
 #include "stdio.h"
 #include "string.h"
 
+__attribute__((constructor)) static void gusb_ctor(void) {
+    printf("[gusb] ctor\n");
+    fflush(stdout);
+}
+
 static int wid;
 static ag_widget_t widgets[20];
 static ag_view_t view;
@@ -123,8 +128,16 @@ static void on_files(ag_widget_t *w, void *u) { (void)w; (void)u; spawn("/gfiles
 static void on_term(ag_widget_t *w, void *u) { (void)w; (void)u; spawn("/gterm"); }
 
 int main(void) {
+    printf("[gusb] starting\n");
+    fflush(stdout);
     wid = ag_window_create(120, 90, 560, 310, "USB Manager", AG_WIN_DEFAULT);
-    if (wid < 0) return 1;
+    if (wid < 0) {
+        printf("[gusb] ag_window_create failed\n");
+        fflush(stdout);
+        return 1;
+    }
+    printf("[gusb] window created wid=%d\n", wid);
+    fflush(stdout);
     ag_window_show(wid);
     ag_view_init(&view, wid, widgets, 20, AG_PANEL);
 
@@ -144,7 +157,11 @@ int main(void) {
     ag_add_button(&view, 180, 224, 150, 30, "Open Terminal", on_term, 0);
     ag_add_label(&view, 16, 270, "Tip: use /usb/info, /usb/sector0.bin, /usb/disk.img, /usb/fat", AG_DARK);
 
+    printf("[gusb] before refresh\n");
+    fflush(stdout);
     refresh_usb();
+    printf("[gusb] entering event loop\n");
+    fflush(stdout);
     ag_view_run(&view, 0, 0);
     return 0;
 }

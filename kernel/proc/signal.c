@@ -233,9 +233,8 @@ int64_t do_pause(void) {
     tcb_t *t = sched_current();
     if (!t) return -EINTR;
     while (!next_deliverable(t)) {
-        __asm__ volatile ("sti" ::: "memory");
+        __asm__ volatile ("sti; hlt" ::: "memory");
         sched_yield();
-        __asm__ volatile ("pause");
     }
     return -EINTR;
 }
@@ -254,9 +253,8 @@ int64_t do_sigsuspend(const sigset_t *mask) {
     t->sig_suspend_active = 1;
     t->sig_suspend_restore = saved;
     while (!next_deliverable(t)) {
-        __asm__ volatile ("sti" ::: "memory");
+        __asm__ volatile ("sti; hlt" ::: "memory");
         sched_yield();
-        __asm__ volatile ("pause");
     }
     /* If the woken signal is default-terminate/ignore (no frame built), or it
      * was consumed without a handler, restore the original mask here. */
