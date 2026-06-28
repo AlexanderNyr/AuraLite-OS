@@ -1,10 +1,5 @@
-/* syscall.c — system call dispatch.
- *
- * Phase 11+ syscall surface for the shell, user programs, networking, VFS and
- * GUI.  User pointers are validated/copied through usercopy helpers before the
- * kernel dereferences them.
- */
-
+#include "kernel/proc/clone_decls.h"
+#include "kernel/fs/p10_decls.h"
 #include <stdint.h>
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/lib/errno.h"
@@ -26,6 +21,24 @@
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/timer/pit.h"
 #include "kernel/gui/gui_syscalls.h"
+#include "kernel/time.h"
+#include "kernel/sync/futex.h"
+// clone.c compiled separately
+#include "kernel/arch/x86_64/paging.h"
+#include "kernel/mm/pmm.h"
+#include "kernel/mm/kheap.h"
+#include "kernel/limine_requests.h"
+
+/* P10 types */
+typedef struct {
+    uint64_t fds_bits[64 / 64];
+} fd_set;
+
+struct kernel_timeval {
+    int64_t tv_sec;
+    long    tv_usec;
+};
+// clone.c compiled separately   /* inline for simplicity in this build */
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
@@ -108,6 +121,38 @@
 #define SYS_ACCESS    513
 #define SYS_FCHMOD    514
 #define SYS_FCHOWN    515
+
+/* P10: Additional syscalls */
+#define SYS_SELECT        23
+#define SYS_POLL           7
+#define SYS_FSTAT          5
+#define SYS_LSTAT          6
+#define SYS_SYMLINK       88
+#define SYS_READLINK      89
+#define SYS_LINK          86
+#define SYS_FTRUNCATE     77
+#define SYS_FSYNC         74
+#define SYS_GETDENTS64   217
+#define SYS_GETCWD       540
+#define SYS_CHDIR        541
+#define SYS_FCHDIR       542
+#define SYS_UNAME         63
+#define SYS_GETRLIMIT     97
+
+/* P8: Clocks & Timers */
+#define SYS_NANOSLEEP      35
+#define SYS_GETITIMER      36
+#define SYS_SETITIMER      38
+#define SYS_GETTIMEOFDAY   96
+#define SYS_CLOCK_GETTIME  228
+#define SYS_CLOCK_GETRES   229
+#define SYS_TIME           520
+
+/* P9: Threads */
+#define SYS_CLONE          56
+#define SYS_ARCH_PRCTL     158
+#define SYS_FUTEX          530
+#define SYS_TKILL          531
 
 /* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
@@ -1108,6 +1153,131 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         cur->brk = new_brk;
         return cur->brk;
     }
+
+    /* ---- P8: Clocks, Timers & sleep ---- */
+    case SYS_CLOCK_GETTIME: {
+        int clockid = (int)a1;
+        struct kernel_timespec *user_ts = (struct kernel_timespec *)(uintptr_t)a2;
+        if (!validate_user_range(user_ts, sizeof(struct kernel_timespec), 1))
+            return (uint64_t)-EFAULT;
+        struct kernel_timespec kts;
+        extern void kernel_clock_gettime(int, struct kernel_timespec *);
+        kernel_clock_gettime(clockid, &kts);
+        if (copy_to_user(user_ts, &kts, sizeof(kts)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case SYS_CLOCK_GETRES: {
+        int clockid = (int)a1;
+        struct kernel_timespec *user_ts = (struct kernel_timespec *)(uintptr_t)a2;
+        if (!validate_user_range(user_ts, sizeof(struct kernel_timespec), 1))
+            return (uint64_t)-EFAULT;
+        struct kernel_timespec kres;
+        extern void kernel_clock_getres(int, struct kernel_timespec *);
+        kernel_clock_getres(clockid, &kres);
+        if (copy_to_user(user_ts, &kres, sizeof(kres)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case SYS_NANOSLEEP: {
+        const struct kernel_timespec *ureq = (const struct kernel_timespec *)(uintptr_t)a1;
+        struct kernel_timespec *urem = (struct kernel_timespec *)(uintptr_t)a2;
+        struct kernel_timespec kreq, krem = {0};
+        if (!validate_user_range((void*)ureq, sizeof(kreq), 0)) return (uint64_t)-EFAULT;
+        if (copy_from_user(&kreq, ureq, sizeof(kreq)) != 0) return (uint64_t)-EFAULT;
+        extern int kernel_nanosleep(const struct kernel_timespec *, struct kernel_timespec *);
+        int r = kernel_nanosleep(&kreq, urem ? &krem : NULL);
+        if (r == 0 && urem) {
+            if (!validate_user_range(urem, sizeof(krem), 1)) return (uint64_t)-EFAULT;
+            if (copy_to_user(urem, &krem, sizeof(krem)) != 0) return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)r;
+    }
+    case SYS_GETTIMEOFDAY: {
+        struct kernel_timeval *utv = (struct kernel_timeval *)(uintptr_t)a1;
+        if (!validate_user_range(utv, sizeof(struct kernel_timeval), 1))
+            return (uint64_t)-EFAULT;
+        struct kernel_timeval ktv;
+        extern int kernel_gettimeofday(struct kernel_timeval *, void *);
+        if (kernel_gettimeofday(&ktv, NULL) != 0) return (uint64_t)-EFAULT;
+        if (copy_to_user(utv, &ktv, sizeof(ktv)) != 0) return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case SYS_TIME: {
+        long *ut = (long *)(uintptr_t)a1;
+        extern time_t kernel_time(time_t *);
+        time_t now = kernel_time(NULL);
+        if (ut) {
+            if (!validate_user_range(ut, sizeof(time_t), 1)) return (uint64_t)-EFAULT;
+            if (copy_to_user(ut, &now, sizeof(now)) != 0) return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)now;
+    }
+    case SYS_GETITIMER: {
+        int which = (int)a1;
+        struct itimer_state *uval = (struct itimer_state *)(uintptr_t)a2;
+        if (!validate_user_range(uval, sizeof(struct itimer_state), 1))
+            return (uint64_t)-EFAULT;
+        struct itimer_state kval;
+        extern int kernel_getitimer(int, struct itimer_state *);
+        if (kernel_getitimer(which, &kval) != 0) return (uint64_t)-EINVAL;
+        if (copy_to_user(uval, &kval, sizeof(kval)) != 0) return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case SYS_SETITIMER: {
+        int which = (int)a1;
+        const struct itimer_state *unew = (const struct itimer_state *)(uintptr_t)a2;
+        struct itimer_state *uold = (struct itimer_state *)(uintptr_t)a3;
+        struct itimer_state knew, kold;
+        if (!validate_user_range((void*)unew, sizeof(knew), 0)) return (uint64_t)-EFAULT;
+        if (copy_from_user(&knew, unew, sizeof(knew)) != 0) return (uint64_t)-EFAULT;
+        extern int kernel_setitimer(int, const struct itimer_state *, struct itimer_state *);
+        int r = kernel_setitimer(which, &knew, uold ? &kold : NULL);
+        if (r == 0 && uold) {
+            if (!validate_user_range(uold, sizeof(kold), 1)) return (uint64_t)-EFAULT;
+            if (copy_to_user(uold, &kold, sizeof(kold)) != 0) return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)r;
+    }
+
+    /* ---- P10: select / stat / symlink / cwd ---- */
+    case SYS_SELECT: {
+        extern int do_select(int, fd_set*, fd_set*, fd_set*, struct kernel_timeval*);
+        return (uint64_t)do_select((int)a1, (fd_set*)(uintptr_t)a2,
+                                   (fd_set*)(uintptr_t)a3, (fd_set*)(uintptr_t)a4,
+                                   (struct kernel_timeval*)(uintptr_t)a5);
+    }
+    case SYS_FSTAT:
+        return (uint64_t)vfs_fstat((int)a1, (struct vfs_stat*)(uintptr_t)a2);
+    case SYS_LSTAT: {
+        char path[SYSCALL_PATH_MAX];
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_lstat(path, (struct vfs_stat*)(uintptr_t)a2);
+    }
+    case SYS_SYMLINK: {
+        char target[SYSCALL_PATH_MAX], linkp[SYSCALL_PATH_MAX];
+        if (copy_user_path(target, a1) != 0 || copy_user_path(linkp, a2) != 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_symlink(target, linkp);
+    }
+    case SYS_READLINK:
+        return (uint64_t)vfs_readlink((const char*)(uintptr_t)a1,
+                                      (char*)(uintptr_t)a2, (size_t)a3);
+    case SYS_GETCWD:
+        return (uint64_t)do_getcwd((char*)(uintptr_t)a1, (size_t)a2);
+    case SYS_CHDIR:
+        return (uint64_t)do_chdir((const char*)(uintptr_t)a1);
+
+    /* ---- P9: pthread / clone / futex ---- */
+    case SYS_CLONE:
+        return (uint64_t)do_clone(a1, a2, a3, a4, a5);
+    case SYS_ARCH_PRCTL:
+        return (uint64_t)do_arch_prctl((int)a1, a2);
+    case SYS_FUTEX:
+        return (uint64_t)do_futex(a1, (int)a2, (uint32_t)a3, a4, (uint32_t *)(uintptr_t)a5, (uint32_t)a6);
+    case SYS_TKILL:
+        return (uint64_t)do_tkill((int64_t)a1, (int)a2);
+
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
         return (uint64_t)-ENOSYS;   /* reserved for unimplemented syscall nrs */

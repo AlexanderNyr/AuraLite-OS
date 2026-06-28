@@ -72,6 +72,10 @@ void pit_init(uint32_t frequency) {
     kprintf(TIMER_TAG "PIT channel 0: mode 3, divisor %u -> %u Hz"
             " (%u Hz requested)\n",
             (unsigned)divisor, (unsigned)timer_freq_hz, (unsigned)frequency);
+
+    /* P8: initialize CMOS RTC epoch */
+    extern void time_init_cmos(void);
+    time_init_cmos();
 }
 
 uint64_t timer_get_ticks(void) {

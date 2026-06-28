@@ -20,6 +20,7 @@
 #include "signal.h"
 #include "termios.h"
 #include "sys/ioctl.h"
+#include "time.h"   /* P8 */
 
 /* ---- errno storage ----
  *
@@ -407,6 +408,49 @@ pid_t getsid(pid_t pid) {
 pid_t getpgrp(void) {
     return getpgid(0);
 }
+
+/* ---- P8: time wrappers ---- */
+int clock_gettime(clockid_t clockid, struct timespec *tp) {
+    return (int)syscall_ret(syscall(228, (uint64_t)clockid, (uint64_t)tp, 0, 0, 0, 0));
+}
+
+int clock_getres(clockid_t clockid, struct timespec *res) {
+    return (int)syscall_ret(syscall(229, (uint64_t)clockid, (uint64_t)res, 0, 0, 0, 0));
+}
+
+int nanosleep(const struct timespec *req, struct timespec *rem) {
+    return (int)syscall_ret(syscall(35, (uint64_t)req, (uint64_t)rem, 0, 0, 0, 0));
+}
+
+int gettimeofday(struct timeval *tv, void *tz) {
+    return (int)syscall_ret(syscall(96, (uint64_t)tv, (uint64_t)tz, 0, 0, 0, 0));
+}
+
+time_t time(time_t *t) {
+    return (time_t)syscall(520, (uint64_t)t, 0, 0, 0, 0, 0);
+}
+
+int getitimer(int which, struct itimerval *curr) {
+    return (int)syscall_ret(syscall(36, (uint64_t)which, (uint64_t)curr, 0, 0, 0, 0));
+}
+
+int setitimer(int which, const struct itimerval *new, struct itimerval *old) {
+    return (int)syscall_ret(syscall(38, (uint64_t)which, (uint64_t)new, (uint64_t)old, 0, 0, 0));
+}
+
+unsigned int sleep(unsigned int seconds) {
+    struct timespec ts = {seconds, 0};
+    nanosleep(&ts, NULL);
+    return 0;
+}
+
+int usleep(unsigned long usec) {
+    struct timespec ts = {0, (long)usec * 1000L};
+    return nanosleep(&ts, NULL);
+}
+
+/* P9 pthread symbols (thin wrappers) */
+#include "pthread.h"
 pid_t tcgetpgrp(int fd) {
     int pgid = 0;
     if (ioctl(fd, TIOCGPGRP, &pgid) < 0) return -1;

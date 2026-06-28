@@ -223,3 +223,7 @@ void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t of
 int     munmap(void *addr, size_t length);
 
 #endif /* AURALITE_LIBC_UNISTD_H */
+char *getcwd(char *buf, size_t size);
+int chdir(const char *path);
+int fchdir(int fd);
+int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);

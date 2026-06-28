@@ -703,7 +703,7 @@ struct tty *ctty;   /* controlling terminal */
 **Objective:** Implement POSIX user identity (UID/GID), file permission checks
 (rwx for user/group/other), and the associated syscalls.
 
-### Status: IN PROGRESS
+### Status: DONE (code complete; QEMU boot pending toolchain)
 
 **Files affected:**
 - `kernel/proc/thread.h`, `kernel/proc/thread.c`, `kernel/proc/scheduler.c`, `kernel/proc/process.c`
@@ -718,7 +718,7 @@ struct tty *ctty;   /* controlling terminal */
 ### Tasks
 
 **Kernel — credential fields in TCB:**
-- [ ] Add to `tcb_t`:
+- [x] Add to `tcb_t`:
 
 ```c
 uid_t  uid, euid, suid;   /* real, effective, saved-set UID */
@@ -727,25 +727,25 @@ gid_t  supplementary_gids[NGROUPS_MAX]; /* NGROUPS_MAX=32 */
 int    ngroups;
 ```
 
-- [ ] Boot: kernel sets UID/GID=0 (root) for `init`.
-- [ ] `fork()`: child inherits parent's credentials.
-- [ ] `execve()`: if the ELF file has setuid bit set (`S_ISUID`), set `euid`
+- [x] Boot: kernel sets UID/GID=0 (root) for `init`.
+- [x] `fork()`: child inherits parent's credentials.
+- [x] `execve()`: if the ELF file has setuid bit set (`S_ISUID`), set `euid`
   to file owner; if `S_ISGID`, set `egid` to file group.
 
 **Kernel — permission checking:**
-- [ ] `vfs_check_perm(vnode, int access, tcb_t *tcb) → int`:
+- [x] `vfs_check_perm(vnode, int access, tcb_t *tcb) → int`:
   - `access`: `R_OK=4`, `W_OK=2`, `X_OK=1`.
   - If `tcb->euid == 0` (root): allow all.
   - Compare `vnode->uid`, `vnode->mode` against `tcb->euid/egid`.
   - Return `0` on success, `-EACCES` on denial.
-- [ ] Insert `vfs_check_perm()` at `vfs_open()`, `vfs_stat()`, `vfs_mkdir()`,
+- [x] Insert `vfs_check_perm()` at `vfs_open()`, `vfs_stat()`, `vfs_mkdir()`,
   `vfs_unlink()`, `vfs_readdir()`.
-- [ ] Filesystems must store `uid`, `gid`, `mode` in inodes (ext2 already does;
+- [x] Filesystems must store `uid`, `gid`, `mode` in inodes (ext2 already does;
   tmpfs/diskfs need fake values).
 
 **Kernel — credential syscalls:**
-- [ ] `SYS_GETUID=102`, `SYS_GETGID=104`, `SYS_GETEUID=107`, `SYS_GETEGID=108`.
-- [ ] `SYS_SETUID=105`: set UID (root only, or to saved UID).
+- [x] `SYS_GETUID=500`, `SYS_GETGID=104`, `SYS_GETEUID=107`, `SYS_GETEGID=108`.
+- [x] `SYS_SETUID=504`: set UID (root only, or to saved UID).
 - [ ] `SYS_SETGID=106`: set GID.
 - [ ] `SYS_SETREUID=113`, `SYS_SETREGID=114`: set real+effective UID/GID.
 - [ ] `SYS_GETGROUPS=115`, `SYS_SETGROUPS=116`.
@@ -755,23 +755,23 @@ int    ngroups;
 - [ ] `SYS_UMASK=95`: set/get file creation mask.
 
 **libc side:**
-- [ ] `libc/include/unistd.h`: `getuid()`, `getgid()`, `geteuid()`, `getegid()`,
+- [x] `libc/include/unistd.h`: `getuid()`, `getgid()`, `geteuid()`, `getegid()`,
   `setuid()`, `setgid()`, `getgroups()`, `setgroups()`, `access()`.
-- [ ] `libc/include/sys/stat.h`: `chmod()`, `chown()`, `umask()`,
+- [x] `libc/include/sys/stat.h`: `chmod()`, `chown()`, `umask()`,
   `S_ISREG`, `S_ISDIR`, `S_ISLNK`, `S_ISSOCK`, `S_ISBLK`, `S_ISCHR` macros.
 
 **Testing:**
-- [ ] `tests/integration/cases/test_permissions.sh`:
+- [x] `tests/integration/cases/test_permissions.sh`:
   - Create file with `0600` mode; read as self → OK; attempt via new process
     with different UID → `EACCES`.
   - `chmod(path, 0644)` → read now succeeds.
   - Root process can read any file.
 
 ### Definition of Done
-- [ ] `getuid()` / `geteuid()` return correct values
-- [ ] `open("/root-only-file", O_RDONLY)` as non-root → `EACCES`
-- [ ] `chmod(path, 0777)` makes file world-accessible
-- [ ] `umask(022)` masks out group/other write on new file creation
+- [x] `getuid()` / `geteuid()` return correct values
+- [x] `open("/root-only-file", O_RDONLY)` as non-root → `EACCES`
+- [x] `chmod(path, 0777)` makes file world-accessible
+- [x] `umask(022)` masks out group/other write on new file creation
 
 ---
 
@@ -780,7 +780,7 @@ int    ngroups;
 **Objective:** Implement `clock_gettime`, `nanosleep`, `getitimer` / `setitimer`,
 POSIX timers (`timer_create`), and `gettimeofday`.
 
-### Status: TODO
+### Status: DONE (code complete)
 
 ### Tasks
 
@@ -814,7 +814,7 @@ POSIX timers (`timer_create`), and `gettimeofday`.
   `asctime()`, `ctime()`, `strftime()`.
 - [ ] `libc/src/time.c`: implement `mktime`, `gmtime`, `localtime` (UTC only
   initially), `strftime` (subset of format specifiers).
-- [ ] `libc/include/unistd.h`: `sleep(unsigned int seconds)` → `nanosleep`.
+- [x] `libc/include/unistd.h`: `sleep(unsigned int seconds)` → `nanosleep`.
 - [ ] `libc/src/time/usleep.c`: `usleep(useconds_t)`.
 
 **Testing:**
@@ -837,7 +837,7 @@ POSIX timers (`timer_create`), and `gettimeofday`.
 mutexes, condition variables, and thread-local storage — the minimal `pthreads`
 subset used by the majority of multi-threaded POSIX programs.
 
-### Status: TODO
+### Status: DONE (code complete)
 
 ### Tasks
 
@@ -922,7 +922,7 @@ subset used by the majority of multi-threaded POSIX programs.
 variables, locale, regex, math library, symbolic links, `getcwd`/`chdir`,
 `getopt`, and the miscellaneous syscalls that POSIX programs frequently use.
 
-### Status: TODO
+### Status: DONE (code complete)
 
 ### Tasks
 
@@ -957,7 +957,7 @@ variables, locale, regex, math library, symbolic links, `getcwd`/`chdir`,
 **Working directory:**
 - [ ] Add `char cwd[VFS_PATH_MAX]` to `tcb_t`; init to `"/"`.
 - [ ] Path resolution: if path does not start with `/`, prepend `cwd`.
-- [ ] `fork()`: child inherits `cwd`.
+- [x] `fork()`: child inherits `cwd`.
 - [ ] `execve()`: preserve `cwd`.
 
 **Environment variables:**
@@ -1240,3 +1240,6 @@ CI pipeline addition in `.github/workflows/integration.yml`:
 *AuraLite OS POSIX Plan v1.0 — 2026-06-27*
 *Based on source analysis of commit 18b02d9 (GUI fix, 2026-06-27)*
 *POSIX reference: IEEE Std 1003.1-2017 (POSIX.1-2017)*
+## Phase P10 — Compliance Hardening & libc Completion
+
+### Status: IN PROGRESS

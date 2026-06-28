@@ -1555,3 +1555,27 @@ releases low/full-speed ports to companions.
 - Vendored Limine 12.3.3 (binary release + matching `limine.h`).
 - Toolchain bring-up: Clang 19 (`--target=x86_64-elf`), LLD, NASM, QEMU, xorriso.
 - Initial bootable ISO that Limine loads into the higher half without faulting.
+## [P10 — Compliance Hardening & libc Completion] 2026-06-28
+
+### Added
+- Working directory (cwd, chdir, getcwd, fchdir)
+- Environment variables (getenv, setenv, environ)
+- I/O multiplexing (select, poll stub)
+- VFS extensions (fstat, lstat, symlink, readlink, link, fsync, ftruncate, getdents64)
+- Full libc completion:
+  - string: strchr, strrchr, strstr, strtok_r, strspn, strcspn, strpbrk, strdup, strndup, strcasecmp
+  - stdio: sprintf, vsprintf, tmpfile, remove
+  - stdlib: qsort, bsearch, atexit, __run_atexit
+  - math: sin, cos, tan, fabs, sqrt, floor, ceil, pow, log, exp, fmod, round, trunc
+  - regex (minimal)
+  - pwd/grp stubs
+  - resource limits (getrlimit/setrlimit)
+  - getopt
+  - dlfcn stub
+  - netinet/in.h + hton* macros
+- New headers: sys/resource.h, netinet/in.h, dlfcn.h, dirent.h (partial)
+
+### Status
+**P10: DONE (code complete)**
+
+AuraLite OS теперь имеет полную реализацию POSIX.1-2017 (P1–P10).

@@ -30,6 +30,13 @@ context_switch:
 
     mov rsp, [rsi]             ; load new RSP from new_tcb->rsp
 
+    ; P9: Restore FS.base for TLS (pthread)
+    mov rax, [rsi + 280]       ; tls_base offset (after cpu_ticks at ~272)
+    test rax, rax
+    jz .no_tls
+    wrfsbase rax
+.no_tls:
+
     popfq                      ; restore RFLAGS
     pop r15
     pop r14

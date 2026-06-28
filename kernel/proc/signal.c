@@ -208,6 +208,10 @@ void signal_tick(uint64_t now) {
             signal_send(t, SIGALRM);
         }
     }
+
+    /* P8: ITIMER_REAL */
+    extern void itimer_tick_real(uint64_t current_ticks);
+    itimer_tick_real(now);
 }
 
 unsigned do_alarm(unsigned seconds) {

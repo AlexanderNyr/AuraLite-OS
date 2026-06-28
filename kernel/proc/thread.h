@@ -106,6 +106,24 @@ typedef struct tcb {
     uint32_t  supplementary_gids[32];       /* supplementary groups */
     int       ngroups;                      /* count of supplementary_gids[] */
     uint16_t  umask;                        /* file creation mask, default 0022 */
+
+    /* ---- P8: per-process interval timers ---- */
+    struct {
+        uint64_t interval_ticks;
+        uint64_t deadline_ticks;
+    } itimers[3];                 /* [0]=ITIMER_REAL, [1]=ITIMER_VIRTUAL, [2]=ITIMER_PROF */
+    uint64_t cpu_ticks;           /* ticks this process spent RUNNING */
+
+    /* ---- P9: pthread / thread-group ---- */
+    uint64_t  tgid;                /* thread group ID = PID of main thread */
+    uint64_t  tls_base;            /* FS.base — WRFSBASE on context switch */
+    int       detached;            /* 1 = pthread_detach() called */
+    uint64_t  join_value;          /* pthread_exit() value */
+    int       is_pthread;          /* 1 = userspace thread */
+    uint64_t clear_tid_addr;      /* *ctid = 0 + futex_wake on exit */
+
+    /* ---- P10: working directory ---- */
+    char cwd[VFS_PATH_MAX];
 } tcb_t;
 
 /* Allocate/free a guarded kernel stack for an already-zeroed TCB. */
