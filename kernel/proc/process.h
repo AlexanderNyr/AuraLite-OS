@@ -17,7 +17,7 @@ int64_t do_fork(void);
 
 /* execve(): replace the current process's address space with a new ELF loaded
  * from the VFS path `path`. Does not return on success; returns -1 on failure. */
-int64_t do_execve(const char *path);
+int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp);
 
 /* wait4(): block until a child process exits. Returns the child's PID, or
  * -1 if no children exist. Sets *exit_code to the child's exit status. */

@@ -29,4 +29,27 @@ double log2(double x);
 double sin(double x);
 double cos(double x);
 
+/* Extended math (libc/src/math_extra.c). */
+double tan(double x);
+double fmod(double x, double y);
+double round(double x);
+double trunc(double x);
+double asin(double x);
+double acos(double x);
+double atan(double x);
+double atan2(double y, double x);
+double sinh(double x);
+double cosh(double x);
+double tanh(double x);
+double exp2(double x);
+double log10(double x);
+double cbrt(double x);
+double hypot(double x, double y);
+double fma(double x, double y, double z);
+double frexp(double x, int *exp);
+double ldexp(double x, int exp);
+double modf(double x, double *iptr);
+double nearbyint(double x);
+double remainder(double x, double y);
+
 #endif /* AURALITE_LIBC_MATH_H */

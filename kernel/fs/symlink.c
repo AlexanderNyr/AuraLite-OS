@@ -1,28 +1,43 @@
-/* kernel/fs/symlink.c — symlink, readlink, link, fstat, lstat (P10) */
+/* kernel/fs/symlink.c — symlink, readlink, link, fstat, lstat (P10)
+ *
+ * The current VFS does not yet support persistent symlink objects, so the
+ * symlink/readlink/link operations are honest stubs that return -ENOSYS.
+ * fstat/lstat are fully wired to the real VFS API (vfs_get_vnode / vfs_stat).
+ */
 
 #include "kernel/fs/vfs.h"
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/proc/usercopy.h"
 
-int vfs_symlink(const char *target, const char *linkpath) {
-    /* Упрощённая реализация: создаём vnode типа SYMLINK */
-    struct vnode *vn = vfs_lookup(linkpath);
-    if (vn) return -EEXIST;
+/* Fill a struct vfs_stat from a vnode, mirroring vfs_stat()'s default path. */
+static int stat_from_vnode(struct vnode *vn, struct vfs_stat *out) {
+    if (!vn || !out) return -EFAULT;
+    if (vn->ops && vn->ops->stat) {
+        int r = vn->ops->stat(vn, out);
+        return r < 0 ? -EIO : 0;
+    }
+    memset(out, 0, sizeof(*out));
+    out->type  = vn->type;
+    out->mode  = vn->mode ? vn->mode : (vn->type == VFS_TYPE_DIR ? 0755 : 0644);
+    out->uid   = vn->uid;
+    out->gid   = vn->gid;
+    out->size  = vn->size;
+    out->inode = vn->inode_id;
+    out->nlink = 1;
+    return 0;
+}
 
-    /* В реальной реализации — создаём через create() + специальный тип */
-    return -ENOSYS;   /* stub для быстрой интеграции */
+int vfs_symlink(const char *target, const char *linkpath) {
+    (void)target; (void)linkpath;
+    /* Persistent symlink creation is not implemented yet (see TODO.md). */
+    return -ENOSYS;
 }
 
 int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
-    struct vnode *vn = vfs_lookup(path);
-    if (!vn || vn->type != VFS_TYPE_SYMLINK) return -EINVAL;
-
-    /* stub: возвращаем target как содержимое */
-    size_t len = strlen((char*)vn->fs_data);
-    if (len > bufsiz) len = bufsiz;
-    copy_to_user(buf, vn->fs_data, len);
-    return (int)len;
+    (void)path; (void)buf; (void)bufsiz;
+    /* No symlink objects exist to read back yet. */
+    return -EINVAL;
 }
 
 int vfs_link(const char *oldpath, const char *newpath) {
@@ -31,12 +46,13 @@ int vfs_link(const char *oldpath, const char *newpath) {
 }
 
 int vfs_fstat(int fd, struct vfs_stat *st) {
-    struct ofd *o = vfs_get_ofd(fd);
-    if (!o || !o->vn) return -EBADF;
-    return vfs_stat_by_vnode(o->vn, st);
+    if (!st) return -EFAULT;
+    struct vnode *vn = vfs_get_vnode(fd);
+    if (!vn) return -EBADF;
+    return stat_from_vnode(vn, st);
 }
 
 int vfs_lstat(const char *path, struct vfs_stat *st) {
-    /* Для простоты — сейчас не следуем symlink */
+    /* Without symlink objects, lstat is identical to stat. */
     return vfs_stat(path, st);
 }

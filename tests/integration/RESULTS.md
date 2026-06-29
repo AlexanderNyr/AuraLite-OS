@@ -15,6 +15,8 @@ make test-unit && make test-integration
 | 2 | `test_shell_commands`       | 10 / 10 |  30s | ✅ PASS |
 | 3 | `test_syscalls`             |   4 / 4 |  20s | ✅ PASS |
 | 4 | `test_selftest`             | 13 / 13 |  35s | ✅ PASS |
+| 4a| `test_posix_p10`            | 27 / 27 |  40s | ✅ PASS |
+| 4b| `test_execve_args`          | 16 / 16 |  28s | ✅ PASS |
 | 5 | `test_user_processes`       |   4 / 4 |  25s | ✅ PASS |
 | 6 | `test_ahci_rw`              |   9 / 9 |  25s | ✅ PASS |
 | 7 | `test_fat32_persistence`    |   5 / 5 |  50s | ✅ PASS |
@@ -27,7 +29,7 @@ make test-unit && make test-integration
 |14 | `test_graphics`             |   4 / 4 |  25s | ✅ PASS |
 |15 | `test_smp`                  |   3 / 3 |  15s | ✅ PASS |
 |16 | `test_gui`                  |   9 / 9 |  17s | ✅ PASS² |
-|   | **TOTAL**                   | **134/134** | **530s** | **✅** |
+|   | **TOTAL**                   | **177/177** | **598s** | **✅** |
 
 Unit tests in the same run also passed: PMM, heap, string, bitmap, net helpers,
 kprintf, libc, 3D math, USB protocol structures and WM helpers.
@@ -64,6 +66,29 @@ Runs `/selftest`, a bundled userspace regression program.  It verifies that
 invalid user pointers are rejected by `write`, `open` and `stat`, that valid
 `stat/open/read/write` paths still work, and that the new socket-style API can
 create and close process-owned socket handles without kernel faults.
+
+### `test_posix_p10` — 27 asserts
+
+Runs `/p10test`, a standalone P10 (POSIX.1-2017) libc regression program, and
+asserts every marker: environment variables (`setenv`/`getenv`/`unsetenv` with
+overwrite semantics), `strtod`/`strtol`/`strtoul`, the extended `<math.h>`
+surface (`asin`/`atan2`/`fmod` — software implementations that previously
+regressed to infinite self-loops), `fnmatch` (including `FNM_PATHNAME`), POSIX
+`regcomp`/`regexec`, futex-backed POSIX semaphores, `inet_pton`/`inet_ntop`,
+`getcwd`, and `opendir`/`readdir`. Gated on the final `P10TEST ALL PASS` line
+with no exception/panic.
+
+### `test_execve_args` — 16 asserts
+
+Verifies `execve(path, argv, envp)` end-to-end. The kernel boot self-test spawns
+`/execve_child`, which `execve()`s `/argv_echo` with a known `argv`/`envp`.
+`/argv_echo` prints what it received, proving the kernel builds the System V
+AMD64 initial process stack correctly (`argc`, `argv[]`, `NULL`, `envp[]`,
+`NULL`, `AT_NULL` auxv, strings) and that `crt0`/`__libc_start_main` decode it:
+`argc==4`, each `argv` entry intact (including one with an embedded space),
+`argv[argc]==NULL`, `envp==environ`, the injected env vars present, and
+`getenv("P10")=="on"`. Runs at boot (before the shell) to avoid racing the
+per-thread SYSCALL save area.
 
 ### `test_user_processes` — 4 asserts
 

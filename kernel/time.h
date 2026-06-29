@@ -26,11 +26,7 @@ struct kernel_timeval {
 #define ITIMER_VIRTUAL 1
 #define ITIMER_PROF    2
 
-/* Per-process itimer state (stored in tcb_t) */
-struct itimer_state {
-    uint64_t interval_ticks;
-    uint64_t deadline_ticks;
-};
+/* struct itimer_state is defined in kernel/time_types.h (included above). */
 
 /* Global boot epoch (seconds since Unix epoch, UTC) */
 extern uint64_t kernel_boot_epoch_sec;

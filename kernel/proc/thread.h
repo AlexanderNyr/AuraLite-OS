@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "kernel/fs/vfs.h"
 #include "kernel/proc/signal.h"
+#include "kernel/time_types.h"
 
 /*
  * Thread Control Block (also serves as the Process Control Block).
@@ -108,10 +109,7 @@ typedef struct tcb {
     uint16_t  umask;                        /* file creation mask, default 0022 */
 
     /* ---- P8: per-process interval timers ---- */
-    struct {
-        uint64_t interval_ticks;
-        uint64_t deadline_ticks;
-    } itimers[3];                 /* [0]=ITIMER_REAL, [1]=ITIMER_VIRTUAL, [2]=ITIMER_PROF */
+    struct itimer_state itimers[3]; /* [0]=ITIMER_REAL, [1]=ITIMER_VIRTUAL, [2]=ITIMER_PROF */
     uint64_t cpu_ticks;           /* ticks this process spent RUNNING */
 
     /* ---- P9: pthread / thread-group ---- */

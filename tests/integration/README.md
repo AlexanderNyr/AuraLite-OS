@@ -14,6 +14,8 @@ tests/integration/
     ├── test_shell_commands.sh       help/ls/cat/echo/pwd/free/run …
     ├── test_syscalls.sh             read/write/open/listdir/getpid
     ├── test_selftest.sh             usercopy + FD + socket syscall regression app
+    ├── test_posix_p10.sh            P10 libc: env/strtod/math/fnmatch/regex/sem/inet/getcwd/dirent
+    ├── test_execve_args.sh          execve(path, argv, envp) marshalling (argv/envp on the stack)
     ├── test_user_processes.sh       spawn(), isolated address spaces
     ├── test_ahci_rw.sh              AHCI DMA + /disk + /fat write/read
     ├── test_fat32_persistence.sh    write file → reboot → still there

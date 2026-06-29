@@ -68,3 +68,25 @@ void free(void *ptr) {
     memset(ptr, 0, block_ptr->size);
     block_ptr->free = 1;
 }
+
+void *calloc(size_t nmemb, size_t size) {
+    size_t total = nmemb * size;
+    if (nmemb && total / nmemb != size) return NULL;   /* overflow */
+    void *p = malloc(total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+void *realloc(void *ptr, size_t size) {
+    if (!ptr) return malloc(size);
+    if (size == 0) { free(ptr); return NULL; }
+
+    block_meta *block_ptr = ((block_meta *)ptr) - 1;
+    if (block_ptr->size >= size) return ptr;   /* fits in place */
+
+    void *new_ptr = malloc(size);
+    if (!new_ptr) return NULL;
+    memcpy(new_ptr, ptr, block_ptr->size);
+    free(ptr);
+    return new_ptr;
+}

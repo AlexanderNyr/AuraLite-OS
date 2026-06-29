@@ -439,6 +439,22 @@ void thread_exit_with_signal(int signo) {
 }
 
 void thread_exit_with_code(int code) {
+    /* P9 pthread teardown: if this thread was created with CLONE_CHILD_CLEARTID
+     * (clear_tid_addr != 0), zero *clear_tid_addr in user memory and wake one
+     * waiter on that futex so pthread_join() can observe completion.  Done in
+     * normal context, before disabling interrupts. */
+    {
+        extern int copy_to_user(void *user_dst, const void *kernel_src, uint64_t len);
+        extern int futex_wake(uint32_t *uaddr, int n);
+        tcb_t *me = sched_current();
+        if (me && me->clear_tid_addr) {
+            uint32_t zero = 0;
+            (void)copy_to_user((void *)(uintptr_t)me->clear_tid_addr, &zero, sizeof(zero));
+            (void)futex_wake((uint32_t *)(uintptr_t)me->clear_tid_addr, 1);
+            me->clear_tid_addr = 0;
+        }
+    }
+
     /* Disable interrupts: we're about to manipulate scheduler state. */
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));

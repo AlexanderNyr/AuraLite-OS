@@ -63,6 +63,20 @@ int   fprintf(FILE *f, const char *fmt, ...);
 int   vfprintf(FILE *f, const char *fmt, va_list ap);
 int   snprintf(char *str, size_t size, const char *fmt, ...);
 int   vsnprintf(char *str, size_t size, const char *fmt, va_list ap);
+int   sprintf(char *str, const char *fmt, ...);
+int   vsprintf(char *str, const char *fmt, va_list ap);
+
+/* Formatted input (libc/src/stdio_extra.c). */
+int   sscanf(const char *str, const char *fmt, ...);
+int   vsscanf(const char *str, const char *fmt, va_list ap);
+int   scanf(const char *fmt, ...);
+int   fscanf(FILE *f, const char *fmt, ...);
+
+/* Temporary files (libc/src/stdio_extra.c). */
+FILE *tmpfile(void);
+char *tmpnam(char *s);
+int   mkstemp(char *tmpl);
+int   remove(const char *path);
 int   fflush(FILE *f);
 int   feof(FILE *f);
 int   ferror(FILE *f);

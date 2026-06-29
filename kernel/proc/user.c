@@ -109,6 +109,12 @@ void user_mode_self_test(void) {
         return;
     }
 
+    /* P10: the init shell is the root of the process tree — root its current
+     * working directory at "/" so getcwd()/chdir() and every spawned child
+     * (which inherits this cwd) start from a valid path. */
+    t->cwd[0] = '/';
+    t->cwd[1] = '\0';
+
     /* Give the shell a few scheduling slots to start up and print its banner. */
     for (int i = 0; i < 5; i++) {
         sched_yield();

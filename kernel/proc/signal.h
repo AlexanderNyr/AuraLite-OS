@@ -37,6 +37,11 @@ struct tcb;
 #define SIGTSTP  20
 #define SIGTTIN  21
 #define SIGTTOU  22
+#define SIGURG   23
+#define SIGXCPU  24
+#define SIGXFSZ  25
+#define SIGVTALRM 26
+#define SIGPROF  27
 #define SIGWINCH 28
 #define NSIG     32    /* signals 1..31 are valid; bit (sig-1) in masks */
 

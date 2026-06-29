@@ -12,6 +12,14 @@
 #include "errno.h"
 #include "sys/stat.h"
 #include "auragui.h"
+#include "stdlib.h"      /* P10: getenv/setenv/strtod/qsort */
+#include "math.h"        /* P10: asin/atan2/fmod */
+#include "regex.h"       /* P10: regcomp/regexec */
+#include "fnmatch.h"     /* P10: fnmatch */
+#include "dirent.h"      /* P10: opendir/readdir */
+#include "semaphore.h"   /* P10: sem_init/wait/post */
+#include "sys/socket.h"  /* P10: AF_INET */
+#include "arpa/inet.h"   /* P10: inet_pton/inet_ntop */
 
 static int fails = 0;
 
@@ -480,11 +488,11 @@ int main(void) {
     check("stat accepts valid output pointer", r == 0 && st.st_size > 0);
     printf("SELFTEST PASS: stat accepts valid output pointer\n");
 
-    r = readdir("/", (void *)0xFFFF800000000000ULL, 4);
+    r = aura_readdir("/", (void *)0xFFFF800000000000ULL, 4);
     check("readdir rejects kernel output pointer", r < 0);
 
-    struct dirent ents[8];
-    r = readdir("/", ents, 8);
+    struct aura_dirent ents[8];
+    r = aura_readdir("/", ents, 8);
     check("readdir accepts valid output pointer", r > 0);
 
     fd = open("/hello", O_RDONLY);
@@ -683,6 +691,106 @@ int main(void) {
             check("access R_OK denied for uid 1000", access("/tmp/perm.txt", R_OK) < 0);
             check("open R_OK denied for uid 1000", open("/tmp/perm.txt", O_RDONLY) < 0);
             printf("SELFTEST PASS: open denied for non-owner\n");
+        }
+    }
+
+    /* ---- P10 POSIX.1-2017 library surface ---- */
+    {
+        /* environment variables */
+        setenv("AURA_TEST", "hello", 1);
+        const char *ev = getenv("AURA_TEST");
+        check("setenv/getenv round-trip", ev && strcmp(ev, "hello") == 0);
+        setenv("AURA_TEST", "world", 1);
+        ev = getenv("AURA_TEST");
+        check("setenv overwrite=1 replaces", ev && strcmp(ev, "world") == 0);
+        setenv("AURA_TEST", "ignored", 0);
+        ev = getenv("AURA_TEST");
+        check("setenv overwrite=0 keeps", ev && strcmp(ev, "world") == 0);
+        unsetenv("AURA_TEST");
+        check("unsetenv removes", getenv("AURA_TEST") == NULL);
+
+        /* strtod / strtol family */
+        char *end = NULL;
+        double d = strtod("3.5xyz", &end);
+        check("strtod parses 3.5", d > 3.49 && d < 3.51 && end && *end == 'x');
+        long lv = strtol("  -42rest", &end, 10);
+        check("strtol parses -42", lv == -42 && end && *end == 'r');
+        unsigned long uv = strtoul("ff", NULL, 16);
+        check("strtoul hex ff==255", uv == 255);
+
+        /* extended math */
+        double s = asin(1.0);
+        check("asin(1)==pi/2", s > 1.5707 && s < 1.5709);
+        double a2 = atan2(1.0, 1.0);
+        check("atan2(1,1)==pi/4", a2 > 0.7853 && a2 < 0.7854);
+        double fm = fmod(7.0, 3.0);
+        check("fmod(7,3)==1", fm > 0.999 && fm < 1.001);
+
+        /* fnmatch */
+        check("fnmatch *.c matches foo.c",
+              fnmatch("*.c", "foo.c", 0) == 0);
+        check("fnmatch *.c rejects foo.h",
+              fnmatch("*.c", "foo.h", 0) != 0);
+        check("fnmatch PATHNAME star stops at slash",
+              fnmatch("a/*", "a/b", FNM_PATHNAME) == 0 &&
+              fnmatch("a/*", "a/b/c", FNM_PATHNAME) != 0);
+
+        /* POSIX regex (substring matcher) */
+        regex_t re;
+        if (regcomp(&re, "ell", 0) == 0) {
+            regmatch_t m[1];
+            int rc = regexec(&re, "hello", 1, m, 0);
+            check("regexec finds 'ell' in 'hello'",
+                  rc == 0 && m[0].rm_so == 1 && m[0].rm_eo == 4);
+            check("regexec no match returns nonzero",
+                  regexec(&re, "world", 1, m, 0) != 0);
+            regfree(&re);
+        } else {
+            check("regcomp 'ell'", 0);
+        }
+
+        /* POSIX semaphore (futex-backed) */
+        sem_t sem;
+        if (sem_init(&sem, 0, 1) == 0) {
+            check("sem_wait on count=1 succeeds", sem_wait(&sem) == 0);
+            check("sem_trywait on count=0 fails", sem_trywait(&sem) != 0);
+            check("sem_post returns 0", sem_post(&sem) == 0);
+            check("sem_wait after post succeeds", sem_wait(&sem) == 0);
+            sem_destroy(&sem);
+        } else {
+            check("sem_init", 0);
+        }
+
+        /* inet_pton / inet_ntop */
+        unsigned char ipb[4] = {0};
+        check("inet_pton 127.0.0.1",
+              inet_pton(AF_INET, "127.0.0.1", ipb) == 1 &&
+              ipb[0] == 127 && ipb[3] == 1);
+        char ipstr[16];
+        unsigned char ip2[4] = {192, 168, 0, 5};
+        check("inet_ntop 192.168.0.5",
+              inet_ntop(AF_INET, ip2, ipstr, sizeof(ipstr)) != NULL &&
+              strcmp(ipstr, "192.168.0.5") == 0);
+        check("inet_pton rejects 256.0.0.1",
+              inet_pton(AF_INET, "256.0.0.1", ipb) == 0);
+
+        /* getcwd */
+        char cwdbuf[256];
+        char *cw = getcwd(cwdbuf, sizeof(cwdbuf));
+        check("getcwd returns a path", cw != NULL && cwdbuf[0] != '\0');
+
+        /* opendir / readdir over /tmp (created above by perm tests) */
+        DIR *dp = opendir("/tmp");
+        if (dp) {
+            int saw_entry = 0;
+            struct dirent *de;
+            while ((de = readdir(dp)) != NULL) {
+                if (de->d_name[0] != '\0') saw_entry = 1;
+            }
+            check("opendir/readdir /tmp yields entries", saw_entry);
+            closedir(dp);
+        } else {
+            check("opendir /tmp", 0);
         }
     }
 

@@ -47,7 +47,7 @@ CFLAGS      := --target=$(TARGET) \
                -O2 -g \
                -DARCH_X86_64 -I . -I $(LIMINE_DIR) -I $(BUILD_DIR)
 
-ASFLAGS     := -f elf64
+ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 
 # The linker script fixes the higher-half address; no --image-base needed.
 LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
@@ -95,6 +95,19 @@ $(BUILD_DIR)/%.o: %.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
+# Auto-generated nasm struct-offset include (keeps hand-written asm in sync
+# with tcb_t).  Built by a tiny host program using offsetof().
+$(BUILD_DIR)/gen_asm_offsets: tools/gen_asm_offsets.c kernel/proc/thread.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -I . $< -o $@
+
+$(BUILD_DIR)/asm_offsets.inc: $(BUILD_DIR)/gen_asm_offsets
+	@mkdir -p $(dir $@)
+	$< > $@
+
+# context.asm %includes asm_offsets.inc for TCB field offsets.
+$(BUILD_DIR)/kernel/proc/context.o: $(BUILD_DIR)/asm_offsets.inc
+
 $(KERNEL_ELF): $(KERNEL_OBJS) kernel.ld $(USER_BIN_H)
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) $(KERNEL_OBJS) -o $@
@@ -110,11 +123,24 @@ HELLO_ELF    := $(USER_BUILD)/hello.elf
 USER_BIN_H   := $(BUILD_DIR)/init_bin.h
 
 USER_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
-                -O2 -Wall -Wextra -Werror -I libc/include
+                -O2 -Wall -Wextra -Werror -I . -I libc/include
 USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 
 # Common objects shared by all user programs.
-USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o
+# Extra libc translation units (each its own object, all linked into every
+# user program via USER_COMMON).  These provide the P9/P10 surface: pthreads,
+# dirent, regex, env, getopt, pwd, utsname, getrlimit, and the math/stdio/
+# stdlib/string extensions.
+LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o $(USER_BUILD)/dirent.o \
+                   $(USER_BUILD)/regex.o $(USER_BUILD)/env.o \
+                   $(USER_BUILD)/getopt.o $(USER_BUILD)/pwd.o \
+                   $(USER_BUILD)/utsname.o $(USER_BUILD)/resource.o \
+                   $(USER_BUILD)/math_extra.o $(USER_BUILD)/stdio_extra.o \
+                   $(USER_BUILD)/stdlib_extra.o $(USER_BUILD)/string_extra.o \
+                   $(USER_BUILD)/posix_extra.o
+
+USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o \
+               $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o $(LIBC_EXTRA_OBJS)
 
 USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h \
                    libc/include/errno.h libc/include/limits.h libc/include/stdbool.h \
@@ -129,6 +155,8 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/snake.elf $(USER_BUILD)/browser.elf \
              $(USER_BUILD)/selftest.elf \
              $(USER_BUILD)/proctest.elf $(USER_BUILD)/fdtest.elf \
+             $(USER_BUILD)/p10test.elf $(USER_BUILD)/argv_echo.elf \
+             $(USER_BUILD)/execve_child.elf \
              $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
              $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
              $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
@@ -196,6 +224,18 @@ $(USER_BUILD)/fdtest.o: userspace/fdtest/fdtest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
+$(USER_BUILD)/p10test.o: userspace/p10test/p10test.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/argv_echo.o: userspace/argv_echo/argv_echo.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/execve_child.o: userspace/execve_child/execve_child.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
 $(USER_BUILD)/apm.o: userspace/apm/apm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/matrix.o: userspace/matrix/matrix.c $(USER_CFLAGS_INC)
@@ -254,6 +294,16 @@ $(USER_BUILD)/libc.o: libc/src/libc.c libc/include/unistd.h libc/include/string.
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/malloc.o: libc/src/malloc.c libc/include/stdlib.h libc/include/unistd.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# Generic rule for the extra libc translation units in libc/src/*.c.
+$(USER_BUILD)/%.o: libc/src/%.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# The pthread runtime lives in a sub-directory.
+$(USER_BUILD)/pthread.o: libc/src/pthread/pthread.c libc/include/pthread.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -361,6 +411,9 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/selftest.elf $(INITRD_DIR)/selftest
 	@cp $(USER_BUILD)/proctest.elf $(INITRD_DIR)/proctest
 	@cp $(USER_BUILD)/fdtest.elf   $(INITRD_DIR)/fdtest
+	@cp $(USER_BUILD)/p10test.elf  $(INITRD_DIR)/p10test
+	@cp $(USER_BUILD)/argv_echo.elf $(INITRD_DIR)/argv_echo
+	@cp $(USER_BUILD)/execve_child.elf $(INITRD_DIR)/execve_child
 	@cp $(USER_BUILD)/gcalc.elf   $(INITRD_DIR)/gcalc
 	@cp $(USER_BUILD)/gedit.elf   $(INITRD_DIR)/gedit
 	@cp $(USER_BUILD)/gfiles.elf  $(INITRD_DIR)/gfiles

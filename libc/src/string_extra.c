@@ -2,6 +2,13 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <stdlib.h>
+
+size_t strnlen(const char *s, size_t maxlen) {
+    size_t n = 0;
+    while (n < maxlen && s[n]) n++;
+    return n;
+}
 
 char *strchr(const char *s, int c) {
     while (*s) {
@@ -95,4 +102,14 @@ int strcasecmp(const char *s1, const char *s2) {
         s1++; s2++;
     }
     return tolower(*s1) - tolower(*s2);
+}
+
+int strncasecmp(const char *s1, const char *s2, size_t n) {
+    while (n && *s1 && *s2) {
+        int c1 = tolower((unsigned char)*s1), c2 = tolower((unsigned char)*s2);
+        if (c1 != c2) return c1 - c2;
+        s1++; s2++; n--;
+    }
+    if (n == 0) return 0;
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
 }

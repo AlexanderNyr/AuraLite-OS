@@ -23,6 +23,7 @@ typedef struct {
 typedef struct { int pshared; } pthread_condattr_t;
 
 typedef uint32_t pthread_key_t;
+typedef struct { int done; volatile int lock; } pthread_once_t;
 
 #define PTHREAD_MUTEX_INITIALIZER {0,0,0}
 #define PTHREAD_COND_INITIALIZER {0,0}
@@ -52,6 +53,6 @@ int pthread_setspecific(pthread_key_t key, const void *value);
 
 int pthread_once(pthread_once_t *once_control, void (*init_routine)(void));
 
-#define PTHREAD_ONCE_INIT {0}
+#define PTHREAD_ONCE_INIT {0, 0}
 
 #endif /* _PTHREAD_H */

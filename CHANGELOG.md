@@ -2,6 +2,75 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [P10 — POSIX.1-2017 compliance hardening & libc completion] 2026-06-28
+
+### Added
+- **execve argv/envp**: `execve(path, argv, envp)` now passes the argument and
+  environment vectors to the new program. The kernel snapshots `argv[]`/`envp[]`
+  out of the caller's address space and rebuilds them on the new process's
+  initial user stack per the System V AMD64 ABI (`argc`, argv pointers, NULL,
+  envp pointers, NULL, `AT_NULL` auxv, then the string data), with a
+  16-byte-aligned RSP. `crt0.asm` decodes that stack and calls the new
+  `__libc_start_main`, which publishes `environ` and runs
+  `main(argc, argv, envp)`. New libc wrappers: `execv`, `execvp` (PATH search,
+  default `/bin`).
+- **fork cwd inheritance**: a forked child inherits the parent's current
+  working directory.
+- **POSIX library breadth** (`libc/src/posix_extra.c` + headers): `poll()`,
+  `setlocale`/`localeconv`, wide-char helpers, futex-backed POSIX semaphores
+  (`sem_init/destroy/wait/trywait/post/getvalue`), `fnmatch()` (with
+  `FNM_PATHNAME`/`FNM_NOESCAPE`), `glob()`, `inet_pton/ntop/aton/ntoa/inet_addr`,
+  `getaddrinfo`/`freeaddrinfo`/`gai_strerror`/`gethostbyname`,
+  `getgrgid`/`getgrnam`, `getopt_long`.
+- **New headers**: `pwd.h`, `sys/utsname.h`, `getopt.h`, `poll.h`, `locale.h`,
+  `semaphore.h`, `fnmatch.h`, `glob.h`, `grp.h`, `sys/socket.h`, `arpa/inet.h`,
+  `netdb.h`, `wchar.h`, `sys/select.h`.
+- **libc completeness**: `calloc`/`realloc`; `strtoul`/`strtoll`/`strtoull`/
+  `strtod`/`strtof`/`strtold`/`atof`; extended `<math.h>` (`tan`/`fmod`/`asin`/
+  `acos`/`atan`/`atan2`/`sinh`/`cosh`/`tanh`/`exp2`/`log10`/`cbrt`/`hypot`/…);
+  `qsort`/`bsearch`/`atexit` (run on `exit()` in reverse order, before stdio
+  flush); `opendir`/`readdir`/`closedir` over the raw `aura_readdir` lister;
+  POSIX `regcomp`/`regexec`/`regfree` (substring matcher).
+- **selftest P10 block**: setenv/getenv, strtod/strtol family, asin/atan2/fmod,
+  fnmatch, regcomp/regexec, semaphores, inet_pton/ntop, getcwd, opendir/readdir.
+- **Integration tests (QEMU)**: `tests/integration/cases/test_posix_p10.sh`
+  (runs `/p10test`, 27 asserts over the P10 libc surface) and
+  `test_execve_args.sh` (runs the boot self-test `/execve_child` → `execve` →
+  `/argv_echo`, 16 asserts on argv/envp marshalling). New helper userspace
+  programs `/p10test`, `/argv_echo`, `/execve_child`; the kernel boot self-test
+  now also exercises `execve(path, argv, envp)`.
+
+### Fixed (P10 libc)
+- **Extended math functions were broken**: `asin/acos/atan/atan2/tan/sinh/cosh/
+  tanh/exp2/log10/cbrt/hypot/round/trunc/frexp/ldexp/modf/nearbyint/remainder/
+  fma` were implemented as `__builtin_<fn>(x)`, which the compiler lowered to a
+  self-call for runtime arguments — i.e. an infinite `jmp self` loop that hung
+  any program calling them. Reimplemented in software on top of the SSE-backed
+  primitives in `libc.c` (`sin/cos/sqrt/exp/log/pow/floor/ceil/fabs`); accuracy
+  verified against host libm (~1e-16).
+- **Process working directory defaulted to empty**: a freshly spawned process
+  (and the init shell) had `cwd[0]=='\0'`, so `getcwd()` returned an empty
+  string. The init shell is now rooted at `/`, and `process_spawn()` inherits
+  the spawner's cwd (defaulting to `/`).
+
+### Changed
+- `execve()` libc/kernel signature is now the POSIX 3-argument form.
+- `mmap()` accepts anonymous `MAP_SHARED` (currently degraded to a private
+  mapping — see TODO.md); file-backed `MAP_SHARED` returns `-ENOSYS`.
+
+### Fixed (baseline repair, P9 follow-through)
+- Removed 19 duplicate draft `.c` files that broke linking with duplicate
+  symbols; rewrote `kernel/fs/symlink.c` against the real VFS API.
+- Real `clone`/`futex`/`arch_prctl`/`tkill` (were `-ENOSYS` stubs); fixed a TLS
+  base offset bug in `context.asm` via auto-generated asm offsets; rewrote
+  `libc/src/pthread/pthread.c` to use `clone` + futex mutex/cond.
+
+### Notes / deferred (P10 follow-up)
+- `epoll` (`epoll_create1`/`epoll_ctl`/`epoll_wait`) is deferred (low priority);
+  `poll()` is available in libc on top of `select()`.
+- The execve auxiliary vector carries only `AT_NULL`; richer auxv
+  (`AT_PAGESZ`/`AT_RANDOM`/…) and true shared `mmap` VMAs are future work.
+
 ## [P6 (kernel core) — process groups, sessions, waitpid options] 2026-06-27
 
 ### Added

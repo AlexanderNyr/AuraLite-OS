@@ -44,6 +44,8 @@ ALL_CASES=(
     test_shell_commands
     test_syscalls
     test_selftest
+    test_posix_p10
+    test_execve_args
     test_errno
     test_open_flags
     test_lseek

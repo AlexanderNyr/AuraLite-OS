@@ -3,7 +3,10 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/scheduler.h"
+#include "kernel/proc/usercopy.h"
 #include "kernel/lib/errno.h"
+#include "kernel/lib/string.h"
+#include "kernel/time.h"
 #include <stdint.h>
 
 #define FD_SETSIZE 64

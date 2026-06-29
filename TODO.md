@@ -22,6 +22,22 @@ for the feature matrix.
 - **PIC/PIT legacy interrupt model.** LAPIC/IOAPIC and per-CPU LAPIC timers are
   not implemented.
 
+#### P10 / POSIX follow-ups
+
+- **`MAP_SHARED` is not truly shared.** Anonymous `MAP_SHARED` is accepted but
+  degraded to a private mapping (no cross-process shared page-cache VMAs yet),
+  and file-backed `MAP_SHARED` returns `-ENOSYS`. Implement real shared VMAs
+  with write-back before relying on `mmap`-based IPC.
+- **execve passes argv/envp but no real auxv.** The initial process stack is
+  built per the System V AMD64 ABI (argc/argv/NULL/envp/NULL) but the auxiliary
+  vector contains only an `AT_NULL` terminator. Add `AT_PAGESZ`/`AT_RANDOM`/etc.
+  when a dynamic loader needs them.
+- **No `execvpe`/`fexecve`/`posix_spawn`.** Only `execve`/`execv`/`execvp`
+  wrappers exist; `execvp` honours `PATH` (default `/bin`) with no per-segment
+  `EACCES` retry semantics.
+- **`epoll` is not implemented** (low priority): `poll()` is provided in libc on
+  top of `select()`; `epoll_create1`/`epoll_ctl`/`epoll_wait` are unimplemented.
+
 ### Security / syscall robustness
 
 - **User pointer validation is basic.** Syscall dispatch now uses

@@ -34,10 +34,7 @@ typedef struct {
     uint64_t fds_bits[64 / 64];
 } fd_set;
 
-struct kernel_timeval {
-    int64_t tv_sec;
-    long    tv_usec;
-};
+/* struct kernel_timeval is provided by kernel/time.h (included above). */
 // clone.c compiled separately   /* inline for simplicity in this build */
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
@@ -129,7 +126,11 @@ struct kernel_timeval {
 #define SYS_LSTAT          6
 #define SYS_SYMLINK       88
 #define SYS_READLINK      89
-#define SYS_LINK          86
+/* SYS_LINK was erroneously 86, colliding with SYS_NET_CLOSE; moved to the free
+ * slot 90 next to its symlink/readlink siblings.  Still undispatched (link(2)
+ * returns -ENOSYS via the symlink.c stub), but the number is now collision-free
+ * for when link(2) is wired up. */
+#define SYS_LINK          90
 #define SYS_FTRUNCATE     77
 #define SYS_FSYNC         74
 #define SYS_GETDENTS64   217
@@ -173,6 +174,7 @@ struct kernel_timeval {
 #define PROT_READ             0x1
 #define PROT_WRITE            0x2
 #define PROT_EXEC             0x4
+#define MAP_SHARED            0x01
 #define MAP_PRIVATE           0x02
 #define MAP_FIXED             0x10
 #define MAP_ANONYMOUS         0x20
@@ -322,7 +324,13 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || prot == 0) {
         return (uint64_t)-EINVAL;
     }
-    if (!(flags & MAP_PRIVATE)) return (uint64_t)-EINVAL;
+    /* Exactly one of MAP_SHARED / MAP_PRIVATE must be requested.  We do not
+     * yet implement true shared mappings (no shared page-cache VMAs); for
+     * anonymous MAP_SHARED we degrade to a private mapping so single-process
+     * users (e.g. POSIX shm-style scratch buffers) still work.  File-backed
+     * MAP_SHARED, which would require write-back, is rejected.  See TODO.md. */
+    if (!(flags & (MAP_SHARED | MAP_PRIVATE))) return (uint64_t)-EINVAL;
+    if ((flags & MAP_SHARED) && !anonymous) return (uint64_t)-ENOSYS;
     if (anonymous) {
         if (fd != (uint64_t)-1) return (uint64_t)-EINVAL;
     } else {
@@ -639,9 +647,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_FORK:
         return do_fork();
     case SYS_EXECVE: {
+        /* a1 = path, a2 = argv (char* const*), a3 = envp (char* const*). */
         char path[SYSCALL_PATH_MAX];
         if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
-        return (uint64_t)vfs_errno((int64_t)do_execve(path), ENOENT);
+        return (uint64_t)vfs_errno((int64_t)do_execve(path, a2, a3), ENOENT);
     }
     case SYS_WAIT4: {
         /* New ABI: a1 = pid (int64_t, -1 = any child), a2 = *exit_code (or NULL).

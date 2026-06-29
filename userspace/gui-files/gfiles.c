@@ -64,8 +64,8 @@ static void load_dir(const char *path) {
     int np = 0;
     int bp = 0;
     
-    struct dirent ents[128];
-    int nents = readdir(path, ents, 128);
+    struct aura_dirent ents[128];
+    int nents = aura_readdir(path, ents, 128);
     
     if (nents > 0) {
         for (int i = 0; i < nents && np < AG_MAX_LIST_ITEMS; i++) {

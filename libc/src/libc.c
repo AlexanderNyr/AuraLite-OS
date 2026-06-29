@@ -21,6 +21,7 @@
 #include "termios.h"
 #include "sys/ioctl.h"
 #include "time.h"   /* P8 */
+#include "sys/select.h"
 
 /* ---- errno storage ----
  *
@@ -261,9 +262,32 @@ void listdir(const char *path) {
     syscall(80, (uint64_t)path, 0, 0, 0, 0, 0); // 80 = SYS_LISTDIR
 }
 
-int readdir(const char *path, void *out, int max) {
+int aura_readdir(const char *path, void *out, int max) {
     return (int)syscall_ret(syscall(80, (uint64_t)path, (uint64_t)out, max,
                                     0, 0, 0));
+}
+
+/* ---- P10: working directory + multiplexing wrappers ---- */
+
+char *getcwd(char *buf, size_t size) {
+    long r = syscall_ret(syscall(SYS_GETCWD, (uint64_t)buf, (uint64_t)size,
+                                 0, 0, 0, 0));
+    return r < 0 ? (char *)0 : buf;
+}
+
+int chdir(const char *path) {
+    return (int)syscall_ret(syscall(SYS_CHDIR, (uint64_t)path, 0, 0, 0, 0, 0));
+}
+
+int fchdir(int fd) {
+    return (int)syscall_ret(syscall(SYS_FCHDIR, (uint64_t)fd, 0, 0, 0, 0, 0));
+}
+
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+           fd_set *exceptfds, struct timeval *timeout) {
+    return (int)syscall_ret(syscall(SYS_SELECT, (uint64_t)nfds,
+                                    (uint64_t)readfds, (uint64_t)writefds,
+                                    (uint64_t)exceptfds, (uint64_t)timeout, 0));
 }
 
 uint32_t dns_resolve(const char *hostname) {
@@ -372,8 +396,42 @@ pid_t fork(void) {
     return (pid_t)syscall_ret(syscall(SYS_FORK, 0, 0, 0, 0, 0, 0));
 }
 
-int execve(const char *path) {
-    return (int)syscall_ret(syscall(SYS_EXECVE, (uint64_t)path, 0, 0, 0, 0, 0));
+int execve(const char *path, char *const argv[], char *const envp[]) {
+    return (int)syscall_ret(syscall(SYS_EXECVE, (uint64_t)path,
+                                    (uint64_t)argv, (uint64_t)envp, 0, 0, 0));
+}
+
+/* execv(): like execve() but inherits the current environment. */
+int execv(const char *path, char *const argv[]) {
+    extern char **environ;
+    return execve(path, argv, environ);
+}
+
+/* execvp(): search PATH if @file contains no slash, then execv().  Our minimal
+ * implementation honours PATH from the environment, defaulting to "/bin". */
+int execvp(const char *file, char *const argv[]) {
+    if (!file) { errno = ENOENT; return -1; }
+    if (strchr(file, '/')) return execv(file, argv);
+
+    const char *path = getenv("PATH");
+    if (!path || !*path) path = "/bin";
+
+    char buf[256];
+    const char *p = path;
+    while (*p) {
+        const char *colon = strchr(p, ':');
+        size_t seg = colon ? (size_t)(colon - p) : strlen(p);
+        if (seg + 1 + strlen(file) + 1 < sizeof(buf)) {
+            memcpy(buf, p, seg);
+            buf[seg] = '/';
+            strcpy(buf + seg + 1, file);
+            execv(buf, argv);   /* returns only on failure */
+        }
+        if (!colon) break;
+        p = colon + 1;
+    }
+    errno = ENOENT;
+    return -1;
 }
 
 pid_t wait(int *status) {
@@ -785,11 +843,27 @@ int toupper(int c)  { return islower(c) ? c - ('a' - 'A') : c; }
 /* ---- stdlib ---- */
 
 void __stdio_cleanup(void);   /* defined with the FILE* layer below */
+void __run_atexit(void);      /* defined in stdlib_extra.c */
 
 void exit(int status) {
-    __stdio_cleanup();   /* flush all buffered output streams (C11 §7.22.4.4) */
+    __run_atexit();      /* run atexit() handlers in reverse order (C11 §7.22.4.4) */
+    __stdio_cleanup();   /* then flush all buffered output streams */
     _exit(status);
     for (;;) { }   /* _exit does not return; keep the compiler happy */
+}
+
+/* C runtime bootstrap, invoked by crt0 with the decoded initial stack.
+ * Publishes the environment to `environ`, runs main(argc, argv, envp), then
+ * exit()s with main's return value.  Programs that declare `int main(void)`
+ * simply ignore the extra arguments. */
+extern char **environ;
+extern int main(int argc, char **argv, char **envp);
+
+void __libc_start_main(int argc, char **argv, char **envp) {
+    environ = envp;
+    int rc = main(argc, argv, envp);
+    exit(rc);
+    for (;;) { }   /* exit() does not return */
 }
 
 void abort(void) {
@@ -844,6 +918,91 @@ long strtol(const char *s, char **end, int base) {
     }
     if (end) *end = (char *)s;
     return result * sign;
+}
+
+unsigned long strtoul(const char *s, char **end, int base) {
+    unsigned long result = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '+') s++;
+    else if (*s == '-') s++;   /* strtoul accepts a sign; we ignore it */
+    if (base == 0) {
+        if (*s == '0' && (s[1] == 'x' || s[1] == 'X')) { base = 16; s += 2; }
+        else if (*s == '0') { base = 8; s++; }
+        else base = 10;
+    } else if (base == 16 && *s == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+    }
+    for (;;) {
+        int digit;
+        if (*s >= '0' && *s <= '9') digit = *s - '0';
+        else if (*s >= 'a' && *s <= 'z') digit = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'Z') digit = *s - 'A' + 10;
+        else break;
+        if (digit >= base) break;
+        result = result * (unsigned long)base + (unsigned long)digit;
+        s++;
+    }
+    if (end) *end = (char *)s;
+    return result;
+}
+
+long long strtoll(const char *s, char **end, int base) {
+    return (long long)strtol(s, end, base);
+}
+
+unsigned long long strtoull(const char *s, char **end, int base) {
+    return (unsigned long long)strtoul(s, end, base);
+}
+
+double strtod(const char *s, char **end) {
+    const char *start = s;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+
+    int sign = 1;
+    if (*s == '-') { sign = -1; s++; }
+    else if (*s == '+') s++;
+
+    int any = 0;
+    double value = 0.0;
+    while (*s >= '0' && *s <= '9') { value = value * 10.0 + (*s - '0'); s++; any = 1; }
+
+    if (*s == '.') {
+        s++;
+        double frac = 0.1;
+        while (*s >= '0' && *s <= '9') {
+            value += (*s - '0') * frac;
+            frac *= 0.1;
+            s++; any = 1;
+        }
+    }
+
+    if (any && (*s == 'e' || *s == 'E')) {
+        s++;
+        int esign = 1;
+        if (*s == '-') { esign = -1; s++; }
+        else if (*s == '+') s++;
+        int exp = 0;
+        while (*s >= '0' && *s <= '9') { exp = exp * 10 + (*s - '0'); s++; }
+        double p = 1.0;
+        for (int i = 0; i < exp; i++) p *= 10.0;
+        if (esign < 0) value /= p; else value *= p;
+    }
+
+    if (!any) { if (end) *end = (char *)start; return 0.0; }
+    if (end) *end = (char *)s;
+    return sign * value;
+}
+
+float strtof(const char *s, char **end) {
+    return (float)strtod(s, end);
+}
+
+long double strtold(const char *s, char **end) {
+    return (long double)strtod(s, end);
+}
+
+double atof(const char *s) {
+    return strtod(s, (char **)0);
 }
 
 static unsigned int rng_seed = 1;

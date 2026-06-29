@@ -1240,6 +1240,74 @@ CI pipeline addition in `.github/workflows/integration.yml`:
 *AuraLite OS POSIX Plan v1.0 — 2026-06-27*
 *Based on source analysis of commit 18b02d9 (GUI fix, 2026-06-27)*
 *POSIX reference: IEEE Std 1003.1-2017 (POSIX.1-2017)*
-## Phase P10 — Compliance Hardening & libc Completion
+## Phase P10 — Compliance Hardening & libc Completion (consolidated)
 
-### Status: IN PROGRESS
+### Status: DONE (host-verified; clean `make all` + `make test-unit` green)
+
+This consolidated entry tracks the final P10 hardening pass implemented on top
+of the `dd2d43f` baseline. It is organised into the same A–E blocks used during
+implementation.
+
+### Block A — Baseline repair (make tree build green)
+
+- [x] Remove 19 duplicate "draft" `.c` files that caused duplicate-symbol link
+      errors; keep canonical `kernel/fs/{cwd,select,symlink}.c`,
+      `kernel/proc/clone.c`.
+- [x] Fix duplicate `struct kernel_timeval` / `itimer_state` definitions; add
+      `kernel/time_types.h` with a shared `struct itimer_state`.
+- [x] Rewrite `kernel/fs/symlink.c` against the real VFS API
+      (`vfs_get_vnode`/`vfs_stat`); fstat/lstat work, symlink/link/readlink are
+      honest `-ENOSYS`/`-EINVAL` stubs.
+- [x] libc header hygiene: `sys/select.h` created, getcwd/chdir/fchdir moved
+      inside include guards, `pthread_once_t`/`PTHREAD_ONCE_INIT` added.
+- [x] Makefile: `-I .` for userspace + host tests; `ASFLAGS -I build/`.
+
+### Block B — POSIX headers + libc breadth (`posix_extra.c`)
+
+- [x] Headers: `pwd.h`, `sys/utsname.h`, `getopt.h` (+`getopt_long`), `poll.h`,
+      `locale.h`, `semaphore.h`, `fnmatch.h`, `glob.h`, `grp.h`,
+      `sys/socket.h`, `arpa/inet.h`, `netdb.h`, `wchar.h`.
+- [x] `poll()` (over `select()`), `setlocale`/`localeconv`, wchar helpers.
+- [x] POSIX semaphores (futex-backed): `sem_init/destroy/wait/trywait/post/
+      getvalue`.
+- [x] `fnmatch()` (recursive `* ? [] \` with `FNM_PATHNAME`/`FNM_NOESCAPE`),
+      `glob()` (opendir + fnmatch).
+- [x] `inet_pton/ntop/aton/ntoa/inet_addr`, `getaddrinfo`/`freeaddrinfo`/
+      `gai_strerror`/`gethostbyname`, `getgrgid`/`getgrnam`.
+- [x] `getopt_long`; `calloc`/`realloc`; getcwd/chdir/fchdir/select wrappers.
+
+### Block C — Kernel gaps
+
+- [x] `execve(path, argv, envp)`: kernel snapshots the caller's `argv[]`/
+      `envp[]`, then builds the new process's initial user stack per the
+      System V AMD64 ABI (`argc`, argv ptrs, NULL, envp ptrs, NULL, `AT_NULL`
+      auxv, string data), 16-byte-aligned RSP.
+- [x] `crt0.asm` decodes `argc/argv/envp` and calls `__libc_start_main`, which
+      publishes `environ` and runs `main(argc, argv, envp)`.
+- [x] `execv`/`execvp` libc wrappers (PATH search, default `/bin`).
+- [x] `fork()` inherits the parent's current working directory.
+- [x] `mmap`: anonymous `MAP_SHARED` accepted (degraded to private; see
+      TODO.md), file-backed `MAP_SHARED` → `-ENOSYS`.
+- [ ] `epoll` (`epoll_create1`/`epoll_ctl`/`epoll_wait`) — intentionally
+      deferred (low priority); `poll()` is available in libc.
+
+### Block D — libc completeness checks
+
+- [x] `qsort`/`bsearch`/`atexit` declared and implemented; `exit()` now runs
+      `atexit` handlers (reverse order) before flushing stdio.
+- [x] `HUGE_VAL`/`NAN`/`INFINITY` provided via compiler builtins;
+      extended math (`tan`/`fmod`/`asin`/`atan2`/`sinh`/… ) in `math_extra.c`.
+
+### Block E — Validation & docs
+
+- [x] `userspace/selftest/selftest.c`: P10 block exercising setenv/getenv,
+      strtod/strtol family, asin/atan2/fmod, fnmatch, regcomp/regexec,
+      POSIX semaphores, inet_pton/ntop, getcwd, opendir/readdir.
+- [x] `TODO.md`: P10 follow-ups (MAP_SHARED, auxv, exec family, epoll).
+- [x] `CHANGELOG.md`: P10 entry.
+
+### Definition of Done
+- [x] `make all` builds `build/auralite.iso` + `build/kernel.elf` with zero
+      errors.
+- [x] `make test-unit` — all host unit suites pass.
+- [x] No syscall-number collisions; GUI range 200–299 untouched.

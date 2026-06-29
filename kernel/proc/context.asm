@@ -14,6 +14,10 @@
 bits 64
 default rel
 
+; TCB_TLS_BASE et al. are auto-generated from tcb_t via tools/gen_asm_offsets.c
+; so this never drifts out of sync with the C struct layout.
+%include "asm_offsets.inc"
+
 section .text
 global context_switch
 
@@ -30,8 +34,8 @@ context_switch:
 
     mov rsp, [rsi]             ; load new RSP from new_tcb->rsp
 
-    ; P9: Restore FS.base for TLS (pthread)
-    mov rax, [rsi + 280]       ; tls_base offset (after cpu_ticks at ~272)
+    ; P9: Restore FS.base for TLS (pthread).  Offset comes from asm_offsets.inc.
+    mov rax, [rsi + TCB_TLS_BASE]
     test rax, rax
     jz .no_tls
     wrfsbase rax

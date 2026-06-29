@@ -66,6 +66,12 @@
 #define W_OK 2
 #define R_OK 4
 #define SYS_FCNTL  72
+#define SYS_SELECT   23
+#define SYS_POLL      7
+#define SYS_GETCWD  540
+#define SYS_CHDIR   541
+#define SYS_FCHDIR  542
+#define SYS_UNAME    63
 #define SYS_LSEEK    8
 #define SYS_IOCTL    16
 #define SYS_PREAD64  17
@@ -99,6 +105,7 @@
 #define PROT_WRITE   0x2
 #define PROT_EXEC    0x4
 #define PROT_NONE    0x0
+#define MAP_SHARED   0x01
 #define MAP_PRIVATE  0x02
 #define MAP_FIXED    0x10
 #define MAP_ANON     0x20
@@ -149,13 +156,17 @@ int     isatty(int fd);
 void    _exit(int code);
 pid_t   getpid(void);
 pid_t   fork(void);
-int     execve(const char *path);
+int     execve(const char *path, char *const argv[], char *const envp[]);
+int     execv(const char *path, char *const argv[]);
+int     execvp(const char *file, char *const argv[]);
 pid_t   wait(int *status);
 pid_t   spawn(const char *path);
 
-/* AuraLite extension: list files in a directory path. */
+/* AuraLite extension: list files in a directory path.  The raw directory
+ * lister is named aura_readdir() so the POSIX readdir(DIR*) in <dirent.h>
+ * can own the standard name. */
 void    listdir(const char *path);
-int     readdir(const char *path, void *out, int max);
+int     aura_readdir(const char *path, void *out, int max);
 uint32_t dns_resolve(const char *hostname);
 
 /* ---- Network syscalls ---- */
@@ -172,7 +183,9 @@ int     send(int sock, const void *data, uint32_t len);
 int     recv(int sock, void *buf, uint32_t bufsize);
 int     closesocket(int sock);
 
-struct dirent {
+/* AuraLite raw directory entry (matches the kernel's vfs_dirent layout).
+ * The POSIX `struct dirent` lives in <dirent.h>. */
+struct aura_dirent {
     char     name[256];
     uint32_t type;
     uint64_t size;
@@ -222,8 +235,9 @@ void*   sbrk(intptr_t increment);
 void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);
 int     munmap(void *addr, size_t length);
 
+/* Working directory (P10).  select() lives in <sys/select.h>. */
+char   *getcwd(char *buf, size_t size);
+int     chdir(const char *path);
+int     fchdir(int fd);
+
 #endif /* AURALITE_LIBC_UNISTD_H */
-char *getcwd(char *buf, size_t size);
-int chdir(const char *path);
-int fchdir(int fd);
-int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
