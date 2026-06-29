@@ -21,10 +21,27 @@ global syscall_saved_rcx
 global syscall_saved_r11
 global syscall_saved_rsp
 global syscall_kernel_rsp
+global syscall_saved_rbx
+global syscall_saved_rbp
+global syscall_saved_r12
+global syscall_saved_r13
+global syscall_saved_r14
+global syscall_saved_r15
 syscall_saved_rcx:   dq 0      ; user return RIP (saved by CPU in RCX)
 syscall_saved_r11:   dq 0      ; user RFLAGS (saved by CPU in R11)
 syscall_saved_rsp:   dq 0      ; user RSP (saved manually, for fork())
 syscall_kernel_rsp:  dq 0      ; per-thread kernel stack top (published on switch)
+; Live user callee-saved (SysV-preserved) registers at the SYSCALL boundary.
+; The SYSCALL ABI does not clobber these, so userspace may keep live values in
+; them across a syscall.  They must be captured here so that a signal delivered
+; at the syscall-exit boundary records the genuine interrupted register state
+; (otherwise sigreturn would restore zeros and corrupt the interrupted program).
+syscall_saved_rbx:   dq 0
+syscall_saved_rbp:   dq 0
+syscall_saved_r12:   dq 0
+syscall_saved_r13:   dq 0
+syscall_saved_r14:   dq 0
+syscall_saved_r15:   dq 0
 
 section .text
 extern syscall_dispatch
@@ -87,6 +104,14 @@ syscall_entry:
     mov [rel syscall_saved_rcx], rcx
     mov [rel syscall_saved_r11], r11
     mov [rel syscall_saved_rsp], rsp
+    ; Capture the live user callee-saved registers before any kernel code runs,
+    ; so a signal delivered at syscall exit can faithfully restore them.
+    mov [rel syscall_saved_rbx], rbx
+    mov [rel syscall_saved_rbp], rbp
+    mov [rel syscall_saved_r12], r12
+    mov [rel syscall_saved_r13], r13
+    mov [rel syscall_saved_r14], r14
+    mov [rel syscall_saved_r15], r15
     mov rsp, [rel syscall_kernel_rsp]
 
     ; Stash all SYSCALL arg registers on the KERNEL stack (in reverse order so

@@ -14,8 +14,11 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 12
-il_send "sleep 2 &"
-il_send_delay 1
+# Queue jobs(1) immediately after starting the background sleep.  The shell
+# processes it after add_job() returns, while the job is still present/running;
+# waiting in host time is flaky because QEMU guest time can advance faster than
+# the integration harness delay.
+il_send "sleep 5 &"
 il_send "jobs"
 il_send_delay 3
 il_send "run /selftest"

@@ -260,8 +260,23 @@ int64_t do_sigsuspend(const sigset_t *mask) {
         __asm__ volatile ("sti; hlt" ::: "memory");
         sched_yield();
     }
-    /* If the woken signal is default-terminate/ignore (no frame built), or it
-     * was consumed without a handler, restore the original mask here. */
+    /* A caught pending signal is delivered at the syscall-exit boundary.  Keep
+     * sig_suspend_active set and leave the temporary mask installed so
+     * build_handler_frame() can record @saved in the signal frame; sigreturn
+     * then restores the original mask after the handler runs.  Restoring here
+     * would re-block the signal before syscall_check_signals() gets a chance to
+     * build the handler frame, causing sigsuspend() to return without running
+     * the handler.
+     *
+     * If the wakeup is for an ignored/default signal with no handler frame to
+     * build, restore the original mask here instead. */
+    int signo = next_deliverable(t);
+    if (signo) {
+        void (*h)(int) = t->sig_actions[signo].sa_handler;
+        if (h != SIG_DFL && h != SIG_IGN && signo != SIGKILL && signo != SIGSTOP) {
+            return -EINTR;
+        }
+    }
     if (t->sig_suspend_active) {
         t->sig_mask = saved;
         t->sig_suspend_active = 0;

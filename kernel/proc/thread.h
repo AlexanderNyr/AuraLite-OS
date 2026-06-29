@@ -84,6 +84,16 @@ typedef struct tcb {
     uint64_t  saved_user_rip;
     uint64_t  saved_user_rflags;
     uint64_t  saved_user_rsp;
+    /* Live user callee-saved (SysV-preserved) registers captured at the SYSCALL
+     * boundary.  Snapshotted into the TCB at the top of syscall_dispatch() so a
+     * context switch while blocked inside the syscall cannot lose them; used to
+     * build a faithful signal frame when a signal is delivered at syscall exit. */
+    uint64_t  saved_user_rbx;
+    uint64_t  saved_user_rbp;
+    uint64_t  saved_user_r12;
+    uint64_t  saved_user_r13;
+    uint64_t  saved_user_r14;
+    uint64_t  saved_user_r15;
 
     /* ---- P4: signal state (see kernel/proc/signal.h) ---- */
     uint32_t  sig_pending;            /* bitmask: bit (signo-1) pending */

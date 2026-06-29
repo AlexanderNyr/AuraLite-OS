@@ -439,6 +439,14 @@ static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
 extern uint64_t syscall_saved_rcx;
 extern uint64_t syscall_saved_r11;
 extern uint64_t syscall_saved_rsp;
+/* Live user callee-saved registers captured at the SYSCALL boundary
+ * (defined in syscall_entry.asm). */
+extern uint64_t syscall_saved_rbx;
+extern uint64_t syscall_saved_rbp;
+extern uint64_t syscall_saved_r12;
+extern uint64_t syscall_saved_r13;
+extern uint64_t syscall_saved_r14;
+extern uint64_t syscall_saved_r15;
 
 /* Called from syscall_entry.asm just before sysret.  Refreshes the
  * syscall_saved_* globals from the current TCB's per-thread copies.  Uses the
@@ -450,6 +458,12 @@ void syscall_restore_user_frame(void) {
         syscall_saved_rcx = cur->saved_user_rip;
         syscall_saved_r11 = cur->saved_user_rflags;
         syscall_saved_rsp = cur->saved_user_rsp;
+        syscall_saved_rbx = cur->saved_user_rbx;
+        syscall_saved_rbp = cur->saved_user_rbp;
+        syscall_saved_r12 = cur->saved_user_r12;
+        syscall_saved_r13 = cur->saved_user_r13;
+        syscall_saved_r14 = cur->saved_user_r14;
+        syscall_saved_r15 = cur->saved_user_r15;
     }
 }
 
@@ -482,9 +496,21 @@ void syscall_check_signals(uint64_t retval) {
     r.rax    = retval;                   /* syscall return value */
     r.cs     = SYSCALL_USER_CS;
     r.ss     = SYSCALL_USER_SS;
-    /* Caller-saved GPRs are dead across a syscall per the SysV ABI; leaving the
-     * remaining GPRs zeroed in the saved frame is acceptable for a handler that
-     * runs and returns via sigreturn (which restores exactly these values). */
+    /* Restore the live user callee-saved (SysV-preserved) registers.  The
+     * SYSCALL ABI does not clobber RBX/RBP/R12-R15, so userspace may hold live
+     * values in them across the syscall; they were captured at the syscall
+     * boundary (and survive yields via the TCB snapshot).  Recording them in
+     * the signal frame is essential: sigreturn restores exactly these values
+     * to the interrupted context, and zeroing them would corrupt the program
+     * (e.g. a pointer kept in RBP/R15 across sigaction()).  Caller-saved GPRs
+     * (RAX/RCX/RDX/RSI/RDI/R8-R11) are genuinely dead across a syscall and may
+     * stay zeroed. */
+    r.rbx = syscall_saved_rbx;
+    r.rbp = syscall_saved_rbp;
+    r.r12 = syscall_saved_r12;
+    r.r13 = syscall_saved_r13;
+    r.r14 = syscall_saved_r14;
+    r.r15 = syscall_saved_r15;
 
     if (signal_deliver_iret(&r)) {
         /* A handler frame was installed in @r; enter it via IRETQ. */
@@ -504,6 +530,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         cur->saved_user_rip    = syscall_saved_rcx;
         cur->saved_user_rflags = syscall_saved_r11;
         cur->saved_user_rsp    = syscall_saved_rsp;
+        cur->saved_user_rbx    = syscall_saved_rbx;
+        cur->saved_user_rbp    = syscall_saved_rbp;
+        cur->saved_user_r12    = syscall_saved_r12;
+        cur->saved_user_r13    = syscall_saved_r13;
+        cur->saved_user_r14    = syscall_saved_r14;
+        cur->saved_user_r15    = syscall_saved_r15;
     }
 
     switch (num) {

@@ -46,6 +46,13 @@ static void check(const char *name, int cond) {
 }
 
 int main(void) {
+    /* Many regression checks use /tmp paths.  The initrd root may not ship a
+     * pre-created /tmp directory, so create it once up front and tolerate an
+     * existing directory from a previous run. */
+    if (mkdir("/tmp", 0777) < 0 && errno != EEXIST) {
+        printf("SELFTEST WARN: mkdir /tmp failed (errno=%d)\n", errno);
+    }
+
     /* P6a early gate */
     {
         pid_t me = getpid();
@@ -341,11 +348,16 @@ int main(void) {
         printf("SELFTEST PASS: alarm(1) -> SIGALRM\n");
         alarm(0);   /* cancel any stray alarm */
 
-        /* sigsuspend: block nothing extra, raise SIGUSR1 first so it's pending,
-         * then sigsuspend returns -EINTR after delivering it. */
+        /* sigsuspend: block SIGUSR1, raise it so it stays pending (the handler
+         * cannot run while blocked), then sigsuspend(&empty) atomically unblocks
+         * it, runs the handler, and returns -EINTR.  Blocking first is required:
+         * with SIGUSR1 unblocked, raise() would deliver synchronously before
+         * sigsuspend() ever ran, leaving nothing pending to wake the suspend. */
         struct sigaction u2 = { sigusr1_handler, 0, 0, 0 };
         sigaction(SIGUSR1, &u2, 0);
         sigset_t empty; sigemptyset(&empty);
+        sigset_t blk; sigemptyset(&blk); sigaddset(&blk, SIGUSR1);
+        sigprocmask(SIG_BLOCK, &blk, 0);
         g_sigusr1_count = 0;
         raise(SIGUSR1);
         int sr = sigsuspend(&empty);
@@ -353,6 +365,9 @@ int main(void) {
         printf("SELFTEST PASS: sigsuspend EINTR\n");
         check("sigsuspend delivered pending SIGUSR1", g_sigusr1_count >= 1);
         printf("SELFTEST PASS: sigsuspend delivers\n");
+        /* sigsuspend restores the pre-suspend mask (SIGUSR1 still blocked);
+         * unblock it so it does not leak into later test blocks. */
+        sigprocmask(SIG_UNBLOCK, &blk, 0);
         sigaction(SIGUSR1, &dfl, 0);
         sigaction(SIGALRM, &dfl, 0);
     }
