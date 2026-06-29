@@ -26,6 +26,7 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/process.h"
 #include "drivers/framebuffer/graphics.h"
 #include "drivers/framebuffer/fb.h"
 #include "drivers/framebuffer/font.h"
@@ -153,6 +154,11 @@ static gui_snap_t snap_preview_type = GUI_SNAP_NONE;
 static int last_hover_wid = -1;
 static uint32_t last_click_tick = 0;
 static int32_t  last_click_x = -999, last_click_y = -999;
+static int      last_click_wid = -999;
+static int      last_click_part = -1;
+static uint8_t  last_click_button = 0;
+
+#define GUI_DBLCLICK_SLOP_PX 5
 
 /* Desktop icons. */
 static gui_icon_t icons[GUI_MAX_ICONS];
@@ -173,6 +179,27 @@ static int win_alive(int wid) {
 }
 
 static int32_t abs_diff(int32_t a, int32_t b) { return a > b ? a - b : b - a; }
+
+static int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
+                               int wid, int part, uint8_t button) {
+    return last_click_tick != 0 &&
+           last_click_wid == wid &&
+           last_click_part == part &&
+           last_click_button == button &&
+           (uint32_t)(now - last_click_tick) <= MOUSE_DBLCLICK_TICKS &&
+           abs_diff(x, last_click_x) <= GUI_DBLCLICK_SLOP_PX &&
+           abs_diff(y, last_click_y) <= GUI_DBLCLICK_SLOP_PX;
+}
+
+static void gui_record_click(uint32_t now, int32_t x, int32_t y,
+                             int wid, int part, uint8_t button) {
+    last_click_tick = now;
+    last_click_x = x;
+    last_click_y = y;
+    last_click_wid = wid;
+    last_click_part = part;
+    last_click_button = button;
+}
 
 /* Content area helpers — read from active theme dimensions. */
 static uint32_t c_border(void)    { return active_theme.border_w; }
@@ -1221,6 +1248,87 @@ static void draw_cursor(void) {
     }
 }
 
+/* ---- Built-in GUI application launcher ---- */
+
+typedef struct gui_app_entry {
+    const char *name;
+    const char *path;
+    int icon_id;
+} gui_app_entry_t;
+
+static const gui_app_entry_t gui_apps[] = {
+    { "Calculator",      "/gcalc",    4 },
+    { "Text Editor",     "/gedit",    3 },
+    { "File Manager",    "/gfiles",   2 },
+    { "Terminal",        "/gterm",    1 },
+    { "System Monitor",  "/gsysmon",  5 },
+    { "Task Manager",    "/gtaskmgr", 7 },
+    { "Music Player",    "/gaudio",   8 },
+    { "Web Browser",     "/gbrowser", 9 },
+    { "USB Manager",     "/gusb",     10 },
+    { "About",           "/gabout",   6 },
+};
+
+#define GUI_START_MENU_W 180u
+#define GUI_START_MENU_H 220u
+#define GUI_START_MENU_X 4u
+#define GUI_START_BUTTON_W 90u
+#define GUI_START_MENU_ITEM_Y 28u
+#define GUI_START_MENU_ITEM_H 18u
+
+static int gui_app_count(void) {
+    return (int)(sizeof(gui_apps) / sizeof(gui_apps[0]));
+}
+
+static const gui_app_entry_t *gui_app_by_icon_id(int icon_id) {
+    for (int i = 0; i < gui_app_count(); i++) {
+        if (gui_apps[i].icon_id == icon_id) return &gui_apps[i];
+    }
+    return NULL;
+}
+
+static void gui_launch_app(const gui_app_entry_t *app) {
+    if (!app || !app->path) return;
+    int64_t pid = process_spawn(app->path);
+    if (pid < 0) {
+        kprintf("[gui] launch failed: %s (%s)\n", app->name, app->path);
+        gui_notify("Launch failed", 0x00C04040, 2500);
+    } else {
+        kprintf("[gui] launched: %s (%s) pid=%lld\n",
+                app->name, app->path, (long long)pid);
+    }
+}
+
+static int start_menu_rect(int32_t *x, int32_t *y, uint32_t *w, uint32_t *h) {
+    uint32_t fh = gfx_get_height();
+    uint32_t tb_h = active_theme.taskbar_h;
+    if (fh <= tb_h + GUI_START_MENU_H) return 0;
+    if (x) *x = (int32_t)GUI_START_MENU_X;
+    if (y) *y = (int32_t)(fh - tb_h - GUI_START_MENU_H);
+    if (w) *w = GUI_START_MENU_W;
+    if (h) *h = GUI_START_MENU_H;
+    return 1;
+}
+
+static int start_menu_hit(int32_t mx, int32_t my) {
+    if (!start_menu_open) return -1;
+    int32_t menu_x = 0, menu_y = 0;
+    uint32_t menu_w = 0, menu_h = 0;
+    if (!start_menu_rect(&menu_x, &menu_y, &menu_w, &menu_h)) return -1;
+    if (mx < menu_x || mx >= menu_x + (int32_t)menu_w ||
+        my < menu_y || my >= menu_y + (int32_t)menu_h) return -1;
+
+    int32_t rel_y = my - menu_y;
+    if (rel_y < (int32_t)GUI_START_MENU_ITEM_Y) return -2; /* header */
+    int idx = (rel_y - (int32_t)GUI_START_MENU_ITEM_Y) / (int32_t)GUI_START_MENU_ITEM_H;
+    if (idx >= 0 && idx < gui_app_count()) return idx;
+    return -2;
+}
+
+static int start_menu_contains(int32_t mx, int32_t my) {
+    return start_menu_hit(mx, my) != -1;
+}
+
 /* ---- Taskbar rendering ---- */
 
 static void draw_taskbar(void) {
@@ -1236,32 +1344,30 @@ static void draw_taskbar(void) {
     gfx_draw_line(0, tb_y, fw, tb_y, t->taskbar_border);
 
     /* Start button. */
-    uint32_t start_w = 90;
+    uint32_t start_w = GUI_START_BUTTON_W;
     gfx_fill_rect(4, tb_y + 4, start_w, tb_h - 8, t->start_btn_bg);
     gfx_draw_rect(4, tb_y + 4, start_w, tb_h - 8,
                   start_menu_open ? 0x00FFFFFF : 0x00306090);
     gfx_draw_text(12, tb_y + (tb_h - 8) / 2, "AuraLite", t->start_btn_text);
 
-    /* Start menu dropdown. */
+    /* Start menu dropdown.  This is intentionally part of the taskbar layer,
+     * not a normal window, so input routing has a matching start_menu_hit(). */
     if (start_menu_open) {
-        uint32_t menu_w = 180, menu_h = 220;
-        uint32_t menu_x = 4, menu_y = tb_y - menu_h;
-        gfx_fill_rect(menu_x, menu_y, menu_w, menu_h, 0x00282838);
-        gfx_draw_rect(menu_x, menu_y, menu_w, menu_h, 0x0060A0E0);
-        gfx_draw_text(menu_x + 12, menu_y + 10, "Applications", t->taskbar_text);
-        gfx_draw_line(menu_x + 8, menu_y + 22, menu_x + menu_w - 8, menu_y + 22, 0x00405060);
+        int32_t menu_x = 0, menu_y = 0;
+        uint32_t menu_w = 0, menu_h = 0;
+        if (start_menu_rect(&menu_x, &menu_y, &menu_w, &menu_h)) {
+            gfx_fill_rect((uint32_t)menu_x, (uint32_t)menu_y, menu_w, menu_h, 0x00282838);
+            gfx_draw_rect((uint32_t)menu_x, (uint32_t)menu_y, menu_w, menu_h, 0x0060A0E0);
+            gfx_draw_text((uint32_t)menu_x + 12, (uint32_t)menu_y + 10, "Applications", t->taskbar_text);
+            gfx_draw_line((uint32_t)menu_x + 8, (uint32_t)menu_y + 22,
+                          (uint32_t)menu_x + menu_w - 8, (uint32_t)menu_y + 22, 0x00405060);
 
-        const char *app_names[] = {
-            "Calculator", "Text Editor", "File Manager",
-            "Terminal", "System Monitor", "Task Manager",
-            "Music Player", "Web Browser", "USB Manager",
-            "About"
-        };
-        int n_apps = sizeof(app_names) / sizeof(app_names[0]);
-        for (int i = 0; i < n_apps; i++) {
-            uint32_t ay = menu_y + 28 + (uint32_t)i * 18;
-            if (ay + 16 > tb_y) break;
-            gfx_draw_text(menu_x + 16, ay, app_names[i], t->taskbar_text);
+            for (int i = 0; i < gui_app_count(); i++) {
+                uint32_t ay = (uint32_t)menu_y + GUI_START_MENU_ITEM_Y +
+                              (uint32_t)i * GUI_START_MENU_ITEM_H;
+                if (ay + 16 > tb_y) break;
+                gfx_draw_text((uint32_t)menu_x + 16, ay, gui_apps[i].name, t->taskbar_text);
+            }
         }
     }
 
@@ -1569,10 +1675,11 @@ static int taskbar_hit(int32_t mx, int32_t my) {
     if ((uint32_t)my < fh - tb_h) return -1;
 
     /* Start button. */
-    if ((uint32_t)mx >= 4 && (uint32_t)mx < 94 && (uint32_t)my >= fh - tb_h + 4) return -2;
+    if ((uint32_t)mx >= 4 && (uint32_t)mx < 4 + GUI_START_BUTTON_W &&
+        (uint32_t)my >= fh - tb_h + 4) return -2;
 
     /* Window list. */
-    uint32_t start_w = 90;
+    uint32_t start_w = GUI_START_BUTTON_W;
     uint32_t bx = 4 + start_w + 8;
     uint32_t btn_w = 130;
     uint32_t fw = gfx_get_width();
@@ -1695,10 +1802,30 @@ static void route_mouse_event(const mouse_event_t *ev) {
 
     /* ---- No drag active ---- */
 
-    /* Close start menu if clicking outside it. */
-    if (start_menu_open && !(wid < 0 && taskbar_hit(mx, my) == -2)) {
-        start_menu_open = 0;
-        full_dirty = 1;
+    /* Start menu is not a normal window.  Keep it open while the cursor moves
+     * from the Start button into the menu; only a left-click outside closes it. */
+    if (start_menu_open) {
+        int sm_hit = start_menu_hit(mx, my);
+        if (ev->pressed & MOUSE_BTN_LEFT) {
+            if (sm_hit >= 0) {
+                gui_launch_app(&gui_apps[sm_hit]);
+                start_menu_open = 0;
+                full_dirty = 1;
+                return;
+            }
+            if (sm_hit == -2) {
+                /* Header/empty menu area: consume click but keep menu open. */
+                return;
+            }
+            if (!(wid < 0 && taskbar_hit(mx, my) == -2)) {
+                start_menu_open = 0;
+                full_dirty = 1;
+                return;
+            }
+        } else if (start_menu_contains(mx, my)) {
+            gui_set_cursor(GUI_CURSOR_ARROW);
+            return;
+        }
     }
 
     if (wid < 0) {
@@ -1733,16 +1860,17 @@ static void route_mouse_event(const mouse_event_t *ev) {
         if (ev->pressed & MOUSE_BTN_LEFT && icon_selected >= 0) {
             int ic = hit_icon(mx, my);
             if (ic >= 0 && ic == icon_selected) {
-                /* Double-click detection on icon. */
+                /* Double-click detection on the same desktop icon. */
                 uint32_t now = (uint32_t)timer_get_ticks();
-                if (now - last_click_tick < 20 &&
-                    abs_diff(mx, last_click_x) < 5 &&
-                    abs_diff(my, last_click_y) < 5) {
-                    /* Icon activated! */
-                    kprintf("[gui] icon clicked: %s (id=%d)\n", icons[ic].label, icons[ic].icon_id);
+                int icon_part = 1000 + ic;
+                if (gui_is_double_click(now, mx, my, -1, icon_part, MOUSE_BTN_LEFT)) {
+                    /* Icon activated. */
+                    kprintf("[gui] icon double-clicked: %s (id=%d)\n", icons[ic].label, icons[ic].icon_id);
+                    gui_launch_app(gui_app_by_icon_id(icons[ic].icon_id));
+                    gui_record_click(0, -999, -999, -999, -1, 0);
+                } else {
+                    gui_record_click(now, mx, my, -1, icon_part, MOUSE_BTN_LEFT);
                 }
-                last_click_tick = now;
-                last_click_x = mx; last_click_y = my;
             }
         }
         gui_set_cursor(GUI_CURSOR_ARROW);
@@ -1780,11 +1908,8 @@ static void route_mouse_event(const mouse_event_t *ev) {
                 return;
             case 1: { /* Title bar — drag or double-click maximize */
                 uint32_t now = (uint32_t)timer_get_ticks();
-                int dbl = (last_click_tick && now - last_click_tick < 20
-                           && abs_diff(mx, last_click_x) < 5
-                           && abs_diff(my, last_click_y) < 5);
-                last_click_tick = now;
-                last_click_x = mx; last_click_y = my;
+                int dbl = gui_is_double_click(now, mx, my, wid, part, MOUSE_BTN_LEFT);
+                gui_record_click(now, mx, my, wid, part, MOUSE_BTN_LEFT);
                 if (dbl && (w->flags & GUI_WIN_RESIZABLE)) {
                     if (w->maximized) gui_restore_window(wid);
                     else              gui_maximize_window(wid);
@@ -1841,11 +1966,8 @@ static void route_mouse_event(const mouse_event_t *ev) {
             }
             case 0: { /* Client area */
                 uint32_t now = (uint32_t)timer_get_ticks();
-                int dbl = (last_click_tick && now - last_click_tick < 20
-                           && abs_diff(mx, last_click_x) < 5
-                           && abs_diff(last_click_y, my) < 5);
-                last_click_tick = now;
-                last_click_x = mx; last_click_y = my;
+                int dbl = gui_is_double_click(now, mx, my, wid, part, MOUSE_BTN_LEFT);
+                gui_record_click(now, mx, my, wid, part, MOUSE_BTN_LEFT);
                 gui_event_t e = {0};
                 e.type    = dbl ? GUI_EVT_MOUSE_DBLCLICK : GUI_EVT_MOUSE_DOWN;
                 e.x       = mx - content_x(w);
@@ -1939,7 +2061,7 @@ static void route_key_event(const kb_event_t *ke) {
     if (ke->pressed) {
         uint8_t mods = ke->mods;
         /* Alt+F4 → close focused window. */
-        if ((mods & 0x01) && ke->key == 0x3E) { /* F4 scancode area; approximate */
+        if ((mods & KB_MOD_ALT) && ke->key == KB_KEY_F4) {
             if (focused >= 0) {
                 request_window_close(focused);
                 return;

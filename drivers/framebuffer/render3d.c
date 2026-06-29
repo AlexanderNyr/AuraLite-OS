@@ -12,6 +12,11 @@
 #include "drivers/framebuffer/render3d.h"
 #include "drivers/framebuffer/graphics.h"
 #include "drivers/timer/pit.h"
+#include "drivers/pci/pci.h"
+#include "kernel/mm/kheap.h"
+#include "kernel/lib/kprintf.h"
+#include "drivers/gpu/virtio_gpu.h"
+#include "drivers/gpu/virgl.h"
 
 /* ---- Freestanding math (no <math.h> available in -ffreestanding mode) ---- */
 
@@ -55,6 +60,124 @@ static float r3d_tanf(float x) {
 /* ---- Constants ---- */
 #define PI_F 3.14159265358979f
 #define DEG2RAD(x) ((x) * PI_F / 180.0f)
+
+/* ---- 3D acceleration/backend state ---- */
+
+static r3d_accel_info_t r3d_accel = {
+    .flags = R3D_ACCEL_SOFTWARE,
+    .pci_vendor = 0,
+    .pci_device = 0,
+    .width = 0,
+    .height = 0,
+    .backend_name = "software",
+    .gpu_name = "Limine framebuffer",
+};
+
+static float *r3d_zbuf = 0;
+static uint32_t r3d_zbuf_w = 0, r3d_zbuf_h = 0;
+
+static inline void r3d_cpuid(uint32_t leaf, uint32_t subleaf,
+                             uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d) {
+    __asm__ volatile ("cpuid"
+                      : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
+                      : "a"(leaf), "c"(subleaf));
+}
+
+static int r3d_cpu_has_sse2(void) {
+    uint32_t a, b, c, d;
+    r3d_cpuid(1, 0, &a, &b, &c, &d);
+    return (d & (1u << 26)) != 0;
+}
+
+static const char *r3d_gpu_name(uint16_t vendor, uint16_t device) {
+    if (vendor == 0x1234 && device == 0x1111) return "QEMU/Bochs std VGA";
+    if (vendor == 0x80ee && device == 0xbeef) return "VirtualBox VMSVGA/VBoxVGA";
+    if (vendor == 0x15ad && (device == 0x0405 || device == 0x0710)) return "VMware SVGA II";
+    if (vendor == 0x1b36 && device == 0x0100) return "QXL paravirtual GPU";
+    if (vendor == 0x1af4 && device == 0x1050) return "Virtio GPU";
+    return "PCI display controller";
+}
+
+static void r3d_probe_gpu(void) {
+    uint8_t bus = 0, dev = 0, func = 0;
+    if (pci_find_class(0x03, 0x00, &bus, &dev, &func) == 0 ||
+        pci_find_class(0x03, 0x02, &bus, &dev, &func) == 0) {
+        r3d_accel.pci_vendor = pci_get_vendor(bus, dev, func);
+        r3d_accel.pci_device = pci_get_device(bus, dev, func);
+        r3d_accel.gpu_name = r3d_gpu_name(r3d_accel.pci_vendor, r3d_accel.pci_device);
+        r3d_accel.flags |= R3D_ACCEL_GPU_DETECTED;
+    }
+}
+
+void r3d_accel_clear_depth(float depth) {
+    if (!r3d_zbuf) return;
+    uint32_t n = r3d_zbuf_w * r3d_zbuf_h;
+    for (uint32_t i = 0; i < n; i++) r3d_zbuf[i] = depth;
+}
+
+void r3d_accel_init(void) {
+    r3d_accel.flags = R3D_ACCEL_SOFTWARE;
+    r3d_accel.backend_name = "software";
+    r3d_accel.gpu_name = "Limine framebuffer";
+    r3d_accel.width = (uint16_t)gfx_get_width();
+    r3d_accel.height = (uint16_t)gfx_get_height();
+
+    if (r3d_cpu_has_sse2()) {
+        r3d_accel.flags |= R3D_ACCEL_SSE;
+        r3d_accel.backend_name = "software-sse-zbuffer";
+    }
+
+    r3d_probe_gpu();
+
+    if (virtio_gpu_init() == 0 && virtio_gpu_available()) {
+        const virtio_gpu_info_t *vg = virtio_gpu_get_info();
+        r3d_accel.flags |= R3D_ACCEL_GPU_DETECTED;
+        if (vg->virgl_enabled && vg->ctx3d_ready) {
+            r3d_accel.flags |= R3D_ACCEL_HW3D;
+            r3d_accel.backend_name = "virtio-gpu-virgl-cmdstream+software-zbuffer";
+            (void)virgl_init();
+        } else if (vg->virgl_supported) {
+            r3d_accel.backend_name = "virtio-gpu-virgl-supported+software-zbuffer";
+        } else {
+            r3d_accel.backend_name = "virtio-gpu-2d-ready+software-zbuffer";
+        }
+        r3d_accel.pci_vendor = vg->pci_vendor;
+        r3d_accel.pci_device = vg->pci_device;
+        r3d_accel.gpu_name = "Virtio GPU";
+    }
+
+    uint32_t w = gfx_get_width();
+    uint32_t h = gfx_get_height();
+    if (w && h && (w != r3d_zbuf_w || h != r3d_zbuf_h || !r3d_zbuf)) {
+        if (r3d_zbuf) kfree(r3d_zbuf);
+        r3d_zbuf = (float *)kmalloc((uint64_t)w * (uint64_t)h * sizeof(float));
+        if (r3d_zbuf) {
+            r3d_zbuf_w = w;
+            r3d_zbuf_h = h;
+            r3d_accel.flags |= R3D_ACCEL_ZBUFFER;
+            r3d_accel_clear_depth(1.0e30f);
+        } else {
+            r3d_zbuf_w = r3d_zbuf_h = 0;
+        }
+    }
+
+    kprintf("[3d] backend=%s flags=0x%x gpu=%s (%04x:%04x) zbuf=%ux%u\n",
+            r3d_accel.backend_name, r3d_accel.flags, r3d_accel.gpu_name,
+            r3d_accel.pci_vendor, r3d_accel.pci_device,
+            r3d_zbuf_w, r3d_zbuf_h);
+}
+
+const r3d_accel_info_t *r3d_accel_info(void) { return &r3d_accel; }
+const char *r3d_accel_backend_name(void) { return r3d_accel.backend_name; }
+
+static inline int r3d_depth_test_and_store(int x, int y, float z) {
+    if (!r3d_zbuf || x < 0 || y < 0 ||
+        x >= (int)r3d_zbuf_w || y >= (int)r3d_zbuf_h) return 0;
+    uint32_t idx = (uint32_t)y * r3d_zbuf_w + (uint32_t)x;
+    if (z >= r3d_zbuf[idx]) return 0;
+    r3d_zbuf[idx] = z;
+    return 1;
+}
 
 /* ---- Camera state ---- */
 
@@ -221,6 +344,37 @@ void r3d_draw_mesh_wire(const mesh *m, mat4 transform, uint32_t color) {
 
 /* ---- Filled triangle rendering (flat shaded) ---- */
 
+typedef struct {
+    float x, y, z;
+} r3d_screen_vertex;
+
+static r3d_screen_vertex r3d_project_full(vec3 world) {
+    float z = world.z + cam_dist;
+    if (z < cam_near) z = cam_near;
+    float scale = 1.0f / z;
+    r3d_screen_vertex out;
+    out.x = (world.x * scale * (float)gfx_get_height() * 0.5f)
+            + (float)gfx_get_width() * 0.5f;
+    out.y = (-world.y * scale * (float)gfx_get_height() * 0.5f)
+            + (float)gfx_get_height() * 0.5f;
+    out.z = z;
+    return out;
+}
+
+static float r3d_edge(r3d_screen_vertex a, r3d_screen_vertex b, float x, float y) {
+    return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
+}
+
+static int r3d_floor_to_int(float x) {
+    int i = (int)x;
+    return (x < (float)i) ? i - 1 : i;
+}
+
+static int r3d_ceil_to_int(float x) {
+    int i = (int)x;
+    return (x > (float)i) ? i + 1 : i;
+}
+
 /* Compute intensity from face normal vs light direction (0..1). */
 static float face_light(vec3 a, vec3 b, vec3 c, vec3 light_dir) {
     vec3 edge1 = vec3_sub(b, a);
@@ -252,54 +406,54 @@ void r3d_fill_triangle(vec3 a, vec3 b, vec3 c,
     float light = face_light(a, b, c, light_dir);
     uint32_t shaded = scale_color(color, light);
 
-    /* Project to screen. */
-    int ax, ay, bx, by, cx, cy;
-    r3d_project(a, &ax, &ay);
-    r3d_project(b, &bx, &by);
-    r3d_project(c, &cx, &cy);
+    r3d_screen_vertex p0 = r3d_project_full(a);
+    r3d_screen_vertex p1 = r3d_project_full(b);
+    r3d_screen_vertex p2 = r3d_project_full(c);
 
-    /* Sort vertices by Y (top to bottom). */
-    int xs[3] = {ax, bx, cx};
-    int ys[3] = {ay, by, cy};
-    /* Simple bubble sort by Y. */
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 2 - i; j++) {
-            if (ys[j] > ys[j + 1]) {
-                int tmp = ys[j]; ys[j] = ys[j + 1]; ys[j + 1] = tmp;
-                tmp = xs[j]; xs[j] = xs[j + 1]; xs[j + 1] = tmp;
+    float area = r3d_edge(p0, p1, p2.x, p2.y);
+    if (area > -0.0001f && area < 0.0001f) return;
+
+    int min_x = r3d_floor_to_int(p0.x);
+    int max_x = r3d_ceil_to_int(p0.x);
+    int min_y = r3d_floor_to_int(p0.y);
+    int max_y = r3d_ceil_to_int(p0.y);
+    int p1_floor_x = r3d_floor_to_int(p1.x), p2_floor_x = r3d_floor_to_int(p2.x);
+    int p1_ceil_x  = r3d_ceil_to_int(p1.x),  p2_ceil_x  = r3d_ceil_to_int(p2.x);
+    int p1_floor_y = r3d_floor_to_int(p1.y), p2_floor_y = r3d_floor_to_int(p2.y);
+    int p1_ceil_y  = r3d_ceil_to_int(p1.y),  p2_ceil_y  = r3d_ceil_to_int(p2.y);
+    if (p1_floor_x < min_x) min_x = p1_floor_x;
+    if (p2_floor_x < min_x) min_x = p2_floor_x;
+    if (p1_ceil_x > max_x) max_x = p1_ceil_x;
+    if (p2_ceil_x > max_x) max_x = p2_ceil_x;
+    if (p1_floor_y < min_y) min_y = p1_floor_y;
+    if (p2_floor_y < min_y) min_y = p2_floor_y;
+    if (p1_ceil_y > max_y) max_y = p1_ceil_y;
+    if (p2_ceil_y > max_y) max_y = p2_ceil_y;
+
+    int fw = (int)gfx_get_width();
+    int fh = (int)gfx_get_height();
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x >= fw) max_x = fw - 1;
+    if (max_y >= fh) max_y = fh - 1;
+    if (min_x > max_x || min_y > max_y) return;
+
+    float inv_area = 1.0f / area;
+    int use_z = (r3d_accel.flags & R3D_ACCEL_ZBUFFER) != 0;
+
+    for (int y = min_y; y <= max_y; y++) {
+        float py = (float)y + 0.5f;
+        for (int x = min_x; x <= max_x; x++) {
+            float px = (float)x + 0.5f;
+            float w0 = r3d_edge(p1, p2, px, py) * inv_area;
+            float w1 = r3d_edge(p2, p0, px, py) * inv_area;
+            float w2 = r3d_edge(p0, p1, px, py) * inv_area;
+            if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
+
+            float z = w0 * p0.z + w1 * p1.z + w2 * p2.z;
+            if (!use_z || r3d_depth_test_and_store(x, y, z)) {
+                gfx_putpixel((uint32_t)x, (uint32_t)y, shaded);
             }
-        }
-    }
-
-    /* Flat-bottom / flat-top triangle fill (scanline). */
-    int total_h = ys[2] - ys[0];
-    if (total_h <= 0) return;
-
-    for (int y = ys[0]; y <= ys[2]; y++) {
-        int h2 = y - ys[0];
-        float alpha = (float)h2 / total_h;
-        int x_left = (int)(xs[0] + alpha * (xs[2] - xs[0]));
-
-        int x_right;
-        if (y < ys[1]) {
-            /* Upper half: left edge is 0→2, right edge is 0→1. */
-            int seg_h = ys[1] - ys[0];
-            if (seg_h <= 0) seg_h = 1;
-            float beta = (float)h2 / seg_h;
-            x_right = (int)(xs[0] + beta * (xs[1] - xs[0]));
-        } else {
-            /* Lower half: left edge is 0→2, right edge is 1→2. */
-            int seg_h = ys[2] - ys[1];
-            if (seg_h <= 0) seg_h = 1;
-            float beta = (float)(y - ys[1]) / seg_h;
-            x_right = (int)(xs[1] + beta * (xs[2] - xs[1]));
-        }
-
-        if (x_left > x_right) {
-            int tmp = x_left; x_left = x_right; x_right = tmp;
-        }
-        for (int x = x_left; x <= x_right; x++) {
-            gfx_putpixel((uint32_t)x, (uint32_t)y, shaded);
         }
     }
 }
@@ -411,6 +565,12 @@ const mesh mesh_pyramid = {
 /* ---- Demo ---- */
 
 void r3d_demo(int frames) {
+    r3d_accel_init();
+    if (r3d_accel.flags & R3D_ACCEL_HW3D) {
+        if (virgl_demo_submit_triangle() != 0) {
+            (void)virgl_demo_submit_clear();
+        }
+    }
 
     vec3 light = vec3_normalize(vec3_make(0.5f, -0.7f, -0.5f));
 
@@ -418,6 +578,7 @@ void r3d_demo(int frames) {
         float angle = DEG2RAD(f * 3);
 
         gfx_clear(0x00001010);
+        r3d_accel_clear_depth(1.0e30f);
 
         /* Build rotation matrix: Y rotation + slight X tilt. */
         mat4 rot_y = mat4_rot_y(angle);
@@ -438,8 +599,9 @@ void r3d_demo(int frames) {
         r3d_draw_mesh_wire(&mesh_pyramid, wt2, GFX_CYAN);
 
         /* Title text. */
-        gfx_draw_string(10, 10, "AuraLite OS — 3D Software Renderer",
+        gfx_draw_string(10, 10, "AuraLite OS — 3D Accelerated Renderer",
                         GFX_WHITE);
+        gfx_draw_string(10, 22, r3d_accel_backend_name(), GFX_CYAN);
 
         gfx_flip();
 

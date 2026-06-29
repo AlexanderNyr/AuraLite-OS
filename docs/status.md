@@ -111,6 +111,8 @@ Legend:
 | Kernel GUI/compositor | ✅/🧪 | **v2.0**: Theme engine (30+ params), desktop icons (32), notifications, window snapping (left/right/top/bottom/maximize), start menu, context menus, always-on-top windows, tool windows, edge/corner resize, double-click titlebar maximize, alpha blit, explicit event ABI (#define values), 64 windows, 128-event rings. Dirty-rect tracking infrastructure (currently full-redraw). Per-process window/icon cleanup on exit. |
 | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
 | Native VBox/VMware SVGA drivers | ❌ | Limine framebuffer is used instead. |
+| virtio-gpu 2D scanout | 🧪 | Modern virtio-gpu PCI probe, control queue, RESOURCE_CREATE_2D, ATTACH_BACKING, SET_SCANOUT, TRANSFER_TO_HOST_2D and RESOURCE_FLUSH are implemented as an optional mirror path for `gfx_flip()`. The driver is initialised during graphics boot so mirroring is available before the GUI compositor starts. |
+| virtio-gpu VirGL command transport | 🚧 | Feature negotiation, 3D context create/destroy, RESOURCE_CREATE_3D, context attach/detach, fenced SUBMIT_3D payload chains and TRANSFER_TO_HOST_3D are present. A tiny VirGL command-stream builder can submit clear/framebuffer packets plus an experimental vertex-buffer/triangle packet stream; resource bookkeeping and fence-id tracking were added, but there is still no full OpenGL/Gallium state tracker yet. |
 
 ## Storage and USB
 

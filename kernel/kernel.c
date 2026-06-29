@@ -42,6 +42,7 @@
 #include "drivers/framebuffer/graphics.h"
 #include "drivers/framebuffer/wm.h"
 #include "drivers/framebuffer/render3d.h"
+#include "drivers/gpu/virtio_gpu.h"
 #include "kernel/gui/gui.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/mouse/mouse.h"
@@ -398,6 +399,11 @@ void kmain(void) {
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
     kprintf("[boot] initialising graphics + keyboard + mouse...\n");
     gfx_init();
+    if (virtio_gpu_init() == 0) {
+        const virtio_gpu_info_t *vg = virtio_gpu_get_info();
+        kprintf("[boot] virtio-gpu acceleration ready: virgl=%d size=%ux%u\n",
+                vg->virgl_enabled, vg->width, vg->height);
+    }
     keyboard_init();
     mouse_init();
     usb_hid_init();

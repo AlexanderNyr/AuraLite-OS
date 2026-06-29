@@ -57,6 +57,31 @@ mat4 mat4_perspective(float fov_rad, float aspect, float near, float far);
 /* Transform a point by a matrix. */
 vec3 mat4_transform(mat4 m, vec3 v);
 
+/* ---- Acceleration / backend selection ---- */
+
+#define R3D_ACCEL_SOFTWARE      0x0001u  /* baseline CPU rasterizer */
+#define R3D_ACCEL_SSE           0x0002u  /* CPU has SSE/SSE2 and render3d.o is built for it */
+#define R3D_ACCEL_ZBUFFER       0x0004u  /* software depth buffer allocated */
+#define R3D_ACCEL_GPU_DETECTED  0x0008u  /* a PCI display/GPU device was found */
+#define R3D_ACCEL_HW3D          0x0010u  /* native command-submission backend active */
+
+typedef struct {
+    uint32_t flags;
+    uint16_t pci_vendor;
+    uint16_t pci_device;
+    uint16_t width, height;
+    const char *backend_name;
+    const char *gpu_name;
+} r3d_accel_info_t;
+
+/* Initialise the 3D backend.  AuraLite currently exposes a fast software/SSE
+ * path and probes virtual GPUs for diagnostics.  Native virtio-gpu/SVGA/QXL
+ * command submission is intentionally left behind this backend boundary. */
+void r3d_accel_init(void);
+const r3d_accel_info_t *r3d_accel_info(void);
+const char *r3d_accel_backend_name(void);
+void r3d_accel_clear_depth(float depth);
+
 /* ---- Rendering ---- */
 
 /* Project a 3D point to 2D screen coordinates. */

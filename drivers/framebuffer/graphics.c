@@ -13,6 +13,7 @@
 #include "kernel/lib/string.h"
 #include "limine/limine.h"
 #include "kernel/limine_requests.h"
+#include "drivers/gpu/virtio_gpu.h"
 
 static uint32_t *front_fb = NULL;   /* the visible Limine framebuffer */
 static uint32_t *back_fb  = NULL;   /* off-screen render target       */
@@ -211,6 +212,13 @@ void gfx_flip(void) {
         memcpy(front_fb + y * pitch32, back_fb + y * pitch32,
                (size_t)fb_pitch);
     }
+
+    /* If a virtio-gpu scanout is available, mirror the completed frame to the
+     * accelerated 2D resource as well.  Keeping the Limine framebuffer copy
+     * preserves compatibility with the normal boot display path. */
+    if (virtio_gpu_available()) {
+        (void)virtio_gpu_present(back_fb, fb_width, fb_height, fb_pitch);
+    }
 }
 
 /*
@@ -236,6 +244,11 @@ void gfx_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h) {
         memcpy(front_fb + (uint32_t)row * pitch32 + (uint32_t)x,
                back_fb  + (uint32_t)row * pitch32 + (uint32_t)x,
                row_pixels * sizeof(uint32_t));
+    }
+
+    if (virtio_gpu_available()) {
+        (void)virtio_gpu_present_rect(back_fb, fb_width, fb_height, fb_pitch,
+                                      x, y, row_pixels, (uint32_t)(y1 - y));
     }
 }
 
