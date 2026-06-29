@@ -56,6 +56,7 @@ ALL_CASES=(
     test_gui_bad_pointers
     test_process_cleanup
     test_memory_reaping
+    test_fork_cow
     test_fd_isolation
     test_user_processes
     test_ahci_rw
@@ -79,6 +80,7 @@ ALL_CASES=(
     test_usbfs_fat32
     test_networking
     test_http_get
+    test_tcp_server
     test_graphics
     test_smp
     test_gui

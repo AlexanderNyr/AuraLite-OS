@@ -93,6 +93,9 @@ typedef struct {
 #define SYS_SOCKET_SEND    302
 #define SYS_SOCKET_RECV    303
 #define SYS_SOCKET_CLOSE   304
+#define SYS_SOCKET_BIND    305
+#define SYS_SOCKET_LISTEN  306
+#define SYS_SOCKET_ACCEPT  307
 
 /* File-descriptor extensions. */
 #define SYS_DUP    32
@@ -521,6 +524,25 @@ void syscall_check_signals(uint64_t retval) {
      * the normal SYSRET path. */
 }
 
+int is_restartable(uint64_t num) {
+    switch (num) {
+        case SYS_READ:
+        case SYS_WRITE:
+        case SYS_WAIT4:
+        case SYS_NANOSLEEP:
+        case SYS_SELECT:
+        case SYS_POLL:
+        case SYS_FUTEX:
+        case SYS_SOCKET_RECV:
+        case SYS_SOCKET_SEND:
+        case SYS_SOCKET_CONNECT:
+        case SYS_SOCKET_ACCEPT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
 
@@ -537,6 +559,15 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         cur->saved_user_r13    = syscall_saved_r13;
         cur->saved_user_r14    = syscall_saved_r14;
         cur->saved_user_r15    = syscall_saved_r15;
+        if (num != SYS_SIGRETURN) {
+            cur->syscall_restart_num = num;
+            cur->syscall_restart_args[0] = a1;
+            cur->syscall_restart_args[1] = a2;
+            cur->syscall_restart_args[2] = a3;
+            cur->syscall_restart_args[3] = a4;
+            cur->syscall_restart_args[4] = a5;
+            cur->syscall_restart_args[5] = a6;
+        }
     }
 
     switch (num) {
@@ -784,6 +815,23 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     }
     case SYS_SOCKET_CLOSE:
         return (uint64_t)socket_close((int)a1);
+    case SYS_SOCKET_BIND:
+        return (uint64_t)socket_bind((int)a1, (uint32_t)a2, (uint16_t)a3);
+    case SYS_SOCKET_LISTEN:
+        return (uint64_t)socket_listen((int)a1, (int)a2);
+    case SYS_SOCKET_ACCEPT: {
+        uint32_t peer_ip = 0;
+        uint16_t peer_port = 0;
+        int64_t r = socket_accept((int)a1, &peer_ip, &peer_port);
+        if (r < 0) return (uint64_t)-1;
+        if (a2 != 0) {
+            if (copy_to_user((void *)(uintptr_t)a2, &peer_ip, sizeof(uint32_t)) != 0) return (uint64_t)-EFAULT;
+        }
+        if (a3 != 0) {
+            if (copy_to_user((void *)(uintptr_t)a3, &peer_port, sizeof(uint16_t)) != 0) return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)r;
+    }
     case SYS_NET_CONNECT:
         return (uint64_t)tcp_connect(a1, (uint16_t)a2);
     case SYS_NET_SEND: {

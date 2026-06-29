@@ -8,6 +8,7 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/slab.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/klog.h"
 #include "kernel/lib/stack_protector.h"
@@ -213,6 +214,8 @@ void kmain(void) {
     kprintf("[boot] initialising kernel heap...\n");
     kheap_init();
     kheap_self_test();
+
+    slab_init();
 
     tss_init();
     kprintf("[boot] TSS loaded (RSP0 + IST1 for #DF)\n");

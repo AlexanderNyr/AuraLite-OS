@@ -18,6 +18,7 @@
 /* TCP connection states. */
 typedef enum {
     TCP_CLOSED,
+    TCP_LISTEN,
     TCP_SYN_SENT,
     TCP_ESTABLISHED,
     TCP_FIN_WAIT_1,
@@ -37,6 +38,8 @@ typedef enum {
 typedef int tcp_handle_t;
 
 tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port);
+tcp_handle_t tcp_listen(uint16_t port);
+tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port);
 int          tcp_send_h(tcp_handle_t h, const void *data, uint32_t len);
 int          tcp_recv_h(tcp_handle_t h, void *buf, uint32_t bufsize);
 int          tcp_close_h(tcp_handle_t h);

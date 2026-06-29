@@ -20,6 +20,9 @@ int64_t socket_connect(int sid, uint32_t ip, uint16_t port);
 int64_t socket_send(int sid, const void *buf, uint32_t len);
 int64_t socket_recv(int sid, void *buf, uint32_t len);
 int64_t socket_close(int sid);
+int64_t socket_bind(int sid, uint32_t ip, uint16_t port);
+int64_t socket_listen(int sid, int backlog);
+int64_t socket_accept(int sid, uint32_t *ip, uint16_t *port);
 void    socket_close_process(uint64_t owner_pid);
 
 #endif /* AURALITE_NET_SOCKET_H */

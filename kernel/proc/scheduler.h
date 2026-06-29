@@ -44,6 +44,9 @@ void sched_tick(void);
 /* Return the currently-running thread's TCB. */
 tcb_t *sched_current(void);
 
+/* Enter the idle loop for an AP. */
+void sched_idle(void);
+
 /* Gate self-test: two threads print interleaved messages, demonstrating both
  * cooperative (yield) and preemptive (timer-driven) context switching. */
 void scheduler_self_test(void);

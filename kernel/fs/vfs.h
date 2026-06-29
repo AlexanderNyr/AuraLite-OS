@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "kernel/proc/wait_queue.h"
 
 /*
  * Virtual File System.
@@ -175,7 +176,12 @@ struct ofd {
     int          append;        /* 1 if O_APPEND */
     int          nonblock;      /* 1 if O_NONBLOCK */
     int          refcount;      /* # of FD slots referencing this OFD; free at 0 */
+    struct wait_queue read_wq;  /* wait queue for select/poll read readiness */
+    struct wait_queue write_wq; /* wait queue for select/poll write readiness */
 };
+
+struct wait_queue *vfs_get_read_wq(struct ofd *o);
+struct wait_queue *vfs_get_write_wq(struct ofd *o);
 
 /* A mount point. */
 struct vfs_mount {

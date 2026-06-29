@@ -11,6 +11,9 @@
 #include "kernel/arch/x86_64/gdt.h"
 #include "kernel/arch/x86_64/idt.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/cpu_local.h"
+#include "kernel/arch/x86_64/lapic.h"
+#include "kernel/proc/scheduler.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
@@ -51,17 +54,18 @@ static void ap_entry(struct limine_mp_info *info) {
     kprintf("[smp] AP #%llu online (lapic_id=%u, processor_id=%u)\n",
             (unsigned long long)cpu_index, info->lapic_id, info->processor_id);
 
+    cpu_local_init(cpu_index + 1);
+    lapic_enable();
+
     /* Atomically report online. */
     __sync_add_and_fetch(&cpus_online, 1);
 
-    /* Enter an idle loop. Interrupts are off (Limine starts APs with IF=0).
-     * For now we stay halted; scheduler integration is a follow-up. */
-    for (;;) {
-        __asm__ volatile ("hlt");
-    }
+    sched_idle();
 }
 
 void smp_init(void) {
+    cpu_local_init(0);
+    lapic_enable();
     uint64_t cpu_count = 0;
     uint32_t bsp_lapic_id = 0;
     struct limine_mp_info *cpus = limine_get_smp_info(&cpu_count, &bsp_lapic_id);

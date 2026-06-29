@@ -79,13 +79,14 @@ struct sigaction {
  * __sigreturn), so the handler sees RSP%16==8 at entry (SysV ABI §3.2.2).
  */
 struct signal_frame {
+    uint8_t  fxsave_area[512];    /* 16-byte aligned FPU/SSE state */
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rdi, rsi, rbp, rdx, rcx, rbx, rax;
     uint64_t rip, rflags, rsp;
     uint64_t cs, ss;
     uint32_t saved_mask;          /* sigmask to restore on sigreturn */
     uint32_t signo;               /* which signal (diagnostic) */
-};
+} __attribute__((aligned(16)));
 
 /* Helpers for sigset_t bit (signo) <-> mask. */
 static inline sigset_t sig_bit(int signo) {

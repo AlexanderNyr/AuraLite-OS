@@ -22,6 +22,7 @@
 #include "sys/ioctl.h"
 #include "time.h"   /* P8 */
 #include "sys/select.h"
+#include "sys/socket.h"
 
 /* ---- errno storage ----
  *
@@ -345,6 +346,42 @@ int recv(int sock, void *buf, uint32_t bufsize) {
 int closesocket(int sock) {
     return (int)syscall_ret(syscall(SYS_SOCKET_CLOSE, (uint64_t)sock,
                                     0, 0, 0, 0, 0));
+}
+
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    if (!addr || addrlen < sizeof(struct sockaddr_in)) return -1;
+    const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+    uint32_t ip = ntohl(sin->sin_addr.s_addr);
+    uint16_t port = ntohs(sin->sin_port);
+    return (int)syscall_ret(syscall(SYS_SOCKET_BIND, (uint64_t)sockfd, ip, port, 0, 0, 0));
+}
+
+int listen(int sockfd, int backlog) {
+    return (int)syscall_ret(syscall(SYS_SOCKET_LISTEN, (uint64_t)sockfd, (uint64_t)backlog, 0, 0, 0, 0));
+}
+
+int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    uint32_t peer_ip = 0;
+    uint16_t peer_port = 0;
+    int ret = (int)syscall_ret(syscall(SYS_SOCKET_ACCEPT, (uint64_t)sockfd, (uint64_t)&peer_ip, (uint64_t)&peer_port, 0, 0, 0));
+    if (ret >= 0 && addr && addrlen && *addrlen >= sizeof(struct sockaddr_in)) {
+        struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+        sin->sin_family = AF_INET;
+        sin->sin_port = htons(peer_port);
+        sin->sin_addr.s_addr = htonl(peer_ip);
+        *addrlen = sizeof(struct sockaddr_in);
+    }
+    return ret;
+}
+
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
+    (void)sockfd; (void)level; (void)optname; (void)optval; (void)optlen;
+    return 0;
+}
+
+int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
+    (void)sockfd; (void)level; (void)optname; (void)optval; (void)optlen;
+    return 0;
 }
 
 int mkdir(const char *path, mode_t mode) {

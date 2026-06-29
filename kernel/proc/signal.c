@@ -19,6 +19,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/arch/x86_64/isr.h"
+#include "kernel/arch/x86_64/syscall.h"
 #include "kernel/lib/errno.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
@@ -207,6 +208,13 @@ void signal_tick(uint64_t now) {
             t->alarm_deadline = 0;
             signal_send(t, SIGALRM);
         }
+        if (t->sleep_deadline != 0 && now >= t->sleep_deadline) {
+            t->sleep_deadline = 0;
+            if (t->state == THREAD_BLOCKED) {
+                t->state = THREAD_READY;
+                sched_add_thread(t);
+            }
+        }
     }
 
     /* P8: ITIMER_REAL */
@@ -324,6 +332,10 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
 
     /* Snapshot the interrupted context into a kernel-local frame, then copy out. */
     struct signal_frame f;
+    memset(&f, 0, sizeof(f));
+#ifdef ARCH_X86_64
+    __asm__ volatile ("fxsave %0" : "=m"(f.fxsave_area));
+#endif
     f.r15 = regs->r15; f.r14 = regs->r14; f.r13 = regs->r13; f.r12 = regs->r12;
     f.r11 = regs->r11; f.r10 = regs->r10; f.r9 = regs->r9;  f.r8  = regs->r8;
     f.rdi = regs->rdi; f.rsi = regs->rsi; f.rbp = regs->rbp; f.rdx = regs->rdx;
@@ -339,6 +351,12 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
         f.saved_mask = t->sig_mask;
     }
     f.signo = (uint32_t)signo;
+
+    if ((int64_t)regs->rax == -EINTR && (sa->sa_flags & SA_RESTART)) {
+        if (is_restartable(t->syscall_restart_num)) {
+            t->syscall_restart_pending = 1;
+        }
+    }
 
     if (copy_to_user((void *)(uintptr_t)frame_addr, &f, sizeof(f)) != 0) {
         terminate_by_signal(SIGSEGV);
@@ -530,6 +548,30 @@ int64_t do_sigreturn(struct registers *regs) {
     /* Pin Ring-3 selectors regardless of frame contents. */
     regs->cs = USER_CS;
     regs->ss = USER_SS;
+
+#ifdef ARCH_X86_64
+    __asm__ volatile ("fxrstor %0" : : "m"(f.fxsave_area));
+#endif
+
+    if (t->syscall_restart_pending) {
+        t->syscall_restart_pending = 0;
+        extern uint64_t syscall_saved_rcx;
+        extern uint64_t syscall_saved_r11;
+        extern uint64_t syscall_saved_rsp;
+        t->saved_user_rip    = regs->rip;
+        t->saved_user_rflags = regs->rflags;
+        t->saved_user_rsp    = regs->rsp;
+        syscall_saved_rcx    = regs->rip;
+        syscall_saved_r11    = regs->rflags;
+        syscall_saved_rsp    = regs->rsp;
+        regs->rax = syscall_dispatch(t->syscall_restart_num,
+                                     t->syscall_restart_args[0],
+                                     t->syscall_restart_args[1],
+                                     t->syscall_restart_args[2],
+                                     t->syscall_restart_args[3],
+                                     t->syscall_restart_args[4],
+                                     t->syscall_restart_args[5]);
+    }
 
     /* The dispatcher will route this return through the iret path; the return
      * value in RAX has already been restored to the interrupted RAX above. */

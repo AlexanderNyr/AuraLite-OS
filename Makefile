@@ -165,7 +165,8 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/apm.elf $(USER_BUILD)/matrix.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
              $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
-             $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf
+             $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf \
+             $(USER_BUILD)/tcpserver.elf
 
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
@@ -193,6 +194,10 @@ $(USER_BUILD)/editor.o: userspace/editor/editor.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/http.o: userspace/http/http.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/tcpserver.o: userspace/tcpserver/tcpserver.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -430,6 +435,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/gaudio.elf  $(INITRD_DIR)/gaudio
 	@cp $(USER_BUILD)/gbrowser.elf $(INITRD_DIR)/gbrowser
 	@cp $(USER_BUILD)/gusb.elf    $(INITRD_DIR)/gusb
+	@cp $(USER_BUILD)/tcpserver.elf $(INITRD_DIR)/tcpserver
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
@@ -457,7 +463,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_signals \
                 $(BUILD_DIR)/test_termios \
                 $(BUILD_DIR)/test_jobcontrol \
-                $(BUILD_DIR)/test_permissions
+                $(BUILD_DIR)/test_permissions \
+                $(BUILD_DIR)/test_cow \
+                $(BUILD_DIR)/test_slab
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -564,6 +572,14 @@ $(BUILD_DIR)/test_jobcontrol: tests/unit/test_jobcontrol.c libc/include/sys/wait
 $(BUILD_DIR)/test_permissions: tests/unit/test_permissions.c libc/include/unistd.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_cow: tests/unit/test_cow.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_slab: tests/unit/test_slab.c kernel/mm/slab.c kernel/mm/slab.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_slab.c kernel/mm/slab.c -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)

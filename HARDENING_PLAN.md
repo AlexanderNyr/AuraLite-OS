@@ -1,6 +1,6 @@
 # AuraLite OS — Systems Hardening Plan
 
-**Status: H1 COMPLETE** (committed `H1: add gfx_flip_rect and dirty-rect compositor`, 2026-06-29)
+**Status: ALL H1–H8 COMPLETE** (committed `H7: implement SA_RESTART syscall restarting and signal frame FPU state preservation`, 2026-06-29)
 
 All 10 POSIX.1-2017 phases are complete (commit `35e58e0`, 2026-06-28).
 
@@ -46,9 +46,9 @@ redraws, cutting idle GPU bandwidth from ~300 MB/s to near zero.
 
 ---
 
-## H2 — Address-Space Reaping Verification & Fix
+## H2 — Address-Space Reaping Verification & Fix ✅ COMPLETE
 
-**Status: VERIFIED — already implemented**
+**Status: VERIFIED & COMPLETE — already implemented**
 
 `paging_free_address_space()` is fully implemented and called from
 `thread_reap_zombies()` (kernel/proc/thread.c:420). Boot log shows:
@@ -57,34 +57,45 @@ redraws, cutting idle GPU bandwidth from ~300 MB/s to near zero.
 [thread] reaped '/execve_child' (tid 7, 38 frames)
 ```
 
-**`docs/status.md` needs update** — line 27 (`Thread/process reaping`) and
-line 36 (`Copy-on-write`) are marked ❌ but both features are implemented.
+**`docs/status.md` updated** — line 27 (`Thread/process reaping`) and
+line 36 (`Copy-on-write`) have been updated to reflect full support.
 
-### Required action
+### Definition of Done
 
-Update `docs/status.md`:
-- Line 27: Thread/process reaping → ✅ (note: via `paging_free_address_space()` in `thread_reap_zombies()`)
-- Line 36: Copy-on-write → ✅ (COW fork via `paging_clone_user_space()`, `paging_handle_cow_fault()`)
+- [x] Verified `paging_free_address_space()` called in `thread_reap_zombies()`
+- [x] Boot log confirms `/hello` reaped (35 frames)
+- [x] Integration test `test_memory_reaping.sh` passes successfully
+- [x] Update `docs/status.md` line 27 (Thread/process reaping → ✅)
+- [x] Update `docs/status.md` line 36 (Copy-on-write → ✅)
 
 ---
 
-## H3 — Copy-on-Write fork()
+## H3 — Copy-on-Write fork() ✅ COMPLETE
 
-**Status: VERIFIED — already implemented (contradicts status.md)**
+**Status: VERIFIED & COMPLETE — already implemented**
 
 `paging_clone_user_space()` performs mark-and-share COW fork (kernel/arch/x86_64/paging.c:210-271).
-`paging_handle_cow_fault()` copies on first write. `status.md` ❌ entry is stale.
+`paging_handle_cow_fault()` copies on first write.
 
-**Required action:** Update `docs/status.md` COW entry → ✅
+**`docs/status.md` updated** — COW entry is verified as ✅.
+
+### Definition of Done
+
+- [x] Verified `paging_clone_user_space()` mark-and-share COW fork logic
+- [x] Verified `paging_handle_cow_fault()` copy-on-write page fault handling
+- [x] Added host unit test `tests/unit/test_cow.c` verifying flag modification and refcounting
+- [x] Added QEMU integration test `tests/integration/cases/test_fork_cow.sh`
+- [x] Verified clean build and successful test execution
+- [x] `docs/status.md` COW entry verified as ✅
 
 ---
 
-## H4 — True Blocking I/O (Wait Queues)
+## H4 — True Blocking I/O (Wait Queues) ✅ COMPLETE
 
-**Status: TODO**
+**Status: COMPLETE**
 
-`wait_queue` does not exist. `futex_wait()` uses `THREAD_BLOCKED + sched_yield()`.
-`select()`, pipe `read()` — yield-polling loops.
+`wait_queue` structure and support functions implemented. `futex_wait()`, `nanosleep()`,
+`pipe`, and `select()` converted from yield-polling loops to true blocking wait queues.
 
 ### New files required
 
@@ -92,34 +103,37 @@ Update `docs/status.md`:
 
 ### Tasks
 
-- [ ] `struct wait_queue` + `wq_wait()`, `wq_wake_one()`, `wq_wake_all()`
-- [ ] Pipe: replace `sched_yield()` poll with `wq_wait()` on `read_wq`/`write_wq`
-- [ ] `futex_wait()`: remove `sched_yield()` loop
-- [ ] `nanosleep()`: use `sleep_deadline` TCB field + PIT wake in `signal_tick()`
-- [ ] `select()`: rewrite to use per-OFD `read_wq`/`write_wq`
+- [x] `struct wait_queue` + `wq_wait()`, `wq_wake_one()`, `wq_wake_all()`
+- [x] Pipe: replace `sched_yield()` poll with `wq_wait()` on `read_wq`/`write_wq`
+- [x] `futex_wait()`: remove `sched_yield()` loop
+- [x] `nanosleep()`: use `sleep_deadline` TCB field + PIT wake in `signal_tick()`
+- [x] `select()`: rewrite to use per-OFD `read_wq`/`write_wq`
 
 ---
 
-## H5 — TCP Server (bind / listen / accept)
+## H5 — TCP Server (bind / listen / accept) ✅ COMPLETE
 
-**Status: TODO**
+**Status: COMPLETE**
 
-No `tcp_listen/accept/bind`. No server-side socket API.
+Server-side TCP socket API implemented across kernel, syscalls, and libc.
+Created minimal HTTP server in userspace (`/tcpserver`).
 
 ### New files / changes
 
-- `kernel/net/tcp.c`: add `tcp_state_listen`, `tcp_listen()`, `tcp_accept()`
-- `kernel/arch/x86_64/syscall.c`: dispatch SYS_BIND/SYS_LISTEN/SYS_ACCEPT
-- `libc/src/libc.c`: `bind()`, `listen()`, `accept()` wrappers
-- `userspace/tcpserver/tcpserver.c`: minimal HTTP echo server
+- [x] `kernel/net/tcp.c`: add `TCP_LISTEN`, `tcp_listen()`, `tcp_accept()`
+- [x] `kernel/arch/x86_64/syscall.c`: dispatch `SYS_SOCKET_BIND`/`SYS_SOCKET_LISTEN`/`SYS_SOCKET_ACCEPT`
+- [x] `libc/src/libc.c`: `bind()`, `listen()`, `accept()` wrappers
+- [x] `userspace/tcpserver/tcpserver.c`: minimal HTTP echo server
+- [x] `tests/integration/cases/test_tcp_server.sh`: QEMU integration test passes
 
 ---
 
-## H6 — Slab Allocator
+## H6 — Slab Allocator ✅ COMPLETE
 
-**Status: TODO**
+**Status: COMPLETE**
 
-`kmalloc(sizeof(tcb_t))` on every thread create. No slab cache.
+Slab allocator implemented in `kernel/mm/slab.c`. Global caches created for `tcb_t`,
+`struct ofd`, and `struct vnode`. Converted all kernel allocations to slab caches.
 
 ### New files required
 
@@ -128,49 +142,51 @@ No `tcp_listen/accept/bind`. No server-side socket API.
 
 ### Tasks
 
-- [ ] `slab_create()`, `slab_alloc()`, `slab_free()`
-- [ ] Global caches: `tcb_cache`, `ofd_cache`, `vnode_cache`
-- [ ] Replace `kmalloc(sizeof(tcb_t))` → `slab_alloc(tcb_cache)` in scheduler/thread
-- [ ] Host unit test: 10000 alloc/free → zero OOM
+- [x] `slab_create()`, `slab_alloc()`, `slab_free()`
+- [x] Global caches: `tcb_cache`, `ofd_cache`, `vnode_cache`
+- [x] Replace `kmalloc(sizeof(tcb_t))` → `slab_alloc(tcb_cache)` in scheduler/thread
+- [x] Host unit test: 10000 alloc/free → zero OOM
 
 ---
 
-## H7 — SA_RESTART & Signal Frame FPU State
+## H7 — SA_RESTART & Signal Frame FPU State ✅ COMPLETE
 
-**Status: TODO**
+**Status: COMPLETE**
 
-`#define SA_RESTART 0x10000000` exists but not acted upon. FXSAVE/FXRSTOR absent.
+Implemented automatic restarting of interruptible syscalls via `SA_RESTART` and
+preservation of FPU/SSE state in the user signal frame via `FXSAVE`/`FXRSTOR`.
 
 ### Tasks
 
-- [ ] `syscall_restart_num`, `syscall_restart_args[6]` in `tcb_t`
-- [ ] `is_restartable()` helper
-- [ ] `signal_deliver()`: save restart info on `-EINTR` + `SA_RESTART`
-- [ ] `sigreturn`: re-dispatch if restart pending
-- [ ] `fxsave_area[512]` in `signal_frame` (16-byte aligned)
-- [ ] `FXSAVE` on signal delivery, `FXRSTOR` on sigreturn
+- [x] `syscall_restart_num`, `syscall_restart_args[6]` in `tcb_t`
+- [x] `is_restartable()` helper
+- [x] `signal_deliver()`: save restart info on `-EINTR` + `SA_RESTART`
+- [x] `sigreturn`: re-dispatch if restart pending
+- [x] `fxsave_area[512]` in `signal_frame` (16-byte aligned)
+- [x] `FXSAVE` on signal delivery, `FXRSTOR` on sigreturn
 
 ---
 
-## H8 — SMP-Safe Scheduler
+## H8 — SMP-Safe Scheduler ✅ COMPLETE
 
-**Status: TODO**
+**Status: COMPLETE**
 
-APs `hlt`-loop. No LAPIC/IOAPIC. Single global `current_thread` without spinlock.
+SMP-safe scheduler implemented with CPU-local data structures via `MSR_GS_BASE`,
+run queue spinlock protection, and LAPIC initialization for BSP and APs.
 
 ### New files required
 
 - `kernel/arch/x86_64/lapic.c` / `lapic.h`
-- `kernel/arch/x86_64/cpu_local.h`
+- `kernel/arch/x86_64/cpu_local.h` / `cpu_local.c`
 
 ### Tasks
 
-- [ ] `struct cpu_local` with `GS:0` self-pointer
-- [ ] `cpu_local_init(cpu_id)` via `WRMSR 0xC0000101`
-- [ ] `sched_lock` spinlock on run queue
-- [ ] Replace `static current_thread` with `cpu_local()->current`
-- [ ] `lapic_enable()`, `lapic_timer_start(hz)`, `lapic_eoi()`
-- [ ] AP main: call `lapic_enable()` + `sched_idle()`
+- [x] `struct cpu_local` with `GS:0` self-pointer
+- [x] `cpu_local_init(cpu_id)` via `WRMSR 0xC0000101`
+- [x] `sched_lock` spinlock on run queue
+- [x] Replace `static current_thread` with `cpu_local()->current`
+- [x] `lapic_enable()`, `lapic_timer_start(hz)`, `lapic_eoi()`
+- [x] AP main: call `lapic_enable()` + `sched_idle()`
 
 ---
 

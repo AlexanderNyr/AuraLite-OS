@@ -125,10 +125,16 @@ int kernel_nanosleep(const struct kernel_timespec *req, struct kernel_timespec *
                 rem->tv_sec  = (int64_t)(left / freq);
                 rem->tv_nsec = (int64_t)((left % freq) * (1000000000ULL / freq));
             }
+            cur->sleep_deadline = 0;
             return -EINTR;
+        }
+        if (cur) {
+            cur->sleep_deadline = deadline;
+            cur->state = THREAD_BLOCKED;
         }
         sched_yield();
     }
+    if (cur) cur->sleep_deadline = 0;
     return 0;
 }
 

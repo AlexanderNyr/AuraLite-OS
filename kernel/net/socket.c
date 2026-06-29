@@ -19,6 +19,8 @@
 typedef enum {
     SOCK_SLOT_FREE = 0,
     SOCK_SLOT_OPEN,
+    SOCK_SLOT_BOUND,
+    SOCK_SLOT_LISTENING,
     SOCK_SLOT_CONNECTED,
 } socket_state_t;
 
@@ -92,7 +94,7 @@ int64_t socket_recv(int sid, void *buf, uint32_t len) {
 int64_t socket_close(int sid) {
     socket_t *s = get_owned_socket(sid);
     if (!s) return -1;
-    if (s->state == SOCK_SLOT_CONNECTED && s->tcp_handle >= 0) {
+    if ((s->state == SOCK_SLOT_CONNECTED || s->state == SOCK_SLOT_LISTENING) && s->tcp_handle >= 0) {
         tcp_close_h(s->tcp_handle);
     }
     memset(s, 0, sizeof(*s));
@@ -100,11 +102,59 @@ int64_t socket_close(int sid) {
     return 0;
 }
 
+int64_t socket_bind(int sid, uint32_t ip, uint16_t port) {
+    socket_t *s = get_owned_socket(sid);
+    if (!s || s->state != SOCK_SLOT_OPEN) return -1;
+    s->state = SOCK_SLOT_BOUND;
+    s->peer_ip = ip;
+    s->peer_port = port;
+    return 0;
+}
+
+int64_t socket_listen(int sid, int backlog) {
+    (void)backlog;
+    socket_t *s = get_owned_socket(sid);
+    if (!s || s->state != SOCK_SLOT_BOUND) return -1;
+    int h = tcp_listen(s->peer_port);
+    if (h < 0) return -1;
+    s->state = SOCK_SLOT_LISTENING;
+    s->tcp_handle = h;
+    return 0;
+}
+
+int64_t socket_accept(int sid, uint32_t *ip, uint16_t *port) {
+    socket_t *s = get_owned_socket(sid);
+    if (!s || s->state != SOCK_SLOT_LISTENING) return -1;
+    uint32_t peer_ip = 0;
+    uint16_t peer_port = 0;
+    int new_h = tcp_accept(s->tcp_handle, &peer_ip, &peer_port);
+    if (new_h < 0) return -1;
+
+    for (int i = 0; i < SOCKET_MAX; i++) {
+        if (sockets[i].state == SOCK_SLOT_FREE) {
+            memset(&sockets[i], 0, sizeof(sockets[i]));
+            sockets[i].state = SOCK_SLOT_CONNECTED;
+            sockets[i].owner_pid = current_pid();
+            sockets[i].domain = s->domain;
+            sockets[i].type = s->type;
+            sockets[i].protocol = s->protocol;
+            sockets[i].peer_ip = peer_ip;
+            sockets[i].peer_port = peer_port;
+            sockets[i].tcp_handle = new_h;
+            if (ip) *ip = peer_ip;
+            if (port) *port = peer_port;
+            return i;
+        }
+    }
+    tcp_close_h(new_h);
+    return -1;
+}
+
 void socket_close_process(uint64_t owner_pid) {
     for (int i = 0; i < SOCKET_MAX; i++) {
         if (sockets[i].state == SOCK_SLOT_FREE) continue;
         if (sockets[i].owner_pid != owner_pid) continue;
-        if (sockets[i].state == SOCK_SLOT_CONNECTED && sockets[i].tcp_handle >= 0) {
+        if ((sockets[i].state == SOCK_SLOT_CONNECTED || sockets[i].state == SOCK_SLOT_LISTENING) && sockets[i].tcp_handle >= 0) {
             tcp_close_h(sockets[i].tcp_handle);
         }
         memset(&sockets[i], 0, sizeof(sockets[i]));

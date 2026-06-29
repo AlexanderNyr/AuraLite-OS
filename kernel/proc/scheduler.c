@@ -1,21 +1,21 @@
-/* scheduler.c — round-robin preemptive scheduler.
+/* scheduler.c — SMP-safe round-robin preemptive scheduler (H8).
  *
- * Ready queue: singly-linked list (tail append, head dequeue = FIFO fairness).
- * The idle thread is a fallback selected only when the ready queue is empty.
- *
- * Concurrency model (single CPU): scheduler state is protected by disabling
- * interrupts (cli).  No spinlock is held across context_switch (that would
- * deadlock when the switched-to thread tries to acquire it).  NOT SMP SAFE.
+ * Ready queue: singly-linked list (tail append, head dequeue = FIFO fairness),
+ * protected by sched_lock spinlock.
+ * Each CPU tracks its own current and idle threads via MSR_GS_BASE (cpu_local).
  */
 
 #include <stdint.h>
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/slab.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/syscall.h"
+#include "kernel/arch/x86_64/cpu_local.h"
+#include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "drivers/timer/pit.h"
@@ -23,16 +23,19 @@
 extern void context_switch(tcb_t *old, tcb_t *new);
 extern void thread_entry(void);   /* trampoline, defined in thread.c */
 
-static tcb_t *current_thread  = NULL;
-static tcb_t *idle_thread     = NULL;
+extern int cpu_local_ready;
+
+static spinlock_t sched_lock;
 static tcb_t *queue_head      = NULL;   /* head = next to run  */
 static tcb_t *queue_tail      = NULL;   /* tail = last to run  */
 static int    scheduler_ready = 0;
 static uint64_t tid_counter   = 0;
 
-/* ---- Run queue operations (call with interrupts disabled) ---- */
+/* ---- Run queue operations ---- */
 
 void sched_add_thread(tcb_t *tcb) {
+    if (!tcb) return;
+    uint64_t flags = spinlock_acquire_irqsave(&sched_lock);
     tcb->next = NULL;
     if (queue_tail) {
         queue_tail->next = tcb;
@@ -40,9 +43,11 @@ void sched_add_thread(tcb_t *tcb) {
         queue_head = tcb;
     }
     queue_tail = tcb;
+    spinlock_release_irqrestore(&sched_lock, flags);
 }
 
 static tcb_t *dequeue(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&sched_lock);
     tcb_t *t = queue_head;
     if (t) {
         queue_head = t->next;
@@ -51,6 +56,7 @@ static tcb_t *dequeue(void) {
         }
         t->next = NULL;
     }
+    spinlock_release_irqrestore(&sched_lock, flags);
     return t;
 }
 
@@ -67,42 +73,36 @@ static void idle_loop(void *arg) {
 
 void schedule(void) {
     /* Must be called with interrupts disabled. */
-    tcb_t *old = current_thread;
+    if (!cpu_local_ready) return;
+    struct cpu_local *local = get_cpu_local();
+    if (!local) return;
+    tcb_t *old = local->current;
 
-    /* Re-add the current thread to the queue unless it is the idle thread or
-       it has exited.  A RUNNING thread that is yielding/preempted must be
-       transitioned to READY by the CALLER (sched_yield / sched_tick) before
-       calling schedule, otherwise it will not be re-queued. */
-    if (old != NULL && old != idle_thread && old->state == THREAD_READY) {
+    if (old != NULL && old != local->idle && old->state == THREAD_READY) {
         sched_add_thread(old);
     }
 
     tcb_t *next = dequeue();
     if (next == NULL) {
-        next = idle_thread;       /* nothing ready: run idle */
+        next = local->idle;       /* nothing ready: run idle */
     }
 
-    current_thread = next;
-    next->state = THREAD_RUNNING;
+    local->current = next;
+    if (next) next->state = THREAD_RUNNING;
 
-    if (next->kernel_stack) {
+    if (next && next->kernel_stack && local->cpu_id == 0) {
+        /* Only update global TSS/syscall MSRs on BSP until per-CPU TSS lands */
         uint64_t kstack_top = (uint64_t)next->kernel_stack + THREAD_STACK_SIZE;
         tss_set_rsp0(kstack_top);
         set_syscall_stack(kstack_top);
     }
 
-    /* Switch address space if the new thread has its own PML4. */
-    if (next->pml4_phys != 0) {
-        /* Only switch CR3 when entering a user process (needs its own user
-         * half). We never switch BACK to the kernel PML4 when going to a
-         * kernel thread, because the kernel half is shared across ALL address
-         * spaces — kernel code/heap/stacks are identical and accessible
-         * regardless of which user PML4 is active. The next user-process
-         * switch will load the correct CR3. */
+    /* Switch address space if the new thread has its own PML4 (BSP only for now). */
+    if (next && next->pml4_phys != 0 && local->cpu_id == 0) {
         paging_switch_to(next->pml4_phys);
     }
 
-    if (old != next && old != NULL) {
+    if (old != next && old != NULL && next != NULL) {
         context_switch(old, next);
     }
 }
@@ -112,8 +112,11 @@ void sched_yield(void) {
     thread_reap_zombies();
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-    if (current_thread != NULL && current_thread != idle_thread) {
-        current_thread->state = THREAD_READY;
+    if (cpu_local_ready) {
+        struct cpu_local *local = get_cpu_local();
+        if (local && local->current != NULL && local->current != local->idle) {
+            local->current->state = THREAD_READY;
+        }
     }
     schedule();
     if (rflags & 0x200ULL) {
@@ -122,25 +125,66 @@ void sched_yield(void) {
 }
 
 void sched_tick(void) {
-    if (!scheduler_ready || current_thread == NULL) {
+    if (!scheduler_ready || !cpu_local_ready) {
+        return;
+    }
+    struct cpu_local *local = get_cpu_local();
+    if (!local || local->current == NULL) {
         return;
     }
     /* We are inside the timer IRQ handler, so IF is already clear. */
-    if (current_thread == idle_thread) {
+    if (local->current == local->idle) {
         /* Always try to switch away from idle. */
         schedule();
         return;
     }
-    current_thread->quantum--;
-    if (current_thread->quantum == 0) {
-        current_thread->quantum = SCHED_QUANTUM;
-        current_thread->state = THREAD_READY;
+    local->current->quantum--;
+    if (local->current->quantum == 0) {
+        local->current->quantum = SCHED_QUANTUM;
+        local->current->state = THREAD_READY;
         schedule();
     }
 }
 
 tcb_t *sched_current(void) {
-    return current_thread;
+    if (!cpu_local_ready) return NULL;
+    struct cpu_local *local = get_cpu_local();
+    return local ? local->current : NULL;
+}
+
+/* ---- AP Idle entry point ---- */
+
+static void setup_stack(tcb_t *tcb, void (*fn)(void *), void *arg);
+
+void sched_idle(void) {
+    struct cpu_local *local = get_cpu_local();
+    if (!local) return;
+
+    tcb_t *idle = slab_alloc(tcb_cache);
+    if (!idle) return;
+    memset(idle, 0, sizeof(tcb_t));
+    idle->kernel_stack = NULL;
+    idle->kernel_stack_region = NULL;
+    idle->kernel_stack_slot = -1;
+    if (thread_alloc_kernel_stack(idle) != 0) {
+        slab_free(tcb_cache, idle);
+        return;
+    }
+    idle->id = __sync_fetch_and_add(&tid_counter, 1);
+    idle->state = THREAD_RUNNING;
+    idle->quantum = 1;
+    idle->umask = 0022;
+    strncpy(idle->name, "ap-idle", THREAD_NAME_MAX - 1);
+    setup_stack(idle, idle_loop, NULL);
+    thread_register_tcb(idle);
+
+    local->idle = idle;
+    local->current = idle;
+
+    __asm__ volatile ("sti");
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
 }
 
 /* ---- Gate self-test: two interleaving threads ---- */
@@ -181,10 +225,6 @@ void scheduler_self_test(void) {
 
 /* ---- Initialisation ---- */
 
-/*
- * Build the initial stack for a thread (factored from thread.c's helper).
- * Identical layout: 6 callee-saved regs + ret target + alignment padding.
- */
 static void setup_stack(tcb_t *tcb, void (*fn)(void *), void *arg) {
     tcb->entry = fn;
     tcb->arg   = arg;
@@ -203,42 +243,46 @@ static void setup_stack(tcb_t *tcb, void (*fn)(void *), void *arg) {
 }
 
 void sched_init(void) {
-    /* 1) Create the "kmain" TCB representing the currently-running context.
-          Its RSP will be saved on the first context_switch away from it. */
-    current_thread = kmalloc(sizeof(tcb_t));
-    memset(current_thread, 0, sizeof(tcb_t));
-    current_thread->id      = tid_counter++;
-    current_thread->state   = THREAD_RUNNING;
-    current_thread->quantum = SCHED_QUANTUM;
-    current_thread->umask   = 0022;
-    strncpy(current_thread->name, "kmain", THREAD_NAME_MAX - 1);
+    spinlock_init(&sched_lock);
+    struct cpu_local *local = get_cpu_local();
+    if (!local) return;
 
-    /* 2) Create the idle thread (NOT added to the run queue — it is the
-          fallback selected by schedule() when the queue is empty). */
-    idle_thread = kmalloc(sizeof(tcb_t));
+    /* 1) Create the "kmain" TCB representing the currently-running context. */
+    tcb_t *kmain_thread = slab_alloc(tcb_cache);
+    memset(kmain_thread, 0, sizeof(tcb_t));
+    kmain_thread->id      = __sync_fetch_and_add(&tid_counter, 1);
+    kmain_thread->state   = THREAD_RUNNING;
+    kmain_thread->quantum = SCHED_QUANTUM;
+    kmain_thread->umask   = 0022;
+    strncpy(kmain_thread->name, "kmain", THREAD_NAME_MAX - 1);
+
+    /* 2) Create the idle thread. */
+    tcb_t *idle_thread = slab_alloc(tcb_cache);
     if (idle_thread == NULL) return;
     memset(idle_thread, 0, sizeof(tcb_t));
     idle_thread->kernel_stack = NULL;
     idle_thread->kernel_stack_region = NULL;
     idle_thread->kernel_stack_slot = -1;
     if (thread_alloc_kernel_stack(idle_thread) != 0) {
-        kfree(idle_thread);
-        idle_thread = NULL;
+        slab_free(tcb_cache, idle_thread);
         return;
     }
-    idle_thread->id      = tid_counter++;
+    idle_thread->id      = __sync_fetch_and_add(&tid_counter, 1);
     idle_thread->state   = THREAD_READY;
-    idle_thread->quantum = 1;             /* switch away from idle ASAP */
+    idle_thread->quantum = 1;
     idle_thread->umask   = 0022;
     strncpy(idle_thread->name, "idle", THREAD_NAME_MAX - 1);
     setup_stack(idle_thread, idle_loop, NULL);
 
-    thread_register_tcb(current_thread);
+    local->current = kmain_thread;
+    local->idle = idle_thread;
+
+    thread_register_tcb(kmain_thread);
     thread_register_tcb(idle_thread);
 
     scheduler_ready = 1;
 
     kprintf("[sched] scheduler initialised: kmain (tid %llu) + idle (tid %llu)\n",
-            (unsigned long long)current_thread->id,
+            (unsigned long long)kmain_thread->id,
             (unsigned long long)idle_thread->id);
 }

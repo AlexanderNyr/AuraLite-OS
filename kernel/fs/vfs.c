@@ -11,6 +11,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/slab.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 
@@ -43,6 +44,9 @@ struct pipe_ring {
     uint32_t used;
     int     readers;        /* number of FDs holding the read end open      */
     int     writers;        /* number of FDs holding the write end open     */
+    struct wait_queue read_wq;
+    struct wait_queue write_wq;
+    spinlock_t lock;
 };
 
 static int64_t pipe_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
@@ -51,13 +55,14 @@ static int64_t pipe_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t 
     if (!p) return -1;
     uint8_t *out = (uint8_t *)buf;
     uint64_t got = 0;
+    spinlock_acquire(&p->lock);
     while (got == 0) {
         if (p->used == 0) {
-            if (p->writers == 0) return 0;     /* EOF: nobody to write more */
+            if (p->writers == 0) { spinlock_release(&p->lock); return 0; } /* EOF */
             /* Interrupted by a signal with no data buffered -> -EINTR. */
-            if (signal_interrupted()) return -EINTR;
+            if (signal_interrupted()) { spinlock_release(&p->lock); return -EINTR; }
             __asm__ volatile ("sti" ::: "memory");
-            sched_yield();
+            wq_wait(&p->read_wq, &p->lock);
             continue;
         }
         while (got < count && p->used > 0) {
@@ -66,6 +71,8 @@ static int64_t pipe_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t 
             p->used--;
         }
     }
+    wq_wake_all(&p->write_wq);
+    spinlock_release(&p->lock);
     return (int64_t)got;
 }
 
@@ -81,16 +88,17 @@ static int64_t pipe_write_op(struct vnode *vn, uint64_t pos, const void *buf, ui
     (void)pos;
     struct pipe_ring *p = (struct pipe_ring *)vn->fs_data;
     if (!p) return -EIO;
-    if (p->readers == 0) return pipe_broken();
+    spinlock_acquire(&p->lock);
+    if (p->readers == 0) { spinlock_release(&p->lock); return pipe_broken(); }
     const uint8_t *in = (const uint8_t *)buf;
     uint64_t put = 0;
     while (put < count) {
         if (p->used == PIPE_BUF_SIZE) {
-            if (p->readers == 0) return put ? (int64_t)put : pipe_broken();
+            if (p->readers == 0) { spinlock_release(&p->lock); return put ? (int64_t)put : pipe_broken(); }
             /* Interrupted by a signal before completing -> partial / -EINTR. */
-            if (signal_interrupted()) return put ? (int64_t)put : -EINTR;
+            if (signal_interrupted()) { spinlock_release(&p->lock); return put ? (int64_t)put : -EINTR; }
             __asm__ volatile ("sti" ::: "memory");
-            sched_yield();
+            wq_wait(&p->write_wq, &p->lock);
             continue;
         }
         while (put < count && p->used < PIPE_BUF_SIZE) {
@@ -99,6 +107,8 @@ static int64_t pipe_write_op(struct vnode *vn, uint64_t pos, const void *buf, ui
             p->used++;
         }
     }
+    wq_wake_all(&p->read_wq);
+    spinlock_release(&p->lock);
     return (int64_t)put;
 }
 
@@ -136,11 +146,14 @@ static void ofd_release_backing(struct vnode *vn) {
     if (p && (vn->ops == &pipe_read_ops || vn->ops == &pipe_write_ops)) {
         /* Pipe reader/writer counts track live OFDs, not fds: decrement here,
          * on final OFD release, exactly once per OFD. */
-        if (vn->ops == &pipe_read_ops)  p->readers--;
-        if (vn->ops == &pipe_write_ops) p->writers--;
-        if (p->readers <= 0 && p->writers <= 0) {
+        spinlock_acquire(&p->lock);
+        if (vn->ops == &pipe_read_ops)  { p->readers--; wq_wake_all(&p->write_wq); }
+        if (vn->ops == &pipe_write_ops) { p->writers--; wq_wake_all(&p->read_wq); }
+        int kill = (p->readers <= 0 && p->writers <= 0);
+        spinlock_release(&p->lock);
+        if (kill) {
             kfree(p);
-            kfree(vn);
+            slab_free(vnode_cache, vn);
         }
     }
     /* Non-pipe vnodes are owned by their filesystem; nothing to free here. */
@@ -148,7 +161,7 @@ static void ofd_release_backing(struct vnode *vn) {
 
 /* Allocate a new OFD referring to @vn with refcount 1. */
 static struct ofd *ofd_alloc(struct vnode *vn, int acc, int append, int nonblock) {
-    struct ofd *o = kmalloc(sizeof(*o));
+    struct ofd *o = slab_alloc(ofd_cache);
     if (!o) return NULL;
     o->vn          = vn;
     o->pos         = append ? vn->size : 0;
@@ -156,7 +169,27 @@ static struct ofd *ofd_alloc(struct vnode *vn, int acc, int append, int nonblock
     o->append      = append;
     o->nonblock    = nonblock;
     o->refcount    = 1;
+    wq_init(&o->read_wq);
+    wq_init(&o->write_wq);
     return o;
+}
+
+struct wait_queue *vfs_get_read_wq(struct ofd *o) {
+    if (!o) return NULL;
+    if (o->vn && (o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops)) {
+        struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
+        if (p) return &p->read_wq;
+    }
+    return &o->read_wq;
+}
+
+struct wait_queue *vfs_get_write_wq(struct ofd *o) {
+    if (!o) return NULL;
+    if (o->vn && (o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops)) {
+        struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
+        if (p) return &p->write_wq;
+    }
+    return &o->write_wq;
 }
 
 /* Drop one reference; free the OFD (and release its backing) at 0. */
@@ -164,7 +197,7 @@ static void ofd_put(struct ofd *o) {
     if (!o) return;
     if (--o->refcount <= 0) {
         ofd_release_backing(o->vn);
-        kfree(o);
+        slab_free(ofd_cache, o);
     }
 }
 
@@ -469,7 +502,10 @@ int64_t vfs_read(int fd, void *buf, uint64_t count) {
         if (p && p->used == 0 && p->writers > 0) return -EAGAIN;
     }
     int64_t n = o->vn->ops->read(o->vn, o->pos, buf, count);
-    if (n > 0) o->pos += (uint64_t)n;       /* shared OFD offset advances */
+    if (n > 0) {
+        o->pos += (uint64_t)n;       /* shared OFD offset advances */
+        wq_wake_all(&o->write_wq);
+    }
     return vfs_wrap_err(n, EIO);
 }
 
@@ -489,7 +525,10 @@ int64_t vfs_write(int fd, const void *buf, uint64_t count) {
      * access lands this needs a per-vnode write lock (TODO.md). */
     if (o->append) o->pos = o->vn->size;
     int64_t n = o->vn->ops->write(o->vn, o->pos, buf, count);
-    if (n > 0) o->pos += (uint64_t)n;
+    if (n > 0) {
+        o->pos += (uint64_t)n;
+        wq_wake_all(&o->read_wq);
+    }
     return vfs_wrap_err(n, EIO);
 }
 
@@ -629,9 +668,12 @@ int vfs_pipe2(int out_fds[2], int flags) {
     if (!p) { t[rfd] = NULL; return -ENOMEM; }
     memset(p, 0, sizeof(*p));
     p->readers = 1; p->writers = 1;   /* one read-end OFD, one write-end OFD */
+    wq_init(&p->read_wq);
+    wq_init(&p->write_wq);
+    spinlock_init(&p->lock);
 
-    struct vnode *rvn = kmalloc(sizeof(*rvn));
-    struct vnode *wvn = kmalloc(sizeof(*wvn));
+    struct vnode *rvn = slab_alloc(vnode_cache);
+    struct vnode *wvn = slab_alloc(vnode_cache);
     int nb = (flags & O_NONBLOCK) ? 1 : 0;
     struct ofd *ro = NULL, *wo = NULL;
     if (rvn && wvn) {
@@ -645,10 +687,10 @@ int vfs_pipe2(int out_fds[2], int flags) {
         wo = ofd_alloc(wvn, O_WRONLY, 0, nb);
     }
     if (!rvn || !wvn || !ro || !wo) {
-        if (ro) kfree(ro);
-        if (wo) kfree(wo);
-        if (rvn) kfree(rvn);
-        if (wvn) kfree(wvn);
+        if (ro) slab_free(ofd_cache, ro);
+        if (wo) slab_free(ofd_cache, wo);
+        if (rvn) slab_free(vnode_cache, rvn);
+        if (wvn) slab_free(vnode_cache, wvn);
         kfree(p);
         t[rfd] = NULL;
         return -ENOMEM;

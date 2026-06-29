@@ -36,6 +36,9 @@
 #define SYS_SOCKET_SEND    302
 #define SYS_SOCKET_RECV    303
 #define SYS_SOCKET_CLOSE   304
+#define SYS_SOCKET_BIND    305
+#define SYS_SOCKET_LISTEN  306
+#define SYS_SOCKET_ACCEPT  307
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 
 /* File-descriptor extensions. */

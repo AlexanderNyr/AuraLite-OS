@@ -100,8 +100,12 @@ typedef struct tcb {
     uint32_t  sig_mask;               /* blocked signals */
     struct sigaction sig_actions[NSIG]; /* per-signal disposition (index by signo) */
     uint64_t  alarm_deadline;         /* PIT tick at which SIGALRM fires (0 = off) */
+    uint64_t  sleep_deadline;         /* PIT tick at which nanosleep wakes (0 = off) */
     int       sig_suspend_active;     /* 1 while in sigsuspend(): use sig_suspend_restore */
     uint32_t  sig_suspend_restore;    /* mask to record in the next signal frame */
+    uint64_t  syscall_restart_num;
+    uint64_t  syscall_restart_args[6];
+    int       syscall_restart_pending;
 
     /* ---- P6: process groups / sessions (POSIX §4.8) ---- */
     int64_t   pgid;                   /* process group ID (leader: pgid == id) */

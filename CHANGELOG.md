@@ -2,6 +2,65 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [H7 — SA_RESTART & Signal Frame FPU State] 2026-06-29
+
+### Added & Implemented
+- **SA_RESTART Syscall Restarting**: Added `syscall_restart_num`, `syscall_restart_args`, and `syscall_restart_pending` to `tcb_t`. Implemented `is_restartable()` in `kernel/arch/x86_64/syscall.c` covering interruptible I/O, wait, futex, select, and socket syscalls. `signal_deliver()` now marks restart pending when a syscall fails with `-EINTR` and `SA_RESTART` is set. `do_sigreturn()` transparently restores user execution state and re-dispatches the restartable syscall.
+- **Signal Frame FPU/SSE Preservation**: Added a 16-byte aligned `fxsave_area[512]` buffer to `struct signal_frame`. `signal_deliver()` snapshots live FPU/SSE state via `FXSAVE` before entering user handlers, and `do_sigreturn()` restores it via `FXRSTOR`.
+
+## [H6 — Slab Allocator] 2026-06-29
+
+### Added & Refactored
+- **Slab Allocator Core**: Added `kernel/mm/slab.c` and `kernel/mm/slab.h` implementing `slab_create()`, `slab_alloc()`, `slab_free()`, and `slab_init()`. Designed to be 100% portable between x86_64 kernel mode and host unit testing.
+- **Global Caches**: Initialized `tcb_cache`, `ofd_cache`, and `vnode_cache` during kernel boot in `kernel/kernel.c`.
+- **TCB Slab Allocation**: Converted `kmalloc(sizeof(tcb_t))` and `kfree(tcb)` to `slab_alloc(tcb_cache)` and `slab_free(tcb_cache)` across `kernel/proc/thread.c` and `kernel/proc/scheduler.c`.
+- **VFS Slab Allocation**: Converted `kmalloc` and `kfree` for `struct ofd` and `struct vnode` to `slab_alloc` and `slab_free` on `ofd_cache` and `vnode_cache` in `kernel/fs/vfs.c`.
+- **Unit Tests**: Added host unit test `tests/unit/test_slab.c` running 10000 alloc/free stress cycles confirming zero OOM and zero corruption.
+
+## [H8 — SMP-Safe Scheduler] 2026-06-29
+
+### Added & Refactored
+- **CPU-Local Data**: Created `kernel/arch/x86_64/cpu_local.h` and `kernel/arch/x86_64/cpu_local.c` defining `struct cpu_local`, `cpu_local_init()`, and `get_cpu_local()` using `MSR_GS_BASE` (`0xC0000101`).
+- **LAPIC Management**: Created `kernel/arch/x86_64/lapic.h` and `kernel/arch/x86_64/lapic.c` implementing `lapic_enable()`, `lapic_eoi()`, and `lapic_timer_start()`, including automatic MMIO page mapping for `0xFEE00000`.
+- **SMP-Safe Scheduler**: Refactored `kernel/proc/scheduler.c` to replace global `current_thread` with per-CPU `cpu_local()->current` and `cpu_local()->idle`. Added `sched_lock` spinlock protecting the global run queue. Added `sched_idle()` entry point for APs.
+- **AP Initialization**: Updated `smp_init()` and `ap_entry()` in `kernel/arch/x86_64/smp.c` to initialize CPU-local structures, enable LAPIC, and enter the idle scheduler loop on all cores.
+- **Integration Tests**: Confirmed successful execution and passing of `tests/integration/cases/test_smp.sh` with `-smp 4`.
+
+## [H5 — TCP Server (bind / listen / accept)] 2026-06-29
+
+### Added & Implemented
+- **Kernel TCP Server Stack**: Added `TCP_LISTEN` connection state, `tcp_listen()`, `tcp_accept()`, and incoming SYN poll loop `tcp_recv_syn()` in `kernel/net/tcp.c`.
+- **Socket Table Extensions**: Added `socket_bind()`, `socket_listen()`, and `socket_accept()` in `kernel/net/socket.c` with matching state tracking (`SOCK_SLOT_BOUND`, `SOCK_SLOT_LISTENING`) and clean teardown in `socket_close()`.
+- **Syscall Dispatch**: Added `SYS_SOCKET_BIND` (305), `SYS_SOCKET_LISTEN` (306), and `SYS_SOCKET_ACCEPT` (307) in `kernel/arch/x86_64/syscall.c`.
+- **POSIX Libc Wrappers**: Implemented `bind()`, `listen()`, `accept()`, `setsockopt()`, and `getsockopt()` in `libc/src/libc.c`.
+- **Userspace HTTP Server**: Created a minimal HTTP echo server `/tcpserver` in `userspace/tcpserver/tcpserver.c` and integrated it into the initrd build.
+- **Integration Tests**: Added QEMU integration test `tests/integration/cases/test_tcp_server.sh` verifying server binding, listening, accepting connections, reading requests, and sending HTTP responses.
+
+## [H4 — True Blocking I/O (Wait Queues)] 2026-06-29
+
+### Added & Refactored
+- **Wait Queues**: Added `kernel/proc/wait_queue.c` and `kernel/proc/wait_queue.h` implementing `struct wait_queue`, `wq_wait()`, `wq_wake_one()`, `wq_wake_all()`, `wq_wake_n()`, `wq_add_entry()`, and `wq_remove_entry()`.
+- **True Blocking Pipes**: Replaced `sched_yield()` polling loop in `pipe_read_op` and `pipe_write_op` with `wq_wait()` on `read_wq` and `write_wq`. Added wakeup triggers in `vfs_read`, `vfs_write`, and `ofd_release_backing`.
+- **True Blocking Futex**: Replaced `sched_yield()` polling loop in `futex_wait()` with `wq_wait()`.
+- **True Blocking Nanosleep**: Replaced `sched_yield()` polling loop in `kernel_nanosleep()` with `sleep_deadline` TCB tracking and PIT wakeup in `signal_tick()`.
+- **True Blocking Select**: Replaced `sched_yield()` polling loop in `do_select()` with true blocking wait across per-OFD `read_wq`/`write_wq` structures and `sleep_deadline` timeout tracking.
+
+## [H3 — Copy-on-Write fork()] 2026-06-29
+
+### Verified & Tested
+- **COW fork mechanics**: Verified `paging_clone_user_space()` mark-and-share COW fork logic and `paging_handle_cow_fault()` copy-on-write page fault handling.
+- **Unit Tests**: Added host unit test `tests/unit/test_cow.c` verifying page flag modifications (`PAGE_FLAG_COW`, `PAGE_FLAG_WRITABLE`), PMM frame refcounting, single-reference shortcut restoration, and invalid fault case rejection.
+- **Integration Tests**: Added QEMU integration test `tests/integration/cases/test_fork_cow.sh` verifying kernel log output during `do_fork()`, address space cloning, child execution in user mode, and clean teardown.
+- **Status Matrix**: Confirmed `docs/status.md` correctly reflects Copy-on-write as ✅.
+
+## [H2 — Address-Space Reaping Verification & Fix] 2026-06-29
+
+### Verified & Documented
+- **Address-Space Reaping**: Verified full functionality of `paging_free_address_space()` called via `thread_reap_zombies()` to free user PML4 tables, page directories, and data frames upon process termination.
+- **Copy-on-Write fork**: Verified COW fork support via `paging_clone_user_space()` and `paging_handle_cow_fault()`.
+- **Status Matrix**: Updated `docs/status.md` to reflect full implementation of Thread/process reaping and Copy-on-write.
+- **Integration Tests**: Confirmed successful execution and passing of `tests/integration/cases/test_memory_reaping.sh`.
+
 ## [P10 — POSIX.1-2017 compliance hardening & libc completion] 2026-06-28
 
 ### Added

@@ -11,6 +11,7 @@
 #include "kernel/lib/errno.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/mm/slab.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
@@ -211,9 +212,9 @@ static void setup_initial_stack(tcb_t *tcb, void (*fn)(void *), void *arg) {
 }
 
 tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
-    tcb_t *tcb = kmalloc(sizeof(tcb_t));
+    tcb_t *tcb = slab_alloc(tcb_cache);
     if (tcb == NULL) {
-        kprintf("[thread] FATAL: kmalloc failed for TCB\n");
+        kprintf("[thread] FATAL: slab_alloc failed for TCB\n");
         return NULL;
     }
     memset(tcb, 0, sizeof(tcb_t));
@@ -223,7 +224,7 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     tcb->kernel_stack_slot = -1;
     if (thread_alloc_kernel_stack(tcb) != 0) {
         kprintf("[thread] FATAL: could not allocate guarded kernel stack\n");
-        kfree(tcb);
+        slab_free(tcb_cache, tcb);
         return NULL;
     }
 
@@ -427,7 +428,7 @@ void thread_reap_zombies(void) {
         thread_deregister_tcb(z);
         thread_free_kernel_stack(z);
         memset(z, 0, sizeof(*z));
-        kfree(z);
+        slab_free(tcb_cache, z);
         zombies_reaped++;
     }
 }
