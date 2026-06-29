@@ -1343,6 +1343,93 @@ static void draw_notifications(void) {
 
 /* ---- Full compositor render ---- */
 
+/* Z-order insertion sort for visible-window arrays.
+ * Uses local variables: windows[], _i, _j, _v.
+ * Must be #undef'd after use in each function to avoid duplicate definitions. */
+#define SORT_ARR(arr, cnt) do { \
+    for (int _i = 1; _i < (cnt); _i++) { \
+        int _v = (arr)[_i], _j = _i - 1; \
+        while (_j >= 0 && windows[(arr)[_j]].z > windows[_v].z) { \
+            (arr)[_j + 1] = (arr)[_j]; _j--; \
+        } \
+        (arr)[_j + 1] = _v; \
+    } \
+} while(0)
+
+/*
+ * Compute the bounding-box union of all dirty rects.
+ * Writes (ox,oy,ow,oh) — the minimal rect covering every dirty entry.
+ * If dirty_count == 0, sets ow=oh=0.
+ */
+static void compute_dirty_union(int32_t *ox, int32_t *oy,
+                                uint32_t *ow, uint32_t *oh) {
+    int32_t x0 = 0x7FFFFFFF, y0 = 0x7FFFFFFF;
+    int32_t x1 = -0x7FFFFFFF, y1 = -0x7FFFFFFF;
+    for (int i = 0; i < dirty_count; i++) {
+        gui_rect_t *r = &dirty_rects[i];
+        if (r->x < x0) x0 = r->x;
+        if (r->y < y0) y0 = r->y;
+        int32_t rx1 = r->x + (int32_t)r->w;
+        int32_t ry1 = r->y + (int32_t)r->h;
+        if (rx1 > x1) x1 = rx1;
+        if (ry1 > y1) y1 = ry1;
+    }
+    /* Clamp to screen. */
+    uint32_t fw = gfx_get_width(), fh = gfx_get_height();
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int32_t)fw) x1 = (int32_t)fw;
+    if (y1 > (int32_t)fh) y1 = (int32_t)fh;
+    *ox = x0; *oy = y0;
+    *ow = (x0 < x1) ? (uint32_t)(x1 - x0) : 0;
+    *oh = (y0 < y1) ? (uint32_t)(y1 - y0) : 0;
+}
+
+/*
+ * Partial redraw: composite the whole back buffer (draw order must be
+ * preserved), then flip only the dirty bounding box to avoid tearing on
+ * unchanged areas.
+ */
+static void compositor_render_dirty(void) {
+    /* Re-composite the entire back buffer. */
+    draw_desktop();
+    draw_icons();
+
+    /* Z-sorted index of visible windows (same logic as compositor_render). */
+    int order[GUI_MAX_WINDOWS], n = 0;
+    int normal[GUI_MAX_WINDOWS], nn = 0;
+    int atop[GUI_MAX_WINDOWS], na = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (windows[i].in_use && windows[i].visible && !windows[i].minimized) {
+            if (windows[i].flags & GUI_WIN_ALWAYS_TOP) atop[na++] = i;
+            else normal[nn++] = i;
+        }
+    }
+    SORT_ARR(normal, nn);
+    SORT_ARR(atop, na);
+    n = 0;
+    for (int i = 0; i < nn; i++) order[n++] = normal[i];
+    for (int i = 0; i < na; i++) order[n++] = atop[i];
+
+    for (int i = 0; i < n; i++) {
+        blit_window_decor(&windows[order[i]]);
+        blit_window_content(&windows[order[i]]);
+    }
+
+    draw_snap_preview();
+    draw_taskbar();
+    draw_notifications();
+    draw_cursor();
+
+    /* Flip only the dirty bounding box. */
+    int32_t dx, dy;
+    uint32_t dw, dh;
+    compute_dirty_union(&dx, &dy, &dw, &dh);
+    if (dw > 0 && dh > 0) {
+        gfx_flip_rect(dx, dy, dw, dh);
+    }
+}
+
 static void compositor_render(void) {
     draw_desktop();
 
@@ -1363,16 +1450,6 @@ static void compositor_render(void) {
     }
 
     /* Insertion sort each group by z ascending. */
-    #define SORT_ARR(arr, cnt) do { \
-        for (int _i = 1; _i < (cnt); _i++) { \
-            int _v = (arr)[_i], _j = _i - 1; \
-            while (_j >= 0 && windows[(arr)[_j]].z > windows[_v].z) { \
-                (arr)[_j + 1] = (arr)[_j]; _j--; \
-            } \
-            (arr)[_j + 1] = _v; \
-        } \
-    } while(0)
-
     SORT_ARR(normal, nn);
     SORT_ARR(atop, na);
 
@@ -1891,7 +1968,21 @@ void gui_compositor_tick(void) {
     kb_event_t ke;
     while (keyboard_get_event(&ke)) route_key_event(&ke);
 
-    /* Clock tick: force redraw once per second for the clock. */
+    /* Track cursor movement: mark old and new cursor region dirty. */
+    int mx, my;
+    if (mouse_get_position(&mx, &my)) {
+        static int prev_mx = -1, prev_my = -1;
+        if (prev_mx != mx || prev_my != my) {
+            if (prev_mx >= 0 && prev_my >= 0) {
+                gui_mark_dirty(prev_mx - 1, prev_my - 1, 16, 16);
+            }
+            gui_mark_dirty(mx - 1, my - 1, 16, 16);
+            prev_mx = mx;
+            prev_my = my;
+        }
+    }
+
+    /* Clock tick: mark taskbar dirty once per second for the clock. */
     uint32_t hz = timer_get_frequency();
     if (hz == 0) hz = 100;
     uint64_t ticks = timer_get_ticks();
@@ -1900,7 +1991,7 @@ void gui_compositor_tick(void) {
     uint64_t now_sec = elapsed_ticks / hz;
     if (now_sec != gui_clock_last_second) {
         gui_clock_last_second = now_sec;
-        gui_mark_dirty(0, gfx_get_height() - active_theme.taskbar_h,
+        gui_mark_dirty(0, (int32_t)(gfx_get_height() - active_theme.taskbar_h),
                        gfx_get_width(), active_theme.taskbar_h);
     }
 
@@ -1923,14 +2014,16 @@ void gui_compositor_tick(void) {
         }
     }
 
-    /* For now, use full redraw to ensure correctness.
-     * TODO: switch to dirty-rect-based partial redraw once thoroughly tested. */
-    full_dirty = 1;
-
-    if (full_dirty || dirty_count > 0) {
+    /* Branch: full redraw, partial dirty-redraw, or idle frame. */
+    if (full_dirty) {
         full_dirty = 0;
         dirty_count = 0;
         compositor_render();
+    } else if (dirty_count > 0) {
+        dirty_count = 0;
+        compositor_render_dirty();
+    } else {
+        /* Idle frame — no work needed, zero bandwidth consumed. */
     }
 }
 

@@ -154,6 +154,7 @@ typedef struct {
 #define SYS_ARCH_PRCTL     158
 #define SYS_FUTEX          530
 #define SYS_TKILL          531
+#define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 
 /* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
@@ -1318,6 +1319,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)do_futex(a1, (int)a2, (uint32_t)a3, a4, (uint32_t *)(uintptr_t)a5, (uint32_t)a6);
     case SYS_TKILL:
         return (uint64_t)do_tkill((int64_t)a1, (int)a2);
+
+    /* H2: expose PMM free-frame count for memory-reaping integration tests. */
+    case SYS_MEMINFO: {
+        extern uint64_t pmm_get_free_frames(void);
+        return pmm_get_free_frames();
+    }
 
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);

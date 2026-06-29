@@ -213,6 +213,32 @@ void gfx_flip(void) {
     }
 }
 
+/*
+ * gfx_flip_rect — copy only the rectangle [x, x+w) x [y, y+h) from back to
+ * front buffer.  Clips to the screen.  Used by the dirty-rect compositor to
+ * avoid bandwidth on idle frames.
+ */
+void gfx_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h) {
+    if (!back_fb || !front_fb) return;
+    uint32_t pitch32 = fb_pitch / 4;
+
+    /* Clip to screen bounds. */
+    int32_t x1 = x + (int32_t)w;
+    int32_t y1 = y + (int32_t)h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > (int32_t)fb_width)  x1 = (int32_t)fb_width;
+    if (y1 > (int32_t)fb_height) y1 = (int32_t)fb_height;
+    if (x >= x1 || y >= y1) return;
+
+    uint32_t row_pixels = (uint32_t)(x1 - x);
+    for (int32_t row = y; row < y1; row++) {
+        memcpy(front_fb + (uint32_t)row * pitch32 + (uint32_t)x,
+               back_fb  + (uint32_t)row * pitch32 + (uint32_t)x,
+               row_pixels * sizeof(uint32_t));
+    }
+}
+
 void gfx_clear(color_t color) {
     if (!back_fb) return;
     color_t packed = make_color(color);

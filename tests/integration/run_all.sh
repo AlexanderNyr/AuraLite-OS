@@ -55,6 +55,7 @@ ALL_CASES=(
     test_permissions
     test_gui_bad_pointers
     test_process_cleanup
+    test_memory_reaping
     test_fd_isolation
     test_user_processes
     test_ahci_rw

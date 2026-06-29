@@ -36,6 +36,7 @@
 #define SYS_SOCKET_SEND    302
 #define SYS_SOCKET_RECV    303
 #define SYS_SOCKET_CLOSE   304
+#define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 
 /* File-descriptor extensions. */
 #define SYS_DUP    32
@@ -170,6 +171,10 @@ int     aura_readdir(const char *path, void *out, int max);
 uint32_t dns_resolve(const char *hostname);
 
 /* ---- Network syscalls ---- */
+
+/* H2: Memory subsystem introspection — returns pmm_get_free_frames() count. */
+uint64_t get_free_frames(void);
+
 int     net_connect(uint32_t ip, uint16_t port);
 int     net_send(const void *data, uint32_t len);
 int     net_recv(void *buf, uint32_t bufsize);

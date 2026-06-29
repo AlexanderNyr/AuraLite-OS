@@ -309,6 +309,11 @@ int net_recv(void *buf, uint32_t bufsize) {
                                     0, 0, 0, 0));
 }
 
+/* H2: Returns the PMM free-frame count. Used to verify address-space reaping. */
+uint64_t get_free_frames(void) {
+    return (uint64_t)syscall(SYS_MEMINFO, 0, 0, 0, 0, 0, 0);
+}
+
 int net_close(void) {
     return (int)syscall_ret(syscall(SYS_NET_CLOSE, 0, 0, 0, 0, 0, 0));
 }

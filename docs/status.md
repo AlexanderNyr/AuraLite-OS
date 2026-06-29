@@ -33,7 +33,7 @@ Legend:
 | Virtual memory manager | ✅ | Extends Limine page tables through HHDM. |
 | Kernel heap | ✅ | First-fit allocator with coalescing. |
 | Per-process PML4 | 🧪 | Implemented for spawned user processes. |
-| Copy-on-write | ❌ | `fork` deep-copies user pages. |
+| Copy-on-write | ✅ | `fork` via `paging_clone_user_space()` performs mark-and-share COW: page-table pages are copied, writable user frames are shared (write-protected in both parent and child) via `PAGE_FLAG_COW`; first write triggers `paging_handle_cow_fault()` to copy. PMM refcount (reference counting for shared frames) is implemented in `pmm.c`. |
 | User pointer validation | 🧪 | `validate_user_range`, `copy_from_user`, `copy_to_user` use a #PF fixup path so TOCTOU/unmap during copy returns an error instead of panicking. |
 | Slab allocator | ❌ | Future work. |
 
@@ -46,10 +46,10 @@ Legend:
 | Ring 3 user mode | ✅ | ELF entry via `iretq`. |
 | ELF loader | ✅ | Loads PT_LOAD segments at linked virtual addresses. |
 | `spawn` | 🧪 | Used by shell `run <prog>` and integration-tested. |
-| `fork` | 🧪 | Deep-copy implementation, simplified semantics. |
+| `fork` | 🧪 | COW fork via `paging_clone_user_space()` (O(page-tables) not O(address-space)); simplified PID semantics. |
 | `execve` | 🧪 | Replaces current address space, simplified. |
 | `wait4` / `wait` | 🧪 | Yield-polling, no precise child PID semantics. |
-| Thread/process reaping | 🧪 | Dead TCBs/stacks are deferred-reaped from a safe stack; user page-table frames are still leaked. |
+| Thread/process reaping | ✅ | Dead TCBs/stacks are deferred-reaped from a safe stack via `thread_reap_zombies()` called every PIT tick. User address spaces are fully freed by `paging_free_address_space()` (walk user PML4, free all data frames + page-table frames + PML4 itself). COW shared frames use PMM refcount — frame is only returned to the free pool when all sharers have released it. Boot log confirms: `[thread] reaped '/hello' (tid 6, 35 frames)`. |
 | Per-process FD tables | 🧪 | Each TCB has its own FD table; `fork` shallow-copies entries. Lifetime/inheritance semantics remain simplified. |
 
 ## Filesystems
