@@ -370,10 +370,10 @@ iso: deps-check kernel $(BUILD_DIR)/initrd.tar limine-build
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)
 	@mkdir -p release
 	@cp $(ISO_IMAGE) release/auralite.iso
-	@cp $(ISO_IMAGE) release/auralite-universal.iso
 	@cp $(BUILD_DIR)/kernel.elf release/kernel.elf
 	@cp $(BUILD_DIR)/initrd.tar release/initrd.tar
-	@cd release && sha256sum auralite.iso auralite-universal.iso kernel.elf initrd.tar > SHA256SUMS
+	@cd release && sha256sum auralite.iso kernel.elf initrd.tar > SHA256SUMS
+	@rm -f release/auralite-universal.iso
 	@cp release/SHA256SUMS SHA256SUMS
 	@echo "[release] Wrote ISO, kernel.elf, initrd.tar, and SHA256SUMS to 'release/' folder"
 

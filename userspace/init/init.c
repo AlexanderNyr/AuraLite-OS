@@ -74,12 +74,16 @@ static void remove_job(pid_t pgid, int status) {
 }
 
 static void cmd_jobs(void) {
+    int count = 0;
     for (int i = 0; i < MAX_JOBS; i++) {
         if (job_list[i].id != 0) {
-            printf("[%d] %s %s &\n", job_list[i].id,
-                   job_list[i].running ? "Running" : "Stopped",
-                   job_list[i].cmd);
+            const char *status = job_list[i].running ? "Running" : "Stopped";
+            printf("[%d] %s %s\n", job_list[i].id, status, job_list[i].cmd);
+            count++;
         }
+    }
+    if (count == 0) {
+        printf("no jobs\n");
     }
     fflush(stdout);
 }

@@ -40,6 +40,7 @@ fi
 # -------- counters --------
 IL_PASS_COUNT=0
 IL_FAIL_COUNT=0
+IL_ASSERT_COUNT=0
 IL_FAILED_ASSERTS=()
 IL_INPUT_QUEUE=""    # accumulated shell input; flushed via il_run_qemu
 
@@ -166,6 +167,7 @@ il_run_qemu() {
 # -------- assertions --------
 il_assert_grep() {
     local log="$1" pat="$2" desc="$3"
+    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
     if grep -qE "$pat" "$log"; then
         il_pass "$desc"
     else
@@ -176,6 +178,7 @@ il_assert_grep() {
 # Fixed-string variant (no regex, avoids '(' ')' '?' issues in SELFTEST output)
 il_assert_grep_fixed() {
     local log="$1" pat="$2" desc="$3"
+    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
     if grep -Fq -- "$pat" "$log"; then
         il_pass "$desc"
     else
@@ -230,7 +233,7 @@ il_section() {
 }
 
 il_summary() {
-    local total=$((IL_PASS_COUNT + IL_FAIL_COUNT))
+    local total=${IL_ASSERT_COUNT:-$((IL_PASS_COUNT + IL_FAIL_COUNT))}
     echo
     if [ "$IL_FAIL_COUNT" -eq 0 ]; then
         echo "${C_BOLD}${C_GREEN}── ${IL_PASS_COUNT}/${total} assertions passed ──${C_RESET}"
