@@ -13,6 +13,7 @@
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/arch/x86_64/lapic.h"
+#include "kernel/arch/x86_64/tss.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
@@ -45,11 +46,10 @@ static void ap_entry(struct limine_mp_info *info) {
         :: "r"((uint64_t)ap_stacks[cpu_index] + AP_STACK_SIZE)
     );
 
-    /* Load the kernel's GDT (shared across all CPUs). */
+    /* Load the kernel's GDT/IDT and a per-CPU TSS. */
     gdt_flush((uint64_t)(uintptr_t)&gdtr);
-
-    /* Load the kernel's IDT (shared). */
     __asm__ volatile ("lidt %0" :: "m"(idtp));
+    tss_load_for_cpu((int)(cpu_index + 1));
 
     kprintf("[smp] AP #%llu online (lapic_id=%u, processor_id=%u)\n",
             (unsigned long long)cpu_index, info->lapic_id, info->processor_id);

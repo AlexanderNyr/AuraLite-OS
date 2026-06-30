@@ -7,6 +7,10 @@
 /* Minimal page cache for MAP_SHARED file-backed mappings. */
 uint64_t page_cache_get(struct ofd *file, uint64_t offset);
 void     page_cache_put(struct ofd *file, uint64_t offset, uint64_t phys);
+int      page_cache_get_or_alloc(struct ofd *file, uint64_t offset,
+                                 uint64_t *phys_out,
+                                 void (*fill_fn)(uint64_t phys, void *arg),
+                                 void *fill_arg);
 void     page_cache_invalidate(struct ofd *file);
 void     page_cache_flush(struct ofd *file);
 

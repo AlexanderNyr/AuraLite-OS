@@ -232,6 +232,7 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     tcb->id           = next_tid++;
     tcb->state        = THREAD_READY;
     tcb->quantum      = SCHED_QUANTUM;
+    spinlock_init(&tcb->vma_lock);
     /* Default: each new task is its own process group and session leader.
      * fork()/spawn() override pgid/sid to inherit from the parent; setsid()/
      * setpgid() change them explicitly (P6). */

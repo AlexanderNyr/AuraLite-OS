@@ -176,6 +176,137 @@ paths (error cleanup and successful handoff in `load_and_jump_args`).
 
 ---
 
+## Bug 13 — `schedule()`: TSS/CR3 updated only on CPU 0 (scheduler.c) ⛔ CRITICAL SMP BUG
+
+**Files:** `kernel/proc/scheduler.c`, `kernel/arch/x86_64/tss.{c,h}`  
+**Severity:** Wrong kernel stack / wrong address space on APs  
+
+The scheduler updated TSS.RSP0, the SYSCALL kernel stack, and CR3 only when
+`cpu_id == 0`. That is safe only while APs stay in the idle loop. As soon as an
+AP runs a user thread, Ring 3→0 transitions would use the wrong kernel stack and
+user execution would continue in the wrong address space.
+
+**Fix:** Removed the `cpu_id == 0` guards from `schedule()` so every CPU updates
+its own active stack and CR3. Added `tss_set_rsp0_for_cpu(int cpu_id, uint64_t)`
+and completed the TSS side with per-CPU TSS state plus `tss_load_for_cpu()` so
+AP bring-up loads a CPU-local TSS instead of sharing only the BSP image.
+
+---
+
+## Bug 14 — `handle_user_page_fault()`: MAP_SHARED TOCTOU on page-cache miss (vma.c / page_cache.c) ⛔ CRITICAL
+
+**Files:** `kernel/mm/vma.c`, `kernel/mm/page_cache.{c,h}`  
+**Severity:** Double frame allocation / leaked or inconsistent shared pages on SMP  
+
+`handle_user_page_fault()` did a `page_cache_get()` miss check, then allocated a
+new frame, filled it, and finally did `page_cache_put()`. Two CPUs faulting the
+same shared page concurrently could both allocate different frames and race to
+publish them.
+
+**Fix:** Added `page_cache_get_or_alloc()`, which performs lookup + allocation +
+insertion as one cache-locked operation and returns the canonical shared frame
+with its PMM refcount bumped. `handle_user_page_fault()` now uses that helper.
+
+---
+
+## Bug 15 — `do_select()`: large fixed arrays on 16 KiB kernel stack (select.c) 🔴 CRASH
+
+**File:** `kernel/fs/select.c`  
+**Severity:** Kernel-stack overflow risk  
+
+The blocking `select()` path allocated four `FD_SETSIZE`-sized arrays directly on
+its kernel stack, consuming ~3 KiB before any deeper call chain or interrupt
+nesting.
+
+**Fix:** Moved the wait-queue arrays to heap allocations sized by `nfds`, added
+OOM handling, and freed them on exit. Also reset `ready` before the post-wakeup
+re-scan so the return value matches the actual ready-set count.
+
+---
+
+## Bug 16 — `vma_remove_range()`: split-allocation OOM corrupts VMA layout (vma.c) 🟡 DATA LOSS / DOUBLE-FREE RISK
+
+**File:** `kernel/mm/vma.c`  
+**Severity:** Lost VMA coverage after partial `munmap()` under allocation failure  
+
+The code removed the original VMA from the list before allocating left/right
+split nodes. If one split allocation failed, the address-space description could
+lose surviving regions entirely.
+
+**Fix:** Pre-allocate the required split nodes first. If any required allocation
+fails, the original VMA is left untouched and removal of that segment is skipped.
+
+---
+
+## Bug 17 — `vma_list` accessed without locking (thread.h / process.c / vma.c / syscall.c) 🟡 RACE CONDITION
+
+**Files:** `kernel/proc/thread.h`, `kernel/proc/thread.c`, `kernel/proc/process.c`, `kernel/mm/vma.c`, `kernel/arch/x86_64/syscall.c`  
+**Severity:** Concurrent VMA traversal/modification can race on SMP  
+
+`vma_list` was read and modified from page faults, fork, mmap/munmap, and
+mprotect with no per-process lock.
+
+**Fix:** Added `spinlock_t vma_lock` to `tcb_t`, initialised it in
+`kthread_create()`, and used IRQ-save locking around VMA traversal/modification
+sites. The page-fault handler snapshots the matched VMA under the lock and then
+continues fault resolution without holding it.
+
+---
+
+## Bug 18 — `fork()`: COW applied to already-mapped `VMA_SHARED` pages (paging.c) 🟡 MEMORY CORRUPTION
+
+**Files:** `kernel/arch/x86_64/paging.c`, `kernel/proc/process.c`  
+**Severity:** Shared mappings lose MAP_SHARED semantics across fork  
+
+`paging_clone_user_space()` marked every writable user mapping copy-on-write,
+including pages that belong to `VMA_SHARED` mappings and should remain shared.
+
+**Fix:** During user-PTE cloning, reconstruct the virtual address, look up the
+parent VMA under `vma_lock`, and skip the COW transformation for `VMA_SHARED`
+pages while still incrementing their PMM refcount.
+
+---
+
+## Bug 19 — `munmap()`: freed frames before removing VMA metadata (syscall.c) 🟡 DOUBLE-FREE RISK
+
+**File:** `kernel/arch/x86_64/syscall.c`  
+**Severity:** Freed pages could remain described by a stale VMA if split/removal failed  
+
+`munmap()` first unmapped/freed physical pages and only then called
+`vma_remove_range()`. Combined with the old split-allocation bug, that could
+leave stale VMAs describing already-freed pages.
+
+**Fix:** Reverse the order: remove VMA metadata first under `vma_lock`, then walk
+and unmap/free the physical pages.
+
+---
+
+## Bug 20 — `page_cache_flush()` cleared `dirty` even on write failure (page_cache.c) 🟡 DATA LOSS RISK
+
+**File:** `kernel/mm/page_cache.c`  
+**Severity:** Dirty data could be lost forever after a short/error write  
+
+The flush path ignored the vnode write return value and always cleared the page's
+`dirty` flag.
+
+**Fix:** Clear `dirty` only after a full 4096-byte write. On error/short write,
+log the failure and keep the page dirty so a later flush can retry.
+
+---
+
+## Bug 21 — NXE enablement not verified before relying on NX faults (paging.c) ⚠️ HARDENING
+
+**File:** `kernel/arch/x86_64/paging.c`  
+**Severity:** Execution-disable protections depend on EFER.NXE  
+
+The kernel was already setting EFER.NXE, but there was no visibility when it had
+not yet been enabled on entry.
+
+**Fix:** `paging_init()` now explicitly checks EFER.NXE and logs a warning before
+forcing it on, making the NX dependency visible during boot diagnostics.
+
+---
+
 ## Files Modified
 
 | File | Bugs Fixed |

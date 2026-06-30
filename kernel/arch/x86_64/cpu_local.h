@@ -2,6 +2,7 @@
 #define AURALITE_ARCH_X86_64_CPU_LOCAL_H
 
 #include <stdint.h>
+#include "kernel/lib/spinlock.h"
 
 struct tcb;
 

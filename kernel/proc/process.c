@@ -363,12 +363,26 @@ int64_t do_fork(void) {
         child->vma_list = NULL;
 
         /* Clone the VMA list from parent to child. */
+        uint64_t vf = spinlock_acquire_irqsave(&parent->vma_lock);
         vma_t *vma = parent->vma_list;
         while (vma) {
-            vma_insert(&child->vma_list, vma->va_start, vma->va_end,
-                       vma->flags, vma->file, vma->file_off);
+            if (vma_insert(&child->vma_list, vma->va_start, vma->va_end,
+                           vma->flags, vma->file, vma->file_off) != 0) {
+                spinlock_release_irqrestore(&parent->vma_lock, vf);
+                vma_free_all(&child->vma_list);
+                child->vma_list = NULL;
+                if (child->pml4_phys) {
+                    (void)paging_free_address_space(child->pml4_phys);
+                    child->pml4_phys = 0;
+                }
+                child->state = THREAD_DEAD;
+                child->waited = 1;
+                if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+                return -1;
+            }
             vma = vma->next;
         }
+        spinlock_release_irqrestore(&parent->vma_lock, vf);
         /* POSIX fork(): child inherits the signal dispositions and the blocked
          * mask, but its pending-signal set is empty. */
         for (int s = 0; s < NSIG; s++) child->sig_actions[s] = parent->sig_actions[s];

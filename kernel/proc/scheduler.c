@@ -78,13 +78,13 @@ void schedule(void) {
     local->current = next;
     if (next) next->state = THREAD_RUNNING;
 
-    if (next && next->kernel_stack && local->cpu_id == 0) {
+    if (next && next->kernel_stack) {
         uint64_t kstack_top = (uint64_t)next->kernel_stack + THREAD_STACK_SIZE;
-        tss_set_rsp0(kstack_top);
+        tss_set_rsp0_for_cpu((int)local->cpu_id, kstack_top);
         set_syscall_stack(kstack_top);
     }
 
-    if (next && next->pml4_phys != 0 && local->cpu_id == 0) {
+    if (next && next->pml4_phys != 0) {
         paging_switch_to(next->pml4_phys);
     }
 

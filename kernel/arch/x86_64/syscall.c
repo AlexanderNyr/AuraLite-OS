@@ -27,6 +27,7 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/vma.h"
 #include "kernel/limine_requests.h"
 
 /* P10 types */
@@ -377,9 +378,14 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     }
 
     /* Create the VMA descriptor. No physical allocation here. */
-    if (vma_insert(&cur->vma_list, addr, addr + len,
-                   vflags, file_ofd, off) != 0) {
-        return (uint64_t)-ENOMEM;
+    {
+        uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
+        int vr = vma_insert(&cur->vma_list, addr, addr + len,
+                            vflags, file_ofd, off);
+        spinlock_release_irqrestore(&cur->vma_lock, vf);
+        if (vr != 0) {
+            return (uint64_t)-ENOMEM;
+        }
     }
 
     /* MAP_POPULATE: eager allocation (optional). */
@@ -414,6 +420,12 @@ static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
     len = align_up_u64(len, PAGE_SIZE_BYTES);
     if (!user_mmap_range_ok(addr, len)) return (uint64_t)-EINVAL;
 
+    {
+        uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
+        vma_remove_range(&cur->vma_list, addr, addr + len);
+        spinlock_release_irqrestore(&cur->vma_lock, vf);
+    }
+
     for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
         uint64_t virt = addr + off;
         uint64_t phys = paging_get_phys(virt);
@@ -423,7 +435,6 @@ static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
         }
     }
 
-    vma_remove_range(&cur->vma_list, addr, addr + len);
     return 0;
 }
 
@@ -437,8 +448,10 @@ static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
         return (uint64_t)-EINVAL;
     }
 
+    uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
     vma_t *vma = vma_find(cur->vma_list, addr);
     if (!vma || vma->va_start != addr || vma->va_end < addr + len) {
+        spinlock_release_irqrestore(&cur->vma_lock, vf);
         return (uint64_t)-ENOMEM;
     }
 
@@ -447,6 +460,7 @@ static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     if (prot & PROT_WRITE) vflags |= VMA_WRITE;
     if (prot & PROT_EXEC)  vflags |= VMA_EXEC;
     vma->flags = vflags;
+    spinlock_release_irqrestore(&cur->vma_lock, vf);
 
     uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
     if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;

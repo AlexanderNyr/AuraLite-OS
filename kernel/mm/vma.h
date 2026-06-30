@@ -30,5 +30,6 @@ int     vma_insert(vma_t **list_head, uint64_t start, uint64_t end,
                    uint32_t flags, struct ofd *file, uint64_t file_off);
 void    vma_remove_range(vma_t **list_head, uint64_t start, uint64_t end);
 void    vma_free_all(vma_t **list_head);
+int     handle_user_page_fault(uint64_t cr2, uint64_t err_code);
 
 #endif /* AURALITE_MM_VMA_H */

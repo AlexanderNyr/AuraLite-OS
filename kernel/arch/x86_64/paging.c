@@ -10,6 +10,9 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/mm/vma.h"
+#include "kernel/proc/scheduler.h"
+#include "kernel/proc/thread.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
@@ -49,6 +52,9 @@ void paging_init(void) {
 
     /* Enable the NX (No-Execute) execution-disable bit in page tables. */
     uint64_t efer = read_msr(MSR_EFER);
+    if (!(efer & EFER_NXE)) {
+        kprintf(VMM_TAG "WARN: NXE was disabled, enabling it now\n");
+    }
     write_msr(MSR_EFER, efer | EFER_NXE);
 
     /* Enable SMEP when the CPU advertises it so the kernel cannot execute
@@ -254,17 +260,25 @@ uint64_t paging_clone_user_space(void) {
 
                     uint64_t old_phys = opte & PAGE_ADDR_MASK;
                     uint64_t flags = opte & ~PAGE_ADDR_MASK;
+                    uint64_t virt = ((uint64_t)i4 << 39) |
+                                    ((uint64_t)i3 << 30) |
+                                    ((uint64_t)i2 << 21) |
+                                    ((uint64_t)i1 << 12);
+                    int is_shared_vma = 0;
+                    tcb_t *parent = sched_current();
+                    if (parent) {
+                        uint64_t vf = spinlock_acquire_irqsave(&parent->vma_lock);
+                        vma_t *vma = vma_find(parent->vma_list, virt);
+                        is_shared_vma = (vma && (vma->flags & VMA_SHARED)) ? 1 : 0;
+                        spinlock_release_irqrestore(&parent->vma_lock, vf);
+                    }
 
                     if (pmm_inc_frame_ref(old_phys) != 0) goto fail;
 
-                    if (flags & (PAGE_FLAG_WRITABLE | PAGE_FLAG_COW)) {
+                    if (!is_shared_vma && (flags & (PAGE_FLAG_WRITABLE | PAGE_FLAG_COW))) {
                         flags &= ~PAGE_FLAG_WRITABLE;
                         flags |= PAGE_FLAG_COW;
                         o_pt[i1] = old_phys | flags;
-                        uint64_t virt = ((uint64_t)i4 << 39) |
-                                        ((uint64_t)i3 << 30) |
-                                        ((uint64_t)i2 << 21) |
-                                        ((uint64_t)i1 << 12);
                         invlpg(virt);
                     }
                     n_pt[i1] = old_phys | flags;

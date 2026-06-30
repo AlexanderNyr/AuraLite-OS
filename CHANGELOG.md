@@ -2,6 +2,22 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Bugfix batch N1-N9 (partial: N1, N2, N3, N4, N5, N6, N8, N9, N7 hardening)] 2026-06-30
+
+### Fixed
+- **Scheduler SMP safety**: `schedule()` no longer restricts TSS.RSP0, SYSCALL stack, or CR3 switching to CPU 0. Added `tss_set_rsp0_for_cpu()`, per-CPU TSS backing state, and `tss_load_for_cpu()` so AP bring-up loads a CPU-local TSS before those CPUs enter scheduling.
+- **`select()` kernel-stack pressure**: moved blocking-path wait-queue arrays off the fixed 16 KiB kernel stack and onto heap allocations sized by `nfds`, with full cleanup on all exit paths.
+- **MAP_SHARED page-fault race**: added `page_cache_get_or_alloc()` and switched shared-fault resolution to an atomic lookup/allocate/publish flow to avoid double frame allocation on concurrent page-cache misses.
+- **VMA split OOM handling**: `vma_remove_range()` now pre-allocates required split nodes before unlinking the original VMA, preserving the mapping list when memory pressure prevents a split.
+- **Per-process VMA locking**: added `tcb_t::vma_lock` and used IRQ-safe locking around `fork()` VMA cloning, page-fault lookup/snapshot, `mmap`, `munmap`, and `mprotect` metadata changes.
+- **`fork()` + `MAP_SHARED` semantics**: `paging_clone_user_space()` now skips COW conversion for already-mapped pages covered by a `VMA_SHARED` mapping while still bumping PMM refcounts.
+- **`munmap()` ordering**: VMA metadata is removed before page-table/frame teardown, preventing stale VMA descriptors from surviving a failed split path.
+- **Page-cache flush durability**: `page_cache_flush()` only clears `dirty` after a full 4 KiB writeback; short/error writes leave the page dirty and log the failure.
+- **NX visibility**: `paging_init()` now warns when EFER.NXE was not already enabled before forcing it on, making NX dependency explicit in boot logs.
+
+### Added
+- Host unit tests: `tests/unit/test_select_stack.c`, `tests/unit/test_vma.c`, and `tests/unit/test_page_cache.c` to pin the fixed stack-allocation, VMA-split, and page-cache behaviors.
+
 ## [N5.4 — Stack guard pages] 2026-06-30
 
 ### Added

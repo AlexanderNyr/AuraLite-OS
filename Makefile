@@ -495,7 +495,10 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_slab \
                 $(BUILD_DIR)/test_virgl \
                 $(BUILD_DIR)/test_virtio_net \
-                $(BUILD_DIR)/test_stack_guard
+                $(BUILD_DIR)/test_stack_guard \
+                $(BUILD_DIR)/test_select_stack \
+                $(BUILD_DIR)/test_vma \
+                $(BUILD_DIR)/test_page_cache
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -541,6 +544,18 @@ $(BUILD_DIR)/test_virtio_net: tests/unit/test_virtio_net.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_stack_guard: tests/unit/test_stack_guard.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_select_stack: tests/unit/test_select_stack.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_vma: tests/unit/test_vma.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_page_cache: tests/unit/test_page_cache.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

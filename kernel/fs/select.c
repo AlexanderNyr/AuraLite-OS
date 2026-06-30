@@ -9,6 +9,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/time.h"
 #include "drivers/timer/pit.h"
+#include "kernel/mm/kheap.h"
 #include <stdint.h>
 
 #define FD_SETSIZE 64
@@ -53,14 +54,28 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
 
     /* True blocking wait via wait_queue (H4) */
     if (ready == 0) {
-        struct wq_entry rentries[FD_SETSIZE];
-        struct wq_entry wentries[FD_SETSIZE];
-        struct wait_queue *rwqs[FD_SETSIZE];
-        struct wait_queue *wwqs[FD_SETSIZE];
-        memset(rentries, 0, sizeof(rentries));
-        memset(wentries, 0, sizeof(wentries));
-        memset(rwqs, 0, sizeof(rwqs));
-        memset(wwqs, 0, sizeof(wwqs));
+        struct wq_entry *rentries = NULL;
+        struct wq_entry *wentries = NULL;
+        struct wait_queue **rwqs = NULL;
+        struct wait_queue **wwqs = NULL;
+
+        if (nfds > 0) {
+            rentries = kmalloc(sizeof(*rentries) * (uint64_t)nfds);
+            wentries = kmalloc(sizeof(*wentries) * (uint64_t)nfds);
+            rwqs = kmalloc(sizeof(*rwqs) * (uint64_t)nfds);
+            wwqs = kmalloc(sizeof(*wwqs) * (uint64_t)nfds);
+            if (!rentries || !wentries || !rwqs || !wwqs) {
+                kfree(rentries);
+                kfree(wentries);
+                kfree(rwqs);
+                kfree(wwqs);
+                return -ENOMEM;
+            }
+            memset(rentries, 0, sizeof(*rentries) * (uint64_t)nfds);
+            memset(wentries, 0, sizeof(*wentries) * (uint64_t)nfds);
+            memset(rwqs, 0, sizeof(*rwqs) * (uint64_t)nfds);
+            memset(wwqs, 0, sizeof(*wwqs) * (uint64_t)nfds);
+        }
 
         for (int fd = 0; fd < nfds; fd++) {
             struct ofd *o = cur->fd_table[fd];
@@ -105,6 +120,7 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
 
         /* Re-scan for readiness after waking up */
         FD_ZERO(&r_out); FD_ZERO(&w_out);
+        ready = 0;
         for (int fd = 0; fd < nfds; fd++) {
             struct ofd *o = cur->fd_table[fd];
             if (!o) continue;
@@ -115,6 +131,11 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
             if (can_read)  { FD_SET(fd, &r_out); ready++; }
             if (can_write) { FD_SET(fd, &w_out); ready++; }
         }
+
+        kfree(rentries);
+        kfree(wentries);
+        kfree(rwqs);
+        kfree(wwqs);
     }
 
     if (readfds)  copy_to_user(readfds, &r_out, sizeof(fd_set));

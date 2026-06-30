@@ -15,6 +15,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/time.h"
+#include "kernel/limine_requests.h"
 
 /*
  * vfs_wrap_err() — normalise a filesystem op's return value to a negative

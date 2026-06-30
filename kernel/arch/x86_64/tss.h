@@ -47,11 +47,15 @@ struct tss_entry {
     uint16_t iomap_base;
 } __attribute__((packed));
 
-/* Build the TSS descriptor in the GDT, set RSP0, and load TR. */
+/* Build per-CPU TSS state and load the BSP TSS. */
 void tss_init(void);
+
+/* Load the current CPU's TSS descriptor into TR. Safe to call on BSP/AP init. */
+void tss_load_for_cpu(int cpu_id);
 
 /* Update RSP0 (the kernel stack used on Ring 3 -> Ring 0 transitions).
  * Called when switching to a user thread so each has its own kernel stack. */
 void tss_set_rsp0(uint64_t rsp0);
+void tss_set_rsp0_for_cpu(int cpu_id, uint64_t rsp0);
 
 #endif /* AURALITE_ARCH_X86_64_TSS_H */
