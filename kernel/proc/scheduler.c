@@ -29,6 +29,18 @@ extern tcb_t *sched_steal_work(void);
 
 static int    scheduler_ready = 0;
 static uint64_t tid_counter   = 0;
+spinlock_t sched_lock = SPINLOCK_UNLOCKED;
+
+/* ---- Idle loop ---- */
+
+/* The idle thread runs when no other thread is ready. It enables interrupts
+ * and halts until the next IRQ (typically the PIT timer). */
+static void idle_loop(void *arg) {
+    (void)arg;
+    for (;;) {
+        __asm__ volatile ("sti; hlt" ::: "memory");
+    }
+}
 
 /* ---- Core scheduler ---- */
 

@@ -1,7 +1,9 @@
 #include "kernel/mm/page_cache.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/mm/kheap.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
+#include "kernel/limine_requests.h"
 
 #define PAGE_CACHE_BUCKETS 1024
 
@@ -83,17 +85,20 @@ void page_cache_invalidate(struct ofd *file) {
 }
 
 void page_cache_flush(struct ofd *file) {
-    /* Simple flush: iterate cache and write dirty pages to disk.
-     * Since we don't track dirty pages in a separate list, we scan all. */
+    /* Simple flush: iterate cache and write dirty pages back via the OFD's
+     * vnode write op.  We convert the physical address to a HHDM virtual
+     * pointer so the kernel can access the page contents. */
     if (!file) return;
+    uint64_t hhdm = limine_get_hhdm_offset();
     spinlock_acquire(&cache_lock);
     for (int i = 0; i < PAGE_CACHE_BUCKETS; i++) {
         page_cache_entry_t *curr = cache_buckets[i];
         while (curr) {
             if (curr->ofd == file && curr->dirty) {
-                vfs_pwrite(0, (void*)(uintptr_t)(curr->phys), 4096, curr->offset);
-                /* Warning: vfs_pwrite takes an int fd. 
-                   This needs to be fixed to use OFD. */
+                if (file->vn && file->vn->ops && file->vn->ops->write) {
+                    void *kbuf = (void *)(uintptr_t)(hhdm + curr->phys);
+                    file->vn->ops->write(file->vn, curr->offset, kbuf, 4096);
+                }
                 curr->dirty = 0;
             }
             curr = curr->next;

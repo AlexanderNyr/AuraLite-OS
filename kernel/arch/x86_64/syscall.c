@@ -35,11 +35,6 @@ typedef struct {
 } fd_set;
 
 /* struct kernel_timeval is provided by kernel/time.h (included above). */
-// clone.c compiled separately   /* inline for simplicity in this build */
-#include "kernel/arch/x86_64/paging.h"
-#include "kernel/mm/pmm.h"
-#include "kernel/mm/kheap.h"
-#include "kernel/limine_requests.h"
 
 #define SYS_READ    0
 #define SYS_WRITE   1

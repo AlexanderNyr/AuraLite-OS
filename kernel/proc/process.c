@@ -218,11 +218,17 @@ static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *
 static void __attribute__((noreturn))
 load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea) {
     tcb_t *cur = sched_current();
+    if (!cur) {
+        kprintf("[proc] FATAL: load_and_jump_args with no current thread\n");
+        if (elf_data) kfree((void *)elf_data);
+        if (ea) { exec_args_free(ea); kfree(ea); }
+        thread_exit();
+    }
     uint64_t entry = elf_load(elf_data, elf_size, &cur->brk);
     if (entry == 0) {
         kprintf("[proc] ELF load failed\n");
         if (elf_data) kfree((void *)elf_data);
-        if (ea) exec_args_free(ea);
+        if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
     uint64_t stack_top = choose_user_stack_top();
@@ -246,8 +252,9 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
             user_rsp = (usp_top - 16) & ~0xFULL;
         }
         exec_args_free(ea);
+        kfree(ea);
     } else {
-        if (ea) exec_args_free(ea);
+        if (ea) { exec_args_free(ea); kfree(ea); }
         /* No args: still hand crt0 a valid argc=0/argv=NULL/envp=NULL frame. */
         struct exec_args empty = { 0, 0, { NULL }, { NULL } };
         user_rsp = build_initial_stack(usp_top, &empty);
@@ -411,9 +418,11 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
 
     /* 0a) Snapshot argv[]/envp[] from the CALLER's address space NOW, before
      *     we replace it.  On failure leave the current image intact. */
-    static struct exec_args ea;   /* large; keep off the kernel stack */
-    if (exec_args_capture(&ea, user_argv, user_envp) != 0) {
+    struct exec_args *ea = kmalloc(sizeof(struct exec_args));
+    if (!ea) return -ENOMEM;
+    if (exec_args_capture(ea, user_argv, user_envp) != 0) {
         kprintf("[proc] execve: bad argv/envp\n");
+        kfree(ea);
         return -EFAULT;
     }
 
@@ -438,7 +447,7 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     int fd = vfs_open(path, O_RDONLY, 0);
     if (fd < 0) {
         kprintf("[proc] execve: '%s' not found\n", path);
-        exec_args_free(&ea);
+        exec_args_free(ea); kfree(ea);
         return -1;
     }
 
@@ -453,7 +462,7 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     uint8_t *buf = kmalloc(256 * 1024);
     if (!buf) {
         vfs_close(fd);
-        exec_args_free(&ea);
+        exec_args_free(ea); kfree(ea);
         return -1;
     }
     int64_t total = 0;
@@ -465,13 +474,16 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     kprintf("[proc] execve: read %lld bytes\n", (long long)total);
 
     /* 2) Create a fresh address space. */
-    if (cur) {
-        vma_free_all(&cur->vma_list);
+    {
+        tcb_t *cur_vma = sched_current();
+        if (cur_vma) {
+            vma_free_all(&cur_vma->vma_list);
+        }
     }
     uint64_t new_pml4 = paging_new_address_space();
     if (new_pml4 == 0) {
         kfree(buf);
-        exec_args_free(&ea);
+        exec_args_free(ea); kfree(ea);
         return -1;
     }
 
@@ -491,7 +503,7 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
 
     /* 5) Load and jump (does not return).  Pass the captured argv/envp so they
      *    are materialised on the new process's initial user stack. */
-    load_and_jump_args(buf, (uint64_t)total, &ea);
+    load_and_jump_args(buf, (uint64_t)total, ea);
 
     return -1;   /* not reached */
 }

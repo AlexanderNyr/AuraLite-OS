@@ -45,7 +45,7 @@ void sched_add_thread(tcb_t *tcb) {
     spinlock_release_irqrestore(&target->rq_lock, flags);
 }
 
-static tcb_t *sched_steal_work(void) {
+tcb_t *sched_steal_work(void) {
     struct cpu_local *me = get_cpu_local();
     extern int cpu_count;
     int my_id = (int)me->cpu_id;

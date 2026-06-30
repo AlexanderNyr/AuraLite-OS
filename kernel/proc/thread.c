@@ -364,7 +364,7 @@ int64_t do_wait4_pid(int64_t pid, int64_t *exit_code) {
 
 static void close_process_fds(tcb_t *t) {
     if (!t) return;
-    for (int fd = 3; fd < VFS_MAX_FDS; fd++) {
+    for (int fd = 0; fd < VFS_MAX_FDS; fd++) {
         if (t->fd_table[fd] != NULL) {
             vfs_close(fd);
         }

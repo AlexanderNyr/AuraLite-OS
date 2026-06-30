@@ -32,7 +32,8 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
     if (!cur || nfds < 0 || nfds > FD_SETSIZE) return -EINVAL;
 
     int ready = 0;
-    fd_set r, w;
+    fd_set r, w, r_out, w_out;
+    FD_ZERO(&r); FD_ZERO(&w); FD_ZERO(&r_out); FD_ZERO(&w_out);
     if (readfds)  copy_from_user(&r, readfds, sizeof(fd_set));
     if (writefds) copy_from_user(&w, writefds, sizeof(fd_set));
 
@@ -43,7 +44,8 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
         int can_read  = (readfds  && FD_ISSET(fd, &r))  && (o->pos < o->vn->size || o->nonblock);
         int can_write = (writefds && FD_ISSET(fd, &w)) && (o->access_mode != O_RDONLY);
 
-        if (can_read || can_write) ready++;
+        if (can_read)  { FD_SET(fd, &r_out); ready++; }
+        if (can_write) { FD_SET(fd, &w_out); ready++; }
     }
 
     if (ready == 0 && timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0)
@@ -102,6 +104,7 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
         }
 
         /* Re-scan for readiness after waking up */
+        FD_ZERO(&r_out); FD_ZERO(&w_out);
         for (int fd = 0; fd < nfds; fd++) {
             struct ofd *o = cur->fd_table[fd];
             if (!o) continue;
@@ -109,12 +112,13 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
             int can_read  = (readfds  && FD_ISSET(fd, &r))  && (o->pos < o->vn->size || o->nonblock);
             int can_write = (writefds && FD_ISSET(fd, &w)) && (o->access_mode != O_RDONLY);
 
-            if (can_read || can_write) ready++;
+            if (can_read)  { FD_SET(fd, &r_out); ready++; }
+            if (can_write) { FD_SET(fd, &w_out); ready++; }
         }
     }
 
-    if (readfds)  copy_to_user(readfds, &r, sizeof(fd_set));
-    if (writefds) copy_to_user(writefds, &w, sizeof(fd_set));
+    if (readfds)  copy_to_user(readfds, &r_out, sizeof(fd_set));
+    if (writefds) copy_to_user(writefds, &w_out, sizeof(fd_set));
 
     return ready;
 }
