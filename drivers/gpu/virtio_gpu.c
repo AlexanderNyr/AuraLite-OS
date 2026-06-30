@@ -793,6 +793,29 @@ int virtio_gpu_transfer_to_host_3d(uint32_t ctx_id, uint32_t resource_id,
     return gpu_cmd_nodata(&req, sizeof(req));
 }
 
+int virtio_gpu_set_scanout_resource(uint32_t scanout_id, uint32_t resource_id,
+                                    uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (!virtio_gpu_available()) return -1;
+    struct virtio_gpu_set_scanout scanout;
+    memset(&scanout, 0, sizeof(scanout));
+    scanout.hdr.type = VIRTIO_GPU_CMD_SET_SCANOUT;
+    scanout.r.x = x; scanout.r.y = y; scanout.r.width = w; scanout.r.height = h;
+    scanout.scanout_id = scanout_id;
+    scanout.resource_id = resource_id;
+    return gpu_cmd_nodata(&scanout, sizeof(scanout));
+}
+
+int virtio_gpu_flush_resource(uint32_t resource_id,
+                              uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (!virtio_gpu_available()) return -1;
+    struct virtio_gpu_resource_flush fl;
+    memset(&fl, 0, sizeof(fl));
+    fl.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+    fl.r.x = x; fl.r.y = y; fl.r.width = w; fl.r.height = h;
+    fl.resource_id = resource_id;
+    return gpu_cmd_nodata(&fl, sizeof(fl));
+}
+
 const virtio_gpu_info_t *virtio_gpu_get_info(void) { return &info; }
 int virtio_gpu_available(void) { return info.present && info.controlq_ready; }
 int virtio_gpu_virgl_supported(void) { return info.virgl_supported; }

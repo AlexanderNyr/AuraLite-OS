@@ -55,6 +55,10 @@ il_init() {
     # QEMU binary (overridable for cross / non-x86_64 hosts).
     IL_QEMU="${IL_QEMU:-qemu-system-x86_64}"
 
+    # NIC model on the user/SLIRP NAT (overridable so a test can exercise an
+    # alternative backend, e.g. IL_NIC=virtio-net-pci for the virtio-net path).
+    IL_NIC="${IL_NIC:-e1000}"
+
     # Build the ISO on demand.
     if [ ! -f "$IL_ISO" ]; then
         echo "${C_YELLOW}[lib] ISO missing — running 'make iso'…${C_RESET}"
@@ -142,7 +146,7 @@ il_run_qemu() {
         -cpu qemu64
         -boot order=d
         -netdev user,id=net0
-        -device e1000,netdev=net0
+        -device "${IL_NIC},netdev=net0"
     )
 
     # Stream queued input → QEMU stdin, capture serial output → log.

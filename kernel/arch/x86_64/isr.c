@@ -7,6 +7,7 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/guard.h"
 #include "kernel/proc/signal.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/lib/kprintf.h"
@@ -123,6 +124,31 @@ void isr_handler(struct registers *r) {
          * the copy returns -1 instead of panicking the kernel. */
         if (!from_user && r->int_no == 14 && usercopy_recover_fault(&r->rip)) {
             return;
+        }
+
+        /* Stack guard-page diagnosis: if this #PF landed on a known kernel- or
+         * user-stack guard page, report it explicitly as a stack overflow.  A
+         * kernel-stack guard hit is fatal (we cannot safely continue on a
+         * corrupted/overflowing kernel stack); a user-stack guard hit falls
+         * through to the normal SIGSEGV path below. */
+        if (r->int_no == 14) {
+            const char *gdesc = 0;
+            enum guard_fault_kind gk =
+                guard_classify_fault(read_cr2(), from_user, &gdesc);
+            if (gk != GUARD_FAULT_NONE) {
+                kprintf("\n[GUARD] %s: CR2=0x%016llx RIP=0x%016llx (%s mode)\n",
+                        gdesc ? gdesc : "stack guard page hit",
+                        (unsigned long long)read_cr2(),
+                        (unsigned long long)r->rip,
+                        from_user ? "USER" : "KERNEL");
+                if (!from_user) {
+                    dump_registers(r);
+                    kprintf("[GUARD] kernel stack overflow is fatal; halting.\n");
+                    kernel_halt();
+                }
+                /* User-mode guard hit: let the SIGSEGV path below terminate or
+                 * deliver a handler, but the [GUARD] line records the cause. */
+            }
         }
 
         kprintf("\n[EXCEPTION] %s (vector %llu, error code 0x%016llx) "

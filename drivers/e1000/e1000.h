@@ -6,8 +6,9 @@
 /*
  * Intel 82540EM e1000 NIC driver (QEMU's default NIC).
  *
- * Uses legacy (non-descriptor-split) TX/RX descriptor rings with polling
- * (no interrupts). The MMIO register file is accessed through the HHDM.
+ * Uses legacy (non-descriptor-split) TX/RX descriptor rings with an
+ * interrupt-capable RX/TX path. The MMIO register file is accessed through the
+ * HHDM.
  */
 
 #define E1000_VENDOR_ID  0x8086
@@ -49,5 +50,17 @@ int e1000_send(const void *data, uint32_t len);
  * is available.
  */
 int e1000_recv(void *buf, uint32_t bufsize);
+
+/*
+ * Timed receive variant for socket/TCP paths that can sleep.
+ * timeout_ticks == 0 means wait indefinitely; otherwise return 0 on timeout.
+ */
+int e1000_recv_wait(void *buf, uint32_t bufsize, uint64_t timeout_ticks);
+
+/* Blocking receive variant for socket/TCP paths that can sleep. */
+int e1000_recv_blocking(void *buf, uint32_t bufsize);
+
+/* Register the e1000 as a netdev backend (call after e1000_init succeeds). */
+void e1000_register_netdev(void);
 
 #endif /* AURALITE_DRIVERS_E1000_E1000_H */

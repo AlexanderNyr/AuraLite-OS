@@ -33,6 +33,7 @@
 #define VFS_TYPE_DIR      2
 #define VFS_TYPE_CHARDEV  3
 #define VFS_TYPE_SYMLINK  4
+#define VFS_TYPE_FIFO     5
 
 /* open(2) flags — Linux/asm-generic ABI values (must match libc/include/fcntl.h).
  *
@@ -152,6 +153,9 @@ struct vnode {
     void    *fs_data;       /* fs-private (e.g. inode struct pointer) */
     void    *mount_data;    /* mount-private (e.g. superblock) */
     uint64_t inode_id;      /* fs-specific id (cluster for FAT, inode # for ext2) */
+    uint64_t mtime;         /* modification time (Unix epoch, 0 if unknown) */
+    uint64_t ctime;         /* status/change or creation time, fs-dependent */
+    uint64_t atime;         /* access time */
 };
 
 /* An open file handle.  File tables live in tcb_t, so fd numbers are
@@ -194,6 +198,13 @@ struct vfs_mount {
 /* ---- Lifecycle ---- */
 void vfs_init(void);
 int  vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data);
+
+/* Timestamp helpers (seconds-resolution, realtime clock). */
+uint64_t vfs_now(void);
+void vfs_stamp_created(struct vnode *vn);
+void vfs_stamp_accessed(struct vnode *vn);
+void vfs_stamp_modified(struct vnode *vn);
+void vfs_stamp_changed(struct vnode *vn);
 
 /* ---- FD-based file I/O ---- */
 int     vfs_open(const char *path, int flags, int mode);
@@ -255,6 +266,7 @@ int vfs_unlink(const char *path);
 int vfs_rename(const char *from, const char *to);
 int vfs_truncate(const char *path, uint64_t new_size);
 int vfs_stat(const char *path, struct vfs_stat *out);
+int vfs_mkfifo(const char *path, uint32_t mode);
 
 /* readdir: pass a path; entries are written into out[].  Returns count or -1. */
 int vfs_readdir(const char *path, struct vfs_dirent *out, int max);
@@ -271,6 +283,11 @@ int vfs_fchmod(int fd, uint32_t mode);
 int vfs_chown(const char *path, uint32_t uid, uint32_t gid);
 int vfs_fchown(int fd, uint32_t uid, uint32_t gid);
 int vfs_access(const char *path, int mode);
+
+/* In-memory symlink registry helpers (implemented in symlink.c). */
+int vfs_symlink_lookup(const char *path, char *target, size_t target_len);
+struct vnode *vfs_symlink_vnode(const char *path);
+int vfs_unlink_symlink(const char *path);
 
 /* Phase 10 gate test. */
 void vfs_self_test(void);

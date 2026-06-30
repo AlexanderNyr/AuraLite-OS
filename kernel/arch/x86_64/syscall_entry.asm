@@ -138,15 +138,18 @@ syscall_entry:
     mov  rcx, [rsp + 24]   ; a3
     mov  r8 , [rsp + 32]   ; a4
     mov  r9 , [rsp + 40]   ; a5
-    ; The 7th arg (a6) must live on the stack at [rsp] when call executes.
+    ; The 7th C arg (a6) must be at [rsp] before CALL so the callee sees it
+    ; at [rsp+8] after the return address is pushed.  The seven saved SYSCALL
+    ; registers leave RSP 8 mod 16, so this single slot also restores the
+    ; required 16-byte pre-call alignment.
     mov  rax, [rsp + 48]
-    push rax               ; [rsp]  = a6  (7th C arg)
-    sub  rsp, 8            ; keep 16-byte alignment for `call`
+    sub  rsp, 8
+    mov  [rsp], rax
 
     cld
     call syscall_dispatch
 
-    add  rsp, 16           ; drop alignment pad + a6
+    add  rsp, 8            ; drop a6 stack slot
     add  rsp, 7*8          ; drop the 7 pushed sources
 
     ; Restore the GLOBAL syscall_saved_rcx/r11/rsp from this thread's TCB.

@@ -20,6 +20,9 @@ struct tmpfs_file {
     uint8_t *data;
     uint64_t size;
     uint64_t capacity;
+    uint64_t mtime;
+    uint64_t ctime;
+    uint64_t atime;
     struct vnode vnode;
 };
 
@@ -79,7 +82,11 @@ static struct vnode *tmpfs_create(void *fs_data, const char *path) {
             f->vnode.type = VFS_TYPE_FILE;
             f->vnode.size = 0;
             f->vnode.ops = &tmpfs_ops;
+            f->mtime = f->ctime = f->atime = vfs_now();
             f->vnode.fs_data = f;
+            f->vnode.mtime = f->mtime;
+            f->vnode.ctime = f->ctime;
+            f->vnode.atime = f->atime;
             return &f->vnode;
         }
     }
@@ -106,6 +113,8 @@ static int64_t tmpfs_read(struct vnode *vn, uint64_t pos,
     if (!f || pos >= f->size) return 0;
     if (pos + count > f->size) count = f->size - pos;
     memcpy(buf, f->data + pos, count);
+    f->atime = vfs_now();
+    vn->atime = f->atime;
     return (int64_t)count;
 }
 
@@ -121,6 +130,9 @@ static int64_t tmpfs_write(struct vnode *vn, uint64_t pos,
         f->size = end;
         f->vnode.size = end;
     }
+    f->mtime = f->ctime = vfs_now();
+    f->vnode.mtime = f->mtime;
+    f->vnode.ctime = f->ctime;
     return (int64_t)count;
 }
 
@@ -162,6 +174,33 @@ static int tmpfs_truncate(struct vnode *vn, uint64_t new_size) {
     }
     f->size = new_size;
     f->vnode.size = new_size;
+    f->mtime = f->ctime = vfs_now();
+    f->vnode.mtime = f->mtime;
+    f->vnode.ctime = f->ctime;
+    return 0;
+}
+
+static int tmpfs_stat(struct vnode *vn, struct vfs_stat *out) {
+    if (!vn || !out) return -EIO;
+    memset(out, 0, sizeof(*out));
+    out->type = vn->type;
+    out->mode = vn->mode ? vn->mode : (vn->type == VFS_TYPE_DIR ? 0755 : 0644);
+    out->uid = vn->uid;
+    out->gid = vn->gid;
+    out->size = vn->size;
+    out->inode = vn->inode_id;
+    out->nlink = 1;
+    if (vn->type == VFS_TYPE_DIR) {
+        out->mtime = vn->mtime;
+        out->ctime = vn->ctime;
+        out->atime = vn->atime;
+        return 0;
+    }
+    struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
+    if (!f) return -EIO;
+    out->mtime = f->mtime;
+    out->ctime = f->ctime;
+    out->atime = f->atime;
     return 0;
 }
 
@@ -172,6 +211,7 @@ const struct vfs_ops tmpfs_ops = {
     .write    = tmpfs_write,
     .readdir  = tmpfs_readdir,
     .unlink   = tmpfs_unlink,
+    .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
 };
 

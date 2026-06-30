@@ -53,10 +53,14 @@ ALL_CASES=(
     test_termios
     test_jobcontrol
     test_permissions
+    test_timestamps
+    test_fifo_symlinks
     test_gui_bad_pointers
     test_process_cleanup
     test_memory_reaping
     test_fork_cow
+    test_elf_permissions
+    test_stack_guard
     test_fd_isolation
     test_user_processes
     test_ahci_rw
@@ -79,6 +83,9 @@ ALL_CASES=(
     test_usbfs
     test_usbfs_fat32
     test_networking
+    test_e1000_irq
+    test_virtio_net
+    test_udp_sockets
     test_http_get
     test_tcp_server
     test_graphics

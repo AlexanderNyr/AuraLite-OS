@@ -11,16 +11,18 @@ for the feature matrix.
 
 ### Kernel / CPU / scheduling
 
-- **Scheduler is not SMP-safe.** Application processors are brought online and
-  load the shared tables, but they idle instead of running the normal scheduler.
-- **Address-space reaping is incomplete.** Dead TCBs and kernel stacks are now
-  deferred-reaped from a safe stack, and process FDs are closed on exit, but
-  user page-table/address-space frames are still leaked until the VMM grows a
-  full address-space free walker.
-- **Blocking model is primitive.** Waits are mostly yield/poll loops; there are
-  no general wait queues or sleepable locks.
-- **PIC/PIT legacy interrupt model.** LAPIC/IOAPIC and per-CPU LAPIC timers are
-  not implemented.
+- **SMP scheduling is conservative.** Application processors are online, load
+  CPU-local state and enter the idle scheduler loop; normal user scheduling remains
+  BSP-only until per-CPU run queues and TLB shootdown policy are completed.
+- ~~**Address-space reaping is incomplete.**~~ **Done (H2):** dead TCBs,
+  kernel stacks, process FDs, and user page-table/address-space frames are
+  deferred-reaped from a safe stack via `thread_reap_zombies()` and
+  `paging_free_address_space()`.
+- ~~**Blocking model is primitive.**~~ **Done (H4):** wait queues back
+  blocking pipes, futex waits, `select()`, and `nanosleep()`.
+- **Interrupt model is transitional.** LAPIC enable and per-CPU LAPIC timers
+  are implemented; IOAPIC routing and fully interrupt-driven device paths remain
+  future work.
 
 #### P10 / POSIX follow-ups
 
@@ -69,9 +71,9 @@ for the feature matrix.
   robust against the SYSCALL-save-area race).
 - ~~SIGPIPE / -EINTR on blocking reads~~ **Done:** pipe-with-no-readers posts
   SIGPIPE + -EPIPE; stdin/pipe yield loops abort with -EINTR (or partial count).
-- **No full SA_RESTART rewind.** Blocking calls report -EINTR rather than
-  transparently restarting (-ERESTARTSYS, RIP-=2 + reload orig RAX). signal()
-  sets SA_RESTART but the kernel does not yet act on it for restart.
+- ~~**No full SA_RESTART rewind.**~~ **Done (H7):** restartable blocking
+  syscalls save restart metadata on `-EINTR` and `sigreturn` re-dispatches them
+  when the handler was installed with `SA_RESTART`.
 - **SA_SIGINFO siginfo_t** not populated (handler gets signo only; rsi/rdx = 0).
 - ~~**Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT**~~ **Done (P5):** the
   console stdin path and /dev/tty0 line discipline generate these via ISIG and
@@ -104,8 +106,8 @@ for the feature matrix.
   of a tab or control char erases a fixed 1–2 columns, not the true width.
 - **VMIN/VTIME timers** are approximated (the syscall layer's yield loop honors
   VMIN counts; VTIME deciseconds timing is not yet wired to the PIT).
-- **FP/SSE state is not saved in the signal frame** — a handler that clobbers
-  XMM corrupts interrupted code. Add FXSAVE/XSAVE area to struct signal_frame.
+- ~~**FP/SSE state is not saved in the signal frame.**~~ **Done (H7):**
+  signal delivery saves a 512-byte FXSAVE frame and `sigreturn` restores it.
 - **Signal state is single-CPU safe only** (guarded by IF-disabled return
   boundaries); SMP needs atomic sig_pending updates and locking.
 - **Job-control STOP** is treated as terminate for now (no stopped state until P6).
@@ -143,18 +145,24 @@ for the feature matrix.
   must move behind TLS in `__errno_location()` during P9 (pthreads).
 - **SYSCALL state uses globals.** Saved user `RCX/R11/RSP` state is not designed
   for true concurrent SMP syscalls.
-- **ELF final permissions are simplified.** User segments are loaded with broad
-  writable/user mappings; strict per-segment R/W/X enforcement is future work.
+- ~~**ELF final permissions are simplified.**~~ **Done (N4):** user
+  ELFs now use page-aligned RX/R/NX/RW/NX `PT_LOAD` segments, and the kernel
+  maps `PF_W`/`PF_X` into exact writable/NX PTE flags. User stacks are NX.
 
 ### Processes and file descriptors
 
-- **FD semantics are simplified.** FD numbers are now per-process, but there is
-  still no `dup`, `pipe`, close-on-exec or precise POSIX shared-open-file
-  description behavior after `fork`.
+- **FD semantics still need final POSIX precision.** FD numbers are per-process
+  and `dup`, `pipe`, close-on-exec and OFD sharing exist, but exact shared-open-
+  file-description semantics across every `fork`/`exec` edge case still need audit.
 - **`fork`, `execve`, `wait4` are simplified.** They are sufficient for the
   bundled demos/tests, but not POSIX-complete.
-- **No user heap management syscalls.** `mmap`, `munmap`, `brk` are missing.
-- **No IPC primitives.** No pipes, signals, futexes or shared memory.
+- **User VM is still eager/simple.** `brk`, `mmap`, and `munmap` exist, but
+  lazy VMAs and true file-backed `MAP_SHARED` remain future work.
+- **IPC primitives are partial.** Pipes, signals, futexes, wait queues, baseline
+  in-memory named FIFOs (`mkfifo`) and baseline in-memory symbolic links
+  (`symlink`/`readlink`/`lstat`) exist; shared memory, hard links (`link`),
+  persistent per-filesystem FIFO/symlink storage and full symlink path-component
+  following remain future work.
 
 ### Storage / filesystems
 
@@ -162,9 +170,7 @@ for the feature matrix.
   AHCI disks, but broad hardware/hypervisor coverage is still experimental.
 - **`/disk` is intentionally tiny.** Flat namespace, 8 files maximum, 4 KiB per
   file.
-- **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and ext2
-  supports Linux-mkfs images plus in-kernel mkfs, but crash consistency,
-  journaling, permissions and extensive fsck-style recovery are out of scope.
+- **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and FAT date/time stat decoding, and ext2 supports Linux-mkfs images plus in-kernel mkfs with inode timestamps. Crash consistency, journaling, full permission semantics and extensive fsck-style recovery are out of scope.
 
 ### USB / devices
 
@@ -185,17 +191,24 @@ for the feature matrix.
 
 ### Networking
 
-- **Polling I/O.** e1000 RX/TX and the higher network stack are polling-based.
-- **Minimal TCP.** User space now has process-owned socket-style handles, but
-  the underlying TCP transport still supports one active stream, with no
-  retransmission strategy, congestion control or sliding windows.
+- **Network I/O transition in progress.** e1000 now has an INTx IRQ-capable RX/TX core and software RX queue; TCP, ARP, DHCP, ICMP, and kernel UDP/DNS receive waits use bounded IRQ-backed NIC waits. UDP user sockets and a basic fixed-RTO TCP retransmission path are implemented; remaining N2 work is deeper socket blocking edge cases and production TCP features.
+- **NIC backend abstraction (netdev).** The IP stack now talks to an active NIC through `kernel/net/netdev.{h,c}` rather than calling a driver directly. e1000 is the default; modern virtio-net (`drivers/virtio_net/`) is a fully working fallback (DHCP/ICMP/DNS/TCP validated under QEMU `-device virtio-net-pci`). virtio-net is currently a polling data path with no IRQ.
+- **Minimal TCP.** User space now has process-owned socket-style handles, and
+  the underlying TCP transport now has a one-segment fixed-RTO retransmission
+  strategy for SYN/data/FIN. It still lacks congestion control, sliding windows
+  and production-grade packet queues.
 - **DHCP can fall back in QEMU SLIRP.** Integration tests tolerate fallback
   static addressing for deterministic boots.
 
 ### Graphics / GUI
 
-- **Framebuffer-only graphics.** VirtualBox/VMware/QEMU native GPU acceleration
-  is not implemented; Limine's framebuffer is used.
+- **GPU acceleration is early.** Limine framebuffer remains the primary GUI
+  surface, while virtio-gpu 2D mirroring and the VirGL command transport are
+  present as experimental acceleration paths. The VirGL path now completes a
+  present pipeline (fenced SUBMIT_3D -> TRANSFER_TO_HOST_3D -> SET_SCANOUT ->
+  RESOURCE_FLUSH) to scan a 3D render target out to the display, falling back to
+  software rendering when no virgl-capable host GPU is attached. A full
+  OpenGL/Gallium state tracker and userspace 3D API remain future work.
 - **GUI is educational.** The kernel compositor, GUI syscalls and `libauragui`
   are functional in tests, and windows are cleaned up on client exit, but it is
   not yet a protected multi-client production desktop.
@@ -206,48 +219,54 @@ for the feature matrix.
 
 ### Memory management
 
-- [ ] Strict per-segment user ELF permissions and NX for user data/stack.
+- [x] Strict per-segment user ELF permissions and NX for user data/stack.
 - [x] Basic user pointer validation and safe copy helpers for syscall dispatch.
 - [ ] Fault-recovering user access and continued audits for new syscall paths.
-- [ ] Copy-on-write `fork`.
-- [ ] User `mmap` / `munmap` / `brk`.
-- [ ] Slab allocator for common fixed-size kernel objects.
-- [ ] Guard pages around kernel/user stacks and heap regions.
+- [x] Copy-on-write `fork`.
+- [x] User `mmap` / `munmap` / `brk` baseline syscalls (eager private mappings; true lazy/shared VMAs remain future work).
+- [x] Slab allocator for common fixed-size kernel objects.
+- [x] Guard pages around kernel/user stacks, with explicit overflow diagnosis in the `#PF` handler (`kernel/proc/guard.c`; kernel-stack hit is fatal, user-stack hit → SIGSEGV). Heap-region guard pages remain future work.
 - [ ] Large-page support for selected kernel mappings.
 - [x] `paging_free_address_space()` walker (user half) with PMM accounting.
 - [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land.
 
 ### Scheduling and processes
 
-- [ ] SMP-aware scheduler with per-CPU run queues or explicit AP-off normal mode.
+- [x] SMP-aware scheduler baseline: CPU-local current/idle state, global scheduler lock, AP idle scheduler loop. Per-CPU run queues remain future work.
 - [x] Deferred TCB/kernel-stack reaper and missed-wakeup-safe wait notifications.
-- [~] Full address-space/page-table reaping (code landed; conservative gate keeps it disabled in the live path until cross-PML4 walking races are eliminated).
-- [ ] BLOCKED state, wait queues and sleepable kernel primitives.
+- [x] Full address-space/page-table reaping via `paging_free_address_space()` in `thread_reap_zombies()`.
+- [x] BLOCKED state, wait queues and sleepable kernel primitives baseline.
 - [ ] Real parent/child process table and precise `waitpid` semantics.
 - [x] Basic per-process FD tables.
 - [x] `dup`, `dup2`, `pipe`, `fcntl(F_GETFD/F_SETFD/FD_CLOEXEC)` syscalls + `execve` honouring `FD_CLOEXEC`.
 - [x] `waitpid(pid, *exit_code)` with real exit-code propagation and zombie collection on wait.
 - [ ] Precise POSIX shared-open-file description semantics across `fork`.
-- [ ] Signals or another process notification mechanism.
+- [x] Signals and process notification baseline (`kill`, alarms, terminal signals, SIGCHLD, SA_RESTART).
 
 ### Filesystems and storage
 
 - [ ] Broaden AHCI compatibility beyond the QEMU test path.
 - [ ] Add fsck/recovery tooling or defensive consistency checks for FAT32/ext2.
-- [ ] Add file timestamps/permission handling consistently across all FS drivers.
+- [x] Add baseline file timestamps for VFS stat plus tmpfs, diskfs, ext2 and FAT32. Remaining permission-mode persistence/audit across every experimental FS stays future work.
 - [ ] Add symbolic links and richer path handling where useful.
 - [ ] Add block cache and writeback policy instead of direct synchronous writes.
 - [ ] Add virtio-blk / virtio-scsi or NVMe as modern virtual storage targets.
 
 ### Networking
 
-- [ ] Interrupt-driven e1000 RX/TX.
+- [x] Interrupt-capable e1000 RX/TX driver core (INTx, RX software queue, wait queues).
+- [x] Rewire TCP receive waits to timed IRQ-backed NIC waits.
+- [x] Rewire ARP/DHCP/ICMP and kernel UDP/DNS boot paths to bounded IRQ-backed NIC waits.
+- [x] Add AF_INET/SOCK_DGRAM user sockets with `sendto(44)` / `recvfrom(45)`.
+- [ ] Make remaining socket edge cases fully blocking.
 - [x] Process-owned socket-style client handles (`socket/connect/send/recv/close`).
 - [x] Per-connection TCP state (`tcp_handle_t`, up to `TCP_MAX_CONNS=8`).  Legacy `SYS_NET_*` syscalls are now a thin shim over the per-connection layer and are formally **deprecated**.
-- [ ] Full BSD socket ABI including `sockaddr`, `bind`, `listen` and `accept`.
-- [ ] UDP user sockets.
-- [ ] Retransmission, timeouts and better packet queues.
-- [ ] virtio-net / vmxnet3 / e1000e data-path drivers.
+- [x] Full BSD socket ABI baseline including `sockaddr`, `bind`, `listen` and `accept` for AF_INET/SOCK_STREAM.
+- [x] UDP user sockets.
+- [x] Basic one-segment TCP retransmission and fixed RTO for SYN/data/FIN. Better packet queues, congestion control and sliding windows remain future work.
+- [x] netdev NIC abstraction with boot-time backend selection (e1000 default, virtio-net fallback).
+- [x] virtio-net modern data-path driver (RX/TX virtqueues, 12-byte hdr, MAC from device cfg).
+- [ ] virtio-net IRQ-driven RX (currently polling); vmxnet3 / e1000e data-path drivers.
 
 ### USB and wireless
 
@@ -262,6 +281,7 @@ for the feature matrix.
 
 ### GUI and userspace
 
+- [x] GUI dirty-rect compositor partial redraw (`compositor_render_dirty()` + `gfx_flip_rect()`).
 - [x] Clean up GUI windows when the owning process exits.
 - [x] Basic GUI process ownership enforcement for user-facing window syscalls.
 - [x] Audit every GUI sub-op for out-of-range/negative wid and bad userspace pointers (with integration test).
@@ -274,8 +294,9 @@ for the feature matrix.
 
 ### Infrastructure and docs
 
+- [x] Sync `docs/status.md`, `TODO.md`, and `CHANGELOG.md` for completed H1–H8 hardening work.
 - [ ] Keep `README.md`, `docs/status.md`, `docs/syscall_abi.md` and
-      `docs/driver_guide.md` in sync with every feature change.
+      `docs/driver_guide.md` in sync with every future feature change.
 - [ ] Add GDB helper scripts / pretty-printers for kernel structures.
 - [ ] Reduce integration-test timing flakiness around process spawn and serial
       input pacing.

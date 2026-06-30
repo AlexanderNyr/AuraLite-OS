@@ -41,6 +41,10 @@ uint32_t pci_get_bar(uint8_t bus, uint8_t dev, uint8_t func, uint8_t bar_idx) {
     return pci_config_read(bus, dev, func, 0x10 + bar_idx * 4);
 }
 
+uint8_t pci_get_interrupt_line(uint8_t bus, uint8_t dev, uint8_t func) {
+    return (uint8_t)(pci_config_read(bus, dev, func, 0x3C) & 0xFF);
+}
+
 void pci_enable_bus_master(uint8_t bus, uint8_t dev, uint8_t func) {
     uint32_t cmd = pci_config_read(bus, dev, func, 0x04);
     /* Bit 2 = bus master, bit 1 = memory space, bit 0 = I/O space. */

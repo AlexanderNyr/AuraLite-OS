@@ -14,6 +14,7 @@
 #include "kernel/mm/slab.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/time.h"
 
 /*
  * vfs_wrap_err() — normalise a filesystem op's return value to a negative
@@ -121,6 +122,61 @@ static struct vfs_mount mounts[VFS_MAX_MOUNTS];
 static struct ofd *fallback_fd_table[VFS_MAX_FDS];
 static uint8_t     fallback_cloexec[VFS_MAX_FDS];
 
+#define VFS_MAX_NAMED_FIFOS 16
+#define VFS_SYMLINK_MAX_FOLLOW 8
+
+struct named_fifo {
+    int in_use;
+    char path[VFS_PATH_MAX];
+    struct pipe_ring *ring;
+    struct vnode *vn;
+};
+
+static struct named_fifo named_fifos[VFS_MAX_NAMED_FIFOS];
+
+static int64_t fifo_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
+    return pipe_read_op(vn, pos, buf, count);
+}
+
+static int64_t fifo_write_op(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
+    return pipe_write_op(vn, pos, buf, count);
+}
+
+static const struct vfs_ops fifo_ops = {
+    .read = fifo_read_op,
+    .write = fifo_write_op,
+};
+
+uint64_t vfs_now(void) {
+    time_t now = kernel_time(NULL);
+    return now > 0 ? (uint64_t)now : 1;
+}
+
+void vfs_stamp_created(struct vnode *vn) {
+    if (!vn) return;
+    uint64_t now = vfs_now();
+    vn->mtime = now;
+    vn->ctime = now;
+    vn->atime = now;
+}
+
+void vfs_stamp_accessed(struct vnode *vn) {
+    if (!vn) return;
+    vn->atime = vfs_now();
+}
+
+void vfs_stamp_modified(struct vnode *vn) {
+    if (!vn) return;
+    uint64_t now = vfs_now();
+    vn->mtime = now;
+    vn->ctime = now;
+}
+
+void vfs_stamp_changed(struct vnode *vn) {
+    if (!vn) return;
+    vn->ctime = vfs_now();
+}
+
 static struct ofd **current_fd_table(void) {
     tcb_t *cur = sched_current();
     if (cur) return cur->fd_table;
@@ -176,7 +232,8 @@ static struct ofd *ofd_alloc(struct vnode *vn, int acc, int append, int nonblock
 
 struct wait_queue *vfs_get_read_wq(struct ofd *o) {
     if (!o) return NULL;
-    if (o->vn && (o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops)) {
+    if (o->vn && (o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops ||
+                  o->vn->ops == &fifo_ops)) {
         struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
         if (p) return &p->read_wq;
     }
@@ -185,7 +242,8 @@ struct wait_queue *vfs_get_read_wq(struct ofd *o) {
 
 struct wait_queue *vfs_get_write_wq(struct ofd *o) {
     if (!o) return NULL;
-    if (o->vn && (o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops)) {
+    if (o->vn && (o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops ||
+                  o->vn->ops == &fifo_ops)) {
         struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
         if (p) return &p->write_wq;
     }
@@ -219,6 +277,7 @@ void vfs_init(void) {
     memset(mounts, 0, sizeof(mounts));
     memset(fallback_fd_table, 0, sizeof(fallback_fd_table));
     memset(fallback_cloexec, 0, sizeof(fallback_cloexec));
+    memset(named_fifos, 0, sizeof(named_fifos));
 }
 
 int vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data) {
@@ -383,11 +442,69 @@ int vfs_access(const char *path, int mode) {
     return err;
 }
 
-static struct vnode *resolve_path(const char *path) {
+static struct vnode *named_fifo_lookup(const char *path) {
+    for (int i = 0; i < VFS_MAX_NAMED_FIFOS; i++) {
+        if (named_fifos[i].in_use && strcmp(named_fifos[i].path, path) == 0) {
+            return named_fifos[i].vn;
+        }
+    }
+    return NULL;
+}
+
+static void symlink_target_to_absolute(const char *linkpath, const char *target,
+                                       char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!target || !*target) return;
+    if (target[0] == '/') {
+        strncpy(out, target, out_len - 1);
+        out[out_len - 1] = '\0';
+        return;
+    }
+
+    size_t parent_len = 1;
+    const char *last_slash = NULL;
+    for (const char *p = linkpath; p && *p; p++) {
+        if (*p == '/') last_slash = p;
+    }
+    if (last_slash && last_slash != linkpath) parent_len = (size_t)(last_slash - linkpath);
+
+    if (parent_len >= out_len) parent_len = out_len - 1;
+    memcpy(out, linkpath, parent_len);
+    out[parent_len] = '\0';
+    size_t used = strlen(out);
+    if (parent_len > 1 && out[parent_len - 1] != '/' && used + 1 < out_len) {
+        out[used++] = '/';
+        out[used] = '\0';
+    }
+    size_t remain = out_len - used - 1;
+    size_t tlen = strlen(target);
+    if (tlen > remain) tlen = remain;
+    memcpy(out + used, target, tlen);
+    out[used + tlen] = '\0';
+}
+
+static struct vnode *resolve_path_follow(const char *path, int depth) {
+    if (depth > VFS_SYMLINK_MAX_FOLLOW) return NULL;
+
+    char target[VFS_PATH_MAX];
+    if (vfs_symlink_lookup(path, target, sizeof(target)) == 0) {
+        char next[VFS_PATH_MAX];
+        symlink_target_to_absolute(path, target, next, sizeof(next));
+        return resolve_path_follow(next, depth + 1);
+    }
+
+    struct vnode *fifo = named_fifo_lookup(path);
+    if (fifo) return fifo;
+
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return NULL;
     return mounts[m].ops->lookup(mounts[m].fs_data, rel);
+}
+
+static struct vnode *resolve_path(const char *path) {
+    return resolve_path_follow(path, 0);
 }
 
 /*
@@ -433,6 +550,7 @@ int vfs_open(const char *path, int flags, int mode) {
         uint32_t masked_mode = (mode != 0 ? mode : 0666) & 07777u & ~umask;
         vn->mode = masked_mode ? masked_mode : (0644u & ~umask);
         if (cur) { vn->uid = cur->euid; vn->gid = cur->egid; }
+        vfs_stamp_created(vn);
         if (vn->ops && vn->ops->chmod) vn->ops->chmod(vn, vn->mode);
         if (vn->ops && vn->ops->chown) vn->ops->chown(vn, vn->uid, vn->gid);
 
@@ -486,7 +604,7 @@ static struct ofd *fd_to_ofd(int fd) {
 /* True if @vn is non-seekable (pipe/FIFO/socket/chardev) -> lseek gives ESPIPE. */
 static int vnode_is_pipe_like(const struct vnode *vn) {
     return vn && (vn->ops == &pipe_read_ops || vn->ops == &pipe_write_ops ||
-                  vn->type == VFS_TYPE_CHARDEV);
+                  vn->type == VFS_TYPE_FIFO || vn->type == VFS_TYPE_CHARDEV);
 }
 
 int64_t vfs_read(int fd, void *buf, uint64_t count) {
@@ -497,13 +615,14 @@ int64_t vfs_read(int fd, void *buf, uint64_t count) {
     if (!o->vn->ops->read) return -EINVAL;   /* object not readable */
     /* O_NONBLOCK: a read that would block returns -EAGAIN instead.  For a pipe
      * with no buffered data and writers still attached, that is a would-block. */
-    if (o->nonblock && o->vn->ops == &pipe_read_ops && count > 0) {
+    if (o->nonblock && (o->vn->ops == &pipe_read_ops || o->vn->ops == &fifo_ops) && count > 0) {
         struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
         if (p && p->used == 0 && p->writers > 0) return -EAGAIN;
     }
     int64_t n = o->vn->ops->read(o->vn, o->pos, buf, count);
     if (n > 0) {
         o->pos += (uint64_t)n;       /* shared OFD offset advances */
+        vfs_stamp_accessed(o->vn);
         wq_wake_all(&o->write_wq);
     }
     return vfs_wrap_err(n, EIO);
@@ -516,7 +635,7 @@ int64_t vfs_write(int fd, const void *buf, uint64_t count) {
     if (o->access_mode == O_RDONLY) return -EBADF;
     if (!o->vn->ops->write) return -EINVAL;   /* object not writable */
     /* O_NONBLOCK: a write that would block returns -EAGAIN instead. */
-    if (o->nonblock && o->vn->ops == &pipe_write_ops && count > 0) {
+    if (o->nonblock && (o->vn->ops == &pipe_write_ops || o->vn->ops == &fifo_ops) && count > 0) {
         struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
         if (p && p->used == PIPE_BUF_SIZE && p->readers > 0) return -EAGAIN;
     }
@@ -527,6 +646,7 @@ int64_t vfs_write(int fd, const void *buf, uint64_t count) {
     int64_t n = o->vn->ops->write(o->vn, o->pos, buf, count);
     if (n > 0) {
         o->pos += (uint64_t)n;
+        vfs_stamp_modified(o->vn);
         wq_wake_all(&o->read_wq);
     }
     return vfs_wrap_err(n, EIO);
@@ -558,6 +678,7 @@ int64_t vfs_pread(int fd, void *buf, uint64_t count, int64_t offset) {
     if (!o->vn->ops->read) return -EINVAL;
     /* Positioned read: do NOT touch the shared OFD offset. */
     int64_t n = o->vn->ops->read(o->vn, (uint64_t)offset, buf, count);
+    if (n > 0) vfs_stamp_accessed(o->vn);
     return vfs_wrap_err(n, EIO);
 }
 
@@ -570,6 +691,7 @@ int64_t vfs_pwrite(int fd, const void *buf, uint64_t count, int64_t offset) {
     if (!o->vn->ops->write) return -EINVAL;
     /* POSIX pwrite ignores O_APPEND and writes at @offset, leaving pos alone. */
     int64_t n = o->vn->ops->write(o->vn, (uint64_t)offset, buf, count);
+    if (n > 0) vfs_stamp_modified(o->vn);
     return vfs_wrap_err(n, EIO);
 }
 
@@ -838,6 +960,7 @@ int vfs_mkdir(const char *path, uint32_t mode) {
             uint16_t umask = cur ? cur->umask : 0022;
             vn->mode = (mode != 0 ? mode : 0777u) & 07777u & ~umask;
             if (cur) { vn->uid = cur->euid; vn->gid = cur->egid; }
+            vfs_stamp_created(vn);
             if (vn->ops && vn->ops->chmod) vn->ops->chmod(vn, vn->mode);
             if (vn->ops && vn->ops->chown) vn->ops->chown(vn, vn->uid, vn->gid);
         }
@@ -861,6 +984,16 @@ int vfs_unlink(const char *path) {
     struct vnode *pvn = resolve_parent_vnode(path);
     int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
     if (err != 0) return err;
+
+    if (vfs_unlink_symlink(path) == 0) return 0;
+    for (int i = 0; i < VFS_MAX_NAMED_FIFOS; i++) {
+        if (named_fifos[i].in_use && strcmp(named_fifos[i].path, path) == 0) {
+            kfree(named_fifos[i].ring);
+            slab_free(vnode_cache, named_fifos[i].vn);
+            memset(&named_fifos[i], 0, sizeof(named_fifos[i]));
+            return 0;
+        }
+    }
 
     const char *rel = NULL;
     int m = find_mount(path, &rel);
@@ -892,7 +1025,62 @@ int vfs_truncate(const char *path, uint64_t new_size) {
     struct vnode *vn = resolve_path(path);
     if (!vn) return -ENOENT;
     if (!vn->ops->truncate) return -EINVAL;
-    return (int)vfs_wrap_err(vn->ops->truncate(vn, new_size), EIO);
+    int r = (int)vfs_wrap_err(vn->ops->truncate(vn, new_size), EIO);
+    if (r == 0) vfs_stamp_modified(vn);
+    return r;
+}
+
+int vfs_mkfifo(const char *path, uint32_t mode) {
+    if (!path || path[0] != '/') return -EINVAL;
+    if (resolve_path(path) || vfs_symlink_vnode(path)) return -EEXIST;
+
+    struct vnode *pvn = resolve_parent_vnode(path);
+    int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
+    if (err != 0) return err;
+
+    int slot = -1;
+    for (int i = 0; i < VFS_MAX_NAMED_FIFOS; i++) {
+        if (!named_fifos[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) return -ENOSPC;
+
+    struct pipe_ring *ring = kmalloc(sizeof(*ring));
+    struct vnode *vn = slab_alloc(vnode_cache);
+    if (!ring || !vn) {
+        if (ring) kfree(ring);
+        if (vn) slab_free(vnode_cache, vn);
+        return -ENOMEM;
+    }
+    memset(ring, 0, sizeof(*ring));
+    /* Baseline named FIFOs keep the ring alive while the node exists.  The
+     * counters are deliberately non-zero so single-process tests can open the
+     * FIFO O_RDWR without an external peer and still exercise wait queues. */
+    ring->readers = 1;
+    ring->writers = 1;
+    wq_init(&ring->read_wq);
+    wq_init(&ring->write_wq);
+    spinlock_init(&ring->lock);
+
+    memset(vn, 0, sizeof(*vn));
+    strncpy(vn->name, path, VFS_PATH_MAX - 1);
+    vn->type = VFS_TYPE_FIFO;
+    vn->mode = mode & 07777u;
+    vn->ops = &fifo_ops;
+    vn->fs_data = ring;
+    vfs_stamp_created(vn);
+    tcb_t *cur = sched_current();
+    if (cur) {
+        uint16_t umask = cur->umask;
+        vn->mode = (mode != 0 ? mode : 0666u) & 07777u & ~umask;
+        vn->uid = cur->euid;
+        vn->gid = cur->egid;
+    }
+
+    named_fifos[slot].in_use = 1;
+    strncpy(named_fifos[slot].path, path, VFS_PATH_MAX - 1);
+    named_fifos[slot].ring = ring;
+    named_fifos[slot].vn = vn;
+    return 0;
 }
 
 int vfs_stat(const char *path, struct vfs_stat *out) {
@@ -909,6 +1097,9 @@ int vfs_stat(const char *path, struct vfs_stat *out) {
     out->size  = vn->size;
     out->inode = vn->inode_id;
     out->nlink = 1;
+    out->mtime = vn->mtime;
+    out->ctime = vn->ctime;
+    out->atime = vn->atime;
     return 0;
 }
 

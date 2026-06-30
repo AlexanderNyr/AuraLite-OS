@@ -4,17 +4,17 @@
  * teardown. Uses the existing IP/ARP layers from net.c.
  *
  * Design:
- *   - Single connection at a time (global state).
- *   - Polling-based (no interrupt-driven I/O).
- *   - No retransmission timer — QEMU SLIRP is reliable and fast.
+ *   - Small fixed table of connection handles.
+ *   - IRQ-backed timed receive waits via the active netdev (e1000/virtio-net).
  *   - One segment in flight at a time (no sliding window).
+ *   - Fixed-RTO retransmission for the saved in-flight segment.
  *   - Correct sequence numbers, ACKs, and TCP checksum (with pseudo-header).
  */
 
 #include <stdint.h>
 #include "kernel/net/tcp.h"
 #include "kernel/net/net.h"
-#include "drivers/e1000/e1000.h"
+#include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "drivers/timer/pit.h"
@@ -30,7 +30,9 @@
 
 #define TCP_WINDOW  64240   /* a generous window */
 #define TCP_MSS     1460    /* max segment size (typical Ethernet) */
-#define TCP_RECV_POLLS 1000000
+#define TCP_RECV_TIMEOUT_TICKS 100
+#define TCP_RTO_TICKS 20
+#define TCP_MAX_RETRIES 3
 
 /* ---- TCP header (20 bytes minimum) ---- */
 struct tcp_hdr {
@@ -126,6 +128,12 @@ typedef struct {
     uint16_t     src_port;     /* our ephemeral port */
     uint32_t     seq;          /* our next sequence number */
     uint32_t     ack;          /* next byte we expect from peer */
+    uint8_t      retx_valid;
+    uint8_t      retx_flags;
+    uint32_t     retx_seq;
+    uint32_t     retx_ack;
+    uint32_t     retx_len;
+    uint8_t      retx_data[TCP_MSS];
 } tcp_conn_t;
 
 static tcp_conn_t conns[TCP_MAX_CONNS];
@@ -156,7 +164,8 @@ extern int net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
                         const void *payload, uint32_t plen);
 
 /* ---- Send a TCP segment ---- */
-static void tcp_send_segment(uint8_t flags, const void *data, uint32_t data_len) {
+static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_len,
+                                uint32_t seq, uint32_t ack) {
     uint8_t dst_mac[6];
     if (net_arp_resolve(conn_dst_ip, dst_mac) != 0) {
         kprintf("[tcp] ARP resolve failed for peer\n");
@@ -174,8 +183,8 @@ static void tcp_send_segment(uint8_t flags, const void *data, uint32_t data_len)
     struct tcp_hdr *tcp = (struct tcp_hdr *)(pkt + 14 + 20);
     tcp->src_port   = htons_(conn_src_port);
     tcp->dst_port   = htons_(conn_dst_port);
-    tcp->seq        = htonl_(conn_seq);
-    tcp->ack        = htonl_(conn_ack);
+    tcp->seq        = htonl_(seq);
+    tcp->ack        = htonl_(ack);
     tcp->data_offset = (5 << 4);   /* 5 × 32-bit words = 20 bytes */
     tcp->flags      = flags;
     tcp->window     = htons_(TCP_WINDOW);
@@ -225,15 +234,57 @@ static void tcp_send_segment(uint8_t flags, const void *data, uint32_t data_len)
         memset(pkt + frame_len, 0, 60 - frame_len);
         frame_len = 60;
     }
-    e1000_send(pkt, frame_len);
+    netdev_send(pkt, frame_len);
 }
 
-/* ---- Receive a TCP segment (polls for one matching our connection) ---- */
-static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
-                            uint32_t max_data, int *out_data_len) {
+static void tcp_send_segment(uint8_t flags, const void *data, uint32_t data_len) {
+    tcp_send_segment_at(flags, data, data_len, conn_seq, conn_ack);
+}
+
+static void tcp_record_retx(uint8_t flags, const void *data, uint32_t data_len,
+                            uint32_t seq, uint32_t ack) {
+    if (data_len > TCP_MSS) data_len = TCP_MSS;
+    conns[active_h].retx_valid = 1;
+    conns[active_h].retx_flags = flags;
+    conns[active_h].retx_seq = seq;
+    conns[active_h].retx_ack = ack;
+    conns[active_h].retx_len = data_len;
+    if (data && data_len > 0) {
+        memcpy(conns[active_h].retx_data, data, data_len);
+    }
+}
+
+static void tcp_clear_retx(void) {
+    conns[active_h].retx_valid = 0;
+}
+
+static void tcp_retransmit_last(void) {
+    if (!conns[active_h].retx_valid) return;
+    tcp_send_segment_at(conns[active_h].retx_flags,
+                        conns[active_h].retx_len ? conns[active_h].retx_data : NULL,
+                        conns[active_h].retx_len,
+                        conns[active_h].retx_seq,
+                        conns[active_h].retx_ack);
+}
+
+static void tcp_send_retx_segment(uint8_t flags, const void *data, uint32_t data_len,
+                                  uint32_t seq, uint32_t ack) {
+    tcp_record_retx(flags, data, data_len, seq, ack);
+    tcp_retransmit_last();
+}
+
+/* ---- Receive a TCP segment (waits for one matching our connection) ---- */
+static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
+                                    uint32_t max_data, int *out_data_len,
+                                    uint64_t timeout_ticks) {
     uint8_t buf[2048];
-    for (int poll = 0; poll < TCP_RECV_POLLS; poll++) {
-        int n = e1000_recv(buf, sizeof(buf));
+    uint64_t deadline = timer_get_ticks() + timeout_ticks;
+    while (timer_get_ticks() < deadline) {
+        uint64_t now = timer_get_ticks();
+        uint64_t remaining = (deadline > now) ? (deadline - now) : 1;
+        int n = netdev_recv_wait(buf, sizeof(buf), remaining);
+        if (n < 0) return -1;
+        if (n == 0) break;
         if (n < (int)(14 + 20 + 20)) continue;
 
         struct eth_hdr *eh = (struct eth_hdr *)buf;
@@ -281,10 +332,21 @@ static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
     return -1;   /* timeout */
 }
 
+static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
+                            uint32_t max_data, int *out_data_len) {
+    return tcp_recv_segment_timeout(out_tcp, out_data, max_data, out_data_len,
+                                    TCP_RECV_TIMEOUT_TICKS);
+}
+
 static int tcp_recv_syn(uint16_t src_port, struct tcp_hdr *out_tcp, uint32_t *out_src_ip, uint16_t *out_src_port) {
     uint8_t buf[2048];
-    for (int poll = 0; poll < TCP_RECV_POLLS; poll++) {
-        int n = e1000_recv(buf, sizeof(buf));
+    uint64_t deadline = timer_get_ticks() + TCP_RECV_TIMEOUT_TICKS;
+    while (timer_get_ticks() < deadline) {
+        uint64_t now = timer_get_ticks();
+        uint64_t remaining = (deadline > now) ? (deadline - now) : 1;
+        int n = netdev_recv_wait(buf, sizeof(buf), remaining);
+        if (n < 0) return -1;
+        if (n == 0) break;
         if (n < (int)(14 + 20 + 20)) continue;
 
         struct eth_hdr *eh = (struct eth_hdr *)buf;
@@ -418,29 +480,40 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
             (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
             dst_port, conn_src_port);
 
-    tcp_send_segment(TCP_SYN, NULL, 0);
-    conn_seq += 1;
+    uint32_t syn_seq = conn_seq;
+    tcp_send_retx_segment(TCP_SYN, NULL, 0, syn_seq, conn_ack);
+    conn_seq = syn_seq + 1;
 
     struct tcp_hdr rx;
-    int data_len;
-    if (tcp_recv_segment(&rx, NULL, 0, &data_len) != 0) {
+    int data_len = 0;
+    int synack_ok = 0;
+    for (int attempt = 0; attempt <= TCP_MAX_RETRIES; attempt++) {
+        if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, TCP_RTO_TICKS) == 0) {
+            if (rx.flags & TCP_RST) {
+                kprintf("[tcp] [h=%d] connection refused (RST)\n", h);
+                conns[h].in_use = 0;
+                active_h = saved;
+                return -1;
+            }
+            if ((rx.flags & TCP_SYN) && (rx.flags & TCP_ACK)) {
+                synack_ok = 1;
+                break;
+            }
+            kprintf("[tcp] [h=%d] expected SYN-ACK, got flags=0x%02x\n", h, rx.flags);
+        }
+        if (attempt < TCP_MAX_RETRIES) {
+            kprintf("[tcp] [h=%d] RTO waiting for SYN-ACK, retransmitting SYN (%d/%d)\n",
+                    h, attempt + 1, TCP_MAX_RETRIES);
+            tcp_retransmit_last();
+        }
+    }
+    if (!synack_ok) {
         kprintf("[tcp] [h=%d] timeout waiting for SYN-ACK\n", h);
         conns[h].in_use = 0;
         active_h = saved;
         return -1;
     }
-    if (rx.flags & TCP_RST) {
-        kprintf("[tcp] [h=%d] connection refused (RST)\n", h);
-        conns[h].in_use = 0;
-        active_h = saved;
-        return -1;
-    }
-    if (!(rx.flags & TCP_SYN) || !(rx.flags & TCP_ACK)) {
-        kprintf("[tcp] [h=%d] expected SYN-ACK, got flags=0x%02x\n", h, rx.flags);
-        conns[h].in_use = 0;
-        active_h = saved;
-        return -1;
-    }
+    tcp_clear_retx();
     conn_ack = ntohl_(rx.seq) + 1;
     tcp_send_segment(TCP_ACK, NULL, 0);
     conn_state = TCP_ESTABLISHED;
@@ -576,37 +649,45 @@ int tcp_send(const void *data, uint32_t len) {
         uint32_t chunk = len - offset;
         if (chunk > TCP_MSS) chunk = TCP_MSS;
 
-        /* Send the segment with data. */
-        tcp_send_segment(TCP_ACK | TCP_PSH, (const uint8_t *)data + offset, chunk);
-        conn_seq += chunk;
+        uint32_t seg_seq = conn_seq;
+        uint32_t ack_target = seg_seq + chunk;
+        tcp_send_retx_segment(TCP_ACK | TCP_PSH, (const uint8_t *)data + offset,
+                              chunk, seg_seq, conn_ack);
+        conn_seq = ack_target;
 
-        /* Wait for the ACK. */
         struct tcp_hdr rx;
-        int data_len;
-        if (tcp_recv_segment(&rx, NULL, 0, &data_len) != 0) {
+        int data_len = 0;
+        int ack_ok = 0;
+        for (int attempt = 0; attempt <= TCP_MAX_RETRIES; attempt++) {
+            if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, TCP_RTO_TICKS) == 0) {
+                if (rx.flags & TCP_RST) {
+                    kprintf("[tcp] RST received during send\n");
+                    conn_state = TCP_CLOSED;
+                    return -1;
+                }
+                if (data_len > 0) {
+                    conn_ack += data_len;
+                    tcp_send_segment(TCP_ACK, NULL, 0);
+                }
+                if (rx.flags & TCP_ACK) {
+                    uint32_t acked = ntohl_(rx.ack);
+                    if (acked >= ack_target) {
+                        ack_ok = 1;
+                        break;
+                    }
+                }
+            }
+            if (attempt < TCP_MAX_RETRIES) {
+                kprintf("[tcp] RTO waiting for data ACK, retransmitting seq=%u (%d/%d)\n",
+                        seg_seq, attempt + 1, TCP_MAX_RETRIES);
+                tcp_retransmit_last();
+            }
+        }
+        if (!ack_ok) {
             kprintf("[tcp] timeout waiting for data ACK\n");
             return -1;
         }
-
-        if (rx.flags & TCP_RST) {
-            kprintf("[tcp] RST received during send\n");
-            conn_state = TCP_CLOSED;
-            return -1;
-        }
-
-        if (rx.flags & TCP_ACK) {
-            uint32_t acked = ntohl_(rx.ack);
-            if (acked < conn_seq) {
-                /* The peer hasn't ACKed everything yet — retransmit would
-                 * go here. For now, assume QEMU SLIRP is reliable. */
-            }
-        }
-
-        /* If the peer sent data, update our ACK. */
-        if (data_len > 0) {
-            conn_ack += data_len;
-            tcp_send_segment(TCP_ACK, NULL, 0);
-        }
+        tcp_clear_retx();
 
         offset += chunk;
     }
@@ -667,25 +748,38 @@ int tcp_close(void) {
 
     /* Send FIN. */
     kprintf("[tcp] sending FIN (seq=%u)\n", conn_seq);
-    tcp_send_segment(TCP_FIN | TCP_ACK, NULL, 0);
-    conn_seq += 1;
+    uint32_t fin_seq = conn_seq;
+    tcp_send_retx_segment(TCP_FIN | TCP_ACK, NULL, 0, fin_seq, conn_ack);
+    conn_seq = fin_seq + 1;
 
     if (conn_state == TCP_ESTABLISHED) {
         conn_state = TCP_FIN_WAIT_1;
 
-        /* Wait for the FIN-ACK. */
         struct tcp_hdr rx;
-        int data_len;
-        if (tcp_recv_segment(&rx, NULL, 0, &data_len) == 0) {
-            if (rx.flags & TCP_ACK) {
-                conn_state = TCP_FIN_WAIT_2;
+        int data_len = 0;
+        int fin_acked = 0;
+        for (int attempt = 0; attempt <= TCP_MAX_RETRIES; attempt++) {
+            if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, TCP_RTO_TICKS) == 0) {
+                if (rx.flags & TCP_ACK) {
+                    fin_acked = 1;
+                    conn_state = TCP_FIN_WAIT_2;
+                }
+                if (rx.flags & TCP_FIN) {
+                    conn_ack += 1;
+                    tcp_send_segment(TCP_ACK, NULL, 0);
+                    conn_state = TCP_CLOSED;
+                    fin_acked = 1;
+                    break;
+                }
+                if (fin_acked) break;
             }
-            if (rx.flags & TCP_FIN) {
-                conn_ack += 1;
-                tcp_send_segment(TCP_ACK, NULL, 0);
-                conn_state = TCP_CLOSED;
+            if (attempt < TCP_MAX_RETRIES) {
+                kprintf("[tcp] RTO waiting for FIN ACK, retransmitting FIN (%d/%d)\n",
+                        attempt + 1, TCP_MAX_RETRIES);
+                tcp_retransmit_last();
             }
         }
+        tcp_clear_retx();
     }
 
     kprintf("[tcp] connection closed\n");

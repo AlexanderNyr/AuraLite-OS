@@ -65,6 +65,7 @@ typedef struct {
 #define SYS_RENAME   103
 #define SYS_TRUNCATE 104
 #define SYS_STAT     105
+#define SYS_MKFIFO   106  /* N5.2: named FIFO */
 #define SYS_MMAP     9
 #define SYS_MUNMAP   11
 #define SYS_BRK      12
@@ -77,6 +78,8 @@ typedef struct {
 #define SYS_SIGPENDING 127   /* P4 */
 #define SYS_PAUSE       34   /* P4 */
 #define SYS_ALARM       37   /* P4 */
+#define SYS_SENDTO      44   /* N2.3b: UDP sockets */
+#define SYS_RECVFROM    45   /* N2.3b: UDP sockets */
 #define SYS_SIGSUSPEND 130   /* P4 */
 #define SYS_SETPGID    109   /* P6 */
 #define SYS_GETPGID    121   /* P6 */
@@ -537,6 +540,8 @@ int is_restartable(uint64_t num) {
         case SYS_SOCKET_SEND:
         case SYS_SOCKET_CONNECT:
         case SYS_SOCKET_ACCEPT:
+        case SYS_SENDTO:
+        case SYS_RECVFROM:
             return 1;
         default:
             return 0;
@@ -813,6 +818,62 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (copy_to_user(user_buf, tmp, (uint64_t)r) != 0) return (uint64_t)-EFAULT;
         return (uint64_t)r;
     }
+
+    case SYS_SENDTO: {
+        if (a3 == 0) return 0;
+        const void *user_buf = (const void *)(uintptr_t)a2;
+        if (!validate_user_range(user_buf, a3, 0)) return (uint64_t)-EFAULT;
+        if (a3 > SYSCALL_IO_CHUNK) return (uint64_t)-EINVAL;
+        if (a5 == 0 || a6 < 16) return (uint64_t)-EINVAL;
+        if (!validate_user_range((const void *)(uintptr_t)a5, 16, 0)) return (uint64_t)-EFAULT;
+
+        char tmp[SYSCALL_IO_CHUNK];
+        uint8_t kaddr[16];
+        if (copy_from_user(tmp, user_buf, a3) != 0) return (uint64_t)-EFAULT;
+        if (copy_from_user(kaddr, (const void *)(uintptr_t)a5, sizeof(kaddr)) != 0) return (uint64_t)-EFAULT;
+        uint16_t family = (uint16_t)kaddr[0] | ((uint16_t)kaddr[1] << 8);
+        if (family != AURA_AF_INET) return (uint64_t)-EINVAL;
+        uint16_t port = ((uint16_t)kaddr[2] << 8) | (uint16_t)kaddr[3];
+        uint32_t ip = ((uint32_t)kaddr[4] << 24) | ((uint32_t)kaddr[5] << 16) |
+                      ((uint32_t)kaddr[6] << 8) | (uint32_t)kaddr[7];
+        int64_t r = socket_sendto((int)a1, tmp, (uint32_t)a3, ip, port);
+        return (uint64_t)r;
+    }
+    case SYS_RECVFROM: {
+        if (a3 == 0) return 0;
+        void *user_buf = (void *)(uintptr_t)a2;
+        if (!validate_user_range(user_buf, a3, 1)) return (uint64_t)-EFAULT;
+        if (a3 > SYSCALL_IO_CHUNK) a3 = SYSCALL_IO_CHUNK;
+
+        char tmp[SYSCALL_IO_CHUNK];
+        uint32_t src_ip = 0;
+        uint16_t src_port = 0;
+        int64_t r = socket_recvfrom((int)a1, tmp, (uint32_t)a3, &src_ip, &src_port);
+        if (r <= 0) return (uint64_t)r;
+        if (copy_to_user(user_buf, tmp, (uint64_t)r) != 0) return (uint64_t)-EFAULT;
+        if (a5 != 0) {
+            uint8_t kaddr[16];
+            memset(kaddr, 0, sizeof(kaddr));
+            kaddr[0] = (uint8_t)(AURA_AF_INET & 0xFF);
+            kaddr[1] = (uint8_t)((AURA_AF_INET >> 8) & 0xFF);
+            kaddr[2] = (uint8_t)((src_port >> 8) & 0xFF);
+            kaddr[3] = (uint8_t)(src_port & 0xFF);
+            kaddr[4] = (uint8_t)((src_ip >> 24) & 0xFF);
+            kaddr[5] = (uint8_t)((src_ip >> 16) & 0xFF);
+            kaddr[6] = (uint8_t)((src_ip >> 8) & 0xFF);
+            kaddr[7] = (uint8_t)(src_ip & 0xFF);
+            if (a6 != 0) {
+                uint32_t user_len = 0;
+                if (!validate_user_range((void *)(uintptr_t)a6, sizeof(uint32_t), 1)) return (uint64_t)-EFAULT;
+                if (copy_from_user(&user_len, (const void *)(uintptr_t)a6, sizeof(uint32_t)) != 0) return (uint64_t)-EFAULT;
+                if (user_len < sizeof(kaddr)) return (uint64_t)-EINVAL;
+                if (copy_to_user((void *)(uintptr_t)a6, &(uint32_t){ sizeof(kaddr) }, sizeof(uint32_t)) != 0) return (uint64_t)-EFAULT;
+            }
+            if (!validate_user_range((void *)(uintptr_t)a5, sizeof(kaddr), 1)) return (uint64_t)-EFAULT;
+            if (copy_to_user((void *)(uintptr_t)a5, kaddr, sizeof(kaddr)) != 0) return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)r;
+    }
     case SYS_SOCKET_CLOSE:
         return (uint64_t)socket_close((int)a1);
     case SYS_SOCKET_BIND:
@@ -909,6 +970,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EFAULT;
         }
         return 0;
+    }
+    case SYS_MKFIFO: {
+        char path[SYSCALL_PATH_MAX];
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_mkfifo(path, (uint32_t)a2), EACCES);
     }
 
     /* GUI syscalls.  gui_syscalls.c performs op-specific user copies. */
@@ -1337,12 +1403,23 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                                    (fd_set*)(uintptr_t)a3, (fd_set*)(uintptr_t)a4,
                                    (struct kernel_timeval*)(uintptr_t)a5);
     }
-    case SYS_FSTAT:
-        return (uint64_t)vfs_fstat((int)a1, (struct vfs_stat*)(uintptr_t)a2);
+    case SYS_FSTAT: {
+        struct vfs_stat st;
+        if (!validate_user_range((void *)(uintptr_t)a2, sizeof(st), 1)) return (uint64_t)-EFAULT;
+        int r = vfs_fstat((int)a1, &st);
+        if (r != 0) return (uint64_t)r;
+        if (copy_to_user((void *)(uintptr_t)a2, &st, sizeof(st)) != 0) return (uint64_t)-EFAULT;
+        return 0;
+    }
     case SYS_LSTAT: {
         char path[SYSCALL_PATH_MAX];
+        struct vfs_stat st;
         if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
-        return (uint64_t)vfs_lstat(path, (struct vfs_stat*)(uintptr_t)a2);
+        if (!validate_user_range((void *)(uintptr_t)a2, sizeof(st), 1)) return (uint64_t)-EFAULT;
+        int r = vfs_lstat(path, &st);
+        if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        if (copy_to_user((void *)(uintptr_t)a2, &st, sizeof(st)) != 0) return (uint64_t)-EFAULT;
+        return 0;
     }
     case SYS_SYMLINK: {
         char target[SYSCALL_PATH_MAX], linkp[SYSCALL_PATH_MAX];
@@ -1350,9 +1427,19 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EFAULT;
         return (uint64_t)vfs_symlink(target, linkp);
     }
-    case SYS_READLINK:
-        return (uint64_t)vfs_readlink((const char*)(uintptr_t)a1,
-                                      (char*)(uintptr_t)a2, (size_t)a3);
+    case SYS_READLINK: {
+        char path[SYSCALL_PATH_MAX];
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        size_t bufsiz = (size_t)a3;
+        if (bufsiz == 0) return (uint64_t)-EINVAL;
+        if (bufsiz > VFS_PATH_MAX) bufsiz = VFS_PATH_MAX;
+        if (!validate_user_range((void *)(uintptr_t)a2, bufsiz, 1)) return (uint64_t)-EFAULT;
+        char kbuf[VFS_PATH_MAX];
+        int r = vfs_readlink(path, kbuf, bufsiz);
+        if (r < 0) return (uint64_t)r;
+        if (copy_to_user((void *)(uintptr_t)a2, kbuf, (uint64_t)r) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)r;
+    }
     case SYS_GETCWD:
         return (uint64_t)do_getcwd((char*)(uintptr_t)a1, (size_t)a2);
     case SYS_CHDIR:

@@ -374,6 +374,24 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
     return ret;
 }
 
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen) {
+    (void)flags;
+    return (ssize_t)syscall_ret(syscall(SYS_SENDTO, (uint64_t)sockfd,
+                                        (uint64_t)buf, (uint64_t)len,
+                                        0, (uint64_t)dest_addr,
+                                        (uint64_t)addrlen));
+}
+
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+                 struct sockaddr *src_addr, socklen_t *addrlen) {
+    (void)flags;
+    return (ssize_t)syscall_ret(syscall(SYS_RECVFROM, (uint64_t)sockfd,
+                                        (uint64_t)buf, (uint64_t)len,
+                                        0, (uint64_t)src_addr,
+                                        (uint64_t)addrlen));
+}
+
 int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
     (void)sockfd; (void)level; (void)optname; (void)optval; (void)optlen;
     return 0;
@@ -404,6 +422,27 @@ int truncate(const char *path, uint64_t new_size) {
 int stat(const char *path, struct stat *out) {
     return (int)syscall_ret(syscall(SYS_STAT, (uint64_t)path, (uint64_t)out,
                                     0, 0, 0, 0));
+}
+int lstat(const char *path, struct stat *out) {
+    return (int)syscall_ret(syscall(SYS_LSTAT, (uint64_t)path, (uint64_t)out,
+                                    0, 0, 0, 0));
+}
+int fstat(int fd, struct stat *out) {
+    return (int)syscall_ret(syscall(SYS_FSTAT, (uint64_t)fd, (uint64_t)out,
+                                    0, 0, 0, 0));
+}
+int mkfifo(const char *path, mode_t mode) {
+    return (int)syscall_ret(syscall(SYS_MKFIFO, (uint64_t)path, (uint64_t)mode,
+                                    0, 0, 0, 0));
+}
+int symlink(const char *target, const char *linkpath) {
+    return (int)syscall_ret(syscall(SYS_SYMLINK, (uint64_t)target,
+                                    (uint64_t)linkpath, 0, 0, 0, 0));
+}
+int64_t readlink(const char *path, char *buf, size_t bufsiz) {
+    return (int64_t)syscall_ret(syscall(SYS_READLINK, (uint64_t)path,
+                                        (uint64_t)buf, (uint64_t)bufsiz,
+                                        0, 0, 0));
 }
 int access(const char *path, int mode) {
     return (int)syscall_ret(syscall(SYS_ACCESS, (uint64_t)path, (uint64_t)mode, 0, 0, 0, 0));

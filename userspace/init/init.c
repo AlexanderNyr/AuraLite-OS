@@ -429,6 +429,9 @@ static void cmd_stat(const char *path) {
     printf("Mode:    0%o\n",        (unsigned)st.st_mode);
     printf("Links:   %u\n",         (unsigned)st.st_nlink);
     printf("Blocks:  %u\n",         (unsigned)st.st_blocks);
+    printf("MTime:   %llu\n",       (unsigned long long)st.st_mtime);
+    printf("CTime:   %llu\n",       (unsigned long long)st.st_ctime);
+    printf("ATime:   %llu\n",       (unsigned long long)st.st_atime);
     fflush(stdout);
 }
 

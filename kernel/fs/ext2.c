@@ -178,6 +178,11 @@ struct ext2_vinfo {
 };
 static struct ext2_vinfo vcache[EXT2_MAX_OPEN];
 
+static uint32_t ext2_now(void) {
+    uint64_t now = vfs_now();
+    return now > 0xFFFFFFFFULL ? 0xFFFFFFFFu : (uint32_t)now;
+}
+
 /* ---- Block I/O ---- */
 
 static int read_blocks(uint32_t fs_lba, uint32_t count, void *buf) {
@@ -500,7 +505,9 @@ static void free_all_blocks(struct ext2_inode *inode) {
     uint32_t *l2 = (uint32_t *)kmalloc(es.block_size);
     uint32_t *l3 = (uint32_t *)kmalloc(es.block_size);
     if (!l1 || !l2 || !l3) {
-        if (l1) kfree(l1); if (l2) kfree(l2); if (l3) kfree(l3);
+        if (l1) kfree(l1);
+        if (l2) kfree(l2);
+        if (l3) kfree(l3);
         return;
     }
     if (inode->i_block[12]) {
@@ -591,6 +598,7 @@ static int64_t inode_write(uint32_t ino, struct ext2_inode *inode,
         done += chunk;
     }
     if (pos + count > inode->i_size) inode->i_size = (uint32_t)(pos + count);
+    inode->i_mtime = inode->i_ctime = ext2_now();
     write_inode(ino, inode);
     return (int64_t)done;
 }
@@ -615,7 +623,7 @@ static int dir_iterate(struct ext2_inode *dir, dir_iter_cb cb, void *user) {
             if (de->rec_len < 8 || de->rec_len > es.block_size - off) break;
             if (de->inode != 0 && de->name_len > 0) {
                 char name[256];
-                uint32_t nl = de->name_len > 255 ? 255 : de->name_len;
+                uint32_t nl = de->name_len;
                 memcpy(name, de->name, nl);
                 name[nl] = 0;
                 if (cb(name, de->inode, de->file_type, user)) return 0;
@@ -733,7 +741,7 @@ static int dir_remove(uint32_t dir_ino, struct ext2_inode *dir, const char *name
         while (off < es.block_size) {
             struct ext2_dir_entry *de = (struct ext2_dir_entry *)(block_buf + off);
             if (de->rec_len < 8 || de->rec_len > es.block_size - off) break;
-            char tmp[256]; uint32_t nl = de->name_len > 255 ? 255 : de->name_len;
+            char tmp[256]; uint32_t nl = de->name_len;
             memcpy(tmp, de->name, nl); tmp[nl] = 0;
             if (de->inode != 0 && strcmp(tmp, name) == 0) {
                 if (out_removed_ino)  *out_removed_ino  = de->inode;
@@ -821,6 +829,9 @@ static struct ext2_vinfo *vinfo_get(uint32_t ino) {
             v->vnode.ops  = &ext2_ops;
             v->vnode.fs_data = v;
             v->vnode.inode_id = ino;
+            v->vnode.atime = v->inode.i_atime;
+            v->vnode.ctime = v->inode.i_ctime;
+            v->vnode.mtime = v->inode.i_mtime;
             return v;
         }
     }
@@ -873,6 +884,7 @@ static struct vnode *ext2_create(void *fs_data, const char *path) {
     ni.i_links_count = 1;
     ni.i_size = 0;
     ni.i_blocks = 0;
+    ni.i_atime = ni.i_ctime = ni.i_mtime = ext2_now();
     write_inode(new_ino, &ni);
     if (dir_insert(parent, &pin, base, new_ino, EXT2_FT_REG_FILE) != 0) {
         free_inode(new_ino, 0);
@@ -886,14 +898,24 @@ static int64_t ext2_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t 
     struct ext2_vinfo *v = (struct ext2_vinfo *)vn->fs_data;
     if (!v) return -1;
     /* Refresh size from cached inode in case of concurrent grow. */
-    return inode_read(&v->inode, pos, buf, count);
+    int64_t n = inode_read(&v->inode, pos, buf, count);
+    if (n > 0) {
+        v->inode.i_atime = ext2_now();
+        v->vnode.atime = v->inode.i_atime;
+        write_inode(v->inode_no, &v->inode);
+    }
+    return n;
 }
 
 static int64_t ext2_write_op(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
     struct ext2_vinfo *v = (struct ext2_vinfo *)vn->fs_data;
     if (!v) return -1;
     int64_t n = inode_write(v->inode_no, &v->inode, pos, buf, count);
-    if (n > 0) v->vnode.size = v->inode.i_size;
+    if (n > 0) {
+        v->vnode.size = v->inode.i_size;
+        v->vnode.mtime = v->inode.i_mtime;
+        v->vnode.ctime = v->inode.i_ctime;
+    }
     return n;
 }
 
@@ -947,6 +969,7 @@ static int ext2_mkdir_op(void *fs_data, const char *path) {
     ni.i_mode = EXT2_S_IFDIR | 0755;
     ni.i_links_count = 2;        /* "." */
     ni.i_size = 0;
+    ni.i_atime = ni.i_ctime = ni.i_mtime = ext2_now();
 
     /* Allocate the first directory block and write "." and ".." entries. */
     uint32_t b = alloc_data_block();
@@ -976,6 +999,7 @@ static int ext2_mkdir_op(void *fs_data, const char *path) {
         return -1;
     }
     pin.i_links_count++;        /* parent gets one for ".." */
+    pin.i_mtime = pin.i_ctime = ext2_now();
     write_inode(parent, &pin);
     return 0;
 }
@@ -1001,12 +1025,16 @@ static int ext2_unlink_op(void *fs_data, const char *path) {
     if (in.i_links_count == 0) {
         free_all_blocks(&in);
         in.i_size = 0;
-        in.i_dtime = 1;
+        in.i_dtime = ext2_now();
+        in.i_ctime = in.i_dtime;
         write_inode(ino, &in);
         free_inode(ino, 0);
     } else {
+        in.i_ctime = ext2_now();
         write_inode(ino, &in);
     }
+    pin.i_mtime = pin.i_ctime = ext2_now();
+    write_inode(parent, &pin);
     vinfo_drop(ino);
     return 0;
 }
@@ -1059,10 +1087,12 @@ static int ext2_rmdir_op(void *fs_data, const char *path) {
     free_all_blocks(&in);
     in.i_links_count = 0;
     in.i_size = 0;
-    in.i_dtime = 1;
+    in.i_dtime = ext2_now();
+    in.i_ctime = in.i_dtime;
     write_inode(ino, &in);
     free_inode(ino, 1);
     if (pin.i_links_count > 2) pin.i_links_count--;
+    pin.i_mtime = pin.i_ctime = ext2_now();
     write_inode(parent, &pin);
     vinfo_drop(ino);
     return 0;
@@ -1092,12 +1122,16 @@ static int ext2_rename_op(void *fs_data, const char *from, const char *to) {
     if (dir_remove(pf, &pin_from, bf, &rmv, &rt) != 0) return -1;
     if (dir_insert(pt, &pin_to, bt, ino_from, ft) != 0) return -1;
     /* If we moved a directory between parents, fix link counts on parents. */
+    src.i_ctime = ext2_now();
+    write_inode(ino_from, &src);
+    pin_from.i_mtime = pin_from.i_ctime = ext2_now();
+    pin_to.i_mtime = pin_to.i_ctime = pin_from.i_ctime;
     if (ft == EXT2_FT_DIR && pf != pt) {
         if (pin_from.i_links_count > 2) pin_from.i_links_count--;
         pin_to.i_links_count++;
-        write_inode(pf, &pin_from);
-        write_inode(pt, &pin_to);
     }
+    write_inode(pf, &pin_from);
+    write_inode(pt, &pin_to);
     return 0;
 }
 
@@ -1117,7 +1151,10 @@ static int ext2_truncate_op(struct vnode *vn, uint64_t new_size) {
          * which is invoked only at unlink; partial shrink leaves index blocks. */
     }
     v->inode.i_size = (uint32_t)new_size;
+    v->inode.i_mtime = v->inode.i_ctime = ext2_now();
     v->vnode.size = new_size;
+    v->vnode.mtime = v->inode.i_mtime;
+    v->vnode.ctime = v->inode.i_ctime;
     write_inode(v->inode_no, &v->inode);
     return 0;
 }
@@ -1144,6 +1181,8 @@ static int ext2_chmod_op(struct vnode *vn, uint32_t mode) {
     struct ext2_vinfo *v = (struct ext2_vinfo *)vn->fs_data;
     if (!v) return -1;
     v->inode.i_mode = (v->inode.i_mode & ~0xFFFu) | (mode & 0xFFFu);
+    v->inode.i_ctime = ext2_now();
+    v->vnode.ctime = v->inode.i_ctime;
     write_inode(v->inode_no, &v->inode);
     return 0;
 }
@@ -1153,6 +1192,8 @@ static int ext2_chown_op(struct vnode *vn, uint32_t uid, uint32_t gid) {
     if (!v) return -1;
     if (uid != (uint32_t)-1) v->inode.i_uid = (uint16_t)uid;
     if (gid != (uint32_t)-1) v->inode.i_gid = (uint16_t)gid;
+    v->inode.i_ctime = ext2_now();
+    v->vnode.ctime = v->inode.i_ctime;
     write_inode(v->inode_no, &v->inode);
     return 0;
 }
@@ -1228,8 +1269,8 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     es.sb.s_blocks_per_group   = blocks_per_group;
     es.sb.s_frags_per_group    = blocks_per_group;
     es.sb.s_inodes_per_group   = inodes_per_group;
-    es.sb.s_mtime              = 0;
-    es.sb.s_wtime              = 0;
+    es.sb.s_mtime              = ext2_now();
+    es.sb.s_wtime              = es.sb.s_mtime;
     es.sb.s_mnt_count          = 0;
     es.sb.s_max_mnt_count      = 20;
     es.sb.s_magic              = EXT2_MAGIC;
@@ -1292,6 +1333,7 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     root.i_mode  = EXT2_S_IFDIR | 0755;
     root.i_size  = es.block_size;
     root.i_links_count = 3;   /* "." and parent "." (root) + the dir entry */
+    root.i_atime = root.i_ctime = root.i_mtime = ext2_now();
     root.i_block[0] = root_blk;
     root.i_blocks = es.block_size / 512;
     write_inode(EXT2_ROOT_INO, &root);

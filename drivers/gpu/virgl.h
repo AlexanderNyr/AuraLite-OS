@@ -149,6 +149,10 @@ int virgl_cmd_inline_write(virgl_cmd_buf_t *cb, uint32_t resource_id,
                            uint32_t z, uint32_t w, uint32_t h, uint32_t d,
                            const void *data, uint32_t bytes);
 
+/* Present the default render-target resource to display scanout 0 by issuing
+ * TRANSFER_TO_HOST_3D + SET_SCANOUT + RESOURCE_FLUSH.  Returns 0 on success. */
+int virgl_present_render_target(uint32_t resource_id, uint32_t width, uint32_t height);
+
 /* Smoke-test / demo helpers. */
 int virgl_clear_screen(float r, float g, float b, float a);
 int virgl_create_scanout_render_target(uint32_t resource_id, uint32_t width, uint32_t height);

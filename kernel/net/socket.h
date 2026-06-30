@@ -14,6 +14,7 @@
 
 #define AURA_AF_INET      2
 #define AURA_SOCK_STREAM  1
+#define AURA_SOCK_DGRAM   2
 
 int64_t socket_create(int domain, int type, int protocol);
 int64_t socket_connect(int sid, uint32_t ip, uint16_t port);
@@ -23,6 +24,10 @@ int64_t socket_close(int sid);
 int64_t socket_bind(int sid, uint32_t ip, uint16_t port);
 int64_t socket_listen(int sid, int backlog);
 int64_t socket_accept(int sid, uint32_t *ip, uint16_t *port);
+int64_t socket_sendto(int sid, const void *buf, uint32_t len,
+                      uint32_t dst_ip, uint16_t dst_port);
+int64_t socket_recvfrom(int sid, void *buf, uint32_t len,
+                        uint32_t *src_ip, uint16_t *src_port);
 void    socket_close_process(uint64_t owner_pid);
 
 #endif /* AURALITE_NET_SOCKET_H */

@@ -52,7 +52,10 @@ struct stat;             /* full definition in <unistd.h> */
 #define S_IXOTH 00001
 
 int stat(const char *path, struct stat *out);
+int lstat(const char *path, struct stat *out);
+int fstat(int fd, struct stat *out);
 int mkdir(const char *path, mode_t mode);
+int mkfifo(const char *path, mode_t mode);
 int chmod(const char *path, mode_t mode);
 int fchmod(int fd, mode_t mode);
 int chown(const char *path, uid_t owner, gid_t group);

@@ -24,6 +24,8 @@
 #define SYS_NET_RECV    85
 #define SYS_NET_CLOSE   86
 #define SYS_NET_PING    87
+#define SYS_SENDTO      44
+#define SYS_RECVFROM    45
 #define SYS_LISTDIR 80   /* non-standard: list a directory */
 #define SYS_MKDIR    100
 #define SYS_RMDIR    101
@@ -31,6 +33,11 @@
 #define SYS_RENAME   103
 #define SYS_TRUNCATE 104
 #define SYS_STAT     105
+#define SYS_MKFIFO   106
+#define SYS_FSTAT      5
+#define SYS_LSTAT      6
+#define SYS_SYMLINK   88
+#define SYS_READLINK  89
 #define SYS_SOCKET         300
 #define SYS_SOCKET_CONNECT 301
 #define SYS_SOCKET_SEND    302
@@ -133,6 +140,9 @@ struct stat {
 };
 #define ST_TYPE_FILE 1
 #define ST_TYPE_DIR  2
+#define ST_TYPE_CHARDEV 3
+#define ST_TYPE_SYMLINK 4
+#define ST_TYPE_FIFO 5
 
 #ifndef AURALITE_TYPE_SSIZE_T
 #define AURALITE_TYPE_SSIZE_T
@@ -207,6 +217,11 @@ int     unlink(const char *path);
 int     rename(const char *from, const char *to);
 int     truncate(const char *path, uint64_t new_size);
 int     stat(const char *path, struct stat *out);
+int     lstat(const char *path, struct stat *out);
+int     fstat(int fd, struct stat *out);
+int     mkfifo(const char *path, mode_t mode);
+int     symlink(const char *target, const char *linkpath);
+int64_t readlink(const char *path, char *buf, size_t bufsiz);
 int     access(const char *path, int mode);
 
 /* P7: Credentials */

@@ -17,14 +17,14 @@
 #include "kernel/lib/kprintf.h"
 
 #define DISKFS_MAGIC 0x41554653u /* AUFS */
-#define DISKFS_VERSION 1
+#define DISKFS_VERSION 2
 #define DISKFS_MAX_FILES 8
 #define DISKFS_NAME_MAX 48
 #define DISKFS_FILE_SECTORS 8
 #define DISKFS_MAX_FILE_SIZE (DISKFS_FILE_SECTORS * AHCI_SECTOR_SIZE)
 #define DISKFS_SUPER_LBA 2
 #define DISKFS_TABLE_LBA 3
-#define DISKFS_DATA_LBA  4
+#define DISKFS_DATA_LBA  5
 
 struct diskfs_super {
     uint32_t magic;
@@ -39,11 +39,14 @@ struct diskfs_entry {
     uint8_t reserved0[3];
     uint32_t start_lba;
     uint32_t size;
+    uint64_t mtime;
+    uint64_t ctime;
+    uint64_t atime;
     char name[DISKFS_NAME_MAX];
-    uint8_t reserved1[4];
+    uint8_t reserved1[44];
 } __attribute__((packed));
 
-typedef char static_assert_entry_size[(sizeof(struct diskfs_entry) == 64) ? 1 : -1];
+typedef char static_assert_entry_size[(sizeof(struct diskfs_entry) == 128) ? 1 : -1];
 
 static int disk_port = -1;
 static struct diskfs_entry entries[DISKFS_MAX_FILES];
@@ -64,16 +67,18 @@ static int write_sector(uint64_t lba, const void *buf) {
 }
 
 static void sync_table(void) {
-    uint8_t sector[AHCI_SECTOR_SIZE];
+    uint8_t sector[AHCI_SECTOR_SIZE * 2];
     memset(sector, 0, sizeof(sector));
     memcpy(sector, entries, sizeof(entries));
     write_sector(DISKFS_TABLE_LBA, sector);
+    write_sector(DISKFS_TABLE_LBA + 1, sector + AHCI_SECTOR_SIZE);
 }
 
 static void load_table(void) {
-    uint8_t sector[AHCI_SECTOR_SIZE];
+    uint8_t sector[AHCI_SECTOR_SIZE * 2];
     memset(sector, 0, sizeof(sector));
-    if (read_sector(DISKFS_TABLE_LBA, sector) == 0) {
+    if (read_sector(DISKFS_TABLE_LBA, sector) == 0 &&
+        read_sector(DISKFS_TABLE_LBA + 1, sector + AHCI_SECTOR_SIZE) == 0) {
         memcpy(entries, sector, sizeof(entries));
     }
 }
@@ -87,6 +92,10 @@ static void rebuild_vnodes(void) {
         vnodes[i].size = entries[i].size;
         vnodes[i].ops = &diskfs_ops;
         vnodes[i].fs_data = &entries[i];
+        vnodes[i].inode_id = (uint64_t)i;
+        vnodes[i].mtime = entries[i].mtime;
+        vnodes[i].ctime = entries[i].ctime;
+        vnodes[i].atime = entries[i].atime;
     }
 }
 
@@ -164,6 +173,7 @@ static struct vnode *diskfs_create(void *fs_data, const char *path) {
             entries[i].in_use = 1;
             entries[i].start_lba = DISKFS_DATA_LBA + (uint32_t)i * DISKFS_FILE_SECTORS;
             entries[i].size = 0;
+            entries[i].mtime = entries[i].ctime = entries[i].atime = vfs_now();
             strncpy(entries[i].name, path, DISKFS_NAME_MAX - 1);
             rebuild_vnodes();
             sync_table();
@@ -184,6 +194,9 @@ static int64_t diskfs_read(struct vnode *vn, uint64_t pos,
         if (read_sector(e->start_lba + s, tmp + s * AHCI_SECTOR_SIZE) != 0) return -1;
     }
     memcpy(buf, tmp + pos, count);
+    e->atime = vfs_now();
+    sync_table();
+    rebuild_vnodes();
     return (int64_t)count;
 }
 
@@ -201,6 +214,7 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     memcpy(tmp + pos, buf, count);
     uint64_t end = pos + count;
     if (end > e->size) e->size = (uint32_t)end;
+    e->mtime = e->ctime = vfs_now();
 
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
         if (write_sector(e->start_lba + s, tmp + s * AHCI_SECTOR_SIZE) != 0) return -1;
@@ -238,6 +252,31 @@ static int diskfs_unlink(void *fs_data, const char *path) {
     return -1;
 }
 
+
+static int diskfs_stat(struct vnode *vn, struct vfs_stat *out) {
+    if (!vn || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    out->type = vn->type;
+    out->mode = vn->mode ? vn->mode : (vn->type == VFS_TYPE_DIR ? 0755 : 0644);
+    out->uid = vn->uid;
+    out->gid = vn->gid;
+    out->size = vn->size;
+    out->inode = vn->inode_id;
+    out->nlink = 1;
+    if (vn->type == VFS_TYPE_DIR) {
+        out->mtime = vn->mtime;
+        out->ctime = vn->ctime;
+        out->atime = vn->atime;
+        return 0;
+    }
+    struct diskfs_entry *e = entry_from_vnode(vn);
+    if (!e) return -1;
+    out->mtime = e->mtime;
+    out->ctime = e->ctime;
+    out->atime = e->atime;
+    return 0;
+}
+
 const struct vfs_ops diskfs_ops = {
     .lookup  = diskfs_lookup,
     .create  = diskfs_create,
@@ -245,6 +284,7 @@ const struct vfs_ops diskfs_ops = {
     .write   = diskfs_write,
     .readdir = diskfs_readdir,
     .unlink  = diskfs_unlink,
+    .stat    = diskfs_stat,
 };
 
 void diskfs_list(void) {

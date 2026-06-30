@@ -1,6 +1,6 @@
 /* e1000.c — Intel 82540EM NIC driver for QEMU.
  *
- * Legacy TX/RX descriptor rings, polling-based (no interrupts). The MMIO
+ * Legacy TX/RX descriptor rings, interrupt-capable. The MMIO
  * register file is reached through Limine's HHDM so we can read/write the
  * device registers without setting up dedicated paging.
  */
@@ -9,8 +9,15 @@
 #include "drivers/e1000/e1000.h"
 #include "drivers/pci/pci.h"
 #include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/proc/wait_queue.h"
+#include "kernel/net/netdev.h"
+#include "kernel/proc/scheduler.h"
+#include "kernel/proc/thread.h"
+#include "drivers/timer/pit.h"
+#include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
@@ -33,6 +40,10 @@
 #define E1000_RAL     0x5400   /* Receive Address Low */
 #define E1000_RAH     0x5404   /* Receive Address High */
 #define E1000_EERD    0x0014   /* EEPROM Read */
+#define E1000_ICR     0x00C0   /* Interrupt Cause Read (read clears) */
+#define E1000_ICS     0x00C8   /* Interrupt Cause Set */
+#define E1000_IMS     0x00D0   /* Interrupt Mask Set/Read */
+#define E1000_IMC     0x00D8   /* Interrupt Mask Clear */
 
 /* CTRL bits */
 #define CTRL_FD       (1u << 0)    /* Full Duplex */
@@ -40,6 +51,13 @@
 
 /* STATUS bits */
 #define STATUS_LU     (1u << 1)    /* Link Up */
+
+/* Interrupt cause bits. */
+#define ICR_TXDW      (1u << 0)    /* TX descriptor written back */
+#define ICR_LSC       (1u << 2)    /* Link status change */
+#define ICR_RXDMT0    (1u << 4)    /* RX descriptor minimum threshold */
+#define ICR_RXO       (1u << 6)    /* RX overrun */
+#define ICR_RXT0      (1u << 7)    /* RX timer expired */
 
 /* RCTL bits */
 #define RCTL_EN       (1u << 1)    /* Receiver Enable */
@@ -93,7 +111,63 @@ static volatile struct rx_desc *rx_ring;
 static uint8_t *tx_buffers[E1000_NUM_TX_DESC];
 static uint8_t *rx_buffers[E1000_NUM_RX_DESC];
 static uint32_t tx_tail = 0;
-static uint32_t rx_next = 0;
+
+#define E1000_SW_RX_QUEUE_LEN 16
+struct sw_rx_packet {
+    uint16_t len;
+    uint8_t  data[E1000_PKT_BUF_SIZE];
+};
+
+static struct sw_rx_packet sw_rx_queue[E1000_SW_RX_QUEUE_LEN];
+static uint32_t sw_rx_head = 0;
+static uint32_t sw_rx_tail = 0;
+static uint32_t sw_rx_count = 0;
+static uint32_t sw_rx_drops = 0;
+static spinlock_t rxq_lock = SPINLOCK_UNLOCKED;
+static spinlock_t hw_rx_lock = SPINLOCK_UNLOCKED;
+static struct wait_queue e1000_rx_wq;
+static struct wait_queue e1000_tx_wq;
+static uint8_t e1000_irq_line = 0xFF;
+static uint32_t rx_packet_count = 0;
+static uint32_t last_rdh = 0;
+
+static int sw_rx_push(const void *data, uint16_t len) {
+    if (!data || len == 0) return 0;
+    if (len > E1000_PKT_BUF_SIZE) len = E1000_PKT_BUF_SIZE;
+
+    uint64_t flags = spinlock_acquire_irqsave(&rxq_lock);
+    if (sw_rx_count >= E1000_SW_RX_QUEUE_LEN) {
+        sw_rx_drops++;
+        spinlock_release_irqrestore(&rxq_lock, flags);
+        return 0;
+    }
+    struct sw_rx_packet *p = &sw_rx_queue[sw_rx_tail];
+    memcpy(p->data, data, len);
+    p->len = len;
+    sw_rx_tail = (sw_rx_tail + 1) % E1000_SW_RX_QUEUE_LEN;
+    sw_rx_count++;
+    spinlock_release_irqrestore(&rxq_lock, flags);
+    return 1;
+}
+
+static int sw_rx_pop(void *buf, uint32_t bufsize) {
+    if (!buf || bufsize == 0) return -1;
+
+    uint64_t flags = spinlock_acquire_irqsave(&rxq_lock);
+    if (sw_rx_count == 0) {
+        spinlock_release_irqrestore(&rxq_lock, flags);
+        return 0;
+    }
+    struct sw_rx_packet *p = &sw_rx_queue[sw_rx_head];
+    uint16_t len = p->len;
+    if (len > bufsize) len = (uint16_t)bufsize;
+    memcpy(buf, p->data, len);
+    p->len = 0;
+    sw_rx_head = (sw_rx_head + 1) % E1000_SW_RX_QUEUE_LEN;
+    sw_rx_count--;
+    spinlock_release_irqrestore(&rxq_lock, flags);
+    return (int)len;
+}
 
 /* ---- MMIO helpers ---- */
 
@@ -126,6 +200,55 @@ static const char *e1000_device_name(uint16_t device_id) {
     case E1000_DEVICE_82545EM: return "82545EM / PRO/1000 MT Server";
     case E1000_DEVICE_82543GC: return "82543GC / PRO/1000 T Server";
     default:                  return "unknown e1000-compatible";
+    }
+}
+
+static int e1000_hw_rx_drain(void) {
+    if (!mmio || !rx_ring) return 0;
+
+    int drained = 0;
+    uint64_t flags = spinlock_acquire_irqsave(&hw_rx_lock);
+    uint32_t rdh = mmio_read(E1000_RDH);
+    while (rdh != last_rdh) {
+        uint32_t idx = last_rdh % E1000_NUM_RX_DESC;
+        uint16_t pkt_len = rx_ring[idx].length;
+        if (pkt_len > E1000_PKT_BUF_SIZE) pkt_len = E1000_PKT_BUF_SIZE;
+        if (pkt_len > 0) {
+            if (sw_rx_push(rx_buffers[idx], pkt_len)) {
+                drained++;
+                rx_packet_count++;
+            }
+        }
+
+        rx_ring[idx].status = 0;
+        last_rdh = (last_rdh + 1) % E1000_NUM_RX_DESC;
+        uint32_t new_rdt = (last_rdh + E1000_NUM_RX_DESC - 1) % E1000_NUM_RX_DESC;
+        mmio_write(E1000_RDT, new_rdt);
+        rdh = mmio_read(E1000_RDH);
+    }
+    spinlock_release_irqrestore(&hw_rx_lock, flags);
+    return drained;
+}
+
+static void e1000_irq_handler(struct registers *regs) {
+    (void)regs;
+    if (!mmio) return;
+
+    uint32_t icr = mmio_read(E1000_ICR); /* read clears pending causes */
+    if (icr == 0) return;
+
+    if (icr & (ICR_RXT0 | ICR_RXDMT0 | ICR_RXO)) {
+        int drained = e1000_hw_rx_drain();
+        if (drained > 0) {
+            wq_wake_all(&e1000_rx_wq);
+        }
+        if (icr & ICR_RXO) {
+            kprintf("[e1000] RX overrun (drops=%u)\n", sw_rx_drops);
+        }
+    }
+
+    if (icr & (ICR_TXDW | ICR_LSC)) {
+        wq_wake_all(&e1000_tx_wq);
     }
 }
 
@@ -162,8 +285,17 @@ int e1000_init(void) {
             e1000_device_name(device_id), device_id,
             pci_bus, pci_dev, pci_func);
 
+    wq_init(&e1000_rx_wq);
+    wq_init(&e1000_tx_wq);
+    sw_rx_head = sw_rx_tail = sw_rx_count = sw_rx_drops = 0;
+    last_rdh = 0;
+    rx_packet_count = 0;
+
     /* 2) Enable bus mastering + memory space. */
     pci_enable_bus_master(pci_bus, pci_dev, pci_func);
+    /* Make sure legacy INTx is enabled in PCI Command (bit 10 disables INTx). */
+    uint32_t pci_cmd = pci_config_read(pci_bus, pci_dev, pci_func, 0x04);
+    pci_config_write(pci_bus, pci_dev, pci_func, 0x04, pci_cmd & ~(1u << 10));
 
     /* 3) Map the MMIO BAR0 into the HHDM. The HHDM only covers physical RAM,
      *    so we must explicitly map the MMIO region (which lives at ~4GB). */
@@ -238,9 +370,9 @@ int e1000_init(void) {
             mac_addr[0], mac_addr[1], mac_addr[2],
             mac_addr[3], mac_addr[4], mac_addr[5]);
 
-    /* 5) Disable interrupts (we poll). */
-    mmio_write(0x00D0, 0xFFFFFFFF);   /* IMS */
-    mmio_write(0x00D8, 0xFFFFFFFF);   /* IMC — clear all */
+    /* 5) Keep interrupts masked while rings are being initialised. */
+    mmio_write(E1000_IMC, 0xFFFFFFFF);
+    (void)mmio_read(E1000_ICR);       /* clear any stale cause bits */
 
     /* 6) Set up the TX descriptor ring. Descriptors and buffers must be in
      *    memory the NIC can DMA — we allocate physical frames from the PMM
@@ -281,7 +413,6 @@ int e1000_init(void) {
         mmio_write(E1000_RDLEN, E1000_NUM_RX_DESC * 16);
         mmio_write(E1000_RDH, 0);
         mmio_write(E1000_RDT, E1000_NUM_RX_DESC - 1);
-        rx_next = 0;
         kprintf("[e1000] RX ring phys=0x%llx, desc0_addr=0x%llx desc0_status=%u\n",
                 (unsigned long long)ring_phys,
                 (unsigned long long)rx_ring[0].addr,
@@ -299,6 +430,18 @@ int e1000_init(void) {
     /* Enable RX: EN=1, SECRC=1 (strip CRC), BSIZE=0 (2048), BAM=1 (accept
      * broadcasts — needed for DHCP), UPE=1 (unicast promiscuous). */
     mmio_write(E1000_RCTL, RCTL_EN | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_BAM | (1u << 3));
+
+    e1000_irq_line = pci_get_interrupt_line(pci_bus, pci_dev, pci_func);
+    if (e1000_irq_line < 16) {
+        irq_register_handler((int)e1000_irq_line, e1000_irq_handler);
+        (void)mmio_read(E1000_ICR);
+        mmio_write(E1000_IMS, ICR_RXT0 | ICR_RXDMT0 | ICR_RXO | ICR_TXDW | ICR_LSC);
+        kprintf("[e1000] IRQ line %u enabled (IMS=0x%08x)\n",
+                e1000_irq_line, mmio_read(E1000_IMS));
+    } else {
+        kprintf("[e1000] no valid PCI INTx line (0x%02x); polling fallback only\n",
+                e1000_irq_line);
+    }
 
     kprintf("[e1000] TX/RX rings initialised, RCTL=0x%08x\n",
             mmio_read(E1000_RCTL));
@@ -354,37 +497,66 @@ int e1000_send(const void *data, uint32_t len) {
     return (int)len;
 }
 
-static uint32_t rx_packet_count = 0;
-static uint32_t last_rdh = 0;
-
 int e1000_recv(void *buf, uint32_t bufsize) {
-    /* Poll the RDH MMIO register. QEMU's e1000 advances RDH when a packet
-     * arrives. We track our own read pointer (last_rdh) independently.
-     *
-     * RDH can jump ahead by multiple positions (multiple packets received
-     * between polls). We process one at a time, advancing our pointer by 1
-     * each call. We handle wraparound by comparing modular values. */
-    uint32_t rdh = mmio_read(E1000_RDH);
-    if (rdh == last_rdh) {
-        return 0;
+    int n = sw_rx_pop(buf, bufsize);
+    if (n != 0) return n;
+
+    /* Preserve legacy non-blocking polling semantics: if no IRQ has queued a
+     * packet yet, opportunistically drain the hardware ring and try again. */
+    if (e1000_hw_rx_drain() > 0) {
+        n = sw_rx_pop(buf, bufsize);
+        if (n != 0) return n;
     }
+    return 0;
+}
 
-    /* Process the packet at our current read position. */
-    uint32_t idx = last_rdh % E1000_NUM_RX_DESC;
-    last_rdh = (last_rdh + 1) % E1000_NUM_RX_DESC;
+int e1000_recv_wait(void *buf, uint32_t bufsize, uint64_t timeout_ticks) {
+    uint64_t start = timer_get_ticks();
+    uint64_t deadline = timeout_ticks ? start + timeout_ticks : 0;
+    tcb_t *cur = sched_current();
+    uint64_t old_sleep_deadline = cur ? cur->sleep_deadline : 0;
 
-    rx_packet_count++;
-    uint16_t pkt_len = rx_ring[idx].length;
-    if (pkt_len > bufsize) {
-        pkt_len = (uint16_t)bufsize;
+    for (;;) {
+        int n = e1000_recv(buf, bufsize);
+        if (n != 0) {
+            if (cur) cur->sleep_deadline = old_sleep_deadline;
+            return n;
+        }
+        if (!e1000_link_up()) {
+            if (cur) cur->sleep_deadline = old_sleep_deadline;
+            return -1;
+        }
+        if (deadline && timer_get_ticks() >= deadline) {
+            if (cur) cur->sleep_deadline = old_sleep_deadline;
+            return 0;
+        }
+
+        if (!cur) {
+            __asm__ volatile ("pause");
+            continue;
+        }
+
+        if (deadline) cur->sleep_deadline = deadline;
+        wq_wait(&e1000_rx_wq, NULL);
+        if (deadline) cur->sleep_deadline = old_sleep_deadline;
     }
-    if (pkt_len > 0) {
-        memcpy(buf, rx_buffers[idx], pkt_len);
-    }
+}
 
-    /* Give the descriptor back to the hardware. */
-    uint32_t new_rdt = (last_rdh + E1000_NUM_RX_DESC - 1) % E1000_NUM_RX_DESC;
-    mmio_write(E1000_RDT, new_rdt);
+int e1000_recv_blocking(void *buf, uint32_t bufsize) {
+    return e1000_recv_wait(buf, bufsize, 0);
+}
 
-    return pkt_len;
+/* ---- netdev backend registration ---------------------------------------- */
+
+static const struct netdev e1000_netdev = {
+    .name      = "e1000",
+    .send      = e1000_send,
+    .recv      = e1000_recv,
+    .recv_wait = e1000_recv_wait,
+    .get_mac   = e1000_get_mac,
+    .link_up   = e1000_link_up,
+};
+
+void e1000_register_netdev(void) {
+    netdev_register(&e1000_netdev);
 }

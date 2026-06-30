@@ -2,6 +2,172 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [N5.4 — Stack guard pages] 2026-06-30
+
+### Added
+- **Guard-page overflow diagnosis**: New `kernel/proc/guard.{h,c}` classifies a page fault that lands on a known stack guard page. Kernel-thread stacks are already bracketed by unmapped guard pages on both sides of each slot, and user stacks have an unmapped guard page below them; `guard_classify_fault()` turns a fault on any of these into `GUARD_FAULT_{KERNEL_STACK_LOW,KERNEL_STACK_HIGH,USER_STACK}` (kernel detection is exact via the current thread's slot bounds; user detection uses the fixed high-VA stack window).
+- **`#PF` handler integration**: `kernel/arch/x86_64/isr.c` now reports `[GUARD] <reason>: CR2/RIP` when a fault hits a guard page (checked after COW/uaccess recovery so recoverable faults aren't misreported). A kernel-stack guard hit is fatal (`kernel_halt()`); a user-stack guard hit falls through to the normal SIGSEGV path so the process is killed (or a handler runs), with the `[GUARD]` line recording the cause.
+- **Tests**: New `userspace/stackguard/` deliberately overflows its user stack; new QEMU gate `tests/integration/cases/test_stack_guard.sh` asserts `[GUARD] user stack overflow`, a USER-mode `#PF`, shell survival, and no bypass/panic. New host unit test `tests/unit/test_stack_guard.c` pins the kernel/user guard-window classification boundaries (registered in `make test-unit`).
+
+### Notes
+- No new syscalls; the GUI syscall range (200–299) is untouched. The classifier is read-only address arithmetic with no allocation, safe to run in fault context. The existing ELF-permission fault path is unaffected (those addresses fall outside the stack windows → `GUARD_FAULT_NONE`), confirmed by `test_elf_permissions` still seeing exactly two user faults and no spurious `[GUARD]` lines.
+
+### Validation
+- `make clean && make all` completes with 0 warnings (`-Werror`).
+- QEMU gates pass: new `test_stack_guard` plus fault-path regressions `test_elf_permissions` and `test_fork_cow`.
+- `make test-unit` passes (including the new `test_stack_guard`, 14 checks).
+- `make run` smoke boot is clean: no spurious `[GUARD]`/exception, DHCP/TCP PASS, shell active, no panic.
+
+## [N3 — virtio-net] 2026-06-30
+
+### Added
+- **netdev NIC abstraction**: New `kernel/net/netdev.{h,c}` introduces a small `struct netdev` (`send`/`recv`/`recv_wait`/`get_mac`/`link_up`/`name`). The IPv4/ARP/DHCP/UDP/TCP stack now talks to whichever NIC is active through `netdev_*` wrappers instead of calling a driver directly. The first registered NIC becomes active, so e1000 stays the default.
+- **virtio-net driver**: New `drivers/virtio_net/virtio_net.{h,c}` brings up a modern virtio-net PCI device (`1af4:1041`, or the transitional `1af4:1000` through its modern capabilities). It negotiates `VIRTIO_F_VERSION_1` (+ `VIRTIO_NET_F_MAC`), sets up RX (queue 0, prefilled with buffers) and TX (queue 1) split virtqueues, reads the MAC from device config, and exchanges frames with a 12-byte `virtio_net_hdr`. It registers itself as a netdev backend.
+- **Backend selection**: `net_init()` brings up e1000 first and registers it; if e1000 is absent it falls back to virtio-net. MAC and link status are taken through `netdev_*`.
+- **Tests**: New QEMU gate `tests/integration/cases/test_virtio_net.sh` (overrides the NIC via the new `IL_NIC` env knob to `virtio-net-pci`) asserts the full DHCP/ICMP/DNS/TCP path over virtio-net. New host unit test `tests/unit/test_virtio_net.c` pins the `virtio_net_hdr` and split-virtqueue wire layouts (registered in `make test-unit`).
+
+### Fixed
+- **TCP over non-e1000 NICs**: `kernel/net/tcp.c` was calling `e1000_send`/`e1000_recv_wait` directly, bypassing the netdev layer; routed through `netdev_*` so TCP works over virtio-net.
+- **virtio_net_hdr size**: under `VIRTIO_F_VERSION_1` the header is always 12 bytes (`num_buffers` present regardless of `MRG_RXBUF`). A 10-byte header shifted every transmitted frame by 2 bytes on the wire (broke DHCP/ARP); corrected to 12 bytes and locked in by the unit test.
+
+### Notes
+- virtio-net is inert unless its PCI device is present; all new paths return errors gracefully when unavailable. The data path polls the used ring (consistent with the boot-time stack); there is no allocation or protocol parsing in IRQ context. The GUI syscall range (200–299) is untouched and no new syscalls were added.
+
+### Validation
+- `make clean && make all` completes with 0 warnings (`-Werror`).
+- QEMU gates pass: new `test_virtio_net` (DHCP + ICMP + DNS + TCP over virtio-net) plus e1000 regressions `test_networking`, `test_e1000_irq`, `test_udp_sockets`, `test_http_get`, `test_tcp_server`.
+- `make test-unit` passes (including the new `test_virtio_net`, 24 checks).
+- `make run` default-NIC (e1000) smoke boot is clean: DHCP/ping/DNS/TCP all PASS, shell active, no panic.
+
+## [N1 — VirGL Present Pipeline] 2026-06-30
+
+### Added
+- **3D present pipeline**: A fenced `SUBMIT_3D` that renders into a VirGL 3D render-target resource is now presented to the display via `TRANSFER_TO_HOST_3D` -> `SET_SCANOUT` -> `RESOURCE_FLUSH`. Added `virgl_present_render_target()` and wired it into the clear/triangle demos.
+- **Transport ops**: Added `virtio_gpu_set_scanout_resource()` and `virtio_gpu_flush_resource()` so any resource id (not just the fixed 2D mirror resource) can be scanned out and flushed.
+- **Host unit test**: Added `tests/unit/test_virgl.c`, validating the `VIRGL_CMD0` opcode/object/length packing and the CLEAR / DRAW_VBO dword payload layout plus the command-buffer overflow guard. Registered in `make test-unit`.
+
+### Notes
+- All new paths are guarded: when no virtio-gpu/VirGL host is attached they return `-1` and the renderer transparently falls back to the software SSE z-buffer backend. Nothing runs in IRQ context and there is no allocation in IRQ context.
+
+### Validation
+- `make clean && make all` completes with 0 warnings (`-Werror`).
+- Host unit suite: `make test-unit` passes (including the new `test_virgl`).
+- QEMU gates pass: `test_3d_render`, `test_graphics`, `test_gui`, `test_gui_usb`; `make run` smoke boot is clean (software 3D fallback, no panic).
+
+## [N5.2-N5.3 — Named FIFOs + Symbolic Links] 2026-06-30
+
+### Added
+- **Named FIFOs (`mkfifo`)**: Added `VFS_TYPE_FIFO`, an in-memory named-FIFO registry in `vfs.c`, and the `vfs_mkfifo()` path backed by the existing pipe ring and wait queues. New `SYS_MKFIFO=106` syscall, dispatch, libc wrapper, and `docs/syscall_abi.md` entry. FIFO descriptors honour blocking/`O_NONBLOCK` read/write and report `ESPIPE` on `lseek`.
+- **Symbolic links**: Replaced the `symlink.c` stubs with a baseline in-memory symlink registry. `symlink(target, linkpath)` and `readlink()` are functional; `lstat()` reports the link itself (`ST_TYPE_SYMLINK`) while `stat()`/`open()` follow the final symlink through the VFS resolver with bounded follow depth to avoid loops.
+- **Stat ABI hardening**: `fstat`, `lstat`, and `readlink` dispatch now copy fixed-size kernel buffers in/out with user-range validation instead of dereferencing raw user pointers.
+- **libc**: Added `mkfifo`, `symlink`, `readlink`, `lstat`, `fstat` wrappers and `ST_TYPE_CHARDEV/SYMLINK/FIFO` exports.
+- **Tests**: Added `/fifolinktest` userspace probe, `tests/integration/cases/test_fifo_symlinks.sh`, and registered it in the integration runner.
+
+### Validation
+- `make clean && make all` completes with 0 warnings (`-Werror`).
+- Host unit suite: `make test-unit` passes.
+- QEMU gates pass: `test_fifo_symlinks`, `test_timestamps`, `test_open_flags`, `test_lseek`.
+
+## [N5.1 — File timestamps] 2026-06-30
+
+### Added & Refactored
+- **VFS timestamp metadata**: Added seconds-resolution `mtime`, `ctime`, and `atime` fields to `struct vnode`, plus `vfs_now()` and timestamp stamping helpers. The existing `stat()` ABI now exports these fields through the already-present `struct vfs_stat` / userspace `struct stat` layout.
+- **Generic timestamp updates**: VFS read paths update `atime`; write and truncate paths update `mtime`/`ctime`; newly-created files/directories are stamped with all three timestamps.
+- **Filesystem coverage**: Wired tmpfs in-memory timestamps, diskfs persistent table timestamps, ext2 inode `i_atime`/`i_ctime`/`i_mtime` updates, and FAT32 date/time decoding for `stat()` with access-date/write-time refreshes.
+- **Userspace visibility**: The shell `stat` command now prints MTime/CTime/ATime, and `/timestest` validates create/write/read/truncate timestamp behavior.
+- **Integration gate**: Added `tests/integration/cases/test_timestamps.sh` and registered it in the integration runner.
+
+### Validation
+- `make clean && make all` completes successfully.
+- Host unit suite: `make test-unit` passes.
+- QEMU timestamp gate passes: `test_timestamps`.
+
+## [N2.4 — TCP Retransmission Buffer / RTO] 2026-06-30
+
+### Added & Refactored
+- **Fixed-RTO TCP retries**: Added `TCP_RTO_TICKS=20` and `TCP_MAX_RETRIES=3` for the current one-segment-in-flight TCP model.
+- **Per-connection retransmission slot**: Extended TCP connection state with a fixed `TCP_MSS`-sized retransmission buffer carrying flags, sequence, ACK and payload bytes. This avoids heap allocation and keeps retry state local to the connection.
+- **SYN/data/FIN retransmission**: Active open, data send ACK waits, and FIN close now record the last transmitted segment and retransmit it when the timed receive helper reaches the RTO deadline.
+- **IRQ safety preserved**: Retransmission is handled in normal TCP context; the e1000 IRQ handler still only drains descriptors into the preallocated RX queue and wakes waiters, with no allocation or protocol parsing in IRQ context.
+
+### Validation
+- `cc -std=c11 -Wall -Wextra -Werror -I . -ffreestanding -fsyntax-only kernel/net/tcp.c` passes.
+- `make clean && make all` completes successfully.
+- Host unit suite: `make test-unit` passes.
+- QEMU networking/TCP gates pass: `test_networking`, `test_tcp_server`, and `test_http_get`.
+
+## [N2.3b — UDP user sockets] 2026-06-30
+
+### Added & Fixed
+- **UDP socket ABI**: Added `SYS_SENDTO=44` and `SYS_RECVFROM=45`, documented in `docs/syscall_abi.md`, with POSIX-shaped libc wrappers using `struct sockaddr_in`.
+- **SOCK_DGRAM support**: Extended the process-owned socket table to accept `AF_INET/SOCK_DGRAM`, track local UDP ports, auto-bind ephemeral ports, and route datagrams through `net_udp_sendto()` / `net_udp_recvfrom()`.
+- **Kernel UDP primitives**: Exported bounded IRQ-backed UDP send/receive helpers from `kernel/net/net.c` while keeping all UDP parsing outside IRQ context.
+- **6-argument syscall ABI fix**: Fixed `kernel/arch/x86_64/syscall_entry.asm` so the seventh C argument (`a6`, carried in syscall `R9`) is passed at the correct stack slot to `syscall_dispatch()`. `sendto`/`recvfrom` exposed this latent bug because they depend on the sixth syscall argument (`addrlen` / `socklen_t *`).
+- **Userspace gate**: Added `/udptest`, which performs a DNS A query using `socket(AF_INET, SOCK_DGRAM)`, `bind`, `sendto`, and `recvfrom`. Added `test_udp_sockets` to the integration runner.
+
+### Validation
+- `make clean && make all` completes successfully.
+- Host unit suite: `make test-unit` passes.
+- QEMU gates pass: `test_elf_permissions`, `test_networking`, `test_e1000_irq`, and `test_udp_sockets`.
+
+## [N2.3a — IRQ-backed waits for ARP/DHCP/ICMP/UDP boot paths] 2026-06-30
+
+### Refactored
+- **Bounded net receive waits**: Added a local `net_recv_wait_until()` helper in `kernel/net/net.c` that converts existing tick deadlines into `e1000_recv_wait()` calls.
+- **Boot protocol receive paths**: Rewired ARP gateway/local resolution, ICMP ping replies, DHCP OFFER/ACK waits, and kernel UDP/DNS receives from busy `e1000_recv()` loops to IRQ/wait-queue-backed timed waits while keeping the previous 1s/2s timeout behavior.
+- **IRQ safety preserved**: Protocol parsing remains in normal kernel context; the e1000 IRQ handler still only drains descriptors into the preallocated software RX queue and wakes waiters.
+
+### Validation
+- Installed the missing local toolchain/QEMU packages and completed `make clean && make all` successfully.
+- Host unit suite: `make test-unit` passes.
+- QEMU integration gates pass: `test_networking`, `test_e1000_irq`, and `test_elf_permissions`.
+
+## [N2.2 — Timed NIC waits for TCP receive paths] 2026-06-30
+
+### Added & Refactored
+- **Timed NIC Receive API**: Added `e1000_recv_wait(buf, size, timeout_ticks)`. It first drains the software RX queue, then sleeps on the e1000 RX wait queue with `sleep_deadline` for bounded waits; `timeout_ticks == 0` waits indefinitely. `e1000_recv_blocking()` now wraps this helper.
+- **TCP RX Wait Conversion**: Replaced the tight `TCP_RECV_POLLS` CPU spin loops in `tcp_recv_segment()` and `tcp_recv_syn()` with deadline-based waits over `e1000_recv_wait()`. Existing TCP timeout behavior and integration fallback paths are preserved.
+- **Boot Compatibility**: ARP/DHCP/ICMP receive paths remain polling-compatible for now, reducing risk to boot-time networking while TCP/socket receive waits move onto the IRQ-backed path.
+
+### Validation
+- Host C syntax checks pass for `drivers/e1000/e1000.c`, `drivers/pci/pci.c`, and `kernel/net/tcp.c` with `-Wall -Wextra -Werror`.
+- Host unit suite: `make test-unit` passes.
+- Full ISO build and QEMU execution now run in this workspace after installing the required toolchain/QEMU packages.
+
+## [N2.1 — Interrupt-Capable e1000 RX/TX] 2026-06-30
+
+### Added & Refactored
+- **PCI INTx Discovery**: Added `pci_get_interrupt_line()` for reading the legacy PCI interrupt line register at config offset `0x3C`.
+- **e1000 IRQ Path**: Added e1000 interrupt registers/cause bits, enabled legacy INTx in PCI Command, registered an IRQ handler through `irq_register_handler()`, and enabled RX/TX/link interrupt causes through `IMS`.
+- **Software RX Queue**: Added a preallocated software RX ring inside the e1000 driver. The IRQ handler drains completed hardware RX descriptors into this ring without allocation or protocol parsing, then wakes RX waiters.
+- **Blocking Receive API**: Preserved `e1000_recv()` as a non-blocking compatibility API for existing DHCP/ARP/ICMP/TCP polling loops and added `e1000_recv_blocking()` for future socket/TCP blocking paths.
+- **Integration Gate**: Added `tests/integration/cases/test_e1000_irq.sh` and registered it in `tests/integration/run_all.sh` to verify IRQ-capable driver initialization.
+
+### Notes
+- This is the safe driver-layer step for N2. Higher protocol loops remain polling-compatible and will be rewired to blocking waits in the next networking subphase.
+- Full ISO build and QEMU execution now run in this workspace after installing the required toolchain/QEMU packages.
+
+## [N4 — Strict ELF Permissions & NX] 2026-06-30
+
+### Added & Hardened
+- **Page-Aligned User ELF Segments**: Updated `libc/user.ld` to emit explicit `PHDRS` with separate page-aligned `PT_LOAD` segments: RX `.text`, R/NX `.rodata`, and RW/NX `.data`/`.bss`. This gives the kernel ELF loader precise `PF_W`/`PF_X` input instead of a broad coalesced userspace segment.
+- **Strict Loader Enforcement Verified**: Confirmed `kernel/proc/elf.c` already derives final PTE flags from ELF program-header permissions: `PF_W` is the only source of `PAGE_FLAG_WRITABLE`, and non-`PF_X` segments receive `PAGE_FLAG_NO_EXEC`. User stack mappings in `kernel/proc/process.c` are writable+NX with guard pages left unmapped.
+- **ELF Permission Probe**: Added `/elfperm`, a userspace regression probe with `write-text` and `exec-data` modes. The first attempts to write into `.text`; the second attempts to execute code bytes from `.data`. Either reaching an `ELFPERM FAIL` marker indicates a permission bypass.
+- **Integration Gate**: Added `tests/integration/cases/test_elf_permissions.sh` and registered it in `tests/integration/run_all.sh`. The gate expects two user-mode page faults, no kernel-mode exception, no panic, and a live shell afterward.
+
+### Validation
+- Host unit suite: `make test-unit` passes.
+- Linker-script sanity check with host `ld`/`readelf` confirms the intended `R E`, `R`, and `RW` load segments.
+- `make clean && make all` now completes in this workspace after installing `clang`, `ld.lld`, `nasm`, `xorriso`, and `qemu-system-x86_64`; the N4 QEMU integration gate passes.
+
+## [H1 — GUI Dirty-Rect Compositor] 2026-06-29
+
+### Added & Implemented
+- **Dirty-Rect Partial Redraw**: Added `gfx_flip_rect()` in `drivers/framebuffer/graphics.c` / `.h` to copy only clipped dirty rectangles instead of flipping the whole framebuffer every tick.
+- **Compositor Dirty Union**: Added dirty-region aggregation and `compositor_render_dirty()` in `kernel/gui/gui.c`, rendering only when window, cursor, notification, or desktop regions are marked dirty.
+- **Idle-Frame Optimization**: `gui_compositor_tick()` no longer forces `full_dirty` every frame; idle GUI ticks skip framebuffer copies entirely. Cursor motion marks both previous and current cursor rectangles dirty to avoid trails.
+- **Validation**: The H1 gate verified idle frames perform no flips, cursor/window movement marks the expected old+new rectangles dirty, GUI self-test passes, `make all` is clean, and host unit tests pass.
+
 ## [H7 — SA_RESTART & Signal Frame FPU State] 2026-06-29
 
 ### Added & Implemented

@@ -59,6 +59,12 @@ int virtio_gpu_transfer_to_host_3d(uint32_t ctx_id, uint32_t resource_id,
                                    uint32_t w, uint32_t h, uint32_t d,
                                    uint64_t offset, uint32_t level,
                                    uint32_t stride, uint32_t layer_stride);
+/* Bind an arbitrary resource id to a display scanout, then flush a sub-rect of
+ * it to the host display.  Used to present a VirGL/3D render target. */
+int virtio_gpu_set_scanout_resource(uint32_t scanout_id, uint32_t resource_id,
+                                    uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+int virtio_gpu_flush_resource(uint32_t resource_id,
+                              uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 int virtio_gpu_virgl_supported(void);
 
 #endif /* AURALITE_DRIVERS_GPU_VIRTIO_GPU_H */

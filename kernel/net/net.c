@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include "kernel/net/net.h"
 #include "drivers/e1000/e1000.h"
+#include "drivers/virtio_net/virtio_net.h"
+#include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 
@@ -78,16 +80,16 @@ struct icmp_hdr {
     uint16_t seq;
 } __attribute__((packed));
 
-/* ---- Poll budgets ----
+/* ---- Receive wait budgets ----
  * Keep boot responsive on hypervisors with disconnected/unsupported virtual
  * networking. QEMU/VirtualBox/VMware NAT replies arrive quickly when link is
- * healthy; long multi-second spin loops only delay boot when packets cannot be
+ * healthy; bounded waits avoid delaying boot when packets cannot be
  * transmitted or received. */
-#define NET_ARP_POLLS       1000000
-#define NET_ICMP_POLLS      1000000
-#define NET_UDP_POLLS       1000000
-#define NET_DHCP_OFFER_POLLS 1500000
-#define NET_DHCP_ACK_POLLS  1000000
+#define NET_ARP_TIMEOUT_TICKS        100
+#define NET_ICMP_TIMEOUT_TICKS       200
+#define NET_UDP_TIMEOUT_TICKS        200
+#define NET_DHCP_OFFER_TIMEOUT_TICKS 200
+#define NET_DHCP_ACK_TIMEOUT_TICKS   200
 
 /* ---- State ---- */
 static uint8_t  our_mac[6];
@@ -140,6 +142,14 @@ static uint16_t checksum(const void *data, uint32_t len) {
     return htons_((uint16_t)(~sum & 0xFFFF));
 }
 
+static int net_recv_wait_until(void *buf, uint32_t bufsize, uint64_t deadline_ticks) {
+    uint64_t now = timer_get_ticks();
+    if (deadline_ticks <= now) {
+        return 0;
+    }
+    return netdev_recv_wait(buf, bufsize, deadline_ticks - now);
+}
+
 /* ---- Ethernet send: wrap payload in an Ethernet frame and transmit. ---- */
 int net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
                  const void *payload, uint32_t plen) {
@@ -154,7 +164,7 @@ int net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
         memset(frame + total, 0, 60 - total);
         total = 60;   /* minimum Ethernet frame size */
     }
-    return e1000_send(frame, total);
+    return netdev_send(frame, total);
 }
 
 /* ---- ARP: resolve an IP address to a MAC. ---- */
@@ -185,9 +195,10 @@ int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
                     (gateway_ip >> 8) & 0xFF, gateway_ip & 0xFF);
 
             uint8_t buf[2048];
-            uint64_t start_ticks = timer_get_ticks();
-            while (timer_get_ticks() - start_ticks < 100) { /* 1.0 second timeout */
-                int n = e1000_recv(buf, sizeof(buf));
+            uint64_t deadline = timer_get_ticks() + NET_ARP_TIMEOUT_TICKS;
+            while (timer_get_ticks() < deadline) {
+                int n = net_recv_wait_until(buf, sizeof(buf), deadline);
+                if (n <= 0) break;
                 if (n < (int)(14 + sizeof(struct arp_pkt))) continue;
                 struct eth_hdr *eh = (struct eth_hdr *)buf;
                 if (htons_(eh->ethertype) != ETHERTYPE_ARP) continue;
@@ -238,11 +249,12 @@ int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]) {
             (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
             (target_ip >> 8) & 0xFF, target_ip & 0xFF);
 
-    /* Poll for the ARP reply. */
+    /* Wait for the ARP reply. */
     uint8_t buf[2048];
-    uint64_t start_ticks = timer_get_ticks();
-    while (timer_get_ticks() - start_ticks < 100) { /* 1.0 second timeout */
-        int n = e1000_recv(buf, sizeof(buf));
+    uint64_t deadline = timer_get_ticks() + NET_ARP_TIMEOUT_TICKS;
+    while (timer_get_ticks() < deadline) {
+        int n = net_recv_wait_until(buf, sizeof(buf), deadline);
+        if (n <= 0) break;
         if (n < (int)(14 + sizeof(struct arp_pkt))) {
             continue;
         }
@@ -320,7 +332,7 @@ int net_ping(uint32_t target_ip) {
     memcpy(eh->src_mac, our_mac, 6);
     eh->ethertype = htons_(ETHERTYPE_IPV4);
 
-    if (e1000_send(pkt, 14 + 20 + 8 + 32) < 0) {
+    if (netdev_send(pkt, 14 + 20 + 8 + 32) < 0) {
         kprintf("[net] ICMP echo request TX failed\n");
         return -1;
     }
@@ -328,11 +340,12 @@ int net_ping(uint32_t target_ip) {
             (target_ip >> 24) & 0xFF, (target_ip >> 16) & 0xFF,
             (target_ip >> 8) & 0xFF, target_ip & 0xFF);
 
-    /* 5) Poll for the ICMP echo reply. */
+    /* 5) Wait for the ICMP echo reply. */
     uint8_t buf[2048];
-    uint64_t start_ticks = timer_get_ticks();
-    while (timer_get_ticks() - start_ticks < 200) { /* 2.0 second timeout */
-        int n = e1000_recv(buf, sizeof(buf));
+    uint64_t deadline = timer_get_ticks() + NET_ICMP_TIMEOUT_TICKS;
+    while (timer_get_ticks() < deadline) {
+        int n = net_recv_wait_until(buf, sizeof(buf), deadline);
+        if (n <= 0) break;
         if (n < (int)(14 + 20 + 8)) {
             continue;
         }
@@ -371,10 +384,14 @@ struct udp_hdr {
  * Resolves the MAC via ARP, builds Ethernet + IPv4 + UDP, and transmits.
  * Returns 0 on success, -1 on failure.
  */
-static int net_udp_send(uint32_t dst_ip, uint16_t dst_port,
-                        uint16_t src_port, const void *data, uint32_t data_len) {
+int net_udp_sendto(uint32_t dst_ip, uint16_t dst_port,
+                   uint16_t src_port, const void *data, uint32_t data_len) {
     uint8_t dst_mac[6];
     if (net_arp_resolve(dst_ip, dst_mac) != 0) {
+        return -1;
+    }
+
+    if (data_len > 1472) {
         return -1;
     }
 
@@ -418,40 +435,53 @@ static int net_udp_send(uint32_t dst_ip, uint16_t dst_port,
         memset(pkt + frame_len, 0, 60 - frame_len);
         frame_len = 60;
     }
-    if (e1000_send(pkt, frame_len) < 0) {
+    if (netdev_send(pkt, frame_len) < 0) {
         return -1;
     }
     return 0;
 }
 
 /*
- * Poll for a UDP packet from dst_ip:dst_port. Copies up to bufsize bytes of
+ * Wait for a UDP packet from dst_ip:dst_port. Copies up to bufsize bytes of
  * the UDP payload into buf. Returns payload length, or -1 on timeout.
  */
-static int net_udp_recv(uint32_t src_ip, uint16_t src_port,
-                        void *buf, uint32_t bufsize) {
+int net_udp_recvfrom(uint16_t local_port, uint32_t *src_ip, uint16_t *src_port,
+                     void *buf, uint32_t bufsize, uint64_t timeout_ticks) {
     uint8_t rbuf[2048];
-    uint64_t start_ticks = timer_get_ticks();
-    while (timer_get_ticks() - start_ticks < 200) { /* 2.0 second timeout */
-        int n = e1000_recv(rbuf, sizeof(rbuf));
+    uint64_t deadline = timer_get_ticks() + (timeout_ticks ? timeout_ticks : NET_UDP_TIMEOUT_TICKS);
+    while (timer_get_ticks() < deadline) {
+        int n = net_recv_wait_until(rbuf, sizeof(rbuf), deadline);
+        if (n <= 0) break;
         if (n < (int)(14 + 20 + 8)) continue;
         struct eth_hdr *eh = (struct eth_hdr *)rbuf;
         if (htons_(eh->ethertype) != ETHERTYPE_IPV4) continue;
         struct ipv4_hdr *ip = (struct ipv4_hdr *)(rbuf + 14);
         if (ip->protocol != IP_PROTO_UDP) continue;
-        if (htonl_(ip->src_ip) != src_ip) continue;
         struct udp_hdr *udp = (struct udp_hdr *)(rbuf + 14 + 20);
-        if (htons_(udp->src_port) != src_port) continue;
+        if (htons_(udp->dst_port) != local_port) continue;
 
-        /* Found it. Copy the payload. */
         uint16_t udp_len = htons_(udp->length);
         if (udp_len < 8) return -1;
         uint16_t payload_len = udp_len - 8;
+        if ((uint32_t)(14 + 20 + 8 + payload_len) > (uint32_t)n) continue;
         if (payload_len > bufsize) payload_len = (uint16_t)bufsize;
         memcpy(buf, rbuf + 14 + 20 + 8, payload_len);
+        if (src_ip) *src_ip = htonl_(ip->src_ip);
+        if (src_port) *src_port = htons_(udp->src_port);
         return payload_len;
     }
     return -1;
+}
+
+static int net_udp_recv(uint32_t src_ip, uint16_t src_port,
+                        void *buf, uint32_t bufsize) {
+    uint32_t got_ip = 0;
+    uint16_t got_port = 0;
+    int n = net_udp_recvfrom(12345, &got_ip, &got_port, buf, bufsize,
+                             NET_UDP_TIMEOUT_TICKS);
+    if (n < 0) return -1;
+    if (got_ip != src_ip || got_port != src_port) return -1;
+    return n;
 }
 
 /* ---- DNS resolver ---- */
@@ -527,7 +557,7 @@ uint32_t net_dns_resolve(const char *hostname) {
 
     kprintf("[net] dns: resolving '%s' via 10.0.2.3:53...\n", hostname);
 
-    if (net_udp_send(dns_ip, 53, 12345, query, query_len) != 0) {
+    if (net_udp_sendto(dns_ip, 53, 12345, query, query_len) != 0) {
         kprintf("[net] dns: failed to send query\n");
         return 0;
     }
@@ -765,7 +795,7 @@ int net_dhcp(void) {
             memset(frame + frame_len, 0, 60 - frame_len);
             frame_len = 60;
         }
-        if (e1000_send(frame, frame_len) < 0) {
+        if (netdev_send(frame, frame_len) < 0) {
             kprintf("[dhcp] FAIL: DISCOVER transmit failed (link down or TX timeout)\n");
             return -1;
         }
@@ -779,10 +809,10 @@ int net_dhcp(void) {
     uint32_t server_id  = 0;
     uint32_t dns_ip     = 0;
 
-    uint64_t offer_start_ticks = timer_get_ticks();
-    while (timer_get_ticks() - offer_start_ticks < 200) { /* 2.0 second timeout */
-        int n = e1000_recv(rbuf, sizeof(rbuf));
-        if (n <= 0) continue;
+    uint64_t offer_deadline = timer_get_ticks() + NET_DHCP_OFFER_TIMEOUT_TICKS;
+    while (timer_get_ticks() < offer_deadline) {
+        int n = net_recv_wait_until(rbuf, sizeof(rbuf), offer_deadline);
+        if (n <= 0) break;
         if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
         struct eth_hdr *eh = (struct eth_hdr *)rbuf;
         if (htons_(eh->ethertype) != ETHERTYPE_IPV4) continue;
@@ -894,7 +924,7 @@ int net_dhcp(void) {
             memset(frame + frame_len, 0, 60 - frame_len);
             frame_len = 60;
         }
-        if (e1000_send(frame, frame_len) < 0) {
+        if (netdev_send(frame, frame_len) < 0) {
             kprintf("[dhcp] FAIL: REQUEST transmit failed (link down or TX timeout)\n");
             return -1;
         }
@@ -904,9 +934,10 @@ int net_dhcp(void) {
             (offered_ip >> 8) & 0xFF, offered_ip & 0xFF);
 
     /* --- Step 4: Wait for DHCPACK --- */
-    uint64_t ack_start_ticks = timer_get_ticks();
-    while (timer_get_ticks() - ack_start_ticks < 200) { /* 2.0 second timeout */
-        int n = e1000_recv(rbuf, sizeof(rbuf));
+    uint64_t ack_deadline = timer_get_ticks() + NET_DHCP_ACK_TIMEOUT_TICKS;
+    while (timer_get_ticks() < ack_deadline) {
+        int n = net_recv_wait_until(rbuf, sizeof(rbuf), ack_deadline);
+        if (n <= 0) break;
         if (n < (int)(14 + 20 + 8 + sizeof(struct dhcp_pkt))) continue;
         struct eth_hdr *eh = (struct eth_hdr *)rbuf;
         if (htons_(eh->ethertype) != ETHERTYPE_IPV4) continue;
@@ -973,14 +1004,26 @@ int net_init(void) {
     our_ip     = ip_from_octets(OUR_IP_O0, OUR_IP_O1, OUR_IP_O2, OUR_IP_O3);
     gateway_ip = ip_from_octets(GW_IP_O0, GW_IP_O1, GW_IP_O2, GW_IP_O3);
 
-    if (e1000_init() != 0) {
+    /* Backend selection: e1000 is the default NIC.  When it is absent we fall
+     * back to a modern virtio-net device.  The first NIC registered with the
+     * netdev layer becomes the active one, so e1000 takes priority. */
+    int have_nic = 0;
+    if (e1000_init() == 0) {
+        e1000_register_netdev();
+        have_nic = 1;
+    } else if (virtio_net_init() == 0) {
+        virtio_net_register_netdev();
+        have_nic = 1;
+    }
+    if (!have_nic || !netdev_active()) {
         kprintf("[net] no NIC available\n");
         return -1;
     }
+    kprintf("[net] using NIC: %s\n", netdev_name());
 
-    e1000_get_mac(our_mac);
+    netdev_get_mac(our_mac);
 
-    if (!e1000_link_up()) {
+    if (!netdev_link_up()) {
         kprintf("[net] link is down; skipping DHCP and network self-tests\n");
         return -1;
     }

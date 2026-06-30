@@ -209,15 +209,23 @@ Current caveats:
 | 85 | `net_recv` | `net_recv(buf, len)` | 🧪 | Polling receive on the global TCP connection. |
 | 86 | `net_close` | `net_close()` | 🧪 | Closes the global TCP connection. |
 | 87 | `net_ping` | `net_ping(ip)` | 🧪 | Legacy ICMP echo via kernel networking stack. |
+| 44 | `sendto` | `sendto(sock, buf, len, flags, dest_addr, addrlen)` | 🧪 | Sends one AF_INET/SOCK_DGRAM datagram. `flags` is currently ignored; `dest_addr` must be `sockaddr_in`. |
+| 45 | `recvfrom` | `recvfrom(sock, buf, len, flags, src_addr, addrlen)` | 🧪 | Receives one AF_INET/SOCK_DGRAM datagram using the IRQ-backed UDP wait path. `flags` is currently ignored. |
 | 100 | `mkdir` | `mkdir(path)` | ✅/🧪 | Creates a directory when the mounted FS supports it (`/fat`, `/ext2`). |
 | 101 | `rmdir` | `rmdir(path)` | ✅/🧪 | Removes an empty directory. |
 | 102 | `unlink` | `unlink(path)` | ✅/🧪 | Removes a regular file. |
 | 103 | `rename` | `rename(from, to)` | ✅/🧪 | Renames/moves within supported filesystems. |
 | 104 | `truncate` | `truncate(path, size)` | ✅/🧪 | Shrinks or extends supported regular files. |
-| 105 | `stat` | `stat(path, struct stat*)` | ✅/🧪 | Fills the AuraLite `struct stat` subset. |
+| 105 | `stat` | `stat(path, struct stat*)` | ✅/🧪 | Fills the AuraLite `struct stat` subset; follows a final symlink. |
+| 106 | `mkfifo` | `mkfifo(path, mode)` | 🧪 | Creates a baseline in-memory named FIFO (`/tmp` tested). Backed by the shared pipe ring + wait queues; `lseek` returns `ESPIPE`. |
+| 5 | `fstat` | `fstat(fd, struct stat*)` | ✅/🧪 | Stats an open descriptor; copies a kernel `struct vfs_stat` out. |
+| 6 | `lstat` | `lstat(path, struct stat*)` | 🧪 | Like `stat` but reports the symlink itself (`ST_TYPE_SYMLINK`) instead of following it. |
+| 88 | `symlink` | `symlink(target, linkpath)` | 🧪 | Creates a baseline in-memory symbolic link (registry keyed by absolute link path). |
+| 89 | `readlink` | `readlink(path, buf, bufsiz)` | 🧪 | Returns the link target bytes (no NUL terminator), `-EINVAL` on a non-link path. |
+| 90 | `link` | `link(oldpath, newpath)` | ❌ | Reserved number; hard links return `-ENOSYS`. |
 | 200 | `gui_call` | packed GUI dispatcher | 🧪 | Window lifecycle, drawing, invalidation, render and cursor operations. Used through `libauragui`. |
 | 201 | `gui_event` | `gui_event(wid, out, block)` | 🧪 | Polls or waits for GUI events for a window. Used through `libauragui`. |
-| 300 | `socket` | `socket(domain, type, protocol)` | 🧪 | Creates a process-owned AF_INET/SOCK_STREAM socket handle. |
+| 300 | `socket` | `socket(domain, type, protocol)` | 🧪 | Creates a process-owned AF_INET socket handle. `SOCK_STREAM` and `SOCK_DGRAM` are supported. |
 | 301 | `socket_connect` | `connect(sock, ip, port)` | 🧪 | Connects a socket to an IPv4 endpoint. |
 | 302 | `socket_send` | `send(sock, buf, len)` | 🧪 | Sends bytes on a connected socket with user-copy validation. |
 | 303 | `socket_recv` | `recv(sock, buf, len)` | 🧪 | Receives bytes from a connected socket. |
@@ -250,6 +258,10 @@ int     connect(int sock, uint32_t ip, uint16_t port);
 int     send(int sock, const void *data, uint32_t len);
 int     recv(int sock, void *buf, uint32_t bufsize);
 int     closesocket(int sock);
+ssize_t sendto(int sock, const void *buf, size_t len, int flags,
+               const struct sockaddr *dest_addr, socklen_t addrlen);
+ssize_t recvfrom(int sock, void *buf, size_t len, int flags,
+                 struct sockaddr *src_addr, socklen_t *addrlen);
 int     mkdir(const char *path);
 int     rmdir(const char *path);
 int     unlink(const char *path);

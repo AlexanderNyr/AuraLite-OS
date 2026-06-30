@@ -37,6 +37,9 @@ uint8_t pci_get_class(uint8_t bus, uint8_t dev, uint8_t func);
 /* Read a BAR (base address register) value at offset 0x10+4*n. */
 uint32_t pci_get_bar(uint8_t bus, uint8_t dev, uint8_t func, uint8_t bar_idx);
 
+/* Read the legacy PCI interrupt line register (offset 0x3C, low byte). */
+uint8_t pci_get_interrupt_line(uint8_t bus, uint8_t dev, uint8_t func);
+
 /* Enable bus mastering (so the device can DMA). */
 void pci_enable_bus_master(uint8_t bus, uint8_t dev, uint8_t func);
 

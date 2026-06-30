@@ -287,6 +287,7 @@ static int dir_read_entry(uint32_t dir_cluster, uint32_t off, uint8_t out[32]) {
 }
 
 /* Write a 32-byte dir entry at `off`. */
+static int read_entry_times(uint32_t dir_cluster, uint32_t off, uint64_t *ctime, uint64_t *mtime, uint64_t *atime);
 static int dir_write_entry(uint32_t dir_cluster, uint32_t off, const uint8_t in[32]) {
     uint32_t cl_idx = off / fs.bytes_per_clus;
     uint32_t in_off = off % fs.bytes_per_clus;
@@ -667,6 +668,8 @@ static struct fat_vinfo *vinfo_intern(const char *path,
             vinfo_pool[i].dirent_offset  = dirent_off;
             vinfo_pool[i].is_dir         = (uint8_t)is_dir;
             vinfo_pool[i].vnode.size     = size;
+            read_entry_times(parent_cluster, dirent_off, &vinfo_pool[i].vnode.ctime,
+                             &vinfo_pool[i].vnode.mtime, &vinfo_pool[i].vnode.atime);
             return &vinfo_pool[i];
         }
     }
@@ -688,6 +691,8 @@ static struct fat_vinfo *vinfo_intern(const char *path,
             v->vnode.ops      = &fat32_ops;
             v->vnode.fs_data  = v;
             v->vnode.inode_id = first_cluster;
+            read_entry_times(parent_cluster, dirent_off, &v->vnode.ctime,
+                             &v->vnode.mtime, &v->vnode.atime);
             return v;
         }
     }
@@ -749,6 +754,45 @@ static void fat_now(uint16_t *out_date, uint16_t *out_time) {
     uint16_t m = (bump / 60) % 60;
     uint16_t h = (bump / 3600) % 24;
     *out_time = (h << 11) | (m << 5) | s;
+}
+
+
+static int is_leap_year(int y) {
+    return (y % 4 == 0) && (y % 100 != 0 || y % 400 == 0);
+}
+
+static uint64_t ymdhms_to_epoch(int y, int mo, int d, int h, int mi, int se) {
+    static const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    if (y < 1980 || mo < 1 || mo > 12 || d < 1 || h < 0 || h > 23 || mi < 0 || mi > 59 || se < 0 || se > 59) return 0;
+    uint64_t days = 0;
+    for (int yr = 1970; yr < y; yr++) days += 365 + is_leap_year(yr);
+    for (int m = 1; m < mo; m++) days += mdays[m - 1] + ((m == 2 && is_leap_year(y)) ? 1 : 0);
+    days += (uint64_t)(d - 1);
+    return days * 86400ULL + (uint64_t)h * 3600ULL + (uint64_t)mi * 60ULL + (uint64_t)se;
+}
+
+static uint64_t fat_datetime_to_epoch(uint16_t date, uint16_t time) {
+    if (date == 0) return 0;
+    int y = 1980 + ((date >> 9) & 0x7F);
+    int mo = (date >> 5) & 0x0F;
+    int d = date & 0x1F;
+    int h = (time >> 11) & 0x1F;
+    int mi = (time >> 5) & 0x3F;
+    int se = (time & 0x1F) * 2;
+    return ymdhms_to_epoch(y, mo, d, h, mi, se);
+}
+
+static uint64_t fat_date_to_epoch(uint16_t date) {
+    return fat_datetime_to_epoch(date, 0);
+}
+
+static int read_entry_times(uint32_t dir_cluster, uint32_t off, uint64_t *ctime, uint64_t *mtime, uint64_t *atime) {
+    uint8_t e[32];
+    if (dir_read_entry(dir_cluster, off, e) != 0) return -1;
+    if (ctime) *ctime = fat_datetime_to_epoch(rd16(e + 16), rd16(e + 14));
+    if (mtime) *mtime = fat_datetime_to_epoch(rd16(e + 24), rd16(e + 22));
+    if (atime) *atime = fat_date_to_epoch(rd16(e + 18));
+    return 0;
 }
 
 /* Write a short directory entry. */
@@ -987,6 +1031,16 @@ static int64_t fat32_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
         memcpy(out + done, cluster_buf + off, chunk);
         done += chunk;
     }
+    if (done > 0) {
+        uint8_t e[32];
+        if (dir_read_entry(v->parent_cluster, v->dirent_offset, e) == 0) {
+            uint16_t d, t;
+            fat_now(&d, &t);
+            wr16(e + 18, d);
+            dir_write_entry(v->parent_cluster, v->dirent_offset, e);
+            vn->atime = fat_date_to_epoch(d);
+        }
+    }
     return (int64_t)done;
 }
 
@@ -1016,6 +1070,7 @@ static int64_t fat32_write(struct vnode *vn, uint64_t pos, const void *buf, uint
     if (end > v->size) v->size = (uint32_t)end;
     v->vnode.size = v->size;
     update_sfn_entry(v->parent_cluster, v->dirent_offset, v->first_cluster, v->size);
+    read_entry_times(v->parent_cluster, v->dirent_offset, &vn->ctime, &vn->mtime, &vn->atime);
     return (int64_t)done;
 }
 
@@ -1180,6 +1235,7 @@ static int fat32_truncate_op(struct vnode *vn, uint64_t new_size) {
     v->size = (uint32_t)new_size;
     v->vnode.size = new_size;
     update_sfn_entry(v->parent_cluster, v->dirent_offset, v->first_cluster, v->size);
+    read_entry_times(v->parent_cluster, v->dirent_offset, &vn->ctime, &vn->mtime, &vn->atime);
     return 0;
 }
 
@@ -1195,6 +1251,7 @@ static int fat32_stat_op(struct vnode *vn, struct vfs_stat *st) {
     st->inode  = v->first_cluster;
     st->nlink  = 1;
     st->blocks = (v->size + fs.bytes_per_clus - 1) / fs.bytes_per_clus;
+    read_entry_times(v->parent_cluster, v->dirent_offset, &st->ctime, &st->mtime, &st->atime);
     return 0;
 }
 

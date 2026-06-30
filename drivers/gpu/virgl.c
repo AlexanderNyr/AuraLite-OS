@@ -211,6 +211,29 @@ int virgl_create_scanout_render_target(uint32_t resource_id, uint32_t width, uin
     return virgl_submit(&cb);
 }
 
+int virgl_present_render_target(uint32_t resource_id, uint32_t width, uint32_t height) {
+    if (!virgl_available() || resource_id == 0 || width == 0 || height == 0) return -1;
+    /* The default render target is a B8G8R8X8 2D texture: 4 bytes per pixel. */
+    uint32_t stride = width * 4u;
+    if (virtio_gpu_transfer_to_host_3d(VIRGL_CTX_DEFAULT, resource_id,
+                                       0, 0, 0, width, height, 1,
+                                       0, 0, stride, stride * height) != 0) {
+        kprintf("[virgl] present: transfer-to-host-3d failed\n");
+        return -1;
+    }
+    if (virtio_gpu_set_scanout_resource(0, resource_id, 0, 0, width, height) != 0) {
+        kprintf("[virgl] present: set-scanout failed\n");
+        return -1;
+    }
+    if (virtio_gpu_flush_resource(resource_id, 0, 0, width, height) != 0) {
+        kprintf("[virgl] present: resource-flush failed\n");
+        return -1;
+    }
+    kprintf("[virgl] presented render target res=%u to scanout 0 (%ux%u)\n",
+            resource_id, width, height);
+    return 0;
+}
+
 int virgl_clear_screen(float r, float g, float b, float a) {
     if (!virgl_available()) return -1;
     virgl_cmd_buf_t cb;
@@ -232,6 +255,7 @@ int virgl_demo_submit_clear(void) {
         kprintf("[virgl] clear submit failed\n");
         return -1;
     }
+    (void)virgl_present_render_target(default_rt_res, w, h);
     kprintf("[virgl] submitted experimental clear to 3D context\n");
     return 0;
 }
@@ -399,6 +423,7 @@ int virgl_demo_submit_triangle(void) {
         kprintf("[virgl] triangle submit failed\n");
         return -1;
     }
+    (void)virgl_present_render_target(default_rt_res, w, h);
     kprintf("[virgl] submitted experimental triangle command stream fence=%llu\n",
             (unsigned long long)fence);
     return 0;

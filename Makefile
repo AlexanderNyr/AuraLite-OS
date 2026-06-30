@@ -166,7 +166,9 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
              $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
              $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf \
-             $(USER_BUILD)/tcpserver.elf
+             $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
+             $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
+             $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf
 
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
@@ -198,6 +200,26 @@ $(USER_BUILD)/http.o: userspace/http/http.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/tcpserver.o: userspace/tcpserver/tcpserver.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/elfperm.o: userspace/elfperm/elfperm.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/udptest.o: userspace/udptest/udptest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/timestest.o: userspace/timestest/timestest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/fifolinktest.o: userspace/fifolinktest/fifolinktest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/stackguard.o: userspace/stackguard/stackguard.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -436,6 +458,11 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/gbrowser.elf $(INITRD_DIR)/gbrowser
 	@cp $(USER_BUILD)/gusb.elf    $(INITRD_DIR)/gusb
 	@cp $(USER_BUILD)/tcpserver.elf $(INITRD_DIR)/tcpserver
+	@cp $(USER_BUILD)/elfperm.elf $(INITRD_DIR)/elfperm
+	@cp $(USER_BUILD)/udptest.elf $(INITRD_DIR)/udptest
+	@cp $(USER_BUILD)/timestest.elf $(INITRD_DIR)/timestest
+	@cp $(USER_BUILD)/fifolinktest.elf $(INITRD_DIR)/fifolinktest
+	@cp $(USER_BUILD)/stackguard.elf $(INITRD_DIR)/stackguard
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
@@ -465,7 +492,10 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_jobcontrol \
                 $(BUILD_DIR)/test_permissions \
                 $(BUILD_DIR)/test_cow \
-                $(BUILD_DIR)/test_slab
+                $(BUILD_DIR)/test_slab \
+                $(BUILD_DIR)/test_virgl \
+                $(BUILD_DIR)/test_virtio_net \
+                $(BUILD_DIR)/test_stack_guard
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -501,6 +531,18 @@ $(BUILD_DIR)/test_libc: tests/unit/test_libc.c
 $(BUILD_DIR)/test_3d: tests/unit/test_3d.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@ -lm
+
+$(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_virtio_net: tests/unit/test_virtio_net.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_stack_guard: tests/unit/test_stack_guard.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_usb: tests/unit/test_usb.c
 	@mkdir -p $(BUILD_DIR)
