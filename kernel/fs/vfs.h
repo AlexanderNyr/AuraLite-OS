@@ -234,6 +234,8 @@ void    vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexe
                          const uint8_t *src_cloexec);
 void    vfs_close_ofd(struct ofd *o, struct vnode *unused);
 int     vfs_close(int fd);
+/* read from @o at @offset directly into a physical frame. Returns bytes read. */
+int64_t vfs_read_at_phys(struct ofd *o, uint64_t offset, uint64_t phys, uint64_t count);
 
 /* dup(): allocate a new FD that refers to the same vnode/offset.  Returns
  * the new FD or -1.  Cloexec is cleared on the returned FD (matches POSIX). */

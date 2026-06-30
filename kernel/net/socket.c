@@ -188,7 +188,14 @@ int64_t socket_recvfrom(int sid, void *buf, uint32_t len,
     if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND &&
         s->state != SOCK_SLOT_CONNECTED) return -1;
     uint16_t local_port = udp_auto_bind(s);
-    return net_udp_recvfrom(local_port, src_ip, src_port, buf, len, 200);
+    
+    /* Simplified blocking: poll with a small timeout in a loop. 
+     * A full wait_queue implementation would go in net_udp_recvfrom. */
+    while (1) {
+        int64_t r = net_udp_recvfrom(local_port, src_ip, src_port, buf, len, 10);
+        if (r != 0) return r;
+        __asm__ volatile ("pause");
+    }
 }
 
 void socket_close_process(uint64_t owner_pid) {

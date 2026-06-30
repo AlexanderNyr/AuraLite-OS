@@ -68,6 +68,7 @@ typedef struct {
 #define SYS_MKFIFO   106  /* N5.2: named FIFO */
 #define SYS_MMAP     9
 #define SYS_MUNMAP   11
+#define SYS_MPROTECT  10
 #define SYS_BRK      12
 #define SYS_LSEEK    8    /* P3 */
 #define SYS_IOCTL   16    /* P5 */
@@ -323,19 +324,11 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     tcb_t *cur = sched_current();
     if (!cur || len == 0) return (uint64_t)-EINVAL;
 
-    /* First implementation: eager MAP_PRIVATE mappings.  Anonymous mappings
-     * are zero-filled; file-backed mappings read the file contents now (not a
-     * shared page-cache VMA yet).  PROT_NONE would need VMA fault bookkeeping,
-     * so reject it for now. */
+    /* Validation of prot and flags (as before). */
     int anonymous = (flags & MAP_ANONYMOUS) ? 1 : 0;
     if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || prot == 0) {
         return (uint64_t)-EINVAL;
     }
-    /* Exactly one of MAP_SHARED / MAP_PRIVATE must be requested.  We do not
-     * yet implement true shared mappings (no shared page-cache VMAs); for
-     * anonymous MAP_SHARED we degrade to a private mapping so single-process
-     * users (e.g. POSIX shm-style scratch buffers) still work.  File-backed
-     * MAP_SHARED, which would require write-back, is rejected.  See TODO.md. */
     if (!(flags & (MAP_SHARED | MAP_PRIVATE))) return (uint64_t)-EINVAL;
     if ((flags & MAP_SHARED) && !anonymous) return (uint64_t)-ENOSYS;
     if (anonymous) {
@@ -376,53 +369,52 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
         cur->mmap_next = addr + len;
     }
 
-    uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
-    if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;
-    if (!(prot & PROT_EXEC)) pte_flags |= PAGE_FLAG_NO_EXEC;
+    /* Determine VMA flags. */
+    uint32_t vflags = anonymous ? VMA_ANON : VMA_FILE;
+    if (prot & PROT_READ)  vflags |= VMA_READ;
+    if (prot & PROT_WRITE) vflags |= VMA_WRITE;
+    if (prot & PROT_EXEC)  vflags |= VMA_EXEC;
+    if (flags & MAP_SHARED) vflags |= VMA_SHARED;
 
-    int64_t old_pos = -1;
+    struct ofd *file_ofd = NULL;
     if (!anonymous) {
-        old_pos = vfs_lseek((int)fd, 0, 1);
-        if (old_pos < 0) return (uint64_t)-EBADF;
-        if (vfs_lseek((int)fd, (int64_t)off, 0) < 0) {
-            (void)vfs_lseek((int)fd, old_pos, 0);
-            return (uint64_t)-EINVAL;
-        }
+        file_ofd = cur->fd_table[fd];
     }
 
-    uint64_t hhdm = limine_get_hhdm_offset();
-    uint64_t mapped = 0;
-    for (; mapped < len; mapped += PAGE_SIZE_BYTES) {
-        uint64_t phys = pmm_alloc_frame();
-        if (!phys) goto fail;
-        memset((void *)(uintptr_t)(hhdm + phys), 0, PAGE_SIZE_BYTES);
-        if (!anonymous) {
-            int64_t rd = vfs_read((int)fd, (void *)(uintptr_t)(hhdm + phys),
-                                  PAGE_SIZE_BYTES);
-            if (rd < 0) {
-                pmm_free_frame(phys);
-                goto fail;
+    /* Create the VMA descriptor. No physical allocation here. */
+    if (vma_insert(&cur->vma_list, addr, addr + len,
+                   vflags, file_ofd, off) != 0) {
+        return (uint64_t)-ENOMEM;
+    }
+
+    /* MAP_POPULATE: eager allocation (optional). */
+    if (flags & 0x4000) { /* MAP_POPULATE */
+        uint64_t hhdm = limine_get_hhdm_offset();
+        uint64_t mapped = 0;
+        uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
+        if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;
+        if (!(prot & PROT_EXEC)) pte_flags |= PAGE_FLAG_NO_EXEC;
+
+        for (; mapped < len; mapped += PAGE_SIZE_BYTES) {
+            uint64_t phys = pmm_alloc_frame();
+            if (!phys) {
+                /* Partial populate: we just stop and return the addr. */
+                break;
             }
+            memset((void *)(uintptr_t)(hhdm + phys), 0, PAGE_SIZE_BYTES);
+            if (!anonymous && file_ofd) {
+                vfs_read_at_phys(file_ofd, off + mapped, phys, PAGE_SIZE_BYTES);
+            }
+            paging_map(addr + mapped, phys, pte_flags);
         }
-        paging_map(addr + mapped, phys, pte_flags);
     }
-    if (!anonymous) (void)vfs_lseek((int)fd, old_pos, 0);
-    return addr;
 
-fail:
-    if (!anonymous && old_pos >= 0) (void)vfs_lseek((int)fd, old_pos, 0);
-    for (uint64_t off2 = 0; off2 < mapped; off2 += PAGE_SIZE_BYTES) {
-        uint64_t phys = paging_get_phys(addr + off2);
-        if (phys) {
-            paging_unmap(addr + off2);
-            pmm_free_frame(phys);
-        }
-    }
-    return (uint64_t)-ENOMEM;
+    return addr;
 }
 
 static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
-    if (len == 0) return (uint64_t)-EINVAL;
+    tcb_t *cur = sched_current();
+    if (!cur || len == 0) return (uint64_t)-EINVAL;
     if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
     len = align_up_u64(len, PAGE_SIZE_BYTES);
     if (!user_mmap_range_ok(addr, len)) return (uint64_t)-EINVAL;
@@ -435,6 +427,43 @@ static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
             pmm_free_frame(phys);
         }
     }
+
+    vma_remove_range(&cur->vma_list, addr, addr + len);
+    return 0;
+}
+
+static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
+    tcb_t *cur = sched_current();
+    if (!cur || len == 0) return (uint64_t)-EINVAL;
+    if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
+    len = align_up_u64(len, PAGE_SIZE_BYTES);
+
+    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || prot == 0) {
+        return (uint64_t)-EINVAL;
+    }
+
+    vma_t *vma = vma_find(cur->vma_list, addr);
+    if (!vma || vma->va_start != addr || vma->va_end < addr + len) {
+        return (uint64_t)-ENOMEM;
+    }
+
+    uint32_t vflags = vma->flags & ~(VMA_READ | VMA_WRITE | VMA_EXEC);
+    if (prot & PROT_READ)  vflags |= VMA_READ;
+    if (prot & PROT_WRITE) vflags |= VMA_WRITE;
+    if (prot & PROT_EXEC)  vflags |= VMA_EXEC;
+    vma->flags = vflags;
+
+    uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
+    if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;
+    if (!(prot & PROT_EXEC)) pte_flags |= PAGE_FLAG_NO_EXEC;
+
+    for (uint64_t va = addr; va < addr + len; va += PAGE_SIZE_BYTES) {
+        uint64_t phys = paging_get_phys(va);
+        if (phys) {
+            paging_map(va, phys, pte_flags);
+        }
+    }
+
     return 0;
 }
 
@@ -1268,6 +1297,8 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return syscall_mmap(a1, a2, a3, a4, a5, a6);
     case SYS_MUNMAP:
         return syscall_munmap(a1, a2);
+    case SYS_MPROTECT:
+        return syscall_mprotect(a1, a2, a3);
     case SYS_BRK: {
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-ENOMEM;

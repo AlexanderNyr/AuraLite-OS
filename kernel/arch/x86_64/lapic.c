@@ -73,3 +73,23 @@ void lapic_timer_start(uint32_t hz) {
     uint32_t ticks = 100000000 / 16 / hz;
     lapic[LAPIC_TIMER_INIT / 4] = ticks;
 }
+
+void lapic_send_ipi_all_excluding_self(uint8_t vector) {
+    uint64_t hhdm = limine_get_hhdm_offset();
+    if (!hhdm) return;
+    uint64_t apic_base_msr;
+    uint32_t low, high;
+    __asm__ volatile ("rdmsr" : "=a"(low), "=d"(high) : "c"(0x1B));
+    apic_base_msr = ((uint64_t)high << 32) | low;
+    uint64_t lapic_phys = apic_base_msr & 0xFFFFF000ULL;
+    if (!lapic_phys) lapic_phys = 0xFEE00000ULL;
+    volatile uint32_t *lapic = (volatile uint32_t *)(uintptr_t)(hhdm + lapic_phys);
+
+    /* ICR High: Destination shorthand = All excluding self (3) */
+    lapic[0x310 / 4] = 0; 
+    /* ICR Low: Delivery Mode = Fixed (0), Vector = vector */
+    lapic[0x300 / 4] = (3u << 18) | (0u << 14) | vector;
+
+    /* Wait for delivery */
+    while (lapic[0x300 / 4] & (1u << 12)) {}
+}

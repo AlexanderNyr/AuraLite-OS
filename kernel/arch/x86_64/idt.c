@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "kernel/arch/x86_64/idt.h"
+#include "kernel/arch/x86_64/lapic.h"
 
 /* 256 handler entry-point addresses, laid out in isr.asm (.rodata). */
 extern uint64_t isr_table[IDT_ENTRIES];
@@ -34,4 +35,8 @@ void idt_init(void) {
     }
 
     lidt_load(&idtp);
+
+    /* Register TLB Shootdown IPI (vector 0xF0). */
+    extern void ipi_tlb_shootdown_handler(void);
+    idt_set_gate(0xF0, (uint64_t)ipi_tlb_shootdown_handler, IDT_GATE_INTERRUPT);
 }

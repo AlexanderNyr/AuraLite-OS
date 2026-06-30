@@ -10,6 +10,13 @@ struct cpu_local {
     uint64_t          cpu_id;
     struct tcb       *current;
     struct tcb       *idle;
+
+    /* Per-CPU run queue */
+    spinlock_t        rq_lock;
+    struct tcb       *rq_head;
+    struct tcb       *rq_tail;
+    uint32_t          rq_len;
+    uint64_t          steal_count;
 };
 
 void cpu_local_init(uint64_t cpu_id);

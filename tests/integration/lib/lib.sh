@@ -129,7 +129,13 @@ il_run_qemu() {
     local timeout_s="$1"; shift
     local extra=( "$@" )
 
+    # Ensure the log directory exists
+    mkdir -p "$(dirname "$log")"
     : > "$log"
+    export IL_LAST_LOG="$log"
+
+    # Compose the QEMU command line.  We always include:
+    # ...
 
     # Compose the QEMU command line.  We always include:
     #   - serial → stdio (we read from it, write to it)

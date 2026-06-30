@@ -68,6 +68,7 @@ typedef struct tcb {
     /* Program break (brk) / heap tracking. */
     uint64_t  brk;               /* Current user heap end */
     uint64_t  mmap_next;         /* Next anonymous mmap hint address */
+    struct vma  *vma_list;         /* sorted list of virtual memory areas */
 
     /* Saved user-mode return frame used by fork()'s child to re-enter user
      * space at the exact instruction that issued the SYSCALL.  Recorded by

@@ -941,7 +941,23 @@ void vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
     }
 }
 
-/* ---- Path operations ---- */
+/*
+ * vfs_read_at_phys() — read bytes from @o at @offset directly into a physical frame.
+ * Used by the demand paging fault handler to fill new pages from files.
+ * Returns bytes read (>= 0) or a negative errno.
+ */
+int64_t vfs_read_at_phys(struct ofd *o, uint64_t offset, uint64_t phys, uint64_t count) {
+    if (!o || !o->vn) return -EBADF;
+    if (!o->vn->ops->read) return -EINVAL;
+    
+    uint64_t hhdm = limine_get_hhdm_offset();
+    void *dst = (void *)(uintptr_t)(hhdm + phys);
+    
+    /* Call the vnode's read operation. Since we are in kernel context, 
+     * we don't need to worry about user-range validation. */
+    int64_t n = o->vn->ops->read(o->vn, offset, dst, count);
+    return n;
+}
 
 int vfs_mkdir(const char *path, uint32_t mode) {
     struct vnode *pvn = resolve_parent_vnode(path);

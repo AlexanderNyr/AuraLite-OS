@@ -128,6 +128,22 @@ typedef struct {
     uint16_t     src_port;     /* our ephemeral port */
     uint32_t     seq;          /* our next sequence number */
     uint32_t     ack;          /* next byte we expect from peer */
+    
+    /* Sliding Window & Congestion Control */
+    uint32_t     snd_una;      /* oldest unacknowledged byte */
+    uint32_t     snd_nxt;      /* next byte to send */
+    uint32_t     snd_wnd;      /* receiver's window (from ACK) */
+    uint32_t     rcv_wnd;      /* our receive window */
+    uint32_t     cwnd;         /* congestion window */
+    uint32_t     ssthresh;     /* slow start threshold */
+    uint32_t     rtt_ms;       /* smoothed RTT */
+    uint32_t     rto_ms;       /* retransmission timeout */
+
+    /* TX buffer for in-flight segments */
+    uint8_t      tx_buf[65536]; 
+    uint32_t     tx_buf_start; 
+    uint32_t     tx_buf_len;
+
     uint8_t      retx_valid;
     uint8_t      retx_flags;
     uint32_t     retx_seq;
@@ -638,58 +654,47 @@ int tcp_send(const void *data, uint32_t len) {
         return -1;
     }
 
-    /* Integration Test Fallback for simulated accepted connection */
+    /* Integration Test Fallback */
     if (conn_dst_port == 54321) {
         conn_seq += len;
         return (int)len;
     }
 
-    uint32_t offset = 0;
-    while (offset < len) {
-        uint32_t chunk = len - offset;
+    uint32_t bytes_sent = 0;
+    while (bytes_sent < len) {
+        /* Check Sliding Window: can we send more? */
+        if (conns[active_h].snd_nxt - conns[active_h].snd_una >= 
+            (conns[active_h].cwnd < conns[active_h].snd_wnd ? 
+             conns[active_h].cwnd : conns[active_h].snd_wnd)) {
+            /* Window full: wait for ACK. */
+            struct tcp_hdr rx;
+            int data_len = 0;
+            if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, TCP_RTO_TICKS) == 0) {
+                /* process ACK to slide window */
+                uint32_t acked = ntohl_(rx.ack);
+                if (acked > conns[active_h].snd_una) {
+                    conns[active_h].snd_una = acked;
+                    /* Grow cwnd (Slow Start) */
+                    conns[active_h].cwnd += 1460;
+                }
+            } else {
+                /* Timeout: Congestion! */
+                conns[active_h].ssthresh = conns[active_h].cwnd / 2;
+                conns[active_h].cwnd = 1460;
+                /* Retransmit oldest unacked */
+                tcp_retransmit_last();
+            }
+            continue;
+        }
+
+        uint32_t chunk = len - bytes_sent;
         if (chunk > TCP_MSS) chunk = TCP_MSS;
 
         uint32_t seg_seq = conn_seq;
-        uint32_t ack_target = seg_seq + chunk;
-        tcp_send_retx_segment(TCP_ACK | TCP_PSH, (const uint8_t *)data + offset,
+        tcp_send_retx_segment(TCP_ACK | TCP_PSH, (const uint8_t *)data + bytes_sent,
                               chunk, seg_seq, conn_ack);
-        conn_seq = ack_target;
-
-        struct tcp_hdr rx;
-        int data_len = 0;
-        int ack_ok = 0;
-        for (int attempt = 0; attempt <= TCP_MAX_RETRIES; attempt++) {
-            if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, TCP_RTO_TICKS) == 0) {
-                if (rx.flags & TCP_RST) {
-                    kprintf("[tcp] RST received during send\n");
-                    conn_state = TCP_CLOSED;
-                    return -1;
-                }
-                if (data_len > 0) {
-                    conn_ack += data_len;
-                    tcp_send_segment(TCP_ACK, NULL, 0);
-                }
-                if (rx.flags & TCP_ACK) {
-                    uint32_t acked = ntohl_(rx.ack);
-                    if (acked >= ack_target) {
-                        ack_ok = 1;
-                        break;
-                    }
-                }
-            }
-            if (attempt < TCP_MAX_RETRIES) {
-                kprintf("[tcp] RTO waiting for data ACK, retransmitting seq=%u (%d/%d)\n",
-                        seg_seq, attempt + 1, TCP_MAX_RETRIES);
-                tcp_retransmit_last();
-            }
-        }
-        if (!ack_ok) {
-            kprintf("[tcp] timeout waiting for data ACK\n");
-            return -1;
-        }
-        tcp_clear_retx();
-
-        offset += chunk;
+        conn_seq += chunk;
+        bytes_sent += chunk;
     }
 
     return (int)len;

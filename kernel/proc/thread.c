@@ -12,6 +12,7 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/slab.h"
+#include "kernel/mm/vma.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
@@ -418,6 +419,7 @@ void thread_reap_zombies(void) {
                 if (cur_cr3 == z->pml4_phys) {
                     paging_switch_to(kpml4);
                 }
+                vma_free_all(&z->vma_list);
                 reaped_frames = paging_free_address_space(z->pml4_phys);
             }
             z->pml4_phys = 0;

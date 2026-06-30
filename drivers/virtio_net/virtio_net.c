@@ -23,6 +23,7 @@
 #include "drivers/timer/pit.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/proc/wait_queue.h"
 
 #define VIRTIO_VENDOR_ID         0x1AF4
 #define VIRTIO_NET_MODERN_DEVICE 0x1041
@@ -148,6 +149,8 @@ static struct vnet_queue rxq;
 static struct vnet_queue txq;
 static uint8_t mac[6];
 static int have_mac;
+
+static struct wait_queue vnet_rx_wq;
 
 static uint16_t pci_read16_at(uint8_t off) {
     uint32_t v = pci_config_read(pci_bus, pci_dev, pci_func, off & 0xFC);
@@ -281,6 +284,17 @@ static void rx_fill(void) {
     notify_queue(&rxq, VNET_RXQ);
 }
 
+static void virtio_net_irq_handler(void) {
+    /* Drain the RX used ring */
+    while (rxq.used->idx != rxq.last_used_idx) {
+        /* Just acknowledge the packets for now, we don't do allocation in IRQ.
+         * We just mark the queue as having data. */
+        rxq.last_used_idx = rxq.used->idx;
+    }
+    wq_wake_all(&vnet_rx_wq);
+    /* EOI is usually handled by the ISR dispatcher or at the end of the handler. */
+}
+
 int virtio_net_init(void) {
     if (init_attempted) return init_result;
     init_attempted = 1;
@@ -354,6 +368,17 @@ int virtio_net_init(void) {
     }
 
     common_cfg->device_status |= VIRTIO_STATUS_DRIVER_OK;
+
+    /* Initialize RX wait queue. */
+    wq_init(&vnet_rx_wq);
+
+    /* Register IRQ handler. */
+    uint8_t irq_line = pci_get_interrupt_line(pci_bus, pci_dev, pci_func);
+    if (irq_line != 0xFF) {
+        irq_register_handler(irq_line, virtio_net_irq_handler);
+    } else {
+        kprintf("[virtio-net] could not find IRQ line\n");
+    }
 
     /* RX must be filled after DRIVER_OK so the device may consume buffers. */
     rx_fill();
@@ -461,15 +486,22 @@ int virtio_net_recv(void *out, uint32_t bufsize) {
 
 int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
     if (!virtio_net_available()) return -1;
-    uint64_t start = timer_get_ticks();
-    uint64_t deadline = timeout_ticks ? start + timeout_ticks : 0;
-
+    
     for (;;) {
         int n = virtio_net_recv(out, bufsize);
         if (n != 0) return n;
         if (!virtio_net_link_up()) return -1;
-        if (deadline && timer_get_ticks() >= deadline) return 0;
-        __asm__ volatile ("pause");
+
+        if (timeout_ticks == 0) {
+            wq_wait(&vnet_rx_wq);
+        } else {
+            uint64_t start = timer_get_ticks();
+            while (virtio_net_recv(out, bufsize) == 0) {
+                if (timer_get_ticks() - start >= timeout_ticks) return 0;
+                __asm__ volatile ("pause");
+            }
+            return virtio_net_recv(out, bufsize); // This is clumsy, but just for now.
+        }
     }
 }
 

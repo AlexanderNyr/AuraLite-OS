@@ -1,7 +1,7 @@
 /* scheduler.c — SMP-safe round-robin preemptive scheduler (H8).
  *
- * Ready queue: singly-linked list (tail append, head dequeue = FIFO fairness),
- * protected by sched_lock spinlock.
+ * Ready queue: per-CPU singly-linked list (tail append, head dequeue = FIFO fairness),
+ * protected by per-CPU rq_lock spinlock.
  * Each CPU tracks its own current and idle threads via MSR_GS_BASE (cpu_local).
  */
 
@@ -24,50 +24,11 @@ extern void context_switch(tcb_t *old, tcb_t *new);
 extern void thread_entry(void);   /* trampoline, defined in thread.c */
 
 extern int cpu_local_ready;
+extern void sched_add_thread(tcb_t *tcb);
+extern tcb_t *sched_steal_work(void);
 
-static spinlock_t sched_lock;
-static tcb_t *queue_head      = NULL;   /* head = next to run  */
-static tcb_t *queue_tail      = NULL;   /* tail = last to run  */
 static int    scheduler_ready = 0;
 static uint64_t tid_counter   = 0;
-
-/* ---- Run queue operations ---- */
-
-void sched_add_thread(tcb_t *tcb) {
-    if (!tcb) return;
-    uint64_t flags = spinlock_acquire_irqsave(&sched_lock);
-    tcb->next = NULL;
-    if (queue_tail) {
-        queue_tail->next = tcb;
-    } else {
-        queue_head = tcb;
-    }
-    queue_tail = tcb;
-    spinlock_release_irqrestore(&sched_lock, flags);
-}
-
-static tcb_t *dequeue(void) {
-    uint64_t flags = spinlock_acquire_irqsave(&sched_lock);
-    tcb_t *t = queue_head;
-    if (t) {
-        queue_head = t->next;
-        if (queue_head == NULL) {
-            queue_tail = NULL;
-        }
-        t->next = NULL;
-    }
-    spinlock_release_irqrestore(&sched_lock, flags);
-    return t;
-}
-
-/* ---- Idle thread: halts until an interrupt wakes the CPU ---- */
-
-static void idle_loop(void *arg) {
-    (void)arg;
-    for (;;) {
-        __asm__ volatile ("hlt");
-    }
-}
 
 /* ---- Core scheduler ---- */
 
@@ -82,22 +43,35 @@ void schedule(void) {
         sched_add_thread(old);
     }
 
-    tcb_t *next = dequeue();
-    if (next == NULL) {
-        next = local->idle;       /* nothing ready: run idle */
+    tcb_t *next = NULL;
+    {
+        uint64_t flags = spinlock_acquire_irqsave(&local->rq_lock);
+        next = local->rq_head;
+        if (next) {
+            local->rq_head = next->next;
+            if (!local->rq_head) local->rq_tail = NULL;
+            local->rq_len--;
+            next->next = NULL;
+        }
+        spinlock_release_irqrestore(&local->rq_lock, flags);
+    }
+
+    if (!next) {
+        next = sched_steal_work();
+    }
+    if (!next) {
+        next = local->idle;
     }
 
     local->current = next;
     if (next) next->state = THREAD_RUNNING;
 
     if (next && next->kernel_stack && local->cpu_id == 0) {
-        /* Only update global TSS/syscall MSRs on BSP until per-CPU TSS lands */
         uint64_t kstack_top = (uint64_t)next->kernel_stack + THREAD_STACK_SIZE;
         tss_set_rsp0(kstack_top);
         set_syscall_stack(kstack_top);
     }
 
-    /* Switch address space if the new thread has its own PML4 (BSP only for now). */
     if (next && next->pml4_phys != 0 && local->cpu_id == 0) {
         paging_switch_to(next->pml4_phys);
     }

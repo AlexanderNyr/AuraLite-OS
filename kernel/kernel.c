@@ -59,6 +59,7 @@
 #include "drivers/wifi/wifi.h"
 #include "drivers/timer/pit.h"
 #include "drivers/vm/virtual_drivers.h"
+#include "drivers/virtio_blk/virtio_blk.h"
 #include "kernel/audio/audio.h"
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
@@ -296,6 +297,11 @@ void kmain(void) {
     if (fat32_init() == 0) {
         vfs_mount("/fat", &fat32_ops, NULL);
         fat32_self_test();
+    }
+
+    /* VirtIO Block driver. */
+    if (virtio_blk_init() == 0) {
+        kprintf("[boot] virtio-blk initialized\n");
     }
 
     /* ext2 prefers the *second* AHCI disk so /fat and /ext2 stay independent.

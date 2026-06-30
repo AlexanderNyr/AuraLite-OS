@@ -136,6 +136,10 @@ void paging_unmap(uint64_t virt) {
     }
     *pte = 0;
     invlpg(virt);
+
+    /* TLB Shootdown: Invalidate this range on all other CPUs. */
+    extern void lapic_send_ipi_all_excluding_self(uint8_t vector);
+    lapic_send_ipi_all_excluding_self(0xF0);
 }
 
 int paging_protect(uint64_t virt, uint64_t flags) {

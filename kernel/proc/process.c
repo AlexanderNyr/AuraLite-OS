@@ -19,6 +19,7 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/mm/vma.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"
@@ -352,6 +353,15 @@ int64_t do_fork(void) {
                          child->cloexec, parent->cloexec);
         child->brk = parent->brk;
         child->mmap_next = parent->mmap_next;
+        child->vma_list = NULL;
+
+        /* Clone the VMA list from parent to child. */
+        vma_t *vma = parent->vma_list;
+        while (vma) {
+            vma_insert(&child->vma_list, vma->va_start, vma->va_end,
+                       vma->flags, vma->file, vma->file_off);
+            vma = vma->next;
+        }
         /* POSIX fork(): child inherits the signal dispositions and the blocked
          * mask, but its pending-signal set is empty. */
         for (int s = 0; s < NSIG; s++) child->sig_actions[s] = parent->sig_actions[s];
@@ -455,6 +465,9 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     kprintf("[proc] execve: read %lld bytes\n", (long long)total);
 
     /* 2) Create a fresh address space. */
+    if (cur) {
+        vma_free_all(&cur->vma_list);
+    }
     uint64_t new_pml4 = paging_new_address_space();
     if (new_pml4 == 0) {
         kfree(buf);
@@ -539,6 +552,10 @@ int64_t process_spawn(const char *path) {
     if (new_pml4 == 0) {
         return -1;
     }
+    /* If we are spawning from a thread that has a VMA list, 
+     * the child starts with a fresh one, but we don't need to 
+     * clear the parent's. Wait, process_spawn creates a NEW thread.
+     * So child->vma_list should be NULL. */
 
     /* Create a thread that will load the ELF in its own address space. */
     /* We need to pass the path somehow; for simplicity, we use a known
@@ -575,6 +592,7 @@ int64_t process_spawn(const char *path) {
         return -1;
     }
     child->pml4_phys = new_pml4;
+    child->vma_list = NULL;
     child->parent = sched_current();
     /* The spawned child joins the spawner's process group / session and shares
      * its controlling terminal (so a foreground spawn is killable by Ctrl+C). */
