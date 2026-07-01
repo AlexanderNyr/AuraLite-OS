@@ -187,6 +187,10 @@ struct ofd {
 struct wait_queue *vfs_get_read_wq(struct ofd *o);
 struct wait_queue *vfs_get_write_wq(struct ofd *o);
 
+/* Readiness helpers for select()/poll() — understand pipes/FIFOs (BUG-28). */
+int vfs_ofd_is_readable(struct ofd *o);
+int vfs_ofd_is_writable(struct ofd *o);
+
 /* A mount point. */
 struct vfs_mount {
     char     mount_path[VFS_PATH_MAX];

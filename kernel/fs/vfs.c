@@ -251,6 +251,31 @@ struct wait_queue *vfs_get_write_wq(struct ofd *o) {
     return &o->write_wq;
 }
 
+/* ---- select()/poll() readiness helpers (BUG-28) ------------------------ */
+
+int vfs_ofd_is_readable(struct ofd *o) {
+    if (!o || !o->vn) return 0;
+    /* Pipes and FIFOs: readiness is determined by the ring buffer byte count. */
+    if (o->vn->ops == &pipe_read_ops || o->vn->ops == &fifo_ops) {
+        struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
+        return p && p->used > 0;
+    }
+    /* Regular files and char devices: position < size, or non-blocking. */
+    return o->pos < o->vn->size || o->nonblock;
+}
+
+int vfs_ofd_is_writable(struct ofd *o) {
+    if (!o || !o->vn) return 0;
+    if (o->access_mode == O_RDONLY) return 0;
+    /* Pipe write end / FIFO: ready if space is available in the ring buffer. */
+    if (o->vn->ops == &pipe_write_ops || o->vn->ops == &fifo_ops) {
+        struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
+        return p && p->used < PIPE_BUF_SIZE;
+    }
+    /* Everything else is considered writable if opened for writing. */
+    return 1;
+}
+
 /* Drop one reference; free the OFD (and release its backing) at 0. */
 static void ofd_put(struct ofd *o) {
     if (!o) return;

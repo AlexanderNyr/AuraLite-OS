@@ -24,6 +24,14 @@ tcb_t *sched_current(void) { return &fake_cur; }
 void sched_yield(void) { sched_yield_calls++; }
 struct wait_queue *vfs_get_read_wq(struct ofd *o) { return &o->read_wq; }
 struct wait_queue *vfs_get_write_wq(struct ofd *o) { return &o->write_wq; }
+
+/* Stubs for the pipe-aware readiness helpers used by select.c (BUG-28).
+ * The real implementations live in kernel/fs/vfs.c. */
+static int force_readable = 0;
+static int force_writable = 0;
+int vfs_ofd_is_readable(struct ofd *o) { return force_readable || (o->pos < o->vn->size || o->nonblock); }
+int vfs_ofd_is_writable(struct ofd *o) { return force_writable || (o->access_mode != O_RDONLY); }
+
 void wq_add_entry(struct wait_queue *q, struct wq_entry *e) { (void)q; (void)e; wq_add_calls++; }
 void wq_remove_entry(struct wait_queue *q, struct wq_entry *e) { (void)q; (void)e; wq_remove_calls++; }
 uint32_t timer_get_frequency(void) { return 100; }
@@ -77,8 +85,36 @@ static void test_blocking_path_heap_allocates_per_nfds(void) {
     assert(sched_yield_calls == 1);
 }
 
+/* BUG-28: a pipe fd whose helper reports ready must be returned immediately
+ * without entering the blocking path. */
+static void test_pipe_ready_returns_immediately(void) {
+    reset_state();
+    struct vnode vnode;
+    struct ofd ofd;
+    memset(&vnode, 0, sizeof(vnode));
+    memset(&ofd, 0, sizeof(ofd));
+    vnode.size = 0;              /* pipe-like: vn->size is always 0 */
+    ofd.vn = &vnode;
+    ofd.access_mode = O_RDONLY;
+    fake_cur.fd_table[0] = &ofd;
+
+    force_readable = 1;
+    fd_set rfds;
+    struct kernel_timeval tv = {0, 0};   /* zero timeout */
+    FD_ZERO(&rfds);
+    FD_SET(0, &rfds);
+
+    int ready = do_select(1, &rfds, NULL, NULL, &tv);
+    assert(ready == 1);
+    assert(kmalloc_calls == 0); /* no blocking path allocations */
+    assert(kfree_calls == 0);
+    assert(sched_yield_calls == 0);
+    force_readable = 0;
+}
+
 int main(void) {
     test_zero_timeout_no_alloc();
     test_blocking_path_heap_allocates_per_nfds();
+    test_pipe_ready_returns_immediately();
     return 0;
 }

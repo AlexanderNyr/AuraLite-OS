@@ -43,8 +43,8 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
         struct ofd *o = cur->fd_table[fd];
         if (!o) continue;
 
-        int can_read  = (readfds  && FD_ISSET(fd, &r))  && (o->pos < o->vn->size || o->nonblock);
-        int can_write = (writefds && FD_ISSET(fd, &w)) && (o->access_mode != O_RDONLY);
+        int can_read  = (readfds  && FD_ISSET(fd, &r))  && vfs_ofd_is_readable(o);
+        int can_write = (writefds && FD_ISSET(fd, &w)) && vfs_ofd_is_writable(o);
 
         if (can_read)  { FD_SET(fd, &r_out); ready++; }
         if (can_write) { FD_SET(fd, &w_out); ready++; }
@@ -126,8 +126,8 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
             struct ofd *o = cur->fd_table[fd];
             if (!o) continue;
 
-            int can_read  = (readfds  && FD_ISSET(fd, &r))  && (o->pos < o->vn->size || o->nonblock);
-            int can_write = (writefds && FD_ISSET(fd, &w)) && (o->access_mode != O_RDONLY);
+            int can_read  = (readfds  && FD_ISSET(fd, &r))  && vfs_ofd_is_readable(o);
+            int can_write = (writefds && FD_ISSET(fd, &w)) && vfs_ofd_is_writable(o);
 
             if (can_read)  { FD_SET(fd, &r_out); ready++; }
             if (can_write) { FD_SET(fd, &w_out); ready++; }

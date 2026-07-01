@@ -6,6 +6,11 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/limine_requests.h"
 
+#ifndef __SCHED_YIELD_DECLARED
+void sched_yield(void);
+#define __SCHED_YIELD_DECLARED
+#endif
+
 #define PAGE_CACHE_BUCKETS 1024
 
 typedef struct page_cache_entry {
@@ -24,11 +29,44 @@ static uint32_t hash_page(struct ofd *ofd, uint64_t offset) {
     return ((uint32_t)((uintptr_t)ofd ^ offset)) % PAGE_CACHE_BUCKETS;
 }
 
-static void page_cache_wait_ready(page_cache_entry_t *entry) {
-    if (!entry) return;
-    while (!__atomic_load_n(&entry->ready, __ATOMIC_ACQUIRE)) {
-        __asm__ volatile ("pause");
+#ifndef PAGE_CACHE_READY_SPINS
+#define PAGE_CACHE_READY_SPINS 100000u
+#endif
+
+static int page_cache_wait_ready(page_cache_entry_t *entry) {
+    if (!entry) return 0;
+    for (uint32_t i = 0; i < PAGE_CACHE_READY_SPINS; i++) {
+        if (__atomic_load_n(&entry->ready, __ATOMIC_ACQUIRE)) return 1;
+        /* Yield every 256 iterations so a live filler can make progress; otherwise
+         * keep the CPU busy with a short pause. */
+        if ((i & 0xFF) == 0) {
+            sched_yield();
+        } else {
+            __asm__ volatile ("pause");
+        }
     }
+    kprintf("[page_cache] WARN: ready timeout on entry ofd=%p off=%llu\n",
+            (void *)entry->ofd, (unsigned long long)entry->offset);
+    return 0;
+}
+
+/* Remove a stale cache entry and release its backing frame. */
+static void page_cache_drop(struct ofd *file, uint64_t offset, uint64_t phys) {
+    uint32_t h = hash_page(file, offset);
+    spinlock_acquire(&cache_lock);
+    page_cache_entry_t **pp = &cache_buckets[h];
+    while (*pp) {
+        if ((*pp)->ofd == file && (*pp)->offset == offset) {
+            page_cache_entry_t *e = *pp;
+            *pp = e->next;
+            spinlock_release(&cache_lock);
+            kfree(e);
+            if (phys) pmm_free_frame(phys);
+            return;
+        }
+        pp = &(*pp)->next;
+    }
+    spinlock_release(&cache_lock);
 }
 
 uint64_t page_cache_get(struct ofd *file, uint64_t offset) {
@@ -41,7 +79,10 @@ uint64_t page_cache_get(struct ofd *file, uint64_t offset) {
             uint64_t phys = curr->phys;
             page_cache_entry_t *entry = curr;
             spinlock_release(&cache_lock);
-            page_cache_wait_ready(entry);
+            if (!page_cache_wait_ready(entry)) {
+                page_cache_drop(file, offset, phys);
+                return 0;
+            }
             return phys;
         }
         curr = curr->next;
@@ -109,7 +150,10 @@ int page_cache_get_or_alloc(struct ofd *file, uint64_t offset,
             uint64_t phys = curr->phys;
             page_cache_entry_t *entry = curr;
             spinlock_release(&cache_lock);
-            page_cache_wait_ready(entry);
+            if (!page_cache_wait_ready(entry)) {
+                page_cache_drop(file, offset, phys);
+                return -1;
+            }
             if (pmm_inc_frame_ref(phys) != 0) return -1;
             *phys_out = phys;
             return 0;
@@ -136,7 +180,10 @@ int page_cache_get_or_alloc(struct ofd *file, uint64_t offset,
             spinlock_release(&cache_lock);
             kfree(entry);
             pmm_free_frame(phys);
-            page_cache_wait_ready(existing_entry);
+            if (!page_cache_wait_ready(existing_entry)) {
+                page_cache_drop(file, offset, existing);
+                return -1;
+            }
             if (pmm_inc_frame_ref(existing) != 0) return -1;
             *phys_out = existing;
             return 0;

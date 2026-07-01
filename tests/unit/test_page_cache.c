@@ -67,6 +67,14 @@ void kfree(void *p) {
 uint64_t limine_get_hhdm_offset(void) { return (uint64_t)(uintptr_t)backing - 0x1000; }
 void kprintf(const char *fmt, ...) { (void)fmt; }
 
+/* In unit tests <sched.h> already declares POSIX int sched_yield(void).
+ * Avoid the kernel void declaration colliding with it. */
+#define __SCHED_YIELD_DECLARED
+
+/* Give the concurrent fill test plenty of spins before the new timeout
+ * path fires; real kernel code uses the default 100000u. */
+#define PAGE_CACHE_READY_SPINS 10000000u
+
 #include "../../kernel/mm/page_cache.c"
 
 static void fill_fn(uint64_t phys, void *arg) {

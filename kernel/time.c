@@ -131,25 +131,45 @@ int kernel_nanosleep(const struct kernel_timespec *req, struct kernel_timespec *
 
     tcb_t *cur = sched_current();
 
+    /* Arm the sleep deadline BEFORE any yield so signal_tick() can wake us. */
+    if (cur) {
+        cur->sleep_deadline = deadline;
+    }
+
     while (timer_get_ticks() < deadline) {
+        /* Check signals with interrupts disabled to close the race window
+         * between the signal check and setting THREAD_BLOCKED (BUG-30). */
+        uint64_t rflags;
+        __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+
         if (cur && (cur->sig_pending & ~cur->sig_mask)) {
-            /* Interrupted by signal */
+            __asm__ volatile ("sti" ::: "memory");
+            cur->sleep_deadline = 0;
+            cur->state = THREAD_READY;
             if (rem) {
                 uint64_t now = timer_get_ticks();
                 uint64_t left = (now < deadline) ? (deadline - now) : 0;
                 rem->tv_sec  = (int64_t)(left / freq);
                 rem->tv_nsec = (int64_t)((left % freq) * (1000000000ULL / freq));
             }
-            cur->sleep_deadline = 0;
             return -EINTR;
         }
+
         if (cur) {
-            cur->sleep_deadline = deadline;
             cur->state = THREAD_BLOCKED;
         }
-        sched_yield();
+
+        schedule();   /* call directly with IRQs already off */
+
+        if (rflags & 0x200ULL) {
+            __asm__ volatile ("sti" ::: "memory");
+        }
     }
-    if (cur) cur->sleep_deadline = 0;
+
+    if (cur) {
+        cur->sleep_deadline = 0;
+        cur->state = THREAD_READY;
+    }
     return 0;
 }
 

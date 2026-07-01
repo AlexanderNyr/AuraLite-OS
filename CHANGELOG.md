@@ -2,6 +2,21 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Bugfix batch BUG-28 — BUG-30] 2026-07-01
+
+### Fixed
+- **BUG-28 — `select()` on pipe/FIFO never reported immediately ready**: `do_select()` now uses pipe-aware readiness helpers (`vfs_ofd_is_readable()` / `vfs_ofd_is_writable()`) that inspect the pipe ring-buffer `used` count instead of `o->pos < o->vn->size`. A pipe read-end with buffered data is now returned as ready without first blocking on the wait queue.
+- **BUG-29 — `page_cache_wait_ready()` could spin forever**: the wait loop is now bounded by `PAGE_CACHE_READY_SPINS`. If the filling thread dies before setting `ready=1`, waiting readers time out, remove the stale entry, and treat it as a cache miss. All `page_cache_get()` / `page_cache_get_or_alloc()` paths updated to drop stale entries on timeout.
+- **BUG-30 — `kernel_nanosleep()` lost a signal in the check/block race**: the sleep deadline is armed before any yield, and the signal check is performed with interrupts disabled. The thread is set to `THREAD_BLOCKED` and `schedule()` is called directly with IRQs off, closing the window between signal detection and blocking where a signal could be delayed by one tick.
+
+### Notes
+- BUG-31 (`ext4.c` `ee_start_hi` 48-bit shift) was already correct in commit `40c1afa`; no code change required.
+- `tests/unit/test_select_stack.c` gained stub implementations of the new readiness helpers so the existing unit test continues to link against the updated `select.c`.
+
+### Validation
+- `make clean && make kernel` builds with 0 errors (pre-existing driver warnings unrelated to these fixes).
+- `make test-unit` passes (including the updated `test_select_stack` and `test_page_cache` concurrency tests).
+
 ## [Bugfix batch M1-M6] 2026-07-01
 
 ### Fixed
