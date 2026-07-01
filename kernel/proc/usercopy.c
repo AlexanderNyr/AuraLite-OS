@@ -13,13 +13,22 @@
 #include "kernel/proc/usercopy.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/lib/string.h"
 
-volatile uint64_t uaccess_recover_ip = 0;
+#define UACCESS_MAX_CPUS 64
+volatile uint64_t uaccess_recover_ip_percpu[UACCESS_MAX_CPUS];
 extern int64_t uaccess_copy_asm(void *dst, const void *src, uint64_t len);
 
+static uint64_t uaccess_cpu_index(void) {
+    if (!cpu_local_ready) return 0;
+    struct cpu_local *c = get_cpu_local();
+    if (!c || c->cpu_id >= UACCESS_MAX_CPUS) return 0;
+    return c->cpu_id;
+}
+
 int usercopy_recover_fault(uint64_t *saved_rip) {
-    uint64_t fixup = uaccess_recover_ip;
+    uint64_t fixup = uaccess_recover_ip_percpu[uaccess_cpu_index()];
     if (!fixup || !saved_rip) return 0;
     *saved_rip = fixup;
     return 1;

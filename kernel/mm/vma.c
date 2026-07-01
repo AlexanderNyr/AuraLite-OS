@@ -12,6 +12,14 @@
 
 static slab_cache_t *vma_cache = NULL;
 
+static void vma_retain_file(uint32_t flags, struct ofd *file) {
+    if ((flags & VMA_FILE) && file) vfs_ofd_get(file);
+}
+
+static void vma_drop_file(uint32_t flags, struct ofd *file) {
+    if ((flags & VMA_FILE) && file) vfs_ofd_put(file);
+}
+
 static vma_t *vma_find_nolock(vma_t *list, uint64_t va) {
     vma_t *curr = list;
     while (curr) {
@@ -61,6 +69,7 @@ vma_t *vma_find(vma_t *list, uint64_t va) {
 
 int vma_insert(vma_t **list_head, uint64_t start, uint64_t end,
                uint32_t flags, struct ofd *file, uint64_t file_off) {
+    if ((flags & VMA_FILE) && !file) return -1;
     vma_t *new_vma = vma_alloc();
     if (!new_vma) return -1;
 
@@ -70,6 +79,7 @@ int vma_insert(vma_t **list_head, uint64_t start, uint64_t end,
     new_vma->file = file;
     new_vma->file_off = file_off;
     new_vma->next = NULL;
+    vma_retain_file(flags, file);
 
     vma_t **curr = list_head;
     while (*curr && (*curr)->va_start < start) {
@@ -108,7 +118,6 @@ void vma_remove_range(vma_t **list_head, uint64_t start, uint64_t end) {
         uint64_t off = v->file_off;
 
         *curr = v->next;
-        vma_free(v);
 
         if (left) {
             left->va_start = v_start;
@@ -116,6 +125,7 @@ void vma_remove_range(vma_t **list_head, uint64_t start, uint64_t end) {
             left->flags = flags;
             left->file = file;
             left->file_off = off;
+            vma_retain_file(flags, file);
             left->next = *curr;
             *curr = left;
             curr = &left->next;
@@ -127,10 +137,14 @@ void vma_remove_range(vma_t **list_head, uint64_t start, uint64_t end) {
             right->flags = flags;
             right->file = file;
             right->file_off = off + (end - v_start);
+            vma_retain_file(flags, file);
             right->next = *curr;
             *curr = right;
             curr = &right->next;
         }
+
+        vma_drop_file(flags, file);
+        vma_free(v);
     }
 }
 
@@ -138,6 +152,7 @@ void vma_free_all(vma_t **list_head) {
     vma_t *curr = *list_head;
     while (curr) {
         vma_t *next = curr->next;
+        vma_drop_file(curr->flags, curr->file);
         vma_free(curr);
         curr = next;
     }
@@ -161,11 +176,19 @@ int handle_user_page_fault(uint64_t cr2, uint64_t err_code) {
     }
 
     vma_t snapshot = *vma;
+    int snapshot_file_retained = (snapshot.flags & VMA_FILE) && snapshot.file;
+    if (snapshot_file_retained) vfs_ofd_get(snapshot.file);
     spinlock_release_irqrestore(&cur->vma_lock, irqf);
 
     /* Permission check */
-    if ((err_code & 0x02) && !(snapshot.flags & VMA_WRITE)) return -1;
-    if ((err_code & 0x10) && !(snapshot.flags & VMA_EXEC)) return -1;
+    if ((err_code & 0x02) && !(snapshot.flags & VMA_WRITE)) {
+        if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
+        return -1;
+    }
+    if ((err_code & 0x10) && !(snapshot.flags & VMA_EXEC)) {
+        if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
+        return -1;
+    }
 
     uint64_t phys;
     uint64_t offset = snapshot.file_off + (page_va - snapshot.va_start);
@@ -178,11 +201,15 @@ int handle_user_page_fault(uint64_t cr2, uint64_t err_code) {
         } fill_ctx = { snapshot.file, offset, snapshot.flags };
 
         if (page_cache_get_or_alloc(snapshot.file, offset, &phys, fill_page, &fill_ctx) != 0) {
+            if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
             return -1;
         }
     } else {
         phys = pmm_alloc_frame();
-        if (!phys) return -1;
+        if (!phys) {
+            if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
+            return -1;
+        }
         if (snapshot.flags & VMA_FILE) {
             vfs_read_at_phys(snapshot.file, offset, phys, 4096);
         } else {
@@ -196,5 +223,6 @@ int handle_user_page_fault(uint64_t cr2, uint64_t err_code) {
     if (!(snapshot.flags & VMA_EXEC)) pte |= PAGE_FLAG_NO_EXEC;
 
     paging_map(page_va, phys, pte);
+    if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
     return 0;
 }

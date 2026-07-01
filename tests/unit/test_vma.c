@@ -38,6 +38,9 @@ int pmm_inc_frame_ref(uint64_t phys) { (void)phys; return 0; }
 int64_t vfs_read_at_phys(struct ofd *ofd, uint64_t off, uint64_t phys, uint64_t len) {
     (void)ofd; (void)off; (void)phys; (void)len; return 0;
 }
+void vfs_ofd_get(struct ofd *o) { if (o) o->refcount++; }
+void vfs_ofd_put(struct ofd *o) { if (o) o->refcount--; }
+static struct ofd fake_ofd;
 uint64_t limine_get_hhdm_offset(void) { return 0; }
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) { (void)virt; (void)phys; (void)flags; }
 void kprintf(const char *fmt, ...) { (void)fmt; }
@@ -65,7 +68,7 @@ static void reset_alloc(void) {
 static void test_split_middle_range(void) {
     reset_alloc();
     vma_t *head = NULL;
-    assert(vma_insert(&head, 0x1000, 0x5000, VMA_FILE | VMA_READ, NULL, 0) == 0);
+    assert(vma_insert(&head, 0x1000, 0x5000, VMA_FILE | VMA_READ, &fake_ofd, 0) == 0);
     vma_remove_range(&head, 0x2000, 0x4000);
     assert(head);
     assert(head->va_start == 0x1000 && head->va_end == 0x2000);
@@ -80,7 +83,7 @@ static void test_split_middle_range(void) {
 static void test_oom_keeps_original_vma(void) {
     reset_alloc();
     vma_t *head = NULL;
-    assert(vma_insert(&head, 0x1000, 0x5000, VMA_FILE | VMA_READ, NULL, 0) == 0);
+    assert(vma_insert(&head, 0x1000, 0x5000, VMA_FILE | VMA_READ, &fake_ofd, 0) == 0);
     fail_after = alloc_count;
     vma_remove_range(&head, 0x2000, 0x4000);
     assert(head);

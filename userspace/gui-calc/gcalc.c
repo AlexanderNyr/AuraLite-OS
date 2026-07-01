@@ -32,6 +32,7 @@ static void show_value(long v) {
     buf[n] = 0;
     ag_textbox_set(display, buf);
     strncpy(expr, buf, sizeof(expr) - 1);
+        expr[sizeof(expr) - 1] = 0;
 }
 
 static long apply_op(long a, long b, char op) {

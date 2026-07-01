@@ -54,6 +54,7 @@ int wm_create_window(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     windows[id].has_close = 1;
     windows[id].widget_count = 0;
     strncpy(windows[id].title, title, sizeof(windows[id].title) - 1);
+    windows[id].title[sizeof(windows[id].title) - 1] = 0;
     focused_window = id;
     return id;
 }
@@ -104,6 +105,7 @@ int wm_add_button(int win_id, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     wid->fg = fg; wid->bg = bg;
     wid->state = 0;
     strncpy(wid->text, text, sizeof(wid->text) - 1);
+    wid->text[sizeof(wid->text) - 1] = 0;
     return windows[win_id].widget_count - 1;
 }
 
@@ -115,6 +117,7 @@ int wm_add_label(int win_id, uint32_t x, uint32_t y,
     wid->x = x; wid->y = y; wid->w = strlen(text) * 8; wid->h = 8;
     wid->fg = color; wid->bg = 0;
     strncpy(wid->text, text, sizeof(wid->text) - 1);
+    wid->text[sizeof(wid->text) - 1] = 0;
     return windows[win_id].widget_count - 1;
 }
 
@@ -140,7 +143,8 @@ void wm_set_progress(int win_id, int widget_id, int progress) {
 void wm_set_label_text(int win_id, int widget_id, const char *text) {
     if (win_id < 0 || win_id >= window_count) return;
     if (widget_id < 0 || widget_id >= windows[win_id].widget_count) return;
-    strncpy(windows[win_id].widgets[widget_id].text, text, 63);
+    strncpy(windows[win_id].widgets[widget_id].text, text, sizeof(windows[win_id].widgets[widget_id].text) - 1);
+    windows[win_id].widgets[widget_id].text[sizeof(windows[win_id].widgets[widget_id].text) - 1] = 0;
 }
 
 /* ---- Widget rendering ---- */

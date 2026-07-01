@@ -79,6 +79,14 @@ void smp_init(void) {
     kprintf("[smp] BSP lapic_id=%u, %llu total CPUs detected\n",
             bsp_lapic_id, (unsigned long long)cpu_count);
 
+    /* Normal AuraLite builds currently keep execution BSP-only: legacy PIC/PIT
+     * routing under QEMU can stall early boot once APs are released, while the
+     * syscall/uaccess paths are not fully per-CPU yet.  Keep the Limine MP
+     * discovery log, but leave AP wake-up disabled until the SMP scheduler and
+     * interrupt routing are completed. */
+    kprintf("[smp] AP wake disabled in normal config; running BSP-only\n");
+    return;
+
     /* The Limine MP response's cpus[] array includes the BSP, so we must
      * skip the entry whose lapic_id matches bsp_lapic_id. */
     volatile struct limine_mp_info *vcpus = (volatile struct limine_mp_info *)cpus;

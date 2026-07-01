@@ -3,7 +3,7 @@
 ; int uaccess_copy_asm(void *dst, const void *src, uint64_t len)
 ;
 ; The C wrapper enables SMAP user access before calling us and disables it after
-; return.  While REP MOVSB is active, uaccess_recover_ip points at .fault.  The
+; return.  While REP MOVSB is active, the per-CPU uaccess_recover_ip_percpu slot points at .fault.  The
 ; page-fault handler rewrites RIP to that address for kernel #PFs in this window,
 ; making the function return -1 instead of panicking the kernel.
 
@@ -13,18 +13,30 @@ default rel
 section .text
 
 global uaccess_copy_asm
-extern uaccess_recover_ip
+extern uaccess_recover_ip_percpu
 
 uaccess_copy_asm:
+    mov r8, [gs:8]                 ; current cpu_id
+    cmp r8, 63
+    jbe .cpu_ok
+    xor r8, r8
+.cpu_ok:
+    lea r9, [rel uaccess_recover_ip_percpu]
     lea rax, [rel .fault]
-    mov [rel uaccess_recover_ip], rax
+    mov [r9 + r8*8], rax
     mov rcx, rdx
     rep movsb
-    mov qword [rel uaccess_recover_ip], 0
+    mov qword [r9 + r8*8], 0
     xor eax, eax
     ret
 
 .fault:
-    mov qword [rel uaccess_recover_ip], 0
+    mov r8, [gs:8]
+    cmp r8, 63
+    jbe .fault_cpu_ok
+    xor r8, r8
+.fault_cpu_ok:
+    lea r9, [rel uaccess_recover_ip_percpu]
+    mov qword [r9 + r8*8], 0
     mov rax, -1
     ret

@@ -375,6 +375,9 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
 
     struct ofd *file_ofd = NULL;
     if (!anonymous) {
+        if (fd >= VFS_MAX_FDS || cur->fd_table[fd] == NULL) {
+            return (uint64_t)-EBADF;
+        }
         file_ofd = cur->fd_table[fd];
     }
 
@@ -556,7 +559,6 @@ int is_restartable(uint64_t num) {
         case SYS_WAIT4:
         case SYS_NANOSLEEP:
         case SYS_SELECT:
-        case SYS_POLL:
         case SYS_FUTEX:
         case SYS_SOCKET_RECV:
         case SYS_SOCKET_SEND:
@@ -1423,9 +1425,19 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     /* ---- P10: select / stat / symlink / cwd ---- */
     case SYS_SELECT: {
         extern int do_select(int, fd_set*, fd_set*, fd_set*, struct kernel_timeval*);
+        struct kernel_timeval ktv;
+        struct kernel_timeval *ktvp = NULL;
+        if (a5) {
+            if (copy_from_user(&ktv, (const void *)(uintptr_t)a5, sizeof(ktv)) != 0) {
+                return (uint64_t)-EFAULT;
+            }
+            if (ktv.tv_usec < 0 || ktv.tv_usec >= 1000000) return (uint64_t)-EINVAL;
+            if (ktv.tv_sec < 0) return (uint64_t)-EINVAL;
+            ktvp = &ktv;
+        }
         return (uint64_t)do_select((int)a1, (fd_set*)(uintptr_t)a2,
                                    (fd_set*)(uintptr_t)a3, (fd_set*)(uintptr_t)a4,
-                                   (struct kernel_timeval*)(uintptr_t)a5);
+                                   ktvp);
     }
     case SYS_FSTAT: {
         struct vfs_stat st;

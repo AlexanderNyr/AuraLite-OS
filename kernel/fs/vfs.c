@@ -254,13 +254,25 @@ struct wait_queue *vfs_get_write_wq(struct ofd *o) {
 /* Drop one reference; free the OFD (and release its backing) at 0. */
 static void ofd_put(struct ofd *o) {
     if (!o) return;
-    if (--o->refcount <= 0) {
+    if (__sync_sub_and_fetch(&o->refcount, 1) <= 0) {
         ofd_release_backing(o->vn);
         slab_free(ofd_cache, o);
     }
 }
 
-/* Public wrapper used by the process layer (exit path). */
+/* Public wrappers used by process and VM layers. */
+void vfs_ofd_get(struct ofd *o) {
+    if (!o) return;
+    /* Existing OFD refcounts are plain integers throughout vfs.c; use an
+     * atomic add here so VMA references remain safe if mmap/close race on
+     * different CPUs in future SMP configurations. */
+    __sync_add_and_fetch(&o->refcount, 1);
+}
+
+void vfs_ofd_put(struct ofd *o) {
+    ofd_put(o);
+}
+
 void vfs_close_ofd(struct ofd *o, struct vnode *unused) {
     (void)unused;
     ofd_put(o);
@@ -758,7 +770,7 @@ int vfs_dup(int oldfd) {
     if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
     int nfd = alloc_fd_slot_ptr(t, 0);
     if (nfd < 0) return -EMFILE;
-    t[oldfd]->refcount++;
+    vfs_ofd_get(t[oldfd]);
     t[nfd] = t[oldfd];
     current_cloexec()[nfd] = 0;   /* FD_CLOEXEC is per-fd; dup() clears it */
     return nfd;
@@ -769,7 +781,7 @@ int vfs_dup2(int oldfd, int newfd) {
     if (oldfd < 0 || oldfd >= VFS_MAX_FDS || t[oldfd] == NULL) return -EBADF;
     if (newfd < 0 || newfd >= VFS_MAX_FDS) return -EBADF;
     if (oldfd == newfd) return newfd;
-    t[oldfd]->refcount++;
+    vfs_ofd_get(t[oldfd]);
     struct ofd *old = t[newfd];
     t[newfd] = t[oldfd];
     current_cloexec()[newfd] = 0;
@@ -858,7 +870,7 @@ static int dup_lowest_from(int oldfd, int minfd, int cloexec) {
     int start = minfd;
     int nfd = alloc_fd_slot_ptr(t, start);
     if (nfd < 0) return -EMFILE;            /* no slot >= minfd available */
-    t[oldfd]->refcount++;
+    vfs_ofd_get(t[oldfd]);
     t[nfd] = t[oldfd];
     current_cloexec()[nfd] = cloexec ? 1 : 0;
     return nfd;
@@ -938,7 +950,7 @@ void vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
     for (int i = 0; i < VFS_MAX_FDS; i++) {
         dst[i] = src[i];
         dst_cloexec[i] = src_cloexec[i];
-        if (src[i]) src[i]->refcount++;
+        if (src[i]) vfs_ofd_get(src[i]);
     }
 }
 

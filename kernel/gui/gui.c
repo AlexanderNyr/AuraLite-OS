@@ -346,8 +346,11 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     if (flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) {
         bw = w; bh = h;
     } else {
-        bw = w - 2 * active_theme.border_w;
-        bh = h - active_theme.titlebar_h - 2 * active_theme.border_w;
+        uint32_t decor_w = 2 * active_theme.border_w;
+        uint32_t decor_h = active_theme.titlebar_h + 2 * active_theme.border_w;
+        if (w <= decor_w || h <= decor_h) return -1;
+        bw = w - decor_w;
+        bh = h - decor_h;
     }
     if (bw == 0 || bh == 0) return -1;
 
@@ -397,7 +400,8 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
         spinlock_release(&gui_lock);
         return -1;
     }
-    for (uint32_t i = 0; i < bw * bh; i++) win->back[i] = active_theme.win_content;
+    size_t pixels = (size_t)bw * (size_t)bh;
+    for (size_t i = 0; i < pixels; i++) win->back[i] = active_theme.win_content;
     spinlock_release(&gui_lock);
     return id;
 }
@@ -499,8 +503,14 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
     if (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) {
         new_bw = w; new_bh = h;
     } else {
-        new_bw = w - 2 * active_theme.border_w;
-        new_bh = h - active_theme.titlebar_h - 2 * active_theme.border_w;
+        uint32_t decor_w = 2 * active_theme.border_w;
+        uint32_t decor_h = active_theme.titlebar_h + 2 * active_theme.border_w;
+        if (w <= decor_w || h <= decor_h) {
+            spinlock_release(&gui_lock);
+            return -1;
+        }
+        new_bw = w - decor_w;
+        new_bh = h - decor_h;
     }
     if (new_bw == 0 || new_bh == 0) {
         spinlock_release(&gui_lock);
@@ -527,7 +537,8 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
             spinlock_release(&gui_lock);
             return -1;
         }
-        for (uint32_t i = 0; i < new_bw * new_bh; i++) nb[i] = active_theme.win_content;
+        size_t pixels = (size_t)new_bw * (size_t)new_bh;
+        for (size_t i = 0; i < pixels; i++) nb[i] = active_theme.win_content;
         /* Copy overlapping region with optimized row copies. */
         uint32_t cw = new_bw < win->back_w ? new_bw : win->back_w;
         uint32_t ch = new_bh < win->back_h ? new_bh : win->back_h;
@@ -807,11 +818,12 @@ int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color) {
 int gui_fill_rect(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H, uint32_t color) {
     if (!win_alive(wid)) return -1;
     gui_win_t *w = &windows[wid];
-    if (x < 0) { if (W <= (uint32_t)(-x)) return 0; W -= (uint32_t)(-x); x = 0; }
-    if (y < 0) { if (H <= (uint32_t)(-y)) return 0; H -= (uint32_t)(-y); y = 0; }
+    if (x < 0) { uint32_t skip = (uint32_t)(-(int64_t)x); if (W <= skip) return 0; W -= skip; x = 0; }
+    if (y < 0) { uint32_t skip = (uint32_t)(-(int64_t)y); if (H <= skip) return 0; H -= skip; y = 0; }
     if ((uint32_t)x >= w->back_w || (uint32_t)y >= w->back_h) return 0;
-    if ((uint32_t)x + W > w->back_w) W = w->back_w - (uint32_t)x;
-    if ((uint32_t)y + H > w->back_h) H = w->back_h - (uint32_t)y;
+    if (W > w->back_w - (uint32_t)x) W = w->back_w - (uint32_t)x;
+    if (H > w->back_h - (uint32_t)y) H = w->back_h - (uint32_t)y;
+    if (W == 0 || H == 0) return 0;
     /* Optimised: fill each row with a repeated pattern then memcpy. */
     uint32_t *row_start = w->back + (uint32_t)y * w->back_w + (uint32_t)x;
     for (uint32_t col = 0; col < W; col++) row_start[col] = color;
@@ -890,11 +902,13 @@ int gui_blit(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
         int32_t dx = x;
         uint32_t copy_w = W;
         if (dx < 0) {
-            if (copy_w <= (uint32_t)(-dx)) continue;
-            copy_w -= (uint32_t)(-dx);
+            uint32_t skip = (uint32_t)(-(int64_t)dx);
+            if (copy_w <= skip) continue;
+            copy_w -= skip;
             dx = 0;
         }
-        if ((uint32_t)dx + copy_w > w->back_w) copy_w = w->back_w - (uint32_t)dx;
+        if ((uint32_t)dx >= w->back_w) continue;
+        if (copy_w > w->back_w - (uint32_t)dx) copy_w = w->back_w - (uint32_t)dx;
         if (copy_w > 0) {
             memcpy(w->back + (uint32_t)dy * w->back_w + (uint32_t)dx,
                    src + row * src_stride + (dx - x), copy_w * 4);
@@ -1057,11 +1071,22 @@ static void blit_window_content(const gui_win_t *win) {
     int32_t dst_y = cy, dst_x = cx;
     uint32_t copy_w = win->back_w, copy_h = win->back_h;
 
-    if (dst_y < 0) { src_y = -dst_y; copy_h -= (uint32_t)src_y; dst_y = 0; }
-    if (dst_x < 0) { src_x = -dst_x; copy_w -= (uint32_t)src_x; dst_x = 0; }
+    if (dst_y < 0) {
+        src_y = -dst_y;
+        if ((uint32_t)src_y >= copy_h) return;
+        copy_h -= (uint32_t)src_y;
+        dst_y = 0;
+    }
+    if (dst_x < 0) {
+        src_x = -dst_x;
+        if ((uint32_t)src_x >= copy_w) return;
+        copy_w -= (uint32_t)src_x;
+        dst_x = 0;
+    }
     if (dst_y >= fh || dst_x >= fw) return;
-    if (dst_y + (int32_t)copy_h > fh) copy_h = (uint32_t)(fh - dst_y);
-    if (dst_x + (int32_t)copy_w > fw) copy_w = (uint32_t)(fw - dst_x);
+    if (copy_h > (uint32_t)(fh - dst_y)) copy_h = (uint32_t)(fh - dst_y);
+    if (copy_w > (uint32_t)(fw - dst_x)) copy_w = (uint32_t)(fw - dst_x);
+    if (copy_w == 0 || copy_h == 0) return;
 
     for (uint32_t row = 0; row < copy_h; row++) {
         for (uint32_t col = 0; col < copy_w; col++) {

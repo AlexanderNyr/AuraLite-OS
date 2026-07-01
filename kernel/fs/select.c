@@ -27,16 +27,17 @@ static inline int FD_ISSET(int fd, fd_set *set) {
 }
 
 int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct kernel_timeval *timeout) {
-    (void)exceptfds;
-
     tcb_t *cur = sched_current();
     if (!cur || nfds < 0 || nfds > FD_SETSIZE) return -EINVAL;
 
     int ready = 0;
-    fd_set r, w, r_out, w_out;
-    FD_ZERO(&r); FD_ZERO(&w); FD_ZERO(&r_out); FD_ZERO(&w_out);
-    if (readfds)  copy_from_user(&r, readfds, sizeof(fd_set));
-    if (writefds) copy_from_user(&w, writefds, sizeof(fd_set));
+    fd_set r, w, e, r_out, w_out, e_out;
+    FD_ZERO(&r); FD_ZERO(&w); FD_ZERO(&e);
+    FD_ZERO(&r_out); FD_ZERO(&w_out); FD_ZERO(&e_out);
+    if (readfds && copy_from_user(&r, readfds, sizeof(fd_set)) != 0) return -EFAULT;
+    if (writefds && copy_from_user(&w, writefds, sizeof(fd_set)) != 0) return -EFAULT;
+    if (exceptfds && copy_from_user(&e, exceptfds, sizeof(fd_set)) != 0) return -EFAULT;
+    (void)e; /* exception readiness is not supported yet; output is cleared. */
 
     for (int fd = 0; fd < nfds; fd++) {
         struct ofd *o = cur->fd_table[fd];
@@ -138,8 +139,9 @@ int do_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, st
         kfree(wwqs);
     }
 
-    if (readfds)  copy_to_user(readfds, &r_out, sizeof(fd_set));
-    if (writefds) copy_to_user(writefds, &w_out, sizeof(fd_set));
+    if (readfds && copy_to_user(readfds, &r_out, sizeof(fd_set)) != 0) return -EFAULT;
+    if (writefds && copy_to_user(writefds, &w_out, sizeof(fd_set)) != 0) return -EFAULT;
+    if (exceptfds && copy_to_user(exceptfds, &e_out, sizeof(fd_set)) != 0) return -EFAULT;
 
     return ready;
 }

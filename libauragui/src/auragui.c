@@ -190,6 +190,7 @@ ag_widget_t *ag_add_label(ag_view_t *v, int32_t x, int32_t y, const char *text, 
     w->x = x; w->y = y; w->w = strlen(text) * 8; w->h = 12;
     w->fg = color; w->bg = 0;
     strncpy(w->text, text, AG_MAX_WIDGET_TEXT - 1);
+    w->text[AG_MAX_WIDGET_TEXT - 1] = 0;
     return w;
 }
 
@@ -201,6 +202,7 @@ ag_widget_t *ag_add_button(ag_view_t *v, int32_t x, int32_t y, uint32_t W, uint3
     w->x = x; w->y = y; w->w = W; w->h = H;
     w->fg = AG_WHITE; w->bg = AG_ACCENT;
     strncpy(w->text, text, AG_MAX_WIDGET_TEXT - 1);
+    w->text[AG_MAX_WIDGET_TEXT - 1] = 0;
     w->on_click = cb; w->user = user;
     return w;
 }
@@ -214,6 +216,7 @@ ag_widget_t *ag_add_textbox(ag_view_t *v, int32_t x, int32_t y, uint32_t W, uint
     w->fg = AG_BLACK; w->bg = AG_WHITE;
     if (initial) {
         strncpy(w->text, initial, AG_MAX_WIDGET_TEXT - 1);
+    w->text[AG_MAX_WIDGET_TEXT - 1] = 0;
         w->cursor_pos = (int)strlen(w->text);
     }
     return w;
@@ -227,6 +230,7 @@ ag_widget_t *ag_add_checkbox(ag_view_t *v, int32_t x, int32_t y, const char *tex
     w->fg = AG_BLACK; w->bg = AG_WHITE;
     w->state = checked ? 1 : 0;
     strncpy(w->text, text, AG_MAX_WIDGET_TEXT - 1);
+    w->text[AG_MAX_WIDGET_TEXT - 1] = 0;
     return w;
 }
 

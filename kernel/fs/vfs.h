@@ -233,6 +233,9 @@ int64_t vfs_writev(int fd, const struct iovec *iov, int iovcnt);
 void    vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
                          const uint8_t *src_cloexec);
 void    vfs_close_ofd(struct ofd *o, struct vnode *unused);
+/* Explicit OFD references used by file-backed VMAs. */
+void    vfs_ofd_get(struct ofd *o);
+void    vfs_ofd_put(struct ofd *o);
 int     vfs_close(int fd);
 /* read from @o at @offset directly into a physical frame. Returns bytes read. */
 int64_t vfs_read_at_phys(struct ofd *o, uint64_t offset, uint64_t phys, uint64_t count);

@@ -331,11 +331,10 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
     }
 
     /* Snapshot the interrupted context into a kernel-local frame, then copy out. */
-    struct signal_frame f;
+    struct signal_frame f __attribute__((aligned(16)));
     memset(&f, 0, sizeof(f));
-#ifdef ARCH_X86_64
-    __asm__ volatile ("fxsave %0" : "=m"(f.fxsave_area));
-#endif
+/* FPU/SSE context save is deferred until the kernel enables OSFXSR/FXSAVE
+ * support on all CPUs.  The frame area stays zeroed for ABI stability. */
     f.r15 = regs->r15; f.r14 = regs->r14; f.r13 = regs->r13; f.r12 = regs->r12;
     f.r11 = regs->r11; f.r10 = regs->r10; f.r9 = regs->r9;  f.r8  = regs->r8;
     f.rdi = regs->rdi; f.rsi = regs->rsi; f.rbp = regs->rbp; f.rdx = regs->rdx;
@@ -521,7 +520,7 @@ int64_t do_sigreturn(struct registers *regs) {
         terminate_by_signal(SIGSEGV);
         return 0;
     }
-    struct signal_frame f;
+    struct signal_frame f __attribute__((aligned(16)));
     if (copy_from_user(&f, (void *)(uintptr_t)frame_addr, sizeof(f)) != 0) {
         terminate_by_signal(SIGSEGV);
         return 0;
@@ -549,9 +548,7 @@ int64_t do_sigreturn(struct registers *regs) {
     regs->cs = USER_CS;
     regs->ss = USER_SS;
 
-#ifdef ARCH_X86_64
-    __asm__ volatile ("fxrstor %0" : : "m"(f.fxsave_area));
-#endif
+/* FPU/SSE context restore intentionally skipped; see signal delivery save path. */
 
     if (t->syscall_restart_pending) {
         t->syscall_restart_pending = 0;

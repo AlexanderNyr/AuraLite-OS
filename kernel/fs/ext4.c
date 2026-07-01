@@ -520,8 +520,9 @@ static uint32_t extent_map(struct ext4_inode *inode, uint32_t lblock) {
         for (int i = 0; i < eh->eh_entries; i++) {
             if (lblock >= ext[i].ee_block &&
                 lblock < ext[i].ee_block + ext[i].ee_len) {
-                return ((uint32_t)ext[i].ee_start_hi << 16) |
-                       ext[i].ee_start_lo + (lblock - ext[i].ee_block);
+                uint64_t start = ((uint64_t)ext[i].ee_start_hi << 32) | ext[i].ee_start_lo;
+                uint64_t phys = start + (uint64_t)(lblock - ext[i].ee_block);
+                return (phys <= 0xFFFFFFFFULL) ? (uint32_t)phys : 0;
             }
         }
     } else {
@@ -531,7 +532,8 @@ static uint32_t extent_map(struct ext4_inode *inode, uint32_t lblock) {
         uint32_t child = 0;
         for (int i = 0; i < eh->eh_entries; i++) {
             if (lblock >= idx[i].ei_block) {
-                child = ((uint32_t)idx[i].ei_leaf_hi << 16) | idx[i].ei_leaf_lo;
+                uint64_t child64 = ((uint64_t)idx[i].ei_leaf_hi << 32) | idx[i].ei_leaf_lo;
+                child = (child64 <= 0xFFFFFFFFULL) ? (uint32_t)child64 : 0;
             }
         }
         if (!child) return 0;
@@ -542,8 +544,9 @@ static uint32_t extent_map(struct ext4_inode *inode, uint32_t lblock) {
         for (int i = 0; i < eh->eh_entries; i++) {
             if (lblock >= ext[i].ee_block &&
                 lblock < ext[i].ee_block + ext[i].ee_len) {
-                return ((uint32_t)ext[i].ee_start_hi << 16) |
-                       ext[i].ee_start_lo + (lblock - ext[i].ee_block);
+                uint64_t start = ((uint64_t)ext[i].ee_start_hi << 32) | ext[i].ee_start_lo;
+                uint64_t phys = start + (uint64_t)(lblock - ext[i].ee_block);
+                return (phys <= 0xFFFFFFFFULL) ? (uint32_t)phys : 0;
             }
         }
     }
@@ -591,7 +594,7 @@ static int extent_insert(struct ext4_inode *inode, uint32_t lblock_start,
     for (uint32_t i = 0; i < count; i++) {
         ext[i].ee_block = lblock_start + i;
         ext[i].ee_len = 1;
-        ext[i].ee_start_hi = (uint16_t)(phys_blocks[i] >> 16);
+        ext[i].ee_start_hi = 0; /* phys_blocks[] is uint32_t; high 16 bits of 48-bit block are zero. */
         ext[i].ee_start_lo = (uint32_t)phys_blocks[i];
     }
 

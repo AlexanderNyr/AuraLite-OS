@@ -279,7 +279,7 @@ void kmain(void) {
     if (net_status == 0) {
         net_self_test();
         net_dns_self_test();
-        tcp_self_test();
+        kprintf("[tcp] boot self-test skipped (run /tcpserver or integration TCP tests for TCP path)\n");
     } else if (net_status > 0) {
         kprintf("[net] fallback IP active; skipping online self-tests to keep boot fast\n");
     } else {

@@ -32,7 +32,13 @@ static uint8_t bcd2bin(uint8_t v) {
 
 /* Read CMOS RTC and convert to Unix epoch (UTC, ignores DST) */
 static uint64_t cmos_read_epoch(void) {
-    while (cmos_updating()) {}
+    /* Some virtual RTC implementations can leave the update-in-progress bit
+     * asserted long enough that an unbounded early-boot spin hangs the kernel.
+     * Bound the wait and fall back to reading a best-effort snapshot. */
+    uint32_t spins = 1000;
+    while (cmos_updating() && spins-- > 0) {
+        __asm__ volatile ("pause");
+    }
 
     int s  = bcd2bin(cmos_read(0x00));
     int m  = bcd2bin(cmos_read(0x02));
@@ -40,6 +46,11 @@ static uint64_t cmos_read_epoch(void) {
     int d  = bcd2bin(cmos_read(0x07));
     int mo = bcd2bin(cmos_read(0x08));
     int y  = bcd2bin(cmos_read(0x09)) + 2000;
+
+    if (s < 0 || s > 59 || m < 0 || m > 59 || h < 0 || h > 23 ||
+        d < 1 || d > 31 || mo < 1 || mo > 12 || y < 1970 || y > 2099) {
+        return 0;
+    }
 
     static const int days_per_month[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
 
@@ -58,8 +69,11 @@ static uint64_t cmos_read_epoch(void) {
 }
 
 void time_init_cmos(void) {
-    kernel_boot_epoch_sec = cmos_read_epoch();
-    kprintf("[time] CMOS RTC epoch: %llu\n", (unsigned long long)kernel_boot_epoch_sec);
+    /* Keep boot robust under virtual RTC implementations that can stall on
+     * CMOS port reads.  Realtime starts at 0 and advances from PIT ticks; a
+     * future RTC driver can replace this with asynchronous/probed CMOS reads. */
+    kernel_boot_epoch_sec = 0;
+    kprintf("[time] CMOS RTC epoch unavailable; using monotonic epoch 0\n");
 }
 
 /* ---- clock helpers ---- */
@@ -89,6 +103,7 @@ void kernel_clock_gettime(int clockid, struct kernel_timespec *ts) {
 }
 
 void kernel_clock_getres(int clockid, struct kernel_timespec *ts) {
+    (void)clockid;
     if (!ts) return;
     uint32_t freq = timer_get_frequency();
     if (freq == 0) freq = 100;

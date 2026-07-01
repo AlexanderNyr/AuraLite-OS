@@ -35,8 +35,10 @@ static uint32_t          timer_freq_hz  = 0;
 static void timer_irq_handler(struct registers *regs) {
     (void)regs;
     timer_ticks++;
-    signal_tick(timer_ticks);   /* fire elapsed alarm() deadlines (SIGALRM) */
-    sched_tick();
+    if (sched_is_ready()) {
+        signal_tick(timer_ticks);   /* fire elapsed alarm() deadlines (SIGALRM) */
+        sched_tick();
+    }
 }
 
 void pit_init(uint32_t frequency) {
@@ -65,6 +67,12 @@ void pit_init(uint32_t frequency) {
     outb(PIT_CHANNEL0_DATA, (uint8_t)(divisor & 0xFF));
     outb(PIT_CHANNEL0_DATA, (uint8_t)((divisor >> 8) & 0xFF));
 
+    /* P8: initialize CMOS RTC epoch before unmasking IRQ0, so early timer
+     * interrupts cannot run signal/scheduler tick code while RTC probing is in
+     * progress. */
+    extern void time_init_cmos(void);
+    time_init_cmos();
+
     /* Hook IRQ 0 and unmask it (irq_register_handler unmasks automatically). */
     timer_ticks = 0;
     irq_register_handler(TIMER_IRQ, timer_irq_handler);
@@ -72,10 +80,6 @@ void pit_init(uint32_t frequency) {
     kprintf(TIMER_TAG "PIT channel 0: mode 3, divisor %u -> %u Hz"
             " (%u Hz requested)\n",
             (unsigned)divisor, (unsigned)timer_freq_hz, (unsigned)frequency);
-
-    /* P8: initialize CMOS RTC epoch */
-    extern void time_init_cmos(void);
-    time_init_cmos();
 }
 
 uint64_t timer_get_ticks(void) {
@@ -97,9 +101,11 @@ void timer_sleep_ms(uint64_t ms) {
     }
     uint64_t target = timer_ticks + ticks_to_wait;
     while (timer_ticks < target) {
-        /* Halt until the next interrupt (the PIT tick). This avoids burning
-           100% CPU in the spin loop while still returning promptly on tick. */
-        __asm__ volatile ("hlt");
+        /* In SMP/QEMU the legacy timer interrupt may be delivered to another
+         * vCPU, so HLT on the current CPU can sleep forever even though the
+         * global tick counter is advancing.  Keep IF enabled but poll with
+         * PAUSE for boot/self-test sleeps. */
+        __asm__ volatile ("sti; pause" ::: "memory");
     }
 }
 

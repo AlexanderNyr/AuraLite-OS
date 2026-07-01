@@ -31,6 +31,8 @@ static int    scheduler_ready = 0;
 static uint64_t tid_counter   = 0;
 spinlock_t sched_lock = SPINLOCK_UNLOCKED;
 
+int sched_is_ready(void) { return scheduler_ready; }
+
 /* ---- Idle loop ---- */
 
 /* The idle thread runs when no other thread is ready. It enables interrupts
@@ -49,6 +51,16 @@ void schedule(void) {
     if (!cpu_local_ready) return;
     struct cpu_local *local = get_cpu_local();
     if (!local) return;
+    /* Until syscall/uaccess entry state is fully per-CPU, keep normal user
+     * scheduling BSP-only.  APs are online for SMP bring-up tests, but must not
+     * steal runnable user threads or publish their stacks into the global
+     * SYSCALL entry slot. */
+    if (local->cpu_id != 0) {
+        local->current = local->idle;
+        if (local->idle) local->idle->state = THREAD_RUNNING;
+        return;
+    }
+
     tcb_t *old = local->current;
 
     if (old != NULL && old != local->idle && old->state == THREAD_READY) {
@@ -81,7 +93,7 @@ void schedule(void) {
     if (next && next->kernel_stack) {
         uint64_t kstack_top = (uint64_t)next->kernel_stack + THREAD_STACK_SIZE;
         tss_set_rsp0_for_cpu((int)local->cpu_id, kstack_top);
-        set_syscall_stack(kstack_top);
+        if (local->cpu_id == 0) set_syscall_stack(kstack_top);
     }
 
     if (next && next->pml4_phys != 0) {
@@ -167,9 +179,11 @@ void sched_idle(void) {
     local->idle = idle;
     local->current = idle;
 
-    __asm__ volatile ("sti");
     for (;;) {
-        __asm__ volatile ("hlt");
+        /* APs are brought online for detection/self-tests but do not take
+         * legacy PIC/PIT interrupts or run normal tasks in the current BSP-only
+         * scheduling mode. */
+        __asm__ volatile ("cli; hlt" ::: "memory");
     }
 }
 

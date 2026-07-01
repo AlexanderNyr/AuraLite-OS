@@ -35,6 +35,7 @@ static void update_proc_data(void) {
                 if (nl2) *nl2 = '\0';
             }
             strncpy(mem_text, buf, sizeof(mem_text) - 1);
+    mem_text[sizeof(mem_text) - 1] = 0;
             strcpy(mem_lbl->text, mem_text);
         }
         close(fd);

@@ -20,6 +20,7 @@
 
 /* Initialise the scheduler: create the kmain and idle threads. */
 void sched_init(void);
+int  sched_is_ready(void);
 
 /* Add a thread to the tail of the ready queue. */
 void sched_add_thread(tcb_t *tcb);
