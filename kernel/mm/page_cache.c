@@ -13,6 +13,7 @@ typedef struct page_cache_entry {
     uint64_t    offset;
     uint64_t    phys;
     int         dirty;
+    volatile int ready;
     struct page_cache_entry *next;
 } page_cache_entry_t;
 
@@ -23,6 +24,13 @@ static uint32_t hash_page(struct ofd *ofd, uint64_t offset) {
     return ((uint32_t)((uintptr_t)ofd ^ offset)) % PAGE_CACHE_BUCKETS;
 }
 
+static void page_cache_wait_ready(page_cache_entry_t *entry) {
+    if (!entry) return;
+    while (!__atomic_load_n(&entry->ready, __ATOMIC_ACQUIRE)) {
+        __asm__ volatile ("pause");
+    }
+}
+
 uint64_t page_cache_get(struct ofd *file, uint64_t offset) {
     if (!file) return 0;
     uint32_t h = hash_page(file, offset);
@@ -30,8 +38,11 @@ uint64_t page_cache_get(struct ofd *file, uint64_t offset) {
     page_cache_entry_t *curr = cache_buckets[h];
     while (curr) {
         if (curr->ofd == file && curr->offset == offset) {
+            uint64_t phys = curr->phys;
+            page_cache_entry_t *entry = curr;
             spinlock_release(&cache_lock);
-            return curr->phys;
+            page_cache_wait_ready(entry);
+            return phys;
         }
         curr = curr->next;
     }
@@ -42,28 +53,44 @@ uint64_t page_cache_get(struct ofd *file, uint64_t offset) {
 void page_cache_put(struct ofd *file, uint64_t offset, uint64_t phys) {
     if (!file) return;
     uint32_t h = hash_page(file, offset);
-    spinlock_acquire(&cache_lock);
 
+    spinlock_acquire(&cache_lock);
     page_cache_entry_t *curr = cache_buckets[h];
     while (curr) {
         if (curr->ofd == file && curr->offset == offset) {
             curr->phys = phys;
+            curr->ready = 1;
             spinlock_release(&cache_lock);
             return;
         }
         curr = curr->next;
     }
+    spinlock_release(&cache_lock);
 
-    /* Not in cache, add new entry. */
-    page_cache_entry_t *entry = kmalloc(sizeof(page_cache_entry_t));
-    if (entry) {
-        entry->ofd = file;
-        entry->offset = offset;
-        entry->phys = phys;
-        entry->dirty = 0;
-        entry->next = cache_buckets[h];
-        cache_buckets[h] = entry;
+    page_cache_entry_t *entry = kmalloc(sizeof(*entry));
+    if (!entry) return;
+
+    entry->ofd = file;
+    entry->offset = offset;
+    entry->phys = phys;
+    entry->dirty = 0;
+    entry->ready = 1;
+
+    spinlock_acquire(&cache_lock);
+    curr = cache_buckets[h];
+    while (curr) {
+        if (curr->ofd == file && curr->offset == offset) {
+            curr->phys = phys;
+            curr->ready = 1;
+            spinlock_release(&cache_lock);
+            kfree(entry);
+            return;
+        }
+        curr = curr->next;
     }
+
+    entry->next = cache_buckets[h];
+    cache_buckets[h] = entry;
     spinlock_release(&cache_lock);
 }
 
@@ -80,36 +107,55 @@ int page_cache_get_or_alloc(struct ofd *file, uint64_t offset,
     while (curr) {
         if (curr->ofd == file && curr->offset == offset) {
             uint64_t phys = curr->phys;
+            page_cache_entry_t *entry = curr;
             spinlock_release(&cache_lock);
+            page_cache_wait_ready(entry);
             if (pmm_inc_frame_ref(phys) != 0) return -1;
             *phys_out = phys;
             return 0;
         }
         curr = curr->next;
     }
+    spinlock_release(&cache_lock);
+
+    page_cache_entry_t *entry = kmalloc(sizeof(*entry));
+    if (!entry) return -1;
 
     uint64_t phys = pmm_alloc_frame();
     if (!phys) {
-        spinlock_release(&cache_lock);
+        kfree(entry);
         return -1;
     }
 
-    page_cache_entry_t *entry = kmalloc(sizeof(*entry));
-    if (!entry) {
-        spinlock_release(&cache_lock);
-        pmm_free_frame(phys);
-        return -1;
+    spinlock_acquire(&cache_lock);
+    curr = cache_buckets[h];
+    while (curr) {
+        if (curr->ofd == file && curr->offset == offset) {
+            uint64_t existing = curr->phys;
+            page_cache_entry_t *existing_entry = curr;
+            spinlock_release(&cache_lock);
+            kfree(entry);
+            pmm_free_frame(phys);
+            page_cache_wait_ready(existing_entry);
+            if (pmm_inc_frame_ref(existing) != 0) return -1;
+            *phys_out = existing;
+            return 0;
+        }
+        curr = curr->next;
     }
 
     entry->ofd = file;
     entry->offset = offset;
     entry->phys = phys;
     entry->dirty = 0;
+    entry->ready = 0;
     entry->next = cache_buckets[h];
     cache_buckets[h] = entry;
     spinlock_release(&cache_lock);
 
     if (fill_fn) fill_fn(phys, fill_arg);
+    __atomic_store_n(&entry->ready, 1, __ATOMIC_RELEASE);
+
     if (pmm_inc_frame_ref(phys) != 0) {
         spinlock_acquire(&cache_lock);
         page_cache_entry_t **pp = &cache_buckets[h];
@@ -132,6 +178,8 @@ int page_cache_get_or_alloc(struct ofd *file, uint64_t offset,
 
 void page_cache_invalidate(struct ofd *file) {
     if (!file) return;
+
+    page_cache_entry_t *to_free = NULL;
     spinlock_acquire(&cache_lock);
     for (int i = 0; i < PAGE_CACHE_BUCKETS; i++) {
         page_cache_entry_t **curr = &cache_buckets[i];
@@ -139,13 +187,20 @@ void page_cache_invalidate(struct ofd *file) {
             page_cache_entry_t *entry = *curr;
             if (entry->ofd == file) {
                 *curr = entry->next;
-                kfree(entry);
+                entry->next = to_free;
+                to_free = entry;
             } else {
                 curr = &entry->next;
             }
         }
     }
     spinlock_release(&cache_lock);
+
+    while (to_free) {
+        page_cache_entry_t *next = to_free->next;
+        kfree(to_free);
+        to_free = next;
+    }
 }
 
 void page_cache_flush(struct ofd *file) {

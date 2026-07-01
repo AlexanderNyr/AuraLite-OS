@@ -25,6 +25,7 @@
 #include "kernel/sync/futex.h"
 // clone.c compiled separately
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/mprotect.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/vma.h"
@@ -449,30 +450,13 @@ static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     }
 
     uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
-    vma_t *vma = vma_find(cur->vma_list, addr);
-    if (!vma || vma->va_start != addr || vma->va_end < addr + len) {
+    if (mprotect_update_vma_range(cur->vma_list, addr, len, prot) != 0) {
         spinlock_release_irqrestore(&cur->vma_lock, vf);
         return (uint64_t)-ENOMEM;
     }
-
-    uint32_t vflags = vma->flags & ~(VMA_READ | VMA_WRITE | VMA_EXEC);
-    if (prot & PROT_READ)  vflags |= VMA_READ;
-    if (prot & PROT_WRITE) vflags |= VMA_WRITE;
-    if (prot & PROT_EXEC)  vflags |= VMA_EXEC;
-    vma->flags = vflags;
     spinlock_release_irqrestore(&cur->vma_lock, vf);
 
-    uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
-    if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;
-    if (!(prot & PROT_EXEC)) pte_flags |= PAGE_FLAG_NO_EXEC;
-
-    for (uint64_t va = addr; va < addr + len; va += PAGE_SIZE_BYTES) {
-        uint64_t phys = paging_get_phys(va);
-        if (phys) {
-            paging_map(va, phys, pte_flags);
-        }
-    }
-
+    mprotect_remap_present_pages(addr, len, prot);
     return 0;
 }
 

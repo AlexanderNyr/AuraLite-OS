@@ -24,6 +24,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/proc/wait_queue.h"
+#include "kernel/arch/x86_64/irq.h"
 
 #define VIRTIO_VENDOR_ID         0x1AF4
 #define VIRTIO_NET_MODERN_DEVICE 0x1041
@@ -284,7 +285,8 @@ static void rx_fill(void) {
     notify_queue(&rxq, VNET_RXQ);
 }
 
-static void virtio_net_irq_handler(void) {
+static void virtio_net_irq_handler(struct registers *regs) {
+    (void)regs;
     /* Drain the RX used ring */
     while (rxq.used->idx != rxq.last_used_idx) {
         /* Just acknowledge the packets for now, we don't do allocation in IRQ.
@@ -493,7 +495,7 @@ int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
         if (!virtio_net_link_up()) return -1;
 
         if (timeout_ticks == 0) {
-            wq_wait(&vnet_rx_wq);
+            wq_wait(&vnet_rx_wq, NULL);
         } else {
             uint64_t start = timer_get_ticks();
             while (virtio_net_recv(out, bufsize) == 0) {

@@ -2,6 +2,20 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Bugfix batch M1-M6] 2026-07-01
+
+### Fixed
+- **Page-cache lock discipline**: `page_cache_get_or_alloc()` no longer performs `kmalloc()` or `pmm_alloc_frame()` while holding `cache_lock`. The miss path now does a lockless pre-allocation, rechecks the bucket under the lock, and only then inserts the new entry. Adjacent `page_cache_put()` / `page_cache_invalidate()` paths were aligned with the same no-heap-under-spinlock rule.
+- **Page-cache publish ordering**: shared file-cache entries now carry a `ready` flag. Misses insert `ready=0`, fill the page outside the lock, then publish `ready=1` with release semantics; racing readers wait for readiness before returning the frame.
+- **Per-CPU TSS setup race**: added `gdt_set_tss_in()` so `tss_load_for_cpu()` can encode each CPU's TSS descriptor directly into its private GDT copy without transient writes to the global `gdt[]`.
+- **`mprotect()` TLB correctness**: the PTE reprotection path now remaps every present page with the new flags, invalidates the local TLB entry with `invlpg`, and sends a TLB-shootdown IPI to the other CPUs after the batch.
+- **`mprotect()` multi-VMA coverage**: ranges are now verified across adjacent VMAs instead of requiring a single VMA to cover the whole span, and every covered VMA has its protection bits updated before PTE remap.
+- **AP bring-up ordering**: `cpu_local_init()` now runs before `tss_load_for_cpu()` on application processors so GS-based per-CPU state is valid before any TSS warning/logging path executes.
+
+### Added
+- Host unit tests: `tests/unit/test_page_cache.c`, `tests/unit/test_mprotect.c`, and `tests/unit/test_gdt_tss.c` pin the lock-ordering/page-ready behavior, the new `mprotect()` helpers, and the arbitrary-buffer TSS descriptor encoder.
+- Integration coverage: `tests/integration/cases/test_smp_tss.sh` and `tests/integration/cases/test_smp_init_order.sh` extend the SMP QEMU gates with explicit no-warning/no-fault checks for the TSS/AP-init paths.
+
 ## [Bugfix batch N1-N9 (partial: N1, N2, N3, N4, N5, N6, N8, N9, N7 hardening)] 2026-06-30
 
 ### Fixed

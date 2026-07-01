@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/smp.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/vma.h"
 #include "kernel/proc/scheduler.h"
@@ -143,9 +144,11 @@ void paging_unmap(uint64_t virt) {
     *pte = 0;
     invlpg(virt);
 
-    /* TLB Shootdown: Invalidate this range on all other CPUs. */
-    extern void lapic_send_ipi_all_excluding_self(uint8_t vector);
-    lapic_send_ipi_all_excluding_self(0xF0);
+    /* TLB Shootdown: only needed once more than one CPU is online. */
+    if (smp_get_cpu_count() > 1) {
+        extern void lapic_send_ipi_all_excluding_self(uint8_t vector);
+        lapic_send_ipi_all_excluding_self(0xF0);
+    }
 }
 
 int paging_protect(uint64_t virt, uint64_t flags) {

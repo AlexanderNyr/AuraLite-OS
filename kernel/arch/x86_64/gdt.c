@@ -36,25 +36,31 @@ static void gdt_set_entry(int index, uint32_t base, uint32_t limit,
  * hold the upper 32 bits of the base. Since our TSS lives in the higher half
  * (> 4 GiB), we MUST write the upper base bits, not just zero them.
  */
-void gdt_set_tss(int index, uint64_t base, uint32_t limit) {
-    gdt[index].base_low    = (uint16_t)(base & 0xFFFF);
-    gdt[index].base_middle = (uint8_t)((base >> 16) & 0xFF);
-    gdt[index].base_high   = (uint8_t)((base >> 24) & 0xFF);
-    gdt[index].limit_low   = (uint16_t)(limit & 0xFFFF);
-    gdt[index].granularity = (uint8_t)((limit >> 16) & 0x0F);
+void gdt_set_tss_in(struct gdt_entry *gdt_buf, int index,
+                    uint64_t base, uint32_t limit) {
+    if (!gdt_buf || index < 0 || index >= GDT_NUM_ENTRIES) return;
+
+    gdt_buf[index].base_low    = (uint16_t)(base & 0xFFFF);
+    gdt_buf[index].base_middle = (uint8_t)((base >> 16) & 0xFF);
+    gdt_buf[index].base_high   = (uint8_t)((base >> 24) & 0xFF);
+    gdt_buf[index].limit_low   = (uint16_t)(limit & 0xFFFF);
+    gdt_buf[index].granularity = (uint8_t)((limit >> 16) & 0x0F);
     /* access: Present | DPL=0 | type=0x9 (available 64-bit TSS) => 0x89 */
-    gdt[index].access      = 0x89;
-    /* The next 8 bytes (index+1) hold bits 32..63 of the base in its low 32
-     * bits; the high 32 bits must be zero. */
+    gdt_buf[index].access      = 0x89;
+
     if (index + 1 < GDT_NUM_ENTRIES) {
         uint64_t upper = base >> 32;
-        gdt[index + 1].limit_low   = (uint16_t)(upper & 0xFFFF);
-        gdt[index + 1].base_low    = (uint16_t)((upper >> 16) & 0xFFFF);
-        gdt[index + 1].base_middle = 0;
-        gdt[index + 1].access      = 0;
-        gdt[index + 1].granularity = 0;
-        gdt[index + 1].base_high   = 0;
+        gdt_buf[index + 1].limit_low   = (uint16_t)(upper & 0xFFFF);
+        gdt_buf[index + 1].base_low    = (uint16_t)((upper >> 16) & 0xFFFF);
+        gdt_buf[index + 1].base_middle = 0;
+        gdt_buf[index + 1].access      = 0;
+        gdt_buf[index + 1].granularity = 0;
+        gdt_buf[index + 1].base_high   = 0;
     }
+}
+
+void gdt_set_tss(int index, uint64_t base, uint32_t limit) {
+    gdt_set_tss_in(gdt, index, base, limit);
 }
 
 void gdt_init(void) {

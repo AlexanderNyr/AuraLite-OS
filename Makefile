@@ -498,7 +498,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_stack_guard \
                 $(BUILD_DIR)/test_select_stack \
                 $(BUILD_DIR)/test_vma \
-                $(BUILD_DIR)/test_page_cache
+                $(BUILD_DIR)/test_page_cache \
+                $(BUILD_DIR)/test_mprotect \
+                $(BUILD_DIR)/test_gdt_tss
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -557,7 +559,15 @@ $(BUILD_DIR)/test_vma: tests/unit/test_vma.c
 
 $(BUILD_DIR)/test_page_cache: tests/unit/test_page_cache.c
 	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@ -lpthread
+
+$(BUILD_DIR)/test_mprotect: tests/unit/test_mprotect.c
+	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_gdt_tss: tests/unit/test_gdt_tss.c kernel/arch/x86_64/gdt.c kernel/arch/x86_64/gdt.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_gdt_tss.c kernel/arch/x86_64/gdt.c -o $@
 
 $(BUILD_DIR)/test_usb: tests/unit/test_usb.c
 	@mkdir -p $(BUILD_DIR)

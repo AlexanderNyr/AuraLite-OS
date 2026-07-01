@@ -90,6 +90,8 @@ ALL_CASES=(
     test_tcp_server
     test_graphics
     test_smp
+    test_smp_tss
+    test_smp_init_order
     test_gui
     test_gui_usb
 )

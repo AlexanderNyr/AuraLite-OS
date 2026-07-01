@@ -22,6 +22,10 @@ struct cpu_local {
 
 void cpu_local_init(uint64_t cpu_id);
 
+extern int cpu_local_ready;
+extern struct cpu_local bsp_cpu_local;
+extern struct cpu_local ap_cpu_locals[32];
+
 static inline struct cpu_local *get_cpu_local(void) {
     struct cpu_local *p;
     __asm__ volatile ("mov %%gs:0, %0" : "=r"(p));

@@ -46,16 +46,17 @@ static void ap_entry(struct limine_mp_info *info) {
         :: "r"((uint64_t)ap_stacks[cpu_index] + AP_STACK_SIZE)
     );
 
-    /* Load the kernel's GDT/IDT and a per-CPU TSS. */
+    /* Load the kernel's GDT/IDT. */
     gdt_flush((uint64_t)(uintptr_t)&gdtr);
     __asm__ volatile ("lidt %0" :: "m"(idtp));
+
+    /* CPU-local state must come first so per-CPU logging/scheduler lookups are safe. */
+    cpu_local_init(cpu_index + 1);
     tss_load_for_cpu((int)(cpu_index + 1));
+    lapic_enable();
 
     kprintf("[smp] AP #%llu online (lapic_id=%u, processor_id=%u)\n",
             (unsigned long long)cpu_index, info->lapic_id, info->processor_id);
-
-    cpu_local_init(cpu_index + 1);
-    lapic_enable();
 
     /* Atomically report online. */
     __sync_add_and_fetch(&cpus_online, 1);

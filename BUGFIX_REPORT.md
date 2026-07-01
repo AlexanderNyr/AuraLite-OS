@@ -318,3 +318,35 @@ forcing it on, making the NX dependency visible during boot diagnostics.
 | `kernel/mm/page_cache.c` | #5, #6 |
 | `kernel/arch/x86_64/syscall.c` | #7 |
 | `kernel/fs/select.c` | #10 |
+
+---
+
+## Bug 22 — `page_cache_get_or_alloc()`: `kmalloc` inside spinlock (M1) 🔴 DEADLOCK RISK
+
+**Files:** `kernel/mm/page_cache.c`, `tests/unit/test_page_cache.c`  
+**Fix:** Reworked the page-cache miss path into a lockless pre-allocation + locked recheck/insert flow so both `kmalloc()` and `pmm_alloc_frame()` happen outside the cache spinlock. The same lock discipline was applied to adjacent page-cache insert/invalidate paths so no heap allocation/free now occurs while `cache_lock` is held.
+
+## Bug 23 — `page_cache_get_or_alloc()`: page published before fill (M2) 🔴 DATA CORRUPTION
+
+**Files:** `kernel/mm/page_cache.c`, `tests/unit/test_page_cache.c`  
+**Fix:** Added a `ready` flag to cache entries. New pages are inserted as `ready=0`, filled outside the lock, then published with a release-store to `ready=1`. Readers wait until `ready` is observed before returning the shared frame.
+
+## Bug 24 — `tss_load_for_cpu()`: race on global `gdt[]` under SMP (M3) 🔴 CORRUPTION
+
+**Files:** `kernel/arch/x86_64/gdt.{c,h}`, `kernel/arch/x86_64/tss.c`, `tests/unit/test_gdt_tss.c`  
+**Fix:** Added `gdt_set_tss_in()` to encode a TSS descriptor into an arbitrary GDT buffer. `tss_load_for_cpu()` now patches the per-CPU GDT directly instead of transiently mutating the global `gdt[]`.
+
+## Bug 25 — `mprotect()`: no TLB invalidation after PTE change (M4) 🟡 SECURITY
+
+**Files:** `kernel/arch/x86_64/syscall.c`, `kernel/arch/x86_64/mprotect.{c,h}`, `kernel/arch/x86_64/lapic.h`, `tests/unit/test_mprotect.c`  
+**Fix:** Moved the page-table reprotection path into a dedicated helper that remaps every present page with the new flags, performs `invlpg` on the local CPU for each updated VA, and issues a TLB-shootdown IPI for other CPUs after the batch.
+
+## Bug 26 — `mprotect()`: only handles single-VMA ranges (M5) 🟡 POSIX NON-COMPLIANCE
+
+**Files:** `kernel/arch/x86_64/syscall.c`, `kernel/arch/x86_64/mprotect.{c,h}`, `tests/unit/test_mprotect.c`  
+**Fix:** Replaced the single-`vma_find()` check with a full coverage walk across adjacent VMAs and updated every VMA intersecting the protected span before remapping present PTEs.
+
+## Bug 27 — `ap_entry()`: `tss_load_for_cpu` called before `cpu_local_init` (M6) 🟡 NULL DEREF
+
+**Files:** `kernel/arch/x86_64/smp.c`, `tests/integration/cases/test_smp_init_order.sh`, `tests/integration/cases/test_smp_tss.sh`  
+**Fix:** Reordered AP bring-up so `cpu_local_init()` runs immediately after GDT/IDT load and before any per-CPU TSS/logging path that can touch GS-based CPU-local state.

@@ -8,8 +8,8 @@
 #define MSR_GS_BASE 0xC0000101
 
 int cpu_local_ready = 0;
-static struct cpu_local bsp_cpu_local;
-static struct cpu_local ap_cpu_locals[32];
+struct cpu_local bsp_cpu_local;
+struct cpu_local ap_cpu_locals[32];
 
 static inline void wrmsr_gs(uint32_t msr, uint64_t val) {
     uint32_t low = (uint32_t)val;

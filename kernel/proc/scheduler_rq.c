@@ -1,6 +1,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/arch/x86_64/cpu_local.h"
+#include "kernel/arch/x86_64/smp.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/kprintf.h"
 #include <stdint.h>
@@ -15,12 +16,11 @@ static inline struct cpu_local* get_cpu_by_id(uint32_t id) {
 
 /* Helper to find the least loaded CPU. */
 static struct cpu_local* find_least_loaded_cpu(void) {
-    /* We assume max 4 CPUs for this logic, but use the detected cpu_count. */
-    extern int cpu_count; 
+    uint32_t cpu_count = smp_get_cpu_count();
     int best_id = 0;
     uint32_t min_len = get_cpu_local()->rq_len;
 
-    for (int i = 1; i < cpu_count; i++) {
+    for (uint32_t i = 1; i < cpu_count; i++) {
         struct cpu_local *cpu = get_cpu_by_id(i);
         if (cpu->rq_len < min_len) {
             min_len = cpu->rq_len;
@@ -47,10 +47,10 @@ void sched_add_thread(tcb_t *tcb) {
 
 tcb_t *sched_steal_work(void) {
     struct cpu_local *me = get_cpu_local();
-    extern int cpu_count;
+    uint32_t cpu_count = smp_get_cpu_count();
     int my_id = (int)me->cpu_id;
 
-    for (int i = 1; i < cpu_count; i++) {
+    for (uint32_t i = 1; i < cpu_count; i++) {
         int victim_id = (my_id + i) % cpu_count;
         struct cpu_local *victim = get_cpu_by_id(victim_id);
         if (victim->rq_len == 0) continue;

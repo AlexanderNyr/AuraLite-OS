@@ -59,6 +59,8 @@ void gdt_init(void);
 /* Encode a 64-bit TSS descriptor at the given GDT index (16 bytes, so it
  * occupies index and index+1). Used by tss.c. */
 void gdt_set_tss(int index, uint64_t base, uint32_t limit);
+void gdt_set_tss_in(struct gdt_entry *gdt_buf, int index,
+                    uint64_t base, uint32_t limit);
 
 /* Encoded by gdt.c for tss.c to reference. */
 extern struct gdt_entry gdt[GDT_NUM_ENTRIES];

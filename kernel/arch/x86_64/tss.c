@@ -36,10 +36,11 @@ void tss_load_for_cpu(int cpu_id) {
     }
 
     memcpy(per_cpu_gdt[cpu_id], gdt, PER_CPU_GDT_BYTES);
+    gdt_set_tss_in(per_cpu_gdt[cpu_id], 5,
+                   (uint64_t)(uintptr_t)&tss_entries[cpu_id],
+                   sizeof(struct tss_entry) - 1);
     per_cpu_gdtr[cpu_id].limit = (uint16_t)(PER_CPU_GDT_BYTES - 1);
     per_cpu_gdtr[cpu_id].base = (uint64_t)(uintptr_t)&per_cpu_gdt[cpu_id][0];
-    gdt_set_tss(5, (uint64_t)(uintptr_t)&tss_entries[cpu_id], sizeof(struct tss_entry) - 1);
-    memcpy(&per_cpu_gdt[cpu_id][0], gdt, PER_CPU_GDT_BYTES);
 
     extern void gdt_flush(uint64_t gdtr_ptr);
     gdt_flush((uint64_t)(uintptr_t)&per_cpu_gdtr[cpu_id]);

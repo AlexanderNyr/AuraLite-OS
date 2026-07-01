@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define IPI_TLB_SHOOTDOWN_VECTOR 0xF0
+
 void lapic_enable(void);
 void lapic_timer_start(uint32_t hz);
 void lapic_eoi(void);
