@@ -65,7 +65,7 @@ static void run_command(const char *line) {
     } else if (strcmp(cmd, "pwd") == 0) {
         hist_push("/");
     } else if (strcmp(cmd, "uname") == 0) {
-        hist_push("AuraLite OS 1.0.0 x86_64");
+        hist_push("AuraLite OS 0.0.1 x86_64");
     } else if (strcmp(cmd, "echo") == 0) {
         hist_push(arg);
     } else if (strcmp(cmd, "ls") == 0) {

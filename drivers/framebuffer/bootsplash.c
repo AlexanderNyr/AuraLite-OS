@@ -91,7 +91,7 @@ static void bootsplash_render(void) {
     /* manual version string */
     const char *ver = AURALITE_NAME;
     (void)ver;
-    gfx_draw_text_centered(cy + 90, "Version 1.0.0  —  x86_64", BS_GRAY);
+    gfx_draw_text_centered(cy + 90, "Version 0.0.1  —  x86_64", BS_GRAY);
     gfx_draw_text_centered(cy + 110, "Limine  •  SMP  •  TCP/IP  •  GUI", BS_ACCENT2);
 
     /* Progress bar */

@@ -422,7 +422,7 @@ void kmain(void) {
     /* Boot screen. */
     gfx_clear(GFX_DARKBLUE);
     gfx_fill_rect(0, 0, gfx_get_width(), 40, GFX_BLUE);
-    gfx_draw_string(16, 16, "AuraLite OS v1.0.0 — Graphics Mode", GFX_WHITE);
+    gfx_draw_string(16, 16, "AuraLite OS v0.0.1 — Graphics Mode", GFX_WHITE);
     uint32_t box_w = 80, box_h = 60, gap = 16;
     color_t colours[] = {GFX_RED, GFX_GREEN, GFX_YELLOW, GFX_CYAN, GFX_MAGENTA};
     for (int i = 0; i < 5; i++) {

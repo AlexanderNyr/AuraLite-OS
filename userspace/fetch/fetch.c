@@ -5,7 +5,7 @@
 
 int main(void) {
     puts("");
-    puts("      /\\        OS:      AuraLite OS v1.0.0 x86_64");
+    puts("      /\\        OS:      AuraLite OS v0.0.1 x86_64");
     puts("     /  \\       Host:    QEMU / Limine Boot Protocol");
     puts("    / /\\ \\      Kernel:  AuraLite Higher-Half x86_64");
     puts("   / ____ \\     Uptime:  12 minutes, 34 seconds");

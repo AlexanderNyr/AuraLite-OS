@@ -217,7 +217,7 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
                         "model name\t: AuraLite x86_64 CPU\n"
                         "cores\t\t: 4\n");
     } else if (vn->inode_id == 4) {
-        len = ksnprintf(text, sizeof(text), "AuraLite OS v1.0.0 (x86_64) #1 SMP\n");
+        len = ksnprintf(text, sizeof(text), "AuraLite OS v0.0.1 (x86_64) #1 SMP\n");
     } else if (vn->inode_id == 5) {
         len = ksnprintf(text, sizeof(text), "cpu  1234 0 5678 91011\nintr 1450\nctxt 2450\n");
     } else if ((vn->inode_id >> 16) != 0) {

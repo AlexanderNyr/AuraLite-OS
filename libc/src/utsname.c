@@ -8,7 +8,7 @@ int uname(struct utsname *buf) {
 
     strcpy(buf->sysname, "AuraLite");
     strcpy(buf->nodename, "auralite");
-    strcpy(buf->release, "1.0.0");
+    strcpy(buf->release, "0.0.1");
     strcpy(buf->version, "POSIX P10");
     strcpy(buf->machine, "x86_64");
     return 0;

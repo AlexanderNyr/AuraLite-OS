@@ -483,7 +483,7 @@ void wm_demo(void) {
     int w1 = wm_create_window(80, 60, 400, 220,
                               "Terminal", GFX_BLUE);
     wm_clear_window(w1, 0x00181828);
-    wm_draw_text(w1, 1, 1, "AuraLite OS v1.0.0", GFX_GREEN);
+    wm_draw_text(w1, 1, 1, "AuraLite OS v0.0.1", GFX_GREEN);
     wm_draw_text(w1, 1, 2, "Full GUI Demo", GFX_CYAN);
     wm_draw_text(w1, 1, 4, "Features:", GFX_WHITE);
     wm_draw_text(w1, 3, 5, "Draggable windows", GFX_GRAY);
@@ -511,7 +511,7 @@ void wm_demo(void) {
     int w3 = wm_create_window(200, 300, 300, 140,
                               "About AuraLite OS", GFX_DARKBLUE);
     wm_clear_window(w3, 0x00181828);
-    wm_draw_text(w3, 1, 1, "AuraLite OS v1.0.0", GFX_YELLOW);
+    wm_draw_text(w3, 1, 1, "AuraLite OS v0.0.1", GFX_YELLOW);
     wm_draw_text(w3, 1, 3, "x86_64 bare-metal kernel", GFX_WHITE);
     wm_draw_text(w3, 1, 4, "Booted via Limine", GFX_GRAY);
     wm_draw_text(w3, 1, 6, "Phases 0-14 + extensions", GFX_CYAN);

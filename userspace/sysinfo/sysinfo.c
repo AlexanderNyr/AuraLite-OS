@@ -22,7 +22,7 @@ int main(void) {
 
     pid_t pid = getpid();
     printf("  Process ID : %d\n", (int)pid);
-    puts("  OS         : AuraLite OS 1.0.0");
+    puts("  OS         : AuraLite OS 0.0.1");
     puts("  Arch       : x86_64 (AMD64)");
     puts("  Bootloader : Limine 12.3.3");
     puts("  Features   : SMP, VFS, TCP/IP, DHCP");
