@@ -198,6 +198,7 @@ il_assert_grep_fixed() {
 
 il_assert_no_grep() {
     local log="$1" pat="$2" desc="$3"
+    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
     if grep -qE "$pat" "$log"; then
         il_fail "$desc  (unexpected pattern: ${C_DIM}$pat${C_RESET})"
     else
@@ -207,6 +208,7 @@ il_assert_no_grep() {
 
 il_assert_no_grep_fixed() {
     local log="$1" pat="$2" desc="$3"
+    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
     if grep -Fq -- "$pat" "$log"; then
         il_fail "$desc  (unexpected fixed: ${C_DIM}$pat${C_RESET})"
     else

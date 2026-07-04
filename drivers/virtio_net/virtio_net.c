@@ -498,11 +498,12 @@ int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
             wq_wait(&vnet_rx_wq, NULL);
         } else {
             uint64_t start = timer_get_ticks();
-            while (virtio_net_recv(out, bufsize) == 0) {
+            int n;
+            while ((n = virtio_net_recv(out, bufsize)) == 0) {
                 if (timer_get_ticks() - start >= timeout_ticks) return 0;
                 __asm__ volatile ("pause");
             }
-            return virtio_net_recv(out, bufsize); // This is clumsy, but just for now.
+            return n;
         }
     }
 }
