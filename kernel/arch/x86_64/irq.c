@@ -65,6 +65,16 @@ void irq_register_handler(int irq, irq_handler_t handler) {
     }
     irq_handlers[irq] = handler;
     pic_unmask(irq);
+    /* Slave-PIC IRQs (8-15) are wired through the master PIC's cascade input
+     * on IRQ2.  If that line stays masked, no slave-PIC interrupt (including
+     * IRQ12 for the PS/2 mouse and IRQ14/15 for legacy IDE) ever reaches the
+     * CPU, even though pic_unmask() above correctly clears the bit on PIC2.
+     * Without this, the mouse driver initialises successfully and reports
+     * "ready", but mouse_handler() is never invoked, so the GUI cursor and
+     * anything else depending on slave-PIC IRQs silently never updates. */
+    if (irq >= 8) {
+        pic_unmask(2);
+    }
 }
 
 void irq_dispatch(int irq, struct registers *regs) {

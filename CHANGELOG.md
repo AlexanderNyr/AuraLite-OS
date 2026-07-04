@@ -2,6 +2,48 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Bugfix batch BUG-32 — BUG-33: GUI freeze (frozen clock/cursor)] 2026-07-04
+
+### Fixed
+- **BUG-32 — GUI dirty-rect flip never ran after the first frame**: in
+  `gui_compositor_tick()` (`kernel/gui/gui.c`), the partial-redraw branch
+  cleared `dirty_count = 0` **before** calling `compositor_render_dirty()`.
+  That function computes the screen rectangle to flip via
+  `compute_dirty_union()`, which iterates `dirty_rects[0..dirty_count)` — so
+  it always saw `dirty_count == 0` and produced an empty rectangle, and
+  `gfx_flip_rect()` silently did nothing. The back buffer kept compositing
+  correctly every tick (cursor tracking, taskbar clock, notifications), but
+  none of it was ever copied to the visible framebuffer after the initial
+  full redraw, so the on-screen GUI appeared completely frozen (clock stuck
+  at whatever second the last full redraw happened, cursor not moving).
+  Fixed by computing the dirty union first and clearing `dirty_count` only
+  afterward, inside `compositor_render_dirty()` itself.
+- **BUG-33 — PS/2 mouse (and any other slave-PIC device) never delivered
+  interrupts**: `irq_register_handler()` in `kernel/arch/x86_64/irq.c` only
+  unmasked the requested IRQ line on its own PIC. For IRQ 8-15 (the slave
+  8259A, which includes IRQ12 for the PS/2 mouse and IRQ14/15 for legacy
+  IDE), the slave's cascade output is itself wired to IRQ2 on the *master*
+  PIC; if IRQ2 stays masked (as it does from `pic_init()`, which masks
+  everything), no slave-PIC interrupt ever reaches the CPU regardless of the
+  slave-side mask. The mouse driver initialised and reported "ready", but
+  `mouse_handler()` was simply never invoked, so mouse movement was
+  completely inert — compounding the visible "frozen GUI" symptom (the
+  cursor genuinely never moved, independent of BUG-32). Fixed by also
+  unmasking IRQ2 whenever a handler for any IRQ >= 8 is registered.
+
+### Validation
+- `make clean && make iso` builds with 0 errors.
+- `make test-unit` — all host-side unit tests pass, no regressions.
+- QEMU integration re-runs with no regressions: `test_boot_to_shell` (17/17),
+  `test_gui` (9/9 with `vncdotool` installed — VNC screenshots now visibly
+  differ before/after `/glaunch`, confirming the framebuffer actually
+  updates), `test_graphics` (4/4), `test_usb_hid` (6/6), `test_usb_msc`
+  (7/7), `test_ahci_rw` (9/9), `test_networking` (7/7), `test_smp` (4/4).
+- Manual QEMU-monitor `mouse_move` injection plus VNC screenshots confirm the
+  cursor now physically relocates and the taskbar clock advances
+  second-by-second on the visible screen (previously frozen at whatever time
+  the last full redraw happened, e.g. `00:00:04`).
+
 ## [Bugfix batch BUG-28 — BUG-30] 2026-07-01
 
 ### Fixed

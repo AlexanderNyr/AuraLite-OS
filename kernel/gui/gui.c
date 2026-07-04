@@ -1552,10 +1552,18 @@ static void compositor_render_dirty(void) {
     draw_notifications();
     draw_cursor();
 
-    /* Flip only the dirty bounding box. */
+    /* Flip only the dirty bounding box.  Compute the union BEFORE clearing
+     * dirty_count — the caller no longer clears it beforehand (BUG-32: the
+     * old code cleared dirty_count in gui_compositor_tick() before calling
+     * this function, so compute_dirty_union() always saw dirty_count==0 and
+     * produced an empty rect, meaning gfx_flip_rect() never ran and the
+     * visible screen never updated after the first full redraw — cursor and
+     * taskbar clock appeared frozen even though the back buffer kept
+     * rendering correctly). */
     int32_t dx, dy;
     uint32_t dw, dh;
     compute_dirty_union(&dx, &dy, &dw, &dh);
+    dirty_count = 0;
     if (dw > 0 && dh > 0) {
         gfx_flip_rect(dx, dy, dw, dh);
     }
@@ -2161,13 +2169,16 @@ void gui_compositor_tick(void) {
         }
     }
 
-    /* Branch: full redraw, partial dirty-redraw, or idle frame. */
+    /* Branch: full redraw, partial dirty-redraw, or idle frame.
+     * NOTE: dirty_count must NOT be cleared here for the partial-redraw path;
+     * compositor_render_dirty() reads it (via compute_dirty_union()) to know
+     * which rectangle to flip to the visible framebuffer, and clears it
+     * itself once that's done (BUG-32 fix). */
     if (full_dirty) {
         full_dirty = 0;
         dirty_count = 0;
         compositor_render();
     } else if (dirty_count > 0) {
-        dirty_count = 0;
         compositor_render_dirty();
     } else {
         /* Idle frame — no work needed, zero bandwidth consumed. */
