@@ -488,22 +488,24 @@ int virtio_net_recv(void *out, uint32_t bufsize) {
 
 int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
     if (!virtio_net_available()) return -1;
-    
-    for (;;) {
-        int n = virtio_net_recv(out, bufsize);
-        if (n != 0) return n;
-        if (!virtio_net_link_up()) return -1;
 
-        if (timeout_ticks == 0) {
+    if (timeout_ticks == 0) {
+        /* Blocking wait — loop until a packet arrives. */
+        for (;;) {
+            int n = virtio_net_recv(out, bufsize);
+            if (n != 0) return n;
+            if (!virtio_net_link_up()) return -1;
             wq_wait(&vnet_rx_wq, NULL);
-        } else {
-            uint64_t start = timer_get_ticks();
-            int n;
-            while ((n = virtio_net_recv(out, bufsize)) == 0) {
-                if (timer_get_ticks() - start >= timeout_ticks) return 0;
-                __asm__ volatile ("pause");
-            }
-            return n;
+        }
+    } else {
+        /* Timed wait — poll until a packet arrives or timeout expires. */
+        uint64_t start = timer_get_ticks();
+        for (;;) {
+            int n = virtio_net_recv(out, bufsize);
+            if (n != 0) return n;
+            if (!virtio_net_link_up()) return -1;
+            if (timer_get_ticks() - start >= timeout_ticks) return 0;
+            __asm__ volatile ("pause");
         }
     }
 }

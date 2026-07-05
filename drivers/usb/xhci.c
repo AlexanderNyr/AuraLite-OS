@@ -319,11 +319,17 @@ int xhci_init(void) {
     kprintf("[xhci] controller at PCI %u:%u.%u\n", bus, dev, func);
     pci_enable_bus_master(bus, dev, func);
 
-    /* Map BAR0. xHCI needs more MMIO space than the others — map 64 KiB. */
+    /* Map BAR0. xHCI needs more MMIO space than the others — map 64 KiB.
+     * BAR0 may be a 64-bit BAR (type bits 2:1 == 10b), in which case the
+     * upper 32 bits of the physical address live in BAR1 (index 1). */
     uint32_t bar0 = pci_get_bar(bus, dev, func, 0);
-    uint32_t mmio_phys = bar0 & ~0xF;
+    uint64_t mmio_phys = (uint64_t)(bar0 & ~0xFu);
+    if ((bar0 & 0x6) == 0x4) { /* 64-bit BAR */
+        uint32_t bar1 = pci_get_bar(bus, dev, func, 1);
+        mmio_phys |= (uint64_t)bar1 << 32;
+    }
     uint64_t hhdm = limine_get_hhdm_offset();
-    for (uint32_t off = 0; off < 0x10000; off += 0x1000) {
+    for (uint64_t off = 0; off < 0x10000; off += 0x1000) {
         paging_map(hhdm + mmio_phys + off, mmio_phys + off,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
     }
@@ -507,23 +513,44 @@ int xhci_init(void) {
         kprintf("[xhci] controller running\n");
     }
 
-    /* 11) Enumerate ports. */
+    /* Give the HC a moment to detect attached devices after start.
+     * QEMU's xhci emulation may not show CCS immediately. */
+    for (volatile int d = 0; d < 2000000; d++)
+        __asm__ volatile ("nop");
+
+    /* 11) Enumerate ports.
+     *
+     * PORTSC is tricky: some bits are RW1C (write-1-to-clear), so a
+     * read-modify-write that preserves them will accidentally clear
+     * status-change bits.  When writing PORTSC, we must:
+     *   - Preserve RW bits like PP (Port Power).
+     *   - NOT write 1 to RW1C bits unless we intend to clear them.
+     * The mask below keeps PP and clears all RW1C change bits so they
+     * are not accidentally cleared by an OR operation. */
+#define PORTSC_RW1C_MASK (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC | \
+                          XHCI_PORTSC_WRC | XHCI_PORTSC_OCC | \
+                          XHCI_PORTSC_PRC | XHCI_PORTSC_PLC | \
+                          XHCI_PORTSC_CEC)
+#define PORTSC_PRESERVE(ps) ((ps) & ~PORTSC_RW1C_MASK)
+
     port_count = 0;
     for (int i = 0; i < num_ports; i++) {
         uint32_t ps = port_rd(i);
         if (ps & XHCI_PORTSC_CCS) {
             int speed = (ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK;
 
-            /* Reset the port. */
-            port_wr(i, XHCI_PORTSC_PR);
+            /* Reset the port: set PR while preserving PP and not clearing
+             * status-change bits accidentally. */
+            port_wr(i, PORTSC_PRESERVE(ps) | XHCI_PORTSC_PR);
             /* Wait for reset to complete (PR clears). */
             int rt2 = 5000000;
             while ((port_rd(i) & XHCI_PORTSC_PR) && rt2-- > 0) {
                 __asm__ volatile ("pause");
             }
-            /* Clear status change bits. */
-            port_wr(i, port_rd(i) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC |
-                                     XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
+            /* Clear status change bits by writing 1 to them (RW1C). */
+            ps = port_rd(i);
+            port_wr(i, PORTSC_PRESERVE(ps) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC |
+                                               XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
 
             /* Re-read speed after reset. */
             ps = port_rd(i);
@@ -554,11 +581,13 @@ int xhci_port_has_device(int port) {
 
 int xhci_reset_port(int port) {
     if (op_regs == NULL || port < 0 || port >= num_ports) return -1;
-    if (!(port_rd(port) & XHCI_PORTSC_CCS)) return -1;
-    port_wr(port, port_rd(port) | XHCI_PORTSC_PR);
+    uint32_t ps = port_rd(port);
+    if (!(ps & XHCI_PORTSC_CCS)) return -1;
+    port_wr(port, PORTSC_PRESERVE(ps) | XHCI_PORTSC_PR);
     int t = 5000000;
     while ((port_rd(port) & XHCI_PORTSC_PR) && t-- > 0) __asm__ volatile ("pause");
-    port_wr(port, port_rd(port) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC | XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
+    ps = port_rd(port);
+    port_wr(port, PORTSC_PRESERVE(ps) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC | XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
     return (port_rd(port) & XHCI_PORTSC_CCS) ? 0 : -1;
 }
 

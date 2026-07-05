@@ -88,8 +88,8 @@ struct icmp_hdr {
 #define NET_ARP_TIMEOUT_TICKS        100
 #define NET_ICMP_TIMEOUT_TICKS       200
 #define NET_UDP_TIMEOUT_TICKS        200
-#define NET_DHCP_OFFER_TIMEOUT_TICKS 200
-#define NET_DHCP_ACK_TIMEOUT_TICKS   200
+#define NET_DHCP_OFFER_TIMEOUT_TICKS 500
+#define NET_DHCP_ACK_TIMEOUT_TICKS   500
 
 /* ---- State ---- */
 static uint8_t  our_mac[6];
