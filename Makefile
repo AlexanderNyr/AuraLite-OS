@@ -82,6 +82,28 @@ deps-check:
 
 kernel: $(KERNEL_ELF)
 
+# =============================================================================
+# BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
+# =============================================================================
+BOOT_BIOS_DIR   := boot/bios
+MBR_BIN         := $(BUILD_DIR)/boot/mbr.bin
+
+.PHONY: mbr
+mbr: $(MBR_BIN)
+
+$(MBR_BIN): $(BOOT_BIOS_DIR)/stage1/mbr.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f bin -o $@ $<
+	@sz=$$(wc -c < $@); \
+	  if [ "$$sz" -ne 512 ]; then \
+	    echo "[mbr]  ERROR: $@ is $$sz bytes, expected 512"; exit 1; \
+	  fi
+	@sig=$$(od -An -tx1 -N2 -j510 $@ | tr -d ' \n'); \
+	  if [ "$$sig" != "55aa" ]; then \
+	    echo "[mbr]  ERROR: bad boot signature $$sig (expected 55aa)"; exit 1; \
+	  fi
+	@printf "  [mbr] %-40s %d bytes, sig=0x55AA\n" $@ 512
+
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
