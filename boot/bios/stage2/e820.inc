@@ -17,11 +17,11 @@
 ; =============================================================================
 
 ; Layout constants (must match boot_info_t in boot/shared/boot_info.h).
-;   magic(8) + fb(24) = 32 bytes header
-;   mmap[] starts at offset 32 inside boot_info.
-;   mmap_count u32 at offset 32 + 256*24 = 6176.
-BOOT_MMAP_OFF        equ 32
-BOOT_MMAP_COUNT_OFF  equ 32 + 256*24
+;   magic(8) + fb(32, auto-aligned) = 40 bytes header
+;   mmap[] starts at offset 40 inside boot_info.
+;   mmap_count u32 at offset 40 + 256*24 = 6184.
+BOOT_MMAP_OFF        equ 40
+BOOT_MMAP_COUNT_OFF  equ 40 + 256*24
 E820_ENTRY_SIZE      equ 24         ; boot_mmap_entry_t stride
 
 ; detect_memory -- fills boot_info.mmap[] up to BOOT_MAX_MMAP=256 entries

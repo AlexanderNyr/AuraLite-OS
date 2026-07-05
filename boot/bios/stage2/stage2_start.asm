@@ -79,26 +79,28 @@ stage2_entry:
     rep  stosw
 
     ; ---- Fill the constant fields that BL3 owns (BL4 fills the rest).
-    ; See boot/shared/boot_info.h for the field layout.  All offsets
-    ; below are computed at assembly time from sizeof() of the C struct
-    ; members so any layout change in the header is caught by the
-    ; unit-test test_boot_info before the BIOS path is even booted.
+    ; See boot/shared/boot_info.h for the field layout.  The offsets
+    ; below MUST match sizeof/offsetof reported by the host compiler
+    ; on the same header -- the tests/unit/test_boot_info test would
+    ; catch a drift only for the C side, not for stage 2, so we keep
+    ; both this comment block and the numeric offsets in sync by hand.
     ;
+    ; Confirmed by `offsetof` on boot/shared/boot_info.h @ commit BL4:
     ;   +0     magic          u64          <-- 0x4155524142544C44
-    ;   +8     fb             boot_fb_t (24 B)   left zero here
-    ;   +32    mmap[256]      6144 B             filled by detect_memory
-    ;   +6176  mmap_count     u32                filled by detect_memory
-    ;   +6180  _pad_mmap      u32
-    ;   +6184  hhdm_offset    u64          <-- 0xFFFF800000000000
-    ;   +6192  initrd_phys    u64                left zero here (BL4)
-    ;   +6200  initrd_size    u64                left zero here (BL4)
-    ;   +6208  cpu_count      u32                left zero here (BL4)
-    ;   +6212  bsp_lapic_id   u32
-    ;   +6216  cpus[64]       1536 B             left zero here (BL4)
-    ;   +7752  rsdp_phys      u64
-    ;   +7760  boot_from_uefi u8           <-- 0 (BIOS)
-%assign BOOT_HHDM_OFF  (8 + 24 + 256*24 + 4 + 4)
-%assign BOOT_UEFI_OFF  (BOOT_HHDM_OFF + 8 + 16 + 8 + 64*24 + 8)
+    ;   +8     fb             boot_fb_t (32 B, auto-aligned)
+    ;   +40    mmap[256]      6144 B             filled by detect_memory
+    ;   +6184  mmap_count     u32                filled by detect_memory
+    ;   +6188  _pad_mmap      u32
+    ;   +6192  hhdm_offset    u64          <-- 0xFFFF800000000000
+    ;   +6200  initrd_phys    u64                left zero here
+    ;   +6208  initrd_size    u64                left zero here
+    ;   +6216  cpu_count      u32                left zero here
+    ;   +6220  bsp_lapic_id   u32
+    ;   +6224  cpus[64]       1536 B             left zero here
+    ;   +7760  rsdp_phys      u64
+    ;   +7768  boot_from_uefi u8           <-- 0 (BIOS)
+%assign BOOT_HHDM_OFF  6192
+%assign BOOT_UEFI_OFF  7768
 
     ; magic: 0x4155524142544C44 -> bytes 44 4C 54 42 41 52 55 41 (LE).
     mov  word [es:0], 0x4C44
@@ -234,7 +236,21 @@ stage2_entry:
     jc   .elf_fail
     mov  si, msg_elf_ok
     call com1_puts
+
+    ; Build the 4-level page tables at PT_BASE.  Uses FS (unreal flat).
+    call build_page_tables
+    mov  si, msg_pt_ok
+    call com1_puts
+
+    ; Announce final hand-off, then take the CPU into long mode.
+    ; This call never returns; the last real-mode byte we execute is
+    ; the `mov cr0, eax` inside enter_long_mode.
+    mov  si, msg_lm_go
+    call com1_puts
+    call enter_long_mode
+    ; unreachable
     jmp  .fat_done
+
 .elf_fail:
     mov  si, msg_elf_fail
     call com1_puts
@@ -275,6 +291,8 @@ msg_fat_found:   db "[BL4] kernel.elf located", 0x0D, 0x0A, 0
 msg_fat_load_ok: db "[BL4] kernel.elf loaded to 0x00200000", 0x0D, 0x0A, 0
 msg_elf_ok:      db "[BL4] ELF PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
 msg_elf_fail:    db "[BL4] ELF parse FAILED", 0x0D, 0x0A, 0
+msg_pt_ok:       db "[BL4] page tables built at 0x01000000", 0x0D, 0x0A, 0
+msg_lm_go:       db "[BL4] entering long mode; jumping to kernel _start", 0x0D, 0x0A, 0
 msg_fat_no_kernel: db "[BL4] kernel.elf NOT FOUND", 0x0D, 0x0A, 0
 msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0
 msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
@@ -294,6 +312,8 @@ boot_drive: db 0
 %include "boot/bios/stage2/unreal.inc"
 %include "boot/bios/stage2/fat.inc"
 %include "boot/bios/stage2/elf.inc"
+%include "boot/bios/stage2/paging.inc"
+%include "boot/bios/stage2/longmode.inc"
 
 ; --------------------------------------------------------------------------
 ; Padding: Stage 2 must fit in the 63 KiB the MBR loads.  We pad to a

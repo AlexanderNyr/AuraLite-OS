@@ -107,9 +107,10 @@ import struct, sys
 data = open(sys.argv[1], 'rb').read()
 magic = struct.unpack_from('<Q', data, 0)[0]
 BOOT_MAGIC = 0x4155524142544C44
-BOOT_HHDM_OFF = 8 + 24 + 256*24 + 4 + 4
+BOOT_HHDM_OFF     = 6192      # boot_info_t offsetof(hhdm_offset)
+BOOT_MMAP_CNT_OFF = 6184      # boot_info_t offsetof(mmap_count)
 hhdm  = struct.unpack_from('<Q', data, BOOT_HHDM_OFF)[0]
-mmapc = struct.unpack_from('<I', data, 32 + 256*24)[0]
+mmapc = struct.unpack_from('<I', data, BOOT_MMAP_CNT_OFF)[0]
 ok = True
 print(f'  [bl3] mem magic  = 0x{magic:016x}   {"OK" if magic == BOOT_MAGIC else "FAIL"}')
 print(f'  [bl3] mem hhdm   = 0x{hhdm:016x}   {"OK" if hhdm == 0xffff800000000000 else "FAIL"}')

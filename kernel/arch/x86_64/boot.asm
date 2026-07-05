@@ -33,6 +33,14 @@ extern __bss_end
 _start:
     cli                        ; no interrupts until the IDT is up (Phase 2)
 
+    ; ---- Save the bootloader-provided boot_info pointer.
+    ; We stash it in R15 (a callee-saved GPR that the SysV AMD64 ABI
+    ; guarantees we own) *before* touching any memory, so that the
+    ; .bss zero-fill below cannot corrupt it.  We cannot push it onto
+    ; a stack yet because our stack sits inside .bss -- pushing then
+    ; zeroing would erase the saved value.
+    mov r15, rdi
+
     ; ---- Enable SSE (needed for float in the 3D renderer) ----
     mov rax, cr0
     and ax, 0xFFFB             ; clear EM (Emulation) bit
@@ -42,15 +50,8 @@ _start:
     or  ax, 3 << 9             ; set OSFXSR (bit 9) + OSXMMEXCPT (bit 10)
     mov cr4, rax
 
-    ; Establish our own deterministically-sized stack.  RDI is preserved
-    ; across the stack switch because we do not touch it.
-    lea rsp, [rel stack_top]
-
-    ; Save the boot_info pointer (RDI) on the fresh stack -- the BSS
-    ; zero-fill below uses STOSB, which clobbers RDI.
-    push rdi
-
     ; Zero the .bss section.  The bootloader is not required to.
+    ; Do this BEFORE we start using the .bss-resident stack.
     cld                        ; STOSB advances forward (DF = 0)
     lea rdi, [rel __bss_start]
     lea rcx, [rel __bss_end]
@@ -58,9 +59,12 @@ _start:
     xor eax, eax               ; al = 0 (fill byte)
     rep stosb                  ; memset(rdi, 0, rcx)
 
+    ; Now that .bss is zeroed, install our own deterministic stack.
+    lea rsp, [rel stack_top]
+
     ; Restore boot_info pointer into RDI -- first argument to kmain per
     ; the System V AMD64 ABI.
-    pop rdi
+    mov rdi, r15
 
     ; Enter C.
     call kmain
