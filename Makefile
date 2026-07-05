@@ -435,6 +435,17 @@ endif
 
 limine-build: $(LIMINE_DEPS)
 
+# ---- BL5: BIOS-only ISO built with our custom bootloader (no Limine).
+# Produces a hybrid MBR image that boots on QEMU (`-drive if=ide`) and
+# on real hardware via USB stick (`dd if=... of=/dev/sdX`).  Legacy
+# CD-ROM (`-cdrom`) boot is out of scope -- BL7 adds a dual-boot ISO
+# that supports both.
+BIOS_ISO_IMAGE := $(BUILD_DIR)/auralite-bios.iso
+
+.PHONY: iso-bios
+iso-bios: deps-check kernel $(MBR_BIN) $(STAGE2_BIN)
+	@bash tools/mkisoimage_bios.sh $(KERNEL_ELF) $(BIOS_ISO_IMAGE)
+
 iso: deps-check kernel $(BUILD_DIR)/initrd.tar limine-build
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)
 	@mkdir -p release
