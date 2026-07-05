@@ -87,11 +87,13 @@ kernel: $(KERNEL_ELF)
 # =============================================================================
 BOOT_BIOS_DIR   := boot/bios
 MBR_BIN         := $(BUILD_DIR)/boot/mbr.bin
+MBR_DUAL_BIN    := $(BUILD_DIR)/boot/mbr_dual.bin
 STAGE2_BIN      := $(BUILD_DIR)/boot/stage2.bin
 
-.PHONY: mbr stage2
-mbr:    $(MBR_BIN)
-stage2: $(STAGE2_BIN)
+.PHONY: mbr mbr-dual stage2
+mbr:      $(MBR_BIN)
+mbr-dual: $(MBR_DUAL_BIN)
+stage2:   $(STAGE2_BIN)
 
 $(MBR_BIN): $(BOOT_BIOS_DIR)/stage1/mbr.asm
 	@mkdir -p $(dir $@)
@@ -105,6 +107,15 @@ $(MBR_BIN): $(BOOT_BIOS_DIR)/stage1/mbr.asm
 	    echo "[mbr]  ERROR: bad boot signature $$sig (expected 55aa)"; exit 1; \
 	  fi
 	@printf "  [mbr] %-40s %d bytes, sig=0x55AA\n" $@ 512
+
+$(MBR_DUAL_BIN): $(BOOT_BIOS_DIR)/stage1/mbr_dual.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f bin -o $@ $<
+	@sz=$$(wc -c < $@); \
+	  [ "$$sz" -eq 512 ] || { echo "[mbr-dual] ERROR: $@ is $$sz bytes"; exit 1; }
+	@sig=$$(od -An -tx1 -N2 -j510 $@ | tr -d ' \n'); \
+	  [ "$$sig" = "55aa" ] || { echo "[mbr-dual] ERROR: bad sig $$sig"; exit 1; }
+	@printf "  [mbr-dual] %-35s %d bytes, sig=0x55AA\n" $@ 512
 
 # ---- BL3: BIOS Stage 2 -----------------------------------------------------
 # Stage 2 is a single flat binary assembled from stage2_start.asm which
@@ -476,6 +487,17 @@ BIOS_ISO_IMAGE := $(BUILD_DIR)/auralite-bios.iso
 .PHONY: iso-bios
 iso-bios: deps-check kernel $(MBR_BIN) $(STAGE2_BIN)
 	@bash tools/mkisoimage_bios.sh $(KERNEL_ELF) $(BIOS_ISO_IMAGE)
+
+# ---- BL7: dual-boot ISO combining BIOS + UEFI on one file -----------------
+# The resulting image boots on legacy BIOS (SeaBIOS reads the hybrid
+# MBR and runs Stage 2) AND on UEFI (OVMF walks the GPT to find the
+# ESP and runs BOOTX64.EFI).  Both paths share the same KERNEL.ELF
+# stored in the FAT32 partition at LBA 256.
+DUAL_ISO_IMAGE := $(BUILD_DIR)/auralite-dual.iso
+
+.PHONY: iso-dual
+iso-dual: deps-check kernel $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
+	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)
 
 iso: deps-check kernel $(BUILD_DIR)/initrd.tar limine-build
 	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)

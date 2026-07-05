@@ -197,12 +197,17 @@ stage2_entry:
 .unreal_done:
 
     ; ---- FAT32 lookup + load self-test (BL4.fat) -------------------
-    ; Only run when the FAT header at LBA 128 looks like FAT32.  If we
-    ; are booting off a plain disk image with no partition, skip
-    ; silently and let BL4 report the specific failure later.
-    mov  eax, 128                         ; conventional FAT32 partition base
+    ; The FAT32 partition can live at LBA 128 (BL5 hybrid MBR image)
+    ; or LBA 256 (BL7 dual-boot GPT image; the 34..159 slot right
+    ; after the GPT primary array is reserved for Stage 2 itself).
+    ; Try both in order and use whichever fat_init accepts.
+    mov  eax, 128                         ; BL5 layout
+    call fat_init
+    jnc  .fat_init_done
+    mov  eax, 256                         ; BL7 layout (past GPT + Stage 2)
     call fat_init
     jc   .fat_skip
+.fat_init_done:
     mov  si, msg_fat_init_ok
     call com1_puts
 
