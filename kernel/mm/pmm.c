@@ -14,8 +14,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
-#include "kernel/limine_requests.h"
-#include "limine/limine.h"
+#include "kernel/boot_info.h"
 
 #define PMM_TAG "[pmm] "
 
@@ -55,16 +54,16 @@ static void mark_range(uint64_t base, uint64_t len, int used) {
 
 /* Locate a region large enough to hold the bitmap; prefer bootloader-
    reclaimable memory, fall back to usable memory. */
-static uint64_t find_bitmap_region(struct limine_memmap_entry **entries,
+static uint64_t find_bitmap_region(boot_mmap_entry_t *entries,
                                    uint64_t count) {
     for (int pass = 0; pass < 2; pass++) {
-        uint64_t want_type = (pass == 0)
-            ? LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE
-            : LIMINE_MEMMAP_USABLE;
+        uint32_t want_type = (pass == 0)
+            ? BOOT_MEM_BOOTLOADER
+            : BOOT_MEM_USABLE;
         for (uint64_t i = 0; i < count; i++) {
-            if (entries[i]->type == want_type &&
-                entries[i]->length >= pmm.bitmap_bytes + pmm.refcount_bytes) {
-                return entries[i]->base;
+            if (entries[i].type == want_type &&
+                entries[i].length >= pmm.bitmap_bytes + pmm.refcount_bytes) {
+                return entries[i].base;
             }
         }
     }
@@ -73,8 +72,8 @@ static uint64_t find_bitmap_region(struct limine_memmap_entry **entries,
 
 void pmm_init(void) {
     uint64_t entry_count = 0;
-    struct limine_memmap_entry **entries = limine_get_memmap(&entry_count);
-    uint64_t hhdm = limine_get_hhdm_offset();
+    boot_mmap_entry_t *entries = boot_get_memmap(&entry_count);
+    uint64_t hhdm = boot_get_hhdm_offset();
 
     if (entries == NULL || hhdm == 0 || entry_count == 0) {
         kprintf(PMM_TAG "FATAL: no memory map or HHDM available\n");
@@ -85,8 +84,8 @@ void pmm_init(void) {
     uint64_t highest = 0;
     uint64_t usable_bytes = 0;
     for (uint64_t i = 0; i < entry_count; i++) {
-        struct limine_memmap_entry *e = entries[i];
-        if (e->type == LIMINE_MEMMAP_USABLE) {
+        boot_mmap_entry_t *e = &entries[i];
+        if (e->type == BOOT_MEM_USABLE) {
             uint64_t top = e->base + e->length;
             if (top > highest) {
                 highest = top;
@@ -121,8 +120,8 @@ void pmm_init(void) {
     /* 3) Start with everything marked used, then clear USABLE regions. */
     memset(pmm.bitmap, 0xFF, pmm.bitmap_bytes);
     for (uint64_t i = 0; i < entry_count; i++) {
-        struct limine_memmap_entry *e = entries[i];
-        if (e->type == LIMINE_MEMMAP_USABLE) {
+        boot_mmap_entry_t *e = &entries[i];
+        if (e->type == BOOT_MEM_USABLE) {
             mark_range(e->base, e->length, 0);
         }
     }

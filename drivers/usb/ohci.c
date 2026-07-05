@@ -16,7 +16,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- OHCI register offsets (from BAR0 base) ---- */
 #define OHCI_REVISION      0x00    /* Revision */
@@ -192,7 +192,7 @@ found:
     /* Map BAR0 (MMIO). */
     uint32_t bar0 = pci_get_bar(bus, dev, func, 0);
     uint32_t mmio_phys = bar0 & ~0xF;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     for (uint32_t off = 0; off < 0x1000; off += 0x1000) {
         paging_map(hhdm + mmio_phys + off, mmio_phys + off,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
@@ -409,7 +409,7 @@ static int ohci_run_transfer(uint8_t dev_addr, uint8_t endpoint, uint8_t ed_dir,
                              volatile struct ohci_td *tds, uint32_t td_count,
                              uint32_t first_td_phys, uint32_t tail_td_phys,
                              int is_bulk) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t ed_phys = pmm_alloc_frame();
     if (!ed_phys) return -1;
     volatile struct ohci_ed *ed = (volatile struct ohci_ed *)(uintptr_t)(hhdm + ed_phys);
@@ -438,7 +438,7 @@ int ohci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data,
                           uint16_t data_len, uint8_t max_packet0) {
     if (mmio == NULL || setup == NULL) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint16_t max_packet = max_packet0 ? max_packet0 : (low_speed ? 8 : 64);
     uint32_t data_packets = data_len ? ((data_len + max_packet - 1) / max_packet) : 0;
     uint32_t td_count = 1 + data_packets + 1;
@@ -502,7 +502,7 @@ int ohci_control_transfer(uint8_t dev_addr, int low_speed,
 int ohci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
     if (mmio == NULL || data == NULL || len == 0) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     if (max_packet == 0) max_packet = 64;
     uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
     uint64_t td_phys = pmm_alloc_frame();
@@ -533,7 +533,7 @@ int ohci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
                             int low_speed, uint16_t max_packet,
                             void *data, uint16_t len, int *toggle_io) {
     if (mmio == NULL || data == NULL || len == 0 || !(endpoint & 0x80)) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     if (max_packet == 0) max_packet = low_speed ? 8 : 8;
     if (len > max_packet) len = max_packet;
     uint64_t buf_phys = pmm_alloc_frame();

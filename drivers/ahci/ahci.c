@@ -17,7 +17,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- PCI / AHCI constants ---- */
 #define PCI_CLASS_MASS_STORAGE  0x01
@@ -132,7 +132,7 @@ static void port_start(int port) {
 
 /* ---- Port init ---- */
 static int ahci_init_port(int port) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
 
     port_stop(port);
 
@@ -280,7 +280,7 @@ int ahci_init(void) {
     pci_enable_bus_master(bus, dev, func);
 
     uint32_t abar_phys = pci_get_bar(bus, dev, func, 5) & ~0xF;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
 
     /* Map 8 KiB of ABAR. */
     for (uint32_t off = 0; off < 0x2000; off += 0x1000)
@@ -303,7 +303,7 @@ int ahci_init(void) {
 int ahci_read(uint32_t port, uint64_t lba, uint32_t count, void *buf) {
     if (port >= AHCI_MAX_PORTS || !ports[port].present || !count)
         return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint32_t len = count * AHCI_SECTOR_SIZE;
     uint32_t frames = (len + 0xFFF) / 0x1000;
     uint64_t dma = pmm_alloc_contiguous(frames);
@@ -318,7 +318,7 @@ int ahci_read(uint32_t port, uint64_t lba, uint32_t count, void *buf) {
 int ahci_write(uint32_t port, uint64_t lba, uint32_t count, const void *buf) {
     if (port >= AHCI_MAX_PORTS || !ports[port].present || !count)
         return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint32_t len = count * AHCI_SECTOR_SIZE;
     uint32_t frames = (len + 0xFFF) / 0x1000;
     uint64_t dma = pmm_alloc_contiguous(frames);

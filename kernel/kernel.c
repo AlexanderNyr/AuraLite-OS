@@ -12,8 +12,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/klog.h"
 #include "kernel/lib/stack_protector.h"
-#include "kernel/limine_requests.h"
-#include "limine/limine.h"
+#include "kernel/boot_info.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/user.h"
@@ -154,7 +153,12 @@ void run_experimental_tests(void) {
     test_ntfs_detect();
 }
 
-void kmain(void) {
+void kmain(boot_info_t *boot_info) {
+    /* Latch the bootloader handoff pointer BEFORE any other subsystem
+     * touches it -- stack_protector_init(), uart_init(), etc. all read
+     * from boot_info via boot_get_*() accessors. */
+    boot_info_init(boot_info);
+
     /* Order matters for diagnosability: each subsystem prints its own status,
        so if the boot stalls or triple-faults we can see exactly how far it got. */
     uart_init();
@@ -181,26 +185,25 @@ void kmain(void) {
     kprintf("\n");
     kprintf("==============================================\n");
     kprintf(" Hello from AuraLite OS kernel!                     \n");
-    kprintf("  x86_64 long mode, booted via Limine         \n");
+    kprintf("  x86_64 long mode, booted via %s               \n",
+            boot_info->boot_from_uefi ? "UEFI" : "BIOS");
     kprintf("==============================================\n");
     kprintf("\n");
 
     kprintf("[kernel] %s version %s\n", AURALITE_NAME, AURALITE_VERSION);
     kprintf("[kernel] build: %s %s\n", __DATE__, __TIME__);
 
-    if (limine_base_revision_supported()) {
-        kprintf("[limine] requested base revision supported\n");
-    } else {
-        kprintf("[limine] WARNING: requested base revision NOT supported\n");
-    }
+    kprintf("[boot]  handoff magic=0x%016llx path=%s\n",
+            (unsigned long long)boot_info->magic,
+            boot_info->boot_from_uefi ? "UEFI" : "BIOS");
 
-    uint64_t mem = limine_get_usable_memory();
+    uint64_t mem = boot_get_usable_memory();
     kprintf("[mm]    usable memory: %llu bytes (%llu KiB / %llu MiB)\n",
             (unsigned long long)mem,
             (unsigned long long)(mem / 1024ULL),
             (unsigned long long)(mem / (1024ULL * 1024ULL)));
     kprintf("[mm]    HHDM offset: 0x%016llx\n",
-            (unsigned long long)limine_get_hhdm_offset());
+            (unsigned long long)boot_get_hhdm_offset());
 
     kprintf("\n[kernel] interrupts enabled, exception handling online.\n");
 
@@ -242,16 +245,19 @@ void kmain(void) {
     kprintf("[boot] initialising virtual file system...\n");
     vfs_init();
 
-    /* Mount the initrd (USTAR) at "/" if Limine provided a module. */
+    /* Mount the initrd (USTAR) at "/" if the bootloader provided one.
+     * boot_info reports the initrd as a raw physical address; convert it
+     * to a kernel-visible pointer by adding the HHDM offset. */
     {
-        uint64_t mod_count = 0;
-        struct limine_file *mod = limine_get_modules(&mod_count);
-        if (mod != NULL && mod_count >= 1) {
-            initrd_init((uint64_t)(uintptr_t)mod->address, mod->size);
+        uint64_t initrd_size = 0;
+        uint64_t initrd_phys = boot_get_initrd(&initrd_size);
+        if (initrd_phys != 0 && initrd_size != 0) {
+            uint64_t hhdm = boot_get_hhdm_offset();
+            initrd_init(hhdm + initrd_phys, initrd_size);
             vfs_mount("/", &initrd_ops, NULL);
             vfs_list("/");
         } else {
-            kprintf("[vfs] WARNING: no initrd module loaded\n");
+            kprintf("[vfs] WARNING: no initrd loaded\n");
         }
     }
 

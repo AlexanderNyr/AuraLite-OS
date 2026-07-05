@@ -19,7 +19,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- HCI packet structures ---- */
 

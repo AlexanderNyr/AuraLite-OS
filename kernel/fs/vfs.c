@@ -15,7 +15,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/time.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /*
  * vfs_wrap_err() — normalise a filesystem op's return value to a negative
@@ -988,7 +988,7 @@ int64_t vfs_read_at_phys(struct ofd *o, uint64_t offset, uint64_t phys, uint64_t
     if (!o || !o->vn) return -EBADF;
     if (!o->vn->ops->read) return -EINVAL;
     
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     void *dst = (void *)(uintptr_t)(hhdm + phys);
     
     /* Call the vnode's read operation. Since we are in kernel context, 

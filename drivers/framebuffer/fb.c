@@ -5,8 +5,7 @@
 #include "drivers/framebuffer/fb.h"
 #include "drivers/framebuffer/psf.h"
 #include "drivers/framebuffer/psf_font.h"
-#include "limine/limine.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 static uint32_t *fb_addr = NULL;
 static uint64_t fb_width = 0, fb_height = 0, fb_pitch = 0;
@@ -56,16 +55,18 @@ static void fb_scroll(void) {
 }
 
 void fb_init(void) {
-    struct limine_framebuffer *fb = limine_get_framebuffer();
+    boot_fb_t *fb = boot_get_framebuffer();
     if (!fb || fb->bpp != 32) { fb_addr = NULL; return; }
     psf_init();
     const struct psf_font *f = psf_get_font();
     font_width = f->width; font_height = f->height;
-    fb_addr = (uint32_t*)fb->address;
+    /* boot_fb_t.phys_base is a raw physical address; add the HHDM
+     * offset so the framebuffer is accessible in kernel virtual space. */
+    fb_addr = (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + fb->phys_base);
     fb_width = fb->width; fb_height = fb->height; fb_pitch = fb->pitch;
-    fb_r_shift = fb->red_mask_shift;
-    fb_g_shift = fb->green_mask_shift;
-    fb_b_shift = fb->blue_mask_shift;
+    fb_r_shift = fb->red_shift;
+    fb_g_shift = fb->green_shift;
+    fb_b_shift = fb->blue_shift;
     fb_fg = make_color(220, 220, 220);
     fb_bg = make_color(16, 16, 28);
     fb_cols = fb_width / font_width;

@@ -4,7 +4,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 #ifndef __SCHED_YIELD_DECLARED
 void sched_yield(void);
@@ -255,7 +255,7 @@ void page_cache_flush(struct ofd *file) {
      * vnode write op.  We convert the physical address to a HHDM virtual
      * pointer so the kernel can access the page contents. */
     if (!file) return;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     spinlock_acquire(&cache_lock);
     for (int i = 0; i < PAGE_CACHE_BUCKETS; i++) {
         page_cache_entry_t *curr = cache_buckets[i];

@@ -22,7 +22,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- UHCI I/O register offsets (from BAR4 base) ---- */
 #define UHCI_USBCMD      0x00    /* Command register */
@@ -222,7 +222,7 @@ static uint32_t make_td_ctrl(int low_speed, int is_interrupt) {
 static int uhci_schedule_tds(volatile struct uhci_td *first_td,
                              volatile struct uhci_td *last_td,
                              uint32_t first_td_phys) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
 
     /* Allocate a QH for this transfer. */
     uint64_t qh_phys = pmm_alloc_frame();
@@ -294,7 +294,7 @@ int uhci_control_transfer_ex(uint8_t dev_addr, int low_speed,
                              uint8_t max_packet0) {
     if (iobase == 0) return -1;
 
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
 
     uint32_t max_packet = low_speed ? 8u : (uint32_t)max_packet0;
     if (max_packet != 8 && max_packet != 16 && max_packet != 32 && max_packet != 64) {
@@ -383,7 +383,7 @@ int uhci_bulk_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
                           void *data, uint32_t len, int *toggle_io) {
     if (iobase == 0 || len == 0 || data == NULL) return -1;
 
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     int is_in = (endpoint & 0x80) ? 1 : 0;
     uint8_t ep = endpoint & 0x0F;
     uint8_t pid = is_in ? PID_IN : PID_OUT;
@@ -446,7 +446,7 @@ int uhci_interrupt_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
     if (iobase == 0 || data == NULL || len == 0) return -1;
     if (!(endpoint & 0x80)) return -1; /* HID input uses interrupt IN. */
 
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint8_t ep = endpoint & 0x0F;
     if (max_packet == 0) max_packet = low_speed ? 8 : 8;
     if (len > max_packet) len = max_packet;
@@ -583,7 +583,7 @@ int uhci_init(void) {
     wait_halt();
 
     /* Allocate the frame list (4 KiB, 1024 entries). */
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t fl_phys = pmm_alloc_frame();
     if (fl_phys == 0) {
         kprintf("[uhci] OOM for frame list\n");

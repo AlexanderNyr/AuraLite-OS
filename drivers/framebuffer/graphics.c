@@ -11,8 +11,7 @@
 #include "drivers/framebuffer/font.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
-#include "limine/limine.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 #include "drivers/gpu/virtio_gpu.h"
 
 static uint32_t *front_fb = NULL;   /* the visible Limine framebuffer */
@@ -30,19 +29,21 @@ static color_t make_color(uint32_t rgb) {
 }
 
 void gfx_init(void) {
-    extern struct limine_framebuffer *limine_get_framebuffer(void);
-    struct limine_framebuffer *fb = limine_get_framebuffer();
+    boot_fb_t *fb = boot_get_framebuffer();
     if (fb == NULL || fb->bpp != 32) {
         return;
     }
 
-    front_fb  = (uint32_t *)fb->address;
+    /* boot_fb_t.phys_base is a raw physical address; the framebuffer is
+     * accessed through the higher-half direct map established by the
+     * bootloader (add hhdm_offset). */
+    front_fb  = (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + fb->phys_base);
     fb_width  = (uint32_t)fb->width;
     fb_height = (uint32_t)fb->height;
     fb_pitch  = (uint32_t)fb->pitch;
-    r_shift   = fb->red_mask_shift;
-    g_shift   = fb->green_mask_shift;
-    b_shift   = fb->blue_mask_shift;
+    r_shift   = fb->red_shift;
+    g_shift   = fb->green_shift;
+    b_shift   = fb->blue_shift;
 
     /* Allocate the back buffer (same size as the framebuffer). */
     uint64_t buf_bytes = (uint64_t)fb_pitch * fb_height;

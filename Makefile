@@ -500,7 +500,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_vma \
                 $(BUILD_DIR)/test_page_cache \
                 $(BUILD_DIR)/test_mprotect \
-                $(BUILD_DIR)/test_gdt_tss
+                $(BUILD_DIR)/test_gdt_tss \
+                $(BUILD_DIR)/test_boot_info
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -564,6 +565,11 @@ $(BUILD_DIR)/test_page_cache: tests/unit/test_page_cache.c
 $(BUILD_DIR)/test_mprotect: tests/unit/test_mprotect.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_boot_info: tests/unit/test_boot_info.c kernel/boot_info.c kernel/boot_info.h boot/shared/boot_info.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	    tests/unit/test_boot_info.c kernel/boot_info.c -o $@
 
 $(BUILD_DIR)/test_gdt_tss: tests/unit/test_gdt_tss.c kernel/arch/x86_64/gdt.c kernel/arch/x86_64/gdt.h
 	@mkdir -p $(BUILD_DIR)

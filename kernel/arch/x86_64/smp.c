@@ -18,8 +18,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
-#include "kernel/limine_requests.h"
-#include "limine/limine.h"
+#include "kernel/boot_info.h"
 
 #define AP_STACK_SIZE  (16 * 1024)
 #define MAX_CPUS       32
@@ -34,9 +33,10 @@ static void *ap_stacks[MAX_CPUS];
 static volatile uint32_t cpus_online = 1;
 
 /* ---- AP entry point ----
- * Called by Limine with RDI = pointer to this CPU's limine_mp_info.
+ * Called with RDI = pointer to this CPU's boot_cpu_t (the exact address
+ * inside boot_info->cpus[] that the BSP wrote goto_address into).
  * extra_argument holds the CPU index we assigned in smp_init(). */
-static void ap_entry(struct limine_mp_info *info) {
+static void ap_entry(boot_cpu_t *info) {
     uint64_t cpu_index = info->extra_argument;
 
     /* Switch to our own stack (Limine's stack is temporary). */
@@ -69,7 +69,7 @@ void smp_init(void) {
     lapic_enable();
     uint64_t cpu_count = 0;
     uint32_t bsp_lapic_id = 0;
-    struct limine_mp_info *cpus = limine_get_smp_info(&cpu_count, &bsp_lapic_id);
+    boot_cpu_t *cpus = boot_get_smp_info(&cpu_count, &bsp_lapic_id);
 
     if (cpus == NULL || cpu_count <= 1) {
         kprintf("[smp] single-CPU system (no APs to wake)\n");
@@ -81,15 +81,17 @@ void smp_init(void) {
 
     /* Normal AuraLite builds currently keep execution BSP-only: legacy PIC/PIT
      * routing under QEMU can stall early boot once APs are released, while the
-     * syscall/uaccess paths are not fully per-CPU yet.  Keep the Limine MP
-     * discovery log, but leave AP wake-up disabled until the SMP scheduler and
+     * syscall/uaccess paths are not fully per-CPU yet.  Keep the MP discovery
+     * log, but leave AP wake-up disabled until the SMP scheduler and
      * interrupt routing are completed. */
     kprintf("[smp] AP wake disabled in normal config; running BSP-only\n");
     return;
 
-    /* The Limine MP response's cpus[] array includes the BSP, so we must
-     * skip the entry whose lapic_id matches bsp_lapic_id. */
-    volatile struct limine_mp_info *vcpus = (volatile struct limine_mp_info *)cpus;
+    /* The bootloader's cpus[] array includes the BSP, so we must skip the
+     * entry whose lapic_id matches bsp_lapic_id.  We access boot_cpu_t
+     * through a volatile pointer so the APs observe our writes to
+     * goto_address / extra_argument as soon as we mfence. */
+    volatile boot_cpu_t *vcpus = (volatile boot_cpu_t *)cpus;
     uint64_t ap_count = 0;
     for (uint64_t i = 0; i < cpu_count; i++) {
         if (vcpus[i].lapic_id == bsp_lapic_id) {
@@ -105,7 +107,7 @@ void smp_init(void) {
             return;
         }
         vcpus[i].extra_argument = ap_count;
-        vcpus[i].goto_address   = (limine_goto_address)ap_entry;
+        vcpus[i].goto_address   = (uint64_t)(uintptr_t)ap_entry;
         __asm__ volatile ("mfence" ::: "memory");
         kprintf("[smp]   AP %llu: lapic_id=%u -> goto set\n",
                 (unsigned long long)ap_count, vcpus[i].lapic_id);

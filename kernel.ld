@@ -1,14 +1,17 @@
 /*
- * kernel.ld — AuraLite OS kernel linker script for x86_64 higher-half (Limine-loaded).
+ * kernel.ld -- AuraLite OS kernel linker script for x86_64 higher-half.
  *
  * The kernel is linked at virtual address 0xFFFFFFFF80100000 (higher half).
- * Limine reads the PT_LOAD program headers, allocates physical pages, copies
- * the file image, and maps [p_vaddr, p_vaddr + p_memsz) to that physical memory.
+ * The bootloader (BIOS Stage 2, UEFI BOOTX64.EFI, or the optional Limine
+ * fallback) reads the PT_LOAD program headers, allocates physical pages,
+ * copies the file image, and maps [p_vaddr, p_vaddr + p_memsz) to that
+ * physical memory.
  *
- * CRITICAL layout rule enforced by Limine: two PT_LOAD segments whose
- * permissions differ MUST NOT occupy the same page. We therefore page-align
- * (CONSTANT(MAXPAGESIZE) = 4096) every boundary between differently-permissioned
- * segments, and keep each PHDR's sections contiguous.
+ * Layout rule (enforced by every loader we target): two PT_LOAD segments
+ * whose permissions differ MUST NOT occupy the same page.  We therefore
+ * page-align (CONSTANT(MAXPAGESIZE) = 4096) every boundary between
+ * differently-permissioned segments and keep each PHDR's sections
+ * contiguous.
  *
  * p_flags: PF_X=1 (execute), PF_W=2 (write), PF_R=4 (read).
  */
@@ -44,18 +47,9 @@ SECTIONS
 
     . += CONSTANT(MAXPAGESIZE);
 
-    /* ---- Writable data.
-       Limine protocol requests live here: they must be in a loaded, WRITABLE
-       segment (Limine writes the response pointer back into each request),
-       and KEEP() prevents the linker from stripping these "unused" objects.
-       Order matters: start marker -> requests -> end marker. ---- */
+    /* ---- Writable data ---- */
     .data : {
         *(.data .data.*)
-
-        . = ALIGN(16);
-        KEEP(*(.limine_requests_start))
-        KEEP(*(.limine_requests))
-        KEEP(*(.limine_requests_end))
     } :data
 
     /* ---- Zero-initialised data (incl. the boot stack) ---- */

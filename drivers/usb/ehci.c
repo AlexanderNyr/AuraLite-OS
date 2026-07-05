@@ -22,7 +22,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- EHCI capability register offsets (read-only, at BAR0 base) ---- */
 #define EHCI_CAP_CAPLENGTH  0x00   /* Capability Register Length (8-bit) */
@@ -270,7 +270,7 @@ found:
     /* Map BAR0 (MMIO). EHCI typically needs 4 KiB+ — map 8 KiB to be safe. */
     uint32_t bar0 = pci_get_bar(pci_bus_e, pci_dev_e, pci_func_e, 0);
     uint32_t mmio_phys = bar0 & ~0xF;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     for (uint32_t off = 0; off < 0x2000; off += 0x1000) {
         paging_map(hhdm + mmio_phys + off, mmio_phys + off,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
@@ -450,7 +450,7 @@ static uint32_t ehci_qtd_token(uint8_t pid, uint32_t len, int toggle, int ioc) {
 static int ehci_run_async(uint8_t dev_addr, uint8_t endpoint, uint16_t max_packet,
                           volatile struct ehci_qtd *qtds, uint32_t qtd_count,
                           uint32_t first_qtd_phys, uint32_t qh_phys) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     volatile struct ehci_qh *qh = (volatile struct ehci_qh *)(uintptr_t)(hhdm + qh_phys);
     memset((void *)qh, 0, 4096);
     if (max_packet == 0) max_packet = 64;
@@ -500,7 +500,7 @@ int ehci_control_transfer(uint8_t dev_addr, int low_speed,
                           uint16_t data_len, uint8_t max_packet0) {
     (void)low_speed;
     if (op_regs == NULL || setup == NULL) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint16_t max_packet = max_packet0 ? max_packet0 : 64;
     uint32_t data_packets = data_len ? ((data_len + max_packet - 1) / max_packet) : 0;
     uint32_t qtd_count = 1 + data_packets + 1;
@@ -546,7 +546,7 @@ int ehci_control_transfer(uint8_t dev_addr, int low_speed,
 int ehci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
     if (op_regs == NULL || data == NULL || len == 0) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     if (max_packet == 0) max_packet = 512;
     uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
     uint64_t qtd_phys = pmm_alloc_frame();

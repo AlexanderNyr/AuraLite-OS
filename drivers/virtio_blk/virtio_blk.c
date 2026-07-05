@@ -2,7 +2,7 @@
 #include "drivers/virtio/virtio_common.h"
 #include "drivers/pci/pci.h"
 #include "kernel/arch/x86_64/paging.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
@@ -65,7 +65,7 @@ static uint64_t map_bar_region(uint8_t bar, uint32_t offset, uint32_t length) {
     uint32_t raw = pci_get_bar(pci_bus, pci_dev, pci_func, bar);
     if (raw == 0 || raw == 0xFFFFFFFF || (raw & 1)) return 0;
     uint64_t phys = (uint64_t)(raw & ~0xFULL) + offset;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t start = phys & ~0xFFFULL;
     uint64_t end = (phys + length + 0xFFFULL) & ~0xFFFULL;
     for (uint64_t p = start; p < end; p += 0x1000) {
@@ -101,7 +101,7 @@ static int parse_virtio_caps(void) {
 static uint64_t alloc_zero_page(void **virt_out) {
     uint64_t phys = pmm_alloc_frame();
     if (!phys) return 0;
-    void *virt = (void *)(uintptr_t)(limine_get_hhdm_offset() + phys);
+    void *virt = (void *)(uintptr_t)(boot_get_hhdm_offset() + phys);
     memset(virt, 0, 4096);
     if (virt_out) *virt_out = virt;
     return phys;
@@ -174,7 +174,7 @@ uint64_t virtio_blk_sector_count(void) { return device_capacity_sectors; }
 static uint64_t alloc_temp_page(void **virt) {
     uint64_t phys = pmm_alloc_frame();
     if (!phys) return 0;
-    *virt = (void *)(uintptr_t)(limine_get_hhdm_offset() + phys);
+    *virt = (void *)(uintptr_t)(boot_get_hhdm_offset() + phys);
     return phys;
 }
 
@@ -186,12 +186,12 @@ int virtio_blk_read_sectors(uint64_t lba, uint32_t count, void *buf) {
     uint64_t s_phys = alloc_temp_page(NULL);
     if (!h_phys || !d_phys || !s_phys) return -1;
 
-    virtio_blk_req_hdr_t *hdr = (virtio_blk_req_hdr_t *)(uintptr_t)(limine_get_hhdm_offset() + h_phys);
+    virtio_blk_req_hdr_t *hdr = (virtio_blk_req_hdr_t *)(uintptr_t)(boot_get_hhdm_offset() + h_phys);
     hdr->type = VIRTIO_BLK_T_IN;
     hdr->sector = lba;
 
     /* Map data buffer to physical if it's not already (simplified: we copy). */
-    void *d_virt = (void *)(uintptr_t)(limine_get_hhdm_offset() + d_phys);
+    void *d_virt = (void *)(uintptr_t)(boot_get_hhdm_offset() + d_phys);
     
     uint16_t slot = q.last_used_idx % q.qsize;
     q.desc[slot].addr = h_phys; q.desc[slot].len = sizeof(virtio_blk_req_hdr_t); q.desc[slot].flags = 0; q.desc[slot].next = 1;
@@ -204,7 +204,7 @@ int virtio_blk_read_sectors(uint64_t lba, uint32_t count, void *buf) {
 
     while (q.used->idx == q.last_used_idx) { __asm__ volatile ("pause"); }
     
-    uint32_t status = *(volatile uint32_t *)(uintptr_t)(limine_get_hhdm_offset() + s_phys);
+    uint32_t status = *(volatile uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + s_phys);
     int res = (status == VIRTIO_BLK_S_OK) ? 0 : -1;
     if (res == 0) memcpy(buf, d_virt, count * 512);
 
@@ -221,11 +221,11 @@ int virtio_blk_write_sectors(uint64_t lba, uint32_t count, const void *buf) {
     uint64_t s_phys = alloc_temp_page(NULL);
     if (!h_phys || !d_phys || !s_phys) return -1;
 
-    virtio_blk_req_hdr_t *hdr = (virtio_blk_req_hdr_t *)(uintptr_t)(limine_get_hhdm_offset() + h_phys);
+    virtio_blk_req_hdr_t *hdr = (virtio_blk_req_hdr_t *)(uintptr_t)(boot_get_hhdm_offset() + h_phys);
     hdr->type = VIRTIO_BLK_T_OUT;
     hdr->sector = lba;
 
-    void *d_virt = (void *)(uintptr_t)(limine_get_hhdm_offset() + d_phys);
+    void *d_virt = (void *)(uintptr_t)(boot_get_hhdm_offset() + d_phys);
     memcpy(d_virt, buf, count * 512);
     
     uint16_t slot = q.last_used_idx % q.qsize;
@@ -239,7 +239,7 @@ int virtio_blk_write_sectors(uint64_t lba, uint32_t count, const void *buf) {
 
     while (q.used->idx == q.last_used_idx) { __asm__ volatile ("pause"); }
     
-    uint32_t status = *(volatile uint32_t *)(uintptr_t)(limine_get_hhdm_offset() + s_phys);
+    uint32_t status = *(volatile uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + s_phys);
     int res = (status == VIRTIO_BLK_S_OK) ? 0 : -1;
 
     pmm_free_frame(h_phys); pmm_free_frame(d_phys); pmm_free_frame(s_phys);

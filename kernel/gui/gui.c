@@ -987,8 +987,6 @@ int gui_wait_event(int wid, gui_event_t *out) {
  * Compositor rendering
  * =================================================================== */
 
-extern struct limine_framebuffer *limine_get_framebuffer(void);
-
 /* ---- Window decoration rendering ---- */
 
 static void blit_window_decor(const gui_win_t *win) {

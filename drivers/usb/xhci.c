@@ -34,7 +34,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- xHCI capability registers (offsets from BAR0) ---- */
 #define XHCI_CAP_CAPLENGTH  0x00    /* Capability Register Length (8-bit) + HCIVERSION */
@@ -328,7 +328,7 @@ int xhci_init(void) {
         uint32_t bar1 = pci_get_bar(bus, dev, func, 1);
         mmio_phys |= (uint64_t)bar1 << 32;
     }
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     for (uint64_t off = 0; off < 0x10000; off += 0x1000) {
         paging_map(hhdm + mmio_phys + off, mmio_phys + off,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
@@ -711,7 +711,7 @@ static int xhci_alloc_ep_ring(xhci_dev_t *xd, int ep_id) {
     if (xd->ep_ring[ep_id]) return 0;
     uint64_t phys = pmm_alloc_frame();
     if (!phys) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     xd->ep_ring_phys[ep_id] = phys;
     xd->ep_ring[ep_id] = (struct xhci_trb *)(uintptr_t)(hhdm + phys);
     memset(xd->ep_ring[ep_id], 0, 4096);
@@ -739,7 +739,7 @@ int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packe
     if (!slot) return -1;
     xd->slot_id = slot;
 
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t dev_ctx_phys = pmm_alloc_contiguous((XHCI_CTX_BYTES + 0xFFF) / 0x1000);
     uint64_t in_ctx_phys  = pmm_alloc_contiguous((XHCI_CTX_BYTES + 0xFFF) / 0x1000);
     if (!dev_ctx_phys || !in_ctx_phys) return -1;
@@ -791,7 +791,7 @@ static int xhci_configure_ep(xhci_dev_t *xd, uint8_t endpoint, uint16_t max_pack
     xd->ep_max_packet[ep_id] = max_packet;
     xd->ep_type[ep_id] = forced_type ? (uint8_t)forced_type : (is_in ? XHCI_EP_BULK_IN : XHCI_EP_BULK_OUT);
 
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     void *inctx = (void *)(uintptr_t)(hhdm + xd->input_ctx_phys);
     memset(inctx, 0, XHCI_CTX_BYTES);
     uint32_t *icc = ctx_ptr(inctx, 0);
@@ -864,7 +864,7 @@ int xhci_control_transfer(uint8_t dev_addr, int low_speed,
     if (sb[1] == 5) return 0;
     xhci_dev_t *xd = find_xdev(dev_addr);
     if (!xd) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t setup_phys = pmm_alloc_frame();
     uint64_t data_phys = data_len ? pmm_alloc_contiguous((data_len + 0xFFF) / 0x1000) : 0;
     if (!setup_phys || (data_len && !data_phys)) return -1;
@@ -903,7 +903,7 @@ int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
     int ep_num = endpoint & 0x0F;
     int ep_id = ep_num * 2 + ((endpoint & 0x80) ? 1 : 0);
     if (xhci_configure_ep(xd, endpoint, max_packet, in ? XHCI_EP_BULK_IN : XHCI_EP_BULK_OUT) != 0) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
     if (!buf_phys) return -1;
     if (!in) memcpy((void *)(uintptr_t)(hhdm + buf_phys), data, len);
@@ -932,7 +932,7 @@ int xhci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
     int ep_num = endpoint & 0x0F;
     int ep_id = ep_num * 2 + 1;
     if (xhci_configure_ep(xd, endpoint, max_packet ? max_packet : len, XHCI_EP_INTR_IN) != 0) return -1;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t buf_phys = pmm_alloc_frame();
     if (!buf_phys) return -1;
     memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);

@@ -28,7 +28,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* Link to the UHCI transfer layer. */
 extern int uhci_control_transfer_ex(uint8_t dev_addr, int low_speed,

@@ -12,7 +12,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 #define ELF_TAG "[elf]  "
 
@@ -20,7 +20,7 @@
 #define PAGE_MASK (PAGE_SIZE - 1)
 
 static inline void *phys_to_hhdm(uint64_t phys) {
-    return (void *)(uintptr_t)(limine_get_hhdm_offset() + phys);
+    return (void *)(uintptr_t)(boot_get_hhdm_offset() + phys);
 }
 
 static int add_overflow_u64(uint64_t a, uint64_t b, uint64_t *out) {

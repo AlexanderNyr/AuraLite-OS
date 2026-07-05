@@ -16,7 +16,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* EFER (Extended Feature Enable Register) — Intel SDM Vol.3, 35.14 (AMD usage). */
 #define MSR_EFER   0xC0000080
@@ -40,7 +40,7 @@ static inline void *phys_to_ptr(uint64_t phys) {
 }
 
 void paging_init(void) {
-    hhdm = limine_get_hhdm_offset();
+    hhdm = boot_get_hhdm_offset();
     if (hhdm == 0) {
         kprintf(VMM_TAG "FATAL: no HHDM available; cannot manage page tables\n");
         return;

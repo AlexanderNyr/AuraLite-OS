@@ -64,7 +64,7 @@ void kfree(void *p) {
     free(p);
 }
 
-uint64_t limine_get_hhdm_offset(void) { return (uint64_t)(uintptr_t)backing - 0x1000; }
+uint64_t boot_get_hhdm_offset(void) { return (uint64_t)(uintptr_t)backing - 0x1000; }
 void kprintf(const char *fmt, ...) { (void)fmt; }
 
 /* In unit tests <sched.h> already declares POSIX int sched_yield(void).
@@ -80,7 +80,7 @@ void kprintf(const char *fmt, ...) { (void)fmt; }
 static void fill_fn(uint64_t phys, void *arg) {
     (void)arg;
     fill_calls++;
-    memset((void *)(uintptr_t)(limine_get_hhdm_offset() + phys), 0xAB, 4096);
+    memset((void *)(uintptr_t)(boot_get_hhdm_offset() + phys), 0xAB, 4096);
 }
 
 static void blocking_fill_fn(uint64_t phys, void *arg) {
@@ -90,7 +90,7 @@ static void blocking_fill_fn(uint64_t phys, void *arg) {
     while (!atomic_load(&allow_fill)) {
         sched_yield();
     }
-    memset((void *)(uintptr_t)(limine_get_hhdm_offset() + phys), 0xCD, 4096);
+    memset((void *)(uintptr_t)(boot_get_hhdm_offset() + phys), 0xCD, 4096);
 }
 
 static int64_t fake_write(struct vnode *vn, uint64_t off, const void *buf, uint64_t len) {

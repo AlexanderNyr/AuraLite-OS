@@ -20,7 +20,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- MMIO register offsets (Intel 8254x datasheet) ---- */
 #define E1000_CTRL    0x0000
@@ -301,7 +301,7 @@ int e1000_init(void) {
      *    so we must explicitly map the MMIO region (which lives at ~4GB). */
     uint32_t bar0 = pci_get_bar(pci_bus, pci_dev, pci_func, 0);
     uint32_t mmio_phys = bar0 & ~0xF;   /* mask type/flags bits */
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
 
     /* Map 128 KiB of MMIO space (128 * 4KB pages = 32 pages). */
     for (uint32_t off = 0; off < 0x20000; off += 0x1000) {

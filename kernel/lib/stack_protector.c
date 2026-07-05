@@ -2,7 +2,7 @@
 #include "kernel/lib/stack_protector.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/arch/x86_64/cpu.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 extern void kernel_halt(void);
 
@@ -16,7 +16,7 @@ uintptr_t __stack_chk_guard = 0xA84B9C2DF13E0471ULL;
 __attribute__((no_stack_protector))
 void stack_protector_init(void) {
     volatile uint64_t local = 0;
-    uint64_t seed = read_tsc() ^ read_cr3() ^ limine_get_hhdm_offset() ^
+    uint64_t seed = read_tsc() ^ read_cr3() ^ boot_get_hhdm_offset() ^
                     (uint64_t)(uintptr_t)&local ^ (uint64_t)(uintptr_t)&__stack_chk_guard;
     if (seed == 0 || seed == 0x00000A0DFFULL) {
         seed ^= 0xD1B54A32D192ED03ULL;

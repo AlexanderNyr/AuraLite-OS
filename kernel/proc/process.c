@@ -24,7 +24,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"
 #include "kernel/proc/usercopy.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 #define USER_STACK_TOP         0x7FFFF0000000ULL
 #define USER_STACK_SIZE        0x10000ULL

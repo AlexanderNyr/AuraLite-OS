@@ -18,7 +18,7 @@
 #include "drivers/pci/pci.h"
 #include "kernel/net/netdev.h"
 #include "kernel/arch/x86_64/paging.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 #include "kernel/mm/pmm.h"
 #include "drivers/timer/pit.h"
 #include "kernel/lib/string.h"
@@ -167,7 +167,7 @@ static uint64_t map_bar_region(uint8_t bar, uint32_t offset, uint32_t length) {
     uint32_t raw = pci_get_bar(pci_bus, pci_dev, pci_func, bar);
     if (raw == 0 || raw == 0xFFFFFFFF || (raw & 1)) return 0;
     uint64_t phys = (uint64_t)(raw & ~0xFULL) + offset;
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     uint64_t start = phys & ~0xFFFULL;
     uint64_t end = (phys + length + 0xFFFULL) & ~0xFFFULL;
     for (uint64_t p = start; p < end; p += 0x1000) {
@@ -211,7 +211,7 @@ static int parse_virtio_caps(void) {
 static uint64_t alloc_zero_page(void **virt_out) {
     uint64_t phys = pmm_alloc_frame();
     if (!phys) return 0;
-    void *virt = (void *)(uintptr_t)(limine_get_hhdm_offset() + phys);
+    void *virt = (void *)(uintptr_t)(boot_get_hhdm_offset() + phys);
     memset(virt, 0, 4096);
     if (virt_out) *virt_out = virt;
     return phys;

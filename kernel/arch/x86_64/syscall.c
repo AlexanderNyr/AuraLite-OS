@@ -29,7 +29,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/vma.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* P10 types */
 typedef struct {
@@ -394,7 +394,7 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
 
     /* MAP_POPULATE: eager allocation (optional). */
     if (flags & 0x4000) { /* MAP_POPULATE */
-        uint64_t hhdm = limine_get_hhdm_offset();
+        uint64_t hhdm = boot_get_hhdm_offset();
         uint64_t mapped = 0;
         uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
         if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;
@@ -1317,7 +1317,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
 
         uint64_t pages_to_alloc = (new_brk - cur->brk) / 4096ULL;
-        uint64_t hhdm = limine_get_hhdm_offset();
+        uint64_t hhdm = boot_get_hhdm_offset();
         for (uint64_t i = 0; i < pages_to_alloc; i++) {
             uint64_t virt = cur->brk + i * 4096ULL;
             if (paging_get_phys(virt) == 0) {

@@ -8,7 +8,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 static slab_cache_t *vma_cache = NULL;
 
@@ -42,7 +42,7 @@ static void fill_page(uint64_t phys, void *arg) {
     if (ctx->flags & VMA_FILE) {
         vfs_read_at_phys(ctx->file, ctx->offset, phys, 4096);
     } else {
-        uint64_t hhdm = limine_get_hhdm_offset();
+        uint64_t hhdm = boot_get_hhdm_offset();
         memset((void *)(uintptr_t)(hhdm + phys), 0, 4096);
     }
 }
@@ -213,7 +213,7 @@ int handle_user_page_fault(uint64_t cr2, uint64_t err_code) {
         if (snapshot.flags & VMA_FILE) {
             vfs_read_at_phys(snapshot.file, offset, phys, 4096);
         } else {
-            uint64_t hhdm = limine_get_hhdm_offset();
+            uint64_t hhdm = boot_get_hhdm_offset();
             memset((void *)(uintptr_t)(hhdm + phys), 0, 4096);
         }
     }

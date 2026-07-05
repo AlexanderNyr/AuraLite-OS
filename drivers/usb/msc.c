@@ -22,7 +22,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
-#include "kernel/limine_requests.h"
+#include "kernel/boot_info.h"
 
 /* ---- CBW (Command Block Wrapper) — 31 bytes ---- */
 #define CBW_SIGNATURE  0x43425355   /* "USBC" */

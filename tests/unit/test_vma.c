@@ -41,7 +41,7 @@ int64_t vfs_read_at_phys(struct ofd *ofd, uint64_t off, uint64_t phys, uint64_t 
 void vfs_ofd_get(struct ofd *o) { if (o) o->refcount++; }
 void vfs_ofd_put(struct ofd *o) { if (o) o->refcount--; }
 static struct ofd fake_ofd;
-uint64_t limine_get_hhdm_offset(void) { return 0; }
+uint64_t boot_get_hhdm_offset(void) { return 0; }
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) { (void)virt; (void)phys; (void)flags; }
 void kprintf(const char *fmt, ...) { (void)fmt; }
 void spinlock_init(spinlock_t *lock) { (void)lock; }

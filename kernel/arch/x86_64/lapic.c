@@ -2,8 +2,7 @@
 
 #include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/paging.h"
-#include "kernel/limine_requests.h"
-#include "limine/limine.h"
+#include "kernel/boot_info.h"
 #include "kernel/lib/kprintf.h"
 #include <stdint.h>
 
@@ -20,7 +19,7 @@
 static int lapic_mapped = 0;
 
 void lapic_enable(void) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     if (!hhdm) return;
     uint64_t apic_base_msr;
     uint32_t low, high;
@@ -40,7 +39,7 @@ void lapic_enable(void) {
 }
 
 void lapic_eoi(void) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     if (!hhdm || !lapic_mapped) return;
     uint64_t apic_base_msr;
     uint32_t low, high;
@@ -53,7 +52,7 @@ void lapic_eoi(void) {
 }
 
 void lapic_timer_start(uint32_t hz) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     if (!hhdm || hz == 0 || !lapic_mapped) return;
     uint64_t apic_base_msr;
     uint32_t low, high;
@@ -75,7 +74,7 @@ void lapic_timer_start(uint32_t hz) {
 }
 
 void lapic_send_ipi_all_excluding_self(uint8_t vector) {
-    uint64_t hhdm = limine_get_hhdm_offset();
+    uint64_t hhdm = boot_get_hhdm_offset();
     if (!hhdm) return;
     uint64_t apic_base_msr;
     uint32_t low, high;
