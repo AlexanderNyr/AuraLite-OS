@@ -11,6 +11,8 @@
 ; memory) and then copy up while in unreal mode.
 ; =============================================================================
 
+DISK_RETRIES equ 3
+
 ; disk_read_lba -- read CX sectors starting at LBA EAX (low 32 bits;
 ;                  we assume high 32 bits = 0 which is true for any
 ;                  disk < 2 TiB) into segment:offset ES:BX.
@@ -19,8 +21,8 @@
 ;                        portability -- some BIOSes truncate above 128),
 ;           ES:BX = destination buffer,
 ;           [boot_drive] = BIOS drive number.
-; On exit : CF clear on success, CF set on error; AH = BIOS error code
-;           on failure.  All GP registers preserved.
+; On exit : CF clear on success, CF set on error.  All GP registers
+;           preserved.
 disk_read_lba:
     pushad
     push ds
@@ -40,13 +42,29 @@ disk_read_lba:
     xor  ax, ax
     mov  ds, ax
     mov  si, dap_buffer
+    mov  byte [dr_retry_count], DISK_RETRIES
 
+.attempt:
     mov  ah, 0x42
     mov  dl, [boot_drive]
     int  0x13
-    ; CF is meaningful; do NOT clobber it with subsequent instructions.
-    jc   .fail
+    jnc  .ok
 
+    ; Reset the disk system between attempts.  Some BIOSes transiently
+    ; report a timeout once and succeed on a retry after AH=00h reset.
+    xor  ax, ax                         ; be defensive about BIOS clobbers
+    mov  ds, ax
+    dec  byte [dr_retry_count]
+    jz   .fail
+    mov  ah, 0x00                       ; AH=00h: reset disk system
+    mov  dl, [boot_drive]
+    int  0x13
+    xor  ax, ax
+    mov  ds, ax
+    mov  si, dap_buffer
+    jmp  .attempt
+
+.ok:
     pop  es
     pop  ds
     popad
@@ -82,3 +100,5 @@ dr_lba_lo:
     dd   0
 dr_lba_hi:
     dd   0
+dr_retry_count:
+    db   0

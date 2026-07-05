@@ -16,12 +16,8 @@
 ;            ACPI 6.5 spec, s.15.3 "System Address Map Interfaces".
 ; =============================================================================
 
-; Layout constants (must match boot_info_t in boot/shared/boot_info.h).
-;   magic(8) + fb(32, auto-aligned) = 40 bytes header
-;   mmap[] starts at offset 40 inside boot_info.
-;   mmap_count u32 at offset 40 + 256*24 = 6184.
-BOOT_MMAP_OFF        equ 40
-BOOT_MMAP_COUNT_OFF  equ 40 + 256*24
+; boot_info_t offsets are generated from boot/shared/boot_info.h and included
+; by stage2_start.asm before this file.
 E820_ENTRY_SIZE      equ 24         ; boot_mmap_entry_t stride
 
 ; detect_memory -- fills boot_info.mmap[] up to BOOT_MAX_MMAP=256 entries
@@ -70,7 +66,7 @@ detect_memory:
     jnz  .loop                        ; more entries available
 .done:
     ; Store the count (u32 -- upper half stays zero from block-clear).
-    mov  [es:BOOT_MMAP_COUNT_OFF], bp
+    mov  [es:BOOT_MMAP_CNT_OFF], bp
     clc
     pop  es
     popa

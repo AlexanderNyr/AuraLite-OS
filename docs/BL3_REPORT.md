@@ -38,7 +38,7 @@ Two items intentionally deferred:
 | Path | LOC | Purpose |
 |------|----:|---------|
 | `boot/bios/stage2/stage2_start.asm` | 200 | Entry + boot_info seeding + top-level flow |
-| `boot/bios/stage2/com1.inc`         |  85 | UART 16550 driver (115200 8N1) |
+| `boot/bios/stage2/uart16.inc`         |  85 | UART 16550 driver (115200 8N1) |
 | `boot/bios/stage2/e820.inc`         |  70 | INT 15h EAX=E820h loop → mmap[] |
 | `boot/bios/stage2/a20.inc`          | 130 | A20 enable (BIOS → 0x92 → 8042) |
 | `boot/bios/stage2/disk.inc`         |  80 | INT 13h AH=42h wrapper |

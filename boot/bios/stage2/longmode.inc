@@ -93,6 +93,17 @@ bits 64
     mov  fs, ax
     mov  gs, ax
 
+    ; Clear GS base state explicitly.  Loading a null GS selector in
+    ; 64-bit mode does not reset the hidden GS.base value; only WRMSR
+    ; or WRGSBASE does.  The kernel sets its own GS base later, but
+    ; enter with a defined zero base.
+    xor  eax, eax
+    xor  edx, edx
+    mov  ecx, 0xC0000101                    ; IA32_GS_BASE
+    wrmsr
+    mov  ecx, 0xC0000102                    ; IA32_KERNEL_GS_BASE
+    wrmsr
+
     ; Temporary stack; the kernel's boot.asm replaces it immediately.
     mov  rsp, 0x7C00
 

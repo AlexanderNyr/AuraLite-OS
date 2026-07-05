@@ -10,6 +10,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD="$ROOT/build"
 IMG="$BUILD/bl4_boot.img"
 LOG="$BUILD/bl4_boot.log"
+LOG_HIGHMEM="$BUILD/bl4_boot_highmem.log"
 
 # 1. Build all three artefacts + the kernel.
 make -C "$ROOT" mbr stage2 kernel >/dev/null
@@ -93,6 +94,31 @@ if grep -qE '(PANIC|panic:)' "$LOG"; then
     fail=1
 fi
 
+# 5. High-memory pass.  Force more than 1 GiB below the 4 GiB boundary so the
+#    PMM metadata lands above 1 GiB and exercises the extended BIOS HHDM map.
+#    The default 1536 MiB keeps the test usable on smaller CI runners; set
+#    BL4_HIGHMEM_MB=2048 to run the full 2 GiB audit scenario.
+HIGHMEM_MB="${BL4_HIGHMEM_MB:-1536}"
+rm -f "$LOG_HIGHMEM"
+timeout 30 qemu-system-x86_64 \
+    -machine "pc,max-ram-below-4g=${HIGHMEM_MB}M" \
+    -drive format=raw,file="$IMG",if=ide \
+    -m "${HIGHMEM_MB}M" \
+    -display none -serial file:"$LOG_HIGHMEM" -no-reboot \
+    >/dev/null 2>&1 || true
+
+if grep -qE '\[pmm\] PASS:' "$LOG_HIGHMEM"; then
+    echo "  [bl4-boot] serial OK   PMM self-test with ${HIGHMEM_MB} MiB RAM"
+else
+    echo "  [bl4-boot] serial MISS PMM self-test with ${HIGHMEM_MB} MiB RAM"
+    fail=1
+fi
+
+if grep -qE '(PANIC|panic:|Triple fault)' "$LOG_HIGHMEM"; then
+    echo "  [bl4-boot] serial FAIL high-memory panic/triple-fault observed"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "[bl4-boot] PASS -- full BIOS boot chain works end to end"
     exit 0
@@ -100,5 +126,9 @@ else
     echo "[bl4-boot] FAIL"
     echo "--- last 60 lines of serial log ---"
     tail -60 "$LOG" | sed 's/^/    /'
+    if [ -f "$LOG_HIGHMEM" ]; then
+        echo "--- last 60 lines of high-memory serial log ---"
+        tail -60 "$LOG_HIGHMEM" | sed 's/^/    /'
+    fi
     exit 1
 fi

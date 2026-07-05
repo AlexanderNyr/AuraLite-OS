@@ -14,7 +14,7 @@
 ; This file is BL3 scope: real-mode services and the top-level flow.
 ; The protected-mode + long-mode transition and the ELF loader come in
 ; BL4.  During BL3 the entry point demonstrates the collected data by
-; writing a "[BL3] stage2 alive" banner to COM1 and halting.
+; writing a "[BL3] stage2 alive" banner to the first PC serial port and halting.
 ; =============================================================================
 
 bits 16
@@ -41,6 +41,13 @@ STAGE2_SCRATCH_PHYS equ 0x00011000
 ; addressed as [es:<offset>] with ES = BOOT_INFO_SEG.
 BOOT_INFO_SEG       equ 0x1000
 
+; Generated from boot/shared/boot_info.h by tools/gen_boot_offsets.c.
+; Keeps BIOS Stage 2 field writes in sync with the C handoff structure.
+%include "build/boot_offsets.inc"
+%if BOOT_INFO_SIZEOF > 12*1024
+    %error "boot_info_t exceeds the 12 KiB Stage 2 zero-fill reservation"
+%endif
+
 ; --------------------------------------------------------------------------
 ; Entry
 ; --------------------------------------------------------------------------
@@ -61,15 +68,14 @@ stage2_entry:
     mov  sp, 0x7C00
     sti
 
-    ; UART early-init so subsequent modules can log through com1_putc.
-    call com1_init
+    ; UART early-init so subsequent modules can log through uart16_putc.
+    call uart16_init
     mov  si, msg_hello
-    call com1_puts
+    call uart16_puts
 
     ; Zero the boot_info_t block via ES:DI = BOOT_INFO_SEG:0000.
-    ; sizeof(boot_info_t) is currently 9376 bytes; round up to 12 KiB
-    ; (3 pages) so future struct growth does not require touching this
-    ; code.  12 KiB / 2 = 6144 words for rep stosw.
+    ; The generated BOOT_INFO_SIZEOF guard above ensures the fixed 12 KiB
+    ; reservation remains large enough.  12 KiB / 2 = 6144 words.
     push es
     mov  ax, BOOT_INFO_SEG
     mov  es, ax
@@ -79,54 +85,20 @@ stage2_entry:
     rep  stosw
 
     ; ---- Fill the constant fields that BL3 owns (BL4 fills the rest).
-    ; See boot/shared/boot_info.h for the field layout.  The offsets
-    ; below MUST match sizeof/offsetof reported by the host compiler
-    ; on the same header -- the tests/unit/test_boot_info test would
-    ; catch a drift only for the C side, not for stage 2, so we keep
-    ; both this comment block and the numeric offsets in sync by hand.
-    ;
-    ; Confirmed by `offsetof` on boot/shared/boot_info.h @ commit BL4:
-    ;   +0     magic          u64          <-- 0x4155524142544C44
-    ;   +8     fb             boot_fb_t (32 B, auto-aligned)
-    ;   +40    mmap[256]      6144 B             filled by detect_memory
-    ;   +6184  mmap_count     u32                filled by detect_memory
-    ;   +6188  _pad_mmap      u32
-    ;   +6192  hhdm_offset    u64          <-- 0xFFFF800000000000
-    ;   +6200  initrd_phys    u64                left zero here
-    ;   +6208  initrd_size    u64                left zero here
-    ;   +6216  cpu_count      u32                left zero here
-    ;   +6220  bsp_lapic_id   u32
-    ;   +6224  cpus[64]       1536 B             left zero here
-    ;   +7760  rsdp_phys      u64
-    ;   +7768  boot_from_uefi u8           <-- 0 (BIOS)
-%assign BOOT_HHDM_OFF  6192
-%assign BOOT_UEFI_OFF  7768
+    ; Field offsets come from build/boot_offsets.inc, generated with
+    ; offsetof(boot_info_t, field) from boot/shared/boot_info.h.
 
     ; magic: 0x4155524142544C44 -> bytes 44 4C 54 42 41 52 55 41 (LE).
-    mov  word [es:0], 0x4C44
-    mov  word [es:2], 0x4254
-    mov  word [es:4], 0x5241
-    mov  word [es:6], 0x4155
+    mov  word [es:BOOT_MAGIC_OFF + 0], 0x4C44
+    mov  word [es:BOOT_MAGIC_OFF + 2], 0x4254
+    mov  word [es:BOOT_MAGIC_OFF + 4], 0x5241
+    mov  word [es:BOOT_MAGIC_OFF + 6], 0x4155
 
-    ; hhdm_offset: qword 0xFFFF800000000000
-    ;   LE byte layout at BOOT_HHDM_OFF: 00 00 00 00 00 00 00 80 FF FF
-    ;   Wait -- that is 10 bytes.  Correct expansion:
-    ;   qword 0xFFFF_8000_0000_0000
-    ;     byte 0 = 0x00
-    ;     byte 1 = 0x00
-    ;     byte 2 = 0x00
-    ;     byte 3 = 0x00
-    ;     byte 4 = 0x00
-    ;     byte 5 = 0x00
-    ;     byte 6 = 0x00
-    ;     byte 7 = 0x80  <-- oops, actually 0x80 is bit 47, not byte 7
-    ;   Recompute: 0xFFFF_8000_0000_0000 has bits 63..47 set.
-    ;     high dword = 0xFFFF8000 -> bytes 4..7 = 00 80 FF FF
-    ;     low  dword = 0x00000000 -> bytes 0..3 = 00 00 00 00
-    ;   Full LE bytes: 00 00 00 00 00 80 FF FF
+    ; hhdm_offset: qword 0xFFFF800000000000.
+    ; Full little-endian bytes: 00 00 00 00 00 80 FF FF.
+    ; The low dword stays zero from the block-clear above.
     mov  word [es:BOOT_HHDM_OFF + 4], 0x8000     ; bytes 4..5 = 00 80
     mov  word [es:BOOT_HHDM_OFF + 6], 0xFFFF     ; bytes 6..7 = FF FF
-    ; bytes 0..3 stay zero from the block-clear above.
 
     ; boot_from_uefi = 0 (already zero, but write explicitly for clarity).
     mov  byte [es:BOOT_UEFI_OFF], 0
@@ -135,11 +107,11 @@ stage2_entry:
     ; ---- Real-mode services (BL3) ----
     call detect_memory              ; E820 -> boot_info.mmap[]
     mov  si, msg_e820_ok
-    call com1_puts
+    call uart16_puts
 
     call enable_a20                 ; ensure A20 is on
     mov  si, msg_a20_ok
-    call com1_puts
+    call uart16_puts
 
     ; ---- Disk read self-test (BL3.disk) ----------------------------
     ; Read sector 1 (the start of Stage 2 itself) back into a scratch
@@ -165,11 +137,11 @@ stage2_entry:
     cmp  al, 0xFA                       ; CLI opcode
     jne  .disk_fail
     mov  si, msg_disk_ok
-    call com1_puts
+    call uart16_puts
     jmp  .disk_done
 .disk_fail:
     mov  si, msg_disk_fail
-    call com1_puts
+    call uart16_puts
 .disk_done:
 
     ; ---- Unreal-mode self-test (BL3.unreal) ------------------------
@@ -189,11 +161,11 @@ stage2_entry:
     cmp  eax, 0xDEADC0DE
     jne  .unreal_fail
     mov  si, msg_unreal_ok
-    call com1_puts
+    call uart16_puts
     jmp  .unreal_done
 .unreal_fail:
     mov  si, msg_unreal_fail
-    call com1_puts
+    call uart16_puts
 .unreal_done:
 
     ; ---- FAT32 lookup + load self-test (BL4.fat) -------------------
@@ -209,14 +181,14 @@ stage2_entry:
     jc   .fat_skip
 .fat_init_done:
     mov  si, msg_fat_init_ok
-    call com1_puts
+    call uart16_puts
 
     ; Look up KERNEL.ELF -- 11-byte 8.3, space-padded, uppercase.
     mov  si, name_kernel
     call fat_find
     jc   .fat_no_kernel
     mov  si, msg_fat_found
-    call com1_puts
+    call uart16_puts
 
     ; Load the file to flat 0x00200000 (2 MiB) as a staging buffer.
     ; ELF parsing then copies each PT_LOAD segment to its physical
@@ -230,7 +202,7 @@ stage2_entry:
     call fat_load
     jc   .fat_load_fail
     mov  si, msg_fat_load_ok
-    call com1_puts
+    call uart16_puts
 
     ; Parse the ELF and copy its PT_LOAD segments to their physical
     ; addresses.  Requires FS still be in unreal-mode flat form; we
@@ -240,33 +212,33 @@ stage2_entry:
     call elf_load
     jc   .elf_fail
     mov  si, msg_elf_ok
-    call com1_puts
+    call uart16_puts
 
     ; Build the 4-level page tables at PT_BASE.  Uses FS (unreal flat).
     call build_page_tables
     mov  si, msg_pt_ok
-    call com1_puts
+    call uart16_puts
 
     ; Announce final hand-off, then take the CPU into long mode.
     ; This call never returns; the last real-mode byte we execute is
     ; the `mov cr0, eax` inside enter_long_mode.
     mov  si, msg_lm_go
-    call com1_puts
+    call uart16_puts
     call enter_long_mode
     ; unreachable
     jmp  .fat_done
 
 .elf_fail:
     mov  si, msg_elf_fail
-    call com1_puts
+    call uart16_puts
     jmp  .fat_done
 .fat_no_kernel:
     mov  si, msg_fat_no_kernel
-    call com1_puts
+    call uart16_puts
     jmp  .fat_done
 .fat_load_fail:
     mov  si, msg_fat_load_fail
-    call com1_puts
+    call uart16_puts
 .fat_skip:
 .fat_done:
 
@@ -275,7 +247,7 @@ stage2_entry:
     ; build page tables, enter long mode, and jump to _start.  For now
     ; we announce success and halt so the smoke test can grep for it.
     mov  si, msg_bl3_done
-    call com1_puts
+    call uart16_puts
 
 .hang:
     hlt
@@ -310,7 +282,7 @@ boot_drive: db 0
 ; --------------------------------------------------------------------------
 ; Included modules (order matters only for symbol resolution)
 ; --------------------------------------------------------------------------
-%include "boot/bios/stage2/com1.inc"
+%include "boot/bios/stage2/uart16.inc"
 %include "boot/bios/stage2/e820.inc"
 %include "boot/bios/stage2/a20.inc"
 %include "boot/bios/stage2/disk.inc"

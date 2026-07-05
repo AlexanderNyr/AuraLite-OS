@@ -98,7 +98,7 @@ MBR_BIN         := $(BUILD_DIR)/boot/mbr.bin
 MBR_DUAL_BIN    := $(BUILD_DIR)/boot/mbr_dual.bin
 STAGE2_BIN      := $(BUILD_DIR)/boot/stage2.bin
 
-.PHONY: mbr mbr-dual stage2
+.PHONY: mbr mbr-dual stage2 boot-offsets
 mbr:      $(MBR_BIN)
 mbr-dual: $(MBR_DUAL_BIN)
 stage2:   $(STAGE2_BIN)
@@ -127,21 +127,42 @@ $(MBR_DUAL_BIN): $(BOOT_BIOS_DIR)/stage1/mbr_dual.asm
 
 # ---- BL3: BIOS Stage 2 -----------------------------------------------------
 # Stage 2 is a single flat binary assembled from stage2_start.asm which
-# %includes every submodule (com1.inc, e820.inc, a20.inc, ...).  There is
+# %includes every submodule (uart16.inc, e820.inc, a20.inc, ...).  There is
 # no linker involved: nasm -f bin outputs raw code ready to load at ORG.
 # Max size: 63 KiB (126 sectors) -- enforced below.
-STAGE2_SRC   := $(BOOT_BIOS_DIR)/stage2/stage2_start.asm
-STAGE2_INCS  := $(wildcard $(BOOT_BIOS_DIR)/stage2/*.inc)
+STAGE2_SRC      := $(BOOT_BIOS_DIR)/stage2/stage2_start.asm
+STAGE2_INCS     := $(wildcard $(BOOT_BIOS_DIR)/stage2/*.inc)
+BOOT_OFFSETS_GEN := $(BUILD_DIR)/gen_boot_offsets
+BOOT_OFFSETS_INC := $(BUILD_DIR)/boot_offsets.inc
+BOOT_OFFSETS_H   := $(BUILD_DIR)/boot_offsets.h
 
-$(STAGE2_BIN): $(STAGE2_SRC) $(STAGE2_INCS)
+boot-offsets: $(BOOT_OFFSETS_INC) $(BOOT_OFFSETS_H)
+
+$(BOOT_OFFSETS_GEN): tools/gen_boot_offsets.c boot/shared/boot_info.h
 	@mkdir -p $(dir $@)
-	$(AS) -f bin -I . -o $@ $<
+	$(HOST_CC) -std=c11 -I . $< -o $@
+
+$(BOOT_OFFSETS_INC): $(BOOT_OFFSETS_GEN)
+	@mkdir -p $(dir $@)
+	$< --asm > $@
+	@echo "  [offsets] $@"
+
+$(BOOT_OFFSETS_H): $(BOOT_OFFSETS_GEN)
+	@mkdir -p $(dir $@)
+	$< --c > $@
+	@echo "  [offsets] $@"
+
+$(STAGE2_BIN): $(STAGE2_SRC) $(STAGE2_INCS) $(BOOT_OFFSETS_INC)
+	@mkdir -p $(dir $@)
+	$(AS) -f bin -I . -I $(BUILD_DIR)/ -o $@ $<
 	@sz=$$(wc -c < $@); \
 	  maxsz=$$((126*512)); \
 	  if [ "$$sz" -gt "$$maxsz" ]; then \
-	    echo "[stage2] ERROR: $@ is $$sz bytes (max $$maxsz)"; exit 1; \
+	    echo "[stage2] FATAL: $@ is $$sz bytes; MBR loads max $$maxsz"; \
+	    rm -f $@; \
+	    exit 1; \
 	  fi; \
-	  printf "  [stage2] %-38s %d bytes (max %d)\n" $@ $$sz $$maxsz
+	  printf "  [stage2] %-38s %d / %d bytes\n" $@ $$sz $$maxsz
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -635,6 +656,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_page_cache \
                 $(BUILD_DIR)/test_mprotect \
                 $(BUILD_DIR)/test_gdt_tss \
+                $(BUILD_DIR)/test_boot_offsets \
                 $(BUILD_DIR)/test_boot_info
 
 test-unit: $(UNIT_TESTS)
@@ -704,6 +726,10 @@ $(BUILD_DIR)/test_boot_info: tests/unit/test_boot_info.c kernel/boot_info.c kern
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	    tests/unit/test_boot_info.c kernel/boot_info.c -o $@
+
+$(BUILD_DIR)/test_boot_offsets: tests/unit/test_boot_offsets.c boot/shared/boot_info.h $(BOOT_OFFSETS_H)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I $(BUILD_DIR) $< -o $@
 
 $(BUILD_DIR)/test_gdt_tss: tests/unit/test_gdt_tss.c kernel/arch/x86_64/gdt.c kernel/arch/x86_64/gdt.h
 	@mkdir -p $(BUILD_DIR)

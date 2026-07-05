@@ -19,7 +19,18 @@
 #define PMM_TAG "[pmm] "
 
 #define ALIGN_UP(x, a) (((x) + (a) - 1) & ~((a) - 1))
+#define ALIGN_DOWN(x, a) ((x) & ~((a) - 1))
 #define MIB            (1024ULL * 1024ULL)
+#define GIB            (1024ULL * MIB)
+
+/* BIOS Stage 2 initially maps the HHDM only for physical 0..4 GiB.  Keep
+ * early PMM metadata inside that range until the kernel builds its own maps. */
+#define PMM_EARLY_HHDM_LIMIT (4ULL * GIB)
+
+/* Keep low boot-critical memory out of the allocator.  This covers the BIOS
+ * loader, boot_info_t, the loaded kernel image, scratch buffers, and the page
+ * tables built by Stage 2 at 16 MiB. */
+#define PMM_EARLY_BOOT_RESERVE (32ULL * MIB)
 
 struct pmm_state {
     uint8_t  *bitmap;             /* HHDM-mapped pointer to the bitmap        */
@@ -53,18 +64,34 @@ static void mark_range(uint64_t base, uint64_t len, int used) {
 }
 
 /* Locate a region large enough to hold the bitmap; prefer bootloader-
-   reclaimable memory, fall back to usable memory. */
+   reclaimable memory, fall back to usable memory.  Allocate from the top of the
+   chosen range so PMM metadata does not overwrite the low BIOS kernel image or
+   Stage 2 page tables. */
 static uint64_t find_bitmap_region(boot_mmap_entry_t *entries,
                                    uint64_t count) {
+    uint64_t need = ALIGN_UP(pmm.bitmap_bytes + pmm.refcount_bytes,
+                             PMM_PAGE_SIZE);
+
     for (int pass = 0; pass < 2; pass++) {
         uint32_t want_type = (pass == 0)
             ? BOOT_MEM_BOOTLOADER
             : BOOT_MEM_USABLE;
         for (uint64_t i = 0; i < count; i++) {
-            if (entries[i].type == want_type &&
-                entries[i].length >= pmm.bitmap_bytes + pmm.refcount_bytes) {
-                return entries[i].base;
+            if (entries[i].type != want_type) {
+                continue;
             }
+
+            uint64_t start = ALIGN_UP(entries[i].base, PMM_PAGE_SIZE);
+            uint64_t end = ALIGN_DOWN(entries[i].base + entries[i].length,
+                                      PMM_PAGE_SIZE);
+            if (end > PMM_EARLY_HHDM_LIMIT) {
+                end = PMM_EARLY_HHDM_LIMIT;
+            }
+            if (end <= start || end - start < need) {
+                continue;
+            }
+
+            return end - need;
         }
     }
     return 0;
@@ -125,7 +152,9 @@ void pmm_init(void) {
             mark_range(e->base, e->length, 0);
         }
     }
-    /* 4) Reserve PMM metadata frames (idempotent if non-usable). */
+    /* 4) Reserve early boot-critical frames and PMM metadata frames
+     *    (idempotent if non-usable). */
+    mark_range(0, PMM_EARLY_BOOT_RESERVE, 1);
     mark_range(pmm.bitmap_phys, pmm.bitmap_bytes + pmm.refcount_bytes, 1);
 
     /* 5) Count free frames straight from the bitmap. */

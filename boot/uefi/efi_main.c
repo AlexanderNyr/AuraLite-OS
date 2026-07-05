@@ -34,6 +34,20 @@ extern EFI_STATUS efi_setup_hhdm_paging(EFI_BOOT_SERVICES *BS);
 extern void       efi_activate_paging(void);
 extern uint64_t   pml4_phys;
 
+static EFI_SYSTEM_TABLE *gST;
+
+/* efi_print -- write a narrow ASCII string to EFI ConOut.
+ * Converts each byte to CHAR16 on the fly (ASCII subset only). */
+static void efi_print(EFI_SYSTEM_TABLE *st, const char *msg) {
+    if (!st || !st->ConOut || !st->ConOut->OutputString) return;
+
+    CHAR16 buf[2] = {0, 0};
+    while (*msg) {
+        buf[0] = (CHAR16)(uint8_t)*msg++;
+        st->ConOut->OutputString(st->ConOut, buf);
+    }
+}
+
 /* Handy GUID literals.  UEFI passes GUIDs by pointer to `void*` in
  * LocateProtocol / OpenProtocol / HandleProtocol calls. */
 static uint8_t GOP_GUID[16] = {
@@ -107,8 +121,11 @@ static uint32_t efi_mem_type_to_boot(uint32_t t) {
  * thing into a pool allocation, return pointer + size in *out_ptr /
  * *out_sz.  Returns EFI_SUCCESS or the failing status. */
 static EFI_STATUS read_esp_file(EFI_BOOT_SERVICES *BS,
+                                EFI_SYSTEM_TABLE  *st,
                                 EFI_HANDLE         image_handle,
                                 CHAR16            *filename,
+                                const char        *label,
+                                int                quiet_open_error,
                                 void             **out_ptr,
                                 uint64_t          *out_sz)
 {
@@ -117,19 +134,36 @@ static EFI_STATUS read_esp_file(EFI_BOOT_SERVICES *BS,
     EFI_FILE_PROTOCOL               *root = 0, *file = 0;
     EFI_STATUS s;
 
+    *out_ptr = 0;
+    *out_sz = 0;
+
     s = BS->HandleProtocol(image_handle, LOADED_IMAGE_GUID, (void **)&li);
-    if (s != EFI_SUCCESS) return s;
+    if (s != EFI_SUCCESS || !li) {
+        efi_print(st, "UEFI: LoadedImage protocol not found\r\n");
+        return (s != EFI_SUCCESS) ? s : EFI_NOT_FOUND;
+    }
 
     s = BS->HandleProtocol(li->DeviceHandle, SFS_GUID, (void **)&fs);
-    if (s != EFI_SUCCESS) return s;
+    if (s != EFI_SUCCESS || !fs) {
+        efi_print(st, "UEFI: SimpleFileSystem not found on boot device\r\n");
+        return (s != EFI_SUCCESS) ? s : EFI_NOT_FOUND;
+    }
 
     s = fs->OpenVolume(fs, &root);
-    if (s != EFI_SUCCESS) return s;
+    if (s != EFI_SUCCESS || !root) {
+        efi_print(st, "UEFI: OpenVolume failed\r\n");
+        return (s != EFI_SUCCESS) ? s : EFI_NOT_FOUND;
+    }
 
     s = root->Open(root, &file, filename, EFI_FILE_MODE_READ, 0);
-    if (s != EFI_SUCCESS) {
+    if (s != EFI_SUCCESS || !file) {
+        if (!quiet_open_error) {
+            efi_print(st, "UEFI: file not found: ");
+            efi_print(st, label);
+            efi_print(st, "\r\n");
+        }
         root->Close(root);
-        return s;
+        return (s != EFI_SUCCESS) ? s : EFI_NOT_FOUND;
     }
 
     /* Learn file size via GetInfo. */
@@ -137,7 +171,11 @@ static EFI_STATUS read_esp_file(EFI_BOOT_SERVICES *BS,
     UINTN   info_sz = sizeof(info_buf);
     s = file->GetInfo(file, FILE_INFO_GUID, &info_sz, info_buf);
     if (s != EFI_SUCCESS) {
-        file->Close(file); root->Close(root);
+        efi_print(st, "UEFI: GetInfo failed for ");
+        efi_print(st, label);
+        efi_print(st, "\r\n");
+        file->Close(file);
+        root->Close(root);
         return s;
     }
     EFI_FILE_INFO *info = (EFI_FILE_INFO *)info_buf;
@@ -146,15 +184,22 @@ static EFI_STATUS read_esp_file(EFI_BOOT_SERVICES *BS,
     /* Allocate + read. */
     void *buf = 0;
     s = BS->AllocatePool(EfiLoaderData_Pool, sz, &buf);
-    if (s != EFI_SUCCESS) {
-        file->Close(file); root->Close(root);
-        return s;
+    if (s != EFI_SUCCESS || !buf) {
+        efi_print(st, "UEFI: AllocatePool failed for ");
+        efi_print(st, label);
+        efi_print(st, "\r\n");
+        file->Close(file);
+        root->Close(root);
+        return (s != EFI_SUCCESS) ? s : EFI_LOAD_ERROR;
     }
     UINTN read_sz = sz;
     s = file->Read(file, &read_sz, buf);
     file->Close(file);
     root->Close(root);
     if (s != EFI_SUCCESS || read_sz != sz) {
+        efi_print(st, "UEFI: read failed for ");
+        efi_print(st, label);
+        efi_print(st, "\r\n");
         BS->FreePool(buf);
         return EFI_LOAD_ERROR;
     }
@@ -168,6 +213,9 @@ static EFI_STATUS read_esp_file(EFI_BOOT_SERVICES *BS,
  * so we always fall back to COM1. */
 __attribute__((noreturn))
 static void fatal(const char *msg) {
+    efi_print(gST, "UEFI: fatal: ");
+    efi_print(gST, msg);
+    efi_print(gST, "\r\n");
     serial_puts("[BL6] FATAL: ");
     serial_puts(msg);
     serial_puts("\r\n");
@@ -198,15 +246,17 @@ static void jump_to_kernel(uint64_t entry, uint64_t boot_info_phys) {
  * Entry point.  Marked EFIAPI-equivalent by the Windows target ABI.
  * ------------------------------------------------------------------------ */
 EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
+    gST = st;
     EFI_BOOT_SERVICES *BS = st->BootServices;
+    EFI_STATUS status;
 
     serial_init();
     serial_puts("\r\n[BL6] BOOTX64.EFI entered\r\n");
 
     /* ---- 1) Allocate and pre-populate boot_info. ---------------------- */
     boot_info_t *info = 0;
-    if (BS->AllocatePool(EfiLoaderData_Pool, sizeof(*info), (void **)&info)
-        != EFI_SUCCESS)
+    status = BS->AllocatePool(EfiLoaderData_Pool, sizeof(*info), (void **)&info);
+    if (status != EFI_SUCCESS || !info)
         fatal("AllocatePool boot_info");
     mymemset(info, 0, sizeof(*info));
     info->magic          = BOOT_MAGIC;
@@ -217,8 +267,8 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
 
     /* ---- 2) Framebuffer via GOP -------------------------------------- */
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
-    if (BS->LocateProtocol(GOP_GUID, 0, (void **)&gop) == EFI_SUCCESS
-        && gop && gop->Mode && gop->Mode->Info) {
+    status = BS->LocateProtocol(GOP_GUID, 0, (void **)&gop);
+    if (status == EFI_SUCCESS && gop && gop->Mode && gop->Mode->Info) {
         EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mi = gop->Mode->Info;
         info->fb.phys_base = gop->Mode->FrameBufferBase;
         info->fb.width     = mi->HorizontalResolution;
@@ -236,6 +286,7 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
         }
         serial_puts("[BL6] GOP framebuffer located\r\n");
     } else {
+        efi_print(st, "UEFI: no GOP framebuffer\r\n");
         serial_puts("[BL6] no GOP framebuffer (fb=0)\r\n");
     }
 
@@ -244,9 +295,17 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
     uint64_t kernel_sz = 0;
     CHAR16   name_kernel[] = { '\\','E','F','I','\\','B','O','O','T','\\',
                                'K','E','R','N','E','L','.','E','L','F', 0 };
-    if (read_esp_file(BS, image_handle, name_kernel,
-                      &kernel_buf, &kernel_sz) != EFI_SUCCESS)
+    status = read_esp_file(BS, st, image_handle, name_kernel,
+                           "\\EFI\\BOOT\\KERNEL.ELF", 0,
+                           &kernel_buf, &kernel_sz);
+    if (status != EFI_SUCCESS)
         fatal("cannot read \\EFI\\BOOT\\KERNEL.ELF");
+    if (kernel_sz < 4 ||
+        ((uint8_t *)kernel_buf)[0] != 0x7F ||
+        ((uint8_t *)kernel_buf)[1] != 'E'  ||
+        ((uint8_t *)kernel_buf)[2] != 'L'  ||
+        ((uint8_t *)kernel_buf)[3] != 'F')
+        fatal("kernel.elf has bad magic");
     serial_puts("[BL6] KERNEL.ELF loaded from ESP\r\n");
 
     /* Optional: initrd. */
@@ -254,8 +313,10 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
                              'I','N','I','T','R','D','.','T','A','R', 0 };
     void   *initrd_buf = 0;
     uint64_t initrd_sz = 0;
-    if (read_esp_file(BS, image_handle, name_initrd,
-                      &initrd_buf, &initrd_sz) == EFI_SUCCESS) {
+    status = read_esp_file(BS, st, image_handle, name_initrd,
+                           "\\EFI\\BOOT\\INITRD.TAR", 1,
+                           &initrd_buf, &initrd_sz);
+    if (status == EFI_SUCCESS) {
         info->initrd_phys = (uint64_t)(uintptr_t)initrd_buf;
         info->initrd_size = initrd_sz;
         serial_puts("[BL6] INITRD.TAR loaded from ESP\r\n");
@@ -278,28 +339,36 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
     UINTN     map_key = 0;
     UINTN     desc_size = 0;
     uint32_t  desc_ver = 0;
-    (void)BS->GetMemoryMap(&map_size, 0, &map_key, &desc_size, &desc_ver);
+    status = BS->GetMemoryMap(&map_size, 0, &map_key, &desc_size, &desc_ver);
+    if (status != EFI_BUFFER_TOO_SMALL)
+        fatal("GetMemoryMap sizing");
     /* Add slack -- our AllocatePool calls right below may add entries. */
     map_size += 8 * (desc_size ? desc_size : 48);
 
     EFI_MEMORY_DESCRIPTOR *map = 0;
-    if (BS->AllocatePool(EfiLoaderData_Pool, map_size, (void **)&map)
-        != EFI_SUCCESS)
+    status = BS->AllocatePool(EfiLoaderData_Pool, map_size, (void **)&map);
+    if (status != EFI_SUCCESS || !map)
         fatal("AllocatePool for memory map");
 
-    if (BS->GetMemoryMap(&map_size, map, &map_key, &desc_size, &desc_ver)
-        != EFI_SUCCESS)
+    status = BS->GetMemoryMap(&map_size, map, &map_key, &desc_size, &desc_ver);
+    if (status != EFI_SUCCESS)
         fatal("GetMemoryMap (final)");
 
     /* ---- 7) ExitBootServices -- no more UEFI calls after this. ------- */
-    if (BS->ExitBootServices(image_handle, map_key) != EFI_SUCCESS) {
+    status = BS->ExitBootServices(image_handle, map_key);
+    if (status != EFI_SUCCESS) {
         /* Some firmwares return EFI_INVALID_PARAMETER if the map key
          * changed under us; retry once with a fresh map. */
         map_size = 0;
-        (void)BS->GetMemoryMap(&map_size, 0, &map_key, &desc_size, &desc_ver);
+        status = BS->GetMemoryMap(&map_size, 0, &map_key, &desc_size, &desc_ver);
+        if (status != EFI_BUFFER_TOO_SMALL)
+            fatal("GetMemoryMap retry sizing");
         map_size += 8 * desc_size;
-        BS->GetMemoryMap(&map_size, map, &map_key, &desc_size, &desc_ver);
-        if (BS->ExitBootServices(image_handle, map_key) != EFI_SUCCESS)
+        status = BS->GetMemoryMap(&map_size, map, &map_key, &desc_size, &desc_ver);
+        if (status != EFI_SUCCESS)
+            fatal("GetMemoryMap retry");
+        status = BS->ExitBootServices(image_handle, map_key);
+        if (status != EFI_SUCCESS)
             fatal("ExitBootServices failed twice");
     }
     serial_puts("[BL6] ExitBootServices OK\r\n");

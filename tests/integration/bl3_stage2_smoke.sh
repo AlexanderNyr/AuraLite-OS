@@ -102,15 +102,18 @@ fi
 # 5. Assertions on the boot_info memory dump (only if the monitor
 #    capture worked -- some hosts lack socat).
 if [ -s "$MEMDUMP" ]; then
-    python3 - "$MEMDUMP" <<'PY'
-import struct, sys
+    python3 - "$MEMDUMP" "$BUILD/boot_offsets.inc" <<'PY'
+import re, struct, sys
 data = open(sys.argv[1], 'rb').read()
-magic = struct.unpack_from('<Q', data, 0)[0]
+offsets = {}
+for line in open(sys.argv[2], 'r', encoding='utf-8'):
+    m = re.match(r'%define\s+(BOOT_[A-Z0-9_]+)\s+(\d+)', line)
+    if m:
+        offsets[m.group(1)] = int(m.group(2))
+magic = struct.unpack_from('<Q', data, offsets['BOOT_MAGIC_OFF'])[0]
 BOOT_MAGIC = 0x4155524142544C44
-BOOT_HHDM_OFF     = 6192      # boot_info_t offsetof(hhdm_offset)
-BOOT_MMAP_CNT_OFF = 6184      # boot_info_t offsetof(mmap_count)
-hhdm  = struct.unpack_from('<Q', data, BOOT_HHDM_OFF)[0]
-mmapc = struct.unpack_from('<I', data, BOOT_MMAP_CNT_OFF)[0]
+hhdm  = struct.unpack_from('<Q', data, offsets['BOOT_HHDM_OFF'])[0]
+mmapc = struct.unpack_from('<I', data, offsets['BOOT_MMAP_CNT_OFF'])[0]
 ok = True
 print(f'  [bl3] mem magic  = 0x{magic:016x}   {"OK" if magic == BOOT_MAGIC else "FAIL"}')
 print(f'  [bl3] mem hhdm   = 0x{hhdm:016x}   {"OK" if hhdm == 0xffff800000000000 else "FAIL"}')

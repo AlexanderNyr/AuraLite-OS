@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "boot/shared/boot_info.h"
 #include "kernel/boot_info.h"
@@ -116,6 +117,17 @@ int main(void) {
     uint32_t ebsp = 999;
     assert(boot_get_smp_info(&enc, &ebsp) == NULL);
     assert(enc == 0 && ebsp == 0);
+
+    /* Verify stage2.bin fits within the 126-sector MBR loading budget when
+     * the build artifact is present.  This keeps host-only unit-test runs
+     * possible, while CI paths that build Stage 2 get an extra guard. */
+    struct stat st;
+    if (stat("build/boot/stage2.bin", &st) == 0) {
+        assert(st.st_size <= 126 * 512 &&
+               "stage2.bin exceeds the 63 KiB MBR loading budget");
+        printf("stage2 size: %lld / %d bytes\n",
+               (long long)st.st_size, 126 * 512);
+    }
 
     puts("test_boot_info: ALL PASS");
     return 0;
