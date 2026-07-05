@@ -87,9 +87,11 @@ kernel: $(KERNEL_ELF)
 # =============================================================================
 BOOT_BIOS_DIR   := boot/bios
 MBR_BIN         := $(BUILD_DIR)/boot/mbr.bin
+STAGE2_BIN      := $(BUILD_DIR)/boot/stage2.bin
 
-.PHONY: mbr
-mbr: $(MBR_BIN)
+.PHONY: mbr stage2
+mbr:    $(MBR_BIN)
+stage2: $(STAGE2_BIN)
 
 $(MBR_BIN): $(BOOT_BIOS_DIR)/stage1/mbr.asm
 	@mkdir -p $(dir $@)
@@ -103,6 +105,24 @@ $(MBR_BIN): $(BOOT_BIOS_DIR)/stage1/mbr.asm
 	    echo "[mbr]  ERROR: bad boot signature $$sig (expected 55aa)"; exit 1; \
 	  fi
 	@printf "  [mbr] %-40s %d bytes, sig=0x55AA\n" $@ 512
+
+# ---- BL3: BIOS Stage 2 -----------------------------------------------------
+# Stage 2 is a single flat binary assembled from stage2_start.asm which
+# %includes every submodule (com1.inc, e820.inc, a20.inc, ...).  There is
+# no linker involved: nasm -f bin outputs raw code ready to load at ORG.
+# Max size: 63 KiB (126 sectors) -- enforced below.
+STAGE2_SRC   := $(BOOT_BIOS_DIR)/stage2/stage2_start.asm
+STAGE2_INCS  := $(wildcard $(BOOT_BIOS_DIR)/stage2/*.inc)
+
+$(STAGE2_BIN): $(STAGE2_SRC) $(STAGE2_INCS)
+	@mkdir -p $(dir $@)
+	$(AS) -f bin -I . -o $@ $<
+	@sz=$$(wc -c < $@); \
+	  maxsz=$$((126*512)); \
+	  if [ "$$sz" -gt "$$maxsz" ]; then \
+	    echo "[stage2] ERROR: $@ is $$sz bytes (max $$maxsz)"; exit 1; \
+	  fi; \
+	  printf "  [stage2] %-38s %d bytes (max %d)\n" $@ $$sz $$maxsz
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
