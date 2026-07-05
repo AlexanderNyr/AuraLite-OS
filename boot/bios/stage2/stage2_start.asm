@@ -194,7 +194,43 @@ stage2_entry:
     call com1_puts
 .unreal_done:
 
-    ; ---- End of BL3 scope ----
+    ; ---- FAT32 lookup + load self-test (BL4.fat) -------------------
+    ; Only run when the FAT header at LBA 128 looks like FAT32.  If we
+    ; are booting off a plain disk image with no partition, skip
+    ; silently and let BL4 report the specific failure later.
+    mov  eax, 128                         ; conventional FAT32 partition base
+    call fat_init
+    jc   .fat_skip
+    mov  si, msg_fat_init_ok
+    call com1_puts
+
+    ; Look up KERNEL.ELF -- 11-byte 8.3, space-padded, uppercase.
+    mov  si, name_kernel
+    call fat_find
+    jc   .fat_no_kernel
+    mov  si, msg_fat_found
+    call com1_puts
+
+    ; Load the file to flat 0x00200000 (2 MiB) as a smoke buffer.
+    mov  eax, [fat_result_cluster]
+    mov  edx, [fat_result_size]
+    mov  edi, 0x00200000
+    call fat_load
+    jc   .fat_load_fail
+    mov  si, msg_fat_load_ok
+    call com1_puts
+    jmp  .fat_done
+.fat_no_kernel:
+    mov  si, msg_fat_no_kernel
+    call com1_puts
+    jmp  .fat_done
+.fat_load_fail:
+    mov  si, msg_fat_load_fail
+    call com1_puts
+.fat_skip:
+.fat_done:
+
+    ; ---- End of BL3+BL4.fat scope ----
     ; BL4 will call FAT init, load kernel/initrd, enter protected mode,
     ; build page tables, enter long mode, and jump to _start.  For now
     ; we announce success and halt so the smoke test can grep for it.
@@ -215,7 +251,15 @@ msg_disk_ok:     db "[BL3] disk read OK", 0x0D, 0x0A, 0
 msg_disk_fail:   db "[BL3] disk read FAIL", 0x0D, 0x0A, 0
 msg_unreal_ok:   db "[BL3] unreal mode OK", 0x0D, 0x0A, 0
 msg_unreal_fail: db "[BL3] unreal mode FAIL", 0x0D, 0x0A, 0
+msg_fat_init_ok: db "[BL4] FAT32 BPB parsed", 0x0D, 0x0A, 0
+msg_fat_found:   db "[BL4] kernel.elf located", 0x0D, 0x0A, 0
+msg_fat_load_ok: db "[BL4] kernel.elf loaded to 0x00200000", 0x0D, 0x0A, 0
+msg_fat_no_kernel: db "[BL4] kernel.elf NOT FOUND", 0x0D, 0x0A, 0
+msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0
 msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
+
+; File name in 8.3 uppercase, space-padded, 11 bytes exact.
+name_kernel:  db "KERNEL  ELF"
 
 boot_drive: db 0
 
@@ -227,6 +271,7 @@ boot_drive: db 0
 %include "boot/bios/stage2/a20.inc"
 %include "boot/bios/stage2/disk.inc"
 %include "boot/bios/stage2/unreal.inc"
+%include "boot/bios/stage2/fat.inc"
 
 ; --------------------------------------------------------------------------
 ; Padding: Stage 2 must fit in the 63 KiB the MBR loads.  We pad to a
