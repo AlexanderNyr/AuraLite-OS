@@ -211,13 +211,32 @@ stage2_entry:
     mov  si, msg_fat_found
     call com1_puts
 
-    ; Load the file to flat 0x00200000 (2 MiB) as a smoke buffer.
+    ; Load the file to flat 0x00200000 (2 MiB) as a staging buffer.
+    ; ELF parsing then copies each PT_LOAD segment to its physical
+    ; destination (typically 0x00100000+).  Choosing 0x00200000 as the
+    ; staging area keeps a clean 1 MiB window for the kernel image
+    ; between STAGE2_SCRATCH_PHYS (0x11000) and KERNEL_LOAD_PHYS
+    ; (0x100000) plus the loaded kernel's own extent.
     mov  eax, [fat_result_cluster]
     mov  edx, [fat_result_size]
     mov  edi, 0x00200000
     call fat_load
     jc   .fat_load_fail
     mov  si, msg_fat_load_ok
+    call com1_puts
+
+    ; Parse the ELF and copy its PT_LOAD segments to their physical
+    ; addresses.  Requires FS still be in unreal-mode flat form; we
+    ; never touched FS after go_unreal, so we are fine.
+    mov  eax, 0x00200000
+    mov  edx, [fat_result_size]
+    call elf_load
+    jc   .elf_fail
+    mov  si, msg_elf_ok
+    call com1_puts
+    jmp  .fat_done
+.elf_fail:
+    mov  si, msg_elf_fail
     call com1_puts
     jmp  .fat_done
 .fat_no_kernel:
@@ -254,6 +273,8 @@ msg_unreal_fail: db "[BL3] unreal mode FAIL", 0x0D, 0x0A, 0
 msg_fat_init_ok: db "[BL4] FAT32 BPB parsed", 0x0D, 0x0A, 0
 msg_fat_found:   db "[BL4] kernel.elf located", 0x0D, 0x0A, 0
 msg_fat_load_ok: db "[BL4] kernel.elf loaded to 0x00200000", 0x0D, 0x0A, 0
+msg_elf_ok:      db "[BL4] ELF PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
+msg_elf_fail:    db "[BL4] ELF parse FAILED", 0x0D, 0x0A, 0
 msg_fat_no_kernel: db "[BL4] kernel.elf NOT FOUND", 0x0D, 0x0A, 0
 msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0
 msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
@@ -272,6 +293,7 @@ boot_drive: db 0
 %include "boot/bios/stage2/disk.inc"
 %include "boot/bios/stage2/unreal.inc"
 %include "boot/bios/stage2/fat.inc"
+%include "boot/bios/stage2/elf.inc"
 
 ; --------------------------------------------------------------------------
 ; Padding: Stage 2 must fit in the 63 KiB the MBR loads.  We pad to a
