@@ -435,6 +435,37 @@ endif
 
 limine-build: $(LIMINE_DEPS)
 
+# ---- BL6: UEFI bootloader (BOOTX64.EFI) -----------------------------------
+# Freestanding C compiled for the Windows x64 ABI (RCX/RDX/... calling
+# convention that UEFI uses), linked as PE32+ via ld.lld's pei output.
+UEFI_DIR     := boot/uefi
+EFI_BIN      := $(BUILD_DIR)/boot/BOOTX64.EFI
+UEFI_CC      := $(CC) --target=x86_64-unknown-windows
+UEFI_CFLAGS  := -ffreestanding -fno-stack-protector -fshort-wchar \
+                -mno-red-zone -Wall -Wextra -O2 -I .
+UEFI_SRCS    := $(UEFI_DIR)/efi_main.c \
+                $(UEFI_DIR)/efi_paging.c \
+                $(UEFI_DIR)/efi_elf.c
+UEFI_OBJS    := $(patsubst %.c,$(BUILD_DIR)/%.o,$(UEFI_SRCS))
+UEFI_LD      := $(UEFI_DIR)/bootloader.ld
+
+.PHONY: efi
+efi: $(EFI_BIN)
+
+$(BUILD_DIR)/$(UEFI_DIR)/%.o: $(UEFI_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(UEFI_CC) $(UEFI_CFLAGS) -c $< -o $@
+
+$(EFI_BIN): $(UEFI_OBJS)
+	@mkdir -p $(dir $@)
+	lld-link -subsystem:efi_application \
+	         -entry:efi_main \
+	         -nodefaultlib \
+	         -dll \
+	         -out:$@ \
+	         $(UEFI_OBJS)
+	@printf "  [efi] %-40s %d bytes\n" $@ $$(wc -c < $@)
+
 # ---- BL5: BIOS-only ISO built with our custom bootloader (no Limine).
 # Produces a hybrid MBR image that boots on QEMU (`-drive if=ide`) and
 # on real hardware via USB stick (`dd if=... of=/dev/sdX`).  Legacy
