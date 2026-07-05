@@ -1,11 +1,12 @@
 # AuraLite OS
 
-AuraLite OS is a from-scratch **x86_64 hobby operating system** booted by
-Limine. It includes a higher-half kernel, preemptive multitasking, Ring 3 ELF
-user programs, a small libc, an initrd-backed VFS, writable tmpfs/FAT32/ext2
-storage, e1000 networking, AHCI, USB Mass Storage through UHCI, framebuffer
-graphics, a kernel GUI/window compositor, a small user-space GUI toolkit, and
-several experimental device/protocol layers.
+AuraLite OS is a from-scratch **x86_64 hobby operating system** with its own
+custom BIOS and UEFI bootloader written in NASM assembly + freestanding C.  It
+includes a higher-half kernel, preemptive multitasking, Ring 3 ELF user
+programs, a small libc, an initrd-backed VFS, writable tmpfs/FAT32/ext2 storage,
+e1000 networking, AHCI, USB Mass Storage through UHCI, framebuffer graphics, a
+kernel GUI/window compositor, a small user-space GUI toolkit, and several
+experimental device/protocol layers.
 
 The project is intentionally incremental and educational: most subsystems have
 small self-tests, host-side unit tests, and documentation explaining the design
@@ -24,7 +25,9 @@ additional post-phase extensions.
 
 ### Stable / exercised in normal builds
 
-- Limine BIOS/UEFI ISO boot path.
+- Custom BIOS + UEFI dual-boot ISO (`make iso` / `make iso-dual`), plus
+  optional Limine fallback (`make iso-limine`).  See `docs/BL{1..8}_REPORT.md`
+  for the design of every boot phase.
 - x86_64 long mode, higher-half kernel.
 - GDT, IDT, PIC IRQ dispatch, TSS, SYSCALL/SYSRET.
 - Physical memory manager, virtual memory manager, kernel heap.
@@ -77,16 +80,14 @@ sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake
 sudo apt install e2fsprogs vncdotool python3-pil
 ```
 
-Clone normally, or with submodules if you want to rebuild Limine from source:
-
 ```bash
 git clone https://github.com/AlexanderNyr/AuraLite-OS.git
-# Optional source-Limine checkout:
-git submodule update --init --recursive
 ```
 
-The default build uses the checked-in `limine-binary.tar.gz` bundle, so a plain
-clone is enough. If that archive is removed, run the submodule command above.
+The default `make iso` needs no submodules and no Limine binaries -- it uses
+the custom BL2..BL7 bootloader chain shipped in this repository.  Only the
+optional `make iso-limine` fallback requires the vendored Limine binary bundle
+(or the `third_party/limine` git submodule).
 
 ### Build the bootable ISO
 
@@ -95,17 +96,40 @@ make deps-check
 make iso
 ```
 
-Output:
+`make iso` chains through `make iso-dual`: it assembles the BL2 MBR, the BL3+BL4
+Stage 2, the BL6 UEFI application (`BOOTX64.EFI`), and packages them together
+with the kernel into a hybrid GPT + MBR disk image that boots on BOTH firmware
+types from the same file.  Output:
 
 ```text
-build/auralite.iso
+build/auralite-dual.iso
+release/auralite.iso
 ```
 
-A convenience copy may also be placed at:
+Both files are identical bytes; `release/auralite.iso` is the artefact staged
+for distribution.
 
-```text
-auralite.iso
+### Boot paths
+
+| Path                       | Firmware  | How to invoke it in QEMU                                                                 |
+|----------------------------|-----------|------------------------------------------------------------------------------------------|
+| Legacy BIOS                | SeaBIOS   | `qemu-system-x86_64 -drive format=raw,file=release/auralite.iso,if=ide`                  |
+| UEFI                       | OVMF      | `qemu-system-x86_64 -bios /usr/share/OVMF/OVMF_CODE_4M.fd -drive format=raw,file=release/auralite.iso,if=ide` |
+| Real hardware (USB stick)  | either    | `dd if=release/auralite.iso of=/dev/sdX bs=4M`                                           |
+
+### Limine fallback
+
+If a distribution or downstream user needs the historic Limine-based ISO -- for
+example to boot on a firmware known to reject our custom loader chain -- run:
+
+```bash
+make iso-limine
 ```
+
+This produces `release/auralite-limine.iso` using `tools/mkisoimage_limine.sh`
+and the vendored Limine binaries.  Because BL1 removed every `limine_get_*`
+accessor from the kernel, this path uses Limine as a pure chain-loader that
+fills a `boot_info_t` shim -- the kernel itself no longer knows about Limine.
 
 ### Run in QEMU
 
@@ -255,7 +279,14 @@ More details: [`docs/virtual_machines.md`](docs/virtual_machines.md).
 
 | Target | Description |
 |---|---|
-| `make iso` | Build user programs, initrd, kernel and bootable `build/auralite.iso`. |
+| `make iso` | Build the dual-boot BIOS+UEFI ISO (`release/auralite.iso`) using the custom loader chain. |
+| `make iso-bios` | BIOS-only hybrid MBR image (`build/auralite-bios.iso`). |
+| `make iso-dual` | Same as `make iso` but without the release copy step (`build/auralite-dual.iso`). |
+| `make iso-limine` | Legacy Limine-based ISO for firmware-compat fallback. |
+| `make mbr` | BL2 512-byte MBR (`build/boot/mbr.bin`). |
+| `make mbr-dual` | BL7 MBR variant reading Stage 2 from LBA 34 (`build/boot/mbr_dual.bin`). |
+| `make stage2` | BL3+BL4 Stage 2 flat binary (`build/boot/stage2.bin`). |
+| `make efi` | BL6 UEFI application (`build/boot/BOOTX64.EFI`). |
 | `make kernel` | Build `build/kernel.elf` only. |
 | `make user` | Build user-space ELF programs. |
 | `make run` | Boot the ISO in QEMU with serial output and e1000 networking. |

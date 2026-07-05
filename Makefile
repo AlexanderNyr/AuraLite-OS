@@ -27,9 +27,17 @@ endif
 LIMINE_DEPS := $(LIMINE_BIN)/limine $(LIMINE_BIN)/limine-bios.sys \
                $(LIMINE_BIN)/limine-uefi-cd.bin $(LIMINE_BIN)/limine-bios-cd.bin \
                $(LIMINE_BIN)/BOOTX64.EFI
-REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar xorriso
+# mformat/mcopy are needed by mkisoimage_bios.sh / mkisoimage_dual.sh
+# to build the FAT32 partition; lld-link is needed by `make efi` to
+# link BOOTX64.EFI as PE32+.  xorriso is retained even though the
+# custom loaders no longer use it, because `make iso-limine` still
+# wraps its output with xorriso -- keep it in REQUIRED_TOOLS so that
+# users trying the fallback path get a fast error instead of a
+# cryptic xorriso "command not found".
+REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar xorriso \
+                  mformat mcopy lld-link
 ifeq ($(LIMINE_MODE),submodule)
-REQUIRED_TOOLS += git autoreconf mformat mcopy
+REQUIRED_TOOLS += git autoreconf
 endif
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
@@ -45,7 +53,7 @@ CFLAGS      := --target=$(TARGET) \
                -fno-omit-frame-pointer \
                -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
                -O2 -g \
-               -DARCH_X86_64 -I . -I $(LIMINE_DIR) -I $(BUILD_DIR)
+               -DARCH_X86_64 -I . -I $(BUILD_DIR)
 
 ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 
@@ -76,7 +84,7 @@ deps-check:
 		fi; \
 	done; \
 	if [ $$missing -ne 0 ]; then \
-		echo "[deps] Debian/Ubuntu: sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake libtool git make gcc"; \
+		echo "[deps] Debian/Ubuntu: sudo apt install clang lld nasm xorriso qemu-system-x86 mtools ovmf make gcc python3"; \
 		exit 127; \
 	fi
 
@@ -499,16 +507,36 @@ DUAL_ISO_IMAGE := $(BUILD_DIR)/auralite-dual.iso
 iso-dual: deps-check kernel $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
 	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)
 
-iso: deps-check kernel $(BUILD_DIR)/initrd.tar limine-build
-	@bash tools/mkisoimage.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)
+# ---- BL8: `make iso` now defaults to the custom dual-boot loader ----------
+# Legacy `make iso-limine` is preserved below as a fallback for anyone
+# who still needs the old Limine-based image.  The Limine path is
+# fully optional: if the limine-binary.tar.gz bundle and the
+# `third_party/limine` submodule are both absent, `make iso` still
+# works because it no longer depends on `limine-build`.
+.PHONY: iso iso-limine
+iso: iso-dual
 	@mkdir -p release
-	@cp $(ISO_IMAGE) release/auralite.iso
+	@cp $(DUAL_ISO_IMAGE) release/auralite.iso
 	@cp $(BUILD_DIR)/kernel.elf release/kernel.elf
-	@cp $(BUILD_DIR)/initrd.tar release/initrd.tar
-	@cd release && sha256sum auralite.iso kernel.elf initrd.tar > SHA256SUMS
-	@rm -f release/auralite-universal.iso
+	@[ -f $(BUILD_DIR)/initrd.tar ] && cp $(BUILD_DIR)/initrd.tar release/initrd.tar || true
+	@cd release && sha256sum auralite.iso kernel.elf $$( [ -f initrd.tar ] && echo initrd.tar) \
+	    > SHA256SUMS
 	@cp release/SHA256SUMS SHA256SUMS
-	@echo "[release] Wrote ISO, kernel.elf, initrd.tar, and SHA256SUMS to 'release/' folder"
+	@echo "[release] Wrote ISO, kernel.elf$$([ -f release/initrd.tar ] && echo ', initrd.tar'), and SHA256SUMS to 'release/' folder"
+
+# Preserved for backwards compatibility.  Requires either the
+# limine-binary.tar.gz bundle or the third_party/limine submodule.
+# Because BL1 removed every limine_get_* accessor from the kernel and
+# BL1 also dropped the .limine_requests* sections from kernel.ld, the
+# ISO built here contains Limine only as a chain-loader that never
+# reaches the kernel with its own memory-map / framebuffer info -- it
+# will boot to the kernel banner via boot_info fallbacks but the
+# custom BIOS/UEFI paths (make iso-dual) are the supported default.
+iso-limine: deps-check kernel $(BUILD_DIR)/initrd.tar limine-build
+	@bash tools/mkisoimage_limine.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)
+	@mkdir -p release
+	@cp $(ISO_IMAGE) release/auralite-limine.iso
+	@echo "[iso-limine] wrote release/auralite-limine.iso"
 
 usb: iso
 	@cp $(ISO_IMAGE) $(USB_IMAGE)
