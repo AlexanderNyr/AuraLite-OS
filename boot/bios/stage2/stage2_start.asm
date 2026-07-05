@@ -139,6 +139,61 @@ stage2_entry:
     mov  si, msg_a20_ok
     call com1_puts
 
+    ; ---- Disk read self-test (BL3.disk) ----------------------------
+    ; Read sector 1 (the start of Stage 2 itself) back into a scratch
+    ; buffer at 0x00011000 and verify the first two bytes match what
+    ; we currently have loaded at 0x8000 (which are also the first
+    ; bytes of Stage 2).  Proves that the disk_read_lba helper is
+    ; wired up and the DAP layout is correct.
+    push es
+    mov  ax, 0x1100                     ; scratch segment
+    mov  es, ax
+    xor  bx, bx                         ; ES:BX = 0x1100:0000 = 0x11000
+    mov  eax, 1                         ; LBA 1 = first sector of Stage 2
+    mov  cx, 1
+    call disk_read_lba
+    pop  es
+    jc   .disk_fail
+    ; Compare [0x11000] with [0x8000] (both should be 0xFA = CLI).
+    push ds
+    mov  ax, 0x1100
+    mov  ds, ax
+    mov  al, [ds:0]
+    pop  ds
+    cmp  al, 0xFA                       ; CLI opcode
+    jne  .disk_fail
+    mov  si, msg_disk_ok
+    call com1_puts
+    jmp  .disk_done
+.disk_fail:
+    mov  si, msg_disk_fail
+    call com1_puts
+.disk_done:
+
+    ; ---- Unreal-mode self-test (BL3.unreal) ------------------------
+    ; Enter unreal mode, then write a distinctive sentinel dword at
+    ; physical 0x00100000 via FS-relative 32-bit addressing.  The
+    ; smoke test dumps memory 0x100000 through the QEMU monitor and
+    ; asserts that the sentinel is there -- which is only possible if
+    ; FS's hidden descriptor cache was successfully lifted to flat.
+    call go_unreal
+    ; Write 0xDEADC0DE at flat linear 0x00100000.
+    mov  edi, 0x00100000
+    mov  eax, 0xDEADC0DE
+    mov  [fs:edi], eax
+    ; Read it back through FS to be sure the store was seen.
+    mov  eax, 0
+    mov  eax, [fs:edi]
+    cmp  eax, 0xDEADC0DE
+    jne  .unreal_fail
+    mov  si, msg_unreal_ok
+    call com1_puts
+    jmp  .unreal_done
+.unreal_fail:
+    mov  si, msg_unreal_fail
+    call com1_puts
+.unreal_done:
+
     ; ---- End of BL3 scope ----
     ; BL4 will call FAT init, load kernel/initrd, enter protected mode,
     ; build page tables, enter long mode, and jump to _start.  For now
@@ -153,10 +208,14 @@ stage2_entry:
 ; --------------------------------------------------------------------------
 ; Static data
 ; --------------------------------------------------------------------------
-msg_hello:    db 0x0D, 0x0A, "[BL3] AuraLite stage2 alive", 0x0D, 0x0A, 0
-msg_e820_ok:  db "[BL3] E820 done",  0x0D, 0x0A, 0
-msg_a20_ok:   db "[BL3] A20 gate on", 0x0D, 0x0A, 0
-msg_bl3_done: db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
+msg_hello:       db 0x0D, 0x0A, "[BL3] AuraLite stage2 alive", 0x0D, 0x0A, 0
+msg_e820_ok:     db "[BL3] E820 done",  0x0D, 0x0A, 0
+msg_a20_ok:      db "[BL3] A20 gate on", 0x0D, 0x0A, 0
+msg_disk_ok:     db "[BL3] disk read OK", 0x0D, 0x0A, 0
+msg_disk_fail:   db "[BL3] disk read FAIL", 0x0D, 0x0A, 0
+msg_unreal_ok:   db "[BL3] unreal mode OK", 0x0D, 0x0A, 0
+msg_unreal_fail: db "[BL3] unreal mode FAIL", 0x0D, 0x0A, 0
+msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
 
 boot_drive: db 0
 
@@ -166,6 +225,8 @@ boot_drive: db 0
 %include "boot/bios/stage2/com1.inc"
 %include "boot/bios/stage2/e820.inc"
 %include "boot/bios/stage2/a20.inc"
+%include "boot/bios/stage2/disk.inc"
+%include "boot/bios/stage2/unreal.inc"
 
 ; --------------------------------------------------------------------------
 ; Padding: Stage 2 must fit in the 63 KiB the MBR loads.  We pad to a

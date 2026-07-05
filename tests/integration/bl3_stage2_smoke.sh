@@ -51,14 +51,18 @@ for _ in 1 2 3 4 5 6; do
 done
 sleep 1.5
 
+UNREAL_DUMP="$BUILD/bl3_unreal.mem"
+rm -f "$UNREAL_DUMP"
+
 if [ -S "$BUILD/bl3_monitor.sock" ] && command -v socat >/dev/null 2>&1; then
-    # Send monitor commands without any echo/prompt feedback loop by
-    # driving the socket with STDIO=cronoly and closing it right after
-    # the last command.  We escape the destination path so it survives
-    # shell expansion inside socat's exec pipeline.
+    # Batch both memory dumps in a single monitor session, then quit.
+    # The path arguments are quoted so any character (e.g. path with
+    # dashes or spaces) survives QEMU's expression parser.
     {
-        printf 'pmemsave 0x10000 0x2000 "%s"\n' "$MEMDUMP"
-        sleep 0.4
+        printf 'pmemsave 0x10000  0x2000 "%s"\n' "$MEMDUMP"
+        sleep 0.3
+        printf 'pmemsave 0x100000 4      "%s"\n' "$UNREAL_DUMP"
+        sleep 0.3
         printf 'quit\n'
     } | socat -T3 -,ignoreeof UNIX-CONNECT:"$BUILD/bl3_monitor.sock" >/dev/null 2>&1 || true
     sleep 0.5
@@ -69,7 +73,12 @@ wait $QEMU_PID 2>/dev/null || true
 
 # 4. Assertions on the serial log.
 fail=0
-for want in "[BL3] AuraLite stage2 alive" "[BL3] E820 done" "[BL3] A20 gate on" "[BL3] real-mode services complete"; do
+for want in "[BL3] AuraLite stage2 alive" \
+            "[BL3] E820 done" \
+            "[BL3] A20 gate on" \
+            "[BL3] disk read OK" \
+            "[BL3] unreal mode OK" \
+            "[BL3] real-mode services complete"; do
     if grep -qF "$want" "$LOG"; then
         printf '  [bl3] serial OK  %s\n' "$want"
     else
@@ -77,6 +86,18 @@ for want in "[BL3] AuraLite stage2 alive" "[BL3] E820 done" "[BL3] A20 gate on" 
         fail=1
     fi
 done
+
+# 4b. Verify the unreal-mode sentinel dropped at physical 0x00100000.
+if [ -s "$UNREAL_DUMP" ]; then
+    want_hex="dec0adde"                                     # 0xDEADC0DE LE
+    got_hex=$(od -An -tx1 -N4 "$UNREAL_DUMP" | tr -d ' \n')
+    if [ "$got_hex" = "$want_hex" ]; then
+        echo "  [bl3] mem @0x100000 = 0xDEADC0DE                        OK"
+    else
+        echo "  [bl3] mem @0x100000 = 0x$got_hex (expected 0x$want_hex)  FAIL"
+        fail=1
+    fi
+fi
 
 # 5. Assertions on the boot_info memory dump (only if the monitor
 #    capture worked -- some hosts lack socat).
