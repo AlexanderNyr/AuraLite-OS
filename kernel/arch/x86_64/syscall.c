@@ -1507,7 +1507,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
         if (dirfd == -100 || path[0] == '/')
             return (uint64_t)vfs_errno(vfs_open(path, (int)a3, (int)a4), ENOENT);
-        errno = ENOSYS; return (uint64_t)-ENOSYS;
+        return (uint64_t)-ENOSYS;
     }
     case 258: { /* SYS_MKDIRAT */
         int dirfd = (int)a1;
@@ -1602,7 +1602,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         char path[256];
         if (flags & 0x1000) { /* AT_EMPTY_PATH */
             /* fd-based exec: use /proc/self/fd/<dfd> as path */
-            snprintf(path, sizeof(path), "/proc/self/fd/%d", dfd);
+            ksnprintf(path, sizeof(path), "/proc/self/fd/%d", dfd);
         } else {
             if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
         }
