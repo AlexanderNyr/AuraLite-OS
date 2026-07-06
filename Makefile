@@ -222,7 +222,8 @@ LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o $(USER_BUILD)/dirent.o \
                    $(USER_BUILD)/posix_extra.o
 
 USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o \
-               $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o $(LIBC_EXTRA_OBJS)
+               $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o $(USER_BUILD)/setjmp.o \
+               $(USER_BUILD)/compat.o $(LIBC_EXTRA_OBJS)
 
 USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h \
                    libc/include/errno.h libc/include/limits.h libc/include/stdbool.h \
@@ -427,6 +428,16 @@ $(USER_BUILD)/syscall.o: libc/src/syscall.asm
 $(USER_BUILD)/sigreturn.o: libc/crt/sigreturn.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
+
+$(USER_BUILD)/setjmp.o: libc/crt/setjmp.asm
+	@mkdir -p $(dir $@)
+	$(AS) $(ASFLAGS) $< -o $@
+
+$(USER_BUILD)/compat.o: libc/src/compat.c libc/include/strings.h libc/include/wctype.h \
+                         libc/include/inttypes.h libc/include/setjmp.h libc/include/threads.h \
+                         libc/include/uchar.h libc/include/fenv.h libc/include/complex.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(INIT_ELF): $(USER_BUILD)/init.o $(USER_COMMON) libc/user.ld
 	@mkdir -p $(dir $@)
@@ -657,7 +668,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_mprotect \
                 $(BUILD_DIR)/test_gdt_tss \
                 $(BUILD_DIR)/test_boot_offsets \
-                $(BUILD_DIR)/test_boot_info
+                $(BUILD_DIR)/test_boot_info \
+                $(BUILD_DIR)/test_q1_headers
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -730,6 +742,21 @@ $(BUILD_DIR)/test_boot_info: tests/unit/test_boot_info.c kernel/boot_info.c kern
 $(BUILD_DIR)/test_boot_offsets: tests/unit/test_boot_offsets.c boot/shared/boot_info.h $(BOOT_OFFSETS_H)
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I $(BUILD_DIR) $< -o $@
+
+# POSIX.1-2024 Q1: verify every new C standard header (stdarg.h, stddef.h,
+# stdint.h, float.h, inttypes.h, iso646.h, stdalign.h, stdnoreturn.h,
+# tgmath.h, complex.h, fenv.h, stdatomic.h, wctype.h, strings.h, uchar.h,
+# setjmp.h, threads.h) #includes cleanly and that their non-builtin logic
+# behaves correctly.
+$(BUILD_DIR)/test_q1_headers: tests/unit/test_q1_headers.c \
+                               libc/include/stdarg.h libc/include/stddef.h libc/include/stdint.h \
+                               libc/include/float.h libc/include/inttypes.h libc/include/iso646.h \
+                               libc/include/stdalign.h libc/include/stdnoreturn.h libc/include/tgmath.h \
+                               libc/include/complex.h libc/include/fenv.h libc/include/stdatomic.h \
+                               libc/include/wctype.h libc/include/strings.h libc/include/uchar.h \
+                               libc/include/setjmp.h libc/include/threads.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_gdt_tss: tests/unit/test_gdt_tss.c kernel/arch/x86_64/gdt.c kernel/arch/x86_64/gdt.h
 	@mkdir -p $(BUILD_DIR)

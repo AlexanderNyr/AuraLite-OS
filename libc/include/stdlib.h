@@ -28,12 +28,12 @@ void*  calloc(size_t nmemb, size_t size);
 void*  realloc(void *ptr, size_t size);
 
 /* Normal process termination (flushes nothing yet; calls _exit). */
-void   exit(int status) __attribute__((noreturn));
+void   exit(int status) __attribute__((__noreturn__));
 
 /* Abnormal termination.  POSIX abort() raises SIGABRT; signals do not exist
  * until Phase P4, so for now it prints a diagnostic and _exit(134)s
  * (128 + SIGABRT=6).  assert() failures route through here. */
-void   abort(void) __attribute__((noreturn));
+void   abort(void) __attribute__((__noreturn__));
 
 /* Exit-status convenience macros. */
 #define EXIT_SUCCESS 0

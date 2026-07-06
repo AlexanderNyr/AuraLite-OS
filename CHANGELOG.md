@@ -2,6 +2,43 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [POSIX.1-2024 Phase Q1 — mandatory C standard headers] 2026-07-05
+
+### Added
+- 17 new/updated headers under `libc/include/`: `stdarg.h`, `stddef.h`,
+  `stdint.h`, `float.h`, `inttypes.h`, `iso646.h`, `stdalign.h`,
+  `stdnoreturn.h`, `tgmath.h`, `complex.h`, `fenv.h`, `stdatomic.h`,
+  `wctype.h`, `strings.h`, `uchar.h`, `setjmp.h`, `threads.h`. See
+  `POSIX2024_PLAN.md` (Phase Q1) for the approach taken for each.
+- `libc/crt/setjmp.asm`: x86_64 `setjmp`/`longjmp` (System V AMD64 ABI).
+- `libc/src/compat.c`: runtime bodies for the new headers' non-builtin
+  functions (BSD `strings.h` aliases, "C"-locale `wctype.h`, `inttypes.h`
+  helpers, `threads.h`-over-pthreads, `fenv.h`/`complex.h` stubs,
+  `sigsetjmp`/`siglongjmp`, `uchar.h` UTF-8 conversions).
+- `tests/unit/test_q1_headers.c`: new host-side unit test (42 checks),
+  registered in `make test-unit`.
+- `POSIX2024_PLAN.md`: living plan document for the POSIX.1-2024 work,
+  following the same structure as `POSIX_PLAN.md`.
+
+### Fixed
+- **Macro-hygiene bug exposed by `<stdnoreturn.h>`**: `assert.h`,
+  `setjmp.h`, `stdlib.h`, and `threads.h` declared functions with
+  `__attribute__((noreturn))`. Once a translation unit also includes the
+  new `<stdnoreturn.h>` (which `#define`s `noreturn` to `_Noreturn`), that
+  spelling expands to `__attribute__((_Noreturn))`, which GCC rejects under
+  `-Werror` (`'_Noreturn' attribute directive ignored`). Fixed by switching
+  all four declarations to the macro-expansion-immune spelling
+  `__attribute__((__noreturn__))`.
+
+### Validation
+- `make clean && make all` — zero errors/warnings, ISO/kernel.elf/every
+  user-space app build unchanged from baseline.
+- `make test-unit` — all 28 unit-test binaries pass (27 pre-existing + the
+  new `test_q1_headers`), zero regressions.
+- Confirmed the kernel build path (`CFLAGS`) does not include
+  `libc/include`, so this phase is a pure user-space/libc change with no
+  kernel build risk.
+
 ## [Bugfix batch BUG-32 — BUG-33: GUI freeze (frozen clock/cursor)] 2026-07-04
 
 ### Fixed

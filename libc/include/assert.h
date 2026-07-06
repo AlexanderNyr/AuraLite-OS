@@ -12,7 +12,7 @@
 #ifndef AURALITE_LIBC_ASSERT_FAIL_DECLARED
 #define AURALITE_LIBC_ASSERT_FAIL_DECLARED
 void __assert_fail(const char *expr, const char *file, int line,
-                   const char *func) __attribute__((noreturn));
+                   const char *func) __attribute__((__noreturn__));
 #endif
 
 #undef assert
