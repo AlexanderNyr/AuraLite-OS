@@ -1,6 +1,8 @@
 #include "stdlib.h"
 #include "unistd.h"
 #include "string.h"
+#include <stdint.h>
+#include <errno.h>
 
 typedef struct block_meta {
     size_t size;
@@ -89,4 +91,28 @@ void *realloc(void *ptr, size_t size) {
     memcpy(new_ptr, ptr, block_ptr->size);
     free(ptr);
     return new_ptr;
+}
+
+/* ---- POSIX.1-2024 aligned allocation ---- */
+
+int posix_memalign(void **memptr, size_t alignment, size_t size) {
+    if (!memptr) return EINVAL;
+    if (alignment < sizeof(void *) || (alignment & (alignment - 1)) != 0)
+        return EINVAL;
+    if (size == 0) { *memptr = NULL; return 0; }
+    /* Allocate extra space: alignment + sizeof(void*) header for the raw ptr. */
+    void *raw = malloc(size + alignment - 1 + sizeof(void *));
+    if (!raw) return ENOMEM;
+    /* Align forward. */
+    uintptr_t a = ((uintptr_t)raw + sizeof(void *) + alignment - 1)
+                  & ~(uintptr_t)(alignment - 1);
+    ((void **)a)[-1] = raw;   /* store original ptr just before aligned block */
+    *memptr = (void *)a;
+    return 0;
+}
+
+void *aligned_alloc(size_t alignment, size_t size) {
+    void *p = NULL;
+    if (posix_memalign(&p, alignment, size) != 0) return NULL;
+    return p;
 }

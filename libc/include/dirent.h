@@ -25,4 +25,11 @@ struct dirent *readdir(DIR *dirp);
 int            closedir(DIR *dirp);
 void           rewinddir(DIR *dirp);
 
+int  dirfd(DIR *dirp);
+int  scandir(const char *dir, struct dirent ***namelist,
+             int (*sel)(const struct dirent *),
+             int (*compar)(const struct dirent **, const struct dirent **));
+int  alphasort(const struct dirent **a, const struct dirent **b);
+int  versionsort(const struct dirent **a, const struct dirent **b);
+
 #endif /* AURALITE_LIBC_DIRENT_H */

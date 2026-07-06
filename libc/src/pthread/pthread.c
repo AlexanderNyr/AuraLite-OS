@@ -14,6 +14,7 @@
 #include "string.h"
 #include "errno.h"
 #include "stdlib.h"
+#include "signal.h"
 
 #define CLONE_VM             0x00000100
 #define CLONE_FS             0x00000200
@@ -206,5 +207,64 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
     if (__sync_val_compare_and_swap(&once_control->done, 0, 1) == 0) {
         init_routine();
     }
+    return 0;
+}
+
+/* ---- Q6: Cancellation ---- */
+
+int pthread_cancel(pthread_t thread) {
+    /* Send SIGTERM (could use a dedicated realtime signal). */
+    return syscall(531, (uint64_t)thread, (uint64_t)SIGTERM, 0, 0, 0, 0) ? errno : 0;
+}
+
+int pthread_setcancelstate(int state, int *oldstate) {
+    if (oldstate) *oldstate = PTHREAD_CANCEL_ENABLE;
+    (void)state;
+    return 0;
+}
+
+int pthread_setcanceltype(int type, int *oldtype) {
+    if (oldtype) *oldtype = PTHREAD_CANCEL_DEFERRED;
+    (void)type;
+    return 0;
+}
+
+void pthread_testcancel(void) {
+    /* No-op stub; cancellation points check a TLS flag. */
+}
+
+/* ---- Q6: Extended attributes ---- */
+
+int pthread_attr_setstacksize(pthread_attr_t *a, size_t s) {
+    a->stacksize = s;
+    return 0;
+}
+
+int pthread_attr_getstacksize(const pthread_attr_t *a, size_t *s) {
+    *s = a->stacksize ? a->stacksize : 8 * 1024 * 1024;
+    return 0;
+}
+
+int pthread_attr_setstack(pthread_attr_t *a, void *sp, size_t s) {
+    a->stackaddr = sp;
+    a->stacksize = s;
+    return 0;
+}
+
+int pthread_attr_getstack(const pthread_attr_t *a, void **sp, size_t *s) {
+    *sp = a->stackaddr;
+    *s = a->stacksize;
+    return 0;
+}
+
+int pthread_attr_setdetachstate(pthread_attr_t *a, int s) {
+    (void)a;
+    (void)s;
+    return 0;
+}
+
+int pthread_attr_getdetachstate(const pthread_attr_t *a, int *s) {
+    (void)a;
+    *s = PTHREAD_CREATE_JOINABLE;
     return 0;
 }

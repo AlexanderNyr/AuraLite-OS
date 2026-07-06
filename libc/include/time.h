@@ -57,4 +57,13 @@ size_t   strftime(char *s, size_t max, const char *format, const struct tm *tm);
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned long usec);
 
+/* POSIX.1-2024 time extensions */
+#define TIME_UTC 1
+#define TIMER_ABSTIME 1
+
+int timespec_get(struct timespec *ts, int base);
+int timespec_getres(struct timespec *ts, int base);
+int clock_nanosleep(clockid_t clockid, int flags,
+                    const struct timespec *req, struct timespec *rem);
+
 #endif /* _TIME_H */

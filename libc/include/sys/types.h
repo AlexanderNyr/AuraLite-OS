@@ -31,4 +31,7 @@ typedef int64_t  off_t;
 typedef int64_t  blksize_t;
 typedef int64_t  blkcnt_t;
 
+typedef int64_t  key_t;
+typedef uint64_t useconds_t;
+
 #endif /* AURALITE_LIBC_SYS_TYPES_H */

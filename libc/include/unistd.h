@@ -258,9 +258,79 @@ void*   sbrk(intptr_t increment);
 void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);
 int     munmap(void *addr, size_t length);
 
+/* POSIX.1-2024 version constants. */
+#define _POSIX_VERSION    202405L   /* POSIX.1-2024 */
+#define _POSIX2_VERSION   202405L
+#define _XOPEN_VERSION    800
+
 /* Working directory (P10).  select() lives in <sys/select.h>. */
 char   *getcwd(char *buf, size_t size);
 int     chdir(const char *path);
 int     fchdir(int fd);
+
+/* ---- POSIX.1-2024 sysconf / confstr / pathconf (Phase Q4) ---- */
+
+/* _SC_* sysconf names (Linux/glibc-compatible values). */
+#define _SC_ARG_MAX                0
+#define _SC_CLK_TCK                2
+#define _SC_NGROUPS_MAX            3
+#define _SC_OPEN_MAX               4
+#define _SC_STREAM_MAX             5
+#define _SC_TZNAME_MAX             6
+#define _SC_JOB_CONTROL            7
+#define _SC_SAVED_IDS              8
+#define _SC_REALTIME_SIGNALS       9
+#define _SC_PRIORITY_SCHEDULING   10
+#define _SC_TIMERS                11
+#define _SC_ASYNCHRONOUS_IO       12
+#define _SC_SEMAPHORES            21
+#define _SC_SHARED_MEMORY_OBJECTS 22
+#define _SC_PAGE_SIZE             30
+#define _SC_PAGESIZE              30
+#define _SC_PTHREAD_KEYS_MAX      46
+#define _SC_THREADS               67
+#define _SC_GETGR_R_SIZE_MAX      69
+#define _SC_GETPW_R_SIZE_MAX      70
+#define _SC_LOGIN_NAME_MAX        71
+#define _SC_THREAD_STACK_MIN      75
+#define _SC_NPROCESSORS_CONF      83
+#define _SC_NPROCESSORS_ONLN      84
+#define _SC_PHYS_PAGES            85
+#define _SC_MONOTONIC_CLOCK      149
+#define _SC_HOST_NAME_MAX        180
+
+#define _CS_PATH                   0
+
+#define _PC_PATH_MAX               4
+#define _PC_NAME_MAX               3
+#define _PC_PIPE_BUF               5
+
+long   sysconf(int name);
+size_t confstr(int name, char *buf, size_t len);
+long   pathconf(const char *path, int name);
+long   fpathconf(int fd, int name);
+
+/* ---- POSIX.1-2024 AT-family (Phase Q5) ---- */
+#define AT_FDCWD           (-100)
+#define AT_SYMLINK_NOFOLLOW  0x100
+#define AT_REMOVEDIR         0x200
+#define AT_EMPTY_PATH       0x1000
+
+int    openat(int dirfd, const char *path, int flags, ...);
+int    fstatat(int dfd, const char *path, struct stat *buf, int flags);
+int    mkdirat(int dfd, const char *path, mode_t mode);
+int    unlinkat(int dfd, const char *path, int flags);
+int    renameat(int old_dfd, const char *old, int new_dfd, const char *new_);
+ssize_t readlinkat(int dfd, const char *path, char *buf, size_t bufsiz);
+int    fchownat(int dfd, const char *path, uid_t owner, gid_t group, int flags);
+int    fchmodat(int dfd, const char *path, mode_t mode, int flags);
+int    faccessat(int dfd, const char *path, int mode, int flags);
+int    dup3(int oldfd, int newfd, int flags);
+int    fexecve(int fd, char *const argv[], char *const envp[]);
+
+/* Q11: POSIX.1-2024 new functions */
+int     getentropy(void *buffer, size_t length);
+int     close_range(unsigned first, unsigned last, int flags);
+int     closefrom(int lowfd);
 
 #endif /* AURALITE_LIBC_UNISTD_H */

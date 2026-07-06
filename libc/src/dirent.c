@@ -11,6 +11,7 @@
 #include "libc/include/unistd.h"
 #include "libc/include/stdlib.h"
 #include "libc/include/string.h"
+#include "libc/include/errno.h"
 
 #define DIRENT_MAX 256   /* entries snapshotted per directory */
 
@@ -26,6 +27,7 @@ static unsigned char vfs_type_to_dt(unsigned int t) {
 }
 
 struct __dirstream {
+    int            fd;              /* file descriptor (for dirfd)        */
     struct dirent  entry;          /* returned by the last readdir()      */
     int            count;          /* number of valid entries             */
     int            pos;            /* next entry to return                */
@@ -67,4 +69,53 @@ int closedir(DIR *dirp) {
     if (!dirp) return -1;
     free(dirp);
     return 0;
+}
+
+int dirfd(DIR *dirp) {
+    if (!dirp) { errno = EINVAL; return -1; }
+    if (dirp->fd < 0) { errno = ENOSYS; return -1; }
+    return dirp->fd;
+}
+
+int scandir(const char *dir, struct dirent ***namelist,
+            int (*sel)(const struct dirent *),
+            int (*compar)(const struct dirent **, const struct dirent **)) {
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    int n = 0, cap = 16;
+    struct dirent **list = malloc((size_t)cap * sizeof(*list));
+    if (!list) { closedir(d); return -1; }
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        if (sel && !sel(ent)) continue;
+        if (n == cap) {
+            cap *= 2;
+            struct dirent **nl = realloc(list, (size_t)cap * sizeof(*list));
+            if (!nl) {
+                for (int i = 0; i < n; i++) free(list[i]);
+                free(list);
+                closedir(d);
+                return -1;
+            }
+            list = nl;
+        }
+        list[n] = malloc(sizeof(*ent));
+        if (!list[n]) break;
+        memcpy(list[n], ent, sizeof(*ent));
+        n++;
+    }
+    closedir(d);
+    if (compar)
+        qsort(list, (size_t)n, sizeof(*list),
+              (int (*)(const void *, const void *))compar);
+    *namelist = list;
+    return n;
+}
+
+int alphasort(const struct dirent **a, const struct dirent **b) {
+    return strcmp((*a)->d_name, (*b)->d_name);
+}
+
+int versionsort(const struct dirent **a, const struct dirent **b) {
+    return strverscmp((*a)->d_name, (*b)->d_name);
 }

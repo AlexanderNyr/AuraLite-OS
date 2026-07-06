@@ -1,4 +1,4 @@
-/* libc/src/stdio_extra.c — sprintf / sscanf / scanf / tmpfile family (P10) */
+/* libc/src/stdio_extra.c — sprintf / sscanf / scanf / tmpfile / stdio extensions (P10 / Q2) */
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -7,6 +7,8 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <sys/wait.h>
 
 /* ---- formatted output to a buffer ---- */
 
@@ -194,3 +196,181 @@ int mkstemp(char *tmpl) {
 int remove(const char *path) {
     return unlink(path);
 }
+
+/* ---- POSIX.1-2024 stdio extensions (Phase Q2) ---- */
+
+/* Q2.1 — getdelim / getline */
+
+ssize_t getdelim(char **lineptr, size_t *n, int delim, FILE *stream) {
+    if (!lineptr || !n || !stream) { errno = EINVAL; return -1; }
+    if (!*lineptr || *n == 0) {
+        *n = 128;
+        *lineptr = malloc(*n);
+        if (!*lineptr) { errno = ENOMEM; return -1; }
+    }
+    ssize_t total = 0;
+    int c;
+    while ((c = fgetc(stream)) != EOF) {
+        if ((size_t)(total + 2) > *n) {
+            size_t newn = *n * 2;
+            char *p = realloc(*lineptr, newn);
+            if (!p) { errno = ENOMEM; return -1; }
+            *lineptr = p;
+            *n = newn;
+        }
+        (*lineptr)[total++] = (char)c;
+        if (c == delim) break;
+    }
+    if (total == 0) return -1;
+    (*lineptr)[total] = '\0';
+    return total;
+}
+
+ssize_t getline(char **lineptr, size_t *n, FILE *stream) {
+    return getdelim(lineptr, n, '\n', stream);
+}
+
+/* Q2.2 — dprintf / vdprintf */
+
+int vdprintf(int fd, const char *fmt, va_list ap) {
+    char buf[4096];
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    if (n > 0) {
+        int w = (n < (int)sizeof(buf)) ? n : (int)sizeof(buf) - 1;
+        write(fd, buf, (size_t)w);
+    }
+    return n;
+}
+
+int dprintf(int fd, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vdprintf(fd, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+/* Q2.3 — asprintf / vasprintf */
+
+int vasprintf(char **strp, const char *fmt, va_list ap) {
+    va_list ap2;
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap2);
+    va_end(ap2);
+    if (n < 0) { *strp = NULL; return -1; }
+    *strp = malloc((size_t)n + 1);
+    if (!*strp) return -1;
+    vsnprintf(*strp, (size_t)n + 1, fmt, ap);
+    return n;
+}
+
+int asprintf(char **strp, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vasprintf(strp, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+/* Q2.4 — fmemopen */
+
+FILE *fmemopen(void *buf, size_t size, const char *mode) {
+    if (!buf || size == 0 || !mode) { errno = EINVAL; return NULL; }
+    int fds[2];
+    if (pipe(fds) < 0) return NULL;
+    if (mode[0] == 'r') {
+        /* Write the buffer content into the pipe for reading. */
+        write(fds[1], buf, size);
+        close(fds[1]);
+        return fdopen(fds[0], "r");
+    }
+    /* Write mode: keep the write end open. */
+    close(fds[0]);
+    return fdopen(fds[1], "w");
+}
+
+/* Q2.5 — open_memstream */
+
+FILE *open_memstream(char **ptr, size_t *sizeloc) {
+    if (!ptr || !sizeloc) { errno = EINVAL; return NULL; }
+    int fds[2];
+    if (pipe(fds) < 0) return NULL;
+    *ptr = NULL;
+    *sizeloc = 0;
+    /* Write-only stream: close read end. */
+    close(fds[0]);
+    return fdopen(fds[1], "w");
+}
+
+/* Q2.6 — popen / pclose */
+
+#define POPEN_MAX 8
+static struct { FILE *f; pid_t pid; } _popen_tab[POPEN_MAX];
+
+FILE *popen(const char *command, const char *type) {
+    if (!command || !type || (type[0] != 'r' && type[0] != 'w'))
+        { errno = EINVAL; return NULL; }
+    int fds[2];
+    if (pipe(fds) < 0) return NULL;
+    pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); return NULL; }
+    if (pid == 0) {
+        /* Child */
+        if (type[0] == 'r') {
+            dup2(fds[1], 1);  /* child stdout -> pipe write end */
+        } else {
+            dup2(fds[0], 0);  /* child stdin <- pipe read end */
+        }
+        close(fds[0]);
+        close(fds[1]);
+        /* Use /bin/sh -c to execute the command. */
+        const char *argv[] = {"/bin/sh", "-c", command, NULL};
+        execv("/bin/sh", (char *const *)argv);
+        _exit(127);
+    }
+    /* Parent */
+    FILE *f;
+    if (type[0] == 'r') {
+        close(fds[1]);       /* close write end, read from read end */
+        f = fdopen(fds[0], "r");
+    } else {
+        close(fds[0]);       /* close read end, write to write end */
+        f = fdopen(fds[1], "w");
+    }
+    if (f) {
+        for (int i = 0; i < POPEN_MAX; i++) {
+            if (!_popen_tab[i].f) {
+                _popen_tab[i].f = f;
+                _popen_tab[i].pid = pid;
+                break;
+            }
+        }
+    }
+    return f;
+}
+
+int pclose(FILE *stream) {
+    if (!stream) return -1;
+    pid_t pid = 0;
+    for (int i = 0; i < POPEN_MAX; i++) {
+        if (_popen_tab[i].f == stream) {
+            pid = _popen_tab[i].pid;
+            _popen_tab[i].f = NULL;
+            break;
+        }
+    }
+    fclose(stream);
+    if (!pid) return -1;
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return status;
+}
+
+/* Q2.7 — Locking stubs (thread-safety deferred to Q6) */
+
+void flockfile(FILE *f)     { (void)f; }
+void funlockfile(FILE *f)   { (void)f; }
+int  ftrylockfile(FILE *f)  { (void)f; return 0; }
+int  getc_unlocked(FILE *f)      { return fgetc(f); }
+int  putc_unlocked(int c, FILE *f) { return fputc(c, f); }
+int  fgetc_unlocked(FILE *f)     { return fgetc(f); }

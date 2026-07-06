@@ -46,6 +46,24 @@ int    setenv(const char *name, const char *value, int overwrite);
 int    unsetenv(const char *name);
 int    putenv(char *string);
 
+/* ---- POSIX.1-2024 memory alignment ---- */
+int     posix_memalign(void **memptr, size_t alignment, size_t size);
+void   *aligned_alloc(size_t alignment, size_t size);
+
+/* ---- POSIX.1-2024 stdlib extensions ---- */
+void   *reallocarray(void *ptr, size_t nmemb, size_t size);
+char   *realpath(const char *path, char *resolved);
+char   *mkdtemp(char *tmpl);
+int     mkostemp(char *tmpl, int flags);
+int     mkstemps(char *tmpl, int suffixlen);
+
+/* ---- POSIX.1-2024 PTY functions ---- */
+int     posix_openpt(int oflag);
+int     grantpt(int fd);
+int     unlockpt(int fd);
+char   *ptsname(int fd);
+int     ptsname_r(int fd, char *buf, size_t buflen);
+
 /* ---- Sorting / searching / atexit (libc/src/stdlib_extra.c) ---- */
 void   qsort(void *base, size_t nmemb, size_t size,
              int (*compar)(const void *, const void *));

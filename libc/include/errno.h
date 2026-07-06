@@ -70,6 +70,7 @@ int *__errno_location(void);
 #define ELOOP           40   /* Too many symbolic links encountered */
 #define ENOMSG          42   /* No message of desired type */
 #define EIDRM           43   /* Identifier removed */
+#define EMSGSIZE        90   /* Message too long */
 #define EOVERFLOW       75   /* Value too large for defined data type */
 #define EILSEQ          84   /* Illegal byte sequence */
 #define EOPNOTSUPP      95   /* Operation not supported */

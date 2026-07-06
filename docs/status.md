@@ -125,6 +125,7 @@ Legend:
 
 | Feature | Status | Notes |
 |---|---:|---|
+| POSIX.1-2024 compliance | 🧪 | Q1–Q11 implemented (~400 functions covered, see `docs/posix2024_compliance.md`). `_POSIX_VERSION` = 202405L. |
 | AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
 | AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
 | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |

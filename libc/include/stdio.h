@@ -84,4 +84,22 @@ void  clearerr(FILE *f);
 int   fileno(FILE *f);
 int   setvbuf(FILE *f, char *buf, int mode, size_t size);
 
+/* ---- POSIX.1-2024 stdio extensions (Phase Q2) ---- */
+ssize_t  getdelim(char **lineptr, size_t *n, int delim, FILE *stream);
+ssize_t  getline(char **lineptr, size_t *n, FILE *stream);
+int      dprintf(int fd, const char *fmt, ...);
+int      vdprintf(int fd, const char *fmt, va_list ap);
+int      asprintf(char **strp, const char *fmt, ...);
+int      vasprintf(char **strp, const char *fmt, va_list ap);
+FILE    *fmemopen(void *buf, size_t size, const char *mode);
+FILE    *open_memstream(char **ptr, size_t *sizeloc);
+FILE    *popen(const char *command, const char *type);
+int      pclose(FILE *stream);
+void     flockfile(FILE *f);
+void     funlockfile(FILE *f);
+int      ftrylockfile(FILE *f);
+int      getc_unlocked(FILE *f);
+int      putc_unlocked(int c, FILE *f);
+int      fgetc_unlocked(FILE *f);
+
 #endif /* AURALITE_LIBC_STDIO_H */

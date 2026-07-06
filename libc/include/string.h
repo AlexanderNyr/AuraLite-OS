@@ -38,4 +38,14 @@ int    strncasecmp(const char *s1, const char *s2, size_t n);
  * may be overwritten by a subsequent strerror() call for unknown codes. */
 char  *strerror(int errnum);
 
+/* ---- POSIX.1-2024 extended string/memory functions (Phase Q3) ---- */
+void  *memccpy(void *dst, const void *src, int c, size_t n);
+void  *memmem(const void *h, size_t hl, const void *n, size_t nl);
+char  *stpcpy(char *dst, const char *src);
+char  *stpncpy(char *dst, const char *src, size_t n);
+size_t strlcpy(char *dst, const char *src, size_t dsize);
+size_t strlcat(char *dst, const char *src, size_t dsize);
+int    strverscmp(const char *a, const char *b);
+char  *strsignal(int sig);
+
 #endif /* AURALITE_LIBC_STRING_H */

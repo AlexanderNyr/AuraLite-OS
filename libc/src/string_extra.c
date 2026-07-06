@@ -1,8 +1,9 @@
-/* libc/src/string_extra.c — дополнительные строковые функции (P10) */
+/* libc/src/string_extra.c — дополнительные строковые функции (P10 / Q3) */
 
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 size_t strnlen(const char *s, size_t maxlen) {
     size_t n = 0;
@@ -112,4 +113,115 @@ int strncasecmp(const char *s1, const char *s2, size_t n) {
     }
     if (n == 0) return 0;
     return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+/* ---- POSIX.1-2024 extended string/memory functions (Phase Q3) ---- */
+
+void *memccpy(void *dst, const void *src, int c, size_t n) {
+    const unsigned char *s = src;
+    unsigned char *d = dst, uc = (unsigned char)c;
+    while (n--) {
+        if ((*d++ = *s++) == uc) return d;
+    }
+    return NULL;
+}
+
+void *memmem(const void *h, size_t hl, const void *n, size_t nl) {
+    if (nl == 0) return (void *)h;
+    if (hl < nl) return NULL;
+    const char *hay = h, *ndl = n;
+    for (size_t i = 0; i <= hl - nl; i++)
+        if (memcmp(hay + i, ndl, nl) == 0) return (void *)(hay + i);
+    return NULL;
+}
+
+char *stpcpy(char *dst, const char *src) {
+    while ((*dst = *src)) { dst++; src++; }
+    return dst;
+}
+
+char *stpncpy(char *dst, const char *src, size_t n) {
+    while (n && (*dst = *src)) { dst++; src++; n--; }
+    if (n) {
+        char *p = dst;
+        while (--n) *p++ = '\0';
+    }
+    return dst;
+}
+
+size_t strlcpy(char *dst, const char *src, size_t dsize) {
+    const char *s = src;
+    size_t n = dsize;
+    if (n && --n) {
+        do { if (!(*dst++ = *s++)) break; } while (--n);
+    }
+    if (!n) {
+        if (dsize) *dst = '\0';
+        while (*s++) {}
+    }
+    return (size_t)(s - src - 1);
+}
+
+size_t strlcat(char *dst, const char *src, size_t dsize) {
+    size_t dl = strnlen(dst, dsize);
+    if (dl == dsize) return dl + strlen(src);
+    return dl + strlcpy(dst + dl, src, dsize - dl);
+}
+
+int strverscmp(const char *a, const char *b) {
+    for (;;) {
+        if (!*a && !*b) return 0;
+        int da = (*a >= '0' && *a <= '9');
+        int db = (*b >= '0' && *b <= '9');
+        if (da && db) {
+            /* Count leading zeros on each side before comparing numerics. */
+            size_t za = 0, zb = 0;
+            while (a[za] == '0') za++;
+            while (b[zb] == '0') zb++;
+            const char *na = a + za, *nb = b + zb;
+            size_t la = 0, lb = 0;
+            while (na[la] >= '0' && na[la] <= '9') la++;
+            while (nb[lb] >= '0' && nb[lb] <= '9') lb++;
+            if (la != lb) return (la < lb) ? -1 : 1;
+            int r = memcmp(na, nb, la);
+            if (r) return r;
+            /* Same numeric value: more leading zeros sorts earlier. */
+            if (za != zb) return (za > zb) ? -1 : 1;
+            a = na + la; b = nb + lb;
+        } else {
+            if (*a != *b) return (unsigned char)*a - (unsigned char)*b;
+            a++; b++;
+        }
+    }
+}
+
+char *strsignal(int sig) {
+    static const char *names[32] = {
+        [1]  = "Hangup",
+        [2]  = "Interrupt",
+        [3]  = "Quit",
+        [4]  = "Illegal instruction",
+        [5]  = "Trace/BPT trap",
+        [6]  = "Aborted",
+        [7]  = "Bus error",
+        [8]  = "Floating point exception",
+        [9]  = "Killed",
+        [10] = "User defined signal 1",
+        [11] = "Segmentation fault",
+        [12] = "User defined signal 2",
+        [13] = "Broken pipe",
+        [14] = "Alarm clock",
+        [15] = "Terminated",
+        [17] = "Child exited",
+        [18] = "Continued",
+        [19] = "Stopped (signal)",
+        [20] = "Stopped",
+        [21] = "Stopped (tty input)",
+        [22] = "Stopped (tty output)",
+        [28] = "Window size changes",
+    };
+    static char buf[32];
+    if (sig > 0 && sig < 32 && names[sig]) return (char *)names[sig];
+    snprintf(buf, sizeof(buf), "Unknown signal %d", sig);
+    return buf;
 }

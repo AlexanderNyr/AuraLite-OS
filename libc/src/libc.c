@@ -15,6 +15,8 @@
 #include "ctype.h"
 #include "math.h"
 #include "fcntl.h"
+#include "sched.h"
+#include "sys/resource.h"
 #include "sys/uio.h"
 #include "sys/wait.h"
 #include "signal.h"

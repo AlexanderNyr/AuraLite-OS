@@ -22,6 +22,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <signal.h>
+#include <mqueue.h>
+#include <sys/mman.h>
+#include <time.h>
 
 /* ============================ poll (via select) ============================ */
 
@@ -448,4 +452,172 @@ struct group *getgrgid(gid_t gid) {
 
 struct group *getgrnam(const char *name) {
     return (name && strcmp(name, "root") == 0) ? &root_group : NULL;
+}
+
+
+/* ========================= shm_open / shm_unlink (Q7) ===================== */
+
+int shm_open(const char *name, int oflag, mode_t mode) {
+    char path[512];
+    if (name[0] == '/')
+        snprintf(path, sizeof(path), "/dev/shm%s", name);
+    else
+        snprintf(path, sizeof(path), "/dev/shm/%s", name);
+    return open(path, oflag | O_CREAT, mode);
+}
+
+int shm_unlink(const char *name) {
+    char path[512];
+    if (name[0] == '/')
+        snprintf(path, sizeof(path), "/dev/shm%s", name);
+    else
+        snprintf(path, sizeof(path), "/dev/shm/%s", name);
+    return unlink(path);
+}
+
+/* ===================== Named semaphores (Q7) ============================== */
+
+sem_t *sem_open(const char *name, int oflag, ...) {
+    char path[512];
+    snprintf(path, sizeof(path), "/dev/shm/sem%s%s",
+             name[0]=='/' ? "" : "/", name);
+    mode_t mode = 0600;
+    unsigned val = 0;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = va_arg(ap, mode_t);
+        val = va_arg(ap, unsigned);
+        va_end(ap);
+    }
+    int fd = open(path, oflag | O_RDWR, mode);
+    if (fd < 0) return SEM_FAILED;
+    if (oflag & O_CREAT) {
+        write(fd, &val, sizeof(val));
+    }
+    sem_t *s = mmap(NULL, sizeof(sem_t), PROT_READ|PROT_WRITE,
+                    MAP_SHARED, fd, 0);
+    close(fd);
+    return (s == MAP_FAILED) ? SEM_FAILED : s;
+}
+
+int sem_close(sem_t *sem) {
+    return munmap(sem, sizeof(sem_t));
+}
+
+int sem_unlink(const char *name) {
+    char path[512];
+    snprintf(path, sizeof(path), "/dev/shm/sem%s%s",
+             name[0]=='/' ? "" : "/", name);
+    return unlink(path);
+}
+
+int sem_timedwait(sem_t *sem, const struct timespec *abs_timeout) {
+    while (1) {
+        if (sem_trywait(sem) == 0) return 0;
+        struct timespec now;
+        clock_gettime(0, &now);
+        if (now.tv_sec > abs_timeout->tv_sec ||
+            (now.tv_sec == abs_timeout->tv_sec &&
+             now.tv_nsec >= abs_timeout->tv_nsec)) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        struct timespec sl = {0, 1000000};
+        nanosleep(&sl, NULL);
+    }
+}
+
+/* ===================== Message queues (Q7) ================================ */
+
+/* File-based message queue: each mq is a directory under /dev/mqueue/.
+ * mq_open(name, O_CREAT) creates mq files; mq_send/recv act as named pipes
+ * through temp files. For simplicity, queues use tmp files in /tmp/mq.<hash>. */
+
+#define MQ_PATH_MAX 512
+
+static void _mq_name_to_path(const char *name, char *path, size_t sz) {
+    const char *n = name;
+    while (*n == '/') n++;
+    snprintf(path, sz, "/tmp/mq_%s", n);
+}
+
+mqd_t mq_open(const char *name, int oflag, ...) {
+    if (!name) { errno = EINVAL; return MQD_INVALID; }
+    mode_t mode = 0600;
+    struct mq_attr *attr = NULL;
+    if (oflag & O_CREAT) {
+        va_list ap;
+        va_start(ap, oflag);
+        mode = va_arg(ap, mode_t);
+        attr = va_arg(ap, struct mq_attr *);
+        va_end(ap);
+    }
+    char path[MQ_PATH_MAX];
+    _mq_name_to_path(name, path, sizeof(path));
+    int fd = open(path, oflag | O_RDWR, mode);
+    if (fd < 0) return MQD_INVALID;
+    return (mqd_t)(intptr_t)fd;
+}
+
+int mq_close(mqd_t mqdes) {
+    return close((int)mqdes);
+}
+
+int mq_unlink(const char *name) {
+    char path[MQ_PATH_MAX];
+    _mq_name_to_path(name, path, sizeof(path));
+    return unlink(path);
+}
+
+int mq_send(mqd_t mqdes, const char *msg_ptr, size_t msg_len, unsigned msg_prio) {
+    (void)msg_prio;
+    /* Write message as [len:4][data] */
+    if (write((int)mqdes, &msg_len, sizeof(msg_len)) < 0) return -1;
+    if (write((int)mqdes, msg_ptr, msg_len) < 0) return -1;
+    return 0;
+}
+
+ssize_t mq_receive(mqd_t mqdes, char *msg_ptr, size_t msg_len, unsigned *msg_prio) {
+    (void)msg_prio;
+    size_t len = 0;
+    if (read((int)mqdes, &len, sizeof(len)) < 0) return -1;
+    if (len > msg_len) { errno = EMSGSIZE; return -1; }
+    if (read((int)mqdes, msg_ptr, len) < 0) return -1;
+    return (ssize_t)len;
+}
+
+int mq_timedsend(mqd_t mqdes, const char *msg_ptr, size_t msg_len,
+                 unsigned msg_prio, const struct timespec *abs_timeout) {
+    (void)abs_timeout;
+    return mq_send(mqdes, msg_ptr, msg_len, msg_prio);
+}
+
+ssize_t mq_timedreceive(mqd_t mqdes, char *msg_ptr, size_t msg_len,
+                        unsigned *msg_prio, const struct timespec *abs_timeout) {
+    (void)abs_timeout;
+    return mq_receive(mqdes, msg_ptr, msg_len, msg_prio);
+}
+
+int mq_getattr(mqd_t mqdes, struct mq_attr *mqstat) {
+    (void)mqdes;
+    if (!mqstat) { errno = EINVAL; return -1; }
+    mqstat->mq_flags = 0;
+    mqstat->mq_maxmsg = 16;
+    mqstat->mq_msgsize = 1024;
+    mqstat->mq_curmsgs = 0;
+    return 0;
+}
+
+int mq_setattr(mqd_t mqdes, const struct mq_attr *restrict mqstat,
+               struct mq_attr *restrict omqstat) {
+    (void)mqdes;
+    if (omqstat) mq_getattr(mqdes, omqstat);
+    (void)mqstat;
+    return 0;
+}
+
+int mq_notify(mqd_t mqdes, const struct sigevent *notification) {
+    (void)mqdes; (void)notification;
+    errno = ENOSYS; return -1;
 }

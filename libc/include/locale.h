@@ -17,6 +17,8 @@ struct lconv {
     char *currency_symbol;
 };
 
+typedef struct __locale_struct *locale_t;
+
 char         *setlocale(int category, const char *locale);
 struct lconv *localeconv(void);
 

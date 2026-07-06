@@ -1497,6 +1497,146 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return pmm_get_free_frames();
     }
 
+
+
+
+    /* ---- Q5: AT-family syscalls ---- */
+    case 257: { /* SYS_OPENAT */
+        int dirfd = (int)a1;
+        char path[256];
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        if (dirfd == -100 || path[0] == '/')
+            return (uint64_t)vfs_errno(vfs_open(path, (int)a3, (int)a4), ENOENT);
+        errno = ENOSYS; return (uint64_t)-ENOSYS;
+    }
+    case 258: { /* SYS_MKDIRAT */
+        int dirfd = (int)a1;
+        char path[256];
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        if (dirfd == -100 || path[0] == '/')
+            return (uint64_t)vfs_errno(vfs_mkdir(path, (uint32_t)a3), EACCES);
+        return (uint64_t)-ENOSYS;
+    }
+    case 260: { /* SYS_FCHOWNAT */
+        int dfd = (int)a1;
+        char path[256];
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        (void)dfd;
+        return (uint64_t)vfs_chown(path, (uint32_t)a3, (uint32_t)a4);
+    }
+    case 262: { /* SYS_FSTATAT */
+        int dirfd = (int)a1;
+        char path[256];
+        int flags = (int)a4;
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        struct vfs_stat st;
+        int r = (flags & 0x100)
+                ? vfs_lstat(path, &st) : vfs_stat(path, &st);
+        if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        if (copy_to_user((void*)(uintptr_t)a3, &st, sizeof(st)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case 263: { /* SYS_UNLINKAT */
+        int dirfd = (int)a1;
+        char path[256];
+        int flags = (int)a3;
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        (void)dirfd;
+        return (flags & 0x200)
+               ? (uint64_t)vfs_errno(vfs_rmdir(path), ENOENT)
+               : (uint64_t)vfs_errno(vfs_unlink(path), ENOENT);
+    }
+    case 264: { /* SYS_RENAMEAT */
+        int od = (int)a1; (void)od;
+        int nd = (int)a3; (void)nd;
+        char op[256], np[256];
+        if (copy_user_path(op, a2) != 0) return (uint64_t)-EFAULT;
+        if (copy_user_path(np, a4) != 0) return (uint64_t)-EFAULT;
+        return (uint64_t)vfs_errno(vfs_rename(op, np), ENOENT);
+    }
+    case 267: { /* SYS_READLINKAT */
+        int dirfd = (int)a1;
+        char path[256];
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        (void)dirfd;
+        size_t bufsiz = (size_t)a4;
+        if (bufsiz == 0) return (uint64_t)-EINVAL;
+        if (bufsiz > 256) bufsiz = 256;
+        if (!validate_user_range((void*)(uintptr_t)a3, bufsiz, 1))
+            return (uint64_t)-EFAULT;
+        char kbuf[256];
+        int64_t n = vfs_readlink(path, kbuf, bufsiz);
+        if (n < 0) return (uint64_t)n;
+        if (copy_to_user((void*)(uintptr_t)a3, kbuf, (uint64_t)n) != 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)n;
+    }
+    case 268: { /* SYS_FCHMODAT */
+        int dfd = (int)a1;
+        char path[256];
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        (void)dfd;
+        return (uint64_t)vfs_chmod(path, (uint32_t)a3);
+    }
+    case 269: { /* SYS_FACCESSAT */
+        int dfd = (int)a1;
+        char path[256];
+        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        (void)dfd;
+        return (uint64_t)vfs_access(path, (int)a3);
+    }
+    case 292: { /* SYS_DUP3 */
+        int old = (int)a1, new_ = (int)a2, flags = (int)a3;
+        int r = vfs_dup2(old, new_);
+        if (r >= 0 && (flags & 0x80000)) {
+            tcb_t *cur = sched_current();
+            if (cur && r < 64)
+                cur->cloexec[r] = 1;
+        }
+        return (uint64_t)vfs_errno(r, EBADF);
+    }
+    case 322: { /* SYS_EXECVEAT */
+        int dfd = (int)a1;
+        int flags = (int)a5;
+        char path[256];
+        if (flags & 0x1000) { /* AT_EMPTY_PATH */
+            /* fd-based exec: use /proc/self/fd/<dfd> as path */
+            snprintf(path, sizeof(path), "/proc/self/fd/%d", dfd);
+        } else {
+            if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)vfs_errno((int64_t)do_execve(path, a3, a4), ENOENT);
+    }
+
+    /* Q11: POSIX.1-2024 new functions */
+    case 318: { /* SYS_GETENTROPY */
+        void *buf = (void*)(uintptr_t)a1;
+        uint64_t len = a2;
+        if (len > 256) return (uint64_t)-EIO;
+        if (!validate_user_range(buf, len, 1)) return (uint64_t)-EFAULT;
+        uint8_t *out = (uint8_t*)buf;
+        for (uint64_t i = 0; i < len; ) {
+            uint64_t tsc;
+            __asm__ volatile("rdtsc;shl $32,%%rdx;or %%rdx,%%rax":"=a"(tsc)::"rdx");
+            uint64_t rnd = tsc ^ timer_get_ticks() ^ (uint64_t)(uintptr_t)out
+                       ^ ((uint64_t)i * 6364136223846793005ULL + 1442695040888963407ULL);
+            for (int b = 0; b < 8 && i < len; b++, i++) out[i] = (uint8_t)(rnd >> (b*8));
+        }
+        return 0;
+    }
+    case 436: { /* SYS_CLOSE_RANGE */
+        unsigned first=(unsigned)a1, last=(unsigned)a2;
+        tcb_t *cur=sched_current(); if(!cur) return (uint64_t)-EBADF;
+        unsigned max_fds = 64;
+        for(unsigned i=first; i<=last && i<max_fds; i++) vfs_close((int)i);
+        return 0;
+    }
+    case 24: { /* SYS_SCHED_YIELD */
+        sched_yield();
+        return 0;
+    }
+
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
         return (uint64_t)-ENOSYS;   /* reserved for unimplemented syscall nrs */
