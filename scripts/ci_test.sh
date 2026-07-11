@@ -37,8 +37,9 @@ echo "[ci] booting $ISO with shell commands (15s budget)..."
 set +e
 (sleep 5; printf 'ls\n'; sleep 1; printf 'exit\n') | \
 timeout 15 qemu-system-x86_64 \
-    -cdrom "$ISO" -m 512M -smp 4 -vga std -display none \
-    -serial stdio -no-reboot -cpu qemu64 -boot order=d \
+    -drive "file=$ISO,format=raw,if=ide,snapshot=on" \
+    -m 512M -smp 4 -vga std -display none \
+    -serial stdio -no-reboot -cpu qemu64 -boot order=c \
     -netdev user,id=net0 \
     -device e1000,netdev=net0 \
     -drive file=build/disk.img,format=raw,if=none,id=ahcidisk \

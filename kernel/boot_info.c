@@ -25,7 +25,20 @@ void boot_info_init(boot_info_t *info) {
             __asm__ volatile ("cli; hlt");
         }
     }
+#if defined(ARCH_X86_64)
+    /* Custom BIOS/UEFI loaders pass a physical pointer in RDI.  Keep the
+     * latched pointer in the HHDM: the kernel replaces the loader's page
+     * tables during process setup, at which point low identity mappings may
+     * disappear while the direct map remains valid. */
+    uint64_t hhdm = info->hhdm_offset;
+    if (hhdm == 0) {
+        hhdm = 0xffff800000000000ULL;
+    }
+    g_boot_info = (boot_info_t *)((uintptr_t)info + hhdm);
+#else
+    /* Host unit tests pass an ordinary process pointer. */
     g_boot_info = info;
+#endif
 }
 
 boot_fb_t *boot_get_framebuffer(void) {

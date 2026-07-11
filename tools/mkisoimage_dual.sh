@@ -148,6 +148,14 @@ mcopy  -i "$FAT_IMG" "$EFI_APP"    ::/EFI/BOOT/BOOTX64.EFI
 mcopy  -i "$FAT_IMG" "$KERNEL_ELF" ::/EFI/BOOT/KERNEL.ELF
 mcopy  -i "$FAT_IMG" "$KERNEL_ELF" ::/KERNEL.ELF
 if [ -f "$BUILD/initrd.tar" ]; then
+    # BIOS Stage 2 loads the archive at 24 MiB inside its fixed 0..32 MiB
+    # early-boot reservation, leaving an 8 MiB slot.  Fail the build rather
+    # than shipping an image whose BIOS path silently omits userspace.
+    initrd_size=$(wc -c < "$BUILD/initrd.tar")
+    if [ "$initrd_size" -gt $((8 * 1024 * 1024)) ]; then
+        echo "[mkiso-dual] ERROR: initrd.tar is $initrd_size bytes (BIOS loader max: 8 MiB)" >&2
+        exit 1
+    fi
     mcopy -i "$FAT_IMG" "$BUILD/initrd.tar" ::/EFI/BOOT/INITRD.TAR
     mcopy -i "$FAT_IMG" "$BUILD/initrd.tar" ::/INITRD.TAR
 fi

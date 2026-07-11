@@ -81,7 +81,9 @@ def main():
         pass
 
     qemu = subprocess.Popen([
-        "qemu-system-x86_64", "-cdrom", ISO, "-m", "512M",
+        "qemu-system-x86_64",
+        "-drive", f"file={ISO},format=raw,if=ide,snapshot=on",
+        "-boot", "order=c", "-m", "512M",
         "-vga", "std", "-display", "none",
         "-serial", "file:" + SER, "-no-reboot", "-cpu", "qemu64",
         "-monitor", "unix:" + SOCK + ",server=on,wait=off",

@@ -59,10 +59,19 @@ il_init() {
     # alternative backend, e.g. IL_NIC=virtio-net-pci for the virtio-net path).
     IL_NIC="${IL_NIC:-e1000}"
 
-    # Build the ISO on demand.
+    # Build the boot image on demand.  `make iso` must leave the canonical
+    # build/auralite.iso artefact behind; fail immediately instead of running
+    # every test against a missing file and producing misleading assertions.
     if [ ! -f "$IL_ISO" ]; then
-        echo "${C_YELLOW}[lib] ISO missing — running 'make iso'…${C_RESET}"
-        ( cd "$IL_ROOT" && make iso >/dev/null )
+        echo "${C_YELLOW}[lib] boot image missing — running 'make iso'…${C_RESET}"
+        if ! ( cd "$IL_ROOT" && make iso >/dev/null ); then
+            echo "${C_RED}[lib] failed to build boot image: $IL_ISO${C_RESET}" >&2
+            exit 2
+        fi
+    fi
+    if [ ! -f "$IL_ISO" ]; then
+        echo "${C_RED}[lib] make iso did not create boot image: $IL_ISO${C_RESET}" >&2
+        exit 2
     fi
 }
 
@@ -134,23 +143,23 @@ il_run_qemu() {
     : > "$log"
     export IL_LAST_LOG="$log"
 
-    # Compose the QEMU command line.  We always include:
-    # ...
-
-    # Compose the QEMU command line.  We always include:
+    # Compose the QEMU command line.  The default custom-loader artefact is a
+    # raw hybrid disk image (despite its .iso suffix), not an El Torito CD.
+    # Attach it as a snapshot-backed IDE hard disk so SeaBIOS executes its MBR
+    # without allowing a test to modify the base image.
+    # We always include:
     #   - serial → stdio (we read from it, write to it)
     #   - e1000 NIC on user/SLIRP NAT
-    #   - small AHCI disk
     # The caller can override or add more via $extra.
     local base_args=(
-        -cdrom "$IL_ISO"
+        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on"
         -m 512M
         -smp 2
         -display none
         -serial stdio
         -no-reboot
         -cpu qemu64
-        -boot order=d
+        -boot order=c
         -netdev user,id=net0
         -device "${IL_NIC},netdev=net0"
     )

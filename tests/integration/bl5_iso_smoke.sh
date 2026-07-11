@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # tests/integration/bl5_iso_smoke.sh -- BL5 gate criterion.
 #
-# Boots the BIOS ISO built by tools/mkisoimage_bios.sh under QEMU
-# `-cdrom` (i.e. via legacy BIOS El Torito) and asserts the kernel
-# banner reaches COM1.  This proves that the whole custom loader
-# chain works when packaged as an ISO, not just as a raw disk.
+# Boots the BIOS image built by tools/mkisoimage_bios.sh as a raw IDE disk
+# and asserts that the kernel banner reaches COM1.  This proves that the
+# whole custom MBR + Stage 2 loader chain works from the shipped image.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

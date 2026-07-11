@@ -20,7 +20,7 @@ trap 'rm -f "$MON"; il_dump_on_error' EXIT
 
 set +e
 timeout --foreground 55 "$IL_QEMU" \
-    -cdrom "$IL_ISO" \
+    -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
     -m 512M \
     -smp 2 \
     -display none \
@@ -28,7 +28,7 @@ timeout --foreground 55 "$IL_QEMU" \
     -monitor "unix:$MON,server,nowait" \
     -no-reboot \
     -cpu qemu64 \
-    -boot order=d \
+    -boot order=c \
     -netdev user,id=net0 \
     -device e1000,netdev=net0 \
     -device qemu-xhci,id=xhci \

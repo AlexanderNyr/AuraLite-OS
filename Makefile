@@ -551,7 +551,7 @@ iso-bios: deps-check kernel $(MBR_BIN) $(STAGE2_BIN)
 DUAL_ISO_IMAGE := $(BUILD_DIR)/auralite-dual.iso
 
 .PHONY: iso-dual
-iso-dual: deps-check kernel $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
+iso-dual: deps-check kernel $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
 	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)
 
 # ---- BL8: `make iso` now defaults to the custom dual-boot loader ----------
@@ -562,8 +562,11 @@ iso-dual: deps-check kernel $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
 # works because it no longer depends on `limine-build`.
 .PHONY: iso iso-limine
 iso: iso-dual
+	@# Keep the historical build/auralite.iso path as the canonical local
+	@# artefact.  The integration tests and run/debug targets consume it.
+	@cp $(DUAL_ISO_IMAGE) $(ISO_IMAGE)
 	@mkdir -p release
-	@cp $(DUAL_ISO_IMAGE) release/auralite.iso
+	@cp $(ISO_IMAGE) release/auralite.iso
 	@cp $(BUILD_DIR)/kernel.elf release/kernel.elf
 	@[ -f $(BUILD_DIR)/initrd.tar ] && cp $(BUILD_DIR)/initrd.tar release/initrd.tar || true
 	@cd release && sha256sum auralite.iso kernel.elf $$( [ -f initrd.tar ] && echo initrd.tar) \

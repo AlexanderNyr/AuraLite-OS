@@ -103,11 +103,13 @@ types from the same file.  Output:
 
 ```text
 build/auralite-dual.iso
+build/auralite.iso
 release/auralite.iso
 ```
 
-Both files are identical bytes; `release/auralite.iso` is the artefact staged
-for distribution.
+All three files contain identical bytes. `build/auralite.iso` is the canonical
+path consumed by local run and test tooling, while `release/auralite.iso` is
+staged for distribution.
 
 ### Boot paths
 
@@ -137,11 +139,13 @@ fills a `boot_info_t` shim -- the kernel itself no longer knows about Limine.
 make run
 ```
 
-Manual equivalent:
+Manual equivalent (the `.iso` file is a raw hybrid disk image, so attach it as
+an IDE hard disk rather than with QEMU's `-cdrom` option):
 
 ```bash
 qemu-system-x86_64 \
-  -cdrom build/auralite.iso \
+  -drive file=build/auralite.iso,format=raw,if=ide,snapshot=on \
+  -boot order=c \
   -m 512M \
   -smp 4 \
   -vga std \

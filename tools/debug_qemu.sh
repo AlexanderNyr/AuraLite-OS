@@ -9,7 +9,8 @@ ISO="${1:?usage: $0 <auralite.iso>}"
 
 echo "[debug] QEMU waiting for GDB on localhost:1234 (kernel start halted)."
 exec qemu-system-x86_64 \
-    -cdrom "$ISO" \
+    -drive "file=$ISO,format=raw,if=ide,snapshot=on" \
+    -boot order=c \
     -m 512M \
     -vga std \
     -display none \

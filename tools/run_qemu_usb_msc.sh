@@ -24,7 +24,7 @@ PY
 fi
 
 exec qemu-system-x86_64 \
-    -cdrom "$ISO" \
+    -drive "file=$ISO,format=raw,if=ide,snapshot=on" \
     -m 512M \
     -smp 4 \
     -vga std \
@@ -32,7 +32,7 @@ exec qemu-system-x86_64 \
     -serial stdio \
     -no-reboot \
     -no-shutdown \
-    -boot order=d \
+    -boot order=c \
     -cpu qemu64 \
     -netdev user,id=net0 \
     -device e1000,netdev=net0 \

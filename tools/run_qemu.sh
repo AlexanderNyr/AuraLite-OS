@@ -45,7 +45,7 @@ if [ ! -f "$DISK1" ]; then
 fi
 
 exec qemu-system-x86_64 \
-    -cdrom "$ISO" \
+    -drive "file=$ISO,format=raw,if=ide,snapshot=on" \
     -m 512M \
     -smp 4 \
     -vga std \
@@ -54,7 +54,7 @@ exec qemu-system-x86_64 \
     -no-reboot \
     -no-shutdown \
     -cpu qemu64 \
-    -boot order=d \
+    -boot order=c \
     -netdev user,id=net0 \
     -device e1000,netdev=net0 \
     -device piix3-usb-uhci,id=uhci \

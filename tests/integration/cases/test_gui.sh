@@ -29,10 +29,10 @@ VNC_PORT=$((5900 + VNC_DISPLAY))
 INPUT_PID=$!
 
 ( timeout 30 qemu-system-x86_64 \
-    -cdrom "$IL_ISO" -m 512M -smp 2 \
+    -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" -m 512M -smp 2 \
     -vnc "127.0.0.1:$VNC_DISPLAY" \
     -serial file:"$LOG" \
-    -no-reboot -no-shutdown -cpu qemu64 -boot order=d \
+    -no-reboot -no-shutdown -cpu qemu64 -boot order=c \
     -netdev user,id=net0 -device e1000,netdev=net0 \
     -drive file="$DISK0",format=raw,if=none,id=ahcidisk \
     -device ahci,id=ahci0 \

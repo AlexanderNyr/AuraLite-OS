@@ -14,9 +14,10 @@ sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake
 sudo apt install e2fsprogs vncdotool python3-pil
 ```
 
-A normal clone is enough because `make iso` uses the bundled
-`limine-binary.tar.gz`. If you remove that bundle or want to rebuild Limine from
-source, initialise the submodule first:
+A normal clone is enough because `make iso` uses AuraLite's custom BIOS/UEFI
+loader and does not depend on Limine. Only the optional `make iso-limine`
+fallback needs the bundled `limine-binary.tar.gz` or the Limine submodule. To
+build that fallback from source, initialise the submodule first:
 
 ```bash
 git submodule update --init --recursive
@@ -50,8 +51,10 @@ Main output:
 build/auralite.iso
 ```
 
-The ISO is a Limine hybrid image with BIOS and UEFI boot files. BIOS is the
-best-tested path.
+This is a raw hybrid GPT + MBR disk image with AuraLite's custom BIOS and UEFI
+loaders. The `.iso` suffix is retained for compatibility with existing tooling;
+attach the image as a hard disk, not as an El Torito CD-ROM. The same bytes are
+also available as `build/auralite-dual.iso` and `release/auralite.iso`.
 
 ## Build user programs only
 
@@ -95,7 +98,8 @@ If you want a simpler command without the AHCI test disk:
 
 ```bash
 qemu-system-x86_64 \
-  -cdrom build/auralite.iso \
+  -drive file=build/auralite.iso,format=raw,if=ide,snapshot=on \
+  -boot order=c \
   -m 512M \
   -smp 4 \
   -vga std \
