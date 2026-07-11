@@ -255,10 +255,24 @@ static int setup_queue(struct vnet_queue *q, uint16_t qidx) {
 
     common_cfg->queue_select = qidx;
     common_cfg->queue_size = qsz;
+    /* Ensure queue size is written before descriptor addresses. */
+    __asm__ volatile ("mfence" ::: "memory");
     common_cfg->queue_desc = q->desc_phys;
     common_cfg->queue_driver = q->avail_phys;
     common_cfg->queue_device = q->used_phys;
+    /* Ensure all queue config writes are visible before enabling. */
+    __asm__ volatile ("mfence" ::: "memory");
     common_cfg->queue_enable = 1;
+    /* Read back to verify the write took effect (some QEMU versions
+     * validate queue_enable and reject invalid values). */
+    __asm__ volatile ("mfence" ::: "memory");
+    if (common_cfg->queue_enable != 1) {
+        kprintf("[virtio-net] WARNING: queue_enable rejected for qidx %u (val=%u)\\n",
+                qidx, common_cfg->queue_enable);
+        return -1;
+    }
+    /* Read back queue_notify_off AFTER enabling, per spec ordering. */
+    __asm__ volatile ("mfence" ::: "memory");
     q->notify_off = common_cfg->queue_notify_off;
     q->last_used_idx = q->used->idx;
     return 0;

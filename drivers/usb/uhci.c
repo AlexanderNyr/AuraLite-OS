@@ -247,8 +247,9 @@ static int uhci_schedule_tds(volatile struct uhci_td *first_td,
         __asm__ volatile ("sti" ::: "memory");
     }
 
-    /* Wait for completion: element_link becomes 0x1 when all TDs are done. */
-    int timeout = 10000000;
+    /* Wait for completion: element_link becomes 0x1 when all TDs are done.
+     * Hub downstream transfers can take longer due to port reset delays. */
+    int timeout = 200000000;
     while (timeout-- > 0) {
         uint32_t el = qh->element_link;
         if ((el & 0x1) && ((el & ~0xFUL) == 0)) break;
@@ -487,7 +488,7 @@ int uhci_interrupt_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
     }
     if (saved_flags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
 
-    int timeout = 200000;
+    int timeout = 2000000;
     while (timeout-- > 0) {
         if (!(td[0].ctrl & TD_CTRL_ACTIVE)) break;
         __asm__ volatile ("pause");

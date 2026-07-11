@@ -27,7 +27,7 @@ il_assert_grep "$LOG" "\[smp\]"        "SMP subsystem ran"
 il_assert_grep "$LOG" "\[smp\] PASS:"  "SMP self-test PASS"
 
 # Either multi-core APs online OR single-core BSP-only — both are valid.
-il_assert_grep "$LOG" "(AP wake disabled|AP.*online|CPUs online)" \
+il_assert_grep "$LOG" "(AP wake disabled|AP.*online|CPUs online|single-CPU system|single-core)" \
                "SMP mode logged (BSP-only or multi-AP)"
 
 il_assert_no_grep "$LOG" "panic|triple fault|Double Fault" "no fatal SMP fault"

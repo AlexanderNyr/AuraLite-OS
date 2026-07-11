@@ -16,13 +16,13 @@ trap il_dump_on_error EXIT
 il_send_delay 6
 il_send "exit"
 
-# QEMU's legacy `-usb` topology commonly places one HID device on a root port
-# and the second behind a full-speed hub. This exercises hub descriptor/status,
-# port power/reset and child enumeration.
-il_run_qemu "$LOG" 35 \
-    -usb \
-    -device "usb-kbd" \
-    -device "usb-mouse"
+# Use QEMU's internal hub topology: attach devices through a USB hub.
+# The hub is connected to the UHCI controller, and devices are behind it,
+# exercising hub descriptor/status, port power/reset and child enumeration.
+il_run_qemu "$LOG" 45 \
+    -device "usb-hub,bus=uhci.0,port=1" \
+    -device "usb-kbd,bus=uhci.0,port=1.1" \
+    -device "usb-mouse,bus=uhci.0,port=1.2"
 
 il_assert_grep "$LOG" "\[usb\] addr .*class=Hub" "USB hub enumerated"
 il_assert_grep "$LOG" "\[hub\] addr .*downstream port" "hub descriptor read"

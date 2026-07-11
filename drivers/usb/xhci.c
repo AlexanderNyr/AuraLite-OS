@@ -490,14 +490,20 @@ int xhci_init(void) {
     rt_wr(XHCI_RT_IR_IMAN(0), XHCI_IR_IMAN_IE);   /* Enable interrupter */
     rt_wr(XHCI_RT_IR_IMOD(0), 0);     /* No moderation */
 
-    /* 9) Power on ports if port power control is used. */
-    if (has_ppc) {
-        for (int i = 0; i < num_ports; i++) {
-            port_wr(i, XHCI_PORTSC_PP);
+    /* 9) Power on ports - write Port Power bit to every port regardless of
+     *    the PPC (Port Power Control) capability bit. QEMU's qemu-xhci and
+     *    some real hardware report PPC=0 because the platform firmware is
+     *    expected to handle port power, but the driver writing PP is always
+     *    harmless on xHCI and necessary on several emulated/virtual xHCIs. */
+    for (int i = 0; i < num_ports; i++) {
+        uint32_t ps = port_rd(i);
+        if (!(ps & XHCI_PORTSC_PP)) {
+            port_wr(i, ps | XHCI_PORTSC_PP);
         }
-        for (volatile int i = 0; i < 1000000; i++)
-            __asm__ volatile ("nop");
     }
+    /* Wait for port power to stabilise. */
+    for (volatile int i = 0; i < 2000000; i++)
+        __asm__ volatile ("nop");
 
     /* 10) Start the HC: INTE + RUN. */
     op_wr(XHCI_OP_USBCMD, XHCI_USBCMD_INTE | XHCI_USBCMD_RUN);
@@ -515,8 +521,8 @@ int xhci_init(void) {
 
     /* Give the HC a moment to detect attached devices after start.
      * QEMU's xhci emulation may not show CCS immediately. */
-    for (volatile int d = 0; d < 2000000; d++)
-        __asm__ volatile ("nop");
+    for (volatile int d = 0; d < 10000000; d++)
+        __asm__ volatile ("" ::: "memory");
 
     /* 11) Enumerate ports.
      *
@@ -536,28 +542,44 @@ int xhci_init(void) {
     port_count = 0;
     for (int i = 0; i < num_ports; i++) {
         uint32_t ps = port_rd(i);
-        if (ps & XHCI_PORTSC_CCS) {
-            int speed = (ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK;
-
-            /* Reset the port: set PR while preserving PP and not clearing
-             * status-change bits accidentally. */
-            port_wr(i, PORTSC_PRESERVE(ps) | XHCI_PORTSC_PR);
-            /* Wait for reset to complete (PR clears). */
-            int rt2 = 5000000;
-            while ((port_rd(i) & XHCI_PORTSC_PR) && rt2-- > 0) {
-                __asm__ volatile ("pause");
-            }
-            /* Clear status change bits by writing 1 to them (RW1C). */
-            ps = port_rd(i);
+        if (!(ps & XHCI_PORTSC_CCS)) {
+            /* No device - just clear stale change bits. */
             port_wr(i, PORTSC_PRESERVE(ps) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC |
                                                XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
-
-            /* Re-read speed after reset. */
-            ps = port_rd(i);
-            speed = (ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK;
-            kprintf("[xhci] port %d: device attached (%s)\n", i, speed_name(speed));
-            port_count++;
+            continue;
         }
+
+        int speed = (ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK;
+
+        /* Reset the port: set PR while preserving PP. */
+        port_wr(i, PORTSC_PRESERVE(ps) | XHCI_PORTSC_PR);
+        /* Wait for reset to complete (PR clears). Allow up to ~500ms. */
+        int rt2 = 20000000;
+        while ((port_rd(i) & XHCI_PORTSC_PR) && rt2-- > 0) {
+            __asm__ volatile ("pause");
+        }
+        if (rt2 <= 0) {
+            kprintf("[xhci] port %d: reset timeout\n", i);
+            continue;
+        }
+        /* Give the port time to re-establish link after reset. */
+        for (volatile int d = 0; d < 2000000; d++)
+            __asm__ volatile ("" ::: "memory");
+
+        /* Clear status change bits by writing 1 to them (RW1C). */
+        ps = port_rd(i);
+        port_wr(i, PORTSC_PRESERVE(ps) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC |
+                                           XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
+
+        /* Re-read status after reset. */
+        ps = port_rd(i);
+        if (!(ps & XHCI_PORTSC_CCS)) {
+            kprintf("[xhci] port %d: device disappeared after reset\n", i);
+            continue;
+        }
+        speed = (ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK;
+        kprintf("[xhci] port %d: device attached (%s)\n", i, speed_name(speed));
+        port_count++;
     }
 
     if (port_count == 0) {
