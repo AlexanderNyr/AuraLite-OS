@@ -301,14 +301,14 @@ static void rx_fill(void) {
 
 static void virtio_net_irq_handler(struct registers *regs) {
     (void)regs;
-    /* Drain the RX used ring */
-    while (rxq.used->idx != rxq.last_used_idx) {
-        /* Just acknowledge the packets for now, we don't do allocation in IRQ.
-         * We just mark the queue as having data. */
-        rxq.last_used_idx = rxq.used->idx;
-    }
+    /* Do not advance last_used_idx here.  That index is the consumer cursor
+     * owned by virtio_net_recv(); moving it in IRQ context silently discards
+     * every completed RX descriptor before the network stack can inspect it.
+     * The interrupt handler only acknowledges the device and wakes a waiter;
+     * descriptor consumption and recycling stay in the polling receive path. */
+    if (isr_cfg) (void)*isr_cfg;
     wq_wake_all(&vnet_rx_wq);
-    /* EOI is usually handled by the ISR dispatcher or at the end of the handler. */
+    /* EOI is handled by the common ISR dispatcher. */
 }
 
 int virtio_net_init(void) {

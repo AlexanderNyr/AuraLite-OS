@@ -35,6 +35,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/boot_info.h"
+#include "drivers/timer/pit.h"
 
 /* ---- xHCI capability registers (offsets from BAR0) ---- */
 #define XHCI_CAP_CAPLENGTH  0x00    /* Capability Register Length (8-bit) + HCIVERSION */
@@ -282,6 +283,29 @@ static inline void port_wr(int port, uint32_t val) {
     op_wr(XHCI_PORT_OFFSET + port * XHCI_PORT_STRIDE, val);
 }
 
+/* Wait for a PORTSC bit to clear using the PIT rather than an instruction-count
+ * loop.  A fixed loop count varies by orders of magnitude under QEMU/TCG and
+ * made three attached devices consume the entire integration-test timeout. */
+static int xhci_wait_port_clear(int port, uint32_t mask, uint32_t timeout_ms) {
+    uint32_t hz = timer_get_frequency();
+    if (hz != 0) {
+        uint64_t ticks = ((uint64_t)timeout_ms * hz + 999) / 1000;
+        if (ticks == 0) ticks = 1;
+        uint64_t deadline = timer_get_ticks() + ticks;
+        while (port_rd(port) & mask) {
+            if (timer_get_ticks() >= deadline) return -1;
+            __asm__ volatile ("sti; pause" ::: "memory");
+        }
+        return 0;
+    }
+
+    /* Early-boot fallback for configurations that initialise xHCI before PIT. */
+    uint32_t spins = timeout_ms * 10000u;
+    while ((port_rd(port) & mask) && spins-- != 0)
+        __asm__ volatile ("pause");
+    return (port_rd(port) & mask) ? -1 : 0;
+}
+
 static const char *speed_name(int speed) {
     switch (speed) {
     case XHCI_SPEED_FULL:  return "full-speed (12 Mbps)";
@@ -336,8 +360,12 @@ int xhci_init(void) {
     cap_regs = (volatile uint8_t *)(uintptr_t)(hhdm + mmio_phys);
 
     /* Read capability registers. */
-    op_offset = cap_rd8(XHCI_CAP_CAPLENGTH);
-    uint16_t hci_ver = cap_rd16(XHCI_CAP_CAPLENGTH + 2);
+    /* CAPLENGTH and HCIVERSION share the first capability dword.  Read them
+     * atomically: some emulated MMIO implementations do not support the
+     * unaligned/sub-dword HCIVERSION access reliably. */
+    uint32_t cap0 = cap_rd32(XHCI_CAP_CAPLENGTH);
+    op_offset = cap0 & 0xFFu;
+    uint16_t hci_ver = (uint16_t)(cap0 >> 16);
     uint32_t hcs1 = cap_rd32(XHCI_CAP_HCSPARAMS1);
     uint32_t hcs2 = cap_rd32(XHCI_CAP_HCSPARAMS2);
     uint32_t hcc1 = cap_rd32(XHCI_CAP_HCCPARAMS1);
@@ -498,12 +526,13 @@ int xhci_init(void) {
     for (int i = 0; i < num_ports; i++) {
         uint32_t ps = port_rd(i);
         if (!(ps & XHCI_PORTSC_PP)) {
-            port_wr(i, ps | XHCI_PORTSC_PP);
+            /* PORTSC contains RW1C change bits.  Writing the entire value back
+             * can clear pending connect/reset events; write only PP. */
+            port_wr(i, XHCI_PORTSC_PP);
         }
     }
-    /* Wait for port power to stabilise. */
-    for (volatile int i = 0; i < 2000000; i++)
-        __asm__ volatile ("nop");
+    /* Wait for port power to stabilise without a host-speed-dependent loop. */
+    timer_sleep_ms(20);
 
     /* 10) Start the HC: INTE + RUN. */
     op_wr(XHCI_OP_USBCMD, XHCI_USBCMD_INTE | XHCI_USBCMD_RUN);
@@ -519,10 +548,8 @@ int xhci_init(void) {
         kprintf("[xhci] controller running\n");
     }
 
-    /* Give the HC a moment to detect attached devices after start.
-     * QEMU's xhci emulation may not show CCS immediately. */
-    for (volatile int d = 0; d < 10000000; d++)
-        __asm__ volatile ("" ::: "memory");
+    /* Give the HC a moment to detect attached devices after start. */
+    timer_sleep_ms(100);
 
     /* 11) Enumerate ports.
      *
@@ -537,39 +564,35 @@ int xhci_init(void) {
                           XHCI_PORTSC_WRC | XHCI_PORTSC_OCC | \
                           XHCI_PORTSC_PRC | XHCI_PORTSC_PLC | \
                           XHCI_PORTSC_CEC)
-#define PORTSC_PRESERVE(ps) ((ps) & ~PORTSC_RW1C_MASK)
+#define PORTSC_CONTROL(ps) ((ps) & XHCI_PORTSC_PP)
+#define PORTSC_CLEAR_CHANGES(ps) (PORTSC_CONTROL(ps) | ((ps) & PORTSC_RW1C_MASK))
 
     port_count = 0;
     for (int i = 0; i < num_ports; i++) {
         uint32_t ps = port_rd(i);
         if (!(ps & XHCI_PORTSC_CCS)) {
-            /* No device - just clear stale change bits. */
-            port_wr(i, PORTSC_PRESERVE(ps) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC |
-                                               XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
+            /* Clear only change bits that are actually set. */
+            port_wr(i, PORTSC_CLEAR_CHANGES(ps));
             continue;
         }
 
         int speed = (ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK;
+        uint32_t reset_bit = (speed == XHCI_SPEED_SUPER) ?
+                             XHCI_PORTSC_WPR : XHCI_PORTSC_PR;
 
-        /* Reset the port: set PR while preserving PP. */
-        port_wr(i, PORTSC_PRESERVE(ps) | XHCI_PORTSC_PR);
-        /* Wait for reset to complete (PR clears). Allow up to ~500ms. */
-        int rt2 = 20000000;
-        while ((port_rd(i) & XHCI_PORTSC_PR) && rt2-- > 0) {
-            __asm__ volatile ("pause");
-        }
-        if (rt2 <= 0) {
-            kprintf("[xhci] port %d: reset timeout\n", i);
+        /* USB 2 ports use PR; SuperSpeed ports require Warm Port Reset.  Do
+         * not echo read-only or RW1C status bits into PORTSC. */
+        port_wr(i, PORTSC_CONTROL(ps) | reset_bit);
+        if (xhci_wait_port_clear(i, reset_bit, 500) != 0) {
+            kprintf("[xhci] port %d: reset timeout (PORTSC=0x%08x)\n",
+                    i, port_rd(i));
             continue;
         }
-        /* Give the port time to re-establish link after reset. */
-        for (volatile int d = 0; d < 2000000; d++)
-            __asm__ volatile ("" ::: "memory");
+        timer_sleep_ms(20);
 
-        /* Clear status change bits by writing 1 to them (RW1C). */
+        /* Clear status-change bits by writing one only to asserted RW1C bits. */
         ps = port_rd(i);
-        port_wr(i, PORTSC_PRESERVE(ps) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC |
-                                           XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
+        port_wr(i, PORTSC_CLEAR_CHANGES(ps));
 
         /* Re-read status after reset. */
         ps = port_rd(i);
@@ -605,11 +628,14 @@ int xhci_reset_port(int port) {
     if (op_regs == NULL || port < 0 || port >= num_ports) return -1;
     uint32_t ps = port_rd(port);
     if (!(ps & XHCI_PORTSC_CCS)) return -1;
-    port_wr(port, PORTSC_PRESERVE(ps) | XHCI_PORTSC_PR);
-    int t = 5000000;
-    while ((port_rd(port) & XHCI_PORTSC_PR) && t-- > 0) __asm__ volatile ("pause");
+    int speed = (int)((ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK);
+    uint32_t reset_bit = (speed == XHCI_SPEED_SUPER) ?
+                         XHCI_PORTSC_WPR : XHCI_PORTSC_PR;
+    port_wr(port, PORTSC_CONTROL(ps) | reset_bit);
+    if (xhci_wait_port_clear(port, reset_bit, 500) != 0) return -1;
+    timer_sleep_ms(20);
     ps = port_rd(port);
-    port_wr(port, PORTSC_PRESERVE(ps) | (XHCI_PORTSC_CSC | XHCI_PORTSC_PEC | XHCI_PORTSC_PRC | XHCI_PORTSC_PLC));
+    port_wr(port, PORTSC_CLEAR_CHANGES(ps));
     return (port_rd(port) & XHCI_PORTSC_CCS) ? 0 : -1;
 }
 
@@ -626,8 +652,11 @@ static uint32_t trb_cc(const struct xhci_trb *t) {
 }
 
 static int xhci_poll_event(uint32_t want_type, struct xhci_trb *out) {
-    int timeout = 10000000;
-    while (timeout-- > 0) {
+    uint32_t hz = timer_get_frequency();
+    uint64_t deadline = hz ? timer_get_ticks() + hz : 0; /* one second */
+    uint32_t fallback_spins = 1000000;
+
+    for (;;) {
         struct xhci_trb *e = &event_ring[event_ring_idx];
         if ((e->flags & XHCI_TRB_CYCLE) == (uint32_t)event_ring_cycle) {
             if (out) *out = *e;
@@ -642,9 +671,14 @@ static int xhci_poll_event(uint32_t want_type, struct xhci_trb *out) {
             rt_wr(XHCI_RT_IR_ERDP(0), erdp | XHCI_ERDP_BUSY);
             if (!want_type || type == want_type) return 0;
         }
-        __asm__ volatile ("pause");
+        if (hz) {
+            if (timer_get_ticks() >= deadline) return -1;
+            __asm__ volatile ("sti; pause" ::: "memory");
+        } else {
+            if (fallback_spins-- == 0) return -1;
+            __asm__ volatile ("pause");
+        }
     }
-    return -1;
 }
 
 static int xhci_cmd_submit(struct xhci_trb trb, struct xhci_trb *event_out) {
