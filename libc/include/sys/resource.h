@@ -2,6 +2,7 @@
 #define _SYS_RESOURCE_H
 
 #include <sys/types.h>
+#include <time.h>
 
 #define RLIMIT_CPU     0
 #define RLIMIT_FSIZE   1

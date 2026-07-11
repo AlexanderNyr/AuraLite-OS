@@ -171,7 +171,7 @@ int posix_spawn(pid_t *pid, const char *path,
 
     if (child == 0) {
         /* Child */
-        int err = spawn_do_exec(path, fa, attr, argv, envp);
+        int err __attribute__((unused)) = spawn_do_exec(path, fa, attr, argv, envp);
         _exit(127);
     }
 

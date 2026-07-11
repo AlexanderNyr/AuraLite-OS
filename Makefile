@@ -213,13 +213,13 @@ USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 # user program via USER_COMMON).  These provide the P9/P10 surface: pthreads,
 # dirent, regex, env, getopt, pwd, utsname, getrlimit, and the math/stdio/
 # stdlib/string extensions.
-LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o rwlock.o barrier.o spin.o $(USER_BUILD)/dirent.o \
+LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o $(USER_BUILD)/rwlock.o $(USER_BUILD)/barrier.o $(USER_BUILD)/spin.o $(USER_BUILD)/dirent.o \
                    $(USER_BUILD)/regex.o $(USER_BUILD)/env.o \
                    $(USER_BUILD)/getopt.o $(USER_BUILD)/pwd.o \
                    $(USER_BUILD)/utsname.o $(USER_BUILD)/resource.o \
                    $(USER_BUILD)/math_extra.o $(USER_BUILD)/stdio_extra.o \
                    $(USER_BUILD)/stdlib_extra.o $(USER_BUILD)/string_extra.o \
-                   $(USER_BUILD)/posix_extra.o posix_spawn.o q10_stubs.o
+                   $(USER_BUILD)/posix_extra.o $(USER_BUILD)/posix_spawn.o $(USER_BUILD)/q10_stubs.o
 
 USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o \
                $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o $(USER_BUILD)/setjmp.o \
@@ -414,6 +414,8 @@ $(USER_BUILD)/%.o: libc/src/%.c
 
 # The pthread runtime lives in a sub-directory.
 $(USER_BUILD)/pthread.o: libc/src/pthread/pthread.c libc/include/pthread.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/rwlock.o: libc/src/pthread/rwlock.c libc/include/pthread.h
 	@mkdir -p $(dir $@)
@@ -788,9 +790,13 @@ $(BUILD_DIR)/test_stdlib_ext: tests/unit/test_stdlib_ext.c
 
 # ---- Phase Q11: new POSIX.1-2024 functions unit test ----
 $(BUILD_DIR)/test_q11_new: tests/unit/test_q11_new.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 # ---- Phase Q6: pthread extension unit test ----
 $(BUILD_DIR)/test_pthread_ext: tests/unit/test_pthread_ext.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 # ---- Phase Q9: posix_spawn unit test ----
 $(BUILD_DIR)/test_posix_spawn: tests/unit/test_posix_spawn.c
@@ -800,18 +806,10 @@ $(BUILD_DIR)/test_posix_spawn: tests/unit/test_posix_spawn.c
 # ---- Phase Q10: stub headers unit test ----
 $(BUILD_DIR)/test_q10_stubs: tests/unit/test_q10_stubs.c
 	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 # ---- Phase Q7: IPC unit test ----
 $(BUILD_DIR)/test_ipc: tests/unit/test_ipc.c
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
-
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
-
-
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
-
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

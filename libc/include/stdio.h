@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include <sys/types.h>
 
 /* User-space stdio for AuraLite OS: FILE* streams over the fd syscalls. */
 

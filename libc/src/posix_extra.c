@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <signal.h>
+#include <errno.h>
 #include <mqueue.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -557,6 +558,7 @@ mqd_t mq_open(const char *name, int oflag, ...) {
     _mq_name_to_path(name, path, sizeof(path));
     int fd = open(path, oflag | O_RDWR, mode);
     if (fd < 0) return MQD_INVALID;
+    (void)attr;
     return (mqd_t)(intptr_t)fd;
 }
 

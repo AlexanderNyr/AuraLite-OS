@@ -180,6 +180,7 @@ static unsigned _hash(const char *s) {
 
 ENTRY *hsearch(ENTRY item, ACTION action) {
     if (!_htab_inited) return NULL;
+    static ENTRY _hsearch_result;  /* static to avoid returning local address */
     unsigned idx = _hash(item.key) % HTAB_SIZE;
     unsigned start = idx;
     do {
@@ -189,12 +190,17 @@ ENTRY *hsearch(ENTRY item, ACTION action) {
                 if (!_htab[idx].key) return NULL;
                 _htab[idx].data = item.data;
                 _htab[idx].used = 1;
-                return &(ENTRY){_htab[idx].key, _htab[idx].data};
+                _hsearch_result.key = _htab[idx].key;
+                _hsearch_result.data = _htab[idx].data;
+                return &_hsearch_result;
             }
             return NULL;
         }
-        if (strcmp(_htab[idx].key, item.key) == 0)
-            return &(ENTRY){_htab[idx].key, _htab[idx].data};
+        if (strcmp(_htab[idx].key, item.key) == 0) {
+            _hsearch_result.key = _htab[idx].key;
+            _hsearch_result.data = _htab[idx].data;
+            return &_hsearch_result;
+        }
         idx = (idx + 1) % HTAB_SIZE;
     } while (idx != start);
     return NULL;
@@ -376,8 +382,11 @@ void wordfree(wordexp_t *pwordexp) {
 
 int ftw(const char *dir, int (*fn)(const char *, const struct stat *, int),
         int depth) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
     return nftw(dir, (int (*)(const char *, const struct stat *, int, struct FTW *))fn,
                 depth, 0);
+#pragma GCC diagnostic pop
 }
 
 int nftw(const char *dir, int (*fn)(const char *, const struct stat *, int, struct FTW *),
@@ -486,8 +495,9 @@ clock_t times(struct tms *buf) {
 key_t ftok(const char *path, int id) {
     struct stat st;
     if (stat(path, &st) < 0) return (key_t)-1;
-    /* Standard ftok: combine dev+ino with id */
-    return (key_t)((id & 0xFF) | ((st.st_dev & 0xFF) << 8) | ((st.st_ino & 0xFFFF) << 16));
+    /* Standard ftok: combine dev+ino with id.  Our struct stat lacks st_dev,
+       so we use 0 for the device component. */
+    return (key_t)((id & 0xFF) | ((st.st_inode & 0xFF) << 8) | ((st.st_inode >> 8 & 0xFFFF) << 16));
 }
 
 /* ====================== SysV IPC stubs ==================================== */

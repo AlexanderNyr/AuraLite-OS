@@ -1569,3 +1569,10 @@ void __stdio_cleanup(void) {
         if (s) fflush(s);
     }
 }
+
+/* getentropy(2) — wrapper for syscall 318 */
+int getentropy(void *buffer, size_t length) {
+    long ret = syscall(318, (long)buffer, (long)length, 0, 0, 0, 0);
+    if (ret < 0) { errno = (int)-ret; return -1; }
+    return 0;
+}

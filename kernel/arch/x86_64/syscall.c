@@ -1529,6 +1529,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         char path[256];
         int flags = (int)a4;
         if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        (void)dirfd;
         struct vfs_stat st;
         int r = (flags & 0x100)
                 ? vfs_lstat(path, &st) : vfs_stat(path, &st);
