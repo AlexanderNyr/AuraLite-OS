@@ -52,6 +52,12 @@
 #include "drivers/usb/ehci.h"
 #include "drivers/usb/xhci.h"
 #include "drivers/usb/usb_core.h"
+#include "drivers/usb/usb_hub.h"
+#include "drivers/usb/cdc_acm.h"
+#include "drivers/usb/usb_audio.h"
+#include "drivers/usb/usb_printer.h"
+#include "drivers/usb/usb_string.h"
+#include "drivers/usb/usb_isoc.h"
 #include "drivers/usb/msc.h"
 #include "drivers/usb/hid.h"
 #include "drivers/bluetooth/bt.h"
@@ -392,17 +398,37 @@ void kmain(boot_info_t *boot_info) {
     xhci_init();
     xhci_self_test();
 
-    /* USB core + Mass Storage. */
-    kprintf("[boot] initialising USB device core...\n");
+    /* USB core + full stack enumeration. */
+    kprintf("[boot] initialising USB device core — FULL SUPPORT...\n");
+    usb_string_init();
+    usb_isoc_init();
+    usb_hub_init();
     usb_enumerate_all();
     usb_core_self_test();
 
-    kprintf("[boot] initialising USB Mass Storage...\n");
+    kprintf("[boot] initialising USB full class drivers (string, hub, isoc)...\n");
+    usb_string_self_test();
+    usb_hub_self_test();
+    usb_isoc_self_test();
+
+    kprintf("[boot] initialising USB Mass Storage (BBB + SCSI)...\n");
     msc_init();
     msc_self_test();
 
+    kprintf("[boot] initialising USB CDC ACM (serial/modem)...\n");
+    cdc_acm_init();
+    cdc_acm_self_test();
+
+    kprintf("[boot] initialising USB Audio (UAC1/UAC2 isoc)...\n");
+    usb_audio_init();
+    usb_audio_self_test();
+
+    kprintf("[boot] initialising USB Printer (7/1/x bulk)...\n");
+    usb_printer_init();
+    usb_printer_self_test();
+
     /* Bluetooth. */
-    kprintf("[boot] initialising Bluetooth HCI...\n");
+    kprintf("[boot] initialising Bluetooth HCI (now over full USB CDC/HID)...\n");
     bt_init();
     bt_self_test();
 
@@ -412,7 +438,7 @@ void kmain(boot_info_t *boot_info) {
     wifi_self_test();
 
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
-    kprintf("[boot] initialising graphics + keyboard + mouse...\n");
+    kprintf("[boot] initialising graphics + keyboard + mouse (PS/2 + USB HID full)...\n");
     gfx_init();
     if (virtio_gpu_init() == 0) {
         const virtio_gpu_info_t *vg = virtio_gpu_get_info();

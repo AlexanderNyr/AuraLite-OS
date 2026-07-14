@@ -3,35 +3,25 @@
 
 #include <stdint.h>
 
-/*
- * xHCI (eXtensible Host Controller Interface) — USB 3.0 / 2.0.
- *
- * The most advanced USB host controller interface: superseded UHCI, OHCI, and
- * EHCI. Handles all speeds (low/full/high/superSpeed) in a single driver.
- *
- * PCI class: 0x0C / subclass 0x03 / prog_if 0x30 (xHCI).
- *
- * QEMU: -device qemu-xhci,id=xhci (or -device nec-usb-xhci)
- */
-
 #define XHCI_MAX_PORTS  32
 #define XHCI_MAX_SLOTS  32
 
-/* Initialise the xHCI controller. Returns 0 on success. */
 int xhci_init(void);
-
-/* Get the number of ports with devices attached. */
 int xhci_get_port_count(void);
 int xhci_port_has_device(int port);
 int xhci_port_speed(int port);
 int xhci_reset_port(int port);
+int xhci_warm_reset_port(int port);
+int xhci_suspend_port(int port);
+int xhci_resume_port(int port);
+int xhci_suspend(void);
+int xhci_resume(void);
 
-/* Address a device attached to an xHCI root port.  xHCI does not use the USB
- * SET_ADDRESS request on the wire; usb_core calls this when it reaches the
- * SET_ADDRESS enumeration step. */
 int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packet0);
+int xhci_configure_endpoint(uint8_t usb_addr, uint8_t endpoint, uint16_t max_packet, int ep_type);
+int xhci_disable_slot(uint8_t slot_id);
+int xhci_stop_endpoint(uint8_t slot_id, uint8_t ep_id);
 
-/* Transfer backend API. */
 int xhci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data,
                           uint16_t data_len, uint8_t max_packet0);
@@ -40,8 +30,14 @@ int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
 int xhci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
                             int low_speed, uint16_t max_packet,
                             void *data, uint16_t len, int *toggle_io);
-
-/* Gate self-test. */
+int xhci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint,
+                              int low_speed, uint16_t max_packet,
+                              void *data, uint32_t len, int is_in);
+int xhci_isochronous_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
+                                 uint16_t max_packet, void *data, uint32_t len,
+                                 uint32_t num_tds, uint32_t *transferred);
+int xhci_poll_event(void *event_trb_out);
+int xhci_handle_events(void);
 void xhci_self_test(void);
 
-#endif /* AURALITE_DRIVERS_USB_XHCI_H */
+#endif

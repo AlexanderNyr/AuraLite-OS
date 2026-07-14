@@ -3,36 +3,17 @@
 
 #include <stdint.h>
 
-/*
- * EHCI (Enhanced Host Controller Interface) USB 2.0 driver.
- *
- * Targets high-speed (480 Mbps) USB devices via PCI class 0x0C/0x03/prog_if
- * 0x20. Uses memory-mapped registers and a periodic frame list with linked
- * lists of iTDs (isochronous), siTDs (split), and qTDs (async).
- *
- * Key EHCI concepts:
- *   - The async schedule is a circular list of Queue Heads (QH) linked via
- *     physical addresses. Each QH points to a chain of qTDs (queue Transfer
- *     Descriptors).
- *   - The periodic schedule uses a 1024-entry frame list, each pointing to
- *     QHs for interrupt endpoints.
- *   - Companion controllers (UHCI/OHCI) handle low/full-speed devices.
- *
- * QEMU: EHCI is the default high-speed USB controller. It appears
- * automatically when `-usb` is used (QEMU adds a built-in ICH9 EHCI).
- */
+#define EHCI_MAX_PORTS  15
 
-#define EHCI_MAX_PORTS  15   /* EHCI root hub can have up to 15 ports */
-
-/* Initialise the EHCI controller. Returns 0 on success. */
 int ehci_init(void);
-
-/* Get the number of ports with devices attached. */
 int ehci_get_port_count(void);
 int ehci_port_has_device(int port);
 int ehci_reset_port_public(int port);
+int ehci_suspend_port(int port);
+int ehci_resume_port(int port);
+int ehci_suspend(void);
+int ehci_resume(void);
 
-/* Transfer backend API. */
 int ehci_control_transfer(uint8_t dev_addr, int low_speed,
                           const void *setup, void *data,
                           uint16_t data_len, uint8_t max_packet0);
@@ -41,8 +22,10 @@ int ehci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
 int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
                             int low_speed, uint16_t max_packet,
                             void *data, uint16_t len, int *toggle_io);
-
-/* Gate self-test. */
+int ehci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint,
+                              int low_speed, uint16_t max_packet,
+                              void *data, uint32_t len, int is_in);
+int ehci_split_transaction_setup(uint8_t hub_addr, uint8_t hub_port, uint8_t dev_addr, uint8_t endpoint);
 void ehci_self_test(void);
 
-#endif /* AURALITE_DRIVERS_USB_EHCI_H */
+#endif
