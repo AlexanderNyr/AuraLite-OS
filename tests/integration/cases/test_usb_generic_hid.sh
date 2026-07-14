@@ -18,7 +18,7 @@ il_send "exit"
 
 il_run_qemu "$LOG" 35 \
     -device "qemu-xhci,id=xhci" \
-    -device "usb-tablet,bus=xhci.0,port=1"
+    -device "usb-tablet,bus=xhci.0"
 
 il_assert_grep "$LOG" "\[usb\]   HID descriptor: report_len=" "HID descriptor parsed from config"
 il_assert_grep "$LOG" "\[hid\] parsed generic pointer report" "generic report descriptor parsed"

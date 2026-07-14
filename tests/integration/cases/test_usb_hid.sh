@@ -20,8 +20,8 @@ il_send "exit"
 # which can hide the second device behind a hub AuraLite does not yet drive.
 il_run_qemu "$LOG" 25 \
     -device "piix3-usb-uhci,id=uhci" \
-    -device "usb-kbd,bus=uhci.0,port=1" \
-    -device "usb-mouse,bus=uhci.0,port=2"
+    -device "usb-kbd,bus=uhci.0" \
+    -device "usb-mouse,bus=uhci.0"
 
 il_assert_grep "$LOG" "\[usb\]   interface 0: class=0x03 .*proto=0x01" \
     "USB boot keyboard interface enumerated"

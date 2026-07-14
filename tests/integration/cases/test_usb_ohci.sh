@@ -21,10 +21,10 @@ il_send "exit"
 
 il_run_qemu "$LOG" 35 \
     -device "pci-ohci,id=ohci" \
-    -device "usb-kbd,bus=ohci.0,port=1" \
-    -device "usb-mouse,bus=ohci.0,port=2" \
+    -device "usb-kbd,bus=ohci.0" \
+    -device "usb-mouse,bus=ohci.0" \
     -drive "file=$USB,format=raw,if=none,id=ohcistick" \
-    -device "usb-storage,bus=ohci.0,port=3,drive=ohcistick"
+    -device "usb-storage,bus=ohci.0 drive=ohcistick"
 
 il_assert_grep "$LOG" "\[ohci\] PASS: .* USB device" "OHCI root ports detected"
 il_assert_grep "$LOG" "\[hid\] keyboard ready"          "OHCI HID keyboard ready"

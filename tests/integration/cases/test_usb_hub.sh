@@ -20,9 +20,9 @@ il_send "exit"
 # The hub is connected to the UHCI controller, and devices are behind it,
 # exercising hub descriptor/status, port power/reset and child enumeration.
 il_run_qemu "$LOG" 45 \
-    -device "usb-hub,bus=uhci.0,port=1" \
-    -device "usb-kbd,bus=uhci.0,port=1.1" \
-    -device "usb-mouse,bus=uhci.0,port=1.2"
+    -device "usb-hub,bus=uhci.0" \
+    -device "usb-kbd,bus=uhci.0" \
+    -device "usb-mouse,bus=uhci.0"
 
 il_assert_grep "$LOG" "\[usb\] addr .*class=Hub" "USB hub enumerated"
 il_assert_grep "$LOG" "\[hub\] addr .*downstream port" "hub descriptor read"

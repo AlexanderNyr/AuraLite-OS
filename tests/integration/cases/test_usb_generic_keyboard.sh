@@ -20,7 +20,7 @@ il_send "exit"
 # and uses the generic keyboard path instead of relying only on Boot Protocol.
 il_run_qemu "$LOG" 30 \
     -device "qemu-xhci,id=xhci" \
-    -device "usb-kbd,bus=xhci.0,port=1"
+    -device "usb-kbd,bus=xhci.0"
 
 il_assert_grep "$LOG" "\[usb\]   HID descriptor: report_len=" "keyboard HID descriptor parsed"
 il_assert_grep "$LOG" "\[hid\] parsed generic keyboard report" "generic keyboard report parsed"

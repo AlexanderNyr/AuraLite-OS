@@ -65,7 +65,7 @@ def hmp(cmd):
     time.sleep(0.2)
     s.close()
 
-hmp('device_add usb-storage,bus=xhci.0,port=1,drive=hotstick,id=hotmsc')
+hmp('device_add usb-storage,bus=xhci.0 drive=hotstick,id=hotmsc')
 if not wait_for('USB mass storage ready (hotplug)', 30):
     raise SystemExit('hotplug MSC did not become ready')
 hmp('device_del hotmsc')

@@ -18,8 +18,8 @@ il_send "exit"
 
 il_run_qemu "$LOG" 35 \
     -device "usb-ehci,id=ehci" \
-    -device "usb-kbd,bus=ehci.0,port=1" \
-    -device "usb-mouse,bus=ehci.0,port=2"
+    -device "usb-kbd,bus=ehci.0" \
+    -device "usb-mouse,bus=ehci.0"
 
 il_assert_grep "$LOG" "\[usb\] addr .*EHCI.*class=HID" "EHCI HID devices enumerated"
 il_assert_grep "$LOG" "\[hid\] parsed generic keyboard report" "EHCI keyboard report parsed"

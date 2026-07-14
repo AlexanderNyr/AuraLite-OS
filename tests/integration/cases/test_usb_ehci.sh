@@ -22,7 +22,7 @@ il_send "exit"
 il_run_qemu "$LOG" 35 \
     -device "usb-ehci,id=ehci" \
     -drive "file=$USB,format=raw,if=none,id=ehcistick" \
-    -device "usb-storage,bus=ehci.0,drive=ehcistick"
+    -device "usb-storage,bus=ehci.0 drive=ehcistick"
 
 il_assert_grep "$LOG" "\[ehci\] .*high-speed device" "EHCI high-speed port detected"
 il_assert_grep "$LOG" "\[usb\] addr .*EHCI"          "EHCI device enumerated"
