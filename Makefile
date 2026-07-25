@@ -665,6 +665,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
                 $(BUILD_DIR)/test_usb $(BUILD_DIR)/test_wm \
+                $(BUILD_DIR)/test_usb_audio $(BUILD_DIR)/test_usb_cdc \
+                $(BUILD_DIR)/test_usb_full $(BUILD_DIR)/test_usb_hub \
+                $(BUILD_DIR)/test_usb_isoc \
                 $(BUILD_DIR)/test_vfs $(BUILD_DIR)/test_network \
                 $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
                 $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
@@ -831,6 +834,27 @@ $(BUILD_DIR)/test_gdt_tss: tests/unit/test_gdt_tss.c kernel/arch/x86_64/gdt.c ke
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_gdt_tss.c kernel/arch/x86_64/gdt.c -o $@
 
 $(BUILD_DIR)/test_usb: tests/unit/test_usb.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# ---- USB class/protocol point tests (previously present but not wired up) ----
+$(BUILD_DIR)/test_usb_audio: tests/unit/test_usb_audio.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_usb_cdc: tests/unit/test_usb_cdc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_usb_full: tests/unit/test_usb_full.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_usb_hub: tests/unit/test_usb_hub.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_usb_isoc: tests/unit/test_usb_isoc.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

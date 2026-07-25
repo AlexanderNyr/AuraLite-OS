@@ -8,6 +8,7 @@ int main(void){
     printf("Max ports %d depth %d hubs %d -> PASS\n", max_ports, max_depth, max_hubs);
     for (int tt=0; tt<4; tt++) printf(" TT think time %d -> %d FS/LS bits\n", tt, tt*8);
     uint32_t CCS=1, CSC=1<<1, PES=1<<2, PR=1<<4, PPS=1<<8;
+    (void)CSC; (void)PR;
     uint32_t status = CCS|PES|PPS;
     printf("Port status 0x%04x CCS=%d PES=%d PPS=%d -> PASS\n", status, !!(status&CCS), !!(status&PES), !!(status&PPS));
     uint16_t chars = 0x0009;
