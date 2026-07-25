@@ -41,7 +41,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
-            mtools ovmf socat dosfstools \
+            mtools ovmf socat dosfstools e2fsprogs \
             autoconf automake libtool git
 
       - name: Check build dependencies
@@ -79,8 +79,8 @@ jobs:
         run: bash tests/integration/bl7_dual_smoke.sh
         continue-on-error: true    # OVMF assets vary between runners
 
-      - name: Run legacy QEMU integration tests (fast subset)
-        run: make test-integration-fast
+      - name: Run QEMU integration tests
+        run: make test-integration
         env:
           NO_COLOR: "1"
         continue-on-error: true    # existing legacy tests unaffected by BL8
