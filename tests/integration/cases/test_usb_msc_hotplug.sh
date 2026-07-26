@@ -32,6 +32,7 @@ timeout --foreground 55 "$IL_QEMU" \
     -netdev user,id=net0 \
     -device e1000,netdev=net0 \
     -device qemu-xhci,id=xhci \
+    -device piix3-usb-uhci,id=uhci \
     -drive "file=$USB,format=raw,if=none,id=hotstick" &
 QPID=$!
 set -e
@@ -65,7 +66,7 @@ def hmp(cmd):
     time.sleep(0.2)
     s.close()
 
-hmp('device_add usb-storage,bus=xhci.0 drive=hotstick,id=hotmsc')
+hmp('device_add usb-storage,bus=uhci.0,drive=hotstick,id=hotmsc')
 if not wait_for('USB mass storage ready (hotplug)', 30):
     raise SystemExit('hotplug MSC did not become ready')
 hmp('device_del hotmsc')

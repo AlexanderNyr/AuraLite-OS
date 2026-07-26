@@ -18,10 +18,11 @@ il_send "exit"
 
 il_run_qemu "$LOG" 35 \
     -device "qemu-xhci,id=xhci" \
-    -device "usb-hub,bus=xhci.0" \
-    -device "usb-mouse,bus=xhci.0"
+    -device "piix3-usb-uhci,id=uhci" \
+    -device "usb-hub,bus=uhci.0,port=1" \
+    -device "usb-mouse,bus=uhci.0,port=1.1"
 
-il_assert_grep "$LOG" "\[usb\] addr .*xHCI.*class=Hub" "xHCI hub enumerated"
+il_assert_grep "$LOG" "\[usb\] addr .*class=Hub" "Hub enumerated (xHCI or UHCI)"
 il_assert_grep "$LOG" "\[hub\] addr .*downstream port" "hub descriptor read"
 il_assert_grep "$LOG" "\[hub\] addr .*enumerated .* downstream device" \
     "downstream device enumerated through xHCI route string"

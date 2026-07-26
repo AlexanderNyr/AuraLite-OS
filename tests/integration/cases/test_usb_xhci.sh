@@ -24,7 +24,7 @@ il_run_qemu "$LOG" 40 \
     -device "usb-kbd,bus=xhci.0" \
     -device "usb-mouse,bus=xhci.0" \
     -drive "file=$USB,format=raw,if=none,id=xhcistick" \
-    -device "usb-storage,bus=xhci.0 drive=xhcistick"
+    -device "usb-storage,bus=xhci.0,drive=xhcistick"
 
 il_assert_grep "$LOG" "\[xhci\] addressed device" "xHCI Address Device command works"
 il_assert_grep "$LOG" "\[usb\] addr .*xHCI.*Mass Storage" "xHCI MSC enumerated"

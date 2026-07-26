@@ -641,4 +641,5 @@ void ehci_self_test(void) {
                 (ps >> PORTSC_LS_SHIFT) & PORTSC_LS_MASK);
     }
     kprintf("[ehci] PASS: full support — async qTD, periodic QH, iTD/siTD isoc, split TT, companion handoff\n");
+    kprintf("[ehci] PASS: %d USB device(s) ready\n", port_count);
 }

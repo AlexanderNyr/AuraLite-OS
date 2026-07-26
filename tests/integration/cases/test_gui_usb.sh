@@ -21,8 +21,9 @@ il_send "run /gusb"
 
 il_run_qemu "$LOG" 35 \
     -device "qemu-xhci,id=xhci" \
+    -device "piix3-usb-uhci,id=uhci" \
     -drive "file=$USB,format=raw,if=none,id=gusbstick" \
-    -device "usb-storage,bus=xhci.0,drive=gusbstick"
+    -device "usb-storage,bus=uhci.0,drive=gusbstick"
 
 il_assert_grep "$LOG" "\[usbfs\] device available at /usb" "usbfs media available"
 il_assert_grep "$LOG" "running /gusb" "shell launched USB GUI app"

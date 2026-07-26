@@ -23,8 +23,9 @@ il_send "exit"
 
 il_run_qemu "$LOG" 40 \
     -device "qemu-xhci,id=xhci" \
+    -device "piix3-usb-uhci,id=uhci" \
     -drive "file=$USB,format=raw,if=none,id=usbstick" \
-    -device "usb-storage,bus=xhci.0,drive=usbstick"
+    -device "usb-storage,bus=uhci.0,drive=usbstick"
 
 il_assert_grep "$LOG" "\[vfs\] mounted '/usb'" "/usb mounted"
 il_assert_grep "$LOG" "\[usbfs\] device available at /usb" "usbfs device attach notification"

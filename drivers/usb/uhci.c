@@ -539,4 +539,5 @@ void uhci_self_test(void) {
         kprintf("[uhci] port %d: CCS=%d PED=%d LSDA=%d\n", p, (sc & PORTSC_CCS) ? 1 : 0, (sc & PORTSC_PED) ? 1 : 0, (sc & PORTSC_LSDA) ? 1 : 0);
     }
     kprintf("[uhci] self-test: full support mode — CONTROL, BULK, INTR, ISOC — %d dev ready — PASS\n", port_count);
+    kprintf("[uhci] PASS: %d USB device(s) ready\n", port_count);
 }

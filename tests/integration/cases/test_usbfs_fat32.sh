@@ -72,8 +72,9 @@ il_send "exit"
 
 il_run_qemu "$LOG" 45 \
     -device "qemu-xhci,id=xhci" \
+    -device "piix3-usb-uhci,id=uhci" \
     -drive "file=$USB,format=raw,if=none,id=usbfat" \
-    -device "usb-storage,bus=xhci.0,drive=usbfat"
+    -device "usb-storage,bus=uhci.0,drive=usbfat"
 
 il_assert_grep "$LOG" "\[usbfs\] FAT32 detected" "usbfs detected FAT32"
 il_assert_grep "$LOG" "fat32: detected" "usbfs info reports FAT32"

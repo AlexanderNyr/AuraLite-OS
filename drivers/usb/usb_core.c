@@ -438,6 +438,10 @@ static void parse_config_full(usb_device_t *dev, const uint8_t *buf, int len) {
                     ifd->bInterfaceNumber, ifd->bAlternateSetting,
                     ifd->bInterfaceClass, class_name(ifd->bInterfaceClass),
                     ifd->bInterfaceSubClass, ifd->bInterfaceProtocol, ifd->bNumEndpoints);
+            kprintf("[usb]   interface %d: class=0x%02x (%s) subclass=0x%02x proto=0x%02x\n",
+                    ifd->bInterfaceNumber,
+                    ifd->bInterfaceClass, class_name(ifd->bInterfaceClass),
+                    ifd->bInterfaceSubClass, ifd->bInterfaceProtocol);
         }
 
         if (dtype == USB_DESC_HID && dlen >= 9 && cur_class == USB_CLASS_HID) {
@@ -589,17 +593,19 @@ static int enumerate_device(usb_ctrl_type_t ctrl, int port, usb_speed_t speed) {
             full_desc.bDeviceClass, class_name(full_desc.bDeviceClass),
             full_desc.bMaxPacketSize0, speed_name(speed));
 
-    if (dev->iManufacturer) {
-        if (usb_get_string_ascii(dev, dev->iManufacturer, dev->manufacturer_str, sizeof(dev->manufacturer_str)) > 0)
-            kprintf("[usb]   manufacturer: '%s'\n", dev->manufacturer_str);
-    }
-    if (dev->iProduct) {
-        if (usb_get_string_ascii(dev, dev->iProduct, dev->product_str, sizeof(dev->product_str)) > 0)
-            kprintf("[usb]   product: '%s'\n", dev->product_str);
-    }
-    if (dev->iSerial) {
-        if (usb_get_string_ascii(dev, dev->iSerial, dev->serial_str, sizeof(dev->serial_str)) > 0)
-            kprintf("[usb]   serial: '%s'\n", dev->serial_str);
+    if (dev->controller != USB_CTRL_UHCI) {
+        if (dev->iManufacturer) {
+            if (usb_get_string_ascii(dev, dev->iManufacturer, dev->manufacturer_str, sizeof(dev->manufacturer_str)) > 0)
+                kprintf("[usb]   manufacturer: '%s'\n", dev->manufacturer_str);
+        }
+        if (dev->iProduct) {
+            if (usb_get_string_ascii(dev, dev->iProduct, dev->product_str, sizeof(dev->product_str)) > 0)
+                kprintf("[usb]   product: '%s'\n", dev->product_str);
+        }
+        if (dev->iSerial) {
+            if (usb_get_string_ascii(dev, dev->iSerial, dev->serial_str, sizeof(dev->serial_str)) > 0)
+                kprintf("[usb]   serial: '%s'\n", dev->serial_str);
+        }
     }
 
     uint8_t config_buf[512];

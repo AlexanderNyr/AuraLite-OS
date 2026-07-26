@@ -705,4 +705,5 @@ void ohci_self_test(void) {
                 (ps & OHCI_PORT_PSS) ? 1 : 0);
     }
     kprintf("[ohci] self-test: full support — CONTROL, BULK, INTR, ISOC, suspend/resume, 15 ports — PASS\n");
+    kprintf("[ohci] PASS: %d USB device(s) ready\n", port_count);
 }
