@@ -37,35 +37,33 @@ uint64_t pml4_phys = 0;
 
 /* efi_setup_hhdm_paging -- allocate PTs and populate them.
  *
- * Layout (mirrors BL4 but with a wider HHDM to reach the GOP MMIO):
+ * Layout (mirrors BL4 but with a wider HHDM to reach the GOP MMIO and 
+ * using 2-MiB pages instead of 1-GiB pages to support Intel Sandy Bridge 
+ * CPUs which do not support 1-GiB page sizes):
  *
- *   PML4[0]   -> PDPT_ident  : identity map 0..4 GiB (4 * 1-GiB PDPTEs
- *                              each pointing at a shared PD page with
- *                              512 * 2-MiB entries -- but we actually
- *                              use 1-GiB PS=1 PDPTEs to save 3 PD pages).
+ *   PML4[0]   -> PDPT_ident  : identity map 0..64 GiB (64 * 1-GiB PDPTEs
+ *                              each pointing to its own Page Directory (PD) page
+ *                              which maps 512 * 2-MiB entries).
  *   PML4[256] -> PDPT_hhdm   : HHDM identical to PDPT_ident, sharing
- *                              the same 4 * 1-GiB pages, so virt
- *                              0xffff800000000000 .. +4 GiB reaches the
+ *                              the same 64 * 1-GiB pages, so virt
+ *                              0xffff800000000000 .. +64 GiB reaches the
  *                              framebuffer MMIO too (GOP FB usually
  *                              sits at phys 0x80000000+ on OVMF).
  *   PML4[511] -> PDPT_khigh  : kernel higher half via a small PD with
  *                              two 2-MiB entries (kernel image only).
  *
- * 1-GiB pages need CPU support for CR4.PSE + PDPTE.PS + long mode;
- * every x86_64 CPU made since Barcelona (2007) has it.  QEMU TCG
- * emulates it, so we use them unconditionally.  Fallback to per-2-MiB
- * PDs would triple the number of pages we allocate.
- *
- * Called BEFORE ExitBootServices so we can use AllocatePages to get
- * clean physical pages from the EFI allocator.
+ * We allocate 68 physical pages:
+ *   Page 0: PML4
+ *   Page 1: PDPT_ident
+ *   Page 2: PDPT_khigh
+ *   Page 3: PD_kernel
+ *   Pages 4..67: 64 PD pages (each mapping 1 GiB using 2-MiB pages)
  *
  * Returns 0 on success, non-zero on allocation failure. */
 EFI_STATUS efi_setup_hhdm_paging(EFI_BOOT_SERVICES *BS) {
-    /* Four contiguous 4-KiB pages: PML4, PDPT_ident, PDPT_khigh, PD_kernel.
-     * PDPT_hhdm is the same physical page as PDPT_ident (see below). */
     uint64_t base = 0;
     EFI_STATUS s = BS->AllocatePages(AllocateAnyPages, EfiLoaderData,
-                                     4, &base);
+                                     68, &base);
     if (s != EFI_SUCCESS) return s;
 
     uint64_t *pml4      = (uint64_t *)(uintptr_t)(base + 0*4096);
@@ -73,12 +71,23 @@ EFI_STATUS efi_setup_hhdm_paging(EFI_BOOT_SERVICES *BS) {
     uint64_t *pdpt_high = (uint64_t *)(uintptr_t)(base + 2*4096);
     uint64_t *pd_kernel = (uint64_t *)(uintptr_t)(base + 3*4096);
 
-    /* Zero every page (AllocatePages does not guarantee zero-fill). */
-    for (uint64_t *p = pml4; p < pml4 + 4*512; p++) *p = 0;
+    /* Zero all 68 pages to make sure we don't have garbage entries. */
+    for (uint64_t *p = pml4; p < pml4 + 68*512; p++) *p = 0;
 
-    /* PDPT_ident: four 1-GiB PS=1 entries covering phys 0..4 GiB. */
-    for (int i = 0; i < 4; i++)
-        pdpt_id[i] = ((uint64_t)i << 30) | PTE_PS | PTE_P | PTE_W;
+    /* Populate the 64 PD_ident pages. Each page has 512 entries, each mapping 2 MiB.
+     * Page i (where i is 0..63) maps the physical range [i * 1 GiB, (i+1) * 1 GiB). */
+    for (uint64_t i = 0; i < 64; i++) {
+        uint64_t *pd_ident_page = (uint64_t *)(uintptr_t)(base + (4 + i)*4096);
+        
+        /* PDPT_ident entry i points to this PD page */
+        pdpt_id[i] = (uint64_t)(uintptr_t)pd_ident_page | PTE_P | PTE_W;
+        
+        /* Fill the 512 entries of the PD page with 2-MiB page entries */
+        for (uint64_t j = 0; j < 512; j++) {
+            uint64_t phys_addr = (i << 30) + (j << 21);
+            pd_ident_page[j] = phys_addr | PTE_PS | PTE_P | PTE_W;
+        }
+    }
 
     /* PDPT_khigh[510]: kernel virt 0xFFFFFFFF80000000..+2 MiB. */
     pdpt_high[510] = (uint64_t)(uintptr_t)pd_kernel | PTE_P | PTE_W;
@@ -87,7 +96,7 @@ EFI_STATUS efi_setup_hhdm_paging(EFI_BOOT_SERVICES *BS) {
     pd_kernel[0] = (0x00000000ULL) | PTE_PS | PTE_P | PTE_W;
     pd_kernel[1] = (0x00200000ULL) | PTE_PS | PTE_P | PTE_W;
 
-    /* PML4: identity and HHDM share the same PDPT (both cover 0..4 GiB).
+    /* PML4: identity and HHDM share the same PDPT (both cover 0..64 GiB).
      * Kernel higher half at PML4[511]. */
     pml4[0]   = (uint64_t)(uintptr_t)pdpt_id   | PTE_P | PTE_W;
     pml4[256] = (uint64_t)(uintptr_t)pdpt_id   | PTE_P | PTE_W;
