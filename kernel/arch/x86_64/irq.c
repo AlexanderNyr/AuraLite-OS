@@ -39,6 +39,18 @@ void pic_init(void) {
     /* Mask every IRQ until a driver claims it. */
     outb(PIC1_DATA, 0xFF);
     outb(PIC2_DATA, 0xFF);
+
+    /* Force IMCR into PIC mode so the 8259 cascade is actually wired to the
+     * BSP's INTR line. On real hardware the firmware frequently leaves this
+     * switched to APIC mode (or an MP-compliant chipset defaults to it),
+     * which makes every legacy IRQ (timer, keyboard, mouse, ...) silently
+     * vanish: drivers register/unmask cleanly, but their handlers are never
+     * invoked because the interrupt never reaches the CPU core. Writing the
+     * IMCR is a no-op / harmless on chipsets that don't implement it
+     * (single-CPU systems without an MP config table), so this is safe to
+     * do unconditionally. See kernel/arch/x86_64/irq.h for background. */
+    outb(IMCR_ADDR_PORT, IMCR_SELECT);
+    outb(IMCR_DATA_PORT, IMCR_MODE_PIC);
 }
 
 void pic_eoi(int irq) {
