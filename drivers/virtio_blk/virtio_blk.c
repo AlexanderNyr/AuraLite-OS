@@ -69,7 +69,7 @@ static uint64_t map_bar_region(uint8_t bar, uint32_t offset, uint32_t length) {
     uint64_t start = phys & ~0xFFFULL;
     uint64_t end = (phys + length + 0xFFFULL) & ~0xFFFULL;
     for (uint64_t p = start; p < end; p += 0x1000) {
-        paging_map(hhdm + p, p, PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
+        paging_map(hhdm + p, p, PAGE_FLAGS_MMIO);
     }
     return hhdm + phys;
 }

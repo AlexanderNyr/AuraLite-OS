@@ -355,7 +355,7 @@ int xhci_init(void) {
     uint64_t hhdm = boot_get_hhdm_offset();
     for (uint64_t off = 0; off < 0x10000; off += 0x1000) {
         paging_map(hhdm + mmio_phys + off, mmio_phys + off,
-                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
+                   PAGE_FLAGS_MMIO);
     }
     cap_regs = (volatile uint8_t *)(uintptr_t)(hhdm + mmio_phys);
 

@@ -306,7 +306,7 @@ int e1000_init(void) {
     /* Map 128 KiB of MMIO space (128 * 4KB pages = 32 pages). */
     for (uint32_t off = 0; off < 0x20000; off += 0x1000) {
         paging_map(hhdm + mmio_phys + off, mmio_phys + off,
-                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
+                   PAGE_FLAGS_MMIO);
     }
 
     mmio = (volatile uint32_t *)(uintptr_t)(hhdm + mmio_phys);

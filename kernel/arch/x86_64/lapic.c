@@ -29,7 +29,7 @@ void lapic_enable(void) {
     if (!lapic_phys) lapic_phys = 0xFEE00000ULL;
     uint64_t virt = hhdm + lapic_phys;
     if (!lapic_mapped) {
-        paging_map(virt, lapic_phys, PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
+        paging_map(virt, lapic_phys, PAGE_FLAGS_MMIO);
         lapic_mapped = 1;
     }
     volatile uint32_t *lapic = (volatile uint32_t *)(uintptr_t)virt;

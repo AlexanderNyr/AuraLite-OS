@@ -81,6 +81,50 @@ void paging_init(void) {
 }
 
 /*
+ * Split an existing huge-page entry (`entry`, found at `*slot`) into a
+ * freshly allocated next-level table whose 512 entries reproduce the exact
+ * same physical mapping, preserving the original flags (including
+ * cacheability and NX). `level` is 1 for a 1-GiB PDPTE (splits into 512
+ * 2-MiB PD entries) or 2 for a 2-MiB PDE (splits into 512 4-KiB PT
+ * entries). Returns the physical address of the new table, or 0 on OOM (in
+ * which case *slot is left untouched).
+ *
+ * This exists because the boot loaders (BIOS Stage 2 and the UEFI stub)
+ * pre-map all of low physical memory with 1 GiB/2 MiB pages for speed. When
+ * a driver later asks the VMM to create a 4 KiB mapping (e.g. for a device's
+ * MMIO BAR, or the Local APIC) that falls inside one of those huge pages,
+ * the walk must not blindly reinterpret the huge-page's physical field as a
+ * page-table pointer -- doing so hands the caller a PTE pointer that
+ * actually aliases live MMIO/register space, silently corrupting whatever
+ * device sits there. QEMU's TCG happens not to notice; real silicon can
+ * raise a Machine Check Exception (observed: writing a 64-bit PTE straight
+ * into the Local APIC's own register window during smp_init()).
+ */
+static uint64_t split_huge_page(uint64_t *slot, uint64_t entry, int level) {
+    uint64_t new_phys = pmm_alloc_frame();
+    if (new_phys == 0) {
+        kprintf(VMM_TAG "OOM splitting huge page for finer mapping\n");
+        return 0;
+    }
+    uint64_t *new_table = phys_to_ptr(new_phys);
+    uint64_t base_phys = entry & PAGE_ADDR_MASK;
+    uint64_t flags = entry & ~(PAGE_ADDR_MASK | PAGE_FLAG_PS);
+    /* step = size spanned by each entry in the NEW (finer) table: a 1-GiB
+     * PDPTE splits into 512 * 2-MiB PD entries; a 2-MiB PDE splits into
+     * 512 * 4-KiB PT entries. */
+    uint64_t step = (level == 1) ? (1ULL << 21) : (1ULL << 12);
+    /* The new PD entries are still 2-MiB huge pages (PS=1); the new PT
+     * entries are plain 4-KiB leaves and must NOT carry PS (that bit
+     * position means PAT on a 4-KiB PTE). */
+    uint64_t leaf_flag = (level == 1) ? PAGE_FLAG_PS : 0;
+    for (uint64_t i = 0; i < 512; i++) {
+        new_table[i] = (base_phys + i * step) | flags | leaf_flag;
+    }
+    *slot = new_phys | (entry & (PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_USER));
+    return new_phys;
+}
+
+/*
  * Walk the 4-level hierarchy for `virt`, returning a pointer to the final PTE.
  * When `create` is non-zero, any missing intermediate table is allocated from
  * the PMM, zeroed, and linked into its parent.  Returns NULL if an intermediate
@@ -89,6 +133,12 @@ void paging_init(void) {
  * Intermediate entries get Present|Writable|User so that:
  *   - the page is accessible from ring 0 (kernel) now,
  *   - and from ring 3 (user) once the final PTE also carries PAGE_FLAG_USER.
+ *
+ * If an intermediate level is already PRESENT but is a huge-page leaf
+ * (PAGE_FLAG_PS set on a PDPTE/PDE -- as the boot-time identity/HHDM maps
+ * always are), and `create` is set, the huge page is transparently split
+ * into an equivalent next-level table so a finer-grained mapping can be
+ * installed underneath it without corrupting the original mapping.
  */
 static uint64_t *walk_pte(uint64_t virt, int create) {
     uint64_t *table = pml4;
@@ -115,6 +165,22 @@ static uint64_t *walk_pte(uint64_t virt, int create) {
             memset(new_table, 0, PAGE_SIZE_BYTES);   /* PTEs must start zeroed */
             table[indices[level]] = new_phys
                 | PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_USER;
+            entry = table[indices[level]];
+        } else if ((level == 1 || level == 2) && (entry & PAGE_FLAG_PS)) {
+            /* PDPTE (level==1) or PDE (level==2) huge-page leaf: this
+             * covers a 1 GiB / 2 MiB physical span with no page table of
+             * its own.  If the caller wants to create a finer mapping
+             * somewhere inside that span, split it first. Read-only walks
+             * (create==0) instead fail, matching "not present at this
+             * granularity" semantics for paging_get_phys()/friends -- those
+             * callers only ever look up 4 KiB leaves anyway. */
+            if (!create) {
+                return NULL;
+            }
+            uint64_t new_phys = split_huge_page(&table[indices[level]], entry, level);
+            if (new_phys == 0) {
+                return NULL;
+            }
             entry = table[indices[level]];
         }
         table = phys_to_ptr(entry & PAGE_ADDR_MASK);

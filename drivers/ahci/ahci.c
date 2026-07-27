@@ -285,7 +285,7 @@ int ahci_init(void) {
     /* Map 8 KiB of ABAR. */
     for (uint32_t off = 0; off < 0x2000; off += 0x1000)
         paging_map(hhdm + abar_phys + off, abar_phys + off,
-                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
+                   PAGE_FLAGS_MMIO);
     abar = (volatile uint32_t *)(uintptr_t)(hhdm + abar_phys);
 
     /* Enable AHCI mode. */

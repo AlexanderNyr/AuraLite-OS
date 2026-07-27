@@ -29,10 +29,32 @@
 #define PAGE_FLAG_PRESENT  (1ULL << 0)   /* bit 0  */
 #define PAGE_FLAG_WRITABLE (1ULL << 1)   /* bit 1  */
 #define PAGE_FLAG_USER     (1ULL << 2)   /* bit 2  */
+#define PAGE_FLAG_WRITE_THROUGH (1ULL << 3)  /* bit 3 (PWT) */
+#define PAGE_FLAG_CACHE_DISABLE (1ULL << 4)  /* bit 4 (PCD) */
+/* bit 7: Page Size on a PDPTE (1 GiB leaf) / PDE (2 MiB leaf).  On a 4 KiB
+ * leaf PTE the very same bit position instead means PAT; this VMM never sets
+ * PAT on 4 KiB leaves, so PAGE_FLAG_PS is only ever meaningful/tested on
+ * PDPT/PD entries. */
+#define PAGE_FLAG_PS       (1ULL << 7)
 /* Software-owned PTE bit.  Hardware ignores bits 9..11 in 4 KiB PTEs; use
  * one to tag read-only mappings that are private and must be copied on write. */
 #define PAGE_FLAG_COW      (1ULL << 9)
 #define PAGE_FLAG_NO_EXEC  (1ULL << 63)  /* bit 63 (requires EFER.NXE) */
+
+/*
+ * Convenience flag set for mapping memory-mapped device registers (Local
+ * APIC, PCI BARs, virtio MMIO, ...).  Real x86_64 CPUs require MMIO to be
+ * accessed as strong-uncacheable (UC) memory -- caching it, or letting it
+ * inherit a cacheable mapping, is an architecture violation.  QEMU's TCG
+ * emulation does not model this and happily tolerates cacheable/oversized
+ * MMIO accesses, but real silicon can raise a Machine Check Exception
+ * (e.g. writing through a cached mapping of the Local APIC's own register
+ * window). PCD+PWT together select the strong UC PAT entry regardless of
+ * MTRR state for the default PAT layout.
+ */
+#define PAGE_FLAGS_MMIO (PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | \
+                          PAGE_FLAG_NO_EXEC | PAGE_FLAG_CACHE_DISABLE | \
+                          PAGE_FLAG_WRITE_THROUGH)
 
 /* ---- Constants ---- */
 #define PAGE_SIZE_BYTES  4096

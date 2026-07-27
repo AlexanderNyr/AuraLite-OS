@@ -195,7 +195,7 @@ found:
     uint64_t hhdm = boot_get_hhdm_offset();
     for (uint32_t off = 0; off < 0x1000; off += 0x1000) {
         paging_map(hhdm + mmio_phys + off, mmio_phys + off,
-                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE);
+                   PAGE_FLAGS_MMIO);
     }
     mmio = (volatile uint32_t *)(uintptr_t)(hhdm + mmio_phys);
 
