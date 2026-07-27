@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 #include "drivers/framebuffer/graphics.h"
-#include "drivers/framebuffer/font.h"
+#include "drivers/framebuffer/psf.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
 #include "kernel/boot_info.h"
@@ -107,22 +107,31 @@ void gfx_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, color_t c
 }
 
 void gfx_draw_string(uint32_t x, uint32_t y, const char *s, color_t color) {
+    const struct psf_font *f = psf_get_font();
+    if (!f) return;   /* no font loaded (fb_init() failed / no framebuffer) */
     uint32_t cx = x;
     for (; *s; s++) {
         if (*s == '\n') {
             cx = x;
-            y += 8;
+            y += f->height;
             continue;
         }
-        const char *glyph = font8x8_basic[(unsigned char)*s & 0x7F];
-        for (int gy = 0; gy < 8; gy++) {
-            for (int gx = 0; gx < 8; gx++) {
-                if (glyph[gy] & (1 << gx)) {
+        uint32_t idx = (unsigned char)*s;
+        if (idx >= f->num_glyphs) idx = 0;
+        const uint8_t *glyph = f->data + (uint64_t)idx * f->bytes_per_glyph;
+        for (uint32_t gy = 0; gy < f->height; gy++) {
+            const uint8_t *row_bytes = glyph + gy * f->bytes_per_row;
+            for (uint32_t gx = 0; gx < f->width; gx++) {
+                /* PSF bitmaps are MSB-first per row byte: bit 7 is the
+                 * leftmost pixel. */
+                uint8_t byte = row_bytes[gx / 8];
+                uint8_t bit_pos = 7 - (gx % 8);
+                if ((byte >> bit_pos) & 1) {
                     gfx_putpixel(cx + gx, y + gy, color);
                 }
             }
         }
-        cx += 8;
+        cx += f->width;
     }
 }
 
@@ -131,14 +140,17 @@ void gfx_draw_text(uint32_t x, uint32_t y, const char *s, color_t color) {
 }
 
 uint32_t gfx_text_width(const char *s) {
+    const struct psf_font *f = psf_get_font();
+    uint32_t glyph_w = f ? f->width : 8;
     uint32_t w = 0;
     while (s && *s) {
         if (*s == '\n') break;
-        w += 8;
+        w += glyph_w;
         s++;
     }
     return w;
 }
+
 
 void gfx_draw_text_centered(uint32_t y, const char *s, color_t color) {
     uint32_t tw = gfx_text_width(s);

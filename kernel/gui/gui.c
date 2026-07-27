@@ -29,7 +29,7 @@
 #include "kernel/proc/process.h"
 #include "drivers/framebuffer/graphics.h"
 #include "drivers/framebuffer/fb.h"
-#include "drivers/framebuffer/font.h"
+#include "drivers/framebuffer/psf.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/mouse/mouse.h"
 #include "drivers/timer/pit.h"
@@ -204,6 +204,16 @@ static void gui_record_click(uint32_t now, int32_t x, int32_t y,
 /* Content area helpers — read from active theme dimensions. */
 static uint32_t c_border(void)    { return active_theme.border_w; }
 static uint32_t c_titlebar(void)  { return active_theme.titlebar_h; }
+
+/* Height of the active console/GUI font, used to vertically centre
+ * single-line text inside a fixed-height bar (titlebar, taskbar, start
+ * button, notifications, ...). Falls back to 8 if no font is loaded yet
+ * (shouldn't happen once fb_init()/psf_init() have run, but keeps this
+ * arithmetic safe either way). */
+static uint32_t gui_font_h(void) {
+    const struct psf_font *f = psf_get_font();
+    return f ? f->height : 8;
+}
 
 static uint32_t content_w(const gui_win_t *w) {
     if (w->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) return w->w;
@@ -863,16 +873,25 @@ int gui_draw_line(int wid, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint3
 
 int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) {
     if (!win_alive(wid)) return -1;
+    const struct psf_font *f = psf_get_font();
+    if (!f) return -1;
     int32_t cx = x;
     for (; *s; s++) {
-        if (*s == '\n') { cx = x; y += 8; continue; }
-        const char *glyph = font8x8_basic[(unsigned char)*s & 0x7F];
-        for (int gy = 0; gy < 8; gy++) {
-            for (int gx = 0; gx < 8; gx++) {
-                if (glyph[gy] & (1 << gx)) gui_draw_pixel(wid, cx + gx, y + gy, color);
+        if (*s == '\n') { cx = x; y += (int32_t)f->height; continue; }
+        uint32_t idx = (unsigned char)*s;
+        if (idx >= f->num_glyphs) idx = 0;
+        const uint8_t *glyph = f->data + (uint64_t)idx * f->bytes_per_glyph;
+        for (uint32_t gy = 0; gy < f->height; gy++) {
+            const uint8_t *row_bytes = glyph + gy * f->bytes_per_row;
+            for (uint32_t gx = 0; gx < f->width; gx++) {
+                uint8_t byte = row_bytes[gx / 8];
+                uint8_t bit_pos = 7 - (gx % 8);
+                if ((byte >> bit_pos) & 1) {
+                    gui_draw_pixel(wid, cx + (int32_t)gx, y + (int32_t)gy, color);
+                }
             }
         }
-        cx += 8;
+        cx += (int32_t)f->width;
     }
     windows[wid].content_dirty = 1;
     return 0;
@@ -1011,8 +1030,11 @@ static void blit_window_decor(const gui_win_t *win) {
                   win->w - 2 * brd, tbh, titlec);
 
     /* Title text. */
-    gfx_draw_text((uint32_t)win->x + 8, (uint32_t)win->y + brd + (tbh - 8) / 2,
-                  win->title, t->title_text);
+    {
+        uint32_t fh = gui_font_h();
+        uint32_t ty = (uint32_t)win->y + brd + (tbh > fh ? (tbh - fh) / 2 : 0);
+        gfx_draw_text((uint32_t)win->x + 8, ty, win->title, t->title_text);
+    }
 
     /* Window buttons: [_][O][X] right-aligned. */
     uint32_t btn_w = 18, btn_h = 16, btn_pad = 2;
@@ -1371,7 +1393,11 @@ static void draw_taskbar(void) {
     gfx_fill_rect(4, tb_y + 4, start_w, tb_h - 8, t->start_btn_bg);
     gfx_draw_rect(4, tb_y + 4, start_w, tb_h - 8,
                   start_menu_open ? 0x00FFFFFF : 0x00306090);
-    gfx_draw_text(12, tb_y + (tb_h - 8) / 2, "AuraLite", t->start_btn_text);
+    {
+        uint32_t fh = gui_font_h();
+        uint32_t ty = tb_y + (tb_h > fh ? (tb_h - fh) / 2 : 0);
+        gfx_draw_text(12, ty, "AuraLite", t->start_btn_text);
+    }
 
     /* Start menu dropdown.  This is intentionally part of the taskbar layer,
      * not a normal window, so input routing has a matching start_menu_hit(). */
@@ -1412,7 +1438,8 @@ static void draw_taskbar(void) {
         int n = 0;
         while (n < 19 && windows[i].title[n]) { title_short[n] = windows[i].title[n]; n++; }
         title_short[n] = 0;
-        gfx_draw_text(bx + 6, tb_y + (tb_h - 8) / 2, title_short, t->taskbar_text);
+        gfx_draw_text(bx + 6, tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0),
+                      title_short, t->taskbar_text);
         bx += btn_w + 4;
     }
 
@@ -1434,7 +1461,8 @@ static void draw_taskbar(void) {
     clk[p++] = ':'; clk[p++] = '0' + (mm / 10) % 10; clk[p++] = '0' + mm % 10;
     clk[p++] = ':'; clk[p++] = '0' + (ss / 10) % 10; clk[p++] = '0' + ss % 10;
     clk[p] = 0;
-    gfx_draw_text(tray_x, tb_y + (tb_h - 8) / 2, clk, t->taskbar_text);
+    gfx_draw_text(tray_x, tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0),
+                  clk, t->taskbar_text);
 }
 
 /* ---- Notifications rendering ---- */
@@ -1465,7 +1493,8 @@ static void draw_notifications(void) {
         /* Colored accent bar on left. */
         gfx_fill_rect(nx, ny, 4, nh, notifications[i].color);
         /* Text. */
-        gfx_draw_text(nx + 10, ny + (nh - 8) / 2, notifications[i].text, t->notif_text);
+        gfx_draw_text(nx + 10, ny + (nh > gui_font_h() ? (nh - gui_font_h()) / 2 : 0),
+                      notifications[i].text, t->notif_text);
         idx++;
     }
 }

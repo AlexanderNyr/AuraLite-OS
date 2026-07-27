@@ -63,8 +63,11 @@ void wm_draw_text(int win_id, uint32_t col, uint32_t row,
                   const char *text, color_t color) {
     if (win_id < 0 || win_id >= window_count) return;
     wm_window_t *win = &windows[win_id];
-    uint32_t px = win->x + WM_BORDER_W + col * 8;
-    uint32_t py = win->y + WM_TITLE_BAR_H + WM_BORDER_W + row * 8;
+    const struct psf_font *f = psf_get_font();
+    uint32_t cw = f ? f->width : 8;
+    uint32_t ch = f ? f->height : 8;
+    uint32_t px = win->x + WM_BORDER_W + col * cw;
+    uint32_t py = win->y + WM_TITLE_BAR_H + WM_BORDER_W + row * ch;
     gfx_draw_string(px, py, text, color);
 }
 
@@ -114,7 +117,10 @@ int wm_add_label(int win_id, uint32_t x, uint32_t y,
     wm_widget_t *wid = alloc_widget(win_id);
     if (!wid) return -1;
     wid->type = WIDGET_LABEL;
-    wid->x = x; wid->y = y; wid->w = strlen(text) * 8; wid->h = 8;
+    const struct psf_font *f = psf_get_font();
+    wid->x = x; wid->y = y;
+    wid->w = gfx_text_width(text);
+    wid->h = f ? f->height : 8;
     wid->fg = color; wid->bg = 0;
     strncpy(wid->text, text, sizeof(wid->text) - 1);
     wid->text[sizeof(wid->text) - 1] = 0;
@@ -154,6 +160,8 @@ static void draw_widget(wm_window_t *win, wm_widget_t *wid) {
     uint32_t wy = win->y + WM_TITLE_BAR_H + WM_BORDER_W;
     uint32_t x = wx + wid->x;
     uint32_t y = wy + wid->y;
+    const struct psf_font *f = psf_get_font();
+    uint32_t fh = f ? f->height : 8;
 
     switch (wid->type) {
     case WIDGET_NONE:
@@ -166,9 +174,9 @@ static void draw_widget(wm_window_t *win, wm_widget_t *wid) {
         /* Border. */
         gfx_draw_rect(x, y, wid->w, wid->h, GFX_WHITE);
         /* Text (centered). */
-        uint32_t text_w = strlen(wid->text) * 8;
-        uint32_t tx = x + (wid->w - text_w) / 2;
-        uint32_t ty = y + (wid->h - 8) / 2;
+        uint32_t text_w = gfx_text_width(wid->text);
+        uint32_t tx = x + (wid->w > text_w ? (wid->w - text_w) / 2 : 0);
+        uint32_t ty = y + (wid->h > fh ? (wid->h - fh) / 2 : 0);
         gfx_draw_string(tx, ty, wid->text, wid->fg);
         break;
     }
@@ -195,8 +203,8 @@ static void draw_widget(wm_window_t *win, wm_widget_t *wid) {
         else { pct[pos++] = '0' + p; }
         pct[pos++] = '%';
         pct[pos] = 0;
-        uint32_t txt_w = pos * 8;
-        gfx_draw_string(x + (wid->w - txt_w) / 2, y + 1, pct, GFX_WHITE);
+        uint32_t txt_w = gfx_text_width(pct);
+        gfx_draw_string(x + (wid->w > txt_w ? (wid->w - txt_w) / 2 : 0), y + 1, pct, GFX_WHITE);
         break;
     }
     case WIDGET_RECT:
@@ -204,6 +212,7 @@ static void draw_widget(wm_window_t *win, wm_widget_t *wid) {
         break;
     }
 }
+
 
 /* ---- Window rendering ---- */
 

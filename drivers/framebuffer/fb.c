@@ -1,10 +1,9 @@
-/* fb.c — linear framebuffer console with PSF 8x16 font. */
+/* fb.c — linear framebuffer console with a real PSF1/PSF2 font. */
 
 #include <stdint.h>
 #include <stddef.h>
 #include "drivers/framebuffer/fb.h"
 #include "drivers/framebuffer/psf.h"
-#include "drivers/framebuffer/psf_font.h"
 #include "kernel/boot_info.h"
 
 static uint32_t *fb_addr = NULL;
@@ -29,13 +28,16 @@ static void fb_putpixel(uint32_t x, uint32_t y, uint32_t color) {
 
 static void fb_draw_char(unsigned char c, uint32_t ox, uint32_t oy) {
     const struct psf_font *f = psf_get_font();
+    if (!f) return;
     uint32_t idx = c;
     if (idx >= f->num_glyphs) idx = 0;
-    const uint8_t *glyph = f->data + idx * f->height;
+    const uint8_t *glyph = f->data + (uint64_t)idx * f->bytes_per_glyph;
     for (uint32_t row = 0; row < f->height; row++) {
-        uint8_t bits = glyph[row];
+        const uint8_t *row_bytes = glyph + row * f->bytes_per_row;
         for (uint32_t col = 0; col < f->width; col++) {
-            uint32_t pix = (bits >> (7 - col)) & 1 ? fb_fg : fb_bg;
+            uint8_t byte = row_bytes[col / 8];
+            uint8_t bit_pos = 7 - (col % 8);
+            uint32_t pix = (byte >> bit_pos) & 1 ? fb_fg : fb_bg;
             fb_putpixel(ox + col, oy + row, pix);
         }
     }
@@ -59,6 +61,7 @@ void fb_init(void) {
     if (!fb || fb->bpp != 32) { fb_addr = NULL; return; }
     psf_init();
     const struct psf_font *f = psf_get_font();
+    if (!f) { fb_addr = NULL; return; }
     font_width = f->width; font_height = f->height;
     /* boot_fb_t.phys_base is a raw physical address; add the HHDM
      * offset so the framebuffer is accessible in kernel virtual space. */
