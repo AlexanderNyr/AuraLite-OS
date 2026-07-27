@@ -550,6 +550,15 @@ iso-bios: deps-check kernel $(MBR_BIN) $(STAGE2_BIN)
 # stored in the FAT32 partition at LBA 256.
 DUAL_ISO_IMAGE := $(BUILD_DIR)/auralite-dual.iso
 
+# Size of the FAT32 ESP inside the hybrid image, in MiB.  The final image is
+# ESP_MB + 1 MiB (the extra MiB holds the MBR, Stage 2 and the GPT areas).
+# Default 48 MiB is the smallest size that still yields >65525 FAT32 clusters
+# (below that OVMF rejects the volume as FAT16) while fitting kernel + initrd,
+# each of which is stored twice for the BIOS and UEFI lookup paths.
+# Override for a roomier image:  make iso ESP_MB=256
+ESP_MB ?= 48
+export ESP_MB
+
 .PHONY: iso-dual
 iso-dual: deps-check kernel $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
 	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)

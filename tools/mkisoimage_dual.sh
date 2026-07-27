@@ -34,6 +34,28 @@ ISO_OUT="${3:?usage: $0 <kernel.elf> <BOOTX64.EFI> <out.iso>}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build"
+
+# ---- ESP sizing -----------------------------------------------------------
+# Size of the FAT32 partition in MiB.  Override with e.g.
+#     make iso ESP_MB=256          (or ESP_MB=48 tools/mkisoimage_dual.sh ...)
+#
+# Lower bound: a genuine FAT32 volume needs >= 65525 data clusters, otherwise
+# Microsoft's spec (and OVMF's strict FatPkg driver) classify it as FAT16 and
+# refuse to mount it.  We format with -c 1 (1 sector = 512 B per cluster), so
+# the floor is 65525 * 512 = ~32 MiB of *data* plus FAT/reserved overhead.
+# 48 MiB clears that comfortably (~98k clusters) while leaving ~36 MiB free
+# for a kernel + initrd that currently total ~12 MiB (each stored twice).
+ESP_MB="${ESP_MB:-48}"
+
+if [ "$ESP_MB" -lt 40 ]; then
+    echo "[mkiso-dual] ERROR: ESP_MB=$ESP_MB is below the 40 MiB FAT32 floor" >&2
+    echo "[mkiso-dual] hint: <65525 clusters makes OVMF reject the volume as FAT16" >&2
+    exit 1
+fi
+# mformat geometry: heads(32) * sectors(32) * tracks = total sectors.
+# tracks = ESP_MB * 1024 * 1024 / 512 / (32 * 32) = ESP_MB * 2
+ESP_TRACKS=$(( ESP_MB * 2 ))
+ESP_SECTORS=$(( ESP_MB * 2048 ))
 MBR_BIN="$BUILD/boot/mbr_dual.bin"    # dual-boot variant reads Stage 2 from LBA 34
 STAGE2_BIN="$BUILD/boot/stage2.bin"
 
@@ -65,11 +87,10 @@ FAT_IMG="$BUILD/auralite-dual.fat.img"
 # clusters or Microsoft's own FAT32 spec (and OVMF's strict FS
 # driver) rejects it as "actually FAT16".  With 1-sector clusters
 # that means >= 65525 * 512 = ~32 MiB of DATA, so we round up to a
-# 256 MiB FAT32 partition (comfortable slack for kernel + initrd +
-# future assets).  Plus 1 MiB of MBR + Stage 2 + GPT reserved area
-# = 257 MiB total image.
-echo "[mkiso-dual] assembling raw hybrid image at $RAW_IMG"
-dd if=/dev/zero of="$RAW_IMG" bs=1M count=257 status=none
+# ESP_MB FAT32 partition.  Plus 1 MiB of MBR + Stage 2 + GPT reserved
+# area at the front = (ESP_MB + 1) MiB total image.
+echo "[mkiso-dual] assembling raw hybrid image at $RAW_IMG (ESP ${ESP_MB} MiB)"
+dd if=/dev/zero of="$RAW_IMG" bs=1M count=$(( ESP_MB + 1 )) status=none
 
 # Final disk layout (LBA = 512-byte sector):
 #
@@ -78,7 +99,7 @@ dd if=/dev/zero of="$RAW_IMG" bs=1M count=257 status=none
 #   LBA 2..33        GPT primary partition array
 #   LBA 34..159      Stage 2 flat binary (126 sectors max = 63 KiB)
 #   LBA 160..255     free
-#   LBA 256..N-33    ESP FAT32 partition (256 MiB, holds kernel.elf,
+#   LBA 256..N-33    ESP FAT32 partition (ESP_MB MiB, holds kernel.elf,
 #                    BOOTX64.EFI, optional initrd.tar)
 #   LBA N-33..N-2    GPT backup partition array
 #   LBA N-1          GPT backup header
@@ -109,14 +130,13 @@ dd if="$STAGE2_BIN" of="$RAW_IMG" bs=512 seek=34  conv=notrunc status=none
 #                            the partition starts on the parent disk.
 #                            Required by the FAT spec (BPB_HiddSec) and
 #                            by OVMF's FAT driver validation.
-# 256 MiB FAT32 partition.  -h 32 * -s 32 * -t 8192 tracks = 8_388_608
-# sectors * 512 = 4 GiB CHS geometry which mformat gladly clamps to
-# the real 256 MiB physical size (we pass exactly that via the DD-
-# provided backing file below).  Cluster size 4 sectors (2 KiB) gives
-# 128 MiB / 2 KiB = ~65536 clusters -- well above the 65525-cluster
-# floor Microsoft mandates for genuine FAT32.
-dd if=/dev/zero of="$FAT_IMG" bs=1M count=256 status=none
-mformat -i "$FAT_IMG" -F -h 32 -s 32 -t 8192 -c 1 \
+# ESP_MB FAT32 partition.  Geometry -h 32 -s 32 -t $ESP_TRACKS gives
+# exactly ESP_MB MiB, matching the backing file created below.
+# Cluster size 1 sector (512 B) keeps the cluster count above the
+# 65525-cluster floor Microsoft mandates for genuine FAT32 for any
+# ESP_MB >= ~33; the guard above enforces 40 MiB minimum.
+dd if=/dev/zero of="$FAT_IMG" bs=1M count=$ESP_MB status=none
+mformat -i "$FAT_IMG" -F -h 32 -s 32 -t $ESP_TRACKS -c 1 \
         -N 0x12345678 -v AURALITE -H 256 ::
 
 # mformat writes BPB_TotSec16 = 63488 and leaves BPB_TotSec32 = 0.
@@ -170,7 +190,7 @@ dd if="$FAT_IMG" of="$RAW_IMG" bs=512 seek=256 conv=notrunc status=none
 # reads FAT sectors starting at a hard-coded LBA 128 -- so the type
 # byte is irrelevant on that path.  Any bootable partition type that
 # UEFI accepts as an ESP would work; 0xEF is the canonical choice.
-python3 - "$RAW_IMG" <<'PY'
+python3 - "$RAW_IMG" "$ESP_SECTORS" <<'PY'
 """
 Install a hybrid MBR + GPT layout on the raw disk image so that:
 
@@ -205,7 +225,7 @@ disk_size = os.path.getsize(path)
 disk_sectors = disk_size // 512
 
 esp_lba_start = 256                                       # past Stage 2 slot (LBA 34..159)
-esp_lba_count = 256 * 2048                                # 256 MiB
+esp_lba_count = int(sys.argv[2])                          # ESP size in sectors
 esp_lba_end   = esp_lba_start + esp_lba_count - 1
 
 # --- Rewrite the MBR (0x1B8 disk sig + partition entry). --------------------
