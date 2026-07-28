@@ -13,6 +13,7 @@
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/isr.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/lib/kprintf.h"
 
 #define KB_DATA    0x60
@@ -273,6 +274,21 @@ uint32_t mouse_get_event_drops(void) { return mouse_event_drops; }
 
 void mouse_inject_relative(int16_t dx, int16_t dy, int8_t wheel,
                            uint8_t buttons) {
+    /* mouse_buttons/mouse_x/mouse_y are also read-modify-written by
+     * mouse_handler() running in the IRQ12 (PS/2) interrupt context. When
+     * both a PS/2 mouse and a USB pointing device are present at once (e.g.
+     * this project's run.bat adds a usb-tablet for absolute cursor capture
+     * alongside QEMU's always-on emulated PS/2 mouse), QEMU's GTK/SDL front
+     * end can deliver the very same physical click to both devices. Without
+     * this critical section, the USB HID poll thread's read-old-state /
+     * write-new-state / push-event sequence here can be interrupted midway
+     * by the PS/2 IRQ handler doing the same thing, so the USB path ends up
+     * comparing against a stale old_btn and manufactures a second, phantom
+     * "pressed" edge for the SAME physical click -- which is exactly what
+     * made double-clicking (or even single-clicking) a desktop icon launch
+     * the app twice. Disabling interrupts for this short, non-blocking
+     * span makes the read-modify-write atomic with respect to the PS/2 IRQ. */
+    uint64_t irqf = irq_save();
     uint8_t old_btn = mouse_buttons;
     uint8_t new_btn = buttons & 0x07;
     mouse_buttons = new_btn;
@@ -301,10 +317,14 @@ void mouse_inject_relative(int16_t dx, int16_t dy, int8_t wheel,
         evt_push(&e);
         mouse_has_event = 1;
     }
+    irq_restore(irqf);
 }
 
 void mouse_inject_absolute(int16_t x, int16_t y, int8_t wheel,
                            uint8_t buttons) {
+    /* See the comment in mouse_inject_relative(): same PS/2-vs-USB race,
+     * same fix. */
+    uint64_t irqf = irq_save();
     uint8_t old_btn = mouse_buttons;
     uint8_t new_btn = buttons & 0x07;
     mouse_buttons = new_btn;
@@ -334,4 +354,5 @@ void mouse_inject_absolute(int16_t x, int16_t y, int8_t wheel,
         evt_push(&e);
         mouse_has_event = 1;
     }
+    irq_restore(irqf);
 }
