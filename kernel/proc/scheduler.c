@@ -31,6 +31,14 @@ static int    scheduler_ready = 0;
 static uint64_t tid_counter   = 0;
 spinlock_t sched_lock = SPINLOCK_UNLOCKED;
 
+/* CPU usage accounting (BSP only -- see scheduler.h). Incremented from
+ * sched_tick(), which runs once per PIT tick once the scheduler is up. */
+static volatile uint64_t cpu_total_ticks = 0;
+static volatile uint64_t cpu_idle_ticks  = 0;
+
+uint64_t sched_get_total_ticks(void) { return cpu_total_ticks; }
+uint64_t sched_get_idle_ticks(void)  { return cpu_idle_ticks; }
+
 int sched_is_ready(void) { return scheduler_ready; }
 
 /* ---- Idle loop ---- */
@@ -129,6 +137,13 @@ void sched_tick(void) {
     struct cpu_local *local = get_cpu_local();
     if (!local || local->current == NULL) {
         return;
+    }
+    /* CPU usage accounting: PIT/IRQ0 currently only ever reaches the BSP
+     * (see smp.c), so this naturally only ever counts BSP ticks -- exactly
+     * matching the BSP-only scheduling model described in scheduler.h. */
+    cpu_total_ticks++;
+    if (local->current == local->idle) {
+        cpu_idle_ticks++;
     }
     /* We are inside the timer IRQ handler, so IF is already clear. */
     if (local->current == local->idle) {

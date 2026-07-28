@@ -47,4 +47,10 @@ void netdev_get_mac(uint8_t mac[6]);
 int  netdev_link_up(void);
 const char *netdev_name(void);
 
+/* Cumulative byte/packet counters for the active NIC since boot. Any output
+ * pointer may be NULL if that particular counter isn't needed. All zero if
+ * no NIC is active yet. */
+void netdev_get_stats(uint64_t *out_rx_bytes, uint64_t *out_tx_bytes,
+                      uint64_t *out_rx_packets, uint64_t *out_tx_packets);
+
 #endif /* AURALITE_NET_NETDEV_H */

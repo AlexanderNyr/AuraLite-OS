@@ -48,6 +48,18 @@ tcb_t *sched_current(void);
 /* Enter the idle loop for an AP. */
 void sched_idle(void);
 
+/*
+ * CPU usage accounting (BSP only, matching the current BSP-only scheduling
+ * model). Both counters are cumulative PIT ticks since sched_init() and only
+ * ever increase, exactly like Linux's /proc/stat jiffie counters: callers
+ * that want a percentage should sample both values twice, a short interval
+ * apart, and compute busy-delta / total-delta themselves (see
+ * userspace/gui-sysmon/gsysmon.c for a worked example). This avoids baking
+ * an arbitrary sampling window into the kernel.
+ */
+uint64_t sched_get_total_ticks(void);
+uint64_t sched_get_idle_ticks(void);
+
 /* Gate self-test: two threads print interleaved messages, demonstrating both
  * cooperative (yield) and preemptive (timer-driven) context switching. */
 void scheduler_self_test(void);

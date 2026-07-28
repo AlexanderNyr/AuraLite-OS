@@ -9,7 +9,11 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/thread.h"
+#include "kernel/proc/scheduler.h"
+#include "kernel/net/netdev.h"
+#include "drivers/ahci/ahci.h"
 #include "drivers/timer/pit.h"
+#include "kernel/arch/x86_64/smp.h"
 
 #define PROCFS_MAX_VNODES 64
 static struct vnode procfs_vnodes[PROCFS_MAX_VNODES];
@@ -90,6 +94,33 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
         vn->inode_id = 5;
         return vn;
     }
+    if (strcmp(path, "loadavg") == 0) {
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "loadavg", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_FILE;
+        vn->mode = 0644;
+        vn->size = 64;
+        vn->inode_id = 6;
+        return vn;
+    }
+    if (strcmp(path, "netdev") == 0) {
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "netdev", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_FILE;
+        vn->mode = 0644;
+        vn->size = 256;
+        vn->inode_id = 7;
+        return vn;
+    }
+    if (strcmp(path, "diskstats") == 0) {
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "diskstats", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_FILE;
+        vn->mode = 0644;
+        vn->size = 256;
+        vn->inode_id = 8;
+        return vn;
+    }
 
     /* Check if it's a PID directory or PID file (e.g. "1", "1/status", "1/cmdline"). */
     const char *p = path;
@@ -145,8 +176,9 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
 static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     int n = 0;
     if (vn->inode_id == 0) { /* Root of /proc */
-        const char *static_files[] = {"uptime", "meminfo", "cpuinfo", "version", "stat"};
-        for (int i = 0; i < 5 && n < max; i++) {
+        const char *static_files[] = {"uptime", "meminfo", "cpuinfo", "version", "stat",
+                                       "loadavg", "netdev", "diskstats"};
+        for (int i = 0; i < 8 && n < max; i++) {
             memset(&out[n], 0, sizeof(out[n]));
             strncpy(out[n].name, static_files[i], VFS_PATH_MAX - 1);
             out[n].type = VFS_TYPE_FILE;
@@ -215,11 +247,69 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
                         "vendor_id\t: GenuineIntel\n"
                         "cpu family\t: 6\n"
                         "model name\t: AuraLite x86_64 CPU\n"
-                        "cores\t\t: 4\n");
+                        "cores\t\t: %u\n",
+                        (unsigned)smp_get_cpu_count());
     } else if (vn->inode_id == 4) {
         len = ksnprintf(text, sizeof(text), "AuraLite OS v0.0.1 (x86_64) #1 SMP\n");
     } else if (vn->inode_id == 5) {
-        len = ksnprintf(text, sizeof(text), "cpu  1234 0 5678 91011\nintr 1450\nctxt 2450\n");
+        /* Linux-style jiffie counters: user/nice/system/idle, in PIT ticks.
+         * AuraLite doesn't distinguish user/nice/system time yet, so all
+         * non-idle time is reported as "system" (3rd field) -- but idle
+         * (4th field) is real, sourced from sched_get_idle_ticks(), so
+         * `top`-style tools computing %busy = 1 - idle_delta/total_delta
+         * get an accurate answer. */
+        uint64_t total = sched_get_total_ticks();
+        uint64_t idle  = sched_get_idle_ticks();
+        uint64_t busy  = (total >= idle) ? (total - idle) : 0;
+        len = ksnprintf(text, sizeof(text),
+                        "cpu  0 0 %llu %llu\nintr 0\nctxt 0\n",
+                        (unsigned long long)busy, (unsigned long long)idle);
+    } else if (vn->inode_id == 6) {
+        /* /proc/loadavg: real instantaneous CPU busy% (over all ticks since
+         * boot) in the first field, formatted like a 1-minute load average
+         * so existing "load average" style tooling/parsers keep working;
+         * fields 2-3 (5/15 min) are not tracked separately and mirror
+         * field 1. Last two fields (runnable/total threads, last PID) use
+         * real data from thread_get_all()/tid allocation. */
+        uint64_t total = sched_get_total_ticks();
+        uint64_t idle  = sched_get_idle_ticks();
+        uint64_t busy_pct_x100 = 0; /* busy% * 100, i.e. 2 decimal digits */
+        if (total > 0) {
+            uint64_t busy = (total >= idle) ? (total - idle) : 0;
+            busy_pct_x100 = (busy * 10000) / total;
+        }
+        tcb_t *list[64];
+        int nthreads = thread_get_all(list, 64);
+        int runnable = 0;
+        for (int i = 0; i < nthreads; i++) {
+            if (list[i]->state == THREAD_RUNNING || list[i]->state == THREAD_READY) runnable++;
+        }
+        len = ksnprintf(text, sizeof(text), "%llu.%02llu %llu.%02llu %llu.%02llu %d/%d 0\n",
+                        (unsigned long long)(busy_pct_x100 / 100), (unsigned long long)(busy_pct_x100 % 100),
+                        (unsigned long long)(busy_pct_x100 / 100), (unsigned long long)(busy_pct_x100 % 100),
+                        (unsigned long long)(busy_pct_x100 / 100), (unsigned long long)(busy_pct_x100 % 100),
+                        runnable, nthreads);
+    } else if (vn->inode_id == 7) {
+        /* /proc/netdev: cumulative bytes/packets for the active NIC. */
+        uint64_t rxb = 0, txb = 0, rxp = 0, txp = 0;
+        netdev_get_stats(&rxb, &txb, &rxp, &txp);
+        len = ksnprintf(text, sizeof(text),
+                        "Inter-|   Receive                | Transmit\n"
+                        " face |bytes    packets|bytes    packets\n"
+                        "%6s: %8llu %8llu %8llu %8llu\n",
+                        netdev_name(),
+                        (unsigned long long)rxb, (unsigned long long)rxp,
+                        (unsigned long long)txb, (unsigned long long)txp);
+    } else if (vn->inode_id == 8) {
+        /* /proc/diskstats: cumulative sectors read/written across every
+         * AHCI port (see ahci_get_stats()). Not broken down per-device
+         * yet -- AuraLite currently only exposes one active AHCI
+         * controller's aggregate counters. */
+        uint64_t sread = 0, swritten = 0;
+        ahci_get_stats(&sread, &swritten);
+        len = ksnprintf(text, sizeof(text),
+                        "   1    0 ahci0 0 0 %llu 0 0 0 %llu 0 0 0 0\n",
+                        (unsigned long long)sread, (unsigned long long)swritten);
     } else if ((vn->inode_id >> 16) != 0) {
         uint64_t pid = vn->inode_id >> 16;
         uint64_t file_type = vn->inode_id & 0xFFFF;

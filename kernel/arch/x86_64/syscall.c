@@ -660,14 +660,34 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                      * disabled.  That starves the PIT-driven scheduler and the
                      * GUI/USB-HID polling threads; on QEMU/Windows this made
                      * mouse motion appear only after serial/keyboard input
-                     * "kicked" the guest.  Restore interrupts while waiting and
-                     * yield so the compositor and input pollers keep running. */
-                    __asm__ volatile ("sti" ::: "memory");
-                    sched_yield();
-                    if (timer_get_ticks() & 1ULL) {
-                        __asm__ volatile ("hlt" ::: "memory");
-                    } else {
-                        __asm__ volatile ("pause");
+                     * "kicked" the guest.  Restore interrupts while waiting.
+                     *
+                     * Genuinely block for one PIT tick (via sleep_deadline,
+                     * the same mechanism kernel_nanosleep() uses) instead of
+                     * calling sched_yield() in a spin loop: sched_yield()
+                     * only marks the CURRENT thread READY and reschedules,
+                     * so with nothing else runnable the scheduler hands the
+                     * CPU straight back to this very thread -- it never
+                     * actually reaches the idle loop, so every /proc
+                     * consumer (loadavg, a system monitor, ...) sees the CPU
+                     * as 100% "busy" even while the shell is simply sitting
+                     * at an empty prompt. Arming sleep_deadline and entering
+                     * THREAD_BLOCKED makes schedule() run the idle thread
+                     * (hlt) for that tick instead, which both accounts
+                     * correctly in sched_get_idle_ticks() and saves real
+                     * host CPU time under emulation. */
+                    {
+                        uint64_t rflags2;
+                        __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags2));
+                        tcb_t *cur = sched_current();
+                        if (cur) {
+                            cur->sleep_deadline = timer_get_ticks() + 1;
+                            cur->state = THREAD_BLOCKED;
+                        }
+                        schedule();
+                        if (rflags2 & 0x200ULL) {
+                            __asm__ volatile ("sti" ::: "memory");
+                        }
                     }
                     continue;
                 }

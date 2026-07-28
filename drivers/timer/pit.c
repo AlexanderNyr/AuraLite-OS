@@ -11,6 +11,7 @@
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/proc/scheduler.h"
+#include "kernel/proc/thread.h"
 #include "kernel/proc/signal.h"
 #include "kernel/lib/kprintf.h"
 
@@ -100,11 +101,46 @@ void timer_sleep_ms(uint64_t ms) {
         ticks_to_wait = 1;
     }
     uint64_t target = timer_ticks + ticks_to_wait;
+
+    /* Before the scheduler exists (this is also called from
+     * timer_self_test() during early boot, pre-sched_init()), there is no
+     * thread to block: fall back to the original busy-wait. Once threads
+     * are running, genuinely block via sleep_deadline (the same mechanism
+     * kernel_nanosleep()/the stdin SYS_READ path use) instead of spinning
+     * with "sti; pause": every background poller in the kernel (GUI
+     * compositor, USB hotplug monitor, HID polling, ...) calls this
+     * function on its own kernel thread, so a plain busy-wait here meant
+     * the CPU never actually reached the idle loop as long as any of them
+     * were alive -- making /proc/loadavg (and anything reading it, like a
+     * system monitor) report 100% "busy" nearly all the time, regardless
+     * of real load. */
+    if (sched_is_ready()) {
+        tcb_t *cur = sched_current();
+        if (cur) {
+            while (timer_ticks < target) {
+                uint64_t rflags;
+                __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+                if (timer_ticks >= target) {
+                    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+                    break;
+                }
+                cur->sleep_deadline = target;
+                cur->state = THREAD_BLOCKED;
+                schedule();
+                if (rflags & 0x200ULL) {
+                    __asm__ volatile ("sti" ::: "memory");
+                }
+            }
+            cur->sleep_deadline = 0;
+            return;
+        }
+    }
+
     while (timer_ticks < target) {
         /* In SMP/QEMU the legacy timer interrupt may be delivered to another
          * vCPU, so HLT on the current CPU can sleep forever even though the
          * global tick counter is advancing.  Keep IF enabled but poll with
-         * PAUSE for boot/self-test sleeps. */
+         * PAUSE for boot/self-test sleeps (no scheduler yet to block on). */
         __asm__ volatile ("sti; pause" ::: "memory");
     }
 }

@@ -48,4 +48,11 @@ void ahci_self_test(void);
 int ahci_read_sector(uint32_t port, uint64_t lba, void *buf);
 int ahci_write_sector(uint32_t port, uint64_t lba, const void *buf);
 
+/* Cumulative sector counters across every AHCI port, maintained by
+ * ahci_read()/ahci_write() (and therefore also by the single-sector
+ * wrappers above, which call through them). Either output pointer may be
+ * NULL. Useful for a rough, hardware-independent disk-activity indicator
+ * (e.g. a system monitor) without needing per-filesystem instrumentation. */
+void ahci_get_stats(uint64_t *out_sectors_read, uint64_t *out_sectors_written);
+
 #endif /* AURALITE_DRIVERS_AHCI_AHCI_H */

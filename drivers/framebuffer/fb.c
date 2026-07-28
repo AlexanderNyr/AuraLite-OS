@@ -57,9 +57,21 @@ static void fb_scroll(void) {
 }
 
 void fb_init(void) {
+    /* Initialise the PSF font subsystem unconditionally, before any early
+     * return below. The font is used not just by this text console but by
+     * the whole GUI text-rendering path (gui_draw_text() in kernel/gui/gui.c,
+     * gfx_draw_string() in graphics.c): those draw into a window's private
+     * backing buffer, which exists and is drawable even when there is no
+     * usable linear framebuffer to actually display it on (e.g. a legacy
+     * BIOS boot with no VBE mode set). Gating psf_init() behind the
+     * framebuffer check here used to be harmless when the font was a
+     * hardcoded 8x8 C array with no init step, but now that it is a real
+     * parsed PSF2 image, skipping psf_init() left psf_get_font() returning
+     * NULL and every GUI text draw silently failing on such boots. */
+    psf_init();
+
     boot_fb_t *fb = boot_get_framebuffer();
     if (!fb || fb->bpp != 32) { fb_addr = NULL; return; }
-    psf_init();
     const struct psf_font *f = psf_get_font();
     if (!f) { fb_addr = NULL; return; }
     font_width = f->width; font_height = f->height;

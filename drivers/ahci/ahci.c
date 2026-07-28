@@ -97,6 +97,10 @@ static volatile uint32_t *abar = NULL;
 static struct ahci_port ports[AHCI_MAX_PORTS];
 static int port_count = 0;
 
+/* Cumulative sector I/O counters -- see ahci_get_stats() in ahci.h. */
+static volatile uint64_t sectors_read_total    = 0;
+static volatile uint64_t sectors_written_total = 0;
+
 /* ---- MMIO helpers ---- */
 static inline uint32_t port_read(int p, uint32_t off) {
     return abar[(0x100 + p * 0x80 + off) / 4];
@@ -312,6 +316,7 @@ int ahci_read(uint32_t port, uint64_t lba, uint32_t count, void *buf) {
     if (ahci_exec(port, ATA_READ_DMA_EXT, 0, lba, count, dma, len) != 0)
         return -1;
     memcpy(buf, (void *)(uintptr_t)(hhdm + dma), len);
+    sectors_read_total += count;
     return 0;
 }
 
@@ -324,7 +329,14 @@ int ahci_write(uint32_t port, uint64_t lba, uint32_t count, const void *buf) {
     uint64_t dma = pmm_alloc_contiguous(frames);
     if (!dma) return -1;
     memcpy((void *)(uintptr_t)(hhdm + dma), buf, len);
-    return ahci_exec(port, ATA_WRITE_DMA_EXT, 1, lba, count, dma, len);
+    int rc = ahci_exec(port, ATA_WRITE_DMA_EXT, 1, lba, count, dma, len);
+    if (rc == 0) sectors_written_total += count;
+    return rc;
+}
+
+void ahci_get_stats(uint64_t *out_sectors_read, uint64_t *out_sectors_written) {
+    if (out_sectors_read)    *out_sectors_read    = sectors_read_total;
+    if (out_sectors_written) *out_sectors_written = sectors_written_total;
 }
 
 int ahci_get_port_count(void) { return port_count; }
