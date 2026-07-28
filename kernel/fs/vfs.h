@@ -267,6 +267,9 @@ int     vfs_set_cloexec(int fd, int on);
 int     vfs_get_cloexec(int fd);
 /* Close every FD with FD_CLOEXEC set.  Called from execve(). */
 void    vfs_close_on_exec(void);
+/* Guarantee fd 0/1/2 are occupied (opening /dev/null on any that are still
+ * empty) for the current thread.  See vfs.c for why this matters. */
+void    vfs_ensure_std_fds(void);
 
 /* ---- Path operations (no FD needed) ---- */
 int vfs_mkdir(const char *path, uint32_t mode);

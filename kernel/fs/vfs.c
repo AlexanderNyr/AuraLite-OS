@@ -963,6 +963,48 @@ void vfs_close_on_exec(void) {
 }
 
 /*
+ * vfs_ensure_std_fds() — guarantee fd 0/1/2 (stdin/stdout/stderr) are always
+ * occupied for the CURRENT thread, opening /dev/null on whichever of them
+ * are empty.
+ *
+ * Why this exists: ordinary processes get fd 0/1/2 wired to /dev/tty0 by
+ * init (see userspace/init/init.c) and every fork()/spawn() descendant
+ * inherits those same slots already-open via vfs_fork_inherit(). But a few
+ * processes are spawned directly from a KERNEL THREAD's context instead of
+ * from init's process tree -- most notably GUI apps launched by double-
+ * clicking a desktop icon, which run process_spawn() from the
+ * "gui-compositor" kernel thread (started at boot, before init/the shell
+ * even exists). That thread's own fd_table is all NULL (kthread_create()
+ * never opens anything), so a spawned child inherits an EMPTY fd table.
+ *
+ * Without this guarantee, that child's first ordinary open() (e.g. a GUI
+ * app's "/proc/loadavg" for a system monitor) is handed the lowest free
+ * slot, which is fd 0. SYS_READ hard-codes fd==0 as "read a line from the
+ * console keyboard/serial", so read()ing that "innocent" fd 0 blocks
+ * forever waiting for keyboard input that will never come -- the app hangs
+ * silently right after its first file read, never reaching its first
+ * paint, which is exactly what made icon-launched GUI windows appear
+ * permanently blank (while the same app launched from a shell, which
+ * already has fd 0/1/2 reserved, worked fine).
+ */
+void vfs_ensure_std_fds(void) {
+    tcb_t *cur = sched_current();
+    if (!cur) return;
+    for (int fd = 0; fd <= 2; fd++) {
+        if (cur->fd_table[fd] != NULL) continue;
+        int opened = vfs_open("/dev/null", O_RDWR, 0);
+        if (opened < 0) break;   /* devfs not mounted yet: nothing we can do */
+        if (opened != fd) {
+            /* Should not happen (fd was free), but be defensive: move it
+             * into place and free the slot vfs_open picked. */
+            struct ofd **t = current_fd_table();
+            t[fd] = t[opened];
+            t[opened] = NULL;
+        }
+    }
+}
+
+/*
  * vfs_fork_inherit() — share the parent's OFDs with a forked child.
  *
  * The child's FD table entries point at the SAME OFD objects as the parent's

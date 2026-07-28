@@ -547,6 +547,14 @@ static void spawn_thread(void *arg) {
     char *path = (char *)arg;
 
     vfs_close_on_exec();
+    /* See vfs_ensure_std_fds()'s comment: guarantees the spawned process's
+     * own subsequent open() calls (e.g. a GUI app reading files under
+     * /proc) never accidentally land on fd 0/1/2 and get misinterpreted as
+     * a stdin/stdout/stderr operation. Needed because process_spawn() can
+     * be invoked from a kernel thread (e.g. gui-compositor launching a
+     * double-clicked desktop icon) whose own fd_table -- inherited here via
+     * vfs_fork_inherit() -- is completely empty. */
+    vfs_ensure_std_fds();
 
     /* Read the ELF from the VFS into kernel memory. */
     int fd = vfs_open(path, O_RDONLY, 0);
