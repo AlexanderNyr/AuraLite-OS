@@ -470,6 +470,16 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
         tcb_t *cur = sched_current();
         if (cur && (vn->mode & 04000)) cur->euid = vn->uid;
         if (cur && (vn->mode & 02000)) cur->egid = vn->gid;
+        /* Refuse to "execute" a directory: without this check vfs_read() on
+         * a directory vnode returns 0 bytes, which then surfaces as a
+         * confusing "[elf] too small (0 bytes)" / "ELF load failed" instead
+         * of a clear, POSIX-like diagnostic. */
+        if (vn->type == VFS_TYPE_DIR) {
+            kprintf("[proc] execve: '%s' is a directory\n", path);
+            vfs_close(fd);
+            exec_args_free(ea); kfree(ea);
+            return -1;
+        }
     }
 
     /* Read the entire file. For simplicity, assume it fits in 256 KiB. */
@@ -552,6 +562,17 @@ static void spawn_thread(void *arg) {
         tcb_t *cur = sched_current();
         if (cur && (vn->mode & 04000)) cur->euid = vn->uid;
         if (cur && (vn->mode & 02000)) cur->egid = vn->gid;
+        /* Refuse to "execute" a directory (e.g. `run /proc`): without this
+         * check vfs_read() on a directory vnode returns 0 bytes, which then
+         * surfaces as a confusing "[elf] too small (0 bytes)" / "[proc] ELF
+         * load failed" instead of a clear, POSIX-like diagnostic. */
+        if (vn->type == VFS_TYPE_DIR) {
+            kprintf("[proc] spawn: '%s' is a directory\n", path);
+            vfs_close(fd);
+            memset(path, 0, strlen(path) + 1);
+            kfree(path);
+            thread_exit();
+        }
     }
 
     uint8_t *buf = kmalloc(256 * 1024);

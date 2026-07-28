@@ -28,7 +28,11 @@ extern void context_switch(tcb_t *old, tcb_t *new);
 static uint64_t next_tid = 1;
 
 #define THREAD_STACK_SLOT_SIZE  ((THREAD_STACK_PAGES + 2 * THREAD_STACK_GUARD_PAGES) * 4096ULL)
-#define THREAD_STACK_REGION_BASE 0xFFFFFFFF8A000000ULL
+/* Placed 64 MiB after KHEAP_BASE (kernel/mm/kheap.h) -- i.e. exactly at the
+ * kernel heap's current ceiling (KHEAP_LIMIT) -- so kheap growth can never
+ * run into the thread kernel-stack region. Keep these two constants in sync
+ * if either region's size changes. */
+#define THREAD_STACK_REGION_BASE 0xFFFFFFFF8C000000ULL
 #define THREAD_STACK_MAX_SLOTS   128
 
 static uint8_t thread_stack_slots[THREAD_STACK_MAX_SLOTS];
