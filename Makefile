@@ -190,6 +190,27 @@ $(BUILD_DIR)/asm_offsets.inc: $(BUILD_DIR)/gen_asm_offsets
 # context.asm %includes asm_offsets.inc for TCB field offsets.
 $(BUILD_DIR)/kernel/proc/context.o: $(BUILD_DIR)/asm_offsets.inc
 
+# ---- SMP AP trampoline (raw 16-bit blob embedded into the kernel) ----
+# boot/smp/ap_trampoline.asm assembles to a flat position-fixed binary
+# (org 0x8000; same pattern as stage2: nasm -f bin, no linker).  smp.c
+# embeds the bytes via the generated build/ap_trampoline.inc header and
+# copies them to SMP_TRAMPOLINE_CODE_PHYS before sending SIPIs.
+AP_TRAMPOLINE_SRC := boot/smp/ap_trampoline.asm
+AP_TRAMPOLINE_BIN := $(BUILD_DIR)/boot/ap_trampoline.bin
+AP_TRAMPOLINE_INC := $(BUILD_DIR)/ap_trampoline.inc
+
+$(AP_TRAMPOLINE_BIN): $(AP_TRAMPOLINE_SRC)
+	@mkdir -p $(dir $@)
+	$(AS) -f bin -o $@ $<
+
+$(AP_TRAMPOLINE_INC): $(AP_TRAMPOLINE_BIN) tools/gen_ap_trampoline_inc.py
+	@mkdir -p $(dir $@)
+	python3 tools/gen_ap_trampoline_inc.py $< > $@
+	@echo "  [ap-trampoline] $@"
+
+# smp.c #includes build/ap_trampoline.inc directly.
+$(BUILD_DIR)/kernel/arch/x86_64/smp.o: $(AP_TRAMPOLINE_INC)
+
 $(KERNEL_ELF): $(KERNEL_OBJS) kernel.ld $(USER_BIN_H)
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) $(KERNEL_OBJS) -o $@

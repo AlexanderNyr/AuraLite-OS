@@ -130,3 +130,57 @@ void lapic_send_ipi_all_excluding_self(uint8_t vector) {
     /* Wait for delivery */
     while (lapic[0x300 / 4] & (1u << 12)) {}
 }
+
+/* Shared helper: return the LAPIC's HHDM-mapped MMIO base, or NULL if the
+ * HHDM isn't ready.  Every ICR-writing function below needs this, and
+ * lapic_enable() has already mapped the page by the time any of them can
+ * possibly be called. */
+static volatile uint32_t *lapic_mmio(void) {
+    uint64_t hhdm = boot_get_hhdm_offset();
+    if (!hhdm) return 0;
+    uint64_t apic_base_msr;
+    uint32_t low, high;
+    __asm__ volatile ("rdmsr" : "=a"(low), "=d"(high) : "c"(0x1B));
+    apic_base_msr = ((uint64_t)high << 32) | low;
+    uint64_t lapic_phys = apic_base_msr & 0xFFFFF000ULL;
+    if (!lapic_phys) lapic_phys = 0xFEE00000ULL;
+    return (volatile uint32_t *)(uintptr_t)(hhdm + lapic_phys);
+}
+
+uint32_t lapic_read_id(void) {
+    volatile uint32_t *lapic = lapic_mmio();
+    if (!lapic) return 0;
+    /* xAPIC LAPIC ID register (offset 0x20): the ID occupies bits 31:24. */
+    return lapic[LAPIC_ID / 4] >> 24;
+}
+
+/* Write the ICR (Interrupt Command Register, a 64-bit register split across
+ * two 32-bit MMIO words) targeting a specific destination APIC ID, then wait
+ * for the LAPIC to report the send completed (Delivery Status, ICR-low bit
+ * 12) before returning.  This ordering -- high word (destination) before low
+ * word (the write that actually triggers the send) -- is mandated by the
+ * Intel SDM Vol.3 s.10.6.1. */
+static void lapic_send_icr(uint32_t apic_id, uint32_t icr_low_bits) {
+    volatile uint32_t *lapic = lapic_mmio();
+    if (!lapic) return;
+    lapic[0x310 / 4] = apic_id << 24;   /* ICR High: destination APIC ID */
+    lapic[0x300 / 4] = icr_low_bits;    /* ICR Low: triggers the send */
+    while (lapic[0x300 / 4] & (1u << 12)) { /* wait for Delivery Status */ }
+}
+
+void lapic_send_init_ipi(uint32_t apic_id) {
+    /* Delivery Mode = INIT (101b, bits 10:8), Level = Assert (bit 14),
+     * Trigger Mode = Level (bit 15).  Vector is ignored/must be 0 for INIT. */
+    lapic_send_icr(apic_id, (5u << 8) | (1u << 14) | (1u << 15));
+}
+
+void lapic_send_init_deassert(uint32_t apic_id) {
+    /* INIT, Level = Deassert (bit 14 clear), Trigger Mode = Level. */
+    lapic_send_icr(apic_id, (5u << 8) | (1u << 15));
+}
+
+void lapic_send_sipi(uint32_t apic_id, uint8_t vector) {
+    /* Delivery Mode = Startup (110b, bits 10:8); vector = target real-mode
+     * start address >> 12. */
+    lapic_send_icr(apic_id, (6u << 8) | vector);
+}
