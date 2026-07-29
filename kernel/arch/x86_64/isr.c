@@ -4,6 +4,7 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
@@ -193,6 +194,14 @@ void isr_handler(struct registers *r) {
         /* On the way back to Ring 3, deliver any pending unblocked signal
          * (e.g. one posted by kill() from another thread, or SIGALRM). */
         signal_deliver_iret(r);
+    } else if (r->int_no == IPI_TLB_SHOOTDOWN_VECTOR) {
+        /* Inter-processor interrupt: another cpu changed shared page tables
+         * and needs every cpu to drop stale TLB entries (see
+         * kernel/arch/x86_64/tlb_shootdown.c).  Reached through the normal
+         * isr_common_stub save/restore now, so a plain C handler is safe
+         * here. */
+        extern void ipi_tlb_shootdown_handler(void);
+        ipi_tlb_shootdown_handler();
     } else {
         kprintf("[isr] spurious/unknown interrupt vector %llu\n",
                 (unsigned long long)r->int_no);

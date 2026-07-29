@@ -2,6 +2,23 @@
 #define AURALITE_ARCH_X86_64_SYSCALL_H
 
 #include <stdint.h>
+#include "kernel/arch/x86_64/cpu_local.h"
+
+/* Per-CPU SYSCALL entry-state accessors.  The captured user frame lives in
+ * struct cpu_local (see kernel/arch/x86_64/syscall_entry.asm's SMP MODEL
+ * comment) -- it used to live in .data globals, which raced the moment two
+ * CPUs could run syscalls concurrently.  These macros keep the existing C
+ * call sites (`syscall_saved_rcx` et al.) working unchanged against the
+ * current CPU's slots. */
+#define syscall_saved_rcx  (get_cpu_local()->syscall_saved_rip)
+#define syscall_saved_r11  (get_cpu_local()->syscall_saved_rflags)
+#define syscall_saved_rsp  (get_cpu_local()->syscall_saved_rsp)
+#define syscall_saved_rbx  (get_cpu_local()->syscall_saved_rbx)
+#define syscall_saved_rbp  (get_cpu_local()->syscall_saved_rbp)
+#define syscall_saved_r12  (get_cpu_local()->syscall_saved_r12)
+#define syscall_saved_r13  (get_cpu_local()->syscall_saved_r13)
+#define syscall_saved_r14  (get_cpu_local()->syscall_saved_r14)
+#define syscall_saved_r15  (get_cpu_local()->syscall_saved_r15)
 
 /*
  * Fast system call interface (SYSCALL/SYSRET).

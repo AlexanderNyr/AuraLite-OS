@@ -463,26 +463,31 @@ static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     return 0;
 }
 
-/* Saved user-mode RIP/RFLAGS from the syscall_entry asm stub.  Defined in
- * syscall_entry.asm; we read them once at the top of every dispatch and copy
- * them into the current TCB so that a nested syscall from a context-switch
- * partner can safely overwrite the globals.  On the way out we copy them
- * back so the asm sysret prologue lands at the right user RIP. */
-extern uint64_t syscall_saved_rcx;
-extern uint64_t syscall_saved_r11;
-extern uint64_t syscall_saved_rsp;
-/* Live user callee-saved registers captured at the SYSCALL boundary
- * (defined in syscall_entry.asm). */
-extern uint64_t syscall_saved_rbx;
-extern uint64_t syscall_saved_rbp;
-extern uint64_t syscall_saved_r12;
-extern uint64_t syscall_saved_r13;
-extern uint64_t syscall_saved_r14;
-extern uint64_t syscall_saved_r15;
+/* Saved user-mode RIP/RFLAGS from the syscall_entry asm stub.  The stub
+ * stores them into the current CPU's struct cpu_local slots (they used to
+ * be .data globals in syscall_entry.asm -- see the SMP MODEL comment there);
+ * the syscall_saved_* macros in syscall.h expand to those per-CPU slots.
+ * We read them once at the top of every dispatch and copy them into the
+ * current TCB so that a nested syscall from a context-switch partner can
+ * safely overwrite the slots.  On the way out syscall_restore_user_frame()
+ * copies them back so the asm sysret prologue lands at the right user RIP.
+ * This is also what makes a thread that was preempted mid-syscall and
+ * resumed on a DIFFERENT cpu safe: it re-enters the exit path here, which
+ * republishes its frame from the TCB into whatever cpu it now runs on. */
 
-/* Called from syscall_entry.asm just before sysret.  Refreshes the
- * syscall_saved_* globals from the current TCB's per-thread copies.  Uses the
- * default SysV C ABI: no args, no return. */
+/* Publish the kernel stack top the SYSCALL entry stub switches to, into the
+ * CURRENT cpu's per-CPU slot (was an asm routine writing a single global,
+ * which let a thread switch on one CPU clobber the other CPU's entry stack
+ * pointer under real SMP).  Called on every context switch (schedule()) and
+ * at thread first-run (user.c/clone.c/process.c). */
+void set_syscall_stack(uint64_t stack_top) {
+    struct cpu_local *c = get_cpu_local();
+    if (c) c->syscall_kernel_rsp = stack_top;
+}
+
+/* Called from syscall_entry.asm just before sysret.  Refreshes the current
+ * CPU's per-CPU syscall slots from the current TCB's per-thread copies.
+ * Uses the default SysV C ABI: no args, no return. */
 void syscall_restore_user_frame(void) {
     tcb_t *cur = sched_current();
     if (!cur) return;

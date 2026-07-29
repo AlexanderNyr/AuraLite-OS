@@ -2,7 +2,7 @@
 ; syscall_entry.asm — SYSCALL handler entry point.
 ;
 ; SYSCALL convention: rax=sysno, rdi=a1, rsi=a2, rdx=a3, r10=a4, r8=a5, r9=a6
-; C ABI:             rdi=arg1, rsi=arg2, rdx=arg3, rcx=arg4, r8=arg5, r9=arg6
+; C ABI:             rdi=arg1, rsi=arg2, rdx=arg3, rcx=arg4, r8=arg5, r9=a6
 ;
 ; SECURITY MODEL:
 ;   - SYSCALL itself does not switch stacks, so we immediately capture the
@@ -10,38 +10,26 @@
 ;     set_syscall_stack().
 ;   - This avoids running kernel code on attacker-controlled userspace stack
 ;     memory and is a prerequisite for stronger SMAP-style hardening later.
+;
+; SMP MODEL:
+;   - All entry/exit state lives in the per-CPU struct cpu_local slots,
+;     reached through %gs (each CPU's GS.base points at ITS cpu_local, set by
+;     cpu_local_init(); nothing ever changes GS.base after that, and userland
+;     TLS uses FS, so %gs is valid here in both rings).  The offsets come
+;     from tools/gen_asm_offsets.c via build/asm_offsets.inc, so they can
+;     never drift out of sync with the C struct.
+;   - The old implementation kept this state in .data globals -- correct
+;     only while one CPU could enter the kernel at a time.  With real SMP
+;     two CPUs can run syscalls concurrently, and those globals would tear.
 ; =============================================================================
 
 bits 64
 default rel
 
-section .data
-align 8
-global syscall_saved_rcx
-global syscall_saved_r11
-global syscall_saved_rsp
-global syscall_kernel_rsp
-global syscall_saved_rbx
-global syscall_saved_rbp
-global syscall_saved_r12
-global syscall_saved_r13
-global syscall_saved_r14
-global syscall_saved_r15
-syscall_saved_rcx:   dq 0      ; user return RIP (saved by CPU in RCX)
-syscall_saved_r11:   dq 0      ; user RFLAGS (saved by CPU in R11)
-syscall_saved_rsp:   dq 0      ; user RSP (saved manually, for fork())
-syscall_kernel_rsp:  dq 0      ; per-thread kernel stack top (published on switch)
-; Live user callee-saved (SysV-preserved) registers at the SYSCALL boundary.
-; The SYSCALL ABI does not clobber these, so userspace may keep live values in
-; them across a syscall.  They must be captured here so that a signal delivered
-; at the syscall-exit boundary records the genuine interrupted register state
-; (otherwise sigreturn would restore zeros and corrupt the interrupted program).
-syscall_saved_rbx:   dq 0
-syscall_saved_rbp:   dq 0
-syscall_saved_r12:   dq 0
-syscall_saved_r13:   dq 0
-syscall_saved_r14:   dq 0
-syscall_saved_r15:   dq 0
+; CL_SYS_* offsets are auto-generated from struct cpu_local via
+; tools/gen_asm_offsets.c so this file never drifts out of sync with the C
+; struct layout.
+%include "asm_offsets.inc"
 
 section .text
 extern syscall_dispatch
@@ -49,18 +37,11 @@ extern syscall_restore_user_frame
 extern syscall_check_signals
 global syscall_init
 global syscall_entry
-global set_syscall_stack
 
 %define MSR_STAR   0xC0000081
 %define MSR_LSTAR  0xC0000082
 %define MSR_FMASK  0xC0000084
 %define MSR_EFER   0xC0000080
-
-; Publish the kernel stack top to use on SYSCALL entry.
-;   rdi = stack_top
-set_syscall_stack:
-    mov [rel syscall_kernel_rsp], rdi
-    ret
 
 syscall_init:
     ; LSTAR = full 64-bit address of syscall_entry (EDX:EAX for WRMSR).
@@ -98,21 +79,22 @@ syscall_init:
 
 syscall_entry:
     ; CPU set: RCX=user RIP, R11=user RFLAGS.  RSP is still the user stack.
-    ; Capture the full userspace return frame, then switch immediately to the
-    ; published kernel stack so no kernel work runs on attacker-controlled user
-    ; memory.
-    mov [rel syscall_saved_rcx], rcx
-    mov [rel syscall_saved_r11], r11
-    mov [rel syscall_saved_rsp], rsp
+    ; Capture the full userspace return frame into THIS cpu's cpu_local slots
+    ; (interrupts are masked by FMASK, so nothing can preempt us mid-capture),
+    ; then switch immediately to the published kernel stack so no kernel work
+    ; runs on attacker-controlled user memory.
+    mov [gs:CL_SYS_RIP], rcx
+    mov [gs:CL_SYS_RFLAGS], r11
+    mov [gs:CL_SYS_RSP], rsp
     ; Capture the live user callee-saved registers before any kernel code runs,
     ; so a signal delivered at syscall exit can faithfully restore them.
-    mov [rel syscall_saved_rbx], rbx
-    mov [rel syscall_saved_rbp], rbp
-    mov [rel syscall_saved_r12], r12
-    mov [rel syscall_saved_r13], r13
-    mov [rel syscall_saved_r14], r14
-    mov [rel syscall_saved_r15], r15
-    mov rsp, [rel syscall_kernel_rsp]
+    mov [gs:CL_SYS_RBX], rbx
+    mov [gs:CL_SYS_RBP], rbp
+    mov [gs:CL_SYS_R12], r12
+    mov [gs:CL_SYS_R13], r13
+    mov [gs:CL_SYS_R14], r14
+    mov [gs:CL_SYS_R15], r15
+    mov rsp, [gs:CL_SYS_KRSP]
 
     ; Stash all SYSCALL arg registers on the KERNEL stack (in reverse order so
     ; the SysV slots line up neatly). After these pushes:
@@ -152,8 +134,10 @@ syscall_entry:
     add  rsp, 8            ; drop a6 stack slot
     add  rsp, 7*8          ; drop the 7 pushed sources
 
-    ; Restore the GLOBAL syscall_saved_rcx/r11/rsp from this thread's TCB.
-    ; IMPORTANT: preserve user callee-saved registers such as R12.
+    ; Refresh THIS cpu's per-CPU syscall slots from this thread's TCB (the
+    ; thread may have been preempted mid-syscall and resumed HERE after
+    ; another CPU ran its own syscalls).  IMPORTANT: preserve user
+    ; callee-saved registers such as R12.
     push r12
     mov  r12, rax
     call syscall_restore_user_frame
@@ -167,7 +151,7 @@ syscall_entry:
     mov  rax, r12
     pop  r12
 
-    mov rcx, [rel syscall_saved_rcx]
-    mov r11, [rel syscall_saved_r11]
-    mov rsp, [rel syscall_saved_rsp]
+    mov rcx, [gs:CL_SYS_RIP]
+    mov r11, [gs:CL_SYS_RFLAGS]
+    mov rsp, [gs:CL_SYS_RSP]
     o64 sysret

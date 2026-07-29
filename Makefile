@@ -187,8 +187,10 @@ $(BUILD_DIR)/asm_offsets.inc: $(BUILD_DIR)/gen_asm_offsets
 	@mkdir -p $(dir $@)
 	$< > $@
 
-# context.asm %includes asm_offsets.inc for TCB field offsets.
+# context.asm %includes asm_offsets.inc for TCB field offsets;
+# syscall_entry.asm %includes it for the per-CPU struct cpu_local slots.
 $(BUILD_DIR)/kernel/proc/context.o: $(BUILD_DIR)/asm_offsets.inc
+$(BUILD_DIR)/kernel/arch/x86_64/syscall_entry.o: $(BUILD_DIR)/asm_offsets.inc
 
 # ---- SMP AP trampoline (raw 16-bit blob embedded into the kernel) ----
 # boot/smp/ap_trampoline.asm assembles to a flat position-fixed binary

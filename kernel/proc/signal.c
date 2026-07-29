@@ -552,9 +552,9 @@ int64_t do_sigreturn(struct registers *regs) {
 
     if (t->syscall_restart_pending) {
         t->syscall_restart_pending = 0;
-        extern uint64_t syscall_saved_rcx;
-        extern uint64_t syscall_saved_r11;
-        extern uint64_t syscall_saved_rsp;
+        /* The syscall_saved_* per-CPU accessor macros come from
+         * kernel/arch/x86_64/syscall.h (included above): the slots live in
+         * struct cpu_local since real SMP made the .data globals racy. */
         t->saved_user_rip    = regs->rip;
         t->saved_user_rflags = regs->rflags;
         t->saved_user_rsp    = regs->rsp;

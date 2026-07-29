@@ -16,6 +16,8 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/sync/futex.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/syscall.h"
+#include "kernel/arch/x86_64/tss.h"
 #include <stdint.h>
 
 /* Linux-compatible clone flags (subset used by the pthread runtime). */
@@ -35,13 +37,10 @@
 #define ARCH_SET_GS 0x1001
 #define ARCH_GET_GS 0x1004
 
-/* User-mode return frame captured by the syscall entry stub. */
-extern uint64_t syscall_saved_rcx;   /* user RIP   */
-extern uint64_t syscall_saved_r11;   /* user RFLAGS */
-extern uint64_t syscall_saved_rsp;   /* user RSP   */
-
-extern void tss_set_rsp0(uint64_t rsp0);
-extern void set_syscall_stack(uint64_t rsp0);
+/* User-mode return frame captured by the syscall entry stub: reached via
+ * the syscall_saved_* per-CPU accessor macros (kernel/arch/x86_64/syscall.h)
+ * -- the underlying slots live in struct cpu_local since real SMP made the
+ * old .data globals racy. */
 extern void fork_child_sysret(uint64_t rip, uint64_t rflags, uint64_t rsp);
 
 /* First-run trampoline for a cloned thread: enter user mode at the clone

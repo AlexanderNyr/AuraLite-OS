@@ -11,6 +11,7 @@
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/gdt.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
@@ -74,7 +75,19 @@ void tss_init(void) {
 }
 
 void tss_set_rsp0(uint64_t rsp0) {
-    tss_set_rsp0_for_cpu(0, rsp0);
+    /* Route to the CALLING cpu's own TSS.  This used to hard-wire cpu 0,
+     * which is why a thread's first-run stack programming (clone.c,
+     * process.c, user.c -- all invoke this via their entry trampolines)
+     * only worked as long as every thread ran on the BSP; with real SMP it
+     * must target the per-CPU GDT/TSS of whichever cpu the thread actually
+     * runs on.  Early boot (before smp_init() publishes cpu_local state)
+     * still lands on cpu 0 via the guard. */
+    int cpu_id = 0;
+    if (cpu_local_ready) {
+        struct cpu_local *c = get_cpu_local();
+        if (c) cpu_id = (int)c->cpu_id;
+    }
+    tss_set_rsp0_for_cpu(cpu_id, rsp0);
 }
 
 void tss_set_rsp0_for_cpu(int cpu_id, uint64_t rsp0) {

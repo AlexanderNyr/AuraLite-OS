@@ -101,7 +101,9 @@ void schedule(void) {
     if (next && next->kernel_stack) {
         uint64_t kstack_top = (uint64_t)next->kernel_stack + THREAD_STACK_SIZE;
         tss_set_rsp0_for_cpu((int)local->cpu_id, kstack_top);
-        if (local->cpu_id == 0) set_syscall_stack(kstack_top);
+        /* Per-CPU syscall entry stack slot (struct cpu_local), safe to
+         * publish from every cpu now. */
+        set_syscall_stack(kstack_top);
     }
 
     if (next && next->pml4_phys != 0) {

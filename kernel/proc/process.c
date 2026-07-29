@@ -31,9 +31,10 @@
 #define USER_STACK_GUARD_SIZE  0x1000ULL
 
 /* Saved user-mode state from the syscall entry (set in syscall_entry.asm). */
-extern uint64_t syscall_saved_rcx;   /* user RIP */
-extern uint64_t syscall_saved_r11;   /* user RFLAGS */
-extern uint64_t syscall_saved_rsp;   /* user RSP (saved by our asm) */
+/* The user return frame is read through the syscall_saved_* per-CPU
+ * accessor macros from kernel/arch/x86_64/syscall.h (already included
+ * above): the slots live in struct cpu_local, per-cpu, since real SMP made
+ * the former .data globals racy. */
 
 /* ---- Address-space helpers ---- */
 

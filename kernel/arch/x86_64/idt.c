@@ -36,7 +36,13 @@ void idt_init(void) {
 
     lidt_load(&idtp);
 
-    /* Register TLB Shootdown IPI (vector 0xF0). */
-    extern void ipi_tlb_shootdown_handler(void);
-    idt_set_gate(0xF0, (uint64_t)ipi_tlb_shootdown_handler, IDT_GATE_INTERRUPT);
+    /* The TLB Shootdown IPI (vector 0xF0, IPI_TLB_SHOOTDOWN_VECTOR) needs
+     * no special registration here: it arrives through the standard
+     * isr_table[0xF0] stub installed above, and isr_handler() dispatches
+     * that vector to ipi_tlb_shootdown_handler() (see isr.c).  The previous
+     * arrangement pointed the IDT gate straight at the naked C handler -- a
+     * normal C function ends in `ret`, not `iretq`, so any AP that actually
+     * received this IPI with interrupts enabled would have returned into
+     * garbage.  Latent until APs take IPIs with IF=1, fatal the moment
+     * they do. */
 }
