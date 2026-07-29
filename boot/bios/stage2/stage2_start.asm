@@ -106,6 +106,12 @@ stage2_entry:
 
     ; boot_from_uefi = 0 (already zero, but write explicitly for clarity).
     mov  byte [es:BOOT_UEFI_OFF], 0
+
+    ; cpu_count defaults to 1 (BSP-only, single-CPU fallback).  ACPI MADT
+    ; parsing after go_unreal below overwrites this with the real logical
+    ; CPU count if it can locate and validate the MADT; otherwise this
+    ; default stands and the kernel runs BSP-only exactly as before.
+    mov  dword [es:BOOT_CPUCNT_OFF], 1
     pop  es
 
     ; ---- Real-mode services (BL3) ----
@@ -171,6 +177,28 @@ stage2_entry:
     mov  si, msg_unreal_fail
     call uart16_puts
 .unreal_done:
+
+    ; ---- ACPI MADT CPU enumeration (BL9.smp) ------------------------
+    ; Locate the RSDP, then walk RSDT/XSDT -> MADT to discover every
+    ; enabled Local APIC (one per logical CPU) and its APIC ID.  Requires
+    ; unreal mode (FS flat) to read tables that may live above 1 MiB.
+    ; boot_info.cpu_count was pre-set to 1 above; acpi_parse_madt only
+    ; overwrites it once it has validated at least one usable CPU entry,
+    ; so any failure here safely leaves the machine in the existing
+    ; BSP-only single-CPU mode.
+    call acpi_find_rsdp
+    test eax, eax
+    jz   .acpi_no_rsdp
+    mov  si, msg_acpi_rsdp_ok
+    call uart16_puts
+    call acpi_parse_madt
+    mov  si, msg_acpi_madt_done
+    call uart16_puts
+    jmp  .acpi_done
+.acpi_no_rsdp:
+    mov  si, msg_acpi_no_rsdp
+    call uart16_puts
+.acpi_done:
 
     ; ---- FAT32 lookup + load self-test (BL4.fat) -------------------
     ; The FAT32 partition can live at LBA 128 (BL5 hybrid MBR image)
@@ -311,6 +339,9 @@ msg_disk_ok:     db "[BL3] disk read OK", 0x0D, 0x0A, 0
 msg_disk_fail:   db "[BL3] disk read FAIL", 0x0D, 0x0A, 0
 msg_unreal_ok:   db "[BL3] unreal mode OK", 0x0D, 0x0A, 0
 msg_unreal_fail: db "[BL3] unreal mode FAIL", 0x0D, 0x0A, 0
+msg_acpi_rsdp_ok:   db "[BL9] ACPI RSDP found", 0x0D, 0x0A, 0
+msg_acpi_no_rsdp:   db "[BL9] ACPI RSDP not found; BSP-only", 0x0D, 0x0A, 0
+msg_acpi_madt_done: db "[BL9] ACPI MADT parsed", 0x0D, 0x0A, 0
 msg_fat_init_ok: db "[BL4] FAT32 BPB parsed", 0x0D, 0x0A, 0
 msg_fat_found:   db "[BL4] kernel.elf located", 0x0D, 0x0A, 0
 msg_fat_load_ok: db "[BL4] kernel.elf loaded to 0x00200000", 0x0D, 0x0A, 0
@@ -340,6 +371,7 @@ boot_drive: db 0
 %include "boot/bios/stage2/a20.inc"
 %include "boot/bios/stage2/disk.inc"
 %include "boot/bios/stage2/unreal.inc"
+%include "boot/bios/stage2/acpi.inc"
 %include "boot/bios/stage2/fat.inc"
 %include "boot/bios/stage2/elf.inc"
 %include "boot/bios/stage2/paging.inc"

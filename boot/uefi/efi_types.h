@@ -303,6 +303,16 @@ typedef struct {
     void                            *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
 
+/* EFI_CONFIGURATION_TABLE (UEFI spec s.4.6): one entry per firmware-vendor
+ * table (ACPI RSDP, SMBIOS, ...), reached via
+ * EFI_SYSTEM_TABLE.ConfigurationTable[0..NumberOfTableEntries-1].  A GUID
+ * is a plain 16-byte value here (not the ms_abi-callable pointer form used
+ * for protocol lookups), so it is compared byte-for-byte. */
+typedef struct {
+    uint8_t VendorGuid[16];
+    void   *VendorTable;
+} EFI_CONFIGURATION_TABLE;
+
 /* OpenProtocol attributes (UEFI spec s.7.3.9). */
 #define EFI_OPEN_PROTOCOL_GET_PROTOCOL   0x00000002
 

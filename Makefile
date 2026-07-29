@@ -511,7 +511,8 @@ UEFI_CFLAGS  := -ffreestanding -fno-stack-protector -fshort-wchar \
                 -mno-red-zone -Wall -Wextra -O2 -I .
 UEFI_SRCS    := $(UEFI_DIR)/efi_main.c \
                 $(UEFI_DIR)/efi_paging.c \
-                $(UEFI_DIR)/efi_elf.c
+                $(UEFI_DIR)/efi_elf.c \
+                $(UEFI_DIR)/efi_acpi.c
 UEFI_OBJS    := $(patsubst %.c,$(BUILD_DIR)/%.o,$(UEFI_SRCS))
 UEFI_LD      := $(UEFI_DIR)/bootloader.ld
 

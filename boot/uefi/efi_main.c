@@ -33,6 +33,7 @@ extern uint64_t   efi_elf_load(const void *image);
 extern EFI_STATUS efi_setup_hhdm_paging(EFI_BOOT_SERVICES *BS);
 extern void       efi_activate_paging(void);
 extern uint64_t   pml4_phys;
+extern void       efi_acpi_discover_cpus(EFI_SYSTEM_TABLE *st, boot_info_t *info);
 
 static EFI_SYSTEM_TABLE *gST;
 
@@ -264,6 +265,18 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
     info->boot_from_uefi = 1;
     info->cpu_count      = 1;
     info->bsp_lapic_id   = 0;
+
+    /* ---- 1b) ACPI MADT CPU enumeration ------------------------------- */
+    /* Must run while BootServices/ConfigurationTable are still valid, i.e.
+     * before ExitBootServices below. cpu_count/cpus[]/rsdp_phys are updated
+     * only if a well-formed RSDP+MADT with at least one enabled Local APIC
+     * is found; otherwise the single-CPU default above stands untouched. */
+    efi_acpi_discover_cpus(st, info);
+    if (info->cpu_count > 1) {
+        serial_puts("[BL6] ACPI MADT: multiple CPUs detected\r\n");
+    } else {
+        serial_puts("[BL6] ACPI MADT: single-CPU (or not found); BSP-only\r\n");
+    }
 
     /* ---- 2) Framebuffer via GOP -------------------------------------- */
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
