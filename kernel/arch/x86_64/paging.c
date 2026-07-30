@@ -10,10 +10,13 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/smp.h"
+#include "kernel/arch/x86_64/cpu_local.h"
+#include "kernel/arch/x86_64/lapic.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/vma.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/boot_info.h"
@@ -30,13 +33,105 @@
 #define VMM_TAG "[vmm] "
 
 static uint64_t  hhdm;    /* higher-half direct-map offset (from Limine)     */
-static uint64_t *pml4;    /* HHDM pointer to the current PML4 (from CR3)    */
+static uint64_t *pml4;    /* HHDM pointer to the KERNEL's PML4 (from CR3 @ boot).
+                           * Since SMP step 3.2 this is no longer re-pointed on
+                           * address-space switches; each CPU tracks its own
+                           * current tables in cpu_local.vm_pml4 (see below).  */
 static uint64_t  kernel_pml4_phys;  /* the kernel's PML4 (for switching back) */
 volatile int cpu_smap_is_active = 0;
+
+/* VM structure lock: serialises every page-table mutation and every
+ * structure-creating walk across CPUs (map/unmap/protect, COW resolution,
+ * fork/clone of an address space).  Without it, two CPUs touching the same
+ * shared tables -- e.g. one expanding the kernel heap (the kernel half of
+ * the page tables is SHARED by every address space, see
+ * paging_new_address_space()) while another walks them, or CLONE_VM
+ * siblings faulting on the same user page -- would tear entries under each
+ * other.  Read-only lookups (paging_get_phys/get_flags) stay lock-free:
+ * PTE updates are atomic 64-bit stores, matching the pre-SMP locking model.
+ * Lock order (outermost first): vma_lock -> vm_lock -> pmm.lock; kheap and
+ * slab sit strictly above vm_lock, so vm_lock must never call kmalloc. */
+static spinlock_t vm_lock = SPINLOCK_UNLOCKED;
+
+/* The page-table hierarchy THIS cpu is currently translating through.
+ * Before cpu_local exists (early boot) -- or for kernel contexts that never
+ * switched -- this is the kernel PML4 recorded by paging_init().  After SMP
+ * bring-up every CPU's scheduler publishes its current address space into
+ * cpu_local.vm_pml4 via paging_switch_to(), so a page fault handled on CPU1
+ * walks CPU1's tables, not whatever CPU0 last happened to run. */
+static uint64_t *vmm_current_tables(void) {
+    if (cpu_local_ready) {
+        struct cpu_local *cl = get_cpu_local();
+        if (cl && cl->vm_pml4) {
+            return (uint64_t *)(uintptr_t)cl->vm_pml4;
+        }
+    }
+    return pml4;
+}
 
 /* Convert a physical address to a writable HHDM virtual pointer. */
 static inline void *phys_to_ptr(uint64_t phys) {
     return (void *)(uintptr_t)(hhdm + phys);
+}
+
+/* Control-register bit definitions local to this file (cpu.h only exposes
+ * raw accessors). */
+#define CR0_WP   (1ULL << 16)  /* write-protect: ring-0 must fault on RO pages */
+#define CR0_NE   (1ULL << 5)   /* numeric error: native FPU exception reporting */
+#define CR0_MP   (1ULL << 1)   /* monitor coprocessor (paired with EM=0 for SSE) */
+#define CR0_EM   (1ULL << 2)   /* emulation -- MUST be clear for SSE */
+#define CR0_NW   (1ULL << 29)  /* not-write-through (reset leaves this+CD set) */
+#define CR0_CD   (1ULL << 30)  /* cache disable (reset leaves this set!) */
+
+#define CR4_OSFXSR     (1ULL << 9)   /* OS supports FXSAVE/SSE execution */
+#define CR4_OSXMMEXCPT (1ULL << 10)  /* OS supports unmasked SSE exceptions */
+
+/* Per-CPU control-register and feature parity: CR0, EFER, CR4.  Every CPU
+ * comes out of reset (BSP) or INIT (each AP) with its OWN copy of these
+ * registers, and the pre-SMP code normalised them exactly once -- for the
+ * BSP (boot.asm, paging_init()).  An AP that starts scheduling real threads
+ * without the same baseline breaks in ways that are individually baffling:
+ *
+ *   - CR4.OSFXSR = 0   -> every SSE instruction #UDs (observed: the
+ *                         software-SSE 3D demo thread dying with vector 6
+ *                         the moment it was scheduled on an AP);
+ *   - CR0.WP    = 0    -> ring-0 writes to user COW pages SILENTLY succeed
+ *                         instead of #PF-ing through the COW resolver,
+ *                         corrupting shared pages for both parent and child;
+ *   - CR0.CD/NW = 1    -> the AP runs with its caches OFF (reset state the
+ *                         trampoline only OR-ed bits into), slowing that
+ *                         core by an order of magnitude.
+ *
+ * paging_init() runs this for the BSP, ap_entry() (smp.c) for each AP; the
+ * writes are idempotent.  Prints only on the BSP to keep the log quiet. */
+void paging_cpu_features_init(void) {
+    uint64_t cr0 = read_cr0();
+    cr0 &= ~(CR0_EM | CR0_CD | CR0_NW);
+    cr0 |=  CR0_MP | CR0_NE | CR0_WP;
+    write_cr0(cr0);
+
+    uint64_t efer = read_msr(MSR_EFER);
+    write_msr(MSR_EFER, efer | EFER_NXE);
+
+    uint32_t a, b, c, d;
+    cpuid_count(7, 0, &a, &b, &c, &d);
+    (void)a; (void)c; (void)d;
+    uint64_t cr4 = read_cr4() | CR4_OSFXSR | CR4_OSXMMEXCPT;
+    int is_bsp = 1;
+    if (cpu_local_ready) {
+        struct cpu_local *cl = get_cpu_local();
+        if (cl) is_bsp = (cl->cpu_id == 0);
+    }
+    if (b & CPUID7_EBX_SMEP) {
+        cr4 |= CR4_SMEP;
+        if (is_bsp) kprintf(VMM_TAG "SMEP enabled\n");
+    }
+    if (b & CPUID7_EBX_SMAP) {
+        cr4 |= CR4_SMAP;
+        cpu_smap_is_active = 1;
+        if (is_bsp) kprintf(VMM_TAG "SMAP enabled\n");
+    }
+    write_cr4(cr4);
 }
 
 void paging_init(void) {
@@ -58,22 +153,8 @@ void paging_init(void) {
     }
     write_msr(MSR_EFER, efer | EFER_NXE);
 
-    /* Enable SMEP when the CPU advertises it so the kernel cannot execute
-     * instructions from user-mapped pages. */
-    uint32_t a, b, c, d;
-    cpuid_count(7, 0, &a, &b, &c, &d);
-    (void)a; (void)c; (void)d;
-    uint64_t cr4 = read_cr4();
-    if (b & CPUID7_EBX_SMEP) {
-        cr4 |= CR4_SMEP;
-        kprintf(VMM_TAG "SMEP enabled\n");
-    }
-    if (b & CPUID7_EBX_SMAP) {
-        cr4 |= CR4_SMAP;
-        cpu_smap_is_active = 1;
-        kprintf(VMM_TAG "SMAP enabled\n");
-    }
-    write_cr4(cr4);
+    /* SMEP/SMAP/OSFXSR/CR0-parity for the BSP (idempotent writes). */
+    paging_cpu_features_init();
 
     kprintf(VMM_TAG "PML4 at phys 0x%016llx, HHDM 0x%016llx, NXE enabled\n",
             (unsigned long long)(cr3 & PAGE_ADDR_MASK),
@@ -141,7 +222,7 @@ static uint64_t split_huge_page(uint64_t *slot, uint64_t entry, int level) {
  * installed underneath it without corrupting the original mapping.
  */
 static uint64_t *walk_pte(uint64_t virt, int create) {
-    uint64_t *table = pml4;
+    uint64_t *table = vmm_current_tables();
 
     /* The first three levels each index into the NEXT table. */
     const int indices[3] = {
@@ -191,8 +272,10 @@ static uint64_t *walk_pte(uint64_t virt, int create) {
 }
 
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t vf = spinlock_acquire_irqsave(&vm_lock);
     uint64_t *pte = walk_pte(virt, 1);
     if (pte == NULL) {
+        spinlock_release_irqrestore(&vm_lock, vf);
         kprintf(VMM_TAG "map: failed to get PTE for 0x%016llx\n",
                 (unsigned long long)virt);
         return;
@@ -200,30 +283,38 @@ void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
     *pte = (phys & PAGE_ADDR_MASK) | flags;
     /* Flush any stale TLB entry for this virtual address. */
     invlpg(virt);
+    spinlock_release_irqrestore(&vm_lock, vf);
 }
 
 void paging_unmap(uint64_t virt) {
+    uint64_t vf = spinlock_acquire_irqsave(&vm_lock);
     uint64_t *pte = walk_pte(virt, 0);
     if (pte == NULL || !(*pte & PAGE_FLAG_PRESENT)) {
+        spinlock_release_irqrestore(&vm_lock, vf);
         return;   /* nothing to unmap */
     }
     *pte = 0;
     invlpg(virt);
 
-    /* TLB Shootdown: only needed once more than one CPU is online. */
+    /* TLB Shootdown: only needed once more than one CPU is online.  The IPI
+     * handler (tlb_shootdown.c) reloads CR3 (full flush) -- send-and-forget,
+     * so holding vm_lock here can never deadlock against a spinning CPU. */
     if (smp_get_cpu_count() > 1) {
-        extern void lapic_send_ipi_all_excluding_self(uint8_t vector);
-        lapic_send_ipi_all_excluding_self(0xF0);
+        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
     }
+    spinlock_release_irqrestore(&vm_lock, vf);
 }
 
 int paging_protect(uint64_t virt, uint64_t flags) {
+    uint64_t vf = spinlock_acquire_irqsave(&vm_lock);
     uint64_t *pte = walk_pte(virt, 0);
     if (pte == NULL || !(*pte & PAGE_FLAG_PRESENT)) {
+        spinlock_release_irqrestore(&vm_lock, vf);
         return -1;
     }
     *pte = (*pte & PAGE_ADDR_MASK) | flags;
     invlpg(virt);
+    spinlock_release_irqrestore(&vm_lock, vf);
     return 0;
 }
 
@@ -260,20 +351,40 @@ uint64_t paging_new_address_space(void) {
 }
 
 /*
- * Switch the active address space: update CR3 and the VMM's pml4 pointer.
- * Safe because the kernel half (PML4 entries 256-511) is shared, so kernel
- * code, the heap, and all kernel stacks remain accessible after the switch.
+ * Switch the active address space: update CR3 and the VMM's per-CPU current
+ * tables pointer.  Safe because the kernel half (PML4 entries 256-511) is
+ * shared, so kernel code, the heap, and all kernel stacks remain accessible
+ * after the switch.  The pointer goes to THIS cpu's cpu_local.vm_pml4 slot:
+ * with several CPUs scheduling different address spaces concurrently, a
+ * global "current pml4" would be overwritten by whichever CPU switched last
+ * and every page-fault walk would roam the wrong hierarchy.
  */
 void paging_switch_to(uint64_t new_pml4_phys) {
     if (new_pml4_phys == 0) {
         return;
     }
     write_cr3(new_pml4_phys);
-    pml4 = (uint64_t *)phys_to_ptr(new_pml4_phys);
+    if (cpu_local_ready) {
+        struct cpu_local *cl = get_cpu_local();
+        if (cl) {
+            cl->vm_pml4 = (uint64_t)(uintptr_t)phys_to_ptr(new_pml4_phys);
+            return;
+        }
+    }
+    pml4 = (uint64_t *)phys_to_ptr(new_pml4_phys);   /* early boot fallback */
 }
 
-/* Update only the pml4 pointer (used after a manual CR3 write in scheduler). */
+/* Update only the tables pointer (used after a manual CR3 write in the
+ * scheduler): same per-CPU semantics as paging_switch_to(), minus the CR3
+ * write the caller has already performed. */
 void paging_update_pml4_ptr(uint64_t phys) {
+    if (cpu_local_ready) {
+        struct cpu_local *cl = get_cpu_local();
+        if (cl) {
+            cl->vm_pml4 = (uint64_t)(uintptr_t)phys_to_ptr(phys);
+            return;
+        }
+    }
     pml4 = (uint64_t *)phys_to_ptr(phys);
 }
 
@@ -295,9 +406,25 @@ uint64_t paging_clone_user_space(void) {
     if (new_pml4_phys == 0) return 0;
     uint64_t *new_pml4 = phys_to_ptr(new_pml4_phys);
 
+    /* SMP safety: this walk reads AND writes the forking thread's own page
+     * tables (marking writable leaves read-only + COW in the parent).  With
+     * CLONE_VM siblings possibly faulting on other CPUs at the same time,
+     * the walk must be atomic against every other page-table mutator
+     * (vm_lock) and against VMA-list edits (the caller's vma_lock) -- so the
+     * VMA_SHARED lookup below cannot be mid-munmap.  Lock order is
+     * vma_lock -> vm_lock, matching the mprotect syscall path. */
+    tcb_t *parent = sched_current();
+    uint64_t vflags = 0;
+    if (parent) {
+        vflags = spinlock_acquire_irqsave(&parent->vma_lock);
+    }
+    uint64_t vmflags = spinlock_acquire_irqsave(&vm_lock);
+    int marked_cow = 0;
+
+    uint64_t *src = vmm_current_tables();
     for (int i4 = 0; i4 < PML4_USER_TOP; i4++) {
-        if (!(pml4[i4] & PAGE_FLAG_PRESENT)) continue;
-        uint64_t *o_pdpt = phys_to_ptr(pml4[i4] & PAGE_ADDR_MASK);
+        if (!(src[i4] & PAGE_FLAG_PRESENT)) continue;
+        uint64_t *o_pdpt = phys_to_ptr(src[i4] & PAGE_ADDR_MASK);
         uint64_t n_pdpt_p = pmm_alloc_frame();
         if (!n_pdpt_p) goto fail;
         uint64_t *n_pdpt = phys_to_ptr(n_pdpt_p);
@@ -334,12 +461,9 @@ uint64_t paging_clone_user_space(void) {
                                     ((uint64_t)i2 << 21) |
                                     ((uint64_t)i1 << 12);
                     int is_shared_vma = 0;
-                    tcb_t *parent = sched_current();
-                    if (parent) {
-                        uint64_t vf = spinlock_acquire_irqsave(&parent->vma_lock);
+                    if (parent) {   /* parent's vma_lock is held for the walk */
                         vma_t *vma = vma_find(parent->vma_list, virt);
                         is_shared_vma = (vma && (vma->flags & VMA_SHARED)) ? 1 : 0;
-                        spinlock_release_irqrestore(&parent->vma_lock, vf);
                     }
 
                     if (pmm_inc_frame_ref(old_phys) != 0) goto fail;
@@ -349,15 +473,31 @@ uint64_t paging_clone_user_space(void) {
                         flags |= PAGE_FLAG_COW;
                         o_pt[i1] = old_phys | flags;
                         invlpg(virt);
+                        marked_cow = 1;
                     }
                     n_pt[i1] = old_phys | flags;
                 }
             }
         }
     }
+    spinlock_release_irqrestore(&vm_lock, vmflags);
+    if (parent) {
+        spinlock_release_irqrestore(&parent->vma_lock, vflags);
+    }
+    /* If we just write-protected the parent's pages for COW, sibling threads
+     * of the parent running on OTHER cpus with this same CR3 may still hold
+     * stale WRITABLE TLB entries -- one stray write through such an entry
+     * would silently bypass COW.  Flush them once, after the whole walk. */
+    if (marked_cow && smp_get_cpu_count() > 1) {
+        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+    }
     return new_pml4_phys;
 
 fail:
+    spinlock_release_irqrestore(&vm_lock, vmflags);
+    if (parent) {
+        spinlock_release_irqrestore(&parent->vma_lock, vflags);
+    }
     (void)paging_free_address_space(new_pml4_phys);
     return 0;
 }
@@ -370,9 +510,14 @@ int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code) {
     uint64_t virt = fault_addr & ~(PAGE_SIZE_BYTES - 1ULL);
     if (PML4_INDEX(virt) >= PML4_USER_TOP) return 0;
 
+    /* Serialise against concurrent COW resolutions of the SAME pte by a
+     * CLONE_VM sibling on another cpu (and every other table mutator). */
+    uint64_t vf = spinlock_acquire_irqsave(&vm_lock);
+
     uint64_t *pte = walk_pte(virt, 0);
     if (!pte || !(*pte & PAGE_FLAG_PRESENT) || !(*pte & PAGE_FLAG_USER) ||
         !(*pte & PAGE_FLAG_COW)) {
+        spinlock_release_irqrestore(&vm_lock, vf);
         return 0;
     }
 
@@ -384,16 +529,68 @@ int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code) {
     if (refs <= 1) {
         *pte = old_phys | flags;
         invlpg(virt);
+        spinlock_release_irqrestore(&vm_lock, vf);
+        /* Siblings on other cpus (CLONE_VM) may hold stale entries for this
+         * same CR3: without a shootdown their next write would fault again
+         * and, seeing COW already cleared, be misdiagnosed as a real SEGV. */
+        if (smp_get_cpu_count() > 1) {
+            lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+        }
         return 1;
     }
 
     uint64_t new_phys = pmm_alloc_frame();
-    if (!new_phys) return 0;
+    if (!new_phys) {
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return 0;
+    }
     memcpy(phys_to_ptr(new_phys), phys_to_ptr(old_phys), PAGE_SIZE_BYTES);
 
     *pte = new_phys | flags;
     invlpg(virt);
+    spinlock_release_irqrestore(&vm_lock, vf);
     pmm_free_frame(old_phys); /* drop this address space's reference */
+    if (smp_get_cpu_count() > 1) {
+        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+    }
+    return 1;
+}
+
+/* Stale-TLB "spurious fault" detector for the SMP page-fault path.
+ *
+ * Once two CPUs can run threads that share one address space (CLONE_VM), a
+ * fault may arrive on a CPU whose TLB still holds an old entry even though
+ * another CPU has ALREADY resolved the very same fault (COW copy, demand
+ * map).  Re-running the resolver would misbehave (double map, or SIGSEGV
+ * on a perfectly legal write), so the #PF path calls this helper before
+ * treating the fault as real: it returns 1 when the current page tables
+ * already permit the faulting access, after invalidating the stale local
+ * TLB entry. */
+int paging_user_fault_resolved(uint64_t fault_addr, uint64_t err_code) {
+    uint64_t virt = fault_addr & ~(PAGE_SIZE_BYTES - 1ULL);
+    if (PML4_INDEX(virt) >= PML4_USER_TOP) return 0;   /* not a user address */
+
+    /* Read-only walk under the VM lock so we cannot observe a table being
+     * built halfway by another cpu.  The PTE itself is an atomic 64-bit
+     * slot, but the hierarchy above it can be mid-creation. */
+    uint64_t vf = spinlock_acquire_irqsave(&vm_lock);
+    uint64_t *pte = walk_pte(virt, 0);
+    if (!pte || !(*pte & PAGE_FLAG_PRESENT) || !(*pte & PAGE_FLAG_USER)) {
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return 0;
+    }
+    uint64_t e = *pte;
+    spinlock_release_irqrestore(&vm_lock, vf);
+
+    /* Does the installed PTE already permit exactly what faulted? */
+    if ((err_code & 0x2ULL) && !(e & (PAGE_FLAG_WRITABLE | PAGE_FLAG_COW))) {
+        return 0;   /* genuine write to read-only page */
+    }
+    if ((err_code & 0x10ULL) && (e & PAGE_FLAG_NO_EXEC)) {
+        return 0;   /* genuine execute of NX page */
+    }
+    /* Yes: stale-TLB artefact of a concurrent resolver.  Flush and retry. */
+    invlpg(virt);
     return 1;
 }
 

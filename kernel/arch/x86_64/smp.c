@@ -20,12 +20,13 @@
  *      generous timeout before giving up on that particular CPU and moving
  *      on to the next one.
  *
- * Each AP ends up idling (ap_entry() -> sched_idle()) with its own per-CPU
- * run queue ready to receive work (see kernel/proc/scheduler_rq.c); actual
- * load-balancing of user/kernel threads onto APs is a separate, later
- * change to schedule()'s current BSP-only gating (kernel/proc/scheduler.c)
- * -- this file's job is strictly "get every detected CPU core running and
- * idling safely," which is the prerequisite for that to be safe.
+ * Each AP ends up in ap_entry() -> sched_idle() with its own per-CPU run
+ * queue, its own per-CPU syscall/TSS state (step 3.1) and its own
+ * calibrated Local APIC timer tick driving schedule() locally, so real
+ * user/kernel threads execute on every online core in parallel (step 3.2 --
+ * see kernel/proc/scheduler.c).  This file's job is strictly "get every
+ * detected CPU core running and idling safely" plus measuring the APIC bus
+ * frequency those per-AP timer ticks are programmed from.
  */
 
 #include <stdint.h>
@@ -37,6 +38,7 @@
 #include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/lib/kprintf.h"
@@ -161,7 +163,27 @@ static void ap_entry(uint64_t cpu_index) {
      * pointer, then the LAPIC (which reads cpu_id via get_cpu_local()). */
     tss_load_for_cpu((int)(cpu_index + 1));
     cpu_local_init(cpu_index + 1);
+
+    /* Per-CPU architectural state, reset to bare-metal defaults by INIT:
+     *  - NXE/SMEP/SMAP in EFER/CR4 (paging_init did the BSP only);
+     *  - the SYSCALL/SYSRET MSRs + EFER.SCE (kernel.c did the BSP only) --
+     *    WITHOUT this the very first `syscall` instruction a user thread
+     *    executes on this AP raises #UD (observed: freshly spawned /hello
+     *    dying by SIGILL the moment the scheduler placed it on an AP). */
+    paging_cpu_features_init();
+    syscall_init();
+
     lapic_enable();
+
+    /* Arm this AP's own scheduler tick: a periodic Local APIC timer at the
+     * same 100 Hz the PIT gives the BSP (vector 32 == the PIT's vector, so
+     * both land in timer_irq_handler; that handler bumps the shared wall
+     * clock on the BSP only and runs sched_tick() on every cpu).  Safe
+     * no-op if the BSP's calibration failed -- the AP then simply idles
+     * without preemption, exactly like pre-3.2 behaviour.  Interrupts are
+     * still off here; the first tick is taken once sched_idle() does
+     * sti; hlt. */
+    lapic_timer_start_periodic(100);
 
     kprintf("[smp] AP #%llu online (lapic_id=%u)\n",
             (unsigned long long)cpu_index, lapic_id_for_ap_index[cpu_index]);
@@ -187,6 +209,17 @@ void smp_init(void) {
 
     kprintf("[smp] BSP lapic_id=%u, %llu total CPUs detected\n",
             bsp_lapic_id, (unsigned long long)cpu_count);
+
+    /* Measure the APIC bus frequency once, on the BSP, against the PIT
+     * wall clock: the APs we are about to wake program their per-CPU LAPIC
+     * timer ticks (their only preemption source -- the legacy PIT reaches
+     * only the BSP) from this value.  20 ms of busy-waiting at boot is the
+     * price for hardware-independent 100 Hz AP ticks; a failed measurement
+     * is reported by lapic_timer_calibrate_end() itself and simply keeps
+     * APs tick-less (safe legacy behaviour). */
+    lapic_timer_calibrate_begin();
+    smp_udelay(20000);                    /* 20 ms measured window */
+    lapic_timer_calibrate_end(20000);
 
     /* This CPU's own actual LAPIC ID (read from hardware) is the ground
      * truth for "which boot_info.cpus[] entry is the BSP", not
@@ -287,10 +320,10 @@ uint32_t smp_get_cpu_count(void) {
 }
 
 uint32_t smp_get_schedulable_cpu_count(void) {
-    /* schedule() still runs every real thread on the BSP (see the comment
-     * in smp.h), so only cpu 0 counts as schedulable for load-balancing
-     * purposes even when several APs are online. */
-    return 1;
+    /* SMP step 3.2: every online CPU runs the full scheduler (its own run
+     * queue, its own per-CPU syscall/TSS state, its own LAPIC timer tick),
+     * so the load balancer may place threads anywhere. */
+    return cpus_online;
 }
 
 void smp_self_test(void) {

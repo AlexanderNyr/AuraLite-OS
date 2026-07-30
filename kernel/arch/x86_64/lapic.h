@@ -6,9 +6,19 @@
 #define IPI_TLB_SHOOTDOWN_VECTOR 0xF0
 
 void lapic_enable(void);
-void lapic_timer_start(uint32_t hz);
 void lapic_eoi(void);
 void lapic_send_ipi_all_excluding_self(uint8_t vector);
+
+/* Per-CPU Local APIC timer (SMP step 3.2).  The APIC bus frequency is not
+ * architecturally fixed, so smp_init() measures it once on the BSP: call
+ * lapic_timer_calibrate_begin(), wait a known wall-clock interval (the
+ * PIT-based smp_udelay), then lapic_timer_calibrate_end(elapsed_us).
+ * ap_entry() then arms every AP's own periodic tick from that measurement.
+ * lapic_timer_start_periodic() is a safe no-op if calibration failed. */
+void lapic_timer_calibrate_begin(void);
+void lapic_timer_calibrate_end(uint32_t elapsed_us);
+uint32_t lapic_timer_get_bus_hz(void);
+void lapic_timer_start_periodic(uint32_t hz);
 
 /* This CPU's own Local APIC ID, read from the LAPIC ID register (more
  * reliable than trusting bootloader-supplied values). */

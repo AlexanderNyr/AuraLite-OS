@@ -53,6 +53,9 @@ void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
     wq_remove_entry(wq, &entry);
 }
 
+/* SMP 3.2: every wake enqueue must first claim tcb.on_queue exactly once
+ * (see thread.h); the waker may run on a different cpu than the woken
+ * thread, which could still be mid context-switch-out. */
 void wq_wake_one(struct wait_queue *wq) {
     if (!wq) return;
     spinlock_acquire(&wq->lock);
@@ -62,7 +65,9 @@ void wq_wake_one(struct wait_queue *wq) {
         tcb_t *t = w->tcb;
         if (t && t->state == THREAD_BLOCKED) {
             t->state = THREAD_READY;
-            sched_add_thread(t);
+            if (__sync_lock_test_and_set(&t->on_queue, 1) == 0) {
+                sched_add_thread(t);
+            }
         }
     }
     spinlock_release(&wq->lock);
@@ -77,7 +82,9 @@ void wq_wake_all(struct wait_queue *wq) {
         tcb_t *t = w->tcb;
         if (t && t->state == THREAD_BLOCKED) {
             t->state = THREAD_READY;
-            sched_add_thread(t);
+            if (__sync_lock_test_and_set(&t->on_queue, 1) == 0) {
+                sched_add_thread(t);
+            }
         }
         w = w->next;
     }
@@ -94,7 +101,9 @@ int wq_wake_n(struct wait_queue *wq, int n) {
         tcb_t *t = w->tcb;
         if (t && t->state == THREAD_BLOCKED) {
             t->state = THREAD_READY;
-            sched_add_thread(t);
+            if (__sync_lock_test_and_set(&t->on_queue, 1) == 0) {
+                sched_add_thread(t);
+            }
             if (prev) prev->next = w->next;
             else wq->head = w->next;
             woken++;

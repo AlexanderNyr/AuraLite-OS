@@ -5,17 +5,21 @@
 #include "kernel/proc/thread.h"
 
 /*
- * Round-robin preemptive scheduler for kernel threads.
+ * Round-robin preemptive scheduler for kernel threads, SMP edition.
  *
- * A singly-linked ready queue holds THREAD_READY threads.  The timer IRQ
- * (Phase 6) calls sched_tick() which decrements the current thread's quantum
- * and preempts when it reaches zero.  sched_yield() allows cooperative
- * scheduling.
+ * Ready queues: one singly-linked ready queue PER CPU (struct cpu_local,
+ * protected by the per-CPU rq_lock spinlock).  The timer IRQ (PIT on the
+ * BSP, the calibrated Local APIC timer on each AP -- see lapic.c/smp.c)
+ * calls sched_tick() which decrements the current thread's quantum and
+ * preempts when it reaches zero.  sched_yield() allows cooperative
+ * scheduling; a CPU whose own queue is empty steals from another CPU's
+ * queue (sched_steal_work in scheduler_rq.c).
  *
- * Concurrency model (single CPU): scheduler state is manipulated with
- * interrupts disabled (cli).  This is sufficient because there is only one
- * execution context; SMP (Phase 12) will add per-CPU run queues and real
- * spinlocks.  NOT SMP SAFE.
+ * Concurrency model (SMP step 3.2): per-CPU queue selection happens under
+ * the per-CPU rq_lock with interrupts saved; cross-CPU enqueue/steal takes
+ * the TARGET cpu's rq_lock.  Global scheduler-adjacent state (thread
+ * registry, zombie list, kernel heap, page tables) is covered by its own
+ * locks in thread.c/kheap.c/paging.c.
  */
 
 /* Initialise the scheduler: create the kmain and idle threads. */
@@ -49,10 +53,12 @@ tcb_t *sched_current(void);
 void sched_idle(void);
 
 /*
- * CPU usage accounting (BSP only, matching the current BSP-only scheduling
- * model). Both counters are cumulative PIT ticks since sched_init() and only
- * ever increase, exactly like Linux's /proc/stat jiffie counters: callers
- * that want a percentage should sample both values twice, a short interval
+ * CPU usage accounting, summed over all online CPUs.  Each cpu charges its
+ * own per-cpu slot from its own timer tick (Per-CPU LAPIC-calibrated timer
+ * on APs, PIT on the BSP -- scheduler.c), these getters return the
+ * system-wide totals.  The values are cumulative ticks and only ever
+ * increase, exactly like Linux's /proc/stat jiffie counters: callers that
+ * want a percentage should sample both values twice, a short interval
  * apart, and compute busy-delta / total-delta themselves (see
  * userspace/gui-sysmon/gsysmon.c for a worked example). This avoids baking
  * an arbitrary sampling window into the kernel.

@@ -212,7 +212,15 @@ void signal_tick(uint64_t now) {
             t->sleep_deadline = 0;
             if (t->state == THREAD_BLOCKED) {
                 t->state = THREAD_READY;
-                sched_add_thread(t);
+                /* Remote wake (this tick runs on cpu0 only): claim the
+                 * queue-membership bit so the thread-in-transition's own
+                 * cpu cannot also enqueue it from schedule(), and so two
+                 * racing wakers enqueue at most once (SMP 3.2).  If the
+                 * thread is still mid-switch-out its parked flag reads 0
+                 * and the eventual picker spins until the save lands. */
+                if (__sync_lock_test_and_set(&t->on_queue, 1) == 0) {
+                    sched_add_thread(t);
+                }
             }
         }
     }

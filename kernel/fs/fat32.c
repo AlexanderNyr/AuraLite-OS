@@ -33,6 +33,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/klog.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
 
 /* ------- format defaults (only used when LBA 64 has no FAT32 signature) ------- */
@@ -82,6 +83,24 @@ struct fat32_mount {
 };
 
 static struct fat32_mount fs;
+
+/*
+ * Global FAT32 lock (SMP).
+ *
+ * The whole driver keeps its state in file-scope statics: the mount struct
+ * above, the scratch/cluster buffers below, the vnode-info pool and the
+ * per-directory iterators.  Before SMP this was safe because only one CPU
+ * ran kernel code at a time; with the parallel scheduler an AP can be inside
+ * fat32_write() (e.g. the kmain idle loop flushing the kernel log to
+ * AURALOG.TXT) while the BSP is inside fat32_mkdir() from a shell command,
+ * and the interleaved use of cluster_buf/scratch corrupts directory data.
+ *
+ * All VFS entry points (the fat32_ops table) plus fat32_list() therefore
+ * serialise on this lock.  The lock is never held across kprintf/klog and no
+ * IRQ handler touches the FAT32 driver (AHCI is polled), so plain
+ * irqsave/restore acquisition is sufficient and cannot deadlock.
+ */
+static spinlock_t fat32_lock = SPINLOCK_UNLOCKED;
 
 /* Reusable sector-sized scratch buffers — guarded by single-threaded FS. */
 static uint8_t  scratch[512];
@@ -1013,7 +1032,7 @@ static int parse_or_format(void) {
 
 /* ---- File I/O ---- */
 
-static int64_t fat32_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
+static int64_t fat32_read_impl(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
     struct fat_vinfo *v = (struct fat_vinfo *)vn->fs_data;
     if (!v || v->is_dir) return -1;
     if (pos >= v->size) return 0;
@@ -1044,7 +1063,7 @@ static int64_t fat32_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
     return (int64_t)done;
 }
 
-static int64_t fat32_write(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
+static int64_t fat32_write_impl(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
     struct fat_vinfo *v = (struct fat_vinfo *)vn->fs_data;
     if (!v || v->is_dir) return -1;
     if (count == 0) return 0;
@@ -1076,7 +1095,7 @@ static int64_t fat32_write(struct vnode *vn, uint64_t pos, const void *buf, uint
 
 /* ---- VFS surface ---- */
 
-static struct vnode *fat32_lookup(void *fs_data, const char *path) {
+static struct vnode *fat32_lookup_impl(void *fs_data, const char *path) {
     (void)fs_data;
     if (!fs.mounted) return NULL;
     uint32_t parent;
@@ -1094,7 +1113,7 @@ static struct vnode *fat32_lookup(void *fs_data, const char *path) {
                          is_dir)->vnode;
 }
 
-static struct vnode *fat32_create(void *fs_data, const char *path) {
+static struct vnode *fat32_create_impl(void *fs_data, const char *path) {
     (void)fs_data;
     if (!fs.mounted) return NULL;
     uint32_t parent;
@@ -1114,7 +1133,7 @@ static struct vnode *fat32_create(void *fs_data, const char *path) {
     return &vinfo_intern(path, parent, dirent_off, 0, 0, 0)->vnode;
 }
 
-static int fat32_mkdir_op(void *fs_data, const char *path) {
+static int fat32_mkdir_op_impl(void *fs_data, const char *path) {
     (void)fs_data;
     if (!fs.mounted) return -1;
     uint32_t parent;
@@ -1147,7 +1166,7 @@ static int fat32_mkdir_op(void *fs_data, const char *path) {
     return 0;
 }
 
-static int fat32_unlink_op(void *fs_data, const char *path) {
+static int fat32_unlink_op_impl(void *fs_data, const char *path) {
     (void)fs_data;
     if (!fs.mounted) return -1;
     uint32_t parent;
@@ -1175,7 +1194,7 @@ static int dir_is_empty(uint32_t cl) {
     return rc >= 0;
 }
 
-static int fat32_rmdir_op(void *fs_data, const char *path) {
+static int fat32_rmdir_op_impl(void *fs_data, const char *path) {
     (void)fs_data;
     if (!fs.mounted) return -1;
     uint32_t parent;
@@ -1192,7 +1211,7 @@ static int fat32_rmdir_op(void *fs_data, const char *path) {
     return 0;
 }
 
-static int fat32_rename_op(void *fs_data, const char *from, const char *to) {
+static int fat32_rename_op_impl(void *fs_data, const char *from, const char *to) {
     (void)fs_data;
     if (!fs.mounted) return -1;
     uint32_t pf, pt;
@@ -1213,7 +1232,7 @@ static int fat32_rename_op(void *fs_data, const char *from, const char *to) {
     return 0;
 }
 
-static int fat32_truncate_op(struct vnode *vn, uint64_t new_size) {
+static int fat32_truncate_op_impl(struct vnode *vn, uint64_t new_size) {
     struct fat_vinfo *v = (struct fat_vinfo *)vn->fs_data;
     if (!v || v->is_dir) return -1;
     if (new_size > 0xFFFFFFFFu) return -1;
@@ -1239,7 +1258,7 @@ static int fat32_truncate_op(struct vnode *vn, uint64_t new_size) {
     return 0;
 }
 
-static int fat32_stat_op(struct vnode *vn, struct vfs_stat *st) {
+static int fat32_stat_op_impl(struct vnode *vn, struct vfs_stat *st) {
     struct fat_vinfo *v = (struct fat_vinfo *)vn->fs_data;
     memset(st, 0, sizeof(*st));
     if (!v) return -1;
@@ -1255,7 +1274,7 @@ static int fat32_stat_op(struct vnode *vn, struct vfs_stat *st) {
     return 0;
 }
 
-static int fat32_readdir_op(struct vnode *vn, struct vfs_dirent *out, int max) {
+static int fat32_readdir_op_impl(struct vnode *vn, struct vfs_dirent *out, int max) {
     struct fat_vinfo *v = (struct fat_vinfo *)vn->fs_data;
     uint32_t dir_cluster;
     if (!v || (!v->is_dir && vn->type != VFS_TYPE_DIR)) {
@@ -1282,6 +1301,85 @@ static int fat32_readdir_op(struct vnode *vn, struct vfs_dirent *out, int max) {
         n++;
     }
     return n;
+}
+
+/* ---- SMP wrappers: every public VFS op runs under fat32_lock ---- */
+
+static int64_t fat32_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int64_t r = fat32_read_impl(vn, pos, buf, count);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int64_t fat32_write(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int64_t r = fat32_write_impl(vn, pos, buf, count);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static struct vnode *fat32_lookup(void *fs_data, const char *path) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    struct vnode *r = fat32_lookup_impl(fs_data, path);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static struct vnode *fat32_create(void *fs_data, const char *path) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    struct vnode *r = fat32_create_impl(fs_data, path);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int fat32_mkdir_op(void *fs_data, const char *path) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int r = fat32_mkdir_op_impl(fs_data, path);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int fat32_unlink_op(void *fs_data, const char *path) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int r = fat32_unlink_op_impl(fs_data, path);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int fat32_rmdir_op(void *fs_data, const char *path) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int r = fat32_rmdir_op_impl(fs_data, path);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int fat32_rename_op(void *fs_data, const char *from, const char *to) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int r = fat32_rename_op_impl(fs_data, from, to);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int fat32_truncate_op(struct vnode *vn, uint64_t new_size) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int r = fat32_truncate_op_impl(vn, new_size);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int fat32_stat_op(struct vnode *vn, struct vfs_stat *st) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int r = fat32_stat_op_impl(vn, st);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
+}
+
+static int fat32_readdir_op(struct vnode *vn, struct vfs_dirent *out, int max) {
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    int r = fat32_readdir_op_impl(vn, out, max);
+    spinlock_release_irqrestore(&fat32_lock, rf);
+    return r;
 }
 
 const struct vfs_ops fat32_ops = {
@@ -1311,7 +1409,8 @@ int fat32_append_log(const char *data, uint64_t len) {
 
 /* Legacy flat listing. */
 void fat32_list(void) {
-    if (!fs.mounted) return;
+    uint64_t rf = spinlock_acquire_irqsave(&fat32_lock);
+    if (!fs.mounted) { spinlock_release_irqrestore(&fat32_lock, rf); return; }
     struct fat_dir_iter it;
     dir_iter_init(&it, fs.root_cluster);
     while (dir_iter_next(&it) == 1) {
@@ -1322,6 +1421,7 @@ void fat32_list(void) {
         else
             kprintf("  /fat/%s  (%u bytes)\n", nm, it.size);
     }
+    spinlock_release_irqrestore(&fat32_lock, rf);
 }
 
 int fat32_init(void) {

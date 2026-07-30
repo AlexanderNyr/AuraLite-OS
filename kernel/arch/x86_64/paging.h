@@ -120,6 +120,12 @@ void paging_update_pml4_ptr(uint64_t phys);
 /* Return the kernel's PML4 physical address (for switching back). */
 uint64_t paging_get_kernel_pml4(void);
 
+/* Enable the per-CPU architectural features the kernel relies on (NXE,
+ * SMEP, SMAP) on the CALLING cpu.  paging_init() runs it for the BSP;
+ * smp.c's ap_entry() runs it on every AP -- EFER/CR4 are per-CPU registers
+ * and reset to bare-metal defaults when an AP comes out of INIT. */
+void paging_cpu_features_init(void);
+
 /* Clone all user-space pages from the current address space into a new one.
  * Returns the new PML4 physical address, or 0 on failure. Used by fork(). */
 uint64_t paging_clone_user_space(void);
@@ -127,6 +133,12 @@ uint64_t paging_clone_user_space(void);
 /* Resolve a user write-protection #PF on a copy-on-write page.
  * Returns 1 if handled and execution may resume, 0 otherwise. */
 int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code);
+
+/* SMP stale-TLB check: returns 1 if the current address space's tables
+ * already permit the access described by the page-fault error code (i.e. a
+ * fault raised only because this CPU's TLB entry is stale after another CPU
+ * resolved it).  The local TLB entry is invalidated before returning 1. */
+int paging_user_fault_resolved(uint64_t fault_addr, uint64_t err_code);
 
 /*
  * Free every USER-half page (PML4 entries 0..PML4_USER_TOP-1) referenced

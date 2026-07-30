@@ -16,16 +16,11 @@ static inline struct cpu_local* get_cpu_by_id(uint32_t id) {
 
 /* Helper to find the least loaded CPU.
  *
- * Deliberately scoped to smp_get_schedulable_cpu_count() (currently pinned
- * to 1, i.e. the BSP), not smp_get_cpu_count(): every online AP is real and
- * has its own run queue, but schedule() only ever runs the idle thread on an
- * AP until syscall/uaccess entry state is per-CPU (see
- * kernel/proc/scheduler.c).  If a freshly created or freshly woken thread
- * were pushed onto an AP's queue here, it would sit there unscheduled
- * forever -- the BSP cannot count on work-stealing to rescue it in time (a
- * bounded spin like scheduler_self_test()'s 20 sched_yield()s provably hangs
- * that way: one of the two test threads lands on the AP queue and never runs
- * to completion). */
+ * Scoped to smp_get_schedulable_cpu_count(), which since SMP step 3.2 is
+ * every online CPU: each AP is online with its own run queue AND its own
+ * timer tick driving schedule(), so threads placed on an AP queue actually
+ * execute there (the step-2/3.1 concern that a thread could strand on an
+ * AP queue forever no longer applies). */
 static struct cpu_local* find_least_loaded_cpu(void) {
     uint32_t cpu_count = smp_get_schedulable_cpu_count();
     int best_id = 0;
@@ -41,6 +36,9 @@ static struct cpu_local* find_least_loaded_cpu(void) {
     return get_cpu_by_id(best_id);
 }
 
+/* NOTE: callers must already hold the thread's queue-membership claim
+ * (tcb.on_queue via __sync_lock_test_and_set) so that a thread can never
+ * be enqueued twice concurrently -- see thread.h/scheduler.c (SMP 3.2). */
 void sched_add_thread(tcb_t *tcb) {
     if (!tcb) return;
     struct cpu_local *target = find_least_loaded_cpu();
@@ -58,9 +56,8 @@ void sched_add_thread(tcb_t *tcb) {
 
 tcb_t *sched_steal_work(void) {
     struct cpu_local *me = get_cpu_local();
-    /* Same scoping as find_least_loaded_cpu(): nothing is ever queued on an
-     * AP (see above), so there is nothing to steal from one either -- and we
-     * must never pull threads off a queue that schedule() owns differently. */
+    /* Same scoping as find_least_loaded_cpu(): any online CPU may hold work
+     * in its queue, so a starving CPU round-robins across all of them. */
     uint32_t cpu_count = smp_get_schedulable_cpu_count();
     int my_id = (int)me->cpu_id;
 
@@ -76,6 +73,8 @@ tcb_t *sched_steal_work(void) {
             if (!victim->rq_head) victim->rq_tail = NULL;
             victim->rq_len--;
             stolen->next = NULL;
+            /* Dequeuing releases the queue-membership claim (tcb.on_queue). */
+            __sync_lock_release(&stolen->on_queue);
             me->steal_count++;
         }
         spinlock_release_irqrestore(&victim->rq_lock, flags);

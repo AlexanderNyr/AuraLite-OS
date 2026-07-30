@@ -31,13 +31,27 @@ static int    scheduler_ready = 0;
 static uint64_t tid_counter   = 0;
 spinlock_t sched_lock = SPINLOCK_UNLOCKED;
 
-/* CPU usage accounting (BSP only -- see scheduler.h). Incremented from
- * sched_tick(), which runs once per PIT tick once the scheduler is up. */
-static volatile uint64_t cpu_total_ticks = 0;
-static volatile uint64_t cpu_idle_ticks  = 0;
+/* CPU usage accounting, per online CPU (see scheduler.h).  Every cpu ticks
+ * from its own timer source -- the BSP from the PIT (IRQ0 via LINT0 ExtINT),
+ * each AP from its calibrated Local APIC timer -- and sched_tick() charges
+ * the slot indexed by the calling cpu's cpu_id.  The getters SUM all slots
+ * so readers (procfs /proc/stat, sysmon) keep the same "cumulative ticks
+ * system-wide" semantics the single-CPU version had.  32 == MAX_CPUS (kept
+ * in sync with kernel/arch/x86_64/cpu_local.c's ap_cpu_locals[]). */
+#define SCHED_MAX_CPUS 32
+static volatile uint64_t cpu_total_ticks[SCHED_MAX_CPUS];
+static volatile uint64_t cpu_idle_ticks[SCHED_MAX_CPUS];
 
-uint64_t sched_get_total_ticks(void) { return cpu_total_ticks; }
-uint64_t sched_get_idle_ticks(void)  { return cpu_idle_ticks; }
+uint64_t sched_get_total_ticks(void) {
+    uint64_t sum = 0;
+    for (int i = 0; i < SCHED_MAX_CPUS; i++) sum += cpu_total_ticks[i];
+    return sum;
+}
+uint64_t sched_get_idle_ticks(void) {
+    uint64_t sum = 0;
+    for (int i = 0; i < SCHED_MAX_CPUS; i++) sum += cpu_idle_ticks[i];
+    return sum;
+}
 
 int sched_is_ready(void) { return scheduler_ready; }
 
@@ -59,22 +73,17 @@ void schedule(void) {
     if (!cpu_local_ready) return;
     struct cpu_local *local = get_cpu_local();
     if (!local) return;
-    /* Until syscall/uaccess entry state is fully per-CPU, keep normal user
-     * scheduling BSP-only.  APs are online for SMP bring-up tests, but must not
-     * steal runnable user threads or publish their stacks into the global
-     * SYSCALL entry slot. */
-    if (local->cpu_id != 0) {
-        local->current = local->idle;
-        if (local->idle) local->idle->state = THREAD_RUNNING;
-        return;
-    }
 
+    /* SMP step 3.2: real parallel scheduling on every online CPU.  The
+     * per-CPU prerequisites that made this safe landed in step 3.1:
+     *   - SYSCALL entry state lives in struct cpu_local (no shared slots),
+     *   - tss_set_rsp0_for_cpu()/set_syscall_stack() publish this CPU's
+     *     RSP0 / syscall stack instead of a BSP-global one,
+     *   - the VMM's "current tables" pointer is per-CPU (paging.c),
+     *   - the TLB shootdown IPI rides the normal ISR/IPI dispatch.
+     * Below, everything selections are strictly per-CPU: local->current,
+     * the local run queue (rq_lock), then cross-CPU work stealing. */
     tcb_t *old = local->current;
-
-    if (old != NULL && old != local->idle && old->state == THREAD_READY) {
-        sched_add_thread(old);
-    }
-
     tcb_t *next = NULL;
     {
         uint64_t flags = spinlock_acquire_irqsave(&local->rq_lock);
@@ -86,6 +95,8 @@ void schedule(void) {
             next->next = NULL;
         }
         spinlock_release_irqrestore(&local->rq_lock, flags);
+        /* Dequeuing releases the queue-membership claim (tcb.on_queue). */
+        if (next) __sync_lock_release(&next->on_queue);
     }
 
     if (!next) {
@@ -93,6 +104,28 @@ void schedule(void) {
     }
     if (!next) {
         next = local->idle;
+    }
+
+    if (next && next != old) {
+        /* Parking protocol (SMP 3.2, see thread.h): the picked thread may
+         * have been published on a queue by a cpu that is STILL finishing
+         * its context save.  Spinning here is safe against deadlock BECAUSE
+         * of the order of the steps below: this cpu has ALREADY secured its
+         * own next thread and does not touch any contended lock before
+         * context_switch(), while the cpu we are waiting for only needs a
+         * few plain stores to finish saving (it publishes `old` below and
+         * then immediately saves).  An earlier draft spun BEFORE picking,
+         * which provably deadlocked at -smp 4: two cpus each published an
+         * un-parked thread onto the other cpu's queue and then blocked
+         * forever waiting for each other. */
+        while (next->switch_parked == 0) {
+            __asm__ volatile ("pause" ::: "memory");
+        }
+        /* Establish the on-cpu side of the parking invariant: from now
+         * until our context save completes, parked reads 0.  Remote wakers
+         * that race to re-enqueue this thread while it later blocks rely on
+         * this to make pickers spin until the save actually lands. */
+        next->switch_parked = 0;
     }
 
     local->current = next;
@@ -108,6 +141,41 @@ void schedule(void) {
 
     if (next && next->pml4_phys != 0) {
         paging_switch_to(next->pml4_phys);
+    } else if (next) {
+        /* Idle/kernel threads have no address space of their own.  Do NOT
+         * simply keep the previous user process' CR3 (the pre-SMP trick):
+         * on SMP that process can exit and have its whole address space --
+         * including the PML4 frame itself -- reaped by ANOTHER CPU (its
+         * "is cur_cr3 == zombie pml4?" guard only protects the CPU doing
+         * the reaping).  This CPU would keep translating through a freed,
+         * reused frame and triple-fault at a random later instruction
+         * (observed: #PF fetching kernel text under a stale CR3 right
+         * after /hello exited while this cpu sat in its idle loop).
+         * Idle therefore always runs on the KERNEL address space. */
+        uint64_t kpml4 = paging_get_kernel_pml4();
+        uint64_t cur = read_cr3() & PAGE_ADDR_MASK;
+        if (cur != kpml4 && kpml4 != 0) {
+            paging_switch_to(kpml4);
+        }
+    }
+
+    /* Publish the still-READY old thread LAST, right before switching away:
+     * the enqueue makes it visible to every cpu (including remote ones via
+     * the load balancer) while its context is still unsaved -- the parking
+     * flag covers exactly this window.  Doing it after the pick (rather
+     * than before) is what keeps the picker-side spin deadlock-free. */
+    if (old != NULL && old != local->idle && old->state == THREAD_READY) {
+        old->switch_parked = 0;
+        /* Claim the queue slot atomically (tcb.on_queue): a remote waker
+         * (signal_tick sleep wakeup / wait-queue wake on another cpu) may
+         * have flipped this thread BLOCKED->READY and already enqueued it
+         * in the window between the thread's BLOCKED store and reaching
+         * this schedule().  Exactly one claimer may perform the enqueue,
+         * otherwise the same thread lands on two run queues and two cpus
+         * tear its saved context apart with interleaved save/restore. */
+        if (__sync_lock_test_and_set(&old->on_queue, 1) == 0) {
+            sched_add_thread(old);
+        }
     }
 
     if (old != next && old != NULL && next != NULL) {
@@ -140,12 +208,14 @@ void sched_tick(void) {
     if (!local || local->current == NULL) {
         return;
     }
-    /* CPU usage accounting: PIT/IRQ0 currently only ever reaches the BSP
-     * (see smp.c), so this naturally only ever counts BSP ticks -- exactly
-     * matching the BSP-only scheduling model described in scheduler.h. */
-    cpu_total_ticks++;
-    if (local->current == local->idle) {
-        cpu_idle_ticks++;
+    /* Per-CPU usage accounting: this cpu's own timer source ticked us (PIT
+     * on the BSP, the calibrated LAPIC timer on each AP), so charge this
+     * cpu's slot.  cpu_id < 32 by construction (cpu_local.c). */
+    if (local->cpu_id < SCHED_MAX_CPUS) {
+        cpu_total_ticks[local->cpu_id]++;
+        if (local->current == local->idle) {
+            cpu_idle_ticks[local->cpu_id]++;
+        }
     }
     /* We are inside the timer IRQ handler, so IF is already clear. */
     if (local->current == local->idle) {
@@ -189,6 +259,7 @@ void sched_idle(void) {
     idle->state = THREAD_RUNNING;
     idle->quantum = 1;
     idle->umask = 0022;
+    idle->switch_parked = 1;   /* first-run frame is fully crafted below */
     strncpy(idle->name, "ap-idle", THREAD_NAME_MAX - 1);
     setup_stack(idle, idle_loop, NULL);
     thread_register_tcb(idle);
@@ -197,10 +268,12 @@ void sched_idle(void) {
     local->current = idle;
 
     for (;;) {
-        /* APs are brought online for detection/self-tests but do not take
-         * legacy PIC/PIT interrupts or run normal tasks in the current BSP-only
-         * scheduling mode. */
-        __asm__ volatile ("cli; hlt" ::: "memory");
+        /* SMP step 3.2: sti (not cli) so this AP's own LAPIC timer (started
+         * in ap_entry() before we got here) can preempt us into sched_tick()
+         * -> schedule(), which is how real threads reach this CPU.  Between
+         * ticks the core simply sleeps on hlt with interrupts on -- the idle
+         * TCB above keeps the accounting/stealing story consistent. */
+        __asm__ volatile ("sti; hlt" ::: "memory");
     }
 }
 
@@ -271,6 +344,10 @@ void sched_init(void) {
     kmain_thread->state   = THREAD_RUNNING;
     kmain_thread->quantum = SCHED_QUANTUM;
     kmain_thread->umask   = 0022;
+    /* kmain is RUNNING right now, so by the SMP 3.2 parking invariant
+     * ("0 while on-cpu, 1 once saved") it starts un-parked; the first real
+     * context_switch away from it will set the flag. */
+    kmain_thread->switch_parked = 0;
     strncpy(kmain_thread->name, "kmain", THREAD_NAME_MAX - 1);
 
     /* 2) Create the idle thread. */
@@ -288,6 +365,7 @@ void sched_init(void) {
     idle_thread->state   = THREAD_READY;
     idle_thread->quantum = 1;
     idle_thread->umask   = 0022;
+    idle_thread->switch_parked = 1;   /* first-run frame crafted below */
     strncpy(idle_thread->name, "idle", THREAD_NAME_MAX - 1);
     setup_stack(idle_thread, idle_loop, NULL);
 

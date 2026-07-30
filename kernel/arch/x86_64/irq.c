@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/portio.h"
 
 #define NUM_IRQS 16
@@ -95,6 +96,19 @@ void irq_dispatch(int irq, struct registers *regs) {
      * and the PIC must be free to deliver the next tick when we eventually
      * return.  For edge-triggered IRQs (like the PIT) early EOI is safe. */
     pic_eoi(irq);
+    /* Also signal EOI to the LOCAL APIC.  Two delivery paths share this
+     * dispatcher:
+     *   - BSP legacy IRQs arrive via LINT0 in ExtINT mode; the 8259's vector
+     *     comes from the INTA bus cycle and never enters the LAPIC's
+     *     in-service register, so writing EOI there is a harmless no-op.
+     *   - Each AP's own LAPIC timer (vector 32 == IRQ 0's slot, started by
+     *     ap_entry() in smp.c) DOES set the in-service bit, and withholding
+     *     EOI blocks every later interrupt at or below that priority --
+     *     including all subsequent timer ticks, freezing that CPU's
+     *     scheduler after the very first preemption.
+     * lapic_eoi() itself is guarded (no-op until lapic_enable() mapped the
+     * MMIO page), so this is safe in early boot too. */
+    lapic_eoi();
     if (irq >= 0 && irq < NUM_IRQS && irq_handlers[irq] != NULL) {
         irq_handlers[irq](regs);
     }

@@ -20,6 +20,8 @@
 #include "kernel/net/socket.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/smp.h"
+#include "kernel/arch/x86_64/lapic.h"
 #include "drivers/timer/pit.h"
 
 /* Implemented in context.asm */
@@ -41,18 +43,23 @@ static spinlock_t thread_stack_lock = SPINLOCK_UNLOCKED;
 static tcb_t *all_threads[128];
 static int all_threads_count = 0;
 
+/* Guards all_threads[]/all_threads_count.  The pre-SMP code used a plain
+ * cli section, which excludes only LOCAL interleavings -- with APs running
+ * real threads (SMP step 3.2), register/deregister/lookup on two CPUs at
+ * once would corrupt the array.  irqsave because lookups also happen from
+ * IRQ context (e.g. signal_tick() on the BSP timer IRQ). */
+static spinlock_t thread_registry_lock = SPINLOCK_UNLOCKED;
+
 void thread_register_tcb(tcb_t *tcb) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    uint64_t flags = spinlock_acquire_irqsave(&thread_registry_lock);
     if (all_threads_count < 128) {
         all_threads[all_threads_count++] = tcb;
     }
-    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+    spinlock_release_irqrestore(&thread_registry_lock, flags);
 }
 
 void thread_deregister_tcb(tcb_t *tcb) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    uint64_t flags = spinlock_acquire_irqsave(&thread_registry_lock);
     for (int i = 0; i < all_threads_count; i++) {
         if (all_threads[i] == tcb) {
             all_threads[i] = all_threads[all_threads_count - 1];
@@ -60,12 +67,11 @@ void thread_deregister_tcb(tcb_t *tcb) {
             break;
         }
     }
-    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+    spinlock_release_irqrestore(&thread_registry_lock, flags);
 }
 
 tcb_t *thread_get_by_pid(uint64_t pid) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    uint64_t flags = spinlock_acquire_irqsave(&thread_registry_lock);
     tcb_t *found = NULL;
     for (int i = 0; i < all_threads_count; i++) {
         if (all_threads[i]->id == pid) {
@@ -73,18 +79,17 @@ tcb_t *thread_get_by_pid(uint64_t pid) {
             break;
         }
     }
-    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+    spinlock_release_irqrestore(&thread_registry_lock, flags);
     return found;
 }
 
 int thread_get_all(tcb_t *out_list[], int max) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    uint64_t flags = spinlock_acquire_irqsave(&thread_registry_lock);
     int n = 0;
     for (int i = 0; i < all_threads_count && n < max; i++) {
         out_list[n++] = all_threads[i];
     }
-    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+    spinlock_release_irqrestore(&thread_registry_lock, flags);
     return n;
 }
 
@@ -100,6 +105,12 @@ int thread_get_all(tcb_t *out_list[], int max) {
 static tcb_t *zombie_head = NULL;
 static volatile uint64_t zombies_queued = 0;
 static volatile uint64_t zombies_reaped = 0;
+
+/* Guards the zombie list (zombie_head link/unlink, ->waited transitions) and
+ * the two counters.  Same SMP rationale as thread_registry_lock above:
+ * thread_exit() on one CPU and do_waitpid()/thread_reap_zombies() on another
+ * must not race -- a plain cli section no longer excludes the remote party. */
+static spinlock_t zombie_lock = SPINLOCK_UNLOCKED;
 
 uint64_t thread_zombies_queued_total(void) { return zombies_queued; }
 uint64_t thread_zombies_reaped_total(void) { return zombies_reaped; }
@@ -233,9 +244,16 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
         return NULL;
     }
 
-    tcb->id           = next_tid++;
+    /* Atomic tid allocation: kthread_create now runs concurrently on
+     * several cpus (SMP 3.2); a plain next_tid++ handed out duplicate tids
+     * (observed: 'kmain' and 'thread-A' both with tid 1). */
+    tcb->id           = __sync_fetch_and_add(&next_tid, 1);
     tcb->state        = THREAD_READY;
     tcb->quantum      = SCHED_QUANTUM;
+    /* Born parked: the first-run stack frame is fully crafted below, before
+     * the thread becomes visible on any run queue. */
+    tcb->switch_parked = 1;
+    tcb->on_queue      = 0;   /* queue claim is untaken until the enqueue below */
     spinlock_init(&tcb->vma_lock);
     /* Default: each new task is its own process group and session leader.
      * fork()/spawn() override pgid/sid to inherit from the parent; setsid()/
@@ -253,22 +271,31 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     /* New threads start with cloexec cleared and the fd table zeroed
      * (kmalloc + memset above). */
     thread_register_tcb(tcb);
-    sched_add_thread(tcb);
+    /* Fresh thread: nobody else can hold the claim, so this always wins;
+     * keep the claim discipline uniform with every other enqueue site. */
+    if (__sync_lock_test_and_set(&tcb->on_queue, 1) == 0) {
+        sched_add_thread(tcb);
+    }
     return tcb;
 }
 
 /* ---- Zombie / wait4 helpers ---- */
 
 tcb_t *thread_find_zombie(uint64_t parent_pid, int64_t match_pid) {
-    /* Caller must hold IF=0 if it cares about racing with thread_exit. */
+    /* Takes zombie_lock itself: with SMP, racing thread_exit()/reapers run
+     * on OTHER CPUs where a local cli buys nothing. */
+    uint64_t flags = spinlock_acquire_irqsave(&zombie_lock);
+    tcb_t *found = NULL;
     for (tcb_t *z = zombie_head; z; z = z->next) {
         if (z->state != THREAD_DEAD || z->waited) continue;
         uint64_t z_parent_id = z->parent ? z->parent->id : 0;
         if (z_parent_id != parent_pid) continue;
         if (match_pid >= 0 && z->id != (uint64_t)match_pid) continue;
-        return z;
+        found = z;
+        break;
     }
-    return NULL;
+    spinlock_release_irqrestore(&zombie_lock, flags);
+    return found;
 }
 
 /* WNOHANG / WUNTRACED option bits (match libc sys/wait.h). */
@@ -316,10 +343,9 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
     int64_t parent_pgid = self->pgid;
 
     for (;;) {
-        uint64_t rflags;
-        __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-
-        /* Find a matching, not-yet-collected zombie. */
+        /* Find a matching, not-yet-collected zombie (zombie_lock: a child's
+         * thread_exit() may be running on another CPU right now). */
+        uint64_t zf = spinlock_acquire_irqsave(&zombie_lock);
         tcb_t *match = NULL;
         for (tcb_t *z = zombie_head; z; z = z->next) {
             if (z->state != THREAD_DEAD || z->waited) continue;
@@ -330,13 +356,15 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
             uint64_t reaped = match->id;
             match->waited = 1;                 /* reaper releases it later */
             if (self->n_children > 0) self->n_children--;
-            if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+            spinlock_release_irqrestore(&zombie_lock, zf);
             if (status) *status = st;
             return (int64_t)reaped;
         }
+        spinlock_release_irqrestore(&zombie_lock, zf);
 
         /* No matching zombie: scan all TCBs to see if a matching child exists.
          * Skip already-waited zombies — they do not count as children. */
+        uint64_t rf = spinlock_acquire_irqsave(&thread_registry_lock);
         int have_matching_child = 0;
         for (int i = 0; i < all_threads_count; i++) {
             tcb_t *c = all_threads[i];
@@ -345,8 +373,7 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
             have_matching_child = 1;
             break;
         }
-
-        if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+        spinlock_release_irqrestore(&thread_registry_lock, rf);
 
         if (!have_matching_child) return -ECHILD;
         if (options & WAIT_WNOHANG) return 0;   /* matching child exists, none ready */
@@ -377,14 +404,18 @@ static void close_process_fds(tcb_t *t) {
 }
 
 static void zombie_enqueue(tcb_t *t) {
+    uint64_t flags = spinlock_acquire_irqsave(&zombie_lock);
     t->next = zombie_head;
     zombie_head = t;
     zombies_queued++;
+    spinlock_release_irqrestore(&zombie_lock, flags);
 }
 
 void thread_reap_zombies(void) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    /* Unlink the waited zombies under zombie_lock: on SMP the enqueue side
+     * (thread_exit_with_code) and waiters (do_waitpid) may be on other CPUs;
+     * a local cli section cannot exclude them. */
+    uint64_t rz = spinlock_acquire_irqsave(&zombie_lock);
 
     tcb_t *current = sched_current();
     tcb_t *reap = NULL;
@@ -402,30 +433,37 @@ void thread_reap_zombies(void) {
         reap = z;
     }
 
-    if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+    spinlock_release_irqrestore(&zombie_lock, rz);
 
     while (reap) {
         tcb_t *z = reap;
         reap = z->next;
         uint64_t reaped_frames = 0;
         if (z->pml4_phys) {
-            /* Full user-half reaping.  This kernel's scheduler is still
-             * single-CPU, and user address spaces are not shared between live
-             * TCBs, so no remote TLB shootdown is required here.  If the CPU is
-             * currently running on the zombie's CR3 from kernel context, switch
-             * to the kernel PML4 first and then free the unreachable user half. */
+            /* Full user-half reaping.  A zombie is not running anywhere, but
+             * with SMP the CPU doing the reaping may itself be executing on
+             * the zombie's CR3 from kernel context (e.g. the thread exited on
+             * this CPU and sched_yield() reaped it immediately): switch to the
+             * kernel PML4 first so the walk/free never tears down the active
+             * CR3.  The next user dispatch will load that thread's
+             * pml4_phys again. */
             uint64_t cur_cr3 = read_cr3() & PAGE_ADDR_MASK;
             uint64_t kpml4   = paging_get_kernel_pml4();
             if (z->pml4_phys != kpml4) {
-                /* Single-CPU scheduler: if a kernel path is still running on
-                 * the dead process' CR3, first move to the kernel PML4 so the
-                 * page-table walk/free never tears down the active CR3.  The
-                 * next user dispatch will load that thread's pml4_phys again. */
                 if (cur_cr3 == z->pml4_phys) {
                     paging_switch_to(kpml4);
                 }
                 vma_free_all(&z->vma_list);
                 reaped_frames = paging_free_address_space(z->pml4_phys);
+                /* The freed frames go straight back to the PMM and can be
+                 * re-allocated at once; other CPUs may still hold this dead
+                 * space's VA->frame translations in their TLBs (no PCID
+                 * tagging), where they would alias whatever the frames are
+                 * reused for.  Shoot down every remote TLB (handler reloads
+                 * CR3 = full flush) before returning them to circulation. */
+                if (smp_get_cpu_count() > 1) {
+                    lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+                }
             }
             z->pml4_phys = 0;
         }
@@ -485,6 +523,10 @@ void thread_exit_with_code(int code) {
      */
     tcb_t *init_task = thread_get_by_pid(1);
     if (init_task && init_task != self) {
+        /* Registry lock: with APs scheduling real threads, another CPU may
+         * be inside thread_register_tcb/thread_reap_zombies right now; the
+         * cli above only fences THIS cpu. */
+        uint64_t rf = spinlock_acquire_irqsave(&thread_registry_lock);
         int adopted = 0;
         for (int i = 0; i < all_threads_count; i++) {
             tcb_t *c = all_threads[i];
@@ -508,10 +550,12 @@ void thread_exit_with_code(int code) {
         /* Any remaining n_children should be already-waited zombies that we
          * deliberately did not adopt; clear the counter to maintain invariant. */
         self->n_children = 0;
+        spinlock_release_irqrestore(&thread_registry_lock, rf);
     } else {
         /* Fallback (no init yet, e.g. early boot): mark orphaned zombies
          * waited so they don't leak; live orphans get parent=NULL to avoid
          * use-after-free. */
+        uint64_t rf = spinlock_acquire_irqsave(&thread_registry_lock);
         for (int i = 0; i < all_threads_count; i++) {
             tcb_t *c = all_threads[i];
             if (c->parent == self) {
@@ -521,6 +565,7 @@ void thread_exit_with_code(int code) {
                 }
             }
         }
+        spinlock_release_irqrestore(&thread_registry_lock, rf);
     }
 
     /* If we have NO parent or it's a kernel thread (parent NULL), mark

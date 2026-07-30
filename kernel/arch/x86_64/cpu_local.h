@@ -40,6 +40,17 @@ struct cpu_local {
     uint64_t          syscall_saved_r13;
     uint64_t          syscall_saved_r14;
     uint64_t          syscall_saved_r15;
+
+    /* Per-CPU "current address space" pointer for the VMM (HHDM virtual
+     * pointer to the PML4 this CPU's CR3 currently selects).  Until SMP
+     * step 3.2 the VMM kept this in a single global in paging.c, which two
+     * CPUs running threads with different address spaces would overwrite
+     * under each other; paging_switch_to() now updates THIS slot (written
+     * by the scheduler on the CPU that actually switches CR3).  Zero means
+     * "fall back to the kernel's boot PML4" (early boot / kernel threads).
+     * Appended at the END of the struct so the %gs: syscall offsets baked
+     * into syscall_entry.asm (build/asm_offsets.inc) do not shift. */
+    uint64_t          vm_pml4;
 };
 
 void cpu_local_init(uint64_t cpu_id);

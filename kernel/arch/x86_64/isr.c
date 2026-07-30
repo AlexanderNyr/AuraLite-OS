@@ -121,6 +121,15 @@ void isr_handler(struct registers *r) {
             return;
         }
 
+        /* Stale-TLB "spurious" fault: on an SMP system a sibling thread on
+         * another CPU may have already resolved this exact fault (COW copy
+         * or demand map) while this CPU's TLB still holds the old entry.
+         * Dismiss it before treating the fault as real (or as a SEGV). */
+        if (r->int_no == 14 &&
+            paging_user_fault_resolved(read_cr2(), r->err_code)) {
+            return;
+        }
+
         /* Lazy VMA fault: resolve demand paging for user mappings. */
         if (r->int_no == 14 && ((r->cs & 3) == 3)) {
             if (handle_user_page_fault(read_cr2(), r->err_code) == 0) {

@@ -10,6 +10,7 @@
 #include "drivers/timer/pit.h"
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/signal.h"
@@ -30,14 +31,28 @@
 static volatile uint64_t timer_ticks    = 0;
 static uint32_t          timer_freq_hz  = 0;
 
-/* IRQ 0 handler: bump the monotonic counter, then drive the scheduler.
+/* Vector-32 handler: bump the monotonic counter, then drive the scheduler.
  * Minimal work at interrupt level (safety rule 9): just a counter increment
- * and a quantum check.  sched_tick is a no-op until the scheduler is ready. */
+ * and a quantum check.  sched_tick is a no-op until the scheduler is ready.
+ *
+ * This one vector has two hardware sources (SMP step 3.2):
+ *   - on the BSP: the legacy PIT, delivered as IRQ0 via LINT0/ExtINT;
+ *   - on every AP: that CPU's own Local APIC timer (periodic, calibrated in
+ *     smp.c), deliberately re-using vector 32 so dispatch lands here.
+ * The wall-clock book-keeping (timer_ticks, alarm/nanosleep deadlines via
+ * signal_tick) must advance at exactly 100 Hz SYSTEM-WIDE, so only the BSP
+ * bumps it; AP ticks drive their own cpu's scheduler (preemption, per-cpu
+ * usage accounting) without touching the shared time base. */
 static void timer_irq_handler(struct registers *regs) {
     (void)regs;
-    timer_ticks++;
+    struct cpu_local *me = cpu_local_ready ? get_cpu_local() : NULL;
+    if (!me || me->cpu_id == 0) {
+        timer_ticks++;
+        if (sched_is_ready()) {
+            signal_tick(timer_ticks);   /* fire elapsed alarm() deadlines (SIGALRM) */
+        }
+    }
     if (sched_is_ready()) {
-        signal_tick(timer_ticks);   /* fire elapsed alarm() deadlines (SIGALRM) */
         sched_tick();
     }
 }

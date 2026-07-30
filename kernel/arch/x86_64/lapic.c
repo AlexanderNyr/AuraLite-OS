@@ -19,6 +19,10 @@
 
 #define LAPIC_SIVR_ENABLE 0x100
 
+/* Defined further below (shared by the timer code here and the IPI
+ * helpers): returns the LAPIC's HHDM-mapped MMIO base, or NULL. */
+static volatile uint32_t *lapic_mmio(void);
+
 /* LVT delivery-mode field (bits 10:8): ExtINT accepts the 8259's vector on
  * the INTA bus cycle; NMI is fixed non-maskable delivery. Bit 16 is the
  * per-entry Mask bit -- LINT0/LINT1 reset to Mask=1 on every real CPU, so
@@ -89,25 +93,82 @@ void lapic_eoi(void) {
     lapic[LAPIC_EOI / 4] = 0;
 }
 
-void lapic_timer_start(uint32_t hz) {
-    uint64_t hhdm = boot_get_hhdm_offset();
-    if (!hhdm || hz == 0 || !lapic_mapped) return;
-    uint64_t apic_base_msr;
-    uint32_t low, high;
-    __asm__ volatile ("rdmsr" : "=a"(low), "=d"(high) : "c"(0x1B));
-    apic_base_msr = ((uint64_t)high << 32) | low;
-    uint64_t lapic_phys = apic_base_msr & 0xFFFFF000ULL;
-    if (!lapic_phys) lapic_phys = 0xFEE00000ULL;
-    volatile uint32_t *lapic = (volatile uint32_t *)(uintptr_t)(hhdm + lapic_phys);
+/* ---- Local APIC timer (per-CPU scheduler tick source, SMP step 3.2) ----
+ *
+ * The legacy PIT reaches only the BSP (IRQ0 via LINT0/ExtINT -- nothing
+ * routes it to APs), so each AP needs its own periodic tick to run
+ * sched_tick() locally.  Every LAPIC has such a timer, driven off the APIC
+ * bus clock -- whose frequency is NOT architecturally known (it varies per
+ * machine and per emulator), which is why the old lapic_timer_start() with
+ * its hardcoded "assume 100 MHz" guess could never be used.  Instead the
+ * frequency is MEASURED once on the BSP against the PIT-based wall clock
+ * (lapic_timer_calibrate_begin/end, called from smp_init() with a known
+ * busy-wait between them), and each AP then programs its own timer from
+ * that measurement (ap_entry() -> lapic_timer_start_periodic()). */
 
-    /* Divide configuration = 16 */
-    lapic[LAPIC_TIMER_DIV / 4] = 0x03;
-    
-    /* Timer mode = Periodic (bit 17: 0x20000), vector = 32 (IRQ 0/timer vector) */
-    lapic[LAPIC_TIMER / 4] = 0x20000 | 32;
-    
-    /* Assume a base APIC bus frequency of ~100 MHz for timer init count */
-    uint32_t ticks = 100000000 / 16 / hz;
+/* Divide Configuration Register value 0x3 == divide the bus clock by 16
+ * (Intel SDM Vol.3 s.10.5.4, DCR encoding 0011b = /16).  With the measured
+ * bus frequency kept in BUS-HZ units below, all programming maths happens
+ * on the divided counter. */
+#define LAPIC_TIMER_DCR_DIV16 0x3
+
+/* Measured APIC bus frequency in Hz (counter ticks per second BEFORE the
+ * /16 divider is applied), or 0 until lapic_timer_calibrate_end() ran. */
+static uint32_t lapic_bus_hz = 0;
+
+void lapic_timer_calibrate_begin(void) {
+    volatile uint32_t *lapic = lapic_mmio();
+    if (!lapic || !lapic_mapped) return;
+    lapic[LAPIC_TIMER_DIV / 4] = LAPIC_TIMER_DCR_DIV16;
+    /* Mask the LVT timer entry (one-shot mode, no interrupt delivery): we
+     * only poll the current-count register, no IRQ must fire. */
+    lapic[LAPIC_TIMER / 4] = LAPIC_LVT_MASKED;
+    /* Largest possible start value for maximum measurement range. */
+    lapic[LAPIC_TIMER_INIT / 4] = 0xFFFFFFFFu;
+}
+
+void lapic_timer_calibrate_end(uint32_t elapsed_us) {
+    volatile uint32_t *lapic = lapic_mmio();
+    if (!lapic || !lapic_mapped || elapsed_us == 0) return;
+    uint32_t elapsed_ticks = 0xFFFFFFFFu - lapic[LAPIC_TIMER_CUR / 4];
+    /* Keep the timer off until someone starts it for real. */
+    lapic[LAPIC_TIMER / 4] = LAPIC_LVT_MASKED;
+    lapic[LAPIC_TIMER_INIT / 4] = 0;
+
+    /* elapsed_ticks counts BUS_HZ / 16 ticks over elapsed_us microseconds:
+     *   bus_hz = elapsed_ticks * 16 * (1e6 / elapsed_us).  64-bit maths;
+     * the multiplicative form is exact for the smp_udelay(20000) caller
+     * (factor 800).  Reject implausible results (< 8 MHz) as a failed
+     * measurement: lapic_timer_start_periodic() then refuses to run, which
+     * keeps the system in its old safe BSP-only-tick mode. */
+    uint64_t hz = (uint64_t)elapsed_ticks * 16ULL * 1000000ULL / elapsed_us;
+    if (hz < 8000000ULL || hz > 0xFFFFFFFFULL) {
+        kprintf("[smp] LAPIC timer calibration failed (%llu Hz); "
+                "APs will NOT take scheduler ticks\n", (unsigned long long)hz);
+        lapic_bus_hz = 0;
+        return;
+    }
+    lapic_bus_hz = (uint32_t)hz;
+    kprintf("[smp] LAPIC bus frequency: %u Hz (%u MHz)\n",
+            lapic_bus_hz, lapic_bus_hz / 1000000u);
+}
+
+uint32_t lapic_timer_get_bus_hz(void) {
+    return lapic_bus_hz;
+}
+
+void lapic_timer_start_periodic(uint32_t hz) {
+    volatile uint32_t *lapic = lapic_mmio();
+    if (!lapic || !lapic_mapped || hz == 0 || lapic_bus_hz == 0) return;
+    lapic[LAPIC_TIMER_DIV / 4] = LAPIC_TIMER_DCR_DIV16;
+    /* Periodic mode (bit 17), unmasked, vector 32 -- the same vector the
+     * legacy PIT uses on the BSP, so irq_dispatch() routes AP ticks into the
+     * same timer handler; that handler splits BSP wall-clock duties from
+     * per-CPU scheduling by cpu_id (see drivers/timer/pit.c).  AP ticks get
+     * their LAPIC EOI from irq_dispatch(). */
+    lapic[LAPIC_TIMER / 4] = 0x20000u | 32u;
+    uint32_t ticks = lapic_bus_hz / 16u / hz;
+    if (ticks == 0) ticks = 1;
     lapic[LAPIC_TIMER_INIT / 4] = ticks;
 }
 

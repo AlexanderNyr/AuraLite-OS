@@ -20,6 +20,9 @@ int main(void) {
     printf("%%define TCB_TLS_BASE %zu\n", offsetof(tcb_t, tls_base));
     printf("%%define TCB_PML4     %zu\n", offsetof(tcb_t, pml4_phys));
     printf("%%define TCB_SIZE     %zu\n", sizeof(tcb_t));
+    /* SMP step 3.2 parking flag: context_switch() sets this right after the
+     * final save completes (see thread.h / scheduler.c). */
+    printf("%%define TCB_SWITCH_PARKED %zu\n", offsetof(tcb_t, switch_parked));
 
     /* struct cpu_local SYSCALL-entry slots (reached via %gs: in
      * syscall_entry.asm). */

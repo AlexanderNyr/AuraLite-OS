@@ -139,6 +139,44 @@ typedef struct tcb {
 
     /* ---- P10: working directory ---- */
     char cwd[VFS_PATH_MAX];
+
+    /* ---- SMP step 3.2: context-switch parking flag ----
+     * 1 = the thread's saved context block (at ->rsp) is COMPLETE and the
+     *     thread may safely be picked up by ANY cpu's schedule();
+     * 0 = the thread has been published on a run queue but the cpu that is
+     *     switching it out has not finished saving its registers yet.
+     * schedule() clears this before enqueueing a still-running thread and
+     * context_switch() sets it in asm immediately after the final save
+     * (`mov [old], rsp`); pickers spin on it, which is bounded by the few
+     * instructions of the save tail.  Without it, a second cpu could start
+     * executing the thread off a HALF-SAVED frame -- the pre-SMP derived
+     * corruption observed as garbage saved-RFLAGS (TF/DF set) and returns
+     * into data.  Threads are born parked (1): first-run stacks are fully
+     * crafted before they are ever enqueued.
+     *
+     * Invariant (SMP 3.2): parked == 0 while the thread runs on any cpu,
+     * parked == 1 once its context save completed.  schedule() clears the
+     * flag when it picks a thread (right after the bounded spin, i.e. as
+     * soon as the save tail is known to have finished) and context_switch
+     * re-sets it when saving.  This is what lets REMOTE wakers
+     * (signal_tick() sleep wakeups, wait-queue wakes issued on another
+     * cpu) safely enqueue a thread that just wrote THREAD_BLOCKED but has
+     * not reached its context switch yet: during that window the flag
+     * legitimately reads 0, so the picker spins until the save lands
+     * instead of restoring a torn frame. */
+    volatile uint32_t switch_parked;
+    /* Queue-membership bit (SMP 3.2), manipulated ONLY with __sync atomics:
+     * set by whoever successfully claims the thread for enqueueing
+     * (__sync_lock_test_and_set), cleared by the picker that dequeues it
+     * (__sync_lock_release).  Enqueueing without the claim is forbidden.
+     * This closes the double-enqueue race between a remote waker that just
+     * flipped THREAD_BLOCKED->READY and the scheduler publish path on the
+     * thread's own cpu observing the same READY state: exactly one of them
+     * wins the claim and performs sched_add_thread().  Without it the same
+     * thread could land on two run queues, be picked by two cpus and have
+     * its saved context torn by interleaved save/restore (observed live:
+     * #DB from garbage saved-RFLAGS TF|DF restored inside context_switch). */
+    volatile uint32_t on_queue;
 } tcb_t;
 
 /* Allocate/free a guarded kernel stack for an already-zeroed TCB. */

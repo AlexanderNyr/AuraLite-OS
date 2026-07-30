@@ -10,8 +10,11 @@
  * bootloader's ACPI MADT walk (boot_info.cpus[]) with the classic
  * INIT-SIPI-SIPI sequence (see kernel/arch/x86_64/smp.c).  Each AP loads
  * the kernel's GDT/IDT, installs its per-CPU TSS and cpu_local state,
- * enables its Local APIC, reports online and enters the scheduler's idle
- * loop.  The BSP waits for each AP to report online before waking the next.
+ * enables its Local APIC, arms its own calibrated LAPIC timer tick (its
+ * local preemption source), reports online and enters the scheduler's idle
+ * loop with interrupts on.  The BSP waits for each AP to report online
+ * before waking the next.  Since step 3.2, all online CPUs execute real
+ * threads in parallel (see kernel/proc/scheduler.c).
  */
 
 /* Initialise SMP: wake all APs and wait for them to come online. */
@@ -21,14 +24,9 @@ void smp_init(void);
 uint32_t smp_get_cpu_count(void);
 
 /* Number of CPUs the scheduler is allowed to place runnable threads on.
- * Fewer than (or equal to) smp_get_cpu_count(): until syscall/uaccess entry
- * state is fully per-CPU, schedule() keeps all real thread execution on the
- * BSP (cpu_id == 0, see kernel/proc/scheduler.c), so the load balancer must
- * never hand a thread to an AP's run queue -- it would sit there unscheduled
- * forever, and the BSP cannot rely on work-stealing to rescue it in time
- * (a bounded spin like scheduler_self_test()'s 20 sched_yield()s provably
- * hangs that way: one of the two test threads lands on the AP queue and
- * never runs to completion). */
+ * Since SMP step 3.2 this equals smp_get_cpu_count(): every online CPU has
+ * a run queue, per-CPU syscall/TSS state and its own LAPIC timer tick, so
+ * threads scheduled onto any queue genuinely execute there. */
 uint32_t smp_get_schedulable_cpu_count(void);
 
 /* Gate self-test: boot with QEMU -smp N and verify N CPUs come online. */

@@ -12,6 +12,7 @@
 #include "kernel/mm/heap.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 
@@ -22,6 +23,15 @@
 #define MIB         (1024ULL * 1024ULL)
 
 static heap_t kheap;
+
+/* Serialises every operation on the global kernel heap (the free lists and
+ * the brk pointer inside heap_alloc/heap_free/heap_realloc).  Pre-SMP the
+ * heap relied on "one CPU in the kernel at a time"; with APs scheduling
+ * real threads (SMP step 3.2), two CPUs kmalloc()ing concurrently would
+ * tear the free lists.  irqsave because kmalloc also runs from IRQ-context
+ * paths.  Lock order: kheap_lock -> vm_lock -> pmm.lock (expansion maps
+ * pages while holding this lock). */
+static spinlock_t kheap_lock = SPINLOCK_UNLOCKED;
 
 /*
  * Commit more memory into the heap: map aligned pages over [brk, brk+want),
@@ -108,10 +118,14 @@ void kheap_dump(void) {
 }
 
 void *kmalloc(uint64_t size) {
-    return heap_alloc(&kheap, size);
+    uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
+    void *p = heap_alloc(&kheap, size);
+    spinlock_release_irqrestore(&kheap_lock, flags);
+    return p;
 }
 
 void kfree(void *ptr) {
+    uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
     if (ptr) {
         heap_block_t *b = (heap_block_t *)((char *)ptr - HEAP_HEADER_SIZE);
         if (b->magic == HEAP_MAGIC_USED && b->size > HEAP_HEADER_SIZE + HEAP_FOOTER_SIZE) {
@@ -120,10 +134,14 @@ void kfree(void *ptr) {
         }
     }
     heap_free(&kheap, ptr);
+    spinlock_release_irqrestore(&kheap_lock, flags);
 }
 
 void *krealloc(void *ptr, uint64_t size) {
-    return heap_realloc(&kheap, ptr, size);
+    uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
+    void *p = heap_realloc(&kheap, ptr, size);
+    spinlock_release_irqrestore(&kheap_lock, flags);
+    return p;
 }
 
 /*

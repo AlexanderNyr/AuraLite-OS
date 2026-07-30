@@ -32,6 +32,12 @@ context_switch:
 
     mov [rdi], rsp             ; save old RSP into old_tcb->rsp
 
+    ; SMP step 3.2: the old thread's saved frame is now COMPLETE.  Publish
+    ; that to any cpu that may have just dequeued it (schedule() cleared
+    ; switch_parked before enqueueing a still-running thread; pickers spin
+    ; on this byte).  Plain dword store, x86 TSO keeps it after the saves.
+    mov dword [rdi + TCB_SWITCH_PARKED], 1
+
     mov rsp, [rsi]             ; load new RSP from new_tcb->rsp
 
     ; P9: Restore FS.base for TLS (pthread).  Offset comes from asm_offsets.inc.
