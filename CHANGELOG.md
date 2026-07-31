@@ -2,6 +2,72 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G0 — unblocking and scaffolding] 2026-07-31
+
+First phase of the OpenGL stack described in `GL_PLAN.md`. The decision was to
+implement GL as a **user-space library** (`libgl/`, modelled on `libauragui/`)
+with a **software rasterizer**, targeting **OpenGL 1.1 fixed-function** first
+and growing towards later standards. The kernel is unchanged apart from the one
+fix below.
+
+### Fixed
+- **`GUI_OP_BLIT` / `GUI_OP_BLIT_ALPHA` were unreachable from user space.**
+  Both ops were declared in `kernel/gui/gui_syscalls.h` and both
+  `gui_blit()`/`gui_blit_alpha()` were implemented in `kernel/gui/gui.c`, but
+  the `switch` in `kernel/gui/gui_syscalls.c` had no `case` for them, so no
+  application could ever hand a finished pixel buffer to a window. This blocked
+  any 3D output path.
+
+### Added
+- `kernel/gui/gui_syscalls.c`: dispatch for `GUI_OP_BLIT` / `GUI_OP_BLIT_ALPHA`.
+  The source rectangle is validated in full with `validate_user_range()` before
+  anything is drawn, then copied **one row at a time** into a kernel bounce
+  buffer via `copy_from_user()`, so `gui_blit()` never sees a raw user pointer
+  and a partially-unmapped buffer cannot leave a half-drawn window behind.
+  A `GUI_BLIT_MAX_DIM` (8192) clamp keeps the `stride * h * 4` size computation
+  from overflowing.
+- `kernel/gui/gui_syscalls.h`: `gui_blit_args_t`, the user/kernel ABI struct for
+  the blit ops (`SYS_GUI_CALL` has only five arguments, which is not enough for
+  wid + x + y + w + h + stride + src, so the source description is passed by
+  pointer).
+- `libauragui`: `ag_blit()` and `ag_blit_alpha()` wrappers; `src_stride == 0`
+  means "tightly packed".
+- `libc`: 18 C99 float math entry points (`sinf`, `cosf`, `tanf`, `sqrtf`,
+  `fabsf`, `floorf`, `ceilf`, `atan2f`, `fmodf`, `powf`, `expf`, `logf`,
+  `asinf`, `acosf`, `atanf`, `roundf`, `truncf`, `hypotf`) in
+  `libc/src/math_extra.c` + `libc/include/math.h`. The GL pipeline is
+  `GLfloat`-based; these avoid a float→double→float round trip per call.
+- `libgl/include/GL/gl.h`: OpenGL 1.1 type system, enumerants and prototypes.
+- `libgl/include/GL/glmath.h` + `libgl/src/glmath.c`: vector/matrix layer,
+  ported and extended from `drivers/framebuffer/render3d.c`. Column-major
+  storage as OpenGL specifies. Adds `glm_mat4_frustum`, `glm_mat4_ortho`,
+  `glm_mat4_rot_axis`, `glm_mat4_inverse`, `glm_mat4_normal`,
+  `glm_mat4_look_at`.
+- `userspace/gltest/gltest.c`: GL regression program printing `[gl] PASS/FAIL`
+  markers to serial.
+- `tests/unit/test_glmath.c`: **37 checks**, registered in `make test-unit`.
+  Links the real `libgl/src/glmath.c` rather than a copy, so the test cannot
+  drift from the shipping implementation.
+- `tests/integration/cases/test_opengl.sh`: **12 assertions**, registered in
+  `tests/integration/run_all.sh`.
+- `GL_PLAN.md`: the ten-phase (G0–G9) OpenGL roadmap.
+- `patches/GL_G0_scaffolding.patch`: complete diff for this phase.
+
+### Build
+- `LIBGL_OBJS` / `USER_GL_OBJ` / `USER_GL_APPS` in the Makefile, with a
+  dedicated link rule. libgl is linked **only** into GL applications, so the
+  other 38 initrd programs do not grow.
+
+### Verified
+- `test_glmath`: 37/37 pass.
+- `/gltest` under QEMU: 15/15 checks pass, including rejection of a
+  kernel-space source pointer, an unmapped pointer, `stride < w`, oversized
+  dimensions and a foreign window id — with the kernel surviving all of them
+  and the window still usable afterwards.
+- `test_opengl.sh`: 12/12 assertions pass.
+- `make test-unit`: 52/52 test binaries green (was 51).
+- No regressions in `test_gui_bad_pointers` or `test_boot_to_shell`.
+
 ## [POSIX.1-2024 Phase Q1 — mandatory C standard headers] 2026-07-05
 
 ### Added

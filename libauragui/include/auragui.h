@@ -152,6 +152,20 @@ int  ag_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color);
 int  ag_draw_text_centered(int wid, int32_t x, int32_t y, uint32_t w,
                            const char *s, uint32_t color);
 
+/* Bulk pixel transfer into the window back buffer.
+ *
+ * src points at packed 32-bit XRGB8888 pixels; src_stride is the distance
+ * between rows in PIXELS (pass 0 to mean "tightly packed", i.e. stride == w).
+ * ag_blit_alpha() additionally interprets the high byte of each pixel as
+ * alpha and blends against the existing window content.
+ *
+ * This is the presentation path used by the OpenGL stack (libgl/AuraGLX).
+ */
+int  ag_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+             const uint32_t *src, uint32_t src_stride);
+int  ag_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+                   const uint32_t *src, uint32_t src_stride);
+
 /* ---- Events ---- */
 int  ag_poll_event(int wid, ag_event_t *out);
 int  ag_wait_event(int wid, ag_event_t *out);

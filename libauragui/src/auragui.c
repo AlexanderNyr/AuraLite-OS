@@ -103,6 +103,46 @@ int ag_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) {
 int ag_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color) {
     return (int)gui_call(GUI_OP_DRAW_PIXEL, wid, pack2(x, y), color, 0);
 }
+
+/* ---- Bulk pixel transfer ----
+ *
+ * SYS_GUI_CALL carries only five 64-bit arguments, which is not enough for
+ * wid + x + y + w + h + stride + src.  The source description is therefore
+ * passed by pointer; this struct must stay byte-identical to the kernel's
+ * gui_blit_args_t in kernel/gui/gui_syscalls.h.
+ */
+typedef struct {
+    uint32_t w;
+    uint32_t h;
+    uint32_t stride;
+    uint32_t _pad;
+    uint64_t src;
+} ag_blit_args_t;
+
+static int ag_blit_common(uint64_t op, int wid, int32_t x, int32_t y,
+                          uint32_t w, uint32_t h,
+                          const uint32_t *src, uint32_t src_stride) {
+    if (!src) return -1;
+    if (src_stride == 0) src_stride = w;
+    ag_blit_args_t args;
+    args.w      = w;
+    args.h      = h;
+    args.stride = src_stride;
+    args._pad   = 0;
+    args.src    = (uint64_t)(uintptr_t)src;
+    return (int)gui_call(op, (uint64_t)wid, pack2(x, y),
+                         (uint64_t)(uintptr_t)&args, 0);
+}
+
+int ag_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+            const uint32_t *src, uint32_t src_stride) {
+    return ag_blit_common(GUI_OP_BLIT, wid, x, y, w, h, src, src_stride);
+}
+
+int ag_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+                  const uint32_t *src, uint32_t src_stride) {
+    return ag_blit_common(GUI_OP_BLIT_ALPHA, wid, x, y, w, h, src, src_stride);
+}
 int ag_draw_text_centered(int wid, int32_t x, int32_t y, uint32_t w,
                           const char *s, uint32_t color) {
     int32_t tw = (int32_t)(strlen(s) * 8);

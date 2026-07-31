@@ -43,7 +43,7 @@ enum {
     GUI_OP_GET_RECT,        /* a2=wid, a3=user {i32,i32,u32,u32}* */
     GUI_OP_SET_CLIPBOARD,   /* a2=char* */
     GUI_OP_GET_CLIPBOARD,   /* a2=char*, a3=size */
-    GUI_OP_BLIT,            /* a2=wid, a3=x|y<<32, a4={w,h,src*,stride} packed, a5=color_key (0=none) */
+    GUI_OP_BLIT,            /* a2=wid, a3=x|y<<32, a4=gui_blit_args_t* (user) */
     GUI_OP_BLIT_ALPHA,      /* same layout, per-pixel alpha blending */
     /* Desktop icons (new in v2). */
     GUI_OP_ADD_ICON,        /* a2=x|y<<32, a3=label*, a4=icon_id */
@@ -53,6 +53,27 @@ enum {
     /* Window flags query. */
     GUI_OP_GET_FLAGS,       /* a2=wid → returns flags */
 };
+
+/* Argument block for GUI_OP_BLIT / GUI_OP_BLIT_ALPHA.
+ *
+ * SYS_GUI_CALL only carries five 64-bit arguments, which is not enough for
+ * wid + x + y + w + h + stride + src, so the pixel-source description is
+ * passed by pointer instead.  This struct is part of the user/kernel ABI:
+ * libauragui declares a byte-identical copy.  Explicit padding keeps the
+ * layout identical regardless of compiler alignment choices.
+ *
+ *   w, h   : size of the source rectangle in pixels
+ *   stride : distance between rows in pixels (>= w)
+ *   src    : user pointer to the first pixel, packed 32-bit XRGB8888
+ *            (GUI_OP_BLIT_ALPHA interprets the high byte as alpha)
+ */
+typedef struct {
+    uint32_t w;
+    uint32_t h;
+    uint32_t stride;
+    uint32_t _pad;
+    uint64_t src;
+} gui_blit_args_t;
 
 uint64_t syscall_gui_call (uint64_t op, uint64_t a2, uint64_t a3,
                            uint64_t a4, uint64_t a5);

@@ -52,4 +52,34 @@ double modf(double x, double *iptr);
 double nearbyint(double x);
 double remainder(double x, double y);
 
+/* ---- float variants (C99 §7.12) ----
+ *
+ * Added for the OpenGL stack (GL_PLAN.md phase G0): the GL pipeline works on
+ * GLfloat throughout, and routing every operation through the double entry
+ * points would add two conversions per call in the inner rasterizer loops.
+ *
+ * These are thin wrappers over the double implementations, so they inherit
+ * their accuracy rather than being separately tuned single-precision kernels.
+ * That is a deliberate size/accuracy trade-off consistent with the rest of
+ * this libc.
+ */
+float fabsf(float x);
+float floorf(float x);
+float ceilf(float x);
+float sqrtf(float x);
+float powf(float base, float exp);
+float expf(float x);
+float logf(float x);
+float sinf(float x);
+float cosf(float x);
+float tanf(float x);
+float asinf(float x);
+float acosf(float x);
+float atanf(float x);
+float atan2f(float y, float x);
+float fmodf(float x, float y);
+float roundf(float x);
+float truncf(float x);
+float hypotf(float x, float y);
+
 #endif /* AURALITE_LIBC_MATH_H */

@@ -186,3 +186,35 @@ double modf(double x, double *iptr) {
     if (iptr) *iptr = ip;
     return x - ip;
 }
+
+/* ============================================================================
+ * float variants (C99 §7.12)
+ *
+ * Added by GL_PLAN.md phase G0.  The OpenGL pipeline is GLfloat-based, so
+ * these exist to avoid a float->double->float round trip on every call in the
+ * vertex/rasterizer inner loops.
+ *
+ * They are thin wrappers over the double implementations above and in libc.c.
+ * Computing in double and narrowing once at the end is at least as accurate as
+ * a native single-precision kernel would be, so the only cost is speed, not
+ * correctness.
+ * ==========================================================================*/
+
+float fabsf(float x)            { return (float)fabs((double)x); }
+float floorf(float x)           { return (float)floor((double)x); }
+float ceilf(float x)            { return (float)ceil((double)x); }
+float sqrtf(float x)            { return (float)sqrt((double)x); }
+float powf(float b, float e)    { return (float)pow((double)b, (double)e); }
+float expf(float x)             { return (float)exp((double)x); }
+float logf(float x)             { return (float)log((double)x); }
+float sinf(float x)             { return (float)sin((double)x); }
+float cosf(float x)             { return (float)cos((double)x); }
+float tanf(float x)             { return (float)tan((double)x); }
+float asinf(float x)            { return (float)asin((double)x); }
+float acosf(float x)            { return (float)acos((double)x); }
+float atanf(float x)            { return (float)atan((double)x); }
+float atan2f(float y, float x)  { return (float)atan2((double)y, (double)x); }
+float fmodf(float x, float y)   { return (float)fmod((double)x, (double)y); }
+float roundf(float x)           { return (float)round((double)x); }
+float truncf(float x)           { return (float)trunc((double)x); }
+float hypotf(float x, float y)  { return (float)hypot((double)x, (double)y); }

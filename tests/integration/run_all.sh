@@ -56,6 +56,7 @@ ALL_CASES=(
     test_timestamps
     test_fifo_symlinks
     test_gui_bad_pointers
+    test_opengl
     test_process_cleanup
     test_memory_reaping
     test_fork_cow

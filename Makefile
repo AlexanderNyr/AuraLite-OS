@@ -279,7 +279,18 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
 
-user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
+# ---- OpenGL (libgl) -- see GL_PLAN.md ----
+# libgl is linked ONLY into GL applications, not into every user program, so
+# the other 38 binaries in the initrd do not grow.  Add new libgl translation
+# units here as the phases land.
+LIBGL_OBJS := $(USER_BUILD)/glmath.o
+USER_GL_OBJ := $(LIBGL_OBJS)
+USER_CFLAGS += -I libgl/include
+
+# GL applications: linked with libgl in addition to libauragui.
+USER_GL_APPS := $(USER_BUILD)/gltest.elf
+
+user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
 # GUI apps additionally link the libauragui object.
@@ -384,6 +395,25 @@ $(USER_BUILD)/play.o: userspace/play/play.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/auragui.o: libauragui/src/auragui.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# ---- libgl (OpenGL) translation units -- see GL_PLAN.md ----
+$(USER_BUILD)/glmath.o: libgl/src/glmath.c libgl/include/GL/glmath.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# ---- GL applications ----
+$(USER_BUILD)/gltest.o: userspace/gltest/gltest.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# Explicit link rule: GL apps additionally pull in libgl.  This overrides the
+# generic %.elf pattern rule below for these targets.
+$(USER_GL_APPS): $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) \
+                                      $(USER_GUI_OBJ) $(USER_GL_OBJ) libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON) $(USER_GUI_OBJ) \
+	      $(USER_GL_OBJ) -o $@
+	@echo "[link] $@ (libgl)"
 
 $(USER_BUILD)/gcalc.o:   userspace/gui-calc/gcalc.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -640,7 +670,7 @@ vm-configs: vbox vmware
 
 # Build the initrd (USTAR tarball of userspace binaries).
 INITRD_DIR := $(USER_BUILD)/initrd_root
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@mkdir -p $(INITRD_DIR)
 	@cp $(INIT_ELF) $(INITRD_DIR)/init
 	@cp $(HELLO_ELF) $(INITRD_DIR)/hello
@@ -658,6 +688,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS)
 	@cp $(USER_BUILD)/p10test.elf  $(INITRD_DIR)/p10test
 	@cp $(USER_BUILD)/argv_echo.elf $(INITRD_DIR)/argv_echo
 	@cp $(USER_BUILD)/execve_child.elf $(INITRD_DIR)/execve_child
+	@cp $(USER_BUILD)/gltest.elf  $(INITRD_DIR)/gltest
 	@cp $(USER_BUILD)/gcalc.elf   $(INITRD_DIR)/gcalc
 	@cp $(USER_BUILD)/gedit.elf   $(INITRD_DIR)/gedit
 	@cp $(USER_BUILD)/gfiles.elf  $(INITRD_DIR)/gfiles
@@ -693,7 +724,8 @@ debug: iso
 	@bash tools/debug_qemu.sh $(ISO_IMAGE)
 
 # ---- Host-side unit tests (built with the host compiler, no freestanding) ----
-UNIT_TESTS   := $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
+UNIT_TESTS   := $(BUILD_DIR)/test_glmath \
+                $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
@@ -767,6 +799,13 @@ $(BUILD_DIR)/test_libc: tests/unit/test_libc.c
 $(BUILD_DIR)/test_3d: tests/unit/test_3d.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@ -lm
+
+# test_glmath links the REAL libgl/src/glmath.c, not a copy, so the test can
+# never drift away from the shipping implementation (GL_PLAN.md principle 1).
+$(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c libgl/src/glmath.c libgl/include/GL/glmath.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I libgl/include \
+	          tests/unit/test_glmath.c libgl/src/glmath.c -o $@ -lm
 
 $(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
 	@mkdir -p $(BUILD_DIR)

@@ -10,8 +10,15 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/lib/string.h"
+#include "kernel/mm/kheap.h"
 
 #define GUI_USER_TEXT_MAX 512
+
+/* Upper bound for a single blit request.  A window back buffer can never be
+ * larger than the screen, so anything beyond this is a bogus/hostile request.
+ * Keeping an explicit clamp means the w*h multiplication below cannot overflow.
+ */
+#define GUI_BLIT_MAX_DIM 8192u
 
 static char gui_kernel_clipboard[GUI_USER_TEXT_MAX] = {0};
 
@@ -175,6 +182,63 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
         char null_byte = 0;
         copy_to_user((void *)((uintptr_t)a2 + len - 1), &null_byte, 1);
         return 0;
+    }
+    case GUI_OP_BLIT:
+    case GUI_OP_BLIT_ALPHA: {
+        /* a2 = wid
+         * a3 = x | y << 32
+         * a4 = user pointer to gui_blit_args_t { u32 w, h, stride; u64 src; }
+         *
+         * The pixel source stays in user memory, so it is copied one row at a
+         * time into a kernel bounce buffer before gui_blit() touches it.  That
+         * keeps the existing gui_blit()/gui_blit_alpha() implementations
+         * unchanged while guaranteeing the kernel never dereferences a raw
+         * user pointer.
+         */
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+
+        gui_blit_args_t args;
+        if (!a4) return (uint64_t)-1;
+        if (copy_from_user(&args, (const void *)(uintptr_t)a4, sizeof(args)) != 0) {
+            return (uint64_t)-1;
+        }
+
+        int32_t x = lo32(a3), y = hi32(a3);
+        uint32_t w = args.w, h = args.h, stride = args.stride;
+
+        if (w == 0 || h == 0) return 0;                 /* nothing to do */
+        if (w > GUI_BLIT_MAX_DIM || h > GUI_BLIT_MAX_DIM) return (uint64_t)-1;
+        if (stride < w || stride > GUI_BLIT_MAX_DIM) return (uint64_t)-1;
+        if (!args.src) return (uint64_t)-1;
+
+        /* Validate the whole source rectangle up front so a partially drawn
+         * window is not left behind when the tail of the buffer is unmapped. */
+        uint64_t total_bytes = (uint64_t)stride * (uint64_t)h * 4ull;
+        if (!validate_user_range((const void *)(uintptr_t)args.src, total_bytes, 0)) {
+            return (uint64_t)-1;
+        }
+
+        uint32_t *row = (uint32_t *)kmalloc((uint64_t)w * 4ull);
+        if (!row) return (uint64_t)-1;
+
+        int rc = 0;
+        for (uint32_t r = 0; r < h; r++) {
+            uintptr_t src_row = (uintptr_t)args.src + (uintptr_t)r * stride * 4u;
+            if (copy_from_user(row, (const void *)src_row, (uint64_t)w * 4ull) != 0) {
+                rc = -1;
+                break;
+            }
+            /* Blit this row on its own; stride == w because the bounce buffer
+             * holds exactly one packed row. */
+            if (op == GUI_OP_BLIT) {
+                gui_blit((int)a2, x, y + (int32_t)r, w, 1, row, w);
+            } else {
+                gui_blit_alpha((int)a2, x, y + (int32_t)r, w, 1, row, w);
+            }
+        }
+
+        kfree(row);
+        return (uint64_t)rc;
     }
     case GUI_OP_ADD_ICON: {
         char label[32];
