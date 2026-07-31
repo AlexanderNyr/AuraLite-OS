@@ -294,7 +294,7 @@ This is confirmed properly in G1 when the real context buffers are allocated.
 
 ---
 
-## Phase G1 — AuraGLX context and first frame
+## Phase G1 — AuraGLX context and first frame ✅ COMPLETE
 
 **Goal:** a GL context bound to a window; `glClear` fills the window with a colour.
 
@@ -313,13 +313,13 @@ glGetError()                     glGetString(GL_VENDOR/RENDERER/VERSION/EXTENSIO
 
 ### Tasks
 
-- [ ] Context structure: colour buffer (`uint32_t*`), depth buffer (`float*`),
+- [x] Context structure: colour buffer (`uint32_t*`), depth buffer (`float*`),
       dimensions, viewport, clear state, GL error slot.
-- [ ] Buffer allocation/release, out-of-memory handling → `GL_OUT_OF_MEMORY`.
-- [ ] `glClear` with a fast fill (8 pixels per iteration).
-- [ ] `aglxSwapBuffers` → `ag_blit` → `ag_render_now`.
-- [ ] GL error mechanism: `gl_set_error()`, sticky first error, cleared on read.
-- [ ] `glGetString`: `VENDOR="AuraLite OS"`,
+- [x] Buffer allocation/release, out-of-memory handling → `GL_OUT_OF_MEMORY`.
+- [x] `glClear` with a fast fill (8 pixels per iteration).
+- [x] `aglxSwapBuffers` → `ag_blit` → `ag_render_now`.
+- [x] GL error mechanism: `gl_set_error()`, sticky first error, cleared on read.
+- [x] `glGetString`: `VENDOR="AuraLite OS"`,
       `RENDERER="AuraLite Software Rasterizer"`, `VERSION="1.1 AuraLite"`.
 
 ### Test gate
@@ -337,6 +337,35 @@ present the result and release resources cleanly.
 ### Deliverable
 
 `patches/GL_G1_context.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| `aglx_context_t` | Owns colour + optional depth buffer, clear/viewport/error state, and the matrix & per-fragment fields that G2/G3 will populate |
+| Buffer initialisation | Colour zeroed, depth set to the far plane on create **and** on resize — an app that swaps before drawing never sees heap junk |
+| `aglxResize()` | Allocates into a scratch context first, so a failed resize leaves the old buffers intact and rendering can continue |
+| `glClear()` | 8×-unrolled fills; `memset` fast path when clearing to black; invalid mask clears **nothing** and raises `GL_INVALID_VALUE` (§4.2.3) |
+| Error machinery | First error wins, cleared on read; errors are **per-context**, not global |
+| No-context safety | GL entry points with nothing current are no-ops that report `GL_INVALID_OPERATION` instead of crashing |
+| `glGetString` | `GL_EXTENSIONS` returns `""`, never NULL — callers tokenise it |
+| `aglxSwapBuffers()` | Exactly one `ag_blit` + one `ag_render_now` per frame; failure is propagated, not swallowed |
+| Host unit test | `test_glstate` — **37/37 pass**, links the real `auraglx.c`/`glstate.c` |
+| `/gltest` in QEMU | **37/37 checks pass** (15 from G0 + 22 new) |
+| QEMU integration test | `test_opengl.sh` — **20/20 assertions pass** |
+| Regression check | `make test-unit` 53/53 green; `test_boot_to_shell`, `test_gui_bad_pointers` unaffected |
+
+**Host-testing note.** `auraglx.c` includes `auragui.h`, which cannot be built
+against the host toolchain (it needs AuraLite's freestanding libc). Rather than
+excluding the presentation path from testing, `tests/unit/glstub/` provides a
+recording stand-in for `ag_blit()`/`ag_render_now()`. The code under test is
+still the real `auraglx.c`, and the stub lets the tests assert on exactly what
+was presented and simulate a failing blit.
+
+**Memory finding (risk R-1 closed).** `USER_BRK_MAX` gives user space a very
+large heap, so the 640×480 default (2.4 MB per context) is comfortable. The
+`AGLX_MAX_DIM` cap of 4096 keeps the worst case at 64 MB colour + 64 MB depth
+and makes the size arithmetic provably overflow-free.
 
 ---
 
@@ -717,8 +746,8 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
 | Phase | Status | Patch |
 |---|---|---|
 | G0 | ✅ complete | `patches/GL_G0_scaffolding.patch` |
-| G1 | 🔧 next | — |
-| G2 | ⬜ planned | — |
+| G1 | ✅ complete | `patches/GL_G1_context.patch` |
+| G2 | 🔧 next | — |
 | G3 | ⬜ planned | — |
 | G4 | ⬜ planned | — |
 | G5 | ⬜ planned | — |

@@ -283,7 +283,8 @@ USER_GUI_OBJ := $(USER_BUILD)/auragui.o
 # libgl is linked ONLY into GL applications, not into every user program, so
 # the other 38 binaries in the initrd do not grow.  Add new libgl translation
 # units here as the phases land.
-LIBGL_OBJS := $(USER_BUILD)/glmath.o
+LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
+              $(USER_BUILD)/glstate.o
 USER_GL_OBJ := $(LIBGL_OBJS)
 USER_CFLAGS += -I libgl/include
 
@@ -398,6 +399,16 @@ $(USER_BUILD)/auragui.o: libauragui/src/auragui.c libauragui/include/auragui.h $
 
 # ---- libgl (OpenGL) translation units -- see GL_PLAN.md ----
 $(USER_BUILD)/glmath.o: libgl/src/glmath.c libgl/include/GL/glmath.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/auraglx.o: libgl/src/auraglx.c libgl/include/GL/auraglx.h \
+                         libgl/src/glcontext.h libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/glstate.o: libgl/src/glstate.c libgl/src/glcontext.h \
+                         libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -724,7 +735,7 @@ debug: iso
 	@bash tools/debug_qemu.sh $(ISO_IMAGE)
 
 # ---- Host-side unit tests (built with the host compiler, no freestanding) ----
-UNIT_TESTS   := $(BUILD_DIR)/test_glmath \
+UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -806,6 +817,19 @@ $(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c libgl/src/glmath.c libgl/incl
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I libgl/include \
 	          tests/unit/test_glmath.c libgl/src/glmath.c -o $@ -lm
+
+# test_glstate links the real auraglx.c + glstate.c.  libauragui cannot be
+# built for the host (it needs AuraLite's freestanding libc), so a recording
+# stub in tests/unit/glstub/ stands in for ag_blit()/ag_render_now() and lets
+# the tests assert on what was actually presented.
+$(BUILD_DIR)/test_glstate: tests/unit/test_glstate.c libgl/src/auraglx.c \
+                           libgl/src/glstate.c libgl/src/glmath.c \
+                           libgl/src/glcontext.h tests/unit/glstub/auragui_stub.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I libgl/include -I libgl/src -I tests/unit/glstub \
+	          tests/unit/test_glstate.c libgl/src/auraglx.c libgl/src/glstate.c \
+	          libgl/src/glmath.c tests/unit/glstub/auragui_stub.c -o $@ -lm
 
 $(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
 	@mkdir -p $(BUILD_DIR)

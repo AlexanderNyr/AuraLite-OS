@@ -2,6 +2,63 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G1 — AuraGLX context and first frame] 2026-07-31
+
+Second phase of `GL_PLAN.md`. An application can now create a GL context bound
+to a window, clear it and present the result — the complete frame path is live.
+
+### Added
+- `libgl/include/GL/auraglx.h` + `libgl/src/auraglx.c`: **AuraGLX**, the
+  window-binding layer (what GLX is to X11 and EGL is to Wayland).
+  `aglxCreateContext`, `aglxMakeCurrent`, `aglxSwapBuffers`, `aglxResize`,
+  `aglxDestroyContext` plus buffer introspection for tests and demos.
+  Rendering never touches the window: everything lands in the context's own
+  colour buffer and `aglxSwapBuffers()` is the single point that crosses into
+  the kernel, so there are no syscalls in the rasterizer's inner loops and the
+  compositor only ever observes complete frames (no tearing).
+- `libgl/src/glcontext.h`: the internal context struct holding all mutable GL
+  state, plus the colour-packing and clamping helpers. Keeping state in one
+  struct rather than scattered globals is what will allow multiple contexts
+  and, later, per-thread current contexts without reworking every entry point.
+- `libgl/src/glstate.c`: `glGetError`, `glGetString`, `glClearColor`,
+  `glClearDepth`, `glClear`, `glViewport`, `glFlush`, `glFinish`.
+- `tests/unit/test_glstate.c`: **37 checks** covering context lifecycle, the
+  error contract, clear semantics, viewport and presentation.
+- `tests/unit/glstub/`: a recording stand-in for `ag_blit()`/`ag_render_now()`.
+  `auraglx.c` includes `auragui.h`, which cannot be compiled against the host
+  toolchain, so rather than leaving the presentation path untested the stub
+  lets host tests assert on exactly what was presented and simulate a failing
+  blit. The code under test is still the real `auraglx.c`.
+- `patches/GL_G1_context.patch`: complete diff for this phase.
+
+### Behaviour notes
+- **First error wins.** `glGetError()` returns the earliest unread error and
+  clears it (§2.5), so an early failure is never masked by later noise. Errors
+  are per-context, not global.
+- **An invalid `glClear` mask clears nothing at all** and raises
+  `GL_INVALID_VALUE`, per §4.2.3 — it does not clear the valid bits first.
+- **GL calls with no current context** are safe no-ops that record
+  `GL_INVALID_OPERATION`, rather than crashing or silently doing nothing.
+- **`glGetString(GL_EXTENSIONS)` returns `""`, never NULL**, because callers
+  tokenise the result.
+- **A failed resize keeps the old buffers**, so an application can keep
+  rendering at the previous size instead of losing its context.
+- Buffers are initialised on create and on resize (colour black, depth at the
+  far plane): an application that swaps before drawing never sees heap junk.
+
+### Changed
+- `userspace/gltest`: extended with the G1 context/clear/present checks
+  (37 checks total, up from 15).
+- `tests/integration/cases/test_opengl.sh`: 20 assertions, up from 12.
+
+### Verified
+- `test_glstate`: 37/37. `test_glmath`: 37/37.
+- `/gltest` under QEMU: 37/37 checks, reporting
+  `AuraLite OS / AuraLite Software Rasterizer / 1.1 AuraLite`.
+- `test_opengl.sh`: 20/20 assertions.
+- `make test-unit`: 53/53 test binaries green (was 52).
+- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G0 — unblocking and scaffolding] 2026-07-31
 
 First phase of the OpenGL stack described in `GL_PLAN.md`. The decision was to

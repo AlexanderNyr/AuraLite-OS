@@ -41,6 +41,16 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS blit_reject_unmapped"   "unmapped src po
 il_assert_grep    "$LOG" "\\[gl\\] PASS blit_reject_huge"       "oversized blit rejected"
 il_assert_grep    "$LOG" "\\[gl\\] PASS blit_after_rejects"     "window still usable after rejects"
 
+# Phase G1: context lifecycle, glClear and presentation.
+il_assert_grep    "$LOG" "\\[gl\\] PASS ctx_create"            "GL context created"
+il_assert_grep    "$LOG" "\\[gl\\] PASS gl_clear_blue"         "glClear writes the requested colour"
+il_assert_grep    "$LOG" "\\[gl\\] PASS gl_clear_depth_far"    "depth buffer cleared to the far plane"
+il_assert_grep    "$LOG" "\\[gl\\] PASS gl_invalid_clear_mask" "invalid clear mask raises GL_INVALID_VALUE"
+il_assert_grep    "$LOG" "\\[gl\\] PASS gl_invalid_clear_no_effect" "invalid clear mask clears nothing"
+il_assert_grep    "$LOG" "\\[gl\\] PASS gl_swap_buffers"       "frame presented to the window"
+il_assert_grep    "$LOG" "\\[gl\\] PASS gl_swap_after_resize"  "context still usable after resize"
+il_assert_grep    "$LOG" "\\[gl\\] PASS gl_no_context_is_error" "GL without a context is diagnosable"
+
 # Crash safety.
 il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"            "no kernel exception"
 il_assert_no_grep "$LOG" "PANIC"                          "no kernel panic"

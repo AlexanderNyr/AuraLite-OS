@@ -1,0 +1,107 @@
+/* libgl/src/glcontext.h — internal GL context definition.
+ *
+ * PRIVATE to libgl.  Applications see only the opaque aglx_context_t from
+ * GL/auraglx.h; everything here is free to change between phases.
+ *
+ * The context owns all mutable GL state.  Keeping it in one struct (rather
+ * than in scattered globals) is what will allow multiple contexts and,
+ * later, per-thread current contexts without reworking every entry point.
+ */
+#ifndef AURALITE_GL_CONTEXT_H
+#define AURALITE_GL_CONTEXT_H
+
+#include <stdint.h>
+#include "GL/gl.h"
+#include "GL/glmath.h"
+
+/* ---- Limits (GL 1.1 requires at least 32 / 2; we are more generous) ---- */
+#define GL_MODELVIEW_STACK_DEPTH   32
+#define GL_PROJECTION_STACK_DEPTH  8
+#define GL_TEXTURE_STACK_DEPTH     4
+
+/* A colour in the form the framebuffer stores: 0x00RRGGBB. */
+typedef uint32_t gl_pixel_t;
+
+/* Floating-point RGBA, the form GL works in internally. */
+typedef struct {
+    GLfloat r, g, b, a;
+} gl_color_t;
+
+struct aglx_context {
+    /* ---- Render targets ---- */
+    int         width;          /* buffer width  in pixels */
+    int         height;         /* buffer height in pixels */
+    gl_pixel_t *color;          /* width*height, packed XRGB8888, never NULL */
+    float      *depth;          /* width*height, or NULL when AGLX_DEPTH unset */
+
+    /* ---- Window binding ---- */
+    int         wid;            /* AuraGUI window id */
+    uint32_t    flags;          /* AGLX_* creation flags */
+
+    /* ---- Clear state (§4.2.3) ---- */
+    gl_color_t  clear_color;
+    GLfloat     clear_depth;    /* clamped to [0,1] */
+
+    /* ---- Viewport (§2.11) ----
+     * Stored exactly as glViewport() received it; the transform to window
+     * coordinates happens per-vertex in the pipeline. */
+    GLint       viewport_x, viewport_y;
+    GLsizei     viewport_w, viewport_h;
+
+    /* ---- Error state (§2.5) ----
+     * GL keeps the FIRST error until it is read, so later errors never mask
+     * the original cause.  glGetError() clears it. */
+    GLenum      error;
+
+    /* ---- Matrix state (§2.10.2) — populated in phase G2 ---- */
+    GLenum      matrix_mode;
+    glm_mat4    modelview[GL_MODELVIEW_STACK_DEPTH];
+    int         modelview_top;
+    glm_mat4    projection[GL_PROJECTION_STACK_DEPTH];
+    int         projection_top;
+
+    /* ---- Per-fragment state — populated in phase G3 ---- */
+    GLboolean   depth_test;
+    GLboolean   depth_mask;
+    GLenum      depth_func;
+    GLboolean   cull_face;
+    GLenum      cull_mode;
+    GLenum      front_face;
+    GLenum      shade_model;
+    GLboolean   scissor_test;
+    GLint       scissor_x, scissor_y;
+    GLsizei     scissor_w, scissor_h;
+};
+
+/* ---- Internal helpers shared across libgl translation units ---- */
+
+/* The context GL entry points act on, or NULL.  Defined in auraglx.c. */
+extern struct aglx_context *gl_current_ctx;
+
+/* Record an error, honouring the "first error wins" rule.  Safe with a NULL
+ * context (the error is then dropped, since there is nowhere to store it). */
+void gl_set_error(GLenum error);
+
+/* Convenience used by nearly every entry point: fetch the current context or
+ * flag GL_INVALID_OPERATION and return NULL.  Calling GL without a current
+ * context is an application bug, and this makes it visible via glGetError()
+ * instead of silently doing nothing. */
+struct aglx_context *gl_ctx_or_error(void);
+
+/* Clamp a float to [0,1] — GLclampf semantics (§2.1.2). */
+static inline GLfloat gl_clampf(GLfloat v) {
+    if (v < 0.0f) return 0.0f;
+    if (v > 1.0f) return 1.0f;
+    return v;
+}
+
+/* Pack normalised RGBA into the framebuffer's 0x00RRGGBB layout.
+ * Rounding uses +0.5 so that 1.0f maps to 255 rather than 254. */
+static inline gl_pixel_t gl_pack_color(gl_color_t c) {
+    uint32_t r = (uint32_t)(gl_clampf(c.r) * 255.0f + 0.5f);
+    uint32_t g = (uint32_t)(gl_clampf(c.g) * 255.0f + 0.5f);
+    uint32_t b = (uint32_t)(gl_clampf(c.b) * 255.0f + 0.5f);
+    return (r << 16) | (g << 8) | b;
+}
+
+#endif /* AURALITE_GL_CONTEXT_H */
