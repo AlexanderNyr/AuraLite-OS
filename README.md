@@ -375,6 +375,8 @@ The initrd currently packages:
 | `/gabout` | Graphical about dialog. |
 | `/glaunch` | GUI application launcher. |
 | `/gtheme` | GUI Theme Manager. |
+| `/gltest` | OpenGL regression checks (prints PASS/FAIL to serial). |
+| `/glcube` | OpenGL rotating cube demo. |
 
 Common shell commands:
 

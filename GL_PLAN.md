@@ -369,7 +369,7 @@ and makes the size arithmetic provably overflow-free.
 
 ---
 
-## Phase G2 — Matrix stacks and immediate mode (wireframe)
+## Phase G2 — Matrix stacks and immediate mode (wireframe) ✅ COMPLETE
 
 **Goal:** a rotating wireframe cube via classic `glBegin/glEnd`.
 
@@ -387,16 +387,16 @@ glVertex2f/3f/4f/3fv   glColor3f/4f/3ub/4ub/3fv   glEnd()
 
 ### Tasks
 
-- [ ] Port the math from `render3d.c` into `glmath.c`; add `mat4_ortho`,
+- [x] Port the math from `render3d.c` into `glmath.c`; add `mat4_ortho`,
       `mat4_frustum`, `mat4_scale`, `mat4_inverse`, `mat4_transpose`, `mat4_normal`.
       **Strictly column-major**, as in OpenGL (`render3d.h` already declares that order).
-- [ ] Matrix stacks with overflow checks → `GL_STACK_OVERFLOW` / `GL_STACK_UNDERFLOW`.
-- [ ] Immediate-mode vertex buffer; primitive assembly for all modes, including
+- [x] Matrix stacks with overflow checks → `GL_STACK_OVERFLOW` / `GL_STACK_UNDERFLOW`.
+- [x] Immediate-mode vertex buffer; primitive assembly for all modes, including
       correct triangulation of `GL_QUADS` / `GL_POLYGON` / strips / fans.
-- [ ] Vertex pipeline: object → MODELVIEW → PROJECTION → clip → perspective divide
+- [x] Vertex pipeline: object → MODELVIEW → PROJECTION → clip → perspective divide
       → viewport → screen coordinates.
-- [ ] Line (Bresenham) and point rasterisation.
-- [ ] Validation: calling `glVertex` outside `glBegin/glEnd` → `GL_INVALID_OPERATION`.
+- [x] Line (Bresenham) and point rasterisation.
+- [x] Validation: calling `glVertex` outside `glBegin/glEnd` → `GL_INVALID_OPERATION`.
 
 ### Test gate
 
@@ -413,6 +413,50 @@ geometry on screen.
 ### Deliverable
 
 `patches/GL_G2_immediate.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| Matrix stacks | 32 MODELVIEW / 8 PROJECTION, post-multiply semantics, `GL_STACK_OVERFLOW`/`UNDERFLOW`; an overflowing push leaves the current matrix untouched |
+| Immediate mode | All ten primitive modes; `GL_QUADS`/`GL_POLYGON`/strips/fans triangulated correctly, including `GL_TRIANGLE_STRIP` winding alternation |
+| Memory behaviour | Primitives are emitted as soon as enough vertices arrive, so a 100 000-vertex strip uses the same few bytes as a 3-vertex one (covered by a test) |
+| Transform pipeline | object → MODELVIEW → PROJECTION → divide → viewport, with `w <= 0` vertices dropped rather than projected to nonsense |
+| Rasterizer | Bresenham lines with colour interpolation; triangles as wireframe outlines (G3 replaces the body only) |
+| Host unit test | `test_glimm` — **50/50 pass** |
+| `/gltest` in QEMU | **53/53 checks pass** (15 G0 + 22 G1 + 16 G2) |
+| `/glcube` demo | Renders and exits cleanly under QEMU |
+| QEMU integration test | `test_opengl.sh` — **29/29 assertions pass** |
+| Regression check | `make test-unit` 54/54 green; `test_boot_to_shell`, `test_gui_bad_pointers` unaffected |
+
+### Two real bugs found by testing
+
+**1. Pixel-centre off-by-one (caught by the host unit tests).** The rasterizer
+initially rounded window coordinates to the nearest integer. GL pixel *(i,j)*
+covers the half-open square *[i,i+1) × [j,j+1)*, so its centre is at
+*(i+0.5, j+0.5)* and the owning pixel is `floor(v)`, not `round(v)`. Rounding
+shifted every primitive half a pixel, putting a vertex specified at a pixel
+centre into the neighbouring pixel. Twenty-one tests failed at once because
+they assert on real pixels rather than on intermediate maths.
+
+**2. Unbounded Bresenham near the eye plane (caught only in QEMU).** Geometry
+close to the eye projects to window coordinates in the millions. Bresenham
+walks one pixel per step, so a segment spanning ±3 000 000 cost six million
+iterations to draw a handful of visible pixels — indistinguishable from a hang.
+Fixed by Cohen–Sutherland clipping the segment to the framebuffer *before*
+rasterising, which bounds the work by buffer size regardless of the projection.
+Colour interpolation uses the clipped endpoints' parametric positions, so the
+gradient still matches the unclipped line. Three regression tests were added.
+Phase G4 will address the same problem at its source with 3D frustum clipping;
+this 2D clip remains as the rasterizer's own safety net.
+
+### Note on the demo's frame limit
+
+The shell's `run` command uses `spawn()`, which does not forward `argv`, so a
+command-line frame count never reaches the program. `/glcube` therefore reads
+an optional limit from `/tmp/glcube.frames`, following the convention already
+used by `/apm` (see `cmd_apm` in `userspace/init/init.c`). Absent file means
+"run until the window is closed".
 
 ---
 
@@ -747,8 +791,8 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
 |---|---|---|
 | G0 | ✅ complete | `patches/GL_G0_scaffolding.patch` |
 | G1 | ✅ complete | `patches/GL_G1_context.patch` |
-| G2 | 🔧 next | — |
-| G3 | ⬜ planned | — |
+| G2 | ✅ complete | `patches/GL_G2_immediate.patch` |
+| G3 | 🔧 next | — |
 | G4 | ⬜ planned | — |
 | G5 | ⬜ planned | — |
 | G6 | ⬜ planned | — |

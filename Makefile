@@ -284,12 +284,13 @@ USER_GUI_OBJ := $(USER_BUILD)/auragui.o
 # the other 38 binaries in the initrd do not grow.  Add new libgl translation
 # units here as the phases land.
 LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
-              $(USER_BUILD)/glstate.o
+              $(USER_BUILD)/glstate.o $(USER_BUILD)/glmatrix.o \
+              $(USER_BUILD)/glimm.o $(USER_BUILD)/glraster.o
 USER_GL_OBJ := $(LIBGL_OBJS)
 USER_CFLAGS += -I libgl/include
 
 # GL applications: linked with libgl in addition to libauragui.
-USER_GL_APPS := $(USER_BUILD)/gltest.elf
+USER_GL_APPS := $(USER_BUILD)/gltest.elf $(USER_BUILD)/glcube.elf
 
 user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 
@@ -412,8 +413,28 @@ $(USER_BUILD)/glstate.o: libgl/src/glstate.c libgl/src/glcontext.h \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
+$(USER_BUILD)/glmatrix.o: libgl/src/glmatrix.c libgl/src/glcontext.h \
+                          libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/glimm.o: libgl/src/glimm.c libgl/src/glcontext.h \
+                       libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/glraster.o: libgl/src/glraster.c libgl/src/glcontext.h \
+                          libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
 # ---- GL applications ----
 $(USER_BUILD)/gltest.o: userspace/gltest/gltest.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/glcube.o: userspace/glcube/glcube.c libauragui/include/auragui.h \
+                        libgl/include/GL/gl.h libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -700,6 +721,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@cp $(USER_BUILD)/argv_echo.elf $(INITRD_DIR)/argv_echo
 	@cp $(USER_BUILD)/execve_child.elf $(INITRD_DIR)/execve_child
 	@cp $(USER_BUILD)/gltest.elf  $(INITRD_DIR)/gltest
+	@cp $(USER_BUILD)/glcube.elf  $(INITRD_DIR)/glcube
 	@cp $(USER_BUILD)/gcalc.elf   $(INITRD_DIR)/gcalc
 	@cp $(USER_BUILD)/gedit.elf   $(INITRD_DIR)/gedit
 	@cp $(USER_BUILD)/gfiles.elf  $(INITRD_DIR)/gfiles
@@ -736,6 +758,7 @@ debug: iso
 
 # ---- Host-side unit tests (built with the host compiler, no freestanding) ----
 UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                $(BUILD_DIR)/test_glimm \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -830,6 +853,21 @@ $(BUILD_DIR)/test_glstate: tests/unit/test_glstate.c libgl/src/auraglx.c \
 	          -I libgl/include -I libgl/src -I tests/unit/glstub \
 	          tests/unit/test_glstate.c libgl/src/auraglx.c libgl/src/glstate.c \
 	          libgl/src/glmath.c tests/unit/glstub/auragui_stub.c -o $@ -lm
+
+# test_glimm covers the matrix stacks, immediate mode and the transform
+# pipeline.  Geometry is verified by inspecting rendered pixels, so this links
+# the rasterizer too.
+$(BUILD_DIR)/test_glimm: tests/unit/test_glimm.c libgl/src/auraglx.c \
+                         libgl/src/glstate.c libgl/src/glmath.c \
+                         libgl/src/glmatrix.c libgl/src/glimm.c \
+                         libgl/src/glraster.c libgl/src/glcontext.h \
+                         libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I libgl/include -I libgl/src -I tests/unit/glstub \
+	          tests/unit/test_glimm.c libgl/src/auraglx.c libgl/src/glstate.c \
+	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
+	          libgl/src/glraster.c tests/unit/glstub/auragui_stub.c -o $@ -lm
 
 $(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
 	@mkdir -p $(BUILD_DIR)

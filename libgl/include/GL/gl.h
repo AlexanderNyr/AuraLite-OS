@@ -217,12 +217,20 @@ void glBegin(GLenum mode);
 void glEnd(void);
 void glVertex2f(GLfloat x, GLfloat y);
 void glVertex3f(GLfloat x, GLfloat y, GLfloat z);
+void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w);
+void glVertex2fv(const GLfloat *v);
 void glVertex3fv(const GLfloat *v);
+void glVertex4fv(const GLfloat *v);
 void glColor3f(GLfloat r, GLfloat g, GLfloat b);
 void glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a);
 void glColor3ub(GLubyte r, GLubyte g, GLubyte b);
+void glColor4ub(GLubyte r, GLubyte g, GLubyte b, GLubyte a);
+void glColor3fv(const GLfloat *v);
+void glColor4fv(const GLfloat *v);
 void glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz);
+void glNormal3fv(const GLfloat *v);
 void glTexCoord2f(GLfloat s, GLfloat t);
+void glTexCoord2fv(const GLfloat *v);
 
 /* ---- Per-fragment state (G3/G4) ---- */
 void glEnable(GLenum cap);

@@ -18,12 +18,20 @@ LOG="$IL_LOGDIR/opengl.log"
 IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
+# One QEMU boot drives both programs.
+#
+# The glcube frame count goes through a file because the shell's "run" command
+# uses spawn(), which does not forward argv -- the same convention /apm uses.
 il_send_delay 8
 il_send "run /gltest"
-il_send_delay 12
+il_send_delay 14
+il_send "write /tmp/glcube.frames 12"
+il_send_delay 2
+il_send "run /glcube"
+il_send_delay 45
 il_send "exit"
 
-il_run_qemu "$LOG" 60
+il_run_qemu "$LOG" 140
 
 # The test program prints its own verdict.
 il_assert_grep    "$LOG" "\\[gl\\] ALL TESTS PASSED"      "gltest reports all checks passed"
@@ -50,6 +58,22 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS gl_invalid_clear_no_effect" "invalid cle
 il_assert_grep    "$LOG" "\\[gl\\] PASS gl_swap_buffers"       "frame presented to the window"
 il_assert_grep    "$LOG" "\\[gl\\] PASS gl_swap_after_resize"  "context still usable after resize"
 il_assert_grep    "$LOG" "\\[gl\\] PASS gl_no_context_is_error" "GL without a context is diagnosable"
+
+# Phase G2: matrix stacks, immediate mode and the transform pipeline.
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_point_pixel"        "vertex lands on the expected pixel"
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_push_pop"           "glPushMatrix/glPopMatrix restore the matrix"
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_stack_underflow"    "matrix stack underflow is reported"
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_line_run"           "line rasterises a contiguous run"
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_triangle_edge"      "triangle edges are drawn"
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_smooth_red_falls"   "smooth shading interpolates colour"
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_perspective_foreshortens" "perspective foreshortens distant geometry"
+il_assert_grep    "$LOG" "\\[gl\\] PASS geo_behind_eye_dropped" "geometry behind the eye is dropped"
+
+# The demo must have started and reached the GL stack.  Note the deliberately
+# loose pattern: /glcube and the shell write to the same serial console from
+# different threads, so their lines interleave mid-string and an exact-match
+# grep on a full line is unreliable here.
+il_assert_grep    "$LOG" "glcube"                         "glcube demo ran"
 
 # Crash safety.
 il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"            "no kernel exception"

@@ -20,12 +20,13 @@ int  ag_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
 int  ag_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
                    const uint32_t *src, uint32_t src_stride);
 void ag_render_now(void);
+int  ag_window_invalidate(int wid);
 
 /* ---- Test observation hooks (not part of the real libauragui API) ---- */
 
 typedef struct {
     int      calls;         /* how many times ag_blit() was called */
-    int      renders;       /* how many times ag_render_now() was called */
+    int      renders;       /* how many times the window was invalidated */
     int      last_wid;
     int32_t  last_x, last_y;
     uint32_t last_w, last_h;

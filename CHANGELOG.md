@@ -2,6 +2,67 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G2 — matrix stacks and immediate mode] 2026-07-31
+
+Third phase of `GL_PLAN.md`. Classic GL 1.1 geometry code now works:
+`glBegin`/`glVertex`/`glEnd` with the full matrix stack.
+
+### Added
+- `libgl/src/glmatrix.c`: `glMatrixMode`, `glPushMatrix`/`glPopMatrix`
+  (32 MODELVIEW / 8 PROJECTION), `glLoadIdentity`, `glLoadMatrixf`,
+  `glMultMatrixf`, `glTranslatef`, `glRotatef`, `glScalef`, `glFrustum`,
+  `glOrtho`. Matrix commands post-multiply, so the transform written last is
+  applied first to a vertex.
+- `libgl/src/glimm.c`: immediate mode for all ten primitive modes, plus the
+  transform stage (object → MODELVIEW → PROJECTION → perspective divide →
+  viewport). Primitives are emitted as soon as enough vertices arrive, so a
+  100 000-vertex `GL_TRIANGLE_STRIP` uses the same few bytes as a 3-vertex one.
+- `libgl/src/glraster.c`: Bresenham lines with colour interpolation, points,
+  and triangles as wireframe outlines (G3 replaces the triangle body).
+- `libgl/src/glvertex.h`: post-transform vertex type and the internal
+  rasterizer interface. Window coordinates use GL's bottom-left origin; the
+  flip to the framebuffer's top-left origin happens in `gl_fb_row()`.
+- `glShadeModel` in `glstate.c`.
+- `userspace/glcube`: rotating cube demo with mouse/keyboard control. Wireframe
+  in G2; the same source becomes a solid shaded cube in G3 with no changes.
+- `tests/unit/test_glimm.c`: **50 checks**. Geometry is verified by reading
+  back rendered pixels, not by trusting intermediate values.
+- `patches/GL_G2_immediate.patch`.
+
+### Fixed (bugs found during this phase)
+- **Pixel-centre off-by-one.** The rasterizer rounded window coordinates to the
+  nearest integer, but GL pixel *(i,j)* covers *[i,i+1) × [j,j+1)* with its
+  centre at *(i+0.5, j+0.5)*, so the owning pixel is `floor(v)`. Rounding
+  shifted every primitive by half a pixel. Caught by the host unit tests.
+- **Unbounded Bresenham near the eye plane.** Geometry close to the eye
+  projects to window coordinates in the millions, and Bresenham walks one pixel
+  per step — a segment spanning ±3 000 000 took six million iterations to draw
+  a few visible pixels, which looked exactly like a hang. Lines are now
+  Cohen–Sutherland clipped to the framebuffer *before* rasterisation, bounding
+  the work by buffer size. Colour interpolation uses the clipped endpoints'
+  parametric positions so the gradient is unchanged. Three regression tests
+  added. Only reproducible in QEMU, not on the host.
+
+### Behaviour notes
+- `glVertex` outside `glBegin`/`glEnd`, nested `glBegin`, and `glEnd` without
+  `glBegin` are errors that leave state untouched, not undefined behaviour.
+- A `glPushMatrix` that would overflow is ignored entirely and leaves the
+  current matrix intact.
+- `glFrustum` rejects non-positive near/far; `glOrtho` allows negative values
+  (its view volume is a box, not a frustum) but rejects degenerate extents.
+- Vertices with clip `w <= 0` are dropped rather than projected; G4 replaces
+  this with real near-plane clipping that splits such primitives instead.
+- `/glcube` takes its frame limit from `/tmp/glcube.frames`, because the
+  shell's `run` uses `spawn()` which does not forward `argv` (same convention
+  as `/apm`).
+
+### Verified
+- `test_glimm` 50/50, `test_glstate` 37/37, `test_glmath` 37/37.
+- `/gltest` under QEMU: 53/53 checks.
+- `test_opengl.sh`: 29/29 assertions.
+- `make test-unit`: 54/54 binaries green (was 53).
+- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G1 — AuraGLX context and first frame] 2026-07-31
 
 Second phase of `GL_PLAN.md`. An application can now create a GL context bound

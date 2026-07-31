@@ -9,6 +9,8 @@
  * kernel WITHOUT crashing it.
  * Phase G1 scope: AuraGLX context lifecycle, glClear, the GL error machinery
  * and end-to-end frame presentation.
+ * Phase G2 scope: matrix stacks and immediate-mode geometry, verified by
+ * reading back the pixels that were actually rasterised.
  */
 
 #include <stdio.h>
@@ -108,8 +110,136 @@ static void test_gl_context(int wid) {
     check(glGetError() == GL_INVALID_OPERATION, "gl_no_context_is_error");
 }
 
+/* ---- Phase G2: matrix stacks and immediate mode ---- */
+static void test_gl_geometry(int wid) {
+    printf("[gl] --- G2: matrices and immediate mode ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEFAULT);
+    check(ctx != NULL, "geo_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+
+    /* Map GL coordinates 1:1 onto pixels so specific pixels can be named. */
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    check(glGetError() == GL_NO_ERROR, "geo_projection_setup");
+
+    /* Window coordinates have a bottom-left origin, so a point low in GL
+     * space must appear near the BOTTOM of the framebuffer. */
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColor3f(1, 1, 1);
+    glBegin(GL_POINTS);
+    glVertex3f(10.5f, 5.5f, 0.0f);
+    glEnd();
+    int row_from_bottom = GL_H - 1 - 5;
+    check(cb[(size_t)row_from_bottom * GL_W + 10] == 0xFFFFFF, "geo_point_pixel");
+
+    /* Matrix stack: push/rotate/pop must leave the matrix as it was, so the
+     * same vertex lands on the same pixel. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glLoadIdentity();
+    glTranslatef(20.0f, 20.0f, 0.0f);
+    glPushMatrix();
+    glRotatef(45.0f, 0, 0, 1);
+    glScalef(3.0f, 3.0f, 1.0f);
+    glPopMatrix();
+    glBegin(GL_POINTS);
+    glVertex3f(0.5f, 0.5f, 0.0f);       /* -> (20.5, 20.5) */
+    glEnd();
+    check(cb[(size_t)(GL_H - 1 - 20) * GL_W + 20] == 0xFFFFFF, "geo_push_pop");
+
+    /* Stack limits must be reported, not silently ignored. */
+    glLoadIdentity();
+    glPopMatrix();
+    check(glGetError() == GL_STACK_UNDERFLOW, "geo_stack_underflow");
+
+    /* A horizontal line must light a contiguous run of pixels. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glLoadIdentity();
+    glBegin(GL_LINES);
+    glVertex3f(10.5f, 40.5f, 0.0f);
+    glVertex3f(50.5f, 40.5f, 0.0f);
+    glEnd();
+    int run = 1;
+    for (int x = 10; x <= 50; x++) {
+        if (cb[(size_t)(GL_H - 1 - 40) * GL_W + x] == 0) { run = 0; break; }
+    }
+    check(run, "geo_line_run");
+
+    /* A triangle draws its three edges but leaves the interior empty in G2. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(10.5f, 10.5f, 0.0f);
+    glVertex3f(60.5f, 10.5f, 0.0f);
+    glVertex3f(10.5f, 60.5f, 0.0f);
+    glEnd();
+    int edge_ok   = cb[(size_t)(GL_H - 1 - 10) * GL_W + 30] != 0;
+    int centre_ok = cb[(size_t)(GL_H - 1 - 25) * GL_W + 25] == 0;
+    check(edge_ok, "geo_triangle_edge");
+    check(centre_ok, "geo_triangle_hollow_g2");
+
+    /* Smooth shading interpolates colour along a line. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glShadeModel(GL_SMOOTH);
+    glBegin(GL_LINES);
+    glColor3f(1, 0, 0); glVertex3f(10.5f, 70.5f, 0.0f);
+    glColor3f(0, 0, 1); glVertex3f(90.5f, 70.5f, 0.0f);
+    glEnd();
+    uint32_t lp = cb[(size_t)(GL_H - 1 - 70) * GL_W + 12];
+    uint32_t rp = cb[(size_t)(GL_H - 1 - 70) * GL_W + 88];
+    check(((lp >> 16) & 0xFF) > ((rp >> 16) & 0xFF), "geo_smooth_red_falls");
+    check((lp & 0xFF) < (rp & 0xFF), "geo_smooth_blue_rises");
+
+    /* Misuse must be reported rather than crashing. */
+    glVertex3f(0, 0, 0);
+    check(glGetError() == GL_INVALID_OPERATION, "geo_vertex_outside_begin");
+    glBegin(0x9999);
+    check(glGetError() == GL_INVALID_ENUM, "geo_begin_bad_mode");
+
+    /* A perspective projection must foreshorten: the same bar drawn further
+     * away must cover fewer pixels. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glFrustum(-1, 1, -1, 1, 1, 100);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glColor3f(1, 1, 1);
+    glBegin(GL_LINES);
+    glVertex3f(-1, 0, -2); glVertex3f(1, 0, -2);
+    glEnd();
+    int near_lit = 0;
+    for (int i = 0; i < GL_W * GL_H; i++) if (cb[i]) near_lit++;
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBegin(GL_LINES);
+    glVertex3f(-1, 0, -20); glVertex3f(1, 0, -20);
+    glEnd();
+    int far_lit = 0;
+    for (int i = 0; i < GL_W * GL_H; i++) if (cb[i]) far_lit++;
+    check(near_lit > far_lit && far_lit > 0, "geo_perspective_foreshortens");
+
+    /* Geometry behind the eye must be dropped, not projected somewhere wild. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBegin(GL_POINTS);
+    glVertex3f(0, 0, 5.0f);
+    glEnd();
+    int behind_lit = 0;
+    for (int i = 0; i < GL_W * GL_H; i++) if (cb[i]) behind_lit++;
+    check(behind_lit == 0, "geo_behind_eye_dropped");
+
+    check(aglxSwapBuffers(ctx) == 0, "geo_swap");
+    check(glGetError() == GL_NO_ERROR, "geo_no_pending_error");
+
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
-    printf("[gl] === AuraLite GL test (phases G0-G1) ===\n");
+    printf("[gl] === AuraLite GL test (phases G0-G2) ===\n");
 
     /* ---- A window is required as the blit destination. ---- */
     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
@@ -195,8 +325,9 @@ int main(void) {
 
     ag_render_now();
 
-    /* ---- Phase G1 checks ---- */
+    /* ---- Phase G1 and G2 checks ---- */
     test_gl_context(wid);
+    test_gl_geometry(wid);
 
     free(buf);
     ag_window_destroy(wid);

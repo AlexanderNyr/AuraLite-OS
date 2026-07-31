@@ -47,3 +47,9 @@ int ag_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
 void ag_render_now(void) {
     ag_stub.renders++;
 }
+
+int ag_window_invalidate(int wid) {
+    (void)wid;
+    ag_stub.renders++;
+    return 0;
+}

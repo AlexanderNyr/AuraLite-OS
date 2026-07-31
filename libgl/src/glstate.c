@@ -150,6 +150,21 @@ void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
 }
 
 /* ============================================================================
+ * Shading model (§2.14.7)
+ * ==========================================================================*/
+
+void glShadeModel(GLenum mode) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+
+    if (mode != GL_FLAT && mode != GL_SMOOTH) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+    ctx->shade_model = mode;
+}
+
+/* ============================================================================
  * Synchronisation (§5.4)
  * ==========================================================================*/
 

@@ -226,9 +226,16 @@ int aglxSwapBuffers(aglx_context_t *ctx) {
                      ctx->color, (uint32_t)ctx->width);
     if (rc != 0) return -1;
 
-    /* Ask the compositor to show the result now rather than at its next
-     * scheduled tick, which keeps interactive demos responsive. */
-    ag_render_now();
+    /* Mark the window dirty so the compositor picks the new content up on its
+     * next tick.
+     *
+     * Deliberately NOT ag_render_now(): that op (GUI_OP_RENDER) is restricted
+     * to PID <= 2 in the kernel, so an ordinary application calling it just
+     * gets -1 back.  gui_blit() already sets content_dirty, and this makes the
+     * intent explicit and keeps the frame path working for unprivileged
+     * processes.  The compositor runs at 100 FPS, so the added latency is at
+     * most one tick. */
+    ag_window_invalidate(ctx->wid);
     return 0;
 }
 
