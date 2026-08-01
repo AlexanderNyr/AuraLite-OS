@@ -17,6 +17,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/gui/gui.h"
+#include "kernel/gpu/gpu_syscalls.h"
 #include "kernel/net/socket.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
@@ -509,6 +510,7 @@ void thread_exit_with_code(int code) {
     self->state = THREAD_DEAD;
     self->exit_code = code;
     gui_cleanup_process(self->id);
+    gpu_cleanup_process(self->id);
     socket_close_process(self->id);
     close_process_fds(self);
     kprintf("[thread] '%s' (tid %llu) exited (code=%d)\n",

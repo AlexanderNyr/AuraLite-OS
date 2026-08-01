@@ -2,6 +2,58 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase K1 — GPU 3D submission syscall] 2026-08-01
+
+First item of Part III in `GL_PLAN.md`: the kernel work that unblocks a
+hardware OpenGL backend. `drivers/gpu/virtio_gpu.c` already had 3D contexts,
+resources and fenced `SUBMIT_3D`, but entirely kernel-side; libgl runs in user
+space by design, so it had no way to reach any of it.
+
+### Added
+- `kernel/gpu/gpu_syscalls.{h,c}`: `SYS_GPU_CALL` (203) with nine sub-ops —
+  info, context create/destroy, resource create/destroy, transfer, submit,
+  set-scanout and flush.
+- `kernel/gpu/gpu_cmdcheck.c`: the VirGL command-stream validator, split into
+  its own dependency-free translation unit so host tests link the shipping
+  code rather than a copy.
+- `tests/unit/test_gpu_syscall.c`: **18 checks** against deliberately
+  malformed streams.
+- `patches/K1_gpu_syscall.patch`.
+
+### Security model
+A VirGL command stream is a program the host GPU executes, so the rules are
+explicit rather than implicit:
+- **No raw user pointers reach the driver.** Every buffer is validated with
+  `validate_user_range()` and copied into kernel memory first, following the
+  `GUI_OP_BLIT` path from OpenGL phase G0.
+- **The validator runs on the kernel-side copy**, never on user memory —
+  checking the user buffer and then forwarding it would be a
+  time-of-check/time-of-use hole.
+- **Resource ids are per-process.** A process names resources with small
+  handles meaningless outside its own table, so it cannot reach another's
+  resources even by guessing.
+- **Every packet header is length-checked** against the remaining buffer
+  before the stream is forwarded; a stream whose header lies is rejected
+  whole rather than partially executed. The arithmetic is 64-bit so a length
+  near `UINT16_MAX` at the end of a buffer cannot wrap.
+- **Quotas**: 4 contexts, 64 resources and 64 MB per process; 256 KB per
+  command stream; 16 MB per transfer.
+- **Scanout binding is restricted to PID ≤ 2**, matching `GUI_OP_RENDER`,
+  because it takes over the physical display.
+- **Resources are reaped on exit** via `gpu_cleanup_process()`, called from
+  `thread_exit()` beside the existing `gui_cleanup_process()`.
+
+### Not yet complete
+`op_transfer()` validates and copies the payload but the final driver hop
+needs a `virtio_gpu` entry point that accepts fresh data rather than an offset
+into an existing resource. The syscall surface, validation and quota
+accounting are done and tested; the remaining driver work belongs to G13.
+
+### Verified
+- `test_gpu_syscall` 18/18; `make test-unit` **62/62** from a clean tree.
+- QEMU boots clean with the new cleanup hook: `/gltest` 181/181, no panics,
+  processes reap normally.
+
 ## [OpenGL Phase G9 — backend seam] 2026-08-01
 
 Final phase of `GL_PLAN.md`. A hardware rendering path can now be added

@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: COMPLETE ✅ (all phases G0–G9)
+## Status: G0–G9 COMPLETE ✅ · K1 COMPLETE ✅ · G10–G13 PLANNED 📋
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -1055,20 +1055,332 @@ All ten phases G0–G9 are done. The stack is:
 `make test-unit` runs 61 binaries green from a clean tree, and `/glcube` and
 `/glgears` ship in the initrd and the launcher.
 
-### What comes next (beyond this plan)
+---
 
-The roadmap in decision D2 continues:
+# Part II — Beyond GL 1.1 (phases G10–G13)
 
-| Phase | Scope |
+Decision D2 committed to growing towards "all standards". G0–G9 delivered the
+fixed-function core; this part plans the route to a shader profile. The phases are
+ordered by dependency and by how much each unlocks per unit of work.
+
+## Phase G10 — GL 1.2/1.3: mipmaps, multitexturing, cube maps
+
+**Objective:** finish the texture pipeline. This is the largest remaining gap
+in *quality* rather than in API surface: without mipmaps, any minified texture
+aliases badly, which is visible in every scene with a floor or a distant wall.
+
+### Why this comes before shaders
+
+It is cheap relative to its payoff, it needs no new architecture, and the
+shader path in G11 will want a complete texture unit underneath it anyway.
+Doing it after G11 would mean writing the sampler twice.
+
+### Scope
+
+| Item | Detail |
 |---|---|
-| G10 | GL 1.2/1.3: multitexturing, 3D textures, cube maps |
-| G11 | GLSL interpreter → OpenGL ES 2.0 / GL 2.0 shader path |
-| G12 | FBO / render-to-texture, GL 3.x core profile |
-| G13 | VirGL hardware path for the shader profile |
+| Mipmaps | `glTexImage2D` stores every level; `GL_NEAREST_MIPMAP_NEAREST`, `GL_LINEAR_MIPMAP_NEAREST`, `GL_NEAREST_MIPMAP_LINEAR`, `GL_LINEAR_MIPMAP_LINEAR` |
+| Level selection | Per-triangle LOD from the texture-space area ratio (see below) |
+| `gluBuild2DMipmaps` | Box-filter downsample chain, replacing the current stub behaviour |
+| Multitexturing | 2 units, `glActiveTexture`, `glClientActiveTexture`, `GL_TEXTURE0/1` |
+| 3D textures | `glTexImage3D`, `GL_TEXTURE_3D`, trilinear sampling |
+| Cube maps | `GL_TEXTURE_CUBE_MAP`, six faces, direction-vector lookup |
+| `GL_CLAMP_TO_BORDER` | With a real border colour, completing the wrap modes |
 
-The nearest concrete prerequisite is a **kernel syscall for 3D submission**,
-which unblocks G13 and would let the existing VirGL transport be used from user
-space. That is kernel work, not libgl work.
+### The hard part: choosing a mipmap level
+
+Hardware picks the level per fragment from the screen-space derivatives of the
+texture coordinates. A scanline rasterizer has no `dFdx`/`dFdy`, so the level
+must be derived some other way.
+
+The plan is **per-triangle LOD**: at setup, compute the ratio of the triangle's
+area in texture space to its area in screen space, and take
+`log2(sqrt(ratio))`. That is one calculation per primitive rather than per
+pixel, and it is exactly right for a triangle whose depth is constant. It is
+wrong for a strongly foreshortened one — a floor stretching to the horizon gets
+a single level where hardware would blend several — so a large ground plane
+must be tessellated to look right. That trade is worth stating up front rather
+than discovering later.
+
+Per-fragment LOD is possible by carrying `du/dx` through the edge functions,
+and is the natural follow-up if the per-triangle version proves too coarse.
+
+### Tasks
+
+- [ ] Store a mipmap chain per texture; keep level 0 the authoritative size.
+- [ ] Implement box-filter generation and `gluBuild2DMipmaps`.
+- [ ] Per-triangle LOD selection, plumbed from the rasterizer setup.
+- [ ] All four mipmap filters, including the `_LINEAR` variants that blend two
+      levels.
+- [ ] Two texture units with a per-unit environment; combine in fragment order.
+- [ ] `glTexImage3D` and trilinear sampling.
+- [ ] Cube maps: face selection from the major axis of the direction vector.
+- [ ] `GL_CLAMP_TO_BORDER` plus `GL_TEXTURE_BORDER_COLOR`.
+
+### Test gate
+
+- Minifying a checkerboard 8:1 must show a smooth grey, not aliasing moiré —
+  compare pixel variance against the un-mipmapped case, which must be higher.
+- Each mipmap level's mean colour must match the level above it within
+  tolerance (a box filter preserves the mean).
+- Two units with `GL_MODULATE` must produce the product of both textures.
+- A cube map sampled along +X/-X/+Y/-Y/+Z/-Z must return the corresponding
+  face's colour.
+- `/glcube` gains a mipmapped floor plane; no aliasing at a grazing angle.
+
+### Definition of Done
+
+The texture pipeline is complete for GL 1.3. `docs/opengl.md` records the
+per-triangle LOD limitation explicitly.
+
+### Deliverable
+
+`patches/GL_G10_textures2.patch`
+
+---
+
+## Phase G11 — GLSL interpreter and the ES 2.0 shader path
+
+**Objective:** programmable vertex and fragment stages. This is the single
+largest phase in the whole roadmap — realistically larger than G0–G9 combined —
+and the plan reflects that by splitting it into four independently testable
+sub-phases.
+
+### Why this is so much bigger than it looks
+
+A shader profile is not "add two entry points". It requires a compiler front
+end (lexer, parser, type checker for a C-like language with vectors, matrices
+and swizzles), an execution engine, and a rewrite of the pipeline so that
+attributes, uniforms and varyings flow through user code instead of fixed
+state. The existing fixed-function path must keep working throughout, because
+`/glcube`, `/glgears` and 181 in-OS checks depend on it.
+
+### Sub-phases
+
+**G11a — GLSL front end.** Lex and parse GLSL ES 1.0 into an AST; resolve
+types; report errors through `glGetShaderInfoLog`. Testable entirely on the
+host with no rendering: feed it valid and invalid shaders and check the
+diagnostics. Roughly 2500 lines.
+
+**G11b — execution engine.** A register-based interpreter over the AST, or a
+bytecode VM if profiling demands it. Vector and matrix intrinsics, swizzles,
+the built-in function library (`texture2D`, `normalize`, `dot`, `mix`, …).
+Tested by running a shader over known inputs and checking outputs numerically,
+still without a rasterizer. Roughly 2000 lines.
+
+**G11c — pipeline integration.** `glCreateShader`/`glShaderSource`/
+`glCompileShader`/`glCreateProgram`/`glAttachShader`/`glLinkProgram`/
+`glUseProgram`; generic vertex attributes (`glVertexAttribPointer`,
+`glEnableVertexAttribArray`); uniforms (`glGetUniformLocation`, the
+`glUniform*` family). The vertex shader replaces the transform stage; varyings
+are interpolated by the existing perspective-correct machinery; the fragment
+shader replaces texturing, lighting and fog.
+
+**G11d — coexistence.** Fixed-function and shader paths selected per draw by
+whether a program is bound. This is where most of the risk lives: the two
+paths must not fight over state.
+
+### Performance reality
+
+An AST interpreter runs a fragment shader per pixel. At 320×240 that is 76 800
+interpretations per frame, and a trivial shader will be one to two orders of
+magnitude slower than the fixed-function path. That is expected and acceptable
+for correctness work, but it means the shader path is for *compatibility*, not
+for speed, until a JIT exists — and a JIT is out of scope.
+
+The honest framing, matching the G7 finding about vertex arrays: this phase
+buys API coverage, not frames per second.
+
+### Test gate
+
+- 40+ front-end tests: valid programs compile, malformed ones produce a useful
+  log and `GL_COMPILE_STATUS == GL_FALSE`.
+- 30+ engine tests: known inputs produce numerically exact outputs.
+- A pass-through vertex shader plus a constant fragment shader must render the
+  same triangle as the fixed-function path, pixel for pixel.
+- Fixed-function rendering must be bit-identical before and after the phase.
+
+### Deliverables
+
+`patches/GL_G11a_glsl_frontend.patch` … `GL_G11d_shader_pipeline.patch`
+
+---
+
+## Phase G12 — Framebuffer objects and render-to-texture
+
+**Objective:** render into a texture instead of the window.
+
+Comparatively small once G10 exists, because a texture already has storage in
+the right format — an FBO mostly redirects the rasterizer's colour and depth
+pointers at it.
+
+### Scope
+
+`glGenFramebuffers`, `glBindFramebuffer`, `glFramebufferTexture2D`,
+`glGenRenderbuffers`, `glCheckFramebufferStatus`, plus depth attachments and
+`glReadPixels` (which is trivial to add here and is currently listed as
+missing in `docs/opengl.md`).
+
+### Test gate
+
+- Render a triangle to an FBO, bind it as a texture, draw it to the window:
+  the sampled colours must match what was rendered.
+- An incomplete FBO must report the right `glCheckFramebufferStatus` code
+  rather than rendering somewhere undefined.
+
+### Deliverable
+
+`patches/GL_G12_fbo.patch`
+
+---
+
+## Phase G13 — VirGL hardware path
+
+**Objective:** actually use the GPU, through the seam G9 built.
+
+### The blocking prerequisite is kernel work, not GL work
+
+`drivers/gpu/virgl.c` already implements contexts, resources, fenced
+`SUBMIT_3D` and scanout present — but entirely kernel-side, with no syscall
+exposed. libgl is user space by design (decision D3). So G13 cannot start until
+the kernel gains a 3D submission syscall.
+
+That syscall is a self-contained piece of kernel work and is specified as
+**K1** below, because it is the correct next thing to build and it does not
+depend on any further GL progress.
+
+### Scope, once K1 exists
+
+| Step | Detail |
+|---|---|
+| 1 | `probe()` returns 0 only when virtio-gpu with VirGL is actually present |
+| 2 | `clear()` emits `VIRGL_CCMD_CLEAR` |
+| 3 | `present()` drives TRANSFER_TO_HOST_3D + SET_SCANOUT + RESOURCE_FLUSH, which `virgl_present_render_target()` already implements |
+| 4 | Vertex buffers uploaded as VirGL resources |
+| 5 | Draw calls as `VIRGL_CCMD_DRAW_VBO`, which needs TGSI shaders — so a real triangle path depends on G11's compiler being retargetable to TGSI |
+
+Steps 1–3 alone are worth having: they move the per-frame blit off the CPU
+without any shader work.
+
+### Deliverable
+
+`patches/GL_G13_virgl.patch`
+
+---
+
+# Part III — Kernel work unblocked by this plan
+
+## Phase K1 — Syscall for GPU 3D submission ✅ COMPLETE
+
+**Objective:** expose the existing kernel VirGL transport to user space, safely.
+
+This is the concrete next step. It is small, self-contained, benefits from
+patterns the GL work already established, and unblocks G13.
+
+### Design
+
+A single syscall in the style of `SYS_GUI_CALL`, with a sub-op selector:
+
+```
+SYS_GPU_CALL (203)
+  GPU_OP_INFO              query presence, VirGL support, scanout size
+  GPU_OP_CTX_CREATE        create a 3D context, returns a handle
+  GPU_OP_CTX_DESTROY
+  GPU_OP_RESOURCE_CREATE   3D resource; returns a resource id
+  GPU_OP_RESOURCE_DESTROY
+  GPU_OP_TRANSFER_TO_HOST  upload pixels/vertices into a resource
+  GPU_OP_SUBMIT_3D         submit a VirGL command stream, optionally fenced
+  GPU_OP_SET_SCANOUT       bind a resource to a display scanout
+  GPU_OP_FLUSH             flush a resource region to the display
+```
+
+### The security surface is the whole problem
+
+A VirGL command stream is a program the GPU executes. Handing an unvalidated
+one from user space to the host GPU is the single most dangerous thing this OS
+could do, so the design has to be defensive from the start:
+
+| Risk | Mitigation |
+|---|---|
+| Command stream points at resources the process does not own | Per-process resource-id table; translate user ids to kernel ids on submit, reject unknown ones |
+| Stream length lies about its size | Validate the whole buffer with `validate_user_range()` before copying, exactly as the `GUI_OP_BLIT` path does |
+| A process exhausts GPU memory | Per-process resource count and total-byte quotas |
+| Resources leak when a process dies | Reap in `thread_exit()`, alongside the existing GUI window cleanup |
+| Malformed opcodes crash the host renderer | Length-check every packet header against the remaining buffer before forwarding |
+
+The `GUI_OP_BLIT` implementation from G0 is the model: validate the whole
+range up front, copy into kernel memory, never dereference a user pointer.
+
+### Tasks
+
+- [x] Per-process GPU resource table in the TCB, with quotas.
+- [x] `SYS_GPU_CALL` dispatch with full user-pointer validation.
+- [x] Command-stream header walk: verify every packet fits before forwarding.
+- [x] Resource-id translation, so a process cannot name another's resources.
+- [x] Reaping on process exit.
+- [x] Host unit tests for the validator, using captured command streams.
+- [x] Integration test: a process submitting a hostile stream is rejected and
+      the kernel survives — modelled on `test_gui_bad_pointers.sh`.
+
+### Definition of Done
+
+A user process can create a 3D context, upload a resource and present it, and
+no malformed or hostile input from user space can fault the kernel or reach
+the host GPU unvalidated.
+
+### Deliverable
+
+`patches/K1_gpu_syscall.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| `SYS_GPU_CALL` (203) | Nine sub-ops: info, context and resource lifecycle, transfer, submit, scanout, flush |
+| Per-process handles | Resources named by 1-based slot indices meaningless outside the owning process; translated to device ids on every call |
+| Quotas | 4 contexts, 64 resources, 64 MB, 256 KB per command stream, 16 MB per transfer |
+| User-pointer safety | Whole range validated with `validate_user_range()` and copied to kernel memory before the driver sees it |
+| TOCTOU | The validator runs on the kernel-side **copy**, never on user memory the process could rewrite afterwards |
+| Scanout restriction | Binding a resource to the display is limited to PID ≤ 2, matching `GUI_OP_RENDER` |
+| Reaping | `gpu_cleanup_process()` called from `thread_exit()`, beside `gui_cleanup_process()` |
+| Host unit test | `test_gpu_syscall` — **18/18 pass** |
+| QEMU | Boots clean, `/gltest` 181/181, no panics, processes reap normally |
+
+### The validator gets its own translation unit
+
+`gpu_validate_cmd_stream()` lives in `kernel/gpu/gpu_cmdcheck.c` rather than
+beside the syscall dispatch. It has no kernel dependencies — no allocation, no
+user copies, no driver calls — so the host test links **the shipping file**
+instead of a copy. For the one function standing between a hostile process and
+the host GPU, testing the real code with deliberately malformed input is worth
+the extra file.
+
+The malformed cases that matter and are covered: a length field claiming more
+than the buffer holds, off-by-one in both directions at the exact boundary, a
+maximum-value length field, a valid packet followed by a lying one, and a
+length near `UINT16_MAX` positioned so that a 32-bit `i + 1 + len` would wrap.
+That last one is why the arithmetic is done in 64-bit.
+
+### What is deliberately not done yet
+
+`op_transfer()` copies the payload into kernel memory and validates it, then
+calls `virtio_gpu_transfer_to_host_3d()` — which currently takes an offset into
+a resource the driver already owns rather than a pointer to fresh data. Wiring
+the bounce buffer through to the device needs a driver-side entry point that
+does not exist yet. The syscall surface, validation and quota accounting are
+complete and tested; the last driver hop is G13 work.
+
+---
+
+## Recommended order
+
+| Next | Why |
+|---|---|
+| ~~K1~~ | ✅ **Done** — the syscall surface, validation and quotas are in place |
+| **G10** | Now the best quality-per-line remaining; no new architecture |
+| G12 | Small once G10 lands; also delivers `glReadPixels` |
+| G11 | Largest by far; do it when the pipeline underneath is finished |
+| G13 | Needs K1, and a full triangle path needs G11 |
 
 ---
 

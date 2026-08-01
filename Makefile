@@ -821,6 +821,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glclip $(BUILD_DIR)/test_gllight \
                 $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_glarray \
                 $(BUILD_DIR)/test_glu $(BUILD_DIR)/test_glbackend \
+                $(BUILD_DIR)/test_gpu_syscall \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -951,6 +952,17 @@ $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
 	          $(LIBGL_TEST_STUB) -o $@ -lm
 
 # glmath.c is standalone: no context, no stub, so it gets its own rule.
+# test_gpu_syscall links the REAL validator from kernel/gpu/gpu_cmdcheck.c.
+# That file is deliberately free of kernel dependencies so this test exercises
+# the shipping code rather than a copy — it is the function standing between a
+# hostile process and the host GPU, so it gets direct malformed-input testing.
+$(BUILD_DIR)/test_gpu_syscall: tests/unit/test_gpu_syscall.c \
+                               kernel/gpu/gpu_cmdcheck.c \
+                               kernel/gpu/gpu_syscalls.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_gpu_syscall.c kernel/gpu/gpu_cmdcheck.c -o $@
+
 $(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c libgl/src/glmath.c \
                           libgl/include/GL/glmath.h
 	@mkdir -p $(BUILD_DIR)

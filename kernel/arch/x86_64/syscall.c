@@ -21,6 +21,7 @@
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/timer/pit.h"
 #include "kernel/gui/gui_syscalls.h"
+#include "kernel/gpu/gpu_syscalls.h"
 #include "kernel/time.h"
 #include "kernel/sync/futex.h"
 // clone.c compiled separately
@@ -1033,6 +1034,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return syscall_gui_event(a1, a2, a3);
     case SYS_GUI_THEME:
         return syscall_gui_theme(a1, a2, a3, a4, a5);
+
+    /* GPU 3D submission.  gpu_syscalls.c validates every user buffer and
+     * translates per-process resource handles to device ids (phase K1). */
+    case SYS_GPU_CALL:
+        return syscall_gpu_call(a1, a2, a3, a4, a5);
 
     /* dup / dup2 / pipe / fcntl. */
     case SYS_DUP:
