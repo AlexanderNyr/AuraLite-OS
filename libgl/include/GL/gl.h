@@ -210,6 +210,56 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_EXP2                           0x0801
 /* GL_LINEAR (0x2601) doubles as a fog mode, as in the specification. */
 
+/* ---- GL 1.2 / 1.3 texturing (phase G10) ----
+ *
+ * Mipmapping, multitexturing, 3D textures and cube maps.  The enum values are
+ * the standard ones; an application built against a real GL header must see
+ * the same numbers.
+ */
+
+/* Mipmap minification filters (§3.8.8). */
+#define GL_NEAREST_MIPMAP_NEAREST         0x2700
+#define GL_LINEAR_MIPMAP_NEAREST          0x2701
+#define GL_NEAREST_MIPMAP_LINEAR          0x2702
+#define GL_LINEAR_MIPMAP_LINEAR           0x2703
+
+/* Level-of-detail and level clamping (GL 1.2 §3.8.4). */
+#define GL_TEXTURE_BASE_LEVEL             0x813C
+#define GL_TEXTURE_MAX_LEVEL              0x813D
+#define GL_GENERATE_MIPMAP                0x8191
+
+/* Wrapping (GL 1.2/1.3). */
+#define GL_TEXTURE_WRAP_R                 0x8072
+#define GL_CLAMP_TO_BORDER                0x812D
+#define GL_TEXTURE_BORDER_COLOR           0x1004
+
+/* 3D textures (GL 1.2 §3.8.1). */
+#define GL_TEXTURE_3D                     0x806F
+#define GL_TEXTURE_BINDING_3D             0x806A
+#define GL_PACK_ALIGNMENT                 0x0D05
+#define GL_UNPACK_ALIGNMENT               0x0CF5
+
+/* Cube maps (GL 1.3 §3.8.6).  The six face targets are CONSECUTIVE, which is
+ * what lets a face index be derived by subtraction. */
+#define GL_TEXTURE_CUBE_MAP               0x8513
+#define GL_TEXTURE_BINDING_CUBE_MAP       0x8514
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_X    0x8515
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_X    0x8516
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Y    0x8517
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Y    0x8518
+#define GL_TEXTURE_CUBE_MAP_POSITIVE_Z    0x8519
+#define GL_TEXTURE_CUBE_MAP_NEGATIVE_Z    0x851A
+#define GL_MAX_CUBE_MAP_TEXTURE_SIZE      0x851C
+
+/* Multitexturing (GL 1.3 §3.8.10).  GL_TEXTUREi are consecutive too. */
+#define GL_TEXTURE0                       0x84C0
+#define GL_TEXTURE1                       0x84C1
+#define GL_TEXTURE2                       0x84C2
+#define GL_TEXTURE3                       0x84C3
+#define GL_ACTIVE_TEXTURE                 0x84E0
+#define GL_CLIENT_ACTIVE_TEXTURE          0x84E1
+#define GL_MAX_TEXTURE_UNITS              0x84E2
+
 /* ---- Vertex arrays (§2.8) ---- */
 #define GL_VERTEX_ARRAY                   0x8074
 #define GL_NORMAL_ARRAY                   0x8075
@@ -349,8 +399,19 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                      GLsizei width, GLsizei height, GLenum format,
                      GLenum type, const GLvoid *pixels);
 void glTexParameteri(GLenum target, GLenum pname, GLint param);
+void glTexParameterfv(GLenum target, GLenum pname, const GLfloat *params);
 void glTexEnvi(GLenum target, GLenum pname, GLint param);
 void glTexEnvfv(GLenum target, GLenum pname, const GLfloat *params);
+
+/* ---- GL 1.2 / 1.3 texturing (G10) ---- */
+void glTexImage3D(GLenum target, GLint level, GLint internalFormat,
+                  GLsizei width, GLsizei height, GLsizei depth, GLint border,
+                  GLenum format, GLenum type, const GLvoid *pixels);
+void glActiveTexture(GLenum texture);
+void glClientActiveTexture(GLenum texture);
+void glMultiTexCoord2f(GLenum target, GLfloat s, GLfloat t);
+void glTexCoord3f(GLfloat s, GLfloat t, GLfloat r);
+void glGenerateMipmap(GLenum target);
 
 void glBlendFunc(GLenum sfactor, GLenum dfactor);
 void glAlphaFunc(GLenum func, GLclampf ref);

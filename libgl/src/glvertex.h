@@ -36,7 +36,12 @@ typedef struct {
     GLfloat    inv_w;   /* 1/clip.w, kept for perspective-correct interp (G6) */
     gl_color_t color;   /* colour captured when the vertex was specified      */
     glm_vec3   normal;  /* eye-space normal (used from G5)                    */
-    GLfloat    s, t;    /* texture coordinates (used from G6)                 */
+    /* Texture coordinates, one set per texture unit (G6 used a single s,t;
+     * G10 made it per-unit for multitexturing).  `r` is the third coordinate,
+     * used by 3D textures and as the Z component of a cube-map direction. */
+    GLfloat    s[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat    t[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat    r[GL_MAX_TEXTURE_UNITS_IMPL];
     int        valid;   /* 0 when the vertex is behind the eye (w <= 0)       */
 } gl_vertex_t;
 
@@ -120,13 +125,42 @@ GLuint gl_lop_scalef(void);
 GLuint gl_lop_matrix_mode(void);
 GLuint gl_lop_enable(void);
 GLuint gl_lop_disable(void);
+GLuint gl_lop_multitexcoord(void);
+GLuint gl_lop_active_texture(void);
 
-/* ---- Texturing (libgl/src/gltexture.c), phase G6 ---- */
-gl_texture_t *gl_texture_current(struct aglx_context *ctx);
+/* ---- Texturing (libgl/src/gltexture.c), phases G6 and G10 ----
+ *
+ * gl_texture_unit_source() returns the texture unit `unit` should sample, or
+ * NULL when that unit contributes nothing.  Target priority follows the
+ * specification (§3.8.15): cube map beats 3D beats 2D when several are
+ * enabled on the same unit.
+ */
+gl_texture_t *gl_texture_unit_source(struct aglx_context *ctx, int unit);
+
+/* Sample with an explicit level of detail.  `lod` is the continuous mipmap
+ * level; the filters decide whether to round it, or to blend two levels.
+ * Pass lod <= 0 for magnification. */
+gl_color_t gl_texture_sample_lod(const gl_texture_t *t,
+                                 GLfloat s, GLfloat tc, GLfloat rc,
+                                 GLfloat lod);
+
+/* G6-compatible entry point: no mipmapping, `magnifying` selects the filter. */
 gl_color_t gl_texture_sample(const gl_texture_t *t, GLfloat s, GLfloat tc,
                              int magnifying);
+
+/* Apply unit `unit`'s environment to `frag` using `tex`. */
+gl_color_t gl_texture_env_unit(const struct aglx_context *ctx, int unit,
+                               gl_color_t frag, gl_color_t tex);
 gl_color_t gl_texture_env(const struct aglx_context *ctx,
                           gl_color_t frag, gl_color_t tex);
+
+/* Level-0 dimensions of the image the sampler will read, used by the
+ * rasterizer to size the per-triangle LOD.  Returns 0 when unavailable. */
+int gl_texture_base_size(const gl_texture_t *t, GLfloat *w_out, GLfloat *h_out);
+
+/* Does this texture have a usable mipmap chain AND a mipmapping min filter? */
+int gl_texture_uses_mipmaps(const gl_texture_t *t);
+
 void gl_texture_set_defaults(struct aglx_context *ctx);
 void gl_texture_free_all(struct aglx_context *ctx);
 

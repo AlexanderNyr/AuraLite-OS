@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: G0–G9 COMPLETE ✅ · K1 COMPLETE ✅ · G10–G13 PLANNED 📋
+## Status: G0–G10 COMPLETE ✅ · K1 COMPLETE ✅ · G11–G13 PLANNED 📋
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -61,8 +61,8 @@ in phase G7. Rationale:
 **Standards roadmap (beyond this plan):**
 
 ```
-G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← this plan
-G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps
+G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← done
+G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps  ← done
 G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0 (shader path)
 G12     →  FBO / render-to-texture, GL 3.x core profile
 G13     →  VirGL hardware path for the shader profile
@@ -1063,7 +1063,7 @@ Decision D2 committed to growing towards "all standards". G0–G9 delivered the
 fixed-function core; this part plans the route to a shader profile. The phases are
 ordered by dependency and by how much each unlocks per unit of work.
 
-## Phase G10 — GL 1.2/1.3: mipmaps, multitexturing, cube maps
+## Phase G10 — GL 1.2/1.3: mipmaps, multitexturing, cube maps ✅ COMPLETE
 
 **Objective:** finish the texture pipeline. This is the largest remaining gap
 in *quality* rather than in API surface: without mipmaps, any minified texture
@@ -1107,15 +1107,15 @@ and is the natural follow-up if the per-triangle version proves too coarse.
 
 ### Tasks
 
-- [ ] Store a mipmap chain per texture; keep level 0 the authoritative size.
-- [ ] Implement box-filter generation and `gluBuild2DMipmaps`.
-- [ ] Per-triangle LOD selection, plumbed from the rasterizer setup.
-- [ ] All four mipmap filters, including the `_LINEAR` variants that blend two
+- [x] Store a mipmap chain per texture; keep level 0 the authoritative size.
+- [x] Implement box-filter generation and `gluBuild2DMipmaps`.
+- [x] Per-triangle LOD selection, plumbed from the rasterizer setup.
+- [x] All four mipmap filters, including the `_LINEAR` variants that blend two
       levels.
-- [ ] Two texture units with a per-unit environment; combine in fragment order.
-- [ ] `glTexImage3D` and trilinear sampling.
-- [ ] Cube maps: face selection from the major axis of the direction vector.
-- [ ] `GL_CLAMP_TO_BORDER` plus `GL_TEXTURE_BORDER_COLOR`.
+- [x] Two texture units with a per-unit environment; combine in fragment order.
+- [x] `glTexImage3D` and trilinear sampling.
+- [x] Cube maps: face selection from the major axis of the direction vector.
+- [x] `GL_CLAMP_TO_BORDER` plus `GL_TEXTURE_BORDER_COLOR`.
 
 ### Test gate
 
@@ -1133,9 +1133,66 @@ and is the natural follow-up if the per-triangle version proves too coarse.
 The texture pipeline is complete for GL 1.3. `docs/opengl.md` records the
 per-triangle LOD limitation explicitly.
 
+### Outcome
+
+Delivered as planned, with three findings worth recording.
+
+**1. The context outgrew the stack, and a five-phase-old latent bug surfaced.**
+
+`gl_texture_t` gained six face chains of thirteen levels each, taking
+`sizeof(struct aglx_context)` from ~14 KB to ~137 KB. `aglxResize()` had been
+allocating a whole scratch context **on the stack** since G1 — correct while
+the struct was small, an instant user-mode page fault once it was not.
+`/gltest` died at the `gl_resize` check.
+
+The fix is two local pointers instead of a scratch struct. The lesson is more
+general: a stack-allocated copy of a growing aggregate is a bug with a delay
+fuse. `-Wstack-usage=8192` across libgl now reports nothing, and that check is
+cheap to re-run whenever the context grows again.
+
+**2. Mipmapping can be faster than not mipmapping.**
+
+Measured on the tessellated floor at 320×240:
+
+| Filter | Cost |
+|---|---|
+| `GL_NEAREST_MIPMAP_NEAREST` | ~2.6 ms/frame |
+| `GL_LINEAR` (no mipmaps) | ~3.2 ms/frame |
+| `GL_LINEAR_MIPMAP_NEAREST` | ~3.9 ms/frame |
+| `GL_LINEAR_MIPMAP_LINEAR` | ~5.9 ms/frame |
+
+`GL_NEAREST_MIPMAP_NEAREST` beats un-mipmapped `GL_LINEAR` outright: one texel
+read instead of four, out of a level that fits in cache. Trilinear costs about
+1.9× un-mipmapped for eight texels across two levels. So mipmapping is not
+purely a quality feature here — it is a quality/performance *trade*, and which
+way it goes depends on the filter.
+
+**3. A test that passed for the wrong reason.**
+
+The first aliasing test drew the 64×64 checkerboard into an 8×8 pixel quad. At
+exactly 8:1 every pixel centre lands on the same checkerboard phase, so the
+*un-mipmapped* reference came out uniformly black with zero variance — and the
+test would have passed against an implementation with no mipmaps at all. An
+11-pixel quad walks through the phases and measures the aliasing that is
+actually there. Both the host and in-OS versions now carry a comment saying
+why the size is not a round number.
+
+### Delivered
+
+- `libgl/src/gltexture.c` rewritten: one object type for 2D/3D/cube, per-face
+  mipmap chains, box-filter generation, LOD-aware sampling, border colours.
+- `libgl/src/glraster.c`: `triangle_lod()` and a per-unit texturing loop.
+- Per-unit state throughout: `gl_texunit_t`, per-unit texture-coordinate
+  arrays, per-unit vertex attributes.
+- `gluBuild2DMipmaps` and `gluScaleImageHalf`.
+- `log2f()` added to libc.
+- `tests/unit/test_gltex2.c`: **36 checks**.
+- `/gltest` gained **24 in-OS checks** (205 total, was 181).
+- `/glcube` gained the tessellated mipmapped floor.
+
 ### Deliverable
 
-`patches/GL_G10_textures2.patch`
+`patches/GL_G10_textures2.patch` ✅
 
 ---
 
@@ -1377,7 +1434,7 @@ complete and tested; the last driver hop is G13 work.
 | Next | Why |
 |---|---|
 | ~~K1~~ | ✅ **Done** — the syscall surface, validation and quotas are in place |
-| **G10** | Now the best quality-per-line remaining; no new architecture |
+| ~~G10~~ | ✅ Complete |
 | G12 | Small once G10 lands; also delivers `glReadPixels` |
 | G11 | Largest by far; do it when the pipeline underneath is finished |
 | G13 | Needs K1, and a full triangle path needs G11 |

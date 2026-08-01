@@ -197,7 +197,14 @@ static GLboolean *cap_slot(struct aglx_context *ctx, GLenum cap) {
     case GL_LIGHTING:       return &ctx->lighting;
     case GL_NORMALIZE:      return &ctx->normalize;
     case GL_COLOR_MATERIAL: return &ctx->color_material;
-    case GL_TEXTURE_2D:     return &ctx->texture_2d;
+    /* The texture enables are PER UNIT (GL 1.3 §3.8.15): glEnable(GL_TEXTURE_2D)
+     * affects whichever unit glActiveTexture last selected, not a global. */
+    case GL_TEXTURE_2D:
+        return &ctx->texunits[ctx->active_texture].enabled_2d;
+    case GL_TEXTURE_3D:
+        return &ctx->texunits[ctx->active_texture].enabled_3d;
+    case GL_TEXTURE_CUBE_MAP:
+        return &ctx->texunits[ctx->active_texture].enabled_cube;
     case GL_BLEND:          return &ctx->blend;
     case GL_ALPHA_TEST:     return &ctx->alpha_test;
     case GL_FOG:            return &ctx->fog;
@@ -349,7 +356,20 @@ void glGetIntegerv(GLenum pname, GLint *params) {
     case GL_FRONT_FACE:    params[0] = (GLint)ctx->front_face;   break;
     case GL_SHADE_MODEL:   params[0] = (GLint)ctx->shade_model;  break;
     case GL_MAX_LIGHTS:    params[0] = GL_MAX_LIGHTS_IMPL; break;
-    case GL_TEXTURE_BINDING_2D: params[0] = (GLint)ctx->texture_binding; break;
+    case GL_TEXTURE_BINDING_2D:
+        params[0] = (GLint)ctx->texunits[ctx->active_texture].binding_2d; break;
+    case GL_TEXTURE_BINDING_3D:
+        params[0] = (GLint)ctx->texunits[ctx->active_texture].binding_3d; break;
+    case GL_TEXTURE_BINDING_CUBE_MAP:
+        params[0] = (GLint)ctx->texunits[ctx->active_texture].binding_cube; break;
+    case GL_ACTIVE_TEXTURE:
+        params[0] = (GLint)(GL_TEXTURE0 + ctx->active_texture); break;
+    case GL_CLIENT_ACTIVE_TEXTURE:
+        params[0] = (GLint)(GL_TEXTURE0 + ctx->client_active_texture); break;
+    case GL_MAX_TEXTURE_UNITS:
+        params[0] = GL_MAX_TEXTURE_UNITS_IMPL; break;
+    case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
+        params[0] = 8192; break;
     case GL_BLEND_SRC:     params[0] = (GLint)ctx->blend_src;  break;
     case GL_BLEND_DST:     params[0] = (GLint)ctx->blend_dst;  break;
     case GL_ALPHA_TEST_FUNC: params[0] = (GLint)ctx->alpha_func; break;
@@ -404,7 +424,12 @@ void glGetBooleanv(GLenum pname, GLboolean *params) {
     case GL_LIGHTING:        params[0] = ctx->lighting;     break;
     case GL_NORMALIZE:       params[0] = ctx->normalize;    break;
     case GL_COLOR_MATERIAL:  params[0] = ctx->color_material; break;
-    case GL_TEXTURE_2D:      params[0] = ctx->texture_2d;     break;
+    case GL_TEXTURE_2D:
+        params[0] = ctx->texunits[ctx->active_texture].enabled_2d; break;
+    case GL_TEXTURE_3D:
+        params[0] = ctx->texunits[ctx->active_texture].enabled_3d; break;
+    case GL_TEXTURE_CUBE_MAP:
+        params[0] = ctx->texunits[ctx->active_texture].enabled_cube; break;
     case GL_BLEND:           params[0] = ctx->blend;          break;
     case GL_ALPHA_TEST:      params[0] = ctx->alpha_test;     break;
     case GL_FOG:             params[0] = ctx->fog;            break;

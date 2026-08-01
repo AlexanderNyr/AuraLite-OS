@@ -946,6 +946,355 @@ static void test_gl_texture(int wid) {
     aglxDestroyContext(ctx);
 }
 
+
+/* ---- Phase G10: mipmaps, multitexturing, 3D textures, cube maps ----
+ *
+ * Running these ON THE TARGET rather than only on the host matters: the
+ * mipmap path is float-heavy, and G3 already produced one bug (the fill-rule
+ * epsilon) that was invisible on the host and visible under AuraLite.
+ */
+static void test_gl_texture2(int wid) {
+    printf("[gl] --- G10: mipmaps, multitexturing, 3D, cube maps ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "tex2_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glColor3f(1, 1, 1);
+
+    /* ---- Mipmaps ---- */
+
+    /* A 64x64 checkerboard, the classic minification aliasing source. */
+    static unsigned char checker[64 * 64 * 3];
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 64; x++) {
+            unsigned char v = ((x + y) & 1) ? 255 : 0;
+            checker[((size_t)y * 64 + x) * 3 + 0] = v;
+            checker[((size_t)y * 64 + x) * 3 + 1] = v;
+            checker[((size_t)y * 64 + x) * 3 + 2] = v;
+        }
+    }
+
+    GLuint mip = 0;
+    glGenTextures(1, &mip);
+    glBindTexture(GL_TEXTURE_2D, mip);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 64, 64, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, checker);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    check(glGetError() == GL_NO_ERROR, "mip_generate");
+
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* Draw the same heavily minified quad twice, once point-sampled and once
+     * mipmapped, and compare the variance.  Deliberately 11 pixels wide: at
+     * an exact 8:1 ratio every pixel centre would hit the same checkerboard
+     * phase and even the un-mipmapped draw would come out flat. */
+    #define MINI_QUAD() do {                                        \
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);         \
+        glBegin(GL_QUADS);                                          \
+        glTexCoord2f(0, 0); glVertex3f(8,  8,  0);                  \
+        glTexCoord2f(1, 0); glVertex3f(19, 8,  0);                  \
+        glTexCoord2f(1, 1); glVertex3f(19, 19, 0);                  \
+        glTexCoord2f(0, 1); glVertex3f(8,  19, 0);                  \
+        glEnd();                                                    \
+    } while (0)
+
+    #define MINI_VAR(out) do {                                      \
+        long sum = 0, sumsq = 0; int n = 0;                         \
+        for (int yy = 10; yy < 17; yy++) {                          \
+            for (int xx = 10; xx < 17; xx++) {                      \
+                long v = (long)((AT(xx, yy) >> 16) & 0xFF);         \
+                sum += v; sumsq += v * v; n++;                      \
+            }                                                       \
+        }                                                           \
+        long mean = sum / n;                                        \
+        (out) = sumsq / n - mean * mean;                            \
+    } while (0)
+
+    long var_plain = 0, var_mip = 0;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    MINI_QUAD();
+    MINI_VAR(var_plain);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    MINI_QUAD();
+    MINI_VAR(var_mip);
+
+    check(var_plain > 1000, "mip_reference_aliases");
+    check(var_mip * 10 < var_plain, "mip_reduces_aliasing");
+
+    /* Magnification must ignore the chain: a magnified checkerboard still
+     * shows individual texels, not the grey average. */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0,     0);     glVertex3f(0, 0, 0);
+    glTexCoord2f(0.05f, 0);     glVertex3f(GL_W, 0, 0);
+    glTexCoord2f(0.05f, 0.05f); glVertex3f(GL_W, GL_H, 0);
+    glTexCoord2f(0,     0.05f); glVertex3f(0, GL_H, 0);
+    glEnd();
+    {
+        long sum = 0, sumsq = 0; int n = 0;
+        for (int yy = 10; yy < GL_H - 10; yy += 3) {
+            for (int xx = 10; xx < GL_W - 10; xx += 3) {
+                long v = (long)((AT(xx, yy) >> 16) & 0xFF);
+                sum += v; sumsq += v * v; n++;
+            }
+        }
+        long mean = sum / n;
+        check(sumsq / n - mean * mean > 1000, "mip_magnification_uses_level0");
+    }
+
+    /* All four mipmap filters must be accepted. */
+    {
+        static const GLenum f[4] = {
+            GL_NEAREST_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_NEAREST,
+            GL_NEAREST_MIPMAP_LINEAR,  GL_LINEAR_MIPMAP_LINEAR
+        };
+        int all_ok = 1;
+        for (int i = 0; i < 4; i++) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)f[i]);
+            if (glGetError() != GL_NO_ERROR) all_ok = 0;
+        }
+        check(all_ok, "mip_all_filters_accepted");
+    }
+
+    /* A mipmap enum as the MAGNIFICATION filter is an error. */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    check(glGetError() == GL_INVALID_ENUM, "mip_mag_filter_rejected");
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* gluBuild2DMipmaps must succeed and leave a usable texture. */
+    {
+        GLuint gid = 0;
+        glGenTextures(1, &gid);
+        glBindTexture(GL_TEXTURE_2D, gid);
+        int rc = gluBuild2DMipmaps(GL_TEXTURE_2D, GL_RGB, 64, 64, GL_RGB,
+                                   GL_UNSIGNED_BYTE, checker);
+        check(rc == 0, "glu_build_mipmaps");
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        GL_LINEAR_MIPMAP_LINEAR);
+        long var_glu = 0;
+        MINI_QUAD();
+        MINI_VAR(var_glu);
+        check(var_glu * 10 < var_plain, "glu_mipmaps_reduce_aliasing");
+        glDeleteTextures(1, &gid);
+    }
+
+    glDeleteTextures(1, &mip);
+    glDisable(GL_TEXTURE_2D);
+
+    /* ---- Multitexturing ---- */
+    {
+        static const unsigned char c0[3] = { 255, 128, 0 };
+        static const unsigned char c1[3] = { 128, 255, 255 };
+        GLuint t0 = 0, t1 = 0;
+
+        glActiveTexture(GL_TEXTURE0);
+        glGenTextures(1, &t0);
+        glBindTexture(GL_TEXTURE_2D, t0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, c0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glEnable(GL_TEXTURE_2D);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+        glActiveTexture(GL_TEXTURE1);
+        glGenTextures(1, &t1);
+        glBindTexture(GL_TEXTURE_2D, t1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, c1);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glEnable(GL_TEXTURE_2D);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+        check(glGetError() == GL_NO_ERROR, "mt_setup");
+
+        {
+            GLint act = 0;
+            glGetIntegerv(GL_ACTIVE_TEXTURE, &act);
+            check(act == GL_TEXTURE1, "mt_active_unit_query");
+        }
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glMultiTexCoord2f(GL_TEXTURE1, 0, 0); glTexCoord2f(0, 0);
+        glVertex3f(10, 10, 0);
+        glMultiTexCoord2f(GL_TEXTURE1, 1, 0); glTexCoord2f(1, 0);
+        glVertex3f(GL_W - 10, 10, 0);
+        glMultiTexCoord2f(GL_TEXTURE1, 1, 1); glTexCoord2f(1, 1);
+        glVertex3f(GL_W - 10, GL_H - 10, 0);
+        glMultiTexCoord2f(GL_TEXTURE1, 0, 1); glTexCoord2f(0, 1);
+        glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        {
+            /* (255,128,0) * (128,255,255) / 255 = (128,128,0). */
+            uint32_t p = AT(GL_W / 2, GL_H / 2);
+            int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+            check(r > 118 && r < 138 && g > 118 && g < 138 && b < 10,
+                  "mt_two_units_modulate");
+        }
+
+        /* Disabling unit 1 must leave unit 0's colour alone. */
+        glDisable(GL_TEXTURE_2D);          /* unit 1 is still active */
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 0); glVertex3f(10, 10, 0);
+        glTexCoord2f(1, 0); glVertex3f(GL_W - 10, 10, 0);
+        glTexCoord2f(1, 1); glVertex3f(GL_W - 10, GL_H - 10, 0);
+        glTexCoord2f(0, 1); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        check(AT(GL_W / 2, GL_H / 2) == 0xFF8000, "mt_disabled_unit_ignored");
+
+        glActiveTexture(GL_TEXTURE0);
+        glDisable(GL_TEXTURE_2D);
+        glDeleteTextures(1, &t0);
+        glDeleteTextures(1, &t1);
+
+        /* Out-of-range unit selection must be refused. */
+        glActiveTexture(GL_TEXTURE0 + 15);
+        check(glGetError() == GL_INVALID_ENUM, "mt_bad_unit_rejected");
+    }
+
+    /* ---- 3D textures ---- */
+    {
+        static const unsigned char vol[2 * 3] = { 255, 0, 0,   0, 0, 255 };
+        GLuint v = 0;
+        glGenTextures(1, &v);
+        glBindTexture(GL_TEXTURE_3D, v);
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB, 1, 1, 2, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, vol);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        check(glGetError() == GL_NO_ERROR, "tex3d_upload");
+
+        glEnable(GL_TEXTURE_3D);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glTexCoord3f(0.5f, 0.5f, 0.25f); glVertex3f(10, 10, 0);
+        glTexCoord3f(0.5f, 0.5f, 0.25f); glVertex3f(GL_W / 2 - 5, 10, 0);
+        glTexCoord3f(0.5f, 0.5f, 0.25f); glVertex3f(GL_W / 2 - 5, GL_H - 10, 0);
+        glTexCoord3f(0.5f, 0.5f, 0.25f); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        check(AT(GL_W / 4, GL_H / 2) == 0xFF0000, "tex3d_slice0");
+
+        glBegin(GL_QUADS);
+        glTexCoord3f(0.5f, 0.5f, 0.75f); glVertex3f(GL_W / 2 + 5, 10, 0);
+        glTexCoord3f(0.5f, 0.5f, 0.75f); glVertex3f(GL_W - 10, 10, 0);
+        glTexCoord3f(0.5f, 0.5f, 0.75f); glVertex3f(GL_W - 10, GL_H - 10, 0);
+        glTexCoord3f(0.5f, 0.5f, 0.75f); glVertex3f(GL_W / 2 + 5, GL_H - 10, 0);
+        glEnd();
+        check(AT(GL_W * 3 / 4, GL_H / 2) == 0x0000FF, "tex3d_slice1");
+
+        glDisable(GL_TEXTURE_3D);
+        glDeleteTextures(1, &v);
+    }
+
+    /* ---- Cube maps ---- */
+    {
+        static const unsigned char face[6][3] = {
+            { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 },
+            { 255, 255, 0 }, { 255, 0, 255 }, { 0, 255, 255 },
+        };
+        static const uint32_t want[6] = {
+            0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0xFF00FF, 0x00FFFF
+        };
+        static const float dir[6][3] = {
+            {  1, 0, 0 }, { -1, 0, 0 }, { 0,  1, 0 },
+            {  0,-1, 0 }, {  0, 0, 1 }, { 0,  0,-1 },
+        };
+
+        GLuint cm = 0;
+        glGenTextures(1, &cm);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cm);
+        for (int f = 0; f < 6; f++) {
+            glTexImage2D((GLenum)(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f), 0,
+                         GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, face[f]);
+        }
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        check(glGetError() == GL_NO_ERROR, "cube_upload");
+
+        glEnable(GL_TEXTURE_CUBE_MAP);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+        int faces_ok = 1;
+        for (int f = 0; f < 6; f++) {
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glBegin(GL_QUADS);
+            glTexCoord3f(dir[f][0], dir[f][1], dir[f][2]);
+            glVertex3f(10, 10, 0);
+            glTexCoord3f(dir[f][0], dir[f][1], dir[f][2]);
+            glVertex3f(GL_W - 10, 10, 0);
+            glTexCoord3f(dir[f][0], dir[f][1], dir[f][2]);
+            glVertex3f(GL_W - 10, GL_H - 10, 0);
+            glTexCoord3f(dir[f][0], dir[f][1], dir[f][2]);
+            glVertex3f(10, GL_H - 10, 0);
+            glEnd();
+            if (AT(GL_W / 2, GL_H / 2) != want[f]) faces_ok = 0;
+        }
+        check(faces_ok, "cube_six_faces");
+
+        glDisable(GL_TEXTURE_CUBE_MAP);
+        glDeleteTextures(1, &cm);
+    }
+
+    /* ---- GL_CLAMP_TO_BORDER ---- */
+    {
+        static const unsigned char red[3] = { 255, 0, 0 };
+        static const GLfloat blue[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+        GLuint b = 0;
+        glGenTextures(1, &b);
+        glBindTexture(GL_TEXTURE_2D, b);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, red);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, blue);
+        check(glGetError() == GL_NO_ERROR, "border_setup");
+
+        glEnable(GL_TEXTURE_2D);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 0); glVertex3f(10, 10, 0);
+        glTexCoord2f(3, 0); glVertex3f(GL_W - 10, 10, 0);
+        glTexCoord2f(3, 1); glVertex3f(GL_W - 10, GL_H - 10, 0);
+        glTexCoord2f(0, 1); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        check(AT(14, GL_H / 2) == 0xFF0000, "border_inside_is_texel");
+        check(AT(GL_W - 14, GL_H / 2) == 0x0000FF, "border_outside_is_border");
+
+        glDisable(GL_TEXTURE_2D);
+        glDeleteTextures(1, &b);
+    }
+
+    check(aglxSwapBuffers(ctx) == 0, "tex2_swap");
+    check(glGetError() == GL_NO_ERROR, "tex2_no_pending_error");
+
+    #undef MINI_VAR
+    #undef MINI_QUAD
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G7: vertex arrays, VBOs, display lists ---- */
 static void test_gl_arrays(int wid) {
     printf("[gl] --- G7: arrays, VBOs, display lists ---\n");
@@ -1462,6 +1811,7 @@ int main(void) {
     test_gl_clip(wid);
     test_gl_light(wid);
     test_gl_texture(wid);
+    test_gl_texture2(wid);
     test_gl_arrays(wid);
     test_gl_glu(wid);
     test_gl_backend(wid);

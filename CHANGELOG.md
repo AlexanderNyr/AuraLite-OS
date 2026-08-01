@@ -2,6 +2,70 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase G10 — OpenGL 1.2/1.3: mipmaps, multitexturing, 3D and cube textures] 2026-08-01
+
+Completes the fixed-function texture pipeline. Mipmapping was the largest
+remaining gap in rendering *quality* rather than API surface: without it any
+minified texture aliases badly, which shows up in every scene with a floor or
+a distant wall.
+
+### Added
+- **Mipmaps.** Per-texture chains up to 13 levels, box-filter generation via
+  `glGenerateMipmap`, and all four mipmap minification filters. Client-side
+  `gluBuild2DMipmaps` and `gluScaleImageHalf` in GLU.
+- **Multitexturing.** Two texture units with independent enables, bindings and
+  environments; `glActiveTexture`, `glClientActiveTexture`,
+  `glMultiTexCoord2f`, per-unit texture-coordinate arrays. Units combine in
+  order, so `GL_MODULATE` on both yields the product of the two textures.
+- **3D textures.** `glTexImage3D`, `GL_TEXTURE_3D`, trilinear sampling,
+  `GL_TEXTURE_WRAP_R`, `glTexCoord3f`.
+- **Cube maps.** `GL_TEXTURE_CUBE_MAP`, six face targets, face selection from
+  the major axis of the direction vector, mipmapped like any other target.
+- **`GL_CLAMP_TO_BORDER`** with a real `GL_TEXTURE_BORDER_COLOR`, completing
+  the wrap modes.
+- `GL_TEXTURE_BASE_LEVEL` / `GL_TEXTURE_MAX_LEVEL`, `glTexParameterfv`.
+- `log2f()` in libc.
+- `tests/unit/test_gltex2.c`: **36 host checks**.
+- 24 new in-OS checks in `/gltest` (**205 total**, was 181).
+- A tessellated, mipmapped floor in `/glcube`.
+- `patches/GL_G10_textures2.patch`.
+
+### Fixed
+- **`aglxResize()` overflowed the user stack.** It had allocated a scratch
+  `struct aglx_context` as a local since phase G1. Harmless while the context
+  was ~14 KB; a user-mode page fault the moment G10's per-face mipmap chains
+  took it past 130 KB. Now two local pointers. `-Wstack-usage=8192` across
+  libgl reports nothing.
+
+### Known limitation, deliberate
+The mipmap level is chosen **per triangle**, not per fragment: a scanline
+rasterizer has no `dFdx`/`dFdy`, so the level comes from
+`log2(sqrt(texture-space area / screen-space area))` computed once at setup.
+Exact for a triangle at constant depth, progressively wrong for a strongly
+foreshortened one — a ground plane drawn as one quad gets a single averaged
+level. Tessellate large receding surfaces; `/glcube`'s floor is split 16×16 for
+exactly this reason. Documented at the top of `libgl/src/gltexture.c` and in
+`docs/opengl.md`.
+
+### Performance, measured
+On a 16×16-tile textured floor at 320×240:
+
+| Filter | Cost |
+|---|---|
+| `GL_NEAREST_MIPMAP_NEAREST` | ~2.6 ms/frame |
+| `GL_LINEAR` (no mipmaps) | ~3.2 ms/frame |
+| `GL_LINEAR_MIPMAP_NEAREST` | ~3.9 ms/frame |
+| `GL_LINEAR_MIPMAP_LINEAR` | ~5.9 ms/frame |
+
+`GL_NEAREST_MIPMAP_NEAREST` is **faster** than un-mipmapped `GL_LINEAR` — one
+texel instead of four, from a level that fits in cache. Trilinear costs ~1.9×.
+Mipmapping is a quality/performance trade here, not purely a quality feature.
+
+### Verified
+`make test-unit` 63/63 binaries green (375 GL host checks across 11 suites);
+`/gltest` in QEMU 205/205; `test_opengl.sh` 86/86; `/glcube` clean exit;
+`make iso` from a clean tree.
+
 ## [Phase K1 — GPU 3D submission syscall] 2026-08-01
 
 First item of Part III in `GL_PLAN.md`: the kernel work that unblocks a

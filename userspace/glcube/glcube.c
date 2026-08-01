@@ -101,6 +101,82 @@ static GLuint make_checker_texture(void) {
     return id;
 }
 
+/* ---- Mipmapped ground plane (phase G10) ----
+ *
+ * A textured floor is the canonical mipmap demonstration: at a grazing angle
+ * the texture is minified by a large and rapidly changing factor, which is
+ * exactly where point sampling produces the moire shimmer that mipmapping
+ * exists to remove.
+ *
+ * The plane is TESSELLATED into a grid of quads rather than drawn as a single
+ * large one.  That is not decoration: this implementation picks one mipmap
+ * level per triangle (see the note at the top of libgl/src/gltexture.c), so a
+ * single quad stretching to the horizon would get one averaged level across
+ * the whole thing -- too blurry near the camera and still aliased far away.
+ * Sixteen strips give each piece a level that suits its own depth.
+ */
+#define FLOOR_TEX_N   64
+#define FLOOR_TILES   16
+#define FLOOR_EXTENT  6.0f
+#define FLOOR_Y      -1.61f     /* just below the wireframe grid */
+
+static GLuint make_floor_texture(void) {
+    static unsigned char img[FLOOR_TEX_N * FLOOR_TEX_N * 3];
+    for (int y = 0; y < FLOOR_TEX_N; y++) {
+        for (int x = 0; x < FLOOR_TEX_N; x++) {
+            /* A fine 2x2-texel checker: minified even slightly, this is the
+             * pattern that aliases worst, which is the point. */
+            int on = ((x / 2) + (y / 2)) & 1;
+            unsigned char *p = &img[(y * FLOOR_TEX_N + x) * 3];
+            p[0] = on ? 210 : 40;
+            p[1] = on ? 210 : 55;
+            p[2] = on ? 225 : 90;
+        }
+    }
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, FLOOR_TEX_N, FLOOR_TEX_N, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, img);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    return id;
+}
+
+static void draw_floor(GLuint floor_tex) {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, floor_tex);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+    GLfloat step = 2.0f * FLOOR_EXTENT / (GLfloat)FLOOR_TILES;
+    GLfloat uv_step = 2.0f;             /* texture repeats per tile */
+
+    glBegin(GL_QUADS);
+    for (int iz = 0; iz < FLOOR_TILES; iz++) {
+        for (int ix = 0; ix < FLOOR_TILES; ix++) {
+            GLfloat x0 = -FLOOR_EXTENT + (GLfloat)ix * step;
+            GLfloat z0 = -FLOOR_EXTENT + (GLfloat)iz * step;
+            GLfloat x1 = x0 + step, z1 = z0 + step;
+            GLfloat u0 = (GLfloat)ix * uv_step, v0 = (GLfloat)iz * uv_step;
+            GLfloat u1 = u0 + uv_step, v1 = v0 + uv_step;
+
+            glTexCoord2f(u0, v0); glVertex3f(x0, FLOOR_Y, z0);
+            glTexCoord2f(u1, v0); glVertex3f(x1, FLOOR_Y, z0);
+            glTexCoord2f(u1, v1); glVertex3f(x1, FLOOR_Y, z1);
+            glTexCoord2f(u0, v1); glVertex3f(x0, FLOOR_Y, z1);
+        }
+    }
+    glEnd();
+
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glEnable(GL_LIGHTING);
+}
+
 /* Texture coordinates for the four corners of every face. */
 static const GLfloat face_uv[4][2] = { {0,0}, {1,0}, {1,1}, {0,1} };
 
@@ -238,6 +314,9 @@ int main(int argc, char **argv) {
     /* Phase G6: a checkerboard modulated with the per-face colour, so the
      * texture darkens and tints rather than replacing the shading. */
     GLuint checker = make_checker_texture();
+    /* Phase G10: the mipmapped floor, built before the cube's own texture is
+     * bound so the binding left current below is the cube's. */
+    GLuint floor_tex = make_floor_texture();
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, checker);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
@@ -305,6 +384,8 @@ int main(int argc, char **argv) {
         glTranslatef(0.0f, 0.0f, -6.0f);   /* move the scene away from the eye */
 
         glPushMatrix();
+        draw_floor(floor_tex);              /* mipmapped ground (G10) */
+        glBindTexture(GL_TEXTURE_2D, checker);
         draw_grid();                        /* grid does not spin */
         glPopMatrix();
 

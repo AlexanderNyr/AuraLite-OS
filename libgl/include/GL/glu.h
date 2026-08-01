@@ -81,6 +81,26 @@ void gluCylinder(GLUquadric *q, GLdouble base, GLdouble top, GLdouble height,
 void gluDisk(GLUquadric *q, GLdouble inner, GLdouble outer,
              GLint slices, GLint loops);
 
+/* ---- Mipmap construction (phase G10) ----
+ *
+ * Uploads level 0 and then every smaller level, box-filtering as it goes.
+ * Returns 0 on success and a GLU error code otherwise, matching the real GLU.
+ *
+ * Unlike the real GLU this does NOT rescale a non-power-of-two image to the
+ * next power of two first: the sampler here handles arbitrary sizes, and
+ * silently resampling the application's data would be a surprise.  Halving
+ * stops at 1 in each dimension independently, so a 12x5 image is a legal
+ * chain.
+ */
+int gluBuild2DMipmaps(GLenum target, GLint internalFormat,
+                      GLsizei width, GLsizei height,
+                      GLenum format, GLenum type, const void *data);
+
+/* Box-filtered halving of a raw image, exposed because it is useful on its
+ * own and because it is what makes gluBuild2DMipmaps testable in isolation. */
+int gluScaleImageHalf(GLenum format, GLsizei width, GLsizei height,
+                      const unsigned char *src, unsigned char *dst);
+
 #ifdef __cplusplus
 }
 #endif

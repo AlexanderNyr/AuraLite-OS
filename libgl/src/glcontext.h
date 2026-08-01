@@ -29,6 +29,23 @@
  * implementation choice sized for the demos plus room to spare. */
 #define GL_MAX_TEXTURES_IMPL       64
 
+/* ---- Phase G10 limits ----
+ *
+ * Mipmap levels.  13 covers everything up to 4096x4096 (level 12 is 1x1),
+ * which is already beyond what a software rasterizer on this OS will draw.
+ */
+#define GL_MAX_MIPMAP_LEVELS       13
+
+/* Texture units for multitexturing (GL 1.3 §3.8.10).  Two is the minimum the
+ * specification requires and the number the fixed-function combine path here
+ * is written for; raising it costs a sampler call per fragment per unit, which
+ * is the single most expensive thing in the inner loop. */
+#define GL_MAX_TEXTURE_UNITS_IMPL  2
+
+/* Cube map faces, in the order the GL_TEXTURE_CUBE_MAP_* enums are numbered:
+ * +X, -X, +Y, -Y, +Z, -Z. */
+#define GL_CUBE_FACES              6
+
 /* Buffer objects and display lists tracked per context. */
 #define GL_MAX_BUFFERS_IMPL        64
 #define GL_MAX_LISTS_IMPL          256
@@ -54,14 +71,51 @@ typedef struct {
  * rasterizer that is the right trade: sampling happens millions of times per
  * frame, upload happens once.
  */
+/* One stored image: a single mipmap level of a single cube face, or the whole
+ * volume of a 3D texture.  `depth` is 1 for 2D and cube-map images. */
 typedef struct {
-    GLuint     name;             /* 0 means the slot is free                */
-    int        used;
-    uint32_t  *texels;           /* width*height, 0xAARRGGBB, or NULL       */
-    GLsizei    width, height;
-    GLenum     min_filter, mag_filter;
-    GLenum     wrap_s, wrap_t;
+    uint32_t  *texels;           /* width*height*depth, 0xAARRGGBB, or NULL */
+    GLsizei    width, height, depth;
+} gl_teximage_t;
+
+/* ---- Texture object, extended in G10 ----
+ *
+ * A single object type covers 2D, 3D and cube-map textures rather than three
+ * parallel types.  A cube map is six face chains; 2D and 3D use face 0 only.
+ * That costs five unused pointers per non-cube texture (40 bytes) and saves
+ * the sampler from having to know which of three structs it was handed.
+ *
+ * `levels` counts the mipmap levels actually populated on face 0, starting at
+ * level 0.  A chain is COMPLETE when it runs all the way down to 1x1; the
+ * mipmap filters silently fall back to the level-0 image on an incomplete
+ * chain, which is what the specification requires (§3.8.10) and what stops a
+ * half-uploaded texture from rendering as garbage.
+ */
+typedef struct {
+    GLuint         name;         /* 0 means the slot is free                */
+    int            used;
+    GLenum         target;       /* GL_TEXTURE_2D / _3D / _CUBE_MAP, 0 = untyped */
+    gl_teximage_t  img[GL_CUBE_FACES][GL_MAX_MIPMAP_LEVELS];
+    int            levels;       /* populated levels on face 0 (>=1 when sized) */
+    GLenum         min_filter, mag_filter;
+    GLenum         wrap_s, wrap_t, wrap_r;
+    gl_color_t     border_color; /* used by GL_CLAMP_TO_BORDER              */
+    GLint          base_level, max_level;
 } gl_texture_t;
+
+/* ---- Texture unit (GL 1.3 §3.8.10) ----
+ *
+ * Each unit has its own enables, its own bindings for each target and its own
+ * environment.  The units are combined in order: unit 0's result becomes the
+ * incoming fragment colour for unit 1, exactly as the fixed-function pipeline
+ * specifies.
+ */
+typedef struct {
+    GLboolean  enabled_2d, enabled_3d, enabled_cube;
+    GLuint     binding_2d, binding_3d, binding_cube;
+    GLenum     env_mode;         /* MODULATE / REPLACE / DECAL / BLEND      */
+    gl_color_t env_color;
+} gl_texunit_t;
 
 /* ---- Vertex array pointer (§2.8) ----
  *
@@ -193,13 +247,19 @@ struct aglx_context {
     GLboolean     color_material;
     GLenum        color_material_face, color_material_mode;
 
-    /* ---- Texturing (§3.8), phase G6 ---- */
-    GLboolean     texture_2d;              /* GL_TEXTURE_2D enabled?        */
+    /* ---- Texturing (§3.8), phase G6, extended to GL 1.3 in G10 ----
+     *
+     * Texture OBJECTS are shared by the whole context; the per-unit state
+     * (enables, bindings, environment) lives in `texunits`.  `active_texture`
+     * selects which unit the glTexImage/glTexParameter/glTexEnv calls act on,
+     * and `client_active_texture` selects which unit glTexCoordPointer acts
+     * on — GL keeps those two selectors separate, and conflating them is a
+     * classic multitexturing bug. */
     gl_texture_t  textures[GL_MAX_TEXTURES_IMPL];
-    GLuint        texture_binding;         /* currently bound name, 0 = none */
     GLuint        next_texture_name;       /* monotonic name allocator       */
-    GLenum        tex_env_mode;            /* MODULATE / REPLACE / DECAL / BLEND */
-    gl_color_t    tex_env_color;
+    gl_texunit_t  texunits[GL_MAX_TEXTURE_UNITS_IMPL];
+    int           active_texture;          /* 0..GL_MAX_TEXTURE_UNITS_IMPL-1 */
+    int           client_active_texture;
 
     /* ---- Blending (§4.1.7) ---- */
     GLboolean     blend;
@@ -217,7 +277,10 @@ struct aglx_context {
     gl_color_t    fog_color;
 
     /* ---- Vertex arrays and buffer objects (§2.8), phase G7 ---- */
-    gl_array_t    array_vertex, array_color, array_normal, array_texcoord;
+    gl_array_t    array_vertex, array_color, array_normal;
+    /* One texture-coordinate array per unit (GL 1.3): glClientActiveTexture
+     * selects which one glTexCoordPointer and glEnableClientState affect. */
+    gl_array_t    array_texcoord[GL_MAX_TEXTURE_UNITS_IMPL];
     gl_buffer_t   buffers[GL_MAX_BUFFERS_IMPL];
     GLuint        next_buffer_name;
     GLuint        buffer_binding_array;    /* GL_ARRAY_BUFFER         */

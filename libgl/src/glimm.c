@@ -80,7 +80,10 @@ static struct {
 /* Current per-vertex attributes, latched when glVertex is called (§2.7). */
 static gl_color_t cur_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 static glm_vec3   cur_normal;
-static GLfloat    cur_s, cur_t;
+/* Current texture coordinate per unit (G10; G6 had a single s,t pair). */
+static GLfloat    cur_s[GL_MAX_TEXTURE_UNITS_IMPL];
+static GLfloat    cur_t[GL_MAX_TEXTURE_UNITS_IMPL];
+static GLfloat    cur_r[GL_MAX_TEXTURE_UNITS_IMPL];
 static int        cur_normal_init = 0;
 
 /* ============================================================================
@@ -302,8 +305,11 @@ void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
      * the diffuse term too bright or too dark. */
     if (ctx->normalize) v.normal = glm_vec3_normalize(v.normal);
 
-    v.s = cur_s;
-    v.t = cur_t;
+    for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+        v.s[u] = cur_s[u];
+        v.t[u] = cur_t[u];
+        v.r[u] = cur_r[u];
+    }
 
     if (ctx->lighting) {
         /* Lighting is per-vertex in GL 1.1: the lit colour is computed here
@@ -391,19 +397,45 @@ void glNormal3fv(const GLfloat *v) {
     glNormal3f(v[0], v[1], v[2]);
 }
 
-void glTexCoord2f(GLfloat s, GLfloat t) {
+/* glTexCoord* always writes unit 0.  Only glMultiTexCoord* can reach the
+ * others -- glActiveTexture does NOT redirect glTexCoord, which is a detail
+ * applications get wrong far more often than implementations do. */
+void glTexCoord3f(GLfloat s, GLfloat t, GLfloat r) {
     struct aglx_context *ctx = gl_current_ctx;
     if (ctx) {
-        GLfloat fv[2]; fv[0] = s; fv[1] = t;
-        if (gl_list_record(ctx, gl_lop_texcoord2f(), fv, 2, (const GLint *)0, 0))
+        GLfloat fv[3]; fv[0] = s; fv[1] = t; fv[2] = r;
+        if (gl_list_record(ctx, gl_lop_texcoord2f(), fv, 3, (const GLint *)0, 0))
             return;
     }
-    cur_s = s; cur_t = t;
+    cur_s[0] = s; cur_t[0] = t; cur_r[0] = r;
+}
+
+void glTexCoord2f(GLfloat s, GLfloat t) {
+    /* The third coordinate defaults to 0 (§2.7), which is also what a 3D
+     * texture sampled by a 2D-coordinate application will see. */
+    glTexCoord3f(s, t, 0.0f);
 }
 
 void glTexCoord2fv(const GLfloat *v) {
     if (!v) { gl_set_error(GL_INVALID_VALUE); return; }
     glTexCoord2f(v[0], v[1]);
+}
+
+void glMultiTexCoord2f(GLenum target, GLfloat s, GLfloat t) {
+    struct aglx_context *ctx = gl_current_ctx;
+    if (target < GL_TEXTURE0 ||
+        target >= GL_TEXTURE0 + GL_MAX_TEXTURE_UNITS_IMPL) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+    int unit = (int)(target - GL_TEXTURE0);
+    if (ctx) {
+        GLfloat fv[3]; fv[0] = s; fv[1] = t; fv[2] = 0.0f;
+        GLint iv[1]; iv[0] = unit;
+        if (gl_list_record(ctx, gl_lop_multitexcoord(), fv, 3, iv, 1))
+            return;
+    }
+    cur_s[unit] = s; cur_t[unit] = t; cur_r[unit] = 0.0f;
 }
 
 /* ---- Internal: reset immediate-mode state ----
@@ -416,5 +448,7 @@ void gl_imm_reset(void) {
     imm.strip_parity = 0;
     cur_color.r = cur_color.g = cur_color.b = cur_color.a = 1.0f;
     cur_normal_init = 0;
-    cur_s = cur_t = 0.0f;
+    for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+        cur_s[u] = cur_t[u] = cur_r[u] = 0.0f;
+    }
 }

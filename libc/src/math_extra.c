@@ -207,6 +207,8 @@ float sqrtf(float x)            { return (float)sqrt((double)x); }
 float powf(float b, float e)    { return (float)pow((double)b, (double)e); }
 float expf(float x)             { return (float)exp((double)x); }
 float logf(float x)             { return (float)log((double)x); }
+/* Added in GL phase G10: the mipmap level of detail is a base-2 logarithm. */
+float log2f(float x)            { return (float)log2((double)x); }
 float sinf(float x)             { return (float)sin((double)x); }
 float cosf(float x)             { return (float)cos((double)x); }
 float tanf(float x)             { return (float)tan((double)x); }

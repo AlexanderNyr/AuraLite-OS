@@ -250,3 +250,96 @@ void gluDisk(GLUquadric *q, GLdouble inner, GLdouble outer,
         glEnd();
     }
 }
+
+/* ============================================================================
+ * Mipmap construction (phase G10)
+ *
+ * GLU builds the chain on the CLIENT side, in the application's pixel format,
+ * and uploads each level with glTexImage2D.  That is different from
+ * glGenerateMipmap, which filters the already-unpacked texels inside the
+ * implementation.  Both exist because both are what applications call; they
+ * must agree, and the unit tests check that they do.
+ * ==========================================================================*/
+
+static int glu_components(GLenum format) {
+    switch (format) {
+    case GL_RGB:             return 3;
+    case GL_RGBA:            return 4;
+    case GL_LUMINANCE:       return 1;
+    case GL_LUMINANCE_ALPHA: return 2;
+    case GL_ALPHA:           return 1;
+    default:                 return 0;
+    }
+}
+
+int gluScaleImageHalf(GLenum format, GLsizei width, GLsizei height,
+                      const unsigned char *src, unsigned char *dst) {
+    int comps = glu_components(format);
+    if (comps == 0 || !src || !dst || width <= 0 || height <= 0) return 1;
+
+    GLsizei dw = width  > 1 ? width  / 2 : 1;
+    GLsizei dh = height > 1 ? height / 2 : 1;
+
+    for (GLsizei y = 0; y < dh; y++) {
+        GLsizei y0 = (height > 1) ? y * 2 : 0;
+        GLsizei y1 = (height > 1) ? y0 + 1 : y0;
+        for (GLsizei x = 0; x < dw; x++) {
+            GLsizei x0 = (width > 1) ? x * 2 : 0;
+            GLsizei x1 = (width > 1) ? x0 + 1 : x0;
+            for (int c = 0; c < comps; c++) {
+                unsigned sum =
+                      src[((size_t)y0 * width + x0) * comps + c]
+                    + src[((size_t)y0 * width + x1) * comps + c]
+                    + src[((size_t)y1 * width + x0) * comps + c]
+                    + src[((size_t)y1 * width + x1) * comps + c];
+                /* +2 rounds to nearest so a long chain does not drift dark. */
+                dst[((size_t)y * dw + x) * comps + c] =
+                    (unsigned char)((sum + 2) >> 2);
+            }
+        }
+    }
+    return 0;
+}
+
+int gluBuild2DMipmaps(GLenum target, GLint internalFormat,
+                      GLsizei width, GLsizei height,
+                      GLenum format, GLenum type, const void *data) {
+    int comps = glu_components(format);
+    if (comps == 0) return (int)GL_INVALID_ENUM;
+    if (type != GL_UNSIGNED_BYTE) return (int)GL_INVALID_ENUM;
+    if (width <= 0 || height <= 0 || !data) return (int)GL_INVALID_VALUE;
+
+    glTexImage2D(target, 0, internalFormat, width, height, 0,
+                 format, type, data);
+
+    /* Two scratch buffers, ping-ponged: level n is read from one and written
+     * into the other, so no allocation happens per level. */
+    size_t max_bytes = (size_t)width * (size_t)height * (size_t)comps;
+    unsigned char *buf_a = (unsigned char *)malloc(max_bytes);
+    unsigned char *buf_b = (unsigned char *)malloc(max_bytes);
+    if (!buf_a || !buf_b) {
+        free(buf_a); free(buf_b);
+        return (int)GL_OUT_OF_MEMORY;
+    }
+
+    const unsigned char *src = (const unsigned char *)data;
+    unsigned char *dst = buf_a, *other = buf_b;
+    GLsizei w = width, h = height;
+    GLint level = 0;
+
+    while (w > 1 || h > 1) {
+        if (gluScaleImageHalf(format, w, h, src, dst) != 0) break;
+        w = w > 1 ? w / 2 : 1;
+        h = h > 1 ? h / 2 : 1;
+        level++;
+        glTexImage2D(target, level, internalFormat, w, h, 0, format, type, dst);
+
+        src = dst;
+        /* Swap the scratch buffers; `src` now points at what was `dst`. */
+        unsigned char *tmp = dst; dst = other; other = tmp;
+    }
+
+    free(buf_a);
+    free(buf_b);
+    return 0;
+}

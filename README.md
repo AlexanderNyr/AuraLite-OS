@@ -376,7 +376,7 @@ The initrd currently packages:
 | `/glaunch` | GUI application launcher. |
 | `/gtheme` | GUI Theme Manager. |
 | `/gltest` | OpenGL regression checks (prints PASS/FAIL to serial). |
-| `/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube. |
+| `/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube over a mipmapped floor. |
 | `/glgears` | OpenGL demo: the classic three-gear benchmark. |
 
 Common shell commands:
@@ -411,7 +411,7 @@ Start here:
 - [`docs/driver_guide.md`](docs/driver_guide.md) — driver inventory and notes.
 - [`docs/virtual_machines.md`](docs/virtual_machines.md) — VirtualBox/VMware setup.
 - [`docs/virtual_driver_matrix.md`](docs/virtual_driver_matrix.md) — QEMU/VirtualBox/VMware device compatibility matrix.
-- [`docs/opengl.md`](docs/opengl.md) — the software OpenGL 1.1 stack: supported subset, behaviour notes, performance.
+- [`docs/opengl.md`](docs/opengl.md) — the software OpenGL 1.1/1.3 stack: supported subset, mipmapping and multitexturing, behaviour notes, performance.
 - [`PLAN.md`](PLAN.md) — historical phase plan.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.

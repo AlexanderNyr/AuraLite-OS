@@ -85,8 +85,11 @@ static void lerp_vertex(const gl_vertex_t *a, const gl_vertex_t *b,
     out->normal.y = a->normal.y + (b->normal.y - a->normal.y) * t;
     out->normal.z = a->normal.z + (b->normal.z - a->normal.z) * t;
 
-    out->s = a->s + (b->s - a->s) * t;
-    out->t = a->t + (b->t - a->t) * t;
+    for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+        out->s[u] = a->s[u] + (b->s[u] - a->s[u]) * t;
+        out->t[u] = a->t[u] + (b->t[u] - a->t[u]) * t;
+        out->r[u] = a->r[u] + (b->r[u] - a->r[u]) * t;
+    }
 
     /* win/inv_w are recomputed by the viewport transform after clipping. */
     out->valid = 1;

@@ -819,7 +819,8 @@ debug: iso
 UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glimm $(BUILD_DIR)/test_glraster \
                 $(BUILD_DIR)/test_glclip $(BUILD_DIR)/test_gllight \
-                $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_glarray \
+                $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_gltex2 \
+                $(BUILD_DIR)/test_glarray \
                 $(BUILD_DIR)/test_glu $(BUILD_DIR)/test_glbackend \
                 $(BUILD_DIR)/test_gpu_syscall \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
@@ -935,12 +936,13 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
 #   test_gllight  the GL 1.1 lighting equation and materials
 #   test_gltex    texture objects, sampling, perspective correction, blending,
 #                 the alpha test and fog
+#   test_gltex2   GL 1.2/1.3: mipmaps, multitexturing, 3D textures, cube maps
 #
 # libauragui cannot be built for the host (it needs AuraLite's freestanding
 # libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
 # ag_render_now() -- the code under test is still the real auraglx.c.
 LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
-               test_gllight test_gltex test_glarray test_glu \
+               test_gllight test_gltex test_gltex2 test_glarray test_glu \
                test_glbackend
 
 $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \

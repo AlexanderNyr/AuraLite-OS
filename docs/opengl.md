@@ -111,13 +111,17 @@ frames, so output is tear-free without extra work.
 | Context | `aglxCreateContext` / `MakeCurrent` / `SwapBuffers` / `Resize` / `DestroyContext` |
 | Buffers | Colour (XRGB8888) and optional depth (float); `glClear`, `glClearColor`, `glClearDepth` |
 | Matrices | `GL_MODELVIEW` (32 deep) and `GL_PROJECTION` (8 deep); `glPushMatrix`/`glPopMatrix`, `glLoadIdentity`, `glLoadMatrixf`, `glMultMatrixf`, `glTranslatef`, `glRotatef`, `glScalef`, `glFrustum`, `glOrtho` |
-| Immediate mode | All ten primitive modes; `glVertex2f/3f/4f(v)`, `glColor3f/4f/3ub/4ub(v)`, `glNormal3f(v)`, `glTexCoord2f(v)` |
+| Immediate mode | All ten primitive modes; `glVertex2f/3f/4f(v)`, `glColor3f/4f/3ub/4ub(v)`, `glNormal3f(v)`, `glTexCoord2f(v)`, `glTexCoord3f`, `glMultiTexCoord2f` |
 | Rasterizer | Edge-function triangles with barycentric interpolation, Bresenham lines, points; top-left fill rule |
 | Depth | All eight comparison functions, `glDepthMask` |
 | Culling | `glCullFace` (FRONT/BACK/FRONT_AND_BACK), `glFrontFace` (CW/CCW) |
 | Clipping | All six frustum planes, attributes interpolated at the cut |
 | Lighting | 8 lights (positional, directional, spot), Blinn–Phong specular, distance attenuation, front/back materials, `GL_COLOR_MATERIAL`, `GL_NORMALIZE` |
-| Texturing | 2D textures, `GL_RGB`/`RGBA`/`LUMINANCE`/`LUMINANCE_ALPHA`/`ALPHA`, nearest and bilinear, `GL_REPEAT`/`CLAMP`/`CLAMP_TO_EDGE`, `MODULATE`/`REPLACE`/`DECAL`/`BLEND`, **perspective-correct** interpolation |
+| Texturing | 2D textures, `GL_RGB`/`RGBA`/`LUMINANCE`/`LUMINANCE_ALPHA`/`ALPHA`, nearest and bilinear, `GL_REPEAT`/`CLAMP`/`CLAMP_TO_EDGE`/`CLAMP_TO_BORDER`, `MODULATE`/`REPLACE`/`DECAL`/`BLEND`, **perspective-correct** interpolation |
+| Mipmaps | Full chains, all four mipmap filters, `glGenerateMipmap`, `gluBuild2DMipmaps`, `GL_TEXTURE_BASE_LEVEL`/`MAX_LEVEL`; **per-triangle** LOD (see below) |
+| Multitexturing | 2 units, `glActiveTexture`, `glClientActiveTexture`, per-unit enables, bindings and environment |
+| 3D textures | `glTexImage3D`, `GL_TEXTURE_3D`, trilinear sampling, `GL_TEXTURE_WRAP_R` |
+| Cube maps | `GL_TEXTURE_CUBE_MAP`, six faces, direction-vector lookup by major axis, mipmapped |
 | Fragment ops | Alpha test, blending (full factor set), fog (`LINEAR`/`EXP`/`EXP2`), scissor |
 | Arrays | Vertex/colour/normal/texcoord arrays, arbitrary stride, eight component types; `glDrawArrays`, `glDrawElements`, `glArrayElement` |
 | Buffer objects | GL 1.5 subset: `glGenBuffers`, `glBindBuffer`, `glBufferData`, `glBufferSubData`, `glDeleteBuffers` |
@@ -131,9 +135,9 @@ frames, so output is tear-free without extra work.
 | Missing | Notes |
 |---|---|
 | Shaders (GLSL) | Needs an interpreter; planned as G11 in `GL_PLAN.md` |
-| Mipmaps | `glTexImage2D` accepts `level != 0` but does not store it; minification uses the base image |
-| 3D and cube-map textures | Planned as G10 |
-| Multitexturing | Single texture unit only |
+| Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
+| `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
+| More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
 | Stencil buffer | `GL_STENCIL_BUFFER_BIT` is accepted by `glClear` and ignored |
 | Accumulation buffer | Not present |
 | `glReadPixels` / `glCopyTexImage` | Read back with `aglxGetColorBuffer()` instead |
@@ -166,6 +170,45 @@ framebuffer's top-left origin happens only when a pixel is addressed, so
 
 **Texture row 0 is the bottom row**, matching GL's texture coordinate origin.
 No vertical flip is applied at sample time.
+
+**Mipmap level of detail is chosen per triangle, not per fragment.** This is
+the one place where the implementation knowingly departs from what hardware
+does, so it is worth understanding rather than discovering.
+
+Hardware evaluates the LOD for every fragment from the screen-space
+derivatives of the texture coordinates. A scanline rasterizer has no `dFdx` or
+`dFdy`, so this implementation computes one level for the whole primitive, at
+setup, from the ratio of its texture-space area to its screen-space area:
+
+```
+lod = log2( sqrt( texture-space area / screen-space area ) )
+```
+
+That is *exact* for a triangle at constant depth, and progressively wrong for
+a strongly foreshortened one. A ground plane stretching to the horizon,
+drawn as a single quad, gets one averaged level for the whole thing — too
+blurry in the foreground and still aliased in the distance.
+
+**The fix is to tessellate large receding surfaces.** `/glcube`'s floor is
+split into a 16×16 grid for exactly this reason, and the comment in
+`userspace/glcube/glcube.c` says so. Tessellation is cheap; a per-fragment
+derivative is not, in a rasterizer whose bottleneck is already arithmetic.
+
+Per-fragment LOD is possible by carrying `du/dx` through the edge functions
+and is the natural follow-up if the per-triangle version proves too coarse.
+
+**Texture units combine in order.** Unit 0's output becomes unit 1's incoming
+fragment colour, so `GL_MODULATE` on both units yields the product of the two
+textures. `glTexEnv`, `glTexParameter`, `glTexImage*` and `glBindTexture` all
+act on the unit selected by `glActiveTexture`; the *client* selector used by
+`glTexCoordPointer` is separate and set by `glClientActiveTexture`. `glTexCoord`
+itself always writes unit 0 — `glActiveTexture` does not redirect it.
+
+**A mipmap min filter on a texture with no chain falls back to level 0.**
+That is the specification's incomplete-texture rule, and it is why the GL
+default of `GL_NEAREST_MIPMAP_LINEAR` still draws a plain `glTexImage2D`
+texture correctly. Re-uploading level 0 discards any chain built from the
+previous image, since the smaller levels would otherwise still describe it.
 
 **`glOrtho` negates the z axis.** With `glOrtho(l, r, b, t, -1, 1)`, an object
 at object-space `z = +0.5` ends up at window depth 0.25 — *nearer* than one at
@@ -200,6 +243,25 @@ that. Host figures (native, `-O2`):
 | `gluSphere(24×18)`, 280×210, lit | ~0.26 ms/frame |
 | 10 000 triangles, immediate mode | ~4.5 ms |
 | 10 000 triangles, `glDrawArrays` | ~4.6 ms |
+
+Mipmap filtering cost, measured on a 16×16-tile textured floor at 320×240
+(the `/glcube` ground plane):
+
+| Filter | Cost |
+|---|---|
+| `GL_NEAREST_MIPMAP_NEAREST` | ~2.6 ms/frame |
+| `GL_LINEAR` (no mipmaps) | ~3.2 ms/frame |
+| `GL_LINEAR_MIPMAP_NEAREST` | ~3.9 ms/frame |
+| `GL_LINEAR_MIPMAP_LINEAR` | ~5.9 ms/frame |
+
+Worth reading carefully: `GL_NEAREST_MIPMAP_NEAREST` is **faster** than
+un-mipmapped `GL_LINEAR`, because it reads one texel instead of four and the
+smaller levels sit in cache. Trilinear (`GL_LINEAR_MIPMAP_LINEAR`) costs
+roughly 1.9× un-mipmapped, since it samples eight texels across two levels.
+If a scene is fill-bound, `GL_LINEAR_MIPMAP_NEAREST` is usually the right
+compromise: most of the quality, about two-thirds of the cost.
+
+Mipmaps also cost memory: a full chain is 4/3 of the base image.
 
 Under QEMU expect roughly an order of magnitude worse. Practical advice:
 
@@ -243,9 +305,9 @@ syscall for 3D submission.
 
 | Program | What it shows |
 |---|---|
-| `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array. |
+| `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, and a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 170+ checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 205 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -271,8 +333,10 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glclip.c` | Frustum clipping and the attribute stack, 28 |
 | `tests/unit/test_gllight.c` | The lighting equation and materials, 32 |
 | `tests/unit/test_gltex.c` | Texturing, perspective correction, blending, fog, 37 |
+| `tests/unit/test_gltex2.c` | Mipmaps, multitexturing, 3D textures, cube maps, 36 |
 | `tests/unit/test_glarray.c` | Arrays, buffer objects, display lists, 36 |
 | `tests/unit/test_glu.c` | GLU helpers and quadrics, 21 |
+| `tests/unit/test_glbackend.c` | The backend seam and the VirGL candidate, 17 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test

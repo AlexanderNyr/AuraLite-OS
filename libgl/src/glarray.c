@@ -71,7 +71,9 @@ void gl_array_set_defaults(struct aglx_context *ctx) {
     array_defaults(&ctx->array_vertex,   4, GL_FLOAT);
     array_defaults(&ctx->array_color,    4, GL_FLOAT);
     array_defaults(&ctx->array_normal,   3, GL_FLOAT);
-    array_defaults(&ctx->array_texcoord, 4, GL_FLOAT);
+    for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+        array_defaults(&ctx->array_texcoord[u], 4, GL_FLOAT);
+    }
 
     for (int i = 0; i < GL_MAX_BUFFERS_IMPL; i++) {
         ctx->buffers[i].name  = 0;
@@ -170,9 +172,14 @@ void glDeleteBuffers(GLsizei n, const GLuint *buffers) {
 
         /* An array still referencing the deleted buffer would dereference an
          * offset against freed storage on the next draw.  Disarm it. */
-        gl_array_t *arrays[4] = { &ctx->array_vertex, &ctx->array_color,
-                                  &ctx->array_normal, &ctx->array_texcoord };
-        for (int a = 0; a < 4; a++) {
+        gl_array_t *arrays[3 + GL_MAX_TEXTURE_UNITS_IMPL];
+        arrays[0] = &ctx->array_vertex;
+        arrays[1] = &ctx->array_color;
+        arrays[2] = &ctx->array_normal;
+        for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+            arrays[3 + u] = &ctx->array_texcoord[u];
+        }
+        for (int a = 0; a < 3 + GL_MAX_TEXTURE_UNITS_IMPL; a++) {
             if (arrays[a]->buffer == buffers[k]) {
                 arrays[a]->buffer = 0;
                 arrays[a]->ptr    = (const void *)0;
@@ -269,7 +276,12 @@ static gl_array_t *array_slot(struct aglx_context *ctx, GLenum which) {
     case GL_VERTEX_ARRAY:        return &ctx->array_vertex;
     case GL_COLOR_ARRAY:         return &ctx->array_color;
     case GL_NORMAL_ARRAY:        return &ctx->array_normal;
-    case GL_TEXTURE_COORD_ARRAY: return &ctx->array_texcoord;
+    /* The texture-coordinate array is selected by glClientActiveTexture, not
+     * by glActiveTexture: the client-side and server-side selectors are
+     * independent in GL 1.3, and mixing them up silently feeds unit 1 the
+     * coordinates meant for unit 0. */
+    case GL_TEXTURE_COORD_ARRAY:
+        return &ctx->array_texcoord[ctx->client_active_texture];
     default:                     return (gl_array_t *)0;
     }
 }
@@ -354,7 +366,8 @@ void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pt
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
     if (size < 1 || size > 4) { gl_set_error(GL_INVALID_VALUE); return; }
-    set_pointer(ctx, &ctx->array_texcoord, size, type, stride, ptr);
+    set_pointer(ctx, &ctx->array_texcoord[ctx->client_active_texture],
+                size, type, stride, ptr);
 }
 
 /* ============================================================================
@@ -470,9 +483,17 @@ void glArrayElement(GLint i) {
         read_element(ctx, &ctx->array_normal, i, v, 1)) {
         glNormal3f(v[0], v[1], v[2]);
     }
-    if (ctx->array_texcoord.enabled &&
-        read_element(ctx, &ctx->array_texcoord, i, v, 0)) {
-        glTexCoord2f(v[0], v[1]);
+    for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+        gl_array_t *a = &ctx->array_texcoord[u];
+        if (!a->enabled) continue;
+        if (!read_element(ctx, a, i, v, 0)) continue;
+        if (u == 0) {
+            /* Unit 0 goes through glTexCoord3f so a three-component array
+             * feeds a 3D texture's r coordinate. */
+            glTexCoord3f(v[0], v[1], a->size >= 3 ? v[2] : 0.0f);
+        } else {
+            glMultiTexCoord2f((GLenum)(GL_TEXTURE0 + u), v[0], v[1]);
+        }
     }
     if (ctx->array_vertex.enabled &&
         read_element(ctx, &ctx->array_vertex, i, v, 0)) {

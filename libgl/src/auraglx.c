@@ -198,17 +198,33 @@ int aglxResize(aglx_context_t *ctx, int width, int height) {
 
     if (width == ctx->width && height == ctx->height) return 0;
 
-    /* Allocate into a scratch context first, so a failed resize leaves the
-     * existing buffers intact and the application can keep rendering. */
-    struct aglx_context probe;
-    memset(&probe, 0, sizeof(probe));
-    if (ctx_alloc_buffers(&probe, width, height, ctx->flags) != 0) {
-        return -1;
+    /* Allocate the new buffers BEFORE releasing the old ones, so a failed
+     * resize leaves the existing ones intact and the application can keep
+     * rendering.
+     *
+     * This used to allocate into a scratch `struct aglx_context` on the
+     * stack.  That was fine while the context was small, and became a
+     * user-mode page fault the moment phase G10 grew gl_texture_t with its
+     * per-face mipmap chains: sizeof(struct aglx_context) went past 130 KB,
+     * comfortably more stack than a user process here has.  Two pointers do
+     * the same job and cannot outgrow the stack. */
+    size_t pixels = (size_t)width * (size_t)height;
+
+    gl_pixel_t *new_color = (gl_pixel_t *)malloc(pixels * sizeof(gl_pixel_t));
+    if (!new_color) return -1;
+
+    float *new_depth = NULL;
+    if (ctx->flags & AGLX_DEPTH) {
+        new_depth = (float *)malloc(pixels * sizeof(float));
+        if (!new_depth) {
+            free(new_color);
+            return -1;
+        }
     }
 
     ctx_free_buffers(ctx);
-    ctx->color  = probe.color;
-    ctx->depth  = probe.depth;
+    ctx->color  = new_color;
+    ctx->depth  = new_depth;
     ctx->width  = width;
     ctx->height = height;
 

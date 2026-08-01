@@ -10,6 +10,8 @@
  * this file never deals with it directly.
  */
 
+#include <math.h>
+
 #include "GL/gl.h"
 #include "glcontext.h"
 #include "glvertex.h"
@@ -277,6 +279,63 @@ static int is_top_left(GLfloat dx, GLfloat dy) {
     return (dy == 0.0f && dx < 0.0f) || (dy < 0.0f);
 }
 
+/* ---- Per-triangle mipmap level of detail (phase G10) ----
+ *
+ * Hardware evaluates the LOD per FRAGMENT from dFdx/dFdy of the texture
+ * coordinates.  A scanline rasterizer has no derivatives available, so this
+ * computes ONE level for the whole primitive:
+ *
+ *     lod = log2( sqrt( texture-space area / screen-space area ) )
+ *
+ * The ratio of areas is the square of the average scale factor between the
+ * two spaces, so its square root is "texels per pixel" and its base-2
+ * logarithm is exactly the mipmap level at which one texel covers one pixel.
+ *
+ * WHEN THIS IS WRONG, AND WHY IT IS STILL THE RIGHT CHOICE HERE
+ *
+ * It is exact for a triangle at constant depth, and progressively wrong for a
+ * foreshortened one: a ground plane receding to the horizon has a texel/pixel
+ * ratio that varies by orders of magnitude across the primitive, and gets a
+ * single averaged level where hardware would blend several.  The cure is to
+ * tessellate such surfaces -- which is cheap -- rather than to pay a
+ * derivative computation on every one of the millions of fragments a software
+ * rasterizer already struggles with.  Per-fragment LOD is a possible follow-up
+ * (carry du/dx through the edge functions); it is not free.
+ *
+ * The texture-space area uses the PROJECTED coordinates s/w, t/w rather than
+ * the raw ones, so a perspective primitive is measured where it is actually
+ * drawn.
+ */
+static GLfloat triangle_lod(const gl_texture_t *tex,
+                            const gl_vertex_t *v0, const gl_vertex_t *v1,
+                            const gl_vertex_t *v2,
+                            GLfloat screen_area2, int unit) {
+    if (!gl_texture_uses_mipmaps(tex)) return 0.0f;
+
+    GLfloat tw = 0.0f, th = 0.0f;
+    if (!gl_texture_base_size(tex, &tw, &th)) return 0.0f;
+    if (tw <= 0.0f || th <= 0.0f) return 0.0f;
+
+    /* Texture-space positions in TEXELS. */
+    GLfloat ax = v0->s[unit] * tw, ay = v0->t[unit] * th;
+    GLfloat bx = v1->s[unit] * tw, by = v1->t[unit] * th;
+    GLfloat cx = v2->s[unit] * tw, cy = v2->t[unit] * th;
+
+    GLfloat tex_area2 = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+    if (tex_area2 < 0.0f) tex_area2 = -tex_area2;
+
+    GLfloat scr_area2 = screen_area2 < 0.0f ? -screen_area2 : screen_area2;
+    /* A degenerate screen triangle covers no pixels, so the level it would
+     * pick never matters; returning 0 avoids a division by zero. */
+    if (scr_area2 < 1e-12f || tex_area2 <= 0.0f) return 0.0f;
+
+    GLfloat ratio = tex_area2 / scr_area2;
+    if (ratio <= 1.0f) return 0.0f;            /* magnifying: level 0 */
+
+    /* log2(sqrt(ratio)) == 0.5 * log2(ratio). */
+    return 0.5f * log2f(ratio);
+}
+
 void gl_raster_triangle(struct aglx_context *ctx,
                         const gl_vertex_t *a, const gl_vertex_t *b,
                         const gl_vertex_t *c) {
@@ -379,8 +438,7 @@ void gl_raster_triangle(struct aglx_context *ctx,
     GLfloat inv_area = 1.0f / area;
     int flat = (ctx->shade_model == GL_FLAT);
 
-    /* ---- Phase G6 per-fragment state, hoisted out of the loop ---- */
-    gl_texture_t *tex = gl_texture_current(ctx);
+    /* ---- Phase G6/G10 per-fragment state, hoisted out of the loop ---- */
     int do_blend = ctx->blend;
     int do_fog   = ctx->fog;
     int do_alpha = ctx->alpha_test;
@@ -392,8 +450,31 @@ void gl_raster_triangle(struct aglx_context *ctx,
      * 1/w linearly (those ARE linear in screen space) and divide at each
      * pixel. */
     GLfloat w0i = v0->inv_w, w1i = v1->inv_w, w2i = v2->inv_w;
-    GLfloat s0 = v0->s * w0i, s1 = v1->s * w1i, s2 = v2->s * w2i;
-    GLfloat t0 = v0->t * w0i, t1 = v1->t * w1i, t2 = v2->t * w2i;
+
+    /* One entry per texture unit (G10).  `tex[u]` is NULL when the unit
+     * contributes nothing, and the whole texturing block is skipped when no
+     * unit does. */
+    gl_texture_t *tex[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat s0u[GL_MAX_TEXTURE_UNITS_IMPL], s1u[GL_MAX_TEXTURE_UNITS_IMPL],
+            s2u[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat t0u[GL_MAX_TEXTURE_UNITS_IMPL], t1u[GL_MAX_TEXTURE_UNITS_IMPL],
+            t2u[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat r0u[GL_MAX_TEXTURE_UNITS_IMPL], r1u[GL_MAX_TEXTURE_UNITS_IMPL],
+            r2u[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat lod[GL_MAX_TEXTURE_UNITS_IMPL];
+    int any_tex = 0;
+
+    for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+        tex[u] = gl_texture_unit_source(ctx, u);
+        lod[u] = 0.0f;
+        s0u[u] = v0->s[u] * w0i; s1u[u] = v1->s[u] * w1i; s2u[u] = v2->s[u] * w2i;
+        t0u[u] = v0->t[u] * w0i; t1u[u] = v1->t[u] * w1i; t2u[u] = v2->t[u] * w2i;
+        r0u[u] = v0->r[u] * w0i; r1u[u] = v1->r[u] * w1i; r2u[u] = v2->r[u] * w2i;
+        if (tex[u]) {
+            any_tex = 1;
+            lod[u] = triangle_lod(tex[u], v0, v1, v2, area, u);
+        }
+    }
     /* Eye-space depth for fog, interpolated the same way. */
     GLfloat z0 = v0->eye.z * w0i, z1 = v1->eye.z * w1i, z2 = v2->eye.z * w2i;
     /* Flat shading takes the colour of the LAST vertex of the primitive
@@ -451,15 +532,30 @@ void gl_raster_triangle(struct aglx_context *ctx,
                         cc.a = l0 * v0->color.a + l1 * v1->color.a + l2 * v2->color.a;
                     }
 
-                    /* ---- Texturing, perspective-correct ---- */
-                    if (tex) {
+                    /* ---- Texturing, perspective-correct, unit by unit ----
+                     *
+                     * The units are applied IN ORDER: unit 0's output is the
+                     * incoming fragment colour for unit 1.  That chaining is
+                     * what makes GL_MODULATE on two units produce the product
+                     * of both textures, and it is the whole of fixed-function
+                     * multitexturing (§3.8.10). */
+                    if (any_tex) {
                         GLfloat inv_w = l0 * w0i + l1 * w1i + l2 * w2i;
                         if (inv_w > 1e-20f || inv_w < -1e-20f) {
                             GLfloat rw = 1.0f / inv_w;
-                            GLfloat ss = (l0 * s0 + l1 * s1 + l2 * s2) * rw;
-                            GLfloat tt = (l0 * t0 + l1 * t1 + l2 * t2) * rw;
-                            gl_color_t tc = gl_texture_sample(tex, ss, tt, 1);
-                            cc = gl_texture_env(ctx, cc, tc);
+                            for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+                                if (!tex[u]) continue;
+                                GLfloat ss = (l0 * s0u[u] + l1 * s1u[u]
+                                            + l2 * s2u[u]) * rw;
+                                GLfloat tt = (l0 * t0u[u] + l1 * t1u[u]
+                                            + l2 * t2u[u]) * rw;
+                                GLfloat rr = (l0 * r0u[u] + l1 * r1u[u]
+                                            + l2 * r2u[u]) * rw;
+                                gl_color_t tc =
+                                    gl_texture_sample_lod(tex[u], ss, tt, rr,
+                                                          lod[u]);
+                                cc = gl_texture_env_unit(ctx, u, cc, tc);
+                            }
                         }
                     }
 

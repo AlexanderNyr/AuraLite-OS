@@ -38,6 +38,8 @@ enum {
     LOP_ENABLE, LOP_DISABLE,
     LOP_SHADE_MODEL, LOP_CULL_FACE, LOP_FRONT_FACE, LOP_DEPTH_FUNC,
     LOP_BIND_TEXTURE, LOP_CALL_LIST,
+    /* G10 */
+    LOP_MULTITEXCOORD, LOP_ACTIVE_TEXTURE,
 };
 
 /* ============================================================================
@@ -226,7 +228,18 @@ void glCallList(GLuint list) {
         case LOP_VERTEX4F:      glVertex4f(c->f[0], c->f[1], c->f[2], c->f[3]); break;
         case LOP_COLOR4F:       glColor4f(c->f[0], c->f[1], c->f[2], c->f[3]); break;
         case LOP_NORMAL3F:      glNormal3f(c->f[0], c->f[1], c->f[2]); break;
-        case LOP_TEXCOORD2F:    glTexCoord2f(c->f[0], c->f[1]); break;
+        case LOP_TEXCOORD2F:
+            /* Recorded by glTexCoord3f, which glTexCoord2f routes through, so
+             * replaying the three-component form covers both. */
+            glTexCoord3f(c->f[0], c->f[1], c->f[2]);
+            break;
+        case LOP_MULTITEXCOORD:
+            glMultiTexCoord2f((GLenum)(GL_TEXTURE0 + c->i[0]),
+                              c->f[0], c->f[1]);
+            break;
+        case LOP_ACTIVE_TEXTURE:
+            glActiveTexture((GLenum)c->i[0]);
+            break;
         case LOP_PUSH_MATRIX:   glPushMatrix(); break;
         case LOP_POP_MATRIX:    glPopMatrix(); break;
         case LOP_LOAD_IDENTITY: glLoadIdentity(); break;
@@ -288,3 +301,5 @@ GLuint gl_lop_scalef(void)       { return LOP_SCALEF; }
 GLuint gl_lop_matrix_mode(void)  { return LOP_MATRIX_MODE; }
 GLuint gl_lop_enable(void)       { return LOP_ENABLE; }
 GLuint gl_lop_disable(void)      { return LOP_DISABLE; }
+GLuint gl_lop_multitexcoord(void){ return LOP_MULTITEXCOORD; }
+GLuint gl_lop_active_texture(void){ return LOP_ACTIVE_TEXTURE; }

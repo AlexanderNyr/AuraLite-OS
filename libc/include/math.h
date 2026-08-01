@@ -70,6 +70,7 @@ float sqrtf(float x);
 float powf(float base, float exp);
 float expf(float x);
 float logf(float x);
+float log2f(float x);
 float sinf(float x);
 float cosf(float x);
 float tanf(float x);
