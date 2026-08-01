@@ -290,7 +290,9 @@ LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
               $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o \
               $(USER_BUILD)/glarray.o $(USER_BUILD)/gllist.o \
               $(USER_BUILD)/glu.o $(USER_BUILD)/glbackend.o \
-              $(USER_BUILD)/glvirgl.o $(USER_BUILD)/glfbo.o
+              $(USER_BUILD)/glvirgl.o $(USER_BUILD)/glfbo.o \
+              $(USER_BUILD)/glsl_lex.o $(USER_BUILD)/glsl_type.o \
+              $(USER_BUILD)/glsl_parse.o $(USER_BUILD)/glsl_sema.o
 USER_GL_OBJ := $(LIBGL_OBJS)
 USER_CFLAGS += -I libgl/include
 
@@ -486,10 +488,21 @@ $(USER_BUILD)/glfbo.o: libgl/src/glfbo.c libgl/src/glcontext.h \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-# ---- GL applications ----
-$(USER_BUILD)/gltest.o: userspace/gltest/gltest.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+# The GLSL front end (phase G11a).  It depends on glsl.h and the public GL
+# types only -- deliberately not on glcontext.h, so the compiler can be built
+# and tested with no rendering context in sight.
+$(USER_BUILD)/glsl_%.o: libgl/src/glsl_%.c libgl/src/glsl.h \
+                        libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# ---- GL applications ----
+# /gltest reaches into libgl/src for glsl.h: it is libgl's own regression
+# suite, and the GLSL front end has no public entry point until phase G11c.
+$(USER_BUILD)/gltest.o: userspace/gltest/gltest.c libauragui/include/auragui.h \
+                        libgl/src/glsl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -I libgl/src -c $< -o $@
 
 $(USER_BUILD)/glcube.o: userspace/glcube/glcube.c libauragui/include/auragui.h \
                         libgl/include/GL/gl.h libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
@@ -828,7 +841,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_gltex2 \
                 $(BUILD_DIR)/test_glarray \
                 $(BUILD_DIR)/test_glu $(BUILD_DIR)/test_glbackend \
-                $(BUILD_DIR)/test_glfbo \
+                $(BUILD_DIR)/test_glfbo $(BUILD_DIR)/test_glsl \
                 $(BUILD_DIR)/test_gpu_syscall \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
@@ -923,9 +936,12 @@ LIBGL_TEST_SRCS := libgl/src/auraglx.c libgl/src/glstate.c \
                    libgl/src/gltexture.c libgl/src/glfrag.c \
                    libgl/src/glarray.c libgl/src/gllist.c \
                    libgl/src/glu.c libgl/src/glbackend.c \
-                   libgl/src/glvirgl.c libgl/src/glfbo.c
+                   libgl/src/glvirgl.c libgl/src/glfbo.c \
+                   libgl/src/glsl_lex.c libgl/src/glsl_type.c \
+                   libgl/src/glsl_parse.c libgl/src/glsl_sema.c
 
 LIBGL_TEST_HDRS := libgl/src/glcontext.h libgl/src/glvertex.h \
+                   libgl/src/glsl.h \
                    libgl/include/GL/glu.h libgl/include/GL/glbackend.h \
                    libgl/include/GL/gl.h libgl/include/GL/glmath.h \
                    libgl/include/GL/auraglx.h
@@ -945,13 +961,14 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
 #                 the alpha test and fog
 #   test_gltex2   GL 1.2/1.3: mipmaps, multitexturing, 3D textures, cube maps
 #   test_glfbo    framebuffer objects, renderbuffers and glReadPixels
+#   test_glsl     the GLSL ES 1.0 front end: lexer, parser, type checker
 #
 # libauragui cannot be built for the host (it needs AuraLite's freestanding
 # libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
 # ag_render_now() -- the code under test is still the real auraglx.c.
 LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
                test_gllight test_gltex test_gltex2 test_glarray test_glu \
-               test_glbackend test_glfbo
+               test_glbackend test_glfbo test_glsl
 
 $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
                                            $(LIBGL_TEST_SRCS) \

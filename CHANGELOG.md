@@ -2,6 +2,73 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase G11a — GLSL ES 1.0 front end] 2026-08-01
+
+The first quarter of the shader phase: a complete GLSL ES 1.0 compiler front
+end — lexer, recursive-descent parser and type checker — producing a typed AST.
+
+Not yet reachable from the GL API: `glCreateShader` arrives in G11c. Splitting
+the phase here is what makes it testable, because a front end can be driven to
+exhaustion with no rasterizer, no context and no window in sight.
+
+### Added
+- `libgl/src/glsl.h`, `glsl_lex.c`, `glsl_type.c`, `glsl_parse.c`,
+  `glsl_sema.c` — 2400 lines.
+- The full GLSL ES 1.0 language: scalar/vector/matrix/sampler types, structs,
+  arrays, functions with `in`/`out`/`inout`, every statement form, and the
+  built-in library (`sin`, `dot`, `mix`, `texture2D`, `lessThan`, …).
+- Stage-aware checking: `attribute` refused in a fragment shader, `discard` in
+  a vertex shader, and a diagnostic when a vertex shader never writes
+  `gl_Position` or a fragment shader neither writes `gl_FragColor` nor
+  discards.
+- `tests/unit/test_glsl.c`: **167 host checks**, most of them negative cases
+  asserting on the diagnostic text.
+- 18 in-OS checks in `/gltest` (**258 total**, was 240).
+
+### Diagnostics are the deliverable
+A shader that fails at run time leaves the application with nothing but the
+info log, so every diagnostic carries a line number and names the rule:
+
+```
+ERROR: 0:3: cannot initialise 'float' with 'int' (GLSL ES has no implicit conversions)
+ERROR: 0:12: relational operators need scalar operands; use lessThan()/greaterThan() for vectors
+```
+
+### Design notes
+- **One arena per compilation.** Every node, type and interned string comes
+  from a single 1 MB bump allocator, freed in one call. A parse that aborts
+  halfway leaks nothing, and there are no error paths unwinding partial trees.
+- **Errors are values, not control flow.** No setjmp, no abort. A failed parse
+  yields an error node whose type unifies with everything, so one mistake
+  produces one diagnostic instead of a cascade.
+- **Untrusted input is bounded everywhere.** Source size, token count, nesting
+  depth, symbol count and arena size are all hard limits reported as
+  diagnostics, because a shader is user input and a compiler that faults on
+  malformed input is a security problem, not a usability one.
+
+### Found while building it
+- **The AST node was 4× too big.** Inlining the function-parameter array cost
+  384 bytes on every node of every kind, and a 300-statement shader exhausted
+  the arena. Allocating it only for function nodes took the node from 504 to
+  128 bytes. Caught by a robustness test, not by review.
+- **Error recovery silenced everything after the first mistake.** The panic
+  flag was never cleared on a successful `;`, so a shader with three errors
+  reported one.
+- **Struct constructors parsed as undeclared identifiers.** Only the parser
+  knows which names are struct types, so the constructor tag has to be
+  attached during parsing.
+
+### Cost, measured
+| Shader | Compile | Arena |
+|---|---|---|
+| 22-line Blinn-Phong fragment shader | 0.037 ms | 140 KB |
+| 300-statement synthetic shader | 0.61 ms | 600 KB |
+
+### Verified
+`make test-unit` 65/65 binaries green (578 GL host checks across 13 suites);
+`/gltest` in QEMU 258/258; `test_opengl.sh` 86/86; clean under
+`-fsanitize=address,undefined`; `make iso` from a clean tree.
+
 ## [Phase G12 — Framebuffer objects, render-to-texture and glReadPixels] 2026-08-01
 
 Off-screen rendering. An application can now render into a texture and then

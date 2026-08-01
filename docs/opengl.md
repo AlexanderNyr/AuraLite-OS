@@ -137,7 +137,7 @@ frames, so output is tear-free without extra work.
 
 | Missing | Notes |
 |---|---|
-| Shaders (GLSL) | Needs an interpreter; planned as G11 in `GL_PLAN.md` |
+| Shader execution | The GLSL **front end** exists (phase G11a): shaders are lexed, parsed and type-checked, and diagnostics are produced. Executing the result is G11b; wiring it to the pipeline is G11c. There is no `glCreateShader` yet. |
 | Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
 | `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
 | More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
@@ -346,6 +346,81 @@ Under QEMU expect roughly an order of magnitude worse. Practical advice:
 
 ---
 
+## The GLSL front end (phase G11a)
+
+A GLSL ES 1.0 compiler front end lives in `libgl/src/glsl_*.c`: a lexer, a
+recursive-descent parser and a type checker, producing a typed AST. It is
+**not yet reachable from the GL API** — `glCreateShader` and friends arrive in
+G11c — but it is complete, tested and runs on the target.
+
+### What it accepts
+
+The GLSL ES 1.0 language: all the scalar, vector, matrix and sampler types,
+structs, arrays, functions with `in`/`out`/`inout` parameters, the full
+statement set, and the built-in function library (`sin`, `dot`, `mix`,
+`texture2D`, `lessThan`, …). `#version`, `#extension`, `#line`, `#pragma` and
+`precision` declarations are accepted and ignored; there is no preprocessor, so
+`#define` is refused rather than silently dropped.
+
+### Diagnostics are the product
+
+A shader that fails to compile at run time leaves the application with nothing
+but the info log, so the log is treated as the deliverable rather than an
+afterthought. Every diagnostic carries a line number and says what the rule
+is, not just that it was broken:
+
+```
+ERROR: 0:3: cannot initialise 'float' with 'int' (GLSL ES has no implicit conversions)
+ERROR: 0:7: swizzle 'z' selects a component beyond 'vec2'
+ERROR: 0:12: relational operators need scalar operands; use lessThan()/greaterThan() for vectors
+ERROR: 0:1: vertex shader never writes gl_Position
+```
+
+Of the 167 host tests, most are negative cases asserting on the *message*, not
+merely on the failure.
+
+### Rules worth knowing
+
+**There are no implicit conversions at all.** `float f = 1;` is an error, and
+so is `v * 2` for a `vec3` — the scalar must be `2.0`. This surprises everyone
+arriving from C, so the diagnostic names the rule explicitly.
+
+**Relational operators are scalars only.** `a < b` on two vectors is an error
+pointing at `lessThan()`; `==` on vectors is legal and yields one `bool`, while
+the component-wise form is `equal()`.
+
+**Swizzles come from three disjoint alphabets** — `xyzw`, `rgba`, `stpq` — and
+mixing them in one swizzle is an error. A swizzle with a repeated component
+reads fine but is not assignable.
+
+**Stage rules are enforced.** `attribute` is refused in a fragment shader,
+`discard` in a vertex shader; a vertex shader that never writes `gl_Position`
+and a fragment shader that neither writes `gl_FragColor` nor discards are both
+diagnosed, because either renders nothing and the mistake is otherwise
+invisible.
+
+### Cost
+
+| Shader | Compile time | Arena |
+|---|---|---|
+| 22-line Blinn–Phong fragment shader | 0.037 ms | 140 KB |
+| 300-statement synthetic shader | 0.61 ms | 600 KB |
+
+Compilation is fast enough to be irrelevant next to a single rendered frame.
+The arena is one megabyte per compilation, freed in a single call when the unit
+is destroyed; 112 KB of the floor is the type checker's symbol table.
+
+### What comes next
+
+G11b executes the AST; G11c connects it to `glCreateShader`/`glUseProgram`,
+generic vertex attributes and uniforms; G11d makes the fixed-function and
+shader paths coexist. Be warned by the plan's own framing: an AST interpreter
+running a fragment shader per pixel will be one to two orders of magnitude
+slower than the fixed-function path. That phase buys API coverage, not frames
+per second.
+
+---
+
 ## Backends
 
 `libgl` selects a rendering backend through a small table of function pointers
@@ -378,7 +453,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 240 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 258 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -409,6 +484,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glu.c` | GLU helpers and quadrics, 21 |
 | `tests/unit/test_glbackend.c` | The backend seam and the VirGL candidate, 17 |
 | `tests/unit/test_glfbo.c` | Framebuffer objects, renderbuffers, `glReadPixels`, 36 |
+| `tests/unit/test_glsl.c` | The GLSL ES 1.0 front end: lexing, parsing, types, diagnostics, 167 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test

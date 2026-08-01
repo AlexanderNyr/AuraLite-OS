@@ -28,6 +28,10 @@
 #include "GL/gl.h"
 #include "GL/auraglx.h"
 #include "GL/glu.h"
+/* The GLSL front end is internal to libgl, so this reaches into libgl/src.
+ * Legitimate here: /gltest is libgl's own regression suite, not an
+ * application, and the front end has no public entry point until G11c. */
+#include "glsl.h"
 #include "GL/glbackend.h"
 
 static int checks = 0, fails = 0;
@@ -1296,6 +1300,172 @@ static void test_gl_texture2(int wid) {
 }
 
 
+
+/* ---- Phase G11a: the GLSL front end ----
+ *
+ * Running the compiler ON THE TARGET matters more than it might look.  The
+ * front end leans on strtod, vsnprintf and a 1 MB arena allocation, all of
+ * which behave differently under AuraLite's freestanding libc than under the
+ * host's glibc.  A parser that works on the host and mis-lexes "1.5e-2" on
+ * the target would be found here and nowhere else.
+ *
+ * No rendering happens: G11a stops at a typed AST.  These checks are about
+ * whether the compiler runs at all, and whether it agrees with the host about
+ * what is valid.
+ */
+static void test_gl_glsl(void) {
+    printf("[gl] --- G11a: GLSL front end ---\n");
+
+    /* A realistic vertex shader must compile with an empty log. */
+    {
+        static const char *vs =
+            "attribute vec4 aPosition;\n"
+            "attribute vec2 aTexCoord;\n"
+            "uniform mat4 uMVP;\n"
+            "varying vec2 vTexCoord;\n"
+            "void main() {\n"
+            "  vTexCoord = aTexCoord;\n"
+            "  gl_Position = uMVP * aPosition;\n"
+            "}\n";
+        glsl_unit_t *u = glsl_compile(vs, GLSL_SHADER_VERTEX);
+        check(u != NULL, "glsl_vs_unit");
+        if (u) {
+            check(u->compiled, "glsl_vs_compiles");
+            check(glsl_unit_log(u)[0] == '\0', "glsl_vs_log_empty");
+            if (!u->compiled) printf("[gl]   log: %s", glsl_unit_log(u));
+            glsl_unit_free(u);
+        }
+    }
+
+    /* A fragment shader exercising texture lookup, a helper function and a
+     * loop -- the constructs G11b will have to execute. */
+    {
+        static const char *fs =
+            "precision mediump float;\n"
+            "varying vec2 vTexCoord;\n"
+            "uniform sampler2D uTexture;\n"
+            "uniform vec3 uLight[2];\n"
+            "float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }\n"
+            "void main() {\n"
+            "  vec4 t = texture2D(uTexture, vTexCoord);\n"
+            "  vec3 acc = vec3(0.0);\n"
+            "  for (int i = 0; i < 2; i++) { acc += uLight[i] * luma(t.rgb); }\n"
+            "  if (t.a < 0.05) discard;\n"
+            "  gl_FragColor = vec4(acc, t.a);\n"
+            "}\n";
+        glsl_unit_t *u = glsl_compile(fs, GLSL_SHADER_FRAGMENT);
+        check(u != NULL, "glsl_fs_unit");
+        if (u) {
+            check(u->compiled, "glsl_fs_compiles");
+            if (!u->compiled) printf("[gl]   log: %s", glsl_unit_log(u));
+            glsl_unit_free(u);
+        }
+    }
+
+    /* Float literal spellings go through strtod, which is the single most
+     * likely thing to differ between the host and AuraLite's libc. */
+    {
+        static const char *fs =
+            "void main() {\n"
+            "  float a = 1.0; float b = .5; float c = 1e3;\n"
+            "  float d = 1.5E-2; float e = 2.0f;\n"
+            "  gl_FragColor = vec4(a + b + c + d + e);\n"
+            "}\n";
+        glsl_unit_t *u = glsl_compile(fs, GLSL_SHADER_FRAGMENT);
+        check(u && u->compiled, "glsl_float_literals");
+        if (u && !u->compiled) printf("[gl]   log: %s", glsl_unit_log(u));
+        glsl_unit_free(u);
+    }
+
+    /* Diagnostics must arrive with the right line and readable text, since
+     * vsnprintf is what formats them. */
+    {
+        static const char *fs =
+            "void main() {\n"
+            "  float a = 1.0;\n"
+            "  float b = 1;\n"
+            "  gl_FragColor = vec4(a + b);\n"
+            "}\n";
+        glsl_unit_t *u = glsl_compile(fs, GLSL_SHADER_FRAGMENT);
+        check(u && !u->compiled, "glsl_rejects_implicit_conversion");
+        check(u && strstr(glsl_unit_log(u), "0:3:") != NULL,
+              "glsl_diag_has_line_number");
+        check(u && strstr(glsl_unit_log(u), "implicit conversion") != NULL,
+              "glsl_diag_explains_the_rule");
+        glsl_unit_free(u);
+    }
+
+    /* Stage rules differ between the two shader kinds. */
+    {
+        glsl_unit_t *u = glsl_compile(
+            "void main() { discard; gl_Position = vec4(0.0); }\n",
+            GLSL_SHADER_VERTEX);
+        check(u && !u->compiled, "glsl_discard_rejected_in_vertex");
+        glsl_unit_free(u);
+
+        u = glsl_compile("void main() { discard; }\n", GLSL_SHADER_FRAGMENT);
+        check(u && u->compiled, "glsl_discard_ok_in_fragment");
+        glsl_unit_free(u);
+    }
+
+    /* A vertex shader that never writes gl_Position renders nothing, so it is
+     * diagnosed rather than accepted. */
+    {
+        glsl_unit_t *u = glsl_compile("void main() { }\n",
+                                      GLSL_SHADER_VERTEX);
+        check(u && !u->compiled, "glsl_requires_gl_position");
+        glsl_unit_free(u);
+    }
+
+    /* Malformed input must terminate rather than hang or fault. */
+    {
+        glsl_unit_t *u = glsl_compile("void main() { vec4 v = vec4(1.0",
+                                      GLSL_SHADER_FRAGMENT);
+        check(u != NULL && !u->compiled, "glsl_truncated_source_survives");
+        glsl_unit_free(u);
+
+        u = glsl_compile("", GLSL_SHADER_FRAGMENT);
+        check(u != NULL && !u->compiled, "glsl_empty_source_survives");
+        glsl_unit_free(u);
+
+        check(glsl_compile(NULL, GLSL_SHADER_FRAGMENT) == NULL,
+              "glsl_null_source_returns_null");
+    }
+
+    /* Deep nesting must hit the depth limit, not the user stack -- the same
+     * class of failure that G12 found in aglxResize(). */
+    {
+        static char deep[2048];
+        int n = 0;
+        n += snprintf(deep + n, sizeof(deep) - (size_t)n,
+                      "void main() { float f = ");
+        for (int i = 0; i < 150 && n < 1500; i++) deep[n++] = '(';
+        n += snprintf(deep + n, sizeof(deep) - (size_t)n, "1.0");
+        for (int i = 0; i < 150 && n < 1900; i++) deep[n++] = ')';
+        snprintf(deep + n, sizeof(deep) - (size_t)n,
+                 "; gl_FragColor = vec4(f); }\n");
+
+        glsl_unit_t *u = glsl_compile(deep, GLSL_SHADER_FRAGMENT);
+        check(u != NULL, "glsl_deep_nesting_survives");
+        check(u && !u->compiled, "glsl_deep_nesting_diagnosed");
+        glsl_unit_free(u);
+    }
+
+    /* Repeated compilation must not exhaust the heap: each unit owns a 1 MB
+     * arena, so a leak of even a few would be obvious immediately. */
+    {
+        int all_ok = 1;
+        for (int i = 0; i < 40; i++) {
+            glsl_unit_t *u = glsl_compile(
+                "void main() { gl_FragColor = vec4(sin(1.0)); }\n",
+                GLSL_SHADER_FRAGMENT);
+            if (!u || !u->compiled) { all_ok = 0; glsl_unit_free(u); break; }
+            glsl_unit_free(u);
+        }
+        check(all_ok, "glsl_repeated_compiles_do_not_leak");
+    }
+}
+
 /* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
  *
  * The claim under test is that rendering into a texture and then sampling it
@@ -2087,6 +2257,7 @@ int main(void) {
     test_gl_arrays(wid);
     test_gl_glu(wid);
     test_gl_backend(wid);
+    test_gl_glsl();
 
     free(buf);
     ag_window_destroy(wid);

@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: G0–G10, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11, G13 PLANNED 📋
+## Status: G0–G10, G11a, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11b–d, G13 PLANNED 📋
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -63,7 +63,7 @@ in phase G7. Rationale:
 ```
 G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← done
 G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps  ← done
-G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0 (shader path)
+G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0    ← G11a done
 G12     →  FBO / render-to-texture, glReadPixels                    ← done
 G13     →  VirGL hardware path for the shader profile
 ```
@@ -1196,7 +1196,7 @@ why the size is not a round number.
 
 ---
 
-## Phase G11 — GLSL interpreter and the ES 2.0 shader path
+## Phase G11 — GLSL interpreter and the ES 2.0 shader path (G11a ✅ COMPLETE)
 
 **Objective:** programmable vertex and fragment stages. This is the single
 largest phase in the whole roadmap — realistically larger than G0–G9 combined —
@@ -1214,12 +1214,31 @@ state. The existing fixed-function path must keep working throughout, because
 
 ### Sub-phases
 
-**G11a — GLSL front end.** Lex and parse GLSL ES 1.0 into an AST; resolve
-types; report errors through `glGetShaderInfoLog`. Testable entirely on the
-host with no rendering: feed it valid and invalid shaders and check the
-diagnostics. Roughly 2500 lines.
+**G11a — GLSL front end.** ✅ **COMPLETE.** Lex and parse GLSL ES 1.0 into an
+AST; resolve types; produce diagnostics. Delivered in 2400 lines across
+`glsl.h`, `glsl_lex.c`, `glsl_type.c`, `glsl_parse.c` and `glsl_sema.c`, with
+167 host checks and 18 in-OS checks.
 
-**G11b — execution engine.** A register-based interpreter over the AST, or a
+*Outcome notes:*
+
+- **The AST node had to be split.** Inlining the function-parameter array put
+  384 bytes on every node of every kind, and a 300-statement shader ran the
+  arena out. Allocating the array only for function nodes took the node from
+  504 bytes to 128 — a 4× reduction for a one-line change, found only because
+  a robustness test compiled a deliberately long shader.
+- **Error recovery needed an explicit resynchronisation point.** The panic
+  flag that suppresses cascading diagnostics was never cleared on a successful
+  `;`, so the first mistake silenced every later one and the author would have
+  had to recompile once per error.
+- **Struct constructors needed a parser-side tag.** `P(1.0, vec2(2.0))` looks
+  like a function call, and only the parser knows `P` is a type — the checker
+  has no struct names in its symbol table. Without the tag the checker
+  reported the type as an undeclared identifier.
+- **Measured:** 0.037 ms and 140 KB of arena for a 22-line Blinn-Phong shader;
+  0.61 ms and 600 KB for a 300-statement one. Compilation is free next to a
+  frame.
+
+**G11b — execution engine.** 📋 NEXT. A register-based interpreter over the AST, or a
 bytecode VM if profiling demands it. Vector and matrix intrinsics, swizzles,
 the built-in function library (`texture2D`, `normalize`, `dot`, `mix`, …).
 Tested by running a shader over known inputs and checking outputs numerically,
