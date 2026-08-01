@@ -204,6 +204,15 @@ int  gl_shader_run_fragment(struct aglx_context *ctx, const float *varyings,
  * fixed-function transform and attribute latching. */
 void gl_imm_submit_vertex(struct aglx_context *ctx, const gl_vertex_t *v);
 
+/* glBegin/glEnd as the DRAW CALLS use them.  glBegin refuses to open a batch
+ * while a program is bound -- immediate mode has no attributes for a vertex
+ * shader to read -- and glDrawArrays needs an exemption from that rule. */
+void gl_imm_begin_internal(GLenum mode);
+void gl_imm_end_internal(void);
+
+/* 1 while a glBegin/glEnd pair is open. */
+int  gl_imm_in_begin(void);
+
 void gl_shader_set_defaults(struct aglx_context *ctx);
 void gl_shader_free_all(struct aglx_context *ctx);
 

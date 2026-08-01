@@ -546,9 +546,9 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
      * demanding it would make every ES 2.0 application draw nothing. */
     if (!gl_shader_active(ctx) && !ctx->array_vertex.enabled) return;
 
-    glBegin(mode);
+    gl_imm_begin_internal(mode);
     for (GLsizei k = 0; k < count; k++) glArrayElement(first + k);
-    glEnd();
+    gl_imm_end_internal();
 }
 
 void glDrawElements(GLenum mode, GLsizei count, GLenum type,
@@ -589,7 +589,7 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
         return;
     }
 
-    glBegin(mode);
+    gl_imm_begin_internal(mode);
     for (GLsizei k = 0; k < count; k++) {
         const unsigned char *q = idx_base + (size_t)k * isz;
         GLint index;
@@ -602,5 +602,5 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
         }
         glArrayElement(index);
     }
-    glEnd();
+    gl_imm_end_internal();
 }

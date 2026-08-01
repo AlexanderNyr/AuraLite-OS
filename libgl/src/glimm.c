@@ -77,6 +77,15 @@ static struct {
     int         strip_parity;
 } imm;
 
+/* Set while glDrawArrays/glDrawElements drive a batch.  They call glBegin
+ * themselves, so the "no immediate mode with a shader" rule above has to
+ * exempt them -- they are the shader path's own entry, not an application
+ * mixing the two. */
+static int imm_internal;
+
+void gl_imm_begin_internal(GLenum mode);
+void gl_imm_end_internal(void);
+
 /* Current per-vertex attributes, latched when glVertex is called (§2.7). */
 static gl_color_t cur_color = { 1.0f, 1.0f, 1.0f, 1.0f };
 static glm_vec3   cur_normal;
@@ -110,6 +119,20 @@ static void emit_point(struct aglx_context *ctx, const gl_vertex_t *v) {
 }
 
 /* Feed one fully transformed vertex into the assembler. */
+/* Is a glBegin/glEnd pair open?  Entry points that may not be called inside
+ * one consult this. */
+int gl_imm_in_begin(void) { return imm.active; }
+
+void gl_imm_begin_internal(GLenum mode) {
+    imm_internal = 1;
+    glBegin(mode);
+    imm_internal = 0;
+}
+
+void gl_imm_end_internal(void) {
+    glEnd();
+}
+
 /* Feed a vertex the SHADER pipeline produced straight into assembly.
  *
  * The shader path skips glVertex4f entirely -- there is no current colour,
@@ -264,6 +287,27 @@ void glBegin(GLenum mode) {
      * wants, since half a mesh drawn nowhere helps nobody. */
     if (!gl_fbo_target_ok(ctx)) {
         gl_set_error(GL_INVALID_FRAMEBUFFER_OPERATION);
+        return;
+    }
+
+    /* ---- Immediate mode and shaders do not mix (phase G11d) ----
+     *
+     * glVertex3f feeds the FIXED-FUNCTION transform: there is no attribute
+     * for a vertex shader to read, because glVertex is not an attribute.
+     * Before this check the two half-combined -- the fixed-function matrices
+     * placed the geometry and the fragment shader coloured it -- which is a
+     * hybrid no GL implementation produces and no application could rely on.
+     *
+     * Refusing is the honest answer.  Silently ignoring the program would be
+     * worse: an application that forgot glUseProgram(0) would see its
+     * fixed-function geometry render, look right here, and draw nothing
+     * recognisable on real hardware.
+     *
+     * `imm_internal` exempts glDrawArrays and glDrawElements, which open a
+     * batch on the application's behalf and then feed it through the SHADER
+     * path -- see glArrayElement(). */
+    if (!imm_internal && gl_shader_active(ctx)) {
+        gl_set_error(GL_INVALID_OPERATION);
         return;
     }
 

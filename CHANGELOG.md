@@ -2,6 +2,58 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase G11d — fixed function and shaders together] 2026-08-01
+
+The last quarter of the shader phase, and the one the plan flagged as
+carrying most of the risk: "the two paths must not fight over state." They
+did, in four places.
+
+### Fixed
+1. **Shaded points and lines were not shaded.** `gl_raster_point()` and
+   `gl_raster_line()` wrote the vertex colour, which the shader path leaves at
+   white — so a shaded `GL_LINE_LOOP` came out **white** instead of running
+   the fragment shader. Every G11c test drew triangles, so nothing exercised
+   those two functions with a program bound. `glPolygonMode(GL_LINE)`, which
+   routes triangles through them, had the same problem.
+2. **Immediate mode silently hybridised with a shader.** `glVertex` is not an
+   attribute, so a vertex shader has nothing to read from it — yet the
+   fixed-function matrices placed the geometry and the fragment shader
+   coloured it. An application that forgot `glUseProgram(0)` would have seen
+   it render, look right, and draw nothing recognisable on real hardware. Now
+   `GL_INVALID_OPERATION`; `glDrawArrays` and `glDrawElements` stay exempt
+   because they open a batch on the application's behalf.
+3. **`glUseProgram` inside `glBegin`/`glEnd`** was accepted, which would put
+   half a triangle through one program and half through another.
+4. **`glUseProgram` inside `glNewList(GL_COMPILE)` executed immediately**, so
+   compiling a list silently changed the current program and the next
+   unrelated draw call used one the application never bound.
+
+### Verified rather than assumed
+Framebuffer operations **do** apply to shaded fragments — scissor, culling,
+depth mask, blending, FBO rendering. Fixed-function shading state **does not**
+reach one — lighting, fog, the alpha test, the texture environment,
+`glShadeModel`, the `MODELVIEW`/`PROJECTION` matrices and the fixed-function
+vertex arrays. Attribute arrays survive a program switch; uniform values
+survive unbinding; programs are per-context; resizing with one bound works.
+
+### Added
+- `tests/unit/test_glcoexist.c`: **59 host checks**, organised as the three
+  questions the audit asked of every piece of shared state.
+- 28 in-OS checks in `/gltest` (**358 total**, was 330).
+
+### Method
+The audit was a probe program that tried each interaction and printed what
+happened, rather than tests written from the specification. Three of the four
+defects were combinations nobody would have thought to assert on — the
+argument for auditing a seam by enumeration rather than by imagination. Each
+fix was then verified by reverting it and confirming the new tests fail: the
+line-shading revert produces six failures.
+
+### Verified
+`make test-unit` 68/68 binaries green (923 GL host checks across 16 suites);
+`/gltest` in QEMU 358/358; `test_opengl.sh` 86/86; `make iso` from a clean
+tree. No regression in any fixed-function check.
+
 ## [Phase G11c — the shader pipeline] 2026-08-01
 
 Shaders reach the GL API and draw pixels. `glCreateShader` through

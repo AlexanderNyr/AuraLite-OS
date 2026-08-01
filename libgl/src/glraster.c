@@ -54,10 +54,45 @@ static int win_to_pixel(GLfloat v) {
     return i;
 }
 
+/* Run the fragment shader for one point or line pixel.
+ *
+ * Points and lines went through this path unshaded until G11d: they wrote
+ * v->color, which the shader vertex stage leaves at white, so a shaded
+ * GL_LINE_LOOP or GL_POINTS came out WHITE instead of running the fragment
+ * shader at all.  Nothing caught it because every shader test drew triangles.
+ *
+ * Returns 0 when the fragment was discarded.
+ */
+static int shade_pixel(struct aglx_context *ctx, const gl_vertex_t *v,
+                       int px_x, int px_y, gl_pixel_t *out) {
+    gl_color_t sc;
+    sc.r = sc.g = sc.b = 0.0f;
+    sc.a = 1.0f;
+
+    /* A point or a line has no barycentric interpolation to do -- the
+     * varyings are the vertex's own, or the endpoint-interpolated ones the
+     * caller already computed. */
+    if (!gl_shader_run_fragment(ctx, v->varying,
+                                (GLfloat)px_x + 0.5f, (GLfloat)px_y + 0.5f,
+                                v->win.z, 1, &sc)) {
+        return 0;
+    }
+    *out = gl_pack_color(sc);
+    return 1;
+}
+
 void gl_raster_point(struct aglx_context *ctx, const gl_vertex_t *v) {
     if (!v->valid) return;
-    put_pixel(ctx, win_to_pixel(v->win.x), win_to_pixel(v->win.y),
-              gl_pack_color(v->color));
+
+    int px_x = win_to_pixel(v->win.x), px_y = win_to_pixel(v->win.y);
+
+    if (gl_shader_active(ctx)) {
+        gl_pixel_t c;
+        if (shade_pixel(ctx, v, px_x, px_y, &c)) put_pixel(ctx, px_x, px_y, c);
+        return;
+    }
+
+    put_pixel(ctx, px_x, px_y, gl_pack_color(v->color));
 }
 
 /* ---- Cohen-Sutherland region codes, used to clip a segment to the
@@ -184,6 +219,11 @@ void gl_raster_line(struct aglx_context *ctx,
     int steps = (dx > dy) ? dx : dy;
     if (steps == 0) {
         /* Degenerate line: both endpoints land on the same pixel. */
+        if (gl_shader_active(ctx)) {
+            gl_pixel_t sc;
+            if (shade_pixel(ctx, a, x0, y0, &sc)) put_pixel(ctx, x0, y0, sc);
+            return;
+        }
         put_pixel(ctx, x0, y0, gl_pack_color(ca));
         return;
     }
@@ -191,8 +231,41 @@ void gl_raster_line(struct aglx_context *ctx,
     int flat = (ctx->shade_model == GL_FLAT);
     gl_pixel_t flat_color = gl_pack_color(cb2);  /* flat uses the last vertex */
 
+    /* Shaded lines interpolate their varyings along the segment, using the
+     * same clipped parameters t0/t1 the colours above use. */
+    int use_shader = gl_shader_active(ctx);
+    int nvary = use_shader ? a->varying_count : 0;
+    if (nvary > GL_MAX_VARYING_FLOATS) nvary = GL_MAX_VARYING_FLOATS;
+
+    gl_vertex_t sv;
+    if (use_shader) {
+        sv = *a;
+        sv.varying_count = nvary;
+    }
+
     int step = 0;
     for (;;) {
+        if (use_shader) {
+            GLfloat t = (GLfloat)step / (GLfloat)steps;
+            GLfloat tt = t0 + (t1 - t0) * t;
+            for (int k = 0; k < nvary; k++) {
+                sv.varying[k] = a->varying[k]
+                              + (b->varying[k] - a->varying[k]) * tt;
+            }
+            sv.win.z = a->win.z + (b->win.z - a->win.z) * tt;
+
+            gl_pixel_t sc;
+            if (shade_pixel(ctx, &sv, x0, y0, &sc)) put_pixel(ctx, x0, y0, sc);
+
+            if (x0 == x1 && y0 == y1) break;
+            if (step > steps + 2) break;
+            int e2s = err * 2;
+            if (e2s > -dy) { err -= dy; x0 += sx; }
+            if (e2s <  dx) { err += dx; y0 += sy; }
+            step++;
+            continue;
+        }
+
         gl_pixel_t c;
         if (flat) {
             c = flat_color;

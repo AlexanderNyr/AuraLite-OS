@@ -671,6 +671,28 @@ void glLinkProgram(GLuint program) {
 void glUseProgram(GLuint program) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+
+    /* Changing the program mid-primitive is GL_INVALID_OPERATION: half the
+     * vertices of a triangle would have gone through one program and half
+     * through another, and there is no defined answer for what that draws. */
+    if (gl_imm_in_begin()) { gl_set_error(GL_INVALID_OPERATION); return; }
+
+    /* glUseProgram cannot be compiled into a display list.  Display lists are
+     * a GL 1.1 feature and the shader path is ES 2.0; the two never coexisted
+     * in a real implementation, so there is no established meaning for the
+     * combination.
+     *
+     * Executing it during glNewList(GL_COMPILE) -- which is what happened
+     * before this check -- is the worst of the options: compiling a list
+     * would silently change the CURRENT program as a side effect, and the
+     * application would find its next unrelated draw call using a program it
+     * never bound.  Flagging it follows the convention gllist.c already uses
+     * for commands it cannot record. */
+    if (gl_list_compiling(ctx)) {
+        gl_set_error(GL_INVALID_OPERATION);
+        return;
+    }
+
     if (program == 0) { ctx->program_binding = 0; return; }
 
     gl_program_t *p = find_program(ctx, program);

@@ -859,6 +859,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glu $(BUILD_DIR)/test_glbackend \
                 $(BUILD_DIR)/test_glfbo $(BUILD_DIR)/test_glsl \
                 $(BUILD_DIR)/test_glslexec $(BUILD_DIR)/test_glprog \
+                $(BUILD_DIR)/test_glcoexist \
                 $(BUILD_DIR)/test_gpu_syscall \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
@@ -983,6 +984,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
 #   test_glsl     the GLSL ES 1.0 front end: lexer, parser, type checker
 #   test_glslexec the GLSL execution engine, checked numerically
 #   test_glprog   the shader pipeline: programs, attributes, uniforms, pixels
+#   test_glcoexist  fixed function and shaders side by side, and their limits
 #
 # libauragui cannot be built for the host (it needs AuraLite's freestanding
 # libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
@@ -990,7 +992,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
 LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
                test_gllight test_gltex test_gltex2 test_glarray test_glu \
                test_glbackend test_glfbo test_glsl test_glslexec \
-               test_glprog
+               test_glprog test_glcoexist
 
 $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
                                            $(LIBGL_TEST_SRCS) \

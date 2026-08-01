@@ -2312,6 +2312,292 @@ static void test_gl_shader_pipeline(int wid) {
     aglxDestroyContext(ctx);
 }
 
+
+/* ---- Phase G11d: fixed function and shaders together ----
+ *
+ * The plan's own framing: "this is where most of the risk lives: the two
+ * paths must not fight over state."  These are the four defects that audit
+ * found, plus the evidence that the fixed-function path is untouched.
+ */
+static void test_gl_coexistence(int wid) {
+    printf("[gl] --- G11d: coexistence ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "cox_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+
+    static const GLfloat ndc[16] = {
+        -1.0f, -1.0f, 0.0f, 1.0f,
+         1.0f, -1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 0.0f, 1.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+    };
+
+    /* A red constant-colour program. */
+    GLuint prog = 0;
+    {
+        static const char *vsrc =
+            "attribute vec4 aPos;\nvoid main() { gl_Position = aPos; }\n";
+        static const char *fsrc =
+            "void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL); glCompileShader(vs);
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL); glCompileShader(fs);
+        prog = glCreateProgram();
+        glAttachShader(prog, vs); glAttachShader(prog, fs);
+        glLinkProgram(prog);
+        GLint ok = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+        check(ok == GL_TRUE, "cox_program_links");
+        if (!ok) { aglxDestroyContext(ctx); return; }
+    }
+
+    GLint aloc = glGetAttribLocation(prog, "aPos");
+    glUseProgram(prog);
+    glEnableVertexAttribArray((GLuint)aloc);
+    glVertexAttribPointer((GLuint)aloc, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+
+    /* ---- Points and lines must run the fragment shader ----
+     *
+     * They wrote the vertex colour, which the shader path leaves at white, so
+     * a shaded GL_LINE_LOOP came out WHITE.  Nothing caught it because every
+     * G11c test drew triangles. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_LINE_LOOP, 0, 4);
+    check(AT(0, GL_H / 2) == 0xFF0000, "cox_shaded_line_runs_shader");
+    check(AT(0, GL_H / 2) != 0xFFFFFF, "cox_shaded_line_not_white");
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_POINTS, 0, 4);
+    check(AT(0, 0) == 0xFF0000, "cox_shaded_point_runs_shader");
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_QUADS, 0, 4);
+    check(AT(0, GL_H / 2) == 0xFF0000, "cox_polygon_line_shades");
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    /* ---- Combinations with no defined meaning are refused ---- */
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+
+    while (glGetError() != GL_NO_ERROR) { }
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_QUADS);
+    check(glGetError() == GL_INVALID_OPERATION, "cox_immediate_refused");
+    glVertex3f(10, 10, 0); glVertex3f(GL_W - 10, 10, 0);
+    glVertex3f(GL_W - 10, GL_H - 10, 0); glVertex3f(10, GL_H - 10, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0x000000, "cox_refused_batch_draws_nothing");
+
+    /* The draw calls open a batch themselves and must stay exempt. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_QUADS, 0, 4);
+    check(AT(GL_W / 2, GL_H / 2) == 0xFF0000, "cox_drawarrays_still_works");
+
+    glUseProgram(0);
+    while (glGetError() != GL_NO_ERROR) { }
+    glBegin(GL_QUADS);
+    glUseProgram(prog);
+    check(glGetError() == GL_INVALID_OPERATION, "cox_useprogram_in_begin_refused");
+    glEnd();
+    glUseProgram(0);
+
+    {
+        GLuint dl = glGenLists(1);
+        while (glGetError() != GL_NO_ERROR) { }
+        glNewList(dl, GL_COMPILE);
+        glUseProgram(prog);
+        check(glGetError() == GL_INVALID_OPERATION,
+              "cox_useprogram_in_list_refused");
+        glEndList();
+        GLint bound = -1;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &bound);
+        check(bound == 0, "cox_compiling_list_did_not_bind");
+        glDeleteLists(dl, 1);
+    }
+
+    /* ---- Fixed-function state must not leak into a shaded draw ---- */
+    glUseProgram(prog);
+    {
+        GLfloat pos[4] = { 0.0f, 0.0f, -1.0f, 0.0f };
+        GLfloat dif[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        GLfloat fogc[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+
+        glEnable(GL_LIGHTING); glEnable(GL_LIGHT0);
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+        glEnable(GL_FOG);
+        glFogi(GL_FOG_MODE, GL_LINEAR);
+        glFogf(GL_FOG_START, 0.0f); glFogf(GL_FOG_END, 0.001f);
+        glFogfv(GL_FOG_COLOR, fogc);
+        glEnable(GL_ALPHA_TEST);
+        glAlphaFunc(GL_GREATER, 2.0f);      /* nothing could pass */
+        glShadeModel(GL_FLAT);
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawArrays(GL_QUADS, 0, 4);
+        check(AT(GL_W / 2, GL_H / 2) == 0xFF0000,
+              "cox_no_fixed_state_leaks_into_shader");
+
+        glDisable(GL_LIGHTING); glDisable(GL_LIGHT0);
+        glDisable(GL_FOG); glDisable(GL_ALPHA_TEST);
+        glShadeModel(GL_SMOOTH);
+    }
+
+    /* The fixed-function matrices must not transform a shaded vertex. */
+    {
+        glMatrixMode(GL_PROJECTION); glLoadIdentity();
+        glOrtho(0, 1000, 0, 1000, -1, 1);
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+        glTranslatef(500.0f, 500.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawArrays(GL_QUADS, 0, 4);
+        check(AT(GL_W / 2, GL_H / 2) == 0xFF0000,
+              "cox_matrices_do_not_move_shaded_vertex");
+        glLoadIdentity();
+    }
+
+    /* ---- Framebuffer operations still apply to shaded fragments ---- */
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, GL_W / 2, GL_H / 2);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_QUADS, 0, 4);
+    check(AT(GL_W / 4, GL_H / 4) == 0xFF0000, "cox_scissor_keeps");
+    check(AT(GL_W * 3 / 4, GL_H * 3 / 4) == 0x000000, "cox_scissor_clips");
+    glDisable(GL_SCISSOR_TEST);
+
+    glEnable(GL_CULL_FACE); glCullFace(GL_BACK); glFrontFace(GL_CW);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_QUADS, 0, 4);
+    check(AT(GL_W / 2, GL_H / 2) == 0x000000, "cox_culling_applies");
+    glFrontFace(GL_CCW); glDisable(GL_CULL_FACE);
+
+    /* ---- The fixed-function path is unchanged ---- */
+    glUseProgram(0);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1.0f, 1.0f, 0.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(10, 10, 0); glVertex3f(GL_W - 10, 10, 0);
+    glVertex3f(GL_W - 10, GL_H - 10, 0); glVertex3f(10, GL_H - 10, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0xFFFF00, "cox_immediate_mode_restored");
+
+    /* Unshaded points and lines still use the vertex colour -- the branch
+     * added for shading sits right beside them. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(0.0f, 1.0f, 1.0f);
+    glBegin(GL_LINES);
+    glVertex3f(4.5f, GL_H / 2 + 0.5f, 0);
+    glVertex3f(GL_W - 4.5f, GL_H / 2 + 0.5f, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0x00FFFF, "cox_unshaded_line_uses_colour");
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_LINES);
+    glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(4.5f, GL_H / 2 + 0.5f, 0);
+    glColor3f(0.0f, 0.0f, 1.0f); glVertex3f(GL_W - 4.5f, GL_H / 2 + 0.5f, 0);
+    glEnd();
+    {
+        uint32_t left = AT(6, GL_H / 2);
+        uint32_t right = AT(GL_W - 7, GL_H / 2);
+        check(((left >> 16) & 0xFF) > 180 && (left & 0xFF) < 80 &&
+              ((right >> 16) & 0xFF) < 80 && (right & 0xFF) > 180,
+              "cox_unshaded_line_interpolates");
+    }
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1.0f, 0.0f, 1.0f);
+    glBegin(GL_POINTS);
+    glVertex3f(20.5f, 20.5f, 0);
+    glEnd();
+    check(AT(20, 20) == 0xFF00FF, "cox_unshaded_point_uses_colour");
+
+    /* Fixed-function lighting and texturing, the two most state-heavy paths. */
+    {
+        GLfloat pos[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
+        GLfloat dif[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        glEnable(GL_LIGHTING); glEnable(GL_LIGHT0);
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
+        glColor3f(1, 1, 1);
+        glNormal3f(0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glVertex3f(10, 10, 0); glVertex3f(GL_W - 10, 10, 0);
+        glVertex3f(GL_W - 10, GL_H - 10, 0); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        check(((AT(GL_W / 2, GL_H / 2) >> 16) & 0xFF) > 180,
+              "cox_fixed_lighting_intact");
+        glDisable(GL_LIGHTING); glDisable(GL_LIGHT0);
+    }
+
+    /* Alternating within one frame: the mixed-renderer case. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUseProgram(prog);
+    glDrawArrays(GL_QUADS, 0, 4);
+    glUseProgram(0);
+    glColor3f(0.0f, 0.0f, 1.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(GL_W / 2 - 8, GL_H / 2 - 8, 0);
+    glVertex3f(GL_W / 2 + 8, GL_H / 2 - 8, 0);
+    glVertex3f(GL_W / 2 + 8, GL_H / 2 + 8, 0);
+    glVertex3f(GL_W / 2 - 8, GL_H / 2 + 8, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0x0000FF, "cox_mixed_fixed_over_shaded");
+    check(AT(4, 4) == 0xFF0000, "cox_mixed_shaded_survives");
+
+    /* A sampler pointing at nothing must be black rather than a fault. */
+    {
+        static const char *vsrc =
+            "attribute vec4 aPos;\nvoid main() { gl_Position = aPos; }\n";
+        static const char *fsrc =
+            "precision mediump float;\nuniform sampler2D uT;\n"
+            "void main() { gl_FragColor = texture2D(uT, vec2(0.5)); }\n";
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL); glCompileShader(vs);
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL); glCompileShader(fs);
+        GLuint p2 = glCreateProgram();
+        glAttachShader(p2, vs); glAttachShader(p2, fs);
+        glLinkProgram(p2);
+        GLint ok = 0;
+        glGetProgramiv(p2, GL_LINK_STATUS, &ok);
+        if (ok) {
+            glUseProgram(p2);
+            GLint l2 = glGetAttribLocation(p2, "aPos");
+            glEnableVertexAttribArray((GLuint)l2);
+            glVertexAttribPointer((GLuint)l2, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+            glUniform1i(glGetUniformLocation(p2, "uT"), 99);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+            check(AT(GL_W / 2, GL_H / 2) == 0x000000,
+                  "cox_sampler_out_of_range_is_black");
+            check(glGetError() == GL_NO_ERROR, "cox_sampler_out_of_range_no_error");
+        }
+    }
+
+    glUseProgram(0);
+    check(aglxSwapBuffers(ctx) == 0, "cox_swap");
+    check(glGetError() == GL_NO_ERROR, "cox_no_pending_error");
+
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
  *
  * The claim under test is that rendering into a texture and then sampling it
@@ -3106,6 +3392,7 @@ int main(void) {
     test_gl_glsl();
     test_gl_glsl_exec();
     test_gl_shader_pipeline(wid);
+    test_gl_coexistence(wid);
 
     free(buf);
     ag_window_destroy(wid);

@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: G0–G10, G11a–c, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11d, G13 PLANNED 📋
+## Status: G0–G12 COMPLETE ✅ · K1 COMPLETE ✅ · G13 PLANNED 📋
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -63,7 +63,7 @@ in phase G7. Rationale:
 ```
 G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← done
 G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps  ← done
-G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0  ← G11a-c done
+G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0        ← done
 G12     →  FBO / render-to-texture, glReadPixels                    ← done
 G13     →  VirGL hardware path for the shader profile
 ```
@@ -1196,7 +1196,7 @@ why the size is not a round number.
 
 ---
 
-## Phase G11 — GLSL interpreter and the ES 2.0 shader path (G11a-c ✅ COMPLETE)
+## Phase G11 — GLSL interpreter and the ES 2.0 shader path ✅ COMPLETE
 
 **Objective:** programmable vertex and fragment stages. This is the single
 largest phase in the whole roadmap — realistically larger than G0–G9 combined —
@@ -1317,9 +1317,43 @@ culling, depth, scissor and blending are untouched.
   unchanged: vertex shaders are affordable, full-screen fragment shaders are
   not, and the shader path buys API coverage rather than frames per second.
 
-**G11d — coexistence.** 📋 NEXT. Fixed-function and shader paths selected per draw by
-whether a program is bound. This is where most of the risk lives: the two
-paths must not fight over state.
+**G11d — coexistence.** ✅ **COMPLETE.** 59 host checks and 28 in-OS checks,
+plus four real defects the audit found. The phase was right about where the
+risk lives.
+
+*What was broken, and why each hid:*
+
+1. **Shaded points and lines were not shaded.** `gl_raster_point()` and
+   `gl_raster_line()` wrote `v->color`, which the shader vertex stage leaves
+   at white — a shaded `GL_LINE_LOOP` came out *white* rather than running the
+   fragment shader at all. Every G11c test drew triangles, so nothing
+   exercised those two functions with a program bound.
+   `glPolygonMode(GL_LINE)` inherited it.
+2. **Immediate mode silently hybridised.** `glVertex` is not an attribute, so
+   a vertex shader has nothing to read from it — but the fixed-function
+   matrices placed the geometry and the fragment shader coloured it. An
+   application that forgot `glUseProgram(0)` would have seen it render, look
+   right here, and draw nothing recognisable on real hardware. Now
+   `GL_INVALID_OPERATION`, with `glDrawArrays`/`glDrawElements` exempt because
+   they open a batch on the application's behalf.
+3. **`glUseProgram` inside `glBegin`/`glEnd`** was accepted: half a triangle
+   through one program, half through another.
+4. **`glUseProgram` inside `glNewList(GL_COMPILE)` executed immediately**, so
+   compiling a list silently changed the current program and the next
+   unrelated draw used one the application never bound.
+
+*What was already right,* verified rather than assumed: scissor, culling,
+depth mask, blending and FBO rendering all apply to shaded fragments;
+lighting, fog, the alpha test, the texture environment, `glShadeModel`, the
+fixed-function matrices and the fixed-function arrays all fail to reach one;
+attribute arrays survive a program switch; uniforms survive unbinding;
+programs are per-context; resizing with a program bound works.
+
+*Method note:* the audit was a probe program that tried each interaction and
+printed what happened, rather than a set of tests written from the
+specification. Three of the four defects were combinations nobody would have
+thought to assert on — which is the argument for auditing a seam by
+enumeration instead of by imagination.
 
 ### Performance reality
 

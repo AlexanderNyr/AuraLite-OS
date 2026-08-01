@@ -137,7 +137,7 @@ frames, so output is tear-free without extra work.
 
 | Missing | Notes |
 |---|---|
-| Shader coexistence polish | Shaders work (G11a–G11c) and draw correctly alongside fixed function. G11d is the remaining hardening of the two paths' shared state. |
+| Geometry/tessellation/compute shaders | ES 2.0 has vertex and fragment stages only |
 | Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
 | `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
 | More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
@@ -569,9 +569,74 @@ the advice is unchanged:
   areas, or at a small context size, or accept single-digit frame rates.
 - **The shader path buys API coverage, not frames per second.**
 
-### What comes next
+---
 
-G11d hardens the coexistence of the two paths' shared state.
+## Fixed function and shaders together (phase G11d)
+
+Both paths are complete and coexist. Which one runs is decided per draw by
+whether a program is bound. This section is what an application needs to know
+about mixing them.
+
+### The rules
+
+**A shader replaces shading, not the framebuffer.** These still apply to a
+shaded fragment exactly as they do to a fixed-function one:
+
+`GL_DEPTH_TEST` · `glDepthMask` · `GL_CULL_FACE` · `GL_SCISSOR_TEST` ·
+`GL_BLEND` · framebuffer objects · `glReadPixels`
+
+**Fixed-function shading state is ignored entirely.** None of these reaches a
+shaded fragment, because none has a meaning under ES 2.0:
+
+`GL_LIGHTING` · `GL_FOG` · `GL_ALPHA_TEST` · the texture environment ·
+`glShadeModel` · `MODELVIEW`/`PROJECTION` · `glVertexPointer` and the other
+fixed-function arrays
+
+A vertex shader outputs clip coordinates directly and reads *generic*
+attributes, addressed by number through `glVertexAttribPointer`.
+
+**Three combinations are refused rather than invented:**
+
+| Combination | Result |
+|---|---|
+| `glBegin` with a program bound | `GL_INVALID_OPERATION` |
+| `glUseProgram` inside `glBegin`/`glEnd` | `GL_INVALID_OPERATION` |
+| `glUseProgram` inside a display list | `GL_INVALID_OPERATION` |
+
+`glDrawArrays` and `glDrawElements` are exempt from the first: they open a
+batch on the application's behalf and feed it through the shader path.
+
+The reasoning is worth stating. `glVertex` is not an attribute, so a vertex
+shader has nothing to read from it. Before G11d the two half-combined — the
+fixed-function matrices placed the geometry and the fragment shader coloured
+it — which is a hybrid no GL implementation produces. An application that
+forgot `glUseProgram(0)` would have seen it render, look right, and draw
+nothing recognisable on real hardware. Refusing is the honest answer.
+
+### Switching
+
+- `glUseProgram(0)` restores fixed function immediately, within a frame.
+- Deleting the bound program also reverts to fixed function.
+- Generic attribute arrays are *context* state and survive a program switch,
+  so geometry can be bound once and drawn with several programs.
+- Uniform values belong to the program and survive unbinding it.
+- Shaders and programs are per-context, like textures and buffers.
+
+### What G11d found
+
+Four real defects, each invisible to the phase that introduced it:
+
+1. **Shaded points and lines were not shaded.** They wrote the vertex colour,
+   which the shader path leaves at white, so a shaded `GL_LINE_LOOP` came out
+   *white*. Every G11c test drew triangles, so nothing exercised the point and
+   line rasterizers with a program bound. `glPolygonMode(GL_LINE)` had the
+   same problem for the same reason.
+2. **Immediate mode silently hybridised** with a shader, as described above.
+3. **`glUseProgram` inside `glBegin`/`glEnd`** was accepted — half a triangle
+   through one program, half through another.
+4. **`glUseProgram` inside `glNewList(GL_COMPILE)` executed immediately.**
+   Compiling a list silently changed the current program, and the next
+   unrelated draw call used a program the application never bound.
 
 ---
 
@@ -607,7 +672,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 330 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 358 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -641,6 +706,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glsl.c` | The GLSL ES 1.0 front end: lexing, parsing, types, diagnostics, 167 |
 | `tests/unit/test_glslexec.c` | The execution engine, checked numerically, 179 |
 | `tests/unit/test_glprog.c` | The shader pipeline, checked against pixels, 107 |
+| `tests/unit/test_glcoexist.c` | The two paths side by side and their limits, 59 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test
