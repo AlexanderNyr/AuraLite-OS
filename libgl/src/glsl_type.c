@@ -108,6 +108,17 @@ int glsl_type_is_sampler(const glsl_type_t *t) {
 
 int glsl_type_components(const glsl_type_t *t) {
     if (!t) return 0;
+
+    /* An array's component count is its element's, times its length.  Missing
+     * this makes `float a[3]` occupy one slot, so a[1] and a[2] alias a[0] --
+     * which is exactly the bug the array tests caught, and it is silent:
+     * every write lands somewhere legal, just on top of the previous one. */
+    if (t->array_len > 0) {
+        glsl_type_t elem = *t;
+        elem.array_len = 0;
+        return glsl_type_components(&elem) * t->array_len;
+    }
+
     switch (t->kind) {
     case GLSL_TY_BOOL: case GLSL_TY_INT: case GLSL_TY_FLOAT:
         return 1;

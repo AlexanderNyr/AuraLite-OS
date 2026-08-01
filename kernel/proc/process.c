@@ -584,7 +584,17 @@ static void spawn_thread(void *arg) {
         }
     }
 
-    uint8_t *buf = kmalloc(256 * 1024);
+    /* Executable size limit.
+     *
+     * This was 256 KB and the read loop simply stopped there, handing
+     * load_and_jump() a TRUNCATED image.  The ELF loader then reported
+     * "segment file range out of bounds" -- a message about the ELF, for a
+     * problem that was really "your binary is bigger than the buffer".  That
+     * cost real debugging time when /gltest grew past the limit, so the
+     * limit is now both larger and, more importantly, DIAGNOSED. */
+    #define SPAWN_MAX_IMAGE (1024 * 1024)
+
+    uint8_t *buf = kmalloc(SPAWN_MAX_IMAGE);
     if (!buf) {
         vfs_close(fd);
         memset(path, 0, strlen(path) + 1);
@@ -593,13 +603,31 @@ static void spawn_thread(void *arg) {
     }
     int64_t total = 0;
     int64_t n;
-    while ((n = vfs_read(fd, buf + total, (256 * 1024) - total)) > 0) {
+    while (total < SPAWN_MAX_IMAGE &&
+           (n = vfs_read(fd, buf + total, SPAWN_MAX_IMAGE - total)) > 0) {
         total += n;
     }
+
+    /* Did anything remain?  A single further byte means the image did not
+     * fit, and loading what was read would produce a mystifying failure
+     * somewhere inside the ELF parser. */
+    uint8_t probe;
+    int truncated = (total >= SPAWN_MAX_IMAGE) &&
+                    (vfs_read(fd, &probe, 1) > 0);
     vfs_close(fd);
+
+    if (truncated) {
+        kprintf("[spawn] '%s' is larger than the %d KB executable limit\n",
+                path, SPAWN_MAX_IMAGE / 1024);
+        kfree(buf);
+        memset(path, 0, strlen(path) + 1);
+        kfree(path);
+        thread_exit();
+    }
     kfree(path);
 
     load_and_jump(buf, (uint64_t)total);
+    #undef SPAWN_MAX_IMAGE
 }
 
 int64_t process_spawn(const char *path) {

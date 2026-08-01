@@ -2,6 +2,83 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase G11b — GLSL execution engine] 2026-08-01
+
+The second quarter of the shader phase: an AST-walking interpreter that runs
+the tree G11a produces. Shaders now compile *and* execute, producing correct
+numbers for the whole language.
+
+Still not reachable from the GL API — `glCreateShader` arrives in G11c.
+
+### Added
+- `libgl/src/glsl_exec.c`, 1500 lines: expression evaluation, control flow,
+  user functions with `in`/`out`/`inout`, structs, arrays, swizzled lvalues,
+  matrix algebra and the built-in function library.
+- `glsl_env_t`: three callbacks (read a variable, write a variable, sample a
+  texture) through which a shader reaches everything outside itself. The
+  interpreter touches no GL object directly, which is what makes it testable
+  with no context and what lets G11c attach the pipeline without changing it.
+- `tests/unit/test_glslexec.c`: **179 host checks**, all asserting on computed
+  values rather than on "it ran".
+- 31 in-OS checks in `/gltest` (**289 total**, was 258).
+
+### Semantics that differ from C, and are tested
+- `mod()` takes the sign of the **divisor**: `mod(-1.0, 3.0)` is `2.0`.
+- Integer division truncates towards zero; `1/2` is `0`.
+- `matN(s)` builds a **diagonal**, not a fill; matrices are column-major.
+- Undefined maths yields finite values: division by zero is `0.0`,
+  `normalize(vec3(0.0))` is a zero vector. Hardware produces infinities and
+  NaNs; a NaN in a colour propagates through blending and is nearly impossible
+  to trace back, so a defined answer is safer here.
+- `&&`, `||` and `?:` do not evaluate what they do not need.
+
+### Bounded, because a shader is untrusted input
+100 000 loop iterations per invocation, call depth 16, argument nesting 24,
+128 variables. Each is a diagnostic in the info log, never a fault. Hardware
+has a watchdog for a hung shader; here it would take the compositor with it.
+
+### Fixed — all three found only by running on the target
+The host has an 8 MB stack; AuraLite gives a user process 64 KB.
+
+- **`call_user()` used 5.9 KB of stack per interpreted call frame** (a scratch
+  array of live variables), so recursion hit a guard page at depth 11 instead
+  of the interpreter's own limit at 32.
+- **`eval()` reserved 1.2 KB for call arguments on every frame**, not only
+  those evaluating a call — and `eval()` recurses once per level of expression
+  nesting. Both scratch areas now live in the interpreter state; frames are
+  816 bytes and `GLSL_MAX_CALL_DEPTH` is 16, so the limit is reached before
+  the stack is.
+- **The shared argument buffer was keyed on call depth**, but built-in calls
+  do not push a frame, so `max(dot(a, b), 0.0)` gave inner and outer calls the
+  same slot and the inner clobbered the outer's arguments. It showed up as a
+  Lambert term that silently ignored its clamp. Now keyed on argument nesting,
+  with four regression tests.
+
+### Fixed — kernel
+- **`spawn()` truncated executables over 256 KB silently.** It read into a
+  fixed buffer of exactly that size and handed the ELF loader a partial image,
+  which reported "segment file range out of bounds" — a message about the ELF
+  for a problem that was really "your binary does not fit". Surfaced when
+  `/gltest` grew past the limit. The buffer is now 1 MB and an oversized image
+  is diagnosed by name.
+
+### Cost, measured
+| Shader | Per invocation |
+|---|---|
+| Constant colour | 0.27 µs |
+| Texture modulate | 0.44 µs |
+| Blinn-Phong with a helper | 1.85 µs |
+
+At 320×240 a trivial fragment shader is **20 ms/frame**, against 0.07 ms for
+the entire fixed-function path drawing a lit cube. The plan predicted one to
+two orders of magnitude and that is what it is: the shader path buys API
+coverage, not frames per second.
+
+### Verified
+`make test-unit` 66/66 binaries green (757 GL host checks across 14 suites);
+`/gltest` in QEMU 289/289; `test_opengl.sh` 86/86; clean under
+`-fsanitize=address,undefined`; `make iso` from a clean tree.
+
 ## [Phase G11a — GLSL ES 1.0 front end] 2026-08-01
 
 The first quarter of the shader phase: a complete GLSL ES 1.0 compiler front

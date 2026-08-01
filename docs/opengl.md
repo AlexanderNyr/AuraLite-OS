@@ -137,7 +137,7 @@ frames, so output is tear-free without extra work.
 
 | Missing | Notes |
 |---|---|
-| Shader execution | The GLSL **front end** exists (phase G11a): shaders are lexed, parsed and type-checked, and diagnostics are produced. Executing the result is G11b; wiring it to the pipeline is G11c. There is no `glCreateShader` yet. |
+| Shader API | The GLSL **front end** (G11a) and **execution engine** (G11b) both exist: a shader can be compiled, and run over supplied inputs, producing correct numbers. What is missing is the API — `glCreateShader`, `glUseProgram`, generic vertex attributes and uniforms — and the pipeline wiring, which is G11c. |
 | Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
 | `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
 | More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
@@ -410,14 +410,85 @@ Compilation is fast enough to be irrelevant next to a single rendered frame.
 The arena is one megabyte per compilation, freed in a single call when the unit
 is destroyed; 112 KB of the floor is the type checker's symbol table.
 
+---
+
+## The GLSL execution engine (phase G11b)
+
+An AST-walking interpreter in `libgl/src/glsl_exec.c` runs the tree the front
+end produces. It is still not reachable from the GL API — that is G11c — but
+it computes correct results for the whole language.
+
+### How a shader reaches the outside world
+
+Through three callbacks in a `glsl_env_t`: read a variable, write a variable,
+sample a texture. The interpreter never touches a texture object, a uniform
+store or a vertex array directly. That is what lets the whole engine be tested
+numerically with no GL context, and it means G11c attaches the real pipeline
+without changing a line of the interpreter.
+
+### Why an interpreter and not a bytecode VM
+
+The plan allowed for a VM "if profiling demands it". It does not: a second IR
+would add a translation step and a second set of bugs to remove one switch
+dispatch per node, while the real cost is the per-component float arithmetic
+and the fact that a fragment shader runs once per pixel at all. Both
+strategies land in the same place. Only a JIT would change that, and a JIT is
+out of scope.
+
+### Semantics worth knowing
+
+**`mod()` takes the sign of the divisor**, unlike C's `fmod`: `mod(-1.0, 3.0)`
+is `2.0`, not `-1.0`. Shaders that wrap a coordinate depend on this.
+
+**Integer division truncates towards zero** and `1/2` is `0`. Values are
+stored as floats internally, but the integer operators behave as integers.
+
+**`matN(s)` builds a diagonal**, not a fill: `mat4(1.0)` is the identity.
+Matrices are column-major, matching `glUniformMatrix`, so `m[3]` is the
+translation column.
+
+**Undefined maths yields finite values.** Division by zero gives `0.0`,
+`normalize` of a zero vector gives a zero vector, `sqrt` of a negative gives
+`0.0`. GLSL leaves all of these undefined and hardware produces infinities and
+NaNs; a NaN in a colour propagates through blending and is very hard to trace
+back, so a defined finite answer is the safer choice here.
+
+**`&&`, `||` and `?:` do not evaluate what they do not need**, which is
+observable when the skipped expression has a side effect.
+
+### Bounded, because a shader is untrusted input
+
+| Limit | Value | Why |
+|---|---|---|
+| Loop iterations per invocation | 100 000 | `while (true) {}` is a legal program. Hardware has a watchdog; here it would hang the compositor. |
+| Call depth | 16 | GLSL ES forbids recursion, but a shader can still write it. |
+| Argument nesting | 24 | `max(dot(a, b), 0.0)` is two deep. |
+| Variables / storage | 128 / 4096 floats | Bounded so the interpreter state is a fixed size. |
+
+Each is reported as a diagnostic in the info log, never as a fault.
+
+### Cost
+
+| Shader | Per invocation |
+|---|---|
+| Constant colour | 0.27 µs |
+| Texture modulate | 0.44 µs |
+| Blinn–Phong with a helper function | 1.85 µs |
+
+At 320×240 that is **20 ms per frame for a trivial fragment shader** — against
+0.07 ms for the entire fixed-function path drawing a lit cube. The plan
+predicted one to two orders of magnitude and that is what it is.
+
+This is worth stating plainly: **the shader path buys API coverage, not frames
+per second.** A vertex shader is affordable — a few thousand invocations per
+frame — but a fragment shader running per pixel is not, at any resolution
+worth using, until a JIT exists.
+
 ### What comes next
 
-G11b executes the AST; G11c connects it to `glCreateShader`/`glUseProgram`,
-generic vertex attributes and uniforms; G11d makes the fixed-function and
-shader paths coexist. Be warned by the plan's own framing: an AST interpreter
-running a fragment shader per pixel will be one to two orders of magnitude
-slower than the fixed-function path. That phase buys API coverage, not frames
-per second.
+G11c connects this to `glCreateShader`/`glUseProgram`, generic vertex
+attributes and uniforms; G11d makes the fixed-function and shader paths
+coexist.
 
 ---
 
@@ -453,7 +524,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 258 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 289 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -485,6 +556,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glbackend.c` | The backend seam and the VirGL candidate, 17 |
 | `tests/unit/test_glfbo.c` | Framebuffer objects, renderbuffers, `glReadPixels`, 36 |
 | `tests/unit/test_glsl.c` | The GLSL ES 1.0 front end: lexing, parsing, types, diagnostics, 167 |
+| `tests/unit/test_glslexec.c` | The execution engine, checked numerically, 179 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test

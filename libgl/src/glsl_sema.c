@@ -308,6 +308,40 @@ static const glsl_type_t *check_constructor(sema_t *s, glsl_node_t *n,
     int arg_count = 0;
     int from_matrix = 0;
 
+    /* A STRUCT target takes one argument per field, by type, and a field may
+     * itself be a struct -- Outer(Inner(3.0), 4.0) is legal.  So structs are
+     * checked before the component-flattening rules below, which exist for
+     * vectors and matrices and reject struct arguments outright. */
+    if (target->kind == GLSL_TY_STRUCT) {
+        for (glsl_node_t *a = n->list; a; a = a->next) {
+            const glsl_type_t *at = check_expr(s, a);
+            if (is_err(at)) return fail(n);
+            if (!a->is_const) all_const = 0;
+            arg_count++;
+        }
+        if (arg_count != target->field_count) {
+            glsl_error(s->u, n->line,
+                       "constructor for struct '%s' expects %d argument(s), "
+                       "got %d",
+                       glsl_type_name(target), target->field_count, arg_count);
+            return fail(n);
+        }
+        int i = 0;
+        for (glsl_node_t *a = n->list; a; a = a->next, i++) {
+            if (!glsl_type_equal(a->type, target->fields[i].type)) {
+                glsl_error(s->u, n->line,
+                           "field %d of '%s' expects '%s', got '%s'",
+                           i + 1, glsl_type_name(target),
+                           glsl_type_name(target->fields[i].type),
+                           glsl_type_name(a->type));
+                return fail(n);
+            }
+        }
+        n->type = target;
+        n->is_const = all_const;
+        return target;
+    }
+
     for (glsl_node_t *a = n->list; a; a = a->next) {
         const glsl_type_t *at = check_expr(s, a);
         arg_count++;
@@ -333,31 +367,6 @@ static const glsl_type_t *check_constructor(sema_t *s, glsl_node_t *n,
         glsl_error(s->u, n->line, "constructor for '%s' needs arguments",
                    glsl_type_name(target));
         return fail(n);
-    }
-
-    /* A struct constructor takes exactly one argument per field, by type. */
-    if (target->kind == GLSL_TY_STRUCT) {
-        if (arg_count != target->field_count) {
-            glsl_error(s->u, n->line,
-                       "constructor for struct '%s' expects %d argument(s), "
-                       "got %d",
-                       glsl_type_name(target), target->field_count, arg_count);
-            return fail(n);
-        }
-        int i = 0;
-        for (glsl_node_t *a = n->list; a; a = a->next, i++) {
-            if (!glsl_type_equal(a->type, target->fields[i].type)) {
-                glsl_error(s->u, n->line,
-                           "field %d of '%s' expects '%s', got '%s'",
-                           i + 1, glsl_type_name(target),
-                           glsl_type_name(target->fields[i].type),
-                           glsl_type_name(a->type));
-                return fail(n);
-            }
-        }
-        n->type = target;
-        n->is_const = all_const;
-        return target;
     }
 
     /* One scalar fills everything. */

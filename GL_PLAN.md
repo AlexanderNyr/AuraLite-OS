@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: G0–G10, G11a, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11b–d, G13 PLANNED 📋
+## Status: G0–G10, G11a, G11b, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11c–d, G13 PLANNED 📋
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -63,7 +63,7 @@ in phase G7. Rationale:
 ```
 G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← done
 G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps  ← done
-G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0    ← G11a done
+G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0  ← G11a+G11b done
 G12     →  FBO / render-to-texture, glReadPixels                    ← done
 G13     →  VirGL hardware path for the shader profile
 ```
@@ -1196,7 +1196,7 @@ why the size is not a round number.
 
 ---
 
-## Phase G11 — GLSL interpreter and the ES 2.0 shader path (G11a ✅ COMPLETE)
+## Phase G11 — GLSL interpreter and the ES 2.0 shader path (G11a, G11b ✅ COMPLETE)
 
 **Objective:** programmable vertex and fragment stages. This is the single
 largest phase in the whole roadmap — realistically larger than G0–G9 combined —
@@ -1238,13 +1238,54 @@ AST; resolve types; produce diagnostics. Delivered in 2400 lines across
   0.61 ms and 600 KB for a 300-statement one. Compilation is free next to a
   frame.
 
-**G11b — execution engine.** 📋 NEXT. A register-based interpreter over the AST, or a
-bytecode VM if profiling demands it. Vector and matrix intrinsics, swizzles,
-the built-in function library (`texture2D`, `normalize`, `dot`, `mix`, …).
-Tested by running a shader over known inputs and checking outputs numerically,
-still without a rasterizer. Roughly 2000 lines.
+**G11b — execution engine.** ✅ **COMPLETE.** An AST-walking interpreter in
+`glsl_exec.c`, 1500 lines, with 179 host checks and 31 in-OS checks. Shaders
+reach the outside world through three `glsl_env_t` callbacks (read a variable,
+write a variable, sample a texture), which is the seam G11c will attach the
+real pipeline to.
 
-**G11c — pipeline integration.** `glCreateShader`/`glShaderSource`/
+*The VM question, settled:* the plan allowed for bytecode "if profiling demands
+it". It does not. A second IR would add a translation step and a second set of
+bugs to remove one switch dispatch per node, while the cost is dominated by
+per-component float arithmetic and by running once per pixel at all. Both
+strategies land in the same place; only a JIT moves the needle.
+
+*Outcome notes:*
+
+- **Three bugs were found only by running on the target.** The host has an
+  8 MB stack and AuraLite gives a user process 64 KB, so stack consumption
+  that is invisible on one is fatal on the other:
+  - `call_user()` held a 5.9 KB scratch array per interpreted call frame;
+  - `eval()` reserved 1.2 KB for call arguments on *every* frame, not just the
+    ones evaluating a call, and `eval()` recurses per level of expression
+    nesting.
+
+  Both now live in the interpreter state. The frames are 816 bytes, and
+  `GLSL_MAX_CALL_DEPTH` was cut from 32 to 16 so the limit is reached before
+  the stack is. A shader that recursed used to hit a guard page instead of a
+  diagnostic.
+
+- **The shared argument buffer was keyed on the wrong counter.** Indexing it
+  by call depth looked right, but built-in calls do not push a frame, so
+  `max(dot(a, b), 0.0)` gave the inner and outer calls the same slot and the
+  inner one clobbered the outer's arguments. It surfaced as a Lambert term
+  that silently ignored its clamp — every real lighting shader is that shape.
+  Now keyed on argument nesting, with four regression tests.
+
+- **A kernel limit surfaced.** `/gltest` grew past 256 KB and `spawn()` read
+  executables into a fixed buffer of exactly that size, then handed the ELF
+  loader a truncated image. The loader reported "segment file range out of
+  bounds" — a message about the ELF for a problem that was really "your binary
+  does not fit". The buffer is now 1 MB and, more importantly, an oversized
+  image is *diagnosed* rather than silently truncated.
+
+- **Measured:** 0.27 µs for a trivial fragment shader, 1.85 µs for
+  Blinn-Phong. At 320×240 that is 20 ms/frame for the trivial one, against
+  0.07 ms for the whole fixed-function path drawing a lit cube. The plan
+  predicted one to two orders of magnitude; it is exactly that. The shader
+  path buys API coverage, not frames per second.
+
+**G11c — pipeline integration.** 📋 NEXT. `glCreateShader`/`glShaderSource`/
 `glCompileShader`/`glCreateProgram`/`glAttachShader`/`glLinkProgram`/
 `glUseProgram`; generic vertex attributes (`glVertexAttribPointer`,
 `glEnableVertexAttribArray`); uniforms (`glGetUniformLocation`, the

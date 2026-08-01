@@ -87,8 +87,12 @@ void glsl_error(glsl_unit_t *u, int line, const char *fmt, ...) {
 
 /* Build the info log from the diagnostics.  The format mirrors what desktop
  * GL drivers emit ("ERROR: 0:12: message") because that is what application
- * log parsers and developers already expect to read. */
-static void build_log(glsl_unit_t *u) {
+ * log parsers and developers already expect to read.
+ *
+ * Not static: phase G11b's interpreter can also record diagnostics -- an
+ * infinite loop or an exceeded call depth -- and those have to reach the log
+ * too, or a shader that fails at RUN time reports nothing at all. */
+void glsl_build_log(glsl_unit_t *u) {
     u->log_len = 0;
     u->log[0] = '\0';
 
@@ -559,7 +563,7 @@ glsl_unit_t *glsl_compile(const char *source, glsl_shader_kind_t kind) {
     size_t len = strlen(source);
     if (len > GLSL_MAX_SOURCE) {
         glsl_error(u, 1, "shader source exceeds %d bytes", GLSL_MAX_SOURCE);
-        build_log(u);
+        glsl_build_log(u);
         return u;
     }
 
@@ -573,7 +577,7 @@ glsl_unit_t *glsl_compile(const char *source, glsl_shader_kind_t kind) {
     }
 
     u->compiled = (u->error_count == 0);
-    build_log(u);
+    glsl_build_log(u);
     return u;
 }
 

@@ -1466,6 +1466,410 @@ static void test_gl_glsl(void) {
     }
 }
 
+
+/* ---- Phase G11b: the GLSL execution engine ----
+ *
+ * Running the interpreter ON THE TARGET is the point.  Every value it
+ * computes is a float, it leans on sinf/cosf/powf/sqrtf from AuraLite's libc,
+ * and the kernel builds with -mno-sse.  A shader that produces the right
+ * colour on the host and a subtly wrong one here would show up nowhere else.
+ *
+ * Still no rendering: G11b stops at "run a shader and read the numbers back".
+ */
+
+/* The environment the in-OS checks run shaders against: a handful of
+ * uniforms, and a sampler that echoes the coordinate so the caller can prove
+ * which texel was requested. */
+static float glslt_uniforms[8][16];
+static const char *glslt_names[8];
+static int glslt_count;
+static float glslt_color[4];
+static float glslt_position[4];
+static int glslt_wrote_color, glslt_wrote_position;
+
+static void glslt_reset(void) {
+    glslt_count = 0;
+    glslt_wrote_color = glslt_wrote_position = 0;
+    memset(glslt_color, 0, sizeof glslt_color);
+    memset(glslt_position, 0, sizeof glslt_position);
+}
+
+static void glslt_set(const char *name, int n, const float *v) {
+    if (glslt_count >= 8) return;
+    glslt_names[glslt_count] = name;
+    memset(glslt_uniforms[glslt_count], 0, sizeof glslt_uniforms[0]);
+    for (int i = 0; i < n && i < 16; i++) glslt_uniforms[glslt_count][i] = v[i];
+    glslt_count++;
+}
+
+static int glslt_read(glsl_env_t *env, const char *name, glsl_value_t *out) {
+    (void)env;
+    /* Outputs read back so a partial write merges rather than clobbering. */
+    if (strcmp(name, "gl_FragColor") == 0 && glslt_wrote_color) {
+        memcpy(out->v, glslt_color, sizeof glslt_color);
+        return 1;
+    }
+    if (strcmp(name, "gl_Position") == 0 && glslt_wrote_position) {
+        memcpy(out->v, glslt_position, sizeof glslt_position);
+        return 1;
+    }
+    for (int i = 0; i < glslt_count; i++) {
+        if (strcmp(glslt_names[i], name) == 0) {
+            memcpy(out->v, glslt_uniforms[i], sizeof glslt_uniforms[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void glslt_write(glsl_env_t *env, const char *name,
+                        const glsl_value_t *val) {
+    (void)env;
+    if (strcmp(name, "gl_FragColor") == 0) {
+        memcpy(glslt_color, val->v, sizeof glslt_color);
+        glslt_wrote_color = 1;
+    } else if (strcmp(name, "gl_Position") == 0) {
+        memcpy(glslt_position, val->v, sizeof glslt_position);
+        glslt_wrote_position = 1;
+    }
+}
+
+static void glslt_sample(glsl_env_t *env, int unit, int is_cube,
+                         const float *coord, int ncoord, float *rgba) {
+    (void)env; (void)is_cube;
+    rgba[0] = coord[0];
+    rgba[1] = ncoord > 1 ? coord[1] : 0.0f;
+    rgba[2] = (float)unit;
+    rgba[3] = 1.0f;
+}
+
+static int glslt_near(float a, float b) {
+    float d = a - b;
+    if (d < 0.0f) d = -d;
+    float scale = (b < 0.0f ? -b : b);
+    if (scale < 1.0f) scale = 1.0f;
+    return d <= 1e-4f * scale;
+}
+
+/* Compile and run a fragment shader, then compare gl_FragColor. */
+static void glslt_frag(const char *src, float r, float g, float b, float a,
+                       const char *name) {
+    glsl_unit_t *u = glsl_compile(src, GLSL_SHADER_FRAGMENT);
+    if (!u || !u->compiled) {
+        check(0, name);
+        if (u) printf("[gl]   compile: %s", glsl_unit_log(u));
+        glsl_unit_free(u);
+        return;
+    }
+    glsl_env_t env;
+    memset(&env, 0, sizeof env);
+    env.read_var = glslt_read;
+    env.write_var = glslt_write;
+    env.sample = glslt_sample;
+
+    glsl_run_status_t st = glsl_run(u, &env);
+    int ok = (st == GLSL_RUN_OK) &&
+             glslt_near(glslt_color[0], r) && glslt_near(glslt_color[1], g) &&
+             glslt_near(glslt_color[2], b) && glslt_near(glslt_color[3], a);
+    check(ok, name);
+    if (!ok) {
+        printf("[gl]   want (%d %d %d %d) got (%d %d %d %d) st=%d\n",
+               (int)(r * 1000), (int)(g * 1000), (int)(b * 1000),
+               (int)(a * 1000),
+               (int)(glslt_color[0] * 1000), (int)(glslt_color[1] * 1000),
+               (int)(glslt_color[2] * 1000), (int)(glslt_color[3] * 1000),
+               (int)st);
+        if (st == GLSL_RUN_ERROR) printf("[gl]   %s", glsl_unit_log(u));
+    }
+    glsl_unit_free(u);
+}
+
+static void test_gl_glsl_exec(void) {
+    printf("[gl] --- G11b: GLSL execution engine ---\n");
+
+    /* Arithmetic, including the two cases where GLSL differs from C. */
+    glslt_reset();
+    glslt_frag("void main(){ gl_FragColor = vec4(1.0+2.0, 3.0*4.0, "
+               "10.0/4.0, 1.0); }\n",
+               3.0f, 12.0f, 2.5f, 1.0f, "glslx_arithmetic");
+
+    glslt_reset();
+    glslt_frag("void main(){ int a = 7/2; int b = -7/2;\n"
+               "  gl_FragColor = vec4(float(a), float(b), 0.0, 1.0); }\n",
+               3.0f, -3.0f, 0.0f, 1.0f, "glslx_int_division_truncates");
+
+    /* GLSL's mod takes the sign of the divisor, unlike C's fmod. */
+    glslt_reset();
+    glslt_frag("void main(){ gl_FragColor = vec4(mod(-1.0, 3.0)); }\n",
+               2.0f, 2.0f, 2.0f, 2.0f, "glslx_mod_sign_of_divisor");
+
+    /* Swizzles, read and written. */
+    glslt_reset();
+    glslt_frag("void main(){ vec4 v = vec4(1.0, 2.0, 3.0, 4.0);\n"
+               "  gl_FragColor = v.wzyx; }\n",
+               4.0f, 3.0f, 2.0f, 1.0f, "glslx_swizzle_read");
+
+    glslt_reset();
+    glslt_frag("void main(){ vec4 v = vec4(9.0);\n"
+               "  v.zyx = vec3(1.0, 2.0, 3.0);\n  gl_FragColor = v; }\n",
+               3.0f, 2.0f, 1.0f, 9.0f, "glslx_swizzle_write_out_of_order");
+
+    /* matN(s) is a DIAGONAL, and matrices are column-major.  Both are silent
+     * failures if wrong: the scene renders, just incorrectly. */
+    glslt_reset();
+    glslt_frag("void main(){ mat4 m = mat4(2.0);\n"
+               "  gl_FragColor = m * vec4(1.0, 1.0, 1.0, 1.0); }\n",
+               2.0f, 2.0f, 2.0f, 2.0f, "glslx_mat_scalar_is_diagonal");
+
+    glslt_reset();
+    glslt_frag("void main(){ mat4 t = mat4(1.0);\n"
+               "  t[3] = vec4(10.0, 20.0, 30.0, 1.0);\n"
+               "  gl_FragColor = t * vec4(1.0, 2.0, 3.0, 1.0); }\n",
+               11.0f, 22.0f, 33.0f, 1.0f, "glslx_translation_matrix");
+
+    /* The built-in library, which runs through AuraLite's libm. */
+    glslt_reset();
+    glslt_frag("void main(){ gl_FragColor = vec4(sqrt(16.0), pow(2.0, 10.0),\n"
+               "  length(vec3(3.0, 4.0, 0.0)), 1.0); }\n",
+               4.0f, 1024.0f, 5.0f, 1.0f, "glslx_builtin_maths");
+
+    glslt_reset();
+    glslt_frag("void main(){ gl_FragColor = vec4(sin(0.0), cos(0.0),\n"
+               "  sin(radians(90.0)), 1.0); }\n",
+               0.0f, 1.0f, 1.0f, 1.0f, "glslx_trigonometry");
+
+    glslt_reset();
+    glslt_frag("void main(){ vec3 n = normalize(vec3(3.0, 4.0, 0.0));\n"
+               "  gl_FragColor = vec4(n, 1.0); }\n",
+               0.6f, 0.8f, 0.0f, 1.0f, "glslx_normalize");
+
+    glslt_reset();
+    glslt_frag("void main(){ gl_FragColor = vec4(\n"
+               "  dot(vec3(1.0,2.0,3.0), vec3(4.0,5.0,6.0)),\n"
+               "  mix(0.0, 10.0, 0.25), clamp(11.0, 0.0, 10.0), 1.0); }\n",
+               32.0f, 2.5f, 10.0f, 1.0f, "glslx_dot_mix_clamp");
+
+    /* Control flow and functions. */
+    glslt_reset();
+    glslt_frag("void main(){ float a = 0.0;\n"
+               "  for (int i = 0; i < 5; i++) { a += 2.0; }\n"
+               "  gl_FragColor = vec4(a); }\n",
+               10.0f, 10.0f, 10.0f, 10.0f, "glslx_for_loop");
+
+    glslt_reset();
+    glslt_frag("float sq(float x){ return x*x; }\n"
+               "void main(){ gl_FragColor = vec4(sq(7.0)); }\n",
+               49.0f, 49.0f, 49.0f, 49.0f, "glslx_user_function");
+
+    glslt_reset();
+    glslt_frag("void twice(inout float v){ v = v * 2.0; }\n"
+               "void main(){ float f = 21.0; twice(f);\n"
+               "  gl_FragColor = vec4(f); }\n",
+               42.0f, 42.0f, 42.0f, 42.0f, "glslx_inout_parameter");
+
+    /* Arrays: the element count has to account for the array length, or
+     * every element aliases the first. */
+    glslt_reset();
+    glslt_frag("void main(){ float a[3];\n"
+               "  a[0]=1.0; a[1]=2.0; a[2]=3.0;\n"
+               "  gl_FragColor = vec4(a[0], a[1], a[2], 1.0); }\n",
+               1.0f, 2.0f, 3.0f, 1.0f, "glslx_array_elements_are_distinct");
+
+    glslt_reset();
+    glslt_frag("void main(){ vec3 v[2];\n"
+               "  v[0] = vec3(1.0,2.0,3.0); v[1] = vec3(4.0,5.0,6.0);\n"
+               "  gl_FragColor = vec4(v[1], 1.0); }\n",
+               4.0f, 5.0f, 6.0f, 1.0f, "glslx_array_of_vectors");
+
+    /* Uniforms and samplers arrive through the environment. */
+    {
+        static const float k[1] = { 3.0f };
+        static const float c[3] = { 0.25f, 0.5f, 0.75f };
+        glslt_reset();
+        glslt_set("uScale", 1, k);
+        glslt_set("uColor", 3, c);
+        glslt_frag("uniform float uScale;\nuniform vec3 uColor;\n"
+                   "void main(){ gl_FragColor = vec4(uColor * uScale, 1.0); }\n",
+                   0.75f, 1.5f, 2.25f, 1.0f, "glslx_uniforms");
+    }
+
+    {
+        static const float unit[1] = { 2.0f };
+        static const float uv[2]   = { 0.25f, 0.5f };
+        glslt_reset();
+        glslt_set("uTex", 1, unit);
+        glslt_set("vUV", 2, uv);
+        glslt_frag("uniform sampler2D uTex;\nvarying vec2 vUV;\n"
+                   "void main(){ gl_FragColor = texture2D(uTex, vUV); }\n",
+                   0.25f, 0.5f, 2.0f, 1.0f, "glslx_texture_sampling");
+    }
+
+    /* A realistic lit fragment shader, end to end. */
+    {
+        static const float n[3] = { 0.0f, 1.0f, 0.0f };
+        static const float l[3] = { 0.0f, 1.0f, 0.0f };
+        static const float b[3] = { 0.2f, 0.4f, 0.6f };
+        glslt_reset();
+        glslt_set("vNormal", 3, n);
+        glslt_set("uLightDir", 3, l);
+        glslt_set("uBase", 3, b);
+        glslt_frag("precision mediump float;\n"
+                   "varying vec3 vNormal;\nuniform vec3 uLightDir;\n"
+                   "uniform vec3 uBase;\n"
+                   "void main(){\n"
+                   "  float ndl = max(dot(normalize(vNormal),\n"
+                   "                      normalize(uLightDir)), 0.0);\n"
+                   "  gl_FragColor = vec4(uBase * ndl, 1.0); }\n",
+                   0.2f, 0.4f, 0.6f, 1.0f, "glslx_lambert_head_on");
+    }
+
+    /* A vertex shader writing gl_Position, including a partial write that
+     * must merge rather than clobber. */
+    {
+        static const float p[4] = { 1.0f, 2.0f, 3.0f, 1.0f };
+        static const float m[16] = {
+            2.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 2.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 2.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        };
+        glslt_reset();
+        glslt_set("aPos", 4, p);
+        glslt_set("uM", 16, m);
+
+        glsl_unit_t *u = glsl_compile(
+            "attribute vec4 aPos;\nuniform mat4 uM;\n"
+            "void main(){ gl_Position = uM * aPos; }\n",
+            GLSL_SHADER_VERTEX);
+        check(u && u->compiled, "glslx_vertex_compiles");
+        if (u && u->compiled) {
+            glsl_env_t env;
+            memset(&env, 0, sizeof env);
+            env.read_var = glslt_read;
+            env.write_var = glslt_write;
+            check(glsl_run(u, &env) == GLSL_RUN_OK, "glslx_vertex_runs");
+            check(glslt_wrote_position &&
+                  glslt_near(glslt_position[0], 2.0f) &&
+                  glslt_near(glslt_position[1], 4.0f) &&
+                  glslt_near(glslt_position[2], 6.0f) &&
+                  glslt_near(glslt_position[3], 1.0f),
+                  "glslx_gl_position_transformed");
+        }
+        glsl_unit_free(u);
+    }
+
+    {
+        glslt_reset();
+        glsl_unit_t *u = glsl_compile(
+            "void main(){ gl_Position = vec4(9.0);\n"
+            "  gl_Position.xy = vec2(1.0, 2.0); }\n",
+            GLSL_SHADER_VERTEX);
+        if (u && u->compiled) {
+            glsl_env_t env;
+            memset(&env, 0, sizeof env);
+            env.read_var = glslt_read;
+            env.write_var = glslt_write;
+            glsl_run(u, &env);
+            check(glslt_near(glslt_position[0], 1.0f) &&
+                  glslt_near(glslt_position[1], 2.0f) &&
+                  glslt_near(glslt_position[2], 9.0f) &&
+                  glslt_near(glslt_position[3], 9.0f),
+                  "glslx_partial_write_merges");
+        } else {
+            check(0, "glslx_partial_write_merges");
+        }
+        glsl_unit_free(u);
+    }
+
+    /* discard reports itself rather than writing a colour. */
+    {
+        glslt_reset();
+        glsl_unit_t *u = glsl_compile("void main(){ discard; }\n",
+                                      GLSL_SHADER_FRAGMENT);
+        glsl_env_t env;
+        memset(&env, 0, sizeof env);
+        env.read_var = glslt_read;
+        env.write_var = glslt_write;
+        check(u && u->compiled && glsl_run(u, &env) == GLSL_RUN_DISCARD,
+              "glslx_discard_reports");
+        check(!glslt_wrote_color, "glslx_discard_writes_no_colour");
+        glsl_unit_free(u);
+    }
+
+    /* An infinite loop must become a diagnostic, not a hang: there is no
+     * watchdog here, and a hung shader would take the compositor with it. */
+    {
+        glslt_reset();
+        glsl_unit_t *u = glsl_compile(
+            "void main(){ while (true) { } gl_FragColor = vec4(1.0); }\n",
+            GLSL_SHADER_FRAGMENT);
+        glsl_env_t env;
+        memset(&env, 0, sizeof env);
+        env.read_var = glslt_read;
+        env.write_var = glslt_write;
+        check(u && u->compiled && glsl_run(u, &env) == GLSL_RUN_ERROR,
+              "glslx_infinite_loop_terminates");
+        glsl_unit_free(u);
+    }
+
+    /* Runaway recursion must be bounded, not overflow the user stack. */
+    {
+        glslt_reset();
+        glsl_unit_t *u = glsl_compile(
+            "float r(float x){ return r(x) + 1.0; }\n"
+            "void main(){ gl_FragColor = vec4(r(1.0)); }\n",
+            GLSL_SHADER_FRAGMENT);
+        glsl_env_t env;
+        memset(&env, 0, sizeof env);
+        env.read_var = glslt_read;
+        env.write_var = glslt_write;
+        check(u && u->compiled && glsl_run(u, &env) == GLSL_RUN_ERROR,
+              "glslx_recursion_bounded");
+        glsl_unit_free(u);
+    }
+
+    /* Undefined maths must stay finite: a NaN in a colour would propagate
+     * through a blend and be very hard to trace back here. */
+    {
+        glslt_reset();
+        glslt_frag("void main(){ gl_FragColor = vec4(sqrt(-1.0), 1.0/0.0,\n"
+                   "  length(normalize(vec3(0.0))), 1.0); }\n",
+                   0.0f, 0.0f, 0.0f, 1.0f, "glslx_undefined_maths_is_finite");
+    }
+
+    /* The realistic case: one compiled shader run many times, as the
+     * fragment stage will do.  Each run must be independent and the arena
+     * must not grow. */
+    {
+        glsl_unit_t *u = glsl_compile(
+            "uniform float uX;\n"
+            "void main(){ float a = 0.0;\n"
+            "  for (int i = 0; i < 4; i++) { a += uX; }\n"
+            "  gl_FragColor = vec4(a); }\n", GLSL_SHADER_FRAGMENT);
+        check(u && u->compiled, "glslx_reuse_compiles");
+        if (u && u->compiled) {
+            glsl_env_t env;
+            memset(&env, 0, sizeof env);
+            env.read_var = glslt_read;
+            env.write_var = glslt_write;
+
+            int all_ok = 1;
+            size_t first = 0;
+            for (int k = 0; k < 100; k++) {
+                float x = (float)k;
+                glslt_reset();
+                glslt_set("uX", 1, &x);
+                if (glsl_run(u, &env) != GLSL_RUN_OK) { all_ok = 0; break; }
+                if (!glslt_near(glslt_color[0], x * 4.0f)) { all_ok = 0; break; }
+                if (k == 0) first = u->arena_used;
+            }
+            check(all_ok, "glslx_100_runs_are_independent");
+            check(u->arena_used == first, "glslx_runs_do_not_grow_the_arena");
+        }
+        glsl_unit_free(u);
+    }
+}
+
 /* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
  *
  * The claim under test is that rendering into a texture and then sampling it
@@ -2258,6 +2662,7 @@ int main(void) {
     test_gl_glu(wid);
     test_gl_backend(wid);
     test_gl_glsl();
+    test_gl_glsl_exec();
 
     free(buf);
     ag_window_destroy(wid);

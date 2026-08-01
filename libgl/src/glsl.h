@@ -336,6 +336,10 @@ int  glsl_lex(glsl_unit_t *u, const char *source);
 int  glsl_parse(glsl_unit_t *u);
 int  glsl_check(glsl_unit_t *u);
 
+/* Rebuild the info log from the recorded diagnostics.  Called at the end of
+ * compilation, and again after a run that recorded a runtime diagnostic. */
+void glsl_build_log(glsl_unit_t *u);
+
 /* Record a diagnostic.  Safe to call after the cap is reached: the count still
  * rises so the caller can report "and N more". */
 void glsl_error(glsl_unit_t *u, int line, const char *fmt, ...);
@@ -377,5 +381,120 @@ int  glsl_type_is_sampler(const glsl_type_t *t);
 
 /* The scalar element type of a vector or matrix; the type itself otherwise. */
 const glsl_type_t *glsl_type_element(const glsl_type_t *t);
+
+/* ============================================================================
+ * Execution (phase G11b) — libgl/src/glsl_exec.c
+ *
+ * An AST-walking interpreter.  The plan allowed for a bytecode VM "if
+ * profiling demands it"; it does not, and here is why.  Compiling to bytecode
+ * would add a second IR, a second set of bugs and a translation step between
+ * them, in exchange for removing a switch dispatch per node.  The cost of a
+ * fragment shader here is dominated by the per-component float arithmetic and
+ * by the fact that it runs once per PIXEL at all -- an interpreter is one to
+ * two orders of magnitude off the fixed-function path either way, and no
+ * dispatch strategy closes that gap.  A JIT would, and a JIT is out of scope.
+ *
+ * The honest framing, matching the G7 finding about vertex arrays: this buys
+ * API coverage, not frames per second.
+ * ==========================================================================*/
+
+/* A runtime value.
+ *
+ * Everything is stored as float, including ints and bools, with the type
+ * pointer carrying the real shape.  A union of int/float/bool arrays would
+ * save nothing -- the components are 4 bytes either way -- and would put a
+ * branch on every read.  Integer semantics that actually differ (division,
+ * modulus, the fact that `1/2` is 0) are applied at the operator, which is
+ * the only place they are observable.
+ *
+ * 16 components covers mat4, the largest GLSL ES type.  A struct or an array
+ * does not fit, which is deliberate: those live in variable STORAGE and are
+ * addressed field by field, never copied through an expression temporary.
+ */
+typedef struct {
+    const glsl_type_t *type;
+    float              v[16];
+} glsl_value_t;
+
+/* How a shader reaches the world outside itself.
+ *
+ * The interpreter never touches a texture, a uniform store or a vertex
+ * attribute directly: it asks through these callbacks.  That keeps G11b
+ * testable with no GL context at all -- the unit tests supply their own
+ * uniforms and a checkerboard sampler -- and means G11c wires the real
+ * pipeline in without changing a line of the interpreter.
+ *
+ * Every callback may be NULL; the interpreter then supplies zeros, which is
+ * what an unset uniform reads as in GL anyway.
+ */
+typedef struct glsl_env glsl_env_t;
+
+struct glsl_env {
+    /* Read an external variable by name.  `out` is pre-filled with zeros of
+     * the right type, so a callback that does not know the name can simply
+     * return 0 and get GL's own default. */
+    int (*read_var)(glsl_env_t *env, const char *name, glsl_value_t *out);
+
+    /* Write a varying or an output.  Called for gl_Position, gl_FragColor and
+     * every `varying` a vertex shader assigns. */
+    void (*write_var)(glsl_env_t *env, const char *name,
+                      const glsl_value_t *val);
+
+    /* Sample a texture.  `unit` is the sampler's value, which is the texture
+     * unit number a uniform was set to.  `coord` has 2 components for
+     * texture2D and 3 for textureCube. */
+    void (*sample)(glsl_env_t *env, int unit, int is_cube,
+                   const float *coord, int ncoord, float *rgba_out);
+
+    void *user;                  /* whatever the caller needs */
+};
+
+/* Why execution stopped. */
+typedef enum {
+    GLSL_RUN_OK = 0,
+    GLSL_RUN_DISCARD,            /* the fragment shader discarded            */
+    GLSL_RUN_ERROR               /* a runtime limit was hit; see the log     */
+} glsl_run_status_t;
+
+/* Run main().  The unit must have compiled successfully.
+ *
+ * Returns GLSL_RUN_DISCARD when a fragment shader executed `discard`, which
+ * the caller must treat as "produce no fragment" rather than as a failure.
+ */
+glsl_run_status_t glsl_run(glsl_unit_t *u, glsl_env_t *env);
+
+/* Iteration budget for one glsl_run(), shared across all loops.
+ *
+ * A shader is untrusted input and `while (true) {}` is a legal program.  On
+ * hardware a hung shader hangs the GPU and the watchdog resets it; here it
+ * would hang the compositor with no watchdog at all.  A budget turns that
+ * into a diagnostic.  100k iterations is far more than any real shader does
+ * per invocation and is reached in microseconds if a shader is looping away.
+ */
+#define GLSL_MAX_ITERATIONS  100000
+
+/* Call depth, to bound recursion.
+ *
+ * GLSL ES 1.0 forbids recursion outright, so anything approaching this is a
+ * shader doing something the specification does not allow -- but the limit
+ * has to be reached BEFORE the C stack runs out, or the interpreter faults
+ * instead of diagnosing.
+ *
+ * AuraLite gives a user process a 64 KB stack.  Each interpreted call costs
+ * roughly 300 bytes of C stack once the per-frame scratch was moved off it
+ * (it was 5.9 KB before, which overflowed at depth 11 and produced a guard
+ * page fault rather than a diagnostic -- found by running the test suite on
+ * the target, invisible on the host's 8 MB stack).  Sixteen frames is ample
+ * for legal shaders, which nest a handful of helpers at most, and leaves the
+ * budget comfortable. */
+#define GLSL_MAX_CALL_DEPTH  16
+
+/* Runtime variable storage.  Exposed so tests can seed and inspect it. */
+#define GLSL_MAX_LOCALS      128
+
+/* How deeply call arguments may nest: max(dot(a, b), 0.0) is two.  Distinct
+ * from the call depth because built-in calls do not push a frame, so a
+ * shader can nest arguments far deeper than it nests user functions. */
+#define GLSL_MAX_ARG_NESTING 24
 
 #endif /* AURALITE_GLSL_H */
