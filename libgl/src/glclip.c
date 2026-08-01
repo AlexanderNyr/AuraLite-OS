@@ -91,6 +91,15 @@ static void lerp_vertex(const gl_vertex_t *a, const gl_vertex_t *b,
         out->r[u] = a->r[u] + (b->r[u] - a->r[u]) * t;
     }
 
+    /* Varyings (G11c).  A clipped triangle must shade identically to the part
+     * of the original it replaces, which means a shader's outputs get cut the
+     * same way texture coordinates do.  The loop runs zero times on the
+     * fixed-function path. */
+    out->varying_count = a->varying_count;
+    for (int k = 0; k < a->varying_count && k < GL_MAX_VARYING_FLOATS; k++) {
+        out->varying[k] = a->varying[k] + (b->varying[k] - a->varying[k]) * t;
+    }
+
     /* win/inv_w are recomputed by the viewport transform after clipping. */
     out->valid = 1;
 }

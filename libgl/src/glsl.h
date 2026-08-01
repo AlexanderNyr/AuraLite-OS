@@ -313,6 +313,12 @@ typedef struct {
     int           log_len;
 
     int           compiled;      /* 1 when the unit is error-free          */
+
+    /* Interpreter state, allocated on the first glsl_run() and reused by
+     * every later one.  A fragment shader runs once per pixel, so allocating
+     * (and therefore zeroing) 90 KB per invocation is not affordable -- see
+     * the note in glsl_run(). */
+    void         *exec_state;
 } glsl_unit_t;
 
 /* ============================================================================

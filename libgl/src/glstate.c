@@ -380,6 +380,15 @@ void glGetIntegerv(GLenum pname, GLint *params) {
         params[0] = (GLint)ctx->framebuffer_binding; break;
     case GL_RENDERBUFFER_BINDING:
         params[0] = (GLint)ctx->renderbuffer_binding; break;
+    case GL_CURRENT_PROGRAM:
+        params[0] = (GLint)ctx->program_binding; break;
+    case GL_MAX_VERTEX_ATTRIBS:
+        params[0] = GL_MAX_VERTEX_ATTRIBS_IMPL; break;
+    case GL_MAX_VARYING_VECTORS:
+        params[0] = GL_MAX_VARYING_VEC4S; break;
+    case GL_MAX_VERTEX_UNIFORM_VECTORS:
+    case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
+        params[0] = GL_MAX_UNIFORM_FLOATS / 4; break;
     case GL_MAX_COLOR_ATTACHMENTS:
         params[0] = GL_MAX_COLOR_ATTACHMENTS_IMPL; break;
     case GL_MAX_RENDERBUFFER_SIZE:

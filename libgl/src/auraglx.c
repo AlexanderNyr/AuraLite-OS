@@ -95,6 +95,7 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     gl_frag_set_defaults(ctx);
     gl_array_set_defaults(ctx);
     gl_fbo_set_defaults(ctx);
+    gl_shader_set_defaults(ctx);
 }
 
 /* Allocate colour (and optionally depth) buffers for w*h.
@@ -204,6 +205,7 @@ void aglxDestroyContext(aglx_context_t *ctx) {
     gl_texture_free_all(ctx);
     gl_array_free_all(ctx);
     gl_fbo_free_all(ctx);
+    gl_shader_free_all(ctx);
     ctx_free_buffers(ctx);
     free(ctx);
 }

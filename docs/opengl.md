@@ -137,7 +137,7 @@ frames, so output is tear-free without extra work.
 
 | Missing | Notes |
 |---|---|
-| Shader API | The GLSL **front end** (G11a) and **execution engine** (G11b) both exist: a shader can be compiled, and run over supplied inputs, producing correct numbers. What is missing is the API — `glCreateShader`, `glUseProgram`, generic vertex attributes and uniforms — and the pipeline wiring, which is G11c. |
+| Shader coexistence polish | Shaders work (G11a–G11c) and draw correctly alongside fixed function. G11d is the remaining hardening of the two paths' shared state. |
 | Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
 | `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
 | More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
@@ -484,11 +484,94 @@ per second.** A vertex shader is affordable — a few thousand invocations per
 frame — but a fragment shader running per pixel is not, at any resolution
 worth using, until a JIT exists.
 
+---
+
+## The shader pipeline (phase G11c)
+
+Shaders are reachable from the GL API and draw pixels:
+`glCreateShader`, `glShaderSource`, `glCompileShader`, `glCreateProgram`,
+`glAttachShader`, `glLinkProgram`, `glUseProgram`, `glVertexAttribPointer`,
+`glEnableVertexAttribArray`, `glBindAttribLocation`, `glGetAttribLocation`,
+`glGetUniformLocation` and the `glUniform*` family including the matrix forms.
+
+### What replaces what
+
+| Stage | Fixed function | With a program bound |
+|---|---|---|
+| Transform | `MODELVIEW` × `PROJECTION` | the vertex shader |
+| Interpolation | colour, normal, texture coordinates | those **plus varyings** |
+| Fragment | texturing, lighting, fog, alpha test | the fragment shader |
+
+Clipping, culling, the depth test, the scissor box and blending are
+**untouched**: they work on window coordinates and a colour, and a shader
+changes neither contract. That is why the phase is a few hundred lines rather
+than a rewrite.
+
+### What linking does
+
+There is no code generation — both shaders keep their AST. Linking builds
+three tables, once, so the interpreter's by-name variable lookups become index
+arithmetic:
+
+- **Uniforms.** A uniform declared in *both* shaders is one uniform with one
+  location, as the specification requires; disagreeing about its type is a
+  link error.
+- **Varyings.** Matched by name and type. A varying the fragment shader reads
+  and the vertex shader never declares is a **link error**, because it would
+  otherwise silently read zeros and render black with nothing to point at.
+- **Attributes.** Locations assigned, honouring `glBindAttribLocation`.
+
+The tables are rebuilt from scratch by every link, so a stale location cannot
+survive a relink.
+
+### Behaviour worth knowing
+
+**A sampler defaults to texture unit 0**, so a single-texture shader works
+without any `glUniform1i`.
+
+**A shader ignores `glEnable(GL_TEXTURE_2D)`** and samples whatever is *bound*
+to the unit. The enables are a fixed-function concept with no meaning under
+ES 2.0.
+
+**A disabled attribute array supplies `glVertexAttrib4f`'s value**, defaulting
+to `(0,0,0,1)` — a valid homogeneous point rather than four zeros that would
+collapse every vertex to the origin.
+
+**A short array leaves the rest at the default**, so `attribute vec4 aPos` fed
+from a 3-component array reads `w` as 1.0.
+
+**Using an unlinked program is `GL_INVALID_OPERATION`**, not a silent fallback
+to fixed function — which would render the scene wrongly with no indication
+why. Deleting the bound program *does* revert to fixed function.
+
+**A shader that hits a runtime limit paints the fragment magenta** and records
+why in the info log. An obviously wrong colour is far easier to notice than a
+stale one.
+
+### Cost
+
+Full-screen quad at 320×240 (76 800 fragments):
+
+| Path | Cost |
+|---|---|
+| Fixed function | 0.92 ms/frame |
+| Constant-colour shader | 12.1 ms/frame |
+| Lambert-lit shader | 53.8 ms/frame |
+| Vertex stage only (4 vertices) | 1.2 µs/draw |
+
+So a fragment shader costs **13–58× the fixed-function path**. That is better
+than the plan's "one to two orders of magnitude" prediction, but the shape of
+the advice is unchanged:
+
+- **A vertex shader is affordable.** A few thousand invocations per frame at
+  ~0.3 µs each is noise.
+- **A fragment shader is not, at full-screen resolution.** Use one on small
+  areas, or at a small context size, or accept single-digit frame rates.
+- **The shader path buys API coverage, not frames per second.**
+
 ### What comes next
 
-G11c connects this to `glCreateShader`/`glUseProgram`, generic vertex
-attributes and uniforms; G11d makes the fixed-function and shader paths
-coexist.
+G11d hardens the coexistence of the two paths' shared state.
 
 ---
 
@@ -524,7 +607,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 289 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 330 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -557,6 +640,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glfbo.c` | Framebuffer objects, renderbuffers, `glReadPixels`, 36 |
 | `tests/unit/test_glsl.c` | The GLSL ES 1.0 front end: lexing, parsing, types, diagnostics, 167 |
 | `tests/unit/test_glslexec.c` | The execution engine, checked numerically, 179 |
+| `tests/unit/test_glprog.c` | The shader pipeline, checked against pixels, 107 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test

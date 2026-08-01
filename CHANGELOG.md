@@ -2,6 +2,80 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase G11c — the shader pipeline] 2026-08-01
+
+Shaders reach the GL API and draw pixels. `glCreateShader` through
+`glUseProgram`, generic vertex attributes, uniforms including the matrix
+forms — and a fragment shader that renders.
+
+### Added
+- `libgl/src/glshader.c` and `glshaderpipe.c`, 1400 lines: the ES 2.0 object
+  model (shaders, programs, linking, uniforms, generic attributes) and the
+  seam that runs shaders inside the pipeline.
+- Varyings carried through `gl_vertex_t`, clipped by the existing
+  Sutherland–Hodgman code and interpolated perspective-correctly by the
+  existing rasterizer machinery — one loop added to each.
+- `tests/unit/test_glprog.c`: **107 host checks**, driving the public API and
+  asserting on rendered pixels.
+- 41 in-OS checks in `/gltest` (**330 total**, was 289).
+
+### What replaces what
+The vertex shader replaces the transform; the fragment shader replaces
+texturing, lighting and fog. Clipping, culling, the depth test, the scissor
+box and blending are **untouched** — they work on window coordinates and a
+colour, and a shader changes neither contract.
+
+### Linking
+No code generation: both shaders keep their AST. Linking builds the uniform,
+varying and attribute tables so the interpreter's by-name lookups become index
+arithmetic. A uniform declared in both shaders is one uniform with one
+location. A varying the fragment shader reads and the vertex shader never
+declares is a **link error** — otherwise it silently reads zeros and the scene
+renders black with nothing to point at. Tables are rebuilt from scratch every
+link, so a stale location cannot survive a relink.
+
+### Fixed — a 30× interpreter regression
+`glsl_run()` allocated its ~90 KB interpreter state from the arena on every
+invocation, and `glsl_alloc()` zeroes what it returns. At one call per pixel
+that cost 3.90 µs per fragment, against 0.27 µs for the same interpreter
+measured standalone in G11b. The state is now allocated once per unit and only
+the bookkeeping is cleared: **0.13 µs**, and a full-screen shaded frame went
+from 306 ms to 12 ms.
+
+Worth recording *why* it hid: G11b's benchmark called the interpreter directly
+and never allocated in a loop. The cost only appeared once the pipeline
+invoked it 76 800 times a frame.
+
+### Cost, measured
+Full-screen quad at 320×240 (76 800 fragments):
+
+| Path | Cost |
+|---|---|
+| Fixed function | 0.92 ms/frame |
+| Constant-colour shader | 12.1 ms/frame |
+| Lambert-lit shader | 53.8 ms/frame |
+| Vertex stage only, 4 vertices | 1.2 µs/draw |
+
+13–58× the fixed-function path — better than the plan's predicted 100×+, but
+the advice stands: vertex shaders are affordable, full-screen fragment shaders
+are not, and the shader path buys API coverage rather than frames per second.
+
+### Behaviour worth knowing
+- A sampler defaults to unit 0, so a one-texture shader needs no
+  `glUniform1i`.
+- A shader ignores `glEnable(GL_TEXTURE_2D)` and samples what is *bound*.
+- A disabled attribute array supplies `glVertexAttrib4f`'s value, defaulting
+  to `(0,0,0,1)`.
+- Using an unlinked program is `GL_INVALID_OPERATION`, never a silent fallback
+  to fixed function; deleting the bound program *does* revert to it.
+- A shader hitting a runtime limit paints the fragment magenta and logs why.
+
+### Verified
+`make test-unit` 67/67 binaries green (864 GL host checks across 15 suites);
+`/gltest` in QEMU 330/330; `test_opengl.sh` 86/86; clean under
+`-fsanitize=address,undefined`; `make iso` from a clean tree. No regression in
+any fixed-function check.
+
 ## [Phase G11b — GLSL execution engine] 2026-08-01
 
 The second quarter of the shader phase: an AST-walking interpreter that runs

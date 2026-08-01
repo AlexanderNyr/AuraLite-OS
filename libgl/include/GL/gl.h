@@ -32,6 +32,7 @@ typedef unsigned int   GLuint;      /* 4-byte unsigned  */
 typedef int            GLsizei;     /* 4-byte signed    */
 typedef float          GLfloat;     /* single precision */
 typedef float          GLclampf;    /* single precision, clamped to [0,1] */
+typedef char           GLchar;      /* shader source and GLSL names        */
 typedef double         GLdouble;    /* double precision */
 typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 
@@ -306,6 +307,43 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_BGR                            0x80E0
 #define GL_BGRA                           0x80E1
 
+/* ---- Shaders and programs (GL ES 2.0, phase G11c) ---- */
+#define GL_FRAGMENT_SHADER                0x8B30
+#define GL_VERTEX_SHADER                  0x8B31
+#define GL_COMPILE_STATUS                 0x8B81
+#define GL_LINK_STATUS                    0x8B82
+#define GL_VALIDATE_STATUS                0x8B83
+#define GL_INFO_LOG_LENGTH                0x8B84
+#define GL_SHADER_SOURCE_LENGTH           0x8B88
+#define GL_SHADER_TYPE                    0x8B4F
+#define GL_DELETE_STATUS                  0x8B80
+#define GL_ATTACHED_SHADERS               0x8B85
+#define GL_ACTIVE_UNIFORMS                0x8B86
+#define GL_ACTIVE_ATTRIBUTES              0x8B89
+#define GL_CURRENT_PROGRAM                0x8B8D
+
+#define GL_MAX_VERTEX_ATTRIBS             0x8869
+#define GL_MAX_VARYING_VECTORS            0x8DFC
+#define GL_MAX_VERTEX_UNIFORM_VECTORS     0x8DFB
+#define GL_MAX_FRAGMENT_UNIFORM_VECTORS   0x8DFD
+
+/* Uniform and attribute types, as glGetActiveUniform reports them. */
+#define GL_FLOAT_VEC2                     0x8B50
+#define GL_FLOAT_VEC3                     0x8B51
+#define GL_FLOAT_VEC4                     0x8B52
+#define GL_INT_VEC2                       0x8B53
+#define GL_INT_VEC3                       0x8B54
+#define GL_INT_VEC4                       0x8B55
+#define GL_BOOL                           0x8B56
+#define GL_BOOL_VEC2                      0x8B57
+#define GL_BOOL_VEC3                      0x8B58
+#define GL_BOOL_VEC4                      0x8B59
+#define GL_FLOAT_MAT2                     0x8B5A
+#define GL_FLOAT_MAT3                     0x8B5B
+#define GL_FLOAT_MAT4                     0x8B5C
+#define GL_SAMPLER_2D                     0x8B5E
+#define GL_SAMPLER_CUBE                   0x8B60
+
 /* ---- Vertex arrays (§2.8) ---- */
 #define GL_VERTEX_ARRAY                   0x8074
 #define GL_NORMAL_ARRAY                   0x8075
@@ -480,6 +518,62 @@ void glGetRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params);
 
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, GLvoid *pixels);
+
+/* ---- Shaders and programs (G11c) ---- */
+GLuint glCreateShader(GLenum type);
+void   glDeleteShader(GLuint shader);
+GLboolean glIsShader(GLuint shader);
+void   glShaderSource(GLuint shader, GLsizei count, const GLchar *const *string,
+                      const GLint *length);
+void   glCompileShader(GLuint shader);
+void   glGetShaderiv(GLuint shader, GLenum pname, GLint *params);
+void   glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei *length,
+                          GLchar *infoLog);
+
+GLuint glCreateProgram(void);
+void   glDeleteProgram(GLuint program);
+GLboolean glIsProgram(GLuint program);
+void   glAttachShader(GLuint program, GLuint shader);
+void   glDetachShader(GLuint program, GLuint shader);
+void   glLinkProgram(GLuint program);
+void   glUseProgram(GLuint program);
+void   glValidateProgram(GLuint program);
+void   glGetProgramiv(GLuint program, GLenum pname, GLint *params);
+void   glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length,
+                           GLchar *infoLog);
+
+/* ---- Generic vertex attributes ---- */
+void   glVertexAttribPointer(GLuint index, GLint size, GLenum type,
+                             GLboolean normalized, GLsizei stride,
+                             const GLvoid *pointer);
+void   glEnableVertexAttribArray(GLuint index);
+void   glDisableVertexAttribArray(GLuint index);
+void   glBindAttribLocation(GLuint program, GLuint index, const GLchar *name);
+GLint  glGetAttribLocation(GLuint program, const GLchar *name);
+void   glVertexAttrib1f(GLuint index, GLfloat x);
+void   glVertexAttrib2f(GLuint index, GLfloat x, GLfloat y);
+void   glVertexAttrib3f(GLuint index, GLfloat x, GLfloat y, GLfloat z);
+void   glVertexAttrib4f(GLuint index, GLfloat x, GLfloat y, GLfloat z,
+                        GLfloat w);
+
+/* ---- Uniforms ---- */
+GLint  glGetUniformLocation(GLuint program, const GLchar *name);
+void   glUniform1f(GLint location, GLfloat v0);
+void   glUniform2f(GLint location, GLfloat v0, GLfloat v1);
+void   glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
+void   glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2,
+                   GLfloat v3);
+void   glUniform1i(GLint location, GLint v0);
+void   glUniform1fv(GLint location, GLsizei count, const GLfloat *value);
+void   glUniform2fv(GLint location, GLsizei count, const GLfloat *value);
+void   glUniform3fv(GLint location, GLsizei count, const GLfloat *value);
+void   glUniform4fv(GLint location, GLsizei count, const GLfloat *value);
+void   glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose,
+                          const GLfloat *value);
+void   glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose,
+                          const GLfloat *value);
+void   glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose,
+                          const GLfloat *value);
 
 void glBlendFunc(GLenum sfactor, GLenum dfactor);
 void glAlphaFunc(GLenum func, GLclampf ref);

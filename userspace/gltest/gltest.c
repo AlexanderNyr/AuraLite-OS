@@ -1870,6 +1870,448 @@ static void test_gl_glsl_exec(void) {
     }
 }
 
+
+/* ---- Phase G11c: the shader pipeline ----
+ *
+ * The first phase where a shader actually draws.  Running it on the target
+ * matters for the same reason G11b did -- every value is a float through
+ * AuraLite's libm -- plus one new one: the vertex path now allocates a
+ * gl_vertex_t per vertex with varyings in it, and the interpreter runs once
+ * per FRAGMENT, on a 64 KB user stack.
+ */
+static void test_gl_shader_pipeline(int wid) {
+    printf("[gl] --- G11c: shader pipeline ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "shp_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+
+    /* A full-screen quad in normalised device coordinates. */
+    static const GLfloat ndc[16] = {
+        -1.0f, -1.0f, 0.0f, 1.0f,
+         1.0f, -1.0f, 0.0f, 1.0f,
+         1.0f,  1.0f, 0.0f, 1.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+    };
+
+    /* ---- Build the simplest possible program ---- */
+    GLuint prog = 0;
+    {
+        static const char *vsrc =
+            "attribute vec4 aPos;\n"
+            "void main() { gl_Position = aPos; }\n";
+        static const char *fsrc =
+            "void main() { gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL);
+        glCompileShader(vs);
+        GLint ok = 0;
+        glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
+        check(ok == GL_TRUE, "shp_vs_compiles");
+        if (!ok) {
+            char log[256];
+            glGetShaderInfoLog(vs, sizeof log, NULL, log);
+            printf("[gl]   vs: %s", log);
+        }
+
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL);
+        glCompileShader(fs);
+        glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+        check(ok == GL_TRUE, "shp_fs_compiles");
+
+        prog = glCreateProgram();
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glLinkProgram(prog);
+        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+        check(ok == GL_TRUE, "shp_links");
+        if (!ok) {
+            char log[256];
+            glGetProgramInfoLog(prog, sizeof log, NULL, log);
+            printf("[gl]   link: %s", log);
+        }
+    }
+
+    if (prog == 0) { aglxDestroyContext(ctx); return; }
+
+    glUseProgram(prog);
+    {
+        GLint bound = 0;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &bound);
+        check(bound == (GLint)prog, "shp_program_bound");
+    }
+
+    /* ---- A shader draws ---- */
+    {
+        GLint loc = glGetAttribLocation(prog, "aPos");
+        check(loc >= 0, "shp_attrib_location");
+        glEnableVertexAttribArray((GLuint)loc);
+        glVertexAttribPointer((GLuint)loc, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glDrawArrays(GL_QUADS, 0, 4);
+        check(AT(GL_W / 2, GL_H / 2) == 0xFF0000, "shp_shader_fills_centre");
+        check(AT(4, 4) == 0xFF0000, "shp_shader_fills_corner");
+        check(glGetError() == GL_NO_ERROR, "shp_draw_no_error");
+    }
+
+    /* ---- Varyings interpolate ---- */
+    {
+        static const char *vsrc =
+            "attribute vec4 aPos;\nattribute vec3 aCol;\nvarying vec3 vCol;\n"
+            "void main() { vCol = aCol; gl_Position = aPos; }\n";
+        static const char *fsrc =
+            "precision mediump float;\nvarying vec3 vCol;\n"
+            "void main() { gl_FragColor = vec4(vCol, 1.0); }\n";
+        static const GLfloat cols[12] = {
+            1.0f, 0.0f, 0.0f,
+            1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 1.0f,
+        };
+
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL); glCompileShader(vs);
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL); glCompileShader(fs);
+        GLuint p2 = glCreateProgram();
+        glAttachShader(p2, vs); glAttachShader(p2, fs);
+        glLinkProgram(p2);
+        GLint ok = 0;
+        glGetProgramiv(p2, GL_LINK_STATUS, &ok);
+        check(ok == GL_TRUE, "shp_varying_links");
+
+        if (ok) {
+            glUseProgram(p2);
+            GLint lp = glGetAttribLocation(p2, "aPos");
+            GLint lc = glGetAttribLocation(p2, "aCol");
+            glEnableVertexAttribArray((GLuint)lp);
+            glVertexAttribPointer((GLuint)lp, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+            glEnableVertexAttribArray((GLuint)lc);
+            glVertexAttribPointer((GLuint)lc, 3, GL_FLOAT, GL_FALSE, 0, cols);
+
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+
+            /* Red along the bottom, blue along the top, blended between. */
+            uint32_t bot = AT(GL_W / 2, 4);
+            uint32_t top = AT(GL_W / 2, GL_H - 5);
+            uint32_t mid = AT(GL_W / 2, GL_H / 2);
+            check(((bot >> 16) & 0xFF) > 200 && (bot & 0xFF) < 60,
+                  "shp_varying_bottom_is_red");
+            check(((top >> 16) & 0xFF) < 60 && (top & 0xFF) > 200,
+                  "shp_varying_top_is_blue");
+            check(((mid >> 16) & 0xFF) > 60 && ((mid >> 16) & 0xFF) < 200 &&
+                  (mid & 0xFF) > 60 && (mid & 0xFF) < 200,
+                  "shp_varying_middle_is_blended");
+
+            glDisableVertexAttribArray((GLuint)lc);
+        }
+    }
+
+    /* ---- Uniforms drive both stages ---- */
+    {
+        static const char *vsrc =
+            "attribute vec4 aPos;\nuniform float uScale;\n"
+            "void main() { gl_Position = vec4(aPos.xy * uScale, 0.0, 1.0); }\n";
+        static const char *fsrc =
+            "precision mediump float;\nuniform vec3 uColor;\n"
+            "void main() { gl_FragColor = vec4(uColor, 1.0); }\n";
+
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL); glCompileShader(vs);
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL); glCompileShader(fs);
+        GLuint p3 = glCreateProgram();
+        glAttachShader(p3, vs); glAttachShader(p3, fs);
+        glLinkProgram(p3);
+        GLint ok = 0;
+        glGetProgramiv(p3, GL_LINK_STATUS, &ok);
+        check(ok == GL_TRUE, "shp_uniform_links");
+
+        if (ok) {
+            glUseProgram(p3);
+            GLint uc = glGetUniformLocation(p3, "uColor");
+            GLint us = glGetUniformLocation(p3, "uScale");
+            check(uc >= 0 && us >= 0, "shp_uniform_locations");
+            check(glGetUniformLocation(p3, "uNope") == -1,
+                  "shp_unknown_uniform_is_minus_one");
+
+            glUniform3f(uc, 0.0f, 1.0f, 0.0f);
+            glUniform1f(us, 0.5f);
+            GLint lp = glGetAttribLocation(p3, "aPos");
+            glEnableVertexAttribArray((GLuint)lp);
+            glVertexAttribPointer((GLuint)lp, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+            check(AT(GL_W / 2, GL_H / 2) == 0x00FF00, "shp_uniform_colour");
+            check(AT(2, 2) == 0x000000, "shp_uniform_scale_shrank_geometry");
+
+            /* A matrix uniform, column-major as glUniformMatrix expects. */
+            glUniform3f(uc, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+            check(AT(GL_W / 2, GL_H / 2) == 0x0000FF,
+                  "shp_uniform_change_takes_effect");
+        }
+    }
+
+    /* ---- Texturing through a sampler ---- */
+    {
+        static const unsigned char rgb2x2[2 * 2 * 3] = {
+            255, 0,   0,      0,   255, 0,
+            0,   0,   255,    255, 255, 255,
+        };
+        GLuint tex = 0;
+        glActiveTexture(GL_TEXTURE0);
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2, 2, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, rgb2x2);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+        static const char *vsrc =
+            "attribute vec4 aPos;\nattribute vec2 aUV;\nvarying vec2 vUV;\n"
+            "void main() { vUV = aUV; gl_Position = aPos; }\n";
+        static const char *fsrc =
+            "precision mediump float;\nvarying vec2 vUV;\n"
+            "uniform sampler2D uTex;\n"
+            "void main() { gl_FragColor = texture2D(uTex, vUV); }\n";
+        static const GLfloat uv[8] = { 0, 0, 1, 0, 1, 1, 0, 1 };
+
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL); glCompileShader(vs);
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL); glCompileShader(fs);
+        GLuint p4 = glCreateProgram();
+        glAttachShader(p4, vs); glAttachShader(p4, fs);
+        glLinkProgram(p4);
+        GLint ok = 0;
+        glGetProgramiv(p4, GL_LINK_STATUS, &ok);
+        check(ok == GL_TRUE, "shp_texture_links");
+
+        if (ok) {
+            glUseProgram(p4);
+            GLint lp = glGetAttribLocation(p4, "aPos");
+            GLint lu = glGetAttribLocation(p4, "aUV");
+            glEnableVertexAttribArray((GLuint)lp);
+            glVertexAttribPointer((GLuint)lp, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+            glEnableVertexAttribArray((GLuint)lu);
+            glVertexAttribPointer((GLuint)lu, 2, GL_FLOAT, GL_FALSE, 0, uv);
+
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+            /* A sampler defaults to unit 0, so no glUniform1i is needed. */
+            check(AT(GL_W / 4, GL_H / 4) == 0xFF0000,
+                  "shp_sampler_defaults_to_unit_0");
+            check(AT(GL_W * 3 / 4, GL_H / 4) == 0x00FF00,
+                  "shp_sampler_quadrants");
+            check(AT(GL_W / 4, GL_H * 3 / 4) == 0x0000FF,
+                  "shp_sampler_v_axis_not_flipped");
+
+            glDisableVertexAttribArray((GLuint)lu);
+        }
+        glDeleteTextures(1, &tex);
+    }
+
+    /* ---- discard ---- */
+    {
+        static const char *vsrc =
+            "attribute vec4 aPos;\nvarying vec2 vP;\n"
+            "void main() { vP = aPos.xy; gl_Position = aPos; }\n";
+        static const char *fsrc =
+            "precision mediump float;\nvarying vec2 vP;\n"
+            "void main() {\n  if (vP.x > 0.0) discard;\n"
+            "  gl_FragColor = vec4(1.0, 0.0, 1.0, 1.0);\n}\n";
+
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL); glCompileShader(vs);
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL); glCompileShader(fs);
+        GLuint p5 = glCreateProgram();
+        glAttachShader(p5, vs); glAttachShader(p5, fs);
+        glLinkProgram(p5);
+        GLint ok = 0;
+        glGetProgramiv(p5, GL_LINK_STATUS, &ok);
+
+        if (ok) {
+            glUseProgram(p5);
+            GLint lp = glGetAttribLocation(p5, "aPos");
+            glEnableVertexAttribArray((GLuint)lp);
+            glVertexAttribPointer((GLuint)lp, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+            check(AT(GL_W / 4, GL_H / 2) == 0xFF00FF, "shp_discard_keeps_half");
+            check(AT(GL_W * 3 / 4, GL_H / 2) == 0x000000,
+                  "shp_discard_drops_half");
+        }
+    }
+
+    /* ---- A realistic lit shader, the shape an ES 2.0 renderer uses ---- */
+    {
+        static const char *vsrc =
+            "attribute vec4 aPosition;\nattribute vec3 aNormal;\n"
+            "uniform mat4 uMVP;\nvarying vec3 vNormal;\n"
+            "void main() {\n  vNormal = aNormal;\n"
+            "  gl_Position = uMVP * aPosition;\n}\n";
+        static const char *fsrc =
+            "precision mediump float;\nvarying vec3 vNormal;\n"
+            "uniform vec3 uLightDir;\nuniform vec3 uColor;\n"
+            "void main() {\n"
+            "  float ndl = max(dot(normalize(vNormal),\n"
+            "                      normalize(uLightDir)), 0.0);\n"
+            "  gl_FragColor = vec4(uColor * ndl, 1.0);\n}\n";
+        static const GLfloat identity[16] = {
+            1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1
+        };
+        static const GLfloat normals[12] = { 0,0,1, 0,0,1, 0,0,1, 0,0,1 };
+
+        GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &vsrc, NULL); glCompileShader(vs);
+        GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &fsrc, NULL); glCompileShader(fs);
+        GLuint p6 = glCreateProgram();
+        glAttachShader(p6, vs); glAttachShader(p6, fs);
+        glLinkProgram(p6);
+        GLint ok = 0;
+        glGetProgramiv(p6, GL_LINK_STATUS, &ok);
+        check(ok == GL_TRUE, "shp_lit_links");
+
+        if (ok) {
+            glUseProgram(p6);
+            glUniformMatrix4fv(glGetUniformLocation(p6, "uMVP"), 1,
+                               GL_FALSE, identity);
+            glUniform3f(glGetUniformLocation(p6, "uColor"), 0.8f, 0.4f, 0.2f);
+            glUniform3f(glGetUniformLocation(p6, "uLightDir"),
+                        0.0f, 0.0f, 1.0f);
+
+            GLint lp = glGetAttribLocation(p6, "aPosition");
+            GLint ln = glGetAttribLocation(p6, "aNormal");
+            glEnableVertexAttribArray((GLuint)lp);
+            glVertexAttribPointer((GLuint)lp, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+            glEnableVertexAttribArray((GLuint)ln);
+            glVertexAttribPointer((GLuint)ln, 3, GL_FLOAT, GL_FALSE, 0,
+                                  normals);
+
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+            {
+                uint32_t p = AT(GL_W / 2, GL_H / 2);
+                int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+                check(r > 198 && r < 210 && g > 96 && g < 108 &&
+                      b > 45 && b < 57, "shp_lit_head_on");
+            }
+
+            /* Only the uniform changes: the light goes behind the surface. */
+            glUniform3f(glGetUniformLocation(p6, "uLightDir"),
+                        0.0f, 0.0f, -1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glDrawArrays(GL_QUADS, 0, 4);
+            check(AT(GL_W / 2, GL_H / 2) == 0x000000, "shp_lit_from_behind");
+
+            glDisableVertexAttribArray((GLuint)ln);
+        }
+    }
+
+    /* ---- Coexistence: the fixed-function path must be untouched ----
+     *
+     * Nine phases and 289 checks depend on it, so this is really the
+     * regression gate for everything before G11. */
+    glUseProgram(0);
+    {
+        GLint bound = -1;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &bound);
+        check(bound == 0, "shp_use_program_zero_unbinds");
+    }
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1.0f, 1.0f, 0.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(10, 10, 0); glVertex3f(GL_W - 10, 10, 0);
+    glVertex3f(GL_W - 10, GL_H - 10, 0); glVertex3f(10, GL_H - 10, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0xFFFF00, "shp_fixed_function_restored");
+    check(AT(2, 2) == 0x000000, "shp_fixed_function_geometry_placed");
+
+    /* Alternating within one frame: the mixed-renderer case. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUseProgram(prog);
+    {
+        GLint loc = glGetAttribLocation(prog, "aPos");
+        glEnableVertexAttribArray((GLuint)loc);
+        glVertexAttribPointer((GLuint)loc, 4, GL_FLOAT, GL_FALSE, 0, ndc);
+        glDrawArrays(GL_QUADS, 0, 4);
+    }
+    glUseProgram(0);
+    glColor3f(0.0f, 0.0f, 1.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(GL_W / 2 - 8, GL_H / 2 - 8, 0);
+    glVertex3f(GL_W / 2 + 8, GL_H / 2 - 8, 0);
+    glVertex3f(GL_W / 2 + 8, GL_H / 2 + 8, 0);
+    glVertex3f(GL_W / 2 - 8, GL_H / 2 + 8, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0x0000FF, "shp_mixed_fixed_over_shaded");
+    check(AT(4, 4) == 0xFF0000, "shp_mixed_shaded_survives");
+
+    /* ---- Robustness ---- */
+    {
+        while (glGetError() != GL_NO_ERROR) { }
+        glUseProgram(9999);
+        check(glGetError() == GL_INVALID_VALUE, "shp_bad_program_refused");
+
+        GLuint unlinked = glCreateProgram();
+        glUseProgram(unlinked);
+        check(glGetError() == GL_INVALID_OPERATION,
+              "shp_unlinked_program_refused");
+
+        /* Deleting the bound program must revert to fixed function rather
+         * than leave the rasterizer pointing at freed state. */
+        glUseProgram(prog);
+        glDeleteProgram(prog);
+        GLint bound = -1;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &bound);
+        check(bound == 0, "shp_delete_bound_program_unbinds");
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glColor3f(0.0f, 1.0f, 1.0f);
+        glBegin(GL_QUADS);
+        glVertex3f(10, 10, 0); glVertex3f(GL_W - 10, 10, 0);
+        glVertex3f(GL_W - 10, GL_H - 10, 0); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        check(AT(GL_W / 2, GL_H / 2) == 0x00FFFF,
+              "shp_draws_after_program_deleted");
+    }
+
+    /* Implementation limits, so an application can size its own tables. */
+    {
+        GLint v = 0;
+        glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &v);
+        check(v >= 8, "shp_max_vertex_attribs");
+        glGetIntegerv(GL_MAX_VARYING_VECTORS, &v);
+        check(v >= 8, "shp_max_varying_vectors");
+    }
+
+    check(aglxSwapBuffers(ctx) == 0, "shp_swap");
+    check(glGetError() == GL_NO_ERROR, "shp_no_pending_error");
+
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
  *
  * The claim under test is that rendering into a texture and then sampling it
@@ -2663,6 +3105,7 @@ int main(void) {
     test_gl_backend(wid);
     test_gl_glsl();
     test_gl_glsl_exec();
+    test_gl_shader_pipeline(wid);
 
     free(buf);
     ag_window_destroy(wid);

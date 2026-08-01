@@ -42,6 +42,20 @@ typedef struct {
     GLfloat    s[GL_MAX_TEXTURE_UNITS_IMPL];
     GLfloat    t[GL_MAX_TEXTURE_UNITS_IMPL];
     GLfloat    r[GL_MAX_TEXTURE_UNITS_IMPL];
+
+    /* ---- Varyings (phase G11c) ----
+     *
+     * A vertex shader's outputs, interpolated across the primitive and read
+     * by the fragment shader.  Stored as a flat float array because the
+     * clipper and the rasterizer only ever need to lerp them: neither has any
+     * reason to know that floats 4..6 are somebody's `vNormal`.  The program's
+     * varying table maps names to offsets, once, at link time.
+     *
+     * `varying_count` is 0 on the fixed-function path, so the extra work in
+     * the clipper and rasterizer costs a loop that runs zero times. */
+    GLfloat    varying[GL_MAX_VARYING_FLOATS];
+    int        varying_count;
+
     int        valid;   /* 0 when the vertex is behind the eye (w <= 0)       */
 } gl_vertex_t;
 
@@ -173,6 +187,25 @@ int gl_texture_uses_mipmaps(const gl_texture_t *t);
 
 void gl_texture_set_defaults(struct aglx_context *ctx);
 void gl_texture_free_all(struct aglx_context *ctx);
+
+/* ---- Shader pipeline (libgl/src/glshaderpipe.c), phase G11c ----
+ *
+ * The rasterizer and the clipper consult gl_shader_active() to decide which
+ * of the two fragment paths to run; everything else about them is unchanged.
+ */
+int  gl_shader_active(struct aglx_context *ctx);
+int  gl_shader_varying_floats(struct aglx_context *ctx);
+int  gl_shader_run_vertex(struct aglx_context *ctx, int index,
+                          gl_vertex_t *out);
+int  gl_shader_run_fragment(struct aglx_context *ctx, const float *varyings,
+                            float x, float y, float z, int front_facing,
+                            gl_color_t *out);
+/* Push a shader-produced vertex into primitive assembly, bypassing the
+ * fixed-function transform and attribute latching. */
+void gl_imm_submit_vertex(struct aglx_context *ctx, const gl_vertex_t *v);
+
+void gl_shader_set_defaults(struct aglx_context *ctx);
+void gl_shader_free_all(struct aglx_context *ctx);
 
 /* ---- Framebuffer objects (libgl/src/glfbo.c), phase G12 ----
  *

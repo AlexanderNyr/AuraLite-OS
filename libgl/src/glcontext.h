@@ -46,6 +46,22 @@
  * +X, -X, +Y, -Y, +Z, -Z. */
 #define GL_CUBE_FACES              6
 
+/* ---- Phase G11c limits (the shader pipeline) ----
+ *
+ * GLSL ES 1.0 requires at least 8 varying vec4s, 8 vertex attributes, 128
+ * vertex uniform vec4s and 16 fragment ones.  These are the minimums, which
+ * is what portable shaders are written against; raising them costs memory in
+ * every vertex (varyings) and in every context (uniforms) for capability
+ * nothing portable uses.
+ */
+#define GL_MAX_VARYING_VEC4S       8
+#define GL_MAX_VARYING_FLOATS      (GL_MAX_VARYING_VEC4S * 4)
+#define GL_MAX_VERTEX_ATTRIBS_IMPL 8
+#define GL_MAX_UNIFORMS_IMPL       64   /* named uniforms per program      */
+#define GL_MAX_UNIFORM_FLOATS      1024 /* total storage per program       */
+#define GL_MAX_SHADERS_IMPL        16
+#define GL_MAX_PROGRAMS_IMPL       8
+
 /* ---- Phase G12 limits ----
  *
  * Framebuffer and renderbuffer objects tracked per context.  Sized like the
@@ -184,6 +200,90 @@ typedef struct {
     gl_attachment_t color[GL_MAX_COLOR_ATTACHMENTS_IMPL];
     gl_attachment_t depth;
 } gl_framebuffer_t;
+
+/* ---- Shader and program objects (GL ES 2.0, phase G11c) ----
+ *
+ * A shader owns its source and, once compiled, its glsl_unit_t.  A program
+ * references up to two shaders and owns the LINKED state: the uniform store,
+ * and the tables mapping attribute and varying names to slots.
+ *
+ * Those tables are built at link time and not before, which is what makes
+ * glGetUniformLocation() meaningful: a location is an index into this
+ * program's store, not a name lookup repeated per draw call.  The interpreter
+ * still asks by name through glsl_env_t, so the table is what turns that back
+ * into an index once per variable per frame rather than per fragment.
+ */
+typedef struct {
+    GLuint   name;
+    int      used;
+    GLenum   type;               /* GL_VERTEX_SHADER / GL_FRAGMENT_SHADER  */
+    char    *source;             /* owned copy, or NULL                    */
+    void    *unit;               /* glsl_unit_t*, opaque here              */
+    GLboolean compiled;
+    char    *log;                /* owned copy of the info log             */
+} gl_shader_t;
+
+/* One named uniform in a linked program. */
+typedef struct {
+    char    name[64];
+    int     offset;              /* into the program's float store         */
+    int     size;                /* components                             */
+    GLenum  type;                /* GL_FLOAT, GL_FLOAT_VEC3, GL_SAMPLER_2D */
+    int     is_sampler;
+} gl_uniform_t;
+
+/* One varying, matched between the two shaders at link time. */
+typedef struct {
+    char    name[64];
+    int     offset;              /* into gl_vertex_t::varying              */
+    int     size;
+} gl_varying_t;
+
+/* One generic vertex attribute the vertex shader declared. */
+typedef struct {
+    char    name[64];
+    int     location;            /* the index glVertexAttribPointer uses   */
+    int     size;
+} gl_attrib_info_t;
+
+typedef struct {
+    GLuint   name;
+    int      used;
+    GLuint   vertex_shader;      /* attached names, 0 when none            */
+    GLuint   fragment_shader;
+    GLboolean linked;
+    char    *log;
+
+    /* Linked state.  Rebuilt from scratch by every glLinkProgram, so a
+     * relink cannot leave a stale location behind. */
+    gl_uniform_t  uniforms[GL_MAX_UNIFORMS_IMPL];
+    int           uniform_count;
+    float         uniform_data[GL_MAX_UNIFORM_FLOATS];
+    int           uniform_used;
+
+    gl_varying_t  varyings[GL_MAX_VARYING_VEC4S * 4];
+    int           varying_count;
+    int           varying_floats;
+
+    gl_attrib_info_t attribs[GL_MAX_VERTEX_ATTRIBS_IMPL];
+    int           attrib_count;
+} gl_program_t;
+
+/* A generic vertex attribute array (glVertexAttribPointer).  Deliberately a
+ * separate table from the fixed-function arrays: a program addresses them by
+ * NUMBER and the fixed-function pipeline by role, and conflating the two is
+ * how an implementation ends up feeding a shader the colour array because it
+ * happened to be at index 3. */
+typedef struct {
+    GLboolean    enabled;
+    GLint        size;
+    GLenum       type;
+    GLboolean    normalized;
+    GLsizei      stride;
+    const void  *ptr;
+    GLuint       buffer;
+    GLfloat      generic[4];     /* the value when the array is disabled   */
+} gl_vertex_attrib_t;
 
 /* ---- Vertex array pointer (§2.8) ----
  *
@@ -391,6 +491,14 @@ struct aglx_context {
     GLuint        next_list_name;
     int           list_compiling;          /* index into lists[], or -1 */
     GLenum        list_mode;               /* COMPILE or COMPILE_AND_EXECUTE */
+
+    /* ---- Shaders and programs (phase G11c) ---- */
+    gl_shader_t   shaders[GL_MAX_SHADERS_IMPL];
+    gl_program_t  programs[GL_MAX_PROGRAMS_IMPL];
+    GLuint        next_shader_name;
+    GLuint        next_program_name;
+    GLuint        program_binding;         /* 0 = fixed function          */
+    gl_vertex_attrib_t vattrib[GL_MAX_VERTEX_ATTRIBS_IMPL];
 
     /* ---- Framebuffer objects (§4.4), phase G12 ---- */
     gl_framebuffer_t  framebuffers[GL_MAX_FRAMEBUFFERS_IMPL];

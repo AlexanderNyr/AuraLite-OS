@@ -1472,19 +1472,44 @@ static void exec_stmt(exec_t *ex, glsl_node_t *n) {
 glsl_run_status_t glsl_run(glsl_unit_t *u, glsl_env_t *env) {
     if (!u || !u->compiled || !u->root) return GLSL_RUN_ERROR;
 
-    /* The interpreter state is 20 KB, which is a page fault waiting to happen
-     * as a local -- the same lesson G12 learned from aglxResize().  It comes
-     * from the unit's arena, which is already allocated and already sized. */
-    size_t saved_arena = u->arena_used;
-    exec_t *ex = (exec_t *)glsl_alloc(u, sizeof(exec_t));
+    /* The interpreter state is ~90 KB, which is a page fault waiting to happen
+     * as a local -- the same lesson G12 learned from aglxResize().  It is
+     * allocated ONCE per unit and reused: a fragment shader runs once per
+     * pixel, and both allocating it and zeroing it per invocation were
+     * measurable against the interpretation itself. */
+    exec_t *ex = (exec_t *)u->exec_state;
     if (!ex) {
-        glsl_error(u, 1, "not enough memory to run the shader");
-        return GLSL_RUN_ERROR;
+        ex = (exec_t *)glsl_alloc(u, sizeof(exec_t));
+        if (!ex) {
+            glsl_error(u, 1, "not enough memory to run the shader");
+            return GLSL_RUN_ERROR;
+        }
+        u->exec_state = ex;
     }
-    memset(ex, 0, sizeof *ex);
+    /* Clear only what a run actually depends on being zero.
+     *
+     * memset() over the whole exec_t was 90 KB per invocation -- the stash,
+     * argument and constructor scratch arrays dominate it -- and a fragment
+     * shader runs once per PIXEL.  That one line cost 3.6 us of the 3.9 us a
+     * trivial shader took, a 14x slowdown over the same interpreter measured
+     * standalone in G11b, and it only became visible once the pipeline
+     * started calling glsl_run() 76 800 times a frame.
+     *
+     * The scratch arrays need no clearing: every one is written before it is
+     * read, indexed by a depth counter that starts at zero.  Only the
+     * bookkeeping below must be reset. */
     ex->u = u;
     ex->env = env;
     ex->scope = 1;
+    ex->var_count = 0;
+    ex->storage_used = 0;
+    ex->iterations = 0;
+    ex->call_depth = 0;
+    ex->arg_depth = 0;
+    ex->flat_depth = 0;
+    ex->failed = 0;
+    ex->returning = ex->breaking = ex->continuing = ex->discarded = 0;
+    memset(&ex->return_value, 0, sizeof ex->return_value);
 
     /* Globals: `const` and plain globals get storage and their initialisers
      * run; uniforms, attributes and varyings stay with the environment, since
@@ -1508,7 +1533,6 @@ glsl_run_status_t glsl_run(glsl_unit_t *u, glsl_env_t *env) {
     glsl_node_t *main_fn = find_function(ex, "main");
     if (!main_fn) {
         glsl_error(u, 1, "shader has no 'main' to run");
-        u->arena_used = saved_arena;
         return GLSL_RUN_ERROR;
     }
 
@@ -1525,9 +1549,5 @@ glsl_run_status_t glsl_run(glsl_unit_t *u, glsl_env_t *env) {
         st = GLSL_RUN_DISCARD;
     }
 
-    /* Release the interpreter's arena bytes so a shader can be run many
-     * times -- once per vertex, or once per pixel -- without the arena
-     * growing.  Nothing allocated during the run outlives it. */
-    u->arena_used = saved_arena;
     return st;
 }

@@ -438,6 +438,25 @@ void gl_raster_triangle(struct aglx_context *ctx,
     GLfloat inv_area = 1.0f / area;
     int flat = (ctx->shade_model == GL_FLAT);
 
+    /* ---- Phase G11c: is a shader program driving this draw? ----
+     *
+     * When one is, the fragment shader replaces the whole texture/fog/alpha
+     * block below, and the varyings are interpolated in its place.  Depth,
+     * culling, scissor and blending are unchanged: a shader alters neither
+     * the window coordinates nor the meaning of a colour. */
+    int use_shader = gl_shader_active(ctx);
+    int nvary = use_shader ? v0->varying_count : 0;
+    if (nvary > GL_MAX_VARYING_FLOATS) nvary = GL_MAX_VARYING_FLOATS;
+
+    /* Varyings interpolate perspective-correctly, exactly like texture
+     * coordinates: divided through by w at the vertices and multiplied back
+     * per pixel.  Interpolating them linearly in screen space would make a
+     * shader's inputs swim on a perspective triangle, the same artefact G6
+     * fixed for UVs. */
+    GLfloat vary0[GL_MAX_VARYING_FLOATS];
+    GLfloat vary1[GL_MAX_VARYING_FLOATS];
+    GLfloat vary2[GL_MAX_VARYING_FLOATS];
+
     /* ---- Phase G6/G10 per-fragment state, hoisted out of the loop ---- */
     int do_blend = ctx->blend;
     int do_fog   = ctx->fog;
@@ -450,6 +469,12 @@ void gl_raster_triangle(struct aglx_context *ctx,
      * 1/w linearly (those ARE linear in screen space) and divide at each
      * pixel. */
     GLfloat w0i = v0->inv_w, w1i = v1->inv_w, w2i = v2->inv_w;
+
+    for (int k = 0; k < nvary; k++) {
+        vary0[k] = v0->varying[k] * w0i;
+        vary1[k] = v1->varying[k] * w1i;
+        vary2[k] = v2->varying[k] * w2i;
+    }
 
     /* One entry per texture unit (G10).  `tex[u]` is NULL when the unit
      * contributes nothing, and the whole texturing block is skipped when no
@@ -521,6 +546,49 @@ void gl_raster_triangle(struct aglx_context *ctx,
                 }
 
                 if (write) {
+                    /* ---- The shader path ----
+                     *
+                     * A bound program replaces everything from here to the
+                     * alpha test: the fragment shader computes the colour,
+                     * and discard is its own decision rather than an alpha
+                     * comparison.  Blending and the depth write below still
+                     * apply, because those are framebuffer operations. */
+                    if (use_shader) {
+                        GLfloat inv_w = l0 * w0i + l1 * w1i + l2 * w2i;
+                        GLfloat rw = (inv_w > 1e-20f || inv_w < -1e-20f)
+                                   ? 1.0f / inv_w : 0.0f;
+
+                        GLfloat fv[GL_MAX_VARYING_FLOATS];
+                        for (int k = 0; k < nvary; k++) {
+                            fv[k] = (l0 * vary0[k] + l1 * vary1[k]
+                                   + l2 * vary2[k]) * rw;
+                        }
+
+                        gl_color_t sc;
+                        sc.r = sc.g = sc.b = 0.0f;
+                        sc.a = 1.0f;
+                        if (!gl_shader_run_fragment(ctx, fv,
+                                                    (GLfloat)x + 0.5f,
+                                                    (GLfloat)y + 0.5f,
+                                                    z, is_front, &sc)) {
+                            goto next_pixel;     /* the shader discarded */
+                        }
+
+                        if (do_depth_write) drow[x] = z;
+
+                        if (do_blend) {
+                            uint32_t d = crow[x];
+                            gl_color_t dst;
+                            dst.r = (GLfloat)((d >> 16) & 0xFF) / 255.0f;
+                            dst.g = (GLfloat)((d >>  8) & 0xFF) / 255.0f;
+                            dst.b = (GLfloat)( d        & 0xFF) / 255.0f;
+                            dst.a = 1.0f;
+                            sc = gl_blend(ctx, sc, dst);
+                        }
+                        crow[x] = gl_pack_color(sc);
+                        goto next_pixel;
+                    }
+
                     /* ---- Fragment colour ---- */
                     gl_color_t cc;
                     if (flat) {

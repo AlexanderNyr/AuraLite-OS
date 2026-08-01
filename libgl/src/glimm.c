@@ -110,6 +110,22 @@ static void emit_point(struct aglx_context *ctx, const gl_vertex_t *v) {
 }
 
 /* Feed one fully transformed vertex into the assembler. */
+/* Feed a vertex the SHADER pipeline produced straight into assembly.
+ *
+ * The shader path skips glVertex4f entirely -- there is no current colour,
+ * normal or texture coordinate to latch, and no matrix to multiply by -- but
+ * it must reach exactly the same primitive assembler, or strips, fans and
+ * quads would need a second implementation that could disagree about winding.
+ */
+void gl_imm_submit_vertex(struct aglx_context *ctx, const gl_vertex_t *v);
+
+static void assemble(struct aglx_context *ctx, const gl_vertex_t *nv);
+
+void gl_imm_submit_vertex(struct aglx_context *ctx, const gl_vertex_t *v) {
+    if (!imm.active) { gl_set_error(GL_INVALID_OPERATION); return; }
+    assemble(ctx, v);
+}
+
 static void assemble(struct aglx_context *ctx, const gl_vertex_t *nv) {
     int n = imm.count;
 

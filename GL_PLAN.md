@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: G0–G10, G11a, G11b, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11c–d, G13 PLANNED 📋
+## Status: G0–G10, G11a–c, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11d, G13 PLANNED 📋
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -63,7 +63,7 @@ in phase G7. Rationale:
 ```
 G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← done
 G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps  ← done
-G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0  ← G11a+G11b done
+G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0  ← G11a-c done
 G12     →  FBO / render-to-texture, glReadPixels                    ← done
 G13     →  VirGL hardware path for the shader profile
 ```
@@ -1196,7 +1196,7 @@ why the size is not a round number.
 
 ---
 
-## Phase G11 — GLSL interpreter and the ES 2.0 shader path (G11a, G11b ✅ COMPLETE)
+## Phase G11 — GLSL interpreter and the ES 2.0 shader path (G11a-c ✅ COMPLETE)
 
 **Objective:** programmable vertex and fragment stages. This is the single
 largest phase in the whole roadmap — realistically larger than G0–G9 combined —
@@ -1285,15 +1285,39 @@ strategies land in the same place; only a JIT moves the needle.
   predicted one to two orders of magnitude; it is exactly that. The shader
   path buys API coverage, not frames per second.
 
-**G11c — pipeline integration.** 📋 NEXT. `glCreateShader`/`glShaderSource`/
-`glCompileShader`/`glCreateProgram`/`glAttachShader`/`glLinkProgram`/
-`glUseProgram`; generic vertex attributes (`glVertexAttribPointer`,
-`glEnableVertexAttribArray`); uniforms (`glGetUniformLocation`, the
-`glUniform*` family). The vertex shader replaces the transform stage; varyings
-are interpolated by the existing perspective-correct machinery; the fragment
-shader replaces texturing, lighting and fog.
+**G11c — pipeline integration.** ✅ **COMPLETE.** The full ES 2.0 object model
+in `glshader.c` plus the pipeline seam in `glshaderpipe.c`, 1400 lines, with
+107 host checks and 41 in-OS checks. The vertex shader replaces the transform
+stage; varyings are interpolated by the existing perspective-correct
+machinery; the fragment shader replaces texturing, lighting and fog. Clipping,
+culling, depth, scissor and blending are untouched.
 
-**G11d — coexistence.** Fixed-function and shader paths selected per draw by
+*Outcome notes:*
+
+- **A 30× interpreter regression, found only by measuring the assembled
+  pipeline.** `glsl_run()` allocated its ~90 KB interpreter state from the
+  arena on every invocation, and `glsl_alloc()` zeroes what it hands out. At
+  one call per pixel that was 3.90 µs per fragment against the 0.27 µs the
+  same interpreter measured standalone in G11b. Caching the state in the unit
+  and clearing only the bookkeeping took it to 0.13 µs — and the full-screen
+  frame from 306 ms to 12 ms.
+
+  The lesson is about *where* the measurement was taken: G11b's benchmark ran
+  the interpreter directly and never allocated in a loop, so the cost was
+  invisible until the pipeline called it 76 800 times a frame.
+
+- **Undeclared varyings are a link error, deliberately.** A fragment shader
+  reading a varying the vertex shader never declares would otherwise read
+  zeros and render black with nothing to point at. The diagnostic names the
+  varying.
+
+- **Measured, full-screen quad at 320×240:** fixed function 0.92 ms, constant
+  shader 12.1 ms, Lambert-lit shader 53.8 ms, vertex stage alone 1.2 µs per
+  draw. So 13–58× rather than the predicted 100×+, but the advice is
+  unchanged: vertex shaders are affordable, full-screen fragment shaders are
+  not, and the shader path buys API coverage rather than frames per second.
+
+**G11d — coexistence.** 📋 NEXT. Fixed-function and shader paths selected per draw by
 whether a program is bound. This is where most of the risk lives: the two
 paths must not fight over state.
 

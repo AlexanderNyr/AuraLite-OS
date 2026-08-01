@@ -473,6 +473,21 @@ void glArrayElement(GLint i) {
     if (!ctx) return;
     if (i < 0) { gl_set_error(GL_INVALID_VALUE); return; }
 
+    /* ---- The shader path (G11c) ----
+     *
+     * With a program bound, the vertex shader replaces the whole
+     * colour/normal/texcoord/position sequence below: its inputs are the
+     * GENERIC attribute arrays, not the fixed-function ones, and its output
+     * is a clip-space position plus varyings.  Routing it into the same
+     * assembler keeps one implementation of strips, fans and quads. */
+    if (gl_shader_active(ctx)) {
+        gl_vertex_t sv;
+        if (gl_shader_run_vertex(ctx, i, &sv)) {
+            gl_imm_submit_vertex(ctx, &sv);
+        }
+        return;
+    }
+
     GLfloat v[4];
 
     if (ctx->array_color.enabled &&
@@ -524,8 +539,12 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (count == 0) return;
 
     /* Without a vertex array there is nothing to draw; the other arrays are
-     * optional (§2.8). */
-    if (!ctx->array_vertex.enabled) return;
+     * optional (§2.8).
+     *
+     * A shader program supplies its position from a generic attribute
+     * instead, so the fixed-function vertex array is not required -- and
+     * demanding it would make every ES 2.0 application draw nothing. */
+    if (!gl_shader_active(ctx) && !ctx->array_vertex.enabled) return;
 
     glBegin(mode);
     for (GLsizei k = 0; k < count; k++) glArrayElement(first + k);
@@ -545,7 +564,7 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
         return;
     }
     if (count == 0) return;
-    if (!ctx->array_vertex.enabled) return;
+    if (!gl_shader_active(ctx) && !ctx->array_vertex.enabled) return;
 
     /* Indices come from the element buffer when one is bound, in which case
      * `indices` is a byte offset — the same overload as the vertex arrays. */
