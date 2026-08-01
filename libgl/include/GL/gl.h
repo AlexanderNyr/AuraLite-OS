@@ -136,6 +136,17 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_SHININESS                      0x1601
 #define GL_EMISSION                       0x1600
 #define GL_NORMALIZE                      0x0BA1
+#define GL_MAX_LIGHTS                     0x0D31
+#define GL_LIGHT_MODEL_AMBIENT            0x0B53
+#define GL_LIGHT_MODEL_TWO_SIDE           0x0B52
+#define GL_AMBIENT_AND_DIFFUSE            0x1602
+#define GL_COLOR_MATERIAL                 0x0B57
+#define GL_SPOT_DIRECTION                 0x1204
+#define GL_SPOT_EXPONENT                  0x1205
+#define GL_SPOT_CUTOFF                    0x1206
+#define GL_CONSTANT_ATTENUATION           0x1207
+#define GL_LINEAR_ATTENUATION             0x1208
+#define GL_QUADRATIC_ATTENUATION          0x1209
 
 /* ---- Texturing (§3.8) ---- */
 #define GL_TEXTURE_2D                     0x0DE1
@@ -243,6 +254,15 @@ void glFrontFace(GLenum mode);
 void glShadeModel(GLenum mode);
 void glPolygonMode(GLenum face, GLenum mode);
 void glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+
+/* ---- Lighting and materials (G5) ---- */
+void glLightf(GLenum light, GLenum pname, GLfloat param);
+void glLightfv(GLenum light, GLenum pname, const GLfloat *params);
+void glMaterialf(GLenum face, GLenum pname, GLfloat param);
+void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params);
+void glLightModelfv(GLenum pname, const GLfloat *params);
+void glLightModeli(GLenum pname, GLint param);
+void glColorMaterial(GLenum face, GLenum mode);
 
 /* ---- Attribute stack (G4) ---- */
 #define GL_CURRENT_BIT        0x00000001

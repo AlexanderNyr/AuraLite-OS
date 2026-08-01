@@ -620,7 +620,7 @@ correct code.
 
 ---
 
-## Phase G5 — Lighting and materials
+## Phase G5 — Lighting and materials ✅ COMPLETE
 
 **Goal:** physically meaningful shading instead of flat colour.
 
@@ -636,12 +636,12 @@ glNormal3f/3fv   glEnable(GL_NORMALIZE)  glColorMaterial()
 
 ### Tasks
 
-- [ ] GL 1.1 lighting model: ambient + diffuse + specular (Blinn–Phong), distance
+- [x] GL 1.1 lighting model: ambient + diffuse + specular (Blinn–Phong), distance
       attenuation, directional and positional lights, spotlight parameters.
-- [ ] Per-vertex lighting followed by interpolation, as specified by GL 1.1.
-- [ ] Normal transformation by the normal matrix (inverse-transpose MODELVIEW),
+- [x] Per-vertex lighting followed by interpolation, as specified by GL 1.1.
+- [x] Normal transformation by the normal matrix (inverse-transpose MODELVIEW),
       `GL_NORMALIZE` / `GL_RESCALE_NORMAL`.
-- [ ] Two-sided lighting.
+- [x] Two-sided lighting.
 
 ### Test gate
 
@@ -656,6 +656,42 @@ glNormal3f/3fv   glEnable(GL_NORMALIZE)  glColorMaterial()
 ### Deliverable
 
 `patches/GL_G5_lighting.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| Lighting equation | Full GL 1.1 form: emission + scene ambient + per-light (ambient + diffuse·N·L + specular·(N·H)^shininess), Blinn–Phong half-vector |
+| Lights | 8 sources, positional and directional, distance attenuation, spotlights with cutoff and exponent |
+| Materials | Separate front/back ambient/diffuse/specular/emission/shininess; `GL_AMBIENT_AND_DIFFUSE` |
+| `GL_COLOR_MATERIAL` | `glColor` drives a chosen material component, so per-vertex colours keep working while lit |
+| Normals | Transformed by the inverse-transpose of MODELVIEW; `GL_NORMALIZE` rescales |
+| Light positions | Transformed by the MODELVIEW current at `glLightfv` time and stored in eye space, as the specification requires |
+| Host unit test | `test_gllight` — **32/32 pass** |
+| `/gltest` in QEMU | **105/105 checks pass** |
+| `/glcube` | Now a **lit** cube; `clean exit, 12 frames` |
+| QEMU integration test | `test_opengl.sh` — **53/53 assertions pass** |
+| Regression check | `make test-unit` 57/57 green; G1–G4 suites unchanged |
+
+### One real bug: `GL_NORMALIZE` was a no-op
+
+The lighting routine normalised the normal unconditionally, which made
+`glEnable(GL_NORMALIZE)` change nothing. It looked harmless — the output was
+*more* correct, not less — but it silently hid the behaviour applications have
+to opt into, and a test written against the specification caught it. The
+normalisation now happens only in the vertex stage when the flag is set.
+
+### Test-authoring note: per-vertex lighting needs the right geometry
+
+Four lighting tests initially failed against correct code because they lit a
+large quad lying in the plane z = 0. GL 1.1 evaluates lighting **at the
+vertices**, and for that quad every corner sits in the viewer's own plane, so
+the direction to the viewer points sideways, `N·H ≈ 0.707`, and
+`0.707^32 ≈ 0.00002` — no highlight, correctly. Attenuation and the spot cone
+failed for the same reason: the vertices were metres off-axis in eye space.
+Moving to a small quad at z = -20 fixed all four. The lesson is specific to
+fixed-function GL and worth recording: a per-vertex lighting test must place
+its vertices where the light and viewer geometry is actually meaningful.
 
 ---
 
@@ -880,8 +916,8 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
 | G2 | ✅ complete | `patches/GL_G2_immediate.patch` |
 | G3 | ✅ complete | `patches/GL_G3_rasterizer.patch` |
 | G4 | ✅ complete | `patches/GL_G4_clipping.patch` |
-| G5 | 🔧 next | — |
-| G6 | ⬜ planned | — |
+| G5 | ✅ complete | `patches/GL_G5_lighting.patch` |
+| G6 | 🔧 next | — |
 | G7 | ⬜ planned | — |
 | G8 | ⬜ planned | — |
 | G9 | ⬜ planned | — |

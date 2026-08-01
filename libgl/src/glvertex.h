@@ -31,6 +31,7 @@
 /* A vertex that has been through the transform stage. */
 typedef struct {
     glm_vec4   clip;    /* clip coordinates (after PROJECTION, before divide) */
+    glm_vec3   eye;     /* eye-space position, needed by lighting (G5)        */
     glm_vec3   win;     /* window coordinates: x,y in pixels, z in [0,1]      */
     GLfloat    inv_w;   /* 1/clip.w, kept for perspective-correct interp (G6) */
     gl_color_t color;   /* colour captured when the vertex was specified      */
@@ -80,6 +81,17 @@ void gl_raster_triangle(struct aglx_context *ctx,
 void gl_transform_vertex(struct aglx_context *ctx,
                          GLfloat x, GLfloat y, GLfloat z, GLfloat w,
                          gl_vertex_t *out);
+
+/* ---- Lighting (libgl/src/gllight.c), phase G5 ----
+ *
+ * Evaluated per vertex in EYE space, as GL 1.1 specifies; the rasterizer then
+ * Gouraud-interpolates the result.  `back_face` selects the back material and
+ * reverses the normal.
+ */
+gl_color_t gl_light_vertex(struct aglx_context *ctx,
+                           glm_vec3 eye_pos, glm_vec3 normal,
+                           gl_color_t vertex_color, int back_face);
+void gl_lighting_set_defaults(struct aglx_context *ctx);
 
 /* ---- Clipping (libgl/src/glclip.c), phase G4 ----
  *

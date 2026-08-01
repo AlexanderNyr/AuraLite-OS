@@ -1,6 +1,6 @@
 /* glcube.c — rotating cube demo for the AuraLite OpenGL stack.
  *
- * From phase G3 this renders as a SOLID depth-buffered cube.  The geometry and
+ * From phase G5 this renders as a solid, depth-buffered, LIT cube.  The geometry and
  * matrix code are unchanged from the G2 wireframe version — only the two
  * glEnable() calls below were added, which is the point of writing the demo
  * against the GL API rather than against the rasterizer.
@@ -54,6 +54,16 @@ static const int faces[6][4] = {
     { 3, 7, 6, 2 },   /* top    (+y) */
 };
 
+/* Outward normal of each face, in the same order as `faces`. */
+static const GLfloat face_normals[6][3] = {
+    {  0,  0, -1 },   /* back   */
+    {  0,  0,  1 },   /* front  */
+    { -1,  0,  0 },   /* left   */
+    {  1,  0,  0 },   /* right  */
+    {  0, -1,  0 },   /* bottom */
+    {  0,  1,  0 },   /* top    */
+};
+
 static const GLfloat face_colors[6][3] = {
     { 1.0f, 0.3f, 0.3f },   /* red    */
     { 0.3f, 1.0f, 0.3f },   /* green  */
@@ -67,6 +77,7 @@ static void draw_cube(void) {
     glBegin(GL_QUADS);
     for (int f = 0; f < 6; f++) {
         glColor3f(face_colors[f][0], face_colors[f][1], face_colors[f][2]);
+        glNormal3f(face_normals[f][0], face_normals[f][1], face_normals[f][2]);
         for (int v = 0; v < 4; v++) {
             const GLfloat *p = verts[faces[f][v]];
             glVertex3f(p[0], p[1], p[2]);
@@ -77,6 +88,8 @@ static void draw_cube(void) {
 
 /* Ground grid, to make the perspective projection obvious. */
 static void draw_grid(void) {
+    /* The grid is a flat reference, not a lit surface. */
+    glDisable(GL_LIGHTING);
     glColor3f(0.25f, 0.25f, 0.30f);
     glBegin(GL_LINES);
     for (int i = -4; i <= 4; i++) {
@@ -85,6 +98,7 @@ static void draw_grid(void) {
         glVertex3f(-3.0f, -1.6f, t);  glVertex3f(3.0f, -1.6f, t);
     }
     glEnd();
+    glEnable(GL_LIGHTING);
 }
 
 /* Read the optional frame limit from /tmp/glcube.frames (see the note above). */
@@ -148,6 +162,28 @@ int main(int argc, char **argv) {
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
+
+    /* Phase G5: a single white light above and to the right of the camera.
+     * GL_COLOR_MATERIAL lets the per-face glColor calls keep working while
+     * lighting is on: each face's colour becomes its ambient+diffuse material,
+     * so the cube stays multi-coloured but now has directional shading. */
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
+    glEnable(GL_NORMALIZE);
+    {
+        GLfloat light_pos[4] = { 2.0f, 3.0f, 4.0f, 0.0f };  /* directional */
+        GLfloat diffuse[4]   = { 1.0f, 1.0f, 1.0f, 1.0f };
+        GLfloat ambient[4]   = { 0.25f, 0.25f, 0.3f, 1.0f };
+        GLfloat specular[4]  = { 0.9f, 0.9f, 0.9f, 1.0f };
+        glLightfv(GL_LIGHT0, GL_POSITION, light_pos);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuse);
+        glLightfv(GL_LIGHT0, GL_AMBIENT, ambient);
+        glLightfv(GL_LIGHT0, GL_SPECULAR, specular);
+        glMaterialfv(GL_FRONT, GL_SPECULAR, specular);
+        glMaterialf(GL_FRONT, GL_SHININESS, 24.0f);
+    }
 
     GLfloat angle_x = 25.0f, angle_y = 30.0f;
     int paused = 0, running = 1;

@@ -177,11 +177,19 @@ void glShadeModel(GLenum mode) {
  * application believe lighting was on and then wonder why nothing changed;
  * they become real slots in G5/G6. */
 static GLboolean *cap_slot(struct aglx_context *ctx, GLenum cap) {
+    /* GL_LIGHT0..GL_LIGHT7 are a contiguous range, handled before the switch
+     * so the eight cases do not have to be spelled out. */
+    if (cap >= GL_LIGHT0 && cap < GL_LIGHT0 + GL_MAX_LIGHTS_IMPL) {
+        return &ctx->lights[cap - GL_LIGHT0].enabled;
+    }
     switch (cap) {
-    case GL_DEPTH_TEST:   return &ctx->depth_test;
-    case GL_CULL_FACE:    return &ctx->cull_face;
-    case GL_SCISSOR_TEST: return &ctx->scissor_test;
-    default:              return (GLboolean *)0;
+    case GL_DEPTH_TEST:     return &ctx->depth_test;
+    case GL_CULL_FACE:      return &ctx->cull_face;
+    case GL_SCISSOR_TEST:   return &ctx->scissor_test;
+    case GL_LIGHTING:       return &ctx->lighting;
+    case GL_NORMALIZE:      return &ctx->normalize;
+    case GL_COLOR_MATERIAL: return &ctx->color_material;
+    default:                return (GLboolean *)0;
     }
 }
 
@@ -318,6 +326,7 @@ void glGetIntegerv(GLenum pname, GLint *params) {
     case GL_CULL_FACE_MODE:params[0] = (GLint)ctx->cull_mode;    break;
     case GL_FRONT_FACE:    params[0] = (GLint)ctx->front_face;   break;
     case GL_SHADE_MODEL:   params[0] = (GLint)ctx->shade_model;  break;
+    case GL_MAX_LIGHTS:    params[0] = GL_MAX_LIGHTS_IMPL; break;
     case GL_MAX_MODELVIEW_STACK_DEPTH:
         params[0] = GL_MODELVIEW_STACK_DEPTH;  break;
     case GL_MAX_PROJECTION_STACK_DEPTH:
@@ -365,6 +374,9 @@ void glGetBooleanv(GLenum pname, GLboolean *params) {
     case GL_DEPTH_WRITEMASK: params[0] = ctx->depth_mask;   break;
     case GL_CULL_FACE:       params[0] = ctx->cull_face;    break;
     case GL_SCISSOR_TEST:    params[0] = ctx->scissor_test; break;
+    case GL_LIGHTING:        params[0] = ctx->lighting;     break;
+    case GL_NORMALIZE:       params[0] = ctx->normalize;    break;
+    case GL_COLOR_MATERIAL:  params[0] = ctx->color_material; break;
     default:
         gl_set_error(GL_INVALID_ENUM);
         break;

@@ -22,6 +22,9 @@
 /* glPushAttrib stack depth.  GL 1.1 requires at least 16. */
 #define GL_ATTRIB_STACK_DEPTH      16
 
+/* GL 1.1 requires at least 8 lights (§2.14.1). */
+#define GL_MAX_LIGHTS_IMPL         8
+
 /* A colour in the form the framebuffer stores: 0x00RRGGBB. */
 typedef uint32_t gl_pixel_t;
 
@@ -29,6 +32,34 @@ typedef uint32_t gl_pixel_t;
 typedef struct {
     GLfloat r, g, b, a;
 } gl_color_t;
+
+/* ---- Lighting (§2.14) ----
+ *
+ * One light source.  GL stores the position in EYE coordinates: glLightfv()
+ * transforms whatever the application supplies by the MODELVIEW matrix current
+ * at that moment, which is what makes "set the light before the camera
+ * transform" behave differently from "set it after".
+ *
+ * A positional light has w = 1 and attenuates with distance; a directional
+ * light has w = 0, in which case `position` is a direction TOWARDS the light
+ * and no attenuation applies.
+ */
+typedef struct {
+    GLboolean enabled;
+    glm_vec4  position;          /* eye coordinates; w selects the light type */
+    gl_color_t ambient, diffuse, specular;
+    /* Attenuation: 1 / (kc + kl*d + kq*d^2), positional lights only. */
+    GLfloat   constant_att, linear_att, quadratic_att;
+    /* Spotlight.  cutoff == 180 means "not a spotlight" (the GL default). */
+    glm_vec3  spot_direction;    /* eye coordinates */
+    GLfloat   spot_exponent, spot_cutoff;
+} gl_light_t;
+
+/* Material properties for one face (§2.14.2). */
+typedef struct {
+    gl_color_t ambient, diffuse, specular, emission;
+    GLfloat    shininess;        /* specular exponent, [0,128] */
+} gl_material_t;
 
 struct aglx_context {
     /* ---- Render targets ---- */
@@ -75,6 +106,16 @@ struct aglx_context {
     GLboolean   scissor_test;
     GLint       scissor_x, scissor_y;
     GLsizei     scissor_w, scissor_h;
+
+    /* ---- Lighting (§2.14), phase G5 ---- */
+    GLboolean     lighting;
+    gl_light_t    lights[GL_MAX_LIGHTS_IMPL];
+    gl_material_t material_front, material_back;
+    gl_color_t    light_model_ambient;
+    GLboolean     light_model_two_side;
+    GLboolean     normalize;
+    GLboolean     color_material;
+    GLenum        color_material_face, color_material_mode;
 
     /* ---- glPushAttrib / glPopAttrib (§6.1.2) ----
      * Each entry stores a full copy of the attribute groups this

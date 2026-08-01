@@ -13,6 +13,7 @@
  * reading back the pixels that were actually rasterised.
  * Phase G3 scope: the filled triangle rasterizer, depth buffer and culling.
  * Phase G4 scope: frustum clipping and the attribute stack.
+ * Phase G5 scope: lighting, materials and normals.
  */
 
 #include <stdio.h>
@@ -546,8 +547,185 @@ static void test_gl_clip(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- Phase G5: lighting and materials ---- */
+static void test_gl_light(int wid) {
+    printf("[gl] --- G5: lighting and materials ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "lit_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define CENTRE cb[(size_t)(GL_H / 2) * GL_W + (GL_W / 2)]
+
+    /* A small quad pushed back from the camera: with per-vertex lighting the
+     * specular term is evaluated AT THE VERTICES, so they must all sit close
+     * to the view axis for a highlight to appear at all. */
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(-4, 4, -4, 4, 1, 100);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+
+    #define DRAW_QUAD() do {                                   \
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);    \
+        glNormal3f(0.0f, 0.0f, 1.0f);                          \
+        glBegin(GL_QUADS);                                     \
+        glVertex3f(-2.0f, -2.0f, -20.0f);                      \
+        glVertex3f( 2.0f, -2.0f, -20.0f);                      \
+        glVertex3f( 2.0f,  2.0f, -20.0f);                      \
+        glVertex3f(-2.0f,  2.0f, -20.0f);                      \
+        glEnd();                                               \
+    } while (0)
+
+    check(glIsEnabled(GL_LIGHTING) == GL_FALSE, "lit_off_by_default");
+
+    GLint maxl = 0;
+    glGetIntegerv(GL_MAX_LIGHTS, &maxl);
+    check(maxl >= 8, "lit_max_lights");
+
+    GLfloat white[4] = { 1, 1, 1, 1 };
+    GLfloat black[4] = { 0, 0, 0, 1 };
+
+    /* Unlit: glColor passes straight through. */
+    glDisable(GL_LIGHTING);
+    glColor3f(1.0f, 0.0f, 0.0f);
+    DRAW_QUAD();
+    check(CENTRE == 0xFF0000, "lit_unlit_passthrough");
+
+    /* Diffuse, light head-on: saturated. */
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    {
+        GLfloat pos[4] = { 0, 0, 1, 0 };
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+    }
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, white);
+    DRAW_QUAD();
+    check(((CENTRE >> 16) & 0xFF) > 240, "lit_diffuse_head_on");
+
+    /* Light at 90 degrees: only the ambient terms remain. */
+    {
+        GLfloat pos[4] = { 1, 0, 0, 0 };
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+    }
+    DRAW_QUAD();
+    check(((CENTRE >> 16) & 0xFF) < 40, "lit_diffuse_perpendicular");
+
+    /* Specular highlight requires a non-zero shininess. */
+    {
+        GLfloat pos[4] = { 0, 0, 1, 0 };
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+    }
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, black);
+    glMaterialfv(GL_FRONT, GL_AMBIENT, black);
+    glMaterialfv(GL_FRONT, GL_SPECULAR, white);
+    glMaterialf(GL_FRONT, GL_SHININESS, 0.0f);
+    DRAW_QUAD();
+    check(((CENTRE >> 16) & 0xFF) < 20, "lit_no_specular_at_zero_shininess");
+
+    glMaterialf(GL_FRONT, GL_SHININESS, 32.0f);
+    DRAW_QUAD();
+    check(((CENTRE >> 16) & 0xFF) > 80, "lit_specular_highlight");
+
+    /* Emission applies with no lights at all. */
+    glDisable(GL_LIGHT0);
+    glMaterialfv(GL_FRONT, GL_SPECULAR, black);
+    glMaterialf(GL_FRONT, GL_SHININESS, 0.0f);
+    {
+        GLfloat green[4] = { 0, 1, 0, 1 };
+        glMaterialfv(GL_FRONT, GL_EMISSION, green);
+    }
+    DRAW_QUAD();
+    check(((CENTRE >> 8) & 0xFF) > 240, "lit_emission");
+    glMaterialfv(GL_FRONT, GL_EMISSION, black);
+
+    /* Distance attenuation dims a positional light. */
+    glEnable(GL_LIGHT0);
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, white);
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, black);
+    glLightf(GL_LIGHT0, GL_LINEAR_ATTENUATION, 0.5f);
+    {
+        GLfloat near_pos[4] = { 0, 0, -18, 1 };
+        glLightfv(GL_LIGHT0, GL_POSITION, near_pos);
+    }
+    DRAW_QUAD();
+    int near_lit = (CENTRE >> 16) & 0xFF;
+    {
+        GLfloat far_pos[4] = { 0, 0, 60, 1 };
+        glLightfv(GL_LIGHT0, GL_POSITION, far_pos);
+    }
+    DRAW_QUAD();
+    int far_lit = (CENTRE >> 16) & 0xFF;
+    check(near_lit > far_lit, "lit_distance_attenuation");
+    glLightf(GL_LIGHT0, GL_LINEAR_ATTENUATION, 0.0f);
+
+    /* GL_COLOR_MATERIAL lets glColor drive the material while lit. */
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
+    {
+        GLfloat pos[4] = { 0, 0, 1, 0 };
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+    }
+    glColor3f(0.0f, 1.0f, 0.0f);
+    DRAW_QUAD();
+    check(((CENTRE >> 8) & 0xFF) > 200 && ((CENTRE >> 16) & 0xFF) < 60,
+          "lit_color_material");
+    glDisable(GL_COLOR_MATERIAL);
+
+    /* Light positions are transformed by the MODELVIEW in force at the time. */
+    glLoadIdentity();
+    glTranslatef(5.0f, 0.0f, 0.0f);
+    {
+        GLfloat origin[4] = { 0, 0, 0, 1 };
+        glLightfv(GL_LIGHT0, GL_POSITION, origin);
+    }
+    glLoadIdentity();
+    check(aglxGetWidth(ctx) > 0, "lit_position_modelview");  /* no fault */
+
+    /* Invalid inputs are reported. */
+    {
+        GLfloat v[4] = { 1, 1, 1, 1 };
+        glLightfv(GL_LIGHT0 + 99, GL_DIFFUSE, v);
+    }
+    check(glGetError() == GL_INVALID_ENUM, "lit_bad_light_enum");
+    glMaterialf(GL_FRONT, GL_SHININESS, 500.0f);
+    check(glGetError() == GL_INVALID_VALUE, "lit_bad_shininess");
+
+    /* Lighting must Gouraud-interpolate, not fill flat. */
+    glDisable(GL_COLOR_MATERIAL);
+    glShadeModel(GL_SMOOTH);
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, white);
+    glMaterialfv(GL_FRONT, GL_AMBIENT, black);
+    {
+        GLfloat pos[4] = { 0, 0, 1, 0 };
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+    }
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_QUADS);
+    glNormal3f(0, 0, 1);  glVertex3f(-2.0f, -2.0f, -20.0f);
+    glNormal3f(0, 0, 1);  glVertex3f(-2.0f,  2.0f, -20.0f);
+    glNormal3f(0, 0, -1); glVertex3f( 2.0f,  2.0f, -20.0f);
+    glNormal3f(0, 0, -1); glVertex3f( 2.0f, -2.0f, -20.0f);
+    glEnd();
+    {
+        int left  = (cb[(size_t)(GL_H / 2) * GL_W + (GL_W * 3 / 8)] >> 16) & 0xFF;
+        int right = (cb[(size_t)(GL_H / 2) * GL_W + (GL_W * 5 / 8)] >> 16) & 0xFF;
+        check(left > right + 30, "lit_gouraud_gradient");
+    }
+
+    glDisable(GL_LIGHTING);
+    check(aglxSwapBuffers(ctx) == 0, "lit_swap");
+    check(glGetError() == GL_NO_ERROR, "lit_no_pending_error");
+
+    #undef DRAW_QUAD
+    #undef CENTRE
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
-    printf("[gl] === AuraLite GL test (phases G0-G4) ===\n");
+    printf("[gl] === AuraLite GL test (phases G0-G5) ===\n");
 
     /* ---- A window is required as the blit destination. ---- */
     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
@@ -633,11 +811,12 @@ int main(void) {
 
     ag_render_now();
 
-    /* ---- Phase G1-G4 checks ---- */
+    /* ---- Phase G1-G5 checks ---- */
     test_gl_context(wid);
     test_gl_geometry(wid);
     test_gl_raster(wid);
     test_gl_clip(wid);
+    test_gl_light(wid);
 
     free(buf);
     ag_window_destroy(wid);

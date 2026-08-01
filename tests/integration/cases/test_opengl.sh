@@ -90,6 +90,15 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS clip_preserves_winding"  "clipping prese
 il_assert_grep    "$LOG" "\\[gl\\] PASS clip_camera_flythrough"  "camera can fly through geometry"
 il_assert_grep    "$LOG" "\\[gl\\] PASS attrib_restores_enable"  "glPushAttrib/glPopAttrib restore state"
 
+# Phase G5: lighting and materials.
+il_assert_grep    "$LOG" "\\[gl\\] PASS lit_diffuse_head_on"     "diffuse term saturates head-on"
+il_assert_grep    "$LOG" "\\[gl\\] PASS lit_diffuse_perpendicular" "diffuse falls off at 90 degrees"
+il_assert_grep    "$LOG" "\\[gl\\] PASS lit_specular_highlight"  "Blinn-Phong specular highlight"
+il_assert_grep    "$LOG" "\\[gl\\] PASS lit_emission"            "emission applies without lights"
+il_assert_grep    "$LOG" "\\[gl\\] PASS lit_distance_attenuation" "positional lights attenuate with distance"
+il_assert_grep    "$LOG" "\\[gl\\] PASS lit_color_material"      "GL_COLOR_MATERIAL drives the material"
+il_assert_grep    "$LOG" "\\[gl\\] PASS lit_gouraud_gradient"    "lighting is Gouraud-interpolated"
+
 # The demo must have started and reached the GL stack.  Note the deliberately
 # loose pattern: /glcube and the shell write to the same serial console from
 # different threads, so their lines interleave mid-string and an exact-match

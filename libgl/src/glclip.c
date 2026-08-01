@@ -77,6 +77,10 @@ static void lerp_vertex(const gl_vertex_t *a, const gl_vertex_t *b,
     out->color.b = a->color.b + (b->color.b - a->color.b) * t;
     out->color.a = a->color.a + (b->color.a - a->color.a) * t;
 
+    out->eye.x = a->eye.x + (b->eye.x - a->eye.x) * t;
+    out->eye.y = a->eye.y + (b->eye.y - a->eye.y) * t;
+    out->eye.z = a->eye.z + (b->eye.z - a->eye.z) * t;
+
     out->normal.x = a->normal.x + (b->normal.x - a->normal.x) * t;
     out->normal.y = a->normal.y + (b->normal.y - a->normal.y) * t;
     out->normal.z = a->normal.z + (b->normal.z - a->normal.z) * t;

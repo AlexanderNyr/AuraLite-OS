@@ -44,6 +44,8 @@ void gl_transform_vertex(struct aglx_context *ctx,
     glm_vec4 clip = glm_mat4_transform4(ctx->projection[ctx->projection_top], eye);
 
     out->clip  = clip;
+    /* Eye position is kept because lighting is evaluated in eye space (G5). */
+    out->eye   = glm_vec3_make(eye.x, eye.y, eye.z);
     out->valid = 1;
     out->inv_w = 0.0f;
     out->win   = glm_vec3_make(0.0f, 0.0f, 0.0f);
@@ -268,10 +270,30 @@ void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     gl_transform_vertex(ctx, x, y, z, w, &v);
 
     /* Latch the attributes current at this instant (§2.7). */
-    v.color  = cur_color;
-    v.normal = cur_normal_init ? cur_normal : glm_vec3_make(0.0f, 0.0f, 1.0f);
-    v.s      = cur_s;
-    v.t      = cur_t;
+    glm_vec3 obj_normal = cur_normal_init ? cur_normal
+                                          : glm_vec3_make(0.0f, 0.0f, 1.0f);
+
+    /* Normals are transformed by the inverse-transpose of MODELVIEW, not by
+     * MODELVIEW itself: under non-uniform scaling the plain matrix would shear
+     * them away from the surface (§2.10.3). */
+    glm_mat4 nm = glm_mat4_normal(ctx->modelview[ctx->modelview_top]);
+    v.normal = glm_mat4_transform_dir(nm, obj_normal);
+
+    /* GL_NORMALIZE rescales to unit length after transformation, which matters
+     * when the MODELVIEW contains a scale: an unnormalised normal would make
+     * the diffuse term too bright or too dark. */
+    if (ctx->normalize) v.normal = glm_vec3_normalize(v.normal);
+
+    v.s = cur_s;
+    v.t = cur_t;
+
+    if (ctx->lighting) {
+        /* Lighting is per-vertex in GL 1.1: the lit colour is computed here
+         * and then Gouraud-interpolated by the rasterizer. */
+        v.color = gl_light_vertex(ctx, v.eye, v.normal, cur_color, 0);
+    } else {
+        v.color = cur_color;
+    }
 
     assemble(ctx, &v);
 }

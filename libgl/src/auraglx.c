@@ -15,6 +15,7 @@
 #include "GL/auraglx.h"
 #include "GL/gl.h"
 #include "glcontext.h"
+#include "glvertex.h"
 #include "auragui.h"
 
 /* The current context.  Single-threaded for now; when libgl gains thread
@@ -87,6 +88,8 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     ctx->scissor_h = ctx->height;
 
     ctx->attrib_top = 0;
+
+    gl_lighting_set_defaults(ctx);
 }
 
 /* Allocate colour (and optionally depth) buffers for w*h.

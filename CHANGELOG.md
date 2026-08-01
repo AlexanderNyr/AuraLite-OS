@@ -2,6 +2,58 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G5 — lighting and materials] 2026-08-01
+
+Sixth phase of `GL_PLAN.md`. `/glcube` is now a lit cube: each face is shaded
+by its angle to the light rather than being flat-coloured.
+
+### Added
+- `libgl/src/gllight.c`: the GL 1.1 lighting equation — emission, scene
+  ambient, and per-light ambient, diffuse (`N·L`) and Blinn–Phong specular
+  (`(N·H)^shininess`). Eight light sources, positional and directional,
+  distance attenuation, and spotlights with cutoff and exponent.
+- Materials: separate front and back ambient/diffuse/specular/emission/
+  shininess, plus `GL_AMBIENT_AND_DIFFUSE`.
+- `glLightf`/`glLightfv`, `glMaterialf`/`glMaterialfv`, `glLightModelfv`/
+  `glLightModeli`, `glColorMaterial`; `GL_LIGHTING`, `GL_LIGHT0..7`,
+  `GL_NORMALIZE` and `GL_COLOR_MATERIAL` are accepted by `glEnable`.
+- Normals are transformed by the inverse-transpose of MODELVIEW, so
+  non-uniform scaling no longer shears them off the surface.
+- `tests/unit/test_gllight.c`: **32 checks**.
+- `patches/GL_G5_lighting.patch`.
+
+### Fixed
+- **`GL_NORMALIZE` was a no-op.** The lighting routine normalised the normal
+  unconditionally, so enabling the flag changed nothing. The effect looked
+  benign because the result was *more* correct, but it hid behaviour that
+  applications must opt into. Normalisation now happens in the vertex stage
+  only when the flag is set.
+
+### Behaviour notes
+- Lighting is **per-vertex**, as GL 1.1 specifies; the rasterizer then
+  Gouraud-interpolates. Per-pixel lighting needs shaders (phase G11).
+- Light positions are transformed by the MODELVIEW matrix in force when
+  `glLightfv(GL_POSITION)` is called and stored in eye coordinates — which is
+  why setting a light before or after the camera transform gives different
+  results.
+- `GL_LIGHT0` defaults to white diffuse and specular while lights 1–7 default
+  to black. That asymmetry is in the specification.
+- The specular term is gated on `N·L > 0`, so a surface facing away from a
+  light shows no highlight.
+
+### Changed
+- `userspace/glcube`: enables lighting with a directional light and
+  `GL_COLOR_MATERIAL`, so the faces keep their colours but gain shading.
+- `userspace/gltest`: 105 checks (was 88).
+- `tests/integration/cases/test_opengl.sh`: 53 assertions (was 46).
+
+### Verified
+- `test_gllight` 32/32, `test_glclip` 28/28, `test_glraster` 43/43,
+  `test_glimm` 51/51, `test_glstate` 37/37, `test_glmath` 37/37.
+- `/gltest` under QEMU: 105/105 checks. `/glcube`: `clean exit, 12 frames`.
+- `test_opengl.sh`: 53/53. `make test-unit`: 57/57 binaries green (was 56).
+- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G4 — frustum clipping and state completeness] 2026-08-01
 
 Fifth phase of `GL_PLAN.md`. Geometry crossing the view frustum is now split
