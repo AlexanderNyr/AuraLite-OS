@@ -38,6 +38,17 @@ checkerboard modulated against each face's colour.
 - `GL_CLAMP` behaves as `GL_CLAMP_TO_EDGE`: there is no border colour stored,
   and clamping to the edge is the closer of the two behaviours.
 
+### Build
+- **Consolidated the libgl unit-test rules.** Each GL test previously repeated
+  its own copy of the source list. When G5 and G6 added `gllight.c`,
+  `gltexture.c` and `glfrag.c`, `auraglx.c` gained calls into them but the
+  `test_glstate` rule still listed only the G1 set, so `make test-unit` failed
+  to link on a clean tree with `undefined reference to
+  gl_lighting_set_defaults`. An incremental build hid this because the binary
+  was already up to date. The seven near-identical rules are now one pattern
+  rule over a single `LIBGL_TEST_SRCS` variable, so adding a module updates
+  every test at once and the rules cannot drift apart again.
+
 ### Changed
 - `userspace/glcube`: adds a 32×32 procedural checkerboard, generated in code
   so the initrd carries no asset files.
@@ -53,7 +64,8 @@ checkerboard modulated against each face's colour.
   `test_glraster` 43/43, `test_glimm` 51/51, `test_glstate` 37/37,
   `test_glmath` 37/37.
 - `/gltest` under QEMU: 130/130. `/glcube`: `clean exit, 12 frames`.
-- `test_opengl.sh`: 63/63. `make test-unit`: 58/58 binaries green (was 57).
+- `test_opengl.sh`: 63/63. `make test-unit`: 58/58 binaries green (was 57),
+  verified from a clean `rm -rf build`, and `make iso` likewise.
 - No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
 
 ## [OpenGL Phase G5 — lighting and materials] 2026-08-01

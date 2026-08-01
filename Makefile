@@ -858,114 +858,61 @@ $(BUILD_DIR)/test_3d: tests/unit/test_3d.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@ -lm
 
-# test_glmath links the REAL libgl/src/glmath.c, not a copy, so the test can
+# ---- libgl host unit tests -----------------------------------------------
+#
+# Every GL unit test links the REAL libgl sources, never a copy, so a test can
 # never drift away from the shipping implementation (GL_PLAN.md principle 1).
-$(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c libgl/src/glmath.c libgl/include/GL/glmath.h
+#
+# The source list is a SINGLE variable shared by all of them.  It used to be
+# duplicated per rule, and when phases G5/G6 added gllight.c, gltexture.c and
+# glfrag.c the copies drifted: auraglx.c gained calls to the new modules but
+# the test_glstate rule still listed only the G1 set, so `make test-unit`
+# failed to link on a clean tree.  One variable makes that class of bug
+# impossible -- adding a module here fixes every test at once.
+LIBGL_TEST_SRCS := libgl/src/auraglx.c libgl/src/glstate.c \
+                   libgl/src/glmath.c libgl/src/glmatrix.c \
+                   libgl/src/glimm.c libgl/src/glraster.c \
+                   libgl/src/glclip.c libgl/src/gllight.c \
+                   libgl/src/gltexture.c libgl/src/glfrag.c
+
+LIBGL_TEST_HDRS := libgl/src/glcontext.h libgl/src/glvertex.h \
+                   libgl/include/GL/gl.h libgl/include/GL/glmath.h \
+                   libgl/include/GL/auraglx.h
+
+LIBGL_TEST_STUB := tests/unit/glstub/auragui_stub.c
+LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
+                     -I libgl/include -I libgl/src -I tests/unit/glstub
+
+# What each test covers:
+#   test_glmath   vector/matrix math (no context needed, links glmath.c alone)
+#   test_glstate  context lifecycle, GL error contract, glClear, presentation
+#   test_glimm    matrix stacks, immediate mode, the transform pipeline
+#   test_glraster filled rasterizer, depth buffer, culling, top-left fill rule
+#   test_glclip   frustum clipping and the glPushAttrib/glPopAttrib stack
+#   test_gllight  the GL 1.1 lighting equation and materials
+#   test_gltex    texture objects, sampling, perspective correction, blending,
+#                 the alpha test and fog
+#
+# libauragui cannot be built for the host (it needs AuraLite's freestanding
+# libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
+# ag_render_now() -- the code under test is still the real auraglx.c.
+LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
+               test_gllight test_gltex
+
+$(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
+                                           $(LIBGL_TEST_SRCS) \
+                                           $(LIBGL_TEST_HDRS) \
+                                           $(LIBGL_TEST_STUB)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBGL_TEST_CFLAGS) $< $(LIBGL_TEST_SRCS) \
+	          $(LIBGL_TEST_STUB) -o $@ -lm
+
+# glmath.c is standalone: no context, no stub, so it gets its own rule.
+$(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c libgl/src/glmath.c \
+                          libgl/include/GL/glmath.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I libgl/include \
 	          tests/unit/test_glmath.c libgl/src/glmath.c -o $@ -lm
-
-# test_glstate links the real auraglx.c + glstate.c.  libauragui cannot be
-# built for the host (it needs AuraLite's freestanding libc), so a recording
-# stub in tests/unit/glstub/ stands in for ag_blit()/ag_render_now() and lets
-# the tests assert on what was actually presented.
-$(BUILD_DIR)/test_glstate: tests/unit/test_glstate.c libgl/src/auraglx.c \
-                           libgl/src/glstate.c libgl/src/glmath.c \
-                           libgl/src/glcontext.h tests/unit/glstub/auragui_stub.c
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	          -I libgl/include -I libgl/src -I tests/unit/glstub \
-	          tests/unit/test_glstate.c libgl/src/auraglx.c libgl/src/glstate.c \
-	          libgl/src/glmath.c tests/unit/glstub/auragui_stub.c -o $@ -lm
-
-# test_glimm covers the matrix stacks, immediate mode and the transform
-# pipeline.  Geometry is verified by inspecting rendered pixels, so this links
-# the rasterizer too.
-$(BUILD_DIR)/test_glimm: tests/unit/test_glimm.c libgl/src/auraglx.c \
-                         libgl/src/glstate.c libgl/src/glmath.c \
-                         libgl/src/glmatrix.c libgl/src/glimm.c \
-                         libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
-                           libgl/src/gltexture.c libgl/src/glfrag.c libgl/src/glcontext.h \
-                         libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	          -I libgl/include -I libgl/src -I tests/unit/glstub \
-	          tests/unit/test_glimm.c libgl/src/auraglx.c libgl/src/glstate.c \
-	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
-	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
-	          libgl/src/gltexture.c libgl/src/glfrag.c \
-	          tests/unit/glstub/auragui_stub.c -o $@ -lm
-
-# test_glraster covers the G3 filled rasterizer: fill correctness, barycentric
-# interpolation, the depth buffer and all eight comparison functions, face
-# culling, the top-left fill rule and the scissor test.
-# test_glclip covers frustum clipping: near/far/side planes, attribute
-# interpolation at the cut, and the glPushAttrib/glPopAttrib stack.
-# test_gllight covers the GL 1.1 lighting equation: diffuse, Blinn-Phong
-# specular, attenuation, spotlights, colour material and GL_NORMALIZE.
-# test_gltex covers texture objects, sampling with both filters and all wrap
-# modes, the texture environment, PERSPECTIVE-CORRECT interpolation, blending,
-# the alpha test and fog.
-$(BUILD_DIR)/test_gltex: tests/unit/test_gltex.c libgl/src/auraglx.c \
-                         libgl/src/glstate.c libgl/src/glmath.c \
-                         libgl/src/glmatrix.c libgl/src/glimm.c \
-                         libgl/src/glraster.c libgl/src/glclip.c \
-                         libgl/src/gllight.c libgl/src/gltexture.c \
-                         libgl/src/glfrag.c libgl/src/glcontext.h \
-                         libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	          -I libgl/include -I libgl/src -I tests/unit/glstub \
-	          tests/unit/test_gltex.c libgl/src/auraglx.c libgl/src/glstate.c \
-	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
-	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
-	          libgl/src/gltexture.c libgl/src/glfrag.c \
-	          tests/unit/glstub/auragui_stub.c -o $@ -lm
-
-$(BUILD_DIR)/test_gllight: tests/unit/test_gllight.c libgl/src/auraglx.c \
-                           libgl/src/glstate.c libgl/src/glmath.c \
-                           libgl/src/glmatrix.c libgl/src/glimm.c \
-                           libgl/src/glraster.c libgl/src/glclip.c \
-                           libgl/src/gllight.c libgl/src/glcontext.h \
-                           libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	          -I libgl/include -I libgl/src -I tests/unit/glstub \
-	          tests/unit/test_gllight.c libgl/src/auraglx.c libgl/src/glstate.c \
-	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
-	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
-	          libgl/src/gltexture.c libgl/src/glfrag.c \
-	          tests/unit/glstub/auragui_stub.c -o $@ -lm
-
-$(BUILD_DIR)/test_glclip: tests/unit/test_glclip.c libgl/src/auraglx.c \
-                          libgl/src/glstate.c libgl/src/glmath.c \
-                          libgl/src/glmatrix.c libgl/src/glimm.c \
-                          libgl/src/glraster.c libgl/src/glclip.c \
-                          libgl/src/glcontext.h libgl/src/glvertex.h \
-                          tests/unit/glstub/auragui_stub.c
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	          -I libgl/include -I libgl/src -I tests/unit/glstub \
-	          tests/unit/test_glclip.c libgl/src/auraglx.c libgl/src/glstate.c \
-	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
-	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
-	          libgl/src/gltexture.c libgl/src/glfrag.c \
-	          tests/unit/glstub/auragui_stub.c -o $@ -lm
-
-$(BUILD_DIR)/test_glraster: tests/unit/test_glraster.c libgl/src/auraglx.c \
-                            libgl/src/glstate.c libgl/src/glmath.c \
-                            libgl/src/glmatrix.c libgl/src/glimm.c \
-                            libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
-                           libgl/src/gltexture.c libgl/src/glfrag.c libgl/src/glcontext.h \
-                            libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	          -I libgl/include -I libgl/src -I tests/unit/glstub \
-	          tests/unit/test_glraster.c libgl/src/auraglx.c libgl/src/glstate.c \
-	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
-	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
-	          libgl/src/gltexture.c libgl/src/glfrag.c \
-	          tests/unit/glstub/auragui_stub.c -o $@ -lm
 
 $(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
 	@mkdir -p $(BUILD_DIR)
