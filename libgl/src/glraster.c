@@ -217,15 +217,235 @@ void gl_raster_line(struct aglx_context *ctx,
     }
 }
 
-/* Phase G2: triangles are drawn as their three edges.
+/* ============================================================================
+ * Triangle rasterisation (phase G3)
  *
- * This is intentionally a placeholder that produces correct, visible geometry
- * so the transform pipeline can be validated before the filled rasterizer
- * lands in G3.  glPolygonMode(GL_LINE) will keep this path afterwards. */
+ * Edge-function rasterizer, not a scanline or painter's-algorithm one.
+ *
+ * For each edge the function
+ *
+ *     E(x,y) = (x - x0)*(y1 - y0) - (y - y0)*(x1 - x0)
+ *
+ * is the cross product of the edge vector with the vector to the sample point.
+ * Its sign says which side of the edge the point lies on, and its magnitude is
+ * twice the area of the sub-triangle, which is exactly the unnormalised
+ * barycentric weight of the opposite vertex.  So one evaluation per edge gives
+ * both the inside test and the interpolation weights.
+ *
+ * Why not painter's algorithm (what drivers/framebuffer/render3d.c uses):
+ * sorting whole triangles by depth cannot resolve intersecting or cyclically
+ * overlapping geometry.  A per-pixel depth buffer resolves both correctly and
+ * is what GL specifies.
+ * ==========================================================================*/
+
+/* Twice the signed area of the triangle in screen space.  Positive means
+ * counter-clockwise with GL's bottom-left origin and y growing up. */
+static GLfloat signed_area2(const gl_vertex_t *a, const gl_vertex_t *b,
+                            const gl_vertex_t *c) {
+    return (b->win.x - a->win.x) * (c->win.y - a->win.y)
+         - (b->win.y - a->win.y) * (c->win.x - a->win.x);
+}
+
+/* Depth comparison (§4.1.5).  Returns non-zero when the fragment passes. */
+static int depth_passes(GLenum func, float src, float dst) {
+    switch (func) {
+    case GL_NEVER:    return 0;
+    case GL_LESS:     return src <  dst;
+    case GL_EQUAL:    return src == dst;
+    case GL_LEQUAL:   return src <= dst;
+    case GL_GREATER:  return src >  dst;
+    case GL_NOTEQUAL: return src != dst;
+    case GL_GEQUAL:   return src >= dst;
+    case GL_ALWAYS:   return 1;
+    default:          return 0;
+    }
+}
+
+/* Top-left fill rule (§3.5.1).
+ *
+ * A pixel exactly on a shared edge must belong to exactly ONE of the two
+ * triangles that share it: counting it twice double-shades the seam (visible
+ * once blending arrives in G6), counting it zero times leaves a one-pixel gap.
+ * GL resolves this by including edges that are "top" or "left" and excluding
+ * the others.
+ *
+ * With a counter-clockwise winding and y growing upwards:
+ *   - a top edge is horizontal and goes right-to-left (dy == 0 && dx < 0)
+ *   - a left edge goes downwards (dy < 0)
+ */
+static int is_top_left(GLfloat dx, GLfloat dy) {
+    return (dy == 0.0f && dx < 0.0f) || (dy < 0.0f);
+}
+
 void gl_raster_triangle(struct aglx_context *ctx,
                         const gl_vertex_t *a, const gl_vertex_t *b,
                         const gl_vertex_t *c) {
-    gl_raster_line(ctx, a, b);
-    gl_raster_line(ctx, b, c);
-    gl_raster_line(ctx, c, a);
+    /* GL_LINE polygon mode keeps the phase-G2 wireframe behaviour. */
+    if (ctx->polygon_mode == GL_LINE) {
+        gl_raster_line(ctx, a, b);
+        gl_raster_line(ctx, b, c);
+        gl_raster_line(ctx, c, a);
+        return;
+    }
+    if (ctx->polygon_mode == GL_POINT) {
+        gl_raster_point(ctx, a);
+        gl_raster_point(ctx, b);
+        gl_raster_point(ctx, c);
+        return;
+    }
+
+    GLfloat area = signed_area2(a, b, c);
+
+    /* Degenerate: zero area covers no pixels.  Also rejects the NaN/inf that
+     * a malformed projection can produce, since every comparison with NaN is
+     * false and the != test below catches it. */
+    if (!(area != 0.0f)) return;
+
+    /* ---- Face culling (§3.5.1) ----
+     * The winding as seen on screen determines the facing.  glFrontFace tells
+     * us which screen winding counts as front. */
+    int ccw = (area > 0.0f);
+    int is_front = (ctx->front_face == GL_CCW) ? ccw : !ccw;
+
+    if (ctx->cull_face) {
+        if (ctx->cull_mode == GL_FRONT_AND_BACK) return;
+        if (ctx->cull_mode == GL_BACK  && !is_front) return;
+        if (ctx->cull_mode == GL_FRONT &&  is_front) return;
+    }
+
+    /* Work with a consistently counter-clockwise triangle from here on, so the
+     * edge functions are positive inside and the fill rule has a single
+     * orientation to reason about.  Swapping two vertices flips the winding. */
+    const gl_vertex_t *v0 = a, *v1 = b, *v2 = c;
+    if (!ccw) { const gl_vertex_t *t = v1; v1 = v2; v2 = t; area = -area; }
+
+    /* ---- Bounding box, clipped to the framebuffer and the scissor box ----
+     * This is what keeps the cost proportional to the triangle's on-screen
+     * size rather than to the buffer, and what makes huge off-screen
+     * coordinates harmless (the same class of bug fixed for lines in G2). */
+    GLfloat fminx = v0->win.x, fmaxx = v0->win.x;
+    GLfloat fminy = v0->win.y, fmaxy = v0->win.y;
+    if (v1->win.x < fminx) fminx = v1->win.x;
+    if (v1->win.x > fmaxx) fmaxx = v1->win.x;
+    if (v2->win.x < fminx) fminx = v2->win.x;
+    if (v2->win.x > fmaxx) fmaxx = v2->win.x;
+    if (v1->win.y < fminy) fminy = v1->win.y;
+    if (v1->win.y > fmaxy) fmaxy = v1->win.y;
+    if (v2->win.y < fminy) fminy = v2->win.y;
+    if (v2->win.y > fmaxy) fmaxy = v2->win.y;
+
+    int minx = win_to_pixel(fminx), maxx = win_to_pixel(fmaxx);
+    int miny = win_to_pixel(fminy), maxy = win_to_pixel(fmaxy);
+
+    int clip_x0 = 0, clip_y0 = 0;
+    int clip_x1 = ctx->width - 1, clip_y1 = ctx->height - 1;
+    if (ctx->scissor_test) {
+        if (ctx->scissor_x > clip_x0) clip_x0 = ctx->scissor_x;
+        if (ctx->scissor_y > clip_y0) clip_y0 = ctx->scissor_y;
+        int sx1 = ctx->scissor_x + ctx->scissor_w - 1;
+        int sy1 = ctx->scissor_y + ctx->scissor_h - 1;
+        if (sx1 < clip_x1) clip_x1 = sx1;
+        if (sy1 < clip_y1) clip_y1 = sy1;
+    }
+    if (minx < clip_x0) minx = clip_x0;
+    if (miny < clip_y0) miny = clip_y0;
+    if (maxx > clip_x1) maxx = clip_x1;
+    if (maxy > clip_y1) maxy = clip_y1;
+    if (minx > maxx || miny > maxy) return;
+
+    /* Edge vectors, used for both the incremental edge functions and the
+     * fill-rule bias. */
+    GLfloat e0dx = v2->win.x - v1->win.x, e0dy = v2->win.y - v1->win.y;
+    GLfloat e1dx = v0->win.x - v2->win.x, e1dy = v0->win.y - v2->win.y;
+    GLfloat e2dx = v1->win.x - v0->win.x, e2dy = v1->win.y - v0->win.y;
+
+    /* A shared edge is included only for the triangle that owns it.
+     *
+     * This is expressed as "is the comparison >= or > ?" rather than as a
+     * numeric epsilon added to the edge value.  An absolute epsilon does not
+     * work: edge-function magnitudes scale with the triangle's area (they are
+     * twice a sub-triangle area), so a constant such as 1e-6 is meaningless
+     * next to values in the thousands, and whether it has any effect at all
+     * depends on the float rounding of the target.  That is exactly what
+     * happened here — the epsilon version tiled correctly on the host and left
+     * a diagonal seam under AuraLite.
+     *
+     * Comparing exactly against zero, and only changing the strictness, is
+     * scale-free and gives the same result everywhere. */
+    int own0 = is_top_left(e0dx, e0dy);
+    int own1 = is_top_left(e1dx, e1dy);
+    int own2 = is_top_left(e2dx, e2dy);
+
+    GLfloat inv_area = 1.0f / area;
+    int flat = (ctx->shade_model == GL_FLAT);
+    /* Flat shading takes the colour of the LAST vertex of the primitive
+     * (§2.14.7); that is `c` as originally passed, before any swap. */
+    gl_pixel_t flat_color = gl_pack_color(c->color);
+
+    int has_depth = (ctx->depth != (float *)0);
+    int do_depth_test  = ctx->depth_test && has_depth;
+    int do_depth_write = ctx->depth_mask && has_depth;
+
+    /* Sample at pixel centres: pixel (i,j) is sampled at (i+0.5, j+0.5). */
+    GLfloat px0 = (GLfloat)minx + 0.5f;
+    GLfloat py0 = (GLfloat)miny + 0.5f;
+
+    /* Edge function values at the first sample, then stepped incrementally:
+     * one add per pixel instead of a full evaluation. */
+    GLfloat w0_row = (py0 - v1->win.y) * e0dx - (px0 - v1->win.x) * e0dy;
+    GLfloat w1_row = (py0 - v2->win.y) * e1dx - (px0 - v2->win.x) * e1dy;
+    GLfloat w2_row = (py0 - v0->win.y) * e2dx - (px0 - v0->win.x) * e2dy;
+
+    for (int y = miny; y <= maxy; y++) {
+        GLfloat w0 = w0_row, w1 = w1_row, w2 = w2_row;
+
+        gl_pixel_t *crow = gl_fb_row(ctx, y);
+        float      *drow = has_depth ? gl_depth_row(ctx, y) : (float *)0;
+
+        for (int x = minx; x <= maxx; x++) {
+            /* Inside when every edge function is positive, or zero on an edge
+             * this triangle owns under the top-left rule. */
+            int in0 = own0 ? (w0 >= 0.0f) : (w0 > 0.0f);
+            int in1 = own1 ? (w1 >= 0.0f) : (w1 > 0.0f);
+            int in2 = own2 ? (w2 >= 0.0f) : (w2 > 0.0f);
+            if (in0 && in1 && in2) {
+                GLfloat l0 = w0 * inv_area;   /* barycentric weight of v0 */
+                GLfloat l1 = w1 * inv_area;   /*                      v1 */
+                GLfloat l2 = w2 * inv_area;   /*                      v2 */
+
+                /* Depth interpolates linearly in window space (§3.5.1). */
+                GLfloat z = l0 * v0->win.z + l1 * v1->win.z + l2 * v2->win.z;
+
+                int write = 1;
+                if (do_depth_test) {
+                    if (!depth_passes(ctx->depth_func, z, drow[x])) write = 0;
+                }
+
+                if (write) {
+                    if (do_depth_write) drow[x] = z;
+
+                    gl_pixel_t col;
+                    if (flat) {
+                        col = flat_color;
+                    } else {
+                        gl_color_t cc;
+                        cc.r = l0 * v0->color.r + l1 * v1->color.r + l2 * v2->color.r;
+                        cc.g = l0 * v0->color.g + l1 * v1->color.g + l2 * v2->color.g;
+                        cc.b = l0 * v0->color.b + l1 * v1->color.b + l2 * v2->color.b;
+                        cc.a = l0 * v0->color.a + l1 * v1->color.a + l2 * v2->color.a;
+                        col = gl_pack_color(cc);
+                    }
+                    crow[x] = col;
+                }
+            }
+            /* Stepping one pixel right changes E by -dy ... */
+            w0 -= e0dy;
+            w1 -= e1dy;
+            w2 -= e2dy;
+        }
+        /* ... and one pixel up changes it by +dx. */
+        w0_row += e0dx;
+        w1_row += e1dx;
+        w2_row += e2dx;
+    }
 }

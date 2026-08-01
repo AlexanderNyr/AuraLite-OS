@@ -78,6 +78,7 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     ctx->cull_mode   = GL_BACK;
     ctx->front_face  = GL_CCW;
     ctx->shade_model = GL_SMOOTH;
+    ctx->polygon_mode = GL_FILL;
 
     ctx->scissor_test = GL_FALSE;
     ctx->scissor_x = 0;

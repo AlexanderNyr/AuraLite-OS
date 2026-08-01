@@ -69,6 +69,17 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS geo_smooth_red_falls"   "smooth shading 
 il_assert_grep    "$LOG" "\\[gl\\] PASS geo_perspective_foreshortens" "perspective foreshortens distant geometry"
 il_assert_grep    "$LOG" "\\[gl\\] PASS geo_behind_eye_dropped" "geometry behind the eye is dropped"
 
+# Phase G3: filled rasterizer, depth buffer, culling.
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_triangle_filled"     "triangles are filled"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_gouraud_red"         "Gouraud interpolation across the face"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_depth_nearer_wins"   "depth test keeps the nearer surface"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_depth_farther_rejected" "depth test rejects the farther surface"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_cull_back_face"      "back faces are culled"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_no_diagonal_seam"    "shared edge tiles with no seam"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_scissor_inside"      "scissor test clips"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_polymode_line_hollow" "glPolygonMode(GL_LINE) restores wireframe"
+il_assert_grep    "$LOG" "\\[gl\\] PASS ras_huge_triangle_bounded" "huge triangles are bounded by the buffer"
+
 # The demo must have started and reached the GL stack.  Note the deliberately
 # loose pattern: /glcube and the shell write to the same serial console from
 # different threads, so their lines interleave mid-string and an exact-match

@@ -241,6 +241,7 @@ void glDepthMask(GLboolean flag);
 void glCullFace(GLenum mode);
 void glFrontFace(GLenum mode);
 void glShadeModel(GLenum mode);
+void glPolygonMode(GLenum face, GLenum mode);
 void glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
 
 /* ---- State queries (G4) ---- */

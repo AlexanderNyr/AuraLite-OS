@@ -2,6 +2,63 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G3 — triangle rasterizer and depth buffer] 2026-08-01
+
+Fourth phase of `GL_PLAN.md`, and the main visual milestone: `/glcube` now
+renders a **solid, depth-buffered, back-face-culled cube**. Only two
+`glEnable()` calls were added to the G2 demo source — the geometry and matrix
+code are unchanged, which is the payoff of writing the demo against the GL API
+rather than against the rasterizer.
+
+### Added
+- `libgl/src/glraster.c`: edge-function triangle rasterizer replacing the G2
+  wireframe placeholder. One evaluation per edge yields both the inside test
+  and the barycentric weights; the values are stepped incrementally (one add
+  per pixel per edge) and the loop is limited to the primitive's bounding box.
+  Deliberately not a painter's algorithm — sorting whole triangles cannot
+  resolve intersecting or cyclically overlapping geometry, a per-pixel depth
+  buffer can.
+- Depth buffer: all eight comparison functions, `glDepthFunc`, `glDepthMask`,
+  linear depth interpolation. A context created without `AGLX_DEPTH` ignores
+  depth state instead of faulting.
+- Face culling from the screen-space signed area: `glCullFace`
+  (FRONT/BACK/FRONT_AND_BACK), `glFrontFace` (CW/CCW).
+- Top-left fill rule, so two triangles sharing an edge tile it exactly once.
+- `glEnable`/`glDisable`/`glIsEnabled`, `glScissor` + `GL_SCISSOR_TEST`,
+  `glPolygonMode` (`GL_FILL`/`GL_LINE`/`GL_POINT`),
+  `glGetIntegerv`/`glGetFloatv`/`glGetBooleanv`.
+- `tests/unit/test_glraster.c`: **43 checks** covering fill correctness,
+  interpolation, every depth function, culling, the fill rule and scissor.
+- `patches/GL_G3_rasterizer.patch`.
+
+### Fixed (bugs found during this phase)
+- **Edge-function sign inverted.** For a counter-clockwise triangle the form
+  `(x-x0)*dy - (y-y0)*dx` is negative inside, so nothing rendered. Corrected to
+  `(y-y0)*dx - (x-x0)*dy` with matching increment signs.
+- **Fill-rule epsilon that only failed on the target.** The top-left rule was
+  first written as a small negative bias (`-1e-6`) on non-owned edges. Edge
+  magnitudes scale with triangle area, so a constant epsilon is meaningless
+  next to values in the thousands and its effect depends on target float
+  rounding: it tiled correctly on the host but left a visible diagonal seam
+  under AuraLite. Replaced with a scale-free form — compare against exactly
+  zero and vary only the strictness (`>=` for owned edges, `>` otherwise).
+
+### Changed
+- `userspace/glcube`: enables `GL_DEPTH_TEST` and `GL_CULL_FACE`.
+- `userspace/gltest`: 75 checks (was 53). Two G2 assertions that expected
+  hollow triangles were updated — triangles are filled from G3, and the hollow
+  outline is now checked through `glPolygonMode(GL_LINE)`.
+- `tests/integration/cases/test_opengl.sh`: 38 assertions (was 29).
+
+### Verified
+- `test_glraster` 43/43, `test_glimm` 51/51, `test_glstate` 37/37,
+  `test_glmath` 37/37.
+- `/gltest` under QEMU: 75/75 checks.
+- `/glcube`: `clean exit, 12 frames`.
+- `test_opengl.sh`: 38/38 assertions.
+- `make test-unit`: 55/55 binaries green (was 54).
+- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G2 — matrix stacks and immediate mode] 2026-07-31
 
 Third phase of `GL_PLAN.md`. Classic GL 1.1 geometry code now works:

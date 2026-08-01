@@ -68,6 +68,7 @@ struct aglx_context {
     GLenum      cull_mode;
     GLenum      front_face;
     GLenum      shade_model;
+    GLenum      polygon_mode;   /* GL_FILL (default), GL_LINE, GL_POINT */
     GLboolean   scissor_test;
     GLint       scissor_x, scissor_y;
     GLsizei     scissor_w, scissor_h;

@@ -484,8 +484,8 @@ static int t_line_loop_closes(void) {
     return ok;
 }
 
-/* A triangle draws three edges in G2 (wireframe). */
-static int t_triangle_edges(void) {
+/* From G3 a triangle is FILLED, so the interior is covered too. */
+static int t_triangle_filled(void) {
     aglx_context_t *c = setup_pixel_ortho();
     if (!c) return 0;
     glColor3f(1, 1, 1);
@@ -494,8 +494,25 @@ static int t_triangle_edges(void) {
     glVertex3f(20.5f, 2.5f, 0);
     glVertex3f(2.5f, 20.5f, 0);
     glEnd();
-    /* Bottom edge, left edge, and the hypotenuse; centre stays empty. */
-    int ok = px(c, 10, 2) && px(c, 2, 10) && !px(c, 6, 6);
+    /* Interior covered, and a point outside the hypotenuse is not. */
+    int ok = px(c, 6, 6) != 0 && px(c, 5, 3) != 0 && px(c, 18, 18) == 0;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* glPolygonMode(GL_LINE) restores the wireframe behaviour. */
+static int t_polygon_mode_line(void) {
+    aglx_context_t *c = setup_pixel_ortho();
+    if (!c) return 0;
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glColor3f(1, 1, 1);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(2.5f, 2.5f, 0);
+    glVertex3f(20.5f, 2.5f, 0);
+    glVertex3f(2.5f, 20.5f, 0);
+    glEnd();
+    /* Edges drawn, interior hollow. */
+    int ok = px(c, 10, 2) != 0 && px(c, 2, 10) != 0 && px(c, 6, 6) == 0;
     aglxDestroyContext(c);
     return ok;
 }
@@ -511,8 +528,8 @@ static int t_triangle_strip(void) {
     glVertex3f(14.5f, 2.5f, 0);
     glVertex3f(14.5f,14.5f, 0);
     glEnd();
-    /* The shared diagonal plus the outer edges must be drawn. */
-    int ok = px(c, 2, 8) && px(c, 8, 2) && px(c, 14, 8) && px(c, 8, 14);
+    /* Two filled triangles cover the whole quad region. */
+    int ok = px(c, 5, 5) && px(c, 11, 11) && px(c, 8, 8);
     aglxDestroyContext(c);
     return ok;
 }
@@ -528,7 +545,7 @@ static int t_triangle_fan(void) {
     glVertex3f(14.5f, 2.5f, 0);
     glVertex3f(14.5f, 14.5f, 0);
     glEnd();
-    int ok = px(c, 8, 2) && lit_count(c) > 10;
+    int ok = px(c, 8, 5) && lit_count(c) > 40;
     aglxDestroyContext(c);
     return ok;
 }
@@ -544,7 +561,8 @@ static int t_quads(void) {
     glVertex3f(16.5f,16.5f, 0);
     glVertex3f(4.5f, 16.5f, 0);
     glEnd();
-    int ok = px(c, 10, 4) && px(c, 16, 10) && px(c, 10, 16) && px(c, 4, 10);
+    /* Filled: interior and near-corners covered, outside not. */
+    int ok = px(c, 10, 10) && px(c, 5, 5) && px(c, 15, 15) && !px(c, 2, 2);
     aglxDestroyContext(c);
     return ok;
 }
@@ -575,7 +593,7 @@ static int t_polygon(void) {
     glVertex3f(16.5f, 16.5f, 0);
     glVertex3f(4.5f, 16.5f, 0);
     glEnd();
-    int ok = px(c, 10, 4) && px(c, 4, 10);
+    int ok = px(c, 10, 10) && px(c, 6, 6);
     aglxDestroyContext(c);
     return ok;
 }
@@ -861,7 +879,8 @@ int main(void) {
     RUN(t_line_horizontal); RUN(t_line_vertical); RUN(t_line_diagonal);
     RUN(t_lines_independent); RUN(t_lines_odd_vertex_ignored);
     RUN(t_line_strip); RUN(t_line_loop_closes);
-    RUN(t_triangle_edges); RUN(t_triangle_strip); RUN(t_triangle_fan);
+    RUN(t_triangle_filled); RUN(t_polygon_mode_line);
+    RUN(t_triangle_strip); RUN(t_triangle_fan);
     RUN(t_quads); RUN(t_quads_incomplete); RUN(t_polygon);
     RUN(t_long_strip_is_bounded);
 

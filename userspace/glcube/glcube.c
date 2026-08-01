@@ -1,9 +1,9 @@
 /* glcube.c — rotating cube demo for the AuraLite OpenGL stack.
  *
- * Phase G2 renders it as a wireframe, because the triangle rasterizer does not
- * exist yet.  The SAME source becomes a solid shaded cube in G3 with no
- * changes: that is the point of writing it against the GL API rather than
- * against the rasterizer.
+ * From phase G3 this renders as a SOLID depth-buffered cube.  The geometry and
+ * matrix code are unchanged from the G2 wireframe version — only the two
+ * glEnable() calls below were added, which is the point of writing the demo
+ * against the GL API rather than against the rasterizer.
  *
  * Controls:
  *   arrow keys / mouse drag  rotate
@@ -138,6 +138,16 @@ int main(int argc, char **argv) {
 
     glClearColor(0.06f, 0.07f, 0.10f, 1.0f);
     glShadeModel(GL_SMOOTH);
+
+    /* Phase G3: a depth buffer resolves which face is in front per pixel, and
+     * culling skips the three faces pointing away from the camera (roughly
+     * halving the fill cost).  The cube's faces are wound counter-clockwise
+     * when seen from outside, so the defaults are correct. */
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
 
     GLfloat angle_x = 25.0f, angle_y = 30.0f;
     int paused = 0, running = 1;

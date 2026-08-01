@@ -165,6 +165,213 @@ void glShadeModel(GLenum mode) {
 }
 
 /* ============================================================================
+ * Enable / disable (§2.5, §6.1.1)
+ * ==========================================================================*/
+
+/* Resolve a capability to its GLboolean slot in the context, or NULL when the
+ * enum is not a capability this implementation knows.
+ *
+ * Capabilities that exist in the GL 1.1 enum space but have no implementation
+ * yet (lighting, texturing, blending, fog) deliberately return NULL here so
+ * glEnable() reports GL_INVALID_ENUM.  Silently accepting them would let an
+ * application believe lighting was on and then wonder why nothing changed;
+ * they become real slots in G5/G6. */
+static GLboolean *cap_slot(struct aglx_context *ctx, GLenum cap) {
+    switch (cap) {
+    case GL_DEPTH_TEST:   return &ctx->depth_test;
+    case GL_CULL_FACE:    return &ctx->cull_face;
+    case GL_SCISSOR_TEST: return &ctx->scissor_test;
+    default:              return (GLboolean *)0;
+    }
+}
+
+void glEnable(GLenum cap) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    GLboolean *slot = cap_slot(ctx, cap);
+    if (!slot) { gl_set_error(GL_INVALID_ENUM); return; }
+    *slot = GL_TRUE;
+}
+
+void glDisable(GLenum cap) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    GLboolean *slot = cap_slot(ctx, cap);
+    if (!slot) { gl_set_error(GL_INVALID_ENUM); return; }
+    *slot = GL_FALSE;
+}
+
+GLboolean glIsEnabled(GLenum cap) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return GL_FALSE;
+    GLboolean *slot = cap_slot(ctx, cap);
+    if (!slot) { gl_set_error(GL_INVALID_ENUM); return GL_FALSE; }
+    return *slot;
+}
+
+/* ============================================================================
+ * Depth buffer state (§4.1.5)
+ * ==========================================================================*/
+
+void glDepthFunc(GLenum func) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    switch (func) {
+    case GL_NEVER: case GL_LESS: case GL_EQUAL: case GL_LEQUAL:
+    case GL_GREATER: case GL_NOTEQUAL: case GL_GEQUAL: case GL_ALWAYS:
+        ctx->depth_func = func;
+        return;
+    default:
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+}
+
+void glDepthMask(GLboolean flag) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    /* Any non-zero value means GL_TRUE (§2.1.2). */
+    ctx->depth_mask = flag ? GL_TRUE : GL_FALSE;
+}
+
+/* ============================================================================
+ * Polygon state (§3.5)
+ * ==========================================================================*/
+
+void glCullFace(GLenum mode) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (mode != GL_FRONT && mode != GL_BACK && mode != GL_FRONT_AND_BACK) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+    ctx->cull_mode = mode;
+}
+
+void glFrontFace(GLenum mode) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (mode != GL_CW && mode != GL_CCW) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+    ctx->front_face = mode;
+}
+
+void glPolygonMode(GLenum face, GLenum mode) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+
+    if (face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (mode != GL_POINT && mode != GL_LINE && mode != GL_FILL) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+    /* Separate front/back modes are not tracked: AuraLite applies one mode to
+     * both faces.  Accepting GL_FRONT or GL_BACK and applying it to both is
+     * the pragmatic behaviour here — the alternative (rejecting them) would
+     * break the very common glPolygonMode(GL_FRONT_AND_BACK, ...) idiom's
+     * single-face cousins for no benefit. */
+    ctx->polygon_mode = mode;
+}
+
+/* ============================================================================
+ * Scissor test (§4.1.2)
+ * ==========================================================================*/
+
+void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (width < 0 || height < 0) {
+        gl_set_error(GL_INVALID_VALUE);
+        return;
+    }
+    ctx->scissor_x = x;
+    ctx->scissor_y = y;
+    ctx->scissor_w = width;
+    ctx->scissor_h = height;
+}
+
+/* ============================================================================
+ * State queries (§6.1)
+ * ==========================================================================*/
+
+void glGetIntegerv(GLenum pname, GLint *params) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (!params) { gl_set_error(GL_INVALID_VALUE); return; }
+
+    switch (pname) {
+    case GL_VIEWPORT:
+        params[0] = ctx->viewport_x; params[1] = ctx->viewport_y;
+        params[2] = (GLint)ctx->viewport_w; params[3] = (GLint)ctx->viewport_h;
+        break;
+    case GL_SCISSOR_BOX:
+        params[0] = ctx->scissor_x; params[1] = ctx->scissor_y;
+        params[2] = (GLint)ctx->scissor_w; params[3] = (GLint)ctx->scissor_h;
+        break;
+    case GL_MATRIX_MODE:   params[0] = (GLint)ctx->matrix_mode;  break;
+    case GL_DEPTH_FUNC:    params[0] = (GLint)ctx->depth_func;   break;
+    case GL_CULL_FACE_MODE:params[0] = (GLint)ctx->cull_mode;    break;
+    case GL_FRONT_FACE:    params[0] = (GLint)ctx->front_face;   break;
+    case GL_SHADE_MODEL:   params[0] = (GLint)ctx->shade_model;  break;
+    case GL_MAX_MODELVIEW_STACK_DEPTH:
+        params[0] = GL_MODELVIEW_STACK_DEPTH;  break;
+    case GL_MAX_PROJECTION_STACK_DEPTH:
+        params[0] = GL_PROJECTION_STACK_DEPTH; break;
+    default:
+        gl_set_error(GL_INVALID_ENUM);
+        break;
+    }
+}
+
+void glGetFloatv(GLenum pname, GLfloat *params) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (!params) { gl_set_error(GL_INVALID_VALUE); return; }
+
+    switch (pname) {
+    case GL_COLOR_CLEAR_VALUE:
+        params[0] = ctx->clear_color.r; params[1] = ctx->clear_color.g;
+        params[2] = ctx->clear_color.b; params[3] = ctx->clear_color.a;
+        break;
+    case GL_DEPTH_CLEAR_VALUE:
+        params[0] = ctx->clear_depth;
+        break;
+    case GL_MODELVIEW_MATRIX:
+        for (int i = 0; i < 16; i++)
+            params[i] = ctx->modelview[ctx->modelview_top].m[i];
+        break;
+    case GL_PROJECTION_MATRIX:
+        for (int i = 0; i < 16; i++)
+            params[i] = ctx->projection[ctx->projection_top].m[i];
+        break;
+    default:
+        gl_set_error(GL_INVALID_ENUM);
+        break;
+    }
+}
+
+void glGetBooleanv(GLenum pname, GLboolean *params) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (!params) { gl_set_error(GL_INVALID_VALUE); return; }
+
+    switch (pname) {
+    case GL_DEPTH_TEST:      params[0] = ctx->depth_test;   break;
+    case GL_DEPTH_WRITEMASK: params[0] = ctx->depth_mask;   break;
+    case GL_CULL_FACE:       params[0] = ctx->cull_face;    break;
+    case GL_SCISSOR_TEST:    params[0] = ctx->scissor_test; break;
+    default:
+        gl_set_error(GL_INVALID_ENUM);
+        break;
+    }
+}
+
+/* ============================================================================
  * Synchronisation (§5.4)
  * ==========================================================================*/
 

@@ -758,7 +758,7 @@ debug: iso
 
 # ---- Host-side unit tests (built with the host compiler, no freestanding) ----
 UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
-                $(BUILD_DIR)/test_glimm \
+                $(BUILD_DIR)/test_glimm $(BUILD_DIR)/test_glraster \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -866,6 +866,21 @@ $(BUILD_DIR)/test_glimm: tests/unit/test_glimm.c libgl/src/auraglx.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
 	          -I libgl/include -I libgl/src -I tests/unit/glstub \
 	          tests/unit/test_glimm.c libgl/src/auraglx.c libgl/src/glstate.c \
+	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
+	          libgl/src/glraster.c tests/unit/glstub/auragui_stub.c -o $@ -lm
+
+# test_glraster covers the G3 filled rasterizer: fill correctness, barycentric
+# interpolation, the depth buffer and all eight comparison functions, face
+# culling, the top-left fill rule and the scissor test.
+$(BUILD_DIR)/test_glraster: tests/unit/test_glraster.c libgl/src/auraglx.c \
+                            libgl/src/glstate.c libgl/src/glmath.c \
+                            libgl/src/glmatrix.c libgl/src/glimm.c \
+                            libgl/src/glraster.c libgl/src/glcontext.h \
+                            libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I libgl/include -I libgl/src -I tests/unit/glstub \
+	          tests/unit/test_glraster.c libgl/src/auraglx.c libgl/src/glstate.c \
 	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
 	          libgl/src/glraster.c tests/unit/glstub/auragui_stub.c -o $@ -lm
 

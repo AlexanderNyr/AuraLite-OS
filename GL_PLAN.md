@@ -460,7 +460,7 @@ used by `/apm` (see `cmd_apm` in `userspace/init/init.c`). Absent file means
 
 ---
 
-## Phase G3 — Triangle rasterizer and depth buffer
+## Phase G3 — Triangle rasterizer and depth buffer ✅ COMPLETE
 
 **Goal:** a solid shaded cube. The main visual milestone.
 
@@ -475,14 +475,14 @@ glShadeModel(GL_FLAT|GL_SMOOTH)  glPolygonMode()
 
 ### Tasks
 
-- [ ] Edge-function rasterizer (not painter's algorithm — it produces artefacts on
+- [x] Edge-function rasterizer (not painter's algorithm — it produces artefacts on
       intersecting triangles, which is what `render3d.c` currently uses).
-- [ ] Barycentric interpolation of colour and depth; Gouraud shading.
-- [ ] Depth buffer: test, write, all 8 comparison functions, `glDepthMask`.
-- [ ] Back-face culling from the signed area in screen space.
-- [ ] Top-left fill rule — so adjacent triangles neither leave gaps nor double-shade
+- [x] Barycentric interpolation of colour and depth; Gouraud shading.
+- [x] Depth buffer: test, write, all 8 comparison functions, `glDepthMask`.
+- [x] Back-face culling from the signed area in screen space.
+- [x] Top-left fill rule — so adjacent triangles neither leave gaps nor double-shade
       (critical for blending in G6).
-- [ ] Optimisation: primitive bounding box, incremental edge functions.
+- [x] Optimisation: primitive bounding box, incremental edge functions.
 
 ### Test gate
 
@@ -499,6 +499,53 @@ Correct depth-buffered rasterisation. A visually convincing 3D result.
 ### Deliverable
 
 `patches/GL_G3_rasterizer.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| Rasterizer | Edge-function with incremental stepping (one add per pixel per edge), bounding-box limited |
+| Interpolation | Barycentric weights come free from the edge functions; Gouraud colour + linear depth |
+| Depth buffer | All eight comparison functions, `glDepthMask`, correct behaviour when the context has no depth buffer |
+| Culling | `glCullFace` FRONT/BACK/FRONT_AND_BACK, `glFrontFace` CW/CCW, decided from screen-space signed area |
+| Fill rule | Top-left rule: adjacent triangles tile a shared edge exactly once — no seam, no double-cover |
+| Scissor | `glScissor` + `GL_SCISSOR_TEST` applied in the bounding-box clamp |
+| `glPolygonMode` | `GL_FILL` (default), `GL_LINE` restores the G2 wireframe, `GL_POINT` |
+| State queries | `glEnable`/`glDisable`/`glIsEnabled`, `glGetIntegerv`/`glGetFloatv`/`glGetBooleanv` |
+| Host unit tests | `test_glraster` **43/43**, `test_glimm` **51/51** |
+| `/gltest` in QEMU | **75/75 checks pass** |
+| `/glcube` | **Solid depth-buffered cube**; `clean exit, 12 frames`. Only two `glEnable()` lines were added to the G2 source |
+| QEMU integration test | `test_opengl.sh` — **38/38 assertions pass** |
+| Regression check | `make test-unit` 55/55 green; boot and GUI tests unaffected |
+
+### Two bugs found, one of them target-specific
+
+**1. Edge-function sign inverted (caught immediately on the host).** For a
+counter-clockwise triangle the form `(x-x0)*dy - (y-y0)*dx` is *negative*
+inside, so nothing rendered at all. The correct orientation for
+"positive inside CCW" is `(y-y0)*dx - (x-x0)*dy`, with the per-pixel and
+per-row increments negated to match.
+
+**2. Fill-rule epsilon that only failed on the target.** The top-left rule was
+first implemented by adding a small negative bias (`-1e-6`) to the edges a
+triangle does not own. That is wrong in principle: edge-function magnitudes
+scale with triangle area (they are twice a sub-triangle area), so a constant
+epsilon is meaningless beside values in the thousands, and whether it has any
+effect depends on the target's float rounding. It tiled correctly on the host
+and left a **visible diagonal seam under AuraLite**, where the kernel-side
+toolchain settings differ. Replaced with a scale-free formulation: compare
+against exactly zero and vary only the strictness (`>=` for owned edges, `>`
+for the others). This is why the phase gate runs in QEMU and not just on the
+host.
+
+### Note on the demo screenshot
+
+A VGA screendump was attempted for the documentation but captured the 720×400
+text console: the GUI compositor only takes over the framebuffer once the
+desktop is started, and `/glcube` was launched from the serial shell. The
+rendering itself is verified by pixel-level assertions inside the OS
+(`/gltest`, 75/75), which is stronger evidence than a screenshot. Capturing an
+image is left for phase G8, where the demos are wired into `/glaunch`.
 
 ---
 
@@ -792,8 +839,8 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
 | G0 | ✅ complete | `patches/GL_G0_scaffolding.patch` |
 | G1 | ✅ complete | `patches/GL_G1_context.patch` |
 | G2 | ✅ complete | `patches/GL_G2_immediate.patch` |
-| G3 | 🔧 next | — |
-| G4 | ⬜ planned | — |
+| G3 | ✅ complete | `patches/GL_G3_rasterizer.patch` |
+| G4 | 🔧 next | — |
 | G5 | ⬜ planned | — |
 | G6 | ⬜ planned | — |
 | G7 | ⬜ planned | — |

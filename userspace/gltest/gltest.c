@@ -11,6 +11,7 @@
  * and end-to-end frame presentation.
  * Phase G2 scope: matrix stacks and immediate-mode geometry, verified by
  * reading back the pixels that were actually rasterised.
+ * Phase G3 scope: the filled triangle rasterizer, depth buffer and culling.
  */
 
 #include <stdio.h>
@@ -179,10 +180,16 @@ static void test_gl_geometry(int wid) {
     glVertex3f(60.5f, 10.5f, 0.0f);
     glVertex3f(10.5f, 60.5f, 0.0f);
     glEnd();
-    int edge_ok   = cb[(size_t)(GL_H - 1 - 10) * GL_W + 30] != 0;
-    int centre_ok = cb[(size_t)(GL_H - 1 - 25) * GL_W + 25] == 0;
-    check(edge_ok, "geo_triangle_edge");
-    check(centre_ok, "geo_triangle_hollow_g2");
+    /* Since G3 triangles are filled, so both the edge and the interior are
+     * covered.  glPolygonMode(GL_LINE) is what restores the hollow outline,
+     * and that is checked in the G3 block below. */
+    /* Sample strictly INSIDE, not on the boundary: a pixel exactly on an edge
+     * is deliberately owned by only one triangle under the top-left fill rule,
+     * so it is not a stable thing to assert on. */
+    int near_edge_ok = cb[(size_t)(GL_H - 1 - 12) * GL_W + 30] != 0;
+    int interior_ok  = cb[(size_t)(GL_H - 1 - 25) * GL_W + 25] != 0;
+    check(near_edge_ok, "geo_triangle_edge");
+    check(interior_ok, "geo_triangle_filled_g3");
 
     /* Smooth shading interpolates colour along a line. */
     glClear(GL_COLOR_BUFFER_BIT);
@@ -238,8 +245,182 @@ static void test_gl_geometry(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- Phase G3: filled rasterizer, depth buffer, culling ---- */
+static void test_gl_raster(int wid) {
+    printf("[gl] --- G3: rasterizer, depth, culling ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "ras_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    const float    *db = aglxGetDepthBuffer(ctx);
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -1, 1);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+
+    /* Row helper: GL window y -> framebuffer row. */
+    #define ROW(y) ((size_t)(GL_H - 1 - (y)) * GL_W)
+
+    /* ---- Triangles are now FILLED, not hollow. ---- */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1, 1, 1);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(10.5f, 10.5f, 0.0f);
+    glVertex3f(90.5f, 10.5f, 0.0f);
+    glVertex3f(10.5f, 90.5f, 0.0f);
+    glEnd();
+    check(cb[ROW(30) + 30] != 0, "ras_triangle_filled");
+    check(cb[ROW(85) + 85] == 0, "ras_outside_empty");
+
+    /* ---- Gouraud interpolation across the face. ---- */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glShadeModel(GL_SMOOTH);
+    glBegin(GL_TRIANGLES);
+    glColor3f(1, 0, 0); glVertex3f(5.5f,  5.5f,  0.0f);
+    glColor3f(0, 1, 0); glVertex3f(95.5f, 5.5f,  0.0f);
+    glColor3f(0, 0, 1); glVertex3f(5.5f,  95.5f, 0.0f);
+    glEnd();
+    uint32_t corner_r = cb[ROW(8) + 8];
+    uint32_t corner_g = cb[ROW(8) + 90];
+    uint32_t corner_b = cb[ROW(90) + 8];
+    check(((corner_r >> 16) & 0xFF) > 180, "ras_gouraud_red");
+    check(((corner_g >>  8) & 0xFF) > 180, "ras_gouraud_green");
+    check(( corner_b        & 0xFF) > 180, "ras_gouraud_blue");
+
+    /* ---- Depth test: nearer geometry wins regardless of draw order. ----
+     * glOrtho negates z, so object z=+0.5 is NEARER (window depth 0.25). */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glShadeModel(GL_FLAT);
+
+    glColor3f(1, 0, 0);                    /* farther, drawn first */
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, -0.5f);       glVertex3f(GL_W, 0, -0.5f);
+    glVertex3f(GL_W, GL_H, -0.5f); glVertex3f(0, GL_H, -0.5f);
+    glEnd();
+    glColor3f(0, 1, 0);                    /* nearer, drawn second */
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0.5f);        glVertex3f(GL_W, 0, 0.5f);
+    glVertex3f(GL_W, GL_H, 0.5f);  glVertex3f(0, GL_H, 0.5f);
+    glEnd();
+    check(cb[ROW(50) + 50] == 0x00FF00, "ras_depth_nearer_wins");
+
+    /* Reverse order: the farther quad must now be rejected. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(0, 1, 0);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0.5f);        glVertex3f(GL_W, 0, 0.5f);
+    glVertex3f(GL_W, GL_H, 0.5f);  glVertex3f(0, GL_H, 0.5f);
+    glEnd();
+    glColor3f(1, 0, 0);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, -0.5f);       glVertex3f(GL_W, 0, -0.5f);
+    glVertex3f(GL_W, GL_H, -0.5f); glVertex3f(0, GL_H, -0.5f);
+    glEnd();
+    check(cb[ROW(50) + 50] == 0x00FF00, "ras_depth_farther_rejected");
+    check(db[ROW(50) + 50] < 0.3f, "ras_depth_value_written");
+
+    glDisable(GL_DEPTH_TEST);
+
+    /* ---- Back-face culling. ---- */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+    glColor3f(1, 1, 1);
+    /* Clockwise winding = back-facing = culled. */
+    glBegin(GL_TRIANGLES);
+    glVertex3f(10.5f, 10.5f, 0.0f);
+    glVertex3f(10.5f, 90.5f, 0.0f);
+    glVertex3f(90.5f, 10.5f, 0.0f);
+    glEnd();
+    int culled_empty = (cb[ROW(30) + 30] == 0);
+    check(culled_empty, "ras_cull_back_face");
+
+    /* Counter-clockwise = front-facing = kept. */
+    glBegin(GL_TRIANGLES);
+    glVertex3f(10.5f, 10.5f, 0.0f);
+    glVertex3f(90.5f, 10.5f, 0.0f);
+    glVertex3f(10.5f, 90.5f, 0.0f);
+    glEnd();
+    check(cb[ROW(30) + 30] != 0, "ras_cull_keeps_front");
+    glDisable(GL_CULL_FACE);
+
+    /* ---- Shared edge must tile exactly: no seam between two triangles. ---- */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1, 1, 1);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(20.0f, 20.0f, 0); glVertex3f(80.0f, 20.0f, 0); glVertex3f(80.0f, 80.0f, 0);
+    glVertex3f(20.0f, 20.0f, 0); glVertex3f(80.0f, 80.0f, 0); glVertex3f(20.0f, 80.0f, 0);
+    glEnd();
+    int seam_gaps = 0;
+    for (int y = 21; y < 79; y++)
+        for (int x = 21; x < 79; x++)
+            if (cb[ROW(y) + x] == 0) seam_gaps++;
+    check(seam_gaps == 0, "ras_no_diagonal_seam");
+
+    /* ---- Scissor test. ---- */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(30, 30, 20, 20);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);        glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);  glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(cb[ROW(35) + 35] != 0, "ras_scissor_inside");
+    check(cb[ROW(10) + 10] == 0, "ras_scissor_outside");
+    glDisable(GL_SCISSOR_TEST);
+
+    /* ---- glPolygonMode(GL_LINE) restores wireframe. ---- */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(10.5f, 10.5f, 0.0f);
+    glVertex3f(90.5f, 10.5f, 0.0f);
+    glVertex3f(10.5f, 90.5f, 0.0f);
+    glEnd();
+    check(cb[ROW(10) + 50] != 0, "ras_polymode_line_edge");
+    check(cb[ROW(30) + 30] == 0, "ras_polymode_line_hollow");
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    /* ---- Degenerate geometry must not hang or crash. ---- */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(5.5f, 5.5f, 0); glVertex3f(50.5f, 5.5f, 0); glVertex3f(95.5f, 5.5f, 0);
+    glEnd();
+    check(cb[ROW(5) + 50] == 0, "ras_degenerate_empty");
+
+    /* Enormous coordinates must be bounded by the buffer, not by their size. */
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.0e6f, -1.0e6f, 0);
+    glVertex3f( 1.0e6f, -1.0e6f, 0);
+    glVertex3f( 0.0f,    1.0e6f, 0);
+    glEnd();
+    check(cb[ROW(50) + 50] != 0, "ras_huge_triangle_bounded");
+
+    /* ---- State queries. ---- */
+    GLint vp[4];
+    glGetIntegerv(GL_VIEWPORT, vp);
+    check(vp[2] == GL_W && vp[3] == GL_H, "ras_get_viewport");
+    glEnable(GL_DEPTH_TEST);
+    check(glIsEnabled(GL_DEPTH_TEST) == GL_TRUE, "ras_is_enabled");
+    glDisable(GL_DEPTH_TEST);
+
+    check(aglxSwapBuffers(ctx) == 0, "ras_swap");
+    check(glGetError() == GL_NO_ERROR, "ras_no_pending_error");
+
+    #undef ROW
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
-    printf("[gl] === AuraLite GL test (phases G0-G2) ===\n");
+    printf("[gl] === AuraLite GL test (phases G0-G3) ===\n");
 
     /* ---- A window is required as the blit destination. ---- */
     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
@@ -325,9 +506,10 @@ int main(void) {
 
     ag_render_now();
 
-    /* ---- Phase G1 and G2 checks ---- */
+    /* ---- Phase G1, G2 and G3 checks ---- */
     test_gl_context(wid);
     test_gl_geometry(wid);
+    test_gl_raster(wid);
 
     free(buf);
     ag_window_destroy(wid);
