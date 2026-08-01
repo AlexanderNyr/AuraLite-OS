@@ -372,6 +372,109 @@ void glGetBooleanv(GLenum pname, GLboolean *params) {
 }
 
 /* ============================================================================
+ * Attribute stack (§6.1.2)
+ *
+ * glPushAttrib saves groups of server state selected by a bitmask; glPopAttrib
+ * restores exactly the groups that the matching push saved.  The mask is
+ * therefore stored with the entry rather than re-supplied at pop time.
+ *
+ * AuraLite tracks the groups it actually implements.  Bits for state that does
+ * not exist yet (lighting, texturing, fog) are accepted and ignored rather
+ * than rejected: a push/pop pair around code that sets them must still work,
+ * and rejecting the mask would break the extremely common
+ * glPushAttrib(GL_ALL_ATTRIB_BITS) idiom.
+ * ==========================================================================*/
+
+void glPushAttrib(GLbitfield mask) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+
+    if (ctx->attrib_top >= GL_ATTRIB_STACK_DEPTH) {
+        /* Overflow leaves the stack and the current state untouched. */
+        gl_set_error(GL_STACK_OVERFLOW);
+        return;
+    }
+
+    struct gl_attrib_entry *e = &ctx->attrib_stack[ctx->attrib_top];
+    e->mask = mask;
+
+    /* Everything is copied unconditionally; the mask decides what is restored.
+     * Copying a handful of scalars is cheaper than branching per group. */
+    e->clear_color  = ctx->clear_color;
+    e->clear_depth  = ctx->clear_depth;
+    e->viewport_x   = ctx->viewport_x;
+    e->viewport_y   = ctx->viewport_y;
+    e->viewport_w   = ctx->viewport_w;
+    e->viewport_h   = ctx->viewport_h;
+    e->depth_test   = ctx->depth_test;
+    e->depth_mask   = ctx->depth_mask;
+    e->depth_func   = ctx->depth_func;
+    e->cull_face    = ctx->cull_face;
+    e->cull_mode    = ctx->cull_mode;
+    e->front_face   = ctx->front_face;
+    e->shade_model  = ctx->shade_model;
+    e->polygon_mode = ctx->polygon_mode;
+    e->scissor_test = ctx->scissor_test;
+    e->scissor_x    = ctx->scissor_x;
+    e->scissor_y    = ctx->scissor_y;
+    e->scissor_w    = ctx->scissor_w;
+    e->scissor_h    = ctx->scissor_h;
+
+    ctx->attrib_top++;
+}
+
+void glPopAttrib(void) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+
+    if (ctx->attrib_top == 0) {
+        gl_set_error(GL_STACK_UNDERFLOW);
+        return;
+    }
+
+    ctx->attrib_top--;
+    const struct gl_attrib_entry *e = &ctx->attrib_stack[ctx->attrib_top];
+    GLbitfield m = e->mask;
+
+    if (m & GL_ENABLE_BIT) {
+        ctx->depth_test   = e->depth_test;
+        ctx->cull_face    = e->cull_face;
+        ctx->scissor_test = e->scissor_test;
+    }
+    if (m & GL_DEPTH_BUFFER_BIT) {
+        ctx->depth_test  = e->depth_test;
+        ctx->depth_mask  = e->depth_mask;
+        ctx->depth_func  = e->depth_func;
+        ctx->clear_depth = e->clear_depth;
+    }
+    if (m & GL_VIEWPORT_BIT) {
+        ctx->viewport_x = e->viewport_x;
+        ctx->viewport_y = e->viewport_y;
+        ctx->viewport_w = e->viewport_w;
+        ctx->viewport_h = e->viewport_h;
+    }
+    if (m & GL_SCISSOR_BIT) {
+        ctx->scissor_test = e->scissor_test;
+        ctx->scissor_x    = e->scissor_x;
+        ctx->scissor_y    = e->scissor_y;
+        ctx->scissor_w    = e->scissor_w;
+        ctx->scissor_h    = e->scissor_h;
+    }
+    if (m & GL_POLYGON_BIT) {
+        ctx->cull_face    = e->cull_face;
+        ctx->cull_mode    = e->cull_mode;
+        ctx->front_face   = e->front_face;
+        ctx->polygon_mode = e->polygon_mode;
+    }
+    if (m & GL_LIGHTING_BIT) {
+        ctx->shade_model = e->shade_model;
+    }
+    if (m & GL_COLOR_BUFFER_BIT) {
+        ctx->clear_color = e->clear_color;
+    }
+}
+
+/* ============================================================================
  * Synchronisation (§5.4)
  * ==========================================================================*/
 

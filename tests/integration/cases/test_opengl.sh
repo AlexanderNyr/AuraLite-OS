@@ -80,6 +80,16 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS ras_scissor_inside"      "scissor test c
 il_assert_grep    "$LOG" "\\[gl\\] PASS ras_polymode_line_hollow" "glPolygonMode(GL_LINE) restores wireframe"
 il_assert_grep    "$LOG" "\\[gl\\] PASS ras_huge_triangle_bounded" "huge triangles are bounded by the buffer"
 
+# Phase G4: frustum clipping and the attribute stack.
+il_assert_grep    "$LOG" "\\[gl\\] PASS clip_near_plane_split"   "near-plane geometry is split, not dropped"
+il_assert_grep    "$LOG" "\\[gl\\] PASS clip_fully_behind_dropped" "geometry behind the eye is dropped"
+il_assert_grep    "$LOG" "\\[gl\\] PASS clip_two_behind"         "two-vertices-behind case is fanned correctly"
+il_assert_grep    "$LOG" "\\[gl\\] PASS clip_line_crossing_near" "lines crossing the near plane are shortened"
+il_assert_grep    "$LOG" "\\[gl\\] PASS clip_far_plane"          "far-plane clipping works"
+il_assert_grep    "$LOG" "\\[gl\\] PASS clip_preserves_winding"  "clipping preserves winding for culling"
+il_assert_grep    "$LOG" "\\[gl\\] PASS clip_camera_flythrough"  "camera can fly through geometry"
+il_assert_grep    "$LOG" "\\[gl\\] PASS attrib_restores_enable"  "glPushAttrib/glPopAttrib restore state"
+
 # The demo must have started and reached the GL stack.  Note the deliberately
 # loose pattern: /glcube and the shell write to the same serial console from
 # different threads, so their lines interleave mid-string and an exact-match

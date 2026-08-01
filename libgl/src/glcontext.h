@@ -19,6 +19,9 @@
 #define GL_PROJECTION_STACK_DEPTH  8
 #define GL_TEXTURE_STACK_DEPTH     4
 
+/* glPushAttrib stack depth.  GL 1.1 requires at least 16. */
+#define GL_ATTRIB_STACK_DEPTH      16
+
 /* A colour in the form the framebuffer stores: 0x00RRGGBB. */
 typedef uint32_t gl_pixel_t;
 
@@ -72,6 +75,26 @@ struct aglx_context {
     GLboolean   scissor_test;
     GLint       scissor_x, scissor_y;
     GLsizei     scissor_w, scissor_h;
+
+    /* ---- glPushAttrib / glPopAttrib (§6.1.2) ----
+     * Each entry stores a full copy of the attribute groups this
+     * implementation tracks, plus the mask it was pushed with so the pop
+     * restores exactly the groups that were saved. */
+    struct gl_attrib_entry {
+        GLbitfield mask;
+        gl_color_t clear_color;
+        GLfloat    clear_depth;
+        GLint      viewport_x, viewport_y;
+        GLsizei    viewport_w, viewport_h;
+        GLboolean  depth_test, depth_mask;
+        GLenum     depth_func;
+        GLboolean  cull_face;
+        GLenum     cull_mode, front_face, shade_model, polygon_mode;
+        GLboolean  scissor_test;
+        GLint      scissor_x, scissor_y;
+        GLsizei    scissor_w, scissor_h;
+    } attrib_stack[GL_ATTRIB_STACK_DEPTH];
+    int attrib_top;          /* number of entries currently pushed */
 };
 
 /* ---- Internal helpers shared across libgl translation units ---- */

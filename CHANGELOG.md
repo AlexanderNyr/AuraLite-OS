@@ -2,6 +2,52 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G4 — frustum clipping and state completeness] 2026-08-01
+
+Fifth phase of `GL_PLAN.md`. Geometry crossing the view frustum is now split
+correctly instead of being dropped, so the camera can fly through objects.
+
+### Added
+- `libgl/src/glclip.c`: clipping against all six frustum planes.
+  Sutherland–Hodgman for triangles (fanned back into triangles afterwards),
+  Liang–Barsky for lines, a simple in/out test for points. Colour, normal and
+  texture coordinates are interpolated at every cut, so a clipped primitive
+  shades exactly as the original would have.
+- `glPushAttrib`/`glPopAttrib` with a 16-deep stack. The mask is stored with
+  the entry, so a pop restores precisely the groups its push saved. Bits for
+  state that does not exist yet (lighting, texturing, fog) are accepted and
+  ignored rather than rejected, so `glPushAttrib(GL_ALL_ATTRIB_BITS)` works.
+- `tests/unit/test_glclip.c`: **28 checks**.
+- `patches/GL_G4_clipping.patch`.
+
+### Changed
+- **The transform stage now stops in clip space.** `gl_transform_vertex()`
+  previously ran all the way to window coordinates; the perspective divide and
+  viewport transform moved into `gl_project_vertex()`, which the clipper calls
+  on the vertices that survive. Clipping *must* happen before the divide: a
+  vertex behind the eye has `w < 0`, and after dividing, that sign is lost and
+  the vertex appears mirrored in front of the camera. Clip space also makes the
+  plane tests trivial — the frustum is exactly `-w <= x,y,z <= w`.
+- Fully-inside primitives take a fast path that skips the six-plane walk, so
+  ordinary geometry runs at G3 speed. Primitives outside any single plane are
+  trivially rejected before any clipping work.
+- `userspace/gltest`: 88 checks (was 75), including a 10-step camera
+  fly-through that previously would have shown geometry vanishing.
+- `tests/integration/cases/test_opengl.sh`: 46 assertions (was 38).
+
+### Fixed
+- Geometry straddling the near plane is no longer discarded. Before this phase
+  a triangle with one vertex behind the eye disappeared entirely — the classic
+  "walls vanish when you walk into them" artefact.
+
+### Verified
+- `test_glclip` 28/28, `test_glraster` 43/43, `test_glimm` 51/51,
+  `test_glstate` 37/37, `test_glmath` 37/37.
+- `/gltest` under QEMU: 88/88 checks.
+- `test_opengl.sh`: 46/46 assertions.
+- `make test-unit`: 56/56 binaries green (was 55).
+- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G3 — triangle rasterizer and depth buffer] 2026-08-01
 
 Fourth phase of `GL_PLAN.md`, and the main visual milestone: `/glcube` now

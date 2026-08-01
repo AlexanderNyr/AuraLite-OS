@@ -85,6 +85,8 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     ctx->scissor_y = 0;
     ctx->scissor_w = ctx->width;
     ctx->scissor_h = ctx->height;
+
+    ctx->attrib_top = 0;
 }
 
 /* Allocate colour (and optionally depth) buffers for w*h.

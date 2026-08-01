@@ -244,6 +244,20 @@ void glShadeModel(GLenum mode);
 void glPolygonMode(GLenum face, GLenum mode);
 void glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
 
+/* ---- Attribute stack (G4) ---- */
+#define GL_CURRENT_BIT        0x00000001
+#define GL_ENABLE_BIT         0x00002000
+#define GL_DEPTH_BUFFER_BIT_A 0x00000100   /* same value as the clear bit */
+#define GL_VIEWPORT_BIT       0x00000800
+#define GL_SCISSOR_BIT        0x00080000
+#define GL_POLYGON_BIT        0x00000008
+#define GL_LIGHTING_BIT       0x00000040
+#define GL_COLOR_BUFFER_BIT_A 0x00004000
+#define GL_ALL_ATTRIB_BITS    0x000FFFFF
+
+void glPushAttrib(GLbitfield mask);
+void glPopAttrib(void);
+
 /* ---- State queries (G4) ---- */
 void glGetIntegerv(GLenum pname, GLint *params);
 void glGetFloatv(GLenum pname, GLfloat *params);

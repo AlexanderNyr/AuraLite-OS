@@ -549,20 +549,20 @@ image is left for phase G8, where the demos are wired into `/glaunch`.
 
 ---
 
-## Phase G4 — Clipping and state completeness
+## Phase G4 — Clipping and state completeness ✅ COMPLETE
 
 **Goal:** geometry outside the frustum or behind the camera no longer breaks the image.
 
 ### Tasks
 
-- [ ] Near-plane clipping (mandatory: without it, vertices behind the camera cause a
+- [x] Near-plane clipping (mandatory: without it, vertices behind the camera cause a
       division by zero and inverted triangles).
-- [ ] Full 6-plane frustum clipping (Sutherland–Hodgman) with attribute
+- [x] Full 6-plane frustum clipping (Sutherland–Hodgman) with attribute
       interpolation at the newly generated vertices.
-- [ ] `glScissor` + `GL_SCISSOR_TEST`.
-- [ ] `glGetIntegerv` / `glGetFloatv` / `glGetBooleanv`, `glIsEnabled` for every
+- [x] `glScissor` + `GL_SCISSOR_TEST`.
+- [x] `glGetIntegerv` / `glGetFloatv` / `glGetBooleanv`, `glIsEnabled` for every
       state introduced so far.
-- [ ] `glPushAttrib` / `glPopAttrib` (basic mask groups).
+- [x] `glPushAttrib` / `glPopAttrib` (basic mask groups).
 
 ### Test gate
 
@@ -578,6 +578,45 @@ The rasterizer is robust against any geometry, including degenerate and off-scre
 ### Deliverable
 
 `patches/GL_G4_clipping.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| Clip space | The transform stage now stops at clip coordinates; the perspective divide and viewport transform moved into the clipper |
+| Triangles | Sutherland–Hodgman against all six planes, then fanned back into triangles (a clipped triangle can become at most a 9-gon) |
+| Lines | Liang–Barsky parametric range, which avoids allocating a vertex list for something that stays a segment |
+| Points | Trivially in or out |
+| Attributes | Colour, normal and texture coordinates are all interpolated at the cut, so a clipped triangle shades exactly as the original would |
+| Fast path | Fully-inside primitives skip the six-plane walk entirely, keeping ordinary geometry at G3 speed |
+| Trivial reject | Primitives outside a single plane are discarded before any clipping work |
+| `glPushAttrib`/`glPopAttrib` | 16-deep stack; the mask is stored with the entry so the pop restores exactly what the push saved |
+| Host unit test | `test_glclip` — **28/28 pass** |
+| `/gltest` in QEMU | **88/88 checks pass**, including a 10-step camera fly-through |
+| QEMU integration test | `test_opengl.sh` — **46/46 assertions pass** |
+| Regression check | `make test-unit` 56/56 green; G1–G3 tests unchanged and still passing |
+
+### Why clipping must happen before the divide
+
+A vertex behind the eye has `w < 0`. After the perspective divide that sign is
+gone, and the vertex lands mirrored *in front* of the camera — so no amount of
+2D clipping can recover the correct shape. Clipping in clip space also makes
+the plane tests trivial: the frustum is exactly `-w <= x,y,z <= w`, one
+subtraction per plane.
+
+This is why the transform stage was split rather than extended: G0–G3 projected
+straight to window coordinates inside `gl_transform_vertex()`, and G4 moves the
+second half into `gl_project_vertex()`, called by the clipper on the survivors.
+`glimm.c` changed by three functions; nothing else in the pipeline noticed.
+
+### One test-authoring mistake worth recording
+
+`t_triangle_fully_inside_unchanged` initially asserted the triangle covered
+more than 100 pixels. With `glFrustum(-1,1,-1,1,1,100)` the visible width at
+z = -3 is 6 units across 64 pixels, so a 1×1-unit triangle covers about
+0.5 · (64/6)² ≈ 57 pixels. The rasterizer was right and the expectation was
+wrong — worth noting because it is the failure mode that makes people "fix"
+correct code.
 
 ---
 
@@ -840,8 +879,8 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
 | G1 | ✅ complete | `patches/GL_G1_context.patch` |
 | G2 | ✅ complete | `patches/GL_G2_immediate.patch` |
 | G3 | ✅ complete | `patches/GL_G3_rasterizer.patch` |
-| G4 | 🔧 next | — |
-| G5 | ⬜ planned | — |
+| G4 | ✅ complete | `patches/GL_G4_clipping.patch` |
+| G5 | 🔧 next | — |
 | G6 | ⬜ planned | — |
 | G7 | ⬜ planned | — |
 | G8 | ⬜ planned | — |

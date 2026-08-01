@@ -12,6 +12,7 @@
  * Phase G2 scope: matrix stacks and immediate-mode geometry, verified by
  * reading back the pixels that were actually rasterised.
  * Phase G3 scope: the filled triangle rasterizer, depth buffer and culling.
+ * Phase G4 scope: frustum clipping and the attribute stack.
  */
 
 #include <stdio.h>
@@ -419,8 +420,134 @@ static void test_gl_raster(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- Phase G4: frustum clipping and the attribute stack ---- */
+static void test_gl_clip(int wid) {
+    printf("[gl] --- G4: frustum clipping ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "clip_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define LIT(n) do { n = 0; for (int i = 0; i < GL_W * GL_H; i++) if (cb[i]) n++; } while (0)
+    int n;
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glFrustum(-1, 1, -1, 1, 1, 100);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glColor3f(1, 1, 1);
+
+    /* THE headline case: a triangle straddling the near plane must be SPLIT
+     * and still drawn.  Before G4 it vanished entirely, which is the classic
+     * "walls disappear when you walk into them" artefact. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.0f, -1.0f, -3.0f);
+    glVertex3f( 1.0f, -1.0f, -3.0f);
+    glVertex3f( 0.0f,  1.0f,  1.0f);      /* behind the eye */
+    glEnd();
+    LIT(n);
+    check(n > 0, "clip_near_plane_split");
+
+    /* Entirely behind the eye: nothing drawn, no error. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.0f, -1.0f, 2.0f);
+    glVertex3f( 1.0f, -1.0f, 2.0f);
+    glVertex3f( 0.0f,  1.0f, 3.0f);
+    glEnd();
+    LIT(n);
+    check(n == 0, "clip_fully_behind_dropped");
+
+    /* Two vertices behind: the surviving sliver becomes a quad, which must be
+     * fanned back into triangles. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_TRIANGLES);
+    glVertex3f( 0.0f,  0.0f, -3.0f);
+    glVertex3f(-2.0f, -2.0f,  1.0f);
+    glVertex3f( 2.0f, -2.0f,  1.0f);
+    glEnd();
+    LIT(n);
+    check(n > 0, "clip_two_behind");
+
+    /* A line crossing the near plane must be shortened, not dropped. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_LINES);
+    glVertex3f(0.0f, 0.0f, -5.0f);
+    glVertex3f(0.0f, 0.0f,  5.0f);
+    glEnd();
+    LIT(n);
+    check(n > 0, "clip_line_crossing_near");
+
+    /* Beyond the far plane: clipped away. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.0f, -1.0f, -500.0f);
+    glVertex3f( 1.0f, -1.0f, -500.0f);
+    glVertex3f( 0.0f,  1.0f, -500.0f);
+    glEnd();
+    LIT(n);
+    check(n == 0, "clip_far_plane");
+
+    /* Clipping must preserve winding, or a front face becomes a back face and
+     * disappears once culling is on. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(-1.0f, -1.0f, -3.0f);
+    glVertex3f( 1.0f, -1.0f, -3.0f);
+    glVertex3f( 0.0f,  1.0f,  0.5f);
+    glEnd();
+    LIT(n);
+    check(n > 0, "clip_preserves_winding");
+    glDisable(GL_CULL_FACE);
+
+    /* Camera flying THROUGH an object: every step must render without
+     * artefacts and without faulting.  This is the scenario G4 exists for. */
+    int all_steps_ok = 1;
+    for (int step = 0; step < 10; step++) {
+        float z = -6.0f + (float)step * 1.2f;   /* passes through the origin */
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glLoadIdentity();
+        glTranslatef(0.0f, 0.0f, z);
+        glBegin(GL_QUADS);
+        glVertex3f(-1.5f, -1.5f, 0.0f); glVertex3f(1.5f, -1.5f, 0.0f);
+        glVertex3f( 1.5f,  1.5f, 0.0f); glVertex3f(-1.5f, 1.5f, 0.0f);
+        glEnd();
+        if (glGetError() != GL_NO_ERROR) all_steps_ok = 0;
+    }
+    check(all_steps_ok, "clip_camera_flythrough");
+    glLoadIdentity();
+
+    /* ---- Attribute stack ---- */
+    glDisable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glPushAttrib(GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_GREATER);
+    glPopAttrib();
+    check(glIsEnabled(GL_DEPTH_TEST) == GL_FALSE, "attrib_restores_enable");
+    GLint df;
+    glGetIntegerv(GL_DEPTH_FUNC, &df);
+    check(df == GL_LESS, "attrib_restores_func");
+
+    glPopAttrib();
+    check(glGetError() == GL_STACK_UNDERFLOW, "attrib_underflow");
+
+    check(aglxSwapBuffers(ctx) == 0, "clip_swap");
+    check(glGetError() == GL_NO_ERROR, "clip_no_pending_error");
+
+    #undef LIT
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
-    printf("[gl] === AuraLite GL test (phases G0-G3) ===\n");
+    printf("[gl] === AuraLite GL test (phases G0-G4) ===\n");
 
     /* ---- A window is required as the blit destination. ---- */
     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
@@ -506,10 +633,11 @@ int main(void) {
 
     ag_render_now();
 
-    /* ---- Phase G1, G2 and G3 checks ---- */
+    /* ---- Phase G1-G4 checks ---- */
     test_gl_context(wid);
     test_gl_geometry(wid);
     test_gl_raster(wid);
+    test_gl_clip(wid);
 
     free(buf);
     ag_window_destroy(wid);

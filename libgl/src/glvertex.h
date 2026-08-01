@@ -72,10 +72,40 @@ void gl_raster_triangle(struct aglx_context *ctx,
 
 /* ---- Transform stage (libgl/src/glimm.c) ---- */
 
-/* Run object coordinates through MODELVIEW, PROJECTION, the perspective
- * divide and the viewport transform, producing a window-space vertex. */
+/* Run object coordinates through MODELVIEW and PROJECTION, leaving the vertex
+ * in CLIP space.  The perspective divide and viewport transform deliberately
+ * do NOT happen here: from phase G4 clipping runs between the two halves, and
+ * clipping must see the pre-divide values (after the divide the sign of w is
+ * gone and a vertex behind the eye is indistinguishable from one in front). */
 void gl_transform_vertex(struct aglx_context *ctx,
                          GLfloat x, GLfloat y, GLfloat z, GLfloat w,
                          gl_vertex_t *out);
+
+/* ---- Clipping (libgl/src/glclip.c), phase G4 ----
+ *
+ * Each takes CLIP-space vertices, clips against the six frustum planes,
+ * applies the perspective divide and viewport transform to what survives, and
+ * calls `emit` with window-space vertices.  A clipped triangle may emit
+ * several triangles; a fully outside primitive emits none.
+ */
+void gl_project_vertex(struct aglx_context *ctx, gl_vertex_t *v);
+
+void gl_clip_and_emit_triangle(struct aglx_context *ctx,
+                               const gl_vertex_t *a, const gl_vertex_t *b,
+                               const gl_vertex_t *c,
+                               void (*emit)(struct aglx_context *,
+                                            const gl_vertex_t *,
+                                            const gl_vertex_t *,
+                                            const gl_vertex_t *));
+
+void gl_clip_and_emit_line(struct aglx_context *ctx,
+                           const gl_vertex_t *a, const gl_vertex_t *b,
+                           void (*emit)(struct aglx_context *,
+                                        const gl_vertex_t *,
+                                        const gl_vertex_t *));
+
+void gl_clip_and_emit_point(struct aglx_context *ctx, const gl_vertex_t *a,
+                            void (*emit)(struct aglx_context *,
+                                         const gl_vertex_t *));
 
 #endif /* AURALITE_GL_VERTEX_H */

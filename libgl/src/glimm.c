@@ -38,36 +38,15 @@ void gl_transform_vertex(struct aglx_context *ctx,
                          gl_vertex_t *out) {
     glm_vec4 obj = glm_vec4_make(x, y, z, w);
 
-    /* object -> eye -> clip */
+    /* object -> eye -> clip.  The pipeline stops here: from G4 the clipper
+     * runs next and needs the pre-divide clip coordinates (see glclip.c). */
     glm_vec4 eye  = glm_mat4_transform4(ctx->modelview[ctx->modelview_top], obj);
     glm_vec4 clip = glm_mat4_transform4(ctx->projection[ctx->projection_top], eye);
 
-    out->clip = clip;
-
-    /* A vertex at or behind the eye cannot be projected: w <= 0 makes the
-     * perspective divide meaningless and would fling the vertex to the wrong
-     * side of the screen.  Mark it invalid; the rasterizer skips primitives
-     * touching it.  Phase G4 replaces this with real near-plane clipping,
-     * which splits such primitives instead of dropping them. */
-    if (clip.w <= 1e-6f) {
-        out->valid = 0;
-        out->inv_w = 0.0f;
-        out->win   = glm_vec3_make(0, 0, 0);
-        return;
-    }
-
+    out->clip  = clip;
     out->valid = 1;
-    out->inv_w = 1.0f / clip.w;
-
-    /* clip -> NDC (perspective divide) */
-    GLfloat nx = clip.x * out->inv_w;
-    GLfloat ny = clip.y * out->inv_w;
-    GLfloat nz = clip.z * out->inv_w;
-
-    /* NDC -> window (§2.11).  NDC spans [-1,1]; depth maps to [0,1]. */
-    out->win.x = (GLfloat)ctx->viewport_x + ((nx + 1.0f) * 0.5f) * (GLfloat)ctx->viewport_w;
-    out->win.y = (GLfloat)ctx->viewport_y + ((ny + 1.0f) * 0.5f) * (GLfloat)ctx->viewport_h;
-    out->win.z = (nz + 1.0f) * 0.5f;
+    out->inv_w = 0.0f;
+    out->win   = glm_vec3_make(0.0f, 0.0f, 0.0f);
 }
 
 /* ============================================================================
@@ -106,18 +85,23 @@ static int        cur_normal_init = 0;
  * Primitive assembly
  * ==========================================================================*/
 
+/* The assembler produces CLIP-space primitives; these route them through the
+ * frustum clipper, which projects the survivors and hands window-space
+ * vertices to the rasterizer.  Before G4 the transform stage projected
+ * directly and primitives crossing the near plane were dropped whole. */
 static void emit_triangle(struct aglx_context *ctx,
                           const gl_vertex_t *a, const gl_vertex_t *b,
                           const gl_vertex_t *c) {
-    /* Skip anything touching a vertex behind the eye until G4 adds clipping. */
-    if (!a->valid || !b->valid || !c->valid) return;
-    gl_raster_triangle(ctx, a, b, c);
+    gl_clip_and_emit_triangle(ctx, a, b, c, gl_raster_triangle);
 }
 
 static void emit_line(struct aglx_context *ctx,
                       const gl_vertex_t *a, const gl_vertex_t *b) {
-    if (!a->valid || !b->valid) return;
-    gl_raster_line(ctx, a, b);
+    gl_clip_and_emit_line(ctx, a, b, gl_raster_line);
+}
+
+static void emit_point(struct aglx_context *ctx, const gl_vertex_t *v) {
+    gl_clip_and_emit_point(ctx, v, gl_raster_point);
 }
 
 /* Feed one fully transformed vertex into the assembler. */
@@ -127,7 +111,7 @@ static void assemble(struct aglx_context *ctx, const gl_vertex_t *nv) {
     switch (imm.mode) {
 
     case GL_POINTS:
-        gl_raster_point(ctx, nv);
+        emit_point(ctx, nv);
         break;
 
     case GL_LINES:
