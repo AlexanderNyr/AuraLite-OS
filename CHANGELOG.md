@@ -2,6 +2,74 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase G13 — the VirGL hardware backend] 2026-08-01
+
+The last phase of `GL_PLAN.md`. The VirGL backend reaches a real virtio-gpu
+through `SYS_GPU_CALL`: probe, clear and present.
+
+### Added
+- `libgl/src/glvirgl.c` rewritten from the G9 stub: creates a 3D context and a
+  render target, emits `VIRGL_CCMD_CLEAR`, and presents by uploading the frame
+  and driving `SET_SCANOUT` + `RESOURCE_FLUSH`.
+- `virtio_gpu_resource_attach_memory()`, `_release_memory()` and `_upload()` in
+  the driver — the entry point K1 needed and did not have.
+- `tests/unit/test_glvirgl.c`: **44 host checks**.
+- 15 in-OS checks in `/gltest` (**373 total**, was 358).
+- `tests/integration/cases/test_virgl_gpu.sh`: the first integration case that
+  attaches a GPU at all.
+
+### Fixed — the K1 blocker
+`op_transfer()` shipped copying its payload into a kernel bounce buffer and
+then freeing it **unused**: `virtio_gpu_transfer_to_host_3d()` takes an offset
+into a resource it already owns, not a pointer to fresh data — and a 3D
+resource created with `RESOURCE_CREATE_3D` has no guest memory behind it at
+all. Every upload was silently discarded. Resources are now created with
+backing, and it is released both on destroy and on process teardown; the
+latter was a permanent physical-memory leak for any process that exited
+without cleaning up.
+
+### Fixed — three wrong wire-format constants, none of which reached a device
+The first draft of `glvirgl.c` restated the VirGL encoding from memory and got
+it wrong four ways: the header packed the command id and payload length in
+opposite halves, `CLEAR` was 3 rather than 4, the colour bit 0x4 rather than
+0x1, depth 0x1 rather than 0x2, and `BIND_RENDER_TARGET` 0x2 rather than 0x10.
+Two were caught by a unit test running the kernel's own command-stream
+validator, one by a redefinition warning.
+
+The fix is structural: the file now includes `drivers/gpu/virgl.h` instead of
+restating it, so there is one definition of the wire format in the tree. Worth
+recording as a rule — protocol constants are not worth retyping, because a
+wrong one produces a stream the device *accepts and misinterprets*, which is
+far harder to diagnose than one it rejects.
+
+### Found, not caused: the virtio-gpu driver hangs with a real device
+Booting with `-device virtio-gpu-pci` stops after `found modern GPU` and never
+reaches the shell. **Bisected to before G11d** — commit `9188c85` hangs
+identically — so no GL phase caused it. It had never been exercised because no
+integration case attached a GPU until this one.
+
+Traced to the first `GET_DISPLAY_INFO`. Ruled out by instrumentation: the BAR
+mapping, the notify write (it completes), the queue setup, and the 64-bit-BAR
+case. The wait loop then makes zero iterations and still does not return,
+pointing at the used-ring page. Fixing it is virtio driver work, not GL work,
+so it is in `TODO.md`; `test_virgl_gpu.sh` asserts what holds today and has a
+one-line switch for the rest.
+
+### Scope, stated plainly
+Steps 1-3 of the plan's scope are done. Step 5, `DRAW_VBO`, is not: it needs
+shaders as TGSI, and G11's compiler produces an interpreted AST. A TGSI back
+end is a compiler phase, not a corner of this one, and a half-working draw
+path would be worse than none.
+
+What this phase buys is a proved seam — real context, real backed resource,
+real command stream — not frames per second. The present is a small fraction
+of a frame next to a software rasterizer, and drawing still happens on the CPU.
+
+### Verified
+`make test-unit` 69/69 binaries green (967 GL host checks across 17 suites);
+`/gltest` in QEMU 373/373; `test_opengl.sh` 86/86; `test_virgl_gpu.sh` 4/4;
+`make iso` from a clean tree.
+
 ## [Phase G11d — fixed function and shaders together] 2026-08-01
 
 The last quarter of the shader phase, and the one the plan flagged as

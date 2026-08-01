@@ -48,6 +48,24 @@ int virtio_gpu_resource_create_3d(uint32_t resource_id, uint32_t ctx_id,
                                   uint32_t width, uint32_t height, uint32_t depth,
                                   uint32_t array_size, uint32_t last_level,
                                   uint32_t nr_samples, uint32_t flags);
+/* Give a 3D resource guest-side backing memory.
+ *
+ * RESOURCE_CREATE_3D makes a resource that exists on the HOST only; without
+ * backing, TRANSFER_TO_HOST_3D has nothing to read from.  Call this once per
+ * resource user space will upload into, then use
+ * virtio_gpu_resource_upload(). */
+int virtio_gpu_resource_attach_memory(uint32_t resource_id, uint32_t bytes);
+void virtio_gpu_resource_release_memory(uint32_t resource_id);
+
+/* Copy from kernel memory into a backed resource and transfer it to the host
+ * in one step. */
+int virtio_gpu_resource_upload(uint32_t ctx_id, uint32_t resource_id,
+                               const void *src, uint32_t size,
+                               uint32_t x, uint32_t y, uint32_t z,
+                               uint32_t w, uint32_t h, uint32_t d,
+                               uint32_t level, uint32_t stride,
+                               uint32_t layer_stride);
+
 int virtio_gpu_ctx_attach_resource(uint32_t ctx_id, uint32_t resource_id);
 int virtio_gpu_ctx_detach_resource(uint32_t ctx_id, uint32_t resource_id);
 int virtio_gpu_submit_3d(uint32_t ctx_id, const void *cmd, uint32_t cmd_size);

@@ -4,6 +4,7 @@
  * and lets them simulate a failing blit, without a kernel or a window server.
  */
 
+#include <stdint.h>
 #include "auragui.h"
 
 ag_stub_state_t ag_stub;
@@ -52,4 +53,20 @@ int ag_window_invalidate(int wid) {
     (void)wid;
     ag_stub.renders++;
     return 0;
+}
+
+/* ---- Syscall stand-in, for the VirGL backend (phase G13) ----
+ *
+ * glvirgl.c asks the kernel whether a virtio-gpu with VirGL exists.  On the
+ * host there is no kernel, so this reports failure for every call, and the
+ * backend declines exactly as it does on hardware without a GPU.
+ *
+ * That is the behaviour the backend tests assert: the hardware candidate is
+ * registered, it declines, and the registry falls through to software with a
+ * truthful GL_RENDERER string.
+ */
+int64_t syscall(int64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+                uint64_t a4, uint64_t a5, uint64_t a6) {
+    (void)num; (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6;
+    return -1;
 }

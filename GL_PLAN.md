@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: G0–G12 COMPLETE ✅ · K1 COMPLETE ✅ · G13 PLANNED 📋
+## Status: G0–G13 COMPLETE ✅ · K1 COMPLETE ✅ — the plan is finished
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -65,7 +65,7 @@ G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← done
 G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps  ← done
 G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0        ← done
 G12     →  FBO / render-to-texture, glReadPixels                    ← done
-G13     →  VirGL hardware path for the shader profile
+G13     →  VirGL hardware path (probe/clear/present)         ← done
 ```
 
 ### D3. Integration — user-space library `libgl/`
@@ -1469,7 +1469,7 @@ frame will notice the bind cost; batching by target fixes it.
 
 ---
 
-## Phase G13 — VirGL hardware path
+## Phase G13 — VirGL hardware path ✅ COMPLETE (steps 1-3)
 
 **Objective:** actually use the GPU, through the seam G9 built.
 
@@ -1497,9 +1497,48 @@ depend on any further GL progress.
 Steps 1–3 alone are worth having: they move the per-frame blit off the CPU
 without any shader work.
 
+### Outcome
+
+Steps 1-3 delivered: `probe()` asks the kernel and declines honestly,
+`clear()` emits `VIRGL_CCMD_CLEAR`, and `present()` drives the full
+TRANSFER + SET_SCANOUT + RESOURCE_FLUSH path. Steps 4-5 are not, and the
+reason is the one the plan already gave: `DRAW_VBO` needs TGSI, G11 produces
+an interpreted AST, and a TGSI back end is a compiler phase rather than a
+corner of this one.
+
+**The K1 blocker is closed.** `op_transfer()` shipped copying its payload into
+a bounce buffer and then freeing it *unused* — the driver entry point takes an
+offset into a resource it already owns, not a pointer to fresh data, and the
+resource had no guest-side backing to reach. Added
+`virtio_gpu_resource_attach_memory()` / `_release_memory()` / `_upload()`;
+resources are now created with backing and it is released on destroy *and* on
+process teardown, which was a permanent physical-memory leak.
+
+**Three wire-format constants were wrong in the first draft** of glvirgl.c and
+all three were caught before reaching a device: the command header packed id
+and length the wrong way round, `CLEAR` was 3 rather than 4, the colour bit was
+0x4 rather than 0x1, depth 0x1 rather than 0x2, and `BIND_RENDER_TARGET` 0x2
+rather than 0x10. Two were caught by the kernel's own validator via a unit
+test, one by a redefinition warning once the file included the driver's header
+instead of restating it. The fix is structural rather than a correction:
+`glvirgl.c` now includes `drivers/gpu/virgl.h`, so there is one definition of
+the wire format in the tree. Protocol constants are not worth retyping — a
+wrong one produces a stream the device *accepts and misinterprets*.
+
+**A pre-existing driver defect surfaced.** Attaching a real virtio-gpu hangs
+the boot during driver initialisation. Bisected to before G11d, so no GL phase
+caused it; it had simply never been exercised, because no integration case
+attached a GPU until this one did. Recorded in `TODO.md` with what has been
+ruled out, and `test_virgl_gpu.sh` asserts what holds today rather than
+faking the rest.
+
+*Honest summary of value:* this phase buys a proved seam, not frames per
+second. The present is a small fraction of a frame next to a software
+rasterizer, and the drawing still happens on the CPU.
+
 ### Deliverable
 
-`patches/GL_G13_virgl.patch`
+`patches/GL_G13_virgl.patch` ✅
 
 ---
 

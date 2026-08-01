@@ -56,6 +56,7 @@
 #define VIRTIO_GPU_CMD_RESOURCE_FLUSH        0x0104
 #define VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D   0x0105
 #define VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106
+#define VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING 0x0107
 #define VIRTIO_GPU_CMD_CTX_CREATE            0x0200
 #define VIRTIO_GPU_CMD_CTX_DESTROY           0x0201
 #define VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE   0x0202
@@ -724,6 +725,124 @@ int virtio_gpu_resource_create_3d(uint32_t resource_id, uint32_t ctx_id,
     req.array_size = array_size; req.last_level = last_level;
     req.nr_samples = nr_samples; req.flags = flags;
     return gpu_cmd_nodata(&req, sizeof(req));
+}
+
+/* ---- Backing memory for 3D resources (phase G13) ----
+ *
+ * A resource created with RESOURCE_CREATE_3D exists on the HOST side only: it
+ * has no guest memory behind it until ATTACH_BACKING gives it some.  Without
+ * that, TRANSFER_TO_HOST_3D has nothing to read from -- which is exactly why
+ * K1's op_transfer() copied the payload into a bounce buffer and then freed it
+ * unused.  The data never reached the GPU and nothing said so.
+ *
+ * The table is small and fixed.  A dynamic one would need locking against the
+ * command path, and the per-process quota in gpu_syscalls.c already bounds how
+ * many resources can exist.
+ */
+#define VGPU_BACKED_MAX 64
+
+typedef struct {
+    uint32_t resource_id;        /* 0 when the slot is free */
+    uint64_t phys;
+    uint64_t pages;
+    uint32_t bytes;
+} vgpu_backing_t;
+
+static vgpu_backing_t vgpu_backings[VGPU_BACKED_MAX];
+
+static vgpu_backing_t *backing_find(uint32_t resource_id) {
+    if (resource_id == 0) return (vgpu_backing_t *)0;
+    for (int i = 0; i < VGPU_BACKED_MAX; i++) {
+        if (vgpu_backings[i].resource_id == resource_id) return &vgpu_backings[i];
+    }
+    return (vgpu_backing_t *)0;
+}
+
+int virtio_gpu_resource_attach_memory(uint32_t resource_id, uint32_t bytes) {
+    if (!virtio_gpu_available() || !info.virgl_enabled) return -1;
+    if (resource_id == 0 || bytes == 0) return -1;
+    if (backing_find(resource_id)) return -1;        /* already backed */
+
+    vgpu_backing_t *slot = (vgpu_backing_t *)0;
+    for (int i = 0; i < VGPU_BACKED_MAX; i++) {
+        if (vgpu_backings[i].resource_id == 0) { slot = &vgpu_backings[i]; break; }
+    }
+    if (!slot) return -1;
+
+    uint64_t pages = ((uint64_t)bytes + 4095ULL) / 4096ULL;
+    uint64_t phys = pmm_alloc_contiguous(pages);
+    if (!phys) return -1;
+
+    /* Zero it: a resource read before it is written must not expose whatever
+     * the previous owner of these frames left behind. */
+    void *virt = (void *)(uintptr_t)(boot_get_hhdm_offset() + phys);
+    memset(virt, 0, (size_t)(pages * 4096ULL));
+
+    struct virtio_gpu_resource_attach_backing_1 attach;
+    memset(&attach, 0, sizeof(attach));
+    attach.hdr.type = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+    attach.resource_id = resource_id;
+    attach.nr_entries = 1;
+    attach.entry.addr = phys;
+    attach.entry.length = (uint32_t)(pages * 4096ULL);
+    if (gpu_cmd_nodata(&attach, sizeof(attach)) != 0) {
+        for (uint64_t i = 0; i < pages; i++) pmm_free_frame(phys + i * 4096ULL);
+        return -1;
+    }
+
+    slot->resource_id = resource_id;
+    slot->phys  = phys;
+    slot->pages = pages;
+    slot->bytes = bytes;
+    return 0;
+}
+
+void virtio_gpu_resource_release_memory(uint32_t resource_id) {
+    vgpu_backing_t *b = backing_find(resource_id);
+    if (!b) return;
+
+    /* Detach before freeing: the device must stop referring to these frames
+     * before they can be handed to anyone else. */
+    if (virtio_gpu_available()) {
+        struct { struct virtio_gpu_ctrl_hdr hdr; uint32_t resource_id;
+                 uint32_t padding; } __attribute__((packed)) detach;
+        memset(&detach, 0, sizeof(detach));
+        detach.hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
+        detach.resource_id = resource_id;
+        gpu_cmd_nodata(&detach, sizeof(detach));
+    }
+
+    for (uint64_t i = 0; i < b->pages; i++) {
+        pmm_free_frame(b->phys + i * 4096ULL);
+    }
+    b->resource_id = 0;
+    b->phys = 0;
+    b->pages = 0;
+    b->bytes = 0;
+}
+
+/* Copy `size` bytes from kernel memory into a resource's backing store and
+ * tell the device to pull them across.  This is the entry point K1's
+ * op_transfer() needed and did not have. */
+int virtio_gpu_resource_upload(uint32_t ctx_id, uint32_t resource_id,
+                               const void *src, uint32_t size,
+                               uint32_t x, uint32_t y, uint32_t z,
+                               uint32_t w, uint32_t h, uint32_t d,
+                               uint32_t level, uint32_t stride,
+                               uint32_t layer_stride) {
+    if (!virtio_gpu_available() || !info.virgl_enabled) return -1;
+    if (!src || size == 0) return -1;
+
+    vgpu_backing_t *b = backing_find(resource_id);
+    if (!b) return -1;                    /* nothing to copy into */
+    if (size > b->bytes) return -1;       /* refuse to overrun the backing */
+
+    void *virt = (void *)(uintptr_t)(boot_get_hhdm_offset() + b->phys);
+    memcpy(virt, src, size);
+
+    return virtio_gpu_transfer_to_host_3d(ctx_id, resource_id,
+                                          x, y, z, w, h, d,
+                                          0, level, stride, layer_stride);
 }
 
 static int ctx_res_cmd(uint32_t type, uint32_t ctx_id, uint32_t resource_id) {

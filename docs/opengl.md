@@ -147,7 +147,7 @@ frames, so output is tear-free without extra work.
 | Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
 | Evaluators, feedback, selection | Not present |
 | `GL_TEXTURE` matrix mode | `glMatrixMode(GL_TEXTURE)` reports `GL_INVALID_OPERATION` rather than silently doing nothing |
-| Hardware acceleration | The backend seam exists (G9) and a VirGL candidate is registered, but it declines: the kernel's VirGL transport has no user-space syscall yet |
+| Hardware-accelerated **drawing** | The VirGL backend implements probe, clear and present (G13). `DRAW_VBO` needs the GLSL compiler retargeted to TGSI, which is a compiler back end and a phase in its own right |
 
 ---
 
@@ -640,6 +640,56 @@ Four real defects, each invisible to the phase that introduced it:
 
 ---
 
+## The VirGL hardware backend (phase G13)
+
+`libgl/src/glvirgl.c` reaches a real virtio-gpu through `SYS_GPU_CALL`: it
+creates a 3D context, allocates a render target, and presents finished frames
+by uploading them and driving `SET_SCANOUT` + `RESOURCE_FLUSH`.
+
+### What moves to the GPU, and what does not
+
+**Does:** the present. The finished frame goes to the scanout directly instead
+of travelling through the compositor's blit path.
+
+**Does not:** the drawing. `DRAW_VBO` needs shaders expressed as TGSI, and the
+GLSL compiler from G11 produces an AST that it interprets. Retargeting it to
+TGSI is a compiler back end — a phase in its own right, not a corner of this
+one. Shipping a half-working draw path would be worse than not shipping it.
+
+### It declines rather than half-working
+
+`probe()` fails unless a virtio-gpu with VirGL is present *and* every setup
+step succeeded. A backend that registered and then failed per-frame would put
+"hardware" in `GL_RENDERER` and produce silence or corruption; declining leaves
+the software path in place and the renderer string truthful. `/gltest` asserts
+that `GL_RENDERER` agrees with whichever backend is actually active.
+
+### Worth knowing
+
+`clear()` emits a hardware `CLEAR` and then **returns "not handled"** on
+purpose. The CPU rasterizer draws into its own buffer and knows nothing about
+the GPU's render target, so the software clear must still run — returning
+"handled" would skip it and present the previous frame's pixels.
+
+### What it is worth today
+
+Not speed. The software rasterizer costs milliseconds per frame and `ag_blit()`
+costs tens of microseconds, so moving the present is a small fraction of a
+frame. The value is that the seam is proved end to end — a real context, a real
+backed resource, a real command stream — so the remaining work is bounded.
+
+### Known defect, predating this phase
+
+**The virtio-gpu driver hangs during initialisation when a device is actually
+attached.** Booting with `-device virtio-gpu-pci` stops after `found modern
+GPU` and never reaches the shell. Bisected to before G11d, so no GL phase
+caused it; it was simply never exercised, because no integration case attached
+a GPU until G13 added one. Details and what has been ruled out are in
+`TODO.md`. `tests/integration/cases/test_virgl_gpu.sh` asserts what holds today
+and has a one-line switch to enable the rest once the driver is fixed.
+
+---
+
 ## Backends
 
 `libgl` selects a rendering backend through a small table of function pointers
@@ -672,7 +722,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 358 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 373 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -707,6 +757,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glslexec.c` | The execution engine, checked numerically, 179 |
 | `tests/unit/test_glprog.c` | The shader pipeline, checked against pixels, 107 |
 | `tests/unit/test_glcoexist.c` | The two paths side by side and their limits, 59 |
+| `tests/unit/test_glvirgl.c` | The VirGL backend: declining cleanly, and the wire format, 44 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test

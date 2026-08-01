@@ -202,13 +202,41 @@ for the feature matrix.
 
 ### Graphics / GUI
 
+- **⚠ The virtio-gpu driver hangs during initialisation when a device is
+  actually attached.** Booting with `-device virtio-gpu-pci` stops after
+  `[virtio-gpu] found modern GPU` and never reaches the shell.
+
+  *Not caused by any GL phase:* bisected to before G11d — commit `9188c85`
+  hangs identically. It was simply never exercised, because no integration
+  case attached a GPU until `tests/integration/cases/test_virgl_gpu.sh` was
+  added in G13.
+
+  *Traced as far as* the first `GET_DISPLAY_INFO`. Ruled out by
+  instrumentation: the BAR mapping, the notify-register write (it completes),
+  the queue setup (`status=0b`, `queue_enable=1`, sane notify offset and
+  multiplier), and the 64-bit-BAR case (this device's BAR is 32-bit). The wait
+  loop then makes **zero** iterations and still does not return, which points
+  at the used-ring page — the descriptor/avail/used pages come from
+  `pmm_alloc_frame()` and are read through the HHDM, so the suspicion is that
+  mapping rather than the notification path.
+
+  Fixing it is virtio driver work, not GL work, so it is recorded here rather
+  than folded into a GL phase. `test_virgl_gpu.sh` asserts what holds today
+  (the device is found, nothing faults) and has an `ENABLE_FULL_ASSERTS` flag
+  that turns the rest on in one edit once this is fixed.
+
 - **GPU acceleration is early.** Limine framebuffer remains the primary GUI
   surface, while virtio-gpu 2D mirroring and the VirGL command transport are
   present as experimental acceleration paths. The VirGL path now completes a
   present pipeline (fenced SUBMIT_3D -> TRANSFER_TO_HOST_3D -> SET_SCANOUT ->
   RESOURCE_FLUSH) to scan a 3D render target out to the display, falling back to
-  software rendering when no virgl-capable host GPU is attached. A full
-  OpenGL/Gallium state tracker and userspace 3D API remain future work.
+  software rendering when no virgl-capable host GPU is attached. Phase G13 added
+  the user-space half: `libgl/src/glvirgl.c` implements probe, clear and
+  present over `SYS_GPU_CALL`, and 3D resources now get guest-side backing so
+  transfers actually reach the device (K1 shipped without it — see
+  `CHANGELOG.md`). What remains is `DRAW_VBO`, which needs the GLSL compiler
+  retargeted to TGSI: G11 produces an AST and interprets it, and a TGSI back
+  end is a phase in its own right.
 - **GUI is educational.** The kernel compositor, GUI syscalls and `libauragui`
   are functional in tests, and windows are cleaned up on client exit, but it is
   not yet a protected multi-client production desktop.

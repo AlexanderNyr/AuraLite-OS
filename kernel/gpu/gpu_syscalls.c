@@ -219,6 +219,17 @@ static uint64_t op_res_create(uint64_t a2) {
             return (uint64_t)-EIO;
         }
         virtio_gpu_ctx_attach_resource(c->dev_id, dev);
+
+        /* Give it guest-side backing so a later GPU_OP_TRANSFER has somewhere
+         * to write.  A resource without backing exists only on the host and
+         * silently swallows every upload -- the K1 defect this closes.
+         *
+         * Failing to attach is not fatal: a render target the application
+         * never uploads into does not need backing, and refusing to create it
+         * would break that case for no benefit.  A transfer to an unbacked
+         * resource then fails loudly with -EIO. */
+        virtio_gpu_resource_attach_memory(dev, (uint32_t)bytes);
+
         gpu_reses[i].used       = 1;
         gpu_reses[i].owner      = pid;
         gpu_reses[i].dev_id     = dev;
@@ -236,6 +247,7 @@ static uint64_t op_res_destroy(uint64_t a2) {
 
     gpu_ctx_slot_t *c = ctx_from_handle(r->ctx_handle, pid);
     if (c) virtio_gpu_ctx_detach_resource(c->dev_id, r->dev_id);
+    virtio_gpu_resource_release_memory(r->dev_id);
     r->used = 0;
     return 0;
 }
@@ -265,11 +277,19 @@ static uint64_t op_transfer(uint64_t a2) {
         return (uint64_t)-EFAULT;
     }
 
-    int rc = virtio_gpu_transfer_to_host_3d(c->dev_id, r->dev_id,
-                                            tr.x, tr.y, tr.z,
-                                            tr.w, tr.h, tr.d,
-                                            0, tr.level,
-                                            tr.stride, tr.layer_stride);
+    /* Copy into the resource's backing store and pull it across in one step.
+     *
+     * K1 shipped with this line calling virtio_gpu_transfer_to_host_3d()
+     * directly and then freeing the bounce buffer UNUSED: the driver entry
+     * point takes an offset into a resource it already owns, not a pointer to
+     * fresh data, so the payload never reached the GPU and nothing said so.
+     * The resource had no guest-side backing to reach in the first place --
+     * see virtio_gpu_resource_attach_memory(). */
+    int rc = virtio_gpu_resource_upload(c->dev_id, r->dev_id,
+                                        bounce, (uint32_t)tr.size,
+                                        tr.x, tr.y, tr.z,
+                                        tr.w, tr.h, tr.d,
+                                        tr.level, tr.stride, tr.layer_stride);
     kfree(bounce);
     return (rc == 0) ? 0 : (uint64_t)-EIO;
 }
@@ -396,6 +416,10 @@ void gpu_cleanup_process(uint64_t owner_pid) {
         if (!gpu_reses[i].used || gpu_reses[i].owner != owner_pid) continue;
         gpu_ctx_slot_t *c = ctx_from_handle(gpu_reses[i].ctx_handle, owner_pid);
         if (c) virtio_gpu_ctx_detach_resource(c->dev_id, gpu_reses[i].dev_id);
+        /* Release the backing frames too, or a process that exits without
+         * destroying its resources leaks physical memory permanently -- there
+         * is nothing else that will ever free them. */
+        virtio_gpu_resource_release_memory(gpu_reses[i].dev_id);
         gpu_reses[i].used = 0;
         freed_res++;
     }

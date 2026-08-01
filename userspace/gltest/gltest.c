@@ -2598,6 +2598,110 @@ static void test_gl_coexistence(int wid) {
     aglxDestroyContext(ctx);
 }
 
+
+/* ---- Phase G13: the VirGL hardware backend ----
+ *
+ * Two things are worth asserting on the target, and they differ by whether a
+ * virtio-gpu is attached:
+ *
+ *   - WITHOUT one (the default integration run), the backend must decline and
+ *     everything downstream must behave as if it were never registered.  That
+ *     is the property G9 chose and G13 must not break.
+ *   - WITH one (tests/integration/cases/test_virgl_gpu.sh), the same code
+ *     takes the hardware path.  The check below reports which it got rather
+ *     than demanding one, so a single binary is meaningful in both runs.
+ */
+static void test_gl_virgl(int wid) {
+    printf("[gl] --- G13: VirGL backend ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "vg_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    /* The candidate must be in the registry whatever the outcome: the seam is
+     * the deliverable, not the acceleration. */
+    check(gl_backend_force("AuraLite VirGL (virtio-gpu)") == 0,
+          "vg_candidate_registered");
+    gl_backend_force(NULL);
+
+    const gl_backend_info_t *bi = gl_backend_info();
+    check(bi != NULL, "vg_backend_describes_itself");
+
+    /* Report rather than demand: this line is the evidence for whichever run
+     * the log came from. */
+    printf("[gl]   active backend: %s (hardware=%d)\n",
+           bi && bi->name ? bi->name : "?", bi ? bi->hardware : -1);
+
+    /* GL_RENDERER must agree with the backend that is actually active.  A
+     * mismatch is the specific dishonesty G9 set out to prevent. */
+    {
+        const char *r = (const char *)glGetString(GL_RENDERER);
+        check(r != NULL, "vg_renderer_string");
+        if (r && bi) {
+            int claims_virgl = (strstr(r, "VirGL") != NULL);
+            check(claims_virgl == (bi->hardware != 0),
+                  "vg_renderer_matches_backend");
+        }
+    }
+
+    /* Whatever the backend decided, rendering must be correct.  These are the
+     * same assertions the software path passes, run again through whichever
+     * path is live -- which is the only way a hardware present() gets checked
+     * for having quietly dropped the frame. */
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    check(AT(GL_W / 2, GL_H / 2) == 0x0000FF, "vg_clear_reaches_buffer");
+
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(0.0f, 1.0f, 0.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(10, 10, 0); glVertex3f(GL_W - 10, 10, 0);
+    glVertex3f(GL_W - 10, GL_H - 10, 0); glVertex3f(10, GL_H - 10, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0x00FF00, "vg_geometry_rasterises");
+    check(AT(2, 2) == 0x000000, "vg_geometry_placed");
+
+    /* Presenting repeatedly must keep working: the hardware path allocates a
+     * render target on first use and reuses it, and a leak or a stale handle
+     * would show up here rather than on frame one. */
+    {
+        int all_ok = 1;
+        for (int i = 0; i < 8; i++) {
+            if (aglxSwapBuffers(ctx) != 0) { all_ok = 0; break; }
+        }
+        check(all_ok, "vg_eight_presents_succeed");
+        check(glGetError() == GL_NO_ERROR, "vg_presents_raise_no_error");
+    }
+
+    /* A resize must be survivable: the hardware path has to rebuild its
+     * render target, and getting that wrong would present at the old size. */
+    check(aglxResize(ctx, GL_W / 2, GL_H / 2) == 0, "vg_resize");
+    glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    {
+        const uint32_t *rb = aglxGetColorBuffer(ctx);
+        int rw = aglxGetWidth(ctx), rh = aglxGetHeight(ctx);
+        check(rw == GL_W / 2 && rh == GL_H / 2, "vg_resize_dimensions");
+        check(rb[(size_t)(rh / 2) * rw + rw / 2] == 0xFF00FF,
+              "vg_clear_after_resize");
+        check(aglxSwapBuffers(ctx) == 0, "vg_present_after_resize");
+    }
+
+    check(glGetError() == GL_NO_ERROR, "vg_no_pending_error");
+
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
  *
  * The claim under test is that rendering into a texture and then sampling it
@@ -3393,6 +3497,7 @@ int main(void) {
     test_gl_glsl_exec();
     test_gl_shader_pipeline(wid);
     test_gl_coexistence(wid);
+    test_gl_virgl(wid);
 
     free(buf);
     ag_window_destroy(wid);

@@ -479,10 +479,13 @@ $(USER_BUILD)/glbackend.o: libgl/src/glbackend.c libgl/include/GL/glbackend.h \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
+# The VirGL backend shares the kernel's GPU ABI header rather than duplicating
+# the struct layouts, so it needs the repository root on the include path.
 $(USER_BUILD)/glvirgl.o: libgl/src/glvirgl.c libgl/include/GL/glbackend.h \
-                         libgl/src/glcontext.h $(USER_CFLAGS_INC)
+                         libgl/src/glcontext.h kernel/gpu/gpu_syscalls.h \
+                         drivers/gpu/virgl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
-	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+	$(HOST_CC) $(USER_CFLAGS) -I . -c $< -o $@
 
 $(USER_BUILD)/glfbo.o: libgl/src/glfbo.c libgl/src/glcontext.h \
                        libgl/src/glvertex.h libgl/include/GL/gl.h \
@@ -859,7 +862,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glu $(BUILD_DIR)/test_glbackend \
                 $(BUILD_DIR)/test_glfbo $(BUILD_DIR)/test_glsl \
                 $(BUILD_DIR)/test_glslexec $(BUILD_DIR)/test_glprog \
-                $(BUILD_DIR)/test_glcoexist \
+                $(BUILD_DIR)/test_glcoexist $(BUILD_DIR)/test_glvirgl \
                 $(BUILD_DIR)/test_gpu_syscall \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
@@ -967,7 +970,11 @@ LIBGL_TEST_HDRS := libgl/src/glcontext.h libgl/src/glvertex.h \
                    libgl/include/GL/auraglx.h
 
 LIBGL_TEST_STUB := tests/unit/glstub/auragui_stub.c
-LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
+# `-I .` is for glvirgl.c, which shares kernel/gpu/gpu_syscalls.h with the
+# kernel rather than duplicating the ABI structs.  The stub directory supplies
+# the unistd.h that declares syscall(), which the host's own header does not
+# declare compatibly.
+LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I . \
                      -I libgl/include -I libgl/src -I tests/unit/glstub
 
 # What each test covers:
@@ -985,6 +992,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
 #   test_glslexec the GLSL execution engine, checked numerically
 #   test_glprog   the shader pipeline: programs, attributes, uniforms, pixels
 #   test_glcoexist  fixed function and shaders side by side, and their limits
+#   test_glvirgl  the VirGL backend: declining cleanly, and the wire format
 #
 # libauragui cannot be built for the host (it needs AuraLite's freestanding
 # libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
@@ -1007,6 +1015,15 @@ $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
 # That file is deliberately free of kernel dependencies so this test exercises
 # the shipping code rather than a copy — it is the function standing between a
 # hostile process and the host GPU, so it gets direct malformed-input testing.
+# test_glvirgl links the REAL kernel command-stream validator alongside libgl,
+# so the backend's encoding is checked against the code that would reject it.
+$(BUILD_DIR)/test_glvirgl: tests/unit/test_glvirgl.c $(LIBGL_TEST_SRCS) \
+                          $(LIBGL_TEST_HDRS) $(LIBGL_TEST_STUB) \
+                          kernel/gpu/gpu_cmdcheck.c drivers/gpu/virgl.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBGL_TEST_CFLAGS) $< $(LIBGL_TEST_SRCS) \
+	          kernel/gpu/gpu_cmdcheck.c $(LIBGL_TEST_STUB) -o $@ -lm
+
 $(BUILD_DIR)/test_gpu_syscall: tests/unit/test_gpu_syscall.c \
                                kernel/gpu/gpu_cmdcheck.c \
                                kernel/gpu/gpu_syscalls.h
