@@ -2,6 +2,74 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G7 — vertex arrays, VBOs and display lists] 2026-08-01
+
+Eighth phase of `GL_PLAN.md`. Geometry can now be submitted in bulk instead of
+one `glVertex` call at a time.
+
+### Added
+- `libgl/src/glarray.c`: client vertex arrays (vertex, colour, normal, texture
+  coordinate) with arbitrary stride and eight component types, integer types
+  normalised per §2.13; `glDrawArrays`, `glDrawElements`, `glArrayElement`;
+  and the GL 1.5 buffer-object subset (`glGenBuffers`, `glBindBuffer`,
+  `glBufferData`, `glBufferSubData`, `glDeleteBuffers`, `glIsBuffer`).
+- `libgl/src/gllist.c`: display lists with `GL_COMPILE` and
+  `GL_COMPILE_AND_EXECUTE`, contiguous name allocation, nesting and
+  recompilation.
+- `tests/unit/test_glarray.c`: **36 checks**. The equivalence tests compare the
+  **entire framebuffer** between an array draw and the immediate-mode
+  equivalent, because a stride or attribute-ordering bug shows up as a handful
+  of pixels that spot checks would miss.
+- `patches/GL_G7_arrays.patch`.
+
+### Behaviour notes
+- **Vertex arrays are not faster here.** 10 000 triangles cost 4.5 ms via
+  immediate mode and 4.6 ms via `glDrawArrays`; with rasterisation removed
+  entirely the figures are 3.2 ms and 3.5 ms. The per-vertex transform
+  dominates, so removing a call per vertex is noise. A separate bulk path that
+  inlined the transform would duplicate the pipeline and risk the two paths
+  disagreeing about lighting or clipping, so arrays are provided for API
+  completeness rather than as an optimisation. Documented at the top of
+  `glarray.c`.
+- **The pointer/offset overload is captured at specification time.** When a
+  buffer is bound, `glVertexPointer`'s last argument is a byte offset rather
+  than a pointer — and the binding that matters is the one in force when the
+  *pointer* call is made, not at draw time. Each array records its own binding.
+- **Deleting a buffer disarms any array still referencing it**, so a stale
+  offset cannot be followed into freed storage on the next draw.
+- Reads past the end of a bound buffer return zero rather than faulting: GL
+  leaves this undefined, but an OS must not crash on application error.
+- **Display lists store a command log**, not a captured vertex batch, so a
+  `glTranslatef` inside a list takes effect when the list is *called*.
+  Commands that cannot be compiled execute immediately and flag
+  `GL_INVALID_OPERATION` instead of being silently dropped.
+- A self-calling list is depth-limited: unbounded recursion would hit the
+  kernel's stack guard page rather than raising a tidy error.
+
+### Changed
+- `userspace/glcube`: the cube is compiled into a display list once and
+  replayed each frame; the ground grid is drawn from a client vertex array.
+- `userspace/gltest`: 150 checks (was 130). Two checks were made
+  self-contained — the culling check inherited an enabled depth test with a
+  primed buffer from an earlier block and failed for a reason unrelated to
+  culling.
+- `Makefile`: `test_glarray` added to `UNIT_TESTS` (it was in `LIBGL_TESTS`
+  but never run).
+
+### Known issue (pre-existing, not introduced here)
+- Under `-smp 2`, roughly one `/gltest` run in three fails a **different,
+  arbitrary** check; under `-smp 1` the same binary passes 150/150 three times
+  running. This matches the kernel's documented SMP limitation (`TODO.md`:
+  scheduling remains BSP-only) and is unrelated to libgl, which is
+  single-threaded. The longer test simply made the existing window visible.
+
+### Verified
+- `test_glarray` 36/36 and all other GL suites green; `make test-unit` 59/59
+  from a clean `rm -rf build`.
+- `/gltest` under QEMU: 150/150 (`-smp 1`, 3/3 runs).
+- `test_opengl.sh`: 71/71. `/glcube`: `clean exit, 12 frames`.
+- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G6 — textures, blending and fog] 2026-08-01
 
 Seventh phase of `GL_PLAN.md`. `/glcube` is now textured with a procedural

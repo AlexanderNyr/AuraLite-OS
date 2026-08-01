@@ -15,6 +15,7 @@
  * Phase G4 scope: frustum clipping and the attribute stack.
  * Phase G5 scope: lighting, materials and normals.
  * Phase G6 scope: textures, blending, the alpha test and fog.
+ * Phase G7 scope: vertex arrays, buffer objects and display lists.
  */
 
 #include <stdio.h>
@@ -331,7 +332,14 @@ static void test_gl_raster(int wid) {
 
     glDisable(GL_DEPTH_TEST);
 
-    /* ---- Back-face culling. ---- */
+    /* ---- Back-face culling. ----
+     *
+     * The depth test is explicitly disabled first.  The checks above leave it
+     * enabled with a primed depth buffer, and the second draw here reuses the
+     * same buffer without clearing, so a coplanar triangle at the same depth
+     * would be rejected by GL_LESS and the check would fail for a reason that
+     * has nothing to do with culling. */
+    glDisable(GL_DEPTH_TEST);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
@@ -934,8 +942,186 @@ static void test_gl_texture(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- Phase G7: vertex arrays, VBOs, display lists ---- */
+static void test_gl_arrays(int wid) {
+    printf("[gl] --- G7: arrays, VBOs, display lists ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "arr_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    static uint32_t snap[GL_W * GL_H];
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_LIGHTING);
+
+    static const GLfloat pos[9] = {
+        10.0f, 10.0f, 0.0f,  90.0f, 10.0f, 0.0f,  10.0f, 90.0f, 0.0f,
+    };
+    static const GLfloat col[9] = {
+        1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,
+    };
+
+    #define LIT(n) do { n = 0; for (int i = 0; i < GL_W * GL_H; i++) if (cb[i]) n++; } while (0)
+    int n;
+
+    /* Reference: immediate mode. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_TRIANGLES);
+    for (int i = 0; i < 3; i++) {
+        glColor3f(col[i*3], col[i*3+1], col[i*3+2]);
+        glVertex3f(pos[i*3], pos[i*3+1], pos[i*3+2]);
+    }
+    glEnd();
+    for (int i = 0; i < GL_W * GL_H; i++) snap[i] = cb[i];
+    LIT(n);
+    check(n > 500, "arr_reference_drawn");
+
+    /* glDrawArrays must match it pixel for pixel. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, pos);
+    glColorPointer(3, GL_FLOAT, 0, col);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    {
+        int same = 1;
+        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
+        check(same, "arr_drawarrays_matches_immediate");
+    }
+
+    /* glDrawElements must match as well. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        static const unsigned short idx[3] = { 0, 1, 2 };
+        glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, idx);
+        int same = 1;
+        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
+        check(same, "arr_drawelements_matches");
+    }
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+
+    /* Buffer objects: the same geometry from VRAM-side storage. */
+    GLuint vb = 0, cbuf = 0;
+    glGenBuffers(1, &vb);
+    check(vb != 0 && glIsBuffer(vb) == GL_TRUE, "arr_buffer_gen");
+    glBindBuffer(GL_ARRAY_BUFFER, vb);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(pos), pos, GL_STATIC_DRAW);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
+
+    glGenBuffers(1, &cbuf);
+    glBindBuffer(GL_ARRAY_BUFFER, cbuf);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(col), col, GL_STATIC_DRAW);
+    glEnableClientState(GL_COLOR_ARRAY);
+    glColorPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    {
+        int same = 1;
+        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
+        check(same, "arr_vbo_matches_client");
+    }
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+
+    /* Deleting a buffer an array still references must disarm it, not leave a
+     * dangling offset for the next draw to follow. */
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glDeleteBuffers(1, &vb);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    LIT(n);
+    check(n == 0, "arr_deleted_buffer_disarmed");
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDeleteBuffers(1, &cbuf);
+
+    /* Display lists. */
+    GLuint list = glGenLists(1);
+    check(list != 0 && glIsList(list) == GL_TRUE, "arr_list_gen");
+
+    glNewList(list, GL_COMPILE);
+    glBegin(GL_TRIANGLES);
+    for (int i = 0; i < 3; i++) {
+        glColor3f(col[i*3], col[i*3+1], col[i*3+2]);
+        glVertex3f(pos[i*3], pos[i*3+1], pos[i*3+2]);
+    }
+    glEnd();
+    glEndList();
+
+    /* GL_COMPILE must not have drawn anything. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    LIT(n);
+    check(n == 0, "arr_list_compile_silent");
+
+    glCallList(list);
+    {
+        int same = 1;
+        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
+        check(same, "arr_list_matches_immediate");
+    }
+
+    /* A list must record matrix operations, not apply them at compile time. */
+    GLuint mlist = glGenLists(1);
+    glNewList(mlist, GL_COMPILE);
+    glPushMatrix();
+    glTranslatef(40.0f, 40.0f, 0.0f);
+    glBegin(GL_TRIANGLES);
+    glColor3f(1, 1, 1);
+    glVertex3f(0, 0, 0); glVertex3f(30, 0, 0); glVertex3f(0, 30, 0);
+    glEnd();
+    glPopMatrix();
+    glEndList();
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glCallList(mlist);
+    check(cb[(size_t)(GL_H - 1 - 50) * GL_W + 50] != 0, "arr_list_matrix_replayed");
+    check(cb[(size_t)(GL_H - 1 - 5) * GL_W + 5] == 0, "arr_list_matrix_not_at_origin");
+
+    /* A self-calling list must terminate rather than exhausting the stack. */
+    GLuint rlist = glGenLists(1);
+    glNewList(rlist, GL_COMPILE);
+    glCallList(rlist);
+    glEndList();
+    glCallList(rlist);
+    check(1, "arr_list_recursion_survived");
+
+    /* Calling an undefined list is a silent no-op. */
+    glCallList(60000);
+    check(glGetError() == GL_NO_ERROR, "arr_call_undefined_list");
+
+    /* Validation. */
+    glDrawArrays(0x9999, 0, 3);
+    check(glGetError() == GL_INVALID_ENUM, "arr_bad_mode");
+    glEnableClientState(0x9999);
+    check(glGetError() == GL_INVALID_ENUM, "arr_bad_client_state");
+    glNewList(0, GL_COMPILE);
+    check(glGetError() == GL_INVALID_VALUE, "arr_bad_list_name");
+
+    glDeleteLists(list, 1);
+    glDeleteLists(mlist, 1);
+    glDeleteLists(rlist, 1);
+    check(glIsList(list) == GL_FALSE, "arr_list_delete");
+
+    check(aglxSwapBuffers(ctx) == 0, "arr_swap");
+    check(glGetError() == GL_NO_ERROR, "arr_no_pending_error");
+
+    #undef LIT
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
-    printf("[gl] === AuraLite GL test (phases G0-G6) ===\n");
+    printf("[gl] === AuraLite GL test (phases G0-G7) ===\n");
 
     /* ---- A window is required as the blit destination. ---- */
     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
@@ -1021,13 +1207,14 @@ int main(void) {
 
     ag_render_now();
 
-    /* ---- Phase G1-G6 checks ---- */
+    /* ---- Phase G1-G7 checks ---- */
     test_gl_context(wid);
     test_gl_geometry(wid);
     test_gl_raster(wid);
     test_gl_clip(wid);
     test_gl_light(wid);
     test_gl_texture(wid);
+    test_gl_arrays(wid);
 
     free(buf);
     ag_window_destroy(wid);

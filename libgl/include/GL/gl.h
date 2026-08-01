@@ -216,6 +216,26 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_COLOR_ARRAY                    0x8076
 #define GL_TEXTURE_COORD_ARRAY            0x8078
 
+/* Buffer objects (GL 1.5 subset). */
+#define GL_ARRAY_BUFFER                   0x8892
+#define GL_ELEMENT_ARRAY_BUFFER           0x8893
+#define GL_STREAM_DRAW                    0x88E0
+#define GL_STATIC_DRAW                    0x88E4
+#define GL_DYNAMIC_DRAW                   0x88E8
+#define GL_ARRAY_BUFFER_BINDING           0x8894
+#define GL_ELEMENT_ARRAY_BUFFER_BINDING   0x8895
+
+/* Display lists (§5.4). */
+#define GL_COMPILE                        0x1300
+#define GL_COMPILE_AND_EXECUTE            0x1301
+#define GL_LIST_BASE                      0x0B32
+
+/* Index types accepted by glDrawElements. */
+#define GL_BYTE                           0x1400
+#define GL_SHORT                          0x1402
+#define GL_INT                            0x1404
+#define GL_DOUBLE                         0x140A
+
 /* ============================================================================
  * Entry points
  *
@@ -287,6 +307,35 @@ void glFrontFace(GLenum mode);
 void glShadeModel(GLenum mode);
 void glPolygonMode(GLenum face, GLenum mode);
 void glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+
+/* ---- Vertex arrays, buffer objects and display lists (G7) ---- */
+typedef long GLintptr;      /* large enough for a byte offset on LP64      */
+typedef long GLsizeiptr;
+
+void glEnableClientState(GLenum array);
+void glDisableClientState(GLenum array);
+void glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr);
+void glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr);
+void glNormalPointer(GLenum type, GLsizei stride, const GLvoid *ptr);
+void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr);
+void glDrawArrays(GLenum mode, GLint first, GLsizei count);
+void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices);
+void glArrayElement(GLint i);
+
+void glGenBuffers(GLsizei n, GLuint *buffers);
+void glDeleteBuffers(GLsizei n, const GLuint *buffers);
+void glBindBuffer(GLenum target, GLuint buffer);
+GLboolean glIsBuffer(GLuint buffer);
+void glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage);
+void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
+                     const GLvoid *data);
+
+GLuint glGenLists(GLsizei range);
+void glNewList(GLuint list, GLenum mode);
+void glEndList(void);
+void glCallList(GLuint list);
+void glDeleteLists(GLuint list, GLsizei range);
+GLboolean glIsList(GLuint list);
 
 /* ---- Textures, blending and fog (G6) ---- */
 void glGenTextures(GLsizei n, GLuint *textures);

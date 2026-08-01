@@ -82,6 +82,33 @@ void gl_transform_vertex(struct aglx_context *ctx,
                          GLfloat x, GLfloat y, GLfloat z, GLfloat w,
                          gl_vertex_t *out);
 
+/* ---- Vertex arrays and display lists (phase G7) ---- */
+void gl_array_set_defaults(struct aglx_context *ctx);
+void gl_array_free_all(struct aglx_context *ctx);
+
+/* Record a command into the list being compiled.  Returns 1 when the caller
+ * must NOT execute the command (GL_COMPILE), 0 to proceed (no list open, or
+ * GL_COMPILE_AND_EXECUTE). */
+int gl_list_record(struct aglx_context *ctx, GLuint op,
+                   const GLfloat *f, int nf, const GLint *i, int ni);
+int gl_list_compiling(const struct aglx_context *ctx);
+
+GLuint gl_lop_begin(void);
+GLuint gl_lop_end(void);
+GLuint gl_lop_vertex4f(void);
+GLuint gl_lop_color4f(void);
+GLuint gl_lop_normal3f(void);
+GLuint gl_lop_texcoord2f(void);
+GLuint gl_lop_push_matrix(void);
+GLuint gl_lop_pop_matrix(void);
+GLuint gl_lop_load_identity(void);
+GLuint gl_lop_translatef(void);
+GLuint gl_lop_rotatef(void);
+GLuint gl_lop_scalef(void);
+GLuint gl_lop_matrix_mode(void);
+GLuint gl_lop_enable(void);
+GLuint gl_lop_disable(void);
+
 /* ---- Texturing (libgl/src/gltexture.c), phase G6 ---- */
 gl_texture_t *gl_texture_current(struct aglx_context *ctx);
 gl_color_t gl_texture_sample(const gl_texture_t *t, GLfloat s, GLfloat tc,

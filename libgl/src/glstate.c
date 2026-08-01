@@ -10,6 +10,7 @@
 #include "GL/gl.h"
 #include "GL/auraglx.h"
 #include "glcontext.h"
+#include "glvertex.h"
 
 /* ============================================================================
  * Errors (§2.5)
@@ -200,6 +201,11 @@ static GLboolean *cap_slot(struct aglx_context *ctx, GLenum cap) {
 void glEnable(GLenum cap) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+    {
+        GLint iv[1]; iv[0] = (GLint)cap;
+        if (gl_list_record(ctx, gl_lop_enable(), (const GLfloat *)0, 0, iv, 1))
+            return;
+    }
     GLboolean *slot = cap_slot(ctx, cap);
     if (!slot) { gl_set_error(GL_INVALID_ENUM); return; }
     *slot = GL_TRUE;
@@ -208,6 +214,11 @@ void glEnable(GLenum cap) {
 void glDisable(GLenum cap) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+    {
+        GLint iv[1]; iv[0] = (GLint)cap;
+        if (gl_list_record(ctx, gl_lop_disable(), (const GLfloat *)0, 0, iv, 1))
+            return;
+    }
     GLboolean *slot = cap_slot(ctx, cap);
     if (!slot) { gl_set_error(GL_INVALID_ENUM); return; }
     *slot = GL_FALSE;

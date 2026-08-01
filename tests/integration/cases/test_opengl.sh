@@ -24,14 +24,14 @@ trap il_dump_on_error EXIT
 # uses spawn(), which does not forward argv -- the same convention /apm uses.
 il_send_delay 8
 il_send "run /gltest"
-il_send_delay 30
+il_send_delay 42
 il_send "write /tmp/glcube.frames 12"
 il_send_delay 2
 il_send "run /glcube"
 il_send_delay 45
 il_send "exit"
 
-il_run_qemu "$LOG" 170
+il_run_qemu "$LOG" 190
 
 # The test program prints its own verdict.
 il_assert_grep    "$LOG" "\\[gl\\] ALL TESTS PASSED"      "gltest reports all checks passed"
@@ -110,6 +110,16 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS blend_src_alpha"         "alpha blending
 il_assert_grep    "$LOG" "\\[gl\\] PASS alpha_test_discards"     "alpha test discards below the reference"
 il_assert_grep    "$LOG" "\\[gl\\] PASS fog_far"                 "distant geometry is fully fogged"
 il_assert_grep    "$LOG" "\\[gl\\] PASS fog_near"                "near geometry is unfogged"
+
+# Phase G7: vertex arrays, buffer objects and display lists.
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_drawarrays_matches_immediate" "glDrawArrays matches immediate mode"
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_drawelements_matches" "glDrawElements matches immediate mode"
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_vbo_matches_client"  "a VBO draw matches a client-array draw"
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_deleted_buffer_disarmed" "deleting a buffer disarms the array"
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_matches_immediate" "a display list replays identically"
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_compile_silent" "GL_COMPILE does not draw"
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_matrix_replayed" "lists record matrix operations"
+il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_recursion_survived" "a self-calling list terminates"
 
 # The demo must have started and reached the GL stack.  Note the deliberately
 # loose pattern: /glcube and the shell write to the same serial console from

@@ -782,7 +782,7 @@ alpha-tested foliage occlude things behind it.
 
 ---
 
-## Phase G7 — Vertex arrays, VBOs, display lists
+## Phase G7 — Vertex arrays, VBOs, display lists ✅ COMPLETE
 
 **Goal:** efficient geometry submission instead of thousands of `glVertex` calls.
 
@@ -802,12 +802,12 @@ glGenLists/glNewList/glEndList/glCallList/glDeleteLists
 
 ### Tasks
 
-- [ ] Client vertex arrays with arbitrary stride and offset.
-- [ ] Buffer objects (`GL_ARRAY_BUFFER`, `GL_ELEMENT_ARRAY_BUFFER`) with correct
+- [x] Client vertex arrays with arbitrary stride and offset.
+- [x] Buffer objects (`GL_ARRAY_BUFFER`, `GL_ELEMENT_ARRAY_BUFFER`) with correct
       "pointer means offset" semantics while a VBO is bound.
-- [ ] `glDrawElements` with `GL_UNSIGNED_BYTE/SHORT/INT` indices.
-- [ ] Display lists: record commands and replay them (compile + execute).
-- [ ] Fast path: `glDrawArrays(GL_TRIANGLES)` must not go through the
+- [x] `glDrawElements` with `GL_UNSIGNED_BYTE/SHORT/INT` indices.
+- [x] Display lists: record commands and replay them (compile + execute).
+- [x] Fast path: `glDrawArrays(GL_TRIANGLES)` must not go through the
       immediate-mode machinery.
 
 ### Test gate
@@ -823,6 +823,74 @@ An application can draw a real model without per-vertex calls.
 ### Deliverable
 
 `patches/GL_G7_arrays.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| Client arrays | Vertex/colour/normal/texcoord with arbitrary stride; eight component types, integers normalised per §2.13 |
+| `glDrawArrays` / `glDrawElements` | All ten primitive modes; `GL_UNSIGNED_BYTE`/`SHORT`/`INT` indices |
+| Buffer objects | `glGenBuffers`/`glBindBuffer`/`glBufferData`/`glBufferSubData`/`glDeleteBuffers`, both targets |
+| Display lists | `GL_COMPILE` and `GL_COMPILE_AND_EXECUTE`, contiguous names, nesting, recompilation |
+| Host unit test | `test_glarray` — **36/36 pass** |
+| `/gltest` in QEMU | **150/150 checks** |
+| `/glcube` | Cube compiled into a display list, grid drawn from a vertex array |
+| QEMU integration test | `test_opengl.sh` — **71/71 assertions** |
+| Regression check | `make test-unit` 59/59 from a clean tree |
+
+### The measurement that did not go as planned
+
+The phase gate asked for VBOs to be "measurably faster than immediate mode".
+They are not, and the honest result is worth recording:
+
+| Path | 10 000 triangles | degenerate (no fill) |
+|---|---:|---:|
+| immediate mode | 4.5 ms | 3.2 ms |
+| vertex array | 4.6 ms | 3.5 ms |
+| VBO | 4.7 ms | 3.6 ms |
+
+The array path submits through the same immediate-mode entry points, and the
+degenerate column shows why that costs nothing to fix: even with rasterisation
+removed entirely, 3.2 ms of the 4.5 ms is the per-vertex transform — two 4×4
+matrix multiplies, clipping and the viewport map. Removing one function call
+per vertex is noise beside that.
+
+A separate bulk path that inlined the transform would duplicate the pipeline
+and give two code paths that can disagree about lighting, clipping or
+attribute latching. For a software rasterizer whose bottleneck is arithmetic,
+that correctness risk buys nothing. Arrays are therefore provided for API
+completeness and for applications that expect them — a real speed-up needs a
+faster transform stage (SIMD, or the hardware backend of G9). This is
+documented at the top of `glarray.c` so the next reader does not "optimise"
+by adding the second path.
+
+### Why display lists store a command log
+
+A list records `(opcode, arguments)` rather than a captured vertex batch.
+Applications routinely put matrix operations and state changes in a list
+alongside geometry, and a vertex-only capture could not replay those. Replaying
+the log re-invokes the same entry points, which is the specification's own
+definition of list behaviour (§5.4) and is covered by a test asserting that a
+`glTranslatef` inside a list takes effect at **call** time, not compile time.
+
+Commands that cannot be compiled execute immediately and flag
+`GL_INVALID_OPERATION`, rather than being silently dropped — a silently
+dropped command would make the list render differently from the same code run
+directly, with no clue why.
+
+### Pre-existing SMP instability, surfaced by this phase
+
+`/gltest` now runs 150 checks, and under `-smp 2` roughly one run in three
+fails a **different, arbitrary** check (`tex_wrap_repeat`, `ras_cull_keeps_front`
+and `lit_diffuse_head_on` were each seen once). Under `-smp 1` the same binary
+passes 150/150 on three consecutive runs.
+
+That points at the kernel's known SMP limitation (see `TODO.md`: "SMP
+scheduling is conservative… normal user scheduling remains BSP-only"), not at
+the GL code — nothing in G7 is threaded, and the failing check moves between
+runs. It only became visible now because the test is long enough to hit the
+window. Recording it here rather than papering over it: the fix belongs in the
+kernel scheduler, not in libgl.
 
 ---
 
@@ -962,6 +1030,6 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
 | G4 | ✅ complete | `patches/GL_G4_clipping.patch` |
 | G5 | ✅ complete | `patches/GL_G5_lighting.patch` |
 | G6 | ✅ complete | `patches/GL_G6_textures.patch` |
-| G7 | 🔧 next | — |
-| G8 | ⬜ planned | — |
+| G7 | ✅ complete | `patches/GL_G7_arrays.patch` |
+| G8 | 🔧 next | — |
 | G9 | ⬜ planned | — |

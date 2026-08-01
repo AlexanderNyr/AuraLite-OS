@@ -1,7 +1,8 @@
 /* glcube.c — rotating cube demo for the AuraLite OpenGL stack.
  *
- * From phase G6 this renders as a solid, depth-buffered, lit and TEXTURED
- * cube: a procedural checkerboard is modulated with each face's colour.  The geometry and
+ * From phase G7 the cube geometry is compiled into a DISPLAY LIST once and
+ * replayed each frame, and the ground grid is drawn from a vertex array — so
+ * the demo exercises both G7 submission paths rather than only immediate mode.  The geometry and
  * matrix code are unchanged from the G2 wireframe version — only the two
  * glEnable() calls below were added, which is the point of writing the demo
  * against the GL API rather than against the rasterizer.
@@ -118,18 +119,33 @@ static void draw_cube(void) {
 }
 
 /* Ground grid, to make the perspective projection obvious. */
+/* Grid vertices, built once and drawn from a client vertex array (phase G7). */
+#define GRID_LINES 9
+#define GRID_VERTS (GRID_LINES * 4)
+static GLfloat grid_verts[GRID_VERTS * 3];
+
+static void build_grid(void) {
+    int v = 0;
+    for (int i = -4; i <= 4; i++) {
+        GLfloat t = (GLfloat)i * 0.75f;
+        grid_verts[v*3+0] = t;     grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] = -3.0f; v++;
+        grid_verts[v*3+0] = t;     grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] =  3.0f; v++;
+        grid_verts[v*3+0] = -3.0f; grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] = t;     v++;
+        grid_verts[v*3+0] =  3.0f; grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] = t;     v++;
+    }
+}
+
 static void draw_grid(void) {
     /* The grid is a flat, untextured reference, not a lit surface. */
     glDisable(GL_LIGHTING);
     glDisable(GL_TEXTURE_2D);
     glColor3f(0.25f, 0.25f, 0.30f);
-    glBegin(GL_LINES);
-    for (int i = -4; i <= 4; i++) {
-        GLfloat t = (GLfloat)i * 0.75f;
-        glVertex3f(t, -1.6f, -3.0f);  glVertex3f(t, -1.6f, 3.0f);
-        glVertex3f(-3.0f, -1.6f, t);  glVertex3f(3.0f, -1.6f, t);
-    }
-    glEnd();
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, grid_verts);
+    glDrawArrays(GL_LINES, 0, GRID_VERTS);
+    glDisableClientState(GL_VERTEX_ARRAY);
+
     glEnable(GL_LIGHTING);
     glEnable(GL_TEXTURE_2D);
 }
@@ -166,6 +182,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     aglxMakeCurrent(ctx);
+    build_grid();
 
     printf("glcube: %s | %s\n",
            (const char *)glGetString(GL_RENDERER),
@@ -224,6 +241,15 @@ int main(int argc, char **argv) {
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, checker);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+
+    /* Phase G7: compile the cube once.  Its geometry never changes, only the
+     * matrix around it, which is exactly what display lists are for. */
+    GLuint cube_list = glGenLists(1);
+    if (cube_list != 0) {
+        glNewList(cube_list, GL_COMPILE);
+        draw_cube();
+        glEndList();
+    }
 
     GLfloat angle_x = 25.0f, angle_y = 30.0f;
     int paused = 0, running = 1;
@@ -284,7 +310,8 @@ int main(int argc, char **argv) {
 
         glRotatef(angle_x, 1.0f, 0.0f, 0.0f);
         glRotatef(angle_y, 0.0f, 1.0f, 0.0f);
-        draw_cube();
+        if (cube_list != 0) glCallList(cube_list);
+        else                draw_cube();
 
         aglxSwapBuffers(ctx);
 
@@ -299,6 +326,7 @@ int main(int argc, char **argv) {
     if (err != GL_NO_ERROR) printf("glcube: GL error 0x%04x\n", err);
     else                    printf("glcube: clean exit, %ld frames\n", frames);
 
+    if (cube_list != 0) glDeleteLists(cube_list, 1);
     aglxDestroyContext(ctx);
     ag_window_destroy(wid);
     return 0;

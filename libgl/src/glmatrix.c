@@ -19,6 +19,7 @@
 #include "GL/gl.h"
 #include "GL/glmath.h"
 #include "glcontext.h"
+#include "glvertex.h"
 
 /* The stack for the active matrix mode, plus its depth limit.
  * Returns NULL and records GL_INVALID_OPERATION if the mode is somehow
@@ -74,12 +75,20 @@ void glMatrixMode(GLenum mode) {
         gl_set_error(GL_INVALID_OPERATION);
         return;
     }
+    {
+        GLint iv[1]; iv[0] = (GLint)mode;
+        if (gl_list_record(ctx, gl_lop_matrix_mode(), (const GLfloat *)0, 0, iv, 1))
+            return;
+    }
     ctx->matrix_mode = mode;
 }
 
 void glPushMatrix(void) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+
+    if (gl_list_record(ctx, gl_lop_push_matrix(), (const GLfloat *)0, 0,
+                       (const GLint *)0, 0)) return;
 
     int *top, limit;
     glm_mat4 *stack = stack_for_mode(ctx, &top, &limit);
@@ -98,6 +107,9 @@ void glPushMatrix(void) {
 void glPopMatrix(void) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+
+    if (gl_list_record(ctx, gl_lop_pop_matrix(), (const GLfloat *)0, 0,
+                       (const GLint *)0, 0)) return;
 
     int *top, limit;
     glm_mat4 *stack = stack_for_mode(ctx, &top, &limit);
@@ -118,6 +130,9 @@ void glPopMatrix(void) {
 void glLoadIdentity(void) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+
+    if (gl_list_record(ctx, gl_lop_load_identity(), (const GLfloat *)0, 0,
+                       (const GLint *)0, 0)) return;
     glm_mat4 *cur = gl_current_matrix(ctx);
     if (cur) *cur = glm_mat4_identity();
 }
@@ -150,12 +165,22 @@ void glMultMatrixf(const GLfloat *m) {
 void glTranslatef(GLfloat x, GLfloat y, GLfloat z) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+    {
+        GLfloat fv[3]; fv[0] = x; fv[1] = y; fv[2] = z;
+        if (gl_list_record(ctx, gl_lop_translatef(), fv, 3, (const GLint *)0, 0))
+            return;
+    }
     mult_current(ctx, glm_mat4_translate(x, y, z));
 }
 
 void glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+    {
+        GLfloat fv[4]; fv[0] = angle; fv[1] = x; fv[2] = y; fv[3] = z;
+        if (gl_list_record(ctx, gl_lop_rotatef(), fv, 4, (const GLint *)0, 0))
+            return;
+    }
     /* glRotatef takes DEGREES; glm_mat4_rot_axis takes radians. */
     mult_current(ctx, glm_mat4_rot_axis(GLM_DEG2RAD(angle), x, y, z));
 }
@@ -163,6 +188,11 @@ void glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z) {
 void glScalef(GLfloat x, GLfloat y, GLfloat z) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+    {
+        GLfloat fv[3]; fv[0] = x; fv[1] = y; fv[2] = z;
+        if (gl_list_record(ctx, gl_lop_scalef(), fv, 3, (const GLint *)0, 0))
+            return;
+    }
     mult_current(ctx, glm_mat4_scale(x, y, z));
 }
 

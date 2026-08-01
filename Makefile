@@ -287,7 +287,8 @@ LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
               $(USER_BUILD)/glstate.o $(USER_BUILD)/glmatrix.o \
               $(USER_BUILD)/glimm.o $(USER_BUILD)/glraster.o \
               $(USER_BUILD)/glclip.o $(USER_BUILD)/gllight.o \
-              $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o
+              $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o \
+              $(USER_BUILD)/glarray.o $(USER_BUILD)/gllist.o
 USER_GL_OBJ := $(LIBGL_OBJS)
 USER_CFLAGS += -I libgl/include
 
@@ -446,6 +447,16 @@ $(USER_BUILD)/gltexture.o: libgl/src/gltexture.c libgl/src/glcontext.h \
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/glfrag.o: libgl/src/glfrag.c libgl/src/glcontext.h \
+                        libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/glarray.o: libgl/src/glarray.c libgl/src/glcontext.h \
+                         libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/gllist.o: libgl/src/gllist.c libgl/src/glcontext.h \
                         libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -782,7 +793,7 @@ debug: iso
 UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glimm $(BUILD_DIR)/test_glraster \
                 $(BUILD_DIR)/test_glclip $(BUILD_DIR)/test_gllight \
-                $(BUILD_DIR)/test_gltex \
+                $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_glarray \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -873,7 +884,8 @@ LIBGL_TEST_SRCS := libgl/src/auraglx.c libgl/src/glstate.c \
                    libgl/src/glmath.c libgl/src/glmatrix.c \
                    libgl/src/glimm.c libgl/src/glraster.c \
                    libgl/src/glclip.c libgl/src/gllight.c \
-                   libgl/src/gltexture.c libgl/src/glfrag.c
+                   libgl/src/gltexture.c libgl/src/glfrag.c \
+                   libgl/src/glarray.c libgl/src/gllist.c
 
 LIBGL_TEST_HDRS := libgl/src/glcontext.h libgl/src/glvertex.h \
                    libgl/include/GL/gl.h libgl/include/GL/glmath.h \
@@ -897,7 +909,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
 # libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
 # ag_render_now() -- the code under test is still the real auraglx.c.
 LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
-               test_gllight test_gltex
+               test_gllight test_gltex test_glarray
 
 $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
                                            $(LIBGL_TEST_SRCS) \

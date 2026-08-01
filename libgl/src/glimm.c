@@ -231,6 +231,13 @@ void glBegin(GLenum mode) {
         return;
     }
 
+    /* Display lists record the command instead of executing it (§5.4). */
+    {
+        GLint iv[1]; iv[0] = (GLint)mode;
+        if (gl_list_record(ctx, gl_lop_begin(), (const GLfloat *)0, 0, iv, 1))
+            return;
+    }
+
     imm.active       = 1;
     imm.mode         = mode;
     imm.count        = 0;
@@ -240,6 +247,11 @@ void glBegin(GLenum mode) {
 void glEnd(void) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+
+    if (gl_list_record(ctx, gl_lop_end(), (const GLfloat *)0, 0,
+                       (const GLint *)0, 0)) {
+        return;
+    }
 
     if (!imm.active) {
         gl_set_error(GL_INVALID_OPERATION);
@@ -258,6 +270,12 @@ void glEnd(void) {
 void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
+
+    {
+        GLfloat fv[4]; fv[0] = x; fv[1] = y; fv[2] = z; fv[3] = w;
+        if (gl_list_record(ctx, gl_lop_vertex4f(), fv, 4, (const GLint *)0, 0))
+            return;
+    }
 
     if (!imm.active) {
         /* glVertex outside glBegin/glEnd is a no-op with an error, rather
@@ -322,6 +340,12 @@ void glVertex4fv(const GLfloat *v) {
  * any time and simply becomes the current colour (§2.7).
  */
 void glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
+    struct aglx_context *ctx = gl_current_ctx;
+    if (ctx) {
+        GLfloat fv[4]; fv[0] = r; fv[1] = g; fv[2] = b; fv[3] = a;
+        if (gl_list_record(ctx, gl_lop_color4f(), fv, 4, (const GLint *)0, 0))
+            return;
+    }
     cur_color.r = r; cur_color.g = g; cur_color.b = b; cur_color.a = a;
 }
 
@@ -352,6 +376,12 @@ void glColor4fv(const GLfloat *v) {
  * Stored now, consumed by lighting in G5 and texturing in G6.
  */
 void glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz) {
+    struct aglx_context *ctx = gl_current_ctx;
+    if (ctx) {
+        GLfloat fv[3]; fv[0] = nx; fv[1] = ny; fv[2] = nz;
+        if (gl_list_record(ctx, gl_lop_normal3f(), fv, 3, (const GLint *)0, 0))
+            return;
+    }
     cur_normal = glm_vec3_make(nx, ny, nz);
     cur_normal_init = 1;
 }
@@ -361,7 +391,15 @@ void glNormal3fv(const GLfloat *v) {
     glNormal3f(v[0], v[1], v[2]);
 }
 
-void glTexCoord2f(GLfloat s, GLfloat t) { cur_s = s; cur_t = t; }
+void glTexCoord2f(GLfloat s, GLfloat t) {
+    struct aglx_context *ctx = gl_current_ctx;
+    if (ctx) {
+        GLfloat fv[2]; fv[0] = s; fv[1] = t;
+        if (gl_list_record(ctx, gl_lop_texcoord2f(), fv, 2, (const GLint *)0, 0))
+            return;
+    }
+    cur_s = s; cur_t = t;
+}
 
 void glTexCoord2fv(const GLfloat *v) {
     if (!v) { gl_set_error(GL_INVALID_VALUE); return; }

@@ -29,6 +29,14 @@
  * implementation choice sized for the demos plus room to spare. */
 #define GL_MAX_TEXTURES_IMPL       64
 
+/* Buffer objects and display lists tracked per context. */
+#define GL_MAX_BUFFERS_IMPL        64
+#define GL_MAX_LISTS_IMPL          256
+
+/* Commands recorded in one display list.  A list is a flat command log, not a
+ * re-executable program, so this bounds the geometry a single list can hold. */
+#define GL_LIST_MAX_CMDS           16384
+
 /* A colour in the form the framebuffer stores: 0x00RRGGBB. */
 typedef uint32_t gl_pixel_t;
 
@@ -54,6 +62,52 @@ typedef struct {
     GLenum     min_filter, mag_filter;
     GLenum     wrap_s, wrap_t;
 } gl_texture_t;
+
+/* ---- Vertex array pointer (§2.8) ----
+ *
+ * `ptr` is either a real client pointer or, when a buffer is bound at the time
+ * glVertexPointer() and friends are called, a BYTE OFFSET into that buffer.
+ * GL overloads the same argument for both, which is why `buffer` has to be
+ * captured here: the binding in force at specification time is the one that
+ * counts, not the binding in force at draw time.
+ */
+typedef struct {
+    GLboolean    enabled;
+    GLint        size;           /* components per element: 2,3,4          */
+    GLenum       type;           /* GL_FLOAT, GL_UNSIGNED_BYTE, ...        */
+    GLsizei      stride;         /* bytes between elements; 0 = tightly packed */
+    const void  *ptr;
+    GLuint       buffer;         /* 0 = client memory                      */
+} gl_array_t;
+
+/* ---- Buffer object (GL 1.5 subset) ---- */
+typedef struct {
+    GLuint     name;
+    int        used;
+    void      *data;
+    GLsizeiptr size;
+    GLenum     usage;
+} gl_buffer_t;
+
+/* ---- Display list (§5.4) ----
+ *
+ * Recorded as a flat log of (opcode, arguments) rather than as a captured
+ * vertex batch, so a list can contain state changes and matrix operations as
+ * well as geometry — which is what applications actually put in them.
+ */
+typedef struct {
+    GLuint   op;
+    GLfloat  f[8];
+    GLint    i[4];
+} gl_list_cmd_t;
+
+typedef struct {
+    GLuint          name;
+    int             used;
+    gl_list_cmd_t  *cmds;
+    int             count;
+    int             capacity;
+} gl_list_t;
 
 /* ---- Lighting (§2.14) ----
  *
@@ -161,6 +215,19 @@ struct aglx_context {
     GLenum        fog_mode;
     GLfloat       fog_density, fog_start, fog_end;
     gl_color_t    fog_color;
+
+    /* ---- Vertex arrays and buffer objects (§2.8), phase G7 ---- */
+    gl_array_t    array_vertex, array_color, array_normal, array_texcoord;
+    gl_buffer_t   buffers[GL_MAX_BUFFERS_IMPL];
+    GLuint        next_buffer_name;
+    GLuint        buffer_binding_array;    /* GL_ARRAY_BUFFER         */
+    GLuint        buffer_binding_element;  /* GL_ELEMENT_ARRAY_BUFFER */
+
+    /* ---- Display lists (§5.4) ---- */
+    gl_list_t     lists[GL_MAX_LISTS_IMPL];
+    GLuint        next_list_name;
+    int           list_compiling;          /* index into lists[], or -1 */
+    GLenum        list_mode;               /* COMPILE or COMPILE_AND_EXECUTE */
 
     /* ---- glPushAttrib / glPopAttrib (§6.1.2) ----
      * Each entry stores a full copy of the attribute groups this
