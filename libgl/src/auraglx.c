@@ -90,6 +90,8 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     ctx->attrib_top = 0;
 
     gl_lighting_set_defaults(ctx);
+    gl_texture_set_defaults(ctx);
+    gl_frag_set_defaults(ctx);
 }
 
 /* Allocate colour (and optionally depth) buffers for w*h.
@@ -172,6 +174,8 @@ aglx_context_t *aglxGetCurrentContext(void) {
 void aglxDestroyContext(aglx_context_t *ctx) {
     if (!ctx) return;
     if (gl_current_ctx == ctx) gl_current_ctx = NULL;
+    /* Texture images are heap allocations owned by the context. */
+    gl_texture_free_all(ctx);
     ctx_free_buffers(ctx);
     free(ctx);
 }

@@ -189,6 +189,10 @@ static GLboolean *cap_slot(struct aglx_context *ctx, GLenum cap) {
     case GL_LIGHTING:       return &ctx->lighting;
     case GL_NORMALIZE:      return &ctx->normalize;
     case GL_COLOR_MATERIAL: return &ctx->color_material;
+    case GL_TEXTURE_2D:     return &ctx->texture_2d;
+    case GL_BLEND:          return &ctx->blend;
+    case GL_ALPHA_TEST:     return &ctx->alpha_test;
+    case GL_FOG:            return &ctx->fog;
     default:                return (GLboolean *)0;
     }
 }
@@ -327,6 +331,11 @@ void glGetIntegerv(GLenum pname, GLint *params) {
     case GL_FRONT_FACE:    params[0] = (GLint)ctx->front_face;   break;
     case GL_SHADE_MODEL:   params[0] = (GLint)ctx->shade_model;  break;
     case GL_MAX_LIGHTS:    params[0] = GL_MAX_LIGHTS_IMPL; break;
+    case GL_TEXTURE_BINDING_2D: params[0] = (GLint)ctx->texture_binding; break;
+    case GL_BLEND_SRC:     params[0] = (GLint)ctx->blend_src;  break;
+    case GL_BLEND_DST:     params[0] = (GLint)ctx->blend_dst;  break;
+    case GL_ALPHA_TEST_FUNC: params[0] = (GLint)ctx->alpha_func; break;
+    case GL_FOG_MODE:      params[0] = (GLint)ctx->fog_mode;   break;
     case GL_MAX_MODELVIEW_STACK_DEPTH:
         params[0] = GL_MODELVIEW_STACK_DEPTH;  break;
     case GL_MAX_PROJECTION_STACK_DEPTH:
@@ -377,6 +386,10 @@ void glGetBooleanv(GLenum pname, GLboolean *params) {
     case GL_LIGHTING:        params[0] = ctx->lighting;     break;
     case GL_NORMALIZE:       params[0] = ctx->normalize;    break;
     case GL_COLOR_MATERIAL:  params[0] = ctx->color_material; break;
+    case GL_TEXTURE_2D:      params[0] = ctx->texture_2d;     break;
+    case GL_BLEND:           params[0] = ctx->blend;          break;
+    case GL_ALPHA_TEST:      params[0] = ctx->alpha_test;     break;
+    case GL_FOG:             params[0] = ctx->fog;            break;
     default:
         gl_set_error(GL_INVALID_ENUM);
         break;

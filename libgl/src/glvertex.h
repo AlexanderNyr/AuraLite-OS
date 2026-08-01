@@ -82,6 +82,24 @@ void gl_transform_vertex(struct aglx_context *ctx,
                          GLfloat x, GLfloat y, GLfloat z, GLfloat w,
                          gl_vertex_t *out);
 
+/* ---- Texturing (libgl/src/gltexture.c), phase G6 ---- */
+gl_texture_t *gl_texture_current(struct aglx_context *ctx);
+gl_color_t gl_texture_sample(const gl_texture_t *t, GLfloat s, GLfloat tc,
+                             int magnifying);
+gl_color_t gl_texture_env(const struct aglx_context *ctx,
+                          gl_color_t frag, gl_color_t tex);
+void gl_texture_set_defaults(struct aglx_context *ctx);
+void gl_texture_free_all(struct aglx_context *ctx);
+
+/* ---- Per-fragment operations (libgl/src/glfrag.c), phase G6 ---- */
+int        gl_alpha_test_passes(const struct aglx_context *ctx, GLfloat alpha);
+gl_color_t gl_blend(const struct aglx_context *ctx,
+                    gl_color_t src, gl_color_t dst);
+GLfloat    gl_fog_factor(const struct aglx_context *ctx, GLfloat z);
+gl_color_t gl_fog_apply(const struct aglx_context *ctx,
+                        gl_color_t c, GLfloat z);
+void       gl_frag_set_defaults(struct aglx_context *ctx);
+
 /* ---- Lighting (libgl/src/gllight.c), phase G5 ----
  *
  * Evaluated per vertex in EYE space, as GL 1.1 specifies; the rasterizer then

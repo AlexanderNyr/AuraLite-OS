@@ -1,6 +1,7 @@
 /* glcube.c — rotating cube demo for the AuraLite OpenGL stack.
  *
- * From phase G5 this renders as a solid, depth-buffered, LIT cube.  The geometry and
+ * From phase G6 this renders as a solid, depth-buffered, lit and TEXTURED
+ * cube: a procedural checkerboard is modulated with each face's colour.  The geometry and
  * matrix code are unchanged from the G2 wireframe version — only the two
  * glEnable() calls below were added, which is the point of writing the demo
  * against the GL API rather than against the rasterizer.
@@ -73,6 +74,35 @@ static const GLfloat face_colors[6][3] = {
     { 0.8f, 0.4f, 1.0f },   /* purple */
 };
 
+/* Build a procedural checkerboard.  Generating it in code keeps the demo free
+ * of asset files, which the initrd would otherwise have to carry. */
+static GLuint make_checker_texture(void) {
+    #define TEX_N 32
+    static unsigned char img[TEX_N * TEX_N * 3];
+    for (int y = 0; y < TEX_N; y++) {
+        for (int x = 0; x < TEX_N; x++) {
+            int on = ((x / 4) + (y / 4)) & 1;
+            unsigned char v = on ? 235 : 120;
+            unsigned char *p = &img[(y * TEX_N + x) * 3];
+            p[0] = v; p[1] = v; p[2] = v;
+        }
+    }
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, TEX_N, TEX_N, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, img);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    #undef TEX_N
+    return id;
+}
+
+/* Texture coordinates for the four corners of every face. */
+static const GLfloat face_uv[4][2] = { {0,0}, {1,0}, {1,1}, {0,1} };
+
 static void draw_cube(void) {
     glBegin(GL_QUADS);
     for (int f = 0; f < 6; f++) {
@@ -80,6 +110,7 @@ static void draw_cube(void) {
         glNormal3f(face_normals[f][0], face_normals[f][1], face_normals[f][2]);
         for (int v = 0; v < 4; v++) {
             const GLfloat *p = verts[faces[f][v]];
+            glTexCoord2f(face_uv[v][0], face_uv[v][1]);
             glVertex3f(p[0], p[1], p[2]);
         }
     }
@@ -88,8 +119,9 @@ static void draw_cube(void) {
 
 /* Ground grid, to make the perspective projection obvious. */
 static void draw_grid(void) {
-    /* The grid is a flat reference, not a lit surface. */
+    /* The grid is a flat, untextured reference, not a lit surface. */
     glDisable(GL_LIGHTING);
+    glDisable(GL_TEXTURE_2D);
     glColor3f(0.25f, 0.25f, 0.30f);
     glBegin(GL_LINES);
     for (int i = -4; i <= 4; i++) {
@@ -99,6 +131,7 @@ static void draw_grid(void) {
     }
     glEnd();
     glEnable(GL_LIGHTING);
+    glEnable(GL_TEXTURE_2D);
 }
 
 /* Read the optional frame limit from /tmp/glcube.frames (see the note above). */
@@ -184,6 +217,13 @@ int main(int argc, char **argv) {
         glMaterialfv(GL_FRONT, GL_SPECULAR, specular);
         glMaterialf(GL_FRONT, GL_SHININESS, 24.0f);
     }
+
+    /* Phase G6: a checkerboard modulated with the per-face colour, so the
+     * texture darkens and tints rather than replacing the shading. */
+    GLuint checker = make_checker_texture();
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, checker);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
     GLfloat angle_x = 25.0f, angle_y = 30.0f;
     int paused = 0, running = 1;

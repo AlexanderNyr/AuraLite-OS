@@ -2,6 +2,60 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G6 — textures, blending and fog] 2026-08-01
+
+Seventh phase of `GL_PLAN.md`. `/glcube` is now textured with a procedural
+checkerboard modulated against each face's colour.
+
+### Added
+- `libgl/src/gltexture.c`: texture objects (`glGenTextures`, `glBindTexture`,
+  `glDeleteTextures`, `glIsTexture`), image upload (`glTexImage2D`,
+  `glTexSubImage2D`) for `GL_RGB`/`GL_RGBA`/`GL_LUMINANCE`/
+  `GL_LUMINANCE_ALPHA`/`GL_ALPHA`, `glTexParameteri`, `glTexEnvi`/`glTexEnvfv`.
+  Sampling supports `GL_NEAREST` and bilinear `GL_LINEAR` with `GL_REPEAT`,
+  `GL_CLAMP` and `GL_CLAMP_TO_EDGE`. Texels are unpacked to RGBA8 once at
+  upload so the inner sampling loop has no per-texel format branches.
+- **Perspective-correct texture interpolation.** The rasterizer interpolates
+  `s/w`, `t/w` and `1/w` — which are linear in screen space — and divides per
+  pixel. Interpolating `s` and `t` directly makes textures swim on any
+  primitive that recedes from the camera.
+- `libgl/src/glfrag.c`: alpha test (all eight functions), blending (full
+  factor set including `GL_SRC_ALPHA_SATURATE`) and fog (`GL_LINEAR`,
+  `GL_EXP`, `GL_EXP2`) on eye-space distance.
+- `tests/unit/test_gltex.c`: **37 checks**.
+- `patches/GL_G6_textures.patch`.
+
+### Behaviour notes
+- The fragment pipeline runs fog → alpha test → depth test → blend → write.
+  The depth write happens **after** the alpha test, so a discarded fragment
+  leaves depth untouched — otherwise alpha-tested geometry would occlude what
+  is behind it.
+- Texture row 0 is the **bottom** row, matching GL's coordinate origin, so no
+  vertical flip is applied at sample time.
+- Fog changes RGB only; alpha passes through unmodified.
+- `GL_SRC_ALPHA_SATURATE` is accepted as a source factor and rejected as a
+  destination factor, per §4.1.7.
+- `GL_CLAMP` behaves as `GL_CLAMP_TO_EDGE`: there is no border colour stored,
+  and clamping to the edge is the closer of the two behaviours.
+
+### Changed
+- `userspace/glcube`: adds a 32×32 procedural checkerboard, generated in code
+  so the initrd carries no asset files.
+- `userspace/gltest`: 130 checks (was 105). One G5 attenuation check now
+  resets the specular material first — a leftover white specular from the
+  preceding check was adding the same amount to both samples and masking the
+  attenuation difference.
+- `tests/integration/cases/test_opengl.sh`: 63 assertions (was 53); the
+  in-QEMU delay was raised because `/gltest` takes longer at 130 checks.
+
+### Verified
+- `test_gltex` 37/37, `test_gllight` 32/32, `test_glclip` 28/28,
+  `test_glraster` 43/43, `test_glimm` 51/51, `test_glstate` 37/37,
+  `test_glmath` 37/37.
+- `/gltest` under QEMU: 130/130. `/glcube`: `clean exit, 12 frames`.
+- `test_opengl.sh`: 63/63. `make test-unit`: 58/58 binaries green (was 57).
+- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G5 — lighting and materials] 2026-08-01
 
 Sixth phase of `GL_PLAN.md`. `/glcube` is now a lit cube: each face is shaded

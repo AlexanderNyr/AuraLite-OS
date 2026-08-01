@@ -14,6 +14,7 @@
  * Phase G3 scope: the filled triangle rasterizer, depth buffer and culling.
  * Phase G4 scope: frustum clipping and the attribute stack.
  * Phase G5 scope: lighting, materials and normals.
+ * Phase G6 scope: textures, blending, the alpha test and fog.
  */
 
 #include <stdio.h>
@@ -641,9 +642,17 @@ static void test_gl_light(int wid) {
     check(((CENTRE >> 8) & 0xFF) > 240, "lit_emission");
     glMaterialfv(GL_FRONT, GL_EMISSION, black);
 
-    /* Distance attenuation dims a positional light. */
+    /* Distance attenuation dims a positional light.
+     *
+     * The material is reset explicitly first: the specular checks above left
+     * GL_SPECULAR white, and a leftover specular term would add the same
+     * amount to both samples and mask the attenuation difference.  Tests that
+     * share one context have to undo their own state. */
     glEnable(GL_LIGHT0);
     glMaterialfv(GL_FRONT, GL_DIFFUSE, white);
+    glMaterialfv(GL_FRONT, GL_AMBIENT, black);
+    glMaterialfv(GL_FRONT, GL_SPECULAR, black);
+    glMaterialf(GL_FRONT, GL_SHININESS, 0.0f);
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, black);
     glLightf(GL_LIGHT0, GL_LINEAR_ATTENUATION, 0.5f);
     {
@@ -724,8 +733,209 @@ static void test_gl_light(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- Phase G6: textures, blending, fog ---- */
+static void test_gl_texture(int wid) {
+    printf("[gl] --- G6: textures, blending, fog ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "tex_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glColor3f(1, 1, 1);
+
+    /* A 2x2 texture; row 0 is the BOTTOM row, matching GL's origin. */
+    static const unsigned char rgb2x2[2 * 2 * 3] = {
+        255, 0,   0,      0,   255, 0,
+        0,   0,   255,    255, 255, 255,
+    };
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    check(id != 0, "tex_gen");
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2, 2, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, rgb2x2);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    check(glGetError() == GL_NO_ERROR, "tex_upload");
+    check(glIsTexture(id) == GL_TRUE, "tex_is_texture");
+
+    #define FULL_QUAD(smax, tmax) do {                             \
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);        \
+        glBegin(GL_QUADS);                                         \
+        glTexCoord2f(0,      0);      glVertex3f(0, 0, 0);         \
+        glTexCoord2f(smax,   0);      glVertex3f(GL_W, 0, 0);      \
+        glTexCoord2f(smax,   tmax);   glVertex3f(GL_W, GL_H, 0);   \
+        glTexCoord2f(0,      tmax);   glVertex3f(0, GL_H, 0);      \
+        glEnd();                                                   \
+    } while (0)
+
+    /* Nearest sampling: each quadrant shows its own texel, and the v axis is
+     * NOT flipped (row 0 of the upload is the bottom). */
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    FULL_QUAD(1.0f, 1.0f);
+    check(AT(GL_W / 4, GL_H / 4) == 0xFF0000,        "tex_quadrant_red");
+    check(AT(GL_W * 3 / 4, GL_H / 4) == 0x00FF00,    "tex_quadrant_green");
+    check(AT(GL_W / 4, GL_H * 3 / 4) == 0x0000FF,    "tex_quadrant_blue");
+    check(AT(GL_W * 3 / 4, GL_H * 3 / 4) == 0xFFFFFF,"tex_quadrant_white");
+
+    /* GL_REPEAT: two tiles across, so s=1.25 hits the same texel as s=0.25. */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    FULL_QUAD(2.0f, 2.0f);
+    check(AT(GL_W / 8, GL_H / 8) == 0xFF0000 &&
+          AT(GL_W * 5 / 8, GL_H / 8) == 0xFF0000, "tex_wrap_repeat");
+
+    /* Bilinear at the image centre averages all four texels. */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    FULL_QUAD(1.0f, 1.0f);
+    {
+        uint32_t p = AT(GL_W / 2, GL_H / 2);
+        int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+        check(r > 100 && r < 160 && g > 100 && g < 160 && b > 100 && b < 160,
+              "tex_bilinear_average");
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* GL_MODULATE multiplies by the fragment colour; GL_REPLACE ignores it. */
+    glColor3f(1.0f, 0.0f, 0.0f);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    FULL_QUAD(1.0f, 1.0f);
+    {
+        uint32_t p = AT(GL_W * 3 / 4, GL_H * 3 / 4);   /* white texel */
+        check(((p >> 16) & 0xFF) > 240 && ((p >> 8) & 0xFF) < 20,
+              "tex_env_modulate");
+    }
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    FULL_QUAD(1.0f, 1.0f);
+    check(AT(GL_W * 3 / 4, GL_H * 3 / 4) == 0xFFFFFF, "tex_env_replace");
+    glColor3f(1, 1, 1);
+
+    /* Disabling texturing restores plain vertex colour. */
+    glDisable(GL_TEXTURE_2D);
+    glColor3f(1.0f, 0.0f, 1.0f);
+    FULL_QUAD(1.0f, 1.0f);
+    check(AT(GL_W / 2, GL_H / 2) == 0xFF00FF, "tex_disable");
+    glColor3f(1, 1, 1);
+
+    /* ---- Blending ---- */
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1.0f, 0.0f, 0.0f, 0.5f);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);        glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);  glVertex3f(0, GL_H, 0);
+    glEnd();
+    {
+        uint32_t p = AT(GL_W / 2, GL_H / 2);
+        int r = (p >> 16) & 0xFF, b = p & 0xFF;
+        check(r > 100 && r < 160 && b > 100 && b < 160, "blend_src_alpha");
+    }
+
+    /* Blending off means the source simply replaces. */
+    glDisable(GL_BLEND);
+    glColor4f(1.0f, 0.0f, 0.0f, 0.25f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);        glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);  glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0xFF0000, "blend_disabled");
+
+    /* ---- Alpha test ---- */
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_GREATER, 0.5f);
+    glColor4f(1.0f, 0.0f, 0.0f, 0.25f);           /* discarded */
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);        glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);  glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0x0000FF, "alpha_test_discards");
+
+    glColor4f(1.0f, 0.0f, 0.0f, 0.9f);            /* passes */
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);        glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);  glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0xFF0000, "alpha_test_passes");
+    glDisable(GL_ALPHA_TEST);
+
+    /* ---- Fog ---- */
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glFrustum(-1, 1, -1, 1, 1, 100);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glEnable(GL_FOG);
+    glFogi(GL_FOG_MODE, GL_LINEAR);
+    glFogf(GL_FOG_START, 5.0f);
+    glFogf(GL_FOG_END, 20.0f);
+    {
+        GLfloat fogcol[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+        glFogfv(GL_FOG_COLOR, fogcol);
+    }
+    glColor3f(1.0f, 0.0f, 0.0f);
+
+    /* Beyond the fog end: fully fog-coloured. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_QUADS);
+    glVertex3f(-8, -8, -25); glVertex3f(8, -8, -25);
+    glVertex3f( 8,  8, -25); glVertex3f(-8, 8, -25);
+    glEnd();
+    {
+        uint32_t p = AT(GL_W / 2, GL_H / 2);
+        check(((p >> 8) & 0xFF) > 230 && ((p >> 16) & 0xFF) < 25, "fog_far");
+    }
+
+    /* Nearer than the fog start: unfogged. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glFogf(GL_FOG_START, 20.0f);
+    glFogf(GL_FOG_END, 50.0f);
+    glBegin(GL_QUADS);
+    glVertex3f(-2, -2, -5); glVertex3f(2, -2, -5);
+    glVertex3f( 2,  2, -5); glVertex3f(-2, 2, -5);
+    glEnd();
+    {
+        uint32_t p = AT(GL_W / 2, GL_H / 2);
+        check(((p >> 16) & 0xFF) > 230 && ((p >> 8) & 0xFF) < 25, "fog_near");
+    }
+    glDisable(GL_FOG);
+
+    /* ---- Error handling ---- */
+    glBindTexture(0x9999, 1);
+    check(glGetError() == GL_INVALID_ENUM, "tex_bad_target");
+    glBlendFunc(0x9999, GL_ONE);
+    check(glGetError() == GL_INVALID_ENUM, "blend_bad_factor");
+    glFogi(GL_FOG_MODE, 0x9999);
+    check(glGetError() == GL_INVALID_ENUM, "fog_bad_mode");
+
+    glDeleteTextures(1, &id);
+    check(glIsTexture(id) == GL_FALSE, "tex_delete");
+
+    check(aglxSwapBuffers(ctx) == 0, "tex_swap");
+    check(glGetError() == GL_NO_ERROR, "tex_no_pending_error");
+
+    #undef FULL_QUAD
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
-    printf("[gl] === AuraLite GL test (phases G0-G5) ===\n");
+    printf("[gl] === AuraLite GL test (phases G0-G6) ===\n");
 
     /* ---- A window is required as the blit destination. ---- */
     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
@@ -811,12 +1021,13 @@ int main(void) {
 
     ag_render_now();
 
-    /* ---- Phase G1-G5 checks ---- */
+    /* ---- Phase G1-G6 checks ---- */
     test_gl_context(wid);
     test_gl_geometry(wid);
     test_gl_raster(wid);
     test_gl_clip(wid);
     test_gl_light(wid);
+    test_gl_texture(wid);
 
     free(buf);
     ag_window_destroy(wid);

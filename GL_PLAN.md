@@ -695,7 +695,7 @@ its vertices where the light and viewer geometry is actually meaningful.
 
 ---
 
-## Phase G6 — Textures, blending, fog
+## Phase G6 — Textures, blending, fog ✅ COMPLETE
 
 **Goal:** textured objects with transparency.
 
@@ -711,14 +711,14 @@ glBlendFunc()  glAlphaFunc()  glFogf/glFogfv()
 
 ### Tasks
 
-- [ ] Texture objects, name manager, `GL_RGB` / `GL_RGBA` / `GL_LUMINANCE` formats.
-- [ ] **Perspective-correct** UV interpolation (interpolate `u/w`, `v/w`, `1/w`) —
+- [x] Texture objects, name manager, `GL_RGB` / `GL_RGBA` / `GL_LUMINANCE` formats.
+- [x] **Perspective-correct** UV interpolation (interpolate `u/w`, `v/w`, `1/w`) —
       without it textures swim on large triangles.
-- [ ] `GL_NEAREST` and `GL_LINEAR` (bilinear) filtering.
-- [ ] `GL_REPEAT`, `GL_CLAMP`, `GL_CLAMP_TO_EDGE` wrap modes.
-- [ ] Blending: the main factors (`GL_SRC_ALPHA`, `GL_ONE_MINUS_SRC_ALPHA`, `GL_ONE`,
+- [x] `GL_NEAREST` and `GL_LINEAR` (bilinear) filtering.
+- [x] `GL_REPEAT`, `GL_CLAMP`, `GL_CLAMP_TO_EDGE` wrap modes.
+- [x] Blending: the main factors (`GL_SRC_ALPHA`, `GL_ONE_MINUS_SRC_ALPHA`, `GL_ONE`,
       `GL_ZERO`, `GL_DST_ALPHA`…).
-- [ ] Alpha test; linear and exponential fog.
+- [x] Alpha test; linear and exponential fog.
 
 ### Test gate
 
@@ -735,6 +735,50 @@ Texturing is perspective-correct; blending matches the specification.
 ### Deliverable
 
 `patches/GL_G6_textures.patch`
+
+### Results (verified)
+
+| Item | Outcome |
+|---|---|
+| Texture objects | `glGenTextures`/`glBindTexture`/`glDeleteTextures`/`glIsTexture`, 64 slots; binding an unknown name creates it, as §3.8.12 requires |
+| Formats | `GL_RGB`, `GL_RGBA`, `GL_LUMINANCE`, `GL_LUMINANCE_ALPHA`, `GL_ALPHA`, all unpacked to RGBA8 at upload |
+| Sampling | `GL_NEAREST` and bilinear `GL_LINEAR`; `GL_REPEAT`, `GL_CLAMP`, `GL_CLAMP_TO_EDGE` |
+| **Perspective correction** | `s/w`, `t/w`, `1/w` interpolated linearly and divided per pixel |
+| Texture environment | `GL_MODULATE`, `GL_REPLACE`, `GL_DECAL`, `GL_BLEND` |
+| Blending | Full factor set including `GL_SRC_ALPHA_SATURATE`; source-only factors rejected on the destination |
+| Alpha test | All eight functions; a discarded fragment writes neither colour **nor depth** |
+| Fog | `GL_LINEAR`, `GL_EXP`, `GL_EXP2`, applied on eye-space distance; alpha untouched |
+| Host unit test | `test_gltex` — **37/37 pass** |
+| `/gltest` in QEMU | **130/130 checks pass** |
+| `/glcube` | Now **textured** with a procedural checkerboard; `clean exit, 12 frames` |
+| QEMU integration test | `test_opengl.sh` — **63/63 assertions pass** |
+| Regression check | `make test-unit` 58/58 green |
+
+### Why the perspective-correction test is built the way it is
+
+Interpolating `s` and `t` linearly in screen space is only correct for a
+primitive facing the camera; for anything receding, the texture visibly swims.
+Proving the fix works needs a test that a naive implementation actually fails.
+
+The test draws a quad whose right edge is pushed from z = -1.5 to z = -12 and
+textures it with two texels, red then green. The red/green boundary marks
+`s = 0.5`. Screen-space interpolation would put that boundary at the midpoint
+of the covered pixel span; perspective-correct interpolation pushes it far
+past, because the receding half is compressed into fewer pixels. Measured
+result: the span covers x = 11..34 (midpoint 22) and the boundary lands at
+x = 32 — unambiguously the correct behaviour.
+
+The first version of this test compared against the midpoint of the **screen**
+rather than of the **covered span**, and failed against correct code. Worth
+recording: the comparison has to be against something the geometry actually
+determines.
+
+### Ordering note
+
+The fragment pipeline is fog → alpha test → depth test → blend → write. The
+depth write is deliberately placed after the alpha test, so a discarded
+fragment leaves the depth buffer untouched; getting that order wrong makes
+alpha-tested foliage occlude things behind it.
 
 ---
 
@@ -917,7 +961,7 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
 | G3 | ✅ complete | `patches/GL_G3_rasterizer.patch` |
 | G4 | ✅ complete | `patches/GL_G4_clipping.patch` |
 | G5 | ✅ complete | `patches/GL_G5_lighting.patch` |
-| G6 | 🔧 next | — |
-| G7 | ⬜ planned | — |
+| G6 | ✅ complete | `patches/GL_G6_textures.patch` |
+| G7 | 🔧 next | — |
 | G8 | ⬜ planned | — |
 | G9 | ⬜ planned | — |

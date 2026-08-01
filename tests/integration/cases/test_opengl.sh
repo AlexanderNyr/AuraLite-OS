@@ -24,14 +24,14 @@ trap il_dump_on_error EXIT
 # uses spawn(), which does not forward argv -- the same convention /apm uses.
 il_send_delay 8
 il_send "run /gltest"
-il_send_delay 14
+il_send_delay 30
 il_send "write /tmp/glcube.frames 12"
 il_send_delay 2
 il_send "run /glcube"
 il_send_delay 45
 il_send "exit"
 
-il_run_qemu "$LOG" 140
+il_run_qemu "$LOG" 170
 
 # The test program prints its own verdict.
 il_assert_grep    "$LOG" "\\[gl\\] ALL TESTS PASSED"      "gltest reports all checks passed"
@@ -98,6 +98,18 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS lit_emission"            "emission appli
 il_assert_grep    "$LOG" "\\[gl\\] PASS lit_distance_attenuation" "positional lights attenuate with distance"
 il_assert_grep    "$LOG" "\\[gl\\] PASS lit_color_material"      "GL_COLOR_MATERIAL drives the material"
 il_assert_grep    "$LOG" "\\[gl\\] PASS lit_gouraud_gradient"    "lighting is Gouraud-interpolated"
+
+# Phase G6: textures, blending, alpha test, fog.
+il_assert_grep    "$LOG" "\\[gl\\] PASS tex_quadrant_red"        "nearest sampling hits the right texel"
+il_assert_grep    "$LOG" "\\[gl\\] PASS tex_quadrant_blue"       "texture v axis is not flipped"
+il_assert_grep    "$LOG" "\\[gl\\] PASS tex_wrap_repeat"         "GL_REPEAT tiles the texture"
+il_assert_grep    "$LOG" "\\[gl\\] PASS tex_bilinear_average"    "bilinear filtering averages texels"
+il_assert_grep    "$LOG" "\\[gl\\] PASS tex_env_modulate"        "GL_MODULATE combines texel and fragment"
+il_assert_grep    "$LOG" "\\[gl\\] PASS tex_env_replace"         "GL_REPLACE ignores the fragment colour"
+il_assert_grep    "$LOG" "\\[gl\\] PASS blend_src_alpha"         "alpha blending composites correctly"
+il_assert_grep    "$LOG" "\\[gl\\] PASS alpha_test_discards"     "alpha test discards below the reference"
+il_assert_grep    "$LOG" "\\[gl\\] PASS fog_far"                 "distant geometry is fully fogged"
+il_assert_grep    "$LOG" "\\[gl\\] PASS fog_near"                "near geometry is unfogged"
 
 # The demo must have started and reached the GL stack.  Note the deliberately
 # loose pattern: /glcube and the shell write to the same serial console from

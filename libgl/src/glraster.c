@@ -378,9 +378,27 @@ void gl_raster_triangle(struct aglx_context *ctx,
 
     GLfloat inv_area = 1.0f / area;
     int flat = (ctx->shade_model == GL_FLAT);
+
+    /* ---- Phase G6 per-fragment state, hoisted out of the loop ---- */
+    gl_texture_t *tex = gl_texture_current(ctx);
+    int do_blend = ctx->blend;
+    int do_fog   = ctx->fog;
+    int do_alpha = ctx->alpha_test;
+
+    /* Perspective-correct interpolation needs 1/w at each vertex.  Screen-
+     * space linear interpolation of s and t is only correct for an
+     * axis-aligned, unrotated quad; for anything else the texture visibly
+     * "swims" as the primitive turns.  The fix is to interpolate s/w, t/w and
+     * 1/w linearly (those ARE linear in screen space) and divide at each
+     * pixel. */
+    GLfloat w0i = v0->inv_w, w1i = v1->inv_w, w2i = v2->inv_w;
+    GLfloat s0 = v0->s * w0i, s1 = v1->s * w1i, s2 = v2->s * w2i;
+    GLfloat t0 = v0->t * w0i, t1 = v1->t * w1i, t2 = v2->t * w2i;
+    /* Eye-space depth for fog, interpolated the same way. */
+    GLfloat z0 = v0->eye.z * w0i, z1 = v1->eye.z * w1i, z2 = v2->eye.z * w2i;
     /* Flat shading takes the colour of the LAST vertex of the primitive
      * (§2.14.7); that is `c` as originally passed, before any swap. */
-    gl_pixel_t flat_color = gl_pack_color(c->color);
+    gl_color_t flat_src_color = c->color;
 
     int has_depth = (ctx->depth != (float *)0);
     int do_depth_test  = ctx->depth_test && has_depth;
@@ -422,21 +440,66 @@ void gl_raster_triangle(struct aglx_context *ctx,
                 }
 
                 if (write) {
-                    if (do_depth_write) drow[x] = z;
-
-                    gl_pixel_t col;
+                    /* ---- Fragment colour ---- */
+                    gl_color_t cc;
                     if (flat) {
-                        col = flat_color;
+                        cc = flat_src_color;
                     } else {
-                        gl_color_t cc;
                         cc.r = l0 * v0->color.r + l1 * v1->color.r + l2 * v2->color.r;
                         cc.g = l0 * v0->color.g + l1 * v1->color.g + l2 * v2->color.g;
                         cc.b = l0 * v0->color.b + l1 * v1->color.b + l2 * v2->color.b;
                         cc.a = l0 * v0->color.a + l1 * v1->color.a + l2 * v2->color.a;
-                        col = gl_pack_color(cc);
                     }
-                    crow[x] = col;
+
+                    /* ---- Texturing, perspective-correct ---- */
+                    if (tex) {
+                        GLfloat inv_w = l0 * w0i + l1 * w1i + l2 * w2i;
+                        if (inv_w > 1e-20f || inv_w < -1e-20f) {
+                            GLfloat rw = 1.0f / inv_w;
+                            GLfloat ss = (l0 * s0 + l1 * s1 + l2 * s2) * rw;
+                            GLfloat tt = (l0 * t0 + l1 * t1 + l2 * t2) * rw;
+                            gl_color_t tc = gl_texture_sample(tex, ss, tt, 1);
+                            cc = gl_texture_env(ctx, cc, tc);
+                        }
+                    }
+
+                    /* ---- Fog ---- */
+                    if (do_fog) {
+                        GLfloat inv_w = l0 * w0i + l1 * w1i + l2 * w2i;
+                        GLfloat eye_z = 0.0f;
+                        if (inv_w > 1e-20f || inv_w < -1e-20f) {
+                            eye_z = (l0 * z0 + l1 * z1 + l2 * z2) / inv_w;
+                        }
+                        /* Fog is a function of DISTANCE from the eye, and eye
+                         * space puts the viewer at the origin looking down
+                         * -z, so the distance is |eye.z|. */
+                        GLfloat dist = eye_z < 0.0f ? -eye_z : eye_z;
+                        cc = gl_fog_apply(ctx, cc, dist);
+                    }
+
+                    /* ---- Alpha test, before anything is written ---- */
+                    if (do_alpha && !gl_alpha_test_passes(ctx, cc.a)) {
+                        goto next_pixel;
+                    }
+
+                    /* The depth write happens only once the fragment has
+                     * survived every discarding test. */
+                    if (do_depth_write) drow[x] = z;
+
+                    /* ---- Blending ---- */
+                    if (do_blend) {
+                        uint32_t d = crow[x];
+                        gl_color_t dst;
+                        dst.r = (GLfloat)((d >> 16) & 0xFF) / 255.0f;
+                        dst.g = (GLfloat)((d >>  8) & 0xFF) / 255.0f;
+                        dst.b = (GLfloat)( d        & 0xFF) / 255.0f;
+                        dst.a = 1.0f;   /* no destination alpha channel */
+                        cc = gl_blend(ctx, cc, dst);
+                    }
+
+                    crow[x] = gl_pack_color(cc);
                 }
+            next_pixel:;
             }
             /* Stepping one pixel right changes E by -dy ... */
             w0 -= e0dy;

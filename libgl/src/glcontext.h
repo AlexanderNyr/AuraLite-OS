@@ -25,6 +25,10 @@
 /* GL 1.1 requires at least 8 lights (§2.14.1). */
 #define GL_MAX_LIGHTS_IMPL         8
 
+/* Texture objects tracked per context.  GL has no fixed limit; this is an
+ * implementation choice sized for the demos plus room to spare. */
+#define GL_MAX_TEXTURES_IMPL       64
+
 /* A colour in the form the framebuffer stores: 0x00RRGGBB. */
 typedef uint32_t gl_pixel_t;
 
@@ -32,6 +36,24 @@ typedef uint32_t gl_pixel_t;
 typedef struct {
     GLfloat r, g, b, a;
 } gl_color_t;
+
+/* ---- Texture object (§3.8) ----
+ *
+ * Texels are stored already unpacked to 32-bit RGBA in the framebuffer's
+ * channel order, whatever format the application supplied.  Converting once at
+ * glTexImage2D time keeps the inner sampling loop free of per-texel format
+ * branches, at the cost of memory for GL_LUMINANCE images.  For a software
+ * rasterizer that is the right trade: sampling happens millions of times per
+ * frame, upload happens once.
+ */
+typedef struct {
+    GLuint     name;             /* 0 means the slot is free                */
+    int        used;
+    uint32_t  *texels;           /* width*height, 0xAARRGGBB, or NULL       */
+    GLsizei    width, height;
+    GLenum     min_filter, mag_filter;
+    GLenum     wrap_s, wrap_t;
+} gl_texture_t;
 
 /* ---- Lighting (§2.14) ----
  *
@@ -116,6 +138,29 @@ struct aglx_context {
     GLboolean     normalize;
     GLboolean     color_material;
     GLenum        color_material_face, color_material_mode;
+
+    /* ---- Texturing (§3.8), phase G6 ---- */
+    GLboolean     texture_2d;              /* GL_TEXTURE_2D enabled?        */
+    gl_texture_t  textures[GL_MAX_TEXTURES_IMPL];
+    GLuint        texture_binding;         /* currently bound name, 0 = none */
+    GLuint        next_texture_name;       /* monotonic name allocator       */
+    GLenum        tex_env_mode;            /* MODULATE / REPLACE / DECAL / BLEND */
+    gl_color_t    tex_env_color;
+
+    /* ---- Blending (§4.1.7) ---- */
+    GLboolean     blend;
+    GLenum        blend_src, blend_dst;
+
+    /* ---- Alpha test (§4.1.4) ---- */
+    GLboolean     alpha_test;
+    GLenum        alpha_func;
+    GLfloat       alpha_ref;
+
+    /* ---- Fog (§3.10) ---- */
+    GLboolean     fog;
+    GLenum        fog_mode;
+    GLfloat       fog_density, fog_start, fog_end;
+    gl_color_t    fog_color;
 
     /* ---- glPushAttrib / glPopAttrib (§6.1.2) ----
      * Each entry stores a full copy of the attribute groups this

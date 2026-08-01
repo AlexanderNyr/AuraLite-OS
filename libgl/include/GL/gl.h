@@ -176,6 +176,39 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_ONE_MINUS_DST_ALPHA            0x0305
 #define GL_ALPHA_TEST                     0x0BC0
 #define GL_FOG                            0x0B60
+#define GL_CLAMP_TO_EDGE                  0x812F
+#define GL_TEXTURE_ENV                    0x2300
+#define GL_TEXTURE_ENV_MODE               0x2200
+#define GL_TEXTURE_ENV_COLOR              0x2201
+#define GL_MODULATE                       0x2100
+#define GL_DECAL                          0x2101
+#define GL_REPLACE                        0x1E01
+#define GL_TEXTURE_BINDING_2D             0x8069
+#define GL_LUMINANCE_ALPHA                0x190A
+#define GL_ALPHA                          0x1906
+
+/* Blend factors (§4.1.7).  GL_ZERO/GL_ONE are already defined above. */
+#define GL_SRC_COLOR                      0x0300
+#define GL_ONE_MINUS_SRC_COLOR            0x0301
+#define GL_DST_COLOR                      0x0306
+#define GL_ONE_MINUS_DST_COLOR            0x0307
+#define GL_SRC_ALPHA_SATURATE             0x0308
+#define GL_BLEND_SRC                      0x0BE1
+#define GL_BLEND_DST                      0x0BE0
+
+/* Alpha test (§4.1.4). */
+#define GL_ALPHA_TEST_FUNC                0x0BC1
+#define GL_ALPHA_TEST_REF                 0x0BC2
+
+/* Fog (§3.10). */
+#define GL_FOG_MODE                       0x0B65
+#define GL_FOG_DENSITY                    0x0B62
+#define GL_FOG_START                      0x0B63
+#define GL_FOG_END                        0x0B64
+#define GL_FOG_COLOR                      0x0B66
+#define GL_EXP                            0x0800
+#define GL_EXP2                           0x0801
+/* GL_LINEAR (0x2601) doubles as a fog mode, as in the specification. */
 
 /* ---- Vertex arrays (§2.8) ---- */
 #define GL_VERTEX_ARRAY                   0x8074
@@ -254,6 +287,28 @@ void glFrontFace(GLenum mode);
 void glShadeModel(GLenum mode);
 void glPolygonMode(GLenum face, GLenum mode);
 void glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+
+/* ---- Textures, blending and fog (G6) ---- */
+void glGenTextures(GLsizei n, GLuint *textures);
+void glDeleteTextures(GLsizei n, const GLuint *textures);
+void glBindTexture(GLenum target, GLuint texture);
+GLboolean glIsTexture(GLuint texture);
+void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
+                  GLsizei width, GLsizei height, GLint border,
+                  GLenum format, GLenum type, const GLvoid *pixels);
+void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                     GLsizei width, GLsizei height, GLenum format,
+                     GLenum type, const GLvoid *pixels);
+void glTexParameteri(GLenum target, GLenum pname, GLint param);
+void glTexEnvi(GLenum target, GLenum pname, GLint param);
+void glTexEnvfv(GLenum target, GLenum pname, const GLfloat *params);
+
+void glBlendFunc(GLenum sfactor, GLenum dfactor);
+void glAlphaFunc(GLenum func, GLclampf ref);
+
+void glFogi(GLenum pname, GLint param);
+void glFogf(GLenum pname, GLfloat param);
+void glFogfv(GLenum pname, const GLfloat *params);
 
 /* ---- Lighting and materials (G5) ---- */
 void glLightf(GLenum light, GLenum pname, GLfloat param);

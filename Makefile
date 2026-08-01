@@ -286,7 +286,8 @@ USER_GUI_OBJ := $(USER_BUILD)/auragui.o
 LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
               $(USER_BUILD)/glstate.o $(USER_BUILD)/glmatrix.o \
               $(USER_BUILD)/glimm.o $(USER_BUILD)/glraster.o \
-              $(USER_BUILD)/glclip.o $(USER_BUILD)/gllight.o
+              $(USER_BUILD)/glclip.o $(USER_BUILD)/gllight.o \
+              $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o
 USER_GL_OBJ := $(LIBGL_OBJS)
 USER_CFLAGS += -I libgl/include
 
@@ -436,6 +437,16 @@ $(USER_BUILD)/glclip.o: libgl/src/glclip.c libgl/src/glcontext.h \
 
 $(USER_BUILD)/gllight.o: libgl/src/gllight.c libgl/src/glcontext.h \
                          libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/gltexture.o: libgl/src/gltexture.c libgl/src/glcontext.h \
+                           libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/glfrag.o: libgl/src/glfrag.c libgl/src/glcontext.h \
+                        libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -771,6 +782,7 @@ debug: iso
 UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glimm $(BUILD_DIR)/test_glraster \
                 $(BUILD_DIR)/test_glclip $(BUILD_DIR)/test_gllight \
+                $(BUILD_DIR)/test_gltex \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -872,7 +884,8 @@ $(BUILD_DIR)/test_glstate: tests/unit/test_glstate.c libgl/src/auraglx.c \
 $(BUILD_DIR)/test_glimm: tests/unit/test_glimm.c libgl/src/auraglx.c \
                          libgl/src/glstate.c libgl/src/glmath.c \
                          libgl/src/glmatrix.c libgl/src/glimm.c \
-                         libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c libgl/src/glcontext.h \
+                         libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
+                           libgl/src/gltexture.c libgl/src/glfrag.c libgl/src/glcontext.h \
                          libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
@@ -880,6 +893,7 @@ $(BUILD_DIR)/test_glimm: tests/unit/test_glimm.c libgl/src/auraglx.c \
 	          tests/unit/test_glimm.c libgl/src/auraglx.c libgl/src/glstate.c \
 	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
 	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
+	          libgl/src/gltexture.c libgl/src/glfrag.c \
 	          tests/unit/glstub/auragui_stub.c -o $@ -lm
 
 # test_glraster covers the G3 filled rasterizer: fill correctness, barycentric
@@ -889,6 +903,25 @@ $(BUILD_DIR)/test_glimm: tests/unit/test_glimm.c libgl/src/auraglx.c \
 # interpolation at the cut, and the glPushAttrib/glPopAttrib stack.
 # test_gllight covers the GL 1.1 lighting equation: diffuse, Blinn-Phong
 # specular, attenuation, spotlights, colour material and GL_NORMALIZE.
+# test_gltex covers texture objects, sampling with both filters and all wrap
+# modes, the texture environment, PERSPECTIVE-CORRECT interpolation, blending,
+# the alpha test and fog.
+$(BUILD_DIR)/test_gltex: tests/unit/test_gltex.c libgl/src/auraglx.c \
+                         libgl/src/glstate.c libgl/src/glmath.c \
+                         libgl/src/glmatrix.c libgl/src/glimm.c \
+                         libgl/src/glraster.c libgl/src/glclip.c \
+                         libgl/src/gllight.c libgl/src/gltexture.c \
+                         libgl/src/glfrag.c libgl/src/glcontext.h \
+                         libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I libgl/include -I libgl/src -I tests/unit/glstub \
+	          tests/unit/test_gltex.c libgl/src/auraglx.c libgl/src/glstate.c \
+	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
+	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
+	          libgl/src/gltexture.c libgl/src/glfrag.c \
+	          tests/unit/glstub/auragui_stub.c -o $@ -lm
+
 $(BUILD_DIR)/test_gllight: tests/unit/test_gllight.c libgl/src/auraglx.c \
                            libgl/src/glstate.c libgl/src/glmath.c \
                            libgl/src/glmatrix.c libgl/src/glimm.c \
@@ -901,6 +934,7 @@ $(BUILD_DIR)/test_gllight: tests/unit/test_gllight.c libgl/src/auraglx.c \
 	          tests/unit/test_gllight.c libgl/src/auraglx.c libgl/src/glstate.c \
 	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
 	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
+	          libgl/src/gltexture.c libgl/src/glfrag.c \
 	          tests/unit/glstub/auragui_stub.c -o $@ -lm
 
 $(BUILD_DIR)/test_glclip: tests/unit/test_glclip.c libgl/src/auraglx.c \
@@ -915,12 +949,14 @@ $(BUILD_DIR)/test_glclip: tests/unit/test_glclip.c libgl/src/auraglx.c \
 	          tests/unit/test_glclip.c libgl/src/auraglx.c libgl/src/glstate.c \
 	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
 	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
+	          libgl/src/gltexture.c libgl/src/glfrag.c \
 	          tests/unit/glstub/auragui_stub.c -o $@ -lm
 
 $(BUILD_DIR)/test_glraster: tests/unit/test_glraster.c libgl/src/auraglx.c \
                             libgl/src/glstate.c libgl/src/glmath.c \
                             libgl/src/glmatrix.c libgl/src/glimm.c \
-                            libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c libgl/src/glcontext.h \
+                            libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
+                           libgl/src/gltexture.c libgl/src/glfrag.c libgl/src/glcontext.h \
                             libgl/src/glvertex.h tests/unit/glstub/auragui_stub.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
@@ -928,6 +964,7 @@ $(BUILD_DIR)/test_glraster: tests/unit/test_glraster.c libgl/src/auraglx.c \
 	          tests/unit/test_glraster.c libgl/src/auraglx.c libgl/src/glstate.c \
 	          libgl/src/glmath.c libgl/src/glmatrix.c libgl/src/glimm.c \
 	          libgl/src/glraster.c libgl/src/glclip.c libgl/src/gllight.c \
+	          libgl/src/gltexture.c libgl/src/glfrag.c \
 	          tests/unit/glstub/auragui_stub.c -o $@ -lm
 
 $(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
