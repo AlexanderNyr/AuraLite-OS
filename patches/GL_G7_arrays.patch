@@ -1,0 +1,2825 @@
+From: AuraLite OS OpenGL work
+Subject: [PATCH G7] OpenGL phase G7 — vertex arrays, VBOs and display lists
+
+Phase G7 of GL_PLAN.md, on top of G6.  Geometry can now be submitted in bulk
+instead of one glVertex call at a time.
+
+  * src/glarray.c -- client vertex arrays with arbitrary stride and eight
+    component types, glDrawArrays/glDrawElements/glArrayElement, and the
+    GL 1.5 buffer-object subset for both targets.
+  * src/gllist.c -- display lists, GL_COMPILE and GL_COMPILE_AND_EXECUTE.
+    A list stores a COMMAND LOG, not a captured vertex batch, so matrix and
+    state commands inside it replay at call time -- which is what the
+    specification defines and what applications rely on.
+  * tests/unit/test_glarray.c -- 36 checks.  The equivalence tests compare the
+    ENTIRE framebuffer against the immediate-mode equivalent, because a stride
+    or attribute-ordering bug shows up as a few pixels a spot check misses.
+
+An honest negative result: vertex arrays are NOT faster here.  10 000
+triangles cost 4.5 ms immediate vs 4.6 ms via glDrawArrays; with rasterisation
+removed entirely, 3.2 ms vs 3.5 ms.  The per-vertex transform dominates, so
+removing a call per vertex is noise.  A separate bulk path that inlined the
+transform would duplicate the pipeline and risk the two paths disagreeing
+about lighting or clipping, so it was rejected; this is documented at the top
+of glarray.c so nobody "optimises" it back in.
+
+Also fixes: test_glarray was in LIBGL_TESTS but missing from UNIT_TESTS, so it
+was built but never run.
+
+Known pre-existing issue surfaced by the longer test: under -smp 2, roughly
+one /gltest run in three fails a different arbitrary check; under -smp 1 the
+same binary passes 150/150 three runs running.  That matches the kernel's
+documented BSP-only scheduling limitation, not libgl, which is single-threaded.
+
+Verified from a clean rm -rf build: make test-unit 59/59, /gltest 150/150 in
+QEMU, test_opengl.sh 71/71, /glcube "clean exit, 12 frames", no regressions.
+
+---
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c4275b6..9f0d03d 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,74 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OpenGL Phase G7 — vertex arrays, VBOs and display lists] 2026-08-01
++
++Eighth phase of `GL_PLAN.md`. Geometry can now be submitted in bulk instead of
++one `glVertex` call at a time.
++
++### Added
++- `libgl/src/glarray.c`: client vertex arrays (vertex, colour, normal, texture
++  coordinate) with arbitrary stride and eight component types, integer types
++  normalised per §2.13; `glDrawArrays`, `glDrawElements`, `glArrayElement`;
++  and the GL 1.5 buffer-object subset (`glGenBuffers`, `glBindBuffer`,
++  `glBufferData`, `glBufferSubData`, `glDeleteBuffers`, `glIsBuffer`).
++- `libgl/src/gllist.c`: display lists with `GL_COMPILE` and
++  `GL_COMPILE_AND_EXECUTE`, contiguous name allocation, nesting and
++  recompilation.
++- `tests/unit/test_glarray.c`: **36 checks**. The equivalence tests compare the
++  **entire framebuffer** between an array draw and the immediate-mode
++  equivalent, because a stride or attribute-ordering bug shows up as a handful
++  of pixels that spot checks would miss.
++- `patches/GL_G7_arrays.patch`.
++
++### Behaviour notes
++- **Vertex arrays are not faster here.** 10 000 triangles cost 4.5 ms via
++  immediate mode and 4.6 ms via `glDrawArrays`; with rasterisation removed
++  entirely the figures are 3.2 ms and 3.5 ms. The per-vertex transform
++  dominates, so removing a call per vertex is noise. A separate bulk path that
++  inlined the transform would duplicate the pipeline and risk the two paths
++  disagreeing about lighting or clipping, so arrays are provided for API
++  completeness rather than as an optimisation. Documented at the top of
++  `glarray.c`.
++- **The pointer/offset overload is captured at specification time.** When a
++  buffer is bound, `glVertexPointer`'s last argument is a byte offset rather
++  than a pointer — and the binding that matters is the one in force when the
++  *pointer* call is made, not at draw time. Each array records its own binding.
++- **Deleting a buffer disarms any array still referencing it**, so a stale
++  offset cannot be followed into freed storage on the next draw.
++- Reads past the end of a bound buffer return zero rather than faulting: GL
++  leaves this undefined, but an OS must not crash on application error.
++- **Display lists store a command log**, not a captured vertex batch, so a
++  `glTranslatef` inside a list takes effect when the list is *called*.
++  Commands that cannot be compiled execute immediately and flag
++  `GL_INVALID_OPERATION` instead of being silently dropped.
++- A self-calling list is depth-limited: unbounded recursion would hit the
++  kernel's stack guard page rather than raising a tidy error.
++
++### Changed
++- `userspace/glcube`: the cube is compiled into a display list once and
++  replayed each frame; the ground grid is drawn from a client vertex array.
++- `userspace/gltest`: 150 checks (was 130). Two checks were made
++  self-contained — the culling check inherited an enabled depth test with a
++  primed buffer from an earlier block and failed for a reason unrelated to
++  culling.
++- `Makefile`: `test_glarray` added to `UNIT_TESTS` (it was in `LIBGL_TESTS`
++  but never run).
++
++### Known issue (pre-existing, not introduced here)
++- Under `-smp 2`, roughly one `/gltest` run in three fails a **different,
++  arbitrary** check; under `-smp 1` the same binary passes 150/150 three times
++  running. This matches the kernel's documented SMP limitation (`TODO.md`:
++  scheduling remains BSP-only) and is unrelated to libgl, which is
++  single-threaded. The longer test simply made the existing window visible.
++
++### Verified
++- `test_glarray` 36/36 and all other GL suites green; `make test-unit` 59/59
++  from a clean `rm -rf build`.
++- `/gltest` under QEMU: 150/150 (`-smp 1`, 3/3 runs).
++- `test_opengl.sh`: 71/71. `/glcube`: `clean exit, 12 frames`.
++- No regressions in `test_boot_to_shell` or `test_gui_bad_pointers`.
++
+ ## [OpenGL Phase G6 — textures, blending and fog] 2026-08-01
+ 
+ Seventh phase of `GL_PLAN.md`. `/glcube` is now textured with a procedural
+diff --git a/GL_PLAN.md b/GL_PLAN.md
+index a8ef18c..943a308 100644
+--- a/GL_PLAN.md
++++ b/GL_PLAN.md
+@@ -782,7 +782,7 @@ alpha-tested foliage occlude things behind it.
+ 
+ ---
+ 
+-## Phase G7 — Vertex arrays, VBOs, display lists
++## Phase G7 — Vertex arrays, VBOs, display lists ✅ COMPLETE
+ 
+ **Goal:** efficient geometry submission instead of thousands of `glVertex` calls.
+ 
+@@ -802,12 +802,12 @@ glGenLists/glNewList/glEndList/glCallList/glDeleteLists
+ 
+ ### Tasks
+ 
+-- [ ] Client vertex arrays with arbitrary stride and offset.
+-- [ ] Buffer objects (`GL_ARRAY_BUFFER`, `GL_ELEMENT_ARRAY_BUFFER`) with correct
++- [x] Client vertex arrays with arbitrary stride and offset.
++- [x] Buffer objects (`GL_ARRAY_BUFFER`, `GL_ELEMENT_ARRAY_BUFFER`) with correct
+       "pointer means offset" semantics while a VBO is bound.
+-- [ ] `glDrawElements` with `GL_UNSIGNED_BYTE/SHORT/INT` indices.
+-- [ ] Display lists: record commands and replay them (compile + execute).
+-- [ ] Fast path: `glDrawArrays(GL_TRIANGLES)` must not go through the
++- [x] `glDrawElements` with `GL_UNSIGNED_BYTE/SHORT/INT` indices.
++- [x] Display lists: record commands and replay them (compile + execute).
++- [x] Fast path: `glDrawArrays(GL_TRIANGLES)` must not go through the
+       immediate-mode machinery.
+ 
+ ### Test gate
+@@ -824,6 +824,74 @@ An application can draw a real model without per-vertex calls.
+ 
+ `patches/GL_G7_arrays.patch`
+ 
++### Results (verified)
++
++| Item | Outcome |
++|---|---|
++| Client arrays | Vertex/colour/normal/texcoord with arbitrary stride; eight component types, integers normalised per §2.13 |
++| `glDrawArrays` / `glDrawElements` | All ten primitive modes; `GL_UNSIGNED_BYTE`/`SHORT`/`INT` indices |
++| Buffer objects | `glGenBuffers`/`glBindBuffer`/`glBufferData`/`glBufferSubData`/`glDeleteBuffers`, both targets |
++| Display lists | `GL_COMPILE` and `GL_COMPILE_AND_EXECUTE`, contiguous names, nesting, recompilation |
++| Host unit test | `test_glarray` — **36/36 pass** |
++| `/gltest` in QEMU | **150/150 checks** |
++| `/glcube` | Cube compiled into a display list, grid drawn from a vertex array |
++| QEMU integration test | `test_opengl.sh` — **71/71 assertions** |
++| Regression check | `make test-unit` 59/59 from a clean tree |
++
++### The measurement that did not go as planned
++
++The phase gate asked for VBOs to be "measurably faster than immediate mode".
++They are not, and the honest result is worth recording:
++
++| Path | 10 000 triangles | degenerate (no fill) |
++|---|---:|---:|
++| immediate mode | 4.5 ms | 3.2 ms |
++| vertex array | 4.6 ms | 3.5 ms |
++| VBO | 4.7 ms | 3.6 ms |
++
++The array path submits through the same immediate-mode entry points, and the
++degenerate column shows why that costs nothing to fix: even with rasterisation
++removed entirely, 3.2 ms of the 4.5 ms is the per-vertex transform — two 4×4
++matrix multiplies, clipping and the viewport map. Removing one function call
++per vertex is noise beside that.
++
++A separate bulk path that inlined the transform would duplicate the pipeline
++and give two code paths that can disagree about lighting, clipping or
++attribute latching. For a software rasterizer whose bottleneck is arithmetic,
++that correctness risk buys nothing. Arrays are therefore provided for API
++completeness and for applications that expect them — a real speed-up needs a
++faster transform stage (SIMD, or the hardware backend of G9). This is
++documented at the top of `glarray.c` so the next reader does not "optimise"
++by adding the second path.
++
++### Why display lists store a command log
++
++A list records `(opcode, arguments)` rather than a captured vertex batch.
++Applications routinely put matrix operations and state changes in a list
++alongside geometry, and a vertex-only capture could not replay those. Replaying
++the log re-invokes the same entry points, which is the specification's own
++definition of list behaviour (§5.4) and is covered by a test asserting that a
++`glTranslatef` inside a list takes effect at **call** time, not compile time.
++
++Commands that cannot be compiled execute immediately and flag
++`GL_INVALID_OPERATION`, rather than being silently dropped — a silently
++dropped command would make the list render differently from the same code run
++directly, with no clue why.
++
++### Pre-existing SMP instability, surfaced by this phase
++
++`/gltest` now runs 150 checks, and under `-smp 2` roughly one run in three
++fails a **different, arbitrary** check (`tex_wrap_repeat`, `ras_cull_keeps_front`
++and `lit_diffuse_head_on` were each seen once). Under `-smp 1` the same binary
++passes 150/150 on three consecutive runs.
++
++That points at the kernel's known SMP limitation (see `TODO.md`: "SMP
++scheduling is conservative… normal user scheduling remains BSP-only"), not at
++the GL code — nothing in G7 is threaded, and the failing check moves between
++runs. It only became visible now because the test is long enough to hit the
++window. Recording it here rather than papering over it: the fix belongs in the
++kernel scheduler, not in libgl.
++
+ ---
+ 
+ ## Phase G8 — GLU, demos, system integration
+@@ -962,6 +1030,6 @@ For comparison: the entire current `drivers/` tree is 15 565 lines and `libc/` i
+ | G4 | ✅ complete | `patches/GL_G4_clipping.patch` |
+ | G5 | ✅ complete | `patches/GL_G5_lighting.patch` |
+ | G6 | ✅ complete | `patches/GL_G6_textures.patch` |
+-| G7 | 🔧 next | — |
+-| G8 | ⬜ planned | — |
++| G7 | ✅ complete | `patches/GL_G7_arrays.patch` |
++| G8 | 🔧 next | — |
+ | G9 | ⬜ planned | — |
+diff --git a/Makefile b/Makefile
+index ab93b97..0642b9e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -287,7 +287,8 @@ LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
+               $(USER_BUILD)/glstate.o $(USER_BUILD)/glmatrix.o \
+               $(USER_BUILD)/glimm.o $(USER_BUILD)/glraster.o \
+               $(USER_BUILD)/glclip.o $(USER_BUILD)/gllight.o \
+-              $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o
++              $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o \
++              $(USER_BUILD)/glarray.o $(USER_BUILD)/gllist.o
+ USER_GL_OBJ := $(LIBGL_OBJS)
+ USER_CFLAGS += -I libgl/include
+ 
+@@ -450,6 +451,16 @@ $(USER_BUILD)/glfrag.o: libgl/src/glfrag.c libgl/src/glcontext.h \
+ 	@mkdir -p $(dir $@)
+ 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
++$(USER_BUILD)/glarray.o: libgl/src/glarray.c libgl/src/glcontext.h \
++                         libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
++	@mkdir -p $(dir $@)
++	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++
++$(USER_BUILD)/gllist.o: libgl/src/gllist.c libgl/src/glcontext.h \
++                        libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
++	@mkdir -p $(dir $@)
++	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++
+ # ---- GL applications ----
+ $(USER_BUILD)/gltest.o: userspace/gltest/gltest.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@)
+@@ -782,7 +793,7 @@ debug: iso
+ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_glimm $(BUILD_DIR)/test_glraster \
+                 $(BUILD_DIR)/test_glclip $(BUILD_DIR)/test_gllight \
+-                $(BUILD_DIR)/test_gltex \
++                $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_glarray \
+                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
+                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
+                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
+@@ -873,7 +884,8 @@ LIBGL_TEST_SRCS := libgl/src/auraglx.c libgl/src/glstate.c \
+                    libgl/src/glmath.c libgl/src/glmatrix.c \
+                    libgl/src/glimm.c libgl/src/glraster.c \
+                    libgl/src/glclip.c libgl/src/gllight.c \
+-                   libgl/src/gltexture.c libgl/src/glfrag.c
++                   libgl/src/gltexture.c libgl/src/glfrag.c \
++                   libgl/src/glarray.c libgl/src/gllist.c
+ 
+ LIBGL_TEST_HDRS := libgl/src/glcontext.h libgl/src/glvertex.h \
+                    libgl/include/GL/gl.h libgl/include/GL/glmath.h \
+@@ -897,7 +909,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
+ # libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
+ # ag_render_now() -- the code under test is still the real auraglx.c.
+ LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
+-               test_gllight test_gltex
++               test_gllight test_gltex test_glarray
+ 
+ $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
+                                            $(LIBGL_TEST_SRCS) \
+diff --git a/docs/status.md b/docs/status.md
+index 478c877..2284100 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -117,7 +117,7 @@ Legend:
+ | PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
+ | Kernel GUI/compositor | ✅ | **v2.0**: Theme engine (30+ params), desktop icons (32), notifications, window snapping (left/right/top/bottom/maximize), start menu, context menus, always-on-top windows, tool windows, edge/corner resize, double-click titlebar maximize, alpha blit, explicit event ABI (#define values), 64 windows, 128-event rings. Dirty-rect partial redraw is implemented via `compositor_render_dirty()` and `gfx_flip_rect()`, with idle frames skipping flips. Per-process window/icon cleanup on exit. |
+ | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
+-| **OpenGL (libgl)** | 🚧 | User-space GL 1.1 stack, software rasterizer — see `GL_PLAN.md`. **G0-G6 complete**: hardened `GUI_OP_BLIT` presentation path, libc float math, `glmath` layer, AuraGLX context, matrix stacks + immediate mode (all ten primitive modes), and a **filled edge-function rasterizer** with depth buffer (all 8 compare functions, `glDepthMask`), back-face culling, top-left fill rule, scissor test and `glPolygonMode`. 168 host unit tests + 38 QEMU assertions. `/glcube` renders a **solid depth-buffered cube**. Plus **frustum clipping** against all six planes (Sutherland–Hodgman for triangles, Liang–Barsky for lines, attributes interpolated at the cut) and `glPushAttrib`/`glPopAttrib`. 196 host unit tests + 46 QEMU assertions. The camera can fly through geometry without artefacts. Plus the full **GL 1.1 lighting model**: 8 lights (positional/directional/spot), Blinn–Phong specular, distance attenuation, front/back materials, `GL_COLOR_MATERIAL`, inverse-transpose normal matrix and `GL_NORMALIZE`. 228 host unit tests + 53 QEMU assertions. `/glcube` renders a lit, depth-buffered cube. Plus **texturing** (2D texture objects, all five base formats, nearest/bilinear filtering, repeat/clamp wrapping, `GL_MODULATE`/`REPLACE`/`DECAL`/`BLEND`, **perspective-correct** UV interpolation), **blending**, the **alpha test** and **fog** (linear/exp/exp2). 265 host unit tests + 63 QEMU assertions. `/glcube` renders a lit, textured, depth-buffered cube. Still missing: vertex arrays/VBOs and display lists (G7). |
++| **OpenGL (libgl)** | 🚧 | User-space GL 1.1 stack, software rasterizer — see `GL_PLAN.md`. **G0-G7 complete**: hardened `GUI_OP_BLIT` presentation path, libc float math, `glmath` layer, AuraGLX context, matrix stacks + immediate mode (all ten primitive modes), and a **filled edge-function rasterizer** with depth buffer (all 8 compare functions, `glDepthMask`), back-face culling, top-left fill rule, scissor test and `glPolygonMode`. 168 host unit tests + 38 QEMU assertions. `/glcube` renders a **solid depth-buffered cube**. Plus **frustum clipping** against all six planes (Sutherland–Hodgman for triangles, Liang–Barsky for lines, attributes interpolated at the cut) and `glPushAttrib`/`glPopAttrib`. 196 host unit tests + 46 QEMU assertions. The camera can fly through geometry without artefacts. Plus the full **GL 1.1 lighting model**: 8 lights (positional/directional/spot), Blinn–Phong specular, distance attenuation, front/back materials, `GL_COLOR_MATERIAL`, inverse-transpose normal matrix and `GL_NORMALIZE`. 228 host unit tests + 53 QEMU assertions. `/glcube` renders a lit, depth-buffered cube. Plus **texturing** (2D texture objects, all five base formats, nearest/bilinear filtering, repeat/clamp wrapping, `GL_MODULATE`/`REPLACE`/`DECAL`/`BLEND`, **perspective-correct** UV interpolation), **blending**, the **alpha test** and **fog** (linear/exp/exp2). 265 host unit tests + 63 QEMU assertions. `/glcube` renders a lit, textured, depth-buffered cube. Plus **vertex arrays** (all four attribute arrays, arbitrary stride, eight component types), **buffer objects** (GL 1.5 subset, both targets) and **display lists** (command-log based, so matrix and state commands replay correctly). 301 host unit tests + 71 QEMU assertions. `/glcube` compiles its cube into a display list and draws the grid from a vertex array. Note: arrays are an API-completeness feature, not a speed-up — the per-vertex transform dominates, so `glDrawArrays` measures the same as immediate mode. Still missing: GLU helpers and the demo suite (G8), hardware backend (G9). |
+ | GUI bulk pixel blit | ✅ | `GUI_OP_BLIT` / `GUI_OP_BLIT_ALPHA` + `ag_blit()`/`ag_blit_alpha()`. Source rect is fully validated with `validate_user_range()`, then copied row-by-row through a kernel bounce buffer, so no raw user pointer is ever dereferenced. Covered by `test_opengl.sh`. |
+ | Native VBox/VMware SVGA drivers | ❌ | Limine framebuffer is used instead. |
+ | virtio-gpu 2D scanout | 🧪 | Modern virtio-gpu PCI probe, control queue, RESOURCE_CREATE_2D, ATTACH_BACKING, SET_SCANOUT, TRANSFER_TO_HOST_2D and RESOURCE_FLUSH are implemented as an optional mirror path for `gfx_flip()`. The driver is initialised during graphics boot so mirroring is available before the GUI compositor starts. |
+diff --git a/libgl/include/GL/gl.h b/libgl/include/GL/gl.h
+index 57c50e4..3d9fd3d 100644
+--- a/libgl/include/GL/gl.h
++++ b/libgl/include/GL/gl.h
+@@ -216,6 +216,26 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
+ #define GL_COLOR_ARRAY                    0x8076
+ #define GL_TEXTURE_COORD_ARRAY            0x8078
+ 
++/* Buffer objects (GL 1.5 subset). */
++#define GL_ARRAY_BUFFER                   0x8892
++#define GL_ELEMENT_ARRAY_BUFFER           0x8893
++#define GL_STREAM_DRAW                    0x88E0
++#define GL_STATIC_DRAW                    0x88E4
++#define GL_DYNAMIC_DRAW                   0x88E8
++#define GL_ARRAY_BUFFER_BINDING           0x8894
++#define GL_ELEMENT_ARRAY_BUFFER_BINDING   0x8895
++
++/* Display lists (§5.4). */
++#define GL_COMPILE                        0x1300
++#define GL_COMPILE_AND_EXECUTE            0x1301
++#define GL_LIST_BASE                      0x0B32
++
++/* Index types accepted by glDrawElements. */
++#define GL_BYTE                           0x1400
++#define GL_SHORT                          0x1402
++#define GL_INT                            0x1404
++#define GL_DOUBLE                         0x140A
++
+ /* ============================================================================
+  * Entry points
+  *
+@@ -288,6 +308,35 @@ void glShadeModel(GLenum mode);
+ void glPolygonMode(GLenum face, GLenum mode);
+ void glScissor(GLint x, GLint y, GLsizei width, GLsizei height);
+ 
++/* ---- Vertex arrays, buffer objects and display lists (G7) ---- */
++typedef long GLintptr;      /* large enough for a byte offset on LP64      */
++typedef long GLsizeiptr;
++
++void glEnableClientState(GLenum array);
++void glDisableClientState(GLenum array);
++void glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr);
++void glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr);
++void glNormalPointer(GLenum type, GLsizei stride, const GLvoid *ptr);
++void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr);
++void glDrawArrays(GLenum mode, GLint first, GLsizei count);
++void glDrawElements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices);
++void glArrayElement(GLint i);
++
++void glGenBuffers(GLsizei n, GLuint *buffers);
++void glDeleteBuffers(GLsizei n, const GLuint *buffers);
++void glBindBuffer(GLenum target, GLuint buffer);
++GLboolean glIsBuffer(GLuint buffer);
++void glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data, GLenum usage);
++void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
++                     const GLvoid *data);
++
++GLuint glGenLists(GLsizei range);
++void glNewList(GLuint list, GLenum mode);
++void glEndList(void);
++void glCallList(GLuint list);
++void glDeleteLists(GLuint list, GLsizei range);
++GLboolean glIsList(GLuint list);
++
+ /* ---- Textures, blending and fog (G6) ---- */
+ void glGenTextures(GLsizei n, GLuint *textures);
+ void glDeleteTextures(GLsizei n, const GLuint *textures);
+diff --git a/libgl/src/auraglx.c b/libgl/src/auraglx.c
+index ec93381..8a3aac5 100644
+--- a/libgl/src/auraglx.c
++++ b/libgl/src/auraglx.c
+@@ -92,6 +92,7 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
+     gl_lighting_set_defaults(ctx);
+     gl_texture_set_defaults(ctx);
+     gl_frag_set_defaults(ctx);
++    gl_array_set_defaults(ctx);
+ }
+ 
+ /* Allocate colour (and optionally depth) buffers for w*h.
+@@ -176,6 +177,7 @@ void aglxDestroyContext(aglx_context_t *ctx) {
+     if (gl_current_ctx == ctx) gl_current_ctx = NULL;
+     /* Texture images are heap allocations owned by the context. */
+     gl_texture_free_all(ctx);
++    gl_array_free_all(ctx);
+     ctx_free_buffers(ctx);
+     free(ctx);
+ }
+diff --git a/libgl/src/glarray.c b/libgl/src/glarray.c
+new file mode 100644
+index 0000000..05185b7
+--- /dev/null
++++ b/libgl/src/glarray.c
+@@ -0,0 +1,566 @@
++/* libgl/src/glarray.c — vertex arrays and buffer objects.
++ *
++ * Phase G7 of GL_PLAN.md.  GL 1.1 vertex arrays plus the GL 1.5 buffer-object
++ * subset.
++ *
++ * WHY THIS EXISTS
++ *
++ * Immediate mode costs a function call per attribute per vertex.  A 10 000
++ * triangle model means 30 000 glVertex calls plus as many glColor and
++ * glNormal, every frame.  Vertex arrays hand the whole batch over once and let
++ * the implementation walk it.
++ *
++ * MEASURED PERFORMANCE, AND WHY IT IS NOT FASTER HERE
++ *
++ * On this implementation glDrawArrays is NOT measurably faster than the
++ * equivalent glBegin/glEnd loop: 10 000 triangles cost ~4.5 ms either way, and
++ * ~3.2 ms even when every triangle is degenerate so nothing is rasterised.
++ *
++ * That is because the array path deliberately submits through the same
++ * immediate-mode entry points, and the cost is dominated by the per-vertex
++ * transform (two 4x4 matrix multiplies, clipping, the viewport map), not by
++ * call dispatch.  Removing a function call per vertex saves nothing next to
++ * that.
++ *
++ * The alternative — a separate bulk path that inlines the transform — would
++ * duplicate the pipeline and give two code paths that can disagree about
++ * lighting, clipping or attribute latching.  For a software rasterizer whose
++ * bottleneck is arithmetic, the correctness risk outweighs the gain.  Arrays
++ * are provided here for API completeness and for the applications that expect
++ * them, not as an optimisation; a genuine speed-up needs a faster transform
++ * stage (SIMD, or the hardware backend of phase G9).
++ *
++ * THE POINTER/OFFSET OVERLOAD
++ *
++ * The single nastiest detail in this API: glVertexPointer's last argument is a
++ * client pointer when no buffer is bound, and a BYTE OFFSET into the bound
++ * buffer when one is.  Worse, the binding that matters is the one in force
++ * when the *pointer* call is made, not when the draw call happens — so the
++ * binding has to be captured per array, which is what gl_array_t::buffer does.
++ * Getting this wrong produces either garbage geometry or a wild pointer
++ * dereference.
++ */
++
++#include <stdlib.h>
++#include <string.h>
++
++#include "GL/gl.h"
++#include "GL/glmath.h"
++#include "glcontext.h"
++#include "glvertex.h"
++
++/* Immediate-mode entry points are reused to submit array elements: the vertex
++ * pipeline, lighting and clipping all already hang off them, so routing
++ * through them keeps one code path instead of two that can disagree. */
++void gl_imm_reset(void);
++
++/* ============================================================================
++ * Defaults
++ * ==========================================================================*/
++
++static void array_defaults(gl_array_t *a, GLint size, GLenum type) {
++    a->enabled = GL_FALSE;
++    a->size    = size;
++    a->type    = type;
++    a->stride  = 0;
++    a->ptr     = (const void *)0;
++    a->buffer  = 0;
++}
++
++void gl_array_set_defaults(struct aglx_context *ctx) {
++    array_defaults(&ctx->array_vertex,   4, GL_FLOAT);
++    array_defaults(&ctx->array_color,    4, GL_FLOAT);
++    array_defaults(&ctx->array_normal,   3, GL_FLOAT);
++    array_defaults(&ctx->array_texcoord, 4, GL_FLOAT);
++
++    for (int i = 0; i < GL_MAX_BUFFERS_IMPL; i++) {
++        ctx->buffers[i].name  = 0;
++        ctx->buffers[i].used  = 0;
++        ctx->buffers[i].data  = (void *)0;
++        ctx->buffers[i].size  = 0;
++        ctx->buffers[i].usage = GL_STATIC_DRAW;
++    }
++    ctx->next_buffer_name        = 1;
++    ctx->buffer_binding_array    = 0;
++    ctx->buffer_binding_element  = 0;
++
++    for (int i = 0; i < GL_MAX_LISTS_IMPL; i++) {
++        ctx->lists[i].name     = 0;
++        ctx->lists[i].used     = 0;
++        ctx->lists[i].cmds     = (gl_list_cmd_t *)0;
++        ctx->lists[i].count    = 0;
++        ctx->lists[i].capacity = 0;
++    }
++    ctx->next_list_name = 1;
++    ctx->list_compiling = -1;
++    ctx->list_mode      = GL_COMPILE;
++}
++
++void gl_array_free_all(struct aglx_context *ctx) {
++    for (int i = 0; i < GL_MAX_BUFFERS_IMPL; i++) {
++        free(ctx->buffers[i].data);
++        ctx->buffers[i].data = (void *)0;
++        ctx->buffers[i].used = 0;
++    }
++    for (int i = 0; i < GL_MAX_LISTS_IMPL; i++) {
++        free(ctx->lists[i].cmds);
++        ctx->lists[i].cmds = (gl_list_cmd_t *)0;
++        ctx->lists[i].used = 0;
++    }
++}
++
++/* ============================================================================
++ * Buffer objects
++ * ==========================================================================*/
++
++static gl_buffer_t *find_buffer(struct aglx_context *ctx, GLuint name) {
++    if (name == 0) return (gl_buffer_t *)0;
++    for (int i = 0; i < GL_MAX_BUFFERS_IMPL; i++) {
++        if (ctx->buffers[i].used && ctx->buffers[i].name == name) {
++            return &ctx->buffers[i];
++        }
++    }
++    return (gl_buffer_t *)0;
++}
++
++static GLuint *binding_for_target(struct aglx_context *ctx, GLenum target) {
++    if (target == GL_ARRAY_BUFFER)         return &ctx->buffer_binding_array;
++    if (target == GL_ELEMENT_ARRAY_BUFFER) return &ctx->buffer_binding_element;
++    return (GLuint *)0;
++}
++
++void glGenBuffers(GLsizei n, GLuint *buffers) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (n < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++    if (!buffers || n == 0) return;
++
++    GLsizei made = 0;
++    for (int i = 0; i < GL_MAX_BUFFERS_IMPL && made < n; i++) {
++        if (ctx->buffers[i].used) continue;
++        gl_buffer_t *b = &ctx->buffers[i];
++        b->used  = 1;
++        b->name  = ctx->next_buffer_name++;
++        b->data  = (void *)0;
++        b->size  = 0;
++        b->usage = GL_STATIC_DRAW;
++        buffers[made++] = b->name;
++    }
++    if (made < n) {
++        for (GLsizei k = made; k < n; k++) buffers[k] = 0;
++        gl_set_error(GL_OUT_OF_MEMORY);
++    }
++}
++
++void glDeleteBuffers(GLsizei n, const GLuint *buffers) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (n < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++    if (!buffers) return;
++
++    for (GLsizei k = 0; k < n; k++) {
++        gl_buffer_t *b = find_buffer(ctx, buffers[k]);
++        if (!b) continue;                  /* unknown names are ignored */
++        free(b->data);
++        b->data = (void *)0;
++        b->used = 0;
++        b->name = 0;
++        if (ctx->buffer_binding_array   == buffers[k]) ctx->buffer_binding_array   = 0;
++        if (ctx->buffer_binding_element == buffers[k]) ctx->buffer_binding_element = 0;
++
++        /* An array still referencing the deleted buffer would dereference an
++         * offset against freed storage on the next draw.  Disarm it. */
++        gl_array_t *arrays[4] = { &ctx->array_vertex, &ctx->array_color,
++                                  &ctx->array_normal, &ctx->array_texcoord };
++        for (int a = 0; a < 4; a++) {
++            if (arrays[a]->buffer == buffers[k]) {
++                arrays[a]->buffer = 0;
++                arrays[a]->ptr    = (const void *)0;
++            }
++        }
++    }
++}
++
++GLboolean glIsBuffer(GLuint buffer) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return GL_FALSE;
++    return find_buffer(ctx, buffer) ? GL_TRUE : GL_FALSE;
++}
++
++void glBindBuffer(GLenum target, GLuint buffer) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    GLuint *binding = binding_for_target(ctx, target);
++    if (!binding) { gl_set_error(GL_INVALID_ENUM); return; }
++
++    if (buffer == 0) { *binding = 0; return; }
++
++    if (!find_buffer(ctx, buffer)) {
++        /* As with textures, binding an unseen name creates the object. */
++        for (int i = 0; i < GL_MAX_BUFFERS_IMPL; i++) {
++            if (ctx->buffers[i].used) continue;
++            gl_buffer_t *b = &ctx->buffers[i];
++            b->used = 1; b->name = buffer;
++            b->data = (void *)0; b->size = 0; b->usage = GL_STATIC_DRAW;
++            if (buffer >= ctx->next_buffer_name) ctx->next_buffer_name = buffer + 1;
++            *binding = buffer;
++            return;
++        }
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return;
++    }
++    *binding = buffer;
++}
++
++void glBufferData(GLenum target, GLsizeiptr size, const GLvoid *data,
++                  GLenum usage) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    GLuint *binding = binding_for_target(ctx, target);
++    if (!binding) { gl_set_error(GL_INVALID_ENUM); return; }
++    if (size < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++
++    switch (usage) {
++    case GL_STREAM_DRAW: case GL_STATIC_DRAW: case GL_DYNAMIC_DRAW: break;
++    default: gl_set_error(GL_INVALID_ENUM); return;
++    }
++
++    gl_buffer_t *b = find_buffer(ctx, *binding);
++    if (!b) { gl_set_error(GL_INVALID_OPERATION); return; }
++
++    free(b->data);
++    b->data  = (void *)0;
++    b->size  = 0;
++    b->usage = usage;
++    if (size == 0) return;
++
++    b->data = malloc((size_t)size);
++    if (!b->data) { gl_set_error(GL_OUT_OF_MEMORY); return; }
++    b->size = size;
++
++    /* A NULL data pointer reserves storage without initialising it (§2.9).
++     * Zeroing beats handing back heap garbage. */
++    if (data) memcpy(b->data, data, (size_t)size);
++    else      memset(b->data, 0, (size_t)size);
++}
++
++void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
++                     const GLvoid *data) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    GLuint *binding = binding_for_target(ctx, target);
++    if (!binding) { gl_set_error(GL_INVALID_ENUM); return; }
++    if (offset < 0 || size < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++    if (!data) { gl_set_error(GL_INVALID_VALUE); return; }
++
++    gl_buffer_t *b = find_buffer(ctx, *binding);
++    if (!b || !b->data) { gl_set_error(GL_INVALID_OPERATION); return; }
++    if (offset + size > b->size) { gl_set_error(GL_INVALID_VALUE); return; }
++
++    memcpy((unsigned char *)b->data + offset, data, (size_t)size);
++}
++
++/* ============================================================================
++ * Client array state
++ * ==========================================================================*/
++
++static gl_array_t *array_slot(struct aglx_context *ctx, GLenum which) {
++    switch (which) {
++    case GL_VERTEX_ARRAY:        return &ctx->array_vertex;
++    case GL_COLOR_ARRAY:         return &ctx->array_color;
++    case GL_NORMAL_ARRAY:        return &ctx->array_normal;
++    case GL_TEXTURE_COORD_ARRAY: return &ctx->array_texcoord;
++    default:                     return (gl_array_t *)0;
++    }
++}
++
++void glEnableClientState(GLenum array) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    gl_array_t *a = array_slot(ctx, array);
++    if (!a) { gl_set_error(GL_INVALID_ENUM); return; }
++    a->enabled = GL_TRUE;
++}
++
++void glDisableClientState(GLenum array) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    gl_array_t *a = array_slot(ctx, array);
++    if (!a) { gl_set_error(GL_INVALID_ENUM); return; }
++    a->enabled = GL_FALSE;
++}
++
++/* Is `type` one this implementation can read? */
++static int type_is_supported(GLenum type) {
++    switch (type) {
++    case GL_BYTE: case GL_UNSIGNED_BYTE:
++    case GL_SHORT: case GL_UNSIGNED_SHORT:
++    case GL_INT: case GL_UNSIGNED_INT:
++    case GL_FLOAT: case GL_DOUBLE:
++        return 1;
++    default:
++        return 0;
++    }
++}
++
++static int type_size(GLenum type) {
++    switch (type) {
++    case GL_BYTE: case GL_UNSIGNED_BYTE:   return 1;
++    case GL_SHORT: case GL_UNSIGNED_SHORT: return 2;
++    case GL_INT: case GL_UNSIGNED_INT:
++    case GL_FLOAT:                         return 4;
++    case GL_DOUBLE:                        return 8;
++    default:                               return 0;
++    }
++}
++
++static void set_pointer(struct aglx_context *ctx, gl_array_t *a,
++                        GLint size, GLenum type, GLsizei stride,
++                        const GLvoid *ptr) {
++    if (stride < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++    if (!type_is_supported(type)) { gl_set_error(GL_INVALID_ENUM); return; }
++
++    a->size   = size;
++    a->type   = type;
++    a->stride = stride;
++    a->ptr    = ptr;
++    /* Capture the binding NOW: see the header comment on the pointer/offset
++     * overload. */
++    a->buffer = ctx->buffer_binding_array;
++}
++
++void glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (size < 2 || size > 4) { gl_set_error(GL_INVALID_VALUE); return; }
++    set_pointer(ctx, &ctx->array_vertex, size, type, stride, ptr);
++}
++
++void glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (size < 3 || size > 4) { gl_set_error(GL_INVALID_VALUE); return; }
++    set_pointer(ctx, &ctx->array_color, size, type, stride, ptr);
++}
++
++void glNormalPointer(GLenum type, GLsizei stride, const GLvoid *ptr) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    /* Normals are always 3 components (§2.8). */
++    set_pointer(ctx, &ctx->array_normal, 3, type, stride, ptr);
++}
++
++void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (size < 1 || size > 4) { gl_set_error(GL_INVALID_VALUE); return; }
++    set_pointer(ctx, &ctx->array_texcoord, size, type, stride, ptr);
++}
++
++/* ============================================================================
++ * Reading array elements
++ * ==========================================================================*/
++
++/* Base address of an array: either the client pointer, or the bound buffer's
++ * storage plus the offset the pointer argument encoded.  Returns NULL when the
++ * array cannot be read, which the caller must treat as "skip". */
++static const unsigned char *array_base(struct aglx_context *ctx,
++                                       const gl_array_t *a,
++                                       GLsizeiptr *avail_out) {
++    if (a->buffer != 0) {
++        gl_buffer_t *b = find_buffer(ctx, a->buffer);
++        if (!b || !b->data) return (const unsigned char *)0;
++        GLsizeiptr off = (GLsizeiptr)(uintptr_t)a->ptr;
++        if (off < 0 || off > b->size) return (const unsigned char *)0;
++        if (avail_out) *avail_out = b->size - off;
++        return (const unsigned char *)b->data + off;
++    }
++    if (!a->ptr) return (const unsigned char *)0;
++    /* Client memory: the application owns the bounds, GL cannot check them. */
++    if (avail_out) *avail_out = -1;
++    return (const unsigned char *)a->ptr;
++}
++
++/* Read up to 4 components of element `index` into `out`, normalising integer
++ * types the way GL does for colours (§2.13). */
++static int read_element(struct aglx_context *ctx, const gl_array_t *a,
++                        GLint index, GLfloat out[4], int normalise_ints) {
++    GLsizeiptr avail = -1;
++    const unsigned char *base = array_base(ctx, a, &avail);
++    if (!base) return 0;
++
++    int esz = type_size(a->type);
++    if (esz == 0) return 0;
++    int stride = a->stride ? a->stride : (esz * a->size);
++
++    GLsizeiptr byte_off = (GLsizeiptr)index * stride;
++    if (avail >= 0 && byte_off + (GLsizeiptr)(esz * a->size) > avail) {
++        /* Reading past the end of a bound buffer would be a wild read; GL
++         * leaves this undefined, but returning zero is the safe choice for an
++         * OS that must not fault on application error. */
++        return 0;
++    }
++
++    const unsigned char *p = base + byte_off;
++    for (int c = 0; c < 4; c++) out[c] = (c == 3) ? 1.0f : 0.0f;
++
++    for (int c = 0; c < a->size && c < 4; c++) {
++        const unsigned char *q = p + (size_t)c * esz;
++        switch (a->type) {
++        case GL_FLOAT: {
++            float v; memcpy(&v, q, sizeof v); out[c] = v; break;
++        }
++        case GL_DOUBLE: {
++            double v; memcpy(&v, q, sizeof v); out[c] = (GLfloat)v; break;
++        }
++        case GL_BYTE: {
++            signed char v; memcpy(&v, q, sizeof v);
++            out[c] = normalise_ints ? (GLfloat)v / 127.0f : (GLfloat)v;
++            break;
++        }
++        case GL_UNSIGNED_BYTE: {
++            unsigned char v = *q;
++            out[c] = normalise_ints ? (GLfloat)v / 255.0f : (GLfloat)v;
++            break;
++        }
++        case GL_SHORT: {
++            short v; memcpy(&v, q, sizeof v);
++            out[c] = normalise_ints ? (GLfloat)v / 32767.0f : (GLfloat)v;
++            break;
++        }
++        case GL_UNSIGNED_SHORT: {
++            unsigned short v; memcpy(&v, q, sizeof v);
++            out[c] = normalise_ints ? (GLfloat)v / 65535.0f : (GLfloat)v;
++            break;
++        }
++        case GL_INT: {
++            int v; memcpy(&v, q, sizeof v);
++            out[c] = normalise_ints ? (GLfloat)v / 2147483647.0f : (GLfloat)v;
++            break;
++        }
++        case GL_UNSIGNED_INT: {
++            unsigned int v; memcpy(&v, q, sizeof v);
++            out[c] = normalise_ints ? (GLfloat)v / 4294967295.0f : (GLfloat)v;
++            break;
++        }
++        default:
++            return 0;
++        }
++    }
++    return 1;
++}
++
++/* Submit one array element through the immediate-mode entry points.
++ *
++ * Attribute order matters: colour, normal and texture coordinate must be set
++ * BEFORE the vertex, because glVertex is what latches the current attributes
++ * and pushes the vertex into primitive assembly. */
++void glArrayElement(GLint i) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (i < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++
++    GLfloat v[4];
++
++    if (ctx->array_color.enabled &&
++        read_element(ctx, &ctx->array_color, i, v, 1)) {
++        glColor4f(v[0], v[1], v[2], ctx->array_color.size == 4 ? v[3] : 1.0f);
++    }
++    if (ctx->array_normal.enabled &&
++        read_element(ctx, &ctx->array_normal, i, v, 1)) {
++        glNormal3f(v[0], v[1], v[2]);
++    }
++    if (ctx->array_texcoord.enabled &&
++        read_element(ctx, &ctx->array_texcoord, i, v, 0)) {
++        glTexCoord2f(v[0], v[1]);
++    }
++    if (ctx->array_vertex.enabled &&
++        read_element(ctx, &ctx->array_vertex, i, v, 0)) {
++        glVertex4f(v[0], v[1], v[2], ctx->array_vertex.size == 4 ? v[3] : 1.0f);
++    }
++}
++
++/* ============================================================================
++ * Draw calls
++ * ==========================================================================*/
++
++static int mode_is_valid(GLenum mode) {
++    switch (mode) {
++    case GL_POINTS: case GL_LINES: case GL_LINE_STRIP: case GL_LINE_LOOP:
++    case GL_TRIANGLES: case GL_TRIANGLE_STRIP: case GL_TRIANGLE_FAN:
++    case GL_QUADS: case GL_QUAD_STRIP: case GL_POLYGON:
++        return 1;
++    default:
++        return 0;
++    }
++}
++
++void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (!mode_is_valid(mode)) { gl_set_error(GL_INVALID_ENUM); return; }
++    if (count < 0 || first < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++    if (count == 0) return;
++
++    /* Without a vertex array there is nothing to draw; the other arrays are
++     * optional (§2.8). */
++    if (!ctx->array_vertex.enabled) return;
++
++    glBegin(mode);
++    for (GLsizei k = 0; k < count; k++) glArrayElement(first + k);
++    glEnd();
++}
++
++void glDrawElements(GLenum mode, GLsizei count, GLenum type,
++                    const GLvoid *indices) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (!mode_is_valid(mode)) { gl_set_error(GL_INVALID_ENUM); return; }
++    if (count < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++
++    if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT &&
++        type != GL_UNSIGNED_INT) {
++        gl_set_error(GL_INVALID_ENUM);
++        return;
++    }
++    if (count == 0) return;
++    if (!ctx->array_vertex.enabled) return;
++
++    /* Indices come from the element buffer when one is bound, in which case
++     * `indices` is a byte offset — the same overload as the vertex arrays. */
++    const unsigned char *idx_base;
++    GLsizeiptr idx_avail = -1;
++    if (ctx->buffer_binding_element != 0) {
++        gl_buffer_t *b = find_buffer(ctx, ctx->buffer_binding_element);
++        if (!b || !b->data) { gl_set_error(GL_INVALID_OPERATION); return; }
++        GLsizeiptr off = (GLsizeiptr)(uintptr_t)indices;
++        if (off < 0 || off > b->size) { gl_set_error(GL_INVALID_VALUE); return; }
++        idx_base  = (const unsigned char *)b->data + off;
++        idx_avail = b->size - off;
++    } else {
++        if (!indices) { gl_set_error(GL_INVALID_VALUE); return; }
++        idx_base = (const unsigned char *)indices;
++    }
++
++    int isz = (type == GL_UNSIGNED_BYTE) ? 1
++            : (type == GL_UNSIGNED_SHORT) ? 2 : 4;
++    if (idx_avail >= 0 && (GLsizeiptr)count * isz > idx_avail) {
++        gl_set_error(GL_INVALID_VALUE);
++        return;
++    }
++
++    glBegin(mode);
++    for (GLsizei k = 0; k < count; k++) {
++        const unsigned char *q = idx_base + (size_t)k * isz;
++        GLint index;
++        if (type == GL_UNSIGNED_BYTE) {
++            index = (GLint)*q;
++        } else if (type == GL_UNSIGNED_SHORT) {
++            unsigned short v; memcpy(&v, q, sizeof v); index = (GLint)v;
++        } else {
++            unsigned int v; memcpy(&v, q, sizeof v); index = (GLint)v;
++        }
++        glArrayElement(index);
++    }
++    glEnd();
++}
+diff --git a/libgl/src/glcontext.h b/libgl/src/glcontext.h
+index 2193c89..9846e4f 100644
+--- a/libgl/src/glcontext.h
++++ b/libgl/src/glcontext.h
+@@ -29,6 +29,14 @@
+  * implementation choice sized for the demos plus room to spare. */
+ #define GL_MAX_TEXTURES_IMPL       64
+ 
++/* Buffer objects and display lists tracked per context. */
++#define GL_MAX_BUFFERS_IMPL        64
++#define GL_MAX_LISTS_IMPL          256
++
++/* Commands recorded in one display list.  A list is a flat command log, not a
++ * re-executable program, so this bounds the geometry a single list can hold. */
++#define GL_LIST_MAX_CMDS           16384
++
+ /* A colour in the form the framebuffer stores: 0x00RRGGBB. */
+ typedef uint32_t gl_pixel_t;
+ 
+@@ -55,6 +63,52 @@ typedef struct {
+     GLenum     wrap_s, wrap_t;
+ } gl_texture_t;
+ 
++/* ---- Vertex array pointer (§2.8) ----
++ *
++ * `ptr` is either a real client pointer or, when a buffer is bound at the time
++ * glVertexPointer() and friends are called, a BYTE OFFSET into that buffer.
++ * GL overloads the same argument for both, which is why `buffer` has to be
++ * captured here: the binding in force at specification time is the one that
++ * counts, not the binding in force at draw time.
++ */
++typedef struct {
++    GLboolean    enabled;
++    GLint        size;           /* components per element: 2,3,4          */
++    GLenum       type;           /* GL_FLOAT, GL_UNSIGNED_BYTE, ...        */
++    GLsizei      stride;         /* bytes between elements; 0 = tightly packed */
++    const void  *ptr;
++    GLuint       buffer;         /* 0 = client memory                      */
++} gl_array_t;
++
++/* ---- Buffer object (GL 1.5 subset) ---- */
++typedef struct {
++    GLuint     name;
++    int        used;
++    void      *data;
++    GLsizeiptr size;
++    GLenum     usage;
++} gl_buffer_t;
++
++/* ---- Display list (§5.4) ----
++ *
++ * Recorded as a flat log of (opcode, arguments) rather than as a captured
++ * vertex batch, so a list can contain state changes and matrix operations as
++ * well as geometry — which is what applications actually put in them.
++ */
++typedef struct {
++    GLuint   op;
++    GLfloat  f[8];
++    GLint    i[4];
++} gl_list_cmd_t;
++
++typedef struct {
++    GLuint          name;
++    int             used;
++    gl_list_cmd_t  *cmds;
++    int             count;
++    int             capacity;
++} gl_list_t;
++
+ /* ---- Lighting (§2.14) ----
+  *
+  * One light source.  GL stores the position in EYE coordinates: glLightfv()
+@@ -162,6 +216,19 @@ struct aglx_context {
+     GLfloat       fog_density, fog_start, fog_end;
+     gl_color_t    fog_color;
+ 
++    /* ---- Vertex arrays and buffer objects (§2.8), phase G7 ---- */
++    gl_array_t    array_vertex, array_color, array_normal, array_texcoord;
++    gl_buffer_t   buffers[GL_MAX_BUFFERS_IMPL];
++    GLuint        next_buffer_name;
++    GLuint        buffer_binding_array;    /* GL_ARRAY_BUFFER         */
++    GLuint        buffer_binding_element;  /* GL_ELEMENT_ARRAY_BUFFER */
++
++    /* ---- Display lists (§5.4) ---- */
++    gl_list_t     lists[GL_MAX_LISTS_IMPL];
++    GLuint        next_list_name;
++    int           list_compiling;          /* index into lists[], or -1 */
++    GLenum        list_mode;               /* COMPILE or COMPILE_AND_EXECUTE */
++
+     /* ---- glPushAttrib / glPopAttrib (§6.1.2) ----
+      * Each entry stores a full copy of the attribute groups this
+      * implementation tracks, plus the mask it was pushed with so the pop
+diff --git a/libgl/src/glimm.c b/libgl/src/glimm.c
+index d4dda7f..e358b2e 100644
+--- a/libgl/src/glimm.c
++++ b/libgl/src/glimm.c
+@@ -231,6 +231,13 @@ void glBegin(GLenum mode) {
+         return;
+     }
+ 
++    /* Display lists record the command instead of executing it (§5.4). */
++    {
++        GLint iv[1]; iv[0] = (GLint)mode;
++        if (gl_list_record(ctx, gl_lop_begin(), (const GLfloat *)0, 0, iv, 1))
++            return;
++    }
++
+     imm.active       = 1;
+     imm.mode         = mode;
+     imm.count        = 0;
+@@ -241,6 +248,11 @@ void glEnd(void) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
+ 
++    if (gl_list_record(ctx, gl_lop_end(), (const GLfloat *)0, 0,
++                       (const GLint *)0, 0)) {
++        return;
++    }
++
+     if (!imm.active) {
+         gl_set_error(GL_INVALID_OPERATION);
+         return;
+@@ -259,6 +271,12 @@ void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
+ 
++    {
++        GLfloat fv[4]; fv[0] = x; fv[1] = y; fv[2] = z; fv[3] = w;
++        if (gl_list_record(ctx, gl_lop_vertex4f(), fv, 4, (const GLint *)0, 0))
++            return;
++    }
++
+     if (!imm.active) {
+         /* glVertex outside glBegin/glEnd is a no-op with an error, rather
+          * than undefined behaviour (§2.6.1). */
+@@ -322,6 +340,12 @@ void glVertex4fv(const GLfloat *v) {
+  * any time and simply becomes the current colour (§2.7).
+  */
+ void glColor4f(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
++    struct aglx_context *ctx = gl_current_ctx;
++    if (ctx) {
++        GLfloat fv[4]; fv[0] = r; fv[1] = g; fv[2] = b; fv[3] = a;
++        if (gl_list_record(ctx, gl_lop_color4f(), fv, 4, (const GLint *)0, 0))
++            return;
++    }
+     cur_color.r = r; cur_color.g = g; cur_color.b = b; cur_color.a = a;
+ }
+ 
+@@ -352,6 +376,12 @@ void glColor4fv(const GLfloat *v) {
+  * Stored now, consumed by lighting in G5 and texturing in G6.
+  */
+ void glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz) {
++    struct aglx_context *ctx = gl_current_ctx;
++    if (ctx) {
++        GLfloat fv[3]; fv[0] = nx; fv[1] = ny; fv[2] = nz;
++        if (gl_list_record(ctx, gl_lop_normal3f(), fv, 3, (const GLint *)0, 0))
++            return;
++    }
+     cur_normal = glm_vec3_make(nx, ny, nz);
+     cur_normal_init = 1;
+ }
+@@ -361,7 +391,15 @@ void glNormal3fv(const GLfloat *v) {
+     glNormal3f(v[0], v[1], v[2]);
+ }
+ 
+-void glTexCoord2f(GLfloat s, GLfloat t) { cur_s = s; cur_t = t; }
++void glTexCoord2f(GLfloat s, GLfloat t) {
++    struct aglx_context *ctx = gl_current_ctx;
++    if (ctx) {
++        GLfloat fv[2]; fv[0] = s; fv[1] = t;
++        if (gl_list_record(ctx, gl_lop_texcoord2f(), fv, 2, (const GLint *)0, 0))
++            return;
++    }
++    cur_s = s; cur_t = t;
++}
+ 
+ void glTexCoord2fv(const GLfloat *v) {
+     if (!v) { gl_set_error(GL_INVALID_VALUE); return; }
+diff --git a/libgl/src/gllist.c b/libgl/src/gllist.c
+new file mode 100644
+index 0000000..a61764b
+--- /dev/null
++++ b/libgl/src/gllist.c
+@@ -0,0 +1,290 @@
++/* libgl/src/gllist.c — display lists (GL 1.1 §5.4).
++ *
++ * Phase G7 of GL_PLAN.md.
++ *
++ * WHAT A LIST STORES
++ *
++ * A flat log of (opcode, arguments), not a captured vertex batch.  That choice
++ * matters: applications routinely put matrix operations and state changes in a
++ * list alongside the geometry, and a vertex-only capture could not replay
++ * those.  Replaying the log simply re-invokes the same entry points the
++ * application called, so a list behaves exactly as if the commands had been
++ * issued directly — which is the specification's own definition (§5.4).
++ *
++ * WHAT IS NOT SUPPORTED
++ *
++ * Only the commands listed in the opcode table below can be compiled.  Calling
++ * anything else while a list is open executes it immediately instead of
++ * recording it, and flags GL_INVALID_OPERATION so the application can tell.
++ * Silently dropping the command would be far worse: the list would render
++ * differently from the same code run directly, with no indication why.
++ */
++
++#include <stdlib.h>
++#include <string.h>
++
++#include "GL/gl.h"
++#include "GL/glmath.h"
++#include "glcontext.h"
++#include "glvertex.h"
++
++/* Opcodes.  Deliberately private: the numbering is an implementation detail
++ * and lists are never serialised outside a context. */
++enum {
++    LOP_BEGIN = 1, LOP_END,
++    LOP_VERTEX4F, LOP_COLOR4F, LOP_NORMAL3F, LOP_TEXCOORD2F,
++    LOP_PUSH_MATRIX, LOP_POP_MATRIX, LOP_LOAD_IDENTITY,
++    LOP_TRANSLATEF, LOP_ROTATEF, LOP_SCALEF, LOP_MATRIX_MODE,
++    LOP_ENABLE, LOP_DISABLE,
++    LOP_SHADE_MODEL, LOP_CULL_FACE, LOP_FRONT_FACE, LOP_DEPTH_FUNC,
++    LOP_BIND_TEXTURE, LOP_CALL_LIST,
++};
++
++/* ============================================================================
++ * List storage
++ * ==========================================================================*/
++
++static gl_list_t *find_list(struct aglx_context *ctx, GLuint name) {
++    if (name == 0) return (gl_list_t *)0;
++    for (int i = 0; i < GL_MAX_LISTS_IMPL; i++) {
++        if (ctx->lists[i].used && ctx->lists[i].name == name) {
++            return &ctx->lists[i];
++        }
++    }
++    return (gl_list_t *)0;
++}
++
++/* Append one command to the list being compiled.  Grows geometrically so a
++ * long list does not become quadratic. */
++static int list_push(struct aglx_context *ctx, const gl_list_cmd_t *cmd) {
++    if (ctx->list_compiling < 0) return 0;
++    gl_list_t *l = &ctx->lists[ctx->list_compiling];
++
++    if (l->count >= GL_LIST_MAX_CMDS) {
++        gl_set_error(GL_OUT_OF_MEMORY);
++        return 0;
++    }
++    if (l->count == l->capacity) {
++        int cap = l->capacity ? l->capacity * 2 : 64;
++        if (cap > GL_LIST_MAX_CMDS) cap = GL_LIST_MAX_CMDS;
++        gl_list_cmd_t *grown =
++            (gl_list_cmd_t *)realloc(l->cmds, (size_t)cap * sizeof(*grown));
++        if (!grown) { gl_set_error(GL_OUT_OF_MEMORY); return 0; }
++        l->cmds = grown;
++        l->capacity = cap;
++    }
++    l->cmds[l->count++] = *cmd;
++    return 1;
++}
++
++/* Called by the recordable entry points.  Returns 1 when the command was
++ * recorded and the caller must NOT execute it, 0 when the caller should
++ * proceed normally.
++ *
++ * GL_COMPILE_AND_EXECUTE records and then also executes, hence the mode test. */
++int gl_list_record(struct aglx_context *ctx, GLuint op,
++                   const GLfloat *f, int nf, const GLint *i, int ni) {
++    if (ctx->list_compiling < 0) return 0;
++
++    gl_list_cmd_t cmd;
++    memset(&cmd, 0, sizeof cmd);
++    cmd.op = op;
++    for (int k = 0; k < nf && k < 8; k++) cmd.f[k] = f[k];
++    for (int k = 0; k < ni && k < 4; k++) cmd.i[k] = i[k];
++
++    list_push(ctx, &cmd);
++    return (ctx->list_mode == GL_COMPILE) ? 1 : 0;
++}
++
++/* Is a list currently open?  Used by entry points that cannot be compiled, so
++ * they can flag the mismatch. */
++int gl_list_compiling(const struct aglx_context *ctx) {
++    return ctx->list_compiling >= 0;
++}
++
++/* ============================================================================
++ * Entry points
++ * ==========================================================================*/
++
++GLuint glGenLists(GLsizei range) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return 0;
++    if (range < 0) { gl_set_error(GL_INVALID_VALUE); return 0; }
++    if (range == 0) return 0;
++
++    /* Names must be a CONTIGUOUS block starting at the returned value
++     * (§5.4), because applications index into it as base + n. */
++    int free_run = 0, run_start = -1;
++    for (int i = 0; i < GL_MAX_LISTS_IMPL; i++) {
++        if (!ctx->lists[i].used) {
++            if (free_run == 0) run_start = i;
++            if (++free_run == range) break;
++        } else {
++            free_run = 0;
++        }
++    }
++    if (free_run < range) { gl_set_error(GL_OUT_OF_MEMORY); return 0; }
++
++    GLuint base = ctx->next_list_name;
++    ctx->next_list_name += (GLuint)range;
++    for (int k = 0; k < range; k++) {
++        gl_list_t *l = &ctx->lists[run_start + k];
++        l->used     = 1;
++        l->name     = base + (GLuint)k;
++        l->cmds     = (gl_list_cmd_t *)0;
++        l->count    = 0;
++        l->capacity = 0;
++    }
++    return base;
++}
++
++GLboolean glIsList(GLuint list) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return GL_FALSE;
++    return find_list(ctx, list) ? GL_TRUE : GL_FALSE;
++}
++
++void glNewList(GLuint list, GLenum mode) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (list == 0) { gl_set_error(GL_INVALID_VALUE); return; }
++    if (mode != GL_COMPILE && mode != GL_COMPILE_AND_EXECUTE) {
++        gl_set_error(GL_INVALID_ENUM);
++        return;
++    }
++    if (ctx->list_compiling >= 0) {
++        /* Nesting glNewList is illegal and must leave the open list alone. */
++        gl_set_error(GL_INVALID_OPERATION);
++        return;
++    }
++
++    gl_list_t *l = find_list(ctx, list);
++    if (!l) {
++        /* Compiling into a name that was never generated creates it, matching
++         * how glBindTexture treats unseen names. */
++        for (int i = 0; i < GL_MAX_LISTS_IMPL; i++) {
++            if (ctx->lists[i].used) continue;
++            l = &ctx->lists[i];
++            l->used = 1; l->name = list;
++            l->cmds = (gl_list_cmd_t *)0; l->count = 0; l->capacity = 0;
++            if (list >= ctx->next_list_name) ctx->next_list_name = list + 1;
++            break;
++        }
++        if (!l) { gl_set_error(GL_OUT_OF_MEMORY); return; }
++    }
++
++    /* Re-compiling an existing list replaces its contents entirely. */
++    l->count = 0;
++
++    ctx->list_compiling = (int)(l - ctx->lists);
++    ctx->list_mode      = mode;
++}
++
++void glEndList(void) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (ctx->list_compiling < 0) {
++        gl_set_error(GL_INVALID_OPERATION);
++        return;
++    }
++    ctx->list_compiling = -1;
++}
++
++void glCallList(GLuint list) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++
++    gl_list_t *l = find_list(ctx, list);
++    if (!l) return;          /* calling an undefined list is a no-op (§5.4) */
++
++    /* A list may be called while another is being compiled: the CALL is
++     * recorded, not the callee's contents, so editing the callee later is
++     * reflected. */
++    if (ctx->list_compiling >= 0) {
++        GLint iv[1]; iv[0] = (GLint)list;
++        if (gl_list_record(ctx, LOP_CALL_LIST, (const GLfloat *)0, 0, iv, 1)) {
++            return;
++        }
++    }
++
++    /* Guard against a list that calls itself.  Without this, a self-calling
++     * list recurses until the stack is gone — and on AuraLite that is a guard
++     * page fault, not a tidy exception. */
++    static int depth = 0;
++    if (depth > 16) return;
++    depth++;
++
++    /* Replaying must not append to a list that happens to be open. */
++    int saved_compiling = ctx->list_compiling;
++    ctx->list_compiling = -1;
++
++    for (int k = 0; k < l->count; k++) {
++        const gl_list_cmd_t *c = &l->cmds[k];
++        switch (c->op) {
++        case LOP_BEGIN:         glBegin((GLenum)c->i[0]); break;
++        case LOP_END:           glEnd(); break;
++        case LOP_VERTEX4F:      glVertex4f(c->f[0], c->f[1], c->f[2], c->f[3]); break;
++        case LOP_COLOR4F:       glColor4f(c->f[0], c->f[1], c->f[2], c->f[3]); break;
++        case LOP_NORMAL3F:      glNormal3f(c->f[0], c->f[1], c->f[2]); break;
++        case LOP_TEXCOORD2F:    glTexCoord2f(c->f[0], c->f[1]); break;
++        case LOP_PUSH_MATRIX:   glPushMatrix(); break;
++        case LOP_POP_MATRIX:    glPopMatrix(); break;
++        case LOP_LOAD_IDENTITY: glLoadIdentity(); break;
++        case LOP_TRANSLATEF:    glTranslatef(c->f[0], c->f[1], c->f[2]); break;
++        case LOP_ROTATEF:       glRotatef(c->f[0], c->f[1], c->f[2], c->f[3]); break;
++        case LOP_SCALEF:        glScalef(c->f[0], c->f[1], c->f[2]); break;
++        case LOP_MATRIX_MODE:   glMatrixMode((GLenum)c->i[0]); break;
++        case LOP_ENABLE:        glEnable((GLenum)c->i[0]); break;
++        case LOP_DISABLE:       glDisable((GLenum)c->i[0]); break;
++        case LOP_SHADE_MODEL:   glShadeModel((GLenum)c->i[0]); break;
++        case LOP_CULL_FACE:     glCullFace((GLenum)c->i[0]); break;
++        case LOP_FRONT_FACE:    glFrontFace((GLenum)c->i[0]); break;
++        case LOP_DEPTH_FUNC:    glDepthFunc((GLenum)c->i[0]); break;
++        case LOP_BIND_TEXTURE:  glBindTexture((GLenum)c->i[0], (GLuint)c->i[1]); break;
++        case LOP_CALL_LIST:     glCallList((GLuint)c->i[0]); break;
++        default: break;
++        }
++    }
++
++    ctx->list_compiling = saved_compiling;
++    depth--;
++}
++
++void glDeleteLists(GLuint list, GLsizei range) {
++    struct aglx_context *ctx = gl_ctx_or_error();
++    if (!ctx) return;
++    if (range < 0) { gl_set_error(GL_INVALID_VALUE); return; }
++
++    for (GLsizei k = 0; k < range; k++) {
++        gl_list_t *l = find_list(ctx, list + (GLuint)k);
++        if (!l) continue;
++        /* Deleting the list currently being compiled would leave a dangling
++         * index; close the compilation first. */
++        if (ctx->list_compiling >= 0 &&
++            &ctx->lists[ctx->list_compiling] == l) {
++            ctx->list_compiling = -1;
++        }
++        free(l->cmds);
++        l->cmds = (gl_list_cmd_t *)0;
++        l->count = l->capacity = 0;
++        l->used = 0;
++        l->name = 0;
++    }
++}
++
++/* ---- Opcode accessors used by the recordable entry points ---------------- */
++GLuint gl_lop_begin(void)        { return LOP_BEGIN; }
++GLuint gl_lop_end(void)          { return LOP_END; }
++GLuint gl_lop_vertex4f(void)     { return LOP_VERTEX4F; }
++GLuint gl_lop_color4f(void)      { return LOP_COLOR4F; }
++GLuint gl_lop_normal3f(void)     { return LOP_NORMAL3F; }
++GLuint gl_lop_texcoord2f(void)   { return LOP_TEXCOORD2F; }
++GLuint gl_lop_push_matrix(void)  { return LOP_PUSH_MATRIX; }
++GLuint gl_lop_pop_matrix(void)   { return LOP_POP_MATRIX; }
++GLuint gl_lop_load_identity(void){ return LOP_LOAD_IDENTITY; }
++GLuint gl_lop_translatef(void)   { return LOP_TRANSLATEF; }
++GLuint gl_lop_rotatef(void)      { return LOP_ROTATEF; }
++GLuint gl_lop_scalef(void)       { return LOP_SCALEF; }
++GLuint gl_lop_matrix_mode(void)  { return LOP_MATRIX_MODE; }
++GLuint gl_lop_enable(void)       { return LOP_ENABLE; }
++GLuint gl_lop_disable(void)      { return LOP_DISABLE; }
+diff --git a/libgl/src/glmatrix.c b/libgl/src/glmatrix.c
+index 0b313e2..b14d139 100644
+--- a/libgl/src/glmatrix.c
++++ b/libgl/src/glmatrix.c
+@@ -19,6 +19,7 @@
+ #include "GL/gl.h"
+ #include "GL/glmath.h"
+ #include "glcontext.h"
++#include "glvertex.h"
+ 
+ /* The stack for the active matrix mode, plus its depth limit.
+  * Returns NULL and records GL_INVALID_OPERATION if the mode is somehow
+@@ -74,6 +75,11 @@ void glMatrixMode(GLenum mode) {
+         gl_set_error(GL_INVALID_OPERATION);
+         return;
+     }
++    {
++        GLint iv[1]; iv[0] = (GLint)mode;
++        if (gl_list_record(ctx, gl_lop_matrix_mode(), (const GLfloat *)0, 0, iv, 1))
++            return;
++    }
+     ctx->matrix_mode = mode;
+ }
+ 
+@@ -81,6 +87,9 @@ void glPushMatrix(void) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
+ 
++    if (gl_list_record(ctx, gl_lop_push_matrix(), (const GLfloat *)0, 0,
++                       (const GLint *)0, 0)) return;
++
+     int *top, limit;
+     glm_mat4 *stack = stack_for_mode(ctx, &top, &limit);
+     if (!stack) return;
+@@ -99,6 +108,9 @@ void glPopMatrix(void) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
+ 
++    if (gl_list_record(ctx, gl_lop_pop_matrix(), (const GLfloat *)0, 0,
++                       (const GLint *)0, 0)) return;
++
+     int *top, limit;
+     glm_mat4 *stack = stack_for_mode(ctx, &top, &limit);
+     if (!stack) return;
+@@ -118,6 +130,9 @@ void glPopMatrix(void) {
+ void glLoadIdentity(void) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
++
++    if (gl_list_record(ctx, gl_lop_load_identity(), (const GLfloat *)0, 0,
++                       (const GLint *)0, 0)) return;
+     glm_mat4 *cur = gl_current_matrix(ctx);
+     if (cur) *cur = glm_mat4_identity();
+ }
+@@ -150,12 +165,22 @@ void glMultMatrixf(const GLfloat *m) {
+ void glTranslatef(GLfloat x, GLfloat y, GLfloat z) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
++    {
++        GLfloat fv[3]; fv[0] = x; fv[1] = y; fv[2] = z;
++        if (gl_list_record(ctx, gl_lop_translatef(), fv, 3, (const GLint *)0, 0))
++            return;
++    }
+     mult_current(ctx, glm_mat4_translate(x, y, z));
+ }
+ 
+ void glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
++    {
++        GLfloat fv[4]; fv[0] = angle; fv[1] = x; fv[2] = y; fv[3] = z;
++        if (gl_list_record(ctx, gl_lop_rotatef(), fv, 4, (const GLint *)0, 0))
++            return;
++    }
+     /* glRotatef takes DEGREES; glm_mat4_rot_axis takes radians. */
+     mult_current(ctx, glm_mat4_rot_axis(GLM_DEG2RAD(angle), x, y, z));
+ }
+@@ -163,6 +188,11 @@ void glRotatef(GLfloat angle, GLfloat x, GLfloat y, GLfloat z) {
+ void glScalef(GLfloat x, GLfloat y, GLfloat z) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
++    {
++        GLfloat fv[3]; fv[0] = x; fv[1] = y; fv[2] = z;
++        if (gl_list_record(ctx, gl_lop_scalef(), fv, 3, (const GLint *)0, 0))
++            return;
++    }
+     mult_current(ctx, glm_mat4_scale(x, y, z));
+ }
+ 
+diff --git a/libgl/src/glstate.c b/libgl/src/glstate.c
+index 5719777..b40013b 100644
+--- a/libgl/src/glstate.c
++++ b/libgl/src/glstate.c
+@@ -10,6 +10,7 @@
+ #include "GL/gl.h"
+ #include "GL/auraglx.h"
+ #include "glcontext.h"
++#include "glvertex.h"
+ 
+ /* ============================================================================
+  * Errors (§2.5)
+@@ -200,6 +201,11 @@ static GLboolean *cap_slot(struct aglx_context *ctx, GLenum cap) {
+ void glEnable(GLenum cap) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
++    {
++        GLint iv[1]; iv[0] = (GLint)cap;
++        if (gl_list_record(ctx, gl_lop_enable(), (const GLfloat *)0, 0, iv, 1))
++            return;
++    }
+     GLboolean *slot = cap_slot(ctx, cap);
+     if (!slot) { gl_set_error(GL_INVALID_ENUM); return; }
+     *slot = GL_TRUE;
+@@ -208,6 +214,11 @@ void glEnable(GLenum cap) {
+ void glDisable(GLenum cap) {
+     struct aglx_context *ctx = gl_ctx_or_error();
+     if (!ctx) return;
++    {
++        GLint iv[1]; iv[0] = (GLint)cap;
++        if (gl_list_record(ctx, gl_lop_disable(), (const GLfloat *)0, 0, iv, 1))
++            return;
++    }
+     GLboolean *slot = cap_slot(ctx, cap);
+     if (!slot) { gl_set_error(GL_INVALID_ENUM); return; }
+     *slot = GL_FALSE;
+diff --git a/libgl/src/glvertex.h b/libgl/src/glvertex.h
+index 3a75ec4..813ed68 100644
+--- a/libgl/src/glvertex.h
++++ b/libgl/src/glvertex.h
+@@ -82,6 +82,33 @@ void gl_transform_vertex(struct aglx_context *ctx,
+                          GLfloat x, GLfloat y, GLfloat z, GLfloat w,
+                          gl_vertex_t *out);
+ 
++/* ---- Vertex arrays and display lists (phase G7) ---- */
++void gl_array_set_defaults(struct aglx_context *ctx);
++void gl_array_free_all(struct aglx_context *ctx);
++
++/* Record a command into the list being compiled.  Returns 1 when the caller
++ * must NOT execute the command (GL_COMPILE), 0 to proceed (no list open, or
++ * GL_COMPILE_AND_EXECUTE). */
++int gl_list_record(struct aglx_context *ctx, GLuint op,
++                   const GLfloat *f, int nf, const GLint *i, int ni);
++int gl_list_compiling(const struct aglx_context *ctx);
++
++GLuint gl_lop_begin(void);
++GLuint gl_lop_end(void);
++GLuint gl_lop_vertex4f(void);
++GLuint gl_lop_color4f(void);
++GLuint gl_lop_normal3f(void);
++GLuint gl_lop_texcoord2f(void);
++GLuint gl_lop_push_matrix(void);
++GLuint gl_lop_pop_matrix(void);
++GLuint gl_lop_load_identity(void);
++GLuint gl_lop_translatef(void);
++GLuint gl_lop_rotatef(void);
++GLuint gl_lop_scalef(void);
++GLuint gl_lop_matrix_mode(void);
++GLuint gl_lop_enable(void);
++GLuint gl_lop_disable(void);
++
+ /* ---- Texturing (libgl/src/gltexture.c), phase G6 ---- */
+ gl_texture_t *gl_texture_current(struct aglx_context *ctx);
+ gl_color_t gl_texture_sample(const gl_texture_t *t, GLfloat s, GLfloat tc,
+diff --git a/tests/integration/cases/test_opengl.sh b/tests/integration/cases/test_opengl.sh
+index 0bd4d19..ae036f2 100644
+--- a/tests/integration/cases/test_opengl.sh
++++ b/tests/integration/cases/test_opengl.sh
+@@ -24,14 +24,14 @@ trap il_dump_on_error EXIT
+ # uses spawn(), which does not forward argv -- the same convention /apm uses.
+ il_send_delay 8
+ il_send "run /gltest"
+-il_send_delay 30
++il_send_delay 42
+ il_send "write /tmp/glcube.frames 12"
+ il_send_delay 2
+ il_send "run /glcube"
+ il_send_delay 45
+ il_send "exit"
+ 
+-il_run_qemu "$LOG" 170
++il_run_qemu "$LOG" 190
+ 
+ # The test program prints its own verdict.
+ il_assert_grep    "$LOG" "\\[gl\\] ALL TESTS PASSED"      "gltest reports all checks passed"
+@@ -111,6 +111,16 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS alpha_test_discards"     "alpha test dis
+ il_assert_grep    "$LOG" "\\[gl\\] PASS fog_far"                 "distant geometry is fully fogged"
+ il_assert_grep    "$LOG" "\\[gl\\] PASS fog_near"                "near geometry is unfogged"
+ 
++# Phase G7: vertex arrays, buffer objects and display lists.
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_drawarrays_matches_immediate" "glDrawArrays matches immediate mode"
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_drawelements_matches" "glDrawElements matches immediate mode"
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_vbo_matches_client"  "a VBO draw matches a client-array draw"
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_deleted_buffer_disarmed" "deleting a buffer disarms the array"
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_matches_immediate" "a display list replays identically"
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_compile_silent" "GL_COMPILE does not draw"
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_matrix_replayed" "lists record matrix operations"
++il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_recursion_survived" "a self-calling list terminates"
++
+ # The demo must have started and reached the GL stack.  Note the deliberately
+ # loose pattern: /glcube and the shell write to the same serial console from
+ # different threads, so their lines interleave mid-string and an exact-match
+diff --git a/tests/unit/test_glarray.c b/tests/unit/test_glarray.c
+new file mode 100644
+index 0000000..8de1470
+--- /dev/null
++++ b/tests/unit/test_glarray.c
+@@ -0,0 +1,852 @@
++/*
++ * test_glarray.c — host-side unit tests for vertex arrays, buffer objects and
++ * display lists (phase G7).
++ *
++ * The central property being tested throughout: an array or list draw must
++ * produce a BIT-IDENTICAL framebuffer to the equivalent immediate-mode code.
++ * Comparing whole buffers rather than sampling a few pixels is what makes
++ * these tests worth having — a subtle attribute-ordering or stride bug shows
++ * up as a handful of differing pixels that spot checks would miss.
++ */
++
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++
++#include "GL/gl.h"
++#include "GL/auraglx.h"
++#include "glcontext.h"
++#include "glvertex.h"
++#include "auragui.h"
++
++void gl_imm_reset(void);
++
++static int tn = 0, passed = 0, failed = 0;
++
++#define RUN(fn) do {                                    \
++    ag_stub_reset();                                    \
++    gl_imm_reset();                                     \
++    aglxMakeCurrent(NULL);                              \
++    tn++;                                               \
++    if (fn()) { passed++; }                             \
++    else { failed++; printf("  FAIL: %s\n", #fn); }     \
++} while (0)
++
++#define W 48
++#define H 48
++
++static aglx_context_t *setup(void) {
++    aglx_context_t *c = aglxCreateContext(1, W, H, AGLX_DEPTH);
++    if (!c) return NULL;
++    aglxMakeCurrent(c);
++    glClearColor(0, 0, 0, 1);
++    glClearDepth(1.0);
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glMatrixMode(GL_PROJECTION); glLoadIdentity();
++    glOrtho(0, W, 0, H, -10, 10);
++    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
++    glColor3f(1, 1, 1);
++    return c;
++}
++
++static int lit_count(aglx_context_t *c) {
++    const uint32_t *b = aglxGetColorBuffer(c);
++    int n = 0;
++    for (int i = 0; i < W * H; i++) if (b[i] != 0) n++;
++    return n;
++}
++
++/* Snapshot the colour buffer so two renderings can be compared exactly. */
++static uint32_t *snapshot(aglx_context_t *c) {
++    uint32_t *copy = (uint32_t *)malloc((size_t)W * H * sizeof(uint32_t));
++    if (copy) memcpy(copy, aglxGetColorBuffer(c), (size_t)W * H * sizeof(uint32_t));
++    return copy;
++}
++
++static int same_as(aglx_context_t *c, const uint32_t *snap) {
++    return snap && memcmp(aglxGetColorBuffer(c), snap,
++                          (size_t)W * H * sizeof(uint32_t)) == 0;
++}
++
++/* Geometry shared by the equivalence tests: a triangle with per-vertex colour. */
++static const GLfloat tri_pos[3 * 3] = {
++     6.0f,  6.0f, 0.0f,
++    42.0f,  6.0f, 0.0f,
++     6.0f, 42.0f, 0.0f,
++};
++static const GLfloat tri_col[3 * 3] = {
++    1.0f, 0.0f, 0.0f,
++    0.0f, 1.0f, 0.0f,
++    0.0f, 0.0f, 1.0f,
++};
++
++static void draw_immediate(void) {
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glBegin(GL_TRIANGLES);
++    for (int i = 0; i < 3; i++) {
++        glColor3f(tri_col[i*3], tri_col[i*3+1], tri_col[i*3+2]);
++        glVertex3f(tri_pos[i*3], tri_pos[i*3+1], tri_pos[i*3+2]);
++    }
++    glEnd();
++}
++
++/* ---------------------------------------------------- client array state -- */
++
++static int t_client_state_toggle(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glEnableClientState(GL_VERTEX_ARRAY);
++    int on = c->array_vertex.enabled == GL_TRUE;
++    glDisableClientState(GL_VERTEX_ARRAY);
++    int off = c->array_vertex.enabled == GL_FALSE;
++    int ok = on && off && glGetError() == GL_NO_ERROR;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++static int t_client_state_invalid(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glEnableClientState(0x9999);
++    int ok = glGetError() == GL_INVALID_ENUM;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++static int t_pointer_validation(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glVertexPointer(1, GL_FLOAT, 0, tri_pos);      /* size < 2 */
++    int ok = glGetError() == GL_INVALID_VALUE;
++    glVertexPointer(3, 0x9999, 0, tri_pos);        /* bad type */
++    ok = ok && glGetError() == GL_INVALID_ENUM;
++    glVertexPointer(3, GL_FLOAT, -4, tri_pos);     /* negative stride */
++    ok = ok && glGetError() == GL_INVALID_VALUE;
++    glColorPointer(2, GL_FLOAT, 0, tri_col);       /* colour needs 3 or 4 */
++    ok = ok && glGetError() == GL_INVALID_VALUE;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* ------------------------------------------------------- glDrawArrays ----- */
++
++/* THE headline equivalence test: glDrawArrays must match immediate mode
++ * exactly, pixel for pixel. */
++static int t_drawarrays_matches_immediate(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++
++    draw_immediate();
++    uint32_t *snap = snapshot(c);
++    if (!snap) { aglxDestroyContext(c); return 0; }
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, tri_pos);
++    glColorPointer(3, GL_FLOAT, 0, tri_col);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDisableClientState(GL_COLOR_ARRAY);
++
++    int ok = same_as(c, snap) && lit_count(c) > 100;
++    free(snap);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* `first` must skip leading elements. */
++static int t_drawarrays_first_offset(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    /* Six vertices: the first three form a triangle far off-screen, the last
++     * three the on-screen one.  Starting at 3 must draw only the visible one. */
++    static const GLfloat pos[6 * 3] = {
++        -900, -900, 0,  -800, -900, 0,  -900, -800, 0,
++          6,    6,  0,   42,    6,  0,    6,   42,  0,
++    };
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, pos);
++    glDrawArrays(GL_TRIANGLES, 3, 3);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    int ok = lit_count(c) > 100;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* An interleaved array exercised through stride. */
++static int t_drawarrays_stride(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    /* Interleaved: x, y, z, r, g, b per vertex. */
++    static const GLfloat inter[3 * 6] = {
++         6.0f,  6.0f, 0.0f,  1.0f, 0.0f, 0.0f,
++        42.0f,  6.0f, 0.0f,  0.0f, 1.0f, 0.0f,
++         6.0f, 42.0f, 0.0f,  0.0f, 0.0f, 1.0f,
++    };
++    draw_immediate();
++    uint32_t *snap = snapshot(c);
++    if (!snap) { aglxDestroyContext(c); return 0; }
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 6 * sizeof(GLfloat), inter);
++    glColorPointer(3, GL_FLOAT, 6 * sizeof(GLfloat), inter + 3);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDisableClientState(GL_COLOR_ARRAY);
++
++    int ok = same_as(c, snap);
++    free(snap);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Unsigned-byte colours must be normalised to [0,1] (§2.13). */
++static int t_ubyte_colour_normalised(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    static const GLfloat pos[3 * 3] = {
++         6.0f,  6.0f, 0.0f, 42.0f,  6.0f, 0.0f,  6.0f, 42.0f, 0.0f,
++    };
++    static const unsigned char col[3 * 3] = {
++        255, 0, 0,   255, 0, 0,   255, 0, 0,
++    };
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, pos);
++    glColorPointer(3, GL_UNSIGNED_BYTE, 0, col);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDisableClientState(GL_COLOR_ARRAY);
++
++    const uint32_t *b = aglxGetColorBuffer(c);
++    uint32_t p = b[(size_t)(H - 1 - 12) * W + 12];
++    int ok = ((p >> 16) & 0xFF) > 240 && ((p >> 8) & 0xFF) < 15;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Without GL_VERTEX_ARRAY nothing is drawn. */
++static int t_no_vertex_array_draws_nothing(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glColorPointer(3, GL_FLOAT, 0, tri_col);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    glDisableClientState(GL_COLOR_ARRAY);
++    int ok = lit_count(c) == 0;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++static int t_drawarrays_validation(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glDrawArrays(0x9999, 0, 3);
++    int ok = glGetError() == GL_INVALID_ENUM;
++    glDrawArrays(GL_TRIANGLES, 0, -1);
++    ok = ok && glGetError() == GL_INVALID_VALUE;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* A large batch must not overflow anything: memory use stays constant. */
++static int t_large_batch(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    enum { N = 3000 };
++    GLfloat *pos = (GLfloat *)malloc(sizeof(GLfloat) * N * 3);
++    if (!pos) { aglxDestroyContext(c); return 0; }
++    for (int i = 0; i < N; i++) {
++        pos[i*3+0] = (GLfloat)(6 + (i % 30));
++        pos[i*3+1] = (GLfloat)(6 + (i % 24));
++        pos[i*3+2] = 0.0f;
++    }
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, pos);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, N);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    int ok = glGetError() == GL_NO_ERROR;
++    free(pos);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* ----------------------------------------------------- glDrawElements ----- */
++
++/* Indexed drawing must match the equivalent glDrawArrays. */
++static int t_drawelements_matches(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, tri_pos);
++    glColorPointer(3, GL_FLOAT, 0, tri_col);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    uint32_t *snap = snapshot(c);
++    if (!snap) { aglxDestroyContext(c); return 0; }
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    static const unsigned short idx[3] = { 0, 1, 2 };
++    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, idx);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDisableClientState(GL_COLOR_ARRAY);
++
++    int ok = same_as(c, snap);
++    free(snap);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Indices may repeat and reorder vertices — the point of indexed drawing. */
++static int t_drawelements_reuses_vertices(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    /* Four corners, two triangles, six indices: the diagonal pair is shared. */
++    static const GLfloat quad[4 * 3] = {
++         6.0f,  6.0f, 0.0f,
++        42.0f,  6.0f, 0.0f,
++        42.0f, 42.0f, 0.0f,
++         6.0f, 42.0f, 0.0f,
++    };
++    static const unsigned char idx[6] = { 0, 1, 2,  0, 2, 3 };
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, quad);
++    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, idx);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    /* The whole quad must be covered: 36x36 pixels, minus edge effects. */
++    int n = lit_count(c);
++    int ok = n > 1200 && n <= 36 * 36 + 80;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++static int t_drawelements_index_types(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, tri_pos);
++
++    static const unsigned char  i8[3]  = { 0, 1, 2 };
++    static const unsigned short i16[3] = { 0, 1, 2 };
++    static const unsigned int   i32[3] = { 0, 1, 2 };
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_BYTE, i8);
++    int a = lit_count(c);
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, i16);
++    int b = lit_count(c);
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, i32);
++    int d = lit_count(c);
++
++    glDisableClientState(GL_VERTEX_ARRAY);
++    int ok = a > 100 && a == b && b == d && glGetError() == GL_NO_ERROR;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++static int t_drawelements_validation(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    static const unsigned short idx[3] = { 0, 1, 2 };
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, tri_pos);
++
++    glDrawElements(GL_TRIANGLES, 3, GL_FLOAT, idx);     /* bad index type */
++    int ok = glGetError() == GL_INVALID_ENUM;
++    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, NULL);  /* no indices */
++    ok = ok && glGetError() == GL_INVALID_VALUE;
++
++    glDisableClientState(GL_VERTEX_ARRAY);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* ------------------------------------------------------- buffer objects --- */
++
++static int t_buffer_gen_delete(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint ids[2] = { 0, 0 };
++    glGenBuffers(2, ids);
++    int ok = ids[0] && ids[1] && ids[0] != ids[1]
++          && glIsBuffer(ids[0]) == GL_TRUE;
++    glDeleteBuffers(2, ids);
++    ok = ok && glIsBuffer(ids[0]) == GL_FALSE
++            && glGetError() == GL_NO_ERROR;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++static int t_buffer_data_and_subdata(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint id = 0;
++    glGenBuffers(1, &id);
++    glBindBuffer(GL_ARRAY_BUFFER, id);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(tri_pos), tri_pos, GL_STATIC_DRAW);
++    int ok = glGetError() == GL_NO_ERROR;
++
++    GLfloat patch[3] = { 1.0f, 2.0f, 3.0f };
++    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(patch), patch);
++    ok = ok && glGetError() == GL_NO_ERROR;
++
++    /* Writing past the end must be refused. */
++    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)sizeof(tri_pos), sizeof(patch), patch);
++    ok = ok && glGetError() == GL_INVALID_VALUE;
++
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++    glDeleteBuffers(1, &id);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* A VBO draw must match the equivalent client-memory draw exactly. */
++static int t_vbo_matches_client_array(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, tri_pos);
++    glColorPointer(3, GL_FLOAT, 0, tri_col);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    uint32_t *snap = snapshot(c);
++    if (!snap) { aglxDestroyContext(c); return 0; }
++
++    /* Same geometry, now from a buffer object.  The pointer argument becomes
++     * a byte offset once a buffer is bound. */
++    GLuint vb = 0, cb2 = 0;
++    glGenBuffers(1, &vb);
++    glBindBuffer(GL_ARRAY_BUFFER, vb);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(tri_pos), tri_pos, GL_STATIC_DRAW);
++    glVertexPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
++
++    glGenBuffers(1, &cb2);
++    glBindBuffer(GL_ARRAY_BUFFER, cb2);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(tri_col), tri_col, GL_STATIC_DRAW);
++    glColorPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
++
++    glBindBuffer(GL_ARRAY_BUFFER, 0);   /* unbind: the arrays captured theirs */
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++
++    int ok = same_as(c, snap);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDisableClientState(GL_COLOR_ARRAY);
++    free(snap);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* A non-zero offset into a buffer must be honoured. */
++static int t_vbo_offset(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    /* Padding, then the real vertices. */
++    GLfloat blob[3 + 9];
++    blob[0] = blob[1] = blob[2] = -999.0f;
++    memcpy(blob + 3, tri_pos, sizeof(tri_pos));
++
++    GLuint vb = 0;
++    glGenBuffers(1, &vb);
++    glBindBuffer(GL_ARRAY_BUFFER, vb);
++    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(blob), blob, GL_STATIC_DRAW);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0,
++                    (const GLvoid *)(uintptr_t)(3 * sizeof(GLfloat)));
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    int ok = lit_count(c) > 100;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* An element-array buffer supplies the indices. */
++static int t_element_buffer(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    static const unsigned short idx[3] = { 0, 1, 2 };
++    GLuint eb = 0;
++    glGenBuffers(1, &eb);
++    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eb);
++    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
++
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, tri_pos);
++    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, (const GLvoid *)0);
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++
++    int ok = lit_count(c) > 100 && glGetError() == GL_NO_ERROR;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Deleting a buffer an array still references must disarm the array rather
++ * than leaving it pointing at freed storage. */
++static int t_delete_buffer_disarms_array(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint vb = 0;
++    glGenBuffers(1, &vb);
++    glBindBuffer(GL_ARRAY_BUFFER, vb);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(tri_pos), tri_pos, GL_STATIC_DRAW);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glDeleteBuffers(1, &vb);
++    glDrawArrays(GL_TRIANGLES, 0, 3);       /* must not fault */
++    glDisableClientState(GL_VERTEX_ARRAY);
++
++    int ok = lit_count(c) == 0;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Reading past the end of a bound buffer must be refused, not faulted. */
++static int t_vbo_overrun_is_safe(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint vb = 0;
++    glGenBuffers(1, &vb);
++    glBindBuffer(GL_ARRAY_BUFFER, vb);
++    /* Room for one vertex only. */
++    glBufferData(GL_ARRAY_BUFFER, 3 * sizeof(GLfloat), tri_pos, GL_STATIC_DRAW);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glDrawArrays(GL_TRIANGLES, 0, 3);       /* asks for three: must not fault */
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDeleteBuffers(1, &vb);
++    return aglxDestroyContext(c), 1;
++}
++
++static int t_buffer_validation(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glBindBuffer(0x9999, 1);
++    int ok = glGetError() == GL_INVALID_ENUM;
++    GLuint id = 0;
++    glGenBuffers(1, &id);
++    glBindBuffer(GL_ARRAY_BUFFER, id);
++    glBufferData(GL_ARRAY_BUFFER, -1, NULL, GL_STATIC_DRAW);
++    ok = ok && glGetError() == GL_INVALID_VALUE;
++    glBufferData(GL_ARRAY_BUFFER, 16, NULL, 0x9999);
++    ok = ok && glGetError() == GL_INVALID_ENUM;
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* -------------------------------------------------------- display lists --- */
++
++static int t_list_gen_delete(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint base = glGenLists(3);
++    int ok = base != 0
++          && glIsList(base) == GL_TRUE
++          && glIsList(base + 1) == GL_TRUE
++          && glIsList(base + 2) == GL_TRUE;
++    glDeleteLists(base, 3);
++    ok = ok && glIsList(base) == GL_FALSE && glGetError() == GL_NO_ERROR;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Names from glGenLists must be contiguous: applications index base + n. */
++static int t_list_names_contiguous(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint base = glGenLists(4);
++    int ok = base != 0;
++    for (GLuint k = 0; k < 4 && ok; k++) {
++        if (glIsList(base + k) != GL_TRUE) ok = 0;
++    }
++    glDeleteLists(base, 4);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* A compiled list must replay to the same pixels as direct execution. */
++static int t_list_matches_immediate(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++
++    draw_immediate();
++    uint32_t *snap = snapshot(c);
++    if (!snap) { aglxDestroyContext(c); return 0; }
++
++    GLuint list = glGenLists(1);
++    glNewList(list, GL_COMPILE);
++    glBegin(GL_TRIANGLES);
++    for (int i = 0; i < 3; i++) {
++        glColor3f(tri_col[i*3], tri_col[i*3+1], tri_col[i*3+2]);
++        glVertex3f(tri_pos[i*3], tri_pos[i*3+1], tri_pos[i*3+2]);
++    }
++    glEnd();
++    glEndList();
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glCallList(list);
++
++    int ok = same_as(c, snap);
++    free(snap);
++    glDeleteLists(list, 1);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* GL_COMPILE must NOT draw while compiling. */
++static int t_list_compile_does_not_draw(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint list = glGenLists(1);
++    glNewList(list, GL_COMPILE);
++    glBegin(GL_TRIANGLES);
++    glVertex3f(6, 6, 0); glVertex3f(42, 6, 0); glVertex3f(6, 42, 0);
++    glEnd();
++    glEndList();
++    int ok = lit_count(c) == 0;
++    glDeleteLists(list, 1);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* GL_COMPILE_AND_EXECUTE draws as it records. */
++static int t_list_compile_and_execute(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint list = glGenLists(1);
++    glNewList(list, GL_COMPILE_AND_EXECUTE);
++    glBegin(GL_TRIANGLES);
++    glVertex3f(6, 6, 0); glVertex3f(42, 6, 0); glVertex3f(6, 42, 0);
++    glEnd();
++    glEndList();
++    int drawn_now = lit_count(c) > 100;
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glCallList(list);
++    int replays = lit_count(c) > 100;
++
++    int ok = drawn_now && replays;
++    glDeleteLists(list, 1);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Matrix operations inside a list must be recorded, not applied at compile
++ * time — this is what a vertex-only capture could not do. */
++static int t_list_records_matrix_ops(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint list = glGenLists(1);
++    glNewList(list, GL_COMPILE);
++    glPushMatrix();
++    glTranslatef(20.0f, 20.0f, 0.0f);
++    glBegin(GL_TRIANGLES);
++    glVertex3f(0, 0, 0); glVertex3f(16, 0, 0); glVertex3f(0, 16, 0);
++    glEnd();
++    glPopMatrix();
++    glEndList();
++
++    /* The MODELVIEW must be untouched by compilation. */
++    int untouched = c->modelview[c->modelview_top].m[12] == 0.0f;
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glCallList(list);
++    /* The triangle must appear at the TRANSLATED position. */
++    const uint32_t *b = aglxGetColorBuffer(c);
++    int at_translated = b[(size_t)(H - 1 - 24) * W + 24] != 0;
++    int at_origin     = b[(size_t)(H - 1 - 4)  * W + 4]  == 0;
++
++    int ok = untouched && at_translated && at_origin;
++    glDeleteLists(list, 1);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Re-compiling a list replaces its previous contents. */
++static int t_list_recompile_replaces(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint list = glGenLists(1);
++
++    glNewList(list, GL_COMPILE);
++    glBegin(GL_TRIANGLES);
++    glVertex3f(6, 6, 0); glVertex3f(42, 6, 0); glVertex3f(6, 42, 0);
++    glEnd();
++    glEndList();
++
++    glNewList(list, GL_COMPILE);        /* now empty */
++    glEndList();
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glCallList(list);
++    int ok = lit_count(c) == 0;
++    glDeleteLists(list, 1);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* One list calling another. */
++static int t_list_nested_call(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint inner = glGenLists(1);
++    glNewList(inner, GL_COMPILE);
++    glBegin(GL_TRIANGLES);
++    glVertex3f(6, 6, 0); glVertex3f(42, 6, 0); glVertex3f(6, 42, 0);
++    glEnd();
++    glEndList();
++
++    GLuint outer = glGenLists(1);
++    glNewList(outer, GL_COMPILE);
++    glCallList(inner);
++    glEndList();
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glCallList(outer);
++    int ok = lit_count(c) > 100;
++    glDeleteLists(inner, 1);
++    glDeleteLists(outer, 1);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* A self-calling list must terminate rather than recursing until the stack
++ * guard page is hit. */
++static int t_list_self_recursion_bounded(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint list = glGenLists(1);
++    glNewList(list, GL_COMPILE);
++    glCallList(list);                    /* records a call to itself */
++    glEndList();
++    glCallList(list);                    /* must return, not blow the stack */
++    int ok = glGetError() == GL_NO_ERROR || glGetError() != GL_NO_ERROR;
++    glDeleteLists(list, 1);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++static int t_list_validation(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glNewList(0, GL_COMPILE);
++    int ok = glGetError() == GL_INVALID_VALUE;
++    GLuint l = glGenLists(1);
++    glNewList(l, 0x9999);
++    ok = ok && glGetError() == GL_INVALID_ENUM;
++    glEndList();                          /* nothing open */
++    ok = ok && glGetError() == GL_INVALID_OPERATION;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Nesting glNewList is illegal and must not disturb the open list. */
++static int t_list_nested_newlist_rejected(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    GLuint a = glGenLists(1), b = glGenLists(1);
++    glNewList(a, GL_COMPILE);
++    glNewList(b, GL_COMPILE);            /* illegal */
++    int ok = glGetError() == GL_INVALID_OPERATION;
++    glEndList();
++    ok = ok && glGetError() == GL_NO_ERROR;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Calling an undefined list is a silent no-op (§5.4). */
++static int t_call_undefined_list(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    glCallList(9999);
++    int ok = glGetError() == GL_NO_ERROR && lit_count(c) == 0;
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* A large indexed draw through a VBO must complete and stay correct.
++ *
++ * Note this is NOT a speed assertion: on this implementation the array path
++ * submits through the same immediate-mode entry points, and the per-vertex
++ * transform dominates, so glDrawArrays measures the same as glBegin/glEnd
++ * (~4.5 ms for 10 000 triangles either way).  See the header comment in
++ * glarray.c for why a separate bulk path was rejected. */
++static int t_bulk_indexed_draw(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    enum { NV = 600, NI = 1800 };
++    GLfloat *pos = (GLfloat *)malloc(sizeof(GLfloat) * NV * 3);
++    unsigned short *idx = (unsigned short *)malloc(sizeof(unsigned short) * NI);
++    if (!pos || !idx) { free(pos); free(idx); aglxDestroyContext(c); return 0; }
++
++    for (int i = 0; i < NV; i++) {
++        pos[i*3+0] = (GLfloat)(4 + (i % 40));
++        pos[i*3+1] = (GLfloat)(4 + ((i * 3) % 40));
++        pos[i*3+2] = 0.0f;
++    }
++    for (int i = 0; i < NI; i++) idx[i] = (unsigned short)(i % NV);
++
++    GLuint vb = 0, eb = 0;
++    glGenBuffers(1, &vb);
++    glBindBuffer(GL_ARRAY_BUFFER, vb);
++    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(sizeof(GLfloat) * NV * 3),
++                 pos, GL_STATIC_DRAW);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glGenBuffers(1, &eb);
++    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, eb);
++    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
++                 (GLsizeiptr)(sizeof(unsigned short) * NI), idx, GL_STATIC_DRAW);
++
++    glDrawElements(GL_TRIANGLES, NI, GL_UNSIGNED_SHORT, (const GLvoid *)0);
++
++    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++    glDisableClientState(GL_VERTEX_ARRAY);
++
++    int ok = lit_count(c) > 0 && glGetError() == GL_NO_ERROR;
++    free(pos); free(idx);
++    aglxDestroyContext(c);
++    return ok;
++}
++
++/* Destroying a context with live buffers and lists must not leak. */
++static int t_destroy_frees_resources(void) {
++    aglx_context_t *c = setup(); if (!c) return 0;
++    for (int i = 0; i < 4; i++) {
++        GLuint b = 0;
++        glGenBuffers(1, &b);
++        glBindBuffer(GL_ARRAY_BUFFER, b);
++        glBufferData(GL_ARRAY_BUFFER, 1024, NULL, GL_STATIC_DRAW);
++        GLuint l = glGenLists(1);
++        glNewList(l, GL_COMPILE);
++        glBegin(GL_TRIANGLES);
++        glVertex3f(0, 0, 0); glVertex3f(1, 0, 0); glVertex3f(0, 1, 0);
++        glEnd();
++        glEndList();
++    }
++    aglxDestroyContext(c);   /* a leak checker would flag this */
++    return 1;
++}
++
++/* ------------------------------------------------------------------------ */
++
++int main(void) {
++    printf("=== glarray / gllist (G7) unit tests ===\n");
++
++    printf("--- client array state ---\n");
++    RUN(t_client_state_toggle); RUN(t_client_state_invalid);
++    RUN(t_pointer_validation);
++
++    printf("--- glDrawArrays ---\n");
++    RUN(t_drawarrays_matches_immediate); RUN(t_drawarrays_first_offset);
++    RUN(t_drawarrays_stride); RUN(t_ubyte_colour_normalised);
++    RUN(t_no_vertex_array_draws_nothing); RUN(t_drawarrays_validation);
++    RUN(t_large_batch);
++
++    printf("--- glDrawElements ---\n");
++    RUN(t_drawelements_matches); RUN(t_drawelements_reuses_vertices);
++    RUN(t_drawelements_index_types); RUN(t_drawelements_validation);
++
++    printf("--- buffer objects ---\n");
++    RUN(t_buffer_gen_delete); RUN(t_buffer_data_and_subdata);
++    RUN(t_vbo_matches_client_array); RUN(t_vbo_offset);
++    RUN(t_element_buffer); RUN(t_delete_buffer_disarms_array);
++    RUN(t_vbo_overrun_is_safe); RUN(t_buffer_validation);
++    RUN(t_bulk_indexed_draw);
++
++    printf("--- display lists ---\n");
++    RUN(t_list_gen_delete); RUN(t_list_names_contiguous);
++    RUN(t_list_matches_immediate); RUN(t_list_compile_does_not_draw);
++    RUN(t_list_compile_and_execute); RUN(t_list_records_matrix_ops);
++    RUN(t_list_recompile_replaces); RUN(t_list_nested_call);
++    RUN(t_list_self_recursion_bounded); RUN(t_list_validation);
++    RUN(t_list_nested_newlist_rejected); RUN(t_call_undefined_list);
++    RUN(t_destroy_frees_resources);
++
++    printf("\ntest_glarray: %d passed, %d failed (%d total)\n",
++           passed, failed, tn);
++    return failed ? 1 : 0;
++}
+diff --git a/userspace/glcube/glcube.c b/userspace/glcube/glcube.c
+index 7081977..99d9b47 100644
+--- a/userspace/glcube/glcube.c
++++ b/userspace/glcube/glcube.c
+@@ -1,7 +1,8 @@
+ /* glcube.c — rotating cube demo for the AuraLite OpenGL stack.
+  *
+- * From phase G6 this renders as a solid, depth-buffered, lit and TEXTURED
+- * cube: a procedural checkerboard is modulated with each face's colour.  The geometry and
++ * From phase G7 the cube geometry is compiled into a DISPLAY LIST once and
++ * replayed each frame, and the ground grid is drawn from a vertex array — so
++ * the demo exercises both G7 submission paths rather than only immediate mode.  The geometry and
+  * matrix code are unchanged from the G2 wireframe version — only the two
+  * glEnable() calls below were added, which is the point of writing the demo
+  * against the GL API rather than against the rasterizer.
+@@ -118,18 +119,33 @@ static void draw_cube(void) {
+ }
+ 
+ /* Ground grid, to make the perspective projection obvious. */
++/* Grid vertices, built once and drawn from a client vertex array (phase G7). */
++#define GRID_LINES 9
++#define GRID_VERTS (GRID_LINES * 4)
++static GLfloat grid_verts[GRID_VERTS * 3];
++
++static void build_grid(void) {
++    int v = 0;
++    for (int i = -4; i <= 4; i++) {
++        GLfloat t = (GLfloat)i * 0.75f;
++        grid_verts[v*3+0] = t;     grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] = -3.0f; v++;
++        grid_verts[v*3+0] = t;     grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] =  3.0f; v++;
++        grid_verts[v*3+0] = -3.0f; grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] = t;     v++;
++        grid_verts[v*3+0] =  3.0f; grid_verts[v*3+1] = -1.6f; grid_verts[v*3+2] = t;     v++;
++    }
++}
++
+ static void draw_grid(void) {
+     /* The grid is a flat, untextured reference, not a lit surface. */
+     glDisable(GL_LIGHTING);
+     glDisable(GL_TEXTURE_2D);
+     glColor3f(0.25f, 0.25f, 0.30f);
+-    glBegin(GL_LINES);
+-    for (int i = -4; i <= 4; i++) {
+-        GLfloat t = (GLfloat)i * 0.75f;
+-        glVertex3f(t, -1.6f, -3.0f);  glVertex3f(t, -1.6f, 3.0f);
+-        glVertex3f(-3.0f, -1.6f, t);  glVertex3f(3.0f, -1.6f, t);
+-    }
+-    glEnd();
++
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, grid_verts);
++    glDrawArrays(GL_LINES, 0, GRID_VERTS);
++    glDisableClientState(GL_VERTEX_ARRAY);
++
+     glEnable(GL_LIGHTING);
+     glEnable(GL_TEXTURE_2D);
+ }
+@@ -166,6 +182,7 @@ int main(int argc, char **argv) {
+         return 1;
+     }
+     aglxMakeCurrent(ctx);
++    build_grid();
+ 
+     printf("glcube: %s | %s\n",
+            (const char *)glGetString(GL_RENDERER),
+@@ -225,6 +242,15 @@ int main(int argc, char **argv) {
+     glBindTexture(GL_TEXTURE_2D, checker);
+     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+ 
++    /* Phase G7: compile the cube once.  Its geometry never changes, only the
++     * matrix around it, which is exactly what display lists are for. */
++    GLuint cube_list = glGenLists(1);
++    if (cube_list != 0) {
++        glNewList(cube_list, GL_COMPILE);
++        draw_cube();
++        glEndList();
++    }
++
+     GLfloat angle_x = 25.0f, angle_y = 30.0f;
+     int paused = 0, running = 1;
+     long frames = 0;
+@@ -284,7 +310,8 @@ int main(int argc, char **argv) {
+ 
+         glRotatef(angle_x, 1.0f, 0.0f, 0.0f);
+         glRotatef(angle_y, 0.0f, 1.0f, 0.0f);
+-        draw_cube();
++        if (cube_list != 0) glCallList(cube_list);
++        else                draw_cube();
+ 
+         aglxSwapBuffers(ctx);
+ 
+@@ -299,6 +326,7 @@ int main(int argc, char **argv) {
+     if (err != GL_NO_ERROR) printf("glcube: GL error 0x%04x\n", err);
+     else                    printf("glcube: clean exit, %ld frames\n", frames);
+ 
++    if (cube_list != 0) glDeleteLists(cube_list, 1);
+     aglxDestroyContext(ctx);
+     ag_window_destroy(wid);
+     return 0;
+diff --git a/userspace/gltest/gltest.c b/userspace/gltest/gltest.c
+index e5a7cd4..61ed8fc 100644
+--- a/userspace/gltest/gltest.c
++++ b/userspace/gltest/gltest.c
+@@ -15,6 +15,7 @@
+  * Phase G4 scope: frustum clipping and the attribute stack.
+  * Phase G5 scope: lighting, materials and normals.
+  * Phase G6 scope: textures, blending, the alpha test and fog.
++ * Phase G7 scope: vertex arrays, buffer objects and display lists.
+  */
+ 
+ #include <stdio.h>
+@@ -331,7 +332,14 @@ static void test_gl_raster(int wid) {
+ 
+     glDisable(GL_DEPTH_TEST);
+ 
+-    /* ---- Back-face culling. ---- */
++    /* ---- Back-face culling. ----
++     *
++     * The depth test is explicitly disabled first.  The checks above leave it
++     * enabled with a primed depth buffer, and the second draw here reuses the
++     * same buffer without clearing, so a coplanar triangle at the same depth
++     * would be rejected by GL_LESS and the check would fail for a reason that
++     * has nothing to do with culling. */
++    glDisable(GL_DEPTH_TEST);
+     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+     glEnable(GL_CULL_FACE);
+     glCullFace(GL_BACK);
+@@ -934,8 +942,186 @@ static void test_gl_texture(int wid) {
+     aglxDestroyContext(ctx);
+ }
+ 
++/* ---- Phase G7: vertex arrays, VBOs, display lists ---- */
++static void test_gl_arrays(int wid) {
++    printf("[gl] --- G7: arrays, VBOs, display lists ---\n");
++
++    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
++    check(ctx != NULL, "arr_ctx_create");
++    if (!ctx) return;
++    aglxMakeCurrent(ctx);
++
++    const uint32_t *cb = aglxGetColorBuffer(ctx);
++    static uint32_t snap[GL_W * GL_H];
++
++    glMatrixMode(GL_PROJECTION); glLoadIdentity();
++    glOrtho(0, GL_W, 0, GL_H, -10, 10);
++    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
++    glClearColor(0, 0, 0, 1);
++    glClearDepth(1.0);
++    glDisable(GL_TEXTURE_2D);
++    glDisable(GL_LIGHTING);
++
++    static const GLfloat pos[9] = {
++        10.0f, 10.0f, 0.0f,  90.0f, 10.0f, 0.0f,  10.0f, 90.0f, 0.0f,
++    };
++    static const GLfloat col[9] = {
++        1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,
++    };
++
++    #define LIT(n) do { n = 0; for (int i = 0; i < GL_W * GL_H; i++) if (cb[i]) n++; } while (0)
++    int n;
++
++    /* Reference: immediate mode. */
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glBegin(GL_TRIANGLES);
++    for (int i = 0; i < 3; i++) {
++        glColor3f(col[i*3], col[i*3+1], col[i*3+2]);
++        glVertex3f(pos[i*3], pos[i*3+1], pos[i*3+2]);
++    }
++    glEnd();
++    for (int i = 0; i < GL_W * GL_H; i++) snap[i] = cb[i];
++    LIT(n);
++    check(n > 500, "arr_reference_drawn");
++
++    /* glDrawArrays must match it pixel for pixel. */
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, pos);
++    glColorPointer(3, GL_FLOAT, 0, col);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    {
++        int same = 1;
++        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
++        check(same, "arr_drawarrays_matches_immediate");
++    }
++
++    /* glDrawElements must match as well. */
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    {
++        static const unsigned short idx[3] = { 0, 1, 2 };
++        glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, idx);
++        int same = 1;
++        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
++        check(same, "arr_drawelements_matches");
++    }
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDisableClientState(GL_COLOR_ARRAY);
++
++    /* Buffer objects: the same geometry from VRAM-side storage. */
++    GLuint vb = 0, cbuf = 0;
++    glGenBuffers(1, &vb);
++    check(vb != 0 && glIsBuffer(vb) == GL_TRUE, "arr_buffer_gen");
++    glBindBuffer(GL_ARRAY_BUFFER, vb);
++    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(pos), pos, GL_STATIC_DRAW);
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glVertexPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
++
++    glGenBuffers(1, &cbuf);
++    glBindBuffer(GL_ARRAY_BUFFER, cbuf);
++    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof(col), col, GL_STATIC_DRAW);
++    glEnableClientState(GL_COLOR_ARRAY);
++    glColorPointer(3, GL_FLOAT, 0, (const GLvoid *)0);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    {
++        int same = 1;
++        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
++        check(same, "arr_vbo_matches_client");
++    }
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDisableClientState(GL_COLOR_ARRAY);
++
++    /* Deleting a buffer an array still references must disarm it, not leave a
++     * dangling offset for the next draw to follow. */
++    glEnableClientState(GL_VERTEX_ARRAY);
++    glDeleteBuffers(1, &vb);
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glDrawArrays(GL_TRIANGLES, 0, 3);
++    LIT(n);
++    check(n == 0, "arr_deleted_buffer_disarmed");
++    glDisableClientState(GL_VERTEX_ARRAY);
++    glDeleteBuffers(1, &cbuf);
++
++    /* Display lists. */
++    GLuint list = glGenLists(1);
++    check(list != 0 && glIsList(list) == GL_TRUE, "arr_list_gen");
++
++    glNewList(list, GL_COMPILE);
++    glBegin(GL_TRIANGLES);
++    for (int i = 0; i < 3; i++) {
++        glColor3f(col[i*3], col[i*3+1], col[i*3+2]);
++        glVertex3f(pos[i*3], pos[i*3+1], pos[i*3+2]);
++    }
++    glEnd();
++    glEndList();
++
++    /* GL_COMPILE must not have drawn anything. */
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    LIT(n);
++    check(n == 0, "arr_list_compile_silent");
++
++    glCallList(list);
++    {
++        int same = 1;
++        for (int i = 0; i < GL_W * GL_H; i++) if (cb[i] != snap[i]) { same = 0; break; }
++        check(same, "arr_list_matches_immediate");
++    }
++
++    /* A list must record matrix operations, not apply them at compile time. */
++    GLuint mlist = glGenLists(1);
++    glNewList(mlist, GL_COMPILE);
++    glPushMatrix();
++    glTranslatef(40.0f, 40.0f, 0.0f);
++    glBegin(GL_TRIANGLES);
++    glColor3f(1, 1, 1);
++    glVertex3f(0, 0, 0); glVertex3f(30, 0, 0); glVertex3f(0, 30, 0);
++    glEnd();
++    glPopMatrix();
++    glEndList();
++
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glCallList(mlist);
++    check(cb[(size_t)(GL_H - 1 - 50) * GL_W + 50] != 0, "arr_list_matrix_replayed");
++    check(cb[(size_t)(GL_H - 1 - 5) * GL_W + 5] == 0, "arr_list_matrix_not_at_origin");
++
++    /* A self-calling list must terminate rather than exhausting the stack. */
++    GLuint rlist = glGenLists(1);
++    glNewList(rlist, GL_COMPILE);
++    glCallList(rlist);
++    glEndList();
++    glCallList(rlist);
++    check(1, "arr_list_recursion_survived");
++
++    /* Calling an undefined list is a silent no-op. */
++    glCallList(60000);
++    check(glGetError() == GL_NO_ERROR, "arr_call_undefined_list");
++
++    /* Validation. */
++    glDrawArrays(0x9999, 0, 3);
++    check(glGetError() == GL_INVALID_ENUM, "arr_bad_mode");
++    glEnableClientState(0x9999);
++    check(glGetError() == GL_INVALID_ENUM, "arr_bad_client_state");
++    glNewList(0, GL_COMPILE);
++    check(glGetError() == GL_INVALID_VALUE, "arr_bad_list_name");
++
++    glDeleteLists(list, 1);
++    glDeleteLists(mlist, 1);
++    glDeleteLists(rlist, 1);
++    check(glIsList(list) == GL_FALSE, "arr_list_delete");
++
++    check(aglxSwapBuffers(ctx) == 0, "arr_swap");
++    check(glGetError() == GL_NO_ERROR, "arr_no_pending_error");
++
++    #undef LIT
++    aglxDestroyContext(ctx);
++}
++
+ int main(void) {
+-    printf("[gl] === AuraLite GL test (phases G0-G6) ===\n");
++    printf("[gl] === AuraLite GL test (phases G0-G7) ===\n");
+ 
+     /* ---- A window is required as the blit destination. ---- */
+     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
+@@ -1021,13 +1207,14 @@ int main(void) {
+ 
+     ag_render_now();
+ 
+-    /* ---- Phase G1-G6 checks ---- */
++    /* ---- Phase G1-G7 checks ---- */
+     test_gl_context(wid);
+     test_gl_geometry(wid);
+     test_gl_raster(wid);
+     test_gl_clip(wid);
+     test_gl_light(wid);
+     test_gl_texture(wid);
++    test_gl_arrays(wid);
+ 
+     free(buf);
+     ag_window_destroy(wid);

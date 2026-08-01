@@ -82,6 +82,18 @@ void gl_transform_vertex(struct aglx_context *ctx,
                          GLfloat x, GLfloat y, GLfloat z, GLfloat w,
                          gl_vertex_t *out);
 
+/* ---- Backend dispatch (libgl/src/glbackend.c), phase G9 ----
+ *
+ * Each returns 0 when the backend handled the operation and non-zero when the
+ * caller must run its software path.  Keeping the fallback decision here lets
+ * a hardware backend implement operations one at a time.
+ */
+int  gl_backend_try_clear(struct aglx_context *ctx, GLbitfield mask);
+int  gl_backend_try_present(struct aglx_context *ctx);
+void gl_backend_notify_destroy(struct aglx_context *ctx);
+void gl_backend_init_defaults(void);
+void gl_virgl_register(void);
+
 /* ---- Vertex arrays and display lists (phase G7) ---- */
 void gl_array_set_defaults(struct aglx_context *ctx);
 void gl_array_free_all(struct aglx_context *ctx);

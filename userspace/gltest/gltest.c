@@ -16,6 +16,8 @@
  * Phase G5 scope: lighting, materials and normals.
  * Phase G6 scope: textures, blending, the alpha test and fog.
  * Phase G7 scope: vertex arrays, buffer objects and display lists.
+ * Phase G8 scope: the GLU utility layer.
+ * Phase G9 scope: the backend seam.
  */
 
 #include <stdio.h>
@@ -25,6 +27,8 @@
 #include "auragui.h"
 #include "GL/gl.h"
 #include "GL/auraglx.h"
+#include "GL/glu.h"
+#include "GL/glbackend.h"
 
 static int checks = 0, fails = 0;
 
@@ -1120,8 +1124,252 @@ static void test_gl_arrays(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- Phase G8: the GLU utility layer ---- */
+static void test_gl_glu(int wid) {
+    printf("[gl] --- G8: GLU utility layer ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "glu_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define LIT(n) do { n = 0; for (int i = 0; i < GL_W * GL_H; i++) if (cb[i]) n++; } while (0)
+    int n;
+
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glColor3f(1, 1, 1);
+
+    /* gluPerspective must equal the frustum it stands for.  Its fovy is in
+     * DEGREES, which is the usual place to go wrong. */
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(90.0, 1.0, 1.0, 100.0);
+    {
+        GLfloat m[16];
+        glGetFloatv(GL_PROJECTION_MATRIX, m);
+        /* tan(45 deg) == 1, so both scale terms are exactly 1. */
+        int ok = (m[0] > 0.99f && m[0] < 1.01f)
+              && (m[5] > 0.99f && m[5] < 1.01f)
+              && (m[11] < -0.99f && m[11] > -1.01f);
+        check(ok, "glu_perspective_90deg");
+    }
+
+    /* gluLookAt must put the eye at the view-space origin. */
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(0, 0, 10,  0, 0, 0,  0, 1, 0);
+    {
+        GLfloat m[16];
+        glGetFloatv(GL_MODELVIEW_MATRIX, m);
+        check(m[14] < -9.9f && m[14] > -10.1f, "glu_lookat_translation");
+    }
+
+    /* gluErrorString must always return a usable string. */
+    {
+        const char *s1 = (const char *)gluErrorString(GL_INVALID_ENUM);
+        const char *s2 = (const char *)gluErrorString(0x9999);
+        check(s1 != NULL && s1[0] != 0, "glu_error_string");
+        check(s2 != NULL && s2[0] != 0, "glu_error_string_unknown");
+    }
+
+    /* Quadrics: a filled sphere must cover its projected disk. */
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(-2, 2, -2, 2, -10, 10);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glDisable(GL_LIGHTING);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_CULL_FACE);
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        GLUquadric *q = gluNewQuadric();
+        check(q != NULL, "glu_quadric_create");
+        gluSphere(q, 1.0, 20, 16);
+        gluDeleteQuadric(q);
+    }
+    LIT(n);
+    check(n > 400, "glu_sphere_filled");
+    check(cb[(size_t)(GL_H / 2) * GL_W + (GL_W / 2)] != 0, "glu_sphere_centre");
+
+    /* GLU_LINE must produce an outline rather than a solid body. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        GLUquadric *q = gluNewQuadric();
+        gluQuadricDrawStyle(q, GLU_LINE);
+        gluSphere(q, 1.0, 20, 16);
+        gluDeleteQuadric(q);
+    }
+    int wire;
+    LIT(wire);
+    check(wire > 0 && wire < n, "glu_sphere_wireframe");
+
+    /* An annulus must leave its middle empty. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        GLUquadric *q = gluNewQuadric();
+        gluDisk(q, 0.7, 1.0, 24, 2);
+        gluDeleteQuadric(q);
+    }
+    check(cb[(size_t)(GL_H / 2) * GL_W + (GL_W / 2)] == 0, "glu_disk_hole");
+    LIT(n);
+    check(n > 80, "glu_disk_ring");
+
+    /* A cone is a cylinder with a zero top radius: must not divide by zero. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glPushMatrix();
+    glRotatef(90.0f, 1.0f, 0.0f, 0.0f);
+    {
+        GLUquadric *q = gluNewQuadric();
+        gluCylinder(q, 1.0, 0.0, 2.0, 16, 4);
+        gluDeleteQuadric(q);
+    }
+    glPopMatrix();
+    LIT(n);
+    check(n > 50, "glu_cone");
+
+    /* Degenerate parameters must be refused quietly. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        GLUquadric *q = gluNewQuadric();
+        gluSphere(q, -1.0, 16, 12);
+        gluSphere(q, 1.0, 1, 12);
+        gluSphere(NULL, 1.0, 16, 12);
+        gluDeleteQuadric(q);
+        gluDeleteQuadric(NULL);
+    }
+    LIT(n);
+    check(n == 0, "glu_degenerate_safe");
+    check(glGetError() == GL_NO_ERROR, "glu_degenerate_no_error");
+
+    /* Quadrics must light: they emit real per-vertex normals.  The depth test
+     * matters here — a sphere draws both hemispheres, and without it the far,
+     * unlit side would cover the near one. */
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    {
+        GLfloat pos[4] = { 0, 0, 1, 0 };
+        glLightfv(GL_LIGHT0, GL_POSITION, pos);
+        GLfloat white[4] = { 1, 1, 1, 1 };
+        glMaterialfv(GL_FRONT, GL_DIFFUSE, white);
+    }
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        GLUquadric *q = gluNewQuadric();
+        gluSphere(q, 1.0, 24, 18);
+        gluDeleteQuadric(q);
+    }
+    {
+        uint32_t centre = cb[(size_t)(GL_H / 2) * GL_W + (GL_W / 2)];
+        uint32_t rim    = cb[(size_t)(GL_H / 2) * GL_W + (GL_W / 2 + 22)];
+        check(((centre >> 16) & 0xFF) > ((rim >> 16) & 0xFF) + 30,
+              "glu_sphere_lit_gradient");
+    }
+    glDisable(GL_LIGHTING);
+    glDisable(GL_DEPTH_TEST);
+
+    /* GLU through a display list, which is how the demos use it. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        GLUquadric *q = gluNewQuadric();
+        GLuint list = glGenLists(1);
+        glNewList(list, GL_COMPILE);
+        gluSphere(q, 1.0, 16, 12);
+        glEndList();
+        gluDeleteQuadric(q);
+
+        LIT(n);
+        check(n == 0, "glu_list_compile_silent");
+        glCallList(list);
+        LIT(n);
+        check(n > 400, "glu_list_replays");
+        glDeleteLists(list, 1);
+    }
+
+    check(aglxSwapBuffers(ctx) == 0, "glu_swap");
+    check(glGetError() == GL_NO_ERROR, "glu_no_pending_error");
+
+    #undef LIT
+    aglxDestroyContext(ctx);
+}
+
+/* ---- Phase G9: the backend seam ---- */
+static void test_gl_backend(int wid) {
+    printf("[gl] --- G9: backend seam ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, 64, 64, AGLX_DEPTH);
+    check(ctx != NULL, "bk_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    /* A backend is always active: the software one is the guaranteed
+     * fallback, so no caller ever has to handle a NULL. */
+    const gl_backend_info_t *bi = gl_backend_info();
+    check(bi != NULL, "bk_info_available");
+    check(gl_backend_active() != NULL, "bk_active_never_null");
+    if (!bi) { aglxDestroyContext(ctx); return; }
+
+    /* On this machine there is no user-space GPU path, so software must win. */
+    check(bi->hardware == 0, "bk_software_active");
+    check((bi->flags & GL_BACKEND_SOFTWARE) != 0, "bk_software_flag");
+    printf("[gl] backend: %s (hardware=%d)\n", bi->name, bi->hardware);
+
+    /* glGetString(GL_RENDERER) must report whichever backend is live, so an
+     * application can tell which path it is on. */
+    {
+        const char *r = (const char *)glGetString(GL_RENDERER);
+        int same = (r && bi->name && strcmp(r, bi->name) == 0);
+        check(same, "bk_renderer_matches_backend");
+    }
+
+    /* The VirGL candidate is registered but declines until the kernel exposes
+     * a user-space 3D submission path.  Forcing it must find it (proving it is
+     * in the registry) yet still leave a non-VirGL backend active. */
+    gl_virgl_register();
+    {
+        int found = gl_backend_force("AuraLite VirGL (virtio-gpu)");
+        check(found == 0, "bk_virgl_registered");
+        const gl_backend_info_t *after = gl_backend_info();
+        check(after && after->name &&
+              strcmp(after->name, "AuraLite VirGL (virtio-gpu)") != 0,
+              "bk_virgl_declines");
+        gl_backend_force(NULL);
+    }
+
+    /* An unknown name must be refused rather than silently ignored. */
+    check(gl_backend_force("No Such Backend") != 0, "bk_force_unknown_fails");
+    gl_backend_force(NULL);
+
+    /* Rendering must be unaffected by the seam: the whole point is that the
+     * pipeline above it does not care which backend is underneath. */
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, 64, 0, 64, -1, 1);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glDisable(GL_LIGHTING); glDisable(GL_TEXTURE_2D);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1, 1, 1);
+    glBegin(GL_TRIANGLES);
+    glVertex3f(8, 8, 0); glVertex3f(56, 8, 0); glVertex3f(8, 56, 0);
+    glEnd();
+    {
+        const uint32_t *cb = aglxGetColorBuffer(ctx);
+        int lit = 0;
+        for (int i = 0; i < 64 * 64; i++) if (cb[i]) lit++;
+        check(lit > 400, "bk_rendering_unaffected");
+    }
+
+    check(aglxSwapBuffers(ctx) == 0, "bk_swap");
+    check(glGetError() == GL_NO_ERROR, "bk_no_pending_error");
+
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
-    printf("[gl] === AuraLite GL test (phases G0-G7) ===\n");
+    printf("[gl] === AuraLite GL test (phases G0-G9) ===\n");
 
     /* ---- A window is required as the blit destination. ---- */
     int wid = ag_window_create(40, 40, TEST_W + 20, TEST_H + 20,
@@ -1207,7 +1455,7 @@ int main(void) {
 
     ag_render_now();
 
-    /* ---- Phase G1-G7 checks ---- */
+    /* ---- Phase G1-G9 checks ---- */
     test_gl_context(wid);
     test_gl_geometry(wid);
     test_gl_raster(wid);
@@ -1215,6 +1463,8 @@ int main(void) {
     test_gl_light(wid);
     test_gl_texture(wid);
     test_gl_arrays(wid);
+    test_gl_glu(wid);
+    test_gl_backend(wid);
 
     free(buf);
     ag_window_destroy(wid);

@@ -5,7 +5,7 @@
 #include "string.h"
 
 static int wid;
-static ag_widget_t widgets[20];
+static ag_widget_t widgets[24];
 static ag_view_t view;
 
 struct app { const char *name; const char *path; };
@@ -20,6 +20,8 @@ static struct app apps[] = {
     { "Web Browser",   "/gbrowser"},
     { "USB Manager",   "/gusb"    },
     { "About",         "/gabout"  },
+    { "OpenGL Cube",   "/glcube"  },
+    { "OpenGL Gears",  "/glgears" },
 };
 
 static void on_launch(ag_widget_t *w, void *u) {
@@ -34,7 +36,7 @@ int main(void) {
     wid = ag_window_create(40, 60, 280, H, "Application Launcher", AG_WIN_DEFAULT & ~AG_WIN_RESIZABLE);
     if (wid < 0) return 1;
     ag_window_show(wid);
-    ag_view_init(&view, wid, widgets, 20, AG_PANEL);
+    ag_view_init(&view, wid, widgets, 24, AG_PANEL);
 
     ag_add_label(&view, 16, 16, "AuraLite Applications", AG_ACCENT);
     ag_add_label(&view, 16, 36, "Click to launch:", AG_DARK);

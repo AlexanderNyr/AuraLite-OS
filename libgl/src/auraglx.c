@@ -15,6 +15,7 @@
 #include "GL/auraglx.h"
 #include "GL/gl.h"
 #include "glcontext.h"
+#include "GL/glbackend.h"
 #include "glvertex.h"
 #include "auragui.h"
 
@@ -135,6 +136,13 @@ aglx_context_t *aglxCreateContext(int wid, int width, int height,
     if (width <= 0 || height <= 0) return NULL;
     if (width > AGLX_MAX_DIM || height > AGLX_MAX_DIM) return NULL;
 
+    /* Register the backends before the first context exists.  The hardware
+     * candidate goes first so that, once it works, it takes precedence
+     * automatically; today it declines and the registry falls through to
+     * software (see glvirgl.c). */
+    gl_virgl_register();
+    gl_backend_init_defaults();
+
     struct aglx_context *ctx =
         (struct aglx_context *)malloc(sizeof(struct aglx_context));
     if (!ctx) return NULL;
@@ -175,6 +183,7 @@ aglx_context_t *aglxGetCurrentContext(void) {
 void aglxDestroyContext(aglx_context_t *ctx) {
     if (!ctx) return;
     if (gl_current_ctx == ctx) gl_current_ctx = NULL;
+    gl_backend_notify_destroy(ctx);
     /* Texture images are heap allocations owned by the context. */
     gl_texture_free_all(ctx);
     gl_array_free_all(ctx);
@@ -229,6 +238,10 @@ int aglxResize(aglx_context_t *ctx, int width, int height) {
 
 int aglxSwapBuffers(aglx_context_t *ctx) {
     if (!ctx || !ctx->color) return -1;
+
+    /* Give the backend first refusal: a GPU path would scan its own render
+     * target out instead of blitting a CPU buffer through the compositor. */
+    if (gl_backend_try_present(ctx) == 0) return 0;
 
     /* One syscall per frame: hand the whole colour buffer to the window.
      * ag_blit() clips against the window's back buffer, so a context larger

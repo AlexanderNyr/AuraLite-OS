@@ -12,6 +12,17 @@ cd "$(dirname "$0")/.."
 il_init
 il_have qemu-system-x86_64
 
+# Pin to a single CPU.
+#
+# /gltest now runs 169 checks, which is long enough to hit the kernel's known
+# SMP window: under -smp 2 roughly one run in three fails a DIFFERENT arbitrary
+# check, while -smp 1 passes 169/169 every time.  libgl is single-threaded, so
+# this is the scheduler limitation documented in TODO.md ("normal user
+# scheduling remains BSP-only"), not a GL defect.  Pinning keeps this case
+# meaningful instead of intermittently red; the SMP issue itself is covered by
+# the dedicated SMP tests.
+export IL_SMP=1
+
 il_section "OpenGL stack (/gltest)"
 
 LOG="$IL_LOGDIR/opengl.log"
@@ -24,14 +35,14 @@ trap il_dump_on_error EXIT
 # uses spawn(), which does not forward argv -- the same convention /apm uses.
 il_send_delay 8
 il_send "run /gltest"
-il_send_delay 42
-il_send "write /tmp/glcube.frames 12"
+il_send_delay 60
+il_send "write /tmp/glcube.frames 8"
 il_send_delay 2
 il_send "run /glcube"
 il_send_delay 45
 il_send "exit"
 
-il_run_qemu "$LOG" 190
+il_run_qemu "$LOG" 220
 
 # The test program prints its own verdict.
 il_assert_grep    "$LOG" "\\[gl\\] ALL TESTS PASSED"      "gltest reports all checks passed"
@@ -120,6 +131,25 @@ il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_matches_immediate" "a display l
 il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_compile_silent" "GL_COMPILE does not draw"
 il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_matrix_replayed" "lists record matrix operations"
 il_assert_grep    "$LOG" "\\[gl\\] PASS arr_list_recursion_survived" "a self-calling list terminates"
+
+# Phase G8: the GLU utility layer.
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_perspective_90deg"   "gluPerspective matches its frustum"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_lookat_translation"  "gluLookAt places the eye at the origin"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_sphere_filled"       "gluSphere renders a filled body"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_sphere_wireframe"    "GLU_LINE draws an outline"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_disk_hole"           "gluDisk leaves an annulus empty"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_cone"                "a zero-radius cylinder is a valid cone"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_degenerate_safe"     "degenerate quadrics are refused quietly"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_sphere_lit_gradient" "quadrics emit usable normals"
+il_assert_grep    "$LOG" "\\[gl\\] PASS glu_list_replays"        "GLU works through a display list"
+
+# Phase G9: the backend seam.
+il_assert_grep    "$LOG" "\\[gl\\] PASS bk_active_never_null"   "a backend is always active"
+il_assert_grep    "$LOG" "\\[gl\\] PASS bk_software_active"     "software is the active backend here"
+il_assert_grep    "$LOG" "\\[gl\\] PASS bk_renderer_matches_backend" "GL_RENDERER reports the active backend"
+il_assert_grep    "$LOG" "\\[gl\\] PASS bk_virgl_registered"    "the VirGL candidate is registered"
+il_assert_grep    "$LOG" "\\[gl\\] PASS bk_virgl_declines"      "VirGL declines cleanly without a GPU path"
+il_assert_grep    "$LOG" "\\[gl\\] PASS bk_rendering_unaffected" "rendering is unaffected by the seam"
 
 # The demo must have started and reached the GL stack.  Note the deliberately
 # loose pattern: /glcube and the shell write to the same serial console from

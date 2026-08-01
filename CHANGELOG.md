@@ -2,6 +2,118 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OpenGL Phase G9 — backend seam] 2026-08-01
+
+Final phase of `GL_PLAN.md`. A hardware rendering path can now be added
+without touching a line of application code.
+
+### Added
+- `libgl/include/GL/glbackend.h` + `libgl/src/glbackend.c`: a backend registry
+  modelled directly on `kernel/net/netdev.h`, which already lets the IP stack
+  run over e1000 or virtio-net chosen at boot. A backend fills a table of
+  function pointers and registers itself; the first one whose `init()` accepts
+  becomes active.
+- `libgl/src/glvirgl.c`: the VirGL hardware candidate. It registers and then
+  **declines**, with the five steps to complete it written out in the file.
+- `tests/unit/test_glbackend.c`: **17 checks**, using a fake backend to prove
+  the seam actually routes work rather than merely compiling.
+- `patches/GL_G9_backend.patch`.
+
+### Design notes
+- **The software path is registered as a backend**, not special-cased. Its
+  operations all return "not handled", so libgl runs its normal CPU path — but
+  there is never an `if (backend) … else …` anywhere, and the fallback decision
+  lives in one place.
+- **Any entry point may be NULL.** A backend that implements only `present`
+  gets software for everything else. That is what makes incremental bring-up
+  possible, and a test with an all-NULL backend asserts rendering still works
+  end to end.
+- **A backend may decline at `init()`.** A VirGL backend on a machine with no
+  virtio-gpu should do exactly that, rather than failing every draw call later.
+- `glGetString(GL_RENDERER)` now reports the active backend, so an application
+  can tell which path it is on.
+
+### Why VirGL declines today
+AuraLite's VirGL transport lives in the kernel (`drivers/gpu/virgl.c`) with no
+syscall exposed to user space, and libgl is user space by design. Wiring it up
+needs a new 3D submission syscall — kernel work with its own validation and
+security review. Registering a backend that then failed every draw would
+advertise a "hardware" renderer and produce silent corruption instead of a
+clean software fallback.
+
+### Changed
+- `userspace/gltest`: 181 checks (was 169).
+- `tests/integration/cases/test_opengl.sh`: 86 assertions (was 80).
+
+### Verified
+- `test_glbackend` 17/17; all ten GL suites green (**339 checks**);
+  `make test-unit` **61/61** from a clean `rm -rf build`.
+- `/gltest` under QEMU: **181/181**, reporting
+  `backend: AuraLite Software Rasterizer (hardware=0)`.
+- `test_opengl.sh`: **86/86**.
+
+### GL_PLAN.md complete
+All ten phases G0–G9 are done: ~8000 lines of libgl, an OpenGL 1.1
+fixed-function implementation with GLU, two shipped demos, and 339 host plus
+181 in-OS checks. The roadmap continues at G10 (GL 1.2/1.3), G11 (GLSL/ES 2.0)
+and G13 (VirGL hardware path); the nearest prerequisite for the last is a
+kernel syscall for 3D submission.
+
+## [OpenGL Phase G8 — GLU, demos and system integration] 2026-08-01
+
+Ninth phase of `GL_PLAN.md`. The OpenGL stack is now user-visible: two demos
+ship in the initrd and appear in the application launcher.
+
+### Added
+- `libgl/include/GL/glu.h` + `libgl/src/glu.c`: the GLU utility layer.
+  `gluPerspective` (fovy in **degrees**), `gluLookAt` (re-derives a true up
+  vector, so a rough one works), `gluOrtho2D`, `gluErrorString`, and quadrics
+  — `gluSphere`, `gluCylinder` (a zero top radius gives a cone, with the side
+  normal correctly tilted by the taper) and `gluDisk`. Written against the
+  public GL API only: if GLU had needed an internal hook, that would have meant
+  the GL layer was missing an entry point.
+- `userspace/glgears`: the classic three-gear benchmark, ported from real
+  OpenGL sources with the GL calls unchanged. Each gear is compiled into a
+  display list, as in the original.
+- `docs/opengl.md`: architecture, the supported and unsupported subset,
+  behaviour notes, measured performance and how to add a GL application.
+- `tests/unit/test_glu.c`: **21 checks**.
+- `patches/GL_G8_demos.patch`.
+
+### Changed
+- `userspace/gui-launcher`: `/glcube` and `/glgears` added to the launcher.
+- `userspace/gltest`: 169 checks (was 150).
+- `tests/integration/lib/lib.sh`: the CPU count is now overridable via
+  `IL_SMP`, defaulting to 2 as before.
+- `tests/integration/cases/test_opengl.sh`: sets `IL_SMP=1`, 80 assertions.
+- `README.md`: `/glgears` listed; `docs/opengl.md` added to the documentation
+  map.
+
+### Behaviour notes
+- `gluPerspective` takes **degrees**, unlike the internal
+  `glm_mat4_perspective` which takes radians. Mixing them up produces a scene
+  that renders but looks wrong.
+- `gluLookAt` recomputes the up vector from the cross products, so callers may
+  pass an approximate one; `eye == center` or an up vector parallel to the view
+  direction leaves the matrix untouched rather than producing NaNs.
+- Degenerate quadric parameters (radius ≤ 0, fewer than 2 slices, a NULL
+  quadric) are refused quietly rather than drawing garbage or faulting.
+
+### Testing
+- `/gltest` is now long enough to expose the kernel's known SMP window: under
+  `-smp 2` roughly one run in three fails a *different* arbitrary check, while
+  `-smp 1` passes 169/169 consistently. `test_opengl.sh` therefore pins itself
+  to one CPU with a comment explaining why. The default remains 2 elsewhere and
+  `test_smp.sh` still passes, so SMP coverage is unaffected.
+
+### Verified
+- `test_glu` 21/21; all nine GL suites green (322 checks);
+  `make test-unit` 60/60 from a clean `rm -rf build`.
+- `/gltest` under QEMU: 169/169 (twice). `test_opengl.sh`: 80/80.
+- `/glgears`: `clean exit, 3 frames`. `/glcube`: `clean exit, 12 frames`.
+- No regressions in `test_boot_to_shell`, `test_smp` or
+  `test_gui_bad_pointers`.
+
 ## [OpenGL Phase G7 — vertex arrays, VBOs and display lists] 2026-08-01
 
 Eighth phase of `GL_PLAN.md`. Geometry can now be submitted in bulk instead of

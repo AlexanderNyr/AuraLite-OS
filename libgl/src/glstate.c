@@ -10,6 +10,7 @@
 #include "GL/gl.h"
 #include "GL/auraglx.h"
 #include "glcontext.h"
+#include "GL/glbackend.h"
 #include "glvertex.h"
 
 /* ============================================================================
@@ -37,10 +38,13 @@ const GLubyte *glGetString(GLenum name) {
     switch (name) {
     case GL_VENDOR:
         return (const GLubyte *)"AuraLite OS";
-    case GL_RENDERER:
-        /* Updated in phase G9 once the backend boundary can report which
-         * backend is actually active. */
-        return (const GLubyte *)"AuraLite Software Rasterizer";
+    case GL_RENDERER: {
+        /* Reports the ACTIVE backend, so an application can tell whether it
+         * is on the software or hardware path (phase G9). */
+        const gl_backend_info_t *bi = gl_backend_info();
+        return (const GLubyte *)(bi && bi->name ? bi->name
+                                                : "AuraLite Software Rasterizer");
+    }
     case GL_VERSION:
         return (const GLubyte *)"1.1 AuraLite";
     case GL_EXTENSIONS:
@@ -86,6 +90,9 @@ void glClear(GLbitfield mask) {
         gl_set_error(GL_INVALID_VALUE);
         return;
     }
+
+    /* The backend may clear in hardware; a non-zero return means it did not. */
+    if (gl_backend_try_clear(ctx, mask) == 0) return;
 
     size_t pixels = (size_t)ctx->width * (size_t)ctx->height;
 

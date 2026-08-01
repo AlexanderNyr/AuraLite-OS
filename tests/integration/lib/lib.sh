@@ -151,10 +151,15 @@ il_run_qemu() {
     #   - serial → stdio (we read from it, write to it)
     #   - e1000 NIC on user/SLIRP NAT
     # The caller can override or add more via $extra.
+    # CPU count is overridable via IL_SMP.  It defaults to 2, but a case that
+    # runs long enough to hit the kernel's known BSP-only scheduling window
+    # (see TODO.md) can pin itself to 1 rather than being intermittently red.
+    local smp="${IL_SMP:-2}"
+
     local base_args=(
         -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on"
         -m 512M
-        -smp 2
+        -smp "$smp"
         -display none
         -serial stdio
         -no-reboot
