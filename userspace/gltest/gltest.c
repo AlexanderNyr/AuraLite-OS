@@ -1295,6 +1295,277 @@ static void test_gl_texture2(int wid) {
     aglxDestroyContext(ctx);
 }
 
+
+/* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
+ *
+ * The claim under test is that rendering into a texture and then sampling it
+ * returns what was drawn.  Verified on the target as well as on the host
+ * because the render target redirection touches the same row-addressing code
+ * that has produced an orientation bug once already.
+ */
+static void test_gl_fbo(int wid) {
+    printf("[gl] --- G12: framebuffer objects and glReadPixels ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "fbo_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    #define ORTHO_FOR(n) do {                                   \
+        glViewport(0, 0, (n), (n));                             \
+        glMatrixMode(GL_PROJECTION); glLoadIdentity();          \
+        glOrtho(0, (n), 0, (n), -10, 10);                       \
+        glMatrixMode(GL_MODELVIEW);  glLoadIdentity();          \
+    } while (0)
+
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glColor3f(1, 1, 1);
+
+    /* ---- Object management ---- */
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    check(fbo != 0, "fbo_gen");
+    check(glIsFramebuffer(fbo) == GL_TRUE, "fbo_is_framebuffer");
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    {
+        GLint v = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &v);
+        check(v == (GLint)fbo, "fbo_binding_query");
+    }
+
+    /* Nothing attached yet: incomplete, and drawing must be refused rather
+     * than falling back to the window. */
+    check(glCheckFramebufferStatus(GL_FRAMEBUFFER)
+          == GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT,
+          "fbo_incomplete_when_empty");
+    while (glGetError() != GL_NO_ERROR) { }
+    glClear(GL_COLOR_BUFFER_BIT);
+    check(glGetError() == GL_INVALID_FRAMEBUFFER_OPERATION,
+          "fbo_incomplete_refuses_clear");
+
+    /* ---- Render to texture ---- */
+    #define FBO_N 32
+    GLuint target = 0;
+    glGenTextures(1, &target);
+    glBindTexture(GL_TEXTURE_2D, target);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, FBO_N, FBO_N, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, target, 0);
+    check(glGetError() == GL_NO_ERROR, "fbo_attach_texture");
+    check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
+          "fbo_complete_with_texture");
+
+    /* Paint the window first, so a stray write into it is detectable. */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ORTHO_FOR(GL_W);
+    glClearColor(0, 0.5f, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    /* Now render off-screen: red background, blue bottom-left quadrant. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    ORTHO_FOR(FBO_N);
+    glClearColor(1, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColor3f(0, 0, 1);
+    glBegin(GL_QUADS);
+    glVertex3f(0,        0,        0);
+    glVertex3f(FBO_N/2,  0,        0);
+    glVertex3f(FBO_N/2,  FBO_N/2,  0);
+    glVertex3f(0,        FBO_N/2,  0);
+    glEnd();
+    check(glGetError() == GL_NO_ERROR, "fbo_render_offscreen");
+
+    /* glReadPixels must read the FBO, not the window. */
+    {
+        unsigned char rgb[3];
+        glReadPixels(FBO_N / 4, FBO_N / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+        check(rgb[2] == 255 && rgb[0] == 0, "fbo_readpixels_blue_quadrant");
+        glReadPixels(FBO_N * 3 / 4, FBO_N * 3 / 4, 1, 1, GL_RGB,
+                     GL_UNSIGNED_BYTE, rgb);
+        check(rgb[0] == 255 && rgb[2] == 0, "fbo_readpixels_red_background");
+    }
+
+    /* The window must be untouched by all of that. */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ORTHO_FOR(GL_W);
+    {
+        uint32_t p = AT(GL_W / 2, GL_H / 2);
+        check(((p >> 8) & 0xFF) > 120 && ((p >> 8) & 0xFF) < 136 &&
+              ((p >> 16) & 0xFF) == 0, "fbo_window_untouched");
+    }
+
+    /* ---- The round trip: sample the rendered texture ---- */
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1, 1, 1);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, target);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(0,    0,    0);
+    glTexCoord2f(1, 0); glVertex3f(GL_W, 0,    0);
+    glTexCoord2f(1, 1); glVertex3f(GL_W, GL_H, 0);
+    glTexCoord2f(0, 1); glVertex3f(0,    GL_H, 0);
+    glEnd();
+
+    /* Bottom-left quarter blue, the rest red.  This also proves the row order
+     * is right: an inverted target would put the blue at the top. */
+    check(AT(GL_W / 4,     GL_H / 4)     == 0x0000FF, "fbo_roundtrip_bottomleft");
+    check(AT(GL_W * 3 / 4, GL_H / 4)     == 0xFF0000, "fbo_roundtrip_bottomright");
+    check(AT(GL_W / 4,     GL_H * 3 / 4) == 0xFF0000, "fbo_roundtrip_topleft");
+    check(AT(GL_W * 3 / 4, GL_H * 3 / 4) == 0xFF0000, "fbo_roundtrip_topright");
+
+    /* A texture rendered into must sample as OPAQUE: the rasterizer writes
+     * 0x00RRGGBB and the sampler reads the alpha byte back. */
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glColor4f(1, 1, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0.9f, 0.9f); glVertex3f(0,    0,    0);
+    glTexCoord2f(0.9f, 0.9f); glVertex3f(GL_W, 0,    0);
+    glTexCoord2f(0.9f, 0.9f); glVertex3f(GL_W, GL_H, 0);
+    glTexCoord2f(0.9f, 0.9f); glVertex3f(0,    GL_H, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0xFF0000, "fbo_rendered_texture_opaque");
+    glDisable(GL_TEXTURE_2D);
+
+    /* ---- Depth renderbuffer ---- */
+    {
+        GLuint rb = 0;
+        glGenRenderbuffers(1, &rb);
+        check(rb != 0, "rbo_gen");
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24,
+                              FBO_N, FBO_N);
+        check(glGetError() == GL_NO_ERROR, "rbo_storage");
+
+        GLint v = 0;
+        glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &v);
+        check(v == FBO_N, "rbo_width_query");
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                  GL_RENDERBUFFER, rb);
+        check(glCheckFramebufferStatus(GL_FRAMEBUFFER)
+              == GL_FRAMEBUFFER_COMPLETE, "fbo_complete_with_depth");
+
+        ORTHO_FOR(FBO_N);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        /* glOrtho negates z, so +z is NEARER.  Near red, then far blue: the
+         * blue must lose. */
+        glColor3f(1, 0, 0);
+        glBegin(GL_QUADS);
+        glVertex3f(0, 0, 5); glVertex3f(FBO_N, 0, 5);
+        glVertex3f(FBO_N, FBO_N, 5); glVertex3f(0, FBO_N, 5);
+        glEnd();
+        glColor3f(0, 0, 1);
+        glBegin(GL_QUADS);
+        glVertex3f(0, 0, -5); glVertex3f(FBO_N, 0, -5);
+        glVertex3f(FBO_N, FBO_N, -5); glVertex3f(0, FBO_N, -5);
+        glEnd();
+        {
+            unsigned char rgb[3];
+            glReadPixels(FBO_N / 2, FBO_N / 2, 1, 1, GL_RGB,
+                         GL_UNSIGNED_BYTE, rgb);
+            check(rgb[0] == 255 && rgb[2] == 0, "fbo_depth_test_works");
+        }
+        glDisable(GL_DEPTH_TEST);
+
+        /* A dimension mismatch must be diagnosed, not silently rendered. */
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 8, 8);
+        check(glCheckFramebufferStatus(GL_FRAMEBUFFER)
+              == GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS,
+              "fbo_dimension_mismatch_detected");
+
+        /* Deleting the renderbuffer must detach it everywhere. */
+        glDeleteRenderbuffers(1, &rb);
+        check(glCheckFramebufferStatus(GL_FRAMEBUFFER)
+              == GL_FRAMEBUFFER_COMPLETE, "rbo_delete_detaches");
+    }
+
+    /* ---- glReadPixels against the window ---- */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ORTHO_FOR(GL_W);
+    glClearColor(0.2f, 0.4f, 0.6f, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+        unsigned char rgba[4];
+        glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        check(rgba[0] > 46 && rgba[0] < 56 &&
+              rgba[1] > 97 && rgba[1] < 107 &&
+              rgba[2] > 148 && rgba[2] < 158 &&
+              rgba[3] == 255, "readpixels_rgba");
+
+        unsigned char bgr[3];
+        glReadPixels(10, 10, 1, 1, GL_BGR, GL_UNSIGNED_BYTE, bgr);
+        check(bgr[0] == rgba[2] && bgr[2] == rgba[0], "readpixels_bgr_swaps");
+
+        /* Rows come back bottom-first: a band along the bottom must read as
+         * present at low y and absent higher up. */
+        glColor3f(1, 1, 0);
+        glBegin(GL_QUADS);
+        glVertex3f(0, 0, 0); glVertex3f(GL_W, 0, 0);
+        glVertex3f(GL_W, 8, 0); glVertex3f(0, 8, 0);
+        glEnd();
+        unsigned char band[2 * 3];
+        glReadPixels(GL_W / 2, 7, 1, 2, GL_RGB, GL_UNSIGNED_BYTE, band);
+        check(band[0] == 255 && band[1] == 255 && band[3] != 255,
+              "readpixels_row_order_bottom_first");
+
+        unsigned char d = 0;
+        glReadPixels(GL_W / 2, GL_H - 2, 1, 1, GL_DEPTH_COMPONENT,
+                     GL_UNSIGNED_BYTE, &d);
+        check(d == 255, "readpixels_depth_far");
+
+        /* Out of bounds must be zero-filled, not a fault. */
+        unsigned char oob[3] = { 9, 9, 9 };
+        glReadPixels(GL_W + 100, GL_H + 100, 1, 1, GL_RGB,
+                     GL_UNSIGNED_BYTE, oob);
+        check(oob[0] == 0 && oob[1] == 0 && oob[2] == 0,
+              "readpixels_out_of_bounds_zero");
+
+        /* Validation. */
+        while (glGetError() != GL_NO_ERROR) { }
+        glReadPixels(0, 0, 1, 1, GL_RGB, GL_FLOAT, oob);
+        check(glGetError() == GL_INVALID_ENUM, "readpixels_bad_type");
+    }
+
+    /* ---- Cleanup and the state it leaves behind ---- */
+    glDeleteFramebuffers(1, &fbo);
+    check(glIsFramebuffer(fbo) == GL_FALSE, "fbo_delete");
+    {
+        GLint v = -1;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &v);
+        check(v == 0, "fbo_delete_reverts_binding");
+    }
+    glDeleteTextures(1, &target);
+
+    /* The window must still render normally after all of that. */
+    glClearColor(1, 0, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    check(AT(GL_W / 2, GL_H / 2) == 0xFF00FF, "fbo_window_still_usable");
+
+    check(aglxSwapBuffers(ctx) == 0, "fbo_swap");
+    check(glGetError() == GL_NO_ERROR, "fbo_no_pending_error");
+
+    #undef FBO_N
+    #undef ORTHO_FOR
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G7: vertex arrays, VBOs, display lists ---- */
 static void test_gl_arrays(int wid) {
     printf("[gl] --- G7: arrays, VBOs, display lists ---\n");
@@ -1812,6 +2083,7 @@ int main(void) {
     test_gl_light(wid);
     test_gl_texture(wid);
     test_gl_texture2(wid);
+    test_gl_fbo(wid);
     test_gl_arrays(wid);
     test_gl_glu(wid);
     test_gl_backend(wid);

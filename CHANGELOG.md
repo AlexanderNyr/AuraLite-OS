@@ -2,6 +2,78 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase G12 — Framebuffer objects, render-to-texture and glReadPixels] 2026-08-01
+
+Off-screen rendering. An application can now render into a texture and then
+sample it, which is the foundation for shadow maps, post-processing, dynamic
+reflections and any "render the scene twice" effect.
+
+### Added
+- **Framebuffer objects.** `glGenFramebuffers`, `glBindFramebuffer`,
+  `glDeleteFramebuffers`, `glIsFramebuffer`, `glFramebufferTexture2D` (2D
+  targets, cube faces, any mipmap level), `glFramebufferRenderbuffer`,
+  `glCheckFramebufferStatus` with the specific incomplete-* status codes.
+- **Renderbuffers.** `glGenRenderbuffers`, `glBindRenderbuffer`,
+  `glRenderbufferStorage` (colour and depth formats),
+  `glGetRenderbufferParameteriv`.
+- **`glReadPixels`** in `GL_RGB`/`RGBA`/`BGR`/`BGRA`/`ALPHA`/`DEPTH_COMPONENT`,
+  reading whichever target is bound. Previously listed as missing in
+  `docs/opengl.md`; `aglxGetColorBuffer()` is no longer the only readback.
+- `GL_INVALID_FRAMEBUFFER_OPERATION`, reported by `glClear` and `glBegin` when
+  the bound framebuffer is incomplete.
+- `tests/unit/test_glfbo.c`: **36 host checks**.
+- 35 new in-OS checks in `/gltest` (**240 total**, was 205).
+- An inset render-to-texture panel in `/glcube`: a second, overhead view of
+  the scene, rendered through an FBO and pasted into the corner.
+
+### How it works
+The rasterizer has only ever known four things about its target —
+`ctx->color`, `ctx->depth`, `ctx->width`, `ctx->height`. Binding an FBO points
+those at a texture or renderbuffer; binding framebuffer 0 points them back at
+the window buffers, which the context still owns. **Not one line of
+`glraster.c` changed.** Attachments are resolved to pixel pointers at bind
+time rather than attach time, so re-uploading or deleting an attached texture
+is safe.
+
+### Fixed
+- **Row order.** `gl_fb_row()` flipped y unconditionally, which is right for
+  the window (row 0 at the top) and wrong for a texture (row 0 at the bottom,
+  GL's own convention) — rendering into a texture came out upside-down.
+  `ctx->target_flip_y` now selects. Caught by the first round-trip test.
+- **Rendered textures sampled as transparent.** The rasterizer writes
+  `0x00RRGGBB` and the sampler reads `0xAARRGGBB`, so a rendered texture had
+  alpha zero everywhere and `GL_MODULATE` multiplied it to black. Unbinding
+  now forces the colour attachment opaque — one pass at unbind rather than an
+  OR on every fragment of every frame.
+
+### Performance, measured
+200 triangles per frame at 320×240:
+
+| Operation | Cost |
+|---|---|
+| Rendering into the window | 3.75 ms/frame |
+| Rendering into an FBO | 3.72 ms/frame |
+| `glReadPixels`, full 320×240 `GL_RGB` | 0.18 ms |
+
+Rendering off-screen costs the same as rendering on-screen. The bind/unbind
+pair is not free and scales with attachment area (1.3 µs at 64×64, 81.7 µs at
+512×512) because unbinding runs the alpha fixup; batch draws that share a
+target.
+
+### Known limitations, deliberate
+- One colour attachment. The fixed-function pipeline writes one colour, so a
+  second would receive nothing; the loops are already written against
+  `GL_MAX_COLOR_ATTACHMENTS_IMPL` for when a shader path (G11) raises it.
+- No stencil attachment: there is no stencil buffer anywhere in this
+  implementation, so `GL_STENCIL_ATTACHMENT` reports `GL_INVALID_OPERATION`
+  rather than pretending to work.
+- No `glBlitFramebuffer` and no multisampling.
+
+### Verified
+`make test-unit` 64/64 binaries green (411 GL host checks across 12 suites);
+`/gltest` in QEMU 240/240; `test_opengl.sh` 86/86; `/glcube` clean exit;
+`make iso` from a clean tree.
+
 ## [Phase G10 — OpenGL 1.2/1.3: mipmaps, multitexturing, 3D and cube textures] 2026-08-01
 
 Completes the fixed-function texture pipeline. Mipmapping was the largest

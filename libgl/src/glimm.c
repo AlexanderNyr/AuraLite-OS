@@ -241,6 +241,16 @@ void glBegin(GLenum mode) {
             return;
     }
 
+    /* Drawing into an incomplete framebuffer object is
+     * GL_INVALID_FRAMEBUFFER_OPERATION (§4.4.4).  Refusing here rather than
+     * per-primitive means one check per batch instead of one per triangle,
+     * and the batch is discarded as a whole -- which is what the application
+     * wants, since half a mesh drawn nowhere helps nobody. */
+    if (!gl_fbo_target_ok(ctx)) {
+        gl_set_error(GL_INVALID_FRAMEBUFFER_OPERATION);
+        return;
+    }
+
     imm.active       = 1;
     imm.mode         = mode;
     imm.count        = 0;

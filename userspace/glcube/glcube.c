@@ -177,6 +177,57 @@ static void draw_floor(GLuint floor_tex) {
     glEnable(GL_LIGHTING);
 }
 
+/* ---- Render-to-texture mirror (phase G12) ----
+ *
+ * A second view of the same cube is rendered into a texture through a
+ * framebuffer object, and that texture is then pasted onto a panel in the
+ * corner of the window -- a picture-in-picture "security monitor".
+ *
+ * It is a cheap demonstration with a real property to check: the panel must
+ * show the scene the RIGHT WAY UP.  A texture stores row 0 at the bottom and
+ * the window's framebuffer stores it at the top, so an implementation that
+ * flips unconditionally renders correctly to the window and upside-down into
+ * a texture.  That bug happened during this phase; the panel is what makes it
+ * visible at a glance rather than only in a unit test.
+ */
+#define MIRROR_N 64
+
+static GLuint mirror_tex = 0;
+static GLuint mirror_fbo = 0;
+static GLuint mirror_depth = 0;
+static int    mirror_ok = 0;
+
+static void mirror_init(void) {
+    glGenTextures(1, &mirror_tex);
+    glBindTexture(GL_TEXTURE_2D, mirror_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, MIRROR_N, MIRROR_N, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    /* The mirror needs its own depth buffer: the window's belongs to the
+     * window, and rendering a 3D scene without depth would show the cube's
+     * back faces through its front ones. */
+    glGenRenderbuffers(1, &mirror_depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, mirror_depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24,
+                          MIRROR_N, MIRROR_N);
+
+    glGenFramebuffers(1, &mirror_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, mirror_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, mirror_tex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, mirror_depth);
+
+    mirror_ok = (glCheckFramebufferStatus(GL_FRAMEBUFFER)
+                 == GL_FRAMEBUFFER_COMPLETE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!mirror_ok) printf("glcube: mirror FBO incomplete, panel disabled\n");
+}
+
 /* Texture coordinates for the four corners of every face. */
 static const GLfloat face_uv[4][2] = { {0,0}, {1,0}, {1,1}, {0,1} };
 
@@ -330,6 +381,9 @@ int main(int argc, char **argv) {
         glEndList();
     }
 
+    /* Phase G12: the off-screen target for the picture-in-picture panel. */
+    mirror_init();
+
     GLfloat angle_x = 25.0f, angle_y = 30.0f;
     int paused = 0, running = 1;
     long frames = 0;
@@ -378,6 +432,50 @@ int main(int argc, char **argv) {
             if (angle_x >= 360.0f) angle_x -= 360.0f;
         }
 
+        /* ---- Pass 1 (G12): the same cube, from above, into a texture ----
+         *
+         * Rendered BEFORE the window pass so the panel shows the current
+         * frame rather than the previous one. */
+        if (mirror_ok) {
+            glBindFramebuffer(GL_FRAMEBUFFER, mirror_fbo);
+            glViewport(0, 0, MIRROR_N, MIRROR_N);
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            /* A square 50-degree frustum, written out rather than calling
+             * gluPerspective: this demo deliberately depends on libgl only. */
+            {
+                double t = 1.0 * 0.46630766;   /* tan(50deg / 2) */
+                glFrustum(-t, t, -t, t, 1.0, 40.0);
+            }
+            glMatrixMode(GL_MODELVIEW);
+
+            glClearColor(0.05f, 0.05f, 0.12f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            glLoadIdentity();
+            /* A high, tilted vantage point, so the panel is visibly a
+             * different view and not a copy of the main one. */
+            glTranslatef(0.0f, 0.0f, -7.0f);
+            glRotatef(55.0f, 1.0f, 0.0f, 0.0f);
+            glRotatef(angle_y, 0.0f, 1.0f, 0.0f);
+            if (cube_list != 0) glCallList(cube_list);
+            else                draw_cube();
+
+            /* Back to the window, and restore its projection. */
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, CUBE_W, CUBE_H);
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            {
+                double aspect = (double)CUBE_W / (double)CUBE_H;
+                double top    = 1.0 * 0.41421356;   /* tan(45deg / 2) */
+                glFrustum(-top * aspect, top * aspect, -top, top, 1.0, 50.0);
+            }
+            glMatrixMode(GL_MODELVIEW);
+            glClearColor(0.05f, 0.06f, 0.10f, 1.0f);
+        }
+
+        /* ---- Pass 2: the window ---- */
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         glLoadIdentity();
@@ -394,6 +492,52 @@ int main(int argc, char **argv) {
         if (cube_list != 0) glCallList(cube_list);
         else                draw_cube();
 
+        /* ---- The picture-in-picture panel ----
+         *
+         * Drawn last, in an orthographic overlay, with depth testing off so
+         * it always sits on top of the scene. */
+        if (mirror_ok) {
+            glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+            glOrtho(0, CUBE_W, 0, CUBE_H, -1, 1);
+            glMatrixMode(GL_MODELVIEW);  glPushMatrix(); glLoadIdentity();
+
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_LIGHTING);
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, mirror_tex);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+            glColor3f(1.0f, 1.0f, 1.0f);
+
+            GLfloat px0 = (GLfloat)(CUBE_W - MIRROR_N - 8);
+            GLfloat py0 = (GLfloat)(CUBE_H - MIRROR_N - 8);
+            GLfloat px1 = px0 + MIRROR_N, py1 = py0 + MIRROR_N;
+
+            glBegin(GL_QUADS);
+            glTexCoord2f(0, 0); glVertex3f(px0, py0, 0);
+            glTexCoord2f(1, 0); glVertex3f(px1, py0, 0);
+            glTexCoord2f(1, 1); glVertex3f(px1, py1, 0);
+            glTexCoord2f(0, 1); glVertex3f(px0, py1, 0);
+            glEnd();
+
+            /* A thin frame, so the panel reads as an inset rather than as a
+             * rendering artefact. */
+            glDisable(GL_TEXTURE_2D);
+            glColor3f(0.6f, 0.7f, 0.9f);
+            glBegin(GL_LINE_LOOP);
+            glVertex3f(px0 - 1, py0 - 1, 0); glVertex3f(px1 + 1, py0 - 1, 0);
+            glVertex3f(px1 + 1, py1 + 1, 0); glVertex3f(px0 - 1, py1 + 1, 0);
+            glEnd();
+
+            glEnable(GL_TEXTURE_2D);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+            glBindTexture(GL_TEXTURE_2D, checker);
+            glEnable(GL_LIGHTING);
+            glEnable(GL_DEPTH_TEST);
+
+            glMatrixMode(GL_PROJECTION); glPopMatrix();
+            glMatrixMode(GL_MODELVIEW);  glPopMatrix();
+        }
+
         aglxSwapBuffers(ctx);
 
         frames++;
@@ -408,6 +552,9 @@ int main(int argc, char **argv) {
     else                    printf("glcube: clean exit, %ld frames\n", frames);
 
     if (cube_list != 0) glDeleteLists(cube_list, 1);
+    if (mirror_fbo)   glDeleteFramebuffers(1, &mirror_fbo);
+    if (mirror_depth) glDeleteRenderbuffers(1, &mirror_depth);
+    if (mirror_tex)   glDeleteTextures(1, &mirror_tex);
     aglxDestroyContext(ctx);
     ag_window_destroy(wid);
     return 0;

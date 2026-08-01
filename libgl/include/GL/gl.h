@@ -47,6 +47,7 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_STACK_OVERFLOW                 0x0503
 #define GL_STACK_UNDERFLOW                0x0504
 #define GL_OUT_OF_MEMORY                  0x0505
+#define GL_INVALID_FRAMEBUFFER_OPERATION  0x0506
 
 /* ---- glGetString names ---- */
 #define GL_VENDOR                         0x1F00
@@ -260,6 +261,51 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_CLIENT_ACTIVE_TEXTURE          0x84E1
 #define GL_MAX_TEXTURE_UNITS              0x84E2
 
+/* ---- Framebuffer objects (GL 3.0 / EXT_framebuffer_object, phase G12) ----
+ *
+ * The GL 3.0 core names are used, not the EXT-suffixed ones: an application
+ * written against modern GL sees the names it expects, and the values are the
+ * same either way.
+ */
+#define GL_FRAMEBUFFER                    0x8D40
+#define GL_RENDERBUFFER                   0x8D41
+#define GL_FRAMEBUFFER_BINDING            0x8CA6
+#define GL_RENDERBUFFER_BINDING           0x8CA7
+
+/* Attachment points.  GL_COLOR_ATTACHMENTi are consecutive. */
+#define GL_COLOR_ATTACHMENT0              0x8CE0
+#define GL_DEPTH_ATTACHMENT               0x8D00
+#define GL_STENCIL_ATTACHMENT             0x8D20
+
+/* glCheckFramebufferStatus return values (§4.4.4). */
+#define GL_FRAMEBUFFER_COMPLETE                      0x8CD5
+#define GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT         0x8CD6
+#define GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT 0x8CD7
+#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS         0x8CD9
+#define GL_FRAMEBUFFER_UNSUPPORTED                   0x8CDD
+#define GL_FRAMEBUFFER_UNDEFINED                     0x8219
+
+/* Renderbuffer internal formats this implementation understands. */
+#define GL_RGBA8                          0x8058
+#define GL_RGB8                           0x8051
+#define GL_DEPTH_COMPONENT                0x1902
+#define GL_DEPTH_COMPONENT16              0x81A5
+#define GL_DEPTH_COMPONENT24              0x81A6
+#define GL_DEPTH_COMPONENT32F             0x8CAC
+
+/* Renderbuffer queries. */
+#define GL_RENDERBUFFER_WIDTH             0x8D42
+#define GL_RENDERBUFFER_HEIGHT            0x8D43
+#define GL_RENDERBUFFER_INTERNAL_FORMAT   0x8D44
+
+/* Implementation limits. */
+#define GL_MAX_RENDERBUFFER_SIZE          0x84E8
+#define GL_MAX_COLOR_ATTACHMENTS          0x8CDF
+
+/* glReadPixels formats.  GL_RGB/GL_RGBA/GL_ALPHA are already defined above. */
+#define GL_BGR                            0x80E0
+#define GL_BGRA                           0x80E1
+
 /* ---- Vertex arrays (§2.8) ---- */
 #define GL_VERTEX_ARRAY                   0x8074
 #define GL_NORMAL_ARRAY                   0x8075
@@ -412,6 +458,28 @@ void glClientActiveTexture(GLenum texture);
 void glMultiTexCoord2f(GLenum target, GLfloat s, GLfloat t);
 void glTexCoord3f(GLfloat s, GLfloat t, GLfloat r);
 void glGenerateMipmap(GLenum target);
+
+/* ---- Framebuffer objects and pixel readback (G12) ---- */
+void glGenFramebuffers(GLsizei n, GLuint *framebuffers);
+void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers);
+void glBindFramebuffer(GLenum target, GLuint framebuffer);
+GLboolean glIsFramebuffer(GLuint framebuffer);
+GLenum glCheckFramebufferStatus(GLenum target);
+void glFramebufferTexture2D(GLenum target, GLenum attachment,
+                            GLenum textarget, GLuint texture, GLint level);
+void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
+                               GLenum renderbuffertarget, GLuint renderbuffer);
+
+void glGenRenderbuffers(GLsizei n, GLuint *renderbuffers);
+void glDeleteRenderbuffers(GLsizei n, const GLuint *renderbuffers);
+void glBindRenderbuffer(GLenum target, GLuint renderbuffer);
+GLboolean glIsRenderbuffer(GLuint renderbuffer);
+void glRenderbufferStorage(GLenum target, GLenum internalformat,
+                           GLsizei width, GLsizei height);
+void glGetRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params);
+
+void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
+                  GLenum format, GLenum type, GLvoid *pixels);
 
 void glBlendFunc(GLenum sfactor, GLenum dfactor);
 void glAlphaFunc(GLenum func, GLclampf ref);

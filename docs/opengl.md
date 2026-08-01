@@ -127,6 +127,9 @@ frames, so output is tear-free without extra work.
 | Buffer objects | GL 1.5 subset: `glGenBuffers`, `glBindBuffer`, `glBufferData`, `glBufferSubData`, `glDeleteBuffers` |
 | Display lists | `GL_COMPILE` and `GL_COMPILE_AND_EXECUTE`, nesting, recompilation |
 | State queries | `glGetIntegerv`, `glGetFloatv`, `glGetBooleanv`, `glIsEnabled`, `glGetString`, `glGetError` |
+| Framebuffer objects | `glGenFramebuffers`, `glBindFramebuffer`, `glFramebufferTexture2D` (2D and cube faces, any mipmap level), `glFramebufferRenderbuffer`, `glCheckFramebufferStatus`; render-to-texture |
+| Renderbuffers | `glGenRenderbuffers`, `glBindRenderbuffer`, `glRenderbufferStorage` (colour and depth), `glGetRenderbufferParameteriv` |
+| Pixel readback | `glReadPixels` in `GL_RGB`/`RGBA`/`BGR`/`BGRA`/`ALPHA`/`DEPTH_COMPONENT`, from the window or from an FBO |
 | Attribute stack | `glPushAttrib` / `glPopAttrib`, 16 deep |
 | GLU | `gluPerspective`, `gluLookAt`, `gluOrtho2D`, `gluErrorString`, `gluSphere`, `gluCylinder`, `gluDisk` |
 
@@ -138,9 +141,10 @@ frames, so output is tear-free without extra work.
 | Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
 | `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
 | More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
-| Stencil buffer | `GL_STENCIL_BUFFER_BIT` is accepted by `glClear` and ignored |
+| Stencil buffer | `GL_STENCIL_BUFFER_BIT` is accepted by `glClear` and ignored; `GL_STENCIL_ATTACHMENT` reports `GL_INVALID_OPERATION` rather than pretending |
 | Accumulation buffer | Not present |
-| `glReadPixels` / `glCopyTexImage` | Read back with `aglxGetColorBuffer()` instead |
+| `glCopyTexImage` / `glBlitFramebuffer` | Render into the texture directly with an FBO instead |
+| Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
 | Evaluators, feedback, selection | Not present |
 | `GL_TEXTURE` matrix mode | `glMatrixMode(GL_TEXTURE)` reports `GL_INVALID_OPERATION` rather than silently doing nothing |
 | Hardware acceleration | The backend seam exists (G9) and a VirGL candidate is registered, but it declines: the kernel's VirGL transport has no user-space syscall yet |
@@ -204,6 +208,47 @@ act on the unit selected by `glActiveTexture`; the *client* selector used by
 `glTexCoordPointer` is separate and set by `glClientActiveTexture`. `glTexCoord`
 itself always writes unit 0 — `glActiveTexture` does not redirect it.
 
+**Framebuffer objects redirect four pointers, and nothing else.** The
+rasterizer has only ever known about `ctx->color`, `ctx->depth`, `ctx->width`
+and `ctx->height`. Binding an FBO points those at a texture or renderbuffer;
+binding framebuffer 0 points them back at the window. Not one line of
+`glraster.c` changed to gain render-to-texture.
+
+Consequences worth knowing:
+
+- **`aglxSwapBuffers()` always presents the window**, even while an FBO is
+  bound — framebuffer 0 *is* the window, by definition.
+- **An FBO's size is its attachment's size.** Binding a 64×64 target makes the
+  effective viewport bounds 64×64 until it is unbound; set the projection and
+  `glViewport` to match, and restore them afterwards.
+- **No depth attachment means no depth buffer.** `GL_DEPTH_TEST` then silently
+  does nothing, exactly as in a context created without `AGLX_DEPTH`. It does
+  *not* fall through to the window's depth buffer. Attach a depth
+  renderbuffer if the off-screen pass needs depth.
+- **Attachments resolve at bind time, not attach time.** A texture may be
+  re-uploaded at a new size while attached; the FBO sees the current state.
+  Deleting an attached texture makes the FBO incomplete rather than dangling.
+- **An incomplete FBO refuses to draw.** `glClear` and `glBegin` report
+  `GL_INVALID_FRAMEBUFFER_OPERATION` instead of falling back to the window,
+  because silently rendering somewhere else is the hardest kind of bug to see.
+
+**Row order differs between the window and a texture.** The window's
+framebuffer stores row 0 at the top, so writing a GL pixel flips y. A texture
+stores row 0 at the bottom, which is already GL's convention, so no flip
+applies. An implementation that flipped unconditionally would render correctly
+to the window and *upside-down* into a texture — which is exactly what
+happened first here, and is why `/glcube`'s inset panel exists as a visible
+check.
+
+The same convention makes `glReadPixels` return rows bottom-first, so a
+readback fed straight into `glTexImage2D` round-trips without a flip.
+
+**A texture rendered into is forced opaque when the FBO is unbound.** The
+rasterizer writes `0x00RRGGBB` — no alpha — and the sampler reads
+`0xAARRGGBB`, so without this a rendered texture would sample as fully
+transparent and `GL_MODULATE` would multiply it to black. The fixup is one
+pass over the attachment at unbind time; see the performance note below.
+
 **A mipmap min filter on a texture with no chain falls back to level 0.**
 That is the specification's incomplete-texture rule, and it is why the GL
 default of `GL_NEAREST_MIPMAP_LINEAR` still draws a plain `glTexImage2D`
@@ -263,6 +308,32 @@ compromise: most of the quality, about two-thirds of the cost.
 
 Mipmaps also cost memory: a full chain is 4/3 of the base image.
 
+Framebuffer objects, measured at 320×240 with 200 triangles per frame:
+
+| Operation | Cost |
+|---|---|
+| Rendering into the window | 3.75 ms/frame |
+| Rendering into an FBO | 3.72 ms/frame |
+| `glReadPixels`, full 320×240 `GL_RGB` | 0.18 ms |
+
+Rendering into an FBO costs **the same** as rendering into the window: it is
+the same rasterizer writing to a different address.
+
+The bind/unbind pair is not free, though, and its cost scales with the
+attachment's area, because unbinding runs the alpha fixup over the whole
+colour attachment:
+
+| Attachment | Bind + unbind |
+|---|---|
+| 64×64 | 1.3 µs |
+| 128×128 | 5.1 µs |
+| 256×256 | 20.1 µs |
+| 512×512 | 81.7 µs |
+
+At one bind pair per frame this is noise. In a loop that switches targets per
+object it is not — batch everything that shares a target together, which is
+good practice on real hardware for entirely different reasons anyway.
+
 Under QEMU expect roughly an order of magnitude worse. Practical advice:
 
 - Keep the context small. 320×240 costs a quarter of what 640×480 does, and
@@ -305,9 +376,9 @@ syscall for 3D submission.
 
 | Program | What it shows |
 |---|---|
-| `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, and a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD. |
+| `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 205 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 240 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -337,6 +408,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glarray.c` | Arrays, buffer objects, display lists, 36 |
 | `tests/unit/test_glu.c` | GLU helpers and quadrics, 21 |
 | `tests/unit/test_glbackend.c` | The backend seam and the VirGL candidate, 17 |
+| `tests/unit/test_glfbo.c` | Framebuffer objects, renderbuffers, `glReadPixels`, 36 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test

@@ -290,7 +290,7 @@ LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
               $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o \
               $(USER_BUILD)/glarray.o $(USER_BUILD)/gllist.o \
               $(USER_BUILD)/glu.o $(USER_BUILD)/glbackend.o \
-              $(USER_BUILD)/glvirgl.o
+              $(USER_BUILD)/glvirgl.o $(USER_BUILD)/glfbo.o
 USER_GL_OBJ := $(LIBGL_OBJS)
 USER_CFLAGS += -I libgl/include
 
@@ -477,6 +477,12 @@ $(USER_BUILD)/glbackend.o: libgl/src/glbackend.c libgl/include/GL/glbackend.h \
 
 $(USER_BUILD)/glvirgl.o: libgl/src/glvirgl.c libgl/include/GL/glbackend.h \
                          libgl/src/glcontext.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/glfbo.o: libgl/src/glfbo.c libgl/src/glcontext.h \
+                       libgl/src/glvertex.h libgl/include/GL/gl.h \
+                       $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -822,6 +828,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_gltex2 \
                 $(BUILD_DIR)/test_glarray \
                 $(BUILD_DIR)/test_glu $(BUILD_DIR)/test_glbackend \
+                $(BUILD_DIR)/test_glfbo \
                 $(BUILD_DIR)/test_gpu_syscall \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
@@ -916,7 +923,7 @@ LIBGL_TEST_SRCS := libgl/src/auraglx.c libgl/src/glstate.c \
                    libgl/src/gltexture.c libgl/src/glfrag.c \
                    libgl/src/glarray.c libgl/src/gllist.c \
                    libgl/src/glu.c libgl/src/glbackend.c \
-                   libgl/src/glvirgl.c
+                   libgl/src/glvirgl.c libgl/src/glfbo.c
 
 LIBGL_TEST_HDRS := libgl/src/glcontext.h libgl/src/glvertex.h \
                    libgl/include/GL/glu.h libgl/include/GL/glbackend.h \
@@ -937,13 +944,14 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 \
 #   test_gltex    texture objects, sampling, perspective correction, blending,
 #                 the alpha test and fog
 #   test_gltex2   GL 1.2/1.3: mipmaps, multitexturing, 3D textures, cube maps
+#   test_glfbo    framebuffer objects, renderbuffers and glReadPixels
 #
 # libauragui cannot be built for the host (it needs AuraLite's freestanding
 # libc), so tests/unit/glstub/ provides a recording stand-in for ag_blit() and
 # ag_render_now() -- the code under test is still the real auraglx.c.
 LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
                test_gllight test_gltex test_gltex2 test_glarray test_glu \
-               test_glbackend
+               test_glbackend test_glfbo
 
 $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \
                                            $(LIBGL_TEST_SRCS) \

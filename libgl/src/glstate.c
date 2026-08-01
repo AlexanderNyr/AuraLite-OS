@@ -91,6 +91,14 @@ void glClear(GLbitfield mask) {
         return;
     }
 
+    /* Clearing an incomplete framebuffer object is
+     * GL_INVALID_FRAMEBUFFER_OPERATION (§4.4.4).  Without this the clear
+     * would dereference the NULL target that gl_fbo_apply() installs. */
+    if (!gl_fbo_target_ok(ctx)) {
+        gl_set_error(GL_INVALID_FRAMEBUFFER_OPERATION);
+        return;
+    }
+
     /* The backend may clear in hardware; a non-zero return means it did not. */
     if (gl_backend_try_clear(ctx, mask) == 0) return;
 
@@ -368,6 +376,14 @@ void glGetIntegerv(GLenum pname, GLint *params) {
         params[0] = (GLint)(GL_TEXTURE0 + ctx->client_active_texture); break;
     case GL_MAX_TEXTURE_UNITS:
         params[0] = GL_MAX_TEXTURE_UNITS_IMPL; break;
+    case GL_FRAMEBUFFER_BINDING:
+        params[0] = (GLint)ctx->framebuffer_binding; break;
+    case GL_RENDERBUFFER_BINDING:
+        params[0] = (GLint)ctx->renderbuffer_binding; break;
+    case GL_MAX_COLOR_ATTACHMENTS:
+        params[0] = GL_MAX_COLOR_ATTACHMENTS_IMPL; break;
+    case GL_MAX_RENDERBUFFER_SIZE:
+        params[0] = AGLX_MAX_DIM; break;
     case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
         params[0] = 8192; break;
     case GL_BLEND_SRC:     params[0] = (GLint)ctx->blend_src;  break;

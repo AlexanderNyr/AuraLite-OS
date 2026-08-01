@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL Implementation Plan
 
-## Status: G0–G10 COMPLETE ✅ · K1 COMPLETE ✅ · G11–G13 PLANNED 📋
+## Status: G0–G10, G12 COMPLETE ✅ · K1 COMPLETE ✅ · G11, G13 PLANNED 📋
 
 This document is the development plan for the OpenGL graphics API in AuraLite OS.
 It follows the structure of the existing project plans (`HARDENING_PLAN.md`,
@@ -64,7 +64,7 @@ in phase G7. Rationale:
 G1..G8  →  OpenGL 1.1 + GL 1.5 subset (VBOs)          ← done
 G10     →  OpenGL 1.2/1.3: multitexturing, 3D textures, cube maps  ← done
 G11     →  GLSL interpreter → OpenGL ES 2.0 / GL 2.0 (shader path)
-G12     →  FBO / render-to-texture, GL 3.x core profile
+G12     →  FBO / render-to-texture, glReadPixels                    ← done
 G13     →  VirGL hardware path for the shader profile
 ```
 
@@ -1263,7 +1263,7 @@ buys API coverage, not frames per second.
 
 ---
 
-## Phase G12 — Framebuffer objects and render-to-texture
+## Phase G12 — Framebuffer objects and render-to-texture ✅ COMPLETE
 
 **Objective:** render into a texture instead of the window.
 
@@ -1285,9 +1285,69 @@ missing in `docs/opengl.md`).
 - An incomplete FBO must report the right `glCheckFramebufferStatus` code
   rather than rendering somewhere undefined.
 
+### Outcome
+
+The prediction that this phase would be small held: the rasterizer needed no
+changes at all. Binding an FBO re-points `ctx->color`, `ctx->depth`,
+`ctx->width` and `ctx->height`; binding framebuffer 0 points them back. That
+is the entire mechanism, and it is the return on having kept the render target
+abstract since G3.
+
+Three things were not obvious in advance.
+
+**1. Row order differs between the two kinds of target.**
+
+The window's framebuffer stores row 0 at the TOP, so `gl_fb_row()` flipped y
+unconditionally. A texture stores row 0 at the BOTTOM — GL's own convention —
+so the same flip renders into a texture upside-down. The first round-trip test
+caught it immediately: the blue quadrant came out at the top instead of the
+bottom. `ctx->target_flip_y` now says which convention the current target uses.
+
+This is the kind of bug that a "does the API return success" test never finds,
+and it is why the round-trip test compares actual pixel positions.
+
+**2. Rendered textures need an alpha fixup.**
+
+The rasterizer writes `0x00RRGGBB`; the sampler reads `0xAARRGGBB`. A texture
+rendered into therefore has alpha zero everywhere and samples as fully
+transparent — `GL_MODULATE` multiplies it to black. Unbinding now forces the
+colour attachment opaque.
+
+The alternative, making the rasterizer write `0xFF` into the alpha byte, would
+cost an OR on every fragment of every frame to fix up a buffer that is usually
+never sampled. One pass at unbind time is the cheaper place to pay.
+
+**3. That fixup is the only thing binding costs, and it scales with area.**
+
+| Attachment | Bind + unbind |
+|---|---|
+| 64×64 | 1.3 µs |
+| 128×128 | 5.1 µs |
+| 256×256 | 20.1 µs |
+| 512×512 | 81.7 µs |
+
+Rendering into an FBO itself costs exactly what rendering into the window
+costs (3.72 vs 3.75 ms/frame for 200 triangles at 320×240) — same rasterizer,
+different address. Applications that switch targets per object rather than per
+frame will notice the bind cost; batching by target fixes it.
+
+### Delivered
+
+- `libgl/src/glfbo.c`: framebuffer and renderbuffer objects, completeness
+  checking, attachment resolution, `glReadPixels`.
+- `ctx->win_*` alongside `ctx->color/depth/width/height`, so the window
+  buffers stay owned by the context while the target moves.
+- `ctx->target_flip_y` and `gl_row_index()`.
+- `GL_INVALID_FRAMEBUFFER_OPERATION` from `glClear` and `glBegin` on an
+  incomplete target.
+- `tests/unit/test_glfbo.c`: **36 checks**.
+- `/gltest` gained **35 in-OS checks** (240 total, was 205).
+- `/glcube` gained an inset render-to-texture panel — a second view of the
+  scene, which makes the row-order property visible at a glance.
+
 ### Deliverable
 
-`patches/GL_G12_fbo.patch`
+`patches/GL_G12_fbo.patch` ✅
 
 ---
 
@@ -1435,7 +1495,7 @@ complete and tested; the last driver hop is G13 work.
 |---|---|
 | ~~K1~~ | ✅ **Done** — the syscall surface, validation and quotas are in place |
 | ~~G10~~ | ✅ Complete |
-| G12 | Small once G10 lands; also delivers `glReadPixels` |
+| ~~G12~~ | ✅ Complete |
 | G11 | Largest by far; do it when the pipeline underneath is finished |
 | G13 | Needs K1, and a full triangle path needs G11 |
 

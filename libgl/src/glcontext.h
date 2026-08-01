@@ -46,6 +46,21 @@
  * +X, -X, +Y, -Y, +Z, -Z. */
 #define GL_CUBE_FACES              6
 
+/* ---- Phase G12 limits ----
+ *
+ * Framebuffer and renderbuffer objects tracked per context.  Sized like the
+ * texture and buffer tables: generous for the demos, bounded so the context
+ * stays a fixed-size allocation.
+ */
+#define GL_MAX_FRAMEBUFFERS_IMPL   32
+#define GL_MAX_RENDERBUFFERS_IMPL  32
+
+/* Colour attachment points per framebuffer.  One is all the fixed-function
+ * pipeline can write: there are no draw buffers and no gl_FragData, so a
+ * second attachment would have nothing to put in it.  The constant exists so
+ * that the day a shader path lands (G11) the loops are already written. */
+#define GL_MAX_COLOR_ATTACHMENTS_IMPL 1
+
 /* Buffer objects and display lists tracked per context. */
 #define GL_MAX_BUFFERS_IMPL        64
 #define GL_MAX_LISTS_IMPL          256
@@ -116,6 +131,59 @@ typedef struct {
     GLenum     env_mode;         /* MODULATE / REPLACE / DECAL / BLEND      */
     gl_color_t env_color;
 } gl_texunit_t;
+
+/* ---- Renderbuffer object (§4.4.2) ----
+ *
+ * An off-screen surface that is not a texture.  Depth attachments are the
+ * common use: rendering colour into a texture still needs somewhere to put
+ * depth, and a renderbuffer is that somewhere without pretending to be
+ * samplable.
+ *
+ * Colour renderbuffers store packed gl_pixel_t, depth ones store float, and
+ * exactly one of the two pointers is non-NULL.  Keeping them as separate
+ * members rather than a union makes the "which is it" question answerable by
+ * looking, which matters in the attachment-completeness checks.
+ */
+typedef struct {
+    GLuint      name;
+    int         used;
+    GLenum      format;          /* GL_RGBA8, GL_DEPTH_COMPONENT24, ...     */
+    GLsizei     width, height;
+    gl_pixel_t *color;           /* non-NULL for a colour renderbuffer      */
+    float      *depth;           /* non-NULL for a depth renderbuffer       */
+} gl_renderbuffer_t;
+
+/* ---- Framebuffer object (§4.4) ----
+ *
+ * An FBO owns no storage of its own: it is a set of REFERENCES to images that
+ * live in textures or renderbuffers.  That is the whole point of the object,
+ * and it is why deleting an attached texture has to be handled explicitly --
+ * the FBO would otherwise keep a dangling reference.
+ *
+ * An attachment is described by (kind, name, and for a texture the target,
+ * face and level).  Resolving it to an actual pixel pointer happens at bind
+ * time, in gl_fbo_apply(), not here: a texture can be re-uploaded at a new
+ * size while attached, and the resolution must see the current state.
+ */
+typedef enum {
+    GL_ATTACH_NONE = 0,
+    GL_ATTACH_TEXTURE,
+    GL_ATTACH_RENDERBUFFER
+} gl_attach_kind_t;
+
+typedef struct {
+    gl_attach_kind_t kind;
+    GLuint           name;       /* texture or renderbuffer name            */
+    GLenum           textarget;  /* GL_TEXTURE_2D or a cube face target     */
+    GLint            level;      /* mipmap level, textures only             */
+} gl_attachment_t;
+
+typedef struct {
+    GLuint          name;
+    int             used;
+    gl_attachment_t color[GL_MAX_COLOR_ATTACHMENTS_IMPL];
+    gl_attachment_t depth;
+} gl_framebuffer_t;
 
 /* ---- Vertex array pointer (§2.8) ----
  *
@@ -192,11 +260,43 @@ typedef struct {
 } gl_material_t;
 
 struct aglx_context {
-    /* ---- Render targets ---- */
+    /* ---- Render target: where the rasterizer writes ----
+     *
+     * These are the ONLY things the rasterizer knows about.  Binding a
+     * framebuffer object redirects them at the attached images; binding
+     * framebuffer 0 restores the window buffers saved in win_* below.  That
+     * is what makes phase G12 small: not one line of glraster.c had to change
+     * to gain render-to-texture.
+     */
     int         width;          /* buffer width  in pixels */
     int         height;         /* buffer height in pixels */
     gl_pixel_t *color;          /* width*height, packed XRGB8888, never NULL */
-    float      *depth;          /* width*height, or NULL when AGLX_DEPTH unset */
+    float      *depth;          /* width*height, or NULL when there is none  */
+
+    /* ---- Row order of the current target ----
+     *
+     * GL window coordinates have a BOTTOM-left origin, and the two kinds of
+     * target disagree about where row 0 lives:
+     *
+     *   - the window's framebuffer stores row 0 at the TOP, so writing a GL
+     *     pixel requires flipping y;
+     *   - a texture stores row 0 at the BOTTOM (see gltexture.c), which is
+     *     already GL's own convention, so no flip applies.
+     *
+     * Getting this wrong renders correctly into the window and upside-down
+     * into a texture -- which is exactly what happened first, and is the one
+     * genuine subtlety in phase G12.  gl_fb_row() consults this flag. */
+    int         target_flip_y;  /* 1 = row 0 is the top (the window)         */
+
+    /* The window-system buffers, owned by the context and always allocated.
+     * `color`/`depth` above point HERE whenever framebuffer 0 is bound, and
+     * elsewhere when an FBO is.  aglxSwapBuffers() always presents win_color,
+     * so presenting while an FBO is bound shows the window's content rather
+     * than whatever off-screen surface happens to be current -- which is what
+     * the specification means by framebuffer 0 being the window. */
+    int         win_width, win_height;
+    gl_pixel_t *win_color;
+    float      *win_depth;
 
     /* ---- Window binding ---- */
     int         wid;            /* AuraGUI window id */
@@ -291,6 +391,14 @@ struct aglx_context {
     GLuint        next_list_name;
     int           list_compiling;          /* index into lists[], or -1 */
     GLenum        list_mode;               /* COMPILE or COMPILE_AND_EXECUTE */
+
+    /* ---- Framebuffer objects (§4.4), phase G12 ---- */
+    gl_framebuffer_t  framebuffers[GL_MAX_FRAMEBUFFERS_IMPL];
+    gl_renderbuffer_t renderbuffers[GL_MAX_RENDERBUFFERS_IMPL];
+    GLuint            next_framebuffer_name;
+    GLuint            next_renderbuffer_name;
+    GLuint            framebuffer_binding;   /* 0 = the window              */
+    GLuint            renderbuffer_binding;
 
     /* ---- glPushAttrib / glPopAttrib (§6.1.2) ----
      * Each entry stores a full copy of the attribute groups this

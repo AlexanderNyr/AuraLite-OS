@@ -45,18 +45,28 @@ typedef struct {
     int        valid;   /* 0 when the vertex is behind the eye (w <= 0)       */
 } gl_vertex_t;
 
-/* Pointer to the first pixel of window-space row `y`, with the vertical flip
- * from GL's bottom-left origin to the framebuffer's top-left origin applied.
+/* Pointer to the first pixel of window-space row `y`.
+ *
+ * GL window coordinates put y=0 at the BOTTOM.  Whether that needs flipping
+ * depends on the target: the window's framebuffer stores row 0 at the top, a
+ * texture stores it at the bottom.  ctx->target_flip_y says which, and is
+ * maintained by glfbo.c when the render target changes (phase G12).  Before
+ * G12 there was only ever one kind of target and the flip was unconditional.
+ *
  * Callers must have already checked 0 <= y < ctx->height. */
+static inline size_t gl_row_index(const struct aglx_context *ctx, int y) {
+    return ctx->target_flip_y ? (size_t)(ctx->height - 1 - y) : (size_t)y;
+}
+
 static inline gl_pixel_t *gl_fb_row(struct aglx_context *ctx, int y) {
-    return ctx->color + (size_t)(ctx->height - 1 - y) * (size_t)ctx->width;
+    return ctx->color + gl_row_index(ctx, y) * (size_t)ctx->width;
 }
 
 /* Same, for the depth buffer.  Returns NULL when the context has no depth
  * buffer, so callers must check. */
 static inline float *gl_depth_row(struct aglx_context *ctx, int y) {
     if (!ctx->depth) return (float *)0;
-    return ctx->depth + (size_t)(ctx->height - 1 - y) * (size_t)ctx->width;
+    return ctx->depth + gl_row_index(ctx, y) * (size_t)ctx->width;
 }
 
 /* ---- Rasterizer entry points (libgl/src/glraster.c) ----
@@ -163,6 +173,23 @@ int gl_texture_uses_mipmaps(const gl_texture_t *t);
 
 void gl_texture_set_defaults(struct aglx_context *ctx);
 void gl_texture_free_all(struct aglx_context *ctx);
+
+/* ---- Framebuffer objects (libgl/src/glfbo.c), phase G12 ----
+ *
+ * The rasterizer never calls into these: an FBO works by re-pointing
+ * ctx->color/depth/width/height, so the drawing code stays unaware of it.
+ * Only the context lifecycle and the entry points that must refuse to draw
+ * into an incomplete target touch this interface.
+ */
+void gl_fbo_set_defaults(struct aglx_context *ctx);
+void gl_fbo_free_all(struct aglx_context *ctx);
+
+/* Re-point the render target at the current binding.  Called after the window
+ * buffers change (create, resize). */
+void gl_fbo_refresh(struct aglx_context *ctx);
+
+/* 0 when the bound framebuffer is incomplete and nothing may be drawn. */
+int gl_fbo_target_ok(struct aglx_context *ctx);
 
 /* ---- Per-fragment operations (libgl/src/glfrag.c), phase G6 ---- */
 int        gl_alpha_test_passes(const struct aglx_context *ctx, GLfloat alpha);

@@ -94,6 +94,7 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     gl_texture_set_defaults(ctx);
     gl_frag_set_defaults(ctx);
     gl_array_set_defaults(ctx);
+    gl_fbo_set_defaults(ctx);
 }
 
 /* Allocate colour (and optionally depth) buffers for w*h.
@@ -116,16 +117,30 @@ static int ctx_alloc_buffers(struct aglx_context *ctx, int w, int h,
         }
     }
 
+    /* The window buffers are the authoritative allocation; color/depth are
+     * the CURRENT render target, which starts out pointing at them and moves
+     * when a framebuffer object is bound (phase G12). */
+    ctx->win_color  = color;
+    ctx->win_depth  = depth;
+    ctx->win_width  = w;
+    ctx->win_height = h;
+
     ctx->color  = color;
     ctx->depth  = depth;
     ctx->width  = w;
     ctx->height = h;
+    ctx->target_flip_y = 1;      /* the window stores row 0 at the top */
     return 0;
 }
 
 static void ctx_free_buffers(struct aglx_context *ctx) {
-    free(ctx->color);
-    free(ctx->depth);
+    /* Free the WINDOW buffers, never ctx->color: while a framebuffer object
+     * is bound the latter points at a texture or renderbuffer this function
+     * does not own. */
+    free(ctx->win_color);
+    free(ctx->win_depth);
+    ctx->win_color = NULL;
+    ctx->win_depth = NULL;
     ctx->color = NULL;
     ctx->depth = NULL;
 }
@@ -160,10 +175,11 @@ aglx_context_t *aglxCreateContext(int wid, int width, int height,
 
     /* Start from a defined state: an application that swaps before drawing
      * must not see uninitialised heap memory. */
-    memset(ctx->color, 0, (size_t)width * (size_t)height * sizeof(gl_pixel_t));
-    if (ctx->depth) {
+    memset(ctx->win_color, 0,
+           (size_t)width * (size_t)height * sizeof(gl_pixel_t));
+    if (ctx->win_depth) {
         for (size_t i = 0; i < (size_t)width * (size_t)height; i++) {
-            ctx->depth[i] = 1.0f;
+            ctx->win_depth[i] = 1.0f;
         }
     }
 
@@ -187,6 +203,7 @@ void aglxDestroyContext(aglx_context_t *ctx) {
     /* Texture images are heap allocations owned by the context. */
     gl_texture_free_all(ctx);
     gl_array_free_all(ctx);
+    gl_fbo_free_all(ctx);
     ctx_free_buffers(ctx);
     free(ctx);
 }
@@ -223,10 +240,13 @@ int aglxResize(aglx_context_t *ctx, int width, int height) {
     }
 
     ctx_free_buffers(ctx);
-    ctx->color  = new_color;
-    ctx->depth  = new_depth;
-    ctx->width  = width;
-    ctx->height = height;
+    ctx->win_color  = new_color;
+    ctx->win_depth  = new_depth;
+    ctx->win_width  = width;
+    ctx->win_height = height;
+    /* Follow the new buffers only if framebuffer 0 is bound; an application
+     * that resizes while an FBO is current keeps rendering into the FBO. */
+    gl_fbo_refresh(ctx);
 
     /* A resize resets the viewport and scissor box to the new full size,
      * which is what a window-system resize does on other platforms. */
@@ -239,10 +259,11 @@ int aglxResize(aglx_context_t *ctx, int width, int height) {
     ctx->scissor_w  = width;
     ctx->scissor_h  = height;
 
-    memset(ctx->color, 0, (size_t)width * (size_t)height * sizeof(gl_pixel_t));
-    if (ctx->depth) {
+    memset(ctx->win_color, 0,
+           (size_t)width * (size_t)height * sizeof(gl_pixel_t));
+    if (ctx->win_depth) {
         for (size_t i = 0; i < (size_t)width * (size_t)height; i++) {
-            ctx->depth[i] = 1.0f;
+            ctx->win_depth[i] = 1.0f;
         }
     }
     return 0;
@@ -253,7 +274,10 @@ int aglxResize(aglx_context_t *ctx, int width, int height) {
  * ==========================================================================*/
 
 int aglxSwapBuffers(aglx_context_t *ctx) {
-    if (!ctx || !ctx->color) return -1;
+    /* Always presents the WINDOW buffer, never the current render target: a
+     * swap issued while a framebuffer object is bound must show the window's
+     * content, since framebuffer 0 is the window by definition. */
+    if (!ctx || !ctx->win_color) return -1;
 
     /* Give the backend first refusal: a GPU path would scan its own render
      * target out instead of blitting a CPU buffer through the compositor. */
@@ -263,8 +287,8 @@ int aglxSwapBuffers(aglx_context_t *ctx) {
      * ag_blit() clips against the window's back buffer, so a context larger
      * than its window is harmless. */
     int rc = ag_blit(ctx->wid, 0, 0,
-                     (uint32_t)ctx->width, (uint32_t)ctx->height,
-                     ctx->color, (uint32_t)ctx->width);
+                     (uint32_t)ctx->win_width, (uint32_t)ctx->win_height,
+                     ctx->win_color, (uint32_t)ctx->win_width);
     if (rc != 0) return -1;
 
     /* Mark the window dirty so the compositor picks the new content up on its
@@ -285,17 +309,17 @@ int aglxSwapBuffers(aglx_context_t *ctx) {
  * ==========================================================================*/
 
 int aglxGetWidth(const aglx_context_t *ctx) {
-    return ctx ? ctx->width : 0;
+    return ctx ? ctx->win_width : 0;
 }
 
 int aglxGetHeight(const aglx_context_t *ctx) {
-    return ctx ? ctx->height : 0;
+    return ctx ? ctx->win_height : 0;
 }
 
 const uint32_t *aglxGetColorBuffer(const aglx_context_t *ctx) {
-    return ctx ? ctx->color : NULL;
+    return ctx ? ctx->win_color : NULL;
 }
 
 const float *aglxGetDepthBuffer(const aglx_context_t *ctx) {
-    return ctx ? ctx->depth : NULL;
+    return ctx ? ctx->win_depth : NULL;
 }

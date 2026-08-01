@@ -14,7 +14,7 @@ il_have qemu-system-x86_64
 
 # Pin to a single CPU.
 #
-# /gltest now runs 169 checks, which is long enough to hit the kernel's known
+# /gltest now runs 240+ checks, which is long enough to hit the kernel's known
 # SMP window: under -smp 2 roughly one run in three fails a DIFFERENT arbitrary
 # check, while -smp 1 passes 169/169 every time.  libgl is single-threaded, so
 # this is the scheduler limitation documented in TODO.md ("normal user
@@ -42,7 +42,7 @@ il_send "run /glcube"
 il_send_delay 45
 il_send "exit"
 
-il_run_qemu "$LOG" 220
+il_run_qemu "$LOG" 300
 
 # The test program prints its own verdict.
 il_assert_grep    "$LOG" "\\[gl\\] ALL TESTS PASSED"      "gltest reports all checks passed"
