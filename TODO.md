@@ -11,7 +11,7 @@ for the feature matrix.
 
 ### Kernel / CPU / scheduling
 
-- **The IST is allocated but never used, so a bad-stack fault triple-faults.**
+- **The IST is allocated but never used, so a bad-stack fault triple-faults.** (`FIXES_PLAN.md` R1)
   `tss_init()` allocates a per-CPU IST1 stack and panics on OOM allocating it
   (`kernel/arch/x86_64/tss.c`), and `tss_entries[cpu].ist1_low/high` are
   filled in — but `idt_set_gate()` hardcodes `idt[n].ist = 0`
@@ -22,6 +22,16 @@ for the feature matrix.
   triple fault and the machine resets with no diagnostic. Double fault (8),
   NMI (2) and machine check (18) are the vectors that conventionally need
   IST entries.
+- **⚠ The kernel stack protector trips intermittently under `-smp 2`.**
+  `[security] STACK CORRUPTION DETECTED in kernel` followed by a halt,
+  observed twice in `test_selftest` and passing on three consecutive re-runs
+  afterwards. `__stack_chk_fail()` firing means either a genuine kernel stack
+  overflow or a corrupted canary — both are memory corruption, and the message
+  does not distinguish them. It should not be possible while APs only idle,
+  which makes it more interesting rather than less: either something runs on
+  an AP, or shared state is mutated without a lock. Two integration cases set
+  `IL_SMP=1` to avoid the area, which documents the workaround rather than the
+  fault. Diagnosis is `FIXES_PLAN.md` phase R2.
 - **SMP scheduling is conservative.** Application processors are online, load
   CPU-local state and enter the idle scheduler loop; normal user scheduling remains
   BSP-only until per-CPU run queues and TLB shootdown policy are completed.
@@ -96,7 +106,7 @@ for the feature matrix.
   tested; the userspace `init` shell rewrite (`cmd &`, `jobs`, `fg`, `bg`,
   setpgid+tcsetpgrp per spawned child, restore fg on exit) is deferred — high
   regression risk to the interactive shell, wants a QEMU boot to validate.
-- **No stopped state / WUNTRACED.** SIGSTOP/SIGTSTP currently terminate (no
+- **No stopped state / WUNTRACED.** (`FIXES_PLAN.md` R6) SIGSTOP/SIGTSTP currently terminate (no
   THREAD_STOPPED state, no SIGCONT resume); WUNTRACED is accepted but never
   reports a stopped child. Needs a stopped scheduler state.
 - **n_children is fork/spawn-tracked but not perfectly precise** across orphan
@@ -143,7 +153,7 @@ for the feature matrix.
   and `umask` arrive in P7. `sys/stat.h` deliberately omits the mkdir prototype.
 - **O_NONBLOCK** is honored for pipes (EAGAIN); devices/sockets that can block
   are not yet wired to it.
-- **Socket/net syscalls return bare `-1`.** `SYS_SOCKET*` / `SYS_NET_*` failure
+- **Socket/net syscalls return bare `-1`.** (`FIXES_PLAN.md` R7) `SYS_SOCKET*` / `SYS_NET_*` failure
   paths propagate the layer's `-1`, which libc currently decodes as `EPERM`.
   Give them real errno values (`EBADF`, `ENOTCONN`, `ECONNREFUSED`, …).
 - ~~**P1 libc headers still missing.**~~ **Done:** `limits.h`, `stdbool.h`,
@@ -152,7 +162,7 @@ for the feature matrix.
 - **libm accuracy is series-based (~1e-9), not last-ULP**, and only covers the
   ten functions listed in `math.h`; no `tan/asin/atan2/fmod/modf/frexp`, no
   `float` variants, no errno/`HUGE_VAL` domain-error reporting. Revisit in P10.
-- **`errno` is a single global, not thread-local.** Safe while single-threaded;
+- **`errno` is a single global, not thread-local.** (`FIXES_PLAN.md` R3) Safe while single-threaded;
   must move behind TLS in `__errno_location()` during P9 (pthreads).
 - **SYSCALL state uses globals.** Saved user `RCX/R11/RSP` state is not designed
   for true concurrent SMP syscalls.
@@ -195,7 +205,7 @@ for the feature matrix.
   AHCI disks, but broad hardware/hypervisor coverage is still experimental.
 - **`/disk` is intentionally tiny.** Flat namespace, 8 files maximum, 4 KiB per
   file.
-- **`initrd_init()` does not check its `kmalloc`.**
+- **`initrd_init()` does not check its `kmalloc`.** (`FIXES_PLAN.md` R4)
   `kernel/fs/initrd.c` allocates the vnode pool with
   `initrd_vnodes = kmalloc(sizeof(struct vnode) * initrd.file_count)` and
   `memset()`s it on the very next line with no NULL test, so an allocation
@@ -208,7 +218,7 @@ for the feature matrix.
   `mkdir /tmp/x` fails and always has. Directories work on FAT32 and ext2.
   Found while fixing `test_shell_all.sh`, which had been asserting that the
   mkdir *succeeded* — the case is not in `run_all.sh`, so nothing had run it.
-- **`.init_array` is never executed.** `__libc_start_main()` calls `main()`
+- **`.init_array` is never executed.** (`FIXES_PLAN.md` R5) `__libc_start_main()` calls `main()`
   directly, so a `__attribute__((constructor))` function is linked into the
   binary (`gusb.o` has one) and silently never runs. Either the runtime should
   walk `.init_array` or the linker script should reject it; today it does
@@ -234,7 +244,7 @@ for the feature matrix.
 
 ### Input
 
-- **The keyboard layout is hardcoded US, with no way to change it.**
+- **The keyboard layout is hardcoded US, with no way to change it.** (`FIXES_PLAN.md` R8)
   `drivers/keyboard/keyboard.c` translates scancodes through two fixed
   128-entry tables (`map_lo`, `map_hi`); there is no keymap abstraction, no
   runtime selection and no dead-key support. A non-US keyboard produces the
@@ -272,7 +282,7 @@ for the feature matrix.
 
 ### Graphics / GUI
 
-- **`gfx_fill_rect()` does not check `back_fb` for NULL.** `graphics.c`
+- **`gfx_fill_rect()` does not check `back_fb` for NULL.** (`FIXES_PLAN.md` R4) `graphics.c`
   allocates the back buffer with `kmalloc` and tolerates failure
   (`if (back_fb) memset(...)`), and `gfx_putpixel()`, `gfx_clear()`,
   `gfx_flip()` and `gfx_flip_rect()` all begin with a `!back_fb` guard.

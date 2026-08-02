@@ -436,6 +436,7 @@ Start here:
 - [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
 - [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — a box-model web view (planned). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
 - [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
+- [`FIXES_PLAN.md`](FIXES_PLAN.md) — repair plan for known defects (planned), ranked by danger rather than by ease. Adds nothing; fixes what is broken.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
 

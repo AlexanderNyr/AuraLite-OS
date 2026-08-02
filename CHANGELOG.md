@@ -2,6 +2,56 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Plan — repairing what is already broken] 2026-08-02
+
+`FIXES_PLAN.md`, phases R0–R8. Unlike every other plan in this tree, it adds
+nothing: every item is a defect that exists today, found by reading the source
+or by watching a test fail.
+
+### Ranked by danger, not by ease
+
+| Defect | Rank | Phase |
+|---|---|---|
+| Kernel fault on a bad stack → triple fault, no output | **Critical** | R1 |
+| Stack protector trips under `-smp 2`, ~1 run in 3 | **Critical** | R2 |
+| `errno` is one global shared by real threads | **Critical** | R3 |
+| Two unchecked allocations (`initrd_init`, `gfx_fill_rect`) | Latent | R4 |
+| `.init_array` never runs | Serious | R5 |
+| `SIGSTOP`/`SIGTSTP` terminate instead of stopping | Serious | R6 |
+| Socket syscalls return bare `-1` | Serious | R7 |
+| Keyboard layout hardcoded US | Cosmetic | R8 |
+
+### The one that was not recorded anywhere
+The SMP stack-protector trip — `[security] STACK CORRUPTION DETECTED in
+kernel`, seen twice during recent work and passing on three re-runs
+afterwards — **was not in `TODO.md`**. Two integration cases set `IL_SMP=1` to
+avoid the area, which documented the workaround rather than the fault. It is
+now recorded, with the observation that it should be impossible while APs only
+idle, which makes it more interesting rather than less.
+
+### `errno` is a live bug, not a future one
+The comment in `libc.c` says a TLS-backed cell "arrives in P9". P9 shipped:
+`pthread_create` issues a real `SYS_CLONE` with `CLONE_VM|CLONE_THREAD|
+CLONE_SETTLS` and the kernel installs an FS base with `wrfsbase`. Threads are
+real and share one `errno`. It has not bitten only because nothing calls
+`pthread_create` outside the unit tests — and the SDK now invites third
+parties to write exactly that code.
+
+### Decisions worth stating
+- **R2 may end without a fix.** Its deliverable is a diagnosis; an
+  intermittent memory corruption that has been characterised is worth more
+  than one made harder to reproduce. The virtio-gpu hang is the precedent.
+- **R0 fixes nothing on purpose** — it makes the critical failures visible,
+  because debugging a triple fault that produces no output is guesswork.
+- **Every fix needs a test that fails without it**, not merely a suite that
+  still passes. Several of these defects survived precisely because nothing
+  asserted on them.
+
+### Changed
+- `TODO.md`: the SMP flake added; nine existing entries cross-referenced to
+  the phase that repairs them.
+- `README.md`: `FIXES_PLAN.md` indexed alongside the other plans.
+
 ## [Docs — an audit of parts of the OS nobody had looked at] 2026-08-02
 
 A deliberate sweep of subsystems untouched by the recent GL, filesystem, SDK
