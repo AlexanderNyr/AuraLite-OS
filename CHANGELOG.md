@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Fix — test_printf_fmt overrode glibc's stdio] 2026-08-02
+
+`make test-unit` aborted in CI with *"Fatal error: glibc detected an invalid
+stdio handle"* after `test_printf_fmt` printed its results. It passed locally.
+
+### The actual fault
+Linking all of `libc/src/libc.c` into a host test binary brought in far more
+than `snprintf`. AuraLite's libc also defines `printf`, `puts`, `stdout`,
+`stderr`, `fflush` and `exit` — and those became **the definitions the test
+harness itself used**. So the test printed its own results through the very
+code it was testing, and at exit glibc tried to flush a `stdout` that was
+AuraLite's unrelated object of the same name.
+
+Whether that survives is luck: on this machine it did, in CI it aborted.
+
+### Fixed
+An `objcopy -G snprintf -G vsnprintf` step localises every other symbol in the
+object, so:
+- the harness gets glibc's `printf`/`exit`/`stdout` back;
+- the unit under test is reached only through the one symbol being tested.
+
+Verified by symbol table: the binary no longer defines `printf`, `puts`,
+`exit` or `stdout`, and still defines AuraLite's `snprintf`.
+
+### Verification
+`make test-unit` from `rm -rf build`: all suites green, `test_printf_fmt`
+28/28, no abort. `make iso` and `make sdk-check` 31/31 clean. Breaking the
+`-` flag again still fails 12 of the 28 checks, so the test still tests
+something. Every other host test binary was checked for the same overriding —
+none has it.
+
 ## [SDK phase S6 — installing from outside the image] 2026-08-02
 
 The last phase. An application that exists nowhere in this repository can now

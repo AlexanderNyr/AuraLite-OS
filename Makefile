@@ -1299,9 +1299,24 @@ $(BUILD_DIR)/test_wm: tests/unit/test_wm.c
 # because nothing checked formatting -- only a person reading a log would
 # notice.  libc.c is LINKED here rather than #included: it declares main()
 # for __libc_start_main, which would collide with the test's own.
-$(BUILD_DIR)/libc_fmt.o: libc/src/libc.c
+#
+# ONLY snprintf/vsnprintf ARE LEFT GLOBAL, and that is not tidiness.
+#
+# AuraLite's libc.c also defines printf, puts, stdout, stderr, fflush, exit
+# and friends.  Linking the whole object into a host program makes THOSE the
+# definitions the harness itself uses -- so the test printed its own results
+# through the code under test, and at exit glibc tried to flush a `stdout`
+# that was AuraLite's unrelated object.  On this machine it happened to work;
+# in CI it aborted with "glibc detected an invalid stdio handle".
+#
+# objcopy -G localises everything else, so the harness gets glibc's stdio and
+# the unit under test is reached only through the one symbol being tested.
+$(BUILD_DIR)/libc_fmt_full.o: libc/src/libc.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I libc/include -c $< -o $@
+
+$(BUILD_DIR)/libc_fmt.o: $(BUILD_DIR)/libc_fmt_full.o
+	objcopy -G snprintf -G vsnprintf $< $@
 
 $(BUILD_DIR)/test_printf_fmt: tests/unit/test_printf_fmt.c $(BUILD_DIR)/libc_fmt.o
 	@mkdir -p $(BUILD_DIR)
