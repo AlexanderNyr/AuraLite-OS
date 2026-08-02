@@ -1,0 +1,489 @@
+# AuraLite OS — Web View Plan
+
+## Status: PLANNED 📋 (phases W0–W8)
+
+This document answers:
+
+> *We have OpenGL now — can we build a web view?*
+
+Yes, but **not the way the question implies**, and the difference matters
+enough to put at the top rather than bury in a risks section.
+
+It follows the structure of the existing plans (`GL_PLAN.md`,
+`FSLAYOUT_PLAN.md`, `SDK_PLAN.md`): dependency-ordered phases, a definition of
+done and a test gate for every phase, and one `.patch` per phase.
+
+**Baseline:** commit `f842634`, on top of a completed `SDK_PLAN.md`.
+
+---
+
+## 1. The measurement that shapes this plan
+
+The premise is that OpenGL makes a web view possible. That was tested before
+writing anything, because the whole plan depends on the answer.
+
+**libgl is a software rasterizer.** There is no working GPU path: `GL_PLAN.md`
+phase G13 shipped a VirGL backend, and the virtio-gpu driver *hangs during
+initialisation* when a device is attached (bisected to before `9188c85`,
+recorded in `TODO.md`). Every triangle is drawn by the CPU, into a buffer that
+is then `memcpy`'d into the window.
+
+So "use the GPU to composite the page" is not on the table. What would GL
+actually cost, against the obvious alternative of writing pixels directly?
+Measured on this machine at 800×600:
+
+| Operation | Cost |
+|---|---|
+| `memcpy` of a full 800×600 page into the window | **0.125 ms** |
+| Scroll by 40 px (`memmove` + repaint the exposed band) | **0.068 ms** |
+| Per-pixel alpha blend over the whole page | **0.62 ms** |
+| *(from `docs/opengl.md`)* GL, 200 triangles at 320×240 | **3.7 ms** |
+| *(from `docs/opengl.md`)* GL full-screen shaded, 320×240 | **12–54 ms** |
+
+A full-page 2D blit at 800×600 is **thirty times cheaper** than 200 GL
+triangles at a seventh of the area. Routing page compositing through libgl
+would make the browser slower, not faster.
+
+### What this means for the plan
+
+**The renderer is 2D, writing pixels into a buffer and presenting with
+`ag_blit()`.** That is the fast path, and it is the one the measurement
+supports.
+
+OpenGL earns its place in exactly one phase — **W7**, `<canvas>` with a
+3D context — where the page asks for 3D and there is no 2D alternative. That
+is a real feature and a genuinely good fit for what libgl already does: a
+`<canvas>` is a texture-sized render target, which is what FBOs (phase G12)
+were built for.
+
+Building a web view *because* we have OpenGL would be the wrong reason.
+Building one that can host OpenGL content is the right one.
+
+---
+
+## 2. Where things actually stand
+
+Measured against the tree, not assumed.
+
+### There are already two browsers
+
+| Program | Lines | What it does |
+|---|---|---|
+| `/apps/browser` | 360 | HTML → text, printed to the console |
+| `/apps/gbrowser` | 515 | HTML → lines in an AuraGUI **listbox**, with clickable links |
+
+`gbrowser` is not a renderer. It converts tags into text lines and puts them
+in a list widget: one line per element, no layout, no boxes, no inline flow,
+no images. It works, and it is the right starting point to *replace* rather
+than extend — a listbox cannot express a box model no matter how much code is
+added around it.
+
+### The pieces that already exist
+
+| Piece | State | Note |
+|---|---|---|
+| TCP/IP, DNS | ✅ | `test_http_get`, `test_tcp_server` pass |
+| HTTP/1.0 client | ✅ | in both browsers, ~40 lines |
+| Pixel output | ✅ | `ag_blit()`, `ag_blit_alpha()` (GL phase G0) |
+| Font rasteriser | ✅ | PSF2, **VGA 8×16, monospace, 256 glyphs** |
+| Window + events | ✅ | AuraGUI: mouse, keys, scroll |
+| OpenGL | ✅ | software, 17 500 lines, FBOs and GLSL ES |
+| Off-screen render targets | ✅ | FBOs from G12 — exactly what `<canvas>` needs |
+
+### The pieces that do not
+
+| Missing | Consequence |
+|---|---|
+| **TLS** | **No HTTPS. Most of the public web is unreachable.** |
+| Proportional fonts | Every glyph is 8 px wide; no font selection |
+| Image decoders | No PNG, no JPEG, no GIF |
+| CSS of any kind | No stylesheets, not even inline `style=` |
+| JavaScript | None, and none is planned here |
+| Incremental layout | Nothing to reflow |
+
+### Two hard constraints
+
+**The user stack is 64 KB** (`USER_STACK_SIZE`, `kernel/proc/guard.c`). A
+recursive-descent HTML parser or a recursive layout walk over a deep document
+will overflow it. This is not theoretical: GL phase G11b hit exactly this,
+and the fix was to bound recursion explicitly. The parser and the layout
+engine must both be iterative or depth-limited **by design**, not patched
+later.
+
+**A spawned image may not exceed 1 MB** (`SPAWN_MAX_IMAGE`). `/tests/gltest`
+is already 365 KB. A browser with a layout engine, a decoder or two and a
+DOM will approach this, and the failure mode is a diagnosed refusal at spawn
+time — noisy, but a hard ceiling nonetheless.
+
+Also: `gbrowser`'s response buffer is **16 KB**, statically allocated. Real
+pages are larger.
+
+---
+
+## 3. Decisions
+
+### D1. A 2D renderer, with GL for `<canvas>` only
+
+Stated once more because it is the decision the plan turns on. The
+measurement in §1 says a software GL path costs more than writing pixels
+directly. GL appears in W7 and nowhere else.
+
+### D2. Replace `gbrowser`, do not extend it
+
+A listbox of text lines and a box-model renderer have nothing in common
+except the HTTP fetch. The new program is `/apps/webview`; `gbrowser` stays
+until W8 decides its fate, so there is always a working browser in the tree.
+
+### D3. A real DOM, iteratively parsed, with a hard depth limit
+
+An HTML tokeniser is easy; a *tolerant* one is not, and every real page is
+malformed. The parser is a table-driven state machine over the byte stream
+with an explicit element stack — no recursion, and a depth cap that closes
+elements rather than overflowing 64 KB of stack.
+
+### D4. A subset of CSS, chosen by what changes the output
+
+Not "CSS 2.1 minus the hard parts", which is unbounded. A named list:
+`display` (`block`/`inline`/`none`), `color`, `background-color`, `width`,
+`height`, `margin`, `padding`, `border`, `font-weight`, `text-align`. Adding
+to that list is a decision, not a slope.
+
+### D5. No JavaScript. Explicitly, permanently, within this plan
+
+A JS engine is larger than everything in this document combined and would not
+fit in `SPAWN_MAX_IMAGE`. Saying so here stops it being proposed as a
+"natural next phase".
+
+### D6. HTTPS is a prerequisite for usefulness, and it is out of scope
+
+Without TLS the web view reaches plain-HTTP sites, of which there are very
+few left. That makes this a *rendering engine* one can point at a local
+server or a test corpus, not a way to browse the internet.
+
+Implementing TLS 1.3 means X25519, ChaCha20-Poly1305, SHA-256, ASN.1
+certificate parsing and a trust store. That is its own plan of comparable
+size — **`INTERNET_PLAN.md`**, which exists and covers exactly this — and
+half-implementing it would be worse than not having it: a browser that
+appears to do HTTPS but validates nothing is a liability, not a feature.
+
+`INTERNET_PLAN.md` also found something this plan assumed away: the existing
+`getentropy()` returns a mix of TSC, tick count and a fixed constant, so it is
+guessable. TLS seeded from it would be decorative. That is why the internet
+plan starts with the entropy source rather than with crypto.
+
+**W0 states this in the docs before any code is written**, so the limitation
+is discovered by reading rather than by pointing the finger at a blank window.
+
+### D7. Bitmap fonts, and a synthesised bold
+
+The PSF2 font is 8×16 and monospace. Proportional text needs a different
+font format and a glyph cache — real work with no dependency on the rest of
+this plan. Until then, `<b>` is rendered by drawing the glyph twice, one
+pixel apart, which is what every 1980s renderer did and is honest about what
+it is.
+
+---
+
+## 4. Phases
+
+### Phase W0 — Scaffolding and an honest README
+
+**Objective:** a window that says what this can and cannot do.
+
+#### Tasks
+
+- [ ] `userspace/apps/webview/` — a window, an event loop, a pixel buffer
+      presented with `ag_blit()`.
+- [ ] A `docs/webview.md` that states, up front: no HTTPS, no JavaScript, no
+      images yet, monospace only.
+- [ ] Establish the frame budget by measuring it, not guessing: blit an
+      800×600 buffer and record the cost in the doc.
+
+#### Test gate
+
+- The window opens, fills, and presents at a measured cost.
+- `docs/webview.md` exists and names every limitation in §2.
+
+#### Deliverable
+
+`patches/WEB_W0_scaffolding.patch`
+
+---
+
+### Phase W1 — The HTML tokeniser
+
+**Objective:** bytes → a token stream, tolerantly.
+
+#### Tasks
+
+- [ ] A state machine over the input: text, tag open, attribute name,
+      attribute value (quoted and unquoted), comment, DOCTYPE, CDATA.
+- [ ] Character references: the named five (`&amp; &lt; &gt; &quot; &apos;`)
+      plus `&#NN;` and `&#xNN;`.
+- [ ] **No recursion.** Fixed-size buffers, explicit bounds.
+- [ ] Host unit tests, mostly on malformed input: an unclosed tag at EOF, a
+      quote that never closes, `<`, `<<>>`, a 10 KB attribute value, a NUL
+      byte mid-tag.
+
+#### Test gate
+
+- Well-formed HTML tokenises exactly.
+- Every malformed case terminates and produces something usable — a tokeniser
+  that gives up on bad input is useless, because all real input is bad.
+- Fuzzed with random bytes: no crash, no hang, bounded memory.
+
+#### Deliverable
+
+`patches/WEB_W1_tokeniser.patch`
+
+---
+
+### Phase W2 — The DOM
+
+**Objective:** tokens → a tree, with the implied structure real pages omit.
+
+#### Tasks
+
+- [ ] Nodes in a flat array with index links (parent/first-child/next-sibling),
+      not pointers into a heap — one allocation, and a tree walk that cannot
+      run away.
+- [ ] An explicit open-element stack with a **depth cap** (D3).
+- [ ] Implicit close rules for the tags that need them: `<p>`, `<li>`, `<td>`,
+      `<tr>`, and the void elements.
+- [ ] Mismatched close tags are reconciled against the stack, not obeyed.
+
+#### Test gate
+
+- `<p>a<p>b` produces two sibling paragraphs, not nested ones.
+- `<b><i>x</b></i>` does not lose the text or corrupt the tree.
+- A 10 000-element-deep document hits the cap and **does not overflow the
+  64 KB stack** — asserted in QEMU, where the real stack limit applies.
+
+#### Deliverable
+
+`patches/WEB_W2_dom.patch`
+
+---
+
+### Phase W3 — Block layout
+
+**Objective:** a DOM → a list of positioned boxes.
+
+#### Tasks
+
+- [ ] Block boxes stacked vertically, honouring width, margin and padding.
+- [ ] Inline flow within a block: text runs, word wrapping at the box edge.
+- [ ] An iterative layout walk over the flat node array (D3 again — the same
+      64 KB applies here, and layout recursion is the classic way to hit it).
+- [ ] Layout produces a **display list**, not pixels. Separating them is what
+      makes both testable.
+
+#### Test gate
+
+- A paragraph wider than the viewport wraps at the right column.
+- Nested blocks indent by the sum of their margins and padding.
+- Layout of a 5 000-box document completes within the frame budget from W0.
+- The display list is compared against an expected list — text, not pixels,
+  so a failure says *what* moved.
+
+#### Deliverable
+
+`patches/WEB_W3_layout.patch`
+
+---
+
+### Phase W4 — Painting
+
+**Objective:** display list → pixels in the window.
+
+#### Tasks
+
+- [ ] Fill rectangles, draw borders, draw text runs through the PSF glyph
+      rasteriser.
+- [ ] Synthesised bold (D7).
+- [ ] Clip every draw to the viewport, and skip boxes entirely outside it —
+      the difference between scrolling a long page smoothly and not.
+- [ ] Scrolling by `memmove` of the retained buffer plus a repaint of the
+      exposed band, which §1 measured at 0.068 ms.
+
+#### Test gate
+
+- A page renders with text where the display list says it should be.
+- Scrolling a 10 000-line page stays within the frame budget.
+- Painting is checked by hashing the buffer against a stored reference for a
+  fixed input, so a change in output is a deliberate act.
+
+#### Deliverable
+
+`patches/WEB_W4_paint.patch`
+
+---
+
+### Phase W5 — Inline CSS
+
+**Objective:** the subset from D4, from `style=` attributes and `<style>`.
+
+#### Tasks
+
+- [ ] A declaration parser: `property: value` pairs, `;`-separated.
+- [ ] Selector matching limited to tag name, `#id` and `.class`. No
+      combinators, no specificity cascade beyond "later wins, inline wins".
+- [ ] Colour parsing: `#rgb`, `#rrggbb`, and the 16 named colours.
+- [ ] Unknown properties are **ignored**, unknown selectors **skipped** —
+      the one place in this plan where silently ignoring input is correct,
+      because that is what the CSS error-handling rules require.
+
+#### Test gate
+
+- `style="color:#f00"` renders red text.
+- A malformed declaration does not discard the rest of the block.
+- Every property in D4's list has a test that changes the output.
+
+#### Deliverable
+
+`patches/WEB_W5_css.patch`
+
+---
+
+### Phase W6 — Navigation and networking
+
+**Objective:** a usable browser: links, history, a bigger fetch.
+
+#### Tasks
+
+- [ ] Hit-testing over the display list; clicking a link navigates.
+- [ ] Back/forward history.
+- [ ] Replace the 16 KB static response buffer with a growing one, and set an
+      explicit maximum with a diagnosed refusal past it.
+- [ ] HTTP/1.1 with `Host:` and chunked transfer decoding — most servers stop
+      speaking 1.0 politely.
+- [ ] A clear "HTTPS is not supported" page for `https://` URLs, rather than
+      a connection failure the user has to interpret.
+
+#### Test gate
+
+- Fetch and render a page from the in-tree `/tests/tcpserver`, so the test
+  does not depend on the internet.
+- Follow a link, then go back; the previous page reappears.
+- A chunked response decodes to the same bytes as an unchunked one.
+- An `https://` URL produces the explanation, not a hang.
+
+#### Deliverable
+
+`patches/WEB_W6_navigation.patch`
+
+---
+
+### Phase W7 — `<canvas>` with an OpenGL context
+
+**Objective:** the phase OpenGL is actually for.
+
+#### Tasks
+
+- [ ] `<canvas width= height=>` becomes a box in the layout, backed by an FBO
+      (GL phase G12).
+- [ ] A tiny scripting-free binding: `<canvas data-scene="cube">` selects one
+      of a handful of built-in scenes. **There is no JavaScript** (D5), so the
+      page cannot drive the canvas imperatively — it can only ask for a scene.
+- [ ] The canvas renders through libgl into its FBO, and the result is
+      composited into the page like any other box.
+- [ ] Its cost is measured and recorded, so the §1 table gains the one number
+      it is missing: what a GL canvas costs inside a page.
+
+#### Test gate
+
+- A page containing a canvas renders both the text and the 3D content.
+- The canvas is clipped and scrolled with the page, not drawn over it.
+- A page with no canvas costs exactly what it did in W4 — the GL path must
+  not be on the critical path for ordinary pages.
+
+#### Deliverable
+
+`patches/WEB_W7_canvas.patch`
+
+---
+
+### Phase W8 — Retire or keep `gbrowser`
+
+**Objective:** decide, with the evidence in hand.
+
+#### Tasks
+
+- [ ] Compare `/apps/webview` against `/apps/gbrowser` on the same pages.
+- [ ] If the new one is better in every respect, remove the old one and its
+      integration case. If it is not, **say which respect** and keep both.
+- [ ] Update `README.md`, `docs/webview.md` and the launcher.
+
+#### Test gate
+
+- Whatever ships, the integration suite passes and the launcher entry works.
+
+#### Deliverable
+
+`patches/WEB_W8_consolidate.patch`
+
+---
+
+## 5. Order and rationale
+
+| Phase | Why here |
+|---|---|
+| W0 | The limitations belong in writing before the code invites disappointment |
+| W1 | Everything downstream consumes tokens |
+| W2 | Layout needs a tree, and the tree is where the stack limit bites |
+| W3 | Painting needs positions |
+| W4 | The first phase with something to look at |
+| W5 | Styling is meaningless before there are boxes to style |
+| W6 | Navigation is only useful once pages render |
+| W7 | `<canvas>` needs a working layout to sit inside |
+| W8 | A decision that needs the comparison to exist first |
+
+**If only three phases are ever built, build W1–W3.** A tokeniser, a DOM and
+a layout engine are the parts that do not exist anywhere in this tree. Paint
+is a for-loop over rectangles; the hard, interesting, easy-to-get-wrong work
+is upstream of it.
+
+---
+
+## 6. Risks
+
+**No HTTPS makes this a demo.** Named in D6 and first in this list because it
+is the difference between "we have a web view" and "we can browse the web".
+Nothing in this plan changes it.
+
+**The 64 KB stack will be hit.** Twice, probably: once in the parser and once
+in layout. The plan says iterative-by-design for both, and W2's test gate
+puts a 10 000-deep document in QEMU rather than trusting the host, where the
+stack is 8 MB and the bug is invisible. GL phase G11b learned this the
+expensive way.
+
+**A page renderer is an unbounded appetite.** There is always another CSS
+property. D4 fixes a list; the risk is that the list grows silently until the
+program no longer fits in `SPAWN_MAX_IMAGE`, and the failure appears as a
+spawn refusal with no obvious connection to the last feature added.
+
+**Correctness has no natural definition.** "Does this page look right" is not
+a test. W3 and W4 therefore assert on the *display list* and on a hash of the
+output buffer — a change in rendering must be a deliberate act with an updated
+expectation, not a judgement call.
+
+**GL may tempt its way onto the fast path.** The measurement in §1 is
+unambiguous today, and someone will eventually propose "just composite the
+page with GL". If the virtio-gpu hang is ever fixed and there is real hardware
+acceleration, that becomes a legitimate question and should be **re-measured**
+rather than assumed either way.
+
+---
+
+## 7. What this plan does not do
+
+- **No JavaScript.** Not a phase, not a stretch goal (D5).
+- **No HTTPS/TLS.** Its own plan, of comparable size (D6).
+- **No images.** PNG and JPEG decoders are each a phase in their own right;
+  they belong in a follow-up once boxes exist to put them in.
+- **No proportional fonts.** Needs a font format and a glyph cache (D7).
+- **No printing, no downloads, no cookies, no forms.** Forms in particular
+  look small and are not: they need focus management, input widgets and
+  `POST`.
+- **No claim of standards compliance.** This renders a subset, deliberately
+  chosen, and `docs/webview.md` will say so.

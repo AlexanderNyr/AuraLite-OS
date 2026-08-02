@@ -431,6 +431,11 @@ Start here:
 - [`docs/virtual_driver_matrix.md`](docs/virtual_driver_matrix.md) — QEMU/VirtualBox/VMware device compatibility matrix.
 - [`docs/opengl.md`](docs/opengl.md) — the software OpenGL 1.1/1.3 stack: supported subset, mipmapping, multitexturing, framebuffer objects, behaviour notes, performance.
 - [`PLAN.md`](PLAN.md) — historical phase plan.
+- [`GL_PLAN.md`](GL_PLAN.md) — the OpenGL stack (complete).
+- [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
+- [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
+- [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — a box-model web view (planned). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
+- [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
 
@@ -455,6 +460,17 @@ Short version:
   filesystems rather than production-grade implementations.
 - USB MSC currently uses the UHCI backend; OHCI/EHCI/xHCI transfer engines are
   not wired to class drivers yet.
+- **The keyboard layout is hardcoded US.** Two fixed scancode tables, no keymap
+  selection and no dead keys, so a non-US keyboard produces the wrong
+  characters outside the shared ASCII subset.
+- **No cryptography and therefore no HTTPS.** There is no SHA-256, AES or curve
+  arithmetic anywhere in the tree, and `getentropy()` returns a mix of TSC and
+  tick counts that is guessable — unfit for key material. See
+  [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+- **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
+  but no interrupt gate selects it, so a kernel stack overflow or double fault
+  resets the machine with no diagnostic.
+- `SIGSTOP`/`SIGTSTP` terminate rather than stop; there is no stopped state.
 
 See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 

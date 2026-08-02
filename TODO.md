@@ -11,6 +11,17 @@ for the feature matrix.
 
 ### Kernel / CPU / scheduling
 
+- **The IST is allocated but never used, so a bad-stack fault triple-faults.**
+  `tss_init()` allocates a per-CPU IST1 stack and panics on OOM allocating it
+  (`kernel/arch/x86_64/tss.c`), and `tss_entries[cpu].ist1_low/high` are
+  filled in — but `idt_set_gate()` hardcodes `idt[n].ist = 0`
+  (`kernel/arch/x86_64/idt.c:22`, comment: *"no IST for now"*), so **no vector
+  ever selects it**. The memory is reserved and unreachable. The consequence
+  is specific: a fault that occurs when RSP is invalid — a kernel stack
+  overflow, or a #DF — cannot push an exception frame, so it escalates to a
+  triple fault and the machine resets with no diagnostic. Double fault (8),
+  NMI (2) and machine check (18) are the vectors that conventionally need
+  IST entries.
 - **SMP scheduling is conservative.** Application processors are online, load
   CPU-local state and enter the idle scheduler loop; normal user scheduling remains
   BSP-only until per-CPU run queues and TLB shootdown policy are completed.
@@ -164,12 +175,34 @@ for the feature matrix.
   persistent per-filesystem FIFO/symlink storage and full symlink path-component
   following remain future work.
 
+### Security / cryptography
+
+- **`getentropy()` is not cryptographically random.** `SYS_GETENTROPY`
+  (syscall 318) returns `tsc ^ timer_get_ticks() ^ &out ^ (i * LCG_CONST)`.
+  Every input is observable or guessable by anyone who knows roughly when the
+  machine booted. It is fine for the stack-guard cookie and ASLR jitter it was
+  written for, and **unfit for key material** — anything cryptographic must
+  wait for `INTERNET_PLAN.md` phase N0, which replaces it with a CSPRNG seeded
+  from RDRAND/RDSEED and fails closed when no real source exists.
+- **There is no cryptography in the tree at all.** No SHA-256, no AES, no
+  curve arithmetic. `kernel/fs/btrfs.c` writes its SHA-256 checksum field as
+  zeros and says so in a comment. Consequently there is no TLS and no HTTPS;
+  `INTERNET_PLAN.md` is the plan for that.
+
 ### Storage / filesystems
 
 - **AHCI is QEMU-focused.** DMA read/write passes the integration tests on QEMU
   AHCI disks, but broad hardware/hypervisor coverage is still experimental.
 - **`/disk` is intentionally tiny.** Flat namespace, 8 files maximum, 4 KiB per
   file.
+- **`initrd_init()` does not check its `kmalloc`.**
+  `kernel/fs/initrd.c` allocates the vnode pool with
+  `initrd_vnodes = kmalloc(sizeof(struct vnode) * initrd.file_count)` and
+  `memset()`s it on the very next line with no NULL test, so an allocation
+  failure is a kernel NULL-dereference during early boot rather than a
+  diagnosed failure. It has never been hit because the initrd is parsed when
+  the heap is empty, which is precisely why it survived review. Every other
+  `kmalloc` on this path is checked.
 - **tmpfs has no `mkdir`.** `/tmp` and `/opt` are flat: `tmpfs_ops` has no
   `.mkdir` entry and `valid_name()` rejects any path containing a slash, so
   `mkdir /tmp/x` fails and always has. Directories work on FAT32 and ext2.
@@ -198,6 +231,16 @@ for the feature matrix.
   reason. This is worth fixing on its own terms — until it is, path handling
   behaves differently from every POSIX system.
 - **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and FAT date/time stat decoding, and ext2 supports Linux-mkfs images plus in-kernel mkfs with inode timestamps. Crash consistency, journaling, full permission semantics and extensive fsck-style recovery are out of scope.
+
+### Input
+
+- **The keyboard layout is hardcoded US, with no way to change it.**
+  `drivers/keyboard/keyboard.c` translates scancodes through two fixed
+  128-entry tables (`map_lo`, `map_hi`); there is no keymap abstraction, no
+  runtime selection and no dead-key support. A non-US keyboard produces the
+  wrong characters for anything outside the shared ASCII subset, and there is
+  no workaround short of editing the tables and rebuilding. Worth stating
+  because nothing in the docs currently implies the restriction.
 
 ### USB / devices
 
@@ -228,6 +271,14 @@ for the feature matrix.
   static addressing for deterministic boots.
 
 ### Graphics / GUI
+
+- **`gfx_fill_rect()` does not check `back_fb` for NULL.** `graphics.c`
+  allocates the back buffer with `kmalloc` and tolerates failure
+  (`if (back_fb) memset(...)`), and `gfx_putpixel()`, `gfx_clear()`,
+  `gfx_flip()` and `gfx_flip_rect()` all begin with a `!back_fb` guard.
+  `gfx_fill_rect()` is the one that does not, and writes through the pointer
+  directly. On a machine where the back-buffer allocation failed, every other
+  drawing entry point degrades quietly and this one faults.
 
 - **⚠ The virtio-gpu driver hangs during initialisation when a device is
   actually attached.** Booting with `-device virtio-gpu-pci` stops after

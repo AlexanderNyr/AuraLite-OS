@@ -2,6 +2,112 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Docs — an audit of parts of the OS nobody had looked at] 2026-08-02
+
+A deliberate sweep of subsystems untouched by the recent GL, filesystem, SDK
+and planning work, looking for defects rather than for things to write down.
+Four real ones, each verified in the source before being recorded.
+
+### Found and documented
+
+**The IST is allocated but never used.** `tss_init()` allocates a per-CPU IST1
+stack — and panics on OOM doing so — and fills `tss_entries[cpu].ist1_low/high`.
+But `idt_set_gate()` hardcodes `idt[n].ist = 0`, so **no vector ever selects
+it**. The memory is reserved and unreachable. The consequence is concrete: a
+fault taken when RSP is invalid (kernel stack overflow, #DF) cannot push an
+exception frame and escalates to a triple fault, resetting the machine with no
+diagnostic. `docs/status.md` claimed *"RSP0 + IST stack support"*, which was
+not true; that row is now 🚧 and says why.
+
+**`initrd_init()` does not check its `kmalloc`.** The vnode pool is allocated
+and `memset()` on the next line with no NULL test — an allocation failure is a
+NULL-dereference during early boot. Never hit, because the initrd is parsed
+while the heap is still empty, which is exactly why it survived review.
+
+**`gfx_fill_rect()` omits a guard its siblings have.** `gfx_putpixel()`,
+`gfx_clear()`, `gfx_flip()` and `gfx_flip_rect()` all begin with `if
+(!back_fb)`. `gfx_fill_rect()` writes through the pointer directly, so on a
+machine where the back-buffer allocation failed every other drawing path
+degrades quietly and this one faults.
+
+**The keyboard layout is hardcoded US.** Two fixed 128-entry scancode tables,
+no keymap abstraction, no runtime selection, no dead keys. Undocumented
+anywhere until now, and relevant to anyone not using a US keyboard.
+
+### Checked and *not* recorded
+Being explicit about the negatives, because a defect list is only useful if it
+excludes non-defects:
+
+- `select()`'s user-controlled `nfds` **is** bounded (`> FD_SETSIZE` → EINVAL)
+  before the multiply — no overflow.
+- The `kmalloc` calls in `select.c`, `vfs.c`, `ac97.c` and `graphics.c` that a
+  naive grep flags as unchecked all check a line or two later.
+- Wi-Fi being a MAC layer with no chipset driver is already stated in
+  `docs/status.md` and `README.md`.
+- `SIGSTOP`/`SIGTSTP` terminating instead of stopping was already in `TODO.md`;
+  it is now also in the README's user-facing list, where it belongs.
+
+### Changed
+- `TODO.md`: four new entries, each naming the file, the mechanism and the
+  observable consequence.
+- `docs/status.md`: the TSS row corrected from ✅ to 🚧; keyboard and
+  framebuffer rows annotated.
+- `README.md`: the user-facing limitation list gains the keyboard layout, the
+  absence of cryptography/HTTPS, the triple-fault behaviour and the missing
+  stopped state.
+
+## [Plans — a web view, and real internet access] 2026-08-02
+
+Two planning documents, no code. Both were written after measuring the tree
+rather than reasoning about it, and in both cases the measurement changed the
+plan.
+
+### Added
+- **`WEBVIEW_PLAN.md`** — phases W0–W8, a box-model web view.
+- **`INTERNET_PLAN.md`** — phases N0–N9, TLS 1.3 and real internet access.
+- `README.md` now indexes every plan, complete and planned.
+
+### The web view is 2D, and that reverses the premise
+The question was "we have OpenGL, can we do a web view". Measured at 800×600
+on this machine:
+
+| Operation | Cost |
+|---|---|
+| `memcpy` of a full page into the window | 0.125 ms |
+| Scroll 40 px (`memmove` + repaint the band) | 0.068 ms |
+| Per-pixel alpha blend over the page | 0.62 ms |
+| GL, 200 triangles at **320×240** (`docs/opengl.md`) | 3.7 ms |
+
+libgl is a software rasterizer — the VirGL backend exists but the virtio-gpu
+driver hangs on init. A full-page 2D blit at 800×600 is **thirty times
+cheaper** than 200 GL triangles at a seventh of the area, so compositing the
+page through GL would make the browser slower.
+
+GL therefore appears in exactly one phase, W7: `<canvas>` with a 3D context,
+where there is no 2D alternative and where the FBOs from GL phase G12 are
+already the right tool.
+
+### The internet plan starts with entropy, not crypto
+`getentropy()` (syscall 318) returns:
+
+```c
+tsc ^ timer_get_ticks() ^ (uintptr_t)out ^ (i * 6364136223846793005ULL + ...)
+```
+
+Every input is observable or guessable. **TLS seeded from this protects
+nobody** — the padlock would be a false claim, which is worse than no HTTPS.
+So phase N0 is a real CSPRNG, before a single line of cryptography.
+
+Also measured, because it decides whether TLS is a phase or a multi-year
+project: SHA-256 at **205 MB/s**, an X25519 scalar multiplication at
+**~0.2 ms**, a handshake's two at **~0.3 ms**. TLS here is an engineering
+problem, not a performance one.
+
+### Recorded in TODO.md
+Two pre-existing defects found while measuring: `getentropy()` is unfit for
+key material, and there is **no cryptography in the tree at all** —
+`kernel/fs/btrfs.c` writes its SHA-256 field as zeros and says so.
+
 ## [Fix — test_printf_fmt overrode glibc's stdio] 2026-08-02
 
 `make test-unit` aborted in CI with *"Fatal error: glibc detected an invalid

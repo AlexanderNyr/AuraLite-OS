@@ -20,7 +20,7 @@ Legend:
 | Limine ISO boot | ✅ | BIOS path is best-tested; UEFI files are included in the ISO. |
 | Higher-half kernel | ✅ | Linked at `0xFFFFFFFF80100000`. |
 | GDT / IDT / PIC | ✅ | 256 IDT gates, PIC IRQ remap. |
-| TSS | ✅ | RSP0 + IST stack support. |
+| TSS | 🚧 | RSP0 works and is per-CPU. **IST is allocated but unused**: `tss_init()` fills `ist1` for every CPU, but `idt_set_gate()` hardcodes `ist = 0`, so no vector selects it — a fault taken on a bad stack (kernel stack overflow, #DF) triple-faults instead. See `TODO.md`. |
 | SYSCALL/SYSRET | ✅ | Linux-like register ABI, custom syscall table. |
 | SMP bring-up | 🧪 | APs online + scheduler lock; BSP-only scheduling remains the normal execution mode while APs enter `sched_idle()`. |
 | LAPIC / IOAPIC | 🧪 | LAPIC enable + timer on each CPU are implemented; IOAPIC routing is still future work and legacy PIC/PIT paths remain available. |
@@ -109,11 +109,11 @@ Legend:
 
 | Feature | Status | Notes |
 |---|---:|---|
-| Framebuffer console | ✅ | Limine-provided linear framebuffer. |
+| Framebuffer console | ✅ | Limine-provided linear framebuffer. Double-buffered; note that `gfx_fill_rect()` omits the `back_fb` NULL guard its siblings have (`TODO.md`). |
 | PSF/bitmap font rendering | ✅ | Embedded console font. |
 | 2D graphics | ✅ | Double-buffered drawing. |
 | Window manager demo | ✅ | Windows, widgets, taskbar, mouse interaction. |
-| PS/2 keyboard | ✅ | Scan-code set 1, ASCII + rich key-event queues. |
+| PS/2 keyboard | ✅ | Scan-code set 1, ASCII + rich key-event queues. **US layout only** — two fixed translation tables, no keymap selection, no dead keys. |
 | PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
 | Kernel GUI/compositor | ✅ | **v2.0**: Theme engine (30+ params), desktop icons (32), notifications, window snapping (left/right/top/bottom/maximize), start menu, context menus, always-on-top windows, tool windows, edge/corner resize, double-click titlebar maximize, alpha blit, explicit event ABI (#define values), 64 windows, 128-event rings. Dirty-rect partial redraw is implemented via `compositor_render_dirty()` and `gfx_flip_rect()`, with idle frames skipping flips. Per-process window/icon cleanup on exit. |
 | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
