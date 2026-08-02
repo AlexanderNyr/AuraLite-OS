@@ -34,11 +34,11 @@ trap il_dump_on_error EXIT
 # The glcube frame count goes through a file because the shell's "run" command
 # uses spawn(), which does not forward argv -- the same convention /apm uses.
 il_send_delay 8
-il_send "run /gltest"
+il_send "run gltest"
 il_send_delay 60
 il_send "write /tmp/glcube.frames 8"
 il_send_delay 2
-il_send "run /glcube"
+il_send "run glcube"
 il_send_delay 45
 il_send "exit"
 

@@ -105,7 +105,7 @@ int main(void) {
 
         /* errno must NOT be perturbed by a successful call. */
         errno = ENOENT;          /* leftover from a prior failure */
-        int okfd = open("/hello", O_RDONLY);
+        int okfd = open("/bin/hello", O_RDONLY);
         check("open(/hello) succeeds without clearing errno-on-success rule",
               okfd >= 3);
         if (okfd >= 3) close(okfd);
@@ -411,7 +411,7 @@ int main(void) {
         }
         /* isatty(1) is true (console); a regular file is not a tty. */
         check("isatty(stdout)", isatty(1) == 1);
-        int rf = open("/hello", O_RDONLY);
+        int rf = open("/bin/hello", O_RDONLY);
         if (rf >= 3) {
             errno = 0;
             check("isatty(regular file) == 0 + ENOTTY",
@@ -495,11 +495,11 @@ int main(void) {
     printf("SELFTEST PASS: open rejects kernel path pointer\n");
 
     struct stat st;
-    int r = stat("/hello", (struct stat *)0xFFFF800000000000ULL);
+    int r = stat("/bin/hello", (struct stat *)0xFFFF800000000000ULL);
     check("stat rejects kernel output pointer", r < 0);
     printf("SELFTEST PASS: stat rejects kernel output pointer\n");
 
-    r = stat("/hello", &st);
+    r = stat("/bin/hello", &st);
     check("stat accepts valid output pointer", r == 0 && st.st_size > 0);
     printf("SELFTEST PASS: stat accepts valid output pointer\n");
 
@@ -510,7 +510,7 @@ int main(void) {
     r = aura_readdir("/", ents, 8);
     check("readdir accepts valid output pointer", r > 0);
 
-    fd = open("/hello", O_RDONLY);
+    fd = open("/bin/hello", O_RDONLY);
     check("open valid file returns process fd", fd >= 3);
     if (fd >= 3) {
         printf("SELFTEST PASS: open valid file returns process fd\n");
@@ -545,7 +545,7 @@ int main(void) {
 
     /* ---- dup / dup2 / pipe / fcntl ---- */
     {
-        int fd2 = open("/hello", O_RDONLY);
+        int fd2 = open("/bin/hello", O_RDONLY);
         check("open /hello for dup", fd2 >= 3);
         if (fd2 >= 3) {
             int dup_fd = dup(fd2);
@@ -562,7 +562,7 @@ int main(void) {
         }
 
         /* dup2 to a specific number. */
-        int fd3 = open("/hello", O_RDONLY);
+        int fd3 = open("/bin/hello", O_RDONLY);
         check("open /hello for dup2", fd3 >= 3);
         if (fd3 >= 3) {
             int target = fd3 + 5;
@@ -574,7 +574,7 @@ int main(void) {
         }
 
         /* fcntl FD_CLOEXEC round-trip. */
-        int fd4 = open("/hello", O_RDONLY);
+        int fd4 = open("/bin/hello", O_RDONLY);
         if (fd4 >= 3) {
             check("fcntl F_GETFD initial 0", fcntl(fd4, F_GETFD, 0) == 0);
             printf("SELFTEST PASS: fcntl F_GETFD initial 0\n");

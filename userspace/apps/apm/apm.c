@@ -14,10 +14,17 @@ struct package {
     const char *install_path;
 };
 
+/* Packages install into /opt.
+ *
+ * They used to install into /tmp — the one directory guaranteed to be wiped.
+ * The package manager worked; it just put its output in scratch space.
+ * /opt is a separate volume reserved for installed programs, and it is one of
+ * the two directories the kernel permits an executable to be created in
+ * (FSLAYOUT_PLAN phase F1). */
 static struct package repo[MAX_PKG] = {
-    { "matrix", "1.0", "Matrix digital rain screen simulation", "/matrix.pkg", "/tmp/matrix" },
-    { "life",   "1.2", "Conway's Game of Life simulation",      "/life.pkg",   "/tmp/life"   },
-    { "fetch",  "2.1", "System information fetch utility",      "/fetch.pkg",  "/tmp/fetch"  },
+    { "matrix", "1.0", "Matrix digital rain screen simulation", "/pkg/matrix.pkg", "/opt/matrix" },
+    { "life",   "1.2", "Conway's Game of Life simulation",      "/pkg/life.pkg",   "/opt/life"   },
+    { "fetch",  "2.1", "System information fetch utility",      "/pkg/fetch.pkg",  "/opt/fetch"  },
 };
 
 static int is_installed(const struct package *p) {
@@ -71,9 +78,14 @@ static void apm_install(const char *name) {
                 printf("[apm] Error: source archive '%s' not found.\n", repo[i].pkg_path);
                 return;
             }
-            int fd_dst = open(repo[i].install_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+            /* 0755: an installed program is created executable.  The kernel
+             * permits this only under /opt or /tmp, so a build of apm that
+             * pointed somewhere else would fail here with EPERM rather than
+             * quietly succeeding. */
+            int fd_dst = open(repo[i].install_path, O_CREAT | O_WRONLY | O_TRUNC, 0755);
             if (fd_dst < 0) {
                 printf("[apm] Error: cannot create target '%s'.\n", repo[i].install_path);
+                printf("[apm] Programs may only be installed under /opt.\n");
                 close(fd_src);
                 return;
             }

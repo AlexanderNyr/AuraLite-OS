@@ -124,8 +124,15 @@ static void refresh_usb(void) {
 }
 
 static void on_refresh(ag_widget_t *w, void *u) { (void)w; (void)u; refresh_usb(); }
-static void on_files(ag_widget_t *w, void *u) { (void)w; (void)u; spawn("/gfiles"); }
-static void on_term(ag_widget_t *w, void *u) { (void)w; (void)u; spawn("/gterm"); }
+/* Resolved by name (F2/F5): the root-level aliases these used to name are
+ * gone.  Found by grepping for hardcoded paths when F5 removed them — a
+ * button that silently does nothing has no failing test anywhere. */
+static void spawn_by_name(const char *name) {
+    char path[128];
+    if (prog_resolve(name, path, (int)sizeof(path))) spawn(path);
+}
+static void on_files(ag_widget_t *w, void *u) { (void)w; (void)u; spawn_by_name("gfiles"); }
+static void on_term(ag_widget_t *w, void *u) { (void)w; (void)u; spawn_by_name("gterm"); }
 
 int main(void) {
     printf("[gusb] starting\n");

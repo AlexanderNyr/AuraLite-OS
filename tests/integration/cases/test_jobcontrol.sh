@@ -20,7 +20,7 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 7
-il_send "run /selftest"
+il_send "run selftest"
 il_send_delay 3
 il_send "exit"
 

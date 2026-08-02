@@ -1,8 +1,22 @@
-/* tmpfs.c — small writable in-memory filesystem for /tmp.
+/* tmpfs.c — small writable in-memory filesystem.
  *
  * This is intentionally simple: a fixed-size file table and kmalloc-backed file
  * contents. It provides real VFS read/write/create semantics for user programs
  * while persistent disk filesystems are built on top of block devices later.
+ *
+ * TWO VOLUMES (phase F1 of FSLAYOUT_PLAN.md)
+ *
+ * The filesystem used to be a single global file table, because there was a
+ * single mount.  /opt needs its own storage: an install must not be able to
+ * fill up, or be evicted by, ordinary scratch traffic in /tmp, and the two
+ * directories have opposite intents.
+ *
+ * Each volume therefore owns a file table and its OWN ops table.  The ops
+ * tables are functionally identical, and that is deliberate rather than
+ * accidental duplication: vfs_vnode_path() identifies a vnode's mount by its
+ * ops pointer, so two mounts sharing one ops table would be
+ * indistinguishable, and fchmod() on a file in /opt would be judged as if it
+ * were in /tmp.  Distinct addresses are what make the mounts tellable apart.
  */
 
 #include <stdint.h>
@@ -26,7 +40,22 @@ struct tmpfs_file {
     struct vnode vnode;
 };
 
-static struct tmpfs_file files[TMPFS_MAX_FILES];
+/* One mounted volume. */
+struct tmpfs_volume {
+    const char *mount_path;              /* for diagnostics only */
+    const struct vfs_ops *ops;           /* this volume's ops table */
+    struct vnode root;
+    struct tmpfs_file files[TMPFS_MAX_FILES];
+};
+
+static struct tmpfs_volume tmp_vol;
+static struct tmpfs_volume opt_vol;
+
+/* The VFS passes fs_data straight through from vfs_mount(); a NULL means an
+ * older caller that predates volumes, which can only mean /tmp. */
+static struct tmpfs_volume *vol_of(void *fs_data) {
+    return fs_data ? (struct tmpfs_volume *)fs_data : &tmp_vol;
+}
 
 static int valid_name(const char *path) {
     if (!path || !*path) return 0;
@@ -37,51 +66,61 @@ static int valid_name(const char *path) {
     return 1;
 }
 
-void tmpfs_init(void) {
-    memset(files, 0, sizeof(files));
-    kprintf("[tmpfs] writable in-memory filesystem ready (%d files max)\n",
-            TMPFS_MAX_FILES);
+static void vol_init(struct tmpfs_volume *v, const char *mount_path,
+                     const struct vfs_ops *ops) {
+    memset(v, 0, sizeof(*v));
+    v->mount_path = mount_path;
+    v->ops        = ops;
+    v->root.type  = VFS_TYPE_DIR;
+    v->root.mode  = 0755;
+    v->root.size  = 0;
+    v->root.ops   = ops;
 }
 
-static struct tmpfs_file *find_file(const char *path) {
+void tmpfs_init(void) {
+    vol_init(&tmp_vol, "/tmp", &tmpfs_ops);
+    vol_init(&opt_vol, "/opt", &optfs_ops);
+    kprintf("[tmpfs] writable in-memory filesystem ready "
+            "(2 volumes, %d files max each)\n", TMPFS_MAX_FILES);
+}
+
+void *tmpfs_volume_tmp(void) { return &tmp_vol; }
+void *tmpfs_volume_opt(void) { return &opt_vol; }
+
+static struct tmpfs_file *find_file(struct tmpfs_volume *v, const char *path) {
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
-        if (files[i].in_use && strcmp(files[i].name, path) == 0) {
-            return &files[i];
+        if (v->files[i].in_use && strcmp(v->files[i].name, path) == 0) {
+            return &v->files[i];
         }
     }
     return NULL;
 }
 
-static struct vnode tmpfs_root_vnode;
-
 static struct vnode *tmpfs_lookup(void *fs_data, const char *path) {
-    (void)fs_data;
+    struct tmpfs_volume *v = vol_of(fs_data);
     if (path[0] == '\0') {
-        tmpfs_root_vnode.type = VFS_TYPE_DIR;
-        tmpfs_root_vnode.size = 0;
-        tmpfs_root_vnode.ops  = &tmpfs_ops;
-        return &tmpfs_root_vnode;
+        return &v->root;
     }
-    struct tmpfs_file *f = find_file(path);
+    struct tmpfs_file *f = find_file(v, path);
     return f ? &f->vnode : NULL;
 }
 
 static struct vnode *tmpfs_create(void *fs_data, const char *path) {
-    (void)fs_data;
+    struct tmpfs_volume *v = vol_of(fs_data);
     if (!valid_name(path)) return NULL;
-    struct tmpfs_file *existing = find_file(path);
+    struct tmpfs_file *existing = find_file(v, path);
     if (existing) return &existing->vnode;
 
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
-        if (!files[i].in_use) {
-            struct tmpfs_file *f = &files[i];
+        if (!v->files[i].in_use) {
+            struct tmpfs_file *f = &v->files[i];
             memset(f, 0, sizeof(*f));
             f->in_use = 1;
             strncpy(f->name, path, VFS_PATH_MAX - 1);
             strncpy(f->vnode.name, path, VFS_PATH_MAX - 1);
             f->vnode.type = VFS_TYPE_FILE;
             f->vnode.size = 0;
-            f->vnode.ops = &tmpfs_ops;
+            f->vnode.ops = v->ops;
             f->mtime = f->ctime = f->atime = vfs_now();
             f->vnode.fs_data = f;
             f->vnode.mtime = f->mtime;
@@ -136,15 +175,23 @@ static int64_t tmpfs_write(struct vnode *vn, uint64_t pos,
     return (int64_t)count;
 }
 
+/* readdir gets a vnode, not fs_data, so the volume is recovered from the
+ * root vnode's identity. */
+static struct tmpfs_volume *vol_of_vnode(struct vnode *vn) {
+    if (vn == &tmp_vol.root) return &tmp_vol;
+    if (vn == &opt_vol.root) return &opt_vol;
+    return &tmp_vol;
+}
+
 static int tmpfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
-    (void)vn;
+    struct tmpfs_volume *v = vol_of_vnode(vn);
     int n = 0;
     for (int i = 0; i < TMPFS_MAX_FILES && n < max; i++) {
-        if (!files[i].in_use) continue;
+        if (!v->files[i].in_use) continue;
         memset(&out[n], 0, sizeof(out[n]));
-        strncpy(out[n].name, files[i].name, VFS_PATH_MAX - 1);
+        strncpy(out[n].name, v->files[i].name, VFS_PATH_MAX - 1);
         out[n].type = VFS_TYPE_FILE;
-        out[n].size = files[i].size;
+        out[n].size = v->files[i].size;
         out[n].inode = (uint64_t)i;
         n++;
     }
@@ -152,8 +199,8 @@ static int tmpfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
 }
 
 static int tmpfs_unlink(void *fs_data, const char *path) {
-    (void)fs_data;
-    struct tmpfs_file *f = find_file(path);
+    struct tmpfs_volume *v = vol_of(fs_data);
+    struct tmpfs_file *f = find_file(v, path);
     if (!f) return -ENOENT;
     if (f->data) kfree(f->data);
     memset(f, 0, sizeof(*f));
@@ -215,18 +262,34 @@ const struct vfs_ops tmpfs_ops = {
     .truncate = tmpfs_truncate,
 };
 
-void tmpfs_list(void) {
+/* Identical by design — see the header comment.  The distinct address is the
+ * point: it is how vfs_vnode_path() tells /opt from /tmp. */
+const struct vfs_ops optfs_ops = {
+    .lookup   = tmpfs_lookup,
+    .create   = tmpfs_create,
+    .read     = tmpfs_read,
+    .write    = tmpfs_write,
+    .readdir  = tmpfs_readdir,
+    .unlink   = tmpfs_unlink,
+    .stat     = tmpfs_stat,
+    .truncate = tmpfs_truncate,
+};
+
+static void vol_list(const struct tmpfs_volume *v) {
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
-        if (files[i].in_use) {
-            kprintf("  /tmp/%s  (%llu bytes)\n",
-                    files[i].name, (unsigned long long)files[i].size);
+        if (v->files[i].in_use) {
+            kprintf("  %s/%s  (%llu bytes)\n", v->mount_path,
+                    v->files[i].name, (unsigned long long)v->files[i].size);
         }
     }
 }
 
+void tmpfs_list(void) { vol_list(&tmp_vol); }
+void optfs_list(void) { vol_list(&opt_vol); }
+
 void tmpfs_self_test(void) {
     kprintf("[tmpfs] self-test: create/write/read /tmp/hello.txt...\n");
-    struct vnode *vn = tmpfs_create(NULL, "hello.txt");
+    struct vnode *vn = tmpfs_create(&tmp_vol, "hello.txt");
     if (!vn) {
         kprintf("[tmpfs] FAIL: create failed\n");
         return;

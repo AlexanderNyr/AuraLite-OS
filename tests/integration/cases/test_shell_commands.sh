@@ -30,9 +30,9 @@ il_send "echo $MARK"
 il_send_delay 1
 il_send "ps"
 il_send_delay 1
-il_send "run /hello"
+il_send "run hello"
 il_send_delay 2
-il_send "run /sysinfo"
+il_send "run sysinfo"
 il_send_delay 2
 il_send "exit"
 
@@ -44,17 +44,17 @@ il_assert_grep "$LOG" "(AuraLite|x86_64)"   "uname output"
 il_assert_grep "$LOG" "^/$|^/"              "pwd printed"
 il_assert_grep "$LOG" "(free|usable|MiB|KiB)" "free output"
 
-# ls / should show files from initrd
-il_assert_grep "$LOG" "/init"               "ls shows /init"
-il_assert_grep "$LOG" "/hello"              "ls shows /hello"
-il_assert_grep "$LOG" "/calc"               "ls shows /calc"
+# ls / shows the layout directories.  It used to show 43 programs; since F5
+# each program has exactly one location and the root holds directories.
+il_assert_grep "$LOG" "bin/"                "ls / shows the bin directory"
+il_assert_grep "$LOG" "apps/"               "ls / shows the apps directory"
 
 il_assert_grep "$LOG" "$MARK"               "echo round-tripped marker"
 
-# run /hello produced its banner
+# the program ran, whatever directory it now lives in
 il_assert_grep "$LOG" "(Hello|hello)"       "/hello ran"
 
-# run /sysinfo produced something
+# and so did the second one
 il_assert_grep "$LOG" "(sysinfo|System|cpu|CPU|Aura)" "/sysinfo ran"
 
 il_summary

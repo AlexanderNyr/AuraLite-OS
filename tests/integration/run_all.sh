@@ -55,6 +55,10 @@ ALL_CASES=(
     test_permissions
     test_timestamps
     test_fifo_symlinks
+    test_initrd_dirs
+    test_install_dirs
+    test_search_path
+    test_runtime_layout
     test_gui_bad_pointers
     test_opengl
     test_process_cleanup

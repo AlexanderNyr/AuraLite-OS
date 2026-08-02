@@ -253,20 +253,45 @@ static void cmd_help(void) {
     puts("  help        - show this help");
     puts("  exit        - exit shell");
     puts("");
-    puts("Applications:");
-    puts("  run /calc     - interactive calculator");
-    puts("  run /sysinfo  - system information");
-    puts("  run /editor   - text editor");
-    puts("  run /clock    - clock display");
-    puts("  run /guess    - number guessing game");
-    puts("  run /snake    - snake game");
-    puts("  run /hello    - hello world");
-    puts("  run /http     - HTTP client");
-    puts("  run /browser  - web browser (fetch + render HTML)");
-    puts("  run /gbrowser - GUI web browser (clickable links)");
-    puts("  run /gtaskmgr - GUI Task Manager");
-    puts("  run /play <song> - CLI audio player (starwars, ode)");
-    puts("  run /gaudio   - GUI music player");
+    /* Programs are named, not pathed: since F5 there is exactly one location
+     * per program and it is found on the search path.  Printing paths here
+     * would be printing something the user does not need to type, and would
+     * be one more place to update the next time the layout moves. */
+    puts("Applications (run <name>, or just <name>):");
+    puts("  calc      - interactive calculator");
+    puts("  sysinfo   - system information");
+    puts("  editor    - text editor");
+    puts("  clock     - clock display");
+    puts("  guess     - number guessing game");
+    puts("  snake     - snake game");
+    puts("  hello     - hello world");
+    puts("  http      - HTTP client");
+    puts("  browser   - web browser (fetch + render HTML)");
+    puts("  gbrowser  - GUI web browser (clickable links)");
+    puts("  gtaskmgr  - GUI Task Manager");
+    puts("  play <song> - CLI audio player (starwars, ode)");
+    puts("  gaudio    - GUI music player");
+    puts("");
+    puts("Searched in: /bin /apps /demos /tests /opt");
+}
+
+/* ---- Program search path (FSLAYOUT_PLAN phase F2) ----
+ *
+ * The list and the lookup live in libc (libc/src/progpath.c), not here.  The
+ * shell is not the only thing that launches programs — the GUI launcher does
+ * too — and two copies of a search list is two things to update in F3, of
+ * which the second is the one that gets forgotten.
+ */
+
+/* Report a failed search naming what was looked at.  A bare "not found"
+ * makes the user guess where the shell even looked. */
+static void report_not_found(const char *name) {
+    printf("%s: not found in", name);
+    for (int d = 0; d < prog_path_count(); d++) {
+        printf("%s%s", d ? ":" : " ", prog_path_entry(d));
+    }
+    printf("\n");
+    fflush(stdout);
 }
 
 static void cmd_run(const char *prog) {
@@ -274,6 +299,12 @@ static void cmd_run(const char *prog) {
         puts("run: missing program name");
         return;
     }
+    char resolved[128];
+    if (!prog_resolve(prog, resolved, (int)sizeof(resolved))) {
+        report_not_found(prog);
+        return;
+    }
+    prog = resolved;
     printf("running %s in isolated address space...\n", prog);
     fflush(stdout);
     pid_t pid = spawn(prog);
@@ -455,9 +486,16 @@ static void cmd_apm(int argc, char **argv) {
         }
     }
     printf("[shell] starting apm...\n");
-    pid_t pid = spawn("/apm");
+    /* Resolved by name, not hardcoded: F5 removed the root-level aliases,
+     * so "/apm" no longer exists. */
+    char apm_path[128];
+    if (!prog_resolve("apm", apm_path, (int)sizeof(apm_path))) {
+        puts("apm: not found");
+        return;
+    }
+    pid_t pid = spawn(apm_path);
     if (pid < 0) {
-        printf("apm: failed to launch /apm\n");
+        printf("apm: failed to launch %s\n", apm_path);
         return;
     }
     wait(NULL);
@@ -503,8 +541,16 @@ static void process_command(char *line) {
     const char *cmd = cmd_argv[0];
 
     if (bg) {
+        /* The background paths resolve through the same list as the
+         * foreground ones.  Keeping one of them hardcoded is how `run calc`
+         * and `run calc &` end up behaving differently. */
+        char resolved[128];
         if (strcmp(cmd, "run") == 0 && argc > 1) {
-            pid_t pid = spawn(cmd_argv[1]);
+            if (!prog_resolve(cmd_argv[1], resolved, (int)sizeof(resolved))) {
+                report_not_found(cmd_argv[1]);
+                return;
+            }
+            pid_t pid = spawn(resolved);
             if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd_argv[1]); }
             return;
         }
@@ -566,7 +612,14 @@ do_dispatch:
     } else if (strcmp(cmd, "apm") == 0) {
         cmd_apm(argc, cmd_argv);
     } else if (strcmp(cmd, "gui") == 0) {
-        spawn("/glaunch");
+        {
+            char launcher[128];
+            if (prog_resolve("glaunch", launcher, (int)sizeof(launcher))) {
+                spawn(launcher);
+            } else {
+                puts("[gui] launcher not found");
+            }
+        }
         puts("[gui] launcher spawned");
     } else if (strcmp(cmd, "exit") == 0) {
         puts("Goodbye!");
@@ -582,7 +635,15 @@ do_dispatch:
     } else if (cmd[0] == '/' || cmd[0] == '.') {
         cmd_run(cmd);
     } else {
-        printf("%s: command not found\n", cmd);
+        /* Not a built-in.  Before declaring it unknown, look for a program of
+         * that name on the search path — this is what makes `calc` work as
+         * well as `run calc`. */
+        char resolved[128];
+        if (prog_resolve(cmd, resolved, (int)sizeof(resolved))) {
+            cmd_run(cmd);
+        } else {
+            printf("%s: command not found\n", cmd);
+        }
     }
     if (in_subshell) _exit(0);
 }

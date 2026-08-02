@@ -45,17 +45,17 @@ il_send "ps"
 il_send_delay 1
 
 # Userspace programs
-il_send "run /hello"
+il_send "run hello"
 il_send_delay 2
-il_send "run /sysinfo"
+il_send "run sysinfo"
 il_send_delay 2
-il_send "run /calc"
+il_send "run calc"
 il_send "2+3*4"
 il_send_delay 1
 il_send "exit"
 il_send_delay 1
 
-il_send "run /clock"
+il_send "run clock"
 il_send_delay 2
 il_send "exit"
 il_send_delay 1
@@ -84,8 +84,8 @@ il_run_qemu "$LOG" 50
 
 il_assert_grep "$LOG" "(AuraLite|x86_64)"           "uname output"
 il_assert_grep "$LOG" "^/$|/"                         "pwd output"
-il_assert_grep "$LOG" "/init"                         "ls shows /init"
-il_assert_grep "$LOG" "/hello"                        "ls shows /hello"
+il_assert_grep "$LOG" "/bin/init"                         "ls shows /init"
+il_assert_grep "$LOG" "/bin/hello"                        "ls shows /hello"
 il_assert_grep "$LOG" "$MARK"                         "echo round-trip"
 il_assert_grep "$LOG" "hello_shell"                   "tmp file content"
 il_assert_grep "$LOG" "(free|usable|MiB)"             "free output"

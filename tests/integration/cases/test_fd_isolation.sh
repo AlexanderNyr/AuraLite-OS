@@ -18,7 +18,7 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 7
-il_send "run /fdtest"
+il_send "run fdtest"
 il_send_delay 4
 il_send "exit"
 

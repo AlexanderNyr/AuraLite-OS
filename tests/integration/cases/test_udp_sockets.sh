@@ -14,7 +14,7 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 8
-il_send "run /udptest"
+il_send "run udptest"
 il_send_delay 5
 il_send "exit"
 

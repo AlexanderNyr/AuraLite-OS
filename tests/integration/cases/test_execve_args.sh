@@ -2,7 +2,7 @@
 # test_execve_args.sh — execve(path, argv, envp) end-to-end (Block C kernel).
 #
 # The kernel boot self-test (process_self_test) spawns /execve_child in a fresh
-# address space; that program calls execve("/argv_echo", argv, envp). /argv_echo
+# address space; that program calls execve("/tests/argv_echo", argv, envp). /argv_echo
 # prints exactly what it received. We assert the kernel built the System V AMD64
 # initial process stack correctly (argc, argv[], NULL, envp[], NULL, auxv) and
 # that crt0/__libc_start_main decoded it. This runs at boot, before the shell,
@@ -31,7 +31,7 @@ il_assert_no_grep_fixed "$LOG" "EXECVE_CHILD execve FAILED"                     
 
 # argc and each argv entry (note the embedded space in argv[2]).
 il_assert_grep_fixed "$LOG" "ARGV_ECHO argc=4"             "argc == 4"
-il_assert_grep_fixed "$LOG" "ARGV_ECHO argv[0]=/argv_echo" "argv[0] == /argv_echo"
+il_assert_grep_fixed "$LOG" "ARGV_ECHO argv[0]=/tests/argv_echo" "argv[0] == /tests/argv_echo"
 il_assert_grep_fixed "$LOG" "ARGV_ECHO argv[1]=alpha"      "argv[1] == alpha"
 il_assert_grep_fixed "$LOG" "ARGV_ECHO argv[2]=beta gamma" "argv[2] keeps embedded space"
 il_assert_grep_fixed "$LOG" "ARGV_ECHO argv[3]=42"         "argv[3] == 42"

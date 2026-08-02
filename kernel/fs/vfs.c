@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/execpolicy.h"
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
@@ -24,6 +25,10 @@
  * substitutes a caller-supplied @fallback errno for that generic -1.  A return
  * that is already a specific negative errno (in the reserved band) is passed
  * through unchanged, and any non-negative result is returned as-is.
+ *
+ * SAME TRAP AS vfs_errno() IN THE SYSCALL DISPATCHER: EPERM is 1, so -EPERM
+ * is indistinguishable from the generic -1 sentinel and will be replaced by
+ * @fallback.  Do not wrap a call that can return -EPERM.
  *
  * @ret      filesystem op return value (>= 0 success, < 0 failure)
  * @fallback positive errno to use when @ret is the generic -1
@@ -361,6 +366,43 @@ static int find_mount(const char *path, const char **out_rel) {
 /* Resolve a path to a vnode (no creation). */
 static struct vnode *resolve_path(const char *path);
 
+/*
+ * Reconstruct an absolute path for @vn.
+ *
+ * A vnode's name is relative to its mount, so "x" on the /tmp mount is
+ * "/tmp/x".  The mount is identified by the ops pointer, which every
+ * filesystem shares across its vnodes — enough to distinguish the mounts,
+ * because no two mounts in this kernel use the same ops table.
+ *
+ * Returns 0 on success, -1 if the mount cannot be identified or the result
+ * does not fit.  Callers must treat -1 as "unknown", never as "the root".
+ */
+int vfs_vnode_path(const struct vnode *vn, char *out, size_t out_len) {
+    if (!vn || !out || out_len < 2) return -1;
+
+    const char *mp = 0;
+    for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
+        if (mounts[i].in_use && mounts[i].ops == vn->ops) {
+            mp = mounts[i].mount_path;
+            break;
+        }
+    }
+    if (!mp) return -1;
+
+    size_t mlen = strlen(mp);
+    size_t nlen = strlen(vn->name);
+    /* "/" as a mount already supplies the separator. */
+    int need_sep = (mlen > 1);
+    if (mlen + (size_t)need_sep + nlen + 1 > out_len) return -1;
+
+    memcpy(out, mp, mlen);
+    size_t w = mlen;
+    if (need_sep) out[w++] = '/';
+    memcpy(out + w, vn->name, nlen);
+    out[w + nlen] = '\0';
+    return 0;
+}
+
 static struct vnode *resolve_parent_vnode(const char *path) {
     if (!path || !*path) return NULL;
     char parent_path[VFS_PATH_MAX];
@@ -425,6 +467,20 @@ int vfs_chmod(const char *path, uint32_t mode) {
     if (!vn) return -ENOENT;
     tcb_t *cur = sched_current();
     if (cur && cur->euid != 0 && cur->euid != vn->uid) return -EPERM;
+    /* F1: refuse to ADD an execute bit outside the allowlist.
+     *
+     * "Add", not "have": a chmod that leaves an already-executable file
+     * executable is not an installation and must not fail, or every
+     * `chmod 0755` on an existing program in an allowed directory would
+     * break the moment the policy changed. */
+    if ((mode & EXEC_MODE_BITS) & ~(vn->mode & EXEC_MODE_BITS)) {
+        if (!exec_install_allowed(path)) {
+            kprintf("[vfs] refused chmod +x on '%s': "
+                    "programs may only be installed under %s or %s\n",
+                    path, exec_install_dir(0), exec_install_dir(1));
+            return -EPERM;
+        }
+    }
     vn->mode = (vn->mode & ~07777u) | (mode & 07777u);
     if (vn->ops && vn->ops->chmod) return (int)vfs_wrap_err(vn->ops->chmod(vn, vn->mode), EIO);
     return 0;
@@ -435,6 +491,20 @@ int vfs_fchmod(int fd, uint32_t mode) {
     if (!vn) return -EBADF;
     tcb_t *cur = sched_current();
     if (cur && cur->euid != 0 && cur->euid != vn->uid) return -EPERM;
+    /* F1, the fd-based twin of vfs_chmod().
+     *
+     * A vnode stores its name relative to its mount, so the mount prefix has
+     * to be put back before the policy can judge it.  Without that, a tmpfs
+     * file whose vnode name is "x" would be judged as "/x" and refused, and
+     * fchmod would behave differently from chmod on the very same file. */
+    if ((mode & EXEC_MODE_BITS) & ~(vn->mode & EXEC_MODE_BITS)) {
+        char full[VFS_PATH_MAX];
+        if (vfs_vnode_path(vn, full, sizeof(full)) != 0 ||
+            !exec_install_allowed(full)) {
+            kprintf("[vfs] refused fchmod +x on fd %d ('%s')\n", fd, vn->name);
+            return -EPERM;
+        }
+    }
     vn->mode = (vn->mode & ~07777u) | (mode & 07777u);
     if (vn->ops && vn->ops->chmod) return (int)vfs_wrap_err(vn->ops->chmod(vn, vn->mode), EIO);
     return 0;
@@ -572,6 +642,35 @@ int vfs_open(const char *path, int flags, int mode) {
 
     if (vn == NULL) {
         if (!(flags & O_CREAT)) return -ENOENT;
+
+        /* F1: refuse to CREATE an executable outside the allowlist.
+         *
+         * This runs BEFORE anything is created.  An earlier draft placed it
+         * after ops->create() and returned -EPERM there, which left an empty
+         * file behind on every refusal — the check reported the right answer
+         * and the filesystem had already done the wrong thing.
+         *
+         * It also runs before the permission and mount checks, so that a
+         * refused install is reported as EPERM rather than as whatever the
+         * underlying filesystem would have said.  Without this ordering
+         * `open("/x", O_CREAT, 0755)` on the read-only initrd returns EROFS,
+         * which is true but says nothing about the policy, and a caller
+         * cannot tell a refusal from a filesystem that simply cannot write.
+         *
+         * The mode is judged after the umask, because the umask is what
+         * actually lands on the file: a request for 0755 under a umask of
+         * 0111 creates a non-executable file, and there is nothing to refuse.
+         */
+        tcb_t *cur = sched_current();
+        uint16_t umask = cur ? cur->umask : 0022;
+        uint32_t masked_mode = (mode != 0 ? mode : 0666) & 07777u & ~umask;
+        if ((masked_mode & EXEC_MODE_BITS) && !exec_install_allowed(path)) {
+            kprintf("[vfs] refused to create executable '%s': "
+                    "programs may only be installed under %s or %s\n",
+                    path, exec_install_dir(0), exec_install_dir(1));
+            return -EPERM;
+        }
+
         struct vnode *pvn = resolve_parent_vnode(path);
         int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
         if (err != 0) return err;
@@ -583,9 +682,6 @@ int vfs_open(const char *path, int flags, int mode) {
         vn = mounts[m].ops->create(mounts[m].fs_data, rel);
         if (vn == NULL) return -EACCES;
 
-        tcb_t *cur = sched_current();
-        uint16_t umask = cur ? cur->umask : 0022;
-        uint32_t masked_mode = (mode != 0 ? mode : 0666) & 07777u & ~umask;
         vn->mode = masked_mode ? masked_mode : (0644u & ~umask);
         if (cur) { vn->uid = cur->euid; vn->gid = cur->egid; }
         vfs_stamp_created(vn);
@@ -968,7 +1064,7 @@ void vfs_close_on_exec(void) {
  * are empty.
  *
  * Why this exists: ordinary processes get fd 0/1/2 wired to /dev/tty0 by
- * init (see userspace/init/init.c) and every fork()/spawn() descendant
+ * init (see userspace/system/init/init.c) and every fork()/spawn() descendant
  * inherits those same slots already-open via vfs_fork_inherit(). But a few
  * processes are spawned directly from a KERNEL THREAD's context instead of
  * from init's process tree -- most notably GUI apps launched by double-
@@ -1235,12 +1331,15 @@ void vfs_list(const char *path) {
     /* Legacy per-fs print helpers (for filesystems without readdir). */
     extern void initrd_list(void);
     extern void tmpfs_list(void);
+    extern void optfs_list(void);
     extern void diskfs_list(void);
     extern void fat32_list(void);
     if (strcmp(path, "/") == 0) {
         initrd_list();
     } else if (strcmp(path, "/tmp") == 0 || strcmp(path, "/tmp/") == 0) {
         tmpfs_list();
+    } else if (strcmp(path, "/opt") == 0 || strcmp(path, "/opt/") == 0) {
+        optfs_list();
     } else if (strcmp(path, "/disk") == 0 || strcmp(path, "/disk/") == 0) {
         diskfs_list();
     } else if (strcmp(path, "/fat") == 0 || strcmp(path, "/fat/") == 0) {
@@ -1292,7 +1391,7 @@ void vfs_self_test(void) {
     }
     kprintf("[vfs]   /tmp/vfs.txt: create/write/read OK\n");
 
-    fd = vfs_open("/init", O_RDONLY, 0);
+    fd = vfs_open("/bin/init", O_RDONLY, 0);
     if (fd >= 0) {
         char fbuf[32] = { 0 };
         n = vfs_read(fd, fbuf, sizeof(fbuf) - 1);

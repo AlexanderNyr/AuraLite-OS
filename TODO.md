@@ -170,6 +170,23 @@ for the feature matrix.
   AHCI disks, but broad hardware/hypervisor coverage is still experimental.
 - **`/disk` is intentionally tiny.** Flat namespace, 8 files maximum, 4 KiB per
   file.
+- **`/opt` does not persist across a reboot** (FSLAYOUT_PLAN phase F1). It is
+  a tmpfs volume, so an installed package is gone after a restart. Making it
+  durable needs a writable disk that is present on every boot; the persistent
+  filesystems here mount only when their device exists, so the choice is
+  between a location that is always there and one that always survives, and F1
+  took the first. The defect it fixed was `apm` installing into `/tmp` — the
+  one directory guaranteed to be wiped *and* not reserved for programs.
+- **The installation allowlist does not follow symlinks** (FSLAYOUT_PLAN F1).
+  `exec_path_canonical()` is lexical: it defeats `/opt/../etc/evil`, but a
+  symlink inside an allowed directory pointing outside it would let a write
+  through. Closing it means resolving the parent through the VFS, following
+  links, before judging the path.
+- **The VFS does not canonicalise paths at all.** `/tmp/../evil` is split at
+  the `/tmp` mount and the remainder handed to tmpfs, which rejects names
+  containing a slash. Traversal therefore fails today for an incidental
+  reason. This is worth fixing on its own terms — until it is, path handling
+  behaves differently from every POSIX system.
 - **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and FAT date/time stat decoding, and ext2 supports Linux-mkfs images plus in-kernel mkfs with inode timestamps. Crash consistency, journaling, full permission semantics and extensive fsck-style recovery are out of scope.
 
 ### USB / devices

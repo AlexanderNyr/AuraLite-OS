@@ -180,6 +180,19 @@ pid_t   spawn(const char *path);
  * lister is named aura_readdir() so the POSIX readdir(DIR*) in <dirent.h>
  * can own the standard name. */
 void    listdir(const char *path);
+
+/* Program search path (FSLAYOUT_PLAN phase F2).
+ *
+ * prog_resolve() turns a command name into a path: a name containing '/' is
+ * used as given, otherwise the search directories are tried in order and the
+ * first existing entry wins.  Returns 1 and fills @out on success, 0 if
+ * nothing was found.
+ *
+ * prog_path_count()/prog_path_entry() expose the list so a caller can say
+ * what it searched — a bare "not found" makes the user guess. */
+int         prog_resolve(const char *name, char *out, int out_len);
+int         prog_path_count(void);
+const char *prog_path_entry(int index);
 int     aura_readdir(const char *path, void *out, int max);
 uint32_t dns_resolve(const char *hostname);
 

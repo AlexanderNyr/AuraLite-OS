@@ -14,7 +14,7 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 7
-il_send "run /fifolinktest"
+il_send "run fifolinktest"
 il_send_delay 5
 il_send "exit"
 

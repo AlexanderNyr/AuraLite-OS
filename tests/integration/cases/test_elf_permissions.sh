@@ -15,10 +15,10 @@ trap il_dump_on_error EXIT
 
 il_send_delay 8
 il_send "write /tmp/elfperm.mode write-text"
-il_send "run /elfperm"
+il_send "run elfperm"
 il_send_delay 3
 il_send "write /tmp/elfperm.mode exec-data"
-il_send "run /elfperm"
+il_send "run elfperm"
 il_send_delay 3
 il_send "echo ELFPERM: shell alive after faults"
 il_send_delay 1

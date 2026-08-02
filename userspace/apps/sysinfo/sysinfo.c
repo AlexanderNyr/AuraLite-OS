@@ -46,7 +46,7 @@ int main(void) {
     puts("    [x] Per-process address spaces");
 
     print_bar(44, '-');
-    puts("  Try: 'ls /', 'cat /hello', 'run /calc'");
+    puts("  Try: 'ls /', 'ls /apps', 'run calc'");
     print_bar(44, '=');
     printf("\n");
 

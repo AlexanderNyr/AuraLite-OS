@@ -26,7 +26,7 @@ il_send "cat /proc/stat"
 il_send_delay 1
 il_send "cat /proc/cpuinfo"
 il_send_delay 1
-il_send "run /gsysmon"
+il_send "run gsysmon"
 il_send_delay 2
 il_send "exit"
 

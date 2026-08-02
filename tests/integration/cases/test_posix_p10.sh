@@ -19,7 +19,7 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 8
-il_send "run /p10test"
+il_send "run p10test"
 il_send_delay 14
 
 il_run_qemu "$LOG" 40

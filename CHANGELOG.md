@@ -2,6 +2,277 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Phase F5 — the compatibility aliases are gone] 2026-08-01
+
+Every program now has exactly one location. `ls /` shows six directories and
+nothing else; the initrd holds 43 entries instead of 85.
+
+### Changed
+- The root-level hard links are no longer created.
+- `apm` reads from `/pkg/*.pkg`.
+- The shell's help lists program **names**, not paths, and names the search
+  directories — printing a path the user does not need to type is one more
+  thing to update the next time the layout moves.
+
+### The inventory of hidden path assumptions
+
+This is the real output of the phase. Every one of these was found by grep or
+by a failing test, not by reasoning:
+
+| Site | Was | Now |
+|---|---|---|
+| `kernel/fs/vfs.c` self-test | `/init` | `/bin/init` |
+| `kernel/proc/process.c` self-test | `/hello`, `/execve_child` | `/bin/hello`, `/tests/execve_child` |
+| **`kernel/gui/gui.c` start-menu table** | 10 × `/g*` | 10 × `/apps/g*` |
+| `init.c` — `apm`, the GUI launcher | `spawn("/apm")`, `spawn("/glaunch")` | resolved by name |
+| **`gui-usb`** | `spawn("/gfiles")`, `spawn("/gterm")` | resolved by name |
+| `execve_child`, `fdtest`, `selftest`, `insttest` | `/argv_echo`, `/hello` | canonical paths |
+| `sysinfo` banner | `Try: 'cat /hello', 'run /calc'` | `'ls /apps', 'run calc'` |
+| **`test_process_cleanup`, `test_memory_reaping`** | paths inside **regexes** | canonical paths |
+| 35 integration scripts | `run /name` | `run name` |
+
+The mechanical rewrite that handled those 35 scripts matched string literals
+and `run /name`, and **missed paths embedded in regular expressions** —
+`reaped '/hello'`, `'/proctest' \(tid`. Two cases failed for that reason and
+were fixed; the remaining set was then re-grepped for the same shape rather
+than assumed clean.
+
+The two in bold above are the ones worth pausing on. The kernel's start menu and
+`gui-usb`'s buttons have **no test that clicks them** — a stale path there is
+a menu item that silently does nothing, and no suite anywhere would have gone
+red. F2 had already removed the launcher's twelve paths for exactly this
+reason; these two were missed because they are not launchers.
+
+### Fixed — a test that could not have failed
+`test_runtime_layout.sh` first asserted the *absence* of `reaped '/hello'`.
+The shell creates a thread for a failed spawn and the kernel reaps it, so that
+line appears whether or not the program exists. Replaced with the positive
+assertion `spawn: '/hello' not found`.
+
+### Verification
+`make test-unit` 72/72 binaries. **26 integration cases green**, including
+`test_boot_to_shell` 17/17, `test_runtime_layout` 11/11, `test_search_path`
+7/7, `test_install_dirs` 10/10, `test_initrd_dirs` 8/8, `test_shell_commands`
+9/9, `test_selftest` 6/6, `test_syscalls` 4/4, `test_execve_args` 16/16,
+`test_process_cleanup` 8/8, `test_memory_reaping` 9/9, `test_posix_p10` 27/27,
+`test_elf_permissions` 7/7, `test_signals` 9/9, `test_fifo_symlinks` 10/10.
+
+**The whole patch series was verified end to end**: a fresh clone of the
+baseline `a422a93` with all six patches applied in order is byte-identical to
+this tree, builds clean, and passes both the unit suite and the integration
+cases. That is a stronger check than "each patch applies", which is all that
+had been confirmed before.
+
+## [Phase F4 — the source tree gains structure] 2026-08-01
+
+`userspace/` had 42 directories in a flat list mixing applications, demos,
+test programs and `init`. It now has four:
+
+```
+userspace/system/   init                        (1)
+userspace/apps/     calc, editor, gui-*, ...   (21)
+userspace/demos/    glcube, glgears, snake, ... (7)
+userspace/tests/    gltest, fdtest, ...        (14)
+```
+
+### Changed
+- 43 `git mv`s and the Makefile source paths. Nothing else: the compile and
+  link rules, the initrd packing and every program's source are untouched.
+- `README.md` reflects the new tree and the F3 runtime layout.
+
+### Added
+- A `README.md` in each group saying what belongs there and why, because the
+  grouping erodes the first time someone adds a program in a hurry. Each one
+  records something learned the hard way rather than restating the obvious —
+  `system/` warns that `init` has two build sites, `apps/` that a
+  non-interactive program must exit, `tests/` that "skipped" and "failed" are
+  different answers.
+
+### Verification — the claim was checked, not asserted
+The plan said this phase should produce byte-identical output. It does not,
+and the reason is worth recording: **tar stores mtimes**, so no two builds of
+the initrd are ever byte-identical, before or after this change.
+
+What was verified instead is stronger than a hash comparison and weaker than
+the plan's wording: the initrd was extracted before and after the move and
+compared with `diff -r`. **All 85 files identical.** `make test-unit` 72/72
+binaries. In QEMU: `test_boot_to_shell` 17/17, `test_runtime_layout` 12/12,
+`test_search_path` 7/7, `test_install_dirs` 10/10, `test_shell_commands`
+10/10, `test_userspace_apps` 4/4.
+
+## [Phase F3 — the runtime layout moves] 2026-08-01
+
+Every program now lives in `/bin`, `/apps`, `/demos`, `/tests` or `/pkg`, with
+a root-level alias so nothing that names an old path breaks. F5 removes the
+aliases deliberately.
+
+### Changed
+- The initrd rule packs into directories, driven by four name lists instead of
+  43 hand-written `cp` lines.
+- `test_search_path.sh` passes **unmodified** across the move. That was the
+  point of ordering F2 first, and it is the evidence the move is safe.
+
+### Added
+- Hard-link support in `kernel/fs/initrd.c` (USTAR type `1`). The aliases are
+  links, not copies: 43 duplicated binaries would take a 5 MB image to 10 MB,
+  while a link is one 512-byte header. The image went 5.1 MB → 5.3 MB.
+- Explicit directory entries (USTAR type `5`) are honoured, so an empty
+  directory survives — no file path implies one.
+- 7 more checks in `tests/unit/test_initrd_dirs.c` (**26 total**).
+- `tests/integration/cases/test_runtime_layout.sh`: **12 assertions**, with
+  the alias-dependent ones grouped so F5 has its inventory.
+
+### Fixed — caught while building it
+`tar --sort=name` made the *alias* the real archive entry and the canonical
+path a link back to it: `./apm` sorts before `./bin/apm`, and tar writes
+whichever name it meets first as the file. Harmless today, since both resolve
+— and a trap laid for F5, where dropping the aliases would have left every
+canonical path dangling. `mkinitrd.sh` now archives nested paths before
+root-level ones, so the canonical location is the real entry.
+
+### Verification
+`make test-unit` 72/72 binaries, `test_initrd_dirs` 26/26. In QEMU:
+`test_runtime_layout` 12/12, `test_search_path` 7/7 unmodified,
+`test_boot_to_shell` 17/17, `test_shell_commands` 10/10, `test_install_dirs`
+10/10, `test_initrd_dirs` 8/8, `test_userspace_apps` 4/4.
+
+One `test_selftest` run tripped the kernel stack-protector under `-smp 2`;
+three consecutive re-runs were clean, and it matches the pre-existing SMP
+instability recorded in `TODO.md`. Reported rather than ignored.
+
+## [Phase F2 — a program search path] 2026-08-01
+
+`run calc` now works wherever `calc` lives. This lands **before** the layout
+move in F3, deliberately: the same command has to work on both sides of the
+move, and a test that must be edited alongside a move proves nothing about it.
+
+### Added
+- `libc/src/progpath.c`: `prog_resolve()` and the search list
+  `/bin:/apps:/demos:/tests:/opt:/`. In libc, not in the shell, because the
+  GUI launcher also launches programs — two copies of a search list is two
+  things to update in F3, and the second is the one that gets forgotten.
+- `tests/unit/test_progpath.c`: **15 host checks** against a stub filesystem,
+  which makes the search *order* observable.
+- `tests/integration/cases/test_search_path.sh`: **7 assertions**, every one
+  written against a program name rather than a path, so the file must pass
+  unmodified after F3.
+
+### Changed
+- `cmd_run()`, the background `run` path, and the bare-command fallback in
+  `userspace/init/init.c` all resolve through the same function. Keeping one
+  of them hardcoded is how `run calc` and `run calc &` end up differing.
+- A bare command name now runs a program of that name; built-ins still win.
+- A failed search names the directories it searched.
+- `gui-launcher` stores program *names*, not paths. Its twelve hardcoded
+  paths were twelve places F3 could break something with no failing test —
+  the launcher has no test that clicks its buttons.
+
+### Notes
+`/` is searched **last** so that after F3 a program in its proper directory
+wins over its own compatibility alias at the root. The five directories that
+do not exist yet cost one failed lookup each.
+
+### Verification
+`make test-unit` 72/72 binaries green, `test_progpath` 15/15. In QEMU:
+`test_search_path` 7/7, `test_install_dirs` 10/10, `test_initrd_dirs` 8/8,
+`test_boot_to_shell` 17/17, `test_shell_commands` 10/10, `test_jobcontrol`
+14/14, `test_userspace_apps` 4/4. Breaking the path joining so the root
+candidate became `//calc` fails 3 of the 15 host checks.
+
+## [Phase F1 — enforced installation directories] 2026-08-01
+
+The kernel now refuses to create an executable file outside an allowlist.
+This is the phase `FSLAYOUT_PLAN.md` says to build if only one is ever built:
+the layout is tidiness, but `apm` writing programs into scratch space was a
+defect.
+
+### Added
+- `kernel/fs/execpolicy.{c,h}`: the allowlist (`/opt`, `/tmp`) and a lexical
+  path canonicaliser. In its own translation unit so the host test compiles
+  the shipping predicate rather than a copy.
+- Enforcement in `vfs_open()` on `O_CREAT` with an executable mode, and in
+  `vfs_chmod()` / `vfs_fchmod()` when a chmod would *add* an execute bit.
+  Refusals return `EPERM` and log the reason.
+- `/opt` as a second tmpfs volume with its own file table, so scratch traffic
+  cannot crowd out an installed program.
+- `vfs_vnode_path()`: reconstructs an absolute path from a vnode's mount and
+  relative name, needed so `fchmod()` judges the same path `chmod()` would.
+- `userspace/insttest` (`/insttest`): **11 in-OS checks**.
+- `tests/unit/test_execpolicy.c`: **25 host checks**.
+- `tests/integration/cases/test_install_dirs.sh`: **10 assertions**.
+
+### Fixed — a pre-existing kernel bug this phase surfaced
+**`EPERM` is 1, so `-EPERM` is `-1`** — indistinguishable from the generic
+failure sentinel that `vfs_errno()` replaces with a fallback errno. `SYS_OPEN`
+and `SYS_OPENAT` both routed `vfs_open()` through it, so a refusal arrived in
+userspace as `ENOENT`: "no such file", for a file the caller was creating.
+The comment there called `vfs_errno()` "an idempotent safety net"; it is
+idempotent for every errno except the one that collides with the sentinel.
+Both call sites now return the value directly, and the trap is documented at
+`vfs_errno()` and `vfs_wrap_err()` so the next caller does not step in it.
+
+Also fixed before it shipped: the create-time check was originally placed
+*after* `ops->create()`, so every refusal left an empty file behind — the
+right answer returned after the wrong thing had already happened.
+
+### Changed
+- `apm` installs to `/opt/<name>` instead of `/tmp/<name>`, with mode 0755.
+
+### Known limitations (recorded in TODO.md, not papered over)
+- `/opt` is tmpfs and does **not** survive a reboot.
+- Canonicalisation is lexical, so it does not follow symlinks.
+- The VFS does not canonicalise paths at all, so traversal currently fails for
+  an incidental reason as well as a policy one.
+
+### Verification
+`make test-unit` 71/71 binaries green. In QEMU: `test_install_dirs` 10/10
+(`/insttest` 11/11), `test_initrd_dirs` 8/8, `test_boot_to_shell` 17/17,
+`test_shell_commands` 10/10, `test_tmpfs` 9/9, `test_permissions` 7/7,
+`test_selftest` 6/6. The policy was disabled and the suite re-run to confirm
+the tests detect its absence: 3 integration assertions and 5 probe checks
+fail. Removing canonicalisation fails 5 of the 25 host checks.
+
+## [Phase F0 — directories in the initrd] 2026-08-01
+
+The first phase of `FSLAYOUT_PLAN.md`. The initrd can now carry
+subdirectories. **Nothing has moved yet** — this phase adds the capability
+and proves it end to end with a single file, so that the reorganisation in
+F2/F3 is a packaging change rather than a flag day.
+
+### Added
+- `kernel/fs/initrd.c`: a derived directory view. Every `/`-terminated prefix
+  of a packed path is registered as a directory at parse time, `lookup()`
+  resolves directory paths to directory vnodes, and `readdir()` enumerates the
+  *immediate* children of a directory, collapsing anything deeper.
+- `tools/mkinitrd.sh`: recursive staging copy, a hard failure on paths at or
+  beyond the 100-byte USTAR name limit (previously they would have been
+  truncated into a wrong or colliding name), and `--sort=name` so the archive
+  and every directory listing are reproducible.
+- `/etc/motd` — one file in a subdirectory, so the directory path is exercised
+  by every build and by the integration suite, not only by the unit test.
+- `tests/unit/test_initrd_dirs.c`: **19 host checks** against hand-built USTAR
+  images. Compiles the real parser, not a copy.
+- `tests/integration/cases/test_initrd_dirs.sh`: **8 assertions**.
+- `docs/filesystem.md`.
+
+### Fixed
+- `initrd_readdir()` returned every entry's full path from every read, so a
+  file at `apps/calc` would have been listed as a root-level file named
+  `apps/calc` and `/apps` would not have resolved at all. This was latent: no
+  subdirectory had ever been packed, so nothing had exercised it.
+- A trailing slash now asserts "this is a directory". `/etc/` resolves;
+  `/etc/motd/` does not.
+
+### Changed
+- `INITRD_MAX_FILES` 64 → 192, and a new `INITRD_MAX_DIRS` of 32. 41 entries
+  are packed today; the compatibility aliases F3 keeps roughly double that,
+  so the old ceiling would have been reached mid-plan.
+
+### Verification
+`make test-unit` 70/70 binaries green. `test_initrd_dirs` 19/19,
+`test_boot_to_shell` 17/17, `test_shell_commands` 10/10, `test_tmpfs` 9/9,
+`test_initrd_dirs.sh` 8/8. `make iso` clean from `rm -rf build`.
+
 ## [Phase G13 — the VirGL hardware backend] 2026-08-01
 
 The last phase of `GL_PLAN.md`. The VirGL backend reaches a real virtio-gpu

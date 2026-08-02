@@ -14,9 +14,9 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 6
-il_send "run /hello"
+il_send "run hello"
 il_send_delay 2
-il_send "run /calc"
+il_send "run calc"
 il_send_delay 1
 il_send "1+1"
 il_send_delay 1

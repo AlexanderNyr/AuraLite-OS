@@ -195,7 +195,7 @@ blurry in the foreground and still aliased in the distance.
 
 **The fix is to tessellate large receding surfaces.** `/glcube`'s floor is
 split into a 16×16 grid for exactly this reason, and the comment in
-`userspace/glcube/glcube.c` says so. Tessellation is cheap; a per-fragment
+`userspace/demos/glcube/glcube.c` says so. Tessellation is cheap; a per-fragment
 derivative is not, in a rasterizer whose bottleneck is already arithmetic.
 
 Per-fragment LOD is possible by carrying `du/dx` through the edge functions
@@ -788,7 +788,7 @@ enough to hit the existing window.
    `USER_GL_APPS` — those link `libgl`, unlike ordinary user programs.
 3. Add a `cp` line to the initrd rule.
 4. Optionally add it to the `apps[]` table in
-   `userspace/gui-launcher/glaunch.c`.
+   `userspace/apps/gui-launcher/glaunch.c`.
 
 If the program needs a frame limit for CI, read it from a file under `/tmp`
 rather than from `argv`.

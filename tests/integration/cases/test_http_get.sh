@@ -61,7 +61,7 @@ sleep 0.5
 # client supports.
 
 il_send_delay 8                    # wait for full boot incl shell
-il_send "run /http"
+il_send "run http"
 il_send_delay 3                    # let the HTTP client print its banner
 il_send "10.0.2.2:$HTTP_PORT"      # primary attempt
 il_send_delay 6                    # give TCP roundtrip ample time

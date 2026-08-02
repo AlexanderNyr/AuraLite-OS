@@ -20,7 +20,7 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 8
-il_send "run /stackguard"
+il_send "run stackguard"
 il_send_delay 4
 il_send "echo STACKGUARD: shell alive after overflow"
 il_send_delay 1

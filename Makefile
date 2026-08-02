@@ -242,7 +242,8 @@ LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o $(USER_BUILD)/rwlock.o $(USER_BUILD)/
                    $(USER_BUILD)/utsname.o $(USER_BUILD)/resource.o \
                    $(USER_BUILD)/math_extra.o $(USER_BUILD)/stdio_extra.o \
                    $(USER_BUILD)/stdlib_extra.o $(USER_BUILD)/string_extra.o \
-                   $(USER_BUILD)/posix_extra.o $(USER_BUILD)/posix_spawn.o $(USER_BUILD)/q10_stubs.o
+                   $(USER_BUILD)/posix_extra.o $(USER_BUILD)/posix_spawn.o $(USER_BUILD)/q10_stubs.o \
+                   $(USER_BUILD)/progpath.o
 
 USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o \
                $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o $(USER_BUILD)/setjmp.o \
@@ -274,7 +275,8 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
-             $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf
+             $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
+             $(USER_BUILD)/insttest.elf
 
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
@@ -312,95 +314,99 @@ $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) $(USER_GUI_OBJ) libc/user.
 	@echo "[link] $@"
 
 # Compile rules for each application.
-$(USER_BUILD)/calc.o: userspace/calc/calc.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/calc.o: userspace/apps/calc/calc.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/sysinfo.o: userspace/sysinfo/sysinfo.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/sysinfo.o: userspace/apps/sysinfo/sysinfo.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/editor.o: userspace/editor/editor.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/editor.o: userspace/apps/editor/editor.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/http.o: userspace/http/http.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/http.o: userspace/apps/http/http.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/tcpserver.o: userspace/tcpserver/tcpserver.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/tcpserver.o: userspace/tests/tcpserver/tcpserver.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/elfperm.o: userspace/elfperm/elfperm.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/insttest.o: userspace/tests/insttest/insttest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/udptest.o: userspace/udptest/udptest.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/timestest.o: userspace/timestest/timestest.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/udptest.o: userspace/tests/udptest/udptest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/fifolinktest.o: userspace/fifolinktest/fifolinktest.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/timestest.o: userspace/tests/timestest/timestest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/stackguard.o: userspace/stackguard/stackguard.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/fifolinktest.o: userspace/tests/fifolinktest/fifolinktest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/clock.o: userspace/clock/clock.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/stackguard.o: userspace/tests/stackguard/stackguard.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/guess.o: userspace/guess/guess.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/clock.o: userspace/apps/clock/clock.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/snake.o: userspace/snake/snake.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/guess.o: userspace/demos/guess/guess.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/browser.o: userspace/browser/browser.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/snake.o: userspace/demos/snake/snake.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/selftest.o: userspace/selftest/selftest.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/browser.o: userspace/apps/browser/browser.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/proctest.o: userspace/proctest/proctest.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/selftest.o: userspace/tests/selftest/selftest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/fdtest.o: userspace/fdtest/fdtest.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/proctest.o: userspace/tests/proctest/proctest.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/p10test.o: userspace/p10test/p10test.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/fdtest.o: userspace/tests/fdtest/fdtest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/argv_echo.o: userspace/argv_echo/argv_echo.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/p10test.o: userspace/tests/p10test/p10test.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/execve_child.o: userspace/execve_child/execve_child.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/argv_echo.o: userspace/tests/argv_echo/argv_echo.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/apm.o: userspace/apm/apm.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/execve_child.o: userspace/tests/execve_child/execve_child.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/apm.o: userspace/apps/apm/apm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/matrix.o: userspace/matrix/matrix.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/matrix.o: userspace/demos/matrix/matrix.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/life.o: userspace/life/life.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/life.o: userspace/demos/life/life.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/fetch.o: userspace/fetch/fetch.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/fetch.o: userspace/demos/fetch/fetch.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/play.o: userspace/play/play.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/play.o: userspace/apps/play/play.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # ---- GUI applications and libauragui ----
@@ -518,17 +524,17 @@ $(USER_BUILD)/glshaderpipe.o: libgl/src/glshaderpipe.c libgl/src/glcontext.h \
 # ---- GL applications ----
 # /gltest reaches into libgl/src for glsl.h: it is libgl's own regression
 # suite, and the GLSL front end has no public entry point until phase G11c.
-$(USER_BUILD)/gltest.o: userspace/gltest/gltest.c libauragui/include/auragui.h \
+$(USER_BUILD)/gltest.o: userspace/tests/gltest/gltest.c libauragui/include/auragui.h \
                         libgl/src/glsl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -I libgl/src -c $< -o $@
 
-$(USER_BUILD)/glcube.o: userspace/glcube/glcube.c libauragui/include/auragui.h \
+$(USER_BUILD)/glcube.o: userspace/demos/glcube/glcube.c libauragui/include/auragui.h \
                         libgl/include/GL/gl.h libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glgears.o: userspace/glgears/glgears.c libauragui/include/auragui.h \
+$(USER_BUILD)/glgears.o: userspace/demos/glgears/glgears.c libauragui/include/auragui.h \
                          libgl/include/GL/gl.h libgl/include/GL/glu.h \
                          libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
@@ -543,36 +549,36 @@ $(USER_GL_APPS): $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) \
 	      $(USER_GL_OBJ) -o $@
 	@echo "[link] $@ (libgl)"
 
-$(USER_BUILD)/gcalc.o:   userspace/gui-calc/gcalc.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gcalc.o:   userspace/apps/gui-calc/gcalc.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gedit.o:   userspace/gui-edit/gedit.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gedit.o:   userspace/apps/gui-edit/gedit.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gfiles.o:  userspace/gui-files/gfiles.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gfiles.o:  userspace/apps/gui-files/gfiles.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gterm.o:   userspace/gui-term/gterm.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gterm.o:   userspace/apps/gui-term/gterm.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gsysmon.o: userspace/gui-sysmon/gsysmon.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gsysmon.o: userspace/apps/gui-sysmon/gsysmon.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gabout.o:  userspace/gui-about/gabout.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gabout.o:  userspace/apps/gui-about/gabout.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gtaskmgr.o: userspace/gui-taskmgr/gtaskmgr.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gtaskmgr.o: userspace/apps/gui-taskmgr/gtaskmgr.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/glaunch.o: userspace/gui-launcher/glaunch.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glaunch.o: userspace/apps/gui-launcher/glaunch.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gaudio.o: userspace/gui-audio/gaudio.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gaudio.o: userspace/apps/gui-audio/gaudio.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gbrowser.o: userspace/gui-browser/gbrowser.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gusb.o: userspace/gui-usb/gusb.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gtheme.o: userspace/gui-theme/theme.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/hello.o: userspace/hello/hello.c libc/include/unistd.h
+$(USER_BUILD)/hello.o: userspace/apps/hello/hello.c libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/init.o: userspace/init/init.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/init.o: userspace/system/init/init.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -798,49 +804,55 @@ vm-configs: vbox vmware
 
 # Build the initrd (USTAR tarball of userspace binaries).
 INITRD_DIR := $(USER_BUILD)/initrd_root
+# ---- The runtime filesystem layout (FSLAYOUT_PLAN phase F3) ----
+#
+#   /bin    core system programs
+#   /apps   applications
+#   /demos  demonstrations
+#   /tests  test programs
+#   /pkg    package archives (apm's sources)
+#   /opt    installed packages -- a tmpfs mount, not shipped here
+#
+# There are NO root-level aliases any more (phase F5).  Each program has
+# exactly one location, and a command is found by name through the search
+# path in libc/src/progpath.c.  The hard-link support the aliases needed is
+# kept in kernel/fs/initrd.c: it is tested, it costs nothing, and an image
+# that wants two names for one file can still have them.
+#
+# INIT_BIN is deliberately NOT aliased anywhere but /bin: the bootloader path
+# and the kernel's embedded copy are separate, and adding a second name for
+# the one program the kernel starts by itself would invite confusion.
+
+# name=source-basename pairs, grouped by destination directory.
+INITRD_BIN   := init hello apm play sysinfo
+INITRD_APPS  := calc editor http clock browser gcalc gedit gfiles gterm \
+                gsysmon gabout gtaskmgr glaunch gaudio gbrowser gusb
+INITRD_DEMOS := guess snake glcube glgears
+INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
+                gltest tcpserver elfperm udptest timestest fifolinktest \
+                stackguard insttest
+
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
-	@mkdir -p $(INITRD_DIR)
-	@cp $(INIT_ELF) $(INITRD_DIR)/init
-	@cp $(HELLO_ELF) $(INITRD_DIR)/hello
-	@cp $(USER_BUILD)/calc.elf $(INITRD_DIR)/calc
-	@cp $(USER_BUILD)/sysinfo.elf $(INITRD_DIR)/sysinfo
-	@cp $(USER_BUILD)/editor.elf $(INITRD_DIR)/editor
-	@cp $(USER_BUILD)/http.elf $(INITRD_DIR)/http
-	@cp $(USER_BUILD)/clock.elf $(INITRD_DIR)/clock
-	@cp $(USER_BUILD)/guess.elf $(INITRD_DIR)/guess
-	@cp $(USER_BUILD)/snake.elf $(INITRD_DIR)/snake
-	@cp $(USER_BUILD)/browser.elf $(INITRD_DIR)/browser
-	@cp $(USER_BUILD)/selftest.elf $(INITRD_DIR)/selftest
-	@cp $(USER_BUILD)/proctest.elf $(INITRD_DIR)/proctest
-	@cp $(USER_BUILD)/fdtest.elf   $(INITRD_DIR)/fdtest
-	@cp $(USER_BUILD)/p10test.elf  $(INITRD_DIR)/p10test
-	@cp $(USER_BUILD)/argv_echo.elf $(INITRD_DIR)/argv_echo
-	@cp $(USER_BUILD)/execve_child.elf $(INITRD_DIR)/execve_child
-	@cp $(USER_BUILD)/gltest.elf  $(INITRD_DIR)/gltest
-	@cp $(USER_BUILD)/glcube.elf  $(INITRD_DIR)/glcube
-	@cp $(USER_BUILD)/glgears.elf $(INITRD_DIR)/glgears
-	@cp $(USER_BUILD)/gcalc.elf   $(INITRD_DIR)/gcalc
-	@cp $(USER_BUILD)/gedit.elf   $(INITRD_DIR)/gedit
-	@cp $(USER_BUILD)/gfiles.elf  $(INITRD_DIR)/gfiles
-	@cp $(USER_BUILD)/gterm.elf   $(INITRD_DIR)/gterm
-	@cp $(USER_BUILD)/gsysmon.elf $(INITRD_DIR)/gsysmon
-	@cp $(USER_BUILD)/gabout.elf  $(INITRD_DIR)/gabout
-	@cp $(USER_BUILD)/gtaskmgr.elf $(INITRD_DIR)/gtaskmgr
-	@cp $(USER_BUILD)/glaunch.elf $(INITRD_DIR)/glaunch
-	@cp $(USER_BUILD)/apm.elf     $(INITRD_DIR)/apm
-	@cp $(USER_BUILD)/matrix.elf  $(INITRD_DIR)/matrix.pkg
-	@cp $(USER_BUILD)/life.elf    $(INITRD_DIR)/life.pkg
-	@cp $(USER_BUILD)/fetch.elf   $(INITRD_DIR)/fetch.pkg
-	@cp $(USER_BUILD)/play.elf    $(INITRD_DIR)/play
-	@cp $(USER_BUILD)/gaudio.elf  $(INITRD_DIR)/gaudio
-	@cp $(USER_BUILD)/gbrowser.elf $(INITRD_DIR)/gbrowser
-	@cp $(USER_BUILD)/gusb.elf    $(INITRD_DIR)/gusb
-	@cp $(USER_BUILD)/tcpserver.elf $(INITRD_DIR)/tcpserver
-	@cp $(USER_BUILD)/elfperm.elf $(INITRD_DIR)/elfperm
-	@cp $(USER_BUILD)/udptest.elf $(INITRD_DIR)/udptest
-	@cp $(USER_BUILD)/timestest.elf $(INITRD_DIR)/timestest
-	@cp $(USER_BUILD)/fifolinktest.elf $(INITRD_DIR)/fifolinktest
-	@cp $(USER_BUILD)/stackguard.elf $(INITRD_DIR)/stackguard
+	@rm -rf $(INITRD_DIR)
+	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
+	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
+	@cp $(INIT_ELF) $(INITRD_DIR)/bin/init
+	@cp $(HELLO_ELF) $(INITRD_DIR)/bin/hello
+	@for p in apm play sysinfo; do \
+	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/bin/$$p; done
+	@for p in $(INITRD_APPS); do \
+	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/apps/$$p; done
+	@for p in $(INITRD_DEMOS); do \
+	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/demos/$$p; done
+	@for p in $(INITRD_TESTS); do \
+	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/tests/$$p; done
+# Package archives apm installs from.  They keep their .pkg suffix and their
+# root-level names, because apm names them in its repository table.
+	@cp $(USER_BUILD)/matrix.elf $(INITRD_DIR)/pkg/matrix.pkg
+	@cp $(USER_BUILD)/life.elf   $(INITRD_DIR)/pkg/life.pkg
+	@cp $(USER_BUILD)/fetch.elf  $(INITRD_DIR)/pkg/fetch.pkg
+	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
+	    > $(INITRD_DIR)/etc/motd
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
@@ -864,6 +876,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glslexec $(BUILD_DIR)/test_glprog \
                 $(BUILD_DIR)/test_glcoexist $(BUILD_DIR)/test_glvirgl \
                 $(BUILD_DIR)/test_gpu_syscall \
+                $(BUILD_DIR)/test_initrd_dirs \
+                $(BUILD_DIR)/test_execpolicy \
+                $(BUILD_DIR)/test_progpath \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -1165,6 +1180,28 @@ $(BUILD_DIR)/test_wm: tests/unit/test_wm.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 # ---- New unit tests (Phase 15+) ----
+
+# The search path is tested with a stub filesystem, so the search ORDER is
+# observable — the real filesystem only shows which lookup happened to win.
+$(BUILD_DIR)/test_progpath: tests/unit/test_progpath.c libc/src/progpath.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# The installation allowlist is a security predicate, so the test compiles the
+# shipping source rather than a copy.
+$(BUILD_DIR)/test_execpolicy: tests/unit/test_execpolicy.c \
+                              kernel/fs/execpolicy.c kernel/fs/execpolicy.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_execpolicy.c kernel/fs/execpolicy.c -o $@
+
+# The initrd directory view is derived from a flat file table, so it is tested
+# against the real parser rather than a reimplementation.
+$(BUILD_DIR)/test_initrd_dirs: tests/unit/test_initrd_dirs.c kernel/fs/initrd.c \
+                               kernel/fs/initrd.h kernel/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_initrd_dirs.c kernel/fs/initrd.c -o $@
 
 $(BUILD_DIR)/test_vfs: tests/unit/test_vfs.c
 	@mkdir -p $(BUILD_DIR)

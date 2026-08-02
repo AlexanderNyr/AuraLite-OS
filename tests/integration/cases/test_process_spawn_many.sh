@@ -17,17 +17,17 @@ trap il_dump_on_error EXIT
 il_send_delay 6
 
 # Run several programs in sequence
-il_send "run /hello"
+il_send "run hello"
 il_send_delay 2
-il_send "run /hello"
+il_send "run hello"
 il_send_delay 2
-il_send "run /hello"
+il_send "run hello"
 il_send_delay 2
 
 # Run different programs
-il_send "run /sysinfo"
+il_send "run sysinfo"
 il_send_delay 3
-il_send "run /clock"
+il_send "run clock"
 il_send_delay 2
 il_send "exit"
 

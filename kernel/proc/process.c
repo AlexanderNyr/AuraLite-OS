@@ -727,7 +727,7 @@ int64_t process_spawn(const char *path) {
 void process_self_test(void) {
     kprintf("[proc] self-test: spawning /hello in isolated address space...\n");
 
-    int64_t pid = process_spawn("/hello");
+    int64_t pid = process_spawn("/bin/hello");
     if (pid < 0) {
         kprintf("[proc] FAIL: spawn failed\n");
         return;
@@ -745,7 +745,7 @@ void process_self_test(void) {
      * Doing this here (kernel boot, no interactive shell yet) avoids racing on
      * the per-thread SYSCALL save area that a shell-launched fork+execve would. */
     kprintf("[proc] self-test: execve argv/envp via /execve_child...\n");
-    int64_t epid = process_spawn("/execve_child");
+    int64_t epid = process_spawn("/tests/execve_child");
     if (epid < 0) {
         kprintf("[proc] FAIL: spawn /execve_child failed\n");
         return;

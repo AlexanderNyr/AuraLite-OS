@@ -60,7 +60,7 @@ void sched_idle(void);
  * increase, exactly like Linux's /proc/stat jiffie counters: callers that
  * want a percentage should sample both values twice, a short interval
  * apart, and compute busy-delta / total-delta themselves (see
- * userspace/gui-sysmon/gsysmon.c for a worked example). This avoids baking
+ * userspace/apps/gui-sysmon/gsysmon.c for a worked example). This avoids baking
  * an arbitrary sampling window into the kernel.
  */
 uint64_t sched_get_total_ticks(void);

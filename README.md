@@ -342,7 +342,11 @@ AuraLite-OS/
 ├── tests/unit/               # Host-side unit tests
 ├── tests/integration/        # QEMU black-box integration tests
 ├── tools/                    # ISO/initrd/VM/QEMU helper scripts
-├── userspace/                # init shell and user programs
+├── userspace/                # user programs, grouped (see each README.md)
+│   ├── system/               #   init — started by the kernel itself
+│   ├── apps/                 #   applications
+│   ├── demos/                #   demonstrations
+│   └── tests/                #   in-OS test programs
 ├── kernel.ld                 # Kernel linker script
 ├── Makefile                  # Build system
 └── README.md
@@ -354,30 +358,44 @@ AuraLite-OS/
 
 The initrd currently packages:
 
+Programs live in directories by kind, one location each — `/calc` does not
+exist, but `calc`, `run calc` and `/apps/calc` all work. See
+`docs/filesystem.md`.
+
 | Path | Purpose |
 |---|---|
-| `/init` | Interactive shell. |
-| `/hello` | Hello-world test program. |
-| `/calc` | Calculator. |
-| `/sysinfo` | System information. |
-| `/editor` | Simple line editor. |
-| `/clock` | Clock/uptime demo. |
-| `/guess` | Number guessing game. |
-| `/snake` | Terminal snake game. |
-| `/http` | HTTP client. |
-| `/browser` | Text web browser with simple HTML rendering. |
-| `/selftest` | Userspace regression checks for usercopy, FD and socket syscalls. |
-| `/gcalc` | Graphical calculator. |
-| `/gedit` | Graphical text editor. |
-| `/gfiles` | Graphical file manager. |
-| `/gterm` | Graphical terminal-style demo. |
-| `/gsysmon` | Graphical system monitor demo. |
-| `/gabout` | Graphical about dialog. |
-| `/glaunch` | GUI application launcher. |
-| `/gtheme` | GUI Theme Manager. |
-| `/gltest` | OpenGL regression checks (prints PASS/FAIL to serial). |
-| `/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube over a mipmapped floor, with a render-to-texture inset panel. |
-| `/glgears` | OpenGL demo: the classic three-gear benchmark. |
+| `/bin/init` | Interactive shell. |
+| `/bin/hello` | Hello-world test program. |
+| `/bin/apm` | Package manager; installs into `/opt`. |
+| `/bin/play` | CLI audio player. |
+| `/bin/sysinfo` | System information. |
+| `/apps/calc` | Calculator. |
+| `/apps/editor` | Simple line editor. |
+| `/apps/clock` | Clock/uptime demo. |
+| `/apps/http` | HTTP client. |
+| `/apps/browser` | Text web browser with simple HTML rendering. |
+| `/apps/gcalc` | Graphical calculator. |
+| `/apps/gedit` | Graphical text editor. |
+| `/apps/gfiles` | Graphical file manager. |
+| `/apps/gterm` | Graphical terminal-style demo. |
+| `/apps/gsysmon` | Graphical system monitor demo. |
+| `/apps/gabout` | Graphical about dialog. |
+| `/apps/gtaskmgr` | Graphical task manager. |
+| `/apps/glaunch` | GUI application launcher. |
+| `/apps/gaudio` | GUI music player. |
+| `/apps/gbrowser` | GUI web browser. |
+| `/apps/gusb` | GUI USB manager. |
+| `/demos/guess` | Number guessing game. |
+| `/demos/snake` | Terminal snake game. |
+| `/demos/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube over a mipmapped floor, with a render-to-texture inset panel. |
+| `/demos/glgears` | OpenGL demo: the classic three-gear benchmark. |
+| `/tests/selftest` | Userspace regression checks for usercopy, FD and socket syscalls. |
+| `/tests/gltest` | OpenGL regression checks (prints PASS/FAIL to serial). |
+| `/tests/insttest` | Installation-policy checks. |
+| `/pkg/*.pkg` | Package archives `apm` installs from. |
+
+A command can be given by name — `run calc` — and is looked for in
+`/bin:/apps:/demos:/tests:/opt:/`.
 
 Common shell commands:
 
@@ -388,8 +406,8 @@ cat /hello
 echo hello
 write /tmp/note hello
 cat /tmp/note
-run /calc
-run /sysinfo
+run calc
+run /apps/calc
 nslookup example.com
 ping example.com
 gui

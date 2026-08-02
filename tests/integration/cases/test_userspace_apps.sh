@@ -16,17 +16,17 @@ trap il_dump_on_error EXIT
 il_send_delay 6
 
 # hello
-il_send "run /hello"
+il_send "run hello"
 il_send_delay 2
 
 # sysinfo
-il_send "run /sysinfo"
+il_send "run sysinfo"
 il_send_delay 2
 il_send "exit"
 il_send_delay 1
 
 # calc
-il_send "run /calc"
+il_send "run calc"
 il_send_delay 1
 il_send "2+3*4"
 il_send_delay 1
@@ -36,7 +36,7 @@ il_send "exit"
 il_send_delay 1
 
 # guess
-il_send "run /guess"
+il_send "run guess"
 il_send_delay 2
 il_send "50"
 il_send_delay 1

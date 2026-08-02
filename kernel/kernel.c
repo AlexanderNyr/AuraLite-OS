@@ -274,9 +274,23 @@ void kmain(boot_info_t *boot_info) {
     /* Mount procfs at "/proc". */
     procfs_init();
 
-    /* Mount writable tmpfs at "/tmp". */
+    /* Mount writable tmpfs at "/tmp", and a second volume at "/opt".
+     *
+     * /opt is where installed packages go (FSLAYOUT_PLAN phase F1).  It is a
+     * separate volume, not a directory inside /tmp, so that scratch traffic
+     * cannot crowd out an installed program.
+     *
+     * It is in-memory, so it does NOT survive a reboot.  The plan asks for a
+     * location that persists; making that true needs a writable disk that is
+     * present on every boot, and the persistent filesystems here mount only
+     * when their device exists.  Shipping /opt as tmpfs now means apm stops
+     * installing into a directory whose whole purpose is to be wiped, which
+     * is the defect that mattered; the durability is a separate change with a
+     * separate dependency, and it is recorded in TODO.md rather than
+     * pretended away. */
     tmpfs_init();
-    vfs_mount("/tmp", &tmpfs_ops, NULL);
+    vfs_mount("/tmp", &tmpfs_ops, tmpfs_volume_tmp());
+    vfs_mount("/opt", &optfs_ops, tmpfs_volume_opt());
     tmpfs_self_test();
 
     /* Mount usbfs at "/usb". It shows the active hotplug USB mass-storage device. */

@@ -17,7 +17,7 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 il_send_delay 8
-il_send "run /gusb"
+il_send "run gusb"
 
 il_run_qemu "$LOG" 35 \
     -device "qemu-xhci,id=xhci" \

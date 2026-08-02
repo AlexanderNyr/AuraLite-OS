@@ -17,7 +17,7 @@
 
 int main(void) {
     static char *argv[] = {
-        "/argv_echo",
+        "/tests/argv_echo",
         "alpha",
         "beta gamma",   /* embedded space: must survive as one argv entry */
         "42",
@@ -32,7 +32,7 @@ int main(void) {
     printf("EXECVE_CHILD calling execve(/argv_echo, argv, envp)\n");
     fflush(stdout);
 
-    execve("/argv_echo", argv, envp);
+    execve("/tests/argv_echo", argv, envp);
 
     /* Only reached on failure. */
     printf("EXECVE_CHILD execve FAILED\n");

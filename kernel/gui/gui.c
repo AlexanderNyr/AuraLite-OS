@@ -1301,17 +1301,25 @@ typedef struct gui_app_entry {
     int icon_id;
 } gui_app_entry_t;
 
+/* Paths are absolute and canonical (FSLAYOUT_PLAN F3/F5).
+ *
+ * These held root-level names until F5 removed the compatibility aliases.
+ * The kernel cannot use libc's prog_resolve() the way userspace does, so
+ * these stay literal — which makes them the one place in the system where a
+ * layout change must be applied by hand.  Nothing clicks these menu entries
+ * in any test, so a stale path here is a menu item that silently does
+ * nothing.  They were found by grep, not by a failure. */
 static const gui_app_entry_t gui_apps[] = {
-    { "Calculator",      "/gcalc",    4 },
-    { "Text Editor",     "/gedit",    3 },
-    { "File Manager",    "/gfiles",   2 },
-    { "Terminal",        "/gterm",    1 },
-    { "System Monitor",  "/gsysmon",  5 },
-    { "Task Manager",    "/gtaskmgr", 7 },
-    { "Music Player",    "/gaudio",   8 },
-    { "Web Browser",     "/gbrowser", 9 },
-    { "USB Manager",     "/gusb",     10 },
-    { "About",           "/gabout",   6 },
+    { "Calculator",      "/apps/gcalc",    4 },
+    { "Text Editor",     "/apps/gedit",    3 },
+    { "File Manager",    "/apps/gfiles",   2 },
+    { "Terminal",        "/apps/gterm",    1 },
+    { "System Monitor",  "/apps/gsysmon",  5 },
+    { "Task Manager",    "/apps/gtaskmgr", 7 },
+    { "Music Player",    "/apps/gaudio",   8 },
+    { "Web Browser",     "/apps/gbrowser", 9 },
+    { "USB Manager",     "/apps/gusb",     10 },
+    { "About",           "/apps/gabout",   6 },
 };
 
 #define GUI_START_MENU_W 180u

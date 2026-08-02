@@ -21,7 +21,7 @@ il_send_delay 12
 il_send "sleep 5 &"
 il_send "jobs"
 il_send_delay 3
-il_send "run /selftest"
+il_send "run selftest"
 il_send_delay 5
 il_send "exit"
 

@@ -200,6 +200,16 @@ static int copy_user_path(char *dst, uint64_t user_path) {
  * sees a meaningful errno instead of a raw -1.  A return that is already a
  * proper negative errno (in the reserved band) is passed through unchanged.
  *
+ * TRAP: EPERM IS 1, SO -EPERM IS -1
+ *
+ * This function cannot distinguish "operation not permitted" from the generic
+ * failure sentinel, and will replace the former with @fallback.  Any caller
+ * whose callee can return -EPERM must NOT be wrapped — return the value
+ * directly.  This cost real debugging time when the installation policy
+ * (FSLAYOUT_PLAN F1) started returning EPERM from vfs_open() and userspace
+ * saw ENOENT, which reads as "no such file" for a file the caller was in the
+ * middle of creating.
+ *
  * @ret      kernel return value (>= 0 success, < 0 failure)
  * @fallback positive errno to use when @ret is the generic -1
  * Returns @ret on success, or a negative errno on failure.
@@ -748,11 +758,24 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)syscall_vfs_read(fd, user_buf, a3);
     }
     case SYS_OPEN: {
-        /* a1 = path, a2 = flags, a3 = mode.  vfs_open already returns specific
-         * errno values; vfs_errno() is an idempotent safety net. */
+        /* a1 = path, a2 = flags, a3 = mode.
+         *
+         * The result is returned WITHOUT vfs_errno(), and that is deliberate.
+         *
+         * vfs_errno() substitutes a fallback errno for a generic -1.  EPERM
+         * is 1, so -EPERM IS -1: routing vfs_open() through vfs_errno() turns
+         * every "operation not permitted" into ENOENT.  The comment that used
+         * to sit here called vfs_errno() "an idempotent safety net"; it is
+         * idempotent for every errno except the one whose value collides with
+         * the sentinel, and that went unnoticed because nothing in vfs_open()
+         * returned EPERM until the installation policy did.
+         *
+         * The substitution is unnecessary anyway: every failure path in
+         * vfs_open() returns a specific negative errno.  There is no generic
+         * -1 left for a fallback to rescue. */
         char path[SYSCALL_PATH_MAX];
         if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
-        return (uint64_t)vfs_errno(vfs_open(path, (int)a2, (int)a3), ENOENT);
+        return (uint64_t)vfs_open(path, (int)a2, (int)a3);
     }
     case SYS_CLOSE:
         return (uint64_t)vfs_errno(vfs_close((int)a1), EBADF);
@@ -1536,8 +1559,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         int dirfd = (int)a1;
         char path[256];
         if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        /* No vfs_errno() — see SYS_OPEN: it would turn EPERM into ENOENT. */
         if (dirfd == -100 || path[0] == '/')
-            return (uint64_t)vfs_errno(vfs_open(path, (int)a3, (int)a4), ENOENT);
+            return (uint64_t)vfs_open(path, (int)a3, (int)a4);
         return (uint64_t)-ENOSYS;
     }
     case 258: { /* SYS_MKDIRAT */

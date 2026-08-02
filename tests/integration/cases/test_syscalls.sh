@@ -25,7 +25,7 @@ il_send "exit"            # exit(0)
 
 il_run_qemu "$LOG" 20
 
-il_assert_grep "$LOG" "/init"                       "listdir syscall"
+il_assert_grep "$LOG" "bin/"                            "listdir syscall (root now lists directories)"
 il_assert_grep "$LOG" "\x7fELF|ELF"                 "open+read returned ELF magic from /hello"
 il_assert_grep "$LOG" "auralite#"                   "shell read serial input ok"
 

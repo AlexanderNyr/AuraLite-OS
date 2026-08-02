@@ -280,6 +280,11 @@ int vfs_truncate(const char *path, uint64_t new_size);
 int vfs_stat(const char *path, struct vfs_stat *out);
 int vfs_mkfifo(const char *path, uint32_t mode);
 
+/* Reconstruct an absolute path for a vnode from its mount and relative name.
+ * Returns 0 on success, -1 if the mount cannot be identified or it does not
+ * fit.  A -1 means "unknown" — never treat it as the root. */
+int vfs_vnode_path(const struct vnode *vn, char *out, size_t out_len);
+
 /* readdir: pass a path; entries are written into out[].  Returns count or -1. */
 int vfs_readdir(const char *path, struct vfs_dirent *out, int max);
 

@@ -30,7 +30,7 @@ trap il_dump_on_error EXIT
 
 # Boot + run selftest (which includes H2 memory reaping test).
 il_send_delay 8
-il_send "run /selftest"
+il_send "run selftest"
 il_send_delay 12
 il_send "exit"
 
@@ -43,19 +43,19 @@ il_assert_grep "$LOG" "\[heap\] PASS:" "heap self-test passes"
 
 # User process reaping: the proc self-test spawns /hello and /execve_child
 # during boot; both are reaped before the shell becomes interactive.
-# The kernel log must contain "[thread] reaped '/hello'" with a non-zero
+# The kernel log must contain "[thread] reaped '/bin/hello'" with a non-zero
 # frame count — confirming that paging_free_address_space() runs.
-il_assert_grep "$LOG" "\[thread\] reaped '/hello' .*, [0-9]* frames)" \
+il_assert_grep "$LOG" "\[thread\] reaped '/bin/hello' .*, [0-9]* frames)" \
     "at least one /hello reaped with non-zero frame count"
 
-il_assert_grep "$LOG" "\[thread\] reaped '/execve_child' .*, [0-9]* frames)" \
+il_assert_grep "$LOG" "\[thread\] reaped '/tests/execve_child' .*, [0-9]* frames)" \
     "at least one /execve_child reaped with non-zero frame count"
 
 # Parse the /hello reaped frame count and assert it is in a reasonable range.
 # A minimal ELF (~60 KiB) needs at minimum:
 #   1 PML4 + 1 PDPT + 1 PD + 1 PT + ~15 data pages ≈ 20 frames.
 # Anything less than 5 frames would indicate broken reaping.
-reaped=$(grep "\[thread\] reaped '/hello'" "$LOG" | head -1 | \
+reaped=$(grep "\[thread\] reaped '/bin/hello'" "$LOG" | head -1 | \
          sed 's/.*(tid [0-9]*, \([0-9]*\) frames).*/\1/')
 if [ -n "$reaped" ] && [ "$reaped" -gt 0 ] 2>/dev/null; then
     echo "INFO: reaped frames per /hello: $reaped"
