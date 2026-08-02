@@ -14,6 +14,13 @@
  * The shipping source is compiled in, with open()/close() replaced by a stub
  * that answers from a list of "files that exist". That makes the search order
  * observable, which the real filesystem does not.
+ *
+ * progpath.c includes "unistd.h" and "fcntl.h" meaning AURALITE's headers.
+ * tests/unit/pathstub/ supplies host stand-ins for them and is placed ahead of
+ * the system include path, so this test never sees glibc's declarations. It
+ * used to, and got away with it until a CI machine with _FORTIFY_SOURCE
+ * enabled turned glibc's open() into an inline definition that collided with
+ * the stub below.
  */
 
 #include <stdio.h>
@@ -39,10 +46,12 @@ static void fs_add(const char *path) {
     if (existing_count < MAX_EXIST) existing[existing_count++] = path;
 }
 
-/* The stubs the compiled-in source will call. */
-int open(const char *path, int flags, ...);
-int close(int fd);
-
+/* The stubs the compiled-in source will call.  They are DEFINED here and
+ * DECLARED by tests/unit/pathstub/unistd.h, which the include path puts ahead
+ * of glibc's — see that directory's fcntl.h for why.  Declaring them here as
+ * well would collide with glibc's fortified inline open() on any machine
+ * where _FORTIFY_SOURCE is on by default, which is exactly how this test
+ * broke in CI while passing locally. */
 int open(const char *path, int flags, ...) {
     (void)flags;
     if (probe_count < MAX_PROBES) {

@@ -1183,9 +1183,24 @@ $(BUILD_DIR)/test_wm: tests/unit/test_wm.c
 
 # The search path is tested with a stub filesystem, so the search ORDER is
 # observable — the real filesystem only shows which lookup happened to win.
-$(BUILD_DIR)/test_progpath: tests/unit/test_progpath.c libc/src/progpath.c
+# -I tests/unit/pathstub comes FIRST and is not optional: progpath.c includes
+# "unistd.h" and "fcntl.h" meaning AuraLite's headers, and with only -I . those
+# resolved to glibc's.  That worked until a CI machine with _FORTIFY_SOURCE on
+# by default made glibc's open() an inline definition, which collided with the
+# test's stub.  The stub directory keeps the include path under the test's
+# control instead of the distribution's default flags.
+#
+# Only unistd.h and fcntl.h are stubbed.  There is deliberately no string.h
+# stub: -I directories are searched for <angle> includes too, so one would
+# also shadow the real <string.h> that the TEST needs for strcmp/snprintf.
+# progpath.c's include of "string.h" therefore reaches glibc's, which is
+# harmless -- it uses nothing from it.
+$(BUILD_DIR)/test_progpath: tests/unit/test_progpath.c libc/src/progpath.c \
+                            tests/unit/pathstub/unistd.h \
+                            tests/unit/pathstub/fcntl.h
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I tests/unit/pathstub -I . $< -o $@
 
 # The installation allowlist is a security predicate, so the test compiles the
 # shipping source rather than a copy.

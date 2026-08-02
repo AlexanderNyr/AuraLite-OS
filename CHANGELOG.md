@@ -2,6 +2,43 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Fix — test_progpath was compiled against glibc's headers] 2026-08-02
+
+`make test-unit` failed in CI with a redefinition of `open()`, on a machine
+where `_FORTIFY_SOURCE` is enabled by default. It passed locally, where it is
+not.
+
+### The actual fault
+Not the collision — the include path. `libc/src/progpath.c` is AuraLite code,
+so its `#include "unistd.h"` and `#include "fcntl.h"` mean **AuraLite's**
+headers. Compiled with only `-I .`, both resolved to **glibc's**. That was
+wrong the day it was written and merely happened to work: under fortification
+glibc defines `open()` as an inline function, which then collided with the
+test's own stub.
+
+Whether a test of AuraLite code builds should not depend on the host
+distribution's default flags.
+
+### Fixed
+- `tests/unit/pathstub/` — host stand-ins for `unistd.h` and `fcntl.h`,
+  placed **ahead** of the system include path, declaring exactly what
+  `progpath.c` calls with signatures matching `libc/include/unistd.h`. Drift
+  between the two is now a compile error rather than a silent difference.
+- The test no longer re-declares `open()`/`close()`; it only defines them.
+
+There is deliberately **no `string.h` stub**: `-I` directories are searched
+for `<angle>` includes too, so one would also shadow the real `<string.h>`
+that the test itself needs for `strcmp`/`snprintf`. That was tried, and it
+broke the build in a second way before being backed out.
+
+### Verification
+Reproduced the CI failure locally with `-D_FORTIFY_SOURCE=2`, confirmed the
+pre-fix command still fails and the fixed one passes at `=2`, `=3` and unset.
+Full `make test-unit` from `rm -rf build`: **50 suites green, 0 failed** — and
+again with `HOST_CC="cc -D_FORTIFY_SOURCE=2"`, i.e. the CI configuration.
+`test_initrd_dirs` and `test_execpolicy` were checked for the same latent
+fault; neither has it.
+
 ## [Phase F5 — the compatibility aliases are gone] 2026-08-01
 
 Every program now has exactly one location. `ls /` shows six directories and
