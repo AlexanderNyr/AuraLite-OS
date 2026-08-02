@@ -203,6 +203,39 @@ dropping the aliases would have left every canonical path dangling.
 
 ---
 
+## Installing third-party software
+
+An application built outside this repository reaches a running machine like
+this (`SDK_PLAN.md`):
+
+```
+make sdk                       # once, in the OS tree
+cc  -I $SDK/include  -c myapp.c        # against the SDK only
+ld.lld -T $SDK/user.ld ... -o myapp.elf
+build/mkapkg -n myapp -v 1.0 -o myapp.apkg myapp.elf
+# write myapp.apkg onto a FAT32 volume, attach it, then in the OS:
+apm install /fat/MYAPP.APKG            # verified, unpacked into /opt
+run myapp
+```
+
+### The FAT32 volume must start at LBA 64
+
+`kernel/fs/fat32.c` looks for a FAT32 signature at **LBA 64** and formats the
+disk if it does not find one. A plain `mformat -i disk.img` writes its boot
+sector at LBA 0, so the kernel sees an unformatted disk and **wipes it** —
+silently, taking the package with it.
+
+```sh
+dd if=/dev/zero of=disk.img bs=1M count=32
+mformat -i disk.img@@32768 -F -v AURALHCI ::   # @@32768 = 64 * 512
+mcopy   -i disk.img@@32768 myapp.apkg ::MYAPP.APKG
+```
+
+This is a real trap and it cost a debugging cycle to find, so it is written
+down rather than left to be rediscovered.
+
+---
+
 ## Tests
 
 | Test | Covers |
@@ -214,6 +247,7 @@ dropping the aliases would have left every canonical path dangling.
 | `tests/unit/test_progpath.c` | the search order and the path joining, against a stub filesystem |
 | `tests/integration/cases/test_search_path.sh` | resolution by name on a running kernel — passed unmodified across the F3 move |
 | `tests/integration/cases/test_runtime_layout.sh` | the directories, a program at its new path, and that the old root paths no longer resolve |
+| `tests/integration/cases/test_external_install.sh` | the whole third-party route: build against the SDK, package, write to FAT32, install, run |
 
 The unit test compiles `kernel/fs/initrd.c` itself rather than a copy, so it
 cannot drift from the shipping parser.

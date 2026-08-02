@@ -1,7 +1,7 @@
 #ifndef AURALITE_LIBC_PWD_H
 #define AURALITE_LIBC_PWD_H
 
-#include "libc/include/sys/types.h"
+#include "sys/types.h"
 
 struct passwd {
     char   *pw_name;    /* user name      */

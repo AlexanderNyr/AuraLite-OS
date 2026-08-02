@@ -26,7 +26,7 @@ il_run_qemu "$LOG" 35 \
     -device "usb-storage,bus=uhci.0,drive=gusbstick"
 
 il_assert_grep "$LOG" "\[usbfs\] device available at /usb" "usbfs media available"
-il_assert_grep "$LOG" "running /gusb" "shell launched USB GUI app"
+il_assert_grep "$LOG" "running /apps/gusb" "shell launched USB GUI app"
 il_assert_grep "$LOG" "\[gusb\] usb info loaded" "USB Manager loaded /usb info"
 il_assert_grep "$LOG" "\[elf\].*entry" "GUI app ELF loaded"
 il_assert_no_grep "$LOG" "Page Fault|kernel panic|run: failed|\[gusb\] /usb unavailable" \

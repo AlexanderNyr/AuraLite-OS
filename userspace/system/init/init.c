@@ -294,7 +294,18 @@ static void report_not_found(const char *name) {
     fflush(stdout);
 }
 
-static void cmd_run(const char *prog) {
+/* Run a program, optionally with arguments.
+ *
+ * @argv is NULL-terminated and conventionally starts with the program name,
+ * or NULL for no arguments at all.  Before SDK_PLAN phase S3 there was no way
+ * to pass any: the convention was to write them to a file the child agreed to
+ * read (/tmp/apm.args and friends). */
+static void cmd_run_argv(const char *prog, char *const argv[]);
+
+/* No-argument form, for the call sites that have nothing to pass. */
+static void cmd_run(const char *prog) { cmd_run_argv(prog, 0); }
+
+static void cmd_run_argv(const char *prog, char *const argv[]) {
     if (!prog) {
         puts("run: missing program name");
         return;
@@ -307,7 +318,7 @@ static void cmd_run(const char *prog) {
     prog = resolved;
     printf("running %s in isolated address space...\n", prog);
     fflush(stdout);
-    pid_t pid = spawn(prog);
+    pid_t pid = argv ? spawnv(prog, argv) : spawn(prog);
     if (pid < 0) {
         printf("run: failed to spawn %s\n", prog);
         fflush(stdout);
@@ -475,30 +486,33 @@ static void cmd_touch(const char *path) {
 }
 
 static void cmd_apm(int argc, char **argv) {
-    if (argc > 1) {
-        int fd = open("/tmp/apm.args", O_CREAT | O_WRONLY | O_TRUNC, 0644);
-        if (fd >= 0) {
-            for (int i = 1; i < argc; i++) {
-                if (i > 1) write(fd, " ", 1);
-                write(fd, argv[i], strlen(argv[i]));
-            }
-            close(fd);
-        }
-    }
-    printf("[shell] starting apm...\n");
-    /* Resolved by name, not hardcoded: F5 removed the root-level aliases,
-     * so "/apm" no longer exists. */
+    /* Arguments are forwarded as arguments (SDK_PLAN phase S3).
+     *
+     * This used to write the command line to /tmp/apm.args for apm to read
+     * and delete, because spawn() could not carry argv.  Two shells running
+     * apm at once would have raced on that file. */
     char apm_path[128];
     if (!prog_resolve("apm", apm_path, (int)sizeof(apm_path))) {
         puts("apm: not found");
         return;
     }
-    pid_t pid = spawn(apm_path);
+
+    char *av[MAX_ARGS + 1];
+    int n = 0;
+    av[n++] = (char *)"apm";
+    for (int i = 1; i < argc && n < MAX_ARGS; i++) av[n++] = argv[i];
+    av[n] = 0;
+
+    printf("[shell] starting apm...\n");
+    fflush(stdout);
+    pid_t pid = spawnv(apm_path, av);
     if (pid < 0) {
         printf("apm: failed to launch %s\n", apm_path);
+        fflush(stdout);
         return;
     }
-    wait(NULL);
+    int status = 0;
+    waitpid(pid, &status, 0);
 }
 
 /* ---- Shell main loop ---- */
@@ -594,7 +608,13 @@ do_dispatch:
     } else if (strcmp(cmd, "ping") == 0) {
         cmd_ping(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "run") == 0) {
-        cmd_run(argc > 1 ? cmd_argv[1] : 0);
+        if (argc > 1) {
+            /* Forward everything after the program name.  argv[0] is the
+             * program, as the convention everywhere else expects. */
+            cmd_run_argv(cmd_argv[1], &cmd_argv[1]);
+        } else {
+            cmd_run(0);
+        }
     } else if (strcmp(cmd, "ps") == 0) {
         cmd_ps();
     } else if (strcmp(cmd, "mkdir") == 0) {
@@ -640,7 +660,7 @@ do_dispatch:
          * well as `run calc`. */
         char resolved[128];
         if (prog_resolve(cmd, resolved, (int)sizeof(resolved))) {
-            cmd_run(cmd);
+            cmd_run_argv(cmd, cmd_argv);
         } else {
             printf("%s: command not found\n", cmd);
         }

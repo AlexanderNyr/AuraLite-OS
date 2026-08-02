@@ -30,6 +30,13 @@ int64_t do_wait4(int64_t *exit_code);
  */
 int64_t process_spawn(const char *path);
 
+/* Spawn with arguments (SDK_PLAN phase S3).
+ *
+ * @user_argv is a USER-SPACE pointer to a NULL-terminated char* vector, or 0.
+ * It must be captured in the caller's address space, which is why this takes
+ * the raw user pointer rather than a kernel array. */
+int64_t process_spawn_argv(const char *path, uint64_t user_argv);
+
 /*
  * Self-test: spawn /hello in its own address space, wait for it, verify the
  * output. Demonstrates per-process isolation.

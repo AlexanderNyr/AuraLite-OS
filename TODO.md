@@ -170,6 +170,16 @@ for the feature matrix.
   AHCI disks, but broad hardware/hypervisor coverage is still experimental.
 - **`/disk` is intentionally tiny.** Flat namespace, 8 files maximum, 4 KiB per
   file.
+- **tmpfs has no `mkdir`.** `/tmp` and `/opt` are flat: `tmpfs_ops` has no
+  `.mkdir` entry and `valid_name()` rejects any path containing a slash, so
+  `mkdir /tmp/x` fails and always has. Directories work on FAT32 and ext2.
+  Found while fixing `test_shell_all.sh`, which had been asserting that the
+  mkdir *succeeded* — the case is not in `run_all.sh`, so nothing had run it.
+- **`.init_array` is never executed.** `__libc_start_main()` calls `main()`
+  directly, so a `__attribute__((constructor))` function is linked into the
+  binary (`gusb.o` has one) and silently never runs. Either the runtime should
+  walk `.init_array` or the linker script should reject it; today it does
+  neither, which is the worst of the three options.
 - **`/opt` does not persist across a reboot** (FSLAYOUT_PLAN phase F1). It is
   a tmpfs volume, so an installed package is gone after a restart. Making it
   durable needs a writable disk that is present on every boot; the persistent

@@ -543,9 +543,23 @@ int64_t do_wait4(int64_t *exit_code) {
 
 /* ---- spawn() ---- */
 
+/* What process_spawn() hands to the new thread.
+ *
+ * spawn_thread() takes a single void*, and until SDK_PLAN phase S3 that was
+ * just the path string.  Arguments need to travel with it, so the two are
+ * bundled.  `args` is NULL when the caller passed no argv, which is the
+ * common case and keeps the old behaviour exactly. */
+struct spawn_payload {
+    char             *path;   /* kmalloc'd, owned by the new thread */
+    struct exec_args *args;   /* kmalloc'd or NULL, owned by the new thread */
+};
+
 /* Thread function for a spawned process. */
 static void spawn_thread(void *arg) {
-    char *path = (char *)arg;
+    struct spawn_payload *pl = (struct spawn_payload *)arg;
+    char *path = pl->path;
+    struct exec_args *ea = pl->args;
+    kfree(pl);
 
     vfs_close_on_exec();
     /* See vfs_ensure_std_fds()'s comment: guarantees the spawned process's
@@ -563,6 +577,7 @@ static void spawn_thread(void *arg) {
         kprintf("[proc] spawn: '%s' not found\n", path);
         memset(path, 0, strlen(path) + 1);
         kfree(path);
+        if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
 
@@ -580,6 +595,7 @@ static void spawn_thread(void *arg) {
             vfs_close(fd);
             memset(path, 0, strlen(path) + 1);
             kfree(path);
+            if (ea) { exec_args_free(ea); kfree(ea); }
             thread_exit();
         }
     }
@@ -599,6 +615,7 @@ static void spawn_thread(void *arg) {
         vfs_close(fd);
         memset(path, 0, strlen(path) + 1);
         kfree(path);
+        if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
     int64_t total = 0;
@@ -622,15 +639,28 @@ static void spawn_thread(void *arg) {
         kfree(buf);
         memset(path, 0, strlen(path) + 1);
         kfree(path);
+        if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
     kfree(path);
 
-    load_and_jump(buf, (uint64_t)total);
+    /* load_and_jump_args() takes ownership of `ea` and frees it, including on
+     * its own failure paths, so there is nothing to release here. */
+    load_and_jump_args(buf, (uint64_t)total, ea);
     #undef SPAWN_MAX_IMAGE
 }
 
-int64_t process_spawn(const char *path) {
+/* process_spawn() — start `path` as a new process.
+ *
+ * @user_argv is a user-space pointer to a NULL-terminated char* vector, or 0
+ * for none.  It is captured HERE, in the caller's address space, because the
+ * new thread runs in a fresh one where those pointers mean nothing.
+ *
+ * The capture reuses exec_args_capture(), the same routine execve() uses.
+ * That is deliberate: copying an array of user pointers safely is the
+ * dangerous part of this, execve already gets it right, and a second
+ * implementation would be a second place to get it subtly wrong. */
+int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     /* Create a new address space. */
     uint64_t new_pml4 = paging_new_address_space();
     if (new_pml4 == 0) {
@@ -669,8 +699,38 @@ int64_t process_spawn(const char *path) {
     }
     strcpy(path_copy, path);
 
-    tcb_t *child = kthread_create(spawn_thread, path_copy, path);
+    /* Capture argv while we are still in the CALLER's address space. */
+    struct exec_args *ea = NULL;
+    if (user_argv) {
+        ea = kmalloc(sizeof(struct exec_args));
+        if (!ea) {
+            kfree(path_copy);
+            (void)paging_free_address_space(new_pml4);
+            return -1;
+        }
+        if (exec_args_capture(ea, user_argv, 0) != 0) {
+            kprintf("[proc] spawn: bad argv\n");
+            kfree(ea);
+            kfree(path_copy);
+            (void)paging_free_address_space(new_pml4);
+            return -EFAULT;
+        }
+    }
+
+    struct spawn_payload *pl = kmalloc(sizeof(*pl));
+    if (!pl) {
+        if (ea) { exec_args_free(ea); kfree(ea); }
+        kfree(path_copy);
+        (void)paging_free_address_space(new_pml4);
+        return -1;
+    }
+    pl->path = path_copy;
+    pl->args = ea;
+
+    tcb_t *child = kthread_create(spawn_thread, pl, path);
     if (child == NULL) {
+        if (ea) { exec_args_free(ea); kfree(ea); }
+        kfree(pl);
         kfree(path_copy);
         (void)paging_free_address_space(new_pml4);
         return -1;
@@ -723,6 +783,13 @@ int64_t process_spawn(const char *path) {
 }
 
 /* ---- Self-test ---- */
+
+/* Backwards-compatible entry point: spawn with no arguments.
+ * Every existing caller (the shell, the GUI compositor, the self-tests) uses
+ * this, so they are all a test that the no-argv path still works. */
+int64_t process_spawn(const char *path) {
+    return process_spawn_argv(path, 0);
+}
 
 void process_self_test(void) {
     kprintf("[proc] self-test: spawning /hello in isolated address space...\n");

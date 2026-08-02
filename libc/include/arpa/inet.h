@@ -1,8 +1,8 @@
 #ifndef AURALITE_LIBC_ARPA_INET_H
 #define AURALITE_LIBC_ARPA_INET_H
 
-#include "libc/include/netinet/in.h"
-#include "libc/include/sys/socket.h"
+#include "../netinet/in.h"
+#include "../sys/socket.h"
 
 /* htons/htonl/ntohs/ntohl are provided as macros by <netinet/in.h>. */
 

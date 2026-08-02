@@ -8,6 +8,7 @@ TARGET      := $(ARCH)-elf
 CC          := clang
 LD          := ld.lld
 AS          := nasm
+AR          := ar
 HOST_CC     := cc
 
 BUILD_DIR   := build
@@ -70,7 +71,8 @@ KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 
 .PHONY: all kernel user iso usb vbox vmware vm-configs run run-usb-msc clean \
-        deps-check test-unit test-integration test-integration-fast test limine-build
+        deps-check test-unit test-integration test-integration-fast test limine-build \
+        libs sdk sdk-check
 
 all: iso
 
@@ -243,11 +245,54 @@ LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o $(USER_BUILD)/rwlock.o $(USER_BUILD)/
                    $(USER_BUILD)/math_extra.o $(USER_BUILD)/stdio_extra.o \
                    $(USER_BUILD)/stdlib_extra.o $(USER_BUILD)/string_extra.o \
                    $(USER_BUILD)/posix_extra.o $(USER_BUILD)/posix_spawn.o $(USER_BUILD)/q10_stubs.o \
-                   $(USER_BUILD)/progpath.o
+                   $(USER_BUILD)/progpath.o $(USER_BUILD)/apkg.o
 
-USER_COMMON := $(USER_BUILD)/crt0.o $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o \
-               $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o $(USER_BUILD)/setjmp.o \
-               $(USER_BUILD)/compat.o $(LIBC_EXTRA_OBJS)
+# The C runtime objects, as one list.  This is the ONLY place they are
+# enumerated: the archive is built from it and the link line names the
+# archive, so the two cannot drift apart (SDK_PLAN phase S0).
+#
+# crt0.o is deliberately NOT in the archive.  It defines exactly one symbol,
+# _start, which nothing references -- it is the ELF entry point, reached
+# through e_entry rather than through a relocation.  An archive member that
+# resolves no undefined symbol is never pulled in, so archiving crt0 would
+# silently produce programs with no entry code.  Real toolchains keep crt0.o
+# a standalone object for the same reason, and it is named explicitly on the
+# link line below.
+LIBAURAC_OBJS := $(USER_BUILD)/syscall.o $(USER_BUILD)/libc.o \
+                 $(USER_BUILD)/malloc.o $(USER_BUILD)/sigreturn.o \
+                 $(USER_BUILD)/setjmp.o $(USER_BUILD)/compat.o \
+                 $(LIBC_EXTRA_OBJS)
+
+USER_LIBDIR  := $(BUILD_DIR)/lib
+LIBAURAC     := $(USER_LIBDIR)/libaurac.a
+LIBAURAGUI   := $(USER_LIBDIR)/libauragui.a
+LIBAGL       := $(USER_LIBDIR)/libaGL.a
+
+# Two names, because they are two different things and conflating them is how
+# a linker flag ends up in a prerequisite list:
+#
+#   USER_COMMON     — the FILES to depend on (make prerequisites)
+#   USER_COMMON_LNK — the ARGUMENTS to pass to the linker
+#
+# --whole-archive on libaurac.a preserves the PREVIOUS behaviour exactly.
+# Before S0 all 26 objects were named on the link line, so every one was
+# linked unconditionally.  Plain archive semantics -- pull a member only if it
+# resolves an undefined symbol -- would silently change that.
+#
+# Measured, not assumed.  Linking calc.o against the archive WITHOUT the flag
+# drops q10_stubs.o entirely: `closelog` disappears and the binary shrinks
+# from 96936 to 58472 bytes.  Those stubs exist precisely so that a program
+# calling a not-yet-implemented POSIX function links instead of failing, which
+# is a promise that only holds if the member is present.  (sigreturn.o
+# survives either way -- libc.c references __sigreturn for sa_restorer -- so
+# it is not the example to cite here.)
+#
+# The cost is that every program carries the whole libc.  That is exactly what
+# happened before archiving, so nothing regressed; making libc granular is a
+# separate change with its own risks.
+USER_COMMON     := $(USER_BUILD)/crt0.o $(LIBAURAC)
+USER_COMMON_LNK := $(USER_BUILD)/crt0.o \
+                   --whole-archive $(LIBAURAC) --no-whole-archive
 
 USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h \
                    libc/include/errno.h libc/include/limits.h libc/include/stdbool.h \
@@ -276,10 +321,12 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
-             $(USER_BUILD)/insttest.elf
+             $(USER_BUILD)/insttest.elf $(USER_BUILD)/hostilearg.elf
 
-# auragui object linked into every GUI app.
-USER_GUI_OBJ := $(USER_BUILD)/auragui.o
+# auragui, linked into every GUI app.  As with libaurac, the archive is what
+# the link line names; --whole-archive is not needed here because every
+# auragui symbol a program uses is a genuine link-time reference.
+USER_GUI_OBJ := $(LIBAURAGUI)
 
 # ---- OpenGL (libgl) -- see GL_PLAN.md ----
 # libgl is linked ONLY into GL applications, not into every user program, so
@@ -297,12 +344,42 @@ LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
               $(USER_BUILD)/glsl_parse.o $(USER_BUILD)/glsl_sema.o \
               $(USER_BUILD)/glsl_exec.o \
               $(USER_BUILD)/glshader.o $(USER_BUILD)/glshaderpipe.o
-USER_GL_OBJ := $(LIBGL_OBJS)
+USER_GL_OBJ := $(LIBAGL)
 USER_CFLAGS += -I libgl/include
 
 # GL applications: linked with libgl in addition to libauragui.
 USER_GL_APPS := $(USER_BUILD)/gltest.elf $(USER_BUILD)/glcube.elf \
                 $(USER_BUILD)/glgears.elf
+
+# ---- Static libraries (SDK_PLAN phase S0) ----
+#
+# An archive is the one artefact a link command can name without knowing what
+# is inside it.  Before this, linking a program meant naming 26 object files
+# in the right place in build/user, which is why building an application
+# outside this repository was effectively impossible.
+#
+# `ar rcs` is deterministic here: the member list comes from a fixed variable,
+# not a wildcard, so the archive contents do not depend on what happens to be
+# in the build directory.
+$(LIBAURAC): $(LIBAURAC_OBJS)
+	@mkdir -p $(dir $@)
+	@rm -f $@
+	$(AR) rcs $@ $(LIBAURAC_OBJS)
+	@echo "[ar] $@ ($(words $(LIBAURAC_OBJS)) objects)"
+
+$(LIBAURAGUI): $(USER_BUILD)/auragui.o
+	@mkdir -p $(dir $@)
+	@rm -f $@
+	$(AR) rcs $@ $(USER_BUILD)/auragui.o
+	@echo "[ar] $@"
+
+$(LIBAGL): $(LIBGL_OBJS)
+	@mkdir -p $(dir $@)
+	@rm -f $@
+	$(AR) rcs $@ $(LIBGL_OBJS)
+	@echo "[ar] $@ ($(words $(LIBGL_OBJS)) objects)"
+
+libs: $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL)
 
 user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 
@@ -310,7 +387,7 @@ user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 # GUI apps additionally link the libauragui object.
 $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) $(USER_GUI_OBJ) libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON) $(USER_GUI_OBJ) -o $@
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
 
 # Compile rules for each application.
@@ -331,6 +408,10 @@ $(USER_BUILD)/http.o: userspace/apps/http/http.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/tcpserver.o: userspace/tests/tcpserver/tcpserver.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/hostilearg.o: userspace/tests/hostilearg/hostilearg.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -545,7 +626,7 @@ $(USER_BUILD)/glgears.o: userspace/demos/glgears/glgears.c libauragui/include/au
 $(USER_GL_APPS): $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) \
                                       $(USER_GUI_OBJ) $(USER_GL_OBJ) libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON) $(USER_GUI_OBJ) \
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) \
 	      $(USER_GL_OBJ) -o $@
 	@echo "[link] $@ (libgl)"
 
@@ -643,12 +724,12 @@ $(USER_BUILD)/compat.o: libc/src/compat.c libc/include/strings.h libc/include/wc
 
 $(INIT_ELF): $(USER_BUILD)/init.o $(USER_COMMON) libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/init.o $(USER_COMMON) -o $@
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/init.o $(USER_COMMON_LNK) -o $@
 	@echo "[link] $(INIT_ELF)"
 
 $(HELLO_ELF): $(USER_BUILD)/hello.o $(USER_COMMON) libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/hello.o $(USER_COMMON) -o $@
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/hello.o $(USER_COMMON_LNK) -o $@
 	@echo "[link] $(HELLO_ELF)"
 
 # Embed init.elf into the kernel as a C array.
@@ -830,7 +911,7 @@ INITRD_APPS  := calc editor http clock browser gcalc gedit gfiles gterm \
 INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
-                stackguard insttest
+                stackguard insttest hostilearg
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
@@ -846,13 +927,37 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/demos/$$p; done
 	@for p in $(INITRD_TESTS); do \
 	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/tests/$$p; done
-# Package archives apm installs from.  They keep their .pkg suffix and their
-# root-level names, because apm names them in its repository table.
-	@cp $(USER_BUILD)/matrix.elf $(INITRD_DIR)/pkg/matrix.pkg
-	@cp $(USER_BUILD)/life.elf   $(INITRD_DIR)/pkg/life.pkg
-	@cp $(USER_BUILD)/fetch.elf  $(INITRD_DIR)/pkg/fetch.pkg
+# Package archives apm installs from (SDK_PLAN phase S4).
+#
+# These used to be `cp foo.elf foo.pkg` -- a renamed executable with no
+# metadata, so apm could not report what it was about to install nor detect a
+# truncated file.  They are real .apkg packages now: a short textual header
+# with name, version, description, size and CRC-32, followed by the ELF.
+	@$(MAKE) --no-print-directory $(MKAPKG) >/dev/null
+	@$(MKAPKG) -n matrix -v 1.0 -d "Matrix digital rain screen simulation" \
+	           -o $(INITRD_DIR)/pkg/matrix.apkg $(USER_BUILD)/matrix.elf >/dev/null
+	@$(MKAPKG) -n life -v 1.2 -d "Conway's Game of Life simulation" \
+	           -o $(INITRD_DIR)/pkg/life.apkg $(USER_BUILD)/life.elf >/dev/null
+	@$(MKAPKG) -n fetch -v 2.1 -d "System information fetch utility" \
+	           -o $(INITRD_DIR)/pkg/fetch.apkg $(USER_BUILD)/fetch.elf >/dev/null
+# A deliberately corrupted package, so the integration suite can prove a bad
+# checksum is REFUSED and leaves nothing behind.  Testing only the happy path
+# would leave the verification untested, which is the half that matters.
+	@cp $(INITRD_DIR)/pkg/fetch.apkg $(INITRD_DIR)/pkg/broken.apkg
+	@printf 'X' | dd of=$(INITRD_DIR)/pkg/broken.apkg bs=1 seek=200 conv=notrunc \
+	              status=none
 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
 	    > $(INITRD_DIR)/etc/motd
+# SDK examples (SDK_PLAN S2).  Built from the STAGED SDK, never from the
+# source tree, and shipped so that test_sdk_examples.sh can run them.  If the
+# SDK stops being sufficient to build an application, the image build fails
+# here rather than a user discovering it.
+	@$(MAKE) --no-print-directory sdk >/dev/null
+	@for ex in hello-app gui-app; do \
+	    $(MAKE) --no-print-directory -C examples/$$ex \
+	            AURALITE_SDK=$(CURDIR)/$(SDK_DIR) >/dev/null; \
+	    cp examples/$$ex/$$ex.elf $(INITRD_DIR)/apps/$$ex; \
+	done
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
@@ -879,6 +984,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_initrd_dirs \
                 $(BUILD_DIR)/test_execpolicy \
                 $(BUILD_DIR)/test_progpath \
+                $(BUILD_DIR)/test_apkg \
+                $(BUILD_DIR)/test_printf_fmt \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -921,6 +1028,12 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+# Shell-based unit tests.  test_userlibs inspects the built archives rather
+# than compiled code, so it is a script rather than a C binary and cannot join
+# $(UNIT_TESTS), which is a list of executables to build.  It skips cleanly
+# when the archives have not been built.
+	@echo "[unit] running tests/unit/test_userlibs.sh"
+	@bash tests/unit/test_userlibs.sh || exit 1
 
 $(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
 	@mkdir -p $(BUILD_DIR)
@@ -1181,6 +1294,27 @@ $(BUILD_DIR)/test_wm: tests/unit/test_wm.c
 
 # ---- New unit tests (Phase 15+) ----
 
+# printf's conversion specifiers, compared byte for byte against expected
+# output.  The '-' flag was unparsed and printed literally for a long time
+# because nothing checked formatting -- only a person reading a log would
+# notice.  libc.c is LINKED here rather than #included: it declares main()
+# for __libc_start_main, which would collide with the test's own.
+$(BUILD_DIR)/libc_fmt.o: libc/src/libc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I libc/include -c $< -o $@
+
+$(BUILD_DIR)/test_printf_fmt: tests/unit/test_printf_fmt.c $(BUILD_DIR)/libc_fmt.o
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -c $< -o $(BUILD_DIR)/test_printf_fmt.o
+	$(HOST_CC) $(BUILD_DIR)/test_printf_fmt.o $(BUILD_DIR)/libc_fmt.o -o $@
+
+# The package parser reads attacker-controlled input, so the shipping source
+# is compiled in and exercised directly with malformed files.
+$(BUILD_DIR)/test_apkg: tests/unit/test_apkg.c libc/src/apkg.c libc/include/apkg.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I libc/include \
+	          tests/unit/test_apkg.c libc/src/apkg.c -o $@
+
 # The search path is tested with a stub filesystem, so the search ORDER is
 # observable — the real filesystem only shows which lookup happened to win.
 # -I tests/unit/pathstub comes FIRST and is not optional: progpath.c includes
@@ -1286,6 +1420,57 @@ $(BUILD_DIR)/test_cow: tests/unit/test_cow.c
 $(BUILD_DIR)/test_slab: tests/unit/test_slab.c kernel/mm/slab.c kernel/mm/slab.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_slab.c kernel/mm/slab.c -o $@
+
+# ---- Package tool (SDK_PLAN phase S4) ----
+#
+# mkapkg links the SAME parser the OS uses (libc/src/apkg.c), so the writer
+# and the reader cannot disagree about the format.  The two translation units
+# are compiled SEPARATELY and with different include paths on purpose:
+# apkg.c is AuraLite code and needs libc/include, while mkapkg.c is a host
+# program that needs the HOST's stdio.h -- putting libc/include ahead of it
+# would hide fseek/ftell behind AuraLite's freestanding subset.
+MKAPKG := $(BUILD_DIR)/mkapkg
+
+$(BUILD_DIR)/apkg_host.o: libc/src/apkg.c libc/include/apkg.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I libc/include -c $< -o $@
+
+$(BUILD_DIR)/mkapkg.o: tools/mkapkg.c libc/include/apkg.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -c $< -o $@
+
+$(MKAPKG): $(BUILD_DIR)/mkapkg.o $(BUILD_DIR)/apkg_host.o
+	$(HOST_CC) $^ -o $@
+	@echo "[host] $@"
+
+# ---- SDK (SDK_PLAN phase S1) ----
+#
+# `make sdk` assembles everything an out-of-tree application needs into
+# build/sdk.  It is ASSEMBLED FROM THE REAL SOURCES, never a copy kept in the
+# repository: a duplicated header is wrong the moment either side changes, and
+# nobody notices until a user's program misbehaves.
+#
+# `make sdk-check` then builds examples/ AGAINST THE STAGED SDK -- not against
+# the source tree.  That distinction is the whole point.  If the examples could
+# reach into libc/include directly they would keep building after the SDK
+# stopped being sufficient, and the check would prove nothing.
+SDK_DIR := $(BUILD_DIR)/sdk
+
+sdk: libs $(USER_BUILD)/crt0.o
+	@rm -rf $(SDK_DIR)
+	@mkdir -p $(SDK_DIR)/include $(SDK_DIR)/lib
+	@cp -r libc/include/. $(SDK_DIR)/include/
+	@cp libauragui/include/auragui.h $(SDK_DIR)/include/
+	@mkdir -p $(SDK_DIR)/include/GL
+	@cp libgl/include/GL/*.h $(SDK_DIR)/include/GL/
+	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(SDK_DIR)/lib/
+	@cp $(USER_BUILD)/crt0.o $(SDK_DIR)/lib/
+	@cp libc/user.ld $(SDK_DIR)/
+	@bash tools/mksdk.sh $(SDK_DIR)
+	@echo "[sdk] $(SDK_DIR) ($$(find $(SDK_DIR) -type f | wc -l) files)"
+
+sdk-check: sdk
+	@bash tools/sdk_check.sh $(SDK_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)

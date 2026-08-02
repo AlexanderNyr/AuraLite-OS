@@ -820,9 +820,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)ret;
     }
     case SYS_SPAWN: {
+        /* a1 = path, a2 = argv (char* const*) or 0.
+         *
+         * a2 was ignored before SDK_PLAN phase S3, so a caller passing 0 --
+         * every existing one -- behaves exactly as before.  argv is captured
+         * inside process_spawn_argv() while the CALLER's address space is
+         * still current; the new process gets a fresh one where those
+         * pointers would mean nothing. */
         char path[SYSCALL_PATH_MAX];
         if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
-        return (uint64_t)vfs_errno(process_spawn(path), ENOENT);
+        return (uint64_t)vfs_errno(process_spawn_argv(path, a2), ENOENT);
     }
     case SYS_LISTDIR: {
         char path[SYSCALL_PATH_MAX];

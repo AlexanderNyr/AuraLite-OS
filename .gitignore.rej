@@ -1,0 +1,10 @@
+diff a/.gitignore b/.gitignore	(rejected hunks)
+@@ -2,3 +2,8 @@ build/
+ *.o
+ *.iso
+ release/
++
++# Built SDK examples.  The sources are tracked; the binaries are produced by
++# `make iso` (and by `make sdk-check` in a temporary directory) from the
++# staged SDK, so a committed .elf would be a stale copy of a generated file.
++examples/*/*.elf

@@ -1,8 +1,8 @@
 #ifndef AURALITE_LIBC_SYS_SOCKET_H
 #define AURALITE_LIBC_SYS_SOCKET_H
 
-#include "libc/include/sys/types.h"
-#include "libc/include/netinet/in.h"
+#include "../sys/types.h"
+#include "../netinet/in.h"
 
 /* Address families. */
 #define AF_UNSPEC   0

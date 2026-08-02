@@ -2,6 +2,269 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SDK phase S6 — installing from outside the image] 2026-08-02
+
+The last phase. An application that exists nowhere in this repository can now
+reach a booted machine.
+
+The plan warned this phase might end in documentation rather than code — "if
+no supported configuration has a writable medium at boot, there is no route
+in". There is one: FAT32 on an AHCI disk, which mounts at `/fat` and persists.
+
+### Added
+- `tests/integration/cases/test_external_install.sh`: **7 assertions** and the
+  proof of the whole plan. It compiles a program that is not part of the OS
+  against the staged SDK, packages it with `mkapkg`, writes it onto a FAT32
+  volume from the host, boots, installs it with `apm`, and runs it.
+- The route is documented in `docs/filesystem.md`.
+
+### Found — the volume must start at LBA 64
+`kernel/fs/fat32.c` looks for a signature at **LBA 64** and formats the disk
+if it is absent. A plain `mformat -i disk.img` puts its boot sector at LBA 0,
+so the kernel sees an unformatted disk and **wipes it**, taking the package
+with it. That is exactly what happened on the first attempt: the volume
+mounted, `ls /fat` was empty, and the log said `formatting default FAT32
+volume`.
+
+The fix is `mformat -i disk.img@@32768`. The test asserts `formatting default
+FAT32` does **not** appear, so a silent reformat fails the case rather than
+producing a confusing empty directory.
+
+### Verification
+`test_external_install` 7/7, `test_apm_packages` 12/12, `test_sdk_examples`
+5/5, `test_boot_to_shell` 17/17, `test_fat32_persistence` 5/5.
+`make test-unit` all green, `make sdk-check` 31/31.
+
+**SDK_PLAN.md is complete: S0–S6.**
+
+## [SDK phases S4 + S5 — a package format, and a real repository] 2026-08-02
+
+A `.pkg` was `cp foo.elf foo.pkg`: a renamed executable with no metadata, from
+a repository that was a **compile-time array of three entries**. `apm` worked
+and could only ever offer those three.
+
+### Added
+- The `.apkg` format: a short textual header (`name`, `version`,
+  `description`, `size`, `crc32`) followed by the ELF. Deliberately boring —
+  the kernel has no decompressor and this parser reads a file the user
+  obtained from elsewhere, so it has to be auditable by reading.
+- `libc/src/apkg.c` — one parser, shared by `apm` and the host tool, so the
+  writer and the reader cannot disagree.
+- `tools/mkapkg` — builds a package and then **parses back what it wrote**,
+  refusing to leave a file its own reader would reject.
+- `tests/unit/test_apkg.c`: **26 checks**, nearly all on malformed input.
+- `tests/integration/cases/test_apm_packages.sh`: **12 assertions**.
+
+### Changed
+- `apm` scans `/pkg` for `*.apkg` and reads each header, so dropping a package
+  in makes it installable without recompiling anything.
+- `apm install /path/to/x.apkg` installs from anywhere — the route by which a
+  third-party package actually arrives.
+- The payload is verified **before** anything is written. Verifying while
+  copying would leave a half-written executable in `/opt` and an error
+  message, which is worse than a refusal.
+- `apm update` no longer claims to fetch from an "upstream". There is no
+  network; printing a lie about network activity is worse than printing
+  nothing.
+
+### Fixed — a libc defect this surfaced
+**`printf` never parsed the `-` flag.** `%-12s` fell through the specifier
+parser and was printed *literally*, so every column-aligned table in every
+program came out as `%-12s %-8s %-12s`. It shipped unnoticed because nothing
+compared formatted output against an expected string — `apm`'s package listing
+is what finally showed it, and only because a person read it.
+
+Fixed for `%s`, `%d`, `%u`, `%x` and `%X`, with `0` correctly ignored when `-`
+is present (POSIX). `tests/unit/test_printf_fmt.c` compares **28** formats
+byte for byte; it caught `%-10x`, which the first fix missed.
+
+### Not done, and named as such
+No signatures. A CRC-32 detects corruption, not tampering: anyone who can
+alter a payload can recompute a checksum. Real signing needs a key story this
+OS does not have.
+
+### Verification
+`make test-unit` — `test_apkg` 26/26, `test_printf_fmt` 28/28, all other
+suites green. `make sdk-check` 31/31. In QEMU: `test_apm_packages` 12/12
+including a deliberately corrupted package that is detected, refused, and
+leaves nothing in `/opt`; `test_install_dirs` 10/10, `test_boot_to_shell`
+17/17, `test_sdk_examples` 5/5, `test_spawn_argv` 11/11.
+
+## [SDK phase S3 — spawn() forwards arguments] 2026-08-02
+
+`spawn()` could not pass arguments, so programs passed them through a file the
+child agreed to read (`/tmp/apm.args`). That workaround is gone.
+
+### Added
+- `SYS_SPAWN` takes an `argv` pointer in `a2`; `0` is the previous behaviour,
+  so every existing caller is unchanged and is a test of that path.
+- `spawnv(path, argv)` in libc; `spawn()` is now a wrapper.
+- `process_spawn_argv()` in the kernel, capturing argv **in the caller's
+  address space** via `exec_args_capture()` — the same routine `execve()`
+  uses. Copying an array of user pointers safely is the dangerous part of
+  this phase, and a second implementation would be a second place to get it
+  subtly wrong.
+- `userspace/tests/hostilearg` and two integration cases: **11 + 10
+  assertions**.
+
+### Changed
+- `run prog a b c` forwards the arguments, and so does a bare `prog a b c` —
+  leaving one path hardcoded is how the two end up behaving differently.
+- `apm` takes its subcommand as `argv`. The shell no longer writes
+  `/tmp/apm.args`, which two shells running `apm` at once would have raced on.
+- `run <prog>` alone now gives `argc=1` with `argv[0]` set, instead of
+  `argc=0`. A program could not previously learn what it had been invoked as.
+
+### Malformed argv — checked, because this is the risky part
+| Input | Result |
+|---|---|
+| `argv` pointing into kernel space | refused, `-1` |
+| a *string* pointing into kernel space | refused, `-1` |
+| a vector with no terminator | bounded (`EXEC_MAX_ARGS` 256) |
+| `NULL` argv | identical to `spawn()` |
+
+The shell survives all four; no panic, no kernel-mode fault. The
+unterminated-vector case is documented honestly in the probe: the array is in
+BSS, so the walk finds a zero just past the end and the spawn *succeeds* —
+what it proves is that the walk is bounded, not that the input was rejected.
+
+### Verification
+`make test-unit` 50 suites + `test_userlibs`, `make sdk-check` 31/31. In
+QEMU: `test_spawn_argv` 11/11, `test_spawn_argv_hostile` 10/10,
+`test_execve_args` 16/16 (unchanged — the execve path was not touched),
+`test_boot_to_shell` 17/17, `test_shell_commands` 9/9, `test_sdk_examples`
+5/5.
+
+## [SDK phases S1 + S2 — `make sdk` and worked examples] 2026-08-02
+
+`make sdk` produces everything an out-of-tree application needs; `make
+sdk-check` builds the examples against it and fails if it is not enough.
+
+The two phases landed together because they are one mechanism: the examples
+are how the SDK is tested, and an SDK with nothing building against it rots
+silently.
+
+### Added
+- `make sdk` → `build/sdk/` (89 files): headers, the three archives, `crt0.o`,
+  `user.ld`, a generated `auralite.mk` and a README. **Assembled from the real
+  sources**, never a copy kept in the repository.
+- `make sdk-check` → `tools/sdk_check.sh`: **31 checks**.
+- `examples/hello-app/` and `examples/gui-app/`, built by `make iso` from the
+  *staged SDK* and shipped in the image.
+- `tests/integration/cases/test_sdk_examples.sh`: **5 assertions** that an
+  SDK-built binary actually runs.
+
+An application's Makefile is now three lines:
+
+```make
+AURALITE_SDK := /path/to/build/sdk
+include $(AURALITE_SDK)/auralite.mk
+myapp.elf: myapp.o ; $(AURALITE_LD) $(AURALITE_LDFLAGS) $< $(AURALITE_LIBS) -o $@
+```
+
+### Fixed — the headers were not usable outside the tree
+Ten libc headers included each other by **tree-rooted path**:
+
+```c
+#include "libc/include/sys/types.h"    /* in libc/include/unistd.h */
+```
+
+That only resolves because the OS compiles with `-I .`. Any out-of-tree build
+— the entire point of an SDK — failed on the first `#include <unistd.h>`.
+Now relative (`"../sys/types.h"`). This was a real portability defect that no
+in-tree build could have exposed.
+
+### Fixed — two ways a check can lie
+
+**A stale SDK passed.** `make sdk` rebuilds the tree from scratch, so a
+*failed* regeneration leaves the previous SDK on disk. The first version of
+the header-drift test deleted a header, watched make fail, and passed against
+the leftover copy. `sdk_check.sh` now compares staged headers against their
+sources in both directions.
+
+**`pipefail` + `grep -q` reported false failures.** `grep -q` exits on first
+match, closing the pipe and killing `nm` with SIGPIPE; under `set -o pipefail`
+the pipeline then reports failure *even though the match succeeded*. Every
+binary "had no `_start`" while plainly having one. All such tests now count
+matches instead.
+
+Also: `sdk_check.sh` copied examples with `cp -r`, bringing along `.o` and
+`.elf` from a previous local build — make said "nothing to be done" and the
+check inspected an artefact the staged SDK never produced. It copies sources
+only.
+
+### Verification
+`make sdk-check` 31/31, `test_sdk_examples` 5/5, `make iso` clean from
+`rm -rf build`. A program built **only** from `build/sdk` was booted and
+printed its markers.
+
+Noted for S3: `run hello-app` reports `argc=0` — `spawn()` still does not
+forward arguments, which is exactly what phase S3 fixes.
+
+## [SDK phase S0 — static libraries] 2026-08-02
+
+Linking a program meant naming **26 object files** in `build/user`. It now
+means naming one archive. This is the phase `SDK_PLAN.md` says to build if
+only one is ever built: the 26-object link is what made third-party
+development effectively impossible.
+
+### Added
+- `build/lib/libaurac.a` (25 objects), `libauragui.a`, `libaGL.a`, built by a
+  new `make libs` target and by `make iso`.
+- `tests/unit/test_userlibs.sh`: **18 checks** on the archives themselves,
+  run by `make test-unit`.
+
+### Changed
+- Every program links against the archives. All 43 still build and run.
+- `USER_COMMON` split into `USER_COMMON` (make prerequisites) and
+  `USER_COMMON_LNK` (linker arguments) — conflating them is how a linker flag
+  ends up in a dependency list.
+
+### Two things that had to be right, and were checked rather than assumed
+
+**`crt0.o` is kept OUT of the archive.** It defines only `_start`, which
+nothing references — it is reached through the ELF entry point, not a
+relocation. An archive member that resolves no undefined symbol is never
+pulled in, so archiving it would have produced programs with no entry code.
+
+**`--whole-archive` preserves the old behaviour.** Naming 26 objects linked
+them unconditionally; plain archive semantics would not. Measured: linking
+`calc.o` without the flag drops `q10_stubs.o` entirely — `closelog` vanishes
+and the binary shrinks from 96936 to 58472 bytes. Those stubs exist so that a
+program calling an unimplemented POSIX function *links*, which only holds if
+the member is present.
+
+### A real improvement, verified symbol by symbol
+Non-GUI programs shrank by ~14.5 KB because `auragui.o` is no longer forced
+into them. To prove nothing else was lost, the symbol tables of `calc.elf`
+before and after were compared: **the only symbols dropped are `ag_*` and
+their file-local statics.** Not one libc symbol disappeared, and nothing new
+appeared. GUI programs are unchanged in size.
+
+### Fixed along the way
+- `test_gui_usb.sh` asserted `running /gusb`; the program lives at
+  `/apps/gusb` since F3. A leftover my F5 inventory missed.
+- `test_shell_all.sh` (not in `run_all.sh`, so nothing had run it) had four
+  independent faults: it sent `exit` to `calc`, which leaves on `quit`, so
+  calc swallowed every later command; it sent a second `exit` after `clock`,
+  which exits by itself, closing the shell; it `cat`-ed a 96 KB ELF into the
+  serial log, making the log a binary file; and it asserted `ls /` shows
+  `/init`, which F3 changed.
+
+### Found, not fixed (recorded in TODO.md)
+- **tmpfs has no `mkdir`** — `/tmp` is flat and always has been. The test was
+  asserting that `mkdir /tmp/testdir` succeeded; it now asserts the refusal,
+  which is what the system does.
+- **`.init_array` never runs.** `__libc_start_main()` calls `main()` directly,
+  so `gusb`'s constructor is linked in and silently never executed.
+
+### Verification
+`make test-unit` 50 suites + `test_userlibs` 18/18. In QEMU:
+`test_boot_to_shell` 17/17, `test_shell_commands` 9/9, `test_userspace_apps`
+4/4, `test_runtime_layout` 11/11, `test_selftest` 6/6, `test_gui_bad_pointers`
+2/2, `test_opengl` **86/86**, `test_gui_usb` 5/5, `test_shell_all` 15/15,
+`test_process_spawn_many` 3/3.
+
 ## [Fix — test_progpath was compiled against glibc's headers] 2026-08-02
 
 `make test-unit` failed in CI with a redefinition of `open()`, on a machine

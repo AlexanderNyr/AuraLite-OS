@@ -1,7 +1,7 @@
 #ifndef AURALITE_LIBC_NETDB_H
 #define AURALITE_LIBC_NETDB_H
 
-#include "libc/include/sys/socket.h"
+#include "sys/socket.h"
 
 #define AI_PASSIVE     0x01
 #define AI_CANONNAME   0x02
