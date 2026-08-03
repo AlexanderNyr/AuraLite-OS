@@ -1343,6 +1343,10 @@ int ext4_init(int prefer_port) {
 
     if (!ext4_scratch) ext4_scratch = (uint8_t *)kmalloc(m4.block_size);
     if (!ext4_cluster_buf) ext4_cluster_buf = (uint8_t *)kmalloc(m4.block_size);
+    if (!ext4_scratch || !ext4_cluster_buf) {
+        kprintf("[ext4] cannot allocate scratch buffers, mount aborted\n");
+        return -1;
+    }
 
     /* Read superblock */
     if (read_block(0, ext4_scratch) != 0) {

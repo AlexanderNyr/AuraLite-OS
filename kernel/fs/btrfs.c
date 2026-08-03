@@ -899,6 +899,10 @@ int btrfs_init(int prefer_port) {
 
     if (!btrfs_scratch) btrfs_scratch = (uint8_t *)kmalloc(BTRFS_NODE_SIZE);
     if (!btrfs_node_buf) btrfs_node_buf = (uint8_t *)kmalloc(BTRFS_NODE_SIZE);
+    if (!btrfs_scratch || !btrfs_node_buf) {
+        kprintf("[btrfs] cannot allocate scratch buffers, mount aborted\n");
+        return -1;
+    }
 
     /* Read superblock */
     if (btrfs_read_block(BTRFS_SUPER_OFFSET, btrfs_scratch) != 0) {

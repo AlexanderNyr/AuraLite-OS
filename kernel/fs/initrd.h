@@ -19,8 +19,10 @@
  *   Data follows each header, padded to 512 bytes.
  */
 
-/* Initialise the initrd from a Limine module (address + size). */
-void initrd_init(uint64_t address, uint64_t size);
+/* Initialise the initrd from a Limine module (address + size).
+ * Returns 0 on success, -1 when the vnode pool could not be allocated;
+ * the caller must skip the vfs_mount() in that case. */
+int initrd_init(uint64_t address, uint64_t size);
 
 /* VFS operations for the initrd. */
 extern const struct vfs_ops initrd_ops;

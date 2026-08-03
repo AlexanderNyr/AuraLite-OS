@@ -275,14 +275,19 @@ for the feature matrix.
   AHCI disks, but broad hardware/hypervisor coverage is still experimental.
 - **`/disk` is intentionally tiny.** Flat namespace, 8 files maximum, 4 KiB per
   file.
-- **`initrd_init()` does not check its `kmalloc`.** (`FIXES_PLAN.md` R4)
-  `kernel/fs/initrd.c` allocates the vnode pool with
-  `initrd_vnodes = kmalloc(sizeof(struct vnode) * initrd.file_count)` and
-  `memset()`s it on the very next line with no NULL test, so an allocation
-  failure is a kernel NULL-dereference during early boot rather than a
-  diagnosed failure. It has never been hit because the initrd is parsed when
-  the heap is empty, which is precisely why it survived review. Every other
-  `kmalloc` on this path is checked.
+- ~~**`initrd_init()` does not check its `kmalloc`.**~~ **Done (`FIXES_PLAN.md`
+  R4 → `patches/FIX_R4_null_checks.patch`, host test
+  `tests/unit/test_initrd_allocfail.c`).** `initrd_init()` now returns `int`;
+  when the vnode pool cannot be allocated it logs a diagnostic, reports the
+  image back as empty and returns -1, and `kernel.c` skips the
+  `vfs_mount("/")`.  The R4 sweep then audited every `kmalloc`/`slab_alloc`
+  call in `kernel/` and `drivers/` (58 + 10 sites): all the other unchecked
+  same-shape sites it found — the lazy scratch buffers of `btrfs_init()`,
+  `ext4_init()`, `f2fs_init()`, `ext2`'s `block_buf` (mount and format) and
+  `fat32`'s `cluster_buf` (mount and format), the six `get_ind()` users in
+  ext2's `bmap()`, and the `sched_init()` kmain TCB — now fail the
+  mount/format/init with a diagnostic too; every remaining site in the sweep
+  was already NULL-checked.
 - **tmpfs has no `mkdir`.** `/tmp` and `/opt` are flat: `tmpfs_ops` has no
   `.mkdir` entry and `valid_name()` rejects any path containing a slash, so
   `mkdir /tmp/x` fails and always has. Directories work on FAT32 and ext2.
@@ -352,13 +357,13 @@ for the feature matrix.
 
 ### Graphics / GUI
 
-- **`gfx_fill_rect()` does not check `back_fb` for NULL.** (`FIXES_PLAN.md` R4) `graphics.c`
+- ~~**`gfx_fill_rect()` does not check `back_fb` for NULL.**~~ **Done
+  (`FIXES_PLAN.md` R4 → `patches/FIX_R4_null_checks.patch`).** `graphics.c`
   allocates the back buffer with `kmalloc` and tolerates failure
   (`if (back_fb) memset(...)`), and `gfx_putpixel()`, `gfx_clear()`,
   `gfx_flip()` and `gfx_flip_rect()` all begin with a `!back_fb` guard.
-  `gfx_fill_rect()` is the one that does not, and writes through the pointer
-  directly. On a machine where the back-buffer allocation failed, every other
-  drawing entry point degrades quietly and this one faults.
+  `gfx_fill_rect()` now does too, so on a machine where the back-buffer
+  allocation failed every drawing entry point degrades quietly.
 
 - **⚠ The virtio-gpu driver hangs during initialisation when a device is
   actually attached.** Booting with `-device virtio-gpu-pci` stops after

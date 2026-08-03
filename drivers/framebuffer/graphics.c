@@ -64,6 +64,7 @@ void gfx_putpixel(uint32_t x, uint32_t y, color_t color) {
 }
 
 void gfx_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t color) {
+    if (!back_fb) return;   /* back buffer allocation failed (gfx_init) */
     color_t packed = make_color(color);
     uint32_t pitch32 = fb_pitch / 4;
     for (uint32_t row = 0; row < h; row++) {

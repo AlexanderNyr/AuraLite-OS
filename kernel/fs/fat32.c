@@ -943,6 +943,10 @@ static int format_default(void) {
     fs.cluster_count  = fs.total_sectors - (fs.data_lba - fs.base_lba);
     fs.bytes_per_clus = fs.sect_per_clus * 512u;
     if (!cluster_buf) cluster_buf = (uint8_t *)kmalloc(fs.bytes_per_clus);
+    if (!cluster_buf) {
+        kprintf("[fat32] cannot allocate cluster buffer, format aborted\n");
+        return -1;
+    }
 
     /* BPB */
     memset(scratch, 0, 512);
@@ -1026,6 +1030,10 @@ static int parse_or_format(void) {
     fs.cluster_count = fs.total_sectors - (fs.data_lba - fs.base_lba);
     fs.bytes_per_clus = fs.sect_per_clus * 512u;
     if (!cluster_buf) cluster_buf = (uint8_t *)kmalloc(fs.bytes_per_clus);
+    if (!cluster_buf) {
+        kprintf("[fat32] cannot allocate cluster buffer, mount aborted\n");
+        return -1;
+    }
     fsinfo_load();
     return 0;
 }

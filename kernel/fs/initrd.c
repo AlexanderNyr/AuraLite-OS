@@ -121,7 +121,7 @@ static void initrd_register_prefixes(const char *name) {
     }
 }
 
-void initrd_init(uint64_t address, uint64_t size) {
+int initrd_init(uint64_t address, uint64_t size) {
     initrd.base       = address;
     initrd.total_size = size;
     initrd.file_count = 0;
@@ -216,6 +216,16 @@ void initrd_init(uint64_t address, uint64_t size) {
     /* Allocate a pool of vnodes for the files we found. */
     if (initrd.file_count > 0) {
         initrd_vnodes = kmalloc(sizeof(struct vnode) * initrd.file_count);
+        if (initrd_vnodes == NULL) {
+            /* Fail the mount: a NULL pool would fault the first file
+             * lookup.  Report an empty image so the ops stay harmless
+             * even if a caller mounts us anyway. */
+            kprintf("[initrd] ERROR: vnode pool for %d file(s) failed to "
+                    "allocate; initrd not available\n", initrd.file_count);
+            initrd.file_count = 0;
+            initrd.dir_count  = 1;   /* keep only the root directory */
+            return -1;
+        }
         memset(initrd_vnodes, 0, sizeof(struct vnode) * initrd.file_count);
         for (int i = 0; i < initrd.file_count; i++) {
             initrd_vnodes[i].name[0] = '\0';
@@ -243,6 +253,7 @@ void initrd_init(uint64_t address, uint64_t size) {
             initrd.file_count, initrd.dir_count,
             initrd.dir_count == 1 ? "y" : "ies",
             (unsigned long long)initrd.total_size);
+    return 0;
 }
 
 /* ---- VFS ops ---- */

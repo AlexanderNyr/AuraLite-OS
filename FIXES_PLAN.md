@@ -375,12 +375,18 @@ worth more than one that has been made harder to reproduce.
 
 #### Tasks
 
-- [ ] `initrd_init()`: check the `kmalloc`, and fail the mount with a
-      diagnostic rather than dereferencing NULL.
-- [ ] `gfx_fill_rect()`: add the `!back_fb` guard its four siblings have.
-- [ ] Sweep every `kmalloc`/`slab_alloc` in `kernel/` and `drivers/` for the
-      same shape, and record the result — including "none others found", which
-      is a useful thing to know.
+- [x] `initrd_init()`: check the `kmalloc`, and fail the mount with a
+      diagnostic rather than dereferencing NULL — the function now returns
+      `int`; on pool failure it logs, reports the image back as empty and
+      returns -1, and the boot path skips `vfs_mount("/")`.  Host test:
+      `tests/unit/test_initrd_allocfail.c`.
+- [x] `gfx_fill_rect()`: add the `!back_fb` guard its four siblings have.
+- [x] Sweep every `kmalloc`/`slab_alloc` in `kernel/` and `drivers/` for the
+      same shape, and record the result — the sweep found more (not "none
+      others"): the lazy scratch buffers of btrfs/ext2/ext4/f2fs/fat32, the
+      six `get_ind()` users in ext2's `bmap()`, and the `sched_init()` kmain
+      TCB.  All fixed with the same guard shape; the findings table is in
+      the patch description.
 
 #### Test gate
 

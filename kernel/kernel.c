@@ -265,9 +265,13 @@ void kmain(boot_info_t *boot_info) {
         uint64_t initrd_phys = boot_get_initrd(&initrd_size);
         if (initrd_phys != 0 && initrd_size != 0) {
             uint64_t hhdm = boot_get_hhdm_offset();
-            initrd_init(hhdm + initrd_phys, initrd_size);
-            vfs_mount("/", &initrd_ops, NULL);
-            vfs_list("/");
+            if (initrd_init(hhdm + initrd_phys, initrd_size) == 0) {
+                vfs_mount("/", &initrd_ops, NULL);
+                vfs_list("/");
+            } else {
+                kprintf("[vfs] WARNING: initrd failed to initialise; "
+                        "booting without it\n");
+            }
         } else {
             kprintf("[vfs] WARNING: no initrd loaded\n");
         }

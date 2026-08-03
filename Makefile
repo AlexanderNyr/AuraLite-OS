@@ -1017,6 +1017,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glcoexist $(BUILD_DIR)/test_glvirgl \
                 $(BUILD_DIR)/test_gpu_syscall \
                 $(BUILD_DIR)/test_initrd_dirs \
+                $(BUILD_DIR)/test_initrd_allocfail \
                 $(BUILD_DIR)/test_execpolicy \
                 $(BUILD_DIR)/test_progpath \
                 $(BUILD_DIR)/test_apkg \
@@ -1401,6 +1402,15 @@ $(BUILD_DIR)/test_initrd_dirs: tests/unit/test_initrd_dirs.c kernel/fs/initrd.c 
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_initrd_dirs.c kernel/fs/initrd.c -o $@
+
+# Same shape as test_initrd_dirs, but the kmalloc stub can be told to fail:
+# FIX_R4's gate is that initrd_init() reports the pool allocation failure
+# instead of dereferencing the NULL pool.
+$(BUILD_DIR)/test_initrd_allocfail: tests/unit/test_initrd_allocfail.c kernel/fs/initrd.c \
+                                    kernel/fs/initrd.h kernel/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_initrd_allocfail.c kernel/fs/initrd.c -o $@
 
 $(BUILD_DIR)/test_vfs: tests/unit/test_vfs.c
 	@mkdir -p $(BUILD_DIR)

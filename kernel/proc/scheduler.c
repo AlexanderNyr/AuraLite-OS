@@ -339,6 +339,11 @@ void sched_init(void) {
 
     /* 1) Create the "kmain" TCB representing the currently-running context. */
     tcb_t *kmain_thread = slab_alloc(tcb_cache);
+    if (kmain_thread == NULL) {
+        kprintf("[sched] FATAL: cannot allocate the kmain TCB; "
+                "scheduler disabled\n");
+        return;
+    }
     memset(kmain_thread, 0, sizeof(tcb_t));
     kmain_thread->id      = __sync_fetch_and_add(&tid_counter, 1);
     kmain_thread->state   = THREAD_RUNNING;

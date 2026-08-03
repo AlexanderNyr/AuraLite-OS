@@ -1222,6 +1222,10 @@ int f2fs_init(int prefer_port) {
 
     if (!f2fs_scratch) f2fs_scratch = (uint8_t *)kmalloc(F2FS_PAGE_SIZE);
     if (!f2fs_page_buf) f2fs_page_buf = (uint8_t *)kmalloc(F2FS_PAGE_SIZE);
+    if (!f2fs_scratch || !f2fs_page_buf) {
+        kprintf("[f2fs] cannot allocate scratch buffers, mount aborted\n");
+        return -1;
+    }
 
     /* Read superblock */
     if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) {

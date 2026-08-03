@@ -402,6 +402,7 @@ static uint32_t bmap(struct ext2_inode *inode, uint32_t fblock, int alloc) {
             inode->i_blocks += es.block_size / 512;
         }
         uint32_t *buf = get_ind(0);
+        if (!buf) return 0;
         if (read_block(inode->i_block[12], buf) != 0) return 0;
         if (buf[off] == 0 && alloc) {
             uint32_t b = alloc_data_block();
@@ -423,6 +424,7 @@ static uint32_t bmap(struct ext2_inode *inode, uint32_t fblock, int alloc) {
             inode->i_blocks += es.block_size / 512;
         }
         uint32_t *l1 = get_ind(0);
+        if (!l1) return 0;
         if (read_block(inode->i_block[13], l1) != 0) return 0;
         uint32_t idx1 = off / ppb;
         uint32_t idx2 = off % ppb;
@@ -435,6 +437,7 @@ static uint32_t bmap(struct ext2_inode *inode, uint32_t fblock, int alloc) {
         }
         uint32_t l1_idx_blk = l1[idx1];
         uint32_t *l2 = get_ind(1);
+        if (!l2) return 0;
         if (read_block(l1_idx_blk, l2) != 0) return 0;
         if (l2[idx2] == 0 && alloc) {
             uint32_t b = alloc_data_block();
@@ -456,6 +459,7 @@ static uint32_t bmap(struct ext2_inode *inode, uint32_t fblock, int alloc) {
             inode->i_blocks += es.block_size / 512;
         }
         uint32_t *l1 = get_ind(0);
+        if (!l1) return 0;
         if (read_block(inode->i_block[14], l1) != 0) return 0;
         uint32_t idx1 = off / (ppb * ppb);
         uint32_t rest = off % (ppb * ppb);
@@ -470,6 +474,7 @@ static uint32_t bmap(struct ext2_inode *inode, uint32_t fblock, int alloc) {
         }
         uint32_t l1_blk = l1[idx1];
         uint32_t *l2 = get_ind(1);
+        if (!l2) return 0;
         if (read_block(l1_blk, l2) != 0) return 0;
         if (l2[idx2] == 0) {
             if (!alloc) return 0;
@@ -480,6 +485,7 @@ static uint32_t bmap(struct ext2_inode *inode, uint32_t fblock, int alloc) {
         }
         uint32_t l2_blk = l2[idx2];
         uint32_t *l3 = get_ind(2);
+        if (!l3) return 0;
         if (read_block(l2_blk, l3) != 0) return 0;
         if (l3[idx3] == 0 && alloc) {
             uint32_t b = alloc_data_block();
@@ -1247,6 +1253,10 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     es.first_ino        = EXT2_FIRST_USER_INO;
     es.group_count      = 1;
     if (!block_buf) block_buf = (uint8_t *)kmalloc(bsize > 4096 ? bsize : 4096);
+    if (!block_buf) {
+        kprintf("[ext2] cannot allocate block buffer, format aborted\n");
+        return -1;
+    }
 
     uint32_t gdt_blk    = gdt_start_block();
     uint32_t bbm_blk    = gdt_blk + 1;
@@ -1380,6 +1390,10 @@ static int parse_or_format(void) {
                                 es.blocks_per_group - 1) / es.blocks_per_group;
         if (es.group_count == 0) return -1;
         if (!block_buf) block_buf = (uint8_t *)kmalloc(es.block_size > 4096 ? es.block_size : 4096);
+        if (!block_buf) {
+            kprintf("[ext2] cannot allocate block buffer, mount aborted\n");
+            return -1;
+        }
         if (read_gdt() != 0) return -1;
         kprintf("[ext2] mounted existing volume: block_size=%u, groups=%u, "
                 "blocks=%u, inodes=%u (free %u blocks / %u inodes)\n",
