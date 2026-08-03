@@ -58,6 +58,11 @@ ALL_CASES=(
     test_initrd_dirs
     test_install_dirs
     test_search_path
+    test_sdk_examples
+    test_spawn_argv
+    test_spawn_argv_hostile
+    test_apm_packages
+    test_external_install
     test_runtime_layout
     test_gui_bad_pointers
     test_opengl
@@ -66,6 +71,8 @@ ALL_CASES=(
     test_fork_cow
     test_elf_permissions
     test_stack_guard
+    test_panic_diag
+    test_ist_double_fault
     test_fd_isolation
     test_user_processes
     test_ahci_rw

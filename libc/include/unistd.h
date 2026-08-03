@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "libc/include/sys/types.h"
+#include "sys/types.h"
 
 /* Syscall numbers (Linux-compatible subset + AuraLite extensions). */
 #define SYS_READ    0
@@ -175,6 +175,10 @@ int     execv(const char *path, char *const argv[]);
 int     execvp(const char *file, char *const argv[]);
 pid_t   wait(int *status);
 pid_t   spawn(const char *path);
+/* spawnv(): like spawn(), but hands the new process an argv vector.
+ * @argv is NULL-terminated; argv[0] conventionally names the program.
+ * Passing NULL is identical to spawn(). */
+pid_t   spawnv(const char *path, char *const argv[]);
 
 /* AuraLite extension: list files in a directory path.  The raw directory
  * lister is named aura_readdir() so the POSIX readdir(DIR*) in <dirent.h>

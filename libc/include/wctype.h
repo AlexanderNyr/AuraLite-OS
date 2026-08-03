@@ -10,7 +10,7 @@
  * live in libc/src/compat.c.
  */
 
-#include "libc/include/wchar.h"   /* wint_t, WEOF */
+#include "wchar.h"   /* wint_t, WEOF */
 
 typedef unsigned long wctype_t;
 typedef unsigned long wctrans_t;

@@ -20,6 +20,7 @@
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/smp.h"
+#include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
@@ -229,6 +230,11 @@ void kmain(boot_info_t *boot_info) {
 
     tss_init();
     kprintf("[boot] TSS loaded (RSP0 + IST1 for #DF)\n");
+
+    /* FIX_R0: read back the TSS/IDT as loaded and report whether the IST is
+     * actually armed, so FIX_R1's change becomes visible in the boot log
+     * rather than only in the source. */
+    diag_ist_self_check();
 
     kprintf("[boot] initialising SMP...\n");
     smp_init();

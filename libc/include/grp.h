@@ -1,7 +1,7 @@
 #ifndef AURALITE_LIBC_GRP_H
 #define AURALITE_LIBC_GRP_H
 
-#include "libc/include/sys/types.h"
+#include "sys/types.h"
 
 struct group {
     char   *gr_name;    /* group name              */

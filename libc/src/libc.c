@@ -525,6 +525,20 @@ pid_t spawn(const char *path) {
     return (pid_t)syscall_ret(syscall(SYS_SPAWN, (uint64_t)path, 0, 0, 0, 0, 0));
 }
 
+/* spawnv() — spawn with arguments (SDK_PLAN phase S3).
+ *
+ * @argv is a NULL-terminated vector, conventionally with argv[0] naming the
+ * program.  Passing NULL is identical to spawn().
+ *
+ * This exists because spawn() could not forward arguments, and the workaround
+ * was a convention: write them to a file the child agrees to read
+ * (/tmp/apm.args and friends).  That is fine between programs in one
+ * repository that agreed on it; it is not something to teach a third party. */
+pid_t spawnv(const char *path, char *const argv[]) {
+    return (pid_t)syscall_ret(syscall(SYS_SPAWN, (uint64_t)path,
+                                      (uint64_t)argv, 0, 0, 0, 0));
+}
+
 pid_t waitpid(pid_t pid, int *status, int options) {
     /* The kernel writes a 32-bit POSIX status word directly to @status, and
      * returns the reaped pid, 0 (WNOHANG: none ready), or a negative errno. */
@@ -1197,25 +1211,45 @@ struct fmt_sink {
     size_t len;         /* chars actually stored */
 };
 
-static void fmt_emit_uint(struct fmt_sink *s, uint64_t val, unsigned base,
-                          int upper, int width, int zero) {
+/* @left requests left-justification ('-'); it takes precedence over @zero,
+ * which POSIX says is ignored when '-' is present. */
+static void fmt_emit_uint_pad(struct fmt_sink *s, uint64_t val, unsigned base,
+                              int upper, int width, int zero, int left) {
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     char buf[32];
     int i = 0;
     if (val == 0) buf[i++] = '0';
     while (val) { buf[i++] = digits[val % base]; val /= base; }
     int pad = width - i;
-    while (pad-- > 0) s->emit(s, zero ? '0' : ' ');
-    while (i--) s->emit(s, buf[i]);
+    if (!left) { while (pad-- > 0) s->emit(s, zero ? '0' : ' '); }
+    int n = i;
+    while (n--) s->emit(s, buf[n]);
+    if (left)  { while (pad-- > 0) s->emit(s, ' '); }
+}
+
+static void fmt_emit_uint(struct fmt_sink *s, uint64_t val, unsigned base,
+                          int upper, int width, int zero) {
+    fmt_emit_uint_pad(s, val, base, upper, width, zero, 0);
 }
 
 static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
     for (; *fmt; fmt++) {
         if (*fmt != '%') { s->emit(s, *fmt); continue; }
         fmt++;
-        int zero = 0, width = 0;
-        while (*fmt == '0') { zero = 1; fmt++; }
+        /* Flags.  '-' (left-justify) was not parsed at all before, so a
+         * format like "%-12s" fell through and printed the specifier
+         * LITERALLY -- every column-aligned table in every program came out
+         * as "%-12s %-8s ...".  apm's package listing is what surfaced it. */
+        int zero = 0, width = 0, left = 0;
+        for (;;) {
+            if (*fmt == '-')      { left = 1; fmt++; }
+            else if (*fmt == '0') { zero = 1; fmt++; }
+            else break;
+        }
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+        /* Left-justification and zero-padding are mutually exclusive; POSIX
+         * says '0' is ignored when '-' is present. */
+        if (left) zero = 0;
         int is_long = 0;
         while (*fmt == 'l') { is_long++; fmt++; }
         while (*fmt == 'h') { fmt++; }
@@ -1225,20 +1259,25 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
         case 's': {
             const char *str = va_arg(ap, const char *);
             if (!str) str = "(null)";
-            while (*str) s->emit(s, *str++);
+            int slen = 0;
+            while (str[slen]) slen++;
+            int spad = width - slen;
+            if (!left) { while (spad-- > 0) s->emit(s, ' '); }
+            for (int i = 0; i < slen; i++) s->emit(s, str[i]);
+            if (left)  { while (spad-- > 0) s->emit(s, ' '); }
             break;
         }
         case 'd': {
             int64_t v = is_long ? va_arg(ap, int64_t)
                                 : (int64_t)(int)va_arg(ap, int);
-            if (v < 0) { s->emit(s, '-'); fmt_emit_uint(s, (uint64_t)(-(v+1))+1, 10, 0, width, zero); }
-            else fmt_emit_uint(s, (uint64_t)v, 10, 0, width, zero);
+            if (v < 0) { s->emit(s, '-'); fmt_emit_uint_pad(s, (uint64_t)(-(v+1))+1, 10, 0, width ? width-1 : 0, zero, left); }
+            else fmt_emit_uint_pad(s, (uint64_t)v, 10, 0, width, zero, left);
             break;
         }
         case 'u': {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
-            fmt_emit_uint(s, v, 10, 0, width, zero);
+            fmt_emit_uint_pad(s, v, 10, 0, width, zero, left);
             break;
         }
         case 'o': {
@@ -1256,13 +1295,13 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
         case 'x': {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
-            fmt_emit_uint(s, v, 16, 0, width, zero);
+            fmt_emit_uint_pad(s, v, 16, 0, width, zero, left);
             break;
         }
         case 'X': {
             uint64_t v = is_long ? va_arg(ap, uint64_t)
                                  : (uint64_t)(unsigned)va_arg(ap, unsigned);
-            fmt_emit_uint(s, v, 16, 1, width, zero);
+            fmt_emit_uint_pad(s, v, 16, 1, width, zero, left);
             break;
         }
         case '\0': fmt--; break;

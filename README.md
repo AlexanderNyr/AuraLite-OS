@@ -167,64 +167,390 @@ For Windows 10 users running native QEMU without Linux, place `auralite.iso` in 
 
 ```batch
 @echo off
-echo ========================================================
-echo       Checking files and launching AuraLite OS...
-echo ========================================================
+title AuraLite OS - QEMU Launcher
 
-:: 1. Check QEMU installation
-echo [Step 1] Checking for QEMU installation...
-SET QEMU_PATH="C:\Program Files\qemu\qemu-system-x86_64.exe"
-IF NOT EXIST %QEMU_PATH% GOTO NO_QEMU
-echo          - QEMU found at %QEMU_PATH%
+rem ------------------------------------------------------------------
+rem [0] Switch this console to UTF-8 (code page 65001).
+rem
+rem     WHY THIS MATTERS: Windows user/folder names containing non-ASCII
+rem     characters (Cyrillic, accented Latin, CJK, ...) -- for example
+rem     "C:\Users\<CyrillicUserName>\Downloads\..." -- get mangled by cmd.exe's
+rem     legacy single-byte OEM code page (866 on Russian Windows, and
+rem     similar issues on other non-Latin locales) when such paths are
+rem     expanded via %~dp0/%CD% and then handed to commands like COPY
+rem     or passed as arguments to a child process such as QEMU. The
+rem     visible symptoms are garbled ("mojibake") text in this window,
+rem     and -- more seriously -- QEMU/COPY failing to find a file at a
+rem     path that genuinely exists, because the two programs ended up
+rem     disagreeing on how those non-ASCII bytes should be encoded.
+rem     Switching to UTF-8 (chcp 65001) makes this consistent end to
+rem     end on Windows 10 1903+ / Windows 11. The original code page is
+rem     restored right before every exit point in this script.
+rem ------------------------------------------------------------------
+for /f "tokens=2 delims=:" %%P in ('chcp') do set "ORIG_CODEPAGE=%%P"
+set "ORIG_CODEPAGE=%ORIG_CODEPAGE: =%"
+chcp 65001 >nul
 
-:: 2. Check ISO image
-echo [Step 2] Checking for auralite.iso...
-IF NOT EXIST "auralite.iso" GOTO NO_ISO
-echo          - auralite.iso found.
+echo ============================================================
+echo   AuraLite OS - QEMU Launcher for Windows 10
+echo ============================================================
+echo.
 
-:: 3. Check and create disk.img
-echo [Step 3] Checking for disk.img...
-IF EXIST "disk.img" GOTO DISK1_OK
-echo          - Creating disk.img (16MB)...
-fsutil file createnew disk.img 16777216 > nul
-:DISK1_OK
-echo          - disk.img ready.
+rem ------------------------------------------------------------------
+rem [1] Locate qemu-system-x86_64.exe
+rem
+rem     Checked in order: PATH, then a short list of common install
+rem     folders. Every check below is a single, unblocked line on
+rem     purpose: paths like "C:\Program Files (x86)\qemu" contain
+rem     parentheses, and cmd.exe mis-parses parentheses that appear
+rem     inside a multi-line IF/FOR ( ... ) block (it balances them
+rem     against the block's own braces before variables/paths are
+rem     even expanded). Plain one-line "if exist ... set ..." commands
+rem     are not parsed as a block, so this sidesteps that gotcha.
+rem
+rem     If QEMU lives somewhere else entirely, edit EXTRA_QEMU_DIR.
+rem ------------------------------------------------------------------
+echo [1/7] Looking for QEMU...
 
-:: 4. Check and create ext2.img
-echo [Step 4] Checking for ext2.img...
-IF EXIST "ext2.img" GOTO DISK2_OK
-echo          - Creating ext2.img (8MB)...
-fsutil file createnew ext2.img 8388608 > nul
-:DISK2_OK
-echo          - ext2.img ready.
+set "EXTRA_QEMU_DIR="
+rem set "EXTRA_QEMU_DIR=D:\Tools\qemu"
 
-echo ========================================================
-echo [Step 5] All files ready! Starting QEMU...
-echo ========================================================
+set "QEMU_EXE="
 
-%QEMU_PATH% -cdrom auralite.iso -m 512M -smp 4 -vga std -serial stdio -no-reboot -no-shutdown -cpu qemu64 -netdev user,id=net0 -device e1000,netdev=net0 -device piix3-usb-uhci,id=uhci -device usb-kbd,bus=uhci.0,port=1 -device usb-mouse,bus=uhci.0,port=2 -drive file=disk.img,format=raw,if=none,id=ahcidisk -device ahci,id=ahci0 -device ide-hd,drive=ahcidisk,bus=ahci0.0 -drive file=ext2.img,format=raw,if=none,id=ext2disk -device ide-hd,drive=ext2disk,bus=ahci0.1
+for /f "delims=" %%Q in ('where qemu-system-x86_64.exe 2^>nul') do if not defined QEMU_EXE set "QEMU_EXE=%%Q"
+
+if not defined QEMU_EXE if defined EXTRA_QEMU_DIR if exist "%EXTRA_QEMU_DIR%\qemu-system-x86_64.exe" set "QEMU_EXE=%EXTRA_QEMU_DIR%\qemu-system-x86_64.exe"
+if not defined QEMU_EXE if exist "C:\Program Files\qemu\qemu-system-x86_64.exe" set "QEMU_EXE=C:\Program Files\qemu\qemu-system-x86_64.exe"
+if not defined QEMU_EXE if exist "C:\Program Files (x86)\qemu\qemu-system-x86_64.exe" set "QEMU_EXE=C:\Program Files (x86)\qemu\qemu-system-x86_64.exe"
+if not defined QEMU_EXE if exist "C:\qemu\qemu-system-x86_64.exe" set "QEMU_EXE=C:\qemu\qemu-system-x86_64.exe"
+
+if not defined QEMU_EXE goto NO_QEMU
+echo       - Found: %QEMU_EXE%
+
+rem QEMU_DIR = the folder containing qemu-system-x86_64.exe (with trailing \).
+for %%D in ("%QEMU_EXE%") do set "QEMU_DIR=%%~dpD"
+
+rem ------------------------------------------------------------------
+rem [2] Locate the ISO: auralite.iso next to this script, or (failing
+rem     that) any *.iso file found in the same folder.
+rem ------------------------------------------------------------------
+echo [2/7] Looking for the AuraLite ISO...
+set "ISO_FILE=%~dp0auralite.iso"
+
+if not exist "%ISO_FILE%" (
+    for %%F in ("%~dp0*.iso") do set "ISO_FILE=%%~fF"
+)
+
+if not exist "%ISO_FILE%" goto NO_ISO
+echo       - Using: "%ISO_FILE%"
+
+rem ------------------------------------------------------------------
+rem [3] Locate UEFI (OVMF) firmware so the OS boots through its GOP
+rem     framebuffer path instead of the legacy BIOS path.
+rem
+rem     WHY THIS MATTERS: auralite.iso is a dual-boot hybrid image with
+rem     BOTH a legacy BIOS loader and a UEFI (BOOTX64.EFI) loader baked
+rem     in, but only the UEFI path currently programs a linear
+rem     graphics framebuffer. Booted via plain BIOS (SeaBIOS, no OVMF),
+rem     the QEMU window gets stuck showing a static
+rem     "Booting from Hard Disk..." text screen with a blinking cursor
+rem     FOREVER -- that is not a hang, the OS is actually running fine
+rem     underneath (see it alive on the serial console mirrored into
+rem     THIS window), it simply has no framebuffer to draw its own
+rem     console/GUI onto over BIOS. Only UEFI gives it one.
+rem
+rem     Firmware search order:
+rem       1. OVMF_CODE.fd + OVMF_VARS.fd dropped directly next to this
+rem          script (manual override -- copy your own OVMF build here
+rem          under exactly these two names if the checks below fail).
+rem       2. <qemu install dir>\share\edk2-x86_64-code.fd +
+rem          edk2-i386-vars.fd -- the standard qemu-w64-setup.exe
+rem          installer from https://qemu.weilnetz.de/w64/ ships these
+rem          automatically, so most Windows QEMU installs already have
+rem          them and nothing extra needs to be downloaded.
+rem       3. <qemu install dir>\share\OVMF_CODE_4M.fd + OVMF_VARS_4M.fd
+rem          -- alternate naming used by some QEMU/OVMF packages.
+rem
+rem     The VARS file is writable NVRAM storage, so it is copied to a
+rem     private working copy under %PUBLIC% (see the comment further
+rem     down, right before the copy happens, for why that specific
+rem     location was chosen) instead of being used -- and mutated --
+rem     directly from the QEMU install folder. If UEFI firmware cannot
+rem     be found at all, the script falls back to the BIOS path with a
+rem     clear warning explained at the end of this section.
+rem ------------------------------------------------------------------
+echo [3/7] Looking for UEFI (OVMF) firmware...
+
+set "OVMF_CODE="
+set "OVMF_VARS_SRC="
+
+if exist "%~dp0OVMF_CODE.fd" if exist "%~dp0OVMF_VARS.fd" (
+    set "OVMF_CODE=%~dp0OVMF_CODE.fd"
+    set "OVMF_VARS_SRC=%~dp0OVMF_VARS.fd"
+)
+
+if not defined OVMF_CODE if exist "%QEMU_DIR%share\edk2-x86_64-code.fd" if exist "%QEMU_DIR%share\edk2-i386-vars.fd" (
+    set "OVMF_CODE=%QEMU_DIR%share\edk2-x86_64-code.fd"
+    set "OVMF_VARS_SRC=%QEMU_DIR%share\edk2-i386-vars.fd"
+)
+
+if not defined OVMF_CODE if exist "%QEMU_DIR%share\OVMF_CODE_4M.fd" if exist "%QEMU_DIR%share\OVMF_VARS_4M.fd" (
+    set "OVMF_CODE=%QEMU_DIR%share\OVMF_CODE_4M.fd"
+    set "OVMF_VARS_SRC=%QEMU_DIR%share\OVMF_VARS_4M.fd"
+)
+
+if defined OVMF_CODE (
+    echo       - Found: "%OVMF_CODE%"
+)
+rem The writable VARS copy is deliberately placed under %PUBLIC%
+rem (normally "C:\Users\Public"), NOT next to this script. %PUBLIC% is
+rem a fixed, always-ASCII, always-writable system folder, so this
+rem sidesteps any interaction between cmd.exe's COPY command and a
+rem script/ISO location that (as is entirely normal and fine for
+rem everything else) may contain Cyrillic/accented characters, spaces,
+rem or parentheses -- e.g. "C:\Users\<name>\Downloads\my folder (1)".
+rem Those characters are fully supported for the ISO/script location
+rem itself; the extra caution here is only because copying a brand
+rem new file into such a path from a batch script has proven unreliable
+rem in the field. %TEMP% is used as a fallback if %PUBLIC% is unset.
+set "OVMF_VARS="
+set "OVMF_WORKDIR=%PUBLIC%\AuraLiteOS-QEMU"
+if not defined PUBLIC set "OVMF_WORKDIR=%TEMP%\AuraLiteOS-QEMU"
+if defined OVMF_CODE if not exist "%OVMF_WORKDIR%" mkdir "%OVMF_WORKDIR%" >nul 2>&1
+if defined OVMF_CODE if exist "%OVMF_WORKDIR%" set "OVMF_VARS=%OVMF_WORKDIR%\ovmf_vars.fd"
+
+if defined OVMF_VARS if not exist "%OVMF_VARS%" (
+    copy /y "%OVMF_VARS_SRC%" "%OVMF_VARS%" >nul
+    if errorlevel 1 (
+        echo       [WARN] Could not copy the UEFI VARS file to:
+        echo         "%OVMF_VARS%"
+        set "OVMF_CODE="
+        set "OVMF_VARS="
+    )
+)
+if defined OVMF_VARS if not exist "%OVMF_VARS%" (
+    echo       [WARN] UEFI VARS file is still missing after the copy attempt.
+    set "OVMF_CODE="
+    set "OVMF_VARS="
+)
+
+if defined OVMF_CODE (
+    echo       - UEFI boot enabled: the OS will show its graphical
+    echo         console/GUI directly in the QEMU window.
+) else (
+    echo       - No UEFI firmware found next to this script or under
+    echo         "%QEMU_DIR%share".
+    echo       - Falling back to legacy BIOS boot. The QEMU window will
+    echo         show a static "Booting from Hard Disk..." screen with
+    echo         a blinking cursor and appear frozen -- THIS IS EXPECTED
+    echo         over plain BIOS: the OS has no graphics output there,
+    echo         it only prints to the serial console mirrored into
+    echo         THIS cmd window. To see the real GUI, copy an OVMF
+    echo         build's OVMF_CODE.fd and OVMF_VARS.fd next to this
+    echo         script, or reinstall QEMU from
+    echo         https://qemu.weilnetz.de/w64/ ^(recent installers
+    echo         bundle UEFI firmware automatically^).
+)
+
+rem ------------------------------------------------------------------
+rem [4] Pick a CPU accelerator.
+rem
+rem     WHY THIS MATTERS: AuraLite is a real x86_64 kernel with a GUI
+rem     compositor that targets 100 FPS and redraws the whole screen
+rem     every frame. Without hardware-assisted virtualization, QEMU
+rem     falls back to TCG (pure software instruction-by-instruction
+rem     emulation), which is easily 10-50x slower -- that is exactly
+rem     what makes the cursor jerky and the screen update only once
+rem     every 1-2 seconds instead of smoothly.
+rem
+rem     On Windows 10/11, "whpx" (Windows Hypervisor Platform) is the
+rem     hardware accelerator QEMU can use. Passing BOTH "-accel whpx"
+rem     and "-accel tcg" is safe and always correct: per QEMU's own
+rem     documented behaviour, it tries whpx first and silently falls
+rem     back to tcg if whpx isn't available, so this line works whether
+rem     or not Hyper-V/WHPX is enabled on this machine.
+rem
+rem     kernel-irqchip=off: WHPX's default in-kernel interrupt
+rem     controller has a well-known bug on Windows 10 where timer/PIC
+rem     interrupts fail to wake the virtual CPU from HLT. AuraLite's
+rem     8259 PIC + Local APIC "virtual wire" timer path hits this
+rem     directly, and the symptom looks exactly like a freeze: the
+rem     clock stops advancing, the mouse cursor stops moving and the
+rem     screen stops repainting, even though the OS is not actually
+rem     hung (WHPX just silently drops the interrupts that would tell
+rem     it to keep going). Passing kernel-irqchip=off makes WHPX
+rem     emulate interrupt delivery in software instead of through that
+rem     broken fast path -- CPU instruction execution still runs under
+rem     hardware acceleration, only interrupt routing becomes emulated,
+rem     so this is still far faster than plain TCG. This flag is
+rem     specific to whpx and is ignored by (harmless to have present
+rem     for) the tcg fallback.
+rem
+rem     If the GUI is still slow after this, WHPX is most likely not
+rem     enabled at all. Turn it on with (as Administrator, then
+rem     reboot):
+rem         dism /online /enable-feature /featurename:HypervisorPlatform /all
+rem     or via "Turn Windows features on or off" -> check
+rem     "Windows Hypervisor Platform".
+rem ------------------------------------------------------------------
+echo [4/7] Selecting CPU accelerator (WHPX if available, else software)...
+set "ACCEL_ARGS=-accel whpx,kernel-irqchip=off -accel tcg,thread=multi"
+
+rem ------------------------------------------------------------------
+rem [5] Create the optional AHCI/ext2 test disks next to this script
+rem     if they don't already exist. These back /disk, /fat and /ext2
+rem     inside AuraLite; the OS boots fine without them too, so any
+rem     failure here is a warning, not a hard error.
+rem ------------------------------------------------------------------
+echo [5/7] Checking test disk images...
+set "DISK0=%~dp0disk.img"
+set "DISK1=%~dp0ext2.img"
+
+if exist "%DISK0%" (
+    echo       - disk.img already present.
+) else (
+    echo       - Creating disk.img [16 MiB, AHCI test disk for /fat and /disk]...
+    fsutil file createnew "%DISK0%" 16777216 >nul 2>&1
+    if not exist "%DISK0%" (
+        echo         [WARN] Could not create disk.img -- continuing without it.
+        set "DISK0="
+    )
+)
+
+if exist "%DISK1%" (
+    echo       - ext2.img already present.
+) else (
+    echo       - Creating ext2.img [8 MiB, ext2 test disk for /ext2]...
+    fsutil file createnew "%DISK1%" 8388608 >nul 2>&1
+    if not exist "%DISK1%" (
+        echo         [WARN] Could not create ext2.img -- continuing without it.
+        set "DISK1="
+    )
+)
+
+rem ------------------------------------------------------------------
+rem [6] Build the QEMU command line.
+rem
+rem   -accel whpx / tcg       : hardware acceleration when available,
+rem                             see step [4] above.
+rem   -drive if=pflash (x2)   : the OVMF CODE (read-only) and VARS
+rem                             (writable NVRAM) firmware images, only
+rem                             added when UEFI firmware was found in
+rem                             step [3]. Omitted entirely -> QEMU boots
+rem                             its built-in SeaBIOS instead.
+rem   -drive ...,if=ide       : auralite.iso is a raw hybrid disk image
+rem                             (BIOS MBR + UEFI ESP together), NOT an
+rem                             optical disc -- it must be attached as
+rem                             a plain hard disk. Do NOT use -cdrom;
+rem                             the BIOS/UEFI loader chain expects to
+rem                             see it on an IDE/AHCI disk interface.
+rem   -smp 4                  : real SMP is on -- the boot CPU detects
+rem                             every core via ACPI MADT and wakes the
+rem                             application processors with
+rem                             INIT-SIPI-SIPI.  Since SMP step 3.2 the
+rem                             scheduler REALLY runs threads on every
+rem                             core: per-CPU syscall state, per-CPU
+rem                             LAPIC-calibrated timer ticks, run-queue
+rem                             load balancing and work stealing, so 4
+rem                             vCPUs give genuine parallel speedup.
+rem   -vga std                : linear framebuffer for the GUI/console
+rem                             (only actually driven when booting via
+rem                             UEFI/OVMF -- see step [3] above).
+rem   -serial stdio           : mirrors the kernel/shell serial console
+rem                             into this cmd window either way.
+rem   -netdev/-device e1000   : Intel 8254x NIC AuraLite's driver
+rem                             recognises out of the box (DHCP/DNS/TCP).
+rem   -device piix3-usb-uhci  : UHCI controller for the usb-tablet
+rem                             device below (PS/2 keyboard from the
+rem                             standard QEMU PC machine is still used
+rem                             for typing; only the pointer moves to
+rem                             USB).
+rem   -device usb-tablet      : an ABSOLUTE-positioning USB pointer
+rem                             device -- this is what gives "full
+rem                             mouse capture": with a normal (relative)
+rem                             PS/2 mouse, QEMU must literally grab the
+rem                             cursor (Ctrl+Alt to release it) because
+rem                             it only ever sees deltas and the guest
+rem                             and host cursors would otherwise drift
+rem                             apart. usb-tablet instead reports the
+rem                             cursor's exact position every time, so
+rem                             the guest cursor always matches the
+rem                             host cursor 1:1 with no grab/release
+rem                             step at all. AuraLite's generic USB HID
+rem                             report parser already handles this
+rem                             device and is exercised by this exact
+rem                             configuration in the project's own
+rem                             integration test suite
+rem                             (test_usb_generic_hid.sh).
+rem   -device ahci / ide-hd   : the two optional test disks from [5].
+rem ------------------------------------------------------------------
+echo [6/7] Assembling QEMU command line...
+
+set "QEMU_ARGS=%ACCEL_ARGS%"
+if defined OVMF_CODE set "QEMU_ARGS=%QEMU_ARGS% -drive if=pflash,unit=0,format=raw,readonly=on,file="%OVMF_CODE%" -drive if=pflash,unit=1,format=raw,file="%OVMF_VARS%""
+
+set "QEMU_ARGS=%QEMU_ARGS% -drive file="%ISO_FILE%",format=raw,if=ide -boot order=c -m 256M -smp 4 -vga std -serial stdio -no-reboot -no-shutdown -cpu qemu64 -netdev user,id=net0 -device e1000,netdev=net0 -device piix3-usb-uhci,id=uhci -device usb-tablet,bus=uhci.0"
+
+if defined DISK0 set "QEMU_ARGS=%QEMU_ARGS% -drive file="%DISK0%",format=raw,if=none,id=ahcidisk -device ahci,id=ahci0 -device ide-hd,drive=ahcidisk,bus=ahci0.0"
+if defined DISK1 set "QEMU_ARGS=%QEMU_ARGS% -drive file="%DISK1%",format=raw,if=none,id=ext2disk -device ide-hd,drive=ext2disk,bus=ahci0.1"
 
 echo.
-echo QEMU finished.
+echo [7/7] Starting QEMU...
+echo ============================================================
+echo   A QEMU window should appear shortly. Serial/console output
+echo   is also mirrored into THIS window. Close the QEMU window
+echo   (or press Ctrl+C here) to stop.
+echo.
+echo   If the GUI feels slow/jerky (cursor updating only once every
+echo   1-2 seconds), WHPX hardware acceleration is likely disabled on
+echo   this PC and QEMU is falling back to slow software emulation.
+echo   Enable it (as Administrator, then reboot) with:
+echo     dism /online /enable-feature /featurename:HypervisorPlatform /all
+echo   or via "Turn Windows features on or off" -^> check
+echo   "Windows Hypervisor Platform".
+echo.
+echo   If instead the clock is stuck, the mouse cursor does not move
+echo   and the screen never repaints (looks frozen even though QEMU is
+echo   clearly running), that is a known WHPX/Windows 10 bug with
+echo   interrupt delivery -- already worked around in this script via
+echo   kernel-irqchip=off. If it still happens, try updating QEMU to
+echo   the latest version from https://qemu.weilnetz.de/w64/, since
+echo   this WHPX bug has been actively fixed upstream.
+echo ============================================================
+echo.
+
+"%QEMU_EXE%" %QEMU_ARGS%
+set "QEMU_EXIT=%ERRORLEVEL%"
+
+echo.
+echo ============================================================
+echo   QEMU exited with code %QEMU_EXIT%.
+echo ============================================================
 pause
-exit /b
+if defined ORIG_CODEPAGE chcp %ORIG_CODEPAGE% >nul
+exit /b %QEMU_EXIT%
 
 :NO_QEMU
 echo.
-echo [ERROR] QEMU emulator NOT FOUND at: %QEMU_PATH%
-echo         Please install QEMU from https://qemu.weilnetz.de/w64/
-echo         (Or edit run.bat if QEMU is installed in a different folder).
+echo [ERROR] Could not find qemu-system-x86_64.exe
+echo         Install QEMU for Windows from: https://qemu.weilnetz.de/w64/
+echo         Then either:
+echo           - add its install folder to your PATH, or
+echo           - edit this run.bat and set EXTRA_QEMU_DIR to that folder.
 echo.
 pause
-exit /b
+if defined ORIG_CODEPAGE chcp %ORIG_CODEPAGE% >nul
+exit /b 1
 
 :NO_ISO
 echo.
-echo [ERROR] File 'auralite.iso' NOT FOUND in the current folder!
-echo         Please put 'auralite.iso' into the same folder as run.bat.
+echo [ERROR] No .iso file found next to run.bat
+echo         Copy auralite.iso into this folder:
+echo           %~dp0
 echo.
 pause
-exit /b
+if defined ORIG_CODEPAGE chcp %ORIG_CODEPAGE% >nul
+exit /b 1
 ```
 
 ### Run tests
@@ -431,6 +757,12 @@ Start here:
 - [`docs/virtual_driver_matrix.md`](docs/virtual_driver_matrix.md) — QEMU/VirtualBox/VMware device compatibility matrix.
 - [`docs/opengl.md`](docs/opengl.md) — the software OpenGL 1.1/1.3 stack: supported subset, mipmapping, multitexturing, framebuffer objects, behaviour notes, performance.
 - [`PLAN.md`](PLAN.md) — historical phase plan.
+- [`GL_PLAN.md`](GL_PLAN.md) — the OpenGL stack (complete).
+- [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
+- [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
+- [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — a box-model web view (planned). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
+- [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
+- [`FIXES_PLAN.md`](FIXES_PLAN.md) — repair plan for known defects (planned), ranked by danger rather than by ease. Adds nothing; fixes what is broken.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
 
@@ -455,6 +787,17 @@ Short version:
   filesystems rather than production-grade implementations.
 - USB MSC currently uses the UHCI backend; OHCI/EHCI/xHCI transfer engines are
   not wired to class drivers yet.
+- **The keyboard layout is hardcoded US.** Two fixed scancode tables, no keymap
+  selection and no dead keys, so a non-US keyboard produces the wrong
+  characters outside the shared ASCII subset.
+- **No cryptography and therefore no HTTPS.** There is no SHA-256, AES or curve
+  arithmetic anywhere in the tree, and `getentropy()` returns a mix of TSC and
+  tick counts that is guessable — unfit for key material. See
+  [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+- **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
+  but no interrupt gate selects it, so a kernel stack overflow or double fault
+  resets the machine with no diagnostic.
+- `SIGSTOP`/`SIGTSTP` terminate rather than stop; there is no stopped state.
 
 See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 

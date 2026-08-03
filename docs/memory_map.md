@@ -27,6 +27,20 @@ Exact addresses vary per build; inspect with `readelf -lW build/kernel.elf`.
 The heap grows on demand: `kheap_expand()` maps PMM frames via the VMM in 64 KiB
 chunks as `kmalloc` exhausts the free list. Pages are mapped No-Execute.
 
+## Stack regions (guarded)
+
+| Region | Virtual address | Layout |
+|--------|-----------------|--------|
+| Thread kernel stacks | `0xFFFFFFFF8C000000` | 128 slots × 24 KiB: `[4 KiB guard][16 KiB usable][4 KiB guard]` |
+| Per-CPU IST1 stacks (FIX_R1) | `0xFFFFFFFF8C300000` | 32 slots × 20 KiB: `[4 KiB guard][16 KiB usable]` |
+
+Guard pages are simply never mapped via the VMM, so a stack overflow takes a
+page fault on the guard instead of corrupting a neighbour; for the IST1 slots
+the next slot's guard page sits immediately above the usable area.  The IST1
+stacks back the double-fault handler: with the #DF gate armed on IST1
+(`tss_init()`), a kernel fault on a dead stack runs its diagnostic on a
+known-good stack instead of triple-faulting.
+
 ## Limine-provided regions
 
 | Region | Address / offset               | Source request              |

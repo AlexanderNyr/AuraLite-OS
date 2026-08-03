@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 
+/* Size of each per-CPU IST1 stack (usable bytes).  Shared with
+ * diagnostics.c, whose IST self-check locates the guard page below the
+ * stack relative to the programmed stack top. */
+#define TSS_IST1_STACK_SIZE (16 * 1024)
+
 /*
  * 64-bit Task State Segment (TSS).
  *
@@ -57,5 +62,10 @@ void tss_load_for_cpu(int cpu_id);
  * Called when switching to a user thread so each has its own kernel stack. */
 void tss_set_rsp0(uint64_t rsp0);
 void tss_set_rsp0_for_cpu(int cpu_id, uint64_t rsp0);
+
+/* Read back the IST1 stack top programmed for cpu_id (0 when invalid or
+ * unprogrammed).  Used by the FIX_R0 boot-time IST self-check so the log
+ * reflects the TSS contents as loaded, not just the code that wrote them. */
+uint64_t tss_get_ist1_top_for_cpu(int cpu_id);
 
 #endif /* AURALITE_ARCH_X86_64_TSS_H */

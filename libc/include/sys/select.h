@@ -1,8 +1,8 @@
 #ifndef AURALITE_LIBC_SYS_SELECT_H
 #define AURALITE_LIBC_SYS_SELECT_H
 
-#include "libc/include/sys/types.h"
-#include "libc/include/time.h"
+#include "../sys/types.h"
+#include "../time.h"
 
 #define FD_SETSIZE 64
 

@@ -11,6 +11,27 @@ for the feature matrix.
 
 ### Kernel / CPU / scheduling
 
+- **The IST is allocated but never used, so a bad-stack fault triple-faults.** (`FIXES_PLAN.md` R1)
+  `tss_init()` allocates a per-CPU IST1 stack and panics on OOM allocating it
+  (`kernel/arch/x86_64/tss.c`), and `tss_entries[cpu].ist1_low/high` are
+  filled in — but `idt_set_gate()` hardcodes `idt[n].ist = 0`
+  (`kernel/arch/x86_64/idt.c:22`, comment: *"no IST for now"*), so **no vector
+  ever selects it**. The memory is reserved and unreachable. The consequence
+  is specific: a fault that occurs when RSP is invalid — a kernel stack
+  overflow, or a #DF — cannot push an exception frame, so it escalates to a
+  triple fault and the machine resets with no diagnostic. Double fault (8),
+  NMI (2) and machine check (18) are the vectors that conventionally need
+  IST entries.
+- **⚠ The kernel stack protector trips intermittently under `-smp 2`.**
+  `[security] STACK CORRUPTION DETECTED in kernel` followed by a halt,
+  observed twice in `test_selftest` and passing on three consecutive re-runs
+  afterwards. `__stack_chk_fail()` firing means either a genuine kernel stack
+  overflow or a corrupted canary — both are memory corruption, and the message
+  does not distinguish them. It should not be possible while APs only idle,
+  which makes it more interesting rather than less: either something runs on
+  an AP, or shared state is mutated without a lock. Two integration cases set
+  `IL_SMP=1` to avoid the area, which documents the workaround rather than the
+  fault. Diagnosis is `FIXES_PLAN.md` phase R2.
 - **SMP scheduling is conservative.** Application processors are online, load
   CPU-local state and enter the idle scheduler loop; normal user scheduling remains
   BSP-only until per-CPU run queues and TLB shootdown policy are completed.
@@ -85,7 +106,7 @@ for the feature matrix.
   tested; the userspace `init` shell rewrite (`cmd &`, `jobs`, `fg`, `bg`,
   setpgid+tcsetpgrp per spawned child, restore fg on exit) is deferred — high
   regression risk to the interactive shell, wants a QEMU boot to validate.
-- **No stopped state / WUNTRACED.** SIGSTOP/SIGTSTP currently terminate (no
+- **No stopped state / WUNTRACED.** (`FIXES_PLAN.md` R6) SIGSTOP/SIGTSTP currently terminate (no
   THREAD_STOPPED state, no SIGCONT resume); WUNTRACED is accepted but never
   reports a stopped child. Needs a stopped scheduler state.
 - **n_children is fork/spawn-tracked but not perfectly precise** across orphan
@@ -132,7 +153,7 @@ for the feature matrix.
   and `umask` arrive in P7. `sys/stat.h` deliberately omits the mkdir prototype.
 - **O_NONBLOCK** is honored for pipes (EAGAIN); devices/sockets that can block
   are not yet wired to it.
-- **Socket/net syscalls return bare `-1`.** `SYS_SOCKET*` / `SYS_NET_*` failure
+- **Socket/net syscalls return bare `-1`.** (`FIXES_PLAN.md` R7) `SYS_SOCKET*` / `SYS_NET_*` failure
   paths propagate the layer's `-1`, which libc currently decodes as `EPERM`.
   Give them real errno values (`EBADF`, `ENOTCONN`, `ECONNREFUSED`, …).
 - ~~**P1 libc headers still missing.**~~ **Done:** `limits.h`, `stdbool.h`,
@@ -141,7 +162,7 @@ for the feature matrix.
 - **libm accuracy is series-based (~1e-9), not last-ULP**, and only covers the
   ten functions listed in `math.h`; no `tan/asin/atan2/fmod/modf/frexp`, no
   `float` variants, no errno/`HUGE_VAL` domain-error reporting. Revisit in P10.
-- **`errno` is a single global, not thread-local.** Safe while single-threaded;
+- **`errno` is a single global, not thread-local.** (`FIXES_PLAN.md` R3) Safe while single-threaded;
   must move behind TLS in `__errno_location()` during P9 (pthreads).
 - **SYSCALL state uses globals.** Saved user `RCX/R11/RSP` state is not designed
   for true concurrent SMP syscalls.
@@ -164,12 +185,44 @@ for the feature matrix.
   persistent per-filesystem FIFO/symlink storage and full symlink path-component
   following remain future work.
 
+### Security / cryptography
+
+- **`getentropy()` is not cryptographically random.** `SYS_GETENTROPY`
+  (syscall 318) returns `tsc ^ timer_get_ticks() ^ &out ^ (i * LCG_CONST)`.
+  Every input is observable or guessable by anyone who knows roughly when the
+  machine booted. It is fine for the stack-guard cookie and ASLR jitter it was
+  written for, and **unfit for key material** — anything cryptographic must
+  wait for `INTERNET_PLAN.md` phase N0, which replaces it with a CSPRNG seeded
+  from RDRAND/RDSEED and fails closed when no real source exists.
+- **There is no cryptography in the tree at all.** No SHA-256, no AES, no
+  curve arithmetic. `kernel/fs/btrfs.c` writes its SHA-256 checksum field as
+  zeros and says so in a comment. Consequently there is no TLS and no HTTPS;
+  `INTERNET_PLAN.md` is the plan for that.
+
 ### Storage / filesystems
 
 - **AHCI is QEMU-focused.** DMA read/write passes the integration tests on QEMU
   AHCI disks, but broad hardware/hypervisor coverage is still experimental.
 - **`/disk` is intentionally tiny.** Flat namespace, 8 files maximum, 4 KiB per
   file.
+- **`initrd_init()` does not check its `kmalloc`.** (`FIXES_PLAN.md` R4)
+  `kernel/fs/initrd.c` allocates the vnode pool with
+  `initrd_vnodes = kmalloc(sizeof(struct vnode) * initrd.file_count)` and
+  `memset()`s it on the very next line with no NULL test, so an allocation
+  failure is a kernel NULL-dereference during early boot rather than a
+  diagnosed failure. It has never been hit because the initrd is parsed when
+  the heap is empty, which is precisely why it survived review. Every other
+  `kmalloc` on this path is checked.
+- **tmpfs has no `mkdir`.** `/tmp` and `/opt` are flat: `tmpfs_ops` has no
+  `.mkdir` entry and `valid_name()` rejects any path containing a slash, so
+  `mkdir /tmp/x` fails and always has. Directories work on FAT32 and ext2.
+  Found while fixing `test_shell_all.sh`, which had been asserting that the
+  mkdir *succeeded* — the case is not in `run_all.sh`, so nothing had run it.
+- **`.init_array` is never executed.** (`FIXES_PLAN.md` R5) `__libc_start_main()` calls `main()`
+  directly, so a `__attribute__((constructor))` function is linked into the
+  binary (`gusb.o` has one) and silently never runs. Either the runtime should
+  walk `.init_array` or the linker script should reject it; today it does
+  neither, which is the worst of the three options.
 - **`/opt` does not persist across a reboot** (FSLAYOUT_PLAN phase F1). It is
   a tmpfs volume, so an installed package is gone after a restart. Making it
   durable needs a writable disk that is present on every boot; the persistent
@@ -188,6 +241,16 @@ for the feature matrix.
   reason. This is worth fixing on its own terms — until it is, path handling
   behaves differently from every POSIX system.
 - **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and FAT date/time stat decoding, and ext2 supports Linux-mkfs images plus in-kernel mkfs with inode timestamps. Crash consistency, journaling, full permission semantics and extensive fsck-style recovery are out of scope.
+
+### Input
+
+- **The keyboard layout is hardcoded US, with no way to change it.** (`FIXES_PLAN.md` R8)
+  `drivers/keyboard/keyboard.c` translates scancodes through two fixed
+  128-entry tables (`map_lo`, `map_hi`); there is no keymap abstraction, no
+  runtime selection and no dead-key support. A non-US keyboard produces the
+  wrong characters for anything outside the shared ASCII subset, and there is
+  no workaround short of editing the tables and rebuilding. Worth stating
+  because nothing in the docs currently implies the restriction.
 
 ### USB / devices
 
@@ -218,6 +281,14 @@ for the feature matrix.
   static addressing for deterministic boots.
 
 ### Graphics / GUI
+
+- **`gfx_fill_rect()` does not check `back_fb` for NULL.** (`FIXES_PLAN.md` R4) `graphics.c`
+  allocates the back buffer with `kmalloc` and tolerates failure
+  (`if (back_fb) memset(...)`), and `gfx_putpixel()`, `gfx_clear()`,
+  `gfx_flip()` and `gfx_flip_rect()` all begin with a `!back_fb` guard.
+  `gfx_fill_rect()` is the one that does not, and writes through the pointer
+  directly. On a machine where the back-buffer allocation failed, every other
+  drawing entry point degrades quietly and this one faults.
 
 - **⚠ The virtio-gpu driver hangs during initialisation when a device is
   actually attached.** Booting with `-device virtio-gpu-pci` stops after

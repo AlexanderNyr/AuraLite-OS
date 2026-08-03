@@ -9,7 +9,7 @@
  * standard S_* permission/type macros plus the stat-family prototypes.
  */
 
-#include "libc/include/sys/types.h"   /* mode_t */
+#include "../sys/types.h"   /* mode_t */
 
 struct stat;             /* full definition in <unistd.h> */
 
