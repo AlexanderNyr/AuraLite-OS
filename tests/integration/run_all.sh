@@ -47,6 +47,7 @@ ALL_CASES=(
     test_posix_p10
     test_execve_args
     test_errno
+    test_tls_errno
     test_open_flags
     test_lseek
     test_signals

@@ -41,11 +41,17 @@ context_switch:
     mov rsp, [rsi]             ; load new RSP from new_tcb->rsp
 
     ; P9: Restore FS.base for TLS (pthread).  Offset comes from asm_offsets.inc.
+    ; FIX_R3: unconditional, via the IA32_FS_BASE MSR (0xC0000100) rather
+    ; than wrfsbase -- CR4.FSGSBASE is never enabled on any CPU in this
+    ; tree, so wrfsbase raised #UD here and killed the kernel the first
+    ; time a pthread child got scheduled.  Unconditional also means a
+    ; thread with tls_base == 0 does NOT keep the previous tenant's FS:
+    ; FS.base is always exactly the incoming thread's value.
     mov rax, [rsi + TCB_TLS_BASE]
-    test rax, rax
-    jz .no_tls
-    wrfsbase rax
-.no_tls:
+    mov rdx, rax
+    shr rdx, 32
+    mov ecx, 0xC0000100        ; IA32_FS_BASE
+    wrmsr                      ; FS.base <- new_tcb->tls_base
 
     popfq                      ; restore RFLAGS
     pop r15

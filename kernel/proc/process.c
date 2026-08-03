@@ -266,6 +266,14 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
             (unsigned long long)entry, (unsigned long long)user_rsp,
             (unsigned long long)(read_cr3() & 0x000FFFFFFFFFF000ULL));
 
+    /* FIX_R3: a fresh program starts with NO TLS.  Without this an execve()
+     * would leak the old program's (or another tenant's) FS into the new
+     * address space; libc installs the new main thread's TCB itself in
+     * __libc_start_main.  Keep FS.base == tls_base at every user entry,
+     * the same invariant context_switch maintains. */
+    cur->tls_base = 0;
+    write_fs_base(0);
+
     jump_to_user(entry, user_rsp, 0);
     thread_exit();   /* not reached */
 }
@@ -304,6 +312,11 @@ static void fork_child_entry(void *arg) {
         set_syscall_stack(kstack);
     }
 
+    /* FIX_R3: fork() inherits the parent's TLS base (copied into
+     * child->tls_base in do_fork); install it before the first user entry
+     * so FS is never whatever the previous tenant of this CPU left. */
+    write_fs_base(self ? self->tls_base : 0);
+
     /* Jump to user mode at the saved RIP. RAX will be set to 0 by the
      * fork_child_sysret asm (below) so the child sees fork()==0. */
     extern void fork_child_sysret(uint64_t rip, uint64_t rflags, uint64_t rsp);
@@ -332,15 +345,18 @@ int64_t do_fork(void) {
     kprintf("[proc] fork: cloned to PML4 phys 0x%llx\n",
             (unsigned long long)child_pml4);
 
-    /* 2) Create the child thread.  We do this with interrupts disabled so
-     * the scheduler can't pick up the half-initialised TCB (no pml4, no
+    /* 2) Create the child thread UNSTARTED.  The old code relied on cli so
+     * "the scheduler can't pick up the half-initialised TCB (no pml4, no
      * saved user frame, no FDs) between kthread_create() and the field
-     * assignments below. */
+     * assignments below" — but on SMP a remote cpu ignores the local IF.
+     * FIX_R3: the TCB is only published with kthread_start() once every
+     * field below is in place; cli still guards the create→start sequence. */
     tcb_t *parent = self;
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
 
-    tcb_t *child = kthread_create(fork_child_entry, NULL, "fork-child");
+    tcb_t *child = kthread_create_unstarted(fork_child_entry, NULL,
+                                            "fork-child");
     if (child == NULL) {
         (void)paging_free_address_space(child_pml4);
         if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
@@ -355,6 +371,10 @@ int64_t do_fork(void) {
     child->fork_user_rflags = user_rflags;
     child->fork_user_rsp    = user_rsp;
     if (parent) {
+        /* FIX_R3: fork(), like Linux, inherits the TLS base — the child
+         * starts life as a byte-copy of the parent's address space, so the
+         * parent's TLS block is equally valid there. */
+        child->tls_base = parent->tls_base;
         /* Share the parent's open-file descriptions (shared seek offset/flags),
          * incrementing each OFD refcount; copy the per-fd FD_CLOEXEC flags. */
         vfs_fork_inherit(child->fd_table, parent->fd_table,
@@ -417,6 +437,9 @@ int64_t do_fork(void) {
 
         parent->n_children++;
     }
+
+    /* All fields are set: publish — the child may now run on any cpu. */
+    kthread_start(child);
 
     if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
 
@@ -727,7 +750,9 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     pl->path = path_copy;
     pl->args = ea;
 
-    tcb_t *child = kthread_create(spawn_thread, pl, path);
+    /* FIX_R3: created UNSTARTED — pml4_phys, vmas, credentials and the cwd
+     * below must be in place before any cpu may schedule the child. */
+    tcb_t *child = kthread_create_unstarted(spawn_thread, pl, path);
     if (child == NULL) {
         if (ea) { exec_args_free(ea); kfree(ea); }
         kfree(pl);
@@ -778,6 +803,9 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
         child->cwd[0] = '/';
         child->cwd[1] = '\0';
     }
+
+    /* All fields are set: publish — the child may now run on any cpu. */
+    kthread_start(child);
 
     return (int64_t)child->id;
 }

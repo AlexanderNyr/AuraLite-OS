@@ -119,6 +119,18 @@ static inline void write_msr(uint32_t msr, uint64_t val) {
                       "d"((uint32_t)(val >> 32)), "c"(msr));
 }
 
+/* Architectural MSR indices in use. */
+#define MSR_IA32_FS_BASE  0xC0000100U
+
+/* FIX_R3: FS.base is programmed through the IA32_FS_BASE MSR, never via
+ * wrfsbase.  CR4.FSGSBASE is not set anywhere in this tree (and the qemu64
+ * vCPU has no such feature bit), so wrfsbase raises #UD — and did so inside
+ * context_switch the first time a pthread child was scheduled (R3 bring-up),
+ * taking the whole kernel down.  The MSR path works on every x86-64 CPU. */
+static inline void write_fs_base(uint64_t val) {
+    write_msr(MSR_IA32_FS_BASE, val);
+}
+
 /* ---- TLB ---- */
 
 /* Invalidate the TLB entry for a single virtual page (Intel SDM Vol.2, INVLPG). */

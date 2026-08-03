@@ -208,6 +208,15 @@ uint64_t thread_zombies_reaped_total(void);
  */
 tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name);
 
+/* FIX_R3: two-step thread creation for callers that must initialise TCB
+ * fields (pml4_phys, fork_user_*, tls_base, fd tables, credentials) before
+ * the thread may be scheduled anywhere on SMP.  kthread_create_unstarted()
+ * returns a fully-formed but UNPUBLISHED TCB; kthread_start() enqueues it.
+ * After kthread_start() returns the thread can run on any cpu. */
+tcb_t *kthread_create_unstarted(void (*fn)(void *), void *arg,
+                                const char *name);
+void kthread_start(tcb_t *tcb);
+
 /*
  * Terminate the current thread.  Marks it THREAD_DEAD, wakes any waiting
  * parent, and switches to the next runnable thread.  Never returns.

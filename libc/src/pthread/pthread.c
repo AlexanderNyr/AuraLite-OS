@@ -9,6 +9,7 @@
  */
 
 #include "pthread.h"
+#include "pthread_tls.h"   /* struct pthread_tcb — shared with libc's errno */
 #include "unistd.h"
 #include "sys/mman.h"
 #include "string.h"
@@ -29,24 +30,26 @@
 
 /* syscall() is declared in <unistd.h> with a fixed 7-argument prototype. */
 
-/* Per-thread control block, pointed to by FS.base (%fs:0 == self). */
-struct pthread_tcb {
-    struct pthread_tcb *self;          /* %fs:0 must point to itself */
-    void *(*start_routine)(void *);
-    void  *arg;
-    void  *retval;
-    void  *stack_base;                 /* mmap base, for cleanup            */
-    size_t stack_size;
-    volatile int tid_futex;            /* CLONE_CHILD_CLEARTID target       */
-};
+/* The per-thread control block itself is defined once, in pthread_tls.h:
+ * it is shared with libc's TLS-backed errno (FIX_R3), which reads
+ * tcb->errno_cell through %fs:0 from any thread, including the main one. */
 
 static pthread_key_t next_key = 1;
 static void *key_destructor[64];
 
-static inline struct pthread_tcb *tcb_self(void) {
-    struct pthread_tcb *p;
-    __asm__ volatile ("mov %%fs:0, %0" : "=r"(p));
-    return p;
+/* First user code the cloned child runs.  The child returns from the
+ * clone() syscall with RAX=0 on its bare new stack; the return address
+ * consumed by syscall()'s final `ret` is the one pthread_create() seeds
+ * at the top of that stack, and it points HERE — the child therefore never
+ * returns into pthread_create() itself.  FS.base is already this TCB (the
+ * kernel installs tls_base before the first user entry), so ptls_self()
+ * is valid immediately. */
+static void __attribute__((noreturn)) pthread_child_main(void) {
+    struct pthread_tcb *me = ptls_self();
+    void *rv = me->start_routine(me->arg);
+    me->retval = rv;
+    pthread_exit(rv);
+    for (;;) { }   /* pthread_exit does not return */
 }
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
@@ -64,6 +67,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     top = (char *)((uintptr_t)top & ~0xFULL);   /* 16-byte align */
     struct pthread_tcb *tcb = (struct pthread_tcb *)top;
     tcb->self          = tcb;
+    tcb->errno_cell    = 0;       /* FIX_R3: a fresh thread starts with errno 0 */
     tcb->start_routine = start_routine;
     tcb->arg           = arg;
     tcb->retval        = NULL;
@@ -71,8 +75,20 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     tcb->stack_size    = PTHREAD_STACK_SIZE;
     tcb->tid_futex     = 0;
 
-    /* New stack pointer grows down from just below the TCB, 16-byte aligned. */
-    uint64_t child_sp = ((uint64_t)tcb) & ~0xFULL;
+    /* The child's user stack starts just BELOW the TCB.  Seed it with a
+     * two-qword frame so the child's very first `ret` (the one closing
+     * syscall() in the shared libc text) lands in pthread_child_main()
+     * with a valid %rsp alignment of 8 mod 16, exactly as if called:
+     *
+     *     [tcb - 16] = pthread_child_main    <- RIP after the first ret
+     *     [tcb -  8] = pad                   <- RSP after the first ret
+     *
+     * Without the seed the child popped its own TCB pointer as the return
+     * address and fetched from the NX stack (R3 bring-up, first #PF). */
+    uint64_t child_sp = (((uint64_t)tcb) & ~0xFULL) - 16;
+    uint64_t *seed = (uint64_t *)child_sp;
+    seed[0] = (uint64_t)(uintptr_t)pthread_child_main;
+    seed[1] = 0;
 
     long flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
                  CLONE_THREAD | CLONE_SETTLS | CLONE_CHILD_CLEARTID;
@@ -82,16 +98,9 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                              /*ctid*/ (uint64_t)&tcb->tid_futex,
                              /*tls */ (uint64_t)tcb, 0);
 
-    if (tid == 0) {
-        /* ---- child ---- runs the user routine, then exits the thread. */
-        struct pthread_tcb *me = tcb_self();
-        void *rv = me->start_routine(me->arg);
-        me->retval = rv;
-        pthread_exit(rv);
-        /* not reached */
-        for (;;) { }
-    }
-
+    /* tid == 0 in the child cannot be observed here: the child's stack was
+     * seeded so that it never executes this comparison.  Negative is an
+     * error, positive is the child's tid (parent). */
     if (tid < 0) {
         munmap(stack, PTHREAD_STACK_SIZE);
         return EAGAIN;

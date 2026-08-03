@@ -16,6 +16,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/sync/futex.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/tss.h"
 #include <stdint.h>
@@ -57,6 +58,15 @@ static void clone_thread_entry(void *arg) {
         set_syscall_stack(kstack);
     }
 
+    /* FIX_R3: install this thread's FS.base BEFORE the first user entry.
+     * fork_child_sysret does not touch FS, and context.asm only applies
+     * tls_base on LATER switches in; without this the child's very first
+     * `mov %fs:0` read whatever FS the previous tenant of this CPU left
+     * behind (observed: pthread child jumping through a garbage TCB into
+     * an NX page).  FS.base == current->tls_base now holds at every user
+     * entry point, matching the invariant context_switch keeps. */
+    write_fs_base(self->tls_base);
+
     /* fork_child_sysret sets RAX=0 and SYSRETs to (rip, rflags, rsp). */
     fork_child_sysret(self->fork_user_rip, self->fork_user_rflags,
                       self->fork_user_rsp);
@@ -85,12 +95,19 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
     uint64_t user_rflags = parent->saved_user_rip ? parent->saved_user_rflags
                                                   : syscall_saved_r11;
 
-    /* Create the child with interrupts disabled so the scheduler can't run it
-     * before its fields are initialised. */
+    /* FIX_R3: this block used to rely on cli so "the scheduler can't run
+     * the half-initialised TCB" — on SMP that only stops the LOCAL cpu. A
+     * remote cpu could steal and run the child mid-initialisation
+     * (observed: the first pthread child intermittently ran with
+     * tls_base == 0 / under the kernel PML4).  The child is now created
+     * UNSTARTED and published only after every field below is in place;
+     * cli still guards the create→start sequence against our own
+     * preemption. */
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
 
-    tcb_t *child = kthread_create(clone_thread_entry, NULL, "pthread");
+    tcb_t *child = kthread_create_unstarted(clone_thread_entry, NULL,
+                                            "pthread");
     if (!child) {
         if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
         return -ENOMEM;
@@ -130,8 +147,10 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
     child->mmap_next = parent->mmap_next;
     for (int i = 0; i < VFS_PATH_MAX && parent->cwd[i]; i++) child->cwd[i] = parent->cwd[i];
 
-    /* CLONE_SETTLS: install the thread's TLS base (applied via FS.base on the
-     * next context switch — see context.asm). */
+    /* CLONE_SETTLS: record the thread's TLS base.  It becomes FS.base at
+     * the child's first user entry (clone_thread_entry) and on every later
+     * context switch (context.asm) — the kernel invariant is that FS.base
+     * always equals the current thread's tls_base. */
     if (flags & CLONE_SETTLS)
         child->tls_base = tls;
 
@@ -140,6 +159,11 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
         child->clear_tid_addr = ctid;
 
     parent->n_children++;
+
+    /* All fields are set: publish.  From here on the child may run on any
+     * cpu — including before the SETTID stores below (it does not read
+     * them). */
+    kthread_start(child);
 
     if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
 
@@ -163,7 +187,7 @@ int64_t do_arch_prctl(int code, uint64_t addr) {
     switch (code) {
     case ARCH_SET_FS:
         cur->tls_base = addr;
-        __asm__ volatile ("wrfsbase %0" :: "r"(addr));
+        write_fs_base(addr);   /* FIX_R3: MSR path; wrfsbase #UDs here */
         return 0;
     case ARCH_GET_FS:
         if (copy_to_user((void *)(uintptr_t)addr, &cur->tls_base,

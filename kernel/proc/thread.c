@@ -228,7 +228,19 @@ static void setup_initial_stack(tcb_t *tcb, void (*fn)(void *), void *arg) {
     tcb->rsp = (uint64_t)sp;
 }
 
-tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
+/* FIX_R3: kthread_create() is split into create and publish.  Callers that
+ * must initialise TCB fields beyond the baked-in defaults (clone/fork/
+ * spawn set pml4_phys, fork_user_*, tls_base, fd tables, credentials AFTER
+ * creation) MUST use kthread_create_unstarted() + kthread_start() around
+ * their initialisation: a plain kthread_create() enqueues the TCB onto a
+ * run queue immediately, and on SMP a REMOTE cpu is not stopped by the
+ * caller's local cli — it could steal and run the half-initialised thread.
+ * (Observed during R3 bring-up: the first pthread child intermittently ran
+ * with tls_base == 0 or under the kernel PML4, because a sibling cpu
+ * dequeued it mid-do_clone; fork had the same latent window guarded only
+ * by cli, the comment there even admits it.) */
+tcb_t *kthread_create_unstarted(void (*fn)(void *), void *arg,
+                                const char *name) {
     tcb_t *tcb = slab_alloc(tcb_cache);
     if (tcb == NULL) {
         kprintf("[thread] FATAL: slab_alloc failed for TCB\n");
@@ -272,11 +284,25 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
     /* New threads start with cloexec cleared and the fd table zeroed
      * (kmalloc + memset above). */
     thread_register_tcb(tcb);
+    /* NOT enqueued yet: the caller completes field initialisation and then
+     * publishes the thread with kthread_start(). */
+    return tcb;
+}
+
+/* Publish a freshly created, fully initialised thread on a run queue.
+ * After this returns the thread may run on ANY cpu, so every TCB field
+ * the entry path or the scheduler reads must already be set. */
+void kthread_start(tcb_t *tcb) {
     /* Fresh thread: nobody else can hold the claim, so this always wins;
      * keep the claim discipline uniform with every other enqueue site. */
     if (__sync_lock_test_and_set(&tcb->on_queue, 1) == 0) {
         sched_add_thread(tcb);
     }
+}
+
+tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
+    tcb_t *tcb = kthread_create_unstarted(fn, arg, name);
+    if (tcb) kthread_start(tcb);
     return tcb;
 }
 
@@ -423,9 +449,23 @@ void thread_reap_zombies(void) {
     tcb_t **pp = &zombie_head;
     while (*pp) {
         tcb_t *z = *pp;
-        if (z == current || !z->waited) {
-            /* Either still the running thread (impossible since we are alive)
-             * or a zombie nobody has wait4()ed yet — leave it in place. */
+        if (z == current || !z->waited || z->switch_parked == 0) {
+            /* Leave in place:  still the running thread (impossible since
+             * we are alive), a zombie nobody has wait4()ed yet — or, FIX_R3:
+             * a zombie whose final switch-AWAY has not completed on its last
+             * cpu.  switch_parked reads 0 on any thread that is currently ON
+             * a cpu (established at pick time, set back to 1 only inside
+             * context_switch after the frame save).  A DEAD thread enqueues
+             * itself on the zombie list BEFORE its last switch-out, so with
+             * an already-waiting parent and a reaper on another cpu the TCB
+             * could be memset + its kernel stack freed while the owner was
+             * still executing its exit tail on that same stack — observed
+             * live as a stack-protector trip in spinlock_acquire_irqsave on
+             * the dying thread's stack, with the thread's TCB already
+             * zeroed (name "", kernel_stack NULL).  The picker protocol
+             * makes the same guarantee for runnable threads; after parking,
+             * nothing but a handful of never-again-read pops remains, so
+             * reaping is safe. */
             pp = &z->next;
             continue;
         }

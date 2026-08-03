@@ -22,19 +22,64 @@ for the feature matrix.
   triple fault and the machine resets with no diagnostic. Double fault (8),
   NMI (2) and machine check (18) are the vectors that conventionally need
   IST entries.
-- **⚠ The kernel stack protector trips intermittently under `-smp 2`.**
-  `[security] STACK CORRUPTION DETECTED in kernel` followed by a halt,
-  observed twice in `test_selftest` and passing on three consecutive re-runs
-  afterwards. `__stack_chk_fail()` firing means either a genuine kernel stack
-  overflow or a corrupted canary — both are memory corruption, and the message
-  does not distinguish them. It should not be possible while APs only idle,
-  which makes it more interesting rather than less: either something runs on
-  an AP, or shared state is mutated without a lock. Two integration cases set
-  `IL_SMP=1` to avoid the area, which documents the workaround rather than the
-  fault. Diagnosis is `FIXES_PLAN.md` phase R2.
-- **SMP scheduling is conservative.** Application processors are online, load
-  CPU-local state and enter the idle scheduler loop; normal user scheduling remains
-  BSP-only until per-CPU run queues and TLB shootdown policy are completed.
+- **R2 diagnosis: the `-smp 2` stack-protector trip does not reproduce on this
+  tree; the real SMP-only corruption behind the "flaky under `-smp 2`" reports
+  is a missing FPU/SSE context switch.** (`FIXES_PLAN.md` R2 →
+  `patches/FIX_R2_smp_diagnosis.patch`; reproduction harness
+  `tools/repro_smp_chk.sh`, recorded runs in `build/r2_repro/`.)
+  Measured per the R2 gate:
+  - `selftest` under `-smp 2`, 31 boots: **0 protector trips, 0 IST #DF
+    (R1), 0 kernel-stack guard hits** — the anecdotal ~1-in-3 trip rate was
+    not reproduced and no trip was recaptured for classification.
+  - `gltest` (373 FP-heavy rasteriser checks) under `-smp 2`: **13 of 16
+    recorded boots failed at least one check** (6/6 in the final controlled
+    batch); every rerun failed *different, random* checks — 13 distinct
+    names seen, e.g. `ras_gouraud_blue`, `lit_distance_attenuation`,
+    `tex_bilinear_average`, `geo_perspective_foreshortens`.
+  - `gltest` under `-smp 1` control: **7/7 clean**.
+  Root cause of the SMP-only flakiness: **the kernel switches no FPU/SSE
+  state.** `kernel/proc/context.asm` saves only callee-saved GPRs + RFLAGS
+  and the TCB has no FPU area; there is no `fxsave`/`fxrstor` anywhere in
+  the kernel (the claim in `kernel/proc/signal.c` that save is "deferred
+  until OSFXSR" is stale — `CR4.OSFXSR` is already set). xmm registers are
+  per-CPU hardware: with the H8 scheduler's per-CPU run queues, preemption
+  and work stealing (`scheduler_rq.c`), a thread descheduled or migrated
+  mid-computation resumes with another CPU's stale FP state — and gltest
+  links ~9.7k xmm instructions. At `-smp 1` the co-tenant threads happen
+  not to dirty xmm during its quanta; physical migration under `-smp 2`
+  loses the state unconditionally. This is user-visible data corruption,
+  not a canary event. The fix (FXSAVE/FXRSTOR in the context switch) is a
+  separate follow-up phase and deliberately not part of R2.
+  Permanent instrumentation merged so any *future* trip is classifiable:
+  `__stack_chk_fail()` (`kernel/lib/stack_protector.c`) now dumps, over the
+  R0 lock-free serial path, the cpu#, a trip counter, the detection RIP,
+  rsp/rbp against the current thread's kernel-stack bounds (via a safe
+  `sched_current()`), the expected guard, a bounds-checked heuristic
+  frame-cookie readback, and a verdict line: `GENUINE-OVERFLOW` (rsp out of
+  bounds) vs `CANARY-VALUE-MISMATCH` (rsp in bounds ⇒ the cookie was
+  overwritten by another writer — the racing-CPU shape).
+  Ruled out during the investigation:
+  - genuine kernel-stack overflow — guard pages armed + R1's IST #DF
+    A/B-verified; neither fired in any campaign boot;
+  - guard-reseed race — `stack_protector_init()` runs once on the BSP in
+    `kmain`, long before `smp_init()` starts the APs;
+  - "APs only idle" — false; APs execute real threads (see the updated
+    bullet below), and the per-CPU TSS/RSP0 programming re-audited clean
+    (`tss_set_rsp0_for_cpu()` on every context switch, `scheduler.c:136`).
+  Recorded benign anomalies (no corruption markers, causes unknown, kept on
+  file): 1/31 boots read `/tests/selftest` as 0 bytes from the initrd
+  (`[elf] too small`); 2/31 boots failed the benign `isatty(stdout)` check.
+  The latter cannot come from `tty_ioctl()` itself (TCGETS there returns 0
+  unconditionally) — the intermittent `EINVAL`/`EFAULT`/`ENOTTY` must
+  originate in the `SYS_IOCTL` dispatch path or the fd layer, so it feeds
+  the errno work of R3/R7 rather than this phase.  A 3-run spot check on
+  the unpatched base (f09cc69) was clean; no causal link to the R2 delta is
+  plausible (docs, a host-side script, and the never-executed trip path).
+- **SMP scheduling.** Superseded baseline: since the H8 scheduler, all
+  online CPUs run preemptive round-robin with per-CPU run queues,
+  LAPIC-timer ticks, cross-CPU work stealing (`scheduler.c`,
+  `scheduler_rq.c`) and IPI TLB shootdown (`tlb_shootdown.c`) — APs
+  demonstrably execute real threads (re-audited for R2).
 - ~~**Address-space reaping is incomplete.**~~ **Done (H2):** dead TCBs,
   kernel stacks, process FDs, and user page-table/address-space frames are
   deferred-reaped from a safe stack via `thread_reap_zombies()` and
@@ -162,8 +207,33 @@ for the feature matrix.
 - **libm accuracy is series-based (~1e-9), not last-ULP**, and only covers the
   ten functions listed in `math.h`; no `tan/asin/atan2/fmod/modf/frexp`, no
   `float` variants, no errno/`HUGE_VAL` domain-error reporting. Revisit in P10.
-- **`errno` is a single global, not thread-local.** (`FIXES_PLAN.md` R3) Safe while single-threaded;
-  must move behind TLS in `__errno_location()` during P9 (pthreads).
+- ~~**`errno` is a single global, not thread-local.**~~ **Done (`FIXES_PLAN.md`
+  R3 → `patches/FIX_R3_tls_errno.patch`,`/tests/errnotest`,
+  `tests/integration/cases/test_tls_errno.sh`).** `errno` now lives in
+  `pthread_tcb.errno_cell`: `__errno_location()` reads it via `%fs:0` once the
+  main thread's static TCB is installed at the very top of
+  `__libc_start_main()` (any pre-install errno survives the cut-over), and
+  falls back to the old global before that — so non-threaded programs and the
+  pre-`main()` window keep working.  Landing R3 surfaced that the P9 pthread
+  runtime had in fact never executed successfully (no in-tree test ever
+  created a thread); five pre-existing defects are repaired with it:
+  (a) `context_switch`/`do_arch_prctl` used `wrfsbase` with CR4.FSGSBASE
+  never enabled → kernel `#UD` on the first switch into a thread;
+  (b) `fork_child_sysret` never installed the child's FS.base (garbage TLS
+  on first entry);
+  (c) libc's `pthread_create` seeded no return frame on the clone child's
+  fresh stack — the `syscall()` wrapper's `ret` jumped into the TCB;
+  (d) `kthread_create()` published half-initialised TCBs — a REMOTE cpu is
+  not stopped by the caller's `cli` and could steal a child mid-do_clone/
+  do_fork/spawn (now: `kthread_create_unstarted()` + `kthread_start()`);
+  (e) `thread_reap_zombies()` ignored `switch_parked` — a zombie could be
+  memset + have its kernel stack freed while its last cpu still executed
+  the exit tail on that stack; this is what the R2 instrumentation then
+  CAPTURED live during the R3 regression: the first recorded canary trip
+  (cpu1, `spinlock_acquire_irqsave`, TCB already zeroed — its fingerprint).
+  The kernel invariant is now `FS.base == current->tls_base` at every
+  context switch and every first user entry (clone, fork, exec), and a
+  thread is invisible to other cpus until fully initialised.
 - **SYSCALL state uses globals.** Saved user `RCX/R11/RSP` state is not designed
   for true concurrent SMP syscalls.
 - ~~**ELF final permissions are simplified.**~~ **Done (N4):** user

@@ -337,7 +337,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
              $(USER_BUILD)/insttest.elf $(USER_BUILD)/hostilearg.elf \
-             $(USER_BUILD)/rustes.elf
+             $(USER_BUILD)/errnotest.elf $(USER_BUILD)/rustes.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
 # the link line names; --whole-archive is not needed here because every
@@ -428,6 +428,10 @@ $(USER_BUILD)/tcpserver.o: userspace/tests/tcpserver/tcpserver.c $(USER_CFLAGS_I
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hostilearg.o: userspace/tests/hostilearg/hostilearg.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/errnotest.o: userspace/tests/errnotest/errnotest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -942,7 +946,7 @@ INITRD_APPS  := calc editor http clock browser gcalc gedit gfiles gterm \
 INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
-                stackguard insttest hostilearg rustes
+                stackguard insttest hostilearg errnotest rustes
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)

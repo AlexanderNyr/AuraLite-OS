@@ -103,7 +103,8 @@ static void user_test_thread(void *arg) {
 void user_mode_self_test(void) {
     kprintf("[user] starting init shell in Ring 3...\n");
 
-    tcb_t *t = kthread_create(user_test_thread, NULL, "init");
+    /* FIX_R3: unstarted — the cwd default below lands before publish. */
+    tcb_t *t = kthread_create_unstarted(user_test_thread, NULL, "init");
     if (t == NULL) {
         kprintf("[user] FAIL: could not create thread\n");
         return;
@@ -114,6 +115,9 @@ void user_mode_self_test(void) {
      * (which inherits this cwd) start from a valid path. */
     t->cwd[0] = '/';
     t->cwd[1] = '\0';
+
+    /* All fields are set: publish the init shell. */
+    kthread_start(t);
 
     /* Give the shell a few scheduling slots to start up and print its banner. */
     for (int i = 0; i < 5; i++) {

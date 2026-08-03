@@ -282,14 +282,28 @@ worth more than one that has been made harder to reproduce.
 
 #### Tasks
 
-- [ ] Reproduce it deliberately: run the affected cases under `-smp 2` in a
-      loop and record the failure rate. Anecdotally ~1 in 3; measure it.
-- [ ] Determine which CPU trips it (needs R0) and which stack is involved.
-- [ ] Establish whether it is a genuine overflow or a corrupted canary — these
-      have different causes and the message does not distinguish them.
-- [ ] Audit what actually runs on an AP: the claim is "APs idle", and the
-      symptom suggests otherwise.
-- [ ] Check the per-CPU TSS/RSP0 programming, which SDK-era work touched.
+- [x] Reproduce it deliberately: run the affected cases under `-smp 2` in a
+      loop and record the failure rate. Anecdotally ~1 in 3; measured with
+      `tools/repro_smp_chk.sh`: **0/31** `selftest` boots tripped on this
+      tree; `gltest` fails ~3 boots in 4 — seen to be SMP-only by the
+      `-smp 1` control.
+- [x] Determine which CPU trips it (needs R0) and which stack is involved —
+      permanent instrumentation in `__stack_chk_fail()` now reports cpu#,
+      tid, detection RIP and the thread's kernel-stack bounds for any trip;
+      none recurred during the measurement runs.
+- [x] Establish whether it is a genuine overflow or a corrupted canary — these
+      have different causes and the message does not distinguish them:
+      the trip handler now classifies `GENUINE-OVERFLOW` vs
+      `CANARY-VALUE-MISMATCH`; zero events of either shape were captured,
+      and the related-but-distinct SMP-only `gltest` corruption was
+      root-caused to the missing FPU/SSE context switch (see `TODO.md`).
+- [x] Audit what actually runs on an AP: the claim is "APs idle", and the
+      symptom suggests otherwise — audited: the claim is stale; the H8
+      scheduler runs threads on all online CPUs (per-CPU run queues,
+      stealing, LAPIC preemption). Stale docs updated.
+- [x] Check the per-CPU TSS/RSP0 programming, which SDK-era work touched —
+      clean: `tss_set_rsp0_for_cpu()` runs on every context switch
+      (`kernel/proc/scheduler.c:136`).
 
 #### Test gate
 
@@ -312,13 +326,34 @@ worth more than one that has been made harder to reproduce.
 
 #### Tasks
 
-- [ ] Add an `errno` cell to `struct pthread_tcb`.
-- [ ] `__errno_location()` returns `&tcb_self()->errno_cell` when FS base is
+- [x] Add an `errno` cell to `struct pthread_tcb` — the struct moved to a
+      shared internal header (`libc/include/pthread_tls.h`) so libc's errno
+      and the pthread clone path use one definition; a fresh thread starts
+      with `errno_cell = 0`.
+- [x] `__errno_location()` returns `&tcb_self()->errno_cell` when FS base is
       installed, and the existing global otherwise — the main thread of a
-      non-threaded program must keep working before `pthread` is ever linked.
-- [ ] Verify the fallback is correct at the point where `%fs` is not yet set:
+      non-threaded program must keep working before `pthread` is ever linked:
+      `__libc_start_main()` installs a static TCB for the main thread via
+      `arch_prctl(ARCH_SET_FS)` before anything else, so TLS readiness is
+      process-wide and uniform; a pre-main global covers only the
+      crt0 → start_main window.  Landing this exposed and repaired five
+      pre-existing SMP/P9 defects without which no thread ever ran
+      stably: `wrfsbase` with CR4.FSGSBASE never set (kernel #UD in
+      `context_switch`/`do_arch_prctl`), no FS.base install on the
+      `fork_child_sysret` first-entry path, no seeded return frame on the
+      clone child's fresh stack in libc's `pthread_create`, run-queue
+      publication of half-initialised TCBs (`cli` does not stop remote
+      cpus), and reaping of zombies whose last switch-away had not
+      completed — caught live by the R2 canary instrumentation during this
+      phase's regression loop.
+- [x] Verify the fallback is correct at the point where `%fs` is not yet set:
       this runs before `main()`, and getting it wrong turns every program into
-      a fault at startup.
+      a fault at startup — the install is the first statement of
+      `__libc_start_main()` (crt0 is pure asm and never touches errno), the
+      pre-install global's value is copied into the main cell at cut-over,
+      and a failed install keeps the global path so the process degrades to
+      pre-R3 behaviour instead of faulting.  Verified by the full boot
+      suites below running through that window on every program start.
 
 #### Test gate
 

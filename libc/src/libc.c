@@ -28,13 +28,53 @@
 
 /* ---- errno storage ----
  *
- * Single global for now (the system is effectively single-threaded at the
- * libc level).  Phase P9 replaces __errno_location() with a TLS-backed cell;
- * no caller changes because errno is a macro over this accessor. */
+ * FIX_R3 (the P9 follow-up this comment predicted): errno is thread-local.
+ * Two storage sites exist:
+ *
+ *   - __errno_storage, a plain global: the pre-TLS fallback.  It serves the
+ *     very start of every process (the crt0 -> __libc_start_main window,
+ *     before the main thread's TCB is installed) and, defensively, any
+ *     process whose TLS install fails at startup — such a process degrades
+ *     to exactly the pre-R3 single-global behaviour instead of faulting.
+ *
+ *   - pthread_tcb.errno_cell: used from the moment __errno_tls_ready is
+ *     set.  The main thread's cell lives in the static __main_tcb below;
+ *     pthread children get their own blocks at the top of their stacks via
+ *     CLONE_SETTLS.  The kernel keeps FS.base == the running thread's
+ *     tls_base at every context switch and every user-mode entry, so
+ *     ptls_self() is valid in every thread after start-up.
+ *
+ * __errno_tls_ready is a process-wide flag, which is sound because the
+ * install happens exactly once, single-threaded, before main() — hence
+ * before any thread can exist.  No caller changes: errno stays a macro
+ * over this accessor. */
+#include "pthread_tls.h"
+
 static int __errno_storage = 0;
+static struct pthread_tcb __main_tcb;
+static volatile int __errno_tls_ready = 0;
 
 int *__errno_location(void) {
+    if (__errno_tls_ready)
+        return &ptls_self()->errno_cell;
     return &__errno_storage;
+}
+
+/* Install the MAIN thread's TLS block, at the very top of
+ * __libc_start_main(): before main(), hence before any thread exists, and
+ * before any libc code that could observe the pre-TLS window through the
+ * per-thread path.  Any errno value set in the pre-install window survives
+ * the cut-over (copied into the main cell).  On failure the process keeps
+ * the global fallback — the pre-R3 behaviour, and never a fault: reading
+ * %fs:0 with an uninstalled FS would dereference address 0. */
+static void __tls_errno_install_main(void) {
+    __main_tcb.self       = &__main_tcb;
+    __main_tcb.errno_cell = __errno_storage;
+    /* syscall() is declared in <unistd.h>; SYS_ARCH_PRCTL is 158. */
+    long rc = syscall(158, PTLS_ARCH_SET_FS,
+                      (uint64_t)(uintptr_t)&__main_tcb, 0, 0, 0, 0);
+    if (rc == 0)
+        __errno_tls_ready = 1;
 }
 
 /* ---- in-band syscall return decoding ----
@@ -957,6 +997,11 @@ extern char **environ;
 extern int main(int argc, char **argv, char **envp);
 
 void __libc_start_main(int argc, char **argv, char **envp) {
+    /* FIX_R3 first thing: install the main thread's TCB so errno is
+     * per-thread from main() onwards, in every program, threaded or not.
+     * Must precede anything that could set/read errno through the TLS
+     * path; crt0 (pure asm) does not touch errno. */
+    __tls_errno_install_main();
     environ = envp;
     int rc = main(argc, argv, envp);
     exit(rc);
