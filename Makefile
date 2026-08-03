@@ -34,8 +34,9 @@ LIMINE_DEPS := $(LIMINE_BIN)/limine $(LIMINE_BIN)/limine-bios.sys \
 # wraps its output with xorriso -- keep it in REQUIRED_TOOLS so that
 # users trying the fallback path get a fast error instead of a
 # cryptic xorriso "command not found".
+### RUST: add rustc to required tools
 REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar xorriso \
-                  mformat mcopy lld-link
+                  mformat mcopy lld-link rustc
 ifeq ($(LIMINE_MODE),submodule)
 REQUIRED_TOOLS += git autoreconf
 endif
@@ -85,6 +86,8 @@ deps-check:
 	done; \
 	if [ $$missing -ne 0 ]; then \
 		echo "[deps] Debian/Ubuntu: sudo apt install clang lld nasm xorriso qemu-system-x86 mtools ovmf make gcc python3"; \
+		echo "[deps] Also install Rust via: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"; \
+		echo "[deps] Then: rustup target add x86_64-unknown-none"; \
 		exit 127; \
 	fi
 
@@ -231,6 +234,11 @@ USER_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
                 -O2 -Wall -Wextra -Werror -I . -I libc/include
 USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 
+### RUST: compiler and flags for Rust
+RUSTC       := rustc
+RUSTFLAGS   := --target=x86_64-unknown-none -C relocation-model=static \
+               -C opt-level=2 --emit=obj
+
 # Common objects shared by all user programs.
 # Extra libc translation units (each its own object, all linked into every
 # user program via USER_COMMON).  These provide the P9/P10 surface: pthreads,
@@ -256,6 +264,7 @@ USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdi
 USER_CFLAGS += -I libauragui/include
 
 # Application ELFs.
+### RUST: add rustes.elf to the list
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/clock.elf $(USER_BUILD)/guess.elf \
@@ -276,7 +285,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
-             $(USER_BUILD)/insttest.elf
+             $(USER_BUILD)/insttest.elf $(USER_BUILD)/rustes.elf
 
 # auragui object linked into every GUI app.
 USER_GUI_OBJ := $(USER_BUILD)/auragui.o
@@ -337,6 +346,15 @@ $(USER_BUILD)/tcpserver.o: userspace/tests/tcpserver/tcpserver.c $(USER_CFLAGS_I
 $(USER_BUILD)/insttest.o: userspace/tests/insttest/insttest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+### RUST: compile rustes.c and rustes.rs
+$(USER_BUILD)/rustes_c.o: userspace/apps/rustes/rustes.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGS) -o $@ $<
 
 $(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
@@ -577,6 +595,12 @@ $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c libauragui/include/aura
 $(USER_BUILD)/hello.o: userspace/apps/hello/hello.c libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+### RUST: link rustes.elf using both C and Rust objects
+$(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes_c.o $(USER_BUILD)/rustes.o $(USER_COMMON) libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/rustes_c.o $(USER_BUILD)/rustes.o $(USER_COMMON) -o $@
+	@echo "[link] $@"
 
 $(USER_BUILD)/init.o: userspace/system/init/init.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
@@ -846,6 +870,8 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/demos/$$p; done
 	@for p in $(INITRD_TESTS); do \
 	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/tests/$$p; done
+### RUST: copy rustes.elf into /tests
+	@cp $(USER_BUILD)/rustes.elf $(INITRD_DIR)/tests/rustes
 # Package archives apm installs from.  They keep their .pkg suffix and their
 # root-level names, because apm names them in its repository table.
 	@cp $(USER_BUILD)/matrix.elf $(INITRD_DIR)/pkg/matrix.pkg
