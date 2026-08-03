@@ -89,7 +89,12 @@ deps-check:
 	if [ $$missing -ne 0 ]; then \
 		echo "[deps] Debian/Ubuntu: sudo apt install clang lld nasm xorriso qemu-system-x86 mtools ovmf make gcc python3"; \
 		echo "[deps] Also install Rust via: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"; \
-		echo "[deps] Then: rustup target add x86_64-unknown-none"; \
+		echo "[deps] Then: rustup target add $(RUST_TARGET)"; \
+		exit 127; \
+	fi
+	@if ! $(RUSTC) --target=$(RUST_TARGET) --print target-libdir >/dev/null 2>&1; then \
+		echo "[deps] missing Rust target: $(RUST_TARGET)"; \
+		echo "[deps] install it with: rustup target add $(RUST_TARGET)"; \
 		exit 127; \
 	fi
 
@@ -238,7 +243,8 @@ USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
 
 ### RUST: compiler and flags for Rust
 RUSTC       := rustc
-RUSTFLAGS   := --target=x86_64-unknown-none -C relocation-model=static \
+RUST_TARGET := x86_64-unknown-none
+RUSTFLAGS   := --target=$(RUST_TARGET) -C relocation-model=static \
                -C opt-level=2 --emit=obj
 
 # Common objects shared by all user programs.
