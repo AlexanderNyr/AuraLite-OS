@@ -14,6 +14,7 @@
 #include "drivers/ahci/ahci.h"
 #include "drivers/timer/pit.h"
 #include "kernel/arch/x86_64/smp.h"
+#include "kernel/arch/x86_64/diagnostics.h"
 
 #define PROCFS_MAX_VNODES 64
 static struct vnode procfs_vnodes[PROCFS_MAX_VNODES];
@@ -121,6 +122,18 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
         vn->inode_id = 8;
         return vn;
     }
+    if (strcmp(path, "sysrq-trigger") == 0) {
+        /* FIX_R0 test gate: Linux-style /proc/sysrq-trigger.  Writing 'c'
+         * requests a deliberate kernel fault so the fatal diagnostics can
+         * be integration-tested.  Write-only, mirroring Linux. */
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "sysrq-trigger", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_FILE;
+        vn->mode = 0200;
+        vn->size = 0;
+        vn->inode_id = 9;
+        return vn;
+    }
 
     /* Check if it's a PID directory or PID file (e.g. "1", "1/status", "1/cmdline"). */
     const char *p = path;
@@ -177,8 +190,8 @@ static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     int n = 0;
     if (vn->inode_id == 0) { /* Root of /proc */
         const char *static_files[] = {"uptime", "meminfo", "cpuinfo", "version", "stat",
-                                       "loadavg", "netdev", "diskstats"};
-        for (int i = 0; i < 8 && n < max; i++) {
+                                       "loadavg", "netdev", "diskstats", "sysrq-trigger"};
+        for (int i = 0; i < 9 && n < max; i++) {
             memset(&out[n], 0, sizeof(out[n]));
             strncpy(out[n].name, static_files[i], VFS_PATH_MAX - 1);
             out[n].type = VFS_TYPE_FILE;
@@ -310,6 +323,12 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
         len = ksnprintf(text, sizeof(text),
                         "   1    0 ahci0 0 0 %llu 0 0 0 %llu 0 0 0 0\n",
                         (unsigned long long)sread, (unsigned long long)swritten);
+    } else if (vn->inode_id == 9) {
+        /* /proc/sysrq-trigger read: list the supported commands. */
+        len = ksnprintf(text, sizeof(text),
+                        "AuraLite sysrq trigger commands:\n"
+                        "  c - crash: deliberate kernel page fault "
+                        "(FIX_R0 diagnostics test gate)\n");
     } else if ((vn->inode_id >> 16) != 0) {
         uint64_t pid = vn->inode_id >> 16;
         uint64_t file_type = vn->inode_id & 0xFFFF;
@@ -355,10 +374,37 @@ static int procfs_stat(struct vnode *vn, struct vfs_stat *out) {
     return 0;
 }
 
+/* /proc/sysrq-trigger write.  Only command at the moment: 'c' (crash) —
+ * a deliberate kernel page fault, so the FIX_R0 fatal-diagnostics path can
+ * be exercised end-to-end from the shell.  Mirroring Linux, the write that
+ * triggers the crash does not return a result anyone could observe. */
+static int64_t procfs_write(struct vnode *vn, uint64_t pos,
+                            const void *buf, uint64_t count) {
+    (void)pos;
+    if (!vn || (!buf && count != 0)) {
+        return -EINVAL;
+    }
+    if (vn->inode_id == 9) {
+        const char *s = (const char *)buf;
+        for (uint64_t i = 0; i < count; i++) {
+            if (s[i] == 'c') {
+                kprintf("[sysrq] trigger 'c': deliberate kernel fault "
+                        "requested (cpu%u)\n", diag_cpu_id());
+                diag_trigger_kernel_fault();
+                /* Reaching this would mean address 0 turned out mapped. */
+                kprintf("[sysrq] trigger 'c': the deliberate fault did NOT "
+                        "happen — this should never print\n");
+            }
+        }
+        return (int64_t)count;
+    }
+    return -EINVAL;
+}
+
 const struct vfs_ops procfs_ops = {
     .lookup  = procfs_lookup,
     .read    = procfs_read,
-    .write   = NULL,
+    .write   = procfs_write,
     .readdir = procfs_readdir,
     .stat    = procfs_stat,
 };

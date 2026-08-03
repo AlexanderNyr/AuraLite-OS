@@ -98,3 +98,11 @@ void tss_set_rsp0_for_cpu(int cpu_id, uint64_t rsp0) {
     tss_entries[cpu_id].rsp0_low = (uint32_t)(rsp0 & 0xFFFFFFFF);
     tss_entries[cpu_id].rsp0_high = (uint32_t)(rsp0 >> 32);
 }
+
+uint64_t tss_get_ist1_top_for_cpu(int cpu_id) {
+    if (!tss_cpu_valid(cpu_id)) {
+        return 0;
+    }
+    return ((uint64_t)tss_entries[cpu_id].ist1_high << 32) |
+           tss_entries[cpu_id].ist1_low;
+}

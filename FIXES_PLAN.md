@@ -222,12 +222,12 @@ abstraction is real. Runtime switching can follow if anyone wants it.
 
 #### Tasks
 
-- [ ] A panic path that survives a bad stack: print the register state,
+- [x] A panic path that survives a bad stack: print the register state,
       the faulting RIP and a stack trace to the serial port **before**
       touching anything that might fault again.
-- [ ] Emit the CPU number in every panic and exception message — R2's
+- [x] Emit the CPU number in every panic and exception message — R2's
       investigation is impossible without knowing which core faulted.
-- [ ] A boot-time self-check that reports whether IST is armed, so R1's
+- [x] A boot-time self-check that reports whether IST is armed, so R1's
       change is visible in the log rather than only in the source.
 
 #### Test gate

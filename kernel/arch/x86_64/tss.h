@@ -58,4 +58,9 @@ void tss_load_for_cpu(int cpu_id);
 void tss_set_rsp0(uint64_t rsp0);
 void tss_set_rsp0_for_cpu(int cpu_id, uint64_t rsp0);
 
+/* Read back the IST1 stack top programmed for cpu_id (0 when invalid or
+ * unprogrammed).  Used by the FIX_R0 boot-time IST self-check so the log
+ * reflects the TSS contents as loaded, not just the code that wrote them. */
+uint64_t tss_get_ist1_top_for_cpu(int cpu_id);
+
 #endif /* AURALITE_ARCH_X86_64_TSS_H */

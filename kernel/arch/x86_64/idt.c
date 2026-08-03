@@ -26,6 +26,13 @@ void idt_set_gate(int n, uint64_t handler, uint8_t flags) {
     idt[n].zero        = 0;
 }
 
+uint8_t idt_get_ist(int n) {
+    if (n < 0 || n >= IDT_ENTRIES) {
+        return 0;
+    }
+    return idt[n].ist;
+}
+
 void idt_init(void) {
     idtp.limit = (uint16_t)(sizeof(idt) - 1);
     idtp.base  = (uint64_t)(uintptr_t)&idt;

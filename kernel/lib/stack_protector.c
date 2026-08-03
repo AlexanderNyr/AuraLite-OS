@@ -2,6 +2,7 @@
 #include "kernel/lib/stack_protector.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/boot_info.h"
 
 extern void kernel_halt(void);
@@ -25,7 +26,16 @@ void stack_protector_init(void) {
 }
 
 __attribute__((noreturn)) void __stack_chk_fail(void) {
-    kprintf("[security] STACK CORRUPTION DETECTED in kernel\n");
+    /* FIX_R0: the lock-free serial line comes first — with a corrupted or
+     * overflowed stack the kprintf path (console lock, framebuffer, rbp
+     * unwinding for other reporters) is exactly what may not work anymore.
+     * Which CPU tripped the protector is also the one fact the FIX_R2
+     * investigation cannot do without, so it is part of the message. */
+    diag_early_puts("\n[diag] KERNEL STACK CORRUPTION DETECTED on cpu#");
+    diag_early_putdec(diag_cpu_id());
+    diag_early_puts(" (stack protector)\n");
+    kprintf("[security] STACK CORRUPTION DETECTED in kernel (cpu%u)\n",
+            diag_cpu_id());
     kernel_halt();
     for (;;) {
         __asm__ volatile ("cli; hlt");

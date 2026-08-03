@@ -6,6 +6,7 @@
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/guard.h"
@@ -144,6 +145,19 @@ void isr_handler(struct registers *r) {
             return;
         }
 
+        /* FIX_R0: a kernel-mode exception is fatal, and everything further
+         * down this path is best-effort — kprintf takes the console lock
+         * (deadlock if the fault happened inside a print), the stack trace
+         * dereferences the rbp chain (another fault on a corrupt stack).
+         * Emit the full dump — CPU id, error code, faulting RIP, register
+         * state, probed stack trace — on the serial port FIRST, lock-free
+         * and with probed reads, so it survives exactly those conditions.
+         * The kprintf reporting below then becomes pure duplication for the
+         * framebuffer/klog consoles. */
+        if (!from_user) {
+            diag_early_dump(r, msg);
+        }
+
         /* Stack guard-page diagnosis: if this #PF landed on a known kernel- or
          * user-stack guard page, report it explicitly as a stack overflow.  A
          * kernel-stack guard hit is fatal (we cannot safely continue on a
@@ -154,14 +168,17 @@ void isr_handler(struct registers *r) {
             enum guard_fault_kind gk =
                 guard_classify_fault(read_cr2(), from_user, &gdesc);
             if (gk != GUARD_FAULT_NONE) {
-                kprintf("\n[GUARD] %s: CR2=0x%016llx RIP=0x%016llx (%s mode)\n",
+                kprintf("\n[GUARD] %s: CR2=0x%016llx RIP=0x%016llx (%s mode, cpu%u)\n",
                         gdesc ? gdesc : "stack guard page hit",
                         (unsigned long long)read_cr2(),
                         (unsigned long long)r->rip,
-                        from_user ? "USER" : "KERNEL");
+                        from_user ? "USER" : "KERNEL",
+                        diag_cpu_id());
                 if (!from_user) {
-                    dump_registers(r);
-                    kprintf("[GUARD] kernel stack overflow is fatal; halting.\n");
+                    /* Register state + trace were already emitted on serial
+                     * by diag_early_dump() above. */
+                    kprintf("[GUARD] kernel stack overflow is fatal; "
+                            "halting cpu%u.\n", diag_cpu_id());
                     kernel_halt();
                 }
                 /* User-mode guard hit: let the SIGSEGV path below terminate or
@@ -170,10 +187,11 @@ void isr_handler(struct registers *r) {
         }
 
         kprintf("\n[EXCEPTION] %s (vector %llu, error code 0x%016llx) "
-                "from %s mode\n",
+                "from %s mode (cpu%u)\n",
                 msg, (unsigned long long)r->int_no,
                 (unsigned long long)r->err_code,
-                from_user ? "USER" : "KERNEL");
+                from_user ? "USER" : "KERNEL",
+                diag_cpu_id());
 
         /* For user-mode faults, map the exception to a POSIX signal.  If the
          * thread has a handler installed (and the signal is not blocked), build
@@ -187,15 +205,17 @@ void isr_handler(struct registers *r) {
             }
             /* Unmapped exception or no handler: dump + terminate. */
             dump_registers(r);
-            kprintf("[exception] killing user thread (tid %llu)\n",
-                    (unsigned long long)(sched_current() ? sched_current()->id : 0));
+            kprintf("[exception] killing user thread (tid %llu, cpu%u)\n",
+                    (unsigned long long)(sched_current() ? sched_current()->id : 0),
+                    diag_cpu_id());
             thread_exit_with_code(128 + (int)r->int_no);
         }
 
-        /* Kernel-mode exception: dump full context below. */
-        dump_registers(r);
-
-        /* Kernel-mode exception: truly fatal. */
+        /* Kernel-mode exception: truly fatal.  The register state and the
+         * stack trace were already emitted on the serial console by
+         * diag_early_dump() above (before any lockable/fallible output); a
+         * duplicate kprintf dump would only add lock-deadlock exposure on
+         * an already-broken machine, so there is nothing left to print. */
         kernel_halt();
     } else if (r->int_no < 48) {
         /* Hardware IRQ (PIC-remapped vectors 32-47). */

@@ -39,6 +39,10 @@ struct idt_ptr {
 void idt_init(void);
 void idt_set_gate(int n, uint64_t handler, uint8_t flags);
 
+/* Read back the IST index programmed into gate n (0 = no IST).
+ * Used by the FIX_R0 boot-time IST self-check in diagnostics.c. */
+uint8_t idt_get_ist(int n);
+
 /* Exposed for smp.c to reload the IDT on application processors. */
 extern struct idt_ptr idtp;
 
