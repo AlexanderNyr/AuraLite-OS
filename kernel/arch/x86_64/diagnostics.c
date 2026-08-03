@@ -286,19 +286,35 @@ void diag_early_dump(const struct registers *r, const char *exception_name) {
 
 void diag_ist_self_check(void) {
     uint32_t ist1_cpus = 0;
+    uint64_t bsp_top = 0;
     for (int c = 0; c < DIAG_MAX_TSS_CPUS; c++) {
-        if (tss_get_ist1_top_for_cpu(c) != 0) {
+        uint64_t top = tss_get_ist1_top_for_cpu(c);
+        if (top != 0) {
             ist1_cpus++;
+            if (bsp_top == 0) {
+                bsp_top = top;
+            }
         }
     }
     uint8_t df_ist = idt_get_ist(8);       /* vector 8: #DF */
+
+    /* FIX_R1: verify the guard page below the BSP's IST1 stack is really
+     * unmapped in the kernel PML4 — "overflowing the IST stack is also
+     * caught" should be a readback fact, not a code comment. */
+    const char *guard_state = "unknown";
+    if (bsp_top != 0) {
+        uint64_t guard_va = bsp_top - TSS_IST1_STACK_SIZE - 0x1000ULL;
+        int m = diag_kernel_mapped(guard_va);
+        guard_state = (m == 0) ? "armed" : (m > 0) ? "MISSING (mapped!)"
+                                                   : "unknown";
+    }
 
     /* Single line, stable wording: tests and humans grep for "IST check".
      * Readback, not trust: the numbers come from the TSS/IDT as loaded,
      * so when FIX_R1 arms the IST the line changes on its own. */
     kprintf("[diag] IST check: IST1 stacks programmed for %u CPU slot(s); "
-            "IDT #DF gate ist=%u -- %s\n",
-            ist1_cpus, (unsigned)df_ist,
+            "IDT #DF gate ist=%u; IST guard %s -- %s\n",
+            ist1_cpus, (unsigned)df_ist, guard_state,
             df_ist ? "IST ARMED"
                    : "IST NOT ARMED -- a kernel fault on a bad stack "
                      "triple-faults (FIX_R1 will arm it)");
@@ -315,4 +331,32 @@ void diag_trigger_kernel_fault(void) {
      * see a null-pointer store and helpfully optimise the fault away. */
     volatile uintptr_t addr = 0;
     *(volatile uint64_t *)addr = 0xD1A6D1A6D1A6D1A6ULL;
+}
+
+/* ------------------------------------------------------------------------
+ * Deliberate kernel-stack overflow for the FIX_R1 integration test gate.
+ * ------------------------------------------------------------------------ */
+
+__attribute__((noinline))
+static void diag_stack_burn(uint64_t depth) {
+    /* ~2 KiB frames: guaranteed smaller than the 4 KiB guard page bracketing
+     * every kernel stack, so the descent cannot leap over the guard into a
+     * mapped neighbour.  The volatile byte writes keep every frame live. */
+    volatile char frame[2048];
+    frame[0] = (char)depth;
+    if (depth > 0) {
+        diag_stack_burn(depth - 1);
+    }
+    frame[2047] = (char)(frame[0] + 1);
+}
+
+__attribute__((noinline))
+void diag_trigger_kernel_stack_overflow(void) {
+    /* Deep recursion on the caller's (16 KiB) kernel stack.  The frame whose
+     * prologue lands in the low guard page faults with RSP already pointing
+     * at unmapped memory, so the CPU cannot even stack the #PF frame and
+     * escalates to #DF — the exact chain FIX_R1 exists to catch:
+     *   pre-R1: silent triple-fault reset;
+     *   post-R1: #DF runs on IST1, the R0 dump prints, the machine halts. */
+    diag_stack_burn(100000);
 }

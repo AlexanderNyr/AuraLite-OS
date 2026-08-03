@@ -328,7 +328,9 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
         len = ksnprintf(text, sizeof(text),
                         "AuraLite sysrq trigger commands:\n"
                         "  c - crash: deliberate kernel page fault "
-                        "(FIX_R0 diagnostics test gate)\n");
+                        "(FIX_R0 diagnostics test gate)\n"
+                        "  o - overflow: deliberate kernel stack overflow "
+                        "-> #DF (FIX_R1 IST test gate)\n");
     } else if ((vn->inode_id >> 16) != 0) {
         uint64_t pid = vn->inode_id >> 16;
         uint64_t file_type = vn->inode_id & 0xFFFF;
@@ -394,6 +396,13 @@ static int64_t procfs_write(struct vnode *vn, uint64_t pos,
                 /* Reaching this would mean address 0 turned out mapped. */
                 kprintf("[sysrq] trigger 'c': the deliberate fault did NOT "
                         "happen — this should never print\n");
+            } else if (s[i] == 'o') {
+                kprintf("[sysrq] trigger 'o': deliberate kernel stack "
+                        "overflow requested (cpu%u)\n", diag_cpu_id());
+                diag_trigger_kernel_stack_overflow();
+                /* Reaching this would mean the stack did not overflow. */
+                kprintf("[sysrq] trigger 'o': recursion RETURNED — the "
+                        "overflow did not happen, this should never print\n");
             }
         }
         return (int64_t)count;

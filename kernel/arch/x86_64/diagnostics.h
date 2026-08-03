@@ -53,4 +53,9 @@ void diag_ist_self_check(void);
  * the fault unexpectedly did not happen (which the test then reports). */
 void diag_trigger_kernel_fault(void);
 
+/* Deliberate kernel-stack overflow for the FIX_R1 test gate ('o' in
+ * /proc/sysrq-trigger): deep recursion whose fatal frame lands in the
+ * stack's guard page with RSP already invalid, forcing a #DF. */
+void diag_trigger_kernel_stack_overflow(void);
+
 #endif /* AURALITE_ARCH_X86_64_DIAGNOSTICS_H */

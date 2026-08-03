@@ -115,6 +115,23 @@ void isr_handler(struct registers *r) {
          * gives the CPL: 0 = kernel, 3 = user. */
         int from_user = ((r->cs & 3) == 3);
 
+        /* FIX_R1: #DF (vector 8) is special in every respect:
+         *   - it means "an exception occurred while trying to deliver another
+         *     exception" — there is no sane state to return to, for kernel OR
+         *     user faults, so the handler must print and halt, NEVER return;
+         *   - it arrives on IST1 now (armed in tss_init()), i.e. on a
+         *     known-good stack, exactly so that a kernel-stack overflow ends
+         *     in this diagnostic instead of a silent triple-fault reset.
+         * The FIX_R0 dump goes first: lock-free, probed reads, serial-only. */
+        if (r->int_no == 8) {
+            diag_early_dump(r, msg);
+            kprintf("\n[DOUBLE FAULT] cpu%u: unrecoverable CPU exception "
+                    "(cannot push a frame for the original fault) -- "
+                    "running on IST1, halting; before FIX_R1 this was a "
+                    "silent reset\n", diag_cpu_id());
+            kernel_halt();
+        }
+
         /* A write to a user COW page is a recoverable protection fault.  It
          * may be triggered either by user code or by kernel copy_to_user(). */
         if (r->int_no == 14 &&

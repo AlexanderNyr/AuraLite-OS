@@ -16,14 +16,21 @@ static inline void lidt_load(const struct idt_ptr *p) {
     __asm__ volatile ("lidt %0" : : "m"(*p));
 }
 
-void idt_set_gate(int n, uint64_t handler, uint8_t flags) {
+void idt_set_gate(int n, uint64_t handler, uint8_t flags, uint8_t ist) {
     idt[n].offset_low  = (uint16_t)(handler & 0xFFFF);
     idt[n].selector    = KERNEL_CODE_SELECTOR;       /* 0x08 */
-    idt[n].ist         = 0;                          /* no IST for now */
+    idt[n].ist         = ist;
     idt[n].type_attr   = flags;
     idt[n].offset_mid  = (uint16_t)((handler >> 16) & 0xFFFF);
     idt[n].offset_high = (uint32_t)((handler >> 32) & 0xFFFFFFFF);
     idt[n].zero        = 0;
+}
+
+void idt_set_ist(int n, uint8_t ist) {
+    if (n < 0 || n >= IDT_ENTRIES) {
+        return;
+    }
+    idt[n].ist = ist;
 }
 
 uint8_t idt_get_ist(int n) {
@@ -38,7 +45,9 @@ void idt_init(void) {
     idtp.base  = (uint64_t)(uintptr_t)&idt;
 
     for (int i = 0; i < IDT_ENTRIES; i++) {
-        idt_set_gate(i, isr_table[i], IDT_GATE_INTERRUPT);
+        /* All gates start on ist=0; TSS setup arms the #DF gate onto IST1
+         * once the per-CPU IST stacks exist (FIX_R1, see tss_init()). */
+        idt_set_gate(i, isr_table[i], IDT_GATE_INTERRUPT, 0);
     }
 
     lidt_load(&idtp);

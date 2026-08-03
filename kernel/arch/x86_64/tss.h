@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 
+/* Size of each per-CPU IST1 stack (usable bytes).  Shared with
+ * diagnostics.c, whose IST self-check locates the guard page below the
+ * stack relative to the programmed stack top. */
+#define TSS_IST1_STACK_SIZE (16 * 1024)
+
 /*
  * 64-bit Task State Segment (TSS).
  *

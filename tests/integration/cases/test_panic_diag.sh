@@ -40,10 +40,10 @@ il_run_qemu "$LOG" 45
 il_assert_grep "$LOG" "auralite#"                                   "shell reached before the trigger"
 
 # 2. Boot-time IST self-check ran and reported honestly.  The second assert
-#    encodes the PRE-FIX_R1 expectation on purpose: when FIX_R1 arms the
-#    IST, this assert goes red and gets flipped to "IST ARMED".
+#    flipped from NOT ARMED to ARMED when FIX_R1 landed — exactly the
+#    log visibility R0's self-check exists for.
 il_assert_grep "$LOG" "\[diag\] IST check:"                         "boot-time IST self-check ran"
-il_assert_grep "$LOG" "IST NOT ARMED"                               "pre-R1: IST reported NOT ARMED (flip when FIX_R1 lands)"
+il_assert_grep "$LOG" "IST guard armed -- IST ARMED"                "FIX_R1: #DF gate on IST1, guard page unmapped"
 
 # 3. The trigger was honoured.
 il_assert_grep "$LOG" "\[sysrq\] trigger 'c'"                       "sysrq crash trigger accepted"

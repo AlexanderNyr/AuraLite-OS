@@ -249,13 +249,13 @@ a reset.
 
 #### Tasks
 
-- [ ] `idt_set_gate()` gains an IST index parameter, or a companion that sets
+- [x] `idt_set_gate()` gains an IST index parameter, or a companion that sets
       one; the hardcoded `ist = 0` goes.
-- [ ] Vector 8 (#DF) on IST1. Consider vector 2 (NMI) and 18 (#MC), and
+- [x] Vector 8 (#DF) on IST1. Consider vector 2 (NMI) and 18 (#MC), and
       **state the choice** rather than doing all three by reflex — each IST
       slot is a separate stack that must be sized and never re-entered.
-- [ ] A guard page below the IST stack, so overflowing *it* is also caught.
-- [ ] Make the double-fault handler print and halt, never return.
+- [x] A guard page below the IST stack, so overflowing *it* is also caught.
+- [x] Make the double-fault handler print and halt, never return.
 
 #### Test gate
 

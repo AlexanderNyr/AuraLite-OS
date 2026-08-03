@@ -37,7 +37,14 @@ struct idt_ptr {
 #define IDT_GATE_USER_INT  0xEE   /* P=1, DPL=3, interrupt gate */
 
 void idt_init(void);
-void idt_set_gate(int n, uint64_t handler, uint8_t flags);
+
+/* Install gate n for handler with the given type_attr and IST index
+ * (0 = run on the current stack / RSP0; 1..7 = TSS IST slot). */
+void idt_set_gate(int n, uint64_t handler, uint8_t flags, uint8_t ist);
+
+/* Change the IST index of an already-installed gate (FIX_R1 arms #DF this
+ * way, after the per-CPU IST1 stacks are programmed). */
+void idt_set_ist(int n, uint8_t ist);
 
 /* Read back the IST index programmed into gate n (0 = no IST).
  * Used by the FIX_R0 boot-time IST self-check in diagnostics.c. */
