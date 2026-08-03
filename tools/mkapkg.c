@@ -22,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "libc/include/apkg.h"
+#include "lib/libc/include/apkg.h"
 
 static void usage(const char *argv0) {
     fprintf(stderr,

@@ -15,7 +15,7 @@
 #include <stdio.h>
 
 /* Pull in the public libc errno definitions under test. */
-#include "libc/include/errno.h"
+#include "lib/libc/include/errno.h"
 
 /* Provide the errno storage that libc/include/errno.h declares via the
  * __errno_location() accessor, so this test links standalone. */

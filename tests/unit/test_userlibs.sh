@@ -94,7 +94,7 @@ done
 
 if command -v ld.lld >/dev/null 2>&1 && [ -f build/user/hello.o ]; then
     probe=$(mktemp /tmp/userlibs_probe.XXXXXX.elf)
-    if ld.lld -nostdlib -static -T libc/user.ld -z max-page-size=4096 \
+    if ld.lld -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 \
               build/user/hello.o "$CRT0" \
               --whole-archive "$LIBAURAC" --no-whole-archive \
               -o "$probe" 2>/dev/null; then

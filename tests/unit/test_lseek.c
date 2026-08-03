@@ -6,7 +6,7 @@
  */
 #include <stdio.h>
 #include <stdint.h>
-#include "libc/include/sys/uio.h"
+#include "lib/libc/include/sys/uio.h"
 
 /* SEEK_* live in <unistd.h>; redeclare here to avoid pulling the whole header
  * (which declares syscall wrappers).  Values must match. */

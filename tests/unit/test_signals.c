@@ -9,7 +9,7 @@
  */
 #include <stdio.h>
 #include <stdint.h>
-#include "libc/include/signal.h"
+#include "lib/libc/include/signal.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \

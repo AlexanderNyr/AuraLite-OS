@@ -7,8 +7,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
-#include "libc/include/termios.h"
-#include "libc/include/sys/ioctl.h"
+#include "lib/libc/include/termios.h"
+#include "lib/libc/include/sys/ioctl.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \

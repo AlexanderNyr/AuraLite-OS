@@ -7,7 +7,7 @@
 #
 #  1. COMPLETENESS — the examples build and link using ONLY the staged SDK.
 #     The build runs in a temporary directory with no access to the OS source
-#     tree, so an example cannot accidentally reach into libc/include and keep
+#     tree, so an example cannot accidentally reach into lib/libc/include and keep
 #     working after the SDK stopped being sufficient.
 #
 #  2. HONESTY — the flags in auralite.mk match the ones the OS builds its own
@@ -43,9 +43,9 @@ echo "sdk_check: the staged SDK at $SDK"
 # against the sources they are assembled from.
 missing_hdr=0
 while IFS= read -r -d '' src; do
-    rel="${src#"$ROOT"/libc/include/}"
+    rel="${src#"$ROOT"/lib/libc/include/}"
     [ -e "$SDK/include/$rel" ] || { bad "stale SDK: include/$rel is not staged"; missing_hdr=1; }
-done < <(find "$ROOT/libc/include" -name '*.h' -print0)
+done < <(find "$ROOT/lib/libc/include" -name '*.h' -print0)
 
 extra_hdr=0
 while IFS= read -r -d '' staged; do
@@ -53,10 +53,10 @@ while IFS= read -r -d '' staged; do
     case "$rel" in
         auragui.h|GL/*) continue ;;   # staged from libauragui / libgl
     esac
-    [ -e "$ROOT/libc/include/$rel" ] || { bad "stale SDK: include/$rel has no source"; extra_hdr=1; }
+    [ -e "$ROOT/lib/libc/include/$rel" ] || { bad "stale SDK: include/$rel has no source"; extra_hdr=1; }
 done < <(find "$SDK/include" -name '*.h' -print0)
 
-[ "$missing_hdr" -eq 0 ] && [ "$extra_hdr" -eq 0 ] &&     ok "staged headers match libc/include exactly (SDK is not stale)"
+[ "$missing_hdr" -eq 0 ] && [ "$extra_hdr" -eq 0 ] &&     ok "staged headers match lib/libc/include exactly (SDK is not stale)"
 
 # ---- 1. the layout ----------------------------------------------------------
 

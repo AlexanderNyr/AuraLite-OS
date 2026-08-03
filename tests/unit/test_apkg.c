@@ -19,7 +19,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "libc/include/apkg.h"
+#include "lib/libc/include/apkg.h"
 
 static int tn = 0, passed = 0, failed = 0;
 

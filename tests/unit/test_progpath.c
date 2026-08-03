@@ -68,7 +68,7 @@ int close(int fd) { (void)fd; return 0; }
 
 /* The unit under test.  Included rather than linked so the stubs above are
  * the ones it calls. */
-#include "libc/src/progpath.c"
+#include "lib/libc/src/progpath.c"
 
 /* ---- harness ---------------------------------------------------------- */
 

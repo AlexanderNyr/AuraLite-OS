@@ -238,8 +238,8 @@ HELLO_ELF    := $(USER_BUILD)/hello.elf
 USER_BIN_H   := $(BUILD_DIR)/init_bin.h
 
 USER_CFLAGS  := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
-                -O2 -Wall -Wextra -Werror -I . -I libc/include
-USER_LDFLAGS := -nostdlib -static -T libc/user.ld -z max-page-size=4096
+                -O2 -Wall -Wextra -Werror -I . -I lib/libc/include
+USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096
 
 ### RUST: compiler and flags for Rust
 RUSTC       := rustc
@@ -308,11 +308,11 @@ USER_COMMON     := $(USER_BUILD)/crt0.o $(LIBAURAC)
 USER_COMMON_LNK := $(USER_BUILD)/crt0.o \
                    --whole-archive $(LIBAURAC) --no-whole-archive
 
-USER_CFLAGS_INC := libc/include/unistd.h libc/include/string.h libc/include/stdio.h libc/include/stdlib.h \
-                   libc/include/errno.h libc/include/limits.h libc/include/stdbool.h \
-                   libc/include/ctype.h libc/include/math.h libc/include/assert.h
+USER_CFLAGS_INC := lib/libc/include/unistd.h lib/libc/include/string.h lib/libc/include/stdio.h lib/libc/include/stdlib.h \
+                   lib/libc/include/errno.h lib/libc/include/limits.h lib/libc/include/stdbool.h \
+                   lib/libc/include/ctype.h lib/libc/include/math.h lib/libc/include/assert.h
 # Augment include path so user apps can include "auragui.h".
-USER_CFLAGS += -I libauragui/include
+USER_CFLAGS += -I lib/libauragui/include
 
 # Application ELFs.
 ### RUST: add rustes.elf to the list
@@ -361,7 +361,7 @@ LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
               $(USER_BUILD)/glsl_exec.o \
               $(USER_BUILD)/glshader.o $(USER_BUILD)/glshaderpipe.o
 USER_GL_OBJ := $(LIBAGL)
-USER_CFLAGS += -I libgl/include
+USER_CFLAGS += -I lib/libgl/include
 
 # GL applications: linked with libgl in addition to libauragui.
 USER_GL_APPS := $(USER_BUILD)/gltest.elf $(USER_BUILD)/glcube.elf \
@@ -401,7 +401,7 @@ user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
 # GUI apps additionally link the libauragui object.
-$(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) $(USER_GUI_OBJ) libc/user.ld
+$(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
@@ -488,7 +488,7 @@ $(USER_BUILD)/selftest.o: userspace/tests/selftest/selftest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/proctest.o: userspace/tests/proctest/proctest.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/proctest.o: userspace/tests/proctest/proctest.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -520,91 +520,91 @@ $(USER_BUILD)/play.o: userspace/apps/play/play.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # ---- GUI applications and libauragui ----
-$(USER_BUILD)/auragui.o: libauragui/src/auragui.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/auragui.o: lib/libauragui/src/auragui.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # ---- libgl (OpenGL) translation units -- see GL_PLAN.md ----
-$(USER_BUILD)/glmath.o: libgl/src/glmath.c libgl/include/GL/glmath.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glmath.o: lib/libgl/src/glmath.c lib/libgl/include/GL/glmath.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/auraglx.o: libgl/src/auraglx.c libgl/include/GL/auraglx.h \
-                         libgl/src/glcontext.h libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/auraglx.o: lib/libgl/src/auraglx.c lib/libgl/include/GL/auraglx.h \
+                         lib/libgl/src/glcontext.h lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glstate.o: libgl/src/glstate.c libgl/src/glcontext.h \
-                         libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glstate.o: lib/libgl/src/glstate.c lib/libgl/src/glcontext.h \
+                         lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glmatrix.o: libgl/src/glmatrix.c libgl/src/glcontext.h \
-                          libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glmatrix.o: lib/libgl/src/glmatrix.c lib/libgl/src/glcontext.h \
+                          lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glimm.o: libgl/src/glimm.c libgl/src/glcontext.h \
-                       libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glimm.o: lib/libgl/src/glimm.c lib/libgl/src/glcontext.h \
+                       lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glraster.o: libgl/src/glraster.c libgl/src/glcontext.h \
-                          libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glraster.o: lib/libgl/src/glraster.c lib/libgl/src/glcontext.h \
+                          lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glclip.o: libgl/src/glclip.c libgl/src/glcontext.h \
-                        libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glclip.o: lib/libgl/src/glclip.c lib/libgl/src/glcontext.h \
+                        lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/gllight.o: libgl/src/gllight.c libgl/src/glcontext.h \
-                         libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gllight.o: lib/libgl/src/gllight.c lib/libgl/src/glcontext.h \
+                         lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/gltexture.o: libgl/src/gltexture.c libgl/src/glcontext.h \
-                           libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gltexture.o: lib/libgl/src/gltexture.c lib/libgl/src/glcontext.h \
+                           lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glfrag.o: libgl/src/glfrag.c libgl/src/glcontext.h \
-                        libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glfrag.o: lib/libgl/src/glfrag.c lib/libgl/src/glcontext.h \
+                        lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glarray.o: libgl/src/glarray.c libgl/src/glcontext.h \
-                         libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glarray.o: lib/libgl/src/glarray.c lib/libgl/src/glcontext.h \
+                         lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/gllist.o: libgl/src/gllist.c libgl/src/glcontext.h \
-                        libgl/src/glvertex.h libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gllist.o: lib/libgl/src/gllist.c lib/libgl/src/glcontext.h \
+                        lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # glu.c is built purely on the public GL API: no glcontext.h dependency.
-$(USER_BUILD)/glu.o: libgl/src/glu.c libgl/include/GL/glu.h \
-                     libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glu.o: lib/libgl/src/glu.c lib/libgl/include/GL/glu.h \
+                     lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glbackend.o: libgl/src/glbackend.c libgl/include/GL/glbackend.h \
-                           libgl/src/glcontext.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glbackend.o: lib/libgl/src/glbackend.c lib/libgl/include/GL/glbackend.h \
+                           lib/libgl/src/glcontext.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # The VirGL backend shares the kernel's GPU ABI header rather than duplicating
 # the struct layouts, so it needs the repository root on the include path.
-$(USER_BUILD)/glvirgl.o: libgl/src/glvirgl.c libgl/include/GL/glbackend.h \
-                         libgl/src/glcontext.h kernel/gpu/gpu_syscalls.h \
+$(USER_BUILD)/glvirgl.o: lib/libgl/src/glvirgl.c lib/libgl/include/GL/glbackend.h \
+                         lib/libgl/src/glcontext.h kernel/gpu/gpu_syscalls.h \
                          drivers/gpu/virgl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -I . -c $< -o $@
 
-$(USER_BUILD)/glfbo.o: libgl/src/glfbo.c libgl/src/glcontext.h \
-                       libgl/src/glvertex.h libgl/include/GL/gl.h \
+$(USER_BUILD)/glfbo.o: lib/libgl/src/glfbo.c lib/libgl/src/glcontext.h \
+                       lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h \
                        $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -612,84 +612,84 @@ $(USER_BUILD)/glfbo.o: libgl/src/glfbo.c libgl/src/glcontext.h \
 # The GLSL front end (phase G11a).  It depends on glsl.h and the public GL
 # types only -- deliberately not on glcontext.h, so the compiler can be built
 # and tested with no rendering context in sight.
-$(USER_BUILD)/glsl_%.o: libgl/src/glsl_%.c libgl/src/glsl.h \
-                        libgl/include/GL/gl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glsl_%.o: lib/libgl/src/glsl_%.c lib/libgl/src/glsl.h \
+                        lib/libgl/include/GL/gl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # The shader object model and the pipeline seam (phase G11c).  Unlike the
 # compiler these DO know about the GL context, so they depend on glcontext.h.
-$(USER_BUILD)/glshader.o: libgl/src/glshader.c libgl/src/glcontext.h \
-                          libgl/src/glvertex.h libgl/src/glsl.h \
+$(USER_BUILD)/glshader.o: lib/libgl/src/glshader.c lib/libgl/src/glcontext.h \
+                          lib/libgl/src/glvertex.h lib/libgl/src/glsl.h \
                           $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glshaderpipe.o: libgl/src/glshaderpipe.c libgl/src/glcontext.h \
-                              libgl/src/glvertex.h libgl/src/glsl.h \
+$(USER_BUILD)/glshaderpipe.o: lib/libgl/src/glshaderpipe.c lib/libgl/src/glcontext.h \
+                              lib/libgl/src/glvertex.h lib/libgl/src/glsl.h \
                               $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # ---- GL applications ----
-# /gltest reaches into libgl/src for glsl.h: it is libgl's own regression
+# /gltest reaches into lib/libgl/src for glsl.h: it is libgl's own regression
 # suite, and the GLSL front end has no public entry point until phase G11c.
-$(USER_BUILD)/gltest.o: userspace/tests/gltest/gltest.c libauragui/include/auragui.h \
-                        libgl/src/glsl.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gltest.o: userspace/tests/gltest/gltest.c lib/libauragui/include/auragui.h \
+                        lib/libgl/src/glsl.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
-	$(HOST_CC) $(USER_CFLAGS) -I libgl/src -c $< -o $@
+	$(HOST_CC) $(USER_CFLAGS) -I lib/libgl/src -c $< -o $@
 
-$(USER_BUILD)/glcube.o: userspace/demos/glcube/glcube.c libauragui/include/auragui.h \
-                        libgl/include/GL/gl.h libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glcube.o: userspace/demos/glcube/glcube.c lib/libauragui/include/auragui.h \
+                        lib/libgl/include/GL/gl.h lib/libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/glgears.o: userspace/demos/glgears/glgears.c libauragui/include/auragui.h \
-                         libgl/include/GL/gl.h libgl/include/GL/glu.h \
-                         libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glgears.o: userspace/demos/glgears/glgears.c lib/libauragui/include/auragui.h \
+                         lib/libgl/include/GL/gl.h lib/libgl/include/GL/glu.h \
+                         lib/libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # Explicit link rule: GL apps additionally pull in libgl.  This overrides the
 # generic %.elf pattern rule below for these targets.
 $(USER_GL_APPS): $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) \
-                                      $(USER_GUI_OBJ) $(USER_GL_OBJ) libc/user.ld
+                                      $(USER_GUI_OBJ) $(USER_GL_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) \
 	      $(USER_GL_OBJ) -o $@
 	@echo "[link] $@ (libgl)"
 
-$(USER_BUILD)/gcalc.o:   userspace/apps/gui-calc/gcalc.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gcalc.o:   userspace/apps/gui-calc/gcalc.c     lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gedit.o:   userspace/apps/gui-edit/gedit.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gedit.o:   userspace/apps/gui-edit/gedit.c     lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gfiles.o:  userspace/apps/gui-files/gfiles.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gfiles.o:  userspace/apps/gui-files/gfiles.c   lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gterm.o:   userspace/apps/gui-term/gterm.c     libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gterm.o:   userspace/apps/gui-term/gterm.c     lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gsysmon.o: userspace/apps/gui-sysmon/gsysmon.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gsysmon.o: userspace/apps/gui-sysmon/gsysmon.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gabout.o:  userspace/apps/gui-about/gabout.c   libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gabout.o:  userspace/apps/gui-about/gabout.c   lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gtaskmgr.o: userspace/apps/gui-taskmgr/gtaskmgr.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gtaskmgr.o: userspace/apps/gui-taskmgr/gtaskmgr.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/glaunch.o: userspace/apps/gui-launcher/glaunch.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/glaunch.o: userspace/apps/gui-launcher/glaunch.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gaudio.o: userspace/apps/gui-audio/gaudio.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gaudio.o: userspace/apps/gui-audio/gaudio.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/hello.o: userspace/apps/hello/hello.c libc/include/unistd.h
+$(USER_BUILD)/hello.o: userspace/apps/hello/hello.c lib/libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 ### RUST: link rustes.elf using both C and Rust objects
-$(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes_c.o $(USER_BUILD)/rustes.o $(USER_COMMON) libc/user.ld
+$(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes_c.o $(USER_BUILD)/rustes.o $(USER_COMMON) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/rustes_c.o $(USER_BUILD)/rustes.o $(USER_COMMON_LNK) -o $@
 	@echo "[link] $@"
@@ -698,71 +698,71 @@ $(USER_BUILD)/init.o: userspace/system/init/init.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/libc.o: libc/src/libc.c libc/include/unistd.h libc/include/string.h \
-                       libc/include/stdio.h libc/include/stdlib.h libc/include/errno.h \
-                       libc/include/ctype.h libc/include/math.h libc/include/limits.h \
-                       libc/include/stdbool.h libc/include/assert.h libc/include/signal.h \
-                       libc/include/sys/uio.h libc/include/fcntl.h
+$(USER_BUILD)/libc.o: lib/libc/src/libc.c lib/libc/include/unistd.h lib/libc/include/string.h \
+                       lib/libc/include/stdio.h lib/libc/include/stdlib.h lib/libc/include/errno.h \
+                       lib/libc/include/ctype.h lib/libc/include/math.h lib/libc/include/limits.h \
+                       lib/libc/include/stdbool.h lib/libc/include/assert.h lib/libc/include/signal.h \
+                       lib/libc/include/sys/uio.h lib/libc/include/fcntl.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/malloc.o: libc/src/malloc.c libc/include/stdlib.h libc/include/unistd.h
+$(USER_BUILD)/malloc.o: lib/libc/src/malloc.c lib/libc/include/stdlib.h lib/libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-# Generic rule for the extra libc translation units in libc/src/*.c.
-$(USER_BUILD)/%.o: libc/src/%.c
+# Generic rule for the extra libc translation units in lib/libc/src/*.c.
+$(USER_BUILD)/%.o: lib/libc/src/%.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # The pthread runtime lives in a sub-directory.
-$(USER_BUILD)/pthread.o: libc/src/pthread/pthread.c libc/include/pthread.h
+$(USER_BUILD)/pthread.o: lib/libc/src/pthread/pthread.c lib/libc/include/pthread.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/rwlock.o: libc/src/pthread/rwlock.c libc/include/pthread.h
+$(USER_BUILD)/rwlock.o: lib/libc/src/pthread/rwlock.c lib/libc/include/pthread.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/barrier.o: libc/src/pthread/barrier.c libc/include/pthread.h
+$(USER_BUILD)/barrier.o: lib/libc/src/pthread/barrier.c lib/libc/include/pthread.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/spin.o: libc/src/pthread/spin.c libc/include/pthread.h
+$(USER_BUILD)/spin.o: lib/libc/src/pthread/spin.c lib/libc/include/pthread.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/crt0.o: libc/crt/crt0.asm
+$(USER_BUILD)/crt0.o: lib/libc/crt/crt0.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(USER_BUILD)/syscall.o: libc/src/syscall.asm
+$(USER_BUILD)/syscall.o: lib/libc/src/syscall.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(USER_BUILD)/sigreturn.o: libc/crt/sigreturn.asm
+$(USER_BUILD)/sigreturn.o: lib/libc/crt/sigreturn.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(USER_BUILD)/setjmp.o: libc/crt/setjmp.asm
+$(USER_BUILD)/setjmp.o: lib/libc/crt/setjmp.asm
 	@mkdir -p $(dir $@)
 	$(AS) $(ASFLAGS) $< -o $@
 
-$(USER_BUILD)/compat.o: libc/src/compat.c libc/include/strings.h libc/include/wctype.h \
-                         libc/include/inttypes.h libc/include/setjmp.h libc/include/threads.h \
-                         libc/include/uchar.h libc/include/fenv.h libc/include/complex.h
+$(USER_BUILD)/compat.o: lib/libc/src/compat.c lib/libc/include/strings.h lib/libc/include/wctype.h \
+                         lib/libc/include/inttypes.h lib/libc/include/setjmp.h lib/libc/include/threads.h \
+                         lib/libc/include/uchar.h lib/libc/include/fenv.h lib/libc/include/complex.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(INIT_ELF): $(USER_BUILD)/init.o $(USER_COMMON) libc/user.ld
+$(INIT_ELF): $(USER_BUILD)/init.o $(USER_COMMON) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/init.o $(USER_COMMON_LNK) -o $@
 	@echo "[link] $(INIT_ELF)"
 
-$(HELLO_ELF): $(USER_BUILD)/hello.o $(USER_COMMON) libc/user.ld
+$(HELLO_ELF): $(USER_BUILD)/hello.o $(USER_COMMON) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/hello.o $(USER_COMMON_LNK) -o $@
 	@echo "[link] $(HELLO_ELF)"
@@ -931,7 +931,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 #
 # There are NO root-level aliases any more (phase F5).  Each program has
 # exactly one location, and a command is found by name through the search
-# path in libc/src/progpath.c.  The hard-link support the aliases needed is
+# path in lib/libc/src/progpath.c.  The hard-link support the aliases needed is
 # kept in kernel/fs/initrd.c: it is tested, it costs nothing, and an image
 # that wants two names for one file can still have them.
 #
@@ -1113,24 +1113,24 @@ $(BUILD_DIR)/test_3d: tests/unit/test_3d.c
 # the test_glstate rule still listed only the G1 set, so `make test-unit`
 # failed to link on a clean tree.  One variable makes that class of bug
 # impossible -- adding a module here fixes every test at once.
-LIBGL_TEST_SRCS := libgl/src/auraglx.c libgl/src/glstate.c \
-                   libgl/src/glmath.c libgl/src/glmatrix.c \
-                   libgl/src/glimm.c libgl/src/glraster.c \
-                   libgl/src/glclip.c libgl/src/gllight.c \
-                   libgl/src/gltexture.c libgl/src/glfrag.c \
-                   libgl/src/glarray.c libgl/src/gllist.c \
-                   libgl/src/glu.c libgl/src/glbackend.c \
-                   libgl/src/glvirgl.c libgl/src/glfbo.c \
-                   libgl/src/glsl_lex.c libgl/src/glsl_type.c \
-                   libgl/src/glsl_parse.c libgl/src/glsl_sema.c \
-                   libgl/src/glsl_exec.c \
-                   libgl/src/glshader.c libgl/src/glshaderpipe.c
+LIBGL_TEST_SRCS := lib/libgl/src/auraglx.c lib/libgl/src/glstate.c \
+                   lib/libgl/src/glmath.c lib/libgl/src/glmatrix.c \
+                   lib/libgl/src/glimm.c lib/libgl/src/glraster.c \
+                   lib/libgl/src/glclip.c lib/libgl/src/gllight.c \
+                   lib/libgl/src/gltexture.c lib/libgl/src/glfrag.c \
+                   lib/libgl/src/glarray.c lib/libgl/src/gllist.c \
+                   lib/libgl/src/glu.c lib/libgl/src/glbackend.c \
+                   lib/libgl/src/glvirgl.c lib/libgl/src/glfbo.c \
+                   lib/libgl/src/glsl_lex.c lib/libgl/src/glsl_type.c \
+                   lib/libgl/src/glsl_parse.c lib/libgl/src/glsl_sema.c \
+                   lib/libgl/src/glsl_exec.c \
+                   lib/libgl/src/glshader.c lib/libgl/src/glshaderpipe.c
 
-LIBGL_TEST_HDRS := libgl/src/glcontext.h libgl/src/glvertex.h \
-                   libgl/src/glsl.h \
-                   libgl/include/GL/glu.h libgl/include/GL/glbackend.h \
-                   libgl/include/GL/gl.h libgl/include/GL/glmath.h \
-                   libgl/include/GL/auraglx.h
+LIBGL_TEST_HDRS := lib/libgl/src/glcontext.h lib/libgl/src/glvertex.h \
+                   lib/libgl/src/glsl.h \
+                   lib/libgl/include/GL/glu.h lib/libgl/include/GL/glbackend.h \
+                   lib/libgl/include/GL/gl.h lib/libgl/include/GL/glmath.h \
+                   lib/libgl/include/GL/auraglx.h
 
 LIBGL_TEST_STUB := tests/unit/glstub/auragui_stub.c
 # `-I .` is for glvirgl.c, which shares kernel/gpu/gpu_syscalls.h with the
@@ -1138,7 +1138,7 @@ LIBGL_TEST_STUB := tests/unit/glstub/auragui_stub.c
 # the unistd.h that declares syscall(), which the host's own header does not
 # declare compatibly.
 LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I . \
-                     -I libgl/include -I libgl/src -I tests/unit/glstub
+                     -I lib/libgl/include -I lib/libgl/src -I tests/unit/glstub
 
 # What each test covers:
 #   test_glmath   vector/matrix math (no context needed, links glmath.c alone)
@@ -1194,11 +1194,11 @@ $(BUILD_DIR)/test_gpu_syscall: tests/unit/test_gpu_syscall.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_gpu_syscall.c kernel/gpu/gpu_cmdcheck.c -o $@
 
-$(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c libgl/src/glmath.c \
-                          libgl/include/GL/glmath.h
+$(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c lib/libgl/src/glmath.c \
+                          lib/libgl/include/GL/glmath.h
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I libgl/include \
-	          tests/unit/test_glmath.c libgl/src/glmath.c -o $@ -lm
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I lib/libgl/include \
+	          tests/unit/test_glmath.c lib/libgl/src/glmath.c -o $@ -lm
 
 $(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
 	@mkdir -p $(BUILD_DIR)
@@ -1285,12 +1285,12 @@ $(BUILD_DIR)/test_ipc: tests/unit/test_ipc.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_q1_headers: tests/unit/test_q1_headers.c \
-                               libc/include/stdarg.h libc/include/stddef.h libc/include/stdint.h \
-                               libc/include/float.h libc/include/inttypes.h libc/include/iso646.h \
-                               libc/include/stdalign.h libc/include/stdnoreturn.h libc/include/tgmath.h \
-                               libc/include/complex.h libc/include/fenv.h libc/include/stdatomic.h \
-                               libc/include/wctype.h libc/include/strings.h libc/include/uchar.h \
-                               libc/include/setjmp.h libc/include/threads.h
+                               lib/libc/include/stdarg.h lib/libc/include/stddef.h lib/libc/include/stdint.h \
+                               lib/libc/include/float.h lib/libc/include/inttypes.h lib/libc/include/iso646.h \
+                               lib/libc/include/stdalign.h lib/libc/include/stdnoreturn.h lib/libc/include/tgmath.h \
+                               lib/libc/include/complex.h lib/libc/include/fenv.h lib/libc/include/stdatomic.h \
+                               lib/libc/include/wctype.h lib/libc/include/strings.h lib/libc/include/uchar.h \
+                               lib/libc/include/setjmp.h lib/libc/include/threads.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
@@ -1346,9 +1346,9 @@ $(BUILD_DIR)/test_wm: tests/unit/test_wm.c
 #
 # objcopy -G localises everything else, so the harness gets glibc's stdio and
 # the unit under test is reached only through the one symbol being tested.
-$(BUILD_DIR)/libc_fmt_full.o: libc/src/libc.c
+$(BUILD_DIR)/libc_fmt_full.o: lib/libc/src/libc.c
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I libc/include -c $< -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I lib/libc/include -c $< -o $@
 
 $(BUILD_DIR)/libc_fmt.o: $(BUILD_DIR)/libc_fmt_full.o
 	objcopy -G snprintf -G vsnprintf $< $@
@@ -1360,10 +1360,10 @@ $(BUILD_DIR)/test_printf_fmt: tests/unit/test_printf_fmt.c $(BUILD_DIR)/libc_fmt
 
 # The package parser reads attacker-controlled input, so the shipping source
 # is compiled in and exercised directly with malformed files.
-$(BUILD_DIR)/test_apkg: tests/unit/test_apkg.c libc/src/apkg.c libc/include/apkg.h
+$(BUILD_DIR)/test_apkg: tests/unit/test_apkg.c lib/libc/src/apkg.c lib/libc/include/apkg.h
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I libc/include \
-	          tests/unit/test_apkg.c libc/src/apkg.c -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I lib/libc/include \
+	          tests/unit/test_apkg.c lib/libc/src/apkg.c -o $@
 
 # The search path is tested with a stub filesystem, so the search ORDER is
 # observable — the real filesystem only shows which lookup happened to win.
@@ -1379,7 +1379,7 @@ $(BUILD_DIR)/test_apkg: tests/unit/test_apkg.c libc/src/apkg.c libc/include/apkg
 # also shadow the real <string.h> that the TEST needs for strcmp/snprintf.
 # progpath.c's include of "string.h" therefore reaches glibc's, which is
 # harmless -- it uses nothing from it.
-$(BUILD_DIR)/test_progpath: tests/unit/test_progpath.c libc/src/progpath.c \
+$(BUILD_DIR)/test_progpath: tests/unit/test_progpath.c lib/libc/src/progpath.c \
                             tests/unit/pathstub/unistd.h \
                             tests/unit/pathstub/fcntl.h
 	@mkdir -p $(BUILD_DIR)
@@ -1430,36 +1430,36 @@ $(BUILD_DIR)/test_fat32: tests/unit/test_fat32.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_errno: tests/unit/test_errno.c libc/include/errno.h
+$(BUILD_DIR)/test_errno: tests/unit/test_errno.c lib/libc/include/errno.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_ctype: tests/unit/test_ctype.c libc/include/ctype.h \
-                         libc/include/limits.h libc/include/stdbool.h
+$(BUILD_DIR)/test_ctype: tests/unit/test_ctype.c lib/libc/include/ctype.h \
+                         lib/libc/include/limits.h lib/libc/include/stdbool.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_open_flags: tests/unit/test_open_flags.c libc/include/fcntl.h
+$(BUILD_DIR)/test_open_flags: tests/unit/test_open_flags.c lib/libc/include/fcntl.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_lseek: tests/unit/test_lseek.c libc/include/sys/uio.h
+$(BUILD_DIR)/test_lseek: tests/unit/test_lseek.c lib/libc/include/sys/uio.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_signals: tests/unit/test_signals.c libc/include/signal.h
+$(BUILD_DIR)/test_signals: tests/unit/test_signals.c lib/libc/include/signal.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_termios: tests/unit/test_termios.c libc/include/termios.h libc/include/sys/ioctl.h
+$(BUILD_DIR)/test_termios: tests/unit/test_termios.c lib/libc/include/termios.h lib/libc/include/sys/ioctl.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_jobcontrol: tests/unit/test_jobcontrol.c libc/include/sys/wait.h
+$(BUILD_DIR)/test_jobcontrol: tests/unit/test_jobcontrol.c lib/libc/include/sys/wait.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_permissions: tests/unit/test_permissions.c libc/include/unistd.h
+$(BUILD_DIR)/test_permissions: tests/unit/test_permissions.c lib/libc/include/unistd.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
@@ -1473,19 +1473,19 @@ $(BUILD_DIR)/test_slab: tests/unit/test_slab.c kernel/mm/slab.c kernel/mm/slab.h
 
 # ---- Package tool (SDK_PLAN phase S4) ----
 #
-# mkapkg links the SAME parser the OS uses (libc/src/apkg.c), so the writer
+# mkapkg links the SAME parser the OS uses (lib/libc/src/apkg.c), so the writer
 # and the reader cannot disagree about the format.  The two translation units
 # are compiled SEPARATELY and with different include paths on purpose:
-# apkg.c is AuraLite code and needs libc/include, while mkapkg.c is a host
-# program that needs the HOST's stdio.h -- putting libc/include ahead of it
+# apkg.c is AuraLite code and needs lib/libc/include, while mkapkg.c is a host
+# program that needs the HOST's stdio.h -- putting lib/libc/include ahead of it
 # would hide fseek/ftell behind AuraLite's freestanding subset.
 MKAPKG := $(BUILD_DIR)/mkapkg
 
-$(BUILD_DIR)/apkg_host.o: libc/src/apkg.c libc/include/apkg.h
+$(BUILD_DIR)/apkg_host.o: lib/libc/src/apkg.c lib/libc/include/apkg.h
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I libc/include -c $< -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I lib/libc/include -c $< -o $@
 
-$(BUILD_DIR)/mkapkg.o: tools/mkapkg.c libc/include/apkg.h
+$(BUILD_DIR)/mkapkg.o: tools/mkapkg.c lib/libc/include/apkg.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -c $< -o $@
 
@@ -1502,20 +1502,20 @@ $(MKAPKG): $(BUILD_DIR)/mkapkg.o $(BUILD_DIR)/apkg_host.o
 #
 # `make sdk-check` then builds examples/ AGAINST THE STAGED SDK -- not against
 # the source tree.  That distinction is the whole point.  If the examples could
-# reach into libc/include directly they would keep building after the SDK
+# reach into lib/libc/include directly they would keep building after the SDK
 # stopped being sufficient, and the check would prove nothing.
 SDK_DIR := $(BUILD_DIR)/sdk
 
 sdk: libs $(USER_BUILD)/crt0.o
 	@rm -rf $(SDK_DIR)
 	@mkdir -p $(SDK_DIR)/include $(SDK_DIR)/lib
-	@cp -r libc/include/. $(SDK_DIR)/include/
-	@cp libauragui/include/auragui.h $(SDK_DIR)/include/
+	@cp -r lib/libc/include/. $(SDK_DIR)/include/
+	@cp lib/libauragui/include/auragui.h $(SDK_DIR)/include/
 	@mkdir -p $(SDK_DIR)/include/GL
-	@cp libgl/include/GL/*.h $(SDK_DIR)/include/GL/
+	@cp lib/libgl/include/GL/*.h $(SDK_DIR)/include/GL/
 	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(SDK_DIR)/lib/
 	@cp $(USER_BUILD)/crt0.o $(SDK_DIR)/lib/
-	@cp libc/user.ld $(SDK_DIR)/
+	@cp lib/libc/user.ld $(SDK_DIR)/
 	@bash tools/mksdk.sh $(SDK_DIR)
 	@echo "[sdk] $(SDK_DIR) ($$(find $(SDK_DIR) -type f | wc -l) files)"
 

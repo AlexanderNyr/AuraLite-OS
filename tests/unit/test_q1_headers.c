@@ -21,27 +21,27 @@
 #include <string.h>
 
 /* ---- Q1.1 - Q1.13: headers that are pure types/macros/builtins ---- */
-#include "libc/include/stdarg.h"
-#include "libc/include/stddef.h"
-#include "libc/include/stdint.h"
-#include "libc/include/float.h"
-#include "libc/include/inttypes.h"
-#include "libc/include/iso646.h"
-#include "libc/include/stdalign.h"
-#include "libc/include/stdnoreturn.h"
-#include "libc/include/tgmath.h"
-#include "libc/include/complex.h"
-#include "libc/include/fenv.h"
-#include "libc/include/stdatomic.h"
+#include "lib/libc/include/stdarg.h"
+#include "lib/libc/include/stddef.h"
+#include "lib/libc/include/stdint.h"
+#include "lib/libc/include/float.h"
+#include "lib/libc/include/inttypes.h"
+#include "lib/libc/include/iso646.h"
+#include "lib/libc/include/stdalign.h"
+#include "lib/libc/include/stdnoreturn.h"
+#include "lib/libc/include/tgmath.h"
+#include "lib/libc/include/complex.h"
+#include "lib/libc/include/fenv.h"
+#include "lib/libc/include/stdatomic.h"
 
 /* ---- Q1.10 - Q1.12, Q1.17: headers with real (if small) logic ---- */
-#include "libc/include/wctype.h"
-#include "libc/include/strings.h"
-#include "libc/include/uchar.h"
-#include "libc/include/setjmp.h"
+#include "lib/libc/include/wctype.h"
+#include "lib/libc/include/strings.h"
+#include "lib/libc/include/uchar.h"
+#include "lib/libc/include/setjmp.h"
 /* threads.h pulls in pthread.h + time.h, which is fine to include-check
  * even though we don't call any thrd_*() function from a host binary. */
-#include "libc/include/threads.h"
+#include "lib/libc/include/threads.h"
 
 static int passed = 0;
 static int failed = 0;

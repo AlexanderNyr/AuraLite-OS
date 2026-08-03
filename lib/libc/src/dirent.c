@@ -7,11 +7,11 @@
  * read-only directory traversal POSIX programs perform.
  */
 
-#include "libc/include/dirent.h"
-#include "libc/include/unistd.h"
-#include "libc/include/stdlib.h"
-#include "libc/include/string.h"
-#include "libc/include/errno.h"
+#include "lib/libc/include/dirent.h"
+#include "lib/libc/include/unistd.h"
+#include "lib/libc/include/stdlib.h"
+#include "lib/libc/include/string.h"
+#include "lib/libc/include/errno.h"
 
 #define DIRENT_MAX 256   /* entries snapshotted per directory */
 

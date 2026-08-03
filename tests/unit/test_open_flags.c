@@ -9,7 +9,7 @@
  * Built and run by `make test-unit` under -std=c11 -Wall -Wextra -Werror.
  */
 #include <stdio.h>
-#include "libc/include/fcntl.h"
+#include "lib/libc/include/fcntl.h"
 
 /* fcntl.h declares open/creat/fcntl; provide trivial stubs so the test links
  * standalone (we only exercise the constants here). */

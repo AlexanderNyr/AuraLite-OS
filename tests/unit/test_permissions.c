@@ -6,7 +6,7 @@
 #include <string.h>
 #include <errno.h>
 
-#include "libc/include/unistd.h"
+#include "lib/libc/include/unistd.h"
 
 struct mock_vnode {
     uint16_t mode;

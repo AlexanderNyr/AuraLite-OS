@@ -6,9 +6,9 @@
  * a future enhancement (tracked in TODO.md).
  */
 
-#include "libc/include/regex.h"
-#include "libc/include/string.h"
-#include "libc/include/stdlib.h"
+#include "lib/libc/include/regex.h"
+#include "lib/libc/include/string.h"
+#include "lib/libc/include/stdlib.h"
 
 int regcomp(regex_t *preg, const char *pattern, int cflags) {
     (void)cflags;

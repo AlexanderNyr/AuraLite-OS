@@ -14,22 +14,22 @@
 #include <errno.h>
 
 /* Include every new header */
-#include "libc/include/syslog.h"
-#include "libc/include/langinfo.h"
-#include "libc/include/iconv.h"
-#include "libc/include/search.h"
-#include "libc/include/wordexp.h"
-#include "libc/include/ftw.h"
-#include "libc/include/monetary.h"
-#include "libc/include/sys/statvfs.h"
-#include "libc/include/sys/times.h"
-#include "libc/include/sys/ipc.h"
-#include "libc/include/sys/sem.h"
-#include "libc/include/sys/shm.h"
-#include "libc/include/sys/msg.h"
-#include "libc/include/netinet/tcp.h"
-#include "libc/include/net/if.h"
-#include "libc/include/utmpx.h"
+#include "lib/libc/include/syslog.h"
+#include "lib/libc/include/langinfo.h"
+#include "lib/libc/include/iconv.h"
+#include "lib/libc/include/search.h"
+#include "lib/libc/include/wordexp.h"
+#include "lib/libc/include/ftw.h"
+#include "lib/libc/include/monetary.h"
+#include "lib/libc/include/sys/statvfs.h"
+#include "lib/libc/include/sys/times.h"
+#include "lib/libc/include/sys/ipc.h"
+#include "lib/libc/include/sys/sem.h"
+#include "lib/libc/include/sys/shm.h"
+#include "lib/libc/include/sys/msg.h"
+#include "lib/libc/include/netinet/tcp.h"
+#include "lib/libc/include/net/if.h"
+#include "lib/libc/include/utmpx.h"
 
 static int passed = 0;
 static int failed = 0;
