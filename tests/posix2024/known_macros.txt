@@ -1,0 +1,12 @@
+# tests/posix2024/known_macros.txt -- full rows whose conforming
+# implementation MUST be a function-like macro, not a link symbol.
+#
+# POSIX.1-2024 requires pthread_cleanup_push/pop to open/close a lexical
+# scope, so they are #define'd in pthread.h, not emitted into libaurac.a.
+# matrix_check.py does not wave these through: every token listed here must
+# be found as a real `#define <tok>` in the public headers
+# (lib/libc/include), otherwise the drift check still fails.
+#
+# One token per line; '#' comments allowed.
+pthread_cleanup_push   # pthread.h -- scope-opening macro (POSIX requires it)
+pthread_cleanup_pop    # pthread.h -- scope-closing macro (POSIX requires it)

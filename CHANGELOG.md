@@ -2,6 +2,53 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [POSIX.1-2024 Phase Q12 — compliance matrix + conformance suite] 2026-08-04
+
+`POSIX2024_PLAN.md` phase Q12 turns the compliance matrix from a document
+into a gate. Two layers, mirroring the plan:
+
+- **Host layer** (`tests/posix2024/run_host.sh`, wired into `make test-unit`):
+  a header self-containment sweep (every public header must compile
+  standalone under `-std=c11 -Wall -Wextra -Werror -D_POSIX_C_SOURCE=202405L`),
+  a matrix→archive drift check (`tests/posix2024/matrix_check.py`: every ✅
+  row of `docs/posix2024_compliance.md` must resolve to a defined symbol in
+  `libaurac.a`; the 🔶 set must equal the allowlist exactly; no ❌ rows), a
+  negative control (the checker must fail against a degraded archive copy),
+  and a re-run of the Q-family unit binaries as sub-suites.
+- **Guest layer**: `userspace/tests/conformtest/conformtest.c` + one QEMU
+  case (`test_posix2024_conf.sh`) asserting syscall-backed behaviour end to
+  end — the Q5 AT-family on tmpfs and FAT32 (closing the Q5 gate hole),
+  `posix_spawn` argv/envp, mqueue round-trip, semaphores, `clock_nanosleep`
+  TIMER_ABSTIME, `getentropy` bounds, `scandir` ordering.
+
+The drift check caught real drift, and this phase fixes what it found:
+
+- 35 functions declared by Q5/Q8/Q10/Q11 but never given bodies are now
+  implemented in `lib/libc/src/posix_extra.c` (AT-family wrappers,
+  `close_range`/`closefrom`, `clock_nanosleep`/`timespec_get(res)`, the
+  pseudo-terminal skeleton, the `if_*` name/index family, the sched family,
+  `getrusage`, `atol`).
+- `<monetary.h>` and `<mqueue.h>` were not self-contained; fixed.
+- `AT_FDCWD`/`AT_*` moved to their POSIX home in `<fcntl.h>` (were
+  duplicated in `<unistd.h>`).
+- Kernel: tmpfs gains real directory semantics (`mkdir`/`rmdir`/`rename`,
+  nested paths, `readdir` of immediate children with basenames and real
+  types); `/dev/shm` is a third tmpfs volume; the stat-family syscalls now
+  compose POSIX `st_mode` type bits (S_ISREG/S_ISDIR/… work); AT-family
+  relative paths resolve against the caller's cwd when `dirfd == AT_FDCWD`;
+  `fork()`/`clone()` children restore the SysV callee-saved registers
+  (rbx/rbp/r12–r15) instead of resuming with kernel garbage — without this,
+  `posix_spawn`'s child faulted on a kernel address before execve.
+- `mq_send`/`mq_receive` gained a per-descriptor read cursor so a
+  send/receive round-trip on one descriptor works; `sem_trywait` now sets
+  `errno = EAGAIN` as POSIX requires.
+- Honest reclassification: named semaphores (`sem_open`/`sem_close`/
+  `sem_unlink`) moved from ✅ to 🔶 in the matrix — they need MAP_SHARED
+  backing the kernel does not provide yet — and the suite asserts the
+  documented ENOSYS failure. Process-private unnamed semaphores stay ✅.
+
+Delivered as `patches/POSIX2024_Q12_conformance.patch`.
+
 ## [Plan — repairing what is already broken] 2026-08-02
 
 `FIXES_PLAN.md`, phases R0–R8. Unlike every other plan in this tree, it adds

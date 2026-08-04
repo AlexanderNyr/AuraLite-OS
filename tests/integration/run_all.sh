@@ -52,6 +52,7 @@ ALL_CASES=(
     test_stopped
     test_socket_errno
     test_keymaps
+    test_posix2024_conf
     test_open_flags
     test_lseek
     test_signals

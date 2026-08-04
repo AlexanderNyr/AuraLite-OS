@@ -301,6 +301,7 @@ void kmain(boot_info_t *boot_info) {
     tmpfs_init();
     vfs_mount("/tmp", &tmpfs_ops, tmpfs_volume_tmp());
     vfs_mount("/opt", &optfs_ops, tmpfs_volume_opt());
+    vfs_mount("/dev/shm", &shmfs_ops, tmpfs_volume_shm());   /* Q12 */
     tmpfs_self_test();
 
     /* Mount usbfs at "/usb". It shows the active hotplug USB mass-storage device. */

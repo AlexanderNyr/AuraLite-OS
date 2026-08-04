@@ -27,6 +27,10 @@
 #include <mqueue.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <fcntl.h>        /* Q12: O_CREAT/AT_* for the missing-body batch */
+#include <sched.h>        /* Q12: sched family bodies */
+#include <sys/resource.h> /* Q12: getrusage body */
+#include <net/if.h>       /* Q12: if_nameindex family bodies */
 
 /* ============================ poll (via select) ============================ */
 
@@ -155,6 +159,7 @@ int sem_trywait(sem_t *sem) {
                                         __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
             return 0;
     }
+    errno = EAGAIN;   /* Q12: POSIX requires EAGAIN on a would-block trywait */
     return -1;   /* would block */
 }
 
@@ -479,9 +484,15 @@ int shm_unlink(const char *name) {
 /* ===================== Named semaphores (Q7) ============================== */
 
 sem_t *sem_open(const char *name, int oflag, ...) {
+    /* Q12: glibc-style flat naming under the /dev/shm volume ("sem.NAME"),
+     * avoiding a directory component that would need mkdir first.  Named
+     * semaphores are a documented partial (see POSIX2024_PLAN.md Q12 /
+     * tests/posix2024/known_partials.txt): they need MAP_SHARED backing,
+     * which the kernel does not provide yet, so sem_open reaches the
+     * mmap() call below and honestly fails with ENOSYS. */
     char path[512];
-    snprintf(path, sizeof(path), "/dev/shm/sem%s%s",
-             name[0]=='/' ? "" : "/", name);
+    snprintf(path, sizeof(path), "/dev/shm/sem.%s",
+             name[0]=='/' ? name + 1 : name);
     mode_t mode = 0600;
     unsigned val = 0;
     if (oflag & O_CREAT) {
@@ -508,8 +519,8 @@ int sem_close(sem_t *sem) {
 
 int sem_unlink(const char *name) {
     char path[512];
-    snprintf(path, sizeof(path), "/dev/shm/sem%s%s",
-             name[0]=='/' ? "" : "/", name);
+    snprintf(path, sizeof(path), "/dev/shm/sem.%s",
+             name[0]=='/' ? name + 1 : name);
     return unlink(path);
 }
 
@@ -562,8 +573,38 @@ mqd_t mq_open(const char *name, int oflag, ...) {
     return (mqd_t)(intptr_t)fd;
 }
 
+/* Q12 (POSIX2024_PLAN.md): the file-backed queue needs a per-descriptor
+ * read cursor.  Without one, a send on the same fd leaves the file offset
+ * at EOF and the following receive returns nothing (caught by the Q12
+ * conformtest round-trip).  Each mq descriptor tracks its own read offset;
+ * sends always append at EOF.  This is the documented single-process
+ * emulation: cross-process blocking semantics are not provided. */
+#define MQ_CURSORS_MAX 16
+
+struct mq_cursor { int fd; int64_t off; };
+static struct mq_cursor mq_cursors[MQ_CURSORS_MAX];
+
+static int64_t mq_read_off(int fd) {
+    for (int i = 0; i < MQ_CURSORS_MAX; i++)
+        if (mq_cursors[i].fd == fd) return mq_cursors[i].off;
+    return 0;
+}
+
+static void mq_set_off(int fd, int64_t off) {
+    for (int i = 0; i < MQ_CURSORS_MAX; i++) {
+        if (mq_cursors[i].fd == fd || mq_cursors[i].fd == 0) {
+            mq_cursors[i].fd = fd;
+            mq_cursors[i].off = off;
+            return;
+        }
+    }
+}
+
 int mq_close(mqd_t mqdes) {
-    return close((int)mqdes);
+    int fd = (int)mqdes;
+    for (int i = 0; i < MQ_CURSORS_MAX; i++)
+        if (mq_cursors[i].fd == fd) mq_cursors[i].fd = 0;
+    return close(fd);
 }
 
 int mq_unlink(const char *name) {
@@ -574,7 +615,8 @@ int mq_unlink(const char *name) {
 
 int mq_send(mqd_t mqdes, const char *msg_ptr, size_t msg_len, unsigned msg_prio) {
     (void)msg_prio;
-    /* Write message as [len:4][data] */
+    /* Write message as [len:4][data] at EOF */
+    if (lseek((int)mqdes, 0, SEEK_END) < 0) return -1;
     if (write((int)mqdes, &msg_len, sizeof(msg_len)) < 0) return -1;
     if (write((int)mqdes, msg_ptr, msg_len) < 0) return -1;
     return 0;
@@ -582,10 +624,13 @@ int mq_send(mqd_t mqdes, const char *msg_ptr, size_t msg_len, unsigned msg_prio)
 
 ssize_t mq_receive(mqd_t mqdes, char *msg_ptr, size_t msg_len, unsigned *msg_prio) {
     (void)msg_prio;
+    int fd = (int)mqdes;
     size_t len = 0;
-    if (read((int)mqdes, &len, sizeof(len)) < 0) return -1;
+    if (lseek(fd, mq_read_off(fd), SEEK_SET) < 0) return -1;
+    if (read(fd, &len, sizeof(len)) < 0) return -1;
     if (len > msg_len) { errno = EMSGSIZE; return -1; }
-    if (read((int)mqdes, msg_ptr, len) < 0) return -1;
+    if (read(fd, msg_ptr, len) < 0) return -1;
+    mq_set_off(fd, mq_read_off(fd) + (int64_t)sizeof(len) + (int64_t)len);
     return (ssize_t)len;
 }
 
@@ -623,3 +668,269 @@ int mq_notify(mqd_t mqdes, const struct sigevent *notification) {
     (void)mqdes; (void)notification;
     errno = ENOSYS; return -1;
 }
+
+/* =============== POSIX2024 Q12: declared-but-missing bodies ================
+ * POSIX2024_PLAN.md phase Q12.  The new tests/posix2024 matrix drift check
+ * (every ✅ row of docs/posix2024_compliance.md must resolve in libaurac.a)
+ * caught a batch of functions declared in the public headers by earlier
+ * phases but never given bodies.  They are implemented here, thin over the
+ * already-dispatched syscalls (numbers per kernel/arch/x86_64/syscall.c).
+ * Nothing here changes behaviour already shipped -- it fills declared holes.
+ */
+
+/* Local syscall numbers the headers do not carry (like SYS_FUTEX above). */
+#define SYS_SCHED_YIELD    24
+#define SYS_NANOSLEEP      35
+#define SYS_OPENAT        257
+#define SYS_MKDIRAT       258
+#define SYS_FCHOWNAT      260
+#define SYS_FSTATAT       262
+#define SYS_UNLINKAT      263
+#define SYS_RENAMEAT      264
+#define SYS_READLINKAT    267
+#define SYS_FCHMODAT      268
+#define SYS_FACCESSAT     269
+#define SYS_DUP3          292
+#define SYS_EXECVEAT      322
+#define SYS_CLOSE_RANGE   436
+
+/* Decode the in-band negative-errno convention used by syscall_dispatch:
+ * raw < 0 is -(errno); anything else is the successful return value. */
+static int q12_ret(int64_t raw) {
+    if (raw < 0) {
+        errno = (int)-raw;
+        return -1;
+    }
+    return (int)raw;
+}
+
+/* ---- AT-family wrappers (Q5 declared these; the bodies were missing) ---- */
+
+int openat(int dirfd, const char *path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & O_CREAT) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = va_arg(ap, mode_t);
+        va_end(ap);
+    }
+    return q12_ret(syscall(SYS_OPENAT, (uint64_t)dirfd, (uint64_t)path,
+                           (uint64_t)flags, (uint64_t)mode, 0, 0));
+}
+
+int mkdirat(int dfd, const char *path, mode_t mode) {
+    return q12_ret(syscall(SYS_MKDIRAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)mode, 0, 0, 0));
+}
+
+int fchownat(int dfd, const char *path, uid_t owner, gid_t group, int flags) {
+    return q12_ret(syscall(SYS_FCHOWNAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)owner, (uint64_t)group,
+                           (uint64_t)flags, 0));
+}
+
+int fstatat(int dfd, const char *path, struct stat *buf, int flags) {
+    return q12_ret(syscall(SYS_FSTATAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)buf, (uint64_t)flags, 0, 0));
+}
+
+int unlinkat(int dfd, const char *path, int flags) {
+    return q12_ret(syscall(SYS_UNLINKAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)flags, 0, 0, 0));
+}
+
+int renameat(int old_dfd, const char *old, int new_dfd, const char *new_) {
+    return q12_ret(syscall(SYS_RENAMEAT, (uint64_t)old_dfd, (uint64_t)old,
+                           (uint64_t)new_dfd, (uint64_t)new_, 0, 0));
+}
+
+ssize_t readlinkat(int dfd, const char *path, char *buf, size_t bufsiz) {
+    return (ssize_t)syscall(SYS_READLINKAT, (uint64_t)dfd, (uint64_t)path,
+                            (uint64_t)buf, (uint64_t)bufsiz, 0, 0);
+}
+
+int fchmodat(int dfd, const char *path, mode_t mode, int flags) {
+    return q12_ret(syscall(SYS_FCHMODAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)mode, (uint64_t)flags, 0, 0));
+}
+
+int faccessat(int dfd, const char *path, int mode, int flags) {
+    (void)flags;
+    return q12_ret(syscall(SYS_FACCESSAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)mode, 0, 0, 0));
+}
+
+int dup3(int oldfd, int newfd, int flags) {
+    return q12_ret(syscall(SYS_DUP3, (uint64_t)oldfd, (uint64_t)newfd,
+                           (uint64_t)flags, 0, 0, 0));
+}
+
+int fexecve(int fd, char *const argv[], char *const envp[]) {
+    /* execveat(AT_EMPTY_PATH) resolves /proc/self/fd/<fd> in the kernel. */
+    return q12_ret(syscall(SYS_EXECVEAT, (uint64_t)fd, 0,
+                           (uint64_t)argv, (uint64_t)envp,
+                           AT_EMPTY_PATH, 0));
+}
+
+/* ---- close_range / closefrom (Q11 declared; bodies missing) ---- */
+
+int close_range(unsigned first, unsigned last, int flags) {
+    (void)flags;
+    return q12_ret(syscall(SYS_CLOSE_RANGE, (uint64_t)first,
+                           (uint64_t)last, 0, 0, 0, 0));
+}
+
+int closefrom(int lowfd) {
+    /* Kernel caps the range scan at 64 descriptors. */
+    return close_range((unsigned)lowfd, 0x40000000u, 0);
+}
+
+/* ---- clock_nanosleep / timespec_get (Q11 declared; bodies missing) ----
+ * The kernel's nanosleep is relative-only, so TIMER_ABSTIME is computed as
+ * a delta here (POSIX: clock_nanosleep returns the error number directly,
+ * 0 on success -- not -1+errno). */
+
+int clock_nanosleep(clockid_t clockid, int flags,
+                    const struct timespec *req, struct timespec *rem) {
+    if (!req || (flags & ~TIMER_ABSTIME)) return EINVAL;
+    if (flags & TIMER_ABSTIME) {
+        struct timespec now;
+        if (clock_gettime(clockid, &now) != 0) return errno;
+        int64_t nsec = (int64_t)(req->tv_sec - now.tv_sec) * 1000000000LL
+                     + (int64_t)req->tv_nsec - (int64_t)now.tv_nsec;
+        if (nsec <= 0) return 0;
+        struct timespec delta;
+        delta.tv_sec  = nsec / 1000000000LL;
+        delta.tv_nsec = nsec % 1000000000LL;
+        int64_t r = syscall(SYS_NANOSLEEP, (uint64_t)&delta, 0, 0, 0, 0, 0);
+        if (r < 0) {
+            if (rem) *rem = delta;   /* best-effort remainder */
+            return (int)-r;
+        }
+        return 0;
+    }
+    int64_t r = syscall(SYS_NANOSLEEP, (uint64_t)req, (uint64_t)rem, 0, 0, 0, 0);
+    return r < 0 ? (int)-r : 0;
+}
+
+int timespec_get(struct timespec *ts, int base) {
+    if (!ts || base != TIME_UTC) return 0;
+    if (clock_gettime(CLOCK_REALTIME, ts) != 0) return 0;
+    return TIME_UTC;
+}
+
+int timespec_getres(struct timespec *ts, int base) {
+    if (!ts || base != TIME_UTC) return 0;
+    if (clock_getres(CLOCK_REALTIME, ts) != 0) return 0;
+    return TIME_UTC;
+}
+
+/* ---- pseudo-terminal skeleton (Q11 declared; bodies missing) ----
+ * The interface exists and never fails on grant/unlock; ptsname reports the
+ * single skeleton name.  posix_openpt opens /dev/ptmx, which the device
+ * layer does not provide yet, so it fails cleanly with ENOENT. */
+
+int posix_openpt(int oflag) { return open("/dev/ptmx", oflag); }
+
+int grantpt(int fd) { (void)fd; return 0; }
+
+int unlockpt(int fd) { (void)fd; return 0; }
+
+char *ptsname(int fd) { (void)fd; return "/dev/pts/0"; }
+
+int ptsname_r(int fd, char *buf, size_t buflen) {
+    (void)fd;
+    static const char name[] = "/dev/pts/0";
+    if (buflen < sizeof(name)) { errno = ERANGE; return ERANGE; }
+    memcpy(buf, name, sizeof(name));
+    return 0;
+}
+
+/* ---- network interface name/index family (Q10 declared; bodies missing) -
+ * The OS has one NIC: eth0 == index 1. */
+
+unsigned if_nametoindex(const char *ifname) {
+    if (ifname && strcmp(ifname, "eth0") == 0) return 1;
+    return 0;
+}
+
+char *if_indextoname(unsigned ifindex, char *ifname) {
+    if (ifindex == 1) {
+        strcpy(ifname, "eth0");
+        return ifname;
+    }
+    return NULL;
+}
+
+struct if_nameindex *if_nameindex(void) {
+    struct if_nameindex *arr = malloc(2 * sizeof(*arr));
+    if (!arr) return NULL;
+    char *n = strdup("eth0");
+    if (!n) { free(arr); return NULL; }
+    arr[0].if_index = 1; arr[0].if_name = n;
+    arr[1].if_index = 0; arr[1].if_name = NULL;
+    return arr;
+}
+
+void if_freenameindex(struct if_nameindex *ptr) {
+    if (!ptr) return;
+    free(ptr[0].if_name);
+    free(ptr);
+}
+
+/* ---- sched family (Q8 declared; bodies missing) ---- */
+
+int sched_yield(void) {
+    syscall(SYS_SCHED_YIELD, 0, 0, 0, 0, 0, 0);
+    return 0;
+}
+
+int sched_get_priority_max(int policy) { (void)policy; return 99; }
+
+int sched_get_priority_min(int policy) { (void)policy; return 0; }
+
+int sched_getscheduler(pid_t pid) {
+    (void)pid;
+    return SCHED_OTHER;
+}
+
+int sched_setscheduler(pid_t pid, int policy, const struct sched_param *param) {
+    (void)pid;
+    (void)param;
+    if (policy != SCHED_OTHER) { errno = EINVAL; return -1; }
+    return 0;   /* single policy: accept-and-ignore (documented stub) */
+}
+
+int sched_getparam(pid_t pid, struct sched_param *param) {
+    (void)pid;
+    if (!param) { errno = EINVAL; return -1; }
+    param->sched_priority = 0;
+    return 0;
+}
+
+int sched_setparam(pid_t pid, const struct sched_param *param) {
+    (void)pid;
+    (void)param;
+    return 0;
+}
+
+int sched_rr_get_interval(pid_t pid, struct timespec *tp) {
+    (void)pid;
+    if (!tp) { errno = EINVAL; return -1; }
+    tp->tv_sec = 0;
+    tp->tv_nsec = 10000000L;   /* 10 ms PIT tick quantum */
+    return 0;
+}
+
+/* ---- getrusage (Q8 declared, documented ENOSYS stub; body missing) ---- */
+
+int getrusage(int who, struct rusage *usage) {
+    (void)who;
+    (void)usage;
+    errno = ENOSYS;
+    return -1;
+}
+
+/* ---- atol (stdlib gap caught by the same sweep) ---- */
+
+long atol(const char *s) { return (long)strtol(s, (char **)NULL, 10); }

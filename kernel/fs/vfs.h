@@ -24,7 +24,7 @@
  * the VFS returns -ENOTSUP-equivalent (-1).
  */
 
-#define VFS_MAX_MOUNTS   8
+#define VFS_MAX_MOUNTS   16   /* Q12: +/dev/shm on top of the disk-fs probes */
 #define VFS_PATH_MAX     256
 #define VFS_MAX_FDS      64
 #define VFS_MAX_DIRENTS  256          /* per readdir() call */

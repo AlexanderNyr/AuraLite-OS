@@ -81,6 +81,20 @@ typedef struct tcb {
     uint64_t  fork_user_rip;
     uint64_t  fork_user_rflags;
     uint64_t  fork_user_rsp;
+    /* Q12 (POSIX2024_PLAN.md phase Q12): the SysV syscall ABI promises the
+     * callee-saved registers (rbx/rbp/r12-r15) survive the SYSCALL itself,
+     * so compilers legitimately keep live values in them across fork().
+     * fork_child_sysret() restores these in the child; without them the
+     * child resumes with whatever the kernel's thread entry left in the
+     * registers (observed: posix_spawn's attr pointer held in r12 became a
+     * kernel address and the child faulted before execve).  Snapshot from
+     * saved_user_* in do_fork()/do_clone(). */
+    uint64_t  fork_user_rbx;
+    uint64_t  fork_user_rbp;
+    uint64_t  fork_user_r12;
+    uint64_t  fork_user_r13;
+    uint64_t  fork_user_r14;
+    uint64_t  fork_user_r15;
     /* Per-thread copy of the SYSCALL entry frame (RCX/R11).  Captured at the
      * very top of syscall_dispatch() so that another thread which runs while
      * we are blocked inside the syscall (e.g. via wait4 yields) can safely

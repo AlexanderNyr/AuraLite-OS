@@ -346,6 +346,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
              $(USER_BUILD)/stoptest.elf $(USER_BUILD)/insttest.elf $(USER_BUILD)/hostilearg.elf \
              $(USER_BUILD)/socktest.elf \
+             $(USER_BUILD)/conformtest.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
              $(USER_BUILD)/rustes.elf
 
@@ -454,6 +455,10 @@ $(USER_BUILD)/stoptest.o: userspace/tests/stoptest/stoptest.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/socktest.o: userspace/tests/socktest/socktest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/conformtest.o: userspace/tests/conformtest/conformtest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -970,7 +975,7 @@ INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest
+                socktest conformtest
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
@@ -1095,6 +1100,13 @@ test-unit: $(UNIT_TESTS)
 # when the archives have not been built.
 	@echo "[unit] running tests/unit/test_userlibs.sh"
 	@bash tests/unit/test_userlibs.sh || exit 1
+
+# Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
+# header self-containment sweep, matrix->archive drift check, negative
+# control, and the Q-family unit sub-suites.  Skips cleanly when the libc
+# archives have not been built (same convention as test_userlibs.sh above).
+	@echo "[unit] running tests/posix2024/run_host.sh"
+	@bash tests/posix2024/run_host.sh || exit 1
 
 $(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
 	@mkdir -p $(BUILD_DIR)

@@ -1,0 +1,38 @@
+# tests/posix2024/known_partials.txt -- the matrix's "partial" rows, allowlisted.
+#
+# The drift check (matrix_check.py) requires the set of partial rows in
+# docs/posix2024_compliance.md to equal this file EXACTLY, both directions.
+# A partial is an honest, documented "interface present but not fully
+# functional" row -- it can neither grow silently nor disappear
+# undocumented.  One token per line; '#' comments allowed.
+#
+# mq_notify: POSIX.1-2024 requires sigevent-driven notification; the
+#   file-backed mqueue has no kernel object to deliver it on.  Planned for
+#   phase Q15 (mq_notify + sigevent delivery).
+#
+# System V IPC family (semget/semop/semctl, shmget/shmat/shmdt/shmctl,
+#   msgget/msgsnd/msgrcv/msgctl): ENOSYS stubs; kernel objects for
+#   semaphores/shm/msg queues are planned for phase Q14.  (ftok is NOT a
+#   partial: it is fully implemented in q10_stubs.c via stat().)
+#
+# Named semaphores (sem_open/sem_close/sem_unlink): POSIX requires them to
+#   live on shared memory (/dev/shm); the kernel has no mmap(MAP_SHARED)
+#   backing yet, so sem_open fails with ENOSYS.  Planned for phase Q14/Q15
+#   together with the kernel IPC objects.  Process-private unnamed
+#   semaphores (sem_init/sem_wait/sem_post/sem_trywait) are implemented and
+#   are NOT partials.
+mq_notify
+sem_open
+sem_close
+sem_unlink
+semget
+semop
+semctl
+shmget
+shmat
+shmdt
+shmctl
+msgget
+msgsnd
+msgrcv
+msgctl

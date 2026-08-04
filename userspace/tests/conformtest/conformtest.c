@@ -1,0 +1,403 @@
+/* conformtest.c — POSIX.1-2024 conformance suite, guest layer.
+ *
+ * POSIX2024_PLAN.md phase Q12.  This program is installed in the initrd as
+ * /tests/conformtest and driven by the QEMU integration case
+ * (tests/integration/cases/test_posix2024_conf.sh).  It asserts syscall-
+ * backed behaviour END TO END on the real kernel, closing the Q5 gate hole
+ * (the AT-family was host-compiled but never exercised at runtime) and
+ * pinning the matrix rows that must not regress:
+ *
+ *   1. AT-family on the writable /tmp volume: openat/mkdirat/fstatat
+ *      (with and without AT_SYMLINK_NOFOLLOW)/faccessat/renameat/unlinkat
+ *      (file + AT_REMOVEDIR)/readlinkat, plus a cwd-relative openat via
+ *      AT_FDCWD and symlink+readlink round-trips;
+ *   2. AT-family on the FAT32 volume when it is mounted (skipped otherwise);
+ *   3. posix_spawn with an explicit argv/envp (fork+exec with live
+ *      callee-saved registers, see kernel/proc/fork_return.asm);
+ *   4. message-queue send/receive round-trip on the same descriptor;
+ *   5. named semaphores: documented partial (sem_open fails with ENOSYS:
+ *      needs MAP_SHARED backing, see tests/posix2024/known_partials.txt),
+ *      plus process-private unnamed semaphore sanity (init/wait/post/
+ *      trywait-EAGAIN/destroy);
+ *   6. clock_nanosleep(TIMER_ABSTIME) actually sleeps until the deadline;
+ *   7. getentropy bounds: success, non-determinism, length>256 -> EIO;
+ *   8. scandir ordering: alphasort and versionsort.
+ *
+ * Every check prints a stable "CONFORMTEST PASS <name>" / "CONFORMTEST FAIL
+ * <name> (errno=N)" marker; the summary line "CONFORMTEST ALL PASS" plus
+ * exit code 0 is what the integration case asserts.
+ */
+
+#include "unistd.h"
+#include "stdio.h"
+#include "stdlib.h"
+#include "string.h"
+#include "errno.h"
+#include "fcntl.h"
+#include "dirent.h"
+#include "time.h"
+#include "sys/wait.h"
+#include "sys/stat.h"
+#include "spawn.h"
+#include "mqueue.h"
+#include "semaphore.h"
+
+static int failures = 0;
+
+#define CHECK(name, cond) do {                                              \
+    if (cond) {                                                             \
+        printf("CONFORMTEST PASS %s\n", name);                              \
+    } else {                                                                \
+        failures++;                                                         \
+        printf("CONFORMTEST FAIL %s (errno=%d)\n", name, errno);            \
+    }                                                                       \
+} while (0)
+
+#define CHECK_SKIP(name, why) printf("CONFORMTEST SKIP %s (%s)\n", name, why)
+
+/* ------------------------------------------------------------------ */
+/* 1. AT-family on /tmp (tmpfs with real directory semantics, Q12)     */
+/* ------------------------------------------------------------------ */
+static void test_at_tmpfs(void) {
+    errno = 0;
+
+    /* Cleanup any leftovers from a previous run. */
+    unlinkat(AT_FDCWD, "/tmp/q12c/sub", AT_REMOVEDIR);
+    unlinkat(AT_FDCWD, "/tmp/q12c/link", 0);
+    unlinkat(AT_FDCWD, "/tmp/q12c/renamed.txt", 0);
+    unlinkat(AT_FDCWD, "/tmp/q12c/w.txt", 0);
+    unlinkat(AT_FDCWD, "/tmp/q12c", AT_REMOVEDIR);
+
+    errno = 0;
+    CHECK("at-tmpfs: mkdir /tmp/q12c",
+          mkdir("/tmp/q12c", 0755) == 0 || errno == EEXIST);
+
+    /* openat create + write + read-back (plain path, AT_FDCWD). */
+    int fd = openat(AT_FDCWD, "/tmp/q12c/w.txt",
+                    O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    CHECK("at-tmpfs: openat(O_CREAT) creates", fd >= 0);
+    if (fd >= 0) {
+        errno = 0;
+        CHECK("at-tmpfs: write to openat fd",
+              write(fd, "q12 payload", 11) == 11);
+        close(fd);
+    }
+    fd = openat(AT_FDCWD, "/tmp/q12c/w.txt", O_RDONLY);
+    CHECK("at-tmpfs: openat(O_RDONLY) reopens", fd >= 0);
+    if (fd >= 0) {
+        char buf[32];
+        memset(buf, 0, sizeof(buf));
+        errno = 0;
+        CHECK("at-tmpfs: read back payload",
+              read(fd, buf, sizeof(buf) - 1) == 11 &&
+              strcmp(buf, "q12 payload") == 0);
+        close(fd);
+    }
+
+    /* Cwd-relative openat via AT_FDCWD (kernel joins the cwd). */
+    fd = openat(AT_FDCWD, "tmp/q12c/w.txt", O_RDONLY);
+    CHECK("at-tmpfs: cwd-relative openat via AT_FDCWD", fd >= 0);
+    if (fd >= 0) close(fd);
+
+    /* fstatat: type bits must be visible (S_ISREG) and size must match. */
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    errno = 0;
+    CHECK("at-tmpfs: fstatat returns 0",
+          fstatat(AT_FDCWD, "/tmp/q12c/w.txt", &st, 0) == 0);
+    CHECK("at-tmpfs: fstatat st_mode has S_IFREG (S_ISREG)",
+          S_ISREG(st.st_mode));
+    CHECK("at-tmpfs: fstatat st_size matches",
+          st.st_size == 11);
+
+    /* mkdirat + faccessat. */
+    errno = 0;
+    CHECK("at-tmpfs: mkdirat creates subdir",
+          mkdirat(AT_FDCWD, "/tmp/q12c/sub", 0755) == 0 || errno == EEXIST);
+    errno = 0;
+    CHECK("at-tmpfs: faccessat(F_OK) on dir",
+          faccessat(AT_FDCWD, "/tmp/q12c/sub", F_OK, 0) == 0);
+
+    /* renameat file. */
+    errno = 0;
+    CHECK("at-tmpfs: renameat file",
+          renameat(AT_FDCWD, "/tmp/q12c/w.txt",
+                   AT_FDCWD, "/tmp/q12c/renamed.txt") == 0);
+    errno = 0;
+    CHECK("at-tmpfs: old name gone after rename",
+          openat(AT_FDCWD, "/tmp/q12c/w.txt", O_RDONLY) < 0 && errno == ENOENT);
+
+    /* symlink + readlinkat, and fstatat with AT_SYMLINK_NOFOLLOW. */
+    unlink("/tmp/q12c/link");
+    errno = 0;
+    CHECK("at-tmpfs: symlink to renamed.txt",
+          symlink("renamed.txt", "/tmp/q12c/link") == 0);
+    char linkbuf[64];
+    memset(linkbuf, 0, sizeof(linkbuf));
+    errno = 0;
+    CHECK("at-tmpfs: readlinkat returns target",
+          readlinkat(AT_FDCWD, "/tmp/q12c/link", linkbuf, sizeof(linkbuf)) ==
+          (ssize_t)strlen("renamed.txt") &&
+          strcmp(linkbuf, "renamed.txt") == 0);
+    struct stat lstat_st;
+    memset(&lstat_st, 0, sizeof(lstat_st));
+    errno = 0;
+    CHECK("at-tmpfs: fstatat follows symlink (regular file)",
+          fstatat(AT_FDCWD, "/tmp/q12c/link", &lstat_st, 0) == 0 &&
+          S_ISREG(lstat_st.st_mode));
+    memset(&lstat_st, 0, sizeof(lstat_st));
+    errno = 0;
+    CHECK("at-tmpfs: fstatat AT_SYMLINK_NOFOLLOW sees the link itself",
+          fstatat(AT_FDCWD, "/tmp/q12c/link", &lstat_st,
+                  AT_SYMLINK_NOFOLLOW) == 0 &&
+          (lstat_st.st_mode & S_IFMT) == S_IFLNK);
+
+    /* unlinkat: file, then directory with AT_REMOVEDIR. */
+    errno = 0;
+    CHECK("at-tmpfs: unlinkat removes file",
+          unlinkat(AT_FDCWD, "/tmp/q12c/renamed.txt", 0) == 0);
+    errno = 0;
+    CHECK("at-tmpfs: unlinkat AT_REMOVEDIR removes empty dir",
+          unlinkat(AT_FDCWD, "/tmp/q12c/sub", AT_REMOVEDIR) == 0);
+    errno = 0;
+    CHECK("at-tmpfs: unlinkat AT_REMOVEDIR on non-dir is ENOTDIR",
+          unlinkat(AT_FDCWD, "/tmp/q12c/link", AT_REMOVEDIR) < 0 &&
+          errno == ENOTDIR);
+    unlinkat(AT_FDCWD, "/tmp/q12c/link", 0);
+    unlinkat(AT_FDCWD, "/tmp/q12c", AT_REMOVEDIR);
+}
+
+/* ------------------------------------------------------------------ */
+/* 2. AT-family on the FAT32 volume (skipped when not mounted)         */
+/* ------------------------------------------------------------------ */
+static void test_at_fat(void) {
+    struct stat st;
+    if (stat("/fat", &st) != 0 || !S_ISDIR(st.st_mode)) {
+        CHECK_SKIP("at-fat: /fat not mounted in this boot", "no FAT32 volume");
+        return;
+    }
+    errno = 0;
+    int fd = openat(AT_FDCWD, "/fat/q12fat.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    CHECK("at-fat: openat(O_CREAT) on FAT32", fd >= 0);
+    if (fd >= 0) {
+        errno = 0;
+        CHECK("at-fat: write on FAT32", write(fd, "fat12", 5) == 5);
+        close(fd);
+    }
+    errno = 0;
+    CHECK("at-fat: renameat on FAT32",
+          renameat(AT_FDCWD, "/fat/q12fat.txt", AT_FDCWD, "/fat/q12fat2.txt") == 0);
+    errno = 0;
+    CHECK("at-fat: unlinkat on FAT32",
+          unlinkat(AT_FDCWD, "/fat/q12fat2.txt", 0) == 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* 3. posix_spawn with explicit argv/envp                              */
+/* ------------------------------------------------------------------ */
+static void test_spawn(void) {
+    char *const argv[] = { (char *)"argv_echo", (char *)"q12",
+                           (char *)"sp ace", (char *)0 };
+    char *const envp[] = { (char *)"A=Q12", (char *)0 };
+    pid_t pid = -1;
+    errno = 0;
+    int r = posix_spawn(&pid, "/tests/argv_echo", NULL, NULL, argv, envp);
+    CHECK("spawn: posix_spawn returns 0", r == 0);
+    if (r == 0) {
+        int status = -1;
+        errno = 0;
+        CHECK("spawn: waitpid reaps child", waitpid(pid, &status, 0) == pid);
+        CHECK("spawn: child exit status is 0", status == 0);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* 4. Message queue round-trip                                         */
+/* ------------------------------------------------------------------ */
+static void test_mqueue(void) {
+    struct mq_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.mq_maxmsg = 8;
+    attr.mq_msgsize = 64;
+
+    mq_unlink("/q12mq");
+    errno = 0;
+    mqd_t mq = mq_open("/q12mq", O_CREAT | O_EXCL | O_RDWR, 0600, &attr);
+    CHECK("mqueue: mq_open(O_CREAT|O_EXCL)", mq != (mqd_t)-1);
+    if (mq == (mqd_t)-1) return;
+
+    errno = 0;
+    CHECK("mqueue: mq_send 4-byte message",
+          mq_send(mq, "ping", 4, 0) == 0);
+    char buf[64];
+    memset(buf, 0, sizeof(buf));
+    errno = 0;
+    CHECK("mqueue: mq_receive round-trips the payload",
+          mq_receive(mq, buf, sizeof(buf), NULL) == 4 &&
+          strcmp(buf, "ping") == 0);
+    errno = 0;
+    CHECK("mqueue: mq_send + mq_receive again (cursor advanced)",
+          mq_send(mq, "pong!", 5, 0) == 0 &&
+          mq_receive(mq, buf, sizeof(buf), NULL) == 5 &&
+          strcmp(buf, "pong!") == 0);
+
+    mq_close(mq);
+    mq_unlink("/q12mq");
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. Semaphores: named = documented partial; unnamed = in-process     */
+/* ------------------------------------------------------------------ */
+static void test_sem(void) {
+    /* Named: POSIX wants them on shared memory (/dev/shm); the kernel has
+     * no MAP_SHARED backing yet, so sem_open must fail with ENOSYS (see
+     * tests/posix2024/known_partials.txt; planned for Q14/Q15). */
+    sem_t *s = sem_open("/q12sem", O_CREAT | O_EXCL, 0600, 0);
+    CHECK("sem: named sem_open is the documented partial (ENOSYS)",
+          s == SEM_FAILED && errno == ENOSYS);
+
+    /* Process-private unnamed semaphore sanity. */
+    sem_t us;
+    errno = 0;
+    CHECK("sem: sem_init value 2", sem_init(&us, 0, 2) == 0);
+    errno = 0;
+    CHECK("sem: sem_wait #1", sem_wait(&us) == 0);
+    errno = 0;
+    CHECK("sem: sem_wait #2", sem_wait(&us) == 0);
+    errno = 0;
+    CHECK("sem: sem_trywait EAGAIN when empty",
+          sem_trywait(&us) == -1 && errno == EAGAIN);
+    errno = 0;
+    CHECK("sem: sem_post bumps", sem_post(&us) == 0);
+    errno = 0;
+    CHECK("sem: sem_wait consumes post", sem_wait(&us) == 0);
+    errno = 0;
+    CHECK("sem: sem_destroy", sem_destroy(&us) == 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. clock_nanosleep(TIMER_ABSTIME)                                   */
+/* ------------------------------------------------------------------ */
+static void test_clock_nanosleep(void) {
+    struct timespec now, deadline;
+    errno = 0;
+    CHECK("clockns: clock_gettime(MONOTONIC)",
+          clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+
+    deadline = now;
+    deadline.tv_sec += 0;
+    deadline.tv_nsec += 300 * 1000000L;   /* +300 ms */
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    errno = 0;
+    int r = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL);
+    CHECK("clockns: clock_nanosleep(TIMER_ABSTIME) returns 0", r == 0);
+
+    struct timespec after;
+    clock_gettime(CLOCK_MONOTONIC, &after);
+    int64_t slept_ms = (after.tv_sec - now.tv_sec) * 1000L
+                     + (after.tv_nsec - now.tv_nsec) / 1000000L;
+    CHECK("clockns: slept >= ~200 ms (abstime honoured)", slept_ms >= 200);
+    CHECK("clockns: slept < 30 s (no hang)", slept_ms < 30000);
+
+    /* Relative mode still works (regression guard). */
+    struct timespec rel = { 0, 10 * 1000000L };   /* 10 ms */
+    errno = 0;
+    CHECK("clockns: relative mode returns 0",
+          clock_nanosleep(CLOCK_MONOTONIC, 0, &rel, NULL) == 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. getentropy bounds                                                */
+/* ------------------------------------------------------------------ */
+static void test_getentropy(void) {
+    unsigned char b1[16], b2[16];
+    memset(b1, 0, sizeof(b1));
+    memset(b2, 0xff, sizeof(b2));
+    errno = 0;
+    CHECK("entropy: getentropy(16) succeeds", getentropy(b1, sizeof(b1)) == 0);
+    errno = 0;
+    CHECK("entropy: second draw differs", getentropy(b2, sizeof(b2)) == 0 &&
+          memcmp(b1, b2, sizeof(b1)) != 0);
+    unsigned char big[300];
+    errno = 0;
+    CHECK("entropy: length > 256 fails with EIO",
+          getentropy(big, sizeof(big)) == -1 && errno == EIO);
+}
+
+/* ------------------------------------------------------------------ */
+/* 8. scandir ordering                                                 */
+/* ------------------------------------------------------------------ */
+static void test_scandir(void) {
+    /* Sandbox with files whose names sort differently alphabetically vs
+     * numerically: fB, fA, fc10, fc2.
+     *   alphasort  -> fA, fB, fc10, fc2   ('1' < '2' in "fc10" vs "fc2")
+     *   versionsort-> fA, fB, fc2, fc10   (numeric 2 < 10)
+     */
+    mkdir("/tmp/q12sd", 0755);
+    const char *names[] = { "fB", "fA", "fc10", "fc2" };
+    for (int i = 0; i < 4; i++) {
+        char p[64];
+        snprintf(p, sizeof(p), "/tmp/q12sd/%s", names[i]);
+        int fd = open(p, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (fd >= 0) close(fd);
+    }
+
+    struct dirent **list = NULL;
+    errno = 0;
+    int n = scandir("/tmp/q12sd", &list, NULL, alphasort);
+    CHECK("scandir: scandir returns 4 entries", n == 4);
+    if (n == 4) {
+        CHECK("scandir: alphasort orders fA,fB,fc10,fc2",
+              strcmp(list[0]->d_name, "fA") == 0 &&
+              strcmp(list[1]->d_name, "fB") == 0 &&
+              strcmp(list[2]->d_name, "fc10") == 0 &&
+              strcmp(list[3]->d_name, "fc2") == 0);
+    }
+    for (int i = 0; i < n; i++) free(list[i]);
+    free(list);
+
+    list = NULL;
+    errno = 0;
+    n = scandir("/tmp/q12sd", &list, NULL, versionsort);
+    CHECK("scandir: versionsort returns 4 entries", n == 4);
+    if (n == 4) {
+        CHECK("scandir: versionsort orders fA,fB,fc2,fc10",
+              strcmp(list[0]->d_name, "fA") == 0 &&
+              strcmp(list[1]->d_name, "fB") == 0 &&
+              strcmp(list[2]->d_name, "fc2") == 0 &&
+              strcmp(list[3]->d_name, "fc10") == 0);
+    }
+    for (int i = 0; i < n; i++) free(list[i]);
+    free(list);
+
+    /* Cleanup. */
+    for (int i = 0; i < 4; i++) {
+        char p[64];
+        snprintf(p, sizeof(p), "/tmp/q12sd/%s", names[i]);
+        unlink(p);
+    }
+    rmdir("/tmp/q12sd");
+}
+
+int main(void) {
+    printf("CONFORMTEST start\n");
+    test_at_tmpfs();
+    test_at_fat();
+    test_spawn();
+    test_mqueue();
+    test_sem();
+    test_clock_nanosleep();
+    test_getentropy();
+    test_scandir();
+
+    if (failures == 0) {
+        printf("CONFORMTEST ALL PASS\n");
+        return 0;
+    }
+    printf("CONFORMTEST FAILURES %d\n", failures);
+    return 1;
+}

@@ -318,9 +318,18 @@ static void fork_child_entry(void *arg) {
     write_fs_base(self ? self->tls_base : 0);
 
     /* Jump to user mode at the saved RIP. RAX will be set to 0 by the
-     * fork_child_sysret asm (below) so the child sees fork()==0. */
-    extern void fork_child_sysret(uint64_t rip, uint64_t rflags, uint64_t rsp);
-    fork_child_sysret(user_rip, user_rflags, user_rsp);
+     * fork_child_sysret asm (below) so the child sees fork()==0.  Q12: also
+     * hand the callee-saved user registers across (see thread.h). */
+    extern void fork_child_sysret(uint64_t rip, uint64_t rflags, uint64_t rsp,
+                                  uint64_t rbx, uint64_t rbp, uint64_t r12,
+                                  uint64_t r13, uint64_t r14, uint64_t r15);
+    fork_child_sysret(user_rip, user_rflags, user_rsp,
+                      self ? self->fork_user_rbx : 0,
+                      self ? self->fork_user_rbp : 0,
+                      self ? self->fork_user_r12 : 0,
+                      self ? self->fork_user_r13 : 0,
+                      self ? self->fork_user_r14 : 0,
+                      self ? self->fork_user_r15 : 0);
     thread_exit();   /* not reached */
 }
 
@@ -370,6 +379,16 @@ int64_t do_fork(void) {
     child->fork_user_rip    = user_rip;
     child->fork_user_rflags = user_rflags;
     child->fork_user_rsp    = user_rsp;
+    /* Q12: snapshot the callee-saved user registers from the syscall-entry
+     * capture so the child resumes with the parent's live register values
+     * (see thread.h).  saved_user_* are valid here: do_fork runs inside
+     * syscall_dispatch, right after the capture. */
+    child->fork_user_rbx    = parent ? parent->saved_user_rbx : 0;
+    child->fork_user_rbp    = parent ? parent->saved_user_rbp : 0;
+    child->fork_user_r12    = parent ? parent->saved_user_r12 : 0;
+    child->fork_user_r13    = parent ? parent->saved_user_r13 : 0;
+    child->fork_user_r14    = parent ? parent->saved_user_r14 : 0;
+    child->fork_user_r15    = parent ? parent->saved_user_r15 : 0;
     if (parent) {
         /* FIX_R3: fork(), like Linux, inherits the TLS base — the child
          * starts life as a byte-copy of the parent's address space, so the

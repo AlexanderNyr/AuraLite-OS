@@ -1,6 +1,8 @@
 #ifndef AURALITE_LIBC_FCNTL_H
 #define AURALITE_LIBC_FCNTL_H
 
+#include <sys/types.h>   /* Q12: mode_t for openat/mkdirat varargs */
+
 /*
  * fcntl.h — file control options (POSIX.1-2017).  Values match the
  * Linux/asm-generic ABI and the kernel-side kernel/fs/vfs.h; keep both in sync.
@@ -39,6 +41,25 @@
 
 /* File-descriptor flags (F_GETFD/F_SETFD). */
 #define FD_CLOEXEC  1
+
+/* Q12 (POSIX2024_PLAN.md phase Q12): AT_* flag constants for the AT-family
+ * functions.  Values match the kernel's AT handling in syscall.c:
+ *   - AT_FDCWD         -100  (openat(..., AT_FDCWD, rel) resolves vs cwd)
+ *   - AT_SYMLINK_NOFOLLOW 0x100 (fstatat lstat-vs-stat)
+ *   - AT_REMOVEDIR        0x200 (unlinkat rmdir-vs-unlink)
+ *   - AT_EACCESS          0x200 (same value as AT_REMOVEDIR on Linux: the
+ *     two flags are mutually exclusive by call site; faccessat ignores it)
+ *   - AT_SYMLINK_FOLLOW   0x400 (accepted by the dispatcher, no-op today)
+ *   - AT_EMPTY_PATH       0x1000 (fexecve via execveat)
+ * These also live (idempotently) in <unistd.h> for Q5 compatibility. */
+#ifndef AT_FDCWD
+#define AT_FDCWD           -100
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_REMOVEDIR        0x200
+#define AT_EACCESS          0x200
+#define AT_SYMLINK_FOLLOW   0x400
+#define AT_EMPTY_PATH       0x1000
+#endif
 
 /* mode argument is variadic and consulted only when O_CREAT is set. */
 int open(const char *path, int flags, ...);

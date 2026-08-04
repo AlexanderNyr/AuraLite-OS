@@ -327,11 +327,18 @@ size_t confstr(int name, char *buf, size_t len);
 long   pathconf(const char *path, int name);
 long   fpathconf(int fd, int name);
 
-/* ---- POSIX.1-2024 AT-family (Phase Q5) ---- */
+/* ---- POSIX.1-2024 AT-family (Phase Q5) ----
+ * Q12: the same constants live in <fcntl.h> (their POSIX home).  Both
+ * definitions are idempotence-guarded so either include order works and
+ * no -Wmacro-redefined fires. */
+#ifndef AT_FDCWD
 #define AT_FDCWD           (-100)
 #define AT_SYMLINK_NOFOLLOW  0x100
 #define AT_REMOVEDIR         0x200
+#define AT_EACCESS           0x200
+#define AT_SYMLINK_FOLLOW    0x400
 #define AT_EMPTY_PATH       0x1000
+#endif
 
 int    openat(int dirfd, const char *path, int flags, ...);
 int    fstatat(int dfd, const char *path, struct stat *buf, int flags);

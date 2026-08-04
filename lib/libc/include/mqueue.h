@@ -2,6 +2,7 @@
 #define _MQUEUE_H
 
 #include <fcntl.h>
+#include <signal.h>     /* Q12: struct sigevent for mq_notify; self-contained */
 #include <sys/types.h>
 #include <time.h>
 

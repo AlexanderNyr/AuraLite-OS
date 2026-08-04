@@ -42,7 +42,9 @@
  * the syscall_saved_* per-CPU accessor macros (kernel/arch/x86_64/syscall.h)
  * -- the underlying slots live in struct cpu_local since real SMP made the
  * old .data globals racy. */
-extern void fork_child_sysret(uint64_t rip, uint64_t rflags, uint64_t rsp);
+extern void fork_child_sysret(uint64_t rip, uint64_t rflags, uint64_t rsp,
+                              uint64_t rbx, uint64_t rbp, uint64_t r12,
+                              uint64_t r13, uint64_t r14, uint64_t r15);
 
 /* First-run trampoline for a cloned thread: enter user mode at the clone
  * return site, on the new thread's own user stack, with RAX = 0. */
@@ -67,9 +69,13 @@ static void clone_thread_entry(void *arg) {
      * entry point, matching the invariant context_switch keeps. */
     write_fs_base(self->tls_base);
 
-    /* fork_child_sysret sets RAX=0 and SYSRETs to (rip, rflags, rsp). */
+    /* fork_child_sysret sets RAX=0 and SYSRETs to (rip, rflags, rsp), and
+     * Q12: restores the callee-saved user registers too. */
     fork_child_sysret(self->fork_user_rip, self->fork_user_rflags,
-                      self->fork_user_rsp);
+                      self->fork_user_rsp,
+                      self->fork_user_rbx, self->fork_user_rbp,
+                      self->fork_user_r12, self->fork_user_r13,
+                      self->fork_user_r14, self->fork_user_r15);
     thread_exit();   /* not reached */
 }
 
@@ -117,10 +123,17 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
     child->pml4_phys = parent->pml4_phys;
     child->parent    = parent;
 
-    /* User return frame: resume at the clone call site, on the new stack. */
+    /* User return frame: resume at the clone call site, on the new stack.
+     * Q12: callee-saved user registers snapshot (see thread.h). */
     child->fork_user_rip    = user_rip;
     child->fork_user_rflags = user_rflags;
     child->fork_user_rsp    = stack;
+    child->fork_user_rbx    = parent ? parent->saved_user_rbx : 0;
+    child->fork_user_rbp    = parent ? parent->saved_user_rbp : 0;
+    child->fork_user_r12    = parent ? parent->saved_user_r12 : 0;
+    child->fork_user_r13    = parent ? parent->saved_user_r13 : 0;
+    child->fork_user_r14    = parent ? parent->saved_user_r14 : 0;
+    child->fork_user_r15    = parent ? parent->saved_user_r15 : 0;
 
     /* Thread-group bookkeeping. */
     child->tgid       = parent->tgid ? parent->tgid : parent->id;

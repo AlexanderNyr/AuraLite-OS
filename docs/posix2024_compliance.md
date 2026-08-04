@@ -208,9 +208,9 @@
 | sem_trywait | ✅ | |
 | sem_post | ✅ | |
 | sem_getvalue | ✅ | |
-| sem_open | ✅ | Q7, mmap-backed |
-| sem_close | ✅ | Q7 |
-| sem_unlink | ✅ | Q7 |
+| sem_open | 🔶 | Q7; partial since Q12: needs MAP_SHARED (/dev/shm) backing, mmap() unimplemented -> ENOSYS. Planned Q14/Q15 |
+| sem_close | 🔶 | Q7; partial since Q12, see sem_open |
+| sem_unlink | 🔶 | Q7; partial since Q12, see sem_open |
 | sem_timedwait | ✅ | Q7 |
 
 ## `<signal.h>`

@@ -37,6 +37,7 @@ struct tmpfs_file {
     uint64_t mtime;
     uint64_t ctime;
     uint64_t atime;
+    struct tmpfs_volume *vol;   /* Q12: owning volume (for nested dirs) */
     struct vnode vnode;
 };
 
@@ -50,6 +51,7 @@ struct tmpfs_volume {
 
 static struct tmpfs_volume tmp_vol;
 static struct tmpfs_volume opt_vol;
+static struct tmpfs_volume shm_vol;   /* Q12: /dev/shm (POSIX shared memory) */
 
 /* The VFS passes fs_data straight through from vfs_mount(); a NULL means an
  * older caller that predates volumes, which can only mean /tmp. */
@@ -57,12 +59,61 @@ static struct tmpfs_volume *vol_of(void *fs_data) {
     return fs_data ? (struct tmpfs_volume *)fs_data : &tmp_vol;
 }
 
-static int valid_name(const char *path) {
+/* Q12 (POSIX2024_PLAN.md phase Q12): tmpfs grows real directory semantics.
+ * Entries may now contain '/'; an entry whose vnode.type is VFS_TYPE_DIR is
+ * a directory.  Invariants:
+ *   - every entry's parent (prefix up to the last '/') is an existing DIR
+ *     (or the volume root for root-level names);
+ *   - a DIR may be rmdir'd only when no entry starts with "<name>/";
+ *   - unlink refuses DIRs (EISDIR) and rmdir refuses files (ENOTDIR).
+ * The file table stays flat -- names carry the full relative path -- which
+ * keeps lookup O(n) over 64 slots and the code tiny. */
+static int path_ok(const char *path) {
     if (!path || !*path) return 0;
     if (path[0] == '/') return 0;
+    size_t l = strlen(path);
+    if (l >= VFS_PATH_MAX - 1) return 0;
+    if (path[l - 1] == '/') return 0;
     for (const char *p = path; *p; p++) {
-        if (*p == '/') return 0; /* flat tmpfs for now */
+        if (p[0] == '/' && p[1] == '/') return 0;
     }
+    return 1;
+}
+
+static int is_dir_entry(const struct tmpfs_file *f) {
+    return f && f->vnode.type == VFS_TYPE_DIR;
+}
+
+static struct tmpfs_file *find_file(struct tmpfs_volume *v, const char *path);
+
+/* No strchr() in the kernel string library. */
+static int has_slash(const char *s) {
+    for (; *s; s++) {
+        if (*s == '/') return 1;
+    }
+    return 0;
+}
+
+/* Parent of `path`: for root-level names the parent is the volume root
+ * (out = NULL, return 1).  Otherwise the parent prefix must exist and be a
+ * directory: return 0 if it does not exist, -1 if it is not a directory,
+ * and set *out on success. */
+static int parent_dir_of(struct tmpfs_volume *v, const char *path,
+                         struct tmpfs_file **out) {
+    const char *slash = NULL;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') slash = p;
+    }
+    if (!slash) { *out = NULL; return 1; }   /* root-level */
+    char parent[VFS_PATH_MAX];
+    size_t len = (size_t)(slash - path);
+    if (len >= sizeof(parent)) return -1;
+    memcpy(parent, path, len);
+    parent[len] = '\0';
+    struct tmpfs_file *p = find_file(v, parent);
+    if (!p) return 0;
+    if (!is_dir_entry(p)) return -1;
+    *out = p;
     return 1;
 }
 
@@ -80,12 +131,14 @@ static void vol_init(struct tmpfs_volume *v, const char *mount_path,
 void tmpfs_init(void) {
     vol_init(&tmp_vol, "/tmp", &tmpfs_ops);
     vol_init(&opt_vol, "/opt", &optfs_ops);
+    vol_init(&shm_vol, "/dev/shm", &shmfs_ops);
     kprintf("[tmpfs] writable in-memory filesystem ready "
-            "(2 volumes, %d files max each)\n", TMPFS_MAX_FILES);
+            "(3 volumes, %d files max each)\n", TMPFS_MAX_FILES);
 }
 
 void *tmpfs_volume_tmp(void) { return &tmp_vol; }
 void *tmpfs_volume_opt(void) { return &opt_vol; }
+void *tmpfs_volume_shm(void) { return &shm_vol; }
 
 static struct tmpfs_file *find_file(struct tmpfs_volume *v, const char *path) {
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
@@ -107,15 +160,25 @@ static struct vnode *tmpfs_lookup(void *fs_data, const char *path) {
 
 static struct vnode *tmpfs_create(void *fs_data, const char *path) {
     struct tmpfs_volume *v = vol_of(fs_data);
-    if (!valid_name(path)) return NULL;
+    if (!path_ok(path)) return NULL;
     struct tmpfs_file *existing = find_file(v, path);
     if (existing) return &existing->vnode;
+
+    /* Q12: the parent directory must exist and be a directory.  (The VFS
+     * layer already reports ENOENT for a missing parent before calling us;
+     * reaching here with a missing or non-dir parent means the path is
+     * malformed, and refusing with NULL -> EACCES is the documented
+     * behaviour -- POSIX would say ENOENT/ENOTDIR here.) */
+    struct tmpfs_file *pdir;
+    int pr = parent_dir_of(v, path, &pdir);
+    if (pr != 1) return NULL;
 
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
         if (!v->files[i].in_use) {
             struct tmpfs_file *f = &v->files[i];
             memset(f, 0, sizeof(*f));
             f->in_use = 1;
+            f->vol = v;
             strncpy(f->name, path, VFS_PATH_MAX - 1);
             strncpy(f->vnode.name, path, VFS_PATH_MAX - 1);
             f->vnode.type = VFS_TYPE_FILE;
@@ -130,6 +193,57 @@ static struct vnode *tmpfs_create(void *fs_data, const char *path) {
         }
     }
     return NULL;
+}
+
+/* Q12: directory mutation -- mkdir/rmdir/rename, filling the holes the
+ * flat tmpfs never had.  All three validate parent existence and type. */
+
+static int tmpfs_mkdir(void *fs_data, const char *path) {
+    struct tmpfs_volume *v = vol_of(fs_data);
+    if (!path_ok(path)) return -EINVAL;
+    if (find_file(v, path)) return -EEXIST;
+    struct tmpfs_file *pdir;
+    int pr = parent_dir_of(v, path, &pdir);
+    if (pr == 0) return -ENOENT;
+    if (pr < 0) return -ENOTDIR;
+    for (int i = 0; i < TMPFS_MAX_FILES; i++) {
+        if (!v->files[i].in_use) {
+            struct tmpfs_file *f = &v->files[i];
+            memset(f, 0, sizeof(*f));
+            f->in_use = 1;
+            f->vol = v;
+            strncpy(f->name, path, VFS_PATH_MAX - 1);
+            strncpy(f->vnode.name, path, VFS_PATH_MAX - 1);
+            f->vnode.type = VFS_TYPE_DIR;
+            f->vnode.size = 0;
+            f->vnode.ops = v->ops;
+            f->vnode.fs_data = f;
+            f->vnode.mode = 0777;   /* VFS applies umask afterwards */
+            f->mtime = f->ctime = f->atime = vfs_now();
+            f->vnode.mtime = f->mtime;
+            f->vnode.ctime = f->ctime;
+            f->vnode.atime = f->atime;
+            return 0;
+        }
+    }
+    return -ENOSPC;
+}
+
+static int tmpfs_rmdir(void *fs_data, const char *path) {
+    struct tmpfs_volume *v = vol_of(fs_data);
+    struct tmpfs_file *f = find_file(v, path);
+    if (!f) return -ENOENT;
+    if (!is_dir_entry(f)) return -ENOTDIR;
+    size_t fl = strlen(f->name);
+    for (int i = 0; i < TMPFS_MAX_FILES; i++) {
+        if (!v->files[i].in_use || &v->files[i] == f) continue;
+        if (strncmp(v->files[i].name, f->name, fl) == 0 &&
+            v->files[i].name[fl] == '/')
+            return -ENOTEMPTY;
+    }
+    if (f->data) kfree(f->data);
+    memset(f, 0, sizeof(*f));
+    return 0;
 }
 
 static int ensure_capacity(struct tmpfs_file *f, uint64_t need) {
@@ -175,22 +289,104 @@ static int64_t tmpfs_write(struct vnode *vn, uint64_t pos,
     return (int64_t)count;
 }
 
+/* Q12: rename.  Files replace files; directories require an empty target
+ * (or replace an empty directory); a directory rename rewrites the prefix
+ * of every descendant entry, which is exactly what the flat table needs. */
+static int tmpfs_rename(void *fs_data, const char *from, const char *to) {
+    struct tmpfs_volume *v = vol_of(fs_data);
+    if (!path_ok(to)) return -EINVAL;
+    struct tmpfs_file *f = find_file(v, from);
+    if (!f) return -ENOENT;
+    if (strcmp(from, to) == 0) return 0;
+    struct tmpfs_file *t = find_file(v, to);
+    if (t) {
+        if (is_dir_entry(t) && !is_dir_entry(f)) return -EISDIR;
+        if (!is_dir_entry(t) && is_dir_entry(f)) return -ENOTDIR;
+        if (is_dir_entry(t)) {
+            size_t tl = strlen(t->name);
+            for (int i = 0; i < TMPFS_MAX_FILES; i++) {
+                if (!v->files[i].in_use || &v->files[i] == t) continue;
+                if (strncmp(v->files[i].name, t->name, tl) == 0 &&
+                    v->files[i].name[tl] == '/')
+                    return -ENOTEMPTY;
+            }
+            memset(t, 0, sizeof(*t));   /* empty directory replaced */
+        } else {
+            if (t->data) kfree(t->data);
+            memset(t, 0, sizeof(*t));
+        }
+    }
+    struct tmpfs_file *pdir;
+    int pr = parent_dir_of(v, to, &pdir);
+    if (pr == 0) return -ENOENT;
+    if (pr < 0) return -ENOTDIR;
+
+    if (is_dir_entry(f)) {
+        size_t fl = strlen(from);
+        for (int i = 0; i < TMPFS_MAX_FILES; i++) {
+            if (!v->files[i].in_use || &v->files[i] == f) continue;
+            if (strncmp(v->files[i].name, from, fl) != 0 ||
+                v->files[i].name[fl] != '/')
+                continue;
+            size_t nl = strlen(to) + strlen(v->files[i].name + fl);
+            if (nl >= VFS_PATH_MAX - 1) return -ENAMETOOLONG;
+            char newname[VFS_PATH_MAX];
+            memcpy(newname, to, strlen(to));
+            strcpy(newname + strlen(to), v->files[i].name + fl);
+            struct tmpfs_file *collision = find_file(v, newname);
+            if (collision && collision != &v->files[i]) return -EEXIST;
+            strncpy(v->files[i].name, newname, VFS_PATH_MAX - 1);
+            strncpy(v->files[i].vnode.name, newname, VFS_PATH_MAX - 1);
+        }
+    }
+    strncpy(f->name, to, VFS_PATH_MAX - 1);
+    strncpy(f->vnode.name, to, VFS_PATH_MAX - 1);
+    f->mtime = f->ctime = vfs_now();
+    f->vnode.mtime = f->mtime;
+    f->vnode.ctime = f->ctime;
+    return 0;
+}
+
 /* readdir gets a vnode, not fs_data, so the volume is recovered from the
- * root vnode's identity. */
+ * root vnode's identity or the entry's owning-volume back-pointer. */
 static struct tmpfs_volume *vol_of_vnode(struct vnode *vn) {
     if (vn == &tmp_vol.root) return &tmp_vol;
     if (vn == &opt_vol.root) return &opt_vol;
+    if (vn == &shm_vol.root) return &shm_vol;
+    struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
+    if (f && f->vol) return f->vol;
     return &tmp_vol;
 }
 
+/* Q12: list the IMMEDIATE children of a directory, with basenames and real
+ * entry types (files vs directories).  The flat table stores full paths, so
+ * "child of X" means "name starts with X/ and the remainder has no further
+ * slash". */
 static int tmpfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     struct tmpfs_volume *v = vol_of_vnode(vn);
+    if (vn->type != VFS_TYPE_DIR) return -1;
+    const char *dir = "";
+    size_t dl = 0;
+    if (vn != &v->root) {
+        struct tmpfs_file *self = (struct tmpfs_file *)vn->fs_data;
+        if (!self) return -1;
+        dir = self->name;
+        dl = strlen(dir);
+    }
     int n = 0;
     for (int i = 0; i < TMPFS_MAX_FILES && n < max; i++) {
         if (!v->files[i].in_use) continue;
+        const char *e = v->files[i].name;
+        if (dl) {
+            if (strncmp(e, dir, dl) != 0 || e[dl] != '/') continue;
+            e += dl + 1;
+        } else if (has_slash(e)) {
+            continue;
+        }
+        if (!*e || has_slash(e)) continue;   /* immediate children only */
         memset(&out[n], 0, sizeof(out[n]));
-        strncpy(out[n].name, v->files[i].name, VFS_PATH_MAX - 1);
-        out[n].type = VFS_TYPE_FILE;
+        strncpy(out[n].name, e, VFS_PATH_MAX - 1);
+        out[n].type = v->files[i].vnode.type;
         out[n].size = v->files[i].size;
         out[n].inode = (uint64_t)i;
         n++;
@@ -202,6 +398,7 @@ static int tmpfs_unlink(void *fs_data, const char *path) {
     struct tmpfs_volume *v = vol_of(fs_data);
     struct tmpfs_file *f = find_file(v, path);
     if (!f) return -ENOENT;
+    if (is_dir_entry(f)) return -EISDIR;   /* Q12: POSIX unlink(2) on a dir */
     if (f->data) kfree(f->data);
     memset(f, 0, sizeof(*f));
     return 0;
@@ -257,7 +454,10 @@ const struct vfs_ops tmpfs_ops = {
     .read     = tmpfs_read,
     .write    = tmpfs_write,
     .readdir  = tmpfs_readdir,
+    .mkdir    = tmpfs_mkdir,   /* Q12 */
+    .rmdir    = tmpfs_rmdir,   /* Q12 */
     .unlink   = tmpfs_unlink,
+    .rename   = tmpfs_rename,  /* Q12 */
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
 };
@@ -270,7 +470,26 @@ const struct vfs_ops optfs_ops = {
     .read     = tmpfs_read,
     .write    = tmpfs_write,
     .readdir  = tmpfs_readdir,
+    .mkdir    = tmpfs_mkdir,   /* Q12 */
+    .rmdir    = tmpfs_rmdir,   /* Q12 */
     .unlink   = tmpfs_unlink,
+    .rename   = tmpfs_rename,  /* Q12 */
+    .stat     = tmpfs_stat,
+    .truncate = tmpfs_truncate,
+};
+
+/* Q12: /dev/shm volume (POSIX shared memory / named-semaphore home).  Same
+ * code, distinct ops address, exactly like /opt above. */
+const struct vfs_ops shmfs_ops = {
+    .lookup   = tmpfs_lookup,
+    .create   = tmpfs_create,
+    .read     = tmpfs_read,
+    .write    = tmpfs_write,
+    .readdir  = tmpfs_readdir,
+    .mkdir    = tmpfs_mkdir,
+    .rmdir    = tmpfs_rmdir,
+    .unlink   = tmpfs_unlink,
+    .rename   = tmpfs_rename,
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
 };

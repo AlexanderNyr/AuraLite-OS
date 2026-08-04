@@ -167,6 +167,12 @@ typedef struct {
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
 
 #define SYSCALL_PATH_MAX 256
+
+/* Q12: AT_* flags mirroring lib/libc/include/fcntl.h. */
+#define AT_FDCWD           (-100)
+#define AT_SYMLINK_NOFOLLOW 0x100
+#define AT_REMOVEDIR        0x200
+#define AT_EMPTY_PATH       0x1000
 #define SYSCALL_IO_CHUNK 256
 
 /* Keep the heap well below the user stack so brk growth cannot collide with
@@ -190,6 +196,56 @@ typedef struct {
 static int copy_user_path(char *dst, uint64_t user_path) {
     return copy_string_from_user(dst, (const char *)(uintptr_t)user_path,
                                  SYSCALL_PATH_MAX);
+}
+
+/* Q12 (POSIX2024_PLAN.md phase Q12): the stat-family syscalls must deliver
+ * the POSIX st_mode type bits (S_IFMT), not just the permission bits the
+ * VFS stores.  The struct vfs_stat layout is shared with user space
+ * (lib/libc/include/unistd.h), so the type field stays, and st_mode gains
+ * the high bits S_ISREG/S_ISDIR/... test for. */
+static uint32_t stat_posix_mode(const struct vfs_stat *st) {
+    uint32_t m = st->mode & 07777u;
+    switch (st->type) {
+        case VFS_TYPE_FILE:    m |= 0100000u; break;
+        case VFS_TYPE_DIR:     m |= 0040000u; break;
+        case VFS_TYPE_CHARDEV: m |= 0020000u; break;
+        case VFS_TYPE_SYMLINK: m |= 0120000u; break;
+        case VFS_TYPE_FIFO:    m |= 0010000u; break;
+        default: break;
+    }
+    return m;
+}
+
+/* Q12: AT-family path resolution.  POSIX allows a relative path with
+ * dirfd == AT_FDCWD to resolve against the caller's working directory.  The
+ * VFS layer has no cwd-relative open path, so the dispatcher joins the
+ * thread's cwd here.  Real directory fds (dirfd != AT_FDCWD) with relative
+ * paths remain ENOSYS until the VFS grows open-directory resolution --
+ * declared honestly in the plan rather than silently faked.  Returns 0 on
+ * success (dst filled), -EFAULT on a bad user pointer, -ENOSYS on a real
+ * dirfd with a relative path. */
+static int copy_at_path(char *dst, uint64_t user_path, int dirfd) {
+    char tmp[SYSCALL_PATH_MAX];
+    if (copy_user_path(tmp, user_path) != 0) return -EFAULT;
+    if (tmp[0] == '/') {
+        memcpy(dst, tmp, strlen(tmp) + 1);
+        return 0;
+    }
+    if (dirfd != AT_FDCWD) return -ENOSYS;
+    tcb_t *cur = sched_current();
+    const char *cwd = (cur && cur->cwd[0]) ? cur->cwd : "/";
+    size_t cl = strlen(cwd);
+    size_t tl = strlen(tmp);
+    if (cl + 1 + tl + 1 > SYSCALL_PATH_MAX) return -ENAMETOOLONG;
+    if (cwd[cl - 1] == '/') {
+        memcpy(dst, cwd, cl);
+        memcpy(dst + cl, tmp, tl + 1);
+    } else {
+        memcpy(dst, cwd, cl);
+        dst[cl] = '/';
+        memcpy(dst + cl + 1, tmp, tl + 1);
+    }
+    return 0;
 }
 
 /*
@@ -1064,6 +1120,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
         int r = vfs_stat(path, &st);
         if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        st.mode = stat_posix_mode(&st);   /* Q12 */
         if (copy_to_user((void *)(uintptr_t)a2, &st, sizeof(st)) != 0) {
             return (uint64_t)-EFAULT;
         }
@@ -1523,6 +1580,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (!validate_user_range((void *)(uintptr_t)a2, sizeof(st), 1)) return (uint64_t)-EFAULT;
         int r = vfs_fstat((int)a1, &st);
         if (r != 0) return (uint64_t)r;
+        st.mode = stat_posix_mode(&st);   /* Q12 */
         if (copy_to_user((void *)(uintptr_t)a2, &st, sizeof(st)) != 0) return (uint64_t)-EFAULT;
         return 0;
     }
@@ -1533,6 +1591,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (!validate_user_range((void *)(uintptr_t)a2, sizeof(st), 1)) return (uint64_t)-EFAULT;
         int r = vfs_lstat(path, &st);
         if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        st.mode = stat_posix_mode(&st);   /* Q12 */
         if (copy_to_user((void *)(uintptr_t)a2, &st, sizeof(st)) != 0) return (uint64_t)-EFAULT;
         return 0;
     }
@@ -1636,71 +1695,81 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     /* ---- Q5: AT-family syscalls ---- */
     case 257: { /* SYS_OPENAT */
         int dirfd = (int)a1;
-        char path[256];
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
+        char path[SYSCALL_PATH_MAX];
+        int r = copy_at_path(path, a2, dirfd);
+        if (r != 0) return (uint64_t)r;
         /* No vfs_errno() — see SYS_OPEN: it would turn EPERM into ENOENT. */
-        if (dirfd == -100 || path[0] == '/')
-            return (uint64_t)vfs_open(path, (int)a3, (int)a4);
-        return (uint64_t)-ENOSYS;
+        return (uint64_t)vfs_open(path, (int)a3, (int)a4);
     }
     case 258: { /* SYS_MKDIRAT */
         int dirfd = (int)a1;
-        char path[256];
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
-        if (dirfd == -100 || path[0] == '/')
-            return (uint64_t)vfs_errno(vfs_mkdir(path, (uint32_t)a3), EACCES);
-        return (uint64_t)-ENOSYS;
+        char path[SYSCALL_PATH_MAX];
+        int r = copy_at_path(path, a2, dirfd);
+        if (r != 0) return (uint64_t)r;
+        return (uint64_t)vfs_errno(vfs_mkdir(path, (uint32_t)a3), EACCES);
     }
     case 260: { /* SYS_FCHOWNAT */
         int dfd = (int)a1;
-        char path[256];
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
-        (void)dfd;
+        char path[SYSCALL_PATH_MAX];
+        int r = copy_at_path(path, a2, dfd);
+        if (r != 0) return (uint64_t)r;
         return (uint64_t)vfs_chown(path, (uint32_t)a3, (uint32_t)a4);
     }
     case 262: { /* SYS_FSTATAT */
         int dirfd = (int)a1;
-        char path[256];
+        char path[SYSCALL_PATH_MAX];
         int flags = (int)a4;
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
-        (void)dirfd;
+        int r = copy_at_path(path, a2, dirfd);
+        if (r != 0) return (uint64_t)r;
         struct vfs_stat st;
-        int r = (flags & 0x100)
-                ? vfs_lstat(path, &st) : vfs_stat(path, &st);
-        if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        int rs = (flags & AT_SYMLINK_NOFOLLOW)
+                 ? vfs_lstat(path, &st) : vfs_stat(path, &st);
+        if (rs != 0) return (uint64_t)vfs_errno(rs, ENOENT);
+        st.mode = stat_posix_mode(&st);   /* Q12 */
         if (copy_to_user((void*)(uintptr_t)a3, &st, sizeof(st)) != 0)
             return (uint64_t)-EFAULT;
         return 0;
     }
     case 263: { /* SYS_UNLINKAT */
         int dirfd = (int)a1;
-        char path[256];
+        char path[SYSCALL_PATH_MAX];
         int flags = (int)a3;
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
-        (void)dirfd;
-        return (flags & 0x200)
-               ? (uint64_t)vfs_errno(vfs_rmdir(path), ENOENT)
-               : (uint64_t)vfs_errno(vfs_unlink(path), ENOENT);
+        int r = copy_at_path(path, a2, dirfd);
+        if (r != 0) return (uint64_t)r;
+        if (flags & AT_REMOVEDIR) {
+            /* POSIX: AT_REMOVEDIR demands a directory; a symlink or regular
+             * file must give ENOTDIR (the fs rmdir hooks only see entries
+             * in their own tables, and symlinks live in the kernel's global
+             * table, so the type check belongs here in the dispatcher). */
+            if (vfs_symlink_vnode(path) != NULL) return (uint64_t)-ENOTDIR;
+            struct vfs_stat st;
+            if (vfs_stat(path, &st) == 0 && st.type != VFS_TYPE_DIR)
+                return (uint64_t)-ENOTDIR;
+            return (uint64_t)vfs_errno(vfs_rmdir(path), ENOENT);
+        }
+        return (uint64_t)vfs_errno(vfs_unlink(path), ENOENT);
     }
     case 264: { /* SYS_RENAMEAT */
-        int od = (int)a1; (void)od;
-        int nd = (int)a3; (void)nd;
-        char op[256], np[256];
-        if (copy_user_path(op, a2) != 0) return (uint64_t)-EFAULT;
-        if (copy_user_path(np, a4) != 0) return (uint64_t)-EFAULT;
+        int od = (int)a1;
+        int nd = (int)a3;
+        char op[SYSCALL_PATH_MAX], np[SYSCALL_PATH_MAX];
+        int r = copy_at_path(op, a2, od);
+        if (r != 0) return (uint64_t)r;
+        r = copy_at_path(np, a4, nd);
+        if (r != 0) return (uint64_t)r;
         return (uint64_t)vfs_errno(vfs_rename(op, np), ENOENT);
     }
     case 267: { /* SYS_READLINKAT */
         int dirfd = (int)a1;
-        char path[256];
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
-        (void)dirfd;
+        char path[SYSCALL_PATH_MAX];
+        int r = copy_at_path(path, a2, dirfd);
+        if (r != 0) return (uint64_t)r;
         size_t bufsiz = (size_t)a4;
         if (bufsiz == 0) return (uint64_t)-EINVAL;
-        if (bufsiz > 256) bufsiz = 256;
+        if (bufsiz > SYSCALL_PATH_MAX) bufsiz = SYSCALL_PATH_MAX;
         if (!validate_user_range((void*)(uintptr_t)a3, bufsiz, 1))
             return (uint64_t)-EFAULT;
-        char kbuf[256];
+        char kbuf[SYSCALL_PATH_MAX];
         int64_t n = vfs_readlink(path, kbuf, bufsiz);
         if (n < 0) return (uint64_t)n;
         if (copy_to_user((void*)(uintptr_t)a3, kbuf, (uint64_t)n) != 0)
@@ -1709,16 +1778,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     }
     case 268: { /* SYS_FCHMODAT */
         int dfd = (int)a1;
-        char path[256];
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
-        (void)dfd;
+        char path[SYSCALL_PATH_MAX];
+        int r = copy_at_path(path, a2, dfd);
+        if (r != 0) return (uint64_t)r;
         return (uint64_t)vfs_chmod(path, (uint32_t)a3);
     }
     case 269: { /* SYS_FACCESSAT */
         int dfd = (int)a1;
-        char path[256];
-        if (copy_user_path(path, a2) != 0) return (uint64_t)-EFAULT;
-        (void)dfd;
+        char path[SYSCALL_PATH_MAX];
+        int r = copy_at_path(path, a2, dfd);
+        if (r != 0) return (uint64_t)r;
         return (uint64_t)vfs_access(path, (int)a3);
     }
     case 292: { /* SYS_DUP3 */
