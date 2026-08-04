@@ -339,13 +339,14 @@ for the feature matrix.
 
 ### Input
 
-- **The keyboard layout is hardcoded US, with no way to change it.** (`FIXES_PLAN.md` R8)
-  `drivers/keyboard/keyboard.c` translates scancodes through two fixed
-  128-entry tables (`map_lo`, `map_hi`); there is no keymap abstraction, no
-  runtime selection and no dead-key support. A non-US keyboard produces the
-  wrong characters for anything outside the shared ASCII subset, and there is
-  no workaround short of editing the tables and rebuilding. Worth stating
-  because nothing in the docs currently implies the restriction.
+- ~~**The keyboard layout is hardcoded US, with no way to change it.**~~
+  Done (`FIXES_PLAN.md` R8): `keymap_us` and `keymap_de` live in
+  `drivers/keyboard/keymap.c` behind `struct keymap` with a Shift layer and
+  an AltGr third layer (`KB_MOD_ALTGR`, raised by right Alt on PS/2 and USB);
+  `make KEYMAP=de` selects the boot default at compile time and the `kbd`
+  shell command (non-standard `SYS_KBD_LAYOUT` 601) switches/enumerates at
+  runtime.  The remaining gap from the old text is unchanged: still no
+  dead-key support (the German ´ key emits nothing unshifted).
 
 ### USB / devices
 

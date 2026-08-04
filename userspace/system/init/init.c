@@ -12,6 +12,7 @@
  *   pwd        — print working directory
  *   uname      — print OS info
  *   free       — print memory stats
+ *   kbd [name] — show/set keyboard layout
  *   help       — list commands
  *   exit       — halt
  */
@@ -254,6 +255,7 @@ static void cmd_help(void) {
     puts("  touch <file>- create an empty file");
     puts("  stat <path> - show file metadata");
     puts("  apm [cmd]   - AuraLite Package Manager");
+    puts("  kbd [name]  - show/set keyboard layout (us, de)");
     puts("  help        - show this help");
     puts("  exit        - exit shell");
     puts("");
@@ -521,6 +523,42 @@ static void cmd_apm(int argc, char **argv) {
 
 /* ---- Shell main loop ---- */
 
+/* FIX_R8: keyboard layout query/switch.  SYS_KBD_LAYOUT keeps the same
+ * number/kind of ABI as the other non-standard syscalls in
+ * kernel/arch/x86_64/syscall.c (SYS_MEMINFO sits at 600) and returns the
+ * kernel value verbatim: 0 success, -ENOENT for an unknown layout name. */
+#define SYS_KBD_LAYOUT   601
+#define KBD_OP_GET       0
+#define KBD_OP_SET       1
+#define KBD_OP_ENUM      2
+#define KBD_NAME_MAX     32
+
+static void cmd_kbd(const char *arg) {
+    if (!arg) {
+        char cur[KBD_NAME_MAX];
+        if (syscall(SYS_KBD_LAYOUT, KBD_OP_GET, (uint64_t)cur,
+                    (uint64_t)sizeof(cur), 0, 0, 0) == 0) {
+            printf("kbd: current layout '%s'\n", cur);
+        }
+        printf("kbd: available:");
+        for (uint64_t i = 0; ; i++) {
+            char nm[KBD_NAME_MAX];
+            int64_t r = syscall(SYS_KBD_LAYOUT, KBD_OP_ENUM, i,
+                                (uint64_t)nm, 0, 0, 0);
+            if (r < 0) break;
+            printf(" %s", nm);
+        }
+        putchar('\n');
+        return;
+    }
+    int64_t r = syscall(SYS_KBD_LAYOUT, KBD_OP_SET, (uint64_t)arg, 0, 0, 0, 0);
+    if (r == 0) {
+        printf("kbd: layout set to '%s'\n", arg);
+    } else {
+        printf("kbd: unknown layout '%s' (see `kbd` for the list)\n", arg);
+    }
+}
+
 static void process_command(char *line) {
     /* Defensive sanitising: VM serial ports can occasionally feed garbage when
      * no terminal is attached. Treat non-printable/non-ASCII bytes as spaces so
@@ -654,6 +692,8 @@ do_dispatch:
         cmd_fg(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "bg") == 0) {
         cmd_bg(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "kbd") == 0) {
+        cmd_kbd(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "sleep") == 0) {
         cmd_sleep(argc > 1 ? cmd_argv[1] : "0");
     } else if (cmd[0] == '/' || cmd[0] == '.') {
@@ -671,6 +711,7 @@ do_dispatch:
     }
     if (in_subshell) _exit(0);
 }
+
 
 static void dummy_handler(int s) { (void)s; }
 

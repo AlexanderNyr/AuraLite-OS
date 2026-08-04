@@ -519,20 +519,44 @@ worth more than one that has been made harder to reproduce.
 
 #### Tasks
 
-- [ ] A `struct keymap { const char lo[128], hi[128]; const char *name; }`,
-      with the current tables becoming `keymap_us`.
-- [ ] One additional layout as evidence the abstraction works — the plan
-      suggests a Lithuanian or a UK map, chosen because someone can verify it.
-- [ ] Compile-time selection, with a `kbd` shell command to switch at runtime
-      if it falls out cheaply.
-- [ ] AltGr, since most non-US layouts need it for characters US keyboards
-      reach directly.
+- [x] A `struct keymap { const char lo[128], hi[128]; const char *name; }`,
+      with the current tables becoming `keymap_us` — done in
+      `drivers/keyboard/keymap.c` (new translation unit, no kernel deps so the
+      host test links it directly).  One deliberate deviation from the sketch:
+      a third `altgr[128]` table sits between `hi` and `name`, because the
+      AltGr task below has nowhere to live otherwise.
+- [x] One additional layout as evidence the abstraction works — German QWERTZ
+      (`keymap_de`, DIN 2137 T1), picked over the suggested Lithuanian/UK
+      because the digital workspace's user has a German keyboard and can
+      verify it, and because its AltGr layer ({[]}@\|~) is plain ASCII and
+      therefore visible even through the fd-0 line reader.  Umlauts/ß/§/°/µ
+      ship as CP437 bytes for /dev/tty0 readers and the GUI.
+- [x] Compile-time selection, with a `kbd` shell command to switch at runtime
+      if it falls out cheaply — it fell out cheaply: `make KEYMAP=de` passes
+      `-DKEYBOARD_DEFAULT_LAYOUT=keymap_de` for the boot default, and the
+      `kbd` builtin (new non-standard `SYS_KBD_LAYOUT` 601: get/set/enum)
+      switches at runtime and prints the registry without hardcoding it.
+- [x] AltGr, since most non-US layouts need it for characters US keyboards
+      reach directly — `KB_MOD_ALTGR` (0x80) is raised IN ADDITION to
+      `KB_MOD_ALT` by right Alt (PS/2 E0-38 and USB usage alike) so existing
+      Alt-shortcuts keep firing; `keymap_lookup()` gives the third layer
+      precedence over Shift/CapsLock and falls back to lo/hi on zero entries.
 
 #### Test gate
 
 - Each shipped layout maps a scancode set to its expected characters, tested on
-  the host against the table.
-- Switching layouts changes what the shell receives, asserted in QEMU.
+  the host against the table — `tests/unit/test_keymap.c` (in `make
+  test-unit`) links the shipped `keymap.c` and asserts every byte of the US
+  tables (the pre-R8 driver tables, verbatim), the DE divergence rows, all
+  nine DE AltGr entries, the Shift/CapsLock/AltGr decode semantics, and the
+  registry contract.  Part of this patch.
+- Switching layouts changes what the shell receives, asserted in QEMU —
+  `tests/integration/cases/test_keymaps.sh` injects real PS/2 scan codes via
+  the QEMU HMP monitor (`sendkey`, since serial input bypasses the PS/2
+  keyboard): Shift+2 types '@' under `us` and '"' after `kbd de`, the y key
+  types 'z' (QWERTZ swap), and AltGr+8/AltGr+q produce '['/'@' — each byte is
+  witnessed by the shell's own `<char>: command not found` line.  Part of
+  this patch.
 
 #### Deliverable
 

@@ -23,6 +23,10 @@
 #define KB_MOD_META    0x10   /* Windows/Super/Command */
 #define KB_MOD_NUM     0x20
 #define KB_MOD_SCROLL  0x40
+/* FIX_R8: right Alt is AltGr on non-US layouts.  It is tracked in its own
+ * bit (in ADDITION to KB_MOD_ALT, so existing Alt-shortcuts keep working
+ * with either Alt key) and selects the keymap's third layer. */
+#define KB_MOD_ALTGR   0x80
 
 /* Special key codes (kept disjoint from 0x20..0x7E printable ASCII).
  * We use values above 0xE0 so they coexist with extended-set scancodes
@@ -151,6 +155,14 @@ void keyboard_init(void);
 
 /* Legacy printable-ASCII poll (used by the shell). */
 int  keyboard_getchar(void);
+
+/* Layout selection (FIXES_PLAN R8; tables live in keymap.c).  The boot-time
+ * default is KEYBOARD_DEFAULT_LAYOUT (compile-time, see Makefile KEYMAP);
+ * keyboard_set_layout() switches at runtime and returns 0, or -ENOENT when
+ * the name is not in keymap_registry[]. */
+#define KBD_LAYOUT_NAME_MAX 32
+int         keyboard_set_layout(const char *name);
+const char *keyboard_get_layout(void);
 
 /* Rich event queue: returns 1 + fills `out` if an event is available,
  * 0 if none.  Non-destructive peek not provided. */

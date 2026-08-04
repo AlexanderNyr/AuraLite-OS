@@ -19,6 +19,7 @@
 #include "kernel/net/socket.h"
 #include "drivers/uart/uart.h"
 #include "drivers/keyboard/keyboard.h"
+#include "drivers/keyboard/keymap.h"
 #include "drivers/timer/pit.h"
 #include "kernel/gui/gui_syscalls.h"
 #include "kernel/gpu/gpu_syscalls.h"
@@ -160,6 +161,7 @@ typedef struct {
 #define SYS_FUTEX          530
 #define SYS_TKILL          531
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
+#define SYS_KBD_LAYOUT     601   /* non-standard: select keyboard layout (FIXES_PLAN R8) */
 
 /* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
@@ -1572,6 +1574,60 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_MEMINFO: {
         extern uint64_t pmm_get_free_frames(void);
         return pmm_get_free_frames();
+    }
+
+    /* FIX_R8: keyboard layout get/set/enum.
+     *   a1 = 0: copy the active layout's name into (a2, a3 bytes).
+     *   a1 = 1: switch to the layout whose name is the string at a2.
+     *   a1 = 2: copy keymap_registry[a2]'s name into a3 (KBD_LAYOUT_NAME_MAX
+     *           bytes) so shells can enumerate without knowing the list.
+     * No vfs_errno() anywhere near this: -ENOENT is -2, but keyboard_set_-
+     * layout() may gain -EPERM-class returns later (write protection), and
+     * EPERM == 1 == the generic sentinel — return values verbatim. */
+    case SYS_KBD_LAYOUT: {
+        if (a1 == 0) {
+            if (!a2 || a3 == 0) return (uint64_t)-EINVAL;
+            if (!validate_user_range((void *)(uintptr_t)a2, a3, 1)) return (uint64_t)-EFAULT;
+            const char *nm = keyboard_get_layout();
+            uint64_t len = 0;
+            while (nm[len] && len + 1 < a3) {
+                ((char *)(uintptr_t)a2)[len] = nm[len];
+                len++;
+            }
+            ((char *)(uintptr_t)a2)[len] = '\0';
+            return 0;
+        }
+        if (a1 == 1) {
+            char nm[KBD_LAYOUT_NAME_MAX];
+            if (copy_string_from_user(nm, (const char *)(uintptr_t)a2, sizeof(nm)) != 0) {
+                return (uint64_t)-EFAULT;
+            }
+            if (nm[0] == '\0') return (uint64_t)-EINVAL;
+            return (uint64_t)keyboard_set_layout(nm);   /* 0 or -ENOENT */
+        }
+        if (a1 == 2) {
+            if (!a3) return (uint64_t)-EINVAL;
+            if (!validate_user_range((void *)(uintptr_t)a3, KBD_LAYOUT_NAME_MAX, 1)) {
+                return (uint64_t)-EFAULT;
+            }
+            int found = -ENOENT;
+            for (int i = 0; keymap_registry[i]; i++) {
+                if ((uint64_t)i == a2) {
+                    char knm[KBD_LAYOUT_NAME_MAX];
+                    uint64_t len = 0;
+                    const char *nm = keymap_registry[i]->name;
+                    while (nm[len] && len + 1 < sizeof(knm)) { knm[len] = nm[len]; len++; }
+                    knm[len] = '\0';
+                    if (copy_to_user((void *)(uintptr_t)a3, knm, sizeof(knm)) != 0) {
+                        return (uint64_t)-EFAULT;
+                    }
+                    found = 0;
+                    break;
+                }
+            }
+            return (uint64_t)found;
+        }
+        return (uint64_t)-EINVAL;
     }
 
 

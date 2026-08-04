@@ -12,9 +12,12 @@
 
 #include <stdint.h>
 #include "drivers/keyboard/keyboard.h"
+#include "drivers/keyboard/keymap.h"
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/isr.h"
+#include "kernel/lib/errno.h"
+#include "kernel/lib/kprintf.h"
 
 #define KB_DATA   0x60
 #define KB_STATUS 0x64
@@ -45,23 +48,18 @@ static int kb_extended = 0;
 static int kb_pause_bytes_left = 0;
 static int kb_printscreen_prefix = 0;
 
-/* US QWERTY scan-code-set-1 → ASCII (lowercase / unshifted). */
-static const char map_lo[128] = {
-    0, 0x1B,'1','2','3','4','5','6','7','8','9','0','-','=', '\b',
-    '\t','q','w','e','r','t','y','u','i','o','p','[',']','\n',
-    0, 'a','s','d','f','g','h','j','k','l',';','\'', '`',
-    0, '\\','z','x','c','v','b','n','m',',','.','/', 0,
-    '*', 0, ' ',
-};
-
-/* Shifted variants. */
-static const char map_hi[128] = {
-    0, 0x1B,'!','@','#','$','%','^','&','*','(',')','_','+', '\b',
-    '\t','Q','W','E','R','T','Y','U','I','O','P','{','}','\n',
-    0, 'A','S','D','F','G','H','J','K','L',':','"', '~',
-    0, '|','Z','X','C','V','B','N','M','<','>','?', 0,
-    '*', 0, ' ',
-};
+/* The scan-code tables moved to drivers/keyboard/keymap.c as `keymap_us`
+ * (FIX_R8), joined by `keymap_de`.  This file keeps only the active-layout
+ * pointer; the decode itself is keymap_lookup() so the host-side unit test
+ * exercises the exact table entries the kernel ships.
+ *
+ * The boot-time default is compile-time selectable (Makefile: KEYMAP=de
+ * passes -DKEYBOARD_DEFAULT_LAYOUT=keymap_de); the `kbd` shell command
+ * switches at runtime. */
+#ifndef KEYBOARD_DEFAULT_LAYOUT
+#define KEYBOARD_DEFAULT_LAYOUT keymap_us
+#endif
+static const struct keymap *active_keymap = &KEYBOARD_DEFAULT_LAYOUT;
 
 static void kb_enqueue(char c) {
     uint32_t next = (kb_head + 1) % KB_BUF_SIZE;
@@ -92,8 +90,11 @@ static uint8_t mod_bit_for_key(uint32_t key) {
         case KB_KEY_RSHIFT: return KB_MOD_SHIFT;
         case KB_KEY_CTRL:
         case KB_KEY_RCTRL:  return KB_MOD_CTRL;
-        case KB_KEY_ALT:
-        case KB_KEY_RALT:   return KB_MOD_ALT;
+        case KB_KEY_ALT:    return KB_MOD_ALT;
+        /* FIX_R8: right Alt is AltGr on non-US layouts.  Keep KB_MOD_ALT so
+         * shortcuts like Alt+F4 still fire from either Alt key, and add
+         * KB_MOD_ALTGR so keymap_lookup() can select the third layer. */
+        case KB_KEY_RALT:   return KB_MOD_ALT | KB_MOD_ALTGR;
         case KB_KEY_LGUI:
         case KB_KEY_RGUI:   return KB_MOD_META;
         default:            return 0;
@@ -117,12 +118,10 @@ static void toggle_lock_key(uint32_t key) {
 }
 
 static char ascii_for_scancode(uint8_t sc) {
-    if (sc >= sizeof(map_lo)) return 0;
-    char c = (mods & KB_MOD_SHIFT) ? map_hi[sc] : map_lo[sc];
-    /* CapsLock affects letters only and XORs with Shift. */
-    if (c >= 'a' && c <= 'z' && (mods & KB_MOD_CAPS)) c -= 32;
-    else if (c >= 'A' && c <= 'Z' && (mods & KB_MOD_CAPS) && (mods & KB_MOD_SHIFT)) c += 32;
-    return c;
+    /* FIX_R8: decode through the active layout (Shift/CapsLock rules and the
+     * AltGr third layer live in keymap_lookup so the host unit test checks
+     * the same code the kernel runs). */
+    return keymap_lookup(active_keymap, sc, mods);
 }
 
 static uint32_t fn_key(uint8_t sc) {
@@ -350,6 +349,7 @@ static void keyboard_handler(struct registers *regs) {
 }
 
 void keyboard_init(void) {
+    kprintf("[kbd] default layout '%s'\n", active_keymap->name);
     while (inb(KB_STATUS) & 0x01) inb(KB_DATA);
     kb_head = kb_tail = 0;
     evt_head = evt_tail = 0;
@@ -376,6 +376,18 @@ int keyboard_get_event(kb_event_t *out) {
 }
 
 uint8_t keyboard_get_mods(void) { return mods; }
+
+int keyboard_set_layout(const char *name) {
+    const struct keymap *km = keymap_find(name);
+    if (!km) return -ENOENT;
+    if (km != active_keymap) {
+        active_keymap = km;
+        kprintf("[kbd] layout set to '%s'\n", km->name);
+    }
+    return 0;
+}
+
+const char *keyboard_get_layout(void) { return active_keymap->name; }
 uint32_t keyboard_get_ascii_drops(void) { return kb_ascii_drops; }
 uint32_t keyboard_get_event_drops(void) { return kb_event_drops; }
 
@@ -387,6 +399,7 @@ static void apply_usb_mods(uint8_t usb_mods) {
     if (usb_mods & (0x02 | 0x20)) new_mods |= KB_MOD_SHIFT;
     if (usb_mods & (0x01 | 0x10)) new_mods |= KB_MOD_CTRL;
     if (usb_mods & (0x04 | 0x40)) new_mods |= KB_MOD_ALT;
+    if (usb_mods & 0x40) new_mods |= KB_MOD_ALTGR;   /* FIX_R8: right Alt */
     if (usb_mods & (0x08 | 0x80)) new_mods |= KB_MOD_META;
     mods = new_mods;
 }

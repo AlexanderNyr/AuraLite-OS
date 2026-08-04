@@ -51,6 +51,7 @@ ALL_CASES=(
     test_init_array
     test_stopped
     test_socket_errno
+    test_keymaps
     test_open_flags
     test_lseek
     test_signals

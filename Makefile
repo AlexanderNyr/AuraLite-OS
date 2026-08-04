@@ -57,6 +57,15 @@ CFLAGS      := --target=$(TARGET) \
                -O2 -g \
                -DARCH_X86_64 -I . -I $(BUILD_DIR)
 
+# FIX_R8 (FIXES_PLAN.md): compile-time keyboard layout selection.  This only
+# picks the layout that is active at boot; the `kbd` shell command switches
+# at runtime (syscall SYS_KBD_LAYOUT) regardless of this setting.
+# Usage:  make KEYMAP=de
+KEYMAP ?= us
+ifeq ($(KEYMAP),de)
+CFLAGS      += -DKEYBOARD_DEFAULT_LAYOUT=keymap_de
+endif
+
 ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 
 # The linker script fixes the higher-half address; no --image-base needed.
@@ -1075,7 +1084,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_q11_new \
                 $(BUILD_DIR)/test_posix_spawn \
                 $(BUILD_DIR)/test_q10_stubs \
-                $(BUILD_DIR)/test_ipc
+                $(BUILD_DIR)/test_ipc \
+                $(BUILD_DIR)/test_keymap
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1299,6 +1309,12 @@ $(BUILD_DIR)/test_q10_stubs: tests/unit/test_q10_stubs.c
 $(BUILD_DIR)/test_ipc: tests/unit/test_ipc.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_keymap: tests/unit/test_keymap.c drivers/keyboard/keymap.c \
+                          drivers/keyboard/keymap.h drivers/keyboard/keyboard.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	    tests/unit/test_keymap.c drivers/keyboard/keymap.c -o $@
 
 $(BUILD_DIR)/test_q1_headers: tests/unit/test_q1_headers.c \
                                lib/libc/include/stdarg.h lib/libc/include/stddef.h lib/libc/include/stdint.h \
