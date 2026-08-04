@@ -119,10 +119,7 @@ int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
     return (int)len;
 }
 
-int vfs_link(const char *oldpath, const char *newpath) {
-    (void)oldpath; (void)newpath;
-    return -ENOSYS;
-}
+/* Q13: vfs_link() is implemented in vfs.c (was an ENOSYS stub here). */
 
 int vfs_fstat(int fd, struct vfs_stat *st) {
     if (!st) return -EFAULT;

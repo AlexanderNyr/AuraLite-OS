@@ -28,15 +28,21 @@
 
 #define TMPFS_MAX_FILES 64
 
-struct tmpfs_file {
-    int in_use;
-    char name[VFS_PATH_MAX];
+struct tmpfs_data {
     uint8_t *data;
     uint64_t size;
     uint64_t capacity;
     uint64_t mtime;
     uint64_t ctime;
     uint64_t atime;
+    uint64_t ino;          /* shared inode identity (hard links) */
+    int refs;              /* number of names pointing at this data */
+};
+
+struct tmpfs_file {
+    int in_use;
+    char name[VFS_PATH_MAX];
+    struct tmpfs_data *d;   /* Q13: shared data; hard links share one struct */
     struct tmpfs_volume *vol;   /* Q12: owning volume (for nested dirs) */
     struct vnode vnode;
 };
@@ -46,6 +52,7 @@ struct tmpfs_volume {
     const char *mount_path;              /* for diagnostics only */
     const struct vfs_ops *ops;           /* this volume's ops table */
     struct vnode root;
+    uint64_t next_ino;                   /* Q13: inode counter */
     struct tmpfs_file files[TMPFS_MAX_FILES];
 };
 
@@ -149,6 +156,26 @@ static struct tmpfs_file *find_file(struct tmpfs_volume *v, const char *path) {
     return NULL;
 }
 
+/* Q13: allocate a fresh shared-data block (refs = 1, fresh inode id). */
+static struct tmpfs_data *data_alloc(struct tmpfs_volume *v) {
+    struct tmpfs_data *d = kmalloc(sizeof(*d));
+    if (!d) return NULL;
+    memset(d, 0, sizeof(*d));
+    d->refs = 1;
+    d->ino = ++v->next_ino;
+    return d;
+}
+
+/* Q13: release one name's reference; frees the data when the last link
+ * goes away (unlink of one hard link must not affect the others). */
+static void data_release(struct tmpfs_data *d) {
+    if (!d) return;
+    if (--d->refs <= 0) {
+        if (d->data) kfree(d->data);
+        kfree(d);
+    }
+}
+
 static struct vnode *tmpfs_lookup(void *fs_data, const char *path) {
     struct tmpfs_volume *v = vol_of(fs_data);
     if (path[0] == '\0') {
@@ -176,19 +203,23 @@ static struct vnode *tmpfs_create(void *fs_data, const char *path) {
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
         if (!v->files[i].in_use) {
             struct tmpfs_file *f = &v->files[i];
+            struct tmpfs_data *d = data_alloc(v);
+            if (!d) return NULL;
             memset(f, 0, sizeof(*f));
             f->in_use = 1;
             f->vol = v;
+            f->d = d;
+            d->mtime = d->ctime = d->atime = vfs_now();
             strncpy(f->name, path, VFS_PATH_MAX - 1);
             strncpy(f->vnode.name, path, VFS_PATH_MAX - 1);
             f->vnode.type = VFS_TYPE_FILE;
             f->vnode.size = 0;
             f->vnode.ops = v->ops;
-            f->mtime = f->ctime = f->atime = vfs_now();
+            f->vnode.inode_id = d->ino;   /* Q13: hard links share it */
             f->vnode.fs_data = f;
-            f->vnode.mtime = f->mtime;
-            f->vnode.ctime = f->ctime;
-            f->vnode.atime = f->atime;
+            f->vnode.mtime = d->mtime;
+            f->vnode.ctime = d->ctime;
+            f->vnode.atime = d->atime;
             return &f->vnode;
         }
     }
@@ -219,10 +250,7 @@ static int tmpfs_mkdir(void *fs_data, const char *path) {
             f->vnode.ops = v->ops;
             f->vnode.fs_data = f;
             f->vnode.mode = 0777;   /* VFS applies umask afterwards */
-            f->mtime = f->ctime = f->atime = vfs_now();
-            f->vnode.mtime = f->mtime;
-            f->vnode.ctime = f->ctime;
-            f->vnode.atime = f->atime;
+            f->vnode.mtime = f->vnode.ctime = f->vnode.atime = vfs_now();
             return 0;
         }
     }
@@ -241,51 +269,53 @@ static int tmpfs_rmdir(void *fs_data, const char *path) {
             v->files[i].name[fl] == '/')
             return -ENOTEMPTY;
     }
-    if (f->data) kfree(f->data);
+    data_release(f->d);   /* Q13: dirs have d == NULL; harmless */
     memset(f, 0, sizeof(*f));
     return 0;
 }
 
-static int ensure_capacity(struct tmpfs_file *f, uint64_t need) {
-    if (need <= f->capacity) return 0;
-    uint64_t cap = f->capacity ? f->capacity : 64;
+static int ensure_capacity(struct tmpfs_data *d, uint64_t need) {
+    if (need <= d->capacity) return 0;
+    uint64_t cap = d->capacity ? d->capacity : 64;
     while (cap < need) cap *= 2;
-    uint8_t *new_data = krealloc(f->data, cap);
+    uint8_t *new_data = krealloc(d->data, cap);
     if (!new_data) return -1;
-    if (cap > f->capacity) {
-        memset(new_data + f->capacity, 0, cap - f->capacity);
+    if (cap > d->capacity) {
+        memset(new_data + d->capacity, 0, cap - d->capacity);
     }
-    f->data = new_data;
-    f->capacity = cap;
+    d->data = new_data;
+    d->capacity = cap;
     return 0;
 }
 
 static int64_t tmpfs_read(struct vnode *vn, uint64_t pos,
                           void *buf, uint64_t count) {
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
-    if (!f || pos >= f->size) return 0;
-    if (pos + count > f->size) count = f->size - pos;
-    memcpy(buf, f->data + pos, count);
-    f->atime = vfs_now();
-    vn->atime = f->atime;
+    struct tmpfs_data *d = f ? f->d : NULL;
+    if (!d || pos >= d->size) return 0;
+    if (pos + count > d->size) count = d->size - pos;
+    memcpy(buf, d->data + pos, count);
+    d->atime = vfs_now();
+    vn->atime = d->atime;
     return (int64_t)count;
 }
 
 static int64_t tmpfs_write(struct vnode *vn, uint64_t pos,
                            const void *buf, uint64_t count) {
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
-    if (!f) return -EIO;
+    struct tmpfs_data *d = f ? f->d : NULL;
+    if (!d) return -EIO;
     uint64_t end = pos + count;
     if (end < pos) return -EINVAL;             /* size_t/offset overflow */
-    if (ensure_capacity(f, end) != 0) return -ENOSPC;
-    memcpy(f->data + pos, buf, count);
-    if (end > f->size) {
-        f->size = end;
-        f->vnode.size = end;
+    if (ensure_capacity(d, end) != 0) return -ENOSPC;
+    memcpy(d->data + pos, buf, count);
+    if (end > d->size) {
+        d->size = end;
+        vn->size = end;
     }
-    f->mtime = f->ctime = vfs_now();
-    f->vnode.mtime = f->mtime;
-    f->vnode.ctime = f->ctime;
+    d->mtime = d->ctime = vfs_now();
+    vn->mtime = d->mtime;
+    vn->ctime = d->ctime;
     return (int64_t)count;
 }
 
@@ -312,7 +342,7 @@ static int tmpfs_rename(void *fs_data, const char *from, const char *to) {
             }
             memset(t, 0, sizeof(*t));   /* empty directory replaced */
         } else {
-            if (t->data) kfree(t->data);
+            data_release(t->d);         /* Q13: refcounted data */
             memset(t, 0, sizeof(*t));
         }
     }
@@ -341,9 +371,11 @@ static int tmpfs_rename(void *fs_data, const char *from, const char *to) {
     }
     strncpy(f->name, to, VFS_PATH_MAX - 1);
     strncpy(f->vnode.name, to, VFS_PATH_MAX - 1);
-    f->mtime = f->ctime = vfs_now();
-    f->vnode.mtime = f->mtime;
-    f->vnode.ctime = f->ctime;
+    if (f->d) {   /* Q13: rename updates the shared-data times */
+        f->d->mtime = f->d->ctime = vfs_now();
+        f->vnode.mtime = f->d->mtime;
+        f->vnode.ctime = f->d->ctime;
+    }
     return 0;
 }
 
@@ -387,8 +419,8 @@ static int tmpfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
         memset(&out[n], 0, sizeof(out[n]));
         strncpy(out[n].name, e, VFS_PATH_MAX - 1);
         out[n].type = v->files[i].vnode.type;
-        out[n].size = v->files[i].size;
-        out[n].inode = (uint64_t)i;
+        out[n].size = v->files[i].d ? v->files[i].d->size : 0;
+        out[n].inode = v->files[i].vnode.inode_id;   /* Q13: shared inode */
         n++;
     }
     return n;
@@ -399,28 +431,83 @@ static int tmpfs_unlink(void *fs_data, const char *path) {
     struct tmpfs_file *f = find_file(v, path);
     if (!f) return -ENOENT;
     if (is_dir_entry(f)) return -EISDIR;   /* Q12: POSIX unlink(2) on a dir */
-    if (f->data) kfree(f->data);
+    data_release(f->d);                    /* Q13: refcounted data */
     memset(f, 0, sizeof(*f));
     return 0;
 }
 
 static int tmpfs_truncate(struct vnode *vn, uint64_t new_size) {
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
-    if (!f) return -EIO;
-    if (new_size > f->capacity) {
-        if (ensure_capacity(f, new_size) != 0) return -ENOSPC;
+    struct tmpfs_data *d = f ? f->d : NULL;
+    if (!d) return -EIO;
+    if (new_size > d->capacity) {
+        if (ensure_capacity(d, new_size) != 0) return -ENOSPC;
     }
-    if (new_size < f->size) {
+    if (new_size < d->size) {
         /* shrinking: data above new_size becomes garbage; zero it. */
-        memset(f->data + new_size, 0, f->size - new_size);
-    } else if (new_size > f->size) {
-        memset(f->data + f->size, 0, new_size - f->size);
+        memset(d->data + new_size, 0, d->size - new_size);
+    } else if (new_size > d->size) {
+        memset(d->data + d->size, 0, new_size - d->size);
     }
-    f->size = new_size;
-    f->vnode.size = new_size;
-    f->mtime = f->ctime = vfs_now();
-    f->vnode.mtime = f->mtime;
-    f->vnode.ctime = f->ctime;
+    d->size = new_size;
+    vn->size = new_size;
+    d->mtime = d->ctime = vfs_now();
+    vn->mtime = d->mtime;
+    vn->ctime = d->ctime;
+    return 0;
+}
+
+/* Q13: hard link.  Shares the data block AND the inode id with the target
+ * entry; the shared struct tmpfs_data is refcounted, so unlinking either
+ * name keeps the other alive. */
+static int tmpfs_link(void *fs_data, const char *old, const char *new) {
+    struct tmpfs_volume *v = vol_of(fs_data);
+    if (!path_ok(old) || !path_ok(new)) return -EINVAL;
+    struct tmpfs_file *o = find_file(v, old);
+    if (!o) return -ENOENT;
+    if (o->vnode.type == VFS_TYPE_DIR) return -EPERM;   /* vfs_link pre-checks */
+    if (find_file(v, new)) return -EEXIST;
+    struct tmpfs_file *pdir;
+    int pr = parent_dir_of(v, new, &pdir);
+    if (pr == 0) return -ENOENT;
+    if (pr < 0) return -ENOTDIR;
+    for (int i = 0; i < TMPFS_MAX_FILES; i++) {
+        if (!v->files[i].in_use) {
+            struct tmpfs_file *f = &v->files[i];
+            memset(f, 0, sizeof(*f));
+            f->in_use = 1;
+            f->vol = v;
+            f->d = o->d;
+            f->d->refs++;
+            strncpy(f->name, new, VFS_PATH_MAX - 1);
+            strncpy(f->vnode.name, new, VFS_PATH_MAX - 1);
+            f->vnode.type = VFS_TYPE_FILE;
+            f->vnode.size = o->vnode.size;
+            f->vnode.mode = o->vnode.mode;
+            f->vnode.uid = o->vnode.uid;
+            f->vnode.gid = o->vnode.gid;
+            f->vnode.inode_id = o->d->ino;   /* same inode as the target */
+            f->vnode.ops = v->ops;
+            f->vnode.fs_data = f;
+            f->vnode.mtime = o->vnode.mtime;
+            f->vnode.ctime = o->vnode.ctime;
+            f->vnode.atime = o->vnode.atime;
+            return 0;
+        }
+    }
+    return -ENOSPC;
+}
+
+/* Q13: utimensat/futimens on tmpfs — persist into the shared data block so
+ * every hard link reports the same times. */
+static int tmpfs_settimes(struct vnode *vn, uint64_t atime, uint64_t mtime) {
+    struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
+    struct tmpfs_data *d = f ? f->d : NULL;
+    if (!d) return -EIO;
+    if (atime != (uint64_t)-1) d->atime = atime;
+    if (mtime != (uint64_t)-1) d->mtime = mtime;
+    vn->atime = d->atime;
+    vn->mtime = d->mtime;
     return 0;
 }
 
@@ -441,10 +528,12 @@ static int tmpfs_stat(struct vnode *vn, struct vfs_stat *out) {
         return 0;
     }
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
-    if (!f) return -EIO;
-    out->mtime = f->mtime;
-    out->ctime = f->ctime;
-    out->atime = f->atime;
+    struct tmpfs_data *d = f ? f->d : NULL;
+    if (!d) return -EIO;
+    out->mtime = d->mtime;
+    out->ctime = d->ctime;
+    out->atime = d->atime;
+    out->nlink = d->refs;   /* Q13: hard links are counted */
     return 0;
 }
 
@@ -458,6 +547,8 @@ const struct vfs_ops tmpfs_ops = {
     .rmdir    = tmpfs_rmdir,   /* Q12 */
     .unlink   = tmpfs_unlink,
     .rename   = tmpfs_rename,  /* Q12 */
+    .link     = tmpfs_link,    /* Q13 */
+    .settimes = tmpfs_settimes,/* Q13 */
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
 };
@@ -474,6 +565,8 @@ const struct vfs_ops optfs_ops = {
     .rmdir    = tmpfs_rmdir,   /* Q12 */
     .unlink   = tmpfs_unlink,
     .rename   = tmpfs_rename,  /* Q12 */
+    .link     = tmpfs_link,    /* Q13 */
+    .settimes = tmpfs_settimes,/* Q13 */
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
 };
@@ -490,6 +583,8 @@ const struct vfs_ops shmfs_ops = {
     .rmdir    = tmpfs_rmdir,
     .unlink   = tmpfs_unlink,
     .rename   = tmpfs_rename,
+    .link     = tmpfs_link,    /* Q13 */
+    .settimes = tmpfs_settimes,/* Q13 */
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
 };
@@ -497,8 +592,9 @@ const struct vfs_ops shmfs_ops = {
 static void vol_list(const struct tmpfs_volume *v) {
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
         if (v->files[i].in_use) {
+            uint64_t sz = v->files[i].d ? v->files[i].d->size : 0;
             kprintf("  %s/%s  (%llu bytes)\n", v->mount_path,
-                    v->files[i].name, (unsigned long long)v->files[i].size);
+                    v->files[i].name, (unsigned long long)sz);
         }
     }
 }

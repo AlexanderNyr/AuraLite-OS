@@ -9,6 +9,8 @@
 
 #include "lib/libc/include/dirent.h"
 #include "lib/libc/include/unistd.h"
+#include "lib/libc/include/fcntl.h"   /* Q13: O_RDONLY/O_DIRECTORY for opendir */
+#include "lib/libc/include/stdio.h"   /* Q13: snprintf for fdopendir's path */
 #include "lib/libc/include/stdlib.h"
 #include "lib/libc/include/string.h"
 #include "lib/libc/include/errno.h"
@@ -37,14 +39,52 @@ struct __dirstream {
 DIR *opendir(const char *name) {
     if (!name) return NULL;
 
+    /* Q13: hold a real descriptor so dirfd() works (POSIX requires
+     * opendir()'s stream to carry one).  O_DIRECTORY gives ENOTDIR on a
+     * non-directory path, exactly as POSIX specifies. */
+    int fd = open(name, O_RDONLY | O_DIRECTORY);
+    if (fd < 0) return NULL;
+
     DIR *dir = (DIR *)malloc(sizeof(DIR));
-    if (!dir) return NULL;
+    if (!dir) {
+        close(fd);
+        return NULL;
+    }
 
     int n = aura_readdir(name, dir->ents, DIRENT_MAX);
     if (n < 0) {
+        close(fd);
         free(dir);
         return NULL;
     }
+    dir->fd    = fd;
+    dir->count = n;
+    dir->pos   = 0;
+    return dir;
+}
+
+/* Q13: directory stream from an open fd.  POSIX: fdopendir() takes
+ * ownership of fd — closedir() closes it, and failure leaves the fd open
+ * for the caller.  Listing goes through the kernel's /proc/self/fd/<N>
+ * resolution (the same trick fexecve uses), so no new syscall is needed. */
+DIR *fdopendir(int fd) {
+    if (fd < 0) {
+        errno = EBADF;
+        return NULL;
+    }
+    DIR *dir = (DIR *)malloc(sizeof(DIR));
+    if (!dir) return NULL;
+
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+    int n = aura_readdir(path, dir->ents, DIRENT_MAX);
+    if (n < 0) {
+        int e = errno;
+        free(dir);
+        errno = e;          /* fd left open on failure (POSIX) */
+        return NULL;
+    }
+    dir->fd    = fd;
     dir->count = n;
     dir->pos   = 0;
     return dir;
@@ -67,14 +107,14 @@ void rewinddir(DIR *dirp) {
 
 int closedir(DIR *dirp) {
     if (!dirp) return -1;
+    if (dirp->fd >= 0) close(dirp->fd);   /* Q13: release the stream's fd */
     free(dirp);
     return 0;
 }
 
 int dirfd(DIR *dirp) {
     if (!dirp) { errno = EINVAL; return -1; }
-    if (dirp->fd < 0) { errno = ENOSYS; return -1; }
-    return dirp->fd;
+    return dirp->fd;   /* Q13: opendir/fdopendir always hold a real fd */
 }
 
 int scandir(const char *dir, struct dirent ***namelist,

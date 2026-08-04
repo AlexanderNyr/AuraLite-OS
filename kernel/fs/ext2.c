@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include "kernel/fs/ext2.h"
 #include "drivers/ahci/ahci.h"
+#include "kernel/lib/errno.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/kheap.h"
@@ -1204,6 +1205,52 @@ static int ext2_chown_op(struct vnode *vn, uint32_t uid, uint32_t gid) {
     return 0;
 }
 
+/* ---- Q13: hard links + utimensat on ext2 ---- */
+
+static int ext2_link_op(void *fs_data, const char *old, const char *new) {
+    (void)fs_data;
+    if (!es.mounted) return -ENOENT;
+    uint32_t ino = path_to_ino(old, NULL, NULL, 0);
+    if (!ino) return -ENOENT;
+    uint32_t parent;
+    char base[256];
+    if (path_to_ino(new, &parent, base, sizeof(base))) return -EEXIST;
+    if (!base[0]) return -EINVAL;
+
+    struct ext2_inode in;
+    if (read_inode(ino, &in) != 0) return -EIO;
+    if ((in.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR) return -EPERM;
+
+    struct ext2_inode pin;
+    if (read_inode(parent, &pin) != 0) return -EIO;
+
+    uint8_t ft = ((in.i_mode & EXT2_S_IFMT) == EXT2_S_IFLNK)
+                 ? EXT2_FT_SYMLINK : EXT2_FT_REG_FILE;
+    if (dir_insert(parent, &pin, base, ino, ft) != 0) return -EIO;
+
+    in.i_links_count++;
+    in.i_ctime = ext2_now();
+    write_inode(ino, &in);
+    pin.i_mtime = pin.i_ctime = ext2_now();
+    write_inode(parent, &pin);
+    return 0;
+}
+
+static int ext2_settimes_op(struct vnode *vn, uint64_t atime, uint64_t mtime) {
+    struct ext2_vinfo *v = (struct ext2_vinfo *)vn->fs_data;
+    if (!v) return -EIO;
+    if (atime != (uint64_t)-1) v->inode.i_atime = (uint32_t)atime;
+    if (mtime != (uint64_t)-1) {
+        v->inode.i_mtime = (uint32_t)mtime;
+        v->inode.i_ctime = (uint32_t)mtime;
+    }
+    if (write_inode(v->inode_no, &v->inode) != 0) return -EIO;
+    v->vnode.atime = v->inode.i_atime;
+    v->vnode.mtime = v->inode.i_mtime;
+    v->vnode.ctime = v->inode.i_ctime;
+    return 0;
+}
+
 const struct vfs_ops ext2_ops = {
     .lookup   = ext2_lookup,
     .create   = ext2_create,
@@ -1214,6 +1261,8 @@ const struct vfs_ops ext2_ops = {
     .rmdir    = ext2_rmdir_op,
     .unlink   = ext2_unlink_op,
     .rename   = ext2_rename_op,
+    .link     = ext2_link_op,      /* Q13 */
+    .settimes = ext2_settimes_op,  /* Q13 */
     .stat     = ext2_stat_op,
     .truncate = ext2_truncate_op,
     .chmod    = ext2_chmod_op,

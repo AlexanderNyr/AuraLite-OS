@@ -135,6 +135,38 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
         return vn;
     }
 
+    /* Q13: /proc/self/fd/<N> — resolve an open file descriptor to its real
+     * vnode.  This is what fdopendir() (via SYS_LISTDIR on the synthetic
+     * path) and fexecve() (via execveat's AT_EMPTY_PATH) rely on; returning
+     * the fd's actual vnode means open/read/stat/readdir all behave like
+     * the original.  The "self" node is a directory standing for the
+     * calling process. */
+    if (strcmp(path, "self") == 0) {
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "self", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_DIR;
+        vn->mode = 0755;
+        vn->inode_id = 0x7FFFFFF0ull;
+        return vn;
+    }
+    if (strcmp(path, "self/fd") == 0) {
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "fd", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_DIR;
+        vn->mode = 0755;
+        vn->inode_id = 0x7FFFFFF1ull;
+        return vn;
+    }
+    if (strncmp(path, "self/fd/", 8) == 0) {
+        int fd = 0;
+        for (const char *q = path + 8; *q; q++) {
+            if (*q < '0' || *q > '9') return NULL;
+            fd = fd * 10 + (*q - '0');
+            if (fd > VFS_MAX_FDS) return NULL;
+        }
+        return vfs_get_vnode(fd);
+    }
+
     /* Check if it's a PID directory or PID file (e.g. "1", "1/status", "1/cmdline"). */
     const char *p = path;
     if (*p >= '0' && *p <= '9') {
@@ -188,6 +220,26 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
 
 static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     int n = 0;
+    if (vn->inode_id == 0x7FFFFFF0ull) { /* /proc/self */
+        memset(&out[n], 0, sizeof(out[n]));
+        strncpy(out[n].name, "fd", VFS_PATH_MAX - 1);
+        out[n].type = VFS_TYPE_DIR;
+        n++;
+        return n;
+    }
+    if (vn->inode_id == 0x7FFFFFF1ull) { /* /proc/self/fd — the open FDs */
+        struct ofd **ft = sched_current() ? sched_current()->fd_table : NULL;
+        for (int i = 0; i < VFS_MAX_FDS && n < max; i++) {
+            if (ft && ft[i]) {
+                memset(&out[n], 0, sizeof(out[n]));
+                ksnprintf(out[n].name, VFS_PATH_MAX, "%d", i);
+                out[n].type = VFS_TYPE_FILE;
+                out[n].inode = (uint64_t)i;
+                n++;
+            }
+        }
+        return n;
+    }
     if (vn->inode_id == 0) { /* Root of /proc */
         const char *static_files[] = {"uptime", "meminfo", "cpuinfo", "version", "stat",
                                        "loadavg", "netdev", "diskstats", "sysrq-trigger"};

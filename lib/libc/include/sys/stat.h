@@ -9,7 +9,8 @@
  * standard S_* permission/type macros plus the stat-family prototypes.
  */
 
-#include "../sys/types.h"   /* mode_t */
+#include "../sys/types.h"   /* mode_t, dev_t */
+#include "../time.h"        /* Q13: struct timespec for utimensat/futimens */
 
 struct stat;             /* full definition in <unistd.h> */
 
@@ -61,5 +62,18 @@ int fchmod(int fd, mode_t mode);
 int chown(const char *path, uid_t owner, gid_t group);
 int fchown(int fd, uid_t owner, gid_t group);
 mode_t umask(mode_t mask);
+
+/* ---- Q13 (POSIX2024_PLAN.md phase Q13): AT-family completion ---- */
+
+/* utimensat/futimens tv_nsec sentinels (POSIX.1-2024). */
+#define UTIME_NOW  ((1l << 30) - 1l)
+#define UTIME_OMIT ((1l << 30) - 2l)
+
+int  mkfifoat(int dfd, const char *path, mode_t mode);
+int  mknod(const char *path, mode_t mode, dev_t dev);
+int  mknodat(int dfd, const char *path, mode_t mode, dev_t dev);
+int  utimensat(int dfd, const char *path, const struct timespec times[2],
+               int flags);
+int  futimens(int fd, const struct timespec times[2]);
 
 #endif /* AURALITE_LIBC_SYS_STAT_H */

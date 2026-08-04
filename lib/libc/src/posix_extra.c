@@ -31,6 +31,7 @@
 #include <sched.h>        /* Q12: sched family bodies */
 #include <sys/resource.h> /* Q12: getrusage body */
 #include <net/if.h>       /* Q12: if_nameindex family bodies */
+#include <sys/stat.h>     /* Q13: S_IFIFO for mkfifoat, utimensat decls */
 
 /* ============================ poll (via select) ============================ */
 
@@ -934,3 +935,59 @@ int getrusage(int who, struct rusage *usage) {
 /* ---- atol (stdlib gap caught by the same sweep) ---- */
 
 long atol(const char *s) { return (long)strtol(s, (char **)NULL, 10); }
+
+/* =============== POSIX2024 Q13: AT-family completion bodies ================
+ * POSIX2024_PLAN.md phase Q13: link(2)/linkat(2), symlinkat(2), mkfifoat(2),
+ * mknod(2)/mknodat(2), utimensat(2)/futimens(2).  Syscall numbers per
+ * kernel/arch/x86_64/syscall.c (Q13 block).  The VFS layer resolves AT_FDCWD
+ * relative paths against the caller's cwd (Q12 copy_at_path), so these are
+ * thin wrappers exactly like the Q12 batch above.
+ */
+
+#define SYS_LINK       90
+#define SYS_MKNODAT   259
+#define SYS_LINKAT    265
+#define SYS_SYMLINKAT 266
+#define SYS_UTIMENSAT 280
+
+int link(const char *old, const char *new) {
+    return q12_ret(syscall(SYS_LINK, (uint64_t)old, (uint64_t)new,
+                           0, 0, 0, 0));
+}
+
+int linkat(int old_dfd, const char *old, int new_dfd, const char *new,
+           int flags) {
+    return q12_ret(syscall(SYS_LINKAT, (uint64_t)old_dfd, (uint64_t)old,
+                           (uint64_t)new_dfd, (uint64_t)new,
+                           (uint64_t)flags, 0));
+}
+
+int symlinkat(const char *target, int new_dfd, const char *linkpath) {
+    return q12_ret(syscall(SYS_SYMLINKAT, (uint64_t)new_dfd,
+                           (uint64_t)target, (uint64_t)linkpath, 0, 0, 0));
+}
+
+int mknodat(int dfd, const char *path, mode_t mode, dev_t dev) {
+    return q12_ret(syscall(SYS_MKNODAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)mode, (uint64_t)dev, 0, 0));
+}
+
+int mknod(const char *path, mode_t mode, dev_t dev) {
+    return mknodat(AT_FDCWD, path, mode, dev);
+}
+
+int mkfifoat(int dfd, const char *path, mode_t mode) {
+    return mknodat(dfd, path, (mode_t)((mode & 07777) | S_IFIFO), 0);
+}
+
+int utimensat(int dfd, const char *path, const struct timespec times[2],
+              int flags) {
+    return q12_ret(syscall(SYS_UTIMENSAT, (uint64_t)dfd, (uint64_t)path,
+                           (uint64_t)times, (uint64_t)flags, 0, 0));
+}
+
+int futimens(int fd, const struct timespec times[2]) {
+    /* Kernel: utimensat(dfd, NULL, times, 0) == futimens. */
+    return q12_ret(syscall(SYS_UTIMENSAT, (uint64_t)fd, 0,
+                           (uint64_t)times, 0, 0, 0));
+}

@@ -119,6 +119,62 @@ il_assert_grep_fixed "$LOG" "CONFORMTEST PASS scandir: alphasort orders fA,fB,fc
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS scandir: versionsort orders fA,fB,fc2,fc10" \
     "scandir(versionsort) orders fA,fB,fc2,fc10"
 
+# ---- Q13: AT-family completion ----
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS link: link() creates a second name" \
+    "link() creates a hard link on tmpfs"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS link: write via one name visible via the other" \
+    "hard-linked names share the data block"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS link: st_nlink == 2" \
+    "hard link reports st_nlink == 2"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS link: both names share the inode" \
+    "hard-linked names share the inode"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS link: cross-device gives EXDEV" \
+    "cross-device link gives EXDEV"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS linkat: creates via AT_FDCWD" \
+    "linkat(AT_FDCWD, ...) works"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS link: unlink of one name keeps the other alive" \
+    "unlinking one hard link keeps the other name alive"
+il_assert_grep "$LOG" "CONFORMTEST PASS link: FAT32 gives EPERM|CONFORMTEST SKIP at-fat" \
+    "FAT32 link gives EPERM, or /fat is unmounted (skip)"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS symlinkat: creates a link" \
+    "symlinkat() creates a symbolic link"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS symlinkat: readlinkat sees the target" \
+    "symlinkat target is readable via readlinkat"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mknod: mkfifoat creates a FIFO" \
+    "mkfifoat() creates a FIFO"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mknod: FIFO type in st_mode" \
+    "FIFO type is visible in st_mode"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mknod: mknodat creates a regular file" \
+    "mknodat() creates a regular file"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mknod: device node gives ENOSYS (no devfs backing)" \
+    "device nodes honestly report ENOSYS"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS utimens: utimensat sets explicit times" \
+    "utimensat() sets explicit times"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS utimens: atime read back (within 1s)" \
+    "utimensat atime reads back through stat"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS utimens: UTIME_NOW/UTIME_OMIT accepted" \
+    "utimensat handles UTIME_NOW/UTIME_OMIT"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS utimens: mtime kept (UTIME_OMIT)" \
+    "UTIME_OMIT leaves mtime untouched"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS utimens: futimens on an fd" \
+    "futimens() works on an fd"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS utimens: futimens mtime read back via fstat" \
+    "futimens mtime reads back via fstat"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS fdopendir: dirfd() returns the fd" \
+    "fdopendir dirfd() matches the original fd"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS fdopendir: readdir lists the entries" \
+    "fdopendir readdir lists directory entries"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS fdopendir: opendir yields a real dirfd" \
+    "opendir stream carries a real fd for dirfd()"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS fdopendir: non-directory fd gives ENOTDIR" \
+    "fdopendir on a non-directory fd gives ENOTDIR"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS fexecve: child exit status is 0" \
+    "fexecve() execs a binary by fd"
+il_assert_grep_fixed "$LOG" "ARGV_ECHO argv[1]=fex" \
+    "fexecve child sees argv[1]=fex"
+il_assert_grep_fixed "$LOG" "ARGV_ECHO env[0]=B=fex" \
+    "fexecve child sees env[0]=B=fex"
+
 # ---- suite summary and negatives ----
 il_assert_grep_fixed "$LOG" "CONFORMTEST ALL PASS" \
     "conformtest reports ALL PASS"

@@ -173,6 +173,56 @@ typedef struct {
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_REMOVEDIR        0x200
 #define AT_EMPTY_PATH       0x1000
+
+/* Q13: AT-family completion syscall numbers (Linux-compatible, free here). */
+#define SYS_MKNODAT       259
+#define SYS_LINKAT        265
+#define SYS_SYMLINKAT     266
+#define SYS_UTIMENSAT     280
+
+/* Q13: POSIX st_mode file-type bits for mknodat (octal, Linux layout). */
+#define Q13_S_IFMT   0170000u
+#define Q13_S_IFIFO  0010000u
+#define Q13_S_IFREG  0100000u
+#define Q13_S_IFCHR  0020000u
+#define Q13_S_IFBLK  0060000u
+
+/* Q13: utimensat tv_nsec sentinels (POSIX.1-2024, Linux values). */
+#define UTIME_NOW  ((1l << 30) - 1l)
+#define UTIME_OMIT ((1l << 30) - 2l)
+
+/* Q13: resolve the user times[2] array (or NULL == both "now") into Unix
+ * seconds, honoring UTIME_NOW / UTIME_OMIT.  The VFS stores second-
+ * granularity timestamps (vfs_now()); nanosecond values are validated and
+ * rounded, never silently truncated.  (uint64_t)-1 means "keep" (OMIT). */
+struct q13_timespec { long tv_sec; long tv_nsec; };
+static int utimens_resolve(uint64_t user_times, uint64_t *atime, uint64_t *mtime) {
+    if (user_times == 0) {
+        uint64_t now = vfs_now();
+        *atime = now;
+        *mtime = now;
+        return 0;
+    }
+    struct q13_timespec ts[2];
+    if (copy_from_user(ts, (const uint8_t *)(uintptr_t)user_times, sizeof(ts)) != 0)
+        return -EFAULT;
+    for (int i = 0; i < 2; i++) {
+        if (ts[i].tv_nsec != UTIME_NOW && ts[i].tv_nsec != UTIME_OMIT &&
+            (ts[i].tv_nsec < 0 || ts[i].tv_nsec >= 1000000000L))
+            return -EINVAL;
+    }
+    uint64_t now = vfs_now();
+    for (int i = 0; i < 2; i++) {
+        uint64_t *out = (i == 0) ? atime : mtime;
+        if (ts[i].tv_nsec == UTIME_OMIT)       *out = (uint64_t)-1;
+        else if (ts[i].tv_nsec == UTIME_NOW)   *out = now;
+        else {
+            *out = (uint64_t)ts[i].tv_sec;
+            if (ts[i].tv_nsec >= 500000000L) (*out)++;   /* round, don't drop */
+        }
+    }
+    return 0;
+}
 #define SYSCALL_IO_CHUNK 256
 
 /* Keep the heap well below the user stack so brk growth cannot collide with
@@ -1790,6 +1840,79 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (r != 0) return (uint64_t)r;
         return (uint64_t)vfs_access(path, (int)a3);
     }
+
+    /* ---- Q13: AT-family completion ---- */
+
+    case SYS_LINK: { /* 90: link(2) */
+        char old[SYSCALL_PATH_MAX], new_[SYSCALL_PATH_MAX];
+        if (copy_user_path(old, a1) != 0) return (uint64_t)-EFAULT;
+        if (copy_user_path(new_, a2) != 0) return (uint64_t)-EFAULT;
+        /* No vfs_errno() wrapper: vfs_link() returns specific negative
+         * errnos, and -EPERM (== -1, the generic sentinel vfs_errno would
+         * rewrite to the fallback) is a legitimate link(2) result. */
+        return (uint64_t)vfs_link(old, new_);
+    }
+    case SYS_LINKAT: { /* 265 */
+        int od = (int)a1, nd = (int)a3;
+        (void)a5;   /* flags: symlink links unsupported -> EPERM regardless */
+        char op[SYSCALL_PATH_MAX], np[SYSCALL_PATH_MAX];
+        int r = copy_at_path(op, a2, od);
+        if (r != 0) return (uint64_t)r;
+        r = copy_at_path(np, a4, nd);
+        if (r != 0) return (uint64_t)r;
+        return (uint64_t)vfs_link(op, np);
+    }
+    case SYS_SYMLINKAT: { /* 266 */
+        int dfd = (int)a1;
+        char tgt[SYSCALL_PATH_MAX], lp[SYSCALL_PATH_MAX];
+        if (copy_user_path(tgt, a2) != 0) return (uint64_t)-EFAULT;
+        int r = copy_at_path(lp, a3, dfd);
+        if (r != 0) return (uint64_t)r;
+        return (uint64_t)vfs_errno(vfs_symlink(tgt, lp), EEXIST);
+    }
+    case SYS_MKNODAT: { /* 259 */
+        int dfd = (int)a1;
+        char path[SYSCALL_PATH_MAX];
+        int r = copy_at_path(path, a2, dfd);
+        if (r != 0) return (uint64_t)r;
+        uint32_t mode = (uint32_t)a3;
+        uint32_t typ = mode & Q13_S_IFMT;
+        if (typ == Q13_S_IFIFO) {
+            return (uint64_t)vfs_errno(vfs_mkfifo(path, mode & 07777u), EACCES);
+        }
+        if (typ == Q13_S_IFREG) {
+            /* mknod(2) semantics: create a regular file, fail if it exists.
+             * The syscall's contract is 0-on-success; vfs_open hands back an
+             * fd, so close it and return 0.  vfs_open's errnos are specific
+             * (never the -1 sentinel), so pass the raw value through. */
+            int fd = vfs_open(path, O_CREAT | O_EXCL | O_WRONLY, mode & 07777u);
+            if (fd >= 0) {
+                vfs_close(fd);
+                return 0;
+            }
+            return (uint64_t)fd;
+        }
+        if (typ == Q13_S_IFCHR || typ == Q13_S_IFBLK)
+            return (uint64_t)-ENOSYS;   /* devfs has no backing for nodes */
+        return (uint64_t)-EINVAL;
+    }
+    case SYS_UTIMENSAT: { /* 280: utimensat(2) and futimens(2) */
+        int dfd = (int)a1;
+        uint64_t atime, mtime;
+        int r = utimens_resolve(a3, &atime, &mtime);
+        if (r != 0) return (uint64_t)r;
+        if (a2 == 0) {   /* path == NULL: operate on the fd (futimens) */
+            return (uint64_t)vfs_errno(vfs_fsettimes((int)dfd, atime, mtime),
+                                       EBADF);
+        }
+        char path[SYSCALL_PATH_MAX];
+        r = copy_at_path(path, a2, dfd);
+        if (r != 0) return (uint64_t)r;
+        int nofollow = ((int)a4 & AT_SYMLINK_NOFOLLOW) ? 1 : 0;
+        return (uint64_t)vfs_errno(vfs_settimes(path, atime, mtime, nofollow),
+                                   ENOENT);
+    }
+
     case 292: { /* SYS_DUP3 */
         int old = (int)a1, new_ = (int)a2, flags = (int)a3;
         int r = vfs_dup2(old, new_);

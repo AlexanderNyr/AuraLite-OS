@@ -122,6 +122,18 @@ struct vfs_ops {
     int (*unlink)(void *fs_data, const char *path);
     int (*rename)(void *fs_data, const char *from, const char *to);
 
+    /* Optional Q13: hard-link creation within one mount.  Absent => the
+     * operation reports EPERM, POSIX's wording for "links not supported"
+     * (this is what FAT32/exFAT deliver). */
+    int (*link)(void *fs_data, const char *old, const char *new);
+
+    /* Optional Q13: set access/modification times (Unix seconds; the VFS
+     * stores second-granularity timestamps).  Absent => the fs cannot
+     * persist times and utimens* returns EOPNOTSUPP rather than pretending
+     * (the only exceptions are in-memory objects — symlinks and named
+     * FIFOs — fully represented by their vnode). */
+    int (*settimes)(struct vnode *vn, uint64_t atime, uint64_t mtime);
+
     /* Optional: stat (default fills from vnode if NULL). */
     int (*stat)(struct vnode *vn, struct vfs_stat *out);
 
@@ -279,6 +291,17 @@ int vfs_rename(const char *from, const char *to);
 int vfs_truncate(const char *path, uint64_t new_size);
 int vfs_stat(const char *path, struct vfs_stat *out);
 int vfs_mkfifo(const char *path, uint32_t mode);
+
+/* Q13: hard links (link(2)/linkat(2)).  Cross-device attempts give EXDEV;
+ * directories and the global-table symlinks give EPERM; filesystems
+ * without a link hook (FAT32/exFAT) give EPERM. */
+int vfs_link(const char *oldpath, const char *newpath);
+
+/* Q13: utimensat(2)/futimens(2).  Times are Unix seconds; the sentinel
+ * (uint64_t)-1 means "leave untouched" (UTIME_OMIT, resolved by the
+ * syscall layer).  @nofollow: 1 => operate on the symlink itself. */
+int vfs_settimes(const char *path, uint64_t atime, uint64_t mtime, int nofollow);
+int vfs_fsettimes(int fd, uint64_t atime, uint64_t mtime);
 
 /* Reconstruct an absolute path for a vnode from its mount and relative name.
  * Returns 0 on success, -1 if the mount cannot be identified or it does not

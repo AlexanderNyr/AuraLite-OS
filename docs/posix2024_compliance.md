@@ -34,6 +34,7 @@
 | closedir | ✅ | |
 | rewinddir | ✅ | |
 | dirfd | ✅ | Q11 |
+| fdopendir | ✅ | Q13, /proc/self/fd |
 | scandir | ✅ | Q11 |
 | alphasort | ✅ | Q11 |
 | versionsort | ✅ | Q11 |
@@ -383,7 +384,9 @@
 | pipe/pipe2 | ✅ | |
 | fork | ✅ | |
 | execve/execv/execvp | ✅ | |
-| fexecve | ✅ | Q5 |
+| fexecve | ✅ | Q5; functional since Q13 (/proc/self/fd) |
+| link/linkat | ✅ | Q13 |
+| symlinkat | ✅ | Q13 |
 | getpid | ✅ | |
 | exit/_exit | ✅ | |
 | wait/waitpid | ✅ | |
@@ -402,6 +405,9 @@
 | truncate | ✅ | |
 | stat/lstat/fstat | ✅ | |
 | mkfifo | ✅ | |
+| mkfifoat | ✅ | Q13 |
+| mknod/mknodat | ✅ | Q13; device nodes ENOSYS (no devfs backing) |
+| utimensat/futimens | ✅ | Q13; UTIME_NOW/OMIT; second-granularity storage |
 | symlink/readlink | ✅ | |
 | alarm/pause | ✅ | |
 | getpid/getpgid/setpgid | ✅ | |

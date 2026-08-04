@@ -352,6 +352,12 @@ int    faccessat(int dfd, const char *path, int mode, int flags);
 int    dup3(int oldfd, int newfd, int flags);
 int    fexecve(int fd, char *const argv[], char *const envp[]);
 
+/* Q13: AT-family completion (POSIX2024_PLAN.md phase Q13). */
+int     link(const char *old, const char *new);
+int     linkat(int old_dfd, const char *old, int new_dfd, const char *new,
+               int flags);
+int     symlinkat(const char *target, int new_dfd, const char *linkpath);
+
 /* Q11: POSIX.1-2024 new functions */
 int     getentropy(void *buffer, size_t length);
 int     close_range(unsigned first, unsigned last, int flags);

@@ -383,6 +383,292 @@ static void test_scandir(void) {
     rmdir("/tmp/q12sd");
 }
 
+/* ------------------------------------------------------------------ */
+/* Q13 (POSIX2024_PLAN.md phase Q13): AT-family completion             */
+/* ------------------------------------------------------------------ */
+
+/* 9. link/linkat on tmpfs: content sharing, nlink, inode identity,
+ * EEXIST/EPERM/EXDEV, FAT32-EPERM, and unlink-of-one-name semantics. */
+static void test_link(void) {
+    mkdir("/tmp/q13a", 0755);
+    int fd = open("/tmp/q13a/a.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, "linkme", 6);
+        close(fd);
+    }
+
+    errno = 0;
+    CHECK("link: link() creates a second name",
+          link("/tmp/q13a/a.txt", "/tmp/q13a/b.txt") == 0);
+    fd = open("/tmp/q13a/b.txt", O_RDONLY);
+    CHECK("link: second name opens", fd >= 0);
+    if (fd >= 0) {
+        char buf[16];
+        memset(buf, 0, sizeof(buf));
+        CHECK("link: content shared through both names",
+              read(fd, buf, sizeof(buf) - 1) == 6 &&
+              strcmp(buf, "linkme") == 0);
+        close(fd);
+    }
+    /* write via b -> visible via a (same data block). */
+    fd = open("/tmp/q13a/b.txt", O_WRONLY);
+    if (fd >= 0) {
+        lseek(fd, 6, SEEK_SET);
+        write(fd, "-b", 2);
+        close(fd);
+    }
+    fd = open("/tmp/q13a/a.txt", O_RDONLY);
+    if (fd >= 0) {
+        char buf[16];
+        memset(buf, 0, sizeof(buf));
+        read(fd, buf, sizeof(buf) - 1);
+        CHECK("link: write via one name visible via the other",
+              strcmp(buf, "linkme-b") == 0);
+        close(fd);
+    }
+    struct stat sa, sb;
+    memset(&sa, 0, sizeof(sa));
+    memset(&sb, 0, sizeof(sb));
+    stat("/tmp/q13a/a.txt", &sa);
+    stat("/tmp/q13a/b.txt", &sb);
+    CHECK("link: st_nlink == 2", sa.st_nlink == 2);
+    CHECK("link: both names share the inode", sa.st_inode == sb.st_inode);
+
+    errno = 0;
+    CHECK("link: existing target gives EEXIST",
+          link("/tmp/q13a/a.txt", "/tmp/q13a/b.txt") == -1 &&
+          errno == EEXIST);
+    errno = 0;
+    CHECK("link: directory gives EPERM",
+          link("/tmp/q13a", "/tmp/q13a/dirlink") == -1 && errno == EPERM);
+
+    errno = 0;
+    CHECK("linkat: creates via AT_FDCWD",
+          linkat(AT_FDCWD, "/tmp/q13a/a.txt", AT_FDCWD, "/tmp/q13a/c.txt",
+                 0) == 0);
+
+    errno = 0;
+    CHECK("link: cross-device gives EXDEV",
+          link("/tmp/q13a/a.txt", "/dev/shm/q13x") == -1 && errno == EXDEV);
+
+    /* FAT32 has no link support: EPERM (POSIX wording). */
+    struct stat fst;
+    if (stat("/fat", &fst) == 0 && S_ISDIR(fst.st_mode)) {
+        int ffd = open("/fat/q13fl.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        if (ffd >= 0) close(ffd);
+        errno = 0;
+        CHECK("link: FAT32 gives EPERM (links unsupported)",
+              link("/fat/q13fl.txt", "/fat/q13fl2.txt") == -1 &&
+              errno == EPERM);
+        unlink("/fat/q13fl.txt");
+    }
+
+    /* Unlink one name: the other stays alive (refcounted data). */
+    unlink("/tmp/q13a/b.txt");
+    errno = 0;
+    CHECK("link: unlink of one name keeps the other alive",
+          open("/tmp/q13a/a.txt", O_RDONLY) >= 0);
+    unlink("/tmp/q13a/a.txt");
+    unlink("/tmp/q13a/c.txt");
+    rmdir("/tmp/q13a");
+}
+
+/* 10. symlinkat. */
+static void test_symlinkat(void) {
+    mkdir("/tmp/q13b", 0755);
+    int fd = open("/tmp/q13b/a.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, "x", 1);
+        close(fd);
+    }
+    errno = 0;
+    CHECK("symlinkat: creates a link",
+          symlinkat("a.txt", AT_FDCWD, "/tmp/q13b/sl") == 0);
+    char buf[64];
+    memset(buf, 0, sizeof(buf));
+    errno = 0;
+    CHECK("symlinkat: readlinkat sees the target",
+          readlinkat(AT_FDCWD, "/tmp/q13b/sl", buf, sizeof(buf)) == 5 &&
+          strcmp(buf, "a.txt") == 0);
+    unlink("/tmp/q13b/sl");
+    unlink("/tmp/q13b/a.txt");
+    rmdir("/tmp/q13b");
+}
+
+/* 11. mkfifoat / mknodat / mknod. */
+static void test_mknod(void) {
+    mkdir("/tmp/q13c", 0755);
+    errno = 0;
+    CHECK("mknod: mkfifoat creates a FIFO",
+          mkfifoat(AT_FDCWD, "/tmp/q13c/fifo", 0644) == 0);
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    stat("/tmp/q13c/fifo", &st);
+    CHECK("mknod: FIFO type in st_mode", S_ISFIFO(st.st_mode));
+
+    errno = 0;
+    CHECK("mknod: mknodat creates a regular file",
+          mknodat(AT_FDCWD, "/tmp/q13c/n.txt", S_IFREG | 0644, 0) == 0);
+    memset(&st, 0, sizeof(st));
+    stat("/tmp/q13c/n.txt", &st);
+    CHECK("mknod: regular type in st_mode", S_ISREG(st.st_mode));
+
+    errno = 0;
+    CHECK("mknod: mknodat on existing gives EEXIST",
+          mknodat(AT_FDCWD, "/tmp/q13c/n.txt", S_IFREG | 0644, 0) == -1 &&
+          errno == EEXIST);
+    errno = 0;
+    CHECK("mknod: device node gives ENOSYS (no devfs backing)",
+          mknodat(AT_FDCWD, "/tmp/q13c/dev", S_IFCHR | 0600, 1) == -1 &&
+          errno == ENOSYS);
+    errno = 0;
+    CHECK("mknod: mknod() with a plain path works",
+          mknod("/tmp/q13c/p.txt", S_IFREG | 0644, 0) == 0);
+
+    unlink("/tmp/q13c/fifo");
+    unlink("/tmp/q13c/n.txt");
+    unlink("/tmp/q13c/p.txt");
+    rmdir("/tmp/q13c");
+}
+
+/* 12. utimensat / futimens: explicit times, UTIME_NOW, UTIME_OMIT, and
+ * read-back through stat/fstat (second-granularity storage). */
+static void test_utimens(void) {
+    mkdir("/tmp/q13d", 0755);
+    int fd = open("/tmp/q13d/t.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0) {
+        write(fd, "ut", 2);
+        close(fd);
+    }
+
+    struct timespec ts[2];
+    ts[0].tv_sec = 2000000000; ts[0].tv_nsec = 0;   /* atime */
+    ts[1].tv_sec = 1500000000; ts[1].tv_nsec = 0;   /* mtime */
+    errno = 0;
+    CHECK("utimens: utimensat sets explicit times",
+          utimensat(AT_FDCWD, "/tmp/q13d/t.txt", ts, 0) == 0);
+    struct stat st;
+    memset(&st, 0, sizeof(st));
+    stat("/tmp/q13d/t.txt", &st);
+    CHECK("utimens: atime read back (within 1s)",
+          st.st_atime == 2000000000 || st.st_atime == 2000000001);
+    CHECK("utimens: mtime read back (within 1s)",
+          st.st_mtime == 1500000000 || st.st_mtime == 1500000001);
+
+    ts[0].tv_nsec = UTIME_NOW;
+    ts[1].tv_nsec = UTIME_OMIT;
+    errno = 0;
+    CHECK("utimens: UTIME_NOW/UTIME_OMIT accepted",
+          utimensat(AT_FDCWD, "/tmp/q13d/t.txt", ts, 0) == 0);
+    time_t now = time(NULL);
+    memset(&st, 0, sizeof(st));
+    stat("/tmp/q13d/t.txt", &st);
+    CHECK("utimens: atime updated to now",
+          (int64_t)st.st_atime >= now - 2 && (int64_t)st.st_atime <= now + 2);
+    CHECK("utimens: mtime kept (UTIME_OMIT)",
+          st.st_mtime == 1500000000 || st.st_mtime == 1500000001);
+
+    fd = open("/tmp/q13d/t.txt", O_RDWR);
+    ts[0].tv_sec = 1000000000; ts[0].tv_nsec = 0;
+    ts[1].tv_sec = 900000000;  ts[1].tv_nsec = 0;
+    errno = 0;
+    CHECK("utimens: futimens on an fd",
+          fd >= 0 && futimens(fd, ts) == 0);
+    memset(&st, 0, sizeof(st));
+    fstat(fd, &st);
+    CHECK("utimens: futimens mtime read back via fstat",
+          st.st_mtime == 900000000 || st.st_mtime == 900000001);
+    if (fd >= 0) close(fd);
+
+    errno = 0;
+    CHECK("utimens: NULL times sets both to now",
+          utimensat(AT_FDCWD, "/tmp/q13d/t.txt", NULL, 0) == 0);
+
+    ts[0].tv_sec = 0; ts[0].tv_nsec = 2000000000;   /* out of range */
+    ts[1].tv_sec = 0; ts[1].tv_nsec = 0;
+    errno = 0;
+    CHECK("utimens: out-of-range tv_nsec gives EINVAL",
+          utimensat(AT_FDCWD, "/tmp/q13d/t.txt", ts, 0) == -1 &&
+          errno == EINVAL);
+
+    unlink("/tmp/q13d/t.txt");
+    rmdir("/tmp/q13d");
+}
+
+/* 13. fdopendir + dirfd interop (via /proc/self/fd). */
+static void test_fdopendir(void) {
+    mkdir("/tmp/q13e", 0755);
+    mkdir("/tmp/q13e/d", 0755);
+    int fd = open("/tmp/q13e/d/x1", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0) close(fd);
+    fd = open("/tmp/q13e/d/x2", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd >= 0) close(fd);
+
+    int dfd = open("/tmp/q13e/d", O_RDONLY | O_DIRECTORY);
+    CHECK("fdopendir: open a directory fd", dfd >= 0);
+    if (dfd >= 0) {
+        DIR *dp = fdopendir(dfd);
+        CHECK("fdopendir: stream created", dp != NULL);
+        if (dp) {
+            CHECK("fdopendir: dirfd() returns the fd", dirfd(dp) == dfd);
+            int found = 0;
+            struct dirent *e;
+            while ((e = readdir(dp)) != NULL) {
+                if (strcmp(e->d_name, "x1") == 0 ||
+                    strcmp(e->d_name, "x2") == 0)
+                    found++;
+            }
+            CHECK("fdopendir: readdir lists the entries", found == 2);
+            closedir(dp);
+        }
+    }
+
+    DIR *dp2 = opendir("/tmp/q13e/d");
+    CHECK("fdopendir: opendir yields a real dirfd",
+          dp2 != NULL && dirfd(dp2) >= 0);
+    if (dp2) closedir(dp2);
+
+    /* fdopendir on a non-directory fd -> ENOTDIR, fd left open. */
+    int ffd = open("/tmp/q13e/d/x1", O_RDONLY);
+    if (ffd >= 0) {
+        errno = 0;
+        DIR *bad = fdopendir(ffd);
+        CHECK("fdopendir: non-directory fd gives ENOTDIR",
+              bad == NULL && errno == ENOTDIR);
+        if (bad)
+            closedir(bad);
+        else
+            close(ffd);   /* POSIX: fd stays open when fdopendir fails */
+    }
+
+    unlink("/tmp/q13e/d/x1");
+    unlink("/tmp/q13e/d/x2");
+    rmdir("/tmp/q13e/d");
+    rmdir("/tmp/q13e");
+}
+
+/* 14. fexecve: exec a binary by fd (proves /proc/self/fd works; the child
+ * prints ARGV_ECHO markers with the custom argv/envp). */
+static void test_fexecve(void) {
+    int fd = open("/tests/argv_echo", O_RDONLY);
+    CHECK("fexecve: open the target binary", fd >= 0);
+    if (fd < 0) return;
+
+    char *const argv[] = { (char *)"argv_echo", (char *)"fex", (char *)"0",
+                           (char *)0 };
+    char *const envp[] = { (char *)"B=fex", (char *)0 };
+    pid_t c = fork();
+    if (c == 0) {
+        fexecve(fd, argv, envp);
+        _exit(127);
+    }
+    int status = -1;
+    errno = 0;
+    CHECK("fexecve: waitpid reaps child", waitpid(c, &status, 0) == c);
+    CHECK("fexecve: child exit status is 0", status == 0);
+    close(fd);
+}
+
 int main(void) {
     printf("CONFORMTEST start\n");
     test_at_tmpfs();
@@ -393,6 +679,12 @@ int main(void) {
     test_clock_nanosleep();
     test_getentropy();
     test_scandir();
+    test_link();
+    test_symlinkat();
+    test_mknod();
+    test_utimens();
+    test_fdopendir();
+    test_fexecve();
 
     if (failures == 0) {
         printf("CONFORMTEST ALL PASS\n");

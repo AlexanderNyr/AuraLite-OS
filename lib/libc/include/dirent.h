@@ -21,6 +21,7 @@ struct dirent {
 typedef struct __dirstream DIR;
 
 DIR           *opendir(const char *name);
+DIR           *fdopendir(int fd);   /* Q13: dir stream from an open fd */
 struct dirent *readdir(DIR *dirp);
 int            closedir(DIR *dirp);
 void           rewinddir(DIR *dirp);

@@ -1295,6 +1295,81 @@ int vfs_stat(const char *path, struct vfs_stat *out) {
     return 0;
 }
 
+/* ---- Q13: hard links (link(2)/linkat(2)) ---- */
+
+int vfs_link(const char *oldpath, const char *newpath) {
+    if (!oldpath || !newpath || oldpath[0] != '/' || newpath[0] != '/')
+        return -EINVAL;
+
+    /* The old name must resolve to a regular file.  Directories are EPERM
+     * (POSIX reserves hard-linking them for privileged callers).  The
+     * global symlink table (symlink.c) has no notion of multiple names for
+     * one symlink, so linking a symlink is EPERM too — documented rather
+     * than faked. */
+    struct vnode *old_vn = resolve_path(oldpath);
+    if (!old_vn) return -ENOENT;
+    if (old_vn->type == VFS_TYPE_DIR) return -EPERM;
+    if (vfs_symlink_vnode(oldpath)) return -EPERM;
+
+    /* The new name must not exist (as a file or as a symlink). */
+    if (resolve_path(newpath)) return -EEXIST;
+    if (vfs_symlink_vnode(newpath)) return -EEXIST;
+
+    const char *rel_old = NULL, *rel_new = NULL;
+    int m_old = find_mount(oldpath, &rel_old);
+    int m_new = find_mount(newpath, &rel_new);
+    if (m_old < 0 || m_new < 0) return -ENOENT;
+    if (m_old != m_new) return -EXDEV;            /* cross-device link */
+    if (!mounts[m_old].ops->link) return -EPERM;  /* FAT32/exFAT & co. */
+
+    struct vnode *pvn = resolve_parent_vnode(newpath);
+    int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
+    if (err != 0) return err;
+
+    return (int)vfs_wrap_err(
+        mounts[m_old].ops->link(mounts[m_old].fs_data, rel_old, rel_new),
+        ENOENT);
+}
+
+/* ---- Q13: utimensat(2)/futimens(2) ---- */
+
+/* Ownership check for time-setting: root or the file's owner may set. */
+static int settimes_perm(struct vnode *vn) {
+    tcb_t *cur = sched_current();
+    if (cur && cur->euid != 0 && cur->euid != vn->uid) return -EPERM;
+    return 0;
+}
+
+static int vnode_settimes(struct vnode *vn, uint64_t atime, uint64_t mtime) {
+    int err = settimes_perm(vn);
+    if (err != 0) return err;
+    if (vn->ops && vn->ops->settimes)
+        return (int)vfs_wrap_err(vn->ops->settimes(vn, atime, mtime), EIO);
+    /* In-memory objects fully represented by the vnode: symlinks and named
+     * FIFOs.  Anything else without a settimes hook (initrd, FAT32, ...)
+     * must not pretend to persist times. */
+    if (vn->type == VFS_TYPE_SYMLINK || vn->type == VFS_TYPE_FIFO) {
+        if (atime != (uint64_t)-1) vn->atime = atime;
+        if (mtime != (uint64_t)-1) vn->mtime = mtime;
+        return 0;
+    }
+    return -EOPNOTSUPP;
+}
+
+int vfs_settimes(const char *path, uint64_t atime, uint64_t mtime, int nofollow) {
+    if (!path) return -EINVAL;
+    struct vnode *vn = nofollow ? vfs_symlink_vnode(path) : NULL;
+    if (!vn) vn = resolve_path(path);
+    if (!vn) return -ENOENT;
+    return vnode_settimes(vn, atime, mtime);
+}
+
+int vfs_fsettimes(int fd, uint64_t atime, uint64_t mtime) {
+    struct vnode *vn = vfs_get_vnode(fd);
+    if (!vn) return -EBADF;
+    return vnode_settimes(vn, atime, mtime);
+}
+
 int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
     if (!out) return -EFAULT;
     if (max <= 0) return -EINVAL;

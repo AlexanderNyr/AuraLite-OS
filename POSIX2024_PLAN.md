@@ -1,6 +1,6 @@
 # AuraLite OS — POSIX.1-2024 Compliance Plan
 
-## Status: IN PROGRESS 🔧 (Q1–Q12 implemented, Q13–Q16 planned)
+## Status: IN PROGRESS 🔧 (Q1–Q13 implemented, Q14–Q16 planned)
 
 This document is the living development plan for POSIX.1-2024 (IEEE Std
 1003.1-2024, The Open Group Base Specifications Issue 8) compliance in
@@ -36,7 +36,7 @@ promised for Q12 and every 🔶 row the matrix still carries.
 | Q10 | locale/iconv/search/legacy stubs | DONE ✅ |
 | Q11 | POSIX.1-2024-new functions | DONE ✅ |
 | Q12 | Compliance matrix + runnable conformance suite | DONE ✅ |
-| Q13 | AT-family completion: link/linkat, symlinkat, mkfifoat/mknodat, utimensat/futimens, fdopendir | PLANNED 📋 |
+| Q13 | AT-family completion: link/linkat, symlinkat, mkfifoat/mknodat, utimensat/futimens, fdopendir | DONE ✅ |
 | Q14 | System V IPC (sem/shm/msg): replace the ENOSYS stubs | PLANNED 📋 |
 | Q15 | mq_notify + sigevent delivery | PLANNED 📋 |
 | Q16 | Issue-8 odds and ends: pselect/ppoll, getrandom, sig2str/str2sig | PLANNED 📋 |
@@ -472,32 +472,78 @@ their POSIX home in `<fcntl.h>` (they were duplicated in `<unistd.h>`).
 first tranche), including `link(2)` — the only file-operation verb the tree
 still lacks a syscall for.
 
-### Status: PLANNED 📋
+### Status: DONE ✅
+
+### What was added
+
+- **Hard links** — `link(2)`/`linkat(2)`: `SYS_LINK` (90, reserved since
+  Q5) and `SYS_LINKAT` (265) dispatch to a new `vfs_link()`.  Semantics per
+  POSIX: cross-device attempts `EXDEV`; directories and symlinks `EPERM`
+  (symlinks live in the kernel's global table, which has no notion of
+  multiple names — documented, not faked); filesystems without a `link`
+  hook (FAT32/exFAT) report `EPERM`, POSIX's wording for "links not
+  supported".  tmpfs implements hard links by sharing one refcounted data
+  block and one inode id across the names — `st_nlink`, `st_inode` and
+  unlink-of-one-name semantics are all correct.  ext2 links via a real
+  directory entry to the same inode and bumps `i_links_count` (its unlink
+  already decremented and freed at zero).
+- **symlinkat(2)** (`SYS_SYMLINKAT`, 266), **mkfifoat(2)** and
+  **mknod(2)/mknodat(2)** (`SYS_MKNODAT`, 259): FIFO and regular creation
+  only; device nodes report `ENOSYS` honestly (devfs has no backing).
+- **utimensat(2)/futimens(2)** (`SYS_UTIMENSAT`, 280, with
+  `path == NULL` meaning futimens): full `tv_nsec` handling — `UTIME_NOW`/
+  `UTIME_OMIT` sentinels, range validation, rounding — persisted on tmpfs
+  and ext2 through a new optional `settimes` ops hook.  The VFS stores
+  second-granularity timestamps (`vfs_now()`), documented rather than
+  hidden; filesystems without `settimes` (FAT32, initrd) return
+  `EOPNOTSUPP` instead of pretending.
+- **fdopendir(2)** + `dirfd()` interop: `opendir()` now holds a real fd
+  (`O_RDONLY|O_DIRECTORY`), so `dirfd()` returns it; `fdopendir()` takes
+  ownership of the fd (POSIX) and lists through `/proc/self/fd/<N>`.
+  procfs gained `self/fd/<N>` resolution that returns the fd's real vnode
+  — which is also what makes `fexecve()` (shipped in Q12 but silently
+  broken: the path resolved nowhere) actually work.  Verified in the suite
+  with a fexecve child carrying custom argv/envp.
+- libc bodies + declarations for all nine new functions
+  (`link`/`linkat`/`symlinkat` in `<unistd.h>`, `mkfifoat`/`mknod`/
+  `mknodat`/`utimensat`/`futimens` in `<sys/stat.h>`, `fdopendir` in
+  `<dirent.h>`); the drift checker resolved every one on the first pass.
+- Matrix rows added for all nine symbols (`<unistd.h>`, `<sys/stat.h>`
+  families and `<dirent.h>`), each ✅.
+
+**Guest suite:** the Q12 `conformtest` + `test_posix2024_conf.sh` case is
+extended with fourteen new checks: link creation/content-sharing/nlink/
+inode-identity, EEXIST/EPERM/EXDEV, FAT32-EPERM, unlink-of-one-name,
+symlinkat, mkfifoat+mknodat (FIFO/regular/device-ENOSYS), utimensat
+explicit/UTIME_NOW/UTIME_OMIT read back through stat, futimens through
+fstat, fdopendir+dirfd interop, fdopendir-ENOTDIR, and fexecve with custom
+argv/envp (ARGV_ECHO markers asserted by the case).
+
+**Deviation from the original brief, annotated (house convention):** the
+test gate's "`ln`/temp-AT script through the shell" is delivered as
+conformtest checks instead of a shell `ln` command — AuraLite's shell has
+no `ln` builtin, and the C-level suite is strictly stronger (it asserts
+errnos and st_nlink/st_inode, which a shell transcript cannot).  Everything
+the gate named is covered: EXDEV, FAT32 EPERM, utimensat read-back within
+1s, and the host link sweep.
 
 ### Tasks
-- [ ] `link(2)`/`linkat(2)`: dispatch `SYS_LINK` (90 — reserved and made
-      collision-free in the Q5 work) to a new `vfs_link()`; tmpfs and ext2
-      gain a hard-link operation; FAT32/exFAT return `EPERM` (POSIX wording
-      for "links not supported"), cross-device attempts `EXDEV`.
-- [ ] `symlinkat`, `mkfifoat`, `mknodat` (device nodes: return `ENOSYS`
-      where devfs has no backing, `mknodat` for FIFO/regular only).
-- [ ] `utimensat`/`futimens` with real nanosecond `tv_nsec` handling,
-      `UTIME_NOW`/`UTIME_OMIT`; stat structures already carry the fields.
-- [ ] `fdopendir` (same `/proc/self/fd/N` trick `sys_openat`/`execveat`
-      use) + `dirfd` interop test.
-- [ ] libc bodies + declarations (`linkat` is already declared in
-      `unistd.h` without an implementation — link-sweep honesty forces it).
-- [ ] Extend the Q12 guest suite: these operations on tmpfs/ext2/FAT32, so
-      the Q5 hole and Q13 land under one gate.
+- [x] `link(2)`/`linkat(2)` via `vfs_link()`; tmpfs + ext2 hard links;
+      FAT32/exFAT EPERM; cross-device EXDEV.
+- [x] `symlinkat`, `mkfifoat`, `mknodat` (device nodes ENOSYS).
+- [x] `utimensat`/`futimens` with UTIME_NOW/UTIME_OMIT and tv_nsec handling.
+- [x] `fdopendir` via `/proc/self/fd/N` + `dirfd` interop (and fexecve
+      fixed by the same resolution).
+- [x] libc bodies + declarations; drift checker green on all nine symbols.
+- [x] Q12 guest suite extended (14 new checks); QEMU gate green.
 
 ### Test gate
-- QEMU: `ln`/temp-AT script driving link/unlink/utimes through the shell;
-  cross-device `link` yields `EXDEV`; FAT32 `link` yields `EPERM`;
-  `utimensat` mtimes read back through `stat` within 1s.
-- Host: the link sweep finds all new symbols.
+- QEMU: link/unlink/utimes semantics asserted end to end; EXDEV and
+  FAT32-EPERM covered; utimensat mtimes read back through stat. ✓
+- Host: the link sweep finds all new symbols. ✓
 
 ### Deliverable
-`patches/POSIX_Q13_at_complete.patch`
+`patches/POSIX2024_Q13_at_complete.patch`
 
 ---
 

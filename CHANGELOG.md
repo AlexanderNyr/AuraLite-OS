@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [POSIX.1-2024 Phase Q13 — AT-family completion] 2026-08-04
+
+`POSIX2024_PLAN.md` phase Q13 finishes the `*at()` surface POSIX.1-2024
+lists, including `link(2)` — the one file-operation verb the tree had no
+syscall for.
+
+- **Hard links**: `link(2)`/`linkat(2)` dispatch to a new `vfs_link()`:
+  cross-device attempts give `EXDEV`, directories and symlinks `EPERM`,
+  filesystems without link support (FAT32/exFAT) `EPERM`.  tmpfs and ext2
+  implement the operation: tmpfs shares one refcounted data block and one
+  inode id across the names (st_nlink and st_inode are correct, and
+  unlinking one name keeps the others alive); ext2 links via a real
+  directory entry to the same inode and bumps `i_links_count`.
+- **symlinkat(2)**, **mkfifoat(2)**, **mknod(2)/mknodat(2)** — device nodes
+  honestly report `ENOSYS` (devfs has no backing).
+- **utimensat(2)/futimens(2)** with full `tv_nsec` handling
+  (`UTIME_NOW`/`UTIME_OMIT`, range validation, rounding) on tmpfs and ext2;
+  the VFS stores second-granularity timestamps (documented).
+- **fdopendir(2)** + `dirfd()` interop: `opendir()` now holds a real fd;
+  `fdopendir()` lists through `/proc/self/fd/<N>`, which procfs now
+  resolves to the fd's real vnode.  That same resolution is what makes
+  `fexecve()` (Q5/Q12, previously silently broken) actually work.
+- The Q12 guest suite (`conformtest` + `test_posix2024_conf.sh`) is
+  extended: link semantics, symlinkat, mknodat, utimensat/futimens
+  read-back through stat, fdopendir/dirfd interop, and fexecve with custom
+  argv/envp.  Matrix rows added for all nine new symbols.
+
+Delivered as `patches/POSIX2024_Q13_at_complete.patch`.
+
 ## [POSIX.1-2024 Phase Q12 — compliance matrix + conformance suite] 2026-08-04
 
 `POSIX2024_PLAN.md` phase Q12 turns the compliance matrix from a document

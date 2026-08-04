@@ -128,7 +128,7 @@ Legend:
 
 | Feature | Status | Notes |
 |---|---:|---|
-| POSIX.1-2024 compliance | 🧪 | Q1–Q12 implemented (~400 functions covered, see `docs/posix2024_compliance.md`). Q12 adds the runnable conformance harness: host gate in `make test-unit` (`tests/posix2024/`) + guest `conformtest` QEMU case (`test_posix2024_conf.sh`), with the matrix↔archive drift check, the AT-family gate, and the 35 declared-but-missing libc bodies it found and filled. `_POSIX_VERSION` = 202405L. |
+| POSIX.1-2024 compliance | 🧪 | Q1–Q13 implemented (~410 functions covered, see `docs/posix2024_compliance.md`). Q12 added the runnable conformance harness (host gate in `make test-unit` — `tests/posix2024/` — plus the guest `conformtest` QEMU case) and filled the 35 declared-but-missing libc bodies it caught; Q13 completed the AT-family (link/linkat with real hard links on tmpfs/ext2, symlinkat, mkfifoat/mknodat, utimensat/futimens, fdopendir + dirfd interop, fexecve via /proc/self/fd). `_POSIX_VERSION` = 202405L. |
 | AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
 | AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
 | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |
