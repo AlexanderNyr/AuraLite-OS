@@ -77,7 +77,36 @@ static int next_deliverable(tcb_t *t) {
 
 void signal_send(tcb_t *target, int signo) {
     if (!target || signo < 1 || signo >= NSIG) return;
+
+    /* POSIX 2.4.3.1 discard pairs: a stop signal discards a pending SIGCONT,
+     * and SIGCONT discards every pending stop signal. */
+    if (signo == SIGCONT) {
+        target->sig_pending &= ~(sig_bit(SIGSTOP) | sig_bit(SIGTSTP) |
+                                 sig_bit(SIGTTIN) | sig_bit(SIGTTOU));
+    } else if (default_action(signo) == DFL_STOP) {
+        target->sig_pending &= ~sig_bit(SIGCONT);
+    }
     target->sig_pending |= sig_bit(signo);
+
+    /* A stopped thread cannot deliver to itself — delivery happens at ITS
+     * return-to-user boundary, which it never reaches while stopped — so the
+     * sender must wake it here.  SIGCONT is the obvious case (otherwise a
+     * stopped job could never receive the one signal that unstops it);
+     * SIGKILL must also not wait for a voluntary continue: the thread
+     * re-runs and dies in terminate_by_signal() at its next boundary,
+     * before executing user code in earnest.  The pending bit stays set,
+     * so a caught SIGCONT is still handed to its handler once running. */
+    if ((signo == SIGCONT || signo == SIGKILL) &&
+        target->state == THREAD_STOPPED) {
+        target->stop_signal = 0;
+        target->state = THREAD_READY;
+        /* Same claim/enqueue protocol as the wait-queue wakers (SMP: the
+         * stopped thread may still be finishing its final context save on
+         * its own cpu; the picker-side parked flag covers that window). */
+        if (__sync_lock_test_and_set(&target->on_queue, 1) == 0) {
+            sched_add_thread(target);
+        }
+    }
 }
 
 int signal_send_group(int64_t pgid, int signo) {
@@ -308,6 +337,27 @@ static void terminate_by_signal(int signo) {
     thread_exit_with_signal(signo);   /* records WIFSIGNALED status */
 }
 
+/* Enter THREAD_STOPPED instead of falling through to terminate_by_signal
+ * (FIX_R6): the thread is taken off the scheduler — schedule() only
+ * re-enqueues READY olds, so a STOPPED thread is simply not published — the
+ * stop is recorded for waitpid(WUNTRACED)/WSTOPSIG, and a later SIGCONT (or
+ * SIGKILL) from signal_send() re-queues it.  Runs with IRQs disabled, like
+ * the nanosleep block path; after the resume we return and user space picks
+ * up where it was — the stop happened at a return-to-user boundary. */
+static void stop_current_thread(int signo) {
+    tcb_t *t = sched_current();
+    if (!t) { terminate_by_signal(signo); return; }
+    kprintf("[signal] stop pid=%llu by signal %d\n",
+            (unsigned long long)t->id, signo);
+    t->stop_signal   = signo;
+    t->stop_notified = 0;
+    t->state = THREAD_STOPPED;
+    if (t->parent) {
+        signal_send(t->parent, SIGCHLD);   /* SA_NOCLDSTOP is not modelled */
+    }
+    schedule();
+}
+
 /*
  * build_handler_frame() — common frame builder for both the IRET and syscall
  * delivery paths.  @regs is the outgoing Ring-3 register frame; on success it
@@ -430,7 +480,9 @@ int signal_deliver_iret(struct registers *regs) {
         t->sig_pending &= ~sig_bit(signo);
         switch (default_action(signo)) {
         case DFL_IGN:  return 0;                 /* default-ignore: drop */
-        case DFL_STOP: /* job control lands in P6; treat as terminate for now */
+        case DFL_STOP:                           /* job control: true stop */
+            stop_current_thread(signo);
+            return 0;
         case DFL_TERM:
         default:
             terminate_by_signal(signo);          /* no return */

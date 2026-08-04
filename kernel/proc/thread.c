@@ -389,6 +389,27 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
         }
         spinlock_release_irqrestore(&zombie_lock, zf);
 
+        /* WUNTRACED (FIX_R6): report a matching child that has STOPPED and
+         * whose stop has not been reported yet — once per stop
+         * (stop_notified is reset when it stops again).  Status encoding:
+         * 0x7f | (stopsig << 8), matching libc's WIFSTOPPED/WSTOPSIG. */
+        if (options & WAIT_WUNTRACED) {
+            uint64_t sf = spinlock_acquire_irqsave(&thread_registry_lock);
+            for (int i = 0; i < all_threads_count; i++) {
+                tcb_t *c = all_threads[i];
+                if (!wait_child_matches(self, c, pid)) continue;
+                if (c->state != THREAD_STOPPED || c->stop_notified ||
+                    !c->stop_signal) continue;
+                c->stop_notified = 1;
+                int st = 0x7f | (c->stop_signal << 8);
+                uint64_t who = c->id;
+                spinlock_release_irqrestore(&thread_registry_lock, sf);
+                if (status) *status = st;
+                return (int64_t)who;
+            }
+            spinlock_release_irqrestore(&thread_registry_lock, sf);
+        }
+
         /* No matching zombie: scan all TCBs to see if a matching child exists.
          * Skip already-waited zombies — they do not count as children. */
         uint64_t rf = spinlock_acquire_irqsave(&thread_registry_lock);

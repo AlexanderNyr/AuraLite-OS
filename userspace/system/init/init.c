@@ -105,7 +105,11 @@ static void cmd_fg(const char *arg) {
     printf("%s\n", j->cmd);
     fflush(stdout);
     tcsetpgrp(0, j->pgid);
-    if (!j->running) kill(j->pgid, SIGCONT);
+    /* FIX_R6: SIGCONT the whole process GROUP (kill(-pgid)), not just the
+     * leader — a job may have helper processes in its group (stoptest's
+     * stdin pump), and they must resume as well or nobody consumes the
+     * console's next control bytes. */
+    if (!j->running) kill(-j->pgid, SIGCONT);
     int status = 0;
     waitpid(j->pgid, &status, WUNTRACED);
     tcsetpgrp(0, getpid());
@@ -135,7 +139,7 @@ static void cmd_bg(const char *arg) {
     j->running = 1;
     printf("[%d] %s &\n", j->id, j->cmd);
     fflush(stdout);
-    kill(j->pgid, SIGCONT);
+    kill(-j->pgid, SIGCONT);   /* FIX_R6: resume the whole group, as in fg */
 }
 
 static void cmd_sleep(const char *arg) {
@@ -672,6 +676,16 @@ static void dummy_handler(int s) { (void)s; }
 
 int main(void) {
     signal(SIGALRM, dummy_handler);
+
+    /* An interactive shell must not be stoppable from its own keyboard:
+     * between jobs the terminal's foreground group IS the shell, so a bare
+     * ^Z would suspend the shell itself with nobody left to resume it.  The
+     * kernel hands the default dispositions back at every exec, so spawned
+     * children stay suspendible. */
+    signal(SIGTSTP, SIG_IGN);
+    signal(SIGTTIN, SIG_IGN);
+    signal(SIGTTOU, SIG_IGN);
+
 
     int fd = open("/dev/tty0", O_RDWR);
     if (fd >= 0) {

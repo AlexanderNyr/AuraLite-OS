@@ -146,14 +146,20 @@ for the feature matrix.
   the tty->fg_pgid indirection. Full per-process-group routing arrives in P6.
 
 #### P6 / job-control follow-ups
-- **Interactive shell job control not implemented.** The kernel mechanism
-  (pgid/sid, setpgid/tcsetpgrp, group signals, waitpid(WNOHANG)) is complete and
-  tested; the userspace `init` shell rewrite (`cmd &`, `jobs`, `fg`, `bg`,
-  setpgid+tcsetpgrp per spawned child, restore fg on exit) is deferred — high
-  regression risk to the interactive shell, wants a QEMU boot to validate.
-- **No stopped state / WUNTRACED.** (`FIXES_PLAN.md` R6) SIGSTOP/SIGTSTP currently terminate (no
-  THREAD_STOPPED state, no SIGCONT resume); WUNTRACED is accepted but never
-  reports a stopped child. Needs a stopped scheduler state.
+- ~~**Interactive shell job control not implemented.**~~ **Shell side done and
+  validated in QEMU by `FIXES_PLAN.md` R6** (`cmd &`, `jobs`, `fg`, `bg` are
+  built into `init`; the R6 gate drives them: Ctrl+Z suspends, `jobs` lists,
+  `fg` resumes).
+- ~~**No stopped state / WUNTRACED.**~~ **Done (`FIXES_PLAN.md` R6 →
+  `patches/FIX_R6_stopped_state.patch`, `/tests/stoptest`,
+  `tests/integration/cases/test_stopped.sh`).** `THREAD_STOPPED` exists:
+  `DFL_STOP` signals (SIGTSTP/SIGSTOP/SIGTTIN/SIGTTOU) park the thread off
+  the run queues instead of terminating it; `signal_send()` wakes a stopped
+  thread from the sender side for SIGCONT (resume) and SIGKILL (dies at its
+  next boundary in `terminate_by_signal`); waitpid(WUNTRACED) reports each
+  stop exactly once, encoded `0x7f | (stopsig << 8)` for libc's
+  WIFSTOPPED/WSTOPSIG.  The gate asserts a stopped child produces no output
+  (consumes no CPU) and that `run`+Ctrl+Z+`jobs`+`fg` drive it end to end.
 - **n_children is fork/spawn-tracked but not perfectly precise** across orphan
   adoption (a parent that exits without waiting leaves its count stale, but it
   is dead so this is benign). Revisit if a reparent-to-init policy is added.
@@ -176,7 +182,9 @@ for the feature matrix.
   signal delivery saves a 512-byte FXSAVE frame and `sigreturn` restores it.
 - **Signal state is single-CPU safe only** (guarded by IF-disabled return
   boundaries); SMP needs atomic sig_pending updates and locking.
-- **Job-control STOP** is treated as terminate for now (no stopped state until P6).
+- ~~**Job-control STOP** is treated as terminate for now (no stopped state
+  until P6).~~ **Done (`FIXES_PLAN.md` R6):** DFL_STOP now enters a real
+  THREAD_STOPPED state with SIGCONT resume.
 - **alarm()/signal_tick() scan all threads each tick** (O(threads)); fine at
   current scale, revisit with a timer wheel if thread counts grow.
 

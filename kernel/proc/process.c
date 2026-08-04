@@ -468,12 +468,19 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     vfs_close_on_exec();
 
     /* POSIX execve(): caught signals reset to SIG_DFL; signals set to SIG_IGN
-     * stay ignored.  The blocked mask and pending set are preserved. */
+     * stay ignored.  The blocked mask and pending set are preserved.
+     * FIX_R6 extension: the job-control stops (SIGTSTP/SIGTTIN/SIGTTOU) go
+     * back to SIG_DFL even when ignored — interactive shells ignore them so
+     * the SHELL itself cannot be suspended from its own keyboard, and child
+     * programs must get the defaults back or ^Z could never suspend anything
+     * the shell spawns (Linux shells do the same reset in their children
+     * before exec; doing it once here covers every spawn path). */
     {
         tcb_t *cur = sched_current();
         if (cur) {
             for (int s = 1; s < NSIG; s++) {
-                if (cur->sig_actions[s].sa_handler != SIG_IGN)
+                if (cur->sig_actions[s].sa_handler != SIG_IGN ||
+                    s == SIGTSTP || s == SIGTTIN || s == SIGTTOU)
                     cur->sig_actions[s].sa_handler = SIG_DFL;
                 cur->sig_actions[s].sa_flags = 0;
                 cur->sig_actions[s].sa_mask = 0;

@@ -32,6 +32,8 @@ enum thread_state {
     THREAD_READY,
     THREAD_RUNNING,
     THREAD_BLOCKED,
+    THREAD_STOPPED,   /* job-control stop (SIGTSTP/SIGSTOP/TTIN/TTOU): not
+                         on any run queue until SIGCONT (or SIGKILL) wakes it */
     THREAD_DEAD,
 };
 
@@ -117,6 +119,12 @@ typedef struct tcb {
     struct tty *ctty;                 /* controlling terminal (NULL if none) */
     int       n_children;             /* live children (fork/spawn ++, reap --) */
     int       term_signal;            /* signal that killed this task (0 = exited) */
+    /* Job-control stop bookkeeping (FIX_R6).  stop_signal records which
+     * signal put the thread into THREAD_STOPPED (0 = not stopped); it backs
+     * WSTOPSIG.  stop_notified is set by do_waitpid(WUNTRACED) once that stop
+     * has been reported to the parent — each stop reports exactly once. */
+    int       stop_signal;
+    int       stop_notified;
 
     /* ---- P7: POSIX user/group credentials ---- */
     uint32_t  uid,  euid,  suid;            /* real, effective, saved-set UID */

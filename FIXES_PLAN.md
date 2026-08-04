@@ -437,13 +437,30 @@ worth more than one that has been made harder to reproduce.
 
 #### Tasks
 
-- [ ] A `THREAD_STOPPED` state the scheduler skips.
-- [ ] `DFL_STOP` enters it instead of falling through to `terminate_by_signal`.
-- [ ] `SIGCONT` resumes, and is delivered even to a stopped thread — a stopped
-      process that cannot receive the signal that unstops it is worse than the
-      current behaviour.
-- [ ] `waitpid(WUNTRACED)` reports the stop; `WIFSTOPPED`/`WSTOPSIG` work.
-- [ ] The shell's `fg`/`bg` drive it.
+- [x] A `THREAD_STOPPED` state the scheduler skips — the thread is not
+      published on any run queue (`schedule()` re-enqueues READY olds only),
+      so there is nothing to skip.
+- [x] `DFL_STOP` enters it instead of falling through to `terminate_by_signal`
+      — `signal_deliver_iret()` now parks the thread via
+      `stop_current_thread()`; SIGTSTP/SIGSTOP/SIGTTIN/SIGTTOU caught by a
+      handler still run the handler.
+- [x] `SIGCONT` resumes, and is delivered even to a stopped thread — the
+      sender side of `signal_send()` re-queues a stopped target for SIGCONT
+      (pending bit kept, so a caught SIGCONT is handed over once running)
+      and for SIGKILL; POSIX discard pairs (stop vs SIGCONT) are honoured.
+      Resume correctness required one more fix, found by the interactive
+      gate: `syscall_check_signals()` is the only syscall boundary that can
+      now park a thread indefinitely, so on return-0 it must re-publish the
+      per-CPU saved-user frame the SYSRET fast path reloads — otherwise a
+      continued program SYSRETs into whichever thread last made a syscall on
+      that cpu (observed: resumed into the shell's frame, TLS corrupted,
+      #PF storing errno).
+- [x] `waitpid(WUNTRACED)` reports the stop; `WIFSTOPPED`/`WSTOPSIG` work —
+      status `0x7f | (stopsig << 8)`, reported exactly once per stop
+      (`stop_signal`/`stop_notified` in the TCB).
+- [x] The shell's `fg`/`bg` drive it — the existing `jobs`/`fg`/`bg`/`run`
+      builtins were already WUNTRACED-wired; the R6 gate validates them in
+      QEMU (Ctrl+Z → `[1] Stopped` → `jobs` → `fg` → numbering continues).
 
 #### Test gate
 

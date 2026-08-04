@@ -49,6 +49,7 @@ ALL_CASES=(
     test_errno
     test_tls_errno
     test_init_array
+    test_stopped
     test_open_flags
     test_lseek
     test_signals

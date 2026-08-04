@@ -565,7 +565,23 @@ void syscall_check_signals(uint64_t retval) {
         syscall_iret_to_user(&r);        /* noreturn */
     }
     /* No deliverable signal after all (e.g. default-ignore): fall through to
-     * the normal SYSRET path. */
+     * the normal SYSRET fast path — which reloads rcx/r11/rsp from the
+     * PER-CPU saved-user slots (syscall_entry.asm).
+     *
+     * FIX_R6: control can also reach here on the way OUT of a job-control
+     * stop: DFL_STOP parks the thread inside signal_deliver_iret() for an
+     * unbounded time, and while it is parked any syscall another thread
+     * makes on this cpu overwrites the per-CPU slots with ITS frame.  A
+     * SIGCONT later wakes the stopped thread, it returns here, and the
+     * SYSRET would land it in the foreign user context (observed: a
+     * Ctrl+Z-then-fg'ed ticker resumed into the shell's frame, executed
+     * garbage, corrupted its own TLS self-pointer, and page-faulted storing
+     * errno).  Every OTHER in-syscall park (nanosleep/select/...) blocks
+     * inside syscall_dispatch and therefore passes back through
+     * syscall_restore_user_frame() above when it wakes; the signal-check
+     * tail is the one boundary that has no such re-publish, so do it here.
+     * Idempotent for the no-stop paths. */
+    syscall_restore_user_frame();
 }
 
 int is_restartable(uint64_t num) {
