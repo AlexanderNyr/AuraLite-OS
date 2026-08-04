@@ -13,7 +13,8 @@
 ;                  auxv ... AT_NULL
 ;
 ; We pull argc/argv/envp off the stack, hand them to __libc_start_main (which
-; sets `environ`, runs main, then exit()s with its return value). For older
+; sets `environ`, walks .init_array, runs main, walks .fini_array in reverse,
+; then exit()s with its return value). For older
 ; kernels that jump in with a bare 16-aligned stack and argc==0 this still
 ; behaves correctly (main sees argc=0, argv/envp empty).
 ; =============================================================================

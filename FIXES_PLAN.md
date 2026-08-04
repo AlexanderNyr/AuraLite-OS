@@ -406,12 +406,17 @@ worth more than one that has been made harder to reproduce.
 
 #### Tasks
 
-- [ ] `user.ld` keeps `.init_array`/`.fini_array` with `__init_array_start`
-      and `__init_array_end` symbols.
-- [ ] `__libc_start_main()` walks the array before calling `main()`, and
-      `.fini_array` in reverse after it returns.
-- [ ] Confirm ordering: constructors run before `main`, destructors after,
-      destructors in reverse order.
+- [x] `user.ld` keeps `.init_array`/`.fini_array` with `__init_array_start`
+      and `__init_array_end` symbols — plus the fini pair; symbols are
+      assigned outside the section blocks so empty tables link start == end.
+- [x] `__libc_start_main()` walks the array before calling `main()`, and
+      `.fini_array` in reverse after it returns — after the R3 TLS install
+      and `environ` publication, so constructors may use both.
+- [x] Confirm ordering: constructors run before `main`, destructors after,
+      destructors in reverse order — `/tests/ctortest` judges both orders
+      end-to-end from a log buffer (`log=123` in main, `log=123m321` after
+      the last destructor); reverting the runtime walk makes it FAIL, and
+      `gusb`'s constructor prints `[gusb] ctor` only with the walk in place.
 
 #### Test gate
 

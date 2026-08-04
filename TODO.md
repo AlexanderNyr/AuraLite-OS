@@ -293,11 +293,16 @@ for the feature matrix.
   `mkdir /tmp/x` fails and always has. Directories work on FAT32 and ext2.
   Found while fixing `test_shell_all.sh`, which had been asserting that the
   mkdir *succeeded* — the case is not in `run_all.sh`, so nothing had run it.
-- **`.init_array` is never executed.** (`FIXES_PLAN.md` R5) `__libc_start_main()` calls `main()`
-  directly, so a `__attribute__((constructor))` function is linked into the
-  binary (`gusb.o` has one) and silently never runs. Either the runtime should
-  walk `.init_array` or the linker script should reject it; today it does
-  neither, which is the worst of the three options.
+- ~~**`.init_array` is never executed.**~~ **Done (`FIXES_PLAN.md` R5 →
+  `patches/FIX_R5_init_array.patch`, `/tests/ctortest`,
+  `tests/integration/cases/test_init_array.sh`).** `user.ld` now keeps
+  `.init_array`/`.fini_array` with `__init_array_start/end` (and fini)
+  symbols, and `__libc_start_main()` walks `.init_array` forwards before
+  `main()` and `.fini_array` in reverse after it returns (empty arrays link
+  as start == end, so plain programs are untouched).  `gusb`'s constructor
+  finally prints `[gusb] ctor`; `/tests/ctortest` proves constructors run
+  before `main()` in link order and destructors after it in reverse, and
+  fails when the runtime walk is reverted.
 - **`/opt` does not persist across a reboot** (FSLAYOUT_PLAN phase F1). It is
   a tmpfs volume, so an installed package is gone after a restart. Making it
   durable needs a writable disk that is present on every boot; the persistent

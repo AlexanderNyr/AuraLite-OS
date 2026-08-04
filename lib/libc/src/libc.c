@@ -990,11 +990,33 @@ void exit(int status) {
 }
 
 /* C runtime bootstrap, invoked by crt0 with the decoded initial stack.
- * Publishes the environment to `environ`, runs main(argc, argv, envp), then
- * exit()s with main's return value.  Programs that declare `int main(void)`
- * simply ignore the extra arguments. */
+ * Publishes the environment to `environ`, runs the .init_array constructors,
+ * then main(argc, argv, envp), then the .fini_array destructors in reverse,
+ * then exit()s with main's return value.  Programs that declare
+ * `int main(void)` simply ignore the extra arguments.  The array bounds come
+ * from user.ld; with no constructors/destructors they link as start == end
+ * and the walks loop zero times. */
 extern char **environ;
 extern int main(int argc, char **argv, char **envp);
+
+typedef void (*init_fini_fn_t)(void);
+extern init_fini_fn_t __init_array_start[], __init_array_end[];
+extern init_fini_fn_t __fini_array_start[], __fini_array_end[];
+
+/* Constructor order is link order (forward), destructor order unwinds it
+ * (reverse) — the pairing glibc documents for .init_array/.fini_array. */
+static void run_init_array(void) {
+    for (init_fini_fn_t *fn = __init_array_start; fn < __init_array_end; fn++) {
+        (*fn)();
+    }
+}
+
+static void run_fini_array(void) {
+    init_fini_fn_t *fn = __fini_array_end;
+    while (fn > __fini_array_start) {
+        (*--fn)();
+    }
+}
 
 void __libc_start_main(int argc, char **argv, char **envp) {
     /* FIX_R3 first thing: install the main thread's TCB so errno is
@@ -1003,7 +1025,9 @@ void __libc_start_main(int argc, char **argv, char **envp) {
      * path; crt0 (pure asm) does not touch errno. */
     __tls_errno_install_main();
     environ = envp;
+    run_init_array();   /* ctors may use environ and the TLS errno */
     int rc = main(argc, argv, envp);
+    run_fini_array();
     exit(rc);
     for (;;) { }   /* exit() does not return */
 }
