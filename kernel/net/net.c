@@ -11,6 +11,7 @@
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/errno.h"
 
 extern uint64_t timer_get_ticks(void);
 
@@ -388,11 +389,11 @@ int net_udp_sendto(uint32_t dst_ip, uint16_t dst_port,
                    uint16_t src_port, const void *data, uint32_t data_len) {
     uint8_t dst_mac[6];
     if (net_arp_resolve(dst_ip, dst_mac) != 0) {
-        return -1;
+        return -EHOSTUNREACH;   /* FIX_R7: unresolvable neighbour */
     }
 
     if (data_len > 1472) {
-        return -1;
+        return -EINVAL;   /* FIX_R7: datagram too large for one frame */
     }
 
     uint32_t udp_total = 8 + data_len;

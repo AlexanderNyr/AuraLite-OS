@@ -17,6 +17,7 @@
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/errno.h"
 #include "drivers/timer/pit.h"
 
 /* ---- TCP flags (in the 9-bit flags field, offset 12-13 of the header) ---- */
@@ -415,7 +416,7 @@ tcp_handle_t tcp_listen(uint16_t port) {
     int h = alloc_handle();
     if (h < 0) {
         kprintf("[tcp] no free connection slots for listen\n");
-        return -1;
+        return -EMFILE;   /* FIX_R7 */
     }
     net_get_mac(our_mac);
     our_ip = net_get_our_ip();
@@ -426,18 +427,18 @@ tcp_handle_t tcp_listen(uint16_t port) {
 }
 
 tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) {
-    if (!handle_valid(h) || conns[h].state != TCP_LISTEN) return -1;
+    if (!handle_valid(h) || conns[h].state != TCP_LISTEN) return -EBADF;   /* FIX_R7 */
     struct tcp_hdr rx;
     uint32_t src_ip = 0;
     uint16_t src_port = 0;
     if (tcp_recv_syn(conns[h].src_port, &rx, &src_ip, &src_port) != 0) {
-        return -1; /* timeout / no incoming syn */
+        return -ETIMEDOUT;   /* FIX_R7: timeout / no incoming syn */
     }
 
     int new_h = alloc_handle();
     if (new_h < 0) {
         kprintf("[tcp] no free connection slots for accept\n");
-        return -1;
+        return -EMFILE;   /* FIX_R7 */
     }
 
     int saved = active_h;
@@ -473,7 +474,7 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     int h = alloc_handle();
     if (h < 0) {
         kprintf("[tcp] no free connection slots\n");
-        return -1;
+        return -EMFILE;
     }
     int saved = active_h;
     active_h = h;
@@ -483,6 +484,25 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     our_ip = net_get_our_ip();
     conn_dst_ip = dst_ip;
     conn_dst_port = dst_port;
+
+    /* FIX_R7: fail a dead route fast and SPECIFICALLY.  Before this the SYN
+     * section below silently dropped the segment when ARP resolution failed
+     * and the caller waited out the full retry ladder, surfacing a
+     * meaningless timeout for what was really "no route to host".
+     * Distinguishing this from ETIMEDOUT below is exactly what the R7 test
+     * gate asserts on. */
+    {
+        uint8_t probe_mac[6];
+        if (net_arp_resolve(dst_ip, probe_mac) != 0) {
+            kprintf("[tcp] [h=%d] %u.%u.%u.%u is unreachable (ARP failed)\n",
+                    h,
+                    (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
+                    (dst_ip >> 8) & 0xFF, dst_ip & 0xFF);
+            conns[h].in_use = 0;
+            active_h = saved;
+            return -EHOSTUNREACH;
+        }
+    }
     /* Mix in handle to avoid two simultaneous connects landing on the same
      * ephemeral port when the timer hasn't advanced. */
     conn_src_port = 40000 + (uint16_t)((timer_get_ticks() + h * 17) & 0x3FF);
@@ -509,7 +529,7 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
                 kprintf("[tcp] [h=%d] connection refused (RST)\n", h);
                 conns[h].in_use = 0;
                 active_h = saved;
-                return -1;
+                return -ECONNREFUSED;   /* FIX_R7: the cause, not a bare -1 */
             }
             if ((rx.flags & TCP_SYN) && (rx.flags & TCP_ACK)) {
                 synack_ok = 1;
@@ -527,7 +547,7 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
         kprintf("[tcp] [h=%d] timeout waiting for SYN-ACK\n", h);
         conns[h].in_use = 0;
         active_h = saved;
-        return -1;
+        return -ETIMEDOUT;   /* FIX_R7: SYN left, nothing came back */
     }
     tcp_clear_retx();
     conn_ack = ntohl_(rx.seq) + 1;
@@ -572,10 +592,10 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port) {
     if (legacy_h >= 0 && handle_valid(legacy_h) &&
         conns[legacy_h].state != TCP_CLOSED) {
         kprintf("[tcp] legacy connect: already connected on handle %d\n", legacy_h);
-        return -1;
+        return -EINVAL;
     }
     int h = tcp_open(dst_ip, dst_port);
-    if (h < 0) return -1;
+    if (h < 0) return h;   /* FIX_R7: propagate tcp_open's specific errno */
     legacy_h = h;
     return 0;
 }

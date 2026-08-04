@@ -897,7 +897,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             if (n > sizeof(tmp)) n = sizeof(tmp);
             if (copy_from_user(tmp, (const uint8_t *)user_buf + sent, n) != 0) return (uint64_t)-EFAULT;
             int64_t r = socket_send((int)a1, tmp, (uint32_t)n);
-            if (r < 0) return (uint64_t)-1;
+            if (r < 0) return (uint64_t)r;   /* FIX_R7: keep the specific errno */
             sent += (uint64_t)r;
             if ((uint64_t)r < n) break;
         }
@@ -980,7 +980,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         uint32_t peer_ip = 0;
         uint16_t peer_port = 0;
         int64_t r = socket_accept((int)a1, &peer_ip, &peer_port);
-        if (r < 0) return (uint64_t)-1;
+        if (r < 0) return (uint64_t)r;   /* FIX_R7: keep the specific errno */
         if (a2 != 0) {
             if (copy_to_user((void *)(uintptr_t)a2, &peer_ip, sizeof(uint32_t)) != 0) return (uint64_t)-EFAULT;
         }
@@ -1004,7 +1004,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 return (uint64_t)-EFAULT;
             }
             int64_t r = tcp_send(tmp, (uint32_t)n);
-            if (r < 0) return (uint64_t)-1;
+            if (r < 0) return (uint64_t)r;   /* FIX_R7: keep the specific errno */
             sent += (uint64_t)r;
             if ((uint64_t)r < n) break;
         }

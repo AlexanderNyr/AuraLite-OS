@@ -482,14 +482,22 @@ worth more than one that has been made harder to reproduce.
 
 #### Tasks
 
-- [ ] `kernel/net/socket.c` and the `SYS_NET_*` handlers return specific
+- [x] `kernel/net/socket.c` and the `SYS_NET_*` handlers return specific
       negative errnos: `ECONNREFUSED`, `EHOSTUNREACH`, `ETIMEDOUT`, `EBADF`,
-      `EAFNOSUPPORT`, `EMFILE`.
-- [ ] **Do not route them through `vfs_errno()`** — `EPERM` is 1, so `-EPERM`
+      `EAFNOSUPPORT`, `EMFILE` — socket.c maps every failure class explicitly,
+      `tcp_open()` distinguishes RST (`-ECONNREFUSED`) from a SYN-ACK timeout
+      (`-ETIMEDOUT`) and fails an unresolvable ARP fast as `-EHOSTUNREACH`
+      (previously a silent SYN drop plus the full retry ladder, i.e. a lying
+      timeout); the three dispatcher sites that used to collapse errors to
+      `-1` (send/accept/NET_SEND) now propagate verbatim.
+- [x] **Do not route them through `vfs_errno()`** — `EPERM` is 1, so `-EPERM`
       is indistinguishable from the generic `-1` sentinel. That trap is
       documented at `vfs_errno()` after it cost a debugging cycle in SDK phase
-      S3; this phase must not walk into it.
-- [ ] `perror()` output for a failed connection names the cause.
+      S3; this phase must not walk into it. Honoured: socket.c carries the
+      warning in a comment and returns/mapped errnos only.
+- [x] `perror()` output for a failed connection names the cause — libc's
+      `strerror` table needed one addition (`EAFNOSUPPORT`); the gate greps a
+      live `perror("connect")` line for "Connection refused".
 
 #### Test gate
 

@@ -774,6 +774,7 @@ static const char *const errmsgs[] = {
     [EOVERFLOW]       = "Value too large for defined data type",
     [EILSEQ]          = "Invalid or incomplete multibyte or wide character",
     [EOPNOTSUPP]      = "Operation not supported",
+    [EAFNOSUPPORT]    = "Address family not supported by protocol",
     [EADDRINUSE]      = "Address already in use",
     [EADDRNOTAVAIL]   = "Cannot assign requested address",
     [ENETDOWN]        = "Network is down",

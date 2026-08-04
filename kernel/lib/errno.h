@@ -71,6 +71,7 @@
 #define EOVERFLOW       75   /* Value too large for defined data type */
 #define EILSEQ          84   /* Illegal byte sequence */
 #define EOPNOTSUPP      95   /* Operation not supported */
+#define EAFNOSUPPORT    97   /* Address family not supported by protocol */
 #define EADDRINUSE      98   /* Address already in use */
 #define EADDRNOTAVAIL   99   /* Cannot assign requested address */
 #define ENETDOWN       100   /* Network is down */

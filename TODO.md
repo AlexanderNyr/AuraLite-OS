@@ -206,9 +206,16 @@ for the feature matrix.
   and `umask` arrive in P7. `sys/stat.h` deliberately omits the mkdir prototype.
 - **O_NONBLOCK** is honored for pipes (EAGAIN); devices/sockets that can block
   are not yet wired to it.
-- **Socket/net syscalls return bare `-1`.** (`FIXES_PLAN.md` R7) `SYS_SOCKET*` / `SYS_NET_*` failure
-  paths propagate the layer's `-1`, which libc currently decodes as `EPERM`.
-  Give them real errno values (`EBADF`, `ENOTCONN`, `ECONNREFUSED`, …).
+- ~~**Socket/net syscalls return bare `-1`.**~~ **Done (`FIXES_PLAN.md` R7,
+  gated by `tests/integration/cases/test_socket_errno.sh`).** `SYS_SOCKET*` /
+  `SYS_NET_*` failures now carry specific negative errnos end-to-end:
+  `ECONNREFUSED` (RST during connect), `EHOSTUNREACH` (unresolvable ARP —
+  failed fast in `tcp_open()` instead of a full SYN retry ladder),
+  `ETIMEDOUT` (SYN-ACK never came), `EBADF` (unknown/foreign/closed socket),
+  `ENOTCONN` (send/recv before connect), `EAFNOSUPPORT` (non-AF_INET family),
+  `EMFILE` (socket or TCP-handle table exhausted).  Nothing is routed through
+  `vfs_errno()` (the EPERM==1 substitution trap); `strerror`/`perror` name the
+  cause.
 - ~~**P1 libc headers still missing.**~~ **Done:** `limits.h`, `stdbool.h`,
   `assert.h`, `ctype.h` (+impl), `math.h` (+impl). `stdint.h`/`stdarg.h` use the
   freestanding compiler headers.

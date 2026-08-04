@@ -14,6 +14,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/errno.h"
 
 #define SOCKET_MAX 32
 
@@ -54,9 +55,17 @@ static socket_t *get_owned_socket(int sid) {
     return s;
 }
 
+/* FIX_R7: every failure below returns a specific negative errno.  A caller
+ * must NEVER pass these through vfs_errno(): EPERM is 1, so -EPERM IS the
+ * generic -1 sentinel, and the substitution would silently rename a
+ * permission failure into whatever fallback errno was supplied (the trap is
+ * documented at vfs_errno(); network errnos contain EPERM-adjacent values
+ * like EACCES in every realistic future extension, so the rule here is:
+ * propagate verbatim or map explicitly). */
+
 int64_t socket_create(int domain, int type, int protocol) {
-    if (domain != AURA_AF_INET) return -1;
-    if (type != AURA_SOCK_STREAM && type != AURA_SOCK_DGRAM) return -1;
+    if (domain != AURA_AF_INET) return -EAFNOSUPPORT;
+    if (type != AURA_SOCK_STREAM && type != AURA_SOCK_DGRAM) return -EINVAL;
     for (int i = 0; i < SOCKET_MAX; i++) {
         if (sockets[i].state == SOCK_SLOT_FREE) {
             memset(&sockets[i], 0, sizeof(sockets[i]));
@@ -69,15 +78,16 @@ int64_t socket_create(int domain, int type, int protocol) {
             return i;
         }
     }
-    return -1;
+    return -EMFILE;   /* per-process socket table exhausted */
 }
 
 int64_t socket_connect(int sid, uint32_t ip, uint16_t port) {
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->state != SOCK_SLOT_OPEN) return -1;
-    if (s->type != AURA_SOCK_STREAM) return -1;
+    if (!s) return -EBADF;
+    if (s->state != SOCK_SLOT_OPEN) return -EINVAL;
+    if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
     int h = tcp_open(ip, port);
-    if (h < 0) return -1;
+    if (h < 0) return h;   /* -ECONNREFUSED / -EHOSTUNREACH / -ETIMEDOUT / -EMFILE */
     s->state = SOCK_SLOT_CONNECTED;
     s->peer_ip = ip;
     s->peer_port = port;
@@ -87,19 +97,23 @@ int64_t socket_connect(int sid, uint32_t ip, uint16_t port) {
 
 int64_t socket_send(int sid, const void *buf, uint32_t len) {
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->state != SOCK_SLOT_CONNECTED || s->type != AURA_SOCK_STREAM) return -1;
+    if (!s) return -EBADF;
+    if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
+    if (s->state != SOCK_SLOT_CONNECTED) return -ENOTCONN;
     return tcp_send_h(s->tcp_handle, buf, len);
 }
 
 int64_t socket_recv(int sid, void *buf, uint32_t len) {
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->state != SOCK_SLOT_CONNECTED || s->type != AURA_SOCK_STREAM) return -1;
+    if (!s) return -EBADF;
+    if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
+    if (s->state != SOCK_SLOT_CONNECTED) return -ENOTCONN;
     return tcp_recv_h(s->tcp_handle, buf, len);
 }
 
 int64_t socket_close(int sid) {
     socket_t *s = get_owned_socket(sid);
-    if (!s) return -1;
+    if (!s) return -EBADF;
     if ((s->state == SOCK_SLOT_CONNECTED || s->state == SOCK_SLOT_LISTENING) && s->tcp_handle >= 0) {
         tcp_close_h(s->tcp_handle);
     }
@@ -110,7 +124,8 @@ int64_t socket_close(int sid) {
 
 int64_t socket_bind(int sid, uint32_t ip, uint16_t port) {
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->state != SOCK_SLOT_OPEN) return -1;
+    if (!s) return -EBADF;
+    if (s->state != SOCK_SLOT_OPEN) return -EINVAL;
     s->state = SOCK_SLOT_BOUND;
     s->local_ip = ip;
     s->local_port = port;
@@ -122,9 +137,11 @@ int64_t socket_bind(int sid, uint32_t ip, uint16_t port) {
 int64_t socket_listen(int sid, int backlog) {
     (void)backlog;
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->state != SOCK_SLOT_BOUND || s->type != AURA_SOCK_STREAM) return -1;
+    if (!s) return -EBADF;
+    if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
+    if (s->state != SOCK_SLOT_BOUND) return -EINVAL;
     int h = tcp_listen(s->local_port);
-    if (h < 0) return -1;
+    if (h < 0) return h;   /* -EMFILE */
     s->state = SOCK_SLOT_LISTENING;
     s->tcp_handle = h;
     return 0;
@@ -132,11 +149,13 @@ int64_t socket_listen(int sid, int backlog) {
 
 int64_t socket_accept(int sid, uint32_t *ip, uint16_t *port) {
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->state != SOCK_SLOT_LISTENING || s->type != AURA_SOCK_STREAM) return -1;
+    if (!s) return -EBADF;
+    if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
+    if (s->state != SOCK_SLOT_LISTENING) return -EINVAL;
     uint32_t peer_ip = 0;
     uint16_t peer_port = 0;
     int new_h = tcp_accept(s->tcp_handle, &peer_ip, &peer_port);
-    if (new_h < 0) return -1;
+    if (new_h < 0) return new_h;   /* -EBADF / -ETIMEDOUT / -EMFILE */
 
     for (int i = 0; i < SOCKET_MAX; i++) {
         if (sockets[i].state == SOCK_SLOT_FREE) {
@@ -155,7 +174,7 @@ int64_t socket_accept(int sid, uint32_t *ip, uint16_t *port) {
         }
     }
     tcp_close_h(new_h);
-    return -1;
+    return -EMFILE;
 }
 
 
@@ -171,11 +190,13 @@ static uint16_t udp_auto_bind(socket_t *s) {
 int64_t socket_sendto(int sid, const void *buf, uint32_t len,
                       uint32_t dst_ip, uint16_t dst_port) {
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->type != AURA_SOCK_DGRAM) return -1;
+    if (!s) return -EBADF;
+    if (s->type != AURA_SOCK_DGRAM) return -EOPNOTSUPP;
     if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND &&
-        s->state != SOCK_SLOT_CONNECTED) return -1;
+        s->state != SOCK_SLOT_CONNECTED) return -EINVAL;
     uint16_t src_port = udp_auto_bind(s);
-    if (net_udp_sendto(dst_ip, dst_port, src_port, buf, len) != 0) return -1;
+    int r = net_udp_sendto(dst_ip, dst_port, src_port, buf, len);
+    if (r != 0) return r;   /* -EHOSTUNREACH / -EINVAL from the net layer */
     s->peer_ip = dst_ip;
     s->peer_port = dst_port;
     return (int64_t)len;
@@ -184,9 +205,10 @@ int64_t socket_sendto(int sid, const void *buf, uint32_t len,
 int64_t socket_recvfrom(int sid, void *buf, uint32_t len,
                         uint32_t *src_ip, uint16_t *src_port) {
     socket_t *s = get_owned_socket(sid);
-    if (!s || s->type != AURA_SOCK_DGRAM) return -1;
+    if (!s) return -EBADF;
+    if (s->type != AURA_SOCK_DGRAM) return -EOPNOTSUPP;
     if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND &&
-        s->state != SOCK_SLOT_CONNECTED) return -1;
+        s->state != SOCK_SLOT_CONNECTED) return -EINVAL;
     uint16_t local_port = udp_auto_bind(s);
     
     /* Simplified blocking: poll with a small timeout in a loop. 
