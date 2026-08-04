@@ -244,8 +244,7 @@ USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096
 ### RUST: compiler and flags for Rust
 RUSTC       := rustc
 RUST_TARGET := x86_64-unknown-none
-RUSTFLAGS   := --target=$(RUST_TARGET) -C relocation-model=static \
-               -C opt-level=2 --emit=obj
+RUSTFLAGS   := --target=$(RUST_TARGET) -C relocation-model=static -C opt-level=2 -C debug-assertions=no
 
 # Common objects shared by all user programs.
 # Extra libc translation units (each its own object, all linked into every
@@ -439,15 +438,25 @@ $(USER_BUILD)/insttest.o: userspace/tests/insttest/insttest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-### RUST: compile rustes.c and rustes.rs
-$(USER_BUILD)/rustes_c.o: userspace/apps/rustes/rustes.c
-	@mkdir -p $(dir $@)
-	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+### RUST: rsbr - Rust Bridge library
+RSBR_DIR := lib/rsbr
+RSBR_RLIB := $(BUILD_DIR)/librsbr.rlib
 
-$(USER_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs
+$(RSBR_RLIB): $(RSBR_DIR)/common.rs
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(RUSTFLAGS) -o $@ $<
+	$(RUSTC) $(RUSTFLAGS) --crate-type rlib -o $@ $<
+	@echo "[rustc] $@"
 
+### RUST: compile rustes.rs with rsbr
+$(USER_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBR_RLIB)
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGS) --emit obj --extern rsbr=$(RSBR_RLIB) -o $@ $<
+	@echo "[rustc] $@"
+
+$(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes.o $(RSBR_RLIB) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $< $(RSBR_RLIB) -o $@
+	@echo "[link] $@"
 $(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -688,12 +697,6 @@ $(USER_BUILD)/hello.o: userspace/apps/hello/hello.c lib/libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-### RUST: link rustes.elf using both C and Rust objects
-$(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes_c.o $(USER_BUILD)/rustes.o $(USER_COMMON) lib/libc/user.ld
-	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/rustes_c.o $(USER_BUILD)/rustes.o $(USER_COMMON_LNK) -o $@
-	@echo "[link] $@"
-
 $(USER_BUILD)/init.o: userspace/system/init/init.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -729,9 +732,6 @@ $(USER_BUILD)/barrier.o: lib/libc/src/pthread/barrier.c lib/libc/include/pthread
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/spin.o: lib/libc/src/pthread/spin.c lib/libc/include/pthread.h
-	@mkdir -p $(dir $@)
-	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
