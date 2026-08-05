@@ -41,6 +41,7 @@
 #include "spawn.h"
 #include "mqueue.h"
 #include "semaphore.h"
+#include "signal.h"      /* Q15: mq_notify SIGEV_SIGNAL/SIGEV_THREAD */
 
 static int failures = 0;
 
@@ -243,6 +244,118 @@ static void test_mqueue(void) {
 
     mq_close(mq);
     mq_unlink("/q12mq");
+}
+
+/* ------------------------------------------------------------------ */
+/* 4b. Q15: mq_notify + sigevent delivery                              */
+/* ------------------------------------------------------------------ */
+static volatile int mq_notify_sig_flag = 0;
+static void mq_notify_sig_handler(int sig) {
+    (void)sig;
+    mq_notify_sig_flag = 1;
+}
+
+static volatile int mq_notify_thread_count = 0;
+static void mq_notify_thread_fn(union sigval v) {
+    (void)v;
+    mq_notify_thread_count++;
+}
+
+/* Poll a volatile flag for up to `ms` (5 ms sleeps).  Returns 1 when the
+ * condition becomes true, 0 on timeout. */
+static int mq_wait_until(volatile int *cond, int ms) {
+    int iters = ms / 5;
+    while (iters-- > 0 && !*cond) usleep(5000);
+    return *cond;
+}
+
+static void test_mq_notify(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = mq_notify_sig_handler;
+    sigemptyset(&sa.sa_mask);
+    errno = 0;
+    CHECK("mq_notify: sigaction(SIGUSR1) installs", sigaction(SIGUSR1, &sa, NULL) == 0);
+
+    mq_unlink("/q15mq");
+    errno = 0;
+    mqd_t mq = mq_open("/q15mq", O_CREAT | O_EXCL | O_RDWR, 0600, NULL);
+    CHECK("mq_notify: mq_open", mq != (mqd_t)-1);
+    if (mq == (mqd_t)-1) return;
+
+    struct sigevent sev;
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo  = SIGUSR1;
+
+    errno = 0;
+    CHECK("mq_notify: register SIGEV_SIGNAL", mq_notify(mq, &sev) == 0);
+
+    errno = 0;
+    CHECK("mq_notify: second registration gives EBUSY",
+          mq_notify(mq, &sev) == -1 && errno == EBUSY);
+
+    /* The freshly created queue is empty; a forked sender produces the
+     * empty -> non-empty edge POSIX keys on.  The parent waits for the
+     * child FIRST (blocking waitpid guarantees the child gets CPU even
+     * under slow TCG), then polls for the asynchronous delivery. */
+    mq_notify_sig_flag = 0;
+    pid_t pid = fork();
+    if (pid == 0) {
+        int rc = mq_send(mq, "ping", 4, 0);
+        _exit(rc ? 2 : 0);
+    }
+    if (pid > 0) waitpid(pid, NULL, 0);
+    CHECK("mq_notify: SIGEV_SIGNAL delivered on empty->non-empty",
+          mq_wait_until(&mq_notify_sig_flag, 6000));
+
+    /* Re-arm: drain the queue, send again, expect a second delivery. */
+    {
+        char buf[64];
+        while (mq_receive(mq, buf, sizeof(buf), NULL) >= 0) { }
+    }
+    mq_notify_sig_flag = 0;
+    mq_send(mq, "again", 5, 0);
+    CHECK("mq_notify: re-armed after drain (second delivery)",
+          mq_wait_until(&mq_notify_sig_flag, 6000));
+
+    /* Deregistration stops delivery. */
+    errno = 0;
+    CHECK("mq_notify: deregister with NULL", mq_notify(mq, NULL) == 0);
+    {
+        char buf[64];
+        while (mq_receive(mq, buf, sizeof(buf), NULL) >= 0) { }
+    }
+    mq_notify_sig_flag = 0;
+    mq_send(mq, "ghost", 5, 0);
+    usleep(300000);   /* 300 ms: several watcher polls would have fired */
+    CHECK("mq_notify: no delivery after deregistration",
+          mq_notify_sig_flag == 0);
+
+    /* SIGEV_THREAD: run the notification function on a fresh pthread.
+     * Drain first: the queue still holds "ghost", and the watcher must
+     * start in the empty state or it never sees the 0 -> >0 edge. */
+    {
+        char buf[64];
+        while (mq_receive(mq, buf, sizeof(buf), NULL) >= 0) { }
+    }
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_THREAD;
+    sev.sigev_notify_function = mq_notify_thread_fn;
+    sev.sigev_value.sival_int = 7;
+    errno = 0;
+    CHECK("mq_notify: register SIGEV_THREAD", mq_notify(mq, &sev) == 0);
+    mq_notify_thread_count = 0;
+    CHECK("mq_notify: send before THREAD wait", mq_send(mq, "thr", 3, 0) == 0);
+    /* The notification function runs on the watcher thread (annotated
+     * deviation, see libc/src/posix_extra.c mq_notify_deliver), so it is
+     * delivered within one watcher poll. */
+    CHECK("mq_notify: SIGEV_THREAD runs the notification function",
+          mq_wait_until(&mq_notify_thread_count, 6000));
+    CHECK("mq_notify: deregister SIGEV_THREAD", mq_notify(mq, NULL) == 0);
+
+    mq_close(mq);
+    mq_unlink("/q15mq");
 }
 
 /* ------------------------------------------------------------------ */
@@ -675,6 +788,7 @@ int main(void) {
     test_at_fat();
     test_spawn();
     test_mqueue();
+    test_mq_notify();
     test_sem();
     test_clock_nanosleep();
     test_getentropy();

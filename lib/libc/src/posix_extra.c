@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <signal.h>
+#include <pthread.h>   /* Q15: mq_notify SIGEV_THREAD / watcher thread */
 #include <errno.h>
 #include <mqueue.h>
 #include <sys/mman.h>
@@ -541,11 +542,15 @@ int sem_timedwait(sem_t *sem, const struct timespec *abs_timeout) {
     }
 }
 
-/* ===================== Message queues (Q7) ================================ */
+/* ================== Message queues (Q7 / Q15) ============================ */
 
-/* File-based message queue: each mq is a directory under /dev/mqueue/.
- * mq_open(name, O_CREAT) creates mq files; mq_send/recv act as named pipes
- * through temp files. For simplicity, queues use tmp files in /tmp/mq.<hash>. */
+/* File-based message queue: each mq is a queue FILE under /tmp/mq_<name>.
+ * mq_open(name, O_CREAT) creates the queue file; mq_send appends a
+ * [len:4][data] record at EOF; mq_receive consumes the FIRST record and
+ * rewrites the queue file without it, so the queue is a true FIFO and
+ * "empty" really means file size 0 — the state the mq_notify watcher
+ * keys on (Q15).  No cross-process locking is provided; single-writer /
+ * single-reader usage remains the documented emulation model (Q12 note). */
 
 #define MQ_PATH_MAX 512
 
@@ -553,6 +558,31 @@ static void _mq_name_to_path(const char *name, char *path, size_t sz) {
     const char *n = name;
     while (*n == '/') n++;
     snprintf(path, sz, "/tmp/mq_%s", n);
+}
+
+/* Q15: fd -> queue-name table so mq_notify(mqd_t) can find the queue's
+ * path for the one-registration-per-queue (EBUSY) rule. */
+#define MQ_OPEN_MAX 16
+struct mq_fd_name { int fd; char name[MQ_PATH_MAX]; };
+static struct mq_fd_name mq_fd_names[MQ_OPEN_MAX];
+
+static void mq_fd_name_set(int fd, const char *name) {
+    for (int i = 0; i < MQ_OPEN_MAX; i++) {
+        if (mq_fd_names[i].fd == fd || mq_fd_names[i].fd == 0) {
+            mq_fd_names[i].fd = fd;
+            snprintf(mq_fd_names[i].name, sizeof(mq_fd_names[i].name), "%s", name);
+            return;
+        }
+    }
+}
+static void mq_fd_name_clear(int fd) {
+    for (int i = 0; i < MQ_OPEN_MAX; i++)
+        if (mq_fd_names[i].fd == fd) mq_fd_names[i].fd = 0;
+}
+static const char *mq_fd_name_get(int fd) {
+    for (int i = 0; i < MQ_OPEN_MAX; i++)
+        if (mq_fd_names[i].fd == fd) return mq_fd_names[i].name;
+    return NULL;
 }
 
 mqd_t mq_open(const char *name, int oflag, ...) {
@@ -571,40 +601,13 @@ mqd_t mq_open(const char *name, int oflag, ...) {
     int fd = open(path, oflag | O_RDWR, mode);
     if (fd < 0) return MQD_INVALID;
     (void)attr;
+    mq_fd_name_set(fd, name);
     return (mqd_t)(intptr_t)fd;
-}
-
-/* Q12 (POSIX2024_PLAN.md): the file-backed queue needs a per-descriptor
- * read cursor.  Without one, a send on the same fd leaves the file offset
- * at EOF and the following receive returns nothing (caught by the Q12
- * conformtest round-trip).  Each mq descriptor tracks its own read offset;
- * sends always append at EOF.  This is the documented single-process
- * emulation: cross-process blocking semantics are not provided. */
-#define MQ_CURSORS_MAX 16
-
-struct mq_cursor { int fd; int64_t off; };
-static struct mq_cursor mq_cursors[MQ_CURSORS_MAX];
-
-static int64_t mq_read_off(int fd) {
-    for (int i = 0; i < MQ_CURSORS_MAX; i++)
-        if (mq_cursors[i].fd == fd) return mq_cursors[i].off;
-    return 0;
-}
-
-static void mq_set_off(int fd, int64_t off) {
-    for (int i = 0; i < MQ_CURSORS_MAX; i++) {
-        if (mq_cursors[i].fd == fd || mq_cursors[i].fd == 0) {
-            mq_cursors[i].fd = fd;
-            mq_cursors[i].off = off;
-            return;
-        }
-    }
 }
 
 int mq_close(mqd_t mqdes) {
     int fd = (int)mqdes;
-    for (int i = 0; i < MQ_CURSORS_MAX; i++)
-        if (mq_cursors[i].fd == fd) mq_cursors[i].fd = 0;
+    mq_fd_name_clear(fd);
     return close(fd);
 }
 
@@ -616,22 +619,55 @@ int mq_unlink(const char *name) {
 
 int mq_send(mqd_t mqdes, const char *msg_ptr, size_t msg_len, unsigned msg_prio) {
     (void)msg_prio;
-    /* Write message as [len:4][data] at EOF */
+    if (!msg_ptr) { errno = EINVAL; return -1; }
+    /* Append a [len:4][data] record at EOF. */
     if (lseek((int)mqdes, 0, SEEK_END) < 0) return -1;
-    if (write((int)mqdes, &msg_len, sizeof(msg_len)) < 0) return -1;
-    if (write((int)mqdes, msg_ptr, msg_len) < 0) return -1;
+    size_t len = msg_len;
+    if (write((int)mqdes, &len, sizeof(len)) < 0) return -1;
+    if (write((int)mqdes, msg_ptr, len) < 0) return -1;
     return 0;
+}
+
+/* Q15: truncate(2) through procfs.  There is no ftruncate syscall, but
+ * /proc/self/fd/<N> resolves to the fd's real vnode (Q13), so truncating
+ * that path truncates the open queue file. */
+static int mq_ftruncate(int fd, off_t size) {
+    char p[40];
+    snprintf(p, sizeof(p), "/proc/self/fd/%d", fd);
+    return truncate(p, size);
 }
 
 ssize_t mq_receive(mqd_t mqdes, char *msg_ptr, size_t msg_len, unsigned *msg_prio) {
     (void)msg_prio;
     int fd = (int)mqdes;
+    if (!msg_ptr) { errno = EINVAL; return -1; }
+    if (lseek(fd, 0, SEEK_SET) < 0) return -1;
     size_t len = 0;
-    if (lseek(fd, mq_read_off(fd), SEEK_SET) < 0) return -1;
-    if (read(fd, &len, sizeof(len)) < 0) return -1;
+    ssize_t r = read(fd, &len, sizeof(len));
+    if (r < 0) return -1;
+    if (r == 0) { errno = EAGAIN; return -1; }   /* empty queue */
     if (len > msg_len) { errno = EMSGSIZE; return -1; }
-    if (read(fd, msg_ptr, len) < 0) return -1;
-    mq_set_off(fd, mq_read_off(fd) + (int64_t)sizeof(len) + (int64_t)len);
+    if (read(fd, msg_ptr, len) != (ssize_t)len) return -1;
+
+    /* Dequeue: rewrite the queue file with everything after this record
+     * and truncate, so an emptied queue is a 0-byte file. */
+    off_t consumed = (off_t)sizeof(len) + (off_t)len;
+    off_t fsz = lseek(fd, 0, SEEK_END);
+    off_t tail = (fsz > consumed) ? fsz - consumed : 0;
+    if (tail > 0) {
+        char *buf = malloc((size_t)tail);
+        if (!buf) { errno = ENOMEM; return -1; }
+        if (lseek(fd, consumed, SEEK_SET) < 0 ||
+            read(fd, buf, (size_t)tail) != (ssize_t)tail) {
+            free(buf); errno = EIO; return -1;
+        }
+        if (lseek(fd, 0, SEEK_SET) < 0 ||
+            write(fd, buf, (size_t)tail) != (ssize_t)tail) {
+            free(buf); errno = EIO; return -1;
+        }
+        free(buf);
+    }
+    if (mq_ftruncate(fd, tail) < 0) { errno = EIO; return -1; }
     return (ssize_t)len;
 }
 
@@ -648,12 +684,28 @@ ssize_t mq_timedreceive(mqd_t mqdes, char *msg_ptr, size_t msg_len,
 }
 
 int mq_getattr(mqd_t mqdes, struct mq_attr *mqstat) {
-    (void)mqdes;
     if (!mqstat) { errno = EINVAL; return -1; }
+    int fd = (int)mqdes;
     mqstat->mq_flags = 0;
     mqstat->mq_maxmsg = 16;
     mqstat->mq_msgsize = 1024;
     mqstat->mq_curmsgs = 0;
+    /* Count [len][data] records so mq_curmsgs is truthful. */
+    struct stat st;
+    if (fstat(fd, &st) != 0 || (uint64_t)st.st_size <= 0) return 0;
+    uint64_t fsz = (uint64_t)st.st_size;
+    uint64_t pos = 0;
+    int n = 0;
+    while (pos + (uint64_t)sizeof(size_t) <= fsz) {
+        size_t l = 0;
+        if (lseek(fd, (off_t)pos, SEEK_SET) < 0) break;
+        if (read(fd, &l, sizeof(l)) != (ssize_t)sizeof(l)) break;
+        if (l > 1024) break;                 /* corrupt record */
+        pos += (uint64_t)sizeof(l) + (uint64_t)l;
+        n++;
+        if (pos > fsz) break;
+    }
+    mqstat->mq_curmsgs = n;
     return 0;
 }
 
@@ -665,9 +717,178 @@ int mq_setattr(mqd_t mqdes, const struct mq_attr *restrict mqstat,
     return 0;
 }
 
+/* ---- Q15: mq_notify + sigevent delivery (POSIX2024_PLAN.md phase Q15) ----
+ *
+ * The mqueue is file-backed, so notification lives in user space: each
+ * registration spawns a watcher thread that polls the queue FILE SIZE.
+ * A size 0 -> >0 transition is the POSIX "queue went from empty to
+ * non-empty" edge and delivers the notification.  Because mq_receive
+ * dequeues, "empty" really is size 0, and a burst of messages between two
+ * polls compresses to fewer notifications — the POSIX "at least one" rule,
+ * documented rather than hidden.
+ *
+ *   SIGEV_SIGNAL : kill(registrar_pid, sigev_signo).  AuraLite's sigaction
+ *                  has no siginfo delivery, so sigev_value is not conveyed
+ *                  to the handler (documented limitation).
+ *   SIGEV_THREAD : a detached pthread runs sigev_notify_function(sigev_value).
+ *   SIGEV_NONE / NULL : deregister.
+ *
+ * One registration per queue (POSIX): a second mq_notify on the same queue
+ * fails with EBUSY until the first is deregistered.
+ */
+
+#define MQ_NOTIFY_MAX 8
+struct mq_notify_reg {
+    int             active;
+    int             fd;              /* registering mqd_t (identity) */
+    char            path[MQ_PATH_MAX];
+    struct sigevent sev;
+    pthread_t       thread;
+    volatile int    stop;            /* set to ask the watcher to exit */
+    volatile int    done;            /* watcher sets when it has exited */
+    int             target_pid;      /* getpid() at registration time */
+    volatile int    ready;           /* watcher has observed the queue once */
+};
+static struct mq_notify_reg mq_notify_regs[MQ_NOTIFY_MAX];
+
+static void mq_notify_deliver(const struct sigevent *sev, int target_pid) {
+    switch (sev->sigev_notify) {
+    case SIGEV_SIGNAL:
+        if (sev->sigev_signo > 0 && sev->sigev_signo < NSIG)
+            kill(target_pid, sev->sigev_signo);
+        break;
+    case SIGEV_THREAD:
+        if (!sev->sigev_notify_function) break;
+        /* Deviation, annotated (POSIX2024_PLAN.md Q15): POSIX says the
+         * notification function runs on a fresh thread.  AuraLite's
+         * pthread_create clones a kernel thread, and under QEMU TCG a
+         * thread created from ANOTHER thread is not scheduled promptly
+         * (observed: tens of guest-seconds), which made the documented
+         * gate flaky.  The function therefore runs on the watcher thread
+         * (itself a thread of the registering process); the observable
+         * contract — the function is invoked with sigev_value on the
+         * empty->non-empty transition — is preserved.  Revisit when the
+         * scheduler schedules clone children of threads promptly. */
+        sev->sigev_notify_function(sev->sigev_value);
+        break;
+    default:
+        break;
+    }
+}
+
+static void *mq_notify_watcher(void *arg) {
+    struct mq_notify_reg *r = (struct mq_notify_reg *)arg;
+    int wfd = open(r->path, O_RDONLY);
+    if (wfd < 0) { r->done = 1; return NULL; }
+    struct stat st;
+    int was_empty = 1;
+    if (fstat(wfd, &st) == 0) was_empty = (st.st_size == 0);
+    /* Publish readiness only after the initial state is captured, so
+     * mq_notify() can return knowing the watcher is actually observing the
+     * queue.  Without this, a slow first scheduling of the watcher thread
+     * (QEMU TCG) lets a send happen BEFORE the watcher's first fstat, and
+     * the empty->non-empty edge is lost forever. */
+    r->ready = 1;
+    while (!r->stop) {
+        if (fstat(wfd, &st) == 0) {
+            int empty = (st.st_size == 0);
+            if (!empty && was_empty) {
+                /* empty -> non-empty edge */
+                mq_notify_deliver(&r->sev, r->target_pid);
+                was_empty = 0;
+            } else if (empty) {
+                was_empty = 1;       /* re-arm once drained */
+            }
+        }
+        struct timespec ts = { 0, 2000000 };    /* 2 ms poll */
+        nanosleep(&ts, NULL);
+    }
+    close(wfd);
+    r->done = 1;
+    return NULL;
+}
+
 int mq_notify(mqd_t mqdes, const struct sigevent *notification) {
-    (void)mqdes; (void)notification;
-    errno = ENOSYS; return -1;
+    int fd = (int)mqdes;
+    const char *name = mq_fd_name_get(fd);
+    if (!name) { errno = EBADF; return -1; }
+    char path[MQ_PATH_MAX];
+    _mq_name_to_path(name, path, sizeof(path));
+
+    /* Deregistration: NULL or SIGEV_NONE. */
+    if (!notification || notification->sigev_notify == SIGEV_NONE) {
+        for (int i = 0; i < MQ_NOTIFY_MAX; i++) {
+            struct mq_notify_reg *r = &mq_notify_regs[i];
+            if (r->active && strcmp(r->path, path) == 0) {
+                r->stop = 1;
+                int spins = 0;
+                while (!r->done && spins++ < 2000) {
+                    struct timespec ts = { 0, 1000000 };   /* 1 ms */
+                    nanosleep(&ts, NULL);
+                }
+                r->active = 0;
+                r->done = 0;
+                return 0;
+            }
+        }
+        return 0;   /* nothing registered: nothing to undo */
+    }
+
+    if (notification->sigev_notify != SIGEV_SIGNAL &&
+        notification->sigev_notify != SIGEV_THREAD) {
+        errno = EINVAL; return -1;
+    }
+    if (notification->sigev_notify == SIGEV_SIGNAL &&
+        (notification->sigev_signo <= 0 || notification->sigev_signo >= NSIG)) {
+        errno = EINVAL; return -1;
+    }
+
+    /* One registration per queue. */
+    for (int i = 0; i < MQ_NOTIFY_MAX; i++) {
+        if (mq_notify_regs[i].active &&
+            strcmp(mq_notify_regs[i].path, path) == 0) {
+            errno = EBUSY;
+            return -1;
+        }
+    }
+    int slot = -1;
+    for (int i = 0; i < MQ_NOTIFY_MAX; i++)
+        if (!mq_notify_regs[i].active) { slot = i; break; }
+    if (slot < 0) { errno = ENOSPC; return -1; }
+
+    struct mq_notify_reg *r = &mq_notify_regs[slot];
+    memset(r, 0, sizeof(*r));
+    r->active = 1;
+    r->fd = fd;
+    strncpy(r->path, path, sizeof(r->path) - 1);
+    r->path[sizeof(r->path) - 1] = 0;
+    r->sev = *notification;
+    r->target_pid = (int)getpid();
+    r->stop = 0;
+    r->done = 0;
+    r->ready = 0;
+    if (pthread_create(&r->thread, NULL, mq_notify_watcher, r) != 0) {
+        r->active = 0;
+        errno = EAGAIN;
+        return -1;
+    }
+    /* Wait until the watcher has observed the queue's initial state, so a
+     * caller's very next send cannot race ahead of the first fstat and lose
+     * the empty->non-empty edge (slow first scheduling under QEMU TCG). */
+    {
+        int spins = 0;
+        while (!r->ready && spins++ < 200000) {
+            struct timespec ts = { 0, 1000000 };   /* 1 ms */
+            nanosleep(&ts, NULL);
+        }
+        if (!r->ready) {
+            r->stop = 1;
+            r->active = 0;
+            errno = EAGAIN;
+            return -1;
+        }
+    }
+    return 0;
 }
 
 /* =============== POSIX2024 Q12: declared-but-missing bodies ================

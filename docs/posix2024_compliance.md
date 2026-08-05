@@ -115,7 +115,7 @@
 | mq_timedreceive | ✅ | |
 | mq_getattr | ✅ | |
 | mq_setattr | ✅ | |
-| mq_notify | 🔶 | Returns ENOSYS |
+| mq_notify | ✅ | Q15: SIGEV_SIGNAL/SIGEV_THREAD via a watcher thread on the file-backed queue; sigev_value not conveyed on the signal path (no siginfo); coalescing documented |
 
 ## `<monetary.h>` (Q10)
 
@@ -527,7 +527,7 @@
 | `<langinfo.h>` | 2 | 2 | 0 | 0 |
 | `<locale.h>` | 2 | 2 | 0 | 0 |
 | `<math.h>` | 20+ | 20+ | 0 | 0 |
-| `<mqueue.h>` | 10 | 9 | 1 | 0 |
+| `<mqueue.h>` | 10 | 10 | 0 | 0 |
 | `<monetary.h>` | 1 | 1 | 0 | 0 |
 | `<poll.h>` | 1 | 1 | 0 | 0 |
 | `<pthread.h>` | 30+ | 30+ | 0 | 0 |
@@ -546,4 +546,4 @@
 | `<utmpx.h>` | 3 | 3 | 0 | 0 |
 | `<wordexp.h>` | 2 | 2 | 0 | 0 |
 | IPC (sysv) | 13 | 1 | 12 | 0 |
-| **Total** | **~400** | **~380** | **~20** | **0** |
+| **Total** | **~400** | **~381** | **~19** | **0** |

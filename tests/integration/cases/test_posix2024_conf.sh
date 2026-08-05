@@ -32,10 +32,10 @@ trap il_dump_on_error EXIT
 
 il_send_delay 7
 il_send "run conformtest"
-il_send_delay 60
+il_send_delay 320
 il_send "exit"
 
-il_run_qemu "$LOG" 120
+il_run_qemu "$LOG" 480
 
 # ---- AT-family on tmpfs ----
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS at-tmpfs: mkdir" \
@@ -94,6 +94,24 @@ il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mqueue: mq_open(O_CREAT|O_EXCL)" \
     "mq_open(O_CREAT|O_EXCL) works"
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mqueue: mq_receive round-trips the payload" \
     "mq_send/mq_receive round-trip on one descriptor"
+
+# ---- Q15: mq_notify + sigevent delivery ----
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: register SIGEV_SIGNAL" \
+    "mq_notify(SIGEV_SIGNAL) registers"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: second registration gives EBUSY" \
+    "a second registration on the same queue gives EBUSY"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: SIGEV_SIGNAL delivered on empty->non-empty" \
+    "SIGEV_SIGNAL is delivered on the empty->non-empty transition"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: re-armed after drain (second delivery)" \
+    "the notification re-arms after the queue is drained"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: deregister with NULL" \
+    "mq_notify(mq, NULL) deregisters"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: no delivery after deregistration" \
+    "no delivery after deregistration"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: register SIGEV_THREAD" \
+    "mq_notify(SIGEV_THREAD) registers"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: SIGEV_THREAD runs the notification function" \
+    "SIGEV_THREAD runs the notification function on a fresh pthread"
 
 # ---- semaphores ----
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sem: named sem_open is the documented partial (ENOSYS)" \

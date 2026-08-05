@@ -1090,6 +1090,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_posix_spawn \
                 $(BUILD_DIR)/test_q10_stubs \
                 $(BUILD_DIR)/test_ipc \
+                $(BUILD_DIR)/test_mq_notify \
                 $(BUILD_DIR)/test_keymap
 
 test-unit: $(UNIT_TESTS)
@@ -1319,6 +1320,11 @@ $(BUILD_DIR)/test_q10_stubs: tests/unit/test_q10_stubs.c
 
 # ---- Phase Q7: IPC unit test ----
 $(BUILD_DIR)/test_ipc: tests/unit/test_ipc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# ---- Phase Q15: mq_notify state machine / queue format unit test ----
+$(BUILD_DIR)/test_mq_notify: tests/unit/test_mq_notify.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

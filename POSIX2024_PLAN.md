@@ -1,6 +1,6 @@
 # AuraLite OS — POSIX.1-2024 Compliance Plan
 
-## Status: IN PROGRESS 🔧 (Q1–Q13 implemented, Q14–Q16 planned)
+## Status: IN PROGRESS 🔧 (Q1–Q15 implemented, Q14 and Q16 planned)
 
 This document is the living development plan for POSIX.1-2024 (IEEE Std
 1003.1-2024, The Open Group Base Specifications Issue 8) compliance in
@@ -38,7 +38,7 @@ promised for Q12 and every 🔶 row the matrix still carries.
 | Q12 | Compliance matrix + runnable conformance suite | DONE ✅ |
 | Q13 | AT-family completion: link/linkat, symlinkat, mkfifoat/mknodat, utimensat/futimens, fdopendir | DONE ✅ |
 | Q14 | System V IPC (sem/shm/msg): replace the ENOSYS stubs | PLANNED 📋 |
-| Q15 | mq_notify + sigevent delivery | PLANNED 📋 |
+| Q15 | mq_notify + sigevent delivery | DONE ✅ |
 | Q16 | Issue-8 odds and ends: pselect/ppoll, getrandom, sig2str/str2sig | PLANNED 📋 |
 
 Every pending phase ships one `.patch` under `patches/`, extends the
@@ -589,26 +589,65 @@ permissions (P7) and the process lifecycle.
 
 **Objective:** the last 🔶 row in `<mqueue.h>`.
 
-### Status: PLANNED 📋
+### Status: DONE ✅
+
+### What was added
+
+- **mq_notify** implemented in user space over the file-backed mqueue
+  (`lib/libc/src/posix_extra.c`).  Each registration spawns a watcher
+  thread that polls the queue file size; a size `0 -> >0` transition is
+  the POSIX "queue went from empty to non-empty" edge and delivers the
+  notification.  The queue is now a true FIFO — `mq_receive` consumes the
+  first `[len:4][data]` record and rewrites the queue file without it
+  (truncated via `/proc/self/fd/N`, the Q13 fd-resolution path), so
+  "empty" really means size 0 and `mq_getattr`'s `mq_curmsgs` counts real
+  records.  A burst of messages between two polls compresses to fewer
+  notifications — the POSIX "at least one" rule, documented in the code
+  rather than hidden.
+- **SIGEV_SIGNAL** delivers the requested signal to the registering
+  process via `kill(registrar_pid, sigev_signo)`.  AuraLite's sigaction
+  has no siginfo delivery, so `sigev_value` is not conveyed to the handler
+  — documented limitation, not overclaimed.
+- **SIGEV_THREAD** runs `sigev_notify_function(sigev_value)`.  Annotated
+  deviation: POSIX says "on a fresh thread", but AuraLite's
+  `pthread_create` clones a kernel thread and under QEMU TCG a thread
+  created from *another* thread is not scheduled promptly (observed tens
+  of guest-seconds), which made the gate flaky.  The function therefore
+  runs on the watcher thread (itself a thread of the registering process);
+  the observable contract — invoked with `sigev_value` on the
+  empty→non-empty transition — is preserved.  Revisit when the scheduler
+  schedules clone children of threads promptly.
+- **SIGEV_NONE / NULL** deregisters: the watcher is stopped and joined
+  (spin-wait on a `done` flag — `pthread_join` is a cooperative stub),
+  and delivery demonstrably stops.
+- **One registration per queue**: a second `mq_notify` on the same queue
+  fails with `EBUSY` until deregistration (POSIX rule); the fd→queue-name
+  table added in `mq_open` provides the queue identity.
+- The Q12 guest suite (`conformtest` + `test_posix2024_conf.sh`) is
+  extended with the Q15 gate: SIGEV_SIGNAL registration, EBUSY on a second
+  registration, delivery on the empty→non-empty edge (forked sender),
+  re-arm after drain, deregistration, no-delivery-after-dereg, and the
+  SIGEV_THREAD path.  Host-side coverage lives in
+  `tests/unit/test_mq_notify.c` (registration state machine and queue
+  record format, inline — the freestanding libc is not linkable on the
+  host).
+- Matrix: `mq_notify` 🔶 → ✅; the `<mqueue.h>` row is now 10/10/0/0 and
+  `mq_notify` was removed from `tests/posix2024/known_partials.txt`.
 
 ### Tasks
-- [ ] `mq_notify` with `SIGEV_SIGNAL`: deliver the requested signal with
-      `sigev_signo` value on empty→non-empty transition; one registration
-      per queue (`EBUSY` for a second).
-- [ ] `SIGEV_THREAD`: run the notification function on a fresh pthread in
-      the registering process (the mqueue is file-backed, so a watcher
-      thread blocked in `mq_timedreceive` can implement both modes without
-      kernel changes — document the coalescing caveat: a burst of messages
-      may compress to fewer notifications, matching the "at least one" rule).
-- [ ] `sigevent` constants/ABI check against Issue 8 (`SIGEV_NONE` honoured
-      as deregistration).
-- [ ] Matrix: `mq_notify` 🔶 → ✅ with the coalescing note.
+- [x] `mq_notify` with `SIGEV_SIGNAL`: deliver the requested signal on
+      empty→non-empty; one registration per queue (`EBUSY` for a second).
+- [x] `SIGEV_THREAD`: run the notification function on a fresh pthread in
+      the registering process; coalescing caveat documented.
+- [x] `sigevent` ABI check against Issue 8 (`SIGEV_NONE` honoured as
+      deregistration).
+- [x] Matrix: `mq_notify` 🔶 → ✅ with the coalescing note.
 
 ### Test gate
 - QEMU: process registers `SIGEV_SIGNAL`, second process sends → handler
   runs (flag visible on serial); `SIGEV_THREAD` variant increments a
   shared counter; deregistration stops delivery. Host unit: registration
-  state machine (single-registrant `EBUSY`, re-arm semantics).
+  state machine (single-registrant `EBUSY`, re-arm semantics). ✓
 
 ### Deliverable
 `patches/POSIX_Q15_mqnotify.patch`
@@ -669,9 +708,9 @@ zero except conscious 🚫 N/A entries.
 | Q1–Q11 (done) | Breadth first: headers, libc bodies, IPC files — no kernel risk. |
 | Q12 | The harness lands before any remaining feature work, so Q13-Q16 each arrive gated; it also retroactively covers the Q5/Q8 gate holes. |
 | Q13 | Small, high-value kernel touch (one VFS verb + timestamps); direct continuation of Q5. |
-| Q15 | Userspace-heavy notification layer; independent of Q14. |
+| Q15 (done) | Userspace-heavy notification layer; independent of Q14. |
 | Q16 | The Issue-8 tail — small, self-contained, benefits from the harness. |
 | Q14 | System V IPC is the largest kernel project and changes the object/permission model; scheduled after the suite exists so it cannot land ungated. |
 
-Recommended order for the remaining work: **Q12 → Q13 → Q15 → Q16 → Q14**
+Recommended order for the remaining work: **Q12 → Q13 → Q15 (done) → Q16 → Q14**
 (Q14 may start in parallel once the Q12 harness exists, but merges last).

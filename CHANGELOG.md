@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [POSIX.1-2024 Phase Q15 — mq_notify + sigevent delivery] 2026-08-05
+
+`POSIX2024_PLAN.md` phase Q15 closes the last 🔶 row in `<mqueue.h>`:
+`mq_notify` no longer returns `ENOSYS`.
+
+- **mq_notify** is implemented in user space over the file-backed mqueue
+  (`lib/libc/src/posix_extra.c`): each registration spawns a watcher
+  thread that polls the queue file size, and a size `0 -> >0` transition
+  (empty→non-empty) delivers the notification.
+- To make "empty" truthful, the queue is now a real FIFO: `mq_receive`
+  consumes the first `[len:4][data]` record and rewrites the queue file
+  without it (truncated through `/proc/self/fd/N`, the Q13 fd-resolution
+  path — there is still no ftruncate syscall), and `mq_getattr` counts
+  real records into `mq_curmsgs`.  An empty receive now reports `EAGAIN`
+  instead of a silent 0-byte success.
+- **SIGEV_SIGNAL** delivers `sigev_signo` to the registering process
+  (via `kill`; AuraLite's sigaction has no siginfo, so `sigev_value` is
+  not conveyed — documented).  **SIGEV_THREAD** runs
+  `sigev_notify_function(sigev_value)` — annotated deviation: it runs on
+  the watcher thread rather than a fresh pthread, because under QEMU TCG a
+  thread created from another thread is not scheduled promptly (tens of
+  guest-seconds), which made the gate flaky; see `POSIX2024_PLAN.md` Q15.
+  **SIGEV_NONE / NULL** deregisters and delivery demonstrably stops.
+  A second registration on the same queue fails with `EBUSY` (one
+  registration per queue, per POSIX).  A burst of messages between polls
+  compresses to fewer notifications — the "at least one" rule, documented.
+- The Q12 guest suite is extended with nine Q15 checks (registration,
+  EBUSY, delivery from a forked sender, re-arm after drain,
+  deregistration, no-delivery-after-dereg, SIGEV_THREAD); a new host unit
+  `tests/unit/test_mq_notify.c` covers the record format/dequeue algorithm
+  and the registration state machine inline.  Matrix: `<mqueue.h>` row is
+  10/10/0/0, `mq_notify` removed from `known_partials.txt`.
+
 ## [POSIX.1-2024 Phase Q13 — AT-family completion] 2026-08-04
 
 `POSIX2024_PLAN.md` phase Q13 finishes the `*at()` surface POSIX.1-2024
