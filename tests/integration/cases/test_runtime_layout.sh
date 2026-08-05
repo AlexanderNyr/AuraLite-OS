@@ -54,7 +54,7 @@ il_assert_grep "$LOG" "apps/"                         "ls / shows apps"
 il_assert_grep "$LOG" "demos/"                        "ls / shows demos"
 il_assert_grep "$LOG" "tests/"                        "ls / shows tests"
 il_assert_grep "$LOG" "pkg/"                          "ls / shows pkg"
-il_assert_grep "$LOG" "matrix.pkg"                    "ls /pkg shows a package archive"
+il_assert_grep "$LOG" "matrix.apkg"                   "ls /pkg shows a package archive"
 
 # --- a program runs from its new home ---
 il_assert_grep "$LOG" "running /bin/sysinfo"          "a program runs at its new path"

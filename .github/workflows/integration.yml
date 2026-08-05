@@ -78,17 +78,14 @@ jobs:
 
       - name: BL6 -- UEFI BOOTX64.EFI via OVMF
         run: bash tests/integration/bl6_uefi_smoke.sh
-        continue-on-error: true    # OVMF assets vary between runners
 
       - name: BL7 -- dual-boot ISO (BIOS + UEFI in one file)
         run: bash tests/integration/bl7_dual_smoke.sh
-        continue-on-error: true    # OVMF assets vary between runners
 
       - name: Run QEMU integration tests
         run: make test-integration
         env:
           NO_COLOR: "1"
-        continue-on-error: true    # existing legacy tests unaffected by BL8
 
       - name: Upload serial logs on failure
         if: failure()
