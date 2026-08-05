@@ -24,7 +24,7 @@ int main(void) {
     printf("  Process ID : %d\n", (int)pid);
     puts("  OS         : AuraLite OS 0.0.1");
     puts("  Arch       : x86_64 (AMD64)");
-    puts("  Bootloader : Limine 12.3.3");
+    puts("  Bootloader : Custom BIOS/UEFI (BL1-BL8)");
     puts("  Features   : SMP, VFS, TCP/IP, DHCP");
     puts("  Shell      : Interactive (serial I/O)");
 

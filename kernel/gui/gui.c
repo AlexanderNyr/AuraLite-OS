@@ -527,14 +527,27 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
         return -1;
     }
     mark_window_dirty(win);
-    win->w = w; win->h = h;
-    if (new_bw != win->back_w || new_bh != win->back_h) {
-        size_t buf_size = (size_t)new_bw * new_bh * 4;
-        if (buf_size / 4 != (size_t)new_bw * new_bh) {
+
+    /* FIX (resize-allocation): keep the existing back buffer whenever it
+     * already covers the requested content size.  Shrinking a window must
+     * not allocate at all (previously every drag-resize mouse event did
+     * kmalloc + kfree + a full multi-MiB memset, and the kernel heap never
+     * returns pages to the PMM, so the peak stuck around forever).  Growing
+     * inside the current allocation is also free.  Only growth beyond the
+     * current allocation reallocates, rounded up to a 64 px grid so a
+     * drag-resize pays for one allocation per 64 px of travel instead of
+     * one per mouse event.  back_w/back_h now mean the ALLOCATED buffer
+     * size; the logical content size is content_w()/content_h(), which is
+     * what gui_get_window_size() and the compositor clip to. */
+    if (new_bw > win->back_w || new_bh > win->back_h) {
+        uint32_t alloc_w = (new_bw + 63u) & ~63u;
+        uint32_t alloc_h = (new_bh + 63u) & ~63u;
+        size_t buf_size = (size_t)alloc_w * alloc_h * 4;
+        if (buf_size / 4 != (size_t)alloc_w * alloc_h) {
             /* Integer overflow. */
             win->w = win->back_w + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : 2 * active_theme.border_w);
             win->h = win->back_h + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : active_theme.titlebar_h + 2 * active_theme.border_w);
-            kprintf("[gui] resize_window: buffer size overflow %ux%u\n", new_bw, new_bh);
+            kprintf("[gui] resize_window: buffer size overflow %ux%u\n", alloc_w, alloc_h);
             spinlock_release(&gui_lock);
             return -1;
         }
@@ -543,23 +556,24 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
             /* Roll back w/h to keep consistency. */
             win->w = win->back_w + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : 2 * active_theme.border_w);
             win->h = win->back_h + (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS) ? 0 : active_theme.titlebar_h + 2 * active_theme.border_w);
-            kprintf("[gui] resize_window: kmalloc failed for %ux%u buffer\n", new_bw, new_bh);
+            kprintf("[gui] resize_window: kmalloc failed for %ux%u buffer\n", alloc_w, alloc_h);
             spinlock_release(&gui_lock);
             return -1;
         }
-        size_t pixels = (size_t)new_bw * (size_t)new_bh;
+        size_t pixels = (size_t)alloc_w * (size_t)alloc_h;
         for (size_t i = 0; i < pixels; i++) nb[i] = active_theme.win_content;
-        /* Copy overlapping region with optimized row copies. */
+        /* Copy overlapping region with the OLD row stride. */
         uint32_t cw = new_bw < win->back_w ? new_bw : win->back_w;
         uint32_t ch = new_bh < win->back_h ? new_bh : win->back_h;
         for (uint32_t row = 0; row < ch; row++) {
-            memcpy(nb + row * new_bw, win->back + row * win->back_w, cw * 4);
+            memcpy(nb + (size_t)row * alloc_w, win->back + (size_t)row * win->back_w, (size_t)cw * 4);
         }
         if (win->back) kfree(win->back);
         win->back   = nb;
-        win->back_w = new_bw;
-        win->back_h = new_bh;
+        win->back_w = alloc_w;
+        win->back_h = alloc_h;
     }
+    win->w = w; win->h = h;
     win->content_dirty = 1;
     mark_window_dirty(win);
     /* Post resize event. */
@@ -680,8 +694,12 @@ int gui_snap_window(int wid, gui_snap_t snap) {
 
 int gui_get_window_size(int wid, uint32_t *w, uint32_t *h) {
     if (!win_alive(wid)) return -1;
-    if (w) *w = windows[wid].back_w;
-    if (h) *h = windows[wid].back_h;
+    /* FIX: report the LOGICAL content size (content_w/content_h), not the
+     * allocated buffer size.  After the resize fix the buffer can be larger
+     * than the window (it is kept on shrink), so back_w/back_h no longer
+     * equal what applications should draw into. */
+    if (w) *w = content_w(&windows[wid]);
+    if (h) *h = content_h(&windows[wid]);
     return 0;
 }
 
@@ -1090,6 +1108,15 @@ static void blit_window_content(const gui_win_t *win) {
     int32_t src_y = 0, src_x = 0;
     int32_t dst_y = cy, dst_x = cx;
     uint32_t copy_w = win->back_w, copy_h = win->back_h;
+
+    /* FIX: clip to the logical content area, not the (possibly larger)
+     * allocated buffer, so a window that was shrunk (its buffer is kept)
+     * never draws outside its frame. */
+    {
+        uint32_t lw = content_w(win), lh = content_h(win);
+        if (copy_w > lw) copy_w = lw;
+        if (copy_h > lh) copy_h = lh;
+    }
 
     if (dst_y < 0) {
         src_y = -dst_y;
@@ -1847,22 +1874,20 @@ static void route_mouse_event(const mouse_event_t *ev) {
         }
 
         if (ev->released & MOUSE_BTN_LEFT) {
+            int rel_wid = drag_wid;
+            gui_snap_t apply_snap = snap_preview_type;
             drag_mode = 0;
             drag_wid  = -1;
             snap_preview_active = 0;
-            /* Check if we should snap. */
-            if (snap_preview_type != GUI_SNAP_NONE && win_alive(drag_wid == -1 ? 0 : 0)) {
-                /* Find the window we were dragging by checking recent position. */
-                /* Actually, the drag_wid was reset; let's use the fact that
-                 * we saved it before clearing. We handle this differently: */
+            snap_preview_type = GUI_SNAP_NONE;
+            /* FIX (snap-on-release): the old code cleared drag_wid before
+             * checking it, so the snap never applied — the preview drew but
+             * the window never snapped.  Apply the pending snap to the
+             * window that was actually being dragged. */
+            if (apply_snap != GUI_SNAP_NONE && rel_wid >= 0 && win_alive(rel_wid)) {
+                gui_snap_window(rel_wid, apply_snap);
             }
             full_dirty = 1;
-        }
-        /* Handle snap on release. */
-        if (drag_mode == 0 && snap_preview_type != GUI_SNAP_NONE) {
-            /* We need to snap the window that was just released. */
-            /* We already cleared drag_wid, but we can detect the window under cursor. */
-            /* Better approach: save drag_wid before clearing. */
         }
         gui_set_cursor(target_cursor);
         return;

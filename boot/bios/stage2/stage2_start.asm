@@ -124,27 +124,32 @@ stage2_entry:
     call uart16_puts
 
     ; ---- Disk read self-test (BL3.disk) ----------------------------
-    ; Read sector 1 (the start of Stage 2 itself) back into a scratch
-    ; buffer at 0x00011000 and verify the first two bytes match what
-    ; we currently have loaded at 0x8000 (which are also the first
-    ; bytes of Stage 2).  Proves that the disk_read_lba helper is
-    ; wired up and the DAP layout is correct.
+    ; Read LBA 0 (the boot sector / MBR) back into a scratch buffer at
+    ; 0x00011000 and verify the 0x55AA boot signature at byte 510.  This
+    ; proves the disk_read_lba helper is wired up and the DAP layout is
+    ; correct, independent of where this Stage 2 binary happens to live on
+    ; the medium.
+    ; (The old check read LBA 1 and compared it against the loaded Stage 2.
+    ;  That is correct for `make iso-bios` (Stage 2 at LBA 1) but the dual
+    ;  hybrid image from `make iso` puts Stage 2 at LBA 34, so the check
+    ;  always printed FAIL there even though the read itself worked.)
     push es
     mov  ax, 0x1100                     ; scratch segment
     mov  es, ax
     xor  bx, bx                         ; ES:BX = 0x1100:0000 = 0x11000
-    mov  eax, 1                         ; LBA 1 = first sector of Stage 2
+    xor  eax, eax                       ; LBA 0 = boot sector / MBR
     mov  cx, 1
     call disk_read_lba
     pop  es
     jc   .disk_fail
-    ; Compare [0x11000] with [0x8000] (both should be 0xFA = CLI).
+    ; Verify the 0x55AA boot signature at offset 510.
     push ds
     mov  ax, 0x1100
     mov  ds, ax
-    mov  al, [ds:0]
+    mov  al, [ds:510]
+    mov  ah, [ds:511]
     pop  ds
-    cmp  al, 0xFA                       ; CLI opcode
+    cmp  ax, 0xAA55                     ; little-endian boot signature
     jne  .disk_fail
     mov  si, msg_disk_ok
     call uart16_puts
