@@ -333,6 +333,24 @@ int select(int nfds, fd_set *readfds, fd_set *writefds,
                                     (uint64_t)exceptfds, (uint64_t)timeout, 0));
 }
 
+/* Q16: pselect — the mask travels to the kernel and is applied for the
+ * duration of the block (pselect6 ABI: a6 = &{ sigset_t*, size_t }). */
+int pselect(int nfds, fd_set *readfds, fd_set *writefds,
+            fd_set *exceptfds, const struct timespec *timeout,
+            const sigset_t *sigmask) {
+    struct { const sigset_t *ss; size_t ss_len; } sig;
+    uint64_t sig_ptr = 0;
+    if (sigmask) {
+        sig.ss = sigmask;
+        sig.ss_len = sizeof(*sigmask);
+        sig_ptr = (uint64_t)(uintptr_t)&sig;
+    }
+    return (int)syscall_ret(syscall(SYS_PSELECT6, (uint64_t)nfds,
+                                    (uint64_t)readfds, (uint64_t)writefds,
+                                    (uint64_t)exceptfds, (uint64_t)timeout,
+                                    sig_ptr));
+}
+
 uint32_t dns_resolve(const char *hostname) {
     /* Returns a raw IPv4 address (0 on failure); not an in-band errno. */
     return (uint32_t)syscall(SYS_DNS, (uint64_t)hostname, 0, 0, 0, 0, 0);
@@ -1684,4 +1702,55 @@ int getentropy(void *buffer, size_t length) {
     long ret = syscall(318, (long)buffer, (long)length, 0, 0, 0, 0);
     if (ret < 0) { errno = (int)-ret; return -1; }
     return 0;
+}
+
+/* Q16: getrandom(2) — Linux-compatible wrapper for syscall 319; draws from
+ * the same kernel pool as getentropy. */
+ssize_t getrandom(void *buf, size_t buflen, unsigned int flags) {
+    if (!buf && buflen) { errno = EFAULT; return -1; }
+    long ret = syscall(SYS_GETRANDOM, (long)buf, (long)buflen, (long)flags, 0, 0, 0);
+    if (ret < 0) { errno = (int)-ret; return -1; }
+    return (ssize_t)ret;
+}
+
+/* ---- Q16: sig2str / str2sig (POSIX.1-2024 Issue 8) ---- */
+
+/* The AuraLite signal set, in signal-number order.  Index i holds signal
+ * i's name (index 0 unused).  Names omit the "SIG" prefix per POSIX. */
+static const char *const q16_sig_names[NSIG] = {
+    [0] = NULL,
+    [SIGHUP]   = "HUP",    [SIGINT]  = "INT",    [SIGQUIT] = "QUIT",
+    [SIGILL]   = "ILL",    [SIGTRAP] = "TRAP",   [SIGABRT] = "ABRT",
+    [SIGBUS]   = "BUS",    [SIGFPE]  = "FPE",    [SIGKILL] = "KILL",
+    [SIGUSR1]  = "USR1",   [SIGSEGV] = "SEGV",   [SIGUSR2] = "USR2",
+    [SIGPIPE]  = "PIPE",   [SIGALRM] = "ALRM",   [SIGTERM] = "TERM",
+    [SIGCHLD]  = "CHLD",   [SIGCONT] = "CONT",   [SIGSTOP] = "STOP",
+    [SIGTSTP]  = "TSTP",   [SIGTTIN] = "TTIN",   [SIGTTOU] = "TTOU",
+    [SIGURG]   = "URG",    [SIGXCPU] = "XCPU",   [SIGXFSZ] = "XFSZ",
+    [SIGVTALRM]= "VTALRM", [SIGPROF] = "PROF",   [SIGWINCH]= "WINCH",
+};
+
+int sig2str(int signum, char *str) {
+    if (!str || signum < 1 || signum >= NSIG) { errno = EINVAL; return -1; }
+    const char *name = q16_sig_names[signum];
+    if (!name) { errno = EINVAL; return -1; }
+    size_t n = strlen(name);
+    if (n >= SIG2STR_MAX) { errno = EINVAL; return -1; }
+    memcpy(str, name, n + 1);
+    return 0;
+}
+
+int str2sig(const char *restrict str, int *restrict signum) {
+    if (!str || !signum) { errno = EINVAL; return -1; }
+    const char *p = str;
+    if (p[0] == 'S' && p[1] == 'I' && p[2] == 'G' && p[3] != '\0')
+        p += 3;                    /* accept both "HUP" and "SIGHUP" */
+    for (int s = 1; s < NSIG; s++) {
+        if (q16_sig_names[s] && strcmp(p, q16_sig_names[s]) == 0) {
+            *signum = s;
+            return 0;
+        }
+    }
+    errno = EINVAL;
+    return -1;
 }

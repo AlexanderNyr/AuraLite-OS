@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [POSIX.1-2024 Phase Q16 — Issue-8 tail: pselect/ppoll, getrandom, sig2str] 2026-08-05
+
+`POSIX2024_PLAN.md` phase Q16 closes the remaining named Issue-8 functions:
+`pselect`, `ppoll`, `getrandom`, `sig2str`/`str2sig`.  Only Q14 (System V
+IPC) is left in the plan.
+
+- **pselect/ppoll with atomic mask-and-wait.**  `SYS_PSELECT6` (320) and
+  `SYS_PPOLL` (321) install the caller's signal mask for the duration of
+  the block only and restore it before returning — the classic pselect
+  race is closed in the kernel, not papered over in libc.  The select
+  machinery was refactored into `do_select_kernel` + `do_select`, and
+  `do_ppoll` reuses the same blocking path.  A real bug was fixed on the
+  way: `do_select` used `sched_yield()`, which rewrites the thread state
+  to `THREAD_READY`, so the wait never actually blocked (it re-ran
+  immediately); it now blocks with `schedule()` exactly like
+  `kernel_nanosleep`.  `signal_send()` wakes a `THREAD_BLOCKED` thread for
+  an unmasked, non-`SIG_IGN` signal, and `do_select_kernel` returns
+  `-EINTR` when a wake leaves nothing ready — so plain `select()` is now
+  signal-interruptible too, as POSIX requires.
+- **getrandom(2) + `<sys/random.h>`.**  `SYS_GETRANDOM` (319):
+  Linux-compatible flags (`GRND_NONBLOCK`/`GRND_RANDOM` accepted — the
+  pool is always ready; unknown flags `EINVAL`), bounds checks, kernel
+  bounce buffer.  The kernel RNG graduated from the one-off rdtsc-xorshift
+  filler to a seeded `xorshift128+` pool (`kernel/rng.c`), seeded from
+  RDTSC / PIT ticks / kernel-pointer addresses / RDRAND (when
+  CPUID.1:ECX.RDRAND is set), mixed via SplitMix64 with a warm-up discard;
+  `getentropy` now draws from the same pool.  `TODO.md` states the limits
+  honestly: xorshift128+ is a PRNG, not a CSPRNG.
+- **sig2str/str2sig** (`<signal.h>`, `SIG2STR_MAX`): one signal-name table
+  for the full set (27 names); `str2sig` accepts both `"HUP"` and
+  `"SIGHUP"`.  Five missing signal numbers (`SIGURG/SIGXCPU/SIGXFSZ/
+  SIGVTALRM/SIGPROF`) were added to the libc `<signal.h>`.
+- Tests: host `tests/unit/test_q16_tail.c` (468 checks — table
+  round-trip/prefix/uniqueness, ABI constants); guest `conformtest`
+  gains `test_q16` — pselect 20-iteration wake loop (every iteration must
+  return `EINTR`), mask-blocks-the-signal check, ppoll empty/data/
+  signal-interrupted, getrandom streams-differ and flags, sig2str round
+  trip.  Matrix: `<sys/select.h>`, `<poll.h>`, `<sys/random.h>` and two
+  `<signal.h>` rows added; drift check now verifies 416 symbols.
+
 ## [POSIX.1-2024 Phase Q15 — mq_notify + sigevent delivery] 2026-08-05
 
 `POSIX2024_PLAN.md` phase Q15 closes the last 🔶 row in `<mqueue.h>`:

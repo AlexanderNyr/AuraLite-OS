@@ -272,13 +272,16 @@ for the feature matrix.
 
 ### Security / cryptography
 
-- **`getentropy()` is not cryptographically random.** `SYS_GETENTROPY`
-  (syscall 318) returns `tsc ^ timer_get_ticks() ^ &out ^ (i * LCG_CONST)`.
-  Every input is observable or guessable by anyone who knows roughly when the
-  machine booted. It is fine for the stack-guard cookie and ASLR jitter it was
-  written for, and **unfit for key material** — anything cryptographic must
-  wait for `INTERNET_PLAN.md` phase N0, which replaces it with a CSPRNG seeded
-  from RDRAND/RDSEED and fails closed when no real source exists.
+- **`getrandom()`/`getentropy()` draw from a PRNG, not a CSPRNG (Q16).**
+  `kernel/rng.c` is a seeded `xorshift128+` pool: the seed mixes RDTSC /
+  PIT ticks / kernel-pointer addresses / RDRAND (when present), via
+  SplitMix64.  It is a genuine improvement over the old per-call
+  `tsc ^ ticks ^ &out ^ LCG` filler (which TODO previously flagged here),
+  and fine for the stack-guard cookie and ASLR jitter, but xorshift128+
+  is **not cryptographically secure** — it is **unfit for key material**.
+  Anything cryptographic must wait for `INTERNET_PLAN.md` phase N0, which
+  replaces it with a CSPRNG (chacha-lite or similar) seeded from
+  RDRAND/RDSEED and fails closed when no real source exists.
 - **There is no cryptography in the tree at all.** No SHA-256, no AES, no
   curve arithmetic. `kernel/fs/btrfs.c` writes its SHA-256 checksum field as
   zeros and says so in a comment. Consequently there is no TLS and no HTTPS;

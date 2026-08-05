@@ -63,13 +63,21 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
     int ready = 0;
     for (nfds_t i = 0; i < nfds; i++) {
         if (fds[i].fd < 0) continue;
-        if ((fds[i].events & POLLIN)  && FD_ISSET(fds[i].fd, &rfds))
-            fds[i].revents |= POLLIN;
-        if ((fds[i].events & POLLOUT) && FD_ISSET(fds[i].fd, &wfds))
-            fds[i].revents |= POLLOUT;
+        if (FD_ISSET(fds[i].fd, &rfds)) fds[i].revents |= POLLIN;
+        if (FD_ISSET(fds[i].fd, &wfds)) fds[i].revents |= POLLOUT;
         if (fds[i].revents) ready++;
     }
     return ready;
+}
+
+/* Q16: ppoll — delegate to the kernel's SYS_PPOLL so the signal mask is
+ * applied atomically with the block.  q12_ret decodes the in-band errno. */
+static int q12_ret(int64_t raw);   /* defined below (Q12 missing-body batch) */
+int ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
+          const sigset_t *sigmask) {
+    return q12_ret(syscall(SYS_PPOLL, (uint64_t)fds, (uint64_t)nfds,
+                           (uint64_t)timeout, (uint64_t)sigmask,
+                           sizeof(sigset_t), 0));
 }
 
 /* ============================ locale (C only) ============================= */

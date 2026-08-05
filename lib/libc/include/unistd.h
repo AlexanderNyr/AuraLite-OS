@@ -79,6 +79,10 @@
 #define SYS_FCNTL  72
 #define SYS_SELECT   23
 #define SYS_POLL      7
+/* Q16: Issue-8 tail syscalls (kernel numbers 319..321; 318 = getentropy). */
+#define SYS_GETRANDOM 319
+#define SYS_PSELECT6  320
+#define SYS_PPOLL     321
 #define SYS_GETCWD  540
 #define SYS_CHDIR   541
 #define SYS_FCHDIR  542

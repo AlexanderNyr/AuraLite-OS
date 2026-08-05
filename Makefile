@@ -1091,6 +1091,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_q10_stubs \
                 $(BUILD_DIR)/test_ipc \
                 $(BUILD_DIR)/test_mq_notify \
+                $(BUILD_DIR)/test_q16_tail \
                 $(BUILD_DIR)/test_keymap
 
 test-unit: $(UNIT_TESTS)
@@ -1325,6 +1326,11 @@ $(BUILD_DIR)/test_ipc: tests/unit/test_ipc.c
 
 # ---- Phase Q15: mq_notify state machine / queue format unit test ----
 $(BUILD_DIR)/test_mq_notify: tests/unit/test_mq_notify.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# ---- Phase Q16: Issue-8 tail unit test (sig2str/str2sig table) ----
+$(BUILD_DIR)/test_q16_tail: tests/unit/test_q16_tail.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

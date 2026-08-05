@@ -137,6 +137,7 @@
 | Function | Status | Notes |
 |---|---|---|
 | poll | ✅ | Via select() |
+| ppoll | ✅ | Q16: SYS_PPOLL; atomic signal mask |
 
 ## `<pthread.h>` (P9 + Q6)
 
@@ -233,6 +234,8 @@
 | alarm | ✅ | |
 | pause | ✅ | |
 | struct sigevent | ✅ | Q7 |
+| sig2str | ✅ | Q16: signal-name table |
+| str2sig | ✅ | Q16: accepts "HUP" and "SIGHUP" |
 
 ## `<spawn.h>` (Q9)
 
@@ -484,6 +487,19 @@
 |---|---|---|
 | times | ✅ | Stub |
 
+## `<sys/select.h>`
+
+| Function | Status | Notes |
+|---|---|---|
+| select | ✅ | P10; true blocking via wait queues |
+| pselect | ✅ | Q16: SYS_PSELECT6; atomic mask-and-wait |
+
+## `<sys/random.h>` (Q16)
+
+| Function | Status | Notes |
+|---|---|---|
+| getrandom | ✅ | Q16: SYS_GETRANDOM; seeded xorshift128+ pool (non-crypto, see TODO.md); GRND_NONBLOCK/GRND_RANDOM accepted |
+
 ## `<sys/socket.h>`
 
 | Function | Status | Notes |
@@ -529,21 +545,23 @@
 | `<math.h>` | 20+ | 20+ | 0 | 0 |
 | `<mqueue.h>` | 10 | 10 | 0 | 0 |
 | `<monetary.h>` | 1 | 1 | 0 | 0 |
-| `<poll.h>` | 1 | 1 | 0 | 0 |
+| `<poll.h>` | 2 | 2 | 0 | 0 |
 | `<pthread.h>` | 30+ | 30+ | 0 | 0 |
 | `<sched.h>` | 8 | 8 | 0 | 0 |
 | `<search.h>` | 9 | 9 | 0 | 0 |
 | `<semaphore.h>` | 10 | 10 | 0 | 0 |
-| `<signal.h>` | 15+ | 15+ | 0 | 0 |
+| `<signal.h>` | 17+ | 17+ | 0 | 0 |
 | `<spawn.h>` | 14+ | 14+ | 0 | 0 |
 | `<stdio.h>` | 30+ | 30+ | 0 | 0 |
 | `<stdlib.h>` | 25+ | 25+ | 0 | 0 |
 | `<string.h>` | 25+ | 25+ | 0 | 0 |
 | `<syslog.h>` | 5 | 5 | 0 | 0 |
+| `<sys/random.h>` | 1 | 1 | 0 | 0 |
+| `<sys/select.h>` | 2 | 2 | 0 | 0 |
 | `<termios.h>` | 6 | 6 | 0 | 0 |
 | `<time.h>` | 12+ | 12+ | 0 | 0 |
 | `<unistd.h>` | 60+ | 60+ | 0 | 0 |
 | `<utmpx.h>` | 3 | 3 | 0 | 0 |
 | `<wordexp.h>` | 2 | 2 | 0 | 0 |
 | IPC (sysv) | 13 | 1 | 12 | 0 |
-| **Total** | **~400** | **~381** | **~19** | **0** |
+| **Total** | **~410** | **~391** | **~19** | **0** |

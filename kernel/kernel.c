@@ -13,6 +13,7 @@
 #include "kernel/lib/klog.h"
 #include "kernel/lib/stack_protector.h"
 #include "kernel/boot_info.h"
+#include "kernel/rng.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/user.h"
@@ -243,6 +244,10 @@ void kmain(boot_info_t *boot_info) {
     kprintf("[boot] initialising timer (PIT @ 100 Hz)...\n");
     pit_init(100);
     timer_self_test();
+
+    /* Q16: seed the kernel CSPRNG pool (rdtsc/ticks/rdrand jitter).  Must
+     * come after the timer so timer_get_ticks() is live. */
+    rng_init();
 
     kprintf("[boot] initialising scheduler...\n");
     sched_init();

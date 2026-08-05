@@ -33,6 +33,11 @@
 #define SIGTSTP  20
 #define SIGTTIN  21
 #define SIGTTOU  22
+#define SIGURG   23
+#define SIGXCPU  24
+#define SIGXFSZ  25
+#define SIGVTALRM 26
+#define SIGPROF  27
 #define SIGWINCH 28
 #define NSIG     32
 
@@ -75,6 +80,12 @@ int  sigpending(sigset_t *set);
 int  sigsuspend(const sigset_t *mask);
 unsigned alarm(unsigned seconds);
 int  pause(void);
+
+/* Q16: sig2str/str2sig — signal names (POSIX.1-2024 Issue 8). */
+#define SIG2STR_MAX 32
+
+int sig2str(int signum, char *str);
+int str2sig(const char *restrict str, int *restrict signum);
 
 /* POSIX.1 realtime signal extension for mqueue notification. */
 union sigval {

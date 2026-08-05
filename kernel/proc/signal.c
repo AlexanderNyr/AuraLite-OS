@@ -88,6 +88,26 @@ void signal_send(tcb_t *target, int signo) {
     }
     target->sig_pending |= sig_bit(signo);
 
+    /* Q16 (pselect/ppoll): a signal that is NOT blocked by the target's
+     * mask must interrupt a thread blocked in an interruptible wait
+     * (select/pselect/ppoll/nanosleep/futex).  Without this, a thread
+     * sleeping in select with an infinite timeout would never observe a
+     * pending signal — pselect's whole point is that the mask is installed
+     * atomically with the block, so the signal must be able to wake it.
+     * The blocked syscall re-checks readiness and the pending set when it
+     * resumes and returns -EINTR (see do_select / kernel_nanosleep).
+     * Ignored signals (SIG_IGN) and masked signals do not wake: the first
+     * is covered by the pending&~mask check, the second by the
+     * sa_handler != SIG_IGN check. */
+    if (target->state == THREAD_BLOCKED &&
+        (target->sig_pending & ~target->sig_mask) &&
+        target->sig_actions[signo].sa_handler != SIG_IGN) {
+        target->state = THREAD_READY;
+        if (__sync_lock_test_and_set(&target->on_queue, 1) == 0) {
+            sched_add_thread(target);
+        }
+    }
+
     /* A stopped thread cannot deliver to itself — delivery happens at ITS
      * return-to-user boundary, which it never reaches while stopped — so the
      * sender must wake it here.  SIGCONT is the obvious case (otherwise a

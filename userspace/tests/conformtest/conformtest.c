@@ -41,7 +41,10 @@
 #include "spawn.h"
 #include "mqueue.h"
 #include "semaphore.h"
-#include "signal.h"      /* Q15: mq_notify SIGEV_SIGNAL/SIGEV_THREAD */
+#include "signal.h"      /* Q15: mq_notify SIGEV_SIGNAL/SIGEV_THREAD; Q16: sig2str */
+#include "sys/select.h"  /* Q16: pselect */
+#include "poll.h"        /* Q16: ppoll */
+#include "sys/random.h"  /* Q16: getrandom */
 
 static int failures = 0;
 
@@ -782,6 +785,149 @@ static void test_fexecve(void) {
     close(fd);
 }
 
+/* ------------------------------------------------------------------ */
+/* Q16: Issue-8 tail — pselect/ppoll, getrandom, sig2str/str2sig       */
+/* ------------------------------------------------------------------ */
+static volatile int q16_sig_flag = 0;
+static void q16_sig_handler(int sig) {
+    (void)sig;
+    q16_sig_flag = 1;
+}
+
+static void test_q16(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = q16_sig_handler;
+    sigemptyset(&sa.sa_mask);
+    CHECK("q16: sigaction(SIGUSR2) installs", sigaction(SIGUSR2, &sa, NULL) == 0);
+
+    /* ---- pselect: the mask is applied atomically with the block, and a
+     * pending (unmasked) signal wakes the wait with -EINTR.  A sender
+     * child fires SIGUSR2 every 40 ms; the main thread blocks in pselect
+     * with an EMPTY mask (SIGUSR2 is NOT blocked, so it must interrupt).
+     * If signals could not wake a blocked select, every iteration would
+     * hit the 5 s timeout and the count would be 0. */
+    {
+        sigset_t mask;
+        sigemptyset(&mask);        /* empty: nothing blocked */
+        struct timespec five_sec = { 5, 0 };
+        int interrupted = 0;
+        pid_t me = getpid();
+        pid_t sender = fork();
+        if (sender == 0) {
+            for (;;) {
+                usleep(40000);
+                kill(me, SIGUSR2);
+            }
+        }
+        for (int i = 0; i < 20; i++) {
+            q16_sig_flag = 0;
+            errno = 0;
+            int r = pselect(0, NULL, NULL, NULL, &five_sec, &mask);
+            if (r == -1 && errno == EINTR) interrupted++;
+            if (r == 0) break;     /* timeout = lost wakeup */
+        }
+        CHECK("q16: pselect wakes on signal with EINTR (20/20)",
+              interrupted == 20);
+        if (sender > 0) kill(sender, SIGKILL);
+        if (sender > 0) waitpid(sender, NULL, 0);
+
+        /* The mask is honoured DURING the block: a mask that blocks
+         * SIGUSR2 must prevent the interrupt (pselect returns 0 on the
+         * timeout instead of EINTR). */
+        sigaddset(&mask, SIGUSR2);
+        q16_sig_flag = 0;
+        struct timespec short_ts = { 0, 300000000 };   /* 300 ms */
+        errno = 0;
+        int r2 = pselect(0, NULL, NULL, NULL, &short_ts, &mask);
+        CHECK("q16: pselect mask blocks the signal (no EINTR)",
+              r2 == 0);
+    }
+
+    /* ---- ppoll on a pipe: readiness reported. */
+    {
+        int pfd[2];
+        CHECK("q16: pipe() for ppoll", pipe(pfd) == 0);
+        struct pollfd fds[1];
+        fds[0].fd = pfd[0];
+        fds[0].events = POLLIN;
+        fds[0].revents = 0;
+        struct timespec zero = { 0, 0 };
+        int r = ppoll(fds, 1, &zero, NULL);
+        CHECK("q16: ppoll returns 0 with no data", r == 0);
+        CHECK("q16: ppoll revents empty", fds[0].revents == 0);
+        CHECK("q16: ppoll write end", write(pfd[1], "x", 1) == 1);
+        fds[0].revents = 0;
+        r = ppoll(fds, 1, &zero, NULL);
+        CHECK("q16: ppoll reports POLLIN", r == 1 && (fds[0].revents & POLLIN));
+        /* Drain the single byte so the ppoll below actually blocks (a
+         * loop-until-0 would block on the empty pipe with the writer open). */
+        {
+            char drain[4];
+            (void)read(pfd[0], drain, sizeof(drain));
+        }
+        /* ppoll with an empty signal mask wakes on signal like pselect. */
+        fds[0].revents = 0;
+        sigset_t mask;
+        sigemptyset(&mask);        /* empty: SIGUSR2 not blocked */
+        struct timespec five_sec = { 5, 0 };
+        q16_sig_flag = 0;
+        pid_t me = getpid();
+        pid_t sender = fork();
+        if (sender == 0) {
+            usleep(100000);
+            kill(me, SIGUSR2);
+            _exit(0);
+        }
+        errno = 0;
+        r = ppoll(fds, 1, &five_sec, &mask);
+        CHECK("q16: ppoll interrupted by signal (EINTR)",
+              r == -1 && errno == EINTR);
+        if (sender > 0) waitpid(sender, NULL, 0);
+        close(pfd[0]);
+        close(pfd[1]);
+    }
+
+    /* ---- getrandom. */
+    {
+        uint8_t a[32], b[32];
+        memset(a, 0, sizeof(a));
+        memset(b, 0, sizeof(b));
+        errno = 0;
+        CHECK("q16: getrandom(32) returns 32",
+              getrandom(a, sizeof(a), 0) == (ssize_t)sizeof(a));
+        CHECK("q16: getrandom(32) again",
+              getrandom(b, sizeof(b), GRND_NONBLOCK) == (ssize_t)sizeof(b));
+        CHECK("q16: two getrandom streams differ", memcmp(a, b, sizeof(a)) != 0);
+        errno = 0;
+        CHECK("q16: getrandom(0) returns 0", getrandom(NULL, 0, 0) == 0);
+        errno = 0;
+        CHECK("q16: getrandom unknown flags -> EINVAL",
+              getrandom(a, sizeof(a), 0x8000) == -1 && errno == EINVAL);
+    }
+
+    /* ---- sig2str / str2sig round trip. */
+    {
+        char buf[SIG2STR_MAX];
+        int ok = 1, n = 0;
+        for (int s = 1; s < NSIG; s++) {
+            if (sig2str(s, buf) != 0) continue;
+            n++;
+            int back = -1;
+            if (str2sig(buf, &back) != 0 || back != s) ok = 0;
+            char prefixed[SIG2STR_MAX + 4];
+            snprintf(prefixed, sizeof(prefixed), "SIG%s", buf);
+            if (str2sig(prefixed, &back) != 0 || back != s) ok = 0;
+        }
+        CHECK("q16: sig2str/str2sig round-trips every named signal", ok);
+        CHECK("q16: >= 20 named signals", n >= 20);
+        errno = 0;
+        int s = 0;
+        CHECK("q16: str2sig(\"NOSUCH\") -> EINVAL",
+              str2sig("NOSUCH", &s) == -1 && errno == EINVAL);
+    }
+}
+
 int main(void) {
     printf("CONFORMTEST start\n");
     test_at_tmpfs();
@@ -799,6 +945,7 @@ int main(void) {
     test_utimens();
     test_fdopendir();
     test_fexecve();
+    test_q16();
 
     if (failures == 0) {
         printf("CONFORMTEST ALL PASS\n");

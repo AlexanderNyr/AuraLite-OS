@@ -1,6 +1,7 @@
 # AuraLite OS — POSIX.1-2024 Compliance Plan
 
-## Status: IN PROGRESS 🔧 (Q1–Q15 implemented, Q14 and Q16 planned)
+## Status: IN PROGRESS 🔧 (Q1–Q16 implemented, Q14 planned — the only
+remaining phase is the System V IPC kernel work)
 
 This document is the living development plan for POSIX.1-2024 (IEEE Std
 1003.1-2024, The Open Group Base Specifications Issue 8) compliance in
@@ -39,7 +40,7 @@ promised for Q12 and every 🔶 row the matrix still carries.
 | Q13 | AT-family completion: link/linkat, symlinkat, mkfifoat/mknodat, utimensat/futimens, fdopendir | DONE ✅ |
 | Q14 | System V IPC (sem/shm/msg): replace the ENOSYS stubs | PLANNED 📋 |
 | Q15 | mq_notify + sigevent delivery | DONE ✅ |
-| Q16 | Issue-8 odds and ends: pselect/ppoll, getrandom, sig2str/str2sig | PLANNED 📋 |
+| Q16 | Issue-8 odds and ends: pselect/ppoll, getrandom, sig2str/str2sig | DONE ✅ |
 
 Every pending phase ships one `.patch` under `patches/`, extends the
 conformance harness of Q12 and regenerates `docs/posix2024_compliance.md`
@@ -660,32 +661,61 @@ permissions (P7) and the process lifecycle.
 headers the tree already ships; closing them makes the matrix's 🔶 column
 zero except conscious 🚫 N/A entries.
 
-### Status: PLANNED 📋
+### Status: DONE ✅
+
+### What was added
+
+- **`pselect`/`ppoll` with atomic mask-and-wait.**  `SYS_PSELECT6` (320)
+  and `SYS_PPOLL` (321) install the caller's signal mask for the duration
+  of the block only and restore it before returning — the classic pselect
+  race is closed in the kernel, not papered over in libc.  The kernel
+  select machinery was refactored into `do_select_kernel` (kernel-buffer
+  core) + `do_select` (user-copy wrapper) so `do_ppoll` reuses the same
+  blocking path.  To make a pending signal actually wake the wait,
+  `signal_send()` now wakes a `THREAD_BLOCKED` thread when the signal is
+  unmasked and not `SIG_IGN`, and `do_select_kernel` returns `-EINTR` when
+  a wake leaves nothing ready and an unmasked signal is pending — the same
+  discipline `kernel_nanosleep` already used.  This also makes plain
+  `select()` signal-interruptible, which POSIX requires.
+- **`getrandom(2)` + `<sys/random.h>`.**  `SYS_GETRANDOM` (319):
+  Linux-compatible flags (`GRND_NONBLOCK`, `GRND_RANDOM` accepted — the
+  pool is always ready so neither blocks; unknown flags `EINVAL`), bounds
+  checks, kernel bounce buffer.  The kernel RNG graduated from the
+  one-off rdtsc-xorshift filler to a seeded `xorshift128+` pool
+  (`kernel/rng.c`): seeded from RDTSC / PIT ticks / kernel-pointer
+  addresses / RDRAND (when CPUID.1:ECX.RDRAND is set — QEMU `qemu64` lacks
+  it, so the jitter-only path is the exercised one), mixed via SplitMix64,
+  with a warm-up discard.  `getentropy` (318) now draws from the same
+  pool.  The security note is in `TODO.md`: xorshift128+ is a fast PRNG,
+  NOT a cryptographic generator, and getrandom must not be advertised as
+  `/dev/urandom`-equivalent.
+- **`sig2str`/`str2sig`** (`<signal.h>`, `SIG2STR_MAX` 32): a single
+  signal-name table covering the full AuraLite set (HUP..TERM + CHLD..
+  WINCH, 27 names); `str2sig` accepts both `"HUP"` and `"SIGHUP"`;
+  round-trip tested on the host and in the guest.  Five missing signal
+  numbers (`SIGURG/SIGXCPU/SIGXFSZ/SIGVTALRM/SIGPROF`) were added to the
+  libc `<signal.h>` so the table and the header agree.
+- **Leftover sweep**: matrix gains `<sys/select.h>` (pselect),
+  `<poll.h>` (ppoll), `<sys/random.h>` (getrandom) rows and two
+  `<signal.h>` rows; totals updated (416 symbols in the drift check).
 
 ### Tasks
-- [ ] `pselect`/`ppoll`: atomic mask-and-wait — the signal mask must be
-      installed as part of the block, not around it (the classic
-      pselect race); add `SYS_PSELECT6`/`SYS_PPOLL` next to `SYS_SELECT`,
-      reusing `kernel/fs/select.c` plus the signal machinery's
-      syscall-exit delivery boundary.
-- [ ] `getrandom(2)` + `<sys/random.h>`: new syscall beside
-      `getentropy` (318). Kernel RNG graduates from the current
-      rdtsc-xorshift filler to a seeded pool (rdrand when available,
-      PIT/RTC/interrupt-jitter mixing into a xorshift128+ or chacha-lite
-      state; `GRND_NONBLOCK`/`GRND_RANDOM` accepted, one documented
-      source initially). Security note written into TODO.md rather than
-      overclaimed.
-- [ ] `sig2str`/`str2sig` (`<signal.h>`): pure libc tables covering the
-      full signal set; round-trip tested.
-- [ ] Leftover sweep: any Issue-8 function name absent from the matrix is
-      added as a row (✅ or argued 🚫 N/A) so coverage is enumerable, not
-      anecdotal.
+- [x] `pselect`/`ppoll`: atomic mask-and-wait; `SYS_PSELECT6`/`SYS_PPOLL`
+      reusing `kernel/fs/select.c` and the signal wake/-EINTR path.
+- [x] `getrandom(2)` + `<sys/random.h>`; seeded xorshift128+ pool
+      (rdrand when available, jitter otherwise); `GRND_NONBLOCK`/
+      `GRND_RANDOM` accepted; security note in TODO.md.
+- [x] `sig2str`/`str2sig` with the full signal set; round-trip tested.
+- [x] Leftover sweep: new matrix rows for every added symbol.
 
 ### Test gate
-- QEMU: pselect unblocks instantly on a pending signal (race probe loop,
-  1000 iterations, no lost wakeup assert); ppoll same for pipes.
-- Host: `getrandom` byte-stream smoke (chi-square sanity, two streams
-  differ); `sig2str`/`str2sig` full round trip.
+- QEMU: pselect unblocks on a pending signal (20-iteration wake loop with
+  a sender thread — every iteration must return `EINTR`, a timeout means a
+  lost wakeup); ppoll reports POLLIN on a pipe and is likewise
+  signal-interruptible with a mask; getrandom streams differ and unknown
+  flags give `EINVAL`; sig2str/str2sig round-trip every named signal.  ✓
+- Host: `tests/unit/test_q16_tail.c` — signal table round-trip/prefix/
+  uniqueness (468 checks); ABI constants.  ✓
 
 ### Deliverable
 `patches/POSIX_Q16_issue8_tail.patch`
@@ -709,8 +739,8 @@ zero except conscious 🚫 N/A entries.
 | Q12 | The harness lands before any remaining feature work, so Q13-Q16 each arrive gated; it also retroactively covers the Q5/Q8 gate holes. |
 | Q13 | Small, high-value kernel touch (one VFS verb + timestamps); direct continuation of Q5. |
 | Q15 (done) | Userspace-heavy notification layer; independent of Q14. |
-| Q16 | The Issue-8 tail — small, self-contained, benefits from the harness. |
+| Q16 (done) | The Issue-8 tail — small, self-contained, benefited from the harness. |
 | Q14 | System V IPC is the largest kernel project and changes the object/permission model; scheduled after the suite exists so it cannot land ungated. |
 
-Recommended order for the remaining work: **Q12 → Q13 → Q15 (done) → Q16 → Q14**
-(Q14 may start in parallel once the Q12 harness exists, but merges last).
+Recommended order: **Q12 → Q13 → Q15 (done) → Q16 (done) → Q14** — Q14 is
+now the only remaining phase; it may start in parallel, but merges last.

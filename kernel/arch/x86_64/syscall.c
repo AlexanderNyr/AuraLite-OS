@@ -32,6 +32,7 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/vma.h"
 #include "kernel/boot_info.h"
+#include "kernel/rng.h"
 
 /* P10 types */
 typedef struct {
@@ -90,6 +91,10 @@ typedef struct {
 #define SYS_READV    19   /* P3 */
 #define SYS_WRITEV   20   /* P3 */
 #define SYSCALL_IOV_MAX 1024
+/* Q16: Issue-8 tail.  318 = SYS_GETENTROPY (Q11); 319..321 are free. */
+#define SYS_GETRANDOM   319
+#define SYS_PSELECT6    320
+#define SYS_PPOLL       321
 /* Socket-style networking API. */
 #define SYS_SOCKET        300
 #define SYS_SOCKET_CONNECT 301
@@ -1625,6 +1630,65 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                                    (fd_set*)(uintptr_t)a3, (fd_set*)(uintptr_t)a4,
                                    ktvp);
     }
+    /* Q16: pselect6 — select with a relative timespec and an
+     * atomically-installed signal mask (the classic pselect race: the mask
+     * is applied for the duration of the block only, so a signal cannot be
+     * lost between the check and the wait). */
+    case SYS_PSELECT6: {
+        extern int do_select(int, fd_set*, fd_set*, fd_set*, struct kernel_timeval*);
+        struct kernel_timespec kts;
+        struct kernel_timeval ktv, *ktv_p = NULL;
+        if (a5) {
+            if (copy_from_user(&kts, (const void *)(uintptr_t)a5, sizeof(kts)) != 0)
+                return (uint64_t)-EFAULT;
+            if (kts.tv_sec < 0 || kts.tv_nsec < 0 || kts.tv_nsec >= 1000000000L)
+                return (uint64_t)-EINVAL;
+            ktv.tv_sec  = kts.tv_sec;
+            ktv.tv_usec = kts.tv_nsec / 1000;
+            ktv_p = &ktv;
+        }
+        tcb_t *cur = sched_current();
+        uint32_t old_mask = cur ? cur->sig_mask : 0;
+        if (a6) {
+            /* a6 = user pointer to { const sigset_t *ss; size_t ss_len; } */
+            struct { uint64_t ss; uint64_t ss_len; } um;
+            if (copy_from_user(&um, (const void *)(uintptr_t)a6, sizeof(um)) != 0)
+                return (uint64_t)-EFAULT;
+            if (um.ss_len != sizeof(sigset_t)) return (uint64_t)-EINVAL;
+            sigset_t nm;
+            if (copy_from_user(&nm, (const void *)(uintptr_t)um.ss, sizeof(nm)) != 0)
+                return (uint64_t)-EFAULT;
+            if (cur) cur->sig_mask = nm;
+        }
+        int r = do_select((int)a1, (fd_set*)(uintptr_t)a2,
+                          (fd_set*)(uintptr_t)a3, (fd_set*)(uintptr_t)a4, ktv_p);
+        if (cur) cur->sig_mask = old_mask;
+        return (uint64_t)r;
+    }
+    /* Q16: ppoll — pollfds + relative timespec + atomic signal mask. */
+    case SYS_PPOLL: {
+        extern int do_ppoll(struct kernel_pollfd *, uint64_t,
+                            struct kernel_timespec *, const sigset_t *);
+        if (a5 != 0 && a5 != sizeof(sigset_t)) return (uint64_t)-EINVAL;
+        struct kernel_timespec kts;
+        struct kernel_timespec *kts_p = NULL;
+        if (a3) {
+            if (copy_from_user(&kts, (const void *)(uintptr_t)a3, sizeof(kts)) != 0)
+                return (uint64_t)-EFAULT;
+            if (kts.tv_sec < 0 || kts.tv_nsec < 0 || kts.tv_nsec >= 1000000000L)
+                return (uint64_t)-EINVAL;
+            kts_p = &kts;
+        }
+        sigset_t nm;
+        const sigset_t *sm = NULL;
+        if (a4) {
+            if (copy_from_user(&nm, (const void *)(uintptr_t)a4, sizeof(nm)) != 0)
+                return (uint64_t)-EFAULT;
+            sm = &nm;
+        }
+        return (uint64_t)do_ppoll((struct kernel_pollfd *)(uintptr_t)a1, a2,
+                                  kts_p, sm);
+    }
     case SYS_FSTAT: {
         struct vfs_stat st;
         if (!validate_user_range((void *)(uintptr_t)a2, sizeof(st), 1)) return (uint64_t)-EFAULT;
@@ -1942,15 +2006,37 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         uint64_t len = a2;
         if (len > 256) return (uint64_t)-EIO;
         if (!validate_user_range(buf, len, 1)) return (uint64_t)-EFAULT;
-        uint8_t *out = (uint8_t*)buf;
-        for (uint64_t i = 0; i < len; ) {
-            uint64_t tsc;
-            __asm__ volatile("rdtsc;shl $32,%%rdx;or %%rdx,%%rax":"=a"(tsc)::"rdx");
-            uint64_t rnd = tsc ^ timer_get_ticks() ^ (uint64_t)(uintptr_t)out
-                       ^ ((uint64_t)i * 6364136223846793005ULL + 1442695040888963407ULL);
-            for (int b = 0; b < 8 && i < len; b++, i++) out[i] = (uint8_t)(rnd >> (b*8));
+        uint8_t *kbuf = kmalloc(len ? len : 1);
+        if (!kbuf) return (uint64_t)-ENOMEM;
+        rng_fill(kbuf, len);          /* Q16: shared seeded pool */
+        if (copy_to_user(buf, kbuf, len) != 0) {
+            kfree(kbuf);
+            return (uint64_t)-EFAULT;
         }
+        kfree(kbuf);
         return 0;
+    }
+    /* Q16: getrandom(2) — Linux-compatible flags, draws from the same
+     * seeded pool as getentropy.  GRND_NONBLOCK and GRND_RANDOM are
+     * accepted (the pool is always ready, so neither ever blocks); unknown
+     * flags are rejected with EINVAL. */
+    case SYS_GETRANDOM: {
+        void *buf = (void*)(uintptr_t)a1;
+        uint64_t buflen = a2;
+        uint32_t flags = (uint32_t)a3;
+        if (flags & ~(1u | 2u)) return (uint64_t)-EINVAL;   /* GRND_NONBLOCK|GRND_RANDOM */
+        if (buflen == 0) return 0;
+        if (buflen > 65536) return (uint64_t)-EINVAL;       /* sanity bound */
+        if (!buf || !validate_user_range(buf, buflen, 1)) return (uint64_t)-EFAULT;
+        uint8_t *kbuf = kmalloc(buflen);
+        if (!kbuf) return (uint64_t)-ENOMEM;
+        rng_fill(kbuf, buflen);
+        if (copy_to_user(buf, kbuf, buflen) != 0) {
+            kfree(kbuf);
+            return (uint64_t)-EFAULT;
+        }
+        kfree(kbuf);
+        return (uint64_t)buflen;
     }
     case 436: { /* SYS_CLOSE_RANGE */
         unsigned first=(unsigned)a1, last=(unsigned)a2;

@@ -193,6 +193,24 @@ il_assert_grep_fixed "$LOG" "ARGV_ECHO argv[1]=fex" \
 il_assert_grep_fixed "$LOG" "ARGV_ECHO env[0]=B=fex" \
     "fexecve child sees env[0]=B=fex"
 
+# ---- Q16: Issue-8 tail ----
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: pselect wakes on signal with EINTR (20/20)" \
+    "pselect installs the mask atomically and a pending signal wakes it (EINTR)"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: ppoll reports POLLIN" \
+    "ppoll reports POLLIN on a readable pipe"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: ppoll interrupted by signal (EINTR)" \
+    "ppoll with a mask is interrupted by a signal (EINTR)"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: getrandom(32) returns 32" \
+    "getrandom fills the buffer"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: two getrandom streams differ" \
+    "two getrandom streams differ"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: getrandom unknown flags -> EINVAL" \
+    "getrandom rejects unknown flags with EINVAL"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: sig2str/str2sig round-trips every named signal" \
+    "sig2str/str2sig round-trip every named signal"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: str2sig(\"NOSUCH\") -> EINVAL" \
+    "str2sig rejects an unknown name with EINVAL"
+
 # ---- suite summary and negatives ----
 il_assert_grep_fixed "$LOG" "CONFORMTEST ALL PASS" \
     "conformtest reports ALL PASS"
