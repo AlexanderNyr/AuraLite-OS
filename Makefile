@@ -348,6 +348,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/socktest.elf \
              $(USER_BUILD)/conformtest.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
+             $(USER_BUILD)/cryptotest.elf \
              $(USER_BUILD)/rustes.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
@@ -378,6 +379,20 @@ USER_CFLAGS += -I lib/libgl/include
 USER_GL_APPS := $(USER_BUILD)/gltest.elf $(USER_BUILD)/glcube.elf \
                 $(USER_BUILD)/glgears.elf
 
+# ---- libatls (INTERNET_PLAN.md phase N1) ----
+# The TLS crypto primitives live in userspace (decision D2): a bug in an
+# ASN.1 parser must be a killed process, not a kernel panic.  Linked only
+# into programs that actually use it (today: /tests/cryptotest; from N3,
+# the TLS stack), never into every binary.
+LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
+                $(USER_BUILD)/atls_sha512.o $(USER_BUILD)/atls_hmac.o \
+                $(USER_BUILD)/atls_hkdf.o $(USER_BUILD)/atls_chacha20.o \
+                $(USER_BUILD)/atls_poly1305.o $(USER_BUILD)/atls_aead.o \
+                $(USER_BUILD)/atls_fe.o $(USER_BUILD)/atls_x25519.o \
+                $(USER_BUILD)/atls_ed25519.o
+LIBATLS      := $(USER_LIBDIR)/libatls.a
+USER_CFLAGS  += -I lib/libatls/include
+
 # ---- Static libraries (SDK_PLAN phase S0) ----
 #
 # An archive is the one artefact a link command can name without knowing what
@@ -406,7 +421,13 @@ $(LIBAGL): $(LIBGL_OBJS)
 	$(AR) rcs $@ $(LIBGL_OBJS)
 	@echo "[ar] $@ ($(words $(LIBGL_OBJS)) objects)"
 
-libs: $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL)
+$(LIBATLS): $(LIBATLS_OBJS)
+	@mkdir -p $(dir $@)
+	@rm -f $@
+	$(AR) rcs $@ $(LIBATLS_OBJS)
+	@echo "[ar] $@ ($(words $(LIBATLS_OBJS)) objects)"
+
+libs: $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(LIBATLS)
 
 user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 
@@ -485,6 +506,20 @@ $(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes.o $(RSBR_RLIB) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $< $(RSBR_RLIB) -o $@
 	@echo "[link] $@"
+
+# ---- cryptotest (INTERNET_PLAN.md N1): in-guest libatls smoke test ----
+$(USER_BUILD)/cryptotest.o: userspace/tests/cryptotest/cryptotest.c \
+                            lib/libatls/include/atls/atls.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# Explicit link rule: cryptotest additionally pulls in libatls.
+$(USER_BUILD)/cryptotest.elf: $(USER_BUILD)/cryptotest.o $(USER_COMMON) \
+                              $(LIBATLS) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/cryptotest.o $(USER_COMMON_LNK) \
+	      $(LIBATLS) -o $@
+	@echo "[link] $@ (libatls)"
 $(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -665,6 +700,15 @@ $(USER_BUILD)/glshader.o: lib/libgl/src/glshader.c lib/libgl/src/glcontext.h \
 $(USER_BUILD)/glshaderpipe.o: lib/libgl/src/glshaderpipe.c lib/libgl/src/glcontext.h \
                               lib/libgl/src/glvertex.h lib/libgl/src/glsl.h \
                               $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# ---- libatls objects (INTERNET_PLAN.md N1) ----
+# One scoped pattern rule instead of eleven copies: every translation unit
+# has the same dependency (the public header), and atls_fe.h resolves
+# relative to each including file.
+$(USER_BUILD)/atls_%.o: lib/libatls/src/atls_%.c \
+                        lib/libatls/include/atls/atls.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -975,7 +1019,7 @@ INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest conformtest
+                socktest conformtest cryptotest
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
@@ -1094,7 +1138,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_q16_tail \
                 $(BUILD_DIR)/test_sysvipc \
                 $(BUILD_DIR)/test_keymap \
-                $(BUILD_DIR)/test_rng
+                $(BUILD_DIR)/test_rng \
+                $(BUILD_DIR)/test_atls_hash $(BUILD_DIR)/test_atls_aead \
+                $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1120,6 +1166,40 @@ $(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
 $(BUILD_DIR)/test_rng: tests/unit/test_rng.c kernel/rng_core.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# ---- libatls host unit tests (INTERNET_PLAN.md N1) ----
+# One shared source list so every RFC-vector battery always links the SAME
+# library the guest ships — the GL tests learned this the hard way
+# (LIBGL_TEST_SRCS comment): a per-rule copy drifts, a single variable
+# cannot.  Note: test_atls_hash additionally greps these sources for the
+# D7 rule (no memcmp on secrets), so the list must stay explicit.
+LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
+                lib/libatls/src/atls_sha512.c lib/libatls/src/atls_hmac.c \
+                lib/libatls/src/atls_hkdf.c lib/libatls/src/atls_chacha20.c \
+                lib/libatls/src/atls_poly1305.c lib/libatls/src/atls_aead.c \
+                lib/libatls/src/atls_fe.c lib/libatls/src/atls_x25519.c \
+                lib/libatls/src/atls_ed25519.c
+LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
+
+$(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
+                             lib/libatls/include/atls/atls.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
+$(BUILD_DIR)/test_atls_aead: tests/unit/test_atls_aead.c $(LIBATLS_SRCS) \
+                             lib/libatls/include/atls/atls.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
+$(BUILD_DIR)/test_atls_x25519: tests/unit/test_atls_x25519.c $(LIBATLS_SRCS) \
+                               lib/libatls/include/atls/atls.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
+$(BUILD_DIR)/test_atls_ed25519: tests/unit/test_atls_ed25519.c $(LIBATLS_SRCS) \
+                                lib/libatls/include/atls/atls.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
 
 $(BUILD_DIR)/test_heap: tests/unit/test_heap.c kernel/mm/heap.c kernel/mm/heap.h
 	@mkdir -p $(BUILD_DIR)
@@ -1590,7 +1670,9 @@ sdk: libs $(USER_BUILD)/crt0.o
 	@cp lib/libauragui/include/auragui.h $(SDK_DIR)/include/
 	@mkdir -p $(SDK_DIR)/include/GL
 	@cp lib/libgl/include/GL/*.h $(SDK_DIR)/include/GL/
-	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(SDK_DIR)/lib/
+	@mkdir -p $(SDK_DIR)/include/atls
+	@cp lib/libatls/include/atls/atls.h $(SDK_DIR)/include/atls/
+	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(LIBATLS) $(SDK_DIR)/lib/
 	@cp $(USER_BUILD)/crt0.o $(SDK_DIR)/lib/
 	@cp lib/libc/user.ld $(SDK_DIR)/
 	@bash tools/mksdk.sh $(SDK_DIR)

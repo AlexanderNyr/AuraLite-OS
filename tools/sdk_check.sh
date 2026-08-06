@@ -51,7 +51,7 @@ extra_hdr=0
 while IFS= read -r -d '' staged; do
     rel="${staged#"$SDK"/include/}"
     case "$rel" in
-        auragui.h|GL/*) continue ;;   # staged from libauragui / libgl
+        auragui.h|GL/*|atls/*) continue ;;   # staged from libauragui / libgl / libatls
     esac
     [ -e "$ROOT/lib/libc/include/$rel" ] || { bad "stale SDK: include/$rel has no source"; extra_hdr=1; }
 done < <(find "$SDK/include" -name '*.h' -print0)
@@ -61,8 +61,9 @@ done < <(find "$SDK/include" -name '*.h' -print0)
 # ---- 1. the layout ----------------------------------------------------------
 
 for f in auralite.mk user.ld README.md \
-         lib/libaurac.a lib/libauragui.a lib/libaGL.a lib/crt0.o \
-         include/stdio.h include/unistd.h include/auragui.h include/GL/gl.h; do
+         lib/libaurac.a lib/libauragui.a lib/libaGL.a lib/libatls.a lib/crt0.o \
+         include/stdio.h include/unistd.h include/auragui.h include/GL/gl.h \
+         include/atls/atls.h; do
     if [ -e "$SDK/$f" ]; then ok "$f present"; else bad "$f missing"; fi
 done
 

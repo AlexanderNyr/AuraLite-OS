@@ -1,11 +1,12 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0 complete, N1–N9 pending
+## Status: IN PROGRESS 🚧 — N0, N1 complete, N2–N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | N0 — real entropy source | ✅ complete | `patches/NET_N0_entropy.patch` |
-| N1–N9 | pending | — |
+| N1 — cryptographic primitives | ✅ complete | `patches/NET_N1_crypto.patch` |
+| N2–N9 | pending | — |
 
 This document answers:
 
@@ -236,19 +237,21 @@ reference run), and two boots produce different samples.  Integration gate:
 
 ---
 
-### Phase N1 — Cryptographic primitives
+### Phase N1 — Cryptographic primitives ✅ COMPLETE
 
 **Objective:** the algorithms, standing alone and heavily tested.
 
 #### Tasks
 
-- [ ] SHA-256, HMAC-SHA256, HKDF (RFC 5869).
-- [ ] ChaCha20 and Poly1305, and the AEAD construction (RFC 8439).
-- [ ] Curve25519 / X25519 (RFC 7748).
-- [ ] Ed25519 verification (RFC 8032).
-- [ ] A constant-time comparison, and a rule that nothing else compares
+- [x] SHA-256, HMAC-SHA256, HKDF (RFC 5869).  SHA-512 also included —
+      Ed25519 (RFC 8032) is defined on it, so it is a hard dependency,
+      not scope creep.
+- [x] ChaCha20 and Poly1305, and the AEAD construction (RFC 8439).
+- [x] Curve25519 / X25519 (RFC 7748).
+- [x] Ed25519 verification (RFC 8032).
+- [x] A constant-time comparison, and a rule that nothing else compares
       secrets (D7).
-- [ ] `libatls` as a userspace static library, shipped in the SDK.
+- [x] `libatls` as a userspace static library, shipped in the SDK.
 
 #### Test gate
 
@@ -264,6 +267,40 @@ reference run), and two boots produce different samples.  Integration gate:
 #### Deliverable
 
 `patches/NET_N1_crypto.patch`
+
+#### Phase result (2026-08-06)
+
+`lib/libatls/` — 11 freestanding C11 translation units, userspace-only
+(D2), portable 64-bit C with `unsigned __int128` field arithmetic
+(5×51-bit limbs, 128-bit carry chains; an early 64-bit-truncation bug in
+the carry chain was caught by the Wycheproof odd-order point and fixed
+before the phase landed).  Public surface is one header, `atls/atls.h`.
+
+- SHA-256 / SHA-512 (FIPS 180), HMAC-SHA256 (RFC 2104), HKDF (RFC 5869),
+  ChaCha20 + Poly1305 + AEAD (RFC 8439), X25519 (RFC 7748), Ed25519
+  verify (RFC 8032), `atls_ct_eq` / `atls_wipe`.
+- Host batteries `tests/unit/test_atls_{hash,aead,x25519,ed25519}.c`,
+  94 checks, all green: RFC 6234/4231/5869/8439/7748/8032 vectors
+  (incl. the 1 000-iteration X25519 run and the RFC 8439 §2.8.2 full
+  AEAD record), ten Wycheproof low-order X25519 triples (exact
+  private/public pairs, because two of the points have odd small order
+  and only reach the zero secret under their matching scalar), and the
+  Ed25519 negative battery — ten refusals each asserted for the exact
+  reason (`BAD_SIGNATURE` vs `BAD_ENCODING` vs the S-range check),
+  individually, never lumped.
+- D7 is enforced by the test suite itself: `test_atls_hash` greps every
+  libatls source for `memcmp(`/`strncmp(`/`bcmp(`/`strcmp(` and fails if
+  any appears.
+- In-guest proof: `/tests/cryptotest` links `libatls.a` and runs one
+  vector per primitive plus the three refusal paths on the 64 KiB user
+  stack; integration case `tests/integration/cases/test_crypto.sh`
+  (14 assertions, all green).
+- SDK: `libatls.a` + `include/atls/atls.h` staged by `make sdk`,
+  `AURALITE_LIBS_TLS` in `auralite.mk`, `sdk_check` verifies presence
+  (33/33).
+
+Not in this phase, deliberately: RSA-PKCS#1v1.5 verification lands with
+certificate validation (N5), the TLS record/handshake with N3/N4.
 
 ---
 

@@ -74,6 +74,9 @@ AURALITE_LIBS_GUI := $(AURALITE_LIBC) $(AURALITE_SDK)/lib/libauragui.a
 # OpenGL applications add libaGL (and need AuraGUI to present a window).
 AURALITE_LIBS_GL  := $(AURALITE_LIBC) $(AURALITE_SDK)/lib/libauragui.a \
                      $(AURALITE_SDK)/lib/libaGL.a
+# TLS/crypto applications add libatls (INTERNET_PLAN.md N1).  It is
+# self-contained: no GUI or GL dependency.
+AURALITE_LIBS_TLS := $(AURALITE_LIBC) $(AURALITE_SDK)/lib/libatls.a
 
 # ---- The ABI this SDK targets -----------------------------------------------
 #
@@ -101,8 +104,8 @@ OS source tree.
 ## Contents
 
 ```
-include/        C library, AuraGUI and OpenGL headers
-lib/            libaurac.a  libauragui.a  libaGL.a  crt0.o
+include/        C library, AuraGUI, OpenGL and TLS/crypto headers
+lib/            libaurac.a  libauragui.a  libaGL.a  libatls.a  crt0.o
 user.ld         linker script (fixed load address 0x40000000)
 auralite.mk     the build flags, as a makefile fragment
 ```
@@ -134,7 +137,8 @@ myapp.o: myapp.c
 ```
 
 Use `AURALITE_LIBS_GUI` for an AuraGUI application, `AURALITE_LIBS_GL` for
-OpenGL. Worked examples are in `examples/` in the OS source tree.
+OpenGL, `AURALITE_LIBS_TLS` for the TLS/crypto primitives (libatls). Worked
+examples are in `examples/` in the OS source tree.
 
 ## Getting the program onto a machine
 

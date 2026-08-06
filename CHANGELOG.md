@@ -2,6 +2,41 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N1 — Cryptographic primitives (libatls)] 2026-08-06
+
+`INTERNET_PLAN.md` phase N1: the algorithm layer TLS will stand on,
+verified against published vectors before any protocol code exists.
+Everything is userspace (`lib/libatls/`, decision D2) and freestanding
+C11; the kernel is untouched.
+
+- **`lib/libatls/` (new)**: SHA-256, SHA-512, HMAC-SHA256 (RFC 2104),
+  HKDF (RFC 5869), ChaCha20, Poly1305 and AEAD_CHACHA20_POLY1305
+  (RFC 8439), X25519 (RFC 7748), Ed25519 **verification** (RFC 8032),
+  plus `atls_ct_eq` / `atls_wipe`.  One public header (`atls/atls.h`).
+  Field arithmetic is 5×51-bit limbs with `unsigned __int128` carries;
+  AEAD decrypt verifies the tag before releasing plaintext and wipes the
+  buffer on refusal; X25519 refuses all-zero shared secrets
+  (`ATLS_ERR_LOW_ORDER`).
+- **Host test batteries** `tests/unit/test_atls_{hash,aead,x25519,
+  ed25519}.c` — 94 checks, all green: FIPS 180 / RFC 4231 / 5869 / 8439 /
+  7748 / 8032 vectors, the RFC 7748 §6.1 1 000-iteration run, ten
+  Wycheproof low-order X25519 triples (exact private/public pairs; two
+  points have odd small order and only reach zero under their matching
+  scalar), and an Ed25519 negative battery where every refusal is
+  asserted for its exact reason.
+- **D7 enforcement**: `test_atls_hash` greps every libatls source for
+  `memcmp(`/`strncmp(`/`bcmp(`/`strcmp(` and fails the build if one
+  appears — the only secret-comparison primitive is `atls_ct_eq`.
+- **In-guest smoke test**: `/tests/cryptotest` (initrd) links `libatls.a`
+  and runs one vector per primitive plus tampered-AEAD, low-order-X25519
+  and forged-Ed25519 refusals; integration case
+  `tests/integration/cases/test_crypto.sh` (14 assertions).
+- **SDK**: `make sdk` stages `libatls.a` and `include/atls/atls.h`;
+  `auralite.mk` gains `AURALITE_LIBS_TLS`; `sdk_check` verifies both
+  (33/33 pass).
+- Not included, deliberately: RSA-PKCS#1v1.5 verification (lands with
+  certificate validation, N5) and everything protocol-shaped (N2–N4).
+
 ## [Internet Phase N0 — A real entropy source] 2026-08-06
 
 `INTERNET_PLAN.md` phase N0, the first phase of the real-internet plan and

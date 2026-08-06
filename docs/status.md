@@ -87,6 +87,7 @@ Legend:
 | Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
 | Sockets | 🧪 | AF_INET/SOCK_STREAM handles include `socket`, `connect`, `send`, `recv`, `close`, plus server-side `bind`, `listen`, and `accept` (`305..307`). AF_INET/SOCK_DGRAM supports `sendto=44` and `recvfrom=45`. |
 | Entropy (`getentropy`/`getrandom`) | ✅ | INTERNET_PLAN N0. ChaCha20 CSPRNG (`kernel/rng_core.h`, RFC 8439) seeded from RDSEED/RDRAND when present, else an interrupt-timing jitter pool stirred on every IRQ. Fails closed: `getentropy` returns `-ENOSYS` and `getrandom` blocks (or `EAGAIN` with `GRND_NONBLOCK`) until real entropy exists; estimated entropy logged at boot. Host RFC-vector + 1 MiB statistics tests, QEMU gate `test_rng.sh`. |
+| Crypto primitives (`libatls`) | ✅ | INTERNET_PLAN N1. Userspace static library `lib/libatls/`: SHA-256/512, HMAC-SHA256, HKDF, ChaCha20/Poly1305 AEAD, X25519, Ed25519 verify — all RFC-vector-verified by `tests/unit/test_atls_*` (94 checks) incl. the X25519 1000-iteration run and ten Wycheproof low-order triples. D7 enforced by a source grep: no `memcmp` on secrets, only `atls_ct_eq`. Shipped in the SDK (`AURALITE_LIBS_TLS`); in-guest gate `/tests/cryptotest` + `test_crypto.sh`. |
 
 ## Networking
 
