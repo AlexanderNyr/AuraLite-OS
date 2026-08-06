@@ -104,10 +104,22 @@ static int send_all(atls_tls *t, const uint8_t *data, size_t len) {
 
 static int read_exact(atls_tls *t, uint8_t *buf, size_t n) {
     size_t off = 0;
+    int zero_count = 0;
     while (off < n) {
         int r = t->rcv(t->io, buf + off, n - off);
-        if (r == 0) return ATLS_ERR_PEER_EOF;
         if (r < 0) return ATLS_ERR_INPUT;
+        if (r == 0) {
+            /* The guest TCP recv returns 0 on timeout (no data yet),
+             * not necessarily EOF.  Retry a few times before giving up.
+             * A real EOF from the peer arrives as a FIN, which tcp_recv
+             * handles by returning 0 AND changing conn_state — but we
+             * can't detect that here.  Use a retry counter as a pragmatic
+             * timeout: if we get 10 consecutive zeros (~10s with the guest's
+             * 1s recv timeout), treat it as EOF. */
+            if (++zero_count > 10) return ATLS_ERR_PEER_EOF;
+            continue;
+        }
+        zero_count = 0;
         off += (size_t)r;
     }
     return ATLS_OK;

@@ -324,12 +324,16 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
                                       ntohs_(tcp->window) : TCP_WINDOW;
         }
 
-        /* Extract payload (if any). */
+        /* Extract payload (if any).
+         * Use ip->total_length (not frame size n) to avoid counting
+         * Ethernet padding as TCP payload — the NIC pads short frames
+         * to the 60-byte minimum. */
         uint8_t hdr_words = tcp->data_offset >> 4;
         uint32_t tcp_hdr_bytes = (uint32_t)hdr_words * 4;
-        int32_t ip_hdr_bytes = 20;
-        int32_t payload_start = 14 + ip_hdr_bytes + tcp_hdr_bytes;
-        int32_t payload_len = n - payload_start;
+        uint32_t ip_hdr_bytes = (uint32_t)((ip->version_ihl & 0x0F) * 4);
+        uint32_t ip_total = ntohs_(ip->total_length);
+        uint32_t payload_start = 14 + ip_hdr_bytes + tcp_hdr_bytes;
+        int32_t payload_len = (int32_t)(ip_total - ip_hdr_bytes - tcp_hdr_bytes);
 
         if (payload_len > 0 && out_data && max_data > 0) {
             if (payload_len > (int32_t)max_data) payload_len = (int32_t)max_data;
@@ -757,32 +761,38 @@ int tcp_recv(void *buf, uint32_t bufsize) {
         return -1;
     }
 
+    /* Loop until we get actual data, FIN, or timeout.  ACK-only
+     * segments (window updates, etc.) are consumed silently. */
     struct tcp_hdr rx;
     int data_len = 0;
-    if (tcp_recv_segment(&rx, buf, bufsize, &data_len) != 0) {
-        return 0;   /* timeout, no data */
-    }
-
-    /* Handle FIN. */
-    if (rx.flags & TCP_FIN) {
-        kprintf("[tcp] FIN received\n");
-        conn_ack += 1;
-        tcp_send_segment(TCP_ACK, NULL, 0);
-        if (conn_state == TCP_ESTABLISHED) {
-            conn_state = TCP_FIN_WAIT_2;
-        } else {
-            conn_state = TCP_CLOSED;
+    for (;;) {
+        if (tcp_recv_segment(&rx, buf, bufsize, &data_len) != 0) {
+            return 0;   /* timeout, no data */
         }
-        return data_len;   /* return any data that came with the FIN */
-    }
 
-    /* If there's data, update our ACK and send it. */
-    if (data_len > 0) {
-        conn_ack += data_len;
-        tcp_send_segment(TCP_ACK, NULL, 0);
-    }
+            /* Handle FIN. */
+        if (rx.flags & TCP_FIN) {
+            kprintf("[tcp] FIN received\n");
+            conn_ack += 1;
+            tcp_send_segment(TCP_ACK, NULL, 0);
+            if (conn_state == TCP_ESTABLISHED) {
+                conn_state = TCP_FIN_WAIT_2;
+            } else {
+                conn_state = TCP_CLOSED;
+            }
+            return data_len;   /* return any data that came with the FIN */
+        }
 
-    return data_len;
+        /* If there's data, update our ACK and return it. */
+        if (data_len > 0) {
+            conn_ack += data_len;
+            tcp_send_segment(TCP_ACK, NULL, 0);
+            return data_len;
+        }
+
+        /* ACK-only segment (no data, no FIN): consume silently and
+         * keep waiting for actual data. */
+    }
 }
 
 int tcp_close(void) {

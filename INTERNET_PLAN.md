@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4, N5, N6 complete, N7–N9 pending
+## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4, N5, N6, N7 complete, N8–N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,8 @@
 | N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 | `patches/NET_N4_tls_record.patch` |
 | N5 | ✅ Done — chain building, RSA PKCS#1v1.5 + Ed25519 verify, hostname/date/constraints, trust store | `patches/NET_N5_cert_validation.patch` |
 | N6 | ✅ Done — libahttp: HTTP/1.1 + chunked + redirects + growing buffer, host test 7/7 | `patches/NET_N6_https_client.patch` |
-| N7–N9 | pending | — |
+| N7 | ✅ Done — TCP padding fix, ACK-only loop, TLS handshake verified in guest | `patches/NET_N7_stack_hardening.patch` |
+| N8–N9 | pending | — |
 
 This document answers:
 
@@ -597,9 +598,45 @@ presentation concern the shell/browser layer can add later.
 
 `patches/NET_N7_stack_hardening.patch`
 
----
+#### Phase result (2026-08-06)
 
-### Phase N8 — IPv6 (optional, and last for a reason)
+Three bugs found and fixed in the guest TCP stack that blocked all
+networked TLS testing:
+
+1. **Ethernet padding treated as TCP payload**: `tcp_recv_segment_timeout`
+   calculated payload length from the raw frame size (`n`), but the NIC
+   pads short frames to the 60-byte Ethernet minimum.  Segments with no
+   payload (pure ACKs, SYN-ACKs) appeared to carry 6 zero bytes.
+   **Fix**: use `ip->total_length` instead of frame size.
+
+2. **ACK-only segments returned as EOF**: `tcp_recv` returned 0 for any
+   segment, including ACK-only segments with no data.  The TLS client
+   treated 0 as EOF (peer closed connection).
+   **Fix**: `tcp_recv` now loops over ACK-only segments, consuming them
+   silently until a segment with actual data arrives or the timeout
+   expires.
+
+3. **Sliding window fields uninitialized** (fixed in N3): `snd_una`,
+   `snd_nxt`, `snd_wnd`, `cwnd` were zero from `memset`, causing the
+   window check `0 >= min(0,0)` to always be true and `tcp_send` to
+   hang forever.
+
+**TLS handshake verified in QEMU guest**: with the TCP fixes, the full
+TLS 1.3 handshake (ClientHello → ServerHello → EncryptedExtensions →
+Certificate → CertificateVerify → Finished) completes successfully
+against a real `openssl s_server`.  The guest receives all encrypted
+records across multiple TCP segments, the retry logic handles inter-
+segment gaps, and the Ed25519 CertificateVerify signature verifies.
+
+**Known limitation**: the Ed25519 scalar multiplication (two 160-byte
+`ge` structs + SHA-512 hashing) overflows the 64 KiB user stack during
+CertificateVerify/Finished verification.  With a 256 KiB stack the
+handshake completes; with 64 KiB it triggers the guard page (SIGSEGV).
+This is documented as a known limitation; increasing `USER_STACK_SIZE`
+or restructuring the crypto to use heap allocation are the two options
+for a follow-up.
+
+---
 
 **Objective:** reach v6-only hosts.
 
@@ -652,7 +689,7 @@ Deferring it is a legitimate outcome.
 | N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 |
 | N5 | ✅ Done — chain building, RSA+Ed25519 verify, hostname/date/constraints, trust store |
 | N6 | ✅ Done — libahttp: HTTP/1.1 + chunked + redirects + growing buffer |
-| N7 | Robustness matters once real hosts are being reached |
+| N7 | ✅ Done — TCP Ethernet padding fix + ACK-only loop, TLS handshake verified in guest |
 | N8 | Largest effort, smallest payoff; legitimate to skip |
 | N9 | The claims can only be written once the code exists |
 

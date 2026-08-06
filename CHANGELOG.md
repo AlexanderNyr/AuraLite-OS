@@ -2,6 +2,20 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N7 — TCP stack hardening] 2026-08-06
+
+`INTERNET_PLAN.md` phase N7: fixes three TCP bugs that blocked all
+networked TLS testing.
+
+- **Ethernet padding fix**: `tcp_recv_segment_timeout` now uses
+  `ip->total_length` instead of frame size for payload extraction
+- **ACK-only loop**: `tcp_recv` silently consumes ACK-only segments
+  instead of returning them as EOF
+- **TLS handshake verified**: full ClientHello→Finished handshake
+  against real openssl s_server in QEMU guest
+- **Known limitation**: Ed25519 verification overflows 64 KiB user
+  stack; needs 256 KiB or heap-allocated crypto scratch space
+
 ## [Internet Phase N6 — HTTPS client and libahttp] 2026-08-06
 
 `INTERNET_PLAN.md` phase N6: HTTP/1.1 client library with chunked
