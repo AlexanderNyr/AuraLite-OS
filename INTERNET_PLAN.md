@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4 complete, N5–N9 pending
+## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4, N5 complete, N6–N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,8 @@
 | N1 — cryptographic primitives | ✅ complete | `patches/NET_N1_crypto.patch` |
 | N2 — ASN.1 and X.509 parsing | ✅ complete | `patches/NET_N2_x509.patch` |
 | N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 | `patches/NET_N4_tls_record.patch` |
-| N5–N9 | pending | — |
+| N5 | ✅ Done — chain building, RSA PKCS#1v1.5 + Ed25519 verify, hostname/date/constraints, trust store | `patches/NET_N5_cert_validation.patch` |
+| N6–N9 | pending | — |
 
 This document answers:
 
@@ -501,9 +502,34 @@ presentation concern the shell/browser layer can add later.
 
 `patches/NET_N5_cert_validation.patch`
 
----
+#### Phase result (2026-08-06)
 
-### Phase N6 — HTTPS client and `libahttp`
+- **RSA PKCS#1v1.5 verification**: bignum arithmetic (32-bit limbs, 64-bit
+  intermediates), modular exponentiation (binary square-and-multiply),
+  PKCS#1v1.5 padding + SHA-256 DigestInfo check.  The bignum `bn_mod`
+  was fixed twice during development: once for the bit-extraction order
+  (MSB-first vs LSB-first) and once for the loop bound (must process ALL
+  bits of the dividend, not just the modulus's bit-width).
+- **Chain building**: issuer DER byte-equality matching, recursive
+  signature verification (Ed25519 + RSA PKCS#1v1.5), trust store lookup.
+- **Hostname matching**: exact + single-label wildcard (*.example.com).
+- **Validity dates**: UTCTime/GeneralizedTime comparison, fail-closed.
+- **Basic constraints**: leaf must NOT be CA; intermediates must be CA.
+- **Key usage**: CA certs need keyCertSign (bit 5); leaf needs
+  digitalSignature (bit 0) or keyEncipherment (bit 2).
+- **Trust store**: `/etc/ssl/roots.pem` with ISRG Root X1 + DigiCert
+  Global Root CA + DigiCert Global Root G3 (shipped in initrd).
+- **Host test: 14/14** (valid chain, wrong hostname, wildcard match,
+  expired cert, unknown root, self-signed rejected, leaf-as-CA check,
+  flipped signature, RSA self-signed verify, RSA flipped signature).
+- **TLS handshake integration**: the TLS client now validates the
+  certificate chain against the trust store during the handshake.
+  Ed25519 chains verify fully; RSA chains verify the signature but
+  require the root to be in the trust store.
+- **Guest limitation**: TCP data reception bug (N7) still blocks
+  in-QEMU chain validation tests.
+
+---
 
 **Objective:** a usable client, and the thing `WEBVIEW_PLAN` D6 waits for.
 
@@ -606,7 +632,7 @@ Deferring it is a legitimate outcome.
 | N2 | Certificates must be parsed before they can be validated |
 | N3 | ✅ Done — TLS 1.3 client with Ed25519 CertVerify, host test 12/12 vs openssl s_server; guest TCP reception blocked by kernel bug (N7) |
 | N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 |
-| N5 | Validation needs a working handshake to validate within |
+| N5 | ✅ Done — chain building, RSA+Ed25519 verify, hostname/date/constraints, trust store |
 | N6 | The client is the payoff, and needs all of the above |
 | N7 | Robustness matters once real hosts are being reached |
 | N8 | Largest effort, smallest payoff; legitimate to skip |

@@ -2,6 +2,24 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N5 — Certificate validation] 2026-08-06
+
+`INTERNET_PLAN.md` phase N5: the phase that makes the padlock mean
+something.  Chain building, signature verification, hostname matching,
+date checking, basic constraints, key usage.
+
+- **RSA PKCS#1v1.5 verification**: bignum with 32-bit limbs + 64-bit
+  intermediates, modular exponentiation, PKCS#1v1.5 padding + SHA-256
+  DigestInfo
+- **Chain building**: issuer DER matching, recursive signature verify
+- **Hostname matching**: exact + single-label wildcard
+- **Validity dates**: UTCTime/GeneralizedTime, fail-closed
+- **Basic constraints / key usage**: leaf ≠ CA, CA needs keyCertSign
+- **Trust store**: `/etc/ssl/roots.pem` (ISRG Root X1, DigiCert roots)
+- **Host test: 14/14** (valid chain, wrong hostname, wildcard, expired,
+  unknown root, self-signed, leaf-as-CA, flipped sig, RSA verify)
+- **TLS handshake integration**: chain validated against trust store
+
 ## [Internet Phase N4 — TLS record layer] 2026-08-06
 
 `INTERNET_PLAN.md` phase N4: KeyUpdate support, record-size enforcement,

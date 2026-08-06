@@ -392,7 +392,8 @@ LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
                 $(USER_BUILD)/atls_fe.o $(USER_BUILD)/atls_x25519.o \
                 $(USER_BUILD)/atls_ed25519.o \
                 $(USER_BUILD)/atls_der.o $(USER_BUILD)/atls_x509.o \
-                $(USER_BUILD)/atls_tls_keys.o $(USER_BUILD)/atls_tls.o
+                $(USER_BUILD)/atls_tls_keys.o $(USER_BUILD)/atls_tls.o \
+                $(USER_BUILD)/atls_rsa.o $(USER_BUILD)/atls_certval.o
 LIBATLS      := $(USER_LIBDIR)/libatls.a
 USER_CFLAGS  += -I lib/libatls/include
 
@@ -1180,7 +1181,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_atls_hash $(BUILD_DIR)/test_atls_aead \
                 $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519 \
                 $(BUILD_DIR)/test_atls_x509 \
-                $(BUILD_DIR)/test_atls_tls
+                $(BUILD_DIR)/test_atls_tls \
+                $(BUILD_DIR)/test_atls_certval
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1220,7 +1222,8 @@ LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
                 lib/libatls/src/atls_fe.c lib/libatls/src/atls_x25519.c \
                 lib/libatls/src/atls_ed25519.c \
                 lib/libatls/src/atls_der.c lib/libatls/src/atls_x509.c \
-                lib/libatls/src/atls_tls_keys.c lib/libatls/src/atls_tls.c
+                lib/libatls/src/atls_tls_keys.c lib/libatls/src/atls_tls.c \
+                lib/libatls/src/atls_rsa.c lib/libatls/src/atls_certval.c
 LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
 
 $(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
@@ -1254,6 +1257,12 @@ TLS_TEST_DEPS   := $(LIBATLS_SRCS) lib/libatls/include/atls/tls.h \
                     lib/libatls/src/atls_tls_int.h
 
 $(BUILD_DIR)/test_atls_tls: tests/unit/test_atls_tls.c $(TLS_TEST_DEPS)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
+# Certificate validation (N5): links libatls + atls_rsa + atls_certval.
+$(BUILD_DIR)/test_atls_certval: tests/unit/test_atls_certval.c $(LIBATLS_SRCS) \
+                                lib/libatls/include/atls/certval.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
 
