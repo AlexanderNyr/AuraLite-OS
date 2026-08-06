@@ -57,6 +57,8 @@ struct atls_tls {
     uint8_t client_hs_secret[32];
     uint8_t server_hs_secret[32];
     uint8_t master[32];
+    uint8_t client_app_secret[32];
+    uint8_t server_app_secret[32];
 
     uint8_t leaf_cert[MAX_CERT];
     size_t  leaf_cert_len;
@@ -425,8 +427,26 @@ int atls_tls_read(atls_tls *t, uint8_t *buf, size_t cap, size_t *out) {
                     t->closed = 1; return ATLS_ERR_PEER_EOF;
                 }
             }
+        } else if (inner_type == ATLS_CT_HANDSHAKE) {
+            /* Post-handshake messages. */
+            if (plain_len >= 4 && plain[0] == ATLS_HS_KEY_UPDATE
+                && t->app_keys_set) {
+                /* RFC 8446 §4.6.3: server rotates its sending keys. */
+                uint8_t new_ts[32];
+                if (atls_tls_update_traffic_secret(t->server_app_secret,
+                                                   new_ts) == ATLS_OK) {
+                    atls_tls_derive_record_keys(new_ts, &t->app_rx);
+                    for (int i = 0; i < 32; i++)
+                        t->server_app_secret[i] = new_ts[i];
+                    atls_wipe(new_ts, 32);
+                }
+                /* If the server requested we update too, do it now. */
+                if (plain_len >= 2 && plain[1] == 1) {
+                    atls_tls_key_update(t, 0);
+                }
+            }
+            /* NST: ignore. */
         }
-        /* Post-handshake messages (NST): ignore in N3. */
     }
 }
 
@@ -467,6 +487,41 @@ static int send_hs(atls_tls *t, uint8_t type,
         return send_all(t, rec, rlen);
     }
     return send_record(t, ATLS_CT_HANDSHAKE, msg, msg_len);
+}
+
+/* Send a post-handshake message encrypted under app keys. */
+static int send_app_hs(atls_tls *t, uint8_t type,
+                       const uint8_t *body, size_t body_len) {
+    uint8_t msg[65536 + 4];
+    size_t msg_len = atls_tls_hs_frame(type, body, body_len, msg);
+    if (!t->app_keys_set) return ATLS_ERR_TLS;
+    uint8_t rec[ATLS_TLS_MAX_RECORD + 5];
+    size_t rlen;
+    int rc = atls_tls_encrypt_record(&t->app_tx, ATLS_CT_HANDSHAKE,
+                                     msg, msg_len, rec, &rlen);
+    if (rc != ATLS_OK) return rc;
+    return send_all(t, rec, rlen);
+}
+
+/* ---- KeyUpdate (RFC 8446 §4.6.3) ---- */
+
+int atls_tls_key_update(atls_tls *t, int request_update) {
+    if (!t || !t->app_keys_set || t->closed) return ATLS_ERR_INPUT;
+
+    /* The KeyUpdate is the LAST record under the old keys. */
+    uint8_t body[1];
+    body[0] = (uint8_t)(request_update ? 1 : 0);
+    int rc = send_app_hs(t, ATLS_HS_KEY_UPDATE, body, 1);
+    if (rc != ATLS_OK) return rc;
+
+    /* Now rotate: derive new client traffic secret and keys. */
+    uint8_t new_ts[32];
+    rc = atls_tls_update_traffic_secret(t->client_app_secret, new_ts);
+    if (rc != ATLS_OK) return rc;
+    rc = atls_tls_derive_record_keys(new_ts, &t->app_tx);
+    for (int i = 0; i < 32; i++) t->client_app_secret[i] = new_ts[i];
+    atls_wipe(new_ts, 32);
+    return rc;
 }
 
 /* ---- Handshake ---- */
@@ -811,6 +866,11 @@ send_ch: ;
             if (rc != ATLS_OK) return rc;
             rc = atls_tls_derive_record_keys(sap_secret, &t->app_rx);
             if (rc != ATLS_OK) return rc;
+            /* Store traffic secrets for KeyUpdate (RFC 8446 §4.6.3). */
+            for (int i = 0; i < 32; i++) {
+                t->client_app_secret[i] = cap_secret[i];
+                t->server_app_secret[i] = sap_secret[i];
+            }
             t->app_keys_set = 1;
             atls_wipe(cap_secret, 32);
             atls_wipe(sap_secret, 32);

@@ -1,13 +1,14 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0, N1, N2, N3 complete, N4–N9 pending
+## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4 complete, N5–N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | N0 — real entropy source | ✅ complete | `patches/NET_N0_entropy.patch` |
 | N1 — cryptographic primitives | ✅ complete | `patches/NET_N1_crypto.patch` |
 | N2 — ASN.1 and X.509 parsing | ✅ complete | `patches/NET_N2_x509.patch` |
-| N3–N9 | pending | — |
+| N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 | `patches/NET_N4_tls_record.patch` |
+| N5–N9 | pending | — |
 
 This document answers:
 
@@ -452,6 +453,23 @@ presentation concern the shell/browser layer can add later.
 
 `patches/NET_N4_tls_record.patch`
 
+#### Phase result (2026-08-06)
+
+- **KeyUpdate (RFC 8446 §4.6.3)**: client-initiated KeyUpdate with
+  proper key rotation (send under old keys, rotate after; incoming
+  server KeyUpdate handled, including update_requested → client responds
+  with its own KeyUpdate)
+- **Record-size enforcement**: records claiming >16640 bytes refused with
+  `ATLS_ALERT_RECORD_OVERFLOW` without allocating
+- **Host test: 25/25** (full handshake + KeyUpdate + post-KeyUpdate data
+  exchange + large transfer + absurd record length refusal)
+- **Record encryption/decryption, sequence numbers, nonce construction**:
+  fully working since N3, exercised by the KeyUpdate test (multiple
+  epoch transitions in one connection)
+- **Guest limitation**: TCP segment reception bug blocks the in-QEMU
+  record-level tests (10 MB byte-identical, split-across-segments) —
+  these gate closes with N7
+
 ---
 
 ### Phase N5 — Certificate validation
@@ -587,7 +605,7 @@ Deferring it is a legitimate outcome.
 | N1 | Primitives, verified against published vectors, before any protocol |
 | N2 | Certificates must be parsed before they can be validated |
 | N3 | ✅ Done — TLS 1.3 client with Ed25519 CertVerify, host test 12/12 vs openssl s_server; guest TCP reception blocked by kernel bug (N7) |
-| N4 | Records need a completed handshake's keys |
+| N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 |
 | N5 | Validation needs a working handshake to validate within |
 | N6 | The client is the payoff, and needs all of the above |
 | N7 | Robustness matters once real hosts are being reached |

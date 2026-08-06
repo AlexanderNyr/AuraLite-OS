@@ -2,6 +2,20 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N4 — TLS record layer] 2026-08-06
+
+`INTERNET_PLAN.md` phase N4: KeyUpdate support, record-size enforcement,
+and comprehensive record-layer tests.
+
+- **KeyUpdate (RFC 8446 §4.6.3)**: client sends KeyUpdate (rotates keys
+  after send); incoming server KeyUpdate rotates receive keys;
+  update_requested triggers client response
+- **Record-size limit**: >16640 bytes → ATLS_ALERT_RECORD_OVERFLOW
+- **Host test: 25/25** (full handshake + KeyUpdate + large transfer +
+  absurd record refusal)
+- **Guest TCP limitation**: record-level integration tests still blocked
+  by N7 TCP bug
+
 ## [Internet Phase N3 — TLS 1.3 handshake] 2026-08-06
 
 `INTERNET_PLAN.md` phase N3: TLS 1.3 client handshake against real

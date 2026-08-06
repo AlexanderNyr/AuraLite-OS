@@ -135,6 +135,13 @@ int atls_tls_derive_app_secrets(const uint8_t master[32],
     return rc;
 }
 
+/* RFC 8446 §4.6.3: KeyUpdate key derivation. */
+int atls_tls_update_traffic_secret(const uint8_t current[32],
+                                   uint8_t updated[32]) {
+    return atls_tls_hkdf_expand_label(current, "traffic upd",
+                                      NULL, 0, updated, 32);
+}
+
 int atls_tls_derive_record_keys(const uint8_t ts[32],
                                 atls_tls_keys *out) {
     int rc;

@@ -62,6 +62,11 @@ int atls_tls_read(atls_tls *t, uint8_t *buf, size_t cap, size_t *out);
 /* Send close_notify and mark the connection closed. */
 int atls_tls_close(atls_tls *t);
 
+/* Send a KeyUpdate to the peer (RFC 8446 §4.6.3).  After this call,
+ * the client's sending keys are rotated.  If `request_update` is true,
+ * the server is asked to update its keys too. */
+int atls_tls_key_update(atls_tls *t, int request_update);
+
 /* Last alert description sent or received (or -1). */
 int atls_tls_last_alert_sent(const atls_tls *t);
 int atls_tls_last_alert_received(const atls_tls *t);

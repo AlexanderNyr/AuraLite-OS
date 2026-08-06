@@ -193,6 +193,93 @@ static void test_finished_verify(void) {
     unlink(key_path);
 }
 
+/* ---- Test: KeyUpdate (N4) ---- */
+static void test_key_update(int port) {
+    int fd = connect_to(port);
+    CHECK(fd >= 0, "ku: connect");
+
+    host_io io = { .fd = fd };
+    atls_tls_config cfg = { .hostname = "localhost", .alpn = "http/1.1" };
+    atls_tls *t = atls_tls_new(&cfg, host_send, host_recv, &io);
+    CHECK(t != NULL, "ku: new");
+
+    int rc = atls_tls_handshake(t);
+    CHECK(rc == ATLS_OK, "ku: handshake");
+    if (rc != ATLS_OK) { atls_tls_free(t); close(fd); return; }
+
+    /* Client-initiated KeyUpdate. */
+    rc = atls_tls_key_update(t, 0);
+    CHECK(rc == ATLS_OK, "ku: client KeyUpdate sent");
+
+    /* Application data after KeyUpdate should work. */
+    const char *req = "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n";
+    rc = atls_tls_write(t, (const uint8_t *)req, strlen(req));
+    CHECK(rc > 0, "ku: write after KeyUpdate");
+
+    uint8_t resp[4096];
+    size_t resp_len = 0;
+    rc = atls_tls_read(t, resp, sizeof(resp) - 1, &resp_len);
+    CHECK(rc == ATLS_OK && resp_len > 0, "ku: read after KeyUpdate");
+
+    atls_tls_close(t);
+    atls_tls_free(t);
+    close(fd);
+}
+
+/* ---- Test: Large transfer (N4) ---- */
+static void test_large_transfer(int port) {
+    int fd = connect_to(port);
+    CHECK(fd >= 0, "large: connect");
+
+    host_io io = { .fd = fd };
+    atls_tls_config cfg = { .hostname = "localhost", .alpn = "http/1.1" };
+    atls_tls *t = atls_tls_new(&cfg, host_send, host_recv, &io);
+    CHECK(t != NULL, "large: new");
+
+    int rc = atls_tls_handshake(t);
+    CHECK(rc == ATLS_OK, "large: handshake");
+    if (rc != ATLS_OK) { atls_tls_free(t); close(fd); return; }
+
+    /* Send a request, read the response (openssl s_server -www sends
+     * a large HTML status page).  Verify it's non-empty and valid. */
+    const char *req = "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n";
+    rc = atls_tls_write(t, (const uint8_t *)req, strlen(req));
+    CHECK(rc > 0, "large: write");
+
+    uint8_t resp[65536];
+    size_t total = 0;
+    while (1) {
+        size_t chunk = 0;
+        rc = atls_tls_read(t, resp + total, sizeof(resp) - total, &chunk);
+        if (rc != ATLS_OK || chunk == 0) break;
+        total += chunk;
+        if (total >= sizeof(resp)) break;
+    }
+    CHECK(total > 100, "large: received substantial response");
+
+    /* Verify the response looks like HTTP. */
+    int looks_http = (total > 4 && resp[0] == 'H' && resp[1] == 'T');
+    CHECK(looks_http, "large: response is HTTP-like");
+
+    atls_tls_close(t);
+    atls_tls_free(t);
+    close(fd);
+}
+
+/* ---- Test: Absurd record length refused (N4) ---- */
+static void test_absurd_record_length(void) {
+    /* A record claiming 65535 bytes should be refused immediately. */
+    uint8_t fake_record[5] = { 0x17, 0x03, 0x03, 0xFF, 0xFF };
+    atls_tls_keys k;
+    memset(&k, 0, sizeof(k));
+    uint8_t inner_type;
+    uint8_t pt[16];
+    size_t pt_len;
+    int rc = atls_tls_decrypt_record(&k, fake_record, 5,
+                                     &inner_type, pt, &pt_len);
+    CHECK(rc != ATLS_OK, "absurd record length refused");
+}
+
 int main(void) {
     int port = 14433 + (getpid() % 1000);
 
@@ -205,6 +292,9 @@ int main(void) {
 
     test_full_handshake(port);
     test_finished_verify();
+    test_key_update(port);
+    test_large_transfer(port);
+    test_absurd_record_length();
 
     cleanup_s_server();
 

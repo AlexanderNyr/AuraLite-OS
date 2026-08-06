@@ -26,6 +26,7 @@
 #define ATLS_HS_CERTIFICATE       11
 #define ATLS_HS_CERTIFICATE_VERIFY 15
 #define ATLS_HS_FINISHED          20
+#define ATLS_HS_KEY_UPDATE        24
 #define ATLS_HS_MESSAGE_HASH     254
 
 /* ---- Alert levels ---- */
@@ -149,6 +150,10 @@ int atls_tls_decrypt_record(atls_tls_keys *k,
                             const uint8_t *record, size_t reclen,
                             uint8_t *inner_type,
                             uint8_t *pt_out, size_t *pt_len);
+
+/* ---- Key update (RFC 8446 §4.6.3) ---- */
+int atls_tls_update_traffic_secret(const uint8_t current[32],
+                                   uint8_t updated[32]);
 
 /* ---- Byte helpers ---- */
 static inline uint16_t atls_rd16(const uint8_t *p) {
