@@ -790,15 +790,16 @@ Short version:
 - **The keyboard layout is hardcoded US.** Two fixed scancode tables, no keymap
   selection and no dead keys, so a non-US keyboard produces the wrong
   characters outside the shared ASCII subset.
-- **Crypto primitives exist, but no TLS and therefore no HTTPS yet.**
-  `INTERNET_PLAN.md` N0 gave a real entropy source (a ChaCha20 CSPRNG seeded
-  from RDSEED/RDRAND or interrupt-timing jitter; `getentropy()` fails closed
-  with `-ENOSYS` until entropy exists), and N1 shipped `lib/libatls/` —
-  userspace SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305 AEAD, X25519 and
-  Ed25519 verification, all verified against RFC test vectors. What is still
-  missing is everything protocol-shaped: X.509 parsing, the TLS 1.3
-  handshake/record layer, certificate validation, and an HTTPS client
-  (phases N2–N6). See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+- **Crypto primitives and X.509 parsing exist, but no TLS and therefore no
+  HTTPS yet.** `INTERNET_PLAN.md` N0 gave a real entropy source (a ChaCha20
+  CSPRNG seeded from RDSEED/RDRAND or interrupt-timing jitter;
+  `getentropy()` fails closed with `-ENOSYS` until entropy exists); N1
+  shipped `lib/libatls/` — userspace SHA-256/512, HMAC, HKDF,
+  ChaCha20-Poly1305 AEAD, X25519 and Ed25519 verification; N2 added
+  zero-copy, depth-bounded X.509 certificate parsing. All verified against
+  RFC test vectors. What is still missing is everything protocol-shaped:
+  the TLS 1.3 handshake/record layer, certificate validation, and an HTTPS
+  client (phases N3–N6). See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
 - **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
   but no interrupt gate selects it, so a kernel stack overflow or double fault
   resets the machine with no diagnostic.

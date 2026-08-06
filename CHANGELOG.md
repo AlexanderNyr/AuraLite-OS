@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N2 — ASN.1 and X.509 parsing] 2026-08-06
+
+`INTERNET_PLAN.md` phase N2: the parser that reads attacker-controlled,
+deeply nested, length-prefixed binary — written around refusal.  New
+userspace code in `lib/libatls/`; the kernel is untouched.
+
+- **`atls_der.c`/`atls_der.h` (new)**: DER TLV reader — zero allocation,
+  explicit depth budget (`ATLS_DER_MAX_DEPTH` 32), lengths bounds-checked
+  against the enclosing scope BEFORE use, indefinite length and
+  non-minimal encodings refused, unknown constructed content walked by an
+  ITERATIVE frame-table skipper (no recursion anywhere in the parse path).
+- **`atls_x509.c` + `atls/x509.h` (new)**: RFC 5280 X.509 v3 grammar.
+  Extracts, all as zero-copy spans into the caller's buffer: TBS (for
+  signature verification), signature + inner/outer algorithm OIDs,
+  issuer/subject raw DER, decoded validity times (UTCTime and
+  GeneralizedTime), SAN dNSNames (cap 16, overflow flagged),
+  basicConstraints (CA, pathlen, critical), keyUsage bits, SPKI
+  span/OID/key bits.  v1/v2 certificates and unknown CRITICAL extensions
+  are refused with `ATLS_ERR_UNSUPPORTED` (D5: reject rather than
+  interpret).
+- **New error codes**: `ATLS_ERR_TRUNCATED` / `ATLS_ERR_BAD_LENGTH` /
+  `ATLS_ERR_DEPTH` / `ATLS_ERR_UNSUPPORTED`, specific enough that tests
+  assert the reason, not just the refusal.
+- **Host battery** `tests/unit/test_atls_x509.c` — 61 checks: two REAL
+  leaves fetched live (example.com, www.google.com) + four
+  openssl-generated locals asserted field by field; all 1001 truncated
+  prefixes refused; crafted v1/unknown-critical/non-critical/
+  extension-less variants checked per reason; 10 000-deep nesting refused
+  (`ATLS_ERR_DEPTH`), 20-deep accepted; bit-flip and byte-deletion
+  mutation batteries (deletions: 92/92 refused).  Crafted-DER builders in
+  `tests/unit/atls_x509_testdata.c`, shared with the guest test.
+- **In-guest gate**: `/tests/x509test` runs the same crafted bytes on the
+  real 64 KiB user stack — any recursion over hostile nesting would die
+  on the stack guard page here; integration case
+  `tests/integration/cases/test_x509.sh` (14 assertions, no guard hits).
+- **SDK**: `include/atls/x509.h` staged by `make sdk`; `sdk_check`
+  verifies (34/34).
+- Scope note: issuer/subject stay raw DER spans (N5 chains by byte
+  equality); RDN string printing is a later presentation concern.
+
 ## [Internet Phase N1 — Cryptographic primitives (libatls)] 2026-08-06
 
 `INTERNET_PLAN.md` phase N1: the algorithm layer TLS will stand on,

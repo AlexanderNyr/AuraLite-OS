@@ -1,12 +1,13 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0, N1 complete, N2–N9 pending
+## Status: IN PROGRESS 🚧 — N0, N1, N2 complete, N3–N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | N0 — real entropy source | ✅ complete | `patches/NET_N0_entropy.patch` |
 | N1 — cryptographic primitives | ✅ complete | `patches/NET_N1_crypto.patch` |
-| N2–N9 | pending | — |
+| N2 — ASN.1 and X.509 parsing | ✅ complete | `patches/NET_N2_x509.patch` |
+| N3–N9 | pending | — |
 
 This document answers:
 
@@ -304,7 +305,7 @@ certificate validation (N5), the TLS record/handshake with N3/N4.
 
 ---
 
-### Phase N2 — ASN.1 and X.509 parsing
+### Phase N2 — ASN.1 and X.509 parsing ✅ COMPLETE
 
 **Objective:** read a certificate without being read by it.
 
@@ -313,12 +314,12 @@ deeply nested, length-prefixed binary from a stranger.
 
 #### Tasks
 
-- [ ] A DER reader with **explicit depth and length limits** — the 64 KB user
+- [x] A DER reader with **explicit depth and length limits** — the 64 KB user
       stack (`USER_STACK_SIZE`) makes a recursive descent parser a real
       overflow risk, exactly as `WEBVIEW_PLAN` §2 and GL phase G11b describe.
-- [ ] X.509 v3: subject, issuer, validity, SAN, basic constraints, key usage,
+- [x] X.509 v3: subject, issuer, validity, SAN, basic constraints, key usage,
       signature algorithm and value, SPKI.
-- [ ] Reject rather than interpret: unknown critical extensions are fatal.
+- [x] Reject rather than interpret: unknown critical extensions are fatal.
 
 #### Test gate
 
@@ -331,6 +332,48 @@ deeply nested, length-prefixed binary from a stranger.
 #### Deliverable
 
 `patches/NET_N2_x509.patch`
+
+#### Phase result (2026-08-06)
+
+`lib/libatls/src/atls_der.c` (TLV reader) + `atls_x509.c` (RFC 5280
+grammar), public header `atls/x509.h`.  The refusal contract:
+
+- **Zero allocation.** Every output field is a span into the caller's
+  buffer; a 4 GiB length claim dies at the bounds check, not in an
+  allocator.  Bounded memory holds by construction, and the test
+  asserts the claim is refused.
+- **Depth budget 32.** `atls_der_enter`/`open_scope` count nesting;
+  unknown constructed content is walked by an ITERATIVE skipper with an
+  explicit frame table — no recursion anywhere in the parse path.  The
+  10 000-deep certificate dies with `ATLS_ERR_DEPTH`.
+- **Strict DER.** Indefinite length, non-minimal lengths, high-tag-number
+  forms, and trailing garbage are each refused with their own code
+  (`BAD_LENGTH` / `BAD_ENCODING`); v1/v2 certs and unknown CRITICAL
+  extensions are refused with `ATLS_ERR_UNSUPPORTED` (D5).
+- Extracted for N5: TBS span + signature + both algorithm OIDs, issuer/
+  subject raw DER (chain building by byte comparison), decoded validity
+  times (UTCTime + GeneralizedTime), SAN dNSNames (cap 16, overflow
+  flagged), basicConstraints (CA + pathlen + critical), keyUsage bits,
+  SPKI span/OID/key bits.  Zero-copy spans verified to point inside the
+  input.
+
+Tests: host `tests/unit/test_atls_x509.c` — 61 checks: two REAL leaves
+fetched live (example.com, www.google.com) + four openssl-generated
+locals asserted field by field; every one of the 1001 truncated
+prefixes refused; crafted v1 / unknown-critical / non-critical /
+extension-less certificates each checked for the exact reason;
+10 000-deep refused, 20-deep accepted, skipper budget checked directly;
+bit-flip + byte-deletion mutation batteries (deletions are structural
+damage and 92/92 are refused).  In-guest: `/tests/x509test` runs the
+SAME crafted bytes (shared `tests/unit/atls_x509_testdata.c`) on the
+real 64 KiB stack; integration case `tests/integration/cases/test_x509.sh`
+(14 assertions, all green, no guard-page hits).  `make test-unit`: 87
+binaries green; `make sdk-check` 34/34 with `include/atls/x509.h` staged.
+
+One honest scope note: issuer/subject are kept as raw DER spans rather
+than decoded RDN strings — N5 matches chains by byte equality, which is
+what the RFC's chaining rules reduce to, and printing names is a
+presentation concern the shell/browser layer can add later.
 
 ---
 

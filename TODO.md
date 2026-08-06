@@ -281,10 +281,11 @@ for the feature matrix.
   guessable bytes are never served.  The estimated entropy is logged at
   boot.  It remains unaudited hobby-OS entropy; do not treat it as an
   `/dev/urandom` equivalent on real hardware.
-- **Crypto primitives exist; protocols do not.** `INTERNET_PLAN.md` phase N1
-  shipped `lib/libatls/` (SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305 AEAD,
-  X25519, Ed25519 verify) — userspace, RFC-vector-verified.  Still missing:
-  ASN.1/X.509 parsing (N2), the TLS 1.3 handshake and record layer (N3/N4),
+- **Crypto primitives and X.509 parsing exist; protocols do not.**
+  `INTERNET_PLAN.md` phases N1/N2 shipped `lib/libatls/` (SHA-256/512,
+  HMAC, HKDF, ChaCha20-Poly1305 AEAD, X25519, Ed25519 verify, and
+  zero-copy depth-bounded X.509 parsing) — userspace, RFC-vector-verified.
+  Still missing: the TLS 1.3 handshake and record layer (N3/N4),
   certificate validation with RSA-PKCS#1v1.5 verification (N5), and the
   HTTPS client (N6).  Until then there is no HTTPS.  `kernel/fs/btrfs.c`
   still writes its SHA-256 checksum field as zeros (kernel code; it does

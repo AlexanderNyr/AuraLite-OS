@@ -46,6 +46,12 @@ extern "C" {
 #define ATLS_ERR_BAD_SIGNATURE    -3   /* decoded fine, did not verify */
 #define ATLS_ERR_LOW_ORDER        -4   /* X25519 shared secret is zero */
 #define ATLS_ERR_AUTH             -5   /* AEAD tag mismatch */
+/* ASN.1 / X.509 (phase N2): refusals are specific so a test can assert
+ * the REASON, not just the fact. */
+#define ATLS_ERR_TRUNCATED        -6   /* input ended mid-structure */
+#define ATLS_ERR_BAD_LENGTH       -7   /* length not DER / exceeds buffer */
+#define ATLS_ERR_DEPTH            -8   /* nesting beyond ATLS_DER_MAX_DEPTH */
+#define ATLS_ERR_UNSUPPORTED      -9   /* version/extension/structure refused on purpose */
 
 /* ---- constant-time utilities (D7) ---- */
 
