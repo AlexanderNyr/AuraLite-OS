@@ -318,6 +318,12 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
         /* Found a segment for our connection. */
         memcpy(out_tcp, tcp, 20);
 
+        /* N3: keep the advertised window fresh. */
+        if (active_h >= 0 && active_h < TCP_MAX_CONNS) {
+            conns[active_h].snd_wnd = ntohs_(tcp->window) ?
+                                      ntohs_(tcp->window) : TCP_WINDOW;
+        }
+
         /* Extract payload (if any). */
         uint8_t hdr_words = tcp->data_offset >> 4;
         uint32_t tcp_hdr_bytes = (uint32_t)hdr_words * 4;
@@ -459,6 +465,14 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     tcp_send_segment(TCP_SYN | TCP_ACK, NULL, 0);
     conn_seq += 1;
 
+    /* N3 fix: initialise sliding-window fields (same as tcp_open). */
+    conns[new_h].snd_una = conn_seq;
+    conns[new_h].snd_nxt = conn_seq;
+    conns[new_h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
+    conns[new_h].rcv_wnd = TCP_WINDOW;
+    conns[new_h].cwnd    = TCP_WINDOW;
+    conns[new_h].ssthresh= TCP_WINDOW;
+
     /* Quick poll for the ACK */
     struct tcp_hdr ack_rx;
     int data_len = 0;
@@ -553,7 +567,20 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     conn_ack = ntohl_(rx.seq) + 1;
     tcp_send_segment(TCP_ACK, NULL, 0);
     conn_state = TCP_ESTABLISHED;
-    kprintf("[tcp] [h=%d] ESTABLISHED (seq=%u, ack=%u)\n", h, conn_seq, conn_ack);
+
+    /* N3 fix: initialise the sliding-window fields so tcp_send does not
+     * immediately conclude "window full" (0 >= min(0,0)) and spin forever
+     * waiting for an ACK.  cwnd is wide open until N7 brings real
+     * congestion control + buffered out-of-order receive. */
+    conns[h].snd_una = conn_seq;
+    conns[h].snd_nxt = conn_seq;
+    conns[h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
+    conns[h].rcv_wnd = TCP_WINDOW;
+    conns[h].cwnd    = TCP_WINDOW;
+    conns[h].ssthresh= TCP_WINDOW;
+
+    kprintf("[tcp] [h=%d] ESTABLISHED (seq=%u, ack=%u, peer_wnd=%u)\n",
+            h, conn_seq, conn_ack, conns[h].snd_wnd);
     /* Leave active_h pointing at this handle so the very first send/recv
      * works out of the box. */
     return h;
@@ -714,6 +741,7 @@ int tcp_send(const void *data, uint32_t len) {
         tcp_send_retx_segment(TCP_ACK | TCP_PSH, (const uint8_t *)data + bytes_sent,
                               chunk, seg_seq, conn_ack);
         conn_seq += chunk;
+        conns[active_h].snd_nxt = conn_seq;
         bytes_sent += chunk;
     }
 

@@ -81,6 +81,7 @@ ALL_CASES=(
     test_ist_double_fault
     test_rng
     test_crypto
+    test_tls
     test_x509
     test_fd_isolation
     test_user_processes

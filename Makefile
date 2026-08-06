@@ -349,6 +349,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/conformtest.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
              $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
+             $(USER_BUILD)/tlstest.elf \
              $(USER_BUILD)/rustes.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
@@ -390,7 +391,8 @@ LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
                 $(USER_BUILD)/atls_poly1305.o $(USER_BUILD)/atls_aead.o \
                 $(USER_BUILD)/atls_fe.o $(USER_BUILD)/atls_x25519.o \
                 $(USER_BUILD)/atls_ed25519.o \
-                $(USER_BUILD)/atls_der.o $(USER_BUILD)/atls_x509.o
+                $(USER_BUILD)/atls_der.o $(USER_BUILD)/atls_x509.o \
+                $(USER_BUILD)/atls_tls_keys.o $(USER_BUILD)/atls_tls.o
 LIBATLS      := $(USER_LIBDIR)/libatls.a
 USER_CFLAGS  += -I lib/libatls/include
 
@@ -543,6 +545,19 @@ $(USER_BUILD)/x509test.elf: $(USER_BUILD)/x509test.o $(USER_BUILD)/x509_testdata
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/x509test.o $(USER_BUILD)/x509_testdata.o \
 	      $(USER_COMMON_LNK) $(LIBATLS) -o $@
 	@echo "[link] $@ (libatls)"
+# ---- tlstest (INTERNET_PLAN.md N3): in-guest TLS 1.3 handshake gate ----
+$(USER_BUILD)/tlstest.o: userspace/tests/tlstest/tlstest.c \
+                         lib/libatls/include/atls/tls.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/tlstest.elf: $(USER_BUILD)/tlstest.o $(USER_COMMON) \
+                           $(LIBATLS) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/tlstest.o $(USER_COMMON_LNK) \
+	      $(LIBATLS) -o $@
+	@echo "[link] $@ (libatls)"
+
 $(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -1042,7 +1057,7 @@ INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest conformtest cryptotest x509test
+                socktest conformtest cryptotest x509test tlstest
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
@@ -1164,7 +1179,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_rng \
                 $(BUILD_DIR)/test_atls_hash $(BUILD_DIR)/test_atls_aead \
                 $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519 \
-                $(BUILD_DIR)/test_atls_x509
+                $(BUILD_DIR)/test_atls_x509 \
+                $(BUILD_DIR)/test_atls_tls
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1203,7 +1219,8 @@ LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
                 lib/libatls/src/atls_poly1305.c lib/libatls/src/atls_aead.c \
                 lib/libatls/src/atls_fe.c lib/libatls/src/atls_x25519.c \
                 lib/libatls/src/atls_ed25519.c \
-                lib/libatls/src/atls_der.c lib/libatls/src/atls_x509.c
+                lib/libatls/src/atls_der.c lib/libatls/src/atls_x509.c \
+                lib/libatls/src/atls_tls_keys.c lib/libatls/src/atls_tls.c
 LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
 
 $(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
@@ -1229,6 +1246,17 @@ $(BUILD_DIR)/test_atls_ed25519: tests/unit/test_atls_ed25519.c $(LIBATLS_SRCS) \
 # X.509 (N2): additionally links the crafted-DER builders and needs the
 # internal atls_der.h on the include path (testdata drives the skipper).
 # -I . lets it reach tests/atls_test_certs.h, shared with the guest test.
+# TLS 1.3 handshake (N3): links the REAL libatls sources plus the internal
+# atls_tls_int.h header, and exercises the full handshake against a local
+# openssl s_server with an Ed25519 cert.
+TLS_TEST_CFLAGS := $(LIBATLS_TEST_CFLAGS) -I lib/libatls/src
+TLS_TEST_DEPS   := $(LIBATLS_SRCS) lib/libatls/include/atls/tls.h \
+                    lib/libatls/src/atls_tls_int.h
+
+$(BUILD_DIR)/test_atls_tls: tests/unit/test_atls_tls.c $(TLS_TEST_DEPS)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
 $(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \
                              tests/unit/atls_x509_testdata.c $(LIBATLS_SRCS) \
                              lib/libatls/include/atls/x509.h tests/atls_test_certs.h

@@ -1,0 +1,3293 @@
+From 9f028733d5c43acc49e7e5f9e9bf675bc73ca50c Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Thu, 6 Aug 2026 14:48:03 +0300
+Subject: [PATCH] N1 update
+
+---
+ CHANGELOG.md                            |  35 +++
+ INTERNET_PLAN.md                        |  55 +++-
+ Makefile                                |  90 ++++++-
+ README.md                               |  15 +-
+ SHA256SUMS                              |   4 +-
+ TODO.md                                 |  13 +-
+ docs/status.md                          |   1 +
+ lib/libatls/include/atls/atls.h         | 175 +++++++++++++
+ lib/libatls/src/atls_aead.c             | 110 ++++++++
+ lib/libatls/src/atls_chacha20.c         |  75 ++++++
+ lib/libatls/src/atls_common.c           |  22 ++
+ lib/libatls/src/atls_ed25519.c          | 334 ++++++++++++++++++++++++
+ lib/libatls/src/atls_fe.c               | 257 ++++++++++++++++++
+ lib/libatls/src/atls_fe.h               |  56 ++++
+ lib/libatls/src/atls_hkdf.c             |  52 ++++
+ lib/libatls/src/atls_hmac.c             |  62 +++++
+ lib/libatls/src/atls_poly1305.c         | 128 +++++++++
+ lib/libatls/src/atls_sha256.c           | 120 +++++++++
+ lib/libatls/src/atls_sha512.c           | 132 ++++++++++
+ lib/libatls/src/atls_x25519.c           |  93 +++++++
+ tests/integration/cases/test_crypto.sh  |  47 ++++
+ tests/integration/run_all.sh            |   1 +
+ tests/unit/test_atls_aead.c             | 215 +++++++++++++++
+ tests/unit/test_atls_ed25519.c          | 182 +++++++++++++
+ tests/unit/test_atls_hash.c             | 273 +++++++++++++++++++
+ tests/unit/test_atls_x25519.c           | 195 ++++++++++++++
+ tools/mksdk.sh                          |  10 +-
+ tools/sdk_check.sh                      |   7 +-
+ userspace/tests/cryptotest/cryptotest.c | 156 +++++++++++
+ 29 files changed, 2883 insertions(+), 32 deletions(-)
+ create mode 100644 lib/libatls/include/atls/atls.h
+ create mode 100644 lib/libatls/src/atls_aead.c
+ create mode 100644 lib/libatls/src/atls_chacha20.c
+ create mode 100644 lib/libatls/src/atls_common.c
+ create mode 100644 lib/libatls/src/atls_ed25519.c
+ create mode 100644 lib/libatls/src/atls_fe.c
+ create mode 100644 lib/libatls/src/atls_fe.h
+ create mode 100644 lib/libatls/src/atls_hkdf.c
+ create mode 100644 lib/libatls/src/atls_hmac.c
+ create mode 100644 lib/libatls/src/atls_poly1305.c
+ create mode 100644 lib/libatls/src/atls_sha256.c
+ create mode 100644 lib/libatls/src/atls_sha512.c
+ create mode 100644 lib/libatls/src/atls_x25519.c
+ create mode 100644 tests/integration/cases/test_crypto.sh
+ create mode 100644 tests/unit/test_atls_aead.c
+ create mode 100644 tests/unit/test_atls_ed25519.c
+ create mode 100644 tests/unit/test_atls_hash.c
+ create mode 100644 tests/unit/test_atls_x25519.c
+ create mode 100644 userspace/tests/cryptotest/cryptotest.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e622f09..2964640 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,41 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [Internet Phase N1 — Cryptographic primitives (libatls)] 2026-08-06
++
++`INTERNET_PLAN.md` phase N1: the algorithm layer TLS will stand on,
++verified against published vectors before any protocol code exists.
++Everything is userspace (`lib/libatls/`, decision D2) and freestanding
++C11; the kernel is untouched.
++
++- **`lib/libatls/` (new)**: SHA-256, SHA-512, HMAC-SHA256 (RFC 2104),
++  HKDF (RFC 5869), ChaCha20, Poly1305 and AEAD_CHACHA20_POLY1305
++  (RFC 8439), X25519 (RFC 7748), Ed25519 **verification** (RFC 8032),
++  plus `atls_ct_eq` / `atls_wipe`.  One public header (`atls/atls.h`).
++  Field arithmetic is 5×51-bit limbs with `unsigned __int128` carries;
++  AEAD decrypt verifies the tag before releasing plaintext and wipes the
++  buffer on refusal; X25519 refuses all-zero shared secrets
++  (`ATLS_ERR_LOW_ORDER`).
++- **Host test batteries** `tests/unit/test_atls_{hash,aead,x25519,
++  ed25519}.c` — 94 checks, all green: FIPS 180 / RFC 4231 / 5869 / 8439 /
++  7748 / 8032 vectors, the RFC 7748 §6.1 1 000-iteration run, ten
++  Wycheproof low-order X25519 triples (exact private/public pairs; two
++  points have odd small order and only reach zero under their matching
++  scalar), and an Ed25519 negative battery where every refusal is
++  asserted for its exact reason.
++- **D7 enforcement**: `test_atls_hash` greps every libatls source for
++  `memcmp(`/`strncmp(`/`bcmp(`/`strcmp(` and fails the build if one
++  appears — the only secret-comparison primitive is `atls_ct_eq`.
++- **In-guest smoke test**: `/tests/cryptotest` (initrd) links `libatls.a`
++  and runs one vector per primitive plus tampered-AEAD, low-order-X25519
++  and forged-Ed25519 refusals; integration case
++  `tests/integration/cases/test_crypto.sh` (14 assertions).
++- **SDK**: `make sdk` stages `libatls.a` and `include/atls/atls.h`;
++  `auralite.mk` gains `AURALITE_LIBS_TLS`; `sdk_check` verifies both
++  (33/33 pass).
++- Not included, deliberately: RSA-PKCS#1v1.5 verification (lands with
++  certificate validation, N5) and everything protocol-shaped (N2–N4).
++
+ ## [Internet Phase N0 — A real entropy source] 2026-08-06
+ 
+ `INTERNET_PLAN.md` phase N0, the first phase of the real-internet plan and
+diff --git a/INTERNET_PLAN.md b/INTERNET_PLAN.md
+index f75eb48..5d26cea 100644
+--- a/INTERNET_PLAN.md
++++ b/INTERNET_PLAN.md
+@@ -1,11 +1,12 @@
+ # AuraLite OS — Real Internet Access Plan
+ 
+-## Status: IN PROGRESS 🚧 — N0 complete, N1–N9 pending
++## Status: IN PROGRESS 🚧 — N0, N1 complete, N2–N9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | N0 — real entropy source | ✅ complete | `patches/NET_N0_entropy.patch` |
+-| N1–N9 | pending | — |
++| N1 — cryptographic primitives | ✅ complete | `patches/NET_N1_crypto.patch` |
++| N2–N9 | pending | — |
+ 
+ This document answers:
+ 
+@@ -236,19 +237,21 @@ reference run), and two boots produce different samples.  Integration gate:
+ 
+ ---
+ 
+-### Phase N1 — Cryptographic primitives
++### Phase N1 — Cryptographic primitives ✅ COMPLETE
+ 
+ **Objective:** the algorithms, standing alone and heavily tested.
+ 
+ #### Tasks
+ 
+-- [ ] SHA-256, HMAC-SHA256, HKDF (RFC 5869).
+-- [ ] ChaCha20 and Poly1305, and the AEAD construction (RFC 8439).
+-- [ ] Curve25519 / X25519 (RFC 7748).
+-- [ ] Ed25519 verification (RFC 8032).
+-- [ ] A constant-time comparison, and a rule that nothing else compares
++- [x] SHA-256, HMAC-SHA256, HKDF (RFC 5869).  SHA-512 also included —
++      Ed25519 (RFC 8032) is defined on it, so it is a hard dependency,
++      not scope creep.
++- [x] ChaCha20 and Poly1305, and the AEAD construction (RFC 8439).
++- [x] Curve25519 / X25519 (RFC 7748).
++- [x] Ed25519 verification (RFC 8032).
++- [x] A constant-time comparison, and a rule that nothing else compares
+       secrets (D7).
+-- [ ] `libatls` as a userspace static library, shipped in the SDK.
++- [x] `libatls` as a userspace static library, shipped in the SDK.
+ 
+ #### Test gate
+ 
+@@ -265,6 +268,40 @@ reference run), and two boots produce different samples.  Integration gate:
+ 
+ `patches/NET_N1_crypto.patch`
+ 
++#### Phase result (2026-08-06)
++
++`lib/libatls/` — 11 freestanding C11 translation units, userspace-only
++(D2), portable 64-bit C with `unsigned __int128` field arithmetic
++(5×51-bit limbs, 128-bit carry chains; an early 64-bit-truncation bug in
++the carry chain was caught by the Wycheproof odd-order point and fixed
++before the phase landed).  Public surface is one header, `atls/atls.h`.
++
++- SHA-256 / SHA-512 (FIPS 180), HMAC-SHA256 (RFC 2104), HKDF (RFC 5869),
++  ChaCha20 + Poly1305 + AEAD (RFC 8439), X25519 (RFC 7748), Ed25519
++  verify (RFC 8032), `atls_ct_eq` / `atls_wipe`.
++- Host batteries `tests/unit/test_atls_{hash,aead,x25519,ed25519}.c`,
++  94 checks, all green: RFC 6234/4231/5869/8439/7748/8032 vectors
++  (incl. the 1 000-iteration X25519 run and the RFC 8439 §2.8.2 full
++  AEAD record), ten Wycheproof low-order X25519 triples (exact
++  private/public pairs, because two of the points have odd small order
++  and only reach the zero secret under their matching scalar), and the
++  Ed25519 negative battery — ten refusals each asserted for the exact
++  reason (`BAD_SIGNATURE` vs `BAD_ENCODING` vs the S-range check),
++  individually, never lumped.
++- D7 is enforced by the test suite itself: `test_atls_hash` greps every
++  libatls source for `memcmp(`/`strncmp(`/`bcmp(`/`strcmp(` and fails if
++  any appears.
++- In-guest proof: `/tests/cryptotest` links `libatls.a` and runs one
++  vector per primitive plus the three refusal paths on the 64 KiB user
++  stack; integration case `tests/integration/cases/test_crypto.sh`
++  (14 assertions, all green).
++- SDK: `libatls.a` + `include/atls/atls.h` staged by `make sdk`,
++  `AURALITE_LIBS_TLS` in `auralite.mk`, `sdk_check` verifies presence
++  (33/33).
++
++Not in this phase, deliberately: RSA-PKCS#1v1.5 verification lands with
++certificate validation (N5), the TLS record/handshake with N3/N4.
++
+ ---
+ 
+ ### Phase N2 — ASN.1 and X.509 parsing
+diff --git a/Makefile b/Makefile
+index 7a734a1..598fc16 100644
+--- a/Makefile
++++ b/Makefile
+@@ -348,6 +348,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
+              $(USER_BUILD)/socktest.elf \
+              $(USER_BUILD)/conformtest.elf \
+              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
++             $(USER_BUILD)/cryptotest.elf \
+              $(USER_BUILD)/rustes.elf
+ 
+ # auragui, linked into every GUI app.  As with libaurac, the archive is what
+@@ -378,6 +379,20 @@ USER_CFLAGS += -I lib/libgl/include
+ USER_GL_APPS := $(USER_BUILD)/gltest.elf $(USER_BUILD)/glcube.elf \
+                 $(USER_BUILD)/glgears.elf
+ 
++# ---- libatls (INTERNET_PLAN.md phase N1) ----
++# The TLS crypto primitives live in userspace (decision D2): a bug in an
++# ASN.1 parser must be a killed process, not a kernel panic.  Linked only
++# into programs that actually use it (today: /tests/cryptotest; from N3,
++# the TLS stack), never into every binary.
++LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
++                $(USER_BUILD)/atls_sha512.o $(USER_BUILD)/atls_hmac.o \
++                $(USER_BUILD)/atls_hkdf.o $(USER_BUILD)/atls_chacha20.o \
++                $(USER_BUILD)/atls_poly1305.o $(USER_BUILD)/atls_aead.o \
++                $(USER_BUILD)/atls_fe.o $(USER_BUILD)/atls_x25519.o \
++                $(USER_BUILD)/atls_ed25519.o
++LIBATLS      := $(USER_LIBDIR)/libatls.a
++USER_CFLAGS  += -I lib/libatls/include
++
+ # ---- Static libraries (SDK_PLAN phase S0) ----
+ #
+ # An archive is the one artefact a link command can name without knowing what
+@@ -406,7 +421,13 @@ $(LIBAGL): $(LIBGL_OBJS)
+ 	$(AR) rcs $@ $(LIBGL_OBJS)
+ 	@echo "[ar] $@ ($(words $(LIBGL_OBJS)) objects)"
+ 
+-libs: $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL)
++$(LIBATLS): $(LIBATLS_OBJS)
++	@mkdir -p $(dir $@)
++	@rm -f $@
++	$(AR) rcs $@ $(LIBATLS_OBJS)
++	@echo "[ar] $@ ($(words $(LIBATLS_OBJS)) objects)"
++
++libs: $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(LIBATLS)
+ 
+ user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
+ 
+@@ -485,6 +506,20 @@ $(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes.o $(RSBR_RLIB) lib/libc/user.ld
+ 	@mkdir -p $(dir $@)
+ 	$(LD) $(USER_LDFLAGS) $< $(RSBR_RLIB) -o $@
+ 	@echo "[link] $@"
++
++# ---- cryptotest (INTERNET_PLAN.md N1): in-guest libatls smoke test ----
++$(USER_BUILD)/cryptotest.o: userspace/tests/cryptotest/cryptotest.c \
++                            lib/libatls/include/atls/atls.h $(USER_CFLAGS_INC)
++	@mkdir -p $(dir $@)
++	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++
++# Explicit link rule: cryptotest additionally pulls in libatls.
++$(USER_BUILD)/cryptotest.elf: $(USER_BUILD)/cryptotest.o $(USER_COMMON) \
++                              $(LIBATLS) lib/libc/user.ld
++	@mkdir -p $(dir $@)
++	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/cryptotest.o $(USER_COMMON_LNK) \
++	      $(LIBATLS) -o $@
++	@echo "[link] $@ (libatls)"
+ $(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@)
+ 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+@@ -668,6 +703,15 @@ $(USER_BUILD)/glshaderpipe.o: lib/libgl/src/glshaderpipe.c lib/libgl/src/glconte
+ 	@mkdir -p $(dir $@)
+ 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
++# ---- libatls objects (INTERNET_PLAN.md N1) ----
++# One scoped pattern rule instead of eleven copies: every translation unit
++# has the same dependency (the public header), and atls_fe.h resolves
++# relative to each including file.
++$(USER_BUILD)/atls_%.o: lib/libatls/src/atls_%.c \
++                        lib/libatls/include/atls/atls.h $(USER_CFLAGS_INC)
++	@mkdir -p $(dir $@)
++	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++
+ # ---- GL applications ----
+ # /gltest reaches into lib/libgl/src for glsl.h: it is libgl's own regression
+ # suite, and the GLSL front end has no public entry point until phase G11c.
+@@ -975,7 +1019,7 @@ INITRD_DEMOS := guess snake glcube glgears
+ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
+                 gltest tcpserver elfperm udptest timestest fifolinktest \
+                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
+-                socktest conformtest
++                socktest conformtest cryptotest
+ 
+ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
+ 	@rm -rf $(INITRD_DIR)
+@@ -1094,7 +1138,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_q16_tail \
+                 $(BUILD_DIR)/test_sysvipc \
+                 $(BUILD_DIR)/test_keymap \
+-                $(BUILD_DIR)/test_rng
++                $(BUILD_DIR)/test_rng \
++                $(BUILD_DIR)/test_atls_hash $(BUILD_DIR)/test_atls_aead \
++                $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1121,6 +1167,40 @@ $(BUILD_DIR)/test_rng: tests/unit/test_rng.c kernel/rng_core.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# ---- libatls host unit tests (INTERNET_PLAN.md N1) ----
++# One shared source list so every RFC-vector battery always links the SAME
++# library the guest ships — the GL tests learned this the hard way
++# (LIBGL_TEST_SRCS comment): a per-rule copy drifts, a single variable
++# cannot.  Note: test_atls_hash additionally greps these sources for the
++# D7 rule (no memcmp on secrets), so the list must stay explicit.
++LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
++                lib/libatls/src/atls_sha512.c lib/libatls/src/atls_hmac.c \
++                lib/libatls/src/atls_hkdf.c lib/libatls/src/atls_chacha20.c \
++                lib/libatls/src/atls_poly1305.c lib/libatls/src/atls_aead.c \
++                lib/libatls/src/atls_fe.c lib/libatls/src/atls_x25519.c \
++                lib/libatls/src/atls_ed25519.c
++LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
++
++$(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
++                             lib/libatls/include/atls/atls.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
++
++$(BUILD_DIR)/test_atls_aead: tests/unit/test_atls_aead.c $(LIBATLS_SRCS) \
++                             lib/libatls/include/atls/atls.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
++
++$(BUILD_DIR)/test_atls_x25519: tests/unit/test_atls_x25519.c $(LIBATLS_SRCS) \
++                               lib/libatls/include/atls/atls.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
++
++$(BUILD_DIR)/test_atls_ed25519: tests/unit/test_atls_ed25519.c $(LIBATLS_SRCS) \
++                                lib/libatls/include/atls/atls.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
++
+ $(BUILD_DIR)/test_heap: tests/unit/test_heap.c kernel/mm/heap.c kernel/mm/heap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_heap.c kernel/mm/heap.c -o $@
+@@ -1590,7 +1670,9 @@ sdk: libs $(USER_BUILD)/crt0.o
+ 	@cp lib/libauragui/include/auragui.h $(SDK_DIR)/include/
+ 	@mkdir -p $(SDK_DIR)/include/GL
+ 	@cp lib/libgl/include/GL/*.h $(SDK_DIR)/include/GL/
+-	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(SDK_DIR)/lib/
++	@mkdir -p $(SDK_DIR)/include/atls
++	@cp lib/libatls/include/atls/atls.h $(SDK_DIR)/include/atls/
++	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(LIBATLS) $(SDK_DIR)/lib/
+ 	@cp $(USER_BUILD)/crt0.o $(SDK_DIR)/lib/
+ 	@cp lib/libc/user.ld $(SDK_DIR)/
+ 	@bash tools/mksdk.sh $(SDK_DIR)
+diff --git a/README.md b/README.md
+index fe77621..4ee40f2 100644
+--- a/README.md
++++ b/README.md
+@@ -790,12 +790,15 @@ Short version:
+ - **The keyboard layout is hardcoded US.** Two fixed scancode tables, no keymap
+   selection and no dead keys, so a non-US keyboard produces the wrong
+   characters outside the shared ASCII subset.
+-- **No cryptography and therefore no HTTPS.** There is no SHA-256, AES or curve
+-  arithmetic anywhere in the tree. The entropy source is now real
+-  (`INTERNET_PLAN.md` phase N0: a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or
+-  interrupt-timing jitter, with `getentropy()` failing closed via `-ENOSYS`
+-  until entropy exists), but the cryptographic primitives themselves land only
+-  in phase N1. See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
++- **Crypto primitives exist, but no TLS and therefore no HTTPS yet.**
++  `INTERNET_PLAN.md` N0 gave a real entropy source (a ChaCha20 CSPRNG seeded
++  from RDSEED/RDRAND or interrupt-timing jitter; `getentropy()` fails closed
++  with `-ENOSYS` until entropy exists), and N1 shipped `lib/libatls/` —
++  userspace SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305 AEAD, X25519 and
++  Ed25519 verification, all verified against RFC test vectors. What is still
++  missing is everything protocol-shaped: X.509 parsing, the TLS 1.3
++  handshake/record layer, certificate validation, and an HTTPS client
++  (phases N2–N6). See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+ - **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
+   but no interrupt gate selects it, so a kernel stack overflow or double fault
+   resets the machine with no diagnostic.
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 5e2f50b..bdc09a9 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-d91bbe8ed3361f88464614cbbbba128724a6155bac8af967e56e9c033f51164d  auralite.iso
++1e8e7f03c822a5189582587ce6e611c1888467ad62e815aea783141364a301b6  auralite.iso
+ ee9a00d6c5e5c5a3d68a9fb11eebc17aaa2da23c4054d6ffa7c89bbb37209e23  kernel.elf
+-c20744af1ddbfdf866d3b8e4220baa7a8e50272a4e0d03cbef9023fc1e4a3712  initrd.tar
++eb34a60c600d918ad04d10658e2c29db9203b4607c3c1e2c670e4d51372d7464  initrd.tar
+diff --git a/TODO.md b/TODO.md
+index 50e2a7a..bb58260 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -281,11 +281,14 @@ for the feature matrix.
+   guessable bytes are never served.  The estimated entropy is logged at
+   boot.  It remains unaudited hobby-OS entropy; do not treat it as an
+   `/dev/urandom` equivalent on real hardware.
+-- **There is no cryptography in the tree at all.** No SHA-256, no AES, no
+-  curve arithmetic. `kernel/fs/btrfs.c` writes its SHA-256 checksum field as
+-  zeros and says so in a comment. Consequently there is no TLS and no HTTPS;
+-  `INTERNET_PLAN.md` is the plan for that (N0 done; the primitives land in
+-  phase N1).
++- **Crypto primitives exist; protocols do not.** `INTERNET_PLAN.md` phase N1
++  shipped `lib/libatls/` (SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305 AEAD,
++  X25519, Ed25519 verify) — userspace, RFC-vector-verified.  Still missing:
++  ASN.1/X.509 parsing (N2), the TLS 1.3 handshake and record layer (N3/N4),
++  certificate validation with RSA-PKCS#1v1.5 verification (N5), and the
++  HTTPS client (N6).  Until then there is no HTTPS.  `kernel/fs/btrfs.c`
++  still writes its SHA-256 checksum field as zeros (kernel code; it does
++  not use libatls, by design D2).
+ 
+ ### Storage / filesystems
+ 
+diff --git a/docs/status.md b/docs/status.md
+index 785aa90..7501534 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -87,6 +87,7 @@ Legend:
+ | Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
+ | Sockets | 🧪 | AF_INET/SOCK_STREAM handles include `socket`, `connect`, `send`, `recv`, `close`, plus server-side `bind`, `listen`, and `accept` (`305..307`). AF_INET/SOCK_DGRAM supports `sendto=44` and `recvfrom=45`. |
+ | Entropy (`getentropy`/`getrandom`) | ✅ | INTERNET_PLAN N0. ChaCha20 CSPRNG (`kernel/rng_core.h`, RFC 8439) seeded from RDSEED/RDRAND when present, else an interrupt-timing jitter pool stirred on every IRQ. Fails closed: `getentropy` returns `-ENOSYS` and `getrandom` blocks (or `EAGAIN` with `GRND_NONBLOCK`) until real entropy exists; estimated entropy logged at boot. Host RFC-vector + 1 MiB statistics tests, QEMU gate `test_rng.sh`. |
++| Crypto primitives (`libatls`) | ✅ | INTERNET_PLAN N1. Userspace static library `lib/libatls/`: SHA-256/512, HMAC-SHA256, HKDF, ChaCha20/Poly1305 AEAD, X25519, Ed25519 verify — all RFC-vector-verified by `tests/unit/test_atls_*` (94 checks) incl. the X25519 1000-iteration run and ten Wycheproof low-order triples. D7 enforced by a source grep: no `memcmp` on secrets, only `atls_ct_eq`. Shipped in the SDK (`AURALITE_LIBS_TLS`); in-guest gate `/tests/cryptotest` + `test_crypto.sh`. |
+ 
+ ## Networking
+ 
+diff --git a/lib/libatls/include/atls/atls.h b/lib/libatls/include/atls/atls.h
+new file mode 100644
+index 0000000..278cf9b
+--- /dev/null
++++ b/lib/libatls/include/atls/atls.h
+@@ -0,0 +1,175 @@
++#ifndef LIBATLS_ATLS_H
++#define LIBATLS_ATLS_H
++
++/* atls/atls.h — AuraLite TLS crypto primitives (INTERNET_PLAN.md phase N1).
++ *
++ * A freestanding C11 userspace library (decision D2: crypto lives in a
++ * process the kernel can kill, never in the kernel itself).  Portable
++ * 64-bit C, no libc beyond <stdint.h>/<stddef.h>, no SSE intrinsics, and
++ * no memcmp on secret data anywhere (decision D7 — the only secret
++ * comparison primitive is atls_ct_eq, and the test suite greps the sources
++ * to prove nothing else is used).
++ *
++ * Implemented, each verified against its RFC test vectors by
++ * tests/unit/test_atls_*.c (the host tests compile these very sources):
++ *
++ *   SHA-256            FIPS 180-4
++ *   SHA-512            FIPS 180-4          (needed by Ed25519)
++ *   HMAC-SHA256        RFC 2104 / 4231
++ *   HKDF               RFC 5869 (SHA-256)
++ *   ChaCha20           RFC 8439 section 2.4
++ *   Poly1305           RFC 8439 section 2.5
++ *   AEAD               RFC 8439 section 2.8 (ChaCha20-Poly1305)
++ *   X25519             RFC 7748
++ *   Ed25519 verify     RFC 8032 (verification only, per D4: no signing,
++ *                      no key generation — certificate chains need verify)
++ *
++ * Not implemented here: RSA-PKCS#1v1.5 verification lands with certificate
++ * validation (phase N5), and the TLS protocol itself is N3/N4.
++ *
++ * This is unaudited hobby cryptography.  N9 will say that in the docs
++ * rather than implying a security guarantee.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* ---- result codes ---- */
++
++#define ATLS_OK                    0
++#define ATLS_ERR_INPUT            -1   /* NULL/out-of-range argument */
++#define ATLS_ERR_BAD_ENCODING     -2   /* point/integer decoding failed */
++#define ATLS_ERR_BAD_SIGNATURE    -3   /* decoded fine, did not verify */
++#define ATLS_ERR_LOW_ORDER        -4   /* X25519 shared secret is zero */
++#define ATLS_ERR_AUTH             -5   /* AEAD tag mismatch */
++
++/* ---- constant-time utilities (D7) ---- */
++
++/* Compare two buffers without an early exit.  Returns 1 if equal, 0 if
++ * not.  This is the ONLY comparison primitive libatls may use on secret
++ * or attacker-influenced MAC/signature material. */
++int atls_ct_eq(const uint8_t *a, const uint8_t *b, size_t len);
++
++/* Overwrite `len` bytes at `p` with zeros, defeat dead-store elimination. */
++void atls_wipe(void *p, size_t len);
++
++/* ---- SHA-256 (FIPS 180-4) ---- */
++
++typedef struct {
++    uint32_t h[8];
++    uint64_t nbytes;          /* total bytes hashed so far */
++    uint8_t  buf[64];
++    size_t   buflen;
++} atls_sha256_ctx;
++
++void atls_sha256_init(atls_sha256_ctx *c);
++void atls_sha256_update(atls_sha256_ctx *c, const void *data, size_t len);
++void atls_sha256_final(atls_sha256_ctx *c, uint8_t out[32]);
++void atls_sha256(const void *data, size_t len, uint8_t out[32]);
++
++/* ---- SHA-512 (FIPS 180-4) ---- */
++
++typedef struct {
++    uint64_t h[8];
++    uint64_t nbytes_lo;       /* total bytes hashed, low 64 bits */
++    uint64_t nbytes_hi;
++    uint8_t  buf[128];
++    size_t   buflen;
++} atls_sha512_ctx;
++
++void atls_sha512_init(atls_sha512_ctx *c);
++void atls_sha512_update(atls_sha512_ctx *c, const void *data, size_t len);
++void atls_sha512_final(atls_sha512_ctx *c, uint8_t out[64]);
++void atls_sha512(const void *data, size_t len, uint8_t out[64]);
++
++/* ---- HMAC-SHA256 (RFC 2104) ---- */
++
++typedef struct {
++    atls_sha256_ctx inner;
++    uint8_t opad_hash_prefix[64];   /* pre-padded outer key block */
++} atls_hmac_sha256_ctx;
++
++void atls_hmac_sha256_init(atls_hmac_sha256_ctx *c,
++                           const uint8_t *key, size_t keylen);
++void atls_hmac_sha256_update(atls_hmac_sha256_ctx *c,
++                             const void *data, size_t len);
++void atls_hmac_sha256_final(atls_hmac_sha256_ctx *c, uint8_t out[32]);
++void atls_hmac_sha256(const uint8_t *key, size_t keylen,
++                      const void *msg, size_t msglen, uint8_t out[32]);
++
++/* ---- HKDF (RFC 5869, SHA-256) ---- */
++
++/* PRK = HKDF-Extract(salt, IKM).  A NULL/0 salt means HashLen zeros. */
++int atls_hkdf_extract(const uint8_t *salt, size_t saltlen,
++                      const uint8_t *ikm, size_t ikmlen,
++                      uint8_t prk[32]);
++
++/* OKM = HKDF-Expand(PRK, info, L).  L must be <= 255 * 32. */
++int atls_hkdf_expand(const uint8_t prk[32],
++                     const uint8_t *info, size_t infolen,
++                     uint8_t *okm, size_t okmlen);
++
++/* ---- ChaCha20 (RFC 8439 section 2.4) ---- */
++
++/* XOR `len` bytes of `in` with the keystream starting at 32-bit block
++ * `counter` (encryption and decryption are the same call). */
++void atls_chacha20_xor(const uint8_t key[32], uint32_t counter,
++                       const uint8_t nonce[12],
++                       const uint8_t *in, uint8_t *out, size_t len);
++
++/* ---- Poly1305 (RFC 8439 section 2.5) ---- */
++
++/* One-time authenticator.  The 32-byte key must never be reused. */
++void atls_poly1305(const uint8_t key[32],
++                   const uint8_t *msg, size_t msglen,
++                   uint8_t tag[16]);
++
++/* ---- AEAD_CHACHA20_POLY1305 (RFC 8439 section 2.8) ---- */
++
++/* `ct` may equal `pt` (in place).  Writes ptlen ciphertext bytes and a
++ * 16-byte tag.  Returns ATLS_OK or ATLS_ERR_INPUT. */
++int atls_aead_encrypt(const uint8_t key[32], const uint8_t nonce[12],
++                      const uint8_t *aad, size_t aadlen,
++                      const uint8_t *pt, size_t ptlen,
++                      uint8_t *ct, uint8_t tag[16]);
++
++/* Verifies the tag with atls_ct_eq BEFORE releasing plaintext.  On
++ * ATLS_ERR_AUTH the plaintext buffer is wiped.  `pt` may equal `ct`. */
++int atls_aead_decrypt(const uint8_t key[32], const uint8_t nonce[12],
++                      const uint8_t *aad, size_t aadlen,
++                      const uint8_t *ct, size_t ctlen,
++                      const uint8_t tag[16], uint8_t *pt);
++
++/* ---- X25519 (RFC 7748) ---- */
++
++extern const uint8_t ATLS_X25519_BASEPOINT[32];   /* u = 9 */
++
++/* Clamp a private scalar in place (RFC 7748 section 5).  atls_x25519()
++ * clamps internally too; this is exposed for key-generation code. */
++void atls_x25519_clamp(uint8_t scalar[32]);
++
++/* out = X25519(scalar, point).  The high bit of point[31] is masked per
++ * the RFC.  Returns ATLS_OK, ATLS_ERR_INPUT, or ATLS_ERR_LOW_ORDER when
++ * the shared secret is all zeros (low-order input point, Wycheproof
++ * ZeroSharedSecret).  On ATLS_ERR_LOW_ORDER, out is written with zeros. */
++int atls_x25519(uint8_t out[32], const uint8_t scalar[32],
++                const uint8_t point[32]);
++
++/* ---- Ed25519 (RFC 8032) — verification only (D4) ---- */
++
++/* Verify `sig` over `msg` under `pk`.  Returns ATLS_OK,
++ * ATLS_ERR_BAD_ENCODING (R or the public key does not decode as a point),
++ * or ATLS_ERR_BAD_SIGNATURE (everything decoded but the equation fails,
++ * including the "0 <= S < L" range check on the integer half). */
++int atls_ed25519_verify(const uint8_t sig[64], const uint8_t pk[32],
++                        const void *msg, size_t msglen);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* LIBATLS_ATLS_H */
+diff --git a/lib/libatls/src/atls_aead.c b/lib/libatls/src/atls_aead.c
+new file mode 100644
+index 0000000..c7c01f3
+--- /dev/null
++++ b/lib/libatls/src/atls_aead.c
+@@ -0,0 +1,110 @@
++/* atls_aead.c — AEAD_CHACHA20_POLY1305 (RFC 8439 section 2.8).
++ *
++ * The record-layer cipher of this stack (decision D4: ChaCha20-Poly1305
++ * over AES-GCM, because it is fast and constant-time in portable C).
++ *
++ * The Poly1305 input layout is exactly §2.8:
++ *     aad || pad16(aad) || ciphertext || pad16(ciphertext)
++ *         || le64(aadlen) || le64(ctlen)
++ *
++ * Decryption verifies the tag (with atls_ct_eq) BEFORE any plaintext is
++ * handed out, and wipes the output buffer on failure — release nothing
++ * unauthenticated.
++ */
++
++#include "atls/atls.h"
++
++/* Declared, not included: the guest's <stdlib.h> and the host's both
++ * provide these, and keeping the library header-free here means this
++ * file compiles identically in both worlds. */
++extern void *malloc(size_t);
++extern void  free(void *);
++
++static void pad16_append(uint8_t *dst, size_t *off, size_t section_len) {
++    size_t pad = (16 - (section_len % 16)) % 16;
++    for (size_t i = 0; i < pad; i++) dst[(*off)++] = 0;
++}
++
++static void le64_put(uint8_t *p, uint64_t v) {
++    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (i * 8));
++}
++
++/* Build the Poly1305 input for §2.8.  Returns a malloc'd buffer (caller
++ * wipes+frees) or NULL. */
++static uint8_t *mac_data(const uint8_t *aad, size_t aadlen,
++                         const uint8_t *ct, size_t ctlen,
++                         size_t *total) {
++    size_t pad_aad = (16 - (aadlen % 16)) % 16;
++    size_t pad_ct  = (16 - (ctlen % 16)) % 16;
++    size_t n = aadlen + pad_aad + ctlen + pad_ct + 16;
++    uint8_t *buf = (uint8_t *)malloc(n);
++    if (!buf) return NULL;
++
++    size_t off = 0;
++    for (size_t i = 0; i < aadlen; i++) buf[off++] = aad[i];
++    pad16_append(buf, &off, aadlen);
++    for (size_t i = 0; i < ctlen; i++) buf[off++] = ct[i];
++    pad16_append(buf, &off, ctlen);
++    le64_put(buf + off, (uint64_t)aadlen); off += 8;
++    le64_put(buf + off, (uint64_t)ctlen);  off += 8;
++
++    *total = n;
++    return buf;
++}
++
++int atls_aead_encrypt(const uint8_t key[32], const uint8_t nonce[12],
++                      const uint8_t *aad, size_t aadlen,
++                      const uint8_t *pt, size_t ptlen,
++                      uint8_t *ct, uint8_t tag[16]) {
++    if (!key || !nonce || !tag) return ATLS_ERR_INPUT;
++    if ((!aad && aadlen) || (!pt && ptlen) || (!ct && ptlen)) {
++        return ATLS_ERR_INPUT;
++    }
++
++    uint8_t poly_key[64] = { 0 };
++    atls_chacha20_xor(key, 0, nonce, poly_key, poly_key, 64);  /* block 0 */
++
++    atls_chacha20_xor(key, 1, nonce, pt, ct, ptlen);           /* ctr 1.. */
++
++    size_t n = 0;
++    uint8_t *md = mac_data(aad, aadlen, ct, ptlen, &n);
++    if (!md) return ATLS_ERR_INPUT;
++    atls_poly1305(poly_key, md, n, tag);
++
++    atls_wipe(md, n);
++    free(md);
++    atls_wipe(poly_key, sizeof(poly_key));
++    return ATLS_OK;
++}
++
++int atls_aead_decrypt(const uint8_t key[32], const uint8_t nonce[12],
++                      const uint8_t *aad, size_t aadlen,
++                      const uint8_t *ct, size_t ctlen,
++                      const uint8_t tag[16], uint8_t *pt) {
++    if (!key || !nonce || !tag) return ATLS_ERR_INPUT;
++    if ((!aad && aadlen) || (!ct && ctlen) || (!pt && ctlen)) {
++        return ATLS_ERR_INPUT;
++    }
++
++    uint8_t poly_key[64] = { 0 };
++    atls_chacha20_xor(key, 0, nonce, poly_key, poly_key, 64);
++
++    size_t n = 0;
++    uint8_t *md = mac_data(aad, aadlen, ct, ctlen, &n);
++    if (!md) return ATLS_ERR_INPUT;
++    uint8_t check[16];
++    atls_poly1305(poly_key, md, n, check);
++    atls_wipe(md, n);
++    free(md);
++    atls_wipe(poly_key, sizeof(poly_key));
++
++    if (!atls_ct_eq(check, tag, 16)) {
++        atls_wipe(check, sizeof(check));
++        if (pt && ctlen) atls_wipe(pt, ctlen);   /* release nothing */
++        return ATLS_ERR_AUTH;
++    }
++    atls_wipe(check, sizeof(check));
++
++    atls_chacha20_xor(key, 1, nonce, ct, pt, ctlen);
++    return ATLS_OK;
++}
+diff --git a/lib/libatls/src/atls_chacha20.c b/lib/libatls/src/atls_chacha20.c
+new file mode 100644
+index 0000000..49c7ed1
+--- /dev/null
++++ b/lib/libatls/src/atls_chacha20.c
+@@ -0,0 +1,75 @@
++/* atls_chacha20.c — ChaCha20 stream cipher (RFC 8439 section 2.4).
++ *
++ * Userspace copy, independent of the kernel's rng_core.h (decision D2:
++ * crypto lives in userspace).  Same RFC 8439 block function, verified
++ * against the §2.3.2 / §2.4.2 vectors by tests/unit/test_atls_aead.c.
++ */
++
++#include "atls/atls.h"
++
++static inline uint32_t rotl32(uint32_t v, int n) {
++    return (v << n) | (v >> (32 - n));
++}
++
++#define QR(a, b, c, d)                       \
++    do {                                     \
++        a += b; d ^= a; d = rotl32(d, 16);   \
++        c += d; b ^= c; b = rotl32(b, 12);   \
++        a += b; d ^= a; d = rotl32(d, 8);    \
++        c += d; b ^= c; b = rotl32(b, 7);    \
++    } while (0)
++
++static inline uint32_t le32(const uint8_t *p) {
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static void chacha20_block(const uint8_t key[32], uint32_t counter,
++                           const uint8_t nonce[12], uint8_t out[64]) {
++    uint32_t st[16], x[16];
++
++    st[0] = 0x61707865u; st[1] = 0x3320646eu;
++    st[2] = 0x79622d32u; st[3] = 0x6b206574u;
++    for (int i = 0; i < 8; i++) st[4 + i] = le32(key + i * 4);
++    st[12] = counter;
++    st[13] = le32(nonce);
++    st[14] = le32(nonce + 4);
++    st[15] = le32(nonce + 8);
++
++    for (int i = 0; i < 16; i++) x[i] = st[i];
++    for (int r = 0; r < 10; r++) {
++        QR(x[0], x[4], x[8],  x[12]);
++        QR(x[1], x[5], x[9],  x[13]);
++        QR(x[2], x[6], x[10], x[14]);
++        QR(x[3], x[7], x[11], x[15]);
++        QR(x[0], x[5], x[10], x[15]);
++        QR(x[1], x[6], x[11], x[12]);
++        QR(x[2], x[7], x[8],  x[13]);
++        QR(x[3], x[4], x[9],  x[14]);
++    }
++    for (int i = 0; i < 16; i++) {
++        uint32_t v = x[i] + st[i];
++        out[i * 4 + 0] = (uint8_t)(v >> 0);
++        out[i * 4 + 1] = (uint8_t)(v >> 8);
++        out[i * 4 + 2] = (uint8_t)(v >> 16);
++        out[i * 4 + 3] = (uint8_t)(v >> 24);
++    }
++}
++
++void atls_chacha20_xor(const uint8_t key[32], uint32_t counter,
++                       const uint8_t nonce[12],
++                       const uint8_t *in, uint8_t *out, size_t len) {
++    uint8_t block[64];
++    size_t off = 0;
++
++    while (off < len) {
++        chacha20_block(key, counter++, nonce, block);
++        size_t take = len - off;
++        if (take > 64) take = 64;
++        for (size_t i = 0; i < take; i++) {
++            out[off + i] = (uint8_t)(in[off + i] ^ block[i]);
++        }
++        off += take;
++    }
++    atls_wipe(block, sizeof(block));
++}
+diff --git a/lib/libatls/src/atls_common.c b/lib/libatls/src/atls_common.c
+new file mode 100644
+index 0000000..0f4eace
+--- /dev/null
++++ b/lib/libatls/src/atls_common.c
+@@ -0,0 +1,22 @@
++/* atls_common.c — constant-time utilities (INTERNET_PLAN.md D7).
++ *
++ * The rule, stated once and enforced by test_atls_hash grepping these
++ * sources: NOTHING in libatls compares secret or MAC/signature material
++ * with memcmp/strncmp/bcmp.  The one primitive for that is atls_ct_eq.
++ */
++
++#include "atls/atls.h"
++
++int atls_ct_eq(const uint8_t *a, const uint8_t *b, size_t len) {
++    volatile uint8_t diff = 0;
++    for (size_t i = 0; i < len; i++) {
++        diff |= (uint8_t)(a[i] ^ b[i]);
++    }
++    /* diff == 0 -> 1, else 0: (0u - 1) is all-ones in 32 bits. */
++    return (int)(((uint32_t)diff - 1u) >> 31);
++}
++
++void atls_wipe(void *p, size_t len) {
++    volatile uint8_t *q = (volatile uint8_t *)p;
++    for (size_t i = 0; i < len; i++) q[i] = 0;
++}
+diff --git a/lib/libatls/src/atls_ed25519.c b/lib/libatls/src/atls_ed25519.c
+new file mode 100644
+index 0000000..726e1fa
+--- /dev/null
++++ b/lib/libatls/src/atls_ed25519.c
+@@ -0,0 +1,334 @@
++/* atls_ed25519.c — Ed25519 signature VERIFICATION (RFC 8032).
++ *
++ * Verification only, per INTERNET_PLAN.md D4: certificate chains need
++ * signature checks, and nothing in this OS signs.  No key generation,
++ * no signing.
++ *
++ * The curve is the twisted Edwards curve -x^2 + y^2 = 1 + d x^2 y^2
++ * over GF(2^255-19) with the extended homogeneous coordinates
++ * (X:Y:Z:T), x=X/Z, y=Y/Z, xy=T/Z, and the RFC's own §5.1.7 equation:
++ *
++ *     [S]B = R + [h]A,    h = SHA-512(R || A || M) mod L
++ *
++ * Points are compared with the cross-multiplication of the RFC's
++ * reference implementation (x1 z2 == x2 z1, y1 z2 == y2 z1), which
++ * needs no inversion.
++ *
++ * Stack discipline: this file is on the 64 KiB guest stack, so there are
++ * no large locals; every scratch ge (4 fields * 5 limbs * 8 bytes = 160
++ * bytes) is function-scoped and small.  The scalar multiplications are
++ * plain double-and-add — two of them per verification, which is slow by
++ * ref10 standards and honest about it; certificate chains carry three
++ * signatures at most, and N3 measures the handshake cost, not hides it.
++ */
++
++#include "atls_fe.h"
++#include "atls/atls.h"
++
++typedef struct {
++    atls_fe X, Y, Z, T;
++} ge;
++
++/* ---- curve constants (generated and sanity-checked: the base point is
++ * on the curve; L is 253 bits) ---- */
++
++static const uint8_t ED25519_D[32] = {
++    0xa3, 0x78, 0x59, 0x13, 0xca, 0x4d, 0xeb, 0x75,
++    0xab, 0xd8, 0x41, 0x41, 0x4d, 0x0a, 0x70, 0x00,
++    0x98, 0xe8, 0x79, 0x77, 0x79, 0x40, 0xc7, 0x8c,
++    0x73, 0xfe, 0x6f, 0x2b, 0xee, 0x6c, 0x03, 0x52,
++};
++static const uint8_t ED25519_D2[32] = {
++    0x59, 0xf1, 0xb2, 0x26, 0x94, 0x9b, 0xd6, 0xeb,
++    0x56, 0xb1, 0x83, 0x82, 0x9a, 0x14, 0xe0, 0x00,
++    0x30, 0xd1, 0xf3, 0xee, 0xf2, 0x80, 0x8e, 0x19,
++    0xe7, 0xfc, 0xdf, 0x56, 0xdc, 0xd9, 0x06, 0x24,
++};
++static const uint8_t ED25519_SQRT_M1[32] = {
++    0xb0, 0xa0, 0x0e, 0x4a, 0x27, 0x1b, 0xee, 0xc4,
++    0x78, 0xe4, 0x2f, 0xad, 0x06, 0x18, 0x43, 0x2f,
++    0xa7, 0xd7, 0xfb, 0x3d, 0x99, 0x00, 0x4d, 0x2b,
++    0x0b, 0xdf, 0xc1, 0x4f, 0x80, 0x24, 0x83, 0x2b,
++};
++static const uint8_t ED25519_BASE_X[32] = {
++    0x1a, 0xd5, 0x25, 0x8f, 0x60, 0x2d, 0x56, 0xc9,
++    0xb2, 0xa7, 0x25, 0x95, 0x60, 0xc7, 0x2c, 0x69,
++    0x5c, 0xdc, 0xd6, 0xfd, 0x31, 0xe2, 0xa4, 0xc0,
++    0xfe, 0x53, 0x6e, 0xcd, 0xd3, 0x36, 0x69, 0x21,
++};
++static const uint8_t ED25519_BASE_Y[32] = {
++    0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++};
++static const uint8_t ED25519_L[32] = {
++    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
++    0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
++};
++
++static void load_const(atls_fe *r, const uint8_t b[32]) {
++    atls_fe_frombytes(r, b);
++}
++
++/* ---- group law (extended coordinates, a = -1) ---- */
++
++static void ge_neutral(ge *p) {
++    atls_fe_0(&p->X);
++    atls_fe_1(&p->Y);
++    atls_fe_1(&p->Z);
++    atls_fe_0(&p->T);
++}
++
++/* dbl-2008-hwcd. */
++static void ge_double(ge *r, const ge *p) {
++    atls_fe A, B, C, D, E, G, F, H, t;
++
++    atls_fe_sq(&A, &p->X);
++    atls_fe_sq(&B, &p->Y);
++    atls_fe_sq(&C, &p->Z);
++    atls_fe_add(&C, &C, &C);
++    atls_fe_neg(&D, &A);                          /* D = a*A = -A */
++    atls_fe_add(&t, &p->X, &p->Y);
++    atls_fe_sq(&E, &t);
++    atls_fe_sub(&E, &E, &A);
++    atls_fe_sub(&E, &E, &B);
++    atls_fe_add(&G, &D, &B);
++    atls_fe_sub(&F, &G, &C);
++    atls_fe_sub(&H, &D, &B);
++
++    atls_fe_mul(&r->X, &E, &F);
++    atls_fe_mul(&r->Y, &G, &H);
++    atls_fe_mul(&r->T, &E, &H);
++    atls_fe_mul(&r->Z, &F, &G);
++}
++
++/* add-2008-hwcd-3. */
++static void ge_add(ge *r, const ge *p, const ge *q) {
++    static atls_fe d2;
++    static int d2_ready = 0;
++    if (!d2_ready) { load_const(&d2, ED25519_D2); d2_ready = 1; }
++
++    atls_fe A, B, C, D, E, F, G, H, t, u;
++
++    atls_fe_sub(&t, &p->Y, &p->X);
++    atls_fe_sub(&u, &q->Y, &q->X);
++    atls_fe_mul(&A, &t, &u);
++    atls_fe_add(&t, &p->Y, &p->X);
++    atls_fe_add(&u, &q->Y, &q->X);
++    atls_fe_mul(&B, &t, &u);
++    atls_fe_mul(&C, &p->T, &d2);
++    atls_fe_mul(&C, &C, &q->T);
++    atls_fe_mul(&D, &p->Z, &q->Z);
++    atls_fe_add(&D, &D, &D);
++    atls_fe_sub(&E, &B, &A);
++    atls_fe_sub(&F, &D, &C);
++    atls_fe_add(&G, &D, &C);
++    atls_fe_add(&H, &B, &A);
++
++    atls_fe_mul(&r->X, &E, &F);
++    atls_fe_mul(&r->Y, &G, &H);
++    atls_fe_mul(&r->T, &E, &H);
++    atls_fe_mul(&r->Z, &F, &G);
++}
++
++/* r = [scalar]p, MSB-first double-and-add.  Not constant-time in the
++ * addition pattern — acceptable: in verify() the scalars are S (public
++ * in the signature) and h (a public hash). */
++static void ge_scalarmult(ge *r, const ge *p, const uint8_t scalar[32]) {
++    ge q, acc;
++    ge_neutral(&acc);
++    for (int bit = 255; bit >= 0; bit--) {
++        ge_double(&acc, &acc);
++        if ((scalar[bit >> 3] >> (bit & 7)) & 1) {
++            ge tmp;
++            ge_add(&tmp, &acc, p);
++            acc = tmp;
++        }
++    }
++    q = acc;
++    *r = q;
++}
++
++/* ---- encoding ---- */
++
++/* Decode a 32-byte compressed point.  Returns 0 or -1.  Per RFC 8032
++ * §5.1.3, including the canonical-encoding check (the decoded y must
++ * re-serialise to exactly the input bytes). */
++static int ge_frombytes(ge *p, const uint8_t s[32]) {
++    static atls_fe d_fe;
++    static int d_ready = 0;
++    if (!d_ready) { load_const(&d_fe, ED25519_D); d_ready = 1; }
++
++    uint8_t yb[32];
++    for (int i = 0; i < 32; i++) yb[i] = s[i];
++    int sign = (yb[31] >> 7) & 1;
++    yb[31] &= 0x7f;
++
++    atls_fe y;
++    atls_fe_frombytes(&y, yb);
++
++    uint8_t chk[32];
++    atls_fe_tobytes(chk, &y);
++    if (!atls_ct_eq(chk, yb, 32)) return -1;     /* non-canonical y */
++
++    atls_fe one, y2, dy2, u, v;
++    atls_fe_1(&one);
++    atls_fe_sq(&y2, &y);
++    atls_fe_mul(&dy2, &d_fe, &y2);
++    atls_fe_sub(&u, &y2, &one);                  /* u = y^2 - 1 */
++    atls_fe_add(&v, &dy2, &one);                 /* v = d y^2 + 1 */
++
++    /* x = u v^3 (u v^7)^((p-5)/8) */
++    atls_fe v3, v7, uv7, x, vx2;
++    atls_fe_sq(&v3, &v);
++    atls_fe_mul(&v3, &v3, &v);
++    atls_fe_sq(&v7, &v3);
++    atls_fe_mul(&v7, &v7, &v);
++    atls_fe_mul(&uv7, &u, &v7);
++    atls_fe_pow2523(&x, &uv7);
++    atls_fe_mul(&x, &x, &u);
++    atls_fe_mul(&x, &x, &v3);
++
++    atls_fe_sq(&vx2, &x);
++    atls_fe_mul(&vx2, &vx2, &v);
++    if (!atls_fe_ct_eq(&vx2, &u)) {
++        static atls_fe sqrt_m1;
++        static int sm1_ready = 0;
++        if (!sm1_ready) { load_const(&sqrt_m1, ED25519_SQRT_M1); sm1_ready = 1; }
++        atls_fe_mul(&x, &x, &sqrt_m1);
++        atls_fe_sq(&vx2, &x);
++        atls_fe_mul(&vx2, &vx2, &v);
++        if (!atls_fe_ct_eq(&vx2, &u)) return -1;   /* not on curve */
++    }
++
++    if (atls_fe_iszero(&x) && sign) return -1;     /* x=0 wants sign 0 */
++    if (atls_fe_is_negative(&x) != sign) {
++        atls_fe_neg(&x, &x);
++    }
++
++    p->X = x;
++    p->Y = y;
++    atls_fe_1(&p->Z);
++    atls_fe_mul(&p->T, &x, &y);
++    return 0;
++}
++
++/* Cross-multiplication point equality (RFC 8032 reference's
++ * point_equal): x1 z2 == x2 z1 and y1 z2 == y2 z1. */
++static int ge_equal(const ge *p, const ge *q) {
++    atls_fe a, b;
++    atls_fe_mul(&a, &p->X, &q->Z);
++    atls_fe_mul(&b, &q->X, &p->Z);
++    if (!atls_fe_ct_eq(&a, &b)) return 0;
++    atls_fe_mul(&a, &p->Y, &q->Z);
++    atls_fe_mul(&b, &q->Y, &p->Z);
++    return atls_fe_ct_eq(&a, &b);
++}
++
++/* ---- scalar arithmetic mod L ---- */
++
++/* s >= L ?  (both 32-byte little-endian) */
++static int sc_ge_L(const uint8_t s[32]) {
++    for (int i = 31; i >= 0; i--) {
++        if (s[i] > ED25519_L[i]) return 1;
++        if (s[i] < ED25519_L[i]) return 0;
++    }
++    return 1;    /* equal: not canonical */
++}
++
++/* Reduce a 64-byte little-endian integer modulo L by repeated
++ * conditional subtraction of shifted L.  h is public data (a hash), so
++ * the data-dependent branch leaks nothing secret.  At most 260
++ * subtractions; each is a handful of limb ops. */
++static void sc_reduce64(const uint8_t in[64], uint8_t out[32]) {
++    uint64_t x[9];
++    uint64_t Lw[4];
++
++    for (int i = 0; i < 8; i++) {
++        x[i] = 0;
++        for (int j = 0; j < 8; j++) {
++            x[i] |= (uint64_t)in[i * 8 + j] << (j * 8);
++        }
++    }
++    x[8] = 0;
++    for (int i = 0; i < 4; i++) {
++        Lw[i] = 0;
++        for (int j = 0; j < 8; j++) {
++            Lw[i] |= (uint64_t)ED25519_L[i * 8 + j] << (j * 8);
++        }
++    }
++
++    for (int shift = 259; shift >= 0; shift--) {
++        /* y = L << shift, as nine 64-bit limbs */
++        uint64_t y[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
++        int ws = shift / 64, bs = shift % 64;
++        for (int i = 0; i < 4; i++) {
++            y[ws + i] |= Lw[i] << bs;
++            if (bs && ws + i + 1 < 9) y[ws + i + 1] |= Lw[i] >> (64 - bs);
++        }
++        /* compare x >= y */
++        int cmp = 0;   /* 1: x>y, -1: x<y, 0: equal */
++        for (int i = 8; i >= 0; i--) {
++            if (x[i] > y[i]) { cmp = 1; break; }
++            if (x[i] < y[i]) { cmp = -1; break; }
++        }
++        if (cmp >= 0) {
++            uint64_t borrow = 0;
++            for (int i = 0; i < 9; i++) {
++                uint64_t sub = y[i] + borrow;
++                borrow = (x[i] < sub) ? 1 : 0;
++                x[i] -= sub;
++            }
++        }
++    }
++
++    for (int i = 0; i < 4; i++) {
++        for (int j = 0; j < 8; j++) {
++            out[i * 8 + j] = (uint8_t)(x[i] >> (j * 8));
++        }
++    }
++}
++
++/* ---- public API ---- */
++
++int atls_ed25519_verify(const uint8_t sig[64], const uint8_t pk[32],
++                        const void *msg, size_t msglen) {
++    if (!sig || !pk || (!msg && msglen)) return ATLS_ERR_INPUT;
++
++    ge A, R;
++    if (ge_frombytes(&A, pk) != 0) return ATLS_ERR_BAD_ENCODING;
++    if (ge_frombytes(&R, sig) != 0) return ATLS_ERR_BAD_ENCODING;
++    if (sc_ge_L(sig + 32)) return ATLS_ERR_BAD_SIGNATURE;
++
++    /* h = SHA-512(R || A || M) mod L */
++    uint8_t h64[64];
++    atls_sha512_ctx c;
++    atls_sha512_init(&c);
++    atls_sha512_update(&c, sig, 32);
++    atls_sha512_update(&c, pk, 32);
++    atls_sha512_update(&c, msg, msglen);
++    atls_sha512_final(&c, h64);
++    uint8_t h[32];
++    sc_reduce64(h64, h);
++
++    /* [S]B == R + [h]A */
++    static ge B;
++    static int B_ready = 0;
++    if (!B_ready) {
++        load_const(&B.X, ED25519_BASE_X);
++        load_const(&B.Y, ED25519_BASE_Y);
++        atls_fe_1(&B.Z);
++        atls_fe_mul(&B.T, &B.X, &B.Y);
++        B_ready = 1;
++    }
++
++    ge sB, hA, rhs;
++    ge_scalarmult(&sB, &B, sig + 32);
++    ge_scalarmult(&hA, &A, h);
++    ge_add(&rhs, &R, &hA);
++
++    return ge_equal(&sB, &rhs) ? ATLS_OK : ATLS_ERR_BAD_SIGNATURE;
++}
+diff --git a/lib/libatls/src/atls_fe.c b/lib/libatls/src/atls_fe.c
+new file mode 100644
+index 0000000..55d6d01
+--- /dev/null
++++ b/lib/libatls/src/atls_fe.c
+@@ -0,0 +1,257 @@
++/* atls_fe.c — field arithmetic mod p = 2^255 - 19.
++ *
++ * Five limbs in radix 2^51.  After mul/sq each limb is bounded by about
++ * 2^52, which keeps every __int128 accumulator far below 2^127.
++ */
++
++#include "atls_fe.h"
++#include "atls/atls.h"
++
++#define MASK51 0x7ffffffffffffULL
++
++typedef unsigned __int128 u128;
++
++void atls_fe_0(atls_fe *r) {
++    for (int i = 0; i < 5; i++) r->v[i] = 0;
++}
++
++void atls_fe_1(atls_fe *r) {
++    r->v[0] = 1;
++    for (int i = 1; i < 5; i++) r->v[i] = 0;
++}
++
++void atls_fe_copy(atls_fe *r, const atls_fe *a) {
++    for (int i = 0; i < 5; i++) r->v[i] = a->v[i];
++}
++
++void atls_fe_add(atls_fe *r, const atls_fe *a, const atls_fe *b) {
++    for (int i = 0; i < 5; i++) r->v[i] = a->v[i] + b->v[i];
++}
++
++/* Subtract with a pre-added 2p so intermediate limbs never underflow
++ * (inputs are each < ~2^52 per limb, and 2p's limbs are ~2^51). */
++void atls_fe_sub(atls_fe *r, const atls_fe *a, const atls_fe *b) {
++    static const uint64_t two_p[5] = {
++        0xfffffffffffdaULL, 0xffffffffffffeULL, 0xffffffffffffeULL,
++        0xffffffffffffeULL, 0xffffffffffffeULL,
++    };
++    for (int i = 0; i < 5; i++) {
++        r->v[i] = a->v[i] + two_p[i] - b->v[i];
++    }
++}
++
++void atls_fe_neg(atls_fe *r, const atls_fe *a) {
++    static const uint64_t two_p[5] = {
++        0xfffffffffffdaULL, 0xffffffffffffeULL, 0xffffffffffffeULL,
++        0xffffffffffffeULL, 0xffffffffffffeULL,
++    };
++    for (int i = 0; i < 5; i++) r->v[i] = two_p[i] - a->v[i];
++}
++
++/* Carry-propagate five 128-bit accumulators down to bounded 51-bit limbs.
++ * The sums BEFORE this chain are up to ~107 bits (five products of two
++ * ~52-bit limbs), so the propagation must run in 128 bits — truncating to
++ * uint64_t first silently loses the top half of the value. */
++static inline void carry_chain(u128 t[5], uint64_t out[5]) {
++    u128 c;
++    c = t[0] >> 51; t[1] += c; out[0] = (uint64_t)t[0] & MASK51;
++    c = t[1] >> 51; t[2] += c; out[1] = (uint64_t)t[1] & MASK51;
++    c = t[2] >> 51; t[3] += c; out[2] = (uint64_t)t[2] & MASK51;
++    c = t[3] >> 51; t[4] += c; out[3] = (uint64_t)t[3] & MASK51;
++    c = t[4] >> 51; out[4] = (uint64_t)t[4] & MASK51;
++    out[0] += (uint64_t)c * 19;
++    c = out[0] >> 51; out[0] &= MASK51; out[1] += (uint64_t)c;
++}
++
++void atls_fe_mul(atls_fe *r, const atls_fe *a, const atls_fe *b) {
++    const uint64_t *av = a->v, *bv = b->v;
++    uint64_t b19_1 = bv[1] * 19, b19_2 = bv[2] * 19, b19_3 = bv[3] * 19,
++             b19_4 = bv[4] * 19;
++    u128 t[5];
++    uint64_t out[5];
++
++    t[0] = (u128)av[0] * bv[0] + (u128)av[1] * b19_4 +
++           (u128)av[2] * b19_3 + (u128)av[3] * b19_2 +
++           (u128)av[4] * b19_1;
++    t[1] = (u128)av[0] * bv[1] + (u128)av[1] * bv[0] +
++           (u128)av[2] * b19_4 + (u128)av[3] * b19_3 +
++           (u128)av[4] * b19_2;
++    t[2] = (u128)av[0] * bv[2] + (u128)av[1] * bv[1] +
++           (u128)av[2] * bv[0] + (u128)av[3] * b19_4 +
++           (u128)av[4] * b19_3;
++    t[3] = (u128)av[0] * bv[3] + (u128)av[1] * bv[2] +
++           (u128)av[2] * bv[1] + (u128)av[3] * bv[0] +
++           (u128)av[4] * b19_4;
++    t[4] = (u128)av[0] * bv[4] + (u128)av[1] * bv[3] +
++           (u128)av[2] * bv[2] + (u128)av[3] * bv[1] +
++           (u128)av[4] * bv[0];
++
++    carry_chain(t, out);
++    for (int i = 0; i < 5; i++) r->v[i] = out[i];
++}
++
++void atls_fe_mul_small(atls_fe *r, const atls_fe *a, uint64_t s) {
++    u128 t[5];
++    uint64_t out[5];
++    for (int i = 0; i < 5; i++) t[i] = (u128)a->v[i] * s;
++    carry_chain(t, out);
++    for (int i = 0; i < 5; i++) r->v[i] = out[i];
++}
++
++/* Squaring, specialised from mul:
++ *   t0 = a0^2 + 19*(2 a1 a4 + 2 a2 a3)
++ *   t1 = 2 a0 a1 + 19*(2 a2 a4 + a3^2)
++ *   t2 = 2 a0 a2 + a1^2 + 19*(2 a3 a4)
++ *   t3 = 2 a0 a3 + 2 a1 a2 + 19*(a4^2)
++ *   t4 = 2 a0 a4 + 2 a1 a3 + a2^2
++ * written with the precomputed a19_i = 19*a_i to keep single multiplies. */
++void atls_fe_sq(atls_fe *r, const atls_fe *a) {
++    const uint64_t *av = a->v;
++    uint64_t a19_3 = av[3] * 19, a19_4 = av[4] * 19;
++    u128 t[5];
++    uint64_t out[5];
++
++    t[0] = (u128)av[0] * av[0] +
++           (u128)(2 * av[1]) * a19_4 +
++           (u128)(2 * av[2]) * a19_3;
++    t[1] = (u128)(2 * av[0]) * av[1] +
++           (u128)(2 * av[2]) * a19_4 +
++           (u128)av[3] * a19_3;
++    t[2] = (u128)(2 * av[0]) * av[2] +
++           (u128)av[1] * av[1] +
++           (u128)(2 * av[3]) * a19_4;
++    t[3] = (u128)(2 * av[0]) * av[3] +
++           (u128)(2 * av[1]) * av[2] +
++           (u128)av[4] * a19_4;
++    t[4] = (u128)(2 * av[0]) * av[4] +
++           (u128)(2 * av[1]) * av[3] +
++           (u128)av[2] * av[2];
++
++    carry_chain(t, out);
++    for (int i = 0; i < 5; i++) r->v[i] = out[i];
++}
++
++void atls_fe_cswap(atls_fe *a, atls_fe *b, uint64_t swap) {
++    uint64_t mask = (uint64_t)0 - swap;   /* swap must be 0 or 1 */
++    for (int i = 0; i < 5; i++) {
++        uint64_t x = (a->v[i] ^ b->v[i]) & mask;
++        a->v[i] ^= x;
++        b->v[i] ^= x;
++    }
++}
++
++void atls_fe_frombytes(atls_fe *r, const uint8_t b[32]) {
++    uint64_t w[4];
++    for (int i = 0; i < 4; i++) {
++        w[i] = 0;
++        for (int j = 0; j < 8; j++) {
++            w[i] |= (uint64_t)b[i * 8 + j] << (j * 8);
++        }
++    }
++    r->v[0] = w[0] & MASK51;
++    r->v[1] = ((w[0] >> 51) | (w[1] << 13)) & MASK51;
++    r->v[2] = ((w[1] >> 38) | (w[2] << 26)) & MASK51;
++    r->v[3] = ((w[2] >> 25) | (w[3] << 39)) & MASK51;
++    r->v[4] = (w[3] >> 12) & MASK51;        /* bit 255 dropped here */
++}
++
++void atls_fe_tobytes(uint8_t out[32], const atls_fe *a) {
++    uint64_t t[5];
++    for (int i = 0; i < 5; i++) t[i] = a->v[i];
++
++    /* Carry to fully bounded limbs. */
++    uint64_t c;
++    c = t[0] >> 51; t[1] += c; t[0] &= MASK51;
++    c = t[1] >> 51; t[2] += c; t[1] &= MASK51;
++    c = t[2] >> 51; t[3] += c; t[2] &= MASK51;
++    c = t[3] >> 51; t[4] += c; t[3] &= MASK51;
++    c = t[4] >> 51; t[0] += c * 19; t[4] &= MASK51;
++    c = t[0] >> 51; t[1] += c; t[0] &= MASK51;
++
++    /* Conditional subtraction of p: compute t + 19 - 2^255 and keep it
++     * iff it did not borrow. */
++    uint64_t g[5];
++    g[0] = t[0] + 19; c = g[0] >> 51; g[0] &= MASK51;
++    g[1] = t[1] + c;  c = g[1] >> 51; g[1] &= MASK51;
++    g[2] = t[2] + c;  c = g[2] >> 51; g[2] &= MASK51;
++    g[3] = t[3] + c;  c = g[3] >> 51; g[3] &= MASK51;
++    g[4] = t[4] + c;
++    uint64_t overflow = g[4] >> 51;          /* 1 iff t >= p */
++    g[4] &= MASK51;
++    uint64_t mask = (uint64_t)0 - overflow;  /* all-ones iff subtract */
++    for (int i = 0; i < 5; i++) {
++        t[i] ^= (t[i] ^ g[i]) & mask;
++    }
++
++    /* Pack 5x51 bits into 32 little-endian bytes. */
++    uint64_t w[4];
++    w[0] = t[0] | (t[1] << 51);
++    w[1] = (t[1] >> 13) | (t[2] << 38);
++    w[2] = (t[2] >> 26) | (t[3] << 25);
++    w[3] = (t[3] >> 39) | (t[4] << 12);
++    for (int i = 0; i < 4; i++) {
++        for (int j = 0; j < 8; j++) {
++            out[i * 8 + j] = (uint8_t)(w[i] >> (j * 8));
++        }
++    }
++}
++
++/* Generic square-and-multiply over a little-endian 32-byte exponent.
++ * Variable-time over the exponent — acceptable: both exponents below
++ * (p-2, 2^252-3) are public constants. */
++static void fe_pow(atls_fe *r, const atls_fe *base, const uint8_t e[32]) {
++    atls_fe acc, b;
++    atls_fe_1(&acc);
++    atls_fe_copy(&b, base);
++
++    for (int bit = 255; bit >= 0; bit--) {
++        atls_fe_sq(&acc, &acc);
++        if ((e[bit >> 3] >> (bit & 7)) & 1) {
++            atls_fe_mul(&acc, &acc, &b);
++        }
++    }
++    atls_fe_copy(r, &acc);
++}
++
++void atls_fe_invert(atls_fe *r, const atls_fe *a) {
++    /* p - 2 = 2^255 - 21, little-endian. */
++    static const uint8_t e[32] = {
++        0xeb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f,
++    };
++    fe_pow(r, a, e);
++}
++
++void atls_fe_pow2523(atls_fe *r, const atls_fe *a) {
++    /* 2^252 - 3, little-endian. */
++    static const uint8_t e[32] = {
++        0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
++        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f,
++    };
++    fe_pow(r, a, e);
++}
++
++int atls_fe_iszero(const atls_fe *a) {
++    uint8_t b[32];
++    atls_fe_tobytes(b, a);
++    uint8_t zero = 0;
++    for (int i = 0; i < 32; i++) zero |= b[i];
++    return (int)(((uint32_t)zero - 1u) >> 31);
++}
++
++int atls_fe_is_negative(const atls_fe *a) {
++    uint8_t b[32];
++    atls_fe_tobytes(b, a);
++    return (int)(b[0] & 1);
++}
++
++int atls_fe_ct_eq(const atls_fe *a, const atls_fe *b) {
++    uint8_t x[32], y[32];
++    atls_fe_tobytes(x, a);
++    atls_fe_tobytes(y, b);
++    return atls_ct_eq(x, y, 32);
++}
+diff --git a/lib/libatls/src/atls_fe.h b/lib/libatls/src/atls_fe.h
+new file mode 100644
+index 0000000..4d1421a
+--- /dev/null
++++ b/lib/libatls/src/atls_fe.h
+@@ -0,0 +1,56 @@
++#ifndef LIBATLS_ATLS_FE_H
++#define LIBATLS_ATLS_FE_H
++
++/* atls_fe.h — field arithmetic modulo p = 2^255 - 19, shared by X25519
++ * and Ed25519 (INTERNET_PLAN.md phase N1).  Internal header.
++ *
++ * Representation: five 64-bit limbs in radix 2^51 (curve25519-donna-64
++ * shape), multiplied with unsigned __int128 accumulators.  This is
++ * userspace code (the guest userspace build is plain 64-bit C), so
++ * __int128 is available; the kernel never compiles this file.
++ *
++ * Everything here is straight-line except atls_fe_cswap's callers and the
++ * final conditional subtraction in tobytes (both branch-free masked
++ * selects).  The only variable-time operations are the two generic
++ * exponentiations, which run on public exponents (p-2, 2^252-3).
++ */
++
++#include <stdint.h>
++
++typedef struct {
++    uint64_t v[5];
++} atls_fe;
++
++void atls_fe_0(atls_fe *r);
++void atls_fe_1(atls_fe *r);
++void atls_fe_copy(atls_fe *r, const atls_fe *a);
++void atls_fe_add(atls_fe *r, const atls_fe *a, const atls_fe *b);
++void atls_fe_sub(atls_fe *r, const atls_fe *a, const atls_fe *b);
++void atls_fe_neg(atls_fe *r, const atls_fe *a);
++void atls_fe_mul(atls_fe *r, const atls_fe *a, const atls_fe *b);
++void atls_fe_mul_small(atls_fe *r, const atls_fe *a, uint64_t s);
++void atls_fe_sq(atls_fe *r, const atls_fe *a);
++
++/* Constant-time conditional swap: swap a and b iff swap == 1. */
++void atls_fe_cswap(atls_fe *a, atls_fe *b, uint64_t swap);
++
++/* Decode 32 little-endian bytes, masking bit 255 (RFC 7748 decodeUCoordinate
++ * behaviour; also what Ed25519 wants for the y coordinate before the sign
++ * bit is split off by the caller). */
++void atls_fe_frombytes(atls_fe *r, const uint8_t b[32]);
++
++/* Fully reduce to [0, p) and serialise 32 little-endian bytes. */
++void atls_fe_tobytes(uint8_t out[32], const atls_fe *a);
++
++/* r = a^(p-2)  (field inverse, 0 -> 0). */
++void atls_fe_invert(atls_fe *r, const atls_fe *a);
++
++/* r = a^(2^252-3)  (the sqrt candidate exponent (p-5)/8). */
++void atls_fe_pow2523(atls_fe *r, const atls_fe *a);
++
++/* Constant-time comparisons on CANONICAL encodings. */
++int atls_fe_iszero(const atls_fe *a);
++int atls_fe_is_negative(const atls_fe *a);   /* low bit of canonical form */
++int atls_fe_ct_eq(const atls_fe *a, const atls_fe *b);
++
++#endif /* LIBATLS_ATLS_FE_H */
+diff --git a/lib/libatls/src/atls_hkdf.c b/lib/libatls/src/atls_hkdf.c
+new file mode 100644
+index 0000000..e940697
+--- /dev/null
++++ b/lib/libatls/src/atls_hkdf.c
+@@ -0,0 +1,52 @@
++/* atls_hkdf.c — HKDF-SHA256 (RFC 5869).
++ *
++ * Extract-then-Expand.  TLS 1.3 (RFC 8446) builds its entire key schedule
++ * on HKDF-Expand with SHA-256, which is why this is here in N1 rather
++ * than waiting for N3.
++ */
++
++#include "atls/atls.h"
++
++int atls_hkdf_extract(const uint8_t *salt, size_t saltlen,
++                      const uint8_t *ikm, size_t ikmlen,
++                      uint8_t prk[32]) {
++    if (!prk || (!ikm && ikmlen)) return ATLS_ERR_INPUT;
++    if (!salt || saltlen == 0) {
++        static const uint8_t zeros[32] = { 0 };
++        atls_hmac_sha256(zeros, sizeof(zeros), ikm, ikmlen, prk);
++    } else {
++        atls_hmac_sha256(salt, saltlen, ikm, ikmlen, prk);
++    }
++    return ATLS_OK;
++}
++
++int atls_hkdf_expand(const uint8_t prk[32],
++                     const uint8_t *info, size_t infolen,
++                     uint8_t *okm, size_t okmlen) {
++    if (!prk || (!okm && okmlen) || (!info && infolen)) return ATLS_ERR_INPUT;
++    if (okmlen > 255u * 32u) return ATLS_ERR_INPUT;   /* RFC 5869 §2.3 */
++
++    uint8_t t[32];
++    size_t tlen = 0;
++    size_t done = 0;
++    uint8_t counter = 1;
++
++    while (done < okmlen) {
++        atls_hmac_sha256_ctx c;
++        atls_hmac_sha256_init(&c, prk, 32);
++        if (tlen) atls_hmac_sha256_update(&c, t, tlen);
++        if (infolen) atls_hmac_sha256_update(&c, info, infolen);
++        atls_hmac_sha256_update(&c, &counter, 1);
++        atls_hmac_sha256_final(&c, t);
++        tlen = 32;
++
++        size_t take = okmlen - done;
++        if (take > 32) take = 32;
++        for (size_t i = 0; i < take; i++) okm[done + i] = t[i];
++        done += take;
++        counter++;
++    }
++
++    atls_wipe(t, sizeof(t));
++    return ATLS_OK;
++}
+diff --git a/lib/libatls/src/atls_hmac.c b/lib/libatls/src/atls_hmac.c
+new file mode 100644
+index 0000000..a693a31
+--- /dev/null
++++ b/lib/libatls/src/atls_hmac.c
+@@ -0,0 +1,62 @@
++/* atls_hmac.c — HMAC-SHA256 (RFC 2104).
++ *
++ * Streaming API.  Keys longer than the 64-byte block are hashed first,
++ * as the RFC requires.
++ */
++
++#include "atls/atls.h"
++
++void atls_hmac_sha256_init(atls_hmac_sha256_ctx *c,
++                           const uint8_t *key, size_t keylen) {
++    uint8_t kblock[64];
++    for (int i = 0; i < 64; i++) kblock[i] = 0;
++
++    if (keylen > 64) {
++        uint8_t kh[32];
++        atls_sha256(key, keylen, kh);
++        for (int i = 0; i < 32; i++) kblock[i] = kh[i];
++        atls_wipe(kh, sizeof(kh));
++    } else if (key && keylen) {
++        for (size_t i = 0; i < keylen; i++) kblock[i] = key[i];
++    }
++
++    /* Inner hash starts over (ipad ^ key) || message... */
++    atls_sha256_init(&c->inner);
++    for (int i = 0; i < 64; i++) {
++        uint8_t b = (uint8_t)(kblock[i] ^ 0x36);
++        atls_sha256_update(&c->inner, &b, 1);
++    }
++    /* Precompute the outer padded block; final() hashes it over the
++     * inner digest. */
++    for (int i = 0; i < 64; i++) {
++        c->opad_hash_prefix[i] = (uint8_t)(kblock[i] ^ 0x5c);
++    }
++    atls_wipe(kblock, sizeof(kblock));
++}
++
++void atls_hmac_sha256_update(atls_hmac_sha256_ctx *c,
++                             const void *data, size_t len) {
++    atls_sha256_update(&c->inner, data, len);
++}
++
++void atls_hmac_sha256_final(atls_hmac_sha256_ctx *c, uint8_t out[32]) {
++    uint8_t inner_digest[32];
++    atls_sha256_final(&c->inner, inner_digest);
++
++    atls_sha256_ctx outer;
++    atls_sha256_init(&outer);
++    atls_sha256_update(&outer, c->opad_hash_prefix, 64);
++    atls_sha256_update(&outer, inner_digest, 32);
++    atls_sha256_final(&outer, out);
++
++    atls_wipe(inner_digest, sizeof(inner_digest));
++    atls_wipe(c, sizeof(*c));
++}
++
++void atls_hmac_sha256(const uint8_t *key, size_t keylen,
++                      const void *msg, size_t msglen, uint8_t out[32]) {
++    atls_hmac_sha256_ctx c;
++    atls_hmac_sha256_init(&c, key, keylen);
++    atls_hmac_sha256_update(&c, msg, msglen);
++    atls_hmac_sha256_final(&c, out);
++}
+diff --git a/lib/libatls/src/atls_poly1305.c b/lib/libatls/src/atls_poly1305.c
+new file mode 100644
+index 0000000..b1acf19
+--- /dev/null
++++ b/lib/libatls/src/atls_poly1305.c
+@@ -0,0 +1,128 @@
++/* atls_poly1305.c — Poly1305 one-time authenticator (RFC 8439 §2.5).
++ *
++ * Radix-2^26 limbs with 64-bit products (the classic "donna" shape),
++ * portable C.  The arithmetic runs on public accumulator state derived
++ * from the message; the key-dependent part is a fixed sequence of
++ * multiply-accumulates, so there are no secret-dependent branches.
++ */
++
++#include "atls/atls.h"
++
++static inline uint32_t le32(const uint8_t *p) {
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static inline void le32_put(uint8_t *p, uint32_t v) {
++    p[0] = (uint8_t)(v >> 0);
++    p[1] = (uint8_t)(v >> 8);
++    p[2] = (uint8_t)(v >> 16);
++    p[3] = (uint8_t)(v >> 24);
++}
++
++void atls_poly1305(const uint8_t key[32],
++                   const uint8_t *msg, size_t msglen,
++                   uint8_t tag[16]) {
++    /* r, clamped per RFC 8439 §2.5.1 (top four bits of r[3],r[7],r[11],
++     * r[15] clear; bottom two bits of r[4],r[8],r[12] clear). */
++    uint32_t r0 =  (le32(key +  0))       & 0x3ffffffu;
++    uint32_t r1 =  (le32(key +  3) >> 2)  & 0x3ffff03u;
++    uint32_t r2 =  (le32(key +  6) >> 4)  & 0x3ffc0ffu;
++    uint32_t r3 =  (le32(key +  9) >> 6)  & 0x3f03fffu;
++    uint32_t r4 =  (le32(key + 12) >> 8)  & 0x00fffffu;
++
++    uint32_t s1 = r1 * 5, s2 = r2 * 5, s3 = r3 * 5, s4 = r4 * 5;
++
++    uint32_t h0 = 0, h1 = 0, h2 = 0, h3 = 0, h4 = 0;
++
++    size_t remaining = msglen;
++    while (remaining > 0) {
++        uint8_t block[17];
++        size_t take = remaining < 16 ? remaining : 16;
++        for (size_t i = 0; i < take; i++) block[i] = msg[i];
++        block[take] = 0x01;                     /* 2^(8*take) pad bit */
++        for (size_t i = take + 1; i < 17; i++) block[i] = 0;
++        /* A full block contributes 2^128 as the 17th "byte" bit; a
++         * partial block has already been padded with 0x01 at its end and
++         * must NOT get the high bit. */
++        uint32_t hibit = (take == 16) ? (1u << 24) : 0u;
++
++        h0 +=  le32(block +  0)        & 0x3ffffffu;
++        h1 += (le32(block +  3) >> 2)  & 0x3ffffffu;
++        h2 += (le32(block +  6) >> 4)  & 0x3ffffffu;
++        h3 += (le32(block +  9) >> 6)  & 0x3ffffffu;
++        h4 += (le32(block + 12) >> 8)  | hibit;
++
++        uint64_t d0 = (uint64_t)h0 * r0 + (uint64_t)h1 * s4 +
++                      (uint64_t)h2 * s3 + (uint64_t)h3 * s2 +
++                      (uint64_t)h4 * s1;
++        uint64_t d1 = (uint64_t)h0 * r1 + (uint64_t)h1 * r0 +
++                      (uint64_t)h2 * s4 + (uint64_t)h3 * s3 +
++                      (uint64_t)h4 * s2;
++        uint64_t d2 = (uint64_t)h0 * r2 + (uint64_t)h1 * r1 +
++                      (uint64_t)h2 * r0 + (uint64_t)h3 * s4 +
++                      (uint64_t)h4 * s3;
++        uint64_t d3 = (uint64_t)h0 * r3 + (uint64_t)h1 * r2 +
++                      (uint64_t)h2 * r1 + (uint64_t)h3 * r0 +
++                      (uint64_t)h4 * s4;
++        uint64_t d4 = (uint64_t)h0 * r4 + (uint64_t)h1 * r3 +
++                      (uint64_t)h2 * r2 + (uint64_t)h3 * r1 +
++                      (uint64_t)h4 * r0;
++
++        uint32_t c;
++        c = (uint32_t)(d0 >> 26); h0 = (uint32_t)d0 & 0x3ffffffu; d1 += c;
++        c = (uint32_t)(d1 >> 26); h1 = (uint32_t)d1 & 0x3ffffffu; d2 += c;
++        c = (uint32_t)(d2 >> 26); h2 = (uint32_t)d2 & 0x3ffffffu; d3 += c;
++        c = (uint32_t)(d3 >> 26); h3 = (uint32_t)d3 & 0x3ffffffu; d4 += c;
++        c = (uint32_t)(d4 >> 26); h4 = (uint32_t)d4 & 0x3ffffffu;
++        h0 += c * 5;
++        c = h0 >> 26; h0 &= 0x3ffffffu; h1 += c;
++
++        msg += take;
++        remaining -= take;
++    }
++
++    /* Full carry chain. */
++    uint32_t c;
++    c = h1 >> 26; h1 &= 0x3ffffffu; h2 += c;
++    c = h2 >> 26; h2 &= 0x3ffffffu; h3 += c;
++    c = h3 >> 26; h3 &= 0x3ffffffu; h4 += c;
++    c = h4 >> 26; h4 &= 0x3ffffffu; h0 += c * 5;
++    c = h0 >> 26; h0 &= 0x3ffffffu; h1 += c;
++
++    /* Compute h + -(2^130 - 5) and select it if it did not borrow. */
++    uint32_t g0 = h0 + 5; c = g0 >> 26; g0 &= 0x3ffffffu;
++    uint32_t g1 = h1 + c; c = g1 >> 26; g1 &= 0x3ffffffu;
++    uint32_t g2 = h2 + c; c = g2 >> 26; g2 &= 0x3ffffffu;
++    uint32_t g3 = h3 + c; c = g3 >> 26; g3 &= 0x3ffffffu;
++    uint32_t g4 = h4 + c - (1u << 26);
++    uint32_t mask = (g4 >> 31) - 1;      /* all-ones if no borrow */
++    g0 &= mask; g1 &= mask; g2 &= mask; g3 &= mask; g4 &= mask;
++    mask = ~mask;
++    h0 = (h0 & mask) | g0;
++    h1 = (h1 & mask) | g1;
++    h2 = (h2 & mask) | g2;
++    h3 = (h3 & mask) | g3;
++    h4 = (h4 & mask) | g4;
++
++    /* Reassemble into four 32-bit words and add s = key[16..31]. */
++    uint64_t f;
++    f = (uint64_t)h0 | ((uint64_t)h1 << 26);
++    uint32_t w0 = (uint32_t)f;
++    f = ((uint64_t)h1 >> 6) | ((uint64_t)h2 << 20);
++    uint32_t w1 = (uint32_t)f;
++    f = ((uint64_t)h2 >> 12) | ((uint64_t)h3 << 14);
++    uint32_t w2 = (uint32_t)f;
++    f = ((uint64_t)h3 >> 18) | ((uint64_t)h4 << 8);
++    uint32_t w3 = (uint32_t)f;
++
++    f = (uint64_t)w0 + le32(key + 16);             w0 = (uint32_t)f;
++    f = (uint64_t)w1 + le32(key + 20) + (f >> 32); w1 = (uint32_t)f;
++    f = (uint64_t)w2 + le32(key + 24) + (f >> 32); w2 = (uint32_t)f;
++    f = (uint64_t)w3 + le32(key + 28) + (f >> 32); w3 = (uint32_t)f;
++
++    le32_put(tag +  0, w0);
++    le32_put(tag +  4, w1);
++    le32_put(tag +  8, w2);
++    le32_put(tag + 12, w3);
++}
+diff --git a/lib/libatls/src/atls_sha256.c b/lib/libatls/src/atls_sha256.c
+new file mode 100644
+index 0000000..3805f7a
+--- /dev/null
++++ b/lib/libatls/src/atls_sha256.c
+@@ -0,0 +1,120 @@
++/* atls_sha256.c — SHA-256 (FIPS 180-4), streaming + one-shot.
++ *
++ * Standard Merkle-Damgard implementation.  Big-endian message schedule;
++ * all multi-byte I/O is serialised byte-by-byte so there are no host
++ * endianness assumptions.
++ */
++
++#include "atls/atls.h"
++
++static const uint32_t K[64] = {
++    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
++    0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
++    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
++    0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
++    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
++    0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
++    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
++    0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
++    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
++    0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
++    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
++    0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
++    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
++    0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
++    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
++    0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
++};
++
++static inline uint32_t rotr32(uint32_t v, int n) {
++    return (v >> n) | (v << (32 - n));
++}
++
++static inline uint32_t be32(const uint8_t *p) {
++    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
++           ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
++}
++
++static inline void be32_put(uint8_t *p, uint32_t v) {
++    p[0] = (uint8_t)(v >> 24);
++    p[1] = (uint8_t)(v >> 16);
++    p[2] = (uint8_t)(v >> 8);
++    p[3] = (uint8_t)(v >> 0);
++}
++
++static void sha256_block(atls_sha256_ctx *c, const uint8_t p[64]) {
++    uint32_t w[64];
++    uint32_t a, b, cc, d, e, f, g, h;
++
++    for (int i = 0; i < 16; i++) w[i] = be32(p + i * 4);
++    for (int i = 16; i < 64; i++) {
++        uint32_t s0 = rotr32(w[i - 15], 7) ^ rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
++        uint32_t s1 = rotr32(w[i - 2], 17) ^ rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
++        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
++    }
++
++    a = c->h[0]; b = c->h[1]; cc = c->h[2]; d = c->h[3];
++    e = c->h[4]; f = c->h[5]; g  = c->h[6]; h = c->h[7];
++
++    for (int i = 0; i < 64; i++) {
++        uint32_t S1  = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
++        uint32_t ch  = (e & f) ^ ((~e) & g);
++        uint32_t t1  = h + S1 + ch + K[i] + w[i];
++        uint32_t S0  = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
++        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
++        uint32_t t2  = S0 + maj;
++        h = g; g = f; f = e; e = d + t1;
++        d = cc; cc = b; b = a; a = t1 + t2;
++    }
++
++    c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
++    c->h[4] += e; c->h[5] += f; c->h[6] += g;  c->h[7] += h;
++}
++
++void atls_sha256_init(atls_sha256_ctx *c) {
++    c->h[0] = 0x6a09e667u; c->h[1] = 0xbb67ae85u;
++    c->h[2] = 0x3c6ef372u; c->h[3] = 0xa54ff53au;
++    c->h[4] = 0x510e527fu; c->h[5] = 0x9b05688cu;
++    c->h[6] = 0x1f83d9abu; c->h[7] = 0x5be0cd19u;
++    c->nbytes = 0;
++    c->buflen = 0;
++}
++
++void atls_sha256_update(atls_sha256_ctx *c, const void *data, size_t len) {
++    const uint8_t *p = (const uint8_t *)data;
++    c->nbytes += len;
++    while (len > 0) {
++        size_t take = 64 - c->buflen;
++        if (take > len) take = len;
++        for (size_t i = 0; i < take; i++) c->buf[c->buflen + i] = p[i];
++        c->buflen += take;
++        p += take;
++        len -= take;
++        if (c->buflen == 64) {
++            sha256_block(c, c->buf);
++            c->buflen = 0;
++        }
++    }
++}
++
++void atls_sha256_final(atls_sha256_ctx *c, uint8_t out[32]) {
++    uint64_t bitlen = c->nbytes * 8;
++    uint8_t pad = 0x80;
++    atls_sha256_update(c, &pad, 1);
++    uint8_t zero = 0;
++    while (c->buflen != 56) atls_sha256_update(c, &zero, 1);
++    uint8_t lenb[8];
++    for (int i = 0; i < 8; i++) {
++        lenb[i] = (uint8_t)(bitlen >> (56 - i * 8));
++    }
++    atls_sha256_update(c, lenb, 8);   /* fills 56..64 and flushes the block */
++    for (int i = 0; i < 8; i++) be32_put(out + i * 4, c->h[i]);
++    atls_wipe(c, sizeof(*c));
++}
++
++void atls_sha256(const void *data, size_t len, uint8_t out[32]) {
++    atls_sha256_ctx c;
++    atls_sha256_init(&c);
++    atls_sha256_update(&c, data, len);
++    atls_sha256_final(&c, out);
++}
+diff --git a/lib/libatls/src/atls_sha512.c b/lib/libatls/src/atls_sha512.c
+new file mode 100644
+index 0000000..1aed417
+--- /dev/null
++++ b/lib/libatls/src/atls_sha512.c
+@@ -0,0 +1,132 @@
++/* atls_sha512.c — SHA-512 (FIPS 180-4), streaming + one-shot.
++ *
++ * Required by Ed25519 (RFC 8032).  Same Merkle-Damgard shape as
++ * atls_sha256.c with 64-bit words and 128-byte blocks.
++ */
++
++#include "atls/atls.h"
++
++static const uint64_t K[80] = {
++    0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL,
++    0xe9b5dba58189dbbcULL, 0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL,
++    0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL, 0xd807aa98a3030242ULL,
++    0x12835b0145706fbeULL, 0x243185be4ee4b28cULL, 0x550c7dc3d5ffb4e2ULL,
++    0x72be5d74f27b896fULL, 0x80deb1fe3b1696b1ULL, 0x9bdc06a725c71235ULL,
++    0xc19bf174cf692694ULL, 0xe49b69c19ef14ad2ULL, 0xefbe4786384f25e3ULL,
++    0x0fc19dc68b8cd5b5ULL, 0x240ca1cc77ac9c65ULL, 0x2de92c6f592b0275ULL,
++    0x4a7484aa6ea6e483ULL, 0x5cb0a9dcbd41fbd4ULL, 0x76f988da831153b5ULL,
++    0x983e5152ee66dfabULL, 0xa831c66d2db43210ULL, 0xb00327c898fb213fULL,
++    0xbf597fc7beef0ee4ULL, 0xc6e00bf33da88fc2ULL, 0xd5a79147930aa725ULL,
++    0x06ca6351e003826fULL, 0x142929670a0e6e70ULL, 0x27b70a8546d22ffcULL,
++    0x2e1b21385c26c926ULL, 0x4d2c6dfc5ac42aedULL, 0x53380d139d95b3dfULL,
++    0x650a73548baf63deULL, 0x766a0abb3c77b2a8ULL, 0x81c2c92e47edaee6ULL,
++    0x92722c851482353bULL, 0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL,
++    0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL, 0xd192e819d6ef5218ULL,
++    0xd69906245565a910ULL, 0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
++    0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL, 0x2748774cdf8eeb99ULL,
++    0x34b0bcb5e19b48a8ULL, 0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL,
++    0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL, 0x748f82ee5defb2fcULL,
++    0x78a5636f43172f60ULL, 0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
++    0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL, 0xbef9a3f7b2c67915ULL,
++    0xc67178f2e372532bULL, 0xca273eceea26619cULL, 0xd186b8c721c0c207ULL,
++    0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL, 0x06f067aa72176fbaULL,
++    0x0a637dc5a2c898a6ULL, 0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
++    0x28db77f523047d84ULL, 0x32caab7b40c72493ULL, 0x3c9ebe0a15c9bebcULL,
++    0x431d67c49c100d4cULL, 0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL,
++    0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL,
++};
++
++static inline uint64_t rotr64(uint64_t v, int n) {
++    return (v >> n) | (v << (64 - n));
++}
++
++static inline uint64_t be64(const uint8_t *p) {
++    return ((uint64_t)p[0] << 56) | ((uint64_t)p[1] << 48) |
++           ((uint64_t)p[2] << 40) | ((uint64_t)p[3] << 32) |
++           ((uint64_t)p[4] << 24) | ((uint64_t)p[5] << 16) |
++           ((uint64_t)p[6] << 8)  |  (uint64_t)p[7];
++}
++
++static inline void be64_put(uint8_t *p, uint64_t v) {
++    for (int i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - i * 8));
++}
++
++static void sha512_block(atls_sha512_ctx *c, const uint8_t p[128]) {
++    uint64_t w[80];
++    uint64_t a, b, cc, d, e, f, g, h;
++
++    for (int i = 0; i < 16; i++) w[i] = be64(p + i * 8);
++    for (int i = 16; i < 80; i++) {
++        uint64_t s0 = rotr64(w[i - 15], 1) ^ rotr64(w[i - 15], 8) ^ (w[i - 15] >> 7);
++        uint64_t s1 = rotr64(w[i - 2], 19) ^ rotr64(w[i - 2], 61) ^ (w[i - 2] >> 6);
++        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
++    }
++
++    a = c->h[0]; b = c->h[1]; cc = c->h[2]; d = c->h[3];
++    e = c->h[4]; f = c->h[5]; g  = c->h[6]; h = c->h[7];
++
++    for (int i = 0; i < 80; i++) {
++        uint64_t S1  = rotr64(e, 14) ^ rotr64(e, 18) ^ rotr64(e, 41);
++        uint64_t ch  = (e & f) ^ ((~e) & g);
++        uint64_t t1  = h + S1 + ch + K[i] + w[i];
++        uint64_t S0  = rotr64(a, 28) ^ rotr64(a, 34) ^ rotr64(a, 39);
++        uint64_t maj = (a & b) ^ (a & cc) ^ (b & cc);
++        uint64_t t2  = S0 + maj;
++        h = g; g = f; f = e; e = d + t1;
++        d = cc; cc = b; b = a; a = t1 + t2;
++    }
++
++    c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d;
++    c->h[4] += e; c->h[5] += f; c->h[6] += g;  c->h[7] += h;
++}
++
++void atls_sha512_init(atls_sha512_ctx *c) {
++    c->h[0] = 0x6a09e667f3bcc908ULL; c->h[1] = 0xbb67ae8584caa73bULL;
++    c->h[2] = 0x3c6ef372fe94f82bULL; c->h[3] = 0xa54ff53a5f1d36f1ULL;
++    c->h[4] = 0x510e527fade682d1ULL; c->h[5] = 0x9b05688c2b3e6c1fULL;
++    c->h[6] = 0x1f83d9abfb41bd6bULL; c->h[7] = 0x5be0cd19137e2179ULL;
++    c->nbytes_lo = 0;
++    c->nbytes_hi = 0;
++    c->buflen = 0;
++}
++
++void atls_sha512_update(atls_sha512_ctx *c, const void *data, size_t len) {
++    const uint8_t *p = (const uint8_t *)data;
++    uint64_t old = c->nbytes_lo;
++    c->nbytes_lo += len;
++    if (c->nbytes_lo < old) c->nbytes_hi++;
++    while (len > 0) {
++        size_t take = 128 - c->buflen;
++        if (take > len) take = len;
++        for (size_t i = 0; i < take; i++) c->buf[c->buflen + i] = p[i];
++        c->buflen += take;
++        p += take;
++        len -= take;
++        if (c->buflen == 128) {
++            sha512_block(c, c->buf);
++            c->buflen = 0;
++        }
++    }
++}
++
++void atls_sha512_final(atls_sha512_ctx *c, uint8_t out[64]) {
++    uint64_t bitlo = c->nbytes_lo << 3;
++    uint64_t bithi = (c->nbytes_hi << 3) | (c->nbytes_lo >> 61);
++    uint8_t pad = 0x80;
++    atls_sha512_update(c, &pad, 1);
++    uint8_t zero = 0;
++    while (c->buflen != 112) atls_sha512_update(c, &zero, 1);
++    uint8_t lenb[16];
++    be64_put(lenb, bithi);
++    be64_put(lenb + 8, bitlo);
++    atls_sha512_update(c, lenb, 16);
++    for (int i = 0; i < 8; i++) be64_put(out + i * 8, c->h[i]);
++    atls_wipe(c, sizeof(*c));
++}
++
++void atls_sha512(const void *data, size_t len, uint8_t out[64]) {
++    atls_sha512_ctx c;
++    atls_sha512_init(&c);
++    atls_sha512_update(&c, data, len);
++    atls_sha512_final(&c, out);
++}
+diff --git a/lib/libatls/src/atls_x25519.c b/lib/libatls/src/atls_x25519.c
+new file mode 100644
+index 0000000..a842e14
+--- /dev/null
++++ b/lib/libatls/src/atls_x25519.c
+@@ -0,0 +1,93 @@
++/* atls_x25519.c — X25519 scalar multiplication (RFC 7748).
++ *
++ * The Montgomery ladder exactly as the RFC's pseudocode, over the 5x51
++ * field module.  a24 = 121665 = (486662 - 2) / 4, matching the RFC's
++ * z_2 = E * (AA + a24 * E) form.
++ *
++ * Constant-time with respect to the scalar: the ladder is straight-line,
++ * swaps are masked cswaps, and clamping is arithmetic, not branching.
++ * The final all-zero check rejects low-order points (RFC 7748 §6.1
++ * "implementations MUST abort ... if the shared secret is all zeros" is
++ * the TLS 1.3 reading; we surface it as ATLS_ERR_LOW_ORDER so the
++ * handshake layer can fail loudly).
++ */
++
++#include "atls_fe.h"
++#include "atls/atls.h"
++
++const uint8_t ATLS_X25519_BASEPOINT[32] = {
++    9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++};
++
++void atls_x25519_clamp(uint8_t scalar[32]) {
++    scalar[0] &= 248;
++    scalar[31] &= 127;
++    scalar[31] |= 64;
++}
++
++int atls_x25519(uint8_t out[32], const uint8_t scalar[32],
++                const uint8_t point[32]) {
++    if (!out || !scalar || !point) return ATLS_ERR_INPUT;
++
++    uint8_t k[32];
++    for (int i = 0; i < 32; i++) k[i] = scalar[i];
++    atls_x25519_clamp(k);
++
++    atls_fe x_1, x_2, z_2, x_3, z_3;
++    atls_fe_frombytes(&x_1, point);      /* masks bit 255 per the RFC */
++    atls_fe_1(&x_2);
++    atls_fe_0(&z_2);
++    atls_fe_copy(&x_3, &x_1);
++    atls_fe_1(&z_3);
++
++    uint64_t swap = 0;
++    for (int pos = 254; pos >= 0; pos--) {
++        uint64_t bit = (k[pos >> 3] >> (pos & 7)) & 1u;
++        swap ^= bit;
++        atls_fe_cswap(&x_2, &x_3, swap);
++        atls_fe_cswap(&z_2, &z_3, swap);
++        swap = bit;
++
++        atls_fe A, AA, B, BB, E, C, D, DA, CB, t;
++
++        atls_fe_add(&A, &x_2, &z_2);
++        atls_fe_sq(&AA, &A);
++        atls_fe_sub(&B, &x_2, &z_2);
++        atls_fe_sq(&BB, &B);
++        atls_fe_sub(&E, &AA, &BB);
++        atls_fe_add(&C, &x_3, &z_3);
++        atls_fe_sub(&D, &x_3, &z_3);
++        atls_fe_mul(&DA, &D, &A);
++        atls_fe_mul(&CB, &C, &B);
++
++        atls_fe_add(&t, &DA, &CB);
++        atls_fe_sq(&x_3, &t);
++        atls_fe_sub(&t, &DA, &CB);
++        atls_fe_sq(&t, &t);
++        atls_fe_mul(&z_3, &x_1, &t);
++
++        atls_fe_mul(&x_2, &AA, &BB);
++        /* z_2 = E * (AA + a24 * E), a24 = 121665 */
++        atls_fe_mul_small(&t, &E, 121665);
++        atls_fe_add(&t, &AA, &t);
++        atls_fe_mul(&z_2, &E, &t);
++    }
++    atls_fe_cswap(&x_2, &x_3, swap);
++    atls_fe_cswap(&z_2, &z_3, swap);
++
++    atls_fe zinv;
++    atls_fe_invert(&zinv, &z_2);
++    atls_fe_mul(&x_2, &x_2, &zinv);
++    atls_fe_tobytes(out, &x_2);
++
++    atls_wipe(k, sizeof(k));
++
++    /* All-zero shared secret: low-order input point. */
++    uint8_t acc = 0;
++    for (int i = 0; i < 32; i++) acc |= out[i];
++    if (((uint32_t)acc - 1u) >> 31) {      /* acc == 0 */
++        return ATLS_ERR_LOW_ORDER;
++    }
++    return ATLS_OK;
++}
+diff --git a/tests/integration/cases/test_crypto.sh b/tests/integration/cases/test_crypto.sh
+new file mode 100644
+index 0000000..b10b0e1
+--- /dev/null
++++ b/tests/integration/cases/test_crypto.sh
+@@ -0,0 +1,47 @@
++#!/usr/bin/env bash
++# test_crypto.sh — INTERNET_PLAN.md phase N1 in-guest gate.
++#
++# The RFC-vector batteries run host-side (tests/unit/test_atls_*).  This
++# case proves the SAME sources also run inside the OS: /tests/cryptotest
++# links libatls.a, runs one vector per primitive plus the refusal paths
++# (tampered AEAD tag, low-order X25519 point, forged Ed25519 signature),
++# and reports on the serial console.  It also exercises the 64 KiB guest
++# user stack — the field code's scratch usage matters here, exactly as
++# GL phase G11b discovered (WEBVIEW_PLAN §2 precedent).
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "N1: libatls in-guest smoke test"
++
++LOG="$IL_LOGDIR/crypto.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 8
++il_send "run cryptotest"
++il_send_delay 12
++il_send "exit"
++
++il_run_qemu "$LOG" 60
++
++il_assert_grep "$LOG" "auralite#"                "shell reached"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: SHA-256"                     "SHA-256 vector in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: HMAC-SHA256"                 "HMAC vector in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: HKDF RFC 5869 TC1 expand"    "HKDF vector in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: AEAD RFC 8439"               "AEAD vector in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: AEAD tampered tag refused"   "AEAD refusal in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: X25519 RFC 7748"             "X25519 vector in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: X25519 low-order point refused" "X25519 refusal in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: Ed25519 RFC 8032"            "Ed25519 verify in guest"
++il_assert_grep "$LOG" "\[cryptotest\] PASS: Ed25519 forged signature refused" "Ed25519 refusal in guest"
++il_assert_grep "$LOG" "\[cryptotest\] ALL PASS"                          "cryptotest reports ALL PASS"
++
++il_assert_no_grep "$LOG" "\[cryptotest\] FAIL"   "no in-guest crypto failure"
++il_assert_no_grep "$LOG" "KERNEL EXCEPTION"      "no kernel exception"
++il_assert_no_grep "$LOG" "PANIC"                 "no kernel panic"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index a8e0c94..6e81098 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -80,6 +80,7 @@ ALL_CASES=(
+     test_panic_diag
+     test_ist_double_fault
+     test_rng
++    test_crypto
+     test_fd_isolation
+     test_user_processes
+     test_ahci_rw
+diff --git a/tests/unit/test_atls_aead.c b/tests/unit/test_atls_aead.c
+new file mode 100644
+index 0000000..42b0994
+--- /dev/null
++++ b/tests/unit/test_atls_aead.c
+@@ -0,0 +1,215 @@
++/* tests/unit/test_atls_aead.c — N1 stream/MAC/AEAD gates.
++ *
++ * ChaCha20 and Poly1305 against RFC 8439's published vectors, the full
++ * AEAD construction against §2.8.2, then round-trip and tamper checks
++ * (a flipped ciphertext bit, a flipped AAD bit and a flipped tag bit
++ * must each fail authentication, individually).
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "atls/atls.h"
++
++static int pass_count = 0, fail_count = 0;
++
++#define CHECK(cond, msg)                                    \
++    do {                                                    \
++        if (cond) { pass_count++; printf("PASS: %s\n", msg); } \
++        else { fail_count++; printf("FAIL: %s (line %d)\n", msg, __LINE__); } \
++    } while (0)
++
++static void hex2bin(const char *hex, uint8_t *out) {
++    size_t n = strlen(hex);
++    for (size_t i = 0; i < n / 2; i++) {
++        unsigned v;
++        sscanf(hex + i * 2, "%2x", &v);
++        out[i] = (uint8_t)v;
++    }
++}
++
++static int hex_eq(const uint8_t *bin, size_t len, const char *hex) {
++    if (strlen(hex) != len * 2) return 0;
++    for (size_t i = 0; i < len; i++) {
++        unsigned v;
++        sscanf(hex + i * 2, "%2x", &v);
++        if (bin[i] != (uint8_t)v) return 0;
++    }
++    return 1;
++}
++
++static const char RFC_KEY_HEX[] =
++    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
++
++/* ---- ChaCha20 (RFC 8439 §2.4.2, the Sunscreen example) ---- */
++
++static void test_chacha20(void) {
++    uint8_t key[32], nonce[12], pt[114], ct[114];
++    hex2bin(RFC_KEY_HEX, key);
++    hex2bin("000000000000004a00000000", nonce);
++    memcpy(pt,
++           "Ladies and Gentlemen of the class of '99: If I could offer you "
++           "only one tip for the future, sunscreen would be it.", 114);
++
++    atls_chacha20_xor(key, 1, nonce, pt, ct, sizeof(pt));
++    CHECK(hex_eq(ct, 114,
++        "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0b"
++        "f91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d8"
++        "07ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab7793736"
++        "5af90bbf74a35be6b40b8eedf2785e42874d"),
++        "ChaCha20 RFC 8439 §2.4.2 Sunscreen ciphertext");
++
++    /* Decrypt is the same call; it must invert. */
++    uint8_t back[114];
++    atls_chacha20_xor(key, 1, nonce, ct, back, sizeof(ct));
++    CHECK(memcmp(back, pt, sizeof(pt)) == 0, "ChaCha20 decrypt inverts encrypt");
++}
++
++/* ---- Poly1305 (RFC 8439 §2.5.2) ---- */
++
++static void test_poly1305(void) {
++    uint8_t key[32], tag[16];
++    hex2bin("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b",
++            key);
++    const char *msg = "Cryptographic Forum Research Group";
++
++    atls_poly1305(key, (const uint8_t *)msg, strlen(msg), tag);
++    CHECK(hex_eq(tag, 16, "a8061dc1305136c6c22b8baf0c0127a9"),
++          "Poly1305 RFC 8439 §2.5.2 tag");
++
++    /* Empty message. */
++    uint8_t zero_key[32];
++    memset(zero_key, 0, sizeof(zero_key));
++    atls_poly1305(zero_key, NULL, 0, tag);
++    CHECK(hex_eq(tag, 16, "00000000000000000000000000000000"),
++          "Poly1305 zero key, empty message");
++
++    /* All-block-boundary lengths exercise the padding paths. */
++    uint8_t buf[64], t1[16], t2[16];
++    for (int i = 0; i < 64; i++) buf[i] = (uint8_t)i;
++    atls_poly1305(key, buf, 16, t1);
++    atls_poly1305(key, buf, 17, t2);
++    CHECK(atls_ct_eq(t1, t2, 16) == 0,
++          "Poly1305 distinguishes 16-byte and 17-byte messages");
++}
++
++/* ---- AEAD (RFC 8439 §2.8.2) ---- */
++
++static void test_aead_rfc(void) {
++    uint8_t key[32], nonce[12], aad[12], pt[114], ct[114], tag[16];
++    hex2bin("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
++            key);
++    hex2bin("070000004041424344454647", nonce);
++    hex2bin("50515253c0c1c2c3c4c5c6c7", aad);
++    memcpy(pt,
++           "Ladies and Gentlemen of the class of '99: If I could offer you "
++           "only one tip for the future, sunscreen would be it.", 114);
++
++    CHECK(atls_aead_encrypt(key, nonce, aad, sizeof(aad),
++                            pt, sizeof(pt), ct, tag) == ATLS_OK,
++          "AEAD encrypt runs");
++    CHECK(hex_eq(ct, 114,
++        "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6"
++        "3dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36"
++        "92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc"
++        "3ff4def08e4b7a9de576d26586cec64b6116"),
++        "AEAD RFC 8439 §2.8.2 ciphertext");
++    CHECK(hex_eq(tag, 16, "1ae10b594f09e26a7e902ecbd0600691"),
++          "AEAD RFC 8439 §2.8.2 tag");
++
++    uint8_t back[114];
++    CHECK(atls_aead_decrypt(key, nonce, aad, sizeof(aad),
++                            ct, sizeof(ct), tag, back) == ATLS_OK,
++          "AEAD decrypt accepts the genuine tag");
++    CHECK(memcmp(back, pt, sizeof(pt)) == 0, "AEAD round-trip plaintext");
++}
++
++/* ---- tamper cases, each refused individually ---- */
++
++static void test_aead_tamper(void) {
++    uint8_t key[32], nonce[12], aad[5], pt[40], ct[40], tag[16], back[40];
++    for (int i = 0; i < 32; i++) key[i] = (uint8_t)(i + 0x40);
++    for (int i = 0; i < 12; i++) nonce[i] = (uint8_t)(i + 1);
++    for (int i = 0; i < 5; i++) aad[i] = (uint8_t)(0xa0 + i);
++    for (int i = 0; i < 40; i++) pt[i] = (uint8_t)(i * 7);
++
++    CHECK(atls_aead_encrypt(key, nonce, aad, sizeof(aad),
++                            pt, sizeof(pt), ct, tag) == ATLS_OK,
++          "tamper fixture encrypts");
++
++    /* 1. flipped ciphertext bit */
++    uint8_t ct_bad[40];
++    memcpy(ct_bad, ct, sizeof(ct));
++    ct_bad[10] ^= 0x20;
++    CHECK(atls_aead_decrypt(key, nonce, aad, sizeof(aad),
++                            ct_bad, sizeof(ct_bad), tag, back) == ATLS_ERR_AUTH,
++          "tampered ciphertext is refused");
++
++    /* 2. flipped AAD bit */
++    uint8_t aad_bad[5];
++    memcpy(aad_bad, aad, sizeof(aad));
++    aad_bad[2] ^= 0x01;
++    CHECK(atls_aead_decrypt(key, nonce, aad_bad, sizeof(aad_bad),
++                            ct, sizeof(ct), tag, back) == ATLS_ERR_AUTH,
++          "tampered AAD is refused");
++
++    /* 3. flipped tag bit */
++    uint8_t tag_bad[16];
++    memcpy(tag_bad, tag, sizeof(tag));
++    tag_bad[15] ^= 0x80;
++    CHECK(atls_aead_decrypt(key, nonce, aad, sizeof(aad),
++                            ct, sizeof(ct), tag_bad, back) == ATLS_ERR_AUTH,
++          "tampered tag is refused");
++
++    /* 4. wrong key */
++    uint8_t key_bad[32];
++    memcpy(key_bad, key, sizeof(key));
++    key_bad[0] ^= 0xff;
++    CHECK(atls_aead_decrypt(key_bad, nonce, aad, sizeof(aad),
++                            ct, sizeof(ct), tag, back) == ATLS_ERR_AUTH,
++          "wrong key is refused");
++
++    /* The refused plaintext buffer must have been wiped. */
++    memset(back, 0xee, sizeof(back));
++    (void)atls_aead_decrypt(key, nonce, aad, sizeof(aad),
++                            ct_bad, sizeof(ct_bad), tag, back);
++    int wiped = 1;
++    for (size_t i = 0; i < sizeof(back); i++) if (back[i] != 0) wiped = 0;
++    CHECK(wiped, "refused decrypt wipes the plaintext buffer");
++
++    /* In-place decrypt (ct buffer doubles as pt buffer). */
++    uint8_t inplace[40];
++    memcpy(inplace, ct, sizeof(ct));
++    CHECK(atls_aead_decrypt(key, nonce, aad, sizeof(aad),
++                            inplace, sizeof(inplace), tag, inplace) == ATLS_OK
++          && memcmp(inplace, pt, sizeof(pt)) == 0,
++          "in-place decrypt works");
++}
++
++/* ---- the RFC's own Poly1305 key-generation path (§2.6) ---- */
++
++static void test_poly_key_gen(void) {
++    /* §2.6.2: key 80..9f, nonce 00 00 00 00 00 01 02 03 04 05 06 07,
++     * block 0 gives the documented one-time key. */
++    uint8_t key[32], nonce[12], block0[64];
++    hex2bin("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
++            key);
++    hex2bin("000000000001020304050607", nonce);
++    uint8_t zeros[64];
++    memset(zeros, 0, sizeof(zeros));
++    atls_chacha20_xor(key, 0, nonce, zeros, block0, sizeof(zeros));
++    CHECK(hex_eq(block0, 32,
++        "8ad5a08b905f81cc815040274ab29471a833b637e3fd0da508dbb8e2fdd1a646"),
++        "Poly1305 key from ChaCha20 block 0 (RFC 8439 §2.6.2)");
++}
++
++int main(void) {
++    printf("test_atls_aead: ChaCha20/Poly1305/AEAD RFC vectors + tamper gate\n");
++    test_chacha20();
++    test_poly1305();
++    test_poly_key_gen();
++    test_aead_rfc();
++    test_aead_tamper();
++    printf("test_atls_aead: %d passed, %d failed\n", pass_count, fail_count);
++    return fail_count == 0 ? 0 : 1;
++}
+diff --git a/tests/unit/test_atls_ed25519.c b/tests/unit/test_atls_ed25519.c
+new file mode 100644
+index 0000000..dc63dfd
+--- /dev/null
++++ b/tests/unit/test_atls_ed25519.c
+@@ -0,0 +1,182 @@
++/* tests/unit/test_atls_ed25519.c — N1 Ed25519-verify gates.
++ *
++ * RFC 8032 §7.1 TEST 1/2/3 and TEST SHA(abc) verify, then the negative
++ * battery — each refusal checked INDIVIDUALLY and for the RIGHT REASON
++ * (INTERNET_PLAN.md N1 gate: "a rejected signature must be rejected for
++ * the right reason, checked individually rather than as a lump"):
++ *
++ *   - a flipped bit in R, in S, in the message, in the public key
++ *   - S = L and S = L + 1 (non-canonical scalars)
++ *   - an R that encodes a point not on the curve
++ *   - a public key whose y is not canonical (y = p encoded raw)
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "atls/atls.h"
++
++static int pass_count = 0, fail_count = 0;
++
++#define CHECK(cond, msg)                                    \
++    do {                                                    \
++        if (cond) { pass_count++; printf("PASS: %s\n", msg); } \
++        else { fail_count++; printf("FAIL: %s (line %d)\n", msg, __LINE__); } \
++    } while (0)
++
++static void hex2bin(const char *hex, uint8_t *out) {
++    size_t n = strlen(hex);
++    for (size_t i = 0; i < n / 2; i++) {
++        unsigned v;
++        sscanf(hex + i * 2, "%2x", &v);
++        out[i] = (uint8_t)v;
++    }
++}
++
++static int verify_ok(const char *pk_hex, const char *sig_hex,
++                     const uint8_t *msg, size_t msglen) {
++    uint8_t pk[32], sig[64];
++    hex2bin(pk_hex, pk);
++    hex2bin(sig_hex, sig);
++    return atls_ed25519_verify(sig, pk, msg, msglen);
++}
++
++/* ---- RFC 8032 §7.1 positive vectors ---- */
++
++static void test_rfc_vectors(void) {
++    CHECK(verify_ok(
++        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
++        "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
++        "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
++        NULL, 0) == ATLS_OK, "RFC 8032 §7.1 TEST 1 (empty message)");
++
++    uint8_t m2 = 0x72;
++    CHECK(verify_ok(
++        "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
++        "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
++        "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
++        &m2, 1) == ATLS_OK, "RFC 8032 §7.1 TEST 2 (one byte)");
++
++    uint8_t m3[2] = { 0xaf, 0x82 };
++    CHECK(verify_ok(
++        "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
++        "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac"
++        "18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
++        m3, 2) == ATLS_OK, "RFC 8032 §7.1 TEST 3 (two bytes)");
++
++    uint8_t m4[64];
++    hex2bin("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
++            "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
++            m4);
++    CHECK(verify_ok(
++        "ec172b93ad5e563bf4932c70e1245034c35467ef2efd4d64ebf819683467e2bf",
++        "dc2a4459e7369633a52b1bf277839a00201009a3efbf3ecb69bea2186c26b589"
++        "09351fc9ac90b3ecfdfbc7c66431e0303dca179c138ac17ad9bef1177331a704",
++        m4, sizeof(m4)) == ATLS_OK, "RFC 8032 §7.1 TEST SHA(abc) (64 bytes)");
++}
++
++/* ---- negative battery: each case checked for the exact reason ---- */
++
++static const char *PK2 =
++    "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
++static const char *SIG2 =
++    "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
++    "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00";
++
++static void test_negative_battery(void) {
++    uint8_t pk[32], sig[64];
++    uint8_t msg = 0x72;
++
++    /* Baseline sanity: the fixture verifies. */
++    hex2bin(PK2, pk);
++    hex2bin(SIG2, sig);
++    CHECK(atls_ed25519_verify(sig, pk, &msg, 1) == ATLS_OK,
++          "negative battery fixture verifies first");
++
++    /* 1. flipped bit inside R */
++    uint8_t sig_r[64];
++    memcpy(sig_r, sig, 64);
++    sig_r[5] ^= 0x40;
++    CHECK(atls_ed25519_verify(sig_r, pk, &msg, 1) == ATLS_ERR_BAD_SIGNATURE,
++          "flipped bit in R is refused as BAD_SIGNATURE");
++
++    /* 2. flipped bit inside S */
++    uint8_t sig_s[64];
++    memcpy(sig_s, sig, 64);
++    sig_s[40] ^= 0x08;
++    CHECK(atls_ed25519_verify(sig_s, pk, &msg, 1) == ATLS_ERR_BAD_SIGNATURE,
++          "flipped bit in S is refused as BAD_SIGNATURE");
++
++    /* 3. wrong message */
++    uint8_t wrong = 0x73;
++    CHECK(atls_ed25519_verify(sig, pk, &wrong, 1) == ATLS_ERR_BAD_SIGNATURE,
++          "wrong message is refused as BAD_SIGNATURE");
++
++    /* 4. wrong public key (TEST 1's key) */
++    uint8_t pk_wrong[32];
++    hex2bin("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
++            pk_wrong);
++    CHECK(atls_ed25519_verify(sig, pk_wrong, &msg, 1) == ATLS_ERR_BAD_SIGNATURE,
++          "wrong public key is refused as BAD_SIGNATURE");
++
++    /* 5. S = L exactly (non-canonical scalar) */
++    uint8_t sig_l[64];
++    memcpy(sig_l, sig, 64);
++    hex2bin("edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010",
++            sig_l + 32);
++    CHECK(atls_ed25519_verify(sig_l, pk, &msg, 1) == ATLS_ERR_BAD_SIGNATURE,
++          "S = L is refused (range check)");
++
++    /* 6. S with top bits set (>= L through the last byte) */
++    uint8_t sig_big[64];
++    memcpy(sig_big, sig, 64);
++    sig_big[63] = 0xff;
++    CHECK(atls_ed25519_verify(sig_big, pk, &msg, 1) == ATLS_ERR_BAD_SIGNATURE,
++          "S with byte 31 = 0xff is refused (range check)");
++
++    /* 7. R encoding a point not on the curve (y = 2: u/v is not a square
++     * here) */
++    uint8_t sig_bad_r[64];
++    memcpy(sig_bad_r, sig, 64);
++    memset(sig_bad_r, 0, 32);
++    sig_bad_r[0] = 0x02;
++    CHECK(atls_ed25519_verify(sig_bad_r, pk, &msg, 1) == ATLS_ERR_BAD_ENCODING,
++          "R with off-curve y is refused as BAD_ENCODING");
++
++    /* 8. Public key with non-canonical y: the bytes ed ff ... ff 7f
++     * encode the raw value p itself, which reduces to 0 and therefore
++     * cannot re-serialise to the input — decoding must refuse it.
++     * (Note: ec ff ... ff 7f is p - 1, which IS canonical; the torsion
++     * point (0, -1) it describes is handled by the equation instead.) */
++    uint8_t pk_noncanon[32];
++    hex2bin("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
++            pk_noncanon);
++    CHECK(atls_ed25519_verify(sig, pk_noncanon, &msg, 1) == ATLS_ERR_BAD_ENCODING,
++          "non-canonical public key (y = p) is refused as BAD_ENCODING");
++
++    /* 9. R = neutral-point encoding with sign bit 1: x=0 wants sign 0,
++     * so (y=1, sign=1) is not a valid encoding. */
++    uint8_t sig_zero_r[64];
++    memcpy(sig_zero_r, sig, 64);
++    memset(sig_zero_r, 0, 32);
++    sig_zero_r[0] = 0x01;
++    sig_zero_r[31] = 0x80;
++    CHECK(atls_ed25519_verify(sig_zero_r, pk, &msg, 1) == ATLS_ERR_BAD_ENCODING,
++          "R = (0,1) with sign bit 1 is refused as BAD_ENCODING");
++
++    /* 10. argument sanity */
++    CHECK(atls_ed25519_verify(NULL, pk, &msg, 1) == ATLS_ERR_INPUT,
++          "NULL signature refused");
++    CHECK(atls_ed25519_verify(sig, NULL, &msg, 1) == ATLS_ERR_INPUT,
++          "NULL public key refused");
++    CHECK(atls_ed25519_verify(sig, pk, NULL, 5) == ATLS_ERR_INPUT,
++          "NULL message with nonzero length refused");
++}
++
++int main(void) {
++    printf("test_atls_ed25519: RFC 8032 vectors + per-reason negative battery\n");
++    test_rfc_vectors();
++    test_negative_battery();
++    printf("test_atls_ed25519: %d passed, %d failed\n", pass_count, fail_count);
++    return fail_count == 0 ? 0 : 1;
++}
+diff --git a/tests/unit/test_atls_hash.c b/tests/unit/test_atls_hash.c
+new file mode 100644
+index 0000000..0dd2109
+--- /dev/null
++++ b/tests/unit/test_atls_hash.c
+@@ -0,0 +1,273 @@
++/* tests/unit/test_atls_hash.c — N1 hash/MAC/KDF gates.
++ *
++ * Links the REAL libatls sources (the tree's "never test a copy" rule).
++ * Vectors are the published ones — RFC 6234 (SHA), RFC 4231 (HMAC),
++ * RFC 5869 (HKDF) — because "it produces consistent output" proves
++ * nothing (INTERNET_PLAN.md N1 test gate).
++ *
++ * Also enforces decision D7: no memcmp/strncmp/bcmp/strcmp anywhere in
++ * lib/libatls/src — the sources are grepped by THIS test, right here.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "atls/atls.h"
++
++static int pass_count = 0, fail_count = 0;
++
++#define CHECK(cond, msg)                                    \
++    do {                                                    \
++        if (cond) { pass_count++; printf("PASS: %s\n", msg); } \
++        else { fail_count++; printf("FAIL: %s (line %d)\n", msg, __LINE__); } \
++    } while (0)
++
++static void hex2bin(const char *hex, uint8_t *out) {
++    size_t n = strlen(hex);
++    for (size_t i = 0; i < n / 2; i++) {
++        unsigned v;
++        sscanf(hex + i * 2, "%2x", &v);
++        out[i] = (uint8_t)v;
++    }
++}
++
++static int hex_eq(const uint8_t *bin, size_t len, const char *hex) {
++    if (strlen(hex) != len * 2) return 0;
++    for (size_t i = 0; i < len; i++) {
++        unsigned v;
++        sscanf(hex + i * 2, "%2x", &v);
++        if (bin[i] != (uint8_t)v) return 0;
++    }
++    return 1;
++}
++
++/* ---- SHA-256 (FIPS 180 / RFC 6234 vectors) ---- */
++
++static void test_sha256(void) {
++    uint8_t out[32];
++
++    atls_sha256("", 0, out);
++    CHECK(hex_eq(out, 32,
++        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
++        "SHA-256(\"\")");
++
++    atls_sha256("abc", 3, out);
++    CHECK(hex_eq(out, 32,
++        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
++        "SHA-256(\"abc\")");
++
++    atls_sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", 56, out);
++    CHECK(hex_eq(out, 32,
++        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"),
++        "SHA-256 two-block NIST vector");
++
++    /* The million-'a' vector, streamed one chunk at a time. */
++    atls_sha256_ctx c;
++    atls_sha256_init(&c);
++    for (int i = 0; i < 1000000 / 1000; i++) {
++        char buf[1000];
++        memset(buf, 'a', sizeof(buf));
++        atls_sha256_update(&c, buf, sizeof(buf));
++    }
++    atls_sha256_final(&c, out);
++    CHECK(hex_eq(out, 32,
++        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"),
++        "SHA-256 of 1,000,000 x 'a' (streamed)");
++}
++
++/* ---- SHA-512 ---- */
++
++static void test_sha512(void) {
++    uint8_t out[64];
++
++    atls_sha512("", 0, out);
++    CHECK(hex_eq(out, 64,
++        "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce"
++        "47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"),
++        "SHA-512(\"\")");
++
++    atls_sha512("abc", 3, out);
++    CHECK(hex_eq(out, 64,
++        "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a"
++        "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"),
++        "SHA-512(\"abc\")");
++
++    atls_sha512("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmn"
++                "hijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu", 112, out);
++    CHECK(hex_eq(out, 64,
++        "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018"
++        "501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909"),
++        "SHA-512 896-bit two-block vector");
++}
++
++/* ---- HMAC-SHA256 (RFC 4231) ---- */
++
++static void hmac_tc(const char *name, const uint8_t *key, size_t keylen,
++                    const uint8_t *data, size_t datalen,
++                    const char *expect, size_t expect_len) {
++    uint8_t out[32];
++    atls_hmac_sha256(key, keylen, data, datalen, out);
++    CHECK(hex_eq(out, expect_len, expect), name);
++}
++
++static void test_hmac_sha256(void) {
++    uint8_t key[131], data[150];
++
++    memset(key, 0x0b, 20);
++    hmac_tc("RFC 4231 TC1", key, 20, (const uint8_t *)"Hi There", 8,
++            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7", 32);
++
++    hmac_tc("RFC 4231 TC2", (const uint8_t *)"Jefe", 4,
++            (const uint8_t *)"what do ya want for nothing?", 28,
++            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", 32);
++
++    memset(key, 0xaa, 20);
++    memset(data, 0xdd, 50);
++    hmac_tc("RFC 4231 TC3", key, 20, data, 50,
++            "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe", 32);
++
++    for (int i = 0; i < 25; i++) key[i] = (uint8_t)(i + 1);
++    memset(data, 0xcd, 50);
++    hmac_tc("RFC 4231 TC4", key, 25, data, 50,
++            "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b", 32);
++
++    memset(key, 0x0c, 20);
++    hmac_tc("RFC 4231 TC5 (truncated to 16)", key, 20,
++            (const uint8_t *)"Test With Truncation", 20,
++            "a3b6167473100ee06e0c796c2955552b", 16);
++
++    memset(key, 0xaa, 131);
++    hmac_tc("RFC 4231 TC6 (key > block size)", key, 131,
++            (const uint8_t *)"Test Using Larger Than Block-Size Key - Hash Key First", 54,
++            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54", 32);
++
++    hmac_tc("RFC 4231 TC7 (key and data > block size)", key, 131,
++            (const uint8_t *)"This is a test using a larger than block-size key and a "
++                              "larger than block-size data. The key needs to be hashed "
++                              "before being used by the HMAC algorithm.", 152,
++            "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2", 32);
++}
++
++/* ---- HKDF (RFC 5869) ---- */
++
++static void test_hkdf(void) {
++    uint8_t ikm[80], salt[80], info[80], prk[32], okm[82];
++
++    /* TC1 */
++    memset(ikm, 0x0b, 22);
++    hex2bin("000102030405060708090a0b0c", salt);
++    hex2bin("f0f1f2f3f4f5f6f7f8f9", info);
++    CHECK(atls_hkdf_extract(salt, 13, ikm, 22, prk) == ATLS_OK, "HKDF TC1 extract runs");
++    CHECK(hex_eq(prk, 32,
++        "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5"),
++        "HKDF TC1 PRK");
++    CHECK(atls_hkdf_expand(prk, info, 10, okm, 42) == ATLS_OK, "HKDF TC1 expand runs");
++    CHECK(hex_eq(okm, 42,
++        "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
++        "34007208d5b887185865"),
++        "HKDF TC1 OKM");
++
++    /* TC2 (long inputs) */
++    for (int i = 0; i < 80; i++) { ikm[i] = (uint8_t)i; salt[i] = (uint8_t)(0x60 + i); info[i] = (uint8_t)(0xb0 + i); }
++    CHECK(atls_hkdf_extract(salt, 80, ikm, 80, prk) == ATLS_OK, "HKDF TC2 extract runs");
++    CHECK(hex_eq(prk, 32,
++        "06a6b88c5853361a06104c9ceb35b45cef760014904671014a193f40c15fc244"),
++        "HKDF TC2 PRK");
++    CHECK(atls_hkdf_expand(prk, info, 80, okm, 82) == ATLS_OK, "HKDF TC2 expand runs");
++    CHECK(hex_eq(okm, 82,
++        "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c"
++        "59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71"
++        "cc30c58179ec3e87c14c01d5c1f3434f1d87"),
++        "HKDF TC2 OKM (82 bytes, three T-blocks)");
++
++    /* TC3 (zero-length salt and info) */
++    memset(ikm, 0x0b, 22);
++    CHECK(atls_hkdf_extract(NULL, 0, ikm, 22, prk) == ATLS_OK, "HKDF TC3 extract runs");
++    CHECK(hex_eq(prk, 32,
++        "19ef24a32c717b167f33a91d6f648bdf96596776afdb6377ac434c1c293ccb04"),
++        "HKDF TC3 PRK (salt defaults to zeros)");
++    CHECK(atls_hkdf_expand(prk, NULL, 0, okm, 42) == ATLS_OK, "HKDF TC3 expand runs");
++    CHECK(hex_eq(okm, 42,
++        "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d"
++        "9d201395faa4b61a96c8"),
++        "HKDF TC3 OKM (empty info)");
++
++    /* Over-long output is refused (RFC 5869: L <= 255*HashLen). */
++    CHECK(atls_hkdf_expand(prk, NULL, 0, okm, 255 * 32 + 1) == ATLS_ERR_INPUT,
++          "HKDF refuses L > 255*HashLen");
++}
++
++/* ---- atls_ct_eq behaviour ---- */
++
++static void test_ct_eq(void) {
++    uint8_t a[64], b[64];
++    for (int i = 0; i < 64; i++) { a[i] = (uint8_t)(i * 3); b[i] = (uint8_t)(i * 3); }
++    CHECK(atls_ct_eq(a, b, 64) == 1, "ct_eq: equal buffers compare equal");
++    CHECK(atls_ct_eq(a, b, 0) == 1, "ct_eq: zero length is equal");
++    b[63] ^= 1;
++    CHECK(atls_ct_eq(a, b, 64) == 0, "ct_eq: last-byte difference detected");
++    b[63] ^= 1;
++    b[0] ^= 0x80;
++    CHECK(atls_ct_eq(a, b, 64) == 0, "ct_eq: first-byte difference detected");
++}
++
++/* ---- D7: no memcmp on anything in libatls ---- */
++
++static int file_contains(const char *path, const char *needle) {
++    FILE *f = fopen(path, "rb");
++    if (!f) return -1;
++    char buf[8192];
++    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
++    fclose(f);
++    buf[n] = 0;
++    return strstr(buf, needle) != NULL;
++}
++
++static void test_d7_no_memcmp(void) {
++    /* The audited translation units.  Keep in sync with LIBATLS_OBJS. */
++    static const char *srcs[] = {
++        "lib/libatls/src/atls_common.c",
++        "lib/libatls/src/atls_sha256.c",
++        "lib/libatls/src/atls_sha512.c",
++        "lib/libatls/src/atls_hmac.c",
++        "lib/libatls/src/atls_hkdf.c",
++        "lib/libatls/src/atls_chacha20.c",
++        "lib/libatls/src/atls_poly1305.c",
++        "lib/libatls/src/atls_aead.c",
++        "lib/libatls/src/atls_fe.c",
++        "lib/libatls/src/atls_x25519.c",
++        "lib/libatls/src/atls_ed25519.c",
++    };
++    static const char *banned[] = {
++        "memcmp(", "strncmp(", "bcmp(", "strcmp(",
++    };
++    int clean = 1;
++    for (size_t i = 0; i < sizeof(srcs) / sizeof(srcs[0]); i++) {
++        int present = file_contains(srcs[i], "atls_ct_eq");
++        (void)present;
++        for (size_t j = 0; j < sizeof(banned) / sizeof(banned[0]); j++) {
++            int hit = file_contains(srcs[i], banned[j]);
++            if (hit != 0) {
++                if (hit > 0) {
++                    printf("      %s contains %s\n", srcs[i], banned[j]);
++                } else {
++                    printf("      cannot open %s (run from repo root)\n", srcs[i]);
++                }
++                clean = 0;
++            }
++        }
++    }
++    CHECK(clean, "D7: no memcmp/strncmp/bcmp/strcmp in any libatls source");
++}
++
++int main(void) {
++    printf("test_atls_hash: SHA/HMAC/HKDF RFC vectors + D7 audit\n");
++    test_sha256();
++    test_sha512();
++    test_hmac_sha256();
++    test_hkdf();
++    test_ct_eq();
++    test_d7_no_memcmp();
++    printf("test_atls_hash: %d passed, %d failed\n", pass_count, fail_count);
++    return fail_count == 0 ? 0 : 1;
++}
+diff --git a/tests/unit/test_atls_x25519.c b/tests/unit/test_atls_x25519.c
+new file mode 100644
+index 0000000..e538d09
+--- /dev/null
++++ b/tests/unit/test_atls_x25519.c
+@@ -0,0 +1,195 @@
++/* tests/unit/test_atls_x25519.c — N1 X25519 gates.
++ *
++ *   * RFC 7748 §5.2 Alice/Bob vector (shared secret both ways).
++ *   * RFC 7748 §6.1 iterated test, 1 iteration AND 1000 iterations —
++ *     the plan's explicit gate.
++ *   * Wycheproof small/low-order public keys: every one must produce the
++ *     all-zero shared secret AND be refused with ATLS_ERR_LOW_ORDER
++ *     (ZeroSharedSecret flag).  A handshake that accepts a zero shared
++ *     secret hands every passive observer the same session keys.
++ *
++ * The Wycheproof points are tcId 32, 33, 63-68 from x25519_test.json
++ * (vectors_v1), including the NonCanonicalPublic encodings with bit 255
++ * set — the RFC's decode masks that bit, so they land on the same
++ * low-order points.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "atls/atls.h"
++
++static int pass_count = 0, fail_count = 0;
++
++#define CHECK(cond, msg)                                    \
++    do {                                                    \
++        if (cond) { pass_count++; printf("PASS: %s\n", msg); } \
++        else { fail_count++; printf("FAIL: %s (line %d)\n", msg, __LINE__); } \
++    } while (0)
++
++static void hex2bin(const char *hex, uint8_t *out) {
++    size_t n = strlen(hex);
++    for (size_t i = 0; i < n / 2; i++) {
++        unsigned v;
++        sscanf(hex + i * 2, "%2x", &v);
++        out[i] = (uint8_t)v;
++    }
++}
++
++static int hex_eq(const uint8_t *bin, size_t len, const char *hex) {
++    if (strlen(hex) != len * 2) return 0;
++    for (size_t i = 0; i < len; i++) {
++        unsigned v;
++        sscanf(hex + i * 2, "%2x", &v);
++        if (bin[i] != (uint8_t)v) return 0;
++    }
++    return 1;
++}
++
++/* ---- RFC 7748 §5.2: Alice and Bob ---- */
++
++static void test_rfc_alice_bob(void) {
++    uint8_t a_priv[32], b_priv[32], a_pub[32], b_pub[32], s1[32], s2[32];
++
++    hex2bin("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
++            a_priv);
++    hex2bin("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
++            b_priv);
++
++    CHECK(atls_x25519(a_pub, a_priv, ATLS_X25519_BASEPOINT) == ATLS_OK,
++          "Alice public key computation succeeds");
++    CHECK(hex_eq(a_pub, 32,
++        "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"),
++        "Alice public key matches RFC 7748 §5.2");
++
++    CHECK(atls_x25519(b_pub, b_priv, ATLS_X25519_BASEPOINT) == ATLS_OK,
++          "Bob public key computation succeeds");
++    CHECK(hex_eq(b_pub, 32,
++        "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"),
++        "Bob public key matches RFC 7748 §5.2");
++
++    CHECK(atls_x25519(s1, a_priv, b_pub) == ATLS_OK, "Alice->Bob succeeds");
++    CHECK(atls_x25519(s2, b_priv, a_pub) == ATLS_OK, "Bob->Alice succeeds");
++    CHECK(atls_ct_eq(s1, s2, 32) == 1, "both directions agree");
++    CHECK(hex_eq(s1, 32,
++        "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"),
++        "shared secret matches RFC 7748 §5.2");
++}
++
++/* ---- RFC 7748 §6.1: iterated ---- */
++
++static void test_rfc_iterated(void) {
++    uint8_t k[32], u[32], tmp[32];
++    memset(k, 0, 32); k[0] = 9;
++    memset(u, 0, 32); u[0] = 9;
++
++    for (int i = 0; i < 1; i++) {
++        CHECK(atls_x25519(tmp, k, u) == ATLS_OK, "iterated step runs");
++        memcpy(u, k, 32);
++        memcpy(k, tmp, 32);
++    }
++    CHECK(hex_eq(k, 32,
++        "422c8e7a6227d7bca1350b3e2bb7279f7897b87bb6854b783c60e80311ae3079"),
++        "RFC 7748 §6.1 after 1 iteration");
++
++    for (int i = 1; i < 1000; i++) {
++        if (atls_x25519(tmp, k, u) != ATLS_OK) {
++            CHECK(0, "iterated step failed mid-run");
++            return;
++        }
++        memcpy(u, k, 32);
++        memcpy(k, tmp, 32);
++    }
++    CHECK(hex_eq(k, 32,
++        "684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51"),
++        "RFC 7748 §6.1 after 1000 iterations (the plan's gate)");
++}
++
++/* ---- Wycheproof low-order points ---- */
++
++static void test_low_order(void) {
++    /* (tcId, private, public, label) — the exact Wycheproof triples,
++     * because a couple of these points have ODD small order (e.g. 5), so
++     * the all-zero shared secret only appears under the matching scalar.
++     * Every one carries the ZeroSharedSecret flag and result
++     * "acceptable", i.e. a strict implementation refuses them. */
++    static const struct {
++        int tcid;
++        const char *priv;
++        const char *u;
++        const char *what;
++    } cases[] = {
++        { 32, "88227494038f2bb811d47805bcdf04a2ac585ada7f2f23389bfd4658f9ddd45e",
++              "0000000000000000000000000000000000000000000000000000000000000000",
++              "u = 0 (identity)" },
++        { 33, "48232e8972b61c7e61930eb9450b5070eae1c670475685541f0476217e48184f",
++              "0100000000000000000000000000000000000000000000000000000000000000",
++              "u = 1 (order 2)" },
++        { 63, "e0f978dfcd3a8f1a5093418de54136a584c20b7b349afdf6c0520886f95b1272",
++              "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
++              "low order #1" },
++        { 64, "387355d995616090503aafad49da01fb3dc3eda962704eaee6b86f9e20c92579",
++              "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
++              "low order #2" },
++        { 65, "c8fe0df92ae68a03023fc0c9adb9557d31be7feed0d3ab36c558143daf4dbb40",
++              "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
++              "low order #3 (twist)" },
++        { 66, "c8d74acde5934e64b9895d5ff7afbffd7f704f7dfccff7ac28fa62a1e6410347",
++              "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b880",
++              "low order #1, non-canonical (bit 255 set)" },
++        { 67, "b85649d5120e01e8ccaf7b2fb8d81b62e8ad6f3d5c0553fdde1906cb9d79c050",
++              "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f11d7",
++              "low order #2, non-canonical (bit 255 set)" },
++        { 68, "2064b2f4c9dc97ec7cf58932fdfa3265ba6ea4d11f0259b8efc8afb35db88c48",
++              "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
++              "low order #3, non-canonical (bit 255 set)" },
++        { 74, "786a33a4f7af297a20e7642925932bf509e7070fa1bc36986af1eb13f4f50b55",
++              "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
++              "u = p (decodes to 0)" },
++        { 75, "786a33a4f7af297a20e7642925932bf509e7070fa1bc36986af1eb13f4f50b55",
++              "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
++              "odd-order point" },
++    };
++
++    uint8_t scalar[32], u[32], out[32];
++
++    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
++        hex2bin(cases[i].priv, scalar);
++        hex2bin(cases[i].u, u);
++        int rc = atls_x25519(out, scalar, u);
++        char msg[160];
++        int zero = 1;
++        for (int j = 0; j < 32; j++) if (out[j]) zero = 0;
++        snprintf(msg, sizeof(msg),
++                 "Wycheproof tcId %d (%s): zero secret, refused as low-order",
++                 cases[i].tcid, cases[i].what);
++        CHECK(rc == ATLS_ERR_LOW_ORDER && zero, msg);
++    }
++}
++
++/* ---- input validation and determinism ---- */
++
++static void test_misc(void) {
++    uint8_t scalar[32], u[32], a[32], b[32];
++    for (int i = 0; i < 32; i++) { scalar[i] = (uint8_t)(i + 5); u[i] = (uint8_t)(i * 11 + 2); }
++
++    int rc1 = atls_x25519(a, scalar, u);
++    int rc2 = atls_x25519(b, scalar, u);
++    CHECK(rc1 == ATLS_OK || rc1 == ATLS_ERR_LOW_ORDER, "random-ish point runs");
++    CHECK(rc2 == rc1, "same inputs repeat");
++    CHECK(rc1 != ATLS_OK || atls_ct_eq(a, b, 32) == 1, "X25519 is deterministic");
++
++    CHECK(atls_x25519(NULL, scalar, u) == ATLS_ERR_INPUT, "NULL out refused");
++    CHECK(atls_x25519(a, NULL, u) == ATLS_ERR_INPUT, "NULL scalar refused");
++    CHECK(atls_x25519(a, scalar, NULL) == ATLS_ERR_INPUT, "NULL point refused");
++}
++
++int main(void) {
++    printf("test_atls_x25519: RFC 7748 vectors + Wycheproof low-order gate\n");
++    test_rfc_alice_bob();
++    test_rfc_iterated();
++    test_low_order();
++    test_misc();
++    printf("test_atls_x25519: %d passed, %d failed\n", pass_count, fail_count);
++    return fail_count == 0 ? 0 : 1;
++}
+diff --git a/tools/mksdk.sh b/tools/mksdk.sh
+index d9494f4..34f09fd 100644
+--- a/tools/mksdk.sh
++++ b/tools/mksdk.sh
+@@ -74,6 +74,9 @@ AURALITE_LIBS_GUI := $(AURALITE_LIBC) $(AURALITE_SDK)/lib/libauragui.a
+ # OpenGL applications add libaGL (and need AuraGUI to present a window).
+ AURALITE_LIBS_GL  := $(AURALITE_LIBC) $(AURALITE_SDK)/lib/libauragui.a \
+                      $(AURALITE_SDK)/lib/libaGL.a
++# TLS/crypto applications add libatls (INTERNET_PLAN.md N1).  It is
++# self-contained: no GUI or GL dependency.
++AURALITE_LIBS_TLS := $(AURALITE_LIBC) $(AURALITE_SDK)/lib/libatls.a
+ 
+ # ---- The ABI this SDK targets -----------------------------------------------
+ #
+@@ -101,8 +104,8 @@ OS source tree.
+ ## Contents
+ 
+ ```
+-include/        C library, AuraGUI and OpenGL headers
+-lib/            libaurac.a  libauragui.a  libaGL.a  crt0.o
++include/        C library, AuraGUI, OpenGL and TLS/crypto headers
++lib/            libaurac.a  libauragui.a  libaGL.a  libatls.a  crt0.o
+ user.ld         linker script (fixed load address 0x40000000)
+ auralite.mk     the build flags, as a makefile fragment
+ ```
+@@ -134,7 +137,8 @@ myapp.o: myapp.c
+ ```
+ 
+ Use `AURALITE_LIBS_GUI` for an AuraGUI application, `AURALITE_LIBS_GL` for
+-OpenGL. Worked examples are in `examples/` in the OS source tree.
++OpenGL, `AURALITE_LIBS_TLS` for the TLS/crypto primitives (libatls). Worked
++examples are in `examples/` in the OS source tree.
+ 
+ ## Getting the program onto a machine
+ 
+diff --git a/tools/sdk_check.sh b/tools/sdk_check.sh
+index 28408c6..b46d1d8 100644
+--- a/tools/sdk_check.sh
++++ b/tools/sdk_check.sh
+@@ -51,7 +51,7 @@ extra_hdr=0
+ while IFS= read -r -d '' staged; do
+     rel="${staged#"$SDK"/include/}"
+     case "$rel" in
+-        auragui.h|GL/*) continue ;;   # staged from libauragui / libgl
++        auragui.h|GL/*|atls/*) continue ;;   # staged from libauragui / libgl / libatls
+     esac
+     [ -e "$ROOT/lib/libc/include/$rel" ] || { bad "stale SDK: include/$rel has no source"; extra_hdr=1; }
+ done < <(find "$SDK/include" -name '*.h' -print0)
+@@ -61,8 +61,9 @@ done < <(find "$SDK/include" -name '*.h' -print0)
+ # ---- 1. the layout ----------------------------------------------------------
+ 
+ for f in auralite.mk user.ld README.md \
+-         lib/libaurac.a lib/libauragui.a lib/libaGL.a lib/crt0.o \
+-         include/stdio.h include/unistd.h include/auragui.h include/GL/gl.h; do
++         lib/libaurac.a lib/libauragui.a lib/libaGL.a lib/libatls.a lib/crt0.o \
++         include/stdio.h include/unistd.h include/auragui.h include/GL/gl.h \
++         include/atls/atls.h; do
+     if [ -e "$SDK/$f" ]; then ok "$f present"; else bad "$f missing"; fi
+ done
+ 
+diff --git a/userspace/tests/cryptotest/cryptotest.c b/userspace/tests/cryptotest/cryptotest.c
+new file mode 100644
+index 0000000..ea5820a
+--- /dev/null
++++ b/userspace/tests/cryptotest/cryptotest.c
+@@ -0,0 +1,156 @@
++/* cryptotest — in-guest smoke test for libatls (INTERNET_PLAN.md N1).
++ *
++ * The full RFC-vector batteries run host-side (tests/unit/test_atls_*),
++ * compiled from the identical sources.  This program proves the library
++ * also runs INSIDE the OS: same 64 KiB user stack, the guest toolchain,
++ * no host libc.  It exercises one vector per primitive plus the negative
++ * paths that matter for a handshake (tampered AEAD, low-order X25519,
++ * forged Ed25519 signature), and prints machine-checkable PASS lines.
++ */
++
++#include <stdio.h>
++#include <string.h>
++#include <stdint.h>
++#include "atls/atls.h"
++
++static int failures = 0;
++
++static void hex2bin(const char *h, uint8_t *o) {
++    size_t n = strlen(h);
++    for (size_t i = 0; i < n / 2; i++) {
++        unsigned v;
++        char tmp[3] = { h[i * 2], h[i * 2 + 1], 0 };
++        sscanf(tmp, "%2x", &v);
++        o[i] = (uint8_t)v;
++    }
++}
++
++static int hex_eq(const uint8_t *bin, size_t len, const char *hex) {
++    if (strlen(hex) != len * 2) return 0;
++    for (size_t i = 0; i < len; i++) {
++        unsigned v;
++        char tmp[3] = { hex[i * 2], hex[i * 2 + 1], 0 };
++        sscanf(tmp, "%2x", &v);
++        if (bin[i] != (uint8_t)v) return 0;
++    }
++    return 1;
++}
++
++#define CHECK(cond, name)                                    \
++    do {                                                     \
++        if (cond) {                                          \
++            printf("[cryptotest] PASS: %s\n", name);         \
++        } else {                                             \
++            failures++;                                      \
++            printf("[cryptotest] FAIL: %s\n", name);         \
++        }                                                    \
++    } while (0)
++
++static void test_sha(void) {
++    uint8_t out[32];
++    atls_sha256("abc", 3, out);
++    CHECK(hex_eq(out, 32,
++        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
++        "SHA-256(\"abc\")");
++}
++
++static void test_hmac_hkdf(void) {
++    uint8_t key[20], prk[32], okm[42];
++    memset(key, 0x0b, sizeof(key));
++    uint8_t mac[32];
++    atls_hmac_sha256(key, 20, "Hi There", 8, mac);
++    CHECK(hex_eq(mac, 32,
++        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"),
++        "HMAC-SHA256 RFC 4231 TC1");
++
++    uint8_t salt[13], info[10], ikm[22];
++    hex2bin("000102030405060708090a0b0c", salt);
++    hex2bin("f0f1f2f3f4f5f6f7f8f9", info);
++    memset(ikm, 0x0b, sizeof(ikm));
++    CHECK(atls_hkdf_extract(salt, 13, ikm, 22, prk) == ATLS_OK &&
++          hex_eq(prk, 32,
++              "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5"),
++          "HKDF RFC 5869 TC1 extract");
++    CHECK(atls_hkdf_expand(prk, info, 10, okm, 42) == ATLS_OK &&
++          hex_eq(okm, 42,
++              "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
++              "34007208d5b887185865"),
++          "HKDF RFC 5869 TC1 expand");
++}
++
++static void test_aead(void) {
++    uint8_t key[32], nonce[12], aad[12], pt[114], ct[114], tag[16], back[114];
++    hex2bin("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f", key);
++    hex2bin("070000004041424344454647", nonce);
++    hex2bin("50515253c0c1c2c3c4c5c6c7", aad);
++    memcpy(pt,
++           "Ladies and Gentlemen of the class of '99: If I could offer you "
++           "only one tip for the future, sunscreen would be it.", 114);
++
++    CHECK(atls_aead_encrypt(key, nonce, aad, sizeof(aad), pt, sizeof(pt),
++                            ct, tag) == ATLS_OK &&
++          hex_eq(tag, 16, "1ae10b594f09e26a7e902ecbd0600691"),
++          "AEAD RFC 8439 §2.8.2 tag");
++    CHECK(atls_aead_decrypt(key, nonce, aad, sizeof(aad), ct, sizeof(ct),
++                            tag, back) == ATLS_OK &&
++          memcmp(back, pt, sizeof(pt)) == 0,
++          "AEAD round trip");
++
++    uint8_t bad_tag[16];
++    memcpy(bad_tag, tag, sizeof(bad_tag));
++    bad_tag[0] ^= 1;
++    CHECK(atls_aead_decrypt(key, nonce, aad, sizeof(aad), ct, sizeof(ct),
++                            bad_tag, back) == ATLS_ERR_AUTH,
++          "AEAD tampered tag refused");
++}
++
++static void test_x25519(void) {
++    uint8_t a_priv[32], b_pub[32], shared[32];
++    hex2bin("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
++            a_priv);
++    hex2bin("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
++            b_pub);
++    CHECK(atls_x25519(shared, a_priv, b_pub) == ATLS_OK &&
++          hex_eq(shared, 32,
++              "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"),
++          "X25519 RFC 7748 §5.2 shared secret");
++
++    /* Low-order point u = 1 must be refused. */
++    uint8_t one[32], out[32];
++    memset(one, 0, sizeof(one));
++    one[0] = 1;
++    memset(out, 0xaa, sizeof(out));
++    CHECK(atls_x25519(out, a_priv, one) == ATLS_ERR_LOW_ORDER,
++          "X25519 low-order point refused");
++}
++
++static void test_ed25519(void) {
++    uint8_t pk[32], sig[64];
++    hex2bin("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", pk);
++    hex2bin("92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
++            "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00", sig);
++    uint8_t msg = 0x72;
++    CHECK(atls_ed25519_verify(sig, pk, &msg, 1) == ATLS_OK,
++          "Ed25519 RFC 8032 §7.1 TEST 2 verifies");
++
++    uint8_t forged[64];
++    memcpy(forged, sig, sizeof(forged));
++    forged[40] ^= 0x08;
++    CHECK(atls_ed25519_verify(forged, pk, &msg, 1) == ATLS_ERR_BAD_SIGNATURE,
++          "Ed25519 forged signature refused");
++}
++
++int main(void) {
++    printf("[cryptotest] libatls in-guest smoke test (INTERNET_PLAN N1)\n");
++    test_sha();
++    test_hmac_hkdf();
++    test_aead();
++    test_x25519();
++    test_ed25519();
++    if (failures == 0) {
++        printf("[cryptotest] ALL PASS\n");
++        return 0;
++    }
++    printf("[cryptotest] %d FAILURES\n", failures);
++    return 1;
++}
+-- 
+2.47.3
+

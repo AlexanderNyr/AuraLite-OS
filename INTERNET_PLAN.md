@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0, N1, N2 complete, N3–N9 pending
+## Status: IN PROGRESS 🚧 — N0, N1, N2, N3 complete, N4–N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -403,6 +403,29 @@ presentation concern the shell/browser layer can add later.
 
 `patches/NET_N3_tls_handshake.patch`
 
+#### Phase result (2026-08-06)
+
+- **Host test: 12/12** against real openssl s_server (Ed25519 cert, ALPN
+  http/1.1, full handshake + application data + close_notify + Finished MAC
+  component verification)
+- **TCP fix applied**: sliding-window fields (snd_una/snd_nxt/snd_wnd/cwnd)
+  initialised in tcp_open/tcp_accept — without this, every tcp_send hung
+  forever (window check `0 >= min(0,0)` was always true)
+- **Guest integration**: socket/connect succeed; data reception blocked by
+  pre-existing kernel TCP bug (server's response segments not delivered to
+  tcp_recv after the handshake) — this is N7 territory, not a TLS bug
+- **ChangeCipherSpec handling**: TLS 1.3 middlebox compat CCS records
+  correctly skipped (the record type check rejected type=20 before
+  processing)
+- **TLS 1.3 padding**: zero-padding between handshake message and inner
+  content type stripped before hs_buf accumulation (prevents garbage in
+  subsequent message parsing)
+- **Certificate parsing fix**: certificate_list length field correctly
+  skipped before reading individual cert_len (was reading list_len as
+  cert_len, causing 348-byte parse instead of 343-byte cert)
+- **Transcript hash fix**: CertificateVerify and Finished use the hash
+  snapshot from BEFORE the message was added to the transcript (not after)
+
 ---
 
 ### Phase N4 — The TLS record layer
@@ -563,7 +586,7 @@ Deferring it is a legitimate outcome.
 | N0 | Crypto on a guessable seed is theatre; nothing may precede it |
 | N1 | Primitives, verified against published vectors, before any protocol |
 | N2 | Certificates must be parsed before they can be validated |
-| N3 | The handshake needs primitives and a parsed certificate |
+| N3 | ✅ Done — TLS 1.3 client with Ed25519 CertVerify, host test 12/12 vs openssl s_server; guest TCP reception blocked by kernel bug (N7) |
 | N4 | Records need a completed handshake's keys |
 | N5 | Validation needs a working handshake to validate within |
 | N6 | The client is the payoff, and needs all of the above |

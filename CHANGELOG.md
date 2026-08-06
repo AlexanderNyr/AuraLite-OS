@@ -2,6 +2,16 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N3 — TLS 1.3 handshake] 2026-08-06
+
+`INTERNET_PLAN.md` phase N3: TLS 1.3 client handshake against real
+openssl s_server with Ed25519 CertificateVerify verification.  Also
+fixes TCP sliding-window initialization that blocked all guest TCP sends.
+
+- **Host test: 12/12** (openssl s_server, Ed25519 cert, ALPN, app data, close_notify, Finished MAC component tests)
+- **TCP fix**: snd_una/snd_nxt/snd_wnd/cwnd initialised in tcp_open/tcp_accept
+- **Guest TCP limitation**: server response segments not delivered after handshake (N7 bug)
+
 ## [Internet Phase N2 — ASN.1 and X.509 parsing] 2026-08-06
 
 `INTERNET_PLAN.md` phase N2: the parser that reads attacker-controlled,

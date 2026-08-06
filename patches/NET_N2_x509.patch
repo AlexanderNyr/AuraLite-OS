@@ -1,0 +1,2540 @@
+From a810562bf789774ea0e3ccc367f0ed17643ac1a5 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Thu, 6 Aug 2026 15:52:36 +0300
+Subject: [PATCH] N2 update
+
+---
+ CHANGELOG.md                         |  40 +++
+ INTERNET_PLAN.md                     |  55 ++-
+ Makefile                             |  48 ++-
+ README.md                            |  19 +-
+ SHA256SUMS                           |   4 +-
+ TODO.md                              |   9 +-
+ docs/status.md                       |   2 +-
+ lib/libatls/include/atls/atls.h      |   6 +
+ lib/libatls/include/atls/x509.h      | 120 +++++++
+ lib/libatls/src/atls_der.c           | 138 ++++++++
+ lib/libatls/src/atls_der.h           |  71 ++++
+ lib/libatls/src/atls_x509.c          | 510 +++++++++++++++++++++++++++
+ tests/atls_test_certs.h              | 395 +++++++++++++++++++++
+ tests/integration/cases/test_x509.sh |  48 +++
+ tests/integration/run_all.sh         |   1 +
+ tests/unit/atls_x509_testdata.c      | 275 +++++++++++++++
+ tests/unit/test_atls_x509.c          | 351 ++++++++++++++++++
+ tools/sdk_check.sh                   |   2 +-
+ userspace/tests/x509test/x509test.c  | 171 +++++++++
+ 19 files changed, 2236 insertions(+), 29 deletions(-)
+ create mode 100644 lib/libatls/include/atls/x509.h
+ create mode 100644 lib/libatls/src/atls_der.c
+ create mode 100644 lib/libatls/src/atls_der.h
+ create mode 100644 lib/libatls/src/atls_x509.c
+ create mode 100644 tests/atls_test_certs.h
+ create mode 100644 tests/integration/cases/test_x509.sh
+ create mode 100644 tests/unit/atls_x509_testdata.c
+ create mode 100644 tests/unit/test_atls_x509.c
+ create mode 100644 userspace/tests/x509test/x509test.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2964640..21e550a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,46 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [Internet Phase N2 — ASN.1 and X.509 parsing] 2026-08-06
++
++`INTERNET_PLAN.md` phase N2: the parser that reads attacker-controlled,
++deeply nested, length-prefixed binary — written around refusal.  New
++userspace code in `lib/libatls/`; the kernel is untouched.
++
++- **`atls_der.c`/`atls_der.h` (new)**: DER TLV reader — zero allocation,
++  explicit depth budget (`ATLS_DER_MAX_DEPTH` 32), lengths bounds-checked
++  against the enclosing scope BEFORE use, indefinite length and
++  non-minimal encodings refused, unknown constructed content walked by an
++  ITERATIVE frame-table skipper (no recursion anywhere in the parse path).
++- **`atls_x509.c` + `atls/x509.h` (new)**: RFC 5280 X.509 v3 grammar.
++  Extracts, all as zero-copy spans into the caller's buffer: TBS (for
++  signature verification), signature + inner/outer algorithm OIDs,
++  issuer/subject raw DER, decoded validity times (UTCTime and
++  GeneralizedTime), SAN dNSNames (cap 16, overflow flagged),
++  basicConstraints (CA, pathlen, critical), keyUsage bits, SPKI
++  span/OID/key bits.  v1/v2 certificates and unknown CRITICAL extensions
++  are refused with `ATLS_ERR_UNSUPPORTED` (D5: reject rather than
++  interpret).
++- **New error codes**: `ATLS_ERR_TRUNCATED` / `ATLS_ERR_BAD_LENGTH` /
++  `ATLS_ERR_DEPTH` / `ATLS_ERR_UNSUPPORTED`, specific enough that tests
++  assert the reason, not just the refusal.
++- **Host battery** `tests/unit/test_atls_x509.c` — 61 checks: two REAL
++  leaves fetched live (example.com, www.google.com) + four
++  openssl-generated locals asserted field by field; all 1001 truncated
++  prefixes refused; crafted v1/unknown-critical/non-critical/
++  extension-less variants checked per reason; 10 000-deep nesting refused
++  (`ATLS_ERR_DEPTH`), 20-deep accepted; bit-flip and byte-deletion
++  mutation batteries (deletions: 92/92 refused).  Crafted-DER builders in
++  `tests/unit/atls_x509_testdata.c`, shared with the guest test.
++- **In-guest gate**: `/tests/x509test` runs the same crafted bytes on the
++  real 64 KiB user stack — any recursion over hostile nesting would die
++  on the stack guard page here; integration case
++  `tests/integration/cases/test_x509.sh` (14 assertions, no guard hits).
++- **SDK**: `include/atls/x509.h` staged by `make sdk`; `sdk_check`
++  verifies (34/34).
++- Scope note: issuer/subject stay raw DER spans (N5 chains by byte
++  equality); RDN string printing is a later presentation concern.
++
+ ## [Internet Phase N1 — Cryptographic primitives (libatls)] 2026-08-06
+ 
+ `INTERNET_PLAN.md` phase N1: the algorithm layer TLS will stand on,
+diff --git a/INTERNET_PLAN.md b/INTERNET_PLAN.md
+index 5d26cea..c903fea 100644
+--- a/INTERNET_PLAN.md
++++ b/INTERNET_PLAN.md
+@@ -1,12 +1,13 @@
+ # AuraLite OS — Real Internet Access Plan
+ 
+-## Status: IN PROGRESS 🚧 — N0, N1 complete, N2–N9 pending
++## Status: IN PROGRESS 🚧 — N0, N1, N2 complete, N3–N9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | N0 — real entropy source | ✅ complete | `patches/NET_N0_entropy.patch` |
+ | N1 — cryptographic primitives | ✅ complete | `patches/NET_N1_crypto.patch` |
+-| N2–N9 | pending | — |
++| N2 — ASN.1 and X.509 parsing | ✅ complete | `patches/NET_N2_x509.patch` |
++| N3–N9 | pending | — |
+ 
+ This document answers:
+ 
+@@ -304,7 +305,7 @@ certificate validation (N5), the TLS record/handshake with N3/N4.
+ 
+ ---
+ 
+-### Phase N2 — ASN.1 and X.509 parsing
++### Phase N2 — ASN.1 and X.509 parsing ✅ COMPLETE
+ 
+ **Objective:** read a certificate without being read by it.
+ 
+@@ -313,12 +314,12 @@ deeply nested, length-prefixed binary from a stranger.
+ 
+ #### Tasks
+ 
+-- [ ] A DER reader with **explicit depth and length limits** — the 64 KB user
++- [x] A DER reader with **explicit depth and length limits** — the 64 KB user
+       stack (`USER_STACK_SIZE`) makes a recursive descent parser a real
+       overflow risk, exactly as `WEBVIEW_PLAN` §2 and GL phase G11b describe.
+-- [ ] X.509 v3: subject, issuer, validity, SAN, basic constraints, key usage,
++- [x] X.509 v3: subject, issuer, validity, SAN, basic constraints, key usage,
+       signature algorithm and value, SPKI.
+-- [ ] Reject rather than interpret: unknown critical extensions are fatal.
++- [x] Reject rather than interpret: unknown critical extensions are fatal.
+ 
+ #### Test gate
+ 
+@@ -332,6 +333,48 @@ deeply nested, length-prefixed binary from a stranger.
+ 
+ `patches/NET_N2_x509.patch`
+ 
++#### Phase result (2026-08-06)
++
++`lib/libatls/src/atls_der.c` (TLV reader) + `atls_x509.c` (RFC 5280
++grammar), public header `atls/x509.h`.  The refusal contract:
++
++- **Zero allocation.** Every output field is a span into the caller's
++  buffer; a 4 GiB length claim dies at the bounds check, not in an
++  allocator.  Bounded memory holds by construction, and the test
++  asserts the claim is refused.
++- **Depth budget 32.** `atls_der_enter`/`open_scope` count nesting;
++  unknown constructed content is walked by an ITERATIVE skipper with an
++  explicit frame table — no recursion anywhere in the parse path.  The
++  10 000-deep certificate dies with `ATLS_ERR_DEPTH`.
++- **Strict DER.** Indefinite length, non-minimal lengths, high-tag-number
++  forms, and trailing garbage are each refused with their own code
++  (`BAD_LENGTH` / `BAD_ENCODING`); v1/v2 certs and unknown CRITICAL
++  extensions are refused with `ATLS_ERR_UNSUPPORTED` (D5).
++- Extracted for N5: TBS span + signature + both algorithm OIDs, issuer/
++  subject raw DER (chain building by byte comparison), decoded validity
++  times (UTCTime + GeneralizedTime), SAN dNSNames (cap 16, overflow
++  flagged), basicConstraints (CA + pathlen + critical), keyUsage bits,
++  SPKI span/OID/key bits.  Zero-copy spans verified to point inside the
++  input.
++
++Tests: host `tests/unit/test_atls_x509.c` — 61 checks: two REAL leaves
++fetched live (example.com, www.google.com) + four openssl-generated
++locals asserted field by field; every one of the 1001 truncated
++prefixes refused; crafted v1 / unknown-critical / non-critical /
++extension-less certificates each checked for the exact reason;
++10 000-deep refused, 20-deep accepted, skipper budget checked directly;
++bit-flip + byte-deletion mutation batteries (deletions are structural
++damage and 92/92 are refused).  In-guest: `/tests/x509test` runs the
++SAME crafted bytes (shared `tests/unit/atls_x509_testdata.c`) on the
++real 64 KiB stack; integration case `tests/integration/cases/test_x509.sh`
++(14 assertions, all green, no guard-page hits).  `make test-unit`: 87
++binaries green; `make sdk-check` 34/34 with `include/atls/x509.h` staged.
++
++One honest scope note: issuer/subject are kept as raw DER spans rather
++than decoded RDN strings — N5 matches chains by byte equality, which is
++what the RFC's chaining rules reduce to, and printing names is a
++presentation concern the shell/browser layer can add later.
++
+ ---
+ 
+ ### Phase N3 — The TLS 1.3 handshake
+diff --git a/Makefile b/Makefile
+index 598fc16..4f8b699 100644
+--- a/Makefile
++++ b/Makefile
+@@ -348,7 +348,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
+              $(USER_BUILD)/socktest.elf \
+              $(USER_BUILD)/conformtest.elf \
+              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
+-             $(USER_BUILD)/cryptotest.elf \
++             $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
+              $(USER_BUILD)/rustes.elf
+ 
+ # auragui, linked into every GUI app.  As with libaurac, the archive is what
+@@ -389,7 +389,8 @@ LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
+                 $(USER_BUILD)/atls_hkdf.o $(USER_BUILD)/atls_chacha20.o \
+                 $(USER_BUILD)/atls_poly1305.o $(USER_BUILD)/atls_aead.o \
+                 $(USER_BUILD)/atls_fe.o $(USER_BUILD)/atls_x25519.o \
+-                $(USER_BUILD)/atls_ed25519.o
++                $(USER_BUILD)/atls_ed25519.o \
++                $(USER_BUILD)/atls_der.o $(USER_BUILD)/atls_x509.o
+ LIBATLS      := $(USER_LIBDIR)/libatls.a
+ USER_CFLAGS  += -I lib/libatls/include
+ 
+@@ -520,6 +521,28 @@ $(USER_BUILD)/cryptotest.elf: $(USER_BUILD)/cryptotest.o $(USER_COMMON) \
+ 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/cryptotest.o $(USER_COMMON_LNK) \
+ 	      $(LIBATLS) -o $@
+ 	@echo "[link] $@ (libatls)"
++
++# ---- x509test (INTERNET_PLAN.md N2): in-guest X.509 gate ----
++# The crafted-DER builders are compiled once more, with guest flags, so the
++# in-QEMU depth gate runs the identical bytes the host battery uses.
++$(USER_BUILD)/x509test.o: userspace/tests/x509test/x509test.c \
++                          lib/libatls/include/atls/x509.h tests/atls_test_certs.h \
++                          $(USER_CFLAGS_INC)
++	@mkdir -p $(dir $@)
++	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++
++$(USER_BUILD)/x509_testdata.o: tests/unit/atls_x509_testdata.c \
++                               lib/libatls/src/atls_der.h \
++                               lib/libatls/include/atls/atls.h $(USER_CFLAGS_INC)
++	@mkdir -p $(dir $@)
++	$(HOST_CC) $(USER_CFLAGS) -I lib/libatls/src -c $< -o $@
++
++$(USER_BUILD)/x509test.elf: $(USER_BUILD)/x509test.o $(USER_BUILD)/x509_testdata.o \
++                            $(USER_COMMON) $(LIBATLS) lib/libc/user.ld
++	@mkdir -p $(dir $@)
++	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/x509test.o $(USER_BUILD)/x509_testdata.o \
++	      $(USER_COMMON_LNK) $(LIBATLS) -o $@
++	@echo "[link] $@ (libatls)"
+ $(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@)
+ 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+@@ -1019,7 +1042,7 @@ INITRD_DEMOS := guess snake glcube glgears
+ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
+                 gltest tcpserver elfperm udptest timestest fifolinktest \
+                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
+-                socktest conformtest cryptotest
++                socktest conformtest cryptotest x509test
+ 
+ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
+ 	@rm -rf $(INITRD_DIR)
+@@ -1140,7 +1163,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_keymap \
+                 $(BUILD_DIR)/test_rng \
+                 $(BUILD_DIR)/test_atls_hash $(BUILD_DIR)/test_atls_aead \
+-                $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519
++                $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519 \
++                $(BUILD_DIR)/test_atls_x509
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1178,7 +1202,8 @@ LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
+                 lib/libatls/src/atls_hkdf.c lib/libatls/src/atls_chacha20.c \
+                 lib/libatls/src/atls_poly1305.c lib/libatls/src/atls_aead.c \
+                 lib/libatls/src/atls_fe.c lib/libatls/src/atls_x25519.c \
+-                lib/libatls/src/atls_ed25519.c
++                lib/libatls/src/atls_ed25519.c \
++                lib/libatls/src/atls_der.c lib/libatls/src/atls_x509.c
+ LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
+ 
+ $(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
+@@ -1201,6 +1226,17 @@ $(BUILD_DIR)/test_atls_ed25519: tests/unit/test_atls_ed25519.c $(LIBATLS_SRCS) \
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+ 
++# X.509 (N2): additionally links the crafted-DER builders and needs the
++# internal atls_der.h on the include path (testdata drives the skipper).
++# -I . lets it reach tests/atls_test_certs.h, shared with the guest test.
++$(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \
++                             tests/unit/atls_x509_testdata.c $(LIBATLS_SRCS) \
++                             lib/libatls/include/atls/x509.h tests/atls_test_certs.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) -I lib/libatls/src -I . \
++	           $(LIBATLS_SRCS) tests/unit/atls_x509_testdata.c \
++	           tests/unit/test_atls_x509.c -o $@
++
+ $(BUILD_DIR)/test_heap: tests/unit/test_heap.c kernel/mm/heap.c kernel/mm/heap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_heap.c kernel/mm/heap.c -o $@
+@@ -1671,7 +1707,7 @@ sdk: libs $(USER_BUILD)/crt0.o
+ 	@mkdir -p $(SDK_DIR)/include/GL
+ 	@cp lib/libgl/include/GL/*.h $(SDK_DIR)/include/GL/
+ 	@mkdir -p $(SDK_DIR)/include/atls
+-	@cp lib/libatls/include/atls/atls.h $(SDK_DIR)/include/atls/
++	@cp lib/libatls/include/atls/*.h $(SDK_DIR)/include/atls/
+ 	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(LIBATLS) $(SDK_DIR)/lib/
+ 	@cp $(USER_BUILD)/crt0.o $(SDK_DIR)/lib/
+ 	@cp lib/libc/user.ld $(SDK_DIR)/
+diff --git a/README.md b/README.md
+index 4ee40f2..5ae9bd6 100644
+--- a/README.md
++++ b/README.md
+@@ -790,15 +790,16 @@ Short version:
+ - **The keyboard layout is hardcoded US.** Two fixed scancode tables, no keymap
+   selection and no dead keys, so a non-US keyboard produces the wrong
+   characters outside the shared ASCII subset.
+-- **Crypto primitives exist, but no TLS and therefore no HTTPS yet.**
+-  `INTERNET_PLAN.md` N0 gave a real entropy source (a ChaCha20 CSPRNG seeded
+-  from RDSEED/RDRAND or interrupt-timing jitter; `getentropy()` fails closed
+-  with `-ENOSYS` until entropy exists), and N1 shipped `lib/libatls/` —
+-  userspace SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305 AEAD, X25519 and
+-  Ed25519 verification, all verified against RFC test vectors. What is still
+-  missing is everything protocol-shaped: X.509 parsing, the TLS 1.3
+-  handshake/record layer, certificate validation, and an HTTPS client
+-  (phases N2–N6). See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
++- **Crypto primitives and X.509 parsing exist, but no TLS and therefore no
++  HTTPS yet.** `INTERNET_PLAN.md` N0 gave a real entropy source (a ChaCha20
++  CSPRNG seeded from RDSEED/RDRAND or interrupt-timing jitter;
++  `getentropy()` fails closed with `-ENOSYS` until entropy exists); N1
++  shipped `lib/libatls/` — userspace SHA-256/512, HMAC, HKDF,
++  ChaCha20-Poly1305 AEAD, X25519 and Ed25519 verification; N2 added
++  zero-copy, depth-bounded X.509 certificate parsing. All verified against
++  RFC test vectors. What is still missing is everything protocol-shaped:
++  the TLS 1.3 handshake/record layer, certificate validation, and an HTTPS
++  client (phases N3–N6). See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+ - **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
+   but no interrupt gate selects it, so a kernel stack overflow or double fault
+   resets the machine with no diagnostic.
+diff --git a/SHA256SUMS b/SHA256SUMS
+index bdc09a9..d1e29f2 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-1e8e7f03c822a5189582587ce6e611c1888467ad62e815aea783141364a301b6  auralite.iso
++2c86c52d194c843f248799b12e37232e86fe3751094d617396b578049bde989d  auralite.iso
+ ee9a00d6c5e5c5a3d68a9fb11eebc17aaa2da23c4054d6ffa7c89bbb37209e23  kernel.elf
+-eb34a60c600d918ad04d10658e2c29db9203b4607c3c1e2c670e4d51372d7464  initrd.tar
++8c0960d07003f1c0d798493810313802a940528a0ff7628507e45042235d2845  initrd.tar
+diff --git a/TODO.md b/TODO.md
+index bb58260..7801be7 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -281,10 +281,11 @@ for the feature matrix.
+   guessable bytes are never served.  The estimated entropy is logged at
+   boot.  It remains unaudited hobby-OS entropy; do not treat it as an
+   `/dev/urandom` equivalent on real hardware.
+-- **Crypto primitives exist; protocols do not.** `INTERNET_PLAN.md` phase N1
+-  shipped `lib/libatls/` (SHA-256/512, HMAC, HKDF, ChaCha20-Poly1305 AEAD,
+-  X25519, Ed25519 verify) — userspace, RFC-vector-verified.  Still missing:
+-  ASN.1/X.509 parsing (N2), the TLS 1.3 handshake and record layer (N3/N4),
++- **Crypto primitives and X.509 parsing exist; protocols do not.**
++  `INTERNET_PLAN.md` phases N1/N2 shipped `lib/libatls/` (SHA-256/512,
++  HMAC, HKDF, ChaCha20-Poly1305 AEAD, X25519, Ed25519 verify, and
++  zero-copy depth-bounded X.509 parsing) — userspace, RFC-vector-verified.
++  Still missing: the TLS 1.3 handshake and record layer (N3/N4),
+   certificate validation with RSA-PKCS#1v1.5 verification (N5), and the
+   HTTPS client (N6).  Until then there is no HTTPS.  `kernel/fs/btrfs.c`
+   still writes its SHA-256 checksum field as zeros (kernel code; it does
+diff --git a/docs/status.md b/docs/status.md
+index 7501534..6855a66 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -87,7 +87,7 @@ Legend:
+ | Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
+ | Sockets | 🧪 | AF_INET/SOCK_STREAM handles include `socket`, `connect`, `send`, `recv`, `close`, plus server-side `bind`, `listen`, and `accept` (`305..307`). AF_INET/SOCK_DGRAM supports `sendto=44` and `recvfrom=45`. |
+ | Entropy (`getentropy`/`getrandom`) | ✅ | INTERNET_PLAN N0. ChaCha20 CSPRNG (`kernel/rng_core.h`, RFC 8439) seeded from RDSEED/RDRAND when present, else an interrupt-timing jitter pool stirred on every IRQ. Fails closed: `getentropy` returns `-ENOSYS` and `getrandom` blocks (or `EAGAIN` with `GRND_NONBLOCK`) until real entropy exists; estimated entropy logged at boot. Host RFC-vector + 1 MiB statistics tests, QEMU gate `test_rng.sh`. |
+-| Crypto primitives (`libatls`) | ✅ | INTERNET_PLAN N1. Userspace static library `lib/libatls/`: SHA-256/512, HMAC-SHA256, HKDF, ChaCha20/Poly1305 AEAD, X25519, Ed25519 verify — all RFC-vector-verified by `tests/unit/test_atls_*` (94 checks) incl. the X25519 1000-iteration run and ten Wycheproof low-order triples. D7 enforced by a source grep: no `memcmp` on secrets, only `atls_ct_eq`. Shipped in the SDK (`AURALITE_LIBS_TLS`); in-guest gate `/tests/cryptotest` + `test_crypto.sh`. |
++| Crypto primitives (`libatls`) | ✅ | INTERNET_PLAN N1/N2. Userspace static library `lib/libatls/`: SHA-256/512, HMAC-SHA256, HKDF, ChaCha20/Poly1305 AEAD, X25519, Ed25519 verify — all RFC-vector-verified by `tests/unit/test_atls_*` (155 checks) incl. the X25519 1000-iteration run and ten Wycheproof low-order triples. N2 adds zero-copy depth-bounded X.509 v3 parsing (`atls/x509.h`, `ATLS_DER_MAX_DEPTH` 32, iterative skipper): real-leaf field batteries, 10 000-deep refused, mutation corpus — the hostile half re-run in-guest by `/tests/x509test` on the 64 KiB stack. D7 enforced by a source grep: no `memcmp` on secrets, only `atls_ct_eq`. Shipped in the SDK (`AURALITE_LIBS_TLS`); gates `test_crypto.sh`, `test_x509.sh`. |
+ 
+ ## Networking
+ 
+diff --git a/lib/libatls/include/atls/atls.h b/lib/libatls/include/atls/atls.h
+index 278cf9b..8a3346b 100644
+--- a/lib/libatls/include/atls/atls.h
++++ b/lib/libatls/include/atls/atls.h
+@@ -46,6 +46,12 @@ extern "C" {
+ #define ATLS_ERR_BAD_SIGNATURE    -3   /* decoded fine, did not verify */
+ #define ATLS_ERR_LOW_ORDER        -4   /* X25519 shared secret is zero */
+ #define ATLS_ERR_AUTH             -5   /* AEAD tag mismatch */
++/* ASN.1 / X.509 (phase N2): refusals are specific so a test can assert
++ * the REASON, not just the fact. */
++#define ATLS_ERR_TRUNCATED        -6   /* input ended mid-structure */
++#define ATLS_ERR_BAD_LENGTH       -7   /* length not DER / exceeds buffer */
++#define ATLS_ERR_DEPTH            -8   /* nesting beyond ATLS_DER_MAX_DEPTH */
++#define ATLS_ERR_UNSUPPORTED      -9   /* version/extension/structure refused on purpose */
+ 
+ /* ---- constant-time utilities (D7) ---- */
+ 
+diff --git a/lib/libatls/include/atls/x509.h b/lib/libatls/include/atls/x509.h
+new file mode 100644
+index 0000000..fbaa160
+--- /dev/null
++++ b/lib/libatls/include/atls/x509.h
+@@ -0,0 +1,120 @@
++#ifndef LIBATLS_ATLS_X509_H
++#define LIBATLS_ATLS_X509_H
++
++/* atls/x509.h — X.509 certificate parsing (INTERNET_PLAN.md phase N2).
++ *
++ * "Read a certificate without being read by it."
++ *
++ * The parser is ZERO-COPY and ZERO-ALLOCATION: every output field is a
++ * span into the caller's DER buffer, so a hostile length field cannot
++ * buy memory.  Nesting is bounded by ATLS_DER_MAX_DEPTH (32); a
++ * 10 000-deep construction is refused with ATLS_ERR_DEPTH, never
++ * followed.  Unknown CRITICAL extensions are fatal (D5: reject rather
++ * than interpret); unknown non-critical ones are skipped with the
++ * depth-bounded iterative walker.
++ *
++ * What this phase gives N5 (validation):
++ *   - tbs + signature + both algorithm OIDs  -> signature verification
++ *   - issuer / subject raw DER spans         -> chain building by byte
++ *                                               comparison
++ *   - not_before / not_after                 -> validity dates (N5 checks
++ *                                               the RTC is sane first)
++ *   - SAN dNSName list                       -> hostname matching
++ *   - basic constraints / key usage          -> CA policy checks
++ *   - SPKI span + algorithm OID              -> key decoding (RSA parsing
++ *                                               arrives with N5)
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++#include "atls/atls.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define ATLS_X509_MAX_DNS_NAMES 16
++
++/* A raw slice of the input DER.  Valid for as long as the input buffer
++ * the certificate was parsed from is valid. */
++typedef struct {
++    const uint8_t *data;
++    size_t len;
++} atls_span;
++
++typedef struct {
++    int year, month, day, hour, minute, second;
++} atls_x509_time;
++
++typedef struct {
++    /* structure */
++    int version;                    /* 3 for an X.509 v3 certificate */
++    atls_span serial;               /* INTEGER contents (may lead with 0x00) */
++    atls_span tbs;                  /* full TBSCertificate DER (sign this) */
++
++    /* signatures */
++    atls_span outer_sig_alg;        /* outer AlgorithmIdentifier DER */
++    atls_span outer_sig_oid;        /* its OID contents */
++    atls_span inner_sig_oid;        /* TBS signature OID (must equal outer) */
++    atls_span signature;            /* signature BIT STRING contents */
++    int signature_unused_bits;      /* must be 0 for a valid certificate */
++
++    /* identity */
++    atls_span issuer;               /* full Name DER */
++    atls_span subject;              /* full Name DER */
++    atls_x509_time not_before;
++    atls_x509_time not_after;
++
++    /* SubjectPublicKeyInfo */
++    atls_span spki;                 /* full SPKI DER */
++    atls_span spki_alg_oid;         /* algorithm OID inside SPKI */
++    atls_span spki_key;             /* subjectPublicKey BIT STRING contents */
++    int spki_key_unused_bits;
++
++    /* extensions the stack understands */
++    int is_ca;                      /* basicConstraints.cA (default FALSE) */
++    int path_len_present;
++    int path_len;                   /* meaningful when path_len_present */
++    int bc_critical;
++    int key_usage_present;
++    int ku_critical;
++    uint16_t key_usage;             /* bit i => 1<<i; bit 0 = digitalSignature,
++                                       bit 5 = keyCertSign, bit 6 = cRLSign */
++    int san_dns_count;              /* entries stored in san_dns */
++    int san_dns_truncated;          /* more dNSNames than MAX: extras ignored */
++    atls_span san_dns[ATLS_X509_MAX_DNS_NAMES];
++} atls_x509_cert;
++
++/* Parse one DER certificate.  Returns ATLS_OK or one of:
++ *   ATLS_ERR_INPUT         NULL argument
++ *   ATLS_ERR_TRUNCATED     input ends mid-structure
++ *   ATLS_ERR_BAD_LENGTH    non-DER length, or length beyond the buffer
++ *   ATLS_ERR_DEPTH         nesting deeper than ATLS_DER_MAX_DEPTH
++ *   ATLS_ERR_BAD_ENCODING  wrong tags/shape for a certificate
++ *   ATLS_ERR_UNSUPPORTED   v1/v2 cert, unknown critical extension,
++ *                          high-tag-number forms, time shapes we refuse
++ * On any error, *out is left wiped (all zeros). */
++int atls_x509_parse(const uint8_t *der, size_t len, atls_x509_cert *out);
++
++/* Compare an OID span against raw OID content octets. */
++int atls_oid_eq(const atls_span *oid, const uint8_t *bytes, size_t len);
++
++/* Well-known algorithm OIDs (content octets), for N5 and for tests. */
++extern const uint8_t ATLS_OID_RSA_ENCRYPTION[9];        /* 1.2.840.113549.1.1.1 */
++extern const uint8_t ATLS_OID_SHA256_RSA[9];            /* 1.2.840.113549.1.1.11 */
++extern const uint8_t ATLS_OID_SHA384_RSA[9];            /* 1.2.840.113549.1.1.12 */
++extern const uint8_t ATLS_OID_EC_PUBLIC_KEY[7];         /* 1.2.840.10045.2.1 */
++extern const uint8_t ATLS_OID_ECDSA_SHA256[8];          /* 1.2.840.10045.4.3.2 */
++extern const uint8_t ATLS_OID_ECDSA_SHA384[8];          /* 1.2.840.10045.4.3.3 */
++extern const uint8_t ATLS_OID_ED25519[3];               /* 1.3.101.112 */
++
++/* Extension OIDs (content octets). */
++extern const uint8_t ATLS_OID_EXT_KEY_USAGE[3];         /* 2.5.29.15 */
++extern const uint8_t ATLS_OID_EXT_BASIC_CONSTRAINTS[3]; /* 2.5.29.19 */
++extern const uint8_t ATLS_OID_EXT_SAN[3];               /* 2.5.29.17 */
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* LIBATLS_ATLS_X509_H */
+diff --git a/lib/libatls/src/atls_der.c b/lib/libatls/src/atls_der.c
+new file mode 100644
+index 0000000..26f91aa
+--- /dev/null
++++ b/lib/libatls/src/atls_der.c
+@@ -0,0 +1,138 @@
++/* atls_der.c — DER TLV reader (INTERNET_PLAN.md phase N2).
++ *
++ * Zero allocation, bounded depth, bounded lengths — see atls_der.h for
++ * the contract.  Every parser in this phase fails CLOSED: any path that
++ * does not recognise the input as strict DER returns an error rather
++ * than guessing.
++ */
++
++#include "atls_der.h"
++#include "atls/atls.h"
++
++int atls_der_init(atls_der *d, const uint8_t *data, size_t len) {
++    if (!d || (!data && len)) return ATLS_ERR_INPUT;
++    d->p = data;
++    d->end = data + len;
++    d->depth = 0;
++    return ATLS_OK;
++}
++
++int atls_der_at_end(const atls_der *d) {
++    return d->p >= d->end;
++}
++
++/* Parse one TLV starting at d->p, bounded by d->end.  Does not advance. */
++static int parse_tlv(const uint8_t *p, const uint8_t *end, atls_der_tlv *out) {
++    if (p >= end) return ATLS_ERR_TRUNCATED;
++
++    uint8_t tag = p[0];
++    out->tag = tag;
++    out->tag_class = (tag >> 6) & 3;
++    out->constructed = (tag & 0x20) != 0;
++    out->header = p;
++
++    /* High-tag-number form (tag & 0x1f == 0x1f) never appears in the
++     * X.509 structures this project reads; refuse instead of parsing a
++     * shape nobody has audited. */
++    if ((tag & 0x1f) == 0x1f) return ATLS_ERR_UNSUPPORTED;
++
++    const uint8_t *q = p + 1;
++    if (q >= end) return ATLS_ERR_TRUNCATED;
++
++    size_t len;
++    size_t header_len;
++    uint8_t first = q[0];
++
++    if (first < 0x80) {
++        len = first;
++        header_len = 2;
++    } else if (first == 0x80) {
++        /* Indefinite length: not valid DER, and the classic smuggling
++         * shape.  Refuse. */
++        return ATLS_ERR_BAD_LENGTH;
++    } else {
++        int n = first & 0x7f;
++        if (n > 8) return ATLS_ERR_BAD_LENGTH;     /* > 2^64 is absurd */
++        if (q + 1 + n > end) return ATLS_ERR_TRUNCATED;
++        /* DER minimality: no leading zero in the length octets, and the
++         * value must actually need this many octets. */
++        if (q[1] == 0) return ATLS_ERR_BAD_LENGTH;
++        if (n == 1 && q[1] < 0x80) return ATLS_ERR_BAD_LENGTH;
++        len = 0;
++        for (int i = 0; i < n; i++) {
++            len = (len << 8) | q[1 + i];
++        }
++        header_len = (size_t)(2 + n);
++    }
++
++    const uint8_t *value = p + header_len;
++    /* The decisive bounds check: the claimed length must fit inside the
++     * enclosing scope.  This is where a 4 GiB claim dies — nothing is
++     * allocated, nothing is even iterated. */
++    if ((size_t)(end - value) < len) return ATLS_ERR_TRUNCATED;
++
++    out->header_len = header_len;
++    out->value = value;
++    out->len = len;
++    return ATLS_OK;
++}
++
++int atls_der_peek_tlv(const atls_der *d, atls_der_tlv *out) {
++    return parse_tlv(d->p, d->end, out);
++}
++
++int atls_der_read_tlv(atls_der *d, atls_der_tlv *out) {
++    int rc = parse_tlv(d->p, d->end, out);
++    if (rc != ATLS_OK) return rc;
++    d->p = out->value + out->len;
++    return ATLS_OK;
++}
++
++int atls_der_enter(atls_der *d, const atls_der_tlv *t) {
++    if (!t->constructed) return ATLS_ERR_BAD_ENCODING;
++    if (d->depth + 1 > ATLS_DER_MAX_DEPTH) return ATLS_ERR_DEPTH;
++    d->p = t->value;
++    d->end = t->value + t->len;
++    d->depth++;
++    return ATLS_OK;
++}
++
++/* Iterative walk over arbitrary constructed content.  A small explicit
++ * frame table replaces recursion: a 10 000-deep nest runs out of depth
++ * budget long before it runs out of anything else. */
++int atls_der_skip_value(const atls_der_tlv *t, int start_depth) {
++    struct frame {
++        const uint8_t *p;
++        const uint8_t *end;
++    } frames[ATLS_DER_MAX_DEPTH];
++
++    if (!t->constructed) return ATLS_OK;
++    if (start_depth + 1 > ATLS_DER_MAX_DEPTH) return ATLS_ERR_DEPTH;
++
++    int n = 0;
++    frames[n].p = t->value;
++    frames[n].end = t->value + t->len;
++    n++;
++
++    while (n > 0) {
++        struct frame *f = &frames[n - 1];
++        if (f->p >= f->end) {
++            n--;
++            continue;
++        }
++        atls_der_tlv child;
++        int rc = parse_tlv(f->p, f->end, &child);
++        if (rc != ATLS_OK) return rc;
++        f->p = child.value + child.len;
++        if (child.constructed) {
++            if (start_depth + n + 1 > ATLS_DER_MAX_DEPTH) {
++                return ATLS_ERR_DEPTH;
++            }
++            if (n >= ATLS_DER_MAX_DEPTH) return ATLS_ERR_DEPTH;
++            frames[n].p = child.value;
++            frames[n].end = child.value + child.len;
++            n++;
++        }
++    }
++    return ATLS_OK;
++}
+diff --git a/lib/libatls/src/atls_der.h b/lib/libatls/src/atls_der.h
+new file mode 100644
+index 0000000..d4bbc8a
+--- /dev/null
++++ b/lib/libatls/src/atls_der.h
+@@ -0,0 +1,71 @@
++#ifndef LIBATLS_ATLS_DER_H
++#define LIBATLS_ATLS_DER_H
++
++/* atls_der.h — DER TLV reader (INTERNET_PLAN.md phase N2).  Internal.
++ *
++ * This is the code that reads attacker-controlled, deeply nested,
++ * length-prefixed binary from a stranger, so its contract is written
++ * around refusal:
++ *
++ *   - ZERO allocation.  Everything is a span into the caller's buffer;
++ *     a length field claiming 4 GiB costs the parser nothing but an
++ *     error.  "Bounded memory" holds by construction.
++ *   - Explicit DEPTH budget.  The reader carries the nesting consumed
++ *     so far, and no operation descends past ATLS_DER_MAX_DEPTH.  The
++ *     10 000-deep certificate in the test battery dies at depth 32, not
++ *     at the bottom of the 64 KiB user stack.
++ *   - Explicit LENGTH checks.  Long-form lengths are bounds-checked
++ *     against the remaining buffer BEFORE anything else looks at them;
++ *     indefinite length (0x80) is not DER and is refused; non-minimal
++ *     encodings are refused.
++ *   - Skipping unknown constructed content walks ITERATIVELY with its
++ *     own frame table — never recursively.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#define ATLS_DER_MAX_DEPTH 32   /* real X.509 nests ~7 levels deep */
++
++typedef struct {
++    const uint8_t *p;      /* current read position */
++    const uint8_t *end;    /* end of the enclosing value */
++    int depth;             /* nesting consumed to reach this scope */
++} atls_der;
++
++typedef struct {
++    uint8_t tag;           /* full first tag byte */
++    int tag_class;         /* 0 universal, 1 application, 2 context, 3 private */
++    int constructed;
++    const uint8_t *header; /* first byte of the TLV */
++    size_t header_len;
++    const uint8_t *value;  /* contents octets */
++    size_t len;            /* length of contents */
++} atls_der_tlv;
++
++/* Result codes are the public ATLS_ERR_* values from atls.h:
++ *   ATLS_OK, ATLS_ERR_TRUNCATED, ATLS_ERR_BAD_LENGTH, ATLS_ERR_DEPTH,
++ *   ATLS_ERR_BAD_ENCODING. */
++
++int atls_der_init(atls_der *d, const uint8_t *data, size_t len);
++
++/* Read the next TLV in this scope and advance past it. */
++int atls_der_read_tlv(atls_der *d, atls_der_tlv *out);
++
++/* Read the next TLV WITHOUT consuming it. */
++int atls_der_peek_tlv(const atls_der *d, atls_der_tlv *out);
++
++/* Descend into a constructed TLV's value as a new scope (depth + 1,
++ * refused at the budget). */
++int atls_der_enter(atls_der *d, const atls_der_tlv *t);
++
++/* True when the scope is exhausted. */
++int atls_der_at_end(const atls_der *d);
++
++/* Walk an arbitrary (possibly constructed) value without interpreting
++ * it, honouring the depth budget from `start_depth`.  This is how
++ * unknown non-critical extensions and unknown GeneralName choices are
++ * stepped over — iteratively, so no hostile nesting reaches the stack. */
++int atls_der_skip_value(const atls_der_tlv *t, int start_depth);
++
++#endif /* LIBATLS_ATLS_DER_H */
+diff --git a/lib/libatls/src/atls_x509.c b/lib/libatls/src/atls_x509.c
+new file mode 100644
+index 0000000..fc9766f
+--- /dev/null
++++ b/lib/libatls/src/atls_x509.c
+@@ -0,0 +1,510 @@
++/* atls_x509.c — X.509 certificate parsing (INTERNET_PLAN.md phase N2).
++ *
++ * Zero-copy, zero-allocation, depth-bounded; see atls/x509.h and
++ * atls_der.h for the refusal contract.  The grammar implemented is
++ * RFC 5280, exactly the shapes a TLS 1.3 server sends:
++ *
++ *   Certificate ::= SEQUENCE {
++ *       tbsCertificate       TBSCertificate,
++ *       signatureAlgorithm   AlgorithmIdentifier,
++ *       signatureValue       BIT STRING }
++ *
++ * Anything else — v1/v2 certificates, indefinite lengths, high-tag-number
++ * tags, unknown critical extensions, non-minimal encodings — is refused
++ * with a specific error code rather than interpreted.
++ */
++
++#include "atls/x509.h"
++#include "atls_der.h"
++
++/* ---- well-known OIDs (content octets) ---- */
++
++const uint8_t ATLS_OID_RSA_ENCRYPTION[9] =
++    { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
++const uint8_t ATLS_OID_SHA256_RSA[9] =
++    { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b };
++const uint8_t ATLS_OID_SHA384_RSA[9] =
++    { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c };
++const uint8_t ATLS_OID_EC_PUBLIC_KEY[7] =
++    { 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01 };
++const uint8_t ATLS_OID_ECDSA_SHA256[8] =
++    { 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02 };
++const uint8_t ATLS_OID_ECDSA_SHA384[8] =
++    { 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03 };
++const uint8_t ATLS_OID_ED25519[3] = { 0x2b, 0x65, 0x70 };
++const uint8_t ATLS_OID_EXT_KEY_USAGE[3] = { 0x55, 0x1d, 0x0f };
++const uint8_t ATLS_OID_EXT_BASIC_CONSTRAINTS[3] = { 0x55, 0x1d, 0x13 };
++const uint8_t ATLS_OID_EXT_SAN[3] = { 0x55, 0x1d, 0x11 };
++
++int atls_oid_eq(const atls_span *oid, const uint8_t *bytes, size_t len) {
++    if (!oid || !bytes || oid->len != len) return 0;
++    uint8_t diff = 0;
++    for (size_t i = 0; i < len; i++) {
++        diff |= (uint8_t)(oid->data[i] ^ bytes[i]);
++    }
++    return (int)(((uint32_t)diff - 1u) >> 31);
++}
++
++/* ---- small helpers ---- */
++
++static void span_from_tlv(atls_span *s, const atls_der_tlv *t) {
++    s->data = t->value;
++    s->len = t->len;
++}
++
++/* Whole-TLV span (header included) — used for issuer/subject/SPKI/tbs,
++ * which N5 compares and hashes verbatim. */
++static void span_whole_tlv(atls_span *s, const atls_der_tlv *t) {
++    s->data = t->header;
++    s->len = t->header_len + t->len;
++}
++
++/* Open a sub-reader over a value span, inheriting depth from the parent
++ * scope (+1).  The depth budget is the defence against hostile nesting
++ * reached through spans rather than through atls_der_enter. */
++static int open_scope(const atls_der *parent, const uint8_t *p, size_t n,
++                      atls_der *out) {
++    if (parent->depth + 1 > ATLS_DER_MAX_DEPTH) return ATLS_ERR_DEPTH;
++    if (!p && n) return ATLS_ERR_INPUT;
++    out->p = p;
++    out->end = p + n;
++    out->depth = parent->depth + 1;
++    return ATLS_OK;
++}
++
++/* Decode a small non-negative DER INTEGER (<= 4 content octets). */
++static int der_small_uint(const atls_der_tlv *t, uint32_t *out) {
++    if (t->tag != 0x02) return ATLS_ERR_BAD_ENCODING;
++    if (t->len == 0 || t->len > 4) return ATLS_ERR_BAD_ENCODING;
++    uint32_t v = 0;
++    for (size_t i = 0; i < t->len; i++) {
++        v = (v << 8) | t->value[i];
++    }
++    *out = v;
++    return ATLS_OK;
++}
++
++static int is_digits(const uint8_t *p, size_t n) {
++    for (size_t i = 0; i < n; i++) {
++        if (p[i] < '0' || p[i] > '9') return 0;
++    }
++    return 1;
++}
++
++static int two_digits(const uint8_t *p) {
++    return (p[0] - '0') * 10 + (p[1] - '0');
++}
++
++/* UTCTime / GeneralizedTime -> broken-down time (RFC 5280 §4.1.2.5).
++ * Only the two shapes real certificates use are accepted:
++ *   YYMMDDHHMMSSZ  and  YYYYMMDDHHMMSSZ. */
++static int parse_time(const atls_der_tlv *t, atls_x509_time *out) {
++    if (t->tag == 0x17) {                     /* UTCTime */
++        if (t->len != 13 || t->value[12] != 'Z') return ATLS_ERR_BAD_ENCODING;
++        if (!is_digits(t->value, 12)) return ATLS_ERR_BAD_ENCODING;
++        int yy = two_digits(t->value);
++        out->year = yy >= 50 ? 1900 + yy : 2000 + yy;
++        out->month = two_digits(t->value + 2);
++        out->day = two_digits(t->value + 4);
++        out->hour = two_digits(t->value + 6);
++        out->minute = two_digits(t->value + 8);
++        out->second = two_digits(t->value + 10);
++    } else if (t->tag == 0x18) {              /* GeneralizedTime */
++        if (t->len != 15 || t->value[14] != 'Z') return ATLS_ERR_BAD_ENCODING;
++        if (!is_digits(t->value, 14)) return ATLS_ERR_BAD_ENCODING;
++        out->year = two_digits(t->value) * 100 + two_digits(t->value + 2);
++        out->month = two_digits(t->value + 4);
++        out->day = two_digits(t->value + 6);
++        out->hour = two_digits(t->value + 8);
++        out->minute = two_digits(t->value + 10);
++        out->second = two_digits(t->value + 12);
++    } else {
++        return ATLS_ERR_BAD_ENCODING;
++    }
++    if (out->month < 1 || out->month > 12) return ATLS_ERR_BAD_ENCODING;
++    if (out->day < 1 || out->day > 31) return ATLS_ERR_BAD_ENCODING;
++    if (out->hour > 23) return ATLS_ERR_BAD_ENCODING;
++    if (out->minute > 59) return ATLS_ERR_BAD_ENCODING;
++    if (out->second > 59) return ATLS_ERR_BAD_ENCODING;
++    return ATLS_OK;
++}
++
++/* ---- extension value parsers ---- */
++
++static int parse_san(const atls_der *ext_scope, atls_x509_cert *out) {
++    atls_der names_scope;
++    int rc = open_scope(ext_scope, ext_scope->p, (size_t)(ext_scope->end - ext_scope->p),
++                        &names_scope);
++    if (rc != ATLS_OK) return rc;
++
++    atls_der_tlv seq;
++    rc = atls_der_read_tlv(&names_scope, &seq);
++    if (rc != ATLS_OK) return rc;
++    if (seq.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    if (!atls_der_at_end(&names_scope)) return ATLS_ERR_BAD_ENCODING;
++
++    atls_der names;
++    rc = open_scope(&names_scope, seq.value, seq.len, &names);
++    if (rc != ATLS_OK) return rc;
++
++    while (!atls_der_at_end(&names)) {
++        atls_der_tlv name;
++        rc = atls_der_read_tlv(&names, &name);
++        if (rc != ATLS_OK) return rc;
++        if (name.tag == 0x82) {               /* dNSName [2] IA5String */
++            if (name.constructed) return ATLS_ERR_BAD_ENCODING;
++            if (out->san_dns_count < ATLS_X509_MAX_DNS_NAMES) {
++                span_from_tlv(&out->san_dns[out->san_dns_count], &name);
++                out->san_dns_count++;
++            } else {
++                out->san_dns_truncated = 1;
++            }
++        } else {
++            /* Other GeneralName choices: skip with the depth budget. */
++            rc = atls_der_skip_value(&name, names.depth);
++            if (rc != ATLS_OK) return rc;
++        }
++    }
++    return ATLS_OK;
++}
++
++static int parse_basic_constraints(const atls_der *ext_scope,
++                                   atls_x509_cert *out) {
++    atls_der s;
++    int rc = open_scope(ext_scope, ext_scope->p,
++                        (size_t)(ext_scope->end - ext_scope->p), &s);
++    if (rc != ATLS_OK) return rc;
++
++    atls_der_tlv seq;
++    rc = atls_der_read_tlv(&s, &seq);
++    if (rc != ATLS_OK) return rc;
++    if (seq.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    if (!atls_der_at_end(&s)) return ATLS_ERR_BAD_ENCODING;
++
++    /* BasicConstraints ::= SEQUENCE {} is legal (CA defaults FALSE). */
++    if (seq.len == 0) return ATLS_OK;
++
++    rc = atls_der_enter(&s, &seq);
++    if (rc != ATLS_OK) return rc;
++
++    if (!atls_der_at_end(&s)) {
++        atls_der_tlv ca;
++        rc = atls_der_peek_tlv(&s, &ca);
++        if (rc != ATLS_OK) return rc;
++        if (ca.tag == 0x01) {                 /* cA BOOLEAN */
++            rc = atls_der_read_tlv(&s, &ca);
++            if (rc != ATLS_OK) return rc;
++            if (ca.len != 1) return ATLS_ERR_BAD_ENCODING;
++            out->is_ca = ca.value[0] != 0;
++        }
++    }
++    if (!atls_der_at_end(&s)) {
++        atls_der_tlv pl;
++        rc = atls_der_read_tlv(&s, &pl);
++        if (rc != ATLS_OK) return rc;
++        uint32_t v = 0;
++        rc = der_small_uint(&pl, &v);
++        if (rc != ATLS_OK) return rc;
++        out->path_len_present = 1;
++        out->path_len = (int)v;
++    }
++    if (!atls_der_at_end(&s)) return ATLS_ERR_BAD_ENCODING;
++    return ATLS_OK;
++}
++
++static int parse_key_usage(const atls_der *ext_scope, atls_x509_cert *out) {
++    atls_der s;
++    int rc = open_scope(ext_scope, ext_scope->p,
++                        (size_t)(ext_scope->end - ext_scope->p), &s);
++    if (rc != ATLS_OK) return rc;
++
++    atls_der_tlv bs;
++    rc = atls_der_read_tlv(&s, &bs);
++    if (rc != ATLS_OK) return rc;
++    if (bs.tag != 0x03) return ATLS_ERR_BAD_ENCODING;
++    if (!atls_der_at_end(&s)) return ATLS_ERR_BAD_ENCODING;
++    if (bs.len == 0) return ATLS_ERR_BAD_ENCODING;
++
++    int unused = bs.value[0];
++    if (unused > 7) return ATLS_ERR_BAD_ENCODING;
++    size_t nbits = (bs.len - 1) * 8 - (size_t)unused;
++    uint16_t bits = 0;
++    for (size_t i = 0; i < nbits && i < 16; i++) {
++        if (bs.value[1 + i / 8] & (0x80u >> (i % 8))) {
++            bits |= (uint16_t)(1u << i);
++        }
++    }
++    out->key_usage_present = 1;
++    out->key_usage = bits;
++    return ATLS_OK;
++}
++
++/* ---- the certificate itself ---- */
++
++static void wipe_cert(atls_x509_cert *out) {
++    uint8_t *p = (uint8_t *)(uintptr_t)out;
++    for (size_t i = 0; i < sizeof(*out); i++) p[i] = 0;
++}
++
++int atls_x509_parse(const uint8_t *der, size_t len, atls_x509_cert *out) {
++    if (!out) return ATLS_ERR_INPUT;
++    wipe_cert(out);
++    if (!der) return ATLS_ERR_INPUT;
++    if (len == 0) return ATLS_ERR_TRUNCATED;
++
++    atls_der d;
++    int rc = atls_der_init(&d, der, len);
++    if (rc != ATLS_OK) return rc;
++
++    /* Certificate ::= SEQUENCE { tbs, sigAlg, sig } — exactly three. */
++    atls_der_tlv cert_seq;
++    rc = atls_der_read_tlv(&d, &cert_seq);
++    if (rc != ATLS_OK) return rc;
++    if (cert_seq.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    if (!atls_der_at_end(&d)) return ATLS_ERR_BAD_ENCODING;
++
++    rc = atls_der_enter(&d, &cert_seq);
++    if (rc != ATLS_OK) return rc;
++
++    /* ---- TBSCertificate ---- */
++    atls_der_tlv tbs;
++    rc = atls_der_read_tlv(&d, &tbs);
++    if (rc != ATLS_OK) return rc;
++    if (tbs.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    span_whole_tlv(&out->tbs, &tbs);
++
++    /* `t` is scoped INSIDE the TBS; `d` stays at certificate level so it
++     * can later read signatureAlgorithm and signatureValue.  Using
++     * atls_der_enter on `d` here would clobber that outer scope. */
++    atls_der t;
++    rc = open_scope(&d, tbs.value, tbs.len, &t);
++    if (rc != ATLS_OK) return rc;
++
++    /* version [0] EXPLICIT INTEGER — optional */
++    atls_der_tlv f;
++    rc = atls_der_peek_tlv(&t, &f);
++    if (rc != ATLS_OK) return rc;
++    out->version = 1;
++    if (f.tag == 0xa0) {
++        rc = atls_der_read_tlv(&t, &f);
++        if (rc != ATLS_OK) return rc;
++        atls_der v;
++        rc = open_scope(&t, f.value, f.len, &v);
++        if (rc != ATLS_OK) return rc;
++        atls_der_tlv vi;
++        rc = atls_der_read_tlv(&v, &vi);
++        if (rc != ATLS_OK) return rc;
++        uint32_t ver = 0;
++        rc = der_small_uint(&vi, &ver);
++        if (rc != ATLS_OK) return rc;
++        if (!atls_der_at_end(&v)) return ATLS_ERR_BAD_ENCODING;
++        out->version = (int)ver + 1;
++        /* Exactly v3: v1/v2 predate extensions, and higher numbers do
++         * not exist — refuse both directions. */
++        if (out->version != 3) return ATLS_ERR_UNSUPPORTED;
++    }
++
++    /* serialNumber INTEGER */
++    rc = atls_der_read_tlv(&t, &f);
++    if (rc != ATLS_OK) return rc;
++    if (f.tag != 0x02) return ATLS_ERR_BAD_ENCODING;
++    span_from_tlv(&out->serial, &f);
++
++    /* signature AlgorithmIdentifier (inside TBS) */
++    rc = atls_der_read_tlv(&t, &f);
++    if (rc != ATLS_OK) return rc;
++    if (f.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    {
++        atls_der a;
++        rc = open_scope(&t, f.value, f.len, &a);
++        if (rc != ATLS_OK) return rc;
++        atls_der_tlv oid;
++        rc = atls_der_read_tlv(&a, &oid);
++        if (rc != ATLS_OK) return rc;
++        if (oid.tag != 0x06) return ATLS_ERR_BAD_ENCODING;
++        span_from_tlv(&out->inner_sig_oid, &oid);
++        /* parameters (if any) are skipped by not reading them */
++    }
++
++    /* issuer Name */
++    rc = atls_der_read_tlv(&t, &f);
++    if (rc != ATLS_OK) return rc;
++    if (f.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    span_whole_tlv(&out->issuer, &f);
++
++    /* validity SEQUENCE { notBefore, notAfter } */
++    rc = atls_der_read_tlv(&t, &f);
++    if (rc != ATLS_OK) return rc;
++    if (f.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    {
++        atls_der val;
++        rc = open_scope(&t, f.value, f.len, &val);
++        if (rc != ATLS_OK) return rc;
++        atls_der_tlv nb, na;
++        rc = atls_der_read_tlv(&val, &nb);
++        if (rc != ATLS_OK) return rc;
++        rc = parse_time(&nb, &out->not_before);
++        if (rc != ATLS_OK) return rc;
++        rc = atls_der_read_tlv(&val, &na);
++        if (rc != ATLS_OK) return rc;
++        rc = parse_time(&na, &out->not_after);
++        if (rc != ATLS_OK) return rc;
++        if (!atls_der_at_end(&val)) return ATLS_ERR_BAD_ENCODING;
++    }
++
++    /* subject Name */
++    rc = atls_der_read_tlv(&t, &f);
++    if (rc != ATLS_OK) return rc;
++    if (f.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    span_whole_tlv(&out->subject, &f);
++
++    /* subjectPublicKeyInfo SEQUENCE { algorithm, subjectPublicKey } */
++    rc = atls_der_read_tlv(&t, &f);
++    if (rc != ATLS_OK) return rc;
++    if (f.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    span_whole_tlv(&out->spki, &f);
++    {
++        atls_der sp;
++        rc = open_scope(&t, f.value, f.len, &sp);
++        if (rc != ATLS_OK) return rc;
++        atls_der_tlv alg, key;
++        rc = atls_der_read_tlv(&sp, &alg);
++        if (rc != ATLS_OK) return rc;
++        if (alg.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++        atls_der al;
++        rc = open_scope(&sp, alg.value, alg.len, &al);
++        if (rc != ATLS_OK) return rc;
++        atls_der_tlv alg_oid;
++        rc = atls_der_read_tlv(&al, &alg_oid);
++        if (rc != ATLS_OK) return rc;
++        if (alg_oid.tag != 0x06) return ATLS_ERR_BAD_ENCODING;
++        span_from_tlv(&out->spki_alg_oid, &alg_oid);
++        rc = atls_der_read_tlv(&sp, &key);
++        if (rc != ATLS_OK) return rc;
++        if (key.tag != 0x03 || key.len == 0) return ATLS_ERR_BAD_ENCODING;
++        out->spki_key_unused_bits = key.value[0];
++        if (out->spki_key_unused_bits > 7) return ATLS_ERR_BAD_ENCODING;
++        out->spki_key.data = key.value + 1;
++        out->spki_key.len = key.len - 1;
++        if (!atls_der_at_end(&sp)) return ATLS_ERR_BAD_ENCODING;
++    }
++
++    /* optional issuerUniqueID [1] / subjectUniqueID [2]: refuse-and-skip
++     * is wrong for v2 relics nobody sends; skip with the depth budget. */
++    while (!atls_der_at_end(&t)) {
++        rc = atls_der_peek_tlv(&t, &f);
++        if (rc != ATLS_OK) return rc;
++        if (f.tag != 0xa1 && f.tag != 0xa2 && f.tag != 0xa3) break;
++        if (f.tag == 0xa3) break;              /* extensions: handled below */
++        rc = atls_der_read_tlv(&t, &f);        /* unique IDs: skipped */
++        if (rc != ATLS_OK) return rc;
++    }
++
++    /* extensions [3] EXPLICIT SEQUENCE OF Extension — optional */
++    if (!atls_der_at_end(&t)) {
++        rc = atls_der_peek_tlv(&t, &f);
++        if (rc != ATLS_OK) return rc;
++        if (f.tag == 0xa3) {
++            rc = atls_der_read_tlv(&t, &f);
++            if (rc != ATLS_OK) return rc;
++            atls_der exts_wrapper;
++            rc = open_scope(&t, f.value, f.len, &exts_wrapper);
++            if (rc != ATLS_OK) return rc;
++            atls_der_tlv exts_seq;
++            rc = atls_der_read_tlv(&exts_wrapper, &exts_seq);
++            if (rc != ATLS_OK) return rc;
++            if (exts_seq.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++            if (!atls_der_at_end(&exts_wrapper)) return ATLS_ERR_BAD_ENCODING;
++
++            atls_der e;
++            rc = open_scope(&exts_wrapper, exts_seq.value, exts_seq.len, &e);
++            if (rc != ATLS_OK) return rc;
++
++            while (!atls_der_at_end(&e)) {
++                atls_der_tlv ext;
++                rc = atls_der_read_tlv(&e, &ext);
++                if (rc != ATLS_OK) return rc;
++                if (ext.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++
++                atls_der x;
++                rc = open_scope(&e, ext.value, ext.len, &x);
++                if (rc != ATLS_OK) return rc;
++
++                atls_der_tlv oid_t;
++                rc = atls_der_read_tlv(&x, &oid_t);
++                if (rc != ATLS_OK) return rc;
++                if (oid_t.tag != 0x06) return ATLS_ERR_BAD_ENCODING;
++                atls_span oid;
++                span_from_tlv(&oid, &oid_t);
++
++                int critical = 0;
++                rc = atls_der_peek_tlv(&x, &f);
++                if (rc != ATLS_OK) return rc;
++                if (f.tag == 0x01) {           /* critical BOOLEAN */
++                    rc = atls_der_read_tlv(&x, &f);
++                    if (rc != ATLS_OK) return rc;
++                    if (f.len != 1) return ATLS_ERR_BAD_ENCODING;
++                    critical = f.value[0] != 0;
++                }
++
++                atls_der_tlv oct;
++                rc = atls_der_read_tlv(&x, &oct);
++                if (rc != ATLS_OK) return rc;
++                if (oct.tag != 0x04) return ATLS_ERR_BAD_ENCODING;
++                if (!atls_der_at_end(&x)) return ATLS_ERR_BAD_ENCODING;
++
++                atls_der ev;
++                rc = open_scope(&x, oct.value, oct.len, &ev);
++                if (rc != ATLS_OK) return rc;
++
++                if (atls_oid_eq(&oid, ATLS_OID_EXT_SAN, 3)) {
++                    rc = parse_san(&ev, out);
++                } else if (atls_oid_eq(&oid, ATLS_OID_EXT_BASIC_CONSTRAINTS, 3)) {
++                    out->bc_critical = critical;
++                    rc = parse_basic_constraints(&ev, out);
++                } else if (atls_oid_eq(&oid, ATLS_OID_EXT_KEY_USAGE, 3)) {
++                    out->ku_critical = critical;
++                    rc = parse_key_usage(&ev, out);
++                } else if (critical) {
++                    /* D5: reject rather than interpret. */
++                    rc = ATLS_ERR_UNSUPPORTED;
++                } else {
++                    /* Unknown non-critical: walked, not read. */
++                    rc = atls_der_skip_value(&oct, x.depth);
++                }
++                if (rc != ATLS_OK) return rc;
++            }
++        }
++    }
++    if (!atls_der_at_end(&t)) return ATLS_ERR_BAD_ENCODING;
++
++    /* ---- signatureAlgorithm (outer) ---- */
++    atls_der_tlv sa;
++    rc = atls_der_read_tlv(&d, &sa);
++    if (rc != ATLS_OK) return rc;
++    if (sa.tag != 0x30) return ATLS_ERR_BAD_ENCODING;
++    span_whole_tlv(&out->outer_sig_alg, &sa);
++    {
++        atls_der a;
++        rc = open_scope(&d, sa.value, sa.len, &a);
++        if (rc != ATLS_OK) return rc;
++        atls_der_tlv oid;
++        rc = atls_der_read_tlv(&a, &oid);
++        if (rc != ATLS_OK) return rc;
++        if (oid.tag != 0x06) return ATLS_ERR_BAD_ENCODING;
++        span_from_tlv(&out->outer_sig_oid, &oid);
++    }
++
++    /* ---- signatureValue BIT STRING ---- */
++    atls_der_tlv sig;
++    rc = atls_der_read_tlv(&d, &sig);
++    if (rc != ATLS_OK) return rc;
++    if (sig.tag != 0x03 || sig.len == 0) return ATLS_ERR_BAD_ENCODING;
++    out->signature_unused_bits = sig.value[0];
++    if (out->signature_unused_bits != 0) return ATLS_ERR_BAD_ENCODING;
++    out->signature.data = sig.value + 1;
++    out->signature.len = sig.len - 1;
++
++    if (!atls_der_at_end(&d)) return ATLS_ERR_BAD_ENCODING;
++    return ATLS_OK;
++}
+diff --git a/tests/atls_test_certs.h b/tests/atls_test_certs.h
+new file mode 100644
+index 0000000..cb8ef32
+--- /dev/null
++++ b/tests/atls_test_certs.h
+@@ -0,0 +1,395 @@
++/* tests/atls_test_certs.h -- DER certificates embedded for the N2 gates.
++ * GENERATED FILE: produced from the DER bytes captured for phase N2
++ * (two real-world leaves fetched live, four openssl-generated locals).
++ * Included by BOTH the host battery (tests/unit/test_atls_x509.c) and
++ * the in-guest smoke test (userspace/tests/x509test/x509test.c), so the
++ * QEMU gate exercises the exact same bytes. */
++
++#ifndef AURALITE_TESTS_ATLS_TEST_CERTS_H
++#define AURALITE_TESTS_ATLS_TEST_CERTS_H
++
++#include <stdint.h>
++
++/* Real leaf: example.com (EC P-256, SAN example.com + *.example.com) */
++static const uint8_t ATLS_TEST_CERT_EXAMPLE_COM[1002] = {
++    0x30, 0x82, 0x03, 0xe6, 0x30, 0x82, 0x03, 0x8d, 0xa0, 0x03, 0x02, 0x01,
++    0x02, 0x02, 0x10, 0x06, 0x24, 0xd0, 0xab, 0x31, 0x15, 0x58, 0x78, 0x0b,
++    0x7d, 0x52, 0x13, 0xb9, 0x63, 0x18, 0x31, 0x30, 0x0a, 0x06, 0x08, 0x2a,
++    0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x30, 0x51, 0x31, 0x0b, 0x30,
++    0x09, 0x06, 0x03, 0x55, 0x04, 0x06, 0x13, 0x02, 0x55, 0x53, 0x31, 0x18,
++    0x30, 0x16, 0x06, 0x03, 0x55, 0x04, 0x0a, 0x0c, 0x0f, 0x53, 0x53, 0x4c,
++    0x20, 0x43, 0x6f, 0x72, 0x70, 0x6f, 0x72, 0x61, 0x74, 0x69, 0x6f, 0x6e,
++    0x31, 0x28, 0x30, 0x26, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x1f, 0x43,
++    0x6c, 0x6f, 0x75, 0x64, 0x66, 0x6c, 0x61, 0x72, 0x65, 0x20, 0x54, 0x4c,
++    0x53, 0x20, 0x49, 0x73, 0x73, 0x75, 0x69, 0x6e, 0x67, 0x20, 0x45, 0x43,
++    0x43, 0x20, 0x43, 0x41, 0x20, 0x33, 0x30, 0x1e, 0x17, 0x0d, 0x32, 0x36,
++    0x30, 0x37, 0x32, 0x39, 0x32, 0x32, 0x31, 0x30, 0x30, 0x38, 0x5a, 0x17,
++    0x0d, 0x32, 0x36, 0x31, 0x30, 0x32, 0x37, 0x32, 0x32, 0x31, 0x37, 0x32,
++    0x31, 0x5a, 0x30, 0x16, 0x31, 0x14, 0x30, 0x12, 0x06, 0x03, 0x55, 0x04,
++    0x03, 0x0c, 0x0b, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63,
++    0x6f, 0x6d, 0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce,
++    0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
++    0x07, 0x03, 0x42, 0x00, 0x04, 0x76, 0x4e, 0x09, 0xa3, 0xdd, 0xb2, 0xcf,
++    0x45, 0xa5, 0x4d, 0xd1, 0x5b, 0x9d, 0xf0, 0x51, 0x00, 0x52, 0x23, 0x33,
++    0xdd, 0x9d, 0x81, 0x77, 0x99, 0x6d, 0x8b, 0x7f, 0x6e, 0x86, 0xeb, 0xc1,
++    0x01, 0x1c, 0xa7, 0xf9, 0x1e, 0x89, 0x26, 0x40, 0x42, 0xbf, 0x9e, 0x1d,
++    0x95, 0x38, 0xb3, 0xcd, 0xa5, 0x01, 0xcc, 0xb9, 0xeb, 0x89, 0xa3, 0xd5,
++    0x5b, 0xdb, 0xb2, 0xb1, 0x82, 0x09, 0x5d, 0x35, 0x62, 0xa3, 0x82, 0x02,
++    0x80, 0x30, 0x82, 0x02, 0x7c, 0x30, 0x0c, 0x06, 0x03, 0x55, 0x1d, 0x13,
++    0x01, 0x01, 0xff, 0x04, 0x02, 0x30, 0x00, 0x30, 0x1f, 0x06, 0x03, 0x55,
++    0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x83, 0x03, 0xfd, 0xe7,
++    0xf6, 0xf5, 0x4a, 0x4d, 0x15, 0x41, 0xf4, 0xed, 0x22, 0x16, 0xd3, 0x32,
++    0x0a, 0x3e, 0xca, 0x66, 0x30, 0x6c, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05,
++    0x05, 0x07, 0x01, 0x01, 0x04, 0x60, 0x30, 0x5e, 0x30, 0x39, 0x06, 0x08,
++    0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x02, 0x86, 0x2d, 0x68, 0x74,
++    0x74, 0x70, 0x3a, 0x2f, 0x2f, 0x69, 0x2e, 0x63, 0x66, 0x2d, 0x69, 0x2e,
++    0x73, 0x73, 0x6c, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x43, 0x6c, 0x6f, 0x75,
++    0x64, 0x66, 0x6c, 0x61, 0x72, 0x65, 0x2d, 0x54, 0x4c, 0x53, 0x2d, 0x49,
++    0x2d, 0x45, 0x33, 0x2e, 0x63, 0x65, 0x72, 0x30, 0x21, 0x06, 0x08, 0x2b,
++    0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x86, 0x15, 0x68, 0x74, 0x74,
++    0x70, 0x3a, 0x2f, 0x2f, 0x6f, 0x2e, 0x63, 0x66, 0x2d, 0x69, 0x2e, 0x73,
++    0x73, 0x6c, 0x2e, 0x63, 0x6f, 0x6d, 0x30, 0x25, 0x06, 0x03, 0x55, 0x1d,
++    0x11, 0x04, 0x1e, 0x30, 0x1c, 0x82, 0x0b, 0x65, 0x78, 0x61, 0x6d, 0x70,
++    0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d, 0x82, 0x0d, 0x2a, 0x2e, 0x65, 0x78,
++    0x61, 0x6d, 0x70, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d, 0x30, 0x23, 0x06,
++    0x03, 0x55, 0x1d, 0x20, 0x04, 0x1c, 0x30, 0x1a, 0x30, 0x08, 0x06, 0x06,
++    0x67, 0x81, 0x0c, 0x01, 0x02, 0x01, 0x30, 0x0e, 0x06, 0x0c, 0x2b, 0x06,
++    0x01, 0x04, 0x01, 0x82, 0xa9, 0x30, 0x01, 0x03, 0x01, 0x01, 0x30, 0x13,
++    0x06, 0x03, 0x55, 0x1d, 0x25, 0x04, 0x0c, 0x30, 0x0a, 0x06, 0x08, 0x2b,
++    0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01, 0x30, 0x53, 0x06, 0x03, 0x55,
++    0x1d, 0x1f, 0x04, 0x4c, 0x30, 0x4a, 0x30, 0x48, 0xa0, 0x46, 0xa0, 0x44,
++    0x86, 0x42, 0x68, 0x74, 0x74, 0x70, 0x3a, 0x2f, 0x2f, 0x63, 0x2e, 0x63,
++    0x66, 0x2d, 0x69, 0x2e, 0x73, 0x73, 0x6c, 0x2e, 0x63, 0x6f, 0x6d, 0x2f,
++    0x61, 0x65, 0x38, 0x30, 0x31, 0x65, 0x64, 0x31, 0x63, 0x35, 0x35, 0x62,
++    0x62, 0x35, 0x37, 0x39, 0x64, 0x37, 0x39, 0x32, 0x30, 0x38, 0x62, 0x30,
++    0x64, 0x37, 0x37, 0x32, 0x61, 0x63, 0x66, 0x62, 0x38, 0x63, 0x63, 0x33,
++    0x61, 0x32, 0x30, 0x38, 0x2e, 0x63, 0x72, 0x6c, 0x30, 0x0e, 0x06, 0x03,
++    0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x07, 0x80,
++    0x30, 0x0f, 0x06, 0x09, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xda, 0x4b,
++    0x2c, 0x04, 0x02, 0x05, 0x00, 0x30, 0x82, 0x01, 0x04, 0x06, 0x0a, 0x2b,
++    0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x04, 0x02, 0x04, 0x81, 0xf5,
++    0x04, 0x81, 0xf2, 0x00, 0xf0, 0x00, 0x77, 0x00, 0x94, 0x4e, 0x43, 0x87,
++    0xfa, 0xec, 0xc1, 0xef, 0x81, 0xf3, 0x19, 0x24, 0x26, 0xa8, 0x18, 0x65,
++    0x01, 0xc7, 0xd3, 0x5f, 0x38, 0x02, 0x01, 0x3f, 0x72, 0x67, 0x7d, 0x55,
++    0x37, 0x2e, 0x19, 0xd8, 0x00, 0x00, 0x01, 0x9f, 0xaf, 0xf6, 0xc3, 0x36,
++    0x00, 0x00, 0x04, 0x03, 0x00, 0x48, 0x30, 0x46, 0x02, 0x21, 0x00, 0xfd,
++    0x58, 0x5a, 0x2d, 0x44, 0x6c, 0xd6, 0x46, 0x32, 0xd4, 0xa4, 0xab, 0xb9,
++    0x52, 0x01, 0x55, 0x10, 0x85, 0xb6, 0x24, 0x1e, 0xcc, 0xb6, 0xf6, 0x5e,
++    0xfa, 0xda, 0x1c, 0x48, 0xd8, 0x1c, 0xc9, 0x02, 0x21, 0x00, 0x90, 0x85,
++    0x74, 0x3a, 0x02, 0x58, 0x4f, 0x7d, 0x26, 0x31, 0x4a, 0x4a, 0x6c, 0xe3,
++    0x79, 0x18, 0x5b, 0x88, 0x7d, 0x0c, 0xdc, 0x0c, 0x3e, 0x87, 0x8d, 0x78,
++    0xcb, 0xd6, 0xc6, 0xc5, 0x3f, 0x8f, 0x00, 0x75, 0x00, 0xc8, 0xa3, 0xc4,
++    0x7f, 0xc7, 0xb3, 0xad, 0xb9, 0x35, 0x6b, 0x01, 0x3f, 0x6a, 0x7a, 0x12,
++    0x6d, 0xe3, 0x3a, 0x4e, 0x43, 0xa5, 0xc6, 0x46, 0xf9, 0x97, 0xad, 0x39,
++    0x75, 0x99, 0x1d, 0xcf, 0x9a, 0x00, 0x00, 0x01, 0x9f, 0xaf, 0xf6, 0xc3,
++    0x4c, 0x00, 0x00, 0x04, 0x03, 0x00, 0x46, 0x30, 0x44, 0x02, 0x20, 0x0a,
++    0xa6, 0xb3, 0xed, 0x8c, 0xc4, 0x0b, 0x94, 0xba, 0xd2, 0x92, 0xce, 0x1e,
++    0x08, 0x3a, 0x09, 0x67, 0xa5, 0xaa, 0x7a, 0x44, 0x4b, 0x1f, 0xa0, 0x16,
++    0x1d, 0x21, 0xdc, 0xa3, 0xd2, 0xd7, 0xb5, 0x02, 0x20, 0x32, 0xc4, 0x61,
++    0x36, 0xd6, 0xf0, 0xd0, 0x6a, 0x7d, 0x43, 0x42, 0x2d, 0x64, 0x1e, 0x43,
++    0xff, 0x4a, 0x93, 0xce, 0xb3, 0xca, 0x30, 0x10, 0xdb, 0x25, 0x9a, 0x2b,
++    0xf8, 0xd6, 0x64, 0x71, 0xee, 0x30, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48,
++    0xce, 0x3d, 0x04, 0x03, 0x02, 0x03, 0x47, 0x00, 0x30, 0x44, 0x02, 0x20,
++    0x10, 0xb8, 0x7d, 0x44, 0x4a, 0x83, 0xb0, 0x80, 0x4c, 0x04, 0x09, 0x00,
++    0x0d, 0x6b, 0x1c, 0xde, 0x2b, 0xa1, 0x6e, 0x4c, 0x07, 0xc9, 0xf7, 0x2f,
++    0xeb, 0x0f, 0x87, 0xb2, 0x38, 0x5d, 0x3d, 0xcc, 0x02, 0x20, 0x3c, 0xdd,
++    0x6b, 0x6d, 0xdf, 0x67, 0x32, 0x80, 0xdb, 0xea, 0x86, 0xe4, 0xbf, 0xe4,
++    0xd6, 0xd8, 0xb9, 0x83, 0x8a, 0xe4, 0xdd, 0x68, 0x89, 0x53, 0x45, 0x1b,
++    0xbe, 0x95, 0x06, 0x2c, 0xa2, 0xaf,
++};
++
++/* Real leaf: www.google.com */
++static const uint8_t ATLS_TEST_CERT_GOOGLE[886] = {
++    0x30, 0x82, 0x03, 0x72, 0x30, 0x82, 0x03, 0x18, 0xa0, 0x03, 0x02, 0x01,
++    0x02, 0x02, 0x10, 0x3c, 0x4a, 0xdc, 0x83, 0xdf, 0xf6, 0xd4, 0x27, 0x12,
++    0x17, 0x1b, 0x9d, 0xea, 0xf4, 0x75, 0xa4, 0x30, 0x0a, 0x06, 0x08, 0x2a,
++    0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x30, 0x3b, 0x31, 0x0b, 0x30,
++    0x09, 0x06, 0x03, 0x55, 0x04, 0x06, 0x13, 0x02, 0x55, 0x53, 0x31, 0x1e,
++    0x30, 0x1c, 0x06, 0x03, 0x55, 0x04, 0x0a, 0x13, 0x15, 0x47, 0x6f, 0x6f,
++    0x67, 0x6c, 0x65, 0x20, 0x54, 0x72, 0x75, 0x73, 0x74, 0x20, 0x53, 0x65,
++    0x72, 0x76, 0x69, 0x63, 0x65, 0x73, 0x31, 0x0c, 0x30, 0x0a, 0x06, 0x03,
++    0x55, 0x04, 0x03, 0x13, 0x03, 0x57, 0x45, 0x32, 0x30, 0x1e, 0x17, 0x0d,
++    0x32, 0x36, 0x30, 0x37, 0x32, 0x30, 0x31, 0x38, 0x30, 0x38, 0x33, 0x36,
++    0x5a, 0x17, 0x0d, 0x32, 0x36, 0x31, 0x30, 0x31, 0x32, 0x31, 0x38, 0x30,
++    0x38, 0x33, 0x35, 0x5a, 0x30, 0x19, 0x31, 0x17, 0x30, 0x15, 0x06, 0x03,
++    0x55, 0x04, 0x03, 0x13, 0x0e, 0x77, 0x77, 0x77, 0x2e, 0x67, 0x6f, 0x6f,
++    0x67, 0x6c, 0x65, 0x2e, 0x63, 0x6f, 0x6d, 0x30, 0x59, 0x30, 0x13, 0x06,
++    0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86,
++    0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00, 0x04, 0xa9, 0x92,
++    0xa8, 0xe2, 0xc9, 0x09, 0xcb, 0x9c, 0xf9, 0x15, 0x6e, 0x2f, 0x5c, 0x38,
++    0x03, 0xfa, 0xf3, 0x2b, 0x54, 0x4e, 0x75, 0x38, 0x1d, 0x7e, 0xdf, 0xdc,
++    0x17, 0xbe, 0x73, 0x2a, 0x02, 0x29, 0x18, 0x1f, 0x9e, 0xd2, 0x62, 0xa8,
++    0x14, 0x70, 0x47, 0xbd, 0xab, 0xfd, 0x7d, 0x15, 0x14, 0xc8, 0x36, 0xef,
++    0xbe, 0xa6, 0xe5, 0x89, 0xa4, 0xf6, 0x96, 0xe9, 0x8e, 0xc7, 0xf3, 0xa7,
++    0x7c, 0x69, 0xa3, 0x82, 0x02, 0x1e, 0x30, 0x82, 0x02, 0x1a, 0x30, 0x0e,
++    0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02,
++    0x07, 0x80, 0x30, 0x13, 0x06, 0x03, 0x55, 0x1d, 0x25, 0x04, 0x0c, 0x30,
++    0x0a, 0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01, 0x30,
++    0x0c, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x02, 0x30,
++    0x00, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14,
++    0x8f, 0x9e, 0x64, 0xd0, 0xec, 0xf1, 0x5d, 0xb3, 0x3e, 0x4a, 0x6a, 0xbe,
++    0xf2, 0x2a, 0xb5, 0x42, 0x67, 0x6d, 0x99, 0x60, 0x30, 0x1f, 0x06, 0x03,
++    0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x75, 0xbe, 0xc4,
++    0x77, 0xae, 0x89, 0xf6, 0x44, 0x37, 0x7d, 0xcf, 0xb1, 0x68, 0x1f, 0x1d,
++    0x1a, 0xeb, 0xdc, 0x34, 0x59, 0x30, 0x35, 0x06, 0x08, 0x2b, 0x06, 0x01,
++    0x05, 0x05, 0x07, 0x01, 0x01, 0x04, 0x29, 0x30, 0x27, 0x30, 0x25, 0x06,
++    0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x02, 0x86, 0x19, 0x68,
++    0x74, 0x74, 0x70, 0x3a, 0x2f, 0x2f, 0x69, 0x2e, 0x70, 0x6b, 0x69, 0x2e,
++    0x67, 0x6f, 0x6f, 0x67, 0x2f, 0x77, 0x65, 0x32, 0x2e, 0x63, 0x72, 0x74,
++    0x30, 0x19, 0x06, 0x03, 0x55, 0x1d, 0x11, 0x04, 0x12, 0x30, 0x10, 0x82,
++    0x0e, 0x77, 0x77, 0x77, 0x2e, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e,
++    0x63, 0x6f, 0x6d, 0x30, 0x13, 0x06, 0x03, 0x55, 0x1d, 0x20, 0x04, 0x0c,
++    0x30, 0x0a, 0x30, 0x08, 0x06, 0x06, 0x67, 0x81, 0x0c, 0x01, 0x02, 0x01,
++    0x30, 0x36, 0x06, 0x03, 0x55, 0x1d, 0x1f, 0x04, 0x2f, 0x30, 0x2d, 0x30,
++    0x2b, 0xa0, 0x29, 0xa0, 0x27, 0x86, 0x25, 0x68, 0x74, 0x74, 0x70, 0x3a,
++    0x2f, 0x2f, 0x63, 0x2e, 0x70, 0x6b, 0x69, 0x2e, 0x67, 0x6f, 0x6f, 0x67,
++    0x2f, 0x77, 0x65, 0x32, 0x2f, 0x47, 0x74, 0x30, 0x47, 0x6c, 0x36, 0x51,
++    0x6f, 0x47, 0x41, 0x55, 0x2e, 0x63, 0x72, 0x6c, 0x30, 0x82, 0x01, 0x04,
++    0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0xd6, 0x79, 0x02, 0x04, 0x02,
++    0x04, 0x81, 0xf5, 0x04, 0x81, 0xf2, 0x00, 0xf0, 0x00, 0x76, 0x00, 0xd7,
++    0x6d, 0x7d, 0x10, 0xd1, 0xa7, 0xf5, 0x77, 0xc2, 0xc7, 0xe9, 0x5f, 0xd7,
++    0x00, 0xbf, 0xf9, 0x82, 0xc9, 0x33, 0x5a, 0x65, 0xe1, 0xd0, 0xb3, 0x01,
++    0x73, 0x17, 0xc0, 0xc8, 0xc5, 0x69, 0x77, 0x00, 0x00, 0x01, 0x9f, 0x80,
++    0xee, 0x20, 0xd0, 0x00, 0x00, 0x04, 0x03, 0x00, 0x47, 0x30, 0x45, 0x02,
++    0x20, 0x18, 0x52, 0x36, 0xc3, 0x9b, 0x55, 0x2e, 0x33, 0x2d, 0x11, 0x04,
++    0xdd, 0x47, 0x91, 0x60, 0xdd, 0x7a, 0x49, 0xb6, 0x3c, 0x45, 0x00, 0xc7,
++    0x1c, 0x29, 0x37, 0xfb, 0xce, 0xc7, 0xe4, 0xec, 0x06, 0x02, 0x21, 0x00,
++    0x9e, 0xb6, 0x46, 0xeb, 0xd8, 0x3f, 0x3b, 0x22, 0xbc, 0xd0, 0x08, 0x5c,
++    0xdf, 0x8e, 0xee, 0x7f, 0xed, 0x03, 0x49, 0x14, 0x2c, 0x6d, 0xb1, 0x0d,
++    0x0c, 0xf9, 0x82, 0x5d, 0x20, 0x2e, 0xff, 0x67, 0x00, 0x76, 0x00, 0xc2,
++    0x31, 0x7e, 0x57, 0x45, 0x19, 0xa3, 0x45, 0xee, 0x7f, 0x38, 0xde, 0xb2,
++    0x90, 0x41, 0xeb, 0xc7, 0xc2, 0x21, 0x5a, 0x22, 0xbf, 0x7f, 0xd5, 0xb5,
++    0xad, 0x76, 0x9a, 0xd9, 0x0e, 0x52, 0xcd, 0x00, 0x00, 0x01, 0x9f, 0x80,
++    0xee, 0x20, 0xe9, 0x00, 0x00, 0x04, 0x03, 0x00, 0x47, 0x30, 0x45, 0x02,
++    0x20, 0x69, 0xb3, 0x1e, 0x38, 0x32, 0x08, 0x15, 0x35, 0xa8, 0x99, 0x86,
++    0x1d, 0x45, 0x7e, 0xa2, 0xff, 0xf1, 0xe5, 0x5f, 0xd6, 0xa5, 0xcc, 0x0f,
++    0x29, 0xe2, 0xa6, 0x86, 0x90, 0x5e, 0x3f, 0xe6, 0x6e, 0x02, 0x21, 0x00,
++    0x84, 0x41, 0xf7, 0x79, 0x50, 0x9d, 0xe4, 0xbb, 0x8e, 0x08, 0xe8, 0xef,
++    0x32, 0x92, 0x3f, 0x79, 0xd3, 0x50, 0x6e, 0x9e, 0x27, 0xef, 0xe3, 0xe1,
++    0xc5, 0xa6, 0x99, 0xc4, 0x30, 0x5e, 0xe4, 0x1a, 0x30, 0x0a, 0x06, 0x08,
++    0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x03, 0x48, 0x00, 0x30,
++    0x45, 0x02, 0x21, 0x00, 0xf9, 0xf5, 0x83, 0x19, 0xc6, 0x7a, 0x2c, 0x45,
++    0x7b, 0x78, 0xdb, 0xac, 0x64, 0x9c, 0x8a, 0x51, 0xe4, 0xca, 0x2e, 0xee,
++    0xbd, 0xb0, 0xcf, 0xa8, 0x19, 0xf2, 0x0c, 0xe5, 0xa0, 0x8d, 0x9b, 0x4c,
++    0x02, 0x20, 0x39, 0x73, 0x50, 0x54, 0x8e, 0x35, 0x17, 0x78, 0x8b, 0x0c,
++    0x3c, 0x4b, 0x10, 0x7d, 0x29, 0x01, 0x99, 0xb1, 0xf4, 0x33, 0xda, 0x82,
++    0xf4, 0x6c, 0x18, 0x89, 0xe5, 0x67, 0x79, 0x6a, 0x0b, 0x7c,
++};
++
++/* Self-signed EC: CN=localhost, SAN DNS:localhost,DNS:aura.test */
++static const uint8_t ATLS_TEST_CERT_EC_LOCAL[419] = {
++    0x30, 0x82, 0x01, 0x9f, 0x30, 0x82, 0x01, 0x44, 0xa0, 0x03, 0x02, 0x01,
++    0x02, 0x02, 0x14, 0x35, 0xe9, 0x20, 0x12, 0x0d, 0xe9, 0xda, 0x7d, 0x16,
++    0x68, 0xfc, 0xa8, 0x5c, 0x95, 0x7f, 0xc0, 0xb5, 0xd4, 0xe8, 0xd2, 0x30,
++    0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x30,
++    0x14, 0x31, 0x12, 0x30, 0x10, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x09,
++    0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x68, 0x6f, 0x73, 0x74, 0x30, 0x1e, 0x17,
++    0x0d, 0x32, 0x36, 0x30, 0x38, 0x30, 0x36, 0x31, 0x31, 0x35, 0x32, 0x34,
++    0x35, 0x5a, 0x17, 0x0d, 0x33, 0x36, 0x30, 0x38, 0x30, 0x33, 0x31, 0x31,
++    0x35, 0x32, 0x34, 0x35, 0x5a, 0x30, 0x14, 0x31, 0x12, 0x30, 0x10, 0x06,
++    0x03, 0x55, 0x04, 0x03, 0x0c, 0x09, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x68,
++    0x6f, 0x73, 0x74, 0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48,
++    0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03,
++    0x01, 0x07, 0x03, 0x42, 0x00, 0x04, 0x85, 0x35, 0x0c, 0x5a, 0xf7, 0x6b,
++    0x5f, 0xee, 0x78, 0x1c, 0x04, 0x50, 0x89, 0xcc, 0x4a, 0x28, 0x1e, 0xf9,
++    0x10, 0xd6, 0xea, 0xee, 0xe6, 0xaf, 0x95, 0x1f, 0x54, 0x88, 0x0a, 0x9a,
++    0x2f, 0x5e, 0x73, 0x94, 0x83, 0x69, 0xe6, 0x66, 0x6f, 0xb4, 0x8a, 0x7d,
++    0x80, 0x99, 0x6b, 0x2e, 0x5d, 0x6e, 0x63, 0x37, 0x68, 0xf7, 0xdc, 0x46,
++    0x93, 0x8f, 0xe8, 0x7e, 0xe1, 0x37, 0xb3, 0x41, 0x3b, 0x6d, 0xa3, 0x74,
++    0x30, 0x72, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04,
++    0x14, 0xde, 0xa5, 0x3e, 0x5c, 0xca, 0x7c, 0xd9, 0xcf, 0x13, 0x2a, 0x82,
++    0x26, 0xe8, 0xf1, 0x2c, 0xcf, 0x36, 0xdf, 0x0b, 0x65, 0x30, 0x1f, 0x06,
++    0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0xde, 0xa5,
++    0x3e, 0x5c, 0xca, 0x7c, 0xd9, 0xcf, 0x13, 0x2a, 0x82, 0x26, 0xe8, 0xf1,
++    0x2c, 0xcf, 0x36, 0xdf, 0x0b, 0x65, 0x30, 0x0f, 0x06, 0x03, 0x55, 0x1d,
++    0x13, 0x01, 0x01, 0xff, 0x04, 0x05, 0x30, 0x03, 0x01, 0x01, 0xff, 0x30,
++    0x1f, 0x06, 0x03, 0x55, 0x1d, 0x11, 0x04, 0x18, 0x30, 0x16, 0x82, 0x09,
++    0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x68, 0x6f, 0x73, 0x74, 0x82, 0x09, 0x61,
++    0x75, 0x72, 0x61, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x30, 0x0a, 0x06, 0x08,
++    0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x03, 0x49, 0x00, 0x30,
++    0x46, 0x02, 0x21, 0x00, 0x9c, 0xc2, 0x3f, 0x0e, 0x7a, 0xdf, 0x64, 0xed,
++    0x6d, 0xfd, 0x0e, 0x4b, 0x75, 0x25, 0xaa, 0x5e, 0xf9, 0x5b, 0xcb, 0x0f,
++    0x3b, 0x16, 0x01, 0xd9, 0x72, 0x93, 0x1a, 0x11, 0x38, 0x1a, 0xde, 0x91,
++    0x02, 0x21, 0x00, 0x95, 0xa6, 0xeb, 0xd0, 0x12, 0x0f, 0xc5, 0x44, 0x9e,
++    0xd0, 0xb9, 0x52, 0xba, 0x95, 0x2b, 0x4b, 0xbc, 0x53, 0x03, 0xa6, 0x15,
++    0x43, 0x0a, 0xa0, 0x46, 0x87, 0x8f, 0x6b, 0x31, 0x48, 0x70, 0xc3,
++};
++
++/* Self-signed Ed25519: CN=ed.aura.test */
++static const uint8_t ATLS_TEST_CERT_ED_LOCAL[326] = {
++    0x30, 0x82, 0x01, 0x42, 0x30, 0x81, 0xf5, 0xa0, 0x03, 0x02, 0x01, 0x02,
++    0x02, 0x14, 0x59, 0x76, 0x0b, 0xd2, 0x20, 0x0e, 0x9d, 0xcb, 0xb8, 0x3b,
++    0xd6, 0x91, 0xd0, 0x09, 0x95, 0xd4, 0xdb, 0x31, 0x8f, 0x84, 0x30, 0x05,
++    0x06, 0x03, 0x2b, 0x65, 0x70, 0x30, 0x17, 0x31, 0x15, 0x30, 0x13, 0x06,
++    0x03, 0x55, 0x04, 0x03, 0x0c, 0x0c, 0x65, 0x64, 0x2e, 0x61, 0x75, 0x72,
++    0x61, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x30, 0x1e, 0x17, 0x0d, 0x32, 0x36,
++    0x30, 0x38, 0x30, 0x36, 0x31, 0x31, 0x35, 0x32, 0x34, 0x35, 0x5a, 0x17,
++    0x0d, 0x33, 0x36, 0x30, 0x38, 0x30, 0x33, 0x31, 0x31, 0x35, 0x32, 0x34,
++    0x35, 0x5a, 0x30, 0x17, 0x31, 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x04,
++    0x03, 0x0c, 0x0c, 0x65, 0x64, 0x2e, 0x61, 0x75, 0x72, 0x61, 0x2e, 0x74,
++    0x65, 0x73, 0x74, 0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
++    0x03, 0x21, 0x00, 0x0c, 0x66, 0xcd, 0xf7, 0x71, 0x41, 0xd8, 0xf2, 0xff,
++    0x9a, 0xc8, 0x27, 0x7a, 0x04, 0x23, 0xef, 0x9d, 0x44, 0x67, 0xb1, 0x5b,
++    0x18, 0x1e, 0xf3, 0x88, 0x92, 0xdd, 0x4b, 0xc0, 0x24, 0x65, 0x03, 0xa3,
++    0x53, 0x30, 0x51, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16,
++    0x04, 0x14, 0x79, 0x17, 0xc8, 0xde, 0x6e, 0x7d, 0x89, 0xa9, 0xfa, 0xd4,
++    0xb6, 0x8a, 0x5e, 0xfe, 0x04, 0xb9, 0x81, 0xe8, 0x35, 0xbc, 0x30, 0x1f,
++    0x06, 0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x79,
++    0x17, 0xc8, 0xde, 0x6e, 0x7d, 0x89, 0xa9, 0xfa, 0xd4, 0xb6, 0x8a, 0x5e,
++    0xfe, 0x04, 0xb9, 0x81, 0xe8, 0x35, 0xbc, 0x30, 0x0f, 0x06, 0x03, 0x55,
++    0x1d, 0x13, 0x01, 0x01, 0xff, 0x04, 0x05, 0x30, 0x03, 0x01, 0x01, 0xff,
++    0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x41, 0x00, 0x3b, 0x2d,
++    0x9f, 0x92, 0xf1, 0x7a, 0x84, 0x05, 0xb9, 0xe8, 0x02, 0xcb, 0x4e, 0x1b,
++    0x5c, 0x75, 0x4a, 0xbc, 0xde, 0xbf, 0xff, 0x2f, 0xa1, 0xd0, 0x24, 0xa4,
++    0x44, 0x29, 0x65, 0x44, 0x74, 0xe8, 0x60, 0x2d, 0x58, 0x7d, 0x3c, 0xea,
++    0x70, 0xbf, 0x20, 0x4b, 0x90, 0x06, 0x63, 0x25, 0xee, 0x02, 0x6a, 0x5d,
++    0x77, 0x16, 0x18, 0x34, 0x0e, 0xa2, 0x67, 0x2f, 0xe0, 0x12, 0x2b, 0x28,
++    0x44, 0x0f,
++};
++
++/* Self-signed RSA CA: critical BC CA:TRUE pathlen:0, critical KU keyCertSign,cRLSign */
++static const uint8_t ATLS_TEST_CERT_CA_LOCAL[806] = {
++    0x30, 0x82, 0x03, 0x22, 0x30, 0x82, 0x02, 0x0a, 0xa0, 0x03, 0x02, 0x01,
++    0x02, 0x02, 0x14, 0x24, 0xc7, 0xd4, 0xa3, 0xc8, 0xcf, 0x28, 0x71, 0x99,
++    0xa9, 0xbe, 0x5a, 0x15, 0x58, 0x82, 0x3b, 0xdc, 0x2d, 0x3e, 0x5b, 0x30,
++    0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b,
++    0x05, 0x00, 0x30, 0x17, 0x31, 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x04,
++    0x03, 0x0c, 0x0c, 0x41, 0x75, 0x72, 0x61, 0x20, 0x54, 0x65, 0x73, 0x74,
++    0x20, 0x43, 0x41, 0x30, 0x1e, 0x17, 0x0d, 0x32, 0x36, 0x30, 0x38, 0x30,
++    0x36, 0x31, 0x31, 0x35, 0x32, 0x34, 0x35, 0x5a, 0x17, 0x0d, 0x33, 0x36,
++    0x30, 0x38, 0x30, 0x33, 0x31, 0x31, 0x35, 0x32, 0x34, 0x35, 0x5a, 0x30,
++    0x17, 0x31, 0x15, 0x30, 0x13, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x0c,
++    0x41, 0x75, 0x72, 0x61, 0x20, 0x54, 0x65, 0x73, 0x74, 0x20, 0x43, 0x41,
++    0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
++    0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03, 0x82, 0x01, 0x0f, 0x00,
++    0x30, 0x82, 0x01, 0x0a, 0x02, 0x82, 0x01, 0x01, 0x00, 0xcc, 0xbb, 0x86,
++    0xab, 0x71, 0x07, 0x1a, 0xe0, 0x9e, 0x68, 0xa1, 0xa9, 0xbc, 0x8b, 0x8b,
++    0x8e, 0x90, 0xbf, 0xee, 0x5d, 0xd4, 0x4f, 0x54, 0xd7, 0x0e, 0x29, 0x24,
++    0x10, 0xc3, 0x6c, 0xd3, 0x4e, 0xf8, 0x0e, 0xe2, 0xad, 0xa9, 0x4a, 0xfa,
++    0xf0, 0x6b, 0xd7, 0xd6, 0x8e, 0x5f, 0xca, 0xa7, 0x0d, 0xea, 0x42, 0xe9,
++    0x6d, 0x14, 0xf1, 0x48, 0xc2, 0x60, 0x11, 0x55, 0xc9, 0x79, 0x0f, 0xf1,
++    0x8a, 0xf0, 0x76, 0xad, 0xab, 0x0f, 0x6c, 0x5c, 0xe1, 0xda, 0x7c, 0xfe,
++    0x4c, 0xf1, 0x2a, 0x4b, 0x92, 0x50, 0x8a, 0xae, 0xff, 0x60, 0x95, 0x95,
++    0x53, 0x1a, 0x48, 0x02, 0xbb, 0x3c, 0xec, 0x32, 0x85, 0x87, 0x1c, 0x9d,
++    0xe1, 0xc7, 0xc1, 0xe7, 0xd3, 0x50, 0x50, 0x66, 0x97, 0x4b, 0xae, 0xbc,
++    0x3c, 0xc0, 0x9f, 0x43, 0xd6, 0x1c, 0x7d, 0x5d, 0xb8, 0x1e, 0xd3, 0x83,
++    0xbe, 0xad, 0xc3, 0x9d, 0xd5, 0x5d, 0x8a, 0xa6, 0x51, 0x57, 0xab, 0x4b,
++    0x75, 0x8b, 0x22, 0xcc, 0x6c, 0x56, 0x92, 0x0b, 0x8a, 0xc9, 0x68, 0x55,
++    0x9b, 0x55, 0xf8, 0xdb, 0xde, 0x20, 0x16, 0x13, 0x69, 0x9a, 0x79, 0x1b,
++    0xd6, 0xad, 0x57, 0x8f, 0x06, 0x26, 0x01, 0x89, 0xff, 0x8d, 0xcd, 0xc0,
++    0x6b, 0xa6, 0x81, 0x0f, 0x2d, 0x2a, 0xae, 0xfe, 0x13, 0x91, 0x6c, 0x9c,
++    0x3b, 0x1b, 0xa6, 0x9c, 0x09, 0x5f, 0xf8, 0x9a, 0xc4, 0x8e, 0x3a, 0x80,
++    0xa7, 0xdd, 0x68, 0x2b, 0x3c, 0x4b, 0x2b, 0x3f, 0x41, 0x83, 0x95, 0xb8,
++    0x12, 0x40, 0xac, 0xff, 0xba, 0xbe, 0x29, 0xc4, 0x9f, 0xc9, 0x6c, 0xf7,
++    0x48, 0x02, 0xd7, 0x92, 0xf4, 0x57, 0x47, 0x9b, 0x29, 0x00, 0xe9, 0x72,
++    0xe6, 0xb4, 0x57, 0x17, 0x92, 0xe4, 0x33, 0x67, 0x0a, 0x3c, 0xd5, 0x95,
++    0xb6, 0x42, 0xd2, 0xb5, 0x65, 0xd4, 0xb4, 0xb6, 0x83, 0xb2, 0xb1, 0xad,
++    0x43, 0x02, 0x03, 0x01, 0x00, 0x01, 0xa3, 0x66, 0x30, 0x64, 0x30, 0x1d,
++    0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04, 0x14, 0x7a, 0x35, 0x4a,
++    0xe4, 0x5f, 0x60, 0xe2, 0xbf, 0x59, 0x7d, 0x0c, 0x6d, 0xd8, 0x74, 0x33,
++    0x91, 0x8b, 0xc2, 0x0e, 0xdd, 0x30, 0x1f, 0x06, 0x03, 0x55, 0x1d, 0x23,
++    0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x7a, 0x35, 0x4a, 0xe4, 0x5f, 0x60,
++    0xe2, 0xbf, 0x59, 0x7d, 0x0c, 0x6d, 0xd8, 0x74, 0x33, 0x91, 0x8b, 0xc2,
++    0x0e, 0xdd, 0x30, 0x12, 0x06, 0x03, 0x55, 0x1d, 0x13, 0x01, 0x01, 0xff,
++    0x04, 0x08, 0x30, 0x06, 0x01, 0x01, 0xff, 0x02, 0x01, 0x00, 0x30, 0x0e,
++    0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02,
++    0x01, 0x06, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
++    0x01, 0x01, 0x0b, 0x05, 0x00, 0x03, 0x82, 0x01, 0x01, 0x00, 0x51, 0x07,
++    0x43, 0x2d, 0x39, 0xe3, 0x3f, 0xe7, 0x82, 0x1a, 0xbe, 0x42, 0xcf, 0x1f,
++    0x47, 0x66, 0x65, 0xec, 0x42, 0xd1, 0xf1, 0x07, 0x96, 0xf5, 0x5c, 0xed,
++    0x5e, 0x1a, 0x11, 0x24, 0x9e, 0x47, 0x67, 0x46, 0x49, 0x9c, 0x2e, 0xb0,
++    0x90, 0x41, 0x4d, 0x83, 0x95, 0x67, 0x7a, 0x9c, 0x22, 0xe8, 0x4e, 0x7e,
++    0x68, 0x9a, 0x3f, 0x5c, 0x28, 0x0f, 0x42, 0xf1, 0x53, 0x60, 0x5d, 0x78,
++    0xdd, 0xbe, 0x6b, 0xbb, 0xf0, 0xba, 0x67, 0x12, 0xc9, 0xf3, 0x45, 0x2e,
++    0x32, 0xdc, 0x2b, 0xb2, 0x99, 0x6f, 0x8d, 0x8e, 0x0d, 0x88, 0xca, 0x60,
++    0x9b, 0x43, 0xbf, 0x76, 0x77, 0x3b, 0x36, 0xad, 0x10, 0x54, 0x65, 0xc8,
++    0x49, 0x8e, 0x57, 0x65, 0x25, 0x94, 0x1c, 0x62, 0x19, 0x84, 0xd3, 0x0a,
++    0x8b, 0xfd, 0x14, 0x6f, 0xee, 0x8f, 0xc8, 0x74, 0x18, 0xda, 0xb0, 0x31,
++    0xc1, 0x62, 0x02, 0xaa, 0xc8, 0x58, 0xf6, 0x67, 0xd4, 0xf6, 0xee, 0xd9,
++    0x9c, 0xae, 0x85, 0x72, 0x5a, 0xfc, 0x46, 0x3b, 0x88, 0xac, 0x30, 0xb9,
++    0xa0, 0x14, 0x79, 0x7a, 0x76, 0xdb, 0x72, 0x01, 0x71, 0x00, 0xe7, 0x5d,
++    0x5d, 0x50, 0xdb, 0x93, 0x59, 0xca, 0x06, 0xe9, 0x88, 0x60, 0xd5, 0x2d,
++    0x3c, 0x5d, 0x89, 0x67, 0xe4, 0x20, 0x1b, 0x3d, 0x6d, 0xac, 0x47, 0xf1,
++    0x70, 0x3a, 0xfc, 0x21, 0xa5, 0xa0, 0xeb, 0x04, 0xb0, 0x9f, 0xb1, 0x21,
++    0x1d, 0x5b, 0x4c, 0x14, 0x42, 0x42, 0x1a, 0x1f, 0xec, 0xd5, 0x08, 0x68,
++    0xca, 0xa9, 0x7e, 0x2c, 0x6f, 0xe0, 0x82, 0x9f, 0x65, 0xde, 0x7a, 0xe2,
++    0x9a, 0xd6, 0x44, 0x67, 0xb5, 0x98, 0x15, 0xbb, 0xdc, 0x72, 0x3a, 0xb0,
++    0x0b, 0x27, 0x9b, 0x14, 0x91, 0xbd, 0x70, 0xee, 0xf6, 0x19, 0xbd, 0x2b,
++    0xe1, 0xb9, 0x53, 0x9a, 0x07, 0x5a, 0x98, 0x6f, 0x4b, 0x8a, 0xb3, 0xc6,
++    0xe9, 0x00,
++};
++
++/* Self-signed RSA leaf: BC CA:FALSE (non-critical), KU digitalSignature|keyEncipherment, SAN DNS:leaf.aura.test, 1-day validity */
++static const uint8_t ATLS_TEST_CERT_RSA_LEAF[825] = {
++    0x30, 0x82, 0x03, 0x35, 0x30, 0x82, 0x02, 0x1d, 0xa0, 0x03, 0x02, 0x01,
++    0x02, 0x02, 0x14, 0x19, 0xfd, 0x3e, 0xd6, 0x40, 0xaf, 0x5b, 0x69, 0x28,
++    0x50, 0x87, 0x61, 0x8c, 0x0b, 0x22, 0x7f, 0x2a, 0xbe, 0xfc, 0xa4, 0x30,
++    0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b,
++    0x05, 0x00, 0x30, 0x19, 0x31, 0x17, 0x30, 0x15, 0x06, 0x03, 0x55, 0x04,
++    0x03, 0x0c, 0x0e, 0x6c, 0x65, 0x61, 0x66, 0x2e, 0x61, 0x75, 0x72, 0x61,
++    0x2e, 0x74, 0x65, 0x73, 0x74, 0x30, 0x1e, 0x17, 0x0d, 0x32, 0x36, 0x30,
++    0x38, 0x30, 0x36, 0x31, 0x31, 0x35, 0x32, 0x34, 0x35, 0x5a, 0x17, 0x0d,
++    0x32, 0x36, 0x30, 0x38, 0x30, 0x37, 0x31, 0x31, 0x35, 0x32, 0x34, 0x35,
++    0x5a, 0x30, 0x19, 0x31, 0x17, 0x30, 0x15, 0x06, 0x03, 0x55, 0x04, 0x03,
++    0x0c, 0x0e, 0x6c, 0x65, 0x61, 0x66, 0x2e, 0x61, 0x75, 0x72, 0x61, 0x2e,
++    0x74, 0x65, 0x73, 0x74, 0x30, 0x82, 0x01, 0x22, 0x30, 0x0d, 0x06, 0x09,
++    0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00, 0x03,
++    0x82, 0x01, 0x0f, 0x00, 0x30, 0x82, 0x01, 0x0a, 0x02, 0x82, 0x01, 0x01,
++    0x00, 0xba, 0x1b, 0x82, 0xb2, 0xdd, 0x1e, 0xe3, 0x20, 0x58, 0x39, 0x7a,
++    0x10, 0xe5, 0xe0, 0x9a, 0x63, 0x33, 0xc3, 0x14, 0x08, 0xa0, 0x4b, 0x09,
++    0xfa, 0x52, 0x09, 0x36, 0xf2, 0x24, 0x6e, 0x27, 0x4b, 0x8a, 0xf5, 0x78,
++    0xb1, 0x7e, 0x4e, 0x6f, 0x56, 0x8e, 0x85, 0xc1, 0xab, 0xae, 0x37, 0x9b,
++    0x61, 0x85, 0xe1, 0x62, 0x53, 0xb1, 0xf1, 0x01, 0xb1, 0x19, 0xef, 0x50,
++    0xa4, 0xad, 0x79, 0xb8, 0x6a, 0xd0, 0xa0, 0x76, 0x45, 0x69, 0x5b, 0xd8,
++    0x6a, 0x6f, 0x6c, 0x6b, 0x1c, 0x90, 0x52, 0xe2, 0x4e, 0x8c, 0x43, 0x0e,
++    0xbb, 0x3c, 0x89, 0x18, 0xd3, 0x75, 0x3a, 0x8c, 0xb9, 0x90, 0xf0, 0xb8,
++    0xb3, 0xb2, 0x08, 0xe7, 0x08, 0xfa, 0x44, 0xc5, 0x3a, 0xe6, 0x62, 0xc9,
++    0xb5, 0xd2, 0xc5, 0x56, 0xfd, 0xd9, 0x10, 0x52, 0x67, 0x72, 0x0b, 0x18,
++    0x37, 0x16, 0x25, 0x5d, 0xd4, 0xf7, 0xe8, 0x89, 0xa4, 0x10, 0x1c, 0x65,
++    0xd8, 0xed, 0x79, 0x71, 0x2a, 0x27, 0x5b, 0xca, 0x07, 0x33, 0x3d, 0xc0,
++    0x92, 0xa1, 0x37, 0x8a, 0x25, 0xf6, 0xc1, 0x1d, 0xc6, 0x38, 0x2a, 0xd0,
++    0x9e, 0x5a, 0x28, 0xaa, 0xcf, 0xd7, 0x9f, 0xb2, 0xab, 0xaf, 0xee, 0x0d,
++    0xbb, 0x2a, 0x02, 0xbd, 0x9d, 0x9c, 0xae, 0x2c, 0x99, 0x0f, 0x0f, 0x9d,
++    0xd7, 0x54, 0x21, 0x39, 0xc4, 0x1b, 0xf5, 0x4d, 0x51, 0x76, 0xce, 0x7b,
++    0xe4, 0x6c, 0x2a, 0x1d, 0x6a, 0x0d, 0xfa, 0x00, 0x7b, 0xea, 0xea, 0x39,
++    0x3f, 0xb1, 0x73, 0x9e, 0x62, 0x0a, 0x26, 0x7d, 0x49, 0x2d, 0x56, 0x65,
++    0xb3, 0xea, 0xc5, 0x16, 0x6f, 0x60, 0x08, 0xea, 0xc5, 0xfe, 0xc7, 0xbd,
++    0xdd, 0x40, 0xbd, 0x23, 0x9a, 0xb9, 0xfc, 0x0b, 0xdc, 0x96, 0x77, 0x25,
++    0xc6, 0xfc, 0xec, 0xfc, 0xef, 0x99, 0xa2, 0x7a, 0x41, 0x4f, 0x9f, 0x87,
++    0x40, 0xbb, 0x39, 0xaf, 0xdd, 0x02, 0x03, 0x01, 0x00, 0x01, 0xa3, 0x75,
++    0x30, 0x73, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04,
++    0x14, 0x20, 0xff, 0x2c, 0x2f, 0x37, 0x9b, 0x9c, 0xbe, 0xa1, 0xeb, 0xc6,
++    0x4c, 0x20, 0xde, 0xfa, 0xa3, 0x2d, 0x3c, 0xc3, 0x33, 0x30, 0x1f, 0x06,
++    0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0x20, 0xff,
++    0x2c, 0x2f, 0x37, 0x9b, 0x9c, 0xbe, 0xa1, 0xeb, 0xc6, 0x4c, 0x20, 0xde,
++    0xfa, 0xa3, 0x2d, 0x3c, 0xc3, 0x33, 0x30, 0x09, 0x06, 0x03, 0x55, 0x1d,
++    0x13, 0x04, 0x02, 0x30, 0x00, 0x30, 0x0b, 0x06, 0x03, 0x55, 0x1d, 0x0f,
++    0x04, 0x04, 0x03, 0x02, 0x05, 0xa0, 0x30, 0x19, 0x06, 0x03, 0x55, 0x1d,
++    0x11, 0x04, 0x12, 0x30, 0x10, 0x82, 0x0e, 0x6c, 0x65, 0x61, 0x66, 0x2e,
++    0x61, 0x75, 0x72, 0x61, 0x2e, 0x74, 0x65, 0x73, 0x74, 0x30, 0x0d, 0x06,
++    0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
++    0x03, 0x82, 0x01, 0x01, 0x00, 0x0a, 0xca, 0x8f, 0x37, 0xf8, 0xcb, 0xcb,
++    0x8c, 0x97, 0xd3, 0x8c, 0xcb, 0x86, 0x75, 0x5c, 0x94, 0x46, 0x00, 0x01,
++    0x32, 0xf6, 0x3a, 0x27, 0x03, 0x36, 0x75, 0x98, 0x44, 0xa9, 0xcb, 0xf6,
++    0xce, 0x79, 0xdb, 0x7f, 0x36, 0xf8, 0xc4, 0x8b, 0x48, 0x8c, 0x74, 0xad,
++    0x42, 0x32, 0xaa, 0x82, 0xb5, 0x82, 0xb8, 0x4f, 0xfa, 0x45, 0xbf, 0x2a,
++    0x67, 0x36, 0x67, 0x59, 0xcb, 0x38, 0x9d, 0xa9, 0xef, 0x5d, 0x6a, 0xed,
++    0xbc, 0xc9, 0x3d, 0x64, 0x0f, 0x8d, 0x37, 0x0f, 0x07, 0x86, 0xb0, 0xfe,
++    0x1e, 0xa9, 0x46, 0x7c, 0x6f, 0x70, 0xe8, 0x6b, 0x3a, 0xc4, 0x2c, 0x2e,
++    0xf7, 0x8a, 0x10, 0xc1, 0x3d, 0x2a, 0xe1, 0x0d, 0x70, 0x03, 0xd8, 0xa6,
++    0xbf, 0x24, 0xc8, 0xb5, 0x32, 0x64, 0x5f, 0x5c, 0x0e, 0xe1, 0x26, 0x5d,
++    0x5e, 0xec, 0x9f, 0x8e, 0x37, 0x06, 0x9e, 0x34, 0xab, 0xb8, 0x6a, 0x1e,
++    0x5b, 0x51, 0xac, 0x2d, 0xec, 0xf1, 0x47, 0x07, 0xcd, 0xac, 0xea, 0x2b,
++    0xda, 0xf4, 0x29, 0x2f, 0xeb, 0x04, 0xa2, 0x84, 0xcd, 0x3b, 0xf3, 0x35,
++    0x24, 0x35, 0x00, 0xdf, 0x6d, 0xfe, 0xa2, 0xf5, 0xef, 0x14, 0xda, 0xe8,
++    0xb6, 0x85, 0xb3, 0xd8, 0x0f, 0x13, 0xaf, 0x95, 0xd3, 0x47, 0xab, 0x56,
++    0x9b, 0x7d, 0x0d, 0xf2, 0xd9, 0xc8, 0x1f, 0x85, 0x89, 0xed, 0x24, 0xb1,
++    0x49, 0x8a, 0x31, 0x3a, 0x5a, 0xd6, 0x92, 0x22, 0x5d, 0xa7, 0x1a, 0x2d,
++    0x4c, 0x72, 0x2d, 0xa8, 0x24, 0xe7, 0xba, 0x8f, 0x17, 0xe7, 0x6e, 0x29,
++    0x69, 0x86, 0x43, 0xc1, 0x72, 0x5e, 0x97, 0xb5, 0x45, 0x7f, 0x7a, 0x1a,
++    0x3e, 0xb2, 0x19, 0x46, 0xfc, 0x36, 0xc1, 0x2c, 0x6c, 0x66, 0x95, 0x37,
++    0x29, 0x0f, 0x4a, 0xd9, 0xca, 0x3f, 0x6a, 0xb2, 0x8f, 0x88, 0x6c, 0x67,
++    0x3d, 0x19, 0xc1, 0x9b, 0x69, 0x11, 0x5f, 0x19, 0x75,
++};
++
++#endif /* AURALITE_TESTS_ATLS_TEST_CERTS_H */
+diff --git a/tests/integration/cases/test_x509.sh b/tests/integration/cases/test_x509.sh
+new file mode 100644
+index 0000000..9448c54
+--- /dev/null
++++ b/tests/integration/cases/test_x509.sh
+@@ -0,0 +1,48 @@
++#!/usr/bin/env bash
++# test_x509.sh — INTERNET_PLAN.md phase N2 in-guest gate.
++#
++# The field-level RFC battery runs host-side (tests/unit/test_atls_x509.c,
++# 61 checks).  This case boots the OS and runs /tests/x509test, which is
++# the half of the gate that MUST run in QEMU: the hostile inputs (every
++# truncated prefix, a bit-flip battery, indefinite/huge lengths, and a
++# 10 000-deep nesting) are thrown at the parser while it sits on the
++# guest's real 64 KiB user stack.  If the parser recursed over attacker
++# nesting instead of walking it iteratively, this is where it would die
++# on the stack guard page — the test asserts no exception and ALL PASS.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "N2: X.509 parsing in-guest gate"
++
++LOG="$IL_LOGDIR/x509.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 8
++il_send "run x509test"
++il_send_delay 15
++il_send "exit"
++
++il_run_qemu "$LOG" 70
++
++il_assert_grep "$LOG" "auralite#"                      "shell reached"
++il_assert_grep "$LOG" "\[x509test\] PASS: example.com leaf parses in guest"   "real leaf parses"
++il_assert_grep_fixed "$LOG" "[x509test] PASS: local RSA CA: pathlen + keyUsage correct" "local CA fields"
++il_assert_grep "$LOG" "\[x509test\] PASS: every truncated prefix refused"       "truncation sweep"
++il_assert_grep "$LOG" "\[x509test\] PASS: bit-flip battery"                     "bit-flip battery"
++il_assert_grep "$LOG" "\[x509test\] PASS: indefinite length refused"            "indefinite length refused"
++il_assert_grep "$LOG" "\[x509test\] PASS: 4 GiB length claim refused"           "huge length refused"
++il_assert_grep "$LOG" "\[x509test\] PASS: 10 000-deep nesting refused"          "10 000-deep nesting refused at depth budget"
++il_assert_grep "$LOG" "\[x509test\] PASS: 20-deep nesting accepted"             "modest nesting accepted"
++il_assert_grep "$LOG" "\[x509test\] ALL PASS"                                   "x509test reports ALL PASS"
++
++il_assert_no_grep "$LOG" "\[x509test\] FAIL"     "no in-guest X.509 failure"
++il_assert_no_grep "$LOG" "KERNEL EXCEPTION"      "no kernel exception (no stack death)"
++il_assert_no_grep "$LOG" "GUARD"                 "no stack guard page hit"
++il_assert_no_grep "$LOG" "PANIC"                 "no kernel panic"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 6e81098..ba50d83 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -81,6 +81,7 @@ ALL_CASES=(
+     test_ist_double_fault
+     test_rng
+     test_crypto
++    test_x509
+     test_fd_isolation
+     test_user_processes
+     test_ahci_rw
+diff --git a/tests/unit/atls_x509_testdata.c b/tests/unit/atls_x509_testdata.c
+new file mode 100644
+index 0000000..36865c2
+--- /dev/null
++++ b/tests/unit/atls_x509_testdata.c
+@@ -0,0 +1,275 @@
++/* tests/unit/atls_x509_testdata.c — crafted DER for the N2 gates.
++ *
++ * A tiny bottom-up DER writer plus three builders the test batteries use:
++ *
++ *   build_minimal_cert(version, critical_unknown_ext, include_ext)
++ *       The smallest X.509 v3 shape the parser accepts: Ed25519-flavoured
++ *       OIDs, empty Names, zero keys/signatures.  Variants exercise the
++ *       v1 refusal, the unknown-critical-extension refusal (D5), and the
++ *       extension-less case.
++ *
++ *   build_cert_with_san_blob(blob, len)
++ *       Same minimal certificate, but the SAN extension's OCTET STRING
++ *       contains `blob` verbatim — this is how the depth battery smuggles
++ *       a 10 000-deep nesting into the parser's walking path.
++ *
++ *   atls_der_skip_value_test(p, n)
++ *       Drives the internal iterative skipper directly for the depth gate.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++#include <string.h>
++#include "atls_der.h"
++#include "atls/atls.h"
++
++/* ---- tiny DER writer ---- */
++
++static size_t emit_len(uint8_t *out, size_t len) {
++    if (len < 0x80) {
++        out[0] = (uint8_t)len;
++        return 1;
++    }
++    if (len < 0x100) {
++        out[0] = 0x81;
++        out[1] = (uint8_t)len;
++        return 2;
++    }
++    out[0] = 0x82;
++    out[1] = (uint8_t)(len >> 8);
++    out[2] = (uint8_t)len;
++    return 3;
++}
++
++static size_t emit_tlv(uint8_t *out, uint8_t tag, const uint8_t *content,
++                       size_t clen) {
++    out[0] = tag;
++    size_t n = emit_len(out + 1, clen);
++    for (size_t i = 0; i < clen; i++) out[1 + n + i] = content[i];
++    return 1 + n + clen;
++}
++
++/* ---- fixed parts ---- */
++
++static const uint8_t OID_ED25519[] = { 0x2b, 0x65, 0x70 };        /* 1.3.101.112 */
++static const uint8_t OID_UNKNOWN[] = { 0x2b, 0x06, 0x01, 0x04, 0x01 }; /* 1.3.6.1.4.1 */
++static const uint8_t OID_SAN[] = { 0x55, 0x1d, 0x11 };
++
++static size_t build_alg_id(uint8_t *out, const uint8_t *oid, size_t oidlen) {
++    uint8_t oid_tlv[16];
++    size_t on = emit_tlv(oid_tlv, 0x06, oid, oidlen);
++    return emit_tlv(out, 0x30, oid_tlv, on);
++}
++
++size_t build_minimal_cert(uint8_t *out, int version, int critical_unknown_ext,
++                          int include_ext) {
++    uint8_t tbs_content[512];
++    size_t tlen = 0;
++
++    /* version [0] EXPLICIT INTEGER */
++    {
++        uint8_t v = (uint8_t)version;
++        uint8_t vi[8];
++        size_t vn = emit_tlv(vi, 0x02, &v, 1);
++        uint8_t wrap[16];
++        size_t wn = emit_tlv(wrap, 0xa0, vi, vn);
++        memcpy(tbs_content + tlen, wrap, wn);
++        tlen += wn;
++    }
++    /* serialNumber INTEGER 1 */
++    {
++        uint8_t s = 0x01;
++        tlen += emit_tlv(tbs_content + tlen, 0x02, &s, 1);
++    }
++    /* signature AlgorithmIdentifier */
++    tlen += build_alg_id(tbs_content + tlen, OID_ED25519, sizeof(OID_ED25519));
++    /* issuer Name (empty) */
++    tlen += emit_tlv(tbs_content + tlen, 0x30, NULL, 0);
++    /* validity: two UTCTimes */
++    {
++        uint8_t times[64];
++        size_t tn = 0;
++        tn += emit_tlv(times + tn, 0x17,
++                       (const uint8_t *)"260101000000Z", 13);
++        tn += emit_tlv(times + tn, 0x17,
++                       (const uint8_t *)"360101000000Z", 13);
++        tlen += emit_tlv(tbs_content + tlen, 0x30, times, tn);
++    }
++    /* subject Name (empty) */
++    tlen += emit_tlv(tbs_content + tlen, 0x30, NULL, 0);
++    /* subjectPublicKeyInfo */
++    {
++        uint8_t spki_content[128];
++        size_t sn = build_alg_id(spki_content, OID_ED25519, sizeof(OID_ED25519));
++        uint8_t keybits[33];
++        memset(keybits, 0, sizeof(keybits));      /* unused-bits 0 + 32 zero bytes */
++        uint8_t bs[48];
++        size_t bn = emit_tlv(bs, 0x03, keybits, sizeof(keybits));
++        memcpy(spki_content + sn, bs, bn);
++        sn += bn;
++        tlen += emit_tlv(tbs_content + tlen, 0x30, spki_content, sn);
++    }
++    /* extensions [3] */
++    if (include_ext) {
++        uint8_t ext_content[64];
++        size_t xn = 0;
++        xn += emit_tlv(ext_content + xn, 0x06, OID_UNKNOWN, sizeof(OID_UNKNOWN));
++        if (critical_unknown_ext) {
++            uint8_t t = 0xff;
++            xn += emit_tlv(ext_content + xn, 0x01, &t, 1);
++        }
++        xn += emit_tlv(ext_content + xn, 0x04, NULL, 0);   /* empty OCTET STRING */
++
++        uint8_t ext_seq[96];
++        size_t esn = emit_tlv(ext_seq, 0x30, ext_content, xn);
++        uint8_t exts_seq[128];
++        size_t sen = emit_tlv(exts_seq, 0x30, ext_seq, esn);
++        uint8_t wrap[160];
++        size_t wn = emit_tlv(wrap, 0xa3, exts_seq, sen);
++        memcpy(tbs_content + tlen, wrap, wn);
++        tlen += wn;
++    }
++
++    uint8_t cert_content[768];
++    size_t clen = 0;
++    clen += emit_tlv(cert_content + clen, 0x30, tbs_content, tlen);   /* TBS */
++    clen += build_alg_id(cert_content + clen, OID_ED25519, sizeof(OID_ED25519));
++    {
++        uint8_t sigbits[65];
++        memset(sigbits, 0, sizeof(sigbits));      /* unused-bits 0 + 64 zero bytes */
++        uint8_t bs[80];
++        size_t bn = emit_tlv(bs, 0x03, sigbits, sizeof(sigbits));
++        memcpy(cert_content + clen, bs, bn);
++        clen += bn;
++    }
++    return emit_tlv(out, 0x30, cert_content, clen);
++}
++
++size_t build_cert_with_san_blob(uint8_t *out, const uint8_t *blob,
++                                size_t blob_len) {
++    static uint8_t tbs_content[65536];
++    size_t tlen = 0;
++
++    /* version, serial, alg, issuer, validity, subject, spki — same as the
++     * minimal certificate. */
++    {
++        uint8_t v = 2;
++        uint8_t vi[8];
++        size_t vn = emit_tlv(vi, 0x02, &v, 1);
++        tlen += emit_tlv(tbs_content + tlen, 0xa0, vi, vn);
++    }
++    {
++        uint8_t s = 0x01;
++        tlen += emit_tlv(tbs_content + tlen, 0x02, &s, 1);
++    }
++    tlen += build_alg_id(tbs_content + tlen, OID_ED25519, sizeof(OID_ED25519));
++    tlen += emit_tlv(tbs_content + tlen, 0x30, NULL, 0);
++    {
++        uint8_t times[64];
++        size_t tn = 0;
++        tn += emit_tlv(times + tn, 0x17, (const uint8_t *)"260101000000Z", 13);
++        tn += emit_tlv(times + tn, 0x17, (const uint8_t *)"360101000000Z", 13);
++        tlen += emit_tlv(tbs_content + tlen, 0x30, times, tn);
++    }
++    tlen += emit_tlv(tbs_content + tlen, 0x30, NULL, 0);
++    {
++        uint8_t spki_content[128];
++        size_t sn = build_alg_id(spki_content, OID_ED25519, sizeof(OID_ED25519));
++        uint8_t keybits[33];
++        memset(keybits, 0, sizeof(keybits));
++        uint8_t bs[48];
++        size_t bn = emit_tlv(bs, 0x03, keybits, sizeof(keybits));
++        memcpy(spki_content + sn, bs, bn);
++        sn += bn;
++        tlen += emit_tlv(tbs_content + tlen, 0x30, spki_content, sn);
++    }
++    /* extensions [3] { SEQUENCE { SEQUENCE { OID SAN, OCTET STRING blob } } } */
++    {
++        /* One static scratch buffer per wrapping stage; the battery's blob
++         * can be ~47 KiB, so no small stack arrays here. */
++        static uint8_t ext_body[65536];
++        static uint8_t ext_seq[65536];
++        static uint8_t exts_seq[65536];
++        static uint8_t a3_wrap[65536];
++
++        size_t xn = 0;
++        xn += emit_tlv(ext_body + xn, 0x06, OID_SAN, sizeof(OID_SAN));
++        xn += emit_tlv(ext_body + xn, 0x04, blob, blob_len);
++        size_t esn = emit_tlv(ext_seq, 0x30, ext_body, xn);
++        size_t sen = emit_tlv(exts_seq, 0x30, ext_seq, esn);
++        size_t wn = emit_tlv(a3_wrap, 0xa3, exts_seq, sen);
++        memcpy(tbs_content + tlen, a3_wrap, wn);
++        tlen += wn;
++    }
++
++    static uint8_t cert_content[65536];
++    size_t clen = 0;
++    clen += emit_tlv(cert_content + clen, 0x30, tbs_content, tlen);
++    clen += build_alg_id(cert_content + clen, OID_ED25519, sizeof(OID_ED25519));
++    {
++        uint8_t sigbits[65];
++        memset(sigbits, 0, sizeof(sigbits));
++        uint8_t bs[80];
++        size_t bn = emit_tlv(bs, 0x03, sigbits, sizeof(sigbits));
++        memcpy(cert_content + clen, bs, bn);
++        clen += bn;
++    }
++    return emit_tlv(out, 0x30, cert_content, clen);
++}
++
++int atls_der_skip_value_test(const uint8_t *p, size_t n) {
++    atls_der d;
++    int rc = atls_der_init(&d, p, n);
++    if (rc != ATLS_OK) return rc;
++    atls_der_tlv t;
++    rc = atls_der_read_tlv(&d, &t);
++    if (rc != ATLS_OK) return rc;
++    return atls_der_skip_value(&t, 0);
++}
++
++/* Emit `levels` nested SEQUENCEs around a NULL payload into buf, from
++ * the inside out.  Returns total size; buf must hold ~5 bytes per level
++ * (~48 KiB for 10 000 levels).  Shared by the host battery and the
++ * in-guest x509test so both halves of the depth gate run the identical
++ * construction. */
++size_t atls_test_build_deep_nest(uint8_t *buf, size_t bufcap, int levels) {
++    uint8_t payload[2] = { 0x05, 0x00 };
++    size_t cur_len = 2;
++    if (bufcap < cur_len + (size_t)levels * 5) return 0;
++    size_t off = bufcap - cur_len;
++    memcpy(buf + off, payload, cur_len);
++
++    for (int i = 0; i < levels; i++) {
++        uint8_t hdr[5];
++        size_t hlen;
++        hdr[0] = 0x30;
++        if (cur_len < 0x80) {
++            hdr[1] = (uint8_t)cur_len;
++            hlen = 2;
++        } else if (cur_len < 0x100) {
++            hdr[1] = 0x81;
++            hdr[2] = (uint8_t)cur_len;
++            hlen = 3;
++        } else if (cur_len < 0x10000) {
++            hdr[1] = 0x82;
++            hdr[2] = (uint8_t)(cur_len >> 8);
++            hdr[3] = (uint8_t)cur_len;
++            hlen = 4;
++        } else {
++            hdr[1] = 0x83;
++            hdr[2] = (uint8_t)(cur_len >> 16);
++            hdr[3] = (uint8_t)(cur_len >> 8);
++            hdr[4] = (uint8_t)cur_len;
++            hlen = 5;
++        }
++        off -= hlen;
++        memcpy(buf + off, hdr, hlen);
++        cur_len += hlen;
++    }
++    /* Slide the blob down to the buffer start.  The destination (buf) is
++     * BELOW the source (buf+off), so a forward copy never overwrites
++     * bytes it has not read yet; a plain loop keeps this independent of
++     * memmove, which the guest libc does not provide. */
++    for (size_t i = 0; i < cur_len; i++) buf[i] = buf[off + i];
++    return cur_len;
++}
+diff --git a/tests/unit/test_atls_x509.c b/tests/unit/test_atls_x509.c
+new file mode 100644
+index 0000000..c86033d
+--- /dev/null
++++ b/tests/unit/test_atls_x509.c
+@@ -0,0 +1,351 @@
++/* tests/unit/test_atls_x509.c — N2 X.509 parsing gates.
++ *
++ *   1. Real certificates parse correctly: two REAL-WORLD leaves fetched
++ *      live (example.com, www.google.com) plus four openssl-generated
++ *      locals, all embedded via tests/atls_test_certs.h and asserted
++ *      field by field (SAN, CA flag, pathlen, key usage bits, critical
++ *      flags, signature OIDs, validity dates).
++ *   2. Truncated, over-long, and malformed structures are all refused —
++ *      every prefix of a real certificate must fail, and each crafted
++ *      malformation must fail for its SPECIFIC reason.
++ *   3. A 10 000-deep nesting is refused with ATLS_ERR_DEPTH, not
++ *      followed (the 64 KiB guest stack is exactly what this protects;
++ *      the in-guest half of this gate is userspace/tests/x509test).
++ *   4. A mutation battery (bit flips, byte deletions) over real
++ *      certificates: the parser may accept or refuse, but it must not
++ *      crash, hang, or read out of bounds.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "atls/atls.h"
++#include "atls/x509.h"
++#include "tests/atls_test_certs.h"
++
++static int pass_count = 0, fail_count = 0;
++
++#define CHECK(cond, msg)                                    \
++    do {                                                    \
++        if (cond) { pass_count++; printf("PASS: %s\n", msg); } \
++        else { fail_count++; printf("FAIL: %s (line %d)\n", msg, __LINE__); } \
++    } while (0)
++
++static int span_streq(const atls_span *s, const char *lit) {
++    size_t n = strlen(lit);
++    return s->len == n && memcmp(s->data, lit, n) == 0;
++}
++
++/* ---- 1. real certificates, field by field ---- */
++
++static void test_real_certs(void) {
++    atls_x509_cert c;
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_EXAMPLE_COM,
++                          sizeof(ATLS_TEST_CERT_EXAMPLE_COM), &c) == ATLS_OK,
++          "example.com leaf parses");
++    CHECK(c.version == 3, "example.com: version 3");
++    CHECK(c.san_dns_count == 2, "example.com: two dNSNames");
++    CHECK(span_streq(&c.san_dns[0], "example.com"),
++          "example.com: SAN[0] == example.com");
++    CHECK(span_streq(&c.san_dns[1], "*.example.com"),
++          "example.com: SAN[1] == *.example.com");
++    CHECK(c.is_ca == 0 && c.bc_critical == 1,
++          "example.com: CA:FALSE, critical basicConstraints");
++    CHECK(c.key_usage_present && c.key_usage == 0x0001,
++          "example.com: keyUsage digitalSignature only");
++    CHECK(atls_oid_eq(&c.outer_sig_oid, ATLS_OID_ECDSA_SHA256, 8),
++          "example.com: ecdsa-with-SHA256 signature algorithm");
++    CHECK(atls_oid_eq(&c.spki_alg_oid, ATLS_OID_EC_PUBLIC_KEY, 7),
++          "example.com: id-ecPublicKey SPKI");
++    CHECK(c.not_before.year == 2026 && c.not_after.year == 2026,
++          "example.com: validity dates read");
++    CHECK(c.signature.len == 70, "example.com: ECDSA P-256 signature length");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_GOOGLE,
++                          sizeof(ATLS_TEST_CERT_GOOGLE), &c) == ATLS_OK,
++          "www.google.com leaf parses");
++    CHECK(c.san_dns_count == 1 && span_streq(&c.san_dns[0], "www.google.com"),
++          "www.google.com: SAN matches");
++    CHECK(c.is_ca == 0, "www.google.com: leaf, not a CA");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_EC_LOCAL,
++                          sizeof(ATLS_TEST_CERT_EC_LOCAL), &c) == ATLS_OK,
++          "local EC self-signed parses");
++    CHECK(c.san_dns_count == 2 && span_streq(&c.san_dns[0], "localhost")
++          && span_streq(&c.san_dns[1], "aura.test"),
++          "local EC: SANs localhost + aura.test");
++    CHECK(c.not_before.year == 2026 && c.not_after.year == 2036,
++          "local EC: UTCTime decade rollover decoded (2026..2036)");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_ED_LOCAL,
++                          sizeof(ATLS_TEST_CERT_ED_LOCAL), &c) == ATLS_OK,
++          "local Ed25519 self-signed parses");
++    CHECK(atls_oid_eq(&c.outer_sig_oid, ATLS_OID_ED25519, 3),
++          "local Ed25519: Ed25519 signature OID");
++    CHECK(c.signature.len == 64, "local Ed25519: 64-byte signature");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_CA_LOCAL,
++                          sizeof(ATLS_TEST_CERT_CA_LOCAL), &c) == ATLS_OK,
++          "local RSA CA parses");
++    CHECK(c.is_ca == 1 && c.bc_critical == 1,
++          "local CA: CA:TRUE, critical");
++    CHECK(c.path_len_present && c.path_len == 0,
++          "local CA: pathlen:0 decoded");
++    CHECK(c.key_usage_present && c.ku_critical && c.key_usage == 0x0060,
++          "local CA: critical keyUsage keyCertSign|cRLSign");
++    CHECK(atls_oid_eq(&c.outer_sig_oid, ATLS_OID_SHA256_RSA, 9),
++          "local CA: sha256WithRSAEncryption");
++    CHECK(atls_oid_eq(&c.spki_alg_oid, ATLS_OID_RSA_ENCRYPTION, 9),
++          "local CA: rsaEncryption SPKI");
++    CHECK(c.signature.len == 256, "local CA: 2048-bit RSA signature");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_RSA_LEAF,
++                          sizeof(ATLS_TEST_CERT_RSA_LEAF), &c) == ATLS_OK,
++          "local RSA leaf parses");
++    CHECK(c.is_ca == 0 && c.bc_critical == 0,
++          "local leaf: CA:FALSE, NON-critical basicConstraints");
++    CHECK(c.key_usage == 0x0005 && c.ku_critical == 0,
++          "local leaf: keyUsage digitalSignature|keyEncipherment");
++    CHECK(c.not_before.year == 2026 && c.not_before.month == 8
++          && c.not_after.day == 7,
++          "local leaf: short validity decoded");
++}
++
++/* ---- structural invariants N5 will rely on ---- */
++
++static void test_spans_and_invariants(void) {
++    atls_x509_cert c;
++    const uint8_t *base = ATLS_TEST_CERT_EC_LOCAL;
++    size_t len = sizeof(ATLS_TEST_CERT_EC_LOCAL);
++
++    CHECK(atls_x509_parse(base, len, &c) == ATLS_OK, "invariant fixture parses");
++
++    /* Every span must point INSIDE the input buffer (zero-copy). */
++    int inside = 1;
++    const atls_span *spans[] = {
++        &c.serial, &c.tbs, &c.issuer, &c.subject, &c.spki, &c.signature,
++    };
++    for (size_t i = 0; i < sizeof(spans) / sizeof(spans[0]); i++) {
++        if (spans[i]->data < base || spans[i]->data + spans[i]->len > base + len) {
++            inside = 0;
++        }
++    }
++    CHECK(inside, "all output spans point inside the input (zero-copy)");
++
++    /* Self-signed: issuer and subject DER are byte-identical. */
++    CHECK(c.issuer.len == c.subject.len &&
++          memcmp(c.issuer.data, c.subject.data, c.issuer.len) == 0,
++          "self-signed: issuer DER == subject DER (chain building basis)");
++
++    /* Inner (TBS) and outer signature OIDs agree. */
++    CHECK(c.inner_sig_oid.len == c.outer_sig_oid.len &&
++          memcmp(c.inner_sig_oid.data, c.outer_sig_oid.data,
++                 c.inner_sig_oid.len) == 0,
++          "inner and outer signature OIDs agree");
++
++    CHECK(c.signature_unused_bits == 0, "signature BIT STRING has 0 unused bits");
++    CHECK(c.san_dns_truncated == 0, "no SAN truncation for sane certs");
++
++    /* OID comparison helper. */
++    CHECK(atls_oid_eq(&c.outer_sig_oid, ATLS_OID_ECDSA_SHA256, 8) == 1,
++          "atls_oid_eq positive");
++    CHECK(atls_oid_eq(&c.outer_sig_oid, ATLS_OID_ED25519, 3) == 0,
++          "atls_oid_eq negative (different length)");
++}
++
++/* ---- 2. refusal battery: each malformation, each reason ---- */
++
++static void test_refusals(void) {
++    atls_x509_cert c;
++
++    CHECK(atls_x509_parse(NULL, 0, &c) == ATLS_ERR_INPUT, "NULL refused");
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_EC_LOCAL, 0, &c) == ATLS_ERR_TRUNCATED,
++          "empty input refused");
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_EC_LOCAL, 1, &c) != ATLS_OK,
++          "one byte refused");
++
++    /* Trailing garbage after a valid certificate. */
++    uint8_t padded[512];
++    size_t n = sizeof(ATLS_TEST_CERT_EC_LOCAL);
++    memcpy(padded, ATLS_TEST_CERT_EC_LOCAL, n);
++    padded[n] = 0x00;
++    CHECK(atls_x509_parse(padded, n + 1, &c) == ATLS_ERR_BAD_ENCODING,
++          "trailing garbage refused");
++
++    /* Indefinite length is not DER. */
++    {
++        const uint8_t indef[] = { 0x30, 0x80, 0x00, 0x00 };
++        CHECK(atls_x509_parse(indef, sizeof(indef), &c) == ATLS_ERR_BAD_LENGTH,
++              "indefinite length refused (BAD_LENGTH)");
++    }
++
++    /* Non-minimal long-form length (0x81 used for a value < 0x80). */
++    {
++        const uint8_t nonmin[] = { 0x30, 0x81, 0x03, 0x02, 0x01, 0x01 };
++        CHECK(atls_x509_parse(nonmin, sizeof(nonmin), &c) == ATLS_ERR_BAD_LENGTH,
++              "non-minimal length refused (BAD_LENGTH)");
++    }
++
++    /* A 4 GiB length claim dies at the bounds check, not in an
++     * allocator. */
++    {
++        const uint8_t huge[] = { 0x30, 0x84, 0xff, 0xff, 0xff, 0xff };
++        CHECK(atls_x509_parse(huge, sizeof(huge), &c) == ATLS_ERR_TRUNCATED,
++              "4 GiB length claim refused without allocating");
++    }
++
++    /* High-tag-number form: refused rather than guessed at. */
++    {
++        const uint8_t htn[] = { 0x3f, 0x81, 0x00, 0x00 };
++        CHECK(atls_x509_parse(htn, sizeof(htn), &c) == ATLS_ERR_UNSUPPORTED,
++              "high-tag-number form refused");
++    }
++
++    /* v1 certificate (version INTEGER 0): refused on purpose. */
++    uint8_t v1[512];
++    extern size_t build_minimal_cert(uint8_t * out, int version, int critical_unknown_ext,
++                                     int include_ext);
++    size_t v1n = build_minimal_cert(v1, 0, 0, 0);
++    CHECK(atls_x509_parse(v1, v1n, &c) == ATLS_ERR_UNSUPPORTED,
++          "v1 certificate refused (UNSUPPORTED)");
++
++    /* A crafted minimal v3 certificate with an UNKNOWN CRITICAL
++     * extension: D5 — reject rather than interpret. */
++    uint8_t crafted[768];
++    size_t cn = build_minimal_cert(crafted, 2, 1, 1);
++    CHECK(atls_x509_parse(crafted, cn, &c) == ATLS_ERR_UNSUPPORTED,
++          "unknown critical extension refused (UNSUPPORTED)");
++
++    /* The same certificate with the extension NON-critical parses. */
++    cn = build_minimal_cert(crafted, 2, 0, 1);
++    CHECK(atls_x509_parse(crafted, cn, &c) == ATLS_OK,
++          "unknown non-critical extension skipped, cert accepted");
++
++    /* A v3 certificate with no extensions at all is fine. */
++    cn = build_minimal_cert(crafted, 2, 0, 0);
++    CHECK(atls_x509_parse(crafted, cn, &c) == ATLS_OK && c.version == 3,
++          "extension-less v3 certificate accepted");
++}
++
++/* ---- 3. depth gate: 10 000 levels die at the budget ---- */
++
++/* Lives in atls_x509_testdata.c so the in-guest x509test runs the exact
++ * same construction. */
++extern size_t atls_test_build_deep_nest(uint8_t *buf, size_t bufcap, int levels);
++
++extern size_t build_cert_with_san_blob(uint8_t *out, const uint8_t *blob,
++                                       size_t blob_len);
++
++static void test_depth(void) {
++    static uint8_t blob[60000];
++    atls_x509_cert c;
++
++    size_t n10000 = atls_test_build_deep_nest(blob, sizeof(blob), 10000);
++    CHECK(n10000 > 0, "10 000-deep blob built");
++
++    /* Wrapped inside a certificate as the SAN extension value: the
++     * parser must reach the depth budget and refuse, not follow. */
++    static uint8_t crafted[65536];
++    size_t cn = build_cert_with_san_blob(crafted, blob, n10000);
++    CHECK(atls_x509_parse(crafted, cn, &c) == ATLS_ERR_DEPTH,
++          "10 000-deep nesting inside SAN refused with ATLS_ERR_DEPTH");
++
++    /* A modest nesting (20 levels) inside one GeneralName is walked by
++     * the skipper and accepted. */
++    size_t n20 = atls_test_build_deep_nest(blob, sizeof(blob), 20);
++    cn = build_cert_with_san_blob(crafted, blob, n20);
++    CHECK(atls_x509_parse(crafted, cn, &c) == ATLS_OK,
++          "20-deep nesting inside GeneralName skipped within budget");
++
++    /* Direct skipper check on the raw blob (rebuild: blob was reused). */
++    {
++        extern int atls_der_skip_value_test(const uint8_t *p, size_t n);
++        size_t n_again = atls_test_build_deep_nest(blob, sizeof(blob), 10000);
++        CHECK(n_again == n10000, "deep blob rebuild is deterministic");
++        CHECK(atls_der_skip_value_test(blob, n10000) == ATLS_ERR_DEPTH,
++              "skip_value itself enforces the depth budget");
++        size_t n30 = atls_test_build_deep_nest(blob, sizeof(blob), 30);
++        CHECK(atls_der_skip_value_test(blob, n30) == ATLS_OK,
++              "skip_value walks 30 levels fine");
++    }
++}
++
++/* ---- 4. truncation sweep: EVERY prefix of a real cert fails ---- */
++
++static void test_truncation_sweep(void) {
++    atls_x509_cert c;
++    static uint8_t buf[2048];
++    size_t n = sizeof(ATLS_TEST_CERT_EXAMPLE_COM);
++    memcpy(buf, ATLS_TEST_CERT_EXAMPLE_COM, n);
++
++    int all_refused = 1;
++    for (size_t cut = 0; cut < n; cut++) {
++        int rc = atls_x509_parse(buf, cut, &c);
++        if (rc == ATLS_OK) {
++            all_refused = 0;
++            printf("      prefix %zu unexpectedly parsed\n", cut);
++            break;
++        }
++    }
++    CHECK(all_refused,
++          "every truncated prefix of example.com refused (1001 prefixes)");
++}
++
++/* ---- 5. mutation battery: never crash, bounded behaviour ---- */
++
++static void test_mutation_battery(void) {
++    atls_x509_cert c;
++    static uint8_t buf[2048];
++    size_t n = sizeof(ATLS_TEST_CERT_EXAMPLE_COM);
++
++    /* Bit flips at a stride of positions.  The gate is NOT "most flips
++     * refused": this parser checks DER STRUCTURE, and most bytes of a
++     * certificate are payload (key material, signature, name strings)
++     * whose corruption leaves the structure intact.  The honest
++     * assertions are: nothing crashes, both outcomes occur (the parser
++     * discriminates rather than blanket-accepting), and structural
++     * damage — which byte deletions always are — is always refused. */
++    int ok_count = 0, err_count = 0, bad_rc = 0;
++    for (size_t pos = 0; pos < n; pos += 5) {
++        for (int bit = 0; bit < 8; bit += 3) {
++            memcpy(buf, ATLS_TEST_CERT_EXAMPLE_COM, n);
++            buf[pos] ^= (uint8_t)(1u << bit);
++            int rc = atls_x509_parse(buf, n, &c);
++            if (rc == ATLS_OK) ok_count++;
++            else if (rc <= ATLS_ERR_INPUT && rc >= ATLS_ERR_UNSUPPORTED) err_count++;
++            else bad_rc++;
++        }
++    }
++    CHECK(bad_rc == 0, "bit-flip battery: every refusal is a known error code");
++    CHECK(err_count > 0 && ok_count > 0,
++          "bit-flip battery: parser discriminates (both outcomes occur)");
++    printf("      (bit flips: %d refused, %d still parsed, %d unknown codes)\n",
++           err_count, ok_count, bad_rc);
++
++    /* Byte deletions shift every following structure byte, so they are
++     * always structural damage: every one must be refused. */
++    int refused = 0, total = 0;
++    for (size_t pos = 0; pos < n; pos += 11) {
++        memcpy(buf, ATLS_TEST_CERT_EXAMPLE_COM, pos);
++        memcpy(buf + pos, ATLS_TEST_CERT_EXAMPLE_COM + pos + 1, n - pos - 1);
++        int rc = atls_x509_parse(buf, n - 1, &c);
++        if (rc != ATLS_OK) refused++;
++        total++;
++    }
++    CHECK(refused == total,
++          "byte-deletion battery: every deletion refused, none crashed");
++    printf("      (deletions: %d/%d refused)\n", refused, total);
++}
++
++int main(void) {
++    printf("test_atls_x509: real certs + refusal battery + depth gate + fuzz\n");
++    test_real_certs();
++    test_spans_and_invariants();
++    test_refusals();
++    test_depth();
++    test_truncation_sweep();
++    test_mutation_battery();
++    printf("test_atls_x509: %d passed, %d failed\n", pass_count, fail_count);
++    return fail_count == 0 ? 0 : 1;
++}
+diff --git a/tools/sdk_check.sh b/tools/sdk_check.sh
+index b46d1d8..7bda279 100644
+--- a/tools/sdk_check.sh
++++ b/tools/sdk_check.sh
+@@ -63,7 +63,7 @@ done < <(find "$SDK/include" -name '*.h' -print0)
+ for f in auralite.mk user.ld README.md \
+          lib/libaurac.a lib/libauragui.a lib/libaGL.a lib/libatls.a lib/crt0.o \
+          include/stdio.h include/unistd.h include/auragui.h include/GL/gl.h \
+-         include/atls/atls.h; do
++         include/atls/atls.h include/atls/x509.h; do
+     if [ -e "$SDK/$f" ]; then ok "$f present"; else bad "$f missing"; fi
+ done
+ 
+diff --git a/userspace/tests/x509test/x509test.c b/userspace/tests/x509test/x509test.c
+new file mode 100644
+index 0000000..1113750
+--- /dev/null
++++ b/userspace/tests/x509test/x509test.c
+@@ -0,0 +1,171 @@
++/* x509test — in-guest X.509 parsing gate (INTERNET_PLAN.md phase N2).
++ *
++ * The full RFC/field battery runs host-side (tests/unit/test_atls_x509.c).
++ * THIS program exists because the N2 test gate demands the hostile cases
++ * be run "in QEMU where the 64 KB limit is real": the parser faces the
++ * guest's actual 64 KiB user stack and the kernel's guard pages, so any
++ * recursion over attacker-supplied nesting shows up as a SIGSEGV on the
++ * guard page instead of silently passing on the host's 8 MiB stack.
++ *
++ * Covered here: real + local certificates parse, the truncation sweep,
++ * the bit-flip battery, indefinite/huge lengths, and the 10 000-deep
++ * nesting refused at the depth budget — built by the SAME helpers the
++ * host battery uses (tests/unit/atls_x509_testdata.c), so both halves
++ * of the gate exercise identical bytes.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include "atls/atls.h"
++#include "atls/x509.h"
++#include "tests/atls_test_certs.h"
++
++extern size_t atls_test_build_deep_nest(uint8_t *buf, size_t bufcap, int levels);
++extern size_t build_cert_with_san_blob(uint8_t *out, const uint8_t *blob,
++                                       size_t blob_len);
++extern int atls_der_skip_value_test(const uint8_t *p, size_t n);
++
++static int failures = 0;
++
++#define CHECK(cond, name)                                    \
++    do {                                                     \
++        if (cond) {                                          \
++            printf("[x509test] PASS: %s\n", name);           \
++        } else {                                             \
++            failures++;                                      \
++            printf("[x509test] FAIL: %s\n", name);           \
++        }                                                    \
++    } while (0)
++
++static int span_streq(const atls_span *s, const char *lit) {
++    size_t n = strlen(lit);
++    return s->len == n && memcmp(s->data, lit, n) == 0;
++}
++
++static void test_embedded_certs(void) {
++    atls_x509_cert c;
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_EXAMPLE_COM,
++                          sizeof(ATLS_TEST_CERT_EXAMPLE_COM), &c) == ATLS_OK,
++          "example.com leaf parses in guest");
++    CHECK(c.version == 3 && c.san_dns_count == 2 &&
++          span_streq(&c.san_dns[0], "example.com") &&
++          span_streq(&c.san_dns[1], "*.example.com"),
++          "example.com: version + SANs correct");
++    CHECK(atls_oid_eq(&c.outer_sig_oid, ATLS_OID_ECDSA_SHA256, 8),
++          "example.com: signature OID correct");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_GOOGLE,
++                          sizeof(ATLS_TEST_CERT_GOOGLE), &c) == ATLS_OK &&
++          c.san_dns_count == 1 && span_streq(&c.san_dns[0], "www.google.com"),
++          "www.google.com leaf parses in guest");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_EC_LOCAL,
++                          sizeof(ATLS_TEST_CERT_EC_LOCAL), &c) == ATLS_OK &&
++          c.is_ca == 1 && c.san_dns_count == 2 &&
++          span_streq(&c.san_dns[0], "localhost"),
++          "local EC: CA flag + SANs correct");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_ED_LOCAL,
++                          sizeof(ATLS_TEST_CERT_ED_LOCAL), &c) == ATLS_OK &&
++          atls_oid_eq(&c.outer_sig_oid, ATLS_OID_ED25519, 3),
++          "local Ed25519 parses in guest");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_CA_LOCAL,
++                          sizeof(ATLS_TEST_CERT_CA_LOCAL), &c) == ATLS_OK &&
++          c.is_ca == 1 && c.path_len_present && c.path_len == 0 &&
++          c.key_usage == 0x0060,
++          "local RSA CA: pathlen + keyUsage correct");
++
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_RSA_LEAF,
++                          sizeof(ATLS_TEST_CERT_RSA_LEAF), &c) == ATLS_OK &&
++          c.is_ca == 0 && c.key_usage == 0x0005,
++          "local RSA leaf: CA:FALSE + keyUsage correct");
++}
++
++static void test_truncation_sweep(void) {
++    atls_x509_cert c;
++    size_t n = sizeof(ATLS_TEST_CERT_EC_LOCAL);
++    int all_refused = 1;
++    for (size_t cut = 0; cut < n; cut++) {
++        if (atls_x509_parse(ATLS_TEST_CERT_EC_LOCAL, cut, &c) == ATLS_OK) {
++            all_refused = 0;
++            break;
++        }
++    }
++    CHECK(all_refused, "every truncated prefix refused (418 prefixes)");
++}
++
++static void test_bit_flips(void) {
++    atls_x509_cert c;
++    static uint8_t buf[2048];
++    size_t n = sizeof(ATLS_TEST_CERT_EXAMPLE_COM);
++    int ok_count = 0, err_count = 0;
++
++    for (size_t pos = 0; pos < n; pos += 13) {
++        for (int bit = 0; bit < 8; bit += 3) {
++            memcpy(buf, ATLS_TEST_CERT_EXAMPLE_COM, n);
++            buf[pos] ^= (uint8_t)(1u << bit);
++            int rc = atls_x509_parse(buf, n, &c);
++            if (rc == ATLS_OK) ok_count++; else err_count++;
++        }
++    }
++    CHECK(err_count > 0 && ok_count > 0,
++          "bit-flip battery: parser discriminates, nothing crashed");
++}
++
++static void test_malformed(void) {
++    atls_x509_cert c;
++    static const uint8_t indef[] = { 0x30, 0x80, 0x00, 0x00 };
++    CHECK(atls_x509_parse(indef, sizeof(indef), &c) == ATLS_ERR_BAD_LENGTH,
++          "indefinite length refused");
++    static const uint8_t huge[] = { 0x30, 0x84, 0xff, 0xff, 0xff, 0xff };
++    CHECK(atls_x509_parse(huge, sizeof(huge), &c) == ATLS_ERR_TRUNCATED,
++          "4 GiB length claim refused without allocating");
++    CHECK(atls_x509_parse(ATLS_TEST_CERT_EC_LOCAL,
++                          sizeof(ATLS_TEST_CERT_EC_LOCAL) + 0, &c) == ATLS_OK,
++          "sane certificate still parses");
++}
++
++static void test_depth_gate(void) {
++    atls_x509_cert c;
++    uint8_t *blob = malloc(60000);
++    static uint8_t crafted[65536];
++    if (!blob) {
++        CHECK(0, "deep-nest buffer allocation");
++        return;
++    }
++
++    size_t n10000 = atls_test_build_deep_nest(blob, 60000, 10000);
++    CHECK(n10000 > 0, "10 000-deep blob built in guest");
++
++    size_t cn = build_cert_with_san_blob(crafted, blob, n10000);
++    CHECK(atls_x509_parse(crafted, cn, &c) == ATLS_ERR_DEPTH,
++          "10 000-deep nesting refused with ATLS_ERR_DEPTH (no stack death)");
++    CHECK(atls_der_skip_value_test(blob, n10000) == ATLS_ERR_DEPTH,
++          "skip_value enforces the depth budget in guest");
++
++    size_t n20 = atls_test_build_deep_nest(blob, 60000, 20);
++    cn = build_cert_with_san_blob(crafted, blob, n20);
++    CHECK(atls_x509_parse(crafted, cn, &c) == ATLS_OK,
++          "20-deep nesting accepted within budget");
++
++    free(blob);
++}
++
++int main(void) {
++    printf("[x509test] in-guest X.509 gate (INTERNET_PLAN N2, 64 KiB stack)\n");
++    test_embedded_certs();
++    test_truncation_sweep();
++    test_bit_flips();
++    test_malformed();
++    test_depth_gate();
++    if (failures == 0) {
++        printf("[x509test] ALL PASS\n");
++        return 0;
++    }
++    printf("[x509test] %d FAILURES\n", failures);
++    return 1;
++}
+-- 
+2.47.3
+

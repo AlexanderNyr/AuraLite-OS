@@ -52,6 +52,9 @@ extern "C" {
 #define ATLS_ERR_BAD_LENGTH       -7   /* length not DER / exceeds buffer */
 #define ATLS_ERR_DEPTH            -8   /* nesting beyond ATLS_DER_MAX_DEPTH */
 #define ATLS_ERR_UNSUPPORTED      -9   /* version/extension/structure refused on purpose */
+#define ATLS_ERR_TLS             -11   /* TLS protocol failure (fatal alert sent/received) */
+#define ATLS_ERR_NO_ENTROPY      -12   /* kernel CSPRNG not ready (D1 fail-closed) */
+#define ATLS_ERR_PEER_EOF        -13   /* peer closed connection mid-handshake */
 
 /* ---- constant-time utilities (D7) ---- */
 

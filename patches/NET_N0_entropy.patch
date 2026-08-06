@@ -1,0 +1,1534 @@
+From 3dfd5aadf750d5dae3bf75826e6db000fc8c619c Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Thu, 6 Aug 2026 13:26:57 +0300
+Subject: [PATCH] N0 update
+
+---
+ CHANGELOG.md                        |  32 +++
+ INTERNET_PLAN.md                    |  40 ++-
+ Makefile                            |   8 +-
+ README.md                           |   8 +-
+ SHA256SUMS                          |   6 +-
+ TODO.md                             |  22 +-
+ docs/posix2024_compliance.md        |   2 +-
+ docs/status.md                      |   3 +-
+ kernel/arch/x86_64/irq.c            |   7 +
+ kernel/arch/x86_64/syscall.c        |  30 ++-
+ kernel/kernel.c                     |   6 +-
+ kernel/rng.c                        | 399 ++++++++++++++++++++++------
+ kernel/rng.h                        |  55 +++-
+ kernel/rng_core.h                   | 162 +++++++++++
+ lib/libc/include/sys/random.h       |   7 +-
+ tests/integration/cases/test_rng.sh |  83 ++++++
+ tests/integration/lib/lib.sh        |   9 +-
+ tests/integration/run_all.sh        |   1 +
+ tests/unit/test_rng.c               | 315 ++++++++++++++++++++++
+ 19 files changed, 1065 insertions(+), 130 deletions(-)
+ create mode 100644 kernel/rng_core.h
+ create mode 100644 tests/integration/cases/test_rng.sh
+ create mode 100644 tests/unit/test_rng.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4fb4bfd..e622f09 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,38 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [Internet Phase N0 — A real entropy source] 2026-08-06
++
++`INTERNET_PLAN.md` phase N0, the first phase of the real-internet plan and
++the gate for all cryptography (decision D1: nothing cryptographic may stand
++on a guessable seed).  The Q16 seeded xorshift128+ pool is replaced by a
++ChaCha20-based CSPRNG with honest entropy feeding it.
++
++- **`kernel/rng_core.h` (new)**: freestanding ChaCha20 DRBG core — RFC 8439
++  block function, 48-byte seed material (256-bit key + 96-bit nonce),
++  key-after-every-request backtracking resistance, XOR-fold reseed.  No
++  kernel includes, so the host unit test compiles the very same code.
++- **`kernel/rng.c` (rewritten)**: entropy source selection — RDSEED
++  (CPUID.7:EBX bit 18) or RDRAND (CPUID.1:ECX bit 30) with bounded retry,
++  falling back to an interrupt-timing jitter pool; periodic reseed every
++  1 MiB of output; boot self-test (16 KiB byte-frequency + bit-runs) and a
++  32-byte `[rng] sample:` line printed at seeding.
++- **Jitter collection**: `irq_dispatch()` calls the new `rng_jitter_event()`
++  on every IRQ; the pool's observed-variation estimate is counted (low-16
++  delta bits that changed, capped at 4 bits/event) and logged.
++- **Fail-closed API**: `rng_try_fill()` returns `-ENOSYS` until real entropy
++  exists; `getentropy()` (syscall 318) surfaces it.  `getrandom()` blocks
++  until the pool is stirred (`GRND_NONBLOCK` → `-EAGAIN`), like Linux's
++  pre-init `/dev/random`, instead of silently serving guessable bytes.
++- Tests: host `tests/unit/test_rng.c` — RFC 8439 §2.3.2/§2.4.2 vectors,
++  determinism, avalanche, reseed, 1 MiB frequency/run statistics (16
++  checks).  Integration `tests/integration/cases/test_rng.sh` — RDSEED path
++  under `-cpu qemu64,+rdrand,+rdseed`, jitter fallback with logged estimate
++  under plain `qemu64`, two-boots-differ (14 assertions).  `lib.sh` gains
++  an `IL_CPU` knob.
++- Docs: TODO.md and README.md no longer claim `getentropy()` is guessable;
++  the "no cryptography in the tree" limitation stands until phase N1.
++
+ ## [POSIX.1-2024 Phase Q14 — System V IPC: sem/shm/msg kernel objects] 2026-08-05
+ 
+ `POSIX2024_PLAN.md` phase Q14 replaces the twelve `ENOSYS` stubs from Q10
+diff --git a/INTERNET_PLAN.md b/INTERNET_PLAN.md
+index 062d00c..f75eb48 100644
+--- a/INTERNET_PLAN.md
++++ b/INTERNET_PLAN.md
+@@ -1,6 +1,11 @@
+ # AuraLite OS — Real Internet Access Plan
+ 
+-## Status: PLANNED 📋 (phases N0–N9)
++## Status: IN PROGRESS 🚧 — N0 complete, N1–N9 pending
++
++| Phase | Result | Deliverable |
++|-------|--------|-------------|
++| N0 — real entropy source | ✅ complete | `patches/NET_N0_entropy.patch` |
++| N1–N9 | pending | — |
+ 
+ This document answers:
+ 
+@@ -179,19 +184,19 @@ be verified: a single audited comparison function, used everywhere, with no
+ 
+ ## 3. Phases
+ 
+-### Phase N0 — A real entropy source
++### Phase N0 — A real entropy source ✅ COMPLETE
+ 
+ **Objective:** `getentropy()` that is not guessable.
+ 
+ #### Tasks
+ 
+-- [ ] Detect RDRAND and RDSEED via CPUID leaf 1 ECX bit 30 / leaf 7 EBX bit 18.
++- [x] Detect RDRAND and RDSEED via CPUID leaf 1 ECX bit 30 / leaf 7 EBX bit 18.
+       (Verified: this QEMU accepts `-cpu qemu64,+rdrand`, so it is testable.)
+-- [ ] A ChaCha20-based CSPRNG in the kernel, reseeded from RDSEED when present.
+-- [ ] Fallback entropy pool: interrupt timing jitter, not just TSC reads.
+-- [ ] **`getentropy()` returns `-ENOSYS` when neither hardware RNG nor a
++- [x] A ChaCha20-based CSPRNG in the kernel, reseeded from RDSEED when present.
++- [x] Fallback entropy pool: interrupt timing jitter, not just TSC reads.
++- [x] **`getentropy()` returns `-ENOSYS` when neither hardware RNG nor a
+       sufficiently stirred pool is available.** Callers must be able to tell.
+-- [ ] Record the estimated entropy at boot, so a weak source is visible in the
++- [x] Record the estimated entropy at boot, so a weak source is visible in the
+       log rather than silently accepted.
+ 
+ #### Test gate
+@@ -208,6 +213,27 @@ be verified: a single audited comparison function, used everywhere, with no
+ 
+ `patches/NET_N0_entropy.patch`
+ 
++#### Phase result (2026-08-06)
++
++The Q16 xorshift128+ pool is gone.  `kernel/rng_core.h` is a freestanding
++ChaCha20 DRBG core (RFC 8439 block function, key-after-every-request
++backtracking resistance, XOR-fold reseed), unit-tested on the host against
++the RFC 8439 §2.3.2/§2.4.2 vectors plus a 1 MiB frequency/run battery
++(`tests/unit/test_rng.c`, 16 checks).  `kernel/rng.c` feeds it: RDSEED or
++RDRAND when CPUID reports them (384 bits, bounded retry), otherwise an
++interrupt-timing jitter pool stirred from every IRQ via `rng_jitter_event()`
++in `irq_dispatch()`.  Until the pool's measured variation reaches 128
++estimated bits, `rng_try_fill()` returns `-ENOSYS` and `getrandom()` blocks
++(`GRND_NONBLOCK` → `EAGAIN`); the estimate is logged at boot
++(`[rng] pool: N samples, est. E bits`).  A 16 KiB in-kernel self-test
++(byte-frequency + bit-runs) and a 32-byte `[rng] sample:` line are printed
++on seeding.  Measured in QEMU: `qemu64,+rdrand,+rdseed` boots seed from
++RDSEED; plain `qemu64` seeds from the jitter pool (~4 bits of observed
++delta variation per IRQ; 197 samples / est. 780 bits at seed time in the
++reference run), and two boots produce different samples.  Integration gate:
++`tests/integration/cases/test_rng.sh` (14 assertions), gated through
++`tests/integration/run_all.sh`.
++
+ ---
+ 
+ ### Phase N1 — Cryptographic primitives
+diff --git a/Makefile b/Makefile
+index 4ea612c..7a734a1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1093,7 +1093,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_mq_notify \
+                 $(BUILD_DIR)/test_q16_tail \
+                 $(BUILD_DIR)/test_sysvipc \
+-                $(BUILD_DIR)/test_keymap
++                $(BUILD_DIR)/test_keymap \
++                $(BUILD_DIR)/test_rng
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1115,6 +1116,11 @@ $(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# N0 (INTERNET_PLAN.md): the ChaCha20 CSPRNG core, RFC 8439 vectors + stats.
++$(BUILD_DIR)/test_rng: tests/unit/test_rng.c kernel/rng_core.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
++
+ $(BUILD_DIR)/test_heap: tests/unit/test_heap.c kernel/mm/heap.c kernel/mm/heap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_heap.c kernel/mm/heap.c -o $@
+diff --git a/README.md b/README.md
+index e5e0615..fe77621 100644
+--- a/README.md
++++ b/README.md
+@@ -791,9 +791,11 @@ Short version:
+   selection and no dead keys, so a non-US keyboard produces the wrong
+   characters outside the shared ASCII subset.
+ - **No cryptography and therefore no HTTPS.** There is no SHA-256, AES or curve
+-  arithmetic anywhere in the tree, and `getentropy()` returns a mix of TSC and
+-  tick counts that is guessable — unfit for key material. See
+-  [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
++  arithmetic anywhere in the tree. The entropy source is now real
++  (`INTERNET_PLAN.md` phase N0: a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or
++  interrupt-timing jitter, with `getentropy()` failing closed via `-ENOSYS`
++  until entropy exists), but the cryptographic primitives themselves land only
++  in phase N1. See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+ - **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
+   but no interrupt gate selects it, so a kernel stack overflow or double fault
+   resets the machine with no diagnostic.
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 32182c9..5e2f50b 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-b0fc5360d6997d483d357587b3b9773ca8d0ca548943da94d4321a32897e3f4d  auralite.iso
+-d1d832faa9e0930a741478ad97e9896d0a2a8ded31786cd741882d84506b4f73  kernel.elf
+-48712386df0ea8906ff07ac9f1403d11ba9650ea5b1f8a6e949d83dfddf7ad33  initrd.tar
++d91bbe8ed3361f88464614cbbbba128724a6155bac8af967e56e9c033f51164d  auralite.iso
++ee9a00d6c5e5c5a3d68a9fb11eebc17aaa2da23c4054d6ffa7c89bbb37209e23  kernel.elf
++c20744af1ddbfdf866d3b8e4220baa7a8e50272a4e0d03cbef9023fc1e4a3712  initrd.tar
+diff --git a/TODO.md b/TODO.md
+index dcdb1a3..50e2a7a 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -272,20 +272,20 @@ for the feature matrix.
+ 
+ ### Security / cryptography
+ 
+-- **`getrandom()`/`getentropy()` draw from a PRNG, not a CSPRNG (Q16).**
+-  `kernel/rng.c` is a seeded `xorshift128+` pool: the seed mixes RDTSC /
+-  PIT ticks / kernel-pointer addresses / RDRAND (when present), via
+-  SplitMix64.  It is a genuine improvement over the old per-call
+-  `tsc ^ ticks ^ &out ^ LCG` filler (which TODO previously flagged here),
+-  and fine for the stack-guard cookie and ASLR jitter, but xorshift128+
+-  is **not cryptographically secure** — it is **unfit for key material**.
+-  Anything cryptographic must wait for `INTERNET_PLAN.md` phase N0, which
+-  replaces it with a CSPRNG (chacha-lite or similar) seeded from
+-  RDRAND/RDSEED and fails closed when no real source exists.
++- ~~**`getrandom()`/`getentropy()` draw from a PRNG, not a CSPRNG (Q16).**~~
++  **Done (`INTERNET_PLAN.md` phase N0 → `patches/NET_N0_entropy.patch`).**
++  The generator is now a ChaCha20 DRBG (`kernel/rng_core.h`, RFC 8439) fed
++  by RDSEED/RDRAND when the CPU provides them and by an interrupt-timing
++  jitter pool otherwise.  Until real entropy exists, `getentropy()` returns
++  `-ENOSYS` and `getrandom()` blocks (or `EAGAIN` with `GRND_NONBLOCK`) —
++  guessable bytes are never served.  The estimated entropy is logged at
++  boot.  It remains unaudited hobby-OS entropy; do not treat it as an
++  `/dev/urandom` equivalent on real hardware.
+ - **There is no cryptography in the tree at all.** No SHA-256, no AES, no
+   curve arithmetic. `kernel/fs/btrfs.c` writes its SHA-256 checksum field as
+   zeros and says so in a comment. Consequently there is no TLS and no HTTPS;
+-  `INTERNET_PLAN.md` is the plan for that.
++  `INTERNET_PLAN.md` is the plan for that (N0 done; the primitives land in
++  phase N1).
+ 
+ ### Storage / filesystems
+ 
+diff --git a/docs/posix2024_compliance.md b/docs/posix2024_compliance.md
+index 829df8a..5795f20 100644
+--- a/docs/posix2024_compliance.md
++++ b/docs/posix2024_compliance.md
+@@ -498,7 +498,7 @@
+ 
+ | Function | Status | Notes |
+ |---|---|---|
+-| getrandom | ✅ | Q16: SYS_GETRANDOM; seeded xorshift128+ pool (non-crypto, see TODO.md); GRND_NONBLOCK/GRND_RANDOM accepted |
++| getrandom | ✅ | Q16: SYS_GETRANDOM; backed since INTERNET_PLAN N0 by a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or interrupt jitter (blocks until seeded; GRND_NONBLOCK → EAGAIN); GRND_RANDOM accepted |
+ 
+ ## `<sys/socket.h>`
+ 
+diff --git a/docs/status.md b/docs/status.md
+index 16b1ed8..785aa90 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -86,6 +86,7 @@ Legend:
+ | GUI | ✅/🧪 | `SYS_GUI_CALL` (200), `SYS_GUI_EVENT` (201), `SYS_GUI_THEME` (202). v2.0 theme engine, icons, notifications, snap, context menus. |
+ | Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
+ | Sockets | 🧪 | AF_INET/SOCK_STREAM handles include `socket`, `connect`, `send`, `recv`, `close`, plus server-side `bind`, `listen`, and `accept` (`305..307`). AF_INET/SOCK_DGRAM supports `sendto=44` and `recvfrom=45`. |
++| Entropy (`getentropy`/`getrandom`) | ✅ | INTERNET_PLAN N0. ChaCha20 CSPRNG (`kernel/rng_core.h`, RFC 8439) seeded from RDSEED/RDRAND when present, else an interrupt-timing jitter pool stirred on every IRQ. Fails closed: `getentropy` returns `-ENOSYS` and `getrandom` blocks (or `EAGAIN` with `GRND_NONBLOCK`) until real entropy exists; estimated entropy logged at boot. Host RFC-vector + 1 MiB statistics tests, QEMU gate `test_rng.sh`. |
+ 
+ ## Networking
+ 
+@@ -128,7 +129,7 @@ Legend:
+ 
+ | Feature | Status | Notes |
+ |---|---:|---|
+-| POSIX.1-2024 compliance | 🧪 | Q1–Q16 all implemented (~410 functions covered, see `docs/posix2024_compliance.md`). Q12 added the runnable conformance harness (host gate in `make test-unit` — `tests/posix2024/` — plus the guest `conformtest` QEMU case); Q13 completed the AT-family; Q15 implemented `mq_notify`; Q16 added pselect/ppoll, getrandom (seeded xorshift128+ pool, non-crypto) and sig2str/str2sig; Q14 replaced the SysV IPC ENOSYS stubs with real kernel objects — semaphores (blocking semop, SEM_UNDO at exit), page-backed shared memory (destroy at last detach) and message queues (full mtype rules). Only the three named-semaphore functions remain argued 🔶 partials (need MAP_SHARED). `_POSIX_VERSION` = 202405L. |
++| POSIX.1-2024 compliance | 🧪 | Q1–Q16 all implemented (~410 functions covered, see `docs/posix2024_compliance.md`). Q12 added the runnable conformance harness (host gate in `make test-unit` — `tests/posix2024/` — plus the guest `conformtest` QEMU case); Q13 completed the AT-family; Q15 implemented `mq_notify`; Q16 added pselect/ppoll, getrandom and sig2str/str2sig (getrandom's backing was upgraded by INTERNET_PLAN N0 to a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or interrupt jitter, failing closed with ENOSYS until real entropy exists); Q14 replaced the SysV IPC ENOSYS stubs with real kernel objects — semaphores (blocking semop, SEM_UNDO at exit), page-backed shared memory (destroy at last detach) and message queues (full mtype rules). Only the three named-semaphore functions remain argued 🔶 partials (need MAP_SHARED). `_POSIX_VERSION` = 202405L. |
+ | AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
+ | AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
+ | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |
+diff --git a/kernel/arch/x86_64/irq.c b/kernel/arch/x86_64/irq.c
+index a305a46..ddf30a0 100644
+--- a/kernel/arch/x86_64/irq.c
++++ b/kernel/arch/x86_64/irq.c
+@@ -10,6 +10,8 @@
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/arch/x86_64/lapic.h"
+ #include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/x86_64/cpu.h"
++#include "kernel/rng.h"
+ 
+ #define NUM_IRQS 16
+ #define ICW1_ICW4   0x01   /* ICW4 needed                */
+@@ -109,6 +111,11 @@ void irq_dispatch(int irq, struct registers *regs) {
+      * lapic_eoi() itself is guarded (no-op until lapic_enable() mapped the
+      * MMIO page), so this is safe in early boot too. */
+     lapic_eoi();
++    /* N0: feed interrupt-arrival timing jitter to the kernel CSPRNG.  The
++     * low bits of the TSC delta between consecutive IRQs are the fallback
++     * entropy source when the CPU has no RDRAND/RDSEED.  Safe before
++     * rng_init() — events just accumulate. */
++    rng_jitter_event(read_tsc());
+     if (irq >= 0 && irq < NUM_IRQS && irq_handlers[irq] != NULL) {
+         irq_handlers[irq](regs);
+     }
+diff --git a/kernel/arch/x86_64/syscall.c b/kernel/arch/x86_64/syscall.c
+index 4dd6b3c..364bc8d 100644
+--- a/kernel/arch/x86_64/syscall.c
++++ b/kernel/arch/x86_64/syscall.c
+@@ -2021,7 +2021,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+         if (!validate_user_range(buf, len, 1)) return (uint64_t)-EFAULT;
+         uint8_t *kbuf = kmalloc(len ? len : 1);
+         if (!kbuf) return (uint64_t)-ENOMEM;
+-        rng_fill(kbuf, len);          /* Q16: shared seeded pool */
++        /* N0: the ChaCha20 CSPRNG refuses loudly (-ENOSYS) until real
++         * entropy exists; never serve guessable bytes. */
++        if (rng_try_fill(kbuf, len) != 0) {
++            kfree(kbuf);
++            return (uint64_t)-ENOSYS;
++        }
+         if (copy_to_user(buf, kbuf, len) != 0) {
+             kfree(kbuf);
+             return (uint64_t)-EFAULT;
+@@ -2030,9 +2035,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+         return 0;
+     }
+     /* Q16: getrandom(2) — Linux-compatible flags, draws from the same
+-     * seeded pool as getentropy.  GRND_NONBLOCK and GRND_RANDOM are
+-     * accepted (the pool is always ready, so neither ever blocks); unknown
+-     * flags are rejected with EINVAL. */
++     * ChaCha20 CSPRNG as getentropy (N0).  Until the generator is ready
++     * (hardware RNG or a sufficiently stirred jitter pool), it BLOCKS —
++     * like Linux's pre-init /dev/random — unless GRND_NONBLOCK, which
++     * returns -EAGAIN.  Unknown flags are rejected with EINVAL. */
+     case SYS_GETRANDOM: {
+         void *buf = (void*)(uintptr_t)a1;
+         uint64_t buflen = a2;
+@@ -2041,9 +2047,23 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+         if (buflen == 0) return 0;
+         if (buflen > 65536) return (uint64_t)-EINVAL;       /* sanity bound */
+         if (!buf || !validate_user_range(buf, buflen, 1)) return (uint64_t)-EFAULT;
++        if (!rng_available()) {
++            if (flags & 1u) return (uint64_t)-EAGAIN;       /* GRND_NONBLOCK */
++            /* PIT ticks keep stirring the jitter pool; poll with yields.
++             * Give up after 30 s rather than hang a process on a machine
++             * whose entropy source is genuinely dead. */
++            uint64_t start = timer_get_ticks();
++            while (!rng_available()) {
++                if (timer_get_ticks() - start > 3000) return (uint64_t)-EAGAIN;
++                sched_yield();
++            }
++        }
+         uint8_t *kbuf = kmalloc(buflen);
+         if (!kbuf) return (uint64_t)-ENOMEM;
+-        rng_fill(kbuf, buflen);
++        if (rng_try_fill(kbuf, buflen) != 0) {
++            kfree(kbuf);
++            return (uint64_t)-EAGAIN;
++        }
+         if (copy_to_user(buf, kbuf, buflen) != 0) {
+             kfree(kbuf);
+             return (uint64_t)-EFAULT;
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index adef78d..86a5f50 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -245,8 +245,10 @@ void kmain(boot_info_t *boot_info) {
+     pit_init(100);
+     timer_self_test();
+ 
+-    /* Q16: seed the kernel CSPRNG pool (rdtsc/ticks/rdrand jitter).  Must
+-     * come after the timer so timer_get_ticks() is live. */
++    /* N0 (INTERNET_PLAN.md): the kernel CSPRNG.  Detects RDRAND/RDSEED and
++     * seeds from them when present; otherwise arms the interrupt-jitter
++     * pool and refuses to serve (-ENOSYS) until it is stirred.  Must come
++     * after the timer so timer_get_ticks() is live. */
+     rng_init();
+ 
+     kprintf("[boot] initialising scheduler...\n");
+diff --git a/kernel/rng.c b/kernel/rng.c
+index 9407145..a11b7e9 100644
+--- a/kernel/rng.c
++++ b/kernel/rng.c
+@@ -1,123 +1,358 @@
+-/* kernel/rng.c — seeded xorshift128+ pool (POSIX2024 phase Q16).
++/* kernel/rng.c — kernel CSPRNG (INTERNET_PLAN.md phase N0).
+  *
+- * The boot-time syscalls used a per-call rdtsc-xorshift filler with no
+- * persistent state.  This module keeps a 128-bit xorshift128+ state that is
+- * seeded from every entropy-ish source the kernel already has:
++ * Replaces the Q16 seeded xorshift128+ pool.  The generation core is the
++ * ChaCha20 DRBG in kernel/rng_core.h; this file is responsible for the
++ * ENTROPY feeding it, which is the part N0 exists for (decision D1: no
++ * cryptographic code may stand on a guessable seed).
+  *
+- *   - RDRAND, when CPUID.1:ECX.RDRAND is set (QEMU exposes it with
+- *     -cpu qemu64? no — qemu64 lacks RDRAND, so this is a genuine
+- *     "when available" path, exercised on real hardware and newer vCPUs);
+- *   - RDTSC and the PIT tick counter;
+- *   - the addresses of kernel objects (ASLR-ish layout noise);
+- *   - the current stack pointer.
++ * Sources, in preference order:
+  *
+- * The mixing function is SplitMix64, which turns the loosely-correlated
+- * seed words into a well-distributed 128-bit state.  xorshift128+ is a
+- * fast, well-understood PRNG (Vigna 2017); it is NOT a cryptographic
+- * generator.  That is stated in TODO.md, not overclaimed: getrandom(2)
+- * must not be advertised as /dev/urandom-equivalent.
++ *   1. RDSEED  — CPUID leaf 7 EBX bit 18.  A wide hardware entropy source;
++ *                384 bits (48 bytes) are collected with a bounded retry,
++ *                since RDSEED is allowed to return CF=0 when its pool is
++ *                drained.
++ *   2. RDRAND  — CPUID leaf 1 ECX bit 30.  Conditioned hardware source;
++ *                used when RDSEED is absent or starved.
++ *   3. Interrupt-timing jitter pool — the fallback.  irq_dispatch() calls
++ *                rng_jitter_event() on every IRQ; the low bits of the TSC
++ *                DELTA between consecutive interrupts are accumulated into
++ *                a pool and an estimate of observed variation is counted.
++ *                The DRBG is seeded only once that estimate reaches
++ *                RNG_POOL_BITS, and until then rng_try_fill() returns
++ *                -ENOSYS.  The estimate is logged, never silently assumed.
+  *
+- * rng_init() is called from kmain before any syscall can run.  The pool is
+- * global and read from multiple CPUs, but a torn read of a 64-bit word is
+- * harmless for this purpose; no lock is taken (documented).
++ * Reseeding: every RNG_RESEED_BYTES of output the state is re-seeded from
++ * the best source currently available.  The DRBG additionally re-keys from
++ * its own stream after every served request (backtracking resistance),
++ * which rng_core.h implements.
++ *
++ * SMP/IRQ notes: the jitter pool is written lock-free from IRQ context on
++ * any CPU — a torn or lost mix only ever loses entropy, never creates a
++ * correctness dependency.  DRBG state is guarded by an irqsave spinlock.
+  */
+ 
++#include <stdint.h>
++#include <stddef.h>
+ #include "kernel/rng.h"
++#include "kernel/rng_core.h"
+ #include "kernel/arch/x86_64/cpu.h"
+ #include "kernel/lib/spinlock.h"
+ #include "kernel/lib/kprintf.h"
++#include "kernel/lib/string.h"
++#include "kernel/lib/errno.h"
+ #include "drivers/timer/pit.h"
+ 
+-static uint64_t rng_state[2];       /* xorshift128+ state */
+-static volatile int rng_ready = 0;
++#define RNG_RESEED_BYTES (1u << 20)   /* re-seed every 1 MiB of output */
++#define RNG_HW_RETRIES   4096         /* bounded retry per RDSEED/RDRAND word */
++#define RNG_SELFTEST_LEN 16384        /* boot self-test size in bytes */
++
++static struct rngc_drbg drbg;
++static spinlock_t rng_lock = SPINLOCK_UNLOCKED;
++
++static volatile int rng_module_up = 0;  /* rng_init() has run */
++static volatile int rng_ready     = 0;  /* DRBG seeded and serving */
++static int have_rdrand = 0;
++static int have_rdseed = 0;
++static uint64_t bytes_since_reseed = 0;
++
++/* ---- interrupt-timing jitter pool ---- */
+ 
+-/* ---- seed sources ---- */
++#define JPOOL_WORDS 8
++static volatile uint64_t jpool[JPOOL_WORDS];
++static volatile uint32_t jsamples = 0;
++static volatile uint32_t jbits    = 0;   /* observed-variation estimate */
++static volatile uint64_t last_irq_tsc   = 0;
++static volatile uint64_t last_irq_delta = 0;
+ 
+-static uint64_t rdtsc64(void) {
+-    uint32_t lo, hi;
+-    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
+-    return ((uint64_t)hi << 32) | lo;
++static inline uint64_t rotl64(uint64_t v, int n) {
++    return (v << n) | (v >> (64 - n));
+ }
+ 
+-static int cpu_has_rdrand(void) {
+-    uint32_t a = 0, b = 0, c = 0, d = 0;
+-    cpuid_count(1, 0, &a, &b, &c, &d);
+-    return (c & (1u << 30)) != 0;    /* ECX.RDRAND */
++static inline int popcnt16(uint32_t v) {
++    int c = 0;
++    v &= 0xFFFFu;
++    while (v) { c += (int)(v & 1u); v >>= 1; }
++    return c;
+ }
+ 
+-static int rdrand64(uint64_t *out) {
++/* ---- hardware sources ---- */
++
++static int hw_rdseed64(uint64_t *out) {
++    unsigned char ok = 0;
++    __asm__ volatile ("rdseed %0; setc %1" : "=r"(*out), "=qm"(ok));
++    return ok ? 1 : 0;
++}
++
++static int hw_rdrand64(uint64_t *out) {
+     unsigned char ok = 0;
+     __asm__ volatile ("rdrand %0; setc %1" : "=r"(*out), "=qm"(ok));
+     return ok ? 1 : 0;
+ }
+ 
+-/* SplitMix64: one step of a 64-bit mixing generator (for seeding). */
+-static uint64_t splitmix64(uint64_t *s) {
+-    uint64_t z = (*s += 0x9E3779B97F4A7C15ULL);
+-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+-    return z ^ (z >> 31);
++/* Collect 48 bytes from a hardware source.  Returns 1 on success. */
++static int collect_hw(int (*src)(uint64_t *), uint8_t material[RNGC_SEED_LEN]) {
++    size_t filled = 0;
++    while (filled < RNGC_SEED_LEN) {
++        uint64_t w = 0;
++        int ok = 0;
++        for (int attempt = 0; attempt < RNG_HW_RETRIES; attempt++) {
++            if (src(&w)) { ok = 1; break; }
++        }
++        if (!ok) return 0;               /* source starved: bail out */
++        for (int b = 0; b < 8 && filled < RNGC_SEED_LEN; b++) {
++            material[filled++] = (uint8_t)(w >> (b * 8));
++        }
++    }
++    return 1;
++}
++
++/* Snapshot of the jitter pool + cheap context noise, used when no hardware
++ * source is available (initial seed and periodic reseeds).  This is the
++ * weak path; the boot log says so. */
++static void snapshot_pool(uint8_t material[RNGC_SEED_LEN]) {
++    for (int i = 0; i < JPOOL_WORDS / 2; i++) {
++        uint64_t w = jpool[i] ^ jpool[i + JPOOL_WORDS / 2];
++        for (int b = 0; b < 8; b++) material[i * 8 + b] = (uint8_t)(w >> (b * 8));
++    }
++    uint64_t ctx = read_tsc()
++                 ^ ((uint64_t)timer_get_ticks() * 0x9E3779B97F4A7C15ULL)
++                 ^ (uint64_t)(uintptr_t)material
++                 ^ ((uint64_t)jsamples << 32);
++    for (int b = 0; b < 8; b++) material[32 + b] = (uint8_t)(ctx >> (b * 8));
++    uint64_t ctx2 = rotl64(ctx, 17) ^ 0xBF58476D1CE4E5B9ULL;
++    for (int b = 0; b < 8; b++) material[40 + b] = (uint8_t)(ctx2 >> (b * 8));
+ }
+ 
+-/* ---- xorshift128+ (Vigna 2017) ---- */
++/* ---- seeding ---- */
++
++/* Seed the DRBG from the jitter pool snapshot.  Caller holds rng_lock. */
++static void seed_from_pool_locked(void) {
++    uint8_t material[RNGC_SEED_LEN];
++    snapshot_pool(material);
++    rngc_drbg_seed(&drbg, material);
++    memset(material, 0, sizeof(material));
++    bytes_since_reseed = 0;
++    rng_ready = 1;
++    kprintf("[rng] seeded from interrupt-jitter pool (%u samples, est. %u bits)\n",
++            jsamples, jbits);
++}
++
++/* Try to collect and install hardware entropy.  Caller holds rng_lock.
++ * Returns 1 when a hardware seed was installed. */
++static int try_seed_from_hw_locked(void) {
++    uint8_t material[RNGC_SEED_LEN];
++
++    if (have_rdseed && collect_hw(hw_rdseed64, material)) {
++        rngc_drbg_seed(&drbg, material);
++        memset(material, 0, sizeof(material));
++        bytes_since_reseed = 0;
++        rng_ready = 1;
++        kprintf("[rng] seeded from RDSEED (%d bits of hardware entropy)\n",
++                RNGC_SEED_LEN * 8);
++        return 1;
++    }
++    if (have_rdrand && collect_hw(hw_rdrand64, material)) {
++        rngc_drbg_seed(&drbg, material);
++        memset(material, 0, sizeof(material));
++        bytes_since_reseed = 0;
++        rng_ready = 1;
++        kprintf("[rng] seeded from RDRAND (%d bits of hardware entropy)\n",
++                RNGC_SEED_LEN * 8);
++        return 1;
++    }
++    return 0;
++}
++
++/* ---- boot self-test: catch the obvious failures loudly ---- */
++
++/* Byte-frequency and bit-run checks over RNG_SELFTEST_LEN bytes.  These do
++ * not claim cryptographic quality; they catch stuck generators, counters
++ * and badly collapsed seeds. */
++static int rng_self_test(void) {
++    static uint8_t buf[RNG_SELFTEST_LEN];
++    static uint32_t freq[256];
++
++    /* Generate WITHOUT the backtracking re-key noise mattering: just fill. */
++    rngc_drbg_fill(&drbg, buf, sizeof(buf));
++
++    for (int i = 0; i < 256; i++) freq[i] = 0;
++    for (size_t i = 0; i < sizeof(buf); i++) freq[buf[i]]++;
++
++    uint32_t expected = RNG_SELFTEST_LEN / 256;   /* 64 */
++    for (int i = 0; i < 256; i++) {
++        /* +-50% is wide; a stuck/counter generator misses it by orders. */
++        if (freq[i] < expected / 2 || freq[i] > expected + expected / 2) {
++            kprintf("[rng] self-test: FAIL (byte 0x%02x count %u, expected ~%u)\n",
++                    i, freq[i], expected);
++            return 0;
++        }
++    }
++
++    /* Bit runs: count maximal runs of equal bits.  For N random bits the
++     * expected count is ~N/2; allow +-10%. */
++    uint64_t nbits = (uint64_t)sizeof(buf) * 8;
++    uint64_t runs = 1;
++    uint64_t longest = 1, cur = 1;
++    int prev = buf[0] & 1;
++    for (size_t i = 0; i < sizeof(buf); i++) {
++        for (int bit = (i == 0 ? 1 : 0); bit < 8; bit++) {
++            int b = (buf[i] >> bit) & 1;
++            if (b == prev) {
++                cur++;
++                if (cur > longest) longest = cur;
++            } else {
++                runs++;
++                cur = 1;
++                prev = b;
++            }
++        }
++    }
++    uint64_t exp_runs = nbits / 2;
++    if (runs < exp_runs - exp_runs / 10 || runs > exp_runs + exp_runs / 10) {
++        kprintf("[rng] self-test: FAIL (runs %u, expected ~%u)\n",
++                (unsigned)runs, (unsigned)exp_runs);
++        return 0;
++    }
++    if (longest > 64) {
++        kprintf("[rng] self-test: FAIL (longest bit run %u > 64)\n",
++                (unsigned)longest);
++        return 0;
++    }
++
++    kprintf("[rng] self-test: PASS (%u KiB, byte-frequency + bit-runs, "
++            "runs=%u longest=%u)\n",
++            (unsigned)(RNG_SELFTEST_LEN / 1024), (unsigned)runs,
++            (unsigned)longest);
++    return 1;
++}
+ 
+-static uint64_t rng_next(void) {
+-    uint64_t x = rng_state[0];
+-    uint64_t const y = rng_state[1];
+-    rng_state[0] = y;
+-    x ^= x << 23;
+-    rng_state[1] = x ^ y ^ (x >> 17) ^ (y >> 26);
+-    return rng_state[1] + y;
++/* Print a 32-byte sample so an integration test can prove two boots do not
++ * produce identical output. */
++static void rng_print_sample(void) {
++    uint8_t s[32];
++    rngc_drbg_fill(&drbg, s, sizeof(s));
++    kprintf("[rng] sample: ");
++    for (size_t i = 0; i < sizeof(s); i++) kprintf("%02x", s[i]);
++    kprintf("\n");
+ }
+ 
++/* ---- public API ---- */
++
+ void rng_init(void) {
+-    if (rng_ready) return;
+-
+-    uint64_t seed = 0;
+-    uint64_t s = rdtsc64() ^ (uint64_t)(uintptr_t)&rng_state ^ 0xA5A5A5A5A5A5A5A5ULL;
+-    seed ^= splitmix64(&s);
+-    seed ^= (uint64_t)timer_get_ticks() << 32 ^ timer_get_ticks();
+-    seed ^= (uint64_t)(uintptr_t)rng_fill;
+-    seed ^= (uint64_t)(uintptr_t)rng_next;
+-
+-    uint64_t r = 0;
+-    if (cpu_has_rdrand() && rdrand64(&r)) {
+-        seed ^= r;
+-        kprintf("[rng] RDRAND available, folded into seed\n");
++    if (rng_module_up) return;
++
++    uint32_t a = 0, b = 0, c = 0, d = 0;
++    cpuid_count(1, 0, &a, &b, &c, &d);
++    have_rdrand = (c & (1u << 30)) != 0;          /* CPUID.1:ECX.RDRAND */
++    cpuid_count(7, 0, &a, &b, &c, &d);
++    have_rdseed = (b & (1u << 18)) != 0;          /* CPUID.7:EBX.RDSEED */
++    kprintf("[rng] CPU features: RDRAND=%s RDSEED=%s\n",
++            have_rdrand ? "yes" : "no", have_rdseed ? "yes" : "no");
++
++    uint64_t fl = spinlock_acquire_irqsave(&rng_lock);
++    if (try_seed_from_hw_locked()) {
++        rng_self_test();
++        rng_print_sample();
+     } else {
+-        kprintf("[rng] no RDRAND; seeding from jitter sources only\n");
++        kprintf("[rng] no usable hardware RNG; falling back to the "
++                "interrupt-jitter pool\n");
++        kprintf("[rng] pool: %u samples, est. %u bits (threshold %d)\n",
++                jsamples, jbits, RNG_POOL_BITS);
++        if (jbits >= RNG_POOL_BITS) {
++            seed_from_pool_locked();
++            rng_self_test();
++            rng_print_sample();
++        } else {
++            kprintf("[rng] NOT READY: getentropy() returns -ENOSYS until the "
++                    "pool reaches %d estimated bits\n", RNG_POOL_BITS);
++        }
+     }
++    spinlock_release_irqrestore(&rng_lock, fl);
+ 
+-    /* Expand the 64-bit seed into two well-mixed 64-bit words. */
+-    uint64_t sm = seed;
+-    rng_state[0] = splitmix64(&sm);
+-    rng_state[1] = splitmix64(&sm);
++    __asm__ volatile ("" ::: "memory");
++    rng_module_up = 1;
++}
+ 
+-    /* Warm-up: discard the first outputs (weak low bits after seeding). */
+-    for (int i = 0; i < 16; i++) (void)rng_next();
++void rng_jitter_event(uint64_t tsc_now) {
++    uint64_t prev = last_irq_tsc;
++    last_irq_tsc = tsc_now;
++    if (prev == 0) return;                   /* first event: no delta yet */
+ 
+-    __asm__ volatile ("" ::: "memory");
+-    rng_ready = 1;
+-    kprintf("[rng] seeded xorshift128+ pool ready\n");
++    uint64_t delta = tsc_now - prev;
++    if (delta == 0) return;
++
++    uint32_t idx = jsamples++;
++    jpool[idx % JPOOL_WORDS] ^= rotl64(delta, (idx * 7) % 64)
++                              + 0x9E3779B97F4A7C15ULL * (idx + 1);
++
++    /* Estimate: count how many of the low 16 delta bits CHANGED since the
++     * previous interrupt, capped at 4 bits per event.  This measures
++     * observed variation; it never claims more than it saw. */
++    int changed = popcnt16((uint32_t)((delta ^ last_irq_delta) & 0xFFFFu));
++    last_irq_delta = delta;
++    if (changed > 4) changed = 4;
++    if (jbits < 1024) jbits += (uint32_t)changed;
++
++    /* Opportunistic completion: cross the threshold -> seed right here. */
++    if (rng_module_up && !rng_ready && jbits >= RNG_POOL_BITS) {
++        uint64_t fl = spinlock_acquire_irqsave(&rng_lock);
++        if (!rng_ready && jbits >= RNG_POOL_BITS) {
++            if (!try_seed_from_hw_locked()) seed_from_pool_locked();
++            rng_self_test();
++            rng_print_sample();
++        }
++        spinlock_release_irqrestore(&rng_lock, fl);
++    }
+ }
+ 
+-uint64_t rng_u64(void) {
+-    if (!rng_ready) rng_init();
+-    return rng_next();
++int rng_available(void) {
++    if (rng_ready) return 1;
++    if (!rng_module_up) return 0;
++    uint64_t fl = spinlock_acquire_irqsave(&rng_lock);
++    if (!rng_ready && jbits >= RNG_POOL_BITS) {
++        if (!try_seed_from_hw_locked()) seed_from_pool_locked();
++        rng_self_test();
++        rng_print_sample();
++    }
++    spinlock_release_irqrestore(&rng_lock, fl);
++    return rng_ready;
+ }
+ 
+-void rng_fill(void *out, size_t len) {
+-    if (!out) return;
+-    if (!rng_ready) rng_init();
+-    uint8_t *p = (uint8_t *)out;
+-    while (len >= 8) {
+-        uint64_t w = rng_next();
+-        for (int b = 0; b < 8; b++) p[b] = (uint8_t)(w >> (b * 8));
+-        p += 8;
+-        len -= 8;
++int rng_try_fill(void *out, size_t len) {
++    if (!out && len) return -EFAULT;
++    if (len == 0) return 0;
++    if (!rng_available()) {
++        /* ENOSYS is the agreed loud refusal (INTERNET_PLAN N0 / D1): the
++         * caller must be able to tell "no entropy" from "entropy served". */
++        return -ENOSYS;
+     }
+-    if (len > 0) {
+-        uint64_t w = rng_next();
+-        for (size_t b = 0; b < len; b++) p[b] = (uint8_t)(w >> (b * 8));
++
++    uint64_t fl = spinlock_acquire_irqsave(&rng_lock);
++    rngc_drbg_fill(&drbg, (uint8_t *)out, len);
++    bytes_since_reseed += len;
++    if (bytes_since_reseed >= RNG_RESEED_BYTES) {
++        uint8_t material[RNGC_SEED_LEN];
++        int from_hw = 0;
++        if (have_rdseed && collect_hw(hw_rdseed64, material)) from_hw = 1;
++        else if (have_rdrand && collect_hw(hw_rdrand64, material)) from_hw = 1;
++        else snapshot_pool(material);
++        rngc_drbg_reseed(&drbg, material);
++        memset(material, 0, sizeof(material));
++        bytes_since_reseed = 0;
++        kprintf("[rng] periodic reseed from %s\n",
++                from_hw ? (have_rdseed ? "RDSEED" : "RDRAND") : "jitter pool");
+     }
++    spinlock_release_irqrestore(&rng_lock, fl);
++    return 0;
++}
++
++void rng_fill(void *out, size_t len) {
++    if (!out || len == 0) return;
++    if (rng_try_fill(out, len) != 0) memset(out, 0, len);
++}
++
++uint64_t rng_u64(void) {
++    uint64_t v = 0;
++    if (rng_try_fill(&v, sizeof(v)) != 0) return 0;
++    return v;
+ }
+diff --git a/kernel/rng.h b/kernel/rng.h
+index fa970b3..dca576a 100644
+--- a/kernel/rng.h
++++ b/kernel/rng.h
+@@ -4,23 +4,56 @@
+ #include <stdint.h>
+ #include <stddef.h>
+ 
+-/* Kernel CSPRNG (POSIX2024 phase Q16).
++/* Kernel CSPRNG (INTERNET_PLAN.md phase N0).
+  *
+- * Graduates the syscall layer's one-off rdtsc-xorshift filler into a seeded
+- * xorshift128+ pool.  This is a solid PRNG, NOT a cryptographic RNG: the
+- * seed is drawn from rdtsc / timer ticks / pointer addresses / RDRAND (when
+- * the CPU provides it), and the state is mixed from those sources.  The
+- * security note in TODO.md states the limits honestly rather than
+- * overclaiming.  getrandom(2) and getentropy(2) both draw from this pool.
++ * The generator is a ChaCha20-based DRBG (kernel/rng_core.h, RFC 8439).
++ * What makes N0 different from the Q16 xorshift128+ pool it replaces is the
++ * ENTROPY, not the mixing:
++ *
++ *   - RDSEED (CPUID.7:EBX bit 18) or RDRAND (CPUID.1:ECX bit 30) seed the
++ *     DRBG directly when the CPU provides them;
++ *   - otherwise a jitter pool accumulates interrupt-arrival timing deltas
++ *     (kernel/arch/x86_64/irq.c calls rng_jitter_event() on every IRQ), and
++ *     the DRBG is seeded only once the pool's measured variation reaches
++ *     RNG_POOL_BITS estimated bits;
++ *   - until then the generator reports NOT READY: rng_try_fill() returns
++ *     -ENOSYS and getentropy()/getrandom() surface that to userspace
++ *     (D1: a loud failure beats a quiet fake).
++ *
++ * This is hobby-OS entropy suitable for seeding TLS handshake keys
++ * (INTERNET_PLAN N3+); it is not audited.  The estimated entropy is logged
++ * at boot so a weak source is visible rather than silently accepted.
+  */
+ 
+-/* Initialise the pool.  Called once at boot from kmain; idempotent. */
++/* Estimated jitter-pool entropy required before seeding without hardware
++ * RNG.  Public because the boot log names the threshold. */
++#define RNG_POOL_BITS 128
++
++/* Initialise the module: detect RDRAND/RDSEED, seed when possible.
++ * Called once from kmain after the timer; idempotent.  When no hardware
++ * RNG exists the module stays UNREADY and the jitter pool finishes the
++ * seeding later (see rng_jitter_event / rng_available). */
+ void rng_init(void);
+ 
+-/* Fill `len` bytes of `out` from the pool. */
+-void rng_fill(void *out, size_t len);
++/* 1 when the generator is ready to serve bytes RIGHT NOW.  As a side
++ * effect it completes seeding from the jitter pool the first time the
++ * pool's estimate crosses RNG_POOL_BITS, so callers may simply poll. */
++int rng_available(void);
+ 
+-/* Return one 64-bit word from the pool. */
++/* Fill `len` bytes of `out`.  Returns 0 on success, -ENOSYS when the
++ * generator is not ready (no hardware RNG and the jitter pool has not
++ * reached RNG_POOL_BITS yet).  Never partially fills on failure. */
++int rng_try_fill(void *out, size_t len);
++
++/* Legacy convenience wrappers kept for API stability.  rng_fill() fills
++ * when ready and zeroes the buffer otherwise (callers that must tell the
++ * difference use rng_try_fill); rng_u64() returns 0 when not ready. */
++void rng_fill(void *out, size_t len);
+ uint64_t rng_u64(void);
+ 
++/* Interrupt-timing jitter source.  Called from irq_dispatch() for every
++ * hardware IRQ on every CPU.  Must be callable before rng_init() — events
++ * are simply accumulated until the module is up. */
++void rng_jitter_event(uint64_t tsc_now);
++
+ #endif /* AURALITE_KERNEL_RNG_H */
+diff --git a/kernel/rng_core.h b/kernel/rng_core.h
+new file mode 100644
+index 0000000..d43a253
+--- /dev/null
++++ b/kernel/rng_core.h
+@@ -0,0 +1,162 @@
++#ifndef AURALITE_KERNEL_RNG_CORE_H
++#define AURALITE_KERNEL_RNG_CORE_H
++
++/* kernel/rng_core.h — ChaCha20 DRBG core (INTERNET_PLAN.md phase N0).
++ *
++ * A pure, freestanding header: no kernel includes, no inline asm, no
++ * globals.  The exact same code compiles into the kernel (kernel/rng.c)
++ * and into the host-side unit test (tests/unit/test_rng.c), so the bytes
++ * the QEMU guest generates are the bytes the RFC-vector test verified.
++ * This follows the tree's existing "pure core, host-tested" pattern
++ * (kernel/lib/bitmap.h, kernel/mm/heap.c).
++ *
++ * Construction:
++ *
++ *   - ChaCha20 block function exactly as RFC 8439 section 2.3 (constants,
++ *     32-bit key words, 32-bit block counter, 96-bit nonce, 20 rounds).
++ *   - DRBG state = (256-bit key, 96-bit nonce, 32-bit block counter).
++ *     Seeding consumes RNGC_SEED_LEN = 48 bytes of entropy material:
++ *     first 32 -> key, next 12 -> nonce, counter reset to 0.
++ *   - rngc_drbg_fill() serves output keystream, then IMMEDIATELY re-keys
++ *     from the next 48 bytes of its own stream ("key after every request").
++ *     This gives backtracking resistance: compromising the current state
++ *     does not reveal bytes already handed out.
++ *   - rngc_drbg_reseed() folds fresh entropy material into key+nonce with
++ *     XOR and resets the counter, so a reseed never re-enters an earlier
++ *     keystream position with the same key.
++ *
++ * What this file deliberately does NOT do: choose or gather entropy.  The
++ * quality of the output is exactly the quality of the material handed to
++ * seed/reseed; that responsibility (RDSEED / RDRAND / interrupt jitter,
++ * with a loud -ENOSYS refusal when nothing good exists) lives in
++ * kernel/rng.c, per INTERNET_PLAN.md decision D1.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++/* NOTE: deliberately no <string.h> and no kernel includes — this header is
++ * freestanding so the exact same code compiles into the kernel and into the
++ * host unit test.  The byte copy it needs is its own tiny loop. */
++
++static void rngc_copy(uint8_t *dst, const uint8_t *src, size_t n) {
++    for (size_t i = 0; i < n; i++) dst[i] = src[i];
++}
++
++#define RNGC_SEED_LEN 48   /* 32 key bytes + 12 nonce bytes + 4 pad bytes */
++
++static inline uint32_t rngc_rotl32(uint32_t v, int n) {
++    return (v << n) | (v >> (32 - n));
++}
++
++#define RNGC_QR(a, b, c, d)                 \
++    do {                                    \
++        a += b; d ^= a; d = rngc_rotl32(d, 16); \
++        c += d; b ^= c; b = rngc_rotl32(b, 12); \
++        a += b; d ^= a; d = rngc_rotl32(d, 8);  \
++        c += d; b ^= c; b = rngc_rotl32(b, 7);  \
++    } while (0)
++
++/* One ChaCha20 block (RFC 8439 §2.3).  `out` receives sixteen 32-bit words
++ * in little-endian word order — the same order the RFC vectors print. */
++static void rngc_chacha20_block(const uint32_t key[8], uint32_t counter,
++                                const uint32_t nonce[3], uint32_t out[16]) {
++    uint32_t st[16], x[16];
++    int i, round;
++
++    st[0] = 0x61707865u;  /* "expa" */
++    st[1] = 0x3320646eu;  /* "nd 3" */
++    st[2] = 0x79622d32u;  /* "2-by" */
++    st[3] = 0x6b206574u;  /* "te k" */
++    for (i = 0; i < 8; i++) st[4 + i] = key[i];
++    st[12] = counter;
++    st[13] = nonce[0];
++    st[14] = nonce[1];
++    st[15] = nonce[2];
++
++    for (i = 0; i < 16; i++) x[i] = st[i];
++    for (round = 0; round < 10; round++) {
++        /* column round */
++        RNGC_QR(x[0], x[4], x[8],  x[12]);
++        RNGC_QR(x[1], x[5], x[9],  x[13]);
++        RNGC_QR(x[2], x[6], x[10], x[14]);
++        RNGC_QR(x[3], x[7], x[11], x[15]);
++        /* diagonal round */
++        RNGC_QR(x[0], x[5], x[10], x[15]);
++        RNGC_QR(x[1], x[6], x[11], x[12]);
++        RNGC_QR(x[2], x[7], x[8],  x[13]);
++        RNGC_QR(x[3], x[4], x[9],  x[14]);
++    }
++    for (i = 0; i < 16; i++) out[i] = x[i] + st[i];
++}
++
++/* Serialise a block as 64 little-endian bytes (the keystream order used by
++ * RFC 8439 §2.4 encryption). */
++static void rngc_chacha20_block_bytes(const uint32_t key[8], uint32_t counter,
++                                      const uint32_t nonce[3], uint8_t out[64]) {
++    uint32_t w[16];
++    int i;
++    rngc_chacha20_block(key, counter, nonce, w);
++    for (i = 0; i < 16; i++) {
++        out[i * 4 + 0] = (uint8_t)(w[i] >> 0);
++        out[i * 4 + 1] = (uint8_t)(w[i] >> 8);
++        out[i * 4 + 2] = (uint8_t)(w[i] >> 16);
++        out[i * 4 + 3] = (uint8_t)(w[i] >> 24);
++    }
++}
++
++/* Little-endian word loads, for building keys/nonces from byte material. */
++static inline uint32_t rngc_le32(const uint8_t *p) {
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++struct rngc_drbg {
++    uint32_t key[8];
++    uint32_t nonce[3];
++    uint32_t counter;
++};
++
++/* Install fresh entropy material (48 bytes) as the complete state. */
++static void rngc_drbg_seed(struct rngc_drbg *d,
++                           const uint8_t material[RNGC_SEED_LEN]) {
++    int i;
++    for (i = 0; i < 8; i++) d->key[i] = rngc_le32(material + i * 4);
++    for (i = 0; i < 3; i++) d->nonce[i] = rngc_le32(material + 32 + i * 4);
++    d->counter = 0;
++}
++
++/* Fold NEW entropy into the running state (XOR) and reset the block
++ * counter.  XOR keeps every bit of old state mixed with every bit of new
++ * material; the counter reset plus changed key/nonce guarantees no block
++ * position is ever reused under the same key. */
++static void rngc_drbg_reseed(struct rngc_drbg *d,
++                             const uint8_t material[RNGC_SEED_LEN]) {
++    int i;
++    for (i = 0; i < 8; i++) d->key[i] ^= rngc_le32(material + i * 4);
++    for (i = 0; i < 3; i++) d->nonce[i] ^= rngc_le32(material + 32 + i * 4);
++    d->counter = 0;
++}
++
++/* Generate `len` keystream bytes into `out`, then re-key from the stream
++ * itself so the served bytes can never be reconstructed from a later state
++ * compromise (backtracking resistance). */
++static void rngc_drbg_fill(struct rngc_drbg *d, uint8_t *out, size_t len) {
++    uint8_t block[64];
++
++    while (len > 0) {
++        rngc_chacha20_block_bytes(d->key, d->counter, d->nonce, block);
++        d->counter++;
++        size_t take = len < 64 ? len : 64;
++        rngc_copy(out, block, take);
++        out += take;
++        len -= take;
++    }
++
++    /* Re-key: the next 48 bytes of stream become the new state. */
++    uint8_t fresh[RNGC_SEED_LEN + 16];
++    rngc_chacha20_block_bytes(d->key, d->counter, d->nonce, fresh);
++    d->counter++;
++    rngc_drbg_seed(d, fresh);
++}
++
++#endif /* AURALITE_KERNEL_RNG_CORE_H */
+diff --git a/lib/libc/include/sys/random.h b/lib/libc/include/sys/random.h
+index 32608ca..85196c9 100644
+--- a/lib/libc/include/sys/random.h
++++ b/lib/libc/include/sys/random.h
+@@ -1,11 +1,14 @@
+ #ifndef AURALITE_LIBC_SYS_RANDOM_H
+ #define AURALITE_LIBC_SYS_RANDOM_H
+ 
+-/* <sys/random.h> — POSIX.1-2024 / Linux getrandom(2) (phase Q16). */
++/* <sys/random.h> — POSIX.1-2024 / Linux getrandom(2) (phase Q16).
++ * Since INTERNET_PLAN N0 the kernel source is a ChaCha20 CSPRNG seeded from
++ * RDSEED/RDRAND or interrupt jitter; before it is seeded getrandom() blocks
++ * (or returns -1/EAGAIN with GRND_NONBLOCK). */
+ 
+ #include <sys/types.h>
+ 
+-#define GRND_NONBLOCK 0x0001   /* don't block (the pool is always ready) */
++#define GRND_NONBLOCK 0x0001   /* don't block: EAGAIN while unseeded */
+ #define GRND_RANDOM   0x0002   /* legacy hint; accepted, same source */
+ 
+ ssize_t getrandom(void *buf, size_t buflen, unsigned int flags);
+diff --git a/tests/integration/cases/test_rng.sh b/tests/integration/cases/test_rng.sh
+new file mode 100644
+index 0000000..897d4ed
+--- /dev/null
++++ b/tests/integration/cases/test_rng.sh
+@@ -0,0 +1,83 @@
++#!/usr/bin/env bash
++# test_rng.sh — INTERNET_PLAN.md phase N0 test gate.
++#
++# The kernel CSPRNG must:
++#   1. detect and USE RDRAND/RDSEED when the CPU provides them
++#      (IL_CPU="qemu64,+rdrand,+rdseed");
++#   2. without hardware RNG, fall back to the interrupt-jitter pool, LOG
++#      the estimated entropy, and still reach a seeded, self-tested state;
++#   3. two separate boots produce DIFFERENT output (the old TSC/LCG filler
++#      did not reliably manage even this).
++#
++# The statistical gate (1 MiB byte-frequency + bit-runs) runs host-side in
++# tests/unit/test_rng.c against the identical rng_core.h; over the serial
++# console we assert the kernel's own 16 KiB self-test instead.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++trap il_dump_on_error EXIT
++
++# ---------------------------------------------------------------- section 1
++il_section "N0: hardware RNG path (RDRAND + RDSEED)"
++
++LOG1="$IL_LOGDIR/rng_hw.log"
++IL_LAST_LOG="$LOG1"
++IL_CPU="qemu64,+rdrand,+rdseed" il_run_qemu "$LOG1" 40
++
++il_assert_grep "$LOG1" "\[rng\] CPU features: RDRAND=yes RDSEED=yes" \
++               "RDSEED and RDRAND detected via CPUID"
++il_assert_grep "$LOG1" "\[rng\] seeded from RDSEED" \
++               "DRBG seeded from RDSEED"
++il_assert_grep "$LOG1" "\[rng\] self-test: PASS" \
++               "boot self-test (byte-frequency + bit-runs) passes"
++il_assert_grep "$LOG1" "\[rng\] sample: [0-9a-f]{64}" \
++               "32-byte boot sample printed"
++il_assert_no_grep "$LOG1" "PANIC" "no kernel panic"
++
++# ---------------------------------------------------------------- section 2
++il_section "N0: fallback path (no hardware RNG, interrupt jitter)"
++
++LOG2="$IL_LOGDIR/rng_jitter.log"
++IL_LAST_LOG="$LOG2"
++il_run_qemu "$LOG2" 45        # default IL_CPU=qemu64: no RDRAND, no RDSEED
++
++il_assert_grep "$LOG2" "\[rng\] CPU features: RDRAND=no RDSEED=no" \
++               "hardware RNG correctly reported absent"
++il_assert_grep "$LOG2" "no usable hardware RNG; falling back" \
++               "fallback to the interrupt-jitter pool announced"
++il_assert_grep "$LOG2" "\[rng\] pool: [0-9]+ samples, est\. [0-9]+ bits \(threshold 128\)" \
++               "estimated entropy is logged at boot, not silently assumed"
++il_assert_grep "$LOG2" "\[rng\] seeded from interrupt-jitter pool" \
++               "DRBG seeded once the pool crossed the threshold"
++il_assert_grep "$LOG2" "\[rng\] self-test: PASS" \
++               "boot self-test passes on the fallback path"
++il_assert_grep "$LOG2" "\[rng\] sample: [0-9a-f]{64}" \
++               "32-byte boot sample printed"
++il_assert_no_grep "$LOG2" "PANIC" "no kernel panic"
++
++# ---------------------------------------------------------------- section 3
++il_section "N0: two boots differ"
++
++LOG3="$IL_LOGDIR/rng_jitter2.log"
++IL_LAST_LOG="$LOG3"
++il_run_qemu "$LOG3" 45        # second plain-qemu64 boot
++
++s1="$(grep -oE '\[rng\] sample: [0-9a-f]{64}' "$LOG2" | head -1 | awk '{print $3}')"
++s2="$(grep -oE '\[rng\] sample: [0-9a-f]{64}' "$LOG3" | head -1 | awk '{print $3}')"
++
++if [ -n "$s1" ] && [ -n "$s2" ]; then
++    il_pass "both boots produced a sample"
++else
++    il_fail "a boot produced no sample (s1='$s1' s2='$s2')"
++fi
++if [ -n "$s1" ] && [ -n "$s2" ] && [ "$s1" != "$s2" ]; then
++    il_pass "two boots produce different CSPRNG output"
++else
++    il_fail "two boots produced IDENTICAL output ($s1)"
++fi
++
++il_summary
+diff --git a/tests/integration/lib/lib.sh b/tests/integration/lib/lib.sh
+index 333c105..7ba36ff 100644
+--- a/tests/integration/lib/lib.sh
++++ b/tests/integration/lib/lib.sh
+@@ -3,6 +3,9 @@
+ #
+ # Public API:
+ #   il_init                            — set up ROOT, ISO, BUILD, LOG, etc.
++#                                        env knobs: IL_NIC (default e1000),
++#                                        IL_SMP (default 2), IL_CPU (default
++#                                        qemu64; e.g. "qemu64,+rdrand,+rdseed")
+ #   il_have <bin>...                   — assert helper binaries exist
+ #   il_make_disk <path> <MiB> <magic>  — create raw image with magic in sector 0
+ #   il_run_qemu <log> <timeout_s> [-- <extra qemu args>]
+@@ -59,6 +62,10 @@ il_init() {
+     # alternative backend, e.g. IL_NIC=virtio-net-pci for the virtio-net path).
+     IL_NIC="${IL_NIC:-e1000}"
+ 
++    # CPU model (overridable so a test can toggle CPU features, e.g.
++    # IL_CPU="qemu64,+rdrand,+rdseed" for the N0 hardware-entropy path).
++    IL_CPU="${IL_CPU:-qemu64}"
++
+     # Build the boot image on demand.  `make iso` must leave the canonical
+     # build/auralite.iso artefact behind; fail immediately instead of running
+     # every test against a missing file and producing misleading assertions.
+@@ -163,7 +170,7 @@ il_run_qemu() {
+         -display none
+         -serial stdio
+         -no-reboot
+-        -cpu qemu64
++        -cpu "$IL_CPU"
+         -boot order=c
+         -netdev user,id=net0
+         -device "${IL_NIC},netdev=net0"
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 9940787..a8e0c94 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -79,6 +79,7 @@ ALL_CASES=(
+     test_stack_guard
+     test_panic_diag
+     test_ist_double_fault
++    test_rng
+     test_fd_isolation
+     test_user_processes
+     test_ahci_rw
+diff --git a/tests/unit/test_rng.c b/tests/unit/test_rng.c
+new file mode 100644
+index 0000000..44b2533
+--- /dev/null
++++ b/tests/unit/test_rng.c
+@@ -0,0 +1,315 @@
++/* tests/unit/test_rng.c — host-side tests for the N0 CSPRNG core.
++ *
++ * Links the SAME kernel/rng_core.h the guest kernel uses (the tree's
++ * pure-core pattern), so these bytes are the guest's bytes.
++ *
++ * What is checked (INTERNET_PLAN.md N0 test gate):
++ *
++ *   1. The ChaCha20 block function against the RFC 8439 §2.3.2 vector.
++ *   2. The keystream against RFC 8439 §2.4.2 (the "Sunscreen" example,
++ *      both keystream blocks AND the full 114-byte ciphertext).
++ *   3. DRBG determinism: identical seed material -> identical stream.
++ *   4. Two different seeds -> different output (the "two boots differ"
++ *      property, proven at the core level; the integration test proves it
++ *      across real QEMU boots).
++ *   5. Reseeding changes the stream.
++ *   6. Statistical smoke over 1 MiB: per-byte frequency and bit-run
++ *      counts within wide-but-meaningful bounds.  Catches stuck or
++ *      counter-like generators; not a claim of cryptographic quality.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>   /* before rng_core.h: the core itself stays freestanding */
++#include <stdint.h>
++
++#include "kernel/rng_core.h"
++
++static int pass_count = 0, fail_count = 0;
++
++#define CHECK(cond, msg)                                          \
++    do {                                                          \
++        if (cond) {                                               \
++            pass_count++;                                         \
++            printf("PASS: %s\n", msg);                            \
++        } else {                                                  \
++            fail_count++;                                         \
++            printf("FAIL: %s  (line %d)\n", msg, __LINE__);       \
++        }                                                         \
++    } while (0)
++
++/* ---- RFC 8439 test-vector material ---- */
++
++static const uint8_t rfc_key_bytes[32] = {
++    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
++    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
++    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
++    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
++};
++
++/* §2.3.2: Nonce 00:00:00:09 00:00:00:4a 00:00:00:00, counter 1 */
++static const uint32_t rfc232_nonce[3] = { 0x09000000u, 0x4a000000u, 0x00000000u };
++static const uint32_t rfc232_expected[16] = {
++    0xe4e7f110u, 0x15593bd1u, 0x1fdd0f50u, 0xc47120a3u,
++    0xc7f4d1c7u, 0x0368c033u, 0x9aaa2204u, 0x4e6cd4c3u,
++    0x466482d2u, 0x09aa9f07u, 0x05d7c214u, 0xa2028bd9u,
++    0xd19c12b5u, 0xb94e16deu, 0xe883d0cbu, 0x4e3c50a2u,
++};
++static const uint8_t rfc232_serialized[64] = {
++    0x10, 0xf1, 0xe7, 0xe4, 0xd1, 0x3b, 0x59, 0x15,
++    0x50, 0x0f, 0xdd, 0x1f, 0xa3, 0x20, 0x71, 0xc4,
++    0xc7, 0xd1, 0xf4, 0xc7, 0x33, 0xc0, 0x68, 0x03,
++    0x04, 0x22, 0xaa, 0x9a, 0xc3, 0xd4, 0x6c, 0x4e,
++    0xd2, 0x82, 0x64, 0x46, 0x07, 0x9f, 0xaa, 0x09,
++    0x14, 0xc2, 0xd7, 0x05, 0xd9, 0x8b, 0x02, 0xa2,
++    0xb5, 0x12, 0x9c, 0xd1, 0xde, 0x16, 0x4e, 0xb9,
++    0xcb, 0xd0, 0x83, 0xe8, 0xa2, 0x50, 0x3c, 0x4e,
++};
++
++/* §2.4.2: Nonce 00:00:00:00 00:00:00:4a 00:00:00:00, initial counter 1 */
++static const uint32_t rfc242_nonce[3] = { 0x00000000u, 0x4a000000u, 0x00000000u };
++static const uint32_t rfc242_block1[16] = {
++    0xf3514f22u, 0xe1d91b40u, 0x6f27de2fu, 0xed1d63b8u,
++    0x821f138cu, 0xe2062c3du, 0xecca4f7eu, 0x78cff39eu,
++    0xa30a3b8au, 0x920a6072u, 0xcd7479b5u, 0x34932bedu,
++    0x40ba4c79u, 0xcd343ec6u, 0x4c2c21eau, 0xb7417df0u,
++};
++static const uint32_t rfc242_block2[16] = {
++    0x9f74a669u, 0x410f633fu, 0x28feca22u, 0x7ec44decu,
++    0x6d34d426u, 0x738cb970u, 0x3ac5e9f3u, 0x45590cc4u,
++    0xda6e8b39u, 0x892c831au, 0xcdea67c1u, 0x2b7e1d90u,
++    0x037463f3u, 0xa11a2073u, 0xe8bcfb88u, 0xedc49139u,
++};
++
++static const char rfc242_plaintext[] =
++    "Ladies and Gentlemen of the class of '99: If I could offer you only "
++    "one tip for the future, sunscreen would be it.";
++
++static const uint8_t rfc242_ciphertext[114] = {
++    0x6e, 0x2e, 0x35, 0x9a, 0x25, 0x68, 0xf9, 0x80,
++    0x41, 0xba, 0x07, 0x28, 0xdd, 0x0d, 0x69, 0x81,
++    0xe9, 0x7e, 0x7a, 0xec, 0x1d, 0x43, 0x60, 0xc2,
++    0x0a, 0x27, 0xaf, 0xcc, 0xfd, 0x9f, 0xae, 0x0b,
++    0xf9, 0x1b, 0x65, 0xc5, 0x52, 0x47, 0x33, 0xab,
++    0x8f, 0x59, 0x3d, 0xab, 0xcd, 0x62, 0xb3, 0x57,
++    0x16, 0x39, 0xd6, 0x24, 0xe6, 0x51, 0x52, 0xab,
++    0x8f, 0x53, 0x0c, 0x35, 0x9f, 0x08, 0x61, 0xd8,
++    0x07, 0xca, 0x0d, 0xbf, 0x50, 0x0d, 0x6a, 0x61,
++    0x56, 0xa3, 0x8e, 0x08, 0x8a, 0x22, 0xb6, 0x5e,
++    0x52, 0xbc, 0x51, 0x4d, 0x16, 0xcc, 0xf8, 0x06,
++    0x81, 0x8c, 0xe9, 0x1a, 0xb7, 0x79, 0x37, 0x36,
++    0x5a, 0xf9, 0x0b, 0xbf, 0x74, 0xa3, 0x5b, 0xe6,
++    0xb4, 0x0b, 0x8e, 0xed, 0xf2, 0x78, 0x5e, 0x42,
++    0x87, 0x4d,
++};
++
++static void load_rfc_key(uint32_t key[8]) {
++    for (int i = 0; i < 8; i++) key[i] = rngc_le32(rfc_key_bytes + i * 4);
++}
++
++/* ---- 1. RFC 8439 §2.3.2: block function ---- */
++
++static void test_rfc232_block(void) {
++    uint32_t key[8], out[16];
++    load_rfc_key(key);
++    rngc_chacha20_block(key, 1, rfc232_nonce, out);
++    CHECK(memcmp(out, rfc232_expected, sizeof(out)) == 0,
++          "RFC 8439 §2.3.2 block function vector");
++
++    uint8_t bytes[64];
++    rngc_chacha20_block_bytes(key, 1, rfc232_nonce, bytes);
++    CHECK(memcmp(bytes, rfc232_serialized, 64) == 0,
++          "RFC 8439 §2.3.2 little-endian serialization");
++}
++
++/* ---- 2. RFC 8439 §2.4.2: keystream and Sunscreen encryption ---- */
++
++static void test_rfc242_cipher(void) {
++    uint32_t key[8], out[16];
++    load_rfc_key(key);
++
++    rngc_chacha20_block(key, 1, rfc242_nonce, out);
++    CHECK(memcmp(out, rfc242_block1, sizeof(out)) == 0,
++          "RFC 8439 §2.4.2 first keystream block");
++
++    rngc_chacha20_block(key, 2, rfc242_nonce, out);
++    CHECK(memcmp(out, rfc242_block2, sizeof(out)) == 0,
++          "RFC 8439 §2.4.2 second keystream block");
++
++    /* Full 114-byte encryption: generate keystream bytes counter=1,2 and
++     * XOR.  Exercises the byte-order path the DRBG uses. */
++    uint8_t ks[128];
++    rngc_chacha20_block_bytes(key, 1, rfc242_nonce, ks);
++    rngc_chacha20_block_bytes(key, 2, rfc242_nonce, ks + 64);
++
++    size_t pt_len = strlen(rfc242_plaintext);
++    CHECK(pt_len == 114, "Sunscreen plaintext is 114 bytes");
++
++    uint8_t ct[114];
++    for (size_t i = 0; i < pt_len; i++) {
++        ct[i] = (uint8_t)((uint8_t)rfc242_plaintext[i] ^ ks[i]);
++    }
++    CHECK(memcmp(ct, rfc242_ciphertext, 114) == 0,
++          "RFC 8439 §2.4.2 Sunscreen ciphertext (114 bytes)");
++}
++
++/* ---- helpers for DRBG tests ---- */
++
++static void make_material(uint8_t m[RNGC_SEED_LEN], uint8_t seed_byte) {
++    for (int i = 0; i < RNGC_SEED_LEN; i++) {
++        m[i] = (uint8_t)(seed_byte + i * 31 + (i / 7) * 17);
++    }
++}
++
++/* ---- 3/4. determinism and seed sensitivity ---- */
++
++static void test_drbg_determinism(void) {
++    uint8_t m1[RNGC_SEED_LEN], m2[RNGC_SEED_LEN];
++    uint8_t a[1024], b[1024];
++
++    make_material(m1, 0x11);
++    make_material(m2, 0x11);          /* identical */
++    struct rngc_drbg d1, d2;
++    rngc_drbg_seed(&d1, m1);
++    rngc_drbg_seed(&d2, m2);
++    rngc_drbg_fill(&d1, a, sizeof(a));
++    rngc_drbg_fill(&d2, b, sizeof(b));
++    CHECK(memcmp(a, b, sizeof(a)) == 0,
++          "same seed material -> identical 1 KiB stream");
++
++    make_material(m2, 0x12);          /* one byte's recipe differs */
++    rngc_drbg_seed(&d2, m2);
++    rngc_drbg_fill(&d2, b, sizeof(b));
++    CHECK(memcmp(a, b, sizeof(a)) != 0,
++          "different seed material -> different stream");
++
++    /* Not just "different somewhere": overwhelmingly different.  A good
++     * stream cipher flips ~half the bits under a new key. */
++    unsigned differing = 0;
++    for (size_t i = 0; i < sizeof(a); i++) {
++        if (a[i] != b[i]) differing++;
++    }
++    CHECK(differing > sizeof(a) * 3 / 4,
++          "different seeds differ in >75% of bytes (avalanche)");
++}
++
++/* ---- 5. reseed changes the stream ---- */
++
++static void test_drbg_reseed(void) {
++    uint8_t m1[RNGC_SEED_LEN], m2[RNGC_SEED_LEN];
++    uint8_t a[256], b[256], c[256];
++    struct rngc_drbg d1, d2;
++
++    make_material(m1, 0x42);
++    make_material(m2, 0x99);
++    rngc_drbg_seed(&d1, m1);
++    rngc_drbg_seed(&d2, m1);
++
++    rngc_drbg_fill(&d1, a, sizeof(a));
++    rngc_drbg_fill(&d2, b, sizeof(b));
++    CHECK(memcmp(a, b, sizeof(a)) == 0, "pre-reseed streams agree");
++
++    rngc_drbg_reseed(&d2, m2);
++    rngc_drbg_fill(&d2, c, sizeof(c));
++    CHECK(memcmp(b, c, sizeof(c)) != 0,
++          "reseed with fresh material changes the stream");
++
++    /* A reseeded DRBG must not coincide with a never-seeded-with-m2 one's
++     * FIRST request either (XOR-fold lands in a different place than a
++     * direct seed would). */
++    struct rngc_drbg d3;
++    rngc_drbg_seed(&d3, m2);
++    uint8_t e[256];
++    rngc_drbg_fill(&d3, e, sizeof(e));
++    CHECK(memcmp(c, e, sizeof(e)) != 0,
++          "reseeded state != directly-seeded state");
++}
++
++/* ---- 6. statistical smoke over 1 MiB ---- */
++
++static void test_statistical_1mb(void) {
++    enum { N = 1024 * 1024 };
++    uint8_t *buf = malloc(N);
++    if (!buf) {
++        printf("FAIL: could not allocate 1 MiB for statistics\n");
++        fail_count++;
++        return;
++    }
++
++    uint8_t m[RNGC_SEED_LEN];
++    make_material(m, 0x5A);
++    struct rngc_drbg d;
++    rngc_drbg_seed(&d, m);
++
++    /* Fill in several requests so the backtracking re-key path runs too. */
++    size_t off = 0;
++    while (off < (size_t)N) {
++        size_t chunk = 4096;
++        if (off + chunk > (size_t)N) chunk = (size_t)N - off;
++        rngc_drbg_fill(&d, buf + off, chunk);
++        off += chunk;
++    }
++
++    /* Byte frequency: expected 4096 per value; allow +-15% (~9.6 sigma). */
++    static uint32_t freq[256];
++    memset(freq, 0, sizeof(freq));
++    for (size_t i = 0; i < (size_t)N; i++) freq[buf[i]]++;
++    uint32_t expected = N / 256;
++    int freq_ok = 1;
++    uint32_t lo = expected, hi = expected;
++    for (int i = 0; i < 256; i++) {
++        if (freq[i] < lo) lo = freq[i];
++        if (freq[i] > hi) hi = freq[i];
++        if (freq[i] < expected - expected * 15 / 100 ||
++            freq[i] > expected + expected * 15 / 100) {
++            freq_ok = 0;
++        }
++    }
++    CHECK(freq_ok, "1 MiB byte frequency within +-15% per value");
++    printf("      (min count %u, max count %u, expected %u)\n", lo, hi, expected);
++
++    /* Bit runs: expected ~N*4 runs; allow +-2% (~58 sigma). */
++    uint64_t nbits = (uint64_t)N * 8;
++    uint64_t runs = 1, longest = 1, cur = 1;
++    int prev = buf[0] & 1;
++    for (size_t i = 0; i < (size_t)N; i++) {
++        for (int bit = (i == 0 ? 1 : 0); bit < 8; bit++) {
++            int b = (buf[i] >> bit) & 1;
++            if (b == prev) {
++                cur++;
++                if (cur > longest) longest = cur;
++            } else {
++                runs++;
++                cur = 1;
++                prev = b;
++            }
++        }
++    }
++    uint64_t exp_runs = nbits / 2;
++    CHECK(runs > exp_runs - exp_runs / 50 && runs < exp_runs + exp_runs / 50,
++          "1 MiB bit-run count within +-2% of N/2");
++    printf("      (runs %llu, expected ~%llu, longest run %llu)\n",
++           (unsigned long long)runs, (unsigned long long)exp_runs,
++           (unsigned long long)longest);
++    CHECK(longest < 40, "1 MiB longest bit run < 40");
++
++    /* A stuck/counter generator produces huge bias; check the mean too. */
++    unsigned long sum = 0;
++    for (int i = 0; i < 256; i++) sum += (unsigned long)freq[i] * i;
++    double mean = (double)sum / N;
++    CHECK(mean > 126.5 && mean < 129.0, "1 MiB byte mean near 127.5");
++
++    free(buf);
++}
++
++int main(void) {
++    printf("test_rng: N0 ChaCha20 CSPRNG core (RFC 8439 vectors + statistics)\n");
++    test_rfc232_block();
++    test_rfc242_cipher();
++    test_drbg_determinism();
++    test_drbg_reseed();
++    test_statistical_1mb();
++
++    printf("test_rng: %d passed, %d failed\n", pass_count, fail_count);
++    return fail_count == 0 ? 0 : 1;
++}
+-- 
+2.47.3
+
