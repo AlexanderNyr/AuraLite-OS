@@ -2021,7 +2021,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (!validate_user_range(buf, len, 1)) return (uint64_t)-EFAULT;
         uint8_t *kbuf = kmalloc(len ? len : 1);
         if (!kbuf) return (uint64_t)-ENOMEM;
-        rng_fill(kbuf, len);          /* Q16: shared seeded pool */
+        /* N0: the ChaCha20 CSPRNG refuses loudly (-ENOSYS) until real
+         * entropy exists; never serve guessable bytes. */
+        if (rng_try_fill(kbuf, len) != 0) {
+            kfree(kbuf);
+            return (uint64_t)-ENOSYS;
+        }
         if (copy_to_user(buf, kbuf, len) != 0) {
             kfree(kbuf);
             return (uint64_t)-EFAULT;
@@ -2030,9 +2035,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return 0;
     }
     /* Q16: getrandom(2) — Linux-compatible flags, draws from the same
-     * seeded pool as getentropy.  GRND_NONBLOCK and GRND_RANDOM are
-     * accepted (the pool is always ready, so neither ever blocks); unknown
-     * flags are rejected with EINVAL. */
+     * ChaCha20 CSPRNG as getentropy (N0).  Until the generator is ready
+     * (hardware RNG or a sufficiently stirred jitter pool), it BLOCKS —
+     * like Linux's pre-init /dev/random — unless GRND_NONBLOCK, which
+     * returns -EAGAIN.  Unknown flags are rejected with EINVAL. */
     case SYS_GETRANDOM: {
         void *buf = (void*)(uintptr_t)a1;
         uint64_t buflen = a2;
@@ -2041,9 +2047,23 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (buflen == 0) return 0;
         if (buflen > 65536) return (uint64_t)-EINVAL;       /* sanity bound */
         if (!buf || !validate_user_range(buf, buflen, 1)) return (uint64_t)-EFAULT;
+        if (!rng_available()) {
+            if (flags & 1u) return (uint64_t)-EAGAIN;       /* GRND_NONBLOCK */
+            /* PIT ticks keep stirring the jitter pool; poll with yields.
+             * Give up after 30 s rather than hang a process on a machine
+             * whose entropy source is genuinely dead. */
+            uint64_t start = timer_get_ticks();
+            while (!rng_available()) {
+                if (timer_get_ticks() - start > 3000) return (uint64_t)-EAGAIN;
+                sched_yield();
+            }
+        }
         uint8_t *kbuf = kmalloc(buflen);
         if (!kbuf) return (uint64_t)-ENOMEM;
-        rng_fill(kbuf, buflen);
+        if (rng_try_fill(kbuf, buflen) != 0) {
+            kfree(kbuf);
+            return (uint64_t)-EAGAIN;
+        }
         if (copy_to_user(buf, kbuf, buflen) != 0) {
             kfree(kbuf);
             return (uint64_t)-EFAULT;

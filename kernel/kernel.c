@@ -245,8 +245,10 @@ void kmain(boot_info_t *boot_info) {
     pit_init(100);
     timer_self_test();
 
-    /* Q16: seed the kernel CSPRNG pool (rdtsc/ticks/rdrand jitter).  Must
-     * come after the timer so timer_get_ticks() is live. */
+    /* N0 (INTERNET_PLAN.md): the kernel CSPRNG.  Detects RDRAND/RDSEED and
+     * seeds from them when present; otherwise arms the interrupt-jitter
+     * pool and refuses to serve (-ENOSYS) until it is stirred.  Must come
+     * after the timer so timer_get_ticks() is live. */
     rng_init();
 
     kprintf("[boot] initialising scheduler...\n");

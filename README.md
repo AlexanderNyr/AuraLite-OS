@@ -791,9 +791,11 @@ Short version:
   selection and no dead keys, so a non-US keyboard produces the wrong
   characters outside the shared ASCII subset.
 - **No cryptography and therefore no HTTPS.** There is no SHA-256, AES or curve
-  arithmetic anywhere in the tree, and `getentropy()` returns a mix of TSC and
-  tick counts that is guessable — unfit for key material. See
-  [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+  arithmetic anywhere in the tree. The entropy source is now real
+  (`INTERNET_PLAN.md` phase N0: a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or
+  interrupt-timing jitter, with `getentropy()` failing closed via `-ENOSYS`
+  until entropy exists), but the cryptographic primitives themselves land only
+  in phase N1. See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
 - **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
   but no interrupt gate selects it, so a kernel stack overflow or double fault
   resets the machine with no diagnostic.

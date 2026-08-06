@@ -3,6 +3,9 @@
 #
 # Public API:
 #   il_init                            — set up ROOT, ISO, BUILD, LOG, etc.
+#                                        env knobs: IL_NIC (default e1000),
+#                                        IL_SMP (default 2), IL_CPU (default
+#                                        qemu64; e.g. "qemu64,+rdrand,+rdseed")
 #   il_have <bin>...                   — assert helper binaries exist
 #   il_make_disk <path> <MiB> <magic>  — create raw image with magic in sector 0
 #   il_run_qemu <log> <timeout_s> [-- <extra qemu args>]
@@ -58,6 +61,10 @@ il_init() {
     # NIC model on the user/SLIRP NAT (overridable so a test can exercise an
     # alternative backend, e.g. IL_NIC=virtio-net-pci for the virtio-net path).
     IL_NIC="${IL_NIC:-e1000}"
+
+    # CPU model (overridable so a test can toggle CPU features, e.g.
+    # IL_CPU="qemu64,+rdrand,+rdseed" for the N0 hardware-entropy path).
+    IL_CPU="${IL_CPU:-qemu64}"
 
     # Build the boot image on demand.  `make iso` must leave the canonical
     # build/auralite.iso artefact behind; fail immediately instead of running
@@ -163,7 +170,7 @@ il_run_qemu() {
         -display none
         -serial stdio
         -no-reboot
-        -cpu qemu64
+        -cpu "$IL_CPU"
         -boot order=c
         -netdev user,id=net0
         -device "${IL_NIC},netdev=net0"

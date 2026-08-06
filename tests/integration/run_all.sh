@@ -79,6 +79,7 @@ ALL_CASES=(
     test_stack_guard
     test_panic_diag
     test_ist_double_fault
+    test_rng
     test_fd_isolation
     test_user_processes
     test_ahci_rw

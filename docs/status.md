@@ -86,6 +86,7 @@ Legend:
 | GUI | ✅/🧪 | `SYS_GUI_CALL` (200), `SYS_GUI_EVENT` (201), `SYS_GUI_THEME` (202). v2.0 theme engine, icons, notifications, snap, context menus. |
 | Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
 | Sockets | 🧪 | AF_INET/SOCK_STREAM handles include `socket`, `connect`, `send`, `recv`, `close`, plus server-side `bind`, `listen`, and `accept` (`305..307`). AF_INET/SOCK_DGRAM supports `sendto=44` and `recvfrom=45`. |
+| Entropy (`getentropy`/`getrandom`) | ✅ | INTERNET_PLAN N0. ChaCha20 CSPRNG (`kernel/rng_core.h`, RFC 8439) seeded from RDSEED/RDRAND when present, else an interrupt-timing jitter pool stirred on every IRQ. Fails closed: `getentropy` returns `-ENOSYS` and `getrandom` blocks (or `EAGAIN` with `GRND_NONBLOCK`) until real entropy exists; estimated entropy logged at boot. Host RFC-vector + 1 MiB statistics tests, QEMU gate `test_rng.sh`. |
 
 ## Networking
 
@@ -128,7 +129,7 @@ Legend:
 
 | Feature | Status | Notes |
 |---|---:|---|
-| POSIX.1-2024 compliance | 🧪 | Q1–Q16 all implemented (~410 functions covered, see `docs/posix2024_compliance.md`). Q12 added the runnable conformance harness (host gate in `make test-unit` — `tests/posix2024/` — plus the guest `conformtest` QEMU case); Q13 completed the AT-family; Q15 implemented `mq_notify`; Q16 added pselect/ppoll, getrandom (seeded xorshift128+ pool, non-crypto) and sig2str/str2sig; Q14 replaced the SysV IPC ENOSYS stubs with real kernel objects — semaphores (blocking semop, SEM_UNDO at exit), page-backed shared memory (destroy at last detach) and message queues (full mtype rules). Only the three named-semaphore functions remain argued 🔶 partials (need MAP_SHARED). `_POSIX_VERSION` = 202405L. |
+| POSIX.1-2024 compliance | 🧪 | Q1–Q16 all implemented (~410 functions covered, see `docs/posix2024_compliance.md`). Q12 added the runnable conformance harness (host gate in `make test-unit` — `tests/posix2024/` — plus the guest `conformtest` QEMU case); Q13 completed the AT-family; Q15 implemented `mq_notify`; Q16 added pselect/ppoll, getrandom and sig2str/str2sig (getrandom's backing was upgraded by INTERNET_PLAN N0 to a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or interrupt jitter, failing closed with ENOSYS until real entropy exists); Q14 replaced the SysV IPC ENOSYS stubs with real kernel objects — semaphores (blocking semop, SEM_UNDO at exit), page-backed shared memory (destroy at last detach) and message queues (full mtype rules). Only the three named-semaphore functions remain argued 🔶 partials (need MAP_SHARED). `_POSIX_VERSION` = 202405L. |
 | AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
 | AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
 | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |

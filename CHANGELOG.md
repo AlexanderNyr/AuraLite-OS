@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N0 — A real entropy source] 2026-08-06
+
+`INTERNET_PLAN.md` phase N0, the first phase of the real-internet plan and
+the gate for all cryptography (decision D1: nothing cryptographic may stand
+on a guessable seed).  The Q16 seeded xorshift128+ pool is replaced by a
+ChaCha20-based CSPRNG with honest entropy feeding it.
+
+- **`kernel/rng_core.h` (new)**: freestanding ChaCha20 DRBG core — RFC 8439
+  block function, 48-byte seed material (256-bit key + 96-bit nonce),
+  key-after-every-request backtracking resistance, XOR-fold reseed.  No
+  kernel includes, so the host unit test compiles the very same code.
+- **`kernel/rng.c` (rewritten)**: entropy source selection — RDSEED
+  (CPUID.7:EBX bit 18) or RDRAND (CPUID.1:ECX bit 30) with bounded retry,
+  falling back to an interrupt-timing jitter pool; periodic reseed every
+  1 MiB of output; boot self-test (16 KiB byte-frequency + bit-runs) and a
+  32-byte `[rng] sample:` line printed at seeding.
+- **Jitter collection**: `irq_dispatch()` calls the new `rng_jitter_event()`
+  on every IRQ; the pool's observed-variation estimate is counted (low-16
+  delta bits that changed, capped at 4 bits/event) and logged.
+- **Fail-closed API**: `rng_try_fill()` returns `-ENOSYS` until real entropy
+  exists; `getentropy()` (syscall 318) surfaces it.  `getrandom()` blocks
+  until the pool is stirred (`GRND_NONBLOCK` → `-EAGAIN`), like Linux's
+  pre-init `/dev/random`, instead of silently serving guessable bytes.
+- Tests: host `tests/unit/test_rng.c` — RFC 8439 §2.3.2/§2.4.2 vectors,
+  determinism, avalanche, reseed, 1 MiB frequency/run statistics (16
+  checks).  Integration `tests/integration/cases/test_rng.sh` — RDSEED path
+  under `-cpu qemu64,+rdrand,+rdseed`, jitter fallback with logged estimate
+  under plain `qemu64`, two-boots-differ (14 assertions).  `lib.sh` gains
+  an `IL_CPU` knob.
+- Docs: TODO.md and README.md no longer claim `getentropy()` is guessable;
+  the "no cryptography in the tree" limitation stands until phase N1.
+
 ## [POSIX.1-2024 Phase Q14 — System V IPC: sem/shm/msg kernel objects] 2026-08-05
 
 `POSIX2024_PLAN.md` phase Q14 replaces the twelve `ENOSYS` stubs from Q10

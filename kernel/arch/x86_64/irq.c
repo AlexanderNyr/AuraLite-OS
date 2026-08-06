@@ -10,6 +10,8 @@
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/x86_64/cpu.h"
+#include "kernel/rng.h"
 
 #define NUM_IRQS 16
 #define ICW1_ICW4   0x01   /* ICW4 needed                */
@@ -109,6 +111,11 @@ void irq_dispatch(int irq, struct registers *regs) {
      * lapic_eoi() itself is guarded (no-op until lapic_enable() mapped the
      * MMIO page), so this is safe in early boot too. */
     lapic_eoi();
+    /* N0: feed interrupt-arrival timing jitter to the kernel CSPRNG.  The
+     * low bits of the TSC delta between consecutive IRQs are the fallback
+     * entropy source when the CPU has no RDRAND/RDSEED.  Safe before
+     * rng_init() — events just accumulate. */
+    rng_jitter_event(read_tsc());
     if (irq >= 0 && irq < NUM_IRQS && irq_handlers[irq] != NULL) {
         irq_handlers[irq](regs);
     }

@@ -1,6 +1,11 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: PLANNED 📋 (phases N0–N9)
+## Status: IN PROGRESS 🚧 — N0 complete, N1–N9 pending
+
+| Phase | Result | Deliverable |
+|-------|--------|-------------|
+| N0 — real entropy source | ✅ complete | `patches/NET_N0_entropy.patch` |
+| N1–N9 | pending | — |
 
 This document answers:
 
@@ -179,19 +184,19 @@ be verified: a single audited comparison function, used everywhere, with no
 
 ## 3. Phases
 
-### Phase N0 — A real entropy source
+### Phase N0 — A real entropy source ✅ COMPLETE
 
 **Objective:** `getentropy()` that is not guessable.
 
 #### Tasks
 
-- [ ] Detect RDRAND and RDSEED via CPUID leaf 1 ECX bit 30 / leaf 7 EBX bit 18.
+- [x] Detect RDRAND and RDSEED via CPUID leaf 1 ECX bit 30 / leaf 7 EBX bit 18.
       (Verified: this QEMU accepts `-cpu qemu64,+rdrand`, so it is testable.)
-- [ ] A ChaCha20-based CSPRNG in the kernel, reseeded from RDSEED when present.
-- [ ] Fallback entropy pool: interrupt timing jitter, not just TSC reads.
-- [ ] **`getentropy()` returns `-ENOSYS` when neither hardware RNG nor a
+- [x] A ChaCha20-based CSPRNG in the kernel, reseeded from RDSEED when present.
+- [x] Fallback entropy pool: interrupt timing jitter, not just TSC reads.
+- [x] **`getentropy()` returns `-ENOSYS` when neither hardware RNG nor a
       sufficiently stirred pool is available.** Callers must be able to tell.
-- [ ] Record the estimated entropy at boot, so a weak source is visible in the
+- [x] Record the estimated entropy at boot, so a weak source is visible in the
       log rather than silently accepted.
 
 #### Test gate
@@ -207,6 +212,27 @@ be verified: a single audited comparison function, used everywhere, with no
 #### Deliverable
 
 `patches/NET_N0_entropy.patch`
+
+#### Phase result (2026-08-06)
+
+The Q16 xorshift128+ pool is gone.  `kernel/rng_core.h` is a freestanding
+ChaCha20 DRBG core (RFC 8439 block function, key-after-every-request
+backtracking resistance, XOR-fold reseed), unit-tested on the host against
+the RFC 8439 §2.3.2/§2.4.2 vectors plus a 1 MiB frequency/run battery
+(`tests/unit/test_rng.c`, 16 checks).  `kernel/rng.c` feeds it: RDSEED or
+RDRAND when CPUID reports them (384 bits, bounded retry), otherwise an
+interrupt-timing jitter pool stirred from every IRQ via `rng_jitter_event()`
+in `irq_dispatch()`.  Until the pool's measured variation reaches 128
+estimated bits, `rng_try_fill()` returns `-ENOSYS` and `getrandom()` blocks
+(`GRND_NONBLOCK` → `EAGAIN`); the estimate is logged at boot
+(`[rng] pool: N samples, est. E bits`).  A 16 KiB in-kernel self-test
+(byte-frequency + bit-runs) and a 32-byte `[rng] sample:` line are printed
+on seeding.  Measured in QEMU: `qemu64,+rdrand,+rdseed` boots seed from
+RDSEED; plain `qemu64` seeds from the jitter pool (~4 bits of observed
+delta variation per IRQ; 197 samples / est. 780 bits at seed time in the
+reference run), and two boots produce different samples.  Integration gate:
+`tests/integration/cases/test_rng.sh` (14 assertions), gated through
+`tests/integration/run_all.sh`.
 
 ---
 

@@ -498,7 +498,7 @@
 
 | Function | Status | Notes |
 |---|---|---|
-| getrandom | ✅ | Q16: SYS_GETRANDOM; seeded xorshift128+ pool (non-crypto, see TODO.md); GRND_NONBLOCK/GRND_RANDOM accepted |
+| getrandom | ✅ | Q16: SYS_GETRANDOM; backed since INTERNET_PLAN N0 by a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or interrupt jitter (blocks until seeded; GRND_NONBLOCK → EAGAIN); GRND_RANDOM accepted |
 
 ## `<sys/socket.h>`
 

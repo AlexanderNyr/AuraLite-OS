@@ -4,23 +4,56 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Kernel CSPRNG (POSIX2024 phase Q16).
+/* Kernel CSPRNG (INTERNET_PLAN.md phase N0).
  *
- * Graduates the syscall layer's one-off rdtsc-xorshift filler into a seeded
- * xorshift128+ pool.  This is a solid PRNG, NOT a cryptographic RNG: the
- * seed is drawn from rdtsc / timer ticks / pointer addresses / RDRAND (when
- * the CPU provides it), and the state is mixed from those sources.  The
- * security note in TODO.md states the limits honestly rather than
- * overclaiming.  getrandom(2) and getentropy(2) both draw from this pool.
+ * The generator is a ChaCha20-based DRBG (kernel/rng_core.h, RFC 8439).
+ * What makes N0 different from the Q16 xorshift128+ pool it replaces is the
+ * ENTROPY, not the mixing:
+ *
+ *   - RDSEED (CPUID.7:EBX bit 18) or RDRAND (CPUID.1:ECX bit 30) seed the
+ *     DRBG directly when the CPU provides them;
+ *   - otherwise a jitter pool accumulates interrupt-arrival timing deltas
+ *     (kernel/arch/x86_64/irq.c calls rng_jitter_event() on every IRQ), and
+ *     the DRBG is seeded only once the pool's measured variation reaches
+ *     RNG_POOL_BITS estimated bits;
+ *   - until then the generator reports NOT READY: rng_try_fill() returns
+ *     -ENOSYS and getentropy()/getrandom() surface that to userspace
+ *     (D1: a loud failure beats a quiet fake).
+ *
+ * This is hobby-OS entropy suitable for seeding TLS handshake keys
+ * (INTERNET_PLAN N3+); it is not audited.  The estimated entropy is logged
+ * at boot so a weak source is visible rather than silently accepted.
  */
 
-/* Initialise the pool.  Called once at boot from kmain; idempotent. */
+/* Estimated jitter-pool entropy required before seeding without hardware
+ * RNG.  Public because the boot log names the threshold. */
+#define RNG_POOL_BITS 128
+
+/* Initialise the module: detect RDRAND/RDSEED, seed when possible.
+ * Called once from kmain after the timer; idempotent.  When no hardware
+ * RNG exists the module stays UNREADY and the jitter pool finishes the
+ * seeding later (see rng_jitter_event / rng_available). */
 void rng_init(void);
 
-/* Fill `len` bytes of `out` from the pool. */
-void rng_fill(void *out, size_t len);
+/* 1 when the generator is ready to serve bytes RIGHT NOW.  As a side
+ * effect it completes seeding from the jitter pool the first time the
+ * pool's estimate crosses RNG_POOL_BITS, so callers may simply poll. */
+int rng_available(void);
 
-/* Return one 64-bit word from the pool. */
+/* Fill `len` bytes of `out`.  Returns 0 on success, -ENOSYS when the
+ * generator is not ready (no hardware RNG and the jitter pool has not
+ * reached RNG_POOL_BITS yet).  Never partially fills on failure. */
+int rng_try_fill(void *out, size_t len);
+
+/* Legacy convenience wrappers kept for API stability.  rng_fill() fills
+ * when ready and zeroes the buffer otherwise (callers that must tell the
+ * difference use rng_try_fill); rng_u64() returns 0 when not ready. */
+void rng_fill(void *out, size_t len);
 uint64_t rng_u64(void);
+
+/* Interrupt-timing jitter source.  Called from irq_dispatch() for every
+ * hardware IRQ on every CPU.  Must be callable before rng_init() — events
+ * are simply accumulated until the module is up. */
+void rng_jitter_event(uint64_t tsc_now);
 
 #endif /* AURALITE_KERNEL_RNG_H */

@@ -1093,7 +1093,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_mq_notify \
                 $(BUILD_DIR)/test_q16_tail \
                 $(BUILD_DIR)/test_sysvipc \
-                $(BUILD_DIR)/test_keymap
+                $(BUILD_DIR)/test_keymap \
+                $(BUILD_DIR)/test_rng
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1112,6 +1113,11 @@ test-unit: $(UNIT_TESTS)
 	@bash tests/posix2024/run_host.sh || exit 1
 
 $(BUILD_DIR)/test_pmm: tests/unit/test_pmm.c kernel/lib/bitmap.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# N0 (INTERNET_PLAN.md): the ChaCha20 CSPRNG core, RFC 8439 vectors + stats.
+$(BUILD_DIR)/test_rng: tests/unit/test_rng.c kernel/rng_core.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
