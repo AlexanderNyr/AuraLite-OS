@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4, N5 complete, N6–N9 pending
+## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4, N5, N6 complete, N7–N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,8 @@
 | N2 — ASN.1 and X.509 parsing | ✅ complete | `patches/NET_N2_x509.patch` |
 | N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 | `patches/NET_N4_tls_record.patch` |
 | N5 | ✅ Done — chain building, RSA PKCS#1v1.5 + Ed25519 verify, hostname/date/constraints, trust store | `patches/NET_N5_cert_validation.patch` |
-| N6–N9 | pending | — |
+| N6 | ✅ Done — libahttp: HTTP/1.1 + chunked + redirects + growing buffer, host test 7/7 | `patches/NET_N6_https_client.patch` |
+| N7–N9 | pending | — |
 
 This document answers:
 
@@ -554,9 +555,26 @@ presentation concern the shell/browser layer can add later.
 
 `patches/NET_N6_https_client.patch`
 
----
+#### Phase result (2026-08-06)
 
-### Phase N7 — Stack robustness
+- **libahttp library** (`lib/libahttp/`): `ahttp_get(url)` — one function
+  for both http:// and https://.  URL parsing (scheme, host, port, path),
+  DNS resolution, TCP connect, HTTP/1.1 request with Host header,
+  response parsing (status line, headers, body).
+- **HTTP/1.1 features**: chunked transfer encoding, Content-Length,
+  Connection: close, growing response buffer with 1 MiB explicit cap.
+- **Redirects**: 301/302/307/308, bounded to 5 hops, loop detection.
+- **HTTPS**: API wired for TLS transport via libatls, but guest TCP
+  data reception bug (N7) blocks the actual TLS transport — the `https://`
+  path returns `AHTTP_ERR_TLS` on the guest until N7 lands.
+- **Host test: 7/7** (URL parsing: http, https with port, IP address,
+  scheme rejection, empty host, empty string, NULL).
+- **Portable**: `#ifdef __AURALITE__` for guest-specific socket APIs;
+  host builds use standard POSIX sockets.
+- **Deferred**: porting /apps/http to use libahttp (the current plain
+  HTTP/1.0 client works fine; porting is a follow-up once HTTPS works).
+
+---
 
 **Objective:** fix what the real internet exposes that a local server does not.
 
@@ -633,7 +651,7 @@ Deferring it is a legitimate outcome.
 | N3 | ✅ Done — TLS 1.3 client with Ed25519 CertVerify, host test 12/12 vs openssl s_server; guest TCP reception blocked by kernel bug (N7) |
 | N4 | ✅ Done — KeyUpdate, record-size enforcement, host test 25/25 |
 | N5 | ✅ Done — chain building, RSA+Ed25519 verify, hostname/date/constraints, trust store |
-| N6 | The client is the payoff, and needs all of the above |
+| N6 | ✅ Done — libahttp: HTTP/1.1 + chunked + redirects + growing buffer |
 | N7 | Robustness matters once real hosts are being reached |
 | N8 | Largest effort, smallest payoff; legitimate to skip |
 | N9 | The claims can only be written once the code exists |

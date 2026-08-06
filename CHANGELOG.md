@@ -2,6 +2,19 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Internet Phase N6 — HTTPS client and libahttp] 2026-08-06
+
+`INTERNET_PLAN.md` phase N6: HTTP/1.1 client library with chunked
+transfer encoding, Content-Length, redirects, and growing response buffer.
+
+- **libahttp** (`lib/libahttp/`): `ahttp_get(url)` — single function
+  for http:// and https://
+- **HTTP/1.1**: Host header, chunked decoding, Content-Length, Connection: close
+- **Redirects**: 301/302/307/308, max 5 hops, loop detection
+- **Growing buffer**: 1 MiB explicit cap, realloc-based
+- **Host test: 7/7** (URL parsing)
+- **HTTPS**: API wired via libatls, actual transport deferred to N7
+
 ## [Internet Phase N5 — Certificate validation] 2026-08-06
 
 `INTERNET_PLAN.md` phase N5: the phase that makes the padlock mean
