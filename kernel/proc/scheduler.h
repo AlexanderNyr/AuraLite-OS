@@ -40,6 +40,16 @@ void schedule(void);
 void sched_yield(void);
 
 /*
+ * Block the current thread for real: state -> THREAD_BLOCKED, then
+ * schedule() with interrupts off (same discipline as kernel_nanosleep),
+ * restoring the interrupt flag afterwards.  Wakers (signal_send, wait
+ * queues, signal_tick deadline) flip the thread back to READY and enqueue
+ * it.  Extracted so host unit tests of kernel/fs/select.c can stub it
+ * (cli/sti are privileged and would fault in ring 3).
+ */
+void kernel_block_current(void);
+
+/*
  * Timer-driven preemption hook (called from the PIT IRQ handler).  Decrements
  * the current thread's quantum and calls schedule() when it expires.  No-op
  * until the scheduler is initialised.

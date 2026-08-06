@@ -83,6 +83,18 @@
 #define SYS_GETRANDOM 319
 #define SYS_PSELECT6  320
 #define SYS_PPOLL     321
+/* Q14: System V IPC — Linux syscall numbers. */
+#define SYS_SEMGET 64
+#define SYS_SEMOP  65
+#define SYS_SEMCTL 66
+#define SYS_MSGGET 68
+#define SYS_MSGSND 69
+#define SYS_MSGRCV 70
+#define SYS_MSGCTL 71
+#define SYS_SHMGET 29
+#define SYS_SHMAT  30
+#define SYS_SHMCTL 31
+#define SYS_SHMDT  67
 #define SYS_GETCWD  540
 #define SYS_CHDIR   541
 #define SYS_FCHDIR  542

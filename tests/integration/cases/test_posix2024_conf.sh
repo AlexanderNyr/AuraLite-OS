@@ -211,6 +211,34 @@ il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: sig2str/str2sig round-trips e
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS q16: str2sig(\"NOSUCH\") -> EINVAL" \
     "str2sig rejects an unknown name with EINVAL"
 
+# ---- Q14: System V IPC ----
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: semget(IPC_PRIVATE, 1) creates" \
+    "semget(IPC_PRIVATE) creates a semaphore set"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: semctl(GETVAL) == 1" \
+    "semctl(SETVAL/GETVAL) round-trips"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: semop(P) decrements" \
+    "semop(P) decrements the semaphore"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: semop(IPC_NOWAIT) on insufficient -> EAGAIN" \
+    "semop with IPC_NOWAIT fails with EAGAIN instead of blocking"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: shmget(4096) creates" \
+    "shmget(IPC_PRIVATE, 4096) creates a segment"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: shm write/read round-trip" \
+    "attached shm is readable/writable"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: shmctl(IPC_STAT) reads metadata" \
+    "shmctl(IPC_STAT) returns segment metadata"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: shared counter == 400 (no lost increments)" \
+    "forked pair reaches exactly 400 protected increments (sem+shm)"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: msgget(IPC_PRIVATE) creates" \
+    "msgget(IPC_PRIVATE) creates a queue"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: msgrcv(typ=0) FIFO returns mtype 1" \
+    "msgrcv with msgtyp=0 returns the FIFO message"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: msgrcv(typ=5) returns mtype 5 'five-a'" \
+    "msgrcv with msgtyp>0 returns an exact mtype match"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: msgrcv(typ=-5) returns mtype 5 'five-b'" \
+    "msgrcv with msgtyp<0 returns first mtype <= -msgtyp"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: msgrcv on empty queue -> ENOMSG" \
+    "msgrcv on an empty queue fails with ENOMSG"
+
 # ---- suite summary and negatives ----
 il_assert_grep_fixed "$LOG" "CONFORMTEST ALL PASS" \
     "conformtest reports ALL PASS"

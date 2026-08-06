@@ -33,6 +33,7 @@
 #include "kernel/mm/vma.h"
 #include "kernel/boot_info.h"
 #include "kernel/rng.h"
+#include "kernel/ipc/sysvipc.h"
 
 /* P10 types */
 typedef struct {
@@ -95,6 +96,18 @@ typedef struct {
 #define SYS_GETRANDOM   319
 #define SYS_PSELECT6    320
 #define SYS_PPOLL       321
+/* Q14: System V IPC — Linux syscall numbers (64..71, 29..31, 67). */
+#define SYS_SEMGET   64
+#define SYS_SEMOP    65
+#define SYS_SEMCTL   66
+#define SYS_MSGGET   68
+#define SYS_MSGSND   69
+#define SYS_MSGRCV   70
+#define SYS_MSGCTL   71
+#define SYS_SHMGET   29
+#define SYS_SHMAT    30
+#define SYS_SHMCTL   31
+#define SYS_SHMDT    67
 /* Socket-style networking API. */
 #define SYS_SOCKET        300
 #define SYS_SOCKET_CONNECT 301
@@ -2049,6 +2062,31 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         sched_yield();
         return 0;
     }
+
+    /* ---- Q14: System V IPC ---- */
+    case SYS_SEMGET:
+        return (uint64_t)sysv_semget((int64_t)a1, (int)a2, (int)a3);
+    case SYS_SEMOP:
+        return (uint64_t)sysv_semop((int)a1, (const void *)(uintptr_t)a2, a3);
+    case SYS_SEMCTL:
+        return (uint64_t)sysv_semctl((int)a1, (int)a2, (int)a3, a4);
+    case SYS_SHMGET:
+        return (uint64_t)sysv_shmget((int64_t)a1, a2, (int)a3);
+    case SYS_SHMAT:
+        return (uint64_t)sysv_shmat((int)a1, a2, (int)a3);
+    case SYS_SHMDT:
+        return (uint64_t)sysv_shmdt(a1);
+    case SYS_SHMCTL:
+        return (uint64_t)sysv_shmctl((int)a1, (int)a2, a3);
+    case SYS_MSGGET:
+        return (uint64_t)sysv_msgget((int64_t)a1, (int)a2);
+    case SYS_MSGSND:
+        return (uint64_t)sysv_msgsnd((int)a1, (const void *)(uintptr_t)a2, a3, (int)a4);
+    case SYS_MSGRCV:
+        return (uint64_t)sysv_msgrcv((int)a1, (void *)(uintptr_t)a2, a3,
+                                     (int64_t)a4, (int)a5);
+    case SYS_MSGCTL:
+        return (uint64_t)sysv_msgctl((int)a1, (int)a2, a3);
 
     default:
         kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);

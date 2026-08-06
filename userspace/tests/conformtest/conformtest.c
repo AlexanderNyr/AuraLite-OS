@@ -45,6 +45,10 @@
 #include "sys/select.h"  /* Q16: pselect */
 #include "poll.h"        /* Q16: ppoll */
 #include "sys/random.h"  /* Q16: getrandom */
+#include "sys/ipc.h"     /* Q14: System V IPC */
+#include "sys/sem.h"
+#include "sys/shm.h"
+#include "sys/msg.h"
 
 static int failures = 0;
 
@@ -928,6 +932,166 @@ static void test_q16(void) {
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Q14: System V IPC — semaphores, shared memory, message queues       */
+/* ------------------------------------------------------------------ */
+static void test_sysvipc(void) {
+    /* ---- semaphores: semget/semctl(SETVAL|GETVAL)/semop ---- */
+    {
+        int semid = semget(IPC_PRIVATE, 1, IPC_CREAT | 0600);
+        CHECK("sysv: semget(IPC_PRIVATE, 1) creates", semid >= 0);
+        if (semid >= 0) {
+            union semun { int val; struct semid_ds *buf; unsigned short *array; };
+            union semun su;
+            su.val = 1;
+            errno = 0;
+            CHECK("sysv: semctl(SETVAL, 1)", semctl(semid, 0, SETVAL, su) == 0);
+            errno = 0;
+            CHECK("sysv: semctl(GETVAL) == 1",
+                  semctl(semid, 0, GETVAL, su) == 1);
+            struct sembuf op;
+            op.sem_num = 0; op.sem_op = -1; op.sem_flg = 0;   /* P() */
+            errno = 0;
+            CHECK("sysv: semop(P) decrements", semop(semid, &op, 1) == 0);
+            errno = 0;
+            CHECK("sysv: semctl(GETVAL) == 0 after P",
+                  semctl(semid, 0, GETVAL, su) == 0);
+            op.sem_op = 1;                                     /* V() */
+            CHECK("sysv: semop(V) increments", semop(semid, &op, 1) == 0);
+            CHECK("sysv: semctl(GETVAL) == 1 after V",
+                  semctl(semid, 0, GETVAL, su) == 1);
+            /* Blocking P() on an empty semaphore returns EINTR on signal,
+             * but with IPC_NOWAIT it fails with EAGAIN. */
+            op.sem_op = -2;                                    /* needs 2, have 1 */
+            op.sem_flg = IPC_NOWAIT;
+            errno = 0;
+            CHECK("sysv: semop(IPC_NOWAIT) on insufficient -> EAGAIN",
+                  semop(semid, &op, 1) == -1 && errno == EAGAIN);
+            CHECK("sysv: semctl(IPC_RMID)", semctl(semid, 0, IPC_RMID, su) == 0);
+        }
+    }
+
+    /* ---- shared memory: shmget/shmat/shmdt/read-write/rmid ---- */
+    {
+        int shmid = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600);
+        CHECK("sysv: shmget(4096) creates", shmid >= 0);
+        if (shmid >= 0) {
+            void *p = shmat(shmid, NULL, 0);
+            CHECK("sysv: shmat returns non-NULL", p != (void *)-1 && p != NULL);
+            if (p != (void *)-1 && p != NULL) {
+                volatile unsigned *v = (volatile unsigned *)p;
+                *v = 0xCAFEBABE;
+                CHECK("sysv: shm write/read round-trip", *v == 0xCAFEBABE);
+                struct shmid_ds ds;
+                errno = 0;
+                CHECK("sysv: shmctl(IPC_STAT) reads metadata",
+                      shmctl(shmid, IPC_STAT, &ds) == 0);
+                if (shmctl(shmid, IPC_STAT, &ds) == 0)
+                    CHECK("sysv: shm_segsz == 4096", ds.shm_segsz == 4096);
+                errno = 0;
+                CHECK("sysv: shmdt detaches", shmdt(p) == 0);
+            }
+            errno = 0;
+            CHECK("sysv: shmctl(IPC_RMID)", shmctl(shmid, IPC_RMID, NULL) == 0);
+        }
+    }
+
+    /* ---- fork pair: shared counter guarded by a SysV semaphore ---- */
+    {
+        int shmid = shmget(IPC_PRIVATE, 4096, IPC_CREAT | 0600);
+        int semid = semget(IPC_PRIVATE, 1, IPC_CREAT | 0600);
+        CHECK("sysv: fork-pair shmget", shmid >= 0);
+        CHECK("sysv: fork-pair semget", semid >= 0);
+        if (shmid >= 0 && semid >= 0) {
+            union semun { int val; struct semid_ds *buf; unsigned short *array; };
+            union semun su;
+            su.val = 1;
+            semctl(semid, 0, SETVAL, su);
+            unsigned *counter = (unsigned *)shmat(shmid, NULL, 0);
+            CHECK("sysv: fork-pair shmat", counter != (void *)-1 && counter != NULL);
+            if (counter != (void *)-1 && counter != NULL) {
+                *counter = 0;
+                pid_t pid = fork();
+                if (pid == 0) {
+                    /* Child: 200 protected increments. */
+                    struct sembuf op = { 0, -1, 0 };
+                    for (int i = 0; i < 200; i++) {
+                        semop(semid, &op, 1);
+                        (*counter)++;
+                        op.sem_op = 1;
+                        semop(semid, &op, 1);
+                        op.sem_op = -1;
+                    }
+                    _exit(0);
+                }
+                /* Parent: 200 protected increments. */
+                struct sembuf op = { 0, -1, 0 };
+                for (int i = 0; i < 200; i++) {
+                    semop(semid, &op, 1);
+                    (*counter)++;
+                    op.sem_op = 1;
+                    semop(semid, &op, 1);
+                    op.sem_op = -1;
+                }
+                if (pid > 0) waitpid(pid, NULL, 0);
+                CHECK("sysv: shared counter == 400 (no lost increments)",
+                      *counter == 400);
+                shmdt(counter);
+            }
+            shmctl(shmid, IPC_RMID, NULL);
+            semctl(semid, 0, IPC_RMID, su);
+        }
+    }
+
+    /* ---- message queues: msgsnd/msgrcv round-trip + mtype rules ---- */
+    {
+        int qid = msgget(IPC_PRIVATE, IPC_CREAT | 0600);
+        CHECK("sysv: msgget(IPC_PRIVATE) creates", qid >= 0);
+        if (qid >= 0) {
+            struct msg1 { long mtype; char mtext[32]; } m;
+            m.mtype = 1; strcpy(m.mtext, "one");
+            CHECK("sysv: msgsnd(mtype=1)", msgsnd(qid, &m, 4, 0) == 0);
+            m.mtype = 5; strcpy(m.mtext, "five-a");
+            CHECK("sysv: msgsnd(mtype=5) a", msgsnd(qid, &m, 7, 0) == 0);
+            m.mtype = 5; strcpy(m.mtext, "five-b");
+            CHECK("sysv: msgsnd(mtype=5) b", msgsnd(qid, &m, 7, 0) == 0);
+            m.mtype = 9; strcpy(m.mtext, "nine");
+            CHECK("sysv: msgsnd(mtype=9)", msgsnd(qid, &m, 5, 0) == 0);
+
+            /* msgtyp == 0: FIFO -> first is mtype 1. */
+            memset(&m, 0, sizeof(m));
+            errno = 0;
+            ssize_t n = msgrcv(qid, &m, sizeof(m.mtext), 0, 0);
+            CHECK("sysv: msgrcv(typ=0) FIFO returns mtype 1",
+                  n == 4 && m.mtype == 1 && strcmp(m.mtext, "one") == 0);
+            /* msgtyp > 0: exact match -> first mtype 5. */
+            memset(&m, 0, sizeof(m));
+            n = msgrcv(qid, &m, sizeof(m.mtext), 5, 0);
+            CHECK("sysv: msgrcv(typ=5) returns mtype 5 'five-a'",
+                  n == 7 && m.mtype == 5 && strcmp(m.mtext, "five-a") == 0);
+            /* msgtyp < 0: first with mtype <= -typ -> 5 ('five-b'). */
+            memset(&m, 0, sizeof(m));
+            n = msgrcv(qid, &m, sizeof(m.mtext), -5, 0);
+            CHECK("sysv: msgrcv(typ=-5) returns mtype 5 'five-b'",
+                  n == 7 && m.mtype == 5 && strcmp(m.mtext, "five-b") == 0);
+            /* Now only mtype 9 remains. */
+            memset(&m, 0, sizeof(m));
+            n = msgrcv(qid, &m, sizeof(m.mtext), 0, 0);
+            CHECK("sysv: msgrcv(typ=0) returns mtype 9",
+                  n == 5 && m.mtype == 9 && strcmp(m.mtext, "nine") == 0);
+            /* Empty queue + IPC_NOWAIT -> ENOMSG. */
+            errno = 0;
+            CHECK("sysv: msgrcv on empty queue -> ENOMSG",
+                  msgrcv(qid, &m, sizeof(m.mtext), 0, IPC_NOWAIT) == -1 &&
+                  errno == ENOMSG);
+            struct msqid_ds qds;
+            errno = 0;
+            CHECK("sysv: msgctl(IPC_STAT)", msgctl(qid, IPC_STAT, &qds) == 0);
+            CHECK("sysv: msgctl(IPC_RMID)", msgctl(qid, IPC_RMID, NULL) == 0);
+        }
+    }
+}
+
 int main(void) {
     printf("CONFORMTEST start\n");
     test_at_tmpfs();
@@ -946,6 +1110,7 @@ int main(void) {
     test_fdopendir();
     test_fexecve();
     test_q16();
+    test_sysvipc();
 
     if (failures == 0) {
         printf("CONFORMTEST ALL PASS\n");

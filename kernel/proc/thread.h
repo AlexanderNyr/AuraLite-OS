@@ -162,6 +162,10 @@ typedef struct tcb {
     /* ---- P10: working directory ---- */
     char cwd[VFS_PATH_MAX];
 
+    /* ---- Q14: System V IPC per-process state ---- */
+    struct shm_attach *shm_attachments;  /* attached shm segments (va, shmid) */
+    struct sem_undo   *sem_undo_list;    /* SEM_UNDO records applied at exit */
+
     /* ---- SMP step 3.2: context-switch parking flag ----
      * 1 = the thread's saved context block (at ->rsp) is COMPLETE and the
      *     thread may safely be picked up by ANY cpu's schedule();

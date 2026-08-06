@@ -23,6 +23,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"
+#include "kernel/ipc/sysvipc.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/boot_info.h"
 
@@ -547,10 +548,13 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     vfs_close(fd);
     kprintf("[proc] execve: read %lld bytes\n", (long long)total);
 
-    /* 2) Create a fresh address space. */
+    /* 2) Create a fresh address space.  Q14: execve detaches SysV shm
+     * segments (POSIX/Linux semantics) — the address space is about to be
+     * replaced wholesale. */
     {
         tcb_t *cur_vma = sched_current();
         if (cur_vma) {
+            sysvipc_shm_detach_all(cur_vma);
             vma_free_all(&cur_vma->vma_list);
         }
     }

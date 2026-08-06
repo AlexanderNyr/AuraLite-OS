@@ -1092,6 +1092,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_ipc \
                 $(BUILD_DIR)/test_mq_notify \
                 $(BUILD_DIR)/test_q16_tail \
+                $(BUILD_DIR)/test_sysvipc \
                 $(BUILD_DIR)/test_keymap
 
 test-unit: $(UNIT_TESTS)
@@ -1331,6 +1332,11 @@ $(BUILD_DIR)/test_mq_notify: tests/unit/test_mq_notify.c
 
 # ---- Phase Q16: Issue-8 tail unit test (sig2str/str2sig table) ----
 $(BUILD_DIR)/test_q16_tail: tests/unit/test_q16_tail.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# ---- Phase Q14: System V IPC unit test (find-or-create, mtype, ABI) ----
+$(BUILD_DIR)/test_sysvipc: tests/unit/test_sysvipc.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

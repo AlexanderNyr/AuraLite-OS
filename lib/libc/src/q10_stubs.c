@@ -500,61 +500,84 @@ key_t ftok(const char *path, int id) {
     return (key_t)((id & 0xFF) | ((st.st_inode & 0xFF) << 8) | ((st.st_inode >> 8 & 0xFFFF) << 16));
 }
 
-/* ====================== SysV IPC stubs ==================================== */
+/* ====================== SysV IPC (Q14) ==================================== */
+
+/* Wrappers for the Q14 kernel objects (SYS_* numbers in <unistd.h>).
+ * All return -1 and set errno on failure (in-band negative errno). */
+
+static long ipc_ret(long raw) {
+    if (raw < 0) { errno = (int)-raw; return -1; }
+    return raw;
+}
 
 int semget(key_t key, int nsems, int semflg) {
-    (void)key; (void)nsems; (void)semflg;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_SEMGET, (uint64_t)key,
+                                (uint64_t)nsems, (uint64_t)semflg, 0, 0, 0));
 }
 
 int semop(int semid, struct sembuf *sops, size_t nsops) {
-    (void)semid; (void)sops; (void)nsops;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_SEMOP, (uint64_t)semid,
+                                (uint64_t)sops, (uint64_t)nsops, 0, 0, 0));
 }
 
+/* The 4th argument is the traditional union semun { int val; struct
+ * semid_ds *buf; unsigned short *array; }.  It is passed by value as one
+ * register-sized argument. */
+union semun {
+    int              val;
+    struct semid_ds *buf;
+    unsigned short  *array;
+};
+
 int semctl(int semid, int semnum, int cmd, ...) {
-    (void)semid; (void)semnum; (void)cmd;
-    errno = ENOSYS; return -1;
+    va_list ap;
+    va_start(ap, cmd);
+    union semun arg = va_arg(ap, union semun);
+    va_end(ap);
+    return (int)ipc_ret(syscall(SYS_SEMCTL, (uint64_t)semid, (uint64_t)semnum,
+                                (uint64_t)cmd, (uint64_t)arg.val, 0, 0));
 }
 
 int shmget(key_t key, size_t size, int shmflg) {
-    (void)key; (void)size; (void)shmflg;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_SHMGET, (uint64_t)key,
+                                (uint64_t)size, (uint64_t)shmflg, 0, 0, 0));
 }
 
 void *shmat(int shmid, const void *shmaddr, int shmflg) {
-    (void)shmid; (void)shmaddr; (void)shmflg;
-    errno = ENOSYS; return (void *)-1;
+    long r = syscall(SYS_SHMAT, (uint64_t)shmid, (uint64_t)shmaddr,
+                     (uint64_t)shmflg, 0, 0, 0);
+    if (r < 0) { errno = (int)-r; return (void *)-1; }
+    return (void *)(uintptr_t)r;
 }
 
 int shmdt(const void *shmaddr) {
-    (void)shmaddr;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_SHMDT, (uint64_t)shmaddr, 0, 0, 0, 0, 0));
 }
 
 int shmctl(int shmid, int cmd, struct shmid_ds *buf) {
-    (void)shmid; (void)cmd; (void)buf;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_SHMCTL, (uint64_t)shmid, (uint64_t)cmd,
+                                (uint64_t)buf, 0, 0, 0));
 }
 
 int msgget(key_t key, int msgflg) {
-    (void)key; (void)msgflg;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_MSGGET, (uint64_t)key,
+                                (uint64_t)msgflg, 0, 0, 0, 0));
 }
 
 int msgsnd(int msqid, const void *msgp, size_t msgsz, int msgflg) {
-    (void)msqid; (void)msgp; (void)msgsz; (void)msgflg;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_MSGSND, (uint64_t)msqid, (uint64_t)msgp,
+                                (uint64_t)msgsz, (uint64_t)msgflg, 0, 0));
 }
 
 ssize_t msgrcv(int msqid, void *msgp, size_t msgsz, long msgtyp, int msgflg) {
-    (void)msqid; (void)msgp; (void)msgsz; (void)msgtyp; (void)msgflg;
-    errno = ENOSYS; return -1;
+    return (ssize_t)ipc_ret(syscall(SYS_MSGRCV, (uint64_t)msqid, (uint64_t)msgp,
+                                    (uint64_t)msgsz, (uint64_t)msgtyp,
+                                    (uint64_t)msgflg, 0));
 }
 
 int msgctl(int msqid, int cmd, struct msqid_ds *buf) {
-    (void)msqid; (void)cmd; (void)buf;
-    errno = ENOSYS; return -1;
+    return (int)ipc_ret(syscall(SYS_MSGCTL, (uint64_t)msqid, (uint64_t)cmd,
+                                (uint64_t)buf, 0, 0, 0));
 }
 
 /* =============================== utmpx ==================================== */

@@ -10,7 +10,7 @@
 static tcb_t fake_cur;
 static int copy_from_user_calls;
 static int copy_to_user_calls;
-static int sched_yield_calls;
+static int kernel_block_calls;   /* Q16: do_select blocks via kernel_block_current() */
 static int wq_add_calls;
 static int wq_remove_calls;
 static size_t kmalloc_calls;
@@ -21,7 +21,7 @@ void kfree(void *p) { if (p) kfree_calls++; free(p); }
 int copy_from_user(void *dst, const void *src, uint64_t len) { memcpy(dst, src, (size_t)len); copy_from_user_calls++; return 0; }
 int copy_to_user(void *dst, const void *src, uint64_t len) { memcpy(dst, src, (size_t)len); copy_to_user_calls++; return 0; }
 tcb_t *sched_current(void) { return &fake_cur; }
-void sched_yield(void) { sched_yield_calls++; }
+void kernel_block_current(void) { kernel_block_calls++; fake_cur.state = 0; }
 struct wait_queue *vfs_get_read_wq(struct ofd *o) { return &o->read_wq; }
 struct wait_queue *vfs_get_write_wq(struct ofd *o) { return &o->write_wq; }
 
@@ -43,7 +43,7 @@ static void reset_state(void) {
     memset(&fake_cur, 0, sizeof(fake_cur));
     copy_from_user_calls = 0;
     copy_to_user_calls = 0;
-    sched_yield_calls = 0;
+    kernel_block_calls = 0;
     wq_add_calls = 0;
     wq_remove_calls = 0;
     kmalloc_calls = 0;
@@ -82,7 +82,7 @@ static void test_blocking_path_heap_allocates_per_nfds(void) {
     assert(kfree_calls == 4);
     assert(wq_add_calls == 1);
     assert(wq_remove_calls == 1);
-    assert(sched_yield_calls == 1);
+    assert(kernel_block_calls == 1);   /* Q16: blocks once, no spin */
 }
 
 /* BUG-28: a pipe fd whose helper reports ready must be returned immediately
@@ -108,7 +108,7 @@ static void test_pipe_ready_returns_immediately(void) {
     assert(ready == 1);
     assert(kmalloc_calls == 0); /* no blocking path allocations */
     assert(kfree_calls == 0);
-    assert(sched_yield_calls == 0);
+    assert(kernel_block_calls == 0);
     force_readable = 0;
 }
 

@@ -454,9 +454,9 @@
 | Function | Status | Notes |
 |---|---|---|
 | ftok | ✅ | |
-| semget/semop/semctl | 🔶 | Returns ENOSYS |
-| shmget/shmat/shmdt/shmctl | 🔶 | Returns ENOSYS |
-| msgget/msgsnd/msgrcv/msgctl | 🔶 | Returns ENOSYS |
+| semget/semop/semctl | ✅ | Q14: kernel objects; blocking semop on wait queues; SEM_UNDO applied at exit |
+| shmget/shmat/shmdt/shmctl | ✅ | Q14: page-backed segments via PMM; IPC_RMID at last detach |
+| msgget/msgsnd/msgrcv/msgctl | ✅ | Q14: mtype-ordered receive (0/>0/<0), IPC_NOWAIT, MSG_NOERROR |
 
 ## `<sys/mman.h>`
 
@@ -563,5 +563,5 @@
 | `<unistd.h>` | 60+ | 60+ | 0 | 0 |
 | `<utmpx.h>` | 3 | 3 | 0 | 0 |
 | `<wordexp.h>` | 2 | 2 | 0 | 0 |
-| IPC (sysv) | 13 | 1 | 12 | 0 |
-| **Total** | **~410** | **~391** | **~19** | **0** |
+| IPC (sysv) | 13 | 13 | 0 | 0 |
+| **Total** | **~410** | **~402** | **~8** | **0** |

@@ -200,6 +200,17 @@ void sched_yield(void) {
     }
 }
 
+void kernel_block_current(void) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    tcb_t *cur = sched_current();
+    if (cur) cur->state = THREAD_BLOCKED;
+    schedule();
+    if (rflags & 0x200ULL) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+}
+
 void sched_tick(void) {
     if (!scheduler_ready || !cpu_local_ready) {
         return;

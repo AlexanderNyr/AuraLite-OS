@@ -2,6 +2,49 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [POSIX.1-2024 Phase Q14 — System V IPC: sem/shm/msg kernel objects] 2026-08-05
+
+`POSIX2024_PLAN.md` phase Q14 replaces the twelve `ENOSYS` stubs from Q10
+with real kernel services.  This was the last remaining phase — the
+POSIX.1-2024 plan is now complete (Q1–Q16).
+
+- **Kernel module `kernel/ipc/sysvipc.{c,h}`**: three flat object tables
+  (32 each), a global spinlock for table mutations, per-object wait queues
+  for blocking operations, Linux syscall numbers (semget 64, semop 65,
+  semctl 66, shmget 29, shmat 30, shmctl 31, shmdt 67, msgget 68, msgsnd
+  69, msgrcv 70, msgctl 71).
+- **Key namespace + permissions**: `ftok` keys and `IPC_PRIVATE`
+  (always-create), find-or-create semantics (`IPC_CREAT`/`IPC_EXCL` →
+  `EEXIST`, missing without `CREAT` → `ENOENT`, table full → `ENOSPC`);
+  P7 credentials with owner/group/other mode bits and root bypass.
+- **Semaphores**: `semget` (≤256/set), `semop` (atomic multi-op check-
+  then-apply, `IPC_NOWAIT` → `EAGAIN`, blocking on the wait queue,
+  signal-interruptible), `semctl` (`GETVAL/SETVAL/GETALL/SETALL/GETPID/
+  IPC_STAT/IPC_SET/IPC_RMID`); `SEM_UNDO` records live on the TCB and are
+  applied at thread exit.
+- **Shared memory**: page-backed via PMM; `shmat` maps the frames into the
+  caller's address space (`SHM_RDONLY` → no-write PTE, hint/auto address,
+  `SHM_RND`); `shmdt` unmaps; `IPC_RMID` with `nattch > 0` destroys at
+  last detach.  Attachments tracked on the TCB, torn down at exit.
+- **Message queues**: `msgget`/`msgsnd` (blocking on a full queue,
+  `IPC_NOWAIT` → `EAGAIN`)/`msgrcv` (full mtype rule: `0` = FIFO, `>0` =
+  exact, `<0` = first `mtype <= -msgtyp`; `MSG_NOERROR` with re-queue on
+  `E2BIG`)/`msgctl`.
+- **libc**: the Q10 stubs became real syscall wrappers; `IPC_PRIVATE`
+  added to `<sys/ipc.h>`.
+- **Annotated deviations**: shm attachments survive execve (POSIX shmat
+  semantics; "exec closes like FD_CLOEXEC" would break real programs);
+  no `IPC_INFO`/`/proc/sysvipc` (non-goal).
+- Tests: host `tests/unit/test_sysvipc.c` (27 checks — find-or-create,
+  permissions, mtype selection, ABI); guest `conformtest test_sysvipc()`
+  — semaphore SETVAL/GETVAL/P/V/NOWAIT/RMID, shm attach/write/STAT/detach,
+  a forked pair reaching exactly 400 protected increments in a shared
+  counter guarded by a SysV semaphore, and message queues with the full
+  mtype rule set.  Matrix: IPC (sysv) 13/13/0/0; `known_partials.txt`
+  down to the three named-semaphore rows.  Also fixed `make test-unit`:
+  `test_select_stack` now stubs the `kernel_block_current()` helper
+  introduced in Q16 (cli is privileged in ring 3).
+
 ## [POSIX.1-2024 Phase Q16 — Issue-8 tail: pselect/ppoll, getrandom, sig2str] 2026-08-05
 
 `POSIX2024_PLAN.md` phase Q16 closes the remaining named Issue-8 functions:
