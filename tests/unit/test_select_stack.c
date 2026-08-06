@@ -18,6 +18,7 @@ static size_t kfree_calls;
 
 void *kmalloc(size_t n) { kmalloc_calls++; return calloc(1, n); }
 void kfree(void *p) { if (p) kfree_calls++; free(p); }
+void schedule(void) { /* no-op: do_select never blocks in these tests */ }
 int copy_from_user(void *dst, const void *src, uint64_t len) { memcpy(dst, src, (size_t)len); copy_from_user_calls++; return 0; }
 int copy_to_user(void *dst, const void *src, uint64_t len) { memcpy(dst, src, (size_t)len); copy_to_user_calls++; return 0; }
 tcb_t *sched_current(void) { return &fake_cur; }

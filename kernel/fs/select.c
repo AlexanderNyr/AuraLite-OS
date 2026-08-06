@@ -110,18 +110,11 @@ static int do_select_kernel(int nfds, fd_set *r, fd_set *w, fd_set *e,
             }
         }
 
-        /* Block for real: schedule() directly (NOT sched_yield, which
-         * rewrites state to THREAD_READY and would make this a spin), with
-         * IRQs off exactly like kernel_nanosleep.  signal_send() and the
+        /* Block for real: kernel_block_current() blocks via the wait queue
+         * with IRQs off exactly like kernel_nanosleep.  signal_send() and the
          * wait-queue wakers flip state to READY and enqueue us; the timer
          * wakes us via sleep_deadline (signal_tick). */
-        {
-            uint64_t rflags;
-            __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-            cur->state = THREAD_BLOCKED;
-            schedule();
-            if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
-        }
+        kernel_block_current();
 
         cur->sleep_deadline = old_sleep;
 

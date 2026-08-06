@@ -1253,7 +1253,7 @@ $(BUILD_DIR)/test_stack_guard: tests/unit/test_stack_guard.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
-$(BUILD_DIR)/test_select_stack: tests/unit/test_select_stack.c
+$(BUILD_DIR)/test_select_stack: tests/unit/test_select_stack.c kernel/fs/select.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
