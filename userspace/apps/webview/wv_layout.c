@@ -234,6 +234,7 @@ static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
     it.underline = (uint8_t)st->underline;
     it.text_off = off;
     it.text_len = wlen;
+    it.link_off = st->link_off;
     int idx = wv_layout_add_item(L, &it);
 
     if (!b->inl_has_text && b->line_start < 0)
@@ -625,6 +626,23 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w,
                     if (ua_color(name, nlen) != 0xFF000000u)
                         nw->color = ua_color(name, nlen);
                     if (elst.color != 0xFF000000u) nw->color = elst.color;
+                    if (wv_name_is(name, nlen, "a")) {
+                        /* remember the href (DOM pool offset) for W6
+                         * hit-testing */
+                        for (uint32_t ai = 0; ai < nd->attr_count; ai++) {
+                            size_t aidx = (size_t)nd->attr_base + ai;
+                            if (aidx >= d->attr_count) break;
+                            const wv_attr_t *at = &d->attrs[aidx];
+                            const char *an = wv_dom_str(d, at->name_off);
+                            if (an && at->name_len == 4 &&
+                                an[0] == 'h' && an[1] == 'r' &&
+                                an[2] == 'e' && an[3] == 'f' &&
+                                at->value_len > 0) {
+                                nw->link_off = at->value_off;
+                                break;
+                            }
+                        }
+                    }
                 } else {
                     L->truncated = 1;
                 }

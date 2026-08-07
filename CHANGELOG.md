@@ -2,6 +2,42 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W6 — Navigation and networking] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W6: the web view becomes a usable browser — links,
+history, HTTP/1.1, chunked decoding and a growing response buffer.
+
+- **`userspace/apps/webview/wv_url.{h,c}`** — URL parser + relative
+  resolver (scheme default, ports, `../`, `./`, root-relative,
+  scheme-absolute, `//host`, fragments). 32 host checks.
+- **`userspace/apps/webview/wv_http.{h,c}`** — HTTP/1.1 GET with `Host:`,
+  header parser (status, Content-Length, Transfer-Encoding), **chunked
+  decoder** (extensions tolerated, incomplete/garbage rejected), and the
+  **growing response buffer** (8 KB → 512 KB cap with a diagnosed
+  `refused` flag). 69 host checks, including the plan's gate: **a chunked
+  response decodes byte-identical to the unchunked body**, and 100 KB
+  flows through 2 KB appends.
+- **Links**: the layout walk records `href` on text items (`link_off`);
+  clicking a link (or typing an address and pressing Enter, or the Back/Go
+  buttons) navigates. 8-entry back history; back re-fetches without
+  pushing.
+- **HTTPS**: `https://` URLs render the plan's honest "HTTPS is not
+  supported" page — never a hang, never a fake padlock.
+- **QEMU gate**: `tests/integration/cases/test_webview_net.sh` — a real
+  host server (SLIRP 10.0.2.2) serves `/`, `/page2.html`, `/chunked` and
+  `/big` (100 KB). The guest fetches home, **follows link 0 → page2, goes
+  back → home reappears**, refuses https with the explanation, decodes the
+  chunked page and receives the 100 KB page in full. 10 assertions, no
+  internet needed.
+- **Test hooks**: `/tmp/webview.url` (initial page) + `/tmp/webview.steps`
+  (`link 0; back; https; nav <url>`), written before `run webview` because
+  the init shell blocks on a running child.
+- **Kernel TCP note**: the legacy TCP path can drop the last bytes of a
+  stream on FIN (one-segment receive, fixed RTO); the web view falls back
+  to rendering the partial body (259-byte body arrived as 256) instead of
+  an error page — documented in the code.
+- `webview.elf` ~188 KB; `make test-unit` green.
+
 ## [WebView Phase W5 — Inline CSS] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W5: the D4 subset — display, color,

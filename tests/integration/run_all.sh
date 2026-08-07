@@ -117,6 +117,7 @@ ALL_CASES=(
     test_gui
     test_gui_usb
     test_webview
+    test_webview_net
 )
 
 # Slow ones we skip in --fast mode.

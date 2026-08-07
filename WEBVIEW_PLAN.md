@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0–W5 COMPLETE ✅ · W6–W8 PLANNED 📋
+## Status: W0–W6 COMPLETE ✅ · W7–W8 PLANNED 📋
 
 This document answers:
 
@@ -418,19 +418,19 @@ it is.
 
 ---
 
-### Phase W6 — Navigation and networking
+### Phase W6 — Navigation and networking ✅ COMPLETE
 
 **Objective:** a usable browser: links, history, a bigger fetch.
 
 #### Tasks
 
-- [ ] Hit-testing over the display list; clicking a link navigates.
-- [ ] Back/forward history.
-- [ ] Replace the 16 KB static response buffer with a growing one, and set an
+- [x] Hit-testing over the display list; clicking a link navigates.
+- [x] Back/forward history.
+- [x] Replace the 16 KB static response buffer with a growing one, and set an
       explicit maximum with a diagnosed refusal past it.
-- [ ] HTTP/1.1 with `Host:` and chunked transfer decoding — most servers stop
+- [x] HTTP/1.1 with `Host:` and chunked transfer decoding — most servers stop
       speaking 1.0 politely.
-- [ ] A clear "HTTPS is not supported" page for `https://` URLs, rather than
+- [x] A clear "HTTPS is not supported" page for `https://` URLs, rather than
       a connection failure the user has to interpret.
 
 #### Test gate
@@ -444,6 +444,21 @@ it is.
 #### Deliverable
 
 `patches/WEB_W6_navigation.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `wv_url.{h,c}` | Tolerant URL parser + resolver: scheme default, port, path, relative/root-relative/`../`/`./`/scheme-absolute/`//host`/fragment resolution — 32 host checks |
+| `wv_http.{h,c}` | GET / HTTP/1.1 + Host: request builder; header parser (status, Content-Length, Transfer-Encoding: chunked); chunked decoder (extensions tolerated, incomplete/garbage rejected); **growing response buffer** (8 KB start, realloc-doubling, hard 512 KB cap with `refused` flag) — 69 host checks incl. **chunked decodes byte-identical to the plain body** and 100 KB through 2 KB appends |
+| Links in the display list | `wv_disp_t.link_off` (href in the DOM pool) set by the layout walk for `<a>`; hit-testing over text items resolves relative hrefs against the current page URL and navigates |
+| UI | Chrome bar: address bar (typing + Enter), Back and Go buttons (clickable), status strip; wheel/arrow scrolling unchanged |
+| History | 8-entry back stack; `back` re-fetches without pushing |
+| HTTPS refusal | `https://` renders "HTTPS is not supported" with the honest explanation (plan D6), never attempts a connection |
+| **QEMU gate** | `test_webview_net.sh` — a real host server (SLIRP at 10.0.2.2) serves `/` (home + 2 links), `/page2.html`, `/chunked` and `/big` (100 KB). The guest web view: fetches home, **follows link 0 → page2, goes back → home reappears**, refuses `https://` with the explanation, decodes the **chunked** page, and receives the **100 KB page in full** (growing buffer). 10 assertions, all green. No internet needed |
+| Test hooks | `/tmp/webview.url` (initial page) + `/tmp/webview.steps` (`link 0; back; https; nav <url>`, executed with pauses) — written before `run webview`, because the init shell blocks on a running child |
+| Kernel TCP note | The legacy TCP path can drop the last bytes of a stream on FIN (one-segment receive, fixed RTO): a 259-byte body arrived as 256. The web view falls back to rendering the partial body instead of an error page — documented in the code |
+| Size | `webview.elf` ~188 KB — inside `SPAWN_MAX_IMAGE` |
 
 ---
 

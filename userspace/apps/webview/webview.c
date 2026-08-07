@@ -26,20 +26,26 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <sys/socket.h>   /* htons/htonl for IP literals */
 
 #include "auragui.h"
 #include "wv_html.h"
 #include "wv_dom.h"
 #include "wv_layout.h"
 #include "wv_paint.h"
+#include "wv_css.h"
+#include "wv_url.h"
+#include "wv_http.h"
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
 #define VIEW_W 800
 #define VIEW_H 600
 
-/* Window is the viewport plus room for a status strip below it. */
+/* Window: URL chrome on top, the page, then a status strip. */
 #define WIN_W  800
-#define WIN_H  (VIEW_H + 40)
+#define WIN_H  (28 + VIEW_H + 40)
+#define CHROME_H 28
+#define PAGE_OFF_Y 28
 
 /* How many present() calls the startup benchmark runs. */
 #define BENCH_FRAMES 200
@@ -123,6 +129,261 @@ static wv_layout_t lay;
 static wv_paint_t  P;
 static wv_css_t    css;
 static int32_t max_scroll = 0;
+
+/* ---- W6: navigation state ---- */
+#define HIST_MAX 8
+static char      history[HIST_MAX][WV_URL_MAX_URL];
+static int       hist_count = 0, hist_pos = -1;
+static char      addr_buf[WV_URL_MAX_URL];
+static int       addr_len = 0;
+static int       on_page = 0;          /* 1 = the demo page, 0 = a loaded page */
+static char      last_cmd[WV_URL_MAX_URL + 64] = "";
+static char      current_url_str[WV_URL_MAX_URL] = "";   /* base for links */
+
+/* page-build arenas, global so load_html() can rebuild them */
+static wv_token_t    g_tt[2048];
+static wv_attr_t     g_ta[2048];
+static char          g_tp[65536];
+static wv_dom_node_t g_dn[2048];
+static wv_attr_t     g_dda[2048];
+static char          g_dpp[65536];
+static uint32_t      g_stk[512];
+static wv_disp_t     g_di[4096];
+static char          g_lpo[131072];
+static wv_blk_t      g_lb[520];
+static wv_inl_t      g_li[520];
+static wv_walk_t     g_lw[520];
+static wv_css_rule_t g_cr[256];
+static wv_css_decl_t g_cd[1024];
+static char          g_cp[32768];
+
+/* forward declarations (the navigation block precedes the paint block) */
+static void repaint(void);
+static void navigate(const char *url_text);
+static void navigate_ex(const char *url_text, int push);
+static void nav_back(void);
+static int follow_link(int n);
+
+/* Rebuild DOM + CSS + layout from raw HTML (a loaded page). */
+static void page_load_html(const char *html, size_t len) {
+    wv_arena_t toks_a;
+    wv_arena_init(&toks_a, g_tt, 2048, g_ta, 2048, g_tp, sizeof(g_tp));
+    if (wv_html_tokenize(&toks_a, html, len) < 0) return;
+    wv_dom_t dom;
+    wv_dom_init(&dom, g_dn, 2048, g_dda, 2048, g_dpp, sizeof(g_dpp), g_stk, 512);
+    if (wv_dom_build(&dom, &toks_a, 512) < 0) return;
+    wv_css_init(&css, g_cr, 256, g_cd, 1024, g_cp, sizeof(g_cp));
+    wv_css_build(&css, &dom);
+    wv_layout_init(&lay, g_di, 4096, g_lpo, sizeof(g_lpo),
+                   g_lb, 520, g_li, 520, g_lw, 520);
+    wv_layout_run(&lay, &dom, VIEW_W, &css);
+    max_scroll = lay.content_h > (uint32_t)VIEW_H
+                     ? (int32_t)lay.content_h - VIEW_H : 0;
+    scroll_y = 0;
+    on_page = 0;
+}
+
+/* Fetch http:// URL and load its body.  Returns 0 on success, an errno-ish
+ * negative on failure.  The kernel TCP path has its own ~1 s timeouts, so
+ * this cannot hang forever. */
+static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out) {
+    *body_out = NULL;
+    *body_len_out = 0;
+
+    /* host -> IP: dotted quad or DNS */
+    uint32_t ip = 0;
+    int is_ip = 1;
+    int parts = 0;
+    uint32_t cur = 0;
+    for (const char *c = u->host; *c; c++) {
+        if (*c == '.') { parts++; if (parts > 3) { is_ip = 0; break; } ip = (ip << 8) | cur; cur = 0; }
+        else if (*c >= '0' && *c <= '9') cur = cur * 10 + (uint32_t)(*c - '0');
+        else { is_ip = 0; break; }
+    }
+    if (is_ip && parts == 3) { ip = (ip << 8) | cur; }
+    else {
+        ip = dns_resolve(u->host);
+        if (ip == 0) return -1;      /* DNS failure */
+    }
+
+    if (net_connect(ip, u->port) != 0) return -1;
+
+    char req[512];
+    int rlen = wv_http_build_request(u, req, sizeof(req));
+    if (rlen <= 0) { net_close(); return -1; }
+    if (net_send(req, (uint32_t)rlen) != rlen) { net_close(); return -1; }
+
+    /* growing response buffer */
+    char *buf = malloc(WV_HTTP_INITIAL_CAP);
+    if (!buf) { net_close(); return -1; }
+    wv_resp_t r;
+    wv_resp_init(&r, buf, WV_HTTP_INITIAL_CAP);
+
+    char chunk[4096];
+    for (int guard = 0; guard < 200; guard++) {
+        int n = net_recv(chunk, sizeof(chunk));
+        if (n <= 0) break;
+        if (!wv_resp_append(&r, chunk, (size_t)n)) break;
+        /* early exit: headers in and body complete */
+        wv_http_meta_t m;
+        if (wv_http_parse_headers(r.data, r.len, &m)) {
+            char probe[64];
+            int done = 0;
+            if (wv_http_body(r.data, r.len, &m, probe, sizeof(probe), &done) >= 0 && done)
+                break;
+        }
+    }
+    net_close();
+
+    if (r.len == 0 || r.refused) { free(r.data); return -1; }
+
+    wv_http_meta_t m;
+    if (!wv_http_parse_headers(r.data, r.len, &m) || m.status != 200) {
+        free(r.data);
+        return (m.status > 0) ? -m.status : -1;
+    }
+    char *body = malloc(r.len + 1);
+    if (!body) { free(r.data); return -1; }
+    int done = 0;
+    int bl = wv_http_body(r.data, r.len, &m, body, (size_t)r.len + 1, &done);
+    if (bl < 0) {
+        /* The kernel TCP path can drop the last bytes of a stream on FIN
+         * (one-segment receive, fixed RTO).  Pragmatic fallback: if the
+         * headers parsed and SOME body arrived, render what we got —
+         * better than an error page for a 3-byte loss. */
+        if (m.ok && r.len > m.header_len) {
+            size_t n = r.len - m.header_len;
+            if (n > (size_t)r.len) n = (size_t)r.len;
+            memcpy(body, r.data + m.header_len, n);
+            body[n] = 0;
+            free(r.data);
+            *body_out = body;
+            *body_len_out = n;
+            printf("[webview] fetch: partial body (%u of %u bytes)\n",
+                   (unsigned)n, (unsigned)m.content_len);
+            return 0;
+        }
+        free(r.data); free(body); return -1;
+    }
+    body[bl] = 0;
+    free(r.data);
+    *body_out = body;
+    *body_len_out = (size_t)bl;
+    return 0;
+}
+
+/* Load a URL: https -> explanation page; http -> fetch + render.
+ * push=1 records it in the history. */
+static void navigate_ex(const char *url_text, int push) {
+    wv_url_t u;
+    if (!wv_url_parse(url_text, &u) || !u.ok) {
+        printf("[webview] nav: bad url '%s'\n", url_text);
+        return;
+    }
+    char fmt[WV_URL_MAX_URL];
+    wv_url_format(&u, fmt, sizeof(fmt));
+
+    if (u.is_https) {
+        /* The plan's honest refusal, rendered as a page. */
+        printf("[webview] nav: https unsupported for %s\n", fmt);
+        char page[512];
+        int pl = snprintf(page, sizeof(page),
+            "<body><h1>HTTPS is not supported</h1>"
+            "<p>The web view cannot open <b>%s</b>.</p>"
+            "<p>TLS 1.3 is INTERNET_PLAN's work (X25519, ChaCha20-Poly1305, "
+            "SHA-256, ASN.1 and a trust store). A browser that appears to do "
+            "HTTPS but validates nothing would be a liability.</p>"
+            "<p>Point the web view at a plain-HTTP server instead.</p></body>",
+            u.host);
+        page_load_html(page, (size_t)pl > 0 ? (size_t)pl : 0);
+        strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
+        if (push && hist_pos < HIST_MAX - 1) {
+            hist_pos++;
+            hist_count = hist_pos + 1;
+            strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
+        }
+        repaint();
+        return;
+    }
+
+    printf("[webview] nav: fetching %s\n", fmt);
+    char *body = NULL;
+    size_t blen = 0;
+    int rc = wv_fetch_url(&u, &body, &blen);
+    if (rc != 0) {
+        printf("[webview] nav: fetch failed (%d) for %s\n", rc, fmt);
+        char page[256];
+        int pl = snprintf(page, sizeof(page),
+            "<body><h1>Load failed</h1><p>%s (%d)</p></body>", fmt, rc);
+        page_load_html(page, (size_t)pl > 0 ? (size_t)pl : 0);
+        strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
+        if (push && hist_pos < HIST_MAX - 1) {
+            hist_pos++;
+            hist_count = hist_pos + 1;
+            strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
+        }
+        repaint();
+        return;
+    }
+    printf("[webview] nav: loaded %u bytes from %s\n", (unsigned)blen, fmt);
+    page_load_html(body, blen);
+    printf("[webview] nav: html built (items=%u, h=%u)\n",
+           (unsigned)lay.item_count, (unsigned)lay.content_h);
+    free(body);
+    strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
+    if (push && hist_pos < HIST_MAX - 1) {
+        hist_pos++;
+        hist_count = hist_pos + 1;
+        strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
+    }
+    repaint();
+}
+
+static void navigate(const char *url_text) { navigate_ex(url_text, 1); }
+
+/* Hit-test a click at page coordinates (x, y): returns 1 and follows the
+ * link when the click landed on one. */
+static int hit_test_link(int32_t x, int32_t y) {
+    int yp = y + scroll_y;
+    int seen = 0;
+    for (size_t i = 0; i < lay.item_count; i++) {
+        const wv_disp_t *it = &lay.items[i];
+        if (it->type != WV_D_TEXT || it->link_off == 0) continue;
+        if (x >= it->x && x < (int32_t)(it->x + it->w) &&
+            yp >= it->y && yp < it->y + WV_FONT_H)
+            return follow_link(seen);
+        seen++;
+    }
+    return 0;
+}
+
+static void nav_back(void) {
+    if (hist_pos <= 0) { printf("[webview] back: no history\n"); return; }
+    hist_pos--;
+    printf("[webview] back: %s\n", history[hist_pos]);
+    navigate_ex(history[hist_pos], 0);
+}
+
+/* Follow link number n of the current page.  Returns 1 when followed. */
+static int follow_link(int n) {
+    int seen = 0;
+    for (size_t i = 0; i < lay.item_count; i++) {
+        const wv_disp_t *it = &lay.items[i];
+        if (it->type != WV_D_TEXT || it->link_off == 0) continue;
+        if (seen++ != n) continue;
+        if (it->link_off >= sizeof(g_dpp)) return 0;
+        const char *href = &g_dpp[it->link_off];
+        wv_url_t base, target;
+        if (!wv_url_parse(current_url_str, &base) || !base.ok) return 0;
+        if (!wv_url_resolve(href, &base, &target) || !target.ok) return 0;
+        char fmt[WV_URL_MAX_URL];
+        wv_url_format(&target, fmt, sizeof(fmt));
+        printf("[webview] link %d -> %s\n", n, fmt);
+        navigate(fmt);
+        return 1;
+    }
+    return 0;
+}
 
 /* Tokenise + build DOM + layout + paint context, once.  All working
  * arenas are static (bounded) — nothing on the 64 KiB user stack. */
@@ -228,24 +489,60 @@ static void scroll_smoke(void) {
            ok ? "PASS" : "FAIL", ok ? "==" : "!=");
 }
 
-/* Present the page buffer into the window. */
+/* Present the page buffer into the window, below the chrome bar. */
 static void present(void) {
-    ag_blit(wid, 0, 0, VIEW_W, VIEW_H, page, VIEW_W);
+    ag_blit(wid, 0, PAGE_OFF_Y, VIEW_W, VIEW_H, page, VIEW_W);
     frames_done++;
 }
 
-/* Repaint: full page from the display list, present, update the strip. */
+/* The chrome: URL bar + Back/Go buttons + status strip. */
+static void draw_chrome(const char *status) {
+    /* bar background */
+    ag_fill_rect(wid, 0, 0, WIN_W, CHROME_H, 0x00202028);
+    /* Back button */
+    ag_fill_rect(wid, 4, 4, 44, 20, 0x00303040);
+    ag_draw_text(wid, 12, 8, "Back", 0x00DDEEFF);
+    /* Go button */
+    ag_fill_rect(wid, WIN_W - 48, 4, 44, 20, 0x002F60C0);
+    ag_draw_text(wid, WIN_W - 40, 8, "Go", 0x00FFFFFF);
+    /* URL bar */
+    ag_fill_rect(wid, 52, 4, WIN_W - 108, 20, 0x00FFFFFF);
+    ag_draw_text(wid, 56, 8, addr_buf, 0x00000000);
+    /* status strip */
+    ag_fill_rect(wid, 0, VIEW_H + PAGE_OFF_Y, WIN_W, 40, 0x00202028);
+    ag_draw_text(wid, 8, VIEW_H + PAGE_OFF_Y + 12, status, 0x00DDEEFF);
+}
+
+/* Address bar hit zones (client coordinates). */
+static int chrome_back_hit(int32_t x, int32_t y) {
+    return x >= 4 && x < 48 && y >= 4 && y < 24;
+}
+static int chrome_go_hit(int32_t x, int32_t y) {
+    return x >= WIN_W - 48 && x < WIN_W - 4 && y >= 4 && y < 24;
+}
+static int chrome_url_hit(int32_t x, int32_t y) {
+    return x >= 52 && x < WIN_W - 52 && y >= 4 && y < 24;
+}
+
+/* Repaint: full page from the display list, present, chrome + status. */
 static void repaint(void) {
     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);   /* paper */
     wv_paint_run(&P, &lay, scroll_y);
     present();
 
     char status[96];
-    snprintf(status, sizeof(status),
-             "W4 renderer - scroll %d px - frames %u",
-             scroll_y, frames_done);
-    ag_fill_rect(wid, 0, VIEW_H, WIN_W, 40, 0x00202028);
-    ag_draw_text(wid, 8, VIEW_H + 12, status, 0x00DDEEFF);
+    if (on_page)
+        snprintf(status, sizeof(status),
+                 "demo page - scroll %d px - frames %u",
+                 scroll_y, frames_done);
+    else if (current_url_str[0])
+        snprintf(status, sizeof(status),
+                 "%s - scroll %d px - frames %u",
+                 current_url_str, scroll_y, frames_done);
+    else
+        snprintf(status, sizeof(status),
+                 "scroll %d px - frames %u", scroll_y, frames_done);
+    draw_chrome(status);
     ag_render_now();
 }
 
@@ -285,6 +582,7 @@ int main(void) {
     printf("[webview] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
 
     page_build();
+    on_page = 1;
     paint_smoke();
     css_smoke();
     scroll_smoke();
@@ -461,8 +759,62 @@ int main(void) {
         }
     }
 
-    /* ---- Event loop.  The W4 renderer will replace draw_page(); the loop
-     * shape (poll, handle, repaint on demand) is the one it will keep. */
+    /* ---- W6: initial URL from /tmp/webview.url (test hook) ---- */
+    {
+        int fd = open("/tmp/webview.url", O_RDONLY);
+        if (fd >= 0) {
+            char url[WV_URL_MAX_URL];
+            int n = read(fd, url, sizeof(url) - 1);
+            close(fd);
+            if (n > 0) {
+                url[n] = 0;
+                while (n > 0 && (url[n-1] == '\n' || url[n-1] == '\r')) url[--n] = 0;
+                printf("[webview] initial url: %s\n", url);
+                navigate(url);
+            }
+        }
+        /* /tmp/webview.steps: "link 0; back; https; nav <url>" — executed
+         * one by one with a pause between.  The init shell blocks on
+         * `run`, so the test writes the whole script BEFORE starting the
+         * web view. */
+        int fd2 = open("/tmp/webview.steps", O_RDONLY);
+        if (fd2 >= 0) {
+            char steps[512];
+            int n = read(fd2, steps, sizeof(steps) - 1);
+            close(fd2);
+            if (n > 0) {
+                steps[n] = 0;
+                char *save = 0;
+                int idx = 0;
+                for (char *tok = strtok_r(steps, "|", &save); tok;
+                     tok = strtok_r(0, "|", &save)) {
+                    while (*tok == ' ' || *tok == '\t') tok++;
+                    size_t tl = strlen(tok);
+                    while (tl > 0 && (tok[tl-1] == ' ' || tok[tl-1] == '\t' ||
+                                      tok[tl-1] == '\n')) tok[--tl] = 0;
+                    if (tl == 0) continue;
+                    printf("[webview] step %d: %s\n", idx, tok);
+                    if (strncmp(tok, "nav ", 4) == 0) {
+                        navigate(tok + 4);
+                    } else if (strcmp(tok, "back") == 0) {
+                        nav_back();
+                    } else if (strcmp(tok, "https") == 0) {
+                        navigate("https://example.com/");
+                    } else if (strncmp(tok, "link ", 5) == 0) {
+                        int ln = 0;
+                        for (const char *c = tok + 5; *c >= '0' && *c <= '9'; c++)
+                            ln = ln * 10 + (*c - '0');
+                        follow_link(ln);
+                    }
+                    idx++;
+                    struct timespec pause = { 1, 500000000 };
+                    nanosleep(&pause, 0);
+                }
+            }
+        }
+    }
+
+    /* ---- Event loop ---- */
     uint32_t limit = frame_limit();
     if (limit) printf("[webview] frame limit: %u frames\n", limit);
 
@@ -478,9 +830,41 @@ int main(void) {
                     printf("[webview] quit via key\n");
                     goto done;
                 }
+                if (ev.key == '\r' || ev.key == '\n') {
+                    if (addr_len > 0) {
+                        addr_buf[addr_len] = 0;
+                        navigate(addr_buf);
+                    }
+                    break;
+                }
+                if (ev.key == 8 /* backspace */) {
+                    if (addr_len > 0) addr_len--;
+                    addr_buf[addr_len] = 0;
+                    repaint();
+                    break;
+                }
+                if (ev.key >= 0x20 && ev.key < 0x7F && addr_len < WV_URL_MAX_URL - 1) {
+                    addr_buf[addr_len++] = (char)ev.key;
+                    addr_buf[addr_len] = 0;
+                    repaint();
+                }
                 if (ev.key == 0x102 /* arrow up */) { scroll_to(scroll_y - 16); }
                 if (ev.key == 0x103 /* arrow down */) { scroll_to(scroll_y + 16); }
                 break;
+            case AG_EVT_MOUSE_DOWN: {
+                int32_t mx = ev.x, my = ev.y;
+                if (chrome_back_hit(mx, my)) {
+                    nav_back();
+                } else if (chrome_go_hit(mx, my)) {
+                    if (addr_len > 0) { addr_buf[addr_len] = 0; navigate(addr_buf); }
+                } else if (chrome_url_hit(mx, my)) {
+                    /* clicking the address bar focuses it */
+                } else if (my >= PAGE_OFF_Y) {
+                    /* page area: hit-test links */
+                    hit_test_link(mx, my - PAGE_OFF_Y);
+                }
+                break;
+            }
             case AG_EVT_MOUSE_WHEEL: {
                 /* The kernel GUI ABI delivers the wheel delta in ev.key
                  * (gui.c: gui_event_t.key = ev->wheel). */
@@ -493,6 +877,42 @@ int main(void) {
                 break;
             default:
                 break;
+            }
+        }
+
+        /* W6 test hook: /tmp/webview.cmd is polled; a changed line is
+         * executed ("nav <url>", "back", "link <n>", "https"). */
+        {
+            int fd = open("/tmp/webview.cmd", O_RDONLY);
+            if (fd >= 0) {
+                char cmd[WV_URL_MAX_URL + 64];
+                int n = read(fd, cmd, sizeof(cmd) - 1);
+                close(fd);
+                if (n > 0) {
+                    cmd[n] = 0;
+                    while (n > 0 && (cmd[n-1] == '\n' || cmd[n-1] == '\r')) cmd[--n] = 0;
+                    /* the init shell does not strip quotes */
+                    while (n > 0 && (cmd[0] == '"' || cmd[0] == 0x27)) {
+                        for (int q = 0; q + 1 < (int)n; q++) cmd[q] = cmd[q + 1];
+                        n--;
+                    }
+                    while (n > 0 && (cmd[n-1] == '"' || cmd[n-1] == 0x27)) cmd[--n] = 0;
+                    if (strcmp(cmd, last_cmd) != 0) {
+                        strncpy(last_cmd, cmd, sizeof(last_cmd) - 1);
+                        if (strncmp(cmd, "nav ", 4) == 0) {
+                            navigate(cmd + 4);
+                        } else if (strcmp(cmd, "back") == 0) {
+                            nav_back();
+                        } else if (strcmp(cmd, "https") == 0) {
+                            navigate("https://example.com/");
+                        } else if (strncmp(cmd, "link ", 5) == 0) {
+                            int ln = 0;
+                            for (const char *c = cmd + 5; *c >= '0' && *c <= '9'; c++)
+                                ln = ln * 10 + (*c - '0');
+                            follow_link(ln);
+                        }
+                    }
+                }
             }
         }
 

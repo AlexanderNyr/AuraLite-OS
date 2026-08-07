@@ -71,6 +71,7 @@ typedef struct {
     uint16_t border;    /* border width px, 0 = none (WV_D_BOX) */
     uint16_t _pad2;
     uint32_t border_color;
+    uint32_t link_off;  /* href in the DOM pool (0 = not a link) */
 } wv_disp_t;
 
 /* ---- working stacks (caller-provided, so no heap and no big locals) ---- */
@@ -102,6 +103,7 @@ typedef struct {
     int      bold;
     uint32_t color;
     int      underline;
+    uint32_t link_off;   /* href in the DOM pool (0 = none) */
 } wv_inl_t;
 
 typedef struct {

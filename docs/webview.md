@@ -1,7 +1,7 @@
 # AuraLite OS Web View (`/apps/webview`)
 
-**Status:** Phases W0–W5 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
-scaffold, tokeniser, DOM, layout, painting and inline CSS complete. W6 (navigation) is next.
+**Status:** Phases W0–W6 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+scaffold, tokeniser, DOM, layout, painting, inline CSS and navigation complete. W7 (`<canvas>`) is next.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -86,7 +86,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W3 | Block layout → display list (iterative, 64 KiB-safe) | ✅ complete (2026-08-07) |
 | W4 | Painting: rects, borders, glyphs, clipped scroll | ✅ complete (2026-08-07) |
 | W5 | Inline CSS subset (D4) | ✅ complete (2026-08-07) |
-| W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
+| W6 | Navigation: links, history, growing fetch, HTTP/1.1 | ✅ complete (2026-08-07) |
 | W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
 | W8 | Retire or keep `gbrowser` | 📋 planned |
 
@@ -211,3 +211,28 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
   plain=0x2f39d54f)` — the stylesheet demonstrably changes the output.
 - Gate: `tests/unit/test_wv_css.c` — 71 host checks, 0 failures, every D4
   property with a test that changes the output; 500 fuzz iterations.
+
+## 11. Navigation and networking (W6)
+
+The web view is now a usable (if humble) browser:
+
+- `wv_url.{h,c}` — URL parsing + relative resolution (32 host checks).
+- `wv_http.{h,c}` — HTTP/1.1 GET with `Host:`, header parsing,
+  Content-Length, **chunked decoding**, and a **growing response buffer**
+  (8 KB start → 512 KB hard cap with a diagnosed `refused` flag), replacing
+  the 16 KB static buffer of the old `gbrowser`.
+- Links live in the display list (`link_off` on text items); clicking one
+  (or the Back/Go buttons and the address bar in the chrome strip)
+  navigates. History: 8 entries, back re-fetches without pushing.
+- `https://` renders an honest "HTTPS is not supported" page (plan D6) —
+  never a hang, never a fake padlock.
+- Test hooks (written before `run webview`, because the init shell blocks
+  on a running child): `/tmp/webview.url` = initial page,
+  `/tmp/webview.steps` = `link 0|back|https|nav <url>` actions.
+- Gate: `tests/integration/cases/test_webview_net.sh` — a real host server
+  serves `/`, `/page2.html`, `/chunked` and `/big` (100 KB); the guest
+  fetches home, follows a link, goes back, refuses https with the
+  explanation, decodes chunked and receives 100 KB in full. 10 assertions.
+- Kernel note: the legacy TCP path can drop the last bytes on FIN (a
+  259-byte body arrived as 256); the web view falls back to rendering the
+  partial body rather than an error page.
