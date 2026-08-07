@@ -829,17 +829,20 @@ $(USER_BUILD)/wv_html.o: userspace/apps/webview/wv_html.c userspace/apps/webview
 $(USER_BUILD)/wv_dom.o: userspace/apps/webview/wv_dom.c userspace/apps/webview/wv_dom.h \
                         userspace/apps/webview/wv_html.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/wv_layout.o: userspace/apps/webview/wv_layout.c userspace/apps/webview/wv_layout.h \
+                          userspace/apps/webview/wv_dom.h userspace/apps/webview/wv_html.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-# webview links the tokeniser + DOM builder; the generic %.elf pattern rule
-# does not know about them, so give this one explicit prerequisites/link line.
+# webview links the tokeniser + DOM builder + layout; the generic %.elf
+# pattern rule does not know about them, so give explicit prerequisites.
 $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
-                           $(USER_BUILD)/wv_dom.o \
+                           $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
-	      $(USER_BUILD)/wv_dom.o \
+	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
-	@echo "[link] $@ (wv_html + wv_dom)"
+	@echo "[link] $@ (wv_html + wv_dom + wv_layout)"
 $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1224,7 +1227,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_atls_certval \
                 $(BUILD_DIR)/test_ahttp \
                 $(BUILD_DIR)/test_wv_html \
-                $(BUILD_DIR)/test_wv_dom
+                $(BUILD_DIR)/test_wv_dom \
+                $(BUILD_DIR)/test_wv_layout
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1335,6 +1339,21 @@ $(BUILD_DIR)/test_wv_dom: tests/unit/test_wv_dom.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	           tests/unit/test_wv_dom.c userspace/apps/webview/wv_dom.c \
+	           userspace/apps/webview/wv_html.c -o $@
+
+# Web view block layout (WEBVIEW_PLAN W3): the REAL userspace sources are
+# compiled into the host test, never copies.
+$(BUILD_DIR)/test_wv_layout: tests/unit/test_wv_layout.c \
+                             userspace/apps/webview/wv_layout.c \
+                             userspace/apps/webview/wv_layout.h \
+                             userspace/apps/webview/wv_dom.c \
+                             userspace/apps/webview/wv_dom.h \
+                             userspace/apps/webview/wv_html.c \
+                             userspace/apps/webview/wv_html.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	           tests/unit/test_wv_layout.c userspace/apps/webview/wv_layout.c \
+	           userspace/apps/webview/wv_dom.c \
 	           userspace/apps/webview/wv_html.c -o $@
 
 $(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \

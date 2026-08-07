@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W3 — Block layout] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W3: a DOM → a list of positioned boxes (a display
+list), iteratively, inside the 64 KiB user stack.
+
+- **`userspace/apps/webview/wv_layout.{h,c}`** — display list (`WV_D_BOX`
+  + `WV_D_TEXT`): block boxes honouring width/margin/padding; inline flow
+  with HTML whitespace collapsing and word wrap; `<br>`; `<pre>`; inline
+  style stack (`<b>`/`<strong>` bold, `<a>` blue+underline, `<u>`
+  underline) that survives nesting; `<img>` 16×16 placeholder; `<hr>`;
+  `<canvas width height>` block sized by attributes (W7 will back it with
+  an FBO); hidden elements produce no boxes.
+- **Iterative by design**: (node, phase) walk stack + explicit block and
+  inline context stacks in caller-provided arrays — no recursion, nothing
+  big on the 64 KiB stack.
+- **UA stylesheet** until W5's CSS: body 8 px margin, p margins, h1–h6
+  bold, ul/ol 32 px list indent, blockquote margins, hr rule.
+- **Host gate**: `tests/unit/test_wv_layout.c` — 79 checks, 0 failures:
+  wrap at the viewport edge, nested blocks at exactly the summed
+  margin/padding offsets, an exact expected display list (text, not
+  pixels), whitespace collapsing, `<pre>`/`<br>`, hidden elements, inline
+  styles incl. nesting, placeholders, and **5 000 boxes laid out in
+  1 064 µs — inside the W0 frame budget (7 500 µs)**; 1 000 fuzz
+  iterations with every item's offsets verified.
+- **QEMU gate**: the same 5 000-box document laid out in-guest on the real
+  64 KiB stack — `layout smoke: PASS (items=10001, 5000 boxes in
+  10101 us)`, i.e. 10× the host number under TCG emulation, not a layout
+  blow-up. `test_webview.sh` asserts it (11 checks).
+- **Bug caught by the tests**: `br`/`img` were missing from the inline
+  list, so `<br>` opened an empty block and never broke the line — fixed
+  with regressions.
+- `webview.elf` ~175 KB; `make test-unit` green.
+
 ## [WebView Phase W2 — DOM] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W2: tokens → a tree with the implied structure real

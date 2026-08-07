@@ -1,7 +1,7 @@
 # AuraLite OS Web View (`/apps/webview`)
 
-**Status:** Phases W0–W2 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
-scaffold, HTML tokeniser and DOM complete. W3 (block layout) is next.
+**Status:** Phases W0–W3 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+scaffold, HTML tokeniser, DOM and block layout complete. W4 (painting) is next.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -83,7 +83,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W0 | Scaffold: window, event loop, pixel buffer, blit benchmark, this doc | ✅ complete (2026-08-07) |
 | W1 | HTML tokeniser (state machine, no recursion) | ✅ complete (2026-08-07) |
 | W2 | DOM (flat node array, depth cap, implied structure) | ✅ complete (2026-08-07) |
-| W3 | Block layout → display list (iterative, 64 KiB-safe) | 📋 planned |
+| W3 | Block layout → display list (iterative, 64 KiB-safe) | ✅ complete (2026-08-07) |
 | W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
 | W5 | Inline CSS subset (D4) | 📋 planned |
 | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
@@ -136,3 +136,30 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 If only three phases are ever built, W1–W3 are the ones: a tokeniser, a DOM
 and a layout engine are the parts that do not exist anywhere else in the
 tree. Paint is a for-loop over rectangles; the hard work is upstream.
+
+## 8. Block layout (W3)
+
+`userspace/apps/webview/wv_layout.{h,c}` turns the DOM into a **display
+list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
+
+- Iterative by construction: a (node, phase) walk stack and explicit
+  block/inline context stacks, all caller-provided arrays with caps. The
+  5 000-box gate document is laid out in-guest on the real 64 KiB stack
+  every boot (`layout smoke: PASS`).
+- Box model: width/margin/padding honoured; children lay out inside the
+  content box. Until W5's CSS lands, values come from a small UA
+  stylesheet (body 8 px margin, p margins, h1–h6 bold, ul/ol 32 px indent,
+  blockquote margins, hr rule).
+- Inline flow: HTML whitespace collapsing (runs → one space, leading
+  whitespace dropped), word wrap at the content edge, `<br>`, `<pre>`
+  preserving whitespace, inline style stack for `<b>`/`<strong>` (bold),
+  `<a>` (blue + underline), `<u>` (underline) — nesting-safe.
+- Placeholders: `<img>` 16×16 inline box; `<hr>` rule; `<canvas width
+  height>` block (W7 backs it with an FBO).
+- Hidden elements (head, title, style, script, meta, link, base, noscript)
+  produce no boxes.
+- Gate: `tests/unit/test_wv_layout.c` — 79 host checks, 0 failures: wrap,
+  nested indent (summed margins/padding), an exact expected display list,
+  whitespace, `<pre>`/`<br>`, styles, placeholders, **5 000 boxes in
+  1 064 µs (budget 7 500 µs)**, 1 000 fuzz iterations. In-guest:
+  `layout smoke` asserted by `test_webview.sh`.

@@ -165,7 +165,7 @@ Legend:
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W2): scaffold window + heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit, the W1 HTML tokeniser (`wv_html.{h,c}` — 18-state iterative machine, arena-bounded, 122 host checks + in-guest smoke) and the W2 DOM builder (`wv_dom.{h,c}` — flat node array, 512-deep cap, implicit p/li/td/tr closes, pop-until-match reconciliation; 65 host checks; 10 000-deep document built in-guest on the 64 KiB stack). Layout/painting are W3–W4. See `docs/webview.md`. |
+| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W3): scaffold window + heap page buffer via `ag_blit()` (measured budget), `/tmp/webview.frames` limit; W1 tokeniser (`wv_html` — 18-state, arena-bounded, 122 checks); W2 DOM (`wv_dom` — flat node array, 512-deep cap, implicit closes, reconciliation; 65 checks; 10 000-deep doc in-guest on the 64 KiB stack); W3 block layout (`wv_layout` — display list, iterative walk, UA stylesheet, whitespace collapsing + word wrap, inline styles, `<canvas>` block; 79 checks; 5 000 boxes in 1 064 µs host / 10 101 µs QEMU-TCG, inside the W0 budget). Painting/CSS are W4–W5. See `docs/webview.md`. |
 
 ## Known low-priority limitations
 

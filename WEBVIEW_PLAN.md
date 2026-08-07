@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0–W2 COMPLETE ✅ · W3–W8 PLANNED 📋
+## Status: W0–W3 COMPLETE ✅ · W4–W8 PLANNED 📋
 
 This document answers:
 
@@ -302,17 +302,17 @@ it is.
 
 ---
 
-### Phase W3 — Block layout
+### Phase W3 — Block layout ✅ COMPLETE
 
 **Objective:** a DOM → a list of positioned boxes.
 
 #### Tasks
 
-- [ ] Block boxes stacked vertically, honouring width, margin and padding.
-- [ ] Inline flow within a block: text runs, word wrapping at the box edge.
-- [ ] An iterative layout walk over the flat node array (D3 again — the same
+- [x] Block boxes stacked vertically, honouring width, margin and padding.
+- [x] Inline flow within a block: text runs, word wrapping at the box edge.
+- [x] An iterative layout walk over the flat node array (D3 again — the same
       64 KB applies here, and layout recursion is the classic way to hit it).
-- [ ] Layout produces a **display list**, not pixels. Separating them is what
+- [x] Layout produces a **display list**, not pixels. Separating them is what
       makes both testable.
 
 #### Test gate
@@ -326,6 +326,18 @@ it is.
 #### Deliverable
 
 `patches/WEB_W3_layout.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `userspace/apps/webview/wv_layout.{h,c}` | DOM → display list (`WV_D_BOX` + `WV_D_TEXT` items): block boxes honouring width/margin/padding; inline flow with HTML whitespace collapsing and word wrap at the content edge; `<br>`; `<pre>`; inline style stack (`<b>/<strong>` bold, `<a>` blue+underline, `<u>` underline) surviving nesting; `<img>` 16×16 placeholder; `<hr>` rule; `<canvas width height>` block (W7 will back it with an FBO); hidden elements (`head/title/style/script/meta/link/base/noscript`) produce no boxes |
+| Iterative by design | The tree walk is a (node, phase) stack; block/inline contexts are explicit caller-provided arrays with caps — no recursion, nothing on the 64 KiB stack beyond a few locals |
+| UA stylesheet | body 8 px margin, p margins, h1–h6 bold, ul/ol 32 px list indent, blockquote 16/32 margins, hr rule — the browser defaults that make bare HTML readable; W5's CSS will override |
+| Host gate | `tests/unit/test_wv_layout.c` — **79 checks, 0 failures**: wrap (20 words in a 300 px viewport end at ≤ 300 and span 7 lines), nested indent (text at exactly the summed margin/padding offsets), the exact expected display list for `<body><p>ab cd`, whitespace collapsing, `<pre>`/`<br>`, hidden elements, inline styles incl. nesting, placeholders, and **5 000 boxes laid out in 1 064 µs — inside the W0 budget (7 500 µs)**; 1 000 fuzz iterations with every item's offsets verified |
+| QEMU gate | `/apps/webview` lays out the same 5 000-box document in-guest on the real 64 KiB stack: `layout smoke: PASS (items=10001, 5000 boxes in 10101 us, page_h=80000)` — 10 101 µs under TCG emulation (10× the host's 1 064 µs, i.e. the emulation factor, not a layout blow-up); `test_webview.sh` asserts it (11 checks now) |
+| Bugs found by the tests | `br`/`img` were missing from the inline-tag list, so `<br>` opened a block (an empty 600×0 box) and never broke the line — fixed with regressions |
+| Size | `webview.elf` ~175 KB (layout adds ~17 KB) — inside `SPAWN_MAX_IMAGE` |
 
 ---
 

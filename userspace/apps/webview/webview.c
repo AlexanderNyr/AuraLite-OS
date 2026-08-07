@@ -30,6 +30,7 @@
 #include "auragui.h"
 #include "wv_html.h"
 #include "wv_dom.h"
+#include "wv_layout.h"
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
 #define VIEW_W 800
@@ -291,6 +292,63 @@ int main(void) {
             }
             free(tt); free(ta); free(tp);
             free(dn); free(dda); free(dpp); free(stk);
+            free(doc);
+        }
+    }
+
+    /* ---- Phase W3 smoke: block layout runs in-guest too. ----------------
+     * Builds the 5 000-box document from the plan's gate, lays it out and
+     * measures the cost — on the real 64 KiB user stack, with the real
+     * clock. */
+    {
+        size_t doc_len = 5000 * 12;
+        char *doc = malloc(doc_len);
+        if (!doc) {
+            printf("[webview] layout smoke: FAIL (malloc)\n");
+        } else {
+            size_t p = 0;
+            for (int i = 0; i < 5000; i++) {
+                memcpy(doc + p, "<div>a</div>", 12);
+                p += 12;
+            }
+            wv_token_t *tt = malloc(22000 * sizeof(wv_token_t));
+            wv_attr_t  *ta = malloc(1024 * sizeof(wv_attr_t));
+            char       *tp = malloc(262144);
+            wv_dom_node_t *dn = malloc(12000 * sizeof(wv_dom_node_t));
+            wv_attr_t  *dda = malloc(1024 * sizeof(wv_attr_t));
+            char       *dpp = malloc(262144);
+            uint32_t   *stk = malloc(1024 * sizeof(uint32_t));
+            wv_disp_t  *di = malloc(12000 * sizeof(wv_disp_t));
+            char       *lpo = malloc(262144);
+            wv_blk_t   *lb = malloc(520 * sizeof(wv_blk_t));
+            wv_inl_t   *li = malloc(520 * sizeof(wv_inl_t));
+            wv_walk_t  *lw = malloc(520 * sizeof(wv_walk_t));
+            if (!tt || !ta || !tp || !dn || !dda || !dpp || !stk ||
+                !di || !lpo || !lb || !li || !lw) {
+                printf("[webview] layout smoke: FAIL (malloc arenas)\n");
+            } else {
+                wv_arena_t toks_a;
+                wv_arena_init(&toks_a, tt, 22000, ta, 1024, tp, 262144);
+                wv_html_tokenize(&toks_a, doc, doc_len);
+                wv_dom_t dom;
+                wv_dom_init(&dom, dn, 12000, dda, 1024, dpp, 262144, stk, 1024);
+                wv_dom_build(&dom, &toks_a, 512);
+                wv_layout_t lay;
+                wv_layout_init(&lay, di, 12000, lpo, 262144, lb, 520, li, 520, lw, 520);
+
+                struct timespec t0, t1;
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                int ni = wv_layout_run(&lay, &dom, 800);
+                clock_gettime(CLOCK_MONOTONIC, &t1);
+                long us = (t1.tv_sec - t0.tv_sec) * 1000000L +
+                          (t1.tv_nsec - t0.tv_nsec) / 1000L;
+                int ok = (ni == 10001 && !lay.truncated);
+                printf("[webview] layout smoke: %s (items=%d, 5000 boxes in %ld us, page_h=%u)\n",
+                       ok ? "PASS" : "FAIL", ni, us, lay.content_h);
+            }
+            free(tt); free(ta); free(tp);
+            free(dn); free(dda); free(dpp); free(stk);
+            free(di); free(lpo); free(lb); free(li); free(lw);
             free(doc);
         }
     }
