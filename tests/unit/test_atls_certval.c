@@ -10,9 +10,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 #include "atls/atls.h"
 #include "atls/x509.h"
 #include "atls/certval.h"
+
+static atls_time_now get_test_time(void) {
+    time_t t = time(NULL) + 3600;
+    struct tm *tm = gmtime(&t);
+    atls_time_now now = {
+        tm->tm_year + 1900,
+        tm->tm_mon + 1,
+        tm->tm_mday,
+        tm->tm_hour,
+        tm->tm_min,
+        tm->tm_sec
+    };
+    return now;
+}
 
 static int tests_run = 0, tests_failed = 0;
 #define CHECK(cond, name) do { \
@@ -103,7 +118,7 @@ static void test_valid_chain(void) {
     const uint8_t *chain[2] = { test_leaf_der, test_intermediate_der };
     size_t chain_lens[2] = { test_leaf_der_len, test_intermediate_der_len };
 
-    atls_time_now now = { 2026, 8, 6, 23, 59, 59 };
+    atls_time_now now = get_test_time();
     int rc = atls_certval_verify(&ctx, chain, chain_lens, 2,
                                  "example.auraos.dev", &now);
     CHECK(rc == ATLS_CERTVAL_OK, "valid chain to pinned root");
@@ -117,7 +132,7 @@ static void test_wrong_hostname(void) {
     const uint8_t *chain[2] = { test_leaf_der, test_intermediate_der };
     size_t chain_lens[2] = { test_leaf_der_len, test_intermediate_der_len };
 
-    atls_time_now now = { 2026, 8, 6, 23, 59, 59 };
+    atls_time_now now = get_test_time();
     int rc = atls_certval_verify(&ctx, chain, chain_lens, 2,
                                  "wrong.example.com", &now);
     CHECK(rc == ATLS_CERTVAL_ERR_HOSTNAME, "wrong hostname rejected");
@@ -161,7 +176,7 @@ static void test_unknown_root(void) {
     const uint8_t *chain[2] = { test_leaf_der, test_intermediate_der };
     size_t chain_lens[2] = { test_leaf_der_len, test_intermediate_der_len };
 
-    atls_time_now now = { 2026, 8, 6, 23, 59, 59 };
+    atls_time_now now = get_test_time();
     int rc = atls_certval_verify(&ctx, chain, chain_lens, 2,
                                  "example.auraos.dev", &now);
     CHECK(rc == ATLS_CERTVAL_ERR_CHAIN, "chain to unknown root rejected");
@@ -176,7 +191,7 @@ static void test_self_signed_rejected(void) {
     const uint8_t *chain[1] = { test_root_der };
     size_t chain_lens[1] = { test_root_der_len };
 
-    atls_time_now now = { 2026, 8, 6, 23, 59, 59 };
+    atls_time_now now = get_test_time();
     int rc = atls_certval_verify(&ctx, chain, chain_lens, 1,
                                  "N5 Test Root CA", &now);
     CHECK(rc != ATLS_CERTVAL_OK, "self-signed without trust store rejected");
@@ -207,7 +222,7 @@ static void test_flipped_signature(void) {
             atls_certval_init(&ctx, roots, 1);
             const uint8_t *chain[2] = { modified, test_intermediate_der };
             size_t chain_lens[2] = { test_leaf_der_len, test_intermediate_der_len };
-            atls_time_now now = { 2026, 8, 6, 23, 59, 59 };
+            atls_time_now now = get_test_time();
             int rc = atls_certval_verify(&ctx, chain, chain_lens, 2,
                                          "example.auraos.dev", &now);
             CHECK(rc == ATLS_CERTVAL_ERR_SIGNATURE || rc == ATLS_CERTVAL_ERR_CHAIN,
@@ -245,7 +260,7 @@ static void test_rsa_verify(void) {
     atls_trust_root roots[1] = { { rsa_der, rsa_der_len } };
     atls_certval_init(&ctx, roots, 1);
 
-    atls_time_now now = { 2026, 8, 6, 23, 59, 59 };
+    atls_time_now now = get_test_time();
     /* For self-signed, chain = [leaf], and we expect the signature to
      * verify against itself.  But our validation requires a separate
      * root — the leaf's issuer must match a root's subject.  For a
