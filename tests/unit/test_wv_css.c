@@ -2,7 +2,7 @@
  * test_wv_css.c — host unit tests for the web view inline CSS
  * (WEBVIEW_PLAN phase W5).
  *
- * Links the REAL userspace/apps/webview/wv_css.c + wv_layout.c +
+ * Links the REAL userspace/apps/gbrowser/wv_css.c + wv_layout.c +
  * wv_dom.c + wv_html.c (never copies) and checks the plan's gate:
  *   - style="color:#f00" renders red text;
  *   - a malformed declaration does not discard the rest of the block;
@@ -21,11 +21,11 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-#include "userspace/apps/webview/wv_html.h"
-#include "userspace/apps/webview/wv_dom.h"
-#include "userspace/apps/webview/wv_css.h"
-#include "userspace/apps/webview/wv_layout.h"
-#include "userspace/apps/webview/wv_paint.h"
+#include "userspace/apps/gbrowser/wv_html.h"
+#include "userspace/apps/gbrowser/wv_dom.h"
+#include "userspace/apps/gbrowser/wv_css.h"
+#include "userspace/apps/gbrowser/wv_layout.h"
+#include "userspace/apps/gbrowser/wv_paint.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# test_webview_net.sh — WEBVIEW_PLAN phase W6: navigation and networking.
+# test_gbrowser_net.sh — WEBVIEW_PLAN phases W6-W7: navigation and networking.
 #
 # A real HTTP server runs on the host (QEMU SLIRP exposes it at
 # 10.0.2.2).  The web view is driven by its test hooks, which are written
 # BEFORE it starts (the init shell blocks on `run`):
-#   /tmp/webview.url    — the page to load first
-#   /tmp/webview.steps  — "|"-separated actions: "link 0|back|https|
+#   /tmp/gbrowser.url    — the page to load first
+#   /tmp/gbrowser.steps  — "|"-separated actions: "link 0|back|https|
 #                         nav <url>"
 #
 # The server serves:
@@ -30,13 +30,13 @@ il_have qemu-system-x86_64 python3
 
 il_section "WebView W6 navigation and networking"
 
-LOG="$IL_LOGDIR/webview_net.log"
+LOG="$IL_LOGDIR/gbrowser_net.log"
 IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 PORT="${WV_PORT:-18090}"
 
-cat > "$IL_BUILD/webview_test_server.py" <<PYEOF
+cat > "$IL_BUILD/gbrowser_test_server.py" <<PYEOF
 import socket, threading
 
 HOME = (b"<!doctype html><html><head><title>W6 home</title></head>"
@@ -98,17 +98,17 @@ while True:
     threading.Thread(target=handle, args=(c,), daemon=True).start()
 PYEOF
 
-python3 "$IL_BUILD/webview_test_server.py" &
+python3 "$IL_BUILD/gbrowser_test_server.py" &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null; il_dump_on_error' EXIT
 sleep 1
 
 il_send_delay 8
-il_send "write /tmp/webview.url http://10.0.2.2:$PORT/"
+il_send "write /tmp/gbrowser.url http://10.0.2.2:$PORT/"
 il_send_delay 1
-il_send "write /tmp/webview.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big|nav http://10.0.2.2:$PORT/canvas.html"
+il_send "write /tmp/gbrowser.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big|nav http://10.0.2.2:$PORT/canvas.html"
 il_send_delay 1
-il_send "run webview"
+il_send "run gbrowser"
 
 il_run_qemu "$LOG" 110
 

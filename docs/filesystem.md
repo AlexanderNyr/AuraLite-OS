@@ -169,7 +169,7 @@ A failed search names the directories it looked in.
 /bin     init hello apm play sysinfo
 /apps    calc editor http clock browser
          gcalc gedit gfiles gterm gsysmon gabout gtaskmgr glaunch
-         gaudio gbrowser gusb
+         gaudio gusb gbrowser
 /demos   guess snake glcube glgears
 /tests   selftest proctest fdtest p10test argv_echo execve_child gltest
          tcpserver elfperm udptest timestest fifolinktest stackguard insttest

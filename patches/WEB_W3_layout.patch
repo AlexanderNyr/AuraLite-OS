@@ -1,0 +1,1511 @@
+From 6d331982f702338a6f7615d293f44b294350de43 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 09:25:26 +0000
+Subject: [PATCH] W3 update: block layout
+
+WEBVIEW_PLAN.md phase W3:
+- wv_layout.{h,c}: DOM -> display list (WV_D_BOX + WV_D_TEXT); block
+  boxes honouring width/margin/padding; inline flow with HTML whitespace
+  collapsing + word wrap; <br>; <pre>; inline style stack (b/strong
+  bold, a blue+underline, u underline) nesting-safe; img 16x16
+  placeholder; hr; canvas width/height block; hidden elements produce
+  no boxes
+- iterative by design: (node,phase) walk stack + block/inline stacks in
+  caller arrays -- no recursion, nothing big on the 64 KiB stack
+- UA stylesheet until W5 CSS: body 8px margin, p margins, h1-h6 bold,
+  ul/ol 32px indent, blockquote margins, hr rule
+- host gate: test_wv_layout.c 79 checks: wrap at viewport edge, nested
+  blocks at summed margin/padding offsets, exact expected display list,
+  whitespace, pre/br, hidden, styles, placeholders, 5000 boxes in
+  1064 us (budget 7500 us), 1000 fuzz iterations
+- QEMU gate: 5000-box doc laid out in-guest on the real 64 KiB stack
+  (layout smoke: PASS, 10101 us under TCG = 10x host, not a blow-up);
+  test_webview.sh asserts it (11 checks)
+- bug caught: br/img missing from inline list -> <br> opened an empty
+  block and never broke the line; fixed with regressions
+- webview.elf ~175 KB; make test-unit green
+---
+ CHANGELOG.md                            |  33 ++
+ Makefile                                |  31 +-
+ SHA256SUMS                              |   4 +-
+ WEBVIEW_PLAN.md                         |  24 +-
+ docs/status.md                          |   2 +-
+ docs/webview.md                         |  33 +-
+ tests/integration/cases/test_webview.sh |   1 +
+ tests/unit/test_wv_layout.c             | 408 +++++++++++++++++
+ userspace/apps/webview/webview.c        |  58 +++
+ userspace/apps/webview/wv_layout.c      | 579 ++++++++++++++++++++++++
+ userspace/apps/webview/wv_layout.h      | 135 ++++++
+ 11 files changed, 1290 insertions(+), 18 deletions(-)
+ create mode 100644 tests/unit/test_wv_layout.c
+ create mode 100644 userspace/apps/webview/wv_layout.c
+ create mode 100644 userspace/apps/webview/wv_layout.h
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 7eae170..ef139f6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,39 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WebView Phase W3 — Block layout] 2026-08-07
++
++`WEBVIEW_PLAN.md` phase W3: a DOM → a list of positioned boxes (a display
++list), iteratively, inside the 64 KiB user stack.
++
++- **`userspace/apps/webview/wv_layout.{h,c}`** — display list (`WV_D_BOX`
++  + `WV_D_TEXT`): block boxes honouring width/margin/padding; inline flow
++  with HTML whitespace collapsing and word wrap; `<br>`; `<pre>`; inline
++  style stack (`<b>`/`<strong>` bold, `<a>` blue+underline, `<u>`
++  underline) that survives nesting; `<img>` 16×16 placeholder; `<hr>`;
++  `<canvas width height>` block sized by attributes (W7 will back it with
++  an FBO); hidden elements produce no boxes.
++- **Iterative by design**: (node, phase) walk stack + explicit block and
++  inline context stacks in caller-provided arrays — no recursion, nothing
++  big on the 64 KiB stack.
++- **UA stylesheet** until W5's CSS: body 8 px margin, p margins, h1–h6
++  bold, ul/ol 32 px list indent, blockquote margins, hr rule.
++- **Host gate**: `tests/unit/test_wv_layout.c` — 79 checks, 0 failures:
++  wrap at the viewport edge, nested blocks at exactly the summed
++  margin/padding offsets, an exact expected display list (text, not
++  pixels), whitespace collapsing, `<pre>`/`<br>`, hidden elements, inline
++  styles incl. nesting, placeholders, and **5 000 boxes laid out in
++  1 064 µs — inside the W0 frame budget (7 500 µs)**; 1 000 fuzz
++  iterations with every item's offsets verified.
++- **QEMU gate**: the same 5 000-box document laid out in-guest on the real
++  64 KiB stack — `layout smoke: PASS (items=10001, 5000 boxes in
++  10101 us)`, i.e. 10× the host number under TCG emulation, not a layout
++  blow-up. `test_webview.sh` asserts it (11 checks).
++- **Bug caught by the tests**: `br`/`img` were missing from the inline
++  list, so `<br>` opened an empty block and never broke the line — fixed
++  with regressions.
++- `webview.elf` ~175 KB; `make test-unit` green.
++
+ ## [WebView Phase W2 — DOM] 2026-08-07
+ 
+ `WEBVIEW_PLAN.md` phase W2: tokens → a tree with the implied structure real
+diff --git a/Makefile b/Makefile
+index b9f9c86..63e3f67 100644
+--- a/Makefile
++++ b/Makefile
+@@ -829,17 +829,20 @@ $(USER_BUILD)/wv_html.o: userspace/apps/webview/wv_html.c userspace/apps/webview
+ $(USER_BUILD)/wv_dom.o: userspace/apps/webview/wv_dom.c userspace/apps/webview/wv_dom.h \
+                         userspace/apps/webview/wv_html.h
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++$(USER_BUILD)/wv_layout.o: userspace/apps/webview/wv_layout.c userspace/apps/webview/wv_layout.h \
++                          userspace/apps/webview/wv_dom.h userspace/apps/webview/wv_html.h
++	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+-# webview links the tokeniser + DOM builder; the generic %.elf pattern rule
+-# does not know about them, so give this one explicit prerequisites/link line.
++# webview links the tokeniser + DOM builder + layout; the generic %.elf
++# pattern rule does not know about them, so give explicit prerequisites.
+ $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+-                           $(USER_BUILD)/wv_dom.o \
++                           $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+ 	@mkdir -p $(dir $@)
+ 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+-	      $(USER_BUILD)/wv_dom.o \
++	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+ 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+-	@echo "[link] $@ (wv_html + wv_dom)"
++	@echo "[link] $@ (wv_html + wv_dom + wv_layout)"
+ $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+@@ -1224,7 +1227,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_atls_certval \
+                 $(BUILD_DIR)/test_ahttp \
+                 $(BUILD_DIR)/test_wv_html \
+-                $(BUILD_DIR)/test_wv_dom
++                $(BUILD_DIR)/test_wv_dom \
++                $(BUILD_DIR)/test_wv_layout
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1337,6 +1341,21 @@ $(BUILD_DIR)/test_wv_dom: tests/unit/test_wv_dom.c \
+ 	           tests/unit/test_wv_dom.c userspace/apps/webview/wv_dom.c \
+ 	           userspace/apps/webview/wv_html.c -o $@
+ 
++# Web view block layout (WEBVIEW_PLAN W3): the REAL userspace sources are
++# compiled into the host test, never copies.
++$(BUILD_DIR)/test_wv_layout: tests/unit/test_wv_layout.c \
++                             userspace/apps/webview/wv_layout.c \
++                             userspace/apps/webview/wv_layout.h \
++                             userspace/apps/webview/wv_dom.c \
++                             userspace/apps/webview/wv_dom.h \
++                             userspace/apps/webview/wv_html.c \
++                             userspace/apps/webview/wv_html.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
++	           tests/unit/test_wv_layout.c userspace/apps/webview/wv_layout.c \
++	           userspace/apps/webview/wv_dom.c \
++	           userspace/apps/webview/wv_html.c -o $@
++
+ $(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \
+                              tests/unit/atls_x509_testdata.c $(LIBATLS_SRCS) \
+                              lib/libatls/include/atls/x509.h tests/atls_test_certs.h
+diff --git a/SHA256SUMS b/SHA256SUMS
+index de2c9c8..e301ed3 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-ef5373594a21852d6e89d440a90c2918a349a4731f8c8bb2d9124ca2bdf0b0b8  auralite.iso
++9263275db643b278f091de5b16b382785875db97697fee1bf607ab3648aaefe0  auralite.iso
+ 55fad1bb74013012236de5d7e732c91d161fd1008da81267468a3d13653cc0a1  kernel.elf
+-7ba5d3e2c6be8a06c5334840286358d7236f9dfe2e6e9413166b8c29b249f33d  initrd.tar
++94dcf5d9b279f66157e81ac948087d6c17cbc8570bc05504f9f883638b9328a5  initrd.tar
+diff --git a/WEBVIEW_PLAN.md b/WEBVIEW_PLAN.md
+index 0b8dac3..dfea75e 100644
+--- a/WEBVIEW_PLAN.md
++++ b/WEBVIEW_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Web View Plan
+ 
+-## Status: W0–W2 COMPLETE ✅ · W3–W8 PLANNED 📋
++## Status: W0–W3 COMPLETE ✅ · W4–W8 PLANNED 📋
+ 
+ This document answers:
+ 
+@@ -302,17 +302,17 @@ it is.
+ 
+ ---
+ 
+-### Phase W3 — Block layout
++### Phase W3 — Block layout ✅ COMPLETE
+ 
+ **Objective:** a DOM → a list of positioned boxes.
+ 
+ #### Tasks
+ 
+-- [ ] Block boxes stacked vertically, honouring width, margin and padding.
+-- [ ] Inline flow within a block: text runs, word wrapping at the box edge.
+-- [ ] An iterative layout walk over the flat node array (D3 again — the same
++- [x] Block boxes stacked vertically, honouring width, margin and padding.
++- [x] Inline flow within a block: text runs, word wrapping at the box edge.
++- [x] An iterative layout walk over the flat node array (D3 again — the same
+       64 KB applies here, and layout recursion is the classic way to hit it).
+-- [ ] Layout produces a **display list**, not pixels. Separating them is what
++- [x] Layout produces a **display list**, not pixels. Separating them is what
+       makes both testable.
+ 
+ #### Test gate
+@@ -327,6 +327,18 @@ it is.
+ 
+ `patches/WEB_W3_layout.patch`
+ 
++#### Results (verified 2026-08-07)
++
++| Item | Outcome |
++|---|---|
++| `userspace/apps/webview/wv_layout.{h,c}` | DOM → display list (`WV_D_BOX` + `WV_D_TEXT` items): block boxes honouring width/margin/padding; inline flow with HTML whitespace collapsing and word wrap at the content edge; `<br>`; `<pre>`; inline style stack (`<b>/<strong>` bold, `<a>` blue+underline, `<u>` underline) surviving nesting; `<img>` 16×16 placeholder; `<hr>` rule; `<canvas width height>` block (W7 will back it with an FBO); hidden elements (`head/title/style/script/meta/link/base/noscript`) produce no boxes |
++| Iterative by design | The tree walk is a (node, phase) stack; block/inline contexts are explicit caller-provided arrays with caps — no recursion, nothing on the 64 KiB stack beyond a few locals |
++| UA stylesheet | body 8 px margin, p margins, h1–h6 bold, ul/ol 32 px list indent, blockquote 16/32 margins, hr rule — the browser defaults that make bare HTML readable; W5's CSS will override |
++| Host gate | `tests/unit/test_wv_layout.c` — **79 checks, 0 failures**: wrap (20 words in a 300 px viewport end at ≤ 300 and span 7 lines), nested indent (text at exactly the summed margin/padding offsets), the exact expected display list for `<body><p>ab cd`, whitespace collapsing, `<pre>`/`<br>`, hidden elements, inline styles incl. nesting, placeholders, and **5 000 boxes laid out in 1 064 µs — inside the W0 budget (7 500 µs)**; 1 000 fuzz iterations with every item's offsets verified |
++| QEMU gate | `/apps/webview` lays out the same 5 000-box document in-guest on the real 64 KiB stack: `layout smoke: PASS (items=10001, 5000 boxes in 10101 us, page_h=80000)` — 10 101 µs under TCG emulation (10× the host's 1 064 µs, i.e. the emulation factor, not a layout blow-up); `test_webview.sh` asserts it (11 checks now) |
++| Bugs found by the tests | `br`/`img` were missing from the inline-tag list, so `<br>` opened a block (an empty 600×0 box) and never broke the line — fixed with regressions |
++| Size | `webview.elf` ~175 KB (layout adds ~17 KB) — inside `SPAWN_MAX_IMAGE` |
++
+ ---
+ 
+ ### Phase W4 — Painting
+diff --git a/docs/status.md b/docs/status.md
+index 39c92c9..165f8c3 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -165,7 +165,7 @@ Legend:
+ | `/http` | 🧪 | Uses DNS/TCP syscalls. |
+ | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
+ | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
+-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W2): scaffold window + heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit, the W1 HTML tokeniser (`wv_html.{h,c}` — 18-state iterative machine, arena-bounded, 122 host checks + in-guest smoke) and the W2 DOM builder (`wv_dom.{h,c}` — flat node array, 512-deep cap, implicit p/li/td/tr closes, pop-until-match reconciliation; 65 host checks; 10 000-deep document built in-guest on the 64 KiB stack). Layout/painting are W3–W4. See `docs/webview.md`. |
++| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W3): scaffold window + heap page buffer via `ag_blit()` (measured budget), `/tmp/webview.frames` limit; W1 tokeniser (`wv_html` — 18-state, arena-bounded, 122 checks); W2 DOM (`wv_dom` — flat node array, 512-deep cap, implicit closes, reconciliation; 65 checks; 10 000-deep doc in-guest on the 64 KiB stack); W3 block layout (`wv_layout` — display list, iterative walk, UA stylesheet, whitespace collapsing + word wrap, inline styles, `<canvas>` block; 79 checks; 5 000 boxes in 1 064 µs host / 10 101 µs QEMU-TCG, inside the W0 budget). Painting/CSS are W4–W5. See `docs/webview.md`. |
+ 
+ ## Known low-priority limitations
+ 
+diff --git a/docs/webview.md b/docs/webview.md
+index e6b5ed8..4bfcd14 100644
+--- a/docs/webview.md
++++ b/docs/webview.md
+@@ -1,7 +1,7 @@
+ # AuraLite OS Web View (`/apps/webview`)
+ 
+-**Status:** Phases W0–W2 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+-scaffold, HTML tokeniser and DOM complete. W3 (block layout) is next.
++**Status:** Phases W0–W3 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
++scaffold, HTML tokeniser, DOM and block layout complete. W4 (painting) is next.
+ 
+ This document states what the web view is, what it deliberately is not, and
+ what the presentation path costs on this build. It follows the project
+@@ -83,7 +83,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+ | W0 | Scaffold: window, event loop, pixel buffer, blit benchmark, this doc | ✅ complete (2026-08-07) |
+ | W1 | HTML tokeniser (state machine, no recursion) | ✅ complete (2026-08-07) |
+ | W2 | DOM (flat node array, depth cap, implied structure) | ✅ complete (2026-08-07) |
+-| W3 | Block layout → display list (iterative, 64 KiB-safe) | 📋 planned |
++| W3 | Block layout → display list (iterative, 64 KiB-safe) | ✅ complete (2026-08-07) |
+ | W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
+ | W5 | Inline CSS subset (D4) | 📋 planned |
+ | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
+@@ -136,3 +136,30 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+ If only three phases are ever built, W1–W3 are the ones: a tokeniser, a DOM
+ and a layout engine are the parts that do not exist anywhere else in the
+ tree. Paint is a for-loop over rectangles; the hard work is upstream.
++
++## 8. Block layout (W3)
++
++`userspace/apps/webview/wv_layout.{h,c}` turns the DOM into a **display
++list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
++
++- Iterative by construction: a (node, phase) walk stack and explicit
++  block/inline context stacks, all caller-provided arrays with caps. The
++  5 000-box gate document is laid out in-guest on the real 64 KiB stack
++  every boot (`layout smoke: PASS`).
++- Box model: width/margin/padding honoured; children lay out inside the
++  content box. Until W5's CSS lands, values come from a small UA
++  stylesheet (body 8 px margin, p margins, h1–h6 bold, ul/ol 32 px indent,
++  blockquote margins, hr rule).
++- Inline flow: HTML whitespace collapsing (runs → one space, leading
++  whitespace dropped), word wrap at the content edge, `<br>`, `<pre>`
++  preserving whitespace, inline style stack for `<b>`/`<strong>` (bold),
++  `<a>` (blue + underline), `<u>` (underline) — nesting-safe.
++- Placeholders: `<img>` 16×16 inline box; `<hr>` rule; `<canvas width
++  height>` block (W7 backs it with an FBO).
++- Hidden elements (head, title, style, script, meta, link, base, noscript)
++  produce no boxes.
++- Gate: `tests/unit/test_wv_layout.c` — 79 host checks, 0 failures: wrap,
++  nested indent (summed margins/padding), an exact expected display list,
++  whitespace, `<pre>`/`<br>`, styles, placeholders, **5 000 boxes in
++  1 064 µs (budget 7 500 µs)**, 1 000 fuzz iterations. In-guest:
++  `layout smoke` asserted by `test_webview.sh`.
+diff --git a/tests/integration/cases/test_webview.sh b/tests/integration/cases/test_webview.sh
+index f468327..7f7aa22 100755
+--- a/tests/integration/cases/test_webview.sh
++++ b/tests/integration/cases/test_webview.sh
+@@ -36,6 +36,7 @@ il_assert_grep "$LOG" "\\[webview\\] blit 800x600: [0-9][0-9]* us/frame" \
+ il_assert_grep "$LOG" "\\[webview\\] tokeniser smoke: PASS"     "W1 tokeniser smoke passed in-guest"
+ il_assert_grep "$LOG" "\\[webview\\] dom smoke: PASS"           "W2 DOM smoke passed in-guest"
+ il_assert_grep "$LOG" "\\[webview\\] dom deep test: PASS"       "W2 10k-deep doc hits cap, no stack overflow"
++il_assert_grep "$LOG" "\\[webview\\] layout smoke: PASS"         "W3 5000-box layout passed in-guest"
+ il_assert_grep "$LOG" "\\[webview\\] PASS: 10 frames rendered"  "frame limit respected"
+ il_assert_grep "$LOG" "\\[webview\\] W0 scaffold complete"       "clean exit"
+ il_assert_no_grep "$LOG" "Page Fault|kernel panic|triple fault" "no kernel fault"
+diff --git a/tests/unit/test_wv_layout.c b/tests/unit/test_wv_layout.c
+new file mode 100644
+index 0000000..3dc76df
+--- /dev/null
++++ b/tests/unit/test_wv_layout.c
+@@ -0,0 +1,408 @@
++/*
++ * test_wv_layout.c — host unit tests for the web view block layout
++ * (WEBVIEW_PLAN phase W3).
++ *
++ * Links the REAL userspace/apps/webview/wv_layout.c + wv_dom.c +
++ * wv_html.c (never copies) and checks the plan's gate:
++ *   - a paragraph wider than the viewport wraps at the right column;
++ *   - nested blocks indent by the sum of their margins and padding;
++ *   - layout of a 5 000-box document completes within the W0 frame
++ *     budget (measured on the host);
++ *   - the display list is compared against an expected list — text, not
++ *     pixels, so a failure says *what* moved.
++ *
++ * Plus: whitespace collapsing, <pre>, <br>, hidden elements, inline
++ * styles (bold/underline/colour), <img>/<hr>/<canvas> placeholders, and
++ * fuzzed inputs where every item's offsets are verified.
++ *
++ * Built/run by `make test-unit` under -std=c11 -Wall -Wextra -Werror.
++ */
++
++#define _POSIX_C_SOURCE 200809L   /* clock_gettime */
++
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <time.h>
++
++#include "userspace/apps/webview/wv_html.h"
++#include "userspace/apps/webview/wv_dom.h"
++#include "userspace/apps/webview/wv_layout.h"
++
++static int failures = 0;
++#define CK(c) do { if (c) printf("PASS: %s\n", #c); \
++    else { printf("FAIL: %s\n", #c); failures++; } } while (0)
++
++/* ---- arenas (static: bounded by construction) ---- */
++
++static wv_token_t   toks[WV_MAX_TOKENS];
++static wv_attr_t    tattrs[WV_MAX_ATTRS];
++static char         tpool[WV_POOL_SIZE];
++static wv_arena_t   ta;
++
++static wv_dom_node_t nodes[WV_MAX_TOKENS];
++static wv_attr_t    dattrs[WV_MAX_ATTRS];
++static char         dpool[WV_POOL_SIZE];
++static uint32_t     dstack[WV_DOM_DEFAULT_DEPTH];
++static wv_dom_t     da;
++
++static wv_disp_t    items[WV_MAX_ITEMS];
++static char         lpool[131072];
++static wv_blk_t     lblks[520];
++static wv_inl_t     linls[520];
++static wv_walk_t    lwalk[520];
++static wv_layout_t  la;
++
++static void reset(void) {
++    wv_arena_init(&ta, toks, WV_MAX_TOKENS, tattrs, WV_MAX_ATTRS,
++                  tpool, WV_POOL_SIZE);
++    wv_dom_init(&da, nodes, WV_MAX_TOKENS, dattrs, WV_MAX_ATTRS,
++                dpool, WV_POOL_SIZE, dstack, WV_DOM_DEFAULT_DEPTH);
++    wv_layout_init(&la, items, WV_MAX_ITEMS, lpool, sizeof(lpool),
++                   lblks, 520, linls, 520, lwalk, 520);
++}
++
++/* tokenise + build DOM + layout; returns item count (or -1) */
++static int layout(const char *html, int32_t viewport) {
++    reset();
++    if (wv_html_tokenize(&ta, html, strlen(html)) < 0) return -1;
++    if (wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH) < 0) return -1;
++    return wv_layout_run(&la, &da, viewport);
++}
++
++static const char *itext(size_t i) {
++    if (i >= la.item_count) return "";
++    return wv_layout_str(&la, la.items[i].text_off);
++}
++
++/* expect item i to be a box at (x,y) with size w x h (h may be 0) */
++static int exp_box(size_t i, int32_t x, int32_t y, uint32_t w, uint32_t h) {
++    if (i >= la.item_count) return 0;
++    const wv_disp_t *it = &la.items[i];
++    if (it->type != WV_D_BOX) return 0;
++    if (it->x != x || it->y != y || it->w != w) return 0;
++    if (h != 0 && it->h != h) return 0;
++    return 1;
++}
++
++static int exp_text(size_t i, int32_t x, int32_t y, const char *s,
++                    int bold, int underline, uint32_t fg) {
++    if (i >= la.item_count) return 0;
++    const wv_disp_t *it = &la.items[i];
++    if (it->type != WV_D_TEXT) return 0;
++    if (it->x != x || it->y != y) return 0;
++    if (strcmp(itext(i), s) != 0) return 0;
++    if ((int)it->bold != bold) return 0;
++    if ((int)it->underline != underline) return 0;
++    if (fg != 0 && it->fg != fg) return 0;
++    return 1;
++}
++
++/* ---- consistency: every item offset is inside the pool, x is sane ---- */
++static int layout_consistent(void) {
++    if (la.item_count > la.item_cap) return 0;
++    if (la.pool_used > la.pool_cap) return 0;
++    for (size_t i = 0; i < la.item_count; i++) {
++        const wv_disp_t *it = &la.items[i];
++        if (it->x < 0 || it->y < 0) return 0;
++        if (it->type == WV_D_TEXT) {
++            if (it->text_len == 0) return 0;
++            if ((size_t)it->text_off + it->text_len + 1 > la.pool_used) return 0;
++            if (la.pool[it->text_off + it->text_len] != '\0') return 0;
++            if (it->w != it->text_len * WV_GLYPH_W) return 0;
++        }
++    }
++    return 1;
++}
++
++static uint32_t frng = 0xDEADBEEFu;
++static uint32_t frand(void) {
++    frng ^= frng << 13; frng ^= frng >> 17; frng ^= frng << 5;
++    return frng;
++}
++
++/* ---- tests ---- */
++
++static void test_wrap(void) {
++    /* one long paragraph of 10-char words, viewport 300: every word must
++     * end at or before the right edge (words shorter than the viewport),
++     * and the text must occupy more than one line */
++    char html[1024];
++    size_t p = 0;
++    memcpy(html + p, "<p>", 3); p += 3;
++    for (int i = 0; i < 20; i++) {
++        memcpy(html + p, "aaaaaaaaaa", 10); p += 10;
++        if (i < 19) html[p++] = ' ';
++    }
++    memcpy(html + p, "</p>", 4); p += 4;
++
++    int n = layout(html, 300);
++    CK(n > 0);
++    int text_items = 0;
++    int first_y = -1;
++    int max_y = 0;
++    for (size_t i = 0; i < la.item_count; i++) {
++        if (la.items[i].type != WV_D_TEXT) continue;
++        text_items++;
++        const wv_disp_t *it = &la.items[i];
++        CK(it->x + (int32_t)it->w <= 300);
++        if (first_y < 0) first_y = it->y;
++        if (it->y > max_y) max_y = it->y;
++    }
++    CK(text_items == 20);
++    CK(max_y > first_y);                 /* wrapped onto more than one line */
++    CK(layout_consistent());
++}
++
++static void test_nested_indent(void) {
++    /* <ul><li><p>x  — body margin 8, ul padding-left 32, p margin-top 16:
++     * the text lands at x = 8 + 32 = 40, y = 8 + 16(ul) + 16(p) = 40. */
++    int n = layout("<body><ul><li><p>x</body>", 600);
++    CK(n > 0);
++    size_t ti = 0;
++    for (size_t i = 0; i < la.item_count; i++) {
++        if (la.items[i].type == WV_D_TEXT) { ti = i; break; }
++    }
++    CK(exp_text(ti, 40, 40, "x", 0, 0, 0));
++
++    /* <blockquote><p>x — blockquote margins 16 32: x = 8+32 = 40,
++     * y = 8 + 16 + 16 = 40 */
++    layout("<body><blockquote><p>x</body>", 600);
++    for (size_t i = 0; i < la.item_count; i++) {
++        if (la.items[i].type == WV_D_TEXT) { ti = i; break; }
++    }
++    CK(exp_text(ti, 40, 40, "x", 0, 0, 0));
++
++    /* nested divs with a p: the sum of all margins/paddings on the path */
++    layout("<body><div><div><p>x</body>", 600);
++    for (size_t i = 0; i < la.item_count; i++) {
++        if (la.items[i].type == WV_D_TEXT) { ti = i; break; }
++    }
++    CK(exp_text(ti, 8, 24, "x", 0, 0, 0));  /* body8 + p16 */
++    CK(layout_consistent());
++}
++
++static void test_expected_list(void) {
++    /* <body><p>ab cd in a 200 px viewport, body margin 8:
++     *   item0 box  root (0,0) 200x64
++     *   item1 box  body (8,8) 184x48
++     *   item2 box  p    (8,24) 184x16
++     *   item3 text "ab" (8,24)
++     *   item4 text "cd" (32,24)   (8+16+8)
++     */
++    int n = layout("<body><p>ab cd</body>", 200);
++    CK(n == 5);
++    CK(exp_box(0, 0, 0, 200, 64));
++    CK(exp_box(1, 8, 8, 184, 48));
++    CK(exp_box(2, 8, 24, 184, 16));
++    CK(exp_text(3, 8, 24, "ab", 0, 0, 0));
++    CK(exp_text(4, 32, 24, "cd", 0, 0, 0));
++    CK(layout_consistent());
++}
++
++static void test_whitespace_collapse(void) {
++    /* runs of whitespace collapse; leading whitespace on a line drops */
++    int n = layout("<body><p>  a   b\t\tc\n d</body>", 600);
++    CK(n == 7);               /* root + body + p + 4 words */
++    CK(exp_box(0, 0, 0, 600, 0));         /* root */
++    CK(exp_box(1, 8, 8, 584, 0));         /* body */
++    CK(exp_box(2, 8, 24, 584, 16));       /* p */
++    CK(exp_text(3, 8, 24, "a", 0, 0, 0));
++    CK(exp_text(4, 24, 24, "b", 0, 0, 0));
++    CK(exp_text(5, 40, 24, "c", 0, 0, 0));
++    CK(exp_text(6, 56, 24, "d", 0, 0, 0));
++    CK(layout_consistent());
++}
++
++static void test_pre_and_br(void) {
++    /* <pre> keeps whitespace and breaks on newlines */
++    int n = layout("<body><pre>a\n  b</pre></body>", 600);
++    CK(n == 5);   /* root + body + pre + 2 text runs */
++    CK(exp_box(0, 0, 0, 600, 0));
++    CK(exp_box(1, 8, 8, 584, 0));
++    CK(exp_box(2, 8, 24, 584, 32));
++    CK(exp_text(3, 8, 24, "a", 0, 0, 0));
++    CK(exp_text(4, 8, 40, "  b", 0, 0, 0));
++
++    /* <br> forces a line break */
++    n = layout("<body><p>ab<br>cd</body>", 600);
++    CK(n == 5);   /* root + body + p + ab + cd */
++    CK(exp_text(3, 8, 24, "ab", 0, 0, 0));
++    CK(exp_text(4, 8, 40, "cd", 0, 0, 0));
++    CK(layout_consistent());
++}
++
++static void test_hidden_elements(void) {
++    int n = layout("<head><title>hidden</title><style>p{}</style></head>"
++                   "<p>visible", 600);
++    int seen_hidden = 0;
++    for (size_t i = 0; i < la.item_count; i++) {
++        if (la.items[i].type == WV_D_TEXT &&
++            strcmp(itext(i), "hidden") == 0) seen_hidden = 1;
++        if (la.items[i].type == WV_D_TEXT &&
++            strcmp(itext(i), "p{}") == 0) seen_hidden = 1;
++    }
++    CK(seen_hidden == 0);
++    CK(n > 0);
++    int seen_visible = 0;
++    for (size_t i = 0; i < la.item_count; i++)
++        if (la.items[i].type == WV_D_TEXT &&
++            strcmp(itext(i), "visible") == 0) seen_visible = 1;
++    CK(seen_visible == 1);
++    CK(layout_consistent());
++}
++
++static void test_inline_styles(void) {
++    /* <b>B</b> bold; <a> blue+underline; <u> underline; nesting */
++    int n = layout("<body><p><b>B</b> <a href=x>A</a> <u>U</u></body>", 600);
++    CK(n == 6);   /* root + body + p + B + A + U */
++    CK(exp_text(3, 8, 24, "B", 1, 0, 0));
++    CK(exp_text(4, 24, 24, "A", 0, 1, WV_BLUE_LINK));
++    CK(exp_text(5, 40, 24, "U", 0, 1, 0));
++
++    /* nesting: <b>B<i>I</i></b> — the <i> inherits bold */
++    layout("<p><b>B<i>I</i></b>", 600);
++    for (size_t i = 0; i < la.item_count; i++) {
++        if (la.items[i].type == WV_D_TEXT &&
++            strcmp(itext(i), "I") == 0) {
++            CK(la.items[i].bold == 1);
++            break;
++        }
++    }
++    CK(layout_consistent());
++}
++
++static void test_placeholders(void) {
++    /* <img> gets a 16x16 box on the current line; <hr> a 2 px rule;
++     * <canvas width=64 height=48> a 64x48 block */
++    int n = layout("<body><p>a<img>b</body>", 600);
++    int img_seen = 0;
++    for (size_t i = 0; i < la.item_count; i++) {
++        const wv_disp_t *it = &la.items[i];
++        if (it->type == WV_D_BOX && it->w == 16 && it->h == 16)
++            img_seen = 1;
++    }
++    CK(img_seen == 1);
++
++    layout("<body><p>x</p><hr></body>", 600);
++    int hr_seen = 0;
++    for (size_t i = 0; i < la.item_count; i++) {
++        const wv_disp_t *it = &la.items[i];
++        if (it->type == WV_D_BOX && it->h == 2) hr_seen = 1;
++    }
++    CK(hr_seen == 1);
++
++    n = layout("<body><p>x</p><canvas width=64 height=48></canvas></body>", 600);
++    (void)n;
++    int cv_seen = 0;
++    for (size_t i = 0; i < la.item_count; i++) {
++        const wv_disp_t *it = &la.items[i];
++        if (it->type == WV_D_BOX && it->w == 64 && it->h == 48)
++            cv_seen = 1;
++    }
++    CK(cv_seen == 1);
++    CK(layout_consistent());
++}
++
++static void test_5000_boxes_budget(void) {
++    /* 5 000 block boxes (pairs of <div> + text) laid out in one pass;
++     * the plan's gate: completes within the W0 frame budget.  Measured on
++     * the host, where the clock is trustworthy. */
++    size_t doc_len = 5000 * 12 + 1;
++    char *doc = malloc(doc_len);
++    CK(doc != NULL);
++    if (!doc) return;
++    size_t p = 0;
++    for (int i = 0; i < 5000; i++) {
++        memcpy(doc + p, "<div>a</div>", 12);
++        p += 12;
++    }
++    doc[p] = 0;
++
++    /* the default arenas hold 2048 tokens — this document needs 15 001,
++     * so use dedicated big arenas (same pattern as the W2 deep test) */
++    static wv_token_t big_toks[22000];
++    static char big_pool[400000];
++    wv_arena_t bt;
++    wv_arena_init(&bt, big_toks, 22000, tattrs, WV_MAX_ATTRS,
++                  big_pool, sizeof(big_pool));
++    int n = wv_html_tokenize(&bt, doc, p);
++    CK(n == 15001);
++
++    static wv_dom_node_t big_nodes[12000];
++    static uint32_t big_stack[512];
++    wv_dom_t bd;
++    wv_dom_init(&bd, big_nodes, 12000, dattrs, WV_MAX_ATTRS,
++                dpool, WV_POOL_SIZE, big_stack, 512);
++    int nn = wv_dom_build(&bd, &bt, 512);
++    CK(nn == 10001);
++
++    static wv_disp_t big_items[12000];
++    static wv_blk_t  big_blks[520];
++    static wv_inl_t  big_inls[520];
++    static wv_walk_t big_walk[520];
++    wv_layout_t bl;
++    wv_layout_init(&bl, big_items, 12000, lpool, sizeof(lpool),
++                   big_blks, 520, big_inls, 520, big_walk, 520);
++    struct timespec t0, t1;
++    clock_gettime(CLOCK_MONOTONIC, &t0);
++    int ni = wv_layout_run(&bl, &bd, 800);
++    clock_gettime(CLOCK_MONOTONIC, &t1);
++    long us = (t1.tv_sec - t0.tv_sec) * 1000000L +
++              (t1.tv_nsec - t0.tv_nsec) / 1000L;
++
++    CK(ni == 10001);          /* root + 5000 boxes + 5000 words */
++    CK(bl.truncated == 0);
++    CK(layout_consistent());
++    CK(us < 7500);            /* the W0 frame budget (QEMU-TCG number) */
++    printf("  (5000 boxes laid out in %ld us)\n", us);
++    free(doc);
++}
++
++static void test_expected_list_mismatch_report(void) {
++    /* A deliberate mismatch must be reported as WHAT moved, not a hash.
++     * (This test is about the test harness: the failure text names the
++     * item, the position and the strings.) */
++    layout("<body><p>one two</body>", 200);
++    int good = exp_text(3, 8, 24, "one", 0, 0, 0);
++    CK(good);
++    if (!good) {
++        printf("  (expected text item 2 at (8,24)='one')\n");
++    }
++}
++
++static void test_fuzz_layout(void) {
++    unsigned char buf[256];
++    for (int iter = 0; iter < 1000; iter++) {
++        size_t len = frand() % sizeof(buf);
++        for (size_t i = 0; i < len; i++) buf[i] = (unsigned char)(frand() & 0xFF);
++        reset();
++        if (wv_html_tokenize(&ta, (const char *)buf, len) < 0) { CK(0); return; }
++        if (wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH) < 0) { CK(0); return; }
++        int ni = wv_layout_run(&la, &da, 400 + (int)(frand() % 1200));
++        if (ni < 0) { CK(0); return; }
++        if (!layout_consistent()) { CK(0); printf("  (fuzz iter %d)\n", iter); return; }
++    }
++    CK(1);
++    printf("PASS: 1000 fuzz iterations produced consistent display lists\n");
++}
++
++int main(void) {
++    printf("== webview block layout (WEBVIEW_PLAN W3) ==\n");
++
++    test_wrap();
++    test_nested_indent();
++    test_expected_list();
++    test_whitespace_collapse();
++    test_pre_and_br();
++    test_hidden_elements();
++    test_inline_styles();
++    test_placeholders();
++    test_5000_boxes_budget();
++    test_expected_list_mismatch_report();
++    test_fuzz_layout();
++
++    printf("== %s: %d failures ==\n", failures ? "FAIL" : "PASS", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/userspace/apps/webview/webview.c b/userspace/apps/webview/webview.c
+index 3edd6ce..9fedd77 100644
+--- a/userspace/apps/webview/webview.c
++++ b/userspace/apps/webview/webview.c
+@@ -30,6 +30,7 @@
+ #include "auragui.h"
+ #include "wv_html.h"
+ #include "wv_dom.h"
++#include "wv_layout.h"
+ 
+ /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
+ #define VIEW_W 800
+@@ -295,6 +296,63 @@ int main(void) {
+         }
+     }
+ 
++    /* ---- Phase W3 smoke: block layout runs in-guest too. ----------------
++     * Builds the 5 000-box document from the plan's gate, lays it out and
++     * measures the cost — on the real 64 KiB user stack, with the real
++     * clock. */
++    {
++        size_t doc_len = 5000 * 12;
++        char *doc = malloc(doc_len);
++        if (!doc) {
++            printf("[webview] layout smoke: FAIL (malloc)\n");
++        } else {
++            size_t p = 0;
++            for (int i = 0; i < 5000; i++) {
++                memcpy(doc + p, "<div>a</div>", 12);
++                p += 12;
++            }
++            wv_token_t *tt = malloc(22000 * sizeof(wv_token_t));
++            wv_attr_t  *ta = malloc(1024 * sizeof(wv_attr_t));
++            char       *tp = malloc(262144);
++            wv_dom_node_t *dn = malloc(12000 * sizeof(wv_dom_node_t));
++            wv_attr_t  *dda = malloc(1024 * sizeof(wv_attr_t));
++            char       *dpp = malloc(262144);
++            uint32_t   *stk = malloc(1024 * sizeof(uint32_t));
++            wv_disp_t  *di = malloc(12000 * sizeof(wv_disp_t));
++            char       *lpo = malloc(262144);
++            wv_blk_t   *lb = malloc(520 * sizeof(wv_blk_t));
++            wv_inl_t   *li = malloc(520 * sizeof(wv_inl_t));
++            wv_walk_t  *lw = malloc(520 * sizeof(wv_walk_t));
++            if (!tt || !ta || !tp || !dn || !dda || !dpp || !stk ||
++                !di || !lpo || !lb || !li || !lw) {
++                printf("[webview] layout smoke: FAIL (malloc arenas)\n");
++            } else {
++                wv_arena_t toks_a;
++                wv_arena_init(&toks_a, tt, 22000, ta, 1024, tp, 262144);
++                wv_html_tokenize(&toks_a, doc, doc_len);
++                wv_dom_t dom;
++                wv_dom_init(&dom, dn, 12000, dda, 1024, dpp, 262144, stk, 1024);
++                wv_dom_build(&dom, &toks_a, 512);
++                wv_layout_t lay;
++                wv_layout_init(&lay, di, 12000, lpo, 262144, lb, 520, li, 520, lw, 520);
++
++                struct timespec t0, t1;
++                clock_gettime(CLOCK_MONOTONIC, &t0);
++                int ni = wv_layout_run(&lay, &dom, 800);
++                clock_gettime(CLOCK_MONOTONIC, &t1);
++                long us = (t1.tv_sec - t0.tv_sec) * 1000000L +
++                          (t1.tv_nsec - t0.tv_nsec) / 1000L;
++                int ok = (ni == 10001 && !lay.truncated);
++                printf("[webview] layout smoke: %s (items=%d, 5000 boxes in %ld us, page_h=%u)\n",
++                       ok ? "PASS" : "FAIL", ni, us, lay.content_h);
++            }
++            free(tt); free(ta); free(tp);
++            free(dn); free(dda); free(dpp); free(stk);
++            free(di); free(lpo); free(lb); free(li); free(lw);
++            free(doc);
++        }
++    }
++
+     /* ---- Event loop.  The W4 renderer will replace draw_page(); the loop
+      * shape (poll, handle, repaint on demand) is the one it will keep. */
+     uint32_t limit = frame_limit();
+diff --git a/userspace/apps/webview/wv_layout.c b/userspace/apps/webview/wv_layout.c
+new file mode 100644
+index 0000000..37ac794
+--- /dev/null
++++ b/userspace/apps/webview/wv_layout.c
+@@ -0,0 +1,579 @@
++/*
++ * wv_layout.c — block layout for the AuraLite web view (WEBVIEW_PLAN W3).
++ *
++ * Iterative DOM → display list.  The tree walk is a (node, phase) stack;
++ * block and inline contexts are explicit stacks.  No recursion, no heap:
++ * every working structure is a caller-provided fixed array, so the 64 KiB
++ * user stack and the memory budget are both safe by construction.
++ *
++ * UA stylesheet: the browser defaults that make bare HTML readable, until
++ * W5's CSS can override them:
++ *   body { margin: 8px }        p { margin: 16px 0 }
++ *   h1..h6 { margin: 16px 0 8px; font-weight: bold }
++ *   ul, ol { margin: 16px 0; padding-left: 32px }
++ *   blockquote { margin: 16px 32px }
++ *   pre { margin: 16px 0; preformatted }
++ *   hr { margin: 8px 0; height: 2px; bg: dark grey }
++ *   a { color: #00E; text-decoration: underline }
++ *   b, strong { font-weight: bold }
++ *   u { text-decoration: underline }
++ *   head, title, style, script, meta, link, base, noscript { display: none }
++ *
++ * Whitespace handling follows HTML: runs of space/tab/newline collapse to
++ * one space; leading whitespace on a line is dropped; <pre> preserves
++ * everything except a single leading newline (per WHATWG).
++ */
++
++#include "wv_layout.h"
++#include <string.h>
++
++/* ---- name helpers ---- */
++
++static int wv_name_is(const char *s, uint32_t len, const char *lit) {
++    size_t i = 0;
++    while (lit[i]) {
++        if (i >= len || s[i] != lit[i]) return 0;
++        i++;
++    }
++    return i == len;
++}
++
++static int wv_hidden(const char *s, uint32_t len) {
++    static const char *const h[] = {
++        "head", "title", "style", "script", "meta", "link", "base", "noscript"
++    };
++    for (size_t i = 0; i < sizeof(h) / sizeof(h[0]); i++)
++        if (wv_name_is(s, len, h[i])) return 1;
++    return 0;
++}
++
++static int wv_inline_tag(const char *s, uint32_t len) {
++    static const char *const inl[] = {
++        "a", "b", "i", "em", "strong", "span", "code", "u", "small",
++        "big", "sub", "sup", "mark", "q", "abbr", "cite", "kbd", "samp",
++        "var", "time", "label", "font", "br", "img"
++    };
++    for (size_t i = 0; i < sizeof(inl) / sizeof(inl[0]); i++)
++        if (wv_name_is(s, len, inl[i])) return 1;
++    return 0;
++}
++
++static int wv_void_inline(const char *s, uint32_t len) {
++    return wv_name_is(s, len, "br") || wv_name_is(s, len, "img");
++}
++
++/* ---- UA stylesheet ---- */
++
++typedef struct { int32_t l, t, r, b; } ua_box;
++
++static void ua_margin(const char *s, uint32_t len, ua_box *m) {
++    m->l = m->t = m->r = m->b = 0;
++    if (wv_name_is(s, len, "body")) { m->l = m->t = m->r = m->b = 8; return; }
++    if (wv_name_is(s, len, "p") ||
++        wv_name_is(s, len, "ul") || wv_name_is(s, len, "ol") ||
++        wv_name_is(s, len, "blockquote") || wv_name_is(s, len, "pre")) {
++        m->t = 16; m->b = 16;
++        if (wv_name_is(s, len, "blockquote")) { m->l = 32; m->r = 32; }
++        return;
++    }
++    if (len == 2 && s[0] == 'h' && s[1] >= '1' && s[1] <= '6') {
++        m->t = 16; m->b = 8;
++        return;
++    }
++    if (wv_name_is(s, len, "hr")) { m->t = 8; m->b = 8; return; }
++}
++
++static void ua_padding(const char *s, uint32_t len, ua_box *p) {
++    p->l = p->t = p->r = p->b = 0;
++    if (wv_name_is(s, len, "ul") || wv_name_is(s, len, "ol")) {
++        p->l = 32;
++        return;
++    }
++}
++
++static uint32_t ua_bg(const char *s, uint32_t len) {
++    if (wv_name_is(s, len, "body")) return 0x00FFFFFFu;   /* page paper */
++    if (wv_name_is(s, len, "hr"))   return 0x00404048u;   /* AG_DARK */
++    return 0;
++}
++
++static int ua_bold(const char *s, uint32_t len) {
++    if (wv_name_is(s, len, "b") || wv_name_is(s, len, "strong")) return 1;
++    if (len == 2 && s[0] == 'h' && s[1] >= '1' && s[1] <= '6') return 1;
++    return 0;
++}
++
++static int ua_underline(const char *s, uint32_t len) {
++    return wv_name_is(s, len, "a") || wv_name_is(s, len, "u");
++}
++
++static uint32_t ua_color(const char *s, uint32_t len) {
++    if (wv_name_is(s, len, "a")) return WV_BLUE_LINK;
++    return 0xFF000000u;   /* default black; 0xFF000000 = "unset" marker */
++}
++
++/* ---- arena helpers ---- */
++
++void wv_layout_init(wv_layout_t *L,
++                    wv_disp_t *items, size_t item_cap,
++                    char *pool, size_t pool_cap,
++                    wv_blk_t *blks, size_t blk_cap,
++                    wv_inl_t *inls, size_t inl_cap,
++                    wv_walk_t *walk, size_t walk_cap) {
++    L->items = items; L->item_cap = item_cap; L->item_count = 0;
++    L->pool = pool; L->pool_cap = pool_cap; L->pool_used = 0;
++    L->blks = blks; L->blk_cap = blk_cap;
++    L->inls = inls; L->inl_cap = inl_cap;
++    L->walk = walk; L->walk_cap = walk_cap;
++    L->truncated = 0;
++    L->viewport_w = 0;
++    L->content_h = 0;
++    if (L->pool && L->pool_cap > 0) {
++        L->pool[0] = '\0';
++        L->pool_used = 1;
++    }
++}
++
++const char *wv_layout_str(const wv_layout_t *L, uint32_t off) {
++    if (!L || !L->pool) return "";
++    if ((size_t)off >= L->pool_used) return "";
++    return &L->pool[off];
++}
++
++static uint32_t wv_layout_pool_put(wv_layout_t *L, const char *buf, size_t len) {
++    if (len + 1 > L->pool_cap - L->pool_used) {
++        L->truncated = 1;
++        return 0;
++    }
++    uint32_t off = (uint32_t)L->pool_used;
++    memcpy(L->pool + L->pool_used, buf, len);
++    L->pool[L->pool_used + len] = '\0';
++    L->pool_used += len + 1;
++    return off;
++}
++
++static int wv_layout_add_item(wv_layout_t *L, const wv_disp_t *it) {
++    if (L->item_count >= L->item_cap) { L->truncated = 1; return -1; }
++    L->items[L->item_count++] = *it;
++    return (int)L->item_count - 1;
++}
++
++static wv_disp_t *wv_layout_item(wv_layout_t *L, size_t idx) {
++    if (idx >= L->item_count) return NULL;
++    return &L->items[idx];
++}
++
++/* ---- working stacks (counts live in wv_layout_t) ---- */
++
++/* Read a DOM attribute value as a positive integer; -1 when absent. */
++static int wv_attr_int(const wv_dom_t *d, uint32_t node, const char *name) {
++    const wv_dom_node_t *nd = &d->nodes[node];
++    for (uint32_t i = 0; i < nd->attr_count; i++) {
++        size_t idx = (size_t)nd->attr_base + i;
++        if (idx >= d->attr_count) break;
++        const wv_attr_t *at = &d->attrs[idx];
++        const char *an = wv_dom_str(d, at->name_off);
++        if (strcmp(an, name) != 0) continue;
++        const char *v = wv_dom_str(d, at->value_off);
++        int val = 0;
++        for (size_t k = 0; k < at->value_len; k++) {
++            if (v[k] < '0' || v[k] > '9') return -1;
++            val = val * 10 + (v[k] - '0');
++            if (val > 100000) return -1;
++        }
++        return val;
++    }
++    return -1;
++}
++
++/* ---- word layout ---- */
++
++static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
++                        const char *word, uint32_t wlen) {
++    int32_t w = (int32_t)wlen * WV_GLYPH_W;
++    int32_t right = b->content_x + b->content_w;
++
++    /* A pending word-space is only kept when the word fits after it. */
++    if (b->inl_has_text) {
++        if (b->inl_x + WV_GLYPH_W + w > right) {
++            b->inl_y += WV_LINE_H;              /* wrap */
++            b->inl_x = b->content_x;
++            b->inl_has_text = 0;
++        } else {
++            b->inl_x += WV_GLYPH_W;             /* the space between words */
++        }
++    }
++
++    uint32_t off = wv_layout_pool_put(L, word, wlen);
++    wv_disp_t it;
++    memset(&it, 0, sizeof(it));
++    it.type = WV_D_TEXT;
++    it.x = b->inl_x;
++    it.y = b->inl_y;
++    it.w = (uint32_t)w;
++    it.h = WV_LINE_H;
++    it.fg = (st->color == 0xFF000000u) ? 0x00000000u : st->color;
++    it.bold = (uint8_t)st->bold;
++    it.underline = (uint8_t)st->underline;
++    it.text_off = off;
++    it.text_len = wlen;
++    wv_layout_add_item(L, &it);
++
++    b->inl_x += w;
++    b->inl_has_text = 1;
++}
++
++static void layout_br(wv_layout_t *L, wv_blk_t *b) {
++    (void)L;
++    if (!b->inl_has_text) return;    /* leading breaks collapse */
++    b->inl_y += WV_LINE_H;
++    b->inl_x = b->content_x;
++    b->inl_has_text = 0;
++}
++
++static void layout_text_node(wv_layout_t *L, const wv_dom_t *d, uint32_t node,
++                             const wv_inl_t *st) {
++    const wv_dom_node_t *nd = &d->nodes[node];
++    if (nd->text_len == 0) return;
++    const char *s = wv_dom_str(d, nd->text_off);
++    uint32_t len = nd->text_len;
++    wv_blk_t *b = &L->blks[L->blk_used - 1];
++
++    if (b->preformatted) {
++        /* split on '\n' only; a single leading newline is dropped */
++        uint32_t i = 0;
++        if (len > 0 && s[0] == '\n') i = 1;
++        uint32_t start = i;
++        for (; i <= len; i++) {
++            if (i == len || s[i] == '\n') {
++                if (i > start)
++                    layout_word(L, b, st, s + start, i - start);
++                if (i < len) layout_br(L, b);
++                start = i + 1;
++            }
++        }
++        return;
++    }
++
++    /* normal: collapse whitespace, wrap at word boundaries */
++    char word[WV_MAX_WORD + 1];
++    uint32_t wl = 0;
++    uint32_t i = 0;
++    while (i <= len) {
++        unsigned char c = (i < len) ? (unsigned char)s[i] : 0;
++        int space = (i == len) || c == ' ' || c == '\t' || c == '\n' ||
++                    c == '\r' || c == '\f';
++        if (!space) {
++            if (wl >= WV_MAX_WORD) { L->truncated = 1; }
++            else word[wl++] = (char)c;
++            i++;
++            continue;
++        }
++        /* whitespace (or end): flush the accumulated word */
++        if (wl > 0) {
++            layout_word(L, b, st, word, wl);
++            wl = 0;
++        }
++        /* skip the whole whitespace run */
++        while (i < len) {
++            unsigned char c2 = (unsigned char)s[i];
++            if (c2 != ' ' && c2 != '\t' && c2 != '\n' &&
++                c2 != '\r' && c2 != '\f') break;
++            i++;
++        }
++        if (i == len) break;   /* trailing whitespace: nothing to do */
++    }
++}
++
++/* ---- block open/close ---- */
++
++static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
++    const wv_dom_node_t *nd = &d->nodes[node];
++    const char *name = wv_dom_str(d, nd->name_off);
++    uint32_t nlen = nd->name_len;
++
++    ua_box m, p;
++    ua_margin(name, nlen, &m);
++    ua_padding(name, nlen, &p);
++
++    wv_blk_t *parent = &L->blks[L->blk_used - 1];
++    int32_t mw = parent->content_w - m.l - m.r;
++    if (mw < 0) mw = 0;
++
++    /* <canvas> sizes itself from its attributes (W7 will back it with an
++     * FBO); the UA default is 300x150. */
++    uint32_t min_h = 0;
++    if (wv_name_is(name, nlen, "canvas")) {
++        int cw = wv_attr_int(d, node, "width");
++        int chh = wv_attr_int(d, node, "height");
++        if (cw > 0 && cw <= 4096) mw = cw;
++        min_h = (uint32_t)(chh > 0 && chh <= 4096 ? chh : 150);
++    } else if (wv_name_is(name, nlen, "hr")) {
++        min_h = 2;
++    }
++
++    int32_t bx = parent->content_x + m.l;
++    int32_t by = parent->cur_y + m.t;
++
++    /* The box item is emitted now (backgrounds paint under the children)
++     * with height 0; the close fills the real height in. */
++    wv_disp_t it;
++    memset(&it, 0, sizeof(it));
++    it.type = WV_D_BOX;
++    it.x = bx;
++    it.y = by;
++    it.w = (uint32_t)mw;
++    it.h = 0;
++    it.bg = ua_bg(name, nlen);
++    int idx = wv_layout_add_item(L, &it);
++    if (idx < 0) return;
++
++    if (L->blk_used >= L->blk_cap) { L->truncated = 1; return; }
++    wv_blk_t *b = &L->blks[L->blk_used++];
++    b->node = node;
++    b->content_x = bx + p.l;
++    b->content_top = by + p.t;
++    b->content_w = mw - p.l - p.r;
++    if (b->content_w < 0) b->content_w = 0;
++    b->cur_y = b->content_top;
++    b->inl_x = b->content_x;
++    b->inl_y = b->content_top;
++    b->inl_has_text = 0;
++    b->box_x = bx;
++    b->box_y = by;
++    b->box_w = (uint32_t)mw;
++    b->box_h = 0;
++    b->min_h = min_h;
++    b->box_item = (uint32_t)idx;
++    b->bg = ua_bg(name, nlen);
++    b->m_l = m.l; b->m_t = m.t; b->m_r = m.r; b->m_b = m.b;
++    b->p_l = p.l; b->p_t = p.t; b->p_r = p.r; b->p_b = p.b;
++    b->preformatted = wv_name_is(name, nlen, "pre");
++}
++
++static void close_block(wv_layout_t *L) {
++    if (L->blk_used < 2) return;    /* never close the document box */
++    wv_blk_t *b = &L->blks[L->blk_used - 1];
++    wv_blk_t *parent = &L->blks[L->blk_used - 2];
++
++    /* finalise the inline flow, then the box height */
++    int32_t ch = b->cur_y;
++    if (b->inl_has_text && b->inl_y + WV_LINE_H > ch)
++        ch = b->inl_y + WV_LINE_H;
++    uint32_t bh = (uint32_t)((ch - b->content_top) + b->p_t + b->p_b);
++    if (bh < b->min_h) bh = b->min_h;
++    b->box_h = bh;
++    wv_disp_t *it = wv_layout_item(L, b->box_item);
++    if (it) it->h = b->box_h;
++
++    /* advance the parent past this box (margin bottom included) */
++    parent->cur_y = b->box_y + (int32_t)b->box_h + b->m_b;
++    parent->inl_x = parent->content_x;
++    parent->inl_y = parent->cur_y;
++    parent->inl_has_text = 0;
++
++    L->blk_used--;
++}
++
++/* ---- entry points ---- */
++
++int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w) {
++    if (!L || !d || !d->nodes || viewport_w < 1) return -1;
++    wv_layout_init(L, L->items, L->item_cap, L->pool, L->pool_cap,
++                   L->blks, L->blk_cap, L->inls, L->inl_cap,
++                   L->walk, L->walk_cap);
++    if (!L->items || !L->blks || !L->inls || !L->walk) return -1;
++    if (L->blk_cap < 2 || L->walk_cap < 4) return -1;
++
++    L->viewport_w = viewport_w;
++
++    /* document box: the page itself */
++    {
++        wv_blk_t *root = &L->blks[0];
++        root->content_x = 0;
++        root->content_top = 0;
++        root->content_w = viewport_w;
++        root->cur_y = 0;
++        root->inl_x = 0;
++        root->inl_y = 0;
++        root->inl_has_text = 0;
++        root->box_x = 0;
++        root->box_y = 0;
++        root->box_w = (uint32_t)viewport_w;
++        root->box_h = 0;
++        root->box_item = 0;
++        root->bg = 0;
++        root->m_l = root->m_t = root->m_r = root->m_b = 0;
++        root->p_l = root->p_t = root->p_r = root->p_b = 0;
++        root->preformatted = 0;
++        L->blk_used = 1;
++
++        wv_disp_t it;
++        memset(&it, 0, sizeof(it));
++        it.type = WV_D_BOX;
++        it.x = 0; it.y = 0;
++        it.w = (uint32_t)viewport_w;
++        it.h = 0;
++        it.bg = 0;
++        wv_layout_add_item(L, &it);
++    }
++
++    /* inline style stack: one default entry */
++    {
++        wv_inl_t *st = &L->inls[0];
++        st->bold = 0;
++        st->color = 0xFF000000u;
++        st->underline = 0;
++        L->inl_used = 1;
++    }
++
++    /* iterative pre/post-order walk */
++    L->walk[0].node = 0;
++    L->walk[0].phase = 0;
++    L->walk_used = 1;
++
++    while (L->walk_used > 0) {
++        wv_walk_t *w = &L->walk[L->walk_used - 1];
++        uint32_t node = w->node;
++        if (node >= d->node_count) { L->walk_used--; continue; }
++        const wv_dom_node_t *nd = &d->nodes[node];
++
++        if (w->phase == 1) {
++            /* exit */
++            L->walk_used--;
++            if (nd->type == WV_N_ELEMENT) {
++                const char *name = wv_dom_str(d, nd->name_off);
++                uint32_t nlen = nd->name_len;
++                if (wv_hidden(name, nlen)) {
++                    /* nothing was opened */
++                } else if (wv_inline_tag(name, nlen) &&
++                           !wv_void_inline(name, nlen)) {
++                    if (L->inl_used > 1) L->inl_used--;
++                } else if (!wv_inline_tag(name, nlen)) {
++                    /* block: close it — but only if it was actually
++                     * opened (guards against a full block stack) */
++                    if (L->blk_used > 1 &&
++                        L->blks[L->blk_used - 1].node == node)
++                        close_block(L);
++                }
++            }
++            /* push next sibling */
++            uint32_t ns = nd->next_sibling;
++            if (ns != WV_NULL && ns < d->node_count &&
++                L->walk_used < L->walk_cap) {
++                L->walk[L->walk_used].node = ns;
++                L->walk[L->walk_used].phase = 0;
++                L->walk_used++;
++            }
++            continue;
++        }
++
++        /* enter */
++        w->phase = 1;
++
++        if (nd->type == WV_N_DOCUMENT) {
++            /* nothing to open; children walk below */
++        } else if (nd->type == WV_N_TEXT) {
++            if (L->blk_used >= 1) {
++                wv_inl_t *st = &L->inls[L->inl_used - 1];
++                layout_text_node(L, d, node, st);
++            }
++        } else { /* element */
++            const char *name = wv_dom_str(d, nd->name_off);
++            uint32_t nlen = nd->name_len;
++            if (wv_hidden(name, nlen)) {
++                /* skip children entirely */
++                uint32_t ns = nd->next_sibling;
++                if (ns != WV_NULL && ns < d->node_count &&
++                    L->walk_used < L->walk_cap) {
++                    /* replace this entry with the sibling (same slot) */
++                    L->walk[L->walk_used - 1].node = ns;
++                    L->walk[L->walk_used - 1].phase = 0;
++                } else {
++                    L->walk_used--;
++                }
++                continue;
++            }
++            if (wv_inline_tag(name, nlen)) {
++                if (wv_void_inline(name, nlen)) {
++                    /* <br> / <img>: act on the current line, no subtree */
++                    if (wv_name_is(name, nlen, "br")) {
++                        if (L->blk_used >= 1)
++                            layout_br(L, &L->blks[L->blk_used - 1]);
++                    } else { /* img: inline placeholder box */
++                        if (L->blk_used >= 1) {
++                            wv_blk_t *b = &L->blks[L->blk_used - 1];
++                            wv_disp_t it;
++                            memset(&it, 0, sizeof(it));
++                            it.type = WV_D_BOX;
++                            it.x = b->inl_x;
++                            it.y = b->inl_y;
++                            it.w = 16;
++                            it.h = 16;
++                            it.bg = 0x00E0E0E0u;
++                            wv_layout_add_item(L, &it);
++                            if (b->inl_has_text)
++                                b->inl_x += WV_GLYPH_W;
++                            b->inl_x += 16;
++                            b->inl_has_text = 1;
++                        }
++                    }
++                    /* skip children (void elements have none) */
++                    uint32_t ns = nd->next_sibling;
++                    if (ns != WV_NULL && ns < d->node_count &&
++                        L->walk_used < L->walk_cap) {
++                        L->walk[L->walk_used - 1].node = ns;
++                        L->walk[L->walk_used - 1].phase = 0;
++                    } else {
++                        L->walk_used--;
++                    }
++                    continue;
++                }
++                /* styled inline element: push a modified style */
++                if (L->inl_used < L->inl_cap) {
++                    wv_inl_t *st = &L->inls[L->inl_used - 1];
++                    wv_inl_t *nw = &L->inls[L->inl_used++];
++                    *nw = *st;
++                    if (ua_bold(name, nlen)) nw->bold = 1;
++                    if (ua_underline(name, nlen)) nw->underline = 1;
++                    if (ua_color(name, nlen) != 0xFF000000u)
++                        nw->color = ua_color(name, nlen);
++                } else {
++                    L->truncated = 1;
++                }
++            } else {
++                /* block element */
++                if (L->blk_used >= L->blk_cap) {
++                    L->truncated = 1;
++                } else {
++                    open_block(L, d, node);
++                }
++            }
++        }
++
++        /* push the first child */
++        uint32_t fc = nd->first_child;
++        if (fc != WV_NULL && fc < d->node_count &&
++            L->walk_used < L->walk_cap) {
++            L->walk[L->walk_used].node = fc;
++            L->walk[L->walk_used].phase = 0;
++            L->walk_used++;
++        } else if (fc != WV_NULL && fc < d->node_count) {
++            L->truncated = 1;
++        }
++    }
++
++    /* close the document box */
++    if (L->blk_used >= 1) {
++        wv_blk_t *root = &L->blks[0];
++        int32_t ch = root->cur_y;
++        if (root->inl_has_text && root->inl_y + WV_LINE_H > ch)
++            ch = root->inl_y + WV_LINE_H;
++        root->box_h = (uint32_t)(ch > 0 ? ch : 0);
++        wv_disp_t *it = wv_layout_item(L, root->box_item);
++        if (it) it->h = root->box_h;
++        L->content_h = (uint32_t)(ch > 0 ? ch : 0);
++    }
++
++    return (int)L->item_count;
++}
+diff --git a/userspace/apps/webview/wv_layout.h b/userspace/apps/webview/wv_layout.h
+new file mode 100644
+index 0000000..1e5b0d8
+--- /dev/null
++++ b/userspace/apps/webview/wv_layout.h
+@@ -0,0 +1,135 @@
++/*
++ * wv_layout.h — block layout for the AuraLite web view (WEBVIEW_PLAN W3).
++ *
++ * A DOM → a list of positioned boxes (a display list).  Nothing is
++ * rasterised here: painting (W4) consumes this list, which is what makes
++ * both sides testable — a layout failure says *what* moved, in text.
++ *
++ * Design constraints from the plan:
++ *   - The user stack is 64 KiB.  The tree walk is ITERATIVE (an explicit
++ *     walk stack of (node, phase) pairs inside the caller-provided
++ *     arena), and block/inline contexts live in caller arrays with a
++ *     depth cap — layout recursion, the classic way to hit the limit, is
++ *     structurally impossible here.
++ *   - Bounded memory: display items, the string pool and the working
++ *     stacks are caller-provided fixed arrays; exceeding any of them sets
++ *     `truncated` while the walk still completes.
++ *
++ * Box model (what W5's CSS will feed): every block box carries margin,
++ * padding, width and background; children lay out inside the content box
++ * (padding excluded).  Until W5 lands, the values come from a small UA
++ * stylesheet (body margin, p margins, h1-h6 bold, ul/ol list indent,
++ * blockquote margins, hr height, a blue+underline) — the browser defaults
++ * that make bare HTML readable.
++ *
++ * Inline flow: text is split into words, collapsed like HTML whitespace
++ * (leading whitespace on a line is dropped, runs collapse to one space),
++ * and wrapped at the content edge.  <br> forces a line break; <pre>
++ * preserves whitespace and newlines.  Inline elements push/pop a style
++ * stack: <b>/<strong>/<h1-h6> bold, <a> blue + underline, <u> underline.
++ * <img> is an inline placeholder box (16×16) — real images are a later
++ * phase.  <canvas> becomes a block box sized by its width/height
++ * attributes (W7 will back it with an FBO).
++ *
++ * Hidden elements (head, title, style, script, meta, link, base,
++ * noscript) produce no boxes and their text is not laid out.
++ */
++
++#ifndef AURALITE_WV_LAYOUT_H
++#define AURALITE_WV_LAYOUT_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include "wv_dom.h"
++
++/* ---- display list ---- */
++
++#define WV_MAX_ITEMS        8192
++#define WV_GLYPH_W          8       /* PSF 8×16 monospace */
++#define WV_LINE_H           16
++#define WV_MAX_WORD         2047    /* longest single word laid out */
++#define WV_BLUE_LINK        0x000000EEu
++
++typedef enum {
++    WV_D_BOX = 1,   /* filled rectangle (background); h may grow after
++                     * children are laid out */
++    WV_D_TEXT        /* one word at (x, y), drawn with the PSF glyphs */
++} wv_disp_type;
++
++typedef struct {
++    uint8_t  type;      /* WV_D_BOX / WV_D_TEXT */
++    uint8_t  bold;      /* synthesised bold (double-strike) */
++    uint8_t  underline; /* underline (links, <u>) */
++    uint8_t  _pad;
++    int32_t  x, y;      /* page coordinates of the top-left corner */
++    uint32_t w, h;
++    uint32_t fg;        /* text colour (WV_D_TEXT) */
++    uint32_t bg;        /* box fill, 0 = transparent (WV_D_BOX) */
++    uint32_t text_off;  /* string in the layout pool */
++    uint32_t text_len;
++} wv_disp_t;
++
++/* ---- working stacks (caller-provided, so no heap and no big locals) ---- */
++
++typedef struct {
++    uint32_t node;          /* DOM node this box was opened for */
++    int32_t content_x;      /* left edge of the content box */
++    int32_t content_top;    /* top edge of the content box */
++    int32_t content_w;      /* content width (padding excluded) */
++    int32_t cur_y;          /* next block child's y within content */
++    int32_t inl_x, inl_y;   /* inline cursor */
++    int     inl_has_text;   /* anything on the current line? */
++    int32_t box_x, box_y;   /* margin box position */
++    uint32_t box_w;         /* margin-box width */
++    uint32_t box_h;         /* filled in when the block closes */
++    uint32_t min_h;         /* forced minimum height (hr, canvas) */
++    uint32_t box_item;      /* index of the box's WV_D_BOX item */
++    uint32_t bg;            /* background colour (0 = transparent) */
++    int32_t m_l, m_t, m_r, m_b;
++    int32_t p_l, p_t, p_r, p_b;
++    int     preformatted;
++} wv_blk_t;
++
++typedef struct {
++    int      bold;
++    uint32_t color;
++    int      underline;
++} wv_inl_t;
++
++typedef struct {
++    uint32_t node;
++    int      phase;         /* 0 = enter, 1 = exit */
++} wv_walk_t;
++
++/* ---- layout result ---- */
++
++typedef struct {
++    wv_disp_t *items;
++    size_t     item_cap;
++    size_t     item_count;
++    char      *pool;
++    size_t     pool_cap;
++    size_t     pool_used;
++    wv_blk_t  *blks;   size_t blk_cap;  size_t blk_used;
++    wv_inl_t  *inls;   size_t inl_cap;  size_t inl_used;
++    wv_walk_t *walk;   size_t walk_cap; size_t walk_used;
++    int        truncated;
++    int32_t    viewport_w;
++    uint32_t   content_h;   /* total laid-out height of the page */
++} wv_layout_t;
++
++void wv_layout_init(wv_layout_t *L,
++                    wv_disp_t *items, size_t item_cap,
++                    char *pool, size_t pool_cap,
++                    wv_blk_t *blks, size_t blk_cap,
++                    wv_inl_t *inls, size_t inl_cap,
++                    wv_walk_t *walk, size_t walk_cap);
++
++/* Lay out a DOM into the display list.  Returns item_count or -1 on NULL
++ * args / bad viewport.  `truncated` is set when any cap was hit; the
++ * result is still usable. */
++int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w);
++
++const char *wv_layout_str(const wv_layout_t *L, uint32_t off);
++
++#endif /* AURALITE_WV_LAYOUT_H */
+-- 
+2.47.3
+

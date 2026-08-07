@@ -2,7 +2,7 @@
  * test_wv_canvas.c — host unit tests for the web view <canvas> renderer
  * (WEBVIEW_PLAN phase W7).
  *
- * Links the REAL userspace/apps/webview/wv_canvas.c against the REAL
+ * Links the REAL userspace/apps/gbrowser/wv_canvas.c against the REAL
  * libgl sources (LIBGL_TEST_SRCS + the auragui stub — the same harness
  * the GL phase tests use), and checks the plan's gate:
  *   - a page containing a canvas renders BOTH the text and the 3D

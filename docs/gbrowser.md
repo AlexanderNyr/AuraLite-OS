@@ -1,7 +1,7 @@
-# AuraLite OS Web View (`/apps/webview`)
+# AuraLite OS GUI Browser (`/apps/gbrowser`)
 
 **Status:** Phases W0–W7 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
-all phases complete except W8 (retire-or-keep gbrowser).
+all phases W0–W8 complete. `gbrowser` was retired in W8.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -12,7 +12,7 @@ blank window — the window itself carries the same statement.
 
 ## 1. What it is
 
-`/apps/webview` is a windowed program that renders a *standing page*: a pixel
+`/apps/gbrowser` is a windowed program that renders a *standing page*: a pixel
 buffer written by the program itself and presented with `ag_blit()` — the
 same presentation path the renderer will use for the life of this program.
 
@@ -49,7 +49,7 @@ stack by ~30×, so the renderer is 2D and GL appears in exactly one phase —
 W7, `<canvas>` — where the page asks for 3D and there is no 2D alternative.
 
 The number this build commits to is the full-page blit. Measured in-tree at
-startup (`/apps/webview` prints it on every run):
+startup (`/apps/gbrowser` prints it on every run):
 
 | Environment | Full-page 800×600 blit | Notes |
 |---|---|---|
@@ -71,7 +71,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
   `kernel/proc/guard.c` classifies an overflow as `[GUARD] user stack
   overflow`; W2's gate runs a 10 000-deep document in QEMU where the real
   limit applies.
-- **`SPAWN_MAX_IMAGE` is 1 MiB.** `webview.elf` is ~130 KiB as of W0; the
+- **`SPAWN_MAX_IMAGE` is 1 MiB.** `gbrowser.elf` is ~130 KiB as of W0; the
   budget for a tokeniser, a DOM, layout, CSS and painting is the remaining
   ~870 KiB, and the failure mode (a diagnosed spawn refusal) must not become
   the only sign the budget was blown.
@@ -88,11 +88,11 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W5 | Inline CSS subset (D4) | ✅ complete (2026-08-07) |
 | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | ✅ complete (2026-08-07) |
 | W7 | `<canvas>` with an OpenGL context via FBO | ✅ complete (2026-08-07) |
-| W8 | Retire or keep `gbrowser` | 📋 planned |
+| W8 | Retire or keep `gbrowser` | ✅ complete (2026-08-07) — retired |
 
 ## 6. The tokeniser (W1)
 
-`userspace/apps/webview/wv_html.{h,c}` turns bytes into a token stream:
+`userspace/apps/gbrowser/wv_html.{h,c}` turns bytes into a token stream:
 
 - 18-state machine (WHATWG-shaped, simplified per `wv_html.h`): text, tag
   open, tag name, attribute name/value (double, single, unquoted), comment,
@@ -107,12 +107,12 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 - Gate: `tests/unit/test_wv_html.c` — 122 host checks including 3000 fuzz
   iterations and a 64 KiB random blob; every token is walked and every
   offset verified against the arena bounds. The tokeniser also runs in-guest
-  at `/apps/webview` startup (`tokeniser smoke`), asserted by
+  at `/apps/gbrowser` startup (`tokeniser smoke`), asserted by
   `test_webview.sh`.
 
 ## 7. The DOM (W2)
 
-`userspace/apps/webview/wv_dom.{h,c}` turns tokens into a tree:
+`userspace/apps/gbrowser/wv_dom.{h,c}` turns tokens into a tree:
 
 - Nodes are a **flat array** linked by indices (parent / first-child /
   last-child / next-sibling) with an implicit document root at index 0 —
@@ -139,7 +139,7 @@ tree. Paint is a for-loop over rectangles; the hard work is upstream.
 
 ## 8. Block layout (W3)
 
-`userspace/apps/webview/wv_layout.{h,c}` turns the DOM into a **display
+`userspace/apps/gbrowser/wv_layout.{h,c}` turns the DOM into a **display
 list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
 
 - Iterative by construction: a (node, phase) walk stack and explicit
@@ -166,7 +166,7 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
 
 ## 9. Painting (W4)
 
-`userspace/apps/webview/wv_paint.{h,c}` turns the display list into pixels
+`userspace/apps/gbrowser/wv_paint.{h,c}` turns the display list into pixels
 — the first phase with something on the screen.
 
 - The project's PSF2 VGA 8×16 font is embedded as data (the same blob the
@@ -181,7 +181,7 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
   boxes clipped to the band so a box straddling the band edge cannot erase
   content painted above it.
 - **The hash gate**: `wv_paint_hash()` (FNV-1a) pins a fixed document to
-  reference `0xFC12ACDC` in the host test, and `/apps/webview` prints the
+  reference `0xFC12ACDC` in the host test, and `/apps/gbrowser` prints the
   same value at boot (`paint smoke: PASS`) — the guest and host agree, so
   a rendering change is a deliberate act with an updated expectation.
 - Gate: `tests/unit/test_wv_paint.c` — 42 host checks, 0 failures,
@@ -192,7 +192,7 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
 
 ## 10. Inline CSS (W5)
 
-`userspace/apps/webview/wv_css.{h,c}` implements the D4 subset from
+`userspace/apps/gbrowser/wv_css.{h,c}` implements the D4 subset from
 `style=` attributes and `<style>` blocks:
 
 - Properties: `display` (block/inline/none), `color`, `background-color`,

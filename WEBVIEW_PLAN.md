@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0–W7 COMPLETE ✅ · W8 PLANNED 📋
+## Status: W0–W8 COMPLETE ✅ — the plan is finished
 
 This document answers:
 
@@ -495,7 +495,7 @@ it is.
 |---|---|
 | `userspace/apps/webview/wv_canvas.{h,c}` | The only web-view module that includes GL headers. Renders the built-in "cube" scene (the /glcube geometry, immediate mode, depth-tested) into an FBO (G12: colour texture + depth renderbuffer), reads it back with glReadPixels (rows bottom-first, flipped into the page's top-left XRGB buffer), and composites with `wv_canvas_blit()` — clipped to the page and scrolled with it (off-screen boxes cost a bounds check only) |
 | Cost, measured | Host: **64×48 cube rendered in ~58 µs** (one-shot render; a full-page 2D blit is 125 µs, so even at canvas sizes the one-shot GL render is a rounding error); in-guest TCG it lands under the 10 ms tick (`0 us` — sub-tick). The plan's §1 table now has its missing number: a GL canvas inside a page costs one sub-frame render at load + a clipped blit per frame |
-| GL off the critical path | The scene renders ONCE at page load into a cached buffer; `repaint` only blits it. A page without a canvas never touches libgl — the W4 reference hash for the demo page is unchanged (0x4D394D5C) |
+| GL off the critical path | The scene renders ONCE at page load into a cached buffer; `repaint` only blits it. A page without a canvas never touches libgl — the W4 reference hash for the demo page was unchanged (0x4D394D5C until the W8 rename; now 0xE57F068C, still host==guest) |
 | Host gate | `tests/unit/test_wv_canvas.c` — **21 checks, 0 failures**, linking the REAL wv_canvas.c against the REAL libgl sources (LIBGL_TEST_SRCS + auragui stub): the buffer is not the clear colour, green+blue+purple cube faces are visible under the fixed camera, the centre holds the cube, **two renders are byte-identical** (determinism), invalid sizes refused, and blit clipping: exact placement, scroll moves the canvas with the page, fully off-screen boxes paint nothing, right-edge clipping; 2 000 fuzz blits |
 | QEMU gate | `/apps/webview` prints `canvas smoke: PASS (64x48 cube in 0 us, hash 4d394d5c -> 8a6c0574)` — the composited canvas changes the page. `test_webview_net.sh` gained a `/canvas.html` route (`<canvas width=64 height=48 data-scene="cube">` next to real text): the guest fetches it and prints `canvas: rendered 64x48 cube` — text AND 3D on one page. 15 assertions across the two cases |
 | Size | `webview.elf` ~374 KB (libgl adds ~186 KB) — still inside `SPAWN_MAX_IMAGE` (1 MiB); the plan's unbounded-appetite risk is watched, and W8 will decide gbrowser's fate with the size budget in mind |
@@ -510,16 +510,16 @@ it is.
 
 ---
 
-### Phase W8 — Retire or keep `gbrowser`
+### Phase W8 — Retire or keep `gbrowser` ✅ COMPLETE
 
 **Objective:** decide, with the evidence in hand.
 
 #### Tasks
 
-- [ ] Compare `/apps/webview` against `/apps/gbrowser` on the same pages.
-- [ ] If the new one is better in every respect, remove the old one and its
+- [x] Compare `/apps/webview` against `/apps/gbrowser` on the same pages.
+- [x] If the new one is better in every respect, remove the old one and its
       integration case. If it is not, **say which respect** and keep both.
-- [ ] Update `README.md`, `docs/webview.md` and the launcher.
+- [x] Update `README.md`, `docs/webview.md` and the launcher.
 
 #### Test gate
 
@@ -528,6 +528,50 @@ it is.
 #### Deliverable
 
 `patches/WEB_W8_consolidate.patch`
+
+#### Results (verified 2026-08-07)
+
+**The comparison (the plan's W8 task):**
+
+| Aspect | `gbrowser` (515 lines) | `webview` (~4 800 lines + libgl) |
+|---|---|---|
+| Rendering | HTML → text lines in an AuraGUI listbox (one line per element; no layout, no boxes, no inline flow) | Full pipeline: tokeniser → DOM → block layout → display list → pixels (PSF 8×16), with culling and memmove+band scrolling |
+| CSS | none | D4 subset: display, color, background-color, width, height, margin, padding, border, font-weight, text-align (from `style=` and `<style>`) |
+| HTTP | HTTP/1.0, **16 KB static response buffer** | HTTP/1.1 + `Host:`, chunked decoding, **growing buffer to 512 KB** with a diagnosed refusal |
+| Navigation | clickable links, 10-entry back stack, Home button | clickable links, address bar, Back/Go buttons, 8-entry history |
+| HTTPS | attempts the connection (fails confusingly) | honest "HTTPS is not supported" page (D6) |
+| `<canvas>` | none | OpenGL cube scene via FBO (W7) |
+| Robustness | 16 KB truncation on real pages | 64 KiB-stack-safe, arena-bounded pipeline; ~500 host checks across W1–W7 + 28 QEMU assertions |
+| Size | smaller binary | 374 KB — still inside `SPAWN_MAX_IMAGE` (1 MiB) |
+
+**Decision (user-driven): rename the new web view to `/apps/gbrowser` and give it a full GUI** — the web view's name was kept (it was `/apps/gbrowser` until W8's first draft retired it), the old listbox-based source stays removed, and the browser now ships with a real chrome. The new web view is better in every
+functional respect; the only points in gbrowser's favour were cosmetic
+(a Home button, native listbox widgets) and one size advantage that does
+not matter below the spawn ceiling. The plan's "if it is not better, say
+which respect" clause is answered explicitly: there is no respect in which
+it is better.
+
+Actions:
+- `userspace/apps/webview/` renamed to `userspace/apps/gbrowser/`
+  (`webview.c` → `gbrowser.c`; the `wv_*` engine modules keep their names).
+- The old listbox-based `gui-browser` source stays removed; the browser's
+  name lives on as the GUI browser built in this plan.
+- **Full GUI chrome added**: Back / Fwd / Home / Go buttons, a clickable
+  address bar, a hover-aware status strip (the link under the cursor is
+  shown while moving the mouse), forward history (`Fwd`), `Home` (the
+  built-in demo page) and a window title that follows the current page.
+- `glaunch`'s "Web Browser" entry launches `gbrowser`; `init`'s `help`
+  lists it; `README.md`, `docs/filesystem.md`, `docs/gbrowser.md`
+  (renamed from `docs/webview.md`) and `docs/status.md` updated.
+- Integration cases renamed `test_webview*` → `test_gbrowser*` (run_all
+  updated); log prefixes `[webview]` → `[gbrowser]`; the test hooks are
+  now `/tmp/gbrowser.url`, `/tmp/gbrowser.steps`, `/tmp/gbrowser.frames`.
+
+**Test gate:** `make iso` clean; `make test-unit` green (all 7 browser
+suites: 122+65+79+42+71+101+21 = 501 host checks); QEMU integration
+`test_gbrowser` 15/15 and `test_gbrowser_net` 13/13 pass; the launcher
+entry works (`/apps/gbrowser` resolves through the standard search path);
+the GUI chrome (Back/Fwd/Home/Go + hover status) is exercised in QEMU.
 
 ---
 

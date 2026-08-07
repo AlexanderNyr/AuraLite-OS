@@ -1,0 +1,1203 @@
+From 4b86dd38f13a7f951e08d5d2b0e35277d3e181ed Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 09:09:21 +0000
+Subject: [PATCH] W2 update: DOM builder
+
+WEBVIEW_PLAN.md phase W2:
+- wv_dom.{h,c}: flat node array (parent/first/last-child/next-sibling
+  index links), implicit document root, explicit open-element stack with
+  hard depth cap 512 (elements past the cap append without nesting,
+  truncated=1)
+- implicit closes: p, li, td/th (never the row), tr, 14 void elements
+- mismatched closes reconciled pop-until-match; unmatched ends ignored
+- host gate: test_wv_dom.c 65 checks: <p>a<p>b siblings, <b><i>x</b></i>
+  intact, deep mismatch, li/td/tr rules, attr carry, text merging,
+  10000-deep doc (nodes=10001 depth=512), 2000 fuzz iterations, every
+  link verified after every build
+- QEMU gate: 10000-deep doc built in-guest on the real 64 KiB stack
+  (dom deep test: PASS); dom smoke PASS; test_webview.sh asserts both
+- bug caught: <td> was closing its <tr> (cells close cells, rows close
+  rows) -- fixed with regression
+- make test-unit green
+---
+ CHANGELOG.md                            |  27 ++
+ Makefile                                |  28 +-
+ SHA256SUMS                              |   4 +-
+ WEBVIEW_PLAN.md                         |  25 +-
+ docs/status.md                          |   2 +-
+ docs/webview.md                         |  29 +-
+ tests/integration/cases/test_webview.sh |   2 +
+ tests/unit/test_wv_dom.c                | 395 ++++++++++++++++++++++++
+ userspace/apps/webview/webview.c        |  71 +++++
+ userspace/apps/webview/wv_dom.c         | 326 +++++++++++++++++++
+ userspace/apps/webview/wv_dom.h         |  88 ++++++
+ 11 files changed, 980 insertions(+), 17 deletions(-)
+ create mode 100644 tests/unit/test_wv_dom.c
+ create mode 100644 userspace/apps/webview/wv_dom.c
+ create mode 100644 userspace/apps/webview/wv_dom.h
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 18839f2..7eae170 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,33 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WebView Phase W2 — DOM] 2026-08-07
++
++`WEBVIEW_PLAN.md` phase W2: tokens → a tree with the implied structure real
++pages omit, bounded by a hard depth cap.
++
++- **`userspace/apps/webview/wv_dom.{h,c}`** — flat node array with index
++  links (parent / first-child / last-child / next-sibling), implicit
++  document root, explicit open-element stack with `WV_DOM_DEFAULT_DEPTH`
++  (512): past the cap elements are appended without nesting and
++  `truncated` is set — depth is bounded for any input.
++- **Implicit closes**: `<p>` closes an open `<p>`; `<li>` closes an open
++  `<li>`; `<td>`/`<th>` close cells but never the row; `<tr>` closes the
++  previous row; 14 void elements never nest.
++- **Mismatched closes** are reconciled pop-until-match (WHATWG):
++  `<b><i>x</b></i>` keeps the text; unmatched end tags are ignored.
++- **Host gate**: `tests/unit/test_wv_dom.c` — 65 checks, 0 failures:
++  `<p>a<p>b` → sibling paragraphs, `<b><i>x</b></i>` intact, deep
++  mismatch, void/li/td/tr rules, attribute carry, text merging, unmatched
++  ends, a 10 000-deep document (nodes=10001, depth=512, truncated=1), and
++  2000 fuzz iterations with every link verified.
++- **QEMU gate**: `/apps/webview` builds the 10 000-deep document in-guest
++  on the real 64 KiB user stack — `dom deep test: PASS`; `dom smoke: PASS`.
++  `test_webview.sh` asserts both (10 checks).
++- **Bug caught by the tests**: `<td>` was closing its `<tr>` (cells close
++  cells, rows close rows) — fixed with the regression.
++- `webview.elf` ~158 KB; `make test-unit` green.
++
+ ## [WebView Phase W1 — HTML tokeniser] 2026-08-07
+ 
+ `WEBVIEW_PLAN.md` phase W1: bytes → a tolerant token stream, with no
+diff --git a/Makefile b/Makefile
+index c88e975..b9f9c86 100644
+--- a/Makefile
++++ b/Makefile
+@@ -822,19 +822,24 @@ $(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c lib/libauragui/i
+ $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ $(USER_BUILD)/webview.o: userspace/apps/webview/webview.c lib/libauragui/include/auragui.h \
+-                         userspace/apps/webview/wv_html.h $(USER_CFLAGS_INC)
++                         userspace/apps/webview/wv_html.h userspace/apps/webview/wv_dom.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ $(USER_BUILD)/wv_html.o: userspace/apps/webview/wv_html.c userspace/apps/webview/wv_html.h
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++$(USER_BUILD)/wv_dom.o: userspace/apps/webview/wv_dom.c userspace/apps/webview/wv_dom.h \
++                        userspace/apps/webview/wv_html.h
++	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+-# webview links the tokeniser; the generic %.elf pattern rule does not know
+-# about it, so give this one explicit prerequisites and link line.
++# webview links the tokeniser + DOM builder; the generic %.elf pattern rule
++# does not know about them, so give this one explicit prerequisites/link line.
+ $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
++                           $(USER_BUILD)/wv_dom.o \
+                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+ 	@mkdir -p $(dir $@)
+ 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
++	      $(USER_BUILD)/wv_dom.o \
+ 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+-	@echo "[link] $@ (wv_html)"
++	@echo "[link] $@ (wv_html + wv_dom)"
+ $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+@@ -1218,7 +1223,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_atls_tls \
+                 $(BUILD_DIR)/test_atls_certval \
+                 $(BUILD_DIR)/test_ahttp \
+-                $(BUILD_DIR)/test_wv_html
++                $(BUILD_DIR)/test_wv_html \
++                $(BUILD_DIR)/test_wv_dom
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1319,6 +1325,18 @@ $(BUILD_DIR)/test_wv_html: tests/unit/test_wv_html.c \
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+ 	           tests/unit/test_wv_html.c userspace/apps/webview/wv_html.c -o $@
+ 
++# Web view DOM builder (WEBVIEW_PLAN W2): the REAL userspace sources are
++# compiled into the host test, never copies.
++$(BUILD_DIR)/test_wv_dom: tests/unit/test_wv_dom.c \
++                          userspace/apps/webview/wv_dom.c \
++                          userspace/apps/webview/wv_dom.h \
++                          userspace/apps/webview/wv_html.c \
++                          userspace/apps/webview/wv_html.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
++	           tests/unit/test_wv_dom.c userspace/apps/webview/wv_dom.c \
++	           userspace/apps/webview/wv_html.c -o $@
++
+ $(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \
+                              tests/unit/atls_x509_testdata.c $(LIBATLS_SRCS) \
+                              lib/libatls/include/atls/x509.h tests/atls_test_certs.h
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 830335e..de2c9c8 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-3add87b5ad6430477cf4b915ebb1d6fdbd45a1b5217df537c958c96f9e083ae7  auralite.iso
++ef5373594a21852d6e89d440a90c2918a349a4731f8c8bb2d9124ca2bdf0b0b8  auralite.iso
+ 55fad1bb74013012236de5d7e732c91d161fd1008da81267468a3d13653cc0a1  kernel.elf
+-b1d5f1e2c6e16355b3b1a6891252cce9e6ea0a21aadc856fdfcb6c8b9160d9e5  initrd.tar
++7ba5d3e2c6be8a06c5334840286358d7236f9dfe2e6e9413166b8c29b249f33d  initrd.tar
+diff --git a/WEBVIEW_PLAN.md b/WEBVIEW_PLAN.md
+index 380bcf0..0b8dac3 100644
+--- a/WEBVIEW_PLAN.md
++++ b/WEBVIEW_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Web View Plan
+ 
+-## Status: W0–W1 COMPLETE ✅ · W2–W8 PLANNED 📋
++## Status: W0–W2 COMPLETE ✅ · W3–W8 PLANNED 📋
+ 
+ This document answers:
+ 
+@@ -262,19 +262,19 @@ it is.
+ 
+ ---
+ 
+-### Phase W2 — The DOM
++### Phase W2 — The DOM ✅ COMPLETE
+ 
+ **Objective:** tokens → a tree, with the implied structure real pages omit.
+ 
+ #### Tasks
+ 
+-- [ ] Nodes in a flat array with index links (parent/first-child/next-sibling),
++- [x] Nodes in a flat array with index links (parent/first-child/next-sibling),
+       not pointers into a heap — one allocation, and a tree walk that cannot
+       run away.
+-- [ ] An explicit open-element stack with a **depth cap** (D3).
+-- [ ] Implicit close rules for the tags that need them: `<p>`, `<li>`, `<td>`,
++- [x] An explicit open-element stack with a **depth cap** (D3).
++- [x] Implicit close rules for the tags that need them: `<p>`, `<li>`, `<td>`,
+       `<tr>`, and the void elements.
+-- [ ] Mismatched close tags are reconciled against the stack, not obeyed.
++- [x] Mismatched close tags are reconciled against the stack, not obeyed.
+ 
+ #### Test gate
+ 
+@@ -287,6 +287,19 @@ it is.
+ 
+ `patches/WEB_W2_dom.patch`
+ 
++#### Results (verified 2026-08-07)
++
++| Item | Outcome |
++|---|---|
++| `userspace/apps/webview/wv_dom.{h,c}` | Flat node array with parent / first-child / last-child / next-sibling index links; implicit document root at index 0; explicit open-element stack with `WV_DOM_DEFAULT_DEPTH` (512) cap — past the cap elements are appended without nesting and `truncated` is set, so depth is bounded no matter the input |
++| Implicit closes | `<p>` closes an open `<p>`; `<li>` closes an open `<li>`; `<td>`/`<th>` close open cells but never the row; `<tr>` closes the previous row and its cells; 14 void elements never nest; `self_closing` tags never nest |
++| Mismatched closes | WHATWG pop-until-match: `<b><i>x</b></i>` closes `<i>` implicitly when `</b>` arrives; unmatched end tags are ignored (never wipe the stack — a bug the tests caught) |
++| Attributes | Copied into the DOM's own pool (name/value pairs, value-less flags preserved); text runs merge across comments/entities/CDATA into single text nodes |
++| Host gate | `tests/unit/test_wv_dom.c` — **65 checks, 0 failures**: the plan's two tree-shape cases, deep mismatch, void/li/td/tr rules, attribute carry, text merging, unmatched ends, empty input, a 10 000-deep document (nodes=10001, max_depth=512, truncated=1) and 2000 fuzz iterations — every build walked and every parent/child/sibling link verified |
++| QEMU gate (the point of W2) | `/apps/webview` builds the 10 000-deep document **in-guest on the real 64 KiB user stack**: `dom deep test: PASS (tokens=20001 nodes=10001 maxdepth=512 truncated=1)`; `dom smoke: PASS` for `<p>a<p>b`; `test_webview.sh` asserts both (10 checks now) |
++| Bug found by the tests | `<td>` was closing the `<tr>` too (WHATWG says cells close cells, rows close rows), which produced a wrong tree — fixed, with the test that caught it |
++| Size | `webview.elf` ~158 KB (DOM adds ~15 KB) — inside `SPAWN_MAX_IMAGE` |
++
+ ---
+ 
+ ### Phase W3 — Block layout
+diff --git a/docs/status.md b/docs/status.md
+index 3fee9ef..39c92c9 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -165,7 +165,7 @@ Legend:
+ | `/http` | 🧪 | Uses DNS/TCP syscalls. |
+ | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
+ | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
+-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W1): scaffold window + heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit, and the W1 HTML tokeniser (`wv_html.{h,c}` — 18-state iterative machine, arena-bounded, 122 host checks + in-guest smoke). DOM/layout/painting are W2–W4. See `docs/webview.md`. |
++| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W2): scaffold window + heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit, the W1 HTML tokeniser (`wv_html.{h,c}` — 18-state iterative machine, arena-bounded, 122 host checks + in-guest smoke) and the W2 DOM builder (`wv_dom.{h,c}` — flat node array, 512-deep cap, implicit p/li/td/tr closes, pop-until-match reconciliation; 65 host checks; 10 000-deep document built in-guest on the 64 KiB stack). Layout/painting are W3–W4. See `docs/webview.md`. |
+ 
+ ## Known low-priority limitations
+ 
+diff --git a/docs/webview.md b/docs/webview.md
+index 943b637..e6b5ed8 100644
+--- a/docs/webview.md
++++ b/docs/webview.md
+@@ -1,7 +1,7 @@
+ # AuraLite OS Web View (`/apps/webview`)
+ 
+-**Status:** Phases W0–W1 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+-scaffold and HTML tokeniser complete. W2 (DOM) is next.
++**Status:** Phases W0–W2 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
++scaffold, HTML tokeniser and DOM complete. W3 (block layout) is next.
+ 
+ This document states what the web view is, what it deliberately is not, and
+ what the presentation path costs on this build. It follows the project
+@@ -82,7 +82,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+ |---|---|---|
+ | W0 | Scaffold: window, event loop, pixel buffer, blit benchmark, this doc | ✅ complete (2026-08-07) |
+ | W1 | HTML tokeniser (state machine, no recursion) | ✅ complete (2026-08-07) |
+-| W2 | DOM (flat node array, depth cap, implied structure) | 📋 planned |
++| W2 | DOM (flat node array, depth cap, implied structure) | ✅ complete (2026-08-07) |
+ | W3 | Block layout → display list (iterative, 64 KiB-safe) | 📋 planned |
+ | W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
+ | W5 | Inline CSS subset (D4) | 📋 planned |
+@@ -110,6 +110,29 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+   at `/apps/webview` startup (`tokeniser smoke`), asserted by
+   `test_webview.sh`.
+ 
++## 7. The DOM (W2)
++
++`userspace/apps/webview/wv_dom.{h,c}` turns tokens into a tree:
++
++- Nodes are a **flat array** linked by indices (parent / first-child /
++  last-child / next-sibling) with an implicit document root at index 0 —
++  one allocation, and a tree walk that cannot run away.
++- An explicit open-element stack with a **depth cap of 512** (the plan's
++  D3): past the cap, deeper elements are appended without nesting and
++  `truncated` is set. The 10 000-deep document from the plan's gate is
++  built **in QEMU on the real 64 KiB user stack** every boot
++  (`dom deep test: PASS`), so a regression is caught where the bug is
++  visible, not on the 8 MB host stack.
++- Implicit closes: `<p>`, `<li>`, `<td>`/`<th>` (never the row), `<tr>`,
++  and 14 void elements (`area base br col embed hr img input link meta
++  param source track wbr`) never nest.
++- Mismatched close tags are reconciled pop-until-match; unmatched end tags
++  are ignored. `<b><i>x</b></i>` keeps the text and the tree.
++- Gate: `tests/unit/test_wv_dom.c` — 65 host checks, including 2000 fuzz
++  iterations with every parent/child/sibling link verified after every
++  build. In-guest: `dom smoke` + `dom deep test`, asserted by
++  `test_webview.sh`.
++
+ If only three phases are ever built, W1–W3 are the ones: a tokeniser, a DOM
+ and a layout engine are the parts that do not exist anywhere else in the
+ tree. Paint is a for-loop over rectangles; the hard work is upstream.
+diff --git a/tests/integration/cases/test_webview.sh b/tests/integration/cases/test_webview.sh
+index 4f00c32..f468327 100755
+--- a/tests/integration/cases/test_webview.sh
++++ b/tests/integration/cases/test_webview.sh
+@@ -34,6 +34,8 @@ il_assert_grep "$LOG" "\\[webview\\] limitations painted"       "limitation stat
+ il_assert_grep "$LOG" "\\[webview\\] blit 800x600: [0-9][0-9]* us/frame" \
+     "blit benchmark reported a number"
+ il_assert_grep "$LOG" "\\[webview\\] tokeniser smoke: PASS"     "W1 tokeniser smoke passed in-guest"
++il_assert_grep "$LOG" "\\[webview\\] dom smoke: PASS"           "W2 DOM smoke passed in-guest"
++il_assert_grep "$LOG" "\\[webview\\] dom deep test: PASS"       "W2 10k-deep doc hits cap, no stack overflow"
+ il_assert_grep "$LOG" "\\[webview\\] PASS: 10 frames rendered"  "frame limit respected"
+ il_assert_grep "$LOG" "\\[webview\\] W0 scaffold complete"       "clean exit"
+ il_assert_no_grep "$LOG" "Page Fault|kernel panic|triple fault" "no kernel fault"
+diff --git a/tests/unit/test_wv_dom.c b/tests/unit/test_wv_dom.c
+new file mode 100644
+index 0000000..104ee75
+--- /dev/null
++++ b/tests/unit/test_wv_dom.c
+@@ -0,0 +1,395 @@
++/*
++ * test_wv_dom.c — host unit tests for the web view DOM builder
++ * (WEBVIEW_PLAN phase W2).
++ *
++ * Links the REAL userspace/apps/webview/wv_dom.c + wv_html.c (never
++ * copies) and checks the plan's gate:
++ *   - `<p>a<p>b` produces two sibling paragraphs, not nested ones;
++ *   - `<b><i>x</b></i>` does not lose the text or corrupt the tree;
++ *   - mismatched close tags are reconciled (pop-until-match), not obeyed;
++ *   - void elements never nest; <li>/<td>/<tr> implicit closes work;
++ *   - a 10 000-element-deep document hits the depth cap and still builds
++ *     a consistent, bounded tree (on the host; the QEMU assertion with the
++ *     real 64 KiB user stack lives in /apps/webview's deep test);
++ *   - the tree is walked and every parent/child/sibling link verified
++ *     after every build, including fuzzed inputs.
++ *
++ * Built/run by `make test-unit` under -std=c11 -Wall -Wextra -Werror.
++ */
++
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <stdint.h>
++
++#include "userspace/apps/webview/wv_html.h"
++#include "userspace/apps/webview/wv_dom.h"
++
++static int failures = 0;
++#define CK(c) do { if (c) printf("PASS: %s\n", #c); \
++    else { printf("FAIL: %s\n", #c); failures++; } } while (0)
++
++/* ---- arenas ---- */
++
++static wv_token_t   toks[WV_MAX_TOKENS];
++static wv_attr_t    tattrs[WV_MAX_ATTRS];
++static char         tpool[WV_POOL_SIZE];
++static wv_arena_t   ta;
++
++static wv_dom_node_t nodes[WV_MAX_TOKENS];      /* 1:1 with tokens is enough */
++static wv_attr_t    dattrs[WV_MAX_ATTRS];
++static char         dpool[WV_POOL_SIZE];
++static uint32_t     stack[WV_DOM_DEFAULT_DEPTH];
++static wv_dom_t     da;
++
++static void reset(void) {
++    wv_arena_init(&ta, toks, WV_MAX_TOKENS, tattrs, WV_MAX_ATTRS,
++                  tpool, WV_POOL_SIZE);
++    wv_dom_init(&da, nodes, WV_MAX_TOKENS, dattrs, WV_MAX_ATTRS,
++                dpool, WV_POOL_SIZE, stack, WV_DOM_DEFAULT_DEPTH);
++}
++
++/* Tokenise + build; returns DOM node count (or -1). */
++static int build(const char *html) {
++    reset();
++    int n = wv_html_tokenize(&ta, html, strlen(html));
++    if (n < 0) return -1;
++    return wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH);
++}
++
++/* ---- tree invariant checker ---- */
++
++static int dom_consistent(void) {
++    /* every node's parent/child/sibling links must agree */
++    for (size_t i = 0; i < da.node_count; i++) {
++        const wv_dom_node_t *n = &da.nodes[i];
++        if (n->type == WV_N_DOCUMENT) {
++            if (n->parent != WV_NULL) return 0;
++            if (i != 0) return 0;               /* document is node 0 */
++        }
++        if (n->parent != WV_NULL) {
++            if (n->parent >= da.node_count) return 0;
++            /* parent must list this node in its child chain */
++            const wv_dom_node_t *p = &da.nodes[n->parent];
++            uint32_t c = p->first_child;
++            int found = 0;
++            while (c != WV_NULL) {
++                if (c >= da.node_count) return 0;
++                if (c == i) { found = 1; break; }
++                c = da.nodes[c].next_sibling;
++            }
++            if (!found) return 0;
++            if (p->last_child == WV_NULL) return 0;
++        }
++        /* walk this node's child chain: last_child must be the tail */
++        if (n->first_child != WV_NULL) {
++            uint32_t c = n->first_child;
++            uint32_t prev = WV_NULL;
++            while (c != WV_NULL) {
++                if (c >= da.node_count) return 0;
++                if (da.nodes[c].parent != i) return 0;
++                if (prev != WV_NULL && da.nodes[prev].next_sibling != c)
++                    return 0;
++                prev = c;
++                c = da.nodes[c].next_sibling;
++            }
++            if (prev != n->last_child) return 0;
++        } else if (n->last_child != WV_NULL) {
++            return 0;
++        }
++        /* text nodes have no children */
++        if (n->type == WV_N_TEXT &&
++            (n->first_child != WV_NULL || n->attr_count != 0)) return 0;
++        /* name/string offsets are inside the pool */
++        if (n->name_len &&
++            ((size_t)n->name_off + n->name_len + 1 > da.pool_used ||
++             da.pool[n->name_off + n->name_len] != '\0')) return 0;
++        if (n->text_len &&
++            ((size_t)n->text_off + n->text_len + 1 > da.pool_used ||
++             da.pool[n->text_off + n->text_len] != '\0')) return 0;
++        for (size_t a = 0; a < n->attr_count; a++) {
++            size_t idx = (size_t)n->attr_base + a;
++            if (idx >= da.attr_count) return 0;
++            const wv_attr_t *at = &da.attrs[idx];
++            if (at->name_len &&
++                ((size_t)at->name_off + at->name_len + 1 > da.pool_used ||
++                 da.pool[at->name_off + at->name_len] != '\0')) return 0;
++            if (at->value_len &&
++                ((size_t)at->value_off + at->value_len + 1 > da.pool_used ||
++                 da.pool[at->value_off + at->value_len] != '\0')) return 0;
++        }
++    }
++    return 1;
++}
++
++/* find the first element node with the given name under a parent */
++static uint32_t find_child(const wv_dom_t *d, uint32_t parent,
++                           const char *name) {
++    uint32_t c = d->nodes[parent].first_child;
++    while (c != WV_NULL) {
++        const wv_dom_node_t *n = &d->nodes[c];
++        if (n->type == WV_N_ELEMENT &&
++            strcmp(wv_dom_str(d, n->name_off), name) == 0)
++            return c;
++        c = n->next_sibling;
++    }
++    return WV_NULL;
++}
++
++static uint32_t child_count(const wv_dom_t *d, uint32_t node) {
++    uint32_t n = 0, c = d->nodes[node].first_child;
++    while (c != WV_NULL) { n++; c = d->nodes[c].next_sibling; }
++    return n;
++}
++
++/* ---- tests ---- */
++
++static void test_p_siblings(void) {
++    int n = build("<p>a<p>b");
++    CK(n == 5);                       /* doc + 2 p + 2 text */
++    if (n != 5) return;
++    uint32_t p1 = find_child(&da, 0, "p");
++    uint32_t p2 = da.nodes[p1].next_sibling;
++    CK(p2 != WV_NULL && strcmp(wv_dom_str(&da, da.nodes[p2].name_off), "p") == 0);
++    CK(da.nodes[p1].parent == 0 && da.nodes[p2].parent == 0);
++    CK(child_count(&da, p1) == 1 && child_count(&da, p2) == 1);
++    uint32_t t1 = da.nodes[p1].first_child;
++    uint32_t t2 = da.nodes[p2].first_child;
++    CK(strcmp(wv_dom_str(&da, da.nodes[t1].text_off), "a") == 0);
++    CK(strcmp(wv_dom_str(&da, da.nodes[t2].text_off), "b") == 0);
++    CK(dom_consistent());
++}
++
++static void test_b_i_reconcile(void) {
++    int n = build("<b><i>x</b></i>");
++    CK(n == 4);                       /* doc + b + i + text */
++    if (n != 4) return;
++    uint32_t b = find_child(&da, 0, "b");
++    CK(b != WV_NULL);
++    uint32_t i = find_child(&da, b, "i");
++    CK(i != WV_NULL);
++    uint32_t t = da.nodes[i].first_child;
++    CK(t != WV_NULL && da.nodes[t].type == WV_N_TEXT);
++    CK(strcmp(wv_dom_str(&da, da.nodes[t].text_off), "x") == 0);
++    CK(dom_consistent());
++}
++
++static void test_deep_mismatch(void) {
++    /* </a> must implicitly close b and c, not lose anything */
++    int n = build("<a><b><c>z</a>");
++    CK(n == 5);
++    if (n != 5) return;
++    uint32_t a = find_child(&da, 0, "a");
++    uint32_t b = find_child(&da, a, "b");
++    uint32_t c = find_child(&da, b, "c");
++    CK(a != WV_NULL && b != WV_NULL && c != WV_NULL);
++    uint32_t t = da.nodes[c].first_child;
++    CK(t != WV_NULL && strcmp(wv_dom_str(&da, da.nodes[t].text_off), "z") == 0);
++    CK(dom_consistent());
++}
++
++static void test_void_elements(void) {
++    int n = build("<p>x<br>y<hr><img src=i>z</p>");
++    CK(n == 8);                       /* doc+p+3 texts+br+hr+img */
++    if (n != 8) return;
++    uint32_t p = find_child(&da, 0, "p");
++    uint32_t c = da.nodes[p].first_child;
++    /* children: text x, br, text y, hr, img, text z */
++    int seen[6] = {0};
++    int idx = 0;
++    while (c != WV_NULL) {
++        const wv_dom_node_t *nn = &da.nodes[c];
++        if (nn->type == WV_N_TEXT) seen[idx] = (nn->text_len == 1) ? 3 : 3;
++        else if (strcmp(wv_dom_str(&da, nn->name_off), "br") == 0) seen[idx] = 1;
++        else if (strcmp(wv_dom_str(&da, nn->name_off), "hr") == 0) seen[idx] = 2;
++        else if (strcmp(wv_dom_str(&da, nn->name_off), "img") == 0) seen[idx] = 4;
++        c = nn->next_sibling;
++        idx++;
++    }
++    CK(idx == 6);
++    CK(seen[0] == 3 && seen[1] == 1 && seen[2] == 3 &&
++       seen[3] == 2 && seen[4] == 4 && seen[5] == 3);
++    /* void elements must have no children */
++    uint32_t br = find_child(&da, p, "br");
++    CK(br != WV_NULL && da.nodes[br].first_child == WV_NULL);
++    /* br must not be an ancestor of the second text "y": y is p's child */
++    CK(dom_consistent());
++}
++
++static void test_li_td_tr(void) {
++    int n = build("<ul><li>a<li>b</ul>");
++    CK(n == 6);                       /* doc+ul+2li+2text */
++    if (n != 6) return;
++    uint32_t ul = find_child(&da, 0, "ul");
++    uint32_t li1 = find_child(&da, ul, "li");
++    uint32_t li2 = da.nodes[li1].next_sibling;
++    CK(li2 != WV_NULL && strcmp(wv_dom_str(&da, da.nodes[li2].name_off), "li") == 0);
++    CK(da.nodes[li1].parent == ul && da.nodes[li2].parent == ul);
++
++    n = build("<table><tr><td>a<td>b</tr></table>");
++    CK(n == 7);                       /* doc+table+tr+2td+2text */
++    if (n != 7) return;
++    uint32_t table = find_child(&da, 0, "table");
++    uint32_t tr = find_child(&da, table, "tr");
++    uint32_t td1 = find_child(&da, tr, "td");
++    uint32_t td2 = da.nodes[td1].next_sibling;
++    CK(tr != WV_NULL && td1 != WV_NULL && td2 != WV_NULL);
++    CK(da.nodes[td1].parent == tr && da.nodes[td2].parent == tr &&
++       strcmp(wv_dom_str(&da, da.nodes[td2].name_off), "td") == 0);
++    CK(dom_consistent());
++}
++
++static void test_attributes_and_text_merge(void) {
++    int n = build("<a href=\"x\" id=y>t1<!-- c -->t2</a>");
++    CK(n == 3);                       /* doc + a + ONE merged text */
++    if (n != 3) return;
++    uint32_t a = find_child(&da, 0, "a");
++    CK(a != WV_NULL && da.nodes[a].attr_count == 2);
++    if (da.nodes[a].attr_count == 2) {
++        const wv_attr_t *at0 = &da.attrs[da.nodes[a].attr_base];
++        const wv_attr_t *at1 = &da.attrs[da.nodes[a].attr_base + 1];
++        CK(strcmp(wv_dom_str(&da, at0->name_off), "href") == 0);
++        CK(strcmp(wv_dom_str(&da, at0->value_off), "x") == 0);
++        CK(strcmp(wv_dom_str(&da, at1->name_off), "id") == 0);
++        CK(strcmp(wv_dom_str(&da, at1->value_off), "y") == 0);
++    }
++    uint32_t t = da.nodes[a].first_child;
++    CK(t != WV_NULL && da.nodes[t].type == WV_N_TEXT);
++    CK(strcmp(wv_dom_str(&da, da.nodes[t].text_off), "t1t2") == 0);
++    CK(child_count(&da, a) == 1);     /* comment dropped, text merged */
++    CK(dom_consistent());
++}
++
++static void test_cdata_and_refs(void) {
++    int n = build("<p>a&amp;b<![CDATA[<raw>]]>c</p>");
++    CK(n == 3);                       /* doc + p + one text "a&b<raw>c" */
++    if (n != 3) return;
++    uint32_t p = find_child(&da, 0, "p");
++    uint32_t t = da.nodes[p].first_child;
++    CK(t != WV_NULL && da.nodes[t].type == WV_N_TEXT);
++    CK(strcmp(wv_dom_str(&da, da.nodes[t].text_off), "a&b<raw>c") == 0);
++    CK(dom_consistent());
++}
++
++static void test_unclosed_and_ignored_ends(void) {
++    /* end tags with no match are ignored, not stack-wiping */
++    int n = build("<div></span>x</div></p>");
++    CK(n == 3);                       /* doc + div + text */
++    if (n != 3) return;
++    uint32_t d = find_child(&da, 0, "div");
++    CK(d != WV_NULL);
++    uint32_t t = da.nodes[d].first_child;
++    CK(t != WV_NULL && strcmp(wv_dom_str(&da, da.nodes[t].text_off), "x") == 0);
++    CK(dom_consistent());
++
++    /* unclosed tags at EOF keep their structure */
++    n = build("<a><b>text");
++    CK(n == 4);
++    if (n != 4) return;
++    uint32_t a = find_child(&da, 0, "a");
++    uint32_t b = find_child(&da, a, "b");
++    CK(a != WV_NULL && b != WV_NULL);
++    CK(dom_consistent());
++}
++
++static void test_empty_and_whitespace(void) {
++    int n = build("");
++    CK(n == 1);                       /* document only */
++    CK(dom_consistent());
++
++    n = build("   ");
++    CK(n == 2);                       /* doc + one text node */
++    if (n != 2) return;
++    uint32_t t = da.nodes[0].first_child;
++    CK(t != WV_NULL && da.nodes[t].type == WV_N_TEXT &&
++       da.nodes[t].text_len == 3);
++    CK(dom_consistent());
++}
++
++/* deterministic xorshift32 */
++static uint32_t frng = 0x9E3779B9u;
++static uint32_t fuzz_rand(void) {
++    frng ^= frng << 13; frng ^= frng >> 17; frng ^= frng << 5;
++    return frng;
++}
++
++static void test_deep_document(void) {
++    /* 10 000 nested <div>s with a modest cap: must hit the cap, stay
++     * bounded and consistent.  (The same document is built in QEMU by
++     * /apps/webview, where the 64 KiB user stack is real.) */
++    size_t doc_len = 10000 * 5 + 10000 * 6 + 1;
++    char *doc = malloc(doc_len);
++    CK(doc != NULL);
++    if (!doc) return;
++    size_t p = 0;
++    for (int i = 0; i < 10000; i++) { memcpy(doc + p, "<div>", 5); p += 5; }
++    for (int i = 0; i < 10000; i++) { memcpy(doc + p, "</div>", 6); p += 6; }
++    doc[p] = 0;
++
++    reset();
++    /* tokeniser needs a bigger arena for 20 001 tokens */
++    static wv_token_t big_toks[22000];
++    static char big_pool[200000];
++    wv_arena_t bt;
++    wv_arena_init(&bt, big_toks, 22000, tattrs, WV_MAX_ATTRS,
++                  big_pool, sizeof(big_pool));
++    int n = wv_html_tokenize(&bt, doc, p);
++    CK(n == 20001);
++
++    static wv_dom_node_t big_nodes[11000];
++    static uint32_t big_stack[1024];
++    wv_dom_t bd;
++    wv_dom_init(&bd, big_nodes, 11000, dattrs, WV_MAX_ATTRS,
++                dpool, WV_POOL_SIZE, big_stack, 1024);
++    int nn = wv_dom_build(&bd, &bt, 512);
++    CK(nn == 10001);                  /* document + 10 000 divs */
++    CK(bd.truncated == 1);            /* depth cap hit */
++    /* verify max depth == 512 */
++    uint32_t maxd = 0;
++    for (size_t i = 0; i < bd.node_count; i++) {
++        uint32_t dpt = wv_dom_depth(&bd, (uint32_t)i);
++        if (dpt > maxd) maxd = dpt;
++    }
++    CK(maxd == 512);
++    /* no node may be deeper than the cap */
++    CK(maxd <= 512);
++    /* the deepest chain is the first 512 divs */
++    CK(dom_consistent());
++    free(doc);
++    printf("PASS: deep document: nodes=10001 max_depth=512 truncated=1\n");
++}
++
++static void test_fuzz_dom(void) {
++    unsigned char buf[512];
++    for (int iter = 0; iter < 2000; iter++) {
++        size_t len = fuzz_rand() % sizeof(buf);
++        for (size_t i = 0; i < len; i++) buf[i] = (unsigned char)(fuzz_rand() & 0xFF);
++        reset();
++        int n = wv_html_tokenize(&ta, (const char *)buf, len);
++        if (n < 0) { CK(0); return; }
++        int nn = wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH);
++        if (nn < 0) { CK(0); return; }
++        if (!dom_consistent()) { CK(0); printf("  (fuzz iter %d)\n", iter); return; }
++    }
++    CK(1);
++    printf("PASS: 2000 fuzz iterations built consistent DOMs\n");
++}
++
++int main(void) {
++    printf("== webview DOM builder (WEBVIEW_PLAN W2) ==\n");
++
++    printf("[t] p_siblings\n"); fflush(stdout); test_p_siblings();
++    printf("[t] test_b_i_reconcile\n"); fflush(stdout); test_b_i_reconcile();
++    printf("[t] test_deep_mismatch\n"); fflush(stdout); test_deep_mismatch();
++    printf("[t] test_void_elements\n"); fflush(stdout); test_void_elements();
++    printf("[t] test_li_td_tr\n"); fflush(stdout); test_li_td_tr();
++    printf("[t] test_attributes_and_text_merge\n"); fflush(stdout); test_attributes_and_text_merge();
++    printf("[t] test_cdata_and_refs\n"); fflush(stdout); test_cdata_and_refs();
++    printf("[t] test_unclosed_and_ignored_ends\n"); fflush(stdout); test_unclosed_and_ignored_ends();
++    printf("[t] test_empty_and_whitespace\n"); fflush(stdout); test_empty_and_whitespace();
++    printf("[t] test_deep_document\n"); fflush(stdout); test_deep_document();
++    printf("[t] test_fuzz_dom\n"); fflush(stdout); test_fuzz_dom();
++
++    printf("== %s: %d failures ==\n", failures ? "FAIL" : "PASS", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/userspace/apps/webview/webview.c b/userspace/apps/webview/webview.c
+index 42d3a22..3edd6ce 100644
+--- a/userspace/apps/webview/webview.c
++++ b/userspace/apps/webview/webview.c
+@@ -29,6 +29,7 @@
+ 
+ #include "auragui.h"
+ #include "wv_html.h"
++#include "wv_dom.h"
+ 
+ /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
+ #define VIEW_W 800
+@@ -224,6 +225,76 @@ int main(void) {
+         }
+     }
+ 
++    /* ---- Phase W2 smoke: the DOM builder runs in-guest too. ------------
++     * Two checks: the plan's sibling-paragraph rule and the 10 000-deep
++     * document, which must hit the depth cap WITHOUT overflowing the real
++     * 64 KiB user stack (the point of the plan's W2 gate). */
++    {
++        static wv_dom_node_t dn[256];
++        static wv_attr_t     da[512];
++        static char          dp[16384];
++        static uint32_t      dstack[512];
++        wv_arena_t toks_a;
++        static wv_token_t tt[512];
++        static wv_attr_t  ta[512];
++        static char       tp[8192];
++        wv_arena_init(&toks_a, tt, 512, ta, 512, tp, sizeof(tp));
++        const char *doc = "<p>a<p>b";
++        wv_html_tokenize(&toks_a, doc, strlen(doc));
++        wv_dom_t dom;
++        wv_dom_init(&dom, dn, 256, da, 512, dp, sizeof(dp), dstack, 512);
++        int nn = wv_dom_build(&dom, &toks_a, 512);
++        /* doc + 2 p + 2 text; both p's are children of the document */
++        int ok = (nn == 5 && dom.nodes[1].parent == 0 &&
++                  dom.nodes[3].parent == 0 && dom.truncated == 0);
++        printf("[webview] dom smoke: %s (nodes=%d)\n",
++               ok ? "PASS" : "FAIL", nn);
++    }
++
++    {
++        /* 10 000 nested <div>s: tokeniser arena on the heap (20 001
++         * tokens), DOM with a depth cap of 512.  On the 64 KiB user stack
++         * this must not overflow — that is the W2 QEMU gate. */
++        size_t doc_len = 10000 * 5 + 10000 * 6;
++        char *doc = malloc(doc_len);
++        if (!doc) {
++            printf("[webview] dom deep test: FAIL (malloc)\n");
++        } else {
++            size_t p = 0;
++            for (int i = 0; i < 10000; i++) { memcpy(doc + p, "<div>", 5); p += 5; }
++            for (int i = 0; i < 10000; i++) { memcpy(doc + p, "</div>", 6); p += 6; }
++
++            wv_token_t *tt = malloc(22000 * sizeof(wv_token_t));
++            wv_attr_t  *ta = malloc(1024 * sizeof(wv_attr_t));
++            char       *tp = malloc(262144);
++            wv_dom_node_t *dn = malloc(11000 * sizeof(wv_dom_node_t));
++            wv_attr_t  *dda = malloc(1024 * sizeof(wv_attr_t));
++            char       *dpp = malloc(262144);
++            uint32_t   *stk = malloc(1024 * sizeof(uint32_t));
++            if (!tt || !ta || !tp || !dn || !dda || !dpp || !stk) {
++                printf("[webview] dom deep test: FAIL (malloc arenas)\n");
++            } else {
++                wv_arena_t toks_a;
++                wv_arena_init(&toks_a, tt, 22000, ta, 1024, tp, 262144);
++                int n = wv_html_tokenize(&toks_a, doc, doc_len);
++                wv_dom_t dom;
++                wv_dom_init(&dom, dn, 11000, dda, 1024, dpp, 262144, stk, 1024);
++                int nn = wv_dom_build(&dom, &toks_a, 512);
++                uint32_t maxd = 0;
++                for (int i = 0; i < nn && i < 11000; i++) {
++                    uint32_t dd = wv_dom_depth(&dom, (uint32_t)i);
++                    if (dd > maxd) maxd = dd;
++                }
++                int ok = (nn == 10001 && maxd == 512 && dom.truncated == 1);
++                printf("[webview] dom deep test: %s (tokens=%d nodes=%d maxdepth=%u truncated=%d)\n",
++                       ok ? "PASS" : "FAIL", n, nn, maxd, dom.truncated);
++            }
++            free(tt); free(ta); free(tp);
++            free(dn); free(dda); free(dpp); free(stk);
++            free(doc);
++        }
++    }
++
+     /* ---- Event loop.  The W4 renderer will replace draw_page(); the loop
+      * shape (poll, handle, repaint on demand) is the one it will keep. */
+     uint32_t limit = frame_limit();
+diff --git a/userspace/apps/webview/wv_dom.c b/userspace/apps/webview/wv_dom.c
+new file mode 100644
+index 0000000..a5f4921
+--- /dev/null
++++ b/userspace/apps/webview/wv_dom.c
+@@ -0,0 +1,326 @@
++/*
++ * wv_dom.c — DOM builder for the AuraLite web view (WEBVIEW_PLAN W2).
++ *
++ * Iterative HTML tree construction over the token stream, following the
++ * WHATWG "tree construction" rules for the subset the plan needs:
++ * implicit closes for <p>/<li>/<td>/<th>/<tr>, void elements, and the
++ * pop-until-match reconciliation of mismatched close tags.  Everything is
++ * index arithmetic over flat arrays; there is no recursion and no heap
++ * allocation beyond the caller-provided arena.
++ *
++ * Deliberate simplifications (decisions, not accidents):
++ *   - The "in body" insertion mode only; no tables/frameset/select
++ *     special-casing beyond the td/th/tr closes above.
++ *   - Comments and DOCTYPEs are dropped from the tree (they do not affect
++ *     the layout phases).
++ *   - <head>/<body> are not implied: an HTML document without them gets a
++ *     flat tree of whatever elements exist.  The layout phases do not
++ *     need the implied structure; the plan's implied-structure list is
++ *     exactly the p/li/td/tr rules implemented here.
++ *   - Attribute values are copied verbatim (the tokeniser already decoded
++ *     character references).
++ */
++
++#include <string.h>
++#include "wv_dom.h"
++
++/* ---- pool helpers (same shape as the tokeniser's) ---- */
++
++static uint32_t wv_dom_pool_put(wv_dom_t *d, const char *buf, size_t len) {
++    if (len + 1 > d->pool_cap - d->pool_used) {
++        d->truncated = 1;
++        return 0;
++    }
++    uint32_t off = (uint32_t)d->pool_used;
++    memcpy(d->pool + d->pool_used, buf, len);
++    d->pool[d->pool_used + len] = '\0';
++    d->pool_used += len + 1;
++    return off;
++}
++
++/* Append bytes to an existing text node.  When the text is at the very end
++ * of the pool it is extended in place; otherwise the combined string is
++ * re-stored (correct in both cases, cheap in the common one). */
++static void wv_dom_text_append(wv_dom_t *d, uint32_t node,
++                               const char *bytes, size_t n) {
++    wv_dom_node_t *nd = &d->nodes[node];
++    size_t old_len = nd->text_len;
++    if (nd->text_off + old_len + 1 == d->pool_used) {
++        if (old_len + n + 1 > d->pool_cap - d->pool_used) {
++            d->truncated = 1;
++            return;
++        }
++        memcpy(d->pool + nd->text_off + old_len, bytes, n);
++        d->pool[nd->text_off + old_len + n] = '\0';
++        d->pool_used += n;
++        nd->text_len = (uint32_t)(old_len + n);
++        return;
++    }
++    if (old_len + n + 1 > d->pool_cap - d->pool_used) {
++        d->truncated = 1;
++        return;
++    }
++    size_t base = d->pool_used;
++    memcpy(d->pool + base, d->pool + nd->text_off, old_len);
++    memcpy(d->pool + base + old_len, bytes, n);
++    d->pool[base + old_len + n] = '\0';
++    d->pool_used += old_len + n + 1;
++    nd->text_off = (uint32_t)base;
++    nd->text_len = (uint32_t)(old_len + n);
++}
++
++static uint32_t wv_dom_new_node(wv_dom_t *d, int type,
++                                uint32_t name_off, uint32_t name_len,
++                                uint32_t text_off, uint32_t text_len,
++                                uint32_t attr_base, uint32_t attr_count) {
++    if (d->node_count >= d->node_cap) { d->truncated = 1; return WV_NULL; }
++    wv_dom_node_t *n = &d->nodes[d->node_count];
++    n->parent = WV_NULL;
++    n->first_child = WV_NULL;
++    n->last_child = WV_NULL;
++    n->next_sibling = WV_NULL;
++    n->type = (uint8_t)type;
++    n->flags = 0;
++    n->_pad = 0;
++    n->name_off = name_off;
++    n->name_len = name_len;
++    n->text_off = text_off;
++    n->text_len = text_len;
++    n->attr_base = attr_base;
++    n->attr_count = attr_count;
++    return (uint32_t)d->node_count++;
++}
++
++static void wv_dom_append_child(wv_dom_t *d, uint32_t parent, uint32_t child) {
++    wv_dom_node_t *p = &d->nodes[parent];
++    if (p->last_child == WV_NULL) {
++        p->first_child = child;
++        p->last_child = child;
++    } else {
++        d->nodes[p->last_child].next_sibling = child;
++        p->last_child = child;
++    }
++    d->nodes[child].parent = parent;
++}
++
++/* Copy one token attribute into the DOM attribute array + pool. */
++static void wv_dom_push_attr(wv_dom_t *d, const wv_attr_t *src,
++                             const char *name, const char *value) {
++    if (d->attr_count >= d->attr_cap) { d->truncated = 1; return; }
++    wv_attr_t *a = &d->attrs[d->attr_count++];
++    a->name_off = wv_dom_pool_put(d, name, src->name_len);
++    a->name_len = src->name_len;
++    if (src->value_len) {
++        a->value_off = wv_dom_pool_put(d, value, src->value_len);
++        a->value_len = src->value_len;
++    } else {
++        a->value_off = 0;
++        a->value_len = 0;
++    }
++}
++
++/* name helpers */
++
++static int wv_node_name_is(const wv_dom_t *d, uint32_t node, const char *lit) {
++    const wv_dom_node_t *n = &d->nodes[node];
++    if (n->type != WV_N_ELEMENT) return 0;
++    const char *s = wv_dom_str(d, n->name_off);
++    size_t i = 0;
++    while (lit[i]) {
++        if (i >= n->name_len) return 0;
++        if (s[i] != lit[i]) return 0;
++        i++;
++    }
++    return i == n->name_len;
++}
++
++/* Compare an open-element node's name against a token name (both
++ * lower-case). */
++static int wv_node_name_equals(const wv_dom_t *d, uint32_t node,
++                               const char *name, uint32_t len) {
++    const wv_dom_node_t *n = &d->nodes[node];
++    if (n->type != WV_N_ELEMENT || n->name_len != len) return 0;
++    const char *s = wv_dom_str(d, n->name_off);
++    for (uint32_t i = 0; i < len; i++)
++        if (s[i] != name[i]) return 0;
++    return 1;
++}
++
++/* Pop the open-element stack while its top matches any of the (up to 3)
++ * names.  The nodes themselves stay in the tree — this only changes which
++ * element future siblings attach to. */
++static void wv_dom_pop_until(wv_dom_t *d, const char *a,
++                             const char *b, const char *c) {
++    while (d->stack_len > 1) {
++        uint32_t top = d->stack[d->stack_len - 1];
++        if (!wv_node_name_is(d, top, a) &&
++            !(b && wv_node_name_is(d, top, b)) &&
++            !(c && wv_node_name_is(d, top, c)))
++            break;
++        d->stack_len--;
++    }
++}
++
++static int wv_is_void(const char *name, uint32_t len) {
++    static const char *const voids[] = {
++        "area", "base", "br", "col", "embed", "hr", "img", "input",
++        "link", "meta", "param", "source", "track", "wbr"
++    };
++    for (size_t i = 0; i < sizeof(voids) / sizeof(voids[0]); i++) {
++        const char *v = voids[i];
++        size_t j = 0;
++        while (v[j]) {
++            if (j >= len || name[j] != v[j]) break;
++            j++;
++        }
++        if (v[j] == '\0' && j == len) return 1;
++    }
++    return 0;
++}
++
++void wv_dom_init(wv_dom_t *d,
++                 wv_dom_node_t *nodes, size_t node_cap,
++                 wv_attr_t *attrs, size_t attr_cap,
++                 char *pool, size_t pool_cap,
++                 uint32_t *stack, size_t stack_cap) {
++    d->nodes = nodes; d->node_cap = node_cap; d->node_count = 0;
++    d->attrs = attrs; d->attr_cap = attr_cap; d->attr_count = 0;
++    d->pool = pool; d->pool_cap = pool_cap; d->pool_used = 0;
++    d->stack = stack; d->stack_cap = stack_cap; d->stack_len = 0;
++    d->truncated = 0;
++    if (d->pool && d->pool_cap > 0) {
++        d->pool[0] = '\0';
++        d->pool_used = 1;
++    }
++}
++
++const char *wv_dom_str(const wv_dom_t *d, uint32_t off) {
++    if (!d || !d->pool) return "";
++    if ((size_t)off >= d->pool_used) return "";
++    return &d->pool[off];
++}
++
++uint32_t wv_dom_depth(const wv_dom_t *d, uint32_t node) {
++    uint32_t depth = 0;
++    uint32_t cur = node;
++    while (cur != WV_NULL && cur < d->node_count) {
++        uint32_t p = d->nodes[cur].parent;
++        if (p == WV_NULL || p >= d->node_count || p == cur) break;
++        depth++;
++        cur = p;
++    }
++    return depth;
++}
++
++int wv_dom_build(wv_dom_t *d, const wv_arena_t *toks, size_t depth_cap) {
++    if (!d || !toks || !toks->toks) return -1;
++    wv_dom_init(d, d->nodes, d->node_cap, d->attrs, d->attr_cap,
++                d->pool, d->pool_cap, d->stack, d->stack_cap);
++    if (!d->nodes || !d->stack || d->stack_cap < 1) return -1;
++
++    size_t eff_cap = depth_cap ? depth_cap : WV_DOM_DEFAULT_DEPTH;
++    if (eff_cap > d->stack_cap) eff_cap = d->stack_cap;
++    if (eff_cap < 1) eff_cap = 1;
++
++    /* implicit document root at index 0 */
++    uint32_t root = wv_dom_new_node(d, WV_N_DOCUMENT, 0, 0, 0, 0, 0, 0);
++    if (root == WV_NULL) return -1;
++    d->stack[0] = root;
++    d->stack_len = 1;
++
++    for (size_t i = 0; i < toks->tok_count; i++) {
++        const wv_token_t *tk = &toks->toks[i];
++        uint32_t parent = d->stack[d->stack_len - 1];
++
++        switch (tk->type) {
++        case WV_T_TEXT:
++        case WV_T_CDATA: {
++            const char *s = wv_tok_str(toks, tk->text_off);
++            uint32_t last = d->nodes[parent].last_child;
++            if (last != WV_NULL && d->nodes[last].type == WV_N_TEXT) {
++                wv_dom_text_append(d, last, s, tk->text_len);
++            } else {
++                uint32_t off = wv_dom_pool_put(d, s, tk->text_len);
++                uint32_t n = wv_dom_new_node(d, WV_N_TEXT, 0, 0,
++                                             off, tk->text_len, 0, 0);
++                if (n != WV_NULL) wv_dom_append_child(d, parent, n);
++            }
++            break;
++        }
++
++        case WV_T_START: {
++            const char *name = wv_tok_str(toks, tk->name_off);
++
++            /* implicit closes (W2 requirement) */
++            if (tk->name_len == 1 && name[0] == 'p') {
++                wv_dom_pop_until(d, "p", 0, 0);
++                parent = d->stack[d->stack_len - 1];
++            } else if (tk->name_len == 2 && name[0] == 'l' && name[1] == 'i') {
++                wv_dom_pop_until(d, "li", 0, 0);
++                parent = d->stack[d->stack_len - 1];
++            } else if (tk->name_len == 2 &&
++                       ((name[0] == 't' && name[1] == 'd') ||
++                        (name[0] == 't' && name[1] == 'h'))) {
++                /* <td>/<th> close an open cell, never the row itself */
++                wv_dom_pop_until(d, "td", "th", 0);
++                parent = d->stack[d->stack_len - 1];
++            } else if (tk->name_len == 2 && name[0] == 't' &&
++                       name[1] == 'r') {
++                /* a new row closes the previous row and its cells */
++                wv_dom_pop_until(d, "td", "th", "tr");
++                parent = d->stack[d->stack_len - 1];
++            }
++
++            uint32_t name_off = wv_dom_pool_put(d, name, tk->name_len);
++            uint32_t attr_base = (uint32_t)d->attr_count;
++            for (uint32_t a = 0; a < tk->attr_count; a++) {
++                const wv_attr_t *src = wv_tok_attr(toks, tk, a);
++                if (src) {
++                    wv_dom_push_attr(d, src,
++                                     wv_tok_str(toks, src->name_off),
++                                     wv_tok_str(toks, src->value_off));
++                }
++            }
++            uint32_t n = wv_dom_new_node(d, WV_N_ELEMENT,
++                                         name_off, tk->name_len,
++                                         0, 0, attr_base, tk->attr_count);
++            if (n == WV_NULL) break;
++            wv_dom_append_child(d, parent, n);
++
++            if (wv_is_void(name, tk->name_len) || tk->self_closing)
++                break;                              /* never nests */
++            if (d->stack_len >= eff_cap) {
++                d->truncated = 1;
++                break;                              /* depth cap: no nesting */
++            }
++            d->stack[d->stack_len++] = n;
++            break;
++        }
++
++        case WV_T_END: {
++            const char *name = wv_tok_str(toks, tk->name_off);
++            /* reconcile: pop until the matching open element.  Elements
++             * popped implicitly stay in the tree with their children —
++             * only the open-element state is rewound.  When there is no
++             * match the end tag is ignored (WHATWG parse error). */
++            size_t j = d->stack_len;
++            int found = 0;
++            while (j > 1) {
++                j--;
++                if (wv_node_name_equals(d, d->stack[j], name, tk->name_len)) {
++                    found = 1;
++                    break;
++                }
++            }
++            if (found) d->stack_len = j;
++            break;
++        }
++
++        default:
++            /* comments, doctypes and EOF are not part of the tree */
++            break;
++        }
++    }
++
++    return (int)d->node_count;
++}
+diff --git a/userspace/apps/webview/wv_dom.h b/userspace/apps/webview/wv_dom.h
+new file mode 100644
+index 0000000..9583541
+--- /dev/null
++++ b/userspace/apps/webview/wv_dom.h
+@@ -0,0 +1,88 @@
++/*
++ * wv_dom.h — DOM builder for the AuraLite web view (WEBVIEW_PLAN W2).
++ *
++ * Design constraints from the plan (D3, §2):
++ *   - The user stack is 64 KiB.  The builder is iterative: an explicit
++ *     open-element stack (an index array inside the caller-provided arena)
++ *     with a HARD DEPTH CAP.  When the cap is reached, deeper elements are
++ *     appended without nesting and `truncated` is set — a 10 000-deep
++ *     document must hit the cap, not the stack.
++ *   - Nodes live in a FLAT ARRAY with index links (parent, first/last
++ *     child, next sibling) — one allocation, and a tree walk that cannot
++ *     run away.
++ *   - Implicit close rules for the tags real pages omit: <p> closes an
++ *     open <p>; <li> closes an open <li>; <td>/<th> close td/th/tr; <tr>
++ *     closes td/th/tr; void elements never nest.
++ *   - Mismatched close tags are RECONCILED against the stack (WHATWG
++ *     "pop until a match"): `<b><i>x</b></i>` closes <i> implicitly when
++ *     </b> arrives, so no text is lost and the tree stays well-formed.
++ *
++ * The builder consumes the token arena from wv_html (which must outlive
++ * the DOM) and copies every string it keeps into its own pool, so the DOM
++ * is self-contained once built.
++ */
++
++#ifndef AURALITE_WV_DOM_H
++#define AURALITE_WV_DOM_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include "wv_html.h"
++
++/* Sentinel index: "no such node". */
++#define WV_NULL 0xFFFFFFFFu
++
++typedef enum {
++    WV_N_DOCUMENT = 0,   /* implicit root, node 0 */
++    WV_N_ELEMENT,
++    WV_N_TEXT
++} wv_node_type;
++
++typedef struct {
++    uint32_t parent;        /* WV_NULL for the document */
++    uint32_t first_child;   /* WV_NULL when childless */
++    uint32_t last_child;
++    uint32_t next_sibling;  /* WV_NULL for the last child */
++    uint8_t  type;
++    uint8_t  flags;         /* reserved */
++    uint16_t _pad;
++    uint32_t name_off;      /* element name in the DOM pool; 0 = none */
++    uint32_t name_len;
++    uint32_t text_off;      /* text content in the DOM pool; 0 = none */
++    uint32_t text_len;
++    uint32_t attr_base;     /* index into d->attrs[] */
++    uint32_t attr_count;
++} wv_dom_node_t;
++
++/* Default nesting cap: deep enough for any real page, shallow enough that
++ * the explicit stack fits in a small fixed array. */
++#define WV_DOM_DEFAULT_DEPTH 512
++
++typedef struct {
++    wv_dom_node_t *nodes;   size_t node_cap;   size_t node_count;
++    wv_attr_t     *attrs;   size_t attr_cap;   size_t attr_count;
++    char          *pool;    size_t pool_cap;   size_t pool_used;
++    uint32_t      *stack;   size_t stack_cap;  size_t stack_len;
++    int            truncated;
++} wv_dom_t;
++
++void wv_dom_init(wv_dom_t *d,
++                 wv_dom_node_t *nodes, size_t node_cap,
++                 wv_attr_t     *attrs, size_t attr_cap,
++                 char          *pool,  size_t pool_cap,
++                 uint32_t      *stack, size_t stack_cap);
++
++/* Build the tree from a token arena.  depth_cap is the maximum nesting
++ * depth (0/absent = WV_DOM_DEFAULT_DEPTH, clamped to the stack array).
++ * Returns the node count (including the implicit document), or -1 on
++ * NULL arguments.  `truncated` is set when any arena limit or the depth
++ * cap was hit; the tree is still usable. */
++int wv_dom_build(wv_dom_t *d, const wv_arena_t *toks, size_t depth_cap);
++
++/* Nesting depth of a node (0 = document, 1 = child of document, ...). */
++uint32_t wv_dom_depth(const wv_dom_t *d, uint32_t node);
++
++/* NUL-terminated string from the DOM pool ("" for out-of-range). */
++const char *wv_dom_str(const wv_dom_t *d, uint32_t off);
++
++#endif /* AURALITE_WV_DOM_H */
+-- 
+2.47.3
+

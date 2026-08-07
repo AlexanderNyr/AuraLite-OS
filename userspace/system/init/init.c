@@ -273,7 +273,7 @@ static void cmd_help(void) {
     puts("  hello     - hello world");
     puts("  http      - HTTP client");
     puts("  browser   - web browser (fetch + render HTML)");
-    puts("  gbrowser  - GUI web browser (clickable links)");
+    puts("  gbrowser  - GUI browser (renders HTML, links, canvas)");
     puts("  gtaskmgr  - GUI Task Manager");
     puts("  play <song> - CLI audio player (starwars, ode)");
     puts("  gaudio    - GUI music player");

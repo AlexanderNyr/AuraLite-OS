@@ -1,5 +1,5 @@
 /*
- * webview.c — AuraLite OS web view, Phase W0 (WEBVIEW_PLAN.md).
+ * gbrowser.c — AuraLite OS GUI browser (the web view), Phase W0 (WEBVIEW_PLAN.md).
  *
  * Phase W0 is the scaffold: a window, an event loop, a pixel buffer, and the
  * presentation path the renderer will use for the life of this program —
@@ -12,7 +12,7 @@
  * must be discoverable by reading, not by pointing at a blank window.
  *
  * Conventions inherited from the tree:
- *   - /tmp/webview.frames holds an optional decimal frame count (same
+ *   - /tmp/gbrowser.frames holds an optional decimal frame count (same
  *     convention as /glcube): absent or unreadable means "run until
  *     closed".  The integration test writes it so this program cannot
  *     hang CI.
@@ -56,10 +56,10 @@ static int wid;                     /* our window id */
 static int scroll_y = 0;            /* vertical scroll offset, in pixels */
 static uint32_t frames_done = 0;    /* rendered frames */
 
-/* Read the optional /tmp/webview.frames frame limit.  Returns 0 when the
+/* Read the optional /tmp/gbrowser.frames frame limit.  Returns 0 when the
  * file is absent or unreadable, meaning "run forever". */
 static uint32_t frame_limit(void) {
-    int fd = open("/tmp/webview.frames", O_RDONLY);
+    int fd = open("/tmp/gbrowser.frames", O_RDONLY);
     if (fd < 0) return 0;
     char buf[16];
     int n = read(fd, buf, sizeof(buf) - 1);
@@ -86,7 +86,7 @@ static const char k_page_html[] =
     "#footer { text-align: right; color: gray }"
     "</style>"
     "<body>"
-    "<h1>AuraLite WebView</h1>"
+    "<h1>AuraLite Browser</h1>"
     "<p>This is a <b>rendered</b> page: a <a href=\"http://example.com\">link</a>, "
     "<u>underline</u>, and a list.</p>"
     "<ul><li>one<li>two<li>three</ul>"
@@ -123,7 +123,7 @@ static const char k_page_html[] =
     "<p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque "
     "laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto "
     "beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur.</p>"
-    "<p id=\"footer\">AuraLite WebView \u2014 W5</p>"
+    "<p id=\"footer\">AuraLite Browser \u2014 GUI</p>"
     "</body>";
 
 static wv_layout_t lay;
@@ -168,7 +168,11 @@ static void repaint(void);
 static void navigate(const char *url_text);
 static void navigate_ex(const char *url_text, int push);
 static void nav_back(void);
+static void nav_forward(void);
 static int follow_link(int n);
+static void page_build(void);
+static void set_title_for_url(void);
+static char hover_url[WV_URL_MAX_URL] = "";   /* link under the cursor */
 
 /* Rebuild DOM + CSS + layout from raw HTML (a loaded page). */
 static void page_load_html(const char *html, size_t len) {
@@ -197,7 +201,7 @@ static void page_load_html(const char *html, size_t len) {
         if (it->type != WV_D_BOX || it->scene == 0) continue;
         int w = (int)it->w, h = (int)it->h;
         if (w < 8 || h < 8 || w > 256 || h > 256) {
-            printf("[webview] canvas: skip oversized %dx%d\n", w, h);
+            printf("[gbrowser] canvas: skip oversized %dx%d\n", w, h);
             continue;
         }
         uint32_t *px = malloc((size_t)w * (size_t)h * 4);
@@ -205,7 +209,7 @@ static void page_load_html(const char *html, size_t len) {
         long us = -1;
         if (wv_canvas_render_cube(px, w, h, wid, &us) != 0) {
             free(px);
-            printf("[webview] canvas: render failed %dx%d\n", w, h);
+            printf("[gbrowser] canvas: render failed %dx%d\n", w, h);
             continue;
         }
         if (cv_px) free(cv_px);
@@ -213,7 +217,7 @@ static void page_load_html(const char *html, size_t len) {
         cv_w = w;
         cv_h = h;
         cv_valid = 1;
-        printf("[webview] canvas: rendered %dx%d cube in %ld us\n", w, h, us);
+        printf("[gbrowser] canvas: rendered %dx%d cube in %ld us\n", w, h, us);
         break;   /* one canvas per page is enough for the built-in scenes */
     }
 }
@@ -294,7 +298,7 @@ static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out
             free(r.data);
             *body_out = body;
             *body_len_out = n;
-            printf("[webview] fetch: partial body (%u of %u bytes)\n",
+            printf("[gbrowser] fetch: partial body (%u of %u bytes)\n",
                    (unsigned)n, (unsigned)m.content_len);
             return 0;
         }
@@ -307,12 +311,27 @@ static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out
     return 0;
 }
 
+/* The window title follows the current page. */
+static void set_title_for_url(void) {
+    char t[96];
+    if (current_url_str[0]) {
+        wv_url_t u;
+        if (wv_url_parse(current_url_str, &u) && u.ok)
+            snprintf(t, sizeof(t), "Browser - %s", u.host);
+        else
+            snprintf(t, sizeof(t), "Browser");
+    } else {
+        snprintf(t, sizeof(t), "Browser");
+    }
+    ag_window_set_title(wid, t);
+}
+
 /* Load a URL: https -> explanation page; http -> fetch + render.
  * push=1 records it in the history. */
 static void navigate_ex(const char *url_text, int push) {
     wv_url_t u;
     if (!wv_url_parse(url_text, &u) || !u.ok) {
-        printf("[webview] nav: bad url '%s'\n", url_text);
+        printf("[gbrowser] nav: bad url '%s'\n", url_text);
         return;
     }
     char fmt[WV_URL_MAX_URL];
@@ -320,7 +339,7 @@ static void navigate_ex(const char *url_text, int push) {
 
     if (u.is_https) {
         /* The plan's honest refusal, rendered as a page. */
-        printf("[webview] nav: https unsupported for %s\n", fmt);
+        printf("[gbrowser] nav: https unsupported for %s\n", fmt);
         char page[512];
         int pl = snprintf(page, sizeof(page),
             "<body><h1>HTTPS is not supported</h1>"
@@ -337,16 +356,17 @@ static void navigate_ex(const char *url_text, int push) {
             hist_count = hist_pos + 1;
             strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
         }
+        set_title_for_url();
         repaint();
         return;
     }
 
-    printf("[webview] nav: fetching %s\n", fmt);
+    printf("[gbrowser] nav: fetching %s\n", fmt);
     char *body = NULL;
     size_t blen = 0;
     int rc = wv_fetch_url(&u, &body, &blen);
     if (rc != 0) {
-        printf("[webview] nav: fetch failed (%d) for %s\n", rc, fmt);
+        printf("[gbrowser] nav: fetch failed (%d) for %s\n", rc, fmt);
         char page[256];
         int pl = snprintf(page, sizeof(page),
             "<body><h1>Load failed</h1><p>%s (%d)</p></body>", fmt, rc);
@@ -357,12 +377,13 @@ static void navigate_ex(const char *url_text, int push) {
             hist_count = hist_pos + 1;
             strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
         }
+        set_title_for_url();
         repaint();
         return;
     }
-    printf("[webview] nav: loaded %u bytes from %s\n", (unsigned)blen, fmt);
+    printf("[gbrowser] nav: loaded %u bytes from %s\n", (unsigned)blen, fmt);
     page_load_html(body, blen);
-    printf("[webview] nav: html built (items=%u, h=%u)\n",
+    printf("[gbrowser] nav: html built (items=%u, h=%u)\n",
            (unsigned)lay.item_count, (unsigned)lay.content_h);
     free(body);
     strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
@@ -393,10 +414,28 @@ static int hit_test_link(int32_t x, int32_t y) {
 }
 
 static void nav_back(void) {
-    if (hist_pos <= 0) { printf("[webview] back: no history\n"); return; }
+    if (hist_pos <= 0) { printf("[gbrowser] back: no history\n"); return; }
     hist_pos--;
-    printf("[webview] back: %s\n", history[hist_pos]);
+    printf("[gbrowser] back: %s\n", history[hist_pos]);
     navigate_ex(history[hist_pos], 0);
+}
+
+static void nav_forward(void) {
+    if (hist_pos < 0 || hist_pos >= hist_count - 1) {
+        printf("[gbrowser] forward: no history\n");
+        return;
+    }
+    hist_pos++;
+    printf("[gbrowser] forward: %s\n", history[hist_pos]);
+    navigate_ex(history[hist_pos], 0);
+}
+
+/* Home: back to the built-in demo page. */
+static void go_home(void) {
+    printf("[gbrowser] home\n");
+    page_build();      /* forward-declared below */
+    on_page = 1;
+    repaint();
 }
 
 /* Follow link number n of the current page.  Returns 1 when followed. */
@@ -413,7 +452,7 @@ static int follow_link(int n) {
         if (!wv_url_resolve(href, &base, &target) || !target.ok) return 0;
         char fmt[WV_URL_MAX_URL];
         wv_url_format(&target, fmt, sizeof(fmt));
-        printf("[webview] link %d -> %s\n", n, fmt);
+        printf("[gbrowser] link %d -> %s\n", n, fmt);
         navigate(fmt);
         return 1;
     }
@@ -447,13 +486,13 @@ static void page_build(void) {
     wv_dom_build(&dom, &toks_a, 512);
     wv_css_init(&css, cr, 256, cd, 1024, cp, sizeof(cp));
     wv_css_build(&css, &dom);
-    printf("[webview] css rules parsed: %d\n", (int)css.rule_count);
+    printf("[gbrowser] css rules parsed: %d\n", (int)css.rule_count);
     wv_layout_init(&lay, di, 4096, lpo, sizeof(lpo), lb, 520, li, 520, lw, 520);
     wv_layout_run(&lay, &dom, VIEW_W, &css);
     wv_paint_init(&P, page, VIEW_W, VIEW_H);
     max_scroll = lay.content_h > (uint32_t)VIEW_H
                      ? (int32_t)lay.content_h - VIEW_H : 0;
-    printf("[webview] page rendered (content_h=%u, max_scroll=%d)\n",
+    printf("[gbrowser] page rendered (content_h=%u, max_scroll=%d)\n",
            lay.content_h, max_scroll);
 }
 
@@ -463,8 +502,8 @@ static void paint_smoke(void) {
     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
     wv_paint_run(&P, &lay, 0);
     uint32_t h = wv_paint_hash(page, VIEW_W, VIEW_H);
-    int ok = (h == 0x4D394D5Cu);
-    printf("[webview] paint smoke: %s (hash=0x%08x)\n", ok ? "PASS" : "FAIL", h);
+    int ok = (h == 0xE57F068Cu);
+    printf("[gbrowser] paint smoke: %s (hash=0x%08x)\n", ok ? "PASS" : "FAIL", h);
 }
 
 /* The W5 smoke: the <style> block must change the output (the styled page
@@ -500,7 +539,7 @@ static void css_smoke(void) {
     uint32_t h_plain = wv_paint_hash(page, VIEW_W, VIEW_H);
 
     int ok = (h_css != h_plain);
-    printf("[webview] css smoke: %s (styled=0x%08x, plain=0x%08x)\n",
+    printf("[gbrowser] css smoke: %s (styled=0x%08x, plain=0x%08x)\n",
            ok ? "PASS" : "FAIL", h_css, h_plain);
 }
 
@@ -512,7 +551,7 @@ static void canvas_smoke(void) {
     long us = -1;
     int rc = wv_canvas_render_cube(cb, 64, 48, wid, &us);
     if (rc != 0) {
-        printf("[webview] canvas smoke: FAIL (render rc=%d)\n", rc);
+        printf("[gbrowser] canvas smoke: FAIL (render rc=%d)\n", rc);
         return;
     }
     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
@@ -521,7 +560,7 @@ static void canvas_smoke(void) {
     wv_canvas_blit(page, VIEW_W, VIEW_H, cb, 64, 48, 24, 320, 0);
     uint32_t h_after = wv_paint_hash(page, VIEW_W, VIEW_H);
     int ok = (h_before != h_after);
-    printf("[webview] canvas smoke: %s (64x48 cube in %ld us, hash %08x -> %08x)\n",
+    printf("[gbrowser] canvas smoke: %s (64x48 cube in %ld us, hash %08x -> %08x)\n",
            ok ? "PASS" : "FAIL", us, h_before, h_after);
 }
 
@@ -541,7 +580,7 @@ static void scroll_smoke(void) {
     uint32_t h_full = wv_paint_hash(page, VIEW_W, VIEW_H);
 
     int ok = (h_scroll == h_full);
-    printf("[webview] paint scroll smoke: %s (memmove+band %s full repaint)\n",
+    printf("[gbrowser] paint scroll smoke: %s (memmove+band %s full repaint)\n",
            ok ? "PASS" : "FAIL", ok ? "==" : "!=");
 }
 
@@ -552,32 +591,68 @@ static void present(void) {
 }
 
 /* The chrome: URL bar + Back/Go buttons + status strip. */
+/* Button geometry: Back | Fwd | Home | [URL bar] | Go */
+#define BTN_BACK_X 4
+#define BTN_FWD_X  52
+#define BTN_HOME_X 100
+#define BTN_URL_X  148
+#define BTN_URL_W  (WIN_W - 148 - 52)
+#define BTN_GO_X   (WIN_W - 48)
+#define BTN_H 20
+
 static void draw_chrome(const char *status) {
     /* bar background */
     ag_fill_rect(wid, 0, 0, WIN_W, CHROME_H, 0x00202028);
-    /* Back button */
-    ag_fill_rect(wid, 4, 4, 44, 20, 0x00303040);
-    ag_draw_text(wid, 12, 8, "Back", 0x00DDEEFF);
-    /* Go button */
-    ag_fill_rect(wid, WIN_W - 48, 4, 44, 20, 0x002F60C0);
-    ag_draw_text(wid, WIN_W - 40, 8, "Go", 0x00FFFFFF);
+    /* Back */
+    ag_fill_rect(wid, BTN_BACK_X, 4, 44, BTN_H, 0x00303040);
+    ag_draw_text(wid, BTN_BACK_X + 8, 8, "Back", 0x00DDEEFF);
+    /* Fwd */
+    ag_fill_rect(wid, BTN_FWD_X, 4, 44, BTN_H, 0x00303040);
+    ag_draw_text(wid, BTN_FWD_X + 10, 8, "Fwd", 0x00DDEEFF);
+    /* Home */
+    ag_fill_rect(wid, BTN_HOME_X, 4, 44, BTN_H, 0x00303040);
+    ag_draw_text(wid, BTN_HOME_X + 8, 8, "Home", 0x00DDEEFF);
+    /* Go */
+    ag_fill_rect(wid, BTN_GO_X, 4, 44, BTN_H, 0x002F60C0);
+    ag_draw_text(wid, BTN_GO_X + 10, 8, "Go", 0x00FFFFFF);
     /* URL bar */
-    ag_fill_rect(wid, 52, 4, WIN_W - 108, 20, 0x00FFFFFF);
-    ag_draw_text(wid, 56, 8, addr_buf, 0x00000000);
-    /* status strip */
+    ag_fill_rect(wid, BTN_URL_X, 4, BTN_URL_W, BTN_H, 0x00FFFFFF);
+    ag_draw_text(wid, BTN_URL_X + 4, 8, addr_buf, 0x00000000);
+    /* status strip: the hovered link URL takes priority */
+    const char *st = hover_url[0] ? hover_url : status;
     ag_fill_rect(wid, 0, VIEW_H + PAGE_OFF_Y, WIN_W, 40, 0x00202028);
-    ag_draw_text(wid, 8, VIEW_H + PAGE_OFF_Y + 12, status, 0x00DDEEFF);
+    ag_draw_text(wid, 8, VIEW_H + PAGE_OFF_Y + 12, st, 0x00DDEEFF);
 }
 
-/* Address bar hit zones (client coordinates). */
+/* Chrome hit zones (client coordinates). */
 static int chrome_back_hit(int32_t x, int32_t y) {
-    return x >= 4 && x < 48 && y >= 4 && y < 24;
+    return x >= BTN_BACK_X && x < BTN_BACK_X + 44 && y >= 4 && y < 4 + BTN_H;
+}
+static int chrome_fwd_hit(int32_t x, int32_t y) {
+    return x >= BTN_FWD_X && x < BTN_FWD_X + 44 && y >= 4 && y < 4 + BTN_H;
+}
+static int chrome_home_hit(int32_t x, int32_t y) {
+    return x >= BTN_HOME_X && x < BTN_HOME_X + 44 && y >= 4 && y < 4 + BTN_H;
 }
 static int chrome_go_hit(int32_t x, int32_t y) {
-    return x >= WIN_W - 48 && x < WIN_W - 4 && y >= 4 && y < 24;
+    return x >= BTN_GO_X && x < BTN_GO_X + 44 && y >= 4 && y < 4 + BTN_H;
 }
 static int chrome_url_hit(int32_t x, int32_t y) {
-    return x >= 52 && x < WIN_W - 52 && y >= 4 && y < 24;
+    return x >= BTN_URL_X && x < BTN_URL_X + BTN_URL_W && y >= 4 && y < 4 + BTN_H;
+}
+
+/* Find the href of the link under (x, y) — page coordinates. */
+static const char *link_under(int32_t x, int32_t y) {
+    int yp = y + scroll_y;
+    for (size_t i = 0; i < lay.item_count; i++) {
+        const wv_disp_t *it = &lay.items[i];
+        if (it->type != WV_D_TEXT || it->link_off == 0) continue;
+        if (x >= it->x && x < (int32_t)(it->x + it->w) &&
+            yp >= it->y && yp < it->y + WV_FONT_H) {
+            if (it->link_off < sizeof(g_dpp)) return &g_dpp[it->link_off];
+        }
+    }
+    return NULL;
 }
 
 /* Repaint: full page from the display list, present, chrome + status. */
@@ -619,6 +694,7 @@ static void repaint(void) {
 static void scroll_to(int new_scroll) {
     if (new_scroll < 0) new_scroll = 0;
     if (new_scroll > max_scroll) new_scroll = max_scroll;
+    hover_url[0] = 0;                 /* the hovered link moved away */
     int delta = new_scroll - scroll_y;
     if (delta == 0) return;
     scroll_y = new_scroll;
@@ -630,24 +706,24 @@ static void scroll_to(int new_scroll) {
 }
 
 int main(void) {
-    printf("[webview] starting W0 scaffold\n");
+    printf("[gbrowser] starting W0 scaffold\n");
 
     /* The page buffer goes on the heap, not the 64 KiB user stack. */
     page = malloc((size_t)VIEW_W * VIEW_H * sizeof(uint32_t));
     if (!page) {
-        printf("[webview] FAIL: cannot allocate %d x %d page buffer\n",
+        printf("[gbrowser] FAIL: cannot allocate %d x %d page buffer\n",
                VIEW_W, VIEW_H);
         return 1;
     }
 
-    wid = ag_window_create(40, 40, WIN_W, WIN_H, "WebView", AG_WIN_DEFAULT);
+    wid = ag_window_create(40, 40, WIN_W, WIN_H, "Browser", AG_WIN_DEFAULT);
     if (wid < 0) {
-        printf("[webview] FAIL: window create returned %d\n", wid);
+        printf("[gbrowser] FAIL: window create returned %d\n", wid);
         free(page);
         return 1;
     }
     ag_window_show(wid);
-    printf("[webview] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
+    printf("[gbrowser] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
 
     page_build();
     on_page = 1;
@@ -656,7 +732,7 @@ int main(void) {
     canvas_smoke();
     scroll_smoke();
     repaint();
-    printf("[webview] page rendered and presented\n");
+    printf("[gbrowser] page rendered and presented\n");
 
     /* ---- Phase W0 benchmark: the presentation path, measured. ------------
      * The plan (§1) says a full-page blit at 800x600 is ~0.125 ms on the
@@ -674,9 +750,9 @@ int main(void) {
         long total_us = sec * 1000000L + nsec / 1000L;
         /* NOTE: libc printf has no %f, so times are reported in integer
          * microseconds — plenty for a frame budget. */
-        printf("[webview] blit %ux%u: %ld us/frame (%d frames, total %ld us)\n",
+        printf("[gbrowser] blit %ux%u: %ld us/frame (%d frames, total %ld us)\n",
                VIEW_W, VIEW_H, total_us / BENCH_FRAMES, BENCH_FRAMES, total_us);
-        printf("[webview] PASS: blit benchmark completed\n");
+        printf("[gbrowser] PASS: blit benchmark completed\n");
     }
 
     /* ---- Phase W1 smoke: the HTML tokeniser runs in-guest too. ----------
@@ -690,14 +766,14 @@ int main(void) {
         wv_arena_init(&wa, wtoks, 64, watrs, 256, wpool, sizeof(wpool));
         const char *doc = "<p>Hello <b>web</b> &amp; bye<br/></p>";
         int n = wv_html_tokenize(&wa, doc, strlen(doc));
-        printf("[webview] tokeniser smoke: %d tokens, truncated=%d\n",
+        printf("[gbrowser] tokeniser smoke: %d tokens, truncated=%d\n",
                n, wa.truncated);
         if (n == 9 && !wa.truncated) {
             /* START p, TEXT, START b, TEXT, END b, TEXT, START br,
              * END p, EOF */
-            printf("[webview] tokeniser smoke: PASS\n");
+            printf("[gbrowser] tokeniser smoke: PASS\n");
         } else {
-            printf("[webview] tokeniser smoke: FAIL\n");
+            printf("[gbrowser] tokeniser smoke: FAIL\n");
         }
     }
 
@@ -723,7 +799,7 @@ int main(void) {
         /* doc + 2 p + 2 text; both p's are children of the document */
         int ok = (nn == 5 && dom.nodes[1].parent == 0 &&
                   dom.nodes[3].parent == 0 && dom.truncated == 0);
-        printf("[webview] dom smoke: %s (nodes=%d)\n",
+        printf("[gbrowser] dom smoke: %s (nodes=%d)\n",
                ok ? "PASS" : "FAIL", nn);
     }
 
@@ -734,7 +810,7 @@ int main(void) {
         size_t doc_len = 10000 * 5 + 10000 * 6;
         char *doc = malloc(doc_len);
         if (!doc) {
-            printf("[webview] dom deep test: FAIL (malloc)\n");
+            printf("[gbrowser] dom deep test: FAIL (malloc)\n");
         } else {
             size_t p = 0;
             for (int i = 0; i < 10000; i++) { memcpy(doc + p, "<div>", 5); p += 5; }
@@ -748,7 +824,7 @@ int main(void) {
             char       *dpp = malloc(262144);
             uint32_t   *stk = malloc(1024 * sizeof(uint32_t));
             if (!tt || !ta || !tp || !dn || !dda || !dpp || !stk) {
-                printf("[webview] dom deep test: FAIL (malloc arenas)\n");
+                printf("[gbrowser] dom deep test: FAIL (malloc arenas)\n");
             } else {
                 wv_arena_t toks_a;
                 wv_arena_init(&toks_a, tt, 22000, ta, 1024, tp, 262144);
@@ -762,7 +838,7 @@ int main(void) {
                     if (dd > maxd) maxd = dd;
                 }
                 int ok = (nn == 10001 && maxd == 512 && dom.truncated == 1);
-                printf("[webview] dom deep test: %s (tokens=%d nodes=%d maxdepth=%u truncated=%d)\n",
+                printf("[gbrowser] dom deep test: %s (tokens=%d nodes=%d maxdepth=%u truncated=%d)\n",
                        ok ? "PASS" : "FAIL", n, nn, maxd, dom.truncated);
             }
             free(tt); free(ta); free(tp);
@@ -779,7 +855,7 @@ int main(void) {
         size_t doc_len = 5000 * 12;
         char *doc = malloc(doc_len);
         if (!doc) {
-            printf("[webview] layout smoke: FAIL (malloc)\n");
+            printf("[gbrowser] layout smoke: FAIL (malloc)\n");
         } else {
             size_t p = 0;
             for (int i = 0; i < 5000; i++) {
@@ -800,7 +876,7 @@ int main(void) {
             wv_walk_t  *lw = malloc(520 * sizeof(wv_walk_t));
             if (!tt || !ta || !tp || !dn || !dda || !dpp || !stk ||
                 !di || !lpo || !lb || !li || !lw) {
-                printf("[webview] layout smoke: FAIL (malloc arenas)\n");
+                printf("[gbrowser] layout smoke: FAIL (malloc arenas)\n");
             } else {
                 wv_arena_t toks_a;
                 wv_arena_init(&toks_a, tt, 22000, ta, 1024, tp, 262144);
@@ -818,7 +894,7 @@ int main(void) {
                 long us = (t1.tv_sec - t0.tv_sec) * 1000000L +
                           (t1.tv_nsec - t0.tv_nsec) / 1000L;
                 int ok = (ni == 10001 && !lay.truncated);
-                printf("[webview] layout smoke: %s (items=%d, 5000 boxes in %ld us, page_h=%u)\n",
+                printf("[gbrowser] layout smoke: %s (items=%d, 5000 boxes in %ld us, page_h=%u)\n",
                        ok ? "PASS" : "FAIL", ni, us, lay.content_h);
             }
             free(tt); free(ta); free(tp);
@@ -828,9 +904,9 @@ int main(void) {
         }
     }
 
-    /* ---- W6: initial URL from /tmp/webview.url (test hook) ---- */
+    /* ---- W6: initial URL from /tmp/gbrowser.url (test hook) ---- */
     {
-        int fd = open("/tmp/webview.url", O_RDONLY);
+        int fd = open("/tmp/gbrowser.url", O_RDONLY);
         if (fd >= 0) {
             char url[WV_URL_MAX_URL];
             int n = read(fd, url, sizeof(url) - 1);
@@ -838,15 +914,15 @@ int main(void) {
             if (n > 0) {
                 url[n] = 0;
                 while (n > 0 && (url[n-1] == '\n' || url[n-1] == '\r')) url[--n] = 0;
-                printf("[webview] initial url: %s\n", url);
+                printf("[gbrowser] initial url: %s\n", url);
                 navigate(url);
             }
         }
-        /* /tmp/webview.steps: "link 0; back; https; nav <url>" — executed
+        /* /tmp/gbrowser.steps: "link 0; back; https; nav <url>" — executed
          * one by one with a pause between.  The init shell blocks on
          * `run`, so the test writes the whole script BEFORE starting the
          * web view. */
-        int fd2 = open("/tmp/webview.steps", O_RDONLY);
+        int fd2 = open("/tmp/gbrowser.steps", O_RDONLY);
         if (fd2 >= 0) {
             char steps[512];
             int n = read(fd2, steps, sizeof(steps) - 1);
@@ -862,7 +938,7 @@ int main(void) {
                     while (tl > 0 && (tok[tl-1] == ' ' || tok[tl-1] == '\t' ||
                                       tok[tl-1] == '\n')) tok[--tl] = 0;
                     if (tl == 0) continue;
-                    printf("[webview] step %d: %s\n", idx, tok);
+                    printf("[gbrowser] step %d: %s\n", idx, tok);
                     if (strncmp(tok, "nav ", 4) == 0) {
                         navigate(tok + 4);
                     } else if (strcmp(tok, "back") == 0) {
@@ -885,18 +961,18 @@ int main(void) {
 
     /* ---- Event loop ---- */
     uint32_t limit = frame_limit();
-    if (limit) printf("[webview] frame limit: %u frames\n", limit);
+    if (limit) printf("[gbrowser] frame limit: %u frames\n", limit);
 
     for (;;) {
         ag_event_t ev;
         while (ag_poll_event(wid, &ev) > 0) {
             switch (ev.type) {
             case AG_EVT_CLOSE_REQ:
-                printf("[webview] close requested\n");
+                printf("[gbrowser] close requested\n");
                 goto done;
             case AG_EVT_KEY_DOWN:
                 if (ev.key == 'q' || ev.key == 'Q' || ev.key == 27 /* Esc */) {
-                    printf("[webview] quit via key\n");
+                    printf("[gbrowser] quit via key\n");
                     goto done;
                 }
                 if (ev.key == '\r' || ev.key == '\n') {
@@ -924,6 +1000,10 @@ int main(void) {
                 int32_t mx = ev.x, my = ev.y;
                 if (chrome_back_hit(mx, my)) {
                     nav_back();
+                } else if (chrome_fwd_hit(mx, my)) {
+                    nav_forward();
+                } else if (chrome_home_hit(mx, my)) {
+                    go_home();
                 } else if (chrome_go_hit(mx, my)) {
                     if (addr_len > 0) { addr_buf[addr_len] = 0; navigate(addr_buf); }
                 } else if (chrome_url_hit(mx, my)) {
@@ -931,6 +1011,21 @@ int main(void) {
                 } else if (my >= PAGE_OFF_Y) {
                     /* page area: hit-test links */
                     hit_test_link(mx, my - PAGE_OFF_Y);
+                }
+                break;
+            }
+            case AG_EVT_MOUSE_MOVE: {
+                /* hover: show the link's target in the status strip */
+                int32_t mx = ev.x, my = ev.y;
+                const char *new_hover = "";
+                if (my >= PAGE_OFF_Y) {
+                    const char *h = link_under(mx, my - PAGE_OFF_Y);
+                    if (h) new_hover = h;
+                }
+                if (strcmp(hover_url, new_hover) != 0) {
+                    strncpy(hover_url, new_hover, sizeof(hover_url) - 1);
+                    draw_chrome("");      /* chrome + status only */
+                    ag_render_now();
                 }
                 break;
             }
@@ -949,10 +1044,10 @@ int main(void) {
             }
         }
 
-        /* W6 test hook: /tmp/webview.cmd is polled; a changed line is
+        /* W6 test hook: /tmp/gbrowser.cmd is polled; a changed line is
          * executed ("nav <url>", "back", "link <n>", "https"). */
         {
-            int fd = open("/tmp/webview.cmd", O_RDONLY);
+            int fd = open("/tmp/gbrowser.cmd", O_RDONLY);
             if (fd >= 0) {
                 char cmd[WV_URL_MAX_URL + 64];
                 int n = read(fd, cmd, sizeof(cmd) - 1);
@@ -986,7 +1081,7 @@ int main(void) {
         }
 
         if (limit && frames_done >= limit) {
-            printf("[webview] PASS: %u frames rendered, exiting\n", frames_done);
+            printf("[gbrowser] PASS: %u frames rendered, exiting\n", frames_done);
             goto done;
         }
 
@@ -1001,7 +1096,7 @@ int main(void) {
     }
 
 done:
-    printf("[webview] W0 scaffold complete\n");
+    printf("[gbrowser] W0 scaffold complete\n");
     ag_window_destroy(wid);
     free(page);
     return 0;

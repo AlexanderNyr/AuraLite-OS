@@ -2,7 +2,7 @@
  * test_wv_paint.c — host unit tests for the web view painter
  * (WEBVIEW_PLAN phase W4).
  *
- * Links the REAL userspace/apps/webview/wv_paint.c (never a copy) and
+ * Links the REAL userspace/apps/gbrowser/wv_paint.c (never a copy) and
  * checks the plan's gate:
  *   - a page renders with text where the display list says it should be;
  *   - scrolling a 10 000-line page stays within the frame budget;
@@ -25,11 +25,11 @@
 #include <stdint.h>
 #include <time.h>
 
-#include "userspace/apps/webview/wv_html.h"
-#include "userspace/apps/webview/wv_dom.h"
-#include "userspace/apps/webview/wv_layout.h"
-#include "userspace/apps/webview/wv_css.h"
-#include "userspace/apps/webview/wv_paint.h"
+#include "userspace/apps/gbrowser/wv_html.h"
+#include "userspace/apps/gbrowser/wv_dom.h"
+#include "userspace/apps/gbrowser/wv_layout.h"
+#include "userspace/apps/gbrowser/wv_css.h"
+#include "userspace/apps/gbrowser/wv_paint.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \
@@ -207,7 +207,7 @@ static void test_reference_hash(void) {
 "#footer { text-align: right; color: gray }"
 "</style>"
 "<body>"
-"<h1>AuraLite WebView</h1>"
+"<h1>AuraLite Browser</h1>"
 "<p>This is a <b>rendered</b> page: a <a href=\"http://example.com\">link</a>, "
 "<u>underline</u>, and a list.</p>"
 "<ul><li>one<li>two<li>three</ul>"
@@ -244,10 +244,10 @@ static void test_reference_hash(void) {
 "<p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque "
 "laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto "
 "beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur.</p>"
-"<p id=\"footer\">AuraLite WebView \u2014 W5</p>"
+"<p id=\"footer\">AuraLite Browser \u2014 GUI</p>"
 "</body>";
     uint32_t h = render(doc, 800, 0);
-    CK(h == 0x4D394D5Cu);   /* reference — update deliberately */
+    CK(h == 0xE57F068Cu);   /* reference — update deliberately */
     if (h != 0x8F9E9A21u)
         printf("  (got 0x%08x)\n", h);
 }

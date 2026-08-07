@@ -709,9 +709,8 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/apps/gtaskmgr` | Graphical task manager. |
 | `/apps/glaunch` | GUI application launcher. |
 | `/apps/gaudio` | GUI music player. |
-| `/apps/gbrowser` | GUI web browser. |
 | `/apps/gusb` | GUI USB manager. |
-| `/apps/webview` | Web view (W0 scaffold: window, pixel-buffer presentation, blit benchmark; see `docs/webview.md`). |
+| `/apps/gbrowser` | GUI browser (formerly `/apps/webview`): HTML → DOM → layout → pixels, inline CSS, navigation (HTTP/1.1, chunked, growing buffer), Back/Fwd/Home/Go chrome, history, https refusal page, `<canvas data-scene="cube">` via OpenGL. See `docs/gbrowser.md`. |
 | `/demos/guess` | Number guessing game. |
 | `/demos/snake` | Terminal snake game. |
 | `/demos/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube over a mipmapped floor, with a render-to-texture inset panel. |
@@ -761,7 +760,7 @@ Start here:
 - [`GL_PLAN.md`](GL_PLAN.md) — the OpenGL stack (complete).
 - [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
 - [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
-- [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — a box-model web view (planned). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
+- [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — the box-model web view plan (complete). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
 - [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
 - [`FIXES_PLAN.md`](FIXES_PLAN.md) — repair plan for known defects (planned), ranked by danger rather than by ease. Adds nothing; fixes what is broken.
 - [`TODO.md`](TODO.md) — known limitations and future work.

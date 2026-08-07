@@ -2,7 +2,7 @@
  * test_wv_http.c — host unit tests for the web view URL/HTTP layers
  * (WEBVIEW_PLAN phase W6).
  *
- * Links the REAL userspace/apps/webview/wv_url.c + wv_http.c (never
+ * Links the REAL userspace/apps/gbrowser/wv_url.c + wv_http.c (never
  * copies) and checks the plan's gate:
  *   - a chunked response decodes to the same bytes as an unchunked one;
  *   - an https:// URL produces the explanation path (flagged, parseable),
@@ -23,8 +23,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-#include "userspace/apps/webview/wv_url.h"
-#include "userspace/apps/webview/wv_http.h"
+#include "userspace/apps/gbrowser/wv_url.h"
+#include "userspace/apps/gbrowser/wv_http.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \

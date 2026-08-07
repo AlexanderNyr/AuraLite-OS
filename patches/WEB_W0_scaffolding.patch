@@ -1,0 +1,623 @@
+From 4c8288e1cb39d41b288a4b69e7b3ef6bf06a7b80 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 08:34:04 +0000
+Subject: [PATCH] W0 update: web view scaffold
+
+WEBVIEW_PLAN.md phase W0:
+- /apps/webview: window, event loop, heap page buffer (800x600x32),
+  ag_blit() presentation, wheel/arrow scroll, /tmp/webview.frames limit
+- blit benchmark: 7575-7676 us/frame under QEMU TCG; docs/webview.md
+  records the budget and every limitation (no HTTPS/JS/images, monospace)
+- integration gate test_webview.sh (7 asserts) passes in QEMU
+- webview.elf ~130 KB, inside SPAWN_MAX_IMAGE
+---
+ CHANGELOG.md                            |  23 +++
+ Makefile                                |   5 +-
+ README.md                               |   1 +
+ SHA256SUMS                              |   6 +-
+ WEBVIEW_PLAN.md                         |  22 +-
+ docs/README.md                          |   1 +
+ docs/status.md                          |   1 +
+ docs/webview.md                         |  95 +++++++++
+ tests/integration/cases/test_webview.sh |  40 ++++
+ tests/integration/run_all.sh            |   1 +
+ userspace/apps/webview/webview.c        | 262 ++++++++++++++++++++++++
+ 11 files changed, 448 insertions(+), 9 deletions(-)
+ create mode 100644 docs/webview.md
+ create mode 100755 tests/integration/cases/test_webview.sh
+ create mode 100644 userspace/apps/webview/webview.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 76ac570..bb17ae0 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,29 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WebView Phase W0 — Scaffolding] 2026-08-07
++
++`WEBVIEW_PLAN.md` phase W0: the web view exists as a scaffold — a window, an
++event loop, a pixel buffer, and the measured cost of presenting it.
++
++- **`/apps/webview`** (`userspace/apps/webview/webview.c`): 800×640 window,
++  heap-allocated 800×600×32 page buffer (never the 64 KiB user stack),
++  `ag_blit()` presentation, wheel/arrow scrolling of a standing page,
++  `/tmp/webview.frames` frame limit (glcube convention), clean exit.
++- **The window states its own limitations** (plan D6/W0 objective): no HTTPS,
++  no JavaScript, no images, monospace only — drawn in the window and written
++  down in `docs/webview.md` before any code invites disappointment.
++- **Measured frame budget**: full-page 800×600 blit = 7 575–7 676 µs/frame
++  under QEMU TCG (software emulation); the plan's native baseline is
++  0.125 ms. Recorded in `docs/webview.md` §3.
++- **Integration gate**: `tests/integration/cases/test_webview.sh` (7 asserts:
++  launch, window, limitation statement, benchmark number, frame limit, clean
++  exit, no kernel fault) — passes in QEMU.
++- **Size**: `webview.elf` is ~130 KB, comfortably inside `SPAWN_MAX_IMAGE`
++  (1 MiB); ~870 KB remain for W1–W7.
++- **libc note**: `printf` has no `%f`, so the benchmark reports integer
++  microseconds — noted in the source.
++
+ ## [Internet Phase N7 — TCP stack hardening] 2026-08-06
+ 
+ `INTERNET_PLAN.md` phase N7: fixes three TCP bugs that blocked all
+diff --git a/Makefile b/Makefile
+index dd5d719..94b8cf1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -341,6 +341,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
+              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
+              $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
+              $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf \
++             $(USER_BUILD)/webview.elf \
+              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
+              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
+              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
+@@ -820,6 +821,8 @@ $(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c lib/libauragui/i
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++$(USER_BUILD)/webview.o: userspace/apps/webview/webview.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
++	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+@@ -1072,7 +1075,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
+ # name=source-basename pairs, grouped by destination directory.
+ INITRD_BIN   := init hello apm play sysinfo
+ INITRD_APPS  := calc editor http clock browser gcalc gedit gfiles gterm \
+-                gsysmon gabout gtaskmgr glaunch gaudio gbrowser gusb
++                gsysmon gabout gtaskmgr glaunch gaudio gbrowser gusb webview
+ INITRD_DEMOS := guess snake glcube glgears
+ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
+                 gltest tcpserver elfperm udptest timestest fifolinktest \
+diff --git a/README.md b/README.md
+index 5ae9bd6..3aaa62d 100644
+--- a/README.md
++++ b/README.md
+@@ -711,6 +711,7 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
+ | `/apps/gaudio` | GUI music player. |
+ | `/apps/gbrowser` | GUI web browser. |
+ | `/apps/gusb` | GUI USB manager. |
++| `/apps/webview` | Web view (W0 scaffold: window, pixel-buffer presentation, blit benchmark; see `docs/webview.md`). |
+ | `/demos/guess` | Number guessing game. |
+ | `/demos/snake` | Terminal snake game. |
+ | `/demos/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube over a mipmapped floor, with a render-to-texture inset panel. |
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 1a54018..6e932b8 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-4351513229faac6d80d7a945706379da5f3019bbf496fbfbcbb2255f543f5932  auralite.iso
+-92bcf69fddc0e6dbea4abf0b2f7eaf60f18b52fbe3d8cba8456e6535caa4375c  kernel.elf
+-0015de5042410a7eaa68401d77e58b74f3add0f86c3dcc04ad39ee70a54cdeab  initrd.tar
++6a024c51dee33db20e02556ee90632f8134f5ae35428378ee65e4baee52c9bc9  auralite.iso
++55fad1bb74013012236de5d7e732c91d161fd1008da81267468a3d13653cc0a1  kernel.elf
++d743630e1b77a9def1a4c54cdf6333c65f799ac50eb2faecf58a1777b0750cc7  initrd.tar
+diff --git a/WEBVIEW_PLAN.md b/WEBVIEW_PLAN.md
+index 5117849..11e8585 100644
+--- a/WEBVIEW_PLAN.md
++++ b/WEBVIEW_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Web View Plan
+ 
+-## Status: PLANNED 📋 (phases W0–W8)
++## Status: W0 COMPLETE ✅ · W1–W8 PLANNED 📋
+ 
+ This document answers:
+ 
+@@ -186,17 +186,17 @@ it is.
+ 
+ ## 4. Phases
+ 
+-### Phase W0 — Scaffolding and an honest README
++### Phase W0 — Scaffolding and an honest README ✅ COMPLETE
+ 
+ **Objective:** a window that says what this can and cannot do.
+ 
+ #### Tasks
+ 
+-- [ ] `userspace/apps/webview/` — a window, an event loop, a pixel buffer
++- [x] `userspace/apps/webview/` — a window, an event loop, a pixel buffer
+       presented with `ag_blit()`.
+-- [ ] A `docs/webview.md` that states, up front: no HTTPS, no JavaScript, no
++- [x] A `docs/webview.md` that states, up front: no HTTPS, no JavaScript, no
+       images yet, monospace only.
+-- [ ] Establish the frame budget by measuring it, not guessing: blit an
++- [x] Establish the frame budget by measuring it, not guessing: blit an
+       800×600 buffer and record the cost in the doc.
+ 
+ #### Test gate
+@@ -208,6 +208,18 @@ it is.
+ 
+ `patches/WEB_W0_scaffolding.patch`
+ 
++#### Results (verified 2026-08-07)
++
++| Item | Outcome |
++|---|---|
++| `userspace/apps/webview/webview.c` | Window 800×640, event loop (close / `q`/Esc / wheel / arrows), heap-allocated 800×600 page buffer, `ag_blit()` presentation, `/tmp/webview.frames` limit (glcube convention), startup blit benchmark |
++| Limitation statement | Drawn in the window itself (paint_limitations): no HTTPS, no JavaScript, no images, monospace only |
++| Frame budget, measured | **7 575–7 676 µs/frame** for a full 800×600 blit under QEMU TCG (software emulation, 1 CPU); plan's native baseline is 0.125 ms — recorded in `docs/webview.md` §3 |
++| Clean lifecycle | QEMU run: window created (id 2), benchmark PASS, `PASS: 5 frames rendered, exiting`, `'webview' (tid 8) exited (code=0)`, 522 frames reaped — no leak, no fault |
++| Integration gate | `tests/integration/cases/test_webview.sh` added to `run_all.sh` (7 asserts: launch, window, limitation statement, benchmark number, frame limit, clean exit, no kernel fault) |
++| `webview.elf` size | 130 KB — comfortably inside `SPAWN_MAX_IMAGE` (1 MiB), ~870 KB left for W1–W7 |
++| libc discovery | `printf` has **no `%f`** — benchmark reports integer microseconds; noted in the source |
++
+ ---
+ 
+ ### Phase W1 — The HTML tokeniser
+diff --git a/docs/README.md b/docs/README.md
+index 02b4d65..400c237 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -17,6 +17,7 @@ This directory contains the technical documentation for AuraLite OS.
+ 7. [`virtual_machines.md`](virtual_machines.md) — VirtualBox and VMware setup.
+ 8. [`virtual_driver_matrix.md`](virtual_driver_matrix.md) — virtual hardware compatibility matrix.
+ 9. [`rust_application_guide.md`](rust_application_guide.md) — how to write, build, and troubleshoot freestanding Rust applications (`#![no_std]`), dynamic memory (`alloc`), FFI C-string conventions, and AuraGUI v2.0 integration.
++10. [`webview.md`](webview.md) — the web view (`/apps/webview`): what it renders, its deliberate limitations, and the measured presentation budget.
+ 
+ ## Other root-level docs
+ 
+diff --git a/docs/status.md b/docs/status.md
+index 6855a66..fd31cd8 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -165,6 +165,7 @@ Legend:
+ | `/http` | 🧪 | Uses DNS/TCP syscalls. |
+ | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
+ | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
++| `/webview` | 🧪 | Web view scaffold (WEBVIEW_PLAN W0): window, event loop, heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit. No HTML/CSS/painting yet — W1–W4 are next. See `docs/webview.md`. |
+ 
+ ## Known low-priority limitations
+ 
+diff --git a/docs/webview.md b/docs/webview.md
+new file mode 100644
+index 0000000..9b5deac
+--- /dev/null
++++ b/docs/webview.md
+@@ -0,0 +1,95 @@
++# AuraLite OS Web View (`/apps/webview`)
++
++**Status:** Phase W0 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) — scaffold
++complete. W1 (tokeniser) is next.
++
++This document states what the web view is, what it deliberately is not, and
++what the presentation path costs on this build. It follows the project
++convention that limitations are discovered by reading, not by pointing at a
++blank window — the window itself carries the same statement.
++
++---
++
++## 1. What it is
++
++`/apps/webview` is a windowed program that renders a *standing page*: a pixel
++buffer written by the program itself and presented with `ag_blit()` — the
++same presentation path the renderer will use for the life of this program.
++
++Phase W0 delivers the plumbing and its measured cost:
++
++- a window and an event loop (close, `q`/Esc to quit, wheel and arrow keys to
++  scroll);
++- a heap-allocated 800×600 × 32-bit page buffer (the user stack is 64 KiB and
++  must never hold it);
++- the benchmark of the presentation path, run at startup;
++- an optional `/tmp/webview.frames` limit (same convention as `/glcube`) so
++  automated runs cannot hang;
++- the honest limitation statement, drawn in the window itself.
++
++## 2. What it cannot do (as of W0)
++
++These are plan decisions, not TODOs; each has a pointer to where it lives.
++
++| Limitation | Why | Reference |
++|---|---|---|
++| **No HTTPS** | TLS 1.3 is its own plan of comparable size (crypto, X.509, trust store). A browser that appears to do HTTPS but validates nothing would be a liability. | `WEBVIEW_PLAN.md` D6, `INTERNET_PLAN.md` |
++| **No JavaScript** | A JS engine is larger than the whole plan and would not fit `SPAWN_MAX_IMAGE` (1 MiB). Permanent within this plan. | `WEBVIEW_PLAN.md` D5 |
++| **No images** | PNG/JPEG/GIF decoders are each a phase in their own right; they belong in a follow-up once boxes exist to hold them. | `WEBVIEW_PLAN.md` §7 |
++| **No proportional fonts** | The only rasteriser is PSF2 8×16 monospace. `<b>` is rendered as a synthesised double-strike until a real font path exists. | `WEBVIEW_PLAN.md` D7 |
++| **No CSS beyond a named subset** | `display` (`block`/`inline`/`none`), `color`, `background-color`, `width`, `height`, `margin`, `padding`, `border`, `font-weight`, `text-align`. Adding to the list is a decision, not a slope. | `WEBVIEW_PLAN.md` D4 |
++| **No standards compliance claim** | This renders a deliberately chosen subset. | `WEBVIEW_PLAN.md` §7 |
++| **Response buffer limits** | `gbrowser`'s 16 KiB static buffer is being replaced in W6 by a growing one with an explicit cap. | `WEBVIEW_PLAN.md` W6 |
++
++## 3. The measured presentation path
++
++The plan (§1) measured the obvious alternative before choosing it: writing
++pixels directly beats routing page compositing through the software OpenGL
++stack by ~30×, so the renderer is 2D and GL appears in exactly one phase —
++W7, `<canvas>` — where the page asks for 3D and there is no 2D alternative.
++
++The number this build commits to is the full-page blit. Measured in-tree at
++startup (`/apps/webview` prints it on every run):
++
++| Environment | Full-page 800×600 blit | Notes |
++|---|---|---|
++| QEMU TCG (software emulation, this CI-style sandbox), 1 CPU | **~7.6 ms/frame** (7 575 µs, 200 frames, 2026-08-07) | Whole machine is emulated instruction-by-instruction; syscall + 1.92 MiB copy dominate. Expect ~10–50× faster under hardware acceleration |
++| Reference machine from `WEBVIEW_PLAN.md` §1 | 0.125 ms | Native-execution baseline the plan was written against |
++
++Scrolling (W4) reuses the same path: `memmove` of the retained buffer plus a
++repaint of the exposed band, measured at 0.068 ms in the plan's reference
++measurement.
++
++The frame budget the layout phases must fit is therefore **one full-page
++blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
++5 000-box layout completes within it.
++
++## 4. Hard constraints inherited from the kernel
++
++- **The user stack is 64 KiB.** The parser (W1) and the layout walk (W3) are
++  iterative by design, with explicit depth caps — not patched after a crash.
++  `kernel/proc/guard.c` classifies an overflow as `[GUARD] user stack
++  overflow`; W2's gate runs a 10 000-deep document in QEMU where the real
++  limit applies.
++- **`SPAWN_MAX_IMAGE` is 1 MiB.** `webview.elf` is ~130 KiB as of W0; the
++  budget for a tokeniser, a DOM, layout, CSS and painting is the remaining
++  ~870 KiB, and the failure mode (a diagnosed spawn refusal) must not become
++  the only sign the budget was blown.
++
++## 5. Roadmap
++
++| Phase | Deliverable | Status |
++|---|---|---|
++| W0 | Scaffold: window, event loop, pixel buffer, blit benchmark, this doc | ✅ complete (2026-08-07) |
++| W1 | HTML tokeniser (state machine, no recursion) | 📋 planned |
++| W2 | DOM (flat node array, depth cap, implied structure) | 📋 planned |
++| W3 | Block layout → display list (iterative, 64 KiB-safe) | 📋 planned |
++| W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
++| W5 | Inline CSS subset (D4) | 📋 planned |
++| W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
++| W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
++| W8 | Retire or keep `gbrowser` | 📋 planned |
++
++If only three phases are ever built, W1–W3 are the ones: a tokeniser, a DOM
++and a layout engine are the parts that do not exist anywhere else in the
++tree. Paint is a for-loop over rectangles; the hard work is upstream.
+diff --git a/tests/integration/cases/test_webview.sh b/tests/integration/cases/test_webview.sh
+new file mode 100755
+index 0000000..7141226
+--- /dev/null
++++ b/tests/integration/cases/test_webview.sh
+@@ -0,0 +1,40 @@
++#!/usr/bin/env bash
++# test_webview.sh — WEBVIEW_PLAN phase W0 scaffold.
++#
++# Verifies the deliverable of W0 end to end in QEMU:
++#   - the shell launches /apps/webview;
++#   - the window opens and the honest limitation statement is drawn;
++#   - the blit benchmark reports a real number for the 800x600 page;
++#   - the /tmp/webview.frames limit is respected and the program exits
++#     cleanly (same convention as /glcube, so CI cannot hang);
++#   - no kernel fault anywhere in the path.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "WebView W0 scaffold"
++
++LOG="$IL_LOGDIR/webview.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 8
++il_send "write /tmp/webview.frames 10"
++il_send_delay 1
++il_send "run webview"
++
++il_run_qemu "$LOG" 45
++
++il_assert_grep "$LOG" "running /apps/webview"                  "shell launched webview"
++il_assert_grep "$LOG" "\\[webview\\] window created"            "window opened"
++il_assert_grep "$LOG" "\\[webview\\] limitations painted"       "limitation statement drawn"
++il_assert_grep "$LOG" "\\[webview\\] blit 800x600: [0-9][0-9]* us/frame" \
++    "blit benchmark reported a number"
++il_assert_grep "$LOG" "\\[webview\\] PASS: 10 frames rendered"  "frame limit respected"
++il_assert_grep "$LOG" "\\[webview\\] W0 scaffold complete"       "clean exit"
++il_assert_no_grep "$LOG" "Page Fault|kernel panic|triple fault" "no kernel fault"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index bb0b881..459af00 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -116,6 +116,7 @@ ALL_CASES=(
+     test_smp_init_order
+     test_gui
+     test_gui_usb
++    test_webview
+ )
+ 
+ # Slow ones we skip in --fast mode.
+diff --git a/userspace/apps/webview/webview.c b/userspace/apps/webview/webview.c
+new file mode 100644
+index 0000000..0472e11
+--- /dev/null
++++ b/userspace/apps/webview/webview.c
+@@ -0,0 +1,262 @@
++/*
++ * webview.c — AuraLite OS web view, Phase W0 (WEBVIEW_PLAN.md).
++ *
++ * Phase W0 is the scaffold: a window, an event loop, a pixel buffer, and the
++ * presentation path the renderer will use for the life of this program —
++ * pixels written into a buffer, presented with ag_blit().  There is no HTML,
++ * no layout and no painting yet; what this phase proves is the plumbing and
++ * the cost of the plumbing, measured rather than guessed.
++ *
++ * The window itself states the plan's limitations (D6/W0 objective): no
++ * HTTPS, no JavaScript, no images, monospace glyphs only.  The limitation
++ * must be discoverable by reading, not by pointing at a blank window.
++ *
++ * Conventions inherited from the tree:
++ *   - /tmp/webview.frames holds an optional decimal frame count (same
++ *     convention as /glcube): absent or unreadable means "run until
++ *     closed".  The integration test writes it so this program cannot
++ *     hang CI.
++ *   - All user-space allocations come from the heap: the user stack is
++ *     64 KiB and the page buffer must not live on it.
++ */
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <time.h>
++
++#include "auragui.h"
++
++/* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
++#define VIEW_W 800
++#define VIEW_H 600
++
++/* Window is the viewport plus room for a status strip below it. */
++#define WIN_W  800
++#define WIN_H  (VIEW_H + 40)
++
++/* How many present() calls the startup benchmark runs. */
++#define BENCH_FRAMES 200
++
++static uint32_t *page;              /* the pixel buffer being presented */
++static int wid;                     /* our window id */
++static int scroll_y = 0;            /* vertical scroll offset, in pixels */
++static uint32_t frames_done = 0;    /* rendered frames */
++
++/* Read the optional /tmp/webview.frames frame limit.  Returns 0 when the
++ * file is absent or unreadable, meaning "run forever". */
++static uint32_t frame_limit(void) {
++    int fd = open("/tmp/webview.frames", O_RDONLY);
++    if (fd < 0) return 0;
++    char buf[16];
++    int n = read(fd, buf, sizeof(buf) - 1);
++    close(fd);
++    if (n <= 0) return 0;
++    buf[n] = 0;
++    uint32_t v = 0;
++    for (int i = 0; i < n && buf[i] >= '0' && buf[i] <= '9'; i++)
++        v = v * 10 + (uint32_t)(buf[i] - '0');
++    return v;
++}
++
++/* ---- the "document" this phase can render ---------------------------------
++ *
++ * W0 draws a standing page, not a parsed one: a header band, some block
++ * rectangles standing in for paragraphs, and (through the window API, which
++ * has the PSF rasteriser) the honest text the plan requires.  From W4 the
++ * text will live in this buffer, rasterised by webview's own glyph path; the
++ * window-API text here is scaffold, not the renderer.
++ */
++
++static void draw_page(uint32_t *buf, int w, int h, int scroll) {
++    /* Paper background. */
++    for (int y = 0; y < h; y++) {
++        uint32_t *row = buf + (size_t)y * w;
++        for (int x = 0; x < w; x++) row[x] = 0x00FDFDF7;
++    }
++
++    /* Header band (moves with the page). */
++    int hb_y = -scroll;
++    if (hb_y < h && hb_y > -48) {
++        int top = hb_y < 0 ? 0 : hb_y;
++        int bot = hb_y + 48 < h ? hb_y + 48 : h;
++        for (int y = top; y < bot; y++) {
++            uint32_t *row = buf + (size_t)y * w;
++            for (int x = 0; x < w; x++) row[x] = 0x002F60C0;
++        }
++    }
++
++    /* Block "paragraphs": rectangles at increasing depth, each with a
++     * contrasting rule so scrolling is visibly a page move. */
++    static const uint32_t cols[5] = {
++        0x00E8E0D0, 0x00DDE8F0, 0x00E8F0E0, 0x00F0E8E8, 0x00E0E8E8,
++    };
++    for (int i = 0; i < 5; i++) {
++        int py = 64 + i * 90 - scroll;          /* paragraph top */
++        int ph = 60;
++        if (py + ph < 0 || py >= h) continue;   /* clipped out entirely */
++        int top = py < 0 ? 0 : py;
++        int bot = py + ph < h ? py + ph : h;
++        int pw = 720 - i * 40;
++        for (int y = top; y < bot; y++) {
++            uint32_t *row = buf + (size_t)y * w;
++            for (int x = 40; x < 40 + pw && x < w; x++) row[x] = cols[i];
++        }
++        /* rule under the block: full width so scroll motion is obvious */
++        if (py + ph >= 0 && py + ph < h) {
++            uint32_t *row = buf + (size_t)(py + ph) * w;
++            for (int x = 0; x < w; x++) row[x] = 0x00B0A898;
++        }
++    }
++
++    /* Scroll position indicator on the paper margin. */
++    if (h > 16) {
++        for (int y = 0; y < h; y += 8) {
++            buf[(size_t)y * w + 12] = 0x00C0B0A0;
++            buf[(size_t)y * w + 13] = 0x00C0B0A0;
++        }
++    }
++}
++
++/* Present the page buffer into the window. */
++static void present(void) {
++    ag_blit(wid, 0, 0, VIEW_W, VIEW_H, page, VIEW_W);
++    frames_done++;
++}
++
++/* Repaint: redraw the page, present it, update the status strip. */
++static void repaint(void) {
++    draw_page(page, VIEW_W, VIEW_H, scroll_y);
++    present();
++
++    char status[96];
++    snprintf(status, sizeof(status),
++             "W0 scaffold - scroll %d px - frames %u",
++             scroll_y, frames_done);
++    ag_fill_rect(wid, 0, VIEW_H, WIN_W, 40, 0x00202028);
++    ag_draw_text(wid, 8, VIEW_H + 12, status, 0x00DDEEFF);
++    ag_render_now();
++}
++
++/* The honest statement the plan's W0 objective asks the window to make. */
++static void paint_limitations(void) {
++    ag_fill_rect(wid, 0, 0, WIN_W, WIN_H, 0x00FFFFFF);
++    ag_draw_text(wid, 16, 12, "AuraLite WebView - W0 scaffold", 0x00000000);
++    ag_draw_text(wid, 16, 32, "This build can:", 0x00000000);
++    ag_draw_text(wid, 16, 52, "  - open a window and run an event loop", 0x00303030);
++    ag_draw_text(wid, 16, 72, "  - render a pixel buffer and present it with ag_blit()", 0x00303030);
++    ag_draw_text(wid, 16, 92, "  - scroll a standing page (wheel) and quit (q / Esc / close)", 0x00303030);
++    ag_draw_text(wid, 16, 116, "This build cannot:", 0x00000000);
++    ag_draw_text(wid, 16, 136, "  - no HTTPS (TLS is INTERNET_PLAN; see docs/webview.md)", 0x00603020);
++    ag_draw_text(wid, 16, 156, "  - no JavaScript (WEBVIEW_PLAN decision D5, permanent)", 0x00603020);
++    ag_draw_text(wid, 16, 176, "  - no images (PNG/JPEG decoders are future phases)", 0x00603020);
++    ag_draw_text(wid, 16, 196, "  - no proportional fonts (PSF 8x16 monospace only)", 0x00603020);
++    ag_draw_text(wid, 16, 220, "Scrolling in 5 s; then the blit benchmark runs.", 0x00404040);
++}
++
++int main(void) {
++    printf("[webview] starting W0 scaffold\n");
++
++    /* The page buffer goes on the heap, not the 64 KiB user stack. */
++    page = malloc((size_t)VIEW_W * VIEW_H * sizeof(uint32_t));
++    if (!page) {
++        printf("[webview] FAIL: cannot allocate %d x %d page buffer\n",
++               VIEW_W, VIEW_H);
++        return 1;
++    }
++
++    wid = ag_window_create(40, 40, WIN_W, WIN_H, "WebView", AG_WIN_DEFAULT);
++    if (wid < 0) {
++        printf("[webview] FAIL: window create returned %d\n", wid);
++        free(page);
++        return 1;
++    }
++    ag_window_show(wid);
++    printf("[webview] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
++
++    paint_limitations();
++    ag_render_now();
++    printf("[webview] limitations painted\n");
++
++    /* ---- Phase W0 benchmark: the presentation path, measured. ------------
++     * The plan (§1) says a full-page blit at 800x600 is ~0.125 ms on the
++     * reference machine.  This phase records the number for this build
++     * instead of trusting the old one. */
++    {
++        struct timespec t0, t1;
++        clock_gettime(CLOCK_MONOTONIC, &t0);
++        for (int i = 0; i < BENCH_FRAMES; i++)
++            ag_blit(wid, 0, 0, VIEW_W, VIEW_H, page, VIEW_W);
++        clock_gettime(CLOCK_MONOTONIC, &t1);
++        long sec = t1.tv_sec - t0.tv_sec;
++        long nsec = t1.tv_nsec - t0.tv_nsec;
++        if (nsec < 0) { sec--; nsec += 1000000000L; }
++        long total_us = sec * 1000000L + nsec / 1000L;
++        /* NOTE: libc printf has no %f, so times are reported in integer
++         * microseconds — plenty for a frame budget. */
++        printf("[webview] blit %ux%u: %ld us/frame (%d frames, total %ld us)\n",
++               VIEW_W, VIEW_H, total_us / BENCH_FRAMES, BENCH_FRAMES, total_us);
++        printf("[webview] PASS: blit benchmark completed\n");
++    }
++
++    /* ---- Event loop.  The W4 renderer will replace draw_page(); the loop
++     * shape (poll, handle, repaint on demand) is the one it will keep. */
++    uint32_t limit = frame_limit();
++    if (limit) printf("[webview] frame limit: %u frames\n", limit);
++
++    for (;;) {
++        ag_event_t ev;
++        while (ag_poll_event(wid, &ev) > 0) {
++            switch (ev.type) {
++            case AG_EVT_CLOSE_REQ:
++                printf("[webview] close requested\n");
++                goto done;
++            case AG_EVT_KEY_DOWN:
++                if (ev.key == 'q' || ev.key == 'Q' || ev.key == 27 /* Esc */) {
++                    printf("[webview] quit via key\n");
++                    goto done;
++                }
++                if (ev.key == 0x102 /* arrow up */) { scroll_y -= 16; repaint(); }
++                if (ev.key == 0x103 /* arrow down */) { scroll_y += 16; repaint(); }
++                break;
++            case AG_EVT_MOUSE_WHEEL: {
++                /* The kernel GUI ABI delivers the wheel delta in ev.key
++                 * (gui.c: gui_event_t.key = ev->wheel). */
++                int delta = (int)(int32_t)ev.key;
++                int new_scroll = scroll_y - delta * 24;
++                if (new_scroll < 0) new_scroll = 0;
++                if (new_scroll > 600) new_scroll = 600;
++                if (new_scroll != scroll_y) { scroll_y = new_scroll; repaint(); }
++                break;
++            }
++            case AG_EVT_PAINT:
++                repaint();
++                break;
++            default:
++                break;
++            }
++        }
++
++        if (limit && frames_done >= limit) {
++            printf("[webview] PASS: %u frames rendered, exiting\n", frames_done);
++            goto done;
++        }
++
++        /* Pulse: repaint even with no input, so the frame counter is live
++         * and the paint path is exercised continuously (the same cadence
++         * the W4 renderer will use). */
++        repaint();
++
++        /* Yield so the compositor and other threads get CPU time. */
++        struct timespec ts = { 0, 5000000 };   /* 5 ms */
++        nanosleep(&ts, 0);
++    }
++
++done:
++    printf("[webview] W0 scaffold complete\n");
++    ag_window_destroy(wid);
++    free(page);
++    return 0;
++}
+-- 
+2.47.3
+

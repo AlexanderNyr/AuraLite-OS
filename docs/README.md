@@ -17,7 +17,7 @@ This directory contains the technical documentation for AuraLite OS.
 7. [`virtual_machines.md`](virtual_machines.md) — VirtualBox and VMware setup.
 8. [`virtual_driver_matrix.md`](virtual_driver_matrix.md) — virtual hardware compatibility matrix.
 9. [`rust_application_guide.md`](rust_application_guide.md) — how to write, build, and troubleshoot freestanding Rust applications (`#![no_std]`), dynamic memory (`alloc`), FFI C-string conventions, and AuraGUI v2.0 integration.
-10. [`webview.md`](webview.md) — the web view (`/apps/webview`): what it renders, its deliberate limitations, and the measured presentation budget.
+10. [`gbrowser.md`](gbrowser.md) — the GUI browser (`/apps/gbrowser`, formerly `/apps/webview`): what it renders, its deliberate limitations, and the measured presentation budget.
 
 ## Other root-level docs
 

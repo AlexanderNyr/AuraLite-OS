@@ -2,7 +2,7 @@
  * test_wv_layout.c — host unit tests for the web view block layout
  * (WEBVIEW_PLAN phase W3).
  *
- * Links the REAL userspace/apps/webview/wv_layout.c + wv_dom.c +
+ * Links the REAL userspace/apps/gbrowser/wv_layout.c + wv_dom.c +
  * wv_html.c (never copies) and checks the plan's gate:
  *   - a paragraph wider than the viewport wraps at the right column;
  *   - nested blocks indent by the sum of their margins and padding;
@@ -26,9 +26,9 @@
 #include <stdint.h>
 #include <time.h>
 
-#include "userspace/apps/webview/wv_html.h"
-#include "userspace/apps/webview/wv_dom.h"
-#include "userspace/apps/webview/wv_layout.h"
+#include "userspace/apps/gbrowser/wv_html.h"
+#include "userspace/apps/gbrowser/wv_dom.h"
+#include "userspace/apps/gbrowser/wv_layout.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \

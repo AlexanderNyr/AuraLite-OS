@@ -340,8 +340,8 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/apm.elf $(USER_BUILD)/matrix.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
              $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
-             $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf \
-             $(USER_BUILD)/webview.elf \
+             $(USER_BUILD)/gusb.elf \
+             $(USER_BUILD)/gbrowser.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
@@ -817,40 +817,38 @@ $(USER_BUILD)/glaunch.o: userspace/apps/gui-launcher/glaunch.c lib/libauragui/in
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gaudio.o: userspace/apps/gui-audio/gaudio.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
-	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/webview.o: userspace/apps/webview/webview.c lib/libauragui/include/auragui.h \
-                         userspace/apps/webview/wv_html.h userspace/apps/webview/wv_dom.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gbrowser.o: userspace/apps/gbrowser/gbrowser.c lib/libauragui/include/auragui.h \
+                         userspace/apps/gbrowser/wv_html.h userspace/apps/gbrowser/wv_dom.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_html.o: userspace/apps/webview/wv_html.c userspace/apps/webview/wv_html.h
+$(USER_BUILD)/wv_html.o: userspace/apps/gbrowser/wv_html.c userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_dom.o: userspace/apps/webview/wv_dom.c userspace/apps/webview/wv_dom.h \
-                        userspace/apps/webview/wv_html.h
+$(USER_BUILD)/wv_dom.o: userspace/apps/gbrowser/wv_dom.c userspace/apps/gbrowser/wv_dom.h \
+                        userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_layout.o: userspace/apps/webview/wv_layout.c userspace/apps/webview/wv_layout.h \
-                          userspace/apps/webview/wv_dom.h userspace/apps/webview/wv_html.h
+$(USER_BUILD)/wv_layout.o: userspace/apps/gbrowser/wv_layout.c userspace/apps/gbrowser/wv_layout.h \
+                          userspace/apps/gbrowser/wv_dom.h userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_paint.o: userspace/apps/webview/wv_paint.c userspace/apps/webview/wv_paint.h \
-                          userspace/apps/webview/wv_layout.h \
+$(USER_BUILD)/wv_paint.o: userspace/apps/gbrowser/wv_paint.c userspace/apps/gbrowser/wv_paint.h \
+                          userspace/apps/gbrowser/wv_layout.h \
                           drivers/framebuffer/psf2_default_font.inc
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_css.o: userspace/apps/webview/wv_css.c userspace/apps/webview/wv_css.h \
-                        userspace/apps/webview/wv_dom.h
+$(USER_BUILD)/wv_css.o: userspace/apps/gbrowser/wv_css.c userspace/apps/gbrowser/wv_css.h \
+                        userspace/apps/gbrowser/wv_dom.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_url.o: userspace/apps/webview/wv_url.c userspace/apps/webview/wv_url.h
+$(USER_BUILD)/wv_url.o: userspace/apps/gbrowser/wv_url.c userspace/apps/gbrowser/wv_url.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_http.o: userspace/apps/webview/wv_http.c userspace/apps/webview/wv_http.h \
-                         userspace/apps/webview/wv_url.h
+$(USER_BUILD)/wv_http.o: userspace/apps/gbrowser/wv_http.c userspace/apps/gbrowser/wv_http.h \
+                         userspace/apps/gbrowser/wv_url.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/wv_canvas.o: userspace/apps/webview/wv_canvas.c userspace/apps/webview/wv_canvas.h
+$(USER_BUILD)/wv_canvas.o: userspace/apps/gbrowser/wv_canvas.c userspace/apps/gbrowser/wv_canvas.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I lib/libgl/include -c $< -o $@
 
-# webview links the tokeniser + DOM builder + layout + painter + css; the
+# gbrowser links the tokeniser + DOM builder + layout + painter + css; the
 # generic %.elf pattern rule does not know about them, so give explicit
 # prerequisites.
-$(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+$(USER_BUILD)/gbrowser.elf: $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
                            $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
                            $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
                            $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
@@ -858,7 +856,7 @@ $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) $(USER_GL_OBJ) \
                            lib/libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
 	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
 	      $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
 	      $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
@@ -1117,7 +1115,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http clock browser gcalc gedit gfiles gterm \
-                gsysmon gabout gtaskmgr glaunch gaudio gbrowser gusb webview
+                gsysmon gabout gtaskmgr glaunch gaudio gusb gbrowser
 INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
@@ -1349,104 +1347,104 @@ $(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/include/ahttp/http
 # Web view HTML tokeniser (WEBVIEW_PLAN W1): the REAL userspace source is
 # compiled into the host test, never a copy.
 $(BUILD_DIR)/test_wv_html: tests/unit/test_wv_html.c \
-                           userspace/apps/webview/wv_html.c \
-                           userspace/apps/webview/wv_html.h
+                           userspace/apps/gbrowser/wv_html.c \
+                           userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
-	           tests/unit/test_wv_html.c userspace/apps/webview/wv_html.c -o $@
+	           tests/unit/test_wv_html.c userspace/apps/gbrowser/wv_html.c -o $@
 
 # Web view DOM builder (WEBVIEW_PLAN W2): the REAL userspace sources are
 # compiled into the host test, never copies.
 $(BUILD_DIR)/test_wv_dom: tests/unit/test_wv_dom.c \
-                          userspace/apps/webview/wv_dom.c \
-                          userspace/apps/webview/wv_dom.h \
-                          userspace/apps/webview/wv_html.c \
-                          userspace/apps/webview/wv_html.h
+                          userspace/apps/gbrowser/wv_dom.c \
+                          userspace/apps/gbrowser/wv_dom.h \
+                          userspace/apps/gbrowser/wv_html.c \
+                          userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
-	           tests/unit/test_wv_dom.c userspace/apps/webview/wv_dom.c \
-	           userspace/apps/webview/wv_html.c -o $@
+	           tests/unit/test_wv_dom.c userspace/apps/gbrowser/wv_dom.c \
+	           userspace/apps/gbrowser/wv_html.c -o $@
 
 # Web view block layout (WEBVIEW_PLAN W3): the REAL userspace sources are
 # compiled into the host test, never copies.
 $(BUILD_DIR)/test_wv_layout: tests/unit/test_wv_layout.c \
-                             userspace/apps/webview/wv_layout.c \
-                             userspace/apps/webview/wv_layout.h \
-                             userspace/apps/webview/wv_css.c \
-                             userspace/apps/webview/wv_css.h \
-                             userspace/apps/webview/wv_dom.c \
-                             userspace/apps/webview/wv_dom.h \
-                             userspace/apps/webview/wv_html.c \
-                             userspace/apps/webview/wv_html.h
+                             userspace/apps/gbrowser/wv_layout.c \
+                             userspace/apps/gbrowser/wv_layout.h \
+                             userspace/apps/gbrowser/wv_css.c \
+                             userspace/apps/gbrowser/wv_css.h \
+                             userspace/apps/gbrowser/wv_dom.c \
+                             userspace/apps/gbrowser/wv_dom.h \
+                             userspace/apps/gbrowser/wv_html.c \
+                             userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
-	           tests/unit/test_wv_layout.c userspace/apps/webview/wv_layout.c \
-	           userspace/apps/webview/wv_css.c userspace/apps/webview/wv_dom.c \
-	           userspace/apps/webview/wv_html.c -o $@
+	           tests/unit/test_wv_layout.c userspace/apps/gbrowser/wv_layout.c \
+	           userspace/apps/gbrowser/wv_css.c userspace/apps/gbrowser/wv_dom.c \
+	           userspace/apps/gbrowser/wv_html.c -o $@
 
 # Web view URL + HTTP (WEBVIEW_PLAN W6): the REAL userspace sources are
 # compiled into the host test, never copies.
 $(BUILD_DIR)/test_wv_http: tests/unit/test_wv_http.c \
-                           userspace/apps/webview/wv_url.c \
-                           userspace/apps/webview/wv_url.h \
-                           userspace/apps/webview/wv_http.c \
-                           userspace/apps/webview/wv_http.h
+                           userspace/apps/gbrowser/wv_url.c \
+                           userspace/apps/gbrowser/wv_url.h \
+                           userspace/apps/gbrowser/wv_http.c \
+                           userspace/apps/gbrowser/wv_http.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
-	           tests/unit/test_wv_http.c userspace/apps/webview/wv_url.c \
-	           userspace/apps/webview/wv_http.c -o $@
+	           tests/unit/test_wv_http.c userspace/apps/gbrowser/wv_url.c \
+	           userspace/apps/gbrowser/wv_http.c -o $@
 
 # Web view <canvas> renderer (WEBVIEW_PLAN W7): the REAL wv_canvas.c
 # links against the REAL libgl sources (LIBGL_TEST_SRCS + the auragui
 # stub), exactly like the GL phase tests.
 $(BUILD_DIR)/test_wv_canvas: tests/unit/test_wv_canvas.c \
-                             userspace/apps/webview/wv_canvas.c \
-                             userspace/apps/webview/wv_canvas.h \
+                             userspace/apps/gbrowser/wv_canvas.c \
+                             userspace/apps/gbrowser/wv_canvas.h \
                              $(LIBGL_TEST_SRCS) $(LIBGL_TEST_STUB)
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) $(LIBGL_TEST_CFLAGS) -I userspace/apps/webview \
-	           tests/unit/test_wv_canvas.c userspace/apps/webview/wv_canvas.c \
+	$(HOST_CC) $(LIBGL_TEST_CFLAGS) -I userspace/apps/gbrowser \
+	           tests/unit/test_wv_canvas.c userspace/apps/gbrowser/wv_canvas.c \
 	           $(LIBGL_TEST_SRCS) $(LIBGL_TEST_STUB) -o $@ -lm
 
 # Web view inline CSS (WEBVIEW_PLAN W5): the REAL userspace sources are
 # compiled into the host test, never copies.
 $(BUILD_DIR)/test_wv_css: tests/unit/test_wv_css.c \
-                          userspace/apps/webview/wv_css.c \
-                          userspace/apps/webview/wv_css.h \
-                          userspace/apps/webview/wv_layout.c \
-                          userspace/apps/webview/wv_layout.h \
-                          userspace/apps/webview/wv_paint.c \
-                          userspace/apps/webview/wv_paint.h \
-                          userspace/apps/webview/wv_dom.c \
-                          userspace/apps/webview/wv_dom.h \
-                          userspace/apps/webview/wv_html.c \
-                          userspace/apps/webview/wv_html.h
+                          userspace/apps/gbrowser/wv_css.c \
+                          userspace/apps/gbrowser/wv_css.h \
+                          userspace/apps/gbrowser/wv_layout.c \
+                          userspace/apps/gbrowser/wv_layout.h \
+                          userspace/apps/gbrowser/wv_paint.c \
+                          userspace/apps/gbrowser/wv_paint.h \
+                          userspace/apps/gbrowser/wv_dom.c \
+                          userspace/apps/gbrowser/wv_dom.h \
+                          userspace/apps/gbrowser/wv_html.c \
+                          userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
-	           tests/unit/test_wv_css.c userspace/apps/webview/wv_css.c \
-	           userspace/apps/webview/wv_layout.c userspace/apps/webview/wv_paint.c \
-	           userspace/apps/webview/wv_dom.c \
-	           userspace/apps/webview/wv_html.c -o $@
+	           tests/unit/test_wv_css.c userspace/apps/gbrowser/wv_css.c \
+	           userspace/apps/gbrowser/wv_layout.c userspace/apps/gbrowser/wv_paint.c \
+	           userspace/apps/gbrowser/wv_dom.c \
+	           userspace/apps/gbrowser/wv_html.c -o $@
 
 # Web view painter (WEBVIEW_PLAN W4): the REAL userspace sources are
 # compiled into the host test, never copies.
 $(BUILD_DIR)/test_wv_paint: tests/unit/test_wv_paint.c \
-                            userspace/apps/webview/wv_paint.c \
-                            userspace/apps/webview/wv_paint.h \
-                            userspace/apps/webview/wv_layout.c \
-                            userspace/apps/webview/wv_layout.h \
-                            userspace/apps/webview/wv_css.c \
-                            userspace/apps/webview/wv_css.h \
-                            userspace/apps/webview/wv_dom.c \
-                            userspace/apps/webview/wv_dom.h \
-                            userspace/apps/webview/wv_html.c \
-                            userspace/apps/webview/wv_html.h
+                            userspace/apps/gbrowser/wv_paint.c \
+                            userspace/apps/gbrowser/wv_paint.h \
+                            userspace/apps/gbrowser/wv_layout.c \
+                            userspace/apps/gbrowser/wv_layout.h \
+                            userspace/apps/gbrowser/wv_css.c \
+                            userspace/apps/gbrowser/wv_css.h \
+                            userspace/apps/gbrowser/wv_dom.c \
+                            userspace/apps/gbrowser/wv_dom.h \
+                            userspace/apps/gbrowser/wv_html.c \
+                            userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
-	           tests/unit/test_wv_paint.c userspace/apps/webview/wv_paint.c \
-	           userspace/apps/webview/wv_layout.c userspace/apps/webview/wv_css.c \
-	           userspace/apps/webview/wv_dom.c \
-	           userspace/apps/webview/wv_html.c -o $@
+	           tests/unit/test_wv_paint.c userspace/apps/gbrowser/wv_paint.c \
+	           userspace/apps/gbrowser/wv_layout.c userspace/apps/gbrowser/wv_css.c \
+	           userspace/apps/gbrowser/wv_dom.c \
+	           userspace/apps/gbrowser/wv_html.c -o $@
 
 $(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \
                              tests/unit/atls_x509_testdata.c $(LIBATLS_SRCS) \

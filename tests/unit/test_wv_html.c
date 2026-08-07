@@ -2,7 +2,7 @@
  * test_wv_html.c — host unit tests for the web view HTML tokeniser
  * (WEBVIEW_PLAN phase W1).
  *
- * Links the REAL userspace/apps/webview/wv_html.c (never a copy) and checks:
+ * Links the REAL userspace/apps/gbrowser/wv_html.c (never a copy) and checks:
  *   - well-formed HTML tokenises to the exact expected token stream;
  *   - character references: the five named ones plus &#NN; / &#xNN;, in
  *     text and in attribute values; unknown and unterminated references
@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-#include "userspace/apps/webview/wv_html.h"
+#include "userspace/apps/gbrowser/wv_html.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \

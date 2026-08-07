@@ -116,8 +116,8 @@ ALL_CASES=(
     test_smp_init_order
     test_gui
     test_gui_usb
-    test_webview
-    test_webview_net
+    test_gbrowser
+    test_gbrowser_net
 )
 
 # Slow ones we skip in --fast mode.

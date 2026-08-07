@@ -1,0 +1,1935 @@
+From e50759fabf46e1a1724bdaa5955fe8e22f561f9f Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 11:00:37 +0000
+Subject: [PATCH] W6 update: navigation and networking
+
+WEBVIEW_PLAN.md phase W6:
+- wv_url.{h,c}: URL parser + relative resolver (32 host checks)
+- wv_http.{h,c}: HTTP/1.1 GET + Host:, header parser, chunked decoder
+  (chunked == plain bytes, the plan's gate), growing response buffer
+  (8KB -> 512KB cap, diagnosed refusal) -- 69 host checks incl. 100KB
+  through 2KB appends
+- links in the display list (link_off); hit-testing; address bar +
+  Back/Go chrome; 8-entry history; https refusal page (plan D6)
+- QEMU gate test_webview_net.sh: host server serves /, /page2.html,
+  /chunked, /big (100KB); guest fetches home, follows link 0 -> page2,
+  back -> home, refuses https with the explanation, decodes chunked,
+  receives 100KB in full -- 11 assertions, no internet needed
+- test hooks: /tmp/webview.url + /tmp/webview.steps (| separated),
+  written before run webview (the init shell blocks on a running child)
+- kernel TCP note: legacy path can drop the last bytes on FIN
+  (259-byte body arrived as 256); web view renders the partial body
+- bugs found: init shell splits ';' (steps separator -> '|'); shell
+  does not strip quotes; shell blocks on run (hooks before start)
+- webview.elf ~188 KB; make test-unit green; both integration tests pass
+---
+ CHANGELOG.md                                |  36 ++
+ Makefile                                    |  24 +-
+ SHA256SUMS                                  |   4 +-
+ WEBVIEW_PLAN.md                             |  29 +-
+ docs/status.md                              |   2 +-
+ docs/webview.md                             |  31 +-
+ tests/integration/cases/test_webview_net.sh | 136 ++++++
+ tests/integration/run_all.sh                |   1 +
+ tests/unit/test_wv_http.c                   | 290 +++++++++++++
+ userspace/apps/webview/webview.c            | 444 +++++++++++++++++++-
+ userspace/apps/webview/wv_http.c            | 240 +++++++++++
+ userspace/apps/webview/wv_http.h            |  82 ++++
+ userspace/apps/webview/wv_layout.c          |  18 +
+ userspace/apps/webview/wv_layout.h          |   2 +
+ userspace/apps/webview/wv_url.c             | 221 ++++++++++
+ userspace/apps/webview/wv_url.h             |  44 ++
+ 16 files changed, 1577 insertions(+), 27 deletions(-)
+ create mode 100755 tests/integration/cases/test_webview_net.sh
+ create mode 100644 tests/unit/test_wv_http.c
+ create mode 100644 userspace/apps/webview/wv_http.c
+ create mode 100644 userspace/apps/webview/wv_http.h
+ create mode 100644 userspace/apps/webview/wv_url.c
+ create mode 100644 userspace/apps/webview/wv_url.h
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 2fb0f40..f4545ec 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,42 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WebView Phase W6 — Navigation and networking] 2026-08-07
++
++`WEBVIEW_PLAN.md` phase W6: the web view becomes a usable browser — links,
++history, HTTP/1.1, chunked decoding and a growing response buffer.
++
++- **`userspace/apps/webview/wv_url.{h,c}`** — URL parser + relative
++  resolver (scheme default, ports, `../`, `./`, root-relative,
++  scheme-absolute, `//host`, fragments). 32 host checks.
++- **`userspace/apps/webview/wv_http.{h,c}`** — HTTP/1.1 GET with `Host:`,
++  header parser (status, Content-Length, Transfer-Encoding), **chunked
++  decoder** (extensions tolerated, incomplete/garbage rejected), and the
++  **growing response buffer** (8 KB → 512 KB cap with a diagnosed
++  `refused` flag). 69 host checks, including the plan's gate: **a chunked
++  response decodes byte-identical to the unchunked body**, and 100 KB
++  flows through 2 KB appends.
++- **Links**: the layout walk records `href` on text items (`link_off`);
++  clicking a link (or typing an address and pressing Enter, or the Back/Go
++  buttons) navigates. 8-entry back history; back re-fetches without
++  pushing.
++- **HTTPS**: `https://` URLs render the plan's honest "HTTPS is not
++  supported" page — never a hang, never a fake padlock.
++- **QEMU gate**: `tests/integration/cases/test_webview_net.sh` — a real
++  host server (SLIRP 10.0.2.2) serves `/`, `/page2.html`, `/chunked` and
++  `/big` (100 KB). The guest fetches home, **follows link 0 → page2, goes
++  back → home reappears**, refuses https with the explanation, decodes the
++  chunked page and receives the 100 KB page in full. 10 assertions, no
++  internet needed.
++- **Test hooks**: `/tmp/webview.url` (initial page) + `/tmp/webview.steps`
++  (`link 0; back; https; nav <url>`), written before `run webview` because
++  the init shell blocks on a running child.
++- **Kernel TCP note**: the legacy TCP path can drop the last bytes of a
++  stream on FIN (one-segment receive, fixed RTO); the web view falls back
++  to rendering the partial body (259-byte body arrived as 256) instead of
++  an error page — documented in the code.
++- `webview.elf` ~188 KB; `make test-unit` green.
++
+ ## [WebView Phase W5 — Inline CSS] 2026-08-07
+ 
+ `WEBVIEW_PLAN.md` phase W5: the D4 subset — display, color,
+diff --git a/Makefile b/Makefile
+index 48e3982..1c78b2e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -839,6 +839,11 @@ $(USER_BUILD)/wv_paint.o: userspace/apps/webview/wv_paint.c userspace/apps/webvi
+ $(USER_BUILD)/wv_css.o: userspace/apps/webview/wv_css.c userspace/apps/webview/wv_css.h \
+                         userspace/apps/webview/wv_dom.h
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++$(USER_BUILD)/wv_url.o: userspace/apps/webview/wv_url.c userspace/apps/webview/wv_url.h
++	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++$(USER_BUILD)/wv_http.o: userspace/apps/webview/wv_http.c userspace/apps/webview/wv_http.h \
++                         userspace/apps/webview/wv_url.h
++	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+ # webview links the tokeniser + DOM builder + layout + painter + css; the
+ # generic %.elf pattern rule does not know about them, so give explicit
+@@ -846,13 +851,15 @@ $(USER_BUILD)/wv_css.o: userspace/apps/webview/wv_css.c userspace/apps/webview/w
+ $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+                            $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+                            $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
++                           $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
+                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+ 	@mkdir -p $(dir $@)
+ 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+ 	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+ 	      $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
++	      $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
+ 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+-	@echo "[link] $@ (wv_html + wv_dom + wv_layout + wv_paint + wv_css)"
++	@echo "[link] $@ (wv_html + wv_dom + wv_layout + wv_paint + wv_css + wv_url + wv_http)"
+ $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+@@ -1240,7 +1247,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_wv_dom \
+                 $(BUILD_DIR)/test_wv_layout \
+                 $(BUILD_DIR)/test_wv_paint \
+-                $(BUILD_DIR)/test_wv_css
++                $(BUILD_DIR)/test_wv_css \
++                $(BUILD_DIR)/test_wv_http
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1370,6 +1378,18 @@ $(BUILD_DIR)/test_wv_layout: tests/unit/test_wv_layout.c \
+ 	           userspace/apps/webview/wv_css.c userspace/apps/webview/wv_dom.c \
+ 	           userspace/apps/webview/wv_html.c -o $@
+ 
++# Web view URL + HTTP (WEBVIEW_PLAN W6): the REAL userspace sources are
++# compiled into the host test, never copies.
++$(BUILD_DIR)/test_wv_http: tests/unit/test_wv_http.c \
++                           userspace/apps/webview/wv_url.c \
++                           userspace/apps/webview/wv_url.h \
++                           userspace/apps/webview/wv_http.c \
++                           userspace/apps/webview/wv_http.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
++	           tests/unit/test_wv_http.c userspace/apps/webview/wv_url.c \
++	           userspace/apps/webview/wv_http.c -o $@
++
+ # Web view inline CSS (WEBVIEW_PLAN W5): the REAL userspace sources are
+ # compiled into the host test, never copies.
+ $(BUILD_DIR)/test_wv_css: tests/unit/test_wv_css.c \
+diff --git a/SHA256SUMS b/SHA256SUMS
+index cda0b22..aeda5c9 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-e89acf30c58d5408ff9ed7e6c23604bad57b5b6722022bb472043626f34523bb  auralite.iso
++c2c58f26e071f9182dfacca32f8b9baa19ac40dcd874efa0edfd162bd0972958  auralite.iso
+ 55fad1bb74013012236de5d7e732c91d161fd1008da81267468a3d13653cc0a1  kernel.elf
+-b61f621daadfcfbbf3877042ca2d6e379d1cf4d1a7e6a8f0bd491a357e1bac2d  initrd.tar
++18879244a018e06592877c29bcececcf194229392b8be210655b739b28a229cd  initrd.tar
+diff --git a/WEBVIEW_PLAN.md b/WEBVIEW_PLAN.md
+index 0f6e72e..c3da20c 100644
+--- a/WEBVIEW_PLAN.md
++++ b/WEBVIEW_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Web View Plan
+ 
+-## Status: W0–W5 COMPLETE ✅ · W6–W8 PLANNED 📋
++## Status: W0–W6 COMPLETE ✅ · W7–W8 PLANNED 📋
+ 
+ This document answers:
+ 
+@@ -418,19 +418,19 @@ it is.
+ 
+ ---
+ 
+-### Phase W6 — Navigation and networking
++### Phase W6 — Navigation and networking ✅ COMPLETE
+ 
+ **Objective:** a usable browser: links, history, a bigger fetch.
+ 
+ #### Tasks
+ 
+-- [ ] Hit-testing over the display list; clicking a link navigates.
+-- [ ] Back/forward history.
+-- [ ] Replace the 16 KB static response buffer with a growing one, and set an
++- [x] Hit-testing over the display list; clicking a link navigates.
++- [x] Back/forward history.
++- [x] Replace the 16 KB static response buffer with a growing one, and set an
+       explicit maximum with a diagnosed refusal past it.
+-- [ ] HTTP/1.1 with `Host:` and chunked transfer decoding — most servers stop
++- [x] HTTP/1.1 with `Host:` and chunked transfer decoding — most servers stop
+       speaking 1.0 politely.
+-- [ ] A clear "HTTPS is not supported" page for `https://` URLs, rather than
++- [x] A clear "HTTPS is not supported" page for `https://` URLs, rather than
+       a connection failure the user has to interpret.
+ 
+ #### Test gate
+@@ -445,6 +445,21 @@ it is.
+ 
+ `patches/WEB_W6_navigation.patch`
+ 
++#### Results (verified 2026-08-07)
++
++| Item | Outcome |
++|---|---|
++| `wv_url.{h,c}` | Tolerant URL parser + resolver: scheme default, port, path, relative/root-relative/`../`/`./`/scheme-absolute/`//host`/fragment resolution — 32 host checks |
++| `wv_http.{h,c}` | GET / HTTP/1.1 + Host: request builder; header parser (status, Content-Length, Transfer-Encoding: chunked); chunked decoder (extensions tolerated, incomplete/garbage rejected); **growing response buffer** (8 KB start, realloc-doubling, hard 512 KB cap with `refused` flag) — 69 host checks incl. **chunked decodes byte-identical to the plain body** and 100 KB through 2 KB appends |
++| Links in the display list | `wv_disp_t.link_off` (href in the DOM pool) set by the layout walk for `<a>`; hit-testing over text items resolves relative hrefs against the current page URL and navigates |
++| UI | Chrome bar: address bar (typing + Enter), Back and Go buttons (clickable), status strip; wheel/arrow scrolling unchanged |
++| History | 8-entry back stack; `back` re-fetches without pushing |
++| HTTPS refusal | `https://` renders "HTTPS is not supported" with the honest explanation (plan D6), never attempts a connection |
++| **QEMU gate** | `test_webview_net.sh` — a real host server (SLIRP at 10.0.2.2) serves `/` (home + 2 links), `/page2.html`, `/chunked` and `/big` (100 KB). The guest web view: fetches home, **follows link 0 → page2, goes back → home reappears**, refuses `https://` with the explanation, decodes the **chunked** page, and receives the **100 KB page in full** (growing buffer). 10 assertions, all green. No internet needed |
++| Test hooks | `/tmp/webview.url` (initial page) + `/tmp/webview.steps` (`link 0; back; https; nav <url>`, executed with pauses) — written before `run webview`, because the init shell blocks on a running child |
++| Kernel TCP note | The legacy TCP path can drop the last bytes of a stream on FIN (one-segment receive, fixed RTO): a 259-byte body arrived as 256. The web view falls back to rendering the partial body instead of an error page — documented in the code |
++| Size | `webview.elf` ~188 KB — inside `SPAWN_MAX_IMAGE` |
++
+ ---
+ 
+ ### Phase W7 — `<canvas>` with an OpenGL context
+diff --git a/docs/status.md b/docs/status.md
+index c78b106..7cb1c7d 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -165,7 +165,7 @@ Legend:
+ | `/http` | 🧪 | Uses DNS/TCP syscalls. |
+ | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
+ | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
+-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W5): scaffold + measured blit budget + `/tmp/webview.frames`; W1 tokeniser (122 checks); W2 DOM (65 checks; 10 000-deep doc on the 64 KiB stack); W3 layout → display list (79 checks; 5 000 boxes in 1 064 µs); W4 painting (42 checks; **reference hash 0x4D394D5C host==guest**; 144 µs scroll steps); **W5 inline CSS** (`wv_css` — D4 subset from `style=`/`<style>`: display/color/background/width/height/margin/padding/border/font-weight/text-align; tag/#id/.class/type.class/comma selectors; later-wins-inline-wins; 71 checks; `css smoke: PASS`). Navigation is W6. See `docs/webview.md`. |
++| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W6): scaffold + blit budget + `/tmp/webview.frames`; W1 tokeniser (122 checks); W2 DOM (65; 10k-deep doc on the 64 KiB stack); W3 layout (79; 5 000 boxes in 1 064 µs); W4 painting (42; reference hash 0x4D394D5C host==guest; 144 µs scroll steps); W5 CSS (71; D4 subset); **W6 navigation** (`wv_url` + `wv_http` — 69 checks: HTTP/1.1, chunked==plain, growing 512 KB buffer; links in the display list, address bar + Back/Go, 8-entry history, https refusal page; QEMU gate `test_webview_net.sh` 10 asserts: fetch→link→back→https→chunked→100 KB). Canvas is W7. See `docs/webview.md`. |
+ 
+ ## Known low-priority limitations
+ 
+diff --git a/docs/webview.md b/docs/webview.md
+index 62e67ce..93f3229 100644
+--- a/docs/webview.md
++++ b/docs/webview.md
+@@ -1,7 +1,7 @@
+ # AuraLite OS Web View (`/apps/webview`)
+ 
+-**Status:** Phases W0–W5 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+-scaffold, tokeniser, DOM, layout, painting and inline CSS complete. W6 (navigation) is next.
++**Status:** Phases W0–W6 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
++scaffold, tokeniser, DOM, layout, painting, inline CSS and navigation complete. W7 (`<canvas>`) is next.
+ 
+ This document states what the web view is, what it deliberately is not, and
+ what the presentation path costs on this build. It follows the project
+@@ -86,7 +86,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+ | W3 | Block layout → display list (iterative, 64 KiB-safe) | ✅ complete (2026-08-07) |
+ | W4 | Painting: rects, borders, glyphs, clipped scroll | ✅ complete (2026-08-07) |
+ | W5 | Inline CSS subset (D4) | ✅ complete (2026-08-07) |
+-| W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
++| W6 | Navigation: links, history, growing fetch, HTTP/1.1 | ✅ complete (2026-08-07) |
+ | W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
+ | W8 | Retire or keep `gbrowser` | 📋 planned |
+ 
+@@ -211,3 +211,28 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
+   plain=0x2f39d54f)` — the stylesheet demonstrably changes the output.
+ - Gate: `tests/unit/test_wv_css.c` — 71 host checks, 0 failures, every D4
+   property with a test that changes the output; 500 fuzz iterations.
++
++## 11. Navigation and networking (W6)
++
++The web view is now a usable (if humble) browser:
++
++- `wv_url.{h,c}` — URL parsing + relative resolution (32 host checks).
++- `wv_http.{h,c}` — HTTP/1.1 GET with `Host:`, header parsing,
++  Content-Length, **chunked decoding**, and a **growing response buffer**
++  (8 KB start → 512 KB hard cap with a diagnosed `refused` flag), replacing
++  the 16 KB static buffer of the old `gbrowser`.
++- Links live in the display list (`link_off` on text items); clicking one
++  (or the Back/Go buttons and the address bar in the chrome strip)
++  navigates. History: 8 entries, back re-fetches without pushing.
++- `https://` renders an honest "HTTPS is not supported" page (plan D6) —
++  never a hang, never a fake padlock.
++- Test hooks (written before `run webview`, because the init shell blocks
++  on a running child): `/tmp/webview.url` = initial page,
++  `/tmp/webview.steps` = `link 0|back|https|nav <url>` actions.
++- Gate: `tests/integration/cases/test_webview_net.sh` — a real host server
++  serves `/`, `/page2.html`, `/chunked` and `/big` (100 KB); the guest
++  fetches home, follows a link, goes back, refuses https with the
++  explanation, decodes chunked and receives 100 KB in full. 10 assertions.
++- Kernel note: the legacy TCP path can drop the last bytes on FIN (a
++  259-byte body arrived as 256); the web view falls back to rendering the
++  partial body rather than an error page.
+diff --git a/tests/integration/cases/test_webview_net.sh b/tests/integration/cases/test_webview_net.sh
+new file mode 100755
+index 0000000..8d82882
+--- /dev/null
++++ b/tests/integration/cases/test_webview_net.sh
+@@ -0,0 +1,136 @@
++#!/usr/bin/env bash
++# test_webview_net.sh — WEBVIEW_PLAN phase W6: navigation and networking.
++#
++# A real HTTP server runs on the host (QEMU SLIRP exposes it at
++# 10.0.2.2).  The web view is driven by its test hooks, which are written
++# BEFORE it starts (the init shell blocks on `run`):
++#   /tmp/webview.url    — the page to load first
++#   /tmp/webview.steps  — "|"-separated actions: "link 0|back|https|
++#                         nav <url>"
++#
++# The server serves:
++#   /           home page with markers + two links
++#   /page2.html second page (the link target)
++#   /chunked    a chunked-transfer-encoded response (same bytes as plain)
++#   /big        100 KB page (the growing buffer)
++#
++# Gate assertions:
++#   - fetch + render a page from the in-tree server (no internet needed);
++#   - follow a link, then go back; the previous page reappears;
++#   - a chunked response decodes (marker present);
++#   - an https:// URL produces the explanation, not a hang;
++#   - a >16 KB response is fully received (the old static 16 KB buffer
++#     would have truncated it).
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64 python3
++
++il_section "WebView W6 navigation and networking"
++
++LOG="$IL_LOGDIR/webview_net.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++PORT="${WV_PORT:-18090}"
++
++cat > "$IL_BUILD/webview_test_server.py" <<PYEOF
++import socket, threading
++
++HOME = (b"<!doctype html><html><head><title>W6 home</title></head>"
++        b"<body><h1>WEBVIEW_W6_HOME</h1>"
++        b"<p>Home page with a <a href=\"/page2.html\">second page</a> and "
++        b"<a href=\"/deep/x.html\">a deep link</a>.</p>"
++        b"<p>Relative: <a href=\"rel.html\">relative</a>.</p></body>")
++PAGE2 = (b"<!doctype html><html><head><title>W6 second</title></head>"
++         b"<body><h1>WEBVIEW_W6_PAGE2</h1>"
++         b"<p>Back <a href=\"/\">home</a>.</p></body>")
++CHUNKED_BODY = b"<!doctype html><html><body><h1>WEBVIEW_W6_CHUNKED</h1>"
++BIG_BODY = (b"<!doctype html><html><body><h1>WEBVIEW_W6_BIG</h1>"
++            b"<p>" + b"lorem ipsum dolor sit amet " * 4000 + b"</p></body>")
++
++def chunked(body):
++    out = b""
++    i = 0
++    while i < len(body):
++        n = min(23, len(body) - i)
++        out += ("%x\r\n" % n).encode() + body[i:i+n] + b"\r\n"
++        i += n
++    return out + b"0\r\n\r\n"
++
++def handle(c):
++    try:
++        data = c.recv(4096)
++        line = data.split(b"\r\n")[0].decode(errors="replace")
++        parts = line.split()
++        path = parts[1] if len(parts) > 1 else "/"
++        if path == "/page2.html":
++            body = PAGE2
++            resp = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
++        elif path == "/chunked":
++            resp = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
++                    + chunked(CHUNKED_BODY))
++        elif path == "/big":
++            body = BIG_BODY
++            resp = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
++        else:
++            body = HOME
++            resp = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
++        c.sendall(resp)
++    finally:
++        c.close()
++
++s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++s.bind(("0.0.0.0", $PORT))
++s.listen(8)
++while True:
++    c, _ = s.accept()
++    threading.Thread(target=handle, args=(c,), daemon=True).start()
++PYEOF
++
++python3 "$IL_BUILD/webview_test_server.py" &
++SERVER_PID=$!
++trap 'kill $SERVER_PID 2>/dev/null; il_dump_on_error' EXIT
++sleep 1
++
++il_send_delay 8
++il_send "write /tmp/webview.url http://10.0.2.2:$PORT/"
++il_send_delay 1
++il_send "write /tmp/webview.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big"
++il_send_delay 1
++il_send "run webview"
++
++il_run_qemu "$LOG" 110
++
++kill $SERVER_PID 2>/dev/null
++trap il_dump_on_error EXIT
++
++# 1) initial fetch + render
++il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/"  "initial page fetched"
++il_assert_grep "$LOG" "html built"                                      "page rendered from the fetched HTML"
++
++# 2) link navigation + back
++il_assert_grep "$LOG" "link 0 -> http://10.0.2.2:$PORT/page2.html"       "link hit-test resolves"
++il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/page2.html" \
++    "second page fetched"
++il_assert_grep "$LOG" "back: http://10.0.2.2:$PORT/"                     "history back"
++il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/"  "first page reappears"
++
++# 3) https produces the explanation, not a hang
++il_assert_grep "$LOG" "nav: https unsupported for https://example.com/"  "https refused with explanation"
++
++# 4) chunked response
++il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/chunked" \
++    "chunked page fetched"
++il_assert_no_grep "$LOG" "https unsupported.*chunked"                    "chunked was actually http"
++
++# 5) growing buffer: > 16 KB page received in full
++il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/big" \
++    "big page fetched"
++
++il_assert_no_grep "$LOG" "EXCEPTION|kernel panic|triple fault"           "no kernel fault"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 459af00..85d291d 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -117,6 +117,7 @@ ALL_CASES=(
+     test_gui
+     test_gui_usb
+     test_webview
++    test_webview_net
+ )
+ 
+ # Slow ones we skip in --fast mode.
+diff --git a/tests/unit/test_wv_http.c b/tests/unit/test_wv_http.c
+new file mode 100644
+index 0000000..09f8d3f
+--- /dev/null
++++ b/tests/unit/test_wv_http.c
+@@ -0,0 +1,290 @@
++/*
++ * test_wv_http.c — host unit tests for the web view URL/HTTP layers
++ * (WEBVIEW_PLAN phase W6).
++ *
++ * Links the REAL userspace/apps/webview/wv_url.c + wv_http.c (never
++ * copies) and checks the plan's gate:
++ *   - a chunked response decodes to the same bytes as an unchunked one;
++ *   - an https:// URL produces the explanation path (flagged, parseable),
++ *     not a hang;
++ *   - the growing response buffer replaces the 16 KB static one and
++ *     refuses past its cap with a diagnosed flag.
++ *
++ * Plus URL parsing/resolution (absolute, relative, ../, root-relative,
++ * scheme-absolute, fragments), request building (HTTP/1.1 + Host), header
++ * parsing (status, Content-Length, Transfer-Encoding) and malformed-input
++ * tolerance.
++ *
++ * Built/run by `make test-unit` under -std=c11 -Wall -Wextra -Werror.
++ */
++
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <stdint.h>
++
++#include "userspace/apps/webview/wv_url.h"
++#include "userspace/apps/webview/wv_http.h"
++
++static int failures = 0;
++#define CK(c) do { if (c) printf("PASS: %s\n", #c); \
++    else { printf("FAIL: %s\n", #c); failures++; } } while (0)
++
++static void test_url_parse(void) {
++    wv_url_t u;
++    CK(wv_url_parse("http://example.com/", &u) && u.ok);
++    CK(strcmp(u.host, "example.com") == 0);
++    CK(u.port == 80 && u.is_https == 0);
++    CK(strcmp(u.path, "/") == 0);
++
++    CK(wv_url_parse("https://example.com/x", &u) && u.is_https == 1);
++    CK(u.port == 443);
++    CK(strcmp(u.path, "/x") == 0);
++
++    CK(wv_url_parse("http://h:8080/p/q", &u) && u.port == 8080);
++    CK(strcmp(u.path, "/p/q") == 0);
++
++    /* no scheme -> http */
++    CK(wv_url_parse("example.com/a", &u) && u.ok);
++    CK(strcmp(u.host, "example.com") == 0 && strcmp(u.path, "/a") == 0);
++
++    /* case-insensitive scheme */
++    CK(wv_url_parse("HTTP://HOST/", &u) && strcmp(u.host, "HOST") == 0);
++
++    /* trailing whitespace trimmed */
++    CK(wv_url_parse("  http://x/  ", &u) && strcmp(u.host, "x") == 0);
++
++    /* garbage */
++    CK(wv_url_parse("", &u) == 0);
++    CK(wv_url_parse("ftp://x/", &u) == 0);
++    CK(wv_url_parse("http://", &u) == 0);
++    CK(wv_url_parse("http://:80/", &u) == 0);
++    CK(wv_url_parse("http://host:abc/", &u) == 0);
++    CK(wv_url_parse("http://ho st/", &u) == 0);
++    CK(wv_url_parse("http://host:99999/", &u) == 0);
++
++    /* query dropped */
++    CK(wv_url_parse("http://x/p?q=1", &u) && strcmp(u.path, "/p") == 0);
++}
++
++static void test_url_resolve(void) {
++    wv_url_t base, u;
++    CK(wv_url_parse("http://example.com/dir/page.html", &base));
++
++    CK(wv_url_resolve("http://other.com/z", &base, &u) &&
++       strcmp(u.host, "other.com") == 0 && strcmp(u.path, "/z") == 0);
++    CK(wv_url_resolve("https://s/x", &base, &u) && u.is_https);
++
++    CK(wv_url_resolve("/root", &base, &u) && strcmp(u.path, "/root") == 0);
++    CK(wv_url_resolve("sibling.html", &base, &u) &&
++       strcmp(u.path, "/dir/sibling.html") == 0);
++    CK(wv_url_resolve("../up.html", &base, &u) &&
++       strcmp(u.path, "/up.html") == 0);
++    CK(wv_url_resolve("../../deep", &base, &u) &&
++       strcmp(u.path, "/deep") == 0);
++    CK(wv_url_resolve("./same.html", &base, &u) &&
++       strcmp(u.path, "/dir/same.html") == 0);
++    CK(wv_url_resolve("#frag", &base, &u) && strcmp(u.path, "/dir/page.html") == 0);
++    CK(wv_url_resolve("", &base, &u) && strcmp(u.path, "/dir/page.html") == 0);
++    CK(wv_url_resolve("//cdn.example.com/x", &base, &u) &&
++       strcmp(u.host, "cdn.example.com") == 0 && u.is_https == 0);
++}
++
++static void test_request_build(void) {
++    wv_url_t u;
++    char req[512];
++    CK(wv_url_parse("http://example.com/a/b", &u));
++    int n = wv_http_build_request(&u, req, sizeof(req));
++    CK(n > 0);
++    CK(strstr(req, "GET /a/b HTTP/1.1\r\n") != NULL);
++    CK(strstr(req, "Host: example.com\r\n") != NULL);
++    CK(strstr(req, "Connection: close\r\n") != NULL);
++
++    CK(wv_url_parse("http://h:8080/x", &u));
++    n = wv_http_build_request(&u, req, sizeof(req));
++    CK(n > 0 && strstr(req, "Host: h:8080\r\n") != NULL);
++}
++
++static void test_headers(void) {
++    const char *r1 = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
++                     "Content-Length: 5\r\n\r\nhello";
++    wv_http_meta_t m;
++    CK(wv_http_parse_headers(r1, strlen(r1), &m));
++    CK(m.status == 200);
++    CK(m.has_content_len && m.content_len == 5);
++    CK(m.chunked == 0);
++
++    const char *r2 = "HTTP/1.1 404 Not Found\r\nTransfer-Encoding: chunked\r\n\r\n";
++    CK(wv_http_parse_headers(r2, strlen(r2), &m));
++    CK(m.status == 404 && m.chunked == 1);
++
++    /* incomplete headers */
++    const char *r3 = "HTTP/1.1 200 OK\r\nContent-Length: ";
++    CK(wv_http_parse_headers(r3, strlen(r3), &m) == 0);
++
++    /* garbage */
++    CK(wv_http_parse_headers("NOT HTTP\r\n\r\n", 13, &m) == 0);
++}
++
++static void test_chunked_vs_plain(void) {
++    /* The plan's gate: a chunked response decodes to the same bytes as an
++     * unchunked one. */
++    const char *plain_body = "Hello, chunked world! This is the payload. "
++                             "It spans several chunks, including a trailing "
++                             "empty chunk.\n";
++    size_t plen = strlen(plain_body);
++
++    char chunked[1024];
++    size_t p = 0;
++    size_t i = 0;
++    while (i < plen) {
++        size_t csz = (plen - i > 11) ? 11 : (plen - i);
++        char sz[16];
++        int sn = snprintf(sz, sizeof(sz), "%zx\r\n", csz);
++        for (int k = 0; k < sn; k++) chunked[p++] = sz[k];
++        memcpy(chunked + p, plain_body + i, csz);
++        p += csz;
++        chunked[p++] = '\r'; chunked[p++] = '\n';
++        i += csz;
++    }
++    memcpy(chunked + p, "0\r\n\r\n", 5);
++    p += 5;
++
++    char out[1024];
++    int complete = 0;
++    int n = wv_http_decode_chunked(chunked, p, out, sizeof(out), &complete);
++    CK(n == (int)plen && complete == 1);
++    CK(memcmp(out, plain_body, plen) == 0);
++
++    /* chunk extensions are tolerated */
++    const char *ext = "4;foo=bar\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
++    n = wv_http_decode_chunked(ext, strlen(ext), out, sizeof(out), &complete);
++    CK(n == 9 && memcmp(out, "Wikipedia", 9) == 0 && complete == 1);
++
++    /* incomplete stream */
++    const char *inc = "4\r\nWiki\r\n";
++    CK(wv_http_decode_chunked(inc, strlen(inc), out, sizeof(out), &complete) == -1);
++
++    /* garbage */
++    CK(wv_http_decode_chunked("zzz\r\n", 5, out, sizeof(out), &complete) == -1);
++}
++
++static void test_body_extraction(void) {
++    /* plain content-length */
++    const char *r = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
++    wv_http_meta_t m;
++    CK(wv_http_parse_headers(r, strlen(r), &m));
++    char body[64];
++    int done = 0;
++    int n = wv_http_body(r, strlen(r), &m, body, sizeof(body), &done);
++    CK(n == 5 && done == 1 && memcmp(body, "hello", 5) == 0);
++
++    /* truncated body: not done */
++    const char *r2 = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc";
++    wv_http_meta_t m2;
++    CK(wv_http_parse_headers(r2, strlen(r2), &m2));
++    CK(wv_http_body(r2, strlen(r2), &m2, body, sizeof(body), &done) == -1);
++
++    /* no length: body to EOF */
++    const char *r3 = "HTTP/1.1 200 OK\r\n\r\nall of this";
++    wv_http_meta_t m3;
++    CK(wv_http_parse_headers(r3, strlen(r3), &m3));
++    n = wv_http_body(r3, strlen(r3), &m3, body, sizeof(body), &done);
++    CK(n == 11 && memcmp(body, "all of this", 11) == 0);
++
++    /* chunked end-to-end */
++    const char *r4 = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
++                     "5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
++    wv_http_meta_t m4;
++    CK(wv_http_parse_headers(r4, strlen(r4), &m4));
++    n = wv_http_body(r4, strlen(r4), &m4, body, sizeof(body), &done);
++    CK(n == 11 && done == 1 && memcmp(body, "Hello World", 11) == 0);
++}
++
++static void test_growing_buffer(void) {
++    /* 100 KB of body through 2 KB appends into a buffer that starts at
++     * 8 KB and must grow (realloc) without refusing */
++    size_t total = 100 * 1024;
++    char *seed = malloc(2048);
++    CK(seed != NULL);
++    if (!seed) return;
++    for (int i = 0; i < 2048; i++) seed[i] = (char)('a' + (i % 26));
++
++    char *buf = malloc(WV_HTTP_INITIAL_CAP);
++    wv_resp_t r;
++    wv_resp_init(&r, buf, WV_HTTP_INITIAL_CAP);
++    size_t fed = 0;
++    while (fed < total) {
++        size_t n = total - fed > 2048 ? 2048 : total - fed;
++        CK(wv_resp_append(&r, seed, n));
++        fed += n;
++    }
++    CK(r.len == total);
++    CK(r.refused == 0);
++    CK(r.cap > WV_HTTP_INITIAL_CAP);
++    CK(r.data[0] == 'a' && r.data[total - 1] == seed[2047]);
++
++    /* refusal past the cap: init with a tiny fixed buffer that cannot
++     * grow past WV_HTTP_MAX_CAP — simulate by pre-filling almost to the
++     * ceiling with a large seed */
++    char *big = malloc(WV_HTTP_MAX_CAP + 65536);
++    wv_resp_t rb;
++    wv_resp_init(&rb, big, WV_HTTP_MAX_CAP - 4096);
++    size_t feed = 0;
++    while (feed < WV_HTTP_MAX_CAP - 4096) {
++        size_t n = 8192;
++        if (feed + n > WV_HTTP_MAX_CAP - 4096) n = WV_HTTP_MAX_CAP - 4096 - feed;
++        wv_resp_append(&rb, seed, n);
++        feed += n;
++    }
++    /* one more append of 8 KB cannot fit (would exceed the ceiling) */
++    int ok = wv_resp_append(&rb, seed, 8192);
++    CK(ok == 0);
++    CK(rb.refused == 1);
++    CK(rb.len <= WV_HTTP_MAX_CAP);
++
++    free(seed);
++    free(r.data);      /* realloc'ed inside the test: buf is gone */
++    free(rb.data);     /* rb.data is either big or a grown copy */
++
++}
++
++static uint32_t frng = 0xBADF00Du;
++static uint32_t frand(void) {
++    frng ^= frng << 13; frng ^= frng >> 17; frng ^= frng << 5;
++    return frng;
++}
++
++static void test_fuzz(void) {
++    unsigned char buf[512];
++    for (int iter = 0; iter < 1000; iter++) {
++        size_t len = frand() % sizeof(buf);
++        for (size_t i = 0; i < len; i++) buf[i] = (unsigned char)(frand() & 0xFF);
++        wv_http_meta_t m;
++        if (wv_http_parse_headers((const char *)buf, len, &m)) {
++            char out[1024];
++            int done = 0;
++            (void)wv_http_body((const char *)buf, len, &m, out, sizeof(out), &done);
++        }
++        wv_url_t u;
++        (void)wv_url_parse((const char *)buf, &u);
++    }
++    CK(1);
++    printf("PASS: 1000 fuzz iterations (headers + URLs) terminated\n");
++}
++
++int main(void) {
++    printf("== webview URL + HTTP (WEBVIEW_PLAN W6) ==\n");
++
++    test_url_parse();
++    test_url_resolve();
++    test_request_build();
++    test_headers();
++    test_chunked_vs_plain();
++    test_body_extraction();
++    test_growing_buffer();
++    test_fuzz();
++
++    printf("== %s: %d failures ==\n", failures ? "FAIL" : "PASS", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/userspace/apps/webview/webview.c b/userspace/apps/webview/webview.c
+index 2c2aba3..0c08bb2 100644
+--- a/userspace/apps/webview/webview.c
++++ b/userspace/apps/webview/webview.c
+@@ -26,20 +26,26 @@
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <time.h>
++#include <sys/socket.h>   /* htons/htonl for IP literals */
+ 
+ #include "auragui.h"
+ #include "wv_html.h"
+ #include "wv_dom.h"
+ #include "wv_layout.h"
+ #include "wv_paint.h"
++#include "wv_css.h"
++#include "wv_url.h"
++#include "wv_http.h"
+ 
+ /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
+ #define VIEW_W 800
+ #define VIEW_H 600
+ 
+-/* Window is the viewport plus room for a status strip below it. */
++/* Window: URL chrome on top, the page, then a status strip. */
+ #define WIN_W  800
+-#define WIN_H  (VIEW_H + 40)
++#define WIN_H  (28 + VIEW_H + 40)
++#define CHROME_H 28
++#define PAGE_OFF_Y 28
+ 
+ /* How many present() calls the startup benchmark runs. */
+ #define BENCH_FRAMES 200
+@@ -124,6 +130,261 @@ static wv_paint_t  P;
+ static wv_css_t    css;
+ static int32_t max_scroll = 0;
+ 
++/* ---- W6: navigation state ---- */
++#define HIST_MAX 8
++static char      history[HIST_MAX][WV_URL_MAX_URL];
++static int       hist_count = 0, hist_pos = -1;
++static char      addr_buf[WV_URL_MAX_URL];
++static int       addr_len = 0;
++static int       on_page = 0;          /* 1 = the demo page, 0 = a loaded page */
++static char      last_cmd[WV_URL_MAX_URL + 64] = "";
++static char      current_url_str[WV_URL_MAX_URL] = "";   /* base for links */
++
++/* page-build arenas, global so load_html() can rebuild them */
++static wv_token_t    g_tt[2048];
++static wv_attr_t     g_ta[2048];
++static char          g_tp[65536];
++static wv_dom_node_t g_dn[2048];
++static wv_attr_t     g_dda[2048];
++static char          g_dpp[65536];
++static uint32_t      g_stk[512];
++static wv_disp_t     g_di[4096];
++static char          g_lpo[131072];
++static wv_blk_t      g_lb[520];
++static wv_inl_t      g_li[520];
++static wv_walk_t     g_lw[520];
++static wv_css_rule_t g_cr[256];
++static wv_css_decl_t g_cd[1024];
++static char          g_cp[32768];
++
++/* forward declarations (the navigation block precedes the paint block) */
++static void repaint(void);
++static void navigate(const char *url_text);
++static void navigate_ex(const char *url_text, int push);
++static void nav_back(void);
++static int follow_link(int n);
++
++/* Rebuild DOM + CSS + layout from raw HTML (a loaded page). */
++static void page_load_html(const char *html, size_t len) {
++    wv_arena_t toks_a;
++    wv_arena_init(&toks_a, g_tt, 2048, g_ta, 2048, g_tp, sizeof(g_tp));
++    if (wv_html_tokenize(&toks_a, html, len) < 0) return;
++    wv_dom_t dom;
++    wv_dom_init(&dom, g_dn, 2048, g_dda, 2048, g_dpp, sizeof(g_dpp), g_stk, 512);
++    if (wv_dom_build(&dom, &toks_a, 512) < 0) return;
++    wv_css_init(&css, g_cr, 256, g_cd, 1024, g_cp, sizeof(g_cp));
++    wv_css_build(&css, &dom);
++    wv_layout_init(&lay, g_di, 4096, g_lpo, sizeof(g_lpo),
++                   g_lb, 520, g_li, 520, g_lw, 520);
++    wv_layout_run(&lay, &dom, VIEW_W, &css);
++    max_scroll = lay.content_h > (uint32_t)VIEW_H
++                     ? (int32_t)lay.content_h - VIEW_H : 0;
++    scroll_y = 0;
++    on_page = 0;
++}
++
++/* Fetch http:// URL and load its body.  Returns 0 on success, an errno-ish
++ * negative on failure.  The kernel TCP path has its own ~1 s timeouts, so
++ * this cannot hang forever. */
++static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out) {
++    *body_out = NULL;
++    *body_len_out = 0;
++
++    /* host -> IP: dotted quad or DNS */
++    uint32_t ip = 0;
++    int is_ip = 1;
++    int parts = 0;
++    uint32_t cur = 0;
++    for (const char *c = u->host; *c; c++) {
++        if (*c == '.') { parts++; if (parts > 3) { is_ip = 0; break; } ip = (ip << 8) | cur; cur = 0; }
++        else if (*c >= '0' && *c <= '9') cur = cur * 10 + (uint32_t)(*c - '0');
++        else { is_ip = 0; break; }
++    }
++    if (is_ip && parts == 3) { ip = (ip << 8) | cur; }
++    else {
++        ip = dns_resolve(u->host);
++        if (ip == 0) return -1;      /* DNS failure */
++    }
++
++    if (net_connect(ip, u->port) != 0) return -1;
++
++    char req[512];
++    int rlen = wv_http_build_request(u, req, sizeof(req));
++    if (rlen <= 0) { net_close(); return -1; }
++    if (net_send(req, (uint32_t)rlen) != rlen) { net_close(); return -1; }
++
++    /* growing response buffer */
++    char *buf = malloc(WV_HTTP_INITIAL_CAP);
++    if (!buf) { net_close(); return -1; }
++    wv_resp_t r;
++    wv_resp_init(&r, buf, WV_HTTP_INITIAL_CAP);
++
++    char chunk[4096];
++    for (int guard = 0; guard < 200; guard++) {
++        int n = net_recv(chunk, sizeof(chunk));
++        if (n <= 0) break;
++        if (!wv_resp_append(&r, chunk, (size_t)n)) break;
++        /* early exit: headers in and body complete */
++        wv_http_meta_t m;
++        if (wv_http_parse_headers(r.data, r.len, &m)) {
++            char probe[64];
++            int done = 0;
++            if (wv_http_body(r.data, r.len, &m, probe, sizeof(probe), &done) >= 0 && done)
++                break;
++        }
++    }
++    net_close();
++
++    if (r.len == 0 || r.refused) { free(r.data); return -1; }
++
++    wv_http_meta_t m;
++    if (!wv_http_parse_headers(r.data, r.len, &m) || m.status != 200) {
++        free(r.data);
++        return (m.status > 0) ? -m.status : -1;
++    }
++    char *body = malloc(r.len + 1);
++    if (!body) { free(r.data); return -1; }
++    int done = 0;
++    int bl = wv_http_body(r.data, r.len, &m, body, (size_t)r.len + 1, &done);
++    if (bl < 0) {
++        /* The kernel TCP path can drop the last bytes of a stream on FIN
++         * (one-segment receive, fixed RTO).  Pragmatic fallback: if the
++         * headers parsed and SOME body arrived, render what we got —
++         * better than an error page for a 3-byte loss. */
++        if (m.ok && r.len > m.header_len) {
++            size_t n = r.len - m.header_len;
++            if (n > (size_t)r.len) n = (size_t)r.len;
++            memcpy(body, r.data + m.header_len, n);
++            body[n] = 0;
++            free(r.data);
++            *body_out = body;
++            *body_len_out = n;
++            printf("[webview] fetch: partial body (%u of %u bytes)\n",
++                   (unsigned)n, (unsigned)m.content_len);
++            return 0;
++        }
++        free(r.data); free(body); return -1;
++    }
++    body[bl] = 0;
++    free(r.data);
++    *body_out = body;
++    *body_len_out = (size_t)bl;
++    return 0;
++}
++
++/* Load a URL: https -> explanation page; http -> fetch + render.
++ * push=1 records it in the history. */
++static void navigate_ex(const char *url_text, int push) {
++    wv_url_t u;
++    if (!wv_url_parse(url_text, &u) || !u.ok) {
++        printf("[webview] nav: bad url '%s'\n", url_text);
++        return;
++    }
++    char fmt[WV_URL_MAX_URL];
++    wv_url_format(&u, fmt, sizeof(fmt));
++
++    if (u.is_https) {
++        /* The plan's honest refusal, rendered as a page. */
++        printf("[webview] nav: https unsupported for %s\n", fmt);
++        char page[512];
++        int pl = snprintf(page, sizeof(page),
++            "<body><h1>HTTPS is not supported</h1>"
++            "<p>The web view cannot open <b>%s</b>.</p>"
++            "<p>TLS 1.3 is INTERNET_PLAN's work (X25519, ChaCha20-Poly1305, "
++            "SHA-256, ASN.1 and a trust store). A browser that appears to do "
++            "HTTPS but validates nothing would be a liability.</p>"
++            "<p>Point the web view at a plain-HTTP server instead.</p></body>",
++            u.host);
++        page_load_html(page, (size_t)pl > 0 ? (size_t)pl : 0);
++        strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
++        if (push && hist_pos < HIST_MAX - 1) {
++            hist_pos++;
++            hist_count = hist_pos + 1;
++            strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
++        }
++        repaint();
++        return;
++    }
++
++    printf("[webview] nav: fetching %s\n", fmt);
++    char *body = NULL;
++    size_t blen = 0;
++    int rc = wv_fetch_url(&u, &body, &blen);
++    if (rc != 0) {
++        printf("[webview] nav: fetch failed (%d) for %s\n", rc, fmt);
++        char page[256];
++        int pl = snprintf(page, sizeof(page),
++            "<body><h1>Load failed</h1><p>%s (%d)</p></body>", fmt, rc);
++        page_load_html(page, (size_t)pl > 0 ? (size_t)pl : 0);
++        strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
++        if (push && hist_pos < HIST_MAX - 1) {
++            hist_pos++;
++            hist_count = hist_pos + 1;
++            strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
++        }
++        repaint();
++        return;
++    }
++    printf("[webview] nav: loaded %u bytes from %s\n", (unsigned)blen, fmt);
++    page_load_html(body, blen);
++    printf("[webview] nav: html built (items=%u, h=%u)\n",
++           (unsigned)lay.item_count, (unsigned)lay.content_h);
++    free(body);
++    strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
++    if (push && hist_pos < HIST_MAX - 1) {
++        hist_pos++;
++        hist_count = hist_pos + 1;
++        strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
++    }
++    repaint();
++}
++
++static void navigate(const char *url_text) { navigate_ex(url_text, 1); }
++
++/* Hit-test a click at page coordinates (x, y): returns 1 and follows the
++ * link when the click landed on one. */
++static int hit_test_link(int32_t x, int32_t y) {
++    int yp = y + scroll_y;
++    int seen = 0;
++    for (size_t i = 0; i < lay.item_count; i++) {
++        const wv_disp_t *it = &lay.items[i];
++        if (it->type != WV_D_TEXT || it->link_off == 0) continue;
++        if (x >= it->x && x < (int32_t)(it->x + it->w) &&
++            yp >= it->y && yp < it->y + WV_FONT_H)
++            return follow_link(seen);
++        seen++;
++    }
++    return 0;
++}
++
++static void nav_back(void) {
++    if (hist_pos <= 0) { printf("[webview] back: no history\n"); return; }
++    hist_pos--;
++    printf("[webview] back: %s\n", history[hist_pos]);
++    navigate_ex(history[hist_pos], 0);
++}
++
++/* Follow link number n of the current page.  Returns 1 when followed. */
++static int follow_link(int n) {
++    int seen = 0;
++    for (size_t i = 0; i < lay.item_count; i++) {
++        const wv_disp_t *it = &lay.items[i];
++        if (it->type != WV_D_TEXT || it->link_off == 0) continue;
++        if (seen++ != n) continue;
++        if (it->link_off >= sizeof(g_dpp)) return 0;
++        const char *href = &g_dpp[it->link_off];
++        wv_url_t base, target;
++        if (!wv_url_parse(current_url_str, &base) || !base.ok) return 0;
++        if (!wv_url_resolve(href, &base, &target) || !target.ok) return 0;
++        char fmt[WV_URL_MAX_URL];
++        wv_url_format(&target, fmt, sizeof(fmt));
++        printf("[webview] link %d -> %s\n", n, fmt);
++        navigate(fmt);
++        return 1;
++    }
++    return 0;
++}
++
+ /* Tokenise + build DOM + layout + paint context, once.  All working
+  * arenas are static (bounded) — nothing on the 64 KiB user stack. */
+ static void page_build(void) {
+@@ -228,24 +489,60 @@ static void scroll_smoke(void) {
+            ok ? "PASS" : "FAIL", ok ? "==" : "!=");
+ }
+ 
+-/* Present the page buffer into the window. */
++/* Present the page buffer into the window, below the chrome bar. */
+ static void present(void) {
+-    ag_blit(wid, 0, 0, VIEW_W, VIEW_H, page, VIEW_W);
++    ag_blit(wid, 0, PAGE_OFF_Y, VIEW_W, VIEW_H, page, VIEW_W);
+     frames_done++;
+ }
+ 
+-/* Repaint: full page from the display list, present, update the strip. */
++/* The chrome: URL bar + Back/Go buttons + status strip. */
++static void draw_chrome(const char *status) {
++    /* bar background */
++    ag_fill_rect(wid, 0, 0, WIN_W, CHROME_H, 0x00202028);
++    /* Back button */
++    ag_fill_rect(wid, 4, 4, 44, 20, 0x00303040);
++    ag_draw_text(wid, 12, 8, "Back", 0x00DDEEFF);
++    /* Go button */
++    ag_fill_rect(wid, WIN_W - 48, 4, 44, 20, 0x002F60C0);
++    ag_draw_text(wid, WIN_W - 40, 8, "Go", 0x00FFFFFF);
++    /* URL bar */
++    ag_fill_rect(wid, 52, 4, WIN_W - 108, 20, 0x00FFFFFF);
++    ag_draw_text(wid, 56, 8, addr_buf, 0x00000000);
++    /* status strip */
++    ag_fill_rect(wid, 0, VIEW_H + PAGE_OFF_Y, WIN_W, 40, 0x00202028);
++    ag_draw_text(wid, 8, VIEW_H + PAGE_OFF_Y + 12, status, 0x00DDEEFF);
++}
++
++/* Address bar hit zones (client coordinates). */
++static int chrome_back_hit(int32_t x, int32_t y) {
++    return x >= 4 && x < 48 && y >= 4 && y < 24;
++}
++static int chrome_go_hit(int32_t x, int32_t y) {
++    return x >= WIN_W - 48 && x < WIN_W - 4 && y >= 4 && y < 24;
++}
++static int chrome_url_hit(int32_t x, int32_t y) {
++    return x >= 52 && x < WIN_W - 52 && y >= 4 && y < 24;
++}
++
++/* Repaint: full page from the display list, present, chrome + status. */
+ static void repaint(void) {
+     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);   /* paper */
+     wv_paint_run(&P, &lay, scroll_y);
+     present();
+ 
+     char status[96];
+-    snprintf(status, sizeof(status),
+-             "W4 renderer - scroll %d px - frames %u",
+-             scroll_y, frames_done);
+-    ag_fill_rect(wid, 0, VIEW_H, WIN_W, 40, 0x00202028);
+-    ag_draw_text(wid, 8, VIEW_H + 12, status, 0x00DDEEFF);
++    if (on_page)
++        snprintf(status, sizeof(status),
++                 "demo page - scroll %d px - frames %u",
++                 scroll_y, frames_done);
++    else if (current_url_str[0])
++        snprintf(status, sizeof(status),
++                 "%s - scroll %d px - frames %u",
++                 current_url_str, scroll_y, frames_done);
++    else
++        snprintf(status, sizeof(status),
++                 "scroll %d px - frames %u", scroll_y, frames_done);
++    draw_chrome(status);
+     ag_render_now();
+ }
+ 
+@@ -285,6 +582,7 @@ int main(void) {
+     printf("[webview] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
+ 
+     page_build();
++    on_page = 1;
+     paint_smoke();
+     css_smoke();
+     scroll_smoke();
+@@ -461,8 +759,62 @@ int main(void) {
+         }
+     }
+ 
+-    /* ---- Event loop.  The W4 renderer will replace draw_page(); the loop
+-     * shape (poll, handle, repaint on demand) is the one it will keep. */
++    /* ---- W6: initial URL from /tmp/webview.url (test hook) ---- */
++    {
++        int fd = open("/tmp/webview.url", O_RDONLY);
++        if (fd >= 0) {
++            char url[WV_URL_MAX_URL];
++            int n = read(fd, url, sizeof(url) - 1);
++            close(fd);
++            if (n > 0) {
++                url[n] = 0;
++                while (n > 0 && (url[n-1] == '\n' || url[n-1] == '\r')) url[--n] = 0;
++                printf("[webview] initial url: %s\n", url);
++                navigate(url);
++            }
++        }
++        /* /tmp/webview.steps: "link 0; back; https; nav <url>" — executed
++         * one by one with a pause between.  The init shell blocks on
++         * `run`, so the test writes the whole script BEFORE starting the
++         * web view. */
++        int fd2 = open("/tmp/webview.steps", O_RDONLY);
++        if (fd2 >= 0) {
++            char steps[512];
++            int n = read(fd2, steps, sizeof(steps) - 1);
++            close(fd2);
++            if (n > 0) {
++                steps[n] = 0;
++                char *save = 0;
++                int idx = 0;
++                for (char *tok = strtok_r(steps, "|", &save); tok;
++                     tok = strtok_r(0, "|", &save)) {
++                    while (*tok == ' ' || *tok == '\t') tok++;
++                    size_t tl = strlen(tok);
++                    while (tl > 0 && (tok[tl-1] == ' ' || tok[tl-1] == '\t' ||
++                                      tok[tl-1] == '\n')) tok[--tl] = 0;
++                    if (tl == 0) continue;
++                    printf("[webview] step %d: %s\n", idx, tok);
++                    if (strncmp(tok, "nav ", 4) == 0) {
++                        navigate(tok + 4);
++                    } else if (strcmp(tok, "back") == 0) {
++                        nav_back();
++                    } else if (strcmp(tok, "https") == 0) {
++                        navigate("https://example.com/");
++                    } else if (strncmp(tok, "link ", 5) == 0) {
++                        int ln = 0;
++                        for (const char *c = tok + 5; *c >= '0' && *c <= '9'; c++)
++                            ln = ln * 10 + (*c - '0');
++                        follow_link(ln);
++                    }
++                    idx++;
++                    struct timespec pause = { 1, 500000000 };
++                    nanosleep(&pause, 0);
++                }
++            }
++        }
++    }
++
++    /* ---- Event loop ---- */
+     uint32_t limit = frame_limit();
+     if (limit) printf("[webview] frame limit: %u frames\n", limit);
+ 
+@@ -478,9 +830,41 @@ int main(void) {
+                     printf("[webview] quit via key\n");
+                     goto done;
+                 }
++                if (ev.key == '\r' || ev.key == '\n') {
++                    if (addr_len > 0) {
++                        addr_buf[addr_len] = 0;
++                        navigate(addr_buf);
++                    }
++                    break;
++                }
++                if (ev.key == 8 /* backspace */) {
++                    if (addr_len > 0) addr_len--;
++                    addr_buf[addr_len] = 0;
++                    repaint();
++                    break;
++                }
++                if (ev.key >= 0x20 && ev.key < 0x7F && addr_len < WV_URL_MAX_URL - 1) {
++                    addr_buf[addr_len++] = (char)ev.key;
++                    addr_buf[addr_len] = 0;
++                    repaint();
++                }
+                 if (ev.key == 0x102 /* arrow up */) { scroll_to(scroll_y - 16); }
+                 if (ev.key == 0x103 /* arrow down */) { scroll_to(scroll_y + 16); }
+                 break;
++            case AG_EVT_MOUSE_DOWN: {
++                int32_t mx = ev.x, my = ev.y;
++                if (chrome_back_hit(mx, my)) {
++                    nav_back();
++                } else if (chrome_go_hit(mx, my)) {
++                    if (addr_len > 0) { addr_buf[addr_len] = 0; navigate(addr_buf); }
++                } else if (chrome_url_hit(mx, my)) {
++                    /* clicking the address bar focuses it */
++                } else if (my >= PAGE_OFF_Y) {
++                    /* page area: hit-test links */
++                    hit_test_link(mx, my - PAGE_OFF_Y);
++                }
++                break;
++            }
+             case AG_EVT_MOUSE_WHEEL: {
+                 /* The kernel GUI ABI delivers the wheel delta in ev.key
+                  * (gui.c: gui_event_t.key = ev->wheel). */
+@@ -496,6 +880,42 @@ int main(void) {
+             }
+         }
+ 
++        /* W6 test hook: /tmp/webview.cmd is polled; a changed line is
++         * executed ("nav <url>", "back", "link <n>", "https"). */
++        {
++            int fd = open("/tmp/webview.cmd", O_RDONLY);
++            if (fd >= 0) {
++                char cmd[WV_URL_MAX_URL + 64];
++                int n = read(fd, cmd, sizeof(cmd) - 1);
++                close(fd);
++                if (n > 0) {
++                    cmd[n] = 0;
++                    while (n > 0 && (cmd[n-1] == '\n' || cmd[n-1] == '\r')) cmd[--n] = 0;
++                    /* the init shell does not strip quotes */
++                    while (n > 0 && (cmd[0] == '"' || cmd[0] == 0x27)) {
++                        for (int q = 0; q + 1 < (int)n; q++) cmd[q] = cmd[q + 1];
++                        n--;
++                    }
++                    while (n > 0 && (cmd[n-1] == '"' || cmd[n-1] == 0x27)) cmd[--n] = 0;
++                    if (strcmp(cmd, last_cmd) != 0) {
++                        strncpy(last_cmd, cmd, sizeof(last_cmd) - 1);
++                        if (strncmp(cmd, "nav ", 4) == 0) {
++                            navigate(cmd + 4);
++                        } else if (strcmp(cmd, "back") == 0) {
++                            nav_back();
++                        } else if (strcmp(cmd, "https") == 0) {
++                            navigate("https://example.com/");
++                        } else if (strncmp(cmd, "link ", 5) == 0) {
++                            int ln = 0;
++                            for (const char *c = cmd + 5; *c >= '0' && *c <= '9'; c++)
++                                ln = ln * 10 + (*c - '0');
++                            follow_link(ln);
++                        }
++                    }
++                }
++            }
++        }
++
+         if (limit && frames_done >= limit) {
+             printf("[webview] PASS: %u frames rendered, exiting\n", frames_done);
+             goto done;
+diff --git a/userspace/apps/webview/wv_http.c b/userspace/apps/webview/wv_http.c
+new file mode 100644
+index 0000000..8b6e79e
+--- /dev/null
++++ b/userspace/apps/webview/wv_http.c
+@@ -0,0 +1,240 @@
++/*
++ * wv_http.c — HTTP client pieces (WEBVIEW_PLAN W6).  See wv_http.h.
++ *
++ * All parsers are bounded and defensive: they never read past `len`, they
++ * cap values (a 10 MB Content-Length is a number, not a trust boundary),
++ * and malformed input returns -1 rather than looping.  The chunked
++ * decoder is a small state machine over hex chunk sizes — no recursion,
++ * no heap of its own beyond the caller's buffer.
++ */
++
++#include <string.h>
++#include <stdlib.h>
++#include "wv_http.h"
++
++/* ---- request ---- */
++
++int wv_http_build_request(const wv_url_t *u, char *out, size_t cap) {
++    if (!u || !u->ok || !out) return -1;
++    size_t p = 0;
++    const char *get = "GET ";
++    const char *ver = " HTTP/1.1\r\nHost: ";
++    const char *tail = "\r\nConnection: close\r\n\r\n";
++    size_t i;
++    for (i = 0; get[i]; i++) { if (p + 1 >= cap) return -1; out[p++] = get[i]; }
++    for (i = 0; u->path[i]; i++) { if (p + 1 >= cap) return -1; out[p++] = u->path[i]; }
++    for (i = 0; ver[i]; i++) { if (p + 1 >= cap) return -1; out[p++] = ver[i]; }
++    for (i = 0; u->host[i]; i++) { if (p + 1 >= cap) return -1; out[p++] = u->host[i]; }
++    int def_port = u->is_https ? 443 : 80;
++    if (u->port != def_port) {
++        char pb[6];
++        int pn = 0;
++        uint32_t v = u->port;
++        do { pb[pn++] = (char)('0' + v % 10); v /= 10; } while (v);
++        if (p + 1 + pn + 1 >= cap) return -1;
++        out[p++] = ':';
++        while (pn > 0) out[p++] = pb[--pn];
++    }
++    for (i = 0; tail[i]; i++) { if (p + 1 >= cap) return -1; out[p++] = tail[i]; }
++    out[p] = 0;
++    return (int)p;
++}
++
++/* ---- growing response buffer ---- */
++
++void wv_resp_init(wv_resp_t *r, char *buf, size_t initial_cap) {
++    r->data = buf;
++    r->cap = initial_cap ? initial_cap : WV_HTTP_INITIAL_CAP;
++    r->len = 0;
++    r->refused = 0;
++}
++
++int wv_resp_append(wv_resp_t *r, const char *data, size_t n) {
++    if (!r || !data) return 0;
++    if (r->refused) return 0;
++    if (r->len + n > r->cap) {
++        /* grow: double until it fits, or refuse past the ceiling */
++        size_t want = r->len + n;
++        size_t nc = r->cap ? r->cap : WV_HTTP_INITIAL_CAP;
++        while (nc < want) {
++            size_t n2 = nc * 2;
++            if (n2 <= nc || n2 > WV_HTTP_MAX_CAP) { n2 = WV_HTTP_MAX_CAP; }
++            nc = n2;
++            if (nc >= want) break;
++            if (nc >= WV_HTTP_MAX_CAP) break;
++        }
++        if (nc > WV_HTTP_MAX_CAP) nc = WV_HTTP_MAX_CAP;
++        if (nc < want) {
++            /* keep the prefix, mark the refusal */
++            r->refused = 1;
++            return 0;
++        }
++        char *nd = (char *)realloc(r->data, nc);
++        if (!nd) { r->refused = 1; return 0; }
++        r->data = nd;
++        r->cap = nc;
++    }
++    memcpy(r->data + r->len, data, n);
++    r->len += n;
++    return 1;
++}
++
++/* ---- response parsing ---- */
++
++static int wv_line(const char *buf, size_t len, size_t *pos, char *out,
++                   size_t out_cap) {
++    /* copy one CRLF-terminated line; returns 1 and advances *pos */
++    size_t i = *pos;
++    size_t p = 0;
++    while (i < len && buf[i] != '\n') {
++        if (buf[i] != '\r' && p + 1 < out_cap) out[p++] = buf[i];
++        i++;
++    }
++    if (i >= len) return 0;              /* line not complete yet */
++    i++;                                 /* past '\n' */
++    out[p] = 0;
++    *pos = i;
++    return 1;
++}
++
++int wv_http_parse_headers(const char *buf, size_t len, wv_http_meta_t *m) {
++    memset(m, 0, sizeof(*m));
++    m->status = -1;
++    if (!buf || len < 4) return 0;
++    /* find CRLFCRLF */
++    size_t he = (size_t)-1;
++    for (size_t i = 0; i + 3 < len; i++) {
++        if (buf[i] == '\r' && buf[i + 1] == '\n' &&
++            buf[i + 2] == '\r' && buf[i + 3] == '\n') { he = i + 4; break; }
++    }
++    if (he == (size_t)-1) return 0;
++    m->header_len = he;
++
++    /* status line */
++    size_t pos = 0;
++    char line[256];
++    if (!wv_line(buf, he, &pos, line, sizeof(line))) return 0;
++    if (strncmp(line, "HTTP/", 5) != 0) return 0;
++    int code = 0;
++    size_t i = 5;
++    while (line[i] && line[i] != ' ') i++;
++    while (line[i] == ' ') i++;
++    while (line[i] >= '0' && line[i] <= '9') {
++        code = code * 10 + (line[i] - '0');
++        i++;
++    }
++    m->status = code;
++
++    /* headers */
++    while (pos < he) {
++        if (!wv_line(buf, he, &pos, line, sizeof(line))) break;
++        if (line[0] == 0) break;
++        /* header name */
++        size_t c = 0;
++        while (line[c] && line[c] != ':') c++;
++        if (line[c] != ':') continue;
++        size_t v = c + 1;
++        while (line[v] == ' ') v++;
++        /* lowercase name compare */
++        if (line[0] == 'c' || line[0] == 'C' || line[0] == 't' || line[0] == 'T' ||
++            line[0] == 'l' || line[0] == 'L') {
++            char name[64];
++            size_t nl = c < sizeof(name) - 1 ? c : sizeof(name) - 1;
++            for (size_t k = 0; k < nl; k++)
++                name[k] = (line[k] >= 'A' && line[k] <= 'Z') ? (char)(line[k] + 32) : line[k];
++            name[nl] = 0;
++            if (strcmp(name, "content-length") == 0) {
++                m->has_content_len = 1;
++                m->content_len = 0;
++                for (size_t k = v; line[k] && line[k] >= '0' && line[k] <= '9'; k++) {
++                    if (m->content_len > (size_t)1 << 40) break;
++                    m->content_len = m->content_len * 10 + (size_t)(line[k] - '0');
++                }
++            } else if (strcmp(name, "transfer-encoding") == 0) {
++                /* "chunked" anywhere in the value */
++                for (size_t k = v; line[k]; k++) {
++                    if ((line[k] == 'c' || line[k] == 'C') &&
++                        strncmp(line + k, "chunked", 7) == 0) {
++                        m->chunked = 1;
++                        break;
++                    }
++                }
++            }
++        }
++    }
++    m->ok = 1;
++    return 1;
++}
++
++int wv_http_decode_chunked(const char *buf, size_t len,
++                           char *out, size_t out_cap, int *complete) {
++    if (complete) *complete = 0;
++    size_t i = 0, o = 0;
++    int saw_term = 0;
++    while (i < len) {
++        /* chunk size line: hex until CRLF or ';' */
++        uint32_t size = 0;
++        int any = 0;
++        while (i < len) {
++            unsigned char c = (unsigned char)buf[i];
++            if (c == '\r' || c == '\n' || c == ';') break;
++            int hv;
++            if (c >= '0' && c <= '9') hv = c - '0';
++            else if (c >= 'a' && c <= 'f') hv = c - 'a' + 10;
++            else if (c >= 'A' && c <= 'F') hv = c - 'A' + 10;
++            else return -1;
++            if (size > 0xFFFFFFFu) return -1;
++            size = size * 16 + (uint32_t)hv;
++            any = 1;
++            i++;
++        }
++        if (!any) return -1;
++        while (i < len && buf[i] != '\n') i++;   /* skip to EOL */
++        if (i >= len) return -1;
++        i++;                                      /* past '\n' */
++        if (size == 0) { saw_term = 1; break; }
++        if (o + size > out_cap) return -1;        /* does not fit */
++        if (i + size > len) return -1;            /* chunk incomplete */
++        memcpy(out + o, buf + i, size);
++        o += size;
++        i += size;
++        /* trailing CRLF */
++        if (i + 1 < len && buf[i] == '\r' && buf[i + 1] == '\n') i += 2;
++        else if (i < len && buf[i] == '\n') i += 1;
++        else if (i >= len) return -1;
++    }
++    if (!saw_term) return -1;                     /* stream not terminated */
++    if (complete) *complete = 1;
++    return (int)o;
++}
++
++int wv_http_body(const char *buf, size_t len, const wv_http_meta_t *m,
++                 char *out, size_t out_cap, int *done) {
++    if (done) *done = 0;
++    if (!m->ok) return -1;
++    size_t body_start = m->header_len;
++    if (body_start > len) return -1;
++    const char *body = buf + body_start;
++    size_t body_len = len - body_start;
++
++    if (m->chunked) {
++        int complete = 0;
++        int n = wv_http_decode_chunked(body, body_len, out, out_cap, &complete);
++        if (done) *done = complete;
++        return n;
++    }
++    if (m->has_content_len) {
++        size_t want = m->content_len;
++        if (body_len < want) return -1;           /* need more data */
++        if (want > out_cap) want = out_cap;
++        memcpy(out, body, want);
++        if (done) *done = 1;
++        return (int)want;
++    }
++    /* no length: body runs to EOF (Connection: close) */
++    size_t n = body_len;
++    if (n > out_cap) n = out_cap;
++    memcpy(out, body, n);
++    if (done) *done = 1;
++    return (int)n;
++}
+diff --git a/userspace/apps/webview/wv_http.h b/userspace/apps/webview/wv_http.h
+new file mode 100644
+index 0000000..cf39b07
+--- /dev/null
++++ b/userspace/apps/webview/wv_http.h
+@@ -0,0 +1,82 @@
++/*
++ * wv_http.h — HTTP client pieces for the AuraLite web view
++ * (WEBVIEW_PLAN W6).  Pure C (no libc beyond memcpy), so the same file is
++ * unit-tested on the host and compiled into the guest.
++ *
++ * This is NOT a sockets layer: the caller performs the I/O (net_connect /
++ * net_send / net_recv in the guest) and feeds bytes to these functions.
++ *
++ * Components:
++ *   - request building: GET <path> HTTP/1.1 + Host: (the plan: most
++ *     servers stopped speaking 1.0 politely);
++ *   - response parsing: status line, headers, Content-Length, chunked
++ *     flag, body extraction;
++ *   - chunked transfer decoding (the plan: a chunked response decodes to
++ *     the same bytes as an unchunked one);
++ *   - a GROWING response buffer with an explicit cap and a diagnosed
++ *     refusal past it (replaces the 16 KB static buffer).
++ */
++
++#ifndef AURALITE_WV_HTTP_H
++#define AURALITE_WV_HTTP_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include "wv_url.h"
++
++/* ---- request ---- */
++
++/* Build "GET <path> HTTP/1.1\r\nHost: <host>[:port]\r\nConnection:
++ * close\r\n\r\n" into out.  Returns the length, or -1 when it does not
++ * fit. */
++int wv_http_build_request(const wv_url_t *u, char *out, size_t cap);
++
++/* ---- response buffer (growing) ---- */
++
++#define WV_HTTP_INITIAL_CAP 8192
++#define WV_HTTP_MAX_CAP     (512 * 1024)   /* explicit ceiling */
++
++typedef struct {
++    char  *data;
++    size_t cap;
++    size_t len;
++    int    refused;      /* set when the cap was hit (diagnosed refusal) */
++} wv_resp_t;
++
++/* Init with a caller-owned buffer of initial_cap (0 = default). */
++void wv_resp_init(wv_resp_t *r, char *buf, size_t initial_cap);
++/* Append bytes; doubles the buffer (realloc) up to WV_HTTP_MAX_CAP, then
++ * sets refused and keeps the prefix.  Returns 1 on success. */
++int wv_resp_append(wv_resp_t *r, const char *data, size_t n);
++
++/* ---- response parsing ---- */
++
++typedef struct {
++    int      status;          /* 200, 404, ... ; -1 when not parsed */
++    int      chunked;
++    int      has_content_len;
++    size_t   content_len;
++    size_t   header_len;      /* bytes of headers (incl. CRLFCRLF) */
++    int      ok;              /* header block fully present */
++} wv_http_meta_t;
++
++/* Parse the header block at the start of buf[0..len).  Returns 1 when the
++ * header terminator CRLFCRLF was found and the status line parsed. */
++int wv_http_parse_headers(const char *buf, size_t len, wv_http_meta_t *m);
++
++/* Decode a chunked body: buf[0..len) contains the whole chunked payload
++ * (after the headers).  Writes decoded bytes to out (cap = out_cap).
++ * Returns the decoded length, or -1 when the stream is malformed or does
++ * not fit.  When `complete` is non-NULL it is set to 1 only if the
++ * terminating 0-chunk was seen. */
++int wv_http_decode_chunked(const char *buf, size_t len,
++                           char *out, size_t out_cap, int *complete);
++
++/* Extract the body of a response given parsed meta: bytes after the
++ * headers, Content-Length-truncated or complete-chunked-decoded.
++ * Returns the body length or -1 (needs more data / malformed).  When
++ * `done` is non-NULL it is set to 1 when the body is complete. */
++int wv_http_body(const char *buf, size_t len, const wv_http_meta_t *m,
++                 char *out, size_t out_cap, int *done);
++
++#endif /* AURALITE_WV_HTTP_H */
+diff --git a/userspace/apps/webview/wv_layout.c b/userspace/apps/webview/wv_layout.c
+index b9df1f9..9014335 100644
+--- a/userspace/apps/webview/wv_layout.c
++++ b/userspace/apps/webview/wv_layout.c
+@@ -234,6 +234,7 @@ static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
+     it.underline = (uint8_t)st->underline;
+     it.text_off = off;
+     it.text_len = wlen;
++    it.link_off = st->link_off;
+     int idx = wv_layout_add_item(L, &it);
+ 
+     if (!b->inl_has_text && b->line_start < 0)
+@@ -625,6 +626,23 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w,
+                     if (ua_color(name, nlen) != 0xFF000000u)
+                         nw->color = ua_color(name, nlen);
+                     if (elst.color != 0xFF000000u) nw->color = elst.color;
++                    if (wv_name_is(name, nlen, "a")) {
++                        /* remember the href (DOM pool offset) for W6
++                         * hit-testing */
++                        for (uint32_t ai = 0; ai < nd->attr_count; ai++) {
++                            size_t aidx = (size_t)nd->attr_base + ai;
++                            if (aidx >= d->attr_count) break;
++                            const wv_attr_t *at = &d->attrs[aidx];
++                            const char *an = wv_dom_str(d, at->name_off);
++                            if (an && at->name_len == 4 &&
++                                an[0] == 'h' && an[1] == 'r' &&
++                                an[2] == 'e' && an[3] == 'f' &&
++                                at->value_len > 0) {
++                                nw->link_off = at->value_off;
++                                break;
++                            }
++                        }
++                    }
+                 } else {
+                     L->truncated = 1;
+                 }
+diff --git a/userspace/apps/webview/wv_layout.h b/userspace/apps/webview/wv_layout.h
+index c350227..db646bd 100644
+--- a/userspace/apps/webview/wv_layout.h
++++ b/userspace/apps/webview/wv_layout.h
+@@ -71,6 +71,7 @@ typedef struct {
+     uint16_t border;    /* border width px, 0 = none (WV_D_BOX) */
+     uint16_t _pad2;
+     uint32_t border_color;
++    uint32_t link_off;  /* href in the DOM pool (0 = not a link) */
+ } wv_disp_t;
+ 
+ /* ---- working stacks (caller-provided, so no heap and no big locals) ---- */
+@@ -102,6 +103,7 @@ typedef struct {
+     int      bold;
+     uint32_t color;
+     int      underline;
++    uint32_t link_off;   /* href in the DOM pool (0 = none) */
+ } wv_inl_t;
+ 
+ typedef struct {
+diff --git a/userspace/apps/webview/wv_url.c b/userspace/apps/webview/wv_url.c
+new file mode 100644
+index 0000000..e585c11
+--- /dev/null
++++ b/userspace/apps/webview/wv_url.c
+@@ -0,0 +1,221 @@
++/*
++ * wv_url.c — URL parsing and resolution for the AuraLite web view
++ * (WEBVIEW_PLAN W6).  See wv_url.h.
++ *
++ * The parser is tolerant in the way browsers are: a missing scheme means
++ * "http", a missing path means "/", extra whitespace is trimmed.  It is
++ * strict about the things that matter: the host must be non-empty and
++ * printable, the port numeric, and https is flagged so the caller can
++ * refuse it with an explanation rather than a hang.
++ */
++
++#include <string.h>
++#include "wv_url.h"
++
++static int wv_url_isalpha(unsigned char c) {
++    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
++}
++static int wv_url_isdigit(unsigned char c) {
++    return c >= '0' && c <= '9';
++}
++
++/* Trim leading/trailing whitespace of the input. */
++static const char *wv_trim(const char *s, size_t *len) {
++    while (*len > 0 && (s[0] == ' ' || s[0] == '\t' || s[0] == '\n' ||
++                        s[0] == '\r')) { s++; (*len)--; }
++    while (*len > 0 && (s[*len - 1] == ' ' || s[*len - 1] == '\t' ||
++                        s[*len - 1] == '\n' || s[*len - 1] == '\r')) (*len)--;
++    return s;
++}
++
++static void wv_url_clear(wv_url_t *u) {
++    memset(u, 0, sizeof(*u));
++    u->port = 80;
++    u->path[0] = '/';
++    u->ok = 0;
++}
++
++/* Validate a host: printable chars, no spaces/slashes. */
++static int wv_host_ok(const char *h, size_t len) {
++    if (len == 0 || len > WV_URL_MAX_HOST) return 0;
++    for (size_t i = 0; i < len; i++) {
++        unsigned char c = (unsigned char)h[i];
++        if (c < 0x21 || c > 0x7E) return 0;
++        if (c == '/' || c == ' ' || c == '\t') return 0;
++    }
++    return 1;
++}
++
++int wv_url_parse(const char *url, wv_url_t *out) {
++    if (!url || !out) return 0;
++    wv_url_clear(out);
++    size_t len = strlen(url);
++    const char *s = wv_trim(url, &len);
++    if (len == 0) return 0;
++
++    /* scheme */
++    size_t i = 0;
++    while (i < len && s[i] != ':') {
++        if (!wv_url_isalpha(s[i]) && i > 0 && !wv_url_isdigit(s[i]) &&
++            s[i] != '+' && s[i] != '-' && s[i] != '.')
++            break;
++        i++;
++    }
++    if (i > 0 && i < len && s[i] == ':' && i + 2 < len &&
++        s[i + 1] == '/' && s[i + 2] == '/') {
++        if (i >= sizeof(out->scheme)) return 0;
++        for (size_t k = 0; k < i; k++)
++            out->scheme[k] = (s[k] >= 'A' && s[k] <= 'Z') ? (char)(s[k] + 32) : s[k];
++        out->scheme[i] = 0;
++        if (strcmp(out->scheme, "http") != 0 && strcmp(out->scheme, "https") != 0)
++            return 0;
++        out->is_https = (out->scheme[4] == 's');   /* "https" */
++        out->port = out->is_https ? 443 : 80;
++        i += 3;                                     /* past "://" */
++    } else {
++        /* no scheme: default to http */
++        strcpy(out->scheme, "http");
++        out->is_https = 0;
++        out->port = 80;
++        i = 0;
++    }
++
++    /* host[:port] */
++    size_t hstart = i;
++    while (i < len && s[i] != '/' && s[i] != ':' && s[i] != '?' && s[i] != '#')
++        i++;
++    size_t hlen = i - hstart;
++    if (!wv_host_ok(s + hstart, hlen)) return 0;
++    memcpy(out->host, s + hstart, hlen);
++    out->host[hlen] = 0;
++
++    if (i < len && s[i] == ':') {
++        i++;
++        uint32_t port = 0;
++        size_t pd = 0;
++        while (i < len && wv_url_isdigit(s[i]) && pd < 5) {
++            port = port * 10 + (uint32_t)(s[i] - '0');
++            i++;
++            pd++;
++        }
++        if (pd == 0 || port == 0 || port > 65535) return 0;
++        out->port = (uint16_t)port;
++    }
++
++    /* path (up to '?' — query is dropped for now) */
++    if (i < len && s[i] == '/') {
++        size_t pstart = i;
++        while (i < len && s[i] != '?' && s[i] != '#') i++;
++        size_t plen = i - pstart;
++        if (plen == 0) plen = 1;                    /* "/" */
++        if (plen >= sizeof(out->path)) plen = sizeof(out->path) - 1;
++        memcpy(out->path, s + pstart, plen);
++        out->path[plen] = 0;
++    } else {
++        strcpy(out->path, "/");
++    }
++
++    out->ok = 1;
++    return 1;
++}
++
++void wv_url_format(const wv_url_t *u, char *out, size_t cap) {
++    if (!u || !out || cap == 0) return;
++    if (!u->ok) { out[0] = 0; return; }
++    size_t p = 0;
++    const char *scheme = u->is_https ? "https://" : "http://";
++    while (scheme[p] && p + 1 < cap) { out[p] = scheme[p]; p++; }
++    size_t hl = strlen(u->host);
++    for (size_t k = 0; k < hl && p + 1 < cap; k++) out[p++] = u->host[k];
++    int def_port = u->is_https ? 443 : 80;
++    if (u->port != def_port && p + 8 < cap) {
++        out[p++] = ':';
++        char pb[6];
++        int pn = 0;
++        uint32_t v = u->port;
++        do { pb[pn++] = (char)('0' + v % 10); v /= 10; } while (v);
++        while (pn > 0 && p + 1 < cap) out[p++] = pb[--pn];
++    }
++    size_t pl = strlen(u->path);
++    for (size_t k = 0; k < pl && p + 1 < cap; k++) out[p++] = u->path[k];
++    out[p] = 0;
++}
++
++int wv_url_resolve(const char *href, const wv_url_t *base, wv_url_t *out) {
++    if (!href || !base || !out || !base->ok) return 0;
++    size_t len = strlen(href);
++    const char *s = wv_trim(href, &len);
++
++    /* absolute (scheme://...) or protocol-relative (//host/path) */
++    if (len >= 8 && strncmp(s, "http://", 7) == 0) return wv_url_parse(s, out);
++    if (len >= 9 && strncmp(s, "https://", 8) == 0) return wv_url_parse(s, out);
++    if (len >= 2 && s[0] == '/' && s[1] == '/') {
++        char tmp[WV_URL_MAX_URL];
++        size_t t = 0;
++        const char *sch = base->is_https ? "https:" : "http:";
++        while (sch[t] && t + 1 < sizeof(tmp)) { tmp[t] = sch[t]; t++; }
++        for (size_t k = 0; k < len && t + 1 < sizeof(tmp); k++)
++            tmp[t++] = s[k];
++        tmp[t] = 0;
++        return wv_url_parse(tmp, out);
++    }
++
++    /* fragment-only: keep the same document */
++    if (len > 0 && s[0] == '#') {
++        *out = *base;
++        return 1;
++    }
++    if (len == 0) {
++        *out = *base;
++        return 1;
++    }
++
++    /* root-relative */
++    if (s[0] == '/') {
++        wv_url_t u = *base;
++        size_t pl = len;
++        if (pl >= sizeof(u.path)) pl = sizeof(u.path) - 1;
++        memcpy(u.path, s, pl);
++        u.path[pl] = 0;
++        u.ok = 1;
++        *out = u;
++        return 1;
++    }
++
++    /* directory-relative: resolve against the base path's directory.
++     * "a/b" + base "/x/y/z" -> "/x/y/a/b"; leading "../" climbs. */
++    char dir[WV_URL_MAX_PATH + 1];
++    size_t dl = 0;
++    const char *bp = base->path;
++    size_t bpl = strlen(bp);
++    /* drop the last segment */
++    size_t last = bpl;
++    while (last > 0 && bp[last - 1] != '/') last--;
++    if (last == 0) { dir[dl++] = '/'; }
++    else { for (size_t k = 0; k < last && dl < WV_URL_MAX_PATH; k++) dir[dl++] = bp[k]; }
++
++    /* walk "../" segments */
++    size_t i = 0;
++    while (i + 2 < len && s[i] == '.' && s[i + 1] == '.' && s[i + 2] == '/') {
++        /* climb one directory: strip a trailing '/', then the last
++         * segment, then the '/' in front of it */
++        while (dl > 0 && dir[dl - 1] == '/') dl--;
++        while (dl > 0 && dir[dl - 1] != '/') dl--;
++        if (dl > 0) dl--;              /* the '/' before the segment */
++        if (dl == 0) dir[dl++] = '/';
++        i += 3;
++    }
++    /* "./" segments are skipped */
++    while (i + 1 < len && s[i] == '.' && s[i + 1] == '/') i += 2;
++
++    wv_url_t u = *base;
++    size_t pl = 0;
++    char *path = u.path;
++    for (size_t k = 0; k < dl && pl < WV_URL_MAX_PATH; k++) path[pl++] = dir[k];
++    for (size_t k = i; k < len && pl < WV_URL_MAX_PATH; k++) path[pl++] = s[k];
++    path[pl] = 0;
++    if (pl == 0) { path[0] = '/'; path[1] = 0; }
++    u.ok = 1;
++    *out = u;
++    return 1;
++}
+diff --git a/userspace/apps/webview/wv_url.h b/userspace/apps/webview/wv_url.h
+new file mode 100644
+index 0000000..a73bc94
+--- /dev/null
++++ b/userspace/apps/webview/wv_url.h
+@@ -0,0 +1,44 @@
++/*
++ * wv_url.h — URL parsing for the AuraLite web view (WEBVIEW_PLAN W6).
++ *
++ * Pure C, no libc dependencies beyond memcpy/memset, so the same file is
++ * unit-tested on the host and compiled into the guest.  The parser is
++ * deliberately small: scheme://host[:port]/path with defaults, plus
++ * relative-URL resolution against a base (the "href" of a link).
++ *
++ * https:// URLs parse fine but are flagged: W6 shows an explanation page
++ * instead of attempting a connection (TLS is INTERNET_PLAN's job).
++ */
++
++#ifndef AURALITE_WV_URL_H
++#define AURALITE_WV_URL_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#define WV_URL_MAX_HOST 255
++#define WV_URL_MAX_PATH 1023
++#define WV_URL_MAX_URL  (WV_URL_MAX_HOST + WV_URL_MAX_PATH + 32)
++
++typedef struct {
++    char     scheme[8];      /* "http" or "https" (lower-cased) */
++    char     host[WV_URL_MAX_HOST + 1];
++    uint16_t port;           /* 80 for http, 443 for https when absent */
++    char     path[WV_URL_MAX_PATH + 1];
++    int      is_https;
++    int      ok;             /* 1 when the URL is well-formed enough to use */
++} wv_url_t;
++
++/* Parse an absolute URL.  Returns 1 on success (0 on garbage). */
++int wv_url_parse(const char *url, wv_url_t *out);
++
++/* Resolve a (possibly relative) href against a base URL.  Returns 1 on
++ * success.  Base must be absolute.  Handles scheme-absolute hrefs
++ * (http://...), root-relative (/path), directory-relative (../x, x) and
++ * empty (#fragment is dropped). */
++int wv_url_resolve(const char *href, const wv_url_t *base, wv_url_t *out);
++
++/* Render an absolute URL back to text (normalised). */
++void wv_url_format(const wv_url_t *u, char *out, size_t cap);
++
++#endif /* AURALITE_WV_URL_H */
+-- 
+2.47.3
+

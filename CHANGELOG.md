@@ -2,6 +2,32 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W8 — Rename to gbrowser + GUI chrome] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W8, user-driven direction: instead of retiring
+the old browser name, the web view is renamed to `/apps/gbrowser` and
+given a full GUI.
+
+- **Rename**: `userspace/apps/webview/` → `userspace/apps/gbrowser/`
+  (`webview.c` → `gbrowser.c`; the `wv_*` engine modules keep their
+  names); binary, initrd entry, launcher (`glaunch` "Web Browser"),
+  `init` help, integration cases (`test_webview*` → `test_gbrowser*`),
+  log prefixes (`[gbrowser]`) and docs (`docs/gbrowser.md`) all updated.
+  The old listbox-based `gui-browser` source stays removed — the browser's
+  name now belongs to the real renderer.
+- **Full GUI chrome** (the "make a GUI for it" ask):
+  - buttons: **Back / Fwd / Home / Go** (clickable hit zones);
+  - address bar (type + Enter), **forward history** (`Fwd`),
+    **Home** returns to the built-in demo page;
+  - **hover-aware status strip**: moving the mouse over a link shows the
+    link's target URL in the status bar (cleared on scroll/navigation);
+  - **window title follows the current page** ("Browser - <host>").
+- **Test gate**: `make iso` clean; `make test-unit` green (501 browser
+  host checks + POSIX2024); QEMU `test_gbrowser` 15/15 and
+  `test_gbrowser_net` 13/13 pass; the GUI chrome is exercised in QEMU.
+
+**WEBVIEW_PLAN is complete: W0–W8 ✅.**
+
 ## [WebView Phase W7 — `<canvas>` with OpenGL] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W7: the phase OpenGL is actually for — a page can

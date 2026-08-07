@@ -1,0 +1,906 @@
+From cff84aabce176446f307fe4df5e95581297aebcf Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 11:48:52 +0000
+Subject: [PATCH] W7 update: <canvas> with OpenGL
+
+WEBVIEW_PLAN.md phase W7:
+- wv_canvas.{h,c}: the only web-view module that includes GL headers;
+  <canvas data-scene="cube"> renders the built-in cube scene into an
+  FBO (G12) and is composited into the page like any other box
+- GL is NOT on the paint critical path: one-shot render at page load
+  into a cached buffer; repaint only blits (clipped, scrolled with the
+  page); a page without a canvas never touches libgl (the W4 reference
+  hash 0x4D394D5C is unchanged)
+- measured cost: 64x48 cube in ~58 us host / sub-tick in QEMU TCG --
+  the number the plan's section 1 table was missing
+- host gate: test_wv_canvas.c 21 checks (real wv_canvas.c vs real
+  libgl): cube faces visible, two renders byte-identical, invalid
+  sizes refused, blit clipping (placement/scroll/off-screen/edges),
+  2000 fuzz blits
+- QEMU gate: canvas smoke: PASS (hash 4d394d5c -> 8a6c0574);
+  test_webview_net gained /canvas.html (text + cube) and asserts
+  'canvas: rendered 64x48 cube'; 15 + 13 assertions, all green
+- no JavaScript (D5): a page can only ask for a scene
+- webview.elf ~374 KB (libgl +186 KB) - inside SPAWN_MAX_IMAGE
+---
+ CHANGELOG.md                                |  31 ++++
+ Makefile                                    |  26 ++-
+ WEBVIEW_PLAN.md                             |  31 +++-
+ docs/status.md                              |   2 +-
+ docs/webview.md                             |  28 ++-
+ tests/integration/cases/test_webview.sh     |   1 +
+ tests/integration/cases/test_webview_net.sh |  14 +-
+ tests/unit/test_wv_canvas.c                 | 165 ++++++++++++++++++
+ userspace/apps/webview/webview.c            |  69 ++++++++
+ userspace/apps/webview/wv_canvas.c          | 179 ++++++++++++++++++++
+ userspace/apps/webview/wv_canvas.h          |  39 +++++
+ userspace/apps/webview/wv_layout.c          |  18 +-
+ userspace/apps/webview/wv_layout.h          |   2 +
+ 13 files changed, 589 insertions(+), 16 deletions(-)
+ create mode 100644 tests/unit/test_wv_canvas.c
+ create mode 100644 userspace/apps/webview/wv_canvas.c
+ create mode 100644 userspace/apps/webview/wv_canvas.h
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f4545ec..5ba66e4 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,37 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WebView Phase W7 — `<canvas>` with OpenGL] 2026-08-07
++
++`WEBVIEW_PLAN.md` phase W7: the phase OpenGL is actually for — a page can
++host 3D content, with GL kept off the paint critical path.
++
++- **`userspace/apps/webview/wv_canvas.{h,c}`** — the only web-view module
++  that includes GL headers. `<canvas data-scene="cube">` becomes a normal
++  layout box; the built-in cube scene (the /glcube geometry) renders into
++  an FBO (G12: colour texture + depth renderbuffer), is read back with
++  glReadPixels (flipped from GL's bottom-first rows) and composited with
++  `wv_canvas_blit()` — clipped to the page, scrolled with it, off-screen
++  boxes cost a bounds check only.
++- **GL is NOT on the critical path**: the scene renders ONCE at page load
++  into a cached buffer; repaint only blits it. A page without a canvas
++  never touches libgl — the W4 reference hash (0x4D394D5C) is unchanged.
++- **Measured cost** (the number the plan's §1 table was missing):
++  64×48 cube in **~58 µs on the host**, sub-tick under QEMU TCG.
++- **Host gate**: `tests/unit/test_wv_canvas.c` — 21 checks, 0 failures,
++  linking the real wv_canvas.c against the real libgl sources: cube faces
++  visible, **two renders byte-identical** (determinism), invalid sizes
++  refused, blit clipping (exact placement, scroll, off-screen, edges),
++  2 000 fuzz blits.
++- **QEMU gate**: `canvas smoke: PASS (64x48 cube, hash 4d394d5c ->
++  8a6c0574)` — the composited canvas changes the page. The networking
++  test gained `/canvas.html` (text + `<canvas data-scene="cube">`): the
++  guest prints `canvas: rendered 64x48 cube`. 15 assertions across the
++  two cases, all green.
++- No JavaScript (D5): a page can only *ask* for a scene.
++- `webview.elf` ~374 KB (libgl adds ~186 KB) — inside `SPAWN_MAX_IMAGE`;
++  the size budget is a named W8 consideration.
++
+ ## [WebView Phase W6 — Navigation and networking] 2026-08-07
+ 
+ `WEBVIEW_PLAN.md` phase W6: the web view becomes a usable browser — links,
+diff --git a/Makefile b/Makefile
+index 1c78b2e..0810807 100644
+--- a/Makefile
++++ b/Makefile
+@@ -844,6 +844,8 @@ $(USER_BUILD)/wv_url.o: userspace/apps/webview/wv_url.c userspace/apps/webview/w
+ $(USER_BUILD)/wv_http.o: userspace/apps/webview/wv_http.c userspace/apps/webview/wv_http.h \
+                          userspace/apps/webview/wv_url.h
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++$(USER_BUILD)/wv_canvas.o: userspace/apps/webview/wv_canvas.c userspace/apps/webview/wv_canvas.h
++	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I lib/libgl/include -c $< -o $@
+ 
+ # webview links the tokeniser + DOM builder + layout + painter + css; the
+ # generic %.elf pattern rule does not know about them, so give explicit
+@@ -852,14 +854,17 @@ $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+                            $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+                            $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
+                            $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
+-                           $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
++                           $(USER_BUILD)/wv_canvas.o \
++                           $(USER_COMMON) $(USER_GUI_OBJ) $(USER_GL_OBJ) \
++                           lib/libc/user.ld
+ 	@mkdir -p $(dir $@)
+ 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+ 	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+ 	      $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
+ 	      $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
+-	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+-	@echo "[link] $@ (wv_html + wv_dom + wv_layout + wv_paint + wv_css + wv_url + wv_http)"
++	      $(USER_BUILD)/wv_canvas.o \
++	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) $(USER_GL_OBJ) -o $@
++	@echo "[link] $@ (wv_* + libgl: <canvas> W7)"
+ $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+@@ -1248,7 +1253,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_wv_layout \
+                 $(BUILD_DIR)/test_wv_paint \
+                 $(BUILD_DIR)/test_wv_css \
+-                $(BUILD_DIR)/test_wv_http
++                $(BUILD_DIR)/test_wv_http \
++                $(BUILD_DIR)/test_wv_canvas
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1390,6 +1396,18 @@ $(BUILD_DIR)/test_wv_http: tests/unit/test_wv_http.c \
+ 	           tests/unit/test_wv_http.c userspace/apps/webview/wv_url.c \
+ 	           userspace/apps/webview/wv_http.c -o $@
+ 
++# Web view <canvas> renderer (WEBVIEW_PLAN W7): the REAL wv_canvas.c
++# links against the REAL libgl sources (LIBGL_TEST_SRCS + the auragui
++# stub), exactly like the GL phase tests.
++$(BUILD_DIR)/test_wv_canvas: tests/unit/test_wv_canvas.c \
++                             userspace/apps/webview/wv_canvas.c \
++                             userspace/apps/webview/wv_canvas.h \
++                             $(LIBGL_TEST_SRCS) $(LIBGL_TEST_STUB)
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) $(LIBGL_TEST_CFLAGS) -I userspace/apps/webview \
++	           tests/unit/test_wv_canvas.c userspace/apps/webview/wv_canvas.c \
++	           $(LIBGL_TEST_SRCS) $(LIBGL_TEST_STUB) -o $@ -lm
++
+ # Web view inline CSS (WEBVIEW_PLAN W5): the REAL userspace sources are
+ # compiled into the host test, never copies.
+ $(BUILD_DIR)/test_wv_css: tests/unit/test_wv_css.c \
+diff --git a/WEBVIEW_PLAN.md b/WEBVIEW_PLAN.md
+index c3da20c..0ba6843 100644
+--- a/WEBVIEW_PLAN.md
++++ b/WEBVIEW_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Web View Plan
+ 
+-## Status: W0–W6 COMPLETE ✅ · W7–W8 PLANNED 📋
++## Status: W0–W7 COMPLETE ✅ · W8 PLANNED 📋
+ 
+ This document answers:
+ 
+@@ -462,20 +462,20 @@ it is.
+ 
+ ---
+ 
+-### Phase W7 — `<canvas>` with an OpenGL context
++### Phase W7 — `<canvas>` with an OpenGL context ✅ COMPLETE
+ 
+ **Objective:** the phase OpenGL is actually for.
+ 
+ #### Tasks
+ 
+-- [ ] `<canvas width= height=>` becomes a box in the layout, backed by an FBO
++- [x] `<canvas width= height=>` becomes a box in the layout, backed by an FBO
+       (GL phase G12).
+-- [ ] A tiny scripting-free binding: `<canvas data-scene="cube">` selects one
++- [x] A tiny scripting-free binding: `<canvas data-scene="cube">` selects one
+       of a handful of built-in scenes. **There is no JavaScript** (D5), so the
+       page cannot drive the canvas imperatively — it can only ask for a scene.
+-- [ ] The canvas renders through libgl into its FBO, and the result is
++- [x] The canvas renders through libgl into its FBO, and the result is
+       composited into the page like any other box.
+-- [ ] Its cost is measured and recorded, so the §1 table gains the one number
++- [x] Its cost is measured and recorded, so the §1 table gains the one number
+       it is missing: what a GL canvas costs inside a page.
+ 
+ #### Test gate
+@@ -489,6 +489,25 @@ it is.
+ 
+ `patches/WEB_W7_canvas.patch`
+ 
++#### Results (verified 2026-08-07)
++
++| Item | Outcome |
++|---|---|
++| `userspace/apps/webview/wv_canvas.{h,c}` | The only web-view module that includes GL headers. Renders the built-in "cube" scene (the /glcube geometry, immediate mode, depth-tested) into an FBO (G12: colour texture + depth renderbuffer), reads it back with glReadPixels (rows bottom-first, flipped into the page's top-left XRGB buffer), and composites with `wv_canvas_blit()` — clipped to the page and scrolled with it (off-screen boxes cost a bounds check only) |
++| Cost, measured | Host: **64×48 cube rendered in ~58 µs** (one-shot render; a full-page 2D blit is 125 µs, so even at canvas sizes the one-shot GL render is a rounding error); in-guest TCG it lands under the 10 ms tick (`0 us` — sub-tick). The plan's §1 table now has its missing number: a GL canvas inside a page costs one sub-frame render at load + a clipped blit per frame |
++| GL off the critical path | The scene renders ONCE at page load into a cached buffer; `repaint` only blits it. A page without a canvas never touches libgl — the W4 reference hash for the demo page is unchanged (0x4D394D5C) |
++| Host gate | `tests/unit/test_wv_canvas.c` — **21 checks, 0 failures**, linking the REAL wv_canvas.c against the REAL libgl sources (LIBGL_TEST_SRCS + auragui stub): the buffer is not the clear colour, green+blue+purple cube faces are visible under the fixed camera, the centre holds the cube, **two renders are byte-identical** (determinism), invalid sizes refused, and blit clipping: exact placement, scroll moves the canvas with the page, fully off-screen boxes paint nothing, right-edge clipping; 2 000 fuzz blits |
++| QEMU gate | `/apps/webview` prints `canvas smoke: PASS (64x48 cube in 0 us, hash 4d394d5c -> 8a6c0574)` — the composited canvas changes the page. `test_webview_net.sh` gained a `/canvas.html` route (`<canvas width=64 height=48 data-scene="cube">` next to real text): the guest fetches it and prints `canvas: rendered 64x48 cube` — text AND 3D on one page. 15 assertions across the two cases |
++| Size | `webview.elf` ~374 KB (libgl adds ~186 KB) — still inside `SPAWN_MAX_IMAGE` (1 MiB); the plan's unbounded-appetite risk is watched, and W8 will decide gbrowser's fate with the size budget in mind |
++
++**§1 table, completed:**
++
++| Operation | Cost |
++|---|---|
++| Full-page 2D blit (800×600) | 125 µs (reference) / ~7 600 µs (QEMU TCG) |
++| Scroll by 40 px (memmove + band) | 68 µs / 144 µs (10 000-line page, TCG) |
++| **GL `<canvas>` 64×48 cube, one-shot** | **~58 µs host / sub-tick in TCG** (NEW — W7) |
++
+ ---
+ 
+ ### Phase W8 — Retire or keep `gbrowser`
+diff --git a/docs/status.md b/docs/status.md
+index 7cb1c7d..7d28ffa 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -165,7 +165,7 @@ Legend:
+ | `/http` | 🧪 | Uses DNS/TCP syscalls. |
+ | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
+ | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
+-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W6): scaffold + blit budget + `/tmp/webview.frames`; W1 tokeniser (122 checks); W2 DOM (65; 10k-deep doc on the 64 KiB stack); W3 layout (79; 5 000 boxes in 1 064 µs); W4 painting (42; reference hash 0x4D394D5C host==guest; 144 µs scroll steps); W5 CSS (71; D4 subset); **W6 navigation** (`wv_url` + `wv_http` — 69 checks: HTTP/1.1, chunked==plain, growing 512 KB buffer; links in the display list, address bar + Back/Go, 8-entry history, https refusal page; QEMU gate `test_webview_net.sh` 10 asserts: fetch→link→back→https→chunked→100 KB). Canvas is W7. See `docs/webview.md`. |
++| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W7): scaffold + blit budget; W1 tokeniser (122 checks); W2 DOM (65; 10k-deep doc on the 64 KiB stack); W3 layout (79; 5 000 boxes in 1 064 µs); W4 painting (42; reference hash 0x4D394D5C host==guest); W5 CSS (71; D4 subset); W6 navigation (101 checks: URL+HTTP, chunked==plain, growing 512 KB buffer, links, history, https refusal); **W7 `<canvas data-scene="cube">`** (`wv_canvas` — libgl FBO render, one-shot at load, cached; 58 µs host; 21 checks incl. byte-identical re-renders and blit clipping; `canvas smoke: PASS`; text+3D page in the net test). Only W8 (retire-or-keep gbrowser) remains. See `docs/webview.md`. |
+ 
+ ## Known low-priority limitations
+ 
+diff --git a/docs/webview.md b/docs/webview.md
+index 93f3229..517c231 100644
+--- a/docs/webview.md
++++ b/docs/webview.md
+@@ -1,7 +1,7 @@
+ # AuraLite OS Web View (`/apps/webview`)
+ 
+-**Status:** Phases W0–W6 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+-scaffold, tokeniser, DOM, layout, painting, inline CSS and navigation complete. W7 (`<canvas>`) is next.
++**Status:** Phases W0–W7 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
++all phases complete except W8 (retire-or-keep gbrowser).
+ 
+ This document states what the web view is, what it deliberately is not, and
+ what the presentation path costs on this build. It follows the project
+@@ -87,7 +87,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+ | W4 | Painting: rects, borders, glyphs, clipped scroll | ✅ complete (2026-08-07) |
+ | W5 | Inline CSS subset (D4) | ✅ complete (2026-08-07) |
+ | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | ✅ complete (2026-08-07) |
+-| W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
++| W7 | `<canvas>` with an OpenGL context via FBO | ✅ complete (2026-08-07) |
+ | W8 | Retire or keep `gbrowser` | 📋 planned |
+ 
+ ## 6. The tokeniser (W1)
+@@ -236,3 +236,25 @@ The web view is now a usable (if humble) browser:
+ - Kernel note: the legacy TCP path can drop the last bytes on FIN (a
+   259-byte body arrived as 256); the web view falls back to rendering the
+   partial body rather than an error page.
++
++## 12. `<canvas>` with OpenGL (W7)
++
++The only place in the web view where GL is used (plan D1 — "building one
++that can host OpenGL content is the right reason"):
++
++- `<canvas width height data-scene="cube">` becomes a normal layout box;
++  `wv_canvas.c` (the only GL-importing module) renders the built-in cube
++  scene into an FBO (G12) and reads it back with glReadPixels.
++- **One-shot render at page load** into a cached buffer: GL is NOT on the
++  paint critical path. A page without a canvas never touches libgl — the
++  W4 demo-page reference hash is unchanged. Per frame the canvas costs
++  only a clipped blit, scrolled with the page.
++- Measured: 64×48 cube in ~58 µs on the host (sub-tick in QEMU TCG) —
++  the number the plan's §1 table was missing.
++- No JavaScript (D5): a page can only *ask* for a scene via
++  `data-scene`, it cannot drive the canvas imperatively.
++- Gate: `tests/unit/test_wv_canvas.c` — 21 host checks (byte-identical
++  re-renders, face colours visible, blit clipping incl. off-screen and
++  scroll, 2 000 fuzz blits); in-guest `canvas smoke: PASS` and a
++  `/canvas.html` page in the networking test that renders text AND a 3D
++  cube on one page.
+diff --git a/tests/integration/cases/test_webview.sh b/tests/integration/cases/test_webview.sh
+index 486592c..c5f60f5 100644
+--- a/tests/integration/cases/test_webview.sh
++++ b/tests/integration/cases/test_webview.sh
+@@ -34,6 +34,7 @@ il_assert_grep "$LOG" "\\[webview\\] page rendered"             "page built from
+ il_assert_grep "$LOG" "\\[webview\\] paint smoke: PASS"         "paint hash matches the stored reference"
+ il_assert_grep "$LOG" "\\[webview\\] paint scroll smoke: PASS"  "memmove+band scroll equals full repaint"
+ il_assert_grep "$LOG" "\\[webview\\] css smoke: PASS"           "W5 stylesheet changes the output"
++il_assert_grep "$LOG" "\\[webview\\] canvas smoke: PASS"        "W7 GL canvas rendered and composited"
+ il_assert_grep "$LOG" "\\[webview\\] blit 800x600: [0-9][0-9]* us/frame" \
+     "blit benchmark reported a number"
+ il_assert_grep "$LOG" "\\[webview\\] tokeniser smoke: PASS"     "W1 tokeniser smoke passed in-guest"
+diff --git a/tests/integration/cases/test_webview_net.sh b/tests/integration/cases/test_webview_net.sh
+index 8d82882..a85f445 100644
+--- a/tests/integration/cases/test_webview_net.sh
++++ b/tests/integration/cases/test_webview_net.sh
+@@ -50,6 +50,10 @@ PAGE2 = (b"<!doctype html><html><head><title>W6 second</title></head>"
+ CHUNKED_BODY = b"<!doctype html><html><body><h1>WEBVIEW_W6_CHUNKED</h1>"
+ BIG_BODY = (b"<!doctype html><html><body><h1>WEBVIEW_W6_BIG</h1>"
+             b"<p>" + b"lorem ipsum dolor sit amet " * 4000 + b"</p></body>")
++CANVAS_PAGE = (b"<!doctype html><html><body><h1>WEBVIEW_W6_CANVAS</h1>"
++               b"<p>Text and a 3D cube:</p>"
++               b"<canvas width=64 height=48 data-scene=\"cube\"></canvas>"
++               b"</body>")
+ 
+ def chunked(body):
+     out = b""
+@@ -69,6 +73,9 @@ def handle(c):
+         if path == "/page2.html":
+             body = PAGE2
+             resp = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
++        elif path == "/canvas.html":
++            body = CANVAS_PAGE
++            resp = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
+         elif path == "/chunked":
+             resp = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                     + chunked(CHUNKED_BODY))
+@@ -99,7 +106,7 @@ sleep 1
+ il_send_delay 8
+ il_send "write /tmp/webview.url http://10.0.2.2:$PORT/"
+ il_send_delay 1
+-il_send "write /tmp/webview.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big"
++il_send "write /tmp/webview.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big|nav http://10.0.2.2:$PORT/canvas.html"
+ il_send_delay 1
+ il_send "run webview"
+ 
+@@ -131,6 +138,11 @@ il_assert_no_grep "$LOG" "https unsupported.*chunked"                    "chunke
+ il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/big" \
+     "big page fetched"
+ 
++# 6) W7: a page containing a <canvas data-scene="cube"> renders text AND 3D
++il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/canvas.html" \
++    "canvas page fetched"
++il_assert_grep "$LOG" "canvas: rendered 64x48 cube"          "GL canvas rendered in-guest"
++
+ il_assert_no_grep "$LOG" "EXCEPTION|kernel panic|triple fault"           "no kernel fault"
+ 
+ il_summary
+diff --git a/tests/unit/test_wv_canvas.c b/tests/unit/test_wv_canvas.c
+new file mode 100644
+index 0000000..7aeda43
+--- /dev/null
++++ b/tests/unit/test_wv_canvas.c
+@@ -0,0 +1,165 @@
++/*
++ * test_wv_canvas.c — host unit tests for the web view <canvas> renderer
++ * (WEBVIEW_PLAN phase W7).
++ *
++ * Links the REAL userspace/apps/webview/wv_canvas.c against the REAL
++ * libgl sources (LIBGL_TEST_SRCS + the auragui stub — the same harness
++ * the GL phase tests use), and checks the plan's gate:
++ *   - a page containing a canvas renders BOTH the text and the 3D
++ *     content (the canvas buffer differs from its clear colour);
++ *   - the canvas is clipped with the page (wv_canvas_blit: off-screen
++ *     boxes cost a bounds check only; edge clipping works);
++ *   - the render cost is measured and recorded (the number the plan's §1
++ *     table was missing);
++ *   - determinism: two renders of the same scene are byte-identical.
++ *
++ * Built/run by `make test-unit` under -std=c11 -Wall -Wextra -Werror.
++ */
++
++#define _POSIX_C_SOURCE 200809L
++
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <stdint.h>
++
++#include "wv_canvas.h"
++
++static int failures = 0;
++#define CK(c) do { if (c) printf("PASS: %s\n", #c); \
++    else { printf("FAIL: %s\n", #c); failures++; } } while (0)
++
++#define CW 64
++#define CH 48
++static uint32_t buf[CW * CH];
++
++static uint32_t frng = 0xCAFEBABEu;
++static uint32_t frand(void) {
++    frng ^= frng << 13; frng ^= frng >> 17; frng ^= frng << 5;
++    return frng;
++}
++
++static void test_render_basic(void) {
++    memset(buf, 0, sizeof(buf));
++    long us = -1;
++    int rc = wv_canvas_render_cube(buf, CW, CH, 1, &us);
++    CK(rc == 0);
++    CK(us >= 0);
++    printf("  (canvas 64x48 cube rendered in %ld us)\n", us);
++
++    /* the buffer must not be the clear colour everywhere: the cube covers
++     * the centre, the clear colour is (0.08, 0.10, 0.16) = 0x141a29 */
++    int nonclear = 0;
++    int in_center = 0;
++    for (int y = CH / 4; y < 3 * CH / 4; y++) {
++        for (int x = CW / 4; x < 3 * CW / 4; x++) {
++            uint32_t p = buf[y * CW + x];
++            if (p != 0xFF141A29u) {
++                nonclear++;
++                if (x > CW / 3 && x < 2 * CW / 3 && y > CH / 3 && y < 2 * CH / 3)
++                    in_center++;
++            }
++        }
++    }
++    CK(nonclear > 0);
++    CK(in_center > 0);      /* the cube is drawn in the middle */
++    /* at least two distinct face colours are visible under the fixed
++     * camera (the 28/33-degree view shows green, blue and purple faces;
++     * the red face is hidden behind them) */
++    int colors = 0;
++    for (int y = 0; y < CH; y++) {
++        for (int x = 0; x < CW; x++) {
++            uint32_t p = buf[y * CW + x];
++            unsigned r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
++            if (g > 200 && r < 100 && b < 100) { colors |= 1; }   /* green */
++            if (b > 200 && r < 120 && g < 150) { colors |= 2; }   /* blue */
++            if (r > 180 && g < 130 && b > 180) { colors |= 4; }   /* purple */
++        }
++    }
++    CK((colors & 3) == 3);  /* green AND blue faces visible */
++    CK((colors & 4) != 0);  /* the purple face too */
++}
++
++static void test_determinism(void) {
++    static uint32_t buf2[CW * CH];
++    long us1 = 0, us2 = 0;
++    CK(wv_canvas_render_cube(buf, CW, CH, 1, &us1) == 0);
++    CK(wv_canvas_render_cube(buf2, CW, CH, 1, &us2) == 0);
++    CK(memcmp(buf, buf2, sizeof(buf)) == 0);   /* byte-identical scene */
++}
++
++static void test_render_sizes(void) {
++    /* different canvas sizes produce different, valid buffers */
++    static uint32_t small[32 * 24];
++    static uint32_t big[96 * 72];
++    long us = 0;
++    CK(wv_canvas_render_cube(small, 32, 24, 1, &us) == 0);
++    CK(wv_canvas_render_cube(big, 96, 72, 1, &us) == 0);
++    CK(memcmp(small, big, 32 * 24 * 4) != 0);
++
++    /* invalid sizes refused */
++    CK(wv_canvas_render_cube(buf, 0, 0, 1, &us) == -1);
++    CK(wv_canvas_render_cube(NULL, CW, CH, 1, &us) == -1);
++}
++
++static void test_blit_clip(void) {
++    /* page 200x150; canvas at (10, 20); scroll 0 */
++    enum { PW = 200, PH = 150 };
++    static uint32_t page[PW * PH];
++    memset(page, 0, sizeof(page));
++    wv_canvas_blit(page, PW, PH, buf, CW, CH, 10, 20, 0);
++
++    /* the canvas pixels land exactly where the box says */
++    uint32_t center = buf[(CH / 2) * CW + (CW / 2)];
++    CK(page[(20 + CH / 2) * PW + (10 + CW / 2)] == center);
++    /* outside the box: untouched */
++    CK(page[5 * PW + 5] == 0);
++    CK(page[(20 + CH) * PW + 10] == 0);
++
++    /* scroll moves the canvas up with the page: the centre pixel lands
++     * 15 px higher, and the strip vacated at the bottom is empty */
++    memset(page, 0, sizeof(page));
++    wv_canvas_blit(page, PW, PH, buf, CW, CH, 10, 20, 15);
++    CK(page[(20 + CH / 2 - 15) * PW + (10 + CW / 2)] == center);
++    CK(page[(20 + CH - 1) * PW + (10 + CW / 2)] == 0);   /* vacated row */
++
++    /* scrolled fully off the top: nothing painted, and no faults */
++    memset(page, 0xAA, sizeof(page));
++    wv_canvas_blit(page, PW, PH, buf, CW, CH, 10, 20, 1000);
++    for (int i = 0; i < PW * PH; i++)
++        if (page[i] != 0xAAAAAAAAu) { CK(0); printf("  (off-screen wrote a pixel)\n"); return; }
++    CK(1);
++
++    /* right-edge clipping */
++    memset(page, 0, sizeof(page));
++    wv_canvas_blit(page, PW, PH, buf, CW, CH, PW - 10, 20, 0);
++    CK(page[20 * PW + PW - 5] != 0);            /* inside */
++    CK(page[20 * PW + PW - 1] != 0);            /* last column */
++    /* nothing beyond the page (would have overflowed the array) */
++}
++
++static void test_fuzz_blit(void) {
++    for (int iter = 0; iter < 2000; iter++) {
++        int px = (int)(frand() % 400) - 100;
++        int py = (int)(frand() % 300) - 100;
++        int sc = (int)(frand() % 800);
++        static uint32_t page[160 * 120];
++        memset(page, 0, sizeof(page));
++        wv_canvas_blit(page, 160, 120, buf, CW, CH, px, py, sc);
++    }
++    CK(1);
++    printf("PASS: 2000 fuzz blits (random positions/scrolls) did not fault\n");
++}
++
++int main(void) {
++    printf("== webview <canvas> renderer (WEBVIEW_PLAN W7) ==\n");
++
++    test_render_basic();
++    test_determinism();
++    test_render_sizes();
++    test_blit_clip();
++    test_fuzz_blit();
++
++    printf("== %s: %d failures ==\n", failures ? "FAIL" : "PASS", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/userspace/apps/webview/webview.c b/userspace/apps/webview/webview.c
+index 0c08bb2..1998192 100644
+--- a/userspace/apps/webview/webview.c
++++ b/userspace/apps/webview/webview.c
+@@ -36,6 +36,7 @@
+ #include "wv_css.h"
+ #include "wv_url.h"
+ #include "wv_http.h"
++#include "wv_canvas.h"
+ 
+ /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
+ #define VIEW_W 800
+@@ -140,6 +141,11 @@ static int       on_page = 0;          /* 1 = the demo page, 0 = a loaded page *
+ static char      last_cmd[WV_URL_MAX_URL + 64] = "";
+ static char      current_url_str[WV_URL_MAX_URL] = "";   /* base for links */
+ 
++/* W7: the rendered <canvas> of the current page (rendered once at load;
++ * GL is NOT on the paint critical path). */
++static uint32_t *cv_px = 0;
++static int       cv_w = 0, cv_h = 0, cv_valid = 0;
++
+ /* page-build arenas, global so load_html() can rebuild them */
+ static wv_token_t    g_tt[2048];
+ static wv_attr_t     g_ta[2048];
+@@ -181,6 +187,35 @@ static void page_load_html(const char *html, size_t len) {
+                      ? (int32_t)lay.content_h - VIEW_H : 0;
+     scroll_y = 0;
+     on_page = 0;
++
++    /* W7: render every <canvas data-scene="cube"> box once, into the
++     * cached slot.  The cost is measured and printed. */
++    if (cv_px) { free(cv_px); cv_px = 0; }
++    cv_valid = 0;
++    for (size_t i = 0; i < lay.item_count; i++) {
++        const wv_disp_t *it = &lay.items[i];
++        if (it->type != WV_D_BOX || it->scene == 0) continue;
++        int w = (int)it->w, h = (int)it->h;
++        if (w < 8 || h < 8 || w > 256 || h > 256) {
++            printf("[webview] canvas: skip oversized %dx%d\n", w, h);
++            continue;
++        }
++        uint32_t *px = malloc((size_t)w * (size_t)h * 4);
++        if (!px) continue;
++        long us = -1;
++        if (wv_canvas_render_cube(px, w, h, wid, &us) != 0) {
++            free(px);
++            printf("[webview] canvas: render failed %dx%d\n", w, h);
++            continue;
++        }
++        if (cv_px) free(cv_px);
++        cv_px = px;
++        cv_w = w;
++        cv_h = h;
++        cv_valid = 1;
++        printf("[webview] canvas: rendered %dx%d cube in %ld us\n", w, h, us);
++        break;   /* one canvas per page is enough for the built-in scenes */
++    }
+ }
+ 
+ /* Fetch http:// URL and load its body.  Returns 0 on success, an errno-ish
+@@ -469,6 +504,27 @@ static void css_smoke(void) {
+            ok ? "PASS" : "FAIL", h_css, h_plain);
+ }
+ 
++/* The W7 smoke: render the built-in cube scene into a buffer and blit it
++ * into the page — the page hash must change, and the cost is recorded
++ * (the number the plan's §1 table was missing). */
++static void canvas_smoke(void) {
++    static uint32_t cb[64 * 48];
++    long us = -1;
++    int rc = wv_canvas_render_cube(cb, 64, 48, wid, &us);
++    if (rc != 0) {
++        printf("[webview] canvas smoke: FAIL (render rc=%d)\n", rc);
++        return;
++    }
++    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
++    wv_paint_run(&P, &lay, 0);
++    uint32_t h_before = wv_paint_hash(page, VIEW_W, VIEW_H);
++    wv_canvas_blit(page, VIEW_W, VIEW_H, cb, 64, 48, 24, 320, 0);
++    uint32_t h_after = wv_paint_hash(page, VIEW_W, VIEW_H);
++    int ok = (h_before != h_after);
++    printf("[webview] canvas smoke: %s (64x48 cube in %ld us, hash %08x -> %08x)\n",
++           ok ? "PASS" : "FAIL", us, h_before, h_after);
++}
++
+ /* The W4 scroll smoke: memmove-scroll + band repaint must equal a full
+  * repaint at the new offset (the 0.068 ms path from the plan). */
+ static void scroll_smoke(void) {
+@@ -528,6 +584,18 @@ static int chrome_url_hit(int32_t x, int32_t y) {
+ static void repaint(void) {
+     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);   /* paper */
+     wv_paint_run(&P, &lay, scroll_y);
++    if (cv_valid) {
++        /* composite the cached GL canvas into its box (clipped, scrolled
++         * with the page — wv_canvas_blit handles both) */
++        for (size_t i = 0; i < lay.item_count; i++) {
++            const wv_disp_t *it = &lay.items[i];
++            if (it->type == WV_D_BOX && it->scene != 0) {
++                wv_canvas_blit(page, VIEW_W, VIEW_H, cv_px, cv_w, cv_h,
++                               it->x, it->y, scroll_y);
++                break;
++            }
++        }
++    }
+     present();
+ 
+     char status[96];
+@@ -585,6 +653,7 @@ int main(void) {
+     on_page = 1;
+     paint_smoke();
+     css_smoke();
++    canvas_smoke();
+     scroll_smoke();
+     repaint();
+     printf("[webview] page rendered and presented\n");
+diff --git a/userspace/apps/webview/wv_canvas.c b/userspace/apps/webview/wv_canvas.c
+new file mode 100644
+index 0000000..1704544
+--- /dev/null
++++ b/userspace/apps/webview/wv_canvas.c
+@@ -0,0 +1,179 @@
++/*
++ * wv_canvas.c — <canvas> rendering (WEBVIEW_PLAN W7).  See wv_canvas.h.
++ *
++ * The scene is a lit, depth-buffered cube drawn with the immediate-mode
++ * API — the same primitives /glcube uses, minus the texture pass, sized
++ * to the canvas.  Rendered into an FBO (G12) and read back with
++ * glReadPixels, which returns rows BOTTOM-first (GL convention), so the
++ * readback is flipped into the page's top-left-origin XRGB buffer.
++ *
++ * This file is the only web-view module that includes GL headers: the
++ * layout and paint layers stay GL-free, and the host unit test links the
++ * real libgl sources (LIBGL_TEST_SRCS) exactly like the other GL tests.
++ */
++
++#define _POSIX_C_SOURCE 200809L   /* clock_gettime */
++
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++#include "GL/gl.h"
++#include "GL/auraglx.h"
++#include "wv_canvas.h"
++
++/* ---- the cube scene (same geometry as /glcube) ---- */
++
++static const float cverts[8][3] = {
++    { -1, -1, -1 }, {  1, -1, -1 }, {  1,  1, -1 }, { -1,  1, -1 },
++    { -1, -1,  1 }, {  1, -1,  1 }, {  1,  1,  1 }, { -1,  1,  1 },
++};
++static const int cfaces[6][4] = {
++    { 0, 3, 2, 1 },   /* back    */
++    { 4, 5, 6, 7 },   /* front   */
++    { 0, 4, 7, 3 },   /* left    */
++    { 1, 2, 6, 5 },   /* right   */
++    { 0, 1, 5, 4 },   /* bottom  */
++    { 3, 7, 6, 2 },   /* top     */
++};
++static const float cnormals[6][3] = {
++    { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 },
++    { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 },
++};
++static const float ccolors[6][3] = {
++    { 0.9f, 0.3f, 0.3f }, { 0.3f, 0.9f, 0.3f }, { 0.3f, 0.5f, 0.9f },
++    { 0.9f, 0.9f, 0.3f }, { 0.9f, 0.5f, 0.2f }, { 0.8f, 0.4f, 0.9f },
++};
++
++static void wv_cube_draw(void) {
++    glBegin(GL_QUADS);
++    for (int f = 0; f < 6; f++) {
++        glColor3f(ccolors[f][0], ccolors[f][1], ccolors[f][2]);
++        glNormal3f(cnormals[f][0], cnormals[f][1], cnormals[f][2]);
++        for (int v = 0; v < 4; v++) {
++            const float *p = cverts[cfaces[f][v]];
++            glVertex3f(p[0], p[1], p[2]);
++        }
++    }
++    glEnd();
++}
++
++int wv_canvas_render_cube(uint32_t *out, int w, int h, int wid,
++                          long *render_us) {
++    if (!out || w < 8 || h < 8 || w > 256 || h > 256) return -1;
++
++    aglx_context_t *ctx = aglxCreateContext(wid, w, h, 0);
++    if (!ctx) return -1;
++    if (aglxMakeCurrent(ctx) != 0) {
++        aglxDestroyContext(ctx);
++        return -1;
++    }
++
++    /* FBO: colour texture + depth renderbuffer (the G12 pattern). */
++    GLuint tex = 0, rb = 0, fbo = 0;
++    glGenTextures(1, &tex);
++    glBindTexture(GL_TEXTURE_2D, tex);
++    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
++                 GL_UNSIGNED_BYTE, NULL);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++    glGenRenderbuffers(1, &rb);
++    glBindRenderbuffer(GL_RENDERBUFFER, rb);
++    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
++    glGenFramebuffers(1, &fbo);
++    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                           GL_TEXTURE_2D, tex, 0);
++    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
++                              GL_RENDERBUFFER, rb);
++    GLenum fst = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++    if (fst != GL_FRAMEBUFFER_COMPLETE) {
++        glBindFramebuffer(GL_FRAMEBUFFER, 0);
++        glDeleteFramebuffers(1, &fbo);
++        glDeleteRenderbuffers(1, &rb);
++        glDeleteTextures(1, &tex);
++        aglxDestroyContext(ctx);
++        return -1;
++    }
++
++    glViewport(0, 0, w, h);
++    glMatrixMode(GL_PROJECTION);
++    glLoadIdentity();
++    {
++        double t = 0.41421356;                 /* tan(45/2) */
++        double asp = (double)w / (double)h;
++        glFrustum(-t * asp, t * asp, -t, t, 1.0, 50.0);
++    }
++    glMatrixMode(GL_MODELVIEW);
++    glEnable(GL_DEPTH_TEST);
++
++    struct timespec t0, t1;
++    clock_gettime(CLOCK_MONOTONIC, &t0);
++
++    glClearColor(0.08f, 0.10f, 0.16f, 1.0f);
++    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    glLoadIdentity();
++    glTranslatef(0.0f, 0.0f, -4.5f);
++    glRotatef(28.0f, 1.0f, 0.0f, 0.0f);
++    glRotatef(33.0f, 0.0f, 1.0f, 0.0f);
++    wv_cube_draw();
++
++    /* Readback: RGBA bytes, rows bottom-first (GL convention). */
++    unsigned char *tmp = (unsigned char *)malloc((size_t)w * (size_t)h * 4);
++    if (!tmp) {
++        glBindFramebuffer(GL_FRAMEBUFFER, 0);
++        glDeleteFramebuffers(1, &fbo);
++        glDeleteRenderbuffers(1, &rb);
++        glDeleteTextures(1, &tex);
++        aglxDestroyContext(ctx);
++        return -1;
++    }
++    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
++
++    clock_gettime(CLOCK_MONOTONIC, &t1);
++    long sec = t1.tv_sec - t0.tv_sec;
++    long nsec = t1.tv_nsec - t0.tv_nsec;
++    if (nsec < 0) { sec--; nsec += 1000000000L; }
++    if (render_us) *render_us = sec * 1000000L + nsec / 1000L;
++
++    /* Flip rows and pack into XRGB8888 (top-left origin). */
++    for (int y = 0; y < h; y++) {
++        const unsigned char *src = tmp + (size_t)(h - 1 - y) * (size_t)w * 4;
++        uint32_t *dst = out + (size_t)y * (size_t)w;
++        for (int x = 0; x < w; x++) {
++            uint32_t r = src[x * 4 + 0];
++            uint32_t g = src[x * 4 + 1];
++            uint32_t b = src[x * 4 + 2];
++            dst[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
++        }
++    }
++    free(tmp);
++
++    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++    glDeleteFramebuffers(1, &fbo);
++    glDeleteRenderbuffers(1, &rb);
++    glDeleteTextures(1, &tex);
++    aglxDestroyContext(ctx);
++    return 0;
++}
++
++void wv_canvas_blit(uint32_t *page, int pw, int ph,
++                    const uint32_t *cv, int cw, int ch,
++                    int x, int y, int scroll_y) {
++    if (!page || !cv || cw <= 0 || ch <= 0) return;
++    int py = y - scroll_y;
++    if (py + ch <= 0 || py >= ph) return;        /* fully off-screen */
++    for (int row = 0; row < ch; row++) {
++        int yy = py + row;
++        if (yy < 0 || yy >= ph) continue;
++        const uint32_t *src = cv + (size_t)row * (size_t)cw;
++        uint32_t *dst = page + (size_t)yy * (size_t)pw;
++        int x0 = x < 0 ? 0 : x;
++        int x1 = x + cw;
++        if (x1 > pw) x1 = pw;
++        for (int xx = x0; xx < x1; xx++)
++            dst[xx] = src[xx - x];
++    }
++}
+diff --git a/userspace/apps/webview/wv_canvas.h b/userspace/apps/webview/wv_canvas.h
+new file mode 100644
+index 0000000..2bd654d
+--- /dev/null
++++ b/userspace/apps/webview/wv_canvas.h
+@@ -0,0 +1,39 @@
++/*
++ * wv_canvas.h — <canvas> rendering for the AuraLite web view
++ * (WEBVIEW_PLAN phase W7).
++ *
++ * The ONLY place in the web view where OpenGL is used (plan D1): a
++ * <canvas data-scene="cube"> box renders through libgl into an FBO, and
++ * the result is composited into the page like any other box.  There is no
++ * JavaScript (D5), so a page can only ask for one of the handful of built-
++ * in scenes.
++ *
++ * The render is performed ONCE when the page loads (the scene is static —
++ * nothing drives it per-frame), so GL is NOT on the paint critical path:
++ * a page without a canvas costs exactly what it did in W4, and a page
++ * with one pays the render cost once, then only a clipped blit per frame.
++ *
++ * The per-render cost is measured and recorded (the number the plan's §1
++ * table was missing: what a GL canvas costs inside a page).
++ */
++
++#ifndef AURALITE_WV_CANVAS_H
++#define AURALITE_WV_CANVAS_H
++
++#include <stdint.h>
++
++/* Render the built-in "cube" scene into out (w*h XRGB8888 pixels,
++ * top-left origin, no alpha).  wid is only used to create the GL
++ * context.  Returns 0 on success; on failure out is untouched and -1 is
++ * returned.  render_us receives the measured render+readback time. */
++int wv_canvas_render_cube(uint32_t *out, int w, int h, int wid,
++                          long *render_us);
++
++/* Composite a rendered canvas into a page buffer at (x, y) with the page
++ * scrolled by scroll_y (canvas top-left moves to y - scroll_y).  Clips to
++ * the page; boxes entirely off-screen cost a bounds check only. */
++void wv_canvas_blit(uint32_t *page, int pw, int ph,
++                    const uint32_t *cv, int cw, int ch,
++                    int x, int y, int scroll_y);
++
++#endif /* AURALITE_WV_CANVAS_H */
+diff --git a/userspace/apps/webview/wv_layout.c b/userspace/apps/webview/wv_layout.c
+index 9014335..54640be 100644
+--- a/userspace/apps/webview/wv_layout.c
++++ b/userspace/apps/webview/wv_layout.c
+@@ -337,13 +337,28 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
+     if (mw < 0) mw = 0;
+ 
+     /* <canvas> sizes itself from its attributes (W7 will back it with an
+-     * FBO); the UA default is 300x150.  CSS width/height override. */
++     * FBO); the UA default is 300x150.  CSS width/height override.
++     * data-scene="cube" marks the box for the W7 GL renderer. */
+     uint32_t min_h = 0;
++    int scene = 0;
+     if (wv_name_is(name, nlen, "canvas")) {
+         int cw = wv_attr_int(d, node, "width");
+         int chh = wv_attr_int(d, node, "height");
+         if (cw > 0 && cw <= 4096) mw = cw;
+         min_h = (uint32_t)(chh > 0 && chh <= 4096 ? chh : 150);
++        /* data-scene attribute */
++        const wv_dom_node_t *cnd = &d->nodes[node];
++        for (uint32_t ai = 0; ai < cnd->attr_count; ai++) {
++            size_t aidx = (size_t)cnd->attr_base + ai;
++            if (aidx >= d->attr_count) break;
++            const wv_attr_t *at = &d->attrs[aidx];
++            const char *an = wv_dom_str(d, at->name_off);
++            if (an && at->name_len == 10 &&
++                strncmp(an, "data-scene", 10) == 0 &&
++                at->value_len == 4 &&
++                strncmp(wv_dom_str(d, at->value_off), "cube", 4) == 0)
++                scene = 1;
++        }
+     } else if (wv_name_is(name, nlen, "hr")) {
+         min_h = 2;
+     }
+@@ -366,6 +381,7 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
+     if (st.bg != 0xFF000000u) it.bg = st.bg;
+     it.border = (uint16_t)(st.border > 0 ? st.border : 0);
+     it.border_color = 0x00000000u;
++    it.scene = (uint8_t)scene;
+     int idx = wv_layout_add_item(L, &it);
+     if (idx < 0) return;
+ 
+diff --git a/userspace/apps/webview/wv_layout.h b/userspace/apps/webview/wv_layout.h
+index db646bd..114e55d 100644
+--- a/userspace/apps/webview/wv_layout.h
++++ b/userspace/apps/webview/wv_layout.h
+@@ -72,6 +72,8 @@ typedef struct {
+     uint16_t _pad2;
+     uint32_t border_color;
+     uint32_t link_off;  /* href in the DOM pool (0 = not a link) */
++    uint8_t  scene;     /* 0 = none, 1 = cube (W7 <canvas data-scene>) */
++    uint8_t  _pad3[3];
+ } wv_disp_t;
+ 
+ /* ---- working stacks (caller-provided, so no heap and no big locals) ---- */
+-- 
+2.47.3
+

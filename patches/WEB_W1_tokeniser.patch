@@ -1,0 +1,1680 @@
+From 96e74a6a35e9d23ec0041333e5358829cc8c2575 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 09:00:10 +0000
+Subject: [PATCH] W1 update: HTML tokeniser
+
+WEBVIEW_PLAN.md phase W1:
+- wv_html.{h,c}: 18-state iterative tokeniser, no recursion,
+  arena-bounded (tokens+attrs+string pool, truncated flag, scan drains
+  to EOF on any cap)
+- char refs: named five + numeric, in text and attribute values;
+  NUL -> U+FFFD -> '?' (8-bit font ceiling); names lower-cased
+- tolerance: < at EOF, <<>>, unclosed quotes/comments all produce
+  usable tokens; EOF in any state emits what exists + WV_T_EOF
+- host gate: test_wv_html.c, 122 checks: exact streams, malformed
+  corpus, 10KB attr value, 100KB text, 10k tags, 3000 fuzz iters +
+  64KiB blob, arena walked and verified
+- in-guest smoke in /apps/webview (9 tokens, PASS); test_webview.sh
+  asserts it
+- bugs found by tests: double advance after char refs; attrs not
+  flushed after quoted value (class=... lost) -- fixed + regressions
+---
+ CHANGELOG.md                            |  29 +
+ Makefile                                |  26 +-
+ SHA256SUMS                              |   4 +-
+ WEBVIEW_PLAN.md                         |  24 +-
+ docs/status.md                          |   2 +-
+ docs/webview.md                         |  26 +-
+ tests/integration/cases/test_webview.sh |   1 +
+ tests/unit/test_wv_html.c               | 461 ++++++++++++++
+ userspace/apps/webview/webview.c        |  23 +
+ userspace/apps/webview/wv_html.c        | 780 ++++++++++++++++++++++++
+ userspace/apps/webview/wv_html.h        | 108 ++++
+ 11 files changed, 1470 insertions(+), 14 deletions(-)
+ create mode 100644 tests/unit/test_wv_html.c
+ create mode 100644 userspace/apps/webview/wv_html.c
+ create mode 100644 userspace/apps/webview/wv_html.h
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index bb17ae0..18839f2 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,35 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WebView Phase W1 — HTML tokeniser] 2026-08-07
++
++`WEBVIEW_PLAN.md` phase W1: bytes → a tolerant token stream, with no
++recursion and bounded memory by construction.
++
++- **`userspace/apps/webview/wv_html.{h,c}`** — 18-state machine over the
++  byte stream: text, tag open/name, attribute name/value (double, single,
++  unquoted), comment, bogus comment, DOCTYPE, CDATA, self-closing.
++  Tokens live in a caller-provided arena (token array + attribute array +
++  string pool) with fixed caps; exceeding a cap sets `truncated` while the
++  scan drains to EOF — no hang, no crash, no unbounded memory.
++- **Character references**: the named five plus `&#NN;`/`&#xNN;` in text and
++  attribute values; unterminated/unknown refs stay literal; codes > 0xFF
++  render as `'?'` (8-bit font ceiling); NUL → U+FFFD → `'?'`.
++- **Tolerance everywhere**: `<` at EOF → text, `<<>>` → text runs, an
++  unclosed quote keeps the tag and everything before it, an unclosed
++  comment keeps its text, EOF in any state emits what exists plus WV_T_EOF.
++- **Host gate**: `tests/unit/test_wv_html.c` — 122 checks, 0 failures:
++  exact token streams, all malformed cases from the plan, 10 KB attribute
++  value and 100 KB text capped, 10 000 tags drained, 3000 fuzz iterations
++  + a 64 KiB random blob, every offset walked against the arena.
++- **In-guest smoke**: `/apps/webview` tokenises a sample document at
++  startup (`tokeniser smoke: 9 tokens`); `test_webview.sh` asserts it.
++- **Bugs the tests caught**: a double advance after character references
++  (bytes after `&amp;` were skipped) and attributes not flushed after a
++  quoted value (`class="main" id=x` lost `class`). Both fixed with
++  regression checks.
++- `webview.elf` 143 KB (tokeniser adds ~13 KB); `make test-unit` green.
++
+ ## [WebView Phase W0 — Scaffolding] 2026-08-07
+ 
+ `WEBVIEW_PLAN.md` phase W0: the web view exists as a scaffold — a window, an
+diff --git a/Makefile b/Makefile
+index 94b8cf1..c88e975 100644
+--- a/Makefile
++++ b/Makefile
+@@ -821,8 +821,20 @@ $(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c lib/libauragui/i
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+-$(USER_BUILD)/webview.o: userspace/apps/webview/webview.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
++$(USER_BUILD)/webview.o: userspace/apps/webview/webview.c lib/libauragui/include/auragui.h \
++                         userspace/apps/webview/wv_html.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++$(USER_BUILD)/wv_html.o: userspace/apps/webview/wv_html.c userspace/apps/webview/wv_html.h
++	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
++
++# webview links the tokeniser; the generic %.elf pattern rule does not know
++# about it, so give this one explicit prerequisites and link line.
++$(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
++                           $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
++	@mkdir -p $(dir $@)
++	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
++	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
++	@echo "[link] $@ (wv_html)"
+ $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+ 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+ 
+@@ -1205,7 +1217,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_atls_x509 \
+                 $(BUILD_DIR)/test_atls_tls \
+                 $(BUILD_DIR)/test_atls_certval \
+-                $(BUILD_DIR)/test_ahttp
++                $(BUILD_DIR)/test_ahttp \
++                $(BUILD_DIR)/test_wv_html
+ 
+ test-unit: $(UNIT_TESTS)
+ 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+@@ -1297,6 +1310,15 @@ $(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/include/ahttp/http
+ 	           -I lib/libahttp/include -I lib/libatls/include -I lib/libatls/src \
+ 	           lib/libahttp/src/ahttp.c $(LIBATLS_SRCS) $< -o $@
+ 
++# Web view HTML tokeniser (WEBVIEW_PLAN W1): the REAL userspace source is
++# compiled into the host test, never a copy.
++$(BUILD_DIR)/test_wv_html: tests/unit/test_wv_html.c \
++                           userspace/apps/webview/wv_html.c \
++                           userspace/apps/webview/wv_html.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
++	           tests/unit/test_wv_html.c userspace/apps/webview/wv_html.c -o $@
++
+ $(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \
+                              tests/unit/atls_x509_testdata.c $(LIBATLS_SRCS) \
+                              lib/libatls/include/atls/x509.h tests/atls_test_certs.h
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 6e932b8..830335e 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-6a024c51dee33db20e02556ee90632f8134f5ae35428378ee65e4baee52c9bc9  auralite.iso
++3add87b5ad6430477cf4b915ebb1d6fdbd45a1b5217df537c958c96f9e083ae7  auralite.iso
+ 55fad1bb74013012236de5d7e732c91d161fd1008da81267468a3d13653cc0a1  kernel.elf
+-d743630e1b77a9def1a4c54cdf6333c65f799ac50eb2faecf58a1777b0750cc7  initrd.tar
++b1d5f1e2c6e16355b3b1a6891252cce9e6ea0a21aadc856fdfcb6c8b9160d9e5  initrd.tar
+diff --git a/WEBVIEW_PLAN.md b/WEBVIEW_PLAN.md
+index 11e8585..380bcf0 100644
+--- a/WEBVIEW_PLAN.md
++++ b/WEBVIEW_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Web View Plan
+ 
+-## Status: W0 COMPLETE ✅ · W1–W8 PLANNED 📋
++## Status: W0–W1 COMPLETE ✅ · W2–W8 PLANNED 📋
+ 
+ This document answers:
+ 
+@@ -222,18 +222,18 @@ it is.
+ 
+ ---
+ 
+-### Phase W1 — The HTML tokeniser
++### Phase W1 — The HTML tokeniser ✅ COMPLETE
+ 
+ **Objective:** bytes → a token stream, tolerantly.
+ 
+ #### Tasks
+ 
+-- [ ] A state machine over the input: text, tag open, attribute name,
++- [x] A state machine over the input: text, tag open, attribute name,
+       attribute value (quoted and unquoted), comment, DOCTYPE, CDATA.
+-- [ ] Character references: the named five (`&amp; &lt; &gt; &quot; &apos;`)
++- [x] Character references: the named five (`&amp; &lt; &gt; &quot; &apos;`)
+       plus `&#NN;` and `&#xNN;`.
+-- [ ] **No recursion.** Fixed-size buffers, explicit bounds.
+-- [ ] Host unit tests, mostly on malformed input: an unclosed tag at EOF, a
++- [x] **No recursion.** Fixed-size buffers, explicit bounds.
++- [x] Host unit tests, mostly on malformed input: an unclosed tag at EOF, a
+       quote that never closes, `<`, `<<>>`, a 10 KB attribute value, a NUL
+       byte mid-tag.
+ 
+@@ -248,6 +248,18 @@ it is.
+ 
+ `patches/WEB_W1_tokeniser.patch`
+ 
++#### Results (verified 2026-08-07)
++
++| Item | Outcome |
++|---|---|
++| `userspace/apps/webview/wv_html.{h,c}` | 18-state machine over the byte stream; token kinds TEXT/START/END/COMMENT/DOCTYPE/CDATA/EOF; attributes with name/value/flag; `self_closing`; line/col; arena = caller-provided token array + attribute array + string pool, `truncated` flag when any limit is hit while the scan keeps draining to EOF |
++| No recursion | By construction: one loop, one switch; the only locals are fixed-size byte buffers (≤ 4 KB total) — the 64 KiB user stack cannot be exhausted by input |
++| Tolerance | WHATWG behaviours honoured where cheap: `<` at EOF → text, `<<>>` → text runs, unclosed quote keeps the tag and everything before the quote, unclosed comment keeps its text, EOF in any state emits what exists plus WV_T_EOF; NUL → U+FFFD → `'?'` (8-bit font ceiling); names lower-cased; unknown/unterminated char refs stay literal; a reference must end in `;` (documented simplification) |
++| Unit tests | `tests/unit/test_wv_html.c` — **122 checks, 0 failures**: exact token stream for well-formed HTML; all five named refs + numeric in text and attribute values; every malformed case from the gate; 10 000-byte attribute value capped with `truncated`; 100 000-byte text run and 10 000 tags hit caps and terminate; 3000 fuzz iterations + a 64 KiB random blob — every token/attr offset walked and checked against arena bounds |
++| In-guest smoke | `/apps/webview` runs the tokeniser on `<p>Hello <b>web</b> &amp; bye<br/></p>` → `tokeniser smoke: 9 tokens, truncated=0` → PASS; `test_webview.sh` gained the assert (8 checks now) |
++| Size | `webview.elf` 143 KB (tokeniser adds ~13 KB) — still far inside `SPAWN_MAX_IMAGE` |
++| Bugs found by the tests | (1) after a character reference the scan position was advanced twice, skipping bytes after `&amp;`; (2) attributes were not flushed when a space or `/` followed a quoted value, so `class="main" id=x` lost `class`. Both caught by the exact-stream test, fixed, and covered by regression checks |
++
+ ---
+ 
+ ### Phase W2 — The DOM
+diff --git a/docs/status.md b/docs/status.md
+index fd31cd8..3fee9ef 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -165,7 +165,7 @@ Legend:
+ | `/http` | 🧪 | Uses DNS/TCP syscalls. |
+ | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
+ | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
+-| `/webview` | 🧪 | Web view scaffold (WEBVIEW_PLAN W0): window, event loop, heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit. No HTML/CSS/painting yet — W1–W4 are next. See `docs/webview.md`. |
++| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W1): scaffold window + heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit, and the W1 HTML tokeniser (`wv_html.{h,c}` — 18-state iterative machine, arena-bounded, 122 host checks + in-guest smoke). DOM/layout/painting are W2–W4. See `docs/webview.md`. |
+ 
+ ## Known low-priority limitations
+ 
+diff --git a/docs/webview.md b/docs/webview.md
+index 9b5deac..943b637 100644
+--- a/docs/webview.md
++++ b/docs/webview.md
+@@ -1,7 +1,7 @@
+ # AuraLite OS Web View (`/apps/webview`)
+ 
+-**Status:** Phase W0 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) — scaffold
+-complete. W1 (tokeniser) is next.
++**Status:** Phases W0–W1 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
++scaffold and HTML tokeniser complete. W2 (DOM) is next.
+ 
+ This document states what the web view is, what it deliberately is not, and
+ what the presentation path costs on this build. It follows the project
+@@ -81,7 +81,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+ | Phase | Deliverable | Status |
+ |---|---|---|
+ | W0 | Scaffold: window, event loop, pixel buffer, blit benchmark, this doc | ✅ complete (2026-08-07) |
+-| W1 | HTML tokeniser (state machine, no recursion) | 📋 planned |
++| W1 | HTML tokeniser (state machine, no recursion) | ✅ complete (2026-08-07) |
+ | W2 | DOM (flat node array, depth cap, implied structure) | 📋 planned |
+ | W3 | Block layout → display list (iterative, 64 KiB-safe) | 📋 planned |
+ | W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
+@@ -90,6 +90,26 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
+ | W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
+ | W8 | Retire or keep `gbrowser` | 📋 planned |
+ 
++## 6. The tokeniser (W1)
++
++`userspace/apps/webview/wv_html.{h,c}` turns bytes into a token stream:
++
++- 18-state machine (WHATWG-shaped, simplified per `wv_html.h`): text, tag
++  open, tag name, attribute name/value (double, single, unquoted), comment,
++  bogus comment, DOCTYPE, CDATA, self-closing start.
++- Character references: `&amp; &lt; &gt; &quot; &apos;` plus `&#NN;` and
++  `&#xNN;` (must end in `;`; codes > 0xFF become `'?'` — the font's ceiling).
++- **No recursion anywhere**; all storage is a caller-provided arena
++  (tokens + attributes + string pool) with fixed caps and a `truncated`
++  flag — exceeding a cap never hangs or crashes, the scan drains to EOF.
++- NUL bytes are replaced with U+FFFD, rendered as `'?'`.
++- Names are lower-cased; attribute values keep their bytes (minus char refs).
++- Gate: `tests/unit/test_wv_html.c` — 122 host checks including 3000 fuzz
++  iterations and a 64 KiB random blob; every token is walked and every
++  offset verified against the arena bounds. The tokeniser also runs in-guest
++  at `/apps/webview` startup (`tokeniser smoke`), asserted by
++  `test_webview.sh`.
++
+ If only three phases are ever built, W1–W3 are the ones: a tokeniser, a DOM
+ and a layout engine are the parts that do not exist anywhere else in the
+ tree. Paint is a for-loop over rectangles; the hard work is upstream.
+diff --git a/tests/integration/cases/test_webview.sh b/tests/integration/cases/test_webview.sh
+index 7141226..4f00c32 100755
+--- a/tests/integration/cases/test_webview.sh
++++ b/tests/integration/cases/test_webview.sh
+@@ -33,6 +33,7 @@ il_assert_grep "$LOG" "\\[webview\\] window created"            "window opened"
+ il_assert_grep "$LOG" "\\[webview\\] limitations painted"       "limitation statement drawn"
+ il_assert_grep "$LOG" "\\[webview\\] blit 800x600: [0-9][0-9]* us/frame" \
+     "blit benchmark reported a number"
++il_assert_grep "$LOG" "\\[webview\\] tokeniser smoke: PASS"     "W1 tokeniser smoke passed in-guest"
+ il_assert_grep "$LOG" "\\[webview\\] PASS: 10 frames rendered"  "frame limit respected"
+ il_assert_grep "$LOG" "\\[webview\\] W0 scaffold complete"       "clean exit"
+ il_assert_no_grep "$LOG" "Page Fault|kernel panic|triple fault" "no kernel fault"
+diff --git a/tests/unit/test_wv_html.c b/tests/unit/test_wv_html.c
+new file mode 100644
+index 0000000..cd07163
+--- /dev/null
++++ b/tests/unit/test_wv_html.c
+@@ -0,0 +1,461 @@
++/*
++ * test_wv_html.c — host unit tests for the web view HTML tokeniser
++ * (WEBVIEW_PLAN phase W1).
++ *
++ * Links the REAL userspace/apps/webview/wv_html.c (never a copy) and checks:
++ *   - well-formed HTML tokenises to the exact expected token stream;
++ *   - character references: the five named ones plus &#NN; / &#xNN;, in
++ *     text and in attribute values; unknown and unterminated references
++ *     stay literal;
++ *   - every malformed case from the plan's gate terminates and produces
++ *     something usable: unclosed tag at EOF, a quote that never closes,
++ *     "<", "<<>>", a 10 KB attribute value, a NUL byte mid-tag;
++ *   - limits: a 100 000-byte text run and a 10 000-tag document hit the
++ *     arena caps, set truncated=1 and still terminate;
++ *   - fuzzing with random bytes (including NULs): no crash, no hang,
++ *     bounded memory — asserted by walking every produced token and
++ *     checking every offset against the arena bounds.
++ *
++ * Built/run by `make test-unit` under -std=c11 -Wall -Wextra -Werror.
++ */
++
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++#include <stdint.h>
++
++#include "userspace/apps/webview/wv_html.h"
++
++static int failures = 0;
++#define CK(c) do { if (c) printf("PASS: %s\n", #c); \
++    else { printf("FAIL: %s\n", #c); failures++; } } while (0)
++
++/* ---- arena storage for the tests (static: bounded by construction) ---- */
++
++static wv_token_t toks[WV_MAX_TOKENS];
++static wv_attr_t  attrs[WV_MAX_ATTRS];
++static char       pool[WV_POOL_SIZE];
++static wv_arena_t arena;
++
++static void reset(void) {
++    wv_arena_init(&arena, toks, WV_MAX_TOKENS, attrs, WV_MAX_ATTRS,
++                  pool, WV_POOL_SIZE);
++}
++
++/* Tokenise and return tok_count (never asserts inside). */
++static int tok(const char *html) {
++    reset();
++    return wv_html_tokenize(&arena, html, strlen(html));
++}
++
++/* Tokenise a byte buffer with an explicit length (for embedded NULs). */
++static int tok_buf(const char *buf, size_t len) {
++    reset();
++    return wv_html_tokenize(&arena, buf, len);
++}
++
++static const wv_token_t *t(int i) { return &arena.toks[i]; }
++static const char *tname(int i)  { return wv_tok_str(&arena, t(i)->name_off); }
++static const char *ttext(int i)  { return wv_tok_str(&arena, t(i)->text_off); }
++
++/* Check token i against expectations; returns 1 on match. */
++static int expect(int i, int type, const char *name, const char *text,
++                  unsigned attr_count, int self_closing) {
++    if ((int)arena.tok_count <= i) return 0;
++    const wv_token_t *tk = t(i);
++    if ((int)tk->type != type) return 0;
++    if (name && strcmp(tname(i), name) != 0) return 0;
++    if (text && strcmp(ttext(i), text) != 0) return 0;
++    if (tk->attr_count != attr_count) return 0;
++    if ((int)tk->self_closing != self_closing) return 0;
++    return 1;
++}
++
++/* Walk every token/attr and verify every offset is inside the pool with a
++ * NUL terminator exactly where the length says it is. */
++static int arena_is_consistent(void) {
++    if (arena.tok_count > arena.tok_cap) return 0;
++    if (arena.attr_count > arena.attr_cap) return 0;
++    if (arena.pool_used > arena.pool_cap) return 0;
++    for (size_t i = 0; i < arena.tok_count; i++) {
++        const wv_token_t *tk = &arena.toks[i];
++        if (tk->name_len) {
++            if ((size_t)tk->name_off + tk->name_len + 1 > arena.pool_used) return 0;
++            if (arena.pool[tk->name_off + tk->name_len] != '\0') return 0;
++        }
++        if (tk->text_len) {
++            if ((size_t)tk->text_off + tk->text_len + 1 > arena.pool_used) return 0;
++            if (arena.pool[tk->text_off + tk->text_len] != '\0') return 0;
++        }
++        if (tk->attr_base + tk->attr_count > arena.attr_cap) return 0;
++        for (size_t j = 0; j < tk->attr_count; j++) {
++            const wv_attr_t *at = wv_tok_attr(&arena, tk, j);
++            if (!at) return 0;
++            if (at->name_len &&
++                ((size_t)at->name_off + at->name_len + 1 > arena.pool_used ||
++                 arena.pool[at->name_off + at->name_len] != '\0')) return 0;
++            if (at->value_len &&
++                ((size_t)at->value_off + at->value_len + 1 > arena.pool_used ||
++                 arena.pool[at->value_off + at->value_len] != '\0')) return 0;
++        }
++    }
++    return 1;
++}
++
++/* deterministic pseudo-random bytes (xorshift32) */
++static uint32_t rng_state = 0x12345678u;
++static uint32_t rng(void) {
++    rng_state ^= rng_state << 13;
++    rng_state ^= rng_state >> 17;
++    rng_state ^= rng_state << 5;
++    return rng_state;
++}
++
++static void test_null_args(void) {
++    reset();
++    CK(wv_html_tokenize(NULL, "x", 1) == -1);
++    CK(wv_html_tokenize(&arena, NULL, 0) == -1);
++    CK(wv_tok_str(&arena, 999999u)[0] == '\0');   /* out-of-range reads are safe */
++    CK(wv_tok_attr(&arena, t(0), 0) == NULL);
++}
++
++static void test_well_formed(void) {
++    int n = tok("<html><head><title>T</title></head>"
++                "<body class=\"main\" id=x>Hello &amp; bye<br/></body></html>");
++    CK(n == 12);   /* 11 + EOF */
++    if (n != 12) { printf("  (got %d tokens)\n", n); return; }
++
++    CK(expect(0, WV_T_START, "html", 0, 0, 0));
++    CK(expect(1, WV_T_START, "head", 0, 0, 0));
++    CK(expect(2, WV_T_START, "title", 0, 0, 0));
++    CK(expect(3, WV_T_TEXT, 0, "T", 0, 0));
++    CK(expect(4, WV_T_END, "title", 0, 0, 0));
++    CK(expect(5, WV_T_END, "head", 0, 0, 0));
++
++    CK(expect(6, WV_T_START, "body", 0, 2, 0));
++    CK(strcmp(tname(6), "body") == 0);
++    if (t(6)->attr_count == 2) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(6), 0);
++        const wv_attr_t *a1 = wv_tok_attr(&arena, t(6), 1);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->name_off), "class") == 0);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->value_off), "main") == 0);
++        CK(a1 && strcmp(wv_tok_str(&arena, a1->name_off), "id") == 0);
++        CK(a1 && strcmp(wv_tok_str(&arena, a1->value_off), "x") == 0);
++    }
++
++    CK(expect(7, WV_T_TEXT, 0, "Hello & bye", 0, 0));
++    CK(expect(8, WV_T_START, "br", 0, 0, 1));       /* self-closing */
++    CK(expect(9, WV_T_END, "body", 0, 0, 0));
++    CK(expect(10, WV_T_END, "html", 0, 0, 0));
++    CK(expect(11, WV_T_EOF, 0, 0, 0, 0));
++    CK(arena_is_consistent());
++}
++
++static void test_char_refs(void) {
++    int n = tok("&amp; &lt; &gt; &quot; &apos;");
++    CK(n == 2);
++    CK(expect(0, WV_T_TEXT, 0, "& < > \" '", 0, 0));
++    CK(expect(1, WV_T_EOF, 0, 0, 0, 0));
++
++    /* &#0; -> U+FFFD, any code > 0xFF -> U+FFFD (8-bit font ceiling) */
++    n = tok("&#65;&#x41;&#0;&#128512;&#x10FFFF;&#x110000;");
++    CK(n == 2);
++    CK(expect(0, WV_T_TEXT, 0, "AA????", 0, 0));
++
++    /* unknown / unterminated references stay literal */
++    n = tok("a &unknown; b &amp c");
++    CK(n == 2);
++    CK(expect(0, WV_T_TEXT, 0, "a &unknown; b &amp c", 0, 0));
++
++    /* refs inside attribute values */
++    n = tok("<a t=\"a&amp;b\" u='&#x21;' v=x&amp;y>");
++    CK(n == 2);
++    if (t(0)->attr_count == 3) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(0), 0);
++        const wv_attr_t *a1 = wv_tok_attr(&arena, t(0), 1);
++        const wv_attr_t *a2 = wv_tok_attr(&arena, t(0), 2);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->value_off), "a&b") == 0);
++        CK(a1 && strcmp(wv_tok_str(&arena, a1->value_off), "!") == 0);
++        CK(a2 && strcmp(wv_tok_str(&arena, a2->value_off), "x&y") == 0);
++    }
++    CK(arena_is_consistent());
++}
++
++static void test_malformed(void) {
++    /* lone "<" at EOF becomes text */
++    int n = tok("<");
++    CK(n == 2);
++    CK(expect(0, WV_T_TEXT, 0, "<", 0, 0));
++    CK(expect(1, WV_T_EOF, 0, 0, 0, 0));
++
++    /* "<<>>" — WHATWG: each inner '<' emits '<' as its own text token,
++     * then the two '>'s form a second text run */
++    n = tok("<<>>");
++    CK(n == 3);
++    CK(expect(0, WV_T_TEXT, 0, "<", 0, 0));
++    CK(expect(1, WV_T_TEXT, 0, ">>", 0, 0));
++    CK(expect(2, WV_T_EOF, 0, 0, 0, 0));
++
++    /* unclosed end tag at EOF emits the token */
++    n = tok("</div");
++    CK(n == 2);
++    CK(expect(0, WV_T_END, "div", 0, 0, 0));
++
++    /* unclosed start tag with attribute at EOF */
++    n = tok("<div class=\"x");
++    CK(n == 2);
++    CK(expect(0, WV_T_START, "div", 0, 1, 0));
++    if (t(0)->attr_count == 1) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(0), 0);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->name_off), "class") == 0);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->value_off), "x") == 0);
++    }
++
++    /* a quote that never closes swallows to EOF but keeps the tag */
++    n = tok("<a href=\"foo>bar");
++    CK(n == 2);
++    CK(expect(0, WV_T_START, "a", 0, 1, 0));
++    if (t(0)->attr_count == 1) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(0), 0);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->value_off), "foo>bar") == 0);
++    }
++
++    /* an unclosed comment keeps its text */
++    n = tok("<!-- hello");
++    CK(n == 2);
++    CK(expect(0, WV_T_COMMENT, 0, " hello", 0, 0));
++
++    /* empty input: just EOF */
++    n = tok("");
++    CK(n == 1);
++    CK(expect(0, WV_T_EOF, 0, 0, 0, 0));
++
++    /* "</>" — WHATWG: the '>' in end-tag-open is a parse error dropped;
++     * nothing else was accumulated, so only EOF remains */
++    n = tok("</>");
++    CK(n == 1);
++    CK(expect(0, WV_T_EOF, 0, 0, 0, 0));
++    CK(arena_is_consistent());
++}
++
++static void test_10k_attr_value(void) {
++    /* a 10 000-byte attribute value: capped at WV_MAX_ATTR_VALUE, scan
++     * continues to the closing quote, truncated is set */
++    size_t cap = 10000 + 16;
++    char *html = malloc(cap);
++    CK(html != NULL);
++    if (!html) return;
++    size_t p = 0;
++    html[p++] = '<'; html[p++] = 'a'; html[p++] = ' ';
++    html[p++] = 'h'; html[p++] = 'r'; html[p++] = 'e'; html[p++] = 'f';
++    html[p++] = '='; html[p++] = '"';
++    for (int i = 0; i < 10000; i++) html[p++] = 'q';
++    html[p++] = '"'; html[p++] = '>';
++    html[p++] = 'x';
++
++    reset();
++    int n = wv_html_tokenize(&arena, html, p);
++    CK(n == 3);                       /* START a, TEXT x, EOF */
++    CK(arena.truncated == 1);
++    CK(expect(0, WV_T_START, "a", 0, 1, 0));
++    if (t(0)->attr_count == 1) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(0), 0);
++        CK(a0 && a0->value_len == WV_MAX_ATTR_VALUE);
++        CK(a0 && wv_tok_str(&arena, a0->value_off)[WV_MAX_ATTR_VALUE] == '\0');
++    }
++    CK(expect(1, WV_T_TEXT, 0, "x", 0, 0));
++    CK(arena_is_consistent());
++    free(html);
++}
++
++static void test_nul_bytes(void) {
++    /* NUL mid-tag: replaced with '?' inside the name */
++    char t1[] = { '<', 'd', 'i', 0, 'v', '>', 'x' };
++    int n = tok_buf(t1, sizeof(t1));
++    CK(n == 3);
++    CK(expect(0, WV_T_START, "di?v", 0, 0, 0));
++    CK(expect(1, WV_T_TEXT, 0, "x", 0, 0));
++
++    /* NUL in text */
++    char t2[] = { 'a', 0, 'b' };
++    n = tok_buf(t2, sizeof(t2));
++    CK(n == 2);
++    CK(expect(0, WV_T_TEXT, 0, "a?b", 0, 0));
++
++    /* NUL in attribute value */
++    char t3[] = { '<', 'a', ' ', 'x', '=', '"', 'a', 0, 'b', '"', '>' };
++    n = tok_buf(t3, sizeof(t3));
++    CK(n == 2);
++    if (t(0)->attr_count == 1) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(0), 0);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->value_off), "a?b") == 0);
++    }
++    CK(arena_is_consistent());
++}
++
++static void test_decl_and_comment(void) {
++    int n = tok("<!DOCTYPE html><p>x");
++    CK(n == 4);
++    CK(expect(0, WV_T_DOCTYPE, 0, " html", 0, 0));
++    CK(expect(1, WV_T_START, "p", 0, 0, 0));
++    CK(expect(2, WV_T_TEXT, 0, "x", 0, 0));
++
++    n = tok("<!-- a <!-- nested --><p>y");
++    CK(n == 4);
++    CK(expect(0, WV_T_COMMENT, 0, " a <!-- nested ", 0, 0));
++    CK(expect(1, WV_T_START, "p", 0, 0, 0));
++    CK(expect(2, WV_T_TEXT, 0, "y", 0, 0));
++
++    n = tok("<![CDATA[<b>raw & stuff]]>");
++    CK(n == 2);
++    CK(expect(0, WV_T_CDATA, 0, "<b>raw & stuff", 0, 0));
++
++    /* bogus declarations become comments up to '>' */
++    n = tok("<!foo bar><p>z");
++    CK(n == 4);
++    CK(expect(0, WV_T_COMMENT, 0, "foo bar", 0, 0));
++    CK(arena_is_consistent());
++}
++
++static void test_misc(void) {
++    /* case-insensitive names, attribute without a value */
++    int n = tok("<DIV CLASS=\"x\" DISABLED>t");
++    CK(n == 3);
++    CK(expect(0, WV_T_START, "div", 0, 2, 0));
++    if (t(0)->attr_count == 2) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(0), 0);
++        const wv_attr_t *a1 = wv_tok_attr(&arena, t(0), 1);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->name_off), "class") == 0);
++        CK(a1 && strcmp(wv_tok_str(&arena, a1->name_off), "disabled") == 0);
++        CK(a1 && a1->value_len == 0);          /* no value */
++    }
++
++    /* spaces and '=' spacing */
++    n = tok("<a href = 'v' >t");
++    CK(n == 3);
++    CK(expect(0, WV_T_START, "a", 0, 1, 0));
++    if (t(0)->attr_count == 1) {
++        const wv_attr_t *a0 = wv_tok_attr(&arena, t(0), 0);
++        CK(a0 && strcmp(wv_tok_str(&arena, a0->value_off), "v") == 0);
++    }
++
++    /* <p>a<p>b — two sibling paragraphs (the W2 test's raw material) */
++    n = tok("<p>a<p>b");
++    CK(n == 5);
++    CK(expect(0, WV_T_START, "p", 0, 0, 0));
++    CK(expect(1, WV_T_TEXT, 0, "a", 0, 0));
++    CK(expect(2, WV_T_START, "p", 0, 0, 0));
++    CK(expect(3, WV_T_TEXT, 0, "b", 0, 0));
++
++    /* attributes after self-closing slash: "a / b >" style errors stay sane */
++    n = tok("<br/ >x");
++    CK(n >= 2);   /* <br/> with a space before '>' -> br with attr "/"? */
++    CK(arena_is_consistent());
++}
++
++static void test_limit_behaviour(void) {
++    /* 100 000 'a's: text runs are capped, truncated is set, no hang */
++    size_t big = 100000;
++    char *html = malloc(big + 1);
++    CK(html != NULL);
++    if (!html) return;
++    memset(html, 'a', big);
++    html[big] = 0;
++    reset();
++    int n = wv_html_tokenize(&arena, html, big);
++    CK(n > 0);
++    CK(arena.truncated == 1);
++    CK(arena_is_consistent());
++    free(html);
++
++    /* 10 000 "<" bytes: token cap is hit, scan still drains, no hang */
++    size_t caps = 10000;
++    char *lt = malloc(caps + 1);
++    CK(lt != NULL);
++    if (!lt) return;
++    memset(lt, '<', caps);
++    lt[caps] = 0;
++    reset();
++    n = wv_html_tokenize(&arena, lt, caps);
++    CK(n == (int)arena.tok_cap);       /* every slot filled with text tokens */
++    CK(arena.truncated == 1);
++    CK(arena_is_consistent());
++    free(lt);
++
++    /* 10 000 attributes on one tag: capped per tag, scan drains */
++    size_t attrcap = 0;
++    {
++        size_t need = 10 + 10000 * 6 + 2;
++        char *a = malloc(need);
++        CK(a != NULL);
++        if (a) {
++            size_t p = 0;
++            a[p++] = '<'; a[p++] = 'a';
++            for (int i = 0; i < 10000; i++) {
++                a[p++] = ' '; a[p++] = 'x';
++                a[p++] = '='; a[p++] = '1';
++            }
++            a[p++] = '>'; a[p++] = 'z';
++            reset();
++            int nn = wv_html_tokenize(&arena, a, p);
++            CK(nn == 3);
++            CK(arena.truncated == 1);
++            CK(t(0)->attr_count == WV_MAX_ATTR_PER_TAG);
++            CK(expect(1, WV_T_TEXT, 0, "z", 0, 0));
++            CK(arena_is_consistent());
++            attrcap = p;
++            free(a);
++        }
++    }
++    (void)attrcap;
++}
++
++static void test_fuzz(void) {
++    unsigned char buf[512];
++    for (int iter = 0; iter < 3000; iter++) {
++        size_t len = rng() % sizeof(buf);
++        for (size_t i = 0; i < len; i++) buf[i] = (unsigned char)(rng() & 0xFF);
++        reset();
++        int n = wv_html_tokenize(&arena, (const char *)buf, len);
++        if (n < 0) { CK(0); printf("  (fuzz iter %d returned %d)\n", iter, n); return; }
++        if (!arena_is_consistent()) {
++            CK(0);
++            printf("  (fuzz iter %d len %zu: arena inconsistent)\n", iter, len);
++            return;
++        }
++    }
++    CK(1);
++    printf("PASS: 3000 fuzz iterations produced consistent arenas\n");
++
++    /* one large fuzz blob */
++    size_t big = 65536;
++    unsigned char *b = malloc(big);
++    CK(b != NULL);
++    if (b) {
++        for (size_t i = 0; i < big; i++) b[i] = (unsigned char)(rng() & 0xFF);
++        reset();
++        int n = wv_html_tokenize(&arena, (const char *)b, big);
++        CK(n > 0);
++        CK(arena_is_consistent());
++        free(b);
++        printf("PASS: 64 KiB fuzz blob tokenised (n=%d)\n", n);
++    }
++}
++
++int main(void) {
++    printf("== webview HTML tokeniser (WEBVIEW_PLAN W1) ==\n");
++
++    test_null_args();
++    test_well_formed();
++    test_char_refs();
++    test_malformed();
++    test_10k_attr_value();
++    test_nul_bytes();
++    test_decl_and_comment();
++    test_misc();
++    test_limit_behaviour();
++    test_fuzz();
++
++    printf("== %s: %d failures ==\n", failures ? "FAIL" : "PASS", failures);
++    return failures ? 1 : 0;
++}
+diff --git a/userspace/apps/webview/webview.c b/userspace/apps/webview/webview.c
+index 0472e11..42d3a22 100644
+--- a/userspace/apps/webview/webview.c
++++ b/userspace/apps/webview/webview.c
+@@ -28,6 +28,7 @@
+ #include <time.h>
+ 
+ #include "auragui.h"
++#include "wv_html.h"
+ 
+ /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
+ #define VIEW_W 800
+@@ -201,6 +202,28 @@ int main(void) {
+         printf("[webview] PASS: blit benchmark completed\n");
+     }
+ 
++    /* ---- Phase W1 smoke: the HTML tokeniser runs in-guest too. ----------
++     * The host unit tests are the real gate; this proves the same source
++     * builds and behaves inside AuraLite user space. */
++    {
++        static wv_token_t wtoks[64];
++        static wv_attr_t  watrs[256];
++        static char       wpool[4096];
++        wv_arena_t wa;
++        wv_arena_init(&wa, wtoks, 64, watrs, 256, wpool, sizeof(wpool));
++        const char *doc = "<p>Hello <b>web</b> &amp; bye<br/></p>";
++        int n = wv_html_tokenize(&wa, doc, strlen(doc));
++        printf("[webview] tokeniser smoke: %d tokens, truncated=%d\n",
++               n, wa.truncated);
++        if (n == 9 && !wa.truncated) {
++            /* START p, TEXT, START b, TEXT, END b, TEXT, START br,
++             * END p, EOF */
++            printf("[webview] tokeniser smoke: PASS\n");
++        } else {
++            printf("[webview] tokeniser smoke: FAIL\n");
++        }
++    }
++
+     /* ---- Event loop.  The W4 renderer will replace draw_page(); the loop
+      * shape (poll, handle, repaint on demand) is the one it will keep. */
+     uint32_t limit = frame_limit();
+diff --git a/userspace/apps/webview/wv_html.c b/userspace/apps/webview/wv_html.c
+new file mode 100644
+index 0000000..256e350
+--- /dev/null
++++ b/userspace/apps/webview/wv_html.c
+@@ -0,0 +1,780 @@
++/*
++ * wv_html.c — HTML tokeniser for the AuraLite web view (WEBVIEW_PLAN W1).
++ *
++ * A table-driven state machine over the byte stream, following the WHATWG
++ * HTML tokeniser states with deliberate simplifications documented in
++ * wv_html.h.  Everything is iterative; the only "buffers" are fixed-size
++ * locals (a few KB total) and the caller-provided arena, so neither the
++ * 64 KiB user stack nor memory as a whole can be exhausted by input.
++ *
++ * Tolerance rules honoured throughout:
++ *   - EOF in any state terminates with whatever was accumulated (a token
++ *     is emitted for it) plus a WV_T_EOF token — never a hang, never a
++ *     crash, never an empty result when input existed.
++ *   - A malformed construct degrades to the closest useful token: "<"
++ *     alone becomes text, "<<>>" becomes text, an unclosed quote keeps
++ *     the tag and everything before the quote, an unclosed comment keeps
++ *     the comment text.
++ *   - When an internal limit is hit the scan continues to EOF and the
++ *     data is dropped; arena->truncated tells the caller.
++ */
++
++#include "wv_html.h"
++
++/* ---- tiny character helpers (no libc, so host and guest agree) ---- */
++
++static int wv_is_space(unsigned char c) {
++    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
++}
++
++static unsigned char wv_to_lower(unsigned char c) {
++    if (c >= 'A' && c <= 'Z') return (unsigned char)(c + 32);
++    return c;
++}
++
++static int wv_is_alpha(unsigned char c) {
++    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
++}
++
++static int wv_eq_ci(const char *s, size_t pos, size_t len, const char *lit) {
++    size_t i = 0;
++    while (lit[i]) {
++        if (pos + i >= len) return 0;
++        if (wv_to_lower((unsigned char)s[pos + i]) != (unsigned char)lit[i]) return 0;
++        i++;
++    }
++    return 1;
++}
++
++/* ---- arena helpers ---- */
++
++void wv_arena_init(wv_arena_t *a, wv_token_t *toks, size_t tok_cap,
++                   wv_attr_t *attrs, size_t attr_cap,
++                   char *pool, size_t pool_cap) {
++    a->toks = toks; a->tok_cap = tok_cap; a->tok_count = 0;
++    a->attrs = attrs; a->attr_cap = attr_cap; a->attr_count = 0;
++    a->pool = pool; a->pool_cap = pool_cap; a->pool_used = 0;
++    a->truncated = 0;
++    if (a->pool && a->pool_cap > 0) {
++        a->pool[0] = '\0';      /* offset 0 is always the empty string */
++        a->pool_used = 1;
++    }
++}
++
++const char *wv_tok_str(const wv_arena_t *a, uint32_t off) {
++    if (!a || !a->pool) return "";
++    if ((size_t)off >= a->pool_used) return "";
++    return &a->pool[off];
++}
++
++const wv_attr_t *wv_tok_attr(const wv_arena_t *a, const wv_token_t *t, size_t i) {
++    if (!a || !t) return NULL;
++    if (i >= t->attr_count) return NULL;
++    size_t idx = (size_t)t->attr_base + i;
++    if (idx >= a->attr_cap) return NULL;
++    return &a->attrs[idx];
++}
++
++/* Append bytes + NUL to the pool.  Returns the offset, or 0 when the pool
++ * is full (truncated is set; the scan continues, the data is dropped). */
++static uint32_t wv_pool_put(wv_arena_t *a, const char *buf, size_t len) {
++    if (len + 1 > a->pool_cap - a->pool_used) {
++        a->truncated = 1;
++        return 0;
++    }
++    uint32_t off = (uint32_t)a->pool_used;
++    for (size_t i = 0; i < len; i++) a->pool[a->pool_used + i] = buf[i];
++    a->pool[a->pool_used + len] = '\0';
++    a->pool_used += len + 1;
++    return off;
++}
++
++static void wv_push_attr(wv_arena_t *a, const char *name, size_t name_len,
++                         const char *val, size_t val_len, int has_value) {
++    if (a->attr_count >= a->attr_cap) { a->truncated = 1; return; }
++    wv_attr_t *at = &a->attrs[a->attr_count++];
++    at->name_off = wv_pool_put(a, name, name_len);
++    at->name_len = (uint32_t)name_len;
++    if (has_value) {
++        at->value_off = wv_pool_put(a, val, val_len);
++        at->value_len = (uint32_t)val_len;
++    } else {
++        at->value_off = 0;
++        at->value_len = 0;
++    }
++}
++
++static void wv_push_token(wv_arena_t *a, int type,
++                          uint32_t name_off, uint32_t name_len,
++                          uint32_t text_off, uint32_t text_len,
++                          size_t attr_base, size_t attr_count,
++                          int self_closing, uint32_t line, uint32_t col) {
++    if (a->tok_count >= a->tok_cap) { a->truncated = 1; return; }
++    wv_token_t *t = &a->toks[a->tok_count++];
++    t->type = (wv_tok_type)type;
++    t->name_off = name_off; t->name_len = name_len;
++    t->text_off = text_off; t->text_len = text_len;
++    t->attr_base = (uint32_t)attr_base;
++    t->attr_count = (uint32_t)attr_count;
++    t->self_closing = self_closing ? 1u : 0u;
++    t->line = line; t->col = col;
++}
++
++/* ---- character references ----
++ * Tries to consume a reference at s[*i] (which must be '&').  On success
++ * writes the decoded byte to out, advances *i past the ';' and returns 1.
++ * On failure returns 0 and leaves *i untouched — the '&' is literal text.
++ * A reference must end in ';' to be consumed (documented simplification).
++ */
++static int wv_try_char_ref(const char *s, size_t len, size_t *i,
++                           char *out, size_t out_cap, size_t *out_len) {
++    if (out_cap < 1) return 0;
++    size_t p = *i;
++    if (p + 1 >= len || s[p] != '&') return 0;
++
++    if (s[p + 1] == '#') {
++        size_t j = p + 2;
++        int hex = 0;
++        if (j < len && (s[j] == 'x' || s[j] == 'X')) { hex = 1; j++; }
++        uint32_t val = 0;
++        size_t digits = 0;
++        while (j < len && digits < 8) {
++            unsigned char d = (unsigned char)s[j];
++            uint32_t dv;
++            if (d >= '0' && d <= '9') dv = (uint32_t)(d - '0');
++            else if (hex && d >= 'a' && d <= 'f') dv = (uint32_t)(d - 'a' + 10);
++            else if (hex && d >= 'A' && d <= 'F') dv = (uint32_t)(d - 'A' + 10);
++            else break;
++            val = val * (hex ? 16u : 10u) + dv;
++            digits++; j++;
++        }
++        if (digits == 0) return 0;
++        if (j >= len || s[j] != ';') return 0;      /* must end in ';' */
++        if (val > 0x10FFFFu) val = 0xFFFDu;          /* out of range -> U+FFFD */
++        if (val == 0 || val > 0xFFu) out[0] = '?';   /* 8-bit font ceiling */
++        else out[0] = (char)val;
++        *i = j + 1;
++        *out_len = 1;
++        return 1;
++    }
++
++    /* The five named references. */
++    static const struct { const char *name; char ch; } named[] = {
++        { "amp",  '&' }, { "lt", '<' }, { "gt", '>' },
++        { "quot", '"' }, { "apos", '\'' },
++    };
++    for (size_t k = 0; k < 5; k++) {
++        size_t nl = 0;
++        while (named[k].name[nl]) nl++;
++        if (p + 1 + nl >= len) continue;
++        int match = 1;
++        for (size_t m = 0; m < nl; m++)
++            if (s[p + 1 + m] != named[k].name[m]) { match = 0; break; }
++        if (!match) continue;
++        if (s[p + 1 + nl] != ';') continue;
++        out[0] = named[k].ch;
++        *i = p + 1 + nl + 1;
++        *out_len = 1;
++        return 1;
++    }
++    return 0;
++}
++
++/* ---- tokeniser states ---- */
++enum {
++    ST_TEXT = 0,
++    ST_TAG_OPEN,
++    ST_END_TAG_OPEN,
++    ST_TAG_NAME,
++    ST_BEFORE_ATTR_NAME,
++    ST_ATTR_NAME,
++    ST_AFTER_ATTR_NAME,
++    ST_BEFORE_ATTR_VALUE,
++    ST_ATTR_VALUE_DQ,
++    ST_ATTR_VALUE_SQ,
++    ST_ATTR_VALUE_UNQ,
++    ST_AFTER_ATTR_VALUE,
++    ST_SELF_CLOSING_START,
++    ST_MARKUP_DECL,
++    ST_COMMENT,
++    ST_BOGUS_COMMENT,
++    ST_DOCTYPE,
++    ST_CDATA
++};
++
++int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len) {
++    if (!a || !html) return -1;
++    wv_arena_init(a, a->toks, a->tok_cap, a->attrs, a->attr_cap,
++                  a->pool, a->pool_cap);
++
++    size_t pos = 0;
++    int state = ST_TEXT;
++    uint32_t line = 1, col = 1;
++
++    /* current tag being scanned */
++    char tag_name[WV_MAX_NAME + 1];
++    size_t tag_name_len = 0;
++    int tag_name_overflow = 0;
++    int is_end = 0;
++    int self_closing = 0;
++    size_t attr_base = 0, attr_count_cur = 0;
++
++    /* current attribute being scanned */
++    char attr_name[WV_MAX_NAME + 1];
++    size_t attr_name_len = 0;
++    char attr_val[WV_MAX_ATTR_VALUE + 1];
++    size_t attr_val_len = 0;
++    int attr_val_overflow = 0;
++    int attr_has_value = 0;
++
++    /* current text / comment / doctype / cdata run */
++    char text[WV_MAX_TEXT + 1];
++    size_t text_len = 0;
++    int text_overflow = 0;
++    char comment[WV_MAX_COMMENT + 1];
++    size_t comment_len = 0;
++    int comment_overflow = 0;
++
++    uint32_t tok_line = 1, tok_col = 1;   /* start of the current token */
++
++#define ADV() do { \
++        if (html[pos] == '\n') { line++; col = 1; } else { col++; } \
++        pos++; \
++    } while (0)
++
++#define ADV_N(n) do { \
++        size_t _n = (n); \
++        for (size_t _k = 0; _k < _n; _k++) { \
++            if (html[pos] == '\n') { line++; col = 1; } else { col++; } \
++            pos++; \
++        } \
++    } while (0)
++
++/* Advance line/col over bytes [from, to) WITHOUT moving pos — used after a
++ * character reference, which already advanced pos itself. */
++#define COUNT_ADV(from, to) do { \
++        size_t _f = (from), _t = (to); \
++        for (size_t _k = _f; _k < _t; _k++) { \
++            if (html[_k] == '\n') { line++; col = 1; } else { col++; } \
++        } \
++    } while (0)
++
++#define TXT_PUSH(c) do { \
++        if (text_len >= WV_MAX_TEXT) text_overflow = 1; \
++        else text[text_len++] = (char)(c); \
++    } while (0)
++
++#define ATTRN_PUSH(c) do { \
++        if (attr_name_len >= WV_MAX_NAME) { /* drop, scan continues */ } \
++        else attr_name[attr_name_len++] = (char)(c); \
++    } while (0)
++
++#define ATTRV_PUSH(c) do { \
++        if (attr_val_len >= WV_MAX_ATTR_VALUE) attr_val_overflow = 1; \
++        else attr_val[attr_val_len++] = (char)(c); \
++    } while (0)
++
++#define TAGN_PUSH(c) do { \
++        if (tag_name_len >= WV_MAX_NAME) tag_name_overflow = 1; \
++        else tag_name[tag_name_len++] = (char)(c); \
++    } while (0)
++
++#define CMNT_PUSH(c) do { \
++        if (comment_len >= WV_MAX_COMMENT) comment_overflow = 1; \
++        else comment[comment_len++] = (char)(c); \
++    } while (0)
++
++    /* flush accumulated text into a WV_T_TEXT token */
++#define FLUSH_TEXT() do { \
++        if (text_len > 0) { \
++            uint32_t off = wv_pool_put(a, text, text_len); \
++            wv_push_token(a, WV_T_TEXT, 0, 0, off, (uint32_t)text_len, \
++                          0, 0, 0, tok_line, tok_col); \
++            if (text_overflow) a->truncated = 1; \
++            text_len = 0; text_overflow = 0; \
++        } \
++    } while (0)
++
++    /* finish the attribute being scanned, if any */
++#define FLUSH_ATTR() do { \
++        if (attr_name_len > 0 || attr_has_value) { \
++            if (attr_count_cur >= WV_MAX_ATTR_PER_TAG) { \
++                a->truncated = 1; \
++            } else { \
++                wv_push_attr(a, attr_name, attr_name_len, \
++                             attr_val, attr_val_len, attr_has_value); \
++                attr_count_cur++; \
++            } \
++            if (attr_val_overflow) a->truncated = 1; \
++        } \
++        attr_name_len = 0; attr_val_len = 0; \
++        attr_val_overflow = 0; attr_has_value = 0; \
++    } while (0)
++
++    /* finish the tag being scanned into a START/END token */
++#define EMIT_TAG() do { \
++        uint32_t noff = (tag_name_len > 0 && !tag_name_overflow) \
++                            ? wv_pool_put(a, tag_name, tag_name_len) : 0; \
++        wv_push_token(a, is_end ? WV_T_END : WV_T_START, \
++                      noff, (uint32_t)(tag_name_overflow ? 0 : tag_name_len), \
++                      0, 0, attr_base, attr_count_cur, self_closing, \
++                      tok_line, tok_col); \
++        if (tag_name_overflow) a->truncated = 1; \
++        tag_name_len = 0; tag_name_overflow = 0; \
++        is_end = 0; self_closing = 0; \
++        attr_base = a->attr_count; attr_count_cur = 0; \
++    } while (0)
++
++    /* finish a comment/doctype/cdata run into its token */
++#define EMIT_RAW(kind) do { \
++        uint32_t off = wv_pool_put(a, comment, comment_len); \
++        wv_push_token(a, (kind), 0, 0, off, (uint32_t)comment_len, \
++                      0, 0, 0, tok_line, tok_col); \
++        if (comment_overflow) a->truncated = 1; \
++        comment_len = 0; comment_overflow = 0; \
++    } while (0)
++
++    while (pos < len) {
++        unsigned char c = (unsigned char)html[pos];
++
++        switch (state) {
++
++        case ST_TEXT:
++            if (c == '<') {
++                FLUSH_TEXT();
++                tok_line = line; tok_col = col;
++                state = ST_TAG_OPEN;
++                ADV();
++            } else if (c == '&') {
++                char ref[1]; size_t rl = 0; size_t save = pos;
++                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
++                    if (text_len == 0) { tok_line = line; tok_col = col; }
++                    TXT_PUSH(ref[0]);
++                    COUNT_ADV(save, pos);       /* pos already advanced */
++                } else {
++                    if (text_len == 0) { tok_line = line; tok_col = col; }
++                    TXT_PUSH('&');
++                    ADV();
++                }
++            } else {
++                if (text_len == 0) { tok_line = line; tok_col = col; }
++                TXT_PUSH(c == 0 ? '?' : (char)c);
++                ADV();
++            }
++            break;
++
++        case ST_TAG_OPEN:
++            if (c == '!') {
++                state = ST_MARKUP_DECL;
++                ADV();
++            } else if (c == '/') {
++                state = ST_END_TAG_OPEN;
++                ADV();
++            } else if (c == '?') {
++                state = ST_BOGUS_COMMENT;
++                comment_len = 0; comment_overflow = 0;
++                ADV();
++            } else if (wv_is_alpha(c)) {
++                tag_name_len = 0; tag_name_overflow = 0;
++                is_end = 0; self_closing = 0;
++                attr_base = a->attr_count; attr_count_cur = 0;
++                state = ST_TAG_NAME;
++                TAGN_PUSH(wv_to_lower(c));
++                ADV();
++            } else if (c == '<') {
++                /* WHATWG: parse error, emit '<' as text, reconsume. */
++                FLUSH_TEXT();
++                text[0] = '<'; text_len = 1; tok_line = line; tok_col = col;
++                FLUSH_TEXT();
++                state = ST_TEXT;
++                ADV();
++            } else if (c == '>') {
++                /* WHATWG: parse error, switch to data. */
++                state = ST_TEXT;
++                ADV();
++            } else {
++                /* WHATWG: parse error, emit '<' as text, reconsume. */
++                FLUSH_TEXT();
++                text[0] = '<'; text_len = 1; tok_line = line; tok_col = col;
++                FLUSH_TEXT();
++                state = ST_TEXT;
++                ADV();
++            }
++            break;
++
++        case ST_END_TAG_OPEN:
++            if (wv_is_alpha(c)) {
++                tag_name_len = 0; tag_name_overflow = 0;
++                is_end = 1; self_closing = 0;
++                attr_base = a->attr_count; attr_count_cur = 0;
++                state = ST_TAG_NAME;
++                TAGN_PUSH(wv_to_lower(c));
++                ADV();
++            } else if (c == '>') {
++                /* WHATWG: parse error, switch to data. */
++                state = ST_TEXT;
++                ADV();
++            } else {
++                /* WHATWG: emit "</" as text, reconsume in bogus comment;
++                 * simplified: emit "</" and treat the byte as text. */
++                FLUSH_TEXT();
++                text[0] = '<'; text[1] = '/'; text_len = 2;
++                tok_line = line; tok_col = col;
++                FLUSH_TEXT();
++                state = ST_TEXT;
++                ADV();
++            }
++            break;
++
++        case ST_TAG_NAME:
++            if (wv_is_space(c)) {
++                state = ST_BEFORE_ATTR_NAME;
++                ADV();
++            } else if (c == '/') {
++                state = ST_SELF_CLOSING_START;
++                ADV();
++            } else if (c == '>') {
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else if (c == 0) {
++                TAGN_PUSH('?');
++                ADV();
++            } else {
++                TAGN_PUSH(wv_to_lower(c));
++                ADV();
++            }
++            break;
++
++        case ST_BEFORE_ATTR_NAME:
++            if (wv_is_space(c)) {
++                ADV();
++            } else if (c == '/') {
++                state = ST_SELF_CLOSING_START;
++                ADV();
++            } else if (c == '>') {
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else {
++                attr_name_len = 0;
++                ATTRN_PUSH(c == '=' ? '=' : wv_to_lower(c));
++                state = ST_ATTR_NAME;
++                ADV();
++            }
++            break;
++
++        case ST_ATTR_NAME:
++            if (wv_is_space(c)) {
++                state = ST_AFTER_ATTR_NAME;
++                ADV();
++            } else if (c == '/') {
++                state = ST_SELF_CLOSING_START;
++                ADV();
++            } else if (c == '=') {
++                state = ST_BEFORE_ATTR_VALUE;
++                ADV();
++            } else if (c == '>') {
++                FLUSH_ATTR();
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else if (c == 0) {
++                ATTRN_PUSH('?');
++                ADV();
++            } else {
++                ATTRN_PUSH(wv_to_lower(c));
++                ADV();
++            }
++            break;
++
++        case ST_AFTER_ATTR_NAME:
++            if (wv_is_space(c)) {
++                ADV();
++            } else if (c == '/') {
++                FLUSH_ATTR();               /* name-only attribute complete */
++                state = ST_SELF_CLOSING_START;
++                ADV();
++            } else if (c == '=') {
++                state = ST_BEFORE_ATTR_VALUE;
++                ADV();
++            } else if (c == '>') {
++                FLUSH_ATTR();
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else {
++                /* WHATWG: start a new attribute with this byte. */
++                FLUSH_ATTR();
++                ATTRN_PUSH(c == 0 ? '?' : wv_to_lower(c));
++                state = ST_ATTR_NAME;
++                ADV();
++            }
++            break;
++
++        case ST_BEFORE_ATTR_VALUE:
++            if (wv_is_space(c)) {
++                ADV();
++            } else if (c == '"') {
++                attr_has_value = 1;
++                attr_val_len = 0; attr_val_overflow = 0;
++                state = ST_ATTR_VALUE_DQ;
++                ADV();
++            } else if (c == '\'') {
++                attr_has_value = 1;
++                attr_val_len = 0; attr_val_overflow = 0;
++                state = ST_ATTR_VALUE_SQ;
++                ADV();
++            } else if (c == '>') {
++                /* WHATWG: parse error; emit the tag, no value. */
++                FLUSH_ATTR();
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else {
++                attr_has_value = 1;
++                attr_val_len = 0; attr_val_overflow = 0;
++                state = ST_ATTR_VALUE_UNQ;
++                /* reconsume: fall through handled by the switch on next
++                 * iteration with the same byte; emulate by processing now */
++                ATTRV_PUSH(c == 0 ? '?' : (char)c);
++                ADV();
++            }
++            break;
++
++        case ST_ATTR_VALUE_DQ:
++            if (c == '"') {
++                state = ST_AFTER_ATTR_VALUE;
++                ADV();
++            } else if (c == '&') {
++                char ref[1]; size_t rl = 0; size_t save = pos;
++                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
++                    ATTRV_PUSH(ref[0]);
++                    COUNT_ADV(save, pos);       /* pos already advanced */
++                } else {
++                    ATTRV_PUSH('&');
++                    ADV();
++                }
++            } else if (c == 0) {
++                ATTRV_PUSH('?');
++                ADV();
++            } else {
++                ATTRV_PUSH(c);
++                ADV();
++            }
++            break;
++
++        case ST_ATTR_VALUE_SQ:
++            if (c == '\'') {
++                state = ST_AFTER_ATTR_VALUE;
++                ADV();
++            } else if (c == '&') {
++                char ref[1]; size_t rl = 0; size_t save = pos;
++                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
++                    ATTRV_PUSH(ref[0]);
++                    COUNT_ADV(save, pos);       /* pos already advanced */
++                } else {
++                    ATTRV_PUSH('&');
++                    ADV();
++                }
++            } else if (c == 0) {
++                ATTRV_PUSH('?');
++                ADV();
++            } else {
++                ATTRV_PUSH(c);
++                ADV();
++            }
++            break;
++
++        case ST_ATTR_VALUE_UNQ:
++            if (wv_is_space(c)) {
++                state = ST_AFTER_ATTR_VALUE;
++                ADV();
++            } else if (c == '>') {
++                FLUSH_ATTR();
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else if (c == '&') {
++                char ref[1]; size_t rl = 0; size_t save = pos;
++                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
++                    ATTRV_PUSH(ref[0]);
++                    COUNT_ADV(save, pos);       /* pos already advanced */
++                } else {
++                    ATTRV_PUSH('&');
++                    ADV();
++                }
++            } else if (c == 0) {
++                ATTRV_PUSH('?');
++                ADV();
++            } else {
++                ATTRV_PUSH(c);
++                ADV();
++            }
++            break;
++
++        case ST_AFTER_ATTR_VALUE:
++            if (wv_is_space(c)) {
++                FLUSH_ATTR();               /* attribute is complete */
++                state = ST_BEFORE_ATTR_NAME;
++                ADV();
++            } else if (c == '/') {
++                FLUSH_ATTR();               /* attribute is complete */
++                state = ST_SELF_CLOSING_START;
++                ADV();
++            } else if (c == '>') {
++                FLUSH_ATTR();
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else {
++                /* WHATWG: parse error, reconsume in before-attr-name. */
++                FLUSH_ATTR();
++                state = ST_BEFORE_ATTR_NAME;
++            }
++            break;
++
++        case ST_SELF_CLOSING_START:
++            if (c == '>') {
++                self_closing = 1;
++                FLUSH_ATTR();               /* anything still pending */
++                EMIT_TAG();
++                state = ST_TEXT;
++                ADV();
++            } else {
++                /* WHATWG: parse error, reconsume in before-attr-name. */
++                FLUSH_ATTR();
++                state = ST_BEFORE_ATTR_NAME;
++            }
++            break;
++
++        case ST_MARKUP_DECL:
++            if (c == '-' && pos + 1 < len && html[pos + 1] == '-') {
++                state = ST_COMMENT;
++                comment_len = 0; comment_overflow = 0;
++                ADV_N(2);
++            } else if (wv_eq_ci(html, pos, len, "doctype")) {
++                state = ST_DOCTYPE;
++                comment_len = 0; comment_overflow = 0;
++                ADV_N(7);
++            } else if (c == '[' && pos + 6 < len &&
++                       html[pos + 1] == 'C' && html[pos + 2] == 'D' &&
++                       html[pos + 3] == 'A' && html[pos + 4] == 'T' &&
++                       html[pos + 5] == 'A' && html[pos + 6] == '[') {
++                state = ST_CDATA;
++                comment_len = 0; comment_overflow = 0;
++                ADV_N(7);
++            } else {
++                state = ST_BOGUS_COMMENT;
++                comment_len = 0; comment_overflow = 0;
++            }
++            break;
++
++        case ST_COMMENT:
++            if (c == '-' && pos + 2 < len && html[pos + 1] == '-' &&
++                html[pos + 2] == '>') {
++                EMIT_RAW(WV_T_COMMENT);
++                state = ST_TEXT;
++                ADV_N(3);
++            } else if (c == 0) {
++                CMNT_PUSH('?');
++                ADV();
++            } else {
++                CMNT_PUSH(c);
++                ADV();
++            }
++            break;
++
++        case ST_BOGUS_COMMENT:
++            if (c == '>') {
++                EMIT_RAW(WV_T_COMMENT);
++                state = ST_TEXT;
++                ADV();
++            } else if (c == 0) {
++                CMNT_PUSH('?');
++                ADV();
++            } else {
++                CMNT_PUSH(c);
++                ADV();
++            }
++            break;
++
++        case ST_DOCTYPE:
++            if (c == '>') {
++                EMIT_RAW(WV_T_DOCTYPE);
++                state = ST_TEXT;
++                ADV();
++            } else if (c == 0) {
++                CMNT_PUSH('?');
++                ADV();
++            } else {
++                CMNT_PUSH(c);
++                ADV();
++            }
++            break;
++
++        case ST_CDATA:
++            if (c == ']' && pos + 2 < len && html[pos + 1] == ']' &&
++                html[pos + 2] == '>') {
++                EMIT_RAW(WV_T_CDATA);
++                state = ST_TEXT;
++                ADV_N(3);
++            } else if (c == 0) {
++                CMNT_PUSH('?');
++                ADV();
++            } else {
++                CMNT_PUSH(c);
++                ADV();
++            }
++            break;
++        }
++    }
++
++    /* ---- EOF: flush whatever state we are in, then emit WV_T_EOF ---- */
++    switch (state) {
++    case ST_TEXT:
++        FLUSH_TEXT();
++        break;
++    case ST_TAG_OPEN:
++        /* WHATWG: emit '<' as text. */
++        FLUSH_TEXT();
++        text[0] = '<'; text_len = 1; tok_line = line; tok_col = col;
++        FLUSH_TEXT();
++        break;
++    case ST_END_TAG_OPEN:
++        /* WHATWG: emit "</" as text. */
++        FLUSH_TEXT();
++        text[0] = '<'; text[1] = '/'; text_len = 2;
++        tok_line = line; tok_col = col;
++        FLUSH_TEXT();
++        break;
++    case ST_TAG_NAME:
++    case ST_BEFORE_ATTR_NAME:
++    case ST_ATTR_NAME:
++    case ST_AFTER_ATTR_NAME:
++    case ST_BEFORE_ATTR_VALUE:
++    case ST_ATTR_VALUE_DQ:
++    case ST_ATTR_VALUE_SQ:
++    case ST_ATTR_VALUE_UNQ:
++    case ST_AFTER_ATTR_VALUE:
++    case ST_SELF_CLOSING_START:
++        FLUSH_ATTR();
++        EMIT_TAG();
++        break;
++    case ST_COMMENT:
++    case ST_BOGUS_COMMENT:
++        EMIT_RAW(WV_T_COMMENT);
++        break;
++    case ST_DOCTYPE:
++        EMIT_RAW(WV_T_DOCTYPE);
++        break;
++    case ST_CDATA:
++        EMIT_RAW(WV_T_CDATA);
++        break;
++    default:
++        break;
++    }
++
++    wv_push_token(a, WV_T_EOF, 0, 0, 0, 0, 0, 0, 0, line, col);
++    return (int)a->tok_count;
++}
+diff --git a/userspace/apps/webview/wv_html.h b/userspace/apps/webview/wv_html.h
+new file mode 100644
+index 0000000..887f77e
+--- /dev/null
++++ b/userspace/apps/webview/wv_html.h
+@@ -0,0 +1,108 @@
++/*
++ * wv_html.h — HTML tokeniser for the AuraLite web view (WEBVIEW_PLAN W1).
++ *
++ * Design constraints from the plan (D3, §2):
++ *   - The user stack is 64 KiB.  This tokeniser is a TABLE-DRIVEN STATE
++ *     MACHINE with an explicit loop: no recursion anywhere, so a hostile
++ *     document cannot overflow the stack.
++ *   - Bounded memory by construction: the caller supplies fixed-size
++ *     buffers (tokens, attributes, string pool).  When a limit is hit the
++ *     scan continues (so input is always consumed to EOF — no hangs) but
++ *     the data is dropped and `truncated` is set; the caller can diagnose
++ *     or proceed with what it got.
++ *   - Tolerance: every malformed input produces something usable.  All
++ *     real HTML is malformed.
++ *
++ * The tokeniser is self-contained C11 with no libc dependencies, so the
++ * same file compiles on the host (unit tests) and in AuraLite user space.
++ *
++ * Deliberate simplifications vs WHATWG HTML, documented so they are
++ * decisions rather than accidents:
++ *   - Character references are only the five named ones plus numeric
++ *     (&#NN; / &#xNN;), and a reference must end in ';' to be consumed.
++ *   - Names are normalised to lower case (as HTML requires); values are
++ *     kept verbatim except for character references.
++ *   - NUL bytes are replaced with U+FFFD, which the 8-bit font cannot
++ *     represent, so the replacement is '?' (0x3F).
++ *   - <!DOCTYPE ...> content and comment content are capped; CDATA is
++ *     accepted anywhere (foreign-content rule relaxed).
++ */
++
++#ifndef AURALITE_WV_HTML_H
++#define AURALITE_WV_HTML_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++/* ---- Limits (fixed-size buffers; exceeding one sets truncated=1) ---- */
++#define WV_MAX_TOKENS       2048
++#define WV_MAX_ATTRS        8192        /* total across all tokens */
++#define WV_MAX_ATTR_PER_TAG 63
++#define WV_MAX_NAME         127         /* tag / attribute name bytes */
++#define WV_MAX_ATTR_VALUE   511         /* attribute value bytes */
++#define WV_MAX_TEXT         2047        /* one text token's bytes */
++#define WV_MAX_COMMENT      4095
++#define WV_POOL_SIZE        65536       /* string storage for everything */
++
++/* ---- Token kinds ---- */
++typedef enum {
++    WV_T_TEXT = 0,      /* character data run */
++    WV_T_START,         /* <name attrs> or <name attrs/> */
++    WV_T_END,           /* </name> */
++    WV_T_COMMENT,       /* <!-- ... --> or bogus comment */
++    WV_T_DOCTYPE,       /* <!DOCTYPE ...> (content kept, not parsed) */
++    WV_T_CDATA,         /* <![CDATA[ ... ]]> */
++    WV_T_EOF
++} wv_tok_type;
++
++typedef struct {
++    wv_tok_type type;
++    uint32_t name_off;      /* offset of tag name in the pool; 0 = none */
++    uint32_t name_len;
++    uint32_t text_off;      /* offset of text content in the pool; 0 = none */
++    uint32_t text_len;
++    uint32_t attr_base;     /* index into arena->attrs[] */
++    uint32_t attr_count;
++    uint32_t self_closing;  /* 1 when the tag ended with '/>' */
++    uint32_t line, col;     /* 1-based position of the token start */
++} wv_token_t;
++
++typedef struct {
++    uint32_t name_off;
++    uint32_t name_len;
++    uint32_t value_off;     /* 0 + value_len 0 = attribute without a value */
++    uint32_t value_len;
++} wv_attr_t;
++
++/* The arena is the whole working state.  The caller provides the backing
++ * arrays (heap, static, or — for tiny test arenas — stack). */
++typedef struct {
++    wv_token_t *toks;
++    size_t      tok_cap;
++    size_t      tok_count;
++    wv_attr_t  *attrs;
++    size_t      attr_cap;
++    size_t      attr_count;
++    char       *pool;
++    size_t      pool_cap;
++    size_t      pool_used;
++    int         truncated;      /* 1 if any limit was hit during tokenising */
++} wv_arena_t;
++
++void wv_arena_init(wv_arena_t *a,
++                   wv_token_t *toks, size_t tok_cap,
++                   wv_attr_t  *attrs, size_t attr_cap,
++                   char       *pool,  size_t pool_cap);
++
++/* Tokenise html[0..len).  Returns the number of tokens (including the
++ * trailing WV_T_EOF), or -1 when arena or html is NULL.  On success the
++ * arena holds tok_count tokens; tokens are sorted in document order.
++ * `truncated` is set when any internal limit was exceeded; the result is
++ * still usable. */
++int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len);
++
++/* Accessors: strings are NUL-terminated inside the pool. */
++const char *wv_tok_str(const wv_arena_t *a, uint32_t off);
++const wv_attr_t *wv_tok_attr(const wv_arena_t *a, const wv_token_t *t, size_t i);
++
++#endif /* AURALITE_WV_HTML_H */
+-- 
+2.47.3
+

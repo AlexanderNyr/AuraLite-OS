@@ -2,7 +2,7 @@
  * test_wv_dom.c — host unit tests for the web view DOM builder
  * (WEBVIEW_PLAN phase W2).
  *
- * Links the REAL userspace/apps/webview/wv_dom.c + wv_html.c (never
+ * Links the REAL userspace/apps/gbrowser/wv_dom.c + wv_html.c (never
  * copies) and checks the plan's gate:
  *   - `<p>a<p>b` produces two sibling paragraphs, not nested ones;
  *   - `<b><i>x</b></i>` does not lose the text or corrupt the tree;
@@ -22,8 +22,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-#include "userspace/apps/webview/wv_html.h"
-#include "userspace/apps/webview/wv_dom.h"
+#include "userspace/apps/gbrowser/wv_html.h"
+#include "userspace/apps/gbrowser/wv_dom.h"
 
 static int failures = 0;
 #define CK(c) do { if (c) printf("PASS: %s\n", #c); \
