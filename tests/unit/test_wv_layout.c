@@ -136,6 +136,7 @@ static void test_wrap(void) {
         if (i < 19) html[p++] = ' ';
     }
     memcpy(html + p, "</p>", 4); p += 4;
+    html[p] = 0;   /* NUL-terminate: strlen() must not read past the end */
 
     int n = layout(html, 300);
     CK(n > 0);
