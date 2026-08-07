@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0–W3 COMPLETE ✅ · W4–W8 PLANNED 📋
+## Status: W0–W4 COMPLETE ✅ · W5–W8 PLANNED 📋
 
 This document answers:
 
@@ -341,18 +341,18 @@ it is.
 
 ---
 
-### Phase W4 — Painting
+### Phase W4 — Painting ✅ COMPLETE
 
 **Objective:** display list → pixels in the window.
 
 #### Tasks
 
-- [ ] Fill rectangles, draw borders, draw text runs through the PSF glyph
+- [x] Fill rectangles, draw borders, draw text runs through the PSF glyph
       rasteriser.
-- [ ] Synthesised bold (D7).
-- [ ] Clip every draw to the viewport, and skip boxes entirely outside it —
+- [x] Synthesised bold (D7).
+- [x] Clip every draw to the viewport, and skip boxes entirely outside it —
       the difference between scrolling a long page smoothly and not.
-- [ ] Scrolling by `memmove` of the retained buffer plus a repaint of the
+- [x] Scrolling by `memmove` of the retained buffer plus a repaint of the
       exposed band, which §1 measured at 0.068 ms.
 
 #### Test gate
@@ -365,6 +365,17 @@ it is.
 #### Deliverable
 
 `patches/WEB_W4_paint.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `userspace/apps/webview/wv_paint.{h,c}` | Clip-aware rect/glyph/text drawing; the project's PSF2 VGA 8×16 font embedded as data (same blob the kernel console uses); synthesised bold = double-strike (D7); underline at the glyph baseline; display-list run culls any box/word entirely outside the viewport before touching a pixel |
+| Scrolling | `wv_paint_scroll()` memmoves the retained buffer; `wv_paint_band()` repaints only the exposed band, with **boxes clipped to the band** (a box straddling the band edge must not erase content painted above it) |
+| Host gate | `tests/unit/test_wv_paint.c` — **42 checks, 0 failures**: clip rects; glyph 'A' compared pixel-by-pixel against the font bitmap; bold/underline pixels; the display list's text appears exactly where W3 said (first ink pixel of 'a'/'b' at the expected positions); scroll equivalence (memmove+band == full repaint, including a 2 000-line page with an opaque `<body>` box — the regression that used to erase content); **10 000-line page: one scroll step in 144 µs** (budget 7 500 µs); **the reference hash: a fixed document hashes to 0xFC12ACDC — stored in the test, so a rendering change is a deliberate act**; off-screen culling; 500 fuzz iterations |
+| QEMU gate | `/apps/webview` renders a real 842 px page (h1, bold/underline/link, list, hr, canvas, 8 paragraphs) and prints `paint smoke: PASS (hash=0xfc12acdc)` — **the guest hash equals the host reference**, proving determinism — and `paint scroll smoke: PASS`; `test_webview.sh` asserts both (13 checks now) |
+| Bug found by the tests | Band repaints drew opaque boxes whole, erasing content above the band (only visible once the page had a `<body>` background) — fixed by clipping boxes to the band; regression test added |
+| Size | `webview.elf` ~180 KB (painter adds ~24 KB incl. the 4 KB font) — inside `SPAWN_MAX_IMAGE` |
 
 ---
 

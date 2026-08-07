@@ -1,7 +1,7 @@
 # AuraLite OS Web View (`/apps/webview`)
 
-**Status:** Phases W0–W3 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
-scaffold, HTML tokeniser, DOM and block layout complete. W4 (painting) is next.
+**Status:** Phases W0–W4 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+scaffold, HTML tokeniser, DOM, block layout and painting complete. W5 (inline CSS) is next.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -84,7 +84,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W1 | HTML tokeniser (state machine, no recursion) | ✅ complete (2026-08-07) |
 | W2 | DOM (flat node array, depth cap, implied structure) | ✅ complete (2026-08-07) |
 | W3 | Block layout → display list (iterative, 64 KiB-safe) | ✅ complete (2026-08-07) |
-| W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
+| W4 | Painting: rects, borders, glyphs, clipped scroll | ✅ complete (2026-08-07) |
 | W5 | Inline CSS subset (D4) | 📋 planned |
 | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
 | W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
@@ -163,3 +163,29 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
   whitespace, `<pre>`/`<br>`, styles, placeholders, **5 000 boxes in
   1 064 µs (budget 7 500 µs)**, 1 000 fuzz iterations. In-guest:
   `layout smoke` asserted by `test_webview.sh`.
+
+## 9. Painting (W4)
+
+`userspace/apps/webview/wv_paint.{h,c}` turns the display list into pixels
+— the first phase with something on the screen.
+
+- The project's PSF2 VGA 8×16 font is embedded as data (the same blob the
+  kernel console uses); glyphs are rasterised MSB-first with clip-aware
+  row/column skipping.
+- Synthesised bold (plan D7): each glyph drawn twice, one pixel apart.
+  Underline: a bar at the glyph baseline.
+- Culling: a box or word whose page y falls entirely outside the viewport
+  is skipped before a single pixel is touched.
+- **Scrolling** (the 0.068 ms path): `wv_paint_scroll()` memmoves the
+  retained buffer; `wv_paint_band()` repaints only the exposed band, with
+  boxes clipped to the band so a box straddling the band edge cannot erase
+  content painted above it.
+- **The hash gate**: `wv_paint_hash()` (FNV-1a) pins a fixed document to
+  reference `0xFC12ACDC` in the host test, and `/apps/webview` prints the
+  same value at boot (`paint smoke: PASS`) — the guest and host agree, so
+  a rendering change is a deliberate act with an updated expectation.
+- Gate: `tests/unit/test_wv_paint.c` — 42 host checks, 0 failures,
+  including scroll equivalence on a 2 000-line page with an opaque
+  `<body>` box, and a 10 000-line page scrolling in **144 µs** (budget
+  7 500 µs). In-guest: `paint smoke` + `paint scroll smoke`, asserted by
+  `test_webview.sh`.

@@ -31,6 +31,7 @@
 #include "wv_html.h"
 #include "wv_dom.h"
 #include "wv_layout.h"
+#include "wv_paint.h"
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
 #define VIEW_W 800
@@ -64,63 +65,103 @@ static uint32_t frame_limit(void) {
     return v;
 }
 
-/* ---- the "document" this phase can render ---------------------------------
+/* ---- W4: the real page pipeline ----------------------------------------
  *
- * W0 draws a standing page, not a parsed one: a header band, some block
- * rectangles standing in for paragraphs, and (through the window API, which
- * has the PSF rasteriser) the honest text the plan requires.  From W4 the
- * text will live in this buffer, rasterised by webview's own glyph path; the
- * window-API text here is scaffold, not the renderer.
- */
+ * The sample page is the SAME document the host test pins to reference
+ * hash 0x973F0DC8 at scroll 0 — the paint gate lives in both places. */
 
-static void draw_page(uint32_t *buf, int w, int h, int scroll) {
-    /* Paper background. */
-    for (int y = 0; y < h; y++) {
-        uint32_t *row = buf + (size_t)y * w;
-        for (int x = 0; x < w; x++) row[x] = 0x00FDFDF7;
-    }
+static const char k_page_html[] =
+    "<body><h1>AuraLite WebView</h1>"
+    "<p>This is a <b>rendered</b> page: a <a href=\"http://example.com\">link</a>, <u>underline</u>, and a list.</p>"
+    "<ul><li>one<li>two<li>three</ul>"
+    "<hr>"
+    "<p>The renderer is 2D: pixels are written into a buffer and presented with ag_blit. "
+    "The plan measured a full-page blit at 0.125 ms against 3.7 ms for two hundred GL triangles, "
+    "so OpenGL appears in exactly one phase \u2014 canvas.</p>"
+    "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+    "ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.</p>"
+    "<p>Scroll with the wheel or arrow keys. The paint path is hash-checked: a change in rendering "
+    "is a deliberate act.</p>"
+    "<canvas width=64 height=48></canvas>"
+    "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+    "ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco "
+    "laboris nisi ut aliquip ex ea commodo consequat.</p>"
+    "<p>The user stack is 64 KiB, so the tokeniser, the DOM and the layout walk are iterative by "
+    "design with explicit depth caps \u2014 a 10 000-deep document is built on it every boot.</p>"
+    "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor "
+    "incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud "
+    "exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure "
+    "dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>"
+    "<p>Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt "
+    "mollit anim id est laborum. Sed ut perspiciatis unde omnis iste natus error sit voluptatem "
+    "accusantium doloremque laudantium.</p>"
+    "<p>Scrolling repaints only the exposed band: the retained buffer is memmoved and the "
+    "gap is drawn from the display list, which the plan measured at 0.068 ms.</p>"
+"</body>";
 
-    /* Header band (moves with the page). */
-    int hb_y = -scroll;
-    if (hb_y < h && hb_y > -48) {
-        int top = hb_y < 0 ? 0 : hb_y;
-        int bot = hb_y + 48 < h ? hb_y + 48 : h;
-        for (int y = top; y < bot; y++) {
-            uint32_t *row = buf + (size_t)y * w;
-            for (int x = 0; x < w; x++) row[x] = 0x002F60C0;
-        }
-    }
+static wv_layout_t lay;
+static wv_paint_t  P;
+static int32_t max_scroll = 0;
 
-    /* Block "paragraphs": rectangles at increasing depth, each with a
-     * contrasting rule so scrolling is visibly a page move. */
-    static const uint32_t cols[5] = {
-        0x00E8E0D0, 0x00DDE8F0, 0x00E8F0E0, 0x00F0E8E8, 0x00E0E8E8,
-    };
-    for (int i = 0; i < 5; i++) {
-        int py = 64 + i * 90 - scroll;          /* paragraph top */
-        int ph = 60;
-        if (py + ph < 0 || py >= h) continue;   /* clipped out entirely */
-        int top = py < 0 ? 0 : py;
-        int bot = py + ph < h ? py + ph : h;
-        int pw = 720 - i * 40;
-        for (int y = top; y < bot; y++) {
-            uint32_t *row = buf + (size_t)y * w;
-            for (int x = 40; x < 40 + pw && x < w; x++) row[x] = cols[i];
-        }
-        /* rule under the block: full width so scroll motion is obvious */
-        if (py + ph >= 0 && py + ph < h) {
-            uint32_t *row = buf + (size_t)(py + ph) * w;
-            for (int x = 0; x < w; x++) row[x] = 0x00B0A898;
-        }
-    }
+/* Tokenise + build DOM + layout + paint context, once.  All working
+ * arenas are static (bounded) — nothing on the 64 KiB user stack. */
+static void page_build(void) {
+    static wv_token_t   tt[2048];
+    static wv_attr_t    ta[2048];
+    static char         tp[65536];
+    static wv_dom_node_t dn[2048];
+    static wv_attr_t    dda[2048];
+    static char         dpp[65536];
+    static uint32_t     stk[512];
+    static wv_disp_t    di[4096];
+    static char         lpo[131072];
+    static wv_blk_t     lb[520];
+    static wv_inl_t     li[520];
+    static wv_walk_t    lw[520];
 
-    /* Scroll position indicator on the paper margin. */
-    if (h > 16) {
-        for (int y = 0; y < h; y += 8) {
-            buf[(size_t)y * w + 12] = 0x00C0B0A0;
-            buf[(size_t)y * w + 13] = 0x00C0B0A0;
-        }
-    }
+    wv_arena_t toks_a;
+    wv_arena_init(&toks_a, tt, 2048, ta, 2048, tp, sizeof(tp));
+    wv_html_tokenize(&toks_a, k_page_html, strlen(k_page_html));
+    wv_dom_t dom;
+    wv_dom_init(&dom, dn, 2048, dda, 2048, dpp, sizeof(dpp), stk, 512);
+    wv_dom_build(&dom, &toks_a, 512);
+    wv_layout_init(&lay, di, 4096, lpo, sizeof(lpo), lb, 520, li, 520, lw, 520);
+    wv_layout_run(&lay, &dom, VIEW_W);
+    wv_paint_init(&P, page, VIEW_W, VIEW_H);
+    max_scroll = lay.content_h > (uint32_t)VIEW_H
+                     ? (int32_t)lay.content_h - VIEW_H : 0;
+    printf("[webview] page rendered (content_h=%u, max_scroll=%d)\n",
+           lay.content_h, max_scroll);
+}
+
+/* The W4 smoke: paint at scroll 0 and compare the buffer hash against the
+ * stored reference — a change in rendering is a deliberate act. */
+static void paint_smoke(void) {
+    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
+    wv_paint_run(&P, &lay, 0);
+    uint32_t h = wv_paint_hash(page, VIEW_W, VIEW_H);
+    int ok = (h == 0xFC12ACDCu);
+    printf("[webview] paint smoke: %s (hash=0x%08x)\n", ok ? "PASS" : "FAIL", h);
+}
+
+/* The W4 scroll smoke: memmove-scroll + band repaint must equal a full
+ * repaint at the new offset (the 0.068 ms path from the plan). */
+static void scroll_smoke(void) {
+    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
+    wv_paint_run(&P, &lay, 0);
+    int32_t bt, bh;
+    wv_paint_scroll(&P, 40, &bt, &bh);
+    wv_paint_rect(&P, 0, bt, VIEW_W, bh, 0x00FFFFFFu);
+    wv_paint_band(&P, &lay, 40, bt, bh);
+    uint32_t h_scroll = wv_paint_hash(page, VIEW_W, VIEW_H);
+
+    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
+    wv_paint_run(&P, &lay, 40);
+    uint32_t h_full = wv_paint_hash(page, VIEW_W, VIEW_H);
+
+    int ok = (h_scroll == h_full);
+    printf("[webview] paint scroll smoke: %s (memmove+band %s full repaint)\n",
+           ok ? "PASS" : "FAIL", ok ? "==" : "!=");
 }
 
 /* Present the page buffer into the window. */
@@ -129,34 +170,34 @@ static void present(void) {
     frames_done++;
 }
 
-/* Repaint: redraw the page, present it, update the status strip. */
+/* Repaint: full page from the display list, present, update the strip. */
 static void repaint(void) {
-    draw_page(page, VIEW_W, VIEW_H, scroll_y);
+    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);   /* paper */
+    wv_paint_run(&P, &lay, scroll_y);
     present();
 
     char status[96];
     snprintf(status, sizeof(status),
-             "W0 scaffold - scroll %d px - frames %u",
+             "W4 renderer - scroll %d px - frames %u",
              scroll_y, frames_done);
     ag_fill_rect(wid, 0, VIEW_H, WIN_W, 40, 0x00202028);
     ag_draw_text(wid, 8, VIEW_H + 12, status, 0x00DDEEFF);
     ag_render_now();
 }
 
-/* The honest statement the plan's W0 objective asks the window to make. */
-static void paint_limitations(void) {
-    ag_fill_rect(wid, 0, 0, WIN_W, WIN_H, 0x00FFFFFF);
-    ag_draw_text(wid, 16, 12, "AuraLite WebView - W0 scaffold", 0x00000000);
-    ag_draw_text(wid, 16, 32, "This build can:", 0x00000000);
-    ag_draw_text(wid, 16, 52, "  - open a window and run an event loop", 0x00303030);
-    ag_draw_text(wid, 16, 72, "  - render a pixel buffer and present it with ag_blit()", 0x00303030);
-    ag_draw_text(wid, 16, 92, "  - scroll a standing page (wheel) and quit (q / Esc / close)", 0x00303030);
-    ag_draw_text(wid, 16, 116, "This build cannot:", 0x00000000);
-    ag_draw_text(wid, 16, 136, "  - no HTTPS (TLS is INTERNET_PLAN; see docs/webview.md)", 0x00603020);
-    ag_draw_text(wid, 16, 156, "  - no JavaScript (WEBVIEW_PLAN decision D5, permanent)", 0x00603020);
-    ag_draw_text(wid, 16, 176, "  - no images (PNG/JPEG decoders are future phases)", 0x00603020);
-    ag_draw_text(wid, 16, 196, "  - no proportional fonts (PSF 8x16 monospace only)", 0x00603020);
-    ag_draw_text(wid, 16, 220, "Scrolling in 5 s; then the blit benchmark runs.", 0x00404040);
+/* Scroll via memmove of the retained buffer + repaint of the exposed band
+ * only (the plan's 0.068 ms path). */
+static void scroll_to(int new_scroll) {
+    if (new_scroll < 0) new_scroll = 0;
+    if (new_scroll > max_scroll) new_scroll = max_scroll;
+    int delta = new_scroll - scroll_y;
+    if (delta == 0) return;
+    scroll_y = new_scroll;
+    int32_t bt, bh;
+    wv_paint_scroll(&P, delta, &bt, &bh);
+    wv_paint_rect(&P, 0, bt, VIEW_W, bh, 0x00FFFFFFu);      /* paper band */
+    wv_paint_band(&P, &lay, scroll_y, bt, bh);
+    present();
 }
 
 int main(void) {
@@ -179,9 +220,11 @@ int main(void) {
     ag_window_show(wid);
     printf("[webview] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
 
-    paint_limitations();
-    ag_render_now();
-    printf("[webview] limitations painted\n");
+    page_build();
+    paint_smoke();
+    scroll_smoke();
+    repaint();
+    printf("[webview] page rendered and presented\n");
 
     /* ---- Phase W0 benchmark: the presentation path, measured. ------------
      * The plan (§1) says a full-page blit at 800x600 is ~0.125 ms on the
@@ -370,17 +413,14 @@ int main(void) {
                     printf("[webview] quit via key\n");
                     goto done;
                 }
-                if (ev.key == 0x102 /* arrow up */) { scroll_y -= 16; repaint(); }
-                if (ev.key == 0x103 /* arrow down */) { scroll_y += 16; repaint(); }
+                if (ev.key == 0x102 /* arrow up */) { scroll_to(scroll_y - 16); }
+                if (ev.key == 0x103 /* arrow down */) { scroll_to(scroll_y + 16); }
                 break;
             case AG_EVT_MOUSE_WHEEL: {
                 /* The kernel GUI ABI delivers the wheel delta in ev.key
                  * (gui.c: gui_event_t.key = ev->wheel). */
                 int delta = (int)(int32_t)ev.key;
-                int new_scroll = scroll_y - delta * 24;
-                if (new_scroll < 0) new_scroll = 0;
-                if (new_scroll > 600) new_scroll = 600;
-                if (new_scroll != scroll_y) { scroll_y = new_scroll; repaint(); }
+                scroll_to(scroll_y - delta * 24);
                 break;
             }
             case AG_EVT_PAINT:

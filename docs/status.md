@@ -165,7 +165,7 @@ Legend:
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W3): scaffold window + heap page buffer via `ag_blit()` (measured budget), `/tmp/webview.frames` limit; W1 tokeniser (`wv_html` — 18-state, arena-bounded, 122 checks); W2 DOM (`wv_dom` — flat node array, 512-deep cap, implicit closes, reconciliation; 65 checks; 10 000-deep doc in-guest on the 64 KiB stack); W3 block layout (`wv_layout` — display list, iterative walk, UA stylesheet, whitespace collapsing + word wrap, inline styles, `<canvas>` block; 79 checks; 5 000 boxes in 1 064 µs host / 10 101 µs QEMU-TCG, inside the W0 budget). Painting/CSS are W4–W5. See `docs/webview.md`. |
+| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W4): scaffold + measured blit budget + `/tmp/webview.frames`; W1 tokeniser (122 checks); W2 DOM (65 checks; 10 000-deep doc on the 64 KiB stack); W3 block layout → display list (79 checks; 5 000 boxes in 1 064 µs host / 10 101 µs QEMU-TCG); **W4 painting** (`wv_paint` — PSF2 VGA 8×16 glyphs, synthesised bold, viewport culling, memmove+band scrolling with band-clipped boxes; 42 checks incl. the **reference hash 0xFC12ACDC** and 144 µs scroll steps on a 10 000-line page; guest `paint smoke`/`paint scroll smoke` PASS with the same hash). CSS is W5. See `docs/webview.md`. |
 
 ## Known low-priority limitations
 

@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W4 — Painting] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W4: display list → pixels. The first phase with
+something on the screen.
+
+- **`userspace/apps/webview/wv_paint.{h,c}`** — clip-aware rect/glyph/text
+  drawing; the project's PSF2 VGA 8×16 font embedded as data (same blob as
+  the kernel console); synthesised bold = double-strike (plan D7);
+  underline at the glyph baseline; display-list runs cull anything fully
+  outside the viewport.
+- **Scrolling**: `wv_paint_scroll()` memmoves the retained buffer and
+  `wv_paint_band()` repaints only the exposed band — **boxes are clipped
+  to the band**, so a box straddling the band edge cannot erase content
+  painted above it.
+- **Host gate**: `tests/unit/test_wv_paint.c` — 42 checks, 0 failures:
+  clip rects; glyph 'A' pixel-compared against the font bitmap; bold and
+  underline pixels; text lands exactly where the display list says;
+  scroll equivalence (memmove+band == full repaint on a 2 000-line page
+  with an opaque `<body>` box); **a 10 000-line page scrolls in 144 µs**
+  (budget 7 500 µs); **the reference hash gate: a fixed document hashes
+  to 0xFC12ACDC**; off-screen culling; 500 fuzz iterations.
+- **QEMU gate**: `/apps/webview` renders a real 842 px page and prints
+  `paint smoke: PASS (hash=0xfc12acdc)` — the guest hash equals the host
+  reference, proving determinism — and `paint scroll smoke: PASS`.
+  `test_webview.sh` asserts both (13 checks).
+- **Bug caught by the tests**: band repaints drew opaque boxes whole,
+  erasing content above the band — only visible once the page had a
+  `<body>` background; fixed by clipping boxes to the band.
+- `webview.elf` ~180 KB; `make test-unit` green.
+
 ## [WebView Phase W3 — Block layout] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W3: a DOM → a list of positioned boxes (a display

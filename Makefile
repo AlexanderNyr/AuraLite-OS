@@ -832,17 +832,24 @@ $(USER_BUILD)/wv_dom.o: userspace/apps/webview/wv_dom.c userspace/apps/webview/w
 $(USER_BUILD)/wv_layout.o: userspace/apps/webview/wv_layout.c userspace/apps/webview/wv_layout.h \
                           userspace/apps/webview/wv_dom.h userspace/apps/webview/wv_html.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/wv_paint.o: userspace/apps/webview/wv_paint.c userspace/apps/webview/wv_paint.h \
+                          userspace/apps/webview/wv_layout.h \
+                          drivers/framebuffer/psf2_default_font.inc
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-# webview links the tokeniser + DOM builder + layout; the generic %.elf
-# pattern rule does not know about them, so give explicit prerequisites.
+# webview links the tokeniser + DOM builder + layout + painter; the
+# generic %.elf pattern rule does not know about them, so give explicit
+# prerequisites.
 $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
                            $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+                           $(USER_BUILD)/wv_paint.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
 	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
+	      $(USER_BUILD)/wv_paint.o \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
-	@echo "[link] $@ (wv_html + wv_dom + wv_layout)"
+	@echo "[link] $@ (wv_html + wv_dom + wv_layout + wv_paint)"
 $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1228,7 +1235,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_ahttp \
                 $(BUILD_DIR)/test_wv_html \
                 $(BUILD_DIR)/test_wv_dom \
-                $(BUILD_DIR)/test_wv_layout
+                $(BUILD_DIR)/test_wv_layout \
+                $(BUILD_DIR)/test_wv_paint
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1353,6 +1361,24 @@ $(BUILD_DIR)/test_wv_layout: tests/unit/test_wv_layout.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	           tests/unit/test_wv_layout.c userspace/apps/webview/wv_layout.c \
+	           userspace/apps/webview/wv_dom.c \
+	           userspace/apps/webview/wv_html.c -o $@
+
+# Web view painter (WEBVIEW_PLAN W4): the REAL userspace sources are
+# compiled into the host test, never copies.
+$(BUILD_DIR)/test_wv_paint: tests/unit/test_wv_paint.c \
+                            userspace/apps/webview/wv_paint.c \
+                            userspace/apps/webview/wv_paint.h \
+                            userspace/apps/webview/wv_layout.c \
+                            userspace/apps/webview/wv_layout.h \
+                            userspace/apps/webview/wv_dom.c \
+                            userspace/apps/webview/wv_dom.h \
+                            userspace/apps/webview/wv_html.c \
+                            userspace/apps/webview/wv_html.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	           tests/unit/test_wv_paint.c userspace/apps/webview/wv_paint.c \
+	           userspace/apps/webview/wv_layout.c \
 	           userspace/apps/webview/wv_dom.c \
 	           userspace/apps/webview/wv_html.c -o $@
 
