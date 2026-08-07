@@ -50,6 +50,10 @@ PAGE2 = (b"<!doctype html><html><head><title>W6 second</title></head>"
 CHUNKED_BODY = b"<!doctype html><html><body><h1>WEBVIEW_W6_CHUNKED</h1>"
 BIG_BODY = (b"<!doctype html><html><body><h1>WEBVIEW_W6_BIG</h1>"
             b"<p>" + b"lorem ipsum dolor sit amet " * 4000 + b"</p></body>")
+CANVAS_PAGE = (b"<!doctype html><html><body><h1>WEBVIEW_W6_CANVAS</h1>"
+               b"<p>Text and a 3D cube:</p>"
+               b"<canvas width=64 height=48 data-scene=\"cube\"></canvas>"
+               b"</body>")
 
 def chunked(body):
     out = b""
@@ -68,6 +72,9 @@ def handle(c):
         path = parts[1] if len(parts) > 1 else "/"
         if path == "/page2.html":
             body = PAGE2
+            resp = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
+        elif path == "/canvas.html":
+            body = CANVAS_PAGE
             resp = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n" % len(body) + body
         elif path == "/chunked":
             resp = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
@@ -99,7 +106,7 @@ sleep 1
 il_send_delay 8
 il_send "write /tmp/webview.url http://10.0.2.2:$PORT/"
 il_send_delay 1
-il_send "write /tmp/webview.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big"
+il_send "write /tmp/webview.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big|nav http://10.0.2.2:$PORT/canvas.html"
 il_send_delay 1
 il_send "run webview"
 
@@ -130,6 +137,11 @@ il_assert_no_grep "$LOG" "https unsupported.*chunked"                    "chunke
 # 5) growing buffer: > 16 KB page received in full
 il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/big" \
     "big page fetched"
+
+# 6) W7: a page containing a <canvas data-scene="cube"> renders text AND 3D
+il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/canvas.html" \
+    "canvas page fetched"
+il_assert_grep "$LOG" "canvas: rendered 64x48 cube"          "GL canvas rendered in-guest"
 
 il_assert_no_grep "$LOG" "EXCEPTION|kernel panic|triple fault"           "no kernel fault"
 

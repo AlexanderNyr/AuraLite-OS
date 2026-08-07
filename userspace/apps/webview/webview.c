@@ -36,6 +36,7 @@
 #include "wv_css.h"
 #include "wv_url.h"
 #include "wv_http.h"
+#include "wv_canvas.h"
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
 #define VIEW_W 800
@@ -140,6 +141,11 @@ static int       on_page = 0;          /* 1 = the demo page, 0 = a loaded page *
 static char      last_cmd[WV_URL_MAX_URL + 64] = "";
 static char      current_url_str[WV_URL_MAX_URL] = "";   /* base for links */
 
+/* W7: the rendered <canvas> of the current page (rendered once at load;
+ * GL is NOT on the paint critical path). */
+static uint32_t *cv_px = 0;
+static int       cv_w = 0, cv_h = 0, cv_valid = 0;
+
 /* page-build arenas, global so load_html() can rebuild them */
 static wv_token_t    g_tt[2048];
 static wv_attr_t     g_ta[2048];
@@ -181,6 +187,35 @@ static void page_load_html(const char *html, size_t len) {
                      ? (int32_t)lay.content_h - VIEW_H : 0;
     scroll_y = 0;
     on_page = 0;
+
+    /* W7: render every <canvas data-scene="cube"> box once, into the
+     * cached slot.  The cost is measured and printed. */
+    if (cv_px) { free(cv_px); cv_px = 0; }
+    cv_valid = 0;
+    for (size_t i = 0; i < lay.item_count; i++) {
+        const wv_disp_t *it = &lay.items[i];
+        if (it->type != WV_D_BOX || it->scene == 0) continue;
+        int w = (int)it->w, h = (int)it->h;
+        if (w < 8 || h < 8 || w > 256 || h > 256) {
+            printf("[webview] canvas: skip oversized %dx%d\n", w, h);
+            continue;
+        }
+        uint32_t *px = malloc((size_t)w * (size_t)h * 4);
+        if (!px) continue;
+        long us = -1;
+        if (wv_canvas_render_cube(px, w, h, wid, &us) != 0) {
+            free(px);
+            printf("[webview] canvas: render failed %dx%d\n", w, h);
+            continue;
+        }
+        if (cv_px) free(cv_px);
+        cv_px = px;
+        cv_w = w;
+        cv_h = h;
+        cv_valid = 1;
+        printf("[webview] canvas: rendered %dx%d cube in %ld us\n", w, h, us);
+        break;   /* one canvas per page is enough for the built-in scenes */
+    }
 }
 
 /* Fetch http:// URL and load its body.  Returns 0 on success, an errno-ish
@@ -469,6 +504,27 @@ static void css_smoke(void) {
            ok ? "PASS" : "FAIL", h_css, h_plain);
 }
 
+/* The W7 smoke: render the built-in cube scene into a buffer and blit it
+ * into the page — the page hash must change, and the cost is recorded
+ * (the number the plan's §1 table was missing). */
+static void canvas_smoke(void) {
+    static uint32_t cb[64 * 48];
+    long us = -1;
+    int rc = wv_canvas_render_cube(cb, 64, 48, wid, &us);
+    if (rc != 0) {
+        printf("[webview] canvas smoke: FAIL (render rc=%d)\n", rc);
+        return;
+    }
+    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
+    wv_paint_run(&P, &lay, 0);
+    uint32_t h_before = wv_paint_hash(page, VIEW_W, VIEW_H);
+    wv_canvas_blit(page, VIEW_W, VIEW_H, cb, 64, 48, 24, 320, 0);
+    uint32_t h_after = wv_paint_hash(page, VIEW_W, VIEW_H);
+    int ok = (h_before != h_after);
+    printf("[webview] canvas smoke: %s (64x48 cube in %ld us, hash %08x -> %08x)\n",
+           ok ? "PASS" : "FAIL", us, h_before, h_after);
+}
+
 /* The W4 scroll smoke: memmove-scroll + band repaint must equal a full
  * repaint at the new offset (the 0.068 ms path from the plan). */
 static void scroll_smoke(void) {
@@ -528,6 +584,18 @@ static int chrome_url_hit(int32_t x, int32_t y) {
 static void repaint(void) {
     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);   /* paper */
     wv_paint_run(&P, &lay, scroll_y);
+    if (cv_valid) {
+        /* composite the cached GL canvas into its box (clipped, scrolled
+         * with the page — wv_canvas_blit handles both) */
+        for (size_t i = 0; i < lay.item_count; i++) {
+            const wv_disp_t *it = &lay.items[i];
+            if (it->type == WV_D_BOX && it->scene != 0) {
+                wv_canvas_blit(page, VIEW_W, VIEW_H, cv_px, cv_w, cv_h,
+                               it->x, it->y, scroll_y);
+                break;
+            }
+        }
+    }
     present();
 
     char status[96];
@@ -585,6 +653,7 @@ int main(void) {
     on_page = 1;
     paint_smoke();
     css_smoke();
+    canvas_smoke();
     scroll_smoke();
     repaint();
     printf("[webview] page rendered and presented\n");

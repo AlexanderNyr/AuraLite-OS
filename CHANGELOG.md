@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W7 — `<canvas>` with OpenGL] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W7: the phase OpenGL is actually for — a page can
+host 3D content, with GL kept off the paint critical path.
+
+- **`userspace/apps/webview/wv_canvas.{h,c}`** — the only web-view module
+  that includes GL headers. `<canvas data-scene="cube">` becomes a normal
+  layout box; the built-in cube scene (the /glcube geometry) renders into
+  an FBO (G12: colour texture + depth renderbuffer), is read back with
+  glReadPixels (flipped from GL's bottom-first rows) and composited with
+  `wv_canvas_blit()` — clipped to the page, scrolled with it, off-screen
+  boxes cost a bounds check only.
+- **GL is NOT on the critical path**: the scene renders ONCE at page load
+  into a cached buffer; repaint only blits it. A page without a canvas
+  never touches libgl — the W4 reference hash (0x4D394D5C) is unchanged.
+- **Measured cost** (the number the plan's §1 table was missing):
+  64×48 cube in **~58 µs on the host**, sub-tick under QEMU TCG.
+- **Host gate**: `tests/unit/test_wv_canvas.c` — 21 checks, 0 failures,
+  linking the real wv_canvas.c against the real libgl sources: cube faces
+  visible, **two renders byte-identical** (determinism), invalid sizes
+  refused, blit clipping (exact placement, scroll, off-screen, edges),
+  2 000 fuzz blits.
+- **QEMU gate**: `canvas smoke: PASS (64x48 cube, hash 4d394d5c ->
+  8a6c0574)` — the composited canvas changes the page. The networking
+  test gained `/canvas.html` (text + `<canvas data-scene="cube">`): the
+  guest prints `canvas: rendered 64x48 cube`. 15 assertions across the
+  two cases, all green.
+- No JavaScript (D5): a page can only *ask* for a scene.
+- `webview.elf` ~374 KB (libgl adds ~186 KB) — inside `SPAWN_MAX_IMAGE`;
+  the size budget is a named W8 consideration.
+
 ## [WebView Phase W6 — Navigation and networking] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W6: the web view becomes a usable browser — links,

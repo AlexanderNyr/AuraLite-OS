@@ -1,7 +1,7 @@
 # AuraLite OS Web View (`/apps/webview`)
 
-**Status:** Phases W0–W6 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
-scaffold, tokeniser, DOM, layout, painting, inline CSS and navigation complete. W7 (`<canvas>`) is next.
+**Status:** Phases W0–W7 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+all phases complete except W8 (retire-or-keep gbrowser).
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -87,7 +87,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W4 | Painting: rects, borders, glyphs, clipped scroll | ✅ complete (2026-08-07) |
 | W5 | Inline CSS subset (D4) | ✅ complete (2026-08-07) |
 | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | ✅ complete (2026-08-07) |
-| W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
+| W7 | `<canvas>` with an OpenGL context via FBO | ✅ complete (2026-08-07) |
 | W8 | Retire or keep `gbrowser` | 📋 planned |
 
 ## 6. The tokeniser (W1)
@@ -236,3 +236,25 @@ The web view is now a usable (if humble) browser:
 - Kernel note: the legacy TCP path can drop the last bytes on FIN (a
   259-byte body arrived as 256); the web view falls back to rendering the
   partial body rather than an error page.
+
+## 12. `<canvas>` with OpenGL (W7)
+
+The only place in the web view where GL is used (plan D1 — "building one
+that can host OpenGL content is the right reason"):
+
+- `<canvas width height data-scene="cube">` becomes a normal layout box;
+  `wv_canvas.c` (the only GL-importing module) renders the built-in cube
+  scene into an FBO (G12) and reads it back with glReadPixels.
+- **One-shot render at page load** into a cached buffer: GL is NOT on the
+  paint critical path. A page without a canvas never touches libgl — the
+  W4 demo-page reference hash is unchanged. Per frame the canvas costs
+  only a clipped blit, scrolled with the page.
+- Measured: 64×48 cube in ~58 µs on the host (sub-tick in QEMU TCG) —
+  the number the plan's §1 table was missing.
+- No JavaScript (D5): a page can only *ask* for a scene via
+  `data-scene`, it cannot drive the canvas imperatively.
+- Gate: `tests/unit/test_wv_canvas.c` — 21 host checks (byte-identical
+  re-renders, face colours visible, blit clipping incl. off-screen and
+  scroll, 2 000 fuzz blits); in-guest `canvas smoke: PASS` and a
+  `/canvas.html` page in the networking test that renders text AND a 3D
+  cube on one page.

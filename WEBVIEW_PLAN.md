@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0–W6 COMPLETE ✅ · W7–W8 PLANNED 📋
+## Status: W0–W7 COMPLETE ✅ · W8 PLANNED 📋
 
 This document answers:
 
@@ -462,20 +462,20 @@ it is.
 
 ---
 
-### Phase W7 — `<canvas>` with an OpenGL context
+### Phase W7 — `<canvas>` with an OpenGL context ✅ COMPLETE
 
 **Objective:** the phase OpenGL is actually for.
 
 #### Tasks
 
-- [ ] `<canvas width= height=>` becomes a box in the layout, backed by an FBO
+- [x] `<canvas width= height=>` becomes a box in the layout, backed by an FBO
       (GL phase G12).
-- [ ] A tiny scripting-free binding: `<canvas data-scene="cube">` selects one
+- [x] A tiny scripting-free binding: `<canvas data-scene="cube">` selects one
       of a handful of built-in scenes. **There is no JavaScript** (D5), so the
       page cannot drive the canvas imperatively — it can only ask for a scene.
-- [ ] The canvas renders through libgl into its FBO, and the result is
+- [x] The canvas renders through libgl into its FBO, and the result is
       composited into the page like any other box.
-- [ ] Its cost is measured and recorded, so the §1 table gains the one number
+- [x] Its cost is measured and recorded, so the §1 table gains the one number
       it is missing: what a GL canvas costs inside a page.
 
 #### Test gate
@@ -488,6 +488,25 @@ it is.
 #### Deliverable
 
 `patches/WEB_W7_canvas.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `userspace/apps/webview/wv_canvas.{h,c}` | The only web-view module that includes GL headers. Renders the built-in "cube" scene (the /glcube geometry, immediate mode, depth-tested) into an FBO (G12: colour texture + depth renderbuffer), reads it back with glReadPixels (rows bottom-first, flipped into the page's top-left XRGB buffer), and composites with `wv_canvas_blit()` — clipped to the page and scrolled with it (off-screen boxes cost a bounds check only) |
+| Cost, measured | Host: **64×48 cube rendered in ~58 µs** (one-shot render; a full-page 2D blit is 125 µs, so even at canvas sizes the one-shot GL render is a rounding error); in-guest TCG it lands under the 10 ms tick (`0 us` — sub-tick). The plan's §1 table now has its missing number: a GL canvas inside a page costs one sub-frame render at load + a clipped blit per frame |
+| GL off the critical path | The scene renders ONCE at page load into a cached buffer; `repaint` only blits it. A page without a canvas never touches libgl — the W4 reference hash for the demo page is unchanged (0x4D394D5C) |
+| Host gate | `tests/unit/test_wv_canvas.c` — **21 checks, 0 failures**, linking the REAL wv_canvas.c against the REAL libgl sources (LIBGL_TEST_SRCS + auragui stub): the buffer is not the clear colour, green+blue+purple cube faces are visible under the fixed camera, the centre holds the cube, **two renders are byte-identical** (determinism), invalid sizes refused, and blit clipping: exact placement, scroll moves the canvas with the page, fully off-screen boxes paint nothing, right-edge clipping; 2 000 fuzz blits |
+| QEMU gate | `/apps/webview` prints `canvas smoke: PASS (64x48 cube in 0 us, hash 4d394d5c -> 8a6c0574)` — the composited canvas changes the page. `test_webview_net.sh` gained a `/canvas.html` route (`<canvas width=64 height=48 data-scene="cube">` next to real text): the guest fetches it and prints `canvas: rendered 64x48 cube` — text AND 3D on one page. 15 assertions across the two cases |
+| Size | `webview.elf` ~374 KB (libgl adds ~186 KB) — still inside `SPAWN_MAX_IMAGE` (1 MiB); the plan's unbounded-appetite risk is watched, and W8 will decide gbrowser's fate with the size budget in mind |
+
+**§1 table, completed:**
+
+| Operation | Cost |
+|---|---|
+| Full-page 2D blit (800×600) | 125 µs (reference) / ~7 600 µs (QEMU TCG) |
+| Scroll by 40 px (memmove + band) | 68 µs / 144 µs (10 000-line page, TCG) |
+| **GL `<canvas>` 64×48 cube, one-shot** | **~58 µs host / sub-tick in TCG** (NEW — W7) |
 
 ---
 

@@ -165,7 +165,7 @@ Legend:
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W6): scaffold + blit budget + `/tmp/webview.frames`; W1 tokeniser (122 checks); W2 DOM (65; 10k-deep doc on the 64 KiB stack); W3 layout (79; 5 000 boxes in 1 064 µs); W4 painting (42; reference hash 0x4D394D5C host==guest; 144 µs scroll steps); W5 CSS (71; D4 subset); **W6 navigation** (`wv_url` + `wv_http` — 69 checks: HTTP/1.1, chunked==plain, growing 512 KB buffer; links in the display list, address bar + Back/Go, 8-entry history, https refusal page; QEMU gate `test_webview_net.sh` 10 asserts: fetch→link→back→https→chunked→100 KB). Canvas is W7. See `docs/webview.md`. |
+| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W7): scaffold + blit budget; W1 tokeniser (122 checks); W2 DOM (65; 10k-deep doc on the 64 KiB stack); W3 layout (79; 5 000 boxes in 1 064 µs); W4 painting (42; reference hash 0x4D394D5C host==guest); W5 CSS (71; D4 subset); W6 navigation (101 checks: URL+HTTP, chunked==plain, growing 512 KB buffer, links, history, https refusal); **W7 `<canvas data-scene="cube">`** (`wv_canvas` — libgl FBO render, one-shot at load, cached; 58 µs host; 21 checks incl. byte-identical re-renders and blit clipping; `canvas smoke: PASS`; text+3D page in the net test). Only W8 (retire-or-keep gbrowser) remains. See `docs/webview.md`. |
 
 ## Known low-priority limitations
 

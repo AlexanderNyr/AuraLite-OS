@@ -337,13 +337,28 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
     if (mw < 0) mw = 0;
 
     /* <canvas> sizes itself from its attributes (W7 will back it with an
-     * FBO); the UA default is 300x150.  CSS width/height override. */
+     * FBO); the UA default is 300x150.  CSS width/height override.
+     * data-scene="cube" marks the box for the W7 GL renderer. */
     uint32_t min_h = 0;
+    int scene = 0;
     if (wv_name_is(name, nlen, "canvas")) {
         int cw = wv_attr_int(d, node, "width");
         int chh = wv_attr_int(d, node, "height");
         if (cw > 0 && cw <= 4096) mw = cw;
         min_h = (uint32_t)(chh > 0 && chh <= 4096 ? chh : 150);
+        /* data-scene attribute */
+        const wv_dom_node_t *cnd = &d->nodes[node];
+        for (uint32_t ai = 0; ai < cnd->attr_count; ai++) {
+            size_t aidx = (size_t)cnd->attr_base + ai;
+            if (aidx >= d->attr_count) break;
+            const wv_attr_t *at = &d->attrs[aidx];
+            const char *an = wv_dom_str(d, at->name_off);
+            if (an && at->name_len == 10 &&
+                strncmp(an, "data-scene", 10) == 0 &&
+                at->value_len == 4 &&
+                strncmp(wv_dom_str(d, at->value_off), "cube", 4) == 0)
+                scene = 1;
+        }
     } else if (wv_name_is(name, nlen, "hr")) {
         min_h = 2;
     }
@@ -366,6 +381,7 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
     if (st.bg != 0xFF000000u) it.bg = st.bg;
     it.border = (uint16_t)(st.border > 0 ? st.border : 0);
     it.border_color = 0x00000000u;
+    it.scene = (uint8_t)scene;
     int idx = wv_layout_add_item(L, &it);
     if (idx < 0) return;
 

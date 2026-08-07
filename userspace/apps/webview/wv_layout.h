@@ -72,6 +72,8 @@ typedef struct {
     uint16_t _pad2;
     uint32_t border_color;
     uint32_t link_off;  /* href in the DOM pool (0 = not a link) */
+    uint8_t  scene;     /* 0 = none, 1 = cube (W7 <canvas data-scene>) */
+    uint8_t  _pad3[3];
 } wv_disp_t;
 
 /* ---- working stacks (caller-provided, so no heap and no big locals) ---- */

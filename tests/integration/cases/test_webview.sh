@@ -34,6 +34,7 @@ il_assert_grep "$LOG" "\\[webview\\] page rendered"             "page built from
 il_assert_grep "$LOG" "\\[webview\\] paint smoke: PASS"         "paint hash matches the stored reference"
 il_assert_grep "$LOG" "\\[webview\\] paint scroll smoke: PASS"  "memmove+band scroll equals full repaint"
 il_assert_grep "$LOG" "\\[webview\\] css smoke: PASS"           "W5 stylesheet changes the output"
+il_assert_grep "$LOG" "\\[webview\\] canvas smoke: PASS"        "W7 GL canvas rendered and composited"
 il_assert_grep "$LOG" "\\[webview\\] blit 800x600: [0-9][0-9]* us/frame" \
     "blit benchmark reported a number"
 il_assert_grep "$LOG" "\\[webview\\] tokeniser smoke: PASS"     "W1 tokeniser smoke passed in-guest"
