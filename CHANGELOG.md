@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W0 — Scaffolding] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W0: the web view exists as a scaffold — a window, an
+event loop, a pixel buffer, and the measured cost of presenting it.
+
+- **`/apps/webview`** (`userspace/apps/webview/webview.c`): 800×640 window,
+  heap-allocated 800×600×32 page buffer (never the 64 KiB user stack),
+  `ag_blit()` presentation, wheel/arrow scrolling of a standing page,
+  `/tmp/webview.frames` frame limit (glcube convention), clean exit.
+- **The window states its own limitations** (plan D6/W0 objective): no HTTPS,
+  no JavaScript, no images, monospace only — drawn in the window and written
+  down in `docs/webview.md` before any code invites disappointment.
+- **Measured frame budget**: full-page 800×600 blit = 7 575–7 676 µs/frame
+  under QEMU TCG (software emulation); the plan's native baseline is
+  0.125 ms. Recorded in `docs/webview.md` §3.
+- **Integration gate**: `tests/integration/cases/test_webview.sh` (7 asserts:
+  launch, window, limitation statement, benchmark number, frame limit, clean
+  exit, no kernel fault) — passes in QEMU.
+- **Size**: `webview.elf` is ~130 KB, comfortably inside `SPAWN_MAX_IMAGE`
+  (1 MiB); ~870 KB remain for W1–W7.
+- **libc note**: `printf` has no `%f`, so the benchmark reports integer
+  microseconds — noted in the source.
+
 ## [Internet Phase N7 — TCP stack hardening] 2026-08-06
 
 `INTERNET_PLAN.md` phase N7: fixes three TCP bugs that blocked all

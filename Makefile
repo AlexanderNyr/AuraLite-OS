@@ -341,6 +341,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
              $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
              $(USER_BUILD)/gbrowser.elf $(USER_BUILD)/gusb.elf \
+             $(USER_BUILD)/webview.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
@@ -820,6 +821,8 @@ $(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c lib/libauragui/i
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/webview.o: userspace/apps/webview/webview.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1072,7 +1075,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http clock browser gcalc gedit gfiles gterm \
-                gsysmon gabout gtaskmgr glaunch gaudio gbrowser gusb
+                gsysmon gabout gtaskmgr glaunch gaudio gbrowser gusb webview
 INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \

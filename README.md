@@ -711,6 +711,7 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/apps/gaudio` | GUI music player. |
 | `/apps/gbrowser` | GUI web browser. |
 | `/apps/gusb` | GUI USB manager. |
+| `/apps/webview` | Web view (W0 scaffold: window, pixel-buffer presentation, blit benchmark; see `docs/webview.md`). |
 | `/demos/guess` | Number guessing game. |
 | `/demos/snake` | Terminal snake game. |
 | `/demos/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube over a mipmapped floor, with a render-to-texture inset panel. |

@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: PLANNED 📋 (phases W0–W8)
+## Status: W0 COMPLETE ✅ · W1–W8 PLANNED 📋
 
 This document answers:
 
@@ -186,17 +186,17 @@ it is.
 
 ## 4. Phases
 
-### Phase W0 — Scaffolding and an honest README
+### Phase W0 — Scaffolding and an honest README ✅ COMPLETE
 
 **Objective:** a window that says what this can and cannot do.
 
 #### Tasks
 
-- [ ] `userspace/apps/webview/` — a window, an event loop, a pixel buffer
+- [x] `userspace/apps/webview/` — a window, an event loop, a pixel buffer
       presented with `ag_blit()`.
-- [ ] A `docs/webview.md` that states, up front: no HTTPS, no JavaScript, no
+- [x] A `docs/webview.md` that states, up front: no HTTPS, no JavaScript, no
       images yet, monospace only.
-- [ ] Establish the frame budget by measuring it, not guessing: blit an
+- [x] Establish the frame budget by measuring it, not guessing: blit an
       800×600 buffer and record the cost in the doc.
 
 #### Test gate
@@ -207,6 +207,18 @@ it is.
 #### Deliverable
 
 `patches/WEB_W0_scaffolding.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `userspace/apps/webview/webview.c` | Window 800×640, event loop (close / `q`/Esc / wheel / arrows), heap-allocated 800×600 page buffer, `ag_blit()` presentation, `/tmp/webview.frames` limit (glcube convention), startup blit benchmark |
+| Limitation statement | Drawn in the window itself (paint_limitations): no HTTPS, no JavaScript, no images, monospace only |
+| Frame budget, measured | **7 575–7 676 µs/frame** for a full 800×600 blit under QEMU TCG (software emulation, 1 CPU); plan's native baseline is 0.125 ms — recorded in `docs/webview.md` §3 |
+| Clean lifecycle | QEMU run: window created (id 2), benchmark PASS, `PASS: 5 frames rendered, exiting`, `'webview' (tid 8) exited (code=0)`, 522 frames reaped — no leak, no fault |
+| Integration gate | `tests/integration/cases/test_webview.sh` added to `run_all.sh` (7 asserts: launch, window, limitation statement, benchmark number, frame limit, clean exit, no kernel fault) |
+| `webview.elf` size | 130 KB — comfortably inside `SPAWN_MAX_IMAGE` (1 MiB), ~870 KB left for W1–W7 |
+| libc discovery | `printf` has **no `%f`** — benchmark reports integer microseconds; noted in the source |
 
 ---
 

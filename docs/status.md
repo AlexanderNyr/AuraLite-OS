@@ -165,6 +165,7 @@ Legend:
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
+| `/webview` | 🧪 | Web view scaffold (WEBVIEW_PLAN W0): window, event loop, heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit. No HTML/CSS/painting yet — W1–W4 are next. See `docs/webview.md`. |
 
 ## Known low-priority limitations
 
