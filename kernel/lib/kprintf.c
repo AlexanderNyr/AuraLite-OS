@@ -19,6 +19,22 @@ void kputchar(char c) {
     klog_putchar(c);
 }
 
+/* Write a raw byte string to the console atomically (under print_lock), so a
+ * user-mode write() to the console cannot be interleaved character-by-character
+ * with a kernel kprintf() running on another CPU.  Without this, kernel log
+ * lines (e.g. "[thread] reaped ...") would splice into the middle of a
+ * user-space marker line, making output-parsing integration tests flaky. */
+void kputs_locked(const char *s, size_t n) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    spinlock_acquire(&print_lock);
+    for (size_t i = 0; i < n; i++) kputchar(s[i]);
+    spinlock_release(&print_lock);
+    if (rflags & 0x200ULL) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+}
+
 void kputs(const char *s) {
     while (*s) {
         kputchar(*s++);

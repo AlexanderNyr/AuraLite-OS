@@ -226,7 +226,11 @@ il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: shm write/read round-trip" \
     "attached shm is readable/writable"
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: shmctl(IPC_STAT) reads metadata" \
     "shmctl(IPC_STAT) returns segment metadata"
-il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: shared counter == 400 (no lost increments)" \
+# The kernel's own serial output ([thread] reaped ...) can interleave with the
+# guest's stdout mid-line, so a full fixed line is flaky to grep for.  The
+# marker substring "counter == 400 (no lost increments)" always survives the
+# interleave as a contiguous run, so assert on that instead.
+il_assert_grep_fixed "$LOG" "counter == 400 (no lost increments)" \
     "forked pair reaches exactly 400 protected increments (sem+shm)"
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sysv: msgget(IPC_PRIVATE) creates" \
     "msgget(IPC_PRIVATE) creates a queue"

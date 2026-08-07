@@ -16,5 +16,6 @@ void kprintf(const char *fmt, ...);
 int ksnprintf(char *buf, size_t size, const char *fmt, ...);
 void kputchar(char c);
 void kputs(const char *s);
+void kputs_locked(const char *s, size_t n);
 
 #endif /* AURALITE_LIB_KPRINTF_H */

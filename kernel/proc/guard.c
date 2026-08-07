@@ -11,7 +11,7 @@
  * in sync with process.c.
  */
 #define USER_STACK_TOP         0x7FFFF0000000ULL
-#define USER_STACK_SIZE        0x10000ULL
+#define USER_STACK_SIZE        0x100000ULL  /* 1 MiB usable user stack */
 #define USER_STACK_GUARD_SIZE  0x1000ULL
 #define USER_STACK_ENTROPY     (0x10ULL * 0x1000ULL) /* choose_user_stack_top() slack */
 

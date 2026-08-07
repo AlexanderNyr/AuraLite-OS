@@ -28,7 +28,7 @@
 #include "kernel/boot_info.h"
 
 #define USER_STACK_TOP         0x7FFFF0000000ULL
-#define USER_STACK_SIZE        0x10000ULL
+#define USER_STACK_SIZE        0x100000ULL  /* 1 MiB usable user stack */
 #define USER_STACK_GUARD_SIZE  0x1000ULL
 
 /* Saved user-mode state from the syscall entry (set in syscall_entry.asm). */

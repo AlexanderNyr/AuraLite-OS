@@ -246,7 +246,7 @@ static int utimens_resolve(uint64_t user_times, uint64_t *atime, uint64_t *mtime
 /* Keep the heap well below the user stack so brk growth cannot collide with
  * the fixed high-address stack mapping. */
 #define USER_STACK_TOP        0x7FFFF0000000ULL
-#define USER_STACK_SIZE       0x10000ULL
+#define USER_STACK_SIZE       0x100000ULL  /* 1 MiB usable user stack */
 #define USER_STACK_GUARD_SIZE 0x1000ULL
 #define USER_MMAP_BASE        0x0000400000000000ULL
 #define USER_MMAP_MAX         0x0000700000000000ULL
@@ -774,7 +774,10 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 if (copy_from_user(tmp, (const uint8_t *)user_buf + done, n) != 0) {
                     return (uint64_t)-EFAULT;
                 }
-                for (uint64_t i = 0; i < n; i++) kputchar(tmp[i]);
+                /* Write each chunk atomically under print_lock so kernel
+                 * kprintf() cannot splice into a user-space line (fixes
+                 * flaky console-marker integration tests on SMP). */
+                kputs_locked(tmp, n);
                 done += n;
             }
             return a3;
