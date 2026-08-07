@@ -1,0 +1,309 @@
+# AuraLite OS — TLS Implementation Documentation
+
+**Last updated:** 2026-08-06
+
+This document describes the TLS stack implemented in AuraLite OS, its
+capabilities, limitations, and security properties.  It exists because an
+honest statement about what this protects against — and what it does not —
+is more valuable than a padlock icon.
+
+---
+
+## 1. What is implemented
+
+### 1.1 Protocol
+
+| Component | Status | Standard |
+|---|---|---|
+| TLS 1.3 handshake | ✅ | RFC 8446 |
+| TLS 1.2 and earlier | ❌ Refused | Decision D3 |
+| Cipher suite | TLS_CHACHA20_POLY1305_SHA256 only | RFC 8446, D4 |
+| Key exchange | X25519 | RFC 7748 |
+| Certificate signatures | Ed25519, RSA PKCS#1v1.5-SHA256 | RFC 8032, RFC 8017 |
+| ECDSA P-256 | ❌ Not implemented | D4 (no curve arithmetic) |
+| Client certificates | ❌ | D6 |
+| Session resumption | ❌ | D6 |
+| 0-RTT | ❌ | D6 |
+| KeyUpdate | ✅ | RFC 8446 §4.6.3 |
+| Alerts | ✅ Send and receive | RFC 8446 §6 |
+| close_notify | ✅ | |
+
+### 1.2 Cryptographic primitives (`libatls`)
+
+| Primitive | Standard | Test vectors |
+|---|---|---|
+| SHA-256 | FIPS 180-4 | NIST |
+| SHA-512 | FIPS 180-4 | NIST |
+| HMAC-SHA256 | RFC 2104 | RFC 4231 (7 test cases) |
+| HKDF-SHA256 | RFC 5869 | RFC 5869 (3 test cases) |
+| ChaCha20 | RFC 8439 §2.4 | RFC 8439 §2.4.2 |
+| Poly1305 | RFC 8439 §2.5 | RFC 8439 §2.5.2 |
+| AEAD_CHACHA20_POLY1305 | RFC 8439 §2.8 | RFC 8439 §2.8.2 |
+| X25519 | RFC 7748 | RFC 7748 §5.2 + §6.1 (1000 iterations) + Wycheproof low-order |
+| Ed25519 (verify only) | RFC 8032 | RFC 8032 §7.1 TEST 1–3 + SHA(abc) |
+| RSA PKCS#1v1.5 (verify only) | RFC 8017 | Self-signed certificate chain |
+| Constant-time comparison | — | Unit test asserts behavior |
+| CSPRNG (kernel) | ChaCha20 DRBG | RFC 8439 block vectors + statistical |
+
+### 1.3 Certificate handling
+
+| Feature | Status |
+|---|---|
+| X.509 v3 parsing | ✅ (DER, zero-allocation) |
+| Chain building | ✅ (issuer DER byte-equality) |
+| Ed25519 signature verification | ✅ |
+| RSA PKCS#1v1.5-SHA256 verification | ✅ |
+| ECDSA signature verification | ❌ |
+| Hostname matching (SAN dNSName) | ✅ (exact + single-label wildcard) |
+| Validity date checking | ✅ (UTCTime + GeneralizedTime, fail-closed) |
+| Basic constraints | ✅ (leaf ≠ CA, CA must have keyCertSign) |
+| Key usage | ✅ |
+| Unknown critical extensions | ✅ Refused (D5) |
+| OCSP / CRL | ❌ Not implemented |
+| Certificate Transparency | ❌ Not implemented |
+
+### 1.4 HTTP client (`libahttp`)
+
+| Feature | Status |
+|---|---|
+| HTTP/1.1 | ✅ |
+| Host header | ✅ |
+| Chunked transfer encoding | ✅ |
+| Content-Length | ✅ |
+| Connection: close | ✅ |
+| Redirects (301/302/307/308) | ✅ (max 5 hops) |
+| Growing response buffer | ✅ (1 MiB cap) |
+| HTTPS (over TLS) | ⚠️ API wired, guest transport blocked by stack limits |
+
+### 1.5 Entropy source
+
+The kernel CSPRNG (`kernel/rng.c`) is a ChaCha20-based DRBG seeded from:
+
+1. **RDSEED** (CPUID leaf 7, EBX bit 18) — preferred, when available
+2. **RDRAND** (CPUID leaf 1, ECX bit 30) — fallback
+3. **Interrupt timing jitter** — collected from every IRQ via
+   `rng_jitter_event()` in `irq_dispatch()`; requires 128 estimated bits
+   of variation before seeding
+
+Until the pool is seeded, `getentropy()` returns `-ENOSYS` and
+`getrandom()` blocks.  The estimated entropy is logged at boot.
+
+---
+
+## 2. What this protects against
+
+- **Passive eavesdropping** on a network path between the client and a
+  compliant TLS 1.3 server.  The handshake uses X25519 ephemeral keys
+  (forward secrecy), and the record layer uses AEAD_CHACHA20_POLY1305.
+
+- **Server impersonation** by an attacker who does not possess a valid
+  certificate chain rooted in the shipped trust store.  Ed25519 and RSA
+  PKCS#1v1.5 signatures are verified; ECDSA chains are refused (not
+  silently skipped).
+
+- **Tampered records** — the AEAD tag is verified before any plaintext
+  is released; a tampered record causes the connection to abort.
+
+---
+
+## 3. What this does NOT protect against
+
+This is the important section.  Read it before trusting this TLS stack
+with anything valuable.
+
+### 3.1 Not audited
+
+This code has never been reviewed by a cryptographer or a security
+engineer.  It was written by a hobby OS developer and tested against RFC
+test vectors.  RFC vectors verify correctness, not security.  There are
+almost certainly bugs that an audit would find.
+
+### 3.2 Side channels
+
+Constant-time discipline (decision D7) is a coding rule: a single
+`atls_ct_eq` function is used for all secret comparisons, and the test
+suite greps the sources to verify no `memcmp` on secret data.  This is
+the limit of what can be verified.  Timing side channels in the
+field arithmetic, the bignum exponentiation, or the AEAD construction
+have not been measured and cannot be honestly claimed absent.
+
+### 3.3 RSA is not constant-time
+
+The bignum implementation (`atls_rsa.c`) uses 32-bit limbs with
+64-bit intermediates.  Modular exponentiation uses binary
+square-and-multiply.  This is not constant-time.  RSA is used only
+for verification of public signatures, where the inputs are public
+data; the risk is lower than for signing or decryption, but it is
+not zero (a fault attack could forge a signature if the implementation
+leaks through a side channel during verification).
+
+### 3.4 No revocation checking
+
+There is no OCSP client, no CRL parser, and no Certificate Transparency
+verification.  A revoked certificate will be accepted until it expires.
+The trust store is a pinned, in-image set of root certificates; there
+is no mechanism to update it at runtime.
+
+### 3.5 Trust store will rot
+
+The shipped roots (`/etc/ssl/roots.pem`) expire on fixed dates.  An
+image built today will eventually fail against sites whose chains move
+to a root it does not carry.  Updating requires rebuilding the image.
+
+Root certificates shipped:
+
+| Root | Expires | Notes |
+|---|---|---|
+| ISRG Root X1 | 2035-06-04 | Let's Encrypt |
+| DigiCert Global Root CA | 2038-11-10 | |
+| DigiCert Global Root G3 | 2038-01-15 | |
+
+### 3.6 ECDSA leaf certificates are not supported
+
+Most of the modern web uses ECDSA P-256 leaf certificates.  This TLS
+stack verifies Ed25519 and RSA PKCS#1v1.5 signatures only (decision D4).
+An ECDSA leaf will cause the handshake to abort with
+`unsupported_certificate`, not be silently accepted.
+
+### 3.7 64 KiB user stack limit
+
+The Ed25519 scalar multiplication uses ~3 KiB of stack per verification
+(two 160-byte `ge` structs + SHA-512 hashing).  A full TLS handshake
+with Ed25519 CertificateVerify overflows the default 64 KiB user stack.
+The workaround is to increase `USER_STACK_SIZE` to 256 KiB, or
+restructure the crypto to use heap-allocated scratch space.  This is
+a known limitation, not a security issue.
+
+### 3.8 No hostname verification against a CA policy
+
+The hostname matching logic (RFC 6125) verifies that the server's SAN
+matches the requested hostname.  There is no CA policy enforcement
+beyond "the chain must reach a root in the trust store."  A self-signed
+certificate with a matching SAN will be rejected (the chain must
+actually verify against a pinned root).
+
+### 3.9 HTTP client limitations
+
+- No HTTP/2 or HTTP/3.
+- No persistent connections (Connection: close only).
+- No request body support (GET only).
+- HTTPS transport is API-wired but blocked by the 64 KiB stack limit
+  on the guest.
+
+### 3.10 Known limitations inherited from the TCP stack
+
+- `TCP_MAX_CONNS` is 8 (may be insufficient for heavy usage).
+- No IP fragment reassembly.
+- No IPv6.
+- No DNS caching.
+
+---
+
+## 4. Test coverage
+
+### 4.1 Host unit tests (run on every commit)
+
+| Test | Checks | Covers |
+|---|---|---|
+| `test_rng` | 16 | ChaCha20 DRBG, RFC 8439 vectors, statistical (1 MiB) |
+| `test_atls_hash` | 32 | SHA-256/512, HMAC, HKDF, D7 memcmp audit |
+| `test_atls_aead` | 18 | ChaCha20, Poly1305, AEAD, round-trip, tamper |
+| `test_atls_x25519` | 27 | RFC 7748, 1000 iterations, Wycheproof low-order |
+| `test_atls_ed25519` | 17 | RFC 8032, negative cases, exact reason asserted |
+| `test_atls_x509` | 61 | Real certs, truncation sweep, mutations, depth gate |
+| `test_atls_tls` | 25 | Handshake vs openssl, KeyUpdate, large transfer, Finished MAC |
+| `test_atls_certval` | 14 | Chain building, RSA+Ed25519, hostname, dates, constraints |
+| `test_ahttp` | 7 | URL parsing |
+
+### 4.2 QEMU integration tests
+
+| Test | Assertions | Covers |
+|---|---|---|
+| `test_rng` | 14 | Entropy: RDRAND detection, jitter fallback, boot sample |
+| `test_crypto` | 14 | libatls in-guest smoke test on 64 KiB stack |
+| `test_x509` | 14 | X.509 parser in-guest on 64 KiB stack |
+| `test_tls` | 14 | TLS handshake in-guest vs openssl s_server |
+
+---
+
+## 5. Architecture decisions reference
+
+| ID | Decision | Rationale |
+|---|---|---|
+| D1 | Entropy first | Crypto on guessable seed is theatre |
+| D2 | Crypto in userspace | ASN.1 parser bug → killed process, not kernel panic |
+| D3 | TLS 1.3 only | Smaller, no legacy vuln classes |
+| D4 | One suite, one exchange, one sig | ChaCha20 (fast in C), X25519, Ed25519+RSA |
+| D5 | Validation not optional | Plaintext-with-extra-steps is worse than plaintext |
+| D6 | No client certs/resumption/0-RTT | No payoff for public-page browsing |
+| D7 | Constant-time where it matters | audited comparison function, grep-enforced |
+
+---
+
+## 6. File layout
+
+```
+lib/libatls/
+  include/atls/
+    atls.h          — public crypto API
+    tls.h           — TLS client API
+    x509.h          — X.509 parser API
+    certval.h       — certificate validation API
+  src/
+    atls_common.c   — constant-time comparison, wipe
+    atls_sha256.c   — SHA-256
+    atls_sha512.c   — SHA-512
+    atls_hmac.c     — HMAC-SHA256
+    atls_hkdf.c     — HKDF-SHA256
+    atls_chacha20.c — ChaCha20
+    atls_poly1305.c — Poly1305
+    atls_aead.c     — AEAD_CHACHA20_POLY1305
+    atls_fe.c       — field arithmetic (2^255-19)
+    atls_x25519.c   — X25519
+    atls_ed25519.c  — Ed25519 verification
+    atls_rsa.c      — RSA PKCS#1v1.5 verification (bignum)
+    atls_der.c      — DER TLV reader
+    atls_x509.c     — X.509 v3 parser
+    atls_certval.c  — certificate chain validation
+    atls_tls_keys.c — TLS key schedule + record crypto
+    atls_tls.c      — TLS 1.3 client state machine
+
+lib/libahttp/
+  include/ahttp/http.h — HTTP client API
+  src/ahttp.c          — HTTP/1.1 client
+
+kernel/
+  rng.c             — ChaCha20 CSPRNG (N0)
+  net/tcp.c         — TCP (N7 fixes)
+
+etc/ssl/roots.pem   — pinned trust store
+
+tests/unit/
+  test_rng.c, test_atls_*.c, test_ahttp.c
+
+tests/integration/cases/
+  test_rng.sh, test_crypto.sh, test_x509.sh, test_tls.sh
+```
+
+---
+
+## 7. What comes next
+
+The remaining phases from `INTERNET_PLAN.md`:
+
+- **N8 (IPv6):** optional, largest effort with smallest payoff.
+  Deferred indefinitely.
+- **Known gaps that would strengthen the stack:**
+  - Increase `USER_STACK_SIZE` to 256 KiB (or heap-allocate crypto scratch)
+  - ECDSA P-256 verification (most of the web uses ECDSA leaves)
+  - OCSP stapling / CRL checking
+  - HTTP/2 support
+  - Persistent HTTP connections
+  - DNS caching
+  - IP fragment reassembly
+
+---
+
+*This document is part of INTERNET_PLAN.md phase N9.  Every limitation
+listed here is a known gap, not a future feature.  If something is not
+listed, it is either implemented or an oversight — file an issue.*
