@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W1 — HTML tokeniser] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W1: bytes → a tolerant token stream, with no
+recursion and bounded memory by construction.
+
+- **`userspace/apps/webview/wv_html.{h,c}`** — 18-state machine over the
+  byte stream: text, tag open/name, attribute name/value (double, single,
+  unquoted), comment, bogus comment, DOCTYPE, CDATA, self-closing.
+  Tokens live in a caller-provided arena (token array + attribute array +
+  string pool) with fixed caps; exceeding a cap sets `truncated` while the
+  scan drains to EOF — no hang, no crash, no unbounded memory.
+- **Character references**: the named five plus `&#NN;`/`&#xNN;` in text and
+  attribute values; unterminated/unknown refs stay literal; codes > 0xFF
+  render as `'?'` (8-bit font ceiling); NUL → U+FFFD → `'?'`.
+- **Tolerance everywhere**: `<` at EOF → text, `<<>>` → text runs, an
+  unclosed quote keeps the tag and everything before it, an unclosed
+  comment keeps its text, EOF in any state emits what exists plus WV_T_EOF.
+- **Host gate**: `tests/unit/test_wv_html.c` — 122 checks, 0 failures:
+  exact token streams, all malformed cases from the plan, 10 KB attribute
+  value and 100 KB text capped, 10 000 tags drained, 3000 fuzz iterations
+  + a 64 KiB random blob, every offset walked against the arena.
+- **In-guest smoke**: `/apps/webview` tokenises a sample document at
+  startup (`tokeniser smoke: 9 tokens`); `test_webview.sh` asserts it.
+- **Bugs the tests caught**: a double advance after character references
+  (bytes after `&amp;` were skipped) and attributes not flushed after a
+  quoted value (`class="main" id=x` lost `class`). Both fixed with
+  regression checks.
+- `webview.elf` 143 KB (tokeniser adds ~13 KB); `make test-unit` green.
+
 ## [WebView Phase W0 — Scaffolding] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W0: the web view exists as a scaffold — a window, an

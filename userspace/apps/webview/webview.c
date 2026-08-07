@@ -28,6 +28,7 @@
 #include <time.h>
 
 #include "auragui.h"
+#include "wv_html.h"
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
 #define VIEW_W 800
@@ -199,6 +200,28 @@ int main(void) {
         printf("[webview] blit %ux%u: %ld us/frame (%d frames, total %ld us)\n",
                VIEW_W, VIEW_H, total_us / BENCH_FRAMES, BENCH_FRAMES, total_us);
         printf("[webview] PASS: blit benchmark completed\n");
+    }
+
+    /* ---- Phase W1 smoke: the HTML tokeniser runs in-guest too. ----------
+     * The host unit tests are the real gate; this proves the same source
+     * builds and behaves inside AuraLite user space. */
+    {
+        static wv_token_t wtoks[64];
+        static wv_attr_t  watrs[256];
+        static char       wpool[4096];
+        wv_arena_t wa;
+        wv_arena_init(&wa, wtoks, 64, watrs, 256, wpool, sizeof(wpool));
+        const char *doc = "<p>Hello <b>web</b> &amp; bye<br/></p>";
+        int n = wv_html_tokenize(&wa, doc, strlen(doc));
+        printf("[webview] tokeniser smoke: %d tokens, truncated=%d\n",
+               n, wa.truncated);
+        if (n == 9 && !wa.truncated) {
+            /* START p, TEXT, START b, TEXT, END b, TEXT, START br,
+             * END p, EOF */
+            printf("[webview] tokeniser smoke: PASS\n");
+        } else {
+            printf("[webview] tokeniser smoke: FAIL\n");
+        }
     }
 
     /* ---- Event loop.  The W4 renderer will replace draw_page(); the loop

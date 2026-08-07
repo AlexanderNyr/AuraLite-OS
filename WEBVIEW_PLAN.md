@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0 COMPLETE ✅ · W1–W8 PLANNED 📋
+## Status: W0–W1 COMPLETE ✅ · W2–W8 PLANNED 📋
 
 This document answers:
 
@@ -222,18 +222,18 @@ it is.
 
 ---
 
-### Phase W1 — The HTML tokeniser
+### Phase W1 — The HTML tokeniser ✅ COMPLETE
 
 **Objective:** bytes → a token stream, tolerantly.
 
 #### Tasks
 
-- [ ] A state machine over the input: text, tag open, attribute name,
+- [x] A state machine over the input: text, tag open, attribute name,
       attribute value (quoted and unquoted), comment, DOCTYPE, CDATA.
-- [ ] Character references: the named five (`&amp; &lt; &gt; &quot; &apos;`)
+- [x] Character references: the named five (`&amp; &lt; &gt; &quot; &apos;`)
       plus `&#NN;` and `&#xNN;`.
-- [ ] **No recursion.** Fixed-size buffers, explicit bounds.
-- [ ] Host unit tests, mostly on malformed input: an unclosed tag at EOF, a
+- [x] **No recursion.** Fixed-size buffers, explicit bounds.
+- [x] Host unit tests, mostly on malformed input: an unclosed tag at EOF, a
       quote that never closes, `<`, `<<>>`, a 10 KB attribute value, a NUL
       byte mid-tag.
 
@@ -247,6 +247,18 @@ it is.
 #### Deliverable
 
 `patches/WEB_W1_tokeniser.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `userspace/apps/webview/wv_html.{h,c}` | 18-state machine over the byte stream; token kinds TEXT/START/END/COMMENT/DOCTYPE/CDATA/EOF; attributes with name/value/flag; `self_closing`; line/col; arena = caller-provided token array + attribute array + string pool, `truncated` flag when any limit is hit while the scan keeps draining to EOF |
+| No recursion | By construction: one loop, one switch; the only locals are fixed-size byte buffers (≤ 4 KB total) — the 64 KiB user stack cannot be exhausted by input |
+| Tolerance | WHATWG behaviours honoured where cheap: `<` at EOF → text, `<<>>` → text runs, unclosed quote keeps the tag and everything before the quote, unclosed comment keeps its text, EOF in any state emits what exists plus WV_T_EOF; NUL → U+FFFD → `'?'` (8-bit font ceiling); names lower-cased; unknown/unterminated char refs stay literal; a reference must end in `;` (documented simplification) |
+| Unit tests | `tests/unit/test_wv_html.c` — **122 checks, 0 failures**: exact token stream for well-formed HTML; all five named refs + numeric in text and attribute values; every malformed case from the gate; 10 000-byte attribute value capped with `truncated`; 100 000-byte text run and 10 000 tags hit caps and terminate; 3000 fuzz iterations + a 64 KiB random blob — every token/attr offset walked and checked against arena bounds |
+| In-guest smoke | `/apps/webview` runs the tokeniser on `<p>Hello <b>web</b> &amp; bye<br/></p>` → `tokeniser smoke: 9 tokens, truncated=0` → PASS; `test_webview.sh` gained the assert (8 checks now) |
+| Size | `webview.elf` 143 KB (tokeniser adds ~13 KB) — still far inside `SPAWN_MAX_IMAGE` |
+| Bugs found by the tests | (1) after a character reference the scan position was advanced twice, skipping bytes after `&amp;`; (2) attributes were not flushed when a space or `/` followed a quoted value, so `class="main" id=x` lost `class`. Both caught by the exact-stream test, fixed, and covered by regression checks |
 
 ---
 

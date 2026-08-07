@@ -1,7 +1,7 @@
 # AuraLite OS Web View (`/apps/webview`)
 
-**Status:** Phase W0 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) — scaffold
-complete. W1 (tokeniser) is next.
+**Status:** Phases W0–W1 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+scaffold and HTML tokeniser complete. W2 (DOM) is next.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -81,7 +81,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | Phase | Deliverable | Status |
 |---|---|---|
 | W0 | Scaffold: window, event loop, pixel buffer, blit benchmark, this doc | ✅ complete (2026-08-07) |
-| W1 | HTML tokeniser (state machine, no recursion) | 📋 planned |
+| W1 | HTML tokeniser (state machine, no recursion) | ✅ complete (2026-08-07) |
 | W2 | DOM (flat node array, depth cap, implied structure) | 📋 planned |
 | W3 | Block layout → display list (iterative, 64 KiB-safe) | 📋 planned |
 | W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
@@ -89,6 +89,26 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
 | W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
 | W8 | Retire or keep `gbrowser` | 📋 planned |
+
+## 6. The tokeniser (W1)
+
+`userspace/apps/webview/wv_html.{h,c}` turns bytes into a token stream:
+
+- 18-state machine (WHATWG-shaped, simplified per `wv_html.h`): text, tag
+  open, tag name, attribute name/value (double, single, unquoted), comment,
+  bogus comment, DOCTYPE, CDATA, self-closing start.
+- Character references: `&amp; &lt; &gt; &quot; &apos;` plus `&#NN;` and
+  `&#xNN;` (must end in `;`; codes > 0xFF become `'?'` — the font's ceiling).
+- **No recursion anywhere**; all storage is a caller-provided arena
+  (tokens + attributes + string pool) with fixed caps and a `truncated`
+  flag — exceeding a cap never hangs or crashes, the scan drains to EOF.
+- NUL bytes are replaced with U+FFFD, rendered as `'?'`.
+- Names are lower-cased; attribute values keep their bytes (minus char refs).
+- Gate: `tests/unit/test_wv_html.c` — 122 host checks including 3000 fuzz
+  iterations and a 64 KiB random blob; every token is walked and every
+  offset verified against the arena bounds. The tokeniser also runs in-guest
+  at `/apps/webview` startup (`tokeniser smoke`), asserted by
+  `test_webview.sh`.
 
 If only three phases are ever built, W1–W3 are the ones: a tokeniser, a DOM
 and a layout engine are the parts that do not exist anywhere else in the
