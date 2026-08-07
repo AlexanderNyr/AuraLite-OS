@@ -29,6 +29,7 @@
 
 #include "auragui.h"
 #include "wv_html.h"
+#include "wv_dom.h"
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
 #define VIEW_W 800
@@ -221,6 +222,76 @@ int main(void) {
             printf("[webview] tokeniser smoke: PASS\n");
         } else {
             printf("[webview] tokeniser smoke: FAIL\n");
+        }
+    }
+
+    /* ---- Phase W2 smoke: the DOM builder runs in-guest too. ------------
+     * Two checks: the plan's sibling-paragraph rule and the 10 000-deep
+     * document, which must hit the depth cap WITHOUT overflowing the real
+     * 64 KiB user stack (the point of the plan's W2 gate). */
+    {
+        static wv_dom_node_t dn[256];
+        static wv_attr_t     da[512];
+        static char          dp[16384];
+        static uint32_t      dstack[512];
+        wv_arena_t toks_a;
+        static wv_token_t tt[512];
+        static wv_attr_t  ta[512];
+        static char       tp[8192];
+        wv_arena_init(&toks_a, tt, 512, ta, 512, tp, sizeof(tp));
+        const char *doc = "<p>a<p>b";
+        wv_html_tokenize(&toks_a, doc, strlen(doc));
+        wv_dom_t dom;
+        wv_dom_init(&dom, dn, 256, da, 512, dp, sizeof(dp), dstack, 512);
+        int nn = wv_dom_build(&dom, &toks_a, 512);
+        /* doc + 2 p + 2 text; both p's are children of the document */
+        int ok = (nn == 5 && dom.nodes[1].parent == 0 &&
+                  dom.nodes[3].parent == 0 && dom.truncated == 0);
+        printf("[webview] dom smoke: %s (nodes=%d)\n",
+               ok ? "PASS" : "FAIL", nn);
+    }
+
+    {
+        /* 10 000 nested <div>s: tokeniser arena on the heap (20 001
+         * tokens), DOM with a depth cap of 512.  On the 64 KiB user stack
+         * this must not overflow — that is the W2 QEMU gate. */
+        size_t doc_len = 10000 * 5 + 10000 * 6;
+        char *doc = malloc(doc_len);
+        if (!doc) {
+            printf("[webview] dom deep test: FAIL (malloc)\n");
+        } else {
+            size_t p = 0;
+            for (int i = 0; i < 10000; i++) { memcpy(doc + p, "<div>", 5); p += 5; }
+            for (int i = 0; i < 10000; i++) { memcpy(doc + p, "</div>", 6); p += 6; }
+
+            wv_token_t *tt = malloc(22000 * sizeof(wv_token_t));
+            wv_attr_t  *ta = malloc(1024 * sizeof(wv_attr_t));
+            char       *tp = malloc(262144);
+            wv_dom_node_t *dn = malloc(11000 * sizeof(wv_dom_node_t));
+            wv_attr_t  *dda = malloc(1024 * sizeof(wv_attr_t));
+            char       *dpp = malloc(262144);
+            uint32_t   *stk = malloc(1024 * sizeof(uint32_t));
+            if (!tt || !ta || !tp || !dn || !dda || !dpp || !stk) {
+                printf("[webview] dom deep test: FAIL (malloc arenas)\n");
+            } else {
+                wv_arena_t toks_a;
+                wv_arena_init(&toks_a, tt, 22000, ta, 1024, tp, 262144);
+                int n = wv_html_tokenize(&toks_a, doc, doc_len);
+                wv_dom_t dom;
+                wv_dom_init(&dom, dn, 11000, dda, 1024, dpp, 262144, stk, 1024);
+                int nn = wv_dom_build(&dom, &toks_a, 512);
+                uint32_t maxd = 0;
+                for (int i = 0; i < nn && i < 11000; i++) {
+                    uint32_t dd = wv_dom_depth(&dom, (uint32_t)i);
+                    if (dd > maxd) maxd = dd;
+                }
+                int ok = (nn == 10001 && maxd == 512 && dom.truncated == 1);
+                printf("[webview] dom deep test: %s (tokens=%d nodes=%d maxdepth=%u truncated=%d)\n",
+                       ok ? "PASS" : "FAIL", n, nn, maxd, dom.truncated);
+            }
+            free(tt); free(ta); free(tp);
+            free(dn); free(dda); free(dpp); free(stk);
+            free(doc);
         }
     }
 

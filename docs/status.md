@@ -165,7 +165,7 @@ Legend:
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W1): scaffold window + heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit, and the W1 HTML tokeniser (`wv_html.{h,c}` — 18-state iterative machine, arena-bounded, 122 host checks + in-guest smoke). DOM/layout/painting are W2–W4. See `docs/webview.md`. |
+| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W2): scaffold window + heap page buffer presented via `ag_blit()`, measured blit budget, `/tmp/webview.frames` limit, the W1 HTML tokeniser (`wv_html.{h,c}` — 18-state iterative machine, arena-bounded, 122 host checks + in-guest smoke) and the W2 DOM builder (`wv_dom.{h,c}` — flat node array, 512-deep cap, implicit p/li/td/tr closes, pop-until-match reconciliation; 65 host checks; 10 000-deep document built in-guest on the 64 KiB stack). Layout/painting are W3–W4. See `docs/webview.md`. |
 
 ## Known low-priority limitations
 

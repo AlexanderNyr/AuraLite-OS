@@ -34,6 +34,8 @@ il_assert_grep "$LOG" "\\[webview\\] limitations painted"       "limitation stat
 il_assert_grep "$LOG" "\\[webview\\] blit 800x600: [0-9][0-9]* us/frame" \
     "blit benchmark reported a number"
 il_assert_grep "$LOG" "\\[webview\\] tokeniser smoke: PASS"     "W1 tokeniser smoke passed in-guest"
+il_assert_grep "$LOG" "\\[webview\\] dom smoke: PASS"           "W2 DOM smoke passed in-guest"
+il_assert_grep "$LOG" "\\[webview\\] dom deep test: PASS"       "W2 10k-deep doc hits cap, no stack overflow"
 il_assert_grep "$LOG" "\\[webview\\] PASS: 10 frames rendered"  "frame limit respected"
 il_assert_grep "$LOG" "\\[webview\\] W0 scaffold complete"       "clean exit"
 il_assert_no_grep "$LOG" "Page Fault|kernel panic|triple fault" "no kernel fault"

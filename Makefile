@@ -822,19 +822,24 @@ $(USER_BUILD)/gbrowser.o: userspace/apps/gui-browser/gbrowser.c lib/libauragui/i
 $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/webview.o: userspace/apps/webview/webview.c lib/libauragui/include/auragui.h \
-                         userspace/apps/webview/wv_html.h $(USER_CFLAGS_INC)
+                         userspace/apps/webview/wv_html.h userspace/apps/webview/wv_dom.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_html.o: userspace/apps/webview/wv_html.c userspace/apps/webview/wv_html.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/wv_dom.o: userspace/apps/webview/wv_dom.c userspace/apps/webview/wv_dom.h \
+                        userspace/apps/webview/wv_html.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-# webview links the tokeniser; the generic %.elf pattern rule does not know
-# about it, so give this one explicit prerequisites and link line.
+# webview links the tokeniser + DOM builder; the generic %.elf pattern rule
+# does not know about them, so give this one explicit prerequisites/link line.
 $(USER_BUILD)/webview.elf: $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+                           $(USER_BUILD)/wv_dom.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/webview.o $(USER_BUILD)/wv_html.o \
+	      $(USER_BUILD)/wv_dom.o \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
-	@echo "[link] $@ (wv_html)"
+	@echo "[link] $@ (wv_html + wv_dom)"
 $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1218,7 +1223,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_atls_tls \
                 $(BUILD_DIR)/test_atls_certval \
                 $(BUILD_DIR)/test_ahttp \
-                $(BUILD_DIR)/test_wv_html
+                $(BUILD_DIR)/test_wv_html \
+                $(BUILD_DIR)/test_wv_dom
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1318,6 +1324,18 @@ $(BUILD_DIR)/test_wv_html: tests/unit/test_wv_html.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	           tests/unit/test_wv_html.c userspace/apps/webview/wv_html.c -o $@
+
+# Web view DOM builder (WEBVIEW_PLAN W2): the REAL userspace sources are
+# compiled into the host test, never copies.
+$(BUILD_DIR)/test_wv_dom: tests/unit/test_wv_dom.c \
+                          userspace/apps/webview/wv_dom.c \
+                          userspace/apps/webview/wv_dom.h \
+                          userspace/apps/webview/wv_html.c \
+                          userspace/apps/webview/wv_html.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	           tests/unit/test_wv_dom.c userspace/apps/webview/wv_dom.c \
+	           userspace/apps/webview/wv_html.c -o $@
 
 $(BUILD_DIR)/test_atls_x509: tests/unit/test_atls_x509.c \
                              tests/unit/atls_x509_testdata.c $(LIBATLS_SRCS) \

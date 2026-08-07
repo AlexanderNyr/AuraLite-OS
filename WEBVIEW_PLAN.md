@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0–W1 COMPLETE ✅ · W2–W8 PLANNED 📋
+## Status: W0–W2 COMPLETE ✅ · W3–W8 PLANNED 📋
 
 This document answers:
 
@@ -262,19 +262,19 @@ it is.
 
 ---
 
-### Phase W2 — The DOM
+### Phase W2 — The DOM ✅ COMPLETE
 
 **Objective:** tokens → a tree, with the implied structure real pages omit.
 
 #### Tasks
 
-- [ ] Nodes in a flat array with index links (parent/first-child/next-sibling),
+- [x] Nodes in a flat array with index links (parent/first-child/next-sibling),
       not pointers into a heap — one allocation, and a tree walk that cannot
       run away.
-- [ ] An explicit open-element stack with a **depth cap** (D3).
-- [ ] Implicit close rules for the tags that need them: `<p>`, `<li>`, `<td>`,
+- [x] An explicit open-element stack with a **depth cap** (D3).
+- [x] Implicit close rules for the tags that need them: `<p>`, `<li>`, `<td>`,
       `<tr>`, and the void elements.
-- [ ] Mismatched close tags are reconciled against the stack, not obeyed.
+- [x] Mismatched close tags are reconciled against the stack, not obeyed.
 
 #### Test gate
 
@@ -286,6 +286,19 @@ it is.
 #### Deliverable
 
 `patches/WEB_W2_dom.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `userspace/apps/webview/wv_dom.{h,c}` | Flat node array with parent / first-child / last-child / next-sibling index links; implicit document root at index 0; explicit open-element stack with `WV_DOM_DEFAULT_DEPTH` (512) cap — past the cap elements are appended without nesting and `truncated` is set, so depth is bounded no matter the input |
+| Implicit closes | `<p>` closes an open `<p>`; `<li>` closes an open `<li>`; `<td>`/`<th>` close open cells but never the row; `<tr>` closes the previous row and its cells; 14 void elements never nest; `self_closing` tags never nest |
+| Mismatched closes | WHATWG pop-until-match: `<b><i>x</b></i>` closes `<i>` implicitly when `</b>` arrives; unmatched end tags are ignored (never wipe the stack — a bug the tests caught) |
+| Attributes | Copied into the DOM's own pool (name/value pairs, value-less flags preserved); text runs merge across comments/entities/CDATA into single text nodes |
+| Host gate | `tests/unit/test_wv_dom.c` — **65 checks, 0 failures**: the plan's two tree-shape cases, deep mismatch, void/li/td/tr rules, attribute carry, text merging, unmatched ends, empty input, a 10 000-deep document (nodes=10001, max_depth=512, truncated=1) and 2000 fuzz iterations — every build walked and every parent/child/sibling link verified |
+| QEMU gate (the point of W2) | `/apps/webview` builds the 10 000-deep document **in-guest on the real 64 KiB user stack**: `dom deep test: PASS (tokens=20001 nodes=10001 maxdepth=512 truncated=1)`; `dom smoke: PASS` for `<p>a<p>b`; `test_webview.sh` asserts both (10 checks now) |
+| Bug found by the tests | `<td>` was closing the `<tr>` too (WHATWG says cells close cells, rows close rows), which produced a wrong tree — fixed, with the test that caught it |
+| Size | `webview.elf` ~158 KB (DOM adds ~15 KB) — inside `SPAWN_MAX_IMAGE` |
 
 ---
 

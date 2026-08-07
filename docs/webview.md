@@ -1,7 +1,7 @@
 # AuraLite OS Web View (`/apps/webview`)
 
-**Status:** Phases W0–W1 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
-scaffold and HTML tokeniser complete. W2 (DOM) is next.
+**Status:** Phases W0–W2 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+scaffold, HTML tokeniser and DOM complete. W3 (block layout) is next.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -82,7 +82,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 |---|---|---|
 | W0 | Scaffold: window, event loop, pixel buffer, blit benchmark, this doc | ✅ complete (2026-08-07) |
 | W1 | HTML tokeniser (state machine, no recursion) | ✅ complete (2026-08-07) |
-| W2 | DOM (flat node array, depth cap, implied structure) | 📋 planned |
+| W2 | DOM (flat node array, depth cap, implied structure) | ✅ complete (2026-08-07) |
 | W3 | Block layout → display list (iterative, 64 KiB-safe) | 📋 planned |
 | W4 | Painting: rects, borders, glyphs, clipped scroll | 📋 planned |
 | W5 | Inline CSS subset (D4) | 📋 planned |
@@ -108,6 +108,29 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
   iterations and a 64 KiB random blob; every token is walked and every
   offset verified against the arena bounds. The tokeniser also runs in-guest
   at `/apps/webview` startup (`tokeniser smoke`), asserted by
+  `test_webview.sh`.
+
+## 7. The DOM (W2)
+
+`userspace/apps/webview/wv_dom.{h,c}` turns tokens into a tree:
+
+- Nodes are a **flat array** linked by indices (parent / first-child /
+  last-child / next-sibling) with an implicit document root at index 0 —
+  one allocation, and a tree walk that cannot run away.
+- An explicit open-element stack with a **depth cap of 512** (the plan's
+  D3): past the cap, deeper elements are appended without nesting and
+  `truncated` is set. The 10 000-deep document from the plan's gate is
+  built **in QEMU on the real 64 KiB user stack** every boot
+  (`dom deep test: PASS`), so a regression is caught where the bug is
+  visible, not on the 8 MB host stack.
+- Implicit closes: `<p>`, `<li>`, `<td>`/`<th>` (never the row), `<tr>`,
+  and 14 void elements (`area base br col embed hr img input link meta
+  param source track wbr`) never nest.
+- Mismatched close tags are reconciled pop-until-match; unmatched end tags
+  are ignored. `<b><i>x</b></i>` keeps the text and the tree.
+- Gate: `tests/unit/test_wv_dom.c` — 65 host checks, including 2000 fuzz
+  iterations with every parent/child/sibling link verified after every
+  build. In-guest: `dom smoke` + `dom deep test`, asserted by
   `test_webview.sh`.
 
 If only three phases are ever built, W1–W3 are the ones: a tokeniser, a DOM

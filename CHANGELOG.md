@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W2 — DOM] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W2: tokens → a tree with the implied structure real
+pages omit, bounded by a hard depth cap.
+
+- **`userspace/apps/webview/wv_dom.{h,c}`** — flat node array with index
+  links (parent / first-child / last-child / next-sibling), implicit
+  document root, explicit open-element stack with `WV_DOM_DEFAULT_DEPTH`
+  (512): past the cap elements are appended without nesting and
+  `truncated` is set — depth is bounded for any input.
+- **Implicit closes**: `<p>` closes an open `<p>`; `<li>` closes an open
+  `<li>`; `<td>`/`<th>` close cells but never the row; `<tr>` closes the
+  previous row; 14 void elements never nest.
+- **Mismatched closes** are reconciled pop-until-match (WHATWG):
+  `<b><i>x</b></i>` keeps the text; unmatched end tags are ignored.
+- **Host gate**: `tests/unit/test_wv_dom.c` — 65 checks, 0 failures:
+  `<p>a<p>b` → sibling paragraphs, `<b><i>x</b></i>` intact, deep
+  mismatch, void/li/td/tr rules, attribute carry, text merging, unmatched
+  ends, a 10 000-deep document (nodes=10001, depth=512, truncated=1), and
+  2000 fuzz iterations with every link verified.
+- **QEMU gate**: `/apps/webview` builds the 10 000-deep document in-guest
+  on the real 64 KiB user stack — `dom deep test: PASS`; `dom smoke: PASS`.
+  `test_webview.sh` asserts both (10 checks).
+- **Bug caught by the tests**: `<td>` was closing its `<tr>` (cells close
+  cells, rows close rows) — fixed with the regression.
+- `webview.elf` ~158 KB; `make test-unit` green.
+
 ## [WebView Phase W1 — HTML tokeniser] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W1: bytes → a tolerant token stream, with no
