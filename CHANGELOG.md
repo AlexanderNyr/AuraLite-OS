@@ -2,6 +2,45 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WebView Phase W5 — Inline CSS] 2026-08-07
+
+`WEBVIEW_PLAN.md` phase W5: the D4 subset — display, color,
+background-color, width, height, margin, padding, border, font-weight,
+text-align — from `style=` attributes and `<style>` blocks.
+
+- **`userspace/apps/webview/wv_css.{h,c}`** — declaration parser (tolerant:
+  a malformed declaration never discards its block), selector matcher
+  (tag / `#id` / `.class` / `type.class` / comma lists; no combinators;
+  later wins, inline wins), colours `#rgb` / `#rrggbb` / 16 names, lengths
+  `<int>px`, margin/padding 1-2-4 value forms, border width, unknown
+  properties ignored and unknown selectors skipped (CSS error recovery).
+- **Computed styles in layout**: display none/block, color inherited into
+  block text via the inline style stack, background-color, width, height,
+  per-side margin/padding overriding UA values, border painted by the
+  painter, font-weight through nesting, text-align with line tracking
+  (lines shifted on wrap and at block close).
+- **Host gate**: `tests/unit/test_wv_css.c` — 71 checks, 0 failures:
+  `style="color:#f00"` red-text gate, malformed declarations keep the
+  block, **every D4 property has a test that changes the output**, colour
+  parsing, selector precedence, display:none, 4-value margins, border
+  pixels, text-align at exact offsets, no-CSS builds hash identically to
+  W4, 500 fuzz iterations.
+- **Bugs found**: an infinite loop in the selector matcher on a trailing
+  comma; `#rgb` producing `0x0FF0000` instead of `0x00FF0000`; values with
+  leading whitespace failing colour parsing; `type.class` selectors not
+  matched. All fixed with regressions.
+- **Stack safety**: `wv_css_build` originally used a 64 KiB stack buffer
+  for `<style>` text — it overflowed the real user stack in QEMU (a
+  `[GUARD] user stack overflow`, exactly the failure the plan's
+  constraints exist to prevent). Reworked to parse text nodes in place;
+  no large stack buffers anywhere in the pipeline.
+- **QEMU gate**: the demo page carries a 5-rule stylesheet (h1 colour +
+  centring, p margins, green links, `.note` background + border, `#footer`
+  right-aligned grey): `css smoke: PASS (styled=0x4d394d5c,
+  plain=0x2f39d54f)`; the reference hash moved to **0x4D394D5C,
+  identical on host and guest**. `test_webview.sh` asserts it (14 checks).
+- `webview.elf` ~175 KB; `make test-unit` green.
+
 ## [WebView Phase W4 — Painting] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W4: display list → pixels. The first phase with

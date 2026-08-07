@@ -96,15 +96,43 @@ void wv_paint_text(wv_paint_t *P, int32_t x, int32_t y,
     }
 }
 
+/* Border: four bars around a box, clipped to [y0, y1) vertically (used by
+ * both the full run and the band repaint). */
+static void wv_paint_border(wv_paint_t *P, int32_t x, int32_t y,
+                            int32_t w, int32_t h, int32_t bw,
+                            uint32_t color, int32_t y0, int32_t y1) {
+    if (bw <= 0 || w <= 0 || h <= 0) return;
+    if (y + h <= y0 || y >= y1) return;
+    int32_t top = y < y0 ? y0 : y;
+    int32_t bot = y + h > y1 ? y1 : y + h;
+    if (top >= bot) return;
+    /* top bar */
+    wv_paint_rect(P, x, top, w, top < y + bw ? y + bw - top : 0, color);
+    /* bottom bar */
+    if (y + h - bw < bot)
+        wv_paint_rect(P, x, y + h - bw, w, bot - (y + h - bw), color);
+    /* left bar (excluding the corners already drawn) */
+    int32_t ly0 = y + bw < top ? top : y + bw;
+    int32_t ly1 = y + h - bw > bot ? bot : y + h - bw;
+    if (ly0 < ly1)
+        wv_paint_rect(P, x, ly0, bw, ly1 - ly0, color);
+    /* right bar */
+    if (ly0 < ly1)
+        wv_paint_rect(P, x + w - bw, ly0, bw, ly1 - ly0, color);
+}
+
 void wv_paint_run(wv_paint_t *P, const wv_layout_t *L, int32_t scroll_y) {
     if (!P->page || !L || !L->items) return;
     for (size_t i = 0; i < L->item_count; i++) {
         const wv_disp_t *it = &L->items[i];
         int32_t py = it->y - scroll_y;
         if (it->type == WV_D_BOX) {
-            if (!it->bg) continue;                  /* transparent */
             if (py + (int32_t)it->h <= 0 || py >= P->h) continue;
-            wv_paint_rect(P, it->x, py, (int32_t)it->w, (int32_t)it->h, it->bg);
+            if (it->bg)
+                wv_paint_rect(P, it->x, py, (int32_t)it->w, (int32_t)it->h, it->bg);
+            if (it->border)
+                wv_paint_border(P, it->x, py, (int32_t)it->w, (int32_t)it->h,
+                                it->border, it->border_color, 0, P->h);
         } else { /* WV_D_TEXT */
             if (py + WV_FONT_H <= 0 || py >= P->h) continue;   /* cull */
             const char *s = wv_layout_str(L, it->text_off);
@@ -155,7 +183,6 @@ void wv_paint_band(wv_paint_t *P, const wv_layout_t *L, int32_t scroll_y,
         int32_t ih = (it->type == WV_D_BOX) ? (int32_t)it->h : WV_FONT_H;
         if (py + ih <= band_top || py >= band_top + band_h) continue;
         if (it->type == WV_D_BOX) {
-            if (!it->bg) continue;
             /* CLIP the box to the band: its part above the band was
              * already painted by the retained buffer, and repainting it
              * would erase content drawn on top of it.  (A box fully
@@ -163,8 +190,14 @@ void wv_paint_band(wv_paint_t *P, const wv_layout_t *L, int32_t scroll_y,
             int32_t y0 = py < band_top ? band_top : py;
             int32_t y1 = py + ih;
             if (y1 > band_top + band_h) y1 = band_top + band_h;
-            if (y0 < y1)
-                wv_paint_rect(P, it->x, y0, (int32_t)it->w, y1 - y0, it->bg);
+            if (y0 < y1) {
+                if (it->bg)
+                    wv_paint_rect(P, it->x, y0, (int32_t)it->w, y1 - y0, it->bg);
+                if (it->border)
+                    wv_paint_border(P, it->x, py, (int32_t)it->w, ih,
+                                    it->border, it->border_color,
+                                    band_top, band_top + band_h);
+            }
         } else {
             /* Text is drawn whole (glyphs may straddle the band edge —
              * exactly as the full repaint draws them). */

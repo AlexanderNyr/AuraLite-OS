@@ -1,7 +1,7 @@
 # AuraLite OS Web View (`/apps/webview`)
 
-**Status:** Phases W0–W4 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
-scaffold, HTML tokeniser, DOM, block layout and painting complete. W5 (inline CSS) is next.
+**Status:** Phases W0–W5 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+scaffold, tokeniser, DOM, layout, painting and inline CSS complete. W6 (navigation) is next.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
@@ -85,7 +85,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W2 | DOM (flat node array, depth cap, implied structure) | ✅ complete (2026-08-07) |
 | W3 | Block layout → display list (iterative, 64 KiB-safe) | ✅ complete (2026-08-07) |
 | W4 | Painting: rects, borders, glyphs, clipped scroll | ✅ complete (2026-08-07) |
-| W5 | Inline CSS subset (D4) | 📋 planned |
+| W5 | Inline CSS subset (D4) | ✅ complete (2026-08-07) |
 | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | 📋 planned |
 | W7 | `<canvas>` with an OpenGL context via FBO | 📋 planned |
 | W8 | Retire or keep `gbrowser` | 📋 planned |
@@ -189,3 +189,25 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
   `<body>` box, and a 10 000-line page scrolling in **144 µs** (budget
   7 500 µs). In-guest: `paint smoke` + `paint scroll smoke`, asserted by
   `test_webview.sh`.
+
+## 10. Inline CSS (W5)
+
+`userspace/apps/webview/wv_css.{h,c}` implements the D4 subset from
+`style=` attributes and `<style>` blocks:
+
+- Properties: `display` (block/inline/none), `color`, `background-color`,
+  `width`, `height`, `margin`, `padding` (1-2-4 value forms), `border`
+  (width; the style keyword and colour are parsed and ignored per CSS),
+  `font-weight`, `text-align` (left/center/right — lines are tracked and
+  shifted on wrap and at block close).
+- Selectors: tag, `#id`, `.class`, `type.class`, comma lists. No
+  combinators; no specificity — later rules win, inline wins.
+- Colours: `#rgb`, `#rrggbb`, the 16 named colours.
+- Error handling per CSS: unknown properties ignored, unknown selectors
+  skipped, a malformed declaration never discards the rest of its block.
+- The demo page carries a 5-rule stylesheet (h1 colour + centring, p
+  margins, green links, `.note` background + border, `#footer` right-
+  aligned grey) and boots with `css smoke: PASS (styled=0x4d394d5c,
+  plain=0x2f39d54f)` — the stylesheet demonstrably changes the output.
+- Gate: `tests/unit/test_wv_css.c` — 71 host checks, 0 failures, every D4
+  property with a test that changes the output; 500 fuzz iterations.

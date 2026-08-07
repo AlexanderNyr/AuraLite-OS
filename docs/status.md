@@ -165,7 +165,7 @@ Legend:
 | `/http` | 🧪 | Uses DNS/TCP syscalls. |
 | `/browser` | 🧪 | Text rendering of simple HTTP/HTML responses. |
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
-| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W4): scaffold + measured blit budget + `/tmp/webview.frames`; W1 tokeniser (122 checks); W2 DOM (65 checks; 10 000-deep doc on the 64 KiB stack); W3 block layout → display list (79 checks; 5 000 boxes in 1 064 µs host / 10 101 µs QEMU-TCG); **W4 painting** (`wv_paint` — PSF2 VGA 8×16 glyphs, synthesised bold, viewport culling, memmove+band scrolling with band-clipped boxes; 42 checks incl. the **reference hash 0xFC12ACDC** and 144 µs scroll steps on a 10 000-line page; guest `paint smoke`/`paint scroll smoke` PASS with the same hash). CSS is W5. See `docs/webview.md`. |
+| `/webview` | 🧪 | Web view (WEBVIEW_PLAN W0–W5): scaffold + measured blit budget + `/tmp/webview.frames`; W1 tokeniser (122 checks); W2 DOM (65 checks; 10 000-deep doc on the 64 KiB stack); W3 layout → display list (79 checks; 5 000 boxes in 1 064 µs); W4 painting (42 checks; **reference hash 0x4D394D5C host==guest**; 144 µs scroll steps); **W5 inline CSS** (`wv_css` — D4 subset from `style=`/`<style>`: display/color/background/width/height/margin/padding/border/font-weight/text-align; tag/#id/.class/type.class/comma selectors; later-wins-inline-wins; 71 checks; `css smoke: PASS`). Navigation is W6. See `docs/webview.md`. |
 
 ## Known low-priority limitations
 

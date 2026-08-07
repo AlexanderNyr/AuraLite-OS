@@ -28,6 +28,7 @@
 #include "userspace/apps/webview/wv_html.h"
 #include "userspace/apps/webview/wv_dom.h"
 #include "userspace/apps/webview/wv_layout.h"
+#include "userspace/apps/webview/wv_css.h"
 #include "userspace/apps/webview/wv_paint.h"
 
 static int failures = 0;
@@ -54,6 +55,11 @@ static wv_inl_t     linls[520];
 static wv_walk_t    lwalk[520];
 static wv_layout_t  la;
 
+static wv_css_rule_t crules[WV_CSS_MAX_RULES];
+static wv_css_decl_t cdecls[WV_CSS_MAX_DECLS];
+static char          cpool[WV_CSS_POOL];
+static wv_css_t      css;
+
 #define PAGE_W 800
 #define PAGE_H 600
 static uint32_t page[PAGE_W * PAGE_H];
@@ -70,13 +76,16 @@ static void reset(void) {
     memset(page, 0, sizeof(page));
 }
 
-/* Full pipeline: html -> tokens -> DOM -> layout -> paint(paper+run).
+/* Full pipeline: html -> tokens -> DOM -> CSS -> layout -> paint.
  * Returns the painted page hash. */
 static uint32_t render(const char *html, int32_t viewport, int32_t scroll_y) {
     reset();
     if (wv_html_tokenize(&ta, html, strlen(html)) < 0) return 0;
     if (wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH) < 0) return 0;
-    if (wv_layout_run(&la, &da, viewport) < 0) return 0;
+    wv_css_init(&css, crules, WV_CSS_MAX_RULES, cdecls, WV_CSS_MAX_DECLS,
+                cpool, WV_CSS_POOL);
+    if (wv_css_build(&css, &da) < 0) return 0;
+    if (wv_layout_run(&la, &da, viewport, &css) < 0) return 0;
     wv_paint_rect(&P, 0, 0, PAGE_W, PAGE_H, 0x00FFFFFFu);   /* paper */
     wv_paint_run(&P, &la, scroll_y);
     return wv_paint_hash(page, PAGE_W, PAGE_H);
@@ -190,36 +199,55 @@ static void test_reference_hash(void) {
      * value below is the deliberate, reviewed output; changing the
      * rendering means updating it on purpose. */
     const char *doc =
-        "<body><h1>AuraLite WebView</h1>"
-        "<p>This is a <b>rendered</b> page: a "
-        "<a href=\"http://example.com\">link</a>, <u>underline</u>, and a list.</p>"
-        "<ul><li>one<li>two<li>three</ul>"
-        "<hr>"
-        "<p>The renderer is 2D: pixels are written into a buffer and presented with ag_blit. "
-        "The plan measured a full-page blit at 0.125 ms against 3.7 ms for two hundred GL triangles, "
-        "so OpenGL appears in exactly one phase \u2014 canvas.</p>"
-        "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
-        "ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.</p>"
-        "<p>Scroll with the wheel or arrow keys. The paint path is hash-checked: a change in rendering "
-        "is a deliberate act.</p>"
-        "<canvas width=64 height=48></canvas>"
-        "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
-        "ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco "
-        "laboris nisi ut aliquip ex ea commodo consequat.</p>"
-        "<p>The user stack is 64 KiB, so the tokeniser, the DOM and the layout walk are iterative by "
-        "design with explicit depth caps \u2014 a 10 000-deep document is built on it every boot.</p>"
-        "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor "
-    "incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud "
-    "exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure "
-    "dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>"
-    "<p>Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt "
-    "mollit anim id est laborum. Sed ut perspiciatis unde omnis iste natus error sit voluptatem "
-    "accusantium doloremque laudantium.</p>"
-    "<p>Scrolling repaints only the exposed band: the retained buffer is memmoved and the "
-    "gap is drawn from the display list, which the plan measured at 0.068 ms.</p>"
+"<style>"
+"h1 { color: #2f60c0; text-align: center }"
+"p  { margin: 16px 0 }"
+"a  { color: green }"
+".note { background-color: #fff3bf; border: 1px solid #c0a030 }"
+"#footer { text-align: right; color: gray }"
+"</style>"
+"<body>"
+"<h1>AuraLite WebView</h1>"
+"<p>This is a <b>rendered</b> page: a <a href=\"http://example.com\">link</a>, "
+"<u>underline</u>, and a list.</p>"
+"<ul><li>one<li>two<li>three</ul>"
+"<hr>"
+"<p>The renderer is 2D: pixels are written into a buffer and presented with ag_blit. "
+"The plan measured a full-page blit at 0.125 ms against 3.7 ms for two hundred GL triangles, "
+"so OpenGL appears in exactly one phase \u2014 canvas.</p>"
+"<p class=\"note\">Inline CSS phase W5: color, background-color, width, height, margin, "
+"padding, border, font-weight, text-align \u2014 the named D4 list.</p>"
+"<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+"ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.</p>"
+"<p>Scroll with the wheel or arrow keys. The paint path is hash-checked: a change in rendering "
+"is a deliberate act.</p>"
+"<canvas width=64 height=48></canvas>"
+"<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+"ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco "
+"laboris nisi ut aliquip ex ea commodo consequat.</p>"
+"<p>The user stack is 64 KiB, so the tokeniser, the DOM and the layout walk are iterative by "
+"design with explicit depth caps \u2014 a 10 000-deep document is built on it every boot.</p>"
+"<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+"ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco "
+"laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in "
+"voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>"
+"<p>Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit "
+"anim id est laborum. Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium "
+"doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis.</p>"
+"<p>Scrolling repaints only the exposed band: the retained buffer is memmoved and the gap is "
+"drawn from the display list \u2014 the plan measured that path at 0.068 ms.</p>"
+"<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+"ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco "
+"laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in "
+"voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat "
+"non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>"
+"<p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque "
+"laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto "
+"beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur.</p>"
+"<p id=\"footer\">AuraLite WebView \u2014 W5</p>"
 "</body>";
     uint32_t h = render(doc, 800, 0);
-    CK(h == 0xFC12ACDCu);   /* reference — update deliberately */
+    CK(h == 0x4D394D5Cu);   /* reference — update deliberately */
     if (h != 0x8F9E9A21u)
         printf("  (got 0x%08x)\n", h);
 }
@@ -247,7 +275,7 @@ static void test_scroll_equivalence(void) {
     reset();
     CK(wv_html_tokenize(&ta, doc, p) > 0);
     CK(wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH) > 0);
-    CK(wv_layout_run(&la, &da, 800) > 0);
+    CK(wv_layout_run(&la, &da, 800, 0) > 0);
 
     /* way 1: full repaint at scroll=40 */
     memset(page, 0, sizeof(page));
@@ -316,7 +344,7 @@ static void test_scroll_budget(void) {
     static wv_walk_t bwk[520];
     wv_layout_t bl;
     wv_layout_init(&bl, bdi, 22000, blp, sizeof(blp), bbl, 520, bin, 520, bwk, 520);
-    CK(wv_layout_run(&bl, &bd, 800) == 20001);
+    CK(wv_layout_run(&bl, &bd, 800, 0) == 20001);
     CK(bl.content_h >= 10000 * 16 - 16);
 
     memset(page, 0, sizeof(page));
@@ -362,7 +390,7 @@ static void test_fuzz_paint(void) {
         reset();
         if (wv_html_tokenize(&ta, (const char *)buf, len) < 0) { CK(0); return; }
         if (wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH) < 0) { CK(0); return; }
-        if (wv_layout_run(&la, &da, 400 + (int)(frand() % 800)) < 0) { CK(0); return; }
+        if (wv_layout_run(&la, &da, 400 + (int)(frand() % 800), 0) < 0) { CK(0); return; }
         memset(page, 0xAA, sizeof(page));
         wv_paint_run(&P, &la, (int32_t)(frand() % 4096));
         uint32_t h = wv_paint_hash(page, PAGE_W, PAGE_H);

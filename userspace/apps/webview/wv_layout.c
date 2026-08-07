@@ -188,6 +188,22 @@ static int wv_attr_int(const wv_dom_t *d, uint32_t node, const char *name) {
 
 /* ---- word layout ---- */
 
+/* Align the finished line: shift every text item of the current line by
+ * the text-align offset.  Called on a wrap and at block close. */
+static void finish_line(wv_layout_t *L, wv_blk_t *b) {
+    if (b->align == 0 || b->line_start < 0) return;
+    int32_t right = b->content_x + b->content_w;
+    int32_t dx = right - b->line_w;
+    if (b->align == 1) dx /= 2;                 /* center */
+    if (dx <= 0) { b->line_start = -1; return; }
+    for (int32_t i = b->line_start; i < (int32_t)L->item_count; i++) {
+        wv_disp_t *it = &L->items[i];
+        if (it->type != WV_D_TEXT || it->y != b->inl_y) break;
+        it->x += dx;
+    }
+    b->line_start = -1;
+}
+
 static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
                         const char *word, uint32_t wlen) {
     int32_t w = (int32_t)wlen * WV_GLYPH_W;
@@ -196,6 +212,7 @@ static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
     /* A pending word-space is only kept when the word fits after it. */
     if (b->inl_has_text) {
         if (b->inl_x + WV_GLYPH_W + w > right) {
+            finish_line(L, b);                  /* align the old line */
             b->inl_y += WV_LINE_H;              /* wrap */
             b->inl_x = b->content_x;
             b->inl_has_text = 0;
@@ -217,15 +234,19 @@ static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
     it.underline = (uint8_t)st->underline;
     it.text_off = off;
     it.text_len = wlen;
-    wv_layout_add_item(L, &it);
+    int idx = wv_layout_add_item(L, &it);
+
+    if (!b->inl_has_text && b->line_start < 0)
+        b->line_start = idx;                    /* first item of the line */
+    b->line_w = b->inl_x + w - b->content_x;
 
     b->inl_x += w;
     b->inl_has_text = 1;
 }
 
 static void layout_br(wv_layout_t *L, wv_blk_t *b) {
-    (void)L;
     if (!b->inl_has_text) return;    /* leading breaks collapse */
+    finish_line(L, b);
     b->inl_y += WV_LINE_H;
     b->inl_x = b->content_x;
     b->inl_has_text = 0;
@@ -292,16 +313,30 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
     const char *name = wv_dom_str(d, nd->name_off);
     uint32_t nlen = nd->name_len;
 
+    wv_style_t st;
+    wv_style_default(&st);
+    if (L->css)
+        wv_css_resolve(L->css, d, node, &st);
+
     ua_box m, p;
     ua_margin(name, nlen, &m);
     ua_padding(name, nlen, &p);
+    /* CSS overrides the UA box, side by side */
+    if (st.margin[0] != WV_STYLE_UNSET) m.l = st.margin[0];
+    if (st.margin[1] != WV_STYLE_UNSET) m.t = st.margin[1];
+    if (st.margin[2] != WV_STYLE_UNSET) m.r = st.margin[2];
+    if (st.margin[3] != WV_STYLE_UNSET) m.b = st.margin[3];
+    if (st.padding[0] != WV_STYLE_UNSET) p.l = st.padding[0];
+    if (st.padding[1] != WV_STYLE_UNSET) p.t = st.padding[1];
+    if (st.padding[2] != WV_STYLE_UNSET) p.r = st.padding[2];
+    if (st.padding[3] != WV_STYLE_UNSET) p.b = st.padding[3];
 
     wv_blk_t *parent = &L->blks[L->blk_used - 1];
     int32_t mw = parent->content_w - m.l - m.r;
     if (mw < 0) mw = 0;
 
     /* <canvas> sizes itself from its attributes (W7 will back it with an
-     * FBO); the UA default is 300x150. */
+     * FBO); the UA default is 300x150.  CSS width/height override. */
     uint32_t min_h = 0;
     if (wv_name_is(name, nlen, "canvas")) {
         int cw = wv_attr_int(d, node, "width");
@@ -311,6 +346,8 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
     } else if (wv_name_is(name, nlen, "hr")) {
         min_h = 2;
     }
+    if (st.width != WV_STYLE_UNSET) mw = st.width;
+    if (st.height != WV_STYLE_UNSET) min_h = (uint32_t)st.height;
 
     int32_t bx = parent->content_x + m.l;
     int32_t by = parent->cur_y + m.t;
@@ -325,6 +362,9 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
     it.w = (uint32_t)mw;
     it.h = 0;
     it.bg = ua_bg(name, nlen);
+    if (st.bg != 0xFF000000u) it.bg = st.bg;
+    it.border = (uint16_t)(st.border > 0 ? st.border : 0);
+    it.border_color = 0x00000000u;
     int idx = wv_layout_add_item(L, &it);
     if (idx < 0) return;
 
@@ -346,9 +386,27 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
     b->min_h = min_h;
     b->box_item = (uint32_t)idx;
     b->bg = ua_bg(name, nlen);
+    if (st.bg != 0xFF000000u) b->bg = st.bg;
     b->m_l = m.l; b->m_t = m.t; b->m_r = m.r; b->m_b = m.b;
     b->p_l = p.l; b->p_t = p.t; b->p_r = p.r; b->p_b = p.b;
     b->preformatted = wv_name_is(name, nlen, "pre");
+    b->align = st.align;
+    b->line_start = -1;
+    b->line_w = 0;
+
+    /* push a base inline style for this block: block styles (colour,
+     * font-weight) inherit into the text inside it */
+    if (L->inl_used < L->inl_cap) {
+        b->inl_mark = L->inl_used;               /* where we started */
+        wv_inl_t *cur = &L->inls[L->inl_used - 1];   /* current top */
+        wv_inl_t *nw = &L->inls[L->inl_used++];
+        *nw = *cur;                              /* inherit */
+        if (st.color != 0xFF000000u) nw->color = st.color;
+        if (st.bold) nw->bold = 1;
+    } else {
+        b->inl_mark = L->inl_used;
+        L->truncated = 1;
+    }
 }
 
 static void close_block(wv_layout_t *L) {
@@ -357,6 +415,8 @@ static void close_block(wv_layout_t *L) {
     wv_blk_t *parent = &L->blks[L->blk_used - 2];
 
     /* finalise the inline flow, then the box height */
+    finish_line(L, b);                           /* align the last line */
+    if (L->inl_used > b->inl_mark) L->inl_used = b->inl_mark;
     int32_t ch = b->cur_y;
     if (b->inl_has_text && b->inl_y + WV_LINE_H > ch)
         ch = b->inl_y + WV_LINE_H;
@@ -377,8 +437,10 @@ static void close_block(wv_layout_t *L) {
 
 /* ---- entry points ---- */
 
-int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w) {
+int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w,
+                  const wv_css_t *css) {
     if (!L || !d || !d->nodes || viewport_w < 1) return -1;
+    L->css = css;
     wv_layout_init(L, L->items, L->item_cap, L->pool, L->pool_cap,
                    L->blks, L->blk_cap, L->inls, L->inl_cap,
                    L->walk, L->walk_cap);
@@ -406,6 +468,10 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w) {
         root->m_l = root->m_t = root->m_r = root->m_b = 0;
         root->p_l = root->p_t = root->p_r = root->p_b = 0;
         root->preformatted = 0;
+        root->align = 0;
+        root->inl_mark = 0;
+        root->line_start = -1;
+        root->line_w = 0;
         L->blk_used = 1;
 
         wv_disp_t it;
@@ -481,6 +547,25 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w) {
         } else { /* element */
             const char *name = wv_dom_str(d, nd->name_off);
             uint32_t nlen = nd->name_len;
+
+            wv_style_t elst;
+            wv_style_default(&elst);
+            if (L->css)
+                wv_css_resolve(L->css, d, node, &elst);
+
+            if (elst.display == 2) {
+                /* display: none — skip the subtree, move to the sibling */
+                uint32_t ns = nd->next_sibling;
+                if (ns != WV_NULL && ns < d->node_count &&
+                    L->walk_used < L->walk_cap) {
+                    L->walk[L->walk_used - 1].node = ns;
+                    L->walk[L->walk_used - 1].phase = 0;
+                } else {
+                    L->walk_used--;
+                }
+                continue;
+            }
+
             if (wv_hidden(name, nlen)) {
                 /* skip children entirely */
                 uint32_t ns = nd->next_sibling;
@@ -535,9 +620,11 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w) {
                     wv_inl_t *nw = &L->inls[L->inl_used++];
                     *nw = *st;
                     if (ua_bold(name, nlen)) nw->bold = 1;
+                    if (elst.bold) nw->bold = 1;               /* CSS */
                     if (ua_underline(name, nlen)) nw->underline = 1;
                     if (ua_color(name, nlen) != 0xFF000000u)
                         nw->color = ua_color(name, nlen);
+                    if (elst.color != 0xFF000000u) nw->color = elst.color;
                 } else {
                     L->truncated = 1;
                 }

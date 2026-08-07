@@ -68,7 +68,7 @@ static int layout(const char *html, int32_t viewport) {
     reset();
     if (wv_html_tokenize(&ta, html, strlen(html)) < 0) return -1;
     if (wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH) < 0) return -1;
-    return wv_layout_run(&la, &da, viewport);
+    return wv_layout_run(&la, &da, viewport, 0);
 }
 
 static const char *itext(size_t i) {
@@ -347,7 +347,7 @@ static void test_5000_boxes_budget(void) {
                    big_blks, 520, big_inls, 520, big_walk, 520);
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    int ni = wv_layout_run(&bl, &bd, 800);
+    int ni = wv_layout_run(&bl, &bd, 800, 0);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     long us = (t1.tv_sec - t0.tv_sec) * 1000000L +
               (t1.tv_nsec - t0.tv_nsec) / 1000L;
@@ -380,7 +380,7 @@ static void test_fuzz_layout(void) {
         reset();
         if (wv_html_tokenize(&ta, (const char *)buf, len) < 0) { CK(0); return; }
         if (wv_dom_build(&da, &ta, WV_DOM_DEFAULT_DEPTH) < 0) { CK(0); return; }
-        int ni = wv_layout_run(&la, &da, 400 + (int)(frand() % 1200));
+        int ni = wv_layout_run(&la, &da, 400 + (int)(frand() % 1200), 0);
         if (ni < 0) { CK(0); return; }
         if (!layout_consistent()) { CK(0); printf("  (fuzz iter %d)\n", iter); return; }
     }

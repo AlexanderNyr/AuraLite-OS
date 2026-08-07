@@ -1,6 +1,6 @@
 # AuraLite OS — Web View Plan
 
-## Status: W0–W4 COMPLETE ✅ · W5–W8 PLANNED 📋
+## Status: W0–W5 COMPLETE ✅ · W6–W8 PLANNED 📋
 
 This document answers:
 
@@ -379,17 +379,18 @@ it is.
 
 ---
 
-### Phase W5 — Inline CSS
+### Phase W5 — Inline CSS ✅ COMPLETE
 
 **Objective:** the subset from D4, from `style=` attributes and `<style>`.
 
 #### Tasks
 
-- [ ] A declaration parser: `property: value` pairs, `;`-separated.
-- [ ] Selector matching limited to tag name, `#id` and `.class`. No
-      combinators, no specificity cascade beyond "later wins, inline wins".
-- [ ] Colour parsing: `#rgb`, `#rrggbb`, and the 16 named colours.
-- [ ] Unknown properties are **ignored**, unknown selectors **skipped** —
+- [x] A declaration parser: `property: value` pairs, `;`-separated.
+- [x] Selector matching limited to tag name, `#id` and `.class` (plus
+      `type.class` and comma lists). No combinators, no specificity cascade
+      beyond "later wins, inline wins".
+- [x] Colour parsing: `#rgb`, `#rrggbb`, and the 16 named colours.
+- [x] Unknown properties are **ignored**, unknown selectors **skipped** —
       the one place in this plan where silently ignoring input is correct,
       because that is what the CSS error-handling rules require.
 
@@ -402,6 +403,18 @@ it is.
 #### Deliverable
 
 `patches/WEB_W5_css.patch`
+
+#### Results (verified 2026-08-07)
+
+| Item | Outcome |
+|---|---|
+| `userspace/apps/webview/wv_css.{h,c}` | Declaration parser (`;`-separated, tolerant: a no-colon declaration is skipped to the next `;`, never discarding the block); selector matcher (tag / `#id` / `.class` / `type.class` / comma lists, no combinators); colours `#rgb` / `#rrggbb` / 16 names; lengths as `<int>px`; margin/padding 1-2-4 value forms; border width; cascade: later rules win, inline `style=` wins; unknown properties/selectors ignored (CSS error recovery) |
+| Computed styles in layout | `wv_style_t` resolved per element; layout honours display none/block, color (inherited into block text via the inline style stack), background-color, width, height, margin/padding (per side, overriding UA values), border (drawn by the painter), font-weight (inherited through nesting), text-align (lines are tracked and shifted on wrap and at block close) |
+| Host gate | `tests/unit/test_wv_css.c` — **71 checks, 0 failures**: the plan's `style="color:#f00"` red-text gate; malformed declarations keep the rest of the block; **every D4 property has a test that changes the output**; colours (13 cases); selectors incl. `#id` vs `.class` vs `p.note` precedence and comma lists; display:none in a stylesheet; margin 4-value form; border paints; text-align centre/right at exact pixel offsets; no-CSS builds hash identically to W4; 500 fuzz iterations with random `<style>` content |
+| Bugs found | (1) an infinite loop in the selector matcher on a trailing comma (empty tail never advanced) — the fuzz/`h1, h2` test caught it; (2) `#rgb` produced `0x0FF0000` instead of `0x00FF0000` (the channel shift was wrong); (3) values with leading whitespace (`" maroon"`) failed colour parsing; (4) `p.note` selectors were not matched. All fixed with regressions |
+| QEMU gate | `/apps/webview` renders a page with a 5-rule `<style>` (h1 colour+centred, p margins, green links, `.note` background+border, `#footer` right-aligned grey): `css smoke: PASS (styled=0x4d394d5c, plain=0x2f39d54f)` — the stylesheet demonstrably changes the output — and the reference hash moved to **0x4D394D5C, identical on host and guest**; `test_webview.sh` asserts the css smoke (14 checks now) |
+| Stack safety | `wv_css_build` originally copied `<style>` text into a 64 KiB stack buffer — it overflowed the real user stack in QEMU (a `[GUARD] user stack overflow`, the exact failure the plan's constraints exist to prevent). Reworked to parse each text node in place: no large stack buffers anywhere in the pipeline |
+| Size | `webview.elf` ~175 KB (CSS adds ~13 KB) — inside `SPAWN_MAX_IMAGE` |
 
 ---
 

@@ -41,6 +41,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "wv_dom.h"
+#include "wv_css.h"
 
 /* ---- display list ---- */
 
@@ -67,6 +68,9 @@ typedef struct {
     uint32_t bg;        /* box fill, 0 = transparent (WV_D_BOX) */
     uint32_t text_off;  /* string in the layout pool */
     uint32_t text_len;
+    uint16_t border;    /* border width px, 0 = none (WV_D_BOX) */
+    uint16_t _pad2;
+    uint32_t border_color;
 } wv_disp_t;
 
 /* ---- working stacks (caller-provided, so no heap and no big locals) ---- */
@@ -88,6 +92,10 @@ typedef struct {
     int32_t m_l, m_t, m_r, m_b;
     int32_t p_l, p_t, p_r, p_b;
     int     preformatted;
+    int     align;          /* 0 left, 1 center, 2 right (W5 text-align) */
+    size_t  inl_mark;       /* inline-style stack depth at block open */
+    int32_t line_start;     /* first display item of the current line */
+    int32_t line_w;         /* width occupied on the current line */
 } wv_blk_t;
 
 typedef struct {
@@ -113,6 +121,7 @@ typedef struct {
     wv_blk_t  *blks;   size_t blk_cap;  size_t blk_used;
     wv_inl_t  *inls;   size_t inl_cap;  size_t inl_used;
     wv_walk_t *walk;   size_t walk_cap; size_t walk_used;
+    const wv_css_t *css;   /* stylesheet, may be NULL */
     int        truncated;
     int32_t    viewport_w;
     uint32_t   content_h;   /* total laid-out height of the page */
@@ -125,10 +134,11 @@ void wv_layout_init(wv_layout_t *L,
                     wv_inl_t *inls, size_t inl_cap,
                     wv_walk_t *walk, size_t walk_cap);
 
-/* Lay out a DOM into the display list.  Returns item_count or -1 on NULL
- * args / bad viewport.  `truncated` is set when any cap was hit; the
- * result is still usable. */
-int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w);
+/* Lay out a DOM into the display list.  css may be NULL (UA styles only).
+ * Returns item_count or -1 on NULL args / bad viewport.  `truncated` is
+ * set when any cap was hit; the result is still usable. */
+int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w,
+                  const wv_css_t *css);
 
 const char *wv_layout_str(const wv_layout_t *L, uint32_t off);
 

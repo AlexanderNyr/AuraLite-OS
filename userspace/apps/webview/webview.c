@@ -71,13 +71,24 @@ static uint32_t frame_limit(void) {
  * hash 0x973F0DC8 at scroll 0 — the paint gate lives in both places. */
 
 static const char k_page_html[] =
-    "<body><h1>AuraLite WebView</h1>"
-    "<p>This is a <b>rendered</b> page: a <a href=\"http://example.com\">link</a>, <u>underline</u>, and a list.</p>"
+    "<style>"
+    "h1 { color: #2f60c0; text-align: center }"
+    "p  { margin: 16px 0 }"
+    "a  { color: green }"
+    ".note { background-color: #fff3bf; border: 1px solid #c0a030 }"
+    "#footer { text-align: right; color: gray }"
+    "</style>"
+    "<body>"
+    "<h1>AuraLite WebView</h1>"
+    "<p>This is a <b>rendered</b> page: a <a href=\"http://example.com\">link</a>, "
+    "<u>underline</u>, and a list.</p>"
     "<ul><li>one<li>two<li>three</ul>"
     "<hr>"
     "<p>The renderer is 2D: pixels are written into a buffer and presented with ag_blit. "
     "The plan measured a full-page blit at 0.125 ms against 3.7 ms for two hundred GL triangles, "
     "so OpenGL appears in exactly one phase \u2014 canvas.</p>"
+    "<p class=\"note\">Inline CSS phase W5: color, background-color, width, height, margin, "
+    "padding, border, font-weight, text-align \u2014 the named D4 list.</p>"
     "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
     "ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.</p>"
     "<p>Scroll with the wheel or arrow keys. The paint path is hash-checked: a change in rendering "
@@ -88,19 +99,29 @@ static const char k_page_html[] =
     "laboris nisi ut aliquip ex ea commodo consequat.</p>"
     "<p>The user stack is 64 KiB, so the tokeniser, the DOM and the layout walk are iterative by "
     "design with explicit depth caps \u2014 a 10 000-deep document is built on it every boot.</p>"
-    "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor "
-    "incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud "
-    "exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure "
-    "dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>"
-    "<p>Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt "
-    "mollit anim id est laborum. Sed ut perspiciatis unde omnis iste natus error sit voluptatem "
-    "accusantium doloremque laudantium.</p>"
-    "<p>Scrolling repaints only the exposed band: the retained buffer is memmoved and the "
-    "gap is drawn from the display list, which the plan measured at 0.068 ms.</p>"
-"</body>";
+    "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+    "ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco "
+    "laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in "
+    "voluptate velit esse cillum dolore eu fugiat nulla pariatur.</p>"
+    "<p>Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit "
+    "anim id est laborum. Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium "
+    "doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis.</p>"
+    "<p>Scrolling repaints only the exposed band: the retained buffer is memmoved and the gap is "
+    "drawn from the display list \u2014 the plan measured that path at 0.068 ms.</p>"
+    "<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt "
+    "ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco "
+    "laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in "
+    "voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat "
+    "non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</p>"
+    "<p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque "
+    "laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto "
+    "beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur.</p>"
+    "<p id=\"footer\">AuraLite WebView \u2014 W5</p>"
+    "</body>";
 
 static wv_layout_t lay;
 static wv_paint_t  P;
+static wv_css_t    css;
 static int32_t max_scroll = 0;
 
 /* Tokenise + build DOM + layout + paint context, once.  All working
@@ -118,6 +139,9 @@ static void page_build(void) {
     static wv_blk_t     lb[520];
     static wv_inl_t     li[520];
     static wv_walk_t    lw[520];
+    static wv_css_rule_t cr[256];
+    static wv_css_decl_t cd[1024];
+    static char         cp[32768];
 
     wv_arena_t toks_a;
     wv_arena_init(&toks_a, tt, 2048, ta, 2048, tp, sizeof(tp));
@@ -125,8 +149,11 @@ static void page_build(void) {
     wv_dom_t dom;
     wv_dom_init(&dom, dn, 2048, dda, 2048, dpp, sizeof(dpp), stk, 512);
     wv_dom_build(&dom, &toks_a, 512);
+    wv_css_init(&css, cr, 256, cd, 1024, cp, sizeof(cp));
+    wv_css_build(&css, &dom);
+    printf("[webview] css rules parsed: %d\n", (int)css.rule_count);
     wv_layout_init(&lay, di, 4096, lpo, sizeof(lpo), lb, 520, li, 520, lw, 520);
-    wv_layout_run(&lay, &dom, VIEW_W);
+    wv_layout_run(&lay, &dom, VIEW_W, &css);
     wv_paint_init(&P, page, VIEW_W, VIEW_H);
     max_scroll = lay.content_h > (uint32_t)VIEW_H
                      ? (int32_t)lay.content_h - VIEW_H : 0;
@@ -140,8 +167,45 @@ static void paint_smoke(void) {
     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
     wv_paint_run(&P, &lay, 0);
     uint32_t h = wv_paint_hash(page, VIEW_W, VIEW_H);
-    int ok = (h == 0xFC12ACDCu);
+    int ok = (h == 0x4D394D5Cu);
     printf("[webview] paint smoke: %s (hash=0x%08x)\n", ok ? "PASS" : "FAIL", h);
+}
+
+/* The W5 smoke: the <style> block must change the output (the styled page
+ * hash differs from the un-styled build of the same document). */
+static void css_smoke(void) {
+    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
+    wv_paint_run(&P, &lay, 0);
+    uint32_t h_css = wv_paint_hash(page, VIEW_W, VIEW_H);
+
+    static wv_token_t tt2[2048];
+    static wv_attr_t  ta2[2048];
+    static char       tp2[65536];
+    static wv_dom_node_t dn2[2048];
+    static wv_attr_t  dda2[2048];
+    static char       dpp2[65536];
+    static uint32_t   stk2[512];
+    static wv_disp_t  di2[4096];
+    static char       lpo2[131072];
+    static wv_blk_t   lb2[520];
+    static wv_inl_t   li2[520];
+    static wv_walk_t  lw2[520];
+    wv_arena_t ta2a;
+    wv_arena_init(&ta2a, tt2, 2048, ta2, 2048, tp2, sizeof(tp2));
+    wv_html_tokenize(&ta2a, k_page_html, strlen(k_page_html));
+    wv_dom_t dom2;
+    wv_dom_init(&dom2, dn2, 2048, dda2, 2048, dpp2, sizeof(dpp2), stk2, 512);
+    wv_dom_build(&dom2, &ta2a, 512);
+    wv_layout_t lay2;
+    wv_layout_init(&lay2, di2, 4096, lpo2, sizeof(lpo2), lb2, 520, li2, 520, lw2, 520);
+    wv_layout_run(&lay2, &dom2, VIEW_W, 0);
+    wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
+    wv_paint_run(&P, &lay2, 0);
+    uint32_t h_plain = wv_paint_hash(page, VIEW_W, VIEW_H);
+
+    int ok = (h_css != h_plain);
+    printf("[webview] css smoke: %s (styled=0x%08x, plain=0x%08x)\n",
+           ok ? "PASS" : "FAIL", h_css, h_plain);
 }
 
 /* The W4 scroll smoke: memmove-scroll + band repaint must equal a full
@@ -222,6 +286,7 @@ int main(void) {
 
     page_build();
     paint_smoke();
+    css_smoke();
     scroll_smoke();
     repaint();
     printf("[webview] page rendered and presented\n");
@@ -381,7 +446,7 @@ int main(void) {
 
                 struct timespec t0, t1;
                 clock_gettime(CLOCK_MONOTONIC, &t0);
-                int ni = wv_layout_run(&lay, &dom, 800);
+                int ni = wv_layout_run(&lay, &dom, 800, 0);
                 clock_gettime(CLOCK_MONOTONIC, &t1);
                 long us = (t1.tv_sec - t0.tv_sec) * 1000000L +
                           (t1.tv_nsec - t0.tv_nsec) / 1000L;
