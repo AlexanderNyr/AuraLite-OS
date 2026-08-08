@@ -272,6 +272,8 @@ static void cmd_help(void) {
     puts("  snake     - snake game");
     puts("  hello     - hello world");
     puts("  http      - HTTP client");
+    puts("  weather   - live weather report (wttr.in): weather [full|3] <city>");
+    puts("  gweather  - GUI weather window (Riga, wttr.in)");
     puts("  browser   - web browser (fetch + render HTML)");
     puts("  gbrowser  - GUI browser (renders HTML, links, canvas)");
     puts("  gtaskmgr  - GUI Task Manager");

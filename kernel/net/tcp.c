@@ -173,6 +173,9 @@ static int active_h = -1;
 static uint8_t  our_mac[6];
 static uint32_t our_ip;
 
+/* Defined next to tcp_recv() below; resets the per-connection RX stash. */
+static void tcp_rx_stash_reset(void);
+
 /* Access net.c's internals (declared here, not in net.h for encapsulation). */
 extern void net_get_mac(uint8_t mac[6]);
 extern uint32_t net_get_our_ip(void);
@@ -459,6 +462,7 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     conn_seq = 0x2000 + (uint32_t)new_h * 0x100;
     conn_ack = ntohl_(rx.seq) + 1;
     conn_state = TCP_ESTABLISHED;
+    tcp_rx_stash_reset();   /* no leftovers may leak across connections */
 
     kprintf("[tcp] [h=%d] ACCEPTED connection from %u.%u.%u.%u:%u (our port %u)\n",
             new_h,
@@ -527,6 +531,7 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     conn_seq = 0x1000 + (uint32_t)h * 0x100;
     conn_ack = 0;
     conn_state = TCP_SYN_SENT;
+    tcp_rx_stash_reset();   /* no leftovers may leak across connections */
 
     kprintf("[tcp] [h=%d] connecting to %u.%u.%u.%u:%u (src port %u)...\n",
             h,
@@ -752,6 +757,41 @@ int tcp_send(const void *data, uint32_t len) {
     return (int)len;
 }
 
+/* ---- RX stash -----------------------------------------------------------
+ * tcp_recv() used to hand the caller's buffer straight to the segment
+ * parser, so a payload larger than the caller's buffer was CLAMPED and the
+ * remainder silently discarded.  That surfaced as HTTP responses cut at
+ * exactly SYSCALL_IO_CHUNK (256) bytes whenever the syscall bounce buffer
+ * was smaller than the inbound TCP segment.
+ *
+ * Every inbound payload now lands whole in a staging buffer; the caller is
+ * served from it and any remainder is stashed here for the next tcp_recv()
+ * instead of being dropped.  Draining the stash must NOT advance conn_ack:
+ * the whole segment was ACKed when it was first consumed. */
+#define TCP_RX_STAGE_SIZE 1600   /* >= max Ethernet-carried TCP payload */
+
+static uint8_t  rx_stash[TCP_RX_STAGE_SIZE];
+static uint32_t rx_stash_len = 0;
+static uint8_t  rx_staging[TCP_RX_STAGE_SIZE];
+
+static void tcp_rx_stash_reset(void) { rx_stash_len = 0; }
+
+/* Split a freshly received payload: hand the caller what fits into buf and
+ * stash the rest.  Returns the number of bytes copied into buf. */
+static uint32_t tcp_rx_deliver(void *buf, uint32_t bufsize,
+                               const uint8_t *payload, uint32_t payload_len) {
+    uint32_t take = payload_len < bufsize ? payload_len : bufsize;
+    if (take > 0) memcpy(buf, payload, take);
+
+    uint32_t rest = payload_len - take;
+    if (rest > 0) {
+        if (rest > sizeof(rx_stash)) rest = sizeof(rx_stash);  /* paranoia */
+        memcpy(rx_stash, payload + take, rest);
+        rx_stash_len = rest;
+    }
+    return take;
+}
+
 int tcp_recv(void *buf, uint32_t bufsize) {
     if (active_h < 0) {
         if (legacy_h >= 0 && handle_valid(legacy_h)) active_h = legacy_h;
@@ -761,12 +801,24 @@ int tcp_recv(void *buf, uint32_t bufsize) {
         return -1;
     }
 
+    /* Serve the stashed remainder of an earlier oversized segment first. */
+    if (rx_stash_len > 0) {
+        uint32_t n = rx_stash_len < bufsize ? rx_stash_len : bufsize;
+        memcpy(buf, rx_stash, n);
+        if (n < rx_stash_len)
+            memmove(rx_stash, rx_stash + n, rx_stash_len - n);
+        rx_stash_len -= n;
+        return (int)n;
+    }
+
     /* Loop until we get actual data, FIN, or timeout.  ACK-only
-     * segments (window updates, etc.) are consumed silently. */
+     * segments (window updates, etc.) are consumed silently.  Payloads are
+     * staged whole so nothing past the caller's bufsize is lost. */
     struct tcp_hdr rx;
     int data_len = 0;
     for (;;) {
-        if (tcp_recv_segment(&rx, buf, bufsize, &data_len) != 0) {
+        if (tcp_recv_segment(&rx, rx_staging, sizeof(rx_staging),
+                             &data_len) != 0) {
             return 0;   /* timeout, no data */
         }
 
@@ -774,20 +826,24 @@ int tcp_recv(void *buf, uint32_t bufsize) {
         if (rx.flags & TCP_FIN) {
             kprintf("[tcp] FIN received\n");
             conn_ack += 1;
+            if (data_len > 0) conn_ack += (uint32_t)data_len;
             tcp_send_segment(TCP_ACK, NULL, 0);
             if (conn_state == TCP_ESTABLISHED) {
                 conn_state = TCP_FIN_WAIT_2;
             } else {
                 conn_state = TCP_CLOSED;
             }
-            return data_len;   /* return any data that came with the FIN */
+            /* return any data that came with the FIN (stash the excess) */
+            return (int)tcp_rx_deliver(buf, bufsize, rx_staging,
+                                       (uint32_t)data_len);
         }
 
         /* If there's data, update our ACK and return it. */
         if (data_len > 0) {
             conn_ack += data_len;
             tcp_send_segment(TCP_ACK, NULL, 0);
-            return data_len;
+            return (int)tcp_rx_deliver(buf, bufsize, rx_staging,
+                                       (uint32_t)data_len);
         }
 
         /* ACK-only segment (no data, no FIN): consume silently and
@@ -806,6 +862,7 @@ int tcp_close(void) {
             legacy_h = -1;
             active_h = -1;
         }
+        tcp_rx_stash_reset();
         return 0;
     }
 
@@ -847,6 +904,7 @@ int tcp_close(void) {
 
     kprintf("[tcp] connection closed\n");
     conn_state = TCP_CLOSED;
+    tcp_rx_stash_reset();
     if (active_h == legacy_h) {
         if (legacy_h >= 0) conns[legacy_h].in_use = 0;
         legacy_h = -1;

@@ -326,6 +326,7 @@ USER_CFLAGS += -I lib/libauragui/include
 ### RUST: add rustes.elf to the list
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
+             $(USER_BUILD)/weather.elf \
              $(USER_BUILD)/clock.elf $(USER_BUILD)/guess.elf \
              $(USER_BUILD)/snake.elf $(USER_BUILD)/browser.elf \
              $(USER_BUILD)/selftest.elf \
@@ -335,6 +336,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
              $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
              $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
+             $(USER_BUILD)/gweather.elf \
              $(USER_BUILD)/gtaskmgr.elf $(USER_BUILD)/gtheme.elf \
              $(USER_BUILD)/glaunch.elf \
              $(USER_BUILD)/apm.elf $(USER_BUILD)/matrix.elf \
@@ -474,6 +476,10 @@ $(USER_BUILD)/editor.o: userspace/apps/editor/editor.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/http.o: userspace/apps/http/http.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/weather.o: userspace/apps/weather/weather.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -836,6 +842,8 @@ $(USER_BUILD)/gsysmon.o: userspace/apps/gui-sysmon/gsysmon.c lib/libauragui/incl
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gabout.o:  userspace/apps/gui-about/gabout.c   lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gweather.o: userspace/apps/gui-weather/gweather.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gtaskmgr.o: userspace/apps/gui-taskmgr/gtaskmgr.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/glaunch.o: userspace/apps/gui-launcher/glaunch.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
@@ -1139,8 +1147,8 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
-INITRD_APPS  := calc editor http clock browser gcalc gedit gfiles gterm \
-                gsysmon gabout gtaskmgr glaunch gaudio gusb gbrowser
+INITRD_APPS  := calc editor http weather clock browser gcalc gedit gfiles gterm \
+                gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
 INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
