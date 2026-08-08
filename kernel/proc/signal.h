@@ -72,6 +72,58 @@ struct sigaction {
     void    (*sa_restorer)(void); /* libc __sigreturn trampoline */
 };
 
+/* ---- M5 (MATURITY_PLAN.md): SA_SIGINFO siginfo_t + ucontext_t ----
+ *
+ * siginfo_t is the payload passed as the 2nd argument to an SA_SIGINFO
+ * handler.  AuraLite's layout MUST match lib/libc/include/signal.h exactly
+ * (both headers define it verbatim, like struct sigaction).  It carries the
+ * common si_signo/si_errno/si_code prefix and a union for the one payload
+ * field that matters per signal: si_addr for a synchronous fault (SEGV/BUS/
+ * FPE/ILL), si_pid/si_uid for a kill()/raise()-delivered (SI_USER) signal. */
+typedef struct {
+    int      si_signo;            /* offset 0  */
+    int      si_errno;            /* offset 4  (always 0 here) */
+    int      si_code;             /* offset 8  */
+    int      _pad;                /* offset 12 -> 16-align the payload */
+    /* Anonymous union (C11): si_addr / si_pid / si_uid are all accessible
+     * directly as siginfo.si_addr etc. without accessor macros, which would
+     * collide with same-named local variables (e.g. an isr.c fault_addr). */
+    union {
+        void *si_addr;            /* offset 16: faulting address (SEGV/BUS/FPE/ILL) */
+        struct { int si_pid; uint32_t si_uid; };  /* offset 16: SI_USER sender */
+    };
+} siginfo_t;
+
+/* si_code values used by the kernel (must match lib/libc/include/signal.h). */
+#define SI_USER      0      /* sent via kill/raise */
+#define SI_KERNEL    0x80   /* sent by the kernel */
+#define ILL_ILLOPC   1      /* illegal opcode */
+#define FPE_INTDIV   1      /* integer divide by zero */
+#define SEGV_MAPERR  1      /* address not mapped to object */
+#define SEGV_ACCERR  2      /* invalid permissions for mapped object */
+#define BUS_ADRALN   1      /* invalid address alignment */
+#define TRAP_BRKPT   1      /* process breakpoint */
+
+/* ucontext_t: the 3rd argument to an SA_SIGINFO handler.  uc_mcontext carries
+ * the interrupted GPR set (copied from the signal frame) so a handler can
+ * inspect the faulting state; uc_sigmask is the mask restored on sigreturn.
+ * uc_link/uc_stack are present-but-unused (no sigaltstack yet).  Layout must
+ * match lib/libc/include/signal.h. */
+typedef struct {
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx;
+    uint64_t rip, rflags, rsp;
+    uint64_t cs, ss;
+} mcontext_t;
+
+typedef struct ucontext ucontext_t;
+struct ucontext {
+    uint64_t      uc_flags;
+    ucontext_t   *uc_link;
+    mcontext_t    uc_mcontext;
+    sigset_t      uc_sigmask;
+};;
+
 /*
  * Signal frame pushed onto the user stack before entering a handler.  Laid out
  * so rt_sigreturn can restore the full interrupted machine state.  The frame is
@@ -118,9 +170,13 @@ int64_t do_getsid(int64_t pid);
 
 /* Raise a synchronous signal on the current thread from a CPU exception,
  * forcing the default action if it is blocked/ignored.  @regs is the faulting
- * Ring-3 frame.  Returns 1 if a handler frame was set up on @regs (caller
- * should iret), 0 if the thread was terminated. */
-int  signal_raise_fault(struct registers *regs, int signo);
+ * Ring-3 frame.  @fault_addr is the address reported to an SA_SIGINFO handler
+ * (CR2 for #PF, the faulting RIP for #UD/#DE/#AC, etc.); @si_code is the
+ * siginfo si_code (SEGV_MAPERR/SEGV_ACCERR/ILL_ILLOPC/...).  Returns 1 if a
+ * handler frame was set up on @regs (caller should iret), 0 if the thread was
+ * terminated. */
+int  signal_raise_fault(struct registers *regs, int signo,
+                        uint64_t fault_addr, int si_code);
 
 /*
  * signal_deliver_iret() — if @regs returns to Ring 3 and a pending unblocked

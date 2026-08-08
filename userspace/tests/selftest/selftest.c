@@ -323,7 +323,7 @@ int main(void) {
         printf("SELFTEST PASS: unblock delivers\n");
 
         /* SIG_IGN: raise should be a no-op. */
-        struct sigaction ign = { SIG_IGN, 0, 0, 0 };
+        struct sigaction ign = { .sa_handler = SIG_IGN };
         sigaction(SIGUSR1, &ign, 0);
         g_sigusr1_count = 0;
         raise(SIGUSR1);
@@ -331,12 +331,12 @@ int main(void) {
         check("SIG_IGN drops SIGUSR1", g_sigusr1_count == 0);
         printf("SELFTEST PASS: SIG_IGN drops\n");
         /* Restore default. */
-        struct sigaction dfl = { SIG_DFL, 0, 0, 0 };
+        struct sigaction dfl = { .sa_handler = SIG_DFL };
         sigaction(SIGUSR1, &dfl, 0);
 
         /* alarm(1) -> SIGALRM after ~1s.  Install a handler and spin (yielding
          * via cheap syscalls so the PIT keeps ticking) until it fires. */
-        struct sigaction al = { sigalrm_handler, 0, 0, 0 };
+        struct sigaction al = { .sa_handler = sigalrm_handler };
         sigaction(SIGALRM, &al, 0);
         g_sigalrm_count = 0;
         unsigned prev = alarm(1);
@@ -353,7 +353,7 @@ int main(void) {
          * it, runs the handler, and returns -EINTR.  Blocking first is required:
          * with SIGUSR1 unblocked, raise() would deliver synchronously before
          * sigsuspend() ever ran, leaving nothing pending to wake the suspend. */
-        struct sigaction u2 = { sigusr1_handler, 0, 0, 0 };
+        struct sigaction u2 = { .sa_handler = sigusr1_handler };
         sigaction(SIGUSR1, &u2, 0);
         sigset_t empty; sigemptyset(&empty);
         sigset_t blk; sigemptyset(&blk); sigaddset(&blk, SIGUSR1);

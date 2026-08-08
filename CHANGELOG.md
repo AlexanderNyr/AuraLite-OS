@@ -2,6 +2,48 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [MATURITY_PLAN M5 — SA_SIGINFO siginfo_t] 2026-08-08
+
+`MATURITY_PLAN.md` phase M5 (first slice). Until now an `SA_SIGINFO` handler
+received `si_addr`/`si_code`/`si_pid` as zero — the kernel set `rsi=rdx=0` with
+a "P4 follow-up" comment, so a program could not, for example, catch `SIGSEGV`
+and learn the faulting address.
+
+- **siginfo_t + ucontext_t** (`kernel/proc/signal.h`, `lib/libc/include/signal.h`,
+  verbatim-matched): a POSIX-style siginfo with `si_signo`/`si_errno`/`si_code`
+  and a C11 anonymous union giving `si_addr` (fault address) and
+  `si_pid`/`si_uid` (SI_USER sender). `ucontext_t.uc_mcontext` carries the full
+  interrupted GPR set (mirrored from the signal frame); `uc_sigmask` records the
+  mask `sigreturn` restores. `struct sigaction` is now a `sa_handler`/
+  `sa_sigaction` union (same bytes — ABI-unchanged).
+- **`build_handler_frame`** (`kernel/proc/signal.c`) builds the siginfo +
+  ucontext on the user stack below the trampoline and passes `&siginfo`/`&uc`
+  in rsi/rdx. `signal_raise_fault` now carries the faulting address and a
+  per-exception `si_code`; `isr.c` derives them (CR2 + the #PF present bit →
+  `SEGV_MAPERR`/`SEGV_ACCERR`; `#UD`→`ILL_ILLOPC`; `#DE`→`FPE_INTDIV`; …) and
+  the async path reports `SI_USER` + `si_pid`.
+
+- **Latent M1 defect found and fixed.** This surfaced that M1's signal-frame
+  `fxsave` had never actually run (no integration test caught a signal after
+  M1): it **#GP'd**, because the IRQ/syscall entry stubs do not 16-byte-align
+  the stack before calling C, so a compiler-aligned stack local lands
+  misaligned. The signal `fxsave`/`fxrstor` now use a runtime-aligned scratch
+  whose address is forced opaque to the optimizer (otherwise it folds the
+  alignment away). `sigreturn` also masks MXCSR to its defined low 16 bits so a
+  user-controlled frame cannot `#GP` the kernel.
+
+**Test gate**: `/tests/siginfotest` (new) checks both paths —
+`kill(getpid(),SIGUSR1)` → `si_signo`/`si_code=SI_USER`/`si_pid`, and a
+synchronous SIGSEGV → `si_code=SEGV_MAPERR`, `si_addr` == the faulting address.
+Integration case `test_siginfo.sh` (5/5). Existing `test_signals` (9/9) and
+`test_fpu_smp` (7/7) still pass (no regression to M1 signal/FPU paths).
+
+**Recorded findings (not fixed here):** `test_stopped` fails on M1 too (Ctrl+Z
+`sendkey` timing) — pre-existing, unrelated to signals. The IRQ/syscall entry
+stubs do not maintain the 16-byte C-ABI stack alignment; harmless while the
+kernel avoids aligned SSE ops, but worth a dedicated stub fix before relying on
+aligned locals in IRQ context.
+
 ## [MATURITY_PLAN M1 — FPU/SSE context switch] 2026-08-08
 
 `MATURITY_PLAN.md` phase M1. The H8 scheduler is real SMP (per-CPU run queues +

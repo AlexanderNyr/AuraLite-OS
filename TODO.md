@@ -147,7 +147,23 @@ for the feature matrix.
 - ~~**No full SA_RESTART rewind.**~~ **Done (H7):** restartable blocking
   syscalls save restart metadata on `-EINTR` and `sigreturn` re-dispatches them
   when the handler was installed with `SA_RESTART`.
-- **SA_SIGINFO siginfo_t** not populated (handler gets signo only; rsi/rdx = 0).
+- ~~**SA_SIGINFO siginfo_t** not populated (handler gets signo only; rsi/rdx = 0).~~
+  **Done (MATURITY_PLAN.md M5):** an SA_SIGINFO handler now receives a real
+  siginfo_t (si_signo/si_code/si_addr for faults, si_pid for SI_USER) and a
+  ucontext_t mirroring the saved registers. signal_raise_fault carries the
+  faulting address + per-exception si_code (CR2 -> SEGV_MAPERR/ACCERR, etc.).
+  Landed with a fix to a latent M1 defect: the signal-frame fxsave #GP'd
+  because the IRQ/syscall entry stubs do not 16-align the stack before calling
+  C -- now uses a runtime-aligned scratch. Gate: /tests/siginfotest +
+  test_siginfo.sh (5/5); test_signals (9/9) still green.
+- **IRQ/syscall entry stubs do not maintain 16-byte C-ABI stack alignment.**
+  isr_common_stub pushes 17 words (errcode+vector+15 GPRs) and never realigns
+  before call isr_handler, so a compiler-aligned stack local in an
+  IRQ/syscall-context C function can land misaligned and any aligned SSE op
+  (e.g. fxsave) #GPs. Harmless while the kernel builds -mno-sse, but a
+  dedicated stub fix is the proper cure; the M5 signal path works around it
+  with a runtime-aligned scratch. test_stopped is also failing for an unrelated
+  Ctrl+Z sendkey timing reason (pre-existing, fails on M1 too).
 - ~~**Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT**~~ **Done (P5):** the
   console stdin path and /dev/tty0 line discipline generate these via ISIG and
   the tty->fg_pgid indirection. Full per-process-group routing arrives in P6.

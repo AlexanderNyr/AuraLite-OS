@@ -216,7 +216,30 @@ void isr_handler(struct registers *r) {
          * signal_raise_fault() terminates the thread (default action). */
         if (from_user) {
             int signo = exception_to_signal(r->int_no);
-            if (signo && signal_raise_fault(r, signo)) {
+            /* M5 (MATURITY_PLAN.md): build the siginfo payload the handler
+             * sees under SA_SIGINFO.  si_addr is CR2 for a page fault, the
+             * faulting RIP for most other traps; si_code classifies the cause
+             * (present-bit of the #PF error code distinguishes SEGV_ACCERR
+             * from SEGV_MAPERR). */
+            uint64_t si_addr = 0;
+            int      si_code = SI_KERNEL;
+            switch (r->int_no) {
+            case 14: /* #PF */
+                si_addr  = read_cr2();
+                si_code  = (r->err_code & 1) ? SEGV_ACCERR : SEGV_MAPERR;
+                break;
+            case 6:  /* #UD */
+                si_addr = r->rip; si_code = ILL_ILLOPC; break;
+            case 0:  /* #DE */
+                si_addr = r->rip; si_code = FPE_INTDIV; break;
+            case 3:  /* #BP */
+                si_addr = r->rip; si_code = TRAP_BRKPT;  break;
+            case 17: /* #AC */
+                si_addr = r->rip; si_code = BUS_ADRALN;  break;
+            default:
+                si_addr = (r->int_no == 13) ? 0 : r->rip; break;
+            }
+            if (signo && signal_raise_fault(r, signo, si_addr, si_code)) {
                 /* Handler frame installed; return to it. */
                 return;
             }

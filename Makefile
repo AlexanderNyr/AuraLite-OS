@@ -348,6 +348,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/stoptest.elf $(USER_BUILD)/insttest.elf $(USER_BUILD)/hostilearg.elf \
              $(USER_BUILD)/socktest.elf \
              $(USER_BUILD)/fpustress.elf \
+             $(USER_BUILD)/siginfotest.elf \
              $(USER_BUILD)/conformtest.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
              $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
@@ -503,6 +504,11 @@ $(USER_BUILD)/socktest.o: userspace/tests/socktest/socktest.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/fpustress.o: userspace/tests/fpustress/fpustress.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -ffp-contract=off -c $< -o $@
+
+# M5 (MATURITY_PLAN.md): SA_SIGINFO regression test.
+$(USER_BUILD)/siginfotest.o: userspace/tests/siginfotest/siginfotest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/conformtest.o: userspace/tests/conformtest/conformtest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
@@ -1127,7 +1133,7 @@ INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest fpustress conformtest cryptotest x509test tlstest
+                socktest fpustress siginfotest conformtest cryptotest x509test tlstest
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)

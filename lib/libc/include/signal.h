@@ -50,14 +50,65 @@
 #define SA_RESTART   0x10000000
 #define SA_SIGINFO   0x00000004
 
+/* si_code values for siginfo_t (M5 SA_SIGINFO).  Must match the kernel. */
+#define SI_USER      0      /* sent via kill/raise */
+#define SI_KERNEL    0x80   /* sent by the kernel */
+#define ILL_ILLOPC   1      /* illegal opcode */
+#define FPE_INTDIV   1      /* integer divide by zero */
+#define SEGV_MAPERR  1      /* address not mapped to object */
+#define SEGV_ACCERR  2      /* invalid permissions for mapped object */
+#define BUS_ADRALN   1      /* invalid address alignment */
+#define TRAP_BRKPT   1      /* process breakpoint */
+
 #define SIG_BLOCK    0
 #define SIG_UNBLOCK  1
 #define SIG_SETMASK  2
 
 typedef uint32_t sigset_t;
 
+/* siginfo_t — passed to an SA_SIGINFO handler as the 2nd argument (M5).
+ * Layout MUST match kernel/proc/signal.h.  si_addr is the faulting address
+ * for SEGV/BUS/FPE/ILL; si_pid/si_uid identify the sender for SI_USER. */
+typedef struct {
+    int      si_signo;
+    int      si_errno;
+    int      si_code;
+    int      _pad;
+    /* Anonymous union (C11): si_addr / si_pid / si_uid are all accessible
+     * directly (siginfo.si_addr) without accessor macros.  Layout MUST match
+     * kernel/proc/signal.h. */
+    union {
+        void *si_addr;
+        struct { int si_pid; uint32_t si_uid; };
+    };
+} siginfo_t;
+
+/* ucontext_t — 3rd argument to an SA_SIGINFO handler (M5).  uc_mcontext
+ * carries the interrupted register set; uc_sigmask is restored on sigreturn.
+ * Layout MUST match kernel/proc/signal.h. */
+typedef struct {
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rdi, rsi, rbp, rbx, rdx, rax, rcx;
+    uint64_t rip, rflags, rsp;
+    uint64_t cs, ss;
+} mcontext_t;
+
+typedef struct ucontext ucontext_t;
+struct ucontext {
+    uint64_t      uc_flags;
+    ucontext_t   *uc_link;
+    mcontext_t    uc_mcontext;
+    sigset_t      uc_sigmask;
+};
+
+/* sa_handler and sa_sigaction share one slot (a union), exactly as POSIX
+ * requires; the bytes are identical to the kernel's single sa_handler field,
+ * so the ABI is unchanged.  Set sa_sigaction + SA_SIGINFO for a 3-arg handler. */
 struct sigaction {
-    void    (*sa_handler)(int);
+    union {
+        void (*sa_handler)(int);
+        void (*sa_sigaction)(int, siginfo_t *, void *);
+    };
     uint32_t  sa_mask;
     int       sa_flags;
     void    (*sa_restorer)(void);

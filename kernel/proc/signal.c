@@ -384,8 +384,10 @@ static void stop_current_thread(int signo) {
  * is rewritten to enter the handler and the function returns 1.  On failure
  * (bad user stack) the process is terminated and the function does not return.
  */
-static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
+static int build_handler_frame(tcb_t *t, int signo, struct registers *regs,
+                               const siginfo_t *si) {
     struct sigaction *sa = &t->sig_actions[signo];
+    int want_info = (sa->sa_flags & SA_SIGINFO) && (si != NULL);
 
     /* Subtract the 128-byte red zone, reserve the frame, 16-align, then leave
      * room for the 8-byte trampoline return address so the handler sees
@@ -396,9 +398,28 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
     sp &= ~((uint64_t)15);                        /* 16-align the frame */
     uint64_t frame_addr = sp;
     sp -= 8;                                      /* trampoline return address slot */
-    /* Now sp%16 == 8 (frame_addr was 16-aligned), as a `call` would leave it. */
+    uint64_t handler_rsp = sp;                    /* handler RSP (points at the trampoline);
+                                                   * siginfo/ucontext reserved below do NOT move it */
+    /* handler_rsp%16 == 8 (frame_addr was 16-aligned), as a `call` leaves it. */
 
-    /* Validate the whole frame + return slot lies in user space and is writable. */
+    /* M5 (MATURITY_PLAN.md): for an SA_SIGINFO handler, reserve a siginfo_t
+     * and a ucontext_t BELOW the trampoline (lower addresses).  The handler
+     * receives &siginfo in rsi and &ucontext in rdx; sigreturn still reads
+     * the signal_frame from just above the trampoline, so these do not
+     * interfere with state restoration. */
+    uint64_t si_addr = 0, uc_addr = 0;
+    if (want_info) {
+        sp -= sizeof(ucontext_t);
+        sp &= ~((uint64_t)15);
+        uc_addr = sp;
+        sp -= sizeof(siginfo_t);
+        sp &= ~((uint64_t)15);
+        si_addr = sp;
+    }
+
+    /* Validate the whole frame + trampoline (+ siginfo/ucontext) lies in user
+     * space and is writable, in one range from the lowest reserved byte to the
+     * top of the signal frame. */
     if (!validate_user_range((void *)(uintptr_t)sp,
                              (uint64_t)(frame_addr - sp) + sizeof(struct signal_frame),
                              1)) {
@@ -411,13 +432,25 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
     /* Snapshot the interrupted context into a kernel-local frame, then copy out. */
     struct signal_frame f __attribute__((aligned(16)));
     memset(&f, 0, sizeof(f));
-    /* M1 (MATURITY_PLAN.md): snapshot the interrupted thread's LIVE FPU/SSE
-     * state into the frame so sigreturn can restore it.  CR4.OSFXSR is enabled
-     * (boot.asm), so fxsave is available, and f.fxsave_area is 16-aligned (the
-     * first field of an aligned(16) struct).  Until M1 this was a stub that
-     * zeroed the area, so a signal delivered mid-FP-computation silently wiped
-     * the thread's SSE state on handler return. */
-    __asm__ volatile("fxsave %0" : "=m"(f.fxsave_area) :: "memory");
+    /* M1/M5: snapshot the interrupted thread's LIVE FPU/SSE state into the
+     * frame so sigreturn can restore it.  fxsave needs a 16-byte aligned
+     * 512-byte operand; the IRQ/syscall entry stubs do not 16-align the stack
+     * before calling C, so a compiler-aligned local (like f.fxsave_area) can
+     * land on a misaligned address and #GP.  Align a scratch at runtime, fxsave
+     * into it, then copy into the frame.  (CR4.OSFXSR is enabled in boot.asm.) */
+    {
+        uint8_t  fpu_raw[512 + 16];
+        uintptr_t base = (uintptr_t)fpu_raw;
+        /* The IRQ/syscall entry stubs do not 16-align the stack before calling
+         * C, so a compiler-aligned local can land misaligned and fxsave #GPs.
+         * Mark the buffer address opaque so the alignment rounding below is
+         * computed at RUNTIME (the optimizer otherwise folds it away, having
+         * "proven" the local is already aligned). */
+        __asm__ volatile("" : "+r"(base) :: "memory");
+        uint8_t *fpu = (uint8_t *)((base + 15) & ~(uintptr_t)15);
+        __asm__ volatile("fxsave %0" : "=m"(*(uint8_t(*)[512])fpu) :: "memory");
+        memcpy(f.fxsave_area, fpu, 512);
+    }
     f.r15 = regs->r15; f.r14 = regs->r14; f.r13 = regs->r13; f.r12 = regs->r12;
     f.r11 = regs->r11; f.r10 = regs->r10; f.r9 = regs->r9;  f.r8  = regs->r8;
     f.rdi = regs->rdi; f.rsi = regs->rsi; f.rbp = regs->rbp; f.rdx = regs->rdx;
@@ -452,7 +485,7 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
         terminate_by_signal(SIGSEGV);            /* no usable restorer */
         return 0;
     }
-    if (copy_to_user((void *)(uintptr_t)sp, &trampoline, sizeof(trampoline)) != 0) {
+    if (copy_to_user((void *)(uintptr_t)handler_rsp, &trampoline, sizeof(trampoline)) != 0) {
         terminate_by_signal(SIGSEGV);
         return 0;
     }
@@ -476,10 +509,44 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
 
     /* Rewrite the outgoing frame to enter the handler (SysV: rdi = signo). */
     regs->rip = (uint64_t)(uintptr_t)sa->sa_handler;
-    regs->rsp = sp;
+    regs->rsp = handler_rsp;
     regs->rdi = (uint64_t)signo;
-    regs->rsi = 0;                       /* &siginfo (SA_SIGINFO: P4 follow-up) */
-    regs->rdx = 0;                       /* &ucontext */
+    if (want_info) {
+        /* M5: hand the handler a populated siginfo_t and ucontext_t.  The
+         * siginfo carries si_code/si_addr from the fault (or SI_USER +
+         * si_pid for an async signal); the ucontext's mcontext mirrors the
+         * just-saved signal frame so the handler can inspect the faulting
+         * register state, and uc_sigmask records the mask sigreturn restores. */
+        siginfo_t ksi = *si;
+        ksi.si_signo = (uint32_t)signo;
+        if (copy_to_user((void *)(uintptr_t)si_addr, &ksi, sizeof(ksi)) != 0) {
+            terminate_by_signal(SIGSEGV);
+            return 0;
+        }
+        ucontext_t uc;
+        memset(&uc, 0, sizeof(uc));
+        uc.uc_mcontext.r8  = f.r8;  uc.uc_mcontext.r9  = f.r9;
+        uc.uc_mcontext.r10 = f.r10; uc.uc_mcontext.r11 = f.r11;
+        uc.uc_mcontext.r12 = f.r12; uc.uc_mcontext.r13 = f.r13;
+        uc.uc_mcontext.r14 = f.r14; uc.uc_mcontext.r15 = f.r15;
+        uc.uc_mcontext.rdi = f.rdi; uc.uc_mcontext.rsi = f.rsi;
+        uc.uc_mcontext.rbp = f.rbp; uc.uc_mcontext.rbx = f.rbx;
+        uc.uc_mcontext.rdx = f.rdx; uc.uc_mcontext.rax = f.rax;
+        uc.uc_mcontext.rcx = f.rcx;
+        uc.uc_mcontext.rip = f.rip; uc.uc_mcontext.rsp = f.rsp;
+        uc.uc_mcontext.rflags = f.rflags; uc.uc_mcontext.cs = f.cs;
+        uc.uc_mcontext.ss = f.ss;
+        uc.uc_sigmask = f.saved_mask;
+        if (copy_to_user((void *)(uintptr_t)uc_addr, &uc, sizeof(uc)) != 0) {
+            terminate_by_signal(SIGSEGV);
+            return 0;
+        }
+        regs->rsi = si_addr;                  /* &siginfo */
+        regs->rdx = uc_addr;                  /* &ucontext */
+    } else {
+        regs->rsi = 0;                        /* one-arg handler */
+        regs->rdx = 0;
+    }
     regs->rax = 0;                       /* varargs convention */
     /* Sanitize RFLAGS for handler entry: clear DF/RF/TF, force IF set. */
     regs->rflags = (regs->rflags & ~(uint64_t)(FLAG_DF | FLAG_RF | FLAG_TF)) | FLAG_IF;
@@ -518,11 +585,20 @@ int signal_deliver_iret(struct registers *regs) {
         t->sig_pending &= ~sig_bit(signo);       /* explicitly ignored */
         return 0;
     }
-    /* Caught: build the handler frame. */
-    return build_handler_frame(t, signo, regs);
+    /* Caught: build the handler frame.  M5: for SA_SIGINFO, supply an SI_USER
+     * siginfo whose si_pid is this process (correct for raise()/self-kill and
+     * SIGALRM-to-self; cross-process kill does not yet record the true sender
+     * in the pending queue). */
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    si.si_signo = (uint32_t)signo;
+    si.si_code  = SI_USER;
+    si.si_pid   = (int)t->id;
+    return build_handler_frame(t, signo, regs, &si);
 }
 
-int signal_raise_fault(struct registers *regs, int signo) {
+int signal_raise_fault(struct registers *regs, int signo,
+                       uint64_t fault_addr, int si_code) {
     tcb_t *t = sched_current();
     if (!t) { terminate_by_signal(signo); return 0; }
     struct sigaction *sa = &t->sig_actions[signo];
@@ -536,7 +612,15 @@ int signal_raise_fault(struct registers *regs, int signo) {
         return 0;
     }
     t->sig_pending |= sig_bit(signo);
-    return build_handler_frame(t, signo, regs);
+    /* M5: build the siginfo for an SA_SIGINFO handler.  si_addr is the
+     * faulting address (CR2 for #PF, the faulting RIP otherwise); si_code
+     * classifies the cause (SEGV_MAPERR/ACCERR/ILL_ILLOPC/...). */
+    siginfo_t si;
+    memset(&si, 0, sizeof(si));
+    si.si_signo = (uint32_t)signo;
+    si.si_code  = si_code;
+    si.si_addr  = (void *)(uintptr_t)fault_addr;
+    return build_handler_frame(t, signo, regs, &si);
 }
 
 /* ---- syscalls ---- */
@@ -633,17 +717,23 @@ int64_t do_sigreturn(struct registers *regs) {
     regs->cs = USER_CS;
     regs->ss = USER_SS;
 
-    /* M1 (MATURITY_PLAN.md): restore the FPU/SSE state captured at signal
-     * delivery.  The frame came from user memory, so an attacker could set
-     * reserved MXCSR bits (FXSAVE image offset 24) that would make fxrstor
-     * #GP -- a kernel fault caused by user input.  Mask MXCSR to its defined
-     * low 16 bits (the named IE/DE/ZE/OE/UE/PE flags, masks, DAZ, RC, FTZ)
-     * before restoring, which keeps the user able to set its own rounding
-     * mode/exception masks but cannot trip a reserved-bit #GP. */
+    /* M1/M5: restore the FPU/SSE state captured at signal delivery.  The frame
+     * came from user memory, so an attacker could set reserved MXCSR bits
+     * (FXSAVE image offset 24) that would make fxrstor #GP -- a kernel fault
+     * caused by user input.  Mask MXCSR to its defined low 16 bits (the named
+     * IE/DE/ZE/OE/UE/PE flags, masks, DAZ, RC, FTZ) before restoring, which
+     * keeps the user able to set its own rounding mode/exception masks but
+     * cannot trip a reserved-bit #GP.  As above, fxrstor of a stack-local can
+     * #GP under the misaligned entry stack, so use a runtime-aligned scratch. */
     {
-        uint32_t *mxcsr = (uint32_t *)&f.fxsave_area[24];
+        uint8_t  fpu_raw[512 + 16];
+        uintptr_t base = (uintptr_t)fpu_raw;
+        __asm__ volatile("" : "+r"(base) :: "memory");   /* runtime-align (see save path) */
+        uint8_t *fpu = (uint8_t *)((base + 15) & ~(uintptr_t)15);
+        memcpy(fpu, f.fxsave_area, 512);
+        uint32_t *mxcsr = (uint32_t *)(fpu + 24);
         *mxcsr &= 0x0000FFFFu;
-        __asm__ volatile("fxrstor %0" :: "m"(f.fxsave_area) : "memory");
+        __asm__ volatile("fxrstor %0" :: "m"(*(uint8_t(*)[512])fpu) : "memory");
     }
 
     if (t->syscall_restart_pending) {
