@@ -307,7 +307,7 @@ reparent-to-init) are still pending.
       fd in the child share one OFD offset.
 - [ ] `close_range`/`closefrom` and correct `O_CLOEXEC` on every inherited fd
       at `execve`; atomic `pipe2`/`socket(O_CLOEXEC)` already exist.
-- [ ] `execve` auxiliary vector: `AT_PAGESZ`, `AT_RANDOM`, `AT_EXECFN`,
+- [x] `execve` auxiliary vector: `AT_PAGESZ`, `AT_RANDOM`, `AT_EXECFN`,
       `AT_PHDR` — needed before any dynamic loader is thinkable.
 - [x] `SA_SIGINFO`: populate a real `siginfo_t` (si_signo/si_code/si_addr/
       si_pid), not the current rsi/rdx=0 stub.

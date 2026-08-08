@@ -30,6 +30,7 @@
 #define EM_X86_64     62
 
 #define PT_LOAD       1
+#define PT_PHDR       6           /* program-header table itself (M5 auxv) */
 
 /* Program-header permission bits. */
 #define PF_X          0x1
@@ -69,10 +70,18 @@ struct elf64_phdr {
 /*
  * Load an ELF64 binary from memory (the embedded image).
  *
- * @param  image  pointer to the raw ELF file bytes
- * @param  size   image size in bytes
+ * @param  image     pointer to the raw ELF file bytes
+ * @param  size      image size in bytes
+ * @param  out_brk   if non-NULL, receives the program break (end of the
+ *                   highest PT_LOAD segment) for brk() tracking
+ * @param  out_phdr  if non-NULL, receives the virtual address of the mapped
+ *                   program-header table (for the AT_PHDR auxv entry): the
+ *                   PT_PHDR p_vaddr when the ELF has one, else the PT_LOAD
+ *                   vaddr that contains e_phoff, else 0.
+ * @param  out_phnum if non-NULL, receives e_phnum (for AT_PHNUM)
  * @returns the entry-point virtual address, or 0 on failure
  */
-uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk);
+uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
+                  uint64_t *out_phdr, uint64_t *out_phnum);
 
 #endif /* AURALITE_PROC_ELF_H */

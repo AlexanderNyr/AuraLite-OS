@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [MATURITY_PLAN M5 — auxiliary vector (auxv)] 2026-08-08
+
+`MATURITY_PLAN.md` phase M5 (second slice). Until now the kernel's auxv held
+only an `AT_NULL` terminator, so `getauxval()` returned 0 for every type: no
+`AT_PAGESZ`, no `AT_RANDOM` (the 16-byte seed a stack-canary crt0 wants), no
+`AT_EXECFN`, no `AT_PHDR`/`AT_ENTRY`/`AT_PHNUM` -- a future dynamic loader or
+any `getauxval`-using program had nothing to read.
+
+- **Kernel** (`build_initial_stack`, `kernel/proc/process.c`): the initial
+  process stack now carries a real auxv -- `AT_PHDR`/`AT_PHENT`/`AT_PHNUM`,
+  `AT_PAGESZ`, `AT_ENTRY`, `AT_BASE`, `AT_FLAGS`, `AT_UID/EUID/GID/EGID`,
+  `AT_SECURE`, `AT_RANDOM` (16 kernel-seeded bytes; CSPRNG, TSC fallback) and
+  `AT_EXECFN` (the run path), ended by `AT_NULL`. `elf_load` now exposes the
+  mapped program-header address (PT_PHDR p_vaddr, or the PT_LOAD covering
+  e_phoff) and `e_phnum`.
+- **libc** (`lib/libc/src/libc.c`, new `include/sys/auxv.h`):
+  `__libc_start_main` locates the auxv just past envp's NULL terminator and
+  `getauxval(type)` scans it.
+- **Real bug fixed:** the kernel-started init shell (`user_test_thread`) jumped
+  to user with a bare `stack_top-16` and NO argc/argv/envp/auxv table -- the
+  shell always booted on a garbage frame (harmless only because the old
+  `__libc_start_main` never dereferenced envp). It now gets a minimal valid ABI
+  frame.
+
+**Test gate**: `/tests/auxvtest` (new) checks `AT_PAGESZ==4096`, `AT_PHENT==56`,
+`AT_ENTRY`/`AT_PHNUM` present, `AT_RANDOM` a valid non-zero pointer, `AT_EXECFN`
+naming the binary; integration `test_auxv.sh` (6/6). `test_execve_args`,
+`test_selftest`, `test_signals`, `test_siginfo`, `test_fpu_smp` all still pass.
+
 ## [MATURITY_PLAN M5 — SA_SIGINFO siginfo_t] 2026-08-08
 
 `MATURITY_PLAN.md` phase M5 (first slice). Until now an `SA_SIGINFO` handler

@@ -26,6 +26,34 @@
 #include "kernel/ipc/sysvipc.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/boot_info.h"
+#include "kernel/rng.h"
+
+/* Auxiliary-vector entry types (Linux/ELF ABI).  Emitted on the initial
+ * process stack so a dynamic loader, getauxval() or a stack-canary-seeding
+ * crt0 can find what it needs (M5 auxv). */
+#define AT_NULL    0
+#define AT_PHDR    3
+#define AT_PHENT   4
+#define AT_PHNUM   5
+#define AT_PAGESZ  6
+#define AT_BASE    7
+#define AT_FLAGS   8
+#define AT_ENTRY   9
+#define AT_UID     11
+#define AT_EUID    12
+#define AT_GID     13
+#define AT_EGID    14
+#define AT_SECURE  23
+#define AT_RANDOM  25
+#define AT_EXECFN  31
+#define AUX_ENTRIES 14            /* all but the AT_NULL terminator pair */
+
+/* ELF facts elf_load() exposes so build_initial_stack can fill AT_PHDR etc. */
+struct exec_elfinfo {
+    uint64_t entry;               /* AT_ENTRY  */
+    uint64_t phdr;                /* AT_PHDR   */
+    uint64_t phnum;               /* AT_PHNUM  */
+};
 
 #define USER_STACK_TOP         0x7FFFF0000000ULL
 #define USER_STACK_SIZE        0x100000ULL  /* 1 MiB usable user stack */
@@ -147,12 +175,18 @@ static int exec_args_capture(struct exec_args *ea,
  *                      NULL                (argv terminator)
  *                      envp[0..envc-1]     (pointers)
  *                      NULL                (envp terminator)
- *                      auxv: AT_NULL entry (2 x 8 bytes of zero)
- *                      ... string data ...
+ *                      auxv[]              (type/value pairs)
+ *                      AT_NULL             (terminator pair)
+ *                      ... string data ... (argv/envp, AT_EXECFN, AT_RANDOM)
  *
- * @stack_top is the (exclusive) top of the mapped user stack.  Returns the
- * RSP value to pass to jump_to_user, or 0 on failure. */
-static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *ea) {
+ * @ei provides AT_PHDR/AT_PHNUM/AT_ENTRY; @execfn (kernel-readable, may be
+ * NULL) becomes AT_EXECFN; @uid/euid/gid/egid become AT_*ID.  Returns the RSP
+ * for jump_to_user, or 0 on failure. */
+static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *ea,
+                                    const struct exec_elfinfo *ei,
+                                    const char *execfn,
+                                    uint32_t uid, uint32_t euid,
+                                    uint32_t gid, uint32_t egid) {
     int argc = ea ? ea->argc : 0;
     int envc = ea ? ea->envc : 0;
 
@@ -175,15 +209,34 @@ static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *
         arg_addr[i] = sp;
     }
 
-    /* 2) Compute the size of the pointer table so the final RSP lands on a
-     *    16-byte boundary (ABI requires RSP%16==0 at _start, i.e. before the
-     *    implicit return address — here there is none, so we align RSP itself
-     *    to 16). The table holds:
-     *      1 (argc) + argc + 1(NULL) + envc + 1(NULL) + 2(AT_NULL) words. */
-    uint64_t nwords = 1 + (uint64_t)argc + 1 + (uint64_t)envc + 1 + 2;
+    /* M5: AT_RANDOM -- 16 bytes the kernel seeds (crt0/stack-canary source).
+     * Prefer the CSPRNG; fall back to TSC mixing if it is not yet seeded. */
+    uint64_t random_addr = 0;
+    {
+        uint8_t rbuf[16];
+        if (rng_try_fill(rbuf, sizeof(rbuf)) != 0) {
+            uint64_t t = read_tsc();
+            for (int i = 0; i < 16; i++) rbuf[i] = (uint8_t)(t >> (i * 4));
+        }
+        sp -= 16;
+        random_addr = sp;
+        if (copy_to_user((void *)sp, rbuf, 16) != 0) return 0;
+    }
+    /* M5: AT_EXECFN -- the path the program was executed with. */
+    uint64_t execfn_addr = 0;
+    if (execfn && execfn[0]) {
+        uint64_t len = (uint64_t)strlen(execfn) + 1;
+        sp -= len;
+        if (copy_to_user((void *)sp, execfn, len) != 0) return 0;
+        execfn_addr = sp;
+    }
 
-    /* Align the string area downward, then place the table so its base (argc)
-     * is 16-aligned. */
+    /* 2) Size the pointer table:
+     *      1 (argc) + argc + 1(argv NULL) + envc + 1(envp NULL)
+     *      + 2*AUX_ENTRIES + 2 (AT_NULL terminator pair). */
+    uint64_t nwords = 1 + (uint64_t)argc + 1 + (uint64_t)envc + 1
+                      + 2 * AUX_ENTRIES + 2;
+
     sp &= ~0xFULL;
     uint64_t table_bytes = nwords * 8;
     uint64_t table_base = sp - table_bytes;
@@ -203,7 +256,29 @@ static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *
         if (copy_to_user((void *)w, &env_addr[i], 8) != 0) return 0; w += 8;
     }
     v = 0; if (copy_to_user((void *)w, &v, 8) != 0) return 0; w += 8;   /* envp NULL */
-    /* auxv: a single AT_NULL terminator (type 0, value 0). */
+
+    /* M5: the auxiliary vector (type/value pairs, each 2 words). */
+    uint64_t a_pairs[AUX_ENTRIES][2] = {
+        { AT_PHDR,   ei ? ei->phdr  : 0 },
+        { AT_PHENT,  56 },                       /* sizeof(Elf64_Phdr) */
+        { AT_PHNUM,  ei ? ei->phnum : 0 },
+        { AT_PAGESZ, 4096 },
+        { AT_BASE,   0 },                        /* no dynamic interpreter */
+        { AT_FLAGS,  0 },
+        { AT_ENTRY,  ei ? ei->entry : 0 },
+        { AT_UID,    uid },
+        { AT_EUID,   euid },
+        { AT_GID,    gid },
+        { AT_EGID,   egid },
+        { AT_SECURE, 0 },
+        { AT_RANDOM, random_addr },
+        { AT_EXECFN, execfn_addr },
+    };
+    for (int i = 0; i < AUX_ENTRIES; i++) {
+        if (copy_to_user((void *)w, &a_pairs[i][0], 8) != 0) return 0; w += 8;
+        if (copy_to_user((void *)w, &a_pairs[i][1], 8) != 0) return 0; w += 8;
+    }
+    /* AT_NULL terminator (type 0, value 0). */
     v = 0; if (copy_to_user((void *)w, &v, 8) != 0) return 0; w += 8;
     v = 0; if (copy_to_user((void *)w, &v, 8) != 0) return 0; w += 8;
 
@@ -218,7 +293,8 @@ static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *
  * Does not return.
  */
 static void __attribute__((noreturn))
-load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea) {
+load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea,
+                   const char *execfn) {
     tcb_t *cur = sched_current();
     if (!cur) {
         kprintf("[proc] FATAL: load_and_jump_args with no current thread\n");
@@ -226,10 +302,15 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
         if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
-    uint64_t entry = elf_load(elf_data, elf_size, &cur->brk);
+    struct exec_elfinfo ei;
+    ei.phdr  = 0;
+    ei.phnum = 0;
+    uint64_t entry = elf_load(elf_data, elf_size, &cur->brk, &ei.phdr, &ei.phnum);
+    ei.entry = entry;
     if (entry == 0) {
         kprintf("[proc] ELF load failed\n");
         if (elf_data) kfree((void *)elf_data);
+        if (execfn)  kfree((void *)execfn);
         if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
@@ -247,8 +328,10 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
      * guard page just above is intentionally unmapped to catch overflows. */
     uint64_t usp_top = stack_top - USER_STACK_GUARD_SIZE;
     uint64_t user_rsp;
+    uint32_t uid = cur->uid, euid = cur->euid, gid = cur->gid, egid = cur->egid;
     if (ea && (ea->argc > 0 || ea->envc > 0)) {
-        user_rsp = build_initial_stack(usp_top, ea);
+        user_rsp = build_initial_stack(usp_top, ea, &ei, execfn,
+                                       uid, euid, gid, egid);
         if (user_rsp == 0) {
             kprintf("[proc] failed to build initial stack; using empty frame\n");
             user_rsp = (usp_top - 16) & ~0xFULL;
@@ -259,9 +342,12 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
         if (ea) { exec_args_free(ea); kfree(ea); }
         /* No args: still hand crt0 a valid argc=0/argv=NULL/envp=NULL frame. */
         struct exec_args empty = { 0, 0, { NULL }, { NULL } };
-        user_rsp = build_initial_stack(usp_top, &empty);
+        user_rsp = build_initial_stack(usp_top, &empty, &ei, execfn,
+                                       uid, euid, gid, egid);
         if (user_rsp == 0) user_rsp = (usp_top - 16) & ~0xFULL;
     }
+    /* execfn was kmalloc'd by the caller and copied onto the user stack above. */
+    if (execfn) kfree((void *)execfn);
 
     kprintf("[proc] entering Ring 3 at 0x%llx RSP=0x%llx (CR3=0x%llx)\n",
             (unsigned long long)entry, (unsigned long long)user_rsp,
@@ -282,7 +368,7 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
 /* Back-compat wrapper: load with no argv/envp. */
 static void __attribute__((noreturn))
 load_and_jump(const void *elf_data, uint64_t elf_size) {
-    load_and_jump_args(elf_data, elf_size, NULL);
+    load_and_jump_args(elf_data, elf_size, NULL, NULL);
 }
 
 /* ---- fork() ---- */
@@ -580,8 +666,14 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     }
 
     /* 5) Load and jump (does not return).  Pass the captured argv/envp so they
-     *    are materialised on the new process's initial user stack. */
-    load_and_jump_args(buf, (uint64_t)total, ea);
+     *    are materialised on the new process's initial user stack.  AT_EXECFN
+     *    gets a kernel copy of the path (load_and_jump_args frees it). */
+    {
+        size_t eflen = strlen(path) + 1;
+        char *ef = kmalloc(eflen);
+        if (ef) memcpy(ef, path, eflen);
+        load_and_jump_args(buf, (uint64_t)total, ea, ef);
+    }
 
     return -1;   /* not reached */
 }
@@ -695,11 +787,9 @@ static void spawn_thread(void *arg) {
         if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
-    kfree(path);
-
-    /* load_and_jump_args() takes ownership of `ea` and frees it, including on
-     * its own failure paths, so there is nothing to release here. */
-    load_and_jump_args(buf, (uint64_t)total, ea);
+    /* `path` becomes AT_EXECFN: load_and_jump_args copies it onto the new
+     * process's initial stack and frees it.  (ea is also consumed there.) */
+    load_and_jump_args(buf, (uint64_t)total, ea, path);
     #undef SPAWN_MAX_IMAGE
 }
 

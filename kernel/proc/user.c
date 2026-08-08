@@ -89,7 +89,7 @@ static void user_test_thread(void *arg) {
     if (cur) cur->pml4_phys = shell_pml4;
 
     uint64_t init_brk = 0;
-    uint64_t entry = elf_load(init_bin, init_bin_size, &init_brk);
+    uint64_t entry = elf_load(init_bin, init_bin_size, &init_brk, NULL, NULL);
     if (cur) cur->brk = init_brk;
     if (entry == 0) { kprintf("[user] FAIL: ELF load failed\n"); return; }
     uint64_t stack_top = choose_user_stack_top();
@@ -97,7 +97,21 @@ static void user_test_thread(void *arg) {
 
     kprintf("[user] shell in isolated address space (CR3=0x%llx)\n",
             (unsigned long long)shell_pml4);
-    jump_to_user(entry, stack_top - 16, 0);
+    /* M5: build a minimal valid initial stack (argc=0, NULL argv/envp, an
+     * AT_NULL-terminated auxv) so crt0/libc parse a real frame.  Previously
+     * this jumped with a bare stack_top-16 and NO argc/argv/envp table; the
+     * shell booted on a garbage frame that the new libc auxv walk tripped on.
+     * (The richer auxv exec/spawn builds is not needed for the init shell.) */
+    {
+        uint64_t rsp = (stack_top - 64) & ~0xFULL;
+        volatile uint64_t *frame = (volatile uint64_t *)rsp;
+        frame[0] = 0;   /* argc        */
+        frame[1] = 0;   /* argv NULL   */
+        frame[2] = 0;   /* envp NULL   */
+        frame[3] = 0;   /* auxv AT_NULL type  */
+        frame[4] = 0;   /* auxv AT_NULL value */
+        jump_to_user(entry, rsp, 0);
+    }
 }
 
 void user_mode_self_test(void) {

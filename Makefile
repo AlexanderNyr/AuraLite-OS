@@ -349,6 +349,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/socktest.elf \
              $(USER_BUILD)/fpustress.elf \
              $(USER_BUILD)/siginfotest.elf \
+             $(USER_BUILD)/auxvtest.elf \
              $(USER_BUILD)/conformtest.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
              $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
@@ -507,6 +508,11 @@ $(USER_BUILD)/fpustress.o: userspace/tests/fpustress/fpustress.c $(USER_CFLAGS_I
 
 # M5 (MATURITY_PLAN.md): SA_SIGINFO regression test.
 $(USER_BUILD)/siginfotest.o: userspace/tests/siginfotest/siginfotest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# M5 (MATURITY_PLAN.md): auxiliary-vector (getauxval) test.
+$(USER_BUILD)/auxvtest.o: userspace/tests/auxvtest/auxvtest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1133,7 +1139,7 @@ INITRD_DEMOS := guess snake glcube glgears
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest fpustress siginfotest conformtest cryptotest x509test tlstest
+                socktest fpustress siginfotest auxvtest conformtest cryptotest x509test tlstest
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)

@@ -1037,6 +1037,10 @@ static void run_fini_array(void) {
     }
 }
 
+/* M5: the auxiliary vector, located by __libc_start_main from the envp
+ * pointer on the initial process stack.  getauxval() scans it. */
+unsigned long *__libc_auxv = NULL;
+
 void __libc_start_main(int argc, char **argv, char **envp) {
     /* FIX_R3 first thing: install the main thread's TCB so errno is
      * per-thread from main() onwards, in every program, threaded or not.
@@ -1044,11 +1048,30 @@ void __libc_start_main(int argc, char **argv, char **envp) {
      * path; crt0 (pure asm) does not touch errno. */
     __tls_errno_install_main();
     environ = envp;
+    /* M5: locate the auxv -- it follows envp's NULL terminator on the initial
+     * process stack; each entry is an (a_type, a_val) pair ended by AT_NULL. */
+    {
+        char **e = envp;
+        if (e) { while (*e) e++; }
+        __libc_auxv = (unsigned long *)(e + 1);
+    }
     run_init_array();   /* ctors may use environ and the TLS errno */
     int rc = main(argc, argv, envp);
     run_fini_array();
     exit(rc);
     for (;;) { }   /* exit() does not return */
+}
+
+/* M5: getauxval(3) -- return the value of auxiliary-vector entry @type, or 0
+ * if absent (0 is also AT_NULL's value, but no real entry has type 0). */
+unsigned long getauxval(unsigned long type) {
+    unsigned long *a = __libc_auxv;
+    if (!a) return 0;
+    while (a[0] != 0) {       /* AT_NULL terminates with a_type == 0 */
+        if (a[0] == type) return a[1];
+        a += 2;
+    }
+    return 0;
 }
 
 void abort(void) {

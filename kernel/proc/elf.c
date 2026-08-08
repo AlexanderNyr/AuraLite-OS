@@ -235,7 +235,8 @@ static int load_segment(const struct elf64_phdr *ph, const uint8_t *image,
     return 1;
 }
 
-uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk) {
+uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
+                  uint64_t *out_phdr, uint64_t *out_phnum) {
     const struct elf64_ehdr *eh = (const struct elf64_ehdr *)image;
 
     if (!validate_elf(eh, size)) {
@@ -247,7 +248,13 @@ uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk) {
 
     int segs_loaded = 0;
     uint64_t highest_end = 0;
+    uint64_t phdr_vaddr = 0;          /* AT_PHDR (M5 auxv) */
+
     for (int i = 0; i < eh->e_phnum; i++) {
+        /* PT_PHDR explicitly locates the program-header table in memory. */
+        if (phdrs[i].p_type == PT_PHDR) {
+            phdr_vaddr = phdrs[i].p_vaddr;
+        }
         if (phdrs[i].p_type == PT_LOAD) {
             if (!load_segment(&phdrs[i], (const uint8_t *)image, size)) {
                 return 0;
@@ -257,6 +264,14 @@ uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk) {
                 uint64_t end = align_up_page(phdrs[i].p_vaddr + phdrs[i].p_memsz);
                 if (end > highest_end) highest_end = end;
             }
+            /* Fallback AT_PHDR: the PT_LOAD whose file range covers e_phoff
+             * maps the header table. p_vaddr + (e_phoff - p_offset). */
+            if (phdr_vaddr == 0 &&
+                eh->e_phoff >= phdrs[i].p_offset &&
+                eh->e_phoff <  phdrs[i].p_offset + phdrs[i].p_filesz) {
+                phdr_vaddr = phdrs[i].p_vaddr +
+                             (eh->e_phoff - phdrs[i].p_offset);
+            }
         }
     }
 
@@ -265,7 +280,9 @@ uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk) {
         return 0;
     }
 
-    if (out_brk) *out_brk = highest_end;
+    if (out_brk)  *out_brk  = highest_end;
+    if (out_phdr) *out_phdr = phdr_vaddr;
+    if (out_phnum)*out_phnum= (uint64_t)eh->e_phnum;
 
     kprintf(ELF_TAG "loaded %d segment(s), entry 0x%llx\n",
             segs_loaded, (unsigned long long)eh->e_entry);

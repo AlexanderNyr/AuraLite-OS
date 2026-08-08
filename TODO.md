@@ -107,6 +107,13 @@ for the feature matrix.
   built per the System V AMD64 ABI (argc/argv/NULL/envp/NULL) but the auxiliary
   vector contains only an `AT_NULL` terminator. Add `AT_PAGESZ`/`AT_RANDOM`/etc.
   when a dynamic loader needs them.
+  **Done (MATURITY_PLAN.md M5):** `build_initial_stack` now emits a full auxv
+  (AT_PHDR/PHENT/PHNUM, AT_PAGESZ, AT_ENTRY, AT_UID/EUID/GID/EGID, AT_SECURE,
+  AT_RANDOM=16 kernel-seeded bytes, AT_EXECFN); `elf_load` exposes the mapped
+  phdr address + e_phnum. libc locates the auxv past envp and `getauxval()`
+  scans it (new `sys/auxv.h`). Also fixed a latent bug: the init shell booted
+  on a garbage stack frame (no argc/argv/envp at all) -- now a valid ABI frame.
+  Gate: /tests/auxvtest + test_auxv.sh (6/6); exec/spawn/argv tests still green.
 - **No `execvpe`/`fexecve`/`posix_spawn`.** Only `execve`/`execv`/`execvp`
   wrappers exist; `execvp` honours `PATH` (default `/bin`) with no per-segment
   `EACCES` retry semantics.
