@@ -270,6 +270,7 @@ static void cmd_help(void) {
     puts("  clock     - clock display");
     puts("  guess     - number guessing game");
     puts("  snake     - snake game");
+    puts("  glrunner  - Cube Runner 3D game (A/D steer, Space pause, R restart)");
     puts("  hello     - hello world");
     puts("  http      - HTTP client");
     puts("  weather   - live weather report (wttr.in): weather [full|3] <city>");

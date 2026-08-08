@@ -385,7 +385,7 @@ USER_CFLAGS += -I lib/libgl/include
 
 # GL applications: linked with libgl in addition to libauragui.
 USER_GL_APPS := $(USER_BUILD)/gltest.elf $(USER_BUILD)/glcube.elf \
-                $(USER_BUILD)/glgears.elf
+                $(USER_BUILD)/glgears.elf $(USER_BUILD)/glrunner.elf
 
 # ---- libatls (INTERNET_PLAN.md phase N1) ----
 # The TLS crypto primitives live in userspace (decision D2): a bug in an
@@ -821,6 +821,12 @@ $(USER_BUILD)/glgears.o: userspace/demos/glgears/glgears.c lib/libauragui/includ
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
+$(USER_BUILD)/glrunner.o: userspace/demos/glrunner/glrunner.c lib/libauragui/include/auragui.h \
+                          lib/libgl/include/GL/gl.h lib/libgl/include/GL/glu.h \
+                          lib/libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
 # Explicit link rule: GL apps additionally pull in libgl.  This overrides the
 # generic %.elf pattern rule below for these targets.
 $(USER_GL_APPS): $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) \
@@ -1149,7 +1155,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http weather clock browser gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
-INITRD_DEMOS := guess snake glcube glgears
+INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
@@ -1159,16 +1165,20 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
-	@cp $(INIT_ELF) $(INITRD_DIR)/bin/init
-	@cp $(HELLO_ELF) $(INITRD_DIR)/bin/hello
+# Binaries are stripped into the image: the BIOS boot path reserves an 8 MiB
+# slot for initrd.tar (see mkisoimage_dual.sh) and the full userland with
+# symbol tables no longer fits.  Unstripped ELFs stay in build/user for
+# debugging; nothing in the OS reads user-space symtabs at runtime.
+	@strip -s $(INIT_ELF) -o $(INITRD_DIR)/bin/init
+	@strip -s $(HELLO_ELF) -o $(INITRD_DIR)/bin/hello
 	@for p in apm play sysinfo; do \
-	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/bin/$$p; done
+	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/bin/$$p; done
 	@for p in $(INITRD_APPS); do \
-	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/apps/$$p; done
+	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/apps/$$p; done
 	@for p in $(INITRD_DEMOS); do \
-	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/demos/$$p; done
+	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/demos/$$p; done
 	@for p in $(INITRD_TESTS); do \
-	    cp $(USER_BUILD)/$$p.elf $(INITRD_DIR)/tests/$$p; done
+	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/tests/$$p; done
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
 # These used to be `cp foo.elf foo.pkg` -- a renamed executable with no
@@ -1198,7 +1208,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@for ex in hello-app gui-app; do \
 	    $(MAKE) --no-print-directory -C examples/$$ex \
 	            AURALITE_SDK=$(CURDIR)/$(SDK_DIR) >/dev/null; \
-	    cp examples/$$ex/$$ex.elf $(INITRD_DIR)/apps/$$ex; \
+	    strip -s examples/$$ex/$$ex.elf -o $(INITRD_DIR)/apps/$$ex; \
 	done
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 

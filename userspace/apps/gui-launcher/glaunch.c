@@ -32,6 +32,7 @@ static struct app apps[] = {
     { "About",         "gabout"  },
     { "OpenGL Cube",   "glcube"  },
     { "OpenGL Gears",  "glgears" },
+    { "Cube Runner 3D","glrunner"},
 };
 
 static void on_launch(ag_widget_t *w, void *u) {
