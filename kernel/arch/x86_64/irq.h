@@ -32,6 +32,7 @@
 #define IMCR_DATA_PORT  0x23
 #define IMCR_SELECT     0x70   /* select the IMCR register via port 0x22 */
 #define IMCR_MODE_PIC   0x00   /* route 8259 INTR directly to the BSP    */
+#define IMCR_MODE_APIC  0x01   /* decouple 8259; deliver via I/O APIC    */
 
 typedef void (*irq_handler_t)(struct registers *regs);
 
@@ -39,6 +40,12 @@ void pic_init(void);
 void pic_eoi(int irq);
 void pic_mask(int irq);
 void pic_unmask(int irq);
+
+/* Switch the system off the 8259 for I/O-APIC delivery: mask all 16 PIC IRQs
+ * and force the IMCR into APIC mode so the 8259 is fully decoupled from the
+ * BSP's INTR line.  Called by ioapic_init() once the I/O APIC is driving the
+ * legacy IRQs.  No-op/harmless on chipsets without an IMCR. */
+void pic_disable_for_apic(void);
 
 void irq_register_handler(int irq, irq_handler_t handler);
 void irq_dispatch(int irq, struct registers *regs);

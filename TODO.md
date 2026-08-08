@@ -94,8 +94,13 @@ for the feature matrix.
 - ~~**Blocking model is primitive.**~~ **Done (H4):** wait queues back
   blocking pipes, futex waits, `select()`, and `nanosleep()`.
 - **Interrupt model is transitional.** LAPIC enable and per-CPU LAPIC timers
-  are implemented; IOAPIC routing and fully interrupt-driven device paths remain
-  future work.
+  are implemented. **I/O APIC routing is now done** (`MATURITY_PLAN.md` M2): the
+  16 legacy ISA IRQs are delivered through the I/O APIC (PIT → GSI2, etc.) with
+  the 8259 masked/decoupled, QEMU-hardcoded at the PC-standard base. The
+  remaining gap is real-hw discovery — the I/O APIC base address and Interrupt
+  Source Overrides should come from the ACPI MADT (parsed in the bootloader)
+  rather than the hard-coded QEMU defaults — and fully interrupt-driven device
+  data paths (virtio-net IRQ RX; MSI/MSI-X for virtio/virtio-gpu).
 
 #### P10 / POSIX follow-ups
 

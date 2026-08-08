@@ -7,6 +7,10 @@
 
 void lapic_enable(void);
 void lapic_eoi(void);
+/* Mask LINT0 on the running CPU (write the LVT entry with the Mask bit).  Used
+ * by ioapic_init() once the I/O APIC is delivering legacy IRQs directly: the
+ * BSP's LINT0 no longer needs to carry the 8259's ExtINT vectors. */
+void lapic_mask_lint0(void);
 void lapic_send_ipi_all_excluding_self(uint8_t vector);
 
 /* Per-CPU Local APIC timer (SMP step 3.2).  The APIC bus frequency is not

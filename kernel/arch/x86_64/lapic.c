@@ -93,6 +93,15 @@ void lapic_eoi(void) {
     lapic[LAPIC_EOI / 4] = 0;
 }
 
+void lapic_mask_lint0(void) {
+    volatile uint32_t *lapic = lapic_mmio();
+    if (!lapic || !lapic_mapped) return;
+    /* Set only the Mask bit in the LINT0 LVT entry: delivery mode and trigger
+     * become irrelevant once masked.  This disconnects the 8259 ExtINT "virtual
+     * wire" on the BSP once the I/O APIC is delivering IRQs directly. */
+    lapic[LAPIC_LVT_LINT0 / 4] = LAPIC_LVT_MASKED;
+}
+
 /* ---- Local APIC timer (per-CPU scheduler tick source, SMP step 3.2) ----
  *
  * The legacy PIT reaches only the BSP (IRQ0 via LINT0/ExtINT -- nothing

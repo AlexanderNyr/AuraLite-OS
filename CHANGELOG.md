@@ -2,6 +2,48 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [MATURITY_PLAN M2 — IOAPIC driver + PIC→I/O-APIC switch] 2026-08-08
+
+`MATURITY_PLAN.md` phase M2 (core). Until now every device interrupt reached
+the BSP through the 8259 PIC over the LAPIC LINT0 "virtual wire" (ExtINT); the
+I/O APIC, which the SMP machine was built for, sat unused. This phase routes the
+16 legacy ISA IRQs through the I/O APIC instead.
+
+- **I/O APIC driver** (`kernel/arch/x86_64/ioapic.{c,h}`, new): maps the MMIO
+  register window (QEMU-standard `0xFEC00000`), probes the version register
+  (rejecting absent hardware so the PIC path stays intact), and programs the
+  redirection table — ISA IRQ0 (the PIT) to GSI 2 (the one mandatory ACPI
+  Interrupt Source Override), every other ISA IRQ identity-mapped, all delivered
+  as fixed/physical/edge/active-high on vectors 32–47 (the PIC remap offsets, so
+  every registered handler keeps firing unchanged) to the BSP APIC ID.
+- **PIC→APIC switch** (`irq.c`, `irq.h`, `lapic.c`, `lapic.h`, `kernel.c`): once
+  the redirections are armed, `pic_disable_for_apic()` masks all 16 PIC IRQs and
+  flips the IMCR to APIC delivery, `lapic_mask_lint0()` drops the BSP's ExtINT
+  virtual wire, and a new `apic_irq_mode` flag makes `irq_dispatch()` do
+  LAPIC-EOI only (no more poking a now-disconnected 8259). `ioapic_init()` runs
+  in `kmain` after `smp_init()` (LAPIC up, APIC ID known) and before `pit_init()`
+  so the very first PIT tick arrives over the I/O APIC.
+- **Bug caught at the gate (GSI collision):** the first cut identity-mapped
+  ISA IRQ2 to GSI2 — the same pin the PIT override occupies — so the PIT entry
+  was overwritten with IRQ2's vector and timer ticks were delivered to vector 34
+  instead of 32. The timer froze and the scheduler hung after zero ticks. IRQ2
+  is the PIC cascade line (no device), so it is now skipped; GSI2 belongs to the
+  PIT alone.
+
+**Deferred (stated, not dropped):** MSI/MSI-X for virtio/virtio-gpu and moving
+virtio-net RX to true interrupt-driven delivery were *listed under M2* but are
+genuinely M7-adjacent (the plan itself routes virtio-net IRQ RX to M7); they
+depend on per-device work, not this interrupt substrate. Real-hw MADT
+IOAPIC-base / Interrupt-Source-Override parsing in the bootloader is the
+documented follow-up that replaces the QEMU-hardcoded base + IRQ0→GSI2 override.
+
+**Test gate:** `test_boot_to_shell.sh` 17/17 (PIT timer accuracy + scheduler
+interleave pass in APIC mode, no panic/triple-fault), `test_keymaps.sh` real
+PS/2 scancodes delivered (US + DE layouts), `test_networking.sh` 7/7 (DHCP +
+ICMP + DNS + TCP) and `test_e1000_irq.sh` 5/5 — IRQ delivery works end to end.
+Boot log reports `[ioapic] I/O APIC @0xfec00000 ver 0x20, 24 redirection
+entries; BSP on APIC IRQs (PIT@GSI2, kbd@GSI1)`.
+
 ## [MATURITY_PLAN M5 — POSIX process-model precision COMPLETE] 2026-08-08
 
 `MATURITY_PLAN.md` phase M5 finished. The remaining edges beyond the SA_SIGINFO

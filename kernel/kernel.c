@@ -5,6 +5,7 @@
 #include "kernel/arch/x86_64/gdt.h"
 #include "kernel/arch/x86_64/idt.h"
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/arch/x86_64/ioapic.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
@@ -240,6 +241,15 @@ void kmain(boot_info_t *boot_info) {
     kprintf("[boot] initialising SMP...\n");
     smp_init();
     smp_self_test();
+
+    /* M2: switch the BSP from the 8259 PIC/"virtual-wire" path onto the I/O
+     * APIC for legacy IRQ delivery.  Must run AFTER smp_init() (which calls
+     * lapic_enable(), mapping the Local APIC and giving us a usable APIC ID)
+     * and BEFORE pit_init(), so the very first PIT tick arrives over the I/O
+     * APIC instead of through the PIC.  On failure (no IOAPIC) it leaves the
+     * PIC path intact and we simply continue.  APs are unaffected -- they run
+     * their own Local APIC timer. */
+    ioapic_init();
 
     kprintf("[boot] initialising timer (PIT @ 100 Hz)...\n");
     pit_init(100);

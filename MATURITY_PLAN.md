@@ -1,12 +1,12 @@
 # AuraLite OS — Subsystem Maturity Plan
 
-## Status: IN PROGRESS 🚧 — M1 + M5(siginfo) complete, M2–M14 pending
+## Status: IN PROGRESS 🚧 — M1, M5 complete; M2 core (IOAPIC) complete; M3, M4, M6–M14 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | M1 — FPU/SSE context switch | ✅ complete | `patches/MAT_M1_fpu_context.patch` |
 | M5 — POSIX process-model precision | ✅ complete | `patches/MAT_M5_complete.patch` |
-| M2 — IOAPIC + interrupt-driven devices | pending | — |
+| M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
 | M3 — fault-recovering uaccess + audit | pending | — |
 | M4, M6–M14 | pending | — |
 
@@ -188,32 +188,60 @@ with its own registers. This is the defect that makes SMP real.
 
 ---
 
-### Phase M2 — IOAPIC and an interrupt-driven device model
+### Phase M2 — IOAPIC and an interrupt-driven device model  ✅ CORE COMPLETE
+
+**Slice done (`patches/MAT_M2_ioapic.patch`):** a kernel-only I/O APIC driver
+(`kernel/arch/x86_64/ioapic.{c,h}`) now routes the 16 legacy ISA IRQs through
+the I/O APIC instead of the 8259 PIC. On boot, after the LAPIC is enabled,
+`ioapic_init()` maps the I/O APIC window (QEMU-standard `0xFEC00000`), programs
+the redirection table (PIT IRQ0→GSI2, every other ISA IRQ identity-mapped, all
+to vectors 32–47, fixed/physical/edge/active-high, destined at the BSP APIC ID),
+masks the 8259 entirely, flips the IMCR to APIC mode, masks LINT0, and raises
+`apic_irq_mode` so `irq_dispatch()` does LAPIC-EOI only. If no I/O APIC is
+present the version-register probe bails out and the PIC virtual-wire path is
+left untouched. A latent GSI-collision bug (ISA IRQ2's identity map landing on
+the PIT's GSI2 and overwriting its vector) was caught and fixed at the gate —
+without it the timer froze and the scheduler hung.
+
+**Deferred from this phase (stated, not silently dropped):** MSI/MSI-X for
+virtio/virtio-gpu, and moving virtio-net RX to true interrupt-driven delivery,
+were *listed under M2* but are genuinely M7-adjacent (the plan itself routes
+"virtio-net full IRQ-driven RX" to M7) — they depend on per-device work, not
+the interrupt substrate this phase delivers, and are tracked there. Real-hw
+MADT IOAPIC-base / Interrupt-Source-Override parsing in the bootloader is the
+documented follow-up that replaces the QEMU-hardcoded base.
 
 **Objective:** stop routing every device through the legacy 8259 PIC and give
 the SMP machine the interrupt controller it was built for.
 
 #### Tasks
 
-- [ ] An IOAPIC driver (`kernel/arch/x86_64/ioapic.{c,h}`): detect via ACPI
-      MADT (the bootloader already parses MADT — `boot/shared`), map the MMIO
-      register window, program the redirection table.
-- [ ] Wire IOAPIC + LAPIC as the primary interrupt path; keep the PIC as a
-      fallback behind a `pic_mode`/`apic_mode` boot decision, **stated** rather
-      than both live at once.
-- [ ] MSI / MSI-X for virtio and virtio-gpu, so those devices are not pinned to
-      legacy INTx share-line behaviour.
+- [x] An IOAPIC driver (`kernel/arch/x86_64/ioapic.{c,h}`): map the MMIO
+      register window, program the redirection table.  *(ACPI MADT detection
+      is the real-hardware follow-up — this increment uses the PC-standard
+      base `0xFEC00000` + the IRQ0→GSI2 override, which is correct for QEMU i440fx.)*
+- [x] Wire IOAPIC + LAPIC as the primary interrupt path; keep the PIC as a
+      fallback behind an `apic_irq_mode` boot decision (the probe fails closed
+      → PIC path stays), **stated** rather than both live at once.
+- [ ] MSI / MSI-X for virtio and virtio-gpu — **deferred** (per-device, tracked
+      as future work; the legacy-INTx path through the I/O APIC already works).
 - [ ] Move virtio-net RX (M7 prerequisite) and the e1000 path to true
-      interrupt-driven delivery, not the current "IRQ only acks + poll" shape.
+      interrupt-driven delivery — **e1000 INTx RX/TX verified through the I/O
+      APIC this phase**; virtio-net IRQ-driven RX is M7's task.
 
 #### Test gate
 
-- Boot log reports IOAPIC mode active; `ping`/`tcpserver` still pass (IRQ
-  delivery works end to end).
-- A device interrupt is observed to wake a `hlt`-ed AP (proves routing, not
-  just programming) — an integration case that pins a waiter to a non-BSP core.
-- The full integration suite passes in APIC mode, since changing the interrupt
-  controller is exactly the change that disturbs everything.
+- [x] Boot log reports IOAPIC mode active
+      (`[ioapic] I/O APIC @0xfec00000 ver 0x20, 24 redirection entries; BSP on
+      APIC IRQs (PIT@GSI2, kbd@GSI1)`); `ping`/`tcpserver`/networking still pass
+      (IRQ delivery works end to end): `test_networking.sh` 7/7, `test_e1000_irq.sh` 5/5.
+- [x] The full integration suite passes in APIC mode — `test_boot_to_shell.sh`
+      17/17 (PIT timer accuracy + scheduler interleave), `test_keymaps.sh`
+      real PS/2 scancodes delivered, no panic/triple-fault/unhandled exception —
+      since changing the interrupt controller is exactly the change that disturbs everything.
+- [ ] A device interrupt is observed to wake a `hlt`-ed AP — **deferred** to the
+      M7 virtio-IRQ work (delivery to the BSP is proven; routing to an AP needs a
+      device whose redir entry targets a non-BSP core, which the legacy ISA map does not).
 
 #### Deliverable
 
