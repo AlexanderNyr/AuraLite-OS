@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [MATURITY_PLAN M5 — POSIX process-model precision COMPLETE] 2026-08-08
+
+`MATURITY_PLAN.md` phase M5 finished. The remaining edges beyond the SA_SIGINFO
+and auxv slices: shared-open-file-description semantics across `fork`, the
+`close_range`/`closefrom` surface, precise `waitpid`, and reparent-to-init.
+
+- **OFD sharing across fork (gated):** `vfs_fork_inherit` already shared the
+  parent's open-file descriptions with the child (same seek offset); the
+  fork-shared-offset path was only asserted for same-process `dup` until now.
+  New `/tests/fdsharetest` exercises the textbook case -- parent reads 4 bytes,
+  `fork()`, child reads the NEXT 4 (shared offset, not a restart at 0); a
+  `dup`'d fd continues from where the child left off.
+- **`close_range`/`closefrom`:** already wired (`SYS_CLOSE_RANGE` 436 +
+  `posix_extra.c` wrappers, plus the `SYS_CLOSE_RANGE` define in unistd.h);
+  now exercised and asserted by `/fdsharetest`.
+- **Precise `waitpid` + reparent-to-init:** confirmed present -- `do_waitpid`
+  handles `pid>0`/`0`/`-1`/`<-1` selectors, `WNOHANG`/`WUNTRACED`; orphan
+  adoption reparents every live/zombie child to init (PID 1, P6a) so an
+  orphan's exit is reaped rather than leaking.
+
+**Test gate:** `/tests/fdsharetest` (new) + `test_fdshare.sh` (6/6).
+`test_fork_cow`, `test_execve_args`, `test_fd_isolation`, `test_siginfo`,
+`test_auxv` still pass; host unit tests green.
+
+**M5 is complete: SA_SIGINFO, auxv, fork/dup shared-OFD, close_range/closefrom,
+precise waitpid + reparent-to-init all done.**
+
 ## [MATURITY_PLAN M5 — auxiliary vector (auxv)] 2026-08-08
 
 `MATURITY_PLAN.md` phase M5 (second slice). Until now the kernel's auxv held

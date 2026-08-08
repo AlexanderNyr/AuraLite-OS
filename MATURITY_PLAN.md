@@ -5,7 +5,7 @@
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | M1 — FPU/SSE context switch | ✅ complete | `patches/MAT_M1_fpu_context.patch` |
-| M5 (slice) — SA_SIGINFO siginfo_t | ✅ complete | `patches/MAT_M5_siginfo.patch` |
+| M5 — POSIX process-model precision | ✅ complete | `patches/MAT_M5_complete.patch` |
 | M2 — IOAPIC + interrupt-driven devices | pending | — |
 | M3 — fault-recovering uaccess + audit | pending | — |
 | M4, M6–M14 | pending | — |
@@ -287,7 +287,7 @@ in on demand rather than eagerly copied at map time.
 
 ---
 
-### Phase M5 — POSIX process-model precision  (slice: SA_SIGINFO ✅)
+### Phase M5 — POSIX process-model precision  ✅ COMPLETE
 
 **Slice done (MAT_M5_siginfo.patch):** SA_SIGINFO now populates a real
 `siginfo_t` (`si_addr` from CR2/faulting RIP, `si_code` per exception,
@@ -302,16 +302,16 @@ reparent-to-init) are still pending.
 
 #### Tasks
 
-- [ ] Full POSIX shared-open-file-description semantics across `fork`/`execve`
+- [x] Full POSIX shared-open-file-description semantics across `fork`/`execve`
       (today TODO calls this out): a `dup`'d fd in the parent and the inherited
       fd in the child share one OFD offset.
-- [ ] `close_range`/`closefrom` and correct `O_CLOEXEC` on every inherited fd
+- [x] `close_range`/`closefrom` and correct `O_CLOEXEC` on every inherited fd
       at `execve`; atomic `pipe2`/`socket(O_CLOEXEC)` already exist.
 - [x] `execve` auxiliary vector: `AT_PAGESZ`, `AT_RANDOM`, `AT_EXECFN`,
       `AT_PHDR` — needed before any dynamic loader is thinkable.
 - [x] `SA_SIGINFO`: populate a real `siginfo_t` (si_signo/si_code/si_addr/
       si_pid), not the current rsi/rdx=0 stub.
-- [ ] Precise `waitpid` child-PID semantics and a reparent-to-init policy so an
+- [x] Precise `waitpid` child-PID semantics and a reparent-to-init policy so an
       orphan's exit is reaped rather than leaking (TODO n_children note).
 
 #### Test gate

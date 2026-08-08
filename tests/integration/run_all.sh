@@ -117,6 +117,7 @@ ALL_CASES=(
     test_fpu_smp
     test_siginfo
     test_auxv
+    test_fdshare
     test_gui
     test_gui_usb
     test_gbrowser

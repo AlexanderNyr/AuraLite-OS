@@ -287,9 +287,11 @@ for the feature matrix.
 
 ### Processes and file descriptors
 
-- **FD semantics still need final POSIX precision.** FD numbers are per-process
-  and `dup`, `pipe`, close-on-exec and OFD sharing exist, but exact shared-open-
-  file-description semantics across every `fork`/`exec` edge case still need audit.
+- ~~**FD semantics still need final POSIX precision.**~~ **Done (MATURITY_PLAN.md M5):**
+  fork()/dup() share the open-file description (same seek offset), now gated by
+  /tests/fdsharetest (parent reads, fork, child continues at the shared offset;
+  dup'd fd then continues from there). close_range/closefrom wired; precise
+  waitpid + reparent-to-init confirmed present.
 - **`fork`, `execve`, `wait4` are simplified.** They are sufficient for the
   bundled demos/tests, but not POSIX-complete.
 - **User VM is still eager/simple.** `brk`, `mmap`, and `munmap` exist, but
@@ -489,7 +491,7 @@ for the feature matrix.
 - [x] Basic per-process FD tables.
 - [x] `dup`, `dup2`, `pipe`, `fcntl(F_GETFD/F_SETFD/FD_CLOEXEC)` syscalls + `execve` honouring `FD_CLOEXEC`.
 - [x] `waitpid(pid, *exit_code)` with real exit-code propagation and zombie collection on wait.
-- [ ] Precise POSIX shared-open-file description semantics across `fork`.
+- [x] Precise POSIX shared-open-file description semantics across `fork`.
 - [x] Signals and process notification baseline (`kill`, alarms, terminal signals, SIGCHLD, SA_RESTART).
 
 ### Filesystems and storage

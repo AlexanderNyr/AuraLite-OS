@@ -53,6 +53,7 @@
 #define SYS_DUP2   33
 #define SYS_PIPE   22
 #define SYS_PIPE2  293
+#define SYS_CLOSE_RANGE 436
 
 /* P7: User & Group Credentials */
 #define SYS_GETUID    500
