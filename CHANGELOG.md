@@ -2,6 +2,50 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [MATURITY_PLAN M1 — FPU/SSE context switch] 2026-08-08
+
+`MATURITY_PLAN.md` phase M1. The H8 scheduler is real SMP (per-CPU run queues +
+work stealing), but the context switch saved **no FPU/SSE state**, so a thread
+resumed on another CPU continued its floating-point computation with that CPU's
+stale xmm registers. The visible symptom was `gltest`'s 373 FP-heavy checks
+failing a *different random* check roughly one run in three under `-smp 2`
+(13/16 boots) while passing 7/7 under `-smp 1` — the textbook signature of a
+missing FPU context switch.
+
+- **`context_switch`** (`kernel/proc/context.asm`) now eagerly `FXSAVE`s the
+  outgoing thread's state and `FXRSTOR`s the incoming thread's. A `fpu_valid`
+  flag (0 on a freshly-zeroed TCB) makes the first switch-IN initialise a clean
+  FPU (`fninit` + the default MXCSR via `ldmxcsr`) rather than restoring a
+  stranger's registers, and the first switch-OUT `FXSAVE`s live state and sets
+  the flag — after which every switch-IN `FXRSTOR`s a known-valid image
+  (`FXRSTOR` of an uninitialised area is `#GP`). Because `memset` leaves the
+  flag at 0, the four TCB allocation sites need no FPU initialisation of their
+  own. Eager (not lazy `CR0.TS`/`#NM`) was chosen: AuraLite's thread counts are
+  small, so the ~150-cycle/switch cost is negligible, and it avoids an SMP-unsafe
+  trap-handler path.
+- **Signal frame** (`kernel/proc/signal.c`): `build_handler_frame()` now
+  `FXSAVE`s the interrupted thread's live FPU/SSE state into the (already
+  reserved) `signal_frame.fxsave_area`, and `do_sigreturn()` `FXRSTOR`s it back —
+  fixing a stale stub ("deferred until OSFXSR" — but `CR4.OSFXSR` has been set
+  since `boot.asm`) that zeroed the area, silently wiping a thread's SSE state
+  when a signal was delivered mid-FP-computation. `sigreturn` masks MXCSR to its
+  defined low 16 bits before restoring, so a user-controlled frame cannot set a
+  reserved bit that would make `FXRSTOR` `#GP` the kernel.
+- **TCB** (`kernel/proc/thread.h`): +512-byte aligned `fpu_area` + `fpu_valid`;
+  offsets emitted by `tools/gen_asm_offsets.c` (`TCB_FPU`, `TCB_FPU_VALID`).
+
+**Test gate**: `/tests/fpustress` (new) — four FP-heavy pthreads keep four
+double accumulators live in xmm registers across hundreds of preemptions with a
+distinct base each; all four match their single-threaded reference under
+`-smp 4`. `gltest` now passes 373/373 under `-smp 4` (3/3 boots here, against
+the 13/16 baseline). Integration case `test_fpu_smp.sh` (7/7). The
+`IL_SMP=1` pin in `test_opengl.sh` — which existed *only* to dodge this bug —
+is removed; `/gltest` now runs under `-smp 2`. `make test-unit` green.
+
+A side finding, recorded for a later phase: libc `printf` has no `%f`/`%g`
+support (no `case 'f'` in the converter), so `/fpustress` reports mismatches as
+raw IEEE-754 bits. That is a POSIX-tail / libc item, not M1.
+
 ## [WebView Phase W8 — Rename to gbrowser + GUI chrome] 2026-08-07
 
 `WEBVIEW_PLAN.md` phase W8, user-driven direction: instead of retiring

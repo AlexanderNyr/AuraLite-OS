@@ -49,7 +49,14 @@ for the feature matrix.
   not to dirty xmm during its quanta; physical migration under `-smp 2`
   loses the state unconditionally. This is user-visible data corruption,
   not a canary event. The fix (FXSAVE/FXRSTOR in the context switch) is a
-  separate follow-up phase and deliberately not part of R2.
+  separate follow-up phase and deliberately not part of R2. **✅ DONE
+  (`MATURITY_PLAN.md` M1 → `patches/MAT_M1_fpu_context.patch`):**
+  `context_switch` now eagerly `fxsave`/`fxrstor`s a per-TCB 512-byte area
+  (a `fpu_valid` flag zeroes on memset so the first switch-IN runs `fninit`
+  + default MXCSR), and the signal frame's stale FP stub was filled in.
+  `gltest` passes 373/373 under `-smp 4` (was 13/16 failing at `-smp 2`);
+  new gate `/tests/fpustress` + `test_fpu_smp.sh`; the `IL_SMP=1` pin in
+  `test_opengl.sh` is removed.
   Permanent instrumentation merged so any *future* trip is classifiable:
   `__stack_chk_fail()` (`kernel/lib/stack_protector.c`) now dumps, over the
   R0 lock-free serial path, the cpu#, a trip counter, the detection RIP,

@@ -411,8 +411,13 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs) {
     /* Snapshot the interrupted context into a kernel-local frame, then copy out. */
     struct signal_frame f __attribute__((aligned(16)));
     memset(&f, 0, sizeof(f));
-/* FPU/SSE context save is deferred until the kernel enables OSFXSR/FXSAVE
- * support on all CPUs.  The frame area stays zeroed for ABI stability. */
+    /* M1 (MATURITY_PLAN.md): snapshot the interrupted thread's LIVE FPU/SSE
+     * state into the frame so sigreturn can restore it.  CR4.OSFXSR is enabled
+     * (boot.asm), so fxsave is available, and f.fxsave_area is 16-aligned (the
+     * first field of an aligned(16) struct).  Until M1 this was a stub that
+     * zeroed the area, so a signal delivered mid-FP-computation silently wiped
+     * the thread's SSE state on handler return. */
+    __asm__ volatile("fxsave %0" : "=m"(f.fxsave_area) :: "memory");
     f.r15 = regs->r15; f.r14 = regs->r14; f.r13 = regs->r13; f.r12 = regs->r12;
     f.r11 = regs->r11; f.r10 = regs->r10; f.r9 = regs->r9;  f.r8  = regs->r8;
     f.rdi = regs->rdi; f.rsi = regs->rsi; f.rbp = regs->rbp; f.rdx = regs->rdx;
@@ -628,7 +633,18 @@ int64_t do_sigreturn(struct registers *regs) {
     regs->cs = USER_CS;
     regs->ss = USER_SS;
 
-/* FPU/SSE context restore intentionally skipped; see signal delivery save path. */
+    /* M1 (MATURITY_PLAN.md): restore the FPU/SSE state captured at signal
+     * delivery.  The frame came from user memory, so an attacker could set
+     * reserved MXCSR bits (FXSAVE image offset 24) that would make fxrstor
+     * #GP -- a kernel fault caused by user input.  Mask MXCSR to its defined
+     * low 16 bits (the named IE/DE/ZE/OE/UE/PE flags, masks, DAZ, RC, FTZ)
+     * before restoring, which keeps the user able to set its own rounding
+     * mode/exception masks but cannot trip a reserved-bit #GP. */
+    {
+        uint32_t *mxcsr = (uint32_t *)&f.fxsave_area[24];
+        *mxcsr &= 0x0000FFFFu;
+        __asm__ volatile("fxrstor %0" :: "m"(f.fxsave_area) : "memory");
+    }
 
     if (t->syscall_restart_pending) {
         t->syscall_restart_pending = 0;

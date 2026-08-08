@@ -22,7 +22,7 @@ Legend:
 | GDT / IDT / PIC | ✅ | 256 IDT gates, PIC IRQ remap. |
 | TSS | 🚧 | RSP0 works and is per-CPU. **IST is allocated but unused**: `tss_init()` fills `ist1` for every CPU, but `idt_set_gate()` hardcodes `ist = 0`, so no vector selects it — a fault taken on a bad stack (kernel stack overflow, #DF) triple-faults instead. See `TODO.md`. |
 | SYSCALL/SYSRET | ✅ | Linux-like register ABI, custom syscall table. |
-| SMP bring-up | 🧪 | APs online + scheduler lock; BSP-only scheduling remains the normal execution mode while APs enter `sched_idle()`. |
+| SMP bring-up | ✅ | H8 scheduler: all online CPUs run preemptive round-robin with per-CPU run queues, LAPIC-timer ticks, cross-CPU work stealing and IPI TLB shootdown. **M1 added eager `FXSAVE`/`FXRSTOR` FPU/SSE context switching**, which H8 needed to be correct (gltest now passes 373/373 under `-smp 4`; `test_fpu_smp.sh`). |
 | LAPIC / IOAPIC | 🧪 | LAPIC enable + timer on each CPU are implemented; IOAPIC routing is still future work and legacy PIC/PIT paths remain available. |
 
 ## Memory management

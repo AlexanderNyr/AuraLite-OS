@@ -203,6 +203,29 @@ typedef struct tcb {
      * its saved context torn by interleaved save/restore (observed live:
      * #DB from garbage saved-RFLAGS TF|DF restored inside context_switch). */
     volatile uint32_t on_queue;
+
+    /* ---- M1 (MATURITY_PLAN.md): per-thread FPU/SSE context-save area ----
+     *
+     * The H8 scheduler is real SMP (per-CPU run queues + work stealing), but
+     * until M1 the context switch saved NO FPU/SSE state: a thread resumed on
+     * another CPU continued its floating-point computation with that CPU's
+     * stale xmm registers.  gltest's 373 FP-heavy checks failed randomly
+     * under -smp 2 (13/16 boots) and passed cleanly under -smp 1 (7/7) --
+     * the textbook signature of a missing FPU context switch.
+     *
+     * context_switch() now eagerly FXSAVEs the outgoing thread's state and
+     * FXRSTORs the incoming thread's.  fpu_valid is 0 on a freshly-zeroed
+     * TCB: the first switch-IN initialises a clean FPU (fninit + the default
+     * MXCSR) rather than restoring a stranger's registers, and the first
+     * switch-OUT FXSAVEs live state and sets fpu_valid=1, after which every
+     * switch-IN FXRSTORs a known-valid image (FXRSTOR of an uninitialised
+     * area is #GP).  Because memset leaves fpu_valid==0, the four TCB
+     * allocation sites need no FPU initialisation of their own.
+     *
+     * fpu_area MUST be 16-byte aligned for FXSAVE/FXRSTOR; the TCB slab cache
+     * is created with align=16 so the absolute address is 16-aligned. */
+    uint8_t  fpu_valid;
+    uint8_t  fpu_area[512] __attribute__((aligned(16)));
 } tcb_t;
 
 /* Allocate/free a guarded kernel stack for an already-zeroed TCB. */

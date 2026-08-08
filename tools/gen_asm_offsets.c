@@ -23,6 +23,10 @@ int main(void) {
     /* SMP step 3.2 parking flag: context_switch() sets this right after the
      * final save completes (see thread.h / scheduler.c). */
     printf("%%define TCB_SWITCH_PARKED %zu\n", offsetof(tcb_t, switch_parked));
+    /* M1 (MATURITY_PLAN.md): FPU/SSE context-save area + validity flag, used
+     * by context_switch()'s eager fxsave/fxrstor.  fpu_area is aligned(16). */
+    printf("%%define TCB_FPU       %zu\n", offsetof(tcb_t, fpu_area));
+    printf("%%define TCB_FPU_VALID %zu\n", offsetof(tcb_t, fpu_valid));
 
     /* struct cpu_local SYSCALL-entry slots (reached via %gs: in
      * syscall_entry.asm). */

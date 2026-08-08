@@ -12,16 +12,13 @@ cd "$(dirname "$0")/.."
 il_init
 il_have qemu-system-x86_64
 
-# Pin to a single CPU.
-#
-# /gltest now runs 240+ checks, which is long enough to hit the kernel's known
-# SMP window: under -smp 2 roughly one run in three fails a DIFFERENT arbitrary
-# check, while -smp 1 passes 169/169 every time.  libgl is single-threaded, so
-# this is the scheduler limitation documented in TODO.md ("normal user
-# scheduling remains BSP-only"), not a GL defect.  Pinning keeps this case
-# meaningful instead of intermittently red; the SMP issue itself is covered by
-# the dedicated SMP tests.
-export IL_SMP=1
+# Run on the default (-smp 2).  Before M1 (MATURITY_PLAN.md) the context switch
+# saved no FPU/SSE state, so /gltest failed a different random check roughly one
+# run in three under -smp 2 and this case had to pin IL_SMP=1 to stay green.
+# M1 added eager fxsave/fxrstor to context_switch; /gltest now passes reliably
+# under SMP, so the workaround is gone.  The dedicated regression is
+# test_fpu_smp.sh.
+export IL_SMP="${IL_SMP:-2}"
 
 il_section "OpenGL stack (/gltest)"
 
