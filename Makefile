@@ -328,6 +328,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
              $(USER_BUILD)/stoptest.elf $(USER_BUILD)/insttest.elf $(USER_BUILD)/hostilearg.elf \
              $(USER_BUILD)/socktest.elf \
+             $(USER_BUILD)/tcpx5test.elf \
              $(USER_BUILD)/fpustress.elf \
              $(USER_BUILD)/siginfotest.elf \
              $(USER_BUILD)/auxvtest.elf \
@@ -494,6 +495,10 @@ $(USER_BUILD)/stoptest.o: userspace/tests/stoptest/stoptest.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/socktest.o: userspace/tests/socktest/socktest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/tcpx5test.o: userspace/tests/tcpx5test/tcpx5test.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1103,7 +1108,7 @@ INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest
+                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
@@ -1197,6 +1202,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_usb_isoc \
                 $(BUILD_DIR)/test_vfs $(BUILD_DIR)/test_network \
                 $(BUILD_DIR)/test_dns \
+                $(BUILD_DIR)/test_tcp_x5 \
                 $(BUILD_DIR)/test_ip_reasm \
                 $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
                 $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
@@ -1847,6 +1853,12 @@ $(BUILD_DIR)/test_dns: tests/unit/test_dns.c kernel/net/dns_parse.c kernel/net/d
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -DAURALITE_DNS_HOST_TEST -I . \
 		tests/unit/test_dns.c kernel/net/dns_parse.c kernel/net/dns.c -o $@
+
+# X5: TCP hardening policy — pure header (RTO/PMTUD ladder/scheduler/sequencer).
+$(BUILD_DIR)/test_tcp_x5: tests/unit/test_tcp_x5.c kernel/net/tcp_x5.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . \
+		tests/unit/test_tcp_x5.c -o $@
 
 # X4: IPv4 fragment reassembly — pure engine, injected clock.
 $(BUILD_DIR)/test_ip_reasm: tests/unit/test_ip_reasm.c kernel/net/ip_reasm.c \

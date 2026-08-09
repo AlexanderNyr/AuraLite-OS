@@ -2,6 +2,59 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [REALINTERNET_PLAN X5 — TCP hardening] 2026-08-09
+
+`REALINTERNET_PLAN.md` phase X5. The TCP client grew the machinery the
+public internet assumes: an adaptive retransmission timer, tolerance for
+Path-MTU black holes, and correct handling of real-world inbound
+segments (window updates, partial ACKs, duplicates, out-of-order data,
+RSTs). All policy lives in a pure, host-testable header
+(`kernel/net/tcp_x5.h`); `tcp.c` only wires it into the connection table.
+
+- **Concurrency**: `TCP_MAX_CONNS` 8 → 16. The dead 64 KiB `tx_buf[]` per
+  handle was deleted, so a handle shrank to ~10 KiB (8 KiB of which is the
+  new out-of-order stash) — 16 handles cost less RAM (~164 KiB) than the
+  old 8 (~525 KiB). Boot gate `tcp_x5_self_test()` (wired into `kernel.c`
+  where the "self-test skipped" message used to be) holds one full table
+  of 16 concurrent connections to 10.0.2.3:53 and proves the 17th
+  `tcp_open()` fails with -EMFILE and a kprintf diagnosis — predictable,
+  never silent.
+- **Retransmission timing**: RFC 6298-style estimator (`tcpx5_rto_t`) —
+  1 s initial RTO, SRTT/RTTVAR sampling with 200 ms floor and 60 s cap,
+  exponential backoff doubling to the cap, Karn's rule (no samples off
+  retransmitted segments; first-send tick recorded per segment). A send
+  that survives 10 unbroken RTOs returns -ETIMEDOUT with a `[tcp] send
+  failed: ... — giving up` diagnosis (D7) instead of looping forever.
+- **PMTUD black-hole ladder**: `tcpx5_mss_ladder()` steps the effective
+  segment size 1460 → 1200 → 1024 → 536 after pairs of unbroken timeouts;
+  `tcp_retransmit_last` probes the first `eff_mss` bytes and slides the
+  retransmission record so the same byte range is retried, and any ACK
+  progress resets the ladder to 1460.
+- **Real-world receive path**: `tcpx5_classify()` sequences every inbound
+  payload — in-order accepted; full duplicates re-ACKed and dropped
+  (recovery pressure); partial duplicates trimmed to the unseen tail; one
+  subsequent-sequence gap stashed (`TCPX5_OOO_CAP` = 8 KiB) and chained
+  in-order once contiguous; beyond-window segments dropped with a re-ACK.
+  RST now takes effect everywhere — `tcp_recv` returns -ECONNRESET and
+  closes, `tcp_send`'s window wait and `tcp_close`'s FIN wait abort on it.
+  The send side consumes window updates and partial ACKs during
+  window-full waits (`snd_wnd` refreshes, `snd_una` slides, cwnd grows in
+  slow start, capped), and a throttled `[tcp] window full: waiting for
+  ACK` marker makes the piecemeal-ACK path observable.
+- **Tests**: host `tests/unit/test_tcp_x5.c` — 8/8 (RTO init/sample/
+  backoff/cap, ladder bounds, send-scheduler arithmetic, scripted
+  piecemeal transfers with and without simulated loss, sequencer
+  classes). Guest `tests/integration/cases/test_tcp_x5.sh` — 9/9: boot
+  concurrency gate plus a real-wire 1 MiB upload to a slow-draining host
+  sink (`tests/integration/x5_slow_server.py`): window-full waits are
+  asserted via the kernel marker, every byte is drained, and the server's
+  verdict round-trips through `tcp_recv_h`. Regression suites green:
+  `test_tcp_server` 8/8, `test_http_get` 4/4, `test_tls` 13/13,
+  `test_networking` 7/7 (assertion updated for the new boot gate),
+  `test_dns_cache` 10/10, `test_udp_sockets` 6/6, `test_ip_frag` 6/6.
+  Per rule D6 the SLIRP-dependent gates are manual and dated in the plan,
+  not CI-gated.
+
 ## [REALINTERNET_PLAN X4 — IPv4 fragment reassembly] 2026-08-09
 
 `REALINTERNET_PLAN.md` phase X4. `flags_frag` was written as zero at send and

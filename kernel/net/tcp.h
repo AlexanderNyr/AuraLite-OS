@@ -4,15 +4,18 @@
 #include <stdint.h>
 
 /*
- * Minimal TCP implementation: client-side connections only.
+ * Minimal TCP implementation (client + basic server accept).
  *
- * Supports: active open (three-way handshake), data send/recv, and clean
- * teardown (FIN/ACK). Uses a simple single-connection model (one TCP
- * connection at a time) with polling-based I/O.
+ * Supports: active open (three-way handshake), listen/accept, data
+ * send/recv, and clean teardown (FIN/ACK).  Uses a small fixed table of
+ * connection handles with polling-based I/O on top of the IRQ-backed
+ * netdev receive path.
  *
- * Sequence numbers, acknowledgments, and the TCP checksum (with pseudo-header)
- * are handled correctly. No retransmission timer or sliding window — segments
- * are sent one at a time and we poll for the ACK.
+ * Per the X5 hardening phase there is a real sliding send window (cwnd
+ * and the peer's advertised window), an adaptive retransmission timer
+ * (RFC 6298-style SRTT/RTTVAR with exponential backoff), a PMTUD
+ * black-hole segment-size ladder, and inbound segment sequencing
+ * (in-order / duplicate / partial-duplicate / single-gap out-of-order).
  */
 
 /* TCP connection states. */
@@ -26,8 +29,12 @@ typedef enum {
     TCP_CLOSING,
 } tcp_state_t;
 
-/* Maximum simultaneously-tracked TCP connections. */
-#define TCP_MAX_CONNS 8
+/* Maximum simultaneously-tracked TCP connections.
+ * X5: raised 8 -> 16.  RAM budget: after dropping the dead 64 KiB tx_buf
+ * the per-connection struct is ~10 KiB (dominated by the 8 KiB
+ * out-of-order stash), so 16 handles cost ~164 KiB static — far less
+ * than the ~525 KiB eight mostly-dead handles used to cost. */
+#define TCP_MAX_CONNS 16
 
 /*
  * Per-connection API.  Each open() returns a tcp_handle_t (>=0) that must
@@ -56,5 +63,9 @@ tcp_state_t tcp_state(void);
 
 /* TCP self-test: connect to a known service and verify the handshake. */
 void tcp_self_test(void);
+
+/* X5 boot gate: fill the connection table to TCP_MAX_CONNS and verify the
+ * next open() fails cleanly with -EMFILE (diagnosed, not hung). */
+void tcp_x5_self_test(void);
 
 #endif /* AURALITE_NET_TCP_H */

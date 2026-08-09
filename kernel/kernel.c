@@ -333,7 +333,7 @@ void kmain(boot_info_t *boot_info) {
     if (net_status == 0) {
         net_self_test();
         net_dns_self_test();
-        kprintf("[tcp] boot self-test skipped (run /tcpserver or integration TCP tests for TCP path)\n");
+        tcp_x5_self_test();   /* X5: concurrent-connection + full-table gate */
     } else if (net_status > 0) {
         kprintf("[net] fallback IP active; skipping online self-tests to keep boot fast\n");
     } else {

@@ -4,15 +4,19 @@
  * teardown. Uses the existing IP/ARP layers from net.c.
  *
  * Design:
- *   - Small fixed table of connection handles.
+ *   - Small fixed table of connection handles (TCP_MAX_CONNS).
  *   - IRQ-backed timed receive waits via the active netdev (e1000/virtio-net).
- *   - One segment in flight at a time (no sliding window).
- *   - Fixed-RTO retransmission for the saved in-flight segment.
+ *   - Sliding send window (min(cwnd, peer window)); last segment kept
+ *     for retransmission.
+ *   - X5: adaptive RTO (RFC 6298-style, exponential backoff), PMTUD
+ *     black-hole segment-size ladder, and in-order / duplicate /
+ *     partial-duplicate / single-gap out-of-order receive handling.
  *   - Correct sequence numbers, ACKs, and TCP checksum (with pseudo-header).
  */
 
 #include <stdint.h>
 #include "kernel/net/tcp.h"
+#include "kernel/net/tcp_x5.h"
 #include "kernel/net/net.h"
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
@@ -34,6 +38,13 @@
 #define TCP_RECV_TIMEOUT_TICKS 100
 #define TCP_RTO_TICKS 20
 #define TCP_MAX_RETRIES 3
+
+/* X5: the PIT runs at 100 Hz => 10 ms/tick.  Convert the adaptive RTO
+ * (milliseconds) to ticks, always waiting at least one full tick. */
+#define TCP_MS_TO_TICKS(ms) (((ms) + 9u) / 10u)
+/* Fail visibly (instead of sitting in an RTO loop) after this many
+ * consecutive retransmit timeouts without any ACK progress. */
+#define TCP_X5_MAX_TMO 10u
 
 /* ---- TCP header (20 bytes minimum) ---- */
 struct tcp_hdr {
@@ -140,10 +151,18 @@ typedef struct {
     uint32_t     rtt_ms;       /* smoothed RTT */
     uint32_t     rto_ms;       /* retransmission timeout */
 
-    /* TX buffer for in-flight segments */
-    uint8_t      tx_buf[65536]; 
-    uint32_t     tx_buf_start; 
-    uint32_t     tx_buf_len;
+    /* X5 hardening state (see kernel/net/tcp_x5.h). */
+    tcpx5_rto_t  rto;          /* adaptive RTO: SRTT/RTTVAR + backoff */
+    uint32_t     eff_mss;      /* current segment-size ladder step */
+    uint32_t     consec_tmo;   /* retransmit timeouts without progress */
+    uint32_t     tx_last_tick; /* first-send tick of the retx segment */
+    uint8_t      retx_ever;    /* Karn: retransmitted => no RTT sampling */
+
+    /* Single-gap out-of-order stash for the inbound direction. */
+    uint8_t      ooo_valid;
+    uint32_t     ooo_seq;
+    uint32_t     ooo_len;
+    uint8_t      ooo_data[TCPX5_OOO_CAP];
 
     uint8_t      retx_valid;
     uint8_t      retx_flags;
@@ -280,17 +299,45 @@ static void tcp_clear_retx(void) {
 
 static void tcp_retransmit_last(void) {
     if (!conns[active_h].retx_valid) return;
-    tcp_send_segment_at(conns[active_h].retx_flags,
-                        conns[active_h].retx_len ? conns[active_h].retx_data : NULL,
-                        conns[active_h].retx_len,
-                        conns[active_h].retx_seq,
-                        conns[active_h].retx_ack);
+    tcp_conn_t *c = &conns[active_h];
+
+    /* Karn: mark before sending so no RTT sample is taken off this ACK. */
+    c->retx_ever = 1;
+
+    /* X5 PMTUD black-hole ladder: if repeated timeouts shrank the segment
+     * size below the recorded segment's length, send only the first
+     * eff_mss bytes and slide the record to the still-unacked tail, so
+     * the SAME byte range is eventually probed at 536 bytes. */
+    uint32_t len = c->retx_len;
+    if (len > c->eff_mss) {
+        kprintf("[tcp] PMTUD ladder: probing %u B of a %u B segment\n",
+                c->eff_mss, len);
+        len = c->eff_mss;
+    }
+    tcp_send_segment_at(c->retx_flags,
+                        len ? c->retx_data : NULL, len,
+                        c->retx_seq, c->retx_ack);
+    if (len < c->retx_len) {
+        c->retx_seq += len;
+        c->retx_len -= len;
+        memmove(c->retx_data, c->retx_data + len, c->retx_len);
+    }
 }
 
 static void tcp_send_retx_segment(uint8_t flags, const void *data, uint32_t data_len,
                                   uint32_t seq, uint32_t ack) {
+    /* Fresh first transmission: the RTT from this segment's ACK is a
+     * usable sample (Karn's rule resets on genuine retransmission). */
+    conns[active_h].retx_ever = 0;
+    conns[active_h].tx_last_tick = (uint32_t)timer_get_ticks();
     tcp_record_retx(flags, data, data_len, seq, ack);
-    tcp_retransmit_last();
+    /* tcp_retransmit_last() clamps to eff_mss; a first send must go out
+     * whole (eff_mss was already applied in tcp_send's chunking). */
+    uint8_t saved = conns[active_h].retx_ever;
+    tcp_send_segment_at(conns[active_h].retx_flags,
+                        data_len ? conns[active_h].retx_data : NULL,
+                        data_len, seq, ack);
+    conns[active_h].retx_ever = saved;
 }
 
 /* ---- Receive a TCP segment (waits for one matching our connection) ---- */
@@ -421,6 +468,9 @@ static int alloc_handle(void) {
             memset(&conns[i], 0, sizeof(conns[i]));
             conns[i].in_use = 1;
             conns[i].state = TCP_CLOSED;
+            /* X5: adaptive RTO (1 s initial) and the full-size MSS ladder. */
+            tcpx5_rto_init(&conns[i].rto);
+            conns[i].eff_mss = TCP_MSS;
             return i;
         }
     }
@@ -723,40 +773,83 @@ int tcp_send(const void *data, uint32_t len) {
     }
 
     uint32_t bytes_sent = 0;
+    tcp_conn_t *c = &conns[active_h];
     while (bytes_sent < len) {
-        /* Check Sliding Window: can we send more? */
-        if (conns[active_h].snd_nxt - conns[active_h].snd_una >= 
-            (conns[active_h].cwnd < conns[active_h].snd_wnd ? 
-             conns[active_h].cwnd : conns[active_h].snd_wnd)) {
-            /* Window full: wait for ACK. */
+        /* X5: the send scheduler folds cwnd, the peer's advertised window
+         * and the PMTUD segment-size ladder into the next chunk; 0 means
+         * the window is exhausted and we must wait for an ACK. */
+        uint32_t chunk = tcpx5_send_chunk(c->snd_una, c->snd_nxt, c->cwnd,
+                                          c->snd_wnd, c->eff_mss,
+                                          len - bytes_sent);
+        if (chunk == 0) {
+            /* Window full: wait one *effective* (adaptive) RTO.  Visible
+             * (throttled): the piecemeal-ACK gate greps this marker. */
+            static uint32_t wfull = 0;
+            if (((wfull++) & 31u) == 0)
+                kprintf("[tcp] window full: waiting for ACK "
+                        "(in-flight %u, wnd %u, cwnd %u, rto %u ms)\n",
+                        c->snd_nxt - c->snd_una, c->snd_wnd, c->cwnd,
+                        c->rto.eff_ms);
             struct tcp_hdr rx;
             int data_len = 0;
-            if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, TCP_RTO_TICKS) == 0) {
-                /* process ACK to slide window */
+            uint64_t wait = TCP_MS_TO_TICKS(c->rto.eff_ms);
+            if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, wait) == 0) {
+                if (rx.flags & TCP_RST) {           /* X5: fail closed */
+                    kprintf("[tcp] send aborted: RST from peer\n");
+                    c->state = TCP_CLOSED;
+                    c->retx_valid = 0;
+                    return -ECONNRESET;
+                }
                 uint32_t acked = ntohl_(rx.ack);
-                if (acked > conns[active_h].snd_una) {
-                    conns[active_h].snd_una = acked;
-                    /* Grow cwnd (Slow Start) */
-                    conns[active_h].cwnd += 1460;
+                if (acked > c->snd_una) {
+                    /* Progress: slide, sample RTT (Karn: only if the
+                     * covered segment was never retransmitted), reset
+                     * the loss counters, grow cwnd (slow start). */
+                    c->snd_una = acked;
+                    c->consec_tmo = 0;
+                    c->eff_mss = tcpx5_mss_ladder(0);
+                    if (!c->retx_ever && c->tx_last_tick != 0) {
+                        uint32_t rtt = ((uint32_t)timer_get_ticks() -
+                                        c->tx_last_tick) * 10u;
+                        tcpx5_rto_sample(&c->rto, rtt);
+                    } else {
+                        /* Karn: no sample off retransmitted segments;
+                         * just settle the backoff. */
+                        c->rto.backoff = 0;
+                        c->rto.eff_ms = c->rto.rto_ms;
+                    }
+                    if (acked >= c->retx_seq + c->retx_len)
+                        c->retx_valid = 0;
+                    c->cwnd += 1460;
+                    if (c->cwnd > TCP_WINDOW) c->cwnd = TCP_WINDOW;
                 }
             } else {
-                /* Timeout: Congestion! */
-                conns[active_h].ssthresh = conns[active_h].cwnd / 2;
-                conns[active_h].cwnd = 1460;
-                /* Retransmit oldest unacked */
+                /* Timeout: congestion (or a swallowed segment).  Back the
+                 * RTO off exponentially, step the PMTUD ladder down, and
+                 * retransmit.  Give up visibly after TCP_X5_MAX_TMO. */
+                c->consec_tmo++;
+                tcpx5_rto_backoff(&c->rto);
+                c->eff_mss = tcpx5_mss_ladder(c->consec_tmo);
+                c->ssthresh = c->cwnd / 2;
+                if (c->ssthresh < 1460) c->ssthresh = 1460;
+                c->cwnd = 1460;
+                if (c->consec_tmo > TCP_X5_MAX_TMO) {
+                    kprintf("[tcp] send failed: %u consecutive RTOs "
+                            "(backoff to %u ms) — giving up\n",
+                            c->consec_tmo, c->rto.eff_ms);
+                    c->retx_valid = 0;
+                    return -ETIMEDOUT;
+                }
                 tcp_retransmit_last();
             }
             continue;
         }
 
-        uint32_t chunk = len - bytes_sent;
-        if (chunk > TCP_MSS) chunk = TCP_MSS;
-
         uint32_t seg_seq = conn_seq;
         tcp_send_retx_segment(TCP_ACK | TCP_PSH, (const uint8_t *)data + bytes_sent,
                               chunk, seg_seq, conn_ack);
         conn_seq += chunk;
-        conns[active_h].snd_nxt = conn_seq;
+        c->snd_nxt = conn_seq;
         bytes_sent += chunk;
     }
 
@@ -775,12 +868,31 @@ int tcp_send(const void *data, uint32_t len) {
  * instead of being dropped.  Draining the stash must NOT advance conn_ack:
  * the whole segment was ACKed when it was first consumed. */
 #define TCP_RX_STAGE_SIZE 1600   /* >= max Ethernet-carried TCP payload */
+/* X5: the stash also absorbs a chained out-of-order gap. */
+#define TCP_RX_STASH_SIZE (TCP_RX_STAGE_SIZE + TCPX5_OOO_CAP)
 
-static uint8_t  rx_stash[TCP_RX_STAGE_SIZE];
+static uint8_t  rx_stash[TCP_RX_STASH_SIZE];
 static uint32_t rx_stash_len = 0;
 static uint8_t  rx_staging[TCP_RX_STAGE_SIZE];
 
 static void tcp_rx_stash_reset(void) { rx_stash_len = 0; }
+
+/* X5: after accepting an in-order segment, if the stashed out-of-order
+ * gap has become contiguous, fold it in (ACK it and queue its bytes
+ * behind whatever tcp_rx_deliver left stashed).  Must be called BEFORE
+ * returning the in-order payload, so the folded bytes are served next. */
+static void tcp_x5_drain_ooo(void) {
+    tcp_conn_t *c = &conns[active_h];
+    if (!c->ooo_valid || c->ooo_seq != conn_ack) return;
+    conn_ack += c->ooo_len;
+    tcp_send_segment(TCP_ACK, NULL, 0);   /* ACK the now-covered gap */
+    if (rx_stash_len + c->ooo_len <= sizeof(rx_stash)) {
+        memcpy(rx_stash + rx_stash_len, c->ooo_data, c->ooo_len);
+        rx_stash_len += c->ooo_len;
+    }
+    kprintf("[tcp] out-of-order gap closed (%u bytes delivered)\n", c->ooo_len);
+    c->ooo_valid = 0;
+}
 
 /* Split a freshly received payload: hand the caller what fits into buf and
  * stash the rest.  Returns the number of bytes copied into buf. */
@@ -817,9 +929,12 @@ int tcp_recv(void *buf, uint32_t bufsize) {
         return (int)n;
     }
 
-    /* Loop until we get actual data, FIN, or timeout.  ACK-only
+    /* Loop until we get actual data, FIN, RST, or timeout.  ACK-only
      * segments (window updates, etc.) are consumed silently.  Payloads are
-     * staged whole so nothing past the caller's bufsize is lost. */
+     * staged whole so nothing past the caller's bufsize is lost.
+     * X5: every payload/FIN is sequenced — in-order accepted, duplicates
+     * re-ACKed and dropped, partial duplicates trimmed, one out-of-order
+     * gap stashed and chained once contiguous. */
     struct tcp_hdr rx;
     int data_len = 0;
     for (;;) {
@@ -828,11 +943,69 @@ int tcp_recv(void *buf, uint32_t bufsize) {
             return 0;   /* timeout, no data */
         }
 
-            /* Handle FIN. */
+        tcp_conn_t *c = &conns[active_h];
+
+        /* X5: connection reset — fail closed and visibly. */
+        if (rx.flags & TCP_RST) {
+            kprintf("[tcp] RST from peer — connection reset (ack=%u)\n",
+                    conn_ack);
+            c->state = TCP_CLOSED;
+            c->ooo_valid = 0;
+            tcp_rx_stash_reset();
+            return -ECONNRESET;
+        }
+
+        /* X5: sequence-check the payload (FIN is validated on top: the
+         * sequence point it carries must follow any accepted data). */
+        const uint8_t *payload = rx_staging;
+        uint32_t plen = (uint32_t)data_len;
+        uint32_t seg_seq = ntohl_(rx.seq);
+        tcpx5_seq_class_t cls = tcpx5_classify(conn_ack, seg_seq, plen,
+                                               c->rcv_wnd);
+        switch (cls) {
+        case TCPX5_PARTIAL_DUP: {
+            uint32_t skip = tcpx5_dup_prefix(conn_ack, seg_seq);
+            payload += skip;
+            plen -= skip;
+            break;
+        }
+        case TCPX5_DUP:
+            /* Old news (retransmit, or an overlap we already delivered):
+             * refresh our ACK so the peer stops retransmitting. */
+            tcp_send_segment(TCP_ACK, NULL, 0);
+            continue;
+        case TCPX5_OOO:
+            if (!c->ooo_valid && plen > 0 && plen <= TCPX5_OOO_CAP) {
+                memcpy(c->ooo_data, payload, plen);
+                c->ooo_seq = seg_seq;
+                c->ooo_len = plen;
+                c->ooo_valid = 1;
+                kprintf("[tcp] out-of-order segment stashed "
+                        "(%u B @ %u, expecting %u)\n",
+                        plen, seg_seq, conn_ack);
+            }
+            tcp_send_segment(TCP_ACK, NULL, 0);
+            continue;
+        case TCPX5_OOO_FAR:
+            kprintf("[tcp] segment beyond receive window dropped "
+                    "(seq %u, expecting %u)\n", seg_seq, conn_ack);
+            tcp_send_segment(TCP_ACK, NULL, 0);
+            continue;
+        case TCPX5_IN_ORDER:
+        default:
+            break;
+        }
+
+        /* Handle FIN (its data has been sequenced above). */
         if (rx.flags & TCP_FIN) {
+            if (plen == 0 && seg_seq != conn_ack) {
+                /* FIN for bytes we never received — do not pretend
+                 * (X5 sequencing); re-ACK and keep waiting. */
+                tcp_send_segment(TCP_ACK, NULL, 0);
+                continue;
+            }
             kprintf("[tcp] FIN received\n");
-            conn_ack += 1;
-            if (data_len > 0) conn_ack += (uint32_t)data_len;
+            conn_ack += plen + 1;
             tcp_send_segment(TCP_ACK, NULL, 0);
             if (conn_state == TCP_ESTABLISHED) {
                 conn_state = TCP_FIN_WAIT_2;
@@ -840,16 +1013,18 @@ int tcp_recv(void *buf, uint32_t bufsize) {
                 conn_state = TCP_CLOSED;
             }
             /* return any data that came with the FIN (stash the excess) */
-            return (int)tcp_rx_deliver(buf, bufsize, rx_staging,
-                                       (uint32_t)data_len);
+            uint32_t out = tcp_rx_deliver(buf, bufsize, payload, plen);
+            tcp_x5_drain_ooo();
+            return (int)out;
         }
 
         /* If there's data, update our ACK and return it. */
-        if (data_len > 0) {
-            conn_ack += data_len;
+        if (plen > 0) {
+            conn_ack += plen;
             tcp_send_segment(TCP_ACK, NULL, 0);
-            return (int)tcp_rx_deliver(buf, bufsize, rx_staging,
-                                       (uint32_t)data_len);
+            uint32_t out = tcp_rx_deliver(buf, bufsize, payload, plen);
+            tcp_x5_drain_ooo();
+            return (int)out;
         }
 
         /* ACK-only segment (no data, no FIN): consume silently and
@@ -886,6 +1061,12 @@ int tcp_close(void) {
         int fin_acked = 0;
         for (int attempt = 0; attempt <= TCP_MAX_RETRIES; attempt++) {
             if (tcp_recv_segment_timeout(&rx, NULL, 0, &data_len, TCP_RTO_TICKS) == 0) {
+                if (rx.flags & TCP_RST) {   /* X5: peer reset while closing */
+                    kprintf("[tcp] RST during close — connection closed\n");
+                    tcp_clear_retx();
+                    conns[active_h].state = TCP_CLOSED;
+                    break;
+                }
                 if (rx.flags & TCP_ACK) {
                     fin_acked = 1;
                     conn_state = TCP_FIN_WAIT_2;
@@ -979,4 +1160,47 @@ void tcp_self_test(void) {
     /* Clean close. */
     tcp_close();
     kprintf("[tcp] PASS: TCP connect + send + close all worked\n");
+}
+
+/* X5 gate: with the network up, open TCP_MAX_CONNS concurrent connections
+ * and prove the (max+1)-th open fails cleanly with -EMFILE and a printed
+ * diagnosis — no hang, no silent slot reuse. */
+void tcp_x5_self_test(void) {
+    uint32_t dns_ip = (10u << 24) | (0u << 16) | (2u << 8) | 3u;
+    static tcp_handle_t hs[TCP_MAX_CONNS];
+    int ok = 0, fails = 0;
+
+    kprintf("[tcp-x5] probing %d concurrent TCP connections...\n",
+            TCP_MAX_CONNS);
+    for (int i = 0; i < TCP_MAX_CONNS; i++) {
+        tcp_handle_t h = tcp_open(dns_ip, 53);
+        if (h < 0) {
+            kprintf("[tcp-x5]   open #%d failed (%d)\n", i, h);
+            break;
+        }
+        hs[ok++] = h;
+    }
+    if (ok == TCP_MAX_CONNS) {
+        tcp_handle_t extra = tcp_open(dns_ip, 53);
+        if (extra == -EMFILE) {
+            kprintf("[tcp-x5]   full table: extra open refused with "
+                    "-EMFILE (diagnosed)\n");
+        } else {
+            fails++;
+            kprintf("[tcp-x5]   FAIL: full table refused with %d, "
+                    "wanted -EMFILE\n", extra);
+            if (extra >= 0) tcp_close_h(extra);
+        }
+    } else {
+        fails++;
+        kprintf("[tcp-x5]   FAIL: reached only %d/%d concurrent "
+                "connections\n", ok, TCP_MAX_CONNS);
+    }
+    for (int i = 0; i < ok; i++) tcp_close_h(hs[i]);
+
+    if (fails == 0)
+        kprintf("[tcp-x5] PASS: %d concurrent connections held; table full "
+                "is diagnosed, not fatal\n", TCP_MAX_CONNS);
+    else
+        kprintf("[tcp-x5] FAIL: %d check(s) failed\n", fails);
 }

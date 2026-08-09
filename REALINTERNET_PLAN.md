@@ -400,25 +400,71 @@ Shipped as part of this patch set; the files are listed in the patch header.
 
 #### Tasks
 
-- [ ] Raise `TCP_MAX_CONNS` from 8 (kernel/net/tcp.h:30) to a value justified
+- [x] Raise `TCP_MAX_CONNS` from 8 (kernel/net/tcp.h:30) to a value justified
       by RAM, or document precisely why 8 is the cap.
-- [ ] Path-MTU black-hole tolerance: on repeated retransmit timeouts, reduce
+      → Raised to 16.  The dead 64 KiB `tx_buf[]` per connection was
+      removed at the same time, so a handle now costs ~10 KiB (dominated by
+      the 8 KiB out-of-order stash): 16 handles ≈ 164 KiB static vs the
+      ~525 KiB eight mostly-dead handles used to burn.  Justification is
+      documented at the #define in kernel/net/tcp.h.
+- [x] Path-MTU black-hole tolerance: on repeated retransmit timeouts, reduce
       the effective segment size rather than hanging.
-- [ ] RTO backoff and a sane initial retransmit timer (the N7 fix showed the
+      → `tcpx5_mss_ladder()` (kernel/net/tcp_x5.h): after 2 unbroken RTOs
+      the segment size steps 1460 → 1200 → 1024 → 536; `tcp_retransmit_last`
+      probes the first `eff_mss` bytes and slides the retransmission record
+      so the SAME byte range is retried.  Any ACK progress resets the ladder.
+- [x] RTO backoff and a sane initial retransmit timer (the N7 fix showed the
       stack depends on careful window/ACK handling; extend it).
-- [ ] Handle the real-world segments the local server never sent: window
+      → RFC 6298-style estimator in `tcpx5_rto_t`: 1 s initial RTO,
+      SRTT/RTTVAR with the 200 ms minimum, 60 s maximum, exponential backoff
+      doubling up to the cap, Karn's rule (no RTT samples off retransmitted
+      segments; the first-send tick is recorded per segment).  A send that
+      hits 10 consecutive unbroken RTOs fails visibly with -ETIMEDOUT and a
+      kprintf diagnosis instead of looping forever (rule D7).
+- [x] Handle the real-world segments the local server never sent: window
       updates, partial ACKs, out-of-order data.
+      → The send path consumes every segment while window-waiting (window
+      updates slide `snd_wnd`, partial ACKs slide `snd_una` via the common
+      `tcp_recv_segment_timeout`); the receive path classifies each payload
+      with `tcpx5_classify()`: in-order accepted, full duplicates re-ACKed
+      and dropped, partial duplicates trimmed, one out-of-order gap stashed
+      (8 KiB) and chained in-order once contiguous, far segments dropped
+      with a re-ACK.  RST now closes the connection and returns -ECONNRESET
+      from recv/send instead of being ignored (in tcp_recv, tcp_send's
+      window wait and tcp_close's FIN wait).
 
 #### Test gate
 
 - Nine concurrent connections behave predictably (the ninth fails cleanly
-  with a diagnosis, or succeeds after the cap is raised).
-- A slow server that ACKs the window piecemeal completes a transfer.
-- No regression: `test_tcp_server`, `test_http_get`, `test_tls` still pass.
+  with a diagnosis, or succeeds after the cap is raised). ✔ exceeded: the
+  boot self-test holds 16 concurrent connections (one full
+  `TCP_MAX_CONNS` table) against 10.0.2.3:53 and the 17th `open()` fails
+  with -EMFILE plus a printed diagnosis (`[tcp] no free connection slots`).
+- A slow server that ACKs the window piecemeal completes a transfer. ✔
+  `test_tcp_x5.sh` uploads 1 MiB (larger than SLIRP's proxied receive
+  buffer, so window-full waits provably occur — the `[tcp] window full:
+  waiting for ACK` marker is asserted) to a host sink that drains at
+  ~100 KiB/s; every byte arrives and the verdict round-trips.
+- No regression: `test_tcp_server`, `test_http_get`, `test_tls` still pass. ✔
+
+#### Result (2026-08-09)
+
+| Check | Evidence |
+|---|---|
+| host unit | `make test-unit` → `build/test_tcp_x5` 8/8 scenarios (RTO init/sample/backoff/cap, MSS ladder bounds, send-scheduler arithmetic, scripted piecemeal transfers with and without loss, segment sequencer classes) |
+| guest gate | `test_tcp_x5.sh` → 9/9 assertions: boot self-test `[tcp-x5] PASS` (16 held, 17th -EMFILE + diagnosis), 1 MiB uploaded through asserted window-full waits, slow-drain server verdict echoed byte-exact |
+| regression | `test_tcp_server` 8/8, `test_http_get` 4/4, `test_tls` 13/13, `test_networking` 7/7, `test_dns_cache` 10/10, `test_udp_sockets` 6/6, `test_ip_frag` 6/6 |
+| network note | per D6 the QEMU/SLIRP gates are manual and dated here (run on 2026-08-09), not CI-gated |
+
+Design notes: all timer/ladder/scheduler/sequencer decisions live in the
+pure, host-testable header `kernel/net/tcp_x5.h`; `tcp.c` only wires it
+into the connection table.  Fixed ISNs per handle and the single-gap OOO
+budget remain documented simplifications (ISN randomisation is future
+work; the OOO budget is stated beside `TCPX5_OOO_CAP`).
 
 #### Deliverable
 
-`patches/REAL_X5_tcp.patch`
+`patches/REAL_X5_tcp.patch` ✔ (applies on top of `patches/REAL_X4_frag.patch`)
 
 ---
 
