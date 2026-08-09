@@ -1196,6 +1196,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_usb_full $(BUILD_DIR)/test_usb_hub \
                 $(BUILD_DIR)/test_usb_isoc \
                 $(BUILD_DIR)/test_vfs $(BUILD_DIR)/test_network \
+                $(BUILD_DIR)/test_dns \
                 $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
                 $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
                 $(BUILD_DIR)/test_fat32 $(BUILD_DIR)/test_errno \
@@ -1837,6 +1838,14 @@ $(BUILD_DIR)/test_vfs: tests/unit/test_vfs.c
 $(BUILD_DIR)/test_network: tests/unit/test_network.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . $< -o $@
+
+# X3: DNS reliability — compiles the real resolver/parser modules with the
+# kernel environment stubbed (fake clock, scripted transport).
+$(BUILD_DIR)/test_dns: tests/unit/test_dns.c kernel/net/dns_parse.c kernel/net/dns.c \
+		kernel/net/dns_parse.h kernel/net/dns.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -DAURALITE_DNS_HOST_TEST -I . \
+		tests/unit/test_dns.c kernel/net/dns_parse.c kernel/net/dns.c -o $@
 
 $(BUILD_DIR)/test_elf: tests/unit/test_elf.c
 	@mkdir -p $(BUILD_DIR)

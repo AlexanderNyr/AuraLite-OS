@@ -246,6 +246,9 @@ static void cmd_help(void) {
     puts("  uname       - print OS information");
     puts("  free        - print memory usage");
     puts("  nslookup    - resolve a hostname via DNS");
+    puts("  dnscache    - show DNS cache and servers");
+    puts("  dnsset <ip> [ip2] - override DNS servers (debug)");
+    puts("  dnsflush    - clear the DNS cache");
     puts("  ping <host> - ping a hostname via ICMP");
     puts("  ps          - list processes (stub)");
     puts("  mkdir <dir> - create a directory  (FAT32 / ext2)");
@@ -402,6 +405,70 @@ static void cmd_nslookup(const char *hostname) {
     } else {
         printf("nslookup: failed to resolve %s\n", hostname);
     }
+}
+
+/* X3: tiny dotted-quad parser (host-order result), avoids pulling in
+ * arpa/inet.h for three debug commands. */
+static int parse_ipv4(const char *s, uint32_t *out) {
+    uint32_t ip = 0;
+    for (int part = 0; part < 4; part++) {
+        if (!s || *s < '0' || *s > '9') return -1;
+        int v = 0;
+        while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); if (v > 255) return -1; s++; }
+        ip = (ip << 8) | (uint32_t)v;
+        if (part < 3) { if (*s != '.') return -1; s++; }
+    }
+    if (*s != 0) return -1;
+    *out = ip;
+    return 0;
+}
+
+static void cmd_dnscache(void) {
+    uint32_t servers[8];
+    int ns = dnsctl(DNSCTL_GET_SERVERS, servers, sizeof(servers));
+    printf("DNS servers (%d):\n", ns);
+    for (int i = 0; i < ns; i++)
+        printf("  #%d  %u.%u.%u.%u\n", i + 1,
+               (servers[i] >> 24) & 0xFF, (servers[i] >> 16) & 0xFF,
+               (servers[i] >> 8) & 0xFF, servers[i] & 0xFF);
+    dnsctl_entry_t entries[16];
+    int n = dnsctl(DNSCTL_LIST, entries, sizeof(entries));
+    printf("DNS cache (%d entries):\n", n);
+    for (int i = 0; i < n; i++) {
+        if (entries[i].negative)
+            printf("  %-40s NEGATIVE (ttl %us left)\n", entries[i].name, entries[i].ttl_left);
+        else
+            printf("  %-40s %u.%u.%u.%u (ttl %us left)\n", entries[i].name,
+                   (entries[i].ip >> 24) & 0xFF, (entries[i].ip >> 16) & 0xFF,
+                   (entries[i].ip >> 8) & 0xFF, entries[i].ip & 0xFF,
+                   entries[i].ttl_left);
+    }
+}
+
+static void cmd_dnsset(int argc, char **argv) {
+    if (argc < 2) {
+        puts("dnsset: usage: dnsset <primary-ip> [secondary-ip] ...");
+        return;
+    }
+    uint32_t servers[8];
+    int n = 0;
+    for (int i = 1; i < argc && n < 8; i++) {
+        if (parse_ipv4(argv[i], &servers[n]) != 0) {
+            printf("dnsset: bad IPv4 address '%s'\n", argv[i]);
+            return;
+        }
+        n++;
+    }
+    if (dnsctl(DNSCTL_SET_SERVERS, servers, (uint32_t)(n * 4)) < 0) {
+        puts("dnsset: kernel refused the server list");
+        return;
+    }
+    printf("dnsset: %d server(s) configured\n", n);
+}
+
+static void cmd_dnsflush(void) {
+    dnsctl(DNSCTL_FLUSH, 0, 0);
+    puts("dnsflush: cache cleared");
 }
 
 static void cmd_ps(void) {
@@ -650,6 +717,12 @@ do_dispatch:
         cmd_help();
     } else if (strcmp(cmd, "nslookup") == 0) {
         cmd_nslookup(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "dnscache") == 0) {
+        cmd_dnscache();
+    } else if (strcmp(cmd, "dnsset") == 0) {
+        cmd_dnsset(argc, cmd_argv);
+    } else if (strcmp(cmd, "dnsflush") == 0) {
+        cmd_dnsflush();
     } else if (strcmp(cmd, "ping") == 0) {
         cmd_ping(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "run") == 0) {

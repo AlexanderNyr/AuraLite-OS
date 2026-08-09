@@ -17,6 +17,7 @@
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "kernel/net/socket.h"
+#include "kernel/net/dns.h"
 #include "drivers/uart/uart.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/keyboard/keymap.h"
@@ -58,6 +59,7 @@ typedef struct {
 #define SYS_NET_RECV    85  /* non-standard: TCP recv */
 #define SYS_NET_CLOSE   86  /* non-standard: TCP close */
 #define SYS_NET_PING    87  /* non-standard: ICMP ping */
+#define SYS_DNSCTL     107  /* X3: DNS cache/server control (see kernel/net/dns.h) */
 #define SYS_LISTDIR 80
 /* Filesystem extensions (non-standard numbers). */
 #define SYS_MKDIR    100
@@ -1163,6 +1165,49 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)tcp_close();
     case SYS_NET_PING:
         return (uint64_t)net_ping(a1);
+
+    /* X3: DNS cache inspection/flush and resolver server control for the
+     * dnscache/dnsset/dnsflush shell commands.  Buffers are validated and
+     * bounded before any copy (D7/HARDENING discipline). */
+    case SYS_DNSCTL: {
+        switch (a1) {
+        case DNSCTL_LIST: {
+            if (!validate_user_range((const void *)(uintptr_t)a2, a3, 1)) return (uint64_t)-EFAULT;
+            dnsctl_entry_t kbuf[DNS_CACHE_MAX];
+            int want = (int)(a3 / sizeof(dnsctl_entry_t));
+            int n = dns_cache_snapshot(kbuf, want);
+            if (copy_to_user((uint8_t *)(uintptr_t)a2, (const uint8_t *)kbuf,
+                             (uint64_t)n * sizeof(dnsctl_entry_t)) != 0)
+                return (uint64_t)-EFAULT;
+            return (uint64_t)n;
+        }
+        case DNSCTL_FLUSH:
+            dns_cache_flush();
+            return 0;
+        case DNSCTL_SET_SERVERS: {
+            if (!validate_user_range((const void *)(uintptr_t)a2, a3, 0)) return (uint64_t)-EFAULT;
+            int n = (int)(a3 / sizeof(uint32_t));
+            if (n <= 0 || n > DNS_SERVERS_MAX) return (uint64_t)-EINVAL;
+            uint32_t ips[DNS_SERVERS_MAX];
+            if (copy_from_user((uint8_t *)ips, (const uint8_t *)(uintptr_t)a2,
+                               (uint64_t)n * sizeof(uint32_t)) != 0)
+                return (uint64_t)-EFAULT;
+            dns_set_servers(ips, n);
+            return (uint64_t)n;
+        }
+        case DNSCTL_GET_SERVERS: {
+            if (!validate_user_range((const void *)(uintptr_t)a2, a3, 1)) return (uint64_t)-EFAULT;
+            uint32_t ips[DNS_SERVERS_MAX];
+            int n = dns_get_servers(ips, DNS_SERVERS_MAX);
+            if (copy_to_user((uint8_t *)(uintptr_t)a2, (const uint8_t *)ips,
+                             (uint64_t)n * sizeof(uint32_t)) != 0)
+                return (uint64_t)-EFAULT;
+            return (uint64_t)n;
+        }
+        default:
+            return (uint64_t)-EINVAL;
+        }
+    }
 
     /* Filesystem extensions. */
     case SYS_MKDIR: {

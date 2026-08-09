@@ -9,6 +9,7 @@
 #include "drivers/e1000/e1000.h"
 #include "drivers/virtio_net/virtio_net.h"
 #include "kernel/net/netdev.h"
+#include "kernel/net/dns.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/errno.h"
@@ -485,149 +486,15 @@ static int net_udp_recv(uint32_t src_ip, uint16_t src_port,
     return n;
 }
 
-/* ---- DNS resolver ---- */
-
-/* QEMU's built-in DNS proxy. */
-#define DNS_IP_O0 10
-#define DNS_IP_O1 0
-#define DNS_IP_O2 2
-#define DNS_IP_O3 3
-
-struct dns_header {
-    uint16_t id;
-    uint16_t flags;
-    uint16_t qd_count;   /* questions */
-    uint16_t an_count;   /* answers */
-    uint16_t ns_count;
-    uint16_t ar_count;
-} __attribute__((packed));
-
-/*
- * Encode a dotted hostname (e.g. "example.com") into DNS label format:
- * each dot-delimited segment is prefixed by its length byte, terminated
- * by a zero byte. Writes into `out` and returns the total length.
+/* ---- DNS resolver ----
+ *
+ * The resolver moved to kernel/net/dns.c in REALINTERNET_PLAN phase X3:
+ * TTL cache (positive + negative), secondary-server failover and CNAME
+ * chain following live there; the pure wire-format parser and cache core
+ * (host-unit-tested) are in kernel/net/dns_parse.c.  The public entry
+ * points from net.h (net_dns_resolve / net_dns_self_test) are kept and
+ * forward to the new module, so the syscall layer and shell are unchanged.
  */
-static int dns_encode_name(const char *name, uint8_t *out) {
-    int pos = 0;
-    const char *seg = name;
-    while (*seg) {
-        const char *dot = seg;
-        while (*dot && *dot != '.') dot++;
-        int len = dot - seg;
-        if (len > 63 || len == 0) return -1;
-        out[pos++] = (uint8_t)len;
-        for (int i = 0; i < len; i++) {
-            out[pos++] = (uint8_t)seg[i];
-        }
-        seg = dot;
-        if (*seg == '.') seg++;
-    }
-    out[pos++] = 0;   /* root label */
-    return pos;
-}
-
-/*
- * Resolve a hostname to an IPv4 address via QEMU's DNS proxy (10.0.2.3:53).
- * Returns the IP in host byte order, or 0 on failure.
- */
-uint32_t net_dns_resolve(const char *hostname) {
-    uint32_t dns_ip = ip_from_octets(DNS_IP_O0, DNS_IP_O1, DNS_IP_O2, DNS_IP_O3);
-
-    /* Build the DNS query. */
-    uint8_t query[512];
-    struct dns_header *hdr = (struct dns_header *)query;
-    hdr->id       = htons_(0x1234);
-    hdr->flags    = htons_(0x0100);   /* standard query, recursion desired */
-    hdr->qd_count = htons_(1);
-    hdr->an_count = 0;
-    hdr->ns_count = 0;
-    hdr->ar_count = 0;
-
-    /* Encode the question name after the 12-byte header. */
-    int name_len = dns_encode_name(hostname, query + 12);
-    if (name_len < 0) {
-        kprintf("[net] dns: invalid hostname '%s'\n", hostname);
-        return 0;
-    }
-
-    /* Question type (A = 1) and class (IN = 1). */
-    int q_off = 12 + name_len;
-    query[q_off]     = 0; query[q_off + 1] = 1;   /* type A */
-    query[q_off + 2] = 0; query[q_off + 3] = 1;   /* class IN */
-    int query_len = q_off + 4;
-
-    kprintf("[net] dns: resolving '%s' via 10.0.2.3:53...\n", hostname);
-
-    if (net_udp_sendto(dns_ip, 53, 12345, query, query_len) != 0) {
-        kprintf("[net] dns: failed to send query\n");
-        return 0;
-    }
-
-    /* Wait for the response. */
-    uint8_t resp[1024];
-    int resp_len = net_udp_recv(dns_ip, 53, resp, sizeof(resp));
-    if (resp_len < (int)(12 + name_len + 4 + 12)) {
-        kprintf("[net] dns: no response (got %d bytes)\n", resp_len);
-        return 0;
-    }
-
-    /* Parse the response: skip the question section, then walk the answer
-     * resource records looking for a type-A (1) record. */
-    struct dns_header *rhdr = (struct dns_header *)resp;
-    uint16_t an_count = htons_(rhdr->an_count);
-    if (an_count == 0) {
-        kprintf("[net] dns: no answers in response\n");
-        return 0;
-    }
-
-    /* Skip past the question section (header + name + 4 bytes type/class). */
-    int off = 12 + name_len + 4;
-
-    for (int a = 0; a < an_count && off + 12 < resp_len; a++) {
-        /* Skip the name (may be compressed: if first byte has top 2 bits set,
-         * it's a 2-byte pointer; otherwise walk labels). */
-        if ((resp[off] & 0xC0) == 0xC0) {
-            off += 2;   /* compressed name pointer */
-        } else {
-            while (off < resp_len && resp[off] != 0) off += resp[off] + 1;
-            off++;      /* skip the terminating zero */
-        }
-
-        if (off + 10 > resp_len) break;
-        uint16_t rtype = (resp[off] << 8) | resp[off + 1];
-        uint16_t rdlen = (resp[off + 8] << 8) | resp[off + 9];
-        off += 10;   /* skip type(2) + class(2) + ttl(4) + rdlength(2) */
-
-        if (rtype == 1 && rdlen == 4 && off + 4 <= resp_len) {
-            /* Type A record: 4 bytes of IPv4 address (network byte order). */
-            uint32_t ip = ((uint32_t)resp[off] << 24) |
-                          ((uint32_t)resp[off + 1] << 16) |
-                          ((uint32_t)resp[off + 2] << 8) |
-                          (uint32_t)resp[off + 3];
-            kprintf("[net] dns: '%s' resolved to %u.%u.%u.%u\n",
-                    hostname,
-                    (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-                    (ip >> 8) & 0xFF, ip & 0xFF);
-            return ip;
-        }
-        off += rdlen;   /* skip this resource record's data */
-    }
-
-    kprintf("[net] dns: no A record found for '%s'\n", hostname);
-    return 0;
-}
-
-void net_dns_self_test(void) {
-    kprintf("[net] dns self-test: resolving 'example.com'...\n");
-    uint32_t ip = net_dns_resolve("example.com");
-    if (ip != 0) {
-        kprintf("[net] dns PASS: example.com -> %u.%u.%u.%u\n",
-                (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
-                (ip >> 8) & 0xFF, ip & 0xFF);
-    } else {
-        kprintf("[net] dns FAIL: could not resolve example.com\n");
-    }
-}
 
 /* ---- DHCP client ---- */
 
@@ -809,6 +676,10 @@ int net_dhcp(void) {
     uint32_t offered_ip = 0;
     uint32_t server_id  = 0;
     uint32_t dns_ip     = 0;
+    /* X3: option 6 may carry several DNS servers; collect them all so the
+     * resolver can fail over to the secondary on timeout (dns_set_servers). */
+    uint32_t dns_list[DNS_SERVERS_MAX];
+    int      dns_count  = 0;
 
     uint64_t offer_deadline = timer_get_ticks() + NET_DHCP_OFFER_TIMEOUT_TICKS;
     while (timer_get_ticks() < offer_deadline) {
@@ -850,7 +721,13 @@ int net_dhcp(void) {
         int dns_len;
         const uint8_t *dns = dhcp_find_option(offer->options, opts_len,
                                               DHCP_OPT_DNS_SERVER, &dns_len);
-        if (dns && dns_len >= 4) dns_ip = be32_to_host(dns);
+        if (dns && dns_len >= 4) {
+            dns_ip = be32_to_host(dns);
+            dns_count = dns_len / 4;
+            if (dns_count > DNS_SERVERS_MAX) dns_count = DNS_SERVERS_MAX;
+            for (int di = 0; di < dns_count; di++)
+                dns_list[di] = be32_to_host(dns + di * 4);
+        }
 
         break;
     }
@@ -979,9 +856,12 @@ int net_dhcp(void) {
                         (subnet_mask >> 8) & 0xFF, subnet_mask & 0xFF);
             }
             if (dns_ip) {
-                kprintf("[dhcp] DNS server: %u.%u.%u.%u\n",
+                kprintf("[dhcp] DNS server: %u.%u.%u.%u (%d total)\n",
                         (dns_ip >> 24) & 0xFF, (dns_ip >> 16) & 0xFF,
-                        (dns_ip >> 8) & 0xFF, dns_ip & 0xFF);
+                        (dns_ip >> 8) & 0xFF, dns_ip & 0xFF, dns_count);
+                /* X3: hand the full server list to the resolver so a
+                 * silent primary fails over to the secondary. */
+                dns_set_servers(dns_list, dns_count);
             }
             kprintf("[dhcp] PASS: IP %u.%u.%u.%u, gateway %u.%u.%u.%u\n",
                     (our_ip >> 24) & 0xFF, (our_ip >> 16) & 0xFF,
@@ -1028,6 +908,10 @@ int net_init(void) {
         kprintf("[net] link is down; skipping DHCP and network self-tests\n");
         return -1;
     }
+
+    /* X3: arm the DNS resolver with the default server list (QEMU SLIRP
+     * 10.0.2.3); a successful DHCP below replaces it with option 6. */
+    dns_init();
 
     /* Try DHCP to get a real IP. If it fails, fall back to the hardcoded
      * QEMU defaults (10.0.2.15 / 10.0.2.2). */

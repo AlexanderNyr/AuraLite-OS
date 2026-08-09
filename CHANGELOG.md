@@ -2,6 +2,45 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [REALINTERNET_PLAN X3 — DNS reliability] 2026-08-09
+
+`REALINTERNET_PLAN.md` phase X3. The resolver previously sent one query to one
+server, parsed optimistically (unmatched IDs, unchecked compression pointers),
+and forgot the answer the moment it printed it. Lookups now survive the real
+network: cached, failed-over, and CNAME-chased — and they fail loudly instead
+of returning wrong answers (D7).
+
+- **New `kernel/net/dns_parse.{h,c}`** — pure DNS wire parser + cache core
+  with no kernel dependencies (time and state injected; host-testable). Name
+  encoder with strict label/name bounds; response parser validating ID, QR,
+  RCODE, compression pointers (loop/range-checked) and rdata bounds; answers
+  CNAME chains with the minimum TTL preserved and reports chain-only answers
+  (`DNS_PARSE_CNAME`) for re-querying; negative handling from NXDOMAIN /
+  NODATA+SOA with `neg_ttl = min(soa.ttl, soa.minimum)` (RFC 2308). Cache:
+  16 entries, LRU, TTL cap 24 h, TTL=0 never stored (RFC 2181), expired
+  entries report themselves on lookup.
+- **New `kernel/net/dns.c`** — resolver on top of the cache: up to 4 servers,
+  2 attempts × each server with a 2 s receive timeout, visible failover log
+  (`server X failed — trying secondary Y`), CNAME chase loop (depth ≤ 4),
+  randomised query IDs, loud failure on TRUNCATED answers instead of a wrong
+  address. The wire transport is injectable (`dns_set_transport_for_tests`)
+  so the host test drives resolver logic without a network.
+- **DHCP**: option 6 now collects up to 4 DNS servers and arms the resolver
+  (`dns_set_servers`) instead of remembering only the first one.
+- **Observability**: new `SYS_DNSCTL` (107) with LIST / FLUSH / SET_SERVERS /
+  GET_SERVERS; libc `dnsctl()`; shell commands `dnscache`, `dnsset <ip>…`,
+  `dnsflush`, documented in `help`.
+- **Compatibility**: `net_dns_resolve()` / `net_dns_self_test()` keep their
+  signatures (thin wrappers); the old block in `net.c` is replaced by a
+  pointer comment. Boot self-test now also verifies a cached second read.
+- **Tests**: host `tests/unit/test_dns.c` — 14/14 scenarios over the real
+  modules with a fake clock and scripted transport (encoder edges, CNAME
+  chains, compression-loop/pointer/rdata-overrun refusal, negative TTLs,
+  LRU eviction, expiry re-query, failover sequence, loud TRUNCATED).
+  Guest `tests/integration/cases/test_dns_cache.sh` — 10/10 (MISS→HIT,
+  blackholed primary → secondary, visible NXDOMAIN failure, negative cache
+  HIT). Dated manual real-network run recorded in the plan (2026-08-09).
+
 ## [MATURITY_PLAN M2 — IOAPIC driver + PIC→I/O-APIC switch] 2026-08-08
 
 `MATURITY_PLAN.md` phase M2 (core). Until now every device interrupt reached

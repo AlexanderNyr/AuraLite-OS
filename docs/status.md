@@ -82,7 +82,7 @@ Legend:
 | Console/file I/O | ✅ | `read`, `write`, `open`, `close`. |
 | Process basics | 🧪 | `getpid`, `exit`, `spawn`, `fork`, `execve`, `wait4`. |
 | Directory/path ops | ✅/🧪 | `listdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`. |
-| Networking | 🧪 | DNS, ping, legacy TCP calls and process-owned socket-style syscalls. |
+| Networking | 🧪 | DNS with cache+failover+CNAME (X3), ping, legacy TCP calls and process-owned socket-style syscalls. |
 | GUI | ✅/🧪 | `SYS_GUI_CALL` (200), `SYS_GUI_EVENT` (201), `SYS_GUI_THEME` (202). v2.0 theme engine, icons, notifications, snap, context menus. |
 | Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
 | Sockets | 🧪 | AF_INET/SOCK_STREAM handles include `socket`, `connect`, `send`, `recv`, `close`, plus server-side `bind`, `listen`, and `accept` (`305..307`). AF_INET/SOCK_DGRAM supports `sendto=44` and `recvfrom=45`. |
@@ -100,7 +100,7 @@ Legend:
 | IPv4 / ICMP | ✅ | Ping self-test. |
 | DHCP | ✅ | QEMU/VM NAT-oriented DORA flow. |
 | UDP | ✅ | Used by DNS and exposed to userspace through AF_INET/SOCK_DGRAM `sendto`/`recvfrom`. |
-| DNS resolver | ✅ | A-record lookup. |
+| DNS resolver | ✅ | A-record lookup with a TTL/negative cache (LRU, RFC 2308 SOA-derived negative TTL), up to 4 servers from DHCP option 6 with visible timeout failover, CNAME-chain chasing (in-packet and re-query), strict wire validation (ID/QR/compression bounds), LRU expiry re-query; `SYS_DNSCTL` + shell `dnscache`/`dnsset`/`dnsflush`. REALINTERNET_PLAN X3; gated by `test_dns` (host, 14 scenarios) and `test_dns_cache.sh` (guest, 10 asserts). |
 | TCP client | 🧪 | Per-connection TCP state (up to 8 connections) with a one-segment retransmission slot and fixed RTO/retry handling for SYN, data ACK wait, and FIN close. Legacy `SYS_NET_*` are deprecated. |
 | Socket API | 🧪 | AF_INET/SOCK_STREAM process-owned handles plus AF_INET/SOCK_DGRAM `sendto`/`recvfrom` exist. |
 | TCP server (bind/listen/accept) | 🧪 | Server-side socket path is implemented with `tcp_listen()`/`tcp_accept()` and the `/tcpserver` minimal HTTP echo server. |

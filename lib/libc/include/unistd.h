@@ -24,6 +24,20 @@
 #define SYS_NET_RECV    85
 #define SYS_NET_CLOSE   86
 #define SYS_NET_PING    87
+#define SYS_DNSCTL     107   /* X3: DNS cache/server control */
+
+/* X3 (REALINTERNET_PLAN): SYS_DNSCTL operations. */
+#define DNSCTL_LIST        1   /* buf: dnsctl_entry_t[] -> entry count */
+#define DNSCTL_FLUSH       2   /* drop all cache entries */
+#define DNSCTL_SET_SERVERS 3   /* buf: uint32_t[] host-order IPs (len bytes) */
+#define DNSCTL_GET_SERVERS 4   /* buf: uint32_t[] -> server count */
+
+typedef struct {
+    char     name[256];
+    uint32_t ip;          /* host order; 0 when negative entry */
+    uint32_t ttl_left;    /* seconds until expiry at listing time */
+    uint8_t  negative;
+} dnsctl_entry_t;
 #define SYS_SENDTO      44
 #define SYS_RECVFROM    45
 #define SYS_LISTDIR 80   /* non-standard: list a directory */
@@ -216,6 +230,7 @@ int         prog_path_count(void);
 const char *prog_path_entry(int index);
 int     aura_readdir(const char *path, void *out, int max);
 uint32_t dns_resolve(const char *hostname);
+int     dnsctl(int op, void *buf, uint32_t len);
 
 /* ---- Network syscalls ---- */
 

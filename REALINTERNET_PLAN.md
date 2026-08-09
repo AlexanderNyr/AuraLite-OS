@@ -1,11 +1,12 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — X1, X2 complete; X3–X9 pending
+## Status: IN PROGRESS 🚧 — X1, X2, X3 complete; X4–X9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | X1 — ECDSA P-256 verification | ✅ complete | (see §Phase X1 — result) |
 | X2 — usable HTTPS client | ✅ complete | (see §Phase X2 — result) |
+| X3 — DNS reliability | ✅ complete | `patches/REAL_X3_dns.patch` |
 | X2 — A usable HTTPS client | planned | `patches/REAL_X2_https_client.patch` |
 | X3 — DNS reliability | planned | `patches/REAL_X3_dns.patch` |
 | X4 — IP fragment reassembly | planned | `patches/REAL_X4_frag.patch` |
@@ -265,26 +266,63 @@ Shipped as part of this patch set; the files are listed in the patch header.
 
 ---
 
-### Phase X3 — DNS reliability
+### Phase X3 — DNS reliability ✅ COMPLETE
 
 **Objective:** lookups that survive the real network.
 
 #### Tasks
 
-- [ ] A small DNS cache honoring TTL (positive and negative entries).
-- [ ] Retry against the configured secondary server on timeout.
-- [ ] Parse CNAME chains (follow to the terminal A/AAAA).
-- [ ] Optional: TCP DNS fallback when the UDP reply is truncated (links to
-      X4, which makes large replies safe).
+- [x] A small DNS cache honoring TTL (positive and negative entries):
+      `kernel/net/dns_parse.{h,c}` — a pure parser + cache core with no kernel
+      dependencies (time passed in, so host tests step the clock manually);
+      16 entries, LRU, TTL capped at 24 h, TTL=0 never stored (RFC 2181),
+      negative entries from NXDOMAIN/NODATA+SOA (`neg_ttl = min(soa.ttl,
+      soa.minimum)`, RFC 2308).
+- [x] Retry against the configured secondary server on timeout:
+      `kernel/net/dns.c` — per-server list (`DNS_SERVERS_MAX` 4), 2 attempts ×
+      each server, 200-tick (2 s) recv timeout, visible log
+      `server X failed — trying secondary Y` (D7). DHCP option 6 now feeds up
+      to 4 servers; `dnsset` overrides them at runtime.
+- [x] Parse CNAME chains (follow to the terminal A): same-packet chains are
+      walked with the minimum TTL preserved; a chain that runs out of the
+      packet (`DNS_PARSE_CNAME`) is re-queried — loop
+      `alias → … → A`, depth ≤ 4, logged as `'X' is a CNAME for 'Y'`.
+- [x] Wire validation of the wire: response ID must match the (randomised)
+      query ID, QR must be set, compression pointers are loop- and
+      bounds-checked — the previous parser accepted poisonable shapes.
+- [ ] Optional: TCP DNS fallback when the UDP reply is truncated — **deferred
+      with a loud log** (`TRUNCATED` answers fail the lookup visibly instead of
+      returning a wrong address; D7). Lands with X4 reassembly/X6 as decided
+      by the plan order.
+- [x] Kernel/user observability: new `SYS_DNSCTL` (107) with ops
+      LIST/FLUSH/SET_SERVERS/GET_SERVERS; shell commands `dnscache`,
+      `dnsset <ip>…`, `dnsflush` (documented in `help`).
 
 #### Test gate
 
-- Two lookups of the same name in a row: second is served from cache
-  (assert via serial log line), and a TTL-expired entry is re-queried.
-- A primary-server blackhole (host firewall) still resolves via the
-  secondary.
-- A CNAME'd name (e.g. `www.example.com`) resolves to the terminal address.
-- `nslookup` from the shell uses the cache without user-visible change.
+- Host: **`tests/unit/test_dns.c` 14/14 scenarios** — compiles the real
+  `dns_parse.c` + `dns.c` with a fake clock and a scripted transport:
+  name encoder edge cases, plain A parse, 2-level CNAME chain (min TTL),
+  CNAME-without-A signalling, compression-loop / out-of-range-pointer /
+  rdata-overrun refusal, NXDOMAIN & NODATA SOA `neg_ttl`, cache HIT/MISS,
+  TTL tick-down and expiry (re-query), TTL=0 no-store, TTL cap, negative
+  round-trip, LRU eviction, resolver cache HIT + re-query after expiry,
+  blackholed-primary failover (2 attempts × server sequence asserted),
+  CNAME re-query, negative resolver cache, loud failure on TRUNCATED and on
+  all-servers-silent. Wired into `make test-unit` as `test_dns`.
+- Guest: **`tests/integration/cases/test_dns_cache.sh` 10/10** — real boot:
+  `[dns] init`, self-test PASS (regression), `cache MISS` → `cache HIT`,
+  `dnscache`/`dnsflush` output, blackholed 10.0.2.97 →
+  `trying secondary 10.0.2.3`, NXDOMAIN fails visibly and the second lookup
+  is a negative `cache HIT`. CNAME observation is lenient (day-shape, like
+  `test_networking.sh`).
+- Manual, recorded (D6), dated **2026-08-09**: boot under QEMU SLIRP —
+  `example.com → 172.66.147.243` (MISS then HIT),
+  `www.wikipedia.org → 198.35.26.224` (direct A today; CNAME check lenient),
+  `dnscache` snapshot listed both entries with live TTLs, blackhole
+  `dnsset 10.0.2.97 10.0.2.3` + `dnsflush` + `nslookup db2.test` logged the
+  failover and returned a visible `nslookup: failed to resolve db2.test`
+  (NXDOMAIN negative-cached). Log: `build/integration-logs/dns_cache.log`.
 
 #### Deliverable
 
