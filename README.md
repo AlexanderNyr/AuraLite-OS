@@ -25,9 +25,8 @@ additional post-phase extensions.
 
 ### Stable / exercised in normal builds
 
-- Custom BIOS + UEFI dual-boot ISO (`make iso` / `make iso-dual`), plus
-  optional Limine fallback (`make iso-limine`).  See `docs/BL{1..8}_REPORT.md`
-  for the design of every boot phase.
+- Custom BIOS + UEFI dual-boot ISO (`make iso` / `make iso-dual`).  See
+  `docs/BL{1..8}_REPORT.md` for the design of every boot phase.
 - x86_64 long mode, higher-half kernel.
 - GDT, IDT, PIC IRQ dispatch, TSS, SYSCALL/SYSRET.
 - Physical memory manager, virtual memory manager, kernel heap.
@@ -84,10 +83,8 @@ sudo apt install e2fsprogs vncdotool python3-pil
 git clone https://github.com/AlexanderNyr/AuraLite-OS.git
 ```
 
-The default `make iso` needs no submodules and no Limine binaries -- it uses
-the custom BL2..BL7 bootloader chain shipped in this repository.  Only the
-optional `make iso-limine` fallback requires the vendored Limine binary bundle
-(or the `third_party/limine` git submodule).
+`make iso` needs no submodules and no third-party bootloader -- it uses the
+custom BL2..BL7 bootloader chain shipped in this repository.
 
 ### Build the bootable ISO
 
@@ -118,20 +115,6 @@ staged for distribution.
 | Legacy BIOS                | SeaBIOS   | `qemu-system-x86_64 -drive format=raw,file=release/auralite.iso,if=ide`                  |
 | UEFI                       | OVMF      | `qemu-system-x86_64 -bios /usr/share/OVMF/OVMF_CODE_4M.fd -drive format=raw,file=release/auralite.iso,if=ide` |
 | Real hardware (USB stick)  | either    | `dd if=release/auralite.iso of=/dev/sdX bs=4M`                                           |
-
-### Limine fallback
-
-If a distribution or downstream user needs the historic Limine-based ISO -- for
-example to boot on a firmware known to reject our custom loader chain -- run:
-
-```bash
-make iso-limine
-```
-
-This produces `release/auralite-limine.iso` using `tools/mkisoimage_limine.sh`
-and the vendored Limine binaries.  Because BL1 removed every `limine_get_*`
-accessor from the kernel, this path uses Limine as a pure chain-loader that
-fills a `boot_info_t` shim -- the kernel itself no longer knows about Limine.
 
 ### Run in QEMU
 
@@ -612,7 +595,6 @@ More details: [`docs/virtual_machines.md`](docs/virtual_machines.md).
 | `make iso` | Build the dual-boot BIOS+UEFI ISO (`release/auralite.iso`) using the custom loader chain. |
 | `make iso-bios` | BIOS-only hybrid MBR image (`build/auralite-bios.iso`). |
 | `make iso-dual` | Same as `make iso` but without the release copy step (`build/auralite-dual.iso`). |
-| `make iso-limine` | Legacy Limine-based ISO for firmware-compat fallback. |
 | `make mbr` | BL2 512-byte MBR (`build/boot/mbr.bin`). |
 | `make mbr-dual` | BL7 MBR variant reading Stage 2 from LBA 34 (`build/boot/mbr_dual.bin`). |
 | `make stage2` | BL3+BL4 Stage 2 flat binary (`build/boot/stage2.bin`). |
@@ -638,7 +620,7 @@ More details: [`docs/virtual_machines.md`](docs/virtual_machines.md).
 
 ```text
 AuraLite-OS/
-├── boot/limine/              # Limine boot configs
+├── boot/                     # Custom BIOS/UEFI bootloader (BL2..BL7)
 ├── docs/                     # Architecture, ABI, drivers, VM setup, status
 ├── drivers/
 │   ├── ahci/                 # AHCI SATA detection and DMA sector I/O
@@ -663,7 +645,6 @@ AuraLite-OS/
 │   └── kernel.c              # kmain() orchestration
 ├── libauragui/               # User-space GUI toolkit wrappers/widgets
 ├── libc/                     # Minimal user-space libc and crt0
-├── limine/                   # Vendored Limine binaries and header
 ├── scripts/                  # CI/integration helper
 ├── tests/unit/               # Host-side unit tests
 ├── tests/integration/        # QEMU black-box integration tests
@@ -811,6 +792,5 @@ See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 
 ## License notes
 
-This repository vendors Limine binaries and `limine.h`; see `limine/LICENSE` for
-Limine licensing. Font assets and third-party snippets are documented in their
-respective source files where applicable.
+Font assets and third-party snippets are documented in their respective source
+files where applicable.

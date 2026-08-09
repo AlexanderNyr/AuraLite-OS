@@ -1,6 +1,7 @@
 # =============================================================================
 # AuraLite OS — Top-level Makefile
-# Toolchain: Clang (--target=x86_64-elf) + LLD + NASM, booted by Limine.
+# Toolchain: Clang (--target=x86_64-elf) + LLD + NASM, booted by the custom
+# BIOS/UEFI loader chain (BL2..BL7) shipped in this repository.
 # =============================================================================
 
 ARCH        := x86_64
@@ -12,35 +13,13 @@ AR          := ar
 HOST_CC     := cc
 
 BUILD_DIR   := build
-LIMINE_DIR  := limine
-LIMINE_SRC  := third_party/limine
-# Prefer the checked-in Limine binary bundle.  This keeps a normal clone buildable
-# even when the Git submodule was not initialised and avoids rebuilding the whole
-# Limine tree in CI.  If the bundle is removed, Make falls back to the submodule.
-LIMINE_ARCHIVE := limine-binary.tar.gz
-ifneq ($(wildcard $(LIMINE_ARCHIVE)),)
-LIMINE_BIN  := $(BUILD_DIR)/limine-binary
-LIMINE_MODE := bundled
-else
-LIMINE_BIN  := $(LIMINE_SRC)/bin
-LIMINE_MODE := submodule
-endif
-LIMINE_DEPS := $(LIMINE_BIN)/limine $(LIMINE_BIN)/limine-bios.sys \
-               $(LIMINE_BIN)/limine-uefi-cd.bin $(LIMINE_BIN)/limine-bios-cd.bin \
-               $(LIMINE_BIN)/BOOTX64.EFI
+
 # mformat/mcopy are needed by mkisoimage_bios.sh / mkisoimage_dual.sh
 # to build the FAT32 partition; lld-link is needed by `make efi` to
-# link BOOTX64.EFI as PE32+.  xorriso is retained even though the
-# custom loaders no longer use it, because `make iso-limine` still
-# wraps its output with xorriso -- keep it in REQUIRED_TOOLS so that
-# users trying the fallback path get a fast error instead of a
-# cryptic xorriso "command not found".
+# link BOOTX64.EFI as PE32+.
 ### RUST: add rustc to required tools
-REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar xorriso \
+REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar \
                   mformat mcopy lld-link rustc
-ifeq ($(LIMINE_MODE),submodule)
-REQUIRED_TOOLS += git autoreconf
-endif
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
 
@@ -81,7 +60,7 @@ KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
 
 .PHONY: all kernel user iso usb vbox vmware vm-configs run run-usb-msc clean \
-        deps-check test-unit test-integration test-integration-fast test limine-build \
+        deps-check test-unit test-integration test-integration-fast test \
         libs sdk sdk-check
 
 all: iso
@@ -96,7 +75,7 @@ deps-check:
 		fi; \
 	done; \
 	if [ $$missing -ne 0 ]; then \
-		echo "[deps] Debian/Ubuntu: sudo apt install clang lld nasm xorriso qemu-system-x86 mtools ovmf make gcc python3"; \
+		echo "[deps] Debian/Ubuntu: sudo apt install clang lld nasm qemu-system-x86 mtools ovmf make gcc python3"; \
 		echo "[deps] Also install Rust via: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"; \
 		echo "[deps] Then: rustup target add $(RUST_TARGET)"; \
 		exit 127; \
@@ -989,33 +968,6 @@ $(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
 
 USB_IMAGE   := $(BUILD_DIR)/usb.img
 
-ifeq ($(LIMINE_MODE),bundled)
-$(LIMINE_BIN)/limine: $(LIMINE_ARCHIVE)
-	@echo "[limine] using bundled Limine binary package ($<)"
-	@rm -rf $(LIMINE_BIN)
-	@mkdir -p $(BUILD_DIR)
-	@tar -xzf $< -C $(BUILD_DIR)
-	@$(MAKE) -C $(LIMINE_BIN) limine
-
-$(filter-out $(LIMINE_BIN)/limine,$(LIMINE_DEPS)): $(LIMINE_BIN)/limine
-	@:
-else
-$(LIMINE_BIN)/limine:
-	@if [ ! -d "$(LIMINE_SRC)/.git" ]; then \
-		echo "[limine] missing submodule $(LIMINE_SRC)"; \
-		echo "[limine] run: git submodule update --init --recursive"; \
-		exit 1; \
-	fi
-	@( cd $(LIMINE_SRC) && ([ -f configure ] || ./bootstrap) && \
-	   ./configure --enable-all && make -j$$(nproc) )
-
-
-$(filter-out $(LIMINE_BIN)/limine,$(LIMINE_DEPS)): $(LIMINE_BIN)/limine
-	@:
-endif
-
-limine-build: $(LIMINE_DEPS)
-
 # ---- BL6: UEFI bootloader (BOOTX64.EFI) -----------------------------------
 # Freestanding C compiled for the Windows x64 ABI (RCX/RDX/... calling
 # convention that UEFI uses), linked as PE32+ via ld.lld's pei output.
@@ -1048,7 +1000,7 @@ $(EFI_BIN): $(UEFI_OBJS)
 	         $(UEFI_OBJS)
 	@printf "  [efi] %-40s %d bytes\n" $@ $$(wc -c < $@)
 
-# ---- BL5: BIOS-only ISO built with our custom bootloader (no Limine).
+# ---- BL5: BIOS-only ISO built with our custom bootloader.
 # Produces a hybrid MBR image that boots on QEMU (`-drive if=ide`) and
 # on real hardware via USB stick (`dd if=... of=/dev/sdX`).  Legacy
 # CD-ROM (`-cdrom`) boot is out of scope -- BL7 adds a dual-boot ISO
@@ -1079,13 +1031,8 @@ export ESP_MB
 iso-dual: deps-check kernel $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
 	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)
 
-# ---- BL8: `make iso` now defaults to the custom dual-boot loader ----------
-# Legacy `make iso-limine` is preserved below as a fallback for anyone
-# who still needs the old Limine-based image.  The Limine path is
-# fully optional: if the limine-binary.tar.gz bundle and the
-# `third_party/limine` submodule are both absent, `make iso` still
-# works because it no longer depends on `limine-build`.
-.PHONY: iso iso-limine
+# ---- BL8: `make iso` uses the custom dual-boot loader ---------------------
+.PHONY: iso
 iso: iso-dual
 	@# Keep the historical build/auralite.iso path as the canonical local
 	@# artefact.  The integration tests and run/debug targets consume it.
@@ -1098,20 +1045,6 @@ iso: iso-dual
 	    > SHA256SUMS
 	@cp release/SHA256SUMS SHA256SUMS
 	@echo "[release] Wrote ISO, kernel.elf$$([ -f release/initrd.tar ] && echo ', initrd.tar'), and SHA256SUMS to 'release/' folder"
-
-# Preserved for backwards compatibility.  Requires either the
-# limine-binary.tar.gz bundle or the third_party/limine submodule.
-# Because BL1 removed every limine_get_* accessor from the kernel and
-# BL1 also dropped the .limine_requests* sections from kernel.ld, the
-# ISO built here contains Limine only as a chain-loader that never
-# reaches the kernel with its own memory-map / framebuffer info -- it
-# will boot to the kernel banner via boot_info fallbacks but the
-# custom BIOS/UEFI paths (make iso-dual) are the supported default.
-iso-limine: deps-check kernel $(BUILD_DIR)/initrd.tar limine-build
-	@bash tools/mkisoimage_limine.sh $(KERNEL_ELF) $(ISO_IMAGE) $(LIMINE_BIN)
-	@mkdir -p release
-	@cp $(ISO_IMAGE) release/auralite-limine.iso
-	@echo "[iso-limine] wrote release/auralite-limine.iso"
 
 usb: iso
 	@cp $(ISO_IMAGE) $(USB_IMAGE)

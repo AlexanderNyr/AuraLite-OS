@@ -3,6 +3,12 @@ build/
 *.iso
 release/
 
+# Legacy Limine bootloader (fully removed from the project).
+limine/
+limine-binary.tar.gz
+third_party/
+boot/limine/
+
 # Built SDK examples.  The sources are tracked; the binaries are produced by
 # `make iso` (and by `make sdk-check` in a temporary directory) from the
 # staged SDK, so a committed .elf would be a stale copy of a generated file.
