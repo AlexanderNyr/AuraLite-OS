@@ -19,8 +19,8 @@ is more valuable than a padlock icon.
 | TLS 1.2 and earlier | ❌ Refused | Decision D3 |
 | Cipher suite | TLS_CHACHA20_POLY1305_SHA256 only | RFC 8446, D4 |
 | Key exchange | X25519 | RFC 7748 |
-| Certificate signatures | Ed25519, RSA PKCS#1v1.5-SHA256 | RFC 8032, RFC 8017 |
-| ECDSA P-256 | ❌ Not implemented | D4 (no curve arithmetic) |
+| Certificate signatures | Ed25519, RSA PKCS#1v1.5-SHA256, **ECDSA P-256** | RFC 8032, RFC 8017, RFC 6979 |
+| ECDSA P-256 | ✅ Verify only (REALINTERNET_PLAN X1) | secp256r1, DER ECDSA-Sig-Value |
 | Client certificates | ❌ | D6 |
 | Session resumption | ❌ | D6 |
 | 0-RTT | ❌ | D6 |
@@ -53,7 +53,7 @@ is more valuable than a padlock icon.
 | Chain building | ✅ (issuer DER byte-equality) |
 | Ed25519 signature verification | ✅ |
 | RSA PKCS#1v1.5-SHA256 verification | ✅ |
-| ECDSA signature verification | ❌ |
+| ECDSA P-256 (secp256r1) signature verification | ✅ (verify only, REALINTERNET_PLAN X1) |
 | Hostname matching (SAN dNSName) | ✅ (exact + single-label wildcard) |
 | Validity date checking | ✅ (UTCTime + GeneralizedTime, fail-closed) |
 | Basic constraints | ✅ (leaf ≠ CA, CA must have keyCertSign) |
@@ -158,12 +158,15 @@ Root certificates shipped:
 | DigiCert Global Root CA | 2038-11-10 | |
 | DigiCert Global Root G3 | 2038-01-15 | |
 
-### 3.6 ECDSA leaf certificates are not supported
+### 3.6 ECDSA leaf certificates
 
-Most of the modern web uses ECDSA P-256 leaf certificates.  This TLS
-stack verifies Ed25519 and RSA PKCS#1v1.5 signatures only (decision D4).
-An ECDSA leaf will cause the handshake to abort with
-`unsupported_certificate`, not be silently accepted.
+ECDSA P-256 (secp256r1) leaf certificates are now verified
+(REALINTERNET_PLAN.md phase X1) — signature verification over the DER
+ECDSA-Sig-Value, against the uncompressed `04 || X || Y` point.  ECDSA on
+other curves (P-384, P-521) is still refused with
+`unsupported_certificate`, not silently accepted.  Like the rest of the
+TLS layer, the P-256 arithmetic is not audited and not constant-time (it
+runs on public certificate data; see §3.1–§3.3).
 
 ### 3.7 64 KiB user stack limit
 
@@ -212,7 +215,8 @@ actually verify against a pinned root).
 | `test_atls_ed25519` | 17 | RFC 8032, negative cases, exact reason asserted |
 | `test_atls_x509` | 61 | Real certs, truncation sweep, mutations, depth gate |
 | `test_atls_tls` | 25 | Handshake vs openssl, KeyUpdate, large transfer, Finished MAC |
-| `test_atls_certval` | 14 | Chain building, RSA+Ed25519, hostname, dates, constraints |
+| `test_atls_certval` | 17 | Chain building, RSA+Ed25519+ECDSA, hostname, dates, constraints |
+| `test_atls_ecdsa` | 10 | ECDSA P-256 direct verify + hostile negatives (X1) |
 | `test_ahttp` | 7 | URL parsing |
 
 ### 4.2 QEMU integration tests
@@ -294,8 +298,6 @@ The remaining phases from `INTERNET_PLAN.md`:
 - **N8 (IPv6):** optional, largest effort with smallest payoff.
   Deferred indefinitely.
 - **Known gaps that would strengthen the stack:**
-  - Increase `USER_STACK_SIZE` to 256 KiB (or heap-allocate crypto scratch)
-  - ECDSA P-256 verification (most of the web uses ECDSA leaves)
   - OCSP stapling / CRL checking
   - HTTP/2 support
   - Persistent HTTP connections

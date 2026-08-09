@@ -9,6 +9,7 @@
 
 #include "atls/certval.h"
 #include "atls_rsa.h"
+#include "atls/ecdsa.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -165,7 +166,23 @@ static int verify_cert_signature(const atls_x509_cert *child,
                ? ATLS_CERTVAL_OK : ATLS_CERTVAL_ERR_SIGNATURE;
     }
 
-    /* ECDSA: not supported (D4: Ed25519 + RSA only). */
+    /* ECDSA P-256 SHA-256: OID 1.2.840.10045.4.3.2 (REALINTERNET_PLAN X1).
+     * The issuer's public key must be an uncompressed P-256 point
+     * (0x04 || X || Y), and the certificate signature is a DER
+     * ECDSA-Sig-Value over the TBS bytes. */
+    if (atls_oid_eq(&child->outer_sig_oid, ATLS_OID_ECDSA_SHA256, 8)) {
+        if (!atls_oid_eq(&issuer->spki_alg_oid, ATLS_OID_EC_PUBLIC_KEY, 7))
+            return ATLS_CERTVAL_ERR_UNSUPPORTED;
+        if (issuer->spki_key.len != 65 || issuer->spki_key_unused_bits ||
+            issuer->spki_key.data[0] != 0x04)
+            return ATLS_CERTVAL_ERR_SIGNATURE;
+        int rc = atls_ecdsa_p256_verify(sig, sig_len,
+                                        issuer->spki_key.data,
+                                        child->tbs.data, child->tbs.len);
+        return rc == ATLS_OK ? ATLS_CERTVAL_OK : ATLS_CERTVAL_ERR_SIGNATURE;
+    }
+
+    /* Any other signature algorithm is unsupported. */
     return ATLS_CERTVAL_ERR_UNSUPPORTED;
 }
 

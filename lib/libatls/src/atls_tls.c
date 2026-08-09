@@ -19,6 +19,7 @@
 #include "atls/atls.h"
 #include "atls/tls.h"
 #include "atls/x509.h"
+#include "atls/ecdsa.h"
 #include <string.h>
 
 /* Provided by the process's libc / test harness. */
@@ -829,6 +830,19 @@ send_ch: ;
                     return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
                 rc = atls_ed25519_verify(sig, leaf.spki_key.data,
                                          content, content_len);
+                if (rc != ATLS_OK)
+                    return fail(t, ATLS_ALERT_DECRYPT_ERROR);
+            } else if (sig_scheme == ATLS_SIG_ECDSA_SECP256R1_SHA256) {
+                /* REALINTERNET_PLAN X1: ECDSA P-256 CertificateVerify. */
+                if (!atls_oid_eq(&leaf.spki_alg_oid,
+                                 ATLS_OID_EC_PUBLIC_KEY, 7))
+                    return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                if (leaf.spki_key.len != 65 || leaf.spki_key_unused_bits ||
+                    leaf.spki_key.data[0] != 0x04)
+                    return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
+                rc = atls_ecdsa_p256_verify(sig, sig_len,
+                                            leaf.spki_key.data,
+                                            content, content_len);
                 if (rc != ATLS_OK)
                     return fail(t, ATLS_ALERT_DECRYPT_ERROR);
             } else {

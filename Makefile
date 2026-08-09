@@ -379,7 +379,8 @@ LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
                 $(USER_BUILD)/atls_ed25519.o \
                 $(USER_BUILD)/atls_der.o $(USER_BUILD)/atls_x509.o \
                 $(USER_BUILD)/atls_tls_keys.o $(USER_BUILD)/atls_tls.o \
-                $(USER_BUILD)/atls_rsa.o $(USER_BUILD)/atls_certval.o
+                $(USER_BUILD)/atls_rsa.o $(USER_BUILD)/atls_certval.o \
+                $(USER_BUILD)/atls_ecdsa.o
 LIBATLS      := $(USER_LIBDIR)/libatls.a
 USER_CFLAGS  += -I lib/libatls/include
 
@@ -1221,6 +1222,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_atls_x509 \
                 $(BUILD_DIR)/test_atls_tls \
                 $(BUILD_DIR)/test_atls_certval \
+                $(BUILD_DIR)/test_atls_ecdsa \
                 $(BUILD_DIR)/test_ahttp \
                 $(BUILD_DIR)/test_wv_html \
                 $(BUILD_DIR)/test_wv_dom \
@@ -1269,7 +1271,8 @@ LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
                 lib/libatls/src/atls_ed25519.c \
                 lib/libatls/src/atls_der.c lib/libatls/src/atls_x509.c \
                 lib/libatls/src/atls_tls_keys.c lib/libatls/src/atls_tls.c \
-                lib/libatls/src/atls_rsa.c lib/libatls/src/atls_certval.c
+                lib/libatls/src/atls_rsa.c lib/libatls/src/atls_certval.c \
+                lib/libatls/src/atls_ecdsa.c
 LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
 
 $(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
@@ -1309,6 +1312,14 @@ $(BUILD_DIR)/test_atls_tls: tests/unit/test_atls_tls.c $(TLS_TEST_DEPS)
 # Certificate validation (N5): links libatls + atls_rsa + atls_certval.
 $(BUILD_DIR)/test_atls_certval: tests/unit/test_atls_certval.c $(LIBATLS_SRCS) \
                                 lib/libatls/include/atls/certval.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
+# ECDSA P-256 (REALINTERNET_PLAN X1): direct verify against the embedded
+# openssl-derived vector plus the negative cases.  Links the REAL libatls
+# sources, as every other atls host test does.
+$(BUILD_DIR)/test_atls_ecdsa: tests/unit/test_atls_ecdsa.c $(LIBATLS_SRCS) \
+                              lib/libatls/include/atls/ecdsa.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
 

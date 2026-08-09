@@ -283,6 +283,67 @@ static void test_rsa_verify(void) {
           "RSA flipped signature rejected");
 }
 
+/* ---- ECDSA P-256 chain (REALINTERNET_PLAN X1) ---- */
+
+static uint8_t ecdsa_root_der[4096];
+static uint8_t ecdsa_leaf_der[4096];
+static size_t ecdsa_root_der_len, ecdsa_leaf_der_len;
+
+/* Generate a Root CA -> Leaf chain, all ECDSA P-256. */
+static int generate_ecdsa_certs(void) {
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "openssl ecparam -name prime256v1 -genkey -noout -out /tmp/x1_root.key 2>/dev/null && "
+        "openssl req -new -key /tmp/x1_root.key -x509 -out /tmp/x1_root.pem -days 3650 -nodes "
+        "-subj '/CN=X1 ECDSA Root/O=AuraLite Test' "
+        "-addext 'basicConstraints=critical,CA:TRUE' "
+        "-addext 'keyUsage=critical,keyCertSign,cRLSign' 2>/dev/null && "
+        "openssl ecparam -name prime256v1 -genkey -noout -out /tmp/x1_leaf.key 2>/dev/null && "
+        "openssl req -new -key /tmp/x1_leaf.key -out /tmp/x1_leaf.csr -subj '/CN=ecdsa.auraos.dev' 2>/dev/null && "
+        "printf 'basicConstraints=CA:FALSE\\nkeyUsage=digitalSignature\\nsubjectAltName=DNS:ecdsa.auraos.dev' > /tmp/x1_leaf_ext.txt && "
+        "openssl x509 -req -in /tmp/x1_leaf.csr -CA /tmp/x1_root.pem -CAkey /tmp/x1_root.key "
+        "-CAcreateserial -out /tmp/x1_leaf.pem -days 365 -extfile /tmp/x1_leaf_ext.txt 2>/dev/null");
+    if (system(cmd) != 0) return -1;
+
+    snprintf(cmd, sizeof(cmd), "openssl x509 -in /tmp/x1_root.pem -outform DER -out /tmp/x1_root.der 2>/dev/null");
+    if (system(cmd) != 0) return -1;
+    snprintf(cmd, sizeof(cmd), "openssl x509 -in /tmp/x1_leaf.pem -outform DER -out /tmp/x1_leaf.der 2>/dev/null");
+    if (system(cmd) != 0) return -1;
+
+    FILE *f;
+    f = fopen("/tmp/x1_root.der", "rb"); if (!f) return -1;
+    ecdsa_root_der_len = fread(ecdsa_root_der, 1, sizeof(ecdsa_root_der), f); fclose(f);
+    f = fopen("/tmp/x1_leaf.der", "rb"); if (!f) return -1;
+    ecdsa_leaf_der_len = fread(ecdsa_leaf_der, 1, sizeof(ecdsa_leaf_der), f); fclose(f);
+    return 0;
+}
+
+static void test_ecdsa_chain_valid(void) {
+    atls_certval_ctx ctx;
+    atls_trust_root roots[1] = { { ecdsa_root_der, ecdsa_root_der_len } };
+    atls_certval_init(&ctx, roots, 1);
+    const uint8_t *chain[1] = { ecdsa_leaf_der };
+    size_t lens[1] = { ecdsa_leaf_der_len };
+    atls_time_now now = get_test_time();
+    int rc = atls_certval_verify(&ctx, chain, lens, 1, "ecdsa.auraos.dev", &now);
+    CHECK(rc == ATLS_CERTVAL_OK, "ECDSA P-256 chain to pinned root verifies");
+}
+
+static void test_ecdsa_chain_flipped_signature(void) {
+    static uint8_t leaf_buf[4096];
+    memcpy(leaf_buf, ecdsa_leaf_der, ecdsa_leaf_der_len);
+    /* Flip a byte near the end of the certificate (inside the signature). */
+    leaf_buf[ecdsa_leaf_der_len - 5] ^= 0x01;
+    atls_certval_ctx ctx;
+    atls_trust_root roots[1] = { { ecdsa_root_der, ecdsa_root_der_len } };
+    atls_certval_init(&ctx, roots, 1);
+    const uint8_t *chain[1] = { leaf_buf };
+    size_t lens[1] = { ecdsa_leaf_der_len };
+    atls_time_now now = get_test_time();
+    int rc = atls_certval_verify(&ctx, chain, lens, 1, "ecdsa.auraos.dev", &now);
+    CHECK(rc == ATLS_CERTVAL_ERR_SIGNATURE, "ECDSA chain with flipped signature refused");
+}
+
 int main(void) {
     printf("=== N5 Certificate Validation Test Suite ===\n\n");
 
@@ -302,6 +363,16 @@ int main(void) {
     test_leaf_as_ca();
     test_flipped_signature();
     test_rsa_verify();
+
+    /* ECDSA P-256 chain (REALINTERNET_PLAN X1). */
+    if (generate_ecdsa_certs() != 0) {
+        printf("FAIL: could not generate ECDSA test certificates\n");
+        return 1;
+    }
+    CHECK(ecdsa_root_der_len > 0 && ecdsa_leaf_der_len > 0,
+          "ECDSA test certificates generated");
+    test_ecdsa_chain_valid();
+    test_ecdsa_chain_flipped_signature();
 
     printf("\n=== %d/%d passed ===\n", tests_run - tests_failed, tests_run);
     return tests_failed ? 1 : 0;
