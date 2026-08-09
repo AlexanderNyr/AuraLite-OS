@@ -265,6 +265,7 @@ int     vfs_dup2(int oldfd, int newfd);
 int     vfs_pipe(int out_fds[2]);
 /* pipe2(): like pipe() but applies O_CLOEXEC / O_NONBLOCK atomically. */
 int     vfs_pipe2(int out_fds[2], int flags);
+int     vfs_fd_is_pipe(int fd);
 /* fcntl(2): F_GETFL/F_SETFL/F_DUPFD/F_DUPFD_CLOEXEC plus the F_GETFD/F_SETFD
  * flag commands.  Returns a non-negative result or a negative errno. */
 int     vfs_fcntl(int fd, int cmd, int arg);

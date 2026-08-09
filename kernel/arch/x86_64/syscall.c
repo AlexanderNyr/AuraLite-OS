@@ -766,6 +766,15 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EFAULT;
         }
         if (a1 == 1 || a1 == 2) {
+            /* POSIX redirection: if dup2() wired a PIPE into fd 1/2, the
+             * bytes must go to that pipe, not to the console (this is how
+             * gterm captures a spawned program's stdout).  Every other case
+             * — /dev/tty0 from init, /dev/null from vfs_ensure_std_fds() —
+             * keeps the historical locked console path, so shell-visible
+             * behavior is unchanged. */
+            if (vfs_fd_is_pipe((int)a1)) {
+                return (uint64_t)syscall_vfs_write((int)a1, user_buf, a3);
+            }
             char tmp[SYSCALL_IO_CHUNK];
             uint64_t done = 0;
             while (done < a3) {

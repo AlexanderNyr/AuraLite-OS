@@ -967,6 +967,18 @@ int vfs_pipe(int out_fds[2]) {
     return vfs_pipe2(out_fds, 0);
 }
 
+/* vfs_fd_is_pipe() — true when @fd of the CURRENT thread holds a pipe end.
+ * Used by SYS_WRITE: fd 1/2 historically go straight to the console, but
+ * when dup2() has wired a pipe into fd 1/2 (the way gterm captures a
+ * spawned program's stdout) the bytes must reach the pipe instead. */
+int vfs_fd_is_pipe(int fd) {
+    if (fd < 0 || fd >= VFS_MAX_FDS) return 0;
+    struct ofd **t = current_fd_table();
+    struct ofd *o = t[fd];
+    if (!o || (uintptr_t)o == 1 || !o->vn) return 0;
+    return o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops;
+}
+
 int vfs_set_cloexec(int fd, int on) {
     if (fd < 0 || fd >= VFS_MAX_FDS) return -EBADF;
     if (current_fd_table()[fd] == NULL) return -EBADF;
