@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — X1, X2, X3 complete; X4–X9 pending
+## Status: IN PROGRESS 🚧 — X1–X4 complete; X5–X9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -330,7 +330,7 @@ Shipped as part of this patch set; the files are listed in the patch header.
 
 ---
 
-### Phase X4 — IP fragment reassembly
+### Phase X4 — IP fragment reassembly ✅ COMPLETE
 
 **Objective:** stop dropping datagrams bigger than one MTU, safely.
 
@@ -339,14 +339,14 @@ Shipped as part of this patch set; the files are listed in the patch header.
 
 #### Tasks
 
-- [ ] Reassembly buffer table (bounded count and bytes), keyed by
+- [x] Reassembly buffer table (bounded count and bytes), keyed by
       src/ip, dst/ip, proto, fragment-id.
-- [ ] A reassembly timeout (drop on expiry, never hold forever) and a
+- [x] A reassembly timeout (drop on expiry, never hold forever) and a
       memory cap (refuse past it, per INTERNET_PLAN's "no large allocation on
       a stranger's say-so").
-- [ ] Overlapping-fragment attacks refused (the first fragment wins for a
+- [x] Overlapping-fragment attacks refused (the first fragment wins for a
       byte offset; conflicting later fragments dropped).
-- [ ] Feed the reassembled datagram to UDP/TCP as a normal packet.
+- [x] Feed the reassembled datagram to UDP/TCP as a normal packet.
 
 #### Test gate
 
@@ -358,6 +358,39 @@ Shipped as part of this patch set; the files are listed in the patch header.
 #### Deliverable
 
 `patches/REAL_X4_frag.patch`
+
+#### Result (2026-08-09)
+
+- **Host: `test_ip_reasm` 11/11** over the pure engine
+  (`kernel/net/ip_reasm.c`, clock and table injected): two-/three-fragment
+  byte-exact reassembly in and out of order, benign duplicates, overlapping
+  conflicts refused with first-wins preserved, cap enforcement with
+  poisoned-entry kill, timeout drop via sweep **and** via lazy input-path
+  expiry, key isolation (same id, different sources), bounded-table
+  eviction, malformed-input refusal.
+- **Guest: `test_ip_frag` 6/6** — the boot self-test pushes synthetic
+  wire-shaped fragments through the **real** `net_ipfrag_step()` glue: a
+  3000-byte datagram in three fragments delivered last-first comes back
+  byte-identical; a tampered overlap probe is refused and the original
+  bytes still win. X3 regressions (DNS MISS/HIT, self-test) stay green.
+- Design: one bounded table (8 datagrams × 8 KiB ≈ 72 KiB max, 10 s
+  timeout, LRU eviction when full) keyed by src/dst/proto/id; every receive
+  loop (`net_udp_recvfrom`, ICMP ping, both TCP paths) steps frames through
+  `net_ipfrag_step()`; a completed datagram re-enters parsing as a
+  synthetic full frame with a recomputed header checksum. per-byte bitmap →
+  exact overlap detection, first writer wins.
+- **Manual, recorded (dated):** QEMU/SLIRP never fragments traffic for the
+  guest, so real-wire fragmented traffic was not reproducible on 2026-08-09;
+  the deterministic gates above are the witness, and the guest self-test
+  exercises the same code path live traffic takes. Trusted-network
+  fragmentation (e.g. UDP > MTU on real hardware LANs) will hit exactly
+  this path; a hardware or tunnel run may be appended here when available.
+- Limitations kept, honestly logged: a datagram larger than the 8 KiB cap
+  is refused with a visible `[ipfrag] refused fragment beyond cap` line;
+  the ICMP/UDP/TCP wait loops are the reassembly entry points — the DHCP
+  boot loops are not (DHCP predates other traffic; documented in net.c);
+  super-sized UDP payloads beyond a protocol's caller buffer keep the
+  existing size-truncation semantics.
 
 ---
 

@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [REALINTERNET_PLAN X4 — IPv4 fragment reassembly] 2026-08-09
+
+`REALINTERNET_PLAN.md` phase X4. `flags_frag` was written as zero at send and
+never read at receive: any UDP/TCP datagram a router had to split arrived as
+n unreachable fragments, silently dropped. The stack now reassembles them —
+bounded, timed, and immunised against the classic attacks (D7).
+
+- **New `kernel/net/ip_reasm.{h,c}`** — pure reassembly engine, host-testable
+  like dns_parse (clock injected, whole table caller-owned). One bounded
+  table by policy: 8 concurrent datagrams keyed by src/dst/proto/id, 8 KiB
+  cap per datagram (≈72 KiB total — "no large allocation on a stranger's
+  say-so"), 10 s reassembly timeout with drop-on-expiry (lazy on input plus
+  an explicit sweep), LRU eviction of the oldest incomplete entry when the
+  table is full. Overlap policy is per-byte exact (bitmap): the first
+  fragment wins, a conflicting re-write of any received byte refuses the
+  fragment, an identical retransmission is benign — teardrop-class overlaps
+  cannot corrupt or crash anything.
+- **Wire-in** (`net.c: net_ipfrag_step()`): every receive loop —
+  `net_udp_recvfrom`, the ICMP ping wait, and both TCP receive paths — now
+  steps frames through the helper before parsing. Unfragmented frames pass
+  through on a fast path at branch cost; an incomplete fragment is absorbed
+  silently; a completed datagram re-enters parsing as a synthetic full frame
+  (fixed `total_length`, recomputed header checksum), so UDP/TCP/ICMP see it
+  exactly like an ordinary packet.
+- **Observability**: `[ipfrag]` log lines for reassembly start, completion
+  (with byte count), timeout drops, cap/overlap refusals, and evictions.
+- **Guest self-test**: `net_ipfrag_self_test()` at boot feeds synthetic
+  wire-shaped fragments through the real glue — a 3000-byte datagram in
+  three fragments delivered last-first reassembles byte-identical; a
+  tampered overlap probe is refused and first-fragment bytes still win.
+- **Tests**: host `tests/unit/test_ip_reasm.c` — 11/11 scenarios (byte-exact
+  in/out-of-order reassembly, duplicates, overlap refuse + first-wins,
+  benign overlap, cap enforce + poisoned-entry kill, sweep and lazy
+  timeouts, key isolation, bounded-table eviction, malformed inputs). Guest
+  `tests/integration/cases/test_ip_frag.sh` — 6/6 (wire self-test, no
+  exceptions, X3 DNS MISS/HIT regression). Dated manual note in the plan:
+  SLIRP cannot produce fragmented traffic for the guest, so the real-wire
+  scenario is gated deterministically; the guest path is the same code
+  live traffic takes.
+
 ## [REALINTERNET_PLAN X3 — DNS reliability] 2026-08-09
 
 `REALINTERNET_PLAN.md` phase X3. The resolver previously sent one query to one

@@ -10,6 +10,7 @@
 #include "drivers/virtio_net/virtio_net.h"
 #include "kernel/net/netdev.h"
 #include "kernel/net/dns.h"
+#include "kernel/net/ip_reasm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/errno.h"
@@ -142,6 +143,102 @@ static uint16_t checksum(const void *data, uint32_t len) {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
     return htons_((uint16_t)(~sum & 0xFFFF));
+}
+
+/* ---- X4: IPv4 fragment reassembly (REALINTERNET_PLAN) ----
+ * Pure engine: kernel/net/ip_reasm.c.  The kernel holds ONE table and ONE
+ * staging frame; every receive loop calls net_ipfrag_step() before parsing.
+ * A frame returned unchanged is parsed as before; a NULL return means
+ * "consumed fragment - keep waiting".  On completion the caller gets a
+ * synthetic full frame (fixed total_length, recomputed header checksum) so
+ * every protocol parser sees the reassembled datagram exactly like an
+ * unfragmented one.  Bounded: 8 datagrams x 8 KiB, 10 s timeout, first-win
+ * overlap policy - a stranger can hold at most ~72 KiB for 10 seconds. */
+
+#define NET_IPFRAG_TIMEOUT_MS 10000u
+
+static ipreasm_t g_ipreasm;
+static int       g_ipreasm_inited = 0;
+static uint8_t   g_ipfrag_frame[14 + 20 + IPREASM_CAP];
+
+static uint32_t net_now_ms(void) {
+    return (uint32_t)(timer_get_ticks() * 10u);   /* 100 Hz ticks */
+}
+
+const uint8_t *net_ipfrag_step(const uint8_t *frame, int len, int *out_len) {
+    if (out_len) *out_len = len;
+    if (!g_ipreasm_inited) { ipreasm_init(&g_ipreasm); g_ipreasm_inited = 1; }
+    if (len < 14 + 20) return frame;
+    {
+        uint32_t now = net_now_ms();
+        int dropped = ipreasm_sweep(&g_ipreasm, now, NET_IPFRAG_TIMEOUT_MS);
+        if (dropped > 0)
+            kprintf("[ipfrag] timeout: dropped %d incomplete datagram(s)\n", dropped);
+    }
+    const struct eth_hdr *eh = (const struct eth_hdr *)frame;
+    if (htons_(eh->ethertype) != ETHERTYPE_IPV4) return frame;
+    const struct ipv4_hdr *ip = (const struct ipv4_hdr *)(frame + 14);
+    if ((ip->version_ihl & 0x0F) != 5) return frame;   /* options: legacy path */
+    uint16_t ff = htons_(ip->flags_frag);
+    int mf = (ff & 0x2000) != 0;
+    uint16_t off_units = (uint16_t)(ff & 0x1FFF);
+    if (!mf && off_units == 0) return frame;           /* fast path: unfragmented */
+
+    uint16_t total = htons_(ip->total_length);
+    if (total < 20 || (uint32_t)(14 + total) > (uint32_t)len)
+        return 0;                                     /* malformed fragment */
+    uint16_t plen = (uint16_t)(total - 20);
+
+    ipreasm_key_t key;
+    key.src = ip->src_ip; key.dst = ip->dst_ip;
+    key.proto = ip->protocol; key.id = ip->ident;
+    uint16_t expected = mf ? 0 : (uint16_t)(off_units * 8 + plen);
+    uint32_t before_overlap = g_ipreasm.n_overlap_refused;
+    uint32_t before_cap     = g_ipreasm.n_cap_refused;
+    uint32_t before_evict   = g_ipreasm.n_evicted;
+    uint16_t full_len = 0;
+    int rc = ipreasm_input(&g_ipreasm, net_now_ms(), NET_IPFRAG_TIMEOUT_MS,
+                           &key, expected, (uint16_t)(off_units * 8),
+                           frame + 14 + 20, plen,
+                           g_ipfrag_frame + 34, IPREASM_CAP, &full_len);
+    if (g_ipreasm.n_evicted != before_evict)
+        kprintf("[ipfrag] table full: evicted oldest incomplete datagram\n");
+    if (rc == IPREASM_REFUSED) {
+        if (g_ipreasm.n_overlap_refused != before_overlap)
+            kprintf("[ipfrag] refused overlapping/conflicting fragment (id %u)\n",
+                    htons_(ip->ident));
+        else if (g_ipreasm.n_cap_refused != before_cap)
+            kprintf("[ipfrag] refused fragment beyond %u-byte cap (id %u)\n",
+                    IPREASM_CAP, htons_(ip->ident));
+        else
+            kprintf("[ipfrag] refused malformed fragment (id %u)\n",
+                    htons_(ip->ident));
+        return 0;
+    }
+    if (rc == IPREASM_PENDING) {
+        if (off_units == 0)
+            kprintf("[ipfrag] reassembly started: id %u proto %u\n",
+                    htons_(ip->ident), ip->protocol);
+        return 0;
+    }
+
+    /* COMPLETE: build a synthetic full frame for the caller to parse. */
+    memcpy(g_ipfrag_frame, frame, 14);
+    memcpy(g_ipfrag_frame + 14, ip, 20);
+    struct ipv4_hdr *nip = (struct ipv4_hdr *)(g_ipfrag_frame + 14);
+    nip->total_length = htons_((uint16_t)(20 + full_len));
+    nip->flags_frag = 0;
+    nip->checksum = 0;
+    nip->checksum = checksum(nip, 20);
+    kprintf("[ipfrag] complete: %u-byte datagram reassembled (id %u)\n",
+            full_len, htons_(ip->ident));
+    if (out_len) *out_len = 14 + 20 + (int)full_len;
+    return g_ipfrag_frame;
+}
+
+void net_ipfrag_sweep(void) {
+    if (g_ipreasm_inited)
+        ipreasm_sweep(&g_ipreasm, net_now_ms(), NET_IPFRAG_TIMEOUT_MS);
 }
 
 static int net_recv_wait_until(void *buf, uint32_t bufsize, uint64_t deadline_ticks) {
@@ -348,18 +445,21 @@ int net_ping(uint32_t target_ip) {
     while (timer_get_ticks() < deadline) {
         int n = net_recv_wait_until(buf, sizeof(buf), deadline);
         if (n <= 0) break;
-        if (n < (int)(14 + 20 + 8)) {
+        int fl = 0;
+        const uint8_t *f = net_ipfrag_step(buf, n, &fl);    /* X4 reassembly */
+        if (!f) continue;
+        if (fl < (int)(14 + 20 + 8)) {
             continue;
         }
-        struct eth_hdr *reh = (struct eth_hdr *)buf;
+        struct eth_hdr *reh = (struct eth_hdr *)f;
         if (htons_(reh->ethertype) != ETHERTYPE_IPV4) {
             continue;
         }
-        struct ipv4_hdr *rip = (struct ipv4_hdr *)(buf + 14);
+        struct ipv4_hdr *rip = (struct ipv4_hdr *)(f + 14);
         if (rip->protocol != IP_PROTO_ICMP) {
             continue;
         }
-        struct icmp_hdr *ricmp = (struct icmp_hdr *)(buf + 14 + 20);
+        struct icmp_hdr *ricmp = (struct icmp_hdr *)(f + 14 + 20);
         if (ricmp->type != ICMP_ECHO_REP) {
             continue;
         }
@@ -454,20 +554,23 @@ int net_udp_recvfrom(uint16_t local_port, uint32_t *src_ip, uint16_t *src_port,
     while (timer_get_ticks() < deadline) {
         int n = net_recv_wait_until(rbuf, sizeof(rbuf), deadline);
         if (n <= 0) break;
-        if (n < (int)(14 + 20 + 8)) continue;
-        struct eth_hdr *eh = (struct eth_hdr *)rbuf;
+        int fl = 0;
+        const uint8_t *f = net_ipfrag_step(rbuf, n, &fl);   /* X4 reassembly */
+        if (!f) continue;
+        if (fl < (int)(14 + 20 + 8)) continue;
+        struct eth_hdr *eh = (struct eth_hdr *)f;
         if (htons_(eh->ethertype) != ETHERTYPE_IPV4) continue;
-        struct ipv4_hdr *ip = (struct ipv4_hdr *)(rbuf + 14);
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(f + 14);
         if (ip->protocol != IP_PROTO_UDP) continue;
-        struct udp_hdr *udp = (struct udp_hdr *)(rbuf + 14 + 20);
+        struct udp_hdr *udp = (struct udp_hdr *)(f + 14 + 20);
         if (htons_(udp->dst_port) != local_port) continue;
 
         uint16_t udp_len = htons_(udp->length);
         if (udp_len < 8) return -1;
         uint16_t payload_len = udp_len - 8;
-        if ((uint32_t)(14 + 20 + 8 + payload_len) > (uint32_t)n) continue;
+        if ((uint32_t)(14 + 20 + 8 + payload_len) > (uint32_t)fl) continue;
         if (payload_len > bufsize) payload_len = (uint16_t)bufsize;
-        memcpy(buf, rbuf + 14 + 20 + 8, payload_len);
+        memcpy(buf, f + 14 + 20 + 8, payload_len);
         if (src_ip) *src_ip = htonl_(ip->src_ip);
         if (src_port) *src_port = htons_(udp->src_port);
         return payload_len;
@@ -912,6 +1015,7 @@ int net_init(void) {
     /* X3: arm the DNS resolver with the default server list (QEMU SLIRP
      * 10.0.2.3); a successful DHCP below replaces it with option 6. */
     dns_init();
+    net_ipfrag_self_test();   /* X4 */
 
     /* Try DHCP to get a real IP. If it fails, fall back to the hardcoded
      * QEMU defaults (10.0.2.15 / 10.0.2.2). */
@@ -939,4 +1043,76 @@ void net_self_test(void) {
     } else {
         kprintf("[net] FAIL: no ICMP echo reply (is QEMU -netdev user configured?)\n");
     }
+}
+
+/* ---- X4 guest self-test: feed synthetic fragmented frames through the
+ * real net_ipfrag_step() wire-in.  Offline (needs no traffic): (a) a
+ * 3000-byte UDP datagram split in three, delivered out of order, must come
+ * back byte-identical; (b) a conflicting overlap probe must be refused and
+ * the original bytes still win.  Timeout-drop and table-eviction policy are
+ * gated by the host unit test (tests/unit/test_ip_reasm.c). */
+static void craft_ip_frag(uint8_t *frame, uint16_t id, uint16_t ff,
+                          uint16_t off_bytes, const uint8_t *datagram,
+                          uint16_t frag_len, uint32_t src, uint32_t dst) {
+    struct eth_hdr *eh = (struct eth_hdr *)frame;
+    memset(eh->dst_mac, 0xAA, 6);
+    memcpy(eh->src_mac, our_mac, 6);
+    eh->ethertype = htons_(ETHERTYPE_IPV4);
+    struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + 14);
+    memset(ip, 0, 20);
+    ip->version_ihl = 0x45;
+    ip->ttl = 64;
+    ip->protocol = IP_PROTO_UDP;
+    ip->ident = htons_(id);
+    ip->src_ip = htonl_(src);
+    ip->dst_ip = htonl_(dst);
+    ip->total_length = htons_((uint16_t)(20 + frag_len));
+    ip->flags_frag = htons_(ff);
+    memcpy(frame + 34, datagram + off_bytes, frag_len);
+}
+
+void net_ipfrag_self_test(void) {
+    int fails = 0;
+    static uint8_t dg[3000];
+    for (int i = 0; i < 3000; i++) dg[i] = (uint8_t)(i * 31 + 7);
+    const uint32_t src = 0x0A000203, dst = 0x0A00020F;   /* slirp DNS -> us */
+
+    /* (a) 3 fragments, last first: 1480 | 1480 | 40 */
+    static uint8_t fa[1600], fb[1600], fc[160];
+    craft_ip_frag(fc, 0xBEEF, (uint16_t)(2960 / 8),          2960, dg,   40, src, dst);
+    craft_ip_frag(fb, 0xBEEF, (uint16_t)(0x2000 | (1480 / 8)), 1480, dg, 1480, src, dst);
+    craft_ip_frag(fa, 0xBEEF, 0x2000,                             0, dg, 1480, src, dst);
+    int fl = 0;
+    const uint8_t *r;
+    if (net_ipfrag_step(fc, 14 + 20 + 40, &fl) != 0)   fails++;
+    if (net_ipfrag_step(fb, 14 + 20 + 1480, &fl) != 0) fails++;
+    r = net_ipfrag_step(fa, 14 + 20 + 1480, &fl);
+    if (!r) { fails++; }
+    else {
+        if (fl != 14 + 20 + 3000) fails++;
+        else if (memcmp(r + 34, dg, 3000) != 0) fails++;
+    }
+
+    /* (b) overlap probe: same first bytes, tampered middle -> refused;
+     * the original first-fragment bytes must still win. */
+    static uint8_t fd[1600], fe[1600], ff_[160];
+    craft_ip_frag(fd, 0xBEEF ^ 0x100, 0x2000,                        0, dg, 1480, src, dst);
+    craft_ip_frag(fe, 0xBEEF ^ 0x100, (uint16_t)(0x2000 | (1480 / 8)), 1480, dg, 1480, src, dst);
+    craft_ip_frag(ff_, 0xBEEF ^ 0x100, (uint16_t)(2960 / 8),        2960, dg,   40, src, dst);
+    /* overlapped copy of the first fragment with tampered bytes */
+    static uint8_t atk[1600];
+    craft_ip_frag(atk, 0xBEEF ^ 0x100, 0x2000, 0, dg, 1480, src, dst);
+    atk[34 + 100] ^= 0xFF;
+    if (net_ipfrag_step(fd, 14 + 20 + 1480, &fl) != 0) fails++;
+    if (net_ipfrag_step(atk, 14 + 20 + 1480, &fl) != 0) fails++;  /* refused: NULL */
+    if (net_ipfrag_step(fe, 14 + 20 + 1480, &fl) != 0) fails++;
+    r = net_ipfrag_step(ff_, 14 + 20 + 40, &fl);
+    if (!r) { fails++; }
+    else if (fl != 14 + 20 + 3000 || memcmp(r + 34, dg, 3000) != 0) fails++;
+
+    if (fails == 0)
+        kprintf("[ipfrag] self-test PASS: out-of-order 3-fragment reassembly"
+                " byte-exact, overlap probe refused\n");
+    else
+        kprintf("[ipfrag] self-test FAIL: %d check(s) failed\n", fails);
 }

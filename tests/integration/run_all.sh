@@ -107,6 +107,7 @@ ALL_CASES=(
     test_usbfs_fat32
     test_networking
     test_dns_cache
+    test_ip_frag
     test_e1000_irq
     test_virtio_net
     test_udp_sockets

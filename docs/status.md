@@ -82,7 +82,7 @@ Legend:
 | Console/file I/O | ✅ | `read`, `write`, `open`, `close`. |
 | Process basics | 🧪 | `getpid`, `exit`, `spawn`, `fork`, `execve`, `wait4`. |
 | Directory/path ops | ✅/🧪 | `listdir`, `mkdir`, `rmdir`, `unlink`, `rename`, `truncate`, `stat`. |
-| Networking | 🧪 | DNS with cache+failover+CNAME (X3), ping, legacy TCP calls and process-owned socket-style syscalls. |
+| Networking | 🧪 | DNS with cache+failover+CNAME (X3), ping, legacy TCP calls and process-owned socket-style syscalls; IPv4 fragment reassembly (X4) feeds oversized UDP/TCP datagrams to the normal path. |
 | GUI | ✅/🧪 | `SYS_GUI_CALL` (200), `SYS_GUI_EVENT` (201), `SYS_GUI_THEME` (202). v2.0 theme engine, icons, notifications, snap, context menus. |
 | Memory syscalls | 🧪 | `brk` implemented. `mmap`/`munmap` support eager private anonymous mappings and eager private file-backed reads. |
 | Sockets | 🧪 | AF_INET/SOCK_STREAM handles include `socket`, `connect`, `send`, `recv`, `close`, plus server-side `bind`, `listen`, and `accept` (`305..307`). AF_INET/SOCK_DGRAM supports `sendto=44` and `recvfrom=45`. |
@@ -97,7 +97,7 @@ Legend:
 | PCI e1000 detection | ✅ | Supports common QEMU/VirtualBox/VMware 8254x IDs. |
 | e1000 TX/RX | 🧪 | Legacy descriptor rings with INTx IRQ enable, IRQ cause handling, preallocated software RX queue, non-blocking compatibility receive, and blocking/timed receive helpers. TCP, ARP, DHCP, ICMP, and kernel UDP/DNS receive waits now use IRQ/wait-queue-backed bounded NIC waits; user UDP sockets (`sendto`/`recvfrom`) and basic fixed-RTO TCP retransmission are implemented; remaining N2 work is deeper socket blocking edge cases and production TCP features. |
 | Ethernet / ARP | ✅ | Gateway routing support. |
-| IPv4 / ICMP | ✅ | Ping self-test. |
+| IPv4 / ICMP | ✅ | Ping self-test; bounded RFC 1122 fragment reassembly (8 datagrams × 8 KiB, 10 s timeout, first-win overlap, LRU eviction) wired into every RX path — UDP, ICMP and both TCP receive loops step through `net_ipfrag_step()` and parse completed datagrams as ordinary packets. REALINTERNET_PLAN X4; gated by `test_ip_reasm` (host, 11 scenarios) and the in-kernel wire self-test in `test_ip_frag.sh` (guest, 6 asserts). |
 | DHCP | ✅ | QEMU/VM NAT-oriented DORA flow. |
 | UDP | ✅ | Used by DNS and exposed to userspace through AF_INET/SOCK_DGRAM `sendto`/`recvfrom`. |
 | DNS resolver | ✅ | A-record lookup with a TTL/negative cache (LRU, RFC 2308 SOA-derived negative TTL), up to 4 servers from DHCP option 6 with visible timeout failover, CNAME-chain chasing (in-packet and re-query), strict wire validation (ID/QR/compression bounds), LRU expiry re-query; `SYS_DNSCTL` + shell `dnscache`/`dnsset`/`dnsflush`. REALINTERNET_PLAN X3; gated by `test_dns` (host, 14 scenarios) and `test_dns_cache.sh` (guest, 10 asserts). |

@@ -305,16 +305,19 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
         int n = netdev_recv_wait(buf, sizeof(buf), remaining);
         if (n < 0) return -1;
         if (n == 0) break;
-        if (n < (int)(14 + 20 + 20)) continue;
+        int fl = 0;
+        const uint8_t *f = net_ipfrag_step(buf, n, &fl);    /* X4 reassembly */
+        if (!f) continue;
+        if (fl < (int)(14 + 20 + 20)) continue;
 
-        struct eth_hdr *eh = (struct eth_hdr *)buf;
+        struct eth_hdr *eh = (struct eth_hdr *)f;
         if (htons_(eh->ethertype) != 0x0800) continue;
 
-        struct ipv4_hdr *ip = (struct ipv4_hdr *)(buf + 14);
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(f + 14);
         if (ip->protocol != IP_PROTO_TCP) continue;
         if (ntohl_(ip->src_ip) != conn_dst_ip) continue;
 
-        struct tcp_hdr *tcp = (struct tcp_hdr *)(buf + 14 + 20);
+        struct tcp_hdr *tcp = (struct tcp_hdr *)(f + 14 + 20);
         if (ntohs_(tcp->src_port) != conn_dst_port) continue;
         if (ntohs_(tcp->dst_port) != conn_src_port) continue;
 
@@ -340,7 +343,7 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
 
         if (payload_len > 0 && out_data && max_data > 0) {
             if (payload_len > (int32_t)max_data) payload_len = (int32_t)max_data;
-            memcpy(out_data, buf + payload_start, payload_len);
+            memcpy(out_data, f + payload_start, payload_len);
         }
         if (out_data_len) *out_data_len = (payload_len > 0) ? payload_len : 0;
         return 0;
@@ -377,15 +380,18 @@ static int tcp_recv_syn(uint16_t src_port, struct tcp_hdr *out_tcp, uint32_t *ou
         int n = netdev_recv_wait(buf, sizeof(buf), remaining);
         if (n < 0) return -1;
         if (n == 0) break;
-        if (n < (int)(14 + 20 + 20)) continue;
+        int fl = 0;
+        const uint8_t *f = net_ipfrag_step(buf, n, &fl);    /* X4 reassembly */
+        if (!f) continue;
+        if (fl < (int)(14 + 20 + 20)) continue;
 
-        struct eth_hdr *eh = (struct eth_hdr *)buf;
+        struct eth_hdr *eh = (struct eth_hdr *)f;
         if (htons_(eh->ethertype) != 0x0800) continue;
 
-        struct ipv4_hdr *ip = (struct ipv4_hdr *)(buf + 14);
+        struct ipv4_hdr *ip = (struct ipv4_hdr *)(f + 14);
         if (ip->protocol != IP_PROTO_TCP) continue;
 
-        struct tcp_hdr *tcp = (struct tcp_hdr *)(buf + 14 + 20);
+        struct tcp_hdr *tcp = (struct tcp_hdr *)(f + 14 + 20);
         if (ntohs_(tcp->dst_port) != src_port) continue;
         if (!(tcp->flags & TCP_SYN)) continue;
 

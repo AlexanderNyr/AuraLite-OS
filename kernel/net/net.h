@@ -57,4 +57,14 @@ int net_udp_recvfrom(uint16_t local_port, uint32_t *src_ip, uint16_t *src_port,
 /* DNS self-test: resolve 'example.com'. */
 void net_dns_self_test(void);
 
+/* X4: IPv4 fragment reassembly wire-in (pure engine: kernel/net/ip_reasm.h).
+ * Feed every received Ethernet frame through net_ipfrag_step() before
+ * parsing; it returns the frame to parse (either the input, unchanged, or
+ * the staging frame holding a completed datagram) and 0 when the frame was
+ * a fragment absorbed by an incomplete reassembly.  Bounded policy: 8
+ * datagrams x 8 KiB, 10 s timeout, first-win overlap. */
+const uint8_t *net_ipfrag_step(const uint8_t *frame, int len, int *out_len);
+void net_ipfrag_sweep(void);
+void net_ipfrag_self_test(void);
+
 #endif /* AURALITE_NET_NET_H */
