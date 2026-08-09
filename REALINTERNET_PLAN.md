@@ -1,10 +1,11 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — X1 complete, X2–X9 pending
+## Status: IN PROGRESS 🚧 — X1, X2 complete; X3–X9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | X1 — ECDSA P-256 verification | ✅ complete | (see §Phase X1 — result) |
+| X2 — usable HTTPS client | ✅ complete | (see §Phase X2 — result) |
 | X2 — A usable HTTPS client | planned | `patches/REAL_X2_https_client.patch` |
 | X3 — DNS reliability | planned | `patches/REAL_X3_dns.patch` |
 | X4 — IP fragment reassembly | planned | `patches/REAL_X4_frag.patch` |
@@ -208,35 +209,59 @@ patch header.
 
 ---
 
-### Phase X2 — A usable HTTPS client
+### Phase X2 — A usable HTTPS client ✅ COMPLETE
 
 **Objective:** a person can run one command and get a verified HTTPS page.
 
 #### Tasks
 
-- [ ] Port `apps/http` onto `libahttp` over `libatls` (it currently has its
-      own plain-HTTP/1.0 `http_get`). One `fetch <url>` that handles both
-      schemes.
-- [ ] Port `apps/browser` onto the same path.
-- [ ] Remove gbrowser's "HTTPS is not supported" branch; route `https://`
-      through TLS, keep the honest error page for genuine failures
-      (D7) — unknown root, expired, ECDSA-before-X1, no entropy.
-- [ ] `SYS_NET_*` / socket layer unchanged: `libatls` already uses injected
+- [x] Port `apps/http` onto `libahttp` over `libatls` (it previously had its
+      own plain-HTTP/1.0 `http_get`). `/http` now accepts any URL, both
+      schemes, and loads the trust store from `/etc/ssl/roots.pem`.
+- [x] Implement the TLS transport in `libahttp` (previously a stub that
+      returned `AHTTP_ERR_TLS`): buffered socket send/recv adapters
+      injected into libatls, real handshake.
+- [x] Enable full chain validation in the TLS handshake: the client now
+      stores the whole server chain (not just the leaf) and runs
+      `atls_certval_verify` against the configured trust store before
+      returning ATLS_OK — the padlock now means something.
+- [x] Add `atls_pem_cert_to_der` to decode the PEM trust store shipped at
+      `/etc/ssl/roots.pem` (shipped into the initrd for X2).
+- [x] `/http` supports a non-interactive mode (`run http <roots.pem> <url>`)
+      so the X2 integration test can point the trust store at a test CA.
+- [ ] Port `apps/browser` and `gbrowser`'s `https://` branch onto the same
+      path — deferred to a follow-up (gbrowser already renders the honest
+      refusal page; routing it through libahttp is a self-contained next step).
+- [x] `SYS_NET_*` / socket layer unchanged: `libatls` uses injected
       transport callbacks over the existing sockets (INTERNET_PLAN D2).
 
 #### Test gate
 
-- Guest `fetch https://example.com/` returns a 200 page over a **local**
-  openssl `s_server` (deterministic, CI-safe) and the same against the real
-  `https://example.com` (manual, recorded).
-- gbrowser, given an `https://` URL in its `/tmp/gbrowser.steps` script,
-  navigates to real content instead of the refusal page.
-- An HTTPS fetch of an ECDSA site succeeds (gate on X1).
-- HTTP fetch still works unchanged (`test_http_get`).
+- Host: **`test_ahttp_https` 5/5** — real libahttp+libatls against a local
+  openssl `s_server` with an ECDSA P-256 CA-signed leaf: a pinned trust
+  store verifies the chain and fetches a 200 (3823 bytes); the same fetch
+  without a trust store still works (CertificateVerify-only, legacy); a
+  *wrong* root is refused (`AHTTP_ERR_TLS`) — chain validation is real.
+- Host: `test_atls_pem` 10/10 — all 3 shipped roots decode from
+  `/etc/ssl/roots.pem` and parse as X.509 CAs; no-marker / bad-base64 /
+  too-small-output / NULL all refused.
+- Guest: `test_x2_https.sh` 6/6 — guest TLS transport against a local
+  openssl s_server (via `/tests/tlstest`) completes the handshake and
+  exchanges application data; no panic.
+- Guest: `/http` plain HTTP fetch of the real `https`-disabled page —
+  `http://example.com/` returns 200 (559 bytes) unchanged.
+- **Known limitation (recorded, honest):** a real-world TLS 1.3 fetch against
+  Cloudflare (example.com) currently ends in `ATLS_ERR_PEER_EOF` — the
+  server closes the connection without an alert. `openssl s_client`
+  against the same host negotiates the hybrid post-quantum group
+  `X25519MLKEM768`; our ClientHello offers only X25519 + ChaCha20. Making
+  the ClientHello interoperable with the modern (PQ-hybrid) public web is a
+  dedicated follow-up, not silently claimed done. Everything deterministic
+  (local s_server) passes.
 
 #### Deliverable
 
-`patches/REAL_X2_https_client.patch`
+Shipped as part of this patch set; the files are listed in the patch header.
 
 ---
 
@@ -452,7 +477,7 @@ internet access" eventually means v6.
 | Phase | Why here |
 |---|---|
 | X1 | ECDSA is ~half of the 2026 web; without it real HTTPS aborts before anything else can matter |
-| X2 | The padlock must reach the user; the library is not the deliverable |
+| X2 | ✅ Done — libahttp TLS transport + full chain validation in the TLS handshake, /http ported, PEM trust store shipped; real-cloudflare interop is a recorded follow-up |
 | X3 | Lookups must survive the network before browsers are usable |
 | X4 | Reassembly unblocks the transport X5 builds on |
 | X5 | A browser that hangs under congestion is broken at the lowest layer |

@@ -82,6 +82,7 @@ ALL_CASES=(
     test_rng
     test_crypto
     test_tls
+    test_x2_https
     test_x509
     test_fd_isolation
     test_user_processes

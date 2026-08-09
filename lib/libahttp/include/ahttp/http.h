@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "atls/certval.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +62,15 @@ ahttp_response *ahttp_get(const char *url);
 
 /* Free a response. */
 void ahttp_response_free(ahttp_response *r);
+
+/* ---- Trust store (REALINTERNET_PLAN X2) ----
+ * By default HTTPS verifies only the CertificateVerify signature.  Call
+ * ahttp_set_trust_roots() to supply a pinned trust store and current time
+ * so the whole server chain is validated before the fetch succeeds.  The
+ * caller keeps ownership of the arrays; they must outlive the fetch.
+ * Pass num_roots == 0 to disable chain validation (the default). */
+void ahttp_set_trust_roots(const atls_trust_root *roots, int num_roots,
+                           const atls_time_now *now);
 
 /* ---- URL parsing (exposed for testing) ---- */
 typedef struct {

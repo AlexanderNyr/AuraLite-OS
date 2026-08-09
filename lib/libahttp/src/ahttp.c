@@ -111,13 +111,64 @@ int ahttp_url_parse(const char *url, ahttp_url *out) {
     return AHTTP_OK;
 }
 
+/* ---- Trust store (REALINTERNET_PLAN X2) ---- */
+static const atls_trust_root *g_roots;
+static int                    g_num_roots;
+static const atls_time_now   *g_now;
+
+void ahttp_set_trust_roots(const atls_trust_root *roots, int num_roots,
+                           const atls_time_now *now) {
+    g_roots = roots;
+    g_num_roots = num_roots;
+    g_now = now;
+}
+
 /* ---- Transport layer (plain TCP or TLS) ---- */
 
 typedef struct {
     int fd;
     int is_tls;
     atls_tls *tls;
+    /* Buffered socket reader for the TLS transport callbacks. */
+    uint8_t rbuf[4096];
+    size_t  rlen, roff;
 } transport;
+
+/* TLS transport callbacks: adapt the socket to libatls's send/recv
+ * interface (REALINTERNET_PLAN X2).  recv buffers one socket read so TLS
+ * records spanning TCP segments and multiple records per segment both work. */
+static int tls_send_cb(void *io, const uint8_t *data, size_t len) {
+    transport *t = io;
+    size_t off = 0;
+    while (off < len) {
+#ifdef __AURALITE__
+        int n = send(t->fd, data + off, (uint32_t)(len - off));
+#else
+        int n = host_send(t->fd, data + off, len - off);
+#endif
+        if (n <= 0) return -1;
+        off += (size_t)n;
+    }
+    return (int)len;
+}
+static int tls_recv_cb(void *io, uint8_t *data, size_t cap) {
+    transport *t = io;
+    if (t->roff >= t->rlen) {
+#ifdef __AURALITE__
+        int n = recv(t->fd, t->rbuf, sizeof(t->rbuf));
+#else
+        int n = host_recv(t->fd, t->rbuf, sizeof(t->rbuf));
+#endif
+        if (n <= 0) return n;
+        t->rlen = (size_t)n;
+        t->roff = 0;
+    }
+    size_t n = t->rlen - t->roff;
+    if (n > cap) n = cap;
+    for (size_t i = 0; i < n; i++) data[i] = t->rbuf[t->roff + i];
+    t->roff += n;
+    return (int)n;
+}
 
 static int transport_connect(transport *t, const char *host, int port, int use_tls) {
     t->is_tls = use_tls;
@@ -142,21 +193,27 @@ static int transport_connect(transport *t, const char *host, int port, int use_t
 #endif
     if (rc != 0) { closesocket(t->fd); return AHTTP_ERR_CONNECT; }
 
-    /* TLS handshake. */
+    /* TLS handshake (REALINTERNET_PLAN X2). */
     if (use_tls) {
         atls_tls_config cfg;
         memset(&cfg, 0, sizeof(cfg));
         cfg.hostname = host;
         cfg.alpn = "http/1.1";
-        t->tls = atls_tls_new(&cfg, NULL, NULL, NULL);
+        cfg.roots = g_roots;
+        cfg.num_roots = g_num_roots;
+        cfg.now = g_now;
+        t->tls = atls_tls_new(&cfg, tls_send_cb, tls_recv_cb, t);
         if (!t->tls) { closesocket(t->fd); return AHTTP_ERR_TLS; }
-        /* TODO: wire up send/recv callbacks to the socket.
-         * For now, TLS support is deferred — the N6 gate is HTTP over
-         * plain TCP, and HTTPS requires the guest TCP fix (N7). */
-        atls_tls_free(t->tls);
-        t->tls = NULL;
-        closesocket(t->fd);
-        return AHTTP_ERR_TLS;
+        int hrc = atls_tls_handshake(t->tls);
+        if (hrc != ATLS_OK) {
+            printf("[ahttp] TLS handshake failed hrc=%d alert_sent=%d alert_recv=%d\n",
+                   hrc, atls_tls_last_alert_sent(t->tls),
+                   atls_tls_last_alert_received(t->tls));
+            atls_tls_free(t->tls);
+            t->tls = NULL;
+            closesocket(t->fd);
+            return AHTTP_ERR_TLS;
+        }
     }
 
     return AHTTP_OK;

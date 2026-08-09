@@ -63,7 +63,8 @@ done < <(find "$SDK/include" -name '*.h' -print0)
 for f in auralite.mk user.ld README.md \
          lib/libaurac.a lib/libauragui.a lib/libaGL.a lib/libatls.a lib/crt0.o \
          include/stdio.h include/unistd.h include/auragui.h include/GL/gl.h \
-         include/atls/atls.h include/atls/x509.h include/atls/ecdsa.h; do
+         include/atls/atls.h include/atls/x509.h include/atls/ecdsa.h \
+         include/atls/pem.h; do
     if [ -e "$SDK/$f" ]; then ok "$f present"; else bad "$f missing"; fi
 done
 

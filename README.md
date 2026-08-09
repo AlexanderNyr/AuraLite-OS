@@ -679,7 +679,7 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/apps/calc` | Calculator. |
 | `/apps/editor` | Simple line editor. |
 | `/apps/clock` | Clock/uptime demo. |
-| `/apps/http` | HTTP client. |
+| `/apps/http` | HTTP/1.1 + HTTPS client (libahttp over libatls, chain validation against `/etc/ssl/roots.pem`). |
 | `/apps/browser` | Text web browser with simple HTML rendering. |
 | `/apps/gcalc` | Graphical calculator. |
 | `/apps/gedit` | Graphical text editor. |
@@ -743,6 +743,7 @@ Start here:
 - [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
 - [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — the box-model web view plan (complete). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
 - [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
+- [`REALINTERNET_PLAN.md`](REALINTERNET_PLAN.md) — real internet access: ECDSA P-256 (X1), usable HTTPS client (X2), then DNS/fragmentation/TCP/IPv6.
 - [`FIXES_PLAN.md`](FIXES_PLAN.md) — repair plan for known defects (planned), ranked by danger rather than by ease. Adds nothing; fixes what is broken.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
@@ -771,16 +772,19 @@ Short version:
 - **The keyboard layout is hardcoded US.** Two fixed scancode tables, no keymap
   selection and no dead keys, so a non-US keyboard produces the wrong
   characters outside the shared ASCII subset.
-- **Crypto primitives and X.509 parsing exist, but no TLS and therefore no
-  HTTPS yet.** `INTERNET_PLAN.md` N0 gave a real entropy source (a ChaCha20
-  CSPRNG seeded from RDSEED/RDRAND or interrupt-timing jitter;
-  `getentropy()` fails closed with `-ENOSYS` until entropy exists); N1
-  shipped `lib/libatls/` — userspace SHA-256/512, HMAC, HKDF,
-  ChaCha20-Poly1305 AEAD, X25519 and Ed25519 verification; N2 added
-  zero-copy, depth-bounded X.509 certificate parsing. All verified against
-  RFC test vectors. What is still missing is everything protocol-shaped:
-  the TLS 1.3 handshake/record layer, certificate validation, and an HTTPS
-  client (phases N3–N6). See [`INTERNET_PLAN.md`](INTERNET_PLAN.md).
+- **TLS 1.3 and an HTTPS client exist and are tested against a local
+  openssl s_server, but real-world public-web interop is not yet complete.**
+  `INTERNET_PLAN.md` N0–N7 shipped the entropy source, crypto primitives,
+  X.509 parsing, the TLS 1.3 handshake/record layer, certificate
+  validation, and `libahttp`. `REALINTERNET_PLAN.md` X1 added ECDSA P-256
+  verification; X2 wired the TLS transport into `libahttp`, enabled full
+  chain validation in the handshake, ported `/apps/http`, and ships the
+  trust store at `/etc/ssl/roots.pem`. The deterministic gates (host
+  `test_ahttp_https`, guest TLS transport) pass. A live fetch against a
+  modern Cloudflare host currently ends with the server closing the
+  connection (`X25519MLKEM768` PQ-group interop — a recorded follow-up).
+  See [`INTERNET_PLAN.md`](INTERNET_PLAN.md) and
+  [`REALINTERNET_PLAN.md`](REALINTERNET_PLAN.md).
 - **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
   but no interrupt gate selects it, so a kernel stack overflow or double fault
   resets the machine with no diagnostic.

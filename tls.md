@@ -16,6 +16,7 @@ is more valuable than a padlock icon.
 | Component | Status | Standard |
 |---|---|---|
 | TLS 1.3 handshake | ✅ | RFC 8446 |
+| Full chain validation in handshake | ✅ when a trust store is set (REALINTERNET_PLAN X2) | RFC 5280 |
 | TLS 1.2 and earlier | ❌ Refused | Decision D3 |
 | Cipher suite | TLS_CHACHA20_POLY1305_SHA256 only | RFC 8446, D4 |
 | Key exchange | X25519 | RFC 7748 |
@@ -73,7 +74,8 @@ is more valuable than a padlock icon.
 | Connection: close | ✅ |
 | Redirects (301/302/307/308) | ✅ (max 5 hops) |
 | Growing response buffer | ✅ (1 MiB cap) |
-| HTTPS (over TLS) | ⚠️ API wired, guest transport blocked by stack limits |
+| HTTPS (over TLS) | ✅ TLS transport implemented (REALINTERNET_PLAN X2) |
+| Chain validation in HTTPS | ✅ when a trust store is set (`ahttp_set_trust_roots`); default is CertificateVerify-only |
 
 ### 1.5 Entropy source
 
@@ -190,8 +192,14 @@ actually verify against a pinned root).
 - No HTTP/2 or HTTP/3.
 - No persistent connections (Connection: close only).
 - No request body support (GET only).
-- HTTPS transport is API-wired but blocked by the 64 KiB stack limit
-  on the guest.
+- **Real-world ClientHello interop:** a TLS 1.3 fetch against a modern
+  Cloudflare-hosted site (e.g. example.com) currently ends with the server
+  closing the connection (`ATLS_ERR_PEER_EOF`), because such servers
+  negotiate the hybrid post-quantum group `X25519MLKEM768` while this
+  client offers only X25519 + ChaCha20.  Handshakes against a local
+  openssl s_server (the deterministic gate) pass.  Making the ClientHello
+  interoperable with the modern PQ-hybrid public web is a dedicated
+  follow-up (REALINTERNET_PLAN X2 result notes).
 
 ### 3.10 Known limitations inherited from the TCP stack
 
@@ -217,6 +225,8 @@ actually verify against a pinned root).
 | `test_atls_tls` | 25 | Handshake vs openssl, KeyUpdate, large transfer, Finished MAC |
 | `test_atls_certval` | 17 | Chain building, RSA+Ed25519+ECDSA, hostname, dates, constraints |
 | `test_atls_ecdsa` | 10 | ECDSA P-256 direct verify + hostile negatives (X1) |
+| `test_atls_pem` | 10 | PEM trust-store decoding (X2) |
+| `test_ahttp_https` | 5 | HTTPS client end-to-end vs openssl, chain validation on/off (X2) |
 | `test_ahttp` | 7 | URL parsing |
 
 ### 4.2 QEMU integration tests

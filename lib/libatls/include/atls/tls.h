@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "atls/atls.h"
+#include "atls/certval.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +39,15 @@ typedef int (*atls_recv_fn)(void *io, uint8_t *data, size_t cap);
 typedef struct {
     const char *hostname;   /* SNI; required */
     const char *alpn;       /* e.g. "http/1.1"; NULL to omit ALPN */
+    /* Optional chain validation (REALINTERNET_PLAN X2).  When a trust
+     * store and current time are supplied, the handshake runs the full
+     * certificate chain validation (atls_certval_verify) against the
+     * server's chain and fails with a bad-certificate alert if it does
+     * not verify.  When roots == NULL, only the CertificateVerify
+     * signature is checked (the historical behaviour). */
+    const atls_trust_root *roots;   /* may be NULL to skip chain validation */
+    int                    num_roots;
+    const atls_time_now   *now;     /* may be NULL to skip date checks */
 } atls_tls_config;
 
 /* Create a client.  Returns NULL on bad arguments/alloc failure. */

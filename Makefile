@@ -380,7 +380,7 @@ LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
                 $(USER_BUILD)/atls_der.o $(USER_BUILD)/atls_x509.o \
                 $(USER_BUILD)/atls_tls_keys.o $(USER_BUILD)/atls_tls.o \
                 $(USER_BUILD)/atls_rsa.o $(USER_BUILD)/atls_certval.o \
-                $(USER_BUILD)/atls_ecdsa.o
+                $(USER_BUILD)/atls_ecdsa.o $(USER_BUILD)/atls_pem.o
 LIBATLS      := $(USER_LIBDIR)/libatls.a
 USER_CFLAGS  += -I lib/libatls/include
 
@@ -441,6 +441,16 @@ $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/u
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/$*.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
+
+# /http links libahttp + libatls (REALINTERNET_PLAN X2): it is the HTTPS
+# client, so it needs the TLS library and the HTTP library, unlike the
+# generic pattern rule above.
+$(USER_BUILD)/http.elf: $(USER_BUILD)/http.o $(USER_BUILD)/ahttp.o \
+                        $(USER_COMMON) $(LIBATLS) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/http.o $(USER_BUILD)/ahttp.o \
+	      $(USER_COMMON_LNK) $(LIBATLS) -o $@
+	@echo "[link] $@ (libahttp + libatls)"
 
 # Compile rules for each application.
 $(USER_BUILD)/calc.o: userspace/apps/calc/calc.c $(USER_CFLAGS_INC)
@@ -1134,6 +1144,10 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	              status=none
 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
 	    > $(INITRD_DIR)/etc/motd
+# Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
+# HTTPS client can validate server chains against it.
+	@mkdir -p $(INITRD_DIR)/etc/ssl
+	@cp etc/ssl/roots.pem $(INITRD_DIR)/etc/ssl/roots.pem
 # SDK examples (SDK_PLAN S2).  Built from the STAGED SDK, never from the
 # source tree, and shipped so that test_sdk_examples.sh can run them.  If the
 # SDK stops being sufficient to build an application, the image build fails
@@ -1223,6 +1237,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_atls_tls \
                 $(BUILD_DIR)/test_atls_certval \
                 $(BUILD_DIR)/test_atls_ecdsa \
+                $(BUILD_DIR)/test_atls_pem \
+                $(BUILD_DIR)/test_ahttp_https \
                 $(BUILD_DIR)/test_ahttp \
                 $(BUILD_DIR)/test_wv_html \
                 $(BUILD_DIR)/test_wv_dom \
@@ -1272,7 +1288,7 @@ LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
                 lib/libatls/src/atls_der.c lib/libatls/src/atls_x509.c \
                 lib/libatls/src/atls_tls_keys.c lib/libatls/src/atls_tls.c \
                 lib/libatls/src/atls_rsa.c lib/libatls/src/atls_certval.c \
-                lib/libatls/src/atls_ecdsa.c
+                lib/libatls/src/atls_ecdsa.c lib/libatls/src/atls_pem.c
 LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
 
 $(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
@@ -1323,9 +1339,24 @@ $(BUILD_DIR)/test_atls_ecdsa: tests/unit/test_atls_ecdsa.c $(LIBATLS_SRCS) \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
 
+# PEM trust-store decoding (REALINTERNET_PLAN X2).
+$(BUILD_DIR)/test_atls_pem: tests/unit/test_atls_pem.c $(LIBATLS_SRCS) \
+                            lib/libatls/include/atls/pem.h etc/ssl/roots.pem
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
 # HTTP client (N6): URL parsing tests.
 $(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/include/ahttp/http.h \
                          $(LIBATLS_SRCS)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	           -I lib/libahttp/include -I lib/libatls/include -I lib/libatls/src \
+	           lib/libahttp/src/ahttp.c $(LIBATLS_SRCS) $< -o $@
+
+# HTTPS client end-to-end (REALINTERNET_PLAN X2): real libahttp + libatls
+# against a local openssl s_server, with chain validation on and off.
+$(BUILD_DIR)/test_ahttp_https: tests/unit/test_ahttp_https.c \
+                               lib/libahttp/include/ahttp/http.h $(LIBATLS_SRCS)
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
 	           -I lib/libahttp/include -I lib/libatls/include -I lib/libatls/src \

@@ -34,6 +34,7 @@ extern void  free(void *);
 #define MAX_COOKIE 256
 #define MAX_HS_BUF 65536
 #define MAX_CERT 8192
+#define MAX_CHAIN ATLS_CERTVAL_MAX_CHAIN   /* leaf + intermediates */
 
 struct atls_tls {
     atls_send_fn snd;
@@ -63,6 +64,19 @@ struct atls_tls {
 
     uint8_t leaf_cert[MAX_CERT];
     size_t  leaf_cert_len;
+
+    /* Server certificate chain (REALINTERNET_PLAN X2).  leaf first, each
+     * DER, copied out of the reassembled Certificate message.  Used for
+     * full chain validation against the configured trust store. */
+    uint8_t chain[MAX_CHAIN][MAX_CERT];
+    size_t  chain_len[MAX_CHAIN];
+    int     chain_count;
+
+    /* Chain validation config (REALINTERNET_PLAN X2).  When roots != NULL
+     * the handshake validates the whole chain before returning ATLS_OK. */
+    const atls_trust_root *trust_roots;
+    int                    num_roots;
+    const atls_time_now   *now;
 
     char alpn_selected[MAX_ALPN + 1];
 
@@ -187,6 +201,11 @@ atls_tls *atls_tls_new(const atls_tls_config *cfg,
         for (size_t i = 0; i < alen; i++) t->alpn_proto[i] = cfg->alpn[i];
         t->alpn_proto[alen] = 0;
     }
+
+    /* Chain validation config (REALINTERNET_PLAN X2). */
+    t->trust_roots = cfg->roots;
+    t->num_roots = cfg->num_roots;
+    t->now = cfg->now;
     return t;
 }
 
@@ -771,19 +790,43 @@ send_ch: ;
             if (co + list_len > body_len)
                 return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
 
-            /* Read the first CertificateEntry (leaf). */
-            if (co + 3 > body_len)
-                return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
-            uint32_t cert_len = atls_rd24(body + co);
-            co += 3;
-            if (co + cert_len > body_len)
-                return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
-            if (cert_len > MAX_CERT)
-                return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
+            /* Read every CertificateEntry: the leaf first, then the
+             * intermediates, into t->chain (REALINTERNET_PLAN X2).  The
+             * leaf is also kept in t->leaf_cert for CertificateVerify. */
+            t->chain_count = 0;
+            size_t list_end = co + list_len;
+            int parsed_any = 0;
+            while (co + 3 <= list_end && t->chain_count < MAX_CHAIN) {
+                uint32_t cert_len = atls_rd24(body + co);
+                co += 3;
+                if (co + cert_len > list_end)
+                    return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
+                if (cert_len > MAX_CERT)
+                    return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
+                /* Skip extensions (CertificateEntry extensions length). */
+                size_t entry_end = co + cert_len;
+                if (entry_end + 2 <= list_end) {
+                    uint16_t ext_total = atls_rd16(body + entry_end);
+                    entry_end += 2 + ext_total;
+                }
+                if (entry_end > list_end)
+                    return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
 
-            for (size_t i = 0; i < cert_len; i++)
-                t->leaf_cert[i] = body[co + i];
-            t->leaf_cert_len = cert_len;
+                for (size_t i = 0; i < cert_len; i++)
+                    t->chain[t->chain_count][i] = body[co + i];
+                t->chain_len[t->chain_count] = cert_len;
+                t->chain_count++;
+                if (!parsed_any) {
+                    /* Leaf: also copy into t->leaf_cert. */
+                    for (size_t i = 0; i < cert_len; i++)
+                        t->leaf_cert[i] = body[co + i];
+                    t->leaf_cert_len = cert_len;
+                    parsed_any = 1;
+                }
+                co = entry_end;
+            }
+            if (!parsed_any)
+                return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
 
             atls_x509_cert x509;
             int xrc = atls_x509_parse(t->leaf_cert, t->leaf_cert_len, &x509);
@@ -907,6 +950,27 @@ send_ch: ;
             /* Tolerate: ignore. */
         } else {
             return fail(t, ATLS_ALERT_UNEXPECTED_MESSAGE);
+        }
+    }
+
+    /* Full chain validation (REALINTERNET_PLAN X2).  Only when a trust
+     * store was supplied; otherwise keep the historical behaviour (just
+     * the CertificateVerify signature). */
+    if (t->trust_roots && t->num_roots > 0 && t->chain_count > 0) {
+        const uint8_t *chain[ATLS_CERTVAL_MAX_CHAIN];
+        size_t clens[ATLS_CERTVAL_MAX_CHAIN];
+        int n = t->chain_count;
+        if (n > ATLS_CERTVAL_MAX_CHAIN) n = ATLS_CERTVAL_MAX_CHAIN;
+        for (int i = 0; i < n; i++) {
+            chain[i] = t->chain[i];
+            clens[i] = t->chain_len[i];
+        }
+        atls_certval_ctx ctx;
+        atls_certval_init(&ctx, t->trust_roots, t->num_roots);
+        int vrc = atls_certval_verify(&ctx, chain, clens, n,
+                                      t->hostname, t->now);
+        if (vrc != ATLS_CERTVAL_OK) {
+            return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
         }
     }
 
