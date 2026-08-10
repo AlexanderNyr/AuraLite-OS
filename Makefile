@@ -306,6 +306,7 @@ USER_CFLAGS += -I lib/libauragui/include
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/weather.elf \
+             $(USER_BUILD)/trustinfo.elf \
              $(USER_BUILD)/clock.elf $(USER_BUILD)/guess.elf \
              $(USER_BUILD)/snake.elf $(USER_BUILD)/browser.elf \
              $(USER_BUILD)/selftest.elf \
@@ -452,6 +453,18 @@ $(USER_BUILD)/http.elf: $(USER_BUILD)/http.o $(USER_BUILD)/ahttp.o \
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/http.o $(USER_BUILD)/ahttp.o \
 	      $(USER_COMMON_LNK) $(LIBATLS) -o $@
 	@echo "[link] $@ (libahttp + libatls)"
+
+# trustinfo — REALINTERNET_PLAN X8: print the shipped trust store's roots and
+# their expiry dates.  Links libatls (the same X.509 parser the TLS stack uses).
+$(USER_BUILD)/trustinfo.o: userspace/apps/trustinfo/trustinfo.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/trustinfo.elf: $(USER_BUILD)/trustinfo.o $(USER_COMMON) $(LIBATLS) \
+                             lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/trustinfo.o $(USER_COMMON_LNK) \
+	      $(LIBATLS) -o $@
+	@echo "[link] $@ (libatls)"
 
 # Compile rules for each application.
 $(USER_BUILD)/calc.o: userspace/apps/calc/calc.c $(USER_CFLAGS_INC)
@@ -1116,7 +1129,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
-INITRD_APPS  := calc editor http weather clock browser gcalc gedit gfiles gterm \
+INITRD_APPS  := calc editor http weather trustinfo clock browser gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
 INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \

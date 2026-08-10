@@ -116,6 +116,7 @@ ALL_CASES=(
     test_tcp_server
     test_tcp_x5
     test_ipv6_ping6
+    test_trust_store
     test_graphics
     test_smp
     test_smp_tss

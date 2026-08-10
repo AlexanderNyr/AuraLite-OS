@@ -209,6 +209,7 @@ Current caveats:
 | 85 | `net_recv` | `net_recv(buf, len)` | 🧪 | Polling receive on the global TCP connection. |
 | 86 | `net_close` | `net_close()` | 🧪 | Closes the global TCP connection. |
 | 87 | `net_ping` | `net_ping(ip)` | 🧪 | Legacy ICMP echo via kernel networking stack. |
+| 610 | `ping6` | `net_ping6(addr16)` | 🧪 | X7: ICMPv6 echo to a link-local neighbour. `a1` is a user pointer to 16 raw address bytes (validated + copied out); pinging our own link-local is answered as a loopback. |
 | 44 | `sendto` | `sendto(sock, buf, len, flags, dest_addr, addrlen)` | 🧪 | Sends one AF_INET/SOCK_DGRAM datagram. `flags` is currently ignored; `dest_addr` must be `sockaddr_in`. |
 | 45 | `recvfrom` | `recvfrom(sock, buf, len, flags, src_addr, addrlen)` | 🧪 | Receives one AF_INET/SOCK_DGRAM datagram using the IRQ-backed UDP wait path. `flags` is currently ignored. |
 | 100 | `mkdir` | `mkdir(path)` | ✅/🧪 | Creates a directory when the mounted FS supports it (`/fat`, `/ext2`). |

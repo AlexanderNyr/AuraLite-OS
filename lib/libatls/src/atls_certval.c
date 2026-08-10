@@ -244,7 +244,7 @@ int atls_certval_verify(atls_certval_ctx *ctx,
         found_root = 1;
         break;
     }
-    if (!found_root) return ATLS_CERTVAL_ERR_CHAIN;
+    if (!found_root) return ATLS_CERTVAL_ERR_UNKNOWN_ROOT;   /* X8 diagnosis */
 
     /* 3. Validity dates. */
     if (now) {

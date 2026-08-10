@@ -2,6 +2,81 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [REALINTERNET_PLAN X8 — Trust-store lifecycle] 2026-08-10
+
+`REALINTERNET_PLAN.md` phase X8. The shipped trust store is now documented,
+visible, and diagnosable, so a root that expires or a chain that moves to an
+unshipped root reads as a trust-store issue rather than a TLS bug.
+
+- **Decision (b): documented rebuild-and-reship.** `docs/trust_store.md` §1
+  chooses the static-file + dated-provenance model over the signed in-image
+  update (a bootstrap-trust loop) and §3 documents the rotation procedure.
+- **Provenance + expiry table.** `docs/trust_store.md` lists all three shipped
+  roots (DigiCert Global Root CA 2031-11-10, DigiCert Global Root G3
+  2038-01-15, ISRG Root X1 2035-06-04) with SHA-256 fingerprints and sources.
+- **Distinct "root not in trust store" diagnosis.** `ATLS_CERTVAL_ERR_UNKNOWN_ROOT`
+  (-27) is returned when the top of the chain's issuer is not a shipped root
+  (was collapsed into the generic `ATLS_CERTVAL_ERR_CHAIN`); the TLS handshake
+  propagates it and `libahttp` prints "root not in trust store" instead of a
+  generic handshake failure.
+- **Runtime visibility.** New `trustinfo` app (`/apps/trustinfo`, links the
+  same libatls X.509 parser the TLS stack uses) reads `/etc/ssl/roots.pem` and
+  prints each root's common name and not-after expiry.
+- **Revocation recorded as excluded.** `docs/trust_store.md` §5 records that
+  OCSP / CRL / Certificate Transparency are not implemented (a networked
+  protocol of its own), consistent with INTERNET_PLAN §6.
+- **Tests**: host `test_atls_certval` `test_unknown_root` now asserts
+  `ATLS_CERTVAL_ERR_UNKNOWN_ROOT` (17/17); `test_ahttp_https` `test_https_wrong_root`
+  emits the "root not in trust store" line (5/5). Guest
+  `test_trust_store.sh` — 7/7 (three roots decoded with the expected expiries,
+  provenance file referenced, no exception). `make test-unit` green.
+- **Deliverable**: `patches/REAL_X8_trust.patch`.
+
+
+
+## [REALINTERNET_PLAN X7 — IPv6 (first landing)] 2026-08-10
+
+`REALINTERNET_PLAN.md` phase X7 (delivers `INTERNET_PLAN` N8). The second
+address family now exists: a link-local IPv6 address, Neighbor/Router
+Discovery, ICMPv6 echo, and a `ping6` shell command. This is the
+deterministic, CI-gated core of the plan's IPv6 gate; SLAAC/sockets/
+dual-stack are recorded as follow-ups.
+
+- **Pure address core** (`kernel/net/ipv6_addr.{h,c}`), host-testable like
+  dns_parse/ip_reasm: 16-byte address type, RFC 5952 text⇄binary conversion
+  (longest-zero-run compression, no leading zeros), modified-EUI-64 link-local
+  derivation from the NIC MAC, and the ICMPv6 pseudo-header checksum.
+  `tests/unit/test_ipv6_addr.c` — 4/4 (parse/format vectors, malformed-input
+  rejection, EUI-64, checksum cross-checked against an independent reference).
+- **IPv6 network I/O** (`kernel/net/ipv6.{h,c}`, wired into `net_init()`):
+  link-local state, **Neighbor Discovery** (NS/NA) for MAC resolution,
+  **Router Discovery** (RS/RA) to learn the router, and **ICMPv6 echo**
+  (`net_ping6`). An offline boot self-test covers pton/ntop, EUI-64, the
+  checksum, and the echo-request responder.
+- **Syscall + command**: `SYS_PING6` (610) in the kernel dispatcher
+  (validated/copied 16-byte user address), a `net_ping6()` libc wrapper, and a
+  `ping6 <addr>` shell command. Deterministic gate: `ping6
+  fe80::5054:ff:fe12:3456` (derived from the default QEMU MAC) is answered as
+  a loopback.
+- **Echo-request responder**: the OS answers an ICMPv6 echo request addressed
+  to its own link-local (checksum-validated), so it is pingable like a real
+  v6 host.
+- **Bugs caught and fixed during bring-up**: the IPv6 version field was stored
+  little-endian (`0x60000000u`) so the wire version read 0 and every frame was
+  dropped — fixed to emit version 6; NDP messages must carry an IP Hop Limit
+  of 255 per RFC 4861 s6.1.1 (receivers drop otherwise) — RS/NS now use 255;
+  `ipv6_ntop` emitted a spurious third colon after a compressed run, and
+  `ipv6_pton` accepted a trailing lone colon — both fixed.
+- **Tests**: host `test_ipv6_addr` 4/4; guest `test_ipv6_ping6.sh` 5/5
+  assertions (link-local derived; self-test PASS; `ping6` invoked; self-ping
+  answered; no self-test failure). Full `make test-unit` green — no IPv4/other
+  regression. QEMU SLIRP's known IPv6 filter (Launchpad #1724590) blocks
+  peer-echo in CI; per D6 the real-peer/HTTPS-over-v6 run is recorded as a
+  manual follow-up, not a CI gate.
+- **Deliverable**: `patches/REAL_X7_ipv6.patch`.
+
+
+
 ## [REALINTERNET_PLAN X5 — TCP hardening] 2026-08-09
 
 `REALINTERNET_PLAN.md` phase X5. The TCP client grew the machinery the

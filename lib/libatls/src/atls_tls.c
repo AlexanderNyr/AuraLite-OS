@@ -970,7 +970,12 @@ send_ch: ;
         int vrc = atls_certval_verify(&ctx, chain, clens, n,
                                       t->hostname, t->now);
         if (vrc != ATLS_CERTVAL_OK) {
-            return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
+            /* Send the fatal alert, but propagate the *specific* certificate
+             * validation code (X8) so the caller can say "root not in trust
+             * store" (ATLS_CERTVAL_ERR_UNKNOWN_ROOT) instead of only a generic
+             * handshake failure. */
+            (void)fail(t, ATLS_ALERT_BAD_CERTIFICATE);
+            return vrc;
         }
     }
 

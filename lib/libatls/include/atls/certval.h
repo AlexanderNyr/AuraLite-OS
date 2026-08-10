@@ -52,6 +52,12 @@ typedef struct {
 #define ATLS_CERTVAL_ERR_KEYUSAGE     -24  /* key usage violation */
 #define ATLS_CERTVAL_ERR_SIGNATURE    -25  /* signature verification failed */
 #define ATLS_CERTVAL_ERR_UNSUPPORTED  -26  /* unsupported signature algorithm */
+#define ATLS_CERTVAL_ERR_UNKNOWN_ROOT -27  /* X8: top of chain's issuer is not a
+                                            * shipped trust-store root (distinct
+                                            * from a broken/garbled chain, so a
+                                            * "root not in trust store" diagnosis
+                                            * can be surfaced instead of a generic
+                                            * handshake failure) */
 
 /* Initialize validation context with a trust store. */
 void atls_certval_init(atls_certval_ctx *ctx,

@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0, N1, N2, N3, N4, N5, N6, N7 complete, N8–N9 pending
+## Status: IN PROGRESS 🚧 — N0–N7 complete; N8 delivered by `REALINTERNET_PLAN` X7 (IPv6 first landing); N9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,8 @@
 | N5 | ✅ Done — chain building, RSA PKCS#1v1.5 + Ed25519 verify, hostname/date/constraints, trust store | `patches/NET_N5_cert_validation.patch` |
 | N6 | ✅ Done — libahttp: HTTP/1.1 + chunked + redirects + growing buffer, host test 7/7 | `patches/NET_N6_https_client.patch` |
 | N7 | ✅ Done — TCP padding fix, ACK-only loop, TLS handshake verified in guest | `patches/NET_N7_stack_hardening.patch` |
-| N8–N9 | pending | — |
+| N8 | ✅ Done (via `REALINTERNET_PLAN` X7, first landing) — link-local + NDP + ICMPv6 echo + `ping6`; SLAAC/sockets/dual-stack recorded as follow-ups | `patches/REAL_X7_ipv6.patch` |
+| N9 | pending | — |
 
 This document answers:
 
@@ -642,17 +643,23 @@ for a follow-up.
 
 Last because it is the largest phase with the smallest immediate payoff: dual
 stack, NDP, SLAAC, ICMPv6, and a second address family through every layer.
-Deferring it is a legitimate outcome.
+
+**Status (2026-08-10):** the deterministic first landing was delivered by
+`REALINTERNET_PLAN` phase X7 (`patches/REAL_X7_ipv6.patch`): link-local
+addressing, Neighbor/Router Discovery (NS/NA/RS/RA), ICMPv6 echo and a
+`ping6` command. The full test gate below (HTTPS over IPv6, dual-stack,
+SLAAC) is the recorded follow-up work, tracked in `REALINTERNET_PLAN` X7.
 
 #### Test gate
 
-- `ping6` to a link-local address.
-- An HTTPS fetch over IPv6.
-- A dual-stack host is reached by whichever family works.
+- `ping6` to a link-local address. ✔ (self-ping answered; peer-echo is a D6
+  manual run — QEMU SLIRP filters guest IPv6, Launchpad #1724590).
+- An HTTPS fetch over IPv6. ⏳ follow-up.
+- A dual-stack host is reached by whichever family works. ⏳ follow-up.
 
 #### Deliverable
 
-`patches/NET_N8_ipv6.patch`
+`patches/REAL_X7_ipv6.patch`
 
 ---
 

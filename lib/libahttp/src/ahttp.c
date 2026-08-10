@@ -23,6 +23,7 @@
 #include "atls/atls.h"
 #include "atls/tls.h"
 #include "atls/pem.h"
+#include "atls/certval.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -286,9 +287,22 @@ static int transport_connect(transport *t, const char *host, int port, int use_t
         if (!t->tls) { closesocket(t->fd); return AHTTP_ERR_TLS; }
         int hrc = atls_tls_handshake(t->tls);
         if (hrc != ATLS_OK) {
-            printf("[ahttp] TLS handshake failed hrc=%d alert_sent=%d alert_recv=%d\n",
-                   hrc, atls_tls_last_alert_sent(t->tls),
-                   atls_tls_last_alert_received(t->tls));
+            /* X8: surface the *reason* for a certificate-validation failure,
+             * not a generic handshake error — an untrusted chain must read as
+             * "root not in trust store", not "TLS broken". */
+            if (hrc == ATLS_CERTVAL_ERR_UNKNOWN_ROOT) {
+                printf("[ahttp] TLS: server chain root is not in the trust "
+                       "store (root not in trust store)\n");
+            } else if (hrc == ATLS_CERTVAL_ERR_EXPIRED) {
+                printf("[ahttp] TLS: certificate chain expired/not yet valid\n");
+            } else if (hrc == ATLS_CERTVAL_ERR_HOSTNAME) {
+                printf("[ahttp] TLS: certificate hostname mismatch\n");
+            } else {
+                printf("[ahttp] TLS handshake failed hrc=%d alert_sent=%d "
+                       "alert_recv=%d\n", hrc,
+                       atls_tls_last_alert_sent(t->tls),
+                       atls_tls_last_alert_received(t->tls));
+            }
             atls_tls_free(t->tls);
             t->tls = NULL;
             closesocket(t->fd);

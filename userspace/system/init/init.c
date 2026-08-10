@@ -277,6 +277,7 @@ static void cmd_help(void) {
     puts("  glrunner  - Cube Runner 3D game (A/D steer, Space pause, R restart)");
     puts("  hello     - hello world");
     puts("  http      - HTTP client");
+    puts("  trustinfo - show shipped TLS trust-store roots and their expiry");
     puts("  weather   - live weather report (wttr.in): weather [full|3] <city>");
     puts("  gweather  - GUI weather window (Riga, wttr.in)");
     puts("  browser   - web browser (fetch + render HTML)");

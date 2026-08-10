@@ -37,6 +37,8 @@ additional post-phase extensions.
 - AHCI SATA sector read/write on QEMU-style AHCI disks.
 - e1000 networking with ARP, IPv4, ICMP, DHCP/fallback addressing, UDP DNS and
   a minimal single-connection TCP client.
+- IPv6 (X7 first landing): link-local address, NDP/Router Discovery, ICMPv6
+  echo (`ping6`); SLAAC/sockets/dual-stack are recorded follow-ups.
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
   kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus, 100 FPS guaranteed refresh rate), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.
@@ -680,6 +682,7 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/apps/editor` | Simple line editor. |
 | `/apps/clock` | Clock/uptime demo. |
 | `/apps/http` | HTTP/1.1 + HTTPS client (libahttp over libatls, chain validation against `/etc/ssl/roots.pem`). |
+| `/apps/trustinfo` | Shows the shipped trust-store roots and their not-after expiry (X8; see `docs/trust_store.md`). |
 | `/apps/browser` | Text web browser with simple HTML rendering. |
 | `/apps/gcalc` | Graphical calculator. |
 | `/apps/gedit` | Graphical text editor. |
@@ -717,6 +720,7 @@ run calc
 run /apps/calc
 nslookup example.com
 ping example.com
+ping6 fe80::5054:ff:fe12:3456
 gui
 exit
 ```

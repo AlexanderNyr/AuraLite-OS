@@ -179,7 +179,8 @@ static void test_unknown_root(void) {
     atls_time_now now = get_test_time();
     int rc = atls_certval_verify(&ctx, chain, chain_lens, 2,
                                  "example.auraos.dev", &now);
-    CHECK(rc == ATLS_CERTVAL_ERR_CHAIN, "chain to unknown root rejected");
+    CHECK(rc == ATLS_CERTVAL_ERR_UNKNOWN_ROOT,
+          "chain to unknown root rejected with 'root not in trust store'");
 }
 
 static void test_self_signed_rejected(void) {
