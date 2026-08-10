@@ -1,17 +1,15 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — X1–X4 complete; X5–X9 pending
+## Status: IN PROGRESS 🚧 — X1–X6 complete; X7–X9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | X1 — ECDSA P-256 verification | ✅ complete | (see §Phase X1 — result) |
 | X2 — usable HTTPS client | ✅ complete | (see §Phase X2 — result) |
 | X3 — DNS reliability | ✅ complete | `patches/REAL_X3_dns.patch` |
-| X2 — A usable HTTPS client | planned | `patches/REAL_X2_https_client.patch` |
-| X3 — DNS reliability | planned | `patches/REAL_X3_dns.patch` |
-| X4 — IP fragment reassembly | planned | `patches/REAL_X4_frag.patch` |
-| X5 — TCP hardening for the public internet | planned | `patches/REAL_X5_tcp.patch` |
-| X6 — HTTP completeness | planned | `patches/REAL_X6_http.patch` |
+| X4 — IP fragment reassembly | ✅ complete | `patches/REAL_X4_frag.patch` |
+| X5 — TCP hardening for the public internet | ✅ complete | CHANGELOG 2026-08-09 |
+| X6 — HTTP completeness | ✅ complete | `patches/REAL_X6_http.patch` |
 | X7 — IPv6 (INTERNET_PLAN N8 delivery) | planned | `patches/REAL_X7_ipv6.patch` |
 | X8 — Trust-store lifecycle | planned | `patches/REAL_X8_trust.patch` |
 | X9 — Fit, memory and an honest statement | planned | `patches/REAL_X9_fit.patch` |
@@ -474,25 +472,53 @@ work; the OOO budget is stated beside `TCPX5_OOO_CAP`).
 
 #### Tasks
 
-- [ ] Persistent connections (keep-alive) in `libahttp` — the current
+- [x] Persistent connections (keep-alive) in `libahttp` — the current
       `Connection: close` on every request is the common reason real servers
-      behave differently than the test harness.
-- [ ] A redirect-to-HTTPS policy (an `http://` URL that 301s to `https://`
+      behave differently than the test harness.  Done as a real client API:
+      `ahttp_client_new/free/set_trust_roots/request/get` caches one live
+      connection per origin, reopens stale sockets once for idempotent
+      methods (RFC 7230 6.3.1), honours `Connection: close`/HTTP/1.0 and
+      close-delimited bodies, skips 1xx, and logs every reuse/reopen with
+      `[ahttp] keep-alive:` lines.  `ahttp_get()` stays as a one-shot
+      wrapper, so every pre-X6 caller is untouched.
+- [x] A redirect-to-HTTPS policy (an `http://` URL that 301s to `https://`
       is followed, and `https://` is the default scheme in gbrowser).
-- [ ] Request bodies (POST/PUT) behind a bounded interface, for future
-      uploads and form submission.
+      Redirect resolution now also handles the Location values real
+      servers send (protocol-relative, absolute-path, relative with
+      RFC 3986 dot-segment removal; `data:`/`javascript:` refused);
+      301/302 rewind to GET, 307/308 re-send the body, max 5 hops, every
+      hop logged.
+- [x] Request bodies (POST/PUT) behind a bounded interface, for future
+      uploads and form submission: `AHTTP_MAX_REQ_BODY` = 64 KiB,
+      `Content-Length` framing, bodies only on POST/PUT.
 - [ ] **Optional** HTTP/2 h2c/TLS-ALPN — only after X3–X5; it is the least
       useful for a browsing OS that opens one connection at a time.
+      (Not attempted; the gate does not depend on it.)
 
-#### Test gate
+**Also in X6:** gbrowser now fetches through libahttp (http *and* https),
+loads `/etc/ssl/roots.pem` with the same loud CertificateVerify-only
+fallback as `/http` (D7), and the pre-X6 "https unsupported" page is
+gone.  The PEM trust-store loader moved into libahttp itself
+(`ahttp_load_trust_roots`) so apps stop duplicating the 40-line walk.
+
+#### Test gate — results
 
 - Two sequential requests on one connection reuse the socket (assert via a
-  serial log line).
+  serial log line). ✅ — plus the stronger wire gate: the host-side
+  `x6_server.py` counts raw sockets and saw **connections=1 requests=4**
+  for the whole four-request guest program.
 - `http://example.com` that redirects to `https://` is followed exactly once
-  and renders.
-- A POST with a body reaches the local test server intact.
-- If HTTP/2 is attempted: an h2 handshake over the existing TLS ALPN is
-  recorded as a manual result; the gate does not depend on it.
+  and renders. ✅ — guest gate follows a 301 from the HTTP server to a TLS
+  marker page (`redirects_used == 1`, exactly one `[ahttp] redirect:` line),
+  and the redirect target page carries `[X6_HTTPS_MARKER]`.
+- A POST with a body reaches the local test server intact. ✅ — echoed
+  byte-exact on the reused socket; PUT equally supported.
+- If HTTP/2 is attempted: not attempted (optional).
+
+Host side, `test_ahttp` grew 43 checks: resolver matrix, in-process
+threaded keep-alive server (reuse, stale reopen, `Connection: close`,
+HEAD/204/chunked framing, redirect chain/relative/307/loop-guard,
+method validation).
 
 #### Deliverable
 

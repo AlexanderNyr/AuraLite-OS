@@ -49,9 +49,11 @@ if grep -qE '\[dhcp\] PASS:' "$LOG"; then
     echo "  ${C_DIM}(DHCP succeeded over virtio-net → asserting online self-tests)${C_RESET}"
     il_assert_grep "$LOG" "\\[net\\] PASS: ping 10\\.0\\.2\\.2"  "ICMP echo over virtio-net"
     il_assert_grep "$LOG" "(\\[net\\] dns PASS|\\[dns\\] PASS)"  "DNS resolver over virtio-net"
-    # TCP boot self-test is intentionally skipped (tested separately by
-    # test_tcp_server).  Assert the subsystem initialised without errors.
-    il_assert_grep "$LOG" "\\[tcp\\] boot self-test skipped"     "TCP subsystem available over virtio-net"
+    # X5 replaced the old "[tcp] boot self-test skipped" line with the
+    # concurrent-connection boot gate over the active NIC; assert that gate
+    # ran and did not report failures.
+    il_assert_grep    "$LOG" "\\[tcp-x5\\] probing"   "TCP subsystem available over virtio-net (X5 gate ran)"
+    il_assert_no_grep "$LOG" "\\[tcp-x5\\] FAIL"      "X5 boot gate did not fail over virtio-net"
 else
     echo "  ${C_DIM}(DHCP didn't complete → using fallback-IP path)${C_RESET}"
     il_assert_grep "$LOG" "our IP: 10\\.0\\.2\\.15"             "static IP assigned over virtio-net"

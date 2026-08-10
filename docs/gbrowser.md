@@ -217,25 +217,31 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
 The web view is now a usable (if humble) browser:
 
 - `wv_url.{h,c}` — URL parsing + relative resolution (32 host checks).
-- `wv_http.{h,c}` — HTTP/1.1 GET with `Host:`, header parsing,
-  Content-Length, **chunked decoding**, and a **growing response buffer**
-  (8 KB start → 512 KB hard cap with a diagnosed `refused` flag), replacing
-  the 16 KB static buffer of the old `gbrowser`.
+- Fetch path (REALINTERNET_PLAN **X6**): the browser goes through
+  **libahttp's keep-alive client** (`ahttp_client`), shared across
+  navigations.  http:// and https:// are both first-class: TLS 1.3 with
+  chain validation against `/etc/ssl/roots.pem`, one cached connection
+  per origin (reuse logged as `[ahttp] keep-alive:` lines), http→https
+  redirects followed automatically, POST/PUT support behind a bounded
+  interface.  `wv_http.{h,c}` keeps its request/response helpers for the
+  host unit tests; the guest fetch path itself is `wv_fetch_url()` in
+  `gbrowser.c`.
+- Scheme-less input in the address bar / steps hook defaults to
+  `https://` (secure by default); `wv_url`'s parser default is unchanged
+  so the host tests stay stable.
 - Links live in the display list (`link_off` on text items); clicking one
   (or the Back/Go buttons and the address bar in the chrome strip)
   navigates. History: 8 entries, back re-fetches without pushing.
-- `https://` renders an honest "HTTPS is not supported" page (plan D6) —
-  never a hang, never a fake padlock.
 - Test hooks (written before `run webview`, because the init shell blocks
   on a running child): `/tmp/webview.url` = initial page,
   `/tmp/webview.steps` = `link 0|back|https|nav <url>` actions.
 - Gate: `tests/integration/cases/test_webview_net.sh` — a real host server
   serves `/`, `/page2.html`, `/chunked` and `/big` (100 KB); the guest
-  fetches home, follows a link, goes back, refuses https with the
-  explanation, decodes chunked and receives 100 KB in full. 10 assertions.
-- Kernel note: the legacy TCP path can drop the last bytes on FIN (a
-  259-byte body arrived as 256); the web view falls back to rendering the
-  partial body rather than an error page.
+  fetches home, follows a link, goes back, attempts https for real
+  (never the pre-X6 refusal page), decodes chunked and receives 100 KB
+  in full.
+- Kernel note: the fetch path now rides the BSD-socket API via libahttp,
+  so the old legacy-TCP FIN truncation workaround is gone.
 
 ## 12. `<canvas>` with OpenGL (W7)
 

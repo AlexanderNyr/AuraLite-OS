@@ -336,7 +336,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/conformtest.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
              $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
-             $(USER_BUILD)/tlstest.elf \
+             $(USER_BUILD)/tlstest.elf $(USER_BUILD)/httpx6.elf \
              $(USER_BUILD)/rustes.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
@@ -599,6 +599,19 @@ $(USER_BUILD)/tlstest.elf: $(USER_BUILD)/tlstest.o $(USER_COMMON) \
 	      $(LIBATLS) -o $@
 	@echo "[link] $@ (libatls)"
 
+# ---- httpx6 (REALINTERNET_PLAN X6): in-guest keep-alive/POST/redirect gate ----
+$(USER_BUILD)/httpx6.o: userspace/tests/httpx6/httpx6.c \
+                        lib/libahttp/include/ahttp/http.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/httpx6.elf: $(USER_BUILD)/httpx6.o $(USER_BUILD)/ahttp.o \
+                          $(USER_COMMON) $(LIBATLS) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/httpx6.o $(USER_BUILD)/ahttp.o \
+	      $(USER_COMMON_LNK) $(LIBATLS) -o $@
+	@echo "[link] $@ (libahttp + libatls)"
+
 $(USER_BUILD)/elfperm.o: userspace/tests/elfperm/elfperm.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -854,7 +867,8 @@ $(USER_BUILD)/gaudio.o: userspace/apps/gui-audio/gaudio.c lib/libauragui/include
 $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gbrowser.o: userspace/apps/gbrowser/gbrowser.c lib/libauragui/include/auragui.h \
-                         userspace/apps/gbrowser/wv_html.h userspace/apps/gbrowser/wv_dom.h $(USER_CFLAGS_INC)
+                         userspace/apps/gbrowser/wv_html.h userspace/apps/gbrowser/wv_dom.h \
+                         lib/libahttp/include/ahttp/http.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_html.o: userspace/apps/gbrowser/wv_html.c userspace/apps/gbrowser/wv_html.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
@@ -886,17 +900,17 @@ $(USER_BUILD)/gbrowser.elf: $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
                            $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
                            $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
                            $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
-                           $(USER_BUILD)/wv_canvas.o \
+                           $(USER_BUILD)/wv_canvas.o $(USER_BUILD)/ahttp.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) $(USER_GL_OBJ) \
-                           lib/libc/user.ld
+                           $(LIBATLS) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
 	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
 	      $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
 	      $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
-	      $(USER_BUILD)/wv_canvas.o \
-	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) $(USER_GL_OBJ) -o $@
-	@echo "[link] $@ (wv_* + libgl: <canvas> W7)"
+	      $(USER_BUILD)/wv_canvas.o $(USER_BUILD)/ahttp.o \
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) $(USER_GL_OBJ) $(LIBATLS) -o $@
+	@echo "[link] $@ (wv_* + libgl canvas + libahttp/libatls https X6)"
 $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1108,7 +1122,7 @@ INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest
+                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
@@ -1354,7 +1368,8 @@ $(BUILD_DIR)/test_atls_pem: tests/unit/test_atls_pem.c $(LIBATLS_SRCS) \
 	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
 
 # HTTP client (N6): URL parsing tests.
-$(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/include/ahttp/http.h \
+$(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/src/ahttp.c \
+                         lib/libahttp/include/ahttp/http.h \
                          $(LIBATLS_SRCS)
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
@@ -1364,6 +1379,7 @@ $(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/include/ahttp/http
 # HTTPS client end-to-end (REALINTERNET_PLAN X2): real libahttp + libatls
 # against a local openssl s_server, with chain validation on and off.
 $(BUILD_DIR)/test_ahttp_https: tests/unit/test_ahttp_https.c \
+                               lib/libahttp/src/ahttp.c \
                                lib/libahttp/include/ahttp/http.h $(LIBATLS_SRCS)
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \

@@ -126,8 +126,11 @@ il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/page2.htm
 il_assert_grep "$LOG" "back: http://10.0.2.2:$PORT/"                     "history back"
 il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/"  "first page reappears"
 
-# 3) https produces the explanation, not a hang
-il_assert_grep "$LOG" "nav: https unsupported for https://example.com/"  "https refused with explanation"
+# 3) X6: https:// is now fetched for real (TLS via libahttp).  Whether the
+# fetch succeeds (host with internet) or fails gracefully (offline CI),
+# the navigation must be attempted and must never print the old refusal.
+il_assert_grep "$LOG" "nav: fetching https://example.com/"   "https navigation attempted"
+il_assert_no_grep "$LOG" "https unsupported"                 "no pre-X6 https refusal"
 
 # 4) chunked response
 il_assert_grep "$LOG" "nav: loaded .* bytes from http://10.0.2.2:$PORT/chunked" \

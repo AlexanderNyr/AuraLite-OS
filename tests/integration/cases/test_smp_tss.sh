@@ -25,7 +25,7 @@ il_run_qemu "$LOG" 15 -smp 4
 il_assert_grep    "$LOG" "\[smp\]"                               "SMP subsystem ran"
 
 # Accept either multi-AP online message or BSP-only log.
-il_assert_grep    "$LOG" "(AP wake disabled|all [0-9]+ CPUs online|[smp] PASS)" \
+il_assert_grep    "$LOG" "(AP wake disabled|all [0-9]+ CPUs online|\\[smp\\] PASS)" \
                                                                  "SMP mode reported"
 
 il_assert_no_grep "$LOG" "\[tss\] WARN"                         "no TSS warnings"

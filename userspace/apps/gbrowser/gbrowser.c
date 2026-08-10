@@ -37,6 +37,7 @@
 #include "wv_url.h"
 #include "wv_http.h"
 #include "wv_canvas.h"
+#include "ahttp/http.h"   /* X6: https via libahttp (keep-alive + TLS 1.3) */
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
 #define VIEW_W 800
@@ -222,92 +223,76 @@ static void page_load_html(const char *html, size_t len) {
     }
 }
 
-/* Fetch http:// URL and load its body.  Returns 0 on success, an errno-ish
- * negative on failure.  The kernel TCP path has its own ~1 s timeouts, so
- * this cannot hang forever. */
+/* ---- Fetch path: libahttp keep-alive client (REALINTERNET_PLAN X6) ----
+ *
+ * The browser used to hand-roll one net_connect/net_send/net_recv round
+ * per navigation.  It now speaks both http:// and https:// through
+ * libahttp, on a persistent client: repeated navigations to the same
+ * origin reuse the socket ([ahttp] keep-alive lines on the serial log),
+ * http→https redirects are followed with chain validation, and POST is
+ * available the day forms land.
+ *
+ * wv_http.c's request/response helpers stay for the host unit tests;
+ * the guest fetch path itself is the code below. */
+
+static ahttp_client *g_http;
+static int           g_http_roots = -1;   /* -1 = not tried yet */
+
+static ahttp_client *wv_http_client(void) {
+    if (!g_http) {
+        g_http = ahttp_client_new();
+        if (!g_http) return NULL;
+        static atls_trust_root roots[16];
+        static uint8_t root_der[16384];
+        int n = 0;
+        if (ahttp_load_trust_roots("/etc/ssl/roots.pem", roots, root_der,
+                                   16, sizeof(root_der), &n) == 0) {
+            ahttp_client_set_trust_roots(g_http, roots, n, NULL);
+            g_http_roots = n;
+            printf("[gbrowser] fetch: %d trust root(s) from /etc/ssl/roots.pem\n", n);
+        } else {
+            /* D7: fail loudly, not silently — TLS then runs in the
+             * CertificateVerify-only mode, exactly like /http warns. */
+            g_http_roots = 0;
+            printf("[gbrowser] fetch: WARNING: /etc/ssl/roots.pem unusable — "
+                   "https verifies server signatures only\n");
+        }
+    }
+    return g_http;
+}
+
+/* Fetch http:// or https:// URL and load its body.  Returns 0 on success;
+ * -status on an HTTP error, an ahttp error code (<0) on transport/TLS
+ * failure.  libahttp's own timeouts cap worst-case wait. */
 static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out) {
     *body_out = NULL;
     *body_len_out = 0;
 
-    /* host -> IP: dotted quad or DNS */
-    uint32_t ip = 0;
-    int is_ip = 1;
-    int parts = 0;
-    uint32_t cur = 0;
-    for (const char *c = u->host; *c; c++) {
-        if (*c == '.') { parts++; if (parts > 3) { is_ip = 0; break; } ip = (ip << 8) | cur; cur = 0; }
-        else if (*c >= '0' && *c <= '9') cur = cur * 10 + (uint32_t)(*c - '0');
-        else { is_ip = 0; break; }
+    ahttp_client *c = wv_http_client();
+    if (!c) return -1;
+
+    char fmt[WV_URL_MAX_URL];
+    wv_url_format(u, fmt, sizeof(fmt));
+    ahttp_response *r = ahttp_client_get(c, fmt);
+    if (!r) return -1;   /* OOM */
+    if (r->error != AHTTP_OK) {
+        int rc = r->error;   /* already negative */
+        ahttp_response_free(r);
+        return rc;
     }
-    if (is_ip && parts == 3) { ip = (ip << 8) | cur; }
-    else {
-        ip = dns_resolve(u->host);
-        if (ip == 0) return -1;      /* DNS failure */
+    if (r->status_code != 200) {
+        int rc = -r->status_code;
+        ahttp_response_free(r);
+        return rc;
     }
-
-    if (net_connect(ip, u->port) != 0) return -1;
-
-    char req[512];
-    int rlen = wv_http_build_request(u, req, sizeof(req));
-    if (rlen <= 0) { net_close(); return -1; }
-    if (net_send(req, (uint32_t)rlen) != rlen) { net_close(); return -1; }
-
-    /* growing response buffer */
-    char *buf = malloc(WV_HTTP_INITIAL_CAP);
-    if (!buf) { net_close(); return -1; }
-    wv_resp_t r;
-    wv_resp_init(&r, buf, WV_HTTP_INITIAL_CAP);
-
-    char chunk[4096];
-    for (int guard = 0; guard < 200; guard++) {
-        int n = net_recv(chunk, sizeof(chunk));
-        if (n <= 0) break;
-        if (!wv_resp_append(&r, chunk, (size_t)n)) break;
-        /* early exit: headers in and body complete */
-        wv_http_meta_t m;
-        if (wv_http_parse_headers(r.data, r.len, &m)) {
-            char probe[64];
-            int done = 0;
-            if (wv_http_body(r.data, r.len, &m, probe, sizeof(probe), &done) >= 0 && done)
-                break;
-        }
-    }
-    net_close();
-
-    if (r.len == 0 || r.refused) { free(r.data); return -1; }
-
-    wv_http_meta_t m;
-    if (!wv_http_parse_headers(r.data, r.len, &m) || m.status != 200) {
-        free(r.data);
-        return (m.status > 0) ? -m.status : -1;
-    }
-    char *body = malloc(r.len + 1);
-    if (!body) { free(r.data); return -1; }
-    int done = 0;
-    int bl = wv_http_body(r.data, r.len, &m, body, (size_t)r.len + 1, &done);
-    if (bl < 0) {
-        /* The kernel TCP path can drop the last bytes of a stream on FIN
-         * (one-segment receive, fixed RTO).  Pragmatic fallback: if the
-         * headers parsed and SOME body arrived, render what we got —
-         * better than an error page for a 3-byte loss. */
-        if (m.ok && r.len > m.header_len) {
-            size_t n = r.len - m.header_len;
-            if (n > (size_t)r.len) n = (size_t)r.len;
-            memcpy(body, r.data + m.header_len, n);
-            body[n] = 0;
-            free(r.data);
-            *body_out = body;
-            *body_len_out = n;
-            printf("[gbrowser] fetch: partial body (%u of %u bytes)\n",
-                   (unsigned)n, (unsigned)m.content_len);
-            return 0;
-        }
-        free(r.data); free(body); return -1;
-    }
-    body[bl] = 0;
-    free(r.data);
+    char *body = malloc(r->body_len + 1);
+    if (!body) { ahttp_response_free(r); return -1; }
+    memcpy(body, r->body, r->body_len);
+    body[r->body_len] = 0;
+    size_t bl = r->body_len;
+    ahttp_response_free(r);
     *body_out = body;
-    *body_len_out = (size_t)bl;
+    *body_len_out = bl;
     return 0;
 }
 
@@ -326,9 +311,16 @@ static void set_title_for_url(void) {
     ag_window_set_title(wid, t);
 }
 
-/* Load a URL: https -> explanation page; http -> fetch + render.
- * push=1 records it in the history. */
+/* Load a URL and render it (http:// and https:// alike, X6).  Input
+ * without a scheme gets https:// prepended — secure by default now that
+ * TLS exists.  push=1 records the visit in the history. */
 static void navigate_ex(const char *url_text, int push) {
+    char norm[WV_URL_MAX_URL];
+    if (!strstr(url_text, "://")) {
+        int nn = snprintf(norm, sizeof(norm), "https://%s", url_text);
+        if (nn > 0 && (size_t)nn < sizeof(norm)) url_text = norm;
+    }
+
     wv_url_t u;
     if (!wv_url_parse(url_text, &u) || !u.ok) {
         printf("[gbrowser] nav: bad url '%s'\n", url_text);
@@ -336,30 +328,6 @@ static void navigate_ex(const char *url_text, int push) {
     }
     char fmt[WV_URL_MAX_URL];
     wv_url_format(&u, fmt, sizeof(fmt));
-
-    if (u.is_https) {
-        /* The plan's honest refusal, rendered as a page. */
-        printf("[gbrowser] nav: https unsupported for %s\n", fmt);
-        char page[512];
-        int pl = snprintf(page, sizeof(page),
-            "<body><h1>HTTPS is not supported</h1>"
-            "<p>The web view cannot open <b>%s</b>.</p>"
-            "<p>TLS 1.3 is INTERNET_PLAN's work (X25519, ChaCha20-Poly1305, "
-            "SHA-256, ASN.1 and a trust store). A browser that appears to do "
-            "HTTPS but validates nothing would be a liability.</p>"
-            "<p>Point the web view at a plain-HTTP server instead.</p></body>",
-            u.host);
-        page_load_html(page, (size_t)pl > 0 ? (size_t)pl : 0);
-        strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
-        if (push && hist_pos < HIST_MAX - 1) {
-            hist_pos++;
-            hist_count = hist_pos + 1;
-            strncpy(history[hist_pos], fmt, WV_URL_MAX_URL - 1);
-        }
-        set_title_for_url();
-        repaint();
-        return;
-    }
 
     printf("[gbrowser] nav: fetching %s\n", fmt);
     char *body = NULL;
