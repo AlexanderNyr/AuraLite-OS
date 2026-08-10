@@ -18,6 +18,7 @@
 #include "kernel/net/tcp.h"
 #include "kernel/net/socket.h"
 #include "kernel/net/dns.h"
+#include "kernel/net/ipv6.h"
 #include "drivers/uart/uart.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/keyboard/keymap.h"
@@ -59,6 +60,7 @@ typedef struct {
 #define SYS_NET_RECV    85  /* non-standard: TCP recv */
 #define SYS_NET_CLOSE   86  /* non-standard: TCP close */
 #define SYS_NET_PING    87  /* non-standard: ICMP ping */
+#define SYS_PING6       610 /* X7: ICMPv6 echo to a link-local neighbour */
 #define SYS_DNSCTL     107  /* X3: DNS cache/server control (see kernel/net/dns.h) */
 #define SYS_LISTDIR 80
 /* Filesystem extensions (non-standard numbers). */
@@ -1165,6 +1167,17 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)tcp_close();
     case SYS_NET_PING:
         return (uint64_t)net_ping(a1);
+
+    /* X7: ping6.  a1 points to a 16-byte IPv6 address in user space; copy it
+     * out (validated/bounded), then ask the kernel's ICMPv6 path to echo it. */
+    case SYS_PING6: {
+        ipv6_addr_t addr;
+        if (!validate_user_range((const void *)(uintptr_t)a1, IPV6_ADDR_LEN, 1))
+            return (uint64_t)-EFAULT;
+        if (copy_from_user(addr.b, (const void *)(uintptr_t)a1, IPV6_ADDR_LEN) != 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)net_ping6(&addr);
+    }
 
     /* X3: DNS cache inspection/flush and resolver server control for the
      * dnscache/dnsset/dnsflush shell commands.  Buffers are validated and

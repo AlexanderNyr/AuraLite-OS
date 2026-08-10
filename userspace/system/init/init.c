@@ -250,6 +250,7 @@ static void cmd_help(void) {
     puts("  dnsset <ip> [ip2] - override DNS servers (debug)");
     puts("  dnsflush    - clear the DNS cache");
     puts("  ping <host> - ping a hostname via ICMP");
+    puts("  ping6 <addr>- ping an IPv6 link-local neighbour (e.g. fe80::2)");
     puts("  ps          - list processes (stub)");
     puts("  mkdir <dir> - create a directory  (FAT32 / ext2)");
     puts("  rmdir <dir> - remove an empty directory");
@@ -469,6 +470,73 @@ static void cmd_dnsset(int argc, char **argv) {
 static void cmd_dnsflush(void) {
     dnsctl(DNSCTL_FLUSH, 0, 0);
     puts("dnsflush: cache cleared");
+}
+
+/* ---- X7: ping6 ---- */
+
+/* Parse a text IPv6 address into 16 bytes (a small, dependency-free subset
+ * supporting "::" and groups; the kernel validates the bytes it uses). */
+static int parse_ipv6(const char *s, uint8_t out[16]) {
+    int groups[8];
+    int ng = 0, dc = -1;
+    int val = -1;
+    const char *p = s;
+    memset(out, 0, 16);
+    for (;;) {
+        char c = *p;
+        if (c == ':' || c == '\0') {
+            if (val >= 0) {
+                if (ng >= 8) return -1;
+                groups[ng++] = val;
+                val = -1;
+            } else if (c == ':') {
+                if (p[1] == ':') { if (dc >= 0) return -1; dc = ng; p += 2; continue; }
+                return -1;
+            }
+            if (c == '\0') break;
+            if (p[1] == ':') { if (dc >= 0) return -1; dc = ng; p += 2; continue; }
+            p++;
+            continue;
+        }
+        int v;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+        else return -1;
+        val = (val < 0) ? v : (val << 4) | v;
+        if (val > 0xFFFF) return -1;
+        p++;
+    }
+    if (dc >= 0) {
+        int fill = 8 - ng;
+        if (fill < 1) return -1;
+        int k = 0, i;
+        for (i = 0; i < dc; i++) { out[k++] = (groups[i] >> 8) & 0xFF; out[k++] = groups[i] & 0xFF; }
+        k += fill * 2;
+        for (i = dc; i < ng; i++) { out[k++] = (groups[i] >> 8) & 0xFF; out[k++] = groups[i] & 0xFF; }
+        return 0;
+    }
+    if (ng != 8) return -1;
+    for (int i = 0; i < 8; i++) { out[i * 2] = (groups[i] >> 8) & 0xFF; out[i * 2 + 1] = groups[i] & 0xFF; }
+    return 0;
+}
+
+static void cmd_ping6(const char *arg) {
+    if (!arg) {
+        puts("ping6: missing address (e.g. ping6 fe80::2)");
+        return;
+    }
+    uint8_t addr[16];
+    if (parse_ipv6(arg, addr) != 0) {
+        printf("ping6: bad IPv6 address '%s'\n", arg);
+        return;
+    }
+    printf("ping6 %s...\n", arg);
+    if (net_ping6(addr) == 0) {
+        printf("Reply received from %s!\n", arg);
+    } else {
+        printf("No reply from %s\n", arg);
+    }
 }
 
 static void cmd_ps(void) {
@@ -725,6 +793,8 @@ do_dispatch:
         cmd_dnsflush();
     } else if (strcmp(cmd, "ping") == 0) {
         cmd_ping(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "ping6") == 0) {
+        cmd_ping6(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "run") == 0) {
         if (argc > 1) {
             /* Forward everything after the program name.  argv[0] is the

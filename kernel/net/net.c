@@ -11,6 +11,7 @@
 #include "kernel/net/netdev.h"
 #include "kernel/net/dns.h"
 #include "kernel/net/ip_reasm.h"
+#include "kernel/net/ipv6.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/errno.h"
@@ -1016,6 +1017,11 @@ int net_init(void) {
      * 10.0.2.3); a successful DHCP below replaces it with option 6. */
     dns_init();
     net_ipfrag_self_test();   /* X4 */
+
+    /* X7 (REALINTERNET_PLAN): IPv6 link-local address from the NIC MAC, plus
+     * the offline NDP/ICMPv6 helper self-test. */
+    net_ipv6_init();
+    net_ipv6_self_test();
 
     /* Try DHCP to get a real IP. If it fails, fall back to the hardcoded
      * QEMU defaults (10.0.2.15 / 10.0.2.2). */

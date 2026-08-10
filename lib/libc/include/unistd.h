@@ -24,6 +24,7 @@
 #define SYS_NET_RECV    85
 #define SYS_NET_CLOSE   86
 #define SYS_NET_PING    87
+#define SYS_PING6      610   /* X7: ICMPv6 echo to a link-local neighbour */
 #define SYS_DNSCTL     107   /* X3: DNS cache/server control */
 
 /* X3 (REALINTERNET_PLAN): SYS_DNSCTL operations. */
@@ -242,6 +243,8 @@ int     net_send(const void *data, uint32_t len);
 int     net_recv(void *buf, uint32_t bufsize);
 int     net_close(void);
 int     net_ping(uint32_t ip);
+/* X7: ICMPv6 echo to a link-local neighbour given as 16 raw address bytes. */
+int     net_ping6(const uint8_t addr[16]);
 
 /* Socket-style network API. */
 int     socket(int domain, int type, int protocol);

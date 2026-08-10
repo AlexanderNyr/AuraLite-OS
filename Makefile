@@ -1218,6 +1218,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_dns \
                 $(BUILD_DIR)/test_tcp_x5 \
                 $(BUILD_DIR)/test_ip_reasm \
+                $(BUILD_DIR)/test_ipv6_addr \
                 $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
                 $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
                 $(BUILD_DIR)/test_fat32 $(BUILD_DIR)/test_errno \
@@ -1881,6 +1882,12 @@ $(BUILD_DIR)/test_ip_reasm: tests/unit/test_ip_reasm.c kernel/net/ip_reasm.c \
 		kernel/net/ip_reasm.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . tests/unit/test_ip_reasm.c -o $@
+
+# X7: IPv6 address helpers — pure engine, compiled straight in.
+$(BUILD_DIR)/test_ipv6_addr: tests/unit/test_ipv6_addr.c kernel/net/ipv6_addr.c \
+		kernel/net/ipv6_addr.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . tests/unit/test_ipv6_addr.c -o $@
 
 $(BUILD_DIR)/test_elf: tests/unit/test_elf.c
 	@mkdir -p $(BUILD_DIR)

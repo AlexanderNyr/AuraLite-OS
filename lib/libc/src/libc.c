@@ -388,6 +388,12 @@ int net_ping(uint32_t ip) {
     return (int)syscall_ret(syscall(SYS_NET_PING, ip, 0, 0, 0, 0, 0));
 }
 
+/* X7: ICMPv6 echo.  The address is passed as 16 raw bytes (big-endian on the
+ * wire), so the caller formats the text address; the kernel validates bounds. */
+int net_ping6(const uint8_t addr[16]) {
+    return (int)syscall_ret(syscall(SYS_PING6, (uint64_t)addr, 0, 0, 0, 0, 0));
+}
+
 int socket(int domain, int type, int protocol) {
     return (int)syscall_ret(syscall(SYS_SOCKET, (uint64_t)domain, (uint64_t)type,
                                     (uint64_t)protocol, 0, 0, 0));
