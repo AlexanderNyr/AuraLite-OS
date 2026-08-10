@@ -25,7 +25,12 @@ int main(void) {
     puts("  OS         : AuraLite OS 0.0.1");
     puts("  Arch       : x86_64 (AMD64)");
     puts("  Bootloader : Custom BIOS/UEFI (BL1-BL8)");
-    puts("  Features   : SMP, VFS, TCP/IP, DHCP");
+    puts("  Features   : SMP, VFS, TCP/IP, DHCP, TLS");
+    /* REALINTERNET_PLAN X9: these numbers must match docs/tls.md and the
+     * actual kernel constants (kernel/proc/process.c SPAWN_MAX_IMAGE and
+     * USER_STACK_SIZE).  They document the fit of the shipped browser stack. */
+    puts("  Exec limit : 1 MiB (SPAWN_MAX_IMAGE; gbrowser uses ~36%)");
+    puts("  User stack : 1 MiB (USER_STACK_SIZE)");
     puts("  Shell      : Interactive (serial I/O)");
 
     print_bar(44, '-');

@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — N0–N7 complete; N8 delivered by `REALINTERNET_PLAN` X7 (IPv6 first landing); N9 pending
+## Status: IN PROGRESS 🚧 — N0–N8 delivered (IPv6 via `REALINTERNET_PLAN` X7; docs via N9); N9 complete
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -12,7 +12,7 @@
 | N6 | ✅ Done — libahttp: HTTP/1.1 + chunked + redirects + growing buffer, host test 7/7 | `patches/NET_N6_https_client.patch` |
 | N7 | ✅ Done — TCP padding fix, ACK-only loop, TLS handshake verified in guest | `patches/NET_N7_stack_hardening.patch` |
 | N8 | ✅ Done (via `REALINTERNET_PLAN` X7, first landing) — link-local + NDP + ICMPv6 echo + `ping6`; SLAAC/sockets/dual-stack recorded as follow-ups | `patches/REAL_X7_ipv6.patch` |
-| N9 | pending | — |
+| N9 | ✅ Done — `docs/tls.md` §6.5 honest security statement, stale claims fixed, `WEBVIEW_PLAN.md` D6 updated | `patches/REAL_X9_fit.patch` |
 
 This document answers:
 
@@ -663,25 +663,29 @@ SLAAC) is the recorded follow-up work, tracked in `REALINTERNET_PLAN` X7.
 
 ---
 
-### Phase N9 — Documentation and an honest security statement
+### Phase N9 — Documentation and an honest security statement ✅ COMPLETE
 
 **Objective:** say precisely what this protects against, and what it does not.
 
 #### Tasks
 
-- [ ] `docs/tls.md`: the implemented subset, the trust store's provenance, the
-      known gaps.
-- [ ] An explicit statement that this is **not audited**, has no side-channel
-      review beyond D7, and should not protect anything valuable.
-- [ ] Update `WEBVIEW_PLAN.md` D6, which points here.
+- [x] `docs/tls.md`: the implemented subset, the trust store's provenance, the
+      known gaps — updated to the current tree (see `docs/trust_store.md` for
+      provenance, `tls.md` §1–§3 for the subset, §7 for gaps).
+- [x] An explicit statement that this is **not audited**, has no side-channel
+      review beyond D7, and should not protect anything valuable — `tls.md` §6.5.
+- [x] Update `WEBVIEW_PLAN.md` D6, which points here — HTTPS is now
+      implemented and wired into gbrowser; D6 points to the honest statement.
 
 #### Test gate
 
-- Every limitation in this document appears in `docs/tls.md`.
+- Every limitation in this document appears in `docs/tls.md`. ✔ (delivered by
+  the X9 doc pass; a grep finds no stale "64 KiB" / "HTTPS is not supported"
+  claims).
 
 #### Deliverable
 
-`patches/NET_N9_docs.patch`
+`patches/REAL_X9_fit.patch` (the X9/N9 doc pass shipped together)
 
 ---
 

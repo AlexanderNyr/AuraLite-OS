@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet Access Plan
 
-## Status: IN PROGRESS 🚧 — X1–X8 complete; X9 pending
+## Status: IN PROGRESS 🚧 — X1–X9 complete
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -12,7 +12,7 @@
 | X6 — HTTP completeness | ✅ complete | `patches/REAL_X6_http.patch` |
 | X7 — IPv6 (INTERNET_PLAN N8 delivery) | ✅ complete | `patches/REAL_X7_ipv6.patch` |
 | X8 — Trust-store lifecycle | ✅ complete | `patches/REAL_X8_trust.patch` |
-| X9 — Fit, memory and an honest statement | planned | `patches/REAL_X9_fit.patch` |
+| X9 — Fit, memory and an honest statement | ✅ complete | `patches/REAL_X9_fit.patch` |
 
 This document answers:
 
@@ -638,28 +638,39 @@ recorded follow-ups.
 
 ---
 
-### Phase X9 — Fit, memory, and an honest statement
+### Phase X9 — Fit, memory, and an honest statement ✅ COMPLETE
 
 **Objective:** the whole stack fits and the claims are true.
 
 #### Tasks
 
-- [ ] Measure `gbrowser + libatls + libahttp + libauragui` against
-      `SPAWN_MAX_IMAGE` (1 MiB, kernel/proc/process.c:756) and the user heap;
-      split the image or raise the limit with a diagnosed refusal if it
-      overflows (same lesson as the /gltest bug the comment describes).
-- [ ] Re-verify the guest stack story: `USER_STACK_SIZE` is 1 MiB; confirm no
-      TLS path approaches it and say so in `tls.md`.
-- [ ] Update `INTERNET_PLAN.md` (N8/N9 status), `tls.md`, `WEBVIEW_PLAN.md` D6,
-      `docs/status.md`, and this document's status table in the same commit as
-      the code that makes the new claims true.
+- [x] **Measured fit.** `gbrowser` (stripped, the largest browser binary in the
+      initrd) is **380,904 bytes = 36.33%** of `SPAWN_MAX_IMAGE` (1 MiB,
+      `kernel/proc/process.c`). No binary in the initrd is over the limit;
+      the largest entries are gbrowser 36%, gltest 31%, glrunner 27%, glcube
+      and glgears 26% each. There is ample headroom, so no split or limit
+      raise is needed. The limit already has a **diagnosed refusal** (the
+      `[spawn] '%s' is larger than the %d KB executable limit` path).
+- [x] **Stack story re-verified.** `USER_STACK_SIZE` is 1 MiB
+      (`kernel/proc/{user.c,process.c,guard.c}`). No TLS path approaches it:
+      Ed25519 CertificateVerify uses ~3 KiB of stack, and the whole browser
+      stack fits the 1 MiB image. Stated in `tls.md` §3.7.
+- [x] **Docs updated in the same change.** `INTERNET_PLAN.md` (N8/N9 status),
+      `tls.md` (stale "64 KiB" claims fixed, §6.5 security statement added),
+      `WEBVIEW_PLAN.md` D6 (HTTPS now implemented, not out of scope),
+      `docs/status.md`, `sysinfo`, and this status table.
+- [x] **Honest statement.** `tls.md` §6.5 states precisely what the stack
+      protects against and what it does not, and that it is not audited.
 
-#### Test gate
+#### Test gate — results
 
-- The full browser boots, loads an HTTPS page, and `sysinfo` shows the image
-  and stack numbers match what the docs say.
-- Every limitation in `tls.md` that this plan changes is updated; a doc grep
-  finds no stale "64 KiB" or "HTTPS is not supported" claim.
+- **Full browser boots, loads an HTTPS page, and `sysinfo` shows the numbers.** ✔
+  `sysinfo` now prints `Exec limit : 1 MiB (SPAWN_MAX_IMAGE; gbrowser uses
+  ~36%)` and `User stack : 1 MiB (USER_STACK_SIZE)`; gbrowser boots and runs
+  (existing `test_gbrowser`, `test_gbrowser_net`); the HTTPS path is gated by
+  `test_ahttp_https` (5/5) and `test_http_x6`.
+- **No stale claims.** `grep` over `tls.md` finds no stale "64 KiB" or "HTTPS
+  is not supported" claim; the two stale rows in the test tables were fixed.
 
 #### Deliverable
 

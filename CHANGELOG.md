@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [REALINTERNET_PLAN X9 — Fit, memory, and an honest statement] 2026-08-10
+
+`REALINTERNET_PLAN.md` phase X9 (and `INTERNET_PLAN` N9 documentation). The
+TLS/browser stack now has measured fit numbers and an honest security
+statement.
+
+- **Measured fit.** The largest browser binary in the initrd (`gbrowser`) is
+  380,904 bytes = **36.33%** of `SPAWN_MAX_IMAGE` (1 MiB). No initrd binary is
+  over the limit (largest: gbrowser 36%, gltest 31%, glrunner 27%, glcube and
+  glgears 26%). No split or limit raise needed; the existing 1 MiB limit
+  already refuses oversized images with a diagnosed message.
+- **Stack story re-verified.** `USER_STACK_SIZE` is 1 MiB; no TLS path
+  approaches it (Ed25519 CertificateVerify uses ~3 KiB of stack). Stated in
+  `tls.md` §3.7, replacing the stale "64 KiB stack" claim.
+- **Honest security statement.** `tls.md` §6.5 states exactly what the stack
+  protects against (in-band attacker who cannot break the crypto), what it
+  does not (root-in-trust-store, compromised CA, no OCSP/CRL/CT, broken
+  clock, compromised host, side channels), and that it is **not audited** and
+  should not protect anything valuable.
+- **Docs updated in the same change.** `INTERNET_PLAN.md` (N8/N9 status),
+  `WEBVIEW_PLAN.md` D6 (HTTPS is now implemented and wired into gbrowser, not
+  out of scope), `docs/status.md`, `sysinfo` (prints `Exec limit : 1 MiB` and
+  `User stack : 1 MiB`), and the X9 plan section. Stale "64 KiB" and "HTTPS is
+  not supported" claims removed from `tls.md`.
+- **Deliverable**: `patches/REAL_X9_fit.patch`.
+
+
+
 ## [REALINTERNET_PLAN X8 — Trust-store lifecycle] 2026-08-10
 
 `REALINTERNET_PLAN.md` phase X8. The shipped trust store is now documented,

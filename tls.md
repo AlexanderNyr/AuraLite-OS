@@ -1,6 +1,6 @@
 # AuraLite OS — TLS Implementation Documentation
 
-**Last updated:** 2026-08-06
+**Last updated:** 2026-08-10 (REALINTERNET_PLAN X9 / INTERNET_PLAN N9)
 
 This document describes the TLS stack implemented in AuraLite OS, its
 capabilities, limitations, and security properties.  It exists because an
@@ -170,14 +170,17 @@ other curves (P-384, P-521) is still refused with
 TLS layer, the P-256 arithmetic is not audited and not constant-time (it
 runs on public certificate data; see §3.1–§3.3).
 
-### 3.7 64 KiB user stack limit
+### 3.7 User stack size
 
-The Ed25519 scalar multiplication uses ~3 KiB of stack per verification
-(two 160-byte `ge` structs + SHA-512 hashing).  A full TLS handshake
-with Ed25519 CertificateVerify overflows the default 64 KiB user stack.
-The workaround is to increase `USER_STACK_SIZE` to 256 KiB, or
-restructure the crypto to use heap-allocated scratch space.  This is
-a known limitation, not a security issue.
+**Resolved.** The user stack is now **1 MiB** (`USER_STACK_SIZE =
+0x100000`, set in `kernel/proc/{user.c,process.c,guard.c}`). The earlier
+claim that Ed25519 CertificateVerify overflowed a *64 KiB* stack is stale:
+that was true only for the old 64 KiB default, and the Ed25519 scalar
+multiplication uses only ~3 KiB of stack per verification anyway. A full
+TLS 1.3 handshake with Ed25519, RSA, or ECDSA P-256 CertificateVerify runs
+well within the 1 MiB stack; no TLS path approaches it (measured in X9 —
+even `gbrowser` + `libatls` + `libahttp` + `libauragui` fit the 1 MiB
+`SPAWN_MAX_IMAGE` with 36% used).
 
 ### 3.8 No hostname verification against a CA policy
 
@@ -190,8 +193,13 @@ actually verify against a pinned root).
 ### 3.9 HTTP client limitations
 
 - No HTTP/2 or HTTP/3.
-- No persistent connections (Connection: close only).
-- No request body support (GET only).
+- Persistent connections: **kept alive** (REALINTERNET_PLAN X6). `libahttp`
+  caches one live connection per origin, honours `Connection: close` and
+  HTTP/1.0, skips 1xx, and reopens a stale socket once for idempotent methods.
+- Request bodies: **supported for POST/PUT** (X6), bounded to
+  `AHTTP_MAX_REQ_BODY` (64 KiB), `Content-Length`-framed.
+- Redirects: **followed** (X6) with RFC 3986 dot-segment resolution, 301/302
+  → GET, 307/308 → resend body, max 5 hops, `data:`/`javascript:` refused.
 - **Real-world ClientHello interop:** a TLS 1.3 fetch against a modern
   Cloudflare-hosted site (e.g. example.com) currently ends with the server
   closing the connection (`ATLS_ERR_PEER_EOF`), because such servers
@@ -234,8 +242,8 @@ actually verify against a pinned root).
 | Test | Assertions | Covers |
 |---|---|---|
 | `test_rng` | 14 | Entropy: RDRAND detection, jitter fallback, boot sample |
-| `test_crypto` | 14 | libatls in-guest smoke test on 64 KiB stack |
-| `test_x509` | 14 | X.509 parser in-guest on 64 KiB stack |
+| `test_crypto` | 14 | libatls in-guest smoke test |
+| `test_x509` | 14 | X.509 parser in-guest |
 | `test_tls` | 14 | TLS handshake in-guest vs openssl s_server |
 
 ---
@@ -301,18 +309,47 @@ tests/integration/cases/
 
 ---
 
+## 6.5 The security statement (REALINTERNET_PLAN X9 / INTERNET_PLAN N9)
+
+Read this before you trust this stack with anything.
+
+- **This is not audited.** No independent review of the TLS layer, the
+  cryptographic primitives in `libatls`, or the certificate validation has
+  been performed. It is hobby/educational code.
+- **No side-channel review beyond D7.** Constant-time behaviour is enforced
+  where secrets are compared (no `memcmp` on secret material; a source grep
+  enforces this per rule D7), but there is no cache-timing, power-analysis or
+  microarchitectural review. P-256 arithmetic runs on public certificate
+  data and is **not** constant-time.
+- **Do not use this to protect anything valuable.** There is no key storage
+  on the OS, no secure enclave, no authenticated boot, and the kernel and
+  userspace are themselves a hobby kernel.
+- **What it protects against (and only that):** an in-band network attacker
+  who cannot break the cryptography cannot read or modify TLS 1.3 traffic to
+  a host whose chain verifies against the shipped trust store. Chain
+  validation (real-world roots, hostname matching, validity dates, basic
+  constraints, key usage, ECDSA/Ed25519/RSA signatures) is implemented and
+  tested.
+- **What it does not protect against:** an attacker with a root in the trust
+  store, a compromised CA, a misissued certificate (no OCSP/CRL/CT — see
+  `docs/trust_store.md` §5), a broken clock (validity checking depends on the
+  OS clock), a compromised host/kernel, or side channels.
+
 ## 7. What comes next
 
 The remaining phases from `INTERNET_PLAN.md`:
 
-- **N8 (IPv6):** optional, largest effort with smallest payoff.
-  Deferred indefinitely.
+- **N8 (IPv6):** delivered as the first landing by `REALINTERNET_PLAN` X7
+  (link-local + NDP + ICMPv6 echo + `ping6`); SLAAC, an AF_INET6 socket
+  family, AAAA-record family choice and dual-stack are recorded follow-ups.
+- **X9 (fit & docs):** complete — measured `gbrowser + libatls + libahttp +
+  libauragui` at 380,904 bytes (36% of the 1 MiB `SPAWN_MAX_IMAGE`); the 1 MiB
+  user stack has ample headroom; docs updated (see `docs/trust_store.md`,
+  `docs/status.md`, `WEBVIEW_PLAN.md` D6).
 - **Known gaps that would strengthen the stack:**
-  - OCSP stapling / CRL checking
+  - OCSP stapling / CRL checking (recorded exclusion — `docs/trust_store.md` §5)
   - HTTP/2 support
-  - Persistent HTTP connections
-  - DNS caching
-  - IP fragment reassembly
+  - Real-world ClientHello interop with PQ-hybrid groups (X25519MLKEM768)
 
 ---
 

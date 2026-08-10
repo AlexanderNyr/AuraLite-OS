@@ -154,7 +154,7 @@ A JS engine is larger than everything in this document combined and would not
 fit in `SPAWN_MAX_IMAGE`. Saying so here stops it being proposed as a
 "natural next phase".
 
-### D6. HTTPS is a prerequisite for usefulness, and it is out of scope
+### D6. HTTPS is a prerequisite for usefulness
 
 Without TLS the web view reaches plain-HTTP sites, of which there are very
 few left. That makes this a *rendering engine* one can point at a local
@@ -165,6 +165,15 @@ certificate parsing and a trust store. That is its own plan of comparable
 size — **`INTERNET_PLAN.md`**, which exists and covers exactly this — and
 half-implementing it would be worse than not having it: a browser that
 appears to do HTTPS but validates nothing is a liability, not a feature.
+
+**Status (REALINTERNET_PLAN X6/X9): TLS is now implemented and wired into
+`gbrowser`.** gbrowser fetches both `http://` and `https://` through
+`libahttp` over `libatls`, loads the shipped trust store
+(`/etc/ssl/roots.pem`), and performs full chain validation in the handshake.
+The old "HTTPS is not supported" refusal page is gone. What remains is the
+honest security statement in `docs/tls.md` §6.5: the stack is not audited,
+has no side-channel review beyond D7, excludes OCSP/CRL/CT
+(`docs/trust_store.md` §5), and should not protect anything valuable.
 
 `INTERNET_PLAN.md` also found something this plan assumed away: the existing
 `getentropy()` returns a mix of TSC, tick count and a fixed constant, so it is
