@@ -1,0 +1,728 @@
+# AuraLite OS — Win32 Application Support Plan
+
+## Status: IN PROGRESS 🔨 — W32-0, W32-1, W32-2 done; W32-3 – W32-8 planned
+
+| Phase | State |
+|---|---|
+| W32-0 Provenance and the legal record | ✅ done |
+| W32-1 UTF-16 and the string layer | ✅ done |
+| W32-2 PE32+ parsing, in user space | ✅ done |
+| W32-3 The kernel PE loader | 📋 planned |
+| W32-4 `KERNEL32` bounded import set | 📋 planned |
+| W32-5 `USER32` + `GDI32` | 📋 planned |
+| W32-6 CRT startup, TLS, minimal SEH | 📋 planned |
+| W32-7 `LoadLibrary`, or a documented refusal | 📋 planned |
+| W32-8 Integration and documentation | 📋 planned |
+
+The three completed phases are exactly the ones that need no kernel change, so
+nothing shipped so far can destabilise a running system: they are a parser, a
+converter and a provenance check, all host-side.
+
+This document answers one question:
+
+> *Can an unmodified Windows `.exe` run on AuraLite OS, and if so, what is the
+> smallest honest path to the first one — without infringing anyone's rights?*
+
+It follows the structure of the existing plans (`SDK_PLAN.md`, `GL_PLAN.md`,
+`WEBVIEW_PLAN.md`, `FIXES_PLAN.md`, `POSIX_PLAN.md`): dependency-ordered
+phases, a definition of done and a test gate for every phase, and one `.patch`
+per phase.
+
+**Baseline:** commit `e79bb90` (M4 update), on top of the completed
+`SDK_PLAN.md` and `WEBVIEW_PLAN.md`.
+
+This plan has an unusual first section. Every other plan in this repository
+starts with what the code does; this one starts with what the law allows,
+because the legal boundary determines the technical design and not the other
+way round. Getting that order wrong is how a project like this ends up having
+to delete work.
+
+---
+
+## 1. The legal boundary, decided first
+
+**Nothing in this plan requires permission from Microsoft, and nothing in it
+uses Microsoft's code.** That is a design constraint, not a hope, and the
+phases below are shaped by it.
+
+### 1.1 What is being copied, and why that is lawful
+
+Re-implementing an API means writing your own code that answers to names
+somebody else chose. The names, signatures and constant values — the
+*declarations* — are what a program links against. The *implementation* behind
+them is what this plan writes from scratch.
+
+Three independent grounds make this defensible:
+
+**Interoperability is the settled purpose.** In *Google LLC v. Oracle America,
+Inc.*, 593 U.S. 1 (2021), the Supreme Court held that copying the declaring
+code of an API — "reimplementation of a user interface" — to let programmers
+"put their accrued talents to work in a new and transformative program" was
+fair use as a matter of law. The Court assumed copyrightability for argument's
+sake and decided on fair use; it did not hold that APIs are uncopyrightable.
+That distinction matters and is why the other two grounds are not redundant.
+
+**A functional interface is thin copyright at best.** 17 U.S.C. § 102(b)
+excludes any "idea, procedure, process, system, method of operation" from
+protection. In the EU, Directive 2009/24/EC Art. 1(2) excludes "ideas and
+principles which underlie any element of a computer program, including those
+which underlie its interfaces," and Art. 6 expressly permits decompilation for
+interoperability. *SAS Institute v. World Programming* (CJEU C-406/10, 2012)
+held that functionality, programming language and file formats are not
+protected as such.
+
+**There is a permissively licensed source for the declarations.** This is the
+practical answer, and it is the one this plan relies on: **mingw-w64**
+publishes Win32 API headers and import libraries under public-domain
+dedications and ZPL-2.1 / BSD-3-Clause terms. They are already shipped by
+Debian, Fedora and MSYS2, and they were produced from public documentation and
+clean-room work, not from the Windows SDK.
+
+So the plan does not need to litigate the first two grounds. It takes the
+headers from a source that is already licensed for exactly this use.
+
+### 1.2 Apache-2.0 compatibility
+
+This repository is Apache-2.0. Inbound licences must be compatible.
+
+| Source | Licence | Apache-2.0 inbound? |
+|---|---|---|
+| mingw-w64 headers (`mingw-w64-headers`) | Public domain / ZPL-2.1 / BSD-3-Clause | ✅ yes |
+| mingw-w64 `crt`/runtime | ZPL-2.1, some LGPL-2.1 | ⚠️ headers only — see D3 |
+| Wine source | **LGPL-2.1-or-later** | ❌ **no** — see D4 |
+| ReactOS source | **GPL-2.0 / LGPL-2.1** | ❌ **no** — see D4 |
+| Windows SDK headers | Proprietary EULA | ❌ **never** |
+| Leaked Windows source | Stolen; no licence | ❌ **never** |
+
+The two entries that will tempt a contributor are Wine and ReactOS, because
+both have already solved every problem in this document. Both are copyleft and
+**cannot** be copied into an Apache-2.0 tree. Reading them to learn *how* a
+thing works is also how a project acquires a provenance problem it cannot later
+disprove. D4 makes this a hard rule.
+
+### 1.3 What is forbidden, stated plainly so it is not rediscovered later
+
+- **No Microsoft SDK headers.** Not one line, not "just this struct".
+- **No leaked or disassembled Windows code.** ReactOS's 2006 internal audit —
+  triggered by an allegation that disassembly had been used — is the case study
+  for why this matters. It cost them a repository lockdown and a full audit.
+- **No copying from Wine or ReactOS.** Licence-incompatible, as above.
+- **No redistributing Microsoft DLLs.** AuraLite ships no `kernel32.dll`,
+  `user32.dll`, `msvcrt.dll` or any other Microsoft binary, ever. The user
+  supplies the `.exe` they want to run; AuraLite supplies the implementation
+  behind the imports.
+- **No trademark use.** "Windows", "Win32", "Microsoft" and "MSVC" are
+  Microsoft trademarks. This plan uses them nominatively — to say truthfully
+  what is being interoperated with — and never in a product name, logo or in a
+  way suggesting endorsement. The subsystem is called **`w32`** internally and
+  described as "a Win32-compatible personality", not "Windows for AuraLite".
+
+### 1.4 Not legal advice
+
+The author of this plan is not a lawyer and this section is not legal advice.
+It is a written record of the reasoning and the sources, so that a reviewer can
+check it and a contributor can follow it. Anyone shipping AuraLite commercially
+should have counsel review §1.
+
+---
+
+## 2. Where things actually stand
+
+Measured against the tree at the baseline commit, not assumed.
+
+### 2.1 The good news, established first
+
+**AuraLite already produces and understands PE32+.** This was not assumed — it
+was checked:
+
+```
+$ od -A d -t x1 -N 8 build/boot/BOOTX64.EFI
+0000000 4d 5a 78 00 01 00 00 00        # "MZ", e_lfanew = 0x78
+$ od -A d -t x4 -j 60 -N 4 build/boot/BOOTX64.EFI
+0000060 00000078
+```
+
+`boot/uefi/` builds a PE32+ image, and `Makefile:1044` links it with
+`lld-link -subsystem:efi_application`. `lld-link` is already in
+`REQUIRED_TOOLS`. The project therefore already owns a PE toolchain and a
+working example of PE layout.
+
+That reframes the problem. **A PE loader is not exotic here** — it is the same
+container the project's own bootloader uses, minus the parts UEFI does not
+need: imports, relocations and a subsystem convention.
+
+### 2.2 What exists to build on
+
+| Requirement | State | Evidence |
+|---|---|---|
+| PE32+ container knowledge | ✅ in-tree | `boot/uefi/`, `lld-link` in `REQUIRED_TOOLS` |
+| ELF loader to model on | ✅ mature | `kernel/proc/elf.c`, per-`PT_LOAD` W^X from `p_flags` |
+| Per-process address spaces | ✅ working | boot log: `spawned PID 5 ... (CR3=0x2358000)` |
+| Windowing to map USER32 onto | ✅ 32 ops | `GUI_OP_CREATE`/`MOVE`/`RESIZE`/`BLIT`/`DRAW_TEXT`/… |
+| Drawing to map GDI32 onto | ✅ exists | `ag_fill_rect`, `ag_draw_line`, `ag_draw_text`, `ag_blit_alpha` |
+| Widgets | ✅ exists | `ag_add_button`, `ag_add_listbox`, `ag_add_textbox`, … |
+| Files/processes for KERNEL32 | ✅ 126 syscalls | `SYS_OPEN`/`READ`/`WRITE`/`MMAP`/`VirtualAlloc`-shaped `SYS_MPROTECT` |
+| Wide strings | ⚠️ partial | `wchar.h` has `wcslen`/`wcscpy`/`wcsncpy`; no UTF-16↔UTF-8 conversion |
+| `setjmp`/`longjmp` | ✅ exists | `lib/libc/include/setjmp.h` — the basis for a minimal SEH |
+| PE loader | ❌ none | no `IMAGE_DOS`/`0x5A4D`/`PE\0\0` anywhere in `kernel/proc/` |
+| Import resolution | ❌ none | ELF loader never looks at `PT_INTERP`/`PT_DYNAMIC` |
+| Base relocations | ❌ none | ELF loader honours each `PT_LOAD`'s own `p_vaddr` verbatim |
+| Win32 calling convention | ❌ none | see 2.4 |
+
+### 2.3 The load-address collision is already solved
+
+`lib/libc/user.ld` fixes every AuraLite program at `0x40000000`. A Win32 `.exe`
+typically prefers `0x140000000` (x64) or `0x400000` (x86). Because each process
+gets its own address space — proven by the distinct `CR3` values in the boot
+log — a PE image can be mapped at its own `ImageBase` without colliding with
+anything. Where it cannot, PE base relocations exist precisely to move it, and
+unlike ELF the format was designed for that.
+
+**This is the single biggest reason the project is closer to this than it
+looks.**
+
+### 2.4 The calling convention is the real work
+
+x86-64 Windows and System V AMD64 differ in ways that cannot be papered over:
+
+| | Windows x64 | System V AMD64 (AuraLite) |
+|---|---|---|
+| Integer args | `RCX RDX R8 R9` | `RDI RSI RDX RCX R8 R9` |
+| Shadow space | 32 bytes, caller-allocated | none |
+| Callee-saved | + `RSI`, `RDI`, `XMM6–15` | `RBX RBP R12–R15` |
+| Struct return | hidden pointer in `RCX` | hidden pointer in `RDI` |
+
+Every call from a PE image into an AuraLite-implemented Win32 function crosses
+that boundary. Clang provides `__attribute__((ms_abi))`, which makes this a
+compiler problem rather than an assembly problem — but it must be applied to
+*every* exported entry point, and getting it wrong produces corruption that
+looks like a random crash three calls later.
+
+### 2.5 Honest scope: what "runs" will mean
+
+A modern `.exe` from the internet will not run. It will import `KERNEL32`,
+`USER32`, `GDI32`, `ADVAPI32`, `SHELL32`, `OLE32`, `COMCTL32`, `MSVCRT` or the
+UCRT, expect a registry, a console subsystem, DLL search paths, TLS callbacks,
+SEH, and often .NET or DirectX. The realistic target for this plan is:
+
+> **A freestanding, statically linked, console or simple-GUI `.exe` built by
+> mingw-w64, importing a bounded set of functions this plan implements.**
+
+That is a real Win32 binary — the same file format, the same ABI, the same
+imports — but it is not "Windows compatibility". §9 says so plainly, because
+the alternative is a plan that promises Photoshop and delivers `MessageBoxA`.
+
+---
+
+## 3. Decisions
+
+### D1. A personality, not an emulator
+
+`w32` is a **subsystem personality**: a PE loader in the kernel plus a
+user-space library that implements the imports. No CPU emulation (the binaries
+are already x86-64), no virtualisation, no syscall interception of a real
+Windows kernel. AuraLite runs the code natively and answers its imports.
+
+### D2. Import resolution in user space, loading in the kernel
+
+The kernel gains the minimum: recognise PE, map sections with W^X from the
+section characteristics, apply base relocations, hand control to a user-space
+loader stub. Everything else — walking the import directory, binding names,
+implementing the functions — is user space, where a bug is a dead process
+rather than a dead machine.
+
+This mirrors what the ELF path already does well and keeps the attacker-facing
+parser (imports, forwarders, delay-loads) out of Ring 0.
+
+### D3. Declarations come from mingw-w64, vendored and attributed
+
+`w32/include/` is populated from mingw-w64's `mingw-w64-headers`, with the
+upstream licence files preserved verbatim and a `PROVENANCE.md` recording the
+exact upstream version and commit. **Headers only** — none of mingw-w64's
+runtime, some of which is LGPL.
+
+Writing our own `windows.h` from scratch is the alternative. It is rejected: it
+would be a worse header, it would drift, and it would put the project in the
+position of asserting that its declarations are original when their whole
+purpose is to be identical.
+
+### D4. Wine and ReactOS are not to be read while contributing to `w32`
+
+Both are licence-incompatible (§1.2). The rule is deliberately stronger than
+"do not copy": a contributor who has read Wine's `user32` cannot easily prove
+their `CreateWindowExA` is independent, and provenance is the asset being
+protected. Permitted references are: mingw-w64 headers, published Microsoft
+*documentation* (learn.microsoft.com — readable, not copyable), the PE/COFF
+specification, and observed behaviour of binaries the contributor lawfully
+possesses.
+
+Contributors affirm this in the existing CLA flow (`docs/CLA_INDIVIDUAL.md`).
+
+### D5. Map onto what exists; do not build a second GUI
+
+`USER32` and `GDI32` are implemented as translation layers over the existing
+GUI syscalls and `libauragui`. `CreateWindowExA` becomes `ag_window_create`;
+`FillRect` becomes `ag_fill_rect`; `TextOutA` becomes `ag_draw_text`. Where
+AuraLite has no equivalent, the function returns a documented failure rather
+than growing a parallel window manager.
+
+The compositor already does the hard part. A second one would be the largest
+mistake available here.
+
+### D6. `A` and `W` both exist; `W` is the real one internally
+
+Win32 doubles every string entry point. `w32` implements the `W` (UTF-16)
+variant as primary and makes the `A` variant a converting wrapper, because
+that is the direction the format actually stores strings and because
+`libauragui` takes UTF-8. This requires UTF-16↔UTF-8 conversion, which
+`wchar.h` does not have today — it is phase W32-1, not an afterthought.
+
+### D7. One bounded import set, chosen by measurement
+
+Rather than "implement KERNEL32", phase W32-4 implements exactly the imports
+that the phase's own test binaries actually reference, discovered by dumping
+their import tables. The set grows only when a new gate binary needs it. This
+keeps the surface auditable and stops the plan becoming an infinite one.
+
+### D8. Explicitly out of scope, so absence is a decision
+
+Named here so nobody has to guess:
+
+- **No registry.** Functions that need one fail with a documented error.
+- **No COM/OLE, no .NET, no DirectX, no WinSock.** Each is a plan of its own.
+- **No 32-bit (i386) PE.** AuraLite is x86-64 only; WOW64 is not a goal.
+- **No DLL loading initially.** Static `.exe` first; `LoadLibrary` is W32-7 and
+  may end in a documented limitation.
+- **No console subsystem beyond stdout/stderr** mapped to the existing TTY.
+- **No SEH beyond a `setjmp`-based `__try/__except` shim** (W32-6), which is
+  not real unwinding and will be documented as such.
+
+---
+
+## 4. Phases
+
+### Phase W32-0 — Provenance and the legal record ✅ DONE
+
+**Objective:** make the licensing position auditable before any code exists.
+
+#### Tasks
+
+- [x] `w32/PROVENANCE.md`: records every file, what it is, and the licence it
+      is under, plus an explicit "these contributed nothing" list.
+- [ ] Vendor mingw-w64 headers into `w32/include/`. **Deferred to W32-4**, and
+      the reason is worth recording: nothing built so far needs an API
+      declaration. The parser and the converter are written from the PE/COFF
+      specification and the Unicode standard. Vendoring headers before there
+      is a caller for them would add a licensing surface for no benefit, so
+      `PROVENANCE.md` currently lists the vendored set as empty.
+- [x] `w32/LICENSING.md`: the contributor-facing rules, including that Wine and
+      ReactOS are forbidden as *references*, not merely as sources.
+- [x] `tools/check_provenance.sh`: fails if a file under `w32/` lacks a licence
+      header or is not listed in `PROVENANCE.md`, or if any file names Wine or
+      ReactOS as a source, or if a `.dll`/`.sys`/`.msi` is ever committed.
+- [ ] Add the D4 affirmation to the CLA checklist — deferred with the header
+      vendoring, since both concern contributions that do not exist yet.
+
+#### Test gate
+
+- `tools/check_provenance.sh` passes, and `--selftest` proves it fails on a
+  planted unrecorded file (negative control, as `test-unit` already does for
+  the libc drift check).
+- Every vendored file's licence is one of: public domain, ZPL-2.1, BSD-3-Clause,
+  MIT. Vacuously true today: nothing is vendored yet.
+- No file under `w32/` names Wine or ReactOS as a source, enforced rather than
+  asserted.
+
+**Result:** wired into `make test-unit`. Both the check and its negative
+control run on every build:
+
+```
+[provenance] PASS: 5 source file(s) recorded, no forbidden sources
+[provenance] self-test PASS: violation was detected as required
+```
+
+**Deliverable:** `w32/LICENSING.md`, `w32/PROVENANCE.md`,
+`tools/check_provenance.sh` ✅
+
+---
+
+### Phase W32-1 — UTF-16 and the string layer ✅ DONE
+
+**Objective:** the prerequisite D6 identified, landed before anything depends
+on it.
+
+#### Tasks
+
+- [x] The UTF-16 type is a fixed `uint16_t`, not `wchar_t`. This turned out to
+      be better than the planned `-fshort-wchar`: a build flag that silently
+      changes what a type means is exactly the kind of implicit boundary the
+      task warned about, so the core uses an explicit width and leaves
+      `-fshort-wchar` to the eventual mingw-w64-facing edge.
+- [x] UTF-16 ↔ UTF-8 conversion, both directions, with surrogate pairs.
+- [x] Strict rejection instead of U+FFFD substitution — a replacement character
+      would quietly turn a hostile filename into a different valid one.
+- [x] `w32_utf16_len()` bounded by a caller-supplied maximum, so an
+      unterminated buffer cannot run away.
+- [ ] Broader `w32_wcs*` helpers: deferred until a caller needs them.
+
+#### Test gate
+
+- Host unit test: round-trip ASCII, BMP, astral (surrogate pairs), and
+  malformed input (lone surrogate, truncated sequence, over-long UTF-8) —
+  refused, not crashed, no over-read past the buffer.
+- Conversion of a 0-length and a 1-byte buffer.
+
+**Result:** `test_w32_utf` 13/13, clean under `-fsanitize=address,undefined`.
+
+Every rejection case is run with the input in an exact-sized heap block, so an
+over-read is a genuine out-of-bounds access ASan can see rather than a walk
+into a convenient trailing zero. Covered: overlong `C0 80`/`E0 80 80`/`C1 BF`/
+`F0 80 80 80`, truncated 2/3/4-byte sequences, bad continuation bytes, stray
+`0x80`, 5-byte sequences, UTF-8-encoded surrogates (`ED A0 80`), `U+110000`,
+lone high and low surrogates, high-followed-by-high, and high-followed-by-ASCII.
+
+One contract bug was found by the tests and fixed: a measuring call
+(`dst == NULL`) returned `ERR_SPACE` instead of `OK`, contradicting the
+documented two-pass sizing protocol.
+
+**Deliverable:** `w32/include/w32/w32_utf.h`, `w32/src/w32_utf.c`,
+`tests/unit/test_w32_utf.c` ✅
+
+---
+
+### Phase W32-2 — PE32+ parsing, in user space, offline ✅ DONE
+
+**Objective:** understand the container with no kernel risk at all.
+
+#### Tasks
+
+- [ ] Parse DOS header, `e_lfanew`, NT headers, optional header, sections.
+- [ ] Parse import directory, base relocation table, exports.
+- [ ] `tools/peinfo` — a host tool that dumps all of it.
+- [ ] Validate: `Machine == IMAGE_FILE_MACHINE_AMD64`, `Magic == PE32+`.
+
+#### Test gate
+
+- `tools/peinfo build/boot/BOOTX64.EFI` agrees with `llvm-readobj --file-headers`
+  on every field. **The project's own EFI binary is the first test fixture** —
+  no external file needed, and the reference output is already obtainable:
+
+  ```
+  $ llvm-readobj-19 --file-headers build/boot/BOOTX64.EFI
+  Format: COFF-x86-64
+  ImageFileHeader {
+    Machine: IMAGE_FILE_MACHINE_AMD64 (0x8664)
+    SectionCount: 3
+    OptionalHeaderSize: 240
+  ```
+
+  `objdump -f` reports the same file as `pei-x86-64` and is an acceptable
+  fallback, so the gate adds no hard new dependency beyond binutils.
+- Malformed inputs refused without crash or over-read: `e_lfanew` past EOF,
+  section count of 0xFFFF, `SizeOfRawData` beyond the file, relocation block
+  with a bogus size, import descriptor with a name RVA outside any section.
+- A fuzz corpus of truncated/bit-flipped PEs: no crash, no hang.
+
+**Result:** `test_w32_pe` 20/20, clean under `-fsanitize=address,undefined`.
+`tools/peinfo` agrees with `llvm-readobj-19` on all nine compared header fields
+of `BOOTX64.EFI`, checked mechanically by `tests/unit/test_w32_peinfo.sh`
+rather than by eye.
+
+Beyond the listed cases the gate also covers: PE32 (32-bit) and i386 refusal,
+non-power-of-two and inverted alignments, `NumberOfRvaAndSizes` overflow, an
+`e_lfanew` that overlaps the DOS header, RVA translation straddling the end of
+a section's raw data, odd-sized relocation blocks, and a W^X section pair. The
+fuzz sweep parses every 7-byte prefix of a valid image and every third bit of
+its header region, walking imports and relocations on anything that parses.
+
+The property worth naming: `BOOTX64.EFI` parses perfectly and is still refused
+by `pe_check_loadable()`, because its subsystem is `EFI_APPLICATION`. The
+project's own firmware binary can never be launched as a user process.
+
+**Deliverable:** `w32/include/w32/w32_pe.h`, `w32/src/w32_pe.c`,
+`w32/tools/peinfo.c`, `tests/unit/test_w32_pe.c`,
+`tests/unit/test_w32_peinfo.sh` ✅
+
+---
+
+### Phase W32-3 — The kernel PE loader
+
+**Objective:** map a PE image into a process the way `elf.c` maps an ELF.
+
+#### Tasks
+
+- [ ] `kernel/proc/pe.c`, modelled on `elf.c`, sharing its validation habits.
+- [ ] Map sections at `ImageBase`; apply base relocations when that is taken.
+- [ ] W^X from section characteristics: `IMAGE_SCN_MEM_EXECUTE` →
+      executable, `MEM_WRITE` → writable, never both, matching `elf.c:111`.
+- [ ] `execpolicy` decides whether a PE may be executed at all.
+- [ ] Only `IMAGE_SUBSYSTEM_WINDOWS_CUI`/`GUI` accepted; EFI subsystems refused
+      so an `.efi` can never be launched as a process.
+
+#### Test gate
+
+- A minimal hand-built PE (assembled in-tree, no external dependency) loads,
+  runs, and exits with a known code.
+- The same PE with `ImageBase` forced to a taken address loads via relocations
+  and produces the identical result.
+- W^X: a section marked `MEM_WRITE|MEM_EXECUTE` is refused, matching the ELF
+  loader's behaviour, with a test that fails without the check.
+- Hostile images from W32-2's corpus are refused by the kernel with no fault:
+  `test_pe_hostile` must show no `UNHANDLED EXCEPTION` in the serial log.
+- `test_elf_permissions` unchanged — evidence the shared paths were not
+  disturbed.
+
+**Deliverable:** `patches/W32_3_peloader.patch`
+
+---
+
+### Phase W32-4 — `KERNEL32`: the bounded first import set
+
+**Objective:** a console `.exe` that prints and exits.
+
+#### Tasks
+
+- [ ] `w32/src/kernel32.c`, every export `__attribute__((ms_abi))`.
+- [ ] The set is exactly what the gate binaries import, per D7. Expected:
+      `GetStdHandle`, `WriteFile`, `ReadFile`, `CreateFileA/W`, `CloseHandle`,
+      `ExitProcess`, `GetLastError`/`SetLastError`, `VirtualAlloc`/`Free`
+      (onto `SYS_MMAP`/`SYS_MPROTECT`), `HeapAlloc`/`HeapFree`,
+      `GetCommandLineA/W`, `Sleep`, `GetTickCount64`.
+- [ ] A `HANDLE` table per process, mapping to AuraLite fds.
+- [ ] Win32 error codes, set on every failure path.
+
+#### Test gate
+
+- A mingw-w64-built `hello.exe` — `printf` to stdout, `ExitProcess(0)` — prints
+  over serial and exits 0.
+- Every implemented function has a failure-path test: bad handle → `FALSE` +
+  `GetLastError() == ERROR_INVALID_HANDLE`, not a crash.
+- A `HANDLE` from another process is not usable (isolation, as
+  `test_fd_isolation` already gates for fds).
+- `ms_abi` correctness: a function taking 6 integer args and returning a struct
+  by value gets every argument intact. **This is the test that catches the
+  convention bug from §2.4, and it is written before the other functions.**
+
+**Deliverable:** `patches/W32_4_kernel32.patch`
+
+---
+
+### Phase W32-5 — `USER32` + `GDI32` onto the existing compositor
+
+**Objective:** a window on screen, drawn by a PE binary.
+
+#### Tasks
+
+- [ ] `RegisterClassExW`, `CreateWindowExW`, `ShowWindow`, `DestroyWindow` →
+      `ag_window_*`.
+- [ ] A message loop: `GetMessage`/`PeekMessage`/`DispatchMessage` over
+      `ag_poll_event`, translating to `WM_PAINT`, `WM_KEYDOWN`, `WM_MOUSEMOVE`,
+      `WM_LBUTTONDOWN`, `WM_CLOSE`, `WM_DESTROY`.
+- [ ] `WNDPROC` dispatch — an `ms_abi` callback *into* the PE image.
+- [ ] `BeginPaint`/`EndPaint`, `FillRect`, `TextOutW`, `MoveToEx`/`LineTo`,
+      `BitBlt` → `ag_*`.
+- [ ] `MessageBoxA/W` over `ag_alert`.
+
+#### Test gate
+
+- A mingw-w64 `.exe` creates a window, paints, responds to a synthetic key and
+  mouse event, and closes cleanly. Framebuffer checked as `test_gui` already
+  does.
+- `WNDPROC` is entered with the correct `hwnd`/`msg`/`wParam`/`lParam` — the
+  callback direction of the ABI, which W32-4's test does not cover.
+- A window owned by a killed PE process is reaped: `gui_cleanup_process`
+  already does this for native apps and must work here too.
+- Hostile: a `WNDPROC` pointer outside the image, a `CreateWindowExW` with a
+  bad class pointer — refused, no kernel fault (`test_gui_bad_pointers` is the
+  existing model).
+
+**Deliverable:** `patches/W32_5_user32_gdi32.patch`
+
+---
+
+### Phase W32-6 — CRT startup, TLS and a minimal SEH
+
+**Objective:** the things a real compiler emits that a hand-written `.exe`
+avoids.
+
+#### Tasks
+
+- [ ] PE entry → `mainCRTStartup`/`WinMainCRTStartup` conventions; build
+      `argc`/`argv` from the command line, including quoting rules.
+- [ ] TLS directory: run TLS callbacks, allocate the TLS block.
+- [ ] `__try`/`__except` shim on `setjmp`/`longjmp`, with
+      `SetUnhandledExceptionFilter`.
+- [ ] Static-initialiser sections (`.CRT$XC*`) run in order.
+
+#### Test gate
+
+- A C++ `.exe` with a global constructor runs it before `main`
+  (`test_init_array` is the existing native analogue).
+- Command-line parsing matches documented Win32 quoting for: quoted args,
+  embedded quotes, backslash runs before a quote, empty args.
+- A divide-by-zero inside `__try` reaches `__except` rather than killing the
+  process; the same fault *outside* `__try` terminates the process cleanly with
+  no kernel fault.
+- Honest note to record in the phase: this is not table-driven unwinding.
+  Destructors of live C++ objects will not run. Say so in `docs/win32.md`.
+
+**Deliverable:** `patches/W32_6_crt_seh.patch`
+
+---
+
+### Phase W32-7 — `LoadLibrary`, or a documented refusal
+
+**Objective:** find out whether dynamic loading is reachable, and say so either
+way.
+
+#### Tasks
+
+- [ ] `LoadLibraryA/W`, `GetProcAddress`, `FreeLibrary` for `w32`'s *own*
+      built-in modules (`kernel32`, `user32`, `gdi32`) — a name table, not a
+      loader.
+- [ ] Investigate loading a real user-supplied DLL: relocations, imports,
+      `DllMain`, per-process module list.
+- [ ] Delay-load and forwarder imports: detect and refuse explicitly, or
+      support.
+
+#### Test gate
+
+- `GetProcAddress(GetModuleHandle("kernel32"), "WriteFile")` returns the
+  implementation and calling through it works.
+- A missing export returns `NULL` + `ERROR_PROC_NOT_FOUND`, never a crash.
+- If real DLL loading lands: a two-DLL cycle, a self-importing DLL, and a DLL
+  whose `DllMain` fails are all handled without leaking the address space.
+- **This phase is allowed to end in documentation.** If per-process module
+  lists prove to need address-space work the kernel does not have, that is a
+  finding, and `TODO.md` records it rather than a half-loader being merged.
+
+**Deliverable:** `patches/W32_7_loadlibrary.patch`
+
+---
+
+### Phase W32-8 — Integration, documentation and the honest matrix
+
+**Objective:** make it usable and make its limits legible.
+
+#### Tasks
+
+- [ ] `docs/win32.md`: supported functions, behaviour notes, the ABI boundary,
+      and a blunt statement of what will not run.
+- [ ] `docs/status.md` gains a `w32` row.
+- [ ] `w32/examples/`: console, GUI, and a deliberately unsupported binary that
+      fails with a clear message.
+- [ ] `make w32-sdk`: mingw-w64 cross-build instructions, mirroring `make sdk`.
+- [ ] Shell: `run app.exe` detects PE by magic and routes to the PE loader.
+- [ ] `README.md` gains a `w32` entry with the §1.3 disclaimer.
+
+#### Test gate
+
+- Every example builds with mingw-w64 and runs.
+- The unsupported binary produces the documented message and a clean exit, not
+  a hang or a fault.
+- `docs/win32.md`'s function table is generated from the source, so it cannot
+  drift (the `sdk-check` pattern).
+- Full `make test` green, including every prior phase's gate.
+
+**Deliverable:** `patches/W32_8_integration.patch`
+
+---
+
+## 5. Order and rationale
+
+| Phase | Why here |
+|---|---|
+| W32-0 | The licence position must be auditable before code exists, not after |
+| W32-1 | D6 makes UTF-16 a dependency of every string entry point |
+| W32-2 | Parse offline where a bug is a failed unit test, not a triple fault |
+| W32-3 | The kernel change, once the parser it depends on is proven |
+| W32-4 | The ABI boundary gets its own gate before any breadth is added |
+| W32-5 | The visible payoff, and it reuses the compositor rather than growing one |
+| W32-6 | Only now do real compiler-emitted binaries become the target |
+| W32-7 | Most likely to end in a limitation; costs least when discovered last |
+| W32-8 | Documentation last, when there is something true to document |
+
+**If only one phase is ever built, build W32-2.** It is pure user space, it
+needs no kernel change, its first test fixture is a file the repository already
+produces, and it answers the question "do we understand this format?" before
+anything is risked on the answer.
+
+**If the plan is abandoned after W32-4**, the result is still coherent: a
+console-only Win32 personality with a documented import set. That is a
+defensible stopping point, which is why the phases are ordered to reach it
+early.
+
+---
+
+## 6. Risks
+
+**The calling convention is a silent corrupter.** A missing `ms_abi` compiles,
+links, and returns plausible garbage — the failure surfaces later and elsewhere.
+W32-4's first test is the ABI test for exactly this reason, and every export
+must carry the attribute; a lint in `check_provenance.sh`'s style that greps for
+un-annotated exports would be cheap insurance.
+
+**Scope creep is the defining risk of this plan.** Every implemented function
+reveals three more that a real binary wants. D7 bounds it by measurement, and
+D8 names the big absences, but the pressure is constant and the plan will fail
+by dilution before it fails technically.
+
+**Provenance contamination.** One contributor who consults Wine to fix a
+stubborn `WM_PAINT` bug can taint a file's history irreversibly. D4 is a rule,
+but a rule is not a mechanism. The CLA affirmation and a visible `LICENSING.md`
+are the mitigation; there is no way to detect a violation after the fact, which
+is precisely why the rule is stated before any code is written.
+
+**The PE parser is attacker-facing.** It reads a wholly untrusted file the user
+was told to obtain elsewhere. Every offset, RVA and count is hostile input.
+W32-2 and W32-3 list malformed inputs first in their gates, and the fuzz corpus
+is not optional.
+
+**A PE loader in the kernel is new Ring 0 attack surface.** D2 keeps imports
+out of the kernel, but section mapping and relocation still run privileged. The
+mitigation is that `pe.c` is modelled on `elf.c` — same validation habits, same
+W^X derivation — so it inherits a reviewed design rather than inventing one.
+
+**"It runs Windows programs" will be over-read.** The moment a screenshot of
+`MessageBoxA` exists, the claim will outrun the truth. §2.5 and `docs/win32.md`
+exist to be quotable in the other direction. This is a reputational risk, not a
+technical one, and it is the most likely to actually occur.
+
+**Trademark drift.** A contributor naming something `windows_compat` or putting
+a Windows logo in the GUI creates a problem no code review usually looks for.
+§1.3 fixes the internal name as `w32` for this reason.
+
+---
+
+## 7. What this plan does not do
+
+- No registry, COM, OLE, .NET, DirectX, WinSock, or printing.
+- No 32-bit PE, no WOW64.
+- No table-driven SEH unwinding; the `__try` shim does not run C++ destructors.
+- No redistribution of any Microsoft binary, ever.
+- No attempt to run a `.exe` obtained from a shop or a download site; the
+  target is binaries the user builds with mingw-w64.
+- No claim of Windows compatibility, in the README, in `docs/`, or in a commit
+  message.
+- No ABI stability guarantee for `w32` across releases, for the same reason
+  `SDK_PLAN.md` declines to make one for the syscall table.
+
+---
+
+## 8. A note on why this is worth doing at all
+
+The honest case for this plan is not "AuraLite will run Windows software". It
+is that a PE loader, a foreign calling convention, an import resolver and a
+personality layer are the four things a hobby OS most often never gets to
+build, and this repository is unusually close to all four: it already emits
+PE32+, already has per-process address spaces, already has a compositor worth
+mapping onto, and already has the testing culture to keep an attacker-facing
+parser honest.
+
+The Win32 API is also the best-documented large API in existence with a
+permissively licensed set of declarations already available — which is why it
+is the right target, and why §1 could be written as confidently as it was.
+
+If the outcome is a console `.exe` and a window, with a clear document saying
+that is all it is, that is a real result and this plan will have been worth
+following.

@@ -1291,9 +1291,36 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_wv_http \
                 $(BUILD_DIR)/test_wv_canvas \
                 $(BUILD_DIR)/test_uaccess \
-                $(BUILD_DIR)/test_vma_m4
+                $(BUILD_DIR)/test_vma_m4 \
+                $(BUILD_DIR)/test_w32_utf \
+                $(BUILD_DIR)/test_w32_pe
 
-test-unit: $(UNIT_TESTS)
+# WIN32_PLAN.md phases W32-1/W32-2: the w32 personality's host-side gates.
+# Both test files #include the implementation directly, so there is no w32
+# archive to build first and these stay pure host tests.
+W32_INC := -I w32/include
+
+$(BUILD_DIR)/test_w32_utf: tests/unit/test_w32_utf.c w32/src/w32_utf.c \
+                           w32/include/w32/w32_utf.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
+
+$(BUILD_DIR)/test_w32_pe: tests/unit/test_w32_pe.c w32/src/w32_pe.c \
+                          w32/include/w32/w32_pe.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
+
+# Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
+# llvm-readobj cross-check gate below.
+.PHONY: w32-peinfo
+w32-peinfo: $(BUILD_DIR)/w32_peinfo
+$(BUILD_DIR)/w32_peinfo: w32/tools/peinfo.c w32/src/w32_pe.c \
+                         w32/include/w32/w32_pe.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) \
+	    w32/tools/peinfo.c w32/src/w32_pe.c -o $@
+
+test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
 # Shell-based unit tests.  test_userlibs inspects the built archives rather
 # than compiled code, so it is a script rather than a C binary and cannot join
@@ -1301,6 +1328,16 @@ test-unit: $(UNIT_TESTS)
 # when the archives have not been built.
 	@echo "[unit] running tests/unit/test_userlibs.sh"
 	@bash tests/unit/test_userlibs.sh || exit 1
+
+# WIN32_PLAN.md W32-0: provenance/licensing enforcement, plus its negative
+# control -- a checker that never fails is indistinguishable from a clean tree.
+	@echo "[unit] running tools/check_provenance.sh"
+	@bash tools/check_provenance.sh || exit 1
+	@bash tools/check_provenance.sh --selftest || exit 1
+# WIN32_PLAN.md W32-2: cross-check peinfo against llvm-readobj on the
+# project's own BOOTX64.EFI.  Skips cleanly if either is unavailable.
+	@echo "[unit] running tests/unit/test_w32_peinfo.sh"
+	@bash tests/unit/test_w32_peinfo.sh || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
