@@ -336,9 +336,10 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/fdsharetest.elf \
              $(USER_BUILD)/conformtest.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
-             $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
-             $(USER_BUILD)/tlstest.elf $(USER_BUILD)/httpx6.elf \
-             $(USER_BUILD)/rustes.elf
+                $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
+                $(USER_BUILD)/tlstest.elf $(USER_BUILD)/httpx6.elf \
+                $(USER_BUILD)/rustes.elf \
+                $(USER_BUILD)/usertest.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
 # the link line names; --whole-archive is not needed here because every
@@ -492,6 +493,11 @@ $(USER_BUILD)/tcpserver.o: userspace/tests/tcpserver/tcpserver.c $(USER_CFLAGS_I
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hostilearg.o: userspace/tests/hostilearg/hostilearg.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# M3 (MATURITY_PLAN.md): fault-recovering uaccess negative test battery.
+$(USER_BUILD)/usertest.o: userspace/tests/usertest/usertest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1135,7 +1141,8 @@ INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6
+                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 \
+                usertest
 
 $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@rm -rf $(INITRD_DIR)
@@ -1282,7 +1289,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_wv_paint \
                 $(BUILD_DIR)/test_wv_css \
                 $(BUILD_DIR)/test_wv_http \
-                $(BUILD_DIR)/test_wv_canvas
+                $(BUILD_DIR)/test_wv_canvas \
+                $(BUILD_DIR)/test_uaccess
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1461,6 +1469,11 @@ $(BUILD_DIR)/test_wv_canvas: tests/unit/test_wv_canvas.c \
 	$(HOST_CC) $(LIBGL_TEST_CFLAGS) -I userspace/apps/gbrowser \
 	           tests/unit/test_wv_canvas.c userspace/apps/gbrowser/wv_canvas.c \
 	           $(LIBGL_TEST_SRCS) $(LIBGL_TEST_STUB) -o $@ -lm
+
+# M3 (MATURITY_PLAN.md): fault-recovering uaccess validation layer.
+$(BUILD_DIR)/test_uaccess: tests/unit/test_uaccess.c kernel/proc/usercopy.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 # Web view inline CSS (WEBVIEW_PLAN W5): the REAL userspace sources are
 # compiled into the host test, never copies.
