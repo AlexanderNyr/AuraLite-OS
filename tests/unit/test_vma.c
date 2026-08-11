@@ -48,6 +48,10 @@ void spinlock_init(spinlock_t *lock) { (void)lock; }
 uint64_t spinlock_acquire_irqsave(spinlock_t *lock) { (void)lock; return 0; }
 void spinlock_release_irqrestore(spinlock_t *lock, uint64_t flags) { (void)lock; (void)flags; }
 struct tcb *sched_current(void) { return NULL; }
+/* vma.c calls shmem_valid() from vma_insert_shmem(); without this stub the
+ * link fails and `make test-unit` aborts before running ANY unit test.
+ * Mirrors the stub in test_vma_m4.c. */
+int shmem_valid(int shmid) { return shmid > 0; }
 
 #include "../../kernel/mm/vma.c"
 

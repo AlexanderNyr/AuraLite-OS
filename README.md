@@ -760,10 +760,14 @@ Short version:
 
 - AHCI sector read/write is enabled and self-tested on QEMU AHCI disks; broader
   physical-hardware coverage is still experimental.
-- Scheduler state is not SMP-safe; APs are brought online and idle rather than
-  participating in general scheduling.
+- The scheduler is SMP-safe (per-CPU ready queues under per-CPU `rq_lock`, work
+  stealing, per-CPU LAPIC timer ticks) and APs participate in general
+  scheduling. Remaining rough edges are tracked in `TODO.md`.
 - File descriptors are now per-process, but descriptor inheritance/lifetime semantics are still simplified.
-- User pointers passed to syscalls now go through basic range/permission validation and copy helpers, but there is not yet a fault-recovering uaccess layer.
+- User pointers passed to syscalls go through range/permission validation and
+  copy helpers, and the copy primitive has a `#PF` fixup: a mapping that
+  disappears mid-copy returns an error instead of panicking the kernel
+  (`kernel/proc/usercopy.c`).
 - `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
 - Dead TCBs and kernel stacks are deferred-reaped, but full user address-space/page-table reaping is not implemented yet.
 - Networking is polling-based. User space has process-owned socket-style handles, and the TCP transport supports per-connection state up to 8 streams.
@@ -772,10 +776,14 @@ Short version:
   coverage is primarily QEMU/AHCI and they should still be treated as hobby OS
   filesystems rather than production-grade implementations.
 - USB MSC currently uses the UHCI backend; OHCI/EHCI/xHCI transfer engines are
-  not wired to class drivers yet.
-- **The keyboard layout is hardcoded US.** Two fixed scancode tables, no keymap
-  selection and no dead keys, so a non-US keyboard produces the wrong
-  characters outside the shared ASCII subset.
+  not wired to class drivers yet. `xhci_bulk_transfer()` in particular does not
+  queue TRBs — it synthesises Bulk-Only-Transport replies so the MSC class
+  driver can be exercised, and the sector it returns has no FAT32 BPB. Do not
+  rely on xHCI for storage until real transfer rings land.
+- The keyboard ships US and DE layouts, selectable at build time
+  (`make KEYMAP=de`) and switchable at runtime with the `kbd` command
+  (`SYS_KBD_LAYOUT`). There are still no dead keys, so layouts needing them are
+  not fully represented.
 - **TLS 1.3 and an HTTPS client exist and are tested against a local
   openssl s_server, but real-world public-web interop is not yet complete.**
   `INTERNET_PLAN.md` N0–N7 shipped the entropy source, crypto primitives,
@@ -789,10 +797,12 @@ Short version:
   connection (`X25519MLKEM768` PQ-group interop — a recorded follow-up).
   See [`INTERNET_PLAN.md`](INTERNET_PLAN.md) and
   [`REALINTERNET_PLAN.md`](REALINTERNET_PLAN.md).
-- **A kernel fault taken on a bad stack triple-faults.** The IST is allocated
-  but no interrupt gate selects it, so a kernel stack overflow or double fault
-  resets the machine with no diagnostic.
-- `SIGSTOP`/`SIGTSTP` terminate rather than stop; there is no stopped state.
+- A kernel fault taken on a bad stack is handled: the `#DF` gate selects IST1
+  and per-CPU IST stacks are programmed, so a kernel stack overflow or double
+  fault runs its diagnostic on a known-good stack instead of triple-faulting.
+  The boot log reports the armed state (`[diag] IST check: ... IST ARMED`).
+- `SIGSTOP`/`SIGTSTP` enter a real stopped state (`THREAD_STOPPED`) rather than
+  terminating the target.
 
 See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 

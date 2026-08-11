@@ -1,8 +1,13 @@
 # AuraLite OS Virtual Memory Map (x86_64)
 
-The address space is established by Limine at load time and extended by the
-kernel's VMM. The kernel half is shared into every user process address space;
+The address space is established by AuraLite's own bootloader (BIOS Stage 2
+BL3/BL4, or the UEFI `BOOTX64.EFI`) at load time and extended by the kernel's
+VMM. The kernel half is shared into every user process address space;
 user-space PML4 entries are process-local for spawned programs.
+
+> Historical note: earlier revisions booted via Limine. It was removed in
+> favour of the in-tree BL2..BL7 loader chain; the handoff is now the
+> `boot_info_t` structure in `boot/shared/boot_info.h`, passed in `RDI`.
 
 For feature-completeness details, see [`status.md`](status.md).
 
@@ -12,7 +17,7 @@ For feature-completeness details, see [`status.md`](status.md).
 |-----------------|------------------------------|-------------|--------------------------------|
 | `.text`         | `0xFFFFFFFF80100000`         | R + X       | Entry `_start` lives here      |
 | `.rodata`       | `~0xFFFFFFFF80102000`        | R           | Read-only data                 |
-| `.data`         | `~0xFFFFFFFF80103000`        | R + W       | Limine request structs live here |
+| `.data`         | `~0xFFFFFFFF80103000`        | R + W       | Initialised globals            |
 | `.bss`          | after `.data`                | R + W       | Zero-initialised globals       |
 | Boot stack      | top of `.bss`                | R + W       | 64 KiB, set in `boot.asm`      |
 
@@ -41,14 +46,19 @@ stacks back the double-fault handler: with the #DF gate armed on IST1
 (`tss_init()`), a kernel fault on a dead stack runs its diagnostic on a
 known-good stack instead of triple-faulting.
 
-## Limine-provided regions
+## Bootloader-provided regions
 
-| Region | Address / offset               | Source request              |
+All of these arrive in the `boot_info_t` handoff structure
+(`boot/shared/boot_info.h`), whose physical address the loader passes in `RDI`.
+The kernel latches it in `boot_info_init()` and reads it through the
+`boot_get_*()` accessors.
+
+| Region | Address / offset               | Source field                |
 |--------|--------------------------------|-----------------------------|
-| HHDM   | base `0xFFFF800000000000`      | `LIMINE_HHDM_REQUEST`       |
-| PML4   | phys `0x1FF85000` (QEMU 512M)  | CR3 (read by VMM at init)   |
-| FB     | phys `0xFD000000` (QEMU stdvga)| `LIMINE_FRAMEBUFFER_REQUEST`|
-| Initrd | passed as a module             | `LIMINE_MODULE_REQUEST`     |
+| HHDM   | base `0xFFFF800000000000`      | `hhdm_offset`               |
+| PML4   | phys `0x01000000` (QEMU 512M)  | built by BL4, then CR3      |
+| FB     | phys `0xFD000000` (QEMU stdvga)| framebuffer fields          |
+| Initrd | phys `0x01800000` (QEMU 512M)  | `boot_get_initrd()`         |
 
 The HHDM is a direct map of **all physical RAM** at a fixed virtual offset.
 The kernel reaches any physical address as `physical + HHDM_offset`.
@@ -90,9 +100,9 @@ Each PTE is 8 bytes; bits 12–51 hold the physical frame address. The NX bit
 (bit 63) is enabled via EFER.NXE. Intermediate entries created by `walk_pte()`
 carry Present|Writable|User; the final PTE gets the caller's full flag set.
 
-## Physical memory (from Limine memmap)
+## Physical memory (from the boot_info memory map)
 
-QEMU `-m 512M` reports ~510 MiB `LIMINE_MEMMAP_USABLE`.
+QEMU `-m 512M` reports ~511 MiB of `BOOT_MEM_USABLE`.
 
 ### PMM bitmap
 
@@ -108,8 +118,8 @@ QEMU `-m 512M` reports ~510 MiB `LIMINE_MEMMAP_USABLE`.
 
 | Type                              | PMM treatment                       |
 |-----------------------------------|-------------------------------------|
-| `LIMINE_MEMMAP_USABLE` (0)        | free / allocatable                  |
-| `LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE` (5) | preferred bitmap storage    |
+| `BOOT_MEM_USABLE` (1)             | free / allocatable                  |
+| `BOOT_MEM_BOOTLOADER` (6)         | preferred bitmap storage            |
 | everything else                   | marked used (not allocatable)       |
 
 ## Device MMIO

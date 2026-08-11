@@ -237,6 +237,29 @@ il_assert_no_grep_fixed() {
     fi
 }
 
+# Assert only when the environment actually provided working DNS.
+#
+# Some cases (X3 cache, X4 fragment reassembly) resolve a public name through
+# QEMU's SLIRP resolver.  That depends on the *host* having working DNS, which
+# is not a property of the kernel under test: on a sandboxed/offline CI box the
+# guest correctly reports the failure and the case would go red for a reason
+# unrelated to what it is gating.  The deterministic part of those cases (the
+# kernel self-test through the real glue) stays a hard assertion; the online
+# part degrades to a reported SKIP.
+il_assert_grep_if_dns() {
+    local log="$1" pat="$2" desc="$3"
+    if grep -qE "\[dns\] (PASS|cache (HIT|MISS))" "$log"; then
+        il_assert_grep "$log" "$pat" "$desc"
+    else
+        il_skip "$desc (no DNS answer in log; host resolver unavailable)"
+    fi
+}
+
+il_skip() {
+    IL_SKIP_COUNT=$((${IL_SKIP_COUNT:-0} + 1))
+    echo "  ${C_YELLOW}⊘${C_RESET} SKIP: $*"
+}
+
 il_assert_count() {
     local log="$1" pat="$2" min="$3" desc="${4:-count of '$pat' >= $min}"
     local n

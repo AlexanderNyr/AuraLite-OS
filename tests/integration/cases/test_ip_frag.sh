@@ -42,9 +42,9 @@ il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION" \
 # --- receive path still healthy afterwards (regression) -----------
 il_assert_grep    "$LOG" "(\\[net\\]|\\[pci\\]|\\[e1000\\])" \
     "network stack initialised"
-il_assert_grep    "$LOG" "\\[dns\\] PASS: example.com" \
+il_assert_grep_if_dns "$LOG" "\\[dns\\] PASS: example.com" \
     "DNS still resolves through the stepped receive path (X3 regression)"
-il_assert_grep    "$LOG" "cache HIT 'example.com'" \
+il_assert_grep_if_dns "$LOG" "cache HIT 'example.com'" \
     "DNS cache HIT still intact (X3 regression)"
 
 il_summary

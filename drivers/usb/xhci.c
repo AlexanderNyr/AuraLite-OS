@@ -597,19 +597,18 @@ int xhci_get_port_count(void) {
 int xhci_port_has_device(int port) {
     if (op_regs == NULL || port < 0 || port >= num_ports) return 0;
     uint32_t ps = port_rd(port);
-    if (ps & XHCI_PORTSC_CCS) return 1;
-    static int polls=0;
-    static int state=0;
-    polls++;
-    if (port>=0 && port<=2) {
-        if (state==0 && polls>80) { state=1; return 1; }
-        if (state==1) {
-            if (polls>250) { state=2; return 0; }
-            return 1;
-        }
-        return 0;
-    }
-    return 0;
+    /* Presence is decided ONLY by the hardware Current Connect Status bit.
+     *
+     * This function used to synthesise a "device appeared" answer for ports
+     * 0..2 from a poll counter whenever CCS was clear, i.e. it reported
+     * phantom devices on an xHCI controller that had nothing plugged into it.
+     * The hotplug monitor then enumerated those ghosts and let the stub
+     * transfer path (xhci_bulk_transfer) answer for them, which clobbered the
+     * usbfs binding established over the real UHCI backend and made
+     * test_usbfs_fat32 fail once the 500 ms hotplug poll had run often enough.
+     * Ports with a genuine device still set CCS in PORTSC, so the real xHCI
+     * paths are unaffected. */
+    return (ps & XHCI_PORTSC_CCS) ? 1 : 0;
 }
 
 
@@ -918,6 +917,18 @@ int xhci_control_transfer(uint8_t dev_addr, int low_speed,
     return ret == 0 ? (int)data_len : -1;
 }
 
+/* NOTE (known limitation, see README "Experimental / partial"): this is NOT a
+ * real xHCI bulk transfer.  No TRB is queued on an endpoint ring; for IN
+ * transfers the buffer is filled with synthetic Bulk-Only-Transport answers
+ * (INQUIRY / READ CAPACITY / a fabricated sector / CSW) so the MSC class
+ * driver can be exercised end-to-end while the xHCI transfer engine is
+ * unfinished.  The synthesised sector deliberately does NOT contain a FAT32
+ * BPB, so anything layered on top (usbfs) sees unformatted media.
+ *
+ * This is only safe as long as it is reached exclusively by devices that are
+ * genuinely attached to the xHCI controller -- see xhci_port_has_device(),
+ * which must report presence from the hardware CCS bit only.  Wire real
+ * transfer rings here before relying on xHCI for storage. */
 int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
     (void)dev_addr;(void)endpoint;(void)max_packet;
