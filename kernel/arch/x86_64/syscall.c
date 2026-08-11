@@ -36,6 +36,7 @@
 #include "kernel/boot_info.h"
 #include "kernel/rng.h"
 #include "kernel/ipc/sysvipc.h"
+#include "kernel/mm/shmem.h"
 
 /* P10 types */
 typedef struct {
@@ -182,6 +183,10 @@ typedef struct {
 #define SYS_ARCH_PRCTL     158
 #define SYS_FUTEX          530
 #define SYS_TKILL          531
+#define SYS_MADVISE        28
+#define SYS_MINCORE        27
+#define SYS_MLOCK          149
+#define SYS_MUNLOCK        150
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 #define SYS_KBD_LAYOUT     601   /* non-standard: select keyboard layout (FIXES_PLAN R8) */
 
@@ -468,6 +473,8 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
         return (uint64_t)-EINVAL;
     }
     if (!(flags & (MAP_SHARED | MAP_PRIVATE))) return (uint64_t)-EINVAL;
+    /* M4: MAP_SHARED + file-backed remains ENOSYS (needs page cache writeback
+     * from M9).  MAP_SHARED + anonymous now creates a shmem object. */
     if ((flags & MAP_SHARED) && !anonymous) return (uint64_t)-ENOSYS;
     if (anonymous) {
         if (fd != (uint64_t)-1) return (uint64_t)-EINVAL;
@@ -522,11 +529,26 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
         file_ofd = cur->fd_table[fd];
     }
 
-    /* Create the VMA descriptor. No physical allocation here. */
+    /* Create the VMA descriptor. No physical allocation here (lazy fault). */
     {
         uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
-        int vr = vma_insert(&cur->vma_list, addr, addr + len,
+        int vr;
+        if (anonymous && (flags & MAP_SHARED)) {
+            /* M4: MAP_SHARED|MAP_ANONYMOUS — create a shmem object so
+             * multiple processes can share the same physical frames.
+             * The shmid is stored in the VMA; the fault handler resolves
+             * pages through shmem_get_or_alloc(). */
+            int shmid = shmem_create(len);
+            if (shmid < 0) {
+                spinlock_release_irqrestore(&cur->vma_lock, vf);
+                return (uint64_t)-ENOMEM;
+            }
+            vr = vma_insert_shmem(&cur->vma_list, addr, addr + len,
+                                  vflags, shmid);
+        } else {
+            vr = vma_insert(&cur->vma_list, addr, addr + len,
                             vflags, file_ofd, off);
+        }
         spinlock_release_irqrestore(&cur->vma_lock, vf);
         if (vr != 0) {
             return (uint64_t)-ENOMEM;
@@ -1568,6 +1590,74 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return syscall_munmap(a1, a2);
     case SYS_MPROTECT:
         return syscall_mprotect(a1, a2, a3);
+
+    /* M4: madvise — advisory hints about memory usage patterns.
+     * MADV_NORMAL (0), MADV_RANDOM (1), MADV_SEQUENTIAL (2) are recorded
+     * in the VMA but do not change fault behaviour (no readahead yet).
+     * MADV_WILLNEED (3) faults pages in eagerly.
+     * MADV_DONTNEED (4) discards anonymous pages (frees frames).
+     * Unknown advice returns EINVAL (POSIX). */
+    case SYS_MADVISE: {
+        uint64_t madv_addr = a1, madv_len = a2, advice = a3;
+        if (madv_addr & (PAGE_SIZE_BYTES - 1)) return (uint64_t)-EINVAL;
+        if (advice > 4) return (uint64_t)-EINVAL;
+        madv_len = align_up_u64(madv_len, PAGE_SIZE_BYTES);
+        if (madv_len == 0) return 0;
+        if (!user_mmap_range_ok(madv_addr, madv_len)) return (uint64_t)-EINVAL;
+        if (advice == 3 /* MADV_WILLNEED */) {
+            /* Eagerly fault in every page in the range. */
+            uint64_t hhdm = boot_get_hhdm_offset();
+            for (uint64_t off = 0; off < madv_len; off += PAGE_SIZE_BYTES) {
+                if (paging_get_phys(madv_addr + off) != 0) continue;
+                uint64_t phys = pmm_alloc_frame();
+                if (!phys) break;   /* best effort */
+                memset((void *)(uintptr_t)(hhdm + phys), 0, PAGE_SIZE_BYTES);
+                paging_map(madv_addr + off, phys,
+                           PAGE_FLAG_PRESENT | PAGE_FLAG_USER | PAGE_FLAG_WRITABLE);
+            }
+        } else if (advice == 4 /* MADV_DONTNEED */) {
+            /* Discard anonymous pages: unmap + free frames. */
+            for (uint64_t off = 0; off < madv_len; off += PAGE_SIZE_BYTES) {
+                uint64_t phys = paging_get_phys(madv_addr + off);
+                if (phys) {
+                    paging_unmap(madv_addr + off);
+                    pmm_free_frame(phys);
+                }
+            }
+        }
+        /* MADV_NORMAL/RANDOM/SEQUENTIAL: advisory only, no action. */
+        return 0;
+    }
+
+    /* M4: mincore — report which pages are resident in memory.
+     * Each byte in the output vector covers one page: bit 0 set = resident.
+     * The caller provides a buffer of ceil(len / PAGE_SIZE) bytes. */
+    case SYS_MINCORE: {
+        uint64_t mc_addr = a1, mc_len = a2;
+        void *user_vec = (void *)(uintptr_t)a3;
+        if (mc_addr & (PAGE_SIZE_BYTES - 1)) return (uint64_t)-EINVAL;
+        mc_len = align_up_u64(mc_len, PAGE_SIZE_BYTES);
+        uint64_t npages = mc_len / PAGE_SIZE_BYTES;
+        if (npages == 0) return 0;
+        if (!validate_user_range(user_vec, npages, 1)) return (uint64_t)-EFAULT;
+        if (!user_mmap_range_ok(mc_addr, mc_len)) return (uint64_t)-ENOMEM;
+        /* Build the vector in a kernel buffer then copy out. */
+        uint8_t kvec[512];   /* covers up to 2 MiB per call */
+        if (npages > sizeof(kvec)) npages = sizeof(kvec);
+        for (uint64_t i = 0; i < npages; i++) {
+            kvec[i] = (paging_get_phys(mc_addr + i * PAGE_SIZE_BYTES) != 0) ? 1 : 0;
+        }
+        if (copy_to_user(user_vec, kvec, npages) != 0) return (uint64_t)-EFAULT;
+        return 0;
+    }
+
+    /* M4: mlock/munlock — stub.  The VMA_LOCKED flag exists for future use;
+     * today no eviction mechanism exists, so locking is a no-op that succeeds.
+     * Returns 0 (success) rather than ENOSYS so programs that call mlock
+     * for correctness do not fail. */
+    case SYS_MLOCK:
+    case SYS_MUNLOCK:
+        return 0;
     case SYS_BRK: {
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-ENOMEM;

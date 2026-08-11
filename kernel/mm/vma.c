@@ -1,4 +1,5 @@
 #include "kernel/mm/vma.h"
+#include "kernel/mm/shmem.h"
 #include "kernel/mm/slab.h"
 #include "kernel/mm/page_cache.h"
 #include "kernel/arch/x86_64/paging.h"
@@ -78,6 +79,7 @@ int vma_insert(vma_t **list_head, uint64_t start, uint64_t end,
     new_vma->flags = flags;
     new_vma->file = file;
     new_vma->file_off = file_off;
+    new_vma->shmid = 0;
     new_vma->next = NULL;
     vma_retain_file(flags, file);
 
@@ -89,6 +91,30 @@ int vma_insert(vma_t **list_head, uint64_t start, uint64_t end,
     new_vma->next = *curr;
     *curr = new_vma;
 
+    return 0;
+}
+
+/* M4: insert a VMA backed by an anonymous shared memory object. */
+int vma_insert_shmem(vma_t **list_head, uint64_t start, uint64_t end,
+                     uint32_t flags, int shmid) {
+    if (!shmem_valid(shmid)) return -1;
+    vma_t *new_vma = vma_alloc();
+    if (!new_vma) return -1;
+
+    new_vma->va_start = start;
+    new_vma->va_end = end;
+    new_vma->flags = flags | VMA_SHMEM;
+    new_vma->file = NULL;
+    new_vma->file_off = 0;
+    new_vma->shmid = shmid;
+    new_vma->next = NULL;
+
+    vma_t **curr = list_head;
+    while (*curr && (*curr)->va_start < start) {
+        curr = &((*curr)->next);
+    }
+    new_vma->next = *curr;
+    *curr = new_vma;
     return 0;
 }
 
@@ -116,6 +142,7 @@ void vma_remove_range(vma_t **list_head, uint64_t start, uint64_t end) {
         uint32_t flags = v->flags;
         struct ofd *file = v->file;
         uint64_t off = v->file_off;
+        int sid = v->shmid;
 
         *curr = v->next;
 
@@ -125,6 +152,7 @@ void vma_remove_range(vma_t **list_head, uint64_t start, uint64_t end) {
             left->flags = flags;
             left->file = file;
             left->file_off = off;
+            left->shmid = sid;
             vma_retain_file(flags, file);
             left->next = *curr;
             *curr = left;
@@ -137,6 +165,7 @@ void vma_remove_range(vma_t **list_head, uint64_t start, uint64_t end) {
             right->flags = flags;
             right->file = file;
             right->file_off = off + (end - v_start);
+            right->shmid = sid;
             vma_retain_file(flags, file);
             right->next = *curr;
             *curr = right;
@@ -193,7 +222,14 @@ int handle_user_page_fault(uint64_t cr2, uint64_t err_code) {
     uint64_t phys;
     uint64_t offset = snapshot.file_off + (page_va - snapshot.va_start);
 
-    if (snapshot.flags & VMA_SHARED) {
+    if (snapshot.flags & VMA_SHMEM) {
+        /* M4: anonymous shared memory — resolve through the shmem object
+         * so every process mapping the same shmid gets the same frame. */
+        if (shmem_get_or_alloc(snapshot.shmid, offset, &phys) != 0) {
+            if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
+            return -1;
+        }
+    } else if (snapshot.flags & VMA_SHARED) {
         struct {
             struct ofd *file;
             uint64_t offset;

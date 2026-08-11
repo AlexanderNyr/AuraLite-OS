@@ -729,6 +729,28 @@ int munmap(void *addr, size_t length) {
                                     0, 0, 0, 0));
 }
 
+/* M4: madvise — advisory hints about memory usage patterns. */
+int madvise(void *addr, size_t length, int advice) {
+    return (int)syscall_ret(syscall(28, (uint64_t)addr, (uint64_t)length,
+                                    (uint64_t)advice, 0, 0, 0));
+}
+
+/* M4: mincore — report which pages are resident in memory. */
+int mincore(void *addr, size_t length, unsigned char *vec) {
+    return (int)syscall_ret(syscall(27, (uint64_t)addr, (uint64_t)length,
+                                    (uint64_t)vec, 0, 0, 0));
+}
+
+/* M4: mlock/munlock — advisory stubs (no eviction mechanism yet). */
+int mlock(const void *addr, size_t length) {
+    return (int)syscall_ret(syscall(149, (uint64_t)addr, (uint64_t)length,
+                                    0, 0, 0, 0));
+}
+int munlock(const void *addr, size_t length) {
+    return (int)syscall_ret(syscall(150, (uint64_t)addr, (uint64_t)length,
+                                    0, 0, 0, 0));
+}
+
 void* sbrk(intptr_t increment) {
     /* SYS_BRK returns the (new) break, or the unchanged break on failure; it
      * does not use the in-band errno band, so decode it by hand. */

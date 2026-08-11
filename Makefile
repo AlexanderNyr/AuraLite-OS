@@ -1290,7 +1290,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_wv_css \
                 $(BUILD_DIR)/test_wv_http \
                 $(BUILD_DIR)/test_wv_canvas \
-                $(BUILD_DIR)/test_uaccess
+                $(BUILD_DIR)/test_uaccess \
+                $(BUILD_DIR)/test_vma_m4
 
 test-unit: $(UNIT_TESTS)
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
@@ -1472,6 +1473,11 @@ $(BUILD_DIR)/test_wv_canvas: tests/unit/test_wv_canvas.c \
 
 # M3 (MATURITY_PLAN.md): fault-recovering uaccess validation layer.
 $(BUILD_DIR)/test_uaccess: tests/unit/test_uaccess.c kernel/proc/usercopy.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# M4 (MATURITY_PLAN.md): demand-paged and shared VMA extensions.
+$(BUILD_DIR)/test_vma_m4: tests/unit/test_vma_m4.c kernel/mm/vma.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

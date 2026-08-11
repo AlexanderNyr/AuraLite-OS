@@ -309,6 +309,16 @@ int     tcsetpgrp(int fd, pid_t pgid);
 void*   sbrk(intptr_t increment);
 void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);
 int     munmap(void *addr, size_t length);
+/* M4: demand-paged and shared VMAs */
+int     madvise(void *addr, size_t length, int advice);
+int     mincore(void *addr, size_t length, unsigned char *vec);
+int     mlock(const void *addr, size_t length);
+int     munlock(const void *addr, size_t length);
+#define MADV_NORMAL     0
+#define MADV_RANDOM     1
+#define MADV_SEQUENTIAL 2
+#define MADV_WILLNEED   3
+#define MADV_DONTNEED   4
 
 /* POSIX.1-2024 version constants. */
 #define _POSIX_VERSION    202405L   /* POSIX.1-2024 */
