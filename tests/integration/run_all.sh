@@ -81,6 +81,7 @@ ALL_CASES=(
     test_w32_user32
     test_w32_crt
     test_w32_loadlibrary
+    test_w32_integration
     test_stack_guard
     test_panic_diag
     test_ist_double_fault

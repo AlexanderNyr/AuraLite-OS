@@ -746,9 +746,19 @@ Start here:
 - [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
 - [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
 - [`WIN32_PLAN.md`](WIN32_PLAN.md) — a Win32-compatible personality: PE32+
-  loader, `ms_abi` boundary and a bounded import set (planned). Scoped to
-  mingw-w64-built binaries, and licence-clean by construction — it ships no
-  Microsoft code and copies nothing from Wine or ReactOS.
+  loader, `ms_abi` boundary and a bounded import set (**complete**, W32-0 –
+  W32-8). A mingw-w64-built `.exe` runs unmodified: `run hello.exe`. See
+  [`docs/win32.md`](docs/win32.md) for the supported-function table and, more
+  usefully, the list of behaviours that are approximations.
+
+  **Disclaimer.** This is an independent reimplementation of a published
+  interface. It ships no Microsoft code, is not endorsed by or affiliated
+  with Microsoft, and "Windows" and "Win32" are their owners' trademarks used
+  here only to describe what the interface is. Declarations were taken from
+  published documentation and mingw-w64's public-domain headers; no Wine or
+  ReactOS source was consulted (`w32/PROVENANCE.md`, `w32/LICENSING.md`).
+  Running a Windows program you do not have a licence for is your
+  responsibility, not the OS's.
 - [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — the box-model web view plan (complete). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
 - [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
 - [`REALINTERNET_PLAN.md`](REALINTERNET_PLAN.md) — real internet access: ECDSA P-256 (X1), usable HTTPS client (X2), then DNS/fragmentation/TCP/IPv6.

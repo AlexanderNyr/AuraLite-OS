@@ -1,13 +1,82 @@
 # Win32 personality — limitations and behaviour notes
 
-**Status:** in progress. Phases W32-0 – W32-6 of [`WIN32_PLAN.md`](../WIN32_PLAN.md)
-are implemented; the full API matrix and the SDK arrive with W32-8.
+**Status:** complete. Phases W32-0 – W32-8 of
+[`WIN32_PLAN.md`](../WIN32_PLAN.md) are implemented. A mingw-w64-built
+`.exe` runs unmodified.
 
-This document exists to record what the personality *does not* do. The
-function list is discoverable from the headers and from `w32/src/w32_bind.c`;
-what a reader cannot discover by grepping is which behaviours are
-approximations, and those are what break programs in ways that look like
-bugs somewhere else.
+This document exists mostly to record what the personality *does not* do.
+The function list below is generated, so it cannot drift; what a reader
+cannot discover by grepping is which behaviours are approximations, and
+those are what break programs in ways that look like bugs somewhere else.
+
+**Disclaimer.** This is an independent reimplementation of a published
+interface. It contains no Microsoft code and is not endorsed by or
+affiliated with Microsoft; "Windows" and "Win32" are their owners'
+trademarks, used here only to describe what the interface is. Declarations
+came from published documentation and mingw-w64's public-domain headers, and
+no Wine or ReactOS source was consulted — see
+[`../w32/PROVENANCE.md`](../w32/PROVENANCE.md) and
+[`../w32/LICENSING.md`](../w32/LICENSING.md).
+
+## Building and running a Win32 program
+
+Install `mingw-w64` on the build host, then:
+
+    make w32-sdk                  # stages build/w32-sdk
+    cd build/w32-sdk/examples/console-app
+    make                          # produces hello.exe
+
+Copy the `.exe` into the initrd and, on AuraLite:
+
+    run hello.exe
+
+The shell recognises a PE image by its magic number. A `.exe` that imports
+Win32 DLLs is routed through `/apps/w32run`, which maps it, binds the
+imports, runs the TLS callbacks and static initialisers, and enters it. An
+`.exe` with **no** imports is spawned directly and taken by the kernel's PE
+loader instead, because that path applies per-section W^X and is the
+hardened one.
+
+`make w32-sdk-check` builds every example against the staged SDK, the same
+way `make sdk-check` does for the native SDK.
+
+## The supported function table
+
+<!-- BEGIN GENERATED: w32 export table -->
+
+*44 functions across 3 modules. This table is generated from
+`w32/src/w32_bind.c` by `tools/gen_w32_api_table.py`; edit the export table, not this list.*
+
+**GDI32.dll** (7)
+
+- `CreateSolidBrush` · `DeleteObject` · `LineTo`
+- `MoveToEx` · `SetPixel` · `SetTextColor`
+- `TextOutA`
+
+**KERNEL32.dll** (20)
+
+- `CloseHandle` · `CreateFileA` · `ExitProcess`
+- `FreeLibrary` · `GetCommandLineA` · `GetLastError`
+- `GetModuleHandleA` · `GetProcAddress` · `GetProcessHeap`
+- `GetStdHandle` · `GetTickCount64` · `HeapAlloc`
+- `HeapFree` · `LoadLibraryA` · `ReadFile`
+- `SetLastError` · `Sleep` · `VirtualAlloc`
+- `VirtualFree` · `WriteFile`
+
+**USER32.dll** (17)
+
+- `BeginPaint` · `CreateWindowExA` · `DefWindowProcA`
+- `DestroyWindow` · `DispatchMessageA` · `EndPaint`
+- `FillRect` · `GetClientRect` · `GetMessageA`
+- `InvalidateRect` · `MessageBoxA` · `PeekMessageA`
+- `PostQuitMessage` · `RegisterClassExA` · `ShowWindow`
+- `TranslateMessage` · `UpdateWindow`
+
+<!-- END GENERATED: w32 export table -->
+
+A function absent from this list is absent from the personality: a binary
+importing it fails at load with the name reported, rather than at the first
+call. That is deliberate — see "one bounded import set" (decision D7).
 
 ## Structured exception handling is not table-driven unwinding
 

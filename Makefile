@@ -65,7 +65,7 @@ KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
 
 .PHONY: all kernel user iso usb vbox vmware vm-configs run run-usb-msc clean \
         deps-check test-unit test-integration test-integration-fast test \
-        libs sdk sdk-check
+        libs sdk sdk-check w32-sdk w32-sdk-check
 
 all: iso
 
@@ -1298,6 +1298,34 @@ $(TESTDLL): w32/tests/testdll.asm w32/tests/testdll.def $(K32_IMPLIB)
 	         $(BUILD_DIR)/user/testdll.obj $(K32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (DLL: 3 exports, 2 imports, DllMain)"
 
+# W32-8: the mingw-w64 examples.  Built only if the cross-compiler is
+# installed -- the OS build must never require it -- but when it IS present
+# the console example is copied into the initrd so the gate can run a
+# genuinely compiler-emitted Win32 binary rather than only hand-written asm.
+MINGW_CC := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
+W32_EXAMPLE_EXE := $(BUILD_DIR)/user/w32hello.exe
+W32_UNSUP_EXE   := $(BUILD_DIR)/user/w32unsup.exe
+
+ifneq ($(MINGW_CC),)
+$(W32_EXAMPLE_EXE): w32/examples/console-app/hello.c
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart -lkernel32 -luser32
+	@echo "  [pe] $@ (mingw-w64 console example)"
+# The deliberately unsupported example: it imports ADVAPI32, which is a
+# non-goal (D8), and must be refused BY NAME at load time.
+$(W32_UNSUP_EXE): w32/examples/unsupported-app/registry.c
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart -lkernel32 -ladvapi32
+	@echo "  [pe] $@ (mingw-w64 unsupported example)"
+else
+$(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE):
+	@mkdir -p $(dir $@)
+	@echo "  [pe] skipping the mingw-w64 examples (no x86_64-w64-mingw32-gcc)"
+	@: > $@
+endif
+
 PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
 
 $(PETEST_RELOC_EXE): $(BUILD_DIR)/user/petest.obj
@@ -1312,7 +1340,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1368,6 +1396,10 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	@cp $(U32TEST_EXE) $(INITRD_DIR)/tests/u32test.exe
 	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
+	@if [ -s $(W32_EXAMPLE_EXE) ]; then \
+	    cp $(W32_EXAMPLE_EXE) $(INITRD_DIR)/tests/w32hello.exe; fi
+	@if [ -s $(W32_UNSUP_EXE) ]; then \
+	    cp $(W32_UNSUP_EXE) $(INITRD_DIR)/tests/w32unsup.exe; fi
 # W32-7 hostile fixtures: a forwarder export, and a DllMain that fails.
 	@python3 tools/mk_dll_variants.py --forwarder $(TESTDLL) \
 	         $(INITRD_DIR)/tests/fwddll.dll
@@ -1573,6 +1605,11 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_provenance.sh"
 	@bash tools/check_provenance.sh || exit 1
 	@bash tools/check_provenance.sh --selftest || exit 1
+# W32-8: docs/win32.md's function table is generated from the export table,
+# so it cannot drift.  Same idea as sdk-check: a hand-maintained API list is
+# wrong the moment somebody adds an export, and nobody notices.
+	@echo "[unit] running tools/gen_w32_api_table.py --check"
+	@python3 tools/gen_w32_api_table.py --check || exit 1
 # W32-4: prove the ABI test would fail without ms_abi.
 	@echo "[unit] running tests/unit/test_w32_abi_negctl.sh"
 	@bash tests/unit/test_w32_abi_negctl.sh || exit 1
@@ -2313,6 +2350,32 @@ sdk: libs $(USER_BUILD)/crt0.o
 
 sdk-check: sdk
 	@bash tools/sdk_check.sh $(SDK_DIR)
+
+# ---- Win32 SDK (WIN32_PLAN.md W32-8) ----
+#
+# Mirrors `make sdk`, but for building Win32 programs against this
+# personality.  What it stages is deliberately small: the import libraries
+# and the examples.  There are no headers to ship -- a Win32 program uses
+# mingw-w64's <windows.h> on the host, which is the whole point of a
+# personality, and vendoring a copy would duplicate something that already
+# exists and would go stale.
+W32_SDK_DIR := $(BUILD_DIR)/w32-sdk
+
+w32-sdk: $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
+	@rm -rf $(W32_SDK_DIR)
+	@mkdir -p $(W32_SDK_DIR)/lib $(W32_SDK_DIR)/examples
+	@cp $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(W32_SDK_DIR)/lib/
+	@cp -r w32/examples/. $(W32_SDK_DIR)/examples/
+	@cp docs/win32.md $(W32_SDK_DIR)/
+	@cp w32/PROVENANCE.md w32/LICENSING.md $(W32_SDK_DIR)/ 2>/dev/null || true
+	@bash tools/mkw32sdk.sh $(W32_SDK_DIR)
+	@echo "[w32-sdk] $(W32_SDK_DIR) ($$(find $(W32_SDK_DIR) -type f | wc -l) files)"
+
+# Build every example against the staged SDK, exactly as sdk-check does:
+# if they could reach into the source tree they would keep building after
+# the SDK stopped being sufficient, and the check would prove nothing.
+w32-sdk-check: w32-sdk
+	@bash tools/w32_sdk_check.sh $(W32_SDK_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)

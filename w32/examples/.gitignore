@@ -1,0 +1,6 @@
+# Build artifacts.  The examples are sources; the .exe files are produced by
+# `make` in each directory (or by `make w32-sdk-check` against the staged
+# SDK) and must not be committed -- a checked-in binary goes stale silently
+# and nobody notices which source it came from.
+*.exe
+*.o

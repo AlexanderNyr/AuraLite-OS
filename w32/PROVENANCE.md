@@ -46,6 +46,9 @@ ReactOS.
 | `include/w32/w32_module.h` | `LoadLibrary`/`GetProcAddress` interface (W32-7) |
 | `src/w32_module.c` | Module table and the DLL load path |
 | `tests/testdll.asm`, `tests/testdll.def` | A real DLL fixture (W32-7) |
+| `examples/console-app/hello.c` | Console example, mingw-w64 built (W32-8) |
+| `examples/gui-app/window.c` | GUI example over the compositor (W32-8) |
+| `examples/unsupported-app/registry.c` | A deliberately refused program (W32-8) |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the Win32 names and error codes

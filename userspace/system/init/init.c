@@ -319,6 +319,61 @@ static void cmd_run_argv(const char *prog, char *const argv[]);
 /* No-argument form, for the call sites that have nothing to pass. */
 static void cmd_run(const char *prog) { cmd_run_argv(prog, 0); }
 
+/* Does @path name a PE image that imports anything?  (WIN32_PLAN.md W32-8.)
+ *
+ * The kernel already recognises PE by magic and loads it (W32-3), so a
+ * self-contained .exe runs when spawned directly.  But nothing binds its
+ * import table on that path -- import resolution lives in user space by
+ * design (decision D2) -- so an .exe that imports even one KERNEL32 function
+ * loads and then faults on its first call through an unwritten IAT slot.
+ *
+ * Rather than leave that trap for the user, the shell detects the case and
+ * routes such a binary through /apps/w32run, which maps it, binds the
+ * imports and runs the CRT startup sequence.  A PE with NO imports still
+ * goes straight to the kernel loader, because that path is the hardened one:
+ * it applies per-section W^X, which w32run cannot.
+ *
+ * Only the headers are read.  Everything is bounds-checked against what was
+ * actually read, since this runs on any file the user names.
+ */
+static int pe_needs_w32run(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+
+    unsigned char h[1024];
+    long n = read(fd, h, (long)sizeof h);
+    close(fd);
+    if (n < 512) return 0;
+
+    if (h[0] != 'M' || h[1] != 'Z') return 0;
+
+    unsigned long e_lfanew = (unsigned long)h[0x3C]
+                           | ((unsigned long)h[0x3D] << 8)
+                           | ((unsigned long)h[0x3E] << 16)
+                           | ((unsigned long)h[0x3F] << 24);
+    /* The optional header must fit in what we read, or this is not a file we
+     * can classify from the headers alone. */
+    if (e_lfanew + 24 + 240 > (unsigned long)n) return 0;
+
+    const unsigned char *pe = h + e_lfanew;
+    if (pe[0] != 'P' || pe[1] != 'E' || pe[2] != 0 || pe[3] != 0) return 0;
+
+    const unsigned char *opt = pe + 24;
+    unsigned magic = (unsigned)opt[0] | ((unsigned)opt[1] << 8);
+    if (magic != 0x20B) return 0;          /* PE32+ only */
+
+    /* Data directory 1 is the import table; a non-zero size means the image
+     * has imports that something must bind. */
+    const unsigned char *imp = opt + 112 + 1 * 8;
+    unsigned long imp_rva = (unsigned long)imp[0] | ((unsigned long)imp[1] << 8)
+                          | ((unsigned long)imp[2] << 16)
+                          | ((unsigned long)imp[3] << 24);
+    unsigned long imp_size = (unsigned long)imp[4] | ((unsigned long)imp[5] << 8)
+                           | ((unsigned long)imp[6] << 16)
+                           | ((unsigned long)imp[7] << 24);
+    return (imp_rva != 0 && imp_size != 0);
+}
+
 static void cmd_run_argv(const char *prog, char *const argv[]) {
     if (!prog) {
         puts("run: missing program name");
@@ -330,6 +385,31 @@ static void cmd_run_argv(const char *prog, char *const argv[]) {
         return;
     }
     prog = resolved;
+
+    /* A PE with imports needs the user-space binder; see pe_needs_w32run().
+     *
+     * The test is on the FILE, not on whether the caller supplied an argv:
+     * `run x.exe` always passes one, so gating on argv skipped every case
+     * this was written for. */
+    char *w32_argv[3];
+    char w32_path[128];
+    if (pe_needs_w32run(prog)) {
+        if (prog_resolve("w32run", w32_path, (int)sizeof(w32_path))) {
+            printf("[shell] %s imports Win32 DLLs; running via %s\n",
+                   prog, w32_path);
+            w32_argv[0] = w32_path;
+            w32_argv[1] = (char *)prog;
+            w32_argv[2] = 0;
+            argv = w32_argv;
+            prog = w32_path;
+        } else {
+            /* Saying so beats spawning it anyway and letting it fault with
+             * no explanation. */
+            printf("[shell] %s needs w32run, which is not installed\n", prog);
+            return;
+        }
+    }
+
     printf("running %s in isolated address space...\n", prog);
     fflush(stdout);
     pid_t pid = argv ? spawnv(prog, argv) : spawn(prog);
