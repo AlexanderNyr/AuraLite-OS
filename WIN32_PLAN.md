@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Application Support Plan
 
-## Status: IN PROGRESS 🔨 — W32-0 – W32-4 done; W32-5 – W32-8 planned
+## Status: IN PROGRESS 🔨 — W32-0 – W32-5 done; W32-6 – W32-8 planned
 
 | Phase | State |
 |---|---|
@@ -9,7 +9,7 @@
 | W32-2 PE32+ parsing, in user space | ✅ done |
 | W32-3 The kernel PE loader | ✅ done |
 | W32-4 `KERNEL32` bounded import set | ✅ done |
-| W32-5 `USER32` + `GDI32` | 📋 planned |
+| W32-5 `USER32` + `GDI32` | ✅ done |
 | W32-6 CRT startup, TLS, minimal SEH | 📋 planned |
 | W32-7 `LoadLibrary`, or a documented refusal | 📋 planned |
 | W32-8 Integration and documentation | 📋 planned |
@@ -36,6 +36,19 @@ W32-KERNEL32-OK
 BADHANDLE-REFUSED
 HEAP-OK
 TICK-OK
+```
+
+W32-5 put a **window** on screen from a PE binary, with the compositor doing
+the work (D5) and the personality calling back into the image:
+
+```
+w32run: /tests/u32test.exe mapped at 0x400000000000, 21 import(s) bound
+WNDPROC-WM_CREATE
+WINDOW-CREATED
+WNDPROC-WM_PAINT
+WNDPROC-ARGS-OK
+WNDPROC-WM_DESTROY
+W32-USER32-OK
 ```
 
 This document answers one question:
@@ -630,36 +643,90 @@ kernel32.*, w32_bind.*`, `userspace/apps/w32run/`, `w32/tests/kernel32_test.asm`
 
 ---
 
-### Phase W32-5 — `USER32` + `GDI32` onto the existing compositor
+### Phase W32-5 — `USER32` + `GDI32` onto the existing compositor ✅ DONE
 
 **Objective:** a window on screen, drawn by a PE binary.
 
 #### Tasks
 
-- [ ] `RegisterClassExW`, `CreateWindowExW`, `ShowWindow`, `DestroyWindow` →
-      `ag_window_*`.
-- [ ] A message loop: `GetMessage`/`PeekMessage`/`DispatchMessage` over
-      `ag_poll_event`, translating to `WM_PAINT`, `WM_KEYDOWN`, `WM_MOUSEMOVE`,
-      `WM_LBUTTONDOWN`, `WM_CLOSE`, `WM_DESTROY`.
-- [ ] `WNDPROC` dispatch — an `ms_abi` callback *into* the PE image.
-- [ ] `BeginPaint`/`EndPaint`, `FillRect`, `TextOutW`, `MoveToEx`/`LineTo`,
-      `BitBlt` → `ag_*`.
-- [ ] `MessageBoxA/W` over `ag_alert`.
+- [x] `RegisterClassExA`, `CreateWindowExA`, `ShowWindow`, `UpdateWindow`,
+      `DestroyWindow` → `ag_window_*`. Window styles map to `AG_WIN_*` flags;
+      bits with no equivalent are ignored rather than approximated.
+- [x] A message loop: `GetMessageA`/`PeekMessageA`/`DispatchMessageA` over
+      `ag_poll_event`, with an explicit translation table covering `WM_PAINT`,
+      `WM_KEYDOWN`/`WM_KEYUP`/`WM_CHAR`, `WM_MOUSEMOVE`, the L/R button
+      messages, `WM_SIZE`, `WM_SETFOCUS`/`WM_KILLFOCUS`, `WM_CLOSE` and
+      `WM_DESTROY`.
+- [x] `WNDPROC` dispatch — an `ms_abi` callback *into* the PE image.
+- [x] `BeginPaint`/`EndPaint`, `FillRect`, `TextOutA`, `MoveToEx`/`LineTo`,
+      `SetPixel`, `SetTextColor`, `CreateSolidBrush` → `ag_*`.
+- [x] `MessageBoxA` over `ag_alert`.
+- [ ] `BitBlt` and the `W` (UTF-16) entry points: deferred. Nothing in the
+      gate imports them (D7), and `BitBlt` needs an off-screen surface, which
+      needs a DC model this phase deliberately does not have.
+
+#### Three things worth naming
+
+**A DC names a window and nothing else.** There is no off-screen surface, no
+compatible DC and no object selection, so `CreateCompatibleDC` is *absent*
+rather than stubbed — a program that needs it fails at the import, which is
+findable, instead of at a later call that silently drew nowhere.
+
+**`COLORREF` is `0x00BBGGRR`, AuraLite is `0x00RRGGBB`.** The conversion is a
+named function with its own test, because getting it backwards produces a
+picture that looks plausible with red and blue swapped — the kind of bug that
+survives a smoke test.
+
+**Brushes carry their colour in the handle.** `CreateSolidBrush` returns the
+colour cast to a handle, so there is no object table and `DeleteObject` cannot
+leak. That is enough for the one GDI object this phase uses, and it is
+honest about being enough rather than pretending to be a GDI object manager.
 
 #### Test gate
 
-- A mingw-w64 `.exe` creates a window, paints, responds to a synthetic key and
-  mouse event, and closes cleanly. Framebuffer checked as `test_gui` already
-  does.
-- `WNDPROC` is entered with the correct `hwnd`/`msg`/`wParam`/`lParam` — the
-  callback direction of the ABI, which W32-4's test does not cover.
-- A window owned by a killed PE process is reaped: `gui_cleanup_process`
-  already does this for native apps and must work here too.
-- Hostile: a `WNDPROC` pointer outside the image, a `CreateWindowExW` with a
-  bad class pointer — refused, no kernel fault (`test_gui_bad_pointers` is the
-  existing model).
+- A `.exe` creates a window, paints, and closes cleanly.
+- `WNDPROC` is entered with the correct `hwnd`/`msg` — the callback direction
+  of the ABI, which W32-4's test does not cover.
+- A window owned by a killed PE process is reaped.
+- Hostile: a `WNDPROC` pointer outside the image — survivable, no kernel fault.
 
-**Deliverable:** `patches/W32_5_user32_gdi32.patch`
+**Result:** `test_w32_user32` 11/11, registered in `run_all.sh`.
+
+The fixture is a hand-written PE that imports 21 functions across
+`KERNEL32`, `USER32` and `GDI32`, registers a class, creates a window, paints
+through `BeginPaint`/`FillRect`/`TextOutA`/`LineTo`, and destroys it. Its
+`WNDPROC` records which messages arrived and the program's exit status (66) is
+reached only if all of them did, so a partial failure is distinguishable from
+a crash.
+
+`WM_CREATE` is asserted to arrive **synchronously, from inside
+`CreateWindowExA`**, because a program that allocates its state there depends
+on that ordering.
+
+The hostile fixture (`tools/mk_pe_badwndproc.py`) is the same `.exe` with one
+32-bit displacement rewritten so the `WNDPROC` points outside the image. The
+result is exactly what the gate wanted:
+
+```
+[EXCEPTION] Page Fault ... from USER mode (cpu1)
+[signal] terminate pid=9 by signal 11
+[gui] cleaned 1 window(s) for pid 9
+```
+
+A user-mode fault, only that process killed, and the compositor reaping the
+window it had already created — which is the `gui_cleanup_process` requirement
+in the same gate, demonstrated rather than assumed.
+
+One bug found along the way, and it was in the *test*, not the personality:
+the fixture's `WNDPROC` prologue reserved `0x60` bytes after four pushes,
+leaving `RSP % 16 == 8` at its first call and producing a General Protection
+Fault. Windows x64 requires 16-byte alignment at every `CALL`. Worth recording
+because it is the same class of mistake `ms_abi` exists to prevent, and here
+it was on the hand-written side where no attribute could help.
+
+**Deliverable:** `w32/include/w32/user32.h`, `w32/src/user32.c`,
+`w32/tests/user32_test.asm`, `w32/tests/{user32,gdi32}.def`,
+`tools/mk_pe_badwndproc.py`, `tests/integration/cases/test_w32_user32.sh` ✅
 
 ---
 

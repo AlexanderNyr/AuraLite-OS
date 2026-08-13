@@ -448,7 +448,7 @@ user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 # the AuraLite libc, and w32_pe.c is the same parser the kernel uses.
 W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_handle.o  $(USER_BUILD)/w32_bind.o \
-                $(USER_BUILD)/w32_peu.o
+                $(USER_BUILD)/w32_peu.o     $(USER_BUILD)/w32_user32.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -460,15 +460,18 @@ $(USER_BUILD)/w32_bind.o: w32/src/w32_bind.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_peu.o: w32/src/w32_pe.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32-5: USER32/GDI32 need the libauragui headers as well.
+$(USER_BUILD)/w32_user32.o: w32/src/user32.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 $(USER_BUILD)/w32run.o: userspace/apps/w32run/w32run.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 $(USER_BUILD)/w32run.elf: $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
-                          $(USER_COMMON) lib/libc/user.ld
+                          $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
-	      $(USER_COMMON_LNK) -o $@
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@ (w32 personality)"
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
@@ -1209,6 +1212,31 @@ $(K32TEST_EXE): w32/tests/kernel32_test.asm $(K32_IMPLIB)
 	         $(BUILD_DIR)/user/k32test.obj $(K32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (imports KERNEL32)"
 
+# W32-5: a .exe that creates a window through USER32/GDI32.
+U32TEST_EXE := $(BUILD_DIR)/user/u32test.exe
+U32_IMPLIB  := $(BUILD_DIR)/user/user32.lib
+G32_IMPLIB  := $(BUILD_DIR)/user/gdi32.lib
+
+$(U32_IMPLIB): w32/tests/user32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 \
+	         -out:$(BUILD_DIR)/user/user32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+$(G32_IMPLIB): w32/tests/gdi32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 \
+	         -out:$(BUILD_DIR)/user/gdi32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+$(U32TEST_EXE): w32/tests/user32_test.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/u32test.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/u32test.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(G32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (imports USER32 + GDI32)"
+
 PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
 
 $(PETEST_RELOC_EXE): $(BUILD_DIR)/user/petest.obj
@@ -1223,7 +1251,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1276,6 +1304,12 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 # is only possible if the .data pointer was fixed up correctly.
 	@cp $(PETEST_RELOC_EXE) $(INITRD_DIR)/tests/petest_reloc.exe
 	@cp $(K32TEST_EXE) $(INITRD_DIR)/tests/k32test.exe
+	@cp $(U32TEST_EXE) $(INITRD_DIR)/tests/u32test.exe
+# The same image with its WNDPROC pointed outside the image (W32-5 hostile
+# gate): dispatching to it must kill only that process, and the compositor
+# must reap the window it had already created.
+	@python3 tools/mk_pe_badwndproc.py $(U32TEST_EXE) \
+	         $(INITRD_DIR)/tests/u32bad.exe
 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
 	    > $(INITRD_DIR)/etc/motd
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the

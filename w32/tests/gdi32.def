@@ -1,0 +1,10 @@
+; gdi32.def — export list for the GDI32 import library.  WIN32_PLAN.md W32-5.
+LIBRARY GDI32.dll
+EXPORTS
+    CreateSolidBrush
+    DeleteObject
+    LineTo
+    MoveToEx
+    SetPixel
+    SetTextColor
+    TextOutA

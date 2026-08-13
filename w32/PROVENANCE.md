@@ -34,6 +34,10 @@ ReactOS.
 | `src/w32_bind.c` | Import binding against a static export table |
 | `tests/kernel32_test.asm` | A PE that imports KERNEL32 (W32-4 fixture) |
 | `tests/kernel32.def` | Export list for the import library |
+| `include/w32/user32.h` | USER32 + GDI32 declarations (W32-5) |
+| `src/user32.c` | USER32/GDI32 mapped onto libauragui |
+| `tests/user32_test.asm` | A PE that creates a window (W32-5 fixture) |
+| `tests/user32.def`, `tests/gdi32.def` | Export lists for the import libraries |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the Win32 names and error codes

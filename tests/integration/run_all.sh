@@ -78,6 +78,7 @@ ALL_CASES=(
     test_elf_permissions
     test_w32_pe_loader
     test_w32_kernel32
+    test_w32_user32
     test_stack_guard
     test_panic_diag
     test_ist_double_fault
