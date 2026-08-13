@@ -19,12 +19,18 @@ This directory contains the technical documentation for AuraLite OS.
 9. [`rust_application_guide.md`](rust_application_guide.md) — how to write, build, and troubleshoot freestanding Rust applications (`#![no_std]`), dynamic memory (`alloc`), FFI C-string conventions, and AuraGUI v2.0 integration.
 10. [`gbrowser.md`](gbrowser.md) — the GUI browser (`/apps/gbrowser`, formerly `/apps/webview`): what it renders, its deliberate limitations, and the measured presentation budget.
 
+11. [`win32.md`](win32.md) — the Win32 personality: what it supports and,
+    more usefully, which behaviours are approximations (SEH is not
+    table-driven unwinding; TLS is per-process).
+
 ## Other root-level docs
 
 - [`../README.md`](../README.md) — project overview and quickstart.
 - [`../PLAN.md`](../PLAN.md) — historical milestone plan.
 - [`../TODO.md`](../TODO.md) — future work and known limitations.
 - [`../CHANGELOG.md`](../CHANGELOG.md) — chronological changes.
+- [`../WIN32_PLAN.md`](../WIN32_PLAN.md) — the Win32 personality plan, its
+  legal grounding, and phase-by-phase status.
 
 ## Documentation conventions
 

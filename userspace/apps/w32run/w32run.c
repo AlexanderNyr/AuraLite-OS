@@ -27,6 +27,7 @@
 
 #include "w32/w32_pe.h"
 #include "w32/w32_bind.h"
+#include "w32/w32_crt.h"
 #include "w32/kernel32.h"
 
 #ifndef PROT_READ
@@ -152,6 +153,55 @@ int main(int argc, char **argv) {
 
     printf("w32run: %s mapped at %p, %lu import(s) bound\n",
            path, (void *)base, (unsigned long)nimp);
+
+    /* --- W32-6: the startup sequence a real CRT expects -----------------
+     *
+     * Order matters and is the documented one: SEH must be armed before any
+     * image code runs (a TLS callback can fault too), TLS callbacks run
+     * before the entry point, and static initialisers run before main.  A
+     * program whose global constructor divides by zero should reach its
+     * __except, not die -- which only works if the handlers are already in
+     * place here. */
+    if (w32_seh_init() != 0)
+        printf("w32run: warning: SEH handlers not installed; "
+               "__try will not catch faults\n");
+
+    size_t image_span = (size_t)img.size_of_image;
+    int ntls = w32_crt_run_tls_callbacks((unsigned char *)base, image_span,
+                                         img.dir[PE_DIR_TLS].rva,
+                                         img.dir[PE_DIR_TLS].size);
+    if (ntls < 0) {
+        /* A malformed TLS directory is refused rather than followed: the
+         * callback array is data out of the file, and calling through it
+         * unchecked is how a bad file becomes arbitrary execution. */
+        printf("w32run: refusing malformed TLS directory (%d)\n", ntls);
+        return 1;
+    }
+    if (ntls > 0) printf("w32run: ran %d TLS callback(s)\n", ntls);
+
+    /* Static initialisers live in .CRT.  A real linker merges the
+     * .CRT$XCA/.CRT$XCU/.CRT$XCZ contributions into that one section,
+     * sorted by the text after the '$', so the section bounds ARE the
+     * table bounds -- which is why they are found by section here rather
+     * than by symbols the image would have to export. */
+    for (uint16_t i = 0; i < img.section_count; i++) {
+        pe_section_t sec;
+        if (pe_get_section(&img, i, &sec) != 0) continue;
+        if (sec.name[0] != '.' || sec.name[1] != 'C' ||
+            sec.name[2] != 'R' || sec.name[3] != 'T' || sec.name[4] != '\0')
+            continue;
+
+        int nini = w32_crt_run_initializers((unsigned char *)base, image_span,
+                                            sec.virtual_address,
+                                            sec.virtual_address +
+                                                sec.virtual_size);
+        if (nini < 0) {
+            printf("w32run: refusing malformed .CRT table (%d)\n", nini);
+            return 1;
+        }
+        if (nini > 0) printf("w32run: ran %d static initialiser(s)\n", nini);
+        break;
+    }
 
     /* Enter the image.  The entry point is ms_abi, like every export. */
     typedef void __attribute__((ms_abi)) (*w32_entry_fn)(void);

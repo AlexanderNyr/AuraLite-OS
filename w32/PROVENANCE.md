@@ -38,6 +38,11 @@ ReactOS.
 | `src/user32.c` | USER32/GDI32 mapped onto libauragui |
 | `tests/user32_test.asm` | A PE that creates a window (W32-5 fixture) |
 | `tests/user32.def`, `tests/gdi32.def` | Export lists for the import libraries |
+| `include/w32/w32_crt.h` | CRT startup, TLS and SEH declarations (W32-6) |
+| `src/w32_crt.c` | TLS callbacks, `.CRT$XC*`, `setjmp`-based `__try` |
+| `include/w32/w32_argv.h` | Command-line splitting interface (W32-6) |
+| `src/w32_argv.c` | Documented Win32 argv quoting rules |
+| `tests/crt_test.asm` | A PE with a TLS directory and `.CRT` table |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the Win32 names and error codes

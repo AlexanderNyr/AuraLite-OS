@@ -308,7 +308,7 @@ USER_CFLAGS += -I lib/libauragui/include
 # Application ELFs.
 ### RUST: add rustes.elf to the list
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
-             $(USER_BUILD)/w32run.elf \
+             $(USER_BUILD)/w32run.elf $(USER_BUILD)/sehtest.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/weather.elf \
              $(USER_BUILD)/trustinfo.elf \
@@ -448,7 +448,8 @@ user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 # the AuraLite libc, and w32_pe.c is the same parser the kernel uses.
 W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_handle.o  $(USER_BUILD)/w32_bind.o \
-                $(USER_BUILD)/w32_peu.o     $(USER_BUILD)/w32_user32.o
+                $(USER_BUILD)/w32_peu.o     $(USER_BUILD)/w32_user32.o \
+                $(USER_BUILD)/w32_crt.o     $(USER_BUILD)/w32_argv.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -464,6 +465,13 @@ $(USER_BUILD)/w32_peu.o: w32/src/w32_pe.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/w32_user32.o: w32/src/user32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
+# W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
+# and Win32 command-line splitting.
+$(USER_BUILD)/w32_crt.o: w32/src/w32_crt.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_argv.o: w32/src/w32_argv.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+
 $(USER_BUILD)/w32run.o: userspace/apps/w32run/w32run.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
@@ -473,6 +481,18 @@ $(USER_BUILD)/w32run.elf: $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@ (w32 personality)"
+
+# W32-6: the SEH shim exercised from native code, so a failure is the shim's
+# and not the PE loader's.
+$(USER_BUILD)/sehtest.o: userspace/apps/w32run/sehtest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+
+$(USER_BUILD)/sehtest.elf: $(USER_BUILD)/sehtest.o $(USER_BUILD)/w32_crt.o \
+                           $(USER_COMMON) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/sehtest.o $(USER_BUILD)/w32_crt.o \
+	      $(USER_COMMON_LNK) -o $@
+	@echo "[link] $@ (w32 SEH shim)"
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
 # GUI apps additionally link the libauragui object.
@@ -1171,7 +1191,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
-INITRD_APPS  := calc editor http weather trustinfo clock browser w32run gcalc gedit gfiles gterm \
+INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
 INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
@@ -1214,6 +1234,7 @@ $(K32TEST_EXE): w32/tests/kernel32_test.asm $(K32_IMPLIB)
 
 # W32-5: a .exe that creates a window through USER32/GDI32.
 U32TEST_EXE := $(BUILD_DIR)/user/u32test.exe
+CRTTEST_EXE := $(BUILD_DIR)/user/crttest.exe
 U32_IMPLIB  := $(BUILD_DIR)/user/user32.lib
 G32_IMPLIB  := $(BUILD_DIR)/user/gdi32.lib
 
@@ -1237,6 +1258,17 @@ $(U32TEST_EXE): w32/tests/user32_test.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPL
 	         $(G32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (imports USER32 + GDI32)"
 
+# W32-6: a PE with a TLS directory and a .CRT$XC* initialiser table.  It is
+# linked at a fixed base because the TLS directory holds VAs, and lld-link
+# populates the TLS data directory from the _tls_used symbol -- the same way
+# it would for a compiler-emitted image.
+$(CRTTEST_EXE): w32/tests/crt_test.asm $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/crttest.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib -base:0x140000000 \
+	         $(BUILD_DIR)/user/crttest.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (TLS callbacks + .CRT static initialisers)"
+
 PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
 
 $(PETEST_RELOC_EXE): $(BUILD_DIR)/user/petest.obj
@@ -1251,7 +1283,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1305,6 +1337,11 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	@cp $(PETEST_RELOC_EXE) $(INITRD_DIR)/tests/petest_reloc.exe
 	@cp $(K32TEST_EXE) $(INITRD_DIR)/tests/k32test.exe
 	@cp $(U32TEST_EXE) $(INITRD_DIR)/tests/u32test.exe
+	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
+# The same image with its first TLS callback pointed outside the image
+# (W32-6 hostile gate): the loader must refuse to call through it.
+	@python3 tools/mk_pe_badtls.py $(CRTTEST_EXE) \
+	         $(INITRD_DIR)/tests/crtbad.exe
 # The same image with its WNDPROC pointed outside the image (W32-5 hostile
 # gate): dispatching to it must kill only that process, and the compositor
 # must reap the window it had already created.
@@ -1424,7 +1461,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_utf \
                 $(BUILD_DIR)/test_w32_pe \
                 $(BUILD_DIR)/test_w32_abi \
-                $(BUILD_DIR)/test_w32_kernel32
+                $(BUILD_DIR)/test_w32_kernel32 \
+                $(BUILD_DIR)/test_w32_argv
 
 # WIN32_PLAN.md phases W32-1/W32-2: the w32 personality's host-side gates.
 # Both test files #include the implementation directly, so there is no w32
@@ -1454,6 +1492,15 @@ $(BUILD_DIR)/test_w32_kernel32: tests/unit/test_w32_kernel32.c \
                                 w32/src/w32_errno.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 $(W32_INC) -I . $< -o $@
+
+# W32-6: command-line splitting.  Pure string handling with no syscalls, so
+# it runs under the sanitizers -- which is where an off-by-one in the
+# backslash-run logic shows up as a real overflow rather than a wrong string.
+$(BUILD_DIR)/test_w32_argv: tests/unit/test_w32_argv.c w32/src/w32_argv.c \
+                            w32/include/w32/w32_argv.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . $< -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.

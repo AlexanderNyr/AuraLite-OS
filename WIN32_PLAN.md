@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Application Support Plan
 
-## Status: IN PROGRESS 🔨 — W32-0 – W32-5 done; W32-6 – W32-8 planned
+## Status: IN PROGRESS 🔨 — W32-0 – W32-6 done; W32-7 – W32-8 planned
 
 | Phase | State |
 |---|---|
@@ -10,7 +10,7 @@
 | W32-3 The kernel PE loader | ✅ done |
 | W32-4 `KERNEL32` bounded import set | ✅ done |
 | W32-5 `USER32` + `GDI32` | ✅ done |
-| W32-6 CRT startup, TLS, minimal SEH | 📋 planned |
+| W32-6 CRT startup, TLS, minimal SEH | ✅ done |
 | W32-7 `LoadLibrary`, or a documented refusal | 📋 planned |
 | W32-8 Integration and documentation | 📋 planned |
 
@@ -730,24 +730,64 @@ it was on the hand-written side where no attribute could help.
 
 ---
 
-### Phase W32-6 — CRT startup, TLS and a minimal SEH
+### Phase W32-6 — CRT startup, TLS and a minimal SEH ✅ DONE
 
 **Objective:** the things a real compiler emits that a hand-written `.exe`
 avoids.
 
 #### Tasks
 
-- [ ] PE entry → `mainCRTStartup`/`WinMainCRTStartup` conventions; build
-      `argc`/`argv` from the command line, including quoting rules.
-- [ ] TLS directory: run TLS callbacks, allocate the TLS block.
-- [ ] `__try`/`__except` shim on `setjmp`/`longjmp`, with
+- [x] `argc`/`argv` built from the command line with the documented quoting
+      rules, in `w32/src/w32_argv.c`.
+- [x] TLS directory: TLS callbacks run at startup, TLS index written.
+      **The block is per-process, not per-thread** — see the note below.
+- [x] `__try`/`__except` on `sigsetjmp`/`siglongjmp`, with
       `SetUnhandledExceptionFilter`.
-- [ ] Static-initialiser sections (`.CRT$XC*`) run in order.
+- [x] Static-initialiser sections (`.CRT$XC*`) run in order.
+- [ ] Moving import binding into the kernel exec path: **deferred**. It is
+      separable from the CRT work, it is the one part of this phase that
+      touches the kernel, and W32-7 (`LoadLibrary`) will change what the
+      binder needs to do. Doing it now would mean writing it twice. The
+      consequence — `w32run` maps the image RW+X rather than per-section
+      W^X — is recorded in `docs/win32.md`.
+
+#### Three things worth naming
+
+**The kernel already delivered faults to user handlers, so SEH needed no
+kernel change.** `kernel/arch/x86_64/isr.c` maps `#DE` to `SIGFPE` and `#PF`
+to `SIGSEGV` and calls `signal_raise_fault()`, which installs a handler frame
+and returns to it. That turned this phase from "modify the fault path" into
+"use the fault path that exists" — less code and much less risk. Checking
+this first, before designing anything, was the single highest-value step in
+the phase.
+
+**`sigsetjmp`, not `setjmp`.** A signal is blocked while its own handler
+runs. Jumping out with plain `longjmp` leaves it blocked forever, so the
+*first* divide by zero is caught and the *second* kills the process. A test
+that faults once cannot see this, which is exactly why the gate faults twice
+in a row. AuraLite's libc implements `sigsetjmp`/`siglongjmp` with a real
+`sigprocmask` save/restore, so the correct primitive was already available.
+
+**TLS is per-process because GS belongs to the kernel.** On Windows, TLS is
+reached through the TEB at `GS:[0x58]`. On AuraLite `IA32_GS_BASE` holds the
+per-CPU pointer and the `SYSCALL` stub reads `[gs:...]` directly **with no
+`swapgs` anywhere in the tree** (`syscall_entry.asm`, `cpu_local.c`). Giving
+user mode its own GS base means introducing `swapgs` on every kernel entry
+and exit — a kernel-wide change, not a personality change. So the TLS
+callbacks and the TLS index are implemented and the block is per-process,
+which is invisible while `w32run` is single-threaded and is the first thing
+that breaks when threads arrive. Recorded in `docs/win32.md` rather than
+left to be discovered.
+
+**Locals live across a `longjmp` only if they are `volatile`.** GCC's
+`-Wclobbered` caught this in the test program itself: counters written inside
+a `__try` body and read after a fault had jumped out. It is undefined
+behaviour (C11 7.13.2.1), not a false positive, and the fix was to give those
+variables static storage rather than to silence the warning.
 
 #### Test gate
 
-- A C++ `.exe` with a global constructor runs it before `main`
-  (`test_init_array` is the existing native analogue).
+- A `.exe` with a static initialiser runs it before the entry point.
 - Command-line parsing matches documented Win32 quoting for: quoted args,
   embedded quotes, backslash runs before a quote, empty args.
 - A divide-by-zero inside `__try` reaches `__except` rather than killing the
@@ -756,7 +796,50 @@ avoids.
 - Honest note to record in the phase: this is not table-driven unwinding.
   Destructors of live C++ objects will not run. Say so in `docs/win32.md`.
 
-**Deliverable:** `patches/W32_6_crt_seh.patch`
+**Result:** `test_w32_crt` 23/23 and `test_w32_argv` 139/139 (host, under
+ASan+UBSan). Both registered; `docs/win32.md` written and linked from
+`docs/README.md`.
+
+Command-line parsing is tested against **Microsoft's own published examples**
+rather than paraphrased cases — the five-row table from "Parsing C
+command-line arguments", asserted verbatim, plus the `a"b"" c d` row. Using
+the documented table is also the legally relevant choice (D3): the rules come
+from documentation, not from disassembling a CRT. The tests were then checked
+for sensitivity by mutating the implementation: disabling the odd-backslash
+rule and making `argv[0]` use the general rules each produced failures, so
+the suite is not passing by accident.
+
+`argv[0]` is parsed by different rules from every other argument —
+backslashes in it are always literal, because it is a path. A parser that
+applied the general rule would mangle `C:\dir\` in a way that only shows up
+for programs run from certain directories.
+
+The startup order is asserted, not assumed: the fixture's TLS callback
+records whether the constructor had already run, so `CRT-ORDER-OK` proves
+TLS callbacks ran *before* static initialisers and both before the entry
+point.
+
+The hostile fixture (`tools/mk_pe_badtls.py`) points the first TLS callback
+outside the image. This is the sharpest hostile case in the personality so
+far: the callback array is data straight out of the file and it is followed
+*before any of the program's own code runs*, so a loader that dereferenced it
+unchecked would hand control to whatever the file named. The loader refuses
+before transferring control — strictly stronger than catching a fault
+afterwards, which is what the W32-5 WNDPROC case does.
+
+One bug found, again in a fixture rather than the personality: `puts_raw`
+used `R12` as scratch without saving it. `R12` is callee-saved in the Windows
+x64 ABI, so the caller's value was corrupted and the return path faulted.
+That is the second fixture-side ABI defect in three phases (after the W32-5
+stack-alignment bug), which is itself the finding: hand-written Windows-ABI
+code is where these mistakes live, and it is why the fixtures are kept small
+and the personality is written in C with `ms_abi` doing the work.
+
+**Deliverable:** `w32/include/w32/{w32_crt,w32_argv}.h`,
+`w32/src/{w32_crt,w32_argv}.c`, `w32/tests/crt_test.asm`,
+`userspace/apps/w32run/sehtest.c`, `tools/mk_pe_badtls.py`,
+`tests/unit/test_w32_argv.c`, `tests/integration/cases/test_w32_crt.sh`,
+`docs/win32.md` ✅
 
 ---
 
