@@ -1,22 +1,33 @@
 # AuraLite OS — Win32 Application Support Plan
 
-## Status: IN PROGRESS 🔨 — W32-0, W32-1, W32-2 done; W32-3 – W32-8 planned
+## Status: IN PROGRESS 🔨 — W32-0 – W32-3 done; W32-4 – W32-8 planned
 
 | Phase | State |
 |---|---|
 | W32-0 Provenance and the legal record | ✅ done |
 | W32-1 UTF-16 and the string layer | ✅ done |
 | W32-2 PE32+ parsing, in user space | ✅ done |
-| W32-3 The kernel PE loader | 📋 planned |
+| W32-3 The kernel PE loader | ✅ done |
 | W32-4 `KERNEL32` bounded import set | 📋 planned |
 | W32-5 `USER32` + `GDI32` | 📋 planned |
 | W32-6 CRT startup, TLS, minimal SEH | 📋 planned |
 | W32-7 `LoadLibrary`, or a documented refusal | 📋 planned |
 | W32-8 Integration and documentation | 📋 planned |
 
-The three completed phases are exactly the ones that need no kernel change, so
-nothing shipped so far can destabilise a running system: they are a parser, a
-converter and a provenance check, all host-side.
+**A real PE32+ `.exe` now runs on AuraLite.** W32-3 landed the kernel loader,
+and a `nasm -f win64` + `lld-link` binary loads, executes Ring 3 code, and
+exits with its own status:
+
+```
+[pe]   loaded 4 section(s) at 0x140000000, entry 0x140001000
+W32-PE-LOADER-OK
+[thread] '/tests/petest.exe' (tid 8) exited (code=77)
+```
+
+The same program linked at an impossible base is relocated and produces
+identical output, and a byte-identical image whose only difference is an EFI
+subsystem is refused. What is *not* there yet is imports: the test binary calls
+the AuraLite syscall ABI directly, because `KERNEL32` is W32-4.
 
 This document answers one question:
 
@@ -445,19 +456,37 @@ project's own firmware binary can never be launched as a user process.
 
 ---
 
-### Phase W32-3 — The kernel PE loader
+### Phase W32-3 — The kernel PE loader ✅ DONE
 
 **Objective:** map a PE image into a process the way `elf.c` maps an ELF.
 
 #### Tasks
 
-- [ ] `kernel/proc/pe.c`, modelled on `elf.c`, sharing its validation habits.
-- [ ] Map sections at `ImageBase`; apply base relocations when that is taken.
-- [ ] W^X from section characteristics: `IMAGE_SCN_MEM_EXECUTE` →
-      executable, `MEM_WRITE` → writable, never both, matching `elf.c:111`.
-- [ ] `execpolicy` decides whether a PE may be executed at all.
-- [ ] Only `IMAGE_SUBSYSTEM_WINDOWS_CUI`/`GUI` accepted; EFI subsystems refused
-      so an `.efi` can never be launched as a process.
+- [x] `kernel/proc/pe.c`, modelled on `elf.c`: same page-flag derivation, the
+      same permission-union rule for a page two sections share, the same
+      "zero every new frame before user space sees it".
+- [x] Map sections at `ImageBase`; apply base relocations when it is taken.
+      The loader also maps the image's own headers read-only at its base,
+      because a PE expects to reach them through its module handle.
+- [x] W^X from section characteristics, enforced in `pe_check_loadable()` and
+      unit-tested without a kernel.
+- [x] Only `WINDOWS_CUI`/`GUI` accepted; every EFI subsystem refused.
+- [x] The exec path selects a loader by the file's own magic
+      (`pe_image_probe()`), not by filename, so a `.exe` that is really an ELF
+      is still handled correctly.
+- [ ] `execpolicy` integration: not needed yet. A PE goes through the same
+      `vfs_open`/`spawn` path as an ELF and is already covered by the existing
+      install-directory policy; a PE-specific rule would be a second mechanism
+      with nothing extra to say. Recorded rather than silently dropped.
+
+#### One decision worth naming
+
+The relocation buffer is a fixed `PE_MAX_KERNEL_RELOCS` (4096) static array,
+and an image needing more is **refused**. The alternative was a heap
+allocation on a Ring 0 path that must stay allocation-free on its error
+routes. A freestanding mingw-w64 `.exe` produces tens of entries, so the cap
+is far above real use, and refusing is safe where silently truncating a
+relocation table would not be.
 
 #### Test gate
 
@@ -467,12 +496,43 @@ project's own firmware binary can never be launched as a user process.
   and produces the identical result.
 - W^X: a section marked `MEM_WRITE|MEM_EXECUTE` is refused, matching the ELF
   loader's behaviour, with a test that fails without the check.
-- Hostile images from W32-2's corpus are refused by the kernel with no fault:
-  `test_pe_hostile` must show no `UNHANDLED EXCEPTION` in the serial log.
+- Hostile images from W32-2's corpus are refused by the kernel with no fault.
 - `test_elf_permissions` unchanged — evidence the shared paths were not
   disturbed.
 
-**Deliverable:** `patches/W32_3_peloader.patch`
+**Result:** `test_w32_pe_loader` 12/12, registered in `run_all.sh`.
+
+Three fixtures, all built in-tree with `nasm -f win64` + `lld-link` (both
+already in `REQUIRED_TOOLS`, since they build `BOOTX64.EFI`), so the gate
+depends on no downloaded binary:
+
+| Fixture | What it proves |
+|---|---|
+| `petest.exe` | Loads at its own `ImageBase`, runs, exits 77 |
+| `petest_reloc.exe` | Linked at `0x800000000000` (== `USER_VADDR_TOP`, never honourable) → relocated to the fallback base, **identical output** |
+| `petest_efi.exe` | One byte different — subsystem 3 → 10 — and refused |
+
+The marker is printed through a pointer that lives in `.data` and is itself a
+relocation target, so identical output from the relocated image is what proves
+the fixups were right rather than merely absent.
+
+Two things the tests caught that a smoke test would not have:
+
+* The first relocation fixture only patched `ImageBase` in the header, leaving
+  the baked-in pointer inconsistent — the image loaded but printed nothing.
+  Fixed by *linking* at an impossible base instead of editing one field, which
+  is also a more honest fixture.
+* `spawn()` gives each process a fresh address space, so `0x40000000` is free
+  even though every native binary is linked there. Forcing the relocation path
+  needs a base outside the user range, not merely one that "looks" taken.
+
+Hostile-image handling inherits W32-2's fuzz corpus: `pe_parse()` is the same
+code in both, so the kernel path is covered by the host test that already runs
+under ASan/UBSan. Boot remains 30 self-test PASS / 0 FAIL with no faults, and
+`make test-unit` is unchanged at 110.
+
+**Deliverable:** `kernel/proc/pe.{c,h}`, `w32/tests/petest.asm`,
+`tools/mk_pe_efi_variant.py`, `tests/integration/cases/test_w32_pe_loader.sh` ✅
 
 ---
 

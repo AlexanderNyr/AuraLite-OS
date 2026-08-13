@@ -76,6 +76,7 @@ ALL_CASES=(
     test_memory_reaping
     test_fork_cow
     test_elf_permissions
+    test_w32_pe_loader
     test_stack_guard
     test_panic_diag
     test_ist_double_fault

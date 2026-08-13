@@ -34,7 +34,7 @@ CFLAGS      := --target=$(TARGET) \
                -fno-omit-frame-pointer \
                -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
                -O2 -g \
-               -DARCH_X86_64 -I . -I $(BUILD_DIR)
+               -DARCH_X86_64 -I . -I $(BUILD_DIR) -I w32/include
 
 # FIX_R8 (FIXES_PLAN.md): compile-time keyboard layout selection.  This only
 # picks the layout that is active at boot; the `kbd` shell command switches
@@ -50,7 +50,11 @@ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 # The linker script fixes the higher-half address; no --image-base needed.
 LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
 
-KERNEL_SRCS := $(shell find kernel drivers -name '*.c')
+KERNEL_SRCS := $(shell find kernel drivers -name '*.c') w32/src/w32_pe.c
+# WIN32_PLAN.md W32-3: the kernel PE loader calls the same parser the host
+# unit test and fuzz corpus exercise (D2 -- one implementation, tested once).
+# w32/src/ is freestanding C with no libc dependency, so it compiles with the
+# kernel CFLAGS unchanged.
 KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
 # NOTE: a .c and .asm file MUST NOT share a base name (e.g. foo.c + foo.asm),
 # because both compile to the same object path build/.../foo.o, which would
@@ -1144,7 +1148,34 @@ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 \
                 usertest
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
+# WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
+# Built with nasm -f win64 + lld-link, both already in REQUIRED_TOOLS (they
+# build BOOTX64.EFI), so this adds no dependency.  Freestanding by design: it
+# imports nothing, because imports are W32-4 and this gate is about the loader.
+PETEST_EXE := $(BUILD_DIR)/user/petest.exe
+
+$(PETEST_EXE): w32/tests/petest.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/petest.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/petest.obj -out:$@
+	@echo "  [pe] $@"
+
+PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
+
+$(PETEST_RELOC_EXE): $(BUILD_DIR)/user/petest.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         -base:0x800000000000 $< -out:$@
+	@echo "  [pe] $@ (linked above USER_VADDR_TOP; forces relocation)"
+
+$(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $@
+
+.PHONY: petest
+petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
+
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1181,6 +1212,21 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 	@cp $(INITRD_DIR)/pkg/fetch.apkg $(INITRD_DIR)/pkg/broken.apkg
 	@printf 'X' | dd of=$(INITRD_DIR)/pkg/broken.apkg bs=1 seek=200 conv=notrunc \
 	              status=none
+# The PE32+ loader fixture (W32-3).  Not stripped: `strip` does not handle PE,
+# and at 3 KiB it costs nothing in the 8 MiB initrd slot.
+	@cp $(PETEST_EXE) $(INITRD_DIR)/tests/petest.exe
+# The same image with its subsystem field forced to EFI_APPLICATION (10), so
+# the integration test can prove a firmware binary is REFUSED rather than run.
+# Patched here rather than assembled separately: one byte apart from the good
+# image is what makes the negative result attributable.
+	@python3 tools/mk_pe_efi_variant.py $(PETEST_EXE) \
+	         $(INITRD_DIR)/tests/petest_efi.exe
+# The same program LINKED at a base the loader cannot honour, so the base
+# relocation path is exercised.  0x800000000000 is above USER_VADDR_TOP
+# (0x800000000000), so the preferred base is always rejected and the image is
+# moved to PE_FALLBACK_BASE.  It must still print the identical marker, which
+# is only possible if the .data pointer was fixed up correctly.
+	@cp $(PETEST_RELOC_EXE) $(INITRD_DIR)/tests/petest_reloc.exe
 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
 	    > $(INITRD_DIR)/etc/motd
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the

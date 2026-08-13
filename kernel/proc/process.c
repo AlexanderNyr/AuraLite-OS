@@ -11,6 +11,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/elf.h"
+#include "kernel/proc/pe.h"
 #include "kernel/proc/user.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
@@ -305,7 +306,21 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
     struct exec_elfinfo ei;
     ei.phdr  = 0;
     ei.phnum = 0;
-    uint64_t entry = elf_load(elf_data, elf_size, &cur->brk, &ei.phdr, &ei.phnum);
+    uint64_t entry;
+
+    /* WIN32_PLAN.md W32-3: a PE32+ image goes to the w32 loader instead.
+     * Selection is by the file's own magic, not by filename, so a .exe that
+     * is really an ELF (or the reverse) is still handled correctly.
+     *
+     * The auxv fields stay zero for a PE: AT_PHDR/AT_PHNUM describe an ELF
+     * program-header table, which a PE does not have.  A Win32 binary reads
+     * its own headers through its module base instead, which pe_load() maps
+     * for exactly that reason. */
+    if (pe_image_probe(elf_data, elf_size)) {
+        entry = pe_load(elf_data, elf_size, &cur->brk, NULL);
+    } else {
+        entry = elf_load(elf_data, elf_size, &cur->brk, &ei.phdr, &ei.phnum);
+    }
     ei.entry = entry;
     if (entry == 0) {
         kprintf("[proc] ELF load failed\n");

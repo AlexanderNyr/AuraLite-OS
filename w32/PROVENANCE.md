@@ -22,7 +22,15 @@ ReactOS.
 | `include/w32/w32_utf.h` | UTF-16 ↔ UTF-8 conversion API |
 | `src/w32_utf.c` | UTF-16 ↔ UTF-8 conversion |
 | `tools/peinfo.c` | Host tool: dump a PE image |
+| `tests/petest.asm` | A freestanding PE32+ test program (W32-3 fixture) |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
+
+### On the kernel-side loader
+
+`kernel/proc/pe.c` and `kernel/proc/pe.h` live outside this directory but
+belong to the same effort. They are written for AuraLite, modelled on the
+in-tree `kernel/proc/elf.c`, and call the parser here rather than duplicating
+it. No Microsoft, Wine or ReactOS code was consulted.
 
 ### On the PE structure constants
 
