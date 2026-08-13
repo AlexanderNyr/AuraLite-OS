@@ -23,12 +23,36 @@ ReactOS.
 | `src/w32_utf.c` | UTF-16 ↔ UTF-8 conversion |
 | `tools/peinfo.c` | Host tool: dump a PE image |
 | `tests/petest.asm` | A freestanding PE32+ test program (W32-3 fixture) |
+| `include/w32/w32_abi.h` | The Windows-x64 ABI boundary: W32ABI and Win32 widths |
+| `include/w32/w32_errno.h` | Win32 error codes and the last-error slot |
+| `include/w32/w32_handle.h` | HANDLE table API |
+| `include/w32/kernel32.h` | The bounded KERNEL32 import set (W32-4, D7) |
+| `include/w32/w32_bind.h` | Import binding API |
+| `src/w32_errno.c` | Last-error slot and errno translation |
+| `src/w32_handle.c` | HANDLE table |
+| `src/kernel32.c` | KERNEL32 translation layer |
+| `src/w32_bind.c` | Import binding against a static export table |
+| `tests/kernel32_test.asm` | A PE that imports KERNEL32 (W32-4 fixture) |
+| `tests/kernel32.def` | Export list for the import library |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
+
+### On the Win32 names and error codes
+
+`kernel32.h` declares function names such as `WriteFile` and constants such as
+`ERROR_INVALID_HANDLE = 6`. These are the **interface being reimplemented** --
+the names and values a program links against and compares to. They are written
+from published documentation, in this project's own style (`W32_ERROR_*`,
+`W32ABI`, `W32_BOOL`), with implementations written from scratch. No SDK
+header was opened; see `LICENSING.md` and `WIN32_PLAN.md` section 1.
+
+`tests/kernel32.def` lists the same names so `lld-link` can build an import
+library. It is a text file naming an interface, not a Microsoft artefact, and
+no `kernel32.dll` from Microsoft is used or shipped.
 
 ### On the kernel-side loader
 
-`kernel/proc/pe.c` and `kernel/proc/pe.h` live outside this directory but
-belong to the same effort. They are written for AuraLite, modelled on the
+`kernel/proc/pe.c`, `kernel/proc/pe.h` and `userspace/apps/w32run/w32run.c`
+live outside this directory but belong to the same effort. They are written for AuraLite, modelled on the
 in-tree `kernel/proc/elf.c`, and call the parser here rather than duplicating
 it. No Microsoft, Wine or ReactOS code was consulted.
 

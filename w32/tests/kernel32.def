@@ -1,0 +1,25 @@
+; kernel32.def — the export list for the import library the test .exe links
+; against.  WIN32_PLAN.md phase W32-4, decision D7: this is exactly the set the
+; gate binaries import, not "all of KERNEL32".
+;
+; lld-link turns this into an import library; nothing here is a Microsoft file
+; and no DLL is redistributed -- the names are the interface being
+; reimplemented (w32/LICENSING.md).
+LIBRARY KERNEL32.dll
+EXPORTS
+    CloseHandle
+    CreateFileA
+    ExitProcess
+    GetCommandLineA
+    GetLastError
+    GetProcessHeap
+    GetStdHandle
+    GetTickCount64
+    HeapAlloc
+    HeapFree
+    ReadFile
+    SetLastError
+    Sleep
+    VirtualAlloc
+    VirtualFree
+    WriteFile

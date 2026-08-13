@@ -308,6 +308,7 @@ USER_CFLAGS += -I lib/libauragui/include
 # Application ELFs.
 ### RUST: add rustes.elf to the list
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
+             $(USER_BUILD)/w32run.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/weather.elf \
              $(USER_BUILD)/trustinfo.elf \
@@ -441,6 +442,34 @@ $(LIBAHTTP): $(LIBAHTTP_OBJS)
 libs: $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(LIBATLS) $(LIBAHTTP)
 
 user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
+
+# WIN32_PLAN.md W32-4: the w32 personality's user-space objects.  Built with
+# the user CFLAGS plus -I w32/include; kernel32.c is plain freestanding C over
+# the AuraLite libc, and w32_pe.c is the same parser the kernel uses.
+W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
+                $(USER_BUILD)/w32_handle.o  $(USER_BUILD)/w32_bind.o \
+                $(USER_BUILD)/w32_peu.o
+
+$(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_errno.o: w32/src/w32_errno.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_handle.o: w32/src/w32_handle.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_bind.o: w32/src/w32_bind.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_peu.o: w32/src/w32_pe.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+
+$(USER_BUILD)/w32run.o: userspace/apps/w32run/w32run.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+
+$(USER_BUILD)/w32run.elf: $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
+                          $(USER_COMMON) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
+	      $(USER_COMMON_LNK) -o $@
+	@echo "[link] $@ (w32 personality)"
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
 # GUI apps additionally link the libauragui object.
@@ -1139,7 +1168,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
-INITRD_APPS  := calc editor http weather trustinfo clock browser gcalc gedit gfiles gterm \
+INITRD_APPS  := calc editor http weather trustinfo clock browser w32run gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
 INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
@@ -1161,6 +1190,25 @@ $(PETEST_EXE): w32/tests/petest.asm
 	         $(BUILD_DIR)/user/petest.obj -out:$@
 	@echo "  [pe] $@"
 
+# WIN32_PLAN.md W32-4: a .exe that imports KERNEL32 through a real PE import
+# table.  The import library comes from a .def via lld-link; no Microsoft file
+# is involved and no DLL is shipped (w32/LICENSING.md).
+K32TEST_EXE := $(BUILD_DIR)/user/k32test.exe
+K32_IMPLIB  := $(BUILD_DIR)/user/kernel32.lib
+
+$(K32_IMPLIB): w32/tests/kernel32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 \
+	         -out:$(BUILD_DIR)/user/kernel32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+$(K32TEST_EXE): w32/tests/kernel32_test.asm $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/k32test.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/k32test.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (imports KERNEL32)"
+
 PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
 
 $(PETEST_RELOC_EXE): $(BUILD_DIR)/user/petest.obj
@@ -1175,7 +1223,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1227,6 +1275,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 # moved to PE_FALLBACK_BASE.  It must still print the identical marker, which
 # is only possible if the .data pointer was fixed up correctly.
 	@cp $(PETEST_RELOC_EXE) $(INITRD_DIR)/tests/petest_reloc.exe
+	@cp $(K32TEST_EXE) $(INITRD_DIR)/tests/k32test.exe
 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
 	    > $(INITRD_DIR)/etc/motd
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
@@ -1339,7 +1388,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_uaccess \
                 $(BUILD_DIR)/test_vma_m4 \
                 $(BUILD_DIR)/test_w32_utf \
-                $(BUILD_DIR)/test_w32_pe
+                $(BUILD_DIR)/test_w32_pe \
+                $(BUILD_DIR)/test_w32_abi \
+                $(BUILD_DIR)/test_w32_kernel32
 
 # WIN32_PLAN.md phases W32-1/W32-2: the w32 personality's host-side gates.
 # Both test files #include the implementation directly, so there is no w32
@@ -1355,6 +1406,20 @@ $(BUILD_DIR)/test_w32_pe: tests/unit/test_w32_pe.c w32/src/w32_pe.c \
                           w32/include/w32/w32_pe.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
+
+# The ABI test is NOT built with sanitizers: ASan's prologue assumes a System V
+# frame and faults inside an ms_abi callee entered from the hand-written
+# Windows-ABI caller.  See the note in the test.  It is verified at -O0..-O3.
+$(BUILD_DIR)/test_w32_abi: tests/unit/test_w32_abi.c \
+                           w32/include/w32/w32_abi.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
+
+$(BUILD_DIR)/test_w32_kernel32: tests/unit/test_w32_kernel32.c \
+                                w32/src/kernel32.c w32/src/w32_handle.c \
+                                w32/src/w32_errno.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -O2 $(W32_INC) -I . $< -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.
@@ -1380,6 +1445,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_provenance.sh"
 	@bash tools/check_provenance.sh || exit 1
 	@bash tools/check_provenance.sh --selftest || exit 1
+# W32-4: prove the ABI test would fail without ms_abi.
+	@echo "[unit] running tests/unit/test_w32_abi_negctl.sh"
+	@bash tests/unit/test_w32_abi_negctl.sh || exit 1
 # WIN32_PLAN.md W32-2: cross-check peinfo against llvm-readobj on the
 # project's own BOOTX64.EFI.  Skips cleanly if either is unavailable.
 	@echo "[unit] running tests/unit/test_w32_peinfo.sh"

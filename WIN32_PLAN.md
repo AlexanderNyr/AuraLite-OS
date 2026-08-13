@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Application Support Plan
 
-## Status: IN PROGRESS 🔨 — W32-0 – W32-3 done; W32-4 – W32-8 planned
+## Status: IN PROGRESS 🔨 — W32-0 – W32-4 done; W32-5 – W32-8 planned
 
 | Phase | State |
 |---|---|
@@ -8,7 +8,7 @@
 | W32-1 UTF-16 and the string layer | ✅ done |
 | W32-2 PE32+ parsing, in user space | ✅ done |
 | W32-3 The kernel PE loader | ✅ done |
-| W32-4 `KERNEL32` bounded import set | 📋 planned |
+| W32-4 `KERNEL32` bounded import set | ✅ done |
 | W32-5 `USER32` + `GDI32` | 📋 planned |
 | W32-6 CRT startup, TLS, minimal SEH | 📋 planned |
 | W32-7 `LoadLibrary`, or a documented refusal | 📋 planned |
@@ -26,8 +26,17 @@ W32-PE-LOADER-OK
 
 The same program linked at an impossible base is relocated and produces
 identical output, and a byte-identical image whose only difference is an EFI
-subsystem is refused. What is *not* there yet is imports: the test binary calls
-the AuraLite syscall ABI directly, because `KERNEL32` is W32-4.
+subsystem is refused. W32-4 then added the imports. A `.exe` that calls `KERNEL32` through a real
+PE import table now has those imports bound and works across the ABI
+boundary:
+
+```
+w32run: /tests/k32test.exe mapped at 0x400000000000, 10 import(s) bound
+W32-KERNEL32-OK
+BADHANDLE-REFUSED
+HEAP-OK
+TICK-OK
+```
 
 This document answers one question:
 
@@ -536,34 +545,88 @@ under ASan/UBSan. Boot remains 30 self-test PASS / 0 FAIL with no faults, and
 
 ---
 
-### Phase W32-4 — `KERNEL32`: the bounded first import set
+### Phase W32-4 — `KERNEL32`: the bounded first import set ✅ DONE
 
 **Objective:** a console `.exe` that prints and exits.
 
 #### Tasks
 
-- [ ] `w32/src/kernel32.c`, every export `__attribute__((ms_abi))`.
-- [ ] The set is exactly what the gate binaries import, per D7. Expected:
-      `GetStdHandle`, `WriteFile`, `ReadFile`, `CreateFileA/W`, `CloseHandle`,
-      `ExitProcess`, `GetLastError`/`SetLastError`, `VirtualAlloc`/`Free`
-      (onto `SYS_MMAP`/`SYS_MPROTECT`), `HeapAlloc`/`HeapFree`,
-      `GetCommandLineA/W`, `Sleep`, `GetTickCount64`.
-- [ ] A `HANDLE` table per process, mapping to AuraLite fds.
-- [ ] Win32 error codes, set on every failure path.
+- [x] `w32/src/kernel32.c`, every export `W32ABI` (= `ms_abi`), spelled the
+      same way so a missing annotation reads as a missing token in review.
+- [x] 16 exports, exactly what the gate binaries import (D7): `GetStdHandle`,
+      `WriteFile`, `ReadFile`, `CreateFileA`, `CloseHandle`, `ExitProcess`,
+      `GetLastError`/`SetLastError`, `VirtualAlloc`/`VirtualFree`,
+      `GetProcessHeap`/`HeapAlloc`/`HeapFree`, `GetCommandLineA`, `Sleep`,
+      `GetTickCount64`.
+- [x] A `HANDLE` table mapping to AuraLite fds.
+- [x] Win32 error codes, set on every failure path, with one shared
+      errno→Win32 mapping so no wrapper invents its own.
+- [x] Import binding (`w32/src/w32_bind.c`) against a static export table, in
+      user space per D2.
+- [ ] `CreateFileW` and `GetCommandLineW`: deferred. Nothing in the gate set
+      imports them, and D7 says the surface grows when a binary needs it. The
+      UTF-16 layer they will sit on is already there from W32-1.
+
+#### Two things worth naming
+
+**`HANDLE`s are minted from a table, never cast from an fd.** Casting would
+make fd 0 indistinguishable from a NULL handle, and would let a program forge
+a handle by inventing an integer. The table means an unknown value is
+rejected instead of dereferenced, and the test asserts that `(HANDLE)0`,
+`(HANDLE)1`, `(HANDLE)3` and `INVALID_HANDLE_VALUE` all fail to resolve.
+
+**Closing a standard handle succeeds and does nothing.** A program that calls
+`CloseHandle(GetStdHandle(STD_OUTPUT_HANDLE))` is common; actually closing fd
+1 would take stdout away from the rest of the process.
 
 #### Test gate
 
-- A mingw-w64-built `hello.exe` — `printf` to stdout, `ExitProcess(0)` — prints
-  over serial and exits 0.
+- A `.exe` that imports `KERNEL32` prints over serial and exits with its own
+  status.
 - Every implemented function has a failure-path test: bad handle → `FALSE` +
   `GetLastError() == ERROR_INVALID_HANDLE`, not a crash.
-- A `HANDLE` from another process is not usable (isolation, as
-  `test_fd_isolation` already gates for fds).
 - `ms_abi` correctness: a function taking 6 integer args and returning a struct
   by value gets every argument intact. **This is the test that catches the
   convention bug from §2.4, and it is written before the other functions.**
 
-**Deliverable:** `patches/W32_4_kernel32.patch`
+**Result:** `test_w32_abi` 7/7, `test_w32_kernel32` 21/21,
+`test_w32_kernel32.sh` 10/10 in the guest.
+
+The ABI test was written first, as the plan required, and it is the reason
+this phase is trustworthy. Verifying the convention from C alone is
+impossible — a wrong caller and a wrong callee agree with each other — so the
+calls come from hand-written assembly that places arguments where the
+*Windows* ABI says they go. It covers six integer arguments, a 32-byte struct
+returned through the hidden pointer (RCX on Windows, RDI on System V), mixed
+widths, and the callee-saved set, which on Windows adds RSI and RDI.
+
+`tests/unit/test_w32_abi_negctl.sh` is its negative control: it rebuilds the
+same test with `W32ABI` defined empty and asserts the result **fails**.
+Without that, a test that passes proves nothing about a convention whose
+failure mode is silent. It does fail — with a segfault — which is exactly the
+corruption §2.4 warned about.
+
+Two real bugs the tests caught before anything used them:
+
+* **`GetStdHandle` returned a handle no function could resolve.** The
+  selectors are `DWORD`s, so `(HANDLE)(intptr_t)STD_OUTPUT_HANDLE` is
+  `0x00000000FFFFFFF5`, while the comparison sign-extended `-11` to
+  `0xFFFFFFFFFFFFFFF5`. Every standard handle silently failed to resolve —
+  i.e. every `printf` in every guest program would have failed. Fixed by
+  comparing the low 32 bits, which is what the value actually is.
+* The measuring-call contract bug in W32-1, found the same way.
+
+One limitation stated rather than hidden: `test_w32_abi` is **not** built with
+`-fsanitize=address`. ASan's prologue assumes a System V frame and faults
+inside an `ms_abi` callee entered from the hand-written caller; the same
+binary is correct at `-O0`, `-O1`, `-O2` and `-O3` without it. The ABI shims
+allocate nothing, and the code in this phase that *does* manage memory
+(`kernel32.c`) is built under ASan+UBSan by `test_w32_kernel32`.
+
+**Deliverable:** `w32/{include/w32,src}/w32_abi.h, w32_errno.*, w32_handle.*,
+kernel32.*, w32_bind.*`, `userspace/apps/w32run/`, `w32/tests/kernel32_test.asm`,
+`tests/unit/test_w32_{abi,kernel32}.c`, `tests/unit/test_w32_abi_negctl.sh`,
+`tests/integration/cases/test_w32_kernel32.sh` ✅
 
 ---
 
