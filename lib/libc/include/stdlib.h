@@ -27,6 +27,17 @@ void   free(void* ptr);
 void*  calloc(size_t nmemb, size_t size);
 void*  realloc(void *ptr, size_t size);
 
+/* Integer absolute value.  abs(INT_MIN) is undefined in C; these return the
+ * argument unchanged rather than overflowing (see stdlib_extra.c). */
+/* No /bin/sh exists on AuraLite: system(NULL) reports "no command
+ * processor" (0) and any real command fails with ENOSYS rather than
+ * silently doing nothing. */
+int    system(const char *command);
+
+int       abs(int v);
+long      labs(long v);
+long long llabs(long long v);
+
 /* Normal process termination (flushes nothing yet; calls _exit). */
 void   exit(int status) __attribute__((__noreturn__));
 

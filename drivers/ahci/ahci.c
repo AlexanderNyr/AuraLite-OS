@@ -91,7 +91,28 @@ struct ahci_port {
     volatile struct hba_cmd_hdr *cmd_list;
     volatile struct hba_cmd_tbl  *cmd_tbl;
     volatile uint8_t             *fis_rx;
+
+    /* A DMA bounce buffer, allocated ONCE at port init.
+     *
+     * It used to be allocated per transfer with pmm_alloc_contiguous() and
+     * never freed, which was two bugs in one line.  The leak exhausted
+     * physical memory after a few hundred reads -- enough that every file
+     * on /fat appeared truncated to 173824 bytes, a symptom pointing
+     * nowhere near this driver.  And even with the free added, allocating
+     * per transfer costs a linear bitmap scan plus a 4 KiB memset on every
+     * 512-byte sector: measured at ~93 ms per sector, which is 5 KB/s and
+     * makes a 28 MB file take an hour and a half.
+     *
+     * One buffer per port, reused, fixes both. */
+    uint64_t dma_phys;
+    uint8_t *dma_virt;
+    uint32_t dma_bytes;
 };
+
+/* Size of that buffer: the largest single transfer the driver will issue.
+ * 128 KiB covers a full cluster on any sane FAT32 volume and keeps the
+ * per-port cost to 32 frames. */
+#define AHCI_DMA_BUF_BYTES (128u * 1024u)
 
 static volatile uint32_t *abar = NULL;
 static struct ahci_port ports[AHCI_MAX_PORTS];
@@ -147,6 +168,20 @@ static int ahci_init_port(int port) {
     port_write(port, PORT_PXCLB, (uint32_t)cl);
     port_write(port, PORT_PXCLBU, (uint32_t)(cl >> 32));
     ports[port].cmd_list = (volatile struct hba_cmd_hdr *)(uintptr_t)(hhdm + cl);
+
+    /* The persistent DMA bounce buffer for this port. */
+    {
+        uint32_t frames = AHCI_DMA_BUF_BYTES / 4096u;
+        uint64_t db = pmm_alloc_contiguous(frames);
+        if (!db) {
+            kprintf("[ahci] port %d: cannot allocate a %u KiB DMA buffer\n",
+                    port, AHCI_DMA_BUF_BYTES / 1024u);
+            return -1;
+        }
+        ports[port].dma_phys  = db;
+        ports[port].dma_virt  = (uint8_t *)(uintptr_t)(hhdm + db);
+        ports[port].dma_bytes = AHCI_DMA_BUF_BYTES;
+    }
 
     /* FIS receive (1 page). */
     uint64_t fb = pmm_alloc_frame();
@@ -307,29 +342,27 @@ int ahci_init(void) {
 int ahci_read(uint32_t port, uint64_t lba, uint32_t count, void *buf) {
     if (port >= AHCI_MAX_PORTS || !ports[port].present || !count)
         return -1;
-    uint64_t hhdm = boot_get_hhdm_offset();
     uint32_t len = count * AHCI_SECTOR_SIZE;
-    uint32_t frames = (len + 0xFFF) / 0x1000;
-    uint64_t dma = pmm_alloc_contiguous(frames);
-    if (!dma) return -1;
-    memset((void *)(uintptr_t)(hhdm + dma), 0, frames * 0x1000);
-    if (ahci_exec(port, ATA_READ_DMA_EXT, 0, lba, count, dma, len) != 0)
-        return -1;
-    memcpy(buf, (void *)(uintptr_t)(hhdm + dma), len);
-    sectors_read_total += count;
-    return 0;
+    if (len > ports[port].dma_bytes) return -1;   /* caller must split */
+
+    int rc = ahci_exec(port, ATA_READ_DMA_EXT, 0, lba, count,
+                       ports[port].dma_phys, len);
+    if (rc == 0) {
+        memcpy(buf, ports[port].dma_virt, len);
+        sectors_read_total += count;
+    }
+    return rc;
 }
 
 int ahci_write(uint32_t port, uint64_t lba, uint32_t count, const void *buf) {
     if (port >= AHCI_MAX_PORTS || !ports[port].present || !count)
         return -1;
-    uint64_t hhdm = boot_get_hhdm_offset();
     uint32_t len = count * AHCI_SECTOR_SIZE;
-    uint32_t frames = (len + 0xFFF) / 0x1000;
-    uint64_t dma = pmm_alloc_contiguous(frames);
-    if (!dma) return -1;
-    memcpy((void *)(uintptr_t)(hhdm + dma), buf, len);
-    int rc = ahci_exec(port, ATA_WRITE_DMA_EXT, 1, lba, count, dma, len);
+    if (len > ports[port].dma_bytes) return -1;   /* caller must split */
+
+    memcpy(ports[port].dma_virt, buf, len);
+    int rc = ahci_exec(port, ATA_WRITE_DMA_EXT, 1, lba, count,
+                       ports[port].dma_phys, len);
     if (rc == 0) sectors_written_total += count;
     return rc;
 }

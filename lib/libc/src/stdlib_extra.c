@@ -247,3 +247,52 @@ long fpathconf(int fd, int name) {
     (void)fd;
     return pathconf(NULL, name);
 }
+/* abs / labs / llabs — C89/C99 integer absolute value.
+ *
+ * Missing until now.  DOOM uses abs() heavily in the renderer, but this is
+ * a plain standard-library gap.
+ *
+ * INT_MIN has no positive counterpart in two's complement, so -INT_MIN
+ * overflows and is undefined behaviour.  The standard leaves abs(INT_MIN)
+ * undefined for exactly that reason; returning the argument unchanged is
+ * what real implementations do and is at least deterministic, rather than
+ * inviting the optimiser to conclude the branch is unreachable.
+ */
+int abs(int v) {
+    if (v == (-2147483647 - 1)) return v;   /* INT_MIN: see above */
+    return v < 0 ? -v : v;
+}
+
+long labs(long v) {
+    if (v == (-9223372036854775807L - 1L)) return v;
+    return v < 0 ? -v : v;
+}
+
+long long llabs(long long v) {
+    if (v == (-9223372036854775807LL - 1LL)) return v;
+    return v < 0 ? -v : v;
+}
+
+/* system() — command execution.
+ *
+ * AuraLite has no /bin/sh: the shell is built into init and is not an
+ * executable a process can spawn.  There is therefore nothing to hand a
+ * command string to.
+ *
+ * The C standard defines exactly this case: system(NULL) returns zero when
+ * no command processor is available, and that is the honest answer here.
+ * For a non-NULL command it returns -1 with errno set, rather than
+ * pretending the command ran and succeeded -- a caller that checks the
+ * result learns the truth, and one that does not is no worse off than with
+ * a silent no-op.
+ *
+ * This exists because portable code tests for a helper by running it (DOOM
+ * probes for `zenity --help` before using it for error dialogs). Such code
+ * needs system() to LINK and to say "no", which it now does, instead of
+ * failing to build.
+ */
+int system(const char *command) {
+    if (command == NULL) return 0;   /* no command processor available */
+    errno = ENOSYS;
+    return -1;
+}

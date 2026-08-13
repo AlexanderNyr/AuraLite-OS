@@ -112,6 +112,18 @@ jobs:
       - name: BL7 -- dual-boot ISO (BIOS + UEFI in one file)
         run: bash tests/integration/bl7_dual_smoke.sh
 
+      # DOOM_PLAN.md D4/D6.  Called out as its own step rather than left to
+      # `make test-integration` below, because it guards a defect class that
+      # nothing else in the suite reaches: ahci_read() leaked a DMA bounce
+      # buffer per transfer, which truncated EVERY file on an AHCI-backed
+      # filesystem past ~10 MB.  It stayed invisible for the life of the
+      # driver because no test read a file that large.  Needs no WAD and no
+      # download, so it runs on every push.
+      - name: AHCI + FAT32 large-file read (the 173824-byte regression)
+        run: bash tests/integration/cases/test_ahci_large_read.sh
+        env:
+          NO_COLOR: "1"
+
       # `make test-integration` runs every case in
       # tests/integration/run_all.sh, which includes all six Win32 gates:
       # test_w32_pe_loader, _kernel32, _user32, _crt, _loadlibrary and
@@ -131,4 +143,58 @@ jobs:
             build/integration-logs/
             build/bl*.log
             build/bl*.mem
+          if-no-files-found: ignore
+
+  # DOOM_PLAN.md D6.  A SEPARATE job, and deliberately not part of the gate
+  # above.
+  #
+  # It clones a GPL-2.0 engine and downloads a 22 MB IWAD, so it depends on
+  # two third-party endpoints that the rest of the build does not.  Making
+  # every push depend on them would mean an outage at either one turns the
+  # whole repository red for a reason unrelated to the change being tested.
+  #
+  # continue-on-error keeps that isolation honest: this job reports, it does
+  # not block.  The libc work DOOM prompted is covered for free by
+  # `make test-unit` in the job above, and the kernel work by the AHCI step.
+  doom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
+            mtools ovmf dosfstools e2fsprogs git curl unzip
+
+      - name: Install Rust bare-metal target
+        run: |
+          rustup target add x86_64-unknown-none
+          rustc --version
+
+      # Fetches doomgeneric and Freedoom into build/ and builds the WAD disk.
+      # The engine is GPL-2.0 and is never committed to this repository
+      # (DOOM_PLAN.md D1); this step is where it enters the build.
+      - name: Build the DOOM port and its WAD disk
+        run: make build/doom/doomdisk.img
+
+      - name: Build the ISO
+        run: make iso
+
+      # Skips loudly and exits 0 if either input is missing, so a failed
+      # fetch is reported as a skip rather than as a broken port.
+      - name: DOOM end-to-end (UEFI + Freedoom)
+        run: bash tests/integration/cases/test_doom.sh
+        env:
+          NO_COLOR: "1"
+
+      - name: Upload serial logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doom-logs
+          path: build/integration-logs/
           if-no-files-found: ignore

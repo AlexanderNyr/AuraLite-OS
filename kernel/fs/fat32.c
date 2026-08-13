@@ -118,9 +118,31 @@ struct fat_vinfo {
     uint32_t  dirent_offset;    /* byte offset within parent dir cluster chain
                                    pointing at this entry's *short* dir entry */
     uint8_t   is_dir;
+
+    /* Chain cursor: the cluster reached at index `hint_idx`.
+     *
+     * Without it every read has to walk the chain from the head, which is
+     * O(offset) per call -- so reading a 28 MB WAD lump by lump, each with
+     * an fseek() to its offset, is quadratic in the file size all over
+     * again.  DOOM does exactly that: seek to a lump, read it, repeat a few
+     * thousand times.
+     *
+     * Caching the last position makes a sequential or forward seek O(delta)
+     * instead of O(offset).  A backward seek falls back to walking from the
+     * head, which is correct and no worse than before. */
+    uint32_t  hint_idx;
+    uint32_t  hint_cluster;
+
     struct vnode vnode;
 };
 static struct fat_vinfo vinfo_pool[FAT_MAX_OPEN_VNODES];
+
+static void vinfo_hints_invalidate(void) {
+    for (int i = 0; i < FAT_MAX_OPEN_VNODES; i++) {
+        vinfo_pool[i].hint_idx     = 0;
+        vinfo_pool[i].hint_cluster = 0;
+    }
+}
 
 /* ---- Tiny endian helpers ---- */
 static inline uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
@@ -146,17 +168,41 @@ static int write_cluster(uint32_t cl, const void *buf) {
 }
 
 /* ---- FAT access ---- */
+/* One-sector cache of the FAT.
+ *
+ * A FAT sector holds 128 entries, so walking a chain of consecutive
+ * clusters re-reads the SAME sector 128 times in a row without this.  The
+ * cache turns those 128 disk commands into one, which is the difference
+ * between reading a large file in seconds and in minutes.
+ *
+ * Invalidated by fat_set_all() -- the only writer -- so a stale entry
+ * cannot survive an allocation.  Deliberately a single sector rather than
+ * a general block cache: this is the hot path and nothing else needs it. */
+static uint32_t fat_cache_lba = 0xFFFFFFFFu;
+static uint8_t  fat_cache[512];
+
+static void fat_cache_invalidate(void) { fat_cache_lba = 0xFFFFFFFFu; }
+
 static uint32_t fat_get(uint32_t cl) {
     if (cl < 2 || cl >= fs.cluster_count + 2) return FAT_EOC;
     uint32_t off  = cl * 4u;
     uint32_t lba  = fs.fat_lba + off / 512u;
     uint32_t soff = off % 512u;
-    if (read_sect_abs(lba, scratch) != 0) return FAT_EOC;
-    return rd32(scratch + soff) & 0x0FFFFFFF;
+    if (lba != fat_cache_lba) {
+        if (read_sect_abs(lba, fat_cache) != 0) return FAT_EOC;
+        fat_cache_lba = lba;
+    }
+    return rd32(fat_cache + soff) & 0x0FFFFFFF;
 }
+
+static void vinfo_hints_invalidate(void);
 
 static int fat_set_all(uint32_t cl, uint32_t val) {
     if (cl < 2 || cl >= fs.cluster_count + 2) return -1;
+    fat_cache_invalidate();   /* the cached sector may be the one we write */
+    /* Any chain may have just been extended or freed, so every cursor into
+     * one is suspect.  Cheap: there are at most FAT_MAX_OPEN_VNODES. */
+    vinfo_hints_invalidate();
     uint32_t off  = cl * 4u;
     uint32_t soff = off % 512u;
     /* Write to every FAT mirror. */
@@ -245,6 +291,24 @@ static uint32_t chain_at(uint32_t first, uint32_t idx) {
     uint32_t cl = first;
     while (idx-- && cl >= 2 && cl < FAT_BAD) cl = fat_get(cl);
     if (cl < 2 || cl >= FAT_BAD) return 0;
+    return cl;
+}
+
+/* chain_at() with a per-file cursor.  Falls back to the plain walk when the
+ * target is behind the cursor or the cursor is unset. */
+static uint32_t chain_at_hinted(struct fat_vinfo *v, uint32_t idx) {
+    uint32_t cl, i;
+    if (v->hint_cluster && v->hint_idx <= idx) {
+        cl = v->hint_cluster;
+        i  = v->hint_idx;
+    } else {
+        cl = v->first_cluster;
+        i  = 0;
+    }
+    while (i < idx && cl >= 2 && cl < FAT_BAD) { cl = fat_get(cl); i++; }
+    if (cl < 2 || cl >= FAT_BAD) return 0;
+    v->hint_idx     = idx;
+    v->hint_cluster = cl;
     return cl;
 }
 
@@ -1047,16 +1111,43 @@ static int64_t fat32_read_impl(struct vnode *vn, uint64_t pos, void *buf, uint64
     if (pos + count > v->size) count = v->size - pos;
     uint8_t *out = (uint8_t *)buf;
     uint64_t done = 0;
+
+    /* Walk the cluster chain INCREMENTALLY.
+     *
+     * This loop used to call chain_at(first, cl_idx) for every cluster,
+     * and chain_at() restarts from the head each time -- following cl_idx
+     * links, each of which is a fat_get(), each of which is a 512-byte
+     * disk read.  Reading N clusters therefore cost N*(N-1)/2 FAT reads on
+     * top of the N data reads: quadratic.
+     *
+     * For a 500 KB file that is 481671 disk reads instead of 981 -- 491x
+     * the necessary I/O, measured at 65 ms per useful sector and 7 KB/s.
+     * For the 28 MB WAD this port needs, it is ~1.6 BILLION reads, which
+     * is not slow so much as never finishing.
+     *
+     * Advancing one link per cluster makes it linear.  The chain is still
+     * walked once to reach the starting cluster, which matters only for a
+     * seek into the middle of a file. */
+    uint32_t cl_idx = (uint32_t)(pos / fs.bytes_per_clus);
+    uint32_t cl = chain_at_hinted(v, cl_idx);
+
     while (done < count) {
-        uint32_t cl_idx = (uint32_t)((pos + done) / fs.bytes_per_clus);
-        uint32_t off    = (uint32_t)((pos + done) % fs.bytes_per_clus);
-        uint32_t cl = chain_at(v->first_cluster, cl_idx);
+        uint32_t off = (uint32_t)((pos + done) % fs.bytes_per_clus);
         if (!cl) break;
         if (read_cluster(cl, cluster_buf) != 0) return -1;
         uint64_t chunk = fs.bytes_per_clus - off;
         if (chunk > count - done) chunk = count - done;
         memcpy(out + done, cluster_buf + off, chunk);
         done += chunk;
+        /* Step to the next cluster only when this one is exhausted. */
+        if ((pos + done) % fs.bytes_per_clus == 0) {
+            uint32_t next = fat_get(cl);
+            cl = (next < 2 || next >= FAT_BAD) ? 0 : next;
+            if (cl) {
+                v->hint_idx     = (uint32_t)((pos + done) / fs.bytes_per_clus);
+                v->hint_cluster = cl;
+            }
+        }
     }
     if (done > 0) {
         uint8_t e[32];

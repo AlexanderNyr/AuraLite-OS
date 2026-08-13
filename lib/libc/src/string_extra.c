@@ -225,3 +225,30 @@ char *strsignal(int sig) {
     snprintf(buf, sizeof(buf), "Unknown signal %d", sig);
     return buf;
 }
+/* memmove — overlap-safe copy.
+ *
+ * A genuine gap until now: <string.h> declared memcpy() but not memmove(),
+ * and bcopy() in compat.c carried a comment saying so and open-coded the
+ * copy itself.  DOOM needs it (the renderer and the zone allocator both
+ * shuffle overlapping regions), and so does any code that moves data within
+ * one buffer, so it belongs here rather than in the port.
+ *
+ * The direction test is the whole function: copying forwards when the
+ * destination overlaps the tail of the source overwrites bytes that have
+ * not been read yet.
+ */
+void *memmove(void *dst, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+
+    if (d == s || n == 0) return dst;
+
+    if (d < s) {
+        for (size_t i = 0; i < n; i++) d[i] = s[i];
+    } else {
+        /* Backwards, so the overlapping tail is read before it is
+         * clobbered. */
+        for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
+    }
+    return dst;
+}

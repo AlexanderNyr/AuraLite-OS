@@ -1391,6 +1391,15 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
             else break;
         }
         while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+        /* Precision.  Parsed for every conversion (and ignored by the
+         * integer ones) so that "%.2f" and "%.3s" consume their digits
+         * instead of leaving them to be printed as literal text. */
+        int prec = -1;
+        if (*fmt == '.') {
+            fmt++;
+            prec = 0;
+            while (*fmt >= '0' && *fmt <= '9') { prec = prec * 10 + (*fmt - '0'); fmt++; }
+        }
         /* Left-justification and zero-padding are mutually exclusive; POSIX
          * says '0' is ignored when '-' is present. */
         if (left) zero = 0;
@@ -1400,6 +1409,83 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
         switch (*fmt) {
         case '%': s->emit(s, '%'); break;
         case 'c': s->emit(s, (char)va_arg(ap, int)); break;
+        /* %f / %F -- fixed-point, the default precision of 6.
+         *
+         * Absent until now, so printf("%f") emitted the literal text "%f".
+         * DOOM writes floats into its config file with it, reads them back
+         * on the next run, and would have been parsing the string "%f" as a
+         * number for ever after.
+         *
+         * This is a deliberately simple conversion: split off the integer
+         * part, then emit `prec` scaled fractional digits with rounding.
+         * It does not attempt shortest-round-trip formatting, and %e/%g are
+         * still absent -- doing those properly means Grisu/Ryu, which is a
+         * project of its own and not one to do halfway. */
+        case 'F':
+        case 'f': {
+            double d = va_arg(ap, double);
+            if (prec < 0) prec = 6;
+            if (prec > 17) prec = 17;   /* beyond double's precision */
+
+            /* The sign has to come from the SIGN BIT, not from `d < 0`:
+             * a comparison is false for every NaN, and negative zero is
+             * not less than zero either.  So read the bit directly --
+             * that is also what makes "%f" of 0.0/0.0 print "-nan" here
+             * exactly as it does on glibc. */
+            union { double d; uint64_t u; } fbits;
+            fbits.d = d;
+            int neg = (int)(fbits.u >> 63);
+
+            if (d != d) {                       /* NaN: compares unequal */
+                if (neg) s->emit(s, '-');
+                s->emit(s, 'n'); s->emit(s, 'a'); s->emit(s, 'n');
+                break;
+            }
+            if (neg) d = -d;
+            /* Infinity, without needing <math.h> here. */
+            if (d > 1.7976931348623157e308) {
+                if (neg) s->emit(s, '-');
+                s->emit(s, 'i'); s->emit(s, 'n'); s->emit(s, 'f');
+                break;
+            }
+
+            /* Round at the requested precision BEFORE splitting, so that
+             * 0.999 at prec 2 gives "1.00" rather than "0.99". */
+            double scale = 1.0;
+            for (int i = 0; i < prec; i++) scale *= 10.0;
+            d += 0.5 / scale;
+
+            uint64_t ip = (uint64_t)d;
+
+            /* Field width counts the sign, the integer digits, the point
+             * and the fraction together, so it has to be computed before
+             * anything is emitted -- "%08.2f" of 3.5 is "00003.50". */
+            int idigits = 1;
+            for (uint64_t t = ip; t >= 10; t /= 10) idigits++;
+            int total = (neg ? 1 : 0) + idigits + (prec > 0 ? 1 + prec : 0);
+
+            if (!left && !zero) { for (int i = total; i < width; i++) s->emit(s, ' '); }
+            if (neg) s->emit(s, '-');
+            /* Zero padding goes AFTER the sign, not before it. */
+            if (!left && zero) { for (int i = total; i < width; i++) s->emit(s, '0'); }
+
+            fmt_emit_uint_pad(s, ip, 10, 0, 0, 0, 0);
+
+            if (prec > 0) {
+                s->emit(s, '.');
+                double frac = d - (double)ip;
+                for (int i = 0; i < prec; i++) {
+                    frac *= 10.0;
+                    int digit = (int)frac;
+                    if (digit < 0) digit = 0;
+                    if (digit > 9) digit = 9;
+                    s->emit(s, (char)('0' + digit));
+                    frac -= (double)digit;
+                }
+            }
+            if (left) { for (int i = total; i < width; i++) s->emit(s, ' '); }
+            break;
+        }
         case 's': {
             const char *str = va_arg(ap, const char *);
             if (!str) str = "(null)";
@@ -1411,11 +1497,63 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
             if (left)  { while (spad-- > 0) s->emit(s, ' '); }
             break;
         }
+        /* %i is identical to %d for OUTPUT (C11 7.21.6.1p8); they differ
+         * only in *scanf, where %i accepts a base prefix.  Omitting it made
+         * printf("%i") emit the literal text "%i", which is how DOOM's
+         * config loader ended up looking for a variable actually named
+         * "joystick_physical_button%i". */
+        case 'i':
         case 'd': {
             int64_t v = is_long ? va_arg(ap, int64_t)
                                 : (int64_t)(int)va_arg(ap, int);
-            if (v < 0) { s->emit(s, '-'); fmt_emit_uint_pad(s, (uint64_t)(-(v+1))+1, 10, 0, width ? width-1 : 0, zero, left); }
-            else fmt_emit_uint_pad(s, (uint64_t)v, 10, 0, width, zero, left);
+            /* For integers, a precision is a MINIMUM DIGIT COUNT, padded
+             * with leading zeros (C11 7.21.6.1p5) -- "%.3d" of 7 is "007".
+             * It is not the same as a zero-padded width: "%.3d" pads to 3
+             * digits regardless of the field width.
+             *
+             * Ignoring it printed DOOM's font lump names as the literal
+             * "STCFN%.3", because the precision digits were consumed but
+             * never applied, and the engine then looked up a lump that
+             * cannot exist. */
+            uint64_t mag = (v < 0) ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+            int w = width;
+            if (v < 0 && w > 0) w--;
+            if (prec >= 0) {
+                /* Count the digits we are about to emit. */
+                int digits = 1;
+                for (uint64_t t = mag; t >= 10; t /= 10) digits++;
+                /* A zero value with a precision of zero converts to NO
+                 * characters (C11 7.21.6.1p8) -- "%.0d" of 0 is "", which
+                 * is what makes "%.0d" usable for optional fields. */
+                if (v == 0 && prec == 0) {
+                    for (int i = 0; i < w; i++) s->emit(s, ' ');
+                    break;
+                }
+                int lead = prec - digits;
+                /* A precision disables the '0' flag (C11 7.21.6.1p6). */
+                int pad = (lead > 0) ? lead : 0;
+                int total = digits + pad;
+                if (!left) { for (int i = total; i < w; i++) s->emit(s, ' '); }
+                if (v < 0) s->emit(s, '-');
+                for (int i = 0; i < pad; i++) s->emit(s, '0');
+                fmt_emit_uint_pad(s, mag, 10, 0, 0, 0, 0);
+                if (left) { for (int i = total; i < w; i++) s->emit(s, ' '); }
+            } else if (v < 0) {
+                /* The sign must sit next to the digits, so with a SPACE-padded
+                 * width the padding comes first: "%5d" of -42 is "  -42", not
+                 * "-  42".  Only zero padding goes between sign and digits.
+                 * Emitting '-' unconditionally first got this backwards for
+                 * every negative number in a width -- a pre-existing bug this
+                 * differential test caught, not one the DOOM port introduced. */
+                int digits = 1;
+                for (uint64_t t = mag; t >= 10; t /= 10) digits++;
+                if (!left && !zero) { for (int i = digits; i < w; i++) s->emit(s, ' '); }
+                s->emit(s, '-');
+                fmt_emit_uint_pad(s, mag, 10, 0, (!left && zero) ? w : 0, zero, 0);
+                if (left) { for (int i = digits; i < w; i++) s->emit(s, ' '); }
+            } else {
+                fmt_emit_uint_pad(s, mag, 10, 0, width, zero, left);
+            }
             break;
         }
         case 'u': {

@@ -374,3 +374,91 @@ int  ftrylockfile(FILE *f)  { (void)f; return 0; }
 int  getc_unlocked(FILE *f)      { return fgetc(f); }
 int  putc_unlocked(int c, FILE *f) { return fputc(c, f); }
 int  fgetc_unlocked(FILE *f)     { return fgetc(f); }
+
+/* ---- file positioning: fseek / ftell / rewind / fgetpos / fsetpos ----
+ *
+ * Added for the DOOM port (DOOM_PLAN.md D1), but these are a plain C89 gap
+ * rather than anything game-specific: a WAD file is read by seeking to a
+ * directory at the end and then to each lump, which is exactly what any
+ * random-access file format does.
+ *
+ * The subtlety is the buffer.  FILE here stages bytes in f->buf, so the
+ * kernel's file offset is generally AHEAD of the position the program
+ * believes it is at (whatever is still unread in the buffer). Two things
+ * follow, and getting either wrong gives silent corruption rather than an
+ * error:
+ *
+ *   - ftell() must SUBTRACT the unread remainder, or it reports the
+ *     read-ahead position instead of the logical one;
+ *   - fseek() must DISCARD the buffer, or the next read returns bytes from
+ *     wherever the stream used to be.
+ */
+
+int fseek(FILE *f, long offset, int whence) {
+    if (!f) { errno = EINVAL; return -1; }
+
+    /* A pending write must reach the fd before the offset moves. */
+    if (f->dir == 2 && f->bufpos > 0) {
+        if (fflush(f) != 0) return -1;
+    }
+
+    /* SEEK_CUR is relative to the LOGICAL position, so it has to be
+     * resolved against the buffered view before the buffer is dropped --
+     * otherwise the seek lands wherever the read-ahead happened to stop. */
+    if (whence == SEEK_CUR) {
+        long here = ftell(f);
+        if (here < 0) return -1;
+        offset = here + offset;
+        whence = SEEK_SET;
+    }
+
+    int64_t pos = lseek(f->fd, (int64_t)offset, whence);
+    if (pos < 0) { f->flags |= FILE_ERR; return -1; }
+
+    /* Drop buffered read state and any pushed-back character; both describe
+     * the old position. */
+    f->bufpos  = 0;
+    f->bufcap  = 0;
+    f->readpos = 0;
+    f->ungot   = -1;
+    f->dir     = 0;
+    f->flags  &= ~FILE_EOF;    /* seeking clears EOF, per C89 */
+    return 0;
+}
+
+long ftell(FILE *f) {
+    if (!f) { errno = EINVAL; return -1; }
+
+    int64_t pos = lseek(f->fd, 0, SEEK_CUR);
+    if (pos < 0) { f->flags |= FILE_ERR; return -1; }
+
+    if (f->dir == 1) {
+        /* Reading: the fd is ahead by whatever is still unread in the
+         * buffer, plus a pushed-back character if there is one. */
+        pos -= (int64_t)(f->bufcap - f->readpos);
+        if (f->ungot >= 0) pos -= 1;
+    } else if (f->dir == 2) {
+        /* Writing: the fd is behind by whatever is still staged. */
+        pos += (int64_t)f->bufpos;
+    }
+    return (long)pos;
+}
+
+void rewind(FILE *f) {
+    if (!f) return;
+    (void)fseek(f, 0, SEEK_SET);
+    f->flags &= ~(FILE_EOF | FILE_ERR);   /* rewind also clears the error */
+}
+
+int fgetpos(FILE *f, fpos_t *pos) {
+    if (!f || !pos) { errno = EINVAL; return -1; }
+    long p = ftell(f);
+    if (p < 0) return -1;
+    *pos = (fpos_t)p;
+    return 0;
+}
+
+int fsetpos(FILE *f, const fpos_t *pos) {
+    if (!f || !pos) { errno = EINVAL; return -1; }
+    return fseek(f, (long)*pos, SEEK_SET);
+}

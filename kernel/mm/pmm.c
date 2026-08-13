@@ -223,6 +223,15 @@ uint64_t pmm_alloc_contiguous(uint64_t count) {
     return phys;
 }
 
+void pmm_free_contiguous(uint64_t phys, uint64_t count) {
+    if (!phys || !count) return;
+    /* Frame-by-frame through pmm_free_frame(), so the refcount handling
+     * (shared pages from copy-on-write fork) stays in exactly one place. */
+    for (uint64_t i = 0; i < count; i++) {
+        pmm_free_frame(phys + i * PMM_PAGE_SIZE);
+    }
+}
+
 void pmm_free_frame(uint64_t phys) {
     uint64_t idx = phys >> PMM_PAGE_SHIFT;
     if (idx == 0 || idx >= pmm.nframes) {

@@ -37,6 +37,14 @@ uint64_t pmm_alloc_frame(void);
  */
 uint64_t pmm_alloc_contiguous(uint64_t count);
 
+/* Release a run obtained from pmm_alloc_contiguous().
+ *
+ * Callers previously had to loop over pmm_free_frame() themselves, and the
+ * AHCI driver simply did not -- leaking a bounce buffer on every disk read
+ * and write.  Providing the counterpart to the allocator makes the correct
+ * thing the obvious thing. */
+void pmm_free_contiguous(uint64_t phys, uint64_t count);
+
 /*
  * Release a frame previously obtained from pmm_alloc_frame. Logging a warning
  * (and ignoring) on a bad address or double free.

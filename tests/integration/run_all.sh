@@ -82,6 +82,8 @@ ALL_CASES=(
     test_w32_crt
     test_w32_loadlibrary
     test_w32_integration
+    test_ahci_large_read
+    test_doom
     test_stack_guard
     test_panic_diag
     test_ist_double_fault
@@ -138,7 +140,10 @@ ALL_CASES=(
 )
 
 # Slow ones we skip in --fast mode.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress'
+# test_doom boots UEFI and reads a 28 MB IWAD; test_ahci_large_read reads
+# 16 MiB.  Both are correctness gates rather than smoke tests, so --fast skips
+# them.
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read'
 
 # ---- prereqs ----
 need=(qemu-system-x86_64 python3 xorriso clang ld.lld nasm)

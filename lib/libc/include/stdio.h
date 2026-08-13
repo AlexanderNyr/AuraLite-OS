@@ -67,6 +67,30 @@ int   vsnprintf(char *str, size_t size, const char *fmt, va_list ap);
 int   sprintf(char *str, const char *fmt, ...);
 int   vsprintf(char *str, const char *fmt, va_list ap);
 
+/* Seek origins.  C requires these in <stdio.h>; AuraLite previously defined
+ * them only in <unistd.h>, so portable code calling fseek() with SEEK_SET
+ * failed to compile even though everything it needed existed.  Guarded so
+ * including both headers in either order is fine. */
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#endif
+
+/* rename(): C puts it in <stdio.h>, but AuraLite declared it only in
+ * <unistd.h>.  remove() is already declared further down with the other
+ * file operations. */
+int   rename(const char *from, const char *to);
+
+/* File positioning (libc/src/stdio_extra.c).  fseek() discards the read
+ * buffer and ftell() reports the LOGICAL position, not the fd's read-ahead
+ * one -- see the comment there. */
+int   fseek(FILE *f, long offset, int whence);
+long  ftell(FILE *f);
+void  rewind(FILE *f);
+int   fgetpos(FILE *f, fpos_t *pos);
+int   fsetpos(FILE *f, const fpos_t *pos);
+
 /* Formatted input (libc/src/stdio_extra.c). */
 int   sscanf(const char *str, const char *fmt, ...);
 int   vsscanf(const char *str, const char *fmt, va_list ap);

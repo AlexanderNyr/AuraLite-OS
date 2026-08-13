@@ -309,7 +309,7 @@ USER_CFLAGS += -I lib/libauragui/include
 ### RUST: add rustes.elf to the list
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/w32run.elf $(USER_BUILD)/sehtest.elf \
-             $(USER_BUILD)/dlltest.elf \
+             $(USER_BUILD)/dlltest.elf $(USER_BUILD)/filesize.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/weather.elf \
              $(USER_BUILD)/trustinfo.elf \
@@ -500,6 +500,13 @@ $(USER_BUILD)/sehtest.elf: $(USER_BUILD)/sehtest.o $(USER_BUILD)/w32_crt.o \
 	@echo "[link] $@ (w32 SEH shim)"
 
 # W32-7: the module layer exercised from native code.
+# filesize: the read-path regression gate; see the file's own comment.
+$(USER_BUILD)/filesize.o: userspace/tests/filesize/filesize.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/filesize.elf: $(USER_BUILD)/filesize.o $(USER_COMMON) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/filesize.o $(USER_COMMON_LNK) -o $@
+
 $(USER_BUILD)/dlltest.o: userspace/apps/w32run/dlltest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
@@ -1207,7 +1214,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
-INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest dlltest gcalc gedit gfiles gterm \
+INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest dlltest filesize gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
 INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
@@ -1514,6 +1521,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_q1_headers \
                 $(BUILD_DIR)/test_pthread_ext \
                 $(BUILD_DIR)/test_string_ext \
+                $(BUILD_DIR)/test_stdio_seek \
+                $(BUILD_DIR)/test_printf_format \
                 $(BUILD_DIR)/test_stdio_ext \
                 $(BUILD_DIR)/test_stdlib_ext \
                 $(BUILD_DIR)/test_q11_new \
@@ -2041,6 +2050,34 @@ $(BUILD_DIR)/test_stdio_ext: tests/unit/test_stdio_ext.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
+# DOOM_PLAN D1: fseek/ftell/rewind, memmove and abs.  Unlike test_stdio_ext,
+# this one tests AURALITE'S implementations, extracted and renamed by the
+# script so GCC's builtins cannot stand in for them.  Under ASan because a
+# direction bug in memmove is an overlapping-buffer bug.
+$(BUILD_DIR)/test_stdio_seek: tests/unit/test_stdio_seek.c \
+                              lib/libc/src/string_extra.c \
+                              lib/libc/src/stdlib_extra.c \
+                              tools/extract_libc_impls.py
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/extract_libc_impls.py $(BUILD_DIR)/libc_impls_gen.c
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined -I . \
+	          tests/unit/test_stdio_seek.c $(BUILD_DIR)/libc_impls_gen.c -o $@
+
+# The printf conversions, checked against the host's glibc.  Not -Werror on
+# the generated file: it is a verbatim extract of libc.c compiled in a host
+# context, and warnings there are about that context, not about the code.
+$(BUILD_DIR)/test_printf_format: tests/unit/test_printf_format.c \
+                              lib/libc/src/libc.c \
+                              tools/extract_libc_impls.py
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/extract_libc_impls.py $(BUILD_DIR)/libc_impls_gen.c
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined -I . \
+	          tests/unit/test_printf_format.c \
+	          -Wno-error=format-truncation \
+	          $(BUILD_DIR)/libc_impls_gen.c -o $@
+
 
 
 # ---- Phase Q4: stdlib extension unit test ----
@@ -2337,6 +2374,138 @@ $(BUILD_DIR)/mkapkg.o: tools/mkapkg.c lib/libc/include/apkg.h
 $(MKAPKG): $(BUILD_DIR)/mkapkg.o $(BUILD_DIR)/apkg_host.o
 	$(HOST_CC) $^ -o $@
 	@echo "[host] $@"
+
+
+# ---- DOOM (DOOM_PLAN.md) ----
+#
+# The engine is NOT vendored into this repository.  DOOM's source is
+# GPL-2.0 and AuraLite is Apache-2.0; the FSF considers those incompatible
+# (Apache's patent-termination and indemnity clauses are "further
+# restrictions" GPLv2 forbids).  So `make doom` FETCHES doomgeneric into
+# build/, compiles it there, and the repository ships only
+# doom/doomgeneric_auralite.c -- AuraLite's own platform layer under
+# AuraLite's own licence.  A user who runs this target builds a GPL-2.0
+# binary on their own machine, which is fine; what AuraLite never does is
+# distribute one.
+#
+# Everything below is therefore opt-in and off the default build path.
+DOOM_DIR     := $(BUILD_DIR)/doom
+DOOM_SRC     := $(DOOM_DIR)/doomgeneric/doomgeneric
+DOOM_REPO    := https://github.com/ozkl/doomgeneric.git
+DOOM_ELF     := $(USER_BUILD)/doom.elf
+DOOM_WAD_URL := https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip
+DOOM_WAD     := $(DOOM_DIR)/freedoom1.wad
+
+$(DOOM_SRC):
+	@mkdir -p $(DOOM_DIR)
+	@echo "[doom] fetching doomgeneric (GPL-2.0, not vendored -- see the"
+	@echo "[doom] licensing note in doom/doomgeneric_auralite.c)"
+	@git clone -q --depth 1 $(DOOM_REPO) $(DOOM_DIR)/doomgeneric
+	@echo "[doom] $$(ls $(DOOM_SRC)/*.c | wc -l) engine sources"
+
+# Freedoom's data is BSD-licensed and freely redistributable, unlike the
+# original DOOM WADs.  Fetched rather than committed: it is ~20 MB of
+# generated data that would bloat every clone of this repository.
+$(DOOM_WAD):
+	@mkdir -p $(DOOM_DIR)
+	@echo "[doom] fetching Freedoom (BSD-licensed game data)"
+	@curl -sL $(DOOM_WAD_URL) -o $(DOOM_DIR)/freedoom.zip
+	@cd $(DOOM_DIR) && unzip -qo freedoom.zip && 	    cp freedoom-*/freedoom1.wad . && rm -rf freedoom-* freedoom.zip
+	@echo "[doom] $$(du -h $(DOOM_WAD) | cut -f1) $(DOOM_WAD)"
+
+# No platform #defines and no patches: the engine builds against
+# AuraLite's libc as it stands.  Getting there meant filling real gaps
+# rather than working around them -- fseek/ftell/rewind, memmove, abs and
+# system() were missing, and SEEK_* lived only in <unistd.h> instead of
+# <stdio.h>.  Every one is a plain C-library conformance gap that any
+# ported program would hit, so they were fixed in libc where they belong.
+# The tempting shortcut, -D__DJGPP__, silences the system() call but then
+# demands a DOS <go32.h> -- which is how one workaround becomes two.
+#
+# -w because these are third-party sources: their warnings are not ours to
+# fix, and -Werror on code we do not own turns every upstream change into a
+# build break.
+# through system().  That is the only part of the engine AuraLite's libc
+# cannot satisfy, and the upstream source already guards it behind a
+# platform check -- so no patching of GPL sources is needed, which keeps
+# this a clean "compile, don't modify" boundary.
+DOOM_CFLAGS := $(USER_CFLAGS) -w -I lib/libauragui/include -I $(DOOM_SRC)
+
+# The engine's own sources, minus the backends for other platforms.
+# The engine's source list, taken from upstream's own Makefile rather than
+# guessed at with a wildcard-and-filter.
+#
+# That is the difference between a list that is right and one that happens
+# to work: the tree also ships backends for SDL, X11, Allegro, Windows,
+# emscripten and the Linux VT, plus their sound and music drivers, and a
+# filter has to enumerate every one of them correctly or the build dies on
+# a missing <allegro/base.h>.  Upstream already maintains the correct list
+# in SRC_DOOM; this reads it and swaps their xlib backend for ours.
+#
+# Recursively expanded (=, not :=) on purpose: the sources do not exist
+# until the fetch rule has run, so this must be evaluated when the recipe
+# runs rather than when the Makefile is parsed.
+DOOM_UPSTREAM_OBJS = $(shell sed -n 's/^SRC_DOOM = //p' \
+                       $(DOOM_SRC)/Makefile 2>/dev/null)
+DOOM_ENGINE_SRCS = $(patsubst %.o,$(DOOM_SRC)/%.c, \
+                     $(filter-out doomgeneric_xlib.o dummy.o, \
+                       $(DOOM_UPSTREAM_OBJS)))
+
+doom: $(DOOM_ELF)
+
+$(DOOM_ELF): $(DOOM_SRC) doom/doomgeneric_auralite.c $(USER_COMMON)              $(USER_GUI_OBJ) lib/libc/user.ld
+	@mkdir -p $(DOOM_DIR)/obj $(USER_BUILD)
+	@echo "[doom] compiling the engine ($$(echo $(DOOM_ENGINE_SRCS) | wc -w) files)"
+	@for f in $(DOOM_ENGINE_SRCS); do 	    o=$(DOOM_DIR)/obj/$$(basename $$f .c).o; 	    $(HOST_CC) $(DOOM_CFLAGS) -c $$f -o $$o || exit 1; 	done
+	@$(HOST_CC) $(DOOM_CFLAGS) -c doom/doomgeneric_auralite.c 	    -o $(DOOM_DIR)/obj/doomgeneric_auralite.o
+	$(LD) $(USER_LDFLAGS) $(DOOM_DIR)/obj/*.o 	    $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	@echo "[link] $@ ($$(du -h $@ | cut -f1))"
+
+# The WAD travels on its own FAT32 disk, not in the initrd.
+#
+# Not a preference -- a constraint.  The BIOS loader reserves an 8 MiB slot
+# for initrd.tar (tools/mkisoimage_dual.sh enforces it), the initrd is
+# already ~7.6 MiB, and the smallest Freedoom IWAD is 22 MiB.  The kernel
+# already mounts a FAT32 volume found at LBA 64 of the first AHCI disk as
+# /fat, so the image below is built to exactly that layout: 64 empty sectors
+# and then the filesystem.  Getting that offset wrong is not a mount
+# failure, it is worse -- the kernel sees no signature and FORMATS the disk,
+# silently destroying the WAD.
+DOOM_DISK := $(DOOM_DIR)/doomdisk.img
+
+$(DOOM_DISK): $(DOOM_WAD) $(DOOM_ELF)
+	@echo "[doom] building the WAD disk (FAT32 at LBA 64)"
+	@rm -f $@ $(DOOM_DIR)/fatpart.img
+	@dd if=/dev/zero of=$(DOOM_DIR)/fatpart.img bs=1M count=64 status=none
+	@mformat -i $(DOOM_DIR)/fatpart.img -F -h 32 -s 32 -t 128 ::
+	@mmd -i $(DOOM_DIR)/fatpart.img ::/doom
+	@mcopy -i $(DOOM_DIR)/fatpart.img $(DOOM_WAD) ::/doom/freedoom1.wad
+# The binary rides on the same disk as its data, rather than in the initrd.
+# Two reasons, and the first is decisive: doom.elf is ~490 KiB and the
+# initrd is already ~7.6 MiB of an 8 MiB BIOS-loader budget that
+# mkisoimage_dual.sh enforces, so it simply does not fit.  The second is
+# that it keeps GPL-2.0-derived build output out of the default image
+# entirely -- `make iso` produces exactly what it did before.
+	@strip -s $(DOOM_ELF) -o $(DOOM_DIR)/doom.stripped
+	@mcopy -i $(DOOM_DIR)/fatpart.img $(DOOM_DIR)/doom.stripped ::/doom/doom
+	@dd if=/dev/zero of=$@ bs=512 count=64 status=none
+	@cat $(DOOM_DIR)/fatpart.img >> $@
+	@rm -f $(DOOM_DIR)/fatpart.img
+	@echo "[doom] $$(du -h $@ | cut -f1) $@"
+
+# Build an ISO with doom.elf installed, then boot it with the WAD disk
+# attached.  Separate from `make run` so the default path stays free of a
+# 28 MB download and of any GPL-licensed build output.
+run-doom: $(DOOM_DISK) iso
+	@echo "[doom] booting; at the shell type: run /fat/doom/doom"
+	qemu-system-x86_64 \
+	    -drive file=$(BUILD_DIR)/auralite.iso,format=raw,if=ide,snapshot=on \
+	    -drive id=wad,file=$(DOOM_DISK),format=raw,if=none,snapshot=on \
+	    -device ahci,id=ahci -device ide-hd,drive=wad,bus=ahci.0 \
+	    -boot order=c -m 512M -smp 2 -cpu qemu64 -no-reboot \
+	    -vga std
+
+.PHONY: doom run-doom
 
 # ---- SDK (SDK_PLAN phase S1) ----
 #
