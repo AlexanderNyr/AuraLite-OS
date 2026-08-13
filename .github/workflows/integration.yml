@@ -44,6 +44,16 @@ jobs:
             mtools ovmf socat dosfstools e2fsprogs \
             autoconf automake libtool git
 
+      # mingw-w64 is NOT in REQUIRED_TOOLS and the OS build does not need it:
+      # the Makefile detects it and skips the Win32 examples when it is
+      # absent.  But absent means test_w32_integration silently skips, and a
+      # gate that quietly does nothing is worse than no gate -- so CI installs
+      # it and the step below asserts the examples really were built.
+      - name: Install mingw-w64 (Win32 personality examples)
+        run: |
+          sudo apt-get install -y --no-install-recommends mingw-w64
+          x86_64-w64-mingw32-gcc --version | head -1
+
       - name: Install Rust bare-metal target
         run: |
           rustup target add x86_64-unknown-none
@@ -57,6 +67,26 @@ jobs:
 
       - name: Run host unit tests (BL1 test_boot_info included)
         run: make test-unit
+
+      # WIN32_PLAN.md W32-8.  `make test-unit` already runs the provenance
+      # selftest and the generated-API-table drift check; this step adds the
+      # Win32 SDK, which is not part of the default build, and builds all
+      # three examples AGAINST THE STAGED SDK rather than the source tree.
+      - name: Win32 personality -- SDK and examples
+        run: make w32-sdk-check
+
+      # The Win32 examples must be in the ISO for test_w32_integration to do
+      # anything.  The Makefile skips them silently when mingw-w64 is
+      # missing, so assert here rather than discover a vacuous pass later.
+      - name: Win32 personality -- examples are in the image
+        run: |
+          if ! tar tf build/initrd.tar | grep -q './tests/w32hello.exe'; then
+            echo "w32hello.exe missing from the initrd: the mingw-w64"
+            echo "examples were not built, so test_w32_integration would"
+            echo "skip instead of testing anything."
+            exit 1
+          fi
+          tar tf build/initrd.tar | grep -E 'w32hello|w32unsup|testdll'
 
       - name: BL2 -- MBR sanity + boot handoff
         run: bash tests/integration/bl2_mbr_smoke.sh
@@ -82,6 +112,11 @@ jobs:
       - name: BL7 -- dual-boot ISO (BIOS + UEFI in one file)
         run: bash tests/integration/bl7_dual_smoke.sh
 
+      # `make test-integration` runs every case in
+      # tests/integration/run_all.sh, which includes all six Win32 gates:
+      # test_w32_pe_loader, _kernel32, _user32, _crt, _loadlibrary and
+      # _integration.  They add roughly 9 minutes to this job (70-120s each,
+      # measured), which the 120-minute timeout absorbs comfortably.
       - name: Run QEMU integration tests
         run: make test-integration
         env:

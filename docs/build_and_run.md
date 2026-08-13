@@ -12,6 +12,9 @@ sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake
 
 # Optional, but needed for the complete integration suite:
 sudo apt install e2fsprogs vncdotool python3-pil
+
+# Optional: the Win32 personality's examples and its end-to-end gate.
+sudo apt install mingw-w64
 ```
 
 A normal clone is enough because `make iso` uses AuraLite's custom BIOS/UEFI
@@ -37,6 +40,15 @@ Tool purposes:
 | `git`, `make`, `gcc` | Source checkout and host helper builds. |
 | `e2fsprogs` | Optional: `mkfs.ext2`/`debugfs` for ext2 integration tests. |
 | `vncdotool` + Pillow | Optional: GUI/VNC screenshot assertions. |
+| `mingw-w64` | Optional: builds `w32/examples/` and enables `test_w32_integration`. Not in `REQUIRED_TOOLS` — `make iso` skips the examples without it. |
+
+**A note on `mingw-w64`.** Without it the build still succeeds and
+`test_w32_integration` *skips*, printing why. That is deliberate — the OS
+must not need a Windows cross-compiler to build — but it does mean a
+contributor can see a green run in which the end-to-end Win32 gate tested
+nothing. CI installs it and asserts the examples reached the initrd, so the
+gate cannot go quiet there. If you are changing anything under `w32/`,
+install it locally too.
 
 ## Build ISO
 

@@ -1306,21 +1306,39 @@ MINGW_CC := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 W32_EXAMPLE_EXE := $(BUILD_DIR)/user/w32hello.exe
 W32_UNSUP_EXE   := $(BUILD_DIR)/user/w32unsup.exe
 
+# A stamp recording WHETHER the cross-compiler was available on the last
+# build, rewritten only when that answer changes.
+#
+# Without it the examples go stale in a way that hides a gate.  Installing
+# mingw-w64 after a build without it leaves the zero-byte placeholders newer
+# than their sources, so make reports "nothing to be done", the examples are
+# never built, and test_w32_integration goes on skipping -- quietly testing
+# nothing.  Removing it after a build with it is the mirror image.  Making
+# the examples depend on this stamp means either transition rebuilds them.
+W32_MINGW_STAMP := $(BUILD_DIR)/user/.mingw-$(if $(MINGW_CC),present,absent)
+
+$(W32_MINGW_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(BUILD_DIR)/user/.mingw-present $(BUILD_DIR)/user/.mingw-absent
+	@touch $@
+
 ifneq ($(MINGW_CC),)
-$(W32_EXAMPLE_EXE): w32/examples/console-app/hello.c
+$(W32_EXAMPLE_EXE): w32/examples/console-app/hello.c $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
 	$(MINGW_CC) -O2 -Wall -Wextra -m64 $< -o $@ \
 	    -nostdlib -Wl,--entry=winstart -lkernel32 -luser32
 	@echo "  [pe] $@ (mingw-w64 console example)"
 # The deliberately unsupported example: it imports ADVAPI32, which is a
 # non-goal (D8), and must be refused BY NAME at load time.
-$(W32_UNSUP_EXE): w32/examples/unsupported-app/registry.c
+$(W32_UNSUP_EXE): w32/examples/unsupported-app/registry.c $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
 	$(MINGW_CC) -O2 -Wall -Wextra -m64 $< -o $@ \
 	    -nostdlib -Wl,--entry=winstart -lkernel32 -ladvapi32
 	@echo "  [pe] $@ (mingw-w64 unsupported example)"
 else
-$(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE):
+# No cross-compiler: leave zero-byte placeholders so the initrd rule has its
+# prerequisites, and skip the copy (the `if [ -s ... ]` guards below).
+$(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE): $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
 	@echo "  [pe] skipping the mingw-w64 examples (no x86_64-w64-mingw32-gcc)"
 	@: > $@
