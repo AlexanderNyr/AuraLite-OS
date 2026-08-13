@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Application Support Plan
 
-## Status: IN PROGRESS 🔨 — W32-0 – W32-6 done; W32-7 – W32-8 planned
+## Status: IN PROGRESS 🔨 — W32-0 – W32-7 done; W32-8 planned
 
 | Phase | State |
 |---|---|
@@ -11,7 +11,7 @@
 | W32-4 `KERNEL32` bounded import set | ✅ done |
 | W32-5 `USER32` + `GDI32` | ✅ done |
 | W32-6 CRT startup, TLS, minimal SEH | ✅ done |
-| W32-7 `LoadLibrary`, or a documented refusal | 📋 planned |
+| W32-7 `LoadLibrary`, or a documented refusal | ✅ done |
 | W32-8 Integration and documentation | 📋 planned |
 
 **A real PE32+ `.exe` now runs on AuraLite.** W32-3 landed the kernel loader,
@@ -843,20 +843,54 @@ and the personality is written in C with `ms_abi` doing the work.
 
 ---
 
-### Phase W32-7 — `LoadLibrary`, or a documented refusal
+### Phase W32-7 — `LoadLibrary`, or a documented refusal ✅ DONE
 
 **Objective:** find out whether dynamic loading is reachable, and say so either
 way.
 
 #### Tasks
 
-- [ ] `LoadLibraryA/W`, `GetProcAddress`, `FreeLibrary` for `w32`'s *own*
-      built-in modules (`kernel32`, `user32`, `gdi32`) — a name table, not a
-      loader.
-- [ ] Investigate loading a real user-supplied DLL: relocations, imports,
-      `DllMain`, per-process module list.
-- [ ] Delay-load and forwarder imports: detect and refuse explicitly, or
-      support.
+- [x] `LoadLibraryA`, `GetProcAddress`, `FreeLibrary`, `GetModuleHandleA`
+      for the built-in modules.
+- [x] **Real user-supplied DLLs load.** The investigation's answer was yes,
+      so the documented refusal was not needed — see below.
+- [x] Delay-load and forwarder imports: detected and refused explicitly.
+- [ ] `LoadLibraryW`: deferred with the rest of the `W` surface (D6).
+
+#### The answer to the question this phase asked
+
+**Dynamic loading is reachable, so it was implemented rather than refused.**
+The two things that could have blocked it both turned out to be present:
+AuraLite's `mmap` grants `PROT_EXEC` (and `mprotect` exists), and the PE
+export directory parses with the W32-2 machinery plus one new function. No
+kernel change and no address-space work were needed, so ending in
+documentation would have been the weaker answer.
+
+What a loaded DLL gets: its own mapping, base relocations applied, **its own
+import table bound** against the built-in exports, and `DllMain` called with
+`DLL_PROCESS_ATTACH`. Modules are reference-counted, so a second
+`LoadLibrary` of the same path shares one mapping instead of handing the
+program two copies of the DLL's state.
+
+#### Three things worth naming
+
+**An empty relocation table is not an unrelocatable image.** The first
+version of the load path refused a DLL with zero relocations when it could
+not be placed at its preferred base — and that rejected the perfectly good
+fixture, which is fully position-independent and legitimately needs no
+fixups. What actually means "cannot be moved" is
+`IMAGE_FILE_RELOCS_STRIPPED`, so that is what is tested now.
+
+**`HMODULE`s are minted from a table, not cast from the mapping.** Same
+reasoning as the W32-4 `HANDLE` table: a token the program can fabricate
+must never be dereferenceable. The gate passes `0x41414141` as an `HMODULE`
+to prove it is refused.
+
+**Forwarders are refused per symbol, not per module.** A forwarder's
+"address" is a string like `KERNEL32.Sleep` living inside the export
+directory; returning it hands the caller a pointer to text they will then
+call. The DLL still loads and its other exports still resolve — refusing the
+whole module would be a bigger hammer than the problem needs.
 
 #### Test gate
 
@@ -869,7 +903,38 @@ way.
   lists prove to need address-space work the kernel does not have, that is a
   finding, and `TODO.md` records it rather than a half-loader being merged.
 
-**Deliverable:** `patches/W32_7_loadlibrary.patch`
+**Result:** `test_w32_loadlibrary` 24/24 and `test_w32_exports` 31/31 (host,
+under ASan+UBSan). The returned `WriteFile` pointer is *called*, not merely
+compared against NULL — a table lookup that returns a plausible address
+proves nothing.
+
+The DLL fixture imports `WriteFile` **itself** and one of its exports calls
+out through that import, so `DLL-SPEAK` in the log is the evidence that a
+loaded DLL's own import table was bound. A loader that mapped the DLL but
+skipped its imports passes every other assertion and fails that one.
+
+The `DllMain`-fails case is checked for the leak as well as the refusal:
+`w32_module_count()` before and after must match, which is the "without
+leaking the address space" the gate asks for. Eight load/free cycles are run
+for the same reason.
+
+Of the gate's optional cases, a **two-DLL cycle and a self-importing DLL are
+not tested**, and the reason is structural rather than an omission: a loaded
+DLL's imports resolve only against the built-in export table, so one DLL
+cannot import from another and a cycle is unrepresentable. That is a real
+limitation of the current binder and is recorded in `docs/win32.md`.
+
+The export parser's tests are mostly malformed input, because
+`AddressOfNameOrdinals[i]` is an index into another array that comes
+straight out of the file. They run under ASan, and the suite was checked by
+mutation: making the parser use that index unvalidated produces an ASan SEGV
+in `rd32`, so the bounds check is load-bearing and the test proves it.
+
+**Deliverable:** `w32/include/w32/w32_module.h`, `w32/src/w32_module.c`,
+`pe_exports()` in `w32/src/w32_pe.c`, `w32/tests/testdll.{asm,def}`,
+`userspace/apps/w32run/dlltest.c`, `tools/mk_dll_variants.py`,
+`tests/unit/test_w32_exports.c`,
+`tests/integration/cases/test_w32_loadlibrary.sh` ✅
 
 ---
 

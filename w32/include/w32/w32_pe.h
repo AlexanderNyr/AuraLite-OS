@@ -164,6 +164,24 @@ int pe_rva_to_offset(const pe_image_t *img, uint32_t rva, uint32_t len,
 int pe_imports(const pe_image_t *img, pe_import_t *out, size_t max,
                size_t *count);
 
+/* One exported symbol from a DLL's export directory. */
+typedef struct {
+    char     name[128];        /* empty for an export by ordinal only     */
+    uint16_t ordinal;          /* the real ordinal (ordinal_base applied) */
+    uint32_t rva;              /* where the implementation lives          */
+    int      is_forwarder;     /* rva points at "OTHERDLL.SymbolName"     */
+} pe_export_t;
+
+/* Walk the export directory; same contract as pe_imports() -- writes up to
+ * `max` entries and always reports the true total in *count.
+ *
+ * Forwarder entries are DETECTED, not followed: an export whose RVA lands
+ * inside the export directory itself is a string naming another DLL, and
+ * resolving it needs a module list.  They are flagged so a caller can refuse
+ * explicitly rather than call into a string. */
+int pe_exports(const pe_image_t *img, pe_export_t *out, size_t max,
+               size_t *count);
+
 /* Walk the base relocation directory; same contract as pe_imports(). */
 int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
                    size_t *count);

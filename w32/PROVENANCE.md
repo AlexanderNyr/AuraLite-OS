@@ -43,6 +43,9 @@ ReactOS.
 | `include/w32/w32_argv.h` | Command-line splitting interface (W32-6) |
 | `src/w32_argv.c` | Documented Win32 argv quoting rules |
 | `tests/crt_test.asm` | A PE with a TLS directory and `.CRT` table |
+| `include/w32/w32_module.h` | `LoadLibrary`/`GetProcAddress` interface (W32-7) |
+| `src/w32_module.c` | Module table and the DLL load path |
+| `tests/testdll.asm`, `tests/testdll.def` | A real DLL fixture (W32-7) |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the Win32 names and error codes

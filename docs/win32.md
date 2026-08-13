@@ -83,10 +83,46 @@ than what the kernel's PE loader does for a directly-executed `.exe`
 (W32-3). Moving binding into the kernel exec path is tracked as remaining
 W32-6 work in `WIN32_PLAN.md`; the hardened path is the kernel one.
 
+## Dynamic loading
+
+`LoadLibraryA`, `GetProcAddress` and `FreeLibrary` work, for both the
+built-in modules (`kernel32`, `user32`, `gdi32` — which are not files, but
+functions linked into the loader) and for real user-supplied PE DLLs, which
+are mapped, relocated, import-bound, and entered through `DllMain`.
+
+Modules are reference-counted, so loading the same path twice shares one
+mapping rather than giving a program two copies of the DLL's state.
+`HMODULE`s are minted from a table and are not mapped addresses, so a
+fabricated handle is refused instead of dereferenced.
+
+Refused explicitly, rather than half-supported:
+
+- **Forwarder exports.** An export whose RVA points back into the export
+  directory is a string naming another DLL. Returning that address would
+  hand the caller a pointer to text they would then call. The refusal is per
+  symbol — other exports of the same DLL still resolve.
+- **Delay-load imports.** The directory is detected and the load refused.
+- **Imports by ordinal**, matching the policy the static binder already
+  applies.
+- **`.exe` files.** `IMAGE_FILE_DLL` must be set; loading an executable
+  would run its entry point under `DllMain`'s contract.
+- **Images with relocations stripped** that cannot be placed at their
+  preferred base. Note that an *empty* relocation table is fine — a fully
+  position-independent DLL legitimately needs no fixups.
+
+A DLL whose `DllMain` returns FALSE fails to load and its mapping is torn
+down, rather than leaving a module a program believes it loaded.
+
+**A loaded DLL can only import from the built-in modules.** Its import table
+is bound against the same static export table the main image uses, so one
+DLL cannot import from another DLL. A dependency chain of two user DLLs is
+therefore not loadable — and, as a side effect, a two-DLL import cycle
+cannot arise. Supporting it needs a recursive load with an in-progress set,
+which is future work rather than a hidden bug.
+
 ## Not implemented at all
 
-Registry, COM, .NET, DirectX, WinSock, WOW64 (32-bit programs),
-`LoadLibrary`/`GetProcAddress` (W32-7), and `BitBlt`/off-screen device
-contexts. The `W` (UTF-16) entry points exist for `KERNEL32` where the plan
+Registry, COM, .NET, DirectX, WinSock, WOW64 (32-bit programs), and
+`BitBlt`/off-screen device contexts. The `W` (UTF-16) entry points exist for `KERNEL32` where the plan
 required them and are otherwise deferred; `A` entry points are the primary
 surface today, which is the reverse of decision D6 and is noted there.

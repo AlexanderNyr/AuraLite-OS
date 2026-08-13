@@ -1,0 +1,5 @@
+LIBRARY testdll.dll
+EXPORTS
+    dll_add
+    dll_speak
+    dll_was_attached

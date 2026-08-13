@@ -308,6 +308,89 @@ int pe_imports(const pe_image_t *img, pe_import_t *out, size_t max,
     return PE_OK;
 }
 
+/* Walk the export directory (W32-7).
+ *
+ * The layout is IMAGE_EXPORT_DIRECTORY: three parallel arrays, and the
+ * indirection between them is the part that must be bounds-checked rather
+ * than trusted.  AddressOfNameOrdinals[i] indexes AddressOfFunctions, and
+ * that index comes out of the file -- so it is validated against
+ * NumberOfFunctions before it is used, otherwise a crafted DLL reads
+ * wherever it likes.
+ *
+ * Exports by ordinal only (a name absent from the name table) are real and
+ * legal, so the function array is walked as the authority and names are
+ * attached to it, rather than only walking the name table.
+ */
+int pe_exports(const pe_image_t *img, pe_export_t *out, size_t max,
+               size_t *count) {
+    if (!img || !count) return PE_ERR_ARG;
+    *count = 0;
+
+    uint32_t dir_rva  = img->dir[PE_DIR_EXPORT].rva;
+    uint32_t dir_size = img->dir[PE_DIR_EXPORT].size;
+    if (dir_rva == 0 || dir_size == 0) return PE_OK;   /* no exports is fine */
+
+    uint32_t off;
+    int rc = pe_rva_to_offset(img, dir_rva, 40, &off);
+    if (rc != PE_OK) return rc;
+
+    const uint8_t *d = img->data + off;
+    uint32_t ordinal_base = rd32(d + 16);
+    uint32_t n_functions  = rd32(d + 20);
+    uint32_t n_names      = rd32(d + 24);
+    uint32_t func_rva     = rd32(d + 28);
+    uint32_t name_rva     = rd32(d + 32);
+    uint32_t nameord_rva  = rd32(d + 36);
+
+    /* A malformed count would overflow the offset arithmetic below. */
+    if (n_functions > 65536u || n_names > 65536u) return PE_ERR_MALFORMED;
+    if (n_names > n_functions && n_functions == 0) return PE_ERR_MALFORMED;
+
+    uint32_t func_off = 0, name_off = 0, nameord_off = 0;
+    if (n_functions) {
+        rc = pe_rva_to_offset(img, func_rva, n_functions * 4u, &func_off);
+        if (rc != PE_OK) return rc;
+    }
+    if (n_names) {
+        rc = pe_rva_to_offset(img, name_rva, n_names * 4u, &name_off);
+        if (rc != PE_OK) return rc;
+        rc = pe_rva_to_offset(img, nameord_rva, n_names * 2u, &nameord_off);
+        if (rc != PE_OK) return rc;
+    }
+
+    size_t total = 0;
+    for (uint32_t i = 0; i < n_functions; i++) {
+        uint32_t fn_rva = rd32(img->data + func_off + i * 4u);
+        /* A hole in the ordinal space is encoded as a zero RVA. */
+        if (fn_rva == 0) continue;
+
+        pe_export_t e;
+        e.name[0]      = 0;
+        e.ordinal      = (uint16_t)(i + ordinal_base);
+        e.rva          = fn_rva;
+        /* A forwarder's RVA points back INTO the export directory, where a
+         * string like "KERNEL32.Sleep" lives.  That is the documented way to
+         * tell the two apart -- there is no flag bit. */
+        e.is_forwarder = (fn_rva >= dir_rva && fn_rva < dir_rva + dir_size);
+
+        /* Attach a name if this ordinal has one. */
+        for (uint32_t j = 0; j < n_names; j++) {
+            uint16_t oi = rd16(img->data + nameord_off + j * 2u);
+            if (oi != i) continue;
+            uint32_t s_rva = rd32(img->data + name_off + j * 4u);
+            rc = copy_cstr_at_rva(img, s_rva, e.name, sizeof e.name);
+            if (rc != PE_OK) return rc;
+            break;
+        }
+
+        if (total < max && out) out[total] = e;
+        total++;
+    }
+
+    *count = total;
+    return PE_OK;
+}
+
 int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
                    size_t *count) {
     if (!img || !count) return PE_ERR_ARG;

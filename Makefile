@@ -309,6 +309,7 @@ USER_CFLAGS += -I lib/libauragui/include
 ### RUST: add rustes.elf to the list
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/w32run.elf $(USER_BUILD)/sehtest.elf \
+             $(USER_BUILD)/dlltest.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/weather.elf \
              $(USER_BUILD)/trustinfo.elf \
@@ -449,7 +450,8 @@ user: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS)
 W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_handle.o  $(USER_BUILD)/w32_bind.o \
                 $(USER_BUILD)/w32_peu.o     $(USER_BUILD)/w32_user32.o \
-                $(USER_BUILD)/w32_crt.o     $(USER_BUILD)/w32_argv.o
+                $(USER_BUILD)/w32_crt.o     $(USER_BUILD)/w32_argv.o \
+                $(USER_BUILD)/w32_module.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -470,6 +472,9 @@ $(USER_BUILD)/w32_user32.o: w32/src/user32.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/w32_crt.o: w32/src/w32_crt.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_argv.o: w32/src/w32_argv.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32-7: LoadLibrary/GetProcAddress/FreeLibrary over real DLL files.
+$(USER_BUILD)/w32_module.o: w32/src/w32_module.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 $(USER_BUILD)/w32run.o: userspace/apps/w32run/w32run.c $(USER_CFLAGS_INC)
@@ -493,6 +498,17 @@ $(USER_BUILD)/sehtest.elf: $(USER_BUILD)/sehtest.o $(USER_BUILD)/w32_crt.o \
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/sehtest.o $(USER_BUILD)/w32_crt.o \
 	      $(USER_COMMON_LNK) -o $@
 	@echo "[link] $@ (w32 SEH shim)"
+
+# W32-7: the module layer exercised from native code.
+$(USER_BUILD)/dlltest.o: userspace/apps/w32run/dlltest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+
+$(USER_BUILD)/dlltest.elf: $(USER_BUILD)/dlltest.o $(W32_USER_OBJ) \
+                           $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/dlltest.o $(W32_USER_OBJ) \
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	@echo "[link] $@ (w32 module loader)"
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
 # GUI apps additionally link the libauragui object.
@@ -1191,7 +1207,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
-INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest gcalc gedit gfiles gterm \
+INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest dlltest gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
 INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
@@ -1269,6 +1285,19 @@ $(CRTTEST_EXE): w32/tests/crt_test.asm $(K32_IMPLIB)
 	         $(BUILD_DIR)/user/crttest.obj $(K32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (TLS callbacks + .CRT static initialisers)"
 
+TESTDLL := $(BUILD_DIR)/user/testdll.dll
+
+# W32-7: a real user-supplied DLL -- exports, its own KERNEL32 imports, and a
+# DllMain.  Linked at a base far from where it will actually land, so the
+# load path is genuinely relocating it.
+$(TESTDLL): w32/tests/testdll.asm w32/tests/testdll.def $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/testdll.obj
+	lld-link -dll -def:w32/tests/testdll.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x190000000 \
+	         $(BUILD_DIR)/user/testdll.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (DLL: 3 exports, 2 imports, DllMain)"
+
 PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
 
 $(PETEST_RELOC_EXE): $(BUILD_DIR)/user/petest.obj
@@ -1283,7 +1312,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1338,6 +1367,12 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	@cp $(K32TEST_EXE) $(INITRD_DIR)/tests/k32test.exe
 	@cp $(U32TEST_EXE) $(INITRD_DIR)/tests/u32test.exe
 	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
+	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
+# W32-7 hostile fixtures: a forwarder export, and a DllMain that fails.
+	@python3 tools/mk_dll_variants.py --forwarder $(TESTDLL) \
+	         $(INITRD_DIR)/tests/fwddll.dll
+	@python3 tools/mk_dll_variants.py --dllmain-fails $(TESTDLL) \
+	         $(INITRD_DIR)/tests/baddll.dll
 # The same image with its first TLS callback pointed outside the image
 # (W32-6 hostile gate): the loader must refuse to call through it.
 	@python3 tools/mk_pe_badtls.py $(CRTTEST_EXE) \
@@ -1462,7 +1497,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_pe \
                 $(BUILD_DIR)/test_w32_abi \
                 $(BUILD_DIR)/test_w32_kernel32 \
-                $(BUILD_DIR)/test_w32_argv
+                $(BUILD_DIR)/test_w32_argv \
+                $(BUILD_DIR)/test_w32_exports
 
 # WIN32_PLAN.md phases W32-1/W32-2: the w32 personality's host-side gates.
 # Both test files #include the implementation directly, so there is no w32
@@ -1501,6 +1537,17 @@ $(BUILD_DIR)/test_w32_argv: tests/unit/test_w32_argv.c w32/src/w32_argv.c \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I . $< -o $@
+
+# W32-7: the export directory -- the structure GetProcAddress walks, and one
+# whose name-ordinal array indexes another array with a value out of the file.
+# Under ASan, because "refused" and "read out of bounds first" look the same
+# otherwise.
+$(BUILD_DIR)/test_w32_exports: tests/unit/test_w32_exports.c w32/src/w32_pe.c \
+                               w32/include/w32/w32_pe.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          tests/unit/test_w32_exports.c w32/src/w32_pe.c -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.

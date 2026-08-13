@@ -1,6 +1,7 @@
 /* w32_bind.c — import binding.  WIN32_PLAN.md phase W32-4 (decision D2). */
 
 #include "w32/w32_bind.h"
+#include "w32/w32_module.h"
 #include "w32/w32_pe.h"
 #include "w32/kernel32.h"
 #include "w32/user32.h"
@@ -37,6 +38,12 @@ static const w32_export_t exports[] = {
     { K32, "CreateFileA",      (void *)CreateFileA      },
     { K32, "ExitProcess",      (void *)ExitProcess      },
     { K32, "GetCommandLineA",  (void *)GetCommandLineA  },
+    /* W32-7: dynamic loading.  GetProcAddress can hand back a pointer to any
+     * of the above, including itself. */
+    { K32, "FreeLibrary",      (void *)w32_FreeLibrary     },
+    { K32, "GetModuleHandleA", (void *)w32_GetModuleHandleA },
+    { K32, "GetProcAddress",   (void *)w32_GetProcAddress  },
+    { K32, "LoadLibraryA",     (void *)w32_LoadLibraryA    },
     { K32, "GetLastError",     (void *)GetLastError     },
     { K32, "GetProcessHeap",   (void *)GetProcessHeap   },
     { K32, "GetStdHandle",     (void *)GetStdHandle     },
