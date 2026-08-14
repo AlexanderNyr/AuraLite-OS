@@ -63,7 +63,13 @@ def hmp(cmd):
     time.sleep(0.2)
     s.close()
 
-hmp('device_add usb-kbd,bus=xhci.0 id=hotkbd')
+# NOTE: the separator before `id=` must be a comma.  With a space QEMU
+# refuses the whole command -- "device_add: extraneous characters at the
+# end of line" -- and no device is ever added, so this case reported
+# "hotplug keyboard did not attach" no matter what the OS did.  The HMP
+# reply goes to the monitor socket, which the test never read, so the
+# mistake was invisible.
+hmp('device_add usb-kbd,bus=xhci.0,id=hotkbd')
 if not wait_for('keyboard ready: addr=', 20):
     raise SystemExit('hotplug keyboard did not attach')
 hmp('device_del hotkbd')

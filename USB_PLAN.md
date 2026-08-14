@@ -1,6 +1,6 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: IN PROGRESS — U0–U5 done ✅, U6–U9 planned 📋 (red band closed for MSC)
+## Status: IN PROGRESS — U0–U6 done ✅, U7–U9 planned 📋 (red band fully closed)
 
 | Phase | Title | State |
 |---|---|---|
@@ -10,7 +10,7 @@
 | U3 | Real `Address Device` | ✅ **done** |
 | U4 | Real control transfers | ✅ **done** |
 | U5 | Real bulk transfers, and MSC on xHCI | ✅ **done** |
-| U6 | Interrupt endpoints and HID on xHCI | 📋 planned |
+| U6 | Interrupt endpoints and HID on xHCI | ✅ **done** |
 | U7 | EHCI periodic schedule and split transactions | 📋 planned |
 | U8 | Interrupts instead of polling | 📋 planned |
 | U9 | Hubs, isoc, and the honest matrix | 📋 planned |
@@ -487,9 +487,12 @@ regression:
 
 | Case | State at U2 | Cleared by |
 |---|---|---|
-| `test_usb_xhci` | ✅ **green at U5** | — |
-| `test_usb_xhci_hub` | ❌ red | U6 |
-| `test_usb_hotplug` | ❌ red (already red before the plan) | U6 |
+| `test_usb_xhci` | ✅ green at U5 | — |
+| `test_usb_xhci_hub` | ✅ green at U6 | — |
+| `test_usb_hotplug` | ✅ **green at U6** (red before the plan began) | — |
+
+The band is closed: every case that was red is green, and green for the
+right reason.
 
 Everything else stays green throughout.
 
@@ -766,9 +769,45 @@ agreeing with itself.
 
 ---
 
-### Phase U6 — Interrupt endpoints and HID on xHCI
+### Phase U6 — Interrupt endpoints and HID on xHCI ✅ DONE
 
 **Objective:** an xHCI keypress is a keypress.
+
+**Landed. `test_usb_hotplug.sh` — the case this whole plan started from —
+is green, 5/5.**
+
+Interrupt endpoints could not reuse the bulk path: `hid_poll_thread()`
+polls every attached device every 10 ms and needs a *non-blocking* answer,
+because an idle keyboard has nothing to say and blocking 1 s per device
+would stall the loop. So an endpoint is **armed once** (one Normal TRB,
+doorbell) and each later call asks whether its Transfer Event has arrived,
+re-arming on completion. The DMA buffer is per-endpoint and persistent —
+the queued TRB points at it until the device answers — and is released by
+`xhci_release_xdev()`.
+
+**The real blocker was not the transfer path at all.**
+
+`xhci_reset_port()` checked CCS and returned, resetting nothing. At boot
+that was survivable: the controller had just come out of reset and QEMU
+brings USB3 ports up enabled by itself. But a USB2 device attached at
+runtime with `device_add` lands Disabled (PLS=7, Polling) and only a Port
+Reset drives it to Enabled — and with PED clear every transfer to it is
+refused, so enumeration could not even begin. That is precisely the
+"hotplug keyboard did not attach" symptom, and it had nothing to do with
+the event ring the plan originally blamed.
+
+**A second bug, this time in the test.** After fixing the reset, hotplug
+worked when driven by hand but the case still failed. The HMP command was
+
+```
+device_add usb-kbd,bus=xhci.0 id=hotkbd     <- space, not comma
+```
+
+which QEMU rejects outright: `device_add: extraneous characters at the end
+of line`. No device was ever added, so the case reported failure no matter
+what the OS did. The reply went to the monitor socket, which the test never
+read — so a broken command was indistinguishable from a broken driver.
+Worth noting for the other HMP-driven cases.
 
 #### Tasks
 
@@ -781,17 +820,30 @@ agreeing with itself.
 - [ ] Feed reports into the existing generic HID parser, which already works
       for UHCI/OHCI/EHCI and needs no change.
 
-#### Test gate
+#### Test gate — met
 
-- `-device usb-kbd,bus=xhci.0`: inject keystrokes over the QEMU monitor
-  (`sendkey`) and assert the **specific characters** appear at the shell.
-  The stub returned zeroes, so any non-empty correct input proves the path.
-- `-device usb-mouse,bus=xhci.0`: injected motion produces cursor movement in
-  the matching direction and magnitude.
-- Assert **no** phantom input when nothing is injected — the inverse failure,
-  and the one a zero-filling stub would have hidden.
-- `test_usb_hotplug.sh` passes: this is the case that fails at the baseline,
-  and it fails precisely because HID could not attach over xHCI.
+New case `tests/integration/cases/test_xhci_interrupt.sh`, **4/4**:
+
+- ✅ keystrokes injected with `sendkey` over the emulated HID device reach
+  the shell as the right characters.
+- ✅ **the inverse**: nothing appears while the keyboard is idle. A
+  zero-filling stub would fail one of these two by construction.
+- ✅ the endpoint is bound as an interrupt endpoint, not quietly as bulk.
+- ✅ no stalls, timeouts or faults.
+
+And the case that started the plan:
+
+- ✅ `test_usb_hotplug.sh` **5/5** — attach, enumerate, bind HID, detach.
+- ✅ `test_usb_xhci_hub.sh` green, closing the last of the red band.
+
+**A correction to my own test.** Its idle check first matched line
+*shapes* (`^[a-z]{2,}`) and flagged `hello` — the output of the `/bin/hello`
+boot self-test, not keyboard input. It now compares the text after the
+shell prompt, which is the only place invented input could appear.
+
+Mouse motion is not asserted: QEMU's `sendkey` has no pointer equivalent,
+and `mouse_move` drives the PS/2 device rather than the USB one. The
+keyboard path exercises the same TRB code.
 
 #### Deliverable
 

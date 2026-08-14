@@ -258,6 +258,12 @@ typedef struct {
     int ep_cycle[32];
     int ep_idx[32];
     int ep_configured[32];
+    /* U6: interrupt endpoints are armed once and polled, not driven
+     * synchronously.  The DMA buffer must outlive the call because the TRB
+     * queued in the ring points at it until the device responds. */
+    uint64_t ep_buf_phys[32];
+    uint16_t ep_armed_len[32];
+    uint8_t  ep_armed[32];
 } xhci_dev_t;
 
 static xhci_dev_t xdevs[XHCI_MAX_DEVS];
@@ -633,10 +639,47 @@ int xhci_port_has_device(int port) {
 }
 
 
+/* Reset a root port and wait for it to enable -- USB_PLAN U6.
+ *
+ * This used to check CCS and return, resetting nothing.  At boot that was
+ * survivable because the controller had just come out of reset and QEMU
+ * left USB3 ports enabled by itself, but it is why runtime hotplug never
+ * worked: a USB2 device attached with `device_add` lands in the Disabled
+ * state (PLS=7, Polling) and only a Port Reset drives it to Enabled.  With
+ * PED clear every transfer to it is refused, so enumeration could not even
+ * begin -- the symptom test_usb_hotplug.sh reports as
+ * "hotplug keyboard did not attach".
+ *
+ * USB3 ports train themselves and come up Enabled; issuing a warm reset
+ * there is unnecessary, so a port that is already enabled is left alone.
+ */
 int xhci_reset_port(int port) {
     if (op_regs == NULL || port < 0 || port >= num_ports) return -1;
     uint32_t ps = port_rd(port);
     if (!(ps & XHCI_PORTSC_CCS)) return -1;
+    if (ps & XHCI_PORTSC_PED) return 0;          /* already usable */
+
+    /* Write PR, preserving PP.  PORTSC_CONTROL() masks off the RW1C change
+     * bits so this does not accidentally acknowledge events. */
+    port_wr(port, PORTSC_CONTROL(ps) | XHCI_PORTSC_PR);
+
+    /* The reset takes tens of milliseconds; PR clears when it completes. */
+    if (xhci_wait_port_clear(port, XHCI_PORTSC_PR, 500) != 0) {
+        kprintf("[xhci] port %d: reset timed out (PORTSC=0x%08x)\n",
+                port, port_rd(port));
+        return -1;
+    }
+    ps = port_rd(port);
+    port_wr(port, PORTSC_CLEAR_CHANGES(ps));
+
+    ps = port_rd(port);
+    if (!(ps & XHCI_PORTSC_PED)) {
+        kprintf("[xhci] port %d: not enabled after reset (PORTSC=0x%08x)\n",
+                port, ps);
+        return -1;
+    }
+    kprintf("[xhci] port %d: reset complete, enabled (%s)\n",
+            port, speed_name((ps >> XHCI_PORTSC_SPEED_SHIFT) & XHCI_PORTSC_SPEED_MASK));
     return 0;
 }
 
@@ -899,6 +942,11 @@ static void xhci_release_xdev(xhci_dev_t *xd) {
         if (xd->ep_ring_phys[i]) pmm_free_frame(xd->ep_ring_phys[i]);
         xd->ep_ring_phys[i] = 0;
         xd->ep_ring[i] = NULL;
+        /* U6: interrupt endpoints keep a persistent bounce buffer alive
+         * for as long as a TRB points at it.  Release it with the ring. */
+        if (xd->ep_buf_phys[i]) pmm_free_frame(xd->ep_buf_phys[i]);
+        xd->ep_buf_phys[i] = 0;
+        xd->ep_armed[i] = 0;
     }
     uint32_t ctx_frames = (XHCI_CTX_BYTES + 0xFFF) / 0x1000;
     if (xd->dev_ctx_phys) {
@@ -1432,26 +1480,119 @@ int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
     return ret == 0 ? actual : -1;
 }
 
-/* Interrupt transfers.
+/* Interrupt transfers -- USB_PLAN U6.
  *
- * U2 deleted a stub that zero-filled the caller's buffer and returned 0 --
- * i.e. reported success having moved nothing.  That is how an xHCI HID
- * device could appear attached and "ready" while never delivering a single
- * report, and why test_usb_hotplug.sh fails.  Real interrupt endpoints
- * land in U6.
+ * Replaces the stub U2 deleted, which zero-filled the buffer and returned
+ * success, so an xHCI HID device looked ready and never delivered a report.
+ *
+ * The shape here is dictated by the caller.  hid_poll_thread() polls every
+ * attached device every 10 ms and expects a *non-blocking* answer: a
+ * keyboard that is not being typed on has nothing to say, and blocking for
+ * the 1 s transfer timeout on each of them would stall the poll loop
+ * entirely.  So an interrupt endpoint is ARMED once -- one Normal TRB
+ * queued, doorbell rung -- and each later call simply asks whether its
+ * Transfer Event has arrived yet.  On completion the data is copied out and
+ * the endpoint is immediately re-armed.
+ *
+ * The DMA buffer therefore has to outlive the call: the queued TRB points
+ * at it until the device responds.  It is allocated once per endpoint and
+ * released by xhci_release_xdev().
+ *
+ * Returns >0 with the byte count on a delivered report, 0 when nothing has
+ * arrived yet (the common case), -1 on error.
  */
 int xhci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
                             int low_speed, uint16_t max_packet,
                             void *data, uint16_t len, int *toggle_io) {
-    (void)dev_addr; (void)endpoint; (void)low_speed; (void)max_packet;
-    (void)data; (void)len; (void)toggle_io;
-    static int warned = 0;
-    if (!warned) {
-        warned = 1;
-        kprintf("[xhci] interrupt transfers are not implemented "
-                "(USB_PLAN.md U6)\n");
+    (void)low_speed; (void)toggle_io;
+    if (op_regs == NULL || data == NULL || len == 0) return -1;
+    if (!(endpoint & 0x80)) return -1;          /* IN endpoints only */
+
+    xhci_dev_t *xd = find_xdev(dev_addr);
+    if (!xd) return -1;
+
+    int ep_num = endpoint & 0x0F;
+    int ep_id  = ep_num * 2 + 1;                /* IN */
+    if (ep_id <= 1 || ep_id >= 32) return -1;
+
+    if (!xd->ep_configured[ep_id]) {
+        if (xhci_configure_ep(xd, endpoint, max_packet ? max_packet : len,
+                              XHCI_EP_INTR_IN) != 0)
+            return -1;
     }
-    return -1;
+
+    uint64_t hhdm = boot_get_hhdm_offset();
+
+    /* One persistent bounce buffer per endpoint. */
+    if (!xd->ep_buf_phys[ep_id]) {
+        uint64_t phys = pmm_alloc_frame();
+        if (!phys) return -1;
+        xd->ep_buf_phys[ep_id] = phys;
+        memset((void *)(uintptr_t)(hhdm + phys), 0, 4096);
+    }
+    if (len > 4096) len = 4096;
+
+    /* Arm the endpoint if it is idle. */
+    if (!xd->ep_armed[ep_id]) {
+        memset((void *)(uintptr_t)(hhdm + xd->ep_buf_phys[ep_id]), 0, len);
+        struct xhci_trb trb;
+        memset(&trb, 0, sizeof(trb));
+        trb.param   = (uint32_t)xd->ep_buf_phys[ep_id];
+        trb.status  = 0;
+        trb.control = len;
+        trb.flags   = (XHCI_TRB_NORMAL << XHCI_TRB_TYPE_SHIFT) |
+                      (1u << 2) |               /* ISP */
+                      XHCI_TRB_IOC;
+        xhci_ring_enqueue(xd, ep_id, trb);
+        xd->ep_armed[ep_id] = 1;
+        xd->ep_armed_len[ep_id] = len;
+        db_wr(xd->slot_id, (uint32_t)ep_id);
+        return 0;                                /* nothing yet */
+    }
+
+    /* Armed: has the event landed?  Non-blocking -- do not consume events
+     * belonging to other endpoints, xhci_ev_park() holds those. */
+    struct xhci_trb ev;
+    if (xhci_ev_take_parked(XHCI_TRB_TRANSFER_EVENT, &ev) != 0) {
+        struct xhci_trb tmp;
+        int got = 0;
+        while (xhci_ev_dequeue(&tmp) == 0) {
+            if (trb_type(&tmp) == XHCI_TRB_TRANSFER_EVENT) { ev = tmp; got = 1; break; }
+            xhci_ev_park(&tmp);
+        }
+        if (!got) return 0;                      /* still pending */
+    }
+
+    /* The event must belong to this endpoint; if not, park it and wait. */
+    uint8_t ev_slot = (uint8_t)(ev.flags >> 24);
+    int ev_ep = (int)((ev.flags >> 16) & 0x1F);
+    if (ev_slot != xd->slot_id || ev_ep != ep_id) {
+        xhci_ev_park(&ev);
+        return 0;
+    }
+
+    xd->ep_armed[ep_id] = 0;
+    uint32_t cc = trb_cc(&ev);
+    uint16_t armed = xd->ep_armed_len[ep_id];
+
+    if (cc == 6) {                                /* Stall */
+        kprintf("[xhci] interrupt endpoint stalled: slot=%u ep=%d\n",
+                xd->slot_id, ep_id);
+        (void)xhci_recover_endpoint(xd, ep_id);
+        return -1;
+    }
+    if (cc != 1 && cc != 13) return -1;
+
+    uint32_t residue = ev.control & 0xFFFFFF;
+    if (cc != 13 || residue > armed) residue = 0;
+    int actual = (int)armed - (int)residue;
+    if (actual < 0) actual = 0;
+    if (actual > (int)len) actual = (int)len;
+    if (actual > 0)
+        memcpy(data, (void *)(uintptr_t)(hhdm + xd->ep_buf_phys[ep_id]),
+               (size_t)actual);
+
+    return actual;
 }
 
 int xhci_warm_reset_port(int port) {
