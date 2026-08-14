@@ -1,11 +1,11 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: IN PROGRESS — U0 done ✅, U1–U9 planned 📋
+## Status: IN PROGRESS — U0–U1 done ✅, U2–U9 planned 📋
 
 | Phase | Title | State |
 |---|---|---|
 | U0 | Tell the truth in the log and the matrix | ✅ **done** |
-| U1 | The event ring, and one real command | 📋 planned |
+| U1 | The event ring, and one real command | ✅ **done** |
 | U2 | Delete the fabrication layer **(critical)** | 📋 planned |
 | U3 | Real `Address Device` | 📋 planned |
 | U4 | Real control transfers | 📋 planned |
@@ -337,12 +337,29 @@ on first entry. Verified both ways — `test_usbfs_fat32` is back to 6/6 while
 
 ---
 
-### Phase U1 — The event ring, and one real command **(critical)**
+### Phase U1 — The event ring, and one real command **(critical)** ✅ DONE
 
 **Objective:** `xhci_poll_event_type()` returns a real TRB.
 
 This is the keystone. Nothing above it can work, and everything above it works
 almost immediately once it does.
+
+**Landed.** For the first time in this driver's history the controller
+answered:
+
+```
+[xhci] command ring: No Op -> Success (cc=1)
+[xhci] command ring: PASS — 256/256 No Ops across a ring wrap
+```
+
+**A real bug found on the way.** The command ring's Link TRB was written
+with cycle 0 while `CRCR` starts the controller at `RCS=1`, so the
+controller would have seen a TRB it does not own and stopped at the end of
+the segment rather than following the link back. It could never show up
+before U1 because no command completed at all; it would have appeared
+immediately afterwards as "the first 255 commands work, then everything
+hangs". Fixed in the same phase, and it is exactly what the 256-No-Op wrap
+test exists to catch.
 
 #### Tasks
 
@@ -365,18 +382,28 @@ almost immediately once it does.
       23)**. It touches no device and its only purpose is exactly this — to
       show the command ring and event ring are correctly wired.
 
-#### Test gate
+#### Test gate — all met
 
-- New boot-time self-test: submit `No Op Command`, receive a Command Completion
-  event with completion code 1 (Success). Log it as
-  `[xhci] command ring: No Op -> Success (cc=1)`.
-- Submit **256 consecutive No Ops** so the command ring wraps its 255-entry
-  segment and the Link TRB with Toggle Cycle is exercised; all 256 complete.
-- Negative control: deliberately program a wrong `ERDP` and confirm the
-  self-test reports a timeout rather than hanging the boot. Revert.
-- New host unit test `test_xhci_ring.c`: the cycle-bit/wrap/dequeue arithmetic
-  is pure logic and must be tested off-hardware, in the manner of
-  `test_w32_pe.c`.
+- ✅ `No Op Command` completes with cc=1 at boot.
+- ✅ 256 consecutive No Ops all complete, driving the ring past its Link TRB.
+- ✅ **Negative control:** `ERDP` deliberately offset by 0x1000 →
+  `command ring: FAIL — 0/256`, with a diagnostic naming the ring state
+  (`erdp_idx`, `ccs`, `usbsts`) and **no hang** — the timeout is real, not a
+  spin. Reverted after measuring.
+- ✅ `tests/unit/test_xhci_ring.c`: **24/24** host checks on the
+  cycle/wrap/dequeue arithmetic, wired into `make test-unit`.
+
+**A correction the unit test forced.** Its negative control first asserted
+that a consumer which never inverts its cycle *stalls* after one lap. That
+is wrong twice over: the setup posted 512 events into a 256-entry ring, so
+every slot had been overwritten with cycle 0 and the broken consumer stopped
+immediately for the wrong reason. The real failure is worse than a stall —
+at the wrap the stale lap-1 TRBs still carry cycle 1, so a non-inverting
+consumer **re-delivers events the controller already retired, forever**. It
+is silent duplication, not a hang, and that is precisely why ownership is
+expressed by the cycle bit rather than by an index comparison. The test now
+asserts the runaway and pairs it with the correct consumer stopping at
+exactly 256 on the same ring.
 
 #### Deliverable
 

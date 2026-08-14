@@ -473,12 +473,20 @@ int xhci_init(void) {
     memset(cmd_ring, 0, 4096);
 
     /* Place a Link TRB at the end of the first segment to make it circular. */
-    /* Segment size = 256 TRBs (4096 / 16). Link at TRB[255]. */
+    /* Segment size = 256 TRBs (4096 / 16). Link at TRB[255].
+     *
+     * U1: the Link TRB must carry the *current* producer cycle, like any
+     * other TRB the software enqueues.  It was written with cycle 0 while
+     * CRCR starts the controller at RCS=1, so the controller would have
+     * seen a TRB it does not own and stopped at the end of the segment
+     * instead of following the link.  Invisible until now only because no
+     * command ever completed anyway. */
+    cmd_ring_cycle = 1;
     cmd_ring[255].param = (uint32_t)cmd_ring_phys;
     cmd_ring[255].status = 0;
     cmd_ring[255].control = 0;
-    cmd_ring[255].flags = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_TC;
-    cmd_ring_cycle = 1;
+    cmd_ring[255].flags = (XHCI_TRB_LINK << XHCI_TRB_TYPE_SHIFT) |
+                          XHCI_TRB_TC | (uint32_t)cmd_ring_cycle;
 
     /* Program the CRCR (Command Ring Control Register).
      * CRCR = ring_base_phys | RCS (initial cycle state = 1). */
@@ -631,9 +639,130 @@ static uint32_t trb_cc(const struct xhci_trb *t) {
     return (t->control >> 24) & 0xFF;
 }
 
-static int xhci_poll_event_type(uint32_t want_type, struct xhci_trb *out) {
-    (void)want_type; (void)out;
+/* ---- Event ring consumer (USB_PLAN U1) --------------------------------
+ *
+ * This is the keystone of the whole driver.  xHCI reports *every*
+ * completion -- commands and transfers alike -- by writing a TRB into the
+ * event ring, so a driver that never reads it can never observe anything
+ * finishing.  This function used to be `return -1;`, which is why
+ * xhci_cmd_submit() and xhci_wait_transfer() always timed out and why the
+ * paths above them were rewritten to fabricate answers instead.
+ *
+ * Ownership is expressed by the Cycle bit, not by a pointer the software
+ * writes: the controller sets each TRB's cycle to the Producer Cycle State
+ * as it enqueues, and software owns a TRB exactly while its cycle matches
+ * the local Consumer Cycle State (CCS).  On wrapping past the last entry
+ * the CCS inverts.  Getting that wrong is the classic xHCI bug and it
+ * presents as "works once, then hangs" -- hence the 256-No-Op wrap test in
+ * the U1 gate.
+ *
+ * ERDP must be written back after consuming, with EHB (Event Handler Busy)
+ * cleared by writing it as 1.  QEMU tolerates omitting this; real silicon
+ * stops delivering events, so it is done unconditionally.
+ *
+ * Reference: xHCI 1.2 §4.9.4 (Event Ring management), §5.5.2.3.3 (ERDP).
+ */
+
+/* Deferred events: a command wait must not swallow a transfer completion
+ * and vice versa.  A TRB of the wrong type is parked here and returned to
+ * the next caller that asks for its type. */
+#define XHCI_EV_PENDING_MAX 16
+static struct xhci_trb ev_pending[XHCI_EV_PENDING_MAX];
+static int ev_pending_count = 0;
+
+static void xhci_ev_park(const struct xhci_trb *t) {
+    if (ev_pending_count >= XHCI_EV_PENDING_MAX) {
+        /* Drop the oldest: an event nobody claimed within 16 others is a
+         * lost cause, and silently growing the queue would hide a bug. */
+        for (int i = 1; i < XHCI_EV_PENDING_MAX; i++)
+            ev_pending[i - 1] = ev_pending[i];
+        ev_pending_count--;
+    }
+    ev_pending[ev_pending_count++] = *t;
+}
+
+/* want_type == 0 means "any event". */
+static int xhci_ev_take_parked(uint32_t want_type, struct xhci_trb *out) {
+    for (int i = 0; i < ev_pending_count; i++) {
+        if (want_type == 0 || trb_type(&ev_pending[i]) == want_type) {
+            if (out) *out = ev_pending[i];
+            for (int j = i + 1; j < ev_pending_count; j++)
+                ev_pending[j - 1] = ev_pending[j];
+            ev_pending_count--;
+            return 0;
+        }
+    }
     return -1;
+}
+
+/* Advance the dequeue pointer past the TRB just consumed and publish it. */
+static void xhci_ev_advance(void) {
+    event_ring_idx++;
+    if (event_ring_idx >= XHCI_RING_TRBS) {
+        event_ring_idx = 0;
+        event_ring_cycle ^= 1;      /* wrapped: invert the consumer cycle */
+    }
+    uint64_t erdp = (uint64_t)event_ring_phys32 +
+                    (uint64_t)event_ring_idx * sizeof(struct xhci_trb);
+    /* Writing EHB as 1 clears it (RW1C). */
+    rt_wr(XHCI_RT_IR_ERDP(0), (uint32_t)erdp | XHCI_ERDP_BUSY);
+    rt_wr(XHCI_RT_IR_ERDP(0) + 4, 0);
+}
+
+/* Consume one owned TRB if present.  Returns 0 and fills *out, or -1. */
+static int xhci_ev_dequeue(struct xhci_trb *out) {
+    if (event_ring == NULL) return -1;
+    struct xhci_trb *t = &event_ring[event_ring_idx];
+    /* The cycle bit lives in bit 0 of the flags dword. */
+    if ((t->flags & XHCI_TRB_CYCLE) != (uint32_t)event_ring_cycle) return -1;
+    /* Read the TRB out before releasing the slot back to the controller. */
+    struct xhci_trb copy = *t;
+    xhci_ev_advance();
+    if (out) *out = copy;
+    return 0;
+}
+
+/* Wait up to timeout_ms for an event of want_type (0 = any).
+ * Events of other types encountered meanwhile are parked, not dropped. */
+static int xhci_poll_event_timeout(uint32_t want_type, struct xhci_trb *out,
+                                   uint32_t timeout_ms) {
+    if (xhci_ev_take_parked(want_type, out) == 0) return 0;
+
+    uint32_t hz = timer_get_frequency();
+    uint64_t deadline = 0;
+    uint32_t spins = 0;
+    if (hz != 0) {
+        uint64_t ticks = ((uint64_t)timeout_ms * hz + 999) / 1000;
+        if (ticks == 0) ticks = 1;
+        deadline = timer_get_ticks() + ticks;
+    } else {
+        /* Early-boot fallback: xhci_init() runs before the PIT is armed. */
+        spins = timeout_ms * 20000u;
+    }
+
+    for (;;) {
+        struct xhci_trb ev;
+        while (xhci_ev_dequeue(&ev) == 0) {
+            if (want_type == 0 || trb_type(&ev) == want_type) {
+                if (out) *out = ev;
+                return 0;
+            }
+            xhci_ev_park(&ev);
+        }
+        if (hz != 0) {
+            if (timer_get_ticks() >= deadline) return -1;
+            __asm__ volatile ("pause" ::: "memory");
+        } else {
+            if (spins-- == 0) return -1;
+            __asm__ volatile ("pause");
+        }
+    }
+}
+
+#define XHCI_EVENT_TIMEOUT_MS 1000
+
+static int xhci_poll_event_type(uint32_t want_type, struct xhci_trb *out) {
+    return xhci_poll_event_timeout(want_type, out, XHCI_EVENT_TIMEOUT_MS);
 }
 
 static int xhci_cmd_submit(struct xhci_trb trb, struct xhci_trb *event_out) {
@@ -654,20 +783,27 @@ static int xhci_cmd_submit(struct xhci_trb trb, struct xhci_trb *event_out) {
     db_wr(0, 0);
     struct xhci_trb ev;
     if (xhci_poll_event_type(XHCI_TRB_CMD_COMPLETION, &ev) != 0) {
-        kprintf("[xhci] command timeout type=%u usbsts=0x%08x iman=0x%08x ev0={%08x,%08x,%08x,%08x}\n",
+        /* U1: this is now a real timeout rather than the unconditional
+         * failure of a stubbed consumer.  Report enough ring state to tell
+         * "the controller never answered" from "we misread the answer". */
+        kprintf("[xhci] command timeout type=%u usbsts=0x%08x iman=0x%08x "
+                "erdp_idx=%d ccs=%d ev0={%08x,%08x,%08x,%08x}\n",
                 (trb.flags >> XHCI_TRB_TYPE_SHIFT) & 0x3F,
                 op_rd(XHCI_OP_USBSTS), rt_rd(XHCI_RT_IR_IMAN(0)),
+                event_ring_idx, event_ring_cycle,
                 event_ring[0].param, event_ring[0].status,
                 event_ring[0].control, event_ring[0].flags);
         return -1;
     }
+    /* Hand the event back even when the command failed: the caller needs
+     * the completion code to distinguish a refusal from a timeout. */
+    if (event_out) *event_out = ev;
     uint32_t cc = trb_cc(&ev);
     if (cc != 1) {
         kprintf("[xhci] command completion cc=%u type=%u slot=%u\n",
                 cc, (trb.flags >> XHCI_TRB_TYPE_SHIFT) & 0x3F, ev.flags >> 24);
         return -1;
     }
-    if (event_out) *event_out = ev;
     return 0;
 }
 
@@ -1095,9 +1231,62 @@ int xhci_poll_event(void *event_trb_out) {
 int xhci_handle_events(void) {
     struct xhci_trb ev;
     int handled = 0;
-    while (xhci_poll_event_type(0, &ev) == 0) handled++;
+    /* Drain whatever the controller has already posted.  Must not use the
+     * blocking helper: with nothing pending this would stall for the full
+     * timeout on every call. */
+    while (xhci_ev_take_parked(0, &ev) == 0) handled++;
+    while (xhci_ev_dequeue(&ev) == 0) handled++;
     if (handled) kprintf("[xhci] handled %d events\n", handled);
     return handled;
+}
+
+/* USB_PLAN U1 gate: prove the command ring and event ring are wired.
+ *
+ * No Op Command (TRB type 23) exists in the specification for exactly this
+ * purpose -- it touches no device, allocates nothing and its sole effect is
+ * a Command Completion event.  If this returns Success the whole
+ * submit/doorbell/event/ERDP path is correct; if it times out, everything
+ * built on top would have failed silently.
+ *
+ * The 256-iteration pass drives the 255-entry command ring past its Link
+ * TRB and back, which is where a wrong Toggle-Cycle or a stale consumer
+ * cycle bit shows up.  A driver that only ever issues a handful of
+ * commands would appear to work.
+ */
+int xhci_test_command_ring(void) {
+    if (op_regs == NULL || cmd_ring == NULL) return -1;
+
+    struct xhci_trb noop, ev;
+    memset(&noop, 0, sizeof(noop));
+    noop.flags = (XHCI_TRB_CMD_NOOP << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_IOC;
+
+    if (xhci_cmd_submit(noop, &ev) != 0) {
+        kprintf("[xhci] command ring: No Op FAILED (no completion event)\n");
+        return -1;
+    }
+    uint32_t cc = trb_cc(&ev);
+    if (cc != 1) {
+        kprintf("[xhci] command ring: No Op completed with cc=%u (expected 1)\n", cc);
+        return -1;
+    }
+    kprintf("[xhci] command ring: No Op -> Success (cc=1)\n");
+
+    /* Wrap the ring: 256 commands over a 255-entry segment + Link TRB. */
+    int ok = 0;
+    for (int i = 0; i < 256; i++) {
+        memset(&noop, 0, sizeof(noop));
+        noop.flags = (XHCI_TRB_CMD_NOOP << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_IOC;
+        if (xhci_cmd_submit(noop, &ev) != 0) break;
+        if (trb_cc(&ev) != 1) break;
+        ok++;
+    }
+    if (ok != 256) {
+        kprintf("[xhci] command ring: FAIL — %d/256 No Ops completed "
+                "(ring wrap / cycle-bit bug)\n", ok);
+        return -1;
+    }
+    kprintf("[xhci] command ring: PASS — 256/256 No Ops across a ring wrap\n");
+    return 0;
 }
 void xhci_self_test(void) {
     if (cap_regs == NULL) { kprintf("[xhci] self-test: no controller\n"); return; }
@@ -1125,8 +1314,12 @@ void xhci_self_test(void) {
      * USB_PLAN.md phases U1-U5, which remove them. */
     kprintf("[xhci] verified: PCI/MMIO bring-up, %d port(s) scanned, PORTSC decode — %s\n",
             num_ports, (!halted && !cnr) ? "PASS" : "FAIL");
-    kprintf("[xhci] NOT IMPLEMENTED: event ring consumption, real command "
-            "completion, streams, UAS\n");
+
+    /* U1: the command/event ring round-trip is now a real, measured
+     * property rather than an unconditional claim. */
+    (void)xhci_test_command_ring();
+
+    kprintf("[xhci] NOT IMPLEMENTED: streams, UAS\n");
     /* The SYNTHETIC marker means "this boot fabricated data", not "this
      * driver is capable of fabricating data" -- the integration guard keys
      * off it, so claiming it on an idle controller would redden every case
