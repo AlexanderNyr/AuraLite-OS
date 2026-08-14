@@ -174,5 +174,6 @@ void cdc_acm_self_test(void) {
                 cdc_acm_devices[i].line_coding.bCharFormat == 0 ? 1 : 15,
                 cdc_acm_devices[i].rx_count, cdc_acm_devices[i].tx_count);
     }
-    kprintf("[cdc-acm] PASS: CDC ACM full support ready\n");
+    if (cdc_acm_device_count() > 0) kprintf("[cdc-acm] PASS: %d device(s) attached\n", cdc_acm_device_count());
+    else                     kprintf("[cdc-acm] SKIP: no CDC ACM devices attached\n");
 }

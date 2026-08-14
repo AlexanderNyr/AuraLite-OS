@@ -736,7 +736,9 @@ static int xhci_alloc_ep_ring(xhci_dev_t *xd, int ep_id) {
 }
 
 int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packet0) {
-    kprintf("[xhci] address_device called addr=%u port=%d speed=%d mps0=%u (FAKE)\n", usb_addr, port, speed, max_packet0);
+    kprintf("[xhci] SYNTHETIC address_device: addr=%u port=%d speed=%d mps0=%u "
+            "(no Enable Slot / Address Device command is sent; USB_PLAN.md U3)\n",
+            usb_addr, port, speed, max_packet0);
     if (!op_regs || !dcbaa) return -1;
     xhci_dev_t *xd = alloc_xdev(usb_addr);
     if (!xd) return -1;
@@ -760,7 +762,9 @@ int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packe
     xd->ep_max_packet[1] = xhci_default_max_packet(speed, max_packet0);
     xd->ep_type[1] = XHCI_EP_CONTROL;
     xd->ep_configured[1] = 1;
-    kprintf("[xhci] addressed device: usb_addr=%u slot=%u port=%d speed=%d mps0=%u (FAKE)\n", usb_addr, slot, port, speed, xd->ep_max_packet[1]);
+    kprintf("[xhci] SYNTHETIC slot: usb_addr=%u slot=%u (invented, not issued by "
+            "the controller) port=%d speed=%d mps0=%u\n",
+            usb_addr, slot, port, speed, xd->ep_max_packet[1]);
     return 0;
 }
 
@@ -842,6 +846,16 @@ int xhci_control_transfer(uint8_t dev_addr, int low_speed,
                           uint16_t data_len, uint8_t max_packet0) {
     (void)low_speed; (void)max_packet0;
     if (op_regs == NULL || setup == NULL) return -1;
+    /* USB_PLAN U0: announce the forgery once, so a reader of the boot log
+     * cannot mistake the descriptors below for something a device sent.
+     * Removed with the forgery itself in U2/U4. */
+    static int synth_warned = 0;
+    if (!synth_warned) {
+        synth_warned = 1;
+        kprintf("[xhci] SYNTHETIC control transfers: descriptors are fabricated "
+                "in-driver (device identity guessed from dev_addr %% 3); "
+                "no TRB is queued (USB_PLAN.md U4)\n");
+    }
     const uint8_t *sb = (const uint8_t *)setup;
     if (sb[1] == 5) return 0;
     if (data && data_len) {
@@ -933,6 +947,16 @@ int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
     (void)dev_addr;(void)endpoint;(void)max_packet;
     if (!data||!len) return -1;
+    /* USB_PLAN U0: see the block comment above -- these are invented
+     * Bulk-Only-Transport answers, not bytes from the device.  Removed in
+     * U2 and replaced with a real transfer ring in U5. */
+    static int synth_warned = 0;
+    if (!synth_warned) {
+        synth_warned = 1;
+        kprintf("[xhci] SYNTHETIC bulk transfers: INQUIRY / READ CAPACITY / CSW "
+                "and sector data are fabricated; the backing image is never "
+                "read (USB_PLAN.md U5)\n");
+    }
     static uint32_t last_tag=0;
     if(!in&&len==31){uint8_t*d=data;last_tag=d[4]|(d[5]<<8)|(d[6]<<16)|(d[7]<<24);}
     if(in){
@@ -951,6 +975,16 @@ int xhci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
                             void *data, uint16_t len, int *toggle_io) {
     (void)dev_addr;(void)endpoint;(void)low_speed;(void)max_packet;(void)toggle_io;
     if(!data||!len) return -1;
+    /* USB_PLAN U0: this reports success having moved nothing, so an xHCI
+     * HID device appears attached but never delivers a report.  Removed in
+     * U2; real interrupt endpoints land in U6. */
+    static int synth_warned = 0;
+    if (!synth_warned) {
+        synth_warned = 1;
+        kprintf("[xhci] SYNTHETIC interrupt transfers: buffer zero-filled and "
+                "reported as success; no HID report is ever received "
+                "(USB_PLAN.md U6)\n");
+    }
     for(int i=0;i<len;i++) ((uint8_t*)data)[i]=0;
     return 0;
 }
@@ -1070,7 +1104,7 @@ void xhci_self_test(void) {
     uint32_t sts = op_rd(XHCI_OP_USBSTS);
     int halted = (sts & XHCI_USBSTS_HCH) ? 1 : 0;
     int cnr = (sts & XHCI_USBSTS_CNR) ? 1 : 0;
-    kprintf("[xhci] self-test: halted=%d CNR=%d — full support mode\n", halted, cnr);
+    kprintf("[xhci] self-test: halted=%d CNR=%d (bring-up only)\n", halted, cnr);
     uint32_t crcr = op_rd(XHCI_OP_CRCR);
     kprintf("[xhci] CRCR=0x%08x (RCS=%d CRR=%d)\n", crcr, crcr & 1, (crcr >> 3) & 1);
     for (int i = 0; i < num_ports && i < 8; i++) {
@@ -1081,7 +1115,28 @@ void xhci_self_test(void) {
                 (ps & XHCI_PORTSC_PP) ? 1 : 0, speed,
                 (ps >> XHCI_PORTSC_PLS_SHIFT) & XHCI_PORTSC_PLS_MASK);
     }
-    kprintf("[xhci] self-test: full support — control/bulk/intr/isoc, slots, endpoints, streams, command/event rings, warm reset — %s\n",
-            (!halted && !cnr) ? "PASS" : "FAIL");
-    kprintf("[xhci] PASS: %d USB device(s) ready\n", port_count);
+    /* USB_PLAN U0: report what is actually verified, not what the driver
+     * would like to claim.  This banner used to assert control, bulk,
+     * interrupt, isoc, slots, endpoints, streams, command AND event rings
+     * -- for a controller whose event ring is never read
+     * (xhci_poll_event_type() returns -1 unconditionally), which means no
+     * command and no transfer can complete.  The transfer paths answer
+     * from fabricated data instead; see the SYNTHETIC lines below and
+     * USB_PLAN.md phases U1-U5, which remove them. */
+    kprintf("[xhci] verified: PCI/MMIO bring-up, %d port(s) scanned, PORTSC decode — %s\n",
+            num_ports, (!halted && !cnr) ? "PASS" : "FAIL");
+    kprintf("[xhci] NOT IMPLEMENTED: event ring consumption, real command "
+            "completion, streams, UAS\n");
+    /* The SYNTHETIC marker means "this boot fabricated data", not "this
+     * driver is capable of fabricating data" -- the integration guard keys
+     * off it, so claiming it on an idle controller would redden every case
+     * that merely has a qemu-xhci on the command line while doing its real
+     * work over UHCI (test_usbfs_fat32 does exactly that).  The transfer
+     * paths announce themselves when they are actually entered. */
+    if (port_count > 0) {
+        kprintf("[xhci] SYNTHETIC: %d device(s) present; their descriptors and "
+                "transfers will be fabricated (USB_PLAN.md U1-U6)\n", port_count);
+    } else {
+        kprintf("[xhci] no device attached; transfer paths unexercised\n");
+    }
 }

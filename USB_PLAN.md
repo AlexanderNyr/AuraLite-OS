@@ -1,10 +1,10 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: PLANNED 📋 (phases U0–U9)
+## Status: IN PROGRESS — U0 done ✅, U1–U9 planned 📋
 
 | Phase | Title | State |
 |---|---|---|
-| U0 | Tell the truth in the log and the matrix | 📋 planned |
+| U0 | Tell the truth in the log and the matrix | ✅ **done** |
 | U1 | The event ring, and one real command | 📋 planned |
 | U2 | Delete the fabrication layer **(critical)** | 📋 planned |
 | U3 | Real `Address Device` | 📋 planned |
@@ -252,10 +252,34 @@ Stated so their absence is a decision and not an oversight:
 
 ## 3. Phases
 
-### Phase U0 — Tell the truth in the log and the matrix
+### Phase U0 — Tell the truth in the log and the matrix ✅ DONE
 
 **Objective:** the tree stops claiming support it does not have, *before* any
 behaviour changes. This phase changes no data path.
+
+**Landed.** Measured on the resulting build:
+
+```
+no xHCI attached:   SYNTHETIC=0   22 PASS   0 FAIL
+xHCI + kbd + disk:  SYNTHETIC=7   (11 with three devices)
+```
+
+`test_usb_xhci.sh` went from a false **8/8 green** to **3 of 9 FAILED**, naming
+the cause:
+
+```
+  ✘ xHCI Address Device command works
+  ✘ xHCI MSC READ(10) works
+  ✘ guest log contains 11 SYNTHETIC marker(s): the OS fabricated data
+      [xhci] SYNTHETIC address_device: ... (no Enable Slot / Address Device
+             command is sent; USB_PLAN.md U3)
+      [xhci] SYNTHETIC control transfers: descriptors are fabricated in-driver
+             (device identity guessed from dev_addr % 3) ...
+```
+
+That is the intended, recorded regression: those two assertions were never
+true. The remaining six still pass because enumeration *structure* is real
+even where its content is not.
 
 Rationale: every later phase is measured against the log. While the log says
 "full support — control/bulk/intr/isoc … PASS" for a controller that fabricates
@@ -280,14 +304,32 @@ its answers, no measurement means anything.
 - [ ] Add a `SYNTHETIC` grep guard to the integration library so any test whose
       log contains a synthetic marker fails loudly rather than passing.
 
-#### Test gate
+#### Test gate — all met
 
-- `grep -c SYNTHETIC` over a boot log with `-device qemu-xhci,...` returns a
-  non-zero count at U0 and **must reach zero at U5**. That number is the
+- ✅ `grep -c SYNTHETIC` returns **7** with an xHCI controller attached and
+  **0** without one. Must reach zero everywhere at U5; that number is the
   plan's progress metric.
-- `test_usb_xhci.sh` now **fails** at U0 via the new guard, with a message
-  naming the synthesis. This is the intended, recorded regression.
-- No other integration case changes state.
+- ✅ `test_usb_xhci.sh` fails via the new guard, naming the synthesis.
+- ✅ No other case changes state: `make test-unit` 118/118, and
+  `test_boot_to_shell`, `test_usb_msc`, `test_usb_ohci`, `test_usb_ehci`,
+  `test_usbfs_fat32`, `test_usb_hub` stay green — the guard is inert on the
+  controllers that move real data.
+
+**Two corrections found by running it**, both the same mistake in different
+places: a marker that described a *capability* rather than an *event*.
+
+1. The first cut printed `SYNTHETIC` in `usb_core`'s summary banner, which
+   fires on every boot — including machines with no xHCI — so the global
+   guard would have reddened all 118 cases.
+2. The second printed it from `xhci_self_test()` whenever a controller
+   existed. `test_usbfs_fat32.sh` puts a `qemu-xhci` on the command line but
+   does its real work over UHCI, so a correct run went red on an idle
+   controller.
+
+The marker now means **"this boot fabricated data"**: it is emitted from
+`xhci.c` only when a device is actually present, and from each transfer path
+on first entry. Verified both ways — `test_usbfs_fat32` is back to 6/6 while
+`test_usb_xhci` stays correctly red.
 
 #### Deliverable
 

@@ -366,7 +366,7 @@ int msc_is_present(void) {
 void msc_self_test(void) {
     if (!msc_present) {
         kprintf("[msc] self-test: no ready mass storage device\n");
-        kprintf("[msc] PASS: MSC layer loaded; attach usb-storage to test I/O\n");
+        kprintf("[msc] SKIP: MSC layer loaded; attach usb-storage to test I/O\n");
         return;
     }
 
@@ -381,5 +381,18 @@ void msc_self_test(void) {
         kprintf(" %02x", sector[i]);
     }
     kprintf("\n");
+
+    /* USB_PLAN U0: on xHCI these bytes did not come from the disk.
+     * xhci_bulk_transfer() fabricates the whole Bulk-Only-Transport
+     * exchange, and the "sector" it returns reads "AURALUSB" regardless of
+     * what the backing image contains -- so printing PASS here asserted
+     * that a read worked when nothing had been read.  Say so instead; U5
+     * makes this a real PASS by wiring actual transfer rings. */
+    if (msc_dev && msc_dev->controller == USB_CTRL_XHCI) {
+        kprintf("[msc] SYNTHETIC: the bytes above are fabricated by the xHCI "
+                "stub, not read from the device (USB_PLAN.md U5)\n");
+        kprintf("[msc] SKIP: READ(10) not verified on xHCI\n");
+        return;
+    }
     kprintf("[msc] PASS: USB mass storage READ(10) works\n");
 }

@@ -74,5 +74,5 @@ void usb_string_self_test(void) {
     char out[32];
     usb_string_to_utf8(sample, 12, out, sizeof(out));
     kprintf("[usb-string] self-test: decode '%s' -> %s\n", "Test (UTF-16LE)", out[0] ? "OK" : "FAIL");
-    kprintf("[usb-string] PASS: string support full (LANG table, ASCII/UTF-8, all indices)\n");
+    kprintf("[usb-string] PASS: UTF-16LE -> UTF-8 decode of a local buffer\n");
 }

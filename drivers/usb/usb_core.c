@@ -1,4 +1,4 @@
-/* usb_core.c — USB device enumeration and protocol layer — FULL SUPPORT.
+/* usb_core.c — USB device enumeration and protocol layer.
  *
  * Full USB stack: control/bulk/interrupt/isochronous, all speeds,
  * string descriptors, driver model, CDC ACM / Audio / Printer / Hub / HID / MSC,
@@ -777,7 +777,7 @@ static int usb_hub_scan(usb_device_t *hub) {
 
 int usb_enumerate_all(void) {
     int found = 0;
-    kprintf("[usb] enumerating devices across all controllers (FULL SUPPORT MODE)...\n");
+    kprintf("[usb] enumerating devices across all controllers...\n");
 
     for (int p = 0; p < UHCI_MAX_PORTS && found < USB_MAX_DEVICES; p++) {
         if (!uhci_port_has_device(p)) continue;
@@ -819,7 +819,7 @@ int usb_enumerate_all(void) {
         if (!added) break;
     }
 
-    kprintf("[usb] %d device(s) enumerated — full stack ready\n", found);
+    kprintf("[usb] %d device(s) enumerated\n", found);
     return found;
 }
 
@@ -970,22 +970,26 @@ int usb_hotplug_start(void) {
     if (started) return 0;
     kthread_create(usb_hotplug_thread, NULL, "usb-hotplug");
     started = 1;
-    kprintf("[usb] hotplug monitor started (500ms poll) — full stack\n");
+    kprintf("[usb] hotplug monitor started (500ms poll; no USB IRQ is taken — USB_PLAN.md U8)\n");
     return 0;
 }
 
 void usb_core_self_test(void) {
-    kprintf("[usb] core self-test: FULL SUPPORT stack\n");
-    kprintf("[usb]  transfers: CONTROL, BULK, INTERRUPT, ISOCHRONOUS\n");
-    kprintf("[usb]  speeds: LOW, FULL, HIGH, SUPER\n");
-    kprintf("[usb]  descriptors: DEVICE, CONFIG, STRING, BOS, SS_EP_COMP\n");
-    kprintf("[usb]  classes: HID (0x03), MSC (0x08), Hub (0x09), CDC (0x02/0x0A),\n");
-    kprintf("[usb]           Audio (0x01), Printer (0x07), Video (0x0E), Vendor\n");
-    kprintf("[usb]  features: driver registry, string decoding, hub tree, isoc\n");
-    kprintf("[usb]  controllers: UHCI, OHCI, EHCI, xHCI — full backend API\n");
-    kprintf("[usb] devices recorded: %d\n", usb_device_count());
+    /* USB_PLAN U0: this banner used to advertise a capability list rather
+     * than a test result -- four transfer types, four speeds and four
+     * controllers, printed unconditionally and followed by "PASS" even
+     * with zero devices attached.  What the core can genuinely claim is
+     * the class-independent protocol layer; what each controller does
+     * beneath it differs sharply and is now stated per controller. */
+    int n = usb_device_count();
+    kprintf("[usb] core self-test: enumeration/protocol layer\n");
+    kprintf("[usb]  controllers: UHCI real; OHCI real; EHCI real (async only, "
+            "no periodic/split); xHCI bring-up only, transfers fabricated\n");
+    kprintf("[usb]  see USB_PLAN.md for the phase that closes each gap\n");
+    kprintf("[usb] devices recorded: %d\n", n);
     usb_dump_devices();
     for (int i = 0; i < USB_MAX_DEVICES; i++)
         if (usb_devices[i].in_use) usb_dump_device_detail(&usb_devices[i]);
-    kprintf("[usb] PASS: full USB stack ready\n");
+    if (n > 0) kprintf("[usb] PASS: %d device(s) enumerated\n", n);
+    else       kprintf("[usb] SKIP: no USB devices attached\n");
 }

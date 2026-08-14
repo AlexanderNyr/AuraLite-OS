@@ -174,9 +174,10 @@ int usb_hub_get_port_count(usb_device_t *hub) {
 void usb_hub_self_test(void) {
     int active = 0;
     for (int i = 0; i < USB_HUB_MAX_HUBS; i++) if (usb_hubs[i].in_use) active++;
-    kprintf("[hub] self-test: %d active hub(s), full support (power, reset, TT, SS, int EP)\n", active);
+    kprintf("[hub] self-test: %d active hub(s)\n", active);
     for (int i = 0; i < USB_HUB_MAX_HUBS; i++) if (usb_hubs[i].in_use) {
         kprintf("[hub]   hub addr=%d ports=%d depth=%d\n", usb_hubs[i].dev->address, usb_hubs[i].num_ports, usb_hubs[i].depth);
     }
-    kprintf("[hub] PASS: hub driver full support ready\n");
+    if (active > 0) kprintf("[hub] PASS: %d hub(s) attached\n", active);
+    else            kprintf("[hub] SKIP: no hubs attached\n");
 }

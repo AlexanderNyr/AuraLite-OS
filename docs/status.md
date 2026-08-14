@@ -140,12 +140,12 @@ Legend:
 | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |
 | OHCI controller | 🧪 | Detection/init/root-port reset plus ED/TD control, bulk and interrupt scheduling works in QEMU for HID/MSC. |
 | EHCI controller | 🧪 | Detection/init/root-port reset plus async qTD control/bulk scheduling works in QEMU for high-speed MSC. Periodic interrupt and split transactions are pending. |
-| xHCI controller | 🧪 | QEMU xHCI slot/address/device-context setup, endpoint contexts, command/event rings, control/bulk/interrupt transfer rings are implemented for HID/MSC. |
-| USB device enumeration | 🧪 | UHCI/OHCI/EHCI/xHCI devices are enumerated through standard requests/controller-specific address setup. |
-| USB HID keyboard/mouse | 🧪 | Boot Protocol/generic keyboards and pointer devices work through UHCI, OHCI, xHCI and high-speed EHCI polling; generic HID parser handles keyboard reports and mouse/tablet pointer reports (QEMU `usb-kbd`/`usb-mouse`/`usb-tablet` tested). EHCI full/low-speed split transactions remain future work. |
+| xHCI controller | 🚧 | **Bring-up only.** PCI/MMIO init, CRCR/DCBAA, port scan and PORTSC decode are real. Above that nothing is: `xhci_poll_event_type()` returns `-1` unconditionally, so the event ring is never consumed and no command or transfer can complete. `Address Device` invents slot IDs, control transfers fabricate descriptors (device identity guessed from `dev_addr % 3`), bulk transfers fabricate INQUIRY/READ CAPACITY/CSW and a sector reading `AURALUSB`, and interrupt transfers zero-fill and report success. The genuine TRB path exists but is unreachable (`xhci.c:887`, `-Wunreachable-code`). Marked `SYNTHETIC` in the boot log. See [`USB_PLAN.md`](../USB_PLAN.md) U1–U6. |
+| USB device enumeration | 🧪 | Real over UHCI/OHCI/EHCI. On xHCI the descriptors are fabricated rather than fetched, so "enumeration" there reflects the driver's guess, not the device. |
+| USB HID keyboard/mouse | 🧪 | Works through UHCI, OHCI and high-speed EHCI polling; the generic HID parser handles keyboard and mouse/tablet reports (QEMU `usb-kbd`/`usb-mouse`/`usb-tablet`). **Not on xHCI**: interrupt transfers there return a zero-filled buffer, so a device attaches but never delivers a report (USB_PLAN U6). EHCI full/low-speed split transactions remain future work (U7). |
 | USB hubs | 🧪 | Standard hub descriptor/status, port power/reset and downstream child enumeration work in QEMU, including xHCI route-string addressing for devices behind a hub. |
-| USB hotplug monitor | 🧪 | Polling monitor scans root ports and known hubs, marks removed records and dynamically attaches HID and MSC class drivers for newly enumerated devices. QEMU xHCI HID and MSC attach/detach are integration-tested. |
-| USB Mass Storage | 🧪 | Bulk-Only/SCSI path works through UHCI, OHCI, high-speed EHCI and xHCI in QEMU, including runtime hotplug attach/read/detach. Active media is exposed through `/usb` via usbfs (`info`, `sector0.bin`, `disk.img`) and FAT32 superfloppy/partition root files are auto-detected read-only under `/usb/fat`. |
+| USB hotplug monitor | 🧪 | 500 ms polling monitor scans root ports and known hubs and attaches HID/MSC drivers for new devices. No USB interrupt is ever taken (U8). `test_usb_hotplug.sh` currently **fails**: HID cannot attach over xHCI. |
+| USB Mass Storage | 🧪 | Bulk-Only/SCSI works through UHCI, OHCI and high-speed EHCI in QEMU, including hotplug attach/read/detach. Media is exposed at `/usb` via usbfs (`info`, `sector0.bin`, `disk.img`), with FAT32 auto-detected read-only under `/usb/fat`. **xHCI is excluded**: its replies are fabricated and the synthesised sector carries no FAT32 BPB (U5). |
 
 ## Wireless and Bluetooth
 
@@ -182,7 +182,7 @@ Legend:
 
 1. Harden address-space teardown for future SMP/TLB-shootdown support.
 2. Audit remaining kernel-internal callers and expand fault-recovering uaccess tests.
-3. Complete USB bulk/control transfer paths across OHCI/EHCI/xHCI.
+3. Complete the USB transfer paths — see [`USB_PLAN.md`](../USB_PLAN.md) (U0–U9): the xHCI event ring first, then delete the synthesis that hides its absence.
 4. Make scheduling SMP-aware or explicitly keep APs disabled in normal configs.
 5. Grow `mmap` into lazy/shared VMAs and add broader file-backed sharing tests.
 6. Tighten FD inheritance/lifetime semantics around `fork`, `execve` and process exit.

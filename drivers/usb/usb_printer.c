@@ -125,11 +125,12 @@ int usb_printer_init(void) {
     return found;
 }
 void usb_printer_self_test(void) {
-    kprintf("[printer] self-test: %d active, full support (ID, reset, bulk IN/OUT)\n", usb_printer_count());
+    kprintf("[printer] self-test: %d active\n", usb_printer_count());
     for (int i=0;i<USB_PRINTER_MAX;i++) if (usb_printers[i].in_use) {
         kprintf("[printer]   addr=%d OUT=0x%02x IN=0x%02x sent=%u recv=%u id=%s\n",
                 usb_printers[i].dev->address, usb_printers[i].bulk_out, usb_printers[i].bulk_in,
                 usb_printers[i].bytes_sent, usb_printers[i].bytes_recv, usb_printers[i].id_string);
     }
-    kprintf("[printer] PASS: USB Printer full support ready\n");
+    if (usb_printer_count() > 0) kprintf("[printer] PASS: %d printer(s) attached\n", usb_printer_count());
+    else                         kprintf("[printer] SKIP: no printers attached\n");
 }

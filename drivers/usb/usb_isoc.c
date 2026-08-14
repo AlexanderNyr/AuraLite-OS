@@ -96,8 +96,8 @@ int usb_isoc_transfer_simple(usb_device_t *dev, uint8_t ep, void *data, uint32_t
 uint32_t usb_isoc_bandwidth_used(void) { return bandwidth_used; }
 uint32_t usb_isoc_max_bandwidth(void) { return max_bandwidth; }
 void usb_isoc_self_test(void) {
-    kprintf("[isoc] self-test: alloc 1 transfer 8 packets 64 bytes each\n");
+    kprintf("[isoc] self-test: framework limits only (no transfer is issued)\n");
     kprintf("[isoc]   max bandwidth %d%%, used %d%%\n", max_bandwidth, bandwidth_used);
-    kprintf("[isoc]   supports: periodic scheduling, sync async/adaptive/sync, feedback EP, multi-packet\n");
-    kprintf("[isoc] PASS: isoc full support ready\n");
+    
+    kprintf("[isoc] SKIP: no isochronous endpoint exercised (USB_PLAN.md U9)\n");
 }

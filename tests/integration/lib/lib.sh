@@ -288,7 +288,39 @@ il_section() {
     echo "${C_BOLD}${C_BLUE}== $* ==${C_RESET}"
 }
 
+# USB_PLAN U0: refuse to pass a case whose guest log contains fabricated data.
+#
+# The xHCI driver answers control/bulk/interrupt transfers from invented
+# buffers (see USB_PLAN.md §1).  test_usb_xhci.sh consequently asserted eight
+# properties of data the OS made up -- including "READ(10) works" against a
+# sector reading "AURALUSB" -- and reported 8/8 green.  A suite that cannot
+# tell a working driver from no driver is worse than no suite, so any log
+# carrying a SYNTHETIC marker fails here, loudly, naming the marker.
+#
+# This is deliberately a *global* guard rather than a per-case assertion: it
+# means a synthesis added anywhere later cannot quietly ride into a green run.
+# The count reaches zero at U5, at which point this guard becomes inert.
+#
+# Escape hatch for the phases that must run while synthesis still exists:
+# IL_ALLOW_SYNTHETIC=1 downgrades it to a warning.
+il_check_synthetic() {
+    local log="${IL_LAST_LOG:-}"
+    [ -n "$log" ] && [ -f "$log" ] || return 0
+    grep -Fq 'SYNTHETIC' "$log" || return 0
+
+    local n
+    n=$(grep -Fc 'SYNTHETIC' "$log")
+    if [ "${IL_ALLOW_SYNTHETIC:-0}" = "1" ]; then
+        echo "${C_YELLOW:-}  ! ${n} SYNTHETIC marker(s) in the log (allowed by IL_ALLOW_SYNTHETIC=1)${C_RESET:-}"
+        return 0
+    fi
+    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+    il_fail "guest log contains ${n} SYNTHETIC marker(s): the OS fabricated data (USB_PLAN.md)"
+    grep -F 'SYNTHETIC' "$log" | sed 's/^/      /' | head -8
+}
+
 il_summary() {
+    il_check_synthetic
     local total=${IL_ASSERT_COUNT:-$((IL_PASS_COUNT + IL_FAIL_COUNT))}
     echo
     if [ "$IL_FAIL_COUNT" -eq 0 ]; then

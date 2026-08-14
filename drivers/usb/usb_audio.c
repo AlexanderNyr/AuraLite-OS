@@ -226,5 +226,6 @@ void usb_audio_self_test(void) {
                 usb_audio_devices[i].current_bits, usb_audio_devices[i].num_streams,
                 usb_audio_devices[i].frames_played, usb_audio_devices[i].frames_captured);
     }
-    kprintf("[audio] PASS: USB Audio full support ready\n");
+    if (usb_audio_device_count() > 0) kprintf("[audio] PASS: %d USB audio device(s) attached\n", usb_audio_device_count());
+    else                       kprintf("[audio] SKIP: no USB audio devices attached\n");
 }

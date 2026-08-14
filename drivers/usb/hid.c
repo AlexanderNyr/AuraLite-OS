@@ -485,5 +485,5 @@ int usb_hid_device_count(void) { return hid_count; }
 
 void usb_hid_self_test(void) {
     if (hid_count > 0) kprintf("[hid] PASS: %d USB HID input device(s) active\n", hid_count);
-    else kprintf("[hid] PASS: no USB HID input devices attached\n");
+    else kprintf("[hid] SKIP: no USB HID input devices attached\n");
 }
