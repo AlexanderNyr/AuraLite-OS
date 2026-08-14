@@ -122,6 +122,26 @@ typedef struct gui_win {
     int       owner_pid;
     /* per-window dirty flag for back-buffer changes */
     volatile int content_dirty;
+
+    /* Front buffer: the last COMPLETE frame, which is what the compositor
+     * draws.  NULL until a client uses the frame brackets, in which case
+     * the compositor reads back[] directly as it always did.
+     *
+     * The compositor runs as its own thread at ~100 Hz
+     * (gui_compositor_thread) and reads the window while the client writes
+     * it, with no synchronisation.  For a program that repaints a little at
+     * a time that is unnoticeable; for one that replaces the whole frame it
+     * is textbook tearing -- DOOM showed horizontal bands from two or three
+     * different frames at once.
+     *
+     * Skipping the window while a frame is in flight was tried first and is
+     * WRONG: under TCG a 640x400 blit takes far longer than the 10 ms tick,
+     * so the window was busy at essentially every tick and never drew at
+     * all.  A frame the compositor is allowed to miss must therefore be a
+     * COMPLETE OLD frame, not no frame -- which means keeping two buffers
+     * and swapping them, not gating on a flag. */
+    uint32_t *front;
+    volatile int updating;
 } gui_win_t;
 
 static gui_win_t windows[GUI_MAX_WINDOWS];
@@ -422,6 +442,7 @@ int gui_destroy_window(int wid) {
     gui_win_t *w = &windows[wid];
     mark_window_dirty(w);
     if (w->back) kfree(w->back);
+    if (w->front) { kfree(w->front); w->front = NULL; }
     memset(w, 0, sizeof(*w));
     if (focused == wid) focused = -1;
     if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
@@ -572,6 +593,12 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
         win->back   = nb;
         win->back_w = alloc_w;
         win->back_h = alloc_h;
+        /* The front buffer was sized for the OLD dimensions; keeping it
+         * would let the compositor read past its end on the very next
+         * tick.  Drop it and let gui_frame_begin() reallocate at the new
+         * size -- one frame falls back to the live buffer, which is
+         * exactly the pre-existing behaviour. */
+        if (win->front) { kfree(win->front); win->front = NULL; }
     }
     win->w = w; win->h = h;
     win->content_dirty = 1;
@@ -929,6 +956,41 @@ int gui_clear(int wid, uint32_t color) {
     return 0;
 }
 
+/* Frame brackets.
+ *
+ * The blit syscall copies user pixels through a one-row bounce buffer and
+ * therefore calls gui_blit() once PER ROW -- 400 times for a 640x400 frame.
+ * Marking the window busy inside gui_blit() would raise and clear the flag
+ * 400 times, and the compositor would simply land in one of the 399 gaps.
+ * The bracket has to span the whole frame, so the syscall wrapper owns it. */
+void gui_frame_begin(int wid) {
+    if (!win_alive(wid)) return;
+    gui_win_t *w = &windows[wid];
+    if (!w->front) {
+        /* Allocated lazily, so windows that never use the brackets cost
+         * nothing.  If the allocation fails the window simply keeps the
+         * old single-buffered behaviour rather than failing to draw. */
+        w->front = (uint32_t *)kmalloc((uint64_t)w->back_w * w->back_h * 4ull);
+    }
+    w->updating = 1;
+    __asm__ volatile ("" ::: "memory");
+}
+
+void gui_frame_end(int wid) {
+    if (!win_alive(wid)) return;
+    gui_win_t *w = &windows[wid];
+    if (w->front) {
+        /* Publish: copy the finished frame where the compositor can read it
+         * without racing the next one.  The copy costs a memcpy per frame
+         * and buys a guarantee that what reaches the screen is always one
+         * whole frame. */
+        memcpy(w->front, w->back, (size_t)w->back_w * w->back_h * 4u);
+    }
+    __asm__ volatile ("" ::: "memory");
+    w->updating = 0;
+    w->content_dirty = 1;
+}
+
 int gui_blit(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
              const uint32_t *src, uint32_t src_stride) {
     if (!win_alive(wid) || !src) return -1;
@@ -1099,6 +1161,10 @@ static void blit_window_decor(const gui_win_t *win) {
 /* ---- Window content blitting (optimised with memcpy rows) ---- */
 
 static void blit_window_content(const gui_win_t *win) {
+    /* Draw the last complete frame when the window is double-buffered,
+     * otherwise the live buffer exactly as before. */
+    const uint32_t *pixels = win->front ? win->front : win->back;
+
     int32_t cx = content_x(win);
     int32_t cy = content_y(win);
     int32_t fw = (int32_t)gfx_get_width();
@@ -1137,8 +1203,8 @@ static void blit_window_content(const gui_win_t *win) {
 
     for (uint32_t row = 0; row < copy_h; row++) {
         for (uint32_t col = 0; col < copy_w; col++) {
-            uint32_t pixel = win->back[(src_y + (int32_t)row) * win->back_w +
-                                       (src_x + (int32_t)col)];
+            uint32_t pixel = pixels[(src_y + (int32_t)row) * win->back_w +
+                                    (src_x + (int32_t)col)];
             gfx_putpixel((uint32_t)(dst_x + (int32_t)col),
                          (uint32_t)(dst_y + (int32_t)row), pixel);
         }

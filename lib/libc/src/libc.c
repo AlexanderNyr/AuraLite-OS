@@ -1789,11 +1789,61 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f) {
     char *p = (char *)ptr;
     size_t total = size * nmemb;
     size_t got = 0;
-    while (got < total) {
-        int c = fgetc(f);
-        if (c == EOF) break;
-        p[got++] = (char)c;
+
+    /* Block copy, not a byte-at-a-time fgetc() loop.
+     *
+     * This used to be `while (got < total) p[got++] = fgetc(f);`, which is
+     * correct and catastrophically slow: one function call, one ungot
+     * check, one buffer-bounds check and one refill test PER BYTE.  With
+     * BUFSIZ at 1024 that is ~29 million iterations to read a 28 MB file,
+     * and it is why DOOM took 63 seconds to start -- 37 of them inside
+     * R_Init, which pulls every wall texture out of the IWAD one lump at
+     * a time.
+     *
+     * Three paths, in the order they pay off:
+     *   1. Drain whatever is already buffered with a single memcpy.
+     *   2. For a request still larger than the buffer, read() straight
+     *      into the caller's memory and skip the bounce entirely -- this
+     *      is the one that matters for WAD lumps, which are far bigger
+     *      than BUFSIZ.
+     *   3. Otherwise refill the buffer and go round again.
+     */
+    if (f->ungot != -1) {
+        p[got++] = (char)f->ungot;
+        f->ungot = -1;
     }
+
+    while (got < total) {
+        /* 1. Anything already in the buffer. */
+        int avail = f->bufcap - f->readpos;
+        if (avail > 0) {
+            size_t want = total - got;
+            size_t take = ((size_t)avail < want) ? (size_t)avail : want;
+            memcpy(p + got, f->buf + f->readpos, take);
+            f->readpos += (int)take;
+            got += take;
+            continue;
+        }
+
+        /* 2. Big remainder: bypass the buffer completely. */
+        size_t want = total - got;
+        if (!f->buf) { f->buf = f->ibuf; f->bufsz = BUFSIZ; }
+        if (want >= (size_t)f->bufsz) {
+            f->dir = 1;
+            ssize_t n = read(f->fd, p + got, want);
+            if (n <= 0) {
+                if (n == 0) f->flags |= FILE_EOF;
+                else        f->flags |= FILE_ERR;
+                break;
+            }
+            got += (size_t)n;
+            continue;
+        }
+
+        /* 3. Small remainder: refill and loop. */
+        if (stream_fill(f) == 0) break;
+    }
+
     return got / size;
 }
 

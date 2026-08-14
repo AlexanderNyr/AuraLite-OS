@@ -221,6 +221,9 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
         uint32_t *row = (uint32_t *)kmalloc((uint64_t)w * 4ull);
         if (!row) return (uint64_t)-1;
 
+        /* One bracket around the WHOLE frame, not around each row. */
+        gui_frame_begin((int)a2);
+
         int rc = 0;
         for (uint32_t r = 0; r < h; r++) {
             uintptr_t src_row = (uintptr_t)args.src + (uintptr_t)r * stride * 4u;
@@ -236,6 +239,8 @@ uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
                 gui_blit_alpha((int)a2, x, y + (int32_t)r, w, 1, row, w);
             }
         }
+
+        gui_frame_end((int)a2);
 
         kfree(row);
         return (uint64_t)rc;

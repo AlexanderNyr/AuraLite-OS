@@ -279,6 +279,8 @@ int gui_draw_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_
 int gui_draw_line(int wid, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t color);
 int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color);
 int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color);
+void gui_frame_begin(int wid);
+void gui_frame_end(int wid);
 int gui_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
              const uint32_t *src, uint32_t src_stride);
 
