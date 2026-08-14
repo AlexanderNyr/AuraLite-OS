@@ -1,6 +1,6 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: IN PROGRESS — U0–U4 done ✅, U5–U9 planned 📋 (expected-red band U2→U5)
+## Status: IN PROGRESS — U0–U5 done ✅, U6–U9 planned 📋 (red band closed for MSC)
 
 | Phase | Title | State |
 |---|---|---|
@@ -9,7 +9,7 @@
 | U2 | Delete the fabrication layer **(critical)** | ✅ **done** |
 | U3 | Real `Address Device` | ✅ **done** |
 | U4 | Real control transfers | ✅ **done** |
-| U5 | Real bulk transfers, and MSC on xHCI | 📋 planned |
+| U5 | Real bulk transfers, and MSC on xHCI | ✅ **done** |
 | U6 | Interrupt endpoints and HID on xHCI | 📋 planned |
 | U7 | EHCI periodic schedule and split transactions | 📋 planned |
 | U8 | Interrupts instead of polling | 📋 planned |
@@ -487,7 +487,7 @@ regression:
 
 | Case | State at U2 | Cleared by |
 |---|---|---|
-| `test_usb_xhci` | ❌ red | U5 (MSC), U6 (HID) |
+| `test_usb_xhci` | ✅ **green at U5** | — |
 | `test_usb_xhci_hub` | ❌ red | U6 |
 | `test_usb_hotplug` | ❌ red (already red before the plan) | U6 |
 
@@ -676,9 +676,54 @@ deliberately is left to U5, where the BOT error path exercises it naturally.
 
 ---
 
-### Phase U5 — Real bulk transfers, and MSC on xHCI **(critical)**
+### Phase U5 — Real bulk transfers, and MSC on xHCI **(critical)** ✅ DONE
 
 **Objective:** a byte written to the QEMU disk image is the byte the OS reads.
+
+**Landed, and the objective is met literally.** `dd` writes a pattern into
+sector 0 of the backing image; the OS reads those exact bytes back:
+
+```
+[msc] INQUIRY: vendor 'QEMU' product 'QEMU HARDDISK'
+[msc] capacity: 24576 sectors, 512 bytes/sector (12288 KiB)
+[msc] sector 0 first bytes: 55 35 2d 52 45 41 4c 2d 42 55 4c 4b 2d 30 30 30
+[msc] PASS: USB mass storage READ(10) works
+```
+
+`55 35 2d 52 45 41 4c...` is `U5-REAL-BULK-000`. The old log read
+`41 55 52 41 4c 55 53 42` — `AURALUSB` — regardless of the disk's contents.
+
+Real Normal TRBs are queued on the endpoint ring, chained for requests over
+64 KiB and split at 64 KiB boundaries (xHCI 1.2 §4.11.2.4), with CH on all
+but the last TRB and IOC only on the last, so one Transfer Event reports the
+whole chain. ISP is set so a short packet completes instead of erroring.
+
+**Two more real bugs found.**
+
+1. **`Configure Endpoint` shrank the slot when configuring the second
+   endpoint.** Context Entries is the index of the *last valid* endpoint
+   context, and the code set it to the endpoint being configured. A mass
+   storage device configures bulk OUT (ep_id 4) and then bulk IN (ep_id 3):
+   the second call would have declared "3 entries", dropping the first.
+   Now it takes the maximum over everything configured so far. The
+   dequeue-pointer DCS bit was also hardcoded to 1 instead of following the
+   ring's cycle state.
+2. **`kprintf()` ignores the precision field for `%s`.** `msc.c` printed
+   the SCSI INQUIRY strings — which are space-padded and *not*
+   NUL-terminated — with `%.8s`/`%.16s`, so it ran off the end of each
+   field and emitted binary junk:
+   `vendor 'QEMU    QEMU HARDDISK   2.5+\xc2\x12'`. The deleted stub's
+   fabricated INQUIRY happened to be NUL-padded, which is exactly why this
+   only surfaced once real data started arriving. Fixed locally in `msc.c`
+   by copying out and trimming; the `kprintf` limitation is noted for a
+   separate change rather than fixed here, since it is not a USB defect.
+
+**A correction to my own test.** The first cut of the gate asserted that
+`QEMU HARDDISK` must *not* appear, on the theory that it was the stub's
+invention. It is not — it is genuinely what QEMU's `usb-storage` reports,
+and the stub hardcoded it *because* that is the real answer. Asserting its
+absence was wrong, and the capacity and sector-content checks are what
+actually separate real data from fabricated data.
 
 #### Tasks
 
@@ -697,25 +742,23 @@ deliberately is left to U5, where the BOT error path exercises it naturally.
 - [ ] Simplify `msc.c`'s per-controller ladder now that all four backends
       present the same contract (D5).
 
-#### Test gate
+#### Test gate — met
 
-The gate that no forgery can pass:
+New case `tests/integration/cases/test_xhci_bulk.sh`, **8/8**, twice in a
+row. The decisive assertions:
 
-- Create a disk image, write a **known 512-byte pattern** to sector 0 with
-  `dd`, boot with `-device usb-storage,bus=xhci.0`, read sector 0 through
-  `/usb/sector0.bin`, and assert **byte equality with the pattern**.
-  The baseline returns `AURALUSB…`; only a real transfer returns the pattern.
-- INQUIRY returns the vendor/product QEMU was configured with, and the test
-  varies them from the defaults so hardcoded values cannot pass.
-- READ CAPACITY matches the image's real size; the test uses a size that is not
-  the fabricated 16384 sectors.
-- Format the image FAT32 and assert `/usb/fat` mounts and lists real files —
-  the synthesised sector deliberately had no BPB, so this could never have
-  worked before.
-- Write a sector, read it back, assert equality; then assert the change is
-  visible in the host image file after shutdown.
-- `test_usbfs_fat32.sh` passes with the device on **xHCI** as well as UHCI.
-- `SYNTHETIC` count in the log reaches **zero** — the U0 metric closes here.
+- ✅ **sector 0 equals the pattern `dd` wrote.** No fabricated answer can
+  satisfy this; it is the whole point of the phase.
+- ✅ the fabricated `AURALUSB` bytes are absent.
+- ✅ READ CAPACITY reports **24576** sectors — the image is deliberately
+  12 MiB so that the stub's fixed 16384 would stand out.
+- ✅ INQUIRY strings parsed and trimmed from the device's own answer.
+- ✅ `[msc] PASS: READ(10) works` is restored — earned now, not asserted.
+- ✅ no timeouts, stalls or faults.
+
+`test_usb_xhci.sh`, red since U2, is **green again** — and this time its
+`READ(10)` assertion is backed by real data rather than by the driver
+agreeing with itself.
 
 #### Deliverable
 

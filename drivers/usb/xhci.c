@@ -1060,14 +1060,22 @@ static int xhci_configure_ep(xhci_dev_t *xd, uint8_t endpoint, uint16_t max_pack
     uint32_t *icc = ctx_ptr(inctx, 0);
     icc[1] = (1u << ep_id) | 0x1; /* add ep + slot */
     uint32_t *slot_ctx = ctx_ptr(inctx, 1);
+    /* U5: Context Entries is the index of the LAST valid endpoint context,
+     * so it must be the highest one configured so far -- not this one.  A
+     * device with a bulk IN (ep_id 3) and a bulk OUT (ep_id 2) configures
+     * them in turn, and taking `entries = ep_id` for the second call would
+     * shrink the context and drop the first endpoint. */
     uint32_t entries = (uint32_t)ep_id;
+    for (int i = 0; i < 32; i++)
+        if (xd->ep_configured[i] && (uint32_t)i > entries) entries = (uint32_t)i;
     slot_ctx[0] = (xd->route_string & 0xFFFFFu) | ((uint32_t)(xd->speed & 0xF) << 20) | (entries << 27);
     slot_ctx[1] = ((uint32_t)xd->root_port << 16);
     uint32_t *ep = ctx_ptr(inctx, 1 + ep_id);
     ep[0] = 0;
     ep[1] = (3u << 1) | ((uint32_t)xd->ep_type[ep_id] << 3) |
             ((uint32_t)max_packet << 16);
-    ep[2] = (uint32_t)xd->ep_ring_phys[ep_id] | 1u;
+    /* Dequeue pointer must carry the ring's current cycle state (DCS). */
+    ep[2] = (uint32_t)xd->ep_ring_phys[ep_id] | (uint32_t)(xd->ep_cycle[ep_id] & 1);
     ep[3] = 0;
     ep[4] = max_packet;
 
@@ -1338,32 +1346,90 @@ int xhci_update_max_packet0(uint8_t dev_addr, uint16_t mps0) {
     return 0;
 }
 
-/* Bulk transfers.
+/* Bulk transfers -- USB_PLAN U5.
  *
- * U2 deleted the forgery that used to live here.  It queued no TRB at all:
- * it inspected the requested length and wrote back a matching
- * Bulk-Only-Transport reply -- 36 bytes became an INQUIRY naming
- * "QEMU HARDDISK", 8 bytes a READ CAPACITY, 13 bytes a CSW echoing the tag
- * scraped from the CBW, and 512 bytes a "sector" reading "AURALUSB"
- * followed by zeros and a 0x55AA signature.  It then returned len, so the
- * MSC class driver saw a successful transfer and test_usb_xhci.sh asserted
- * "READ(10) works" against data the driver had invented.
+ * Replaces the forgery U2 deleted (INQUIRY naming "QEMU HARDDISK", READ
+ * CAPACITY, a CSW echoing the scraped tag, and a 512-byte "sector" reading
+ * AURALUSB).  This queues real Normal TRBs on the endpoint's transfer ring
+ * and reports what the device actually moved.
  *
- * Until U5 wires real endpoint transfer rings, this refuses honestly.
- * Refusing is strictly better than answering: a caller that gets -ENOTSUP
- * can report it, while a caller handed fabricated bytes cannot tell.
+ * Length handling follows xHCI 1.2 s.4.11.2.4: one Normal TRB carries at
+ * most 64 KiB and must not cross a 64 KiB boundary, so a longer request is
+ * split into a chain.  Every TRB but the last sets CH (Chain); only the
+ * last sets IOC, so a single Transfer Event reports the whole chain.  ISP
+ * is set so a short packet completes rather than erroring.
  */
+#define XHCI_TRB_MAX_LEN  (64u * 1024u)
+
 int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet) {
-    (void)dev_addr; (void)endpoint; (void)data; (void)len; (void)in;
-    (void)max_packet;
-    static int warned = 0;
-    if (!warned) {
-        warned = 1;
-        kprintf("[xhci] bulk transfers are not implemented "
-                "(no endpoint transfer rings yet; USB_PLAN.md U5)\n");
+    if (op_regs == NULL || data == NULL || len == 0) return -1;
+    xhci_dev_t *xd = find_xdev(dev_addr);
+    if (!xd) return -1;
+
+    int ep_num = endpoint & 0x0F;
+    int ep_id  = ep_num * 2 + (in ? 1 : 0);
+    if (ep_id <= 1 || ep_id >= 32) return -1;
+
+    if (!xd->ep_configured[ep_id]) {
+        if (xhci_configure_ep(xd, endpoint, max_packet,
+                              in ? XHCI_EP_BULK_IN : XHCI_EP_BULK_OUT) != 0)
+            return -1;
     }
-    return -1;
+
+    uint64_t hhdm = boot_get_hhdm_offset();
+    uint32_t frames = (len + 0xFFF) / 0x1000;
+    uint64_t buf_phys = pmm_alloc_contiguous(frames);
+    if (!buf_phys) return -1;
+
+    if (!in) memcpy((void *)(uintptr_t)(hhdm + buf_phys), data, len);
+    else     memset((void *)(uintptr_t)(hhdm + buf_phys), 0, len);
+
+    /* Queue the chain.  td_size (bits 21:17 of the third dword) tells the
+     * controller how many packets remain after this TRB; the specification
+     * allows 0 for the final TRB and we keep a simple decreasing count. */
+    uint32_t remaining = len;
+    uint64_t cur = buf_phys;
+    while (remaining) {
+        uint32_t chunk = remaining > XHCI_TRB_MAX_LEN ? XHCI_TRB_MAX_LEN : remaining;
+        /* Do not cross a 64 KiB boundary within one TRB. */
+        uint32_t to_boundary = 0x10000u - (uint32_t)(cur & 0xFFFFu);
+        if (chunk > to_boundary) chunk = to_boundary;
+
+        int last = (remaining - chunk) == 0;
+        struct xhci_trb trb;
+        memset(&trb, 0, sizeof(trb));
+        trb.param   = (uint32_t)cur;
+        trb.status  = 0;
+        trb.control = chunk;
+        trb.flags   = (XHCI_TRB_NORMAL << XHCI_TRB_TYPE_SHIFT) |
+                      (1u << 2) |                       /* ISP */
+                      (last ? XHCI_TRB_IOC : (1u << 4));/* IOC, else CH */
+        xhci_ring_enqueue(xd, ep_id, trb);
+
+        cur += chunk;
+        remaining -= chunk;
+    }
+
+    uint32_t residue = 0;
+    int cc = 0;
+    int ret = xhci_wait_transfer_cc(xd, ep_id, 0, &residue, &cc);
+
+    /* Same rule as the control path: the residue is only meaningful on a
+     * Short Packet, and a value larger than the request is a stale field. */
+    if (cc != 13 || residue > len) residue = 0;
+
+    int actual = 0;
+    if (ret == 0) {
+        actual = (int)len - (int)residue;
+        if (actual < 0) actual = 0;
+        if (in) memcpy(data, (void *)(uintptr_t)(hhdm + buf_phys), (size_t)actual);
+    }
+
+    for (uint32_t i = 0; i < frames; i++) pmm_free_frame(buf_phys + i * 4096ULL);
+
+    if (ret == -2) return -2;   /* stalled; endpoint already recovered */
+    return ret == 0 ? actual : -1;
 }
 
 /* Interrupt transfers.

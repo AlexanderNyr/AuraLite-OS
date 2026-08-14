@@ -26,7 +26,12 @@ il_run_qemu "$LOG" 40 \
     -drive "file=$USB,format=raw,if=none,id=xhcistick" \
     -device "usb-storage,bus=xhci.0,drive=xhcistick"
 
-il_assert_grep "$LOG" "\[xhci\] addressed device" "xHCI Address Device command works"
+# USB_PLAN U3 renamed this line.  It used to read "addressed device ...
+# (FAKE)" and was printed by a driver that never issued Address Device at
+# all; it now reads "slot N addressed (... Slot State=Addressed)" and is
+# only printed after the controller has confirmed the state it wrote.
+il_assert_grep "$LOG" "\[xhci\] slot . addressed .*Slot State=Addressed" \
+    "xHCI Address Device command works"
 il_assert_grep "$LOG" "\[usb\] addr .*xHCI.*Mass Storage" "xHCI MSC enumerated"
 il_assert_grep "$LOG" "\[usb\] addr .*xHCI.*HID" "xHCI HID enumerated"
 il_assert_grep "$LOG" "\[hid\] keyboard ready" "xHCI HID keyboard ready"

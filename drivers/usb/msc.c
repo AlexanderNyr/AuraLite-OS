@@ -280,8 +280,21 @@ static int msc_probe_device(usb_device_t *dev, int hotplug) {
         kprintf("[msc] INQUIRY failed\n");
         return -1;
     }
-    kprintf("[msc] INQUIRY: vendor '%.8s' product '%.16s'\n",
-            inquiry + 8, inquiry + 16);
+    /* SCSI INQUIRY strings are space-padded and NOT NUL-terminated: vendor
+     * is 8 bytes at offset 8, product 16 bytes at offset 16.  This used to
+     * print them with "%.8s"/"%.16s", but kernel/lib/kprintf.c ignores the
+     * precision field for %s -- so it ran off the end of each field and
+     * printed the rest of the buffer, including binary junk:
+     *   vendor 'QEMU    QEMU HARDDISK   2.5+\xc2\x12'
+     * The fabricated INQUIRY of the deleted stub happened to be
+     * NUL-padded, which is why this only became visible once U5 started
+     * reading real data.  Copy out and terminate explicitly. */
+    char vendor[9], product[17];
+    memcpy(vendor, inquiry + 8, 8);   vendor[8] = 0;
+    memcpy(product, inquiry + 16, 16); product[16] = 0;
+    for (int i = 7; i >= 0 && vendor[i] == ' '; i--) vendor[i] = 0;
+    for (int i = 15; i >= 0 && product[i] == ' '; i--) product[i] = 0;
+    kprintf("[msc] INQUIRY: vendor '%s' product '%s'\n", vendor, product);
 
     uint8_t cap[8];
     scsi_read_capacity(cmd);
@@ -382,17 +395,11 @@ void msc_self_test(void) {
     }
     kprintf("\n");
 
-    /* USB_PLAN U0: on xHCI these bytes did not come from the disk.
-     * xhci_bulk_transfer() fabricates the whole Bulk-Only-Transport
-     * exchange, and the "sector" it returns reads "AURALUSB" regardless of
-     * what the backing image contains -- so printing PASS here asserted
-     * that a read worked when nothing had been read.  Say so instead; U5
-     * makes this a real PASS by wiring actual transfer rings. */
-    if (msc_dev && msc_dev->controller == USB_CTRL_XHCI) {
-        kprintf("[msc] SYNTHETIC: the bytes above are fabricated by the xHCI "
-                "stub, not read from the device (USB_PLAN.md U5)\n");
-        kprintf("[msc] SKIP: READ(10) not verified on xHCI\n");
-        return;
-    }
+    /* U0 downgraded this to SKIP on xHCI, because the bytes printed above
+     * were fabricated by the transfer stub rather than read from the disk.
+     * U5 replaced that stub with real Normal TRBs on the endpoint ring, so
+     * the verdict is earned again on every controller.  test_xhci_bulk.sh
+     * proves it by writing a known pattern with dd and requiring these
+     * exact bytes back. */
     kprintf("[msc] PASS: USB mass storage READ(10) works\n");
 }
