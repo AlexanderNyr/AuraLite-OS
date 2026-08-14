@@ -30,7 +30,21 @@
 /* Keep low boot-critical memory out of the allocator.  This covers the BIOS
  * loader, boot_info_t, the loaded kernel image, scratch buffers, and the page
  * tables built by Stage 2 at 16 MiB. */
-#define PMM_EARLY_BOOT_RESERVE (32ULL * MIB)
+/* Reserve the low 40 MiB for boot-critical data the loader placed there.
+ *
+ * The BIOS Stage 2 layout puts initrd.tar at 24 MiB
+ * (INITRD_LOAD_PHYS in boot/bios/stage2/stage2_start.asm), so the reserve
+ * ceiling is what caps the archive: at 32 MiB the slot was exactly 8 MiB,
+ * and the initrd had grown to within ~12 KiB of that, so a single added
+ * userspace binary (or merely a compiler that emits slightly larger code
+ * on another host) overflowed it and failed `make iso` in CI.  40 MiB
+ * gives the archive a 16 MiB slot -- roughly double the current 8.0 MiB
+ * -- while still costing well under 10% of the smallest configuration we
+ * boot (512 MiB).  Everything else living in the reserve (the SMP
+ * trampoline at 0x7000/0x8000, the kernel image at 1 MiB, its staging
+ * buffer at 2 MiB, and the boot page tables at 16 MiB) sits below 24 MiB
+ * and is unaffected. */
+#define PMM_EARLY_BOOT_RESERVE (40ULL * MIB)
 
 struct pmm_state {
     uint8_t  *bitmap;             /* HHDM-mapped pointer to the bitmap        */

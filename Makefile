@@ -1369,7 +1369,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
-# Binaries are stripped into the image: the BIOS boot path reserves an 8 MiB
+# Binaries are stripped into the image: the BIOS boot path reserves a 16 MiB
 # slot for initrd.tar (see mkisoimage_dual.sh) and the full userland with
 # symbol tables no longer fits.  Unstripped ELFs stay in build/user for
 # debugging; nothing in the OS reads user-space symtabs at runtime.
@@ -1403,7 +1403,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	@printf 'X' | dd of=$(INITRD_DIR)/pkg/broken.apkg bs=1 seek=200 conv=notrunc \
 	              status=none
 # The PE32+ loader fixture (W32-3).  Not stripped: `strip` does not handle PE,
-# and at 3 KiB it costs nothing in the 8 MiB initrd slot.
+# and at 3 KiB it costs nothing in the 16 MiB initrd slot.
 	@cp $(PETEST_EXE) $(INITRD_DIR)/tests/petest.exe
 # The same image with its subsystem field forced to EFI_APPLICATION (10), so
 # the integration test can prove a firmware binary is REFUSED rather than run.
@@ -2447,8 +2447,18 @@ DOOM_CFLAGS := $(USER_CFLAGS) -w -I lib/libauragui/include -I $(DOOM_SRC)
 # runs rather than when the Makefile is parsed.
 DOOM_UPSTREAM_OBJS = $(shell sed -n 's/^SRC_DOOM = //p' \
                        $(DOOM_SRC)/Makefile 2>/dev/null)
+# `dummy.o` is NOT filtered out, and that is deliberate.  Upstream's
+# dummy.c is not a placeholder: it holds the definitions of `drone` and
+# `net_client_connected` for builds without net_client.c (which
+# doomgeneric does not ship).  Dropping it linked cleanly until upstream
+# commit dcb7a8d ("boolean fix"), after which the link fails with
+# `undefined symbol: drone` / `net_client_connected` from d_loop.c and
+# d_main.c.  Its only other content, I_InitTimidityConfig(), is guarded by
+# `#ifndef FEATURE_SOUND` and the sole competing definition lives in
+# i_sdlmusic.c, which SRC_DOOM does not list -- so there is no duplicate
+# symbol to avoid.  Only the xlib backend is genuinely ours to replace.
 DOOM_ENGINE_SRCS = $(patsubst %.o,$(DOOM_SRC)/%.c, \
-                     $(filter-out doomgeneric_xlib.o dummy.o, \
+                     $(filter-out doomgeneric_xlib.o, \
                        $(DOOM_UPSTREAM_OBJS)))
 
 doom: $(DOOM_ELF)
@@ -2463,7 +2473,7 @@ $(DOOM_ELF): $(DOOM_SRC) doom/doomgeneric_auralite.c $(USER_COMMON)             
 
 # The WAD travels on its own FAT32 disk, not in the initrd.
 #
-# Not a preference -- a constraint.  The BIOS loader reserves an 8 MiB slot
+# Not a preference -- a constraint.  The BIOS loader reserves a 16 MiB slot
 # for initrd.tar (tools/mkisoimage_dual.sh enforces it), the initrd is
 # already ~7.6 MiB, and the smallest Freedoom IWAD is 22 MiB.  The kernel
 # already mounts a FAT32 volume found at LBA 64 of the first AHCI disk as
@@ -2482,7 +2492,7 @@ $(DOOM_DISK): $(DOOM_WAD) $(DOOM_ELF)
 	@mcopy -i $(DOOM_DIR)/fatpart.img $(DOOM_WAD) ::/doom/freedoom1.wad
 # The binary rides on the same disk as its data, rather than in the initrd.
 # Two reasons, and the first is decisive: doom.elf is ~490 KiB and the
-# initrd is already ~7.6 MiB of an 8 MiB BIOS-loader budget that
+# initrd is already ~8.0 MiB of a 16 MiB BIOS-loader budget that
 # mkisoimage_dual.sh enforces, so it simply does not fit.  The second is
 # that it keeps GPL-2.0-derived build output out of the default image
 # entirely -- `make iso` produces exactly what it did before.

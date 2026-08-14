@@ -30,7 +30,8 @@ org  0x8000
 ;   0x00100000  Loaded kernel PT_LOAD segments.
 ;   0x00200000  kernel.elf staging buffer (BL4, temporary).
 ;   0x01000000  Page tables (BL4).
-;   0x01800000  initrd.tar (up to 8 MiB, inside PMM's early reserve).
+;   0x01800000  initrd.tar (up to 16 MiB, inside PMM's early reserve
+;               which the kernel raised to 40 MiB -- see kernel/mm/pmm.c).
 ;
 ; The kernel image lives at 0x100000 because the kernel is linked at
 ; virtual 0xFFFFFFFF80100000 and the higher-half mapping (built in BL4)
@@ -38,7 +39,7 @@ org  0x8000
 BOOT_INFO_PHYS       equ 0x00010000
 STAGE2_SCRATCH_PHYS  equ 0x00011000
 INITRD_LOAD_PHYS     equ 0x01800000
-INITRD_MAX_BYTES     equ 0x00800000
+INITRD_MAX_BYTES     equ 0x01000000
 
 ; Segment/offset used to access the boot_info block from 16-bit code.
 ; 0x1000:0000 = physical 0x00010000.  Fields inside the ~9 KiB struct are
@@ -354,7 +355,7 @@ msg_elf_ok:      db "[BL4] ELF PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
 msg_elf_fail:    db "[BL4] ELF parse FAILED", 0x0D, 0x0A, 0
 msg_initrd_ok:   db "[BL4] initrd.tar loaded to 0x01800000", 0x0D, 0x0A, 0
 msg_initrd_missing: db "[BL4] initrd.tar not found; continuing", 0x0D, 0x0A, 0
-msg_initrd_too_large: db "[BL4] initrd.tar exceeds 8 MiB; continuing", 0x0D, 0x0A, 0
+msg_initrd_too_large: db "[BL4] initrd.tar exceeds 16 MiB; continuing", 0x0D, 0x0A, 0
 msg_initrd_load_fail: db "[BL4] initrd.tar load FAILED; continuing", 0x0D, 0x0A, 0
 msg_pt_ok:       db "[BL4] page tables built at 0x01000000", 0x0D, 0x0A, 0
 msg_lm_go:       db "[BL4] entering long mode; jumping to kernel _start", 0x0D, 0x0A, 0

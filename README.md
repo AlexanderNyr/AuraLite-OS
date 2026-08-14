@@ -763,6 +763,12 @@ Start here:
 - [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
 - [`REALINTERNET_PLAN.md`](REALINTERNET_PLAN.md) — real internet access: ECDSA P-256 (X1), usable HTTPS client (X2), then DNS/fragmentation/TCP/IPv6.
 - [`FIXES_PLAN.md`](FIXES_PLAN.md) — repair plan for known defects (planned), ranked by danger rather than by ease. Adds nothing; fixes what is broken.
+- [`USB_PLAN.md`](USB_PLAN.md) — full USB support (planned, U0–U9). Mostly
+  repair: UHCI/OHCI/EHCI move real data, but xHCI's event ring is never read,
+  so its control/bulk/interrupt paths **fabricate** descriptors and SCSI
+  replies — which is why `test_usb_xhci.sh` passes against invented data while
+  `test_usb_hotplug.sh` fails. Deletes the synthesis, then builds the real
+  transfer engine.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
 

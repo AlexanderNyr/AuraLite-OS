@@ -2,6 +2,78 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [USB_PLAN + two CI build fixes] 2026-08-14
+
+Adds the full-USB plan and repairs the two failures that break `make iso` and
+`make build/doom/doomdisk.img` in CI.
+
+- **`USB_PLAN.md` (new, phases U0-U9).** A plan for real USB support, in the
+  structure of `FIXES_PLAN.md` / `WIN32_PLAN.md`: dependency-ordered phases,
+  a definition of done and a test gate for each, one `.patch` per phase.
+
+  It is a repair plan, not a feature plan. UHCI, OHCI and EHCI move real
+  data; **xHCI does not**. `xhci_poll_event_type()` (`drivers/usb/xhci.c`)
+  unconditionally returns `-1`, so the event ring is never read and no
+  command or transfer can ever complete. Three functions paper over that by
+  fabricating answers: `xhci_control_transfer()` forges descriptors and picks
+  which device to impersonate with `dev_addr % 3`; `xhci_bulk_transfer()`
+  forges INQUIRY/READ CAPACITY/CSW and a sector reading `AURALUSB`;
+  `xhci_address_device()` invents slot IDs from a `static fake_slot`
+  counter.
+
+  The consequence is the reason this is ranked critical: **`test_usb_xhci.sh`
+  passes 8/8 against invented data.** It asserts `READ(10) works` while the
+  log shows `41 55 52 41 4c 55 53 42` — the fabricated string, not the disk
+  image QEMU was given. The suite cannot currently distinguish a working
+  xHCI driver from no driver at all.
+
+  Most of the real implementation is already written and merely unreachable:
+  clang reports `xhci.c:887:22: warning: code will never be executed` for the
+  genuine Setup/Data/Status TRB path, shadowed by a `return data_len;` on the
+  line above. U0 makes the log honest, U1 lands the event ring, U2 deletes
+  the forgery *before* the replacements are written (so the tests become a
+  signal instead of false confidence), U3-U6 build the real data path, U7
+  closes EHCI periodic/split transactions, U8 replaces polling with
+  interrupts, U9 finishes hubs, isoc and the documentation.
+
+- **Fix: `make iso` failed with `initrd.tar is 8427520 bytes (BIOS loader max:
+  8 MiB)`.** Not a fluke — the budget was exhausted. BIOS Stage 2 loads the
+  archive at 24 MiB and `PMM_EARLY_BOOT_RESERVE` ended at 32 MiB, so the slot
+  was exactly 8 MiB while the initrd had grown to ~8.0 MiB, roughly 12 KiB
+  short of the ceiling. Any host whose compiler emits marginally larger code
+  overflows it; CI's did, by 39 KiB.
+
+  Raised the reserve to **40 MiB**, giving the archive a **16 MiB** slot
+  (~2x headroom). Everything else in the reserve — the SMP trampoline at
+  `0x7000`/`0x8000`, the kernel at 1 MiB, its staging buffer at 2 MiB and the
+  boot page tables at 16 MiB — sits below 24 MiB and is untouched. The bound
+  is encoded in three places and all three moved together:
+  `PMM_EARLY_BOOT_RESERVE` (`kernel/mm/pmm.c`), `INITRD_MAX_BYTES`
+  (`boot/bios/stage2/stage2_start.asm`) and the build-time check in
+  `tools/mkisoimage_dual.sh`. Cost: 8 MiB of a 512 MiB guest; measured free
+  frames go 122848 -> 120800, exactly the 2048 frames expected. Boots to the
+  shell with 30 PASS / 0 FAIL.
+
+- **Fix: `make build/doom/doomdisk.img` failed with `undefined symbol: drone`
+  and `net_client_connected`.** `DOOM_ENGINE_SRCS` filtered `dummy.o` out of
+  upstream's `SRC_DOOM`. Despite the name, doomgeneric's `dummy.c` is not a
+  placeholder: it carries the definitions of `drone` and
+  `net_client_connected` for builds without `net_client.c`, which
+  doomgeneric does not ship. The link happened to succeed until upstream
+  commit `dcb7a8d` ("boolean fix") and now fails from `d_loop.c`/`d_main.c`.
+
+  Stopped filtering it. Its only other content,
+  `I_InitTimidityConfig()`, is guarded by `#ifndef FEATURE_SOUND`, and the
+  sole competing definition is in `i_sdlmusic.c`, which `SRC_DOOM` does not
+  list — so there is no duplicate symbol. Only the xlib backend is genuinely
+  ours to replace. Verified: 80 engine files compile and `doom.elf` links at
+  588 KiB.
+
+- **Documentation.** `docs/memory_map.md` gains a table of the low-memory
+  early-boot reserve and states which three files must stay in step. The
+  stale "8 MiB initrd slot" comments in `Makefile` and
+  `doom/doomgeneric_auralite.c` are corrected.
+
 ## [REALINTERNET_PLAN X9 — Fit, memory, and an honest statement] 2026-08-10
 
 `REALINTERNET_PLAN.md` phase X9 (and `INTERNET_PLAN` N9 documentation). The

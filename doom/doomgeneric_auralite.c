@@ -247,7 +247,7 @@ void DG_SetWindowTitle(const char *title) {
  * completely unhelpful to someone who just typed `run doom`.
  *
  * The default path is on /fat rather than in the initrd, and that is forced
- * rather than chosen: the BIOS loader reserves an 8 MiB slot for
+ * rather than chosen: the BIOS loader reserves a 16 MiB slot for
  * initrd.tar (tools/mkisoimage_dual.sh checks it and fails the build), the
  * initrd is already 7.6 MiB, and the smallest Freedoom IWAD is 22 MiB. So
  * the WAD travels on a separate FAT32 disk that the kernel mounts at /fat.

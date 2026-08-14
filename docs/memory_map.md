@@ -60,6 +60,28 @@ The kernel latches it in `boot_info_init()` and reads it through the
 | FB     | phys `0xFD000000` (QEMU stdvga)| framebuffer fields          |
 | Initrd | phys `0x01800000` (QEMU 512M)  | `boot_get_initrd()`         |
 
+### The low-memory early-boot reserve
+
+`pmm_init()` marks the first **40 MiB** of physical RAM as permanently used
+(`PMM_EARLY_BOOT_RESERVE`, `kernel/mm/pmm.c`) so the allocator can never hand
+out a frame the loader is still using:
+
+| Physical | Occupant |
+|---|---|
+| `0x00007000` / `0x00008000` | SMP AP trampoline data / code (must be < 1 MiB for SIPI) |
+| `0x00010000` | `boot_info_t` handoff (~9 KiB) |
+| `0x00100000` | Kernel `PT_LOAD` segments |
+| `0x00200000` | `kernel.elf` staging buffer (BL4, temporary) |
+| `0x01000000` | Boot page tables (BL4) |
+| `0x01800000` | `initrd.tar` — **16 MiB slot**, ends at the 40 MiB ceiling |
+
+The reserve ceiling is what caps the initrd. It was 32 MiB, giving the archive
+exactly 8 MiB; the initrd had grown to ~8.0 MiB, so a marginally larger build
+on another host overflowed it and failed `make iso`. The bound is encoded in
+three places that must stay in step: `PMM_EARLY_BOOT_RESERVE`,
+`INITRD_MAX_BYTES` (`boot/bios/stage2/stage2_start.asm`) and the build-time
+check in `tools/mkisoimage_dual.sh`.
+
 The HHDM is a direct map of **all physical RAM** at a fixed virtual offset.
 The kernel reaches any physical address as `physical + HHDM_offset`.
 
