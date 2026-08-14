@@ -1100,20 +1100,91 @@ static int xhci_ring_enqueue(xhci_dev_t *xd, int ep_id, struct xhci_trb trb) {
     return 0;
 }
 
-static int xhci_wait_transfer(uint8_t slot, int ep_id, int silent_timeout) {
-    db_wr(slot, (uint32_t)ep_id);
+/* Recover a halted endpoint (USB_PLAN U4).
+ *
+ * A Stall (cc=6) leaves the endpoint in the Halted state: every subsequent
+ * TRB on that ring is refused until the driver clears it.  Without this a
+ * single refused request -- and a device is entitled to refuse, e.g. a
+ * descriptor index it does not have -- kills the endpoint for good.
+ *
+ * Reset Endpoint clears Halted; Set TR Dequeue Pointer then tells the
+ * controller where to resume, because the ring's dequeue pointer is left
+ * pointing at the TRB that faulted.  We resume at our own enqueue index
+ * with the current cycle state (xHCI 1.2 s.4.6.8, s.4.6.10).
+ */
+static int xhci_recover_endpoint(xhci_dev_t *xd, int ep_id) {
+    struct xhci_trb cmd, ev;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.flags = (XHCI_TRB_CMD_RESET_ENDPOINT << XHCI_TRB_TYPE_SHIFT) |
+                ((uint32_t)ep_id << 16) | ((uint32_t)xd->slot_id << 24);
+    if (xhci_cmd_submit(cmd, &ev) != 0) {
+        kprintf("[xhci] Reset Endpoint failed slot=%u ep=%d\n", xd->slot_id, ep_id);
+        return -1;
+    }
+
+    uint64_t deq = xd->ep_ring_phys[ep_id] +
+                   (uint64_t)xd->ep_idx[ep_id] * sizeof(struct xhci_trb);
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.param = (uint32_t)deq | (uint32_t)(xd->ep_cycle[ep_id] & 1);
+    cmd.status = 0;
+    cmd.flags = (XHCI_TRB_CMD_SET_TR_DEQUEUE << XHCI_TRB_TYPE_SHIFT) |
+                ((uint32_t)ep_id << 16) | ((uint32_t)xd->slot_id << 24);
+    if (xhci_cmd_submit(cmd, &ev) != 0) {
+        kprintf("[xhci] Set TR Dequeue failed slot=%u ep=%d\n", xd->slot_id, ep_id);
+        return -1;
+    }
+    kprintf("[xhci] endpoint recovered after stall: slot=%u ep=%d\n",
+            xd->slot_id, ep_id);
+    return 0;
+}
+
+/* Wait for a transfer to complete.
+ *
+ * U4: the completion code and the residue both matter and both used to be
+ * discarded.  `*residue_out` receives the Transfer Length field of the
+ * event -- the number of bytes NOT transferred -- which is how a short
+ * packet reports its real length.  Returns 0 on success (including a short
+ * packet), -2 on stall, -1 otherwise.
+ */
+static int xhci_wait_transfer_cc(xhci_dev_t *xd, int ep_id, int silent,
+                                 uint32_t *residue_out, int *cc_out) {
+    if (residue_out) *residue_out = 0;
+    if (cc_out) *cc_out = 0;
+    db_wr(xd->slot_id, (uint32_t)ep_id);
     struct xhci_trb ev;
     if (xhci_poll_event_type(XHCI_TRB_TRANSFER_EVENT, &ev) != 0) {
-        if (!silent_timeout) kprintf("[xhci] transfer timeout slot=%u ep=%d\n", slot, ep_id);
+        if (!silent) kprintf("[xhci] transfer timeout slot=%u ep=%d\n",
+                             xd->slot_id, ep_id);
         return -1;
     }
     uint32_t cc = trb_cc(&ev);
-    if (cc != 1 && cc != 13) { /* 13 short packet is acceptable */
-        kprintf("[xhci] transfer event cc=%u slot=%u ep=%u\n",
-                cc, ev.flags >> 24, (ev.flags >> 16) & 0x1F);
-        return -1;
+    if (cc_out) *cc_out = (int)cc;
+    /* Transfer Event dword 2 -- `control` in this struct's naming, the same
+     * dword trb_cc() takes the completion code from -- holds the residue in
+     * bits 23:0: the number of bytes NOT transferred.  Only trustworthy on
+     * a Short Packet; see the caller. */
+    if (residue_out) *residue_out = ev.control & 0xFFFFFF;
+
+    if (cc == 1 || cc == 13) return 0;   /* Success, or Short Packet */
+
+    if (cc == 6) {                        /* Stall Error */
+        if (!silent) kprintf("[xhci] endpoint stalled: slot=%u ep=%d\n",
+                             xd->slot_id, ep_id);
+        (void)xhci_recover_endpoint(xd, ep_id);
+        return -2;
     }
-    return 0;
+    if (!silent) kprintf("[xhci] transfer event cc=%u slot=%u ep=%u\n",
+                         cc, ev.flags >> 24, (ev.flags >> 16) & 0x1F);
+    return -1;
+}
+
+static int xhci_wait_transfer(uint8_t slot, int ep_id, int silent_timeout) {
+    xhci_dev_t *xd = NULL;
+    for (int i = 0; i < XHCI_MAX_DEVS; i++)
+        if (xdevs[i].in_use && xdevs[i].slot_id == slot) { xd = &xdevs[i]; break; }
+    if (!xd) return -1;
+    return xhci_wait_transfer_cc(xd, ep_id, silent_timeout, NULL, NULL) == 0 ? 0 : -1;
 }
 
 int xhci_control_transfer(uint8_t dev_addr, int low_speed,
@@ -1123,52 +1194,148 @@ int xhci_control_transfer(uint8_t dev_addr, int low_speed,
     if (op_regs == NULL || setup == NULL) return -1;
     const uint8_t *sb = (const uint8_t *)setup;
 
-    /* U2 removed ~40 lines of descriptor forgery that used to stand here:
-     * hardcoded device/config/string/HID-report descriptors, with the
-     * device's very identity guessed from `dev_addr % 3` (divisible by
-     * three => pretend to be mass storage, otherwise a keyboard or a
-     * mouse).  It returned data_len without queueing a single TRB, and the
-     * `return data_len;` that ended it shadowed the real implementation
-     * below -- clang had been reporting that as
-     * "code will never be executed" for as long as it existed.
-     *
-     * SET_ADDRESS (bRequest 5) is deliberately still short-circuited: on
-     * xHCI addressing is not a control transfer at all but an Address
-     * Device *command*, issued by xhci_address_device().  U3 makes that
-     * real; until then it must not be sent down the wire. */
+    /* SET_ADDRESS is deliberately short-circuited: on xHCI addressing is
+     * not a control transfer at all but an Address Device *command*, issued
+     * by xhci_address_device().  Sending it down the wire would address the
+     * device twice. */
     if (sb[1] == 5 /* USB_SET_ADDRESS */) return 0;
 
     xhci_dev_t *xd = find_xdev(dev_addr);
     if (!xd) return -1;
+
     uint64_t hhdm = boot_get_hhdm_offset();
+    uint32_t data_frames = data_len ? (uint32_t)((data_len + 0xFFF) / 0x1000) : 0;
     uint64_t setup_phys = pmm_alloc_frame();
-    uint64_t data_phys = data_len ? pmm_alloc_contiguous((data_len + 0xFFF) / 0x1000) : 0;
-    if (!setup_phys || (data_len && !data_phys)) return -1;
+    uint64_t data_phys = data_frames ? pmm_alloc_contiguous(data_frames) : 0;
+    if (!setup_phys || (data_frames && !data_phys)) {
+        if (setup_phys) pmm_free_frame(setup_phys);
+        if (data_phys) for (uint32_t i = 0; i < data_frames; i++)
+            pmm_free_frame(data_phys + i * 4096ULL);
+        return -1;
+    }
     memcpy((void *)(uintptr_t)(hhdm + setup_phys), setup, 8);
     if (data_len && data) memcpy((void *)(uintptr_t)(hhdm + data_phys), data, data_len);
+
     int data_in = (sb[0] & 0x80) ? 1 : 0;
     struct xhci_trb trb;
+
+    /* Setup Stage: the 8 setup bytes travel *in* the TRB parameter, and
+     * IDT (bit 6) says so.  TRT = 0 no data, 2 OUT data, 3 IN data. */
     memset(&trb, 0, sizeof(trb));
     uint32_t *sp = (uint32_t *)(uintptr_t)(hhdm + setup_phys);
-    trb.param = sp[0]; trb.status = sp[1]; trb.control = 8;
+    trb.param = sp[0];
+    trb.status = sp[1];
+    trb.control = 8;
     uint32_t trt = data_len ? (data_in ? 3u : 2u) : 0u;
-    trb.flags = (XHCI_TRB_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT) | (1u << 6) | (trt << 16);
+    trb.flags = (XHCI_TRB_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT) |
+                (1u << 6) | (trt << 16);
     xhci_ring_enqueue(xd, 1, trb);
+
+    /* Data Stage.  ISP (bit 2) asks the controller to raise an event on a
+     * short packet instead of treating it as an error -- without it a
+     * device returning less than requested (every variable-length
+     * descriptor read does) looks like a failure.
+     *
+     * NOTE the field naming in `struct xhci_trb`: `param`+`status` are the
+     * two halves of the 64-bit parameter, and the *third* dword -- named
+     * `control` here -- carries the Transfer Length.  Writing the length
+     * into `status` (as an earlier cut of this phase did) leaves the length
+     * zero and makes the buffer pointer nonsense, which QEMU catches as
+     *   usb_packet_copy: Assertion `p->actual_length + bytes <= iov->size'
+     * and aborts. */
     if (data_len) {
         memset(&trb, 0, sizeof(trb));
-        trb.param = (uint32_t)data_phys; trb.status = 0; trb.control = data_len;
-        trb.flags = (XHCI_TRB_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) | (data_in ? (1u << 16) : 0);
+        trb.param = (uint32_t)data_phys;
+        trb.status = 0;
+        trb.control = data_len;
+        trb.flags = (XHCI_TRB_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) |
+                    (1u << 2) |                      /* ISP */
+                    (data_in ? (1u << 16) : 0);      /* DIR */
         xhci_ring_enqueue(xd, 1, trb);
     }
+
+    /* Status Stage: direction is the opposite of the data stage. */
     memset(&trb, 0, sizeof(trb));
     trb.flags = (XHCI_TRB_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT) | XHCI_TRB_IOC |
                 ((data_len == 0 || !data_in) ? (1u << 16) : 0);
     xhci_ring_enqueue(xd, 1, trb);
-    int ret = xhci_wait_transfer(xd->slot_id, 1, 0);
-    if (ret == 0 && data_len && data && data_in) memcpy(data, (void *)(uintptr_t)(hhdm + data_phys), data_len);
-    if (data_phys) for (uint32_t i=0;i<(data_len+0xFFF)/0x1000;i++) pmm_free_frame(data_phys+i*4096ULL);
+
+    uint32_t residue = 0;
+    int cc_out = 0;
+    int ret = xhci_wait_transfer_cc(xd, 1, 0, &residue, &cc_out);
+    /* Sanity-check the residue before believing it.
+     *
+     * It is the count of bytes NOT transferred, so it can never exceed the
+     * request.  QEMU nonetheless reports values from an earlier, larger
+     * transfer on this endpoint: a 34-byte configuration-descriptor read
+     * came back cc=13 residue=214, having followed a 256-byte read.  Taken
+     * literally that is a negative length, and clamping it to zero silently
+     * truncated a perfectly good descriptor -- which is why enumeration
+     * stopped at class=Generic with no interfaces or endpoints parsed.
+     *
+     * A residue larger than the request is therefore not a short packet but
+     * a stale field, and the transfer is treated as complete. */
+    if (cc_out != 13 || residue > (uint32_t)data_len) residue = 0;
+
+    /* U4: honour the residue.  The event reports how many bytes were NOT
+     * transferred, so the actual length is data_len - residue.  Returning
+     * data_len unconditionally (as this did) makes every short read look
+     * full-length, which corrupts any caller that trusts the return value
+     * -- a configuration descriptor read is exactly such a caller. */
+    int actual = 0;
+    if (ret == 0) {
+        actual = (int)data_len - (int)residue;
+        if (actual < 0) actual = 0;
+        if (data_len && data && data_in)
+            memcpy(data, (void *)(uintptr_t)(hhdm + data_phys), (size_t)actual);
+    }
+
+    if (data_phys) for (uint32_t i = 0; i < data_frames; i++)
+        pmm_free_frame(data_phys + i * 4096ULL);
     pmm_free_frame(setup_phys);
-    return ret == 0 ? (int)data_len : -1;
+
+    if (ret == -2) return -2;      /* stalled; endpoint already recovered */
+    return ret == 0 ? actual : -1;
+}
+
+/* Re-program EP0's Max Packet Size after the real bMaxPacketSize0 is known.
+ *
+ * Full-speed devices may use 8, 16, 32 or 64 bytes, and the value only
+ * arrives in the first 8 bytes of the device descriptor -- which must be
+ * read using a guessed size first.  Evaluate Context updates EP0 without
+ * disturbing the rest of the slot (xHCI 1.2 s.4.6.7).  Low/high/super speed
+ * have a fixed EP0 size, so this is a no-op there.
+ */
+int xhci_update_max_packet0(uint8_t dev_addr, uint16_t mps0) {
+    xhci_dev_t *xd = find_xdev(dev_addr);
+    if (!xd || !mps0) return -1;
+    if (xd->speed != XHCI_SPEED_FULL) return 0;
+    if (xd->ep_max_packet[1] == mps0) return 0;
+
+    uint64_t hhdm = boot_get_hhdm_offset();
+    void *inctx = (void *)(uintptr_t)(hhdm + xd->input_ctx_phys);
+    memset(inctx, 0, XHCI_CTX_BYTES);
+    uint32_t *icc = ctx_ptr(inctx, 0);
+    icc[1] = 0x2;                                   /* A1: EP0 only */
+    uint32_t *ep0 = ctx_ptr(inctx, 2);
+    ep0[1] = (3u << 1) | ((uint32_t)XHCI_EP_CONTROL << 3) |
+             ((uint32_t)mps0 << 16);
+    ep0[2] = (uint32_t)xd->ep_ring_phys[1] | (uint32_t)(xd->ep_cycle[1] & 1);
+    ep0[4] = 8;
+
+    struct xhci_trb cmd, ev;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.param = (uint32_t)xd->input_ctx_phys;
+    cmd.flags = (XHCI_TRB_CMD_EVALUATE_CONTEXT << XHCI_TRB_TYPE_SHIFT) |
+                ((uint32_t)xd->slot_id << 24);
+    if (xhci_cmd_submit(cmd, &ev) != 0) {
+        kprintf("[xhci] Evaluate Context failed slot=%u\n", xd->slot_id);
+        return -1;
+    }
+    kprintf("[xhci] EP0 max packet updated %u -> %u (slot %u, full-speed)\n",
+            xd->ep_max_packet[1], mps0, xd->slot_id);
+    xd->ep_max_packet[1] = mps0;
+    return 0;
 }
 
 /* Bulk transfers.

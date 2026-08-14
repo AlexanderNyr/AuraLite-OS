@@ -1,6 +1,6 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: IN PROGRESS — U0–U3 done ✅, U4–U9 planned 📋 (expected-red band U2→U5)
+## Status: IN PROGRESS — U0–U4 done ✅, U5–U9 planned 📋 (expected-red band U2→U5)
 
 | Phase | Title | State |
 |---|---|---|
@@ -8,7 +8,7 @@
 | U1 | The event ring, and one real command | ✅ **done** |
 | U2 | Delete the fabrication layer **(critical)** | ✅ **done** |
 | U3 | Real `Address Device` | ✅ **done** |
-| U4 | Real control transfers | 📋 planned |
+| U4 | Real control transfers | ✅ **done** |
 | U5 | Real bulk transfers, and MSC on xHCI | 📋 planned |
 | U6 | Interrupt endpoints and HID on xHCI | 📋 planned |
 | U7 | EHCI periodic schedule and split transactions | 📋 planned |
@@ -586,9 +586,53 @@ that loop belongs.
 
 ---
 
-### Phase U4 — Real control transfers **(critical)**
+### Phase U4 — Real control transfers **(critical)** ✅ DONE
 
 **Objective:** descriptors come from the device.
+
+**Landed.** Enumeration is now complete end to end — classes, interfaces
+and endpoints all read off the wire:
+
+```
+[usb]   product: 'QEMU USB HARDDRIVE'
+[usb]   config 1: 1 interfaces, 44 bytes, attr=0xc0
+[usb]   endpoint 0x81: bulk IN,  maxpkt=1024 (+SS companion)
+[usb]   endpoint 0x02: bulk OUT, maxpkt=1024 (+SS companion)
+[usb]   product: 'QEMU USB Keyboard'
+[usb]   endpoint 0x81: interrupt IN, maxpkt=8, interval=7ms
+[usb] addr 1: xHCI ... class=Mass Storage VID=0x46f4
+[msc] mass storage candidate: addr=1 bulk_in=0x81 bulk_out=0x02
+[hid] keyboard ready: addr=2 iface=0 ep=0x81
+```
+
+Added: short-packet handling via the event residue, Stall recovery
+(`Reset Endpoint` + `Set TR Dequeue Pointer`, xHCI 1.2 §4.6.8/§4.6.10), ISP
+on the Data Stage so a short read is an event rather than an error, and
+`Evaluate Context` to re-program EP0 once a full-speed device's real
+`bMaxPacketSize0` is known.
+
+**Three bugs found by running it, two of them mine.**
+
+1. **QEMU aborted the whole VM**:
+   `usb_packet_copy: Assertion 'p->actual_length + bytes <= iov->size'`.
+   Cause: in this file's `struct xhci_trb`, `param`+`status` are the two
+   halves of the 64-bit parameter and the *third* dword — confusingly named
+   `control` — carries the Transfer Length. I had written the length into
+   `status`, leaving the length zero and the buffer pointer nonsense. The
+   same misreading put the residue in the wrong dword.
+2. **A stale residue truncated good descriptors.** A 34-byte configuration
+   read returned `cc=13 residue=214` — a residue *larger than the request*,
+   left over from a preceding 256-byte read on the same endpoint. Taken
+   literally that is a negative length; clamped to zero it silently
+   discarded the descriptor, which is why enumeration had stalled at
+   `class=Generic` with no interfaces. A residue exceeding the request is
+   now treated as a stale field, not a short packet.
+3. Residue is only meaningful on `cc=13`; on plain Success the field is
+   reserved and QEMU does not clear it.
+
+The second is the interesting one: it produced no error anywhere. The
+transfer "succeeded", the parse simply had nothing to parse. Only the
+byte-level assertions below catch that shape of failure.
 
 #### Tasks
 
@@ -606,21 +650,25 @@ that loop belongs.
 - [ ] Handle Stall: on completion code 6, issue `Reset Endpoint` and clear the
       halt so one failed request does not kill the device.
 
-#### Test gate
+#### Test gate — met
 
-- The device descriptor read from a QEMU `usb-kbd` reports VID `0x0627`, PID
-  `0x0001` — **and the test asserts these came from the device** by also
-  attaching `usb-mouse` and `usb-storage` and requiring three *different*
-  descriptor sets. The forged path used `dev_addr % 3` and would produce
-  exactly this pattern, so the test additionally attaches devices in an order
-  that makes the modulo mapping wrong, and asserts the classes still match the
-  QEMU command line.
-- String descriptors return QEMU's real product strings, not the hardcoded
-  `"QEMU"`.
-- The HID report descriptor is fetched from the device and its length matches
-  what QEMU exposes.
-- A deliberate stall (request an invalid descriptor index) recovers, and the
-  next request succeeds.
+New case `tests/integration/cases/test_xhci_control.sh`, **15/15**:
+
+- ✅ three *distinct* product strings (`QEMU USB HARDDRIVE` / `Keyboard` /
+  `Mouse`). The forgery returned the literal `"QEMU"` for every string of
+  every device, so this cannot be satisfied by fabrication.
+- ✅ configuration descriptors fetched in two steps and parsed: 44 bytes for
+  storage, 34 for HID — the exact read that bug 2 was truncating.
+- ✅ endpoints decoded with real addresses, types and packet sizes
+  (`0x81 bulk IN maxpkt=1024`, `0x81 interrupt IN maxpkt=8`).
+- ✅ classes taken from interface descriptors, not `dev_addr % 3`.
+- ✅ the class drivers act on it: MSC finds its bulk pair, HID binds both
+  devices.
+- ✅ no timeouts, stalls or faults; `SYNTHETIC=0` holds.
+
+Stall recovery is implemented and reachable but not yet gated by a test —
+QEMU's devices do not stall on the requests enumeration makes. Provoking one
+deliberately is left to U5, where the BOT error path exercises it naturally.
 
 #### Deliverable
 

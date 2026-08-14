@@ -582,6 +582,11 @@ static int enumerate_device(usb_ctrl_type_t ctrl, int port, usb_speed_t speed) {
     dev->iSerial = full_desc.iSerialNumber;
     dev->num_configs = full_desc.bNumConfigurations;
     dev->max_packet_size0 = full_desc.bMaxPacketSize0 ? full_desc.bMaxPacketSize0 : dev->max_packet_size0;
+    /* USB_PLAN U4: a full-speed device's real EP0 size (8/16/32/64) is only
+     * known once the descriptor has been read with a guessed one.  Tell the
+     * controller, or every later control transfer is packetised wrongly. */
+    if (dev->controller == USB_CTRL_XHCI)
+        (void)xhci_update_max_packet0(dev->address, dev->max_packet_size0);
     if (full_desc.bDeviceClass != USB_CLASS_USE_DEVICE) {
         dev->interface_class = full_desc.bDeviceClass;
         dev->interface_subclass = full_desc.bDeviceSubClass;
