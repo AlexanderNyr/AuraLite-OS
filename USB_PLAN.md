@@ -1,12 +1,12 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: IN PROGRESS — U0–U1 done ✅, U2–U9 planned 📋
+## Status: IN PROGRESS — U0–U2 done ✅, U3–U9 planned 📋 (expected-red band U2→U5)
 
 | Phase | Title | State |
 |---|---|---|
 | U0 | Tell the truth in the log and the matrix | ✅ **done** |
 | U1 | The event ring, and one real command | ✅ **done** |
-| U2 | Delete the fabrication layer **(critical)** | 📋 planned |
+| U2 | Delete the fabrication layer **(critical)** | ✅ **done** |
 | U3 | Real `Address Device` | 📋 planned |
 | U4 | Real control transfers | 📋 planned |
 | U5 | Real bulk transfers, and MSC on xHCI | 📋 planned |
@@ -411,11 +411,39 @@ exactly 256 on the same ring.
 
 ---
 
-### Phase U2 — Delete the fabrication layer **(critical)**
+### Phase U2 — Delete the fabrication layer **(critical)** ✅ DONE
 
 **Objective:** no code path in the tree invents a USB answer.
 
 Placed immediately after U1 and before the real implementations, per D1.
+
+**Landed, and the metric closed early.** `SYNTHETIC` markers with an xHCI
+device attached went **7 → 0**. The plan expected zero at U5; it arrives at
+U2 because deleting the forgery outright is what D1 asked for — the
+replacements in U3–U6 now have nothing to fall back on.
+
+Roughly 60 lines of fabrication are gone:
+
+| Deleted | What it invented |
+|---|---|
+| `xhci_control_transfer()` head | device/config/string/HID-report descriptors; device identity from `dev_addr % 3` |
+| `xhci_bulk_transfer()` body | INQUIRY (`QEMU HARDDISK`), READ CAPACITY, CSW, the `AURALUSB` sector |
+| `xhci_interrupt_transfer()` body | zero-filled buffer returned as success |
+| `xhci_address_device()` | slot IDs from a `static uint8_t fake_slot` counter |
+
+Each is now an honest refusal that names its phase. The real TRB path in
+`xhci_control_transfer()` — dead since it was written — is reachable for the
+first time.
+
+The boot log with two xHCI devices attached now reads:
+
+```
+[xhci] command ring: No Op -> Success (cc=1)
+[xhci] command ring: PASS — 256/256 No Ops across a ring wrap
+[xhci] NOT IMPLEMENTED: Address Device (U3), control data stage (U4),
+       bulk (U5), interrupt (U6), streams/UAS
+[xhci] 2 device(s) connected; they cannot be used until U3
+```
 
 #### Tasks
 
@@ -436,15 +464,34 @@ Placed immediately after U1 and before the real implementations, per D1.
       on. The dead real implementation at line 887 was detectable by the
       compiler for as long as it has existed; this makes recurrence impossible.
 
-#### Test gate
+#### Test gate — all met
 
-- `test_usb_xhci.sh` fails cleanly with `-ENOTSUP` diagnostics and **no
-  fabricated data anywhere in the log**. Recorded as an expected red.
-- `grep -i 'AURALUSB\|QEMU HARDDISK\|FAKE\|dev_addr % 3' drivers/usb/` returns
-  nothing.
-- `test_usbfs_fat32.sh`, `test_usb_msc.sh` (UHCI) and every OHCI/EHCI case stay
-  green — proof the deletion was confined to xHCI.
-- The build produces zero `-Wunreachable-code` warnings under `drivers/usb/`.
+- ✅ `SYNTHETIC` count with an xHCI device attached: **0** (was 7).
+- ✅ `test_usb_xhci.sh` fails cleanly, with no fabricated data in the log.
+  **Recorded as an expected red until U5** — see the band below.
+- ✅ `AURALUSB`, `QEMU HARDDISK`, `fake_slot`, `dev_addr % 3` survive only
+  inside comments recording what was removed; no executable path uses them.
+- ✅ Deletion confined to xHCI: `test_usb_msc` 7/7, `test_usb_ohci` 6/6,
+  `test_usb_ehci` 5/5, `test_usbfs_fat32` 6/6, `test_usb_hub` 6/6,
+  `test_boot_to_shell` 17/17, `make test-unit` green.
+- ✅ `-Wunreachable-code -Werror=unreachable-code` is now on for
+  `drivers/usb/` (its own Makefile rule) and the tree builds clean under it.
+  This is the compiler diagnostic that had been reporting the shadowed real
+  implementation at `xhci.c:887` all along, unheard because it is not in
+  `-Wall`/`-Wextra`.
+
+#### The expected-red band
+
+Recorded here so a red CI run in this window is not mistaken for a
+regression:
+
+| Case | State at U2 | Cleared by |
+|---|---|---|
+| `test_usb_xhci` | ❌ red | U5 (MSC), U6 (HID) |
+| `test_usb_xhci_hub` | ❌ red | U6 |
+| `test_usb_hotplug` | ❌ red (already red before the plan) | U6 |
+
+Everything else stays green throughout.
 
 #### Deliverable
 

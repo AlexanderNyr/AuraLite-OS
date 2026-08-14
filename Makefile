@@ -170,6 +170,18 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# USB_PLAN U2: -Wunreachable-code, as an error, for the USB drivers.
+#
+# Not a style preference.  xhci_control_transfer() carried a complete, real
+# TRB implementation that was shadowed by a `return data_len;` on the line
+# above it, and clang had been reporting exactly that -- "code will never be
+# executed" at xhci.c:887 -- for as long as the fabrication existed.  The
+# warning is off by default in -Wall/-Wextra, so nobody saw it.  Turning it
+# on here means that particular shape of mistake cannot come back quietly.
+$(BUILD_DIR)/drivers/usb/%.o: drivers/usb/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Wunreachable-code -Werror=unreachable-code -c $< -o $@
+
 # Special rule for render3d.c: needs SSE for float math.
 $(BUILD_DIR)/drivers/framebuffer/render3d.o: drivers/framebuffer/render3d.c
 	@mkdir -p $(dir $@)
