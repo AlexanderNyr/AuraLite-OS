@@ -908,6 +908,11 @@ static void usb_detach_location(usb_ctrl_type_t ctrl, int port) {
     usb_driver_t *drv = usb_find_driver(dev);
     if (drv && drv->disconnect) drv->disconnect(dev);
     if (dev->interface_class == USB_CLASS_MASS_STORAGE) { extern void msc_detach_device(void*); msc_detach_device(dev); }
+    /* USB_PLAN U3: hand the slot back to the controller.  Nothing called
+     * xhci_disable_slot() before, so an unplugged xHCI device kept its slot
+     * (and its contexts and rings) for the rest of the boot -- 64
+     * attach/detach cycles and Enable Slot would start refusing. */
+    if (dev->controller == USB_CTRL_XHCI) (void)xhci_free_device(dev->address);
     dev->in_use = 0;
 }
 static void usb_hotplug_scan_root(usb_ctrl_type_t ctrl, int max_ports) {

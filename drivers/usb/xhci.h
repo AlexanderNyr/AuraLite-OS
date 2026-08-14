@@ -23,6 +23,9 @@ int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packe
 int xhci_test_command_ring(void);
 int xhci_configure_endpoint(uint8_t usb_addr, uint8_t endpoint, uint16_t max_packet, int ep_type);
 int xhci_disable_slot(uint8_t slot_id);
+/* U3: release a device's slot + contexts + rings (detach path). */
+int xhci_free_device(uint8_t usb_addr);
+int xhci_active_slot_count(void);
 int xhci_stop_endpoint(uint8_t slot_id, uint8_t ep_id);
 
 int xhci_control_transfer(uint8_t dev_addr, int low_speed,

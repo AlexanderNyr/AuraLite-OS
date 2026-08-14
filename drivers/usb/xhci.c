@@ -173,6 +173,19 @@ struct xhci_trb {
 #define XHCI_TRB_CMD_ENABLE_SLOT  9
 #define XHCI_TRB_CMD_DISABLE_SLOT 10
 #define XHCI_TRB_CMD_ADDRESS_DEVICE 11
+#define XHCI_TRB_CMD_EVALUATE_CONTEXT 13
+#define XHCI_TRB_CMD_RESET_ENDPOINT 15
+#define XHCI_TRB_CMD_SET_TR_DEQUEUE 16
+
+/* Slot Context dword 3, bits 31:27 -- Slot State (xHCI 1.2 table 6-7).
+ * Read back after Address Device to prove the *controller* accepted it,
+ * which is the one assertion a fabricated implementation cannot satisfy. */
+#define XHCI_SLOT_STATE_SHIFT   27
+#define XHCI_SLOT_STATE_MASK    0x1F
+#define XHCI_SLOT_STATE_ENABLED    0
+#define XHCI_SLOT_STATE_DEFAULT    1
+#define XHCI_SLOT_STATE_ADDRESSED  2
+#define XHCI_SLOT_STATE_CONFIGURED 3
 #define XHCI_TRB_CMD_CONFIGURE_ENDPOINT 12
 
 /* TRB cycle bit */
@@ -830,8 +843,13 @@ static xhci_dev_t *alloc_xdev(uint8_t usb_addr) {
 }
 
 static uint16_t xhci_default_max_packet(int speed, uint8_t mps0) {
-    if (mps0) return mps0;
+    /* USB 2.0 s.9.6.1 / USB 3.2 s.9.6.1: for SuperSpeed devices
+     * bMaxPacketSize0 is an *exponent*, not a byte count -- it is fixed at
+     * 09h meaning 2^9 = 512 bytes.  Taking it literally programmed EP0 with
+     * a 9-byte max packet, which the U3 boot log showed as "maxpkt0=9".
+     * Full/high speed report the size directly. */
     if (speed == XHCI_SPEED_SUPER) return 512;
+    if (mps0) return mps0;
     if (speed == XHCI_SPEED_HIGH) return 64;
     return 8;
 }
@@ -871,28 +889,157 @@ static int xhci_alloc_ep_ring(xhci_dev_t *xd, int ep_id) {
     return 0;
 }
 
-/* Address a device.
+/* Free everything a slot owns.  Used by the error paths below and by
+ * xhci_free_device(); without it a failed enumeration leaks a slot, a
+ * device context and a ring per attempt, which the 20x attach/detach loop
+ * in the U3 gate would surface. */
+static void xhci_release_xdev(xhci_dev_t *xd) {
+    if (!xd || !xd->in_use) return;
+    for (int i = 0; i < 32; i++) {
+        if (xd->ep_ring_phys[i]) pmm_free_frame(xd->ep_ring_phys[i]);
+        xd->ep_ring_phys[i] = 0;
+        xd->ep_ring[i] = NULL;
+    }
+    uint32_t ctx_frames = (XHCI_CTX_BYTES + 0xFFF) / 0x1000;
+    if (xd->dev_ctx_phys) {
+        if (xd->slot_id && dcbaa) dcbaa[xd->slot_id] = 0;
+        for (uint32_t i = 0; i < ctx_frames; i++)
+            pmm_free_frame(xd->dev_ctx_phys + i * 4096ULL);
+    }
+    if (xd->input_ctx_phys)
+        for (uint32_t i = 0; i < ctx_frames; i++)
+            pmm_free_frame(xd->input_ctx_phys + i * 4096ULL);
+    memset(xd, 0, sizeof(*xd));
+}
+
+/* Address a device -- USB_PLAN U3.
  *
- * U2 removed the invented slot ID: a `static uint8_t fake_slot` counter
- * handed out 1, 2, 3... without ever issuing Enable Slot or Address Device,
- * so the controller knew nothing of any of it while the driver believed it
- * had addressed a device.
+ * Replaces the `static uint8_t fake_slot` counter U2 deleted.  The sequence
+ * is the one the specification requires (xHCI 1.2 s.4.3.3-4.3.4):
  *
- * The allocation below (device/input contexts, EP0 ring, DCBAA entry) is
- * kept: it is genuinely needed and is what U3 will hand to the real
- * commands.  What is gone is the pretence that a slot was obtained.  U3
- * issues Enable Slot, takes the slot ID from its Command Completion event,
- * builds the Input Context and issues Address Device.
+ *   1. Enable Slot          -> the *controller* returns the slot ID
+ *   2. allocate the Device Context, publish it in DCBAA[slot]
+ *   3. build an Input Context: A0|A1, Slot Context, EP0 Control endpoint
+ *   4. Address Device       -> the controller writes Slot State = Addressed
+ *
+ * Context size honours HCCPARAMS1.CSZ (D3): QEMU reports 32-byte contexts,
+ * so a hardcoded 32 is invisible here and fatal on much real silicon.
  */
 int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packet0) {
-    (void)usb_addr; (void)port; (void)speed; (void)max_packet0;
     if (!op_regs || !dcbaa) return -1;
-    static int warned = 0;
-    if (!warned) {
-        warned = 1;
-        kprintf("[xhci] Address Device is not implemented; devices on this "
-                "controller cannot be addressed (USB_PLAN.md U3)\n");
+
+    /* 1. Enable Slot.  The slot ID comes back in the event's Slot ID field
+     *    (bits 31:24 of the flags dword) -- it is not ours to choose. */
+    struct xhci_trb cmd, ev;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.flags = (XHCI_TRB_CMD_ENABLE_SLOT << XHCI_TRB_TYPE_SHIFT);
+    if (xhci_cmd_submit(cmd, &ev) != 0) {
+        kprintf("[xhci] Enable Slot failed\n");
+        return -1;
     }
+    uint8_t slot = (uint8_t)(ev.flags >> 24);
+    if (slot == 0 || slot > num_slots) {
+        kprintf("[xhci] Enable Slot returned invalid slot %u\n", slot);
+        return -1;
+    }
+
+    xhci_dev_t *xd = alloc_xdev(usb_addr);
+    if (!xd) {
+        kprintf("[xhci] device table full\n");
+        goto fail_disable;
+    }
+    xd->slot_id = slot;
+    xd->port = port;
+    xd->speed = speed;
+    xhci_decode_port_route(port, &xd->root_port, &xd->route_string);
+
+    /* 2. Device Context + Input Context.  Both must be zeroed: the
+     *    controller writes the former and reads the latter. */
+    uint64_t hhdm = boot_get_hhdm_offset();
+    uint32_t ctx_frames = (XHCI_CTX_BYTES + 0xFFF) / 0x1000;
+    uint64_t dev_ctx_phys = pmm_alloc_contiguous(ctx_frames);
+    uint64_t in_ctx_phys  = pmm_alloc_contiguous(ctx_frames);
+    if (!dev_ctx_phys || !in_ctx_phys) {
+        if (dev_ctx_phys) for (uint32_t i = 0; i < ctx_frames; i++)
+            pmm_free_frame(dev_ctx_phys + i * 4096ULL);
+        if (in_ctx_phys) for (uint32_t i = 0; i < ctx_frames; i++)
+            pmm_free_frame(in_ctx_phys + i * 4096ULL);
+        kprintf("[xhci] OOM allocating contexts for slot %u\n", slot);
+        xd->dev_ctx_phys = xd->input_ctx_phys = 0;
+        xhci_release_xdev(xd);
+        goto fail_disable;
+    }
+    xd->dev_ctx_phys = dev_ctx_phys;
+    xd->input_ctx_phys = in_ctx_phys;
+    memset((void *)(uintptr_t)(hhdm + dev_ctx_phys), 0, XHCI_CTX_BYTES);
+    memset((void *)(uintptr_t)(hhdm + in_ctx_phys), 0, XHCI_CTX_BYTES);
+    dcbaa[slot] = dev_ctx_phys;
+
+    /* 3. EP0's transfer ring, then the Input Context describing it. */
+    if (xhci_alloc_ep_ring(xd, 1) != 0) {
+        kprintf("[xhci] OOM allocating EP0 ring for slot %u\n", slot);
+        xhci_release_xdev(xd);
+        goto fail_disable;
+    }
+    uint16_t mps0 = xhci_default_max_packet(speed, max_packet0);
+    xd->ep_max_packet[1] = mps0;
+    xd->ep_type[1] = XHCI_EP_CONTROL;
+
+    void *inctx = (void *)(uintptr_t)(hhdm + in_ctx_phys);
+    /* Input Control Context: add the Slot Context (A0) and EP0 (A1). */
+    uint32_t *icc = ctx_ptr(inctx, 0);
+    icc[1] = 0x3;
+    /* Slot Context: route string, speed, one context entry (EP0), root port. */
+    uint32_t *slot_ctx = ctx_ptr(inctx, 1);
+    slot_ctx[0] = (xd->route_string & 0xFFFFFu) |
+                  ((uint32_t)(speed & 0xF) << 20) |
+                  (1u << 27);                      /* Context Entries = 1 */
+    slot_ctx[1] = ((uint32_t)xd->root_port << 16);
+    /* EP0 Context: Control endpoint, CErr=3, TR dequeue + DCS=1. */
+    uint32_t *ep0 = ctx_ptr(inctx, 2);
+    ep0[0] = 0;
+    ep0[1] = (3u << 1) | ((uint32_t)XHCI_EP_CONTROL << 3) |
+             ((uint32_t)mps0 << 16);
+    ep0[2] = (uint32_t)xd->ep_ring_phys[1] | 1u;
+    ep0[3] = 0;
+    ep0[4] = 8;                                    /* Average TRB Length */
+
+    /* 4. Address Device. */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.param = (uint32_t)in_ctx_phys;
+    cmd.flags = (XHCI_TRB_CMD_ADDRESS_DEVICE << XHCI_TRB_TYPE_SHIFT) |
+                ((uint32_t)slot << 24);
+    if (xhci_cmd_submit(cmd, &ev) != 0) {
+        kprintf("[xhci] Address Device failed for slot %u (port %d)\n", slot, port);
+        xhci_release_xdev(xd);
+        goto fail_disable;
+    }
+
+    /* Read the Slot State back out of the *device* context.  The controller
+     * wrote it; a driver that invented the slot could not make this say
+     * Addressed, which is exactly why the gate asserts on it. */
+    uint32_t *dev_slot = ctx_ptr((void *)(uintptr_t)(hhdm + dev_ctx_phys), 0);
+    uint32_t state = (dev_slot[3] >> XHCI_SLOT_STATE_SHIFT) & XHCI_SLOT_STATE_MASK;
+    uint8_t dev_addr_hw = (uint8_t)(dev_slot[3] & 0xFF);
+    if (state != XHCI_SLOT_STATE_ADDRESSED) {
+        kprintf("[xhci] slot %u not Addressed after Address Device (state=%u)\n",
+                slot, state);
+        xhci_release_xdev(xd);
+        goto fail_disable;
+    }
+
+    xd->ep_configured[1] = 1;
+    kprintf("[xhci] slot %u addressed (port %d, speed %s, mps0=%u, "
+            "hw addr=%u, Slot State=Addressed)\n",
+            slot, port, speed_name(speed), mps0, dev_addr_hw);
+    return 0;
+
+fail_disable:
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.flags = (XHCI_TRB_CMD_DISABLE_SLOT << XHCI_TRB_TYPE_SHIFT) |
+                ((uint32_t)slot << 24);
+    (void)xhci_cmd_submit(cmd, &ev);
+    if (dcbaa) dcbaa[slot] = 0;
     return -1;
 }
 
@@ -1123,6 +1270,29 @@ int xhci_disable_slot(uint8_t slot_id) {
     kprintf("[xhci] disabled slot %d\n", slot_id);
     return 0;
 }
+
+/* Release everything a USB address owns: Disable Slot on the controller,
+ * then the contexts and rings on our side.  U3: nothing called
+ * xhci_disable_slot() before, so an unplugged device kept its slot for the
+ * lifetime of the boot -- 64 attach/detach cycles and the controller would
+ * refuse to enable any more.  usb_core calls this from its detach path. */
+int xhci_free_device(uint8_t usb_addr) {
+    xhci_dev_t *xd = find_xdev(usb_addr);
+    if (!xd) return -1;
+    uint8_t slot = xd->slot_id;
+    if (slot) (void)xhci_disable_slot(slot);
+    xhci_release_xdev(xd);
+    return 0;
+}
+
+/* How many slots this driver currently believes it owns.  Exposed so the
+ * U3 gate can assert that a detach/attach loop does not leak. */
+int xhci_active_slot_count(void) {
+    int n = 0;
+    for (int i = 0; i < XHCI_MAX_DEVS; i++)
+        if (xdevs[i].in_use && xdevs[i].slot_id) n++;
+    return n;
+}
 int xhci_stop_endpoint(uint8_t slot_id, uint8_t ep_id) {
     kprintf("[xhci] stop endpoint slot %d ep %d (simulated)\n", slot_id, ep_id);
     return 0;
@@ -1267,10 +1437,5 @@ void xhci_self_test(void) {
 
     /* U2: no code path in this driver invents an answer any more.  What is
      * missing is missing, and says so when it is called. */
-    kprintf("[xhci] NOT IMPLEMENTED: Address Device (U3), control data stage "
-            "(U4), bulk (U5), interrupt (U6), streams/UAS\n");
-    if (port_count > 0) {
-        kprintf("[xhci] %d device(s) connected; they cannot be used until U3\n",
-                port_count);
-    }
+    kprintf("[xhci] NOT IMPLEMENTED: bulk (U5), interrupt (U6), streams/UAS\n");
 }

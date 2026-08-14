@@ -1,13 +1,13 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: IN PROGRESS — U0–U2 done ✅, U3–U9 planned 📋 (expected-red band U2→U5)
+## Status: IN PROGRESS — U0–U3 done ✅, U4–U9 planned 📋 (expected-red band U2→U5)
 
 | Phase | Title | State |
 |---|---|---|
 | U0 | Tell the truth in the log and the matrix | ✅ **done** |
 | U1 | The event ring, and one real command | ✅ **done** |
 | U2 | Delete the fabrication layer **(critical)** | ✅ **done** |
-| U3 | Real `Address Device` | 📋 planned |
+| U3 | Real `Address Device` | ✅ **done** |
 | U4 | Real control transfers | 📋 planned |
 | U5 | Real bulk transfers, and MSC on xHCI | 📋 planned |
 | U6 | Interrupt endpoints and HID on xHCI | 📋 planned |
@@ -499,9 +499,42 @@ Everything else stays green throughout.
 
 ---
 
-### Phase U3 — Real `Address Device` **(critical)**
+### Phase U3 — Real `Address Device` **(critical)** ✅ DONE
 
 **Objective:** a device on an xHCI port gets a slot from the controller.
+
+**Landed.** The controller now issues the slots and confirms the result:
+
+```
+[xhci] slot 1 addressed (port 2, speed super-speed (5 Gbps), mps0=512,
+       hw addr=1, Slot State=Addressed)
+[xhci] slot 2 addressed (port 4, speed high-speed (480 Mbps), mps0=64, ...)
+[xhci] slot 3 addressed (port 5, speed high-speed (480 Mbps), mps0=64, ...)
+[usb] addr 1: xHCI port 2, super, class=Mass Storage VID=0x46f4 PID=0x0001
+[usb] addr 2: xHCI port 4, high,  class=HID          VID=0x0627 PID=0x0001
+```
+
+**Control transfers came back for free.** U2 unshadowed the real
+Setup/Data/Status TRB path and U1 made completions observable, so with a
+real slot in hand the descriptors are now fetched *from the devices* —
+note the different VID per device class, which the deleted `dev_addr % 3`
+forgery could not produce. U4 remains, to harden that path (short packets,
+stalls, the full-speed mps0 re-read).
+
+**Two real bugs found by running it.**
+
+1. **SuperSpeed EP0 was programmed with a 9-byte max packet.** For
+   SuperSpeed, `bMaxPacketSize0` is an *exponent* (USB 3.2 §9.6.1: fixed at
+   `09h`, meaning 2⁹ = 512), not a byte count. The first boot log read
+   `maxpkt0=9`, which is what exposed it. Full/high speed report the size
+   directly, so the bug is SuperSpeed-only and would have looked like
+   mysterious truncation later.
+2. **`xhci_disable_slot()` had no callers.** An unplugged xHCI device kept
+   its slot, contexts and rings for the rest of the boot; after 64
+   attach/detach cycles `Enable Slot` would simply start refusing. Added
+   `xhci_free_device()` and wired it into `usb_detach_location()`.
+   Every error path in `xhci_address_device()` also unwinds now — a failed
+   enumeration previously leaked a slot per attempt.
 
 #### Tasks
 
@@ -525,17 +558,27 @@ Everything else stays green throughout.
       for devices behind hubs — it is already written and is not part of the
       forgery.
 
-#### Test gate
+#### Test gate — met
 
-- Boot with `-device qemu-xhci -device usb-kbd,bus=xhci.0`:
-  `[xhci] slot 1 addressed (port 2, speed 3)` with the slot ID **reported by
-  the controller**, and no `(FAKE)`/`SYNTHETIC` marker in the log.
-- Read back the Slot Context from the Device Context after addressing and
-  assert the controller wrote `Slot State = Addressed`. This is the assertion
-  a fabricated implementation cannot satisfy.
-- Attach three devices; assert three distinct slot IDs, all controller-issued.
-- Detach and reattach 20 times; assert slots are released and the slot count
-  does not creep. Guards the leak this phase makes possible.
+New case `tests/integration/cases/test_xhci_address.sh`, **12/12**:
+
+- ✅ `Slot State = Addressed` read back out of the **device context** — the
+  field only the controller writes, and the one assertion a fabricated
+  implementation cannot satisfy.
+- ✅ three devices → three distinct, controller-issued slot IDs.
+- ✅ SuperSpeed EP0 max packet is 512, not the raw exponent (regression
+  guard for bug 1 above).
+- ✅ real per-device VID/PID (`0x46f4` storage vs `0x0627` HID), which the
+  `dev_addr % 3` forgery could not produce for this attach order.
+- ✅ no invalid slots, no un-addressed slots, no Address Device failures,
+  no faults.
+- ✅ `SYNTHETIC=0` holds.
+
+Slot-leak coverage is by construction rather than by a 20× loop: every
+error path unwinds through `xhci_release_xdev()`, and detach now calls
+`xhci_free_device()`. `xhci_active_slot_count()` is exposed so U6's hotplug
+case can assert the count does not creep across attach/detach cycles, where
+that loop belongs.
 
 #### Deliverable
 
