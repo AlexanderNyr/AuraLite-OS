@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include "drivers/usb/ehci.h"
+#include "drivers/usb/usb_core.h"   /* U7: TT hub address/port for split transactions */
 #include "drivers/pci/pci.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
@@ -162,6 +163,27 @@ static uint32_t op_offset = 0;              /* CAPLENGTH value */
 static uint32_t *periodic_list = NULL;      /* HHDM pointer */
 static struct ehci_qh *async_qh = NULL;     /* async list head QH */
 static uint32_t async_qh_phys = 0;
+/* ---- Periodic (interrupt) endpoint state — USB_PLAN U7 ---- */
+#define EHCI_MAX_INTR_EPS 8
+struct ehci_intr_ep {
+    int      in_use;
+    uint8_t  dev_addr;
+    uint8_t  endpoint;
+    uint16_t max_packet;
+    uint8_t  speed;          /* QH_CAP1_EPS_* */
+    uint8_t  hub_addr;       /* TT: 0 when directly attached */
+    uint8_t  hub_port;
+    uint8_t  interval;       /* frames between polls */
+    uint8_t  armed;
+    uint8_t  toggle;
+    uint32_t qh_phys;
+    uint32_t qtd_phys;
+    uint32_t buf_phys;
+    uint16_t len;
+};
+static struct ehci_intr_ep intr_eps[EHCI_MAX_INTR_EPS];
+static uint32_t periodic_list_phys = 0;
+
 static int num_ports = 0;
 static int port_count = 0;
 static int has_64bit = 0;
@@ -333,6 +355,7 @@ found:
     for (int i = 0; i < EHCI_FRAME_COUNT; i++) {
         periodic_list[i] = QH_TERMINATE;
     }
+    periodic_list_phys = (uint32_t)fl_phys;
     op_wr(EHCI_OP_PERIODICLISTBASE, (uint32_t)fl_phys);
     op_wr(EHCI_OP_FRINDEX, 0);
 
@@ -569,17 +592,207 @@ int ehci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
 }
 
 
+/* Interrupt endpoints on the periodic schedule — USB_PLAN U7.
+ *
+ * These used to be forwarded to ehci_bulk_transfer(), i.e. queued on the
+ * ASYNC schedule as a one-shot IN and spun on until the qTD went inactive.
+ * That is wrong twice over.  Interrupt endpoints belong on the PERIODIC
+ * schedule so the controller polls them at the endpoint's bInterval; and an
+ * idle keyboard simply NAKs, so the async one-shot never completed and
+ * burned its full timeout on every poll:
+ *
+ *   [ehci] async qTD timeout token=0x00098d80
+ *
+ * With hid_poll_thread() visiting each device every 10 ms, that stalled the
+ * input path completely -- an EHCI keyboard enumerated, reported "ready",
+ * and then delivered nothing at all.
+ *
+ * The model here matches the xHCI one from U6: a QH is linked into the
+ * periodic frame list once and left there, and each call is a non-blocking
+ * check of whether its qTD has retired.  On completion the data is copied
+ * out and the qTD re-armed for the next interval.
+ *
+ * Full/low-speed devices behind a high-speed hub additionally need the
+ * split-transaction fields (EHCI 1.0 s.4.12): the TT's address and port in
+ * ep_caps2, an S-mask selecting the start-split microframe and a C-mask
+ * selecting the complete-split microframes.
+ */
+static struct ehci_intr_ep *ehci_find_intr_ep(uint8_t dev_addr, uint8_t endpoint) {
+    for (int i = 0; i < EHCI_MAX_INTR_EPS; i++)
+        if (intr_eps[i].in_use && intr_eps[i].dev_addr == dev_addr &&
+            intr_eps[i].endpoint == endpoint)
+            return &intr_eps[i];
+    return NULL;
+}
+
+/* Link a QH into every `interval` frames of the periodic list. */
+static void ehci_periodic_link(uint32_t qh_phys, uint8_t interval) {
+    if (interval < 1) interval = 1;
+    if (interval > EHCI_FRAME_COUNT) interval = EHCI_FRAME_COUNT;
+    /* Round down to a power of two: the frame list is indexed by masking. */
+    uint32_t iv = 1;
+    while ((iv << 1) <= interval) iv <<= 1;
+    for (uint32_t f = 0; f < EHCI_FRAME_COUNT; f += iv)
+        periodic_list[f] = qh_phys | QH_TYPE_QH;
+}
+
+static void ehci_periodic_unlink(uint32_t qh_phys) {
+    for (uint32_t f = 0; f < EHCI_FRAME_COUNT; f++)
+        if ((periodic_list[f] & ~0xFu) == (qh_phys & ~0xFu))
+            periodic_list[f] = QH_TERMINATE;
+}
+
+/* Arm (or re-arm) the endpoint's qTD so the controller will poll it. */
+static void ehci_intr_arm(struct ehci_intr_ep *ep) {
+    uint64_t hhdm = boot_get_hhdm_offset();
+    volatile struct ehci_qtd *qtd =
+        (volatile struct ehci_qtd *)(uintptr_t)(hhdm + ep->qtd_phys);
+    volatile struct ehci_qh *qh =
+        (volatile struct ehci_qh *)(uintptr_t)(hhdm + ep->qh_phys);
+
+    memset((void *)qtd, 0, sizeof(*qtd));
+    qtd->next_qtd = QTD_TERMINATE;
+    qtd->alt_next_qtd = QTD_TERMINATE;
+    qtd->token = ehci_qtd_token(QTD_PID_IN, ep->len, ep->toggle, 1);
+    ehci_qtd_set_bufs((struct ehci_qtd *)qtd, ep->buf_phys, ep->len);
+
+    /* Point the QH overlay at the fresh qTD. */
+    qh->current_qtd = 0;
+    qh->next_qtd = ep->qtd_phys;
+    qh->alt_next_qtd = QTD_TERMINATE;
+    qh->token = 0;
+    ep->armed = 1;
+}
+
 int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
                             int low_speed, uint16_t max_packet,
                             void *data, uint16_t len, int *toggle_io) {
-    (void)low_speed;
-    (void)toggle_io;
-    if (!(endpoint & 0x80)) return -1;
-    /* QEMU's high-speed HID endpoints are accepted through the async qTD path
-     * as a polled one-shot IN transaction.  Full/low-speed interrupt endpoints
-     * still need split transactions through a TT and remain future work. */
-    return ehci_bulk_transfer(dev_addr, endpoint, data, len, 1,
-                              max_packet ? max_packet : len);
+    if (op_regs == NULL || data == NULL || len == 0) return -1;
+    if (!(endpoint & 0x80)) return -1;              /* IN endpoints only */
+    if (len > 1024) len = 1024;
+
+    uint64_t hhdm = boot_get_hhdm_offset();
+    struct ehci_intr_ep *ep = ehci_find_intr_ep(dev_addr, endpoint);
+
+    if (!ep) {
+        /* First call for this endpoint: build its QH and link it in. */
+        for (int i = 0; i < EHCI_MAX_INTR_EPS; i++)
+            if (!intr_eps[i].in_use) { ep = &intr_eps[i]; break; }
+        if (!ep) return -1;
+
+        uint64_t qh_phys  = pmm_alloc_frame();
+        uint64_t qtd_phys = pmm_alloc_frame();
+        uint64_t buf_phys = pmm_alloc_frame();
+        if (!qh_phys || !qtd_phys || !buf_phys) {
+            if (qh_phys)  pmm_free_frame(qh_phys);
+            if (qtd_phys) pmm_free_frame(qtd_phys);
+            if (buf_phys) pmm_free_frame(buf_phys);
+            return -1;
+        }
+
+        memset(ep, 0, sizeof(*ep));
+        ep->in_use     = 1;
+        ep->dev_addr   = dev_addr;
+        ep->endpoint   = endpoint;
+        ep->max_packet = max_packet ? max_packet : len;
+        ep->len        = len;
+        ep->qh_phys    = (uint32_t)qh_phys;
+        ep->qtd_phys   = (uint32_t)qtd_phys;
+        ep->buf_phys   = (uint32_t)buf_phys;
+        ep->interval   = 8;                 /* 8 frames = 8 ms, ample for HID */
+        ep->speed      = low_speed ? QH_CAP1_EPS_LOW : QH_CAP1_EPS_HIGH;
+
+        /* A device reached through a TT reports its hub; usb_core records
+         * the parent hub address and port for exactly this purpose. */
+        usb_device_t *ud = usb_find_device_by_address(dev_addr);
+        if (ud && ud->parent_hub_addr) {
+            ep->hub_addr = ud->parent_hub_addr;
+            ep->hub_port = ud->parent_hub_port;
+            if (!low_speed) ep->speed = QH_CAP1_EPS_FULL;
+        }
+
+        volatile struct ehci_qh *qh =
+            (volatile struct ehci_qh *)(uintptr_t)(hhdm + qh_phys);
+        memset((void *)qh, 0, sizeof(*qh));
+        qh->ep_caps1 = ((uint32_t)(dev_addr & 0x7F) << QH_CAP1_DEVADDR_SHIFT) |
+                       ((uint32_t)(endpoint & 0x0F) << QH_CAP1_EPNUM_SHIFT) |
+                       ((uint32_t)ep->speed << QH_CAP1_EPS_SHIFT) |
+                       QH_CAP1_DTC |
+                       ((uint32_t)ep->max_packet << QH_CAP1_MPL_SHIFT);
+
+        /* ep_caps2: interrupt schedule mask (S-mask) in bits 0-7, split
+         * completion mask (C-mask) in bits 8-15, hub address in 16-22, hub
+         * port in 23-29, Mult in 30-31. */
+        uint32_t smask = 0x01;              /* start in microframe 0 */
+        uint32_t cmask = 0;
+        if (ep->hub_addr) {
+            /* Split: complete in microframes 2,3,4 (EHCI 1.0 s.4.12.3). */
+            cmask = 0x1C;
+        }
+        qh->ep_caps2 = smask |
+                       (cmask << 8) |
+                       ((uint32_t)ep->hub_addr << 16) |
+                       ((uint32_t)ep->hub_port << 23) |
+                       (1u << QH_CAP2_MULT_SHIFT);
+        qh->next_qh = QH_TERMINATE;         /* end of this frame's chain */
+        qh->next_qtd = QTD_TERMINATE;
+        qh->alt_next_qtd = QTD_TERMINATE;
+
+        ehci_intr_arm(ep);
+        ehci_periodic_link(ep->qh_phys, ep->interval);
+
+        kprintf("[ehci] interrupt endpoint 0x%02x dev=%u on periodic schedule "
+                "(interval=%u frames, maxpkt=%u%s)\n",
+                endpoint, dev_addr, ep->interval, ep->max_packet,
+                ep->hub_addr ? ", split via TT" : "");
+        return 0;                            /* nothing delivered yet */
+    }
+
+    if (len != ep->len) ep->len = len;
+    if (!ep->armed) ehci_intr_arm(ep);
+
+    volatile struct ehci_qtd *qtd =
+        (volatile struct ehci_qtd *)(uintptr_t)(hhdm + ep->qtd_phys);
+    uint32_t tok = qtd->token;
+
+
+    ep->armed = 0;
+
+    if (tok & (QTD_STATUS_HALTED | QTD_STATUS_DATA_BUF | QTD_STATUS_BABBLE |
+               QTD_STATUS_XACT)) {
+        /* A halted interrupt endpoint stays halted until re-armed. */
+        kprintf("[ehci] interrupt qTD error dev=%u ep=0x%02x token=0x%08x\n",
+                dev_addr, endpoint, tok);
+        ep->toggle = 0;
+        ehci_intr_arm(ep);
+        return -1;
+    }
+
+    /* Bytes still outstanding sit in the token; what arrived is the rest. */
+    uint32_t remaining = (tok >> QTD_TOTAL_LEN_SHIFT) & QTD_TOTAL_LEN_MASK;
+    int actual = (int)ep->len - (int)remaining;
+    if (actual < 0) actual = 0;
+    if (actual > (int)len) actual = (int)len;
+    if (actual > 0)
+        memcpy(data, (void *)(uintptr_t)(hhdm + ep->buf_phys), (size_t)actual);
+
+    ep->toggle ^= 1;
+    if (toggle_io) *toggle_io = ep->toggle;
+    ehci_intr_arm(ep);                       /* re-arm for the next interval */
+    return actual;
+}
+
+/* Release an endpoint's periodic resources (called on detach). */
+void ehci_release_device(uint8_t dev_addr) {
+    for (int i = 0; i < EHCI_MAX_INTR_EPS; i++) {
+        struct ehci_intr_ep *ep = &intr_eps[i];
+        if (!ep->in_use || ep->dev_addr != dev_addr) continue;
+        ehci_periodic_unlink(ep->qh_phys);
+        if (ep->qh_phys)  pmm_free_frame(ep->qh_phys);
+        if (ep->qtd_phys) pmm_free_frame(ep->qtd_phys);
+        if (ep->buf_phys) pmm_free_frame(ep->buf_phys);
+        memset(ep, 0, sizeof(*ep));
+    }
 }
 
 int ehci_suspend_port(int port) {
@@ -640,6 +853,13 @@ void ehci_self_test(void) {
                 (ps & PORTSC_PP) ? 1 : 0, (ps & PORTSC_OWNER) ? 1 : 0,
                 (ps >> PORTSC_LS_SHIFT) & PORTSC_LS_MASK);
     }
-    kprintf("[ehci] PASS: full support — async qTD, periodic QH, iTD/siTD isoc, split TT, companion handoff\n");
+    /* U7: state what is actually exercised.  This line used to claim
+     * "iTD/siTD isoc, split TT, companion handoff" unconditionally, none of
+     * which had been demonstrated by anything the boot had run. */
+    int intr_active = 0;
+    for (int i = 0; i < EHCI_MAX_INTR_EPS; i++) if (intr_eps[i].in_use) intr_active++;
+    kprintf("[ehci] async qTD + periodic QH real; %d interrupt endpoint(s) "
+            "on the periodic schedule\n", intr_active);
+    kprintf("[ehci] NOT IMPLEMENTED: iTD/siTD isochronous (USB_PLAN.md U9)\n");
     kprintf("[ehci] PASS: %d USB device(s) ready\n", port_count);
 }

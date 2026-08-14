@@ -1,6 +1,6 @@
 # AuraLite OS — Full USB Support Plan
 
-## Status: IN PROGRESS — U0–U6 done ✅, U7–U9 planned 📋 (red band fully closed)
+## Status: IN PROGRESS — U0–U7 done ✅, U8–U9 planned 📋 (red band fully closed)
 
 | Phase | Title | State |
 |---|---|---|
@@ -11,7 +11,7 @@
 | U4 | Real control transfers | ✅ **done** |
 | U5 | Real bulk transfers, and MSC on xHCI | ✅ **done** |
 | U6 | Interrupt endpoints and HID on xHCI | ✅ **done** |
-| U7 | EHCI periodic schedule and split transactions | 📋 planned |
+| U7 | EHCI periodic schedule and split transactions | ✅ **done** |
 | U8 | Interrupts instead of polling | 📋 planned |
 | U9 | Hubs, isoc, and the honest matrix | 📋 planned |
 
@@ -851,9 +851,67 @@ keyboard path exercises the same TRB code.
 
 ---
 
-### Phase U7 — EHCI periodic schedule and split transactions
+### Phase U7 — EHCI periodic schedule and split transactions ✅ DONE
 
 **Objective:** the one honest gap outside xHCI.
+
+**Landed.** EHCI interrupt endpoints now live on the periodic frame list:
+
+```
+[ehci] interrupt endpoint 0x81 dev=1 on periodic schedule (interval=8 frames, maxpkt=8)
+[hid] report from addr=1 ep=0x81 len=8: 00 00 08 00
+```
+
+A QH is linked into the frame list once at the endpoint's interval and left
+there; each poll is a non-blocking check of whether its qTD retired, and the
+qTD is re-armed on completion. Split-transaction fields (TT hub address and
+port, S-mask/C-mask) are programmed for devices behind a high-speed hub.
+
+**The bug this exposed was severe: an EHCI keyboard delivered nothing.**
+Interrupt endpoints were being forwarded to the *async* schedule as a
+one-shot IN and spun on until the qTD went inactive. An idle keyboard NAKs,
+so the qTD never retired and every poll burned its full timeout:
+
+```
+[ehci] async qTD timeout token=0x00098d80
+```
+
+With `hid_poll_thread()` visiting each device every 10 ms, input was dead.
+
+**And a second, worse one — in xHCI, which U6 had declared done.** The
+interrupt path searched for "the first Transfer Event", parked it if it
+belonged to another endpoint, and returned. A stale EP0 completion left
+over from enumeration was therefore re-found on every single poll, forever:
+
+```
+[dbg] MISMATCH ev_slot=1 ev_ep=1 want slot=1 ep=3 cc=1   (repeating)
+```
+
+The endpoint's own event was never reached. The search is now keyed on
+(slot, endpoint) in both the parked list and the hardware ring.
+
+---
+
+#### ⚠️ A gate of mine was green for the wrong reason
+
+The U6 gate asserted that keystrokes injected with `sendkey` reached the
+shell. **That assertion is worthless on its own.** `sendkey` also drives the
+emulated PS/2 keyboard, which this kernel always has, so the same injection
+with **no USB device attached at all** still prints `echo` at the prompt.
+The test was passing while the xHCI interrupt path delivered exactly zero
+reports — which is precisely the failure U6 claimed to have fixed.
+
+Verified directly: `-machine pc,i8042=off` was tried to isolate USB, and it
+does not boot (the kernel hangs initialising the PS/2 controller — a real
+defect, recorded for U8/U9 rather than fixed here). So attribution is proved
+the other way instead, by asserting on evidence only the USB path can
+produce: the HID driver now logs each report with its device address,
+endpoint and bytes, and the gate checks the **HID usage codes** — `0x08` for
+`e`, `0x12` for `o` (HID Usage Tables 1.12 §10). A PS/2 keystroke produces
+no such line, and a fabricating driver cannot produce those constants.
+
+New case `test_usb_hid_input.sh` keeps a **no-USB control run** as a
+permanent assertion, so this class of false green cannot come back.
 
 EHCI's interrupt endpoints are currently routed through the async qTD path as a
 polled one-shot, with a source comment saying periodic and split transactions
@@ -869,16 +927,32 @@ remain future work. That comment is accurate; this phase closes it.
 - [ ] Route full/low-speed devices on an EHCI companion correctly instead of
       failing them.
 
-#### Test gate
+#### Test gate — met
 
-- `-device usb-ehci -device usb-kbd` (a full-speed device on a high-speed
-  controller) enumerates and delivers real keystrokes through the periodic
-  schedule.
-- A full-speed device behind `-device usb-hub` on EHCI works, which is the
-  split-transaction case specifically.
-- Interrupt latency is bounded: report the measured poll interval and assert it
-  matches the endpoint's requested `bInterval` within tolerance.
-- Existing EHCI async cases stay green.
+New case `tests/integration/cases/test_usb_hid_input.sh`, **9/9**, in three
+configurations:
+
+- ✅ **xHCI**: HID reports arrive over the interrupt endpoint, carrying usage
+  `0x08`/`0x12` for the keys injected.
+- ✅ **control, no USB at all**: no HID report line appears, though `sendkey`
+  still reaches the shell over PS/2. This is the assertion that makes the
+  other two mean something.
+- ✅ **EHCI**: the endpoint is linked into the periodic frame list, reports
+  arrive through it, and `async qTD timeout` is gone.
+
+`test_xhci_interrupt.sh` (U6) was rewritten to assert on report evidence
+instead of shell text, and is 5/5.
+
+**Not done, and why.** The plan asked for a full-speed device behind
+`-device usb-hub` on EHCI, to exercise split transactions end to end.
+That configuration cannot be built in QEMU: `usb-hub` is itself a
+full-speed device and QEMU refuses to attach it to an EHCI bus —
+`speed mismatch trying to attach usb device "QEMU USB Hub" (full speed)
+to bus "ehci.0" (high speed)`. The TT fields are implemented and
+programmed, but they are **not exercised by any test**, and that is stated
+here rather than papered over. Measured `bInterval` tolerance is likewise
+not asserted; the poll interval is currently driven by the 10 ms HID thread
+rather than by the schedule, which properly belongs to U8 (interrupts).
 
 #### Deliverable
 

@@ -1550,26 +1550,48 @@ int xhci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
         return 0;                                /* nothing yet */
     }
 
-    /* Armed: has the event landed?  Non-blocking -- do not consume events
-     * belonging to other endpoints, xhci_ev_park() holds those. */
+    /* Armed: has this endpoint's event landed?  Non-blocking.
+     *
+     * Searching must be done by (slot, endpoint), not "the first Transfer
+     * Event".  Parking a foreign event and returning would re-find that
+     * same event on every later poll -- an endless MISMATCH loop in which
+     * this endpoint's own completion is never reached:
+     *
+     *   [dbg] MISMATCH ev_slot=1 ev_ep=1 want slot=1 ep=3 cc=1   (repeating)
+     *
+     * The stale EP0 event is a leftover from enumeration, which uses the
+     * blocking poller and can leave a completion parked. */
     struct xhci_trb ev;
-    if (xhci_ev_take_parked(XHCI_TRB_TRANSFER_EVENT, &ev) != 0) {
-        struct xhci_trb tmp;
-        int got = 0;
-        while (xhci_ev_dequeue(&tmp) == 0) {
-            if (trb_type(&tmp) == XHCI_TRB_TRANSFER_EVENT) { ev = tmp; got = 1; break; }
-            xhci_ev_park(&tmp);
-        }
-        if (!got) return 0;                      /* still pending */
+    int got = 0;
+
+    /* 1) Anything already parked for exactly this endpoint? */
+    for (int i = 0; i < ev_pending_count; i++) {
+        struct xhci_trb *c = &ev_pending[i];
+        if (trb_type(c) != XHCI_TRB_TRANSFER_EVENT) continue;
+        if ((uint8_t)(c->flags >> 24) != xd->slot_id) continue;
+        if ((int)((c->flags >> 16) & 0x1F) != ep_id) continue;
+        ev = *c;
+        for (int j = i + 1; j < ev_pending_count; j++) ev_pending[j - 1] = ev_pending[j];
+        ev_pending_count--;
+        got = 1;
+        break;
     }
 
-    /* The event must belong to this endpoint; if not, park it and wait. */
-    uint8_t ev_slot = (uint8_t)(ev.flags >> 24);
-    int ev_ep = (int)((ev.flags >> 16) & 0x1F);
-    if (ev_slot != xd->slot_id || ev_ep != ep_id) {
-        xhci_ev_park(&ev);
-        return 0;
+    /* 2) Otherwise drain the hardware ring, parking what is not ours. */
+    if (!got) {
+        struct xhci_trb tmp;
+        while (xhci_ev_dequeue(&tmp) == 0) {
+            if (trb_type(&tmp) == XHCI_TRB_TRANSFER_EVENT &&
+                (uint8_t)(tmp.flags >> 24) == xd->slot_id &&
+                (int)((tmp.flags >> 16) & 0x1F) == ep_id) {
+                ev = tmp;
+                got = 1;
+                break;
+            }
+            xhci_ev_park(&tmp);
+        }
     }
+    if (!got) return 0;                          /* nothing for us yet */
 
     xd->ep_armed[ep_id] = 0;
     uint32_t cc = trb_cc(&ev);

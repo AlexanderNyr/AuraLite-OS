@@ -19,6 +19,8 @@ int ehci_control_transfer(uint8_t dev_addr, int low_speed,
                           uint16_t data_len, uint8_t max_packet0);
 int ehci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
                        void *data, uint32_t len, int in, uint16_t max_packet);
+/* U7: free an endpoint's periodic-schedule resources on detach. */
+void ehci_release_device(uint8_t dev_addr);
 int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
                             int low_speed, uint16_t max_packet,
                             void *data, uint16_t len, int *toggle_io);

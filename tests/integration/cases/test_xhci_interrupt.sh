@@ -88,9 +88,17 @@ wait "$QPID" 2>/dev/null || true
 il_assert_grep "$LOG" "\[hid\] keyboard ready: addr=. iface=0 ep=0x81" \
     "HID keyboard bound to its interrupt endpoint"
 
-# 1. The injected characters reached the shell.
-il_assert_grep_fixed "$LOG" "echo" \
-    "keystrokes injected over the xHCI interrupt endpoint reached the shell"
+# 1. Reports actually arrived over the USB interrupt endpoint.
+#
+# This deliberately does NOT assert that "echo" reached the shell, which is
+# what the first version of this test did.  QEMU's `sendkey` also drives the
+# emulated PS/2 keyboard, so that assertion passes even with no USB device
+# attached at all -- it was green while this path delivered nothing.  See
+# test_usb_hid_input.sh, which keeps a no-USB control case to prove it.
+il_assert_grep "$LOG" "\[hid\] report from addr=. ep=0x81" \
+    "HID reports arrive over the xHCI interrupt endpoint (not via PS/2)"
+il_assert_grep_fixed "$LOG" "len=8: 00 00 08 00" \
+    "report carries the real HID usage code for 'e' (0x08)"
 
 # 2. The inverse: the shell saw nothing while the keyboard sat idle.
 #

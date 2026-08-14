@@ -918,6 +918,10 @@ static void usb_detach_location(usb_ctrl_type_t ctrl, int port) {
      * (and its contexts and rings) for the rest of the boot -- 64
      * attach/detach cycles and Enable Slot would start refusing. */
     if (dev->controller == USB_CTRL_XHCI) (void)xhci_free_device(dev->address);
+    /* U7: EHCI interrupt endpoints hold a QH linked into the periodic frame
+     * list plus its qTD and buffer; unlink and free them, or the controller
+     * keeps polling a detached device forever. */
+    if (dev->controller == USB_CTRL_EHCI) ehci_release_device(dev->address);
     dev->in_use = 0;
 }
 static void usb_hotplug_scan_root(usb_ctrl_type_t ctrl, int max_ports) {
@@ -993,8 +997,12 @@ void usb_core_self_test(void) {
      * beneath it differs sharply and is now stated per controller. */
     int n = usb_device_count();
     kprintf("[usb] core self-test: enumeration/protocol layer\n");
-    kprintf("[usb]  controllers: UHCI real; OHCI real; EHCI real (async only, "
-            "no periodic/split); xHCI bring-up only, transfers fabricated\n");
+    /* Kept honest as each phase lands: U3-U6 made xHCI real (slots,
+     * control, bulk, interrupt) and U7 put EHCI's interrupt endpoints on
+     * the periodic schedule with TT split support. */
+    kprintf("[usb]  controllers: UHCI real; OHCI real; EHCI real "
+            "(async + periodic/split); xHCI real "
+            "(control, bulk, interrupt; streams/UAS not implemented)\n");
     kprintf("[usb]  see USB_PLAN.md for the phase that closes each gap\n");
     kprintf("[usb] devices recorded: %d\n", n);
     usb_dump_devices();

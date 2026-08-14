@@ -371,6 +371,20 @@ static void hid_poll_once(hid_dev_t *h) {
     memset(report, 0, sizeof(report));
     int ret = usb_interrupt_transfer(h->dev, h->ep_in, report, len, &h->toggle);
     if (ret <= 0) return;
+    /* USB_PLAN U6/U7: prove input attribution.  QEMU's `sendkey` also
+     * drives the PS/2 controller, so "characters reached the shell" alone
+     * cannot distinguish a working USB HID path from the emulated PS/2
+     * keyboard answering instead.  This line is emitted only when a report
+     * actually arrives over the USB interrupt endpoint. */
+    {
+        int nonzero = 0;
+        for (int bi = 0; bi < ret; bi++) if (report[bi]) { nonzero = 1; break; }
+        if (nonzero)
+            kprintf("[hid] report from addr=%d ep=0x%02x len=%d: %02x %02x %02x %02x\n",
+                    h->dev->address, h->ep_in, ret,
+                    report[0], ret > 1 ? report[1] : 0,
+                    ret > 2 ? report[2] : 0, ret > 3 ? report[3] : 0);
+    }
     if (h->generic == 1) process_generic_mouse_report(h, report, (uint32_t)ret);
     else if (h->generic == 2) process_generic_keyboard_report(h, report, (uint32_t)ret);
     else if (h->protocol == HID_PROTO_KEYBOARD) process_keyboard_report(h, report, ret >= 8 ? 8u : (uint32_t)ret);
