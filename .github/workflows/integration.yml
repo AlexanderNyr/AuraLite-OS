@@ -68,6 +68,14 @@ jobs:
       - name: Run host unit tests (BL1 test_boot_info included)
         run: make test-unit
 
+      # USB_PLAN.md U9.  docs/usb.md states what the USB stack does and --
+      # more importantly -- what it only approximates or does not do at all.
+      # Both halves are checked against the drivers, so an absent feature
+      # that quietly gets implemented, or a claim that quietly stops being
+      # true, fails the build instead of rotting in the documentation.
+      - name: USB documentation drift check
+        run: python3 tools/check_usb_claims.py --check
+
       # WIN32_PLAN.md W32-8.  `make test-unit` already runs the provenance
       # selftest and the generated-API-table drift check; this step adds the
       # Win32 SDK, which is not part of the default build, and builds all

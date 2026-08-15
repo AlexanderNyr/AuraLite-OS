@@ -29,6 +29,7 @@
 
 #include <stdint.h>
 #include "drivers/usb/xhci.h"
+#include "drivers/usb/usb_core.h"   /* U9: shared device-location encoding */
 #include "drivers/pci/pci.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
@@ -171,6 +172,8 @@ struct xhci_trb {
 #define XHCI_TRB_LINK         6
 #define XHCI_TRB_TRANSFER_EVENT 32
 #define XHCI_TRB_PORT_STATUS_CHANGE 34   /* U8: Port Status Change Event */
+#define XHCI_TRB_ISOCH          5        /* U9: Isoch TRB (xHCI 1.2 6.4.1.3) */
+#define XHCI_TRB_ISOCH_SIA      (1u << 31) /* Start Isoch ASAP */
 #define XHCI_TRB_CMD_COMPLETION 33
 #define XHCI_TRB_CMD_NOOP     23
 #define XHCI_TRB_CMD_ENABLE_SLOT  9
@@ -1019,18 +1022,21 @@ static uint16_t xhci_default_max_packet(int speed, uint8_t mps0) {
  * Root devices use port=0..N-1. Hub children use ((root+1)<<4)|route_nibbles,
  * where route_nibbles is the xHCI route string (1 nibble per hub depth). */
 static void xhci_decode_port_route(int port, uint8_t *root_port, uint32_t *route) {
-    if (port >= 16) {
-        uint32_t enc = (uint32_t)port;
-        uint32_t root = (enc >> 4) & 0x0F;
-        *root_port = root ? (uint8_t)root : 1;
-        /* Current usb_core encoding stores the root port in the high nibble and
-         * the first downstream hub port in the low nibble.  For xHCI the route
-         * string contains only downstream hub ports, not the root port. */
-        *route = enc & 0x0Fu;
-    } else {
-        *root_port = (uint8_t)(port + 1);
-        *route = 0;
-    }
+    /* U9: usb_core's location encoding is now root port in bits 0-7 and up
+     * to five 4-bit downstream hub ports above it (see usb_core.h).  That
+     * maps onto the xHCI route string directly -- the route holds only the
+     * hub ports, never the root port (xHCI 1.2 s.4.5.2).
+     *
+     * The old encoding squeezed everything into one byte, so a hub two
+     * levels down computed its own location for its children and they were
+     * silently dropped as duplicates. */
+    int hub_ports = (port >> 8) & 0xFFFFF;
+    /* The root-port byte is 0-based throughout usb_core (a device on the
+     * first root port has port == 0), while xHCI numbers root ports from 1.
+     * Convert in exactly one place -- getting this inconsistent is what
+     * produced "Address Device failed for slot 2 (port 260)". */
+    *root_port = (uint8_t)((port & 0xFF) + 1);
+    *route = (uint32_t)hub_ports;
 }
 
 static int xhci_alloc_ep_ring(xhci_dev_t *xd, int ep_id) {
@@ -1195,9 +1201,13 @@ int xhci_address_device(uint8_t usb_addr, int port, int speed, uint8_t max_packe
     }
 
     xd->ep_configured[1] = 1;
-    kprintf("[xhci] slot %u addressed (port %d, speed %s, mps0=%u, "
-            "hw addr=%u, Slot State=Addressed)\n",
-            slot, port, speed_name(speed), mps0, dev_addr_hw);
+    /* U9: report the decoded topology, not just the opaque location value.
+     * A device behind hubs is only correct if its route string is, and the
+     * route is exactly what a reader cannot infer from "port 4356". */
+    kprintf("[xhci] slot %u addressed (root port %u, route=0x%05x, tier=%d, "
+            "speed %s, mps0=%u, hw addr=%u, Slot State=Addressed)\n",
+            slot, xd->root_port, xd->route_string,
+            usb_loc_depth(port), speed_name(speed), mps0, dev_addr_hw);
     return 0;
 
 fail_disable:
@@ -1824,12 +1834,27 @@ int xhci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint, int low_speed,
     if (!buf_phys) return -1;
     if (!is_in) memcpy((void*)(uintptr_t)(hhdm + buf_phys), data, len);
     else memset((void*)(uintptr_t)(hhdm + buf_phys), 0, len);
+    /* U9: a real Isoch TRB.
+     *
+     * This queued (1 << 10), which is TRB type 1 -- a Normal TRB -- on an
+     * isochronous endpoint, with no frame ID at all.  It happened not to
+     * fail visibly because nothing ever exercised an isoch endpoint, but it
+     * was the wrong descriptor for the transfer type.
+     *
+     * Isoch TRB is type 5.  SIA (Start Isoch ASAP, bit 31 of the flags)
+     * tells the controller to schedule in the next available frame rather
+     * than a specific one, which is the right choice without a real
+     * timebase to align to; the frame ID field is then ignored.  TBC/TLBPC
+     * stay zero: one burst, one packet per burst (xHCI 1.2 s.6.4.1.3). */
     struct xhci_trb trb;
     memset(&trb, 0, sizeof(trb));
     trb.param = (uint32_t)buf_phys;
     trb.status = 0;
     trb.control = len;
-    trb.flags = (1 << 10) | (1 << 5) | (1 << 0);
+    trb.flags = (XHCI_TRB_ISOCH << XHCI_TRB_TYPE_SHIFT) |
+                XHCI_TRB_ISOCH_SIA |
+                (1u << 2) |            /* ISP: short packet is not an error */
+                XHCI_TRB_IOC;
     xhci_ring_enqueue(xd, ep_id, trb);
     int ret = xhci_wait_transfer(xd->slot_id, ep_id, 0);
     if (ret == 0 && is_in) memcpy(data, (void*)(uintptr_t)(hhdm + buf_phys), len);

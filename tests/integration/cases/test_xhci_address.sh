@@ -59,7 +59,9 @@ fi
 
 # SuperSpeed EP0 must be 512 bytes.  bMaxPacketSize0 is an exponent for SS
 # (09h = 2^9), and taking it literally programmed a 9-byte EP0.
-il_assert_grep "$LOG" "slot . addressed \(port ., speed super-speed .*mps0=512" \
+# U9 reworded this line: the location is now reported decoded, as
+# "root port N, route=0x..., tier=N", instead of the raw encoded value.
+il_assert_grep "$LOG" "slot . addressed \(root port ., route=0x00000, tier=0, speed super-speed .*mps0=512" \
     "SuperSpeed EP0 max packet is 512, not the raw exponent"
 
 # Descriptors now come from the devices: the storage device and the HID

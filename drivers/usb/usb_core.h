@@ -280,6 +280,34 @@ typedef enum {
 } usb_ctrl_type_t;
 
 /* Endpoint info for full stack */
+/* USB_PLAN U9: device "location" encoding.
+ *
+ * A location is the root port plus the chain of downstream hub ports taken
+ * to reach the device.  The old encoding packed all of it into one byte --
+ * root port in the high nibble, one hub port in the low nibble -- which
+ * has no room for a second level: a hub at location 0x51 computed 0x51 for
+ * its own port 1, colliding with itself, so usb_find_by_location() matched
+ * the hub and no device two hubs deep was ever enumerated.
+ *
+ * Layout now: bits 0-7 root port (1-based), then up to five 4-bit hub port
+ * numbers in bits 8-11, 12-15, 16-19, 20-23, 24-27.  That is USB's own
+ * depth limit of 5 and matches the xHCI route string directly. */
+#define USB_LOC_ROOT(rp)          ((int)((rp) & 0xFF))
+#define USB_LOC_DEPTH_MAX         5
+static inline int usb_loc_depth(int loc) {
+    int d = 0;
+    for (int i = 0; i < USB_LOC_DEPTH_MAX; i++)
+        if (((loc >> (8 + 4 * i)) & 0xF) != 0) d = i + 1;
+    return d;
+}
+static inline int usb_loc_child(int loc, unsigned hub_port) {
+    int d = usb_loc_depth(loc);
+    if (d >= USB_LOC_DEPTH_MAX) return -1;          /* deeper than USB allows */
+    return loc | (int)((hub_port & 0xF) << (8 + 4 * d));
+}
+/* Downstream hub-port chain as an xHCI route string (4 bits per tier). */
+static inline unsigned usb_loc_route(int loc) { return (unsigned)((loc >> 8) & 0xFFFFF); }
+
 typedef struct {
     uint8_t  address;
     uint8_t  attributes;

@@ -763,7 +763,13 @@ static int usb_hub_scan(usb_device_t *hub) {
             continue;
         }
         usb_speed_t child_speed = usb_hub_port_speed(st, hub->speed);
-        int child_port = (((hub->port >= 16) ? hub->port : ((hub->port + 1) << 4)) | p);
+        int child_port = usb_loc_child(hub->port, p);
+        if (child_port < 0) {
+            kprintf("[hub] addr %d port %u: deeper than the USB limit of %d "
+                    "hub tiers; not enumerated\n",
+                    hub->address, p, USB_LOC_DEPTH_MAX);
+            continue;
+        }
         if (usb_find_by_location(hub->controller, child_port)) continue;
         if (enumerate_device(hub->controller, child_port, child_speed) == 0) {
             usb_device_t *child = usb_last_allocated_by_location(hub->controller, child_port);

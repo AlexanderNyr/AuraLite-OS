@@ -143,7 +143,13 @@ int usb_hub_scan_all(void) {
             if (hub_get_status(hub, p, &st, &ch) < 0) continue;
             if (ch & 1) hub_clear_port_feature(hub, p, 16);
             if (!(st & 1)) continue;
-            int child_port = (((hub->port >= 16) ? hub->port : ((hub->port + 1) << 4)) | p);
+            int child_port = usb_loc_child(hub->port, p);
+            if (child_port < 0) {
+                kprintf("[hub] addr %d port %u: deeper than the USB limit of %d "
+                        "hub tiers; not enumerated\n",
+                        hub->address, p, USB_LOC_DEPTH_MAX);
+                continue;
+            }
             usb_speed_t speed = USB_SPEED_FULL;
             if (st & (1<<9)) speed = USB_SPEED_LOW;
             else if (st & (1<<10)) speed = USB_SPEED_HIGH;
