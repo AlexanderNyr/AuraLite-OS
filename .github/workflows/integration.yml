@@ -68,6 +68,13 @@ jobs:
       - name: Run host unit tests (BL1 test_boot_info included)
         run: make test-unit
 
+      # AUDIT_A0.  run_all.sh's case list is hand-maintained and had fallen
+      # 27 cases behind tests/integration/cases/ -- a fifth of the suite,
+      # including phase gates, that CI never ran while reporting all green.
+      # Disagreement in either direction now fails the build.
+      - name: Integration case registry check
+        run: python3 tools/check_test_registry.py --check
+
       # USB_PLAN.md U9.  docs/usb.md states what the USB stack does and --
       # more importantly -- what it only approximates or does not do at all.
       # Both halves are checked against the drivers, so an absent feature

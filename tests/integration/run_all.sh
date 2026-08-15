@@ -38,7 +38,13 @@ if [ "${#ARGS[@]}" -gt 0 ]; then
     FILTER="$(IFS='|'; echo "${ARGS[*]}")"
 fi
 
-# ---- discover test cases (in a deterministic order) ----
+# ---- test cases, in a deterministic order ----
+#
+# This list is hand-maintained, not discovered: the order matters (cheap
+# smoke tests first) and some cases are deliberately grouped.  Because it is
+# hand-maintained it can fall behind cases/ -- it once did, by 27 cases, a
+# fifth of the suite that CI never ran.  tools/check_test_registry.py now
+# fails the build when this list and cases/ disagree in either direction.
 ALL_CASES=(
     test_boot_to_shell
     test_shell_commands
@@ -137,6 +143,38 @@ ALL_CASES=(
     test_gui_usb
     test_gbrowser
     test_gbrowser_net
+
+    # ---- registered by AUDIT_A0: previously on disk but never run ----
+    # Filesystem and core cases
+    test_devfs
+    test_procfs
+    test_tmpfs
+    test_diskfs
+    test_fat32_mkdir
+    test_mmap_shared
+    test_uaccess
+    test_process_spawn_many
+    # USB: the U3-U9 phase gates from USB_PLAN.md, plus older class cases
+    test_xhci_address
+    test_xhci_control
+    test_xhci_bulk
+    test_xhci_interrupt
+    test_usb_hid_input
+    test_usb_hub_depth
+    test_usb_hub_full
+    test_usb_full_stack
+    test_usb_driver_registry
+    test_usb_string
+    test_usb_isoc
+    test_usb_cdc_acm
+    test_usb_printer
+    test_usb_audio_full
+    # Graphics and userspace
+    test_3d_render
+    test_virgl_gpu
+    test_shell_all
+    test_sysmon_data
+    test_userspace_apps
 )
 
 # Slow ones we skip in --fast mode.
