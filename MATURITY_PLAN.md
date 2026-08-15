@@ -1,14 +1,20 @@
 # AuraLite OS — Subsystem Maturity Plan
 
-## Status: IN PROGRESS 🚧 — M1, M5 complete; M2 core (IOAPIC) complete; M3, M4, M6–M14 pending
+## Status: IN PROGRESS 🚧 — M1–M5 complete; M2 core (IOAPIC) complete; M6–M14 pending
+
+> **Statuses corrected by `AUDIT_A3`** after `MATURITY_AUDIT.md` measured this
+> document against the tree. M3 and M4 had landed but were still listed as
+> pending; M6 understated what already exists; M10 had been overtaken by
+> `USB_PLAN.md`. See [`TESTAUDIT_PLAN.md`](TESTAUDIT_PLAN.md).
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | M1 — FPU/SSE context switch | ✅ complete | `patches/MAT_M1_fpu_context.patch` |
 | M5 — POSIX process-model precision | ✅ complete | `patches/MAT_M5_complete.patch` |
 | M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
-| M3 — fault-recovering uaccess + audit | pending | — |
-| M4, M6–M14 | pending | — |
+| M3 — fault-recovering uaccess + audit | ✅ complete | `patches/MAT_M3_uaccess.patch` + `patches/AUDIT_A1_dead_gates.patch` |
+| M4 — demand-paged and shared VMAs | ✅ complete (anonymous `MAP_SHARED`) | `patches/AUDIT_A1_dead_gates.patch` |
+| M6–M14 | pending | — |
 
 This document answers:
 
@@ -249,21 +255,40 @@ the SMP machine the interrupt controller it was built for.
 
 ---
 
-### Phase M3 — Fault-recovering uaccess and a full audit
+### Phase M3 — Fault-recovering uaccess and a full audit ✅ COMPLETE
 
 **Objective:** the security predicate — a syscall given a hostile or racing
 user pointer returns an errno instead of panicking, everywhere.
 
+**Status corrected by AUDIT_A3.** This phase had landed —
+`patches/MAT_M3_uaccess.patch` is applied, `kernel/proc/usercopy.h`,
+`tests/unit/test_uaccess.c` and `tests/integration/cases/test_uaccess.sh`
+are all in the tree — but the plan still said `pending | —` and every task
+box was unticked.
+
+**Its gate had never run.** `test_uaccess.sh` called `il_run`, `il_assert`
+and `$IL_SERIAL`, none of which exist in `lib.sh`, and it was absent from
+`run_all.sh`. AUDIT_A0 registered it and AUDIT_A1 repaired it. Running it
+for the first time found the battery at **29/30**, not 30/30: the
+`wait4(-1, 0xDEAD, WNOHANG)` case asserted `r == -3` and called that
+`ECHILD`, but `ECHILD` is **10**. The kernel had been right all along; the
+test scored a correct answer as a failure. Now 30/30, with **no kernel
+change**.
+
+Current state: 102 `copy_from_user`/`copy_to_user`/`validate_user_range`
+call sites in `syscall.c` and 13 in `gui_syscalls.c`. `socket.c` has none —
+it does not take raw user pointers directly.
+
 #### Tasks
 
-- [ ] Promote the `copy_from_user`/`copy_to_user` #PF fixup from "a path" to
+- [x] Promote the `copy_from_user`/`copy_to_user` #PF fixup from "a path" to
       "the only path": grep-audit every direct user-pointer dereference in
       `syscall.c`, `socket.c`, `gui_syscalls.c`, `gpu_syscalls.c` and route
       each through the safe primitives.
-- [ ] Make the fixup robust against TOCTOU: copy into a kernel bounce buffer
+- [x] Make the fixup robust against TOCTOU: copy into a kernel bounce buffer
       first (the GUI `ag_blit` path already does this — generalise it), so a
       second thread unmapping the page mid-copy cannot fault the kernel.
-- [ ] A negative test battery: every syscall exercised with (a) an unmapped
+- [x] A negative test battery: every syscall exercised with (a) an unmapped
       pointer, (b) a wrap-around range, (c) a kernel-space pointer, (d) a page
       unmapped between the length check and the copy.
 
@@ -280,7 +305,22 @@ user pointer returns an errno instead of panicking, everywhere.
 
 ---
 
-### Phase M4 — Demand-paged and shared VMAs
+### Phase M4 — Demand-paged and shared VMAs ✅ COMPLETE (anonymous)
+
+**Status corrected by AUDIT_A3.** `MAP_SHARED|MAP_ANONYMOUS` works and is
+now proved: `/tests/mmapshare` has the parent write through a shared page,
+the child read it and answer, the parent see the reply — with a
+`MAP_PRIVATE` control in the same program that must stay copy-on-write.
+`test_mmap_shared.sh` is 7/7.
+
+Like M3, its gate had never executed (same dead `il_run` API), and it only
+ever asked the shell to run the generic `selftest`, which does not touch
+`MAP_SHARED` at all — so even had it run, it would have asserted nothing.
+AUDIT_A1 wrote the program and rewrote the gate.
+
+**Still open, and deliberately not claimed:** file-backed `MAP_SHARED`
+returns `-ENOSYS` (it needs page-cache writeback from M9), and there is no
+demand-paging fault path — mappings are populated eagerly.
 
 **Objective:** `mmap` with `MAP_SHARED` actually shares, and pages are faulted
 in on demand rather than eagerly copied at map time.
@@ -359,6 +399,16 @@ reparent-to-init) are still pending.
 
 ### Phase M6 — Production TCP
 
+> **AUDIT_A3 — this phase understated what already exists.** Measured in
+> `kernel/net/tcp.c`: `cwnd` (14 uses), `ssthresh` (5), `rto_ms`, SRTT and a
+> retransmit queue are **already implemented**, as are `FIN_WAIT_1`/
+> `FIN_WAIT_2` and `tcp_listen()`. `TCP_MAX_CONNS` is **16**, not the 8 the
+> task list assumed.
+>
+> Genuinely absent: duplicate-ACK counting, fast retransmit/recovery, SACK,
+> Nagle, delayed ACK, `TIME_WAIT`/`CLOSE_WAIT`/`LAST_ACK`, a `listen`
+> backlog, `SO_REUSEADDR` and keepalive. Scope the phase to those.
+
 **Objective:** replace "one segment in flight, fixed RTO, 8 connections" with a
 TCP that a real server and a browser can lean on.
 
@@ -372,7 +422,7 @@ TCP that a real server and a browser can lean on.
       CUBIC (Reno is enough and far smaller).
 - [ ] A **retransmit queue** with RTO computed from SRTT/RTTVAR (RFC 6298),
       replacing the fixed-RTO single-slot scheme.
-- [ ] Raise `TCP_MAX_CONNS` (8 → 64+) **or** convert the fixed array to a
+- [ ] Raise `TCP_MAX_CONNS` (**16** today → 64+) **or** convert the fixed array to a
       dynamic table and state the limit.
 - [ ] `listen` backlog, `TIME_WAIT`/`FIN_WAIT` timers, RST handling on
   half-open, and `shutdown(SHUT_WR)` for half-close.
@@ -493,10 +543,31 @@ become real, with the integration coverage FAT32/ext2 already enjoy.
 
 ---
 
-### Phase M10 — USB transfer-engine completion
+### Phase M10 — USB transfer-engine completion  ⤳ SUPERSEDED by `USB_PLAN.md`
 
 **Objective:** OHCI/EHCI/xHCI stop being "bring-up + detection" and drive class
 drivers across the board, matching what UHCI already does for MSC.
+
+> **AUDIT_A3: do not start this phase — most of it is done.**
+> `USB_PLAN.md` U0–U9 delivered the xHCI command/event/transfer rings, slot
+> addressing, endpoint contexts and route-string addressing behind nested
+> hubs (verified two hubs deep), the EHCI periodic schedule, and Isoch TRBs.
+> `test_xhci_bulk.sh` proves MSC by writing a pattern with `dd` and reading
+> those exact bytes back.
+>
+> Three items from the original task list remain genuinely open, and only
+> these should be carried forward:
+>
+> - USB Audio actually moving samples end to end (the isoc path issues real
+>   Isoch TRBs, but no stream has been verified).
+> - Writable `/usb` FAT32 automount, and ext2 hotplug.
+> - `test_usb_msc.sh` run per controller, one case each for
+>   UHCI/OHCI/EHCI/xHCI.
+>
+> EHCI full/low-speed split transactions are implemented but **untestable in
+> QEMU**: `usb-hub` is a full-speed device and QEMU refuses to attach it to
+> an EHCI bus. Recorded in `docs/usb.md` rather than left as a task that
+> cannot be closed.
 
 #### Tasks
 

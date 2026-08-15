@@ -1,13 +1,13 @@
 # AuraLite OS — Test-Integrity and Maturity-Plan Repair
 
-## Status: IN PROGRESS 🚧 — A0–A2, A4 complete; A3, A5, A6 planned
+## Status: IN PROGRESS 🚧 — A0–A4 complete; A5, A6 planned
 
 | Phase | Subject | State | Deliverable |
 |---|---|---|---|
 | A0 | Make the invisible failures visible | ✅ **done** | `patches/AUDIT_A0_registry_guard.patch` |
 | A1 | Repair the two dead gates (M3, M4) | ✅ **done** | `patches/AUDIT_A1_dead_gates.patch` |
 | A2 | Triage the failing orphan cases | ✅ **done** | `patches/AUDIT_A2_orphan_triage.patch` |
-| A3 | Correct `MATURITY_PLAN.md` (M3, M6, M10) | 📋 planned | `patches/AUDIT_A3_plan_corrections.patch` |
+| A3 | Correct `MATURITY_PLAN.md` (M3, M6, M10) | ✅ **done** | `patches/AUDIT_A3_plan_corrections.patch` |
 | A4 | Retire the stale `bring-up only` claim | ✅ **done** (folded into A2) | — |
 | A5 | M3's real audit task: hostile-pointer sweep | 📋 planned | `patches/AUDIT_A5_uaccess_audit.patch` |
 | A6 | M4: demand paging and shared VMAs | 📋 planned | `patches/AUDIT_A6_vma.patch` |
@@ -238,13 +238,40 @@ M8/M9 (filesystems) in `MATURITY_PLAN.md`.
 
 ---
 
-### Phase A3 — Correct `MATURITY_PLAN.md`
+### Phase A3 — Correct `MATURITY_PLAN.md` ✅ DONE
 
-- [ ] M3 → complete (or list what its audit task genuinely leaves open).
-- [ ] M6 → credit `cwnd`/`ssthresh`/`rto_ms`/SRTT; scope to fast retransmit,
-      SACK, Nagle, delayed ACK, backlog, `TIME_WAIT`.
-- [ ] M10 → retire in favour of `USB_PLAN.md`, keeping only USB Audio isoc
-      end-to-end, writable `/usb` automount, and per-controller MSC.
+- [x] **M3 → complete.** The patch was applied and its files were in the
+      tree while the plan still read `pending | —` with every task box
+      unticked. Its gate had never run; A0 registered it and A1 repaired
+      it, which is how the 29/30 → 30/30 `ECHILD` defect surfaced.
+- [x] **M4 → complete (anonymous).** Also silently landed. File-backed
+      `MAP_SHARED` still returns `-ENOSYS` and there is no demand-paging
+      fault path — both stated rather than implied.
+- [x] **M6 → credited, then scoped.** Measured: `cwnd` (14 uses),
+      `ssthresh` (5), `rto_ms`, SRTT, a retransmit queue, `FIN_WAIT_1/2`
+      and `tcp_listen()` all exist; `TCP_MAX_CONNS` is **16**, not the 8
+      the task list assumed. Genuinely absent: dup-ACK counting, fast
+      retransmit, SACK, Nagle, delayed ACK, `TIME_WAIT`/`CLOSE_WAIT`/
+      `LAST_ACK`, backlog, `SO_REUSEADDR`, keepalive.
+- [x] **M10 → superseded** by `USB_PLAN.md`, with the three genuinely open
+      items carried forward and the untestable EHCI split case recorded in
+      `docs/usb.md` instead of left as a task nobody can close.
+
+**The corrections are not the point; the guard is.** A status line is
+prose, and prose does not fail a build — which is exactly how three of them
+drifted. `tools/check_maturity_claims.py` now ties **14** claims to the
+source, checking the absences in reverse as well, and runs in CI beside the
+USB and registry guards.
+
+#### Test gate — met
+
+- ✅ 14 claims verified against the tree.
+- ✅ Negative control 1: putting M3 back to `pending` → "M3's status row
+  says 'complete'" fails.
+- ✅ Negative control 2: introducing `TCP_TIME_WAIT` → "M6 is still
+  pending: no TIME_WAIT state yet" fails. The guard catches drift in
+  **both** directions, not just staleness.
+- ✅ Registry guard 124/124, USB claim guard 12/12, build green.
 
 #### Deliverable
 

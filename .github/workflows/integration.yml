@@ -68,6 +68,14 @@ jobs:
       - name: Run host unit tests (BL1 test_boot_info included)
         run: make test-unit
 
+      # AUDIT_A3.  MATURITY_PLAN.md's phase statuses are prose, and prose
+      # does not fail a build: M3 and M4 had landed while still listed
+      # "pending", M6 understated tcp.c, and M10 asked for USB work that
+      # USB_PLAN.md had already delivered.  Each status is now tied to
+      # something in the source, absences included.
+      - name: Maturity plan claim check
+        run: python3 tools/check_maturity_claims.py --check
+
       # AUDIT_A0.  run_all.sh's case list is hand-maintained and had fallen
       # 27 cases behind tests/integration/cases/ -- a fifth of the suite,
       # including phase gates, that CI never ran while reporting all green.
