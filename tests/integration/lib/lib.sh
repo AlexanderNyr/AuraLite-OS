@@ -261,7 +261,12 @@ il_skip() {
 }
 
 il_assert_count() {
+    # AUDIT_A2: this called il_pass/il_fail without incrementing
+    # IL_ASSERT_COUNT, so every case using it under-reported its own total
+    # ("4/2 assertions passed").  Seven cases are affected.  The other
+    # il_assert_* helpers bump the counter; this one was missed.
     local log="$1" pat="$2" min="$3" desc="${4:-count of '$pat' >= $min}"
+    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
     local n
     n="$(grep -cE "$pat" "$log" || true)"
     if [ "$n" -ge "$min" ]; then

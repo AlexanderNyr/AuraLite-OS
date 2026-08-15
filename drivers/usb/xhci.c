@@ -1951,7 +1951,13 @@ void xhci_self_test(void) {
     uint32_t sts = op_rd(XHCI_OP_USBSTS);
     int halted = (sts & XHCI_USBSTS_HCH) ? 1 : 0;
     int cnr = (sts & XHCI_USBSTS_CNR) ? 1 : 0;
-    kprintf("[xhci] self-test: halted=%d CNR=%d (bring-up only)\n", halted, cnr);
+    /* AUDIT_A4: this said "(bring-up only)" long after USB_PLAN.md U3-U9
+     * made slots, control, bulk, interrupt and nested hubs real.  U0's rule
+     * cuts both ways -- a log that understates disagrees with the driver
+     * just as badly as one that overstates, and test_usb_isoc was failing
+     * on this line rather than on anything isochronous. */
+    kprintf("[xhci] self-test: halted=%d CNR=%d (control/bulk/interrupt real; "
+            "isoc TRBs issued, not stream-verified)\n", halted, cnr);
     uint32_t crcr = op_rd(XHCI_OP_CRCR);
     kprintf("[xhci] CRCR=0x%08x (RCS=%d CRR=%d)\n", crcr, crcr & 1, (crcr >> 3) & 1);
     for (int i = 0; i < num_ports && i < 8; i++) {

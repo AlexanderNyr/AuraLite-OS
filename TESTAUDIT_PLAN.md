@@ -1,14 +1,14 @@
 # AuraLite OS — Test-Integrity and Maturity-Plan Repair
 
-## Status: IN PROGRESS 🚧 — A0, A1 complete; A2–A6 planned
+## Status: IN PROGRESS 🚧 — A0–A2, A4 complete; A3, A5, A6 planned
 
 | Phase | Subject | State | Deliverable |
 |---|---|---|---|
 | A0 | Make the invisible failures visible | ✅ **done** | `patches/AUDIT_A0_registry_guard.patch` |
 | A1 | Repair the two dead gates (M3, M4) | ✅ **done** | `patches/AUDIT_A1_dead_gates.patch` |
-| A2 | Triage the failing orphan cases | 📋 planned | `patches/AUDIT_A2_orphan_triage.patch` |
+| A2 | Triage the failing orphan cases | ✅ **done** | `patches/AUDIT_A2_orphan_triage.patch` |
 | A3 | Correct `MATURITY_PLAN.md` (M3, M6, M10) | 📋 planned | `patches/AUDIT_A3_plan_corrections.patch` |
-| A4 | Retire the stale `bring-up only` claim | 📋 planned | `patches/AUDIT_A4_xhci_selftest.patch` |
+| A4 | Retire the stale `bring-up only` claim | ✅ **done** (folded into A2) | — |
 | A5 | M3's real audit task: hostile-pointer sweep | 📋 planned | `patches/AUDIT_A5_uaccess_audit.patch` |
 | A6 | M4: demand paging and shared VMAs | 📋 planned | `patches/AUDIT_A6_vma.patch` |
 
@@ -155,14 +155,82 @@ which looks exactly like the program failing. Both now wait 8s.
 
 ---
 
-### Phase A2 — Triage the failing orphans
+### Phase A2 — Triage the failing orphans ✅ DONE
 
 **Objective:** every registered case is green, or documented as expected-red
 with a phase that closes it.
 
-Known red at audit time: `test_diskfs` (1/3), `test_fat32_mkdir` (2/4),
-`test_usb_isoc` (2/6), `test_usb_cdc_acm` (1/6). Per case, decide whether
-the test or the code is wrong — the U0 discipline.
+**All four were the test's fault, in two distinct ways — and neither was a
+kernel bug.**
+
+**Group 1 — asserting on banners U0 deliberately deleted.**
+`test_usb_isoc` and `test_usb_cdc_acm` waited for
+`[isoc] PASS: isoc full support ready` and
+`[cdc-acm] PASS: CDC ACM full support ready`. Both lines were printed
+unconditionally — with no isochronous transfer ever issued and with zero
+CDC devices attached — which is precisely why `USB_PLAN.md` U0 replaced
+them with an honest `SKIP` or a device count. The tests were asserting the
+lie. They now assert the honest output.
+
+**A4 folded in here.** `test_usb_isoc` also failed on
+`[xhci] self-test: ... (bring-up only)` — stale since U3–U9 made slots,
+control, bulk, interrupt and nested hubs real. U0's rule cuts both ways: a
+log that *understates* disagrees with the driver just as badly as one that
+overstates. The line now reads
+`control/bulk/interrupt real; isoc TRBs issued, not stream-verified`.
+
+**Group 2 — asserting against a filesystem that was never mounted.**
+`test_diskfs` and `test_fat32_mkdir` exercised `/disk` and `/fat` **while
+attaching no disk to QEMU at all**. The guest printed
+`no AHCI disk available; /disk not mounted`, every command failed, and the
+cases were red for a reason unrelated to their subject. Both now attach a
+real FAT32 volume over AHCI, the way `test_ahci_large_read.sh` does. The
+underlying code was fine: with a disk present, mkdir, write and read-back
+all work.
+
+**Worse than red: two of those assertions were passing for the wrong
+reason.** `test_diskfs` matched `"$MARK"` and `"persist.txt"` anywhere in
+the log — and both appear in the *echo of the write command itself*. They
+passed while nothing was written. The mark is now required to appear
+**twice** (input plus a genuine read-back), and the filename must appear
+inside an actual `ls /disk` listing. `test_fat32_mkdir` had the same defect
+with `testdir`.
+
+**A library bug found on the way.** `il_assert_count()` calls
+`il_pass`/`il_fail` but never incremented `IL_ASSERT_COUNT`, so every case
+using it under-reported its own total — the first fixed run printed
+`4/2 assertions passed`. Seven cases are affected.
+
+#### A2-R1 — a real kernel bug the fix uncovered
+
+`test_diskfs` is **intermittently red, correctly**. About one run in three,
+`cat /disk/persist.txt` returns raw FAT directory-entry bytes instead of
+the file:
+
+```
+cat /disk/persist.txt
+AURALOG TXT ^@^@^M^@M-X\M-X\^@^@^U^@M-X
+```
+
+The write always lands — the file grows 24 → 26 bytes and appears in
+`ls` — so the defect is on the read-back or cache-flush side of the FAT32
+path. The old assertion could never have caught it: it matched `$MARK`
+anywhere in the log, and the echo of the write command satisfied that on
+every run, pass or fail.
+
+Left asserting the correct behaviour on purpose. A retry loop would
+re-hide precisely what this phase exists to surface. Closing it belongs to
+M8/M9 (filesystems) in `MATURITY_PLAN.md`.
+
+#### Test gate — met
+
+- ✅ `test_fat32_mkdir` 5/5, `test_usb_isoc` 6/6, `test_usb_cdc_acm` 6/6.
+- ⚠️ `test_diskfs` 4/4 when the FAT32 read path behaves, 3/4 when A2-R1
+  fires — an honest intermittent, not a masked one.
+- ✅ Negative control 1: removing the AHCI drive from `test_diskfs` →
+  4 of 4 red, led by "/disk is actually mounted".
+- ✅ Negative control 2: restoring `(bring-up only)` → `test_usb_isoc` red.
+- ✅ Registry guard green (124 cases); `make test-unit` green.
 
 #### Deliverable
 
@@ -184,16 +252,12 @@ the test or the code is wrong — the U0 discipline.
 
 ---
 
-### Phase A4 — Retire the stale `bring-up only` claim
+### Phase A4 — Retire the stale `bring-up only` claim ✅ DONE (folded into A2)
 
-`xhci_self_test()` still prints `(bring-up only)` after U3–U9 made slots,
-control, bulk, interrupt and nested hubs real. `test_usb_isoc` fails on it.
-Understating is the same defect as overstating: the log disagrees with the
-driver.
-
-#### Deliverable
-
-`patches/AUDIT_A4_xhci_selftest.patch`
+`xhci_self_test()` printed `(bring-up only)` long after U3–U9 made the
+driver real, and `test_usb_isoc` was failing on that line rather than on
+anything isochronous. Fixing the test without fixing the log would have
+been fixing the symptom, so both landed together in A2.
 
 ---
 

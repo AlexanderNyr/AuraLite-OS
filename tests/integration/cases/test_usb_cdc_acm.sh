@@ -18,6 +18,11 @@ il_assert_grep "$LOG" "\[xhci\] controller running" "xHCI running"
 il_assert_grep "$LOG" "\[xhci\] starting port scan" "Port scan"
 il_assert_grep "$LOG" "\[cdc-acm\] full CDC ACM driver initialized" "CDC ACM driver init"
 il_assert_grep "$LOG" "cdc_acm.*registered" "CDC ACM registered"
-il_assert_grep "$LOG" "\[cdc-acm\] PASS: CDC ACM full support ready" "CDC ACM PASS"
+# AUDIT_A2: U0 deleted "PASS: CDC ACM full support ready" -- printed even
+# with zero devices attached -- and replaced it with a count, or a SKIP when
+# nothing is present.  No CDC device is attached in this case, so SKIP is
+# the correct outcome; asserting the old banner asserted a lie.
+il_assert_grep "$LOG" "\[cdc-acm\] (PASS: [0-9]+ device\\(s\\) attached|SKIP: no CDC ACM devices attached)" \
+    "CDC ACM reports its real device count"
 il_assert_no_grep "$LOG" "Page Fault|kernel panic" "no CDC faults"
 il_summary
