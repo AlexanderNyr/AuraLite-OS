@@ -250,6 +250,58 @@ void page_cache_invalidate(struct ofd *file) {
     }
 }
 
+/*
+ * page_cache_mark_dirty() — A6.
+ *
+ * The dirty flag existed and page_cache_flush() honoured it, but nothing in
+ * the tree ever set it: `dirty` was assigned 0 in two places and tested in
+ * one.  Writeback was therefore a no-op by construction, which is the real
+ * reason file-backed MAP_SHARED could not be supported.
+ */
+int page_cache_mark_dirty(struct ofd *file, uint64_t offset) {
+    if (!file) return -1;
+    uint64_t page_off = offset & ~0xFFFULL;
+    spinlock_acquire(&cache_lock);
+    for (int i = 0; i < PAGE_CACHE_BUCKETS; i++) {
+        for (page_cache_entry_t *curr = cache_buckets[i]; curr; curr = curr->next) {
+            if (curr->ofd == file && curr->offset == page_off) {
+                curr->dirty = 1;
+                spinlock_release(&cache_lock);
+                return 0;
+            }
+        }
+    }
+    spinlock_release(&cache_lock);
+    return -1;
+}
+
+/*
+ * page_cache_flush_range() — A6.  msync() must not write back the whole
+ * file when the caller asked for one page.
+ */
+int page_cache_flush_range(struct ofd *file, uint64_t start, uint64_t end) {
+    if (!file) return -1;
+    uint64_t hhdm = boot_get_hhdm_offset();
+    int failed = 0;
+    spinlock_acquire(&cache_lock);
+    for (int i = 0; i < PAGE_CACHE_BUCKETS; i++) {
+        for (page_cache_entry_t *curr = cache_buckets[i]; curr; curr = curr->next) {
+            if (curr->ofd != file || !curr->dirty) continue;
+            if (curr->offset < start || curr->offset >= end) continue;
+            if (!(file->vn && file->vn->ops && file->vn->ops->write)) {
+                failed = 1;
+                continue;
+            }
+            void *kbuf = (void *)(uintptr_t)(hhdm + curr->phys);
+            int64_t wr = file->vn->ops->write(file->vn, curr->offset, kbuf, 4096);
+            if (wr == 4096) curr->dirty = 0;
+            else failed = 1;
+        }
+    }
+    spinlock_release(&cache_lock);
+    return failed ? -1 : 0;
+}
+
 void page_cache_flush(struct ofd *file) {
     /* Simple flush: iterate cache and write dirty pages back via the OFD's
      * vnode write op.  We convert the physical address to a HHDM virtual

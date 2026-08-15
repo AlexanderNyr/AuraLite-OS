@@ -37,6 +37,7 @@
 #include "kernel/rng.h"
 #include "kernel/ipc/sysvipc.h"
 #include "kernel/mm/shmem.h"
+#include "kernel/mm/page_cache.h"
 
 /* P10 types */
 typedef struct {
@@ -75,6 +76,7 @@ typedef struct {
 #define SYS_MMAP     9
 #define SYS_MUNMAP   11
 #define SYS_MPROTECT  10
+#define SYS_MSYNC     26   /* A6: Linux ABI number */
 #define SYS_BRK      12
 #define SYS_LSEEK    8    /* P3 */
 #define SYS_IOCTL   16    /* P5 */
@@ -473,9 +475,11 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
         return (uint64_t)-EINVAL;
     }
     if (!(flags & (MAP_SHARED | MAP_PRIVATE))) return (uint64_t)-EINVAL;
-    /* M4: MAP_SHARED + file-backed remains ENOSYS (needs page cache writeback
-     * from M9).  MAP_SHARED + anonymous now creates a shmem object. */
-    if ((flags & MAP_SHARED) && !anonymous) return (uint64_t)-ENOSYS;
+    /* A6: MAP_SHARED + file-backed is supported now.  It had been ENOSYS
+     * "pending page cache writeback from M9", but the page cache and the
+     * fault path were both already there -- the only thing missing was
+     * anything that set the dirty bit (see page_cache_mark_dirty()).
+     * MAP_SHARED + anonymous continues to go through shmem. */
     if (anonymous) {
         if (fd != (uint64_t)-1) return (uint64_t)-EINVAL;
     } else {
@@ -587,10 +591,30 @@ static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
     len = align_up_u64(len, PAGE_SIZE_BYTES);
     if (!user_mmap_range_ok(addr, len)) return (uint64_t)-EINVAL;
 
+    /* A6: flush a shared file mapping before it goes away, and remember
+     * whether these frames belong to the page cache.  Freeing a page-cache
+     * frame here would hand a frame that other mappings (and the cache
+     * itself) still reference back to the PMM. */
+    int shared_file = 0;
     {
         uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
+        vma_t *v = vma_find(cur->vma_list, addr);
+        struct ofd *shared_ofd = NULL;
+        uint64_t file_off = 0;
+        if (v && (v->flags & VMA_SHARED) && (v->flags & VMA_FILE) &&
+            !(v->flags & VMA_SHMEM) && v->file) {
+            shared_file = 1;
+            shared_ofd = v->file;
+            file_off = v->file_off + (addr - v->va_start);
+            vfs_ofd_get(shared_ofd);
+        }
         vma_remove_range(&cur->vma_list, addr, addr + len);
         spinlock_release_irqrestore(&cur->vma_lock, vf);
+
+        if (shared_ofd) {
+            page_cache_flush_range(shared_ofd, file_off, file_off + len);
+            vfs_ofd_put(shared_ofd);
+        }
     }
 
     for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
@@ -598,7 +622,7 @@ static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
         uint64_t phys = paging_get_phys(virt);
         if (phys) {
             paging_unmap(virt);
-            pmm_free_frame(phys);
+            if (!shared_file) pmm_free_frame(phys);
         }
     }
 
@@ -1586,6 +1610,43 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     }
     case SYS_MMAP:
         return syscall_mmap(a1, a2, a3, a4, a5, a6);
+    case SYS_MSYNC: {
+        /* A6: msync(addr, len, flags).  Writes a shared file mapping back
+         * through the page cache.  MS_INVALIDATE is accepted and ignored;
+         * MS_ASYNC and MS_SYNC behave identically because the flush is
+         * synchronous either way. */
+        uint64_t ms_addr = a1, ms_len = a2;
+        uint32_t ms_flags = (uint32_t)a3;
+        if (ms_addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
+        if (ms_flags & ~(1u | 2u | 4u)) return (uint64_t)-EINVAL;
+        if ((ms_flags & 1u) && (ms_flags & 4u)) return (uint64_t)-EINVAL;
+        if (ms_len == 0) return 0;
+        ms_len = align_up_u64(ms_len, PAGE_SIZE_BYTES);
+        if (!user_mmap_range_ok(ms_addr, ms_len)) return (uint64_t)-ENOMEM;
+
+        tcb_t *mc = sched_current();
+        if (!mc) return (uint64_t)-EINVAL;
+
+        uint64_t mf = spinlock_acquire_irqsave(&mc->vma_lock);
+        vma_t *mv = vma_find(mc->vma_list, ms_addr);
+        struct ofd *mo = NULL;
+        uint64_t moff = 0;
+        if (mv && (mv->flags & VMA_SHARED) && (mv->flags & VMA_FILE) &&
+            !(mv->flags & VMA_SHMEM) && mv->file) {
+            mo = mv->file;
+            moff = mv->file_off + (ms_addr - mv->va_start);
+            vfs_ofd_get(mo);
+        }
+        int unmapped = (mv == NULL);
+        spinlock_release_irqrestore(&mc->vma_lock, mf);
+
+        if (unmapped) return (uint64_t)-ENOMEM;
+        if (!mo) return 0;      /* private or anonymous: nothing to write */
+
+        int mr = page_cache_flush_range(mo, moff, moff + ms_len);
+        vfs_ofd_put(mo);
+        return mr == 0 ? 0 : (uint64_t)-EIO;
+    }
     case SYS_MUNMAP:
         return syscall_munmap(a1, a2);
     case SYS_MPROTECT:

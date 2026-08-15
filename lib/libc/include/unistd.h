@@ -155,6 +155,11 @@ typedef struct {
 #define MAP_ANONYMOUS MAP_ANON
 #define MAP_FAILED   ((void *)-1)
 
+/* A6: msync() flags (Linux values). */
+#define MS_ASYNC       0x01
+#define MS_INVALIDATE  0x02
+#define MS_SYNC        0x04
+
 /* Subset of struct stat we expose to user space.  Field layout must match
  * `struct vfs_stat` in the kernel (kernel/fs/vfs.h). */
 struct stat {
@@ -309,6 +314,7 @@ int     tcsetpgrp(int fd, pid_t pgid);
 void*   sbrk(intptr_t increment);
 void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);
 int     munmap(void *addr, size_t length);
+int     msync(void *addr, size_t length, int flags);   /* A6 */
 /* M4: demand-paged and shared VMAs */
 int     madvise(void *addr, size_t length, int advice);
 int     mincore(void *addr, size_t length, unsigned char *vec);

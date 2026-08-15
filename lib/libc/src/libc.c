@@ -729,6 +729,12 @@ int munmap(void *addr, size_t length) {
                                     0, 0, 0, 0));
 }
 
+/* A6: msync — write a shared file mapping back through the page cache. */
+int msync(void *addr, size_t length, int flags) {
+    return (int)syscall_ret(syscall(26, (uint64_t)addr, (uint64_t)length,
+                                    (uint64_t)flags, 0, 0, 0));
+}
+
 /* M4: madvise — advisory hints about memory usage patterns. */
 int madvise(void *addr, size_t length, int advice) {
     return (int)syscall_ret(syscall(28, (uint64_t)addr, (uint64_t)length,

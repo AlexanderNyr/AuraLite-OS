@@ -1,6 +1,6 @@
 # AuraLite OS — Test-Integrity and Maturity-Plan Repair
 
-## Status: IN PROGRESS 🚧 — A0–A5 complete; A6 planned
+## Status: ✅ COMPLETE — A0–A6 all delivered
 
 | Phase | Subject | State | Deliverable |
 |---|---|---|---|
@@ -10,7 +10,7 @@
 | A3 | Correct `MATURITY_PLAN.md` (M3, M6, M10) | ✅ **done** | `patches/AUDIT_A3_plan_corrections.patch` |
 | A4 | Retire the stale `bring-up only` claim | ✅ **done** (folded into A2) | — |
 | A5 | M3's real audit task: hostile-pointer sweep | ✅ **done** | `patches/AUDIT_A5_uaccess_audit.patch` |
-| A6 | M4: demand paging and shared VMAs | 📋 planned | `patches/AUDIT_A6_vma.patch` |
+| A6 | M4: file-backed `MAP_SHARED` + writeback | ✅ **done** | `patches/AUDIT_A6_vma.patch` |
 
 Findings this plan acts on are recorded in [`MATURITY_AUDIT.md`](MATURITY_AUDIT.md).
 
@@ -339,9 +339,54 @@ thread unmapping mid-copy. Stated rather than quietly dropped.
 
 ---
 
-### Phase A6 — M4: demand paging and shared VMAs
+### Phase A6 — M4: file-backed `MAP_SHARED` ✅ DONE
 
-Only after A0–A2 give it a gate that runs.
+**Demand paging already existed.** `handle_user_page_fault()` in
+`kernel/mm/vma.c` resolves lazy VMAs — anonymous, file-backed and shmem —
+and `syscall_mmap()` allocates nothing up front. Half of what this phase
+was scoped to build was in the tree. Only file-backed `MAP_SHARED` was
+missing, and it returned `-ENOSYS` "pending page cache writeback from M9".
+
+**The blocker was one line that was never written.** The page cache had a
+`dirty` field, and `page_cache_flush()` honoured it — but nothing in the
+entire tree ever set it. `dirty` was assigned `0` in two places and tested
+in one. Writeback was a no-op *by construction*, so M9 was not actually a
+prerequisite: the missing piece was the dirty bit, not the cache.
+
+Four changes, all small:
+
+| Change | File |
+|---|---|
+| `page_cache_mark_dirty()` + `page_cache_flush_range()` | `kernel/mm/page_cache.c/.h` |
+| Mark dirty on a write fault; map read-only on a *read* fault so the first store still traps | `kernel/mm/vma.c` |
+| Drop the `-ENOSYS`; add `msync(2)`; flush on `munmap()` | `kernel/arch/x86_64/syscall.c` |
+| `msync()` + `MS_*` flags | `lib/libc` |
+
+**The read-only-on-read-fault detail is the load-bearing one.** The VMA is
+`PROT_WRITE`, so the fault handler used to map the page writable on the
+very first (read) fault — after which the first store never trapped and the
+kernel never learned the page had changed. Mapping read-only until a write
+actually faults costs one extra fault per page, once.
+
+**`munmap()` no longer frees page-cache frames.** They are shared with the
+cache and with every other mapping of that file; returning them to the PMM
+would hand out live memory.
+
+#### Test gate — met
+
+- ✅ `/tests/mmapfile` **6/6**, `test_mmap_file` **8/8** (case 125).
+- ✅ **Negative control:** removing the `page_cache_mark_dirty()` call →
+  **4 of 8 assertions red**, including the `MAP_PRIVATE` control.
+- ✅ No regression: `test_mmap_shared` 7/7, `test_uaccess` 4/4,
+  `test_diskfs`, `make test-unit`, all four guards, `make iso`.
+
+**One assertion was deliberately withdrawn.** The first draft checked that
+a plain `read()` saw the store *before* `msync()`, and it failed —
+correctly. `vfs_read()` calls the filesystem read op directly and does not
+consult the page cache, so a dirty page is invisible to `read()` until it
+is written back. That is ordinary write-back behaviour, and POSIX does not
+promise coherence until `msync()`. Asserting it would have been asserting a
+guarantee the system never made.
 
 #### Deliverable
 

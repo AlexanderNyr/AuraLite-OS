@@ -13,7 +13,7 @@
 | M5 — POSIX process-model precision | ✅ complete | `patches/MAT_M5_complete.patch` |
 | M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
 | M3 — fault-recovering uaccess + audit | ✅ complete | `patches/MAT_M3_uaccess.patch` + `patches/AUDIT_A1_dead_gates.patch` |
-| M4 — demand-paged and shared VMAs | ✅ complete (anonymous `MAP_SHARED`) | `patches/AUDIT_A1_dead_gates.patch` |
+| M4 — demand-paged and shared VMAs | ✅ complete | `patches/AUDIT_A1_dead_gates.patch` + `patches/AUDIT_A6_vma.patch` |
 | M6–M14 | pending | — |
 
 This document answers:
@@ -322,9 +322,20 @@ ever asked the shell to run the generic `selftest`, which does not touch
 `MAP_SHARED` at all — so even had it run, it would have asserted nothing.
 AUDIT_A1 wrote the program and rewrote the gate.
 
-**Still open, and deliberately not claimed:** file-backed `MAP_SHARED`
-returns `-ENOSYS` (it needs page-cache writeback from M9), and there is no
-demand-paging fault path — mappings are populated eagerly.
+**Closed by AUDIT_A6.** Both gaps named here were wrong about the tree:
+
+- Demand paging **already existed** — `handle_user_page_fault()` resolves
+  lazy VMAs and `syscall_mmap()` allocates nothing up front. Mappings were
+  never populated eagerly.
+- File-backed `MAP_SHARED` did **not** need M9. The page cache and its
+  `dirty` field were already there; nothing ever *set* the bit, so
+  writeback was a no-op by construction. Setting it on a write fault (and
+  mapping read-only on a read fault so the first store still traps) was
+  enough. `msync(2)` added, `munmap()` flushes, and page-cache frames are
+  no longer freed to the PMM.
+
+Proved by `/tests/mmapfile` 6/6 and `test_mmap_file` 8/8, with a negative
+control that turns 4 of 8 assertions red.
 
 **Objective:** `mmap` with `MAP_SHARED` actually shares, and pages are faulted
 in on demand rather than eagerly copied at map time.

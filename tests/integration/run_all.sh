@@ -152,6 +152,7 @@ ALL_CASES=(
     test_diskfs
     test_fat32_mkdir
     test_mmap_shared
+    test_mmap_file
     test_uaccess
     test_process_spawn_many
     # USB: the U3-U9 phase gates from USB_PLAN.md, plus older class cases

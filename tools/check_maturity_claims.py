@@ -72,6 +72,16 @@ def claims():
          "MAP_SHARED" in syscall and "shmem" in syscall),
         ("M4 claims complete: a program proves it across fork",
          "MAP_SHARED" in mmapshare and "fork" in mmapshare),
+        # A6: file-backed MAP_SHARED is claimed complete too.
+        ("M4 claims complete: file-backed MAP_SHARED is no longer ENOSYS",
+         "MAP_SHARED) && !anonymous) return (uint64_t)-ENOSYS"
+         not in syscall),
+        ("M4 claims complete: the page cache dirty bit is actually set",
+         "page_cache_mark_dirty" in read("kernel", "mm", "page_cache.c") and
+         "page_cache_mark_dirty" in read("kernel", "mm", "vma.c")),
+        ("M4 claims complete: msync() is wired up",
+         "SYS_MSYNC" in syscall and "msync" in read("lib", "libc", "src",
+                                                    "libc.c")),
 
         # --- M5: claimed complete ---
         ("M5 claims complete: session/process-group syscalls are wired",

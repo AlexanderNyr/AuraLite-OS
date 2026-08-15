@@ -240,6 +240,13 @@ int handle_user_page_fault(uint64_t cr2, uint64_t err_code) {
             if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
             return -1;
         }
+        /* A6: a write fault on a shared file mapping dirties the cached
+         * page.  The page is mapped writable below, so this is the only
+         * moment the kernel is told a store happened -- subsequent writes
+         * to the same page do not fault again.  msync()/munmap() flush it. */
+        if (err_code & 0x02) {
+            page_cache_mark_dirty(snapshot.file, offset);
+        }
     } else {
         phys = pmm_alloc_frame();
         if (!phys) {
@@ -257,6 +264,19 @@ int handle_user_page_fault(uint64_t cr2, uint64_t err_code) {
     uint64_t pte = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
     if (snapshot.flags & VMA_WRITE) pte |= PAGE_FLAG_WRITABLE;
     if (!(snapshot.flags & VMA_EXEC)) pte |= PAGE_FLAG_NO_EXEC;
+
+    /* A6: dirty tracking for shared file mappings.
+     *
+     * A read fault used to map the page writable straight away (the VMA is
+     * PROT_WRITE), so the first store never faulted and the kernel never
+     * learned the page had changed -- the data stayed in RAM and msync()
+     * found nothing dirty.  Map it read-only on a read fault instead; the
+     * first write then takes a second fault, which lands in the
+     * mark_dirty() path above.  One extra fault per page, once. */
+    if ((snapshot.flags & VMA_SHARED) && (snapshot.flags & VMA_FILE) &&
+        !(snapshot.flags & VMA_SHMEM) && !(err_code & 0x02)) {
+        pte &= ~PAGE_FLAG_WRITABLE;
+    }
 
     paging_map(page_va, phys, pte);
     if (snapshot_file_retained) vfs_ofd_put(snapshot.file);
