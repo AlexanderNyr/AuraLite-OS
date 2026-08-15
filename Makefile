@@ -357,7 +357,8 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
                 $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
                 $(USER_BUILD)/tlstest.elf $(USER_BUILD)/httpx6.elf \
                 $(USER_BUILD)/rustes.elf \
-                $(USER_BUILD)/usertest.elf
+                $(USER_BUILD)/usertest.elf \
+                $(USER_BUILD)/mmapshare.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
 # the link line names; --whole-archive is not needed here because every
@@ -584,6 +585,12 @@ $(USER_BUILD)/tcpserver.o: userspace/tests/tcpserver/tcpserver.c $(USER_CFLAGS_I
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/hostilearg.o: userspace/tests/hostilearg/hostilearg.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# M4 (MATURITY_PLAN.md): MAP_SHARED across fork, with MAP_PRIVATE as the
+# control.  Added by AUDIT_A1 -- M4's gate had no program to run.
+$(USER_BUILD)/mmapshare.o: userspace/tests/mmapshare/mmapshare.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -1233,7 +1240,7 @@ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
                 socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 \
-                usertest
+                usertest mmapshare
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
 # Built with nasm -f win64 + lld-link, both already in REQUIRED_TOOLS (they

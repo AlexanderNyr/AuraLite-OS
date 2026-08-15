@@ -210,9 +210,17 @@ static void test_pipe_null(void) {
 /* Test 16: wait4() with bad status pointer. */
 static void test_wait4_bad_status(void) {
     TEST("wait4(-1, 0xDEAD, WNOHANG)");
-    /* WNOHANG=1 so it doesn't block; no children -> ECHILD or bad ptr -> EFAULT */
+    /* WNOHANG=1 so it doesn't block; no children -> ECHILD or bad ptr -> EFAULT.
+     *
+     * AUDIT_A1: this hardcoded -3 and called it ECHILD.  ECHILD is 10 in
+     * both kernel/lib/errno.h and lib/libc/include/errno.h, so the kernel's
+     * correct -ECHILD answer was scored as a failure -- the test was wrong,
+     * not the kernel.  This was the single failing case in the battery
+     * (29/30), and it had never been seen because the gate that runs this
+     * program could not execute (it called a lib.sh API that does not
+     * exist) and was not registered in run_all.sh either. */
     int64_t r = SYSCALL3(SYS_WAIT4, (uint64_t)-1, (void*)0xDEAD, 1);
-    if (r == -EFAULT || r == -3 /* ECHILD */ || r == 0) { PASS(); }
+    if (r == -EFAULT || r == -ECHILD || r == 0) { PASS(); }
     else { FAIL("expected -EFAULT/-ECHILD/0"); }
 }
 

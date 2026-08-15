@@ -1,11 +1,11 @@
 # AuraLite OS — Test-Integrity and Maturity-Plan Repair
 
-## Status: IN PROGRESS 🚧 — A0 next; A1–A6 planned
+## Status: IN PROGRESS 🚧 — A0, A1 complete; A2–A6 planned
 
 | Phase | Subject | State | Deliverable |
 |---|---|---|---|
-| A0 | Make the invisible failures visible | 📋 next | `patches/AUDIT_A0_registry_guard.patch` |
-| A1 | Repair the two dead gates (M3, M4) | 📋 planned | `patches/AUDIT_A1_dead_gates.patch` |
+| A0 | Make the invisible failures visible | ✅ **done** | `patches/AUDIT_A0_registry_guard.patch` |
+| A1 | Repair the two dead gates (M3, M4) | ✅ **done** | `patches/AUDIT_A1_dead_gates.patch` |
 | A2 | Triage the failing orphan cases | 📋 planned | `patches/AUDIT_A2_orphan_triage.patch` |
 | A3 | Correct `MATURITY_PLAN.md` (M3, M6, M10) | 📋 planned | `patches/AUDIT_A3_plan_corrections.patch` |
 | A4 | Retire the stale `bring-up only` claim | 📋 planned | `patches/AUDIT_A4_xhci_selftest.patch` |
@@ -90,9 +90,61 @@ whose gates were fictional. M6–M14 stay in `MATURITY_PLAN.md`.
 
 ---
 
-### Phase A1 — Repair the two dead gates
+### Phase A1 — Repair the two dead gates ✅ DONE
 
 **Objective:** M3 and M4 have gates that can actually run.
+
+**Landed. Both phases have evidence for the first time.**
+
+```
+test_uaccess      4/4   (usertest 30/30)
+test_mmap_shared  7/7   (mmapshare 4/4)
+```
+
+**M3 was not actually complete.** With the gate finally running, the
+hostile-pointer battery reported **29/30**. The failing case was
+`wait4(-1, 0xDEAD, WNOHANG)`.
+
+The interesting part is *who* was wrong. The test asserted
+`r == -3 /* ECHILD */`, but `ECHILD` is **10** in both `kernel/lib/errno.h`
+and `lib/libc/include/errno.h`. The kernel had answered `-ECHILD`
+correctly all along; the test scored a correct answer as a failure. Fixing
+the constant gives 30/30 with **no kernel change**.
+
+**A change I made and then removed.** My first reading blamed the kernel:
+`wait4` only validated the status pointer when `ret > 0`, so a bad pointer
+with `WNOHANG` and no ready child was never inspected. I added an up-front
+`validate_user_range()`. Reverting it did **not** redden the test — the
+`ECHILD` path returns before the validation could matter, so the code was
+unreachable. An unreachable "hardening" that no test can distinguish is
+dead weight, so it is not in this patch. The real defect was the test.
+
+**M4 had a gate with nothing to measure.** `test_mmap_shared.sh` only ever
+asked the shell to run the generic `selftest`, which does not touch
+`MAP_SHARED` at all. Even had it executed, it would have proved nothing.
+`/tests/mmapshare` was written for it: parent writes through a
+`MAP_SHARED|MAP_ANONYMOUS` page, child reads it and writes back, parent
+sees the reply — and a **`MAP_PRIVATE` control** in the same program, which
+must stay copy-on-write. A mapping layer that shared everything would pass
+the first half while being badly broken.
+
+#### Test gate — met
+
+- ✅ `test_uaccess` 4/4; `usertest` 30/30, no kernel fault, shell alive.
+- ✅ `test_mmap_shared` 7/7; `mmapshare` 4/4 including the private control.
+- ✅ Negative control 1: restoring the wrong `-3` constant → 29/30, red.
+- ✅ Negative control 2: changing the shared mapping to `MAP_PRIVATE` →
+  "child observed the parent's write" fails, 2 of 7 red.
+- ✅ Registry guard still green (124 cases); `make test-unit` green.
+
+**Both gates also had a second, quieter bug:** they sent their first shell
+command after a 3-second delay, but the prompt appears several seconds into
+boot — the other cases in this suite wait 6–7s. The command was swallowed,
+which looks exactly like the program failing. Both now wait 8s.
+
+#### Deliverable
+
+`patches/AUDIT_A1_dead_gates.patch`
 
 #### Tasks
 
@@ -100,16 +152,6 @@ whose gates were fictional. M6–M14 stay in `MATURITY_PLAN.md`.
       (`il_init`/`il_run_qemu`/`il_assert_grep`/`il_summary`).
 - [ ] Same for `test_mmap_shared.sh`.
 - [ ] Record what each now proves — and what it does not.
-
-#### Test gate
-
-- Both cases run and produce a verdict. If the underlying feature is
-  incomplete, the verdict is **red**, and that is the honest result.
-- Negative control on whichever passes.
-
-#### Deliverable
-
-`patches/AUDIT_A1_dead_gates.patch`
 
 ---
 
