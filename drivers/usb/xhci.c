@@ -36,6 +36,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/boot_info.h"
 #include "drivers/timer/pit.h"
+#include "kernel/arch/x86_64/irq.h"   /* U8: real interrupt handling */
 
 /* ---- xHCI capability registers (offsets from BAR0) ---- */
 #define XHCI_CAP_CAPLENGTH  0x00    /* Capability Register Length (8-bit) + HCIVERSION */
@@ -94,6 +95,7 @@
 #define XHCI_USBSTS_PCD       (1u << 4)    /* Port Change Detect */
 #define XHCI_USBSTS_CNR       (1u << 11)   /* Controller Not Ready */
 #define XHCI_USBSTS_HCE       (1u << 12)   /* HC Error */
+#define XHCI_USBSTS_EINT      (1u << 3)    /* Event Interrupt (RW1C) */
 
 /* CRCR (Command Ring Control Register) bits */
 #define XHCI_CRCR_RCS         (1u << 0)    /* Ring Cycle State */
@@ -168,6 +170,7 @@ struct xhci_trb {
 #define XHCI_TRB_STATUS_STAGE 4
 #define XHCI_TRB_LINK         6
 #define XHCI_TRB_TRANSFER_EVENT 32
+#define XHCI_TRB_PORT_STATUS_CHANGE 34   /* U8: Port Status Change Event */
 #define XHCI_TRB_CMD_COMPLETION 33
 #define XHCI_TRB_CMD_NOOP     23
 #define XHCI_TRB_CMD_ENABLE_SLOT  9
@@ -205,6 +208,14 @@ struct xhci_erst_entry {
 static volatile uint8_t *cap_regs = NULL;
 static volatile uint32_t *op_regs = NULL;
 static volatile uint32_t *rt_regs = NULL;
+/* U8: interrupt state.  The counters are deliberately observable -- the gate
+ * has to prove the IRQ is genuinely being taken, not merely registered. */
+static uint8_t  xhci_pci_bus, xhci_pci_dev, xhci_pci_func;
+static uint8_t  xhci_irq_line = 0xFF;
+static volatile uint32_t xhci_irq_count = 0;      /* IRQs taken */
+static volatile uint32_t xhci_irq_events = 0;     /* port-change events seen */
+static volatile uint32_t xhci_irq_pcd = 0;        /* Port Change Detect */
+static volatile int xhci_port_change_pending = 0;
 static volatile uint32_t *db_regs = NULL;
 static uint32_t op_offset = 0;
 static uint32_t rt_offset = 0;
@@ -335,6 +346,86 @@ static const char *speed_name(int speed) {
     }
 }
 
+/* xHCI interrupt handler — USB_PLAN U8.
+ *
+ * Scope note, stated plainly: this acknowledges interrupts and records that
+ * they happened; it deliberately does NOT drain the event ring.
+ *
+ * The consumer side (xhci_ev_dequeue / the parked list / ep_armed) is not
+ * synchronised against an interrupt context -- U1 built it for thread
+ * context and U6 made the interrupt endpoints poll it without a lock.
+ * Draining the ring from the IRQ handler would race with hid_poll_thread()
+ * mid-search and corrupt event_ring_idx.  Doing that quietly, and calling
+ * the phase done because the counters move, is exactly the kind of
+ * fabrication U2 deleted.  The honest increment is: take the IRQ, clear it
+ * correctly, prove it fires, and use Port Change Detect to make hotplug
+ * interrupt-driven; the transfer path keeps its (now working) polled
+ * consumer until the ring has a lock.
+ */
+static void xhci_irq_handler(struct registers *regs) {
+    (void)regs;
+    if (op_regs == NULL) return;
+
+    uint32_t sts = op_rd(XHCI_OP_USBSTS);
+
+    /* EINT is the aggregate "an interrupter wants attention" bit.  It is
+     * RW1C in USBSTS, and IP is separately RW1C in IMAN -- both must be
+     * cleared or the controller will re-assert the line immediately and the
+     * system will livelock on this IRQ. */
+    if (!(sts & XHCI_USBSTS_EINT)) return;      /* not ours (shared line) */
+
+    xhci_irq_count++;
+    /* Detect "a port changed" two ways.
+     *
+     * USBSTS.PCD is the documented signal, but QEMU never raises it here --
+     * measured directly: a whole boot plus an attach and a detach produced
+     * 257 interrupts, every one a bare EINT, and not a single PCD.  The
+     * Port Status Change Event does arrive, as a TRB in the event ring.
+     *
+     * So peek at the ring head WITHOUT consuming it: read the TRB the
+     * consumer would read next and check its type.  This is a read-only
+     * hint -- the ring index and cycle are untouched, the consumer thread
+     * still owns dequeueing, and a stale or duplicated hint costs one extra
+     * hotplug scan and nothing worse.  That keeps the handler out of the
+     * unlocked consumer state, which is why it does not drain the ring. */
+    int port_changed = (sts & XHCI_USBSTS_PCD) ? 1 : 0;
+    if (!port_changed && event_ring != NULL) {
+        const struct xhci_trb *head = &event_ring[event_ring_idx];
+        /* trb_type() is defined further down; the field is bits 10-15 of
+         * flags (see the TRB layout note at the top of this file). */
+        if ((head->flags & XHCI_TRB_CYCLE) == (uint32_t)event_ring_cycle &&
+            ((head->flags >> XHCI_TRB_TYPE_SHIFT) & 0x3F) == XHCI_TRB_PORT_STATUS_CHANGE)
+            port_changed = 1;
+    }
+    if (port_changed) {
+        xhci_irq_pcd++;
+        xhci_port_change_pending = 1;
+    }
+
+    /* Clear USBSTS (RW1C: write back the bits that were set). */
+    op_wr(XHCI_OP_USBSTS, sts & (XHCI_USBSTS_EINT | XHCI_USBSTS_PCD |
+                                 XHCI_USBSTS_HSE | XHCI_USBSTS_HCE));
+
+    /* Clear IP on interrupter 0, preserving IE. */
+    uint32_t iman = rt_rd(XHCI_RT_IR_IMAN(0));
+    rt_wr(XHCI_RT_IR_IMAN(0), iman | XHCI_IR_IMAN_IP);
+
+    xhci_irq_events++;
+}
+
+/* Observability for the U8 gate. */
+uint32_t xhci_irq_taken(void)      { return xhci_irq_count; }
+/* Consume the "a port changed" flag set by the IRQ handler.  Returns 1 at
+ * most once per interrupt, so the hotplug thread can react immediately
+ * instead of waiting out its 500 ms tick. */
+int xhci_take_port_change(void) {
+    if (!xhci_port_change_pending) return 0;
+    xhci_port_change_pending = 0;
+    return 1;
+}
+uint32_t xhci_irq_port_changes(void) { return xhci_irq_pcd; }
+int      xhci_irq_line_number(void)  { return (int)xhci_irq_line; }
+
 int xhci_init(void) {
     /* Find xHCI: class 0x0C/0x03/prog_if 0x30. */
     uint8_t bus = 0, dev = 0, func = 0;
@@ -365,6 +456,7 @@ int xhci_init(void) {
     /* Map BAR0. xHCI needs more MMIO space than the others — map 64 KiB.
      * BAR0 may be a 64-bit BAR (type bits 2:1 == 10b), in which case the
      * upper 32 bits of the physical address live in BAR1 (index 1). */
+    xhci_pci_bus = bus; xhci_pci_dev = dev; xhci_pci_func = func;
     uint32_t bar0 = pci_get_bar(bus, dev, func, 0);
     uint64_t mmio_phys = (uint64_t)(bar0 & ~0xFu);
     if ((bar0 & 0x6) == 0x4) { /* 64-bit BAR */
@@ -563,6 +655,32 @@ int xhci_init(void) {
 
     /* 10) Start the HC: INTE + RUN. */
     op_wr(XHCI_OP_USBCMD, XHCI_USBCMD_INTE | XHCI_USBCMD_RUN);
+
+    /* U8: take the interrupt.  INTE and IMAN.IE were already being set, so
+     * the controller has been asserting its line since bring-up with
+     * nothing listening -- the 500 ms hotplug poll was doing all the work.
+     * IMOD is left at 0 (no moderation): at these event rates coalescing
+     * only adds latency, and the gate measures that latency. */
+    /* Enable wake-on-connect/disconnect on every root port, so a device
+     * appearing or leaving raises Port Change Detect.  Without these the
+     * controller only interrupts for transfer events -- observed directly:
+     * 257 IRQs taken during a boot, every one of them EINT, and a
+     * device_add produced none at all. */
+    for (int p = 0; p < num_ports; p++) {
+        uint32_t ps = port_rd(p);
+        /* Keep PP, add the wake enables; mask off the RW1C change bits so
+         * this does not silently acknowledge a pending event. */
+        port_wr(p, (ps & XHCI_PORTSC_PP) | XHCI_PORTSC_WCE | XHCI_PORTSC_WDE);
+    }
+
+    xhci_irq_line = pci_get_interrupt_line(xhci_pci_bus, xhci_pci_dev, xhci_pci_func);
+    if (xhci_irq_line < 16) {
+        irq_register_handler((int)xhci_irq_line, xhci_irq_handler);
+        kprintf("[xhci] IRQ line %u registered (INTE=1, IMAN.IE=1)\n", xhci_irq_line);
+    } else {
+        kprintf("[xhci] no usable PCI INTx line (0x%02x); hotplug stays on the "
+                "500 ms poll\n", xhci_irq_line);
+    }
 
     /* Wait for the HC to start (HCH clears). */
     t = 1000000;
@@ -1833,5 +1951,14 @@ void xhci_self_test(void) {
 
     /* U2: no code path in this driver invents an answer any more.  What is
      * missing is missing, and says so when it is called. */
-    kprintf("[xhci] NOT IMPLEMENTED: bulk (U5), interrupt (U6), streams/UAS\n");
+    /* U8: report the interrupt state, and keep the remaining gap honest.
+     * The previous line still said bulk (U5) and interrupt (U6) were not
+     * implemented, which stopped being true two phases ago. */
+    if (xhci_irq_line < 16)
+        kprintf("[xhci] IRQ %u: %u taken, %u port-change event(s)\n",
+                xhci_irq_line, xhci_irq_count, xhci_irq_pcd);
+    else
+        kprintf("[xhci] no IRQ routed; hotplug on the 500 ms poll backstop\n");
+    kprintf("[xhci] NOT IMPLEMENTED: streams/UAS; event ring is still drained "
+            "by the consumer thread, not the IRQ (USB_PLAN.md U8)\n");
 }

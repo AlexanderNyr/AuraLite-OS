@@ -26,6 +26,11 @@ int xhci_disable_slot(uint8_t slot_id);
 /* U3: release a device's slot + contexts + rings (detach path). */
 int xhci_free_device(uint8_t usb_addr);
 int xhci_active_slot_count(void);
+/* U8: interrupt observability and the interrupt-driven hotplug hint. */
+uint32_t xhci_irq_taken(void);
+uint32_t xhci_irq_port_changes(void);
+int      xhci_irq_line_number(void);
+int      xhci_take_port_change(void);
 /* U4: re-program EP0 max packet once the real bMaxPacketSize0 is
  * known (full-speed devices only; no-op otherwise). */
 int xhci_update_max_packet0(uint8_t dev_addr, uint16_t mps0);

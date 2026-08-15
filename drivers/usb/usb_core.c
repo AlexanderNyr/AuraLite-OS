@@ -977,14 +977,30 @@ void usb_hotplug_poll(void) {
 }
 static void usb_hotplug_thread(void *arg) {
     (void)arg;
-    for (;;) { usb_hotplug_poll(); timer_sleep_ms(500); }
+    /* U8: the xHCI interrupt handler sets a flag on Port Change Detect, so
+     * an attach or detach is noticed at interrupt time rather than at the
+     * next 500 ms tick.  The poll remains as a backstop -- for the three
+     * controllers that still have no IRQ handler, and so that a missed or
+     * unroutable interrupt degrades to the old latency instead of hanging.
+     * The sleep is 10 ms and the full scan still runs every 500 ms. */
+    int ticks = 0;
+    for (;;) {
+        if (xhci_take_port_change()) {
+            usb_hotplug_poll();
+            ticks = 0;
+        } else if (++ticks >= 50) {
+            usb_hotplug_poll();
+            ticks = 0;
+        }
+        timer_sleep_ms(10);
+    }
 }
 int usb_hotplug_start(void) {
     static int started = 0;
     if (started) return 0;
     kthread_create(usb_hotplug_thread, NULL, "usb-hotplug");
     started = 1;
-    kprintf("[usb] hotplug monitor started (500ms poll; no USB IRQ is taken — USB_PLAN.md U8)\n");
+    kprintf("[usb] hotplug monitor started (xHCI interrupt-driven, %d ms poll backstop)\n", 500);
     return 0;
 }
 
