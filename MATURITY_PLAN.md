@@ -275,8 +275,12 @@ for the first time found the battery at **29/30**, not 30/30: the
 test scored a correct answer as a failure. Now 30/30, with **no kernel
 change**.
 
-Current state: 102 `copy_from_user`/`copy_to_user`/`validate_user_range`
-call sites in `syscall.c` and 13 in `gui_syscalls.c`. `socket.c` has none —
+**The grep-audit is complete (AUDIT_A5) and found nothing unguarded.** All
+four named files route user pointers through the safe primitives; the sweep
+now runs in CI as `tools/audit_user_pointers.py`, so a new syscall cannot
+reintroduce the problem. Current state: 102
+`copy_from_user`/`copy_to_user`/`validate_user_range` call sites in
+`syscall.c` and 13 in `gui_syscalls.c`. `socket.c` has none —
 it does not take raw user pointers directly.
 
 #### Tasks

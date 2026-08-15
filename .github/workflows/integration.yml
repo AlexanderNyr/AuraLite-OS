@@ -68,6 +68,14 @@ jobs:
       - name: Run host unit tests (BL1 test_boot_info included)
         run: make test-unit
 
+      # AUDIT_A5.  MATURITY_PLAN.md M3's remaining task was a grep-audit of
+      # every user-pointer dereference -- the kind of sweep a human does
+      # once and never repeats.  Written as a tool and run here instead, so
+      # a new syscall that dereferences an argument without going through
+      # copy_from_user/copy_to_user/validate_user_range fails the build.
+      - name: User-pointer dereference audit
+        run: python3 tools/audit_user_pointers.py --check
+
       # AUDIT_A3.  MATURITY_PLAN.md's phase statuses are prose, and prose
       # does not fail a build: M3 and M4 had landed while still listed
       # "pending", M6 understated tcp.c, and M10 asked for USB work that

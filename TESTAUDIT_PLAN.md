@@ -1,6 +1,6 @@
 # AuraLite OS — Test-Integrity and Maturity-Plan Repair
 
-## Status: IN PROGRESS 🚧 — A0–A4 complete; A5, A6 planned
+## Status: IN PROGRESS 🚧 — A0–A5 complete; A6 planned
 
 | Phase | Subject | State | Deliverable |
 |---|---|---|---|
@@ -9,7 +9,7 @@
 | A2 | Triage the failing orphan cases | ✅ **done** | `patches/AUDIT_A2_orphan_triage.patch` |
 | A3 | Correct `MATURITY_PLAN.md` (M3, M6, M10) | ✅ **done** | `patches/AUDIT_A3_plan_corrections.patch` |
 | A4 | Retire the stale `bring-up only` claim | ✅ **done** (folded into A2) | — |
-| A5 | M3's real audit task: hostile-pointer sweep | 📋 planned | `patches/AUDIT_A5_uaccess_audit.patch` |
+| A5 | M3's real audit task: hostile-pointer sweep | ✅ **done** | `patches/AUDIT_A5_uaccess_audit.patch` |
 | A6 | M4: demand paging and shared VMAs | 📋 planned | `patches/AUDIT_A6_vma.patch` |
 
 Findings this plan acts on are recorded in [`MATURITY_AUDIT.md`](MATURITY_AUDIT.md).
@@ -288,13 +288,50 @@ been fixing the symptom, so both landed together in A2.
 
 ---
 
-### Phase A5 — M3's real audit task
+### Phase A5 — M3's real audit task ✅ DONE
 
-The uaccess primitives exist; the *sweep* the phase asked for does not.
-Grep-audit every user-pointer dereference in `syscall.c`, `socket.c`,
-`gui_syscalls.c`, `gpu_syscalls.c`; route each through the safe primitives;
-add the hostile-pointer battery (unmapped, wrap-around, kernel-space,
-unmapped-mid-copy).
+**The sweep found nothing to fix — and that is the reportable result.**
+All 3,257 lines across `syscall.c`, `gui_syscalls.c`, `gpu_syscalls.c` and
+`socket.c` route user pointers through `copy_from_user`, `copy_to_user`,
+`copy_string_from_user` or `validate_user_range`. The uaccess path was in
+better shape than the plan assumed.
+
+**So the deliverable is the sweep itself, not a fix.** A grep-audit is the
+kind of thing done once, declared finished, and never repeated;
+`tools/audit_user_pointers.py` does it on every CI run. A new syscall that
+dereferences an argument without a guard now fails the build.
+
+**Four defects in my own checker, each found by a negative control.** This
+is worth recording, because a checker that reports "clean" is worthless
+unless it is known to be capable of reporting dirty:
+
+| # | Defect | Consequence |
+|---|---|---|
+| 1 | Flagged the declaration line itself | 13 findings, all false — the guard is on the *next* line |
+| 2 | `*ptr = x` skipped as a comment continuation | Blind to the most obvious unsafe shape there is |
+| 3 | Guards matched by bare name, file-wide | A guard in `syscall_vfs_write()` excused a dereference 800 lines away |
+| 4 | `memcpy` matched only its first argument | `memcpy(tmp, user_buf, 8)` reported the *kernel* buffer |
+
+Defect 3 is the instructive one: `user_buf` is a parameter near the top of
+the file **and** a local in a case arm much later. Name-based tracking made
+the checker structurally unable to see the bug its own control had planted.
+Symbols are now scoped by brace depth.
+
+#### Test gate — met
+
+- ✅ Clean tree: no unchecked dereferences across 4 files.
+- ✅ Negative control 1: `*ut = now` unguarded → caught at `syscall.c:1757`.
+- ✅ Negative control 2: `memcpy(tmp, user_buf, 8)` → caught at `:1181`.
+- ✅ Negative control 3: `((char*)user_arg)[0]` behind a cast → caught at
+  `:1484`.
+- ✅ `test_uaccess` still 4/4 (usertest 30/30); all four guards green;
+  build green. No kernel source touched.
+
+**Not attempted:** the "page unmapped between the length check and the
+copy" case from M3's task list. `validate_user_range()` is documented in
+`usercopy.h` as *optimistic* — the real protection is the #PF fixup in
+`copy_*_user`, and provoking that race deterministically needs a second
+thread unmapping mid-copy. Stated rather than quietly dropped.
 
 #### Deliverable
 
