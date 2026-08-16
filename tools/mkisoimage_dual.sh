@@ -167,6 +167,14 @@ mmd    -i "$FAT_IMG" ::/EFI/BOOT
 mcopy  -i "$FAT_IMG" "$EFI_APP"    ::/EFI/BOOT/BOOTX64.EFI
 mcopy  -i "$FAT_IMG" "$KERNEL_ELF" ::/EFI/BOOT/KERNEL.ELF
 mcopy  -i "$FAT_IMG" "$KERNEL_ELF" ::/KERNEL.ELF
+# I386_PLAN I1: the i386 kernel, read by BIOS Stage 2 on a CPU without
+# long mode (8.3 name KERNEL32.ELF -- "KERNEL32ELF" as the padded lookup
+# key in stage2_start.asm).  Optional so that x86_64-only rebuilds of
+# older trees keep working; Stage 2 prints an honest refusal when a
+# 32-bit CPU meets an image without it.
+if [ -s "$BUILD/kernel32.elf" ]; then
+    mcopy -i "$FAT_IMG" "$BUILD/kernel32.elf" ::/KERNEL32.ELF
+fi
 if [ -f "$BUILD/initrd.tar" ]; then
     # BIOS Stage 2 loads the archive at 24 MiB inside the kernel's fixed
     # 0..40 MiB early-boot reservation (PMM_EARLY_BOOT_RESERVE), leaving a

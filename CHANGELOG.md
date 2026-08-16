@@ -2,6 +2,81 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [i386 Phase I1 — The dual-kernel boot chain] 2026-08-16
+
+`I386_PLAN.md` phase I1: the same `make iso` image now carries a second
+kernel, and BIOS Stage 2 picks by CPUID. A 32-bit CPU that yesterday got
+I0's halt now boots `KERNEL32.ELF` into a protected-mode stub that proves
+the entire 32-bit hand-off chain end to end.
+
+- **`boot/bios/stage2/elf32.inc` (new)**: ELF32 loader — class check
+  (each loader refuses the other's ELFCLASS, so a mis-copied kernel fails
+  at parse time, not jump time), 32-bit phdr walk, PT_LOAD copy through
+  unreal `FS`. `p_paddr` is the destination verbatim: the stub is linked
+  VMA = LMA at `0x00100000`; paging belongs to the i386 kernel (I3).
+- **`boot/bios/stage2/pmode32.inc` (new)**: flat 32-bit GDT, `CR0.PE`,
+  far jump, segment reload, and the 32-bit hand-off contract: **ESI =
+  `boot_info_t` phys** (the register sibling of the 64-bit path's RDI).
+- **Stage 2**: I0's halt becomes a branch. The BL10 verdict is latched in
+  `lm_absent`; the FAT stage looks up `KERNEL32.ELF` instead of
+  `KERNEL.ELF` on the 32-bit path, and the final hand-off calls
+  `enter_prot32` instead of building 4-level tables. The refusal remains
+  for no-LM + no-KERNEL32.ELF (`.fat_no_kernel` now distinguishes the
+  two paths and never falls through to a success banner).
+- **`kernel/arch/i386/stub/` (new)**: `boot32.asm` (zero `.bss`, own
+  stack, cdecl push of ESI), `main32.c` (COM1 by port I/O, banner,
+  `boot_info_t` magic verdict, mmap/initrd echo), `kernel32.ld`. The stub
+  is scoped to die in I2; nothing links against it.
+- **`Makefile`**: `kernel32` target — same clang/lld, one width down
+  (`--target=i686-elf`, `nasm -f elf32`, `ld.lld -m elf_i386`); zero new
+  REQUIRED_TOOLS. `kernel/arch/i386/` is excluded from the x86_64 kernel
+  wildcard. `iso-dual` builds and ships `/KERNEL32.ELF`.
+- **The bug the canary caught**: the first stub build printed
+  `mmap entries: 0` — the i386 psABI aligns `uint64_t` to 4 bytes where
+  AMD64 uses 8, so `boot_info.h` compiled to different `mmap[]` offsets
+  at the two widths and the stub read the map 8 bytes early. Fixed with
+  `-malign-double` in `CFLAGS32`; the smoke test asserts the count is
+  non-zero so the contract cannot silently regress. This is I6's thesis
+  in miniature, found by the first 32-bit compile in the tree's history.
+- Tests: `tests/integration/i386_boot32_smoke.sh` — 13 assertions across
+  the i386 boot, the x86_64 no-regression run, and the `mdel` negative
+  control (image minus `KERNEL32.ELF` refuses instead of hanging).
+  `bl4_boot_smoke.sh` / `bl7_dual_smoke.sh` verified green after the
+  Stage 2 changes.
+
+## [i386 Phase I0 — An honest refusal on a 32-bit CPU] 2026-08-16
+
+`I386_PLAN.md` phase I0, the first phase of the i386 support plan and the
+one that repairs a defect rather than adding a feature: booting
+`build/auralite.iso` on a CPU without long mode hung silently right after
+`[BL4] entering long mode; jumping to kernel _start` — the log claimed a
+hand-off that never happened. There was no CPUID instruction anywhere in
+the boot chain (`grep -rn cpuid boot/bios/` counted zero).
+
+- **`I386_PLAN.md` (new, phases I0–I9).** The 32-bit support plan, in the
+  structure of `FIXES_PLAN.md` / `WIN32_PLAN.md` / `USB_PLAN.md`:
+  dependency-ordered phases, a definition of done and a test gate for
+  each, one `.patch` per phase. Decisions: i686 kernel floor with a
+  386-reachable diagnostic (D1), one dual-kernel image chosen by CPUID
+  (D2), non-PAE paging with the NX loss stated rather than buried (D3),
+  `int 0x80` with AuraLite's own syscall numbers (D4), BSP-only at first
+  (D5), a `paddr_t`/`uintptr_t` typing discipline for the 877-site width
+  sweep (D6), and the refusal shipping first, alone (D7).
+- **`boot/bios/stage2/lmcheck.inc` (new)**: `check_long_mode` — EFLAGS.ID
+  toggle test (i486-and-earlier have no CPUID at all), CPUID extended-leaf
+  presence (`0x80000000 >= 0x80000001`), then `0x80000001 EDX.LM`
+  (bit 29). Runs in real mode on a 386; CF=1 on any "no".
+- **Stage 2**: calls the check after the unreal-mode self-test and before
+  any long-mode commitment. On "no" it prints a `[BL10]` refusal to BOTH
+  COM1 and the VGA text console (new `vga_puts`, INT 10h teletype — the
+  machine this fires on may have no serial cable) and halts. On "yes" it
+  logs `[BL10] CPU supports long mode` and proceeds unchanged.
+- Tests: `tests/integration/i386_refusal_smoke.sh` — refusal under
+  `qemu-system-i386` (qemu32) and `-cpu 486` (the no-CPUID path), plus the
+  same image bytes booting to the kernel banner under
+  `qemu-system-x86_64` (8 assertions). The negative control is the plan's
+  own Fact 1: reverting the Stage 2 hunk restores the measured hang.
+
 ## [USB_PLAN + two CI build fixes] 2026-08-14
 
 Adds the full-USB plan and repairs the two failures that break `make iso` and

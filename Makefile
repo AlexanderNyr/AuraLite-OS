@@ -50,12 +50,14 @@ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 # The linker script fixes the higher-half address; no --image-base needed.
 LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
 
-KERNEL_SRCS := $(shell find kernel drivers -name '*.c') w32/src/w32_pe.c
+KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*') w32/src/w32_pe.c
 # WIN32_PLAN.md W32-3: the kernel PE loader calls the same parser the host
 # unit test and fuzz corpus exercise (D2 -- one implementation, tested once).
 # w32/src/ is freestanding C with no libc dependency, so it compiles with the
 # kernel CFLAGS unchanged.
-KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
+# I386_PLAN I1: kernel/arch/i386/ is excluded from the x86_64 kernel -- it
+# builds through the separate kernel32 target with the i686 toolchain flags.
+KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*')
 # NOTE: a .c and .asm file MUST NOT share a base name (e.g. foo.c + foo.asm),
 # because both compile to the same object path build/.../foo.o, which would
 # collide and double-link. Keep assembly stubs named distinctly (e.g.
@@ -91,6 +93,49 @@ deps-check:
 	fi
 
 kernel: $(KERNEL_ELF)
+
+# =============================================================================
+# I386_PLAN I1: the i386 boot stub (KERNEL32.ELF).
+#
+# Same clang/lld toolchain, one width down (--target=i686-elf, nasm -f
+# elf32, ld.lld -m elf_i386) -- deps-check does not grow.  The stub is
+# the 32-bit hand-off proof, not the ported kernel; phase I2 replaces it
+# with the real kmain32 build.  -mno-sse et al. for the same reason the
+# 64-bit kernel sets them; i386 additionally gets -mfpmath=387 territory
+# only when userspace arrives (I5) -- the stub does no floating point.
+# =============================================================================
+KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
+KERNEL32_DIR  := kernel/arch/i386/stub
+# -malign-double: the i386 System V psABI aligns uint64_t to 4 bytes, the
+# AMD64 one to 8.  boot_info_t is written by 16-bit assembly against
+# offsets generated from the 64-bit layout (build/boot_offsets.inc), so a
+# plain -m32 compile silently reads mmap[] 8 bytes early -- measured: the
+# I1 stub printed "mmap entries: 0" until this flag landed.  With
+# -malign-double both ABIs agree on every offset in the struct, and the
+# stub asserts that at runtime via the magic + mmap_count checks.
+CFLAGS32      := --target=i686-elf \
+                 -std=c11 -ffreestanding -fno-stack-protector \
+                 -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2 \
+                 -malign-double \
+                 -fno-omit-frame-pointer \
+                 -Wall -Wextra -Wno-unused-parameter \
+                 -O2 -g -I .
+
+$(BUILD_DIR)/kernel32/boot32.o: $(KERNEL32_DIR)/boot32.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f elf32 -o $@ $<
+
+$(BUILD_DIR)/kernel32/main32.o: $(KERNEL32_DIR)/main32.c boot/shared/boot_info.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS32) -c $< -o $@
+
+$(KERNEL32_ELF): $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o $(KERNEL32_DIR)/kernel32.ld
+	$(LD) -m elf_i386 -nostdlib -static -T $(KERNEL32_DIR)/kernel32.ld \
+	    $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o -o $@
+	@echo "  [kernel32] $@ ($$(du -h $@ | cut -f1))"
+
+.PHONY: kernel32
+kernel32: $(KERNEL32_ELF)
 
 # =============================================================================
 # BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
@@ -1182,7 +1227,7 @@ ESP_MB ?= 48
 export ESP_MB
 
 .PHONY: iso-dual
-iso-dual: deps-check kernel $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
+iso-dual: deps-check kernel kernel32 $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
 	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)
 
 # ---- BL8: `make iso` uses the custom dual-boot loader ---------------------

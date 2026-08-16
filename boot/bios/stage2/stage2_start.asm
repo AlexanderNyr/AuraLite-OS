@@ -184,6 +184,33 @@ stage2_entry:
     call uart16_puts
 .unreal_done:
 
+    ; ---- Long-mode capability check (BL10 / I386_PLAN I0+I1) --------
+    ; Everything on the 64-bit path commits the CPU to WRMSR against
+    ; IA32_EFER and a far jump into an L-bit segment.  Neither is
+    ; defined on a CPU without long mode, and the observed behaviour
+    ; there (qemu-system-i386) was a silent hang right after the
+    ; "entering long mode" banner.  Ask first.
+    ;
+    ; I0 turned the answer "no" into a halt with a diagnostic.  I1
+    ; turns it into a *branch*: the verdict is recorded here and the
+    ; FAT stage below loads KERNEL32.ELF instead of KERNEL.ELF.  The
+    ; refusal remains for the one case that still deserves it -- no
+    ; long mode AND no 32-bit kernel on the partition (.fat_no_kernel).
+    call check_long_mode
+    jnc  .lm_ok
+    mov  byte [lm_absent], 1
+    mov  si, msg_no_lm_1
+    call uart16_puts
+    call vga_puts
+    mov  si, msg_lm_32path
+    call uart16_puts
+    call vga_puts
+    jmp  .lm_done
+.lm_ok:
+    mov  si, msg_lm_ok
+    call uart16_puts
+.lm_done:
+
     ; ---- ACPI MADT CPU enumeration (BL9.smp) ------------------------
     ; Locate the RSDP, then walk RSDT/XSDT -> MADT to discover every
     ; enabled Local APIC (one per logical CPU) and its APIC ID.  Requires
@@ -221,8 +248,14 @@ stage2_entry:
     mov  si, msg_fat_init_ok
     call uart16_puts
 
-    ; Look up KERNEL.ELF -- 11-byte 8.3, space-padded, uppercase.
+    ; Look up the kernel this CPU can execute (I386_PLAN I1):
+    ; KERNEL.ELF (x86_64) when long mode exists, KERNEL32.ELF (i386)
+    ; when it does not.  11-byte 8.3, space-padded, uppercase.
     mov  si, name_kernel
+    cmp  byte [lm_absent], 0
+    je   .kname_done
+    mov  si, name_kernel32
+.kname_done:
     call fat_find
     jc   .fat_no_kernel
     mov  si, msg_fat_found
@@ -245,12 +278,26 @@ stage2_entry:
     ; Parse the ELF and copy its PT_LOAD segments to their physical
     ; addresses.  Requires FS still be in unreal-mode flat form; we
     ; never touched FS after go_unreal, so we are fine.
+    ;
+    ; Class dispatch (I1): each loader validates its own ELFCLASS, so
+    ; a KERNEL32.ELF that is accidentally a 64-bit binary (or vice
+    ; versa) fails loudly here rather than at the jump.
+    cmp  byte [lm_absent], 0
+    jne  .parse_elf32
     mov  eax, 0x00200000
     mov  edx, [fat_result_size]
     call elf_load
     jc   .elf_fail
     mov  si, msg_elf_ok
     call uart16_puts
+    jmp  .elf_parsed
+.parse_elf32:
+    mov  eax, 0x00200000
+    call elf32_load
+    jc   .elf_fail
+    mov  si, msg_elf32_ok
+    call uart16_puts
+.elf_parsed:
 
     ; Load the optional initrd into the upper half of the kernel's fixed
     ; 0..32 MiB early-boot reservation.  The PMM keeps this region allocated,
@@ -296,6 +343,10 @@ stage2_entry:
     call uart16_puts
 .initrd_done:
 
+    ; ---- Final hand-off: one of two exits, chosen by the BL10 verdict.
+    cmp  byte [lm_absent], 0
+    jne  .go_prot32
+
     ; Build the 4-level page tables at PT_BASE.  Uses FS (unreal flat).
     call build_page_tables
     mov  si, msg_pt_ok
@@ -310,11 +361,36 @@ stage2_entry:
     ; unreachable
     jmp  .fat_done
 
+.go_prot32:
+    ; 32-bit path (I1): no page tables here -- the i386 kernel enables
+    ; paging itself in phase I3.  enter_prot32 never returns.
+    mov  si, msg_pm32_go
+    call uart16_puts
+    call enter_prot32
+    ; unreachable
+    jmp  .fat_done
+
 .elf_fail:
     mov  si, msg_elf_fail
     call uart16_puts
     jmp  .fat_done
 .fat_no_kernel:
+    ; On the 32-bit path a missing KERNEL32.ELF is the I0 refusal case:
+    ; the CPU cannot run the 64-bit kernel and the partition carries no
+    ; 32-bit one.  Say so on both consoles and halt (never fall through
+    ; to the "done" banner, which would read like success).
+    cmp  byte [lm_absent], 0
+    je   .fat_no_kernel64
+    mov  si, msg_no_k32
+    call uart16_puts
+    call vga_puts
+    mov  si, msg_no_lm_2
+    call uart16_puts
+    call vga_puts
+.no_k32_hang:
+    hlt
+    jmp  .no_k32_hang
+.fat_no_kernel64:
     mov  si, msg_fat_no_kernel
     call uart16_puts
     jmp  .fat_done
@@ -345,6 +421,13 @@ msg_disk_ok:     db "[BL3] disk read OK", 0x0D, 0x0A, 0
 msg_disk_fail:   db "[BL3] disk read FAIL", 0x0D, 0x0A, 0
 msg_unreal_ok:   db "[BL3] unreal mode OK", 0x0D, 0x0A, 0
 msg_unreal_fail: db "[BL3] unreal mode FAIL", 0x0D, 0x0A, 0
+msg_lm_ok:       db "[BL10] CPU supports long mode", 0x0D, 0x0A, 0
+msg_no_lm_1:     db "[BL10] this CPU has no long mode (x86_64)", 0x0D, 0x0A, 0
+msg_no_lm_2:     db "[BL10] halting -- see I386_PLAN.md for the 32-bit kernel roadmap", 0x0D, 0x0A, 0
+msg_lm_32path:   db "[BL10] taking the 32-bit path: KERNEL32.ELF", 0x0D, 0x0A, 0
+msg_no_k32:      db "[BL10] no KERNEL32.ELF on the boot partition; cannot boot this CPU", 0x0D, 0x0A, 0
+msg_elf32_ok:    db "[BL10] ELF32 PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
+msg_pm32_go:     db "[BL10] entering protected mode; jumping to kernel32 _start", 0x0D, 0x0A, 0
 msg_acpi_rsdp_ok:   db "[BL9] ACPI RSDP found", 0x0D, 0x0A, 0
 msg_acpi_no_rsdp:   db "[BL9] ACPI RSDP not found; BSP-only", 0x0D, 0x0A, 0
 msg_acpi_madt_done: db "[BL9] ACPI MADT parsed", 0x0D, 0x0A, 0
@@ -364,15 +447,46 @@ msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0
 msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
 
 ; File names in 8.3 uppercase, space-padded, 11 bytes exact.
-name_kernel: db "KERNEL  ELF"
-name_initrd: db "INITRD  TAR"
+name_kernel:   db "KERNEL  ELF"
+name_kernel32: db "KERNEL32ELF"
+name_initrd:   db "INITRD  TAR"
 
 boot_drive: db 0
+lm_absent:  db 0        ; BL10 verdict: 1 = no long mode, take the 32-bit path
 
 ; --------------------------------------------------------------------------
 ; Included modules (order matters only for symbol resolution)
 ; --------------------------------------------------------------------------
+; --------------------------------------------------------------------------
+; vga_puts -- INT 10h teletype output of the NUL-terminated string at DS:SI.
+;
+; The long-mode refusal (BL10) is the one message in the boot chain that
+; must reach a user with no serial cable attached: a machine old enough to
+; lack long mode is exactly the machine most likely to be driven from its
+; own keyboard and monitor.  INT 10h AH=0Eh works on every VGA-class BIOS
+; and needs no mode set.  Trashes nothing the caller owns (SI advances,
+; which matches how uart16_puts is already used back to back with it).
+; --------------------------------------------------------------------------
+vga_puts:
+    push ax
+    push bx
+    push si
+    mov  bx, 0x0007              ; page 0, light-grey on black
+.vga_next:
+    lodsb
+    test al, al
+    jz   .vga_done
+    mov  ah, 0x0E
+    int  0x10
+    jmp  .vga_next
+.vga_done:
+    pop  si
+    pop  bx
+    pop  ax
+    ret
+
 %include "boot/bios/stage2/uart16.inc"
+%include "boot/bios/stage2/lmcheck.inc"
 %include "boot/bios/stage2/e820.inc"
 %include "boot/bios/stage2/a20.inc"
 %include "boot/bios/stage2/disk.inc"
@@ -380,8 +494,10 @@ boot_drive: db 0
 %include "boot/bios/stage2/acpi.inc"
 %include "boot/bios/stage2/fat.inc"
 %include "boot/bios/stage2/elf.inc"
+%include "boot/bios/stage2/elf32.inc"
 %include "boot/bios/stage2/paging.inc"
 %include "boot/bios/stage2/longmode.inc"
+%include "boot/bios/stage2/pmode32.inc"
 
 ; --------------------------------------------------------------------------
 ; Padding: Stage 2 must fit in the 63 KiB the MBR loads.  We pad to a
