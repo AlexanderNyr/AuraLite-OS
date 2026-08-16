@@ -124,9 +124,13 @@ def claims():
         ("M6d: segments are pushed to the queue, so SACK has something "
          "to mark",
          "tcpm6c_retxq_push" in tcp and "tcpm6c_retxq_ack" in tcp),
-        # M6 remains partial: these three are genuinely absent.
-        ("M6 is still pending: no listen backlog / SO_REUSEADDR / keepalive",
-         "so_reuseaddr" not in tcp.lower() and "keepalive" not in tcp.lower()),
+        ("M6e: listen refuses a port already in use",
+         "EADDRINUSE" in tcp and "tcpm6e_can_bind" in tcp),
+        ("M6e: the listen backlog is filled, not just declared",
+         "tcpm6e_backlog_push" in tcp and "tcpm6e_backlog_pop" in tcp),
+        ("M6e: keepalive is wired up",
+         "tcp_set_keepalive" in tcp and "tcpm6e_ka_poll" in
+         read("kernel", "net", "tcp_m6e.h")),
 
         # --- M10: superseded, and the plan must say so ---
         ("M10 is marked superseded by USB_PLAN.md",

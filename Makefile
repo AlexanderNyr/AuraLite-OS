@@ -1524,6 +1524,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_tcp_m6 \
                 $(BUILD_DIR)/test_tcp_m6c \
                 $(BUILD_DIR)/test_tcp_m6d \
+                $(BUILD_DIR)/test_tcp_m6e \
                 $(BUILD_DIR)/test_ip_reasm \
                 $(BUILD_DIR)/test_xhci_ring \
                 $(BUILD_DIR)/test_ipv6_addr \
@@ -2337,6 +2338,12 @@ $(BUILD_DIR)/test_tcp_m6d: tests/unit/test_tcp_m6d.c kernel/net/tcp_m6d.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 		tests/unit/test_tcp_m6d.c -o $@
+
+# M6e (MATURITY_PLAN.md): listen backlog, SO_REUSEADDR, keepalive.
+$(BUILD_DIR)/test_tcp_m6e: tests/unit/test_tcp_m6e.c kernel/net/tcp_m6e.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+		tests/unit/test_tcp_m6e.c -o $@
 
 # X4: IPv4 fragment reassembly — pure engine, injected clock.
 $(BUILD_DIR)/test_ip_reasm: tests/unit/test_ip_reasm.c kernel/net/ip_reasm.c \

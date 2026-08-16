@@ -57,6 +57,15 @@ typedef int tcp_handle_t;
 
 tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port);
 tcp_handle_t tcp_listen(uint16_t port);
+/* M6e: listen with an explicit backlog and SO_REUSEADDR.  tcp_listen() is
+ * this with (1, 0).  Returns -EADDRINUSE when the port is genuinely taken
+ * -- a check that did not exist before M6e, so two listeners on one port
+ * both succeeded and whichever polled first stole the SYN. */
+tcp_handle_t tcp_listen_backlog(uint16_t port, uint32_t backlog,
+                                int reuseaddr);
+/* M6e: enable keepalive probes on an established connection. */
+int tcp_set_keepalive(tcp_handle_t h, int enable, uint32_t idle_ms,
+                      uint32_t intvl_ms, uint32_t count);
 tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port);
 int          tcp_send_h(tcp_handle_t h, const void *data, uint32_t len);
 int          tcp_recv_h(tcp_handle_t h, void *buf, uint32_t bufsize);

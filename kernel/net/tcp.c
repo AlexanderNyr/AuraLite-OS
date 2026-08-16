@@ -20,6 +20,7 @@
 #include "kernel/net/tcp_m6.h"
 #include "kernel/net/tcp_m6c.h"
 #include "kernel/net/tcp_m6d.h"
+#include "kernel/net/tcp_m6e.h"
 #include "kernel/net/net.h"
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
@@ -176,6 +177,9 @@ typedef struct {
     tcpm6c_retxq_t retxq;      /* M6c/M6d: unacknowledged segments */
     tcpm6d_block_t sack_blk[TCPM6D_MAX_BLOCKS];  /* M6d: last SACK seen */
     uint32_t       sack_nblk;
+    tcpm6e_backlog_t backlog;  /* M6e: pending connections on a listener */
+    tcpm6e_ka_t      ka;       /* M6e: keepalive */
+    uint8_t          reuseaddr;
     uint16_t     peer_mss;     /* M6c: peer's advertised MSS (0 = none) */
     uint32_t     time_wait_tick;
 
@@ -505,14 +509,20 @@ static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
                                     TCP_RECV_TIMEOUT_TICKS);
 }
 
-static int tcp_recv_syn(uint16_t src_port, struct tcp_hdr *out_tcp, uint32_t *out_src_ip, uint16_t *out_src_port) {
+/* M6e: `listen_h` is the listening handle, so a SYN from a DIFFERENT peer
+ * that arrives while we are mid-handshake can be queued on its backlog
+ * instead of being dropped on the floor. */
+static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
+                           uint32_t *out_src_ip, uint16_t *out_src_port,
+                           int listen_h) {
     uint8_t buf[2048];
+    int got_one = 0;
     uint64_t deadline = timer_get_ticks() + TCP_RECV_TIMEOUT_TICKS;
     while (timer_get_ticks() < deadline) {
         uint64_t now = timer_get_ticks();
         uint64_t remaining = (deadline > now) ? (deadline - now) : 1;
         int n = netdev_recv_wait(buf, sizeof(buf), remaining);
-        if (n < 0) return -1;
+        if (n < 0) return got_one ? 0 : -1;
         if (n == 0) break;
         int fl = 0;
         const uint8_t *f = net_ipfrag_step(buf, n, &fl);    /* X4 reassembly */
@@ -530,13 +540,45 @@ static int tcp_recv_syn(uint16_t src_port, struct tcp_hdr *out_tcp, uint32_t *ou
         if (!(tcp->flags & TCP_SYN)) continue;
 
         /* Found a SYN segment for our listening port! */
+        uint32_t sip = ntohl_(ip->src_ip);
+        uint16_t sport = ntohs_(tcp->src_port);
+
+        /* M6e: the first SYN is served directly; any further one, from a
+         * different peer, goes on the backlog.  A RETRANSMITTED SYN from a
+         * peer already queued must not take a second slot -- that is
+         * exactly what a peer does when its first SYN is dropped, and one
+         * client would otherwise fill the whole queue. */
+        if (got_one && listen_h >= 0 && listen_h < TCP_MAX_CONNS) {
+            if (!tcpm6e_backlog_has(&conns[listen_h].backlog, sip, sport)) {
+                if (tcpm6e_backlog_push(&conns[listen_h].backlog, sip, sport,
+                                        ntohl_(tcp->seq)) == 0) {
+                    kprintf("[tcp] backlog: queued SYN from %u.%u.%u.%u:%u "
+                            "(%u pending)\n",
+                            (sip >> 24) & 0xFF, (sip >> 16) & 0xFF,
+                            (sip >> 8) & 0xFF, sip & 0xFF, sport,
+                            conns[listen_h].backlog.count);
+                } else {
+                    kprintf("[tcp] backlog full: SYN from port %u dropped "
+                            "(%u total)\n", sport,
+                            conns[listen_h].backlog.dropped);
+                }
+            }
+            continue;   /* keep draining; the caller already has its SYN */
+        }
+
         memcpy(out_tcp, tcp, 20);
-        *out_src_ip = ntohl_(ip->src_ip);
-        *out_src_port = ntohs_(tcp->src_port);
-        return 0;
+        *out_src_ip = sip;
+        *out_src_port = sport;
+        got_one = 1;
+        /* Drain briefly for further SYNs so the backlog is populated, but
+         * only while there is room; otherwise return at once. */
+        if (listen_h < 0 || tcpm6e_backlog_full(&conns[listen_h].backlog))
+            return 0;
     }
+    if (got_one) return 0;
 
     /* Integration Test Fallback: Simulate incoming SYN from gateway/test peer (10.0.2.2:54321) */
+    if (got_one) return 0;
     memset(out_tcp, 0, 20);
     out_tcp->src_port = htons_(54321);
     out_tcp->dst_port = htons_(src_port);
@@ -585,7 +627,39 @@ static int handle_valid(tcp_handle_t h) {
     return (h >= 0 && h < TCP_MAX_CONNS && conns[h].in_use);
 }
 
-tcp_handle_t tcp_listen(uint16_t port) {
+/*
+ * M6e: is `port` already spoken for, and in what way?
+ *
+ * This did not exist before M6e, and its absence was a real bug: two
+ * tcp_listen() calls on the same port both "succeeded", and whichever
+ * happened to poll first stole the SYN.  A silent, order-dependent hijack
+ * where the caller expected -EADDRINUSE.
+ */
+static int tcp_port_state(uint16_t port, int skip_h) {
+    for (int i = 0; i < TCP_MAX_CONNS; i++) {
+        if (i == skip_h || !conns[i].in_use) continue;
+        if (conns[i].src_port != port) continue;
+        if (conns[i].state == TCP_LISTEN) return TCPM6E_ST_LISTENING;
+        if (conns[i].state == TCP_TIME_WAIT) return TCPM6E_ST_TIME_WAIT;
+        if (conns[i].state != TCP_CLOSED) return TCPM6E_ST_ACTIVE;
+    }
+    return TCPM6E_ST_FREE;
+}
+
+tcp_handle_t tcp_listen_backlog(uint16_t port, uint32_t backlog,
+                                int reuseaddr) {
+    /* M6e: refuse a port that is genuinely taken, before consuming a
+     * handle -- allocating first would leak a slot on every refusal. */
+    int pstate = tcp_port_state(port, -1);
+    if (tcpm6e_can_bind(pstate, reuseaddr) != TCPM6E_BIND_OK) {
+        kprintf("[tcp] listen on port %u refused: address in use (%s)\n",
+                port,
+                pstate == TCPM6E_ST_LISTENING ? "already listening" :
+                pstate == TCPM6E_ST_TIME_WAIT ? "TIME_WAIT, no SO_REUSEADDR"
+                                              : "active connection");
+        return -EADDRINUSE;
+    }
+
     int h = alloc_handle();
     if (h < 0) {
         kprintf("[tcp] no free connection slots for listen\n");
@@ -595,8 +669,44 @@ tcp_handle_t tcp_listen(uint16_t port) {
     our_ip = net_get_our_ip();
     conns[h].src_port = port;
     conns[h].state = TCP_LISTEN;
-    kprintf("[tcp] [h=%d] LISTENING on port %u...\n", h, port);
+    conns[h].reuseaddr = reuseaddr ? 1 : 0;
+    tcpm6e_backlog_init(&conns[h].backlog, backlog);
+    tcpm6e_ka_init(&conns[h].ka, (uint32_t)timer_get_ticks());
+    kprintf("[tcp] [h=%d] LISTENING on port %u (backlog %u%s)...\n",
+            h, port, conns[h].backlog.limit,
+            reuseaddr ? ", SO_REUSEADDR" : "");
     return h;
+}
+
+tcp_handle_t tcp_listen(uint16_t port) {
+    /* Historical single-argument form: one pending connection, and no
+     * SO_REUSEADDR (the conservative default). */
+    return tcp_listen_backlog(port, 1, 0);
+}
+
+/*
+ * M6e: keepalive.  RFC 1122 s4.2.3.6 requires the default idle time to be
+ * at least two hours precisely so keepalive is not mistaken for a
+ * heartbeat; callers that want it sooner must say so explicitly, which is
+ * why the interval is a parameter rather than a shorter default.
+ */
+int tcp_set_keepalive(tcp_handle_t h, int enable, uint32_t idle_ms,
+                      uint32_t intvl_ms, uint32_t count) {
+    if (!handle_valid(h)) return -EBADF;
+    tcpm6e_ka_t *k = &conns[h].ka;
+    tcpm6e_ka_init(k, (uint32_t)timer_get_ticks());
+    k->enabled = enable ? 1 : 0;
+    if (idle_ms)  k->idle_ms  = idle_ms;
+    if (intvl_ms) k->intvl_ms = intvl_ms;
+    if (count)    k->count    = count;
+    kprintf("[tcp] [h=%d] keepalive %s (idle %u ms, %u probes @ %u ms)\n",
+            h, k->enabled ? "on" : "off", k->idle_ms, k->count, k->intvl_ms);
+    return 0;
+}
+
+static int tcp_recv_syn(uint16_t src_port, struct tcp_hdr *out_tcp,
+                        uint32_t *out_src_ip, uint16_t *out_src_port) {
+    return tcp_recv_syn_bl(src_port, out_tcp, out_src_ip, out_src_port, -1);
 }
 
 tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) {
@@ -604,8 +714,24 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     struct tcp_hdr rx;
     uint32_t src_ip = 0;
     uint16_t src_port = 0;
-    if (tcp_recv_syn(conns[h].src_port, &rx, &src_ip, &src_port) != 0) {
-        return -ETIMEDOUT;   /* FIX_R7: timeout / no incoming syn */
+    uint32_t peer_isn = 0;
+
+    /* M6e: serve the backlog first.  A SYN that arrived while the
+     * application was busy with the previous connection is already queued,
+     * and must be answered before we go back to the wire -- otherwise the
+     * queue would only ever grow. */
+    tcpm6e_pending_t *pend = tcpm6e_backlog_pop(&conns[h].backlog);
+    if (pend) {
+        src_ip = pend->peer_ip;
+        src_port = pend->peer_port;
+        peer_isn = pend->peer_seq;
+        kprintf("[tcp] [h=%d] accept: serving queued SYN (%u still queued)\n",
+                h, conns[h].backlog.count);
+    } else {
+        if (tcp_recv_syn_bl(conns[h].src_port, &rx, &src_ip, &src_port, h) != 0) {
+            return -ETIMEDOUT;   /* FIX_R7: timeout / no incoming syn */
+        }
+        peer_isn = ntohl_(rx.seq);
     }
 
     int new_h = alloc_handle();
@@ -620,7 +746,7 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     conn_dst_port = src_port;
     conn_src_port = conns[h].src_port;
     conn_seq = 0x2000 + (uint32_t)new_h * 0x100;
-    conn_ack = ntohl_(rx.seq) + 1;
+    conn_ack = peer_isn + 1;
     conn_state = TCP_ESTABLISHED;
     tcp_rx_stash_reset();   /* no leftovers may leak across connections */
 
@@ -640,8 +766,10 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     tcpm6_delack_init(&conns[new_h].delack);
     conns[new_h].nodelay = 0;
     conns[new_h].time_wait_tick = 0;
+    tcpm6e_ka_init(&conns[new_h].ka, (uint32_t)timer_get_ticks());
     conns[new_h].snd_nxt = conn_seq;
-    conns[new_h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
+    conns[new_h].snd_wnd = (!pend && ntohs_(rx.window)) ?
+                           ntohs_(rx.window) : TCP_WINDOW;
     conns[new_h].rcv_wnd = TCP_WINDOW;
     conns[new_h].cwnd    = TCP_WINDOW;
     conns[new_h].ssthresh= TCP_WINDOW;

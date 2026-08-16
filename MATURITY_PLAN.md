@@ -1,6 +1,6 @@
 # AuraLite OS — Subsystem Maturity Plan
 
-## Status: IN PROGRESS 🚧 — M1–M5 complete; M2 core (IOAPIC) complete; M6–M14 pending
+## Status: IN PROGRESS 🚧 — M1–M6 complete; M2 core (IOAPIC) complete; M7–M14 pending
 
 > **Statuses corrected by `AUDIT_A3`** after `MATURITY_AUDIT.md` measured this
 > document against the tree. M3 and M4 had landed but were still listed as
@@ -14,7 +14,7 @@
 | M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
 | M3 — fault-recovering uaccess + audit | ✅ complete | `patches/MAT_M3_uaccess.patch` + `patches/AUDIT_A1_dead_gates.patch` |
 | M4 — demand-paged and shared VMAs | ✅ complete | `patches/AUDIT_A1_dead_gates.patch` + `patches/AUDIT_A6_vma.patch` |
-| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, close states, options, retx queue, SACK) | `MAT_M6_fast_retransmit` + `MAT_M6b_close_states` + `MAT_M6c_options_retxq` + `MAT_M6d_sack` |
+| M6 — production TCP | ✅ complete | `MAT_M6_fast_retransmit` + `MAT_M6b_close_states` + `MAT_M6c_options_retxq` + `MAT_M6d_sack` + `MAT_M6e_backlog_reuseaddr_keepalive` |
 | M7–M14 | pending | — |
 
 This document answers:
@@ -488,7 +488,24 @@ reparent-to-init) are still pending.
 > deliberately written to ignore blocks from a peer that never negotiated
 > SACK, so the untested path is inert rather than dangerous.
 >
-> **Still open:** the `listen` backlog, `SO_REUSEADDR`, keepalive.
+> **Update — `MAT_M6e_backlog_reuseaddr_keepalive` closed the last three,
+> and found a bug on the way in.**
+>
+> **`tcp_listen()` never checked whether the port was in use.** Two listens
+> on one port both "succeeded", and whichever call happened to poll first
+> stole the SYN — a silent, order-dependent hijack where the caller
+> expected `-EADDRINUSE`. `SO_REUSEADDR` only means anything once that
+> check exists, so the check came first and the option relaxes it: a port
+> held by a **live** listener is refused either way (sharing one is
+> `SO_REUSEPORT`, a different option, not implemented); a port held only by
+> `TIME_WAIT` is available with the option set.
+>
+> The backlog is FIFO, bounded, and **filled** — a SYN arriving mid-
+> handshake is queued rather than dropped, and a retransmitted SYN from a
+> peer already queued does not take a second slot. Keepalive keeps the
+> RFC 1122 two-hour default rather than a convenient short one.
+>
+> **M6 is now complete.**
 
 **Objective:** replace "one segment in flight, fixed RTO, 8 connections" with a
 TCP that a real server and a browser can lean on.
