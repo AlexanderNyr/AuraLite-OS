@@ -14,7 +14,7 @@
 | M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
 | M3 — fault-recovering uaccess + audit | ✅ complete | `patches/MAT_M3_uaccess.patch` + `patches/AUDIT_A1_dead_gates.patch` |
 | M4 — demand-paged and shared VMAs | ✅ complete | `patches/AUDIT_A1_dead_gates.patch` + `patches/AUDIT_A6_vma.patch` |
-| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, close states) | `patches/MAT_M6_fast_retransmit.patch` + `patches/MAT_M6b_close_states.patch` |
+| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, close states, option codec + retx queue) | `MAT_M6_fast_retransmit` + `MAT_M6b_close_states` + `MAT_M6c_options_retxq` |
 | M7–M14 | pending | — |
 
 This document answers:
@@ -457,7 +457,24 @@ reparent-to-init) are still pending.
 > reclaims a slot only once 2·MSL has elapsed, so the quiet period is real.
 > The passive closer correctly holds **no** quiet period.
 >
-> **Still open:** SACK, the `listen` backlog, `SO_REUSEADDR`, keepalive.
+> **Update — `MAT_M6c_options_retxq` built SACK's two prerequisites.**
+> Attempting SACK directly would have produced fabricated green, so the
+> floor came first:
+>
+> - **The stack had never emitted a TCP option.** `data_offset` was
+>   hardcoded to `5 << 4`, so it could not advertise its MSS or ask for
+>   SACK. Now the SYN carries MSS + SACK-permitted (28-byte header) and the
+>   peer's options are parsed, with a hostile-input-safe walk.
+> - **There was nothing to selectively retransmit from.** `tcp_record_retx()`
+>   kept exactly one MSS segment, so whatever a receiver reported missing,
+>   the only thing resendable was the last segment. `tcp_m6c.h` adds a
+>   bounded 8-segment queue with wrap-correct sequence arithmetic.
+>
+> Verified against a real peer: `mss=1460 sack=no` (SLIRP does not offer
+> SACK — an honest negotiation, not a stub).
+>
+> **Still open:** SACK itself (M6d, now unblocked), the `listen` backlog,
+> `SO_REUSEADDR`, keepalive.
 
 **Objective:** replace "one segment in flight, fixed RTO, 8 connections" with a
 TCP that a real server and a browser can lean on.

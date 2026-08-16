@@ -18,6 +18,7 @@
 #include "kernel/net/tcp.h"
 #include "kernel/net/tcp_x5.h"
 #include "kernel/net/tcp_m6.h"
+#include "kernel/net/tcp_m6c.h"
 #include "kernel/net/net.h"
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
@@ -170,6 +171,8 @@ typedef struct {
     tcpm6_dupack_t dupack;
     tcpm6_delack_t delack;
     uint8_t      nodelay;      /* TCP_NODELAY: bypass Nagle */
+    uint8_t      sack_ok;      /* M6c: peer sent SACK-permitted in its SYN */
+    uint16_t     peer_mss;     /* M6c: peer's advertised MSS (0 = none) */
     uint32_t     time_wait_tick;
 
     uint8_t      retx_valid;
@@ -219,7 +222,23 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
         return;
     }
 
-    uint32_t tcp_hdr_len = 20;
+    /* M6c: a SYN now carries options.  Until this phase data_offset was
+     * hardcoded to 5<<4, so the stack had never emitted a single TCP
+     * option -- it could not advertise its MSS, and could not ask for
+     * SACK.  Options ride the SYN only; data segments stay 20 bytes. */
+    uint8_t optbuf[8];
+    uint32_t optlen = 0;
+    if (flags & TCP_SYN) {
+        optlen = tcpm6c_build_syn_opts(optbuf, TCP_MSS, 1);
+        /* Report what actually went on the wire, derived from the header
+         * length we are about to write -- not from a constant.  The gate
+         * greps this, so a SYN that silently loses its options (the state
+         * this phase started from) turns the case red. */
+        kprintf("[tcp] SYN options: %u bytes, hdr=%u, mss=%u sack-perm\n",
+                optlen, 20u + optlen, (unsigned)TCP_MSS);
+    }
+
+    uint32_t tcp_hdr_len = 20 + optlen;
     uint32_t tcp_total = tcp_hdr_len + data_len;
     uint32_t ip_total = 20 + tcp_total;
     uint32_t frame_len = 14 + ip_total;
@@ -232,15 +251,20 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
     tcp->dst_port   = htons_(conn_dst_port);
     tcp->seq        = htonl_(seq);
     tcp->ack        = htonl_(ack);
-    tcp->data_offset = (5 << 4);   /* 5 × 32-bit words = 20 bytes */
+    tcp->data_offset = tcpm6c_data_offset(optlen);   /* M6c */
     tcp->flags      = flags;
     tcp->window     = htons_(TCP_WINDOW);
     tcp->checksum   = 0;
     tcp->urgent_ptr = 0;
 
-    /* Copy data after the TCP header. */
+    /* M6c: options sit between the fixed header and the payload. */
+    if (optlen > 0) {
+        memcpy(pkt + 14 + 20 + 20, optbuf, optlen);
+    }
+
+    /* Copy data after the TCP header (past any options). */
     if (data && data_len > 0) {
-        memcpy(pkt + 14 + 20 + 20, data, data_len);
+        memcpy(pkt + 14 + 20 + 20 + optlen, data, data_len);
     }
 
     /* Compute the TCP checksum over the pseudo-header + segment. */
@@ -390,7 +414,29 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
          * Ethernet padding as TCP payload — the NIC pads short frames
          * to the 60-byte minimum. */
         uint8_t hdr_words = tcp->data_offset >> 4;
+        /* M6c: a header shorter than the mandatory 20 bytes, or longer
+         * than the 60-byte maximum, is malformed -- and the subtraction
+         * below would underflow into a huge unsigned payload length. */
+        if (hdr_words < 5 || hdr_words > 15) continue;
         uint32_t tcp_hdr_bytes = (uint32_t)hdr_words * 4;
+
+        /* M6c: parse the peer's options.  Only a SYN-ACK carries the ones
+         * we act on, and we must learn them before the handshake finishes
+         * -- SACK-permitted is only ever offered in the SYN exchange. */
+        if ((tcp->flags & TCP_SYN) && tcp_hdr_bytes > 20 &&
+            active_h >= 0 && active_h < TCP_MAX_CONNS) {
+            tcpm6c_opts_t peer_opts;
+            const uint8_t *optp = (const uint8_t *)tcp + 20;
+            if (tcpm6c_parse_opts(optp, tcp_hdr_bytes - 20, &peer_opts) == 0) {
+                conns[active_h].sack_ok = peer_opts.sack_permitted;
+                conns[active_h].peer_mss = peer_opts.mss;
+                if (peer_opts.mss && peer_opts.mss < conns[active_h].eff_mss)
+                    conns[active_h].eff_mss = peer_opts.mss;
+                kprintf("[tcp] peer options: mss=%u sack=%s\n",
+                        peer_opts.mss,
+                        peer_opts.sack_permitted ? "yes" : "no");
+            }
+        }
         uint32_t ip_hdr_bytes = (uint32_t)((ip->version_ihl & 0x0F) * 4);
         uint32_t ip_total = ntohs_(ip->total_length);
         uint32_t payload_start = 14 + ip_hdr_bytes + tcp_hdr_bytes;

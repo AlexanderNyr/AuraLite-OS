@@ -107,9 +107,18 @@ def claims():
          "conn_state = TCP_CLOSE_WAIT" in tcp),
         ("M6 partial: TIME_WAIT actually holds the slot (not decorative)",
          "tcpm6_time_wait_expired" in tcp),
-        # ... and the phase is still open, because SACK is genuinely absent:
-        ("M6 is still pending: no SACK yet",
-         "sack" not in tcp.lower()),
+        ("M6c: the stack emits TCP options (data_offset is computed)",
+         "tcpm6c_data_offset" in tcp and "(5 << 4)" not in tcp),
+        ("M6c: the peer's options are parsed",
+         "tcpm6c_parse_opts" in tcp),
+        ("M6c: a multi-segment retransmit queue exists",
+         "tcpm6c_retxq_push" in read("kernel", "net", "tcp_m6c.h") and
+         "TCPM6C_RETXQ_DEPTH" in read("kernel", "net", "tcp_m6c.h")),
+        # ... and the phase is still open: SACK itself is not implemented.
+        # tcp_m6c.h names it (SACK-permitted is negotiated), so look for
+        # the thing that would actually process incoming SACK blocks.
+        ("M6 is still pending: incoming SACK blocks are not processed yet",
+         "tcpm6d_" not in tcp),
 
         # --- M10: superseded, and the plan must say so ---
         ("M10 is marked superseded by USB_PLAN.md",
