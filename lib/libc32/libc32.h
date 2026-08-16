@@ -1,0 +1,56 @@
+/* lib/libc32/libc32.h -- the i386 bring-up libc (I386_PLAN I5).
+ *
+ * Deliberately tiny: the syscalls the I5 kernel implements, and the
+ * few string helpers init32 needs.  The full lib/libc port (errno,
+ * TLS, stdio buffering, the 427-symbol POSIX surface) is I6 work,
+ * gated by the width sweep; this header exists so init32 is REAL
+ * compiled-from-C Ring 3 code today, not more hand-assembled bytes.
+ *
+ * Numbers are AuraLite's own (lib/libc/include/unistd.h) -- one
+ * table, two trap mechanisms (plan D4).
+ */
+
+#ifndef AURALITE_LIBC32_H
+#define AURALITE_LIBC32_H
+
+#define SYS_WRITE        1
+#define SYS_GETPID      39
+#define SYS_EXIT        60
+#define SYS_SCHED_YIELD 158
+
+long __syscall32(long n, long a1, long a2, long a3, long a4, long a5);
+
+static inline long write(int fd, const void *buf, unsigned long len)
+{
+    return __syscall32(SYS_WRITE, fd, (long)buf, (long)len, 0, 0);
+}
+
+static inline long getpid(void)
+{
+    return __syscall32(SYS_GETPID, 0, 0, 0, 0, 0);
+}
+
+static inline void exit(int code)
+{
+    __syscall32(SYS_EXIT, code, 0, 0, 0, 0);
+    __builtin_unreachable();
+}
+
+static inline long sched_yield(void)
+{
+    return __syscall32(SYS_SCHED_YIELD, 0, 0, 0, 0, 0);
+}
+
+static inline unsigned long strlen32(const char *s)
+{
+    unsigned long n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static inline void puts32(const char *s)
+{
+    write(1, s, strlen32(s));
+}
+
+#endif /* AURALITE_LIBC32_H */

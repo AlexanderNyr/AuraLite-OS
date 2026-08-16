@@ -2,6 +2,85 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [i386 Phase I5 — 32-bit libc and userspace] 2026-08-16
+
+`I386_PLAN.md` phase I5: the hand-assembled Ring 3 bytes of I4 are
+succeeded by the real thing — `/bin32/init32`, compiled from C with a
+32-bit crt0 and an `int 0x80` libc, loaded from the SHARED initrd by an
+ELF32 loader, run in Ring 3, exit code observed.
+
+- **`lib/libc32/`**: `crt0_32.asm` (SYS_EXIT trapped inline — a crt0
+  must not depend on a library that might not be linked), `syscall32.asm`
+  (D4 register convention, callee-saved EBX/ESI/EDI preserved around the
+  trap), `libc32.h` (the I5 syscall surface + string helpers),
+  `user32.ld` (user layout at 0x08048000, W^X-shaped PHDRS).
+- **`kernel/arch/i386/initrd32.c`**: USTAR reader mirroring
+  `kernel/fs/initrd.c`'s parsing rules at lookup-only scope. One
+  `initrd.tar` serves both kernels: i386 binaries live under `/bin32`,
+  and each kernel's loader refuses the other's ELF class anyway.
+- **`kernel/arch/i386/elf32load.c`** (the task I4 moved here, now that
+  its consumer exists): validation in `elf.c`'s order, segments confined
+  to the `[0x08000000, 0x40000000)` window, fresh pages zeroed before
+  mapping. **The window check paid for itself immediately**: the first
+  link used bare `-Ttext` and lld emitted a headers-only PT_LOAD at its
+  default `0x00400000` base — the loader refused it, the link was wrong,
+  `user32.ld` is the fix.
+- **`userspace/system/init32/init32.c`**: banner, pid echo, sched_yield
+  round-trip, and the EFAULT negative control **driven from userspace**
+  (write() with a kernel pointer must be refused; init32 prints "good"
+  only on refusal). Exits 7; the kernel asserts exactly 7.
+- **SYS_WRITE hardening**: the I4 fixed-window pointer check widened to
+  a per-page user-mapping probe (ELF images live at 0x08048000 now, not
+  the hand-built page) — still the bring-up stand-in for the
+  copy_from_user fault fixup that lands in I6.
+- **Scope split recorded in the plan**: the shell gate (`auralite#`)
+  moves to I7 with the keyboard driver it requires; the `/bin` set and
+  `/tests/selftest` move to I6 with the full libc port. Delivered here
+  is the part of the original objective that was about *this* phase.
+- Tests: `tests/integration/i386_user_smoke.sh` — 19 assertions,
+  including the x86_64 pair checked harder than usual because
+  `initrd.tar` itself changed (the 64-bit boot must still reach its
+  init shell with the fatter archive).
+
+## [i386 Phase I4 — Threads, scheduler, Ring 3, int 0x80] 2026-08-16
+
+`I386_PLAN.md` phase I4: the i386 kernel schedules preemptively and runs
+Ring 3 code behind a DPL=3 `int 0x80` gate. `[sched] PASS`, `RING3-OK`
+written from user space, `exit(42)` round-tripped, and a privileged
+instruction from Ring 3 contained via #GP with the kernel surviving.
+
+- **`thread32.c` + `context32.asm`**: static TCB table, kmalloc32'd
+  16 KiB kernel stacks, callee-saved-only context switch (the cdecl
+  sibling of `context.asm`), fabricated first-entry frames, DONE-state
+  reaping from the idle loop. BSP-only per plan D5. TSS `esp0` is
+  refreshed on **every** switch so the Ring 3 interrupt path can never
+  meet a stale kernel stack.
+- **Preemption placement**: PIT handler sets `need_resched`; the switch
+  happens in `irq32_dispatch` **after** the EOI — switching with the PIC
+  unacknowledged freezes IRQ0 for every thread but the interrupted one
+  (the x86_64 phase-6 lesson, inherited rather than re-debugged).
+- **`user32.c` + `user_entry32.asm`**: `iretd` into Ring 3 with user
+  data selectors loaded first; `int 0x80` dispatch with AuraLite's own
+  numbers (D4: `SYS_WRITE=1`, `SYS_GETPID=39`, `SYS_EXIT=60`,
+  `SYS_SCHED_YIELD=158`), user-pointer range checks against the user
+  window; a minimal setjmp-style exit trampoline; Ring 3 exceptions
+  (CPL=3 in the saved CS) terminate the image with `128+vector` — the
+  kernel prints, cleans up the user pages, and boots on.
+- **Boot self-tests**: `[sched]` — two workers that never yield must
+  both progress while the boot thread hlt-waits (the first cut had them
+  yielding, which proves cooperation, not preemption; fixed);
+  `[user]` — a hand-assembled Ring 3 image writes `RING3-OK`, checks
+  getpid, exits 42, then the negative control runs `hlt` from Ring 3
+  and must die by #GP containment (code 141), not execute.
+- **Scope notes recorded in the plan**: the ELF32 user loader moved to
+  I5 (its real consumer is init; a throwaway tar reader to satisfy one
+  sentence is scaffolding), and `copy_from_user` fault fixup moves with
+  the libc that needs it. A one-byte padding bug in the hand-assembled
+  image (`ING3-OK`) is why the smoke test asserts the exact string.
+- Tests: `tests/integration/i386_proc_smoke.sh` — 17 assertions,
+  including kernel survival after the Ring 3 fault and all I2/I3 gates
+  still green.
+
 ## [i386 Phase I3 — Memory: non-PAE paging, PMM, heap] 2026-08-16
 
 `I386_PLAN.md` phase I3: the i386 kernel is higher-half at `0xC0100000`

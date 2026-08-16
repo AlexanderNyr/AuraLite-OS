@@ -61,12 +61,34 @@ static void dump_frame(const struct registers32 *r)
     }
 }
 
+/* user32.c: int 0x80 handler and the Ring 3 fault terminator.  The
+ * latter returns only when no user image is active. */
+void syscall32_entry(struct registers32 *regs);
+int  user32_fault(struct registers32 *regs);
+
 void isr_dispatch32(struct registers32 *regs)
 {
     /* Hardware IRQs land on vectors 32..47 (PIC remap, irq32.c). */
     if (regs->vector >= 32 && regs->vector <= 47) {
         irq32_dispatch(regs);
         return;
+    }
+
+    /* int 0x80: the syscall gate (I4).  DPL=3 on exactly this vector;
+     * every other gate stays DPL=0, so user code invoking them gets
+     * #GP -- which the Ring 3 fault path below then contains. */
+    if (regs->vector == 0x80) {
+        syscall32_entry(regs);
+        return;
+    }
+
+    /* An exception with CPL=3 saved in CS: terminate the user image,
+     * never the kernel (the x86_64 dispatcher raises SIGSEGV here; the
+     * i386 signal layer arrives in I5, so containment is the I4
+     * contract). */
+    if (regs->vector < 32 && (regs->cs & 3) == 3) {
+        if (user32_fault(regs))
+            return;   /* unreachable: user32_fault longjmps */
     }
 
     if (regs->vector == 3 && expect_breakpoint) {

@@ -24,6 +24,11 @@
 #include "kernel/arch/i386/paging32.h"
 #include "kernel/arch/i386/pmm32.h"
 #include "kernel/arch/i386/kheap32.h"
+#include "kernel/arch/i386/thread32.h"
+#include "kernel/arch/i386/user32.h"
+#include "kernel/arch/i386/initrd32.h"
+
+void thread32_reap(void);
 
 /* isr32.c's deliberate-fault hooks. */
 void isr32_expect_breakpoint(void);
@@ -108,6 +113,49 @@ static int selftest_pit(void)
     return -1;
 }
 
+/* ---- I4: scheduler interleave self-test --------------------------------
+ * Same contract as the x86_64 [sched] PASS: two threads increment their
+ * counters concurrently under PIT preemption; both must make progress
+ * WITHOUT either ever calling yield -- that is what distinguishes
+ * preemption from cooperative interleaving. */
+static volatile uint32_t st_count[2];
+
+static void sched_worker(void *arg)
+{
+    volatile uint32_t *ctr = (volatile uint32_t *)arg;
+    /* Run for ~15 ticks of wall time, pure computation. */
+    uint32_t start = pit32_ticks();
+    while (pit32_ticks() - start < 15)
+        (*ctr)++;
+}
+
+static int selftest_sched(void)
+{
+    st_count[0] = st_count[1] = 0;
+
+    int t1 = thread32_create("st-worker-1", sched_worker, (void *)&st_count[0]);
+    int t2 = thread32_create("st-worker-2", sched_worker, (void *)&st_count[1]);
+    if (t1 < 0 || t2 < 0)
+        return -1;
+
+    /* Wait for both to finish; the boot thread hlt-waits, so all
+     * progress the workers make is preemption-driven. */
+    uint32_t deadline = pit32_ticks() + 400;
+    while ((thread32_state(t1) == THREAD32_STATE_READY ||
+            thread32_state(t2) == THREAD32_STATE_READY)) {
+        if (pit32_ticks() > deadline)
+            return -1;
+        __asm__ volatile("hlt");
+    }
+    thread32_reap();
+
+    kprintf32("[sched] worker counts: %u / %u\n", st_count[0], st_count[1]);
+    /* Both made real progress -> the PIT actually preempted. */
+    if (st_count[0] < 1000 || st_count[1] < 1000)
+        return -1;
+    return 0;
+}
+
 /* ---- entry ------------------------------------------------------------- */
 
 void kmain32(uint32_t boot_info_phys)
@@ -174,9 +222,40 @@ void kmain32(uint32_t boot_info_phys)
     else
         kprintf32("[timer] FAIL: no PIT ticks; check PIC mask/EOI path\n");
 
-    kprintf32("[kernel] I3 memory online; idle (I4 adds threads + Ring 3)\n");
+    /* ---- I4: threads, preemption, Ring 3 ---- */
+    kprintf32("[boot] initialising scheduler...\n");
+    sched32_init();
+    if (selftest_sched() == 0)
+        kprintf32("[sched] PASS: 2 workers preempted, both progressed\n");
+    else {
+        kprintf32("[sched] FAIL: interleave self-test\n");
+        goto halt;
+    }
+
+    syscall32_init();
+    if (user32_selftest() != 0) {
+        kprintf32("[user] FAIL: Ring 3 self-test\n");
+        goto halt;
+    }
+
+    /* ---- I5: the initrd and a real compiled init ---- */
+    if (initrd32_init(boot_info) == 0) {
+        kprintf32("[boot] starting init (Ring 3, ELF32 from the initrd)\n");
+        int code = user32_run_elf("bin32/init32");
+        if (code == 7)
+            kprintf32("[init] PASS: init32 ran and exited %d as built\n", code);
+        else
+            kprintf32("[init] FAIL: init32 exit=%d (want 7)\n", code);
+    } else {
+        kprintf32("[init] SKIP: no initrd\n");
+    }
+
+    kprintf32("[kernel] I5 userspace online; idle (I6 adds the width "
+              "sweep + shared code adoption)\n");
 
 halt:
-    for (;;)
+    for (;;) {
+        thread32_reap();
         __asm__ volatile("hlt");
+    }
 }

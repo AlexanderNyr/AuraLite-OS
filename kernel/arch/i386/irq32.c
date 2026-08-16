@@ -11,6 +11,7 @@
 #include "kernel/arch/i386/irq32.h"
 #include "kernel/arch/i386/portio.h"
 #include "kernel/arch/i386/kprintf32.h"
+#include "kernel/arch/i386/thread32.h"
 
 #define NUM_IRQS   16
 #define ICW1_ICW4  0x01
@@ -68,6 +69,14 @@ void irq32_dispatch(struct registers32 *regs)
     if (irq >= 8)
         outb(PIC2_CMD, PIC_EOI);
     outb(PIC1_CMD, PIC_EOI);
+
+    /* Preemption point (I4).  Deliberately AFTER the EOI: a context
+     * switch with the PIC un-acknowledged freezes IRQ0 for every
+     * thread except the interrupted one.  The switched-out thread
+     * parks inside sched32_maybe_preempt and finishes this dispatch
+     * (frame unwind + iret) when it is next scheduled. */
+    if (irq == 0)
+        sched32_maybe_preempt();
 }
 
 /* ---- PIT ------------------------------------------------------------- */
@@ -81,6 +90,8 @@ static void pit32_irq(struct registers32 *regs)
 {
     (void)regs;
     timer_ticks++;
+    sched32_tick();      /* quantum bookkeeping; the switch happens
+                          * post-EOI in irq32_dispatch */
 }
 
 uint32_t pit32_ticks(void)

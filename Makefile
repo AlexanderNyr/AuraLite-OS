@@ -148,6 +148,39 @@ $(KERNEL32_ELF): $(KERNEL32_OBJS) $(KERNEL32_DIR)/kernel32.ld
 kernel32: $(KERNEL32_ELF)
 
 # =============================================================================
+# I386_PLAN I5: the 32-bit userspace (init32 + libc32).
+#
+# Linked at 0x08048000 (the classic i386 ET_EXEC base, inside the
+# loader's [ELF32_USER_MIN, ELF32_USER_MAX) window) with -Ttext rather
+# than a script: two segments, no ambition -- the full user linker
+# script arrives with the real libc port (I6).  The binaries land in
+# the SHARED initrd under /bin32, so one archive serves both kernels
+# and each loader refuses the other's ELF class.
+# =============================================================================
+USER32_BUILD := $(BUILD_DIR)/user32
+INIT32_ELF   := $(USER32_BUILD)/init32
+
+$(USER32_BUILD)/crt0_32.o: lib/libc32/crt0_32.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f elf32 -o $@ $<
+
+$(USER32_BUILD)/syscall32.o: lib/libc32/syscall32.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f elf32 -o $@ $<
+
+$(USER32_BUILD)/init32.o: userspace/system/init32/init32.c lib/libc32/libc32.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS32) -c $< -o $@
+
+$(INIT32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD)/syscall32.o lib/libc32/user32.ld
+	$(LD) -m elf_i386 -nostdlib -static -T lib/libc32/user32.ld \
+	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD)/syscall32.o -o $@
+	@echo "  [user32] $@"
+
+.PHONY: user32
+user32: $(INIT32_ELF)
+
+# =============================================================================
 # BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
 # =============================================================================
 BOOT_BIOS_DIR   := boot/bios
@@ -1446,7 +1479,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1522,6 +1555,11 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	         $(INITRD_DIR)/tests/u32bad.exe
 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
 	    > $(INITRD_DIR)/etc/motd
+# I386_PLAN I5: the 32-bit userland, in the SAME archive under /bin32.
+# One initrd serves both kernels; each kernel's ELF loader refuses the
+# other's class, and the path split means neither can even try.
+	@mkdir -p $(INITRD_DIR)/bin32
+	@strip -s $(INIT32_ELF) -o $(INITRD_DIR)/bin32/init32
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
 # HTTPS client can validate server chains against it.
 	@mkdir -p $(INITRD_DIR)/etc/ssl
