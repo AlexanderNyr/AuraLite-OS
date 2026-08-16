@@ -178,6 +178,57 @@ static void t_time_wait(void) {
     CHECK_EQ(TCPM6_TIME_WAIT_MS, 30000);
 }
 
+/* ------------------------------------------------ close states ------- */
+
+/*
+ * 11: the regression this phase exists for.  A FIN in ESTABLISHED is a
+ * PASSIVE close -> CLOSE_WAIT.  tcp.c used to go to FIN_WAIT_2, claiming an
+ * active close that never happened and skipping LAST_ACK entirely.
+ */
+static void t_fin_in_established_is_close_wait(void) {
+    CHECK_EQ(tcpm6_on_fin(TCPM6_ST_ESTABLISHED), TCPM6_ST_CLOSE_WAIT);
+    CHECK(tcpm6_on_fin(TCPM6_ST_ESTABLISHED) != TCPM6_ST_FIN_WAIT_2);
+}
+
+/* 12: the active-close path ends in TIME_WAIT, the passive one does not. */
+static void t_close_paths(void) {
+    /* Active: ESTABLISHED -> FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT. */
+    tcpm6_state_t st = TCPM6_ST_ESTABLISHED;
+    st = tcpm6_on_close(st);        CHECK_EQ(st, TCPM6_ST_FIN_WAIT_1);
+    st = tcpm6_on_fin_acked(st);    CHECK_EQ(st, TCPM6_ST_FIN_WAIT_2);
+    st = tcpm6_on_fin(st);          CHECK_EQ(st, TCPM6_ST_TIME_WAIT);
+
+    /* Passive: ESTABLISHED -> CLOSE_WAIT -> LAST_ACK -> CLOSED.
+     * The side that closes last holds NO quiet period. */
+    st = TCPM6_ST_ESTABLISHED;
+    st = tcpm6_on_fin(st);          CHECK_EQ(st, TCPM6_ST_CLOSE_WAIT);
+    st = tcpm6_on_close(st);        CHECK_EQ(st, TCPM6_ST_LAST_ACK);
+    st = tcpm6_on_fin_acked(st);    CHECK_EQ(st, TCPM6_ST_CLOSED);
+    CHECK(st != TCPM6_ST_TIME_WAIT);
+
+    /* Simultaneous close: FIN_WAIT_1 + FIN -> CLOSING -> TIME_WAIT. */
+    st = TCPM6_ST_FIN_WAIT_1;
+    st = tcpm6_on_fin(st);          CHECK_EQ(st, TCPM6_ST_CLOSING);
+    st = tcpm6_on_fin_acked(st);    CHECK_EQ(st, TCPM6_ST_TIME_WAIT);
+}
+
+/* 13: a half-closed connection stays usable in the direction still open. */
+static void t_half_close_directions(void) {
+    /* CLOSE_WAIT: peer is done sending; we may still read buffered data
+     * AND still send -- that is what a half-close is for. */
+    CHECK(tcpm6_can_recv(TCPM6_ST_CLOSE_WAIT));
+    CHECK(tcpm6_can_send(TCPM6_ST_CLOSE_WAIT));
+
+    /* FIN_WAIT_2: we closed our side, so we may read but not write. */
+    CHECK(tcpm6_can_recv(TCPM6_ST_FIN_WAIT_2));
+    CHECK(!tcpm6_can_send(TCPM6_ST_FIN_WAIT_2));
+
+    /* TIME_WAIT and LAST_ACK carry no application data either way. */
+    CHECK(!tcpm6_can_recv(TCPM6_ST_TIME_WAIT));
+    CHECK(!tcpm6_can_send(TCPM6_ST_TIME_WAIT));
+    CHECK(!tcpm6_can_recv(TCPM6_ST_LAST_ACK));
+}
+
 int main(void) {
     printf("test_tcp_m6 (MATURITY_PLAN M6 policy)\n");
 
@@ -191,6 +242,9 @@ int main(void) {
     RUN(t_delack_immediate_cases);
     RUN(t_delack_timer);
     RUN(t_time_wait);
+    RUN(t_fin_in_established_is_close_wait);
+    RUN(t_close_paths);
+    RUN(t_half_close_directions);
 
     printf("%s: %d/%d test(s) passed\n",
            failed ? "FAILURES" : "ALL PASS", passed, tn);

@@ -100,6 +100,13 @@ def claims():
         ("M6 partial: Nagle and delayed ACK policy exist",
          "tcpm6_nagle_may_send" in read("kernel", "net", "tcp_m6.h") and
          "tcpm6_delack_on_segment" in read("kernel", "net", "tcp_m6.h")),
+        ("M6 partial: CLOSE_WAIT/LAST_ACK/TIME_WAIT are in tcp_state_t",
+         all(k in read("kernel", "net", "tcp.h")
+             for k in ("TCP_CLOSE_WAIT", "TCP_LAST_ACK", "TCP_TIME_WAIT"))),
+        ("M6 partial: a FIN in ESTABLISHED goes to CLOSE_WAIT, not FIN_WAIT_2",
+         "conn_state = TCP_CLOSE_WAIT" in tcp),
+        ("M6 partial: TIME_WAIT actually holds the slot (not decorative)",
+         "tcpm6_time_wait_expired" in tcp),
         # ... and the phase is still open, because SACK is genuinely absent:
         ("M6 is still pending: no SACK yet",
          "sack" not in tcp.lower()),

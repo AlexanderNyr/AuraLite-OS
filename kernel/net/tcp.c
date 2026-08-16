@@ -43,6 +43,7 @@
 /* X5: the PIT runs at 100 Hz => 10 ms/tick.  Convert the adaptive RTO
  * (milliseconds) to ticks, always waiting at least one full tick. */
 #define TCP_MS_TO_TICKS(ms) (((ms) + 9u) / 10u)
+#define TCP_MS_PER_TICK     10u   /* M6: the PIT runs at 100 Hz */
 /* Fail visibly (instead of sitting in an RTO loop) after this many
  * consecutive retransmit timeouts without any ACK progress. */
 #define TCP_X5_MAX_TMO 10u
@@ -470,6 +471,23 @@ static int tcp_recv_syn(uint16_t src_port, struct tcp_hdr *out_tcp, uint32_t *ou
 /* ---- Public API ---- */
 
 static int alloc_handle(void) {
+    /* M6: retire any TIME_WAIT slot whose 2*MSL has elapsed.
+     *
+     * Without this the state would be decorative: nothing would ever leave
+     * TIME_WAIT, so either the slot leaks forever or -- as before this
+     * phase -- the connection was marked CLOSED immediately and the quiet
+     * period never happened at all.  Reclaiming here, at the moment the
+     * pressure is felt, avoids adding a timer callback for it. */
+    uint32_t now = (uint32_t)timer_get_ticks();
+    for (int i = 0; i < TCP_MAX_CONNS; i++) {
+        if (conns[i].in_use && conns[i].state == TCP_TIME_WAIT &&
+            tcpm6_time_wait_expired(conns[i].time_wait_tick, now,
+                                    TCP_MS_PER_TICK)) {
+            conns[i].state = TCP_CLOSED;
+            conns[i].in_use = 0;
+        }
+    }
+
     for (int i = 0; i < TCP_MAX_CONNS; i++) {
         if (!conns[i].in_use) {
             memset(&conns[i], 0, sizeof(conns[i]));
@@ -968,7 +986,9 @@ int tcp_recv(void *buf, uint32_t bufsize) {
         if (legacy_h >= 0 && handle_valid(legacy_h)) active_h = legacy_h;
         else return -1;
     }
-    if (conn_state != TCP_ESTABLISHED && conn_state != TCP_FIN_WAIT_2) {
+    /* M6: CLOSE_WAIT is readable too -- the peer closed its half, but
+     * anything it sent before the FIN is still ours to drain. */
+    if (!tcp_state_can_recv(conn_state)) {
         return -1;
     }
 
@@ -1060,8 +1080,24 @@ int tcp_recv(void *buf, uint32_t bufsize) {
             kprintf("[tcp] FIN received\n");
             conn_ack += plen + 1;
             tcp_send_segment(TCP_ACK, NULL, 0);
+            /* M6: RFC 793 fig. 6.  A FIN arriving in ESTABLISHED is a
+             * PASSIVE close: the peer is done sending, we are not, so the
+             * connection goes to CLOSE_WAIT and stays writable until the
+             * application calls close().  This used to jump to FIN_WAIT_2
+             * -- a state only reachable after WE send a FIN and it is
+             * acknowledged -- which reported an active close that had
+             * never happened and skipped LAST_ACK entirely.
+             *
+             * In FIN_WAIT_1/FIN_WAIT_2 the FIN completes our own close:
+             * FIN_WAIT_2 + FIN -> TIME_WAIT, and a simultaneous close from
+             * FIN_WAIT_1 -> CLOSING. */
             if (conn_state == TCP_ESTABLISHED) {
-                conn_state = TCP_FIN_WAIT_2;
+                conn_state = TCP_CLOSE_WAIT;
+            } else if (conn_state == TCP_FIN_WAIT_2) {
+                conn_state = TCP_TIME_WAIT;
+                conns[active_h].time_wait_tick = (uint32_t)timer_get_ticks();
+            } else if (conn_state == TCP_FIN_WAIT_1) {
+                conn_state = TCP_CLOSING;
             } else {
                 conn_state = TCP_CLOSED;
             }
@@ -1106,8 +1142,17 @@ int tcp_close(void) {
     tcp_send_retx_segment(TCP_FIN | TCP_ACK, NULL, 0, fin_seq, conn_ack);
     conn_seq = fin_seq + 1;
 
-    if (conn_state == TCP_ESTABLISHED) {
-        conn_state = TCP_FIN_WAIT_1;
+    /* M6: which close is this?  From CLOSE_WAIT the peer already sent its
+     * FIN, so ours is the second one and the next thing owed to us is its
+     * ACK -- that is LAST_ACK, after which the connection is simply gone
+     * (no TIME_WAIT: the side that closes LAST holds no quiet period).
+     * From ESTABLISHED we are the active closer and go FIN_WAIT_1. */
+    int passive_close = (conn_state == TCP_CLOSE_WAIT);
+    if (passive_close) conn_state = TCP_LAST_ACK;
+
+    if (conn_state == TCP_FIN_WAIT_1 || conn_state == TCP_LAST_ACK ||
+        conn_state == TCP_ESTABLISHED) {
+        if (!passive_close) conn_state = TCP_FIN_WAIT_1;
 
         struct tcp_hdr rx;
         int data_len = 0;
@@ -1122,12 +1167,23 @@ int tcp_close(void) {
                 }
                 if (rx.flags & TCP_ACK) {
                     fin_acked = 1;
-                    conn_state = TCP_FIN_WAIT_2;
+                    /* M6: our FIN was acknowledged.  For a passive close
+                     * that is LAST_ACK completing -> CLOSED.  For an active
+                     * close it is FIN_WAIT_1 -> FIN_WAIT_2, still owed the
+                     * peer's FIN. */
+                    conn_state = passive_close ? TCP_CLOSED : TCP_FIN_WAIT_2;
+                    if (passive_close) break;
                 }
                 if (rx.flags & TCP_FIN) {
                     conn_ack += 1;
                     tcp_send_segment(TCP_ACK, NULL, 0);
-                    conn_state = TCP_CLOSED;
+                    /* M6: both FINs exchanged and ours acknowledged -- the
+                     * active closer must sit in TIME_WAIT for 2*MSL so a
+                     * straggling duplicate cannot be accepted into a new
+                     * connection reusing this 4-tuple. */
+                    conn_state = TCP_TIME_WAIT;
+                    conns[active_h].time_wait_tick =
+                        (uint32_t)timer_get_ticks();
                     fin_acked = 1;
                     break;
                 }

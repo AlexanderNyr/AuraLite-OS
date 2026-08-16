@@ -194,4 +194,70 @@ static inline int tcpm6_time_wait_expired(uint32_t entered_tick,
     return (now_tick - entered_tick) * ms_per_tick >= TCPM6_TIME_WAIT_MS;
 }
 
+/* --------------------------------------------- close-state policy --- */
+
+/*
+ * RFC 793 figure 6, as a pure function so the transitions can be tested
+ * without a peer.  `state` values mirror tcp_state_t; the header cannot
+ * include tcp.h (which includes this), so the caller passes ints.
+ *
+ * The bug this encodes against: a FIN arriving in ESTABLISHED is a PASSIVE
+ * close and must go to CLOSE_WAIT.  tcp.c used to send it to FIN_WAIT_2 --
+ * a state only reachable after WE close and are acknowledged -- which
+ * claimed an active close that never happened and skipped LAST_ACK.
+ */
+typedef enum {
+    TCPM6_ST_CLOSED = 0,
+    TCPM6_ST_LISTEN,
+    TCPM6_ST_SYN_SENT,
+    TCPM6_ST_ESTABLISHED,
+    TCPM6_ST_FIN_WAIT_1,
+    TCPM6_ST_FIN_WAIT_2,
+    TCPM6_ST_CLOSING,
+    TCPM6_ST_CLOSE_WAIT,
+    TCPM6_ST_LAST_ACK,
+    TCPM6_ST_TIME_WAIT
+} tcpm6_state_t;
+
+/* Where a received FIN takes us. */
+static inline tcpm6_state_t tcpm6_on_fin(tcpm6_state_t state) {
+    switch (state) {
+    case TCPM6_ST_ESTABLISHED: return TCPM6_ST_CLOSE_WAIT;  /* passive */
+    case TCPM6_ST_FIN_WAIT_2:  return TCPM6_ST_TIME_WAIT;   /* active done */
+    case TCPM6_ST_FIN_WAIT_1:  return TCPM6_ST_CLOSING;     /* simultaneous */
+    default:                   return TCPM6_ST_CLOSED;
+    }
+}
+
+/* Where sending our own FIN takes us. */
+static inline tcpm6_state_t tcpm6_on_close(tcpm6_state_t state) {
+    switch (state) {
+    case TCPM6_ST_ESTABLISHED: return TCPM6_ST_FIN_WAIT_1;  /* active */
+    case TCPM6_ST_CLOSE_WAIT:  return TCPM6_ST_LAST_ACK;    /* passive */
+    default:                   return state;
+    }
+}
+
+/* Where the ACK of our FIN takes us. */
+static inline tcpm6_state_t tcpm6_on_fin_acked(tcpm6_state_t state) {
+    switch (state) {
+    case TCPM6_ST_FIN_WAIT_1: return TCPM6_ST_FIN_WAIT_2;
+    case TCPM6_ST_LAST_ACK:   return TCPM6_ST_CLOSED;  /* no TIME_WAIT */
+    case TCPM6_ST_CLOSING:    return TCPM6_ST_TIME_WAIT;
+    default:                  return state;
+    }
+}
+
+/* May the application still read? */
+static inline int tcpm6_can_recv(tcpm6_state_t state) {
+    return state == TCPM6_ST_ESTABLISHED || state == TCPM6_ST_FIN_WAIT_2 ||
+           state == TCPM6_ST_CLOSE_WAIT;
+}
+
+/* May the application still write?  CLOSE_WAIT is writable -- that is the
+ * entire point of a half-close. */
+static inline int tcpm6_can_send(tcpm6_state_t state) {
+    return state == TCPM6_ST_ESTABLISHED || state == TCPM6_ST_CLOSE_WAIT;
+}
+
 #endif /* AURALITE_NET_TCP_M6_H */

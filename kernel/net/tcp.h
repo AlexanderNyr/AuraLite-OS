@@ -27,7 +27,18 @@ typedef enum {
     TCP_FIN_WAIT_1,
     TCP_FIN_WAIT_2,
     TCP_CLOSING,
+    /* M6: the three states the state machine was missing.  Appended rather
+     * than inserted so the existing enumerators keep their values. */
+    TCP_CLOSE_WAIT,   /* peer sent FIN; we may still send */
+    TCP_LAST_ACK,     /* we answered with our own FIN, awaiting its ACK */
+    TCP_TIME_WAIT,    /* 2*MSL quiet period before the tuple is reusable */
 } tcp_state_t;
+
+/* M6: true while the application may still read from the connection --
+ * ESTABLISHED, or a peer that has closed its half but left ours open. */
+static inline int tcp_state_can_recv(tcp_state_t s) {
+    return s == TCP_ESTABLISHED || s == TCP_FIN_WAIT_2 || s == TCP_CLOSE_WAIT;
+}
 
 /* Maximum simultaneously-tracked TCP connections.
  * X5: raised 8 -> 16.  RAM budget: after dropping the dead 64 KiB tx_buf

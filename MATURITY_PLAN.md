@@ -14,7 +14,7 @@
 | M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
 | M3 — fault-recovering uaccess + audit | ✅ complete | `patches/MAT_M3_uaccess.patch` + `patches/AUDIT_A1_dead_gates.patch` |
 | M4 — demand-paged and shared VMAs | ✅ complete | `patches/AUDIT_A1_dead_gates.patch` + `patches/AUDIT_A6_vma.patch` |
-| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, TIME_WAIT policy) | `patches/MAT_M6_fast_retransmit.patch` |
+| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, close states) | `patches/MAT_M6_fast_retransmit.patch` + `patches/MAT_M6b_close_states.patch` |
 | M7–M14 | pending | — |
 
 This document answers:
@@ -442,9 +442,22 @@ reparent-to-init) are still pending.
 > moves the window is **not** a duplicate ACK. Counting those would make
 > the stack retransmit into a receiver that is merely slow.
 >
-> **Still open:** SACK, the `listen` backlog, `SO_REUSEADDR`, keepalive, and
-> wiring `TIME_WAIT`/`CLOSE_WAIT`/`LAST_ACK` into the state machine (the
-> timing policy exists; the states are not yet in `tcp_state_t`).
+> **Update — `MAT_M6b_close_states` wired the states in, and found a bug.**
+> `TCP_CLOSE_WAIT`, `TCP_LAST_ACK` and `TCP_TIME_WAIT` are now in
+> `tcp_state_t`, and the transitions follow RFC 793 fig. 6.
+>
+> The bug: a FIN arriving in `ESTABLISHED` is a **passive** close and must
+> go to `CLOSE_WAIT`. `tcp.c` sent it to `FIN_WAIT_2` — a state only
+> reachable after *we* close and are acknowledged. It reported an active
+> close that had never happened, skipped `LAST_ACK` entirely, and made a
+> half-closed connection look unwritable when the application was still
+> free to send.
+>
+> `TIME_WAIT` is load-bearing rather than decorative: `alloc_handle()`
+> reclaims a slot only once 2·MSL has elapsed, so the quiet period is real.
+> The passive closer correctly holds **no** quiet period.
+>
+> **Still open:** SACK, the `listen` backlog, `SO_REUSEADDR`, keepalive.
 
 **Objective:** replace "one segment in flight, fixed RTO, 8 connections" with a
 TCP that a real server and a browser can lean on.
