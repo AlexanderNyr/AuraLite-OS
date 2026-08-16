@@ -43,4 +43,9 @@ int  thread32_state(int tid);
 int  thread32_current_tid(void);
 const char *thread32_name(int tid);
 
+/* I7: dedicated Ring 3 trap stack for the current thread (0 = disarm,
+ * falling back to kstack_top).  See the measured lesson in thread32.c. */
+void thread32_set_esp0(uint32_t esp0);
+uint32_t thread32_current_esp0(void);
+
 #endif /* AURALITE_ARCH_I386_THREAD32_H */

@@ -109,4 +109,11 @@ section .bss
 align 16
 stack_bottom:
     resb STACK_SIZE
+; Exported (I7): sched32_init records this as thread 0's kernel-stack
+; top so TSS.esp0 is armed for the boot thread too.  Before this
+; export, thread 0's esp0 silently kept the LAST WORKER's freed stack
+; top after the scheduler self-test -- Ring 3 traps on the boot thread
+; then landed in reclaimed heap memory and worked purely by accident.
+global boot_stack_top
+boot_stack_top:
 stack_top:

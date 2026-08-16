@@ -13,16 +13,30 @@
 #ifndef AURALITE_LIBC32_H
 #define AURALITE_LIBC32_H
 
+#define SYS_READ         0
 #define SYS_WRITE        1
 #define SYS_GETPID      39
 #define SYS_EXIT        60
+#define SYS_SPAWN       81
 #define SYS_SCHED_YIELD 158
 
 long __syscall32(long n, long a1, long a2, long a3, long a4, long a5);
 
+static inline long read(int fd, void *buf, unsigned long len)
+{
+    return __syscall32(SYS_READ, fd, (long)buf, (long)len, 0, 0);
+}
+
 static inline long write(int fd, const void *buf, unsigned long len)
 {
     return __syscall32(SYS_WRITE, fd, (long)buf, (long)len, 0, 0);
+}
+
+/* Non-standard, same number as the 64-bit SYS_SPAWN: run an initrd
+ * program to completion, return its exit code. */
+static inline long spawn(const char *path)
+{
+    return __syscall32(SYS_SPAWN, (long)path, 0, 0, 0, 0);
 }
 
 static inline long getpid(void)

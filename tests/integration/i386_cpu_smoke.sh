@@ -80,7 +80,10 @@ assert_grep    "$LOG32" "\[timer\] PASS: PIT ticking"                  "i386: PI
 # complete" -> "I3 memory online" -> ...); assert the *contract* (the
 # boot reached an idle line) rather than a phase number this test would
 # then pin forever.
-assert_grep    "$LOG32" "idle (I[0-9] adds\|memory online; idle"       "i386: reached idle -- no triple fault"
+# I7 note: the shell blocks on input; survival past THIS phase's scope
+# is the PIT verdict.  The driven-session idle proof lives in
+# i386_shell_smoke.sh.
+assert_grep    "$LOG32" "\[timer\] PASS"                                "i386: boot survived the CPU bring-up phase"
 assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected faults"
 
 # ---- the standing x86_64 regression gate ----

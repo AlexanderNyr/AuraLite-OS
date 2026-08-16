@@ -17,4 +17,8 @@ void kputc32(char c);
 void kputs32(const char *s);
 void kprintf32(const char *fmt, ...);
 
+/* I7: polled UART receive (the serial side of the console's input). */
+int uart32_has_byte(void);
+unsigned char uart32_read_byte(void);
+
 #endif /* AURALITE_ARCH_I386_KPRINTF32_H */

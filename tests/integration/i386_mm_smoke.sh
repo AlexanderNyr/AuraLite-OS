@@ -75,7 +75,7 @@ assert_grep    "$LOG32" "\[isr\] PASS"                                 "i386: I2
 assert_grep    "$LOG32" "\[timer\] PASS"                               "i386: I2 PIT gate still green"
 # Phase-advancing idle line (same generalisation i386_cpu_smoke.sh
 # carries): assert the contract, not the phase number.
-assert_grep    "$LOG32" "online; idle (I[0-9]"                         "i386: reached idle -- no triple fault"
+assert_grep    "$LOG32" "\\[heap\\] PASS"                                 "i386: boot survived past the memory phase (the shell blocks on input now, so the idle line needs a driven session -- i386_shell_smoke covers it)"
 assert_no_grep "$LOG32" "FAIL"                                         "i386: no self-test failures anywhere"
 assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected faults"
 

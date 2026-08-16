@@ -183,8 +183,22 @@ $(INIT32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD
 	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD)/syscall32.o -o $@
 	@echo "  [user32] $@"
 
+# I7: the interactive shell.  Linked at 0x30000000 (shell32.ld) so the
+# children it spawns at 0x08048000 share the address space -- see the
+# script's header for the treaty.
+SHELL32_ELF := $(USER32_BUILD)/shell32
+
+$(USER32_BUILD)/shell32.o: userspace/system/shell32/shell32.c lib/libc32/libc32.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS32) -c $< -o $@
+
+$(SHELL32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/shell32.o $(USER32_BUILD)/syscall32.o lib/libc32/shell32.ld
+	$(LD) -m elf_i386 -nostdlib -static -T lib/libc32/shell32.ld \
+	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/shell32.o $(USER32_BUILD)/syscall32.o -o $@
+	@echo "  [user32] $@"
+
 .PHONY: user32
-user32: $(INIT32_ELF)
+user32: $(INIT32_ELF) $(SHELL32_ELF)
 
 # =============================================================================
 # BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
@@ -1485,7 +1499,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1566,6 +1580,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 # other's class, and the path split means neither can even try.
 	@mkdir -p $(INITRD_DIR)/bin32
 	@strip -s $(INIT32_ELF) -o $(INITRD_DIR)/bin32/init32
+	@strip -s $(SHELL32_ELF) -o $(INITRD_DIR)/bin32/shell32
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
 # HTTPS client can validate server chains against it.
 	@mkdir -p $(INITRD_DIR)/etc/ssl

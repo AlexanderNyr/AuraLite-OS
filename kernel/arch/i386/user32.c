@@ -28,6 +28,8 @@
 #include "kernel/arch/i386/thread32.h"
 #include "kernel/arch/i386/initrd32.h"
 #include "kernel/arch/i386/elf32load.h"
+#include "kernel/arch/i386/kbd32.h"
+#include "kernel/arch/i386/kheap32.h"
 
 /* user_entry32.asm */
 extern void user32_enter(uint32_t entry, uint32_t user_esp);
@@ -74,9 +76,57 @@ int user32_fault(struct registers32 *regs)
 
 /* ---- int 0x80 ----------------------------------------------------------- */
 
+/* Copy a NUL-terminated user string, page-probing as we go.  Returns
+ * 0 on success.  The bring-up stand-in for strncpy_from_user. */
+static int copy_user_path(uint32_t uptr, char *dst, uint32_t cap)
+{
+    for (uint32_t i = 0; i < cap - 1; i++) {
+        uint32_t va = uptr + i;
+        if (va >= KERNEL_VBASE_32 || !paging32_probe(va, NULL))
+            return -1;
+        dst[i] = *(const char *)va;
+        if (!dst[i])
+            return 0;
+    }
+    return -1;                       /* unterminated within cap */
+}
+
 static void syscall32_dispatch(struct registers32 *regs)
 {
     switch (regs->eax) {
+    case SYS32_READ: {
+        /* read(fd=ebx, buf=ecx, len=edx): fd 0, cooked console line.
+         * The buffer must be user-mapped and writable-by-user; probe
+         * each touched page before the blocking wait, not after. */
+        if (regs->ebx != 0 || regs->edx == 0 || regs->edx > 4096 ||
+            regs->ecx >= KERNEL_VBASE_32 ||
+            regs->ecx + regs->edx > KERNEL_VBASE_32) {
+            regs->eax = (uint32_t)-1;
+            return;
+        }
+        for (uint32_t va = regs->ecx & ~(PAGE_SIZE_32 - 1);
+             va < regs->ecx + regs->edx; va += PAGE_SIZE_32) {
+            if (!paging32_probe(va, NULL)) {
+                regs->eax = (uint32_t)-14;   /* -EFAULT */
+                return;
+            }
+        }
+        regs->eax = cons32_readline((char *)regs->ecx, regs->edx);
+        return;
+    }
+    case SYS32_SPAWN: {
+        /* spawn(path=ebx): run another initrd ELF32 to completion and
+         * return its exit code.  Nested inside the caller's own
+         * user32_run context, so the parent's setjmp slot is saved
+         * around the child -- see user32_run_elf's nesting note. */
+        char path[64];
+        if (copy_user_path(regs->ebx, path, sizeof(path)) != 0) {
+            regs->eax = (uint32_t)-14;       /* -EFAULT */
+            return;
+        }
+        regs->eax = (uint32_t)user32_run_elf(path);
+        return;
+    }
     case SYS32_WRITE: {
         /* write(fd=ebx, buf=ecx, len=edx) -> console only at I4/I5.
          * I5 widened the check from the fixed I4 window to "every
@@ -165,6 +215,17 @@ int user32_run_image(const uint8_t *code, uint32_t code_len)
         return -1;
     }
 
+    /* Dedicated trap stack (see thread32_set_esp0's measured lesson). */
+    uint8_t *trap_stack = (uint8_t *)kmalloc32(8192);
+    if (!trap_stack) {
+        paging32_unmap(USER_TEXT_VADDR);
+        paging32_unmap(USER_STACK_VADDR);
+        pmm32_free_frame(text_frame);
+        pmm32_free_frame(stack_frame);
+        return -1;
+    }
+    thread32_set_esp0((uint32_t)trap_stack + 8192);
+
     user_exit_code = -1;
     user_active    = 1;
 
@@ -187,6 +248,8 @@ int user32_run_image(const uint8_t *code, uint32_t code_len)
         : "memory", "eax", "ecx", "edx");
 
     /* user32_leave lands here with the kernel stack rewound. */
+    thread32_set_esp0(0);
+    kfree32(trap_stack);
     paging32_unmap(USER_TEXT_VADDR);
     paging32_unmap(USER_STACK_VADDR);
     pmm32_free_frame(text_frame);
@@ -251,37 +314,71 @@ int user32_selftest(void)
 
 /* ---- I5: ELF32 images from the initrd ----------------------------------- */
 
+/* Spawn depth: 0 = launched from kmain, 1 = child spawned by a user
+ * image (the shell).  Each nesting level needs its own stack page
+ * address AND the parent's exit-trampoline context saved around the
+ * child -- user32_leave must return control to the INNERMOST
+ * user32_run_elf, and the parent must be resumable afterwards. */
+static uint32_t spawn_depth;
+
 int user32_run_elf(const char *path)
 {
     const uint8_t *image;
     uint32_t size;
+
+    if (spawn_depth >= 2) {
+        kprintf32("[user] spawn depth limit (2) -- refusing\n");
+        return -1;
+    }
 
     if (!initrd32_find(path, &image, &size)) {
         kprintf32("[user] /%s: not found in the initrd\n", path);
         return -1;
     }
 
-    uint32_t entry = elf32load_map(image, size);
-    if (!entry)
-        return -1;
+    /* Checkpoint the parent's mappings (no-op at depth 0) and its
+     * exit-trampoline context. */
+    elf32load_mark();
+    uint32_t p_esp = saved_esp, p_ebp = saved_ebp, p_eip = saved_eip;
+    int p_active = user_active;
 
-    /* User stack: one page just under the ELF window's ceiling, well
-     * clear of the load segments the bounds check confined below it. */
+    uint32_t entry = elf32load_map(image, size);
+    if (!entry) {
+        elf32load_unmap();          /* releases to the mark */
+        return -1;
+    }
+
+    /* User stack: one page per nesting level, stepping down from the
+     * ELF window's ceiling so parent and child stacks never collide. */
+    uint32_t stack_page = ELF32_USER_MAX - PAGE_SIZE_32 * (spawn_depth + 1);
     uint32_t stack_frame = pmm32_alloc_frame();
-    if (!stack_frame) {
+    if (!stack_frame ||
+        paging32_map(stack_page, stack_frame,
+                     PAGE32_FLAG_USER | PAGE32_FLAG_WRITE) != 0) {
+        if (stack_frame)
+            pmm32_free_frame(stack_frame);
         elf32load_unmap();
         return -1;
     }
-    uint32_t stack_page = ELF32_USER_MAX - PAGE_SIZE_32;
-    if (paging32_map(stack_page, stack_frame,
-                     PAGE32_FLAG_USER | PAGE32_FLAG_WRITE) != 0) {
+
+    /* A DEDICATED trap stack for this image's Ring 3 entries (the
+     * measured lesson in thread32_set_esp0: esp0 must point at an
+     * empty stack, and kstack_top has our live frames under it).
+     * 8 KiB from the kernel heap per nesting level. */
+    uint32_t p_esp0 = thread32_current_esp0();
+    uint8_t *trap_stack = (uint8_t *)kmalloc32(8192);
+    if (!trap_stack) {
+        paging32_unmap(stack_page);
         pmm32_free_frame(stack_frame);
         elf32load_unmap();
         return -1;
     }
+    thread32_set_esp0((uint32_t)trap_stack + 8192);
 
-    kprintf32("[user] running /%s (entry %x, %u bytes)\n", path, entry, size);
+    kprintf32("[user] running /%s (entry %x, %u bytes, depth %u)\n",
+              path, entry, size, spawn_depth);
 
+    spawn_depth++;
     user_exit_code = -1;
     user_active    = 1;
 
@@ -297,11 +394,25 @@ int user32_run_elf(const char *path)
         "2:\n"
         "1:\n"
         : "=m"(saved_esp), "=m"(saved_ebp), "=m"(saved_eip)
-        : "m"(user_active), "r"(entry), "r"(ELF32_USER_MAX - 16)
+        : "m"(user_active), "r"(entry), "r"(stack_page + PAGE_SIZE_32 - 16)
         : "memory", "eax", "ecx", "edx");
 
+    /* user32_leave lands here; the child's exit code is latched. */
+    int code = user_exit_code;
+    spawn_depth--;
+
+    thread32_set_esp0(p_esp0);      /* parent's trap stack (or disarm) */
+    kfree32(trap_stack);
     paging32_unmap(stack_page);
     pmm32_free_frame(stack_frame);
-    elf32load_unmap();
-    return user_exit_code;
+    elf32load_unmap();              /* child's pages only, to the mark */
+
+    /* Restore the parent's trampoline: the next SYS32_EXIT (the
+     * parent's own) must land in the OUTER user32_run_elf frame. */
+    saved_esp   = p_esp;
+    saved_ebp   = p_ebp;
+    saved_eip   = p_eip;
+    user_active = p_active;
+
+    return code;
 }

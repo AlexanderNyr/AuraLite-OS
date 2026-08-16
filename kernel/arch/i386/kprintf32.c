@@ -8,6 +8,7 @@
 
 #include "kernel/arch/i386/portio.h"
 #include "kernel/arch/i386/kprintf32.h"
+#include "kernel/arch/i386/vga32.h"
 
 #define COM1 0x3F8
 
@@ -22,12 +23,30 @@ void uart32_init(void)
     outb(COM1 + 4, 0x0B);
 }
 
+/* I7: UART receive side, polled.  IRQ4-driven RX can follow when
+ * something needs it; the shell's read path polls from the idle
+ * loop's hlt cadence, which at human typing speed loses nothing. */
+int uart32_has_byte(void)
+{
+    return inb(COM1 + 5) & 0x01;
+}
+
+uint8_t uart32_read_byte(void)
+{
+    return inb(COM1 + 0);
+}
+
 void kputc32(char c)
 {
     if (c == '\n')
         kputc32('\r');
     while (!(inb(COM1 + 5) & 0x20)) { }
     outb(COM1 + 0, (uint8_t)c);
+    /* Fan out to the VGA text console once it exists (I7) -- same
+     * two-sink shape as the 64-bit kprintf.  VGA handles its own \n,
+     * so skip the \r we synthesised for the serial line. */
+    if (c != '\r' && vga32_active())
+        vga32_putc(c);
 }
 
 void kputs32(const char *s)

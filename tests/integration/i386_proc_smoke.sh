@@ -76,10 +76,12 @@ assert_grep    "$LOG32" $'^RING3-OK\r\{0,1\}$'                          "i386: R
 assert_grep    "$LOG32" "\[user\] exit(42) via int 0x80"               "i386: exit code round-trip"
 assert_grep    "$LOG32" "vector=13.*terminating image (code 141)"      "i386: negative control -- Ring 3 hlt contained via #GP"
 assert_grep    "$LOG32" "\[user\] PASS: Ring 3 write/getpid/exit"      "i386: user self-test verdict"
-# Phase-advancing idle line (the same generalisation the I2/I3 smokes
-# carry): the negative control runs BEFORE this line prints, so any
-# "online; idle" reached after it proves the kernel survived the fault.
-assert_grep    "$LOG32" "online; idle (I[0-9]"                         "i386: kernel SURVIVED the Ring 3 fault -- reached idle"
+# Survival marker, I7 revision: the shell BLOCKS on console input, so
+# an input-less boot never reaches the idle line any more.  What still
+# proves the kernel survived the negative-control fault (which fires
+# BEFORE init/shell start) is everything that runs after it: init32's
+# PASS verdict, then the shell prompt.
+assert_grep    "$LOG32" "\[init\] PASS\|auralite# "                    "i386: kernel SURVIVED the Ring 3 fault -- boot continued"
 assert_grep    "$LOG32" "\[pmm\] PASS"                                 "i386: I3 pmm gate still green"
 assert_grep    "$LOG32" "\[vmm\] PASS"                                 "i386: I3 vmm gate still green"
 assert_grep    "$LOG32" "\[heap\] PASS"                                "i386: I3 heap gate still green"

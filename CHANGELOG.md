@@ -2,6 +2,48 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [i386 Phase I7 — Drivers: console, keyboard, the shell] 2026-08-16
+
+`I386_PLAN.md` phase I7: the i386 machine grows a screen and a
+keyboard, and the `auralite#` gate lands — an interactive Ring 3 shell
+that reads cooked lines through `SYS_READ` and spawns other initrd
+programs through `SYS_SPAWN`, nested user images included.
+
+- **`vga32.c`**: VGA text-mode console (mode 3, 80×25 at `0xB8000`
+  via the direct map) — deliberately NOT VBE: Stage 2's 32-bit path
+  sets no video mode, and a bring-up console wants the
+  zero-mode-set output path.  `kprintf32` fans out UART + VGA.
+- **`kbd32.c`**: PS/2 keyboard on IRQ 1 (set 1, US map, shift), one
+  input ring fed by two producers (PS/2 + polled UART RX) so serial
+  and keyboard interleave in arrival order; cooked-line reader with
+  echo and backspace.
+- **`user32.c`**: `SYS_READ` (fd 0, page-probed buffer, blocking) and
+  `SYS_SPAWN` (path copied from user memory with per-byte probing).
+  Spawn nests: `elf32load` grew mark/release mapping checkpoints,
+  user stacks step down per nesting level, and the parent's
+  exit-trampoline context is saved/restored around the child.
+- **`shell32`**: Ring 3 shell at `0x30000000` (`shell32.ld` — children
+  at `0x08048000` share the single page directory by address-range
+  treaty).  help/uname/pid/echo/run/exit; absent commands name the
+  phase that brings them.
+- **Two real bugs found by the gate, both with regression asserts**:
+  (1) `int 0x80` is an interrupt gate, IF arrives cleared — the first
+  read loop slept in a bare `hlt` and wedged the machine behind a
+  fresh prompt; fixed with `sti; hlt; cli`.  (2) `TSS.esp0 =
+  kstack_top` had Ring 3 traps descend into `user32_run_elf`'s live
+  setjmp-trampoline frames; survived on 16 KiB of accidental headroom
+  until the nested spawn closed the gap and the parent resumed into
+  garbage (#PF with cr2 = the child's exit code).  Fixed with a
+  dedicated per-image trap stack (`thread32_set_esp0`).
+- **Scope note in the plan**: e1000/AHCI moved to I8 where their
+  consumers (net/fs parity) arrive — a NIC with no sockets is a demo,
+  not a driver.  Their original gates move with them verbatim.
+- Tests: `i386_shell_smoke.sh` — 16 assertions driving a live session
+  (prompt, uname, exact echo, nested `run` with the child's exit code
+  reported by the shell, unknown-command, clean exit, survival).
+  Three earlier smokes updated for the blocks-at-prompt reality, with
+  the edit recorded in the plan.
+
 ## [i386 Phase I6 — The pointer-width sweep] 2026-08-16
 
 `I386_PLAN.md` phase I6: the width discipline becomes machinery.  Three

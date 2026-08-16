@@ -20,10 +20,12 @@
 
 #include <stdint.h>
 
-/* AuraLite numbers (lib/libc/include/unistd.h), the I4 subset. */
+/* AuraLite numbers (lib/libc/include/unistd.h), the I4 subset + I7. */
+#define SYS32_READ       0
 #define SYS32_WRITE      1
 #define SYS32_GETPID    39
 #define SYS32_EXIT      60
+#define SYS32_SPAWN     81   /* non-standard: spawn from initrd path */
 #define SYS32_YIELD    158   /* SYS_SCHED_YIELD */
 
 /* Register the int 0x80 gate (DPL=3) in the IDT. */

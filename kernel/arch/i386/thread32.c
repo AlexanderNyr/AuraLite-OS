@@ -30,6 +30,11 @@ struct tcb32 {
     uint32_t    esp;            /* saved kernel stack pointer          */
     uint32_t    kstack_base;    /* kmalloc32 block (0 for the boot tcb) */
     uint32_t    kstack_top;
+    uint32_t    esp0;           /* TSS.esp0 while this thread runs --
+                                 * a DEDICATED trap stack armed by
+                                 * user32 before entering Ring 3, and
+                                 * 0 for threads that never do.  See
+                                 * the I7 lesson at thread32_set_esp0. */
     int         state;
     const char *name;
     thread32_fn fn;
@@ -69,17 +74,29 @@ static void thread32_entry(void)
     thread32_exit();
 }
 
+/* boot32.asm: top of the boot stack thread 0 runs on. */
+extern uint8_t boot_stack_top[];
+
 void sched32_init(void)
 {
     for (int i = 0; i < THREAD32_MAX; i++)
         tcbs[i].state = THREAD32_STATE_FREE;
 
     /* Adopt the boot context: kmain32's stack becomes thread 0's.  Its
-     * esp is live (never read until the first switch stores it). */
-    tcbs[0].state = THREAD32_STATE_READY;
-    tcbs[0].name  = "boot/idle";
-    current       = 0;
-    sched_online  = 1;
+     * esp is live (never read until the first switch stores it).
+     * kstack_top is recorded so switch_to arms TSS.esp0 for thread 0
+     * exactly like any other thread -- the I7 shell found the gap:
+     * after the sched self-test, esp0 still pointed at the LAST
+     * WORKER'S freed stack, and the boot thread's Ring 3 traps ran on
+     * reclaimed heap until a nested spawn corrupted it (#PF with a
+     * heap eip, measured).  A thread that can host user code must own
+     * the esp0 it traps onto -- no exceptions, including thread 0. */
+    tcbs[0].state      = THREAD32_STATE_READY;
+    tcbs[0].name       = "boot/idle";
+    tcbs[0].kstack_top = (uint32_t)boot_stack_top;
+    current            = 0;
+    sched_online       = 1;
+    tss_set_esp0(tcbs[0].kstack_top);
 
     kprintf32("[sched] round-robin online (BSP-only, %u slots, "
               "%u KiB kernel stacks)\n",
@@ -144,9 +161,14 @@ static void switch_to(int next)
     current  = next;
 
     /* Arm the ring-transition stack for the incoming thread (see the
-     * file comment).  Thread 0 keeps the boot stack; its top is not
-     * recorded, and it never runs Ring 3 code. */
-    if (tcbs[next].kstack_top)
+     * file comment).  esp0 (armed by user32 while the thread hosts a
+     * Ring 3 image; see thread32_set_esp0) wins over kstack_top: the
+     * setjmp-trampoline design keeps live C frames ON the kernel
+     * stack while Ring 3 runs, so trapping onto kstack_top would
+     * bulldoze them -- the trap needs its own stack. */
+    if (tcbs[next].esp0)
+        tss_set_esp0(tcbs[next].esp0);
+    else if (tcbs[next].kstack_top)
         tss_set_esp0(tcbs[next].kstack_top);
 
     context_switch32(&tcbs[prev].esp, tcbs[next].esp);
@@ -186,6 +208,33 @@ void thread32_reap(void)
         }
     }
     __asm__ volatile("sti");
+}
+
+/* I7: arm/disarm a dedicated Ring 3 trap stack for the CURRENT thread.
+ *
+ * The lesson, twice-measured, recorded once: TSS.esp0 must point at a
+ * stack that is EMPTY at trap time.  kstack_top is not it -- the
+ * setjmp-trampoline keeps user32_run_elf's live C frames on the kernel
+ * stack while Ring 3 runs, and the first version (esp0 = kstack_top)
+ * had every int 0x80 bulldoze those frames from the top down.  It
+ * *appeared* to work while 16 KiB of headroom separated the frames
+ * from the top; the nested `run` from the shell moved the frames close
+ * enough for the trap to overwrite saved_esp/saved_ebp, and the parent
+ * resumed into garbage (#PF at heap eip, then #PF at cr2=0x2a = the
+ * child's exit code where a return address should be).  user32 now
+ * allocates a trap stack per image and arms it here; disarm on exit. */
+void thread32_set_esp0(uint32_t esp0)
+{
+    tcbs[current].esp0 = esp0;
+    if (esp0)
+        tss_set_esp0(esp0);
+    else if (tcbs[current].kstack_top)
+        tss_set_esp0(tcbs[current].kstack_top);
+}
+
+uint32_t thread32_current_esp0(void)
+{
+    return tcbs[current].esp0;
 }
 
 void sched32_tick(void)

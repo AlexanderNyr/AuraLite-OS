@@ -44,6 +44,11 @@ void tss_set_esp0(uint32_t esp0)
     tss.esp0 = esp0;
 }
 
+uint32_t tss_get_esp0(void)
+{
+    return tss.esp0;
+}
+
 void gdt_init(void)
 {
     /* null */

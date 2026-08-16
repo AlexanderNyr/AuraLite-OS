@@ -27,6 +27,8 @@
 #include "kernel/arch/i386/thread32.h"
 #include "kernel/arch/i386/user32.h"
 #include "kernel/arch/i386/initrd32.h"
+#include "kernel/arch/i386/vga32.h"
+#include "kernel/arch/i386/kbd32.h"
 
 void thread32_reap(void);
 
@@ -210,6 +212,12 @@ void kmain32(uint32_t boot_info_phys)
         goto halt;
     }
 
+    /* ---- I7: the console grows a screen and a keyboard ---- */
+    vga32_init();
+    kprintf32("[boot] VGA text console online (80x25 at 0xB8000); "
+              "kprintf fans out to UART + VGA\n");
+    kbd32_init();
+
     /* ---- I2 self-tests (still gating every boot) ---- */
     if (selftest_breakpoint() == 0)
         kprintf32("[isr] PASS: deliberate #BP named, dumped, resumed\n");
@@ -246,12 +254,17 @@ void kmain32(uint32_t boot_info_phys)
             kprintf32("[init] PASS: init32 ran and exited %d as built\n", code);
         else
             kprintf32("[init] FAIL: init32 exit=%d (want 7)\n", code);
+
+        /* ---- I7: the interactive shell (the auralite# gate) ---- */
+        kprintf32("[boot] starting shell (Ring 3)\n");
+        int sh = user32_run_elf("bin32/shell32");
+        kprintf32("[shell] exited %d\n", sh);
     } else {
         kprintf32("[init] SKIP: no initrd\n");
     }
 
-    kprintf32("[kernel] I5 userspace online; idle (I6 adds the width "
-              "sweep + shared code adoption)\n");
+    kprintf32("[kernel] I7 console+shell online; idle (I8 adds fs/net "
+              "parity)\n");
 
 halt:
     for (;;) {

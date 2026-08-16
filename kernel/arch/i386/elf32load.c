@@ -37,11 +37,29 @@ struct elf32_phdr {
     uint32_t p_filesz, p_memsz, p_flags, p_align;
 };
 
-/* Track what we mapped so unmap can undo it (single image at a time). */
+/* Track what we mapped so unmap can undo it.  I7 turned the single
+ * image slot into a mark/release stack: SYS_SPAWN nests -- the shell
+ * (itself a user image) traps into the kernel, and the spawn handler
+ * runs the child image from inside the shell's syscall, on the same
+ * kernel thread.  elf32load_mark() checkpoints the mapping list
+ * before the child; elf32load_unmap() releases back to the newest
+ * mark, leaving the parent's pages untouched.  The images' VIRTUAL
+ * windows must not overlap -- the shell links at 0x30000000
+ * (shell32.ld) so children at 0x08048000 fit beside it, and
+ * paging32_map's already-mapped refusal is the backstop. */
 #define MAX_MAPPED 64
-static uint32_t mapped_vaddr[MAX_MAPPED];
-static uint32_t mapped_frame[MAX_MAPPED];
+#define MAX_NEST   4
+static uint32_t MV[MAX_MAPPED];
+static uint32_t MF[MAX_MAPPED];
 static uint32_t mapped_count;
+static uint32_t marks[MAX_NEST];
+static uint32_t mark_depth;
+
+void elf32load_mark(void)
+{
+    if (mark_depth < MAX_NEST)
+        marks[mark_depth++] = mapped_count;
+}
 
 static int map_user_page(uint32_t vaddr, uint32_t flags)
 {
@@ -59,8 +77,8 @@ static int map_user_page(uint32_t vaddr, uint32_t flags)
         pmm32_free_frame(frame);
         return -1;
     }
-    mapped_vaddr[mapped_count] = vaddr;
-    mapped_frame[mapped_count] = frame;
+    MV[mapped_count] = vaddr;
+    MF[mapped_count] = frame;
     mapped_count++;
     return 0;
 }
@@ -121,7 +139,7 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
             /* Segments may share a page boundary; map once. */
             uint32_t already = 0;
             for (uint32_t m = 0; m < mapped_count; m++)
-                if (mapped_vaddr[m] == va) { already = 1; break; }
+                if (MV[m] == va) { already = 1; break; }
             if (!already && map_user_page(va, flags) != 0) {
                 elf32load_unmap();
                 return 0;
@@ -134,8 +152,8 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
             uint32_t va    = ph->p_vaddr + off;
             uint32_t frame = 0;
             for (uint32_t m = 0; m < mapped_count; m++)
-                if (mapped_vaddr[m] == (va & ~(PAGE_SIZE_32 - 1)))
-                    { frame = mapped_frame[m]; break; }
+                if (MV[m] == (va & ~(PAGE_SIZE_32 - 1)))
+                    { frame = MF[m]; break; }
             ((uint8_t *)p2v_32(frame))[va & (PAGE_SIZE_32 - 1)] =
                 image[ph->p_offset + off];
         }
@@ -148,9 +166,11 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
 
 void elf32load_unmap(void)
 {
-    for (uint32_t m = 0; m < mapped_count; m++) {
-        paging32_unmap(mapped_vaddr[m]);
-        pmm32_free_frame(mapped_frame[m]);
+    /* Release back to the newest mark (or to empty when unnested). */
+    uint32_t floor = mark_depth ? marks[--mark_depth] : 0;
+    for (uint32_t m = floor; m < mapped_count; m++) {
+        paging32_unmap(MV[m]);
+        pmm32_free_frame(MF[m]);
     }
-    mapped_count = 0;
+    mapped_count = floor;
 }

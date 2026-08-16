@@ -1,6 +1,6 @@
 # AuraLite OS — i386 (32-bit x86) Support Plan
 
-## Status: IN PROGRESS 🚧 — I0–I6 complete, I7–I9 pending
+## Status: IN PROGRESS 🚧 — I0–I7 complete, I8–I9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,6 +11,7 @@
 | I4 — threads, scheduler, Ring 3, `int 0x80` | ✅ complete (scope note in phase result) | `patches/I386_I4_proc.patch` |
 | I5 — 32-bit libc and userspace | ✅ complete (bring-up scope, see phase result) | `patches/I386_I5_user.patch` |
 | I6 — the pointer-width sweep | ✅ complete (ratchet armed; residue tracked by CI, see phase result) | `patches/I386_I6_sweep.patch` |
+| I7 — drivers on i386 | ✅ complete (console scope; net/storage re-scoped to I8, see phase result) | `patches/I386_I7_drivers.patch` |
 | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
 | I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
 | I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
@@ -736,31 +737,85 @@ a fact-finding estimate; the checker number is the contract.
 
 ---
 
-### Phase I7 — Drivers on i386
+### Phase I7 — Drivers on i386 ✅ COMPLETE (console scope)
 
-**Objective:** the QEMU-standard device set works: e1000, AHCI, PS/2,
-framebuffer console.
+**Objective (as delivered):** the machine grows a screen and a
+keyboard, and the `auralite#` gate I5 deferred here lands — an
+interactive Ring 3 shell that spawns other programs.  e1000/AHCI move
+to I8 with the filesystem/network parity they exist to serve (scope
+note below).
 
 #### Tasks
 
-- [ ] VBE framebuffer: Stage 2's 32-bit path sets a linear-framebuffer
-      mode via VBE 2.0 real-mode calls before `CR0.PE` (the 64-bit path
-      gets its framebuffer from the loader too — same contract, same
-      `boot_fb_t`).
-- [ ] e1000/AHCI descriptor rings: already `uint64_t` on the wire;
-      audit bounce conditions (none expected below 4 GiB), enable IRQ
-      paths through the 8259 PIC as on early x86_64 phases.
-- [ ] PS/2 keyboard/mouse, PIT, UART: port-I/O only — expected to be
-      recompile-clean; the task is proving it, not writing it.
-- [ ] USB/xHCI, Bluetooth, Wi-Fi, virtio: explicitly deferred; rows in
-      the status matrix say so per-arch.
+- [x] **VGA text console** (`vga32.c`), not VBE: Stage 2's 32-bit path
+      sets no video mode, so the machine is in text mode 3 — 80×25 at
+      `0xB8000` through the direct map, scroll/cursor/backspace.
+      `kprintf32` fans out to UART + VGA, the two-sink shape of the
+      64-bit kprintf.  **VBE graphics are I8 residue**: a bring-up
+      console wants the zero-mode-set path, and text mode is it.
+- [x] **PS/2 keyboard** (`kbd32.c`): IRQ 1, scancode set 1, US map,
+      shift — the one modifier a shell cannot live without.  One input
+      ring, two producers (PS/2 + polled UART RX), so serial and
+      keyboard input interleave in arrival order and the same smoke
+      test exercises both paths.
+- [x] **Blocking `SYS_READ`** (fd 0, cooked line, echo, backspace) and
+      **`SYS_SPAWN`** (path from user memory, page-probed) — the
+      syscalls a shell is made of.  Spawn nests: mark/release mapping
+      checkpoints in `elf32load`, per-level user stacks, the parent's
+      exit-trampoline context saved around the child.
+- [x] **`shell32`** (`userspace/system/shell32/`): Ring 3, linked at
+      `0x30000000` (`shell32.ld`) so children at `0x08048000` share
+      the one page directory by address-range treaty; help/uname/pid/
+      echo/run/exit, absent commands name their phase.
+- [x] PIT/UART "recompile-clean" claim: proven — both were running
+      since I2; the I7 work was the RX side only.
+- [ ] ~~e1000, AHCI~~ — **I8** (scope note below).  USB/xHCI, BT,
+      Wi-Fi, virtio: deferred as planned, per-arch rows in I9's matrix.
 
 #### Test gate
 
-- i386 QEMU: DHCP acquires a lease and `ping` gets an echo reply
-  (`test_e1000_irq`-equivalent under `qemu-system-i386`); AHCI
-  read/write self-test passes; the framebuffer console shows the boot
-  log (VNC screenshot assert, as `test_graphics.sh` does today).
+- `i386_shell_smoke.sh` (16 assertions): drives a full session over
+  serial — prompt, uname, exact-string echo, **nested spawn** (`run
+  bin32/init32` at depth 1 with the child's output and `exit code 7`
+  reported by the shell), unknown-command diagnostic, clean exit,
+  kernel survival ✔.  x86_64 pair green ✔.
+
+#### Result
+
+Two real bugs, both found by the gate and now regression-covered:
+
+1. **The cleared-IF deadlock.**  `int 0x80` is an interrupt gate; IF
+   arrives cleared in the handler.  The first `cons32_readline` slept
+   with a bare `hlt` — a machine wedged forever behind a freshly
+   painted prompt.  Fix: `sti; hlt; cli`, with the comment carrying
+   the measurement.
+2. **esp0 bulldozing live frames.**  The setjmp-trampoline design
+   keeps `user32_run_elf`'s C frames on the kernel stack while Ring 3
+   runs — so `TSS.esp0 = kstack_top` had every trap descend INTO those
+   frames.  It *appeared* to work with 16 KiB of headroom; the nested
+   spawn moved the frames close enough for the trap to overwrite the
+   parent's saved context, and the parent resumed into garbage (#PF at
+   a heap eip; then cr2 = 0x2a — the child's exit code where a return
+   address should be, as clean a smoking gun as fault frames give).
+   Fix: a dedicated per-image trap stack, armed via
+   `thread32_set_esp0`, parent's restored around the child.  The I4
+   design note said the TSS "is the load-bearing wall"; I7 measured
+   exactly where it buckles.
+
+**Scope note, argued:** e1000/AHCI on i386 have no consumer until the
+VFS/net layers port — a NIC that DHCPs into a kernel with no sockets
+and a disk with no filesystem are demos, not drivers.  I8 is where
+their consumers arrive, so I8 is where they land, together with the
+gates the original I7 text specified (DHCP lease + ping, AHCI RW).
+What I7 delivered instead is the thing users touch first and the plan
+originally put here: the console, whole.
+
+Also delivered: three earlier smoke tests updated for the new reality
+that an input-less boot blocks at the prompt (their "reached idle"
+asserts converted to phase-scoped survival markers; the driven-session
+idle proof lives in this phase's own smoke) — recorded here because
+editing older gates is exactly the kind of change that deserves a
+paper trail.
 
 #### Deliverable
 

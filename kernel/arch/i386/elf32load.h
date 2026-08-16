@@ -21,8 +21,11 @@
 
 uint32_t elf32load_map(const uint8_t *image, uint32_t size);
 
-/* Unmap and free every page elf32load_map established (one image at a
- * time at bring-up scope, like user32's single-slot contract). */
+/* I7: mark/release nesting for SYS_SPAWN.  elf32load_mark() checkpoints
+ * the mapping list before a nested child image; elf32load_unmap()
+ * releases back to the newest mark, leaving the parent's pages alone.
+ * Unnested callers just call unmap as before. */
+void elf32load_mark(void);
 void elf32load_unmap(void);
 
 #endif /* AURALITE_ARCH_I386_ELF32LOAD_H */
