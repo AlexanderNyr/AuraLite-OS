@@ -76,6 +76,14 @@ jobs:
       - name: User-pointer dereference audit
         run: python3 tools/audit_user_pointers.py --check
 
+      # AUDIT_A7.  FIXES_PLAN.md said "PLANNED" while all 33 of its own
+      # task boxes were ticked and every repair was in the tree -- the same
+      # drift AUDIT_A3 found one document over.  Each phase is now tied to
+      # the source, and the gates it promises must also be REGISTERED, not
+      # merely present (an unregistered case does not run: see AUDIT_A0).
+      - name: Fixes plan claim check
+        run: python3 tools/check_fixes_claims.py --check
+
       # AUDIT_A3.  MATURITY_PLAN.md's phase statuses are prose, and prose
       # does not fail a build: M3 and M4 had landed while still listed
       # "pending", M6 understated tcp.c, and M10 asked for USB work that

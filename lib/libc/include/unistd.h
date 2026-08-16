@@ -315,6 +315,7 @@ void*   sbrk(intptr_t increment);
 void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t offset);
 int     munmap(void *addr, size_t length);
 int     msync(void *addr, size_t length, int flags);   /* A6 */
+int     fsync(int fd);                                 /* M9 */
 /* M4: demand-paged and shared VMAs */
 int     madvise(void *addr, size_t length, int advice);
 int     mincore(void *addr, size_t length, unsigned char *vec);

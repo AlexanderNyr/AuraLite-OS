@@ -71,12 +71,16 @@ il_send_delay 2
 
 # Directory operations.
 #
-# /tmp is tmpfs, and tmpfs implements NO mkdir op at all -- its valid_name()
-# rejects any path containing a slash, and the ops table has no .mkdir entry.
-# So `mkdir /tmp/testdir` has never worked and cannot; the assertions below
-# are asserted as FAILURES, which is what the system actually does.  The
-# shell's mkdir works on FAT32 and ext2, which is where test_fat32_mkdir.sh
-# exercises it.
+# M9: tmpfs DOES implement mkdir -- tmpfs_ops gained .mkdir in Q12, and all
+# three tmpfs op tables (/tmp, /opt, /dev/shm) carry it.
+#
+# This comment used to say the opposite, and the assertion below was
+# inverted to match: it required `mkdir: failed /tmp/testdir` and called
+# that correct.  Verified against the running system instead of the
+# comment -- the guest prints "mkdir: created /tmp/testdir" and `ls /tmp`
+# lists `testdir/`.  The test was pinning a limitation that had been fixed,
+# which is worse than no test: it would have gone red if someone fixed
+# nothing and green only while the feature stayed broken.
 il_send "mkdir /tmp/testdir"
 il_send_delay 1
 il_send "ls /tmp"
@@ -109,7 +113,12 @@ il_assert_grep "$LOG" "(free|usable|MiB)"             "free output"
 il_assert_grep "$LOG" "(hello|Hello)"                 "/hello ran"
 il_assert_grep "$LOG" "(sysinfo|System|cpu|CPU)"       "/sysinfo ran"
 il_assert_grep "$LOG" "14"                            "calc: 2+3*4=14"
-il_assert_grep "$LOG" "mkdir: failed /tmp/testdir"    "mkdir on tmpfs is refused (tmpfs has no mkdir op)"
+il_assert_grep_fixed "$LOG" "mkdir: created /tmp/testdir" \
+    "mkdir works on tmpfs (M9: tmpfs_ops has .mkdir)"
+# And the directory must actually appear -- "created" alone would pass even
+# if nothing were inserted into the volume.
+il_assert_grep "$LOG" "testdir/" \
+    "the new tmpfs directory is listed by ls"
 il_assert_grep "$LOG" "(stat|Type|Size|regular)"      "stat output"
 il_assert_grep "$LOG" "touch: /tmp/newfile"           "touch succeeded"
 il_assert_grep "$LOG" "newfile"                       "ls shows newfile"

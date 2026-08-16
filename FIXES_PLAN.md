@@ -1,6 +1,14 @@
 # AuraLite OS — Critical Defect Repair Plan
 
-## Status: PLANNED 📋 (phases R0–R8)
+## Status: ✅ COMPLETE — R0–R8 all delivered
+
+> **Corrected by `AUDIT_A7`.** This header read `PLANNED 📋` while all 33
+> of the plan's own task boxes were ticked, every repair was in the source,
+> and all seven test gates existed and were registered in `run_all.sh`.
+> The same drift `AUDIT_A3` found in `MATURITY_PLAN.md`, one document over.
+>
+> `tools/check_fixes_claims.py` now ties each phase to the source and runs
+> in CI, so the document cannot silently disagree with the tree again.
 
 This document is different from the others. `GL_PLAN.md`, `FSLAYOUT_PLAN.md`,
 `SDK_PLAN.md`, `WEBVIEW_PLAN.md` and `INTERNET_PLAN.md` all *add* something.

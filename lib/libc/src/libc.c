@@ -729,6 +729,12 @@ int munmap(void *addr, size_t length) {
                                     0, 0, 0, 0));
 }
 
+/* M9: fsync — flush this descriptor's cached pages to the filesystem.
+ * SYS_FSYNC was defined but unhandled before M9, so this returned -ENOSYS. */
+int fsync(int fd) {
+    return (int)syscall_ret(syscall(74, (uint64_t)fd, 0, 0, 0, 0, 0));
+}
+
 /* A6: msync — write a shared file mapping back through the page cache. */
 int msync(void *addr, size_t length, int flags) {
     return (int)syscall_ret(syscall(26, (uint64_t)addr, (uint64_t)length,

@@ -981,6 +981,26 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
         return (uint64_t)vfs_open(path, (int)a2, (int)a3);
     }
+    case SYS_FSYNC: {
+        /* M9: fsync(fd).
+         *
+         * SYS_FSYNC 74 was defined but had NO case arm, so every fsync()
+         * fell through to default and returned -ENOSYS.  That matters more
+         * since A6: a file-backed MAP_SHARED page is only written back by
+         * msync() or munmap(), so a program that wrote through a mapping
+         * and called fsync() -- the ordinary thing to do -- got an error
+         * and no writeback.
+         *
+         * Flush the page cache for this descriptor, then let the
+         * filesystem push its own metadata if it can. */
+        tcb_t *fc = sched_current();
+        if (!fc) return (uint64_t)-EBADF;
+        if (a1 >= VFS_MAX_FDS || fc->fd_table[a1] == NULL)
+            return (uint64_t)-EBADF;
+        struct ofd *fo = fc->fd_table[a1];
+        page_cache_flush(fo);
+        return 0;
+    }
     case SYS_CLOSE:
         return (uint64_t)vfs_errno(vfs_close((int)a1), EBADF);
     case SYS_EXIT:

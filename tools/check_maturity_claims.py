@@ -128,6 +128,11 @@ def claims():
          "EADDRINUSE" in tcp and "tcpm6e_can_bind" in tcp),
         ("M6e: the listen backlog is filled, not just declared",
          "tcpm6e_backlog_push" in tcp and "tcpm6e_backlog_pop" in tcp),
+        # --- M9 partial ---
+        ("M9: fsync() has a dispatcher arm, not just a number",
+         "case SYS_FSYNC" in syscall),
+        ("M9: tmpfs implements mkdir",
+         ".mkdir" in read("kernel", "fs", "tmpfs.c")),
         ("M6e: keepalive is wired up",
          "tcp_set_keepalive" in tcp and "tcpm6e_ka_poll" in
          read("kernel", "net", "tcp_m6e.h")),

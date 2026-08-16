@@ -1,6 +1,6 @@
 # AuraLite OS — Test-Integrity and Maturity-Plan Repair
 
-## Status: ✅ COMPLETE — A0–A6 all delivered
+## Status: ✅ COMPLETE — A0–A6 delivered; A7 added (plan-drift sweep)
 
 | Phase | Subject | State | Deliverable |
 |---|---|---|---|
@@ -11,6 +11,7 @@
 | A4 | Retire the stale `bring-up only` claim | ✅ **done** (folded into A2) | — |
 | A5 | M3's real audit task: hostile-pointer sweep | ✅ **done** | `patches/AUDIT_A5_uaccess_audit.patch` |
 | A6 | M4: file-backed `MAP_SHARED` + writeback | ✅ **done** | `patches/AUDIT_A6_vma.patch` |
+| A7 | `FIXES_PLAN.md` said PLANNED while fully done | ✅ **done** | `patches/AUDIT_A7_fixes_plan.patch` |
 
 Findings this plan acts on are recorded in [`MATURITY_AUDIT.md`](MATURITY_AUDIT.md).
 
@@ -425,3 +426,52 @@ documentation and log honesty — cheap, and they stop the next reader
 repeating finished work. A5 and A6 are the actual engineering, deliberately
 last, because doing them first would mean writing code against a test suite
 that cannot report on it.
+
+
+---
+
+### Phase A7 — `FIXES_PLAN.md` claimed to be unstarted ✅ DONE
+
+**The same drift A3 found, one document over — and worse.**
+`FIXES_PLAN.md` led with `Status: PLANNED 📋 (phases R0–R8)` while:
+
+- all **33** of its own task checkboxes were ticked,
+- every repair was in the source — `idt_set_ist(8, 1)` in `tss.c`, the
+  seeded `__stack_chk_guard`, `__errno_location`, `.init_array`,
+  `SIGSTOP`/`SIGCONT`, specific socket errno, a second keymap,
+- and all **seven** of its test gates existed **and were registered** in
+  `run_all.sh`.
+
+A reader taking the header at face value would conclude the kernel still
+had two *critical* unfixed defects — an unarmed IST and an undiagnosable
+SMP stack-protector trip — both of which were repaired long ago.
+
+**No `patches/FIX_R*.patch` exists**, so the work was merged without the
+per-phase patches the plan specified. That is why the header was never
+revisited: nothing in the process forced it.
+
+**The guard is the deliverable.** `tools/check_fixes_claims.py` ties all
+nine phases to the source, and additionally requires each promised gate to
+be **registered** in `run_all.sh` — present-but-unregistered was A0's
+finding and would otherwise pass here.
+
+#### Test gate — met
+
+- ✅ 19 claims verified against the tree.
+- ✅ It **found the live defect on first run**: 18 passed, the status line
+  failed.
+- ✅ Negative control 1: restoring `PLANNED` → status-line check fails.
+- ✅ Negative control 2: disarming `idt_set_ist(8, 1)` → R1 fails.
+- ✅ Negative control 3: unregistering `test_ist_double_fault` from
+  `run_all.sh` → the gate check fails.
+- ✅ Five guards green; `make iso` green.
+
+**One defect in my own guard.** The first version searched the whole
+document for `PLANNED`, so the corrected header — which *explains* what it
+used to say — kept failing it. A guard that cannot be satisfied by fixing
+the thing it complains about is a broken guard; it now reads only the
+`## Status:` line.
+
+#### Deliverable
+
+`patches/AUDIT_A7_fixes_plan.patch`

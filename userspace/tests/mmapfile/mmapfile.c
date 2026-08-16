@@ -135,6 +135,35 @@ int main(void) {
     }
     close(fdp);
 
+    /* 5. M9: fsync() must work and must write back, not return -ENOSYS.
+     *
+     * SYS_FSYNC 74 was defined with no case arm in the dispatcher, so every
+     * fsync() fell through to default.  That is worse than a missing
+     * syscall since A6: a program that writes through a MAP_SHARED mapping
+     * and calls fsync() -- the ordinary thing to do -- got an error AND no
+     * writeback. */
+    int fdf = open(PATH, O_RDWR, 0);
+    void *mf = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fdf, 0);
+    if (mf != MAP_FAILED) {
+        memcpy((char *)mf, "M9-FSYNC-WROTE-THIS", 20);
+        int fr = fsync(fdf);
+        check("fsync() returns 0, not -ENOSYS", fr == 0);
+
+        /* And it must actually have flushed: read through a separate fd
+         * WITHOUT msync or munmap first. */
+        memset(buf, 0, sizeof(buf));
+        int fd5 = open(PATH, O_RDONLY, 0);
+        read(fd5, buf, 20);
+        close(fd5);
+        check("fsync() wrote the mapping back",
+              memcmp(buf, "M9-FSYNC-WROTE-THIS", 19) == 0);
+        munmap(mf, 4096);
+    } else {
+        check("fsync test mapping was granted", 0);
+        check("fsync() wrote the mapping back", 0);
+    }
+    close(fdf);
+
     printf("== %d/%d passed ==\n", passed, total);
     return passed == total ? 0 : 1;
 }

@@ -54,7 +54,11 @@ il_assert_grep_fixed "$LOG" "ok   MAP_PRIVATE did NOT write through (control)" \
     "MAP_PRIVATE stayed copy-on-write"
 
 # The whole battery, so a silently shrinking denominator cannot pass.
-il_assert_grep_fixed "$LOG" "== 6/6 passed ==" "mmapfile 6/6"
+il_assert_grep_fixed "$LOG" "ok   fsync() returns 0, not -ENOSYS" \
+    "M9: fsync() is implemented"
+il_assert_grep_fixed "$LOG" "ok   fsync() wrote the mapping back" \
+    "M9: fsync() actually flushes the page cache"
+il_assert_grep_fixed "$LOG" "== 8/8 passed ==" "mmapfile 8/8"
 
 # The kernel must survive it.
 il_assert_no_grep "$LOG" "PANIC|page fault in kernel" "no kernel fault"

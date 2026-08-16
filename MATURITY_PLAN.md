@@ -616,11 +616,23 @@ become real, with the integration coverage FAT32/ext2 already enjoy.
 - [ ] **Path canonicalisation** in the VFS: resolve `.`/`..` and reject
       traversal that escapes a mount, so `/tmp/../etc` behaves like every POSIX
       system instead of failing for an incidental reason (TODO).
-- [ ] **tmpfs `mkdir`**: `tmpfs_ops` gains `.mkdir`; `/tmp` stops being flat;
-      re-enable the `test_shell_all.sh` mkdir assertion that was disabled.
-- [ ] **Buffer/page-cache writeback**: replace direct synchronous writes with a
-      dirty-buffer write-back policy + `sync`/`fsync`, building on the existing
-      `buffer_cache.c`. M4's file-backed mmap depends on this.
+- [x] **tmpfs `mkdir`** — **was already done** (Q12 added `.mkdir` to all
+      three tmpfs op tables). The plan and `test_shell_all.sh` both still
+      said it was impossible: the test asserted `mkdir: failed` and called
+      that correct. Verified against the running guest instead of the
+      comment — it prints `mkdir: created /tmp/testdir` and `ls` shows
+      `testdir/`. The assertion now requires success **and** the directory
+      appearing.
+- [~] **Buffer/page-cache writeback** — writeback itself landed in
+      `AUDIT_A6` (`page_cache_mark_dirty` + `page_cache_flush_range`).
+      **`fsync()` was missing entirely**: `SYS_FSYNC 74` was `#define`d
+      with no case arm in the dispatcher, so every call fell through to
+      `default` and returned `-ENOSYS`. Worse than a merely absent syscall
+      after A6 — a program that wrote through a `MAP_SHARED` mapping and
+      called `fsync()`, the ordinary thing to do, got an error *and* no
+      writeback. Now implemented and proved to flush. A periodic
+      dirty-buffer flush policy (rather than flush-on-demand) is still
+      open.
 - [ ] **Symlink-aware install allowlist**: resolve the parent through the VFS
       before judging a path (TODO F1) so a symlink inside `/opt` cannot write
       outside it.
