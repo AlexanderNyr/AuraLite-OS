@@ -90,12 +90,19 @@ def claims():
         # --- M6: the plan must credit what exists ... ---
         ("M6 correctly credits existing congestion control",
          "cwnd" in tcp and "ssthresh" in tcp and "rto_ms" in tcp),
-        # ... and must still be pending, because these are absent:
-        ("M6 is still pending: no SACK / fast retransmit / Nagle yet",
-         "sack" not in tcp.lower() and "fast_retransmit" not in tcp and
-         "nagle" not in tcp.lower()),
-        ("M6 is still pending: no TIME_WAIT state yet",
-         "TCP_TIME_WAIT" not in tcp),
+        # M6 partial: fast retransmit, Nagle, delayed ACK and TIME_WAIT
+        # policy now exist and are wired into the send path.
+        ("M6 partial: the fast-retransmit policy header exists",
+         "tcpm6_on_ack" in read("kernel", "net", "tcp_m6.h") and
+         "TCPM6_DUPACK_THRESH" in read("kernel", "net", "tcp_m6.h")),
+        ("M6 partial: fast retransmit is wired into tcp.c, not dead code",
+         "tcpm6_on_ack" in tcp and "TCPM6_ACK_FAST_RETX" in tcp),
+        ("M6 partial: Nagle and delayed ACK policy exist",
+         "tcpm6_nagle_may_send" in read("kernel", "net", "tcp_m6.h") and
+         "tcpm6_delack_on_segment" in read("kernel", "net", "tcp_m6.h")),
+        # ... and the phase is still open, because SACK is genuinely absent:
+        ("M6 is still pending: no SACK yet",
+         "sack" not in tcp.lower()),
 
         # --- M10: superseded, and the plan must say so ---
         ("M10 is marked superseded by USB_PLAN.md",

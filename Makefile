@@ -1521,6 +1521,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_vfs $(BUILD_DIR)/test_network \
                 $(BUILD_DIR)/test_dns \
                 $(BUILD_DIR)/test_tcp_x5 \
+                $(BUILD_DIR)/test_tcp_m6 \
                 $(BUILD_DIR)/test_ip_reasm \
                 $(BUILD_DIR)/test_xhci_ring \
                 $(BUILD_DIR)/test_ipv6_addr \
@@ -2313,6 +2314,13 @@ $(BUILD_DIR)/test_tcp_x5: tests/unit/test_tcp_x5.c kernel/net/tcp_x5.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 -I . \
 		tests/unit/test_tcp_x5.c -o $@
+
+# M6 (MATURITY_PLAN.md): fast retransmit/recovery, Nagle, delayed ACK and
+# TIME_WAIT — pure policy header, testable without a NIC.
+$(BUILD_DIR)/test_tcp_m6: tests/unit/test_tcp_m6.c kernel/net/tcp_m6.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+		tests/unit/test_tcp_m6.c -o $@
 
 # X4: IPv4 fragment reassembly — pure engine, injected clock.
 $(BUILD_DIR)/test_ip_reasm: tests/unit/test_ip_reasm.c kernel/net/ip_reasm.c \

@@ -14,7 +14,8 @@
 | M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
 | M3 — fault-recovering uaccess + audit | ✅ complete | `patches/MAT_M3_uaccess.patch` + `patches/AUDIT_A1_dead_gates.patch` |
 | M4 — demand-paged and shared VMAs | ✅ complete | `patches/AUDIT_A1_dead_gates.patch` + `patches/AUDIT_A6_vma.patch` |
-| M6–M14 | pending | — |
+| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, TIME_WAIT policy) | `patches/MAT_M6_fast_retransmit.patch` |
+| M7–M14 | pending | — |
 
 This document answers:
 
@@ -423,6 +424,27 @@ reparent-to-init) are still pending.
 > Genuinely absent: duplicate-ACK counting, fast retransmit/recovery, SACK,
 > Nagle, delayed ACK, `TIME_WAIT`/`CLOSE_WAIT`/`LAST_ACK`, a `listen`
 > backlog, `SO_REUSEADDR` and keepalive. Scope the phase to those.
+
+> **Update — `MAT_M6_fast_retransmit` landed the first four.**
+> `kernel/net/tcp_m6.h` holds the policy as pure inline functions (the
+> pattern `tcp_x5.h` established, so it is unit-testable without a NIC):
+>
+> - **Duplicate-ACK counting + fast retransmit/recovery** (RFC 5681 §3.2),
+>   wired into the real ACK path in `tcp.c` — three duplicates retransmit
+>   immediately instead of waiting out the RTO, `ssthresh` = max(flight/2,
+>   2·MSS), cwnd inflates per duplicate and deflates on exit.
+> - **Nagle** (RFC 896) with a `TCP_NODELAY` escape and a PSH/close flush.
+> - **Delayed ACK** (RFC 1122 §4.2.3.2) — every second segment, 200 ms cap,
+>   immediate on PSH/out-of-order/full-sized.
+> - **TIME_WAIT** timing (2·MSL = 30 s).
+>
+> The important discriminator: a repeated ACK number that carries data or
+> moves the window is **not** a duplicate ACK. Counting those would make
+> the stack retransmit into a receiver that is merely slow.
+>
+> **Still open:** SACK, the `listen` backlog, `SO_REUSEADDR`, keepalive, and
+> wiring `TIME_WAIT`/`CLOSE_WAIT`/`LAST_ACK` into the state machine (the
+> timing policy exists; the states are not yet in `tcp_state_t`).
 
 **Objective:** replace "one segment in flight, fixed RTO, 8 connections" with a
 TCP that a real server and a browser can lean on.

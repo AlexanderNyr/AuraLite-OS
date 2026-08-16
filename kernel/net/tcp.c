@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include "kernel/net/tcp.h"
 #include "kernel/net/tcp_x5.h"
+#include "kernel/net/tcp_m6.h"
 #include "kernel/net/net.h"
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
@@ -163,6 +164,12 @@ typedef struct {
     uint32_t     ooo_seq;
     uint32_t     ooo_len;
     uint8_t      ooo_data[TCPX5_OOO_CAP];
+
+    /* M6: duplicate-ACK / fast-recovery state and the delayed-ACK timer. */
+    tcpm6_dupack_t dupack;
+    tcpm6_delack_t delack;
+    uint8_t      nodelay;      /* TCP_NODELAY: bypass Nagle */
+    uint32_t     time_wait_tick;
 
     uint8_t      retx_valid;
     uint8_t      retx_flags;
@@ -531,6 +538,10 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
 
     /* N3 fix: initialise sliding-window fields (same as tcp_open). */
     conns[new_h].snd_una = conn_seq;
+    tcpm6_dupack_init(&conns[new_h].dupack);   /* M6 */
+    tcpm6_delack_init(&conns[new_h].delack);
+    conns[new_h].nodelay = 0;
+    conns[new_h].time_wait_tick = 0;
     conns[new_h].snd_nxt = conn_seq;
     conns[new_h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
     conns[new_h].rcv_wnd = TCP_WINDOW;
@@ -638,6 +649,10 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
      * waiting for an ACK.  cwnd is wide open until N7 brings real
      * congestion control + buffered out-of-order receive. */
     conns[h].snd_una = conn_seq;
+    tcpm6_dupack_init(&conns[h].dupack);   /* M6 */
+    tcpm6_delack_init(&conns[h].delack);
+    conns[h].nodelay = 0;
+    conns[h].time_wait_tick = 0;
     conns[h].snd_nxt = conn_seq;
     conns[h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
     conns[h].rcv_wnd = TCP_WINDOW;
@@ -801,6 +816,37 @@ int tcp_send(const void *data, uint32_t len) {
                     return -ECONNRESET;
                 }
                 uint32_t acked = ntohl_(rx.ack);
+
+                /* M6: classify before acting.  A repeated ACK number that
+                 * carries data or moves the window is NOT a duplicate ACK
+                 * (RFC 5681 s2) -- counting those would make the stack
+                 * retransmit into a receiver that is merely slow. */
+                tcpm6_ack_kind_t kind =
+                    tcpm6_on_ack(&c->dupack, c->snd_una, acked, c->snd_nxt,
+                                 data_len > 0,
+                                 ntohs_(rx.window) != (uint16_t)c->snd_wnd);
+
+                if (kind == TCPM6_ACK_FAST_RETX) {
+                    /* Three duplicates: the segment is gone, but ACKs are
+                     * still arriving, so the path is alive.  Retransmit at
+                     * once instead of waiting out the RTO (RFC 5681 s3.2). */
+                    c->ssthresh = tcpm6_recovery_ssthresh(
+                        c->snd_nxt - c->snd_una, c->eff_mss);
+                    c->cwnd = tcpm6_recovery_cwnd(c->ssthresh, c->eff_mss,
+                                                  c->dupack.dup_count);
+                    kprintf("[tcp] fast retransmit: %u dup ACKs for %u "
+                            "(ssthresh %u, cwnd %u)\n",
+                            c->dupack.dup_count, acked, c->ssthresh, c->cwnd);
+                    tcp_retransmit_last();
+                    continue;
+                }
+                if (kind == TCPM6_ACK_IN_RECOVERY) {
+                    /* Each further duplicate means one more segment has
+                     * left the network: inflate and try to send. */
+                    c->cwnd += c->eff_mss;
+                    continue;
+                }
+
                 if (acked > c->snd_una) {
                     /* Progress: slide, sample RTT (Karn: only if the
                      * covered segment was never retransmitted), reset
@@ -820,6 +866,13 @@ int tcp_send(const void *data, uint32_t len) {
                     }
                     if (acked >= c->retx_seq + c->retx_len)
                         c->retx_valid = 0;
+                    if (!c->dupack.in_recovery && c->cwnd > c->ssthresh &&
+                        c->ssthresh > 0) {
+                        /* M6: leaving fast recovery deflates cwnd back to
+                         * ssthresh rather than keeping the inflated value
+                         * (RFC 5681 s3.2 step 6). */
+                        c->cwnd = c->ssthresh;
+                    }
                     c->cwnd += 1460;
                     if (c->cwnd > TCP_WINDOW) c->cwnd = TCP_WINDOW;
                 }
