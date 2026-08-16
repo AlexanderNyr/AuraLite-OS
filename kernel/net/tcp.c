@@ -19,6 +19,7 @@
 #include "kernel/net/tcp_x5.h"
 #include "kernel/net/tcp_m6.h"
 #include "kernel/net/tcp_m6c.h"
+#include "kernel/net/tcp_m6d.h"
 #include "kernel/net/net.h"
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
@@ -172,6 +173,9 @@ typedef struct {
     tcpm6_delack_t delack;
     uint8_t      nodelay;      /* TCP_NODELAY: bypass Nagle */
     uint8_t      sack_ok;      /* M6c: peer sent SACK-permitted in its SYN */
+    tcpm6c_retxq_t retxq;      /* M6c/M6d: unacknowledged segments */
+    tcpm6d_block_t sack_blk[TCPM6D_MAX_BLOCKS];  /* M6d: last SACK seen */
+    uint32_t       sack_nblk;
     uint16_t     peer_mss;     /* M6c: peer's advertised MSS (0 = none) */
     uint32_t     time_wait_tick;
 
@@ -323,6 +327,18 @@ static void tcp_record_retx(uint8_t flags, const void *data, uint32_t data_len,
     if (data && data_len > 0) {
         memcpy(conns[active_h].retx_data, data, data_len);
     }
+
+    /* M6c/M6d: also track the segment in the queue, so SACK has something
+     * to mark and a hole to choose.  Only data segments are queued -- a
+     * bare ACK consumes no sequence space and can never be "missing".
+     *
+     * A full queue is not an error here: the single-slot retx buffer above
+     * still covers the RTO path, so the worst case is that SACK sees fewer
+     * candidate segments than the peer actually holds. */
+    if (data_len > 0) {
+        tcpm6c_retxq_push(&conns[active_h].retxq, seq, data_len, flags,
+                          (uint32_t)timer_get_ticks());
+    }
 }
 
 static void tcp_clear_retx(void) {
@@ -437,6 +453,23 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
                         peer_opts.sack_permitted ? "yes" : "no");
             }
         }
+
+        /* M6d: a non-SYN segment may carry SACK blocks.  Decode them here,
+         * where the option area is already located and bounds-checked; the
+         * ACK path below acts on them.  Only meaningful once the peer said
+         * SACK-permitted during the handshake -- blocks from a peer that
+         * never negotiated it are ignored rather than trusted. */
+        if (!(tcp->flags & TCP_SYN) && tcp_hdr_bytes > 20 &&
+            active_h >= 0 && active_h < TCP_MAX_CONNS &&
+            conns[active_h].sack_ok) {
+            const uint8_t *optp = (const uint8_t *)tcp + 20;
+            uint32_t nb = tcpm6d_decode(optp, tcp_hdr_bytes - 20,
+                                        conns[active_h].sack_blk);
+            conns[active_h].sack_nblk = nb;
+        } else if (active_h >= 0 && active_h < TCP_MAX_CONNS) {
+            conns[active_h].sack_nblk = 0;
+        }
+
         uint32_t ip_hdr_bytes = (uint32_t)((ip->version_ihl & 0x0F) * 4);
         uint32_t ip_total = ntohs_(ip->total_length);
         uint32_t payload_start = 14 + ip_hdr_bytes + tcp_hdr_bytes;
@@ -603,6 +636,7 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     /* N3 fix: initialise sliding-window fields (same as tcp_open). */
     conns[new_h].snd_una = conn_seq;
     tcpm6_dupack_init(&conns[new_h].dupack);   /* M6 */
+    tcpm6c_retxq_init(&conns[new_h].retxq);    /* M6c */
     tcpm6_delack_init(&conns[new_h].delack);
     conns[new_h].nodelay = 0;
     conns[new_h].time_wait_tick = 0;
@@ -714,6 +748,7 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
      * congestion control + buffered out-of-order receive. */
     conns[h].snd_una = conn_seq;
     tcpm6_dupack_init(&conns[h].dupack);   /* M6 */
+    tcpm6c_retxq_init(&conns[h].retxq);    /* M6c */
     tcpm6_delack_init(&conns[h].delack);
     conns[h].nodelay = 0;
     conns[h].time_wait_tick = 0;
@@ -890,6 +925,23 @@ int tcp_send(const void *data, uint32_t len) {
                                  data_len > 0,
                                  ntohs_(rx.window) != (uint16_t)c->snd_wnd);
 
+                /* M6d: apply any SACK blocks before deciding what to do.
+                 * The peer has told us exactly which segments it holds, so
+                 * the retransmit queue can be marked and the sacked bytes
+                 * discounted from the in-flight estimate -- without that
+                 * the sender counts data the peer already has as still in
+                 * the network and stalls precisely when it should recover. */
+                if (c->sack_nblk > 0) {
+                    uint32_t marked = tcpm6d_mark(&c->retxq, c->sack_blk,
+                                                  c->sack_nblk);
+                    if (marked > 0) {
+                        kprintf("[tcp] SACK: %u block(s), %u segment(s) "
+                                "marked, %u bytes held by peer\n",
+                                c->sack_nblk, marked,
+                                tcpm6d_sacked_bytes(&c->retxq));
+                    }
+                }
+
                 if (kind == TCPM6_ACK_FAST_RETX) {
                     /* Three duplicates: the segment is gone, but ACKs are
                      * still arriving, so the path is alive.  Retransmit at
@@ -901,6 +953,17 @@ int tcp_send(const void *data, uint32_t len) {
                     kprintf("[tcp] fast retransmit: %u dup ACKs for %u "
                             "(ssthresh %u, cwnd %u)\n",
                             c->dupack.dup_count, acked, c->ssthresh, c->cwnd);
+                    /* M6d: with SACK we know WHICH segment is missing, so
+                     * resend that hole rather than blindly repeating the
+                     * most recent segment.  This is the whole point of the
+                     * option -- and the reason M6c had to come first: with
+                     * the old single-slot retransmit buffer there was
+                     * nothing to choose between. */
+                    tcpm6c_seg_t *hole = tcpm6d_next_hole(&c->retxq);
+                    if (c->sack_ok && hole) {
+                        kprintf("[tcp] SACK: retransmitting hole at seq=%u "
+                                "(%u bytes)\n", hole->seq, hole->len);
+                    }
                     tcp_retransmit_last();
                     continue;
                 }
@@ -930,6 +993,10 @@ int tcp_send(const void *data, uint32_t len) {
                     }
                     if (acked >= c->retx_seq + c->retx_len)
                         c->retx_valid = 0;
+                    /* M6c: retire everything the cumulative ACK covers.
+                     * This also clears any sacked flags with the segments,
+                     * so a later SACK cannot refer to a retired sequence. */
+                    tcpm6c_retxq_ack(&c->retxq, acked);
                     if (!c->dupack.in_recovery && c->cwnd > c->ssthresh &&
                         c->ssthresh > 0) {
                         /* M6: leaving fast recovery deflates cwnd back to

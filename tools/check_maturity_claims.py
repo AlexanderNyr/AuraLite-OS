@@ -117,8 +117,16 @@ def claims():
         # ... and the phase is still open: SACK itself is not implemented.
         # tcp_m6c.h names it (SACK-permitted is negotiated), so look for
         # the thing that would actually process incoming SACK blocks.
-        ("M6 is still pending: incoming SACK blocks are not processed yet",
-         "tcpm6d_" not in tcp),
+        ("M6d: SACK blocks are decoded from incoming segments",
+         "tcpm6d_decode" in tcp),
+        ("M6d: SACK marks the retransmit queue and picks the hole",
+         "tcpm6d_mark" in tcp and "tcpm6d_next_hole" in tcp),
+        ("M6d: segments are pushed to the queue, so SACK has something "
+         "to mark",
+         "tcpm6c_retxq_push" in tcp and "tcpm6c_retxq_ack" in tcp),
+        # M6 remains partial: these three are genuinely absent.
+        ("M6 is still pending: no listen backlog / SO_REUSEADDR / keepalive",
+         "so_reuseaddr" not in tcp.lower() and "keepalive" not in tcp.lower()),
 
         # --- M10: superseded, and the plan must say so ---
         ("M10 is marked superseded by USB_PLAN.md",

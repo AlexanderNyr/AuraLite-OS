@@ -1523,6 +1523,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_tcp_x5 \
                 $(BUILD_DIR)/test_tcp_m6 \
                 $(BUILD_DIR)/test_tcp_m6c \
+                $(BUILD_DIR)/test_tcp_m6d \
                 $(BUILD_DIR)/test_ip_reasm \
                 $(BUILD_DIR)/test_xhci_ring \
                 $(BUILD_DIR)/test_ipv6_addr \
@@ -2329,6 +2330,13 @@ $(BUILD_DIR)/test_tcp_m6c: tests/unit/test_tcp_m6c.c kernel/net/tcp_m6c.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 		tests/unit/test_tcp_m6c.c -o $@
+
+# M6d (MATURITY_PLAN.md): SACK (RFC 2018) — block codec, queue marking,
+# hole selection.  Pure policy on top of the M6c prerequisites.
+$(BUILD_DIR)/test_tcp_m6d: tests/unit/test_tcp_m6d.c kernel/net/tcp_m6d.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+		tests/unit/test_tcp_m6d.c -o $@
 
 # X4: IPv4 fragment reassembly — pure engine, injected clock.
 $(BUILD_DIR)/test_ip_reasm: tests/unit/test_ip_reasm.c kernel/net/ip_reasm.c \

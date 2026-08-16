@@ -14,7 +14,7 @@
 | M2 — IOAPIC + interrupt-driven devices | ✅ core complete (IOAPIC driver + PIC→APIC switch); MSI / virtio-IRQ-RX deferred to their own phases | `patches/MAT_M2_ioapic.patch` |
 | M3 — fault-recovering uaccess + audit | ✅ complete | `patches/MAT_M3_uaccess.patch` + `patches/AUDIT_A1_dead_gates.patch` |
 | M4 — demand-paged and shared VMAs | ✅ complete | `patches/AUDIT_A1_dead_gates.patch` + `patches/AUDIT_A6_vma.patch` |
-| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, close states, option codec + retx queue) | `MAT_M6_fast_retransmit` + `MAT_M6b_close_states` + `MAT_M6c_options_retxq` |
+| M6 — production TCP | 🚧 partial (fast retransmit, Nagle, delayed ACK, close states, options, retx queue, SACK) | `MAT_M6_fast_retransmit` + `MAT_M6b_close_states` + `MAT_M6c_options_retxq` + `MAT_M6d_sack` |
 | M7–M14 | pending | — |
 
 This document answers:
@@ -473,8 +473,22 @@ reparent-to-init) are still pending.
 > Verified against a real peer: `mss=1460 sack=no` (SLIRP does not offer
 > SACK — an honest negotiation, not a stub).
 >
-> **Still open:** SACK itself (M6d, now unblocked), the `listen` backlog,
-> `SO_REUSEADDR`, keepalive.
+> **Update — `MAT_M6d_sack` implemented SACK (RFC 2018).**
+> Block encode/decode, retransmit-queue marking, hole selection, and the
+> in-flight discount (RFC 6675) — the sender no longer counts data the peer
+> already holds as still in the network. Segments are pushed to the M6c
+> queue and retired by the cumulative ACK, so SACK has real state to mark.
+>
+> **Verified in unit tests, NOT end-to-end — and the reason is recorded
+> rather than papered over.** Every integration case runs through QEMU's
+> SLIRP, which terminates TCP itself and never offers SACK-permitted: the
+> live handshake honestly reports `sack=no`, so the blocks are negotiated
+> away before any can arrive. Proving SACK on the wire needs a peer that
+> offers it (a `tap` device to a Linux host). The receive path is
+> deliberately written to ignore blocks from a peer that never negotiated
+> SACK, so the untested path is inert rather than dangerous.
+>
+> **Still open:** the `listen` backlog, `SO_REUSEADDR`, keepalive.
 
 **Objective:** replace "one segment in flight, fixed RTO, 8 connections" with a
 TCP that a real server and a browser can lean on.
