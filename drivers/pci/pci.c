@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include "drivers/pci/pci.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 
 uint32_t pci_config_read(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off) {
     uint32_t addr = (1u << 31)

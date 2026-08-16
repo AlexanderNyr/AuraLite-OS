@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 #include "drivers/timer/pit.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/proc/scheduler.h"

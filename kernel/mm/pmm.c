@@ -203,7 +203,7 @@ void pmm_dump_stats(void) {
             (unsigned long long)(pmm.free_frames * PMM_PAGE_SIZE / MIB));
 }
 
-uint64_t pmm_alloc_frame(void) {
+paddr_t pmm_alloc_frame(void) {
     uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);
     int64_t idx = bm_first_free(pmm.bitmap, pmm.nframes);
     if (idx < 0) {
@@ -219,7 +219,7 @@ uint64_t pmm_alloc_frame(void) {
     return phys;
 }
 
-uint64_t pmm_alloc_contiguous(uint64_t count) {
+paddr_t pmm_alloc_contiguous(uint64_t count) {
     uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);
     int64_t idx = bm_find_contiguous(pmm.bitmap, pmm.nframes, count);
     if (idx < 0) {
@@ -237,7 +237,7 @@ uint64_t pmm_alloc_contiguous(uint64_t count) {
     return phys;
 }
 
-void pmm_free_contiguous(uint64_t phys, uint64_t count) {
+void pmm_free_contiguous(paddr_t phys, uint64_t count) {
     if (!phys || !count) return;
     /* Frame-by-frame through pmm_free_frame(), so the refcount handling
      * (shared pages from copy-on-write fork) stays in exactly one place. */
@@ -246,7 +246,7 @@ void pmm_free_contiguous(uint64_t phys, uint64_t count) {
     }
 }
 
-void pmm_free_frame(uint64_t phys) {
+void pmm_free_frame(paddr_t phys) {
     uint64_t idx = phys >> PMM_PAGE_SHIFT;
     if (idx == 0 || idx >= pmm.nframes) {
         kprintf(PMM_TAG "free: invalid physical address 0x%016llx\n",
@@ -271,7 +271,7 @@ void pmm_free_frame(uint64_t phys) {
     spinlock_release_irqrestore(&pmm.lock, rflags);
 }
 
-int pmm_inc_frame_ref(uint64_t phys) {
+int pmm_inc_frame_ref(paddr_t phys) {
     uint64_t idx = phys >> PMM_PAGE_SHIFT;
     if (idx == 0 || idx >= pmm.nframes) {
         kprintf(PMM_TAG "ref: invalid physical address 0x%016llx\n",
@@ -290,7 +290,7 @@ int pmm_inc_frame_ref(uint64_t phys) {
     return 0;
 }
 
-uint32_t pmm_get_frame_refcount(uint64_t phys) {
+uint32_t pmm_get_frame_refcount(paddr_t phys) {
     uint64_t idx = phys >> PMM_PAGE_SHIFT;
     if (idx == 0 || idx >= pmm.nframes) return 0;
     uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);

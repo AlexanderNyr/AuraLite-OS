@@ -2,6 +2,7 @@
 #define AURALITE_MM_PMM_H
 
 #include <stdint.h>
+#include "kernel/lib/paddr.h"
 
 /*
  * Physical Memory Manager.
@@ -29,13 +30,13 @@ void pmm_init(void);
  *
  * @returns its physical address (page aligned), or 0 if out of memory.
  */
-uint64_t pmm_alloc_frame(void);
+paddr_t pmm_alloc_frame(void);
 
 /*
  * Allocate `count` physically-contiguous free frames.
  * @returns the base physical address, or 0 if no run is available.
  */
-uint64_t pmm_alloc_contiguous(uint64_t count);
+paddr_t pmm_alloc_contiguous(uint64_t count);
 
 /* Release a run obtained from pmm_alloc_contiguous().
  *
@@ -43,19 +44,19 @@ uint64_t pmm_alloc_contiguous(uint64_t count);
  * AHCI driver simply did not -- leaking a bounce buffer on every disk read
  * and write.  Providing the counterpart to the allocator makes the correct
  * thing the obvious thing. */
-void pmm_free_contiguous(uint64_t phys, uint64_t count);
+void pmm_free_contiguous(paddr_t phys, uint64_t count);
 
 /*
  * Release a frame previously obtained from pmm_alloc_frame. Logging a warning
  * (and ignoring) on a bad address or double free.
  */
-void pmm_free_frame(uint64_t phys);
+void pmm_free_frame(paddr_t phys);
 
 /* Increase/decrease/read the sharing reference count for an allocated frame.
  * Used by copy-on-write fork(). pmm_free_frame() is refcount-aware: it only
  * returns the frame to the free bitmap when the count reaches zero. */
-int      pmm_inc_frame_ref(uint64_t phys);
-uint32_t pmm_get_frame_refcount(uint64_t phys);
+int      pmm_inc_frame_ref(paddr_t phys);
+uint32_t pmm_get_frame_refcount(paddr_t phys);
 
 /* Live counters for /proc-style reporting and tests. */
 uint64_t pmm_get_free_frames(void);

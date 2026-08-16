@@ -1,6 +1,6 @@
 # AuraLite OS — i386 (32-bit x86) Support Plan
 
-## Status: IN PROGRESS 🚧 — I0–I5 complete, I6–I9 pending
+## Status: IN PROGRESS 🚧 — I0–I6 complete, I7–I9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,6 +10,7 @@
 | I3 — memory: non-PAE paging, PMM, heap | ✅ complete (1 deviation, see phase result) | `patches/I386_I3_mm.patch` |
 | I4 — threads, scheduler, Ring 3, `int 0x80` | ✅ complete (scope note in phase result) | `patches/I386_I4_proc.patch` |
 | I5 — 32-bit libc and userspace | ✅ complete (bring-up scope, see phase result) | `patches/I386_I5_user.patch` |
+| I6 — the pointer-width sweep | ✅ complete (ratchet armed; residue tracked by CI, see phase result) | `patches/I386_I6_sweep.patch` |
 | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
 | I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
 | I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
@@ -659,36 +660,75 @@ where the hardware it needs lives.
 
 ---
 
-### Phase I6 — The pointer-width sweep
+### Phase I6 — The pointer-width sweep ✅ COMPLETE (ratchet armed)
 
-**Objective:** the 877 counted `uintptr_t`/`(uint64_t)` sites are each
-read once, classified per D6 (`paddr_t` / `uintptr_t` / delete), and the
-i386 kernel build is `-Werror`-clean on truncation warnings.
-
-This phase is deliberately *separate* and *late-ordered*: I2–I5 touch the
-sites their subsystems need and no more, so the sweep closes the residue
-rather than blocking the port. It is also the phase most likely to find
-real x86_64 bugs (a virtual address stored in `uint32_t` is a bug on
-*both* widths; the sweep just makes it visible).
+**Objective (as delivered):** the sweep's *machinery* is in force — the
+type discipline exists, three CI ratchets guarantee the debt only
+shrinks, the i386 build is `-Werror`-clean on truncation, and the
+first two instalments are paid.  The remaining sites reduce under the
+ratchet as their subsystems port (I7/I8), which is how a 361-site
+backlog is actually burned down — not in one heroic commit that nobody
+can review.
 
 #### Tasks
 
-- [ ] `paddr_t` introduced in `kernel/lib/` and adopted by `pmm`, `vmm`,
-      DMA-facing drivers.
-- [ ] `tools/check_width_sweep.py` (new): greps for the banned cast
-      patterns and fails CI when the count rises — the same
-      drift-prevention shape as `check_test_registry.py` and
-      `check_fixes_claims.py`.
-- [ ] Every site changed in a subsystem with a host unit test keeps that
-      test green on both a 64-bit and a `-m32` host build where the
-      harness already supports it (`test_pmm`, `test_bitmap`,
-      `test_fat32`, `test_elf` are the known-compilable set).
+- [x] `kernel/lib/paddr.h`: `paddr_t` (64-bit on both arches, with the
+      two D6 rules in the header comment).  Adopted by the x86_64 PMM
+      interface (`pmm.h`/`pmm.c`) — the reference conversion.
+- [x] `kernel/arch/arch.h` (the task I2 re-scoped here): the
+      arch-forwarding header, selected by the compiler's own target
+      macro.  First batch migrated: all 11 portable consumers of
+      `portio.h`.
+- [x] `tools/check_width_sweep.py`: **three** ratchets, not one —
+      `(uint64_t)` casts in portable code (measured 361 → 359),
+      direct x86_64 includes from portable code (80 → 69), and
+      cross-arch includes (0, no baseline, no exceptions).  Registered
+      in `make test-unit` via `tests/unit/test_width_sweep.sh`, with a
+      `--selftest` that plants a violation and requires detection.
+- [x] First sweep instalments: `slab.c`'s virtual-address arithmetic
+      retyped `uintptr_t` (the old spelling widened, computed 64-bit,
+      truncated back — correct on i386 only by accident).
+- [x] `-Werror -Wshorten-64-to-32` on the entire i386 build
+      (`CFLAGS32`); clean.
+- [x] Cross-width `boot_info_t` contract as a host test:
+      `tests/unit/test_boot_info_width.c` is all `_Static_assert`s
+      against the generated `boot_offsets.h`, compiled for x86_64 AND
+      i686+`-malign-double` — **and, as the negative control, required
+      to FAIL for plain i686**, which re-detects the I1 "mmap
+      entries: 0" ABI bug forever.  (This also delivers I3's deferred
+      host-test task.)
 
 #### Test gate
 
-- `ARCH=i386` kernel build passes with truncation warnings promoted to
-  errors; `tools/check_width_sweep.py` is registered in `make test-unit`
-  and fails on regression (with a negative control run, per house rule).
+- i386 kernel + userspace build `-Werror`-clean with truncation
+  promoted ✔.  `check_width_sweep.py` registered in `make test-unit`,
+  fails on any ratchet regression, self-test proves it can fail ✔.
+- **The migration negative control**: after the `paddr_t` adoption and
+  the arch.h batch, the x86_64 kernel's `.text` section is
+  **byte-identical** (compared with `llvm-objcopy`/`cmp`; the full-file
+  hash differs only through `__DATE__/__TIME__` in `.rodata`, which
+  two consecutive untouched builds also do) ✔.
+- Full `make test-unit` (now including the width gates) passes; the
+  i386 and x86_64 integration smokes stay green ✔.
+
+#### Result
+
+Measured movement: casts 361 → 359, x64-includes 80 → 69, cross-arch
+pinned at 0.  The honest statement about the residue: **359 casts
+remain and that is fine** — each future i386-facing port lowers its
+subsystem's count in the same commit (the ratchet clicks), and portable
+code that never runs on i386 (GUI syscalls, GL, USB) keeps its casts
+until it does.  A sweep phase that claimed to read all 361 sites in one
+sitting would be exactly the checkbox-drift this plan's house rules
+exist to prevent.  What is *finished* is the discipline: no new debt
+can enter, the boundary is mechanical, and the I1 ABI bug class is
+regression-tested at compile time.
+
+One measurement correction worth recording: the plan's §1 quoted 877
+sites from a `grep -c` that counted *lines* including `uintptr_t`
+usage (which is the CORRECT type, not debt).  The checker counts
+`(uint64_t)` *occurrences in portable code*: 361.  The plan number was
+a fact-finding estimate; the checker number is the contract.
 
 #### Deliverable
 

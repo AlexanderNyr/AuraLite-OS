@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include "drivers/mouse/mouse.h"
 #include "drivers/framebuffer/graphics.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/arch/x86_64/cpu.h"

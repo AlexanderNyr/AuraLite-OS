@@ -65,8 +65,13 @@ void *slab_alloc(slab_cache_t *cache) {
         sp->next = cache->page_list;
         cache->page_list = sp;
         
-        uint64_t start = ((uint64_t)(uintptr_t)(page + sizeof(struct slab_page)) + cache->align - 1) & ~(cache->align - 1);
-        uint64_t end = (uint64_t)(uintptr_t)page + SLAB_PAGE_SIZE;
+        /* I6 sweep: these are VIRTUAL addresses -- uintptr_t, not
+         * uint64_t.  On x86_64 the two are the same width and the old
+         * spelling merely lied about intent; on i386 the old spelling
+         * would widen, compute in 64-bit, and truncate back on the
+         * node cast below -- correct only by accident. */
+        uintptr_t start = ((uintptr_t)(page + sizeof(struct slab_page)) + cache->align - 1) & ~(uintptr_t)(cache->align - 1);
+        uintptr_t end = (uintptr_t)page + SLAB_PAGE_SIZE;
         
         while (start + cache->object_size <= end) {
             struct slab_free_node *node = (struct slab_free_node *)(uintptr_t)start;

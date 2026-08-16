@@ -6,7 +6,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/signal.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/lib/kprintf.h"
 #include <stdint.h>
 

@@ -16,7 +16,7 @@
 #include <stdint.h>
 #include "drivers/usb/uhci.h"
 #include "drivers/pci/pci.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"

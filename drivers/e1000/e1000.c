@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include "drivers/e1000/e1000.h"
 #include "drivers/pci/pci.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"

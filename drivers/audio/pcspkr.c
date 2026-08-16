@@ -1,7 +1,7 @@
 /* pcspkr.c — PC Speaker audio driver. */
 #include <stdint.h>
 #include "drivers/audio/pcspkr.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/lib/kprintf.h"
 #include "drivers/timer/pit.h"
 

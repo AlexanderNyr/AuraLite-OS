@@ -117,12 +117,18 @@ KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c')
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
                  $(patsubst %.asm,$(BUILD_DIR)/k32/%.o,$(KERNEL32_ASMS))
+# -Werror + truncation warnings promoted (I6 gate): the i386 build is
+# where a 64-bit value silently narrowing IS the bug class the width
+# sweep exists for, so here it is fatal.  -Wshorten-64-to-32 is the
+# clang spelling; -Wconversion is deliberately NOT enabled (it flags
+# benign integer promotions and would bury the signal).
 CFLAGS32      := --target=i686-elf \
                  -std=c11 -ffreestanding -fno-stack-protector \
                  -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2 \
                  -malign-double \
                  -fno-omit-frame-pointer \
                  -Wall -Wextra -Wno-unused-parameter \
+                 -Werror -Wshorten-64-to-32 \
                  -O2 -g -I .
 
 # Depend on every i386 header: the tree is small enough that a full
@@ -1769,6 +1775,14 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # project's own BOOTX64.EFI.  Skips cleanly if either is unavailable.
 	@echo "[unit] running tests/unit/test_w32_peinfo.sh"
 	@bash tests/unit/test_w32_peinfo.sh || exit 1
+
+# I386_PLAN I6: the pointer-width sweep gates — three ratchets
+# ((uint64_t) casts in portable code, direct x86_64 includes, cross-arch
+# includes), the checker's own self-test, the cross-width boot_info_t
+# offset contract at both targets, and the negative control that
+# re-detects the I1 -malign-double ABI bug.
+	@echo "[unit] running tests/unit/test_width_sweep.sh"
+	@bash tests/unit/test_width_sweep.sh || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative

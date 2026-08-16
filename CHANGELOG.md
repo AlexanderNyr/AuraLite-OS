@@ -2,6 +2,50 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [i386 Phase I6 — The pointer-width sweep] 2026-08-16
+
+`I386_PLAN.md` phase I6: the width discipline becomes machinery.  Three
+CI ratchets, a byte-identity negative control, `-Werror` truncation on
+the whole i386 build, and a compile-time regression test for the I1
+ABI bug.  First instalments paid: casts 361 → 359, x86_64-includes
+80 → 69, cross-arch includes pinned at zero.
+
+- **`kernel/lib/paddr.h` (new)**: `paddr_t` — physical addresses are
+  64-bit on BOTH arches (device rings are 64-bit on the wire; E820
+  reports >4 GiB regions even to a 32-bit kernel, which must skip, not
+  truncate).  Virtual addresses are `uintptr_t` and nothing else.
+  Adopted by the x86_64 PMM interface as the reference conversion.
+- **`kernel/arch/arch.h` (new; the task I2 re-scoped here)**: the
+  forwarding header, selected by the compiler's own target macro.
+  First migration batch: all 11 portable `portio.h` consumers.
+  **Negative control held**: the x86_64 kernel's `.text` is
+  byte-identical after both the paddr_t adoption and the include
+  migration (llvm-objcopy + cmp; only `__DATE__/__TIME__` moves in
+  `.rodata`, as two untouched consecutive builds confirm).
+- **`tools/check_width_sweep.py` (new)**: ratchet 1 — `(uint64_t)`
+  casts in portable code (kernel/ + drivers/ minus kernel/arch/);
+  ratchet 2 — direct `kernel/arch/x86_64/` includes from portable
+  code; ratchet 3 — cross-arch includes, always zero.  Raising any is
+  a CI failure; `--selftest` plants a violation and requires
+  detection.  Registered in `make test-unit`.
+- **`tests/unit/test_boot_info_width.c` (new)**: the three-party
+  offset contract (16-bit loader asm, 64-bit kernel, 32-bit kernel)
+  as `_Static_assert`s against the generated `boot_offsets.h`,
+  compiled for x86_64 and i686+`-malign-double` — and required to
+  **fail** for plain i686, so the I1 "mmap entries: 0" bug class is
+  caught at compile time forever.  (Also delivers I3's deferred host
+  test.)
+- **`CFLAGS32` gains `-Werror -Wshorten-64-to-32`**: silent narrowing
+  is the bug class the sweep exists for, so on i386 it is fatal.  The
+  tree is clean under it.
+- **`kernel/mm/slab.c`**: virtual-address arithmetic retyped
+  `uintptr_t` (the old `(uint64_t)` spelling widened, computed 64-bit
+  and truncated back — correct on i386 only by accident).
+- **A measurement correction, recorded in the plan**: §1's "877 sites"
+  counted lines including `uintptr_t` (the correct type, not debt);
+  the checker counts `(uint64_t)` occurrences in portable code: 361.
+  The estimate was fact-finding; the ratchet is the contract.
+
 ## [i386 Phase I5 — 32-bit libc and userspace] 2026-08-16
 
 `I386_PLAN.md` phase I5: the hand-assembled Ring 3 bytes of I4 are

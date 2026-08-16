@@ -1,6 +1,6 @@
 /* uart.c — 16550 UART (COM1) serial driver. */
 
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "drivers/uart/uart.h"
 
 void uart_init(void) {

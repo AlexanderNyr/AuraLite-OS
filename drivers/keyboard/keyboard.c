@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/keyboard/keymap.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/lib/errno.h"

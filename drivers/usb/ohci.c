@@ -12,7 +12,7 @@
 #include "drivers/usb/ohci.h"
 #include "drivers/pci/pci.h"
 #include "kernel/arch/x86_64/paging.h"
-#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/arch.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
