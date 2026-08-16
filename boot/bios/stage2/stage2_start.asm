@@ -202,9 +202,40 @@ stage2_entry:
     mov  si, msg_no_lm_1
     call uart16_puts
     call vga_puts
+
+    ; I3: the 32-bit kernel's floor is i686-class (plan D1) -- it
+    ; builds its direct map from PSE 4 MiB pages.  A 486/586 must get
+    ; the honest refusal HERE, not a #UD on `mov cr4` three
+    ; instructions before the kernel banner.
+    call check_i686
+    jnc  .i686_ok
+    mov  si, msg_below_floor
+    call uart16_puts
+    call vga_puts
+    mov  si, msg_no_lm_2
+    call uart16_puts
+    call vga_puts
+.floor_hang:
+    hlt
+    jmp  .floor_hang
+.i686_ok:
     mov  si, msg_lm_32path
     call uart16_puts
     call vga_puts
+
+    ; I3: the 32-bit kernel direct-maps phys [0, 896 MiB) at
+    ; 0xC0000000 and validates hhdm_offset against that (the same
+    ; loader-owns-it contract as the 64-bit path's
+    ; 0xFFFF800000000000).  Overwrite the qword BL3 wrote earlier:
+    ; low dword = 0xC0000000, high dword = 0.
+    push es
+    mov  ax, BOOT_INFO_SEG
+    mov  es, ax
+    mov  word [es:BOOT_HHDM_OFF + 0], 0x0000
+    mov  word [es:BOOT_HHDM_OFF + 2], 0xC000
+    mov  word [es:BOOT_HHDM_OFF + 4], 0x0000
+    mov  word [es:BOOT_HHDM_OFF + 6], 0x0000
+    pop  es
     jmp  .lm_done
 .lm_ok:
     mov  si, msg_lm_ok
@@ -426,6 +457,7 @@ msg_no_lm_1:     db "[BL10] this CPU has no long mode (x86_64)", 0x0D, 0x0A, 0
 msg_no_lm_2:     db "[BL10] halting -- see I386_PLAN.md for the 32-bit kernel roadmap", 0x0D, 0x0A, 0
 msg_lm_32path:   db "[BL10] taking the 32-bit path: KERNEL32.ELF", 0x0D, 0x0A, 0
 msg_no_k32:      db "[BL10] no KERNEL32.ELF on the boot partition; cannot boot this CPU", 0x0D, 0x0A, 0
+msg_below_floor: db "[BL10] CPU is below the i686 floor (needs PSE+CX8+CMOV, plan D1)", 0x0D, 0x0A, 0
 msg_elf32_ok:    db "[BL10] ELF32 PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
 msg_pm32_go:     db "[BL10] entering protected mode; jumping to kernel32 _start", 0x0D, 0x0A, 0
 msg_acpi_rsdp_ok:   db "[BL9] ACPI RSDP found", 0x0D, 0x0A, 0

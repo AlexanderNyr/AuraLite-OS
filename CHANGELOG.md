@@ -2,6 +2,88 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [i386 Phase I3 — Memory: non-PAE paging, PMM, heap] 2026-08-16
+
+`I386_PLAN.md` phase I3: the i386 kernel is higher-half at `0xC0100000`
+behind PSE paging, with a bitmap PMM, 4 KiB page mapping and an
+on-demand heap — `[pmm] PASS`, `[vmm] PASS`, `[heap] PASS` in the same
+self-test contract the x86_64 boot enforces.
+
+- **`boot32.asm` + `kernel32.ld`**: the kernel now links at
+  `KERNEL_VMA = 0xC0000000` with a physical-mode `.boot` section
+  (VMA = LMA at `0x00100000`, `AT()` clauses keep the load image
+  contiguous for `elf32.inc`'s forward copy). `.boot` builds the PSE
+  page directory — identity [0, 896 MiB) plus the same frames at
+  `0xC0000000`, zero page tables needed — sets `CR4.PSE`, `CR0.PG|WP`
+  and jumps higher-half. **Deviation from the plan text, recorded
+  there:** Stage 2 does NOT build these tables (the paging.inc mirror
+  is false — long mode cannot run unpaged, protected mode can), it
+  stays paging-free and writes `hhdm_offset = 0xC0000000` for the
+  kernel to validate.
+- **Stage 2 `check_i686` (lmcheck.inc)**: the D1 floor enforced at the
+  only honest place — PSE/CX8/CMOV via CPUID leaf 1 after the long-mode
+  "no"; a 486/586 gets `[BL10] CPU is below the i686 floor`, not a #UD
+  three instructions before the kernel banner.
+- **`pmm32.c`**: bitmap allocator over `kernel/lib/bitmap.h` — the
+  identical host-tested header the x86_64 PMM uses; E820 walked in
+  `uint64_t`, regions above the 896 MiB horizon skipped-not-truncated
+  (D6); 40 MiB low reserve (same reasoning as `PMM_EARLY_BOOT_RESERVE`);
+  1000-frame uniqueness/leak self-test.
+- **`paging32.c`**: map/unmap/probe over PDE/PTE, refuses to split PSE
+  pages, `PAGE32_FLAG_NO_EXEC` accepted and printed as unenforceable
+  (D3) — the smoke test asserts the honesty line. Identity window
+  dropped once higher-half (`NULL now faults`).
+- **`kheap32.c`**: first-fit, split/coalesce, magic-guarded headers,
+  on-demand page commit into a 64 MiB window; 10000-cycle self-test.
+- **Two bugs caught by the phase's own gates** (details in the plan):
+  the planned heap base `0xF0000000` sat *inside* the direct map
+  (`[vmm] FAIL` at first boot; moved to `0xF8000000`), and a
+  header-edit rebuild gap left `kheap32.o` stale (the `k32` pattern
+  rule now depends on all i386 headers).
+- Tests: `tests/integration/i386_mm_smoke.sh` — 16 assertions; the key
+  one reads the #BP fault frame's `eip=c01xxxxx` because a banner can
+  claim higher-half but a fault frame cannot lie. `i386_cpu_smoke.sh`'s
+  idle-line assert generalised to the phase-advancing contract.
+
+## [i386 Phase I2 — kernel/arch/i386 CPU bring-up] 2026-08-16
+
+`I386_PLAN.md` phase I2: the I1 stub is deleted and `KERNEL32.ELF` is now
+a real bring-up kernel. A 32-bit CPU boots to a banner, a validated
+`boot_info_t`, a loaded GDT/TSS/IDT, live interrupts, and two self-tests
+that prove the fault path and the timer path end to end.
+
+- **`kernel/arch/i386/` (I1 stub replaced)**: `boot32.asm` (64 KiB boot
+  stack, same growth the x86_64 boot.asm had), `gdt.c` + `gdt_flush32.asm`
+  (flat Ring 0/3 segments and a 32-bit TSS with `SS0`/`ESP0` wired — on
+  i386 the TSS *is* the ring-transition mechanism, so it exists before
+  Ring 3 does), `idt.c` (256 gates; no IST field exists at this width),
+  `isr_stubs32.asm` (NASM-generated stubs with per-vector error-code
+  parity: 8, 10–14, 17, 21 get the CPU's code, the rest a pushed zero),
+  `isr32.c` (named exception diagnostics in the FIX_R0 format — cpu
+  number, register dump, CR2 on #PF; halt on unhandled kernel faults),
+  `irq32.c` (8259A remap to 32–47, dispatch, EOI, PIT at 100 Hz),
+  `kprintf32.c` (COM1-only formatted output, scoped to die when the
+  shared kprintf becomes width-clean in I6).
+- **Boot self-tests, kmain contract**: a deliberate `int3` must produce a
+  named `[diag]` frame and *resume* (`[isr] PASS`); the PIT must be seen
+  ticking with interrupts enabled (`[timer] PASS`) — the latter exercises
+  gate wiring, PIC unmask and EOI in one assertion. Before I2 both paths
+  were triple faults.
+- **One honest re-scope, recorded in the plan**: the original I2 task
+  list also claimed `arch.h` + compiling `kernel/kernel.c`'s init path.
+  That ordering was wrong — `kernel.c` pulls HHDM/paging code that is
+  I3/I6 work — so those tasks moved to I6 where their negative control
+  (byte-identical x86_64 kernel) lives, and I2 ships arch-local siblings
+  with identical contracts instead. The plan says so in the phase result
+  rather than leaving the boxes ambiguously ticked.
+- **`Makefile`**: the `kernel32` target now builds everything under
+  `kernel/arch/i386/` (wildcard + pattern rules into `build/k32/`), same
+  CFLAGS32 including the I1 `-malign-double` contract.
+- Tests: `tests/integration/i386_cpu_smoke.sh` — 16 assertions: banner,
+  stub-gone, GDT/TSS, IDT, PIC, sti reached, int3 named + dumped +
+  resumed, PIT ticks observed, idle reached with no unhandled faults,
+  plus the standing x86_64 no-regression pair.
+
 ## [i386 Phase I1 — The dual-kernel boot chain] 2026-08-16
 
 `I386_PLAN.md` phase I1: the same `make iso` image now carries a second

@@ -74,3 +74,58 @@ check_long_mode:
     pop  ebx
     stc
     ret
+
+; ---------------------------------------------------------------------------
+; check_i686 -- the 32-bit kernel floor (I386_PLAN I3, decision D1).
+;
+; The i386 kernel assumes P6-class features: PSE (the direct map is
+; built from 4 MiB pages), CMPXCHG8B and CMOV.  A CPU below that floor
+; must get the I0 refusal, not a #UD on `mov cr4` three instructions
+; before the kernel banner.  Called only after check_long_mode said
+; "no", so CPUID presence must be re-established (a 486 reaches here).
+;
+; On return: CF=0  i686-class, safe for KERNEL32.ELF.
+;            CF=1  below the floor -- refuse honestly.
+; ---------------------------------------------------------------------------
+check_i686:
+    push ebx
+    push ecx
+    push edx
+
+    ; CPUID present?  (EFLAGS.ID toggle; a 486 fails right here.)
+    pushfd
+    pop  eax
+    mov  ecx, eax
+    xor  eax, (1 << 21)
+    push eax
+    popfd
+    pushfd
+    pop  eax
+    push ecx
+    popfd
+    xor  eax, ecx
+    test eax, (1 << 21)
+    jz   .below_floor
+
+    ; Leaf 1 EDX: PSE (bit 3), CX8 (bit 8), CMOV (bit 15).
+    mov  eax, 1
+    cpuid
+    test edx, (1 << 3)
+    jz   .below_floor
+    test edx, (1 << 8)
+    jz   .below_floor
+    test edx, (1 << 15)
+    jz   .below_floor
+
+    pop  edx
+    pop  ecx
+    pop  ebx
+    clc
+    ret
+
+.below_floor:
+    pop  edx
+    pop  ecx
+    pop  ebx
+    stc
+    ret

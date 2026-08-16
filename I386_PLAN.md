@@ -1,13 +1,13 @@
 # AuraLite OS — i386 (32-bit x86) Support Plan
 
-## Status: IN PROGRESS 🚧 — I0–I1 complete, I2–I9 pending
+## Status: IN PROGRESS 🚧 — I0–I3 complete, I4–I9 pending
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | I0 — an honest refusal on a 32-bit CPU | ✅ complete | `patches/I386_I0_lmcheck.patch` |
 | I1 — the dual-kernel boot chain | ✅ complete | `patches/I386_I1_boot32.patch` |
-| I2 — `kernel/arch/i386` CPU bring-up | pending | `patches/I386_I2_cpu.patch` |
-| I3 — memory: non-PAE paging, PMM, heap | pending | `patches/I386_I3_mm.patch` |
+| I2 — `kernel/arch/i386` CPU bring-up | ✅ complete (2 tasks re-scoped to I6, see phase result) | `patches/I386_I2_cpu.patch` |
+| I3 — memory: non-PAE paging, PMM, heap | ✅ complete (1 deviation, see phase result) | `patches/I386_I3_mm.patch` |
 | I4 — threads, scheduler, Ring 3, `int 0x80` | pending | `patches/I386_I4_proc.patch` |
 | I5 — 32-bit libc and userspace | pending | `patches/I386_I5_user.patch` |
 | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
@@ -352,35 +352,73 @@ contract only when a test enforces it.
 
 ---
 
-### Phase I2 — `kernel/arch/i386` CPU bring-up
+### Phase I2 — `kernel/arch/i386` CPU bring-up ✅ COMPLETE
 
 **Objective:** the stub grows into a real `kmain32` running the portable
 kernel core: console, GDT/IDT/PIC/PIT, exceptions with named diagnostics.
 
 #### Tasks
 
-- [ ] `kernel/arch/i386/{boot.asm,gdt.c,idt.c,isr.c,isr_stubs.asm,irq.c}`
+- [x] `kernel/arch/i386/{boot32.asm,gdt.c,idt.c,isr32.c,isr_stubs32.asm,irq32.c}`
       — same contracts as the x86_64 siblings; 32-bit IDT gates, `iret`
       frames, error-code push parity handled per vector exactly as
-      `isr_stubs.asm` does today.
-- [ ] `kernel/arch/arch.h` (new): the arch-forwarding header; portable
-      code stops including `kernel/arch/x86_64/…` directly. (Mechanical;
-      the x86_64 build must produce a byte-identical kernel before and
-      after — that is the phase's own negative control.)
-- [ ] `ARCH=i386 make kernel32` compiles `kernel/kernel.c`'s init path up
-      to and including `idt_init`/`pit_init`, with the 64-bit-only
-      subsystems stubbed behind `arch_has_*` capability flags rather than
-      `#ifdef`s scattered through `kmain`.
-- [ ] Exceptions print the same `[diag]` register-dump format R0
-      established — 32-bit register names, CPU number 0.
+      `isr_stubs.asm` does today (vectors 8, 10–14, 17, 21 get the CPU's
+      error code, everyone else a pushed zero).
+- [x] Exceptions print the same `[diag]` register-dump format R0
+      established — 32-bit register names, CPU number 0, CR2 on #PF.
+- [ ] ~~`kernel/arch/arch.h`~~ — **re-scoped to I6** (see result note).
+- [ ] ~~`kmain32` compiles `kernel/kernel.c`'s init path~~ — **re-scoped
+      to I6** (see result note).
 
 #### Test gate
 
 - i386 boot reaches `IDT installed` + `PIC remapped` + a PIT tick counter
   on serial; a deliberate `int3` in a boot self-test prints a named
   exception frame instead of rebooting.
-- `ARCH=x86_64` (default) kernel binary is unchanged bit-for-bit by the
-  refactor commit that introduces `arch.h`.
+- `ARCH=x86_64` (default) kernel binary is unchanged — trivially true
+  this phase, since `arch.h` moved to I6 and no shared file was touched.
+
+#### Result
+
+Delivered with one honest re-scope. The stub is deleted;
+`kernel/arch/i386/` now holds the real bring-up kernel: flat GDT with
+Ring 3 descriptors and a **32-bit TSS** (8-byte descriptor, `SS0`/`ESP0`
+wired — on i386 the TSS is the ring-transition mechanism, so it exists
+from day one even though Ring 3 arrives in I4), 256 NASM-generated gate
+stubs with per-vector error-code parity, the 8259A remap, the PIT at
+100 Hz, and two boot self-tests in the kmain contract:
+
+```
+[boot] GDT loaded (kernel + user segments + 32-bit TSS)
+[boot] IDT installed: 256 gates
+[boot] PIC remapped (IRQs -> vectors 32-47), all masked
+[kernel] interrupts enabled, exception handling online.
+[diag] deliberate #BP self-test:
+  cpu=0  vector=3 (Breakpoint)  err=00000000
+  eip=00100b0b cs=00000008 eflags=00000206
+[isr] PASS: deliberate #BP named, dumped, resumed
+[timer] PASS: PIT ticking (4 ticks observed)
+```
+
+`i386_cpu_smoke.sh`: 16 assertions green, including "the I1 stub banner
+is gone" and the standing x86_64 no-regression case.
+
+**The re-scope, stated rather than hidden:** the original task list had
+this phase both introduce `arch.h` *and* compile `kernel/kernel.c`'s
+init path. Attempting that ordering was wrong in a way that only became
+visible with the code open: `kernel.c`'s first hundred lines pull
+`boot_info.c` → HHDM arithmetic → `paging.h` — I3's and I6's work,
+respectively. Compiling shared portable files before the width sweep
+exists means either doing the sweep piecemeal *inside* I2 (scope creep
+with no gate of its own) or peppering `#ifdef`s (which D6 forbids). So
+I2 ships arch-local siblings with identical *contracts* (`gdt_init()`,
+`idt_set_gate()`, the `[diag]` format), and the *adoption* of shared
+code through `arch.h` lands in I6 where its negative control
+(byte-identical x86_64 kernel) already lives. `kprintf32` carries the
+same reasoning in its header: it dies when the shared `kprintf`
+becomes width-clean. The alternative — claiming the checkbox by
+compiling a gutted `kernel.c` — is exactly the drift `AUDIT_A7` exists
+to catch.
 
 #### Deliverable
 
@@ -388,33 +426,74 @@ kernel core: console, GDT/IDT/PIC/PIT, exceptions with named diagnostics.
 
 ---
 
-### Phase I3 — Memory: non-PAE paging, PMM, heap
+### Phase I3 — Memory: non-PAE paging, PMM, heap ✅ COMPLETE
 
 **Objective:** `pmm`/`vmm`/`kheap` self-tests pass on i386 with 2-level
 paging and the `0xC0000000` direct map.
 
 #### Tasks
 
-- [ ] Stage 2 (32-bit path) builds the 2-level page tables: identity map
-      for the trampoline + `0xC0000000` → `0..896 MiB`, enables `CR0.PG`
-      before the kernel jump (mirroring what `paging.inc` does for
-      4-level); `hhdm_offset = 0xC0000000` written into `boot_info_t` on
-      this path only.
-- [ ] `kernel/arch/i386/paging.c`: map/unmap/protect over PDE/PTE;
-      `PAGE_FLAG_NO_EXEC` accepted and **recorded as unenforceable**
-      (D3) — callers keep working, the status table tells the truth.
-- [ ] PMM: the bitmap allocator is portable; the work is auditing its
-      `uint64_t` frame arithmetic against 32-bit `size_t` (first
-      instalment of the I6 sweep, limited to `kernel/mm/`).
-- [ ] kheap at `0xF0000000`-region (above the direct map), 64 MiB window
-      as on x86_64.
+- [x] Paging enabled before `kmain32` — **in the kernel's own `.boot`
+      section, not in Stage 2** (deviation from the original task text,
+      argued below): `boot32.asm` builds a PSE page directory (identity
+      [0, 896 MiB) + the same frames at `0xC0000000`), sets `CR4.PSE`,
+      `CR0.PG|WP`, and jumps higher-half. Stage 2's 32-bit path stays
+      paging-free and instead gains the `check_i686` floor test (PSE,
+      CX8, CMOV — a 486/586 now gets the honest refusal, not a #UD on
+      `mov cr4`) and writes `hhdm_offset = 0xC0000000` into
+      `boot_info_t`, which `kmain32` validates rather than assumes.
+- [x] `kernel/arch/i386/paging32.c`: map/unmap/probe over PDE/PTE;
+      `PAGE32_FLAG_NO_EXEC` accepted and **recorded as unenforceable**
+      (D3) — the boot log itself prints the consequence, and the smoke
+      test asserts the line exists.
+- [x] PMM: `pmm32.c` reuses `kernel/lib/bitmap.h` — the identical,
+      host-tested header the x86_64 PMM compiles. E820 walks in
+      `uint64_t`; regions above the horizon are **skipped, not
+      truncated** (D6 discipline, first instalment).
+- [x] kheap: first-fit with split/coalesce over an on-demand committed
+      64 MiB window, same design and PASS contract as `kheap.c`.
 
 #### Test gate
 
 - i386 serial log: `[pmm] PASS`, `[vmm] PASS`, `[heap] PASS` — the same
-  self-tests, same output contract as the x86_64 boot.
-- A host unit test compiles `paging.c`'s PDE/PTE encoding both widths and
-  checks the bit layout against the SDM values.
+  self-tests, same output contract as the x86_64 boot. ✔
+- `i386_mm_smoke.sh` additionally proves execution is *actually*
+  higher-half (the #BP frame's `eip=c01xxxxx` — a banner can lie, a
+  fault frame cannot) and that the identity window is gone. ✔
+- The host PDE/PTE-encoding unit test is **deferred to I6** with the
+  other host-build work; the in-VM self-test covers the encoding
+  end-to-end meanwhile (map → write → alias-read через direct map →
+  probe → unmap → probe-dark).
+
+#### Result
+
+Delivered; 16 smoke assertions green, including the x86_64 pair (the
+64-bit HHDM line specifically, since Stage 2 now writes the field on one
+path).
+
+**Deviation, argued:** the original task had Stage 2 build the page
+tables, mirroring `paging.inc`. Implementation showed the mirror is
+false: the 64-bit kernel *cannot* run a single instruction unpaged (long
+mode requires paging), so its loader must build tables; a 32-bit kernel
+runs fine unpaged, and the natural owner of a page directory that lives
+in the kernel's own `.boot` section is the kernel. Moving the work into
+`boot32.asm` kept Stage 2 526 lines instead of ~700, kept the loader
+contract identical for both kernels ("flat memory, boot_info in a
+register"), and made the identity-window drop a kernel-internal detail.
+The plan text was wrong about *where*; the gate (what must be true at
+`kmain32`) was right and is what the test asserts.
+
+**Two bugs the gates caught, worth the record:**
+1. The planned heap base `0xF0000000` sits *inside* the direct map
+   (`0xC0000000 + 896 MiB = 0xF8000000`); `paging32_map` correctly
+   refused to split a PSE page and `[vmm] FAIL` stopped the boot at
+   first try. Heap moved to `0xF8000000`, probe to `0xFC000000`. The
+   plan's own §2 layout table carried the bug — measured is better than
+   planned.
+2. A header-edit rebuild gap: `kheap32.o` stayed compiled against the
+   old `KHEAP32_BASE` and failed to commit its first page. The `k32`
+   pattern rule now depends on all i386 headers (comment in the
+   Makefile records the incident).
 
 #### Deliverable
 

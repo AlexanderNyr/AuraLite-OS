@@ -62,13 +62,18 @@ assert_no_grep() {
 }
 
 # ---- Case 1: the 32-bit CPU boots the 32-bit kernel. ----
+# NOTE (I2): the payload behind the chain evolved.  I1's assertions here
+# named the stub's banner and its "(ESI)" echo; I2 deleted the stub, so
+# this test now asserts the same *contract* through the I2 kernel's
+# lines: 32-bit code runs, boot_info arrived intact, the E820 map is
+# non-empty (the -malign-double ABI canary, as before).
 run_qemu qemu-system-i386 "$ISO" "$LOG32"
 assert_grep "$LOG32" "\[BL10\] taking the 32-bit path: KERNEL32.ELF"       "i386: Stage 2 branches to KERNEL32.ELF"
 assert_grep "$LOG32" "\[BL10\] ELF32 PT_LOAD segments copied to phys"       "i386: ELF32 loader ran"
 assert_grep "$LOG32" "\[BL10\] entering protected mode"                     "i386: protected-mode hand-off"
-assert_grep "$LOG32" "\[kernel32\] AuraLite i386 stub alive"                "i386: stub banner"
-assert_grep "$LOG32" "\[kernel32\] boot_info handoff (ESI) magic OK"        "i386: boot_info magic via ESI"
-assert_no_grep "$LOG32" "mmap entries: 0x00000000"                          "i386: mmap count non-zero (ABI-alignment canary)"
+assert_grep "$LOG32" "Hello from AuraLite OS kernel (i386)!"                "i386: 32-bit kernel entered (was: stub banner)"
+assert_grep "$LOG32" "handoff magic OK"                                     "i386: boot_info magic via ESI"
+assert_grep "$LOG32" "E820 entries: [1-9]"                                  "i386: mmap count non-zero (ABI-alignment canary)"
 assert_no_grep "$LOG32" "entering long mode"                                "i386: long mode never attempted"
 
 # ---- Case 2: the same bytes still boot the 64-bit kernel. ----
@@ -84,7 +89,7 @@ cp "$ISO" "$ISONK"
 if mdel -i "$ISONK@@$((256 * 512))" ::/KERNEL32.ELF 2>/dev/null; then
     run_qemu qemu-system-i386 "$ISONK" "$LOGNK"
     assert_grep "$LOGNK" "\[BL10\] no KERNEL32.ELF on the boot partition"   "no-k32: honest refusal printed"
-    assert_no_grep "$LOGNK" "\[kernel32\] AuraLite i386 stub alive"         "no-k32: stub does not run"
+    assert_no_grep "$LOGNK" "Hello from AuraLite OS kernel (i386)!"         "no-k32: 32-bit kernel does not run"
     assert_no_grep "$LOGNK" "entering long mode"                            "no-k32: long mode never attempted"
 else
     echo "  [i386-boot32] SKIP negative control (mdel could not open the partition)"

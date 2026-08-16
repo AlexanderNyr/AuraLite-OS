@@ -95,24 +95,28 @@ deps-check:
 kernel: $(KERNEL_ELF)
 
 # =============================================================================
-# I386_PLAN I1: the i386 boot stub (KERNEL32.ELF).
+# I386_PLAN I2: the i386 kernel (KERNEL32.ELF).
 #
 # Same clang/lld toolchain, one width down (--target=i686-elf, nasm -f
-# elf32, ld.lld -m elf_i386) -- deps-check does not grow.  The stub is
-# the 32-bit hand-off proof, not the ported kernel; phase I2 replaces it
-# with the real kmain32 build.  -mno-sse et al. for the same reason the
-# 64-bit kernel sets them; i386 additionally gets -mfpmath=387 territory
-# only when userspace arrives (I5) -- the stub does no floating point.
-# =============================================================================
-KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
-KERNEL32_DIR  := kernel/arch/i386/stub
+# elf32, ld.lld -m elf_i386) -- deps-check does not grow.  I1 booted a
+# ~60-line stub through this target; I2 replaced the stub with the real
+# bring-up kernel (GDT/TSS, 256-gate IDT, PIC, PIT, named exception
+# diagnostics), built from everything under kernel/arch/i386/.
+#
 # -malign-double: the i386 System V psABI aligns uint64_t to 4 bytes, the
 # AMD64 one to 8.  boot_info_t is written by 16-bit assembly against
 # offsets generated from the 64-bit layout (build/boot_offsets.inc), so a
 # plain -m32 compile silently reads mmap[] 8 bytes early -- measured: the
 # I1 stub printed "mmap entries: 0" until this flag landed.  With
 # -malign-double both ABIs agree on every offset in the struct, and the
-# stub asserts that at runtime via the magic + mmap_count checks.
+# boot log asserts that at runtime via the magic + mmap_count checks.
+# =============================================================================
+KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
+KERNEL32_DIR  := kernel/arch/i386
+KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c')
+KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
+KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
+                 $(patsubst %.asm,$(BUILD_DIR)/k32/%.o,$(KERNEL32_ASMS))
 CFLAGS32      := --target=i686-elf \
                  -std=c11 -ffreestanding -fno-stack-protector \
                  -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2 \
@@ -121,17 +125,23 @@ CFLAGS32      := --target=i686-elf \
                  -Wall -Wextra -Wno-unused-parameter \
                  -O2 -g -I .
 
-$(BUILD_DIR)/kernel32/boot32.o: $(KERNEL32_DIR)/boot32.asm
-	@mkdir -p $(dir $@)
-	$(AS) -f elf32 -o $@ $<
+# Depend on every i386 header: the tree is small enough that a full
+# rebuild on any header edit is cheaper than the stale-object hunt it
+# prevents (measured: a KHEAP32_BASE move in paging32.h left kheap32.o
+# compiled against the old constant and the heap failed to commit).
+KERNEL32_HDRS := $(shell find $(KERNEL32_DIR) -name '*.h') boot/shared/boot_info.h
 
-$(BUILD_DIR)/kernel32/main32.o: $(KERNEL32_DIR)/main32.c boot/shared/boot_info.h
+$(BUILD_DIR)/k32/%.o: %.c $(KERNEL32_HDRS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS32) -c $< -o $@
 
-$(KERNEL32_ELF): $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o $(KERNEL32_DIR)/kernel32.ld
+$(BUILD_DIR)/k32/%.o: %.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f elf32 -o $@ $<
+
+$(KERNEL32_ELF): $(KERNEL32_OBJS) $(KERNEL32_DIR)/kernel32.ld
 	$(LD) -m elf_i386 -nostdlib -static -T $(KERNEL32_DIR)/kernel32.ld \
-	    $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o -o $@
+	    $(KERNEL32_OBJS) -o $@
 	@echo "  [kernel32] $@ ($$(du -h $@ | cut -f1))"
 
 .PHONY: kernel32

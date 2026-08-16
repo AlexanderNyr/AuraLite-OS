@@ -1,0 +1,104 @@
+/* kernel/arch/i386/irq32.c -- 8259A PIC remap, IRQ dispatch and the PIT
+ * (I386_PLAN I2).  The PIC/PIT halves mirror kernel/arch/x86_64/irq.c
+ * and drivers/timer/pit.c at bring-up scope: same ICW sequence, same
+ * remap (master->32, slave->40), same mode-3 square wave.  The
+ * scheduler hook arrives with the scheduler in I4.
+ */
+
+#include <stdint.h>
+#include <stddef.h>
+
+#include "kernel/arch/i386/irq32.h"
+#include "kernel/arch/i386/portio.h"
+#include "kernel/arch/i386/kprintf32.h"
+
+#define NUM_IRQS   16
+#define ICW1_ICW4  0x01
+#define ICW1_INIT  0x10
+#define ICW4_8086  0x01
+
+static irq32_handler_t irq_handlers[NUM_IRQS];
+
+void pic32_init(void)
+{
+    outb(PIC1_CMD, ICW1_INIT | ICW1_ICW4);  io_wait();
+    outb(PIC2_CMD, ICW1_INIT | ICW1_ICW4);  io_wait();
+
+    outb(PIC1_DATA, PIC_OFFSET);            io_wait();  /* master -> 32 */
+    outb(PIC2_DATA, PIC_OFFSET + 8);        io_wait();  /* slave  -> 40 */
+
+    outb(PIC1_DATA, 0x04);                  io_wait();  /* slave on IRQ2 */
+    outb(PIC2_DATA, 0x02);                  io_wait();
+
+    outb(PIC1_DATA, ICW4_8086);             io_wait();
+    outb(PIC2_DATA, ICW4_8086);             io_wait();
+
+    /* Mask everything; drivers unmask their own line. */
+    outb(PIC1_DATA, 0xFF);
+    outb(PIC2_DATA, 0xFF);
+}
+
+void irq32_install(int irq, irq32_handler_t handler)
+{
+    if (irq >= 0 && irq < NUM_IRQS)
+        irq_handlers[irq] = handler;
+}
+
+void irq32_unmask(int irq)
+{
+    if (irq < 0 || irq >= NUM_IRQS)
+        return;
+    if (irq < 8) {
+        outb(PIC1_DATA, inb(PIC1_DATA) & (uint8_t)~(1 << irq));
+    } else {
+        outb(PIC2_DATA, inb(PIC2_DATA) & (uint8_t)~(1 << (irq - 8)));
+        /* cascade line must be open for any slave IRQ */
+        outb(PIC1_DATA, inb(PIC1_DATA) & (uint8_t)~(1 << 2));
+    }
+}
+
+void irq32_dispatch(struct registers32 *regs)
+{
+    int irq = (int)regs->vector - PIC_OFFSET;
+
+    if (irq >= 0 && irq < NUM_IRQS && irq_handlers[irq])
+        irq_handlers[irq](regs);
+
+    /* EOI: slave first when the line came through it. */
+    if (irq >= 8)
+        outb(PIC2_CMD, PIC_EOI);
+    outb(PIC1_CMD, PIC_EOI);
+}
+
+/* ---- PIT ------------------------------------------------------------- */
+
+#define PIT_BASE_HZ              1193182u
+#define PIT_CMD_CHAN0_LOHI_MODE3 0x36
+
+static volatile uint32_t timer_ticks;
+
+static void pit32_irq(struct registers32 *regs)
+{
+    (void)regs;
+    timer_ticks++;
+}
+
+uint32_t pit32_ticks(void)
+{
+    return timer_ticks;
+}
+
+void pit32_init(uint32_t freq_hz)
+{
+    uint32_t divisor = PIT_BASE_HZ / freq_hz;
+
+    outb(0x43, PIT_CMD_CHAN0_LOHI_MODE3);
+    outb(0x40, (uint8_t)(divisor & 0xFF));
+    outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
+
+    irq32_install(0, pit32_irq);
+    irq32_unmask(0);
+
+    kprintf32("[timer] PIT programmed: %u Hz (divisor %u)\n",
+              freq_hz, divisor);
+}
