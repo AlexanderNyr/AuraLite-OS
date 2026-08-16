@@ -201,9 +201,30 @@ with `testdir`.
 using it under-reported its own total — the first fixed run printed
 `4/2 assertions passed`. Seven cases are affected.
 
-#### A2-R1 — a real kernel bug the fix uncovered
+#### A2-R1 — a real kernel bug the fix uncovered ✅ **FIXED**
 
-`test_diskfs` is **intermittently red, correctly**. About one run in three,
+> **Resolved in `patches/FIX_A2R1_ahci_lock.patch`.** It was never a FAT32
+> bug: `drivers/ahci/ahci.c` had **no lock at all**. Every transfer goes
+> through one command slot and one DMA bounce buffer *per port*, and eight
+> subsystems call in (fat32, diskfs, ext2, ext4, btrfs, f2fs, buffer_cache,
+> `/disk`). `fat32_lock` made FAT32 safe against FAT32, but nothing stopped
+> the BSP reading `/disk` through diskfs while an AP flushed the kernel log
+> to `/fat/AURALOG.TXT` — both on the **same physical port**. The second
+> request overwrote the first's command header and PRDT while the first was
+> still polling `PxCI`, so one request's sector landed in the other's
+> buffer. That is precisely why the garbage read `AURALOG TXT`: a FAT32
+> *directory* sector delivered into a diskfs read. The victim named the
+> culprit and it was misread as the culprit naming itself.
+>
+> Fixed with a **per-port** spinlock (not global — independent disks still
+> overlap) covering both the transfer and the `memcpy` out of the shared
+> bounce buffer. `test_diskfs` now 4/4 across 10 consecutive runs, and
+> `tests/unit/test_ahci_serialisation.c` models the race with a control
+> that must corrupt.
+
+Historical description of the symptom follows.
+
+`test_diskfs` was **intermittently red, correctly**. About one run in three,
 `cat /disk/persist.txt` returns raw FAT directory-entry bytes instead of
 the file:
 
@@ -218,15 +239,16 @@ path. The old assertion could never have caught it: it matched `$MARK`
 anywhere in the log, and the echo of the write command satisfied that on
 every run, pass or fail.
 
-Left asserting the correct behaviour on purpose. A retry loop would
-re-hide precisely what this phase exists to surface. Closing it belongs to
-M8/M9 (filesystems) in `MATURITY_PLAN.md`.
+Left asserting the correct behaviour on purpose throughout. A retry loop
+would have re-hidden precisely what this phase existed to surface — and it
+would have buried a genuine SMP data-corruption bug in the block layer
+under a "flaky test" label.
 
 #### Test gate — met
 
 - ✅ `test_fat32_mkdir` 5/5, `test_usb_isoc` 6/6, `test_usb_cdc_acm` 6/6.
-- ⚠️ `test_diskfs` 4/4 when the FAT32 read path behaves, 3/4 when A2-R1
-  fires — an honest intermittent, not a masked one.
+- ✅ `test_diskfs` 4/4 — was an honest intermittent (3/4 when A2-R1 fired),
+  now green on 10 consecutive runs since the AHCI lock landed.
 - ✅ Negative control 1: removing the AHCI drive from `test_diskfs` →
   4 of 4 red, led by "/disk is actually mounted".
 - ✅ Negative control 2: restoring `(bring-up only)` → `test_usb_isoc` red.

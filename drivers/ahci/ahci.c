@@ -18,6 +18,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/boot_info.h"
+#include "kernel/lib/spinlock.h"
 
 /* ---- PCI / AHCI constants ---- */
 #define PCI_CLASS_MASS_STORAGE  0x01
@@ -117,6 +118,35 @@ struct ahci_port {
 static volatile uint32_t *abar = NULL;
 static struct ahci_port ports[AHCI_MAX_PORTS];
 static int port_count = 0;
+
+/*
+ * Per-port hardware lock (A2-R1).
+ *
+ * Every transfer this driver issues goes through ONE bounce buffer and ONE
+ * command slot per port: ahci_exec() fills ports[port].cmd_list[0], points
+ * its single PRDT entry at ports[port].dma_phys, writes PxCI=1, polls until
+ * the slot clears, and ahci_read() then memcpy()s out of the shared
+ * dma_virt.  None of that was serialised.
+ *
+ * Eight subsystems call in -- fat32, diskfs, ext2, ext4, btrfs, f2fs,
+ * buffer_cache and the /disk layer -- and each has at most its own
+ * filesystem-level lock.  fat32_lock makes FAT32 safe against FAT32, but
+ * nothing stopped the BSP reading /disk through diskfs while an AP flushed
+ * the kernel log to /fat/AURALOG.TXT: both land in ahci_exec() on the same
+ * port, the second overwrites the first's command header and PRDT while the
+ * first is still polling PxCI, and the winner's data lands in the loser's
+ * buffer.
+ *
+ * That is exactly the observed A2-R1 signature: `cat /disk/persist.txt`
+ * returning the raw bytes "AURALOG TXT ..." -- a FAT32 *directory* sector
+ * delivered into a diskfs read.  Not a FAT32 bug at all; the FAT32 driver
+ * was the victim's neighbour.
+ *
+ * The lock is per port, not global, so independent disks still overlap.
+ * AHCI here is polled -- no IRQ handler touches this state -- and the lock
+ * is never held across kprintf, so irqsave acquisition cannot deadlock.
+ */
+static spinlock_t ahci_port_locks[AHCI_MAX_PORTS];
 
 /* Cumulative sector I/O counters -- see ahci_get_stats() in ahci.h. */
 static volatile uint64_t sectors_read_total    = 0;
@@ -334,6 +364,8 @@ int ahci_init(void) {
     kprintf("[ahci] version=0x%x, PI=0x%08x\n", abar_read(AHCI_VS), pi);
 
     memset(ports, 0, sizeof(ports));
+    for (int i = 0; i < AHCI_MAX_PORTS; i++)
+        spinlock_init(&ahci_port_locks[i]);
     ahci_enumerate(pi);
     kprintf("[ahci] %d SATA device(s) ready\n", port_count);
     return 0;
@@ -345,12 +377,18 @@ int ahci_read(uint32_t port, uint64_t lba, uint32_t count, void *buf) {
     uint32_t len = count * AHCI_SECTOR_SIZE;
     if (len > ports[port].dma_bytes) return -1;   /* caller must split */
 
+    /* A2-R1: the command slot AND the bounce buffer are per-port shared
+     * state.  The memcpy out of dma_virt must happen under the same lock as
+     * the transfer that filled it, or another CPU's read overwrites the
+     * buffer between completion and copy. */
+    uint64_t af = spinlock_acquire_irqsave(&ahci_port_locks[port]);
     int rc = ahci_exec(port, ATA_READ_DMA_EXT, 0, lba, count,
                        ports[port].dma_phys, len);
     if (rc == 0) {
         memcpy(buf, ports[port].dma_virt, len);
         sectors_read_total += count;
     }
+    spinlock_release_irqrestore(&ahci_port_locks[port], af);
     return rc;
 }
 
@@ -360,10 +398,14 @@ int ahci_write(uint32_t port, uint64_t lba, uint32_t count, const void *buf) {
     uint32_t len = count * AHCI_SECTOR_SIZE;
     if (len > ports[port].dma_bytes) return -1;   /* caller must split */
 
+    /* A2-R1: likewise, filling dma_virt and issuing the command must be
+     * atomic with respect to any other transfer on this port. */
+    uint64_t af = spinlock_acquire_irqsave(&ahci_port_locks[port]);
     memcpy(ports[port].dma_virt, buf, len);
     int rc = ahci_exec(port, ATA_WRITE_DMA_EXT, 1, lba, count,
                        ports[port].dma_phys, len);
     if (rc == 0) sectors_written_total += count;
+    spinlock_release_irqrestore(&ahci_port_locks[port], af);
     return rc;
 }
 

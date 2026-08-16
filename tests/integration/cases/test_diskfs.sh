@@ -64,11 +64,13 @@ il_assert_grep "$LOG" "wrote /disk/persist.txt"  "write succeeded"
 # anywhere in the log and the echo of the write command satisfied that
 # every time.
 #
-# Left asserting the correct behaviour deliberately.  Tracked as A2-R1 in
-# TESTAUDIT_PLAN.md; masking it with a retry loop would re-hide exactly
-# what this phase exists to expose.
+# A2-R1 is FIXED (see drivers/ahci/ahci.c): the AHCI driver issued every
+# transfer through one command slot and one DMA bounce buffer per port with
+# no lock, so a diskfs read racing the kernel-log flush to /fat/AURALOG.TXT
+# got the other request's sector.  Kept asserting the correct behaviour
+# throughout -- masking it with a retry loop would have hidden the bug.
 il_assert_count "$LOG" "$MARK" 2 \
-    "the written mark is read back from the file (A2-R1: flaky, real bug)"
+    "the written mark is read back from the file (A2-R1: fixed)"
 
 # Likewise, require the name in an `ls /disk` listing rather than anywhere.
 IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
