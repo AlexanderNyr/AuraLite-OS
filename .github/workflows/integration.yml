@@ -8,7 +8,14 @@ on:
 jobs:
   qemu-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # 4 hours.  The suite is 126 registered cases, most of which boot a full
+    # QEMU guest and wait on serial output, so wall-clock time scales with
+    # runner contention rather than with the size of the change being tested.
+    # A timeout that merely fits today's suite turns every slow runner into a
+    # spurious red build, and the failure mode is indistinguishable from a
+    # real hang.  Four hours is a backstop against genuine deadlocks, not a
+    # budget the suite is expected to approach.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -167,7 +174,7 @@ jobs:
       # tests/integration/run_all.sh, which includes all six Win32 gates:
       # test_w32_pe_loader, _kernel32, _user32, _crt, _loadlibrary and
       # _integration.  They add roughly 9 minutes to this job (70-120s each,
-      # measured), which the 120-minute timeout absorbs comfortably.
+      # measured), which the 240-minute timeout absorbs comfortably.
       - name: Run QEMU integration tests
         run: make test-integration
         env:
@@ -197,7 +204,11 @@ jobs:
   # `make test-unit` in the job above, and the kernel work by the AHCI step.
   doom:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Raised to 4 hours alongside the main gate.  This job clones an engine
+    # and downloads a 22 MB IWAD, so it is the most likely to stall on a slow
+    # third-party endpoint; continue-on-error means a stall here reports but
+    # never blocks the repository.
+    timeout-minutes: 240
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

@@ -11,7 +11,7 @@ See also [`status.md`](status.md) for a feature matrix.
 | Area | Location | Status | Purpose |
 |---|---|---:|---|
 | UART 16550 | `drivers/uart/` | ✅ | COM1 serial console and stdin source. |
-| Framebuffer console | `drivers/framebuffer/fb.c` | ✅ | Text output on Limine framebuffer. |
+| Framebuffer console | `drivers/framebuffer/fb.c` | ✅ | Text output on the bootloader-provided framebuffer. |
 | 2D graphics | `drivers/framebuffer/graphics.c` | ✅ | Double-buffered pixel/rect/line/text drawing. |
 | Boot splash | `drivers/framebuffer/bootsplash.c` | 🧪 | Animated graphical boot screen helpers. |
 | Window manager | `drivers/framebuffer/wm.c` | ✅/🧪 | Demo compositor, windows, widgets, mouse interaction. |
@@ -53,7 +53,8 @@ char uart_getchar(void);
 
 ## Framebuffer and graphics
 
-Limine provides a linear 32-bpp framebuffer. AuraLite has two layers on top:
+The bootloader hands over a linear 32-bpp framebuffer in `boot_info_t`
+(`boot_get_framebuffer()`). AuraLite has two layers on top:
 
 1. `fb.c` — console text output, used by `kputchar`.
 2. `graphics.c` — double-buffered drawing API for GUI demos.
@@ -332,7 +333,7 @@ Statuses are:
 
 - `active` — AuraLite has a usable data path;
 - `partial` — detection/bring-up exists, but the full transfer/data path is WIP;
-- `boot framebuffer` — usable through Limine framebuffer, without native GPU acceleration;
+- `boot framebuffer` — usable through the bootloader-provided framebuffer, without native GPU acceleration;
 - `known / no data path` — recognised so users can change VM settings or choose
   the next driver to implement.
 

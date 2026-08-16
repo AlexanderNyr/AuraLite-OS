@@ -76,17 +76,26 @@ Debian/Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake libtool git make gcc
+sudo apt install clang lld nasm qemu-system-x86 mtools git make gcc python3
+
+# Rust is REQUIRED, not optional: rustc is in the Makefile's REQUIRED_TOOLS
+# and `make deps-check` stops the build without it.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup target add x86_64-unknown-none
+
 # Optional but needed for the full integration suite:
-sudo apt install e2fsprogs vncdotool python3-pil
+sudo apt install e2fsprogs vncdotool python3-pil ovmf socat dosfstools
+# Optional: `make iso-bios` only; the default `make iso` does not use xorriso.
+sudo apt install xorriso
 ```
 
 ```bash
 git clone https://github.com/AlexanderNyr/AuraLite-OS.git
 ```
 
-`make iso` needs no submodules and no third-party bootloader -- it uses the
-custom BL2..BL7 bootloader chain shipped in this repository.
+There are no submodules and no third-party bootloader to fetch: `make iso`
+builds the BL2 MBR, the BL3+BL4 Stage 2 and the BL6 `BOOTX64.EFI` from the
+sources in `boot/`.
 
 ### Build the bootable ISO
 

@@ -1,6 +1,7 @@
 # AuraLite OS in VirtualBox and VMware
 
-AuraLite boots from the same Limine hybrid ISO in QEMU, VirtualBox, VMware and
+AuraLite boots from the same hybrid ISO — built by its own BIOS+UEFI loader — in
+QEMU, VirtualBox, VMware and
 on USB. The key is to select virtual hardware that the kernel already supports.
 
 ## Build
@@ -112,7 +113,7 @@ Unsupported for now:
 
 ## Display, input, storage and USB
 
-AuraLite uses the framebuffer supplied by Limine, so it does not require a
+AuraLite uses the framebuffer supplied by its own bootloader, so it does not require a
 native VirtualBox/VMware SVGA driver for basic graphics or the built-in GUI.
 PS/2 keyboard and mouse are used for normal input; USB controllers may also be
 exposed for the USB stack's probing and enumeration tests.

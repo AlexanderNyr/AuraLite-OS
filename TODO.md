@@ -419,6 +419,15 @@ for the feature matrix.
   and production-grade packet queues.
 - **DHCP can fall back in QEMU SLIRP.** Integration tests tolerate fallback
   static addressing for deterministic boots.
+- **e1000 RX ring is not drained while idle.** Once the boot-time network
+  self-tests finish and nothing in user space is reading, unsolicited frames
+  fill the RX ring and the driver emits `[e1000] RX overrun (drops=N)` on the
+  console every few seconds, with `N` climbing without bound for the life of
+  the boot. Nothing malfunctions — the counter is honest and the stack recovers
+  — but it is real packet loss and it floods the serial log, which makes long
+  integration runs harder to read. The fix is to consume and discard frames
+  that no socket claims (or to mask RX interrupts when no consumer exists)
+  rather than to silence the message.
 
 ### Graphics / GUI
 
@@ -453,7 +462,7 @@ for the feature matrix.
   (the device is found, nothing faults) and has an `ENABLE_FULL_ASSERTS` flag
   that turns the rest on in one edit once this is fixed.
 
-- **GPU acceleration is early.** Limine framebuffer remains the primary GUI
+- **GPU acceleration is early.** The bootloader-provided framebuffer remains the primary GUI
   surface, while virtio-gpu 2D mirroring and the VirGL command transport are
   present as experimental acceleration paths. The VirGL path now completes a
   present pipeline (fenced SUBMIT_3D -> TRANSFER_TO_HOST_3D -> SET_SCANOUT ->

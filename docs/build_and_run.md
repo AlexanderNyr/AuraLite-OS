@@ -8,23 +8,28 @@ Debian/Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install clang lld nasm xorriso qemu-system-x86 mtools autoconf automake libtool git make gcc
+sudo apt install clang lld nasm qemu-system-x86 mtools git make gcc python3
+
+# Rust is REQUIRED, not optional: `make deps-check` lists rustc in
+# REQUIRED_TOOLS and the build stops without it (lib/rsbr is a no_std Rust
+# static library linked into the `rustes` userspace program).
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup target add x86_64-unknown-none
+
+# Optional: `make iso-bios` builds the BIOS-only ISO with xorriso.  The
+# default `make iso` (which chains to iso-dual) does not need it.
+sudo apt install xorriso
 
 # Optional, but needed for the complete integration suite:
-sudo apt install e2fsprogs vncdotool python3-pil
+sudo apt install e2fsprogs vncdotool python3-pil ovmf socat dosfstools
 
 # Optional: the Win32 personality's examples and its end-to-end gate.
 sudo apt install mingw-w64
 ```
 
-A normal clone is enough because `make iso` uses AuraLite's custom BIOS/UEFI
-loader and does not depend on Limine. Only the optional `make iso-limine`
-fallback needs the bundled `limine-binary.tar.gz` or the Limine submodule. To
-build that fallback from source, initialise the submodule first:
-
-```bash
-git submodule update --init --recursive
-```
+A plain `git clone` is enough: there are no submodules and no third-party
+bootloader to fetch. `make iso` builds the whole boot chain — MBR, Stage 2 and
+`BOOTX64.EFI` — from the sources in `boot/`.
 
 Tool purposes:
 
@@ -33,10 +38,11 @@ Tool purposes:
 | `clang` | Kernel and userspace C compilation. |
 | `ld.lld` | Static ELF linking with custom linker scripts. |
 | `nasm` | x86_64 assembly files. |
-| `xorriso` | Bootable ISO creation. |
+| `xorriso` | Optional: `make iso-bios` only. The default hybrid image is assembled directly with `mformat`/`mcopy`. |
 | `qemu-system-x86_64` | Local booting and integration testing. |
-| `mtools` | Rebuilding Limine's UEFI support from source. |
-| `autoconf`/`automake`/`libtool` | Rebuilding Limine from source. |
+| `mtools` (`mformat`, `mcopy`) | **Required.** Builds the FAT32 EFI System Partition inside the hybrid image. |
+| `lld-link` | **Required.** Links `BOOTX64.EFI` as PE32+ (`make efi`). Ships with the `lld` package. |
+| `rustc` + `x86_64-unknown-none` | **Required.** Builds `lib/rsbr` for the `rustes` userspace program. |
 | `git`, `make`, `gcc` | Source checkout and host helper builds. |
 | `e2fsprogs` | Optional: `mkfs.ext2`/`debugfs` for ext2 integration tests. |
 | `vncdotool` + Pillow | Optional: GUI/VNC screenshot assertions. |
@@ -275,8 +281,8 @@ Output:
 build/usb.img
 ```
 
-The Limine ISO is already hybrid, so this target currently copies the ISO to a
-raw image file. It can be booted as a disk image or written to a USB stick:
+The ISO is already a raw hybrid GPT+MBR disk image, so this target simply
+copies it to a `.img` name. It can be booted as a disk image or written to a USB stick:
 
 ```bash
 sudo dd if=build/usb.img of=/dev/sdX bs=4M status=progress
@@ -362,27 +368,30 @@ sudo apt install xorriso
 
 ### `mformat: command not found` or `mcopy: command not found`
 
-Install mtools. This is needed only when rebuilding Limine from source:
+Install mtools. These are required for every `make iso`: they build the FAT32
+EFI System Partition inside the hybrid image.
 
 ```bash
 sudo apt install mtools
 ```
 
-### Limine submodule is missing
+### `[deps] missing required tool: rustc`
 
-The default build uses `limine-binary.tar.gz`. If you remove that bundle or force
-submodule Limine builds, initialise the submodule:
+Rust is a required dependency, not an optional one. Install it and add the
+bare-metal target:
 
 ```bash
-git submodule update --init --recursive
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup target add x86_64-unknown-none
 ```
 
-### `autoreconf`, `aclocal`, or `libtool` missing while building Limine
+### `lld-link: command not found`
 
-Install the Limine source-build dependencies:
+`BOOTX64.EFI` is a PE32+ binary, so the UEFI half of the image needs the
+PE-mode driver of LLD. It ships in the same package as `ld.lld`:
 
 ```bash
-sudo apt install autoconf automake libtool
+sudo apt install lld
 ```
 
 ### `mkfs.ext2` or `debugfs` missing during integration tests

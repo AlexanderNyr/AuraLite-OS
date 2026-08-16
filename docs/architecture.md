@@ -10,51 +10,86 @@ applications and a 3D renderer. For a precise feature-completeness table, see
 
 ## Boot flow
 
+AuraLite boots through its own BIOS and UEFI loaders (`boot/`); there is no
+third-party bootloader anywhere in the chain. Both paths converge on the same
+contract: fill a `boot_info_t`, put its address in RDI, jump to the kernel ELF
+entry in 64-bit long mode. See `docs/BL{1..8}_REPORT.md` for each phase and
+`docs/BOOTLOADER_ROADMAP.md` for the index.
+
 ```
-SeaBIOS (QEMU) → Limine stage1/stage2 (BIOS)
-   │  VBE: set 1280x800x32 framebuffer @ 0xfd000000
-   │  Parse /boot/limine/limine.conf
-   │  Load boot():/boot/kernel.elf + initrd.tar module
-   │  Map PT_LOAD segments by permission; set up HHDM + memmap
-   │  Scan marker-delimited request list; fill .response pointers
-   │  Jump to ELF entry (_start) in 64-bit long mode, ring 0
+BIOS path                                  UEFI path
+─────────────────────────────────          ─────────────────────────────────
+SeaBIOS loads the 512-byte MBR             OVMF loads BOOTX64.EFI from the ESP
+  boot/bios/stage1/mbr_dual.asm              boot/uefi/efi_main.c
+   │  INT 13h LBA read of Stage 2            │  locate kernel.elf + initrd.tar
+   ▼                                         │  efi_elf.c: map PT_LOAD segments
+[BL3] Stage 2 (boot/bios/stage2/)            │  efi_paging.c: build page tables
+   │  E820 memory map      (e820.inc)        │  efi_acpi.c: RSDP from cfg table
+   │  A20 gate             (a20.inc)         │  ExitBootServices()
+   │  unreal mode          (unreal.inc)      │
+   │  ACPI RSDP + MADT     (acpi.inc)        │
+   │  [BL4] FAT32 BPB read (fat.inc)         │
+   │  load kernel.elf      (elf.inc)         │
+   │  load initrd.tar                        │
+   │  build page tables    (paging.inc)      │
+   │  enter long mode      (longmode.inc)    │
+   └───────────────┬─────────────────────────┘
+                   ▼
+        boot_info_t in RDI, magic 0x4155524142544c44
+        (framebuffer, memmap, initrd phys+size, HHDM, ACPI, boot path)
+                   ▼
+_start (kernel/arch/x86_64/boot.asm)
+   │  cli; zero .bss; rsp := &stack_top (64 KiB, in .bss)
    ▼
-_start (boot.asm)
-   │  cli; rsp := &stack_top (64 KiB); zero .bss
-   ▼
-kmain (kernel.c)
+kmain (kernel/kernel.c)
+   ├── boot_info_init()      latch RDI handoff; halt on bad magic
    ├── uart_init()           COM1 @ 115200 baud
-   ├── fb_init()             console on the Limine framebuffer (8×8 font)
+   ├── stack_protector_init()
+   ├── fb_init()             console on the boot-provided framebuffer (8×8 font)
    ├── gdt_init()            7-entry GDT (kernel/user segments + TSS)
    ├── idt_init()            256-entry IDT + LIDT
    ├── pic_init()            8259A remap (IRQ 0-15 -> 32-47)
-   ├── sti                   enable maskable interrupts
-   ├── tss_init()            TSS with RSP0 + IST1 (#DF stack)
    ├── syscall_init()        SYSCALL/SYSRET MSRs (STAR, LSTAR, SFMASK, EFER.SCE)
-   ├── pmm_init()            bitmap from Limine memmap (via HHDM)
-   ├── paging_init()         read PML4 from CR3; enable EFER.NXE
-   ├── kheap_init()          on-demand heap (16 MiB, first-fit)
-   ├── smp_init()            wake APs via Limine MP (up to 4 CPUs)
+   ├── sti                   enable maskable interrupts
+   ├── pmm_init()            bitmap + refcount array from the boot memmap (via HHDM)
+   ├── paging_init()         adopt the loader's PML4 from CR3; enable EFER.NXE
+   ├── kheap_init()          on-demand heap (64 MiB region, first-fit)
+   ├── slab_init()           tcb_cache, ofd_cache, vnode_cache
+   ├── tss_init()            TSS with RSP0 + IST1 (#DF stack), per CPU
+   ├── smp_init()            wake APs via ACPI MADT + ap_trampoline.asm
+   ├── ioapic_init()         I/O APIC discovery; legacy PIC/PIT remain available
    ├── pit_init(100)         100 Hz timer (IRQ 0)
+   ├── rng_init()            ChaCha20 CSPRNG; RDSEED/RDRAND or IRQ-jitter pool
    ├── sched_init()          round-robin scheduler + idle thread
-   ├── vfs_init() + initrd   USTAR initrd at /, devfs at /dev
-   ├── net_init()            e1000 NIC + DHCP + ARP + ICMP + DNS + TCP tests
-   ├── ahci_init()           AHCI controller/port detection + DMA read/write self-test
-   ├── diskfs_init()         mount tiny persistent AHCI filesystem at /disk
-   ├── fat32_init()          mount FAT32 at /fat and enable /fat/AURALOG.TXT logs
-   ├── ext2_init()           mount /ext2 when a second AHCI disk is present
-   ├── usb init              UHCI/OHCI/EHCI/xHCI + USB core + MSC protocol layer
+   ├── virtual_drivers_init() PCI catalog of known QEMU/VBox/VMware devices
+   ├── audio_init()          PC speaker + AC97 backends
+   ├── vfs_init() + initrd   USTAR initrd at /, then devfs, procfs, tmpfs, usbfs
+   ├── net_init()            NIC via netdev (e1000, else virtio-net)
+   │                         + DHCP + ARP + ICMP + DNS + IPv6 + TCP self-tests
+   ├── ahci_init()           AHCI controller/port detection + DMA read/write test
+   ├── diskfs_init()         tiny persistent AHCI filesystem at /disk
+   ├── fat32_init()          FAT32 at /fat, /fat/AURALOG.TXT logging
+   ├── virtio_blk_init()     virtio block backend
+   ├── ext2_init()           /ext2 when a second AHCI disk is present
+   ├── bc_init()             buffer cache, then exfat/ext4/btrfs/f2fs/ntfs
+   │                         on further disks when present
+   ├── usb init              UHCI/OHCI/EHCI/xHCI + core, string, isoc, hub
+   │                         + MSC, CDC ACM, USB audio, USB printer
    ├── bt_init()/wifi_init() Bluetooth HCI / 802.11 protocol frameworks
    ├── gfx_init()            double-buffered 2D graphics
    ├── keyboard_init()       PS/2 keyboard (IRQ 1, rich key-event ring)
    ├── mouse_init()          PS/2 mouse (IRQ 12, scroll-wheel event support)
    ├── wm_demo()             framebuffer window-manager demo
    ├── r3d_demo()            software 3D renderer demo
-   ├── gui_init()            kernel GUI compositor (100 FPS cooperative thread) + GUI syscall subsystem
-   ├── process_self_test()   spawn /hello in isolated address space
+   ├── gui_init()            kernel GUI compositor (100 FPS thread) + GUI syscalls
+   ├── process_self_test()   spawn /hello in an isolated address space
    ├── user_mode_self_test() load init.elf (shell) → Ring 3
    └── yield forever         shell runs interactively
 ```
+
+Almost every subsystem above prints a `PASS`/`SKIP` line from a self-test that
+runs on every boot, so a serial log is a live status report rather than a trace.
+
 
 ## Interrupt handling
 
@@ -85,19 +120,28 @@ The 256 vector stubs and their addresses are macro-generated; `isr_table[]`
 Vectors that push an error code (8, 10–14, 17) use `ISR_ERR`; the rest push a
 dummy zero so `registers_t` is always the same shape.
 
-## Limine protocol bridge
+## Bootloader handoff bridge
 
-`kernel/limine_requests.c` emits, in strict order inside the writable `.data`
-segment:
+`kernel/boot_info.c` (which replaced the old bootloader-specific request table)
+latches the `boot_info_t*` the loader passes in RDI. The struct is defined once
+in `boot/shared/boot_info.h` and is written by **both** loaders, so the kernel
+has a single handoff shape regardless of firmware:
 
-1. `LIMINE_REQUESTS_START_MARKER` (4 qwords)
-2. base revision (revision 3)
-3. framebuffer request
-4. memmap request
-5. HHDM request
-6. module request (initrd)
-7. MP request (SMP)
-8. `LIMINE_REQUESTS_END_MARKER` (2 qwords)
+| Field | Filled by | Consumed by |
+|---|---|---|
+| `magic` (`0x4155524142544c44`) | both | `boot_info_init()`, halts on mismatch |
+| framebuffer (phys base, pitch, w/h/bpp) | both | `fb_init()`, `gfx_init()` |
+| memmap array + count | BIOS E820 / UEFI memory map | `pmm_init()` |
+| initrd phys base + size | both | `initrd_init()` |
+| HHDM offset | both | every physical access |
+| ACPI RSDP | `acpi.inc` / `efi_acpi.c` | `smp_init()`, `ioapic_init()` |
+| boot path (BIOS or UEFI) | both | boot banner, `boot_from_uefi` |
+
+Accessors return zero-equivalents rather than dereferencing NULL if called
+before `boot_info_init()`. Note the main API difference from the old bridge:
+`boot_get_memmap()` returns an array of `boot_mmap_entry_t` **values**, not an
+array of pointers.
+
 
 ## Consoles
 
@@ -124,7 +168,7 @@ order) so that SYSRET's formula (`CS = base+0x10`, `SS = base+0x08`) with
 ## Physical memory management
 
 ```
-Limine memmap  ──►  pmm_init()
+boot_info_t memmap ──►  pmm_init()
                      │  highest usable addr → bitmap size
                      │  carve bitmap from bootloader-reclaimable RAM
                      │  reach it via HHDM (0xFFFF800000000000 + phys)
@@ -146,7 +190,7 @@ The allocation algorithms live in the pure-C, kernel-independent
 
 ```
 paging_init()
-   │  read CR3 → PML4 (set up by Limine)
+   │  read CR3 → PML4 (set up by the BL loader)
    │  set EFER.NXE (enable No-Execute bit in PTEs)
    ▼
 paging_map(virt, phys, flags)
@@ -157,10 +201,11 @@ paging_map(virt, phys, flags)
    │  invlpg(virt)
 ```
 
-The VMM does **not** build paging from scratch — Limine already has long-mode
-paging enabled. The VMM extends Limine's page tables, reaching
-newly-allocated table frames through the HHDM. This avoids the classic
-chicken-and-egg of "map a table to manage tables."
+The VMM does **not** build paging from scratch — the bootloader has already
+enabled long-mode paging (`boot/bios/stage2/paging.inc` on the BIOS path,
+`boot/uefi/efi_paging.c` on the UEFI path). The VMM adopts and extends those
+tables, reaching newly-allocated table frames through the HHDM. This avoids the
+classic chicken-and-egg of "map a table to manage tables."
 
 ## Kernel heap
 
@@ -269,9 +314,11 @@ Some of these are experimental and intentionally simplified. See
 
 ## SMP (Phase 12)
 
-Limine's MP request enumerates all CPUs. Each AP is assigned a `goto_address`
-function that switches to its own stack, loads the shared GDT/IDT, reports
-online atomically, and enters an idle loop. The BSP skips its own entry in the
+`smp_init()` enumerates CPUs from the ACPI MADT that the bootloader recorded in
+`boot_info_t`, then wakes each AP with an INIT-SIPI-SIPI sequence pointed at
+`boot/smp/ap_trampoline.asm`. The trampoline brings the AP from real mode up to
+long mode, switches to its own stack, loads the shared GDT/IDT, reports online
+atomically, and enters an idle loop. The BSP skips its own entry in the
 cpus[] array. Writes to `goto_address`/`extra_argument` go through volatile +
 mfence for visibility.
 

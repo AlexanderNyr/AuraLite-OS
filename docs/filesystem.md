@@ -30,7 +30,8 @@ Resolution is by longest-prefix mount match, then the filesystem's own lookup.
 ## The initrd
 
 `tools/mkinitrd.sh` packs a staging directory into a USTAR (POSIX tar)
-archive; Limine hands it to the kernel as a boot module, and
+archive; the bootloader loads it and reports its physical base and size in
+`boot_info_t`, and
 `kernel/fs/initrd.c` parses the 512-byte headers into an in-memory file table
 mounted read-only at `/`.
 

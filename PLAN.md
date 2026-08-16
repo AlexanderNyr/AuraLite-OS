@@ -1,10 +1,20 @@
 # AuraLite OS Development Plan
 
+> **Historical document — kept as the record of the original 14-phase bring-up.**
+> It is preserved as it was written and is *not* maintained against the current
+> tree. Two things in particular have changed since: the kernel no longer boots
+> via Limine (replaced by the custom BL1–BL8 BIOS+UEFI chain, see
+> [`docs/BOOTLOADER_ROADMAP.md`](docs/BOOTLOADER_ROADMAP.md)), and many
+> post-phase subsystems have landed. For the current state read
+> [`docs/status.md`](docs/status.md); for the current architecture read
+> [`docs/architecture.md`](docs/architecture.md).
+
 ## Status: ALL 14 PHASES COMPLETE ✅
 
-AuraLite OS is a from-scratch x86_64 operating system that boots from a Limine
-BIOS ISO and runs an interactive shell in Ring 3. Every phase was built
-incrementally, verified in QEMU, and documented before moving on.
+AuraLite OS is a from-scratch x86_64 operating system that, at the time this
+plan was completed, booted from a Limine BIOS ISO and ran an interactive shell
+in Ring 3. Every phase was built incrementally, verified in QEMU, and
+documented before moving on.
 
 ---
 

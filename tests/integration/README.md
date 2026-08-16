@@ -26,7 +26,7 @@ tests/integration/
     ├── test_networking.sh           e1000 + ARP + ICMP + DNS + TCP
     ├── test_http_get.sh             HTTP userspace path against a local httpd
     ├── test_graphics.sh             framebuffer + WM + 3D demo render
-    ├── test_smp.sh                  Limine MP brings up ≥ 1 AP
+    ├── test_smp.sh                  ACPI MADT + AP trampoline bring up ≥ 1 AP
     └── test_gui.sh                  GUI compositor + VNC screenshot checks
 ```
 

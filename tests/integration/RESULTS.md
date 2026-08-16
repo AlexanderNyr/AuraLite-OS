@@ -46,7 +46,7 @@ and serial-level GUI checks still run.
 
 ### `test_boot_to_shell` — 17 asserts
 
-Limine → `kmain` banner, IDT/PIC/TSS init, SYSCALL MSRs, HHDM offset,
+BL3/BL4 loader progress → `kmain` banner, IDT/PIC/TSS init, SYSCALL MSRs, HHDM offset,
 PMM/VMM/heap/timer/scheduler/VFS self-tests, Ring 3 init shell, visible
 `auralite#` prompt, no panic/triple-fault/unhandled exception.
 
