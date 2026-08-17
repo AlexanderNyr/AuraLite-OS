@@ -235,6 +235,28 @@ def claims():
          "rx bytes via PLIC irq" in shsmk),
     ]
 
+    # --- V8: parity, full crypto, the three-tenant audit ---
+    rvcrypt = read("tests", "unit", "test_libatls_rv64.sh")
+    parity  = read("tests", "integration", "rv_parity_smoke.sh")
+    mkinit  = read("tools", "mkinitrd.sh")
+    checks += [
+        ("V8: the rv64 crypto gate runs the COMPLETE suite",
+         "test_atls_x25519" in rvcrypt and "test_atls_ed25519" in rvcrypt
+         and "test_atls_ecdsa" in rvcrypt and "qemu-riscv64" in rvcrypt),
+        ("V8: the crypto gate is registered beside the m32 gate",
+         "test_libatls_rv64.sh" in makefl and
+         "test_libatls_m32.sh" in makefl),
+        ("V8: the parity smoke asserts one gate per phase + no-FAIL",
+         "RING-U-OK" in parity and "rx bytes via PLIC irq" in parity and
+         'assert_no_grep "FAIL"' in parity),
+        ("V8: mkinitrd audits all three tenants by e_machine",
+         "audit_tenant bin   62" in mkinit and
+         "audit_tenant bin32 3" in mkinit and
+         "audit_tenant binrv 243" in mkinit),
+        ("V8: the plan carries the per-arch status matrix draft",
+         "| Subsystem | x86_64 | i386 | riscv64 |" in plan),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the

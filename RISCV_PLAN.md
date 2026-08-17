@@ -1,6 +1,6 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V7 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V8 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -12,7 +12,7 @@
 | V5 — userspace: libc-rv, init, the shared shell | ✅ complete | `patches/RV_V5_user.patch` |
 | V6 — the inline-assembly sweep | ✅ complete | `patches/RV_V6_sweep.patch` |
 | V7 — drivers: virtio-mmio, blk, net, UART RX | ✅ complete | `patches/RV_V7_drivers.patch` |
-| V8 — parity: storage, network, full crypto | pending | `patches/RV_V8_parity.patch` |
+| V8 — parity: storage, network, full crypto | ✅ complete | `patches/RV_V8_parity.patch` |
 | V9 — CI matrix, docs, the claim check | pending | `patches/RV_V9_ci.patch` |
 
 This document answers:
@@ -965,26 +965,75 @@ assertions (blk/net/uart gates + the PLIC receipt); boot smoke: 45 →
 
 ---
 
-### Phase V8 — Parity: storage, network, full crypto
+### Phase V8 — Parity: storage, network, full crypto ✅ COMPLETE
 
 **Objective:** the parity boot — every gate from every phase green in
 one boot — plus the crypto milestone i386 could not reach.
 
 #### Tasks
 
-- [ ] `rv_parity_smoke.sh`: the I8 shape — storage + network + the
+- [x] `rv_parity_smoke.sh`: the I8 shape — storage + network + the
       whole earlier gauntlet in a single boot, x86 pair attached.
-- [ ] **Full libatls at rv64**: `__int128` exists here (Fact 5), so
+- [x] **Full libatls at rv64**: `__int128` exists here (Fact 5), so
       the host gate runs the *complete* suite — X25519, Ed25519,
-      P-256 included — cross-compiled riscv64 and executed under
-      `qemu-riscv64` user-mode emulation if available, host `-m32`-
-      style compile-check otherwise. The i386 plan's §6 boundary entry
-      gets its counterpart: same sources, both truths recorded.
-- [ ] The initrd's third tenant audited: one tar, three `/bin*` trees,
-      each kernel exec-refusing the other two; `mkinitrd` asserts all
-      three when all three kernels are built.
-- [ ] Status-matrix rows drafted for V9 (per-arch columns now that
-      "per-arch" means three).
+      P-256 included — cross-compiled riscv64-linux-gnu-gcc -static
+      and EXECUTED under `qemu-riscv64` user-mode emulation, with the
+      clang compile-only fallback when the cross toolchain is absent
+      (the miss reported as a loud SKIP, never silently). The i386
+      plan's §6 boundary entry has its counterpart: same sources,
+      both truths recorded.
+- [x] The initrd's third tenant audited: `mkinitrd.sh` reads
+      `e_machine` out of every ELF in each `/bin*` tenant (62/3/243)
+      and FAILS THE PACK on a cross-copied binary — naming the file,
+      at build time, instead of a boot-loop refusal at runtime.
+      Negative control exercised: an i386 binary planted in /binrv
+      kills the pack with the file's name in the error.
+- [x] Status-matrix rows drafted (below) for V9 to install in
+      docs/status.md.
+
+#### Result
+
+Delivered as specified. The crypto gate measured:
+
+```
+[atls-rv64] OK test_atls_hash/aead/x25519/ed25519/ecdsa: vectors pass EXECUTED on rv64
+[atls-rv64] PASS: the COMPLETE suite (hash/AEAD/X25519/Ed25519/ECDSA)
+```
+
+— all five RFC-vector suites, including the 51-bit-limb field
+arithmetic and P-256 ECDSA that `-m32` structurally cannot compile,
+executed on the target ISA (not just compiled: 64×64→128 carry
+chains lower through mulhu on rv64, and a wrong-lowering bug would
+produce plausible field elements — execution is the assertion).
+Registered in `make test-unit` beside the m32 gate: the two truths
+now sit in one target's output, three lines apart.
+
+The parity boot: 21/21 assertions, one QEMU run — V0 banner through
+V7 receipt (`rx bytes via PLIC irq`), `assert_no_grep FAIL` across
+the entire log, and the x86_64 pair green with the three-tenant tar.
+
+**Status-matrix draft for V9** (per-arch columns; the V9 phase moves
+this into docs/status.md):
+
+| Subsystem | x86_64 | i386 | riscv64 |
+|---|---:|---:|---:|
+| Boot path | ✅ BIOS+UEFI ISO | ✅ same ISO, refusal-gated | ✅ OpenSBI `-kernel` |
+| Memory (PMM/VMM/heap) | ✅ | ✅ (no PAE ⇒ no NX) | ✅ Sv39 |
+| W^X enforced | ✅ NX | ❌ honest (D3) | ✅ PTE X-bit, loader refuses W+X |
+| Threads/sched | ✅ SMP | ✅ BSP-only | ✅ boot-hart only (D5) |
+| User mode + syscalls | ✅ SYSCALL | ✅ int 0x80 | ✅ ecall (D4 numbers) |
+| Userspace | ✅ full libc | 🚧 libc32 subset | 🚧 libcrv subset (V8 residue) |
+| Shell | ✅ init shell | ✅ smallsh (shared) | ✅ smallsh (same source) |
+| Storage | ✅ AHCI+virtio-PCI | ✅ ATA PIO | ✅ virtio-mmio blk |
+| Network | ✅ e1000+virtio stack | ✅ e1000 miniproto | ✅ virtio-mmio + shared miniproto |
+| Crypto vectors | ✅ host suite | 🧪 symmetric only (-m32 boundary) | ✅ COMPLETE suite executed |
+| Console input | ✅ PS/2+serial ring | ✅ PS/2+serial ring | ✅ 16550/PLIC irq ring |
+
+Residue, recorded not hidden: the full lib/libc port (errno/TLS/
+stdio) and the VFS mount of the rv64 blk device are follow-on work —
+the plan's §6 scoped them out of V8 ("the *bring-up* net/storage
+proofs, not the full stacks"), and the matrix rows above say 🚧
+where 🚧 is true.
 
 #### Test gate
 

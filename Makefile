@@ -1952,6 +1952,8 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # recorded, not hidden).  Skips cleanly without gcc-multilib.
 	@echo "[unit] running tests/unit/test_libatls_m32.sh"
 	@bash tests/unit/test_libatls_m32.sh || exit 1
+	@echo "[unit] running tests/unit/test_libatls_rv64.sh"
+	@bash tests/unit/test_libatls_rv64.sh || exit 1
 
 # I386_PLAN I9: the plan cannot drift from the tree -- each phase's
 # claims are tied to artefacts that only exist if the phase happened,

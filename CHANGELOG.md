@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V8 — parity: storage, network, full crypto] 2026-08-17
+
+RISCV_PLAN phase V8: every gate from every phase green in ONE boot —
+and the crypto milestone i386 could not reach, reached.
+
+- **`tests/unit/test_libatls_rv64.sh` (new):** the COMPLETE libatls
+  suite — hash, AEAD, X25519, Ed25519, P-256 ECDSA — cross-compiled
+  `riscv64-linux-gnu-gcc -static` and EXECUTED under `qemu-riscv64`
+  (compile-only clang fallback with a loud SKIP when the toolchain is
+  absent). All five RFC-vector suites pass on the target ISA: the
+  51-bit-limb `__int128` field arithmetic that `-m32` structurally
+  cannot compile runs and verifies on rv64. Registered in test-unit
+  beside the m32 gate — I386_PLAN §6's boundary entry and its green
+  counterpart now print three lines apart in one target.
+- **`tests/integration/rv_parity_smoke.sh` (new, 21 assertions):**
+  the I8 shape — one boot with the full device set, one assert per
+  phase gate (V0 banner → V7 PLIC receipt), `assert_no_grep FAIL`
+  over the whole log, and the x86_64 pair proving the three-tenant
+  tar broke nothing.
+- **`tools/mkinitrd.sh`:** the three-tenant audit — every ELF in
+  /bin, /bin32, /binrv has its `e_machine` read (62/3/243) and a
+  cross-copied binary FAILS THE PACK with the file named at build
+  time instead of boot-looping at runtime. Negative control
+  exercised: a planted i386 binary in /binrv kills the pack.
+- **The per-arch status matrix drafted** in the plan's V8 Result
+  (11 subsystem rows, three columns; V9 installs it in
+  docs/status.md). Residue recorded, not hidden: full libc port and
+  VFS mount of the rv64 blk device are follow-on work (§6 scoped
+  them out; the matrix says 🚧 where 🚧 is true).
+- Claims 49 → 54.
+
 ## [RV V7 — drivers: virtio-mmio, blk, net, UART RX] 2026-08-17
 
 RISCV_PLAN phase V7: the virt machine's real device set — and the

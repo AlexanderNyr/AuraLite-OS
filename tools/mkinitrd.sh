@@ -64,4 +64,35 @@ trap 'rm -rf "$STAGING" "$FILELIST"' EXIT
 
 tar --format=ustar --no-recursion -cf "$OUTPUT" -C "$STAGING" -T "$FILELIST"
 
+# RISCV_PLAN V8: the three-tenant audit.  One tar serves three
+# kernels -- /bin (x86_64 ELF64), /bin32 (i386 ELF32), /binrv (rv64
+# ELF64) -- and each kernel's loader refuses the other two's
+# binaries.  The audit here is the packaging half of that contract:
+# when a tenant directory is present, its ELF machine type must match
+# its name (a cross-copied binary would boot-loop as a refusal at
+# runtime; catching it at pack time names the guilty file instead).
+# e_machine: offset 18, little-endian; 62=x86_64, 3=i386, 243=riscv.
+audit_tenant() {
+    local dir="$1" want="$2" name="$3"
+    [ -d "$STAGING/$dir" ] || return 0
+    local f m
+    for f in "$STAGING/$dir"/*; do
+        [ -f "$f" ] || continue
+        # Only ELF files are audited (etc/motd-style strays are fine).
+        if [ "$(head -c4 "$f" | od -An -tx1 | tr -d ' ')" != "7f454c46" ]; then
+            continue
+        fi
+        m=$(od -An -j18 -N2 -tu2 "$f" | tr -d ' ')
+        if [ "$m" != "$want" ]; then
+            echo "[mkinitrd] ERROR: $dir/$(basename "$f") has e_machine=$m," >&2
+            echo "           expected $want ($name) -- a cross-arch binary" >&2
+            echo "           in the wrong tenant directory" >&2
+            exit 1
+        fi
+    done
+}
+audit_tenant bin   62  x86_64
+audit_tenant bin32 3   i386
+audit_tenant binrv 243 riscv64
+
 echo "[mkinitrd] wrote $OUTPUT ($(du -h "$OUTPUT" | cut -f1), $(find "$STAGING" -type f | wc -l) files, $(find "$STAGING" -mindepth 1 -type d | wc -l) subdirectories)"
