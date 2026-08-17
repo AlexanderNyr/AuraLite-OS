@@ -37,7 +37,7 @@ static uint64_t cmos_read_epoch(void) {
      * Bound the wait and fall back to reading a best-effort snapshot. */
     uint32_t spins = 1000;
     while (cmos_updating() && spins-- > 0) {
-        __asm__ volatile ("pause");
+        arch_cpu_relax();
     }
 
     int s  = bcd2bin(cmos_read(0x00));
@@ -139,11 +139,10 @@ int kernel_nanosleep(const struct kernel_timespec *req, struct kernel_timespec *
     while (timer_get_ticks() < deadline) {
         /* Check signals with interrupts disabled to close the race window
          * between the signal check and setting THREAD_BLOCKED (BUG-30). */
-        uint64_t rflags;
-        __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+        arch_irqflags_t rflags = arch_irq_save();
 
         if (cur && (cur->sig_pending & ~cur->sig_mask)) {
-            __asm__ volatile ("sti" ::: "memory");
+            arch_irq_restore(rflags);
             cur->sleep_deadline = 0;
             cur->state = THREAD_READY;
             if (rem) {
@@ -161,9 +160,7 @@ int kernel_nanosleep(const struct kernel_timespec *req, struct kernel_timespec *
 
         schedule();   /* call directly with IRQs already off */
 
-        if (rflags & 0x200ULL) {
-            __asm__ volatile ("sti" ::: "memory");
-        }
+        arch_irq_restore(rflags);
     }
 
     if (cur) {

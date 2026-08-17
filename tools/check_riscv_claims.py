@@ -186,6 +186,27 @@ def claims():
          "definitely-not-a-cmd" in shsmk),
     ]
 
+    # --- V6: the inline-assembly sweep ---
+    archh  = read("kernel", "arch", "arch.h")
+    sweepy = read("tools", "check_width_sweep.py")
+    spinc  = read("kernel", "lib", "spinlock.c")
+    checks += [
+        ("V6: arch.h forwards irqflags for all three arches",
+         "x86_64/irqflags.h" in archh and "i386/irqflags.h" in archh and
+         "riscv64/irqflags.h" in archh),
+        ("V6: the three irqflags backends exist with one contract",
+         all(exists("kernel", "arch", a, "irqflags.h")
+             for a in ("x86_64", "i386", "riscv64"))),
+        ("V6: ratchet 4 is armed with the plan's baseline arithmetic",
+         "BASELINE_ASM_FILES" in sweepy and
+         "was 33 at V6 arming" in sweepy),
+        ("V6: spinlock.c is C11 atomics, no inline asm statements",
+         "atomic_compare_exchange_strong_explicit" in spinc and
+         "volatile (" not in spinc),
+        ("V6: port I/O on riscv is a named compile error, not a stub",
+         "unavailable" in archh and "virtio-mmio" in archh),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the

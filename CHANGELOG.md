@@ -2,6 +2,41 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V6 — the inline-assembly sweep] 2026-08-17
+
+RISCV_PLAN phase V6: ratchet 4 armed at the plan's exact baseline
+(33 portable files bearing real `__asm__`), first batch of 4
+migrated, and the x86_64 byte-identity control exercised for real.
+
+- **`kernel/arch/{x86_64,i386,riscv64}/irqflags.h` (new, D6):** one
+  contract, three backends — `arch_irq_save/restore` (pushfq;cli/sti
+  ↔ csrrc/csrs sstatus.SIE — the csrrc is the pushfq;cli pair's
+  atomicity by ISA design), `arch_wait_for_interrupt` (sti;hlt ↔
+  wfi), `arch_cpu_relax` (pause ↔ fence rw,rw; rv64gc has no
+  Zihintpause). Saved-state type is uint64_t on all three — portable
+  signatures never change width per arch.
+- **`arch.h`:** forwards the irqflags block for all three targets;
+  the riscv port-I/O branch declares inb..outl
+  `__attribute__((unavailable))` naming the V7 virtio-mmio route —
+  including the header stays legal, the first port-I/O USE is the
+  compile error (never a silent stub; the xHCI lesson).
+- **First batch (33 → 29):** `spinlock.c` → C11 atomics;
+  `kprintf.c`, `time.c`, `scheduler.c` → the arch_* four.
+- **The byte-identity control fired and the diff was READ:** the
+  pure-forwarding sites (kprintf, sched_yield…) lowered
+  instruction-identical; `spinlock_acquire` re-ordered basic blocks
+  (C11 gives clang a visible CFG where the asm block was opaque —
+  same LOCK CMPXCHG/pause/store algorithm, accepted as reordered-not-
+  changed); `spinlock_acquire_irqsave` LOST its stack-protector
+  frame (the old `"=rm"` RFLAGS spill tripped the canary heuristic;
+  the C11 version keeps it in a register — strictly better).
+  Verified: x86_64 full boot 22 PASS, i386 boot32 smoke, rv64
+  45-assert smoke — three kernels, zero regressions.
+- **`check_width_sweep.py`:** ratchet 4 (`BASELINE_ASM_FILES = 29`),
+  paren-requiring regex (comments don't count), selftest plants an
+  asm file and watches the count move. `check_riscv_claims.py`:
+  38 → 43.
+
 ## [RV V5 — userspace: libcrv, init, the shared shell] 2026-08-17
 
 RISCV_PLAN phase V5: compiled-from-C U-mode programs from the shared

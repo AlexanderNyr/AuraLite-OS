@@ -1,12 +1,21 @@
-/* spinlock.c — x86_64 test-and-set spinlocks. */
+/* spinlock.c — test-and-set spinlocks (C11 atomics since the V6 sweep).
+ *
+ * The x86_64 original was LOCK CMPXCHG + pause + a plain-store
+ * release, all inline asm.  The C11 spelling below lowers to the
+ * same shape on x86 (lock cmpxchg / pause via arch_cpu_relax / a
+ * mov-store: release ordering is free on x86's TSO memory model) and
+ * to lr.b/sc.b + fence on riscv64 -- one source, three targets, no
+ * __asm__ outside kernel/arch/ (RISCV_PLAN V6, ratchet 4's opening
+ * payment).
+ *
+ * The irqsave pair rides arch_irq_save/arch_irq_restore (arch.h):
+ * pushfq;cli / sti on x86, csrrc/csrs sstatus.SIE on riscv64.
+ */
+
+#include <stdatomic.h>
 
 #include "kernel/lib/spinlock.h"
-
-static inline void cpu_pause(void) {
-    /* Hint to the CPU that we are in a spin-wait loop (saves power / avoids
-       a memory-ordering violation on hyperthreaded cores). Intel SDM Vol.2. */
-    __asm__ volatile ("pause");
-}
+#include "kernel/arch/arch.h"
 
 void spinlock_init(spinlock_t *lock) {
     lock->locked = 0;
@@ -15,40 +24,30 @@ void spinlock_init(spinlock_t *lock) {
 void spinlock_acquire(spinlock_t *lock) {
     for (;;) {
         uint8_t expected = 0;
-        /* LOCK CMPXCHG: if *lock == AL(0) then *lock = 1, ZF=1; else AL=*lock.
-           The "+a" constraint ties `expected` to AL and reads back the result. */
-        __asm__ volatile (
-            "lock cmpxchg %[new], %[lock]"
-            : [lock] "+m" (lock->locked), "+a" (expected)
-            : [new] "q" ((uint8_t)1)
-            : "cc", "memory");
-        if (expected == 0) {
+        if (atomic_compare_exchange_strong_explicit(
+                (_Atomic uint8_t *)&lock->locked, &expected, 1,
+                memory_order_acquire, memory_order_relaxed)) {
             break;                 /* we observed 0 and atomically stored 1 */
         }
-        while (lock->locked) {     /* spin on a cached read until released */
-            cpu_pause();
+        while (atomic_load_explicit((_Atomic uint8_t *)&lock->locked,
+                                    memory_order_relaxed)) {
+            arch_cpu_relax();      /* spin on a cached read until released */
         }
     }
 }
 
 void spinlock_release(spinlock_t *lock) {
-    /* A plain store with a compiler barrier suffices; x86 stores have
-       release semantics for aligned byte stores. */
-    __asm__ volatile ("movb $0, %[lock]" :: [lock] "m" (lock->locked) : "memory");
+    atomic_store_explicit((_Atomic uint8_t *)&lock->locked, 0,
+                          memory_order_release);
 }
 
 uint64_t spinlock_acquire_irqsave(spinlock_t *lock) {
-    uint64_t rflags;
-    /* Capture RFLAGS then clear IF atomically with respect to further code. */
-    __asm__ volatile ("pushfq; popq %0; cli" : "=rm" (rflags) :: "memory");
+    arch_irqflags_t flags = arch_irq_save();
     spinlock_acquire(lock);
-    return rflags;
+    return flags;
 }
 
-void spinlock_release_irqrestore(spinlock_t *lock, uint64_t rflags) {
+void spinlock_release_irqrestore(spinlock_t *lock, uint64_t flags) {
     spinlock_release(lock);
-    /* Only re-enable interrupts if they were enabled on entry. */
-    if (rflags & 0x200ULL) {
-        __asm__ volatile ("sti" ::: "memory");
-    }
+    arch_irq_restore(flags);
 }

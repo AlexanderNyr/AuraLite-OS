@@ -7,6 +7,7 @@
 #include "kernel/lib/klog.h"
 #include "drivers/uart/uart.h"
 #include "drivers/framebuffer/fb.h"
+#include "kernel/arch/arch.h"
 
 /* SMP-safe output: a spinlock ensures only one CPU prints at a time. cli/sti
  * alone is not sufficient under SMP (it's per-CPU). */
@@ -25,14 +26,11 @@ void kputchar(char c) {
  * lines (e.g. "[thread] reaped ...") would splice into the middle of a
  * user-space marker line, making output-parsing integration tests flaky. */
 void kputs_locked(const char *s, size_t n) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    arch_irqflags_t flags = arch_irq_save();
     spinlock_acquire(&print_lock);
     for (size_t i = 0; i < n; i++) kputchar(s[i]);
     spinlock_release(&print_lock);
-    if (rflags & 0x200ULL) {
-        __asm__ volatile ("sti" ::: "memory");
-    }
+    arch_irq_restore(flags);
 }
 
 void kputs(const char *s) {
@@ -191,17 +189,14 @@ static void kvprintf(const char *fmt, va_list ap) {
  * If interrupts were already off (e.g. inside an IRQ handler), they stay off.
  */
 void kprintf(const char *fmt, ...) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    arch_irqflags_t flags = arch_irq_save();
     spinlock_acquire(&print_lock);
     va_list ap;
     va_start(ap, fmt);
     kvprintf(fmt, ap);
     va_end(ap);
     spinlock_release(&print_lock);
-    if (rflags & 0x200ULL) {
-        __asm__ volatile ("sti" ::: "memory");
-    }
+    arch_irq_restore(flags);
 }
 
 /* Simple snprintf for kernel strings. */

@@ -1,6 +1,6 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V5 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V6 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,7 @@
 | V3 — memory: Sv39, PMM, heap — and W^X back | ✅ complete | `patches/RV_V3_mm.patch` |
 | V4 — threads, scheduler, U-mode, `ecall` | ✅ complete | `patches/RV_V4_proc.patch` |
 | V5 — userspace: libc-rv, init, the shared shell | ✅ complete | `patches/RV_V5_user.patch` |
-| V6 — the inline-assembly sweep | pending | `patches/RV_V6_sweep.patch` |
+| V6 — the inline-assembly sweep | ✅ complete | `patches/RV_V6_sweep.patch` |
 | V7 — drivers: virtio-mmio, blk, net, UART RX | pending | `patches/RV_V7_drivers.patch` |
 | V8 — parity: storage, network, full crypto | pending | `patches/RV_V8_parity.patch` |
 | V9 — CI matrix, docs, the claim check | pending | `patches/RV_V9_ci.patch` |
@@ -798,7 +798,7 @@ moment the file moved, which is exactly the drift-detection working).
 
 ---
 
-### Phase V6 — The inline-assembly sweep
+### Phase V6 — The inline-assembly sweep ✅ COMPLETE
 
 **Objective:** ratchet 4 armed and burning: the 33 portable files with
 x86 asm become arch-header consumers, batch by batch, with the
@@ -806,24 +806,68 @@ byte-identity control on every batch.
 
 #### Tasks
 
-- [ ] `arch.h` grows `arch_irq_save/restore`, `arch_wait_for_interrupt`,
+- [x] `arch.h` grows `arch_irq_save/restore`, `arch_wait_for_interrupt`,
       `arch_cpu_relax` (D6) with x86_64, i386 and riscv64 backends;
       the `cli/sti/hlt/pause` sites migrate in counted batches.
-- [ ] `spinlock.c` → C11 atomics; the x86_64 kernel's `.text` compared
-      before/after (byte-identity expected from clang's lowering; if
-      it differs, the diff is *read*, not waved through — a changed
-      spinlock is a changed kernel).
-- [ ] `check_width_sweep.py` ratchet 4: `__asm__`-bearing portable
-      files, baseline 33, self-test plants a violation.
-- [ ] The 6 port-I/O files: compile-time fenced so the riscv build of
-      any of them is a hard error naming the V7 route — never a stub
-      that silently does nothing (the xHCI lesson from USB_PLAN's
-      preamble, applied prophylactically).
+- [x] `spinlock.c` → C11 atomics; the x86_64 kernel's `.text` compared
+      before/after — it differed, and the diff was *read*, not waved
+      through (findings below).
+- [x] `check_width_sweep.py` ratchet 4: `__asm__`-bearing portable
+      files, baseline 33 measured exactly as planned, self-test plants
+      a violation and proves the count moves.
+- [x] Port-I/O fenced for riscv: `arch.h`'s riscv branch declares
+      `inb`..`outl` with `__attribute__((unavailable))` naming the V7
+      virtio-mmio route — including arch.h stays legal (the irqflags
+      block must work), the first port-I/O *use* is the hard error.
+      Never a stub that silently does nothing (the xHCI lesson).
+
+#### Result
+
+Baseline confirmed at exactly the plan's number: **33** portable
+files bearing real `__asm__` statements (the ratchet regex requires
+the opening paren — a comment mentioning `__asm__` is not a hit).
+First batch migrated 4: `spinlock.c` (C11 atomics), `kprintf.c`,
+`time.c`, `scheduler.c` (irq-save pairs, sti;hlt idles, pause spins →
+the arch_* four). Ratchet armed at **29**, selftest plants an
+asm-bearing file and watches the count move.
+
+**The byte-identity control fired, and reading the diff was the
+phase's most instructive hour:**
+
+- `kputs_locked`, `kprintf`, `sched_yield`, `kernel_block_current`:
+  instruction-identical except relocated addresses and one shifted
+  data symbol — the inline pushfq/cli/sti lowered to the same bytes
+  through the header. The forwarding claim holds where it should.
+- `spinlock_acquire`: same instruction *set*, different basic-block
+  layout — the C11 spelling gives clang a visible CFG where the asm
+  block was opaque, so it re-ordered the fast path (fall-through exit
+  vs branch-to-exit) and dropped the frame push on it. Same lock
+  algorithm: LOCK CMPXCHG, pause spin on a cached read, plain-store
+  release. Accepted: a *reordered* spinlock is not a *changed*
+  spinlock, and the atomics' documented lowering IS the old asm.
+- `spinlock_acquire_irqsave`: the stack-protector canary frame
+  vanished — the old version spilled RFLAGS to the stack through the
+  `"=rm"` constraint, tripping -fstack-protector's array heuristic;
+  the C11 version keeps it in a register. Strictly better code, same
+  semantics.
+
+Verified after the batch: x86_64 full boot green (22 PASS lines, the
+shell reached), i386 boot32 smoke green, rv64 45-assert smoke green —
+three kernels, one migration, zero regressions. The riscv kernel
+still contains zero `__asm__` outside `kernel/arch/` (it always did;
+ratchet 4 now guarantees it stays true as portable code starts
+joining the rv64 build in V8).
+
+Remaining 29 files are V8's companions: most are drivers whose whole
+body is x86-only (port I/O ones now fenced), and the proc/*.c cluster
+migrates when those files actually join the rv64 build — paying the
+ratchet down in the commit that needs it, per the plan's batch rule.
 
 #### Test gate
 
 - Ratchet 4 registered and green; x86_64 `.text` byte-identical across
-  the migration batches (or the diff explained in the commit);
+  the migration batches (or the diff explained in the commit — it is,
+  above);
   i386 + x86_64 suites green; the riscv build contains zero `__asm__`
   outside `kernel/arch/`.
 

@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "kernel/proc/scheduler.h"
+#include "kernel/arch/arch.h"
 #include "kernel/proc/thread.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/slab.h"
@@ -62,7 +63,7 @@ int sched_is_ready(void) { return scheduler_ready; }
 static void idle_loop(void *arg) {
     (void)arg;
     for (;;) {
-        __asm__ volatile ("sti; hlt" ::: "memory");
+        arch_wait_for_interrupt();
     }
 }
 
@@ -119,7 +120,7 @@ void schedule(void) {
          * un-parked thread onto the other cpu's queue and then blocked
          * forever waiting for each other. */
         while (next->switch_parked == 0) {
-            __asm__ volatile ("pause" ::: "memory");
+            arch_cpu_relax();
         }
         /* Establish the on-cpu side of the parking invariant: from now
          * until our context save completes, parked reads 0.  Remote wakers
@@ -186,8 +187,7 @@ void schedule(void) {
 void sched_yield(void) {
     /* Free dead threads from a safe stack before voluntarily switching away. */
     thread_reap_zombies();
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    arch_irqflags_t rflags = arch_irq_save();
     if (cpu_local_ready) {
         struct cpu_local *local = get_cpu_local();
         if (local && local->current != NULL && local->current != local->idle) {
@@ -195,20 +195,15 @@ void sched_yield(void) {
         }
     }
     schedule();
-    if (rflags & 0x200ULL) {
-        __asm__ volatile ("sti" ::: "memory");
-    }
+    arch_irq_restore(rflags);
 }
 
 void kernel_block_current(void) {
-    uint64_t rflags;
-    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    arch_irqflags_t rflags = arch_irq_save();
     tcb_t *cur = sched_current();
     if (cur) cur->state = THREAD_BLOCKED;
     schedule();
-    if (rflags & 0x200ULL) {
-        __asm__ volatile ("sti" ::: "memory");
-    }
+    arch_irq_restore(rflags);
 }
 
 void sched_tick(void) {
@@ -284,7 +279,7 @@ void sched_idle(void) {
          * -> schedule(), which is how real threads reach this CPU.  Between
          * ticks the core simply sleeps on hlt with interrupts on -- the idle
          * TCB above keeps the accounting/stealing story consistent. */
-        __asm__ volatile ("sti; hlt" ::: "memory");
+        arch_wait_for_interrupt();
     }
 }
 
