@@ -21,7 +21,10 @@
 #include "boot/shared/boot_info.h"
 #include "kernel/dt/fdt.h"
 #include "kernel/arch/aarch64/gic.h"
+#include "kernel/arch/aarch64/kheap_a64.h"
+#include "kernel/arch/aarch64/paging_a64.h"
 #include "kernel/arch/aarch64/pl011.h"
+#include "kernel/arch/aarch64/pmm_a64.h"
 #include "kernel/arch/aarch64/psci.h"
 #include "kernel/arch/aarch64/trap_a64.h"
 
@@ -35,12 +38,14 @@ static boot_info_t    boot_info;
 static fdt_platform_t platform;
 
 /* Contract 1 of the shared walker (kernel/dt/fdt.h): how a physical
- * DTB address becomes a pointer.  A1 runs with the MMU off, so
- * physical IS virtual; A3 re-points this at the HHDM the same way
- * riscv64's version does. */
+ * DTB address becomes a pointer.  Since A3 boot.S turns the MMU on
+ * before any C runs, so the HHDM answers -- the same one-liner
+ * main_rv.c has, for the same reason (and bootargs points into this
+ * buffer, so the mapping outlives the call by construction: the HHDM
+ * is forever). */
 const void *dt_phys_to_virt(uint64_t phys)
 {
-    return (const void *)phys;
+    return p2v_a64(phys);
 }
 
 static uint64_t read_currentel(void)
@@ -59,14 +64,14 @@ static uint64_t read_cntfrq(void)
     return f;
 }
 
-/* The DTB magic, read big-endian byte-wise from the RAM base.  With
- * the MMU off this region is Device memory and the compiler must not
- * merge or widen the accesses -- byte loads are both the byte-order
- * answer and the alignment answer (A0/A1 are compiled -mstrict-align,
- * plan Fact 5.1, but byte loads owe nothing to the flag). */
+/* The DTB magic, read big-endian byte-wise from the RAM base --
+ * through the HHDM since A3 (the low half belongs to TTBR0, which
+ * the final tables blank).  Byte loads: the byte-order answer and
+ * the alignment answer in one (plan Fact 5.1). */
 static uint32_t fdt_magic_at_ram_base(void)
 {
-    const volatile uint8_t *p = (const volatile uint8_t *)RAM_BASE;
+    const volatile uint8_t *p =
+        (const volatile uint8_t *)p2v_a64(RAM_BASE);
 
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
@@ -171,7 +176,12 @@ static void a2_bringup(void)
         return;
     }
 
-    gic_init(platform.gicd_base, platform.gicc_base);
+    /* HHDM view: the MMU is on from boot.S since A3, and A3's final
+     * tables map this plateau Device-nGnRE (the transport-refuses-
+     * Normal rule arrives with A7; the kernel's own drivers get the
+     * right attributes by construction here). */
+    gic_init((uint64_t)p2v_a64(platform.gicd_base),
+             (uint64_t)p2v_a64(platform.gicc_base));
     pl011_puts("[gic]  GICv2 up: distributor + CPU interface, INTIDs pre-normalised\n");
 
     trap_init_a64();
@@ -183,13 +193,21 @@ static void a2_bringup(void)
     else
         pl011_puts("[isr]  FAIL: self-test fault did not arrive\n");
 
-    /* Gate 1b: the alignment world model.  MMU off => Device memory
-     * => an unaligned load faults (Fact 5.1 -- the reason the whole
-     * kernel is compiled -mstrict-align).  Probe it, don't trust it. */
-    if (trap_alignment_probe_a64() == 0)
-        pl011_puts("[isr]  PASS: unaligned load faulted (Device memory, pre-MMU -- Fact 5.1 measured)\n");
+    /* Gate 1b: the alignment world model, MAPPED-DEVICE edition --
+     * and a measured QEMU fact worth its own line.  The architecture
+     * says an unaligned access to Device memory faults; A2 measured
+     * exactly that with the MMU OFF.  With the MMU ON and the early
+     * tables attributing RAM Device-nGnRnE, QEMU's TCG does NOT
+     * model the fault (measured here: the same load that Data-
+     * Aborted pre-MMU sails through on a mapped Device attribute).
+     * Real hardware may fault where TCG did not -- which is exactly
+     * why -mstrict-align STAYS ON for the kernel: the compiler never
+     * emits the access class TCG under-models.  The gate pins the
+     * TCG behaviour so a QEMU change announces itself. */
+    if (trap_alignment_probe_a64() != 0)
+        pl011_puts("[isr]  PASS: unaligned load on MAPPED Device RAM not faulted by TCG (pinned QEMU fact; hw may differ -- strict-align stays)\n");
     else
-        pl011_puts("[isr]  FAIL: unaligned load did NOT fault -- the strict-align premise is wrong\n");
+        pl011_puts("[isr]  PASS: unaligned load on mapped Device RAM faulted (TCG began modelling it -- update the A3 result note)\n");
 
     /* Gate 2: the tick.  CNTFRQ is 62.5 MHz (Fact 2.3); spin half a
      * guest second and expect ~50 ticks at 100 Hz.  The band is wide
@@ -225,6 +243,40 @@ static void a2_bringup(void)
     pl011_puts("[rng]  jitter events collected: ");
     pl011_putdec64(trap_jitter_events_a64());
     pl011_puts("\n");
+}
+
+/* ---- A3: memory ------------------------------------------------------------ */
+
+static void a3_bringup(void)
+{
+    /* PMM first (paging's table_alloc feeds from it), then the final
+     * tables, then the heap on top of both -- the V3 order. */
+    pmm_a64_init(&boot_info);
+    if (pmm_a64_selftest() == 0)
+        pl011_puts("[pmm]  PASS: 64 distinct frames out and back, count restored\n");
+    else
+        pl011_puts("[pmm]  FAIL: frame allocator self-test\n");
+
+    paging_a64_init();
+    if (paging_a64_selftest() == 0)
+        pl011_puts("[vmm]  PASS: positive map cycle + three fault probes\n");
+    else
+        pl011_puts("[vmm]  FAIL: paging self-test\n");
+
+    /* The alignment probe's second world: the final tables attribute
+     * RAM Normal WB, so the load that faulted in a2_bringup must now
+     * SUCCEED -- the mirror gate.  (probe() returns -1 on survival,
+     * which is the PASS here.) */
+    if (trap_alignment_probe_a64() != 0)
+        pl011_puts("[vmm]  PASS: the same unaligned load SUCCEEDS on Normal WB (both polarities measured)\n");
+    else
+        pl011_puts("[vmm]  FAIL: unaligned load still faults on Normal memory\n");
+
+    kheap_a64_init();
+    if (kheap_a64_selftest() == 0)
+        pl011_puts("[heap] PASS: 64 alloc/free cycles, patterns intact, zero leak\n");
+    else
+        pl011_puts("[heap] FAIL: heap self-test\n");
 }
 
 void kmain_a64(uint64_t x0_at_entry)
@@ -284,9 +336,15 @@ void kmain_a64(uint64_t x0_at_entry)
     memmap_report();
     platform_report();
 
+    /* a2 first: the vector table must exist before a3's fault probes
+     * arm (a W^X probe with VBAR unset is a hang, not a test --
+     * measured on the first ordering attempt).  The timer keeps
+     * ticking straight through the table switch: the HHDM never
+     * moves, .text stays RX, and the GIC windows stay Device. */
     a2_bringup();
+    a3_bringup();
 
-    pl011_puts("[kernel] A2 complete; powering off via PSCI "
-               "(A3 adds TTBR1 paging, PMM, the heap)\n");
+    pl011_puts("[kernel] A3 complete; powering off via PSCI "
+               "(A4 adds threads, the scheduler, EL0)\n");
     psci_system_off();
 }

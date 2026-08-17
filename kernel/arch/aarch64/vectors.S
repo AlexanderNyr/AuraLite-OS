@@ -129,3 +129,46 @@ a64_trap_common:
     ldr   x30,      [sp, #240]
     ldp   x0,  x1,  [sp], #288      // close the frame last
     eret
+
+// ============================================================================
+// a64_setjmp / a64_longjmp_entry -- the A3 fault-probe mechanism (the
+// rv_setjmp pair, AAPCS64-flavoured; A4 will reuse it as the EL0
+// image's exit trampoline exactly as V4 reused rv_setjmp).
+//
+// A deliberate fault probe (store to .text, execute from data) cannot
+// be resumed by elr += 4: for execute-from-data, elr points INTO the
+// data buffer and the next word is as unexecutable as the first.  The
+// handler instead teleports back: a64_setjmp captures the callee-saved
+// world before the probe, and on an EXPECTED fault trap_a64.c rewrites
+// the frame so eret lands in a64_longjmp_entry with x0 = the buf --
+// which restores that world and "returns" 1 from a64_setjmp.
+//
+// buf layout: [0]=x30/lr [1]=sp [2..13]=x19..x29 pairs (14 quads, 112
+// bytes -- the same size as the rv buf; the callee-saved sets happen
+// to match 1:1).
+// ============================================================================
+.globl a64_setjmp
+a64_setjmp:
+    mov   x1, sp
+    stp   x30, x1,  [x0]
+    stp   x19, x20, [x0, #16]
+    stp   x21, x22, [x0, #32]
+    stp   x23, x24, [x0, #48]
+    stp   x25, x26, [x0, #64]
+    stp   x27, x28, [x0, #80]
+    str   x29,      [x0, #96]
+    mov   x0, #0
+    ret
+
+.globl a64_longjmp_entry
+a64_longjmp_entry:
+    ldp   x30, x1,  [x0]
+    mov   sp, x1
+    ldp   x19, x20, [x0, #16]
+    ldp   x21, x22, [x0, #32]
+    ldp   x23, x24, [x0, #48]
+    ldp   x25, x26, [x0, #64]
+    ldp   x27, x28, [x0, #80]
+    ldr   x29,      [x0, #96]
+    mov   x0, #1
+    ret

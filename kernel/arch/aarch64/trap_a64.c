@@ -56,6 +56,31 @@ static volatile int undef_seen;
 static volatile int expect_dabort;
 static volatile int dabort_seen;
 
+/* ---- the A3 fault-probe unwind (rv_setjmp's shape) ---------------------- */
+
+extern int  a64_setjmp(uint64_t *buf);          /* vectors.S */
+extern void a64_longjmp_entry(void);            /* vectors.S */
+
+static uint64_t probe_jmpbuf[14];
+static volatile int probe_armed;
+static volatile int64_t probe_ec1 = -1, probe_ec2 = -1;
+
+int trap_run_fault_probe_a64(int64_t ec1, int64_t ec2,
+                             void (*probe)(void *), void *arg)
+{
+    if (a64_setjmp(probe_jmpbuf)) {
+        /* Landed back from the handler: the expected fault happened. */
+        return 0;
+    }
+    probe_ec1   = ec1;
+    probe_ec2   = ec2;
+    probe_armed = 1;
+    probe(arg);
+    /* Probe returned without faulting: that is the failure. */
+    probe_armed = 0;
+    return -1;
+}
+
 /* ---- tiny output (pl011.c's helpers, kept local names to match
  * trap.c's puts_/put_hex reading rhythm) ---------------------------------- */
 
@@ -198,6 +223,25 @@ void a64_trap(a64_trap_frame_t *f)
         uint64_t esr = esr_read();
         uint32_t ec  = (uint32_t)(esr >> 26) & 0x3F;
 
+        /* The A3 fault probes: an EXPECTED W^X/identity fault unwinds
+         * to the probe's setjmp instead of resuming (elr += 4 cannot
+         * resume an execute-from-data fault -- elr IS the bad
+         * address).  The rv probe_armed path, EC-flavoured. */
+        if (probe_armed &&
+            ((int64_t)ec == probe_ec1 || (int64_t)ec == probe_ec2)) {
+            probe_armed = 0;
+            puts_("[isr] ");
+            puts_(ec_name(ec) ? ec_name(ec) : "fault");
+            puts_(" at elr=");
+            put_hex(f->elr);
+            puts_(" far=");
+            put_hex(far_read());
+            puts_(" -- expected (fault probe), unwinding\n");
+            f->elr     = (uint64_t)a64_longjmp_entry;
+            f->regs[0] = (uint64_t)probe_jmpbuf;
+            return;
+        }
+
         /* The deliberate-fault self-test: an expected undefined
          * instruction is named, then RESUMED PAST -- elr += 4 (the
          * probe word is a fixed-width all-zero encoding). */
@@ -275,6 +319,9 @@ int trap_alignment_probe_a64(void)
                      : "r"((uint8_t *)scratch + 1)
                      : "memory");
     (void)dummy;
+    expect_dabort = 0;   /* disarm: on Normal memory (post-A3) the load
+                          * SUCCEEDS and an armed expectation left behind
+                          * would swallow the next real Data Abort */
     return dabort_seen ? 0 : -1;
 }
 

@@ -146,7 +146,57 @@ def claims():
         ("A2: the alignment premise is probed, not trusted "
          "(-mstrict-align has a measured reason)",
          "trap_alignment_probe_a64" in trapc and
-         "unaligned load faulted" in smoke),
+         "alignment" in smoke),
+    ]
+
+    # --- A3: TTBR1 39-bit VA, PMM, heap -- W^X twice over ---
+    pagec = read("kernel", "arch", "aarch64", "paging_a64.c")
+    pageh = read("kernel", "arch", "aarch64", "paging_a64.h")
+    pmmc  = read("kernel", "arch", "aarch64", "pmm_a64.c")
+    ldscr = read("kernel", "arch", "aarch64", "kernela64.ld")
+    rvh   = read("kernel", "arch", "riscv64", "paging_rv.h")
+    checks += [
+        ("A3: the linker script is higher-half (HHDM VMA, physical LMA)",
+         "HHDM = 0xFFFFFFC000000000" in ldscr and "AT(ADDR(" in ldscr),
+        ("A3: boot.S turns the MMU on before any C runs, with the "
+         "barrier discipline",
+         "early_ttbr1" in boots and "msr   sctlr_el1, x1" in boots and
+         "dsb   ish" in boots),
+        ("A3/D3: HHDM_OFFSET equals riscv64's BY VALUE and the "
+         "arithmetic argument is written down",
+         "#define HHDM_OFFSET 0xFFFFFFC000000000UL" in pageh and
+         "#define HHDM_OFFSET 0xFFFFFFC000000000UL" in rvh and
+         "index 256" in pageh),
+        ("A3: MAIR has exactly the two planned indices and mappings "
+         "spell attributes through kinds, not raw bits",
+         "MAIR_IDX_DEVICE" in pageh and "MAIR_IDX_NORMAL" in pageh and
+         "A64_MAP_RW_DEVICE" in pagec),
+        ("A3: the TLB barrier discipline lives in ONE helper",
+         "tlb_flush_all" in pagec and
+         pagec.count("tlbi vmalle1") == 1),
+        ("A3: W^X twice over -- kernel text is UXN, nothing is W+X",
+         "PTE_UXN" in pagec and "PTE_PXN" in pagec and
+         "W^X holds twice over" in pagec),
+        ("A3: the identity window dies by BLANK TTBR0 (the register-"
+         "flavoured drop, argued in the file)",
+         "root_lo_empty" in pagec and "hand it a blank one" in pagec),
+        ("A3: the PMM is bitmap.h's fourth consumer, header unedited",
+         'include "kernel/lib/bitmap.h"' in pmmc and
+         "pmm_a64" not in read("kernel", "lib", "bitmap.h")),
+        ("A3: the fault probes unwind by setjmp (elr += 4 cannot "
+         "resume execute-from-data)",
+         "a64_setjmp" in vecs and "a64_longjmp_entry" in trapc and
+         "trap_run_fault_probe_a64" in pagec),
+        ("A3: the TCG mapped-Device alignment behaviour is pinned, "
+         "with the strict-align consequence named",
+         "strict-align stays" in read("kernel", "arch", "aarch64",
+                                      "main_a64.c") and
+         "not faulted by TCG" in smoke),
+        ("A3: the smoke gates pmm/vmm/heap and all three fault probes",
+         "store to .text faulted" in smoke and
+         "execute-from-data faulted" in smoke and
+         "identity window confirmed dropped" in smoke and
+         "64 alloc/free cycles" in smoke),
     ]
 
     # Structural: the Status header and the phase table must agree.

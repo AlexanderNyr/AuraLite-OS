@@ -1,13 +1,13 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A2 complete (phases A0–A9)
+## Status: IN PROGRESS 🚧 — A0–A3 complete (phases A0–A9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | A0 — toolchain gates + the EL1 stub | ✅ complete | `patches/A64_A0_boot.patch` |
 | A1 — `boot_info_t` from the Device Tree, walker promoted | ✅ complete | `patches/A64_A1_dtb.patch` |
 | A2 — exceptions, the generic timer, GICv2 | ✅ complete | `patches/A64_A2_traps.patch` |
-| A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over | pending | `patches/A64_A3_mm.patch` |
+| A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over | ✅ complete | `patches/A64_A3_mm.patch` |
 | A4 — threads, scheduler, EL0, `svc` | pending | `patches/A64_A4_proc.patch` |
 | A5 — userspace: libca64, init, the shared shell | pending | `patches/A64_A5_user.patch` |
 | A6 — the sweep, fourth backend: DAIF behind the contracts | pending | `patches/A64_A6_sweep.patch` |
@@ -603,7 +603,7 @@ the dispatch loop's exit condition instead. `check_arm64_claims` 27
 
 ---
 
-### Phase A3 — Memory: TTBR1 39-bit VA, PMM, heap — W^X twice over
+### Phase A3 — Memory: TTBR1 39-bit VA, PMM, heap — W^X twice over ✅ COMPLETE
 
 **Objective:** paging on with the Sv39-shaped geometry (D3), the same
 HHDM constant, PMM + kheap up, and both execute-never bits earning
@@ -611,24 +611,73 @@ their keep.
 
 #### Tasks
 
-- [ ] `paging_a64.c`: T0SZ=T1SZ=25, 4 KB granule; MAIR with exactly two
+- [x] `paging_a64.c`: T0SZ=T1SZ=25, 4 KB granule; MAIR with exactly two
       indices (Normal WB, Device-nGnRE) — Fact 5.2, with the virtio
       windows and GIC/PL011 mapped Device; early 1 GiB block window,
       then real tables; `TLBI vmalle1` + `dsb ish` + `isb` discipline
       (Fact 5.3) in one helper, not scattered.
-- [ ] `HHDM_OFFSET 0xFFFFFFC000000000` — same value as riscv64 *by
+- [x] `HHDM_OFFSET 0xFFFFFFC000000000` — same value as riscv64 *by
       TTBR1 arithmetic* (D3); the claim check asserts equality across
       the two headers and the explanatory comment.
-- [ ] PMM + kheap: the rv64 shape (`pmm_rv.c`/`kheap_rv.c` structure)
+- [x] PMM + kheap: the rv64 shape (`pmm_rv.c`/`kheap_rv.c` structure)
       ported; heap window placed clear of the HHDM.
-- [ ] W^X: kernel `.text` RX+PXN-clear, data RW+PXN+UXN, user pages
+- [x] W^X: kernel `.text` RX+PXN-clear, data RW+PXN+UXN, user pages
       UXN-from-kernel (Fact 5 bonus); the elfperm refusal gates return;
       a deliberate W+X mapping attempt is refused and the smoke asserts
       the refusal text.
-- [ ] `-mstrict-align` measured: either dropped post-MMU with a
+- [x] `-mstrict-align` measured: either dropped post-MMU with a
       comment citing the measurement, or kept with the cost measured
       and named (whichever the numbers say — decided by measurement,
       recorded in the phase result).
+
+#### Result
+
+Delivered as specified. The kernel boots through the high half from
+the first C instruction (boot.S: MAIR → TCR → early TTBR0/TTBR1
+gigapage roots → `SCTLR.M` behind `dsb ish; isb` → literal-pool jump),
+and the final tables land the full V3 gate set plus the UXN bonus:
+
+```
+[vmm]  TTBR1 final tables live: .text RX+UXN, .rodata R, data RW, HHDM Normal-WB; MMIO Device-nGnRE; TTBR0 blanked
+[vmm]  store to .text faulted (W^X write half)
+[vmm]  execute-from-data faulted (W^X execute half -- PXN earning its keep)
+[vmm]  identity window confirmed dropped (TTBR0 blank: low load faults)
+[pmm]  PASS  [heap] PASS  (bitmap.h's fourth consumer; the kheap window at the SAME VA as rv64's)
+```
+
+D3 held by computation: `HHDM_OFFSET` came out `0xFFFFFFC000000000`
+because T1SZ=25 puts a 512 GiB window at `0xFFFFFF8000000000` and the
+constant is 256 GiB in — level-1 index 256, the same index it hits in
+Sv39. The claim check asserts both headers carry the value AND the
+index-256 argument. The identity window died *differently* than Sv39
+— TTBR0 handed a blank root, one register write — and the file argues
+the difference instead of hiding it.
+
+Three measured facts this phase added:
+
+1. **The day-0 console becomes a page-fault generator the moment the
+   MMU turns on**: the first A3 boot hung silently because
+   `pl011.c`'s base was still physical — the banner's own printer was
+   the unmapped address. The base is HHDM-shaped now, with the
+   measurement in the comment.
+2. **Ordering: vectors before fault probes.** The first arrangement
+   ran a3 before a2; a W^X probe with VBAR unset is a hang, not a
+   test. `a2_bringup()` precedes `a3_bringup()` with the reason in
+   the call site — and the timer keeps ticking straight through the
+   table switch, which is its own small proof the switch is sound.
+3. **QEMU's TCG does not model alignment faults on *mapped* Device
+   memory.** Architecturally an unaligned access to Device-attributed
+   RAM faults; A2 measured the fault with the MMU off, but with the
+   early tables mapping RAM as Device, the same load sails through.
+   Both polarities are gated (Device-mapped: pinned as not-faulting
+   under TCG; Normal WB after the final tables: succeeds), and the
+   `-mstrict-align` decision follows FROM the gap: **the flag stays**,
+   precisely because real hardware may fault where TCG does not — the
+   compiler must not emit the access class the emulator under-models.
+   A QEMU behaviour change flips the pinned gate and names itself.
+
+`check_arm64_claims` 38 (+11), a64 smoke 35 assertions green, all
+other suites untouched and green.
 
 #### Test gate
 

@@ -1,32 +1,40 @@
 /*
  * kernel/arch/aarch64/kernela64.ld -- linker script for the aarch64
- * kernel (ARM64_PLAN A0).
+ * kernel (ARM64_PLAN A0; higher-half since A3).
  *
- * Link at 0x40200000: 2 MiB above the virt board's RAM base
- * (0x40000000, plan Fact 3) -- clear of the DTB that QEMU parks AT
- * the RAM base for ELF payloads (Fact 2.2, the plan's day-one trap).
- * The riscv64 kernel sits 2 MiB above ITS RAM base for the OpenSBI
- * shadow; here the tenant below us is the DTB, but the arithmetic is
- * the same and so is the constant's justification.
+ * A3 layout, kernelrv.ld's pattern at the same geometry:
  *
- * QEMU honours e_entry for ELF payloads on this machine -- unlike
- * OpenSBI, which cost V0 a debugging session by jumping to the
- * payload base.  .text.boot is placed first ANYWAY: "first byte of
- * the first segment" == "_start" is a fact all four kernels now hold
- * by construction, because it is free and because the V0 lesson says
- * entry-point indirection is exactly where silent garbage execution
- * is born.
+ *   .boot   VMA = LMA = 0x40200000 -- the physical-entry world.
+ *           2 MiB above the RAM base, clear of the DTB QEMU parks AT
+ *           the base (Fact 2.2).  _start runs here with the MMU off:
+ *           the EL1 check, SPSel, the early TTBR0/TTBR1 tables (also
+ *           in this section -- they must exist before any allocator),
+ *           MAIR/TCR/SCTLR, and the literal-pool jump high.
  *
- * A0 is identity-linked (VMA == LMA), the stub-then-grow shape V0
- * used: A3 moves the kernel to the higher half (TTBR1, the D3
- * geometry) the way V3 did.  PHDRS split R+X / R / R+W from day one
- * so A3's W^X mapping reads section bounds, not guesses -- and .boot
- * is honestly RWX in its ELF header, the pre-paging world.
+ *   everything else: VMA = HHDM + physical, LMA = physical (AT()).
+ *           The D3 direct-map constant 0xFFFFFFC000000000 makes
+ *           "kernel virtual address" and "HHDM view of its physical
+ *           address" the SAME number -- and on THIS arch the constant
+ *           falls out of TTBR1 arithmetic: T1SZ=25 gives a 512 GiB
+ *           TTBR1 window at 0xFFFFFF8000000000, and the HHDM sits
+ *           256 GiB in, at level-1 index 256 -- the same index the
+ *           same constant hits in Sv39.  Equal by computation, not
+ *           copy-paste (the claim check asserts both).
+ *
+ * PHDRS discipline: differently-permissioned segments never share a
+ * page, and from A3 on the permissions are real twice over -- AArch64
+ * PTEs carry AP read-only AND two execute-never bits (UXN/PXN), so
+ * paging_a64.c maps .text RX, .rodata R, .data/.bss RW from the
+ * section bounds exported here.  The .boot segment is honestly RWX in
+ * its ELF header: it is the pre-paging world, and the final tables
+ * leave it as plain HHDM RW frames.
  */
 
 OUTPUT_FORMAT(elf64-littleaarch64)
 OUTPUT_ARCH(aarch64)
 ENTRY(_start)
+
+HHDM = 0xFFFFFFC000000000;
 
 PHDRS
 {
@@ -44,34 +52,37 @@ SECTIONS
 
     .boot : {
         KEEP(*(.text.boot))     /* _start == first byte: the shared discipline */
+        *(.boot.data)           /* early TTBR0/TTBR1 roots */
     } :boot
 
     . = ALIGN(4096);
+    __boot_end_phys = .;
 
-    .text : {
+    /* The higher half: VMA up high, LMA continues physically. */
+    . = HHDM + __boot_end_phys;
+
+    .text : AT(ADDR(.text) - HHDM) {
         __text_start = .;
         *(.text .text.*)
+        . = ALIGN(4096);
         __text_end = .;
     } :text
 
-    . = ALIGN(4096);
-
-    .rodata : {
+    .rodata : AT(ADDR(.rodata) - HHDM) {
         __rodata_start = .;
         *(.rodata .rodata.*)
+        . = ALIGN(4096);
         __rodata_end = .;
     } :rodata
 
-    . = ALIGN(4096);
-
-    .data : {
+    .data : AT(ADDR(.data) - HHDM) {
         __data_start = .;
         *(.data .data.*)
     } :data
 
     . = ALIGN(16);
 
-    .bss : {
+    .bss : AT(ADDR(.bss) - HHDM) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
@@ -80,7 +91,8 @@ SECTIONS
     } :data
 
     . = ALIGN(4096);
-    __kernel_end = .;
+    __kernel_end_virt = .;
+    __kernel_end = __kernel_end_virt - HHDM;    /* physical, for the pool */
 
     /DISCARD/ : {
         *(.comment)

@@ -35,6 +35,14 @@ int trap_selftest_a64(void);
  * -mstrict-align world model is wrong and A3 must find out why. */
 int trap_alignment_probe_a64(void);
 
+/* A3 fault probes: run probe(arg) expecting ESR EC ec1 or ec2.
+ * Returns 0 if the expected fault happened (control unwinds back via
+ * a setjmp in vectors.S), -1 if the probe survived unfaulted.  Two
+ * ECs because aborts report same-EL/lower-EL as different classes;
+ * the A3 probes pass the same value twice. */
+int trap_run_fault_probe_a64(int64_t ec1, int64_t ec2,
+                             void (*probe)(void *), void *arg);
+
 /* Jitter events collected so far (timer-trap CNTVCT deltas -- the
  * same N0 fallback-entropy shape the riscv64 port feeds). */
 uint64_t trap_jitter_events_a64(void);

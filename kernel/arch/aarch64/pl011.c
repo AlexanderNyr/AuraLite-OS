@@ -16,7 +16,14 @@
 
 #include "kernel/arch/aarch64/pl011.h"
 
-#define PL011_BASE 0x09000000UL
+/* HHDM view since A3: the kernel runs higher-half with TTBR0 dropped
+ * after paging_a64_init, and the early TTBR1 window already covers
+ * PA 0..4G -- so the UART is reachable at HHDM+0x09000000 from the
+ * first higher-half instruction, and a bare physical 0x09000000
+ * would fault the moment the MMU turns on (measured: the first A3
+ * boot hung exactly there, silently -- the banner's own printer was
+ * the unmapped address). */
+#define PL011_BASE (0xFFFFFFC000000000UL + 0x09000000UL)
 
 #define PL011_DR   0x00u
 #define PL011_FR   0x18u

@@ -2,6 +2,45 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over] 2026-08-17
+
+`ARM64_PLAN.md` phase A3: the fourth kernel lives in the higher half
+with real page permissions, a frame allocator, and a heap. The D3 bet
+paid out: the same HHDM constant as riscv64, by TTBR1 arithmetic.
+
+- **boot.S turns the MMU on before any C runs** — MAIR (two indices:
+  Device-nGnRnE, Normal WB), TCR T0SZ=T1SZ=25 (39-bit VA both halves,
+  the Sv39 geometry by choice), assembly-time gigapage roots into
+  TTBR0 (identity, to survive the enable) and TTBR1 (the HHDM),
+  `SCTLR.M` behind `dsb ish; isb`, literal-pool jump high. The
+  kernel never runs low again.
+- **`paging_a64.c`**: three-level walk, paging_rv.c's structure move
+  for move; attributes spelled through kind bundles (callers cannot
+  get a MAIR bit wrong); the TLBI+dsb+isb discipline in ONE helper;
+  .text RX+**UXN**, .rodata/data XN both ways — W^X twice over, no
+  descriptor W+X at any EL. The identity window dies by BLANK TTBR0
+  (one register write — the file argues the difference from Sv39's
+  dropped entry). Fault probes unwind by `a64_setjmp` (elr+=4 cannot
+  resume execute-from-data), vectors.S carries the pair.
+- **`pmm_a64.c`**: bitmap.h's FOURTH consumer, header unedited.
+  **`kheap_a64.c`**: kheap_rv's design at the SAME VA window
+  (0xffffffe000000000) — the two kernels' VA maps are one map.
+- **Three measured facts**: (1) the day-0 PL011 base becomes a
+  page-fault generator at MMU-on — first A3 boot hung silently, the
+  banner's own printer was the unmapped address; base is HHDM-shaped
+  with the measurement in the comment. (2) vectors before fault
+  probes — a W^X probe with VBAR unset is a hang, not a test; the
+  a2-before-a3 ordering carries the reason. (3) **QEMU TCG does not
+  model alignment faults on MAPPED Device memory** (the pre-MMU
+  fault was measured in A2; the mapped-Device non-fault is pinned as
+  a gate) — and `-mstrict-align` STAYS because real hardware may
+  fault where TCG does not.
+- Gates: pmm/vmm/heap self-tests, three fault probes (store-to-text,
+  execute-from-data, low-half load), both alignment polarities, all
+  in one boot; a64 smoke 35 assertions; `check_arm64_claims` 38
+  (+11, incl. the HHDM-equality-with-argument claim); all other
+  suites green.
+
 ## [A64 A2 — exceptions, the generic timer, GICv2] 2026-08-17
 
 `ARM64_PLAN.md` phase A2: the fourth kernel takes traps with names,

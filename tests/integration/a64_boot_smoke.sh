@@ -92,19 +92,31 @@ assert_grep "$LOG" "x0 at entry: 0x0000000000000000"               "x0 is 0, not
 assert_grep "$LOG" "DTB probe at RAM base 0x0000000040000000: magic 0x00000000D00DFEED OK" \
                                                                    "DTB magic found at the RAM base (Fact 2.2)"
 assert_grep "$LOG" "CNTFRQ_EL0: 62500000 Hz"                       "timer frequency read from the register (Fact 2.3)"
-assert_grep "$LOG" "A2 complete; powering off via PSCI"            "reached the healthy end of the phase"
+assert_grep "$LOG" "A3 complete; powering off via PSCI"            "reached the healthy end of the phase"
 
 # ---- A2: vectors, timer, GIC ----
 assert_grep "$LOG" "\[isr\]  VBAR_EL1 installed"                    "vector table live (16 x 128, SPSel=1 -- the measured A2 fact)"
-assert_grep "$LOG" "Unknown/Undefined instruction at elr=0x"        "deliberate fault NAMED with elr (EC decode)"
+assert_grep "$LOG" "Unknown/Undefined instruction at elr=0xFFFFFFC0" \
+                                                                   "deliberate fault NAMED with elr -- and the elr is HIGHER-HALF (link/boot agree)"
 assert_grep "$LOG" "\[isr\]  PASS: undefined instruction named and resumed" \
                                                                    "fault RESUMED past (isr gate)"
-assert_grep "$LOG" "Data Abort, same EL at elr=0x"                  "unaligned load faulted with EC-decoded Data Abort (Fact 5.1 pinned)"
-assert_grep "$LOG" "\[isr\]  PASS: unaligned load faulted"          "alignment world-model probe (the -mstrict-align premise)"
+assert_grep "$LOG" "unaligned load on MAPPED Device RAM not faulted by TCG" \
+                                                                   "TCG's mapped-Device alignment behaviour pinned (A3 measured fact)"
 assert_grep "$LOG" "\[timer\] PASS: [0-9]* ticks observed at 100 Hz" \
                                                                    "virtual timer ticks at 100 Hz from CNTFRQ_EL0 (INTID 27 = PPI 11 + 16)"
 assert_grep "$LOG" "\[gic\]  PASS: claim/complete round-trip"       "GICv2 IAR/EOIR flow tracks the ticks"
 assert_grep "$LOG" "\[rng\]  jitter events collected: [1-9]"        "jitter pool fed from timer traps (the N0 shape)"
+
+# ---- A3: TTBR1 paging, PMM, heap, W^X twice over ----
+assert_grep "$LOG" "\[pmm\]  PASS: 64 distinct frames"              "PMM self-test (bitmap.h's fourth consumer)"
+assert_grep "$LOG" "TTBR1 final tables live"                        "final tables switched (Normal WB RAM, Device MMIO, TTBR0 blanked)"
+assert_grep "$LOG" "W^X holds twice over"                           "no descriptor W+X at any EL; UXN on every kernel page"
+assert_grep "$LOG" "map / write / alias-read / unmap correct"       "positive 4 KiB map cycle through the HHDM alias"
+assert_grep "$LOG" "store to .text faulted"                         "W^X write half (Data Abort, unwound by setjmp)"
+assert_grep "$LOG" "execute-from-data faulted"                      "W^X execute half (Instruction Abort -- PXN earning its keep)"
+assert_grep "$LOG" "identity window confirmed dropped"              "TTBR0 blank: the low half faults (the V3 identity gate, register-flavoured)"
+assert_grep "$LOG" "unaligned load SUCCEEDS on Normal WB"           "alignment mirror gate: both polarities measured in one boot"
+assert_grep "$LOG" "\[heap\] PASS: 64 alloc/free cycles"            "heap self-test (kheap window, committed on demand)"
 
 # PSCI power-off, not the timeout: the run must end well inside the
 # 30 s budget (generous bound; a hang eats all 30).
