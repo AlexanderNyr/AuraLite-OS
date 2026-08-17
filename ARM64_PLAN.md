@@ -1,11 +1,11 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0 complete (phases A0–A9)
+## Status: IN PROGRESS 🚧 — A0–A1 complete (phases A0–A9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | A0 — toolchain gates + the EL1 stub | ✅ complete | `patches/A64_A0_boot.patch` |
-| A1 — `boot_info_t` from the Device Tree, walker promoted | pending | `patches/A64_A1_dtb.patch` |
+| A1 — `boot_info_t` from the Device Tree, walker promoted | ✅ complete | `patches/A64_A1_dtb.patch` |
 | A2 — exceptions, the generic timer, GICv2 | pending | `patches/A64_A2_traps.patch` |
 | A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over | pending | `patches/A64_A3_mm.patch` |
 | A4 — threads, scheduler, EL0, `svc` | pending | `patches/A64_A4_proc.patch` |
@@ -423,33 +423,90 @@ pre-existing gates re-ran green after the fix.
 
 ---
 
-### Phase A1 — `boot_info_t` from the Device Tree, the walker promoted
+### Phase A1 — `boot_info_t` from the Device Tree, the walker promoted ✅ COMPLETE
 
 **Objective:** the DTB at the RAM base becomes a populated
 `boot_info_t`, through a *shared* walker.
 
 #### Tasks
 
-- [ ] Promote `kernel/arch/riscv64/fdt.c` → `kernel/dt/fdt.c` (Fact 6):
+- [x] Promote `kernel/arch/riscv64/fdt.c` → `kernel/dt/fdt.c` (Fact 6):
       the walker's 7 riscv references become a two-function arch hook
       (phys-to-virt for the early window; nothing else). The riscv64
       kernel consumes the shared object **in this same patch** — the
       claim check asserts both kernels link `kernel/dt/fdt.o`, so the
       promotion cannot silently bitrot into two copies.
-- [ ] aarch64 consumers: memory from `memory@40000000`, the PL011
+- [x] aarch64 consumers: memory from `memory@40000000`, the PL011
       `reg`, the GICD/GICC pair from `intc@8000000`, the 32 virtio
       windows, the PSCI method string (assert `"hvc"` — a `"smc"`
       board would need one instruction changed, and the assert names
       it), `/chosen` for initrd start/end when `-initrd` is present.
-- [ ] **Interrupt-cell normalisation, once, centrally** (Fact 3): the
+- [x] **Interrupt-cell normalisation, once, centrally** (Fact 3): the
       walker's aarch64 consumer converts `<GIC_SPI n>` to INTID n+32
       and `<GIC_PPI n>` to INTID n+16 at parse time; drivers see final
       INTIDs only. A comment names the off-by-32 as the bug class
       being prevented.
-- [ ] `rv_boot_smoke.sh` re-run green with the shared walker (the
+- [x] `rv_boot_smoke.sh` re-run green with the shared walker (the
       promotion's non-regression gate); `a64_boot_smoke.sh` grows
       boot_info assertions (RAM size, UART base, INTID for SPI 1 = 33
       printed and checked).
+
+#### Result
+
+Delivered as specified — the promotion held, and it caught exactly the
+kind of bug the plan's thesis predicted it would. Measured boot:
+
+```
+[boot] handoff magic OK, path=PSCI, boot_info filled from DTB
+[mm]   mmap entries: 3, usable RAM: 256 MiB
+[hw]   cpus: 1 (boot cpu 0)
+[hw]   uart: 0x0000000009000000 irq 33 (INTID, normalised)
+[hw]   gicd: 0x0000000008000000 gicc: 0x0000000008010000
+[hw]   virtio-mmio windows: 32 (irq 48..79)
+[hw]   psci: method hvc (matches psci.c's conduit)
+```
+
+**The promotion flushed out a riscv-shaped assumption, as designed.**
+The walker tracked the current device node in scalars (`cur_dev`,
+`cur_reg`); the aarch64 GIC node carries a `v2m@8020000` *child*, so
+the child's `END_NODE` wiped the parent's state before the parent's
+own exit could pair reg with compatible — first A1 boot printed
+`gicd: 0x0`. The riscv virt tree has no device nodes with children,
+so the scalar design passed every V1 gate for the port's whole life.
+Fixed with per-depth state (`ndev[depth]`), lesson recorded in the
+walker's comment. This is the plan's argument for promotion over
+forking made concrete: a fork would have hidden the assumption
+forever; the second consumer *was* the test.
+
+Two more facts measured and pinned:
+
+- **QEMU does not load `-initrd` for ELF payloads on this board** —
+  no `/chosen` initrd properties (dumpdtb) AND the payload bytes
+  absent from RAM (scanned). Same family as the x0-is-not-the-DTB
+  fact: the initrd machinery activates on the Linux-`Image` path
+  only. Measured on a raw-Image probe: there `/chosen` gets both
+  properties and `x0` carries the DTB. The smoke *pins* the ELF
+  behaviour (`initrd: none` asserted with `-initrd` passed); A5 owns
+  the exit ramp — the initrd-carrying boots will need a raw-Image
+  packaging step (`llvm-objcopy -O binary` + the 64-byte header),
+  which also un-defers the x0 path. The walker's `/chosen` code is
+  real and the riscv64 suite exercises it every push.
+- **The interrupt normalisation deferral matters**: `intc_kind` is
+  discovered from the GIC node, which the walk may meet *after* the
+  devices (it does on the aarch64 tree — the UART sits before the
+  intc). Raw `interrupts` properties are therefore remembered
+  per-device and normalised at `done:`, when the controller kind is
+  settled. INTIDs measured: UART SPI 1 → 33, virtio SPIs 16–47 →
+  48..79, exactly the plan's Fact 3 arithmetic.
+
+One ratchet payment: the promotion makes `kernel/dt/fdt.c` portable
+code, so ratchet 1 started counting its single `(uint64_t)` cast
+(359 → 360). Paid by widening through assignment in `be64()` —
+baseline restored, and the walker now plays by the same rules as the
+rest of kernel/. `check_riscv_claims` grew the single-object claim
+(60 total), `check_arm64_claims` grew 7 A1 claims (18 total), and
+both kernels' smokes run green on the one walker: 20/20 (a64, +10
+over A0) and the full rv suite untouched.
 
 #### Test gate
 

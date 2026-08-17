@@ -76,6 +76,41 @@ def claims():
          "check_arm64_claims.py" in makefl),
     ]
 
+    # --- A1: boot_info_t from the Device Tree, the walker promoted ---
+    fdt_c  = read("kernel", "dt", "fdt.c")
+    fdt_h  = read("kernel", "dt", "fdt.h")
+    checks += [
+        ("A1: the walker lives in kernel/dt/ and the riscv copy is GONE",
+         exists("kernel", "dt", "fdt.c") and
+         not exists("kernel", "arch", "riscv64", "fdt.c") and
+         not exists("kernel", "arch", "riscv64", "fdt.h")),
+        ("A1: BOTH kernels compile the shared walker (single-object "
+         "promotion, not a fork)",
+         "KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c"
+         in makefl and
+         "KERNELA64_SHARED := kernel/dt/fdt.c" in makefl),
+        ("A1: interrupt normalisation is central -- SPI+32/PPI+16 in "
+         "the walker, never in a driver",
+         "nr + 32" in fdt_c and "nr + 16" in fdt_c and
+         "NORMALISED" in fdt_h),
+        ("A1: the per-depth device-state lesson is recorded (the GIC's "
+         "v2m child wiped the scalar)",
+         "v2m" in fdt_c and "Per-DEPTH, not per-walk" in fdt_c and
+         "ndev[depth]" in fdt_c),
+        ("A1: the PSCI conduit is asserted against the tree, not assumed",
+         "psci_method" in fdt_h and
+         "FDT_PSCI_HVC" in read("kernel", "arch", "aarch64", "main_a64.c")),
+        ("A1: both arches define the dt_phys_to_virt contract",
+         "dt_phys_to_virt" in read("kernel", "arch", "riscv64",
+                                   "main_rv.c") and
+         "dt_phys_to_virt" in read("kernel", "arch", "aarch64",
+                                   "main_a64.c")),
+        ("A1: the smoke asserts normalised INTIDs and the shared-walker "
+         "boot_info lines",
+         "irq 33" in smoke and "virtio-mmio windows: 32" in smoke and
+         "handoff magic OK" in smoke),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # Installed in A0, before a single row is green -- the D8 shape.
     done_rows = len(re.findall(r"^\| A\d .*?✅ complete", plan, re.M))

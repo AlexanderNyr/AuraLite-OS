@@ -63,13 +63,25 @@ def claims():
     ]
 
     # --- V1: boot_info_t from the Device Tree ---
-    fdt   = read("kernel", "arch", "riscv64", "fdt.c")
+    # ARM64_PLAN A1 promoted the walker to kernel/dt/fdt.c (shared by
+    # both DTB-consuming kernels); the V1 claims now check the shared
+    # file -- the artefact moved, the contract did not -- plus one new
+    # claim that the rv64 kernel really consumes the shared copy (a
+    # promotion that forked would pass file-existence checks and still
+    # be a lie).
+    fdt   = read("kernel", "dt", "fdt.c")
     sweep = read("tests", "unit", "test_width_sweep.sh")
     smoke = read("tests", "integration", "rv_boot_smoke.sh")
     checks += [
-        ("V1: the FDT shim exists and reads big-endian only",
-         exists("kernel", "arch", "riscv64", "fdt.c") and
+        ("V1: the FDT shim exists (shared, post-A1) and reads "
+         "big-endian only",
+         exists("kernel", "dt", "fdt.c") and
+         not exists("kernel", "arch", "riscv64", "fdt.c") and
          "be32" in fdt and "be64" in fdt),
+        ("V1/A1: the rv64 kernel links the SHARED walker",
+         "kernel/dt/fdt.c" in makefl and
+         '#include "kernel/dt/fdt.h"'
+         in read("kernel", "arch", "riscv64", "main_rv.c")),
         ("V1: magic is written LAST (the partially-filled rule)",
          # the assignment must be the file's final act before return 0
          "bi->magic = BOOT_MAGIC" in fdt and

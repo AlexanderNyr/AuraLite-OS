@@ -3,7 +3,7 @@
 #ifndef AURALITE_ARCH_RISCV64_VNET_RV_H
 #define AURALITE_ARCH_RISCV64_VNET_RV_H
 
-#include "kernel/arch/riscv64/fdt.h"
+#include "kernel/dt/fdt.h"
 
 /* Probe the DTB windows for a net device.  0 = found and ready. */
 int vnet_rv_init(const fdt_platform_t *plat);

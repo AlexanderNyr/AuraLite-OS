@@ -97,6 +97,26 @@ boot_puts:
 refusal_msg:
     .asciz "AuraLite aarch64: CurrentEL != EL1; refusing to boot (ARM64_PLAN D1).\n"
 
+// Physical layout, exported as data: contract 2 of the shared DTB
+// walker (kernel/dt/fdt.h) -- fdt_parse marks [kernel_layout[0],
+// kernel_layout[7]) as BOOT_MEM_KERNEL so the allocator never hands
+// out the image's own pages.  The pool shape (not bare externs) is
+// riscv64's: medany C there cannot address absolute low symbols
+// across the HHDM gap, so the CONTRACT is a data pool on every arch
+// -- one walker, one access pattern, no per-arch #ifdef in shared
+// code.  Slots [1..6] serve A3's paging the way V3 used them.
+.align 3
+.globl kernel_layout
+kernel_layout:
+    .quad __kernel_start          // [0] image start, PHYS
+    .quad __kernel_start          // [1] (A3 fills the boot/text split)
+    .quad __text_start            // [2] .text start
+    .quad __text_end              // [3]
+    .quad __rodata_start          // [4]
+    .quad __rodata_end            // [5]
+    .quad __data_start            // [6] .data start
+    .quad __kernel_end            // [7] image end, PHYS
+
 .section .bss
 .align 16
 boot_stack_bottom:

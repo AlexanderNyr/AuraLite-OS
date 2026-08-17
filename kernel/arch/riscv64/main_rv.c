@@ -15,7 +15,7 @@
 #include <stdint.h>
 
 #include "boot/shared/boot_info.h"
-#include "kernel/arch/riscv64/fdt.h"
+#include "kernel/dt/fdt.h"
 #include "kernel/arch/riscv64/initrd_rv.h"
 #include "kernel/arch/riscv64/kheap_rv.h"
 #include "kernel/arch/riscv64/paging_rv.h"
@@ -33,6 +33,18 @@
  * ~9 KiB is too big for the V0 stack and there is no allocator yet. */
 static boot_info_t    boot_info;
 static fdt_platform_t platform;
+
+/* Contract 1 of the shared walker (kernel/dt/fdt.h, promoted in
+ * ARM64_PLAN A1): how a physical DTB address becomes a pointer is
+ * this arch's business.  Here: the HHDM -- boot.S turned Sv39 on
+ * before any C ran, so physical pointers no longer dereference bare.
+ * (This is the exact comment that sat inside fdt_parse when the
+ * walker was arch-private; the promotion moved the POLICY out of the
+ * shared file and left the MECHANISM here, where satp lives.) */
+const void *dt_phys_to_virt(uint64_t phys)
+{
+    return p2v_rv(phys);
+}
 
 /* ---- tiny formatting (kprintf32's opening subset; the shared
  * kprintf arrives with the V6 sweep's console work) ---- */

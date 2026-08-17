@@ -50,7 +50,12 @@ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 # The linker script fixes the higher-half address; no --image-base needed.
 LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
 
-KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*') w32/src/w32_pe.c
+# A1 (ARM64_PLAN): kernel/dt/ is excluded too -- the shared DTB walker
+# belongs to the DTB-consuming kernels (riscv64, aarch64), which list
+# it explicitly in their KERNEL*_SHARED variables.  x86 has no DTB and
+# no dt_phys_to_virt definition; the A0 lesson (this find IS the
+# shared build logic) caught its second victim here, at link time.
+KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*' -not -path 'kernel/dt/*') w32/src/w32_pe.c
 # WIN32_PLAN.md W32-3: the kernel PE loader calls the same parser the host
 # unit test and fuzz corpus exercise (D2 -- one implementation, tested once).
 # w32/src/ is freestanding C with no libc dependency, so it compiles with the
@@ -197,12 +202,16 @@ KERNELRV_DIR  := kernel/arch/riscv64
 # V7: kernel/net/miniproto.c is the SHARED bring-up protocol file --
 # the second consumer (net32.c is the first); the whole point of the
 # lift is that both NICs prove the same packets.
-KERNELRV_SHARED := kernel/net/miniproto.c
+# A1 (ARM64_PLAN): kernel/dt/fdt.c is the SHARED DTB walker, promoted
+# out of kernel/arch/riscv64/ -- both DTB-consuming kernels compile
+# this one file, and the claim checkers assert it (a promotion that
+# forked would be worse than no promotion).
+KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c
 KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null) $(KERNELRV_SHARED)
 KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
 KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
                  $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))
-KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h
+KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h
 CFLAGSRV      := --target=riscv64 -march=rv64gc -mabi=lp64d \
                  -mcmodel=medany -mno-relax \
                  -std=c11 -ffreestanding -fno-stack-protector \
@@ -253,11 +262,14 @@ run-rv: kernelrv
 # =============================================================================
 KERNELA64_ELF  := $(BUILD_DIR)/kernela64.elf
 KERNELA64_DIR  := kernel/arch/aarch64
-KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null)
+# A1: the shared DTB walker -- the same object list entry the rv64
+# kernel carries; both consumers, one file (the promotion's whole point).
+KERNELA64_SHARED := kernel/dt/fdt.c
+KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null) $(KERNELA64_SHARED)
 KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
 KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
                   $(patsubst %.S,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_ASMS))
-KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null)
+KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h
 CFLAGSA64      := --target=aarch64-unknown-none-elf \
                   -mstrict-align -mgeneral-regs-only \
                   -std=c11 -ffreestanding -fno-stack-protector \

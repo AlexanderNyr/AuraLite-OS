@@ -1,13 +1,14 @@
-/* kernel/arch/riscv64/fdt.c -- minimal FDT parser (RISCV_PLAN V1).
+/* kernel/dt/fdt.c -- minimal FDT parser (RISCV_PLAN V1; promoted from
+ * kernel/arch/riscv64/ in ARM64_PLAN A1 -- see fdt.h for the terms).
  *
  * THE BYTE-ORDER FILE.  Everything in a flattened device tree --
  * header fields, token stream, property values -- is stored
  * BIG-endian, on a little-endian CPU, in a little-endian kernel.
- * This is the one place on the port where byte order bites (plan
- * risk list; V0 already proved the magic reads 0xD00DFEED only
- * through be32).  Every multi-byte read in this file goes through
- * be32()/be64() below; a bare load of DTB memory anywhere in this
- * file is a bug by definition.
+ * This is the one place on either port where byte order bites (V0
+ * already proved the magic reads 0xD00DFEED only through be32).
+ * Every multi-byte read in this file goes through be32()/be64()
+ * below; a bare load of DTB memory anywhere in this file is a bug by
+ * definition.
  *
  * Structure of a DTB (devicetree spec v0.4, chapter 5):
  *
@@ -19,15 +20,14 @@
  *
  * The walk is single-pass and bounds-checked against totalsize: a
  * malformed tree returns FDT_ERR_*, it never reads outside
- * [dtb, dtb+totalsize).  QEMU's tree is trusted in practice but the
- * parser doesn't know that -- V7 wants to reuse it on trees from
- * boards we have never seen.
+ * [dtb, dtb+totalsize).  QEMU's trees are trusted in practice but the
+ * parser doesn't know that -- it now walks two different boards'
+ * trees and wants to walk trees from boards we have never seen.
  */
 
 #include <stdint.h>
 
-#include "kernel/arch/riscv64/fdt.h"
-#include "kernel/arch/riscv64/paging_rv.h"
+#include "kernel/dt/fdt.h"
 
 /* ---- big-endian reads (the whole point of this file) ------------------- */
 
@@ -39,7 +39,14 @@ static uint32_t be32(const uint8_t *p)
 
 static uint64_t be64(const uint8_t *p)
 {
-    return ((uint64_t)be32(p) << 32) | be32(p + 4);
+    /* Widen by assignment, not by cast: this file is portable code
+     * now (ratchet 1 counts it since the A1 promotion), and the
+     * ratchet's rule -- casts are for addresses via paddr_t/uintptr_t,
+     * widths widen implicitly -- applies to the walker like anything
+     * else in kernel/. */
+    uint64_t hi = be32(p);
+
+    return (hi << 32) | be32(p + 4);
 }
 
 /* ---- tokens and header layout (spec names, spec values) ---------------- */
@@ -59,6 +66,10 @@ static uint64_t be64(const uint8_t *p)
 #define H_OFF_RSVMAP    16
 #define H_VERSION       20
 #define H_LAST_COMP     24
+
+/* GIC `interrupts` cell 0 (the type) -- devicetree GIC binding. */
+#define GIC_CELL_SPI 0u
+#define GIC_CELL_PPI 1u
 
 /* ---- tiny string helpers (no libc in the kernel) ------------------------ */
 
@@ -92,6 +103,31 @@ static int compat_has(const char *list, uint32_t len, const char *want)
     return 0;
 }
 
+/* ---- interrupt normalisation (ARM64_PLAN A1) -----------------------------
+ *
+ * Drivers see FINAL interrupt numbers only; the off-by-32 lives and
+ * dies in this one function.  PLIC trees: `interrupts` is one raw
+ * cell, already final.  GIC trees: 3 cells <type nr flags>, and the
+ * hardware INTID is nr+32 for SPIs, nr+16 for PPIs -- the DTB counts
+ * within each type's own space, the GICD registers count from 0
+ * across all of them.  A driver that adds 32 itself is the bug class
+ * this function exists to prevent. */
+static uint32_t irq_normalise(uint32_t intc_kind,
+                              const uint8_t *val, uint32_t len)
+{
+    if (intc_kind == FDT_INTC_GIC && len >= 12) {
+        uint32_t type = be32(val), nr = be32(val + 4);
+        if (type == GIC_CELL_SPI)
+            return nr + 32;
+        if (type == GIC_CELL_PPI)
+            return nr + 16;
+        return nr;                        /* extended/other: raw */
+    }
+    if (len >= 4)
+        return be32(val);                 /* PLIC: one raw cell */
+    return 0;
+}
+
 /* ---- mmap helpers ------------------------------------------------------- */
 
 static void mmap_add(boot_info_t *bi, uint64_t base, uint64_t len,
@@ -108,18 +144,24 @@ static void mmap_add(boot_info_t *bi, uint64_t base, uint64_t len,
 
 /* ---- the walk ------------------------------------------------------------
  *
- * State machine over nesting depth.  The tree shape on riscv (virt and
- * real boards alike):
+ * State machine over nesting depth.  The tree shapes this walker has
+ * actually met (riscv virt / aarch64 virt; structure is the spec's,
+ * only the leaves differ):
  *
  *   /                     -- #address-cells / #size-cells for its children
  *     chosen              -- bootargs, linux,initrd-{start,end}
  *     memory@X            -- device_type "memory", reg = RAM banks
  *     reserved-memory     -- children's reg = firmware carve-outs
  *     cpus                -- children cpu@N, device_type "cpu"
- *     soc                 -- #address-cells/#size-cells for ITS children,
+ *     psci                -- method "hvc"/"smc" (aarch64)
+ *     soc                 -- riscv: #cells for ITS children
  *       uart@X            --   compatible "ns16550a"
- *       plic@X            --   compatible "riscv,plic0" / "sifive,plic-1.0.0"
+ *       plic@X            --   compatible "riscv,plic0"/"sifive,plic-1.0.0"
  *       virtio_mmio@X     --   compatible "virtio,mmio"
+ *     pl011@X             -- aarch64: compatible "arm,pl011" (at depth 1;
+ *     intc@X              --   the virt board has no soc wrapper --
+ *     virtio_mmio@X       --   the depth-1/depth-2 split is why device
+ *                              matching is depth-independent below)
  *
  * reg parsing needs the PARENT's cell counts, so the walk keeps a
  * small per-depth stack of them (default 2/1 per spec s.2.3.5 when a
@@ -131,12 +173,12 @@ static void mmap_add(boot_info_t *bi, uint64_t base, uint64_t len,
 int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
               boot_info_t *bi, fdt_platform_t *plat)
 {
-    /* V3: boot.S turned Sv39 on before any C ran, so physical
-     * pointers no longer dereference bare -- the DTB is read through
-     * the HHDM.  (The early identity gigapage would still carry a
-     * bare read TODAY, but paging_rv_init drops it, and bootargs --
-     * which points into this buffer -- outlives that drop.) */
-    const uint8_t *dtb = (const uint8_t *)p2v_rv(dtb_phys);
+    /* How a physical DTB address becomes a pointer is the consuming
+     * arch's business (riscv64: HHDM -- boot.S turned Sv39 on before
+     * any C ran; aarch64 A1: identity, MMU off until A3): contract 1
+     * in fdt.h.  bootargs points into this buffer and outlives the
+     * call, so the arch must keep the mapping alive. */
+    const uint8_t *dtb = (const uint8_t *)dt_phys_to_virt(dtb_phys);
 
     /* -- header ---------------------------------------------------- */
     if (be32(dtb + H_MAGIC) != FDT_MAGIC_V)
@@ -177,14 +219,42 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
 
     /* What kind of node the walk is inside, tracked by depth. */
     int in_chosen = -1, in_memory = -1, in_resv = -1, in_cpus = -1;
+    int in_psci = -1;
     int node_is_cpu = 0;
 
-    /* reg of the CURRENT node, decoded lazily once compatible is seen
-     * (PROP order in a node is not guaranteed; remember both). */
+    /* reg of the current node, decoded lazily once compatible is seen
+     * (PROP order in a node is not guaranteed; remember both).  The
+     * SAME deferral applies to `interrupts`: normalisation needs
+     * intc_kind, which may be discovered after the device node --
+     * so the RAW property is remembered per device and normalised at
+     * `done:`, when the controller kind is settled.
+     *
+     * Per-DEPTH, not per-walk: a device node can have children (the
+     * aarch64 GIC carries a v2m@ child), and a single cur_dev would
+     * be wiped by the child's END_NODE before the parent's own
+     * END_NODE pairs reg with compatible.  Measured on the first A1
+     * boot -- gicd came out 0 -- and exactly the kind of riscv-shaped
+     * assumption the promotion exists to flush out: the riscv virt
+     * tree has no device nodes with children, so a single scalar
+     * passed V1's gates for a year. */
+    enum dev_kind { DEV_NONE, DEV_UART, DEV_PLIC, DEV_GIC, DEV_VIRTIO };
     uint64_t cur_reg_base = 0;
-    const uint8_t *cur_reg = 0;
-    uint32_t cur_irq = 0;                /* first cell of `interrupts` */
-    enum { DEV_NONE, DEV_UART, DEV_PLIC, DEV_VIRTIO } cur_dev = DEV_NONE;
+    const uint8_t *nreg[MAX_DEPTH];
+    const uint8_t *nirq_raw[MAX_DEPTH];
+    uint32_t nirq_len[MAX_DEPTH];
+    enum dev_kind ndev[MAX_DEPTH];
+    for (int i = 0; i < MAX_DEPTH; i++) {
+        nreg[i] = 0; nirq_raw[i] = 0; nirq_len[i] = 0; ndev[i] = DEV_NONE;
+    }
+
+    /* Deferred raw `interrupts` for the devices that keep theirs. */
+    const uint8_t *uart_irq_raw = 0;   uint32_t uart_irq_len = 0;
+    const uint8_t *vio_irq_raw[FDT_MAX_VIRTIO];
+    uint32_t vio_irq_len[FDT_MAX_VIRTIO];
+    for (uint32_t i = 0; i < FDT_MAX_VIRTIO; i++) {
+        vio_irq_raw[i] = 0;
+        vio_irq_len[i] = 0;
+    }
 
     uint64_t initrd_start = 0, initrd_end = 0;
 
@@ -220,33 +290,60 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                 else if (node_is(name, "memory"))     in_memory = depth;
                 else if (node_is(name, "reserved-memory")) in_resv = depth;
                 else if (node_is(name, "cpus"))       in_cpus  = depth;
+                else if (node_is(name, "psci"))       in_psci  = depth;
             }
             node_is_cpu = (in_cpus >= 0 && node_is(name, "cpu"));
-            cur_reg = 0; cur_dev = DEV_NONE;
+            nreg[depth] = 0; nirq_raw[depth] = 0; nirq_len[depth] = 0;
+            ndev[depth] = DEV_NONE;
             continue;
         }
 
         if (tok == FDT_END_NODE) {
-            /* Leaving a device node: pair reg with what compatible said. */
-            if (cur_dev != DEV_NONE && cur_reg) {
+            /* Leaving a device node: pair ITS OWN reg with what ITS
+             * OWN compatible said -- per-depth state, so a child
+             * node's exit (the GIC's v2m@) cannot wipe the parent's. */
+            enum dev_kind dv = (depth >= 0) ? ndev[depth] : DEV_NONE;
+            const uint8_t *rg = (depth >= 0) ? nreg[depth] : 0;
+            if (dv != DEV_NONE && rg) {
                 /* reg decodes with the PARENT's cells. */
                 uint32_t ac = acells[depth > 0 ? depth - 1 : 0];
-                cur_reg_base = (ac == 2) ? be64(cur_reg) : be32(cur_reg);
-                if (cur_dev == DEV_UART && plat->uart_base == 0) {
+                cur_reg_base = (ac == 2) ? be64(rg) : be32(rg);
+                if (dv == DEV_UART && plat->uart_base == 0) {
                     plat->uart_base = cur_reg_base;
-                    plat->uart_irq  = cur_irq;   /* PLIC line (V2 wires it) */
-                } else if (cur_dev == DEV_PLIC && plat->plic_base == 0)
+                    uart_irq_raw = nirq_raw[depth];
+                    uart_irq_len = nirq_len[depth];
+                } else if (dv == DEV_PLIC && plat->plic_base == 0) {
                     plat->plic_base = cur_reg_base;
-                else if (cur_dev == DEV_VIRTIO &&
-                         plat->virtio_count < FDT_MAX_VIRTIO)
-                    plat->virtio_base[plat->virtio_count++] = cur_reg_base;
+                    plat->intc_kind = FDT_INTC_PLIC;
+                } else if (dv == DEV_GIC && plat->gicd_base == 0) {
+                    /* GICv2 reg = <GICD base size> <GICC base size>,
+                     * decoded with the parent's cells; on the virt
+                     * board that is 2/2, and both live in one prop. */
+                    uint32_t sc = scells[depth > 0 ? depth - 1 : 0];
+                    uint32_t one = (ac + sc) * 4;
+                    plat->gicd_base = cur_reg_base;
+                    plat->gicc_base = (ac == 2) ? be64(rg + one)
+                                                : be32(rg + one);
+                    plat->intc_kind = FDT_INTC_GIC;
+                } else if (dv == DEV_VIRTIO &&
+                           plat->virtio_count < FDT_MAX_VIRTIO) {
+                    uint32_t i = plat->virtio_count++;
+                    plat->virtio_base[i] = cur_reg_base;
+                    vio_irq_raw[i] = nirq_raw[depth];
+                    vio_irq_len[i] = nirq_len[depth];
+                }
             }
-            cur_reg = 0; cur_irq = 0; cur_dev = DEV_NONE; node_is_cpu = 0;
+            if (depth >= 0) {
+                nreg[depth] = 0; nirq_raw[depth] = 0; nirq_len[depth] = 0;
+                ndev[depth] = DEV_NONE;
+            }
+            node_is_cpu = 0;
 
             if (depth == in_chosen) in_chosen = -1;
             if (depth == in_memory) in_memory = -1;
             if (depth == in_resv)   in_resv   = -1;
             if (depth == in_cpus)   in_cpus   = -1;
+            if (depth == in_psci)   in_psci   = -1;
             depth--;
             continue;
         }
@@ -288,6 +385,14 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
             continue;
         }
 
+        /* -- /psci: the conduit (aarch64) ----------------------------- */
+        if (in_psci >= 0 && streq(pname, "method") && len >= 4) {
+            const char *m = (const char *)val;
+            if (streq(m, "hvc"))      plat->psci_method = FDT_PSCI_HVC;
+            else if (streq(m, "smc")) plat->psci_method = FDT_PSCI_SMC;
+            continue;
+        }
+
         /* -- /memory: reg = RAM banks -------------------------------- */
         if (in_memory >= 0 && streq(pname, "reg")) {
             uint32_t ac = acells[depth - 1], sc = scells[depth - 1];
@@ -323,8 +428,11 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
         /* -- /cpus/cpu@N --------------------------------------------- */
         if (in_cpus >= 0 && depth == in_cpus &&
             streq(pname, "timebase-frequency") && len == 4) {
-            /* What rdtime counts in.  On virt: 10000000 (10 MHz).
-             * A property of /cpus itself, not of any cpu@N child. */
+            /* What rdtime counts in.  On riscv virt: 10000000 (10
+             * MHz).  A property of /cpus itself, not of any cpu@N
+             * child -- and aarch64 trees simply do not carry it (the
+             * frequency lives in CNTFRQ_EL0 there; plat field stays
+             * 0 and the aarch64 kernel never reads it). */
             plat->timebase_freq = be32(val);
             continue;
         }
@@ -333,44 +441,61 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
             if (streq(pname, "device_type") && len >= 3 &&
                 streq((const char *)val, "cpu") &&
                 bi->cpu_count < BOOT_MAX_CPUS) {
-                bi->cpu_count++;         /* hartid filled from reg below */
+                bi->cpu_count++;         /* id filled from reg below */
             }
             if (streq(pname, "reg") && bi->cpu_count > 0 &&
                 bi->cpu_count <= BOOT_MAX_CPUS) {
+                /* riscv trees: 4- or 8-byte hartid.  aarch64 trees:
+                 * #address-cells of /cpus is 1 on virt (measured),
+                 * reg = MPIDR affinity.  Same slot either way. */
                 uint64_t hart = (len == 8) ? be64(val) : be32(val);
                 boot_cpu_t *c = &bi->cpus[bi->cpu_count - 1];
                 c->processor_id = (uint32_t)hart;
                 c->lapic_id     = (uint32_t)hart;  /* the "which CPU" slot;
-                                                    * this arch calls it a
-                                                    * hartid */
+                                                    * hartid / MPIDR */
             }
             continue;
         }
 
         /* -- devices: compatible decides, reg is remembered ---------- */
-        if (streq(pname, "reg")) {
-            cur_reg = val;
+        if (depth >= 0 && streq(pname, "reg")) {
+            nreg[depth] = val;
             continue;
         }
-        if (streq(pname, "interrupts") && len >= 4) {
-            cur_irq = be32(val);         /* first cell = the PLIC line */
+        if (depth >= 0 && streq(pname, "interrupts") && len >= 4) {
+            nirq_raw[depth] = val;       /* RAW; normalised at done: */
+            nirq_len[depth] = len;
             continue;
         }
-        if (streq(pname, "compatible")) {
+        if (depth >= 0 && streq(pname, "compatible")) {
             const char *list = (const char *)val;
-            if (compat_has(list, len, "ns16550a"))
-                cur_dev = DEV_UART;
+            if (compat_has(list, len, "ns16550a") ||
+                compat_has(list, len, "arm,pl011"))
+                ndev[depth] = DEV_UART;
             else if (compat_has(list, len, "riscv,plic0") ||
                      compat_has(list, len, "sifive,plic-1.0.0"))
-                cur_dev = DEV_PLIC;
+                ndev[depth] = DEV_PLIC;
+            else if (compat_has(list, len, "arm,cortex-a15-gic") ||
+                     compat_has(list, len, "arm,gic-400"))
+                ndev[depth] = DEV_GIC;
             else if (compat_has(list, len, "virtio,mmio"))
-                cur_dev = DEV_VIRTIO;
+                ndev[depth] = DEV_VIRTIO;
             continue;
         }
     }
     return FDT_ERR_TRUNCATED;            /* fell off the end: no FDT_END */
 
 done:
+    /* -- normalise the deferred interrupts: intc_kind is now final -- */
+    if (uart_irq_raw)
+        plat->uart_irq = irq_normalise(plat->intc_kind,
+                                       uart_irq_raw, uart_irq_len);
+    for (uint32_t i = 0; i < plat->virtio_count; i++)
+        if (vio_irq_raw[i])
+            plat->virtio_irq[i] = irq_normalise(plat->intc_kind,
+                                                vio_irq_raw[i],
+                                                vio_irq_len[i]);
+
     /* -- assemble the rest of boot_info_t ---------------------------- */
 
     if (initrd_end > initrd_start) {
@@ -383,8 +508,9 @@ done:
     }
 
     /* The kernel image itself.  The bounds are absolute low symbols
-     * the higher-half code cannot address directly (medany's auipc
-     * cannot span the HHDM gap), so boot.S exports them as data. */
+     * the higher-half riscv code cannot address directly (medany's
+     * auipc cannot span the HHDM gap), so each arch's boot.S exports
+     * them as data -- contract 2 in fdt.h. */
     {
         extern const uint64_t kernel_layout[8];
         mmap_add(bi, kernel_layout[0],
@@ -392,20 +518,20 @@ done:
                  BOOT_MEM_KERNEL);
     }
 
-    /* The DTB too -- V2 still reads it after the allocator exists. */
+    /* The DTB too -- it is still read after the allocator exists. */
     mmap_add(bi, dtb_phys, totalsize, BOOT_MEM_BOOTLOADER);
 
-    bi->hhdm_offset    = 0xFFFFFFC000000000ULL;  /* D3: Sv39 direct map;
-                                                  * satp=0 until V3, the
-                                                  * field is the CONTRACT,
-                                                  * V3 makes it true */
-    bi->boot_from_uefi = 0;                      /* SBI path; no third value
-                                                  * invented -- the field
+    /* hhdm_offset: the D3 constant -- and on aarch64 the SAME number
+     * by TTBR1 arithmetic (ARM64_PLAN D3), which is why this is not
+     * an arch hook: one direct-map constant, two proofs.  The riscv
+     * field is the contract V3 made true; A3 does the same. */
+    bi->hhdm_offset    = 0xFFFFFFC000000000ULL;
+    bi->boot_from_uefi = 0;                      /* SBI/PSCI path; the field
                                                   * answers "UEFI?" and the
                                                   * answer is no */
     bi->bsp_lapic_id   = (uint32_t)boot_hartid;
     if (bi->cpu_count == 0) {                    /* tree had no /cpus?  We
-                                                  * are provably one hart */
+                                                  * are provably one CPU */
         bi->cpu_count = 1;
         bi->cpus[0].processor_id = (uint32_t)boot_hartid;
         bi->cpus[0].lapic_id     = (uint32_t)boot_hartid;

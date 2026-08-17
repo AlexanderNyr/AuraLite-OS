@@ -5,7 +5,7 @@
 
 #include <stdint.h>
 
-#include "kernel/arch/riscv64/fdt.h"
+#include "kernel/dt/fdt.h"
 
 /* Probe the DTB windows for a blk device.  0 = found and ready. */
 int vblk_rv_init(const fdt_platform_t *plat);

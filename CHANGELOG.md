@@ -2,6 +2,52 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A1 — boot_info_t from the Device Tree, the walker PROMOTED] 2026-08-17
+
+`ARM64_PLAN.md` phase A1: the aarch64 kernel is the fourth consumer of
+`boot_info_t` — and the second consumer of the now-SHARED DTB walker.
+The plan's thesis (the fourth architecture costs bring-up, not another
+copy of everything) had its first test, and the test bit back
+usefully.
+
+- **`kernel/dt/fdt.c` + `fdt.h` (promoted from `kernel/arch/riscv64/`,
+  riscv copies deleted).** Both DTB-consuming kernels compile the one
+  file (`KERNELRV_SHARED`/`KERNELA64_SHARED`; claim-checked in both
+  checkers). What stayed arch-owned travels as two contracts:
+  `dt_phys_to_virt()` (riscv64: HHDM; aarch64 pre-MMU: identity) and
+  the `kernel_layout[8]` data pool (now exported by both boot.S).
+- **The promotion caught a riscv-shaped bug, as designed**: device
+  state was tracked in per-walk scalars; the aarch64 GIC node has a
+  `v2m@` CHILD whose `END_NODE` wiped the parent's state — first boot
+  printed `gicd: 0x0`. The riscv tree has no device nodes with
+  children, so the scalar design had passed every V1 gate since the
+  port began. Fixed per-depth (`ndev[depth]`), lesson in the walker.
+- **Interrupt normalisation, once, centrally (the off-by-32 rule)**:
+  GIC trees encode `<type nr flags>` where SPI n = INTID n+32, PPI n
+  = INTID n+16; drivers see final INTIDs only. Raw properties are
+  deferred and normalised at `done:` because `intc_kind` may be
+  discovered after the devices (it is, on this tree). Measured: UART
+  SPI 1 → 33, the 32 virtio windows → 48..79. PLIC trees pass raw
+  cells through unchanged — the riscv suite proves the non-regression.
+- **New walker knowledge**: `arm,pl011` matches DEV_UART,
+  `arm,cortex-a15-gic`/`arm,gic-400` fill `gicd/gicc` from one reg
+  pair, `/psci`'s `method` string is parsed and `main_a64.c` asserts
+  it against psci.c's hardcoded `hvc` conduit (D2: a mismatch gets
+  NAMED, not hung on).
+- **Measured and pinned: QEMU does not load `-initrd` for ELF
+  payloads** on this machine — no `/chosen` properties, no payload
+  bytes in RAM (scanned); the raw-`Image` control run gets both plus
+  x0=DTB. The smoke asserts the ELF behaviour so a QEMU change
+  announces itself; A5 owns the raw-Image packaging exit ramp.
+- One ratchet payment: promotion made the walker portable code and
+  ratchet 1 counted its lone `(uint64_t)` cast (360 > 359); paid by
+  widening through assignment in `be64()`. Baselines all hold.
+- Gates: a64 smoke 20/20 (boot_info block, INTIDs, GICD/GICC, PSCI
+  assert, initrd pin, `-smp 4` → 4 CPUs from `/cpus`); the full
+  riscv/i386/x86_64 suites green on the shared walker;
+  `check_arm64_claims` 18, `check_riscv_claims` 60 (+ the
+  single-object claim), selftests pass.
+
 ## [A64 A0 — toolchain gates + the EL1 stub] 2026-08-17
 
 `ARM64_PLAN.md` phase A0: the fourth architecture exists in the build
