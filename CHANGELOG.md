@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V1 — boot_info_t from the Device Tree] 2026-08-17
+
+RISCV_PLAN phase V1: the third producer of the one handoff struct.
+The kernel's own FDT shim walks the DTB OpenSBI hands over in `a1`
+and fills `boot_info_t`; `kmain_rv` then consumes the same contract
+`kmain` and `kmain32` consume — magic checked first, "handoff magic
+OK" in the same log shape as main32.c's.
+
+- **`kernel/arch/riscv64/fdt.{c,h}` (new).** Minimal single-pass FDT
+  parser, no libfdt: every multi-byte read goes through `be32`/`be64`
+  (the one byte-order file on the port), bounds-checked against
+  `totalsize`, named errors. Walks `/memory` → `mmap[]`, `/chosen` →
+  initrd range + bootargs, `/cpus` → hart count and hartids,
+  `/reserved-memory` + the reservation block → `BOOT_MEM_RESERVED`;
+  records UART/PLIC/virtio-mmio bases for V2/V7. reg decodes with the
+  parent's `#address-cells`/`#size-cells` (kept as a per-depth stack).
+  `hhdm_offset = 0xFFFFFFC000000000` (D3), magic written LAST.
+- **`kernelrv.ld`:** `__kernel_start`/`__kernel_end` — the image
+  self-reports as `BOOT_MEM_KERNEL`; initrd and DTB typed too, so no
+  occupied RAM reaches V2's allocator untyped.
+- **`test_width_sweep.sh`:** the boot_info width contract now compiles
+  at the THIRD width (`--target=riscv64`, LP64) — offsets proven equal
+  to AMD64's by `_Static_assert`, permanently.
+- **`rv_boot_smoke.sh`:** 9 → 21 assertions — handoff magic, D3
+  constant, usable/kernel mmap rows, RAM total matches `-m`, honest
+  "initrd: none", UART/PLIC/8-virtio discovery, `-smp 4` counts 4
+  harts, `-initrd` translates byte-exact through /chosen, `-append`
+  echoes back.
+- **`check_riscv_claims.py`:** 8 → 13 claims (V1 row: big-endian-only
+  reads, magic-last ordering, D3 constant, third width, smoke
+  coverage).
+
 ## [RV V0 — the third architecture boots] 2026-08-17
 
 RISCV_PLAN phase V0: `make kernelrv` builds an rv64gc S-mode stub with

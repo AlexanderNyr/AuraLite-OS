@@ -1,11 +1,11 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V1 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | V0 — toolchain gates + the S-mode stub | ✅ complete | `patches/RV_V0_boot.patch` |
-| V1 — `boot_info_t` from the Device Tree | pending | `patches/RV_V1_dtb.patch` |
+| V1 — `boot_info_t` from the Device Tree | ✅ complete | `patches/RV_V1_dtb.patch` |
 | V2 — traps, timer, PLIC | pending | `patches/RV_V2_traps.patch` |
 | V3 — memory: Sv39, PMM, heap — and W^X back | pending | `patches/RV_V3_mm.patch` |
 | V4 — threads, scheduler, U-mode, `ecall` | pending | `patches/RV_V4_proc.patch` |
@@ -366,7 +366,7 @@ the idle loop when there is something to wake up for.
 
 ---
 
-### Phase V1 — `boot_info_t` from the Device Tree
+### Phase V1 — `boot_info_t` from the Device Tree ✅ COMPLETE
 
 **Objective:** the third producer of the one handoff struct: a
 flattened-device-tree walk fills `boot_info_t`, and `kmain_rv` starts
@@ -374,23 +374,64 @@ consuming the same contract `kmain` and `kmain32` consume.
 
 #### Tasks
 
-- [ ] `kernel/arch/riscv64/fdt.c`: a minimal FDT parser — header
+- [x] `kernel/arch/riscv64/fdt.c`: a minimal FDT parser — header
       validation (magic `0xD00DFEED`, big-endian fields: **the one
       place byte order bites on this port**, called out in the code),
       `/memory` reg → `mmap[]`, `/chosen` initrd properties, UART and
       virtio node addresses recorded for V2/V7. No full libfdt; the
       four properties the kernel needs, bounds-checked.
-- [ ] The shim writes `hhdm_offset = 0xFFFFFFC000000000` (D3),
+- [x] The shim writes `hhdm_offset = 0xFFFFFFC000000000` (D3),
       `boot_from_uefi = 0`, magic last (a partially-filled struct must
       never carry a valid magic — same ordering Stage 2 uses).
-- [ ] Initrd: QEMU `-initrd` puts the USTAR archive in memory and its
+- [x] Initrd: QEMU `-initrd` puts the USTAR archive in memory and its
       range in `/chosen`; the shim translates to
       `initrd_phys/initrd_size`. One archive, three kernels: rv64
       binaries go under `/binrv` beside `/bin32` (the I5 layout rule,
-      third tenant).
-- [ ] `test_boot_info_width.c` grows the third compile:
+      third tenant — the *rule* is adopted here; the directory gains
+      its first tenants in V5, when rv64 binaries exist to put in it).
+- [x] `test_boot_info_width.c` grows the third compile:
       `--target=riscv64` must produce the same offsets (LP64 — it
       does; the assert makes "does" permanent).
+
+#### Result
+
+Delivered as specified. `fdt.c` is ~360 lines, single-pass,
+bounds-checked against `totalsize`, with a per-depth
+`#address-cells`/`#size-cells` stack (reg decodes with the *parent's*
+cells — the spot most hand-rolled FDT walks get wrong). Beyond the
+planned four properties the same pass collects `/cpus` (hart count +
+hartids into `cpus[]`), `/reserved-memory` carve-outs and the spec's
+memory-reservation block into `mmap[]` as `BOOT_MEM_RESERVED`, and
+`/chosen bootargs` — each was one `streq` inside a walk that already
+existed. The kernel image self-reports `[__kernel_start,
+__kernel_end)` (new linker symbols) as `BOOT_MEM_KERNEL`; the initrd
+range and the DTB itself are typed too, so V2's allocator inherits an
+mmap with no untyped occupied RAM.
+
+Measured on `-machine virt -m 256M` (OpenSBI v1.6):
+
+```
+[boot] handoff magic OK, path=SBI, boot_info filled from DTB
+[mm]   HHDM offset: 0xffffffc000000000 (Sv39 direct map; the V3 contract, satp=0 today)
+[mm]   0x0000000080000000 + 0x0000000010000000  usable
+[mm]   0x0000000080200000 + 0x0000000000030010  kernel
+[mm]   mmap entries: 5, usable RAM: 256 MiB
+[hw]   uart: 0x0000000010000000
+[hw]   plic: 0x000000000c000000
+[hw]   virtio-mmio windows: 8
+```
+
+— the UART/PLIC/virtio numbers are exactly the plan's Fact 3 dump,
+now discovered by the kernel instead of asserted by the plan. With
+`-initrd build/initrd.tar -append ...`: the /chosen range translates
+to `initrd_phys/initrd_size` byte-exact (8632320 bytes), bootargs
+echo back. With `-smp 4`: `harts: 4`, boot hart from `a0`. The smoke
+test grew from 9 to 21 assertions; the width contract compiles at
+`--target=riscv64` (third width in `test_width_sweep.sh`, claim
+V1-4 in the checker — now 13 claims). Errors are named
+(`FDT_ERR_MAGIC/VERSION/BOUNDS/TRUNCATED`), printed, and end in a
+clean shutdown: a silent boot was V0's failure mode and once was
+enough.
 
 #### Test gate
 

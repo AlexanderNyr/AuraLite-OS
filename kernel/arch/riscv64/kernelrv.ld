@@ -32,6 +32,11 @@ SECTIONS
 {
     . = 0x80200000;
 
+    /* Image bounds: V1's FDT shim marks [__kernel_start, __kernel_end)
+     * as BOOT_MEM_KERNEL in the mmap it builds -- the same self-report
+     * the x86 loaders make on the kernel's behalf. */
+    __kernel_start = .;
+
     .text : {
         /* .text.boot FIRST: OpenSBI jumps to the payload BASE
          * (0x80200000), not to e_entry -- measured in V0, see the
@@ -68,6 +73,8 @@ SECTIONS
         . = ALIGN(16);
         __bss_end = .;
     } :data
+
+    __kernel_end = .;
 
     /DISCARD/ : {
         *(.eh_frame)

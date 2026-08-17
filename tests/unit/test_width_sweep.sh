@@ -81,6 +81,21 @@ else
     note "OK   negative control: plain -m32 layout refused, as required"
 fi
 
+# ---- RISCV_PLAN V1: the third width ----
+# LP64 should agree with AMD64 on every offset (both are 8-byte
+# uint64_t, natural alignment); the compile makes "should" permanent.
+# No negative control here: there is no rv64 ABI flag that mis-aligns
+# uint64_t the way plain i686 does -- the i686 control already guards
+# the assert set itself.
+if clang --target=riscv64 -march=rv64gc -mabi=lp64d -ffreestanding \
+        -std=c11 -I . -c "$T" -o build/biw_rv64.o 2>/dev/null; then
+    note "OK   contract compiles at rv64 (third width, LP64)"
+else
+    note "FAIL contract at rv64 -- the riscv64 kernel reads boot_info_t"
+    note "     at different offsets than its own FDT shim writes"
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "[width] all I6 host gates passed"
 else

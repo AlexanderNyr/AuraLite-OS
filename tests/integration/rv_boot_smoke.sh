@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN phase V0 smoke test.
+# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0+V1 smoke test.
 #
 # The third architecture's first gate: clang -> lld -> OpenSBI ->
 # _start -> SBI console, end to end on QEMU's virt machine.
+# V1 grew it: the FDT walk fills boot_info_t, so the test now also
+# asserts the handoff contract (magic OK line), the mmap (a usable
+# region and a RAM total matching -m), the /chosen initrd translation
+# when -initrd is passed, and the discovered platform (UART at
+# 0x10000000, PLIC, 8 virtio windows -- the plan's Fact 3 numbers).
 #
 # Asserts:
 #   * OpenSBI hands off to our payload address in S-mode;
@@ -38,11 +43,11 @@ fi
 
 fail=0
 run_qemu() {
-    local log="$1" smp="$2"
+    local log="$1" smp="$2"; shift 2
     rm -f "$log"
     timeout 30 qemu-system-riscv64 -machine virt -m 256M -smp "$smp" \
         -display none -serial file:"$log" -no-reboot \
-        -kernel "$ELF" >/dev/null 2>&1 || true
+        -kernel "$ELF" "$@" >/dev/null 2>&1 || true
 }
 
 assert_grep() {
@@ -75,7 +80,18 @@ assert_grep "$LOG" "Hello from AuraLite OS kernel (riscv64)!"         "stub bann
 assert_grep "$LOG" "\[boot\] boot hart: [0-9]"                        "hartid arrived in a0"
 assert_grep "$LOG" "\[boot\] DTB at phys 0x[0-9a-f]*[1-9a-f]"         "DTB pointer arrived in a1, non-null"
 assert_grep "$LOG" "DTB magic OK (0xD00DFEED, big-endian read)"       "DTB magic reads correctly big-endian"
-assert_grep "$LOG" "V0 stub complete"                                 "stub ran to its end"
+
+# ---- V1: boot_info_t from the FDT walk ----
+assert_grep "$LOG" "\[boot\] handoff magic OK"                        "boot_info magic written (and written LAST)"
+assert_grep "$LOG" "HHDM offset: 0xffffffc000000000"                  "hhdm_offset carries the D3 Sv39 constant"
+assert_grep "$LOG" "usable  "                                         "mmap has a usable region from /memory"
+assert_grep "$LOG" "usable RAM: 256 MiB"                              "RAM total matches -m 256M"
+assert_grep "$LOG" "kernel  "                                         "kernel image self-reported in the mmap"
+assert_grep "$LOG" "\[mm\]   initrd: none"                            "no -initrd => initrd honestly absent"
+assert_grep "$LOG" "\[hw\]   uart: 0x0000000010000000"                "ns16550a found where the DTB puts it"
+assert_grep "$LOG" "\[hw\]   plic: 0x000000000c000000"                "PLIC found (V2 consumes this)"
+assert_grep "$LOG" "virtio-mmio windows: 8"                           "all 8 virtio windows found (V7 consumes)"
+assert_grep "$LOG" "V1 complete"                                      "kernel ran to its end"
 
 # The run must END (SBI shutdown), not hang: QEMU exiting before the
 # timeout leaves the log complete, which the final line already
@@ -88,10 +104,26 @@ else
     fail=1
 fi
 
-# ---- 4 harts: the lottery must park three of them ----
+# ---- 4 harts: the lottery must park three, the DTB must count four ----
 run_qemu "$LOGSMP" 4
 assert_count "$LOGSMP" "Hello from AuraLite OS kernel (riscv64)!" 1 \
     "-smp 4: exactly one banner -- hart lottery parked the rest"
+assert_grep "$LOGSMP" "\[hw\]   harts: 4" \
+    "-smp 4: /cpus walk counted all four harts"
+
+# ---- V1: -initrd translates through /chosen ----
+if [ -s "$BUILD/initrd.tar" ]; then
+    LOGIRD="$BUILD/rv_boot_initrd.log"
+    want_size=$(wc -c < "$BUILD/initrd.tar")
+    run_qemu "$LOGIRD" 1 -initrd "$BUILD/initrd.tar" \
+        -append "smoke.bootargs=via-chosen"
+    assert_grep "$LOGIRD" "initrd: $want_size bytes at phys 0x" \
+        "-initrd: /chosen range translated, size exact ($want_size)"
+    assert_grep "$LOGIRD" "bootargs: smoke.bootargs=via-chosen" \
+        "-append travels through /chosen bootargs"
+else
+    printf '  [rv-boot] SKIP initrd assertions (no build/initrd.tar; make iso builds it)\n'
+fi
 
 if [ "$fail" -ne 0 ]; then
     echo "[rv-boot] FAILED"
