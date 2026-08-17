@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0+V1 smoke test.
+# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0-V2 smoke test.
 #
 # The third architecture's first gate: clang -> lld -> OpenSBI ->
 # _start -> SBI console, end to end on QEMU's virt machine.
@@ -91,7 +91,23 @@ assert_grep "$LOG" "\[mm\]   initrd: none"                            "no -initr
 assert_grep "$LOG" "\[hw\]   uart: 0x0000000010000000"                "ns16550a found where the DTB puts it"
 assert_grep "$LOG" "\[hw\]   plic: 0x000000000c000000"                "PLIC found (V2 consumes this)"
 assert_grep "$LOG" "virtio-mmio windows: 8"                           "all 8 virtio windows found (V7 consumes)"
-assert_grep "$LOG" "V1 complete"                                      "kernel ran to its end"
+
+# ---- V2: traps, timer, PLIC ----
+assert_grep "$LOG" "\[isr\] Illegal Instruction at sepc=0x"           "deliberate fault NAMED with sepc"
+assert_grep "$LOG" "\[isr\]  PASS: illegal instruction named and resumed" "fault RESUMED past (isr gate)"
+assert_grep "$LOG" "\[timer\] PASS: [0-9]* ticks observed at 100 Hz"  "SBI timer ticks at 100 Hz (timer gate)"
+assert_grep "$LOG" "\[rng\]  jitter events collected: [1-9]"          "jitter pool fed from timer traps"
+assert_grep "$LOG" "\[plic\] S-context enabled, threshold 0, uart irq 10" "PLIC programmed, uart line from DTB"
+assert_grep "$LOG" "\[plic\] PASS: claim/complete round-trip"         "PLIC claim/complete with a real device irq"
+assert_grep "$LOG" "V2 complete"                                      "kernel ran to its end"
+
+# No unhandled trap anywhere in the boot -- the gate's last word.
+if grep -qa "UNHANDLED\|UNEXPECTED" "$LOG"; then
+    printf '  [rv-boot] FAIL unhandled/unexpected trap in the boot log\n'
+    fail=1
+else
+    printf '  [rv-boot] OK   no unhandled trap in a full boot\n'
+fi
 
 # The run must END (SBI shutdown), not hang: QEMU exiting before the
 # timeout leaves the log complete, which the final line already

@@ -177,6 +177,7 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
      * (PROP order in a node is not guaranteed; remember both). */
     uint64_t cur_reg_base = 0;
     const uint8_t *cur_reg = 0;
+    uint32_t cur_irq = 0;                /* first cell of `interrupts` */
     enum { DEV_NONE, DEV_UART, DEV_PLIC, DEV_VIRTIO } cur_dev = DEV_NONE;
 
     uint64_t initrd_start = 0, initrd_end = 0;
@@ -225,15 +226,16 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                 /* reg decodes with the PARENT's cells. */
                 uint32_t ac = acells[depth > 0 ? depth - 1 : 0];
                 cur_reg_base = (ac == 2) ? be64(cur_reg) : be32(cur_reg);
-                if (cur_dev == DEV_UART && plat->uart_base == 0)
+                if (cur_dev == DEV_UART && plat->uart_base == 0) {
                     plat->uart_base = cur_reg_base;
-                else if (cur_dev == DEV_PLIC && plat->plic_base == 0)
+                    plat->uart_irq  = cur_irq;   /* PLIC line (V2 wires it) */
+                } else if (cur_dev == DEV_PLIC && plat->plic_base == 0)
                     plat->plic_base = cur_reg_base;
                 else if (cur_dev == DEV_VIRTIO &&
                          plat->virtio_count < FDT_MAX_VIRTIO)
                     plat->virtio_base[plat->virtio_count++] = cur_reg_base;
             }
-            cur_reg = 0; cur_dev = DEV_NONE; node_is_cpu = 0;
+            cur_reg = 0; cur_irq = 0; cur_dev = DEV_NONE; node_is_cpu = 0;
 
             if (depth == in_chosen) in_chosen = -1;
             if (depth == in_memory) in_memory = -1;
@@ -313,6 +315,14 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
         }
 
         /* -- /cpus/cpu@N --------------------------------------------- */
+        if (in_cpus >= 0 && depth == in_cpus &&
+            streq(pname, "timebase-frequency") && len == 4) {
+            /* What rdtime counts in.  On virt: 10000000 (10 MHz).
+             * A property of /cpus itself, not of any cpu@N child. */
+            plat->timebase_freq = be32(val);
+            continue;
+        }
+
         if (node_is_cpu) {
             if (streq(pname, "device_type") && len >= 3 &&
                 streq((const char *)val, "cpu") &&
@@ -334,6 +344,10 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
         /* -- devices: compatible decides, reg is remembered ---------- */
         if (streq(pname, "reg")) {
             cur_reg = val;
+            continue;
+        }
+        if (streq(pname, "interrupts") && len >= 4) {
+            cur_irq = be32(val);         /* first cell = the PLIC line */
             continue;
         }
         if (streq(pname, "compatible")) {

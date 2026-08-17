@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V2 — traps, timer, PLIC] 2026-08-17
+
+RISCV_PLAN phase V2: `stvec` catches everything with named
+diagnostics in the FIX_R0 format, time advances, external interrupts
+route — the isr32.c bring-up scope, third architecture.
+
+- **`trapentry.S` (new).** Full x1–x31 frame + sepc to the kernel
+  stack, direct-mode stvec, `sret` exit; the handler may rewrite
+  `frame->sepc` (how the self-test resumes past its fault). Named
+  `trapentry` because `trap.S` + `trap.c` collide at `trap.o` — a
+  measured link error, not a style choice.
+- **`trap.c` (new).** scause decode: 16 named exception codes /
+  interrupt bit, `cpu=hartN` + sepc + stval + full register dump on
+  anything unhandled, then SBI shutdown (no U-mode until V4, so every
+  exception is the kernel's own bug). Deliberate-fault self-test:
+  `.word 0` named and resumed past — `[isr] PASS`. Timer: SBI TIME
+  extension (probe, legacy fallback), 100 Hz from the DTB's
+  `timebase-frequency`, handler re-arms; `[timer] PASS` on 5 observed
+  ticks. Jitter pool (N0's fallback path) collects rdtime deltas per
+  tick; DRBG consumes when shared rng joins in V8. Interrupt-enable
+  order: stvec → arm → sie → sstatus.SIE last.
+- **`plic.c` (new).** Boot hart's S-context (2·hart+1): threshold 0,
+  per-line enable at priority 1, claim/complete dispatch that
+  completes even handler-less claims (a stuck claim gates every lower
+  line). Gate proven with a REAL interrupt: the 16550's THRE line
+  fires on enable (transmitter idles empty), handler acks via IIR —
+  `[plic] PASS: claim/complete round-trip`.
+- **`fdt.c`:** grew `/cpus timebase-frequency` and the UART
+  `interrupts` property (line 10 discovered, not hardcoded).
+- **`rv_boot_smoke.sh`:** 21 → 29 assertions (isr/timer/plic PASS
+  lines + "no unhandled trap in a full boot").
+  **`check_riscv_claims.py`:** 13 → 19 claims.
+
 ## [RV V1 — boot_info_t from the Device Tree] 2026-08-17
 
 RISCV_PLAN phase V1: the third producer of the one handoff struct.

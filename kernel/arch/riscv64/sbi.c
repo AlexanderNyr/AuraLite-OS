@@ -89,6 +89,27 @@ void sbi_puts(const char *s)
     }
 }
 
+/* ---- timer (V2) ---------------------------------------------------------- */
+
+#define SBI_EID_TIME             0x54494D45   /* "TIME" */
+#define SBI_FID_TIME_SET         0
+#define SBI_EID_LEGACY_SET_TIMER 0x00
+
+static int have_time_ext = -1;   /* -1 = not probed yet */
+
+void sbi_set_timer(uint64_t stime_value)
+{
+    if (have_time_ext < 0) {
+        struct sbiret r = sbi_probe_extension(SBI_EID_TIME);
+        have_time_ext = (r.error == 0 && r.value != 0);
+    }
+    if (have_time_ext)
+        sbi_call(SBI_EID_TIME, SBI_FID_TIME_SET,
+                 (long)stime_value, 0, 0);
+    else
+        sbi_call(SBI_EID_LEGACY_SET_TIMER, 0, (long)stime_value, 0, 0);
+}
+
 void sbi_shutdown(void)
 {
     sbi_call(SBI_EID_LEGACY_SHUTDOWN, 0, 0, 0, 0);

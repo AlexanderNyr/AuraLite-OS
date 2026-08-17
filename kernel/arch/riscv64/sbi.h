@@ -36,6 +36,13 @@ void sbi_console_init(void);
 void sbi_putc(char c);
 void sbi_puts(const char *s);
 
+/* TIME extension (EID 0x54494D45, "TIME"): arm the next timer
+ * interrupt at an absolute timebase value.  One-shot -- the trap
+ * handler re-arms.  Falls back to legacy set_timer (EID 0x00) if the
+ * firmware predates the extension (same probe-once pattern as the
+ * console). */
+void sbi_set_timer(uint64_t stime_value);
+
 /* Legacy shutdown (EID 0x08) -- lets the smoke tests end a run without
  * waiting for the QEMU timeout, the way -no-reboot + hlt does on x86. */
 void sbi_shutdown(void) __attribute__((noreturn));

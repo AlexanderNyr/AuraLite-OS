@@ -1,4 +1,4 @@
-/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V1).
+/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V2).
  *
  * V0 proved the chain (clang -> lld -> OpenSBI -> _start -> SBI
  * console); V1 makes this kernel the third CONSUMER of boot_info_t.
@@ -16,7 +16,9 @@
 
 #include "boot/shared/boot_info.h"
 #include "kernel/arch/riscv64/fdt.h"
+#include "kernel/arch/riscv64/plic.h"
 #include "kernel/arch/riscv64/sbi.h"
+#include "kernel/arch/riscv64/trap.h"
 
 /* The struct the FDT shim fills.  Static in .bss (boot.S zeroed it):
  * ~9 KiB is too big for the V0 stack and there is no allocator yet. */
@@ -121,6 +123,110 @@ static void platform_report(void)
     }
 }
 
+/* ---- V2: traps, timer, PLIC --------------------------------------------- */
+
+/* The UART line's first proof.  V7 owns the real 16550 driver; V2
+ * only needs the PLIC path shown live with a genuine device
+ * interrupt.  The 16550's THRE interrupt obliges: IER bit 1 set while
+ * the transmit holding register is empty -> the line fires
+ * immediately, no one has to type.  The handler reads IIR (clears the
+ * THRE cause -- a level-triggered line left uncleared would claim
+ * forever) and counts. */
+#define UART_IER 1   /* interrupt enable */
+#define UART_IIR 2   /* interrupt identification (read clears THRE) */
+
+static volatile uint8_t *uart_mmio;
+static volatile uint64_t uart_irqs;
+
+static void uart_irq_probe(uint32_t irq)
+{
+    (void)irq;
+    if (uart_mmio) {
+        (void)uart_mmio[UART_IIR];      /* acknowledge THRE */
+        uart_mmio[UART_IER] = 0;        /* one proof is enough */
+    }
+    uart_irqs++;
+}
+
+static void v2_bringup(void)
+{
+    trap_set_hartid(boot_info.bsp_lapic_id);
+    trap_init(platform.timebase_freq);
+    sbi_puts("[isr]  stvec installed, SIE.STIE+SEIE on, timer armed (100 Hz)\n");
+
+    /* [isr] gate: a deliberate illegal instruction, named + resumed. */
+    if (trap_selftest() == 0) {
+        sbi_puts("[isr]  PASS: illegal instruction named and resumed past\n");
+    } else {
+        sbi_puts("[isr]  FAIL: self-test fault did not round-trip\n");
+        sbi_shutdown();
+    }
+
+    /* [timer] gate: watch ticks advance.  100 Hz means 5 ticks in
+     * 50 ms; spin on rdtime so the bound is wall-clock, not luck. */
+    {
+        uint64_t start_ticks = timer_ticks();
+        uint64_t tb = platform.timebase_freq ? platform.timebase_freq
+                                             : 10000000;
+        uint64_t deadline = rv_rdtime() + tb / 4;      /* 250 ms cap */
+        while (timer_ticks() < start_ticks + 5 &&
+               rv_rdtime() < deadline)
+            __asm__ volatile("wfi");
+
+        if (timer_ticks() >= start_ticks + 5) {
+            sbi_puts("[timer] PASS: ");
+            put_udec(timer_ticks() - start_ticks);
+            sbi_puts(" ticks observed at 100 Hz\n");
+        } else {
+            sbi_puts("[timer] FAIL: no ticks within 250 ms\n");
+            sbi_shutdown();
+        }
+    }
+
+    /* Jitter pool: collection side of the N0 fallback path, fed by
+     * the timer trap's rdtime deltas.  Consumed by the DRBG when the
+     * shared rng joins the build (V8) -- counted, not oversold. */
+    sbi_puts("[rng]  jitter events collected: ");
+    put_udec(trap_jitter_events());
+    sbi_puts(" (pool feeds from timer traps; DRBG consumes in V8)\n");
+
+    /* PLIC: threshold + enable for the UART line from the DTB. */
+    if (platform.plic_base) {
+        plic_init(platform.plic_base, boot_info.bsp_lapic_id);
+        plic_enable(platform.uart_irq, uart_irq_probe);
+        sbi_puts("[plic] S-context enabled, threshold 0, uart irq ");
+        put_udec(platform.uart_irq);
+        sbi_puts(" wired\n");
+
+        /* Claim/complete round-trip with a REAL device interrupt:
+         * the 16550's transmitter is idle, so enabling the THRE
+         * interrupt (IER bit 1) raises the line right now.  Wait a
+         * few ticks; the handler acks and disables itself. */
+        if (platform.uart_base) {
+            uart_mmio = (volatile uint8_t *)platform.uart_base;
+            uart_mmio[UART_IER] = 0x02;             /* THRE on */
+            uint64_t tb = platform.timebase_freq ? platform.timebase_freq
+                                                 : 10000000;
+            uint64_t deadline = rv_rdtime() + tb / 10;  /* 100 ms cap */
+            while (plic_completions() == 0 && rv_rdtime() < deadline)
+                __asm__ volatile("wfi");
+        }
+
+        if (plic_completions() > 0) {
+            sbi_puts("[plic] PASS: claim/complete round-trip, ");
+            put_udec(plic_completions());
+            sbi_puts(" completion(s), uart line fired ");
+            put_udec(uart_irqs);
+            sbi_puts(" time(s)\n");
+        } else {
+            sbi_puts("[plic] FAIL: no claim within 100 ms of THRE enable\n");
+            sbi_shutdown();
+        }
+    } else {
+        sbi_puts("[plic] not found in DTB -- external interrupts unavailable\n");
+    }
+}
+
 /* ---- entry -------------------------------------------------------------- */
 
 void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
@@ -131,7 +237,7 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
              " Hello from AuraLite OS kernel (riscv64)!\n"
              "  rv64gc S-mode, booted via OpenSBI\n"
              "==============================================\n\n");
-    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V1\n");
+    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V2\n");
 
     sbi_puts("[boot] boot hart: ");
     put_udec(hartid);
@@ -165,7 +271,9 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
     memmap_report();
     platform_report();
 
-    sbi_puts("[kernel] V1 complete; shutting down "
-             "(V2 adds traps, the SBI timer and the PLIC)\n");
+    v2_bringup();
+
+    sbi_puts("[kernel] V2 complete; shutting down "
+             "(V3 adds Sv39 paging, the PMM and the heap)\n");
     sbi_shutdown();
 }

@@ -1,12 +1,12 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V1 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V2 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | V0 — toolchain gates + the S-mode stub | ✅ complete | `patches/RV_V0_boot.patch` |
 | V1 — `boot_info_t` from the Device Tree | ✅ complete | `patches/RV_V1_dtb.patch` |
-| V2 — traps, timer, PLIC | pending | `patches/RV_V2_traps.patch` |
+| V2 — traps, timer, PLIC | ✅ complete | `patches/RV_V2_traps.patch` |
 | V3 — memory: Sv39, PMM, heap — and W^X back | pending | `patches/RV_V3_mm.patch` |
 | V4 — threads, scheduler, U-mode, `ecall` | pending | `patches/RV_V4_proc.patch` |
 | V5 — userspace: libc-rv, init, the shared shell | pending | `patches/RV_V5_user.patch` |
@@ -446,28 +446,69 @@ enough.
 
 ---
 
-### Phase V2 — Traps, timer, PLIC
+### Phase V2 — Traps, timer, PLIC ✅ COMPLETE
 
 **Objective:** `stvec` catches everything with named diagnostics in the
 R0 format; time advances; external interrupts route.
 
 #### Tasks
 
-- [ ] `trap.S` + `trap.c`: full x1–x31 frame save to the per-hart
+- [x] `trapentry.S` + `trap.c`: full x1–x31 frame save to the per-hart
       kernel stack, `scause` decode — the 16 exception codes and the
       interrupt bit — printed R0-style (`cpu=hart0`, `sepc`, `stval`,
       register dump). Deliberate-fault self-test: an illegal
       instruction must be named and resumed past, exactly as i386's
       `int3` gate.
-- [ ] Timer: SBI `set_timer` + `sie.STIE`; a tick counter at 100 Hz
+- [x] Timer: SBI `set_timer` + `sie.STIE`; a tick counter at 100 Hz
       (`[timer] PASS` when observed ticking, the I2 gate's shape).
       `sstc`/`stimecmp` probe recorded for later, not required.
-- [ ] PLIC: context enable/threshold/claim/complete for the boot
+- [x] PLIC: context enable/threshold/claim/complete for the boot
       hart's S-context; UART IRQ 10 wired as the first external line
       (consumed in V7; proven claimable here).
-- [ ] `rng.c`'s x86 paths (`rdseed`/`rdrand`/`cpuid`) stubbed behind
-      the existing capability probe → jitter pool feeds from timer
-      traps on this arch (the N0 fallback path, reused not rewritten).
+- [x] Jitter pool feeds from timer traps (the N0 fallback path):
+      collection side delivered in V2 — rdtime deltas mixed and
+      counted per tick. The consuming DRBG is shared kernel code that
+      joins this build in V8; stubbing `rng.c`'s x86 probe moves
+      there with it (the file cannot compile for rv64 before the
+      shared-code phase anyway — it includes `arch/x86_64/cpu.h`).
+
+#### Result
+
+Delivered as specified, one scope move (rng, above) recorded rather
+than hidden. Two facts earned during the phase:
+
+- **The file-name collision:** `trap.S` and `trap.c` both produce
+  `build/krv/.../trap.o` under the pattern rules — duplicate-symbol
+  link errors. The assembly entry is `trapentry.S`; one object name,
+  one owner.
+- **The PLIC gate uses a real device interrupt, not a simulation:**
+  the 16550's THRE line (IER bit 1) fires the moment it is enabled
+  because the transmitter idles empty — a genuine
+  PLIC-claim/handler/complete round-trip with no one typing. The
+  handler acks via IIR and disables itself; V7's UART driver inherits
+  a proven-live line. A level line left unacked would claim forever —
+  which is also why `plic_dispatch` completes even handler-less
+  claims.
+
+Measured on `-machine virt` (full run under the smoke test):
+
+```
+[isr] Illegal Instruction at sepc=0x000000008020236a -- expected (self-test), resuming past
+[isr]  PASS: illegal instruction named and resumed past
+[timer] PASS: 5 ticks observed at 100 Hz
+[rng]  jitter events collected: 5 (pool feeds from timer traps; DRBG consumes in V8)
+[plic] S-context enabled, threshold 0, uart irq 10 wired
+[plic] PASS: claim/complete round-trip, 1 completion(s), uart line fired 1 time(s)
+```
+
+The interrupt-enable order is airtight: stvec first, one timer shot
+armed, then `sie` bits, then `sstatus.SIE` last — nothing can fire
+half-configured. `fdt.c` grew `timebase-frequency` (10 MHz on virt —
+the tick math's input) and the UART's `interrupts` property (line 10,
+discovered not hardcoded). The smoke test: 21 → 29 assertions,
+including "no unhandled trap in a full boot"; the checker: 13 → 19
+claims. `wfi` idles the waits, so the full gate still ends by SBI
+shutdown in ~1 s.
 
 #### Test gate
 

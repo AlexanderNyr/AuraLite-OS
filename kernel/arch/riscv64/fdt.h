@@ -29,6 +29,9 @@
 
 typedef struct {
     uint64_t uart_base;                  /* ns16550a; 0 = not found */
+    uint32_t uart_irq;                   /* its PLIC line (interrupts prop) */
+    uint32_t timebase_freq;              /* /cpus timebase-frequency, Hz;
+                                          * what rdtime counts in (V2) */
     uint64_t plic_base;                  /* PLIC;     0 = not found */
     uint64_t virtio_base[FDT_MAX_VIRTIO];/* virtio-mmio windows */
     uint32_t virtio_count;

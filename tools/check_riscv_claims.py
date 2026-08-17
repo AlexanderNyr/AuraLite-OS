@@ -82,6 +82,29 @@ def claims():
          "handoff magic OK" in smoke and "initrd" in smoke),
     ]
 
+    # --- V2: traps, timer, PLIC ---
+    trapc = read("kernel", "arch", "riscv64", "trap.c")
+    trape = read("kernel", "arch", "riscv64", "trapentry.S")
+    plicc = read("kernel", "arch", "riscv64", "plic.c")
+    checks += [
+        ("V2: the trap entry saves the full frame and sret-returns",
+         "rv_trap_vector" in trape and "sret" in trape and
+         "sd    x31" in trape),
+        ("V2: scause decode has the 16 named exception codes",
+         exists("kernel", "arch", "riscv64", "trap.c") and
+         "Illegal Instruction" in trapc and
+         "Store/AMO Page Fault" in trapc),
+        ("V2: FIX_R0 discipline -- cpu= in the frame dump",
+         "cpu=hart" in trapc),
+        ("V2: the timer re-arms via SBI (one-shot contract)",
+         "sbi_set_timer" in trapc),
+        ("V2: PLIC completes even unhandled claims (no stuck gateway)",
+         "*reg32(PLIC_CLAIM(s_ctx)) = irq" in plicc),
+        ("V2: the smoke test gates isr/timer/plic PASS lines",
+         "resumed" in smoke and "ticks observed at 100 Hz" in smoke and
+         "claim/complete" in smoke),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the
