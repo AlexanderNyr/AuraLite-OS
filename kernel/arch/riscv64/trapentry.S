@@ -1,22 +1,30 @@
 # =============================================================================
-# kernel/arch/riscv64/trapentry.S -- S-mode trap entry/exit (RISCV_PLAN V2).
+# kernel/arch/riscv64/trapentry.S -- S-mode trap entry/exit (RISCV_PLAN V2;
+# U-mode aware since V4).
 #
 # stvec points here (direct mode: all causes, one vector -- the low two
 # bits of stvec select the mode, so this symbol must be 4-byte aligned).
 #
-# Frame: x1..x31 stored at (N-1)*8, sepc at 248 -- 288 bytes total to
-# keep sp 16-byte aligned (the psABI stack rule holds INSIDE the
-# kernel too; LLVM emits 16-byte-aligned spills against it).
+# Frame: x1..x31 stored at (N-1)*8, sepc at 248, sstatus at 256 --
+# 288 bytes total to keep sp 16-byte aligned (the psABI stack rule
+# holds INSIDE the kernel too).
 #
-# V2 scope: traps arrive from S-mode only (no U-mode until V4), so the
-# interrupted sp IS a kernel sp and pushing the frame right onto it is
-# correct.  V4 adds the sscratch swap for U-mode entry -- the plan
-# names that stack-switch as I7's trap-stack lesson, third verse.
+# The V4 stack switch -- the I7 esp0 lesson, solved the way this ISA
+# solves it: sscratch is 0 while the hart runs in S-mode, and holds
+# the dedicated trap-stack top while it runs in U-mode (armed by
+# user_enter_rv).  Entry does csrrw-swap-and-test:
 #
-# x2 (sp) is not stored through the loop: its "saved" value is just
-# sp+288, recomputed at exit by the addi.  The slot at offset 8 is
-# still written (debuggers walking the frame want to see it) but never
-# reloaded.
+#   from S: sscratch was 0 -> swap back, build the frame on the
+#           interrupted kernel sp (correct: it IS a kernel stack);
+#   from U: sscratch held the trap stack -> sp lands on it, the USER
+#           sp is parked in sscratch for the x2 slot, then sscratch
+#           is zeroed ("we are in the kernel now").
+#
+# Exit re-arms: if the sstatus image being restored has SPP=0 (going
+# back to U-mode), sscratch := this frame's base + 288 == the trap
+# stack top it came in on.  The x2 slot is restored LAST via
+# `ld sp, 8(sp)` -- one sequence serves both worlds because the slot
+# holds "sp+288" for S-traps and the user sp for U-traps.
 # =============================================================================
 
 .option norvc
@@ -25,12 +33,21 @@
 .align 4
 .globl rv_trap_vector
 rv_trap_vector:
+    csrrw sp, sscratch, sp        # swap: sp <- (0 | trap stack)
+    bnez  sp, .Lstack_switched    # non-zero: arrived from U-mode
+    csrrw sp, sscratch, sp        # S-mode trap: undo, stay on kernel sp
+.Lstack_switched:
     addi  sp, sp, -288
 
     sd    x1,  0(sp)
-    # x2's slot: the pre-trap sp, for the frame dump's benefit.
+    # x2's slot: the interrupted sp.  From U it is parked in sscratch
+    # by the swap above; from S sscratch reads 0 and it is sp+288.
+    csrr  x1, sscratch
+    bnez  x1, 1f
     addi  x1, sp, 288
+1:
     sd    x1,  8(sp)
+    csrw  sscratch, x0            # in the kernel now: S-trap semantics
     sd    x3,  16(sp)
     sd    x4,  24(sp)
     sd    x5,  32(sp)
@@ -63,12 +80,22 @@ rv_trap_vector:
 
     csrr  t0, sepc
     sd    t0, 248(sp)
+    csrr  t0, sstatus
+    sd    t0, 256(sp)
 
-    # rv_trap(frame) -- may rewrite frame->sepc to resume PAST a
-    # deliberate fault (the [isr] self-test's whole mechanism).
+    # rv_trap(frame) -- may rewrite sepc (resume past a fault), a0
+    # (syscall return), or sepc+sstatus together (longjmp unwind out
+    # of a finished U-mode image).
     mv    a0, sp
     call  rv_trap
 
+    ld    t0, 256(sp)
+    csrw  sstatus, t0
+    andi  t1, t0, 0x100           # SPP bit
+    bnez  t1, 2f                  # returning to S: sscratch stays 0
+    addi  t1, sp, 288             # returning to U: re-arm the trap stack
+    csrw  sscratch, t1
+2:
     ld    t0, 248(sp)
     csrw  sepc, t0
 
@@ -103,11 +130,13 @@ rv_trap_vector:
     ld    x30, 232(sp)
     ld    x31, 240(sp)
 
-    addi  sp, sp, 288
+    ld    sp, 8(sp)               # x2 last: kernel sp+288 OR the user sp
     sret
 
 # =============================================================================
-# rv_setjmp / rv_longjmp_entry -- the V3 fault-probe mechanism.
+# rv_setjmp / rv_longjmp_entry -- the V3 fault-probe mechanism, reused
+# by V4 as the U-mode image's exit trampoline (user32.c's saved_esp/
+# saved_eip pair, RISC-V-flavoured).
 #
 # A deliberate fault probe (store to .text, execute from data) cannot
 # be resumed by sepc += 4: for execute-from-data, sepc points INTO the
@@ -116,7 +145,9 @@ rv_trap_vector:
 # world before the probe, and on an EXPECTED fault trap.c rewrites the
 # frame so sret lands in rv_longjmp_entry with a0 = the buf -- which
 # restores that world and "returns" 1 from rv_setjmp.  The setjmp
-# contract, trap-flavoured.
+# contract, trap-flavoured.  (For a U-mode exit the rewrite also sets
+# the frame's SPP so sret comes back to S-mode; a1 carries the exit
+# code and rv_setjmp's second return value is 1 + code.)
 #
 # buf layout: [0]=ra [1]=sp [2..13]=s0..s11  (112 bytes)
 # =============================================================================
@@ -142,7 +173,8 @@ rv_setjmp:
 
 .globl rv_longjmp_entry
 rv_longjmp_entry:
-    # a0 = buf (planted in the trap frame by trap.c)
+    # a0 = buf, a1 = value-1 (planted in the trap frame by trap.c;
+    # fault probes pass a1=0 so setjmp returns 1, exactly as before)
     ld    ra,  0(a0)
     ld    sp,  8(a0)
     ld    s0,  16(a0)
@@ -157,5 +189,5 @@ rv_longjmp_entry:
     ld    s9,  88(a0)
     ld    s10, 96(a0)
     ld    s11, 104(a0)
-    li    a0, 1                   # rv_setjmp's second return
+    addi  a0, a1, 1               # setjmp's second return: 1 + value
     ret

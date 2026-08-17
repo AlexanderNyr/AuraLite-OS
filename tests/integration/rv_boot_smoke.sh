@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0-V3 smoke test.
+# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0-V4 smoke test.
 #
 # The third architecture's first gate: clang -> lld -> OpenSBI ->
 # _start -> SBI console, end to end on QEMU's virt machine.
@@ -108,7 +108,16 @@ assert_grep "$LOG" "\[vmm\]  execute-from-data faulted"               "W^X execu
 assert_grep "$LOG" "\[vmm\]  identity window confirmed dropped"       "low load faults after the drop"
 assert_grep "$LOG" "\[vmm\]  PASS"                                    "vmm gate (positive path + 3 fault probes)"
 assert_grep "$LOG" "\[heap\] PASS"                                    "heap gate (64 cycles, no corruption, no leak)"
-assert_grep "$LOG" "V3 complete"                                      "kernel ran to its end"
+
+# ---- V4: scheduler, U-mode, ecall ----
+assert_grep "$LOG" "\[sched\] PASS: two never-yielding workers"       "sched gate (preemption forced by the timer)"
+assert_grep "$LOG" "RING-U-OK"                                        "U-mode wrote through ecall (exact string)"
+assert_grep "$LOG" "\[user\] exit(42) via ecall"                      "SYS_EXIT reached the kernel"
+assert_grep "$LOG" "\[user\] exit code 42 round-tripped"              "exit code round trip"
+assert_grep "$LOG" "terminating image (code 130)"                     "privileged csrr contained as 128+2"
+assert_grep "$LOG" "\[user\] PASS: U-mode round trip"                 "user gate complete, kernel intact"
+assert_grep "$LOG" "kernel reaches idle"                              "kernel reaches idle after U-mode"
+assert_grep "$LOG" "V4 complete"                                      "kernel ran to its end"
 
 # No unhandled trap anywhere in the boot -- the gate's last word.
 if grep -qa "UNHANDLED\|UNEXPECTED" "$LOG"; then

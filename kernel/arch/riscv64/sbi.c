@@ -75,7 +75,15 @@ void sbi_putc(char c)
          * (V0..V2 ran satp=0 where VA==PA and the subtraction would
          * have been wrong; this line is version-locked to the boot
          * layout in boot.S, which turns Sv39 on before any C runs.) */
-        char buf = c;
+        /* STATIC, not a stack local -- measured in V4: the trap
+         * handler's stack is a kheap allocation at 0xFFFFFFE0...,
+         * where VA - HHDM is NOT the physical address; OpenSBI
+         * faulted loading from the garbage "physical" 0x2000001eaf.
+         * A static lives in .bss, whose VA is HHDM + phys by the
+         * linker map, so the subtraction is exact.  Single hart
+         * writes console (D5), so one byte of state races nothing. */
+        static char buf;
+        buf = c;
         sbi_call(SBI_EID_DBCN, SBI_FID_DBCN_WRITE,
                  1, (long)((uintptr_t)&buf - 0xFFFFFFC000000000UL), 0);
     } else {

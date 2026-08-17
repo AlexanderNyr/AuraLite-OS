@@ -131,6 +131,34 @@ def claims():
          "execute-from-data faulted" in smoke),
     ]
 
+    # --- V4: threads, scheduler, U-mode, ecall ---
+    ctxs  = read("kernel", "arch", "riscv64", "context_rv.S")
+    userc = read("kernel", "arch", "riscv64", "user_rv.c")
+    trap2 = read("kernel", "arch", "riscv64", "trap.c")
+    trape2 = read("kernel", "arch", "riscv64", "trapentry.S")
+    checks += [
+        ("V4: the context switch saves the psABI callee-saved set",
+         "context_switch_rv" in ctxs and "s11" in ctxs and
+         "sd    ra" in ctxs),
+        ("V4: preemption sits AFTER the timer re-arm (post-EOI shape)",
+         "sbi_set_timer(now + tick_interval)" in trap2 and
+         trap2.index("sched_rv_maybe_preempt") >
+         trap2.index("sbi_set_timer(now + tick_interval)")),
+        ("V4: the trap entry swap-and-tests sscratch (the I7 lesson)",
+         "csrrw sp, sscratch, sp" in trape2),
+        ("V4: user text maps U|R|X and the stack U|R|W -- W^X in U-mode",
+         "PTE_U | PTE_R | PTE_X" in userc and
+         "PTE_U | PTE_R | PTE_W" in userc),
+        ("V4: U-mode faults are contained as 128+scause",
+         "128 + (int)scause" in userc),
+        ("V4: user copies go through a SUM window, kernel buffer",
+         "SUM" in userc and "csrs sstatus" in userc and
+         "csrc sstatus" in userc),
+        ("V4: the smoke test gates sched/RING-U-OK/exit-code/control",
+         "RING-U-OK" in smoke and "never-yielding" in smoke and
+         "code 130" in smoke),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the

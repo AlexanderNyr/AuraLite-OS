@@ -1,4 +1,4 @@
-/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V3).
+/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V4).
  *
  * V0 proved the chain (clang -> lld -> OpenSBI -> _start -> SBI
  * console); V1 makes this kernel the third CONSUMER of boot_info_t.
@@ -21,7 +21,9 @@
 #include "kernel/arch/riscv64/plic.h"
 #include "kernel/arch/riscv64/pmm_rv.h"
 #include "kernel/arch/riscv64/sbi.h"
+#include "kernel/arch/riscv64/thread_rv.h"
 #include "kernel/arch/riscv64/trap.h"
+#include "kernel/arch/riscv64/user_rv.h"
 
 /* The struct the FDT shim fills.  Static in .bss (boot.S zeroed it):
  * ~9 KiB is too big for the V0 stack and there is no allocator yet. */
@@ -233,6 +235,67 @@ static void v2_bringup(void)
     }
 }
 
+/* ---- V4: the sched gate ---------------------------------------------------
+ *
+ * Two workers that NEVER yield: each spins bumping its counter until
+ * it has seen 3 timer preemptions' worth of progress from the OTHER
+ * one -- possible only if the timer trap forcibly switches between
+ * them.  Cooperative scheduling cannot pass this; that is the point
+ * (thread32's gate, LP64 spelling). */
+
+static volatile uint64_t worker_count[2];
+
+static void sched_worker(void *arg)
+{
+    int me = (int)(uint64_t)arg;
+    int other = 1 - me;
+    uint64_t seen_start = worker_count[other];
+    while (worker_count[other] < seen_start + 3)
+        worker_count[me]++;             /* no yield anywhere in here */
+    /* The farewell tail -- and it is load-bearing: the first cut
+     * DEADLOCKED (measured: worker-a DONE, worker-b spinning forever).
+     * A exits the moment it has seen B's +3, contributing ZERO further
+     * increments; if B sampled its baseline near A's final value, B's
+     * +3 never arrives.  Each worker therefore banks a surplus after
+     * its own wait is satisfied, so the other's condition is payable
+     * regardless of who exits first. */
+    for (int i = 0; i < 1000; i++)
+        worker_count[me]++;
+}
+
+static int sched_selftest(void)
+{
+    worker_count[0] = worker_count[1] = 0;
+    int t1 = thread_rv_create("worker-a", sched_worker, (void *)0);
+    int t2 = thread_rv_create("worker-b", sched_worker, (void *)1);
+    if (t1 < 0 || t2 < 0)
+        return -1;
+
+    sbi_puts("[sched] self-test: two never-yielding workers...\n");
+
+    /* Wait for both to finish, bounded by wall clock (2 s at the
+     * timebase).  thread 0 spins on wfi -- every tick preempts it
+     * too, which is itself part of the proof. */
+    uint64_t tb = platform.timebase_freq ? platform.timebase_freq
+                                         : 10000000;
+    uint64_t deadline = rv_rdtime() + 2 * tb;
+    while ((thread_rv_state(t1) != THREAD_RV_STATE_DONE ||
+            thread_rv_state(t2) != THREAD_RV_STATE_DONE) &&
+           rv_rdtime() < deadline)
+        __asm__ volatile("wfi");
+
+    if (thread_rv_state(t1) != THREAD_RV_STATE_DONE ||
+        thread_rv_state(t2) != THREAD_RV_STATE_DONE)
+        return -1;
+
+    sbi_puts("[sched] worker-a count ");
+    put_udec(worker_count[0]);
+    sbi_puts(", worker-b count ");
+    put_udec(worker_count[1]);
+    sbi_puts(" -- both advanced under forced preemption\n");
+    return (worker_count[0] > 0 && worker_count[1] > 0) ? 0 : -1;
+}
+
 /* ---- entry -------------------------------------------------------------- */
 
 void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
@@ -243,7 +306,7 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
              " Hello from AuraLite OS kernel (riscv64)!\n"
              "  rv64gc S-mode, booted via OpenSBI\n"
              "==============================================\n\n");
-    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V3\n");
+    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V4\n");
 
     sbi_puts("[boot] boot hart: ");
     put_udec(hartid);
@@ -306,7 +369,26 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
         sbi_shutdown();
     }
 
-    sbi_puts("[kernel] V3 complete; shutting down "
-             "(V4 adds threads, the scheduler, U-mode and ecall)\n");
+    /* ---- V4: scheduler, then U-mode, each gated. -------------------- */
+
+    sched_rv_init();
+    if (sched_selftest() == 0) {
+        sbi_puts("[sched] PASS: two never-yielding workers both ran "
+                 "(preemption is real)\n");
+    } else {
+        sbi_puts("[sched] FAIL: self-test\n");
+        sbi_shutdown();
+    }
+    thread_rv_reap();
+
+    if (user_rv_selftest() == 0) {
+        sbi_puts("[user] PASS: U-mode round trip + negative control\n");
+    } else {
+        sbi_puts("[user] FAIL: self-test\n");
+        sbi_shutdown();
+    }
+
+    sbi_puts("[kernel] V4 complete; kernel reaches idle. Shutting down "
+             "(V5 adds libcrv, init and the shared shell)\n");
     sbi_shutdown();
 }

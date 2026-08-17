@@ -2,6 +2,41 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V4 — threads, scheduler, U-mode, ecall] 2026-08-17
+
+RISCV_PLAN phase V4: preemptive round-robin on the boot hart, a
+U-mode program behind `sret`, and `ecall` into the D4 syscall
+convention (a7 number, a0–a5 args, a0 return) — with the I7
+trap-stack lesson pre-paid via `sscratch`.
+
+- **`context_rv.S` + `thread_rv.c` (new).** context32/thread32 at
+  LP64: ra+s0–s11 switch, static TCBs, kmalloc'd stacks, reaper in
+  thread 0. Preemption AFTER `sbi_set_timer` re-arms (the post-EOI
+  placement — the SBI call is what clears STIP).
+- **`trapentry.S`:** U-mode aware — csrrw-swap-and-test on sscratch
+  (0 = S-trap, stay on kernel sp; else land on the image's dedicated
+  trap stack), sstatus joins the frame, exit re-arms sscratch iff
+  returning to U (SPP=0).
+- **`user_rv.c` (new).** The privilege round trip: text `PTE_U|R|X`,
+  stack `PTE_U|R|W` (V3's W^X meets its user PTEs), `user_enter_rv`
+  arms sscratch with SIE off across the window, hand-assembled image
+  prints RING-U-OK and exits 42; negative control (`csrr sscratch`
+  from U) contained as 128+2 with the kernel intact. Exit unwind
+  reuses V3's rv_setjmp/rv_longjmp_entry — one mechanism, two
+  tenants.
+- **Four debugging-session facts recorded in the plan's Result:** the
+  sched gate's first cut deadlocked (workers now bank a farewell
+  surplus); `sstatus.SUM` on by default — user copies go
+  bounds-check → SUM window → kernel buffer; the DBCN byte moved to
+  .bss (kheap VAs are not HHDM+phys; OpenSBI faulted on the garbage
+  address); the exit unwind runs SPIE=0 (a tick in the two-insn
+  window built kernel frames on the USER stack — 288-byte descent
+  measured in -d int). Plus the i386 pad-byte incident replayed
+  verbatim ("-U-OK" + 4 NULs) and caught by the same exact-string
+  assert.
+- **`rv_boot_smoke.sh`:** 36 → 44 assertions.
+  **`check_riscv_claims.py`:** 25 → 32 claims.
+
 ## [RV V3 — Sv39, PMM, heap — and W^X back] 2026-08-17
 
 RISCV_PLAN phase V3: the kernel lives in the Sv39 higher half behind

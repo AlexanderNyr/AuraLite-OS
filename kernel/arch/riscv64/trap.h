@@ -5,11 +5,14 @@
 
 #include <stdint.h>
 
-/* The frame trapentry.S builds: x1..x31 at (N-1)*8, sepc at 248.
- * regs[1] (x2/sp) is display-only -- the exit path recomputes sp. */
+/* The frame trapentry.S builds: x1..x31 at (N-1)*8, sepc at 248,
+ * sstatus at 256.  regs[1] (x2/sp) is the interrupted stack pointer
+ * (kernel sp+288 for S-traps, the USER sp for U-traps); the exit path
+ * restores it last. */
 typedef struct {
     uint64_t regs[31];          /* x1..x31 */
     uint64_t sepc;
+    uint64_t sstatus;
 } rv_trap_frame_t;
 
 /* Install stvec, enable SIE.STIE + SIE.SEIE, start the 100 Hz timer.
@@ -27,8 +30,9 @@ int trap_selftest(void);
  * fallback entropy path's collection side; the DRBG consumes in V8). */
 uint64_t trap_jitter_events(void);
 
-/* Park the hart id in sscratch for the frame dump's cpu= field.
- * V2-only use of sscratch; V4 takes it for the trap-stack swap. */
+/* Record the hart id for the frame dump's cpu= field.  (Lived in
+ * sscratch during V2-V3; V4 took that CSR for the U-mode trap-stack
+ * swap, exactly as the plan scheduled.) */
 void trap_set_hartid(uint64_t hartid);
 
 /* V3 fault probes: run probe(arg) expecting scause cause1 or cause2.

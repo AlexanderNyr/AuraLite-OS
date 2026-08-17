@@ -1,6 +1,6 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V3 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V4 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | V1 — `boot_info_t` from the Device Tree | ✅ complete | `patches/RV_V1_dtb.patch` |
 | V2 — traps, timer, PLIC | ✅ complete | `patches/RV_V2_traps.patch` |
 | V3 — memory: Sv39, PMM, heap — and W^X back | ✅ complete | `patches/RV_V3_mm.patch` |
-| V4 — threads, scheduler, U-mode, `ecall` | pending | `patches/RV_V4_proc.patch` |
+| V4 — threads, scheduler, U-mode, `ecall` | ✅ complete | `patches/RV_V4_proc.patch` |
 | V5 — userspace: libc-rv, init, the shared shell | pending | `patches/RV_V5_user.patch` |
 | V6 — the inline-assembly sweep | pending | `patches/RV_V6_sweep.patch` |
 | V7 — drivers: virtio-mmio, blk, net, UART RX | pending | `patches/RV_V7_drivers.patch` |
@@ -614,27 +614,83 @@ Smoke: 29 → 36 assertions; claims: 19 → 25.
 
 ---
 
-### Phase V4 — Threads, scheduler, U-mode, `ecall`
+### Phase V4 — Threads, scheduler, U-mode, `ecall` ✅ COMPLETE
 
 **Objective:** preemptive round-robin on the boot hart and a U-mode
 program behind `sret`, with the trap stack lesson pre-paid.
 
 #### Tasks
 
-- [ ] `context_rv.S`: callee-saved switch (`s0–s11`, `ra`, `sp` — the
+- [x] `context_rv.S`: callee-saved switch (`s0–s11`, `ra`, `sp` — the
       LP64 sibling of context32's set); TCBs and reaping in the
       thread32 shape.
-- [ ] Preemption from the timer trap, **after** trap-cause
-      acknowledgement (the post-EOI placement, PLIC-flavoured).
-- [ ] U-mode entry: `sstatus.SPP=0`, `sepc=entry`, `sret`;
+- [x] Preemption from the timer trap, **after** trap-cause
+      acknowledgement (the post-EOI placement, PLIC-flavoured:
+      `sbi_set_timer` is what clears STIP, so the switch sits after
+      the re-arm).
+- [x] U-mode entry: `sstatus.SPP=0`, `sepc=entry`, `sret`;
       `sscratch` carries the per-image dedicated trap stack from day
       one — the I7 esp0 corruption is a design input here, not a bug
-      to rediscover.
-- [ ] `ecall` dispatch per D4 into the existing syscall table;
+      to rediscover. trapentry.S does csrrw-swap-and-test: zero means
+      S-trap (stay on the kernel sp), non-zero means U-trap (land on
+      the trap stack, park the user sp in the x2 slot).
+- [x] `ecall` dispatch per D4 into the existing syscall table;
       U-mode faults contained (`128+scause`), kernel survives — with
       the hand-assembled-image self-test and the privileged-op
       negative control both ported (the instruction is `csrr` from an
       S-CSR instead of `hlt`).
+
+#### Result
+
+Delivered as specified. The exit trampoline is V3's fault-probe pair
+re-tenanted: `rv_setjmp`/`rv_longjmp_entry` IS user32.c's
+saved_esp/saved_eip mechanism, so SYS_EXIT and the fault path share
+one unwind. Four facts were bought with debugging sessions:
+
+- **The sched gate deadlocked as first written.** Worker A exits the
+  moment it has seen B's +3 and contributes nothing further; if B
+  sampled its baseline near A's final value, B waits forever
+  (measured: A DONE, B spinning). Each worker now banks a surplus
+  after its own wait — the farewell tail in `sched_worker` is
+  load-bearing and commented as such.
+- **`sstatus.SUM` is SMAP's sibling and it is ON by default**: the
+  kernel's own load from a `PTE_U` page traps. The write path does
+  bounds-check → SUM on → copy to a kernel buffer → SUM off → print.
+  First run measured the fault exactly where the plan's risk table
+  said this ISA differs from x86.
+- **`sbi_putc`'s DBCN buffer moved to .bss**: a stack local on the
+  kheap trap stack (0xFFFFFFE0…) is NOT at HHDM+phys, so the V3
+  "subtract the offset" trick fed OpenSBI a garbage physical address
+  (M-mode fault_load, measured). Statics live where VA−HHDM is exact.
+- **The unwind runs with SPIE=0.** `rv_longjmp_entry` executes two
+  instructions with sp still holding the trapped USER stack pointer;
+  a timer tick in that window built an S-mode trap frame on the user
+  stack — store-fault recursion descending 288 bytes/iteration in
+  `-d int`. `user_rv_leave` clears SPIE; `user_rv_run_image` re-opens
+  interrupts once sp is a kernel stack again.
+
+And one incident replayed on schedule: the hand-assembled image's
+message landed at +0x44 with the pointer saying +0x48 — the console
+printed `-U-OK` + 4 NULs, the i386 "ING3-OK" pad-byte incident
+verbatim at the third width, caught by the same exact-string assert
+that caught it there.
+
+Measured (full run, ~3 s):
+
+```
+[sched] worker-a count 3581293, worker-b count 3671221 -- both advanced under forced preemption
+[sched] PASS: two never-yielding workers both ran (preemption is real)
+RING-U-OK
+[user] exit(42) via ecall
+[user] U-mode fault: scause=2 stval=0x0000000010002573 sepc=0x0000000040000000 -- terminating image (code 130)
+[user] PASS: privileged op contained (code 130), kernel intact
+[kernel] V4 complete; kernel reaches idle.
+```
+
+User text maps `PTE_U|R|X`, the user stack `PTE_U|R|W` — V3's W^X
+machinery met its user PTEs one phase after it was built (`stval` in
+the negative control is the `csrr` encoding itself: fetched, decoded,
+refused). Smoke: 36 → 44 assertions; claims: 25 → 32.
 
 #### Test gate
 

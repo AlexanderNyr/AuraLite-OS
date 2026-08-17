@@ -20,6 +20,8 @@
 #include "kernel/arch/riscv64/sbi.h"
 #include "kernel/arch/riscv64/trap.h"
 #include "kernel/arch/riscv64/plic.h"
+#include "kernel/arch/riscv64/thread_rv.h"
+#include "kernel/arch/riscv64/user_rv.h"
 
 /* ---- CSR helpers (names, not numbers, at every use site) ---------------- */
 
@@ -146,11 +148,12 @@ int trap_run_fault_probe(int64_t cause1, int64_t cause2,
 
 /* ---- dispatcher ----------------------------------------------------------- */
 
+static uint64_t boot_hartid_for_dump;
+
 static void dump_frame(const rv_trap_frame_t *f, uint64_t scause,
                        uint64_t stval)
 {
-    uint64_t hart = csr_read(sscratch); /* boot hart's id, parked there
-                                         * by trap_init for diagnostics */
+    uint64_t hart = boot_hartid_for_dump;
     puts_("  cpu=hart");
     put_dec(hart);
     puts_("  scause=");
@@ -192,7 +195,14 @@ void rv_trap(rv_trap_frame_t *f)
             uint64_t now = rv_rdtime();
             jitter_mix(now);
             ticks++;
+            sched_rv_tick();
             sbi_set_timer(now + tick_interval); /* re-arm; also clears STIP */
+            /* Preempt AFTER the re-arm -- the post-EOI placement:
+             * sbi_set_timer is what clears STIP, and a context switch
+             * before it would park this hart's timer until the
+             * interrupted thread happens to run again (the phase-6
+             * freeze on x86_64, inherited as a design input). */
+            sched_rv_maybe_preempt();
             return;
         }
         if (code == 9) {                        /* S-external -> PLIC */
@@ -221,6 +231,21 @@ void rv_trap(rv_trap_frame_t *f)
         f->regs[9] = (uint64_t)probe_jmpbuf;   /* regs[9] = x10 = a0 */
         return;
     }
+
+    /* U-mode ecall: the syscall path (D4 -- a7 number, a0-a5 args,
+     * a0 return).  sepc += 4 FIRST: sret must land on the instruction
+     * after the ecall, and an exit-unwind never comes back here. */
+    if (scause == 8) {
+        f->sepc += 4;
+        user_rv_syscall(f);
+        return;
+    }
+
+    /* Any other U-mode exception: contained, never fatal.  The image
+     * dies with 128+scause and the kernel thread that hosted it keeps
+     * running -- isr32's cs&3 check, SPP-flavoured. */
+    if (!(f->sstatus & (1UL << 8)) && user_rv_fault(f, scause, stval))
+        return;
 
     /* Exception.  The deliberate-fault self-test first: an expected
      * illegal instruction is named, then RESUMED PAST -- sepc += 4
@@ -284,5 +309,7 @@ void trap_init(uint32_t timebase_freq)
 
 void trap_set_hartid(uint64_t hartid)
 {
-    csr_write(sscratch, hartid);
+    /* V2-V3 parked this in sscratch; V4's trap entry owns that CSR
+     * now (the swap-and-test stack switch), so a plain variable. */
+    boot_hartid_for_dump = hartid;
 }
