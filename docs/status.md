@@ -171,6 +171,41 @@ Legend:
 | `/gcalc`, `/gedit`, `/gfiles`, `/gterm`, `/gsysmon`, `/gabout`, `/glaunch`, `/gusb` | 🧪 | GUI apps using `libauragui` v2.0; `/gusb` is the USB Manager for hotplug/storage status via `/usb`. `/gtheme` customizes window colors. |
 | `/gbrowser` | 🧪 | GUI browser (WEBVIEW_PLAN **W0–W8 complete**, renamed from `/apps/webview` in W8): tokeniser (122), DOM (65), layout (79), painting (42; reference hash 0xE57F068C host==guest), CSS (71; D4 subset), navigation (101; HTTP/1.1 **and HTTPS** since REALINTERNET_PLAN **X6** via the libahttp keep-alive client — connection reuse, POST/PUT, http→https redirects, `https://` default for scheme-less input, links/history), `<canvas data-scene="cube">` (21; libgl FBO, one-shot, 58 µs) — 501 host checks + QEMU assertions, all green. **W8 renamed it to `/apps/gbrowser`** and added a full GUI chrome (Back/Fwd/Home/Go buttons, address bar, hover-link status, page-title). See `docs/gbrowser.md`. |
 
+## i386 (32-bit x86) — I386_PLAN
+
+One image, two kernels: `make iso` ships `KERNEL.ELF` (x86_64) and
+`KERNEL32.ELF` (i386); BIOS Stage 2 picks by CPUID at boot. The i386
+kernel is a from-scratch sibling under `kernel/arch/i386/`, not a
+recompile of the 64-bit tree — shared portable code migrates in through
+`kernel/arch/arch.h` under the width-sweep ratchets
+(`tools/check_width_sweep.py`). CPU floor: i686 (PSE/CX8/CMOV, plan D1);
+older CPUs get an honest two-console refusal, 386 included.
+
+| Feature | Status | Notes |
+|---|---:|---|
+| Long-mode check + refusal (BL10) | ✅ | EFLAGS.ID → CPUID → LM bit; refusal on COM1 **and** VGA. Silent-hang defect fixed in I0. |
+| Dual-kernel boot chain | ✅ | `elf32.inc` + `pmode32.inc`; hand-off `ESI = boot_info_t`. Missing `KERNEL32.ELF` → refusal, not hang. |
+| GDT / IDT / PIC / PIT / 32-bit TSS | ✅ | 256 gates, error-code parity per vector; `[diag]` dumps in the R0 format. |
+| Non-PAE paging, higher half `0xC0100000` | ✅ | PSE 4 MiB direct map [0, 896 MiB) at `0xC0000000`; identity window dropped post-boot. |
+| **No NX** | ❌ by design | Non-PAE has no NX bit (plan D3). W^X for user pages is *unenforceable*; stated in the boot log. |
+| PMM / heap | ✅ | Shared `kernel/lib/bitmap.h`; E820 >4 GiB skipped-not-truncated (D6); same PASS self-tests as x86_64. |
+| Preemptive scheduler | ✅ | Round-robin, post-EOI preemption, BSP-only (plan D5 — SMP stays x86_64). |
+| Ring 3 + `int 0x80` | ✅ | AuraLite's own syscall numbers, Linux register convention (D4). Ring 3 faults contained, kernel survives. |
+| ELF32 loader + initrd | ✅ | Shared `initrd.tar`, i386 binaries under `/bin32`; each kernel refuses the other's ELF class. |
+| libc32 / init32 / shell | ✅ | `auralite#` interactive shell: SYS_READ (cooked), SYS_SPAWN (nested user images). Full libc port pending. |
+| VGA text console + PS/2 keyboard | ✅ | Mode 3 at `0xB8000`; scancode set 1, shift. Framebuffer/VBE graphics: pending. |
+| ATA PIO storage | ✅ | LBA28 on the boot controller; IDENTIFY + known-bytes read + write/readback/restore self-test. AHCI: waiting on a VFS consumer. |
+| e1000 + DHCP/ARP/ICMP | ✅ | 82540EM; SLIRP lease + gateway ARP + payload-verified echo. Sockets/TCP/DNS: pending the net-stack port. |
+| Crypto at 32-bit width | 🧪 | Symmetric suite (SHA/HMAC/HKDF/ChaCha20/Poly1305/AEAD) passes RFC vectors at `-m32`. **X25519/Ed25519/P-256 blocked**: `atls_fe.c` uses `__int128`; a 32-bit limb path is required first. |
+| VFS / FAT32 / ext2 / TCP / GUI | 🚧 | Residue tracked by ratchet 2 (x86_64-include count); lands as the shared subsystems finish the arch.h migration. |
+| Rust userspace / w32 / USB / BT / Wi-Fi | ❌ | Per plan §6: no `i686-unknown-none` target; w32 is PE32+ by design; USB et al. deferred. |
+| UEFI (`BOOTIA32.EFI`) | ❌ by design | BIOS/CSM only on i386 (plan D2). |
+
+Tests: six-case `i386_*_smoke.sh` family (~100 assertions) beside
+`cases/`, plus host gates (`test_width_sweep.sh`, `test_libatls_m32.sh`,
+`test_boot_info_width.c` with its `-malign-double` negative control) and
+`tools/check_i386_claims.py` tying I386_PLAN.md to the tree.
+
 ## Known low-priority limitations
 
 - **SMP scheduling is deliberately conservative.** APs are online, have CPU-local state and LAPIC timers, and enter the idle scheduler loop; normal user scheduling remains BSP-only until per-CPU run queues/TLB shootdown policy are completed.

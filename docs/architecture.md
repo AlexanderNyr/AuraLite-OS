@@ -90,6 +90,50 @@ kmain (kernel/kernel.c)
 Almost every subsystem above prints a `PASS`/`SKIP` line from a self-test that
 runs on every boot, so a serial log is a live status report rather than a trace.
 
+## The i386 boot flow (I386_PLAN)
+
+The same Stage 2 serves a second kernel.  After the unreal-mode
+self-test it asks the CPU (`lmcheck.inc`: EFLAGS.ID toggle → CPUID
+extended leaf → `LM` bit) and branches; a CPU below the i686 floor
+(PSE/CX8/CMOV) gets a two-console refusal instead of either kernel.
+
+```
+Stage 2 (BL3, shared with the 64-bit path up to here)
+   │  E820, A20, unreal mode, ACPI
+   │  check_long_mode (lmcheck.inc)
+   ├── long mode ────────────► KERNEL.ELF path (diagram above)
+   ▼  no long mode
+check_i686                     refuse below the floor (D1)
+   │  hhdm_offset := 0xC0000000 in boot_info_t
+   │  FAT32: load KERNEL32.ELF   (elf32.inc, refuses ELFCLASS64)
+   │  enter_prot32 (pmode32.inc): flat GDT, CR0.PE, ESP scratch
+   ▼
+        boot_info_t in ESI (the 32-bit register sibling of RDI)
+                   ▼
+_start (kernel/arch/i386/boot32.asm, .boot section, VMA = LMA)
+   │  build PSE page directory: identity + direct map at 0xC0000000
+   │  CR4.PSE, CR0.PG|WP ; jump higher-half ; zero .bss ; stack
+   ▼
+kmain32 (kernel/arch/i386/main32.c)
+   ├── uart32/vga32           two-sink console (COM1 + 80x25 text VGA)
+   ├── gdt_init()             flat Ring 0/3 + 32-bit TSS (esp0 = ring transition)
+   ├── idt_init()             256 gates (isr_stubs32.asm)
+   ├── pic32/pit32            8259A remap, 100 Hz
+   ├── paging32/pmm32/kheap32 identity window dropped; [pmm]/[vmm]/[heap] PASS
+   ├── kbd32_init()           PS/2 set 1 + polled UART RX, one input ring
+   ├── ata32/net32            PIO sector I/O self-test; DHCP+ARP+ICMP self-test
+   ├── sched32_init()         round-robin, BSP-only (D5), post-EOI preemption
+   ├── syscall32_init()       int 0x80, DPL=3, AuraLite numbers (D4)
+   ├── user32_selftest()      Ring 3 round-trip + #GP containment
+   ├── initrd32 + init32      shared initrd.tar, ELF32 from /bin32
+   └── shell32                auralite# on the merged console
+```
+
+The two kernels never share a binary artefact, only contracts: the
+`boot_info_t` layout (offset-checked across widths by
+`tests/unit/test_boot_info_width.c`), the syscall number table, and the
+portable sources that migrate in through `kernel/arch/arch.h` under the
+width-sweep ratchets.
 
 ## Interrupt handling
 

@@ -248,3 +248,84 @@ jobs:
           name: doom-logs
           path: build/integration-logs/
           if-no-files-found: ignore
+
+  # I386_PLAN I9: the 32-bit architecture job.  Builds the same `make iso`
+  # image (which already carries KERNEL32.ELF) and runs the i386 smoke
+  # family under qemu-system-i386, plus the host-side width gates.  A
+  # separate job rather than steps in qemu-integration so an i386 red is
+  # attributable at a glance -- the two kernels share contracts, not
+  # artefacts, and their failures deserve separate lines in the matrix.
+  i386-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & QEMU dependencies (i386 target included)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld nasm qemu-system-x86 python3 make gcc llvm \
+            mtools dosfstools gcc-multilib git
+          # qemu-system-x86 ships qemu-system-i386 on Debian/Ubuntu;
+          # assert rather than assume:
+          qemu-system-i386 --version
+
+      - name: Install Rust bare-metal target
+        run: |
+          rustup target add x86_64-unknown-none
+          rustc --version
+
+      - name: Build the dual-kernel ISO
+        run: |
+          make deps-check
+          make iso
+
+      - name: KERNEL32.ELF is in the image
+        run: |
+          mdir -i "build/auralite.iso@@$((256 * 512))" ::/ | grep -i KERNEL32
+        shell: bash
+
+      - name: Width-sweep ratchets + boot_info cross-width contract
+        run: bash tests/unit/test_width_sweep.sh
+
+      - name: Crypto vectors at 32-bit width (-m32)
+        run: bash tests/unit/test_libatls_m32.sh
+
+      - name: I386_PLAN claim check
+        run: |
+          python3 tools/check_i386_claims.py
+          python3 tools/check_i386_claims.py --selftest
+
+      - name: I0 -- refusal on a long-mode-less CPU
+        run: bash tests/integration/i386_refusal_smoke.sh
+
+      - name: I1 -- dual-kernel boot chain
+        run: bash tests/integration/i386_boot32_smoke.sh
+
+      - name: I2 -- CPU bring-up (GDT/IDT/PIC/PIT, named exceptions)
+        run: bash tests/integration/i386_cpu_smoke.sh
+
+      - name: I3 -- memory (PSE paging, PMM, heap)
+        run: bash tests/integration/i386_mm_smoke.sh
+
+      - name: I4 -- processes (scheduler, Ring 3, int 0x80)
+        run: bash tests/integration/i386_proc_smoke.sh
+
+      - name: I5 -- userspace (initrd, ELF32, init32)
+        run: bash tests/integration/i386_user_smoke.sh
+
+      - name: I7 -- interactive shell (auralite#)
+        run: bash tests/integration/i386_shell_smoke.sh
+
+      - name: I8 -- storage + network parity
+        run: bash tests/integration/i386_parity_smoke.sh
+
+      - name: Upload serial logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: i386-serial-logs
+          path: |
+            build/i386_*.log
+          if-no-files-found: ignore

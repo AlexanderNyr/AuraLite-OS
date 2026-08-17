@@ -1,6 +1,6 @@
 # AuraLite OS — i386 (32-bit x86) Support Plan
 
-## Status: IN PROGRESS 🚧 — I0–I8 complete, I9 pending
+## Status: COMPLETE ✅ — I0–I9 all delivered (scope per phase results; residue is ratchet-tracked)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -13,6 +13,7 @@
 | I6 — the pointer-width sweep | ✅ complete (ratchet armed; residue tracked by CI, see phase result) | `patches/I386_I6_sweep.patch` |
 | I7 — drivers on i386 | ✅ complete (console scope; net/storage re-scoped to I8, see phase result) | `patches/I386_I7_drivers.patch` |
 | I8 — filesystems, net, GUI parity | ✅ complete (bring-up parity; VFS/TCP/GUI residue named, see phase result) | `patches/I386_I8_parity.patch` |
+| I9 — CI matrix, docs, the honest table | ✅ complete | `patches/I386_I9_ci.patch` |
 | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
 | I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
 | I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
@@ -891,31 +892,48 @@ ports remain named residue (below), each with its measured blocker.
 
 ---
 
-### Phase I9 — CI matrix, docs, and the honest table
+### Phase I9 — CI matrix, docs, and the honest table ✅ COMPLETE
 
 **Objective:** both architectures build and smoke-test on every push, and
 the documentation stops implying x86_64-only facts are universal.
 
 #### Tasks
 
-- [ ] `.github/workflows`: an `ARCH=i386` job building `kernel32` + the
-      i386 initrd + the dual image, running `i386_refusal_smoke.sh`,
-      `i386_boot32_smoke.sh` and the I8 manifest.
-- [ ] `docs/status.md` gains an arch column (or per-arch rows) for every
-      feature the plan touched; `README.md` Quickstart documents the
-      single-image dual-arch behaviour and the D1 floor (i686).
-- [ ] `docs/architecture.md`: the i386 boot flow diagram beside the
-      existing one; `docs/syscall_abi.md`: the `int 0x80` register
-      contract beside the SYSCALL one.
-- [ ] `MATURITY_AUDIT.md`-style claim check: a script asserts this plan's
-      phase table agrees with the tree (the `AUDIT_A7` lesson — a plan
-      document that can drift, will).
+- [x] `.github/workflows/integration.yml` gains the **`i386-parity`
+      job**: builds the one dual-kernel image, asserts `KERNEL32.ELF`
+      is actually inside it (`mdir` on the FAT partition — a job that
+      boots a stale image tests nothing), runs the host width gates,
+      the claim check with its self-test, and all eight
+      `i386_*_smoke.sh` cases; serial logs uploaded on failure.  A
+      separate job, not steps in `qemu-integration`, so an i386 red is
+      attributable at a glance.
+- [x] `docs/status.md` gains the **i386 section**: 18 rows, three of
+      them honest ❌-by-design entries (no NX — non-PAE; no 32-bit
+      UEFI — D2; no Rust/w32 — §6) and the `__int128` crypto boundary
+      stated with its blocker, not glossed.
+- [x] `docs/architecture.md`: the i386 boot-flow diagram beside the
+      64-bit one, ending at `shell32`; the closing paragraph states
+      what the kernels share (contracts) and what they never share
+      (binary artefacts).  `docs/syscall_abi.md`: the `int 0x80`
+      register table beside the SYSCALL one, with the D4 same-numbers
+      decision and the TSS.esp0 stack-switching difference.
+- [x] `tools/check_i386_claims.py`: 22 claims tying each phase to
+      artefacts that only exist if the phase happened, plus two
+      structural checks (every ✅ table row must have a ✅ COMPLETE
+      heading; the Status header must name the delivered range).
+      Registered in `make test-unit` with `--selftest` (claims must go
+      red against a doctored tree).  Unlike its two predecessors, this
+      checker ships **before** the plan ever drifted — the AUDIT_A7
+      lesson applied prophylactically for once.
+- [x] `README.md` Boot paths: the i386 row (same bytes, CPUID-picked
+      kernel, i686 floor, pre-i686 refusal).
 
 #### Test gate
 
-- CI is green on both arch jobs from a clean clone; the claim-check
-  script fails when a phase row and the tree disagree (verified by a
-  deliberate one-line negative control during review).
+- The claim check passes against the tree and its self-test proves it
+  can fail ✔.  All eight i386 smokes + both host gates green locally
+  in the same sequence the CI job runs ✔.  The x86_64 suite untouched
+  (`bl4`/`bl7` + `make test-unit` green) ✔.
 
 #### Deliverable
 

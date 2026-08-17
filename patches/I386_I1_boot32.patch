@@ -1,0 +1,2132 @@
+From 95a7d7af55c53b8788b8453b5dde0dd77ca6a174 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 15:54:53 +0000
+Subject: [PATCH] I1 update
+
+---
+ CHANGELOG.md                           |   42 +
+ I386_PLAN.md                           |   59 +-
+ Makefile                               |   51 +-
+ SHA256SUMS                             |    2 +-
+ boot/bios/stage2/elf32.inc             |  188 +++++
+ boot/bios/stage2/pmode32.inc           |   81 ++
+ boot/bios/stage2/stage2_start.asm      |   93 ++-
+ kernel/arch/i386/stub/boot32.asm       |   61 ++
+ kernel/arch/i386/stub/kernel32.ld      |   63 ++
+ kernel/arch/i386/stub/main32.c         |  115 +++
+ patches/I386_I0_lmcheck.patch          | 1010 ++++++++++++++++++++++++
+ tests/integration/i386_boot32_smoke.sh |   98 +++
+ tools/mkisoimage_dual.sh               |    8 +
+ 13 files changed, 1837 insertions(+), 34 deletions(-)
+ create mode 100644 boot/bios/stage2/elf32.inc
+ create mode 100644 boot/bios/stage2/pmode32.inc
+ create mode 100644 kernel/arch/i386/stub/boot32.asm
+ create mode 100644 kernel/arch/i386/stub/kernel32.ld
+ create mode 100644 kernel/arch/i386/stub/main32.c
+ create mode 100644 patches/I386_I0_lmcheck.patch
+ create mode 100755 tests/integration/i386_boot32_smoke.sh
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 5f440bf..6121c10 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,48 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [i386 Phase I1 — The dual-kernel boot chain] 2026-08-16
++
++`I386_PLAN.md` phase I1: the same `make iso` image now carries a second
++kernel, and BIOS Stage 2 picks by CPUID. A 32-bit CPU that yesterday got
++I0's halt now boots `KERNEL32.ELF` into a protected-mode stub that proves
++the entire 32-bit hand-off chain end to end.
++
++- **`boot/bios/stage2/elf32.inc` (new)**: ELF32 loader — class check
++  (each loader refuses the other's ELFCLASS, so a mis-copied kernel fails
++  at parse time, not jump time), 32-bit phdr walk, PT_LOAD copy through
++  unreal `FS`. `p_paddr` is the destination verbatim: the stub is linked
++  VMA = LMA at `0x00100000`; paging belongs to the i386 kernel (I3).
++- **`boot/bios/stage2/pmode32.inc` (new)**: flat 32-bit GDT, `CR0.PE`,
++  far jump, segment reload, and the 32-bit hand-off contract: **ESI =
++  `boot_info_t` phys** (the register sibling of the 64-bit path's RDI).
++- **Stage 2**: I0's halt becomes a branch. The BL10 verdict is latched in
++  `lm_absent`; the FAT stage looks up `KERNEL32.ELF` instead of
++  `KERNEL.ELF` on the 32-bit path, and the final hand-off calls
++  `enter_prot32` instead of building 4-level tables. The refusal remains
++  for no-LM + no-KERNEL32.ELF (`.fat_no_kernel` now distinguishes the
++  two paths and never falls through to a success banner).
++- **`kernel/arch/i386/stub/` (new)**: `boot32.asm` (zero `.bss`, own
++  stack, cdecl push of ESI), `main32.c` (COM1 by port I/O, banner,
++  `boot_info_t` magic verdict, mmap/initrd echo), `kernel32.ld`. The stub
++  is scoped to die in I2; nothing links against it.
++- **`Makefile`**: `kernel32` target — same clang/lld, one width down
++  (`--target=i686-elf`, `nasm -f elf32`, `ld.lld -m elf_i386`); zero new
++  REQUIRED_TOOLS. `kernel/arch/i386/` is excluded from the x86_64 kernel
++  wildcard. `iso-dual` builds and ships `/KERNEL32.ELF`.
++- **The bug the canary caught**: the first stub build printed
++  `mmap entries: 0` — the i386 psABI aligns `uint64_t` to 4 bytes where
++  AMD64 uses 8, so `boot_info.h` compiled to different `mmap[]` offsets
++  at the two widths and the stub read the map 8 bytes early. Fixed with
++  `-malign-double` in `CFLAGS32`; the smoke test asserts the count is
++  non-zero so the contract cannot silently regress. This is I6's thesis
++  in miniature, found by the first 32-bit compile in the tree's history.
++- Tests: `tests/integration/i386_boot32_smoke.sh` — 13 assertions across
++  the i386 boot, the x86_64 no-regression run, and the `mdel` negative
++  control (image minus `KERNEL32.ELF` refuses instead of hanging).
++  `bl4_boot_smoke.sh` / `bl7_dual_smoke.sh` verified green after the
++  Stage 2 changes.
++
+ ## [i386 Phase I0 — An honest refusal on a 32-bit CPU] 2026-08-16
+ 
+ `I386_PLAN.md` phase I0, the first phase of the i386 support plan and the
+diff --git a/I386_PLAN.md b/I386_PLAN.md
+index 3df1507..0a85fca 100644
+--- a/I386_PLAN.md
++++ b/I386_PLAN.md
+@@ -1,11 +1,11 @@
+ # AuraLite OS — i386 (32-bit x86) Support Plan
+ 
+-## Status: IN PROGRESS 🚧 — I0 complete, I1–I9 pending
++## Status: IN PROGRESS 🚧 — I0–I1 complete, I2–I9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | I0 — an honest refusal on a 32-bit CPU | ✅ complete | `patches/I386_I0_lmcheck.patch` |
+-| I1 — the dual-kernel boot chain | pending | `patches/I386_I1_boot32.patch` |
++| I1 — the dual-kernel boot chain | ✅ complete | `patches/I386_I1_boot32.patch` |
+ | I2 — `kernel/arch/i386` CPU bring-up | pending | `patches/I386_I2_cpu.patch` |
+ | I3 — memory: non-PAE paging, PMM, heap | pending | `patches/I386_I3_mm.patch` |
+ | I4 — threads, scheduler, Ring 3, `int 0x80` | pending | `patches/I386_I4_proc.patch` |
+@@ -267,7 +267,7 @@ long mode` and boot to the kernel banner unchanged. The smoke test's
+ 
+ ---
+ 
+-### Phase I1 — The dual-kernel boot chain
++### Phase I1 — The dual-kernel boot chain ✅ COMPLETE
+ 
+ **Objective:** the same image carries `KERNEL32.ELF`, and a 32-bit CPU
+ boots into 32-bit code that proves the hand-off — before a single line of
+@@ -281,32 +281,63 @@ the magic check — is exactly what the real i386 kernel needs in I2.
+ 
+ #### Tasks
+ 
+-- [ ] `boot/bios/stage2/elf32.inc` (new): ELF32 sibling of `elf.inc` —
++- [x] `boot/bios/stage2/elf32.inc` (new): ELF32 sibling of `elf.inc` —
+       class check, `e_entry`/`e_phoff`/phdr walk at the 32-bit offsets,
+       PT_LOAD copy to `p_paddr` through unreal `FS`.
+-- [ ] `boot/bios/stage2/pmode32.inc` (new): flat 32-bit GDT
++- [x] `boot/bios/stage2/pmode32.inc` (new): flat 32-bit GDT
+       (code `0x00CF9A…`, data `0x00CF92…`), `CR0.PE`, far jump, segment
+       reload, `ESP` at `0x9F000`, **`ESI` = `boot_info_t` phys** (the
+       32-bit hand-off contract; RDI is the 64-bit one), jump to
+       `[elf32_entry_addr]`. Never returns.
+-- [ ] Stage 2: I0's refusal becomes a *fallback* — `lm_ok` is recorded at
+-      check time; after `fat_init` the chain branches: long mode →
+-      `KERNEL.ELF` (unchanged 64-bit path), no long mode →
+-      `KERNEL32.ELF` → `elf32_load` → `enter_prot32`. The refusal
+-      diagnostic remains for the one case that still deserves it: no
+-      long mode **and** no `KERNEL32.ELF` on the partition.
+-- [ ] `kernel/arch/i386/stub/` (new): `boot32.asm` (stack, push ESI, call
++- [x] Stage 2: I0's refusal becomes a *fallback* — the verdict is
++      recorded in `lm_absent` at check time; after `fat_init` the chain
++      branches: long mode → `KERNEL.ELF` (unchanged 64-bit path), no
++      long mode → `KERNEL32.ELF` → `elf32_load` → `enter_prot32`. The
++      refusal diagnostic remains for the one case that still deserves
++      it: no long mode **and** no `KERNEL32.ELF` on the partition.
++- [x] `kernel/arch/i386/stub/` (new): `boot32.asm` (stack, push ESI, call
+       C), `main32.c` (COM1 init by port I/O, banner, `boot_info_t` magic
+       verdict, `hlt` loop), `kernel32.ld` (ELF32, linked at physical
+       `0x00100000`, VMA = LMA — no paging yet).
+-- [ ] `Makefile`: `kernel32` target (`--target=i686-elf`, `nasm -f
++- [x] `Makefile`: `kernel32` target (`--target=i686-elf`, `nasm -f
+       elf32`, `ld.lld -m elf_i386`); `iso-dual` builds it;
+       `tools/mkisoimage_dual.sh` adds `/KERNEL32.ELF` to the FAT root.
+-- [ ] `tests/integration/i386_boot32_smoke.sh` (new): the full matrix —
++- [x] `tests/integration/i386_boot32_smoke.sh` (new): the full matrix —
+       i386 boots the stub with `magic OK`; x86_64 boots the real kernel
+       from the same bytes; and an image with `KERNEL32.ELF` deleted
+       (`mdel` on a copy) still produces I0's refusal rather than a hang.
+ 
++#### Result
++
++Delivered as specified. Measured under `qemu-system-i386` on the real
++`make iso` image:
++
++```
++[BL10] taking the 32-bit path: KERNEL32.ELF
++[BL4] FAT32 BPB parsed
++[BL4] kernel.elf located
++[BL10] ELF32 PT_LOAD segments copied to phys
++[BL10] entering protected mode; jumping to kernel32 _start
++[kernel32] AuraLite i386 stub alive
++[kernel32] boot_info handoff (ESI) magic OK
++[kernel32] mmap entries: 0x00000006
++[kernel32] initrd size: 0x00836800 bytes
++```
++
++The smoke test's 13 assertions pass, including the `mdel` negative
++control (refusal, no stub, no hang) and the x86_64 no-regression case;
++`bl4_boot_smoke.sh` and `bl7_dual_smoke.sh` stay green.
++
++One real bug was found by the stub's own canary and is worth recording,
++because it is the I6 sweep's thesis in miniature: the first build printed
++`mmap entries: 0`. The i386 System V psABI aligns `uint64_t` to 4 bytes,
++the AMD64 one to 8, so the same `boot_info.h` compiled to different
++`mmap[]` offsets at the two widths and the stub read the map 8 bytes
++early. Fixed with `-malign-double` in `CFLAGS32` (both ABIs then agree on
++every offset), asserted forever after by the smoke test's "mmap count
++non-zero" line. A hand-off struct shared across pointer widths is a
++contract only when a test enforces it.
++
+ #### Test gate
+ 
+ - `qemu-system-i386`: `[BL10] entering protected mode` →
+diff --git a/Makefile b/Makefile
+index 58c6989..3fa24f2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -50,12 +50,14 @@ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
+ # The linker script fixes the higher-half address; no --image-base needed.
+ LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
+ 
+-KERNEL_SRCS := $(shell find kernel drivers -name '*.c') w32/src/w32_pe.c
++KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*') w32/src/w32_pe.c
+ # WIN32_PLAN.md W32-3: the kernel PE loader calls the same parser the host
+ # unit test and fuzz corpus exercise (D2 -- one implementation, tested once).
+ # w32/src/ is freestanding C with no libc dependency, so it compiles with the
+ # kernel CFLAGS unchanged.
+-KERNEL_ASMS := $(shell find kernel drivers -name '*.asm')
++# I386_PLAN I1: kernel/arch/i386/ is excluded from the x86_64 kernel -- it
++# builds through the separate kernel32 target with the i686 toolchain flags.
++KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*')
+ # NOTE: a .c and .asm file MUST NOT share a base name (e.g. foo.c + foo.asm),
+ # because both compile to the same object path build/.../foo.o, which would
+ # collide and double-link. Keep assembly stubs named distinctly (e.g.
+@@ -92,6 +94,49 @@ deps-check:
+ 
+ kernel: $(KERNEL_ELF)
+ 
++# =============================================================================
++# I386_PLAN I1: the i386 boot stub (KERNEL32.ELF).
++#
++# Same clang/lld toolchain, one width down (--target=i686-elf, nasm -f
++# elf32, ld.lld -m elf_i386) -- deps-check does not grow.  The stub is
++# the 32-bit hand-off proof, not the ported kernel; phase I2 replaces it
++# with the real kmain32 build.  -mno-sse et al. for the same reason the
++# 64-bit kernel sets them; i386 additionally gets -mfpmath=387 territory
++# only when userspace arrives (I5) -- the stub does no floating point.
++# =============================================================================
++KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
++KERNEL32_DIR  := kernel/arch/i386/stub
++# -malign-double: the i386 System V psABI aligns uint64_t to 4 bytes, the
++# AMD64 one to 8.  boot_info_t is written by 16-bit assembly against
++# offsets generated from the 64-bit layout (build/boot_offsets.inc), so a
++# plain -m32 compile silently reads mmap[] 8 bytes early -- measured: the
++# I1 stub printed "mmap entries: 0" until this flag landed.  With
++# -malign-double both ABIs agree on every offset in the struct, and the
++# stub asserts that at runtime via the magic + mmap_count checks.
++CFLAGS32      := --target=i686-elf \
++                 -std=c11 -ffreestanding -fno-stack-protector \
++                 -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2 \
++                 -malign-double \
++                 -fno-omit-frame-pointer \
++                 -Wall -Wextra -Wno-unused-parameter \
++                 -O2 -g -I .
++
++$(BUILD_DIR)/kernel32/boot32.o: $(KERNEL32_DIR)/boot32.asm
++	@mkdir -p $(dir $@)
++	$(AS) -f elf32 -o $@ $<
++
++$(BUILD_DIR)/kernel32/main32.o: $(KERNEL32_DIR)/main32.c boot/shared/boot_info.h
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGS32) -c $< -o $@
++
++$(KERNEL32_ELF): $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o $(KERNEL32_DIR)/kernel32.ld
++	$(LD) -m elf_i386 -nostdlib -static -T $(KERNEL32_DIR)/kernel32.ld \
++	    $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o -o $@
++	@echo "  [kernel32] $@ ($$(du -h $@ | cut -f1))"
++
++.PHONY: kernel32
++kernel32: $(KERNEL32_ELF)
++
+ # =============================================================================
+ # BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
+ # =============================================================================
+@@ -1182,7 +1227,7 @@ ESP_MB ?= 48
+ export ESP_MB
+ 
+ .PHONY: iso-dual
+-iso-dual: deps-check kernel $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
++iso-dual: deps-check kernel kernel32 $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
+ 	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)
+ 
+ # ---- BL8: `make iso` uses the custom dual-boot loader ---------------------
+diff --git a/SHA256SUMS b/SHA256SUMS
+index ef7f8da..443dc85 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-63e5ba084e9ef7446025aadfb66d8035450cdab125b4e5ff993be94d04bfdf69  auralite.iso
++e12bec518b86873aa0000425a3b5ed33d60d465c9f4f9e250f9531d4b73632da  auralite.iso
+ 766ec2581f682d07b02cb4506b8ec62014d2463ce38ac02094434bd6c97f84be  kernel.elf
+ e8cbc0965f7e90221d9842fd1ffab394f1b0819759e3de10f7e807c64916a0f1  initrd.tar
+diff --git a/boot/bios/stage2/elf32.inc b/boot/bios/stage2/elf32.inc
+new file mode 100644
+index 0000000..5f2b4c7
+--- /dev/null
++++ b/boot/bios/stage2/elf32.inc
+@@ -0,0 +1,188 @@
++; =============================================================================
++; boot/bios/stage2/elf32.inc -- ELF32 loader (real mode + unreal FS).
++;
++; Sibling of elf.inc (I386_PLAN I1).  Consumes an ELF32 image previously
++; staged at a flat linear address by fat_load, walks the 32-bit program
++; headers, and copies every PT_LOAD segment to its physical destination.
++;
++; Unlike the 64-bit kernel (linked higher-half, phys = p_paddr - VMA),
++; the i386 kernel/stub is linked with VMA = LMA = 0x00100000 -- paging
++; does not exist yet on this path, so p_paddr IS the destination and no
++; translation is needed.  That asymmetry is deliberate: the 32-bit
++; kernel enables paging itself in phase I3, exactly as the original
++; kernel did before the loader took the job over.
++;
++; ELF32 field offsets (System V ABI, Elf32_Ehdr / Elf32_Phdr):
++;   e_entry     @24 (4)      p_type   @ 0 (4)
++;   e_phoff     @28 (4)      p_offset @ 4 (4)
++;   e_phentsize @42 (2)      p_paddr  @12 (4)
++;   e_phnum     @44 (2)      p_filesz @16 (4)
++;                            p_memsz  @20 (4)
++;
++; Requires unreal mode (FS lifted to 4 GiB flat).
++;
++; Public entry
++; ------------
++;   elf32_load(EAX = image flat linear address)
++;       On success: CF=0, [elf32_entry_addr] = 4-byte kernel entry point.
++;       On failure: CF=1 (bad magic, or ELFCLASS != 1).
++; =============================================================================
++
++; Persistent state.
++elf32_entry_addr:     dd 0                 ; kernel32 _start physical address
++_elf32_image_base:    dd 0
++_elf32_phdr_off:      dd 0
++_elf32_phnum:         dd 0
++_elf32_phentsize:     dd 0
++
++ELFCLASS32            equ 1
++
++; ---------------------------------------------------------------------------
++; elf32_load(EAX = image flat address)
++; ---------------------------------------------------------------------------
++elf32_load:
++    push eax
++    push ebx
++    push ecx
++    push edx
++    push esi
++    push edi
++    push ebp
++
++    mov  [_elf32_image_base], eax
++    mov  esi, eax                         ; ESI = flat ptr to Ehdr
++
++    ; Magic: bytes 0..3 == { 0x7F, 'E', 'L', 'F' }.
++    mov  eax, [fs:esi]
++    cmp  eax, 0x464C457F
++    jne  .fail
++
++    ; ELFCLASS32 (byte at offset 4 == 1).  The 64-bit loader checks for
++    ; 2 here; each loader refuses the other's class so a mis-copied
++    ; kernel file fails loudly at parse time, not at jump time.
++    mov  al, [fs:esi + 4]
++    cmp  al, ELFCLASS32
++    jne  .fail
++
++    ; e_entry (4 bytes at offset 24).
++    mov  eax, [fs:esi + 24]
++    mov  [elf32_entry_addr], eax
++
++    ; e_phoff (4 bytes at offset 28).
++    mov  eax, [fs:esi + 28]
++    mov  [_elf32_phdr_off], eax
++
++    ; e_phentsize (u16 @42), e_phnum (u16 @44).
++    movzx eax, word [fs:esi + 42]
++    mov  [_elf32_phentsize], eax
++    movzx eax, word [fs:esi + 44]
++    mov  [_elf32_phnum], eax
++
++    ; Iterate program headers.
++    xor  ecx, ecx                         ; ECX = index
++.ph_loop:
++    cmp  ecx, [_elf32_phnum]
++    jae  .done
++
++    ; Flat address of this phdr: image_base + phoff + i*phentsize.
++    mov  eax, ecx
++    mul  dword [_elf32_phentsize]         ; EDX:EAX = i * phentsize
++    add  eax, [_elf32_phdr_off]
++    add  eax, [_elf32_image_base]
++    mov  edi, eax                         ; EDI = phdr flat addr
++
++    ; Skip non-PT_LOAD.  (PT_LOAD equ 1 comes from elf.inc, which is
++    ; always included alongside this file.)
++    mov  eax, [fs:edi + 0]                ; p_type
++    cmp  eax, PT_LOAD
++    jne  .next
++
++    push ecx
++    call _elf32_copy_segment              ; consumes EDI = phdr addr
++    pop  ecx
++
++.next:
++    inc  ecx
++    jmp  .ph_loop
++
++.done:
++    pop  ebp
++    pop  edi
++    pop  esi
++    pop  edx
++    pop  ecx
++    pop  ebx
++    pop  eax
++    clc
++    ret
++.fail:
++    pop  ebp
++    pop  edi
++    pop  esi
++    pop  edx
++    pop  ecx
++    pop  ebx
++    pop  eax
++    stc
++    ret
++
++; ---------------------------------------------------------------------------
++; Internal: copy one PT_LOAD segment.  EDI = flat address of the Phdr.
++; Same dword-then-tail copy and BSS zero-fill as the 64-bit sibling.
++; Trashes EAX, EBX, ECX, EDX, ESI, EDI.
++; ---------------------------------------------------------------------------
++_elf32_copy_segment:
++    push ebp
++
++    ; src = image_base + p_offset.
++    mov  esi, [fs:edi + 4]                ; p_offset
++    add  esi, [_elf32_image_base]         ; ESI = source flat
++
++    ; dst = p_paddr, verbatim (VMA = LMA, see header comment).
++    mov  ebp, [fs:edi + 12]               ; EBP = dst flat
++
++    ; filesz / memsz.
++    mov  ebx, [fs:edi + 16]               ; p_filesz
++    mov  edx, [fs:edi + 20]               ; p_memsz
++
++.copy_dwords:
++    cmp  ebx, 4
++    jb   .copy_tail
++    mov  eax, [fs:esi]
++    mov  [fs:ebp], eax
++    add  esi, 4
++    add  ebp, 4
++    sub  ebx, 4
++    jmp  .copy_dwords
++.copy_tail:
++    test ebx, ebx
++    jz   .zbss
++    mov  al, [fs:esi]
++    mov  [fs:ebp], al
++    inc  esi
++    inc  ebp
++    dec  ebx
++    jmp  .copy_tail
++
++.zbss:
++    ; Zero-fill (memsz - filesz) bytes; EBP points at dst + filesz.
++    mov  ecx, edx
++    sub  ecx, [fs:edi + 16]               ; ECX = bss bytes
++    xor  eax, eax
++.zloop_dwords:
++    cmp  ecx, 4
++    jb   .zloop_tail
++    mov  [fs:ebp], eax
++    add  ebp, 4
++    sub  ecx, 4
++    jmp  .zloop_dwords
++.zloop_tail:
++    test ecx, ecx
++    jz   .cs_done
++    mov  byte [fs:ebp], 0
++    inc  ebp
++    dec  ecx
++    jmp  .zloop_tail
++.cs_done:
++    pop  ebp
++    ret
+diff --git a/boot/bios/stage2/pmode32.inc b/boot/bios/stage2/pmode32.inc
+new file mode 100644
+index 0000000..a7ccebb
+--- /dev/null
++++ b/boot/bios/stage2/pmode32.inc
+@@ -0,0 +1,81 @@
++; =============================================================================
++; boot/bios/stage2/pmode32.inc -- transition real mode -> 32-bit protected
++; mode and jump to the i386 kernel (I386_PLAN I1).
++;
++; This is the 32-bit sibling of longmode.inc.  The hand-off contract is
++; the same boot_info_t, differently delivered:
++;
++;   64-bit path: boot_info_t phys in RDI  (System V AMD64 argument 0)
++;   32-bit path: boot_info_t phys in ESI  (register parameter; the i386
++;                stub's boot32.asm pushes it for the cdecl C entry)
++;
++; ESI rather than the i386 cdecl stack because there IS no C stack yet at
++; the jump -- the kernel's own entry code sets one up, exactly as the
++; 64-bit _start does, and a register survives that; a stack argument
++; would have to be re-pushed anyway.
++;
++; Sequence (Intel SDM Vol.3 s.9.9.1):
++;   1. cli, load a flat 32-bit GDT (null / code32 / data32).
++;   2. CR0.PE = 1.
++;   3. Far-jump into the 32-bit code segment (serialises, loads CS).
++;   4. Reload data segments with the flat data selector.
++;   5. ESP to a low-memory scratch stack (kernel replaces it).
++;   6. ESI = boot_info_t phys, jump to [elf32_entry_addr].
++;
++; No paging is enabled here -- the i386 kernel owns that (phase I3), the
++; same division of labour the original kernel had before BL4 moved page
++; tables into the loader.  This routine NEVER returns.
++; =============================================================================
++
++; Flat 32-bit GDT.  Base 0, limit 4 GiB (G=1), D=1.
++align 8
++gdt32_start:
++    dq  0x0000000000000000                  ; 0x00 null
++    dq  0x00CF9A000000FFFF                  ; 0x08 code32 (D=1, R/E, DPL=0)
++    dq  0x00CF92000000FFFF                  ; 0x10 data32 (R/W, DPL=0)
++gdt32_end:
++
++gdt32_ptr:
++    dw  gdt32_end - gdt32_start - 1
++    dd  gdt32_start
++
++; ---------------------------------------------------------------------------
++; enter_prot32 -- takes over the CPU permanently.
++;
++; On entry: unreal mode active (A20 on, real-mode segments),
++;           boot_info_t filled at BOOT_INFO_PHYS,
++;           [elf32_entry_addr] holds the kernel32 physical entry point.
++; On exit : does not return.
++; ---------------------------------------------------------------------------
++enter_prot32:
++    cli
++    lgdt [gdt32_ptr]
++
++    mov  eax, cr0
++    or   eax, (1 << 0)                     ; CR0.PE
++    mov  cr0, eax
++
++    ; Far jump to flush the prefetch queue and load the 32-bit CS.
++    jmp  dword 0x08:.pm32
++
++bits 32
++.pm32:
++    mov  ax, 0x10                          ; flat data selector
++    mov  ds, ax
++    mov  es, ax
++    mov  fs, ax
++    mov  gs, ax
++    mov  ss, ax
++
++    ; Scratch stack just under the EBDA floor; the kernel entry
++    ; replaces it with its own .bss stack immediately.
++    mov  esp, 0x0009F000
++
++    ; Hand-off: ESI = boot_info_t physical address.
++    mov  esi, BOOT_INFO_PHYS
++
++    ; Indirect jump to the ELF32 entry point.
++    mov  eax, [elf32_entry_addr]
++    jmp  eax
++
++bits 16
+diff --git a/boot/bios/stage2/stage2_start.asm b/boot/bios/stage2/stage2_start.asm
+index 0f4c454..a00f00a 100644
+--- a/boot/bios/stage2/stage2_start.asm
++++ b/boot/bios/stage2/stage2_start.asm
+@@ -184,28 +184,32 @@ stage2_entry:
+     call uart16_puts
+ .unreal_done:
+ 
+-    ; ---- Long-mode capability check (BL10 / I386_PLAN I0) -----------
+-    ; Everything after this point commits the CPU to the 64-bit path:
+-    ; WRMSR against IA32_EFER and a far jump into an L-bit segment.
+-    ; Neither is defined on a CPU without long mode, and the observed
+-    ; behaviour there (qemu-system-i386) is a silent hang right after
+-    ; the "entering long mode" banner.  Ask first.  A CPU that answers
+-    ; "no" gets a diagnostic on BOTH the serial port and the VGA text
+-    ; screen -- the machine this fires on may have no serial cable.
++    ; ---- Long-mode capability check (BL10 / I386_PLAN I0+I1) --------
++    ; Everything on the 64-bit path commits the CPU to WRMSR against
++    ; IA32_EFER and a far jump into an L-bit segment.  Neither is
++    ; defined on a CPU without long mode, and the observed behaviour
++    ; there (qemu-system-i386) was a silent hang right after the
++    ; "entering long mode" banner.  Ask first.
++    ;
++    ; I0 turned the answer "no" into a halt with a diagnostic.  I1
++    ; turns it into a *branch*: the verdict is recorded here and the
++    ; FAT stage below loads KERNEL32.ELF instead of KERNEL.ELF.  The
++    ; refusal remains for the one case that still deserves it -- no
++    ; long mode AND no 32-bit kernel on the partition (.fat_no_kernel).
+     call check_long_mode
+     jnc  .lm_ok
++    mov  byte [lm_absent], 1
+     mov  si, msg_no_lm_1
+     call uart16_puts
+     call vga_puts
+-    mov  si, msg_no_lm_2
++    mov  si, msg_lm_32path
+     call uart16_puts
+     call vga_puts
+-.lm_hang:
+-    hlt
+-    jmp  .lm_hang
++    jmp  .lm_done
+ .lm_ok:
+     mov  si, msg_lm_ok
+     call uart16_puts
++.lm_done:
+ 
+     ; ---- ACPI MADT CPU enumeration (BL9.smp) ------------------------
+     ; Locate the RSDP, then walk RSDT/XSDT -> MADT to discover every
+@@ -244,8 +248,14 @@ stage2_entry:
+     mov  si, msg_fat_init_ok
+     call uart16_puts
+ 
+-    ; Look up KERNEL.ELF -- 11-byte 8.3, space-padded, uppercase.
++    ; Look up the kernel this CPU can execute (I386_PLAN I1):
++    ; KERNEL.ELF (x86_64) when long mode exists, KERNEL32.ELF (i386)
++    ; when it does not.  11-byte 8.3, space-padded, uppercase.
+     mov  si, name_kernel
++    cmp  byte [lm_absent], 0
++    je   .kname_done
++    mov  si, name_kernel32
++.kname_done:
+     call fat_find
+     jc   .fat_no_kernel
+     mov  si, msg_fat_found
+@@ -268,12 +278,26 @@ stage2_entry:
+     ; Parse the ELF and copy its PT_LOAD segments to their physical
+     ; addresses.  Requires FS still be in unreal-mode flat form; we
+     ; never touched FS after go_unreal, so we are fine.
++    ;
++    ; Class dispatch (I1): each loader validates its own ELFCLASS, so
++    ; a KERNEL32.ELF that is accidentally a 64-bit binary (or vice
++    ; versa) fails loudly here rather than at the jump.
++    cmp  byte [lm_absent], 0
++    jne  .parse_elf32
+     mov  eax, 0x00200000
+     mov  edx, [fat_result_size]
+     call elf_load
+     jc   .elf_fail
+     mov  si, msg_elf_ok
+     call uart16_puts
++    jmp  .elf_parsed
++.parse_elf32:
++    mov  eax, 0x00200000
++    call elf32_load
++    jc   .elf_fail
++    mov  si, msg_elf32_ok
++    call uart16_puts
++.elf_parsed:
+ 
+     ; Load the optional initrd into the upper half of the kernel's fixed
+     ; 0..32 MiB early-boot reservation.  The PMM keeps this region allocated,
+@@ -319,6 +343,10 @@ stage2_entry:
+     call uart16_puts
+ .initrd_done:
+ 
++    ; ---- Final hand-off: one of two exits, chosen by the BL10 verdict.
++    cmp  byte [lm_absent], 0
++    jne  .go_prot32
++
+     ; Build the 4-level page tables at PT_BASE.  Uses FS (unreal flat).
+     call build_page_tables
+     mov  si, msg_pt_ok
+@@ -333,11 +361,36 @@ stage2_entry:
+     ; unreachable
+     jmp  .fat_done
+ 
++.go_prot32:
++    ; 32-bit path (I1): no page tables here -- the i386 kernel enables
++    ; paging itself in phase I3.  enter_prot32 never returns.
++    mov  si, msg_pm32_go
++    call uart16_puts
++    call enter_prot32
++    ; unreachable
++    jmp  .fat_done
++
+ .elf_fail:
+     mov  si, msg_elf_fail
+     call uart16_puts
+     jmp  .fat_done
+ .fat_no_kernel:
++    ; On the 32-bit path a missing KERNEL32.ELF is the I0 refusal case:
++    ; the CPU cannot run the 64-bit kernel and the partition carries no
++    ; 32-bit one.  Say so on both consoles and halt (never fall through
++    ; to the "done" banner, which would read like success).
++    cmp  byte [lm_absent], 0
++    je   .fat_no_kernel64
++    mov  si, msg_no_k32
++    call uart16_puts
++    call vga_puts
++    mov  si, msg_no_lm_2
++    call uart16_puts
++    call vga_puts
++.no_k32_hang:
++    hlt
++    jmp  .no_k32_hang
++.fat_no_kernel64:
+     mov  si, msg_fat_no_kernel
+     call uart16_puts
+     jmp  .fat_done
+@@ -369,8 +422,12 @@ msg_disk_fail:   db "[BL3] disk read FAIL", 0x0D, 0x0A, 0
+ msg_unreal_ok:   db "[BL3] unreal mode OK", 0x0D, 0x0A, 0
+ msg_unreal_fail: db "[BL3] unreal mode FAIL", 0x0D, 0x0A, 0
+ msg_lm_ok:       db "[BL10] CPU supports long mode", 0x0D, 0x0A, 0
+-msg_no_lm_1:     db "[BL10] this CPU has no long mode (x86_64); AuraLite needs a 64-bit CPU", 0x0D, 0x0A, 0
++msg_no_lm_1:     db "[BL10] this CPU has no long mode (x86_64)", 0x0D, 0x0A, 0
+ msg_no_lm_2:     db "[BL10] halting -- see I386_PLAN.md for the 32-bit kernel roadmap", 0x0D, 0x0A, 0
++msg_lm_32path:   db "[BL10] taking the 32-bit path: KERNEL32.ELF", 0x0D, 0x0A, 0
++msg_no_k32:      db "[BL10] no KERNEL32.ELF on the boot partition; cannot boot this CPU", 0x0D, 0x0A, 0
++msg_elf32_ok:    db "[BL10] ELF32 PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
++msg_pm32_go:     db "[BL10] entering protected mode; jumping to kernel32 _start", 0x0D, 0x0A, 0
+ msg_acpi_rsdp_ok:   db "[BL9] ACPI RSDP found", 0x0D, 0x0A, 0
+ msg_acpi_no_rsdp:   db "[BL9] ACPI RSDP not found; BSP-only", 0x0D, 0x0A, 0
+ msg_acpi_madt_done: db "[BL9] ACPI MADT parsed", 0x0D, 0x0A, 0
+@@ -390,10 +447,12 @@ msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0
+ msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
+ 
+ ; File names in 8.3 uppercase, space-padded, 11 bytes exact.
+-name_kernel: db "KERNEL  ELF"
+-name_initrd: db "INITRD  TAR"
++name_kernel:   db "KERNEL  ELF"
++name_kernel32: db "KERNEL32ELF"
++name_initrd:   db "INITRD  TAR"
+ 
+ boot_drive: db 0
++lm_absent:  db 0        ; BL10 verdict: 1 = no long mode, take the 32-bit path
+ 
+ ; --------------------------------------------------------------------------
+ ; Included modules (order matters only for symbol resolution)
+@@ -435,8 +494,10 @@ vga_puts:
+ %include "boot/bios/stage2/acpi.inc"
+ %include "boot/bios/stage2/fat.inc"
+ %include "boot/bios/stage2/elf.inc"
++%include "boot/bios/stage2/elf32.inc"
+ %include "boot/bios/stage2/paging.inc"
+ %include "boot/bios/stage2/longmode.inc"
++%include "boot/bios/stage2/pmode32.inc"
+ 
+ ; --------------------------------------------------------------------------
+ ; Padding: Stage 2 must fit in the 63 KiB the MBR loads.  We pad to a
+diff --git a/kernel/arch/i386/stub/boot32.asm b/kernel/arch/i386/stub/boot32.asm
+new file mode 100644
+index 0000000..456534b
+--- /dev/null
++++ b/kernel/arch/i386/stub/boot32.asm
+@@ -0,0 +1,61 @@
++; =============================================================================
++; kernel/arch/i386/stub/boot32.asm -- i386 kernel entry point (I386_PLAN I1).
++;
++; Sibling of kernel/arch/x86_64/boot.asm, one width down.  Stage 2's
++; enter_prot32 (boot/bios/stage2/pmode32.inc) jumps here in 32-bit
++; protected mode, paging OFF, with:
++;   * ESI = physical address of boot_info_t
++;   * flat CS/DS/ES/FS/GS/SS (base 0, limit 4 GiB)
++;   * a scratch ESP we do not trust
++;
++; Responsibilities, in order:
++;   1. cli -- no IDT exists yet.
++;   2. Zero .bss (the loader copied p_filesz and zero-filled to p_memsz,
++;      but the stub does it again for the same reason boot.asm does:
++;      the entry code must not depend on which loader ran).
++;   3. ESP := stack_top (16 KiB in .bss -- the stub needs no more; the
++;      real i386 kernel in I2 grows this to the 64 KiB boot.asm uses).
++;   4. Push ESI and call kmain32 (cdecl: one stack argument).
++;   5. If kmain32 ever returns: hlt loop.
++; =============================================================================
++
++bits 32
++
++STACK_SIZE equ 16*1024
++
++section .bss
++align 16
++stack_bottom:
++    resb STACK_SIZE
++stack_top:
++
++section .text
++global _start
++extern kmain32
++
++_start:
++    cli
++
++    ; Zero .bss.  __bss_start/__bss_end come from kernel32.ld, both
++    ; 4-aligned by the script, so dword stores suffice.
++    extern __bss_start
++    extern __bss_end
++    mov  edi, __bss_start
++    mov  ecx, __bss_end
++    sub  ecx, edi
++    shr  ecx, 2
++    xor  eax, eax
++    rep  stosd
++
++    ; A real stack.  NOTE: the rep stosd above just zeroed it -- that is
++    ; fine, nothing lives there yet.  ESI survived (rep stosd touches
++    ; EDI/ECX/EAX only).
++    mov  esp, stack_top
++
++    ; cdecl hand-off: kmain32(boot_info_phys).
++    push esi
++    call kmain32
++
++.hang:
++    hlt
++    jmp  .hang
+diff --git a/kernel/arch/i386/stub/kernel32.ld b/kernel/arch/i386/stub/kernel32.ld
+new file mode 100644
+index 0000000..424a8ed
+--- /dev/null
++++ b/kernel/arch/i386/stub/kernel32.ld
+@@ -0,0 +1,63 @@
++/*
++ * kernel/arch/i386/stub/kernel32.ld -- linker script for the i386 boot
++ * stub (I386_PLAN I1).
++ *
++ * Unlike kernel.ld (higher-half, VMA 0xFFFFFFFF80100000, phys derived by
++ * subtraction in elf.inc), the stub is linked with VMA = LMA = 0x00100000:
++ * Stage 2's 32-bit path enables no paging, so p_paddr is the destination
++ * verbatim and the entry jump is a physical address.  The real i386
++ * kernel (I3) moves to 0xC0100000 higher-half once it owns paging; this
++ * script is scoped to the stub and dies with it.
++ *
++ * Same PHDRS discipline as kernel.ld: differently-permissioned segments
++ * never share a page, so the future paging code can map them W^X-honest
++ * (minus NX, which non-PAE i386 does not have -- I386_PLAN D3).
++ */
++
++OUTPUT_FORMAT(elf32-i386)
++OUTPUT_ARCH(i386)
++ENTRY(_start)
++
++PHDRS
++{
++    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)); /* R + X */
++    rodata  PT_LOAD    FLAGS(1 << 2);              /* R     */
++    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
++}
++
++SECTIONS
++{
++    . = 0x00100000;
++
++    .text : {
++        *(.text .text.*)
++    } :text
++
++    . += CONSTANT(MAXPAGESIZE);
++
++    .rodata : {
++        *(.rodata .rodata.*)
++    } :rodata
++
++    . += CONSTANT(MAXPAGESIZE);
++
++    .data : {
++        *(.data .data.*)
++    } :data
++
++    .bss : {
++        . = ALIGN(16);
++        __bss_start = .;
++        *(.bss .bss.*)
++        *(COMMON)
++        . = ALIGN(16);
++        __bss_end = .;
++    } :data
++
++    /DISCARD/ : {
++        *(.eh_frame)
++        *(.eh_frame_hdr)
++        *(.note .note.*)
++        *(.comment)
++    }
++}
+diff --git a/kernel/arch/i386/stub/main32.c b/kernel/arch/i386/stub/main32.c
+new file mode 100644
+index 0000000..f9123da
+--- /dev/null
++++ b/kernel/arch/i386/stub/main32.c
+@@ -0,0 +1,115 @@
++/* kernel/arch/i386/stub/main32.c -- i386 boot stub (I386_PLAN I1).
++ *
++ * This is deliberately NOT the ported kernel; it is the 32-bit sibling of
++ * BL3's "stage2 alive" banner, and it exists for the same reason that
++ * banner did: prove the *chain* before growing the *payload*.  Everything
++ * it validates -- ELF32 staging, the protected-mode entry, boot_info_t in
++ * ESI, the magic check, COM1 by raw port I/O -- is exactly the substrate
++ * the real i386 kernel (phase I2) stands on.
++ *
++ * It shares boot/shared/boot_info.h verbatim: the struct is all
++ * fixed-width fields, so the same header compiles to the same layout at
++ * both pointer widths.  That is not luck -- gen_boot_offsets.c would
++ * catch a drift -- but it is worth asserting at runtime once, which the
++ * magic check below does.
++ *
++ * Freestanding, no libc, no kernel headers beyond the shared hand-off
++ * contract.  Everything is static because nothing outside this file may
++ * link against a stub that will be deleted in phase I2.
++ */
++
++#include <stdint.h>
++
++#include "boot/shared/boot_info.h"
++
++/* ---- COM1 by raw port I/O (mirrors drivers/uart/uart.c, 32-bit asm) ---- */
++
++#define COM1 0x3F8
++
++static inline void outb(uint16_t port, uint8_t val)
++{
++    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
++}
++
++static inline uint8_t inb(uint16_t port)
++{
++    uint8_t v;
++    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
++    return v;
++}
++
++static void uart_init(void)
++{
++    outb(COM1 + 1, 0x00);   /* disable interrupts             */
++    outb(COM1 + 3, 0x80);   /* DLAB on                        */
++    outb(COM1 + 0, 0x01);   /* divisor 1 -> 115200 baud       */
++    outb(COM1 + 1, 0x00);
++    outb(COM1 + 3, 0x03);   /* 8n1, DLAB off                  */
++    outb(COM1 + 2, 0xC7);   /* FIFO on, clear, 14-byte trigger */
++    outb(COM1 + 4, 0x0B);   /* DTR | RTS | OUT2               */
++}
++
++static void uart_putc(char c)
++{
++    while (!(inb(COM1 + 5) & 0x20)) { /* THR empty */ }
++    outb(COM1 + 0, (uint8_t)c);
++}
++
++static void uart_puts(const char *s)
++{
++    while (*s) {
++        if (*s == '\n')
++            uart_putc('\r');
++        uart_putc(*s++);
++    }
++}
++
++static void uart_puthex32(uint32_t v)
++{
++    static const char hex[] = "0123456789abcdef";
++    uart_puts("0x");
++    for (int shift = 28; shift >= 0; shift -= 4)
++        uart_putc(hex[(v >> shift) & 0xF]);
++}
++
++/* ---- Entry -------------------------------------------------------------- */
++
++void kmain32(uint32_t boot_info_phys)
++{
++    uart_init();
++
++    uart_puts("\n[kernel32] AuraLite i386 stub alive\n");
++    uart_puts("[kernel32] protected mode, paging off, booted via BIOS\n");
++
++    /* Paging is off and the segments are flat, so a physical address IS a
++     * usable pointer -- the one moment in the i386 bring-up where that
++     * sentence is true, which is why the check lives here. */
++    const boot_info_t *bi = (const boot_info_t *)boot_info_phys;
++
++    uart_puts("[kernel32] boot_info at ");
++    uart_puthex32(boot_info_phys);
++    uart_puts("\n");
++
++    if (bi->magic == BOOT_MAGIC) {
++        uart_puts("[kernel32] boot_info handoff (ESI) magic OK\n");
++        uart_puts("[kernel32] mmap entries: ");
++        uart_puthex32(bi->mmap_count);
++        uart_puts("\n");
++        uart_puts("[kernel32] initrd size: ");
++        uart_puthex32((uint32_t)bi->initrd_size);
++        uart_puts(" bytes\n");
++    } else {
++        /* Print both halves: the low dword arriving as high (or vice
++         * versa) would point at an offsets bug, not a corruption. */
++        uart_puts("[kernel32] boot_info magic BAD: hi=");
++        uart_puthex32((uint32_t)(bi->magic >> 32));
++        uart_puts(" lo=");
++        uart_puthex32((uint32_t)bi->magic);
++        uart_puts("\n");
++    }
++
++    uart_puts("[kernel32] I1 stub complete; halting (I2 grows this into kmain)\n");
++
++    for (;;)
++        __asm__ volatile("hlt");
++}
+diff --git a/patches/I386_I0_lmcheck.patch b/patches/I386_I0_lmcheck.patch
+new file mode 100644
+index 0000000..d9c2af4
+--- /dev/null
++++ b/patches/I386_I0_lmcheck.patch
+@@ -0,0 +1,1010 @@
++From 2c8ea0079ee3ddc47d8f2c1184144473bd4dc79b Mon Sep 17 00:00:00 2001
++From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
++Date: Sun, 16 Aug 2026 15:51:23 +0000
++Subject: [PATCH] I0 update
++
++---
++ CHANGELOG.md                            |  33 ++
++ I386_PLAN.md                            | 667 ++++++++++++++++++++++++
++ SHA256SUMS                              |   6 +-
++ boot/bios/stage2/lmcheck.inc            |  76 +++
++ boot/bios/stage2/stage2_start.asm       |  55 ++
++ tests/integration/i386_refusal_smoke.sh |  93 ++++
++ 6 files changed, 927 insertions(+), 3 deletions(-)
++ create mode 100644 I386_PLAN.md
++ create mode 100644 boot/bios/stage2/lmcheck.inc
++ create mode 100755 tests/integration/i386_refusal_smoke.sh
++
++diff --git a/CHANGELOG.md b/CHANGELOG.md
++index d4b6686..5f440bf 100644
++--- a/CHANGELOG.md
+++++ b/CHANGELOG.md
++@@ -2,6 +2,39 @@
++ 
++ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
++ 
+++## [i386 Phase I0 — An honest refusal on a 32-bit CPU] 2026-08-16
+++
+++`I386_PLAN.md` phase I0, the first phase of the i386 support plan and the
+++one that repairs a defect rather than adding a feature: booting
+++`build/auralite.iso` on a CPU without long mode hung silently right after
+++`[BL4] entering long mode; jumping to kernel _start` — the log claimed a
+++hand-off that never happened. There was no CPUID instruction anywhere in
+++the boot chain (`grep -rn cpuid boot/bios/` counted zero).
+++
+++- **`I386_PLAN.md` (new, phases I0–I9).** The 32-bit support plan, in the
+++  structure of `FIXES_PLAN.md` / `WIN32_PLAN.md` / `USB_PLAN.md`:
+++  dependency-ordered phases, a definition of done and a test gate for
+++  each, one `.patch` per phase. Decisions: i686 kernel floor with a
+++  386-reachable diagnostic (D1), one dual-kernel image chosen by CPUID
+++  (D2), non-PAE paging with the NX loss stated rather than buried (D3),
+++  `int 0x80` with AuraLite's own syscall numbers (D4), BSP-only at first
+++  (D5), a `paddr_t`/`uintptr_t` typing discipline for the 877-site width
+++  sweep (D6), and the refusal shipping first, alone (D7).
+++- **`boot/bios/stage2/lmcheck.inc` (new)**: `check_long_mode` — EFLAGS.ID
+++  toggle test (i486-and-earlier have no CPUID at all), CPUID extended-leaf
+++  presence (`0x80000000 >= 0x80000001`), then `0x80000001 EDX.LM`
+++  (bit 29). Runs in real mode on a 386; CF=1 on any "no".
+++- **Stage 2**: calls the check after the unreal-mode self-test and before
+++  any long-mode commitment. On "no" it prints a `[BL10]` refusal to BOTH
+++  COM1 and the VGA text console (new `vga_puts`, INT 10h teletype — the
+++  machine this fires on may have no serial cable) and halts. On "yes" it
+++  logs `[BL10] CPU supports long mode` and proceeds unchanged.
+++- Tests: `tests/integration/i386_refusal_smoke.sh` — refusal under
+++  `qemu-system-i386` (qemu32) and `-cpu 486` (the no-CPUID path), plus the
+++  same image bytes booting to the kernel banner under
+++  `qemu-system-x86_64` (8 assertions). The negative control is the plan's
+++  own Fact 1: reverting the Stage 2 hunk restores the measured hang.
+++
++ ## [USB_PLAN + two CI build fixes] 2026-08-14
++ 
++ Adds the full-USB plan and repairs the two failures that break `make iso` and
++diff --git a/I386_PLAN.md b/I386_PLAN.md
++new file mode 100644
++index 0000000..3df1507
++--- /dev/null
+++++ b/I386_PLAN.md
++@@ -0,0 +1,667 @@
+++# AuraLite OS — i386 (32-bit x86) Support Plan
+++
+++## Status: IN PROGRESS 🚧 — I0 complete, I1–I9 pending
+++
+++| Phase | Result | Deliverable |
+++|-------|--------|-------------|
+++| I0 — an honest refusal on a 32-bit CPU | ✅ complete | `patches/I386_I0_lmcheck.patch` |
+++| I1 — the dual-kernel boot chain | pending | `patches/I386_I1_boot32.patch` |
+++| I2 — `kernel/arch/i386` CPU bring-up | pending | `patches/I386_I2_cpu.patch` |
+++| I3 — memory: non-PAE paging, PMM, heap | pending | `patches/I386_I3_mm.patch` |
+++| I4 — threads, scheduler, Ring 3, `int 0x80` | pending | `patches/I386_I4_proc.patch` |
+++| I5 — 32-bit libc and userspace | pending | `patches/I386_I5_user.patch` |
+++| I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
+++| I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
+++| I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
+++| I9 — CI matrix, docs, the honest table | pending | `patches/I386_I9_ci.patch` |
+++
+++This document answers:
+++
+++> *What happens when someone boots `release/auralite.iso` on a machine whose
+++> CPU has no long mode — and what is the honest, incremental path from
+++> "a silent hang with no diagnostic" to "a working 32-bit AuraLite kernel"?*
+++
+++It follows the structure of the existing plans (`FIXES_PLAN.md`,
+++`WIN32_PLAN.md`, `USB_PLAN.md`, `REALINTERNET_PLAN.md`): dependency-ordered
+++phases, a definition of done and a test gate for every phase, one `.patch`
+++per phase.
+++
+++**Baseline:** commit `1b73450` (Documentation update).
+++
+++Like `WIN32_PLAN.md`, this plan starts with a confession rather than a
+++feature list: the very first deliverable fixes a *defect* (a silent hang),
+++not a missing feature. A 32-bit kernel that boots is phases I1–I8; a 32-bit
+++*machine owner who knows why the screen is black* is phase I0, and it ships
+++first.
+++
+++---
+++
+++## 1. Where things actually stand
+++
+++Measured against the tree and against QEMU, not assumed. Four facts shape
+++this plan.
+++
+++### Fact 1 — On a 32-bit CPU, the image hangs silently. Today. Measured.
+++
+++```
+++$ qemu-system-i386 -drive file=build/auralite.iso,format=raw,if=ide -serial stdio
+++...
+++[BL4] page tables built at 0x01000000
+++[BL4] entering long mode; jumping to kernel _start
+++                                  <- nothing, forever
+++```
+++
+++`boot/bios/stage2/longmode.inc` executes `wrmsr` against `IA32_EFER` and
+++far-jumps into an L-bit code segment without ever asking the CPU whether it
+++implements either:
+++
+++```
+++$ grep -rn cpuid boot/bios/ --include='*.inc' --include='*.asm' | wc -l
+++0
+++```
+++
+++There is **no CPUID instruction anywhere in the boot chain.** On a CPU
+++without long mode the sequence is undefined at best (`#UD` on the EFER
+++write) and a triple fault at worst; under `qemu-system-i386` (default
+++`qemu32` vCPU, and equally under `-cpu 486` and `-cpu pentium3`) the
+++observed behaviour is a hang after the hand-off banner. Every 32-bit
+++machine that boots this image today presents as a black screen with a
+++promising serial log — the worst failure shape available, because the log
+++*claims* the hand-off happened.
+++
+++### Fact 2 — The tree is 64-bit by construction, and the cost is countable
+++
+++This is not a `#define`-flip port. The 64-bit assumptions are structural:
+++
+++- **15 NASM files** in the boot chain, kernel and libc are `[bits 64]`
+++  (`boot.asm`, `isr_stubs.asm`, `syscall_entry.asm`, `context.asm`,
+++  `crt0.asm`, `syscall.asm`, …). Every one needs an i386 sibling.
+++- The kernel is linked with `-mcmodel=kernel` at `0xFFFFFFFF80100000`
+++  (top-2-GiB, `kernel.ld`) — meaningless on a 32-bit CPU.
+++- The HHDM constant `0xffff800000000000` appears at **12 sites** across
+++  `kernel/` and `boot/`, and `paging.c` walks a 4-level PML4 that i386
+++  does not have.
+++- `SYSCALL`/`SYSRET`, `swapgs`, `wrfsbase`-via-MSR, per-CPU `GS`-base —
+++  the entire syscall and cpu-local layer is long-mode-only.
+++- `grep -c 'uintptr_t\|(uint64_t)' kernel/` counts **877 sites** where
+++  pointers and 64-bit integers are mixed. Most are correct on both widths;
+++  each one has to be *read* to know. That sweep is I6, and it is the real
+++  cost centre of this plan (see Risks).
+++
+++### Fact 3 — The toolchain already cross-compiles i386; zero new dependencies
+++
+++Verified on this tree's build environment:
+++
+++```
+++$ clang --target=i686-elf -ffreestanding -c t.c   # ELF 32-bit LSB, Intel i386 ✓
+++$ nasm -f elf32                                    # ✓
+++$ ld.lld -m elf_i386                               # ✓
+++$ which qemu-system-i386                           # ✓ (same qemu package)
+++```
+++
+++Clang is a native cross-compiler and LLD links both widths; `REQUIRED_TOOLS`
+++does not grow. The one genuine toolchain gap is Rust: there is no
+++`i686-unknown-none` rustup target, so `rustes` and the `rsbr` bridge stay
+++x86_64-only until someone writes a custom target JSON (out of scope,
+++§6).
+++
+++### Fact 4 — Some of the tree is already width-clean, by luck or by design
+++
+++- `boot_info_t` (`boot/shared/boot_info.h`) is all fixed-width fields —
+++  the same struct works verbatim as a 32-bit hand-off contract, and
+++  `tools/gen_boot_offsets.c` regenerates offsets for whatever width
+++  compiles it.
+++- BIOS Stage 2 itself is 16/32-bit real-mode code end to end; FAT32,
+++  E820, A20, ACPI, the ELF *staging* all run fine on a 386-class CPU
+++  (measured: the i386 hang happens *after* all of them succeed).
+++- User programs are linked at low addresses (`0x40000000`-region: the
+++  build log shows user `.bss` at `0x40015e10`), which already fits under
+++  a 3 GiB/1 GiB split.
+++- The PMM bitmap, the slab layer, the VFS, FAT32/ext2, TCP/TLS and the
+++  compositor are freestanding C over `stdint.h` types — portable unless
+++  proven otherwise by I6's sweep.
+++
+++---
+++
+++## 2. Decisions
+++
+++### D1. "i386 support" means **i686-class (P6) minimum** for the kernel — and a diagnostic for everything older
+++
+++The 32-bit kernel assumes CPUID, CMOV, CMPXCHG8B: Pentium Pro (1995) and
+++later. Genuinely supporting an 80386 means fighting missing atomics for a
+++machine with 4 MiB of RAM; that is a different hobby. **But the refusal
+++path (I0) must work all the way down to a 386**, because the machine that
+++needs the message most is the one that can run the least — so the
+++long-mode check starts with the EFLAGS.ID toggle test (no CPUID on
+++i486-and-earlier is itself a "no").
+++
+++### D2. Two kernels, one image, one boot chain — Stage 2 picks by CPUID
+++
+++`make iso` keeps producing **one** hybrid image. The FAT32 partition
+++carries `KERNEL.ELF` (x86_64) *and* `KERNEL32.ELF` (i386); BIOS Stage 2
+++runs the long-mode check and loads whichever the CPU can execute. No
+++second ISO, no boot menu, no user decision — the CPU already made it.
+++
+++UEFI: 32-bit UEFI firmware (`BOOTIA32.EFI`) is rare in practice and adds a
+++second PE toolchain target for a market of nearly zero machines. **Refused,
+++documented** (§6): a 32-bit machine boots via BIOS/CSM or not at all.
+++
+++### D3. Non-PAE 2-level paging, 3 GiB/1 GiB split — and the honest NX consequence
+++
+++The i386 kernel lives at `0xC0100000` virtual, direct-maps the first
+++896 MiB at `0xC0000000` (`hhdm_offset = 0xC0000000` in `boot_info_t` —
+++the field is already 64-bit-wide and the kernel already reads it rather
+++than assuming), and uses plain 2-level 4-KiB paging. No PAE, no highmem:
+++supported RAM is capped at 512 MiB, which is what every QEMU
+++configuration in this repository already uses.
+++
+++The consequence to state plainly rather than bury: **without PAE there is
+++no NX bit, so the i386 kernel loses W^X for user pages.** `elfperm`'s
+++execute-from-data assertion becomes arch-conditional, and `docs/status.md`
+++gets an honest per-arch row instead of a silent green tick.
+++
+++### D4. Syscall ABI: `int 0x80`, AuraLite's own numbers — **not** Linux-i386 numbers
+++
+++The syscall table (`SYS_READ 0`, `SYS_WRITE 1`, … 103 numbers in
+++`lib/libc/include/unistd.h`) is shared verbatim between both
+++architectures; only the *trap mechanism* differs. i386 dispatches via
+++`int 0x80` (no `SYSCALL` in 32-bit mode; `SYSENTER` is an optimisation for
+++later, not a baseline). Register mapping: `eax` = number,
+++`ebx, ecx, edx, esi, edi, ebp` = args — Linux's convention, because it is
+++well-documented and every register allocator understands it. Adopting
+++Linux's *numbers* as well would fork the libc table in two and buy
+++nothing: AuraLite's numbers already mostly match Linux-x86_64, not
+++Linux-i386, and one table that is true everywhere beats two that drift.
+++
+++### D5. BSP-only on i386, at first
+++
+++The H8 SMP scheduler (per-CPU run queues, work stealing, IPI shootdown)
+++stays x86_64-only. The i386 kernel boots BSP-only with the PIT at 100 Hz,
+++exactly like this kernel did for its first ten phases. A 32-bit machine
+++with multiple CPUs will schedule on one until someone cares; that is a
+++performance gap, not a correctness gap, and it is recorded in the status
+++matrix rather than hidden.
+++
+++### D6. One tree, an arch split, and typed widths instead of an `#ifdef` forest
+++
+++`kernel/arch/x86_64/` gets a sibling `kernel/arch/i386/` with the same
+++file names and the same contracts (`gdt_init()`, `idt_set_gate()`,
+++`paging_map()`, …). Portable code includes `kernel/arch/arch.h` which
+++forwards to the configured arch. Two typing rules make the I6 sweep
+++mechanical rather than judgemental:
+++
+++- **Physical addresses stay `uint64_t` on both arches** (`paddr_t`).
+++  E1000/AHCI descriptor formats are 64-bit on the wire regardless of the
+++  CPU, and DMA above 4 GiB simply never happens on a 512 MiB machine.
+++- **Virtual addresses are `uintptr_t` and nothing else.** Every
+++  `(uint64_t)ptr` cast in kernel code is either deleted (was a virtual
+++  address) or retyped `paddr_t` (was physical). The sweep is done when
+++  `-Wshorten-64-to-32`-class warnings are clean on the i386 build with
+++  `-Werror`.
+++
+++### D7. The refusal ships first, alone, before any porting
+++
+++I0 is one included file and a smoke test, deliverable in a day, and it
+++converts every 32-bit boot from "silent hang after a log line that claims
+++success" into a two-line diagnostic on both the serial port and the VGA
+++text screen. Even if phases I1–I9 are never built, I0 is worth shipping —
+++the same reasoning `FIXES_PLAN.md` R0 used: make the failure visible
+++before making it good.
+++
+++---
+++
+++## 3. Phases
+++
+++### Phase I0 — An honest refusal on a 32-bit CPU ✅ COMPLETE
+++
+++**Objective:** no CPU ever executes the long-mode sequence without being
+++asked first; a CPU that answers "no" gets a diagnostic, not a hang.
+++
+++#### Tasks
+++
+++- [x] `boot/bios/stage2/lmcheck.inc` (new): `check_long_mode` —
+++      EFLAGS.ID toggle test (386/486 have no CPUID at all), then CPUID
+++      `0x80000000` extended-leaf presence, then `0x80000001 EDX.LM`
+++      (bit 29). CF=1 on any "no". Works in real mode on a 386.
+++- [x] Stage 2 calls it after the unreal-mode self-test and **before** any
+++      long-mode commitment; on failure it prints `[BL10]`-tagged
+++      diagnostics to **both** COM1 and the VGA text console (INT 10h
+++      teletype — the machine this fires on may have no serial cable
+++      attached) and halts.
+++- [x] A `vga_puts` teletype helper in Stage 2 — the first user-facing
+++      output path in the boot chain that does not assume a serial port.
+++- [x] `tests/integration/i386_refusal_smoke.sh` (new): boots the real ISO
+++      under `qemu-system-i386` and asserts the refusal text appears and
+++      the `entering long mode` line does **not**; then boots the same
+++      bytes under `qemu-system-x86_64` and asserts the normal 64-bit boot
+++      is untouched.
+++
+++#### Result
+++
+++Delivered as specified. Measured under `qemu-system-i386` (qemu32, `-cpu
+++486`, `-cpu pentium3` — all three refusal shapes):
+++
+++```
+++[BL3] unreal mode OK
+++[BL10] this CPU has no long mode (x86_64); AuraLite needs a 64-bit CPU
+++[BL10] halting -- see I386_PLAN.md for the 32-bit kernel roadmap
+++```
+++
+++and under `qemu-system-x86_64` the same bytes print `[BL10] CPU supports
+++long mode` and boot to the kernel banner unchanged. The smoke test's
+++8 assertions pass; Stage 2 grew 512 bytes (4608 → 5120 of 64512).
+++
+++#### Test gate
+++
+++- `qemu-system-i386` + `build/auralite.iso`: serial log contains
+++  `[BL10] this CPU has no long mode` and does not contain
+++  `entering long mode`.
+++- `qemu-system-x86_64` + the same image: `Hello from AuraLite OS kernel!`
+++  still appears; no refusal text.
+++- Negative control: reverting the Stage 2 hunk turns the i386 case back
+++  into the silent hang, which is how the test is known to test anything.
+++
+++#### Deliverable
+++
+++`patches/I386_I0_lmcheck.patch`
+++
+++---
+++
+++### Phase I1 — The dual-kernel boot chain
+++
+++**Objective:** the same image carries `KERNEL32.ELF`, and a 32-bit CPU
+++boots into 32-bit code that proves the hand-off — before a single line of
+++the real kernel is ported.
+++
+++The stub-first shape is deliberate and copied from BL3 ("stage2 alive"
+++banner before any loading existed): prove the *chain*, then grow the
+++*payload*. The stub is ~60 lines and prints on COM1; everything it
+++validates — ELF32 staging, protected-mode entry, `boot_info_t` in ESI,
+++the magic check — is exactly what the real i386 kernel needs in I2.
+++
+++#### Tasks
+++
+++- [ ] `boot/bios/stage2/elf32.inc` (new): ELF32 sibling of `elf.inc` —
+++      class check, `e_entry`/`e_phoff`/phdr walk at the 32-bit offsets,
+++      PT_LOAD copy to `p_paddr` through unreal `FS`.
+++- [ ] `boot/bios/stage2/pmode32.inc` (new): flat 32-bit GDT
+++      (code `0x00CF9A…`, data `0x00CF92…`), `CR0.PE`, far jump, segment
+++      reload, `ESP` at `0x9F000`, **`ESI` = `boot_info_t` phys** (the
+++      32-bit hand-off contract; RDI is the 64-bit one), jump to
+++      `[elf32_entry_addr]`. Never returns.
+++- [ ] Stage 2: I0's refusal becomes a *fallback* — `lm_ok` is recorded at
+++      check time; after `fat_init` the chain branches: long mode →
+++      `KERNEL.ELF` (unchanged 64-bit path), no long mode →
+++      `KERNEL32.ELF` → `elf32_load` → `enter_prot32`. The refusal
+++      diagnostic remains for the one case that still deserves it: no
+++      long mode **and** no `KERNEL32.ELF` on the partition.
+++- [ ] `kernel/arch/i386/stub/` (new): `boot32.asm` (stack, push ESI, call
+++      C), `main32.c` (COM1 init by port I/O, banner, `boot_info_t` magic
+++      verdict, `hlt` loop), `kernel32.ld` (ELF32, linked at physical
+++      `0x00100000`, VMA = LMA — no paging yet).
+++- [ ] `Makefile`: `kernel32` target (`--target=i686-elf`, `nasm -f
+++      elf32`, `ld.lld -m elf_i386`); `iso-dual` builds it;
+++      `tools/mkisoimage_dual.sh` adds `/KERNEL32.ELF` to the FAT root.
+++- [ ] `tests/integration/i386_boot32_smoke.sh` (new): the full matrix —
+++      i386 boots the stub with `magic OK`; x86_64 boots the real kernel
+++      from the same bytes; and an image with `KERNEL32.ELF` deleted
+++      (`mdel` on a copy) still produces I0's refusal rather than a hang.
+++
+++#### Test gate
+++
+++- `qemu-system-i386`: `[BL10] entering protected mode` →
+++  `[kernel32] AuraLite i386 stub alive` → `boot_info handoff (ESI) magic OK`.
+++- `qemu-system-x86_64`, same image: the 64-bit kernel boots exactly as
+++  before (`bl4_boot_smoke.sh` and `test_boot_to_shell` stay green).
+++- The `mdel` negative control: refusal text, no hang, no stub banner.
+++
+++#### Deliverable
+++
+++`patches/I386_I1_boot32.patch`
+++
+++---
+++
+++### Phase I2 — `kernel/arch/i386` CPU bring-up
+++
+++**Objective:** the stub grows into a real `kmain32` running the portable
+++kernel core: console, GDT/IDT/PIC/PIT, exceptions with named diagnostics.
+++
+++#### Tasks
+++
+++- [ ] `kernel/arch/i386/{boot.asm,gdt.c,idt.c,isr.c,isr_stubs.asm,irq.c}`
+++      — same contracts as the x86_64 siblings; 32-bit IDT gates, `iret`
+++      frames, error-code push parity handled per vector exactly as
+++      `isr_stubs.asm` does today.
+++- [ ] `kernel/arch/arch.h` (new): the arch-forwarding header; portable
+++      code stops including `kernel/arch/x86_64/…` directly. (Mechanical;
+++      the x86_64 build must produce a byte-identical kernel before and
+++      after — that is the phase's own negative control.)
+++- [ ] `ARCH=i386 make kernel32` compiles `kernel/kernel.c`'s init path up
+++      to and including `idt_init`/`pit_init`, with the 64-bit-only
+++      subsystems stubbed behind `arch_has_*` capability flags rather than
+++      `#ifdef`s scattered through `kmain`.
+++- [ ] Exceptions print the same `[diag]` register-dump format R0
+++      established — 32-bit register names, CPU number 0.
+++
+++#### Test gate
+++
+++- i386 boot reaches `IDT installed` + `PIC remapped` + a PIT tick counter
+++  on serial; a deliberate `int3` in a boot self-test prints a named
+++  exception frame instead of rebooting.
+++- `ARCH=x86_64` (default) kernel binary is unchanged bit-for-bit by the
+++  refactor commit that introduces `arch.h`.
+++
+++#### Deliverable
+++
+++`patches/I386_I2_cpu.patch`
+++
+++---
+++
+++### Phase I3 — Memory: non-PAE paging, PMM, heap
+++
+++**Objective:** `pmm`/`vmm`/`kheap` self-tests pass on i386 with 2-level
+++paging and the `0xC0000000` direct map.
+++
+++#### Tasks
+++
+++- [ ] Stage 2 (32-bit path) builds the 2-level page tables: identity map
+++      for the trampoline + `0xC0000000` → `0..896 MiB`, enables `CR0.PG`
+++      before the kernel jump (mirroring what `paging.inc` does for
+++      4-level); `hhdm_offset = 0xC0000000` written into `boot_info_t` on
+++      this path only.
+++- [ ] `kernel/arch/i386/paging.c`: map/unmap/protect over PDE/PTE;
+++      `PAGE_FLAG_NO_EXEC` accepted and **recorded as unenforceable**
+++      (D3) — callers keep working, the status table tells the truth.
+++- [ ] PMM: the bitmap allocator is portable; the work is auditing its
+++      `uint64_t` frame arithmetic against 32-bit `size_t` (first
+++      instalment of the I6 sweep, limited to `kernel/mm/`).
+++- [ ] kheap at `0xF0000000`-region (above the direct map), 64 MiB window
+++      as on x86_64.
+++
+++#### Test gate
+++
+++- i386 serial log: `[pmm] PASS`, `[vmm] PASS`, `[heap] PASS` — the same
+++  self-tests, same output contract as the x86_64 boot.
+++- A host unit test compiles `paging.c`'s PDE/PTE encoding both widths and
+++  checks the bit layout against the SDM values.
+++
+++#### Deliverable
+++
+++`patches/I386_I3_mm.patch`
+++
+++---
+++
+++### Phase I4 — Threads, scheduler, Ring 3, `int 0x80`
+++
+++**Objective:** preemptive round-robin and a Ring 3 process on i386.
+++
+++#### Tasks
+++
+++- [ ] `kernel/arch/i386/context.asm` (pushal-family switch),
+++      `user_entry.asm` (`iret` to Ring 3), TSS with `esp0` (the i386 TSS
+++      is the ring-transition mechanism, not an afterthought — unlike
+++      x86_64 there is no `SYSCALL` stack swap to lean on).
+++- [ ] `int 0x80` gate → the existing `syscall_dispatch()` table; register
+++      marshalling per D4; `copy_from_user`/`copy_to_user` fault fixup
+++      ported (the `#PF`-fixup pattern from `usercopy_fault.asm` carries
+++      over with 32-bit frames).
+++- [ ] Wait queues, sleep, reaping — portable; scheduled BSP-only (D5).
+++- [ ] ELF32 user loader: `elf.c` grows class-aware loading (it already
+++      validates class — it starts *accepting* ELFCLASS32 on i386 and
+++      keeps refusing it on x86_64).
+++
+++#### Test gate
+++
+++- i386: `[sched] PASS` interleave self-test; a `/bin/hello`-class ELF32
+++  binary runs in Ring 3, makes `write()`/`exit()` via `int 0x80`, and its
+++  exit code is observed by the kernel log.
+++- x86_64 suite untouched and green.
+++
+++#### Deliverable
+++
+++`patches/I386_I4_proc.patch`
+++
+++---
+++
+++### Phase I5 — 32-bit libc and userspace
+++
+++**Objective:** the init shell and the core `/bin` set run on i386.
+++
+++#### Tasks
+++
+++- [ ] `lib/libc` builds `-m32`: `crt0_32.asm`, `syscall32.asm`
+++      (`int 0x80` wrapper), `setjmp` (6-register i386 buffer), TLS via
+++      `GS`-based descriptor (i386's `%gs:0` convention rather than
+++      `%fs` — the R3 per-thread `errno` contract is preserved, the
+++      mechanism differs).
+++- [ ] User link addresses audited for the 3 GiB ceiling (they already
+++      fit — Fact 4); `mmap` hint regions move below `0xC0000000`.
+++- [ ] `Makefile`: `ARCH=i386 make user` builds `init` + the non-GUI
+++      `/bin` and `/tests` sets; the initrd for the i386 image carries
+++      ELF32 binaries only. Rust apps and `w32run` are excluded on i386
+++      with an honest note in the app manifest (§6).
+++- [ ] `userspace/tests/selftest` (the boot-time gauntlet) passes on i386.
+++
+++#### Test gate
+++
+++- i386 boots to `auralite#`, and `run /tests/selftest` prints its PASS
+++  summary over serial — the same gate `test_boot_to_shell` +
+++  `test_selftest` enforce on x86_64, executed by new
+++  `IL_QEMU=qemu-system-i386` knobs in `tests/integration/lib/lib.sh`.
+++
+++#### Deliverable
+++
+++`patches/I386_I5_user.patch`
+++
+++---
+++
+++### Phase I6 — The pointer-width sweep
+++
+++**Objective:** the 877 counted `uintptr_t`/`(uint64_t)` sites are each
+++read once, classified per D6 (`paddr_t` / `uintptr_t` / delete), and the
+++i386 kernel build is `-Werror`-clean on truncation warnings.
+++
+++This phase is deliberately *separate* and *late-ordered*: I2–I5 touch the
+++sites their subsystems need and no more, so the sweep closes the residue
+++rather than blocking the port. It is also the phase most likely to find
+++real x86_64 bugs (a virtual address stored in `uint32_t` is a bug on
+++*both* widths; the sweep just makes it visible).
+++
+++#### Tasks
+++
+++- [ ] `paddr_t` introduced in `kernel/lib/` and adopted by `pmm`, `vmm`,
+++      DMA-facing drivers.
+++- [ ] `tools/check_width_sweep.py` (new): greps for the banned cast
+++      patterns and fails CI when the count rises — the same
+++      drift-prevention shape as `check_test_registry.py` and
+++      `check_fixes_claims.py`.
+++- [ ] Every site changed in a subsystem with a host unit test keeps that
+++      test green on both a 64-bit and a `-m32` host build where the
+++      harness already supports it (`test_pmm`, `test_bitmap`,
+++      `test_fat32`, `test_elf` are the known-compilable set).
+++
+++#### Test gate
+++
+++- `ARCH=i386` kernel build passes with truncation warnings promoted to
+++  errors; `tools/check_width_sweep.py` is registered in `make test-unit`
+++  and fails on regression (with a negative control run, per house rule).
+++
+++#### Deliverable
+++
+++`patches/I386_I6_sweep.patch`
+++
+++---
+++
+++### Phase I7 — Drivers on i386
+++
+++**Objective:** the QEMU-standard device set works: e1000, AHCI, PS/2,
+++framebuffer console.
+++
+++#### Tasks
+++
+++- [ ] VBE framebuffer: Stage 2's 32-bit path sets a linear-framebuffer
+++      mode via VBE 2.0 real-mode calls before `CR0.PE` (the 64-bit path
+++      gets its framebuffer from the loader too — same contract, same
+++      `boot_fb_t`).
+++- [ ] e1000/AHCI descriptor rings: already `uint64_t` on the wire;
+++      audit bounce conditions (none expected below 4 GiB), enable IRQ
+++      paths through the 8259 PIC as on early x86_64 phases.
+++- [ ] PS/2 keyboard/mouse, PIT, UART: port-I/O only — expected to be
+++      recompile-clean; the task is proving it, not writing it.
+++- [ ] USB/xHCI, Bluetooth, Wi-Fi, virtio: explicitly deferred; rows in
+++      the status matrix say so per-arch.
+++
+++#### Test gate
+++
+++- i386 QEMU: DHCP acquires a lease and `ping` gets an echo reply
+++  (`test_e1000_irq`-equivalent under `qemu-system-i386`); AHCI
+++  read/write self-test passes; the framebuffer console shows the boot
+++  log (VNC screenshot assert, as `test_graphics.sh` does today).
+++
+++#### Deliverable
+++
+++`patches/I386_I7_drivers.patch`
+++
+++---
+++
+++### Phase I8 — Filesystems, net, GUI parity
+++
+++**Objective:** the portable upper layers — VFS, FAT32/ext2, TCP/TLS, the
+++compositor — run on i386, and the integration suite runs a defined subset
+++green under `qemu-system-i386`.
+++
+++#### Tasks
+++
+++- [ ] `tests/integration/run_all.sh` gains an `IL_ARCH=i386` mode with an
+++      explicit **supported-case manifest** (the D5/D3/§6 exclusions:
+++      no SMP cases, no NX cases, no w32/Rust/xHCI cases) — a curated
+++      list, not a filter, so a skipped case is a decision on record.
+++- [ ] TLS/crypto: `libatls` is portable C; the win is running its full
+++      unit suite compiled `-m32` on the host, which catches width bugs
+++      without a VM in the loop.
+++- [ ] GUI: the compositor is integer 2D over the framebuffer — expected
+++      portable; `gltest`'s software GL uses doubles and will be slow on
+++      x87. Correctness gate yes, FPS gate no.
+++
+++#### Test gate
+++
+++- The i386 manifest of integration cases passes end to end in CI-like
+++  conditions (`bash tests/integration/run_all.sh` with `IL_ARCH=i386`),
+++  and the manifest file itself is checked against `cases/` by
+++  `check_test_registry.py` so it cannot silently rot.
+++
+++#### Deliverable
+++
+++`patches/I386_I8_parity.patch`
+++
+++---
+++
+++### Phase I9 — CI matrix, docs, and the honest table
+++
+++**Objective:** both architectures build and smoke-test on every push, and
+++the documentation stops implying x86_64-only facts are universal.
+++
+++#### Tasks
+++
+++- [ ] `.github/workflows`: an `ARCH=i386` job building `kernel32` + the
+++      i386 initrd + the dual image, running `i386_refusal_smoke.sh`,
+++      `i386_boot32_smoke.sh` and the I8 manifest.
+++- [ ] `docs/status.md` gains an arch column (or per-arch rows) for every
+++      feature the plan touched; `README.md` Quickstart documents the
+++      single-image dual-arch behaviour and the D1 floor (i686).
+++- [ ] `docs/architecture.md`: the i386 boot flow diagram beside the
+++      existing one; `docs/syscall_abi.md`: the `int 0x80` register
+++      contract beside the SYSCALL one.
+++- [ ] `MATURITY_AUDIT.md`-style claim check: a script asserts this plan's
+++      phase table agrees with the tree (the `AUDIT_A7` lesson — a plan
+++      document that can drift, will).
+++
+++#### Test gate
+++
+++- CI is green on both arch jobs from a clean clone; the claim-check
+++  script fails when a phase row and the tree disagree (verified by a
+++  deliberate one-line negative control during review).
+++
+++#### Deliverable
+++
+++`patches/I386_I9_ci.patch`
+++
+++---
+++
+++## 4. Order and rationale
+++
+++```
+++I0 ── the refusal            (independent; ships alone, day one)
+++I1 ── dual-kernel chain      (needs I0's check; proves the hand-off)
+++I2 ── CPU bring-up           (needs I1's entry; introduces arch split)
+++I3 ── memory                 (needs I2's exceptions to debug #PF)
+++I4 ── proc + int 0x80        (needs I3's address spaces)
+++I5 ── libc + userspace       (needs I4's Ring 3)
+++I6 ── width sweep            (closes the residue I2–I5 left; CI-guarded)
+++I7 ── drivers                (needs I3 DMA-safe memory; parallel to I5)
+++I8 ── parity + test manifest (needs I5 + I7)
+++I9 ── CI + docs              (last, because it asserts what now exists)
+++```
+++
+++The dependency chain is the same shape as the original 14-phase bring-up,
+++compressed — because it *is* the original bring-up, replayed on a smaller
+++CPU with the portable code already written. The two early phases are the
+++cheap ones and carry all the user-visible value for owners of 64-bit
+++machines (nothing changes) and 32-bit machines (a hang becomes a
+++diagnostic, then a boot).
+++
+++## 5. Risks
+++
+++- **The I6 sweep is the cost centre, and it is O(sites-read), not
+++  O(sites-changed).** 877 counted sites; estimate a low-hundreds change
+++  count. The mitigation is the two mechanical typing rules (D6) and the
+++  CI counter that stops regression. The unknown is how many latent
+++  x86_64 bugs it surfaces; each becomes a `FIXES_PLAN`-style entry rather
+++  than a silent edit.
+++- **No NX on i386 (D3) weakens a property the tree is proud of.** The
+++  mitigation is honesty in the status matrix plus keeping user/kernel
+++  split enforcement (U/S bit) intact — not pretending segmentation tricks
+++  restore it.
+++- **x87-only floating point.** The userspace GL stack and anything
+++  compiled with SSE assumptions must build with `-mno-sse -mfpmath=387`
+++  on i386; performance will be poor and `gltest` timing-sensitive asserts
+++  may need arch-aware budgets.
+++- **Rust has no `i686-unknown-none` target.** `rustes`/`rsbr` are
+++  excluded on i386 (§6). If that ever matters, a custom target JSON +
+++  `-Zbuild-std` is the researched path — deliberately not on this plan.
+++- **Real 32-bit hardware variance.** QEMU's `qemu32`/`pentium3` models
+++  are the supported gate, matching the repository's existing "QEMU is
+++  the primary target" reality check. Real-hardware reports get the same
+++  experimental labelling x86_64 has.
+++- **Regression risk to x86_64 is concentrated in I2's `arch.h`
+++  refactor.** That commit carries its own gate: the default-arch kernel
+++  binary must be byte-identical before and after.
+++
+++## 6. What this plan does not do
+++
+++- **No PAE, no highmem, no >512 MiB RAM on i386.** 2-level paging only
+++  (D3).
+++- **No NX emulation.** The loss is documented, not papered over.
+++- **No 32-bit UEFI (`BOOTIA32.EFI`).** BIOS/CSM only on i386 (D2).
+++- **No SMP on i386** (D5). BSP-only; the H8 scheduler stays x86_64.
+++- **No Win32-on-i386.** The w32 personality is PE32+ (64-bit) by design;
+++  PE32 support is a separate plan if it is ever worth one.
+++- **No Rust userspace on i386** until a maintained bare-metal 32-bit
+++  target exists (Risk 4).
+++- **No 386/486/586 kernel support.** i686 floor (D1); older CPUs get the
+++  I0 diagnostic, which is more than they get today.
+++- **No performance parity promises.** Correctness gates run on i386;
+++  FPS/throughput numbers stay x86_64-only until measured honestly.
+++
+++## 7. A note on why this is worth doing at all
+++
+++The 64-bit kernel will never need a 32-bit sibling to serve its users —
+++QEMU on a modern host is the audience. The reasons are the same ones that
+++justified the custom bootloader over Limine: the boot chain is *this
+++project's own code*, and a boot chain that silently wedges on an entire
+++CPU family has a defect regardless of how rare the family is (I0 fixes
+++that in a day). And the port itself is the cheapest available audit of a
+++claim the documentation already makes — that the kernel core is portable
+++freestanding C. A claim that has never been compiled for a second width
+++is a hope, not a property. I6's counter turns it into a property that CI
+++defends.
++diff --git a/SHA256SUMS b/SHA256SUMS
++index 13b98ab..ef7f8da 100644
++--- a/SHA256SUMS
+++++ b/SHA256SUMS
++@@ -1,3 +1,3 @@
++-994817a349f2a108c16669af30fef704c4c9fe8cda5c9591017091bfff1f2740  auralite.iso
++-aa4c60e0846d0f7873e6511c38ea7444e51791e6f737a9488bd7769871586439  kernel.elf
++-c379ae67371273cebe89eed057936d8bb1d95ac091f6410d6f4679871f676bac  initrd.tar
+++63e5ba084e9ef7446025aadfb66d8035450cdab125b4e5ff993be94d04bfdf69  auralite.iso
+++766ec2581f682d07b02cb4506b8ec62014d2463ce38ac02094434bd6c97f84be  kernel.elf
+++e8cbc0965f7e90221d9842fd1ffab394f1b0819759e3de10f7e807c64916a0f1  initrd.tar
++diff --git a/boot/bios/stage2/lmcheck.inc b/boot/bios/stage2/lmcheck.inc
++new file mode 100644
++index 0000000..d7e6af7
++--- /dev/null
+++++ b/boot/bios/stage2/lmcheck.inc
++@@ -0,0 +1,76 @@
+++; =============================================================================
+++; boot/bios/stage2/lmcheck.inc -- long-mode capability check (I386_PLAN I0).
+++;
+++; The 64-bit path in longmode.inc executes WRMSR against IA32_EFER and
+++; far-jumps into an L-bit code segment without ever asking the CPU whether
+++; it implements either.  On a CPU without long mode that sequence is
+++; undefined at best (#UD on WRMSR) and a silent triple fault at worst --
+++; measured on qemu-system-i386: the log ends at
+++; "[BL4] entering long mode; jumping to kernel _start" and nothing
+++; further ever appears.  Every 32-bit machine that boots this image today
+++; presents as a hang with no diagnostic.
+++;
+++; This module answers one question, in real mode, before anything is
+++; committed: does this CPU implement x86_64 long mode?
+++;
+++; Sequence (Intel SDM Vol.2 CPUID; AMD APM Vol.3 E.4.2):
+++;   1. EFLAGS.ID (bit 21) toggle test -- a CPU where the bit cannot be
+++;      flipped has no CPUID instruction at all (i486 and earlier).
+++;   2. CPUID leaf 0x80000000 must report at least 0x80000001, otherwise
+++;      the extended-feature leaf does not exist (Pentium through P6).
+++;   3. CPUID leaf 0x80000001: EDX bit 29 (LM) is long mode itself.
+++;
+++; All three failures land in the same place: CF=1, no long mode.  The
+++; caller decides what to do with that -- phase I0 prints an honest
+++; refusal; phase I1 tries KERNEL32.ELF first.
+++;
+++; Public entry
+++; ------------
+++;   check_long_mode
+++;       On return: CF=0  long mode available.
+++;                  CF=1  no CPUID / no extended leaves / no LM bit.
+++;       Trashes EAX, ECX (CPUID also clobbers EBX, EDX -- preserved here).
+++; =============================================================================
+++
+++check_long_mode:
+++    push ebx
+++    push edx
+++
+++    ; ---- 1. Is CPUID implemented?  EFLAGS.ID must be toggleable. ----
+++    pushfd
+++    pop  eax                        ; EAX = current EFLAGS
+++    mov  ecx, eax                   ; ECX = original copy
+++    xor  eax, (1 << 21)             ; flip ID
+++    push eax
+++    popfd                           ; try to write it back
+++    pushfd
+++    pop  eax                        ; re-read
+++    push ecx
+++    popfd                           ; restore original EFLAGS either way
+++    xor  eax, ecx
+++    test eax, (1 << 21)
+++    jz   .no_lm                     ; bit would not flip -> no CPUID
+++
+++    ; ---- 2. Does the extended-feature leaf exist? ----
+++    mov  eax, 0x80000000
+++    cpuid
+++    cmp  eax, 0x80000001
+++    jb   .no_lm                     ; 32-bit CPUs typically report 0x80000004
+++                                    ; or nothing above 0x80000000 here
+++
+++    ; ---- 3. The LM bit itself. ----
+++    mov  eax, 0x80000001
+++    cpuid
+++    test edx, (1 << 29)             ; EDX.LM
+++    jz   .no_lm
+++
+++    pop  edx
+++    pop  ebx
+++    clc
+++    ret
+++
+++.no_lm:
+++    pop  edx
+++    pop  ebx
+++    stc
+++    ret
++diff --git a/boot/bios/stage2/stage2_start.asm b/boot/bios/stage2/stage2_start.asm
++index bd74657..0f4c454 100644
++--- a/boot/bios/stage2/stage2_start.asm
+++++ b/boot/bios/stage2/stage2_start.asm
++@@ -184,6 +184,29 @@ stage2_entry:
++     call uart16_puts
++ .unreal_done:
++ 
+++    ; ---- Long-mode capability check (BL10 / I386_PLAN I0) -----------
+++    ; Everything after this point commits the CPU to the 64-bit path:
+++    ; WRMSR against IA32_EFER and a far jump into an L-bit segment.
+++    ; Neither is defined on a CPU without long mode, and the observed
+++    ; behaviour there (qemu-system-i386) is a silent hang right after
+++    ; the "entering long mode" banner.  Ask first.  A CPU that answers
+++    ; "no" gets a diagnostic on BOTH the serial port and the VGA text
+++    ; screen -- the machine this fires on may have no serial cable.
+++    call check_long_mode
+++    jnc  .lm_ok
+++    mov  si, msg_no_lm_1
+++    call uart16_puts
+++    call vga_puts
+++    mov  si, msg_no_lm_2
+++    call uart16_puts
+++    call vga_puts
+++.lm_hang:
+++    hlt
+++    jmp  .lm_hang
+++.lm_ok:
+++    mov  si, msg_lm_ok
+++    call uart16_puts
+++
++     ; ---- ACPI MADT CPU enumeration (BL9.smp) ------------------------
++     ; Locate the RSDP, then walk RSDT/XSDT -> MADT to discover every
++     ; enabled Local APIC (one per logical CPU) and its APIC ID.  Requires
++@@ -345,6 +368,9 @@ msg_disk_ok:     db "[BL3] disk read OK", 0x0D, 0x0A, 0
++ msg_disk_fail:   db "[BL3] disk read FAIL", 0x0D, 0x0A, 0
++ msg_unreal_ok:   db "[BL3] unreal mode OK", 0x0D, 0x0A, 0
++ msg_unreal_fail: db "[BL3] unreal mode FAIL", 0x0D, 0x0A, 0
+++msg_lm_ok:       db "[BL10] CPU supports long mode", 0x0D, 0x0A, 0
+++msg_no_lm_1:     db "[BL10] this CPU has no long mode (x86_64); AuraLite needs a 64-bit CPU", 0x0D, 0x0A, 0
+++msg_no_lm_2:     db "[BL10] halting -- see I386_PLAN.md for the 32-bit kernel roadmap", 0x0D, 0x0A, 0
++ msg_acpi_rsdp_ok:   db "[BL9] ACPI RSDP found", 0x0D, 0x0A, 0
++ msg_acpi_no_rsdp:   db "[BL9] ACPI RSDP not found; BSP-only", 0x0D, 0x0A, 0
++ msg_acpi_madt_done: db "[BL9] ACPI MADT parsed", 0x0D, 0x0A, 0
++@@ -372,7 +398,36 @@ boot_drive: db 0
++ ; --------------------------------------------------------------------------
++ ; Included modules (order matters only for symbol resolution)
++ ; --------------------------------------------------------------------------
+++; --------------------------------------------------------------------------
+++; vga_puts -- INT 10h teletype output of the NUL-terminated string at DS:SI.
+++;
+++; The long-mode refusal (BL10) is the one message in the boot chain that
+++; must reach a user with no serial cable attached: a machine old enough to
+++; lack long mode is exactly the machine most likely to be driven from its
+++; own keyboard and monitor.  INT 10h AH=0Eh works on every VGA-class BIOS
+++; and needs no mode set.  Trashes nothing the caller owns (SI advances,
+++; which matches how uart16_puts is already used back to back with it).
+++; --------------------------------------------------------------------------
+++vga_puts:
+++    push ax
+++    push bx
+++    push si
+++    mov  bx, 0x0007              ; page 0, light-grey on black
+++.vga_next:
+++    lodsb
+++    test al, al
+++    jz   .vga_done
+++    mov  ah, 0x0E
+++    int  0x10
+++    jmp  .vga_next
+++.vga_done:
+++    pop  si
+++    pop  bx
+++    pop  ax
+++    ret
+++
++ %include "boot/bios/stage2/uart16.inc"
+++%include "boot/bios/stage2/lmcheck.inc"
++ %include "boot/bios/stage2/e820.inc"
++ %include "boot/bios/stage2/a20.inc"
++ %include "boot/bios/stage2/disk.inc"
++diff --git a/tests/integration/i386_refusal_smoke.sh b/tests/integration/i386_refusal_smoke.sh
++new file mode 100755
++index 0000000..d81d025
++--- /dev/null
+++++ b/tests/integration/i386_refusal_smoke.sh
++@@ -0,0 +1,93 @@
+++#!/usr/bin/env bash
+++# tests/integration/i386_refusal_smoke.sh -- I386_PLAN phase I0 smoke test.
+++#
+++# Before I0, booting build/auralite.iso on a CPU without long mode hung
+++# silently right after "[BL4] entering long mode" -- the log claimed the
+++# hand-off happened and nothing further ever appeared.  I0 adds a CPUID
+++# check (boot/bios/stage2/lmcheck.inc) that runs BEFORE any long-mode
+++# commitment and prints an honest refusal on COM1 and the VGA console.
+++#
+++# This test asserts three things:
+++#   1. qemu-system-i386 (qemu32 vCPU: CPUID present, no LM) -> refusal,
+++#      and the "entering long mode" line does NOT appear.
+++#   2. qemu-system-i386 -cpu 486 (no CPUID at all: the EFLAGS.ID toggle
+++#      path) -> the same refusal.
+++#   3. qemu-system-x86_64 with the SAME image bytes -> the check passes
+++#      ("[BL10] CPU supports long mode") and the 64-bit kernel boots to
+++#      its banner exactly as before.
+++set -euo pipefail
+++
+++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+++BUILD="$ROOT/build"
+++ISO="$BUILD/auralite.iso"
+++LOG32="$BUILD/i386_refusal_qemu32.log"
+++LOG486="$BUILD/i386_refusal_486.log"
+++LOG64="$BUILD/i386_refusal_x64.log"
+++
+++REFUSAL="\[BL10\] this CPU has no long mode"
+++COMMIT="entering long mode"
+++
+++# 1. Build the image if it is not there (CI runs `make iso` first; local
+++#    runs should not need to remember).
+++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
+++
+++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
+++    echo "[i386-refusal] SKIP: qemu-system-i386 not installed" >&2
+++    exit 0
+++fi
+++
+++fail=0
+++run_qemu() {
+++    local bin="$1" cpu="$2" log="$3"
+++    rm -f "$log"
+++    local cpuargs=()
+++    [ -n "$cpu" ] && cpuargs=(-cpu "$cpu")
+++    timeout 20 "$bin" "${cpuargs[@]}" \
+++        -drive format=raw,file="$ISO",if=ide,snapshot=on \
+++        -m 512M \
+++        -display none -serial file:"$log" -no-reboot \
+++        >/dev/null 2>&1 || true
+++}
+++
+++assert_grep() {
+++    local log="$1" pat="$2" desc="$3"
+++    if grep -q "$pat" "$log"; then
+++        printf '  [i386-refusal] OK   %s\n' "$desc"
+++    else
+++        printf '  [i386-refusal] FAIL %s\n' "$desc"
+++        fail=1
+++    fi
+++}
+++
+++assert_no_grep() {
+++    local log="$1" pat="$2" desc="$3"
+++    if grep -q "$pat" "$log"; then
+++        printf '  [i386-refusal] FAIL %s\n' "$desc"
+++        fail=1
+++    else
+++        printf '  [i386-refusal] OK   %s\n' "$desc"
+++    fi
+++}
+++
+++# ---- Case 1: qemu32 (CPUID yes, extended leaf reports no LM). ----
+++run_qemu qemu-system-i386 "" "$LOG32"
+++assert_grep    "$LOG32" "$REFUSAL" "qemu32: refusal printed"
+++assert_no_grep "$LOG32" "$COMMIT"  "qemu32: long-mode entry never attempted"
+++
+++# ---- Case 2: 486 (no CPUID; the EFLAGS.ID toggle path). ----
+++run_qemu qemu-system-i386 486 "$LOG486"
+++assert_grep    "$LOG486" "$REFUSAL" "486: refusal printed (no-CPUID path)"
+++assert_no_grep "$LOG486" "$COMMIT"  "486: long-mode entry never attempted"
+++
+++# ---- Case 3: the same bytes on a 64-bit CPU boot exactly as before. ----
+++run_qemu qemu-system-x86_64 "" "$LOG64"
+++assert_grep    "$LOG64" "\[BL10\] CPU supports long mode"    "x86_64: check passes"
+++assert_grep    "$LOG64" "$COMMIT"                            "x86_64: long-mode entry proceeds"
+++assert_grep    "$LOG64" "Hello from AuraLite OS kernel!"     "x86_64: kernel banner unchanged"
+++assert_no_grep "$LOG64" "$REFUSAL"                           "x86_64: no refusal text"
+++
+++if [ "$fail" -ne 0 ]; then
+++    echo "[i386-refusal] FAILED"
+++    exit 1
+++fi
+++echo "[i386-refusal] all assertions passed"
++-- 
++2.47.3
++
+diff --git a/tests/integration/i386_boot32_smoke.sh b/tests/integration/i386_boot32_smoke.sh
+new file mode 100755
+index 0000000..4df2bc7
+--- /dev/null
++++ b/tests/integration/i386_boot32_smoke.sh
+@@ -0,0 +1,98 @@
++#!/usr/bin/env bash
++# tests/integration/i386_boot32_smoke.sh -- I386_PLAN phase I1 smoke test.
++#
++# The full dual-kernel matrix, on the real `make iso` image:
++#
++#   1. qemu-system-i386  -> Stage 2 takes the 32-bit branch, loads
++#      KERNEL32.ELF through elf32.inc, enters protected mode through
++#      pmode32.inc, and the stub proves the ESI hand-off: banner +
++#      boot_info magic OK + a non-zero mmap count (the count is the
++#      canary for the i386/AMD64 struct-alignment contract -- it read
++#      zero until -malign-double landed, see the Makefile comment).
++#   2. qemu-system-x86_64, same bytes -> the 64-bit kernel boots exactly
++#      as before; no 32-bit artefacts appear in its log.
++#   3. Negative control: a copy of the image with KERNEL32.ELF deleted
++#      boots on i386 into I0's refusal -- not a hang, not the stub.
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ISO="$BUILD/auralite.iso"
++LOG32="$BUILD/i386_boot32.log"
++LOG64="$BUILD/i386_boot32_x64.log"
++LOGNK="$BUILD/i386_boot32_nok32.log"
++ISONK="$BUILD/i386_boot32_nok32.img"
++
++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
++
++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
++    echo "[i386-boot32] SKIP: qemu-system-i386 not installed" >&2
++    exit 0
++fi
++
++fail=0
++run_qemu() {
++    local bin="$1" img="$2" log="$3"
++    rm -f "$log"
++    timeout 25 "$bin" \
++        -drive format=raw,file="$img",if=ide,snapshot=on \
++        -m 512M \
++        -display none -serial file:"$log" -no-reboot \
++        >/dev/null 2>&1 || true
++}
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-boot32] OK   %s\n' "$desc"
++    else
++        printf '  [i386-boot32] FAIL %s\n' "$desc"
++        fail=1
++    fi
++}
++
++assert_no_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-boot32] FAIL %s\n' "$desc"
++        fail=1
++    else
++        printf '  [i386-boot32] OK   %s\n' "$desc"
++    fi
++}
++
++# ---- Case 1: the 32-bit CPU boots the 32-bit kernel. ----
++run_qemu qemu-system-i386 "$ISO" "$LOG32"
++assert_grep "$LOG32" "\[BL10\] taking the 32-bit path: KERNEL32.ELF"       "i386: Stage 2 branches to KERNEL32.ELF"
++assert_grep "$LOG32" "\[BL10\] ELF32 PT_LOAD segments copied to phys"       "i386: ELF32 loader ran"
++assert_grep "$LOG32" "\[BL10\] entering protected mode"                     "i386: protected-mode hand-off"
++assert_grep "$LOG32" "\[kernel32\] AuraLite i386 stub alive"                "i386: stub banner"
++assert_grep "$LOG32" "\[kernel32\] boot_info handoff (ESI) magic OK"        "i386: boot_info magic via ESI"
++assert_no_grep "$LOG32" "mmap entries: 0x00000000"                          "i386: mmap count non-zero (ABI-alignment canary)"
++assert_no_grep "$LOG32" "entering long mode"                                "i386: long mode never attempted"
++
++# ---- Case 2: the same bytes still boot the 64-bit kernel. ----
++run_qemu qemu-system-x86_64 "$ISO" "$LOG64"
++assert_grep "$LOG64" "\[BL10\] CPU supports long mode"                      "x86_64: check passes"
++assert_grep "$LOG64" "Hello from AuraLite OS kernel!"                       "x86_64: kernel banner unchanged"
++assert_no_grep "$LOG64" "\[kernel32\]"                                      "x86_64: no 32-bit artefacts in the log"
++
++# ---- Case 3: negative control -- image without KERNEL32.ELF refuses. ----
++# The FAT32 partition starts at LBA 256 in the dual image; hand mtools
++# the partition by byte offset so mdel can remove the file from a copy.
++cp "$ISO" "$ISONK"
++if mdel -i "$ISONK@@$((256 * 512))" ::/KERNEL32.ELF 2>/dev/null; then
++    run_qemu qemu-system-i386 "$ISONK" "$LOGNK"
++    assert_grep "$LOGNK" "\[BL10\] no KERNEL32.ELF on the boot partition"   "no-k32: honest refusal printed"
++    assert_no_grep "$LOGNK" "\[kernel32\] AuraLite i386 stub alive"         "no-k32: stub does not run"
++    assert_no_grep "$LOGNK" "entering long mode"                            "no-k32: long mode never attempted"
++else
++    echo "  [i386-boot32] SKIP negative control (mdel could not open the partition)"
++fi
++rm -f "$ISONK"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[i386-boot32] FAILED"
++    exit 1
++fi
++echo "[i386-boot32] all assertions passed"
+diff --git a/tools/mkisoimage_dual.sh b/tools/mkisoimage_dual.sh
+index f885af2..47cd249 100755
+--- a/tools/mkisoimage_dual.sh
++++ b/tools/mkisoimage_dual.sh
+@@ -167,6 +167,14 @@ mmd    -i "$FAT_IMG" ::/EFI/BOOT
+ mcopy  -i "$FAT_IMG" "$EFI_APP"    ::/EFI/BOOT/BOOTX64.EFI
+ mcopy  -i "$FAT_IMG" "$KERNEL_ELF" ::/EFI/BOOT/KERNEL.ELF
+ mcopy  -i "$FAT_IMG" "$KERNEL_ELF" ::/KERNEL.ELF
++# I386_PLAN I1: the i386 kernel, read by BIOS Stage 2 on a CPU without
++# long mode (8.3 name KERNEL32.ELF -- "KERNEL32ELF" as the padded lookup
++# key in stage2_start.asm).  Optional so that x86_64-only rebuilds of
++# older trees keep working; Stage 2 prints an honest refusal when a
++# 32-bit CPU meets an image without it.
++if [ -s "$BUILD/kernel32.elf" ]; then
++    mcopy -i "$FAT_IMG" "$BUILD/kernel32.elf" ::/KERNEL32.ELF
++fi
+ if [ -f "$BUILD/initrd.tar" ]; then
+     # BIOS Stage 2 loads the archive at 24 MiB inside the kernel's fixed
+     # 0..40 MiB early-boot reservation (PMM_EARLY_BOOT_RESERVE), leaving a
+-- 
+2.47.3
+

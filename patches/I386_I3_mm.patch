@@ -1,0 +1,1524 @@
+From 975d8930fb14657957357a356a4d90353c96757b Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 16:40:09 +0000
+Subject: [PATCH] I3 update
+
+---
+ CHANGELOG.md                        |  43 +++++++
+ I386_PLAN.md                        |  79 +++++++++---
+ Makefile                            |   8 +-
+ SHA256SUMS                          |   2 +-
+ boot/bios/stage2/lmcheck.inc        |  55 ++++++++
+ boot/bios/stage2/stage2_start.asm   |  32 +++++
+ kernel/arch/i386/boot32.asm         | 109 ++++++++++++----
+ kernel/arch/i386/kernel32.ld        |  59 ++++++---
+ kernel/arch/i386/kheap32.c          | 186 +++++++++++++++++++++++++++
+ kernel/arch/i386/kheap32.h          |  18 +++
+ kernel/arch/i386/main32.c           |  84 ++++++++----
+ kernel/arch/i386/paging32.c         | 190 ++++++++++++++++++++++++++++
+ kernel/arch/i386/paging32.h         |  60 +++++++++
+ kernel/arch/i386/pmm32.c            | 151 ++++++++++++++++++++++
+ kernel/arch/i386/pmm32.h            |  33 +++++
+ tests/integration/i386_cpu_smoke.sh |   6 +-
+ tests/integration/i386_mm_smoke.sh  |  90 +++++++++++++
+ 17 files changed, 1112 insertions(+), 93 deletions(-)
+ create mode 100644 kernel/arch/i386/kheap32.c
+ create mode 100644 kernel/arch/i386/kheap32.h
+ create mode 100644 kernel/arch/i386/paging32.c
+ create mode 100644 kernel/arch/i386/paging32.h
+ create mode 100644 kernel/arch/i386/pmm32.c
+ create mode 100644 kernel/arch/i386/pmm32.h
+ create mode 100755 tests/integration/i386_mm_smoke.sh
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1cd4240..2a86bb6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,49 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [i386 Phase I3 — Memory: non-PAE paging, PMM, heap] 2026-08-16
++
++`I386_PLAN.md` phase I3: the i386 kernel is higher-half at `0xC0100000`
++behind PSE paging, with a bitmap PMM, 4 KiB page mapping and an
++on-demand heap — `[pmm] PASS`, `[vmm] PASS`, `[heap] PASS` in the same
++self-test contract the x86_64 boot enforces.
++
++- **`boot32.asm` + `kernel32.ld`**: the kernel now links at
++  `KERNEL_VMA = 0xC0000000` with a physical-mode `.boot` section
++  (VMA = LMA at `0x00100000`, `AT()` clauses keep the load image
++  contiguous for `elf32.inc`'s forward copy). `.boot` builds the PSE
++  page directory — identity [0, 896 MiB) plus the same frames at
++  `0xC0000000`, zero page tables needed — sets `CR4.PSE`, `CR0.PG|WP`
++  and jumps higher-half. **Deviation from the plan text, recorded
++  there:** Stage 2 does NOT build these tables (the paging.inc mirror
++  is false — long mode cannot run unpaged, protected mode can), it
++  stays paging-free and writes `hhdm_offset = 0xC0000000` for the
++  kernel to validate.
++- **Stage 2 `check_i686` (lmcheck.inc)**: the D1 floor enforced at the
++  only honest place — PSE/CX8/CMOV via CPUID leaf 1 after the long-mode
++  "no"; a 486/586 gets `[BL10] CPU is below the i686 floor`, not a #UD
++  three instructions before the kernel banner.
++- **`pmm32.c`**: bitmap allocator over `kernel/lib/bitmap.h` — the
++  identical host-tested header the x86_64 PMM uses; E820 walked in
++  `uint64_t`, regions above the 896 MiB horizon skipped-not-truncated
++  (D6); 40 MiB low reserve (same reasoning as `PMM_EARLY_BOOT_RESERVE`);
++  1000-frame uniqueness/leak self-test.
++- **`paging32.c`**: map/unmap/probe over PDE/PTE, refuses to split PSE
++  pages, `PAGE32_FLAG_NO_EXEC` accepted and printed as unenforceable
++  (D3) — the smoke test asserts the honesty line. Identity window
++  dropped once higher-half (`NULL now faults`).
++- **`kheap32.c`**: first-fit, split/coalesce, magic-guarded headers,
++  on-demand page commit into a 64 MiB window; 10000-cycle self-test.
++- **Two bugs caught by the phase's own gates** (details in the plan):
++  the planned heap base `0xF0000000` sat *inside* the direct map
++  (`[vmm] FAIL` at first boot; moved to `0xF8000000`), and a
++  header-edit rebuild gap left `kheap32.o` stale (the `k32` pattern
++  rule now depends on all i386 headers).
++- Tests: `tests/integration/i386_mm_smoke.sh` — 16 assertions; the key
++  one reads the #BP fault frame's `eip=c01xxxxx` because a banner can
++  claim higher-half but a fault frame cannot lie. `i386_cpu_smoke.sh`'s
++  idle-line assert generalised to the phase-advancing contract.
++
+ ## [i386 Phase I2 — kernel/arch/i386 CPU bring-up] 2026-08-16
+ 
+ `I386_PLAN.md` phase I2: the I1 stub is deleted and `KERNEL32.ELF` is now
+diff --git a/I386_PLAN.md b/I386_PLAN.md
+index 3586b4b..b5b4e3b 100644
+--- a/I386_PLAN.md
++++ b/I386_PLAN.md
+@@ -1,13 +1,13 @@
+ # AuraLite OS — i386 (32-bit x86) Support Plan
+ 
+-## Status: IN PROGRESS 🚧 — I0–I2 complete, I3–I9 pending
++## Status: IN PROGRESS 🚧 — I0–I3 complete, I4–I9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | I0 — an honest refusal on a 32-bit CPU | ✅ complete | `patches/I386_I0_lmcheck.patch` |
+ | I1 — the dual-kernel boot chain | ✅ complete | `patches/I386_I1_boot32.patch` |
+ | I2 — `kernel/arch/i386` CPU bring-up | ✅ complete (2 tasks re-scoped to I6, see phase result) | `patches/I386_I2_cpu.patch` |
+-| I3 — memory: non-PAE paging, PMM, heap | pending | `patches/I386_I3_mm.patch` |
++| I3 — memory: non-PAE paging, PMM, heap | ✅ complete (1 deviation, see phase result) | `patches/I386_I3_mm.patch` |
+ | I4 — threads, scheduler, Ring 3, `int 0x80` | pending | `patches/I386_I4_proc.patch` |
+ | I5 — 32-bit libc and userspace | pending | `patches/I386_I5_user.patch` |
+ | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
+@@ -426,33 +426,74 @@ to catch.
+ 
+ ---
+ 
+-### Phase I3 — Memory: non-PAE paging, PMM, heap
++### Phase I3 — Memory: non-PAE paging, PMM, heap ✅ COMPLETE
+ 
+ **Objective:** `pmm`/`vmm`/`kheap` self-tests pass on i386 with 2-level
+ paging and the `0xC0000000` direct map.
+ 
+ #### Tasks
+ 
+-- [ ] Stage 2 (32-bit path) builds the 2-level page tables: identity map
+-      for the trampoline + `0xC0000000` → `0..896 MiB`, enables `CR0.PG`
+-      before the kernel jump (mirroring what `paging.inc` does for
+-      4-level); `hhdm_offset = 0xC0000000` written into `boot_info_t` on
+-      this path only.
+-- [ ] `kernel/arch/i386/paging.c`: map/unmap/protect over PDE/PTE;
+-      `PAGE_FLAG_NO_EXEC` accepted and **recorded as unenforceable**
+-      (D3) — callers keep working, the status table tells the truth.
+-- [ ] PMM: the bitmap allocator is portable; the work is auditing its
+-      `uint64_t` frame arithmetic against 32-bit `size_t` (first
+-      instalment of the I6 sweep, limited to `kernel/mm/`).
+-- [ ] kheap at `0xF0000000`-region (above the direct map), 64 MiB window
+-      as on x86_64.
++- [x] Paging enabled before `kmain32` — **in the kernel's own `.boot`
++      section, not in Stage 2** (deviation from the original task text,
++      argued below): `boot32.asm` builds a PSE page directory (identity
++      [0, 896 MiB) + the same frames at `0xC0000000`), sets `CR4.PSE`,
++      `CR0.PG|WP`, and jumps higher-half. Stage 2's 32-bit path stays
++      paging-free and instead gains the `check_i686` floor test (PSE,
++      CX8, CMOV — a 486/586 now gets the honest refusal, not a #UD on
++      `mov cr4`) and writes `hhdm_offset = 0xC0000000` into
++      `boot_info_t`, which `kmain32` validates rather than assumes.
++- [x] `kernel/arch/i386/paging32.c`: map/unmap/probe over PDE/PTE;
++      `PAGE32_FLAG_NO_EXEC` accepted and **recorded as unenforceable**
++      (D3) — the boot log itself prints the consequence, and the smoke
++      test asserts the line exists.
++- [x] PMM: `pmm32.c` reuses `kernel/lib/bitmap.h` — the identical,
++      host-tested header the x86_64 PMM compiles. E820 walks in
++      `uint64_t`; regions above the horizon are **skipped, not
++      truncated** (D6 discipline, first instalment).
++- [x] kheap: first-fit with split/coalesce over an on-demand committed
++      64 MiB window, same design and PASS contract as `kheap.c`.
+ 
+ #### Test gate
+ 
+ - i386 serial log: `[pmm] PASS`, `[vmm] PASS`, `[heap] PASS` — the same
+-  self-tests, same output contract as the x86_64 boot.
+-- A host unit test compiles `paging.c`'s PDE/PTE encoding both widths and
+-  checks the bit layout against the SDM values.
++  self-tests, same output contract as the x86_64 boot. ✔
++- `i386_mm_smoke.sh` additionally proves execution is *actually*
++  higher-half (the #BP frame's `eip=c01xxxxx` — a banner can lie, a
++  fault frame cannot) and that the identity window is gone. ✔
++- The host PDE/PTE-encoding unit test is **deferred to I6** with the
++  other host-build work; the in-VM self-test covers the encoding
++  end-to-end meanwhile (map → write → alias-read через direct map →
++  probe → unmap → probe-dark).
++
++#### Result
++
++Delivered; 16 smoke assertions green, including the x86_64 pair (the
++64-bit HHDM line specifically, since Stage 2 now writes the field on one
++path).
++
++**Deviation, argued:** the original task had Stage 2 build the page
++tables, mirroring `paging.inc`. Implementation showed the mirror is
++false: the 64-bit kernel *cannot* run a single instruction unpaged (long
++mode requires paging), so its loader must build tables; a 32-bit kernel
++runs fine unpaged, and the natural owner of a page directory that lives
++in the kernel's own `.boot` section is the kernel. Moving the work into
++`boot32.asm` kept Stage 2 526 lines instead of ~700, kept the loader
++contract identical for both kernels ("flat memory, boot_info in a
++register"), and made the identity-window drop a kernel-internal detail.
++The plan text was wrong about *where*; the gate (what must be true at
++`kmain32`) was right and is what the test asserts.
++
++**Two bugs the gates caught, worth the record:**
++1. The planned heap base `0xF0000000` sits *inside* the direct map
++   (`0xC0000000 + 896 MiB = 0xF8000000`); `paging32_map` correctly
++   refused to split a PSE page and `[vmm] FAIL` stopped the boot at
++   first try. Heap moved to `0xF8000000`, probe to `0xFC000000`. The
++   plan's own §2 layout table carried the bug — measured is better than
++   planned.
++2. A header-edit rebuild gap: `kheap32.o` stayed compiled against the
++   old `KHEAP32_BASE` and failed to commit its first page. The `k32`
++   pattern rule now depends on all i386 headers (comment in the
++   Makefile records the incident).
+ 
+ #### Deliverable
+ 
+diff --git a/Makefile b/Makefile
+index b47ded0..6e18afc 100644
+--- a/Makefile
++++ b/Makefile
+@@ -125,7 +125,13 @@ CFLAGS32      := --target=i686-elf \
+                  -Wall -Wextra -Wno-unused-parameter \
+                  -O2 -g -I .
+ 
+-$(BUILD_DIR)/k32/%.o: %.c boot/shared/boot_info.h
++# Depend on every i386 header: the tree is small enough that a full
++# rebuild on any header edit is cheaper than the stale-object hunt it
++# prevents (measured: a KHEAP32_BASE move in paging32.h left kheap32.o
++# compiled against the old constant and the heap failed to commit).
++KERNEL32_HDRS := $(shell find $(KERNEL32_DIR) -name '*.h') boot/shared/boot_info.h
++
++$(BUILD_DIR)/k32/%.o: %.c $(KERNEL32_HDRS)
+ 	@mkdir -p $(dir $@)
+ 	$(CC) $(CFLAGS32) -c $< -o $@
+ 
+diff --git a/SHA256SUMS b/SHA256SUMS
+index a888d7b..8db238b 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-465b87a2102ca5a53a778c2e3134387c6be23a93c5b15b7953e560774ead7613  auralite.iso
++1c84b609ddc5c4fc2233b01e8f5e7d1a0d87e83d6a34697b3b9a731dab99f0f4  auralite.iso
+ 766ec2581f682d07b02cb4506b8ec62014d2463ce38ac02094434bd6c97f84be  kernel.elf
+ e8cbc0965f7e90221d9842fd1ffab394f1b0819759e3de10f7e807c64916a0f1  initrd.tar
+diff --git a/boot/bios/stage2/lmcheck.inc b/boot/bios/stage2/lmcheck.inc
+index d7e6af7..abd6db4 100644
+--- a/boot/bios/stage2/lmcheck.inc
++++ b/boot/bios/stage2/lmcheck.inc
+@@ -74,3 +74,58 @@ check_long_mode:
+     pop  ebx
+     stc
+     ret
++
++; ---------------------------------------------------------------------------
++; check_i686 -- the 32-bit kernel floor (I386_PLAN I3, decision D1).
++;
++; The i386 kernel assumes P6-class features: PSE (the direct map is
++; built from 4 MiB pages), CMPXCHG8B and CMOV.  A CPU below that floor
++; must get the I0 refusal, not a #UD on `mov cr4` three instructions
++; before the kernel banner.  Called only after check_long_mode said
++; "no", so CPUID presence must be re-established (a 486 reaches here).
++;
++; On return: CF=0  i686-class, safe for KERNEL32.ELF.
++;            CF=1  below the floor -- refuse honestly.
++; ---------------------------------------------------------------------------
++check_i686:
++    push ebx
++    push ecx
++    push edx
++
++    ; CPUID present?  (EFLAGS.ID toggle; a 486 fails right here.)
++    pushfd
++    pop  eax
++    mov  ecx, eax
++    xor  eax, (1 << 21)
++    push eax
++    popfd
++    pushfd
++    pop  eax
++    push ecx
++    popfd
++    xor  eax, ecx
++    test eax, (1 << 21)
++    jz   .below_floor
++
++    ; Leaf 1 EDX: PSE (bit 3), CX8 (bit 8), CMOV (bit 15).
++    mov  eax, 1
++    cpuid
++    test edx, (1 << 3)
++    jz   .below_floor
++    test edx, (1 << 8)
++    jz   .below_floor
++    test edx, (1 << 15)
++    jz   .below_floor
++
++    pop  edx
++    pop  ecx
++    pop  ebx
++    clc
++    ret
++
++.below_floor:
++    pop  edx
++    pop  ecx
++    pop  ebx
++    stc
++    ret
+diff --git a/boot/bios/stage2/stage2_start.asm b/boot/bios/stage2/stage2_start.asm
+index a00f00a..febb941 100644
+--- a/boot/bios/stage2/stage2_start.asm
++++ b/boot/bios/stage2/stage2_start.asm
+@@ -202,9 +202,40 @@ stage2_entry:
+     mov  si, msg_no_lm_1
+     call uart16_puts
+     call vga_puts
++
++    ; I3: the 32-bit kernel's floor is i686-class (plan D1) -- it
++    ; builds its direct map from PSE 4 MiB pages.  A 486/586 must get
++    ; the honest refusal HERE, not a #UD on `mov cr4` three
++    ; instructions before the kernel banner.
++    call check_i686
++    jnc  .i686_ok
++    mov  si, msg_below_floor
++    call uart16_puts
++    call vga_puts
++    mov  si, msg_no_lm_2
++    call uart16_puts
++    call vga_puts
++.floor_hang:
++    hlt
++    jmp  .floor_hang
++.i686_ok:
+     mov  si, msg_lm_32path
+     call uart16_puts
+     call vga_puts
++
++    ; I3: the 32-bit kernel direct-maps phys [0, 896 MiB) at
++    ; 0xC0000000 and validates hhdm_offset against that (the same
++    ; loader-owns-it contract as the 64-bit path's
++    ; 0xFFFF800000000000).  Overwrite the qword BL3 wrote earlier:
++    ; low dword = 0xC0000000, high dword = 0.
++    push es
++    mov  ax, BOOT_INFO_SEG
++    mov  es, ax
++    mov  word [es:BOOT_HHDM_OFF + 0], 0x0000
++    mov  word [es:BOOT_HHDM_OFF + 2], 0xC000
++    mov  word [es:BOOT_HHDM_OFF + 4], 0x0000
++    mov  word [es:BOOT_HHDM_OFF + 6], 0x0000
++    pop  es
+     jmp  .lm_done
+ .lm_ok:
+     mov  si, msg_lm_ok
+@@ -426,6 +457,7 @@ msg_no_lm_1:     db "[BL10] this CPU has no long mode (x86_64)", 0x0D, 0x0A, 0
+ msg_no_lm_2:     db "[BL10] halting -- see I386_PLAN.md for the 32-bit kernel roadmap", 0x0D, 0x0A, 0
+ msg_lm_32path:   db "[BL10] taking the 32-bit path: KERNEL32.ELF", 0x0D, 0x0A, 0
+ msg_no_k32:      db "[BL10] no KERNEL32.ELF on the boot partition; cannot boot this CPU", 0x0D, 0x0A, 0
++msg_below_floor: db "[BL10] CPU is below the i686 floor (needs PSE+CX8+CMOV, plan D1)", 0x0D, 0x0A, 0
+ msg_elf32_ok:    db "[BL10] ELF32 PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
+ msg_pm32_go:     db "[BL10] entering protected mode; jumping to kernel32 _start", 0x0D, 0x0A, 0
+ msg_acpi_rsdp_ok:   db "[BL9] ACPI RSDP found", 0x0D, 0x0A, 0
+diff --git a/kernel/arch/i386/boot32.asm b/kernel/arch/i386/boot32.asm
+index 37519c3..310a248 100644
+--- a/kernel/arch/i386/boot32.asm
++++ b/kernel/arch/i386/boot32.asm
+@@ -1,39 +1,94 @@
+ ; =============================================================================
+-; kernel/arch/i386/boot32.asm -- i386 kernel entry point (I386_PLAN I2).
++; kernel/arch/i386/boot32.asm -- i386 kernel entry point (I386_PLAN I2,
++; higher-half since I3).
+ ;
+-; Grown from the I1 stub's entry: same contract (Stage 2's enter_prot32
+-; jumps here in 32-bit protected mode, paging OFF, ESI = boot_info_t
+-; phys, flat segments), bigger stack (64 KiB, matching the x86_64
+-; boot.asm) because a real kmain with self-tests lives behind it now.
++; Stage 2's enter_prot32 jumps to _start in 32-bit protected mode with
++; paging OFF and ESI = boot_info_t phys.  Since I3 the kernel is linked
++; at 0xC0100000 (KERNEL_VMA + 1 MiB) but loaded at 0x00100000, so entry
++; happens in the .boot section (VMA = LMA, see kernel32.ld) which:
+ ;
+-;   1. cli -- no IDT until idt_init.
+-;   2. Zero .bss.
+-;   3. ESP := stack_top.
+-;   4. Push ESI, call kmain32 (cdecl).
+-;   5. If kmain32 returns: hlt loop.
++;   1. Builds the boot page directory with PSE 4 MiB pages:
++;        PDE[0..223]    identity  [0, 896 MiB)   -- survives the PG flip
++;        PDE[768..991]  direct map [0, 896 MiB) at 0xC0000000
++;      Zero page tables needed -- this is why check_i686 requires PSE.
++;   2. CR3 := page directory, CR4.PSE := 1, CR0.PG|WP := 1.
++;   3. Jumps to the higher half (indirect -- the linker resolved the
++;      target at its VMA).
++;
++; The higher-half half then zeroes .bss, sets the real stack and calls
++; kmain32(ESI) exactly as before.  The identity window is dropped by
++; paging32_drop_identity() once kmain32 is running -- it exists only so
++; the instruction after `mov cr0` fetches successfully.
+ ; =============================================================================
+ 
+ bits 32
+ 
+-STACK_SIZE equ 64*1024
++KERNEL_VMA     equ 0xC0000000
++DIRECT_MAP_MB  equ 896
++PDE_COUNT      equ DIRECT_MAP_MB / 4          ; 224 4-MiB PDEs
+ 
+-section .bss
+-align 16
+-stack_bottom:
+-    resb STACK_SIZE
+-stack_top:
++; PDE bits: P | RW | PS  (kernel-only, global left off until PGE audit)
++PDE_FLAGS      equ (1 << 0) | (1 << 1) | (1 << 7)
+ 
+-section .text
+-global _start
+-extern kmain32
++; -----------------------------------------------------------------------------
++; .boot -- physical-mode entry (VMA = LMA = 0x00100000 region)
++; -----------------------------------------------------------------------------
++section .boot
++align 4096
++global boot_page_directory
++boot_page_directory:
++    times 4096 db 0
+ 
++global _start
+ _start:
+     cli
++    ; ESI = boot_info phys; nothing below may clobber it.
++
++    ; ---- 1. Fill the page directory (runs at physical addresses). ----
++    ; Identity PDEs 0..223 and direct-map PDEs 768..991 share frames:
++    ; entry i maps phys i*4MiB.
++    mov  edi, boot_page_directory
++    xor  ecx, ecx                       ; ecx = PDE index 0..223
++.fill_pde:
++    mov  eax, ecx
++    shl  eax, 22                        ; phys = index * 4 MiB
++    or   eax, PDE_FLAGS
++    mov  [edi + ecx*4], eax             ; identity
++    mov  [edi + (ecx + 768)*4], eax     ; +0xC0000000
++    inc  ecx
++    cmp  ecx, PDE_COUNT
++    jb   .fill_pde
++
++    ; ---- 2. Turn paging on. ----
++    mov  eax, boot_page_directory
++    mov  cr3, eax
++
++    mov  eax, cr4
++    or   eax, (1 << 4)                  ; CR4.PSE
++    mov  cr4, eax
+ 
+-    ; Zero .bss (dword granularity; __bss_start/__bss_end are 4-aligned
+-    ; by kernel32.ld).  ESI survives: rep stosd touches EDI/ECX/EAX only.
+-    extern __bss_start
+-    extern __bss_end
++    mov  eax, cr0
++    or   eax, (1 << 31) | (1 << 16)     ; CR0.PG | CR0.WP
++    mov  cr0, eax
++
++    ; ---- 3. To the higher half.  Indirect jump: the target symbol
++    ; lives in .text, so the linker resolved it at its VMA. ----
++    mov  eax, higher_half
++    jmp  eax
++
++; -----------------------------------------------------------------------------
++; .text -- the higher-half kernel proper
++; -----------------------------------------------------------------------------
++section .text
++extern kmain32
++extern __bss_start
++extern __bss_end
++
++STACK_SIZE equ 64*1024
++
++higher_half:
++    ; Zero .bss (VMA addresses; the direct map backs them now).
++    ; ESI survives: rep stosd touches EDI/ECX/EAX only.
+     mov  edi, __bss_start
+     mov  ecx, __bss_end
+     sub  ecx, edi
+@@ -43,9 +98,15 @@ _start:
+ 
+     mov  esp, stack_top
+ 
+-    push esi
++    push esi                            ; cdecl: kmain32(boot_info_phys)
+     call kmain32
+ 
+ .hang:
+     hlt
+     jmp  .hang
++
++section .bss
++align 16
++stack_bottom:
++    resb STACK_SIZE
++stack_top:
+diff --git a/kernel/arch/i386/kernel32.ld b/kernel/arch/i386/kernel32.ld
+index 424a8ed..c979cbc 100644
+--- a/kernel/arch/i386/kernel32.ld
++++ b/kernel/arch/i386/kernel32.ld
+@@ -1,51 +1,70 @@
+ /*
+- * kernel/arch/i386/stub/kernel32.ld -- linker script for the i386 boot
+- * stub (I386_PLAN I1).
++ * kernel/arch/i386/kernel32.ld -- linker script for the i386 kernel
++ * (I386_PLAN I2, higher-half since I3).
+  *
+- * Unlike kernel.ld (higher-half, VMA 0xFFFFFFFF80100000, phys derived by
+- * subtraction in elf.inc), the stub is linked with VMA = LMA = 0x00100000:
+- * Stage 2's 32-bit path enables no paging, so p_paddr is the destination
+- * verbatim and the entry jump is a physical address.  The real i386
+- * kernel (I3) moves to 0xC0100000 higher-half once it owns paging; this
+- * script is scoped to the stub and dies with it.
++ * I3 layout: the kernel LIVES at virtual KERNEL_VMA + phys (0xC0100000
++ * region, plan D3) but is LOADED at physical 0x00100000 -- Stage 2's
++ * 32-bit path still enables no paging, so a small .boot section stays
++ * VMA = LMA at 0x00100000, builds a minimal PSE page directory, turns
++ * on CR0.PG and jumps to the higher half.  Every other section carries
++ * an AT() clause deriving its LMA by subtracting KERNEL_VMA, which
++ * keeps the load image contiguous from 0x00100000 -- the property
++ * elf32.inc's forward copy from the 0x00200000 staging buffer depends
++ * on (dst = src - 0x100000 stays below src for every byte).
+  *
+- * Same PHDRS discipline as kernel.ld: differently-permissioned segments
+- * never share a page, so the future paging code can map them W^X-honest
+- * (minus NX, which non-PAE i386 does not have -- I386_PLAN D3).
++ * ENTRY is the physical .boot entry: e_entry is what Stage 2 jumps to,
++ * and Stage 2 runs paging-off.
++ *
++ * Same PHDRS discipline as kernel.ld: differently-permissioned
++ * segments never share a page (minus NX, which non-PAE i386 does not
++ * have -- I386_PLAN D3).
+  */
+ 
+ OUTPUT_FORMAT(elf32-i386)
+ OUTPUT_ARCH(i386)
+ ENTRY(_start)
+ 
++KERNEL_VMA = 0xC0000000;
++
+ PHDRS
+ {
+-    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)); /* R + X */
+-    rodata  PT_LOAD    FLAGS(1 << 2);              /* R     */
+-    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
++    boot    PT_LOAD    FLAGS((1 << 0) | (1 << 1) | (1 << 2)); /* RWX: code + boot page dir */
++    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2));            /* R + X */
++    rodata  PT_LOAD    FLAGS(1 << 2);                         /* R     */
++    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2));            /* R + W */
+ }
+ 
+ SECTIONS
+ {
++    /* ---- Physical-mode entry: VMA = LMA = 0x00100000 ---- */
+     . = 0x00100000;
+ 
+-    .text : {
++    .boot : {
++        *(.boot)
++    } :boot
++
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
++
++    /* ---- The higher-half kernel proper ---- */
++    . += KERNEL_VMA;
++
++    .text : AT(ADDR(.text) - KERNEL_VMA) {
+         *(.text .text.*)
+     } :text
+ 
+-    . += CONSTANT(MAXPAGESIZE);
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
+ 
+-    .rodata : {
++    .rodata : AT(ADDR(.rodata) - KERNEL_VMA) {
+         *(.rodata .rodata.*)
+     } :rodata
+ 
+-    . += CONSTANT(MAXPAGESIZE);
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
+ 
+-    .data : {
++    .data : AT(ADDR(.data) - KERNEL_VMA) {
+         *(.data .data.*)
+     } :data
+ 
+-    .bss : {
++    .bss : AT(ADDR(.bss) - KERNEL_VMA) {
+         . = ALIGN(16);
+         __bss_start = .;
+         *(.bss .bss.*)
+diff --git a/kernel/arch/i386/kheap32.c b/kernel/arch/i386/kheap32.c
+new file mode 100644
+index 0000000..6ba8ba1
+--- /dev/null
++++ b/kernel/arch/i386/kheap32.c
+@@ -0,0 +1,186 @@
++/* kernel/arch/i386/kheap32.c -- first-fit kernel heap (I386_PLAN I3).
++ *
++ * Mirrors kernel/mm/kheap.c's design at bring-up scope: a fixed
++ * virtual window ([0xF0000000, +64 MiB), above the direct map), pages
++ * committed on demand through paging32_map + pmm32_alloc_frame, a
++ * doubly-linked free list with split-on-alloc and coalesce-on-free,
++ * and the same boot self-test contract (N alloc/free cycles, no
++ * corruption, no leak).
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/kheap32.h"
++#include "kernel/arch/i386/paging32.h"
++#include "kernel/arch/i386/pmm32.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++#define HEAP_MAGIC_FREE  0xF7EEF7EEu
++#define HEAP_MAGIC_USED  0xA110CA7Eu
++#define ALIGN_UP(x, a)   (((x) + (a) - 1) & ~((a) - 1))
++
++struct block {
++    uint32_t      magic;
++    uint32_t      size;          /* payload bytes */
++    struct block *next;
++    struct block *prev;
++};
++
++static struct block *head;
++static uint32_t committed_top;   /* first uncommitted virt addr */
++static uint32_t used_bytes;
++
++static int commit_through(uint32_t needed_top)
++{
++    while (committed_top < needed_top) {
++        if (committed_top >= KHEAP32_BASE + KHEAP32_SIZE)
++            return -1;                          /* window exhausted */
++        uint32_t frame = pmm32_alloc_frame();
++        if (!frame)
++            return -1;
++        if (paging32_map(committed_top, frame, PAGE32_FLAG_WRITE) != 0)
++            return -1;
++        committed_top += PAGE_SIZE_32;
++    }
++    return 0;
++}
++
++void kheap32_init(void)
++{
++    committed_top = KHEAP32_BASE;
++    used_bytes    = 0;
++
++    if (commit_through(KHEAP32_BASE + PAGE_SIZE_32) != 0) {
++        kprintf32("[heap] FAIL: could not commit the first page\n");
++        head = NULL;
++        return;
++    }
++
++    head        = (struct block *)KHEAP32_BASE;
++    head->magic = HEAP_MAGIC_FREE;
++    head->size  = KHEAP32_SIZE - sizeof(struct block);
++    head->next  = NULL;
++    head->prev  = NULL;
++
++    kprintf32("[heap] window %x (%u MiB), committed on demand\n",
++              KHEAP32_BASE, KHEAP32_SIZE / (1024 * 1024));
++}
++
++void *kmalloc32(size_t size)
++{
++    if (!head || size == 0)
++        return NULL;
++    size = ALIGN_UP(size, 16);
++
++    for (struct block *b = head; b; b = b->next) {
++        if (b->magic != HEAP_MAGIC_FREE || b->size < size)
++            continue;
++
++        /* Commit the pages this block's header+payload will touch. */
++        uint32_t need_top = (uint32_t)b + sizeof(struct block) + (uint32_t)size;
++        /* A split writes a header just past the payload. */
++        if (b->size >= size + sizeof(struct block) + 16)
++            need_top += sizeof(struct block);
++        if (commit_through(ALIGN_UP(need_top, PAGE_SIZE_32)) != 0)
++            return NULL;
++
++        /* Split when the remainder can hold a header + minimal payload. */
++        if (b->size >= size + sizeof(struct block) + 16) {
++            struct block *rest = (struct block *)
++                ((uint32_t)b + sizeof(struct block) + size);
++            rest->magic = HEAP_MAGIC_FREE;
++            rest->size  = b->size - (uint32_t)size - sizeof(struct block);
++            rest->next  = b->next;
++            rest->prev  = b;
++            if (b->next)
++                b->next->prev = rest;
++            b->next = rest;
++            b->size = (uint32_t)size;
++        }
++
++        b->magic    = HEAP_MAGIC_USED;
++        used_bytes += b->size;
++        return (void *)((uint32_t)b + sizeof(struct block));
++    }
++    return NULL;
++}
++
++void kfree32(void *ptr)
++{
++    if (!ptr)
++        return;
++
++    struct block *b = (struct block *)((uint32_t)ptr - sizeof(struct block));
++    if (b->magic != HEAP_MAGIC_USED) {
++        kprintf32("[heap] kfree32: BAD MAGIC at %p -- corruption or "
++                  "double free\n", ptr);
++        return;
++    }
++
++    b->magic    = HEAP_MAGIC_FREE;
++    used_bytes -= b->size;
++
++    /* Coalesce with the next block, then the previous. */
++    if (b->next && b->next->magic == HEAP_MAGIC_FREE &&
++        (uint32_t)b + sizeof(struct block) + b->size == (uint32_t)b->next) {
++        b->size += sizeof(struct block) + b->next->size;
++        b->next  = b->next->next;
++        if (b->next)
++            b->next->prev = b;
++    }
++    if (b->prev && b->prev->magic == HEAP_MAGIC_FREE &&
++        (uint32_t)b->prev + sizeof(struct block) + b->prev->size == (uint32_t)b) {
++        b->prev->size += sizeof(struct block) + b->size;
++        b->prev->next  = b->next;
++        if (b->next)
++            b->next->prev = b->prev;
++    }
++}
++
++/* Same contract as kheap's boot self-test: cycles of varied-size
++ * alloc/free with a write pattern, then a no-leak check. */
++#define ST_CYCLES 10000
++#define ST_SLOTS  16
++
++int kheap32_selftest(void)
++{
++    static void *slot[ST_SLOTS];
++    uint32_t used_before = used_bytes;
++
++    kprintf32("[heap] self-test: %u alloc/free cycles...\n", (uint32_t)ST_CYCLES);
++
++    for (int i = 0; i < ST_CYCLES; i++) {
++        int s = i % ST_SLOTS;
++        if (slot[s]) {
++            /* Verify the pattern the earlier cycle wrote. */
++            uint8_t *p = (uint8_t *)slot[s];
++            if (p[0] != (uint8_t)s || p[7] != (uint8_t)~s)
++                return -1;
++            kfree32(slot[s]);
++            slot[s] = NULL;
++        } else {
++            size_t sz = 16u + (uint32_t)(i * 37 % 4000);
++            slot[s] = kmalloc32(sz);
++            if (!slot[s])
++                return -1;
++            uint8_t *p = (uint8_t *)slot[s];
++            p[0] = (uint8_t)s;
++            p[7] = (uint8_t)~s;
++        }
++    }
++
++    for (int s = 0; s < ST_SLOTS; s++) {
++        if (slot[s]) {
++            kfree32(slot[s]);
++            slot[s] = NULL;
++        }
++    }
++
++    if (used_bytes != used_before)
++        return -1;                       /* leak */
++
++    kprintf32("[heap] PASS: %u cycles, no corruption, no leak\n",
++              (uint32_t)ST_CYCLES);
++    return 0;
++}
+diff --git a/kernel/arch/i386/kheap32.h b/kernel/arch/i386/kheap32.h
+new file mode 100644
+index 0000000..408442f
+--- /dev/null
++++ b/kernel/arch/i386/kheap32.h
+@@ -0,0 +1,18 @@
++/* kernel/arch/i386/kheap32.h -- kernel heap for the i386 kernel
++ * (I386_PLAN I3).  First-fit with coalescing over an on-demand
++ * committed window at 0xF0000000 (64 MiB), the same design and PASS
++ * contract as kernel/mm/kheap.c one width down.
++ */
++
++#ifndef AURALITE_ARCH_I386_KHEAP32_H
++#define AURALITE_ARCH_I386_KHEAP32_H
++
++#include <stdint.h>
++#include <stddef.h>
++
++void  kheap32_init(void);
++void *kmalloc32(size_t size);
++void  kfree32(void *ptr);
++int   kheap32_selftest(void);
++
++#endif /* AURALITE_ARCH_I386_KHEAP32_H */
+diff --git a/kernel/arch/i386/main32.c b/kernel/arch/i386/main32.c
+index 1ef3fd1..bb4a982 100644
+--- a/kernel/arch/i386/main32.c
++++ b/kernel/arch/i386/main32.c
+@@ -1,16 +1,13 @@
+-/* kernel/arch/i386/main32.c -- i386 kernel entry (I386_PLAN I2).
++/* kernel/arch/i386/main32.c -- i386 kernel entry (I386_PLAN I2 + I3).
+  *
+- * This replaces the I1 stub.  Same door (Stage 2's pmode32 hand-off,
+- * boot_info_t phys in ESI), a real room behind it: GDT + TSS, a full
+- * 256-gate IDT, the remapped 8259A PIC, the PIT at 100 Hz, and boot
+- * self-tests that mirror the x86_64 kmain's contract -- every
+- * subsystem proves itself in the log, or says why not.
+- *
+- * The init order matches kernel/kernel.c as far as this phase reaches:
+- *   uart -> banner -> boot_info check -> gdt -> idt -> pic -> sti ->
+- *   pit -> self-tests -> idle hlt loop.
+- * Memory (I3) slots between sti and the self-tests when it lands, the
+- * same place pmm_init occupies in the 64-bit order.
++ * I2 brought up the CPU (GDT/TSS, IDT, PIC, PIT, named exceptions).
++ * I3 adds memory: boot32.asm now enables PSE paging before this code
++ * runs (the kernel is higher-half at 0xC0100000), and kmain32 owns the
++ * rest -- dropping the boot identity window, the PMM over the E820
++ * map, 4 KiB page mappings, and the on-demand heap.  The init order
++ * tracks kernel/kernel.c's:
++ *   uart -> banner -> boot_info -> gdt -> idt -> pic -> sti -> pit ->
++ *   vmm -> pmm -> heap -> self-tests -> idle.
+  *
+  * Still compiled -malign-double: this file reads boot_info_t, and the
+  * I1 canary (mmap_count) keeps watching the cross-width layout.
+@@ -24,6 +21,9 @@
+ #include "kernel/arch/i386/irq32.h"
+ #include "kernel/arch/i386/isr.h"
+ #include "kernel/arch/i386/kprintf32.h"
++#include "kernel/arch/i386/paging32.h"
++#include "kernel/arch/i386/pmm32.h"
++#include "kernel/arch/i386/kheap32.h"
+ 
+ /* isr32.c's deliberate-fault hooks. */
+ void isr32_expect_breakpoint(void);
+@@ -35,8 +35,10 @@ static const boot_info_t *boot_info;
+ 
+ static int boot_info_check(uint32_t phys)
+ {
+-    /* Paging is off (until I3): a physical address is a pointer. */
+-    boot_info = (const boot_info_t *)phys;
++    /* Paging is ON since boot32.asm (I3): reach the struct through the
++     * direct map, not the physical pointer -- the identity window is
++     * about to be dropped. */
++    boot_info = (const boot_info_t *)p2v_32(phys);
+ 
+     if (boot_info->magic != BOOT_MAGIC) {
+         kprintf32("[boot]  boot_info magic BAD (hi=%x lo=%x); halting\n",
+@@ -45,8 +47,21 @@ static int boot_info_check(uint32_t phys)
+         return -1;
+     }
+ 
+-    kprintf32("[boot]  handoff magic OK, path=%s, boot_info at %x\n",
++    kprintf32("[boot]  handoff magic OK, path=%s, boot_info at phys %x\n",
+               boot_info->boot_from_uefi ? "UEFI" : "BIOS", phys);
++
++    /* The loader owns hhdm_offset; the kernel checks rather than
++     * assumes (the 64-bit path prints its 0xffff800000000000 the same
++     * way).  Stage 2's 32-bit branch writes 0xC0000000. */
++    if (boot_info->hhdm_offset != KERNEL_VBASE_32) {
++        kprintf32("[boot]  hhdm_offset=%x%x does not match the direct map "
++                  "(%x); halting\n",
++                  (uint32_t)(boot_info->hhdm_offset >> 32),
++                  (uint32_t)boot_info->hhdm_offset, KERNEL_VBASE_32);
++        return -1;
++    }
++    kprintf32("[mm]    HHDM offset: %x (direct map, %u MiB)\n",
++              KERNEL_VBASE_32, DIRECT_MAP_BYTES / (1024 * 1024));
+     return 0;
+ }
+ 
+@@ -57,8 +72,6 @@ static void memmap_report(void)
+     for (uint32_t i = 0; i < boot_info->mmap_count; i++) {
+         const boot_mmap_entry_t *e = &boot_info->mmap[i];
+         if (e->type == BOOT_MEM_USABLE) {
+-            /* 32-bit kernel: clamp accounting to the 4 GiB horizon.
+-             * The plan's D3 caps supported RAM at 512 MiB anyway. */
+             uint64_t end = e->base + e->length;
+             if (e->base >= 0x100000000ULL)
+                 continue;
+@@ -79,8 +92,6 @@ static void memmap_report(void)
+ 
+ static int selftest_breakpoint(void)
+ {
+-    /* A deliberate #BP must produce a named diagnostic and then resume
+-     * execution here.  Before I2 this vector was a triple fault. */
+     isr32_expect_breakpoint();
+     __asm__ volatile("int3");
+     return isr32_breakpoint_seen() ? 0 : -1;
+@@ -88,10 +99,6 @@ static int selftest_breakpoint(void)
+ 
+ static int selftest_pit(void)
+ {
+-    /* The PIT must actually tick with interrupts enabled.  ~50 ms at
+-     * 100 Hz is 5 ticks; wait for 3 to keep the gate fast and immune
+-     * to TCG jitter, and bound the wait so a dead PIT reports instead
+-     * of hanging the boot. */
+     uint32_t start = pit32_ticks();
+     for (volatile uint32_t spin = 0; spin < 50000000u; spin++) {
+         if (pit32_ticks() - start >= 3)
+@@ -110,9 +117,9 @@ void kmain32(uint32_t boot_info_phys)
+ 
+     kputs32("\n==============================================\n"
+             " Hello from AuraLite OS kernel (i386)!\n"
+-            "  x86 protected mode, booted via BIOS\n"
++            "  x86 protected mode, higher half at 0xC0100000\n"
+             "==============================================\n\n");
+-    kprintf32("[kernel] AuraLite OS i386, I386_PLAN phase I2\n");
++    kprintf32("[kernel] AuraLite OS i386, I386_PLAN phase I3\n");
+ 
+     if (boot_info_check(boot_info_phys) != 0)
+         goto halt;
+@@ -132,7 +139,30 @@ void kmain32(uint32_t boot_info_phys)
+ 
+     pit32_init(100);
+ 
+-    /* -- self-tests: same contract as the 64-bit kmain, PASS or say why. */
++    /* ---- I3: memory ---- */
++    paging32_init();
++    paging32_drop_identity();
++
++    kprintf32("[boot] initialising physical memory manager...\n");
++    pmm32_init(boot_info);
++    if (pmm32_selftest() != 0) {
++        kprintf32("[pmm] FAIL: self-test\n");
++        goto halt;
++    }
++
++    if (paging32_selftest() != 0) {
++        kprintf32("[vmm] FAIL: self-test\n");
++        goto halt;
++    }
++
++    kprintf32("[boot] initialising kernel heap...\n");
++    kheap32_init();
++    if (kheap32_selftest() != 0) {
++        kprintf32("[heap] FAIL: self-test\n");
++        goto halt;
++    }
++
++    /* ---- I2 self-tests (still gating every boot) ---- */
+     if (selftest_breakpoint() == 0)
+         kprintf32("[isr] PASS: deliberate #BP named, dumped, resumed\n");
+     else
+@@ -144,7 +174,7 @@ void kmain32(uint32_t boot_info_phys)
+     else
+         kprintf32("[timer] FAIL: no PIT ticks; check PIC mask/EOI path\n");
+ 
+-    kprintf32("[kernel] I2 bring-up complete; idle (I3 adds paging/pmm/heap)\n");
++    kprintf32("[kernel] I3 memory online; idle (I4 adds threads + Ring 3)\n");
+ 
+ halt:
+     for (;;)
+diff --git a/kernel/arch/i386/paging32.c b/kernel/arch/i386/paging32.c
+new file mode 100644
+index 0000000..16065d4
+--- /dev/null
++++ b/kernel/arch/i386/paging32.c
+@@ -0,0 +1,190 @@
++/* kernel/arch/i386/paging32.c -- non-PAE 2-level paging (I386_PLAN I3).
++ *
++ * boot32.asm built the boot page directory (PSE direct map + identity
++ * window) before the higher-half jump; this file owns everything after:
++ * dropping the identity window, 4 KiB mappings for the heap and (in I4)
++ * user space, and the boot self-test in the vmm PASS contract.
++ *
++ * PDE/PTE bit layout (Intel SDM Vol.3 s.4.3, 32-bit paging):
++ *   bit 0 P, bit 1 R/W, bit 2 U/S, bit 7 PS (PDE only).
++ * PAGE32_FLAG_NO_EXEC is accepted and ignored -- no PAE, no NX bit;
++ * the honest statement lives in I386_PLAN D3 and docs/status.md.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/paging32.h"
++#include "kernel/arch/i386/pmm32.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++#define PDE_P   (1u << 0)
++#define PDE_RW  (1u << 1)
++#define PDE_US  (1u << 2)
++#define PDE_PS  (1u << 7)
++#define PTE_P   (1u << 0)
++#define PTE_RW  (1u << 1)
++#define PTE_US  (1u << 2)
++
++/* Defined in boot32.asm (.boot section, physical address == virtual via
++ * the direct map once paging is on). */
++extern uint32_t boot_page_directory[];
++
++static uint32_t *page_dir;   /* direct-mapped pointer to the PD */
++
++static inline void invlpg(uint32_t virt)
++{
++    __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
++}
++
++void paging32_init(void)
++{
++    /* The PD lives in .boot, below 896 MiB, so the direct map reaches
++     * it.  Its physical address IS the .boot symbol's address (VMA=LMA
++     * there); go through p2v_32 for the post-paging pointer. */
++    page_dir = (uint32_t *)p2v_32((uint32_t)boot_page_directory);
++
++    kprintf32("[vmm] PD at phys %x, direct map %u MiB at %x, PSE 4 MiB pages\n",
++              (uint32_t)boot_page_directory,
++              DIRECT_MAP_BYTES / (1024 * 1024), KERNEL_VBASE_32);
++    kprintf32("[vmm] no PAE => no NX: W^X for user pages is NOT enforceable "
++              "on i386 (plan D3)\n");
++}
++
++void paging32_drop_identity(void)
++{
++    /* PDEs 0..223 were only needed for the instruction after the PG
++     * flip.  With execution higher-half, NULL-page dereferences must
++     * fault, so the window goes. */
++    for (uint32_t i = 0; i < DIRECT_MAP_BYTES / (4u * 1024 * 1024); i++)
++        page_dir[i] = 0;
++
++    /* Full TLB flush: reload CR3. */
++    uint32_t cr3;
++    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
++    __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
++
++    kprintf32("[vmm] identity window [0, %u MiB) dropped; NULL now faults\n",
++              DIRECT_MAP_BYTES / (1024 * 1024));
++}
++
++int paging32_map(uint32_t virt, uint32_t phys, uint32_t flags)
++{
++    uint32_t pdi = virt >> 22;
++    uint32_t pti = (virt >> 12) & 0x3FF;
++
++    uint32_t pde = page_dir[pdi];
++    if (pde & PDE_PS)
++        return -1;                        /* refuse to split a 4 MiB page */
++
++    uint32_t *pt;
++    if (!(pde & PDE_P)) {
++        uint32_t pt_phys = pmm32_alloc_frame();
++        if (!pt_phys)
++            return -1;
++        pt = (uint32_t *)p2v_32(pt_phys);
++        for (int i = 0; i < 1024; i++)
++            pt[i] = 0;
++        /* PDE carries the union of permissions; PTEs restrict. */
++        page_dir[pdi] = pt_phys | PDE_P | PDE_RW |
++                        ((flags & PAGE32_FLAG_USER) ? PDE_US : 0);
++    } else {
++        pt = (uint32_t *)p2v_32(pde & ~0xFFFu);
++        if ((flags & PAGE32_FLAG_USER) && !(pde & PDE_US))
++            page_dir[pdi] |= PDE_US;
++    }
++
++    if (pt[pti] & PTE_P)
++        return -1;                        /* already mapped: caller bug */
++
++    pt[pti] = (phys & ~0xFFFu) | PTE_P |
++              ((flags & PAGE32_FLAG_WRITE) ? PTE_RW : 0) |
++              ((flags & PAGE32_FLAG_USER)  ? PTE_US : 0);
++    invlpg(virt);
++    return 0;
++}
++
++int paging32_unmap(uint32_t virt)
++{
++    uint32_t pdi = virt >> 22;
++    uint32_t pti = (virt >> 12) & 0x3FF;
++
++    uint32_t pde = page_dir[pdi];
++    if (!(pde & PDE_P) || (pde & PDE_PS))
++        return -1;
++
++    uint32_t *pt = (uint32_t *)p2v_32(pde & ~0xFFFu);
++    if (!(pt[pti] & PTE_P))
++        return -1;
++
++    pt[pti] = 0;
++    invlpg(virt);
++    return 0;
++}
++
++int paging32_probe(uint32_t virt, uint32_t *phys_out)
++{
++    uint32_t pdi = virt >> 22;
++    uint32_t pti = (virt >> 12) & 0x3FF;
++
++    uint32_t pde = page_dir[pdi];
++    if (!(pde & PDE_P))
++        return 0;
++
++    if (pde & PDE_PS) {
++        if (phys_out)
++            *phys_out = (pde & 0xFFC00000u) | (virt & 0x003FFFFFu);
++        return 1;
++    }
++
++    uint32_t *pt = (uint32_t *)p2v_32(pde & ~0xFFFu);
++    if (!(pt[pti] & PTE_P))
++        return 0;
++    if (phys_out)
++        *phys_out = (pt[pti] & ~0xFFFu) | (virt & 0xFFFu);
++    return 1;
++}
++
++/* Same shape as the x86_64 vmm self-test: map a fresh page at a probe
++ * address, write/read through it, unmap, confirm the probe goes dark. */
++int paging32_selftest(void)
++{
++    /* Above the heap window: 0xFC000000 is past the direct map's
++     * 0xF8000000 ceiling AND past the heap, so its PDE starts empty.
++     * The first attempt used 0xE0000000, which is *inside* the PSE
++     * direct map -- paging32_map correctly refused to split the 4 MiB
++     * page and the self-test caught the layout bug at first boot. */
++    const uint32_t probe = 0xFC000000u;
++
++    kprintf32("[vmm] self-test: mapping %x...\n", probe);
++
++    uint32_t frame = pmm32_alloc_frame();
++    if (!frame)
++        return -1;
++
++    if (paging32_map(probe, frame, PAGE32_FLAG_WRITE) != 0)
++        return -1;
++
++    volatile uint32_t *p = (volatile uint32_t *)probe;
++    *p = 0xC0DEC0DEu;
++    if (*p != 0xC0DEC0DEu)
++        return -1;
++
++    /* The same frame through the direct map must see the store. */
++    volatile uint32_t *alias = (volatile uint32_t *)p2v_32(frame);
++    if (*alias != 0xC0DEC0DEu)
++        return -1;
++
++    uint32_t phys = 0;
++    if (!paging32_probe(probe, &phys) || phys != frame)
++        return -1;
++
++    if (paging32_unmap(probe) != 0)
++        return -1;
++    if (paging32_probe(probe, NULL))
++        return -1;
++
++    pmm32_free_frame(frame);
++    kprintf32("[vmm] PASS: map / write / alias-read / unmap all correct\n");
++    return 0;
++}
+diff --git a/kernel/arch/i386/paging32.h b/kernel/arch/i386/paging32.h
+new file mode 100644
+index 0000000..7c088e8
+--- /dev/null
++++ b/kernel/arch/i386/paging32.h
+@@ -0,0 +1,60 @@
++/* kernel/arch/i386/paging32.h -- non-PAE 2-level paging (I386_PLAN I3).
++ *
++ * Layout (plan D3; the heap window moved above the direct map's true
++ * ceiling after the vmm self-test caught the original 0xF0000000 plan
++ * sitting INSIDE the map -- 0xC0000000 + 896 MiB = 0xF8000000, so
++ * anything below that is already a 4 MiB PSE page):
++ *   [0xC0000000, 0xF8000000)  direct map of phys [0, 896 MiB)
++ *   [0xF8000000, 0xFC000000)  kernel heap window (64 MiB)
++ *   [0xFC000000, ...)         vmm self-test probe territory
++ *   below 0xC0000000          user space (I4+)
++ *
++ * The direct map uses 4 MiB PSE pages (224 PDEs, zero page tables),
++ * which is why check_i686 requires PSE.  No PAE => no NX: the plan's
++ * D3 consequence, recorded in docs/status.md rather than hidden --
++ * PAGE32_FLAG_NO_EXEC is accepted by paging32_map and ignored, so
++ * portable callers keep compiling while the truth lives in one place.
++ *
++ * hhdm_offset in boot_info_t is 0xC0000000 on this path -- the field
++ * is 64-bit wide and the kernel reads it rather than assuming, exactly
++ * so that both widths can share the contract.
++ */
++
++#ifndef AURALITE_ARCH_I386_PAGING32_H
++#define AURALITE_ARCH_I386_PAGING32_H
++
++#include <stdint.h>
++
++#define KERNEL_VBASE_32     0xC0000000u
++#define DIRECT_MAP_BYTES    (896u * 1024u * 1024u)
++#define KHEAP32_BASE        0xF8000000u
++#define KHEAP32_SIZE        (64u * 1024u * 1024u)
++
++#define PAGE32_FLAG_WRITE    (1u << 0)
++#define PAGE32_FLAG_USER     (1u << 1)
++#define PAGE32_FLAG_NO_EXEC  (1u << 2)   /* accepted, unenforceable: no PAE */
++
++/* phys <-> direct-mapped virt (valid below DIRECT_MAP_BYTES only). */
++static inline void *p2v_32(uint32_t phys) {
++    return (void *)(phys + KERNEL_VBASE_32);
++}
++static inline uint32_t v2p_32(const void *virt) {
++    return (uint32_t)virt - KERNEL_VBASE_32;
++}
++
++/* Build the kernel page directory (identity + direct map), load CR3,
++ * set CR4.PSE, CR0.PG+WP.  After this the kernel runs higher-half. */
++void paging32_init(void);
++
++/* Drop the [0, 896 MiB) identity window once execution is higher-half.
++ * The identity map exists only to survive the mov-to-CR0 instruction. */
++void paging32_drop_identity(void);
++
++int  paging32_map(uint32_t virt, uint32_t phys, uint32_t flags);
++int  paging32_unmap(uint32_t virt);
++/* 1 = mapped, 0 = not; *phys_out optionally receives the frame. */
++int  paging32_probe(uint32_t virt, uint32_t *phys_out);
++
++int  paging32_selftest(void);
++
++#endif /* AURALITE_ARCH_I386_PAGING32_H */
+diff --git a/kernel/arch/i386/pmm32.c b/kernel/arch/i386/pmm32.c
+new file mode 100644
+index 0000000..bd04feb
+--- /dev/null
++++ b/kernel/arch/i386/pmm32.c
+@@ -0,0 +1,151 @@
++/* kernel/arch/i386/pmm32.c -- bitmap frame allocator (I386_PLAN I3).
++ *
++ * Mirrors kernel/mm/pmm.c at bring-up scope: one bit per 4 KiB frame
++ * over kernel/lib/bitmap.h (the identical, host-tested header), an
++ * early-boot low reserve, and a boot self-test with the same PASS
++ * contract.  Refcounting (COW's requirement) arrives with fork in I4+.
++ *
++ * Width discipline (plan D6): E820 walks in uint64_t, allocatable
++ * frames in uint32_t -- an entry above the 4 GiB horizon is skipped
++ * with a log line, never truncated.
++ */
++
++#include <stdint.h>
++
++#include "kernel/arch/i386/pmm32.h"
++#include "kernel/arch/i386/kprintf32.h"
++#include "kernel/lib/bitmap.h"
++
++/* Same reasoning as pmm.c's PMM_EARLY_BOOT_RESERVE: the loader parked
++ * the kernel image, boot_info and the initrd below 40 MiB; keep all of
++ * it allocated until the VFS has copied what it needs. */
++#define EARLY_RESERVE (40u * 1024u * 1024u)
++
++/* The bitmap lives in .bss: 896 MiB / 4 KiB = 229376 frames = 28 KiB.
++ * Static rather than heap-carved because the heap does not exist yet
++ * (kheap32 sits above the PMM in the init order, exactly as on x86_64). */
++#define MAX_FRAMES (PMM32_HORIZON / PAGE_SIZE_32)
++
++static uint8_t  frame_bitmap[MAX_FRAMES / 8];
++static uint32_t total_frames;   /* tracked (below horizon and in E820)   */
++static uint32_t free_count;
++
++static void mark_used(uint32_t frame)
++{
++    if (!bm_test(frame_bitmap, frame)) {
++        bm_set(frame_bitmap, frame);
++        free_count--;
++    }
++}
++
++static void mark_free(uint32_t frame)
++{
++    if (bm_test(frame_bitmap, frame)) {
++        bm_clear(frame_bitmap, frame);
++        free_count++;
++    }
++}
++
++void pmm32_init(const boot_info_t *bi)
++{
++    /* Everything starts used; E820-usable ranges open frames up. */
++    for (uint32_t i = 0; i < sizeof(frame_bitmap); i++)
++        frame_bitmap[i] = 0xFF;
++    total_frames = 0;
++    free_count   = 0;
++
++    uint32_t skipped_high = 0;
++
++    for (uint32_t i = 0; i < bi->mmap_count; i++) {
++        const boot_mmap_entry_t *e = &bi->mmap[i];
++        if (e->type != BOOT_MEM_USABLE)
++            continue;
++
++        uint64_t base = e->base;
++        uint64_t end  = e->base + e->length;
++
++        if (base >= PMM32_HORIZON) {
++            skipped_high++;
++            continue;                    /* skipped, not truncated (D6) */
++        }
++        if (end > PMM32_HORIZON)
++            end = PMM32_HORIZON;
++
++        /* Frame-align inward. */
++        uint32_t first = (uint32_t)((base + PAGE_SIZE_32 - 1) / PAGE_SIZE_32);
++        uint32_t last  = (uint32_t)(end / PAGE_SIZE_32);
++
++        for (uint32_t f = first; f < last; f++) {
++            if (bm_test(frame_bitmap, f)) {
++                bm_clear(frame_bitmap, f);
++                free_count++;
++                total_frames++;
++            }
++        }
++    }
++
++    /* Low reserve: loader artefacts + this kernel + the initrd. */
++    for (uint32_t f = 0; f < EARLY_RESERVE / PAGE_SIZE_32; f++) {
++        if (!bm_test(frame_bitmap, f)) {
++            bm_set(frame_bitmap, f);
++            free_count--;
++        }
++    }
++
++    kprintf32("[pmm] bitmap in .bss, %u bytes; tracked frames: %u (%u MiB)\n",
++              (uint32_t)sizeof(frame_bitmap), total_frames,
++              total_frames / 256);
++    kprintf32("[pmm] free frames:   %u (%u MiB); low %u MiB reserved\n",
++              free_count, free_count / 256, EARLY_RESERVE / (1024 * 1024));
++    if (skipped_high)
++        kprintf32("[pmm] %u E820 region(s) above the %u MiB horizon skipped\n",
++                  skipped_high, PMM32_HORIZON / (1024 * 1024));
++}
++
++uint32_t pmm32_alloc_frame(void)
++{
++    int64_t idx = bm_first_free(frame_bitmap, MAX_FRAMES);
++    if (idx < 0)
++        return 0;
++    mark_used((uint32_t)idx);
++    return (uint32_t)idx * PAGE_SIZE_32;
++}
++
++void pmm32_free_frame(uint32_t phys)
++{
++    mark_free(phys / PAGE_SIZE_32);
++}
++
++uint32_t pmm32_free_frames(void)  { return free_count;   }
++uint32_t pmm32_total_frames(void) { return total_frames; }
++
++/* Same shape as pmm.c's boot self-test: allocate a batch, check
++ * uniqueness and alignment, free, check no leak. */
++#define SELFTEST_N 1000
++
++int pmm32_selftest(void)
++{
++    static uint32_t got[SELFTEST_N];
++    uint32_t before = free_count;
++
++    kprintf32("[pmm] self-test: allocating %u frames...\n", (uint32_t)SELFTEST_N);
++
++    for (int i = 0; i < SELFTEST_N; i++) {
++        got[i] = pmm32_alloc_frame();
++        if (got[i] == 0 || (got[i] & (PAGE_SIZE_32 - 1)) != 0)
++            return -1;
++        for (int j = 0; j < i; j++)
++            if (got[j] == got[i])
++                return -1;               /* duplicate */
++    }
++
++    for (int i = 0; i < SELFTEST_N; i++)
++        pmm32_free_frame(got[i]);
++
++    if (free_count != before)
++        return -1;                       /* leak */
++
++    kprintf32("[pmm] PASS: %u unique aligned frames, no leak\n",
++              (uint32_t)SELFTEST_N);
++    return 0;
++}
+diff --git a/kernel/arch/i386/pmm32.h b/kernel/arch/i386/pmm32.h
+new file mode 100644
+index 0000000..1358f4b
+--- /dev/null
++++ b/kernel/arch/i386/pmm32.h
+@@ -0,0 +1,33 @@
++/* kernel/arch/i386/pmm32.h -- physical frame allocator for the i386
++ * kernel (I386_PLAN I3).
++ *
++ * The algorithms are kernel/lib/bitmap.h -- the SAME header the x86_64
++ * PMM and the host unit test compile, which is the point: I3's memory
++ * work reuses every line that was already width-clean and writes only
++ * the arch glue.  Physical addresses are uint64_t (paddr_t discipline,
++ * plan D6) even though this allocator caps tracking at the direct-map
++ * horizon: E820 entries above 4 GiB exist on real machines and must be
++ * *skipped*, not truncated into aliasing low memory.
++ */
++
++#ifndef AURALITE_ARCH_I386_PMM32_H
++#define AURALITE_ARCH_I386_PMM32_H
++
++#include <stdint.h>
++#include "boot/shared/boot_info.h"
++
++#define PAGE_SIZE_32       4096u
++
++/* Direct-map horizon (plan D3): the kernel direct-maps [0, 896 MiB) at
++ * 0xC0000000, so no frame above it is allocatable.  896 MiB is the
++ * classic split ceiling; supported RAM is 512 MiB in practice. */
++#define PMM32_HORIZON      (896u * 1024u * 1024u)
++
++void     pmm32_init(const boot_info_t *bi);
++uint32_t pmm32_alloc_frame(void);          /* phys addr, 0 on OOM */
++void     pmm32_free_frame(uint32_t phys);
++uint32_t pmm32_free_frames(void);
++uint32_t pmm32_total_frames(void);
++int      pmm32_selftest(void);
++
++#endif /* AURALITE_ARCH_I386_PMM32_H */
+diff --git a/tests/integration/i386_cpu_smoke.sh b/tests/integration/i386_cpu_smoke.sh
+index 4ec2d8d..a421212 100755
+--- a/tests/integration/i386_cpu_smoke.sh
++++ b/tests/integration/i386_cpu_smoke.sh
+@@ -76,7 +76,11 @@ assert_grep    "$LOG32" "vector=3 (Breakpoint)"                        "i386: ex
+ assert_grep    "$LOG32" "cpu=0"                                        "i386: diagnostic names the CPU (R0 discipline)"
+ assert_grep    "$LOG32" "\[isr\] PASS: deliberate #BP named, dumped, resumed" "i386: execution resumed after the fault"
+ assert_grep    "$LOG32" "\[timer\] PASS: PIT ticking"                  "i386: PIT ticks observed (gate+PIC+EOI path)"
+-assert_grep    "$LOG32" "I2 bring-up complete"                         "i386: reached idle -- no triple fault"
++# I3 note: the final line advances phase by phase ("I2 bring-up
++# complete" -> "I3 memory online" -> ...); assert the *contract* (the
++# boot reached an idle line) rather than a phase number this test would
++# then pin forever.
++assert_grep    "$LOG32" "idle (I[0-9] adds\|memory online; idle"       "i386: reached idle -- no triple fault"
+ assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected faults"
+ 
+ # ---- the standing x86_64 regression gate ----
+diff --git a/tests/integration/i386_mm_smoke.sh b/tests/integration/i386_mm_smoke.sh
+new file mode 100755
+index 0000000..6849890
+--- /dev/null
++++ b/tests/integration/i386_mm_smoke.sh
+@@ -0,0 +1,90 @@
++#!/usr/bin/env bash
++# tests/integration/i386_mm_smoke.sh -- I386_PLAN phase I3 smoke test.
++#
++# Asserts the i386 memory contract on the real `make iso` image:
++#
++#   * the kernel runs HIGHER-HALF: the #BP self-test's eip must be a
++#     0xC01xxxxx address (the strongest single signal that paging is on
++#     and the linker/loader/boot32 chain agreed on the layout);
++#   * hhdm_offset arrived as 0xC0000000 and was validated, not assumed;
++#   * the boot identity window was dropped (NULL faults from here on);
++#   * the honest D3 line is printed: no PAE => no NX on i386;
++#   * [pmm] PASS, [vmm] PASS, [heap] PASS -- the same self-test
++#     contract the x86_64 boot enforces, one width down;
++#   * the I2 gates (#BP named+resumed, PIT ticking) still hold;
++#   * nothing triple-faulted: the boot reaches the I3 idle line.
++#
++# Plus the standing x86_64 no-regression pair.
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ISO="$BUILD/auralite.iso"
++LOG32="$BUILD/i386_mm.log"
++LOG64="$BUILD/i386_mm_x64.log"
++
++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
++
++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
++    echo "[i386-mm] SKIP: qemu-system-i386 not installed" >&2
++    exit 0
++fi
++
++fail=0
++run_qemu() {
++    local bin="$1" log="$2"
++    rm -f "$log"
++    timeout 30 "$bin" \
++        -drive format=raw,file="$ISO",if=ide,snapshot=on \
++        -m 512M \
++        -display none -serial file:"$log" -no-reboot \
++        >/dev/null 2>&1 || true
++}
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-mm] OK   %s\n' "$desc"
++    else
++        printf '  [i386-mm] FAIL %s\n' "$desc"
++        fail=1
++    fi
++}
++
++assert_no_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-mm] FAIL %s\n' "$desc"
++        fail=1
++    else
++        printf '  [i386-mm] OK   %s\n' "$desc"
++    fi
++}
++
++# ---- the i386 memory bring-up ----
++run_qemu qemu-system-i386 "$LOG32"
++assert_grep    "$LOG32" "higher half at 0xC0100000"                    "i386: banner claims higher half"
++assert_grep    "$LOG32" "eip=c01"                                      "i386: #BP eip proves execution IS higher-half"
++assert_grep    "$LOG32" "HHDM offset: c0000000"                        "i386: hhdm_offset validated (loader-owns-it contract)"
++assert_grep    "$LOG32" "identity window \[0, 896 MiB) dropped"        "i386: boot identity map dropped"
++assert_grep    "$LOG32" "no PAE => no NX"                              "i386: the D3 consequence stated in the log"
++assert_grep    "$LOG32" "\[pmm\] PASS"                                 "i386: PMM self-test"
++assert_grep    "$LOG32" "\[vmm\] PASS"                                 "i386: paging self-test (map/alias/unmap)"
++assert_grep    "$LOG32" "\[heap\] PASS"                                "i386: heap self-test (10000 cycles)"
++assert_grep    "$LOG32" "\[isr\] PASS"                                 "i386: I2 #BP gate still green"
++assert_grep    "$LOG32" "\[timer\] PASS"                               "i386: I2 PIT gate still green"
++assert_grep    "$LOG32" "I3 memory online"                             "i386: reached idle -- no triple fault"
++assert_no_grep "$LOG32" "FAIL"                                         "i386: no self-test failures anywhere"
++assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected faults"
++
++# ---- the standing x86_64 regression gate ----
++run_qemu qemu-system-x86_64 "$LOG64"
++assert_grep    "$LOG64" "Hello from AuraLite OS kernel!"               "x86_64: kernel banner unchanged"
++assert_grep    "$LOG64" "HHDM offset: 0xffff800000000000"              "x86_64: 64-bit HHDM untouched by the 32-bit hhdm write"
++assert_no_grep "$LOG64" "(i386)"                                       "x86_64: no 32-bit artefacts in the log"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[i386-mm] FAILED"
++    exit 1
++fi
++echo "[i386-mm] all assertions passed"
+-- 
+2.47.3
+

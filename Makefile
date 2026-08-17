@@ -1812,6 +1812,14 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tests/unit/test_libatls_m32.sh"
 	@bash tests/unit/test_libatls_m32.sh || exit 1
 
+# I386_PLAN I9: the plan cannot drift from the tree -- each phase's
+# claims are tied to artefacts that only exist if the phase happened,
+# and the header is checked against the phase table.  With the usual
+# negative control (a checker that never fails checks nothing).
+	@echo "[unit] running tools/check_i386_claims.py"
+	@python3 tools/check_i386_claims.py || exit 1
+	@python3 tools/check_i386_claims.py --selftest || exit 1
+
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
 # control, and the Q-family unit sub-suites.  Skips cleanly when the libc

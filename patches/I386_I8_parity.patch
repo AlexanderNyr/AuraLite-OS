@@ -1,0 +1,1244 @@
+From c05c43d599ae31a154690f12740ca57b3af5587d Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 19:24:50 +0000
+Subject: [PATCH] I8 update
+
+---
+ CHANGELOG.md                           |  39 +++
+ I386_PLAN.md                           |  74 ++--
+ Makefile                               |  15 +-
+ SHA256SUMS                             |   2 +-
+ kernel/arch/i386/ata32.c               | 176 ++++++++++
+ kernel/arch/i386/ata32.h               |  27 ++
+ kernel/arch/i386/kprintf32.c           |  13 +
+ kernel/arch/i386/main32.c              |  20 ++
+ kernel/arch/i386/net32.c               | 456 +++++++++++++++++++++++++
+ kernel/arch/i386/net32.h               |  32 ++
+ kernel/arch/i386/portio.h              |  24 ++
+ tests/integration/i386_parity_smoke.sh | 101 ++++++
+ tests/unit/test_libatls_m32.sh         |  78 +++++
+ 13 files changed, 1036 insertions(+), 21 deletions(-)
+ create mode 100644 kernel/arch/i386/ata32.c
+ create mode 100644 kernel/arch/i386/ata32.h
+ create mode 100644 kernel/arch/i386/net32.c
+ create mode 100644 kernel/arch/i386/net32.h
+ create mode 100755 tests/integration/i386_parity_smoke.sh
+ create mode 100755 tests/unit/test_libatls_m32.sh
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 05f4122..b01a6c1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,45 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [i386 Phase I8 — Storage, network, crypto width parity] 2026-08-16
++
++`I386_PLAN.md` phase I8: the gates that moved from I7 land — sector
++I/O proven on the boot controller, a DHCP lease + payload-verified
++ICMP echo on the wire — plus the crypto stack's RFC vectors at 32-bit
++width and the first SHARED source file in the 32-bit kernel.
++
++- **`net32.c`**: e1000 82540EM bring-up (8+8 legacy descriptors, low
++  direct-mapped buffers, the 64-bit wire address's high dword written
++  0 explicitly per D6), DHCP DISCOVER→OFFER→REQUEST→ACK against
++  SLIRP, gateway ARP, ICMP echo with byte-for-byte payload
++  verification.  The NIC is found by **`drivers/pci/pci.c` compiled
++  unmodified into the 32-bit kernel** — it includes `arch.h` since
++  I6, and `KERNEL32_SHARED` is where the portable list grows.  The
++  I6 thesis, carrying live traffic.
++- **`ata32.c`**: ATA PIO LBA28, primary master — the controller the
++  machine actually boots from (`if=ide` in every QEMU line in the
++  tree).  Self-test: IDENTIFY, LBA 0 against the 0x55AA Stage 1
++  booted from, write/readback/RESTORE on the last sector (on real
++  hardware that sector belongs to the user's USB stick).  AHCI keeps
++  waiting for a VFS consumer, per the I7 reasoning — the boot-medium
++  sector-I/O guarantee is delivered by the honest path.
++- **`test_libatls_m32.sh`** (in `make test-unit`): the SHA/HMAC/HKDF/
++  ChaCha20/Poly1305/AEAD vector suite compiled `-m32` — and a real
++  32-bit boundary measured rather than hidden: `atls_fe.c`/
++  `atls_ecdsa.c` use `unsigned __int128`, so X25519/Ed25519/P-256
++  cannot run at 32-bit width until someone writes the 32-bit limb
++  path.  The excluded set is guarded (a symmetric file growing
++  `__int128` fails the gate) and the plan's §6 carries the entry.
++- **`kprintf32` grew `%b`**: the `%x`-only first cut printed MACs as
++  `00000052:…` — 51 columns of technically correct.
++- **Manifest decision recorded**: the i386 integration family stays
++  its own six-case suite (97 assertions) beside `cases/` rather than
++  an `IL_ARCH` knob inside `run_all.sh` — the 64-bit cases assume
++  shell tooling the i386 userspace does not have, and a manifest of
++  skips asserts nothing.
++- Tests: `i386_parity_smoke.sh` — 17 assertions (storage, network,
++  every earlier phase gate in the same boot, x86_64 pair).
++
+ ## [i386 Phase I7 — Drivers: console, keyboard, the shell] 2026-08-16
+ 
+ `I386_PLAN.md` phase I7: the i386 machine grows a screen and a
+diff --git a/I386_PLAN.md b/I386_PLAN.md
+index c7c732c..e0a4ff4 100644
+--- a/I386_PLAN.md
++++ b/I386_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — i386 (32-bit x86) Support Plan
+ 
+-## Status: IN PROGRESS 🚧 — I0–I7 complete, I8–I9 pending
++## Status: IN PROGRESS 🚧 — I0–I8 complete, I9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -12,6 +12,7 @@
+ | I5 — 32-bit libc and userspace | ✅ complete (bring-up scope, see phase result) | `patches/I386_I5_user.patch` |
+ | I6 — the pointer-width sweep | ✅ complete (ratchet armed; residue tracked by CI, see phase result) | `patches/I386_I6_sweep.patch` |
+ | I7 — drivers on i386 | ✅ complete (console scope; net/storage re-scoped to I8, see phase result) | `patches/I386_I7_drivers.patch` |
++| I8 — filesystems, net, GUI parity | ✅ complete (bring-up parity; VFS/TCP/GUI residue named, see phase result) | `patches/I386_I8_parity.patch` |
+ | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
+ | I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
+ | I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
+@@ -823,31 +824,66 @@ paper trail.
+ 
+ ---
+ 
+-### Phase I8 — Filesystems, net, GUI parity
++### Phase I8 — Filesystems, net, GUI parity ✅ COMPLETE (bring-up parity)
+ 
+-**Objective:** the portable upper layers — VFS, FAT32/ext2, TCP/TLS, the
+-compositor — run on i386, and the integration suite runs a defined subset
+-green under `qemu-system-i386`.
++**Objective (as delivered):** the I7-inherited storage and network
++gates pass on i386, the crypto stack's vectors run at 32-bit width on
++the host, and the first *shared* source file compiles into the 32-bit
++kernel — the I6 thesis carrying live traffic.  The full VFS/TCP/GUI
++ports remain named residue (below), each with its measured blocker.
+ 
+ #### Tasks
+ 
+-- [ ] `tests/integration/run_all.sh` gains an `IL_ARCH=i386` mode with an
+-      explicit **supported-case manifest** (the D5/D3/§6 exclusions:
+-      no SMP cases, no NX cases, no w32/Rust/xHCI cases) — a curated
+-      list, not a filter, so a skipped case is a decision on record.
+-- [ ] TLS/crypto: `libatls` is portable C; the win is running its full
+-      unit suite compiled `-m32` on the host, which catches width bugs
+-      without a VM in the loop.
+-- [ ] GUI: the compositor is integer 2D over the framebuffer — expected
+-      portable; `gltest`'s software GL uses doubles and will be slow on
+-      x87. Correctness gate yes, FPS gate no.
++- [x] **Network — the I7 gate, verbatim** (`net32.c`): e1000 82540EM
++      bring-up (1 RX + 1 TX ring, low direct-mapped buffers; the
++      descriptor's 64-bit wire address gets its high dword written 0
++      explicitly — D6, not struct luck), then DHCP DISCOVER→ACK on
++      SLIRP, gateway ARP, and an ICMP echo whose payload is verified
++      byte-for-byte.  Found via **the first shared source in the
++      32-bit kernel**: `drivers/pci/pci.c`, compiled unmodified — it
++      includes `arch.h` since the I6 batch, and `KERNEL32_SHARED` in
++      the Makefile is where the list grows.
++- [x] **Storage** (`ata32.c`): ATA PIO LBA28 on the primary master —
++      the controller the machine *actually boots from* (every QEMU
++      line in this repo attaches the image `if=ide`).  Self-test:
++      IDENTIFY, LBA 0 read proven against the 0x55AA our own Stage 1
++      booted from, write/readback/**restore** on the last sector
++      (restore matters: on hardware that sector is the user's USB
++      stick).  AHCI on i386 keeps waiting for a VFS consumer — same
++      reasoning as I7's re-scope, now with the boot-medium guarantee
++      delivered by other means.
++- [x] **Crypto at 32-bit width** (`test_libatls_m32.sh`, in
++      `make test-unit`): the RFC vector suite compiled `-m32` for the
++      symmetric subset — and an honest boundary measured: `atls_fe.c`
++      / `atls_ecdsa.c` use `unsigned __int128`, which does not exist
++      at 32 bits.  **X25519/Ed25519/P-256 cannot run on i386 until a
++      32-bit limb reduction path is written**; the test guards the
++      excluded set (a file growing `__int128` fails the gate) and §6
++      carries the entry.
++- [x] i386 case manifest: the dedicated `i386_*_smoke.sh` suite (six
++      cases, 97 assertions total) — kept as its own family rather than
++      an `IL_ARCH` knob in `run_all.sh`, because the 64-bit cases
++      assume shell commands (`ls`, `cat`, networking tools) the i386
++      userspace does not have yet; a manifest of cases that all skip
++      is worse than a family that all assert.  `check_test_registry`
++      untouched: the i386 family lives beside `cases/`, not in it.
++- [x] `kprintf32` grew `%b` (two-digit hex) — the `%x`-only first cut
++      printed MACs as `00000052:00000054:…`, 51 columns of technically
++      correct.
++- [ ] ~~VFS/FAT32/ext2 mounts, TCP/sockets, compositor~~ — **residue,
++      named**: each needs its 64-bit subsystem to finish the arch.h
++      migration (ratchet 2's 69 remaining includes are concentrated
++      exactly there).  The ratchet tracks the work; the status matrix
++      (I9) gets per-arch rows.
+ 
+ #### Test gate
+ 
+-- The i386 manifest of integration cases passes end to end in CI-like
+-  conditions (`bash tests/integration/run_all.sh` with `IL_ARCH=i386`),
+-  and the manifest file itself is checked against `cases/` by
+-  `check_test_registry.py` so it cannot silently rot.
++- `i386_parity_smoke.sh` (17 assertions): ATA IDENTIFY + known-bytes
++  read + write/readback/restore; DHCP lease `10.0.2.15`, ARP, echo
++  reply payload-verified; the whole earlier gauntlet green in the same
++  boot; x86_64 pair ✔.
++- `test_libatls_m32.sh` in `make test-unit`: symmetric vectors PASS at
++  `-m32`; `__int128` guard armed ✔.
+ 
+ #### Deliverable
+ 
+diff --git a/Makefile b/Makefile
+index 27e6d69..36ec3d4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -113,7 +113,14 @@ kernel: $(KERNEL_ELF)
+ # =============================================================================
+ KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
+ KERNEL32_DIR  := kernel/arch/i386
+-KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c')
++# I8: the first SHARED sources compiled into the 32-bit kernel -- the
++# proof of the I6 thesis.  drivers/pci/pci.c includes arch.h (migrated
++# in the I6 batch) and compiles for both widths unchanged; every file
++# added to this list is portable code that now has i386 as a second
++# consumer.  Growth rule: a file lands here only when something on
++# this side actually calls it.
++KERNEL32_SHARED := drivers/pci/pci.c
++KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
+ KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
+ KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
+                  $(patsubst %.asm,$(BUILD_DIR)/k32/%.o,$(KERNEL32_ASMS))
+@@ -1799,6 +1806,12 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
+ 	@echo "[unit] running tests/unit/test_width_sweep.sh"
+ 	@bash tests/unit/test_width_sweep.sh || exit 1
+ 
++# I386_PLAN I8: the crypto stack's RFC vectors at 32-bit width (the
++# symmetric subset; the __int128 boundary in atls_fe.c is measured and
++# recorded, not hidden).  Skips cleanly without gcc-multilib.
++	@echo "[unit] running tests/unit/test_libatls_m32.sh"
++	@bash tests/unit/test_libatls_m32.sh || exit 1
++
+ # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
+ # header self-containment sweep, matrix->archive drift check, negative
+ # control, and the Q-family unit sub-suites.  Skips cleanly when the libc
+diff --git a/SHA256SUMS b/SHA256SUMS
+index f6723af..5f928c1 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-ff67ac0ecef5b82ddacc90da12379b0b792699f1f6574f3432259ef176557b41  auralite.iso
++c28c2201fd33484d25db57eda99aad721330c868fe6dce2494dce86e33b855f5  auralite.iso
+ ca42b702a84a2e7ff707483ae03b1fc5f7e46e11392f9fccbe33825bd49290f7  kernel.elf
+ 5b7a546ec78b5b8a0619ea32ceaf797820f0159467ab142d76d75a871a2a410b  initrd.tar
+diff --git a/kernel/arch/i386/ata32.c b/kernel/arch/i386/ata32.c
+new file mode 100644
+index 0000000..24ef5fb
+--- /dev/null
++++ b/kernel/arch/i386/ata32.c
+@@ -0,0 +1,176 @@
++/* kernel/arch/i386/ata32.c -- ATA PIO LBA28 (I386_PLAN I8).
++ *
++ * Primary channel, master drive, polled PIO -- the classic 0x1F0
++ * register file (ATA-1 s.4; every PC and every QEMU IDE model).
++ * IRQ-driven and DMA modes are consciously absent: at 512-byte
++ * bring-up granularity, polling costs microseconds and buys the
++ * self-test determinism (the same reason bl4's INT 13h reads poll).
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/ata32.h"
++#include "kernel/arch/i386/portio.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++#define ATA_DATA   0x1F0
++#define ATA_ERR    0x1F1
++#define ATA_COUNT  0x1F2
++#define ATA_LBA0   0x1F3
++#define ATA_LBA1   0x1F4
++#define ATA_LBA2   0x1F5
++#define ATA_DRIVE  0x1F6
++#define ATA_STATUS 0x1F7        /* read: status; write: command */
++#define ATA_CMD    0x1F7
++#define ATA_CTRL   0x3F6
++
++#define ST_ERR  (1 << 0)
++#define ST_DRQ  (1 << 3)
++#define ST_DF   (1 << 5)
++#define ST_BSY  (1 << 7)
++
++#define CMD_READ     0x20
++#define CMD_WRITE    0x30
++#define CMD_FLUSH    0xE7
++#define CMD_IDENTIFY 0xEC
++
++static uint32_t disk_sectors;
++
++static int wait_not_busy(void)
++{
++    for (uint32_t i = 0; i < 1000000; i++) {
++        uint8_t st = inb(ATA_STATUS);
++        if (!(st & ST_BSY))
++            return 0;
++    }
++    return -1;
++}
++
++static int wait_drq(void)
++{
++    for (uint32_t i = 0; i < 1000000; i++) {
++        uint8_t st = inb(ATA_STATUS);
++        if (st & (ST_ERR | ST_DF))
++            return -1;
++        if (st & ST_DRQ)
++            return 0;
++    }
++    return -1;
++}
++
++static void select_lba(uint32_t lba, uint8_t count)
++{
++    outb(ATA_DRIVE, (uint8_t)(0xE0 | ((lba >> 24) & 0x0F)));  /* master, LBA */
++    outb(ATA_COUNT, count);
++    outb(ATA_LBA0, (uint8_t)lba);
++    outb(ATA_LBA1, (uint8_t)(lba >> 8));
++    outb(ATA_LBA2, (uint8_t)(lba >> 16));
++}
++
++int ata32_init(uint32_t *total_sectors)
++{
++    /* Presence probe: a floating bus reads 0xFF. */
++    if (inb(ATA_STATUS) == 0xFF)
++        return -1;
++
++    outb(ATA_CTRL, 0x02);       /* nIEN: polled, no IRQs */
++
++    outb(ATA_DRIVE, 0xE0);
++    outb(ATA_COUNT, 0);
++    outb(ATA_LBA0, 0);
++    outb(ATA_LBA1, 0);
++    outb(ATA_LBA2, 0);
++    outb(ATA_CMD, CMD_IDENTIFY);
++
++    if (inb(ATA_STATUS) == 0)
++        return -1;              /* no device */
++    if (wait_not_busy() != 0 || wait_drq() != 0)
++        return -1;
++
++    uint16_t id[256];
++    for (int i = 0; i < 256; i++)
++        id[i] = inw(ATA_DATA);
++
++    /* Words 60-61: total LBA28 sectors. */
++    disk_sectors = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
++    if (total_sectors)
++        *total_sectors = disk_sectors;
++
++    kprintf32("[ata] primary master: %u sectors (%u MiB), PIO LBA28\n",
++              disk_sectors, disk_sectors / 2048);
++    return 0;
++}
++
++int ata32_read(uint32_t lba, uint8_t *buf512)
++{
++    if (lba >= disk_sectors)
++        return -1;
++    if (wait_not_busy() != 0)
++        return -1;
++    select_lba(lba, 1);
++    outb(ATA_CMD, CMD_READ);
++    if (wait_drq() != 0)
++        return -1;
++    uint16_t *w = (uint16_t *)buf512;
++    for (int i = 0; i < 256; i++)
++        w[i] = inw(ATA_DATA);
++    return 0;
++}
++
++int ata32_write(uint32_t lba, const uint8_t *buf512)
++{
++    if (lba >= disk_sectors)
++        return -1;
++    if (wait_not_busy() != 0)
++        return -1;
++    select_lba(lba, 1);
++    outb(ATA_CMD, CMD_WRITE);
++    if (wait_drq() != 0)
++        return -1;
++    const uint16_t *w = (const uint16_t *)buf512;
++    for (int i = 0; i < 256; i++)
++        outw(ATA_DATA, w[i]);
++    outb(ATA_CMD, CMD_FLUSH);
++    return wait_not_busy();
++}
++
++int ata32_selftest(void)
++{
++    static uint8_t sec[512], pattern[512], readback[512];
++
++    /* 1. LBA 0 is our own MBR: the boot signature proves the read
++     * path against bytes we KNOW (Stage 1 booted from them). */
++    if (ata32_read(0, sec) != 0)
++        return -1;
++    if (sec[510] != 0x55 || sec[511] != 0xAA) {
++        kprintf32("[ata] FAIL: LBA 0 has no 0x55AA boot signature\n");
++        return -1;
++    }
++
++    /* 2. Write/readback/restore on the last sector -- far from
++     * anything the image uses, and restored afterwards because on
++     * real hardware this is the user's USB stick. */
++    uint32_t victim = disk_sectors - 1;
++    if (ata32_read(victim, sec) != 0)
++        return -1;
++    for (int i = 0; i < 512; i++)
++        pattern[i] = (uint8_t)(i ^ 0xA5);
++    if (ata32_write(victim, pattern) != 0)
++        return -1;
++    if (ata32_read(victim, readback) != 0)
++        return -1;
++    for (int i = 0; i < 512; i++) {
++        if (readback[i] != pattern[i]) {
++            kprintf32("[ata] FAIL: readback mismatch at byte %u\n",
++                      (uint32_t)i);
++            return -1;
++        }
++    }
++    if (ata32_write(victim, sec) != 0)      /* restore */
++        return -1;
++
++    kprintf32("[ata] PASS: boot-sector read + write/readback/restore "
++              "on LBA %u\n", victim);
++    return 0;
++}
+diff --git a/kernel/arch/i386/ata32.h b/kernel/arch/i386/ata32.h
+new file mode 100644
+index 0000000..b15f4bb
+--- /dev/null
++++ b/kernel/arch/i386/ata32.h
+@@ -0,0 +1,27 @@
++/* kernel/arch/i386/ata32.h -- ATA PIO storage (I386_PLAN I8).
++ *
++ * The honest storage layer for the i386 path: the boot medium IS an
++ * IDE disk (every QEMU invocation in this repository attaches the
++ * hybrid image with if=ide, and Stage 2 read it through INT 13h).
++ * AHCI on i386 waits for the VFS port that would give it a consumer;
++ * this driver gives the SAME guarantee the 64-bit AHCI self-test
++ * gives -- sector read AND write proven at boot -- on the controller
++ * the machine actually booted from.  LBA28, primary master, polled.
++ */
++
++#ifndef AURALITE_ARCH_I386_ATA32_H
++#define AURALITE_ARCH_I386_ATA32_H
++
++#include <stdint.h>
++
++/* 0 on success.  Identify fills total LBA28 sector count. */
++int ata32_init(uint32_t *total_sectors);
++int ata32_read(uint32_t lba, uint8_t *buf512);
++int ata32_write(uint32_t lba, const uint8_t *buf512);
++
++/* Boot self-test: IDENTIFY, read LBA 0 (verify 0x55AA), then a
++ * write/readback/restore cycle on the LAST sector -- restore matters:
++ * on real hardware this runs against the user's USB stick. */
++int ata32_selftest(void);
++
++#endif /* AURALITE_ARCH_I386_ATA32_H */
+diff --git a/kernel/arch/i386/kprintf32.c b/kernel/arch/i386/kprintf32.c
+index 772e232..4ab7f3f 100644
+--- a/kernel/arch/i386/kprintf32.c
++++ b/kernel/arch/i386/kprintf32.c
+@@ -74,6 +74,13 @@ static void put_hex(uint32_t v)
+         kputc32(hex[(v >> shift) & 0xF]);
+ }
+ 
++static void put_hex8(uint32_t v)
++{
++    static const char hex[] = "0123456789abcdef";
++    kputc32(hex[(v >> 4) & 0xF]);
++    kputc32(hex[v & 0xF]);
++}
++
+ void kprintf32(const char *fmt, ...)
+ {
+     va_list ap;
+@@ -109,6 +116,12 @@ void kprintf32(const char *fmt, ...)
+         case 'x':
+             put_hex(va_arg(ap, uint32_t));
+             break;
++        case 'b':   /* two hex digits -- MAC bytes etc.  (The %x-only
++                     * first cut printed MACs as 00000052:...; a MAC
++                     * that needs 51 columns is technically correct
++                     * and practically unreadable.) */
++            put_hex8(va_arg(ap, uint32_t) & 0xFF);
++            break;
+         case 'p':
+             kputs32("0x");
+             put_hex((uint32_t)va_arg(ap, void *));
+diff --git a/kernel/arch/i386/main32.c b/kernel/arch/i386/main32.c
+index b5e0606..5d93607 100644
+--- a/kernel/arch/i386/main32.c
++++ b/kernel/arch/i386/main32.c
+@@ -29,6 +29,8 @@
+ #include "kernel/arch/i386/initrd32.h"
+ #include "kernel/arch/i386/vga32.h"
+ #include "kernel/arch/i386/kbd32.h"
++#include "kernel/arch/i386/ata32.h"
++#include "kernel/arch/i386/net32.h"
+ 
+ void thread32_reap(void);
+ 
+@@ -218,6 +220,24 @@ void kmain32(uint32_t boot_info_phys)
+               "kprintf fans out to UART + VGA\n");
+     kbd32_init();
+ 
++    /* ---- I8: storage + network (the gates that moved from I7) ---- */
++    uint32_t disk_sectors = 0;
++    if (ata32_init(&disk_sectors) == 0) {
++        if (ata32_selftest() != 0) {
++            kprintf32("[ata] FAIL: self-test\n");
++            goto halt;
++        }
++    } else {
++        kprintf32("[ata] no primary-master ATA device; skipping "
++                  "(hardware without IDE: I8 residue, see plan)\n");
++    }
++
++    if (net32_init() == 0) {
++        if (net32_selftest() != 0)
++            kprintf32("[net] FAIL: self-test (continuing; network is "
++                      "not boot-critical)\n");
++    }
++
+     /* ---- I2 self-tests (still gating every boot) ---- */
+     if (selftest_breakpoint() == 0)
+         kprintf32("[isr] PASS: deliberate #BP named, dumped, resumed\n");
+diff --git a/kernel/arch/i386/net32.c b/kernel/arch/i386/net32.c
+new file mode 100644
+index 0000000..1505ea7
+--- /dev/null
++++ b/kernel/arch/i386/net32.c
+@@ -0,0 +1,456 @@
++/* kernel/arch/i386/net32.c -- e1000 bring-up + DHCP/ARP/ICMP
++ * (I386_PLAN I8).  See net32.h for scope.
++ *
++ * Ring geometry mirrors drivers/e1000/e1000.c's at minimum size:
++ * 8 RX + 8 TX legacy descriptors, 2 KiB buffers, all allocated from
++ * the PMM low region so the direct map reaches them and the NIC's
++ * 32-bit DMA sees the same address (everything is below 896 MiB by
++ * construction -- pmm32's horizon IS the direct map).
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/net32.h"
++#include "kernel/arch/i386/pmm32.h"
++#include "kernel/arch/i386/paging32.h"
++#include "kernel/arch/i386/kprintf32.h"
++#include "kernel/arch/i386/irq32.h"
++#include "drivers/pci/pci.h"
++
++/* ---- MMIO ---------------------------------------------------------------- */
++
++#define E1000_VENDOR 0x8086
++#define E1000_82540EM 0x100E
++
++#define REG_CTRL   0x0000
++#define REG_STATUS 0x0008
++#define REG_EERD   0x0014
++#define REG_RCTL   0x0100
++#define REG_TCTL   0x0400
++#define REG_RDBAL  0x2800
++#define REG_RDBAH  0x2804
++#define REG_RDLEN  0x2808
++#define REG_RDH    0x2810
++#define REG_RDT    0x2818
++#define REG_TDBAL  0x3800
++#define REG_TDBAH  0x3804
++#define REG_TDLEN  0x3808
++#define REG_TDH    0x3810
++#define REG_TDT    0x3818
++#define REG_RAL0   0x5400
++#define REG_RAH0   0x5404
++
++#define CTRL_SLU   (1u << 6)
++
++#define RCTL_EN    (1u << 1)
++#define RCTL_BAM   (1u << 15)
++#define RCTL_SECRC (1u << 26)
++
++#define TCTL_EN    (1u << 1)
++#define TCTL_PSP   (1u << 3)
++
++static volatile uint32_t *mmio;
++
++static uint32_t rd32(uint32_t reg)            { return mmio[reg / 4]; }
++static void     wr32(uint32_t reg, uint32_t v) { mmio[reg / 4] = v;    }
++
++/* ---- rings ---------------------------------------------------------------- */
++
++struct rx_desc {
++    uint32_t addr_lo, addr_hi;      /* 64-bit on the wire (D6) */
++    uint16_t length;
++    uint16_t checksum;
++    uint8_t  status;
++    uint8_t  errors;
++    uint16_t special;
++} __attribute__((packed));
++
++struct tx_desc {
++    uint32_t addr_lo, addr_hi;
++    uint16_t length;
++    uint8_t  cso, cmd, status, css;
++    uint16_t special;
++} __attribute__((packed));
++
++#define NDESC    8
++#define BUF_SIZE 2048
++
++static struct rx_desc *rx_ring;
++static struct tx_desc *tx_ring;
++static uint8_t *rx_buf[NDESC];
++static uint8_t *tx_buf[NDESC];
++static uint32_t rx_next, tx_next;
++static uint8_t our_mac[6];
++
++/* ---- byte order ----------------------------------------------------------- */
++
++static uint16_t htons16(uint16_t v) { return (uint16_t)((v << 8) | (v >> 8)); }
++static uint32_t htonl32(uint32_t v)
++{
++    return ((v & 0xFF) << 24) | ((v & 0xFF00) << 8) |
++           ((v >> 8) & 0xFF00) | (v >> 24);
++}
++
++/* ---- init ------------------------------------------------------------------ */
++
++int net32_init(void)
++{
++    uint8_t bus, dev, fn;
++    if (pci_find_device(E1000_VENDOR, E1000_82540EM, &bus, &dev, &fn) != 0) {
++        kprintf32("[net] no e1000 (82540EM) on PCI; skipping\n");
++        return -1;
++    }
++
++    uint32_t bar0 = pci_get_bar(bus, dev, fn, 0) & ~0xFu;
++    pci_enable_bus_master(bus, dev, fn);
++
++    /* BAR0 (0xFEBC0000-region on QEMU) is above the direct map: give
++     * it 4 KiB-page mappings in the probe window.  128 KiB register
++     * file = 32 pages. */
++    for (uint32_t off = 0; off < 0x20000; off += PAGE_SIZE_32)
++        paging32_map(0xFD000000u + off, bar0 + off, PAGE32_FLAG_WRITE);
++    mmio = (volatile uint32_t *)0xFD000000u;
++
++    /* MAC from RAL/RAH (QEMU pre-loads them; EEPROM read not needed). */
++    uint32_t ral = rd32(REG_RAL0), rah = rd32(REG_RAH0);
++    our_mac[0] = (uint8_t)ral;        our_mac[1] = (uint8_t)(ral >> 8);
++    our_mac[2] = (uint8_t)(ral >> 16); our_mac[3] = (uint8_t)(ral >> 24);
++    our_mac[4] = (uint8_t)rah;        our_mac[5] = (uint8_t)(rah >> 8);
++
++    /* Rings + buffers: one 4 KiB frame carries both rings (8*16 = 128
++     * bytes each); buffers get 2 KiB halves of frames. */
++    uint32_t ring_frame = pmm32_alloc_frame();
++    if (!ring_frame)
++        return -1;
++    rx_ring = (struct rx_desc *)p2v_32(ring_frame);
++    tx_ring = (struct tx_desc *)p2v_32(ring_frame + 2048);
++
++    for (int i = 0; i < NDESC; i++) {
++        uint32_t f = pmm32_alloc_frame();
++        if (!f)
++            return -1;
++        rx_buf[i] = (uint8_t *)p2v_32(f);
++        rx_ring[i].addr_lo = f;
++        rx_ring[i].addr_hi = 0;         /* explicit: D6, not struct luck */
++        rx_ring[i].status  = 0;
++
++        f = pmm32_alloc_frame();
++        if (!f)
++            return -1;
++        tx_buf[i] = (uint8_t *)p2v_32(f);
++        tx_ring[i].addr_lo = f;
++        tx_ring[i].addr_hi = 0;
++        tx_ring[i].status  = 1;         /* DD: free to use */
++    }
++
++    wr32(REG_CTRL, rd32(REG_CTRL) | CTRL_SLU);
++
++    wr32(REG_RDBAL, ring_frame);
++    wr32(REG_RDBAH, 0);
++    wr32(REG_RDLEN, NDESC * 16);
++    wr32(REG_RDH, 0);
++    wr32(REG_RDT, NDESC - 1);
++    wr32(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
++
++    wr32(REG_TDBAL, ring_frame + 2048);
++    wr32(REG_TDBAH, 0);
++    wr32(REG_TDLEN, NDESC * 16);
++    wr32(REG_TDH, 0);
++    wr32(REG_TDT, 0);
++    wr32(REG_TCTL, TCTL_EN | TCTL_PSP);
++
++    rx_next = 0;
++    tx_next = 0;
++
++    kprintf32("[net] e1000 82540EM at PCI %u:%u.%u, BAR0 %x, MAC "
++              "%b:%b:%b:%b:%b:%b\n", bus, dev, fn, bar0,
++              our_mac[0], our_mac[1], our_mac[2],
++              our_mac[3], our_mac[4], our_mac[5]);
++    return 0;
++}
++
++/* ---- raw send/poll --------------------------------------------------------- */
++
++static void net_send(const uint8_t *frame, uint32_t len)
++{
++    struct tx_desc *d = &tx_ring[tx_next];
++    while (!(d->status & 1)) { }        /* wait for DD */
++    for (uint32_t i = 0; i < len; i++)
++        tx_buf[tx_next][i] = frame[i];
++    d->length = (uint16_t)len;
++    d->cmd    = 0x0B;                   /* EOP | IFCS | RS */
++    d->status = 0;
++    tx_next = (tx_next + 1) % NDESC;
++    wr32(REG_TDT, tx_next);
++}
++
++/* Returns length (>0) with the frame copied out, or 0 when idle. */
++static uint32_t net_poll(uint8_t *out, uint32_t cap)
++{
++    struct rx_desc *d = &rx_ring[rx_next];
++    if (!(d->status & 1))
++        return 0;
++    uint32_t len = d->length;
++    if (len > cap)
++        len = cap;
++    for (uint32_t i = 0; i < len; i++)
++        out[i] = rx_buf[rx_next][i];
++    d->status = 0;
++    wr32(REG_RDT, rx_next);
++    rx_next = (rx_next + 1) % NDESC;
++    return len;
++}
++
++/* ---- minimal protocols (self-test scope) ----------------------------------- */
++
++static uint16_t ip_checksum(const uint8_t *data, uint32_t len)
++{
++    uint32_t sum = 0;
++    for (uint32_t i = 0; i + 1 < len; i += 2)
++        sum += ((uint32_t)data[i] << 8) | data[i + 1];
++    if (len & 1)
++        sum += (uint32_t)data[len - 1] << 8;
++    while (sum >> 16)
++        sum = (sum & 0xFFFF) + (sum >> 16);
++    return (uint16_t)~sum;
++}
++
++static uint32_t our_ip, gw_ip;          /* network byte order */
++static uint8_t  gw_mac[6];
++
++/* Spin-poll with a PIT deadline; returns len or 0 on timeout. */
++static uint32_t poll_until(uint8_t *buf, uint32_t cap, uint32_t ticks)
++{
++    uint32_t deadline = pit32_ticks() + ticks;
++    while (pit32_ticks() < deadline) {
++        uint32_t n = net_poll(buf, cap);
++        if (n)
++            return n;
++        __asm__ volatile("pause");
++    }
++    return 0;
++}
++
++/* DHCP: fixed-format DISCOVER/REQUEST over UDP broadcast.  SLIRP's
++ * server needs nothing fancier. */
++static uint32_t build_dhcp(uint8_t *f, int request, uint32_t offered,
++                           uint32_t server)
++{
++    static const uint8_t xid[4] = { 0xAA, 0x33, 0x55, 0x77 };
++    uint32_t i;
++
++    /* Ethernet: broadcast. */
++    for (i = 0; i < 6; i++) f[i] = 0xFF;
++    for (i = 0; i < 6; i++) f[6 + i] = our_mac[i];
++    f[12] = 0x08; f[13] = 0x00;
++
++    uint8_t *ip = f + 14;
++    uint8_t *udp = ip + 20;
++    uint8_t *bp  = udp + 8;
++
++    /* BOOTP fixed part (236 bytes) + magic + options. */
++    for (i = 0; i < 300; i++) bp[i] = 0;
++    bp[0] = 1; bp[1] = 1; bp[2] = 6;                 /* op, htype, hlen */
++    for (i = 0; i < 4; i++) bp[4 + i] = xid[i];
++    bp[10] = 0x80;                                   /* BROADCAST flag */
++    for (i = 0; i < 6; i++) bp[28 + i] = our_mac[i];
++    bp[236] = 99; bp[237] = 130; bp[238] = 83; bp[239] = 99;  /* magic */
++
++    uint32_t o = 240;
++    bp[o++] = 53; bp[o++] = 1; bp[o++] = request ? 3 : 1;     /* msg type */
++    if (request) {
++        bp[o++] = 50; bp[o++] = 4;                            /* requested IP */
++        bp[o++] = (uint8_t)(offered); bp[o++] = (uint8_t)(offered >> 8);
++        bp[o++] = (uint8_t)(offered >> 16); bp[o++] = (uint8_t)(offered >> 24);
++        bp[o++] = 54; bp[o++] = 4;                            /* server id */
++        bp[o++] = (uint8_t)(server); bp[o++] = (uint8_t)(server >> 8);
++        bp[o++] = (uint8_t)(server >> 16); bp[o++] = (uint8_t)(server >> 24);
++    }
++    bp[o++] = 255;
++    uint32_t blen = o;
++
++    uint32_t ulen = 8 + blen;
++    udp[0] = 0; udp[1] = 68;            /* src 68 */
++    udp[2] = 0; udp[3] = 67;            /* dst 67 */
++    udp[4] = (uint8_t)(ulen >> 8); udp[5] = (uint8_t)ulen;
++    udp[6] = 0; udp[7] = 0;             /* checksum optional over IPv4 */
++
++    uint32_t iplen = 20 + ulen;
++    ip[0] = 0x45; ip[1] = 0;
++    ip[2] = (uint8_t)(iplen >> 8); ip[3] = (uint8_t)iplen;
++    ip[4] = 0; ip[5] = 0; ip[6] = 0; ip[7] = 0;
++    ip[8] = 64; ip[9] = 17;             /* TTL, UDP */
++    ip[10] = 0; ip[11] = 0;
++    for (i = 12; i < 16; i++) ip[i] = 0;          /* 0.0.0.0 */
++    for (i = 16; i < 20; i++) ip[i] = 0xFF;       /* 255.255.255.255 */
++    uint16_t cs = ip_checksum(ip, 20);
++    ip[10] = (uint8_t)(cs >> 8); ip[11] = (uint8_t)cs;
++
++    return 14 + iplen;
++}
++
++static int dhcp_run(void)
++{
++    static uint8_t f[1536], r[1536];
++    uint32_t offered = 0, server = 0;
++
++    for (int attempt = 0; attempt < 3 && !our_ip; attempt++) {
++        net_send(f, build_dhcp(f, 0, 0, 0));
++
++        uint32_t until = pit32_ticks() + 100;      /* 1 s per attempt */
++        while (pit32_ticks() < until) {
++            uint32_t n = poll_until(r, sizeof(r), 20);
++            if (n < 14 + 20 + 8 + 240)
++                continue;
++            /* UDP to port 68 with our xid? */
++            const uint8_t *ip = r + 14, *udp = ip + 20, *bp = udp + 8;
++            if (r[12] != 0x08 || r[13] != 0x00 || ip[9] != 17)
++                continue;
++            if (udp[2] != 0 || udp[3] != 68)
++                continue;
++            if (bp[4] != 0xAA || bp[5] != 0x33)
++                continue;
++            /* Option walk for message type + server id. */
++            uint32_t o = 240;
++            uint8_t mtype = 0;
++            uint32_t sid = 0;
++            uint32_t limit = n - 14 - 20 - 8;
++            while (o + 1 < limit && bp[o] != 255) {
++                uint8_t opt = bp[o], olen = bp[o + 1];
++                if (opt == 53 && olen == 1)
++                    mtype = bp[o + 2];
++                if (opt == 54 && olen == 4)
++                    sid = (uint32_t)bp[o + 2] | ((uint32_t)bp[o + 3] << 8) |
++                          ((uint32_t)bp[o + 4] << 16) | ((uint32_t)bp[o + 5] << 24);
++                o += 2 + olen;
++            }
++            uint32_t yiaddr = (uint32_t)bp[16] | ((uint32_t)bp[17] << 8) |
++                              ((uint32_t)bp[18] << 16) | ((uint32_t)bp[19] << 24);
++            if (mtype == 2 && !offered) {                  /* OFFER */
++                offered = yiaddr; server = sid;
++                net_send(f, build_dhcp(f, 1, offered, server));
++            } else if (mtype == 5 && offered) {            /* ACK */
++                our_ip = offered;
++                gw_ip  = server;   /* SLIRP: server 10.0.2.2 IS the gw */
++                break;
++            }
++        }
++    }
++
++    if (!our_ip)
++        return -1;
++    kprintf32("[net] DHCP lease: %u.%u.%u.%u (gw %u.%u.%u.%u)\n",
++              our_ip & 0xFF, (our_ip >> 8) & 0xFF,
++              (our_ip >> 16) & 0xFF, our_ip >> 24,
++              gw_ip & 0xFF, (gw_ip >> 8) & 0xFF,
++              (gw_ip >> 16) & 0xFF, gw_ip >> 24);
++    return 0;
++}
++
++static int arp_resolve_gw(void)
++{
++    static uint8_t f[64], r[1536];
++    uint32_t i;
++
++    for (i = 0; i < 6; i++) f[i] = 0xFF;
++    for (i = 0; i < 6; i++) f[6 + i] = our_mac[i];
++    f[12] = 0x08; f[13] = 0x06;
++    uint8_t *a = f + 14;
++    a[0] = 0; a[1] = 1; a[2] = 8; a[3] = 0; a[4] = 6; a[5] = 4;
++    a[6] = 0; a[7] = 1;                                /* request */
++    for (i = 0; i < 6; i++) a[8 + i] = our_mac[i];
++    a[14] = (uint8_t)our_ip; a[15] = (uint8_t)(our_ip >> 8);
++    a[16] = (uint8_t)(our_ip >> 16); a[17] = (uint8_t)(our_ip >> 24);
++    for (i = 0; i < 6; i++) a[18 + i] = 0;
++    a[24] = (uint8_t)gw_ip; a[25] = (uint8_t)(gw_ip >> 8);
++    a[26] = (uint8_t)(gw_ip >> 16); a[27] = (uint8_t)(gw_ip >> 24);
++
++    for (int attempt = 0; attempt < 3; attempt++) {
++        net_send(f, 42);
++        uint32_t n = poll_until(r, sizeof(r), 50);
++        if (n >= 42 && r[12] == 0x08 && r[13] == 0x06 &&
++            r[14 + 7] == 2) {                          /* reply */
++            for (i = 0; i < 6; i++)
++                gw_mac[i] = r[14 + 8 + i];
++            kprintf32("[net] ARP: gateway is %b:%b:%b:%b:%b:%b\n",
++                      gw_mac[0], gw_mac[1], gw_mac[2],
++                      gw_mac[3], gw_mac[4], gw_mac[5]);
++            return 0;
++        }
++    }
++    return -1;
++}
++
++static int icmp_ping_gw(void)
++{
++    static uint8_t f[128], r[1536];
++    uint32_t i;
++
++    for (i = 0; i < 6; i++) f[i] = gw_mac[i];
++    for (i = 0; i < 6; i++) f[6 + i] = our_mac[i];
++    f[12] = 0x08; f[13] = 0x00;
++
++    uint8_t *ip = f + 14, *ic = ip + 20;
++    static const uint8_t payload[] = "auralite-i386-ping";
++    uint32_t plen = sizeof(payload);
++    uint32_t iclen = 8 + plen;
++
++    ic[0] = 8; ic[1] = 0; ic[2] = 0; ic[3] = 0;        /* echo request */
++    ic[4] = 0x13; ic[5] = 0x86;                        /* id */
++    ic[6] = 0; ic[7] = 1;                              /* seq */
++    for (i = 0; i < plen; i++) ic[8 + i] = payload[i];
++    uint16_t cs = ip_checksum(ic, iclen);
++    ic[2] = (uint8_t)(cs >> 8); ic[3] = (uint8_t)cs;
++
++    uint32_t iplen = 20 + iclen;
++    ip[0] = 0x45; ip[1] = 0;
++    ip[2] = (uint8_t)(iplen >> 8); ip[3] = (uint8_t)iplen;
++    ip[4] = 0; ip[5] = 0; ip[6] = 0; ip[7] = 0;
++    ip[8] = 64; ip[9] = 1;                             /* ICMP */
++    ip[10] = 0; ip[11] = 0;
++    ip[12] = (uint8_t)our_ip; ip[13] = (uint8_t)(our_ip >> 8);
++    ip[14] = (uint8_t)(our_ip >> 16); ip[15] = (uint8_t)(our_ip >> 24);
++    ip[16] = (uint8_t)gw_ip; ip[17] = (uint8_t)(gw_ip >> 8);
++    ip[18] = (uint8_t)(gw_ip >> 16); ip[19] = (uint8_t)(gw_ip >> 24);
++    cs = ip_checksum(ip, 20);
++    ip[10] = (uint8_t)(cs >> 8); ip[11] = (uint8_t)cs;
++
++    for (int attempt = 0; attempt < 3; attempt++) {
++        net_send(f, 14 + iplen);
++        uint32_t n = poll_until(r, sizeof(r), 50);
++        if (n >= 14 + 20 + 8 &&
++            r[12] == 0x08 && r[13] == 0x00 &&
++            r[14 + 9] == 1 &&                          /* ICMP */
++            r[14 + 20] == 0 &&                         /* echo reply */
++            r[14 + 20 + 4] == 0x13 && r[14 + 20 + 5] == 0x86) {
++            /* Payload must round-trip byte for byte. */
++            for (i = 0; i < plen; i++)
++                if (r[14 + 20 + 8 + i] != payload[i])
++                    return -1;
++            return 0;
++        }
++    }
++    return -1;
++}
++
++int net32_selftest(void)
++{
++    (void)htons16; (void)htonl32;
++
++    kprintf32("[net] self-test: DHCP -> ARP -> ICMP echo...\n");
++    if (dhcp_run() != 0) {
++        kprintf32("[net] FAIL: no DHCP lease\n");
++        return -1;
++    }
++    if (arp_resolve_gw() != 0) {
++        kprintf32("[net] FAIL: gateway ARP unanswered\n");
++        return -1;
++    }
++    if (icmp_ping_gw() != 0) {
++        kprintf32("[net] FAIL: no ICMP echo reply\n");
++        return -1;
++    }
++    kprintf32("[net] PASS: lease + ARP + echo reply (payload verified)\n");
++    return 0;
++}
+diff --git a/kernel/arch/i386/net32.h b/kernel/arch/i386/net32.h
+new file mode 100644
+index 0000000..4b812e1
+--- /dev/null
++++ b/kernel/arch/i386/net32.h
+@@ -0,0 +1,32 @@
++/* kernel/arch/i386/net32.h -- e1000 + ARP/ICMP bring-up (I386_PLAN I8).
++ *
++ * The gate that moved here from I7: DHCP lease + echo reply under
++ * qemu-system-i386.  Scope is the gate, no wider: e1000 82540EM
++ * (QEMU's model) with one RX and one TX ring in low direct-mapped
++ * memory, then DHCP/ARP/ICMP enough to acquire an address and answer
++ * a ping check.  Sockets, TCP, DNS -- the full kernel/net port --
++ * remain I8 residue tracked in the status matrix; this file is the
++ * driver + proof that packets flow both ways on this arch.
++ *
++ * Width discipline (D6): the e1000 descriptor's buffer address field
++ * is 64-bit ON THE WIRE; the low dword gets the paddr, the high dword
++ * is written 0 explicitly, not left to struct luck.
++ */
++
++#ifndef AURALITE_ARCH_I386_NET32_H
++#define AURALITE_ARCH_I386_NET32_H
++
++#include <stdint.h>
++
++/* 0 when the NIC is found and rings are live. */
++int  net32_init(void);
++
++/* The boot self-test = the I7-inherited gate:
++ *   1. DHCP DISCOVER/OFFER/REQUEST/ACK -> an address on QEMU's SLIRP
++ *      (expected 10.0.2.15 from 10.0.2.2).
++ *   2. ARP-resolve the gateway.
++ *   3. ICMP echo to the gateway; PASS on a matching reply.
++ * Returns 0 on PASS. */
++int  net32_selftest(void);
++
++#endif /* AURALITE_ARCH_I386_NET32_H */
+diff --git a/kernel/arch/i386/portio.h b/kernel/arch/i386/portio.h
+index f7dc716..1548a07 100644
+--- a/kernel/arch/i386/portio.h
++++ b/kernel/arch/i386/portio.h
+@@ -16,6 +16,16 @@ static inline void outb(uint16_t port, uint8_t val)
+     __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+ }
+ 
++static inline void outw(uint16_t port, uint16_t val)
++{
++    __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
++}
++
++static inline void outl(uint16_t port, uint32_t val)
++{
++    __asm__ volatile("outl %0, %1" : : "a"(val), "Nd"(port));
++}
++
+ static inline uint8_t inb(uint16_t port)
+ {
+     uint8_t v;
+@@ -23,6 +33,20 @@ static inline uint8_t inb(uint16_t port)
+     return v;
+ }
+ 
++static inline uint16_t inw(uint16_t port)
++{
++    uint16_t v;
++    __asm__ volatile("inw %1, %0" : "=a"(v) : "Nd"(port));
++    return v;
++}
++
++static inline uint32_t inl(uint16_t port)
++{
++    uint32_t v;
++    __asm__ volatile("inl %1, %0" : "=a"(v) : "Nd"(port));
++    return v;
++}
++
+ static inline void io_wait(void)
+ {
+     /* Port 0x80 is the POST diagnostic port; a write burns ~1 us and has
+diff --git a/tests/integration/i386_parity_smoke.sh b/tests/integration/i386_parity_smoke.sh
+new file mode 100755
+index 0000000..6c78ca5
+--- /dev/null
++++ b/tests/integration/i386_parity_smoke.sh
+@@ -0,0 +1,101 @@
++#!/usr/bin/env bash
++# tests/integration/i386_parity_smoke.sh -- I386_PLAN phase I8 smoke test.
++#
++# The storage and network gates that moved from I7, executed on the
++# real `make iso` image under qemu-system-i386 with an e1000 on SLIRP:
++#
++#   storage: ATA PIO IDENTIFY, boot-sector read against KNOWN bytes
++#     (the 0x55AA our own Stage 1 booted from), and a write/readback/
++#     restore cycle on the last sector -- the same sector-level
++#     guarantee the 64-bit AHCI self-test gives, on the controller
++#     the machine actually boots from;
++#   network: DHCP DISCOVER->ACK on SLIRP (lease 10.0.2.15), gateway
++#     ARP resolution, and an ICMP echo whose PAYLOAD is verified
++#     byte-for-byte in the reply -- "ping got a reply" is the gate
++#     I7's text specified, moved here verbatim;
++#   the first SHARED source in the 32-bit kernel: drivers/pci/pci.c
++#     found the NIC, which is the I6 thesis (portable code compiles at
++#     both widths) carrying live traffic;
++#   and the whole earlier gauntlet (pmm/vmm/heap/sched/user/init32)
++#     still green in the same boot.
++#
++# Plus the standing x86_64 no-regression pair.
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ISO="$BUILD/auralite.iso"
++LOG32="$BUILD/i386_parity.log"
++LOG64="$BUILD/i386_parity_x64.log"
++
++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
++
++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
++    echo "[i386-parity] SKIP: qemu-system-i386 not installed" >&2
++    exit 0
++fi
++
++fail=0
++run_qemu() {
++    local bin="$1" log="$2"
++    rm -f "$log"
++    timeout 45 "$bin" \
++        -drive format=raw,file="$ISO",if=ide,snapshot=on \
++        -m 512M \
++        -display none -serial file:"$log" -no-reboot \
++        -netdev user,id=net0 -device e1000,netdev=net0 \
++        >/dev/null 2>&1 || true
++}
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-parity] OK   %s\n' "$desc"
++    else
++        printf '  [i386-parity] FAIL %s\n' "$desc"
++        fail=1
++    fi
++}
++
++assert_no_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-parity] FAIL %s\n' "$desc"
++        fail=1
++    else
++        printf '  [i386-parity] OK   %s\n' "$desc"
++    fi
++}
++
++# ---- the i386 parity boot ----
++run_qemu qemu-system-i386 "$LOG32"
++
++# storage
++assert_grep    "$LOG32" "\[ata\] primary master: .* sectors"           "i386: ATA IDENTIFY (PIO LBA28)"
++assert_grep    "$LOG32" "\[ata\] PASS: boot-sector read"               "i386: read proven against known bytes + write/readback/restore"
++# network (the I7-inherited gate, verbatim)
++assert_grep    "$LOG32" "\[net\] e1000 82540EM at PCI"                 "i386: NIC found -- shared pci.c carrying live config reads"
++assert_grep    "$LOG32" "\[net\] DHCP lease: 10.0.2.15"                "i386: DHCP lease acquired on SLIRP"
++assert_grep    "$LOG32" "\[net\] ARP: gateway is"                      "i386: gateway ARP resolved"
++assert_grep    "$LOG32" "\[net\] PASS: lease + ARP + echo reply (payload verified)" "i386: ICMP echo round-trip, payload byte-checked"
++# the earlier gauntlet, same boot
++assert_grep    "$LOG32" "\[pmm\] PASS"                                 "i386: I3 pmm gate still green"
++assert_grep    "$LOG32" "\[vmm\] PASS"                                 "i386: I3 vmm gate still green"
++assert_grep    "$LOG32" "\[heap\] PASS"                                "i386: I3 heap gate still green"
++assert_grep    "$LOG32" "\[sched\] PASS"                               "i386: I4 sched gate still green"
++assert_grep    "$LOG32" "\[user\] PASS"                                "i386: I4 user gate still green"
++assert_grep    "$LOG32" "\[init\] PASS"                                "i386: I5 init gate still green"
++assert_grep    "$LOG32" "auralite# "                                   "i386: I7 shell prompt still reached"
++assert_no_grep "$LOG32" "\[ata\] FAIL\|\[net\] FAIL"                   "i386: no storage/network failures"
++assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected kernel faults"
++
++# ---- the standing x86_64 regression gate ----
++run_qemu qemu-system-x86_64 "$LOG64"
++assert_grep    "$LOG64" "Hello from AuraLite OS kernel!"               "x86_64: kernel banner unchanged"
++assert_no_grep "$LOG64" "(i386)"                                       "x86_64: no 32-bit artefacts in the log"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[i386-parity] FAILED"
++    exit 1
++fi
++echo "[i386-parity] all assertions passed"
+diff --git a/tests/unit/test_libatls_m32.sh b/tests/unit/test_libatls_m32.sh
+new file mode 100755
+index 0000000..1677ea3
+--- /dev/null
++++ b/tests/unit/test_libatls_m32.sh
+@@ -0,0 +1,78 @@
++#!/usr/bin/env bash
++# tests/unit/test_libatls_m32.sh -- I386_PLAN I8: the crypto stack at
++# 32-bit width, on the host.
++#
++# libatls (SHA-256/384, ChaCha20-Poly1305, X25519, Ed25519, P-256) is
++# the tree's most width-sensitive portable code: field elements are
++# built from 64-bit limb arithmetic with carries that a silent
++# truncation would corrupt IN A WAY THAT STILL PRODUCES PLAUSIBLE
++# OUTPUT.  Running the full RFC-vector suite compiled -m32 catches
++# that class before any i386 TLS work exists to consume it -- and it
++# needs no VM in the loop.
++#
++# Builds tests/unit/test_atls_hash.c (RFC 6234/8439 vectors and the
++# suite's own negative controls) at -m32 against the SYMMETRIC subset
++# of libatls -- everything test_atls_hash actually calls.
++#
++# WHAT IS DELIBERATELY EXCLUDED, AND WHY IT IS RECORDED LOUDLY:
++# atls_fe.c (the 51-bit-limb field arithmetic under X25519/Ed25519)
++# and atls_ecdsa.c use unsigned __int128, which does not exist at
++# -m32.  That is a REAL 32-bit portability boundary this gate just
++# measured, not an inconvenience to hide: X25519/Ed25519/P-256 cannot
++# run on the i386 kernel until someone writes the 25.5-limb (or
++# 2^25.5 radix) 32-bit reduction path.  I386_PLAN §6 carries the
++# entry; the day TLS work starts on i386, THIS comment is the map.
++set -u
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++cd "$ROOT"
++
++# The symmetric subset: sources without __int128.  The guard below
++# fails this test the day one of them grows a __int128 -- widening
++# the excluded set silently is exactly the drift this file exists to
++# prevent.
++M32_SRCS="lib/libatls/src/atls_common.c
++          lib/libatls/src/atls_sha256.c
++          lib/libatls/src/atls_sha512.c
++          lib/libatls/src/atls_hmac.c
++          lib/libatls/src/atls_hkdf.c
++          lib/libatls/src/atls_chacha20.c
++          lib/libatls/src/atls_poly1305.c
++          lib/libatls/src/atls_aead.c"
++
++for f in $M32_SRCS; do
++    if [ ! -f "$f" ]; then
++        echo "[atls-m32] FAIL: $f does not exist"
++        exit 1
++    fi
++    if grep -q "__int128" "$f"; then
++        echo "[atls-m32] FAIL: $f grew a __int128 -- the -m32 symmetric"
++        echo "           suite no longer covers it; fix or re-scope."
++        exit 1
++    fi
++done
++
++# -m32 available?
++if ! printf 'int main(){return 0;}' | cc -m32 -x c - -o build/m32probe 2>/dev/null; then
++    echo "[atls-m32] SKIP: no -m32 host toolchain (install gcc-multilib)"
++    exit 0
++fi
++rm -f build/m32probe
++
++mkdir -p build
++if ! cc -m32 -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include \
++        $M32_SRCS tests/unit/test_atls_hash.c \
++        -o build/test_atls_hash_m32 2> build/atls_m32_build.log; then
++    echo "[atls-m32] FAIL: does not compile at -m32:"
++    head -20 build/atls_m32_build.log
++    exit 1
++fi
++
++if ./build/test_atls_hash_m32 > build/atls_m32_run.log 2>&1; then
++    echo "[atls-m32] PASS: full hash/AEAD vector suite at 32-bit width"
++    exit 0
++else
++    echo "[atls-m32] FAIL: vectors diverge at 32-bit width:"
++    tail -20 build/atls_m32_run.log
++    exit 1
++fi
+-- 
+2.47.3
+

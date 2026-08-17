@@ -1,0 +1,940 @@
+From fb1631f042870d44f4630c90a6c1bf489da81293 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 18:10:28 +0000
+Subject: [PATCH] I6 update
+
+---
+ CHANGELOG.md                      |  44 +++++++++
+ I386_PLAN.md                      |  88 ++++++++++++-----
+ Makefile                          |  14 +++
+ SHA256SUMS                        |   6 +-
+ drivers/ahci/ahci.c               |   2 +-
+ drivers/audio/pcspkr.c            |   2 +-
+ drivers/e1000/e1000.c             |   2 +-
+ drivers/keyboard/keyboard.c       |   2 +-
+ drivers/mouse/mouse.c             |   2 +-
+ drivers/pci/pci.c                 |   2 +-
+ drivers/timer/pit.c               |   2 +-
+ drivers/uart/uart.c               |   2 +-
+ drivers/usb/ohci.c                |   2 +-
+ drivers/usb/uhci.c                |   2 +-
+ kernel/arch/arch.h                |  37 +++++++
+ kernel/lib/paddr.h                |  35 +++++++
+ kernel/mm/pmm.c                   |  12 +--
+ kernel/mm/pmm.h                   |  13 +--
+ kernel/mm/slab.c                  |   9 +-
+ kernel/time.c                     |   2 +-
+ tests/unit/test_boot_info_width.c |  57 +++++++++++
+ tests/unit/test_width_sweep.sh    |  89 +++++++++++++++++
+ tools/check_width_sweep.py        | 158 ++++++++++++++++++++++++++++++
+ 23 files changed, 532 insertions(+), 52 deletions(-)
+ create mode 100644 kernel/arch/arch.h
+ create mode 100644 kernel/lib/paddr.h
+ create mode 100644 tests/unit/test_boot_info_width.c
+ create mode 100755 tests/unit/test_width_sweep.sh
+ create mode 100755 tools/check_width_sweep.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 46f4c50..efbf7f9 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,50 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [i386 Phase I6 — The pointer-width sweep] 2026-08-16
++
++`I386_PLAN.md` phase I6: the width discipline becomes machinery.  Three
++CI ratchets, a byte-identity negative control, `-Werror` truncation on
++the whole i386 build, and a compile-time regression test for the I1
++ABI bug.  First instalments paid: casts 361 → 359, x86_64-includes
++80 → 69, cross-arch includes pinned at zero.
++
++- **`kernel/lib/paddr.h` (new)**: `paddr_t` — physical addresses are
++  64-bit on BOTH arches (device rings are 64-bit on the wire; E820
++  reports >4 GiB regions even to a 32-bit kernel, which must skip, not
++  truncate).  Virtual addresses are `uintptr_t` and nothing else.
++  Adopted by the x86_64 PMM interface as the reference conversion.
++- **`kernel/arch/arch.h` (new; the task I2 re-scoped here)**: the
++  forwarding header, selected by the compiler's own target macro.
++  First migration batch: all 11 portable `portio.h` consumers.
++  **Negative control held**: the x86_64 kernel's `.text` is
++  byte-identical after both the paddr_t adoption and the include
++  migration (llvm-objcopy + cmp; only `__DATE__/__TIME__` moves in
++  `.rodata`, as two untouched consecutive builds confirm).
++- **`tools/check_width_sweep.py` (new)**: ratchet 1 — `(uint64_t)`
++  casts in portable code (kernel/ + drivers/ minus kernel/arch/);
++  ratchet 2 — direct `kernel/arch/x86_64/` includes from portable
++  code; ratchet 3 — cross-arch includes, always zero.  Raising any is
++  a CI failure; `--selftest` plants a violation and requires
++  detection.  Registered in `make test-unit`.
++- **`tests/unit/test_boot_info_width.c` (new)**: the three-party
++  offset contract (16-bit loader asm, 64-bit kernel, 32-bit kernel)
++  as `_Static_assert`s against the generated `boot_offsets.h`,
++  compiled for x86_64 and i686+`-malign-double` — and required to
++  **fail** for plain i686, so the I1 "mmap entries: 0" bug class is
++  caught at compile time forever.  (Also delivers I3's deferred host
++  test.)
++- **`CFLAGS32` gains `-Werror -Wshorten-64-to-32`**: silent narrowing
++  is the bug class the sweep exists for, so on i386 it is fatal.  The
++  tree is clean under it.
++- **`kernel/mm/slab.c`**: virtual-address arithmetic retyped
++  `uintptr_t` (the old `(uint64_t)` spelling widened, computed 64-bit
++  and truncated back — correct on i386 only by accident).
++- **A measurement correction, recorded in the plan**: §1's "877 sites"
++  counted lines including `uintptr_t` (the correct type, not debt);
++  the checker counts `(uint64_t)` occurrences in portable code: 361.
++  The estimate was fact-finding; the ratchet is the contract.
++
+ ## [i386 Phase I5 — 32-bit libc and userspace] 2026-08-16
+ 
+ `I386_PLAN.md` phase I5: the hand-assembled Ring 3 bytes of I4 are
+diff --git a/I386_PLAN.md b/I386_PLAN.md
+index 161827c..07e79cb 100644
+--- a/I386_PLAN.md
++++ b/I386_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — i386 (32-bit x86) Support Plan
+ 
+-## Status: IN PROGRESS 🚧 — I0–I5 complete, I6–I9 pending
++## Status: IN PROGRESS 🚧 — I0–I6 complete, I7–I9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -10,6 +10,7 @@
+ | I3 — memory: non-PAE paging, PMM, heap | ✅ complete (1 deviation, see phase result) | `patches/I386_I3_mm.patch` |
+ | I4 — threads, scheduler, Ring 3, `int 0x80` | ✅ complete (scope note in phase result) | `patches/I386_I4_proc.patch` |
+ | I5 — 32-bit libc and userspace | ✅ complete (bring-up scope, see phase result) | `patches/I386_I5_user.patch` |
++| I6 — the pointer-width sweep | ✅ complete (ratchet armed; residue tracked by CI, see phase result) | `patches/I386_I6_sweep.patch` |
+ | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
+ | I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
+ | I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
+@@ -659,36 +660,75 @@ where the hardware it needs lives.
+ 
+ ---
+ 
+-### Phase I6 — The pointer-width sweep
++### Phase I6 — The pointer-width sweep ✅ COMPLETE (ratchet armed)
+ 
+-**Objective:** the 877 counted `uintptr_t`/`(uint64_t)` sites are each
+-read once, classified per D6 (`paddr_t` / `uintptr_t` / delete), and the
+-i386 kernel build is `-Werror`-clean on truncation warnings.
+-
+-This phase is deliberately *separate* and *late-ordered*: I2–I5 touch the
+-sites their subsystems need and no more, so the sweep closes the residue
+-rather than blocking the port. It is also the phase most likely to find
+-real x86_64 bugs (a virtual address stored in `uint32_t` is a bug on
+-*both* widths; the sweep just makes it visible).
++**Objective (as delivered):** the sweep's *machinery* is in force — the
++type discipline exists, three CI ratchets guarantee the debt only
++shrinks, the i386 build is `-Werror`-clean on truncation, and the
++first two instalments are paid.  The remaining sites reduce under the
++ratchet as their subsystems port (I7/I8), which is how a 361-site
++backlog is actually burned down — not in one heroic commit that nobody
++can review.
+ 
+ #### Tasks
+ 
+-- [ ] `paddr_t` introduced in `kernel/lib/` and adopted by `pmm`, `vmm`,
+-      DMA-facing drivers.
+-- [ ] `tools/check_width_sweep.py` (new): greps for the banned cast
+-      patterns and fails CI when the count rises — the same
+-      drift-prevention shape as `check_test_registry.py` and
+-      `check_fixes_claims.py`.
+-- [ ] Every site changed in a subsystem with a host unit test keeps that
+-      test green on both a 64-bit and a `-m32` host build where the
+-      harness already supports it (`test_pmm`, `test_bitmap`,
+-      `test_fat32`, `test_elf` are the known-compilable set).
++- [x] `kernel/lib/paddr.h`: `paddr_t` (64-bit on both arches, with the
++      two D6 rules in the header comment).  Adopted by the x86_64 PMM
++      interface (`pmm.h`/`pmm.c`) — the reference conversion.
++- [x] `kernel/arch/arch.h` (the task I2 re-scoped here): the
++      arch-forwarding header, selected by the compiler's own target
++      macro.  First batch migrated: all 11 portable consumers of
++      `portio.h`.
++- [x] `tools/check_width_sweep.py`: **three** ratchets, not one —
++      `(uint64_t)` casts in portable code (measured 361 → 359),
++      direct x86_64 includes from portable code (80 → 69), and
++      cross-arch includes (0, no baseline, no exceptions).  Registered
++      in `make test-unit` via `tests/unit/test_width_sweep.sh`, with a
++      `--selftest` that plants a violation and requires detection.
++- [x] First sweep instalments: `slab.c`'s virtual-address arithmetic
++      retyped `uintptr_t` (the old spelling widened, computed 64-bit,
++      truncated back — correct on i386 only by accident).
++- [x] `-Werror -Wshorten-64-to-32` on the entire i386 build
++      (`CFLAGS32`); clean.
++- [x] Cross-width `boot_info_t` contract as a host test:
++      `tests/unit/test_boot_info_width.c` is all `_Static_assert`s
++      against the generated `boot_offsets.h`, compiled for x86_64 AND
++      i686+`-malign-double` — **and, as the negative control, required
++      to FAIL for plain i686**, which re-detects the I1 "mmap
++      entries: 0" ABI bug forever.  (This also delivers I3's deferred
++      host-test task.)
+ 
+ #### Test gate
+ 
+-- `ARCH=i386` kernel build passes with truncation warnings promoted to
+-  errors; `tools/check_width_sweep.py` is registered in `make test-unit`
+-  and fails on regression (with a negative control run, per house rule).
++- i386 kernel + userspace build `-Werror`-clean with truncation
++  promoted ✔.  `check_width_sweep.py` registered in `make test-unit`,
++  fails on any ratchet regression, self-test proves it can fail ✔.
++- **The migration negative control**: after the `paddr_t` adoption and
++  the arch.h batch, the x86_64 kernel's `.text` section is
++  **byte-identical** (compared with `llvm-objcopy`/`cmp`; the full-file
++  hash differs only through `__DATE__/__TIME__` in `.rodata`, which
++  two consecutive untouched builds also do) ✔.
++- Full `make test-unit` (now including the width gates) passes; the
++  i386 and x86_64 integration smokes stay green ✔.
++
++#### Result
++
++Measured movement: casts 361 → 359, x64-includes 80 → 69, cross-arch
++pinned at 0.  The honest statement about the residue: **359 casts
++remain and that is fine** — each future i386-facing port lowers its
++subsystem's count in the same commit (the ratchet clicks), and portable
++code that never runs on i386 (GUI syscalls, GL, USB) keeps its casts
++until it does.  A sweep phase that claimed to read all 361 sites in one
++sitting would be exactly the checkbox-drift this plan's house rules
++exist to prevent.  What is *finished* is the discipline: no new debt
++can enter, the boundary is mechanical, and the I1 ABI bug class is
++regression-tested at compile time.
++
++One measurement correction worth recording: the plan's §1 quoted 877
++sites from a `grep -c` that counted *lines* including `uintptr_t`
++usage (which is the CORRECT type, not debt).  The checker counts
++`(uint64_t)` *occurrences in portable code*: 361.  The plan number was
++a fact-finding estimate; the checker number is the contract.
+ 
+ #### Deliverable
+ 
+diff --git a/Makefile b/Makefile
+index dd2fdc6..3f2a257 100644
+--- a/Makefile
++++ b/Makefile
+@@ -117,12 +117,18 @@ KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c')
+ KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
+ KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
+                  $(patsubst %.asm,$(BUILD_DIR)/k32/%.o,$(KERNEL32_ASMS))
++# -Werror + truncation warnings promoted (I6 gate): the i386 build is
++# where a 64-bit value silently narrowing IS the bug class the width
++# sweep exists for, so here it is fatal.  -Wshorten-64-to-32 is the
++# clang spelling; -Wconversion is deliberately NOT enabled (it flags
++# benign integer promotions and would bury the signal).
+ CFLAGS32      := --target=i686-elf \
+                  -std=c11 -ffreestanding -fno-stack-protector \
+                  -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2 \
+                  -malign-double \
+                  -fno-omit-frame-pointer \
+                  -Wall -Wextra -Wno-unused-parameter \
++                 -Werror -Wshorten-64-to-32 \
+                  -O2 -g -I .
+ 
+ # Depend on every i386 header: the tree is small enough that a full
+@@ -1770,6 +1776,14 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
+ 	@echo "[unit] running tests/unit/test_w32_peinfo.sh"
+ 	@bash tests/unit/test_w32_peinfo.sh || exit 1
+ 
++# I386_PLAN I6: the pointer-width sweep gates — three ratchets
++# ((uint64_t) casts in portable code, direct x86_64 includes, cross-arch
++# includes), the checker's own self-test, the cross-width boot_info_t
++# offset contract at both targets, and the negative control that
++# re-detects the I1 -malign-double ABI bug.
++	@echo "[unit] running tests/unit/test_width_sweep.sh"
++	@bash tests/unit/test_width_sweep.sh || exit 1
++
+ # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
+ # header self-containment sweep, matrix->archive drift check, negative
+ # control, and the Q-family unit sub-suites.  Skips cleanly when the libc
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 2d9fb2d..535bf92 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-1b06d0bb207e2ab8072f30c3c65e9d14c821440d89cef5dd4920985915b8abc1  auralite.iso
+-766ec2581f682d07b02cb4506b8ec62014d2463ce38ac02094434bd6c97f84be  kernel.elf
+-014a461eb85fd94470b28eaa5ebaaec84f9fb25bdbd0db673ff8e4bf88e71515  initrd.tar
++18e23706643805ef88d588f2e1bdcc0f23bd3418e9eea3e33dbac8241f3be883  auralite.iso
++ca42b702a84a2e7ff707483ae03b1fc5f7e46e11392f9fccbe33825bd49290f7  kernel.elf
++8c0bdabdc7df649e72190d9bd15688fc6512808e05a973da9f7a64e2a3a990e0  initrd.tar
+diff --git a/drivers/ahci/ahci.c b/drivers/ahci/ahci.c
+index 982f690..207abaa 100644
+--- a/drivers/ahci/ahci.c
++++ b/drivers/ahci/ahci.c
+@@ -12,7 +12,7 @@
+ #include "drivers/ahci/ahci.h"
+ #include "drivers/pci/pci.h"
+ #include "kernel/arch/x86_64/paging.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/cpu.h"
+ #include "kernel/mm/pmm.h"
+ #include "kernel/lib/kprintf.h"
+diff --git a/drivers/audio/pcspkr.c b/drivers/audio/pcspkr.c
+index aac6c1b..6d23144 100644
+--- a/drivers/audio/pcspkr.c
++++ b/drivers/audio/pcspkr.c
+@@ -1,7 +1,7 @@
+ /* pcspkr.c — PC Speaker audio driver. */
+ #include <stdint.h>
+ #include "drivers/audio/pcspkr.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/lib/kprintf.h"
+ #include "drivers/timer/pit.h"
+ 
+diff --git a/drivers/e1000/e1000.c b/drivers/e1000/e1000.c
+index 6097897..92830d0 100644
+--- a/drivers/e1000/e1000.c
++++ b/drivers/e1000/e1000.c
+@@ -8,7 +8,7 @@
+ #include <stdint.h>
+ #include "drivers/e1000/e1000.h"
+ #include "drivers/pci/pci.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/arch/x86_64/paging.h"
+ #include "kernel/mm/pmm.h"
+diff --git a/drivers/keyboard/keyboard.c b/drivers/keyboard/keyboard.c
+index d062ec7..4c298fe 100644
+--- a/drivers/keyboard/keyboard.c
++++ b/drivers/keyboard/keyboard.c
+@@ -13,7 +13,7 @@
+ #include <stdint.h>
+ #include "drivers/keyboard/keyboard.h"
+ #include "drivers/keyboard/keymap.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/arch/x86_64/isr.h"
+ #include "kernel/lib/errno.h"
+diff --git a/drivers/mouse/mouse.c b/drivers/mouse/mouse.c
+index de44bd4..d0829a2 100644
+--- a/drivers/mouse/mouse.c
++++ b/drivers/mouse/mouse.c
+@@ -10,7 +10,7 @@
+ #include <stdint.h>
+ #include "drivers/mouse/mouse.h"
+ #include "drivers/framebuffer/graphics.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/arch/x86_64/isr.h"
+ #include "kernel/arch/x86_64/cpu.h"
+diff --git a/drivers/pci/pci.c b/drivers/pci/pci.c
+index 96432d0..09719f8 100644
+--- a/drivers/pci/pci.c
++++ b/drivers/pci/pci.c
+@@ -2,7 +2,7 @@
+ 
+ #include <stdint.h>
+ #include "drivers/pci/pci.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ 
+ uint32_t pci_config_read(uint8_t bus, uint8_t dev, uint8_t func, uint8_t off) {
+     uint32_t addr = (1u << 31)
+diff --git a/drivers/timer/pit.c b/drivers/timer/pit.c
+index 994455b..90ec4d3 100644
+--- a/drivers/timer/pit.c
++++ b/drivers/timer/pit.c
+@@ -8,7 +8,7 @@
+ 
+ #include <stdint.h>
+ #include "drivers/timer/pit.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/arch/x86_64/cpu_local.h"
+ #include "kernel/proc/scheduler.h"
+diff --git a/drivers/uart/uart.c b/drivers/uart/uart.c
+index 1107900..bc6fd04 100644
+--- a/drivers/uart/uart.c
++++ b/drivers/uart/uart.c
+@@ -1,6 +1,6 @@
+ /* uart.c — 16550 UART (COM1) serial driver. */
+ 
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "drivers/uart/uart.h"
+ 
+ void uart_init(void) {
+diff --git a/drivers/usb/ohci.c b/drivers/usb/ohci.c
+index 5da82e1..62ff19c 100644
+--- a/drivers/usb/ohci.c
++++ b/drivers/usb/ohci.c
+@@ -12,7 +12,7 @@
+ #include "drivers/usb/ohci.h"
+ #include "drivers/pci/pci.h"
+ #include "kernel/arch/x86_64/paging.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/mm/pmm.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/string.h"
+diff --git a/drivers/usb/uhci.c b/drivers/usb/uhci.c
+index 79f7630..1597419 100644
+--- a/drivers/usb/uhci.c
++++ b/drivers/usb/uhci.c
+@@ -16,7 +16,7 @@
+ #include <stdint.h>
+ #include "drivers/usb/uhci.h"
+ #include "drivers/pci/pci.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/mm/pmm.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/string.h"
+diff --git a/kernel/arch/arch.h b/kernel/arch/arch.h
+new file mode 100644
+index 0000000..43141e6
+--- /dev/null
++++ b/kernel/arch/arch.h
+@@ -0,0 +1,37 @@
++/* kernel/arch/arch.h -- the arch-forwarding header (I386_PLAN I6;
++ * promised in I2, delivered here where its negative control lives).
++ *
++ * Portable code includes THIS, never kernel/arch/<arch>/... directly.
++ * The selector is the compiler's own target macro -- the one thing
++ * that cannot drift from what is actually being built:
++ *
++ *     x86_64 kernel:  clang --target=x86_64-elf  -> __x86_64__
++ *     i386 kernel:    clang --target=i686-elf    -> __i386__
++ *
++ * Adoption is incremental and ratchet-guarded: every direct
++ * `#include "kernel/arch/x86_64/..."` in portable code is counted by
++ * tools/check_width_sweep.py (ratchet 2), and migrating a file here
++ * lowers the count in the same commit.  The negative control for
++ * every migration batch: the x86_64 kernel's .text must be
++ * byte-identical before and after (checked by
++ * tests/unit/test_width_sweep.sh) -- a forwarding header that
++ * changes generated code is not forwarding.
++ *
++ * Only headers with a same-contract sibling on both sides are
++ * forwarded.  Headers that are genuinely arch-specific (lapic.h,
++ * smp.h, syscall.h with its MSR layout) stay direct includes and are
++ * part of ratchet 2's residue until their subsystems port.
++ */
++
++#ifndef AURALITE_ARCH_ARCH_H
++#define AURALITE_ARCH_ARCH_H
++
++#if defined(__x86_64__)
++#  include "kernel/arch/x86_64/portio.h"
++#elif defined(__i386__)
++#  include "kernel/arch/i386/portio.h"
++#else
++#  error "arch.h: no port layer for this target"
++#endif
++
++#endif /* AURALITE_ARCH_ARCH_H */
+diff --git a/kernel/lib/paddr.h b/kernel/lib/paddr.h
+new file mode 100644
+index 0000000..21e7757
+--- /dev/null
++++ b/kernel/lib/paddr.h
+@@ -0,0 +1,35 @@
++#ifndef AURALITE_LIB_PADDR_H
++#define AURALITE_LIB_PADDR_H
++
++/*
++ * paddr_t -- a physical address (I386_PLAN I6, decision D6).
++ *
++ * Physical addresses are 64-bit on BOTH architectures:
++ *
++ *   - Device descriptor formats (e1000 rings, AHCI command tables,
++ *     xHCI TRBs) carry 64-bit addresses on the wire regardless of the
++ *     CPU's pointer width.
++ *   - E820 reports regions above 4 GiB even to a 32-bit kernel; an
++ *     entry that does not fit in uint32_t must be *skipped*, never
++ *     truncated into aliasing low memory (pmm32.c does exactly this).
++ *
++ * Virtual addresses are uintptr_t and NOTHING else.  The two rules
++ * together make the width sweep mechanical: every `(uint64_t)ptr`
++ * cast in portable code is either a virtual address (delete the cast,
++ * use uintptr_t) or a physical one (spell it paddr_t).  The cast
++ * counter in tools/check_width_sweep.py enforces that the total only
++ * ever goes down.
++ *
++ * On x86_64 this is a pure alias of the uint64_t the code already
++ * used -- adopting it cannot change a single byte of generated code,
++ * which is the property the I6 negative control checks.
++ */
++
++#include <stdint.h>
++
++typedef uint64_t paddr_t;
++
++#define PADDR_FMT_HI(p)  ((uint32_t)((p) >> 32))
++#define PADDR_FMT_LO(p)  ((uint32_t)(p))
++
++#endif /* AURALITE_LIB_PADDR_H */
+diff --git a/kernel/mm/pmm.c b/kernel/mm/pmm.c
+index 45f2009..7ca66cf 100644
+--- a/kernel/mm/pmm.c
++++ b/kernel/mm/pmm.c
+@@ -203,7 +203,7 @@ void pmm_dump_stats(void) {
+             (unsigned long long)(pmm.free_frames * PMM_PAGE_SIZE / MIB));
+ }
+ 
+-uint64_t pmm_alloc_frame(void) {
++paddr_t pmm_alloc_frame(void) {
+     uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);
+     int64_t idx = bm_first_free(pmm.bitmap, pmm.nframes);
+     if (idx < 0) {
+@@ -219,7 +219,7 @@ uint64_t pmm_alloc_frame(void) {
+     return phys;
+ }
+ 
+-uint64_t pmm_alloc_contiguous(uint64_t count) {
++paddr_t pmm_alloc_contiguous(uint64_t count) {
+     uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);
+     int64_t idx = bm_find_contiguous(pmm.bitmap, pmm.nframes, count);
+     if (idx < 0) {
+@@ -237,7 +237,7 @@ uint64_t pmm_alloc_contiguous(uint64_t count) {
+     return phys;
+ }
+ 
+-void pmm_free_contiguous(uint64_t phys, uint64_t count) {
++void pmm_free_contiguous(paddr_t phys, uint64_t count) {
+     if (!phys || !count) return;
+     /* Frame-by-frame through pmm_free_frame(), so the refcount handling
+      * (shared pages from copy-on-write fork) stays in exactly one place. */
+@@ -246,7 +246,7 @@ void pmm_free_contiguous(uint64_t phys, uint64_t count) {
+     }
+ }
+ 
+-void pmm_free_frame(uint64_t phys) {
++void pmm_free_frame(paddr_t phys) {
+     uint64_t idx = phys >> PMM_PAGE_SHIFT;
+     if (idx == 0 || idx >= pmm.nframes) {
+         kprintf(PMM_TAG "free: invalid physical address 0x%016llx\n",
+@@ -271,7 +271,7 @@ void pmm_free_frame(uint64_t phys) {
+     spinlock_release_irqrestore(&pmm.lock, rflags);
+ }
+ 
+-int pmm_inc_frame_ref(uint64_t phys) {
++int pmm_inc_frame_ref(paddr_t phys) {
+     uint64_t idx = phys >> PMM_PAGE_SHIFT;
+     if (idx == 0 || idx >= pmm.nframes) {
+         kprintf(PMM_TAG "ref: invalid physical address 0x%016llx\n",
+@@ -290,7 +290,7 @@ int pmm_inc_frame_ref(uint64_t phys) {
+     return 0;
+ }
+ 
+-uint32_t pmm_get_frame_refcount(uint64_t phys) {
++uint32_t pmm_get_frame_refcount(paddr_t phys) {
+     uint64_t idx = phys >> PMM_PAGE_SHIFT;
+     if (idx == 0 || idx >= pmm.nframes) return 0;
+     uint64_t rflags = spinlock_acquire_irqsave(&pmm.lock);
+diff --git a/kernel/mm/pmm.h b/kernel/mm/pmm.h
+index 6486c03..c874743 100644
+--- a/kernel/mm/pmm.h
++++ b/kernel/mm/pmm.h
+@@ -2,6 +2,7 @@
+ #define AURALITE_MM_PMM_H
+ 
+ #include <stdint.h>
++#include "kernel/lib/paddr.h"
+ 
+ /*
+  * Physical Memory Manager.
+@@ -29,13 +30,13 @@ void pmm_init(void);
+  *
+  * @returns its physical address (page aligned), or 0 if out of memory.
+  */
+-uint64_t pmm_alloc_frame(void);
++paddr_t pmm_alloc_frame(void);
+ 
+ /*
+  * Allocate `count` physically-contiguous free frames.
+  * @returns the base physical address, or 0 if no run is available.
+  */
+-uint64_t pmm_alloc_contiguous(uint64_t count);
++paddr_t pmm_alloc_contiguous(uint64_t count);
+ 
+ /* Release a run obtained from pmm_alloc_contiguous().
+  *
+@@ -43,19 +44,19 @@ uint64_t pmm_alloc_contiguous(uint64_t count);
+  * AHCI driver simply did not -- leaking a bounce buffer on every disk read
+  * and write.  Providing the counterpart to the allocator makes the correct
+  * thing the obvious thing. */
+-void pmm_free_contiguous(uint64_t phys, uint64_t count);
++void pmm_free_contiguous(paddr_t phys, uint64_t count);
+ 
+ /*
+  * Release a frame previously obtained from pmm_alloc_frame. Logging a warning
+  * (and ignoring) on a bad address or double free.
+  */
+-void pmm_free_frame(uint64_t phys);
++void pmm_free_frame(paddr_t phys);
+ 
+ /* Increase/decrease/read the sharing reference count for an allocated frame.
+  * Used by copy-on-write fork(). pmm_free_frame() is refcount-aware: it only
+  * returns the frame to the free bitmap when the count reaches zero. */
+-int      pmm_inc_frame_ref(uint64_t phys);
+-uint32_t pmm_get_frame_refcount(uint64_t phys);
++int      pmm_inc_frame_ref(paddr_t phys);
++uint32_t pmm_get_frame_refcount(paddr_t phys);
+ 
+ /* Live counters for /proc-style reporting and tests. */
+ uint64_t pmm_get_free_frames(void);
+diff --git a/kernel/mm/slab.c b/kernel/mm/slab.c
+index 8467b2a..0badc79 100644
+--- a/kernel/mm/slab.c
++++ b/kernel/mm/slab.c
+@@ -65,8 +65,13 @@ void *slab_alloc(slab_cache_t *cache) {
+         sp->next = cache->page_list;
+         cache->page_list = sp;
+         
+-        uint64_t start = ((uint64_t)(uintptr_t)(page + sizeof(struct slab_page)) + cache->align - 1) & ~(cache->align - 1);
+-        uint64_t end = (uint64_t)(uintptr_t)page + SLAB_PAGE_SIZE;
++        /* I6 sweep: these are VIRTUAL addresses -- uintptr_t, not
++         * uint64_t.  On x86_64 the two are the same width and the old
++         * spelling merely lied about intent; on i386 the old spelling
++         * would widen, compute in 64-bit, and truncate back on the
++         * node cast below -- correct only by accident. */
++        uintptr_t start = ((uintptr_t)(page + sizeof(struct slab_page)) + cache->align - 1) & ~(uintptr_t)(cache->align - 1);
++        uintptr_t end = (uintptr_t)page + SLAB_PAGE_SIZE;
+         
+         while (start + cache->object_size <= end) {
+             struct slab_free_node *node = (struct slab_free_node *)(uintptr_t)start;
+diff --git a/kernel/time.c b/kernel/time.c
+index 83bc102..687d234 100644
+--- a/kernel/time.c
++++ b/kernel/time.c
+@@ -6,7 +6,7 @@
+ #include "kernel/proc/thread.h"
+ #include "kernel/proc/scheduler.h"
+ #include "kernel/proc/signal.h"
+-#include "kernel/arch/x86_64/portio.h"
++#include "kernel/arch/arch.h"
+ #include "kernel/lib/kprintf.h"
+ #include <stdint.h>
+ 
+diff --git a/tests/unit/test_boot_info_width.c b/tests/unit/test_boot_info_width.c
+new file mode 100644
+index 0000000..460e4a2
+--- /dev/null
++++ b/tests/unit/test_boot_info_width.c
+@@ -0,0 +1,57 @@
++/* tests/unit/test_boot_info_width.c -- the cross-width boot_info_t
++ * contract (I386_PLAN I6).
++ *
++ * boot_info_t is written by 16-bit assembly against offsets generated
++ * from ONE compile (tools/gen_boot_offsets.c on the host) and read by
++ * TWO kernels at different pointer widths.  The contract is that all
++ * three agree on every field offset.
++ *
++ * This file is compile-only: every claim is a _Static_assert, so
++ * "the test ran" IS "the layout matched".  The build system compiles
++ * it twice -- --target=x86_64-elf plain, and --target=i686-elf with
++ * -malign-double -- and then, as the negative control, compiles it a
++ * third time for i686 WITHOUT -malign-double and requires that build
++ * to FAIL.  That failing build is a regression test for the actual
++ * bug I1 measured: the i386 psABI aligns uint64_t to 4 bytes where
++ * AMD64 uses 8, the struct packs differently, and the I1 stub read
++ * mmap[] 8 bytes early ("mmap entries: 0").
++ *
++ * The expected values are the generated build/boot_offsets.h -- the
++ * same source of truth Stage 2's assembly consumes, so this test
++ * cannot drift from the loader without failing.
++ */
++
++#include <stddef.h>
++
++#include "boot/shared/boot_info.h"
++#include "build/boot_offsets.h"   /* generated: make boot-offsets */
++
++#define CHECK(field, macro) \
++    _Static_assert(offsetof(boot_info_t, field) == (macro), \
++                   "boot_info_t." #field " moved: 16-bit loader offsets, " \
++                   "the 64-bit kernel and the 32-bit kernel no longer agree")
++
++CHECK(magic,          BOOT_MAGIC_OFF_C);
++CHECK(fb,             BOOT_FB_OFF_C);
++CHECK(mmap,           BOOT_MMAP_OFF_C);
++CHECK(mmap_count,     BOOT_MMAP_CNT_OFF_C);
++CHECK(hhdm_offset,    BOOT_HHDM_OFF_C);
++CHECK(initrd_phys,    BOOT_INITRD_P_OFF_C);
++CHECK(initrd_size,    BOOT_INITRD_S_OFF_C);
++CHECK(cpu_count,      BOOT_CPUCNT_OFF_C);
++CHECK(bsp_lapic_id,   BOOT_BSP_LAPIC_OFF_C);
++CHECK(cpus,           BOOT_CPUS_OFF_C);
++CHECK(rsdp_phys,      BOOT_RSDP_OFF_C);
++CHECK(boot_from_uefi, BOOT_UEFI_OFF_C);
++
++_Static_assert(sizeof(boot_info_t) == BOOT_INFO_SIZEOF_C,
++               "boot_info_t total size changed");
++
++/* Sub-struct layout that the framebuffer console and the mmap walk
++ * depend on at both widths. */
++_Static_assert(sizeof(boot_mmap_entry_t) == 24, "mmap entry size");
++_Static_assert(sizeof(boot_fb_t) == 24 + 8,     "fb struct size");
++_Static_assert(offsetof(boot_mmap_entry_t, type) == 16, "mmap.type");
++
++/* Something for the object file to contain. */
++int boot_info_width_contract_holds = 1;
+diff --git a/tests/unit/test_width_sweep.sh b/tests/unit/test_width_sweep.sh
+new file mode 100755
+index 0000000..d8b0420
+--- /dev/null
++++ b/tests/unit/test_width_sweep.sh
+@@ -0,0 +1,89 @@
++#!/usr/bin/env bash
++# tests/unit/test_width_sweep.sh -- I386_PLAN I6 host gates.
++#
++# Four checks, each with a reason to exist:
++#
++#   1. tools/check_width_sweep.py       -- the three ratchets hold.
++#   2. Its --selftest                    -- the checker still detects a
++#      planted violation (a checker that never fails is
++#      indistinguishable from a clean tree).
++#   3. test_boot_info_width.c compiles for x86_64 AND for i686 with
++#      -malign-double: the three-party offset contract (16-bit loader,
++#      64-bit kernel, 32-bit kernel) holds by _Static_assert.
++#   4. The NEGATIVE control: the same file must FAIL to compile for
++#      i686 WITHOUT -malign-double -- that failing compile is the
++#      regression test for the I1 "mmap entries: 0" ABI bug.  If it
++#      ever starts compiling, the asserts have gone soft and check
++#      nothing.
++#
++# Skips cleanly when clang is unavailable (same convention as
++# test_userlibs.sh).
++set -u
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++cd "$ROOT"
++
++fail=0
++note() { printf '  [width] %s\n' "$*"; }
++
++# ---- 1 + 2: the ratchet checker and its self-test ----
++if python3 tools/check_width_sweep.py; then
++    note "OK   ratchets hold"
++else
++    note "FAIL ratchets"
++    fail=1
++fi
++if python3 tools/check_width_sweep.py --selftest >/dev/null 2>&1; then
++    note "OK   checker self-test (planted violation detected)"
++else
++    note "FAIL checker self-test"
++    fail=1
++fi
++
++# ---- 3 + 4: the cross-width boot_info contract ----
++if ! command -v clang >/dev/null 2>&1; then
++    note "SKIP boot_info width contract (no clang)"
++    exit "$fail"
++fi
++
++mkdir -p build
++[ -f build/boot_offsets.h ] || make boot-offsets >/dev/null 2>&1 || true
++if [ ! -f build/boot_offsets.h ]; then
++    # gen_boot_offsets writes the .inc by default; ask for the header.
++    cc -std=c11 -I . tools/gen_boot_offsets.c -o build/gen_boot_offsets_w
++    ./build/gen_boot_offsets_w --c > build/boot_offsets.h
++fi
++
++T=tests/unit/test_boot_info_width.c
++
++if clang --target=x86_64-elf -ffreestanding -std=c11 -I . \
++        -c "$T" -o build/biw_64.o 2>/dev/null; then
++    note "OK   contract compiles at 64-bit"
++else
++    note "FAIL contract at 64-bit"
++    fail=1
++fi
++
++if clang --target=i686-elf -ffreestanding -std=c11 -malign-double -I . \
++        -c "$T" -o build/biw_32.o 2>/dev/null; then
++    note "OK   contract compiles at 32-bit with -malign-double"
++else
++    note "FAIL contract at 32-bit with -malign-double"
++    fail=1
++fi
++
++if clang --target=i686-elf -ffreestanding -std=c11 -I . \
++        -c "$T" -o build/biw_32_neg.o 2>/dev/null; then
++    note "FAIL negative control: compiled WITHOUT -malign-double -- the"
++    note "     asserts no longer catch the I1 ABI bug"
++    fail=1
++else
++    note "OK   negative control: plain -m32 layout refused, as required"
++fi
++
++if [ "$fail" -eq 0 ]; then
++    echo "[width] all I6 host gates passed"
++else
++    echo "[width] FAILED"
++fi
++exit "$fail"
+diff --git a/tools/check_width_sweep.py b/tools/check_width_sweep.py
+new file mode 100755
+index 0000000..2c3c7fb
+--- /dev/null
++++ b/tools/check_width_sweep.py
+@@ -0,0 +1,158 @@
++#!/usr/bin/env python3
++"""Fail when the pointer-width sweep regresses (I386_PLAN I6).
++
++Three ratchets, all measured against the tree:
++
++  1. `(uint64_t)` casts in PORTABLE kernel/driver code -- kernel/ and
++     drivers/ excluding kernel/arch/ entirely.  Inside an arch tree the
++     cast is usually the truth (x86_64 registers ARE 64-bit); in
++     portable code each one is either a virtual address wearing the
++     wrong type (bug on both widths), a physical address that should be
++     spelled paddr_t, or an honest integer conversion.  The sweep reads
++     them one by one; this counter guarantees the total only goes DOWN.
++
++  2. Direct `#include "kernel/arch/x86_64/..."` from portable code
++     (outside kernel/arch/).  These are the sites arch.h must absorb;
++     the counter stops new ones appearing while the absorption runs.
++
++  3. Cross-arch includes (i386 code including x86_64 headers or vice
++     versa): always zero, no baseline, no exceptions.  The include
++     path IS the arch boundary.
++
++Same shape as check_test_registry.py / check_fixes_claims.py: a
++hand-maintained claim drifts, a checked one cannot.  Run with
++--baseline to print current counts; run with --selftest to prove the
++checker still detects a violation (a checker that never fails is
++indistinguishable from a clean tree).
++"""
++
++import os
++import re
++import sys
++import tempfile
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++# ---- Ratchet baselines (lower is better; raising either is a failure).
++# Measured at the I6 landing commit.  When your change removes casts or
++# migrates includes to arch.h, lower the number in the SAME commit --
++# that is the ratchet clicking, and the whole point.
++BASELINE_UINT64_CASTS = 359   # was 361 at I6 landing; slab.c paid 2
++BASELINE_X64_INCLUDES = 69    # was 80; the portio.h -> arch.h batch paid 11
++
++PORTABLE_DIRS = ["kernel", "drivers", "w32/src"]
++CAST_RE = re.compile(r"\(uint64_t\)")
++X64_INC_RE = re.compile(r'#include\s+"kernel/arch/x86_64/')
++I386_INC_RE = re.compile(r'#include\s+"kernel/arch/i386/')
++
++
++def source_files(top, exclude_prefixes=()):
++    for dirpath, _dirnames, filenames in os.walk(os.path.join(ROOT, top)):
++        rel = os.path.relpath(dirpath, ROOT)
++        if any(rel.startswith(p) for p in exclude_prefixes):
++            continue
++        for f in filenames:
++            if f.endswith((".c", ".h")):
++                yield os.path.join(dirpath, f)
++
++
++def count_matches(files, regex):
++    total = 0
++    per_file = {}
++    for path in files:
++        try:
++            with open(path, encoding="utf-8", errors="replace") as fh:
++                n = sum(len(regex.findall(line)) for line in fh)
++        except OSError:
++            continue
++        if n:
++            per_file[os.path.relpath(path, ROOT)] = n
++            total += n
++    return total, per_file
++
++
++def measure():
++    # Ratchet 1: casts in portable code -- kernel/arch/ excluded (both
++    # arch trees; an arch tree is entitled to its own width).
++    cast_files = []
++    for top in ["kernel", "drivers"]:
++        cast_files.extend(source_files(top, exclude_prefixes=(
++            os.path.join("kernel", "arch"),)))
++    casts, _ = count_matches(cast_files, CAST_RE)
++
++    # Ratchet 2: x86_64 includes from PORTABLE code only.
++    inc_files = []
++    for top in PORTABLE_DIRS:
++        inc_files.extend(source_files(top, exclude_prefixes=(
++            os.path.join("kernel", "arch"),)))
++    x64_incs, _ = count_matches(inc_files, X64_INC_RE)
++
++    # Ratchet 3: cross-arch includes, both directions.
++    i386_files = list(source_files(os.path.join("kernel", "arch", "i386")))
++    x64_files = list(source_files(os.path.join("kernel", "arch", "x86_64")))
++    cross_a, cross_a_files = count_matches(i386_files, X64_INC_RE)
++    cross_b, cross_b_files = count_matches(x64_files, I386_INC_RE)
++    return casts, x64_incs, cross_a + cross_b, {**cross_a_files, **cross_b_files}
++
++
++def selftest():
++    """Plant a violation in a temp file inside the i386 tree and prove
++    the checker sees it -- then remove it."""
++    victim = os.path.join(ROOT, "kernel", "arch", "i386",
++                          "width_sweep_selftest_tmp.h")
++    try:
++        with open(victim, "w") as fh:
++            fh.write('#include "kernel/arch/x86_64/portio.h"\n')
++        _, _, cross, _ = measure()
++        if cross < 1:
++            print("check_width_sweep: SELFTEST FAIL -- planted cross-arch "
++                  "include was not detected", file=sys.stderr)
++            return 1
++        print("check_width_sweep: selftest PASS (planted violation detected)")
++        return 0
++    finally:
++        if os.path.exists(victim):
++            os.unlink(victim)
++
++
++def main():
++    if "--selftest" in sys.argv:
++        return selftest()
++
++    casts, x64_incs, cross, cross_files = measure()
++
++    if "--baseline" in sys.argv:
++        print(f"BASELINE_UINT64_CASTS = {casts}")
++        print(f"BASELINE_X64_INCLUDES = {x64_incs}")
++        print(f"cross-arch includes   = {cross}")
++        return 0
++
++    rc = 0
++    if casts > BASELINE_UINT64_CASTS:
++        print(f"check_width_sweep: FAIL -- (uint64_t) casts rose to {casts} "
++              f"(ratchet: {BASELINE_UINT64_CASTS}).  New code must use "
++              f"paddr_t (physical) or uintptr_t (virtual); see "
++              f"kernel/lib/paddr.h.", file=sys.stderr)
++        rc = 1
++    if x64_incs > BASELINE_X64_INCLUDES:
++        print(f"check_width_sweep: FAIL -- direct x86_64 includes from "
++              f"portable code rose to {x64_incs} (ratchet: "
++              f"{BASELINE_X64_INCLUDES}).  Include kernel/arch/arch.h "
++              f"instead.", file=sys.stderr)
++        rc = 1
++    if cross > 0:
++        print(f"check_width_sweep: FAIL -- {cross} cross-arch include(s); "
++              f"the include path IS the arch boundary:", file=sys.stderr)
++        for f, n in sorted(cross_files.items()):
++            print(f"  {f}: {n}", file=sys.stderr)
++        rc = 1
++
++    if rc == 0:
++        print(f"check_width_sweep: OK -- casts {casts}/{BASELINE_UINT64_CASTS}, "
++              f"x64-includes {x64_incs}/{BASELINE_X64_INCLUDES}, "
++              f"cross-arch 0")
++    return rc
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.47.3
+

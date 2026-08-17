@@ -1,0 +1,1646 @@
+From ee5ae538c35df479638e46e77c1bc63541087512 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 16:19:18 +0000
+Subject: [PATCH] I2 update
+
+---
+ CHANGELOG.md                            |  39 ++++++
+ I386_PLAN.md                            |  72 ++++++++---
+ Makefile                                |  36 +++---
+ SHA256SUMS                              |   2 +-
+ kernel/arch/i386/boot32.asm             |  51 ++++++++
+ kernel/arch/i386/gdt.c                  |  75 ++++++++++++
+ kernel/arch/i386/gdt.h                  |  68 +++++++++++
+ kernel/arch/i386/gdt_flush32.asm        |  34 ++++++
+ kernel/arch/i386/idt.c                  |  40 +++++++
+ kernel/arch/i386/idt.h                  |  33 +++++
+ kernel/arch/i386/irq32.c                | 104 ++++++++++++++++
+ kernel/arch/i386/irq32.h                |  28 +++++
+ kernel/arch/i386/isr.h                  |  27 +++++
+ kernel/arch/i386/isr32.c                |  86 ++++++++++++++
+ kernel/arch/i386/isr_stubs32.asm        |  85 +++++++++++++
+ kernel/arch/i386/{stub => }/kernel32.ld |   0
+ kernel/arch/i386/kprintf32.c            | 108 +++++++++++++++++
+ kernel/arch/i386/kprintf32.h            |  20 ++++
+ kernel/arch/i386/main32.c               | 152 ++++++++++++++++++++++++
+ kernel/arch/i386/portio.h               |  33 +++++
+ kernel/arch/i386/stub/boot32.asm        |  61 ----------
+ kernel/arch/i386/stub/main32.c          | 115 ------------------
+ tests/integration/i386_boot32_smoke.sh  |  13 +-
+ tests/integration/i386_cpu_smoke.sh     |  91 ++++++++++++++
+ 24 files changed, 1159 insertions(+), 214 deletions(-)
+ create mode 100644 kernel/arch/i386/boot32.asm
+ create mode 100644 kernel/arch/i386/gdt.c
+ create mode 100644 kernel/arch/i386/gdt.h
+ create mode 100644 kernel/arch/i386/gdt_flush32.asm
+ create mode 100644 kernel/arch/i386/idt.c
+ create mode 100644 kernel/arch/i386/idt.h
+ create mode 100644 kernel/arch/i386/irq32.c
+ create mode 100644 kernel/arch/i386/irq32.h
+ create mode 100644 kernel/arch/i386/isr.h
+ create mode 100644 kernel/arch/i386/isr32.c
+ create mode 100644 kernel/arch/i386/isr_stubs32.asm
+ rename kernel/arch/i386/{stub => }/kernel32.ld (100%)
+ create mode 100644 kernel/arch/i386/kprintf32.c
+ create mode 100644 kernel/arch/i386/kprintf32.h
+ create mode 100644 kernel/arch/i386/main32.c
+ create mode 100644 kernel/arch/i386/portio.h
+ delete mode 100644 kernel/arch/i386/stub/boot32.asm
+ delete mode 100644 kernel/arch/i386/stub/main32.c
+ create mode 100755 tests/integration/i386_cpu_smoke.sh
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 6121c10..1cd4240 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,45 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [i386 Phase I2 — kernel/arch/i386 CPU bring-up] 2026-08-16
++
++`I386_PLAN.md` phase I2: the I1 stub is deleted and `KERNEL32.ELF` is now
++a real bring-up kernel. A 32-bit CPU boots to a banner, a validated
++`boot_info_t`, a loaded GDT/TSS/IDT, live interrupts, and two self-tests
++that prove the fault path and the timer path end to end.
++
++- **`kernel/arch/i386/` (I1 stub replaced)**: `boot32.asm` (64 KiB boot
++  stack, same growth the x86_64 boot.asm had), `gdt.c` + `gdt_flush32.asm`
++  (flat Ring 0/3 segments and a 32-bit TSS with `SS0`/`ESP0` wired — on
++  i386 the TSS *is* the ring-transition mechanism, so it exists before
++  Ring 3 does), `idt.c` (256 gates; no IST field exists at this width),
++  `isr_stubs32.asm` (NASM-generated stubs with per-vector error-code
++  parity: 8, 10–14, 17, 21 get the CPU's code, the rest a pushed zero),
++  `isr32.c` (named exception diagnostics in the FIX_R0 format — cpu
++  number, register dump, CR2 on #PF; halt on unhandled kernel faults),
++  `irq32.c` (8259A remap to 32–47, dispatch, EOI, PIT at 100 Hz),
++  `kprintf32.c` (COM1-only formatted output, scoped to die when the
++  shared kprintf becomes width-clean in I6).
++- **Boot self-tests, kmain contract**: a deliberate `int3` must produce a
++  named `[diag]` frame and *resume* (`[isr] PASS`); the PIT must be seen
++  ticking with interrupts enabled (`[timer] PASS`) — the latter exercises
++  gate wiring, PIC unmask and EOI in one assertion. Before I2 both paths
++  were triple faults.
++- **One honest re-scope, recorded in the plan**: the original I2 task
++  list also claimed `arch.h` + compiling `kernel/kernel.c`'s init path.
++  That ordering was wrong — `kernel.c` pulls HHDM/paging code that is
++  I3/I6 work — so those tasks moved to I6 where their negative control
++  (byte-identical x86_64 kernel) lives, and I2 ships arch-local siblings
++  with identical contracts instead. The plan says so in the phase result
++  rather than leaving the boxes ambiguously ticked.
++- **`Makefile`**: the `kernel32` target now builds everything under
++  `kernel/arch/i386/` (wildcard + pattern rules into `build/k32/`), same
++  CFLAGS32 including the I1 `-malign-double` contract.
++- Tests: `tests/integration/i386_cpu_smoke.sh` — 16 assertions: banner,
++  stub-gone, GDT/TSS, IDT, PIC, sti reached, int3 named + dumped +
++  resumed, PIT ticks observed, idle reached with no unhandled faults,
++  plus the standing x86_64 no-regression pair.
++
+ ## [i386 Phase I1 — The dual-kernel boot chain] 2026-08-16
+ 
+ `I386_PLAN.md` phase I1: the same `make iso` image now carries a second
+diff --git a/I386_PLAN.md b/I386_PLAN.md
+index 0a85fca..3586b4b 100644
+--- a/I386_PLAN.md
++++ b/I386_PLAN.md
+@@ -1,12 +1,12 @@
+ # AuraLite OS — i386 (32-bit x86) Support Plan
+ 
+-## Status: IN PROGRESS 🚧 — I0–I1 complete, I2–I9 pending
++## Status: IN PROGRESS 🚧 — I0–I2 complete, I3–I9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | I0 — an honest refusal on a 32-bit CPU | ✅ complete | `patches/I386_I0_lmcheck.patch` |
+ | I1 — the dual-kernel boot chain | ✅ complete | `patches/I386_I1_boot32.patch` |
+-| I2 — `kernel/arch/i386` CPU bring-up | pending | `patches/I386_I2_cpu.patch` |
++| I2 — `kernel/arch/i386` CPU bring-up | ✅ complete (2 tasks re-scoped to I6, see phase result) | `patches/I386_I2_cpu.patch` |
+ | I3 — memory: non-PAE paging, PMM, heap | pending | `patches/I386_I3_mm.patch` |
+ | I4 — threads, scheduler, Ring 3, `int 0x80` | pending | `patches/I386_I4_proc.patch` |
+ | I5 — 32-bit libc and userspace | pending | `patches/I386_I5_user.patch` |
+@@ -352,35 +352,73 @@ contract only when a test enforces it.
+ 
+ ---
+ 
+-### Phase I2 — `kernel/arch/i386` CPU bring-up
++### Phase I2 — `kernel/arch/i386` CPU bring-up ✅ COMPLETE
+ 
+ **Objective:** the stub grows into a real `kmain32` running the portable
+ kernel core: console, GDT/IDT/PIC/PIT, exceptions with named diagnostics.
+ 
+ #### Tasks
+ 
+-- [ ] `kernel/arch/i386/{boot.asm,gdt.c,idt.c,isr.c,isr_stubs.asm,irq.c}`
++- [x] `kernel/arch/i386/{boot32.asm,gdt.c,idt.c,isr32.c,isr_stubs32.asm,irq32.c}`
+       — same contracts as the x86_64 siblings; 32-bit IDT gates, `iret`
+       frames, error-code push parity handled per vector exactly as
+-      `isr_stubs.asm` does today.
+-- [ ] `kernel/arch/arch.h` (new): the arch-forwarding header; portable
+-      code stops including `kernel/arch/x86_64/…` directly. (Mechanical;
+-      the x86_64 build must produce a byte-identical kernel before and
+-      after — that is the phase's own negative control.)
+-- [ ] `ARCH=i386 make kernel32` compiles `kernel/kernel.c`'s init path up
+-      to and including `idt_init`/`pit_init`, with the 64-bit-only
+-      subsystems stubbed behind `arch_has_*` capability flags rather than
+-      `#ifdef`s scattered through `kmain`.
+-- [ ] Exceptions print the same `[diag]` register-dump format R0
+-      established — 32-bit register names, CPU number 0.
++      `isr_stubs.asm` does today (vectors 8, 10–14, 17, 21 get the CPU's
++      error code, everyone else a pushed zero).
++- [x] Exceptions print the same `[diag]` register-dump format R0
++      established — 32-bit register names, CPU number 0, CR2 on #PF.
++- [ ] ~~`kernel/arch/arch.h`~~ — **re-scoped to I6** (see result note).
++- [ ] ~~`kmain32` compiles `kernel/kernel.c`'s init path~~ — **re-scoped
++      to I6** (see result note).
+ 
+ #### Test gate
+ 
+ - i386 boot reaches `IDT installed` + `PIC remapped` + a PIT tick counter
+   on serial; a deliberate `int3` in a boot self-test prints a named
+   exception frame instead of rebooting.
+-- `ARCH=x86_64` (default) kernel binary is unchanged bit-for-bit by the
+-  refactor commit that introduces `arch.h`.
++- `ARCH=x86_64` (default) kernel binary is unchanged — trivially true
++  this phase, since `arch.h` moved to I6 and no shared file was touched.
++
++#### Result
++
++Delivered with one honest re-scope. The stub is deleted;
++`kernel/arch/i386/` now holds the real bring-up kernel: flat GDT with
++Ring 3 descriptors and a **32-bit TSS** (8-byte descriptor, `SS0`/`ESP0`
++wired — on i386 the TSS is the ring-transition mechanism, so it exists
++from day one even though Ring 3 arrives in I4), 256 NASM-generated gate
++stubs with per-vector error-code parity, the 8259A remap, the PIT at
++100 Hz, and two boot self-tests in the kmain contract:
++
++```
++[boot] GDT loaded (kernel + user segments + 32-bit TSS)
++[boot] IDT installed: 256 gates
++[boot] PIC remapped (IRQs -> vectors 32-47), all masked
++[kernel] interrupts enabled, exception handling online.
++[diag] deliberate #BP self-test:
++  cpu=0  vector=3 (Breakpoint)  err=00000000
++  eip=00100b0b cs=00000008 eflags=00000206
++[isr] PASS: deliberate #BP named, dumped, resumed
++[timer] PASS: PIT ticking (4 ticks observed)
++```
++
++`i386_cpu_smoke.sh`: 16 assertions green, including "the I1 stub banner
++is gone" and the standing x86_64 no-regression case.
++
++**The re-scope, stated rather than hidden:** the original task list had
++this phase both introduce `arch.h` *and* compile `kernel/kernel.c`'s
++init path. Attempting that ordering was wrong in a way that only became
++visible with the code open: `kernel.c`'s first hundred lines pull
++`boot_info.c` → HHDM arithmetic → `paging.h` — I3's and I6's work,
++respectively. Compiling shared portable files before the width sweep
++exists means either doing the sweep piecemeal *inside* I2 (scope creep
++with no gate of its own) or peppering `#ifdef`s (which D6 forbids). So
++I2 ships arch-local siblings with identical *contracts* (`gdt_init()`,
++`idt_set_gate()`, the `[diag]` format), and the *adoption* of shared
++code through `arch.h` lands in I6 where its negative control
++(byte-identical x86_64 kernel) already lives. `kprintf32` carries the
++same reasoning in its header: it dies when the shared `kprintf`
++becomes width-clean. The alternative — claiming the checkbox by
++compiling a gutted `kernel.c` — is exactly the drift `AUDIT_A7` exists
++to catch.
+ 
+ #### Deliverable
+ 
+diff --git a/Makefile b/Makefile
+index 3fa24f2..b47ded0 100644
+--- a/Makefile
++++ b/Makefile
+@@ -95,24 +95,28 @@ deps-check:
+ kernel: $(KERNEL_ELF)
+ 
+ # =============================================================================
+-# I386_PLAN I1: the i386 boot stub (KERNEL32.ELF).
++# I386_PLAN I2: the i386 kernel (KERNEL32.ELF).
+ #
+ # Same clang/lld toolchain, one width down (--target=i686-elf, nasm -f
+-# elf32, ld.lld -m elf_i386) -- deps-check does not grow.  The stub is
+-# the 32-bit hand-off proof, not the ported kernel; phase I2 replaces it
+-# with the real kmain32 build.  -mno-sse et al. for the same reason the
+-# 64-bit kernel sets them; i386 additionally gets -mfpmath=387 territory
+-# only when userspace arrives (I5) -- the stub does no floating point.
+-# =============================================================================
+-KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
+-KERNEL32_DIR  := kernel/arch/i386/stub
++# elf32, ld.lld -m elf_i386) -- deps-check does not grow.  I1 booted a
++# ~60-line stub through this target; I2 replaced the stub with the real
++# bring-up kernel (GDT/TSS, 256-gate IDT, PIC, PIT, named exception
++# diagnostics), built from everything under kernel/arch/i386/.
++#
+ # -malign-double: the i386 System V psABI aligns uint64_t to 4 bytes, the
+ # AMD64 one to 8.  boot_info_t is written by 16-bit assembly against
+ # offsets generated from the 64-bit layout (build/boot_offsets.inc), so a
+ # plain -m32 compile silently reads mmap[] 8 bytes early -- measured: the
+ # I1 stub printed "mmap entries: 0" until this flag landed.  With
+ # -malign-double both ABIs agree on every offset in the struct, and the
+-# stub asserts that at runtime via the magic + mmap_count checks.
++# boot log asserts that at runtime via the magic + mmap_count checks.
++# =============================================================================
++KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
++KERNEL32_DIR  := kernel/arch/i386
++KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c')
++KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
++KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
++                 $(patsubst %.asm,$(BUILD_DIR)/k32/%.o,$(KERNEL32_ASMS))
+ CFLAGS32      := --target=i686-elf \
+                  -std=c11 -ffreestanding -fno-stack-protector \
+                  -fno-pie -fno-pic -mno-mmx -mno-sse -mno-sse2 \
+@@ -121,17 +125,17 @@ CFLAGS32      := --target=i686-elf \
+                  -Wall -Wextra -Wno-unused-parameter \
+                  -O2 -g -I .
+ 
+-$(BUILD_DIR)/kernel32/boot32.o: $(KERNEL32_DIR)/boot32.asm
++$(BUILD_DIR)/k32/%.o: %.c boot/shared/boot_info.h
+ 	@mkdir -p $(dir $@)
+-	$(AS) -f elf32 -o $@ $<
++	$(CC) $(CFLAGS32) -c $< -o $@
+ 
+-$(BUILD_DIR)/kernel32/main32.o: $(KERNEL32_DIR)/main32.c boot/shared/boot_info.h
++$(BUILD_DIR)/k32/%.o: %.asm
+ 	@mkdir -p $(dir $@)
+-	$(CC) $(CFLAGS32) -c $< -o $@
++	$(AS) -f elf32 -o $@ $<
+ 
+-$(KERNEL32_ELF): $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o $(KERNEL32_DIR)/kernel32.ld
++$(KERNEL32_ELF): $(KERNEL32_OBJS) $(KERNEL32_DIR)/kernel32.ld
+ 	$(LD) -m elf_i386 -nostdlib -static -T $(KERNEL32_DIR)/kernel32.ld \
+-	    $(BUILD_DIR)/kernel32/boot32.o $(BUILD_DIR)/kernel32/main32.o -o $@
++	    $(KERNEL32_OBJS) -o $@
+ 	@echo "  [kernel32] $@ ($$(du -h $@ | cut -f1))"
+ 
+ .PHONY: kernel32
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 443dc85..a888d7b 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-e12bec518b86873aa0000425a3b5ed33d60d465c9f4f9e250f9531d4b73632da  auralite.iso
++465b87a2102ca5a53a778c2e3134387c6be23a93c5b15b7953e560774ead7613  auralite.iso
+ 766ec2581f682d07b02cb4506b8ec62014d2463ce38ac02094434bd6c97f84be  kernel.elf
+ e8cbc0965f7e90221d9842fd1ffab394f1b0819759e3de10f7e807c64916a0f1  initrd.tar
+diff --git a/kernel/arch/i386/boot32.asm b/kernel/arch/i386/boot32.asm
+new file mode 100644
+index 0000000..37519c3
+--- /dev/null
++++ b/kernel/arch/i386/boot32.asm
+@@ -0,0 +1,51 @@
++; =============================================================================
++; kernel/arch/i386/boot32.asm -- i386 kernel entry point (I386_PLAN I2).
++;
++; Grown from the I1 stub's entry: same contract (Stage 2's enter_prot32
++; jumps here in 32-bit protected mode, paging OFF, ESI = boot_info_t
++; phys, flat segments), bigger stack (64 KiB, matching the x86_64
++; boot.asm) because a real kmain with self-tests lives behind it now.
++;
++;   1. cli -- no IDT until idt_init.
++;   2. Zero .bss.
++;   3. ESP := stack_top.
++;   4. Push ESI, call kmain32 (cdecl).
++;   5. If kmain32 returns: hlt loop.
++; =============================================================================
++
++bits 32
++
++STACK_SIZE equ 64*1024
++
++section .bss
++align 16
++stack_bottom:
++    resb STACK_SIZE
++stack_top:
++
++section .text
++global _start
++extern kmain32
++
++_start:
++    cli
++
++    ; Zero .bss (dword granularity; __bss_start/__bss_end are 4-aligned
++    ; by kernel32.ld).  ESI survives: rep stosd touches EDI/ECX/EAX only.
++    extern __bss_start
++    extern __bss_end
++    mov  edi, __bss_start
++    mov  ecx, __bss_end
++    sub  ecx, edi
++    shr  ecx, 2
++    xor  eax, eax
++    rep  stosd
++
++    mov  esp, stack_top
++
++    push esi
++    call kmain32
++
++.hang:
++    hlt
++    jmp  .hang
+diff --git a/kernel/arch/i386/gdt.c b/kernel/arch/i386/gdt.c
+new file mode 100644
+index 0000000..3d61579
+--- /dev/null
++++ b/kernel/arch/i386/gdt.c
+@@ -0,0 +1,75 @@
++/* kernel/arch/i386/gdt.c -- build and load the 32-bit GDT + TSS
++ * (I386_PLAN I2).
++ *
++ * Sibling of kernel/arch/x86_64/gdt.c with the two structural
++ * differences 32-bit protected mode imposes:
++ *
++ *   1. Code/data descriptors carry real base/limit semantics (we still
++ *      use flat 0..4GiB, G=1, D=1 -- but the CPU checks them, unlike
++ *      long mode where most fields are ignored).
++ *   2. The TSS descriptor is 8 bytes (type 0x9 = available 32-bit TSS),
++ *      not the 16-byte 64-bit variant, and the TSS itself is the
++ *      ring-transition mechanism: ESP0/SS0 are consulted on every
++ *      Ring 3 -> Ring 0 interrupt.  tss_set_esp0() is therefore part of
++ *      the context-switch contract from phase I4 on.
++ */
++
++#include <stdint.h>
++#include "kernel/arch/i386/gdt.h"
++
++/* Implemented in gdt_flush32.asm. */
++extern void gdt_flush32(uint32_t gdtr_ptr);
++extern void tss_flush32(uint16_t selector);
++
++static struct gdt_entry gdt[GDT_NUM_ENTRIES];
++static struct gdt_ptr   gdtr;
++static struct tss32     tss;
++
++static void gdt_set_entry(int index, uint32_t base, uint32_t limit,
++                          uint8_t access, uint8_t flags)
++{
++    gdt[index].base_low    = (uint16_t)(base & 0xFFFF);
++    gdt[index].base_middle = (uint8_t)((base >> 16) & 0xFF);
++    gdt[index].base_high   = (uint8_t)((base >> 24) & 0xFF);
++
++    gdt[index].limit_low   = (uint16_t)(limit & 0xFFFF);
++    gdt[index].granularity = (uint8_t)((limit >> 16) & 0x0F);
++    gdt[index].granularity |= (flags & 0xF0);
++
++    gdt[index].access      = access;
++}
++
++void tss_set_esp0(uint32_t esp0)
++{
++    tss.esp0 = esp0;
++}
++
++void gdt_init(void)
++{
++    /* null */
++    gdt_set_entry(0, 0, 0, 0, 0);
++
++    /* Flat 4 GiB segments.  access: P | DPL | S | type.
++     * 0x9A = present, ring 0, code, R/E;  0x92 = present, ring 0, data, R/W.
++     * 0xFA / 0xF2 are the DPL=3 variants.
++     * flags 0xC0 = G (4 KiB granularity) | D (32-bit). */
++    gdt_set_entry(1, 0, 0xFFFFF, 0x9A, 0xC0);   /* kernel code */
++    gdt_set_entry(2, 0, 0xFFFFF, 0x92, 0xC0);   /* kernel data */
++    gdt_set_entry(3, 0, 0xFFFFF, 0xFA, 0xC0);   /* user   code */
++    gdt_set_entry(4, 0, 0xFFFFF, 0xF2, 0xC0);   /* user   data */
++
++    /* TSS descriptor: type 0x9 (available 32-bit TSS), byte granularity,
++     * limit = sizeof - 1.  access 0x89 = P | DPL0 | type 9. */
++    for (unsigned i = 0; i < sizeof(tss); i++)
++        ((uint8_t *)&tss)[i] = 0;
++    tss.ss0        = KERNEL_DATA_SELECTOR;
++    tss.esp0       = 0;                          /* armed per-thread in I4 */
++    tss.iomap_base = sizeof(tss);                /* no I/O bitmap */
++    gdt_set_entry(5, (uint32_t)&tss, sizeof(tss) - 1, 0x89, 0x00);
++
++    gdtr.limit = sizeof(gdt) - 1;
++    gdtr.base  = (uint32_t)&gdt;
++
++    gdt_flush32((uint32_t)&gdtr);
++    tss_flush32(TSS_SELECTOR);
++}
+diff --git a/kernel/arch/i386/gdt.h b/kernel/arch/i386/gdt.h
+new file mode 100644
+index 0000000..d2e0705
+--- /dev/null
++++ b/kernel/arch/i386/gdt.h
+@@ -0,0 +1,68 @@
++/* kernel/arch/i386/gdt.h -- 32-bit GDT layout (I386_PLAN I2).
++ *
++ * Same selector assignments as the x86_64 GDT so the two kernels share
++ * one mental model:
++ *
++ *   0x00  null
++ *   0x08  kernel code   (Ring 0)
++ *   0x10  kernel data   (Ring 0)
++ *   0x18  user code     (Ring 3)  -> selector | 3 = 0x1B when loaded
++ *   0x20  user data     (Ring 3)  -> selector | 3 = 0x23 when loaded
++ *   0x28  TSS           (one slot -- a 32-bit TSS descriptor is 8 bytes,
++ *                        not 16 like the 64-bit one, so no spill entry)
++ *
++ * The i386 TSS matters more than its 64-bit sibling: it is the ONLY
++ * ring-transition stack mechanism (there is no SYSCALL MSR pair), so
++ * ESP0/SS0 must be valid before the first Ring 3 entry (phase I4).
++ */
++
++#ifndef AURALITE_ARCH_I386_GDT_H
++#define AURALITE_ARCH_I386_GDT_H
++
++#include <stdint.h>
++
++#define GDT_NUM_ENTRIES        6
++
++#define KERNEL_CODE_SELECTOR   0x08
++#define KERNEL_DATA_SELECTOR   0x10
++#define USER_CODE_SELECTOR     0x18
++#define USER_DATA_SELECTOR     0x20
++#define TSS_SELECTOR           0x28
++
++struct gdt_entry {
++    uint16_t limit_low;
++    uint16_t base_low;
++    uint8_t  base_middle;
++    uint8_t  access;
++    uint8_t  granularity;
++    uint8_t  base_high;
++} __attribute__((packed));
++
++struct gdt_ptr {
++    uint16_t limit;
++    uint32_t base;
++} __attribute__((packed));
++
++/* The 32-bit TSS (Intel SDM Vol.3 s.8.2.1).  Only ESP0/SS0 are used for
++ * ring transitions; the hardware task-switching fields are dead weight
++ * required by the layout. */
++struct tss32 {
++    uint32_t prev_task;
++    uint32_t esp0;
++    uint32_t ss0;
++    uint32_t esp1, ss1;
++    uint32_t esp2, ss2;
++    uint32_t cr3;
++    uint32_t eip, eflags;
++    uint32_t eax, ecx, edx, ebx;
++    uint32_t esp, ebp, esi, edi;
++    uint32_t es, cs, ss, ds, fs, gs;
++    uint32_t ldt;
++    uint16_t trap;
++    uint16_t iomap_base;
++} __attribute__((packed));
++
++void gdt_init(void);
++void tss_set_esp0(uint32_t esp0);
++
++#endif /* AURALITE_ARCH_I386_GDT_H */
+diff --git a/kernel/arch/i386/gdt_flush32.asm b/kernel/arch/i386/gdt_flush32.asm
+new file mode 100644
+index 0000000..b158eeb
+--- /dev/null
++++ b/kernel/arch/i386/gdt_flush32.asm
+@@ -0,0 +1,34 @@
++; =============================================================================
++; kernel/arch/i386/gdt_flush32.asm -- LGDT + segment reload + LTR
++; (I386_PLAN I2).  Sibling of kernel/arch/x86_64/gdt_flush.asm.
++;
++; cdecl: the single argument arrives on the stack at [esp+4].
++; =============================================================================
++
++bits 32
++
++section .text
++
++global gdt_flush32
++gdt_flush32:
++    mov  eax, [esp + 4]
++    lgdt [eax]
++
++    ; Reload data segments with the kernel data selector.
++    mov  ax, 0x10
++    mov  ds, ax
++    mov  es, ax
++    mov  fs, ax
++    mov  gs, ax
++    mov  ss, ax
++
++    ; Far jump to reload CS.
++    jmp  0x08:.flush
++.flush:
++    ret
++
++global tss_flush32
++tss_flush32:
++    mov  eax, [esp + 4]
++    ltr  ax
++    ret
+diff --git a/kernel/arch/i386/idt.c b/kernel/arch/i386/idt.c
+new file mode 100644
+index 0000000..f6389af
+--- /dev/null
++++ b/kernel/arch/i386/idt.c
+@@ -0,0 +1,40 @@
++/* kernel/arch/i386/idt.c -- build the 256-entry IDT and load it
++ * (I386_PLAN I2).  Sibling of kernel/arch/x86_64/idt.c, minus the two
++ * things 32-bit mode does not have: the IST field (i386 gates have no
++ * stack-table index; the double-fault story is a task gate, deferred
++ * with an honest note in I386_PLAN §6) and the 64-bit offset half.
++ */
++
++#include <stdint.h>
++#include "kernel/arch/i386/idt.h"
++
++/* 256 handler entry-point addresses, laid out in isr_stubs32.asm. */
++extern uint32_t isr_table32[IDT_ENTRIES];
++
++static struct idt_entry idt[IDT_ENTRIES] __attribute__((aligned(16)));
++static struct idt_ptr   idtp;
++
++static inline void lidt_load(const struct idt_ptr *p)
++{
++    __asm__ volatile("lidt %0" : : "m"(*p));
++}
++
++void idt_set_gate(int n, uint32_t handler, uint8_t flags)
++{
++    idt[n].offset_low  = (uint16_t)(handler & 0xFFFF);
++    idt[n].selector    = KERNEL_CODE_SELECTOR;
++    idt[n].zero        = 0;
++    idt[n].type_attr   = flags;
++    idt[n].offset_high = (uint16_t)((handler >> 16) & 0xFFFF);
++}
++
++void idt_init(void)
++{
++    idtp.limit = (uint16_t)(sizeof(idt) - 1);
++    idtp.base  = (uint32_t)&idt;
++
++    for (int i = 0; i < IDT_ENTRIES; i++)
++        idt_set_gate(i, isr_table32[i], IDT_GATE_INTERRUPT);
++
++    lidt_load(&idtp);
++}
+diff --git a/kernel/arch/i386/idt.h b/kernel/arch/i386/idt.h
+new file mode 100644
+index 0000000..4041a62
+--- /dev/null
++++ b/kernel/arch/i386/idt.h
+@@ -0,0 +1,33 @@
++/* kernel/arch/i386/idt.h -- 32-bit IDT layout (I386_PLAN I2). */
++
++#ifndef AURALITE_ARCH_I386_IDT_H
++#define AURALITE_ARCH_I386_IDT_H
++
++#include <stdint.h>
++#include "kernel/arch/i386/gdt.h"
++
++#define IDT_ENTRIES 256
++
++/* type_attr: P | DPL | 0 | gate type.
++ * 0x8E = present, DPL0, 32-bit interrupt gate (IF cleared on entry).
++ * 0xEE = present, DPL3, 32-bit interrupt gate -- for int 0x80 in I4. */
++#define IDT_GATE_INTERRUPT      0x8E
++#define IDT_GATE_INTERRUPT_USER 0xEE
++
++struct idt_entry {
++    uint16_t offset_low;
++    uint16_t selector;
++    uint8_t  zero;
++    uint8_t  type_attr;
++    uint16_t offset_high;
++} __attribute__((packed));
++
++struct idt_ptr {
++    uint16_t limit;
++    uint32_t base;
++} __attribute__((packed));
++
++void idt_init(void);
++void idt_set_gate(int n, uint32_t handler, uint8_t flags);
++
++#endif /* AURALITE_ARCH_I386_IDT_H */
+diff --git a/kernel/arch/i386/irq32.c b/kernel/arch/i386/irq32.c
+new file mode 100644
+index 0000000..14b6de3
+--- /dev/null
++++ b/kernel/arch/i386/irq32.c
+@@ -0,0 +1,104 @@
++/* kernel/arch/i386/irq32.c -- 8259A PIC remap, IRQ dispatch and the PIT
++ * (I386_PLAN I2).  The PIC/PIT halves mirror kernel/arch/x86_64/irq.c
++ * and drivers/timer/pit.c at bring-up scope: same ICW sequence, same
++ * remap (master->32, slave->40), same mode-3 square wave.  The
++ * scheduler hook arrives with the scheduler in I4.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/irq32.h"
++#include "kernel/arch/i386/portio.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++#define NUM_IRQS   16
++#define ICW1_ICW4  0x01
++#define ICW1_INIT  0x10
++#define ICW4_8086  0x01
++
++static irq32_handler_t irq_handlers[NUM_IRQS];
++
++void pic32_init(void)
++{
++    outb(PIC1_CMD, ICW1_INIT | ICW1_ICW4);  io_wait();
++    outb(PIC2_CMD, ICW1_INIT | ICW1_ICW4);  io_wait();
++
++    outb(PIC1_DATA, PIC_OFFSET);            io_wait();  /* master -> 32 */
++    outb(PIC2_DATA, PIC_OFFSET + 8);        io_wait();  /* slave  -> 40 */
++
++    outb(PIC1_DATA, 0x04);                  io_wait();  /* slave on IRQ2 */
++    outb(PIC2_DATA, 0x02);                  io_wait();
++
++    outb(PIC1_DATA, ICW4_8086);             io_wait();
++    outb(PIC2_DATA, ICW4_8086);             io_wait();
++
++    /* Mask everything; drivers unmask their own line. */
++    outb(PIC1_DATA, 0xFF);
++    outb(PIC2_DATA, 0xFF);
++}
++
++void irq32_install(int irq, irq32_handler_t handler)
++{
++    if (irq >= 0 && irq < NUM_IRQS)
++        irq_handlers[irq] = handler;
++}
++
++void irq32_unmask(int irq)
++{
++    if (irq < 0 || irq >= NUM_IRQS)
++        return;
++    if (irq < 8) {
++        outb(PIC1_DATA, inb(PIC1_DATA) & (uint8_t)~(1 << irq));
++    } else {
++        outb(PIC2_DATA, inb(PIC2_DATA) & (uint8_t)~(1 << (irq - 8)));
++        /* cascade line must be open for any slave IRQ */
++        outb(PIC1_DATA, inb(PIC1_DATA) & (uint8_t)~(1 << 2));
++    }
++}
++
++void irq32_dispatch(struct registers32 *regs)
++{
++    int irq = (int)regs->vector - PIC_OFFSET;
++
++    if (irq >= 0 && irq < NUM_IRQS && irq_handlers[irq])
++        irq_handlers[irq](regs);
++
++    /* EOI: slave first when the line came through it. */
++    if (irq >= 8)
++        outb(PIC2_CMD, PIC_EOI);
++    outb(PIC1_CMD, PIC_EOI);
++}
++
++/* ---- PIT ------------------------------------------------------------- */
++
++#define PIT_BASE_HZ              1193182u
++#define PIT_CMD_CHAN0_LOHI_MODE3 0x36
++
++static volatile uint32_t timer_ticks;
++
++static void pit32_irq(struct registers32 *regs)
++{
++    (void)regs;
++    timer_ticks++;
++}
++
++uint32_t pit32_ticks(void)
++{
++    return timer_ticks;
++}
++
++void pit32_init(uint32_t freq_hz)
++{
++    uint32_t divisor = PIT_BASE_HZ / freq_hz;
++
++    outb(0x43, PIT_CMD_CHAN0_LOHI_MODE3);
++    outb(0x40, (uint8_t)(divisor & 0xFF));
++    outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
++
++    irq32_install(0, pit32_irq);
++    irq32_unmask(0);
++
++    kprintf32("[timer] PIT programmed: %u Hz (divisor %u)\n",
++              freq_hz, divisor);
++}
+diff --git a/kernel/arch/i386/irq32.h b/kernel/arch/i386/irq32.h
+new file mode 100644
+index 0000000..fbd7adf
+--- /dev/null
++++ b/kernel/arch/i386/irq32.h
+@@ -0,0 +1,28 @@
++/* kernel/arch/i386/irq32.h -- 8259A PIC + IRQ dispatch (I386_PLAN I2). */
++
++#ifndef AURALITE_ARCH_I386_IRQ32_H
++#define AURALITE_ARCH_I386_IRQ32_H
++
++#include <stdint.h>
++#include "kernel/arch/i386/isr.h"
++
++#define PIC1_CMD   0x20
++#define PIC1_DATA  0x21
++#define PIC2_CMD   0xA0
++#define PIC2_DATA  0xA1
++#define PIC_OFFSET 32
++#define PIC_EOI    0x20
++
++typedef void (*irq32_handler_t)(struct registers32 *regs);
++
++void pic32_init(void);
++void irq32_install(int irq, irq32_handler_t handler);
++void irq32_unmask(int irq);
++void irq32_dispatch(struct registers32 *regs);
++
++/* PIT (8254) channel 0 at the given frequency; the handler bumps a
++ * monotonic tick counter read by pit32_ticks(). */
++void pit32_init(uint32_t freq_hz);
++uint32_t pit32_ticks(void);
++
++#endif /* AURALITE_ARCH_I386_IRQ32_H */
+diff --git a/kernel/arch/i386/isr.h b/kernel/arch/i386/isr.h
+new file mode 100644
+index 0000000..fe7123d
+--- /dev/null
++++ b/kernel/arch/i386/isr.h
+@@ -0,0 +1,27 @@
++/* kernel/arch/i386/isr.h -- exception/interrupt frame + dispatcher
++ * (I386_PLAN I2). */
++
++#ifndef AURALITE_ARCH_I386_ISR_H
++#define AURALITE_ARCH_I386_ISR_H
++
++#include <stdint.h>
++
++/* Matches the push order in isr_stubs32.asm exactly (bottom = last push).
++ * useresp/ss exist only when the interrupt arrived from Ring 3; the
++ * dispatcher checks cs & 3 before touching them. */
++struct registers32 {
++    uint32_t ds;
++    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;  /* pusha */
++    uint32_t vector, error_code;
++    uint32_t eip, cs, eflags;
++    uint32_t useresp, ss;
++} __attribute__((packed));
++
++/* NOTE: pusha pushes in the order eax,ecx,edx,ebx,esp,ebp,esi,edi (so edi
++ * ends up lowest); the struct above lists them ascending from the frame
++ * pointer.  isr_stubs32.asm pushes DS after pusha, so ds sits below the
++ * pusha block. */
++
++void isr_dispatch32(struct registers32 *regs);
++
++#endif /* AURALITE_ARCH_I386_ISR_H */
+diff --git a/kernel/arch/i386/isr32.c b/kernel/arch/i386/isr32.c
+new file mode 100644
+index 0000000..3c5d892
+--- /dev/null
++++ b/kernel/arch/i386/isr32.c
+@@ -0,0 +1,86 @@
++/* kernel/arch/i386/isr32.c -- exception/IRQ dispatcher for the i386
++ * kernel (I386_PLAN I2).  Sibling of kernel/arch/x86_64/isr.c, at
++ * bring-up scope: named exception diagnostics in the FIX_R0 format
++ * (register dump + CPU number), IRQ fan-out to registered handlers,
++ * and a halt on unhandled kernel faults.  Ring 3 signal translation
++ * arrives with Ring 3 itself in I4.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/isr.h"
++#include "kernel/arch/i386/irq32.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++/* Intel SDM Vol.3, 6-15: mnemonic for each CPU exception vector.
++ * Same table as the x86_64 dispatcher -- the vectors did not change
++ * between widths, only the frame around them did. */
++static const char *exception_messages[32] = {
++    "Division by Zero",            "Debug",
++    "Non-Maskable Interrupt",      "Breakpoint",
++    "Overflow",                    "Bound Range Exceeded",
++    "Invalid Opcode",              "Device Not Available",
++    "Double Fault",                "Coprocessor Segment Overrun",
++    "Invalid TSS",                 "Segment Not Present",
++    "Stack-Segment Fault",         "General Protection Fault",
++    "Page Fault",                  "Reserved",
++    "x87 Floating-Point Exception","Alignment Check",
++    "Machine Check",               "SIMD Floating-Point Exception",
++    "Virtualization Exception",    "Control Protection Exception",
++    "Unknown", "Unknown", "Unknown", "Unknown",
++    "Unknown", "Unknown", "Unknown", "Unknown",
++    "Unknown", "Unknown"
++};
++
++/* Optional hook: I2's boot self-test arms this to prove a deliberate
++ * fault produces a named diagnostic and execution continues. */
++static volatile int expect_breakpoint = 0;
++static volatile int breakpoint_seen   = 0;
++
++void isr32_expect_breakpoint(void) { expect_breakpoint = 1; }
++int  isr32_breakpoint_seen(void)   { return breakpoint_seen; }
++
++static void dump_frame(const struct registers32 *r)
++{
++    /* FIX_R0 discipline: name the CPU in every diagnostic.  BSP-only on
++     * i386 (I386_PLAN D5), so the number is 0 -- printed anyway so the
++     * log format matches the x86_64 one and the R2-style "which core?"
++     * question can never come back. */
++    kprintf32("  cpu=0  vector=%u (%s)  err=%x\n",
++              r->vector,
++              r->vector < 32 ? exception_messages[r->vector] : "IRQ/soft",
++              r->error_code);
++    kprintf32("  eip=%x cs=%x eflags=%x\n", r->eip, r->cs, r->eflags);
++    kprintf32("  eax=%x ebx=%x ecx=%x edx=%x\n", r->eax, r->ebx, r->ecx, r->edx);
++    kprintf32("  esi=%x edi=%x ebp=%x ds=%x\n", r->esi, r->edi, r->ebp, r->ds);
++    if (r->vector == 14) {
++        uint32_t cr2;
++        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
++        kprintf32("  cr2=%x (faulting linear address)\n", cr2);
++    }
++}
++
++void isr_dispatch32(struct registers32 *regs)
++{
++    /* Hardware IRQs land on vectors 32..47 (PIC remap, irq32.c). */
++    if (regs->vector >= 32 && regs->vector <= 47) {
++        irq32_dispatch(regs);
++        return;
++    }
++
++    if (regs->vector == 3 && expect_breakpoint) {
++        /* The boot self-test's deliberate int3: report and resume. */
++        expect_breakpoint = 0;
++        breakpoint_seen   = 1;
++        kprintf32("[diag] deliberate #BP self-test:\n");
++        dump_frame(regs);
++        return;
++    }
++
++    kprintf32("\n[diag] UNHANDLED EXCEPTION\n");
++    dump_frame(regs);
++    kprintf32("[diag] kernel halted.\n");
++    for (;;)
++        __asm__ volatile("cli; hlt");
++}
+diff --git a/kernel/arch/i386/isr_stubs32.asm b/kernel/arch/i386/isr_stubs32.asm
+new file mode 100644
+index 0000000..27c9267
+--- /dev/null
++++ b/kernel/arch/i386/isr_stubs32.asm
+@@ -0,0 +1,85 @@
++; =============================================================================
++; kernel/arch/i386/isr_stubs32.asm -- 256 interrupt entry stubs + dispatch
++; trampoline (I386_PLAN I2).  Sibling of kernel/arch/x86_64/isr_stubs.asm.
++;
++; The CPU pushes an error code for vectors 8, 10-14, 17, 21 and nothing
++; for the rest; the stubs normalise that by pushing a zero for the
++; latter group, then push the vector number, save the register file,
++; and call the C dispatcher with a pointer to the frame (cdecl: one
++; stack argument, vs the x86_64 RDI convention).
++;
++; Frame layout handed to C (struct registers32 in isr.h, top down):
++;   [pusha: edi esi ebp esp_dummy ebx edx ecx eax]
++;   [ds]
++;   [vector] [error_code]
++;   [eip cs eflags]  (+ useresp ss when arriving from Ring 3)
++; =============================================================================
++
++bits 32
++
++section .text
++extern isr_dispatch32
++
++; ---- common trampoline ------------------------------------------------------
++isr_common:
++    pusha                       ; edi..eax (8 dwords)
++
++    xor  eax, eax
++    mov  ax, ds
++    push eax                    ; saved DS
++
++    mov  ax, 0x10               ; kernel data
++    mov  ds, ax
++    mov  es, ax
++    mov  fs, ax
++    mov  gs, ax
++
++    push esp                    ; cdecl arg: pointer to the frame
++    call isr_dispatch32
++    add  esp, 4
++
++    pop  eax                    ; restore DS
++    mov  ds, ax
++    mov  es, ax
++    mov  fs, ax
++    mov  gs, ax
++
++    popa
++    add  esp, 8                 ; drop vector + error code
++    iret
++
++; ---- stub generators --------------------------------------------------------
++%macro ISR_NOERR 1
++isr_stub_%1:
++    push dword 0                ; fake error code
++    push dword %1               ; vector
++    jmp  isr_common
++%endmacro
++
++%macro ISR_ERR 1
++isr_stub_%1:
++    ; CPU already pushed the error code
++    push dword %1
++    jmp  isr_common
++%endmacro
++
++; Vectors with a CPU-pushed error code: 8, 10-14, 17, 21 (SDM Vol.3 6-2).
++%assign v 0
++%rep 256
++  %if (v == 8) || ((v >= 10) && (v <= 14)) || (v == 17) || (v == 21)
++    ISR_ERR v
++  %else
++    ISR_NOERR v
++  %endif
++%assign v v+1
++%endrep
++
++; ---- the dispatch table consumed by idt.c -----------------------------------
++section .rodata
++global isr_table32
++isr_table32:
++%assign v 0
++%rep 256
++    dd isr_stub_%+v
++%assign v v+1
++%endrep
+diff --git a/kernel/arch/i386/stub/kernel32.ld b/kernel/arch/i386/kernel32.ld
+similarity index 100%
+rename from kernel/arch/i386/stub/kernel32.ld
+rename to kernel/arch/i386/kernel32.ld
+diff --git a/kernel/arch/i386/kprintf32.c b/kernel/arch/i386/kprintf32.c
+new file mode 100644
+index 0000000..d5ca083
+--- /dev/null
++++ b/kernel/arch/i386/kprintf32.c
+@@ -0,0 +1,108 @@
++/* kernel/arch/i386/kprintf32.c -- COM1 + minimal printf for the i386
++ * bring-up (I386_PLAN I2).  See kprintf32.h for why this is not the
++ * shared kernel/lib/kprintf.c yet.
++ */
++
++#include <stdarg.h>
++#include <stdint.h>
++
++#include "kernel/arch/i386/portio.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++#define COM1 0x3F8
++
++void uart32_init(void)
++{
++    outb(COM1 + 1, 0x00);
++    outb(COM1 + 3, 0x80);
++    outb(COM1 + 0, 0x01);   /* 115200 baud */
++    outb(COM1 + 1, 0x00);
++    outb(COM1 + 3, 0x03);   /* 8n1 */
++    outb(COM1 + 2, 0xC7);
++    outb(COM1 + 4, 0x0B);
++}
++
++void kputc32(char c)
++{
++    if (c == '\n')
++        kputc32('\r');
++    while (!(inb(COM1 + 5) & 0x20)) { }
++    outb(COM1 + 0, (uint8_t)c);
++}
++
++void kputs32(const char *s)
++{
++    while (*s)
++        kputc32(*s++);
++}
++
++static void put_udec(uint32_t v)
++{
++    char buf[10];
++    int i = 0;
++    do {
++        buf[i++] = (char)('0' + v % 10);
++        v /= 10;
++    } while (v);
++    while (i--)
++        kputc32(buf[i]);
++}
++
++static void put_hex(uint32_t v)
++{
++    static const char hex[] = "0123456789abcdef";
++    for (int shift = 28; shift >= 0; shift -= 4)
++        kputc32(hex[(v >> shift) & 0xF]);
++}
++
++void kprintf32(const char *fmt, ...)
++{
++    va_list ap;
++    va_start(ap, fmt);
++
++    for (; *fmt; fmt++) {
++        if (*fmt != '%') {
++            kputc32(*fmt);
++            continue;
++        }
++        fmt++;
++        switch (*fmt) {
++        case 's': {
++            const char *s = va_arg(ap, const char *);
++            kputs32(s ? s : "(null)");
++            break;
++        }
++        case 'c':
++            kputc32((char)va_arg(ap, int));
++            break;
++        case 'd': {
++            int32_t v = va_arg(ap, int32_t);
++            if (v < 0) {
++                kputc32('-');
++                v = -v;
++            }
++            put_udec((uint32_t)v);
++            break;
++        }
++        case 'u':
++            put_udec(va_arg(ap, uint32_t));
++            break;
++        case 'x':
++            put_hex(va_arg(ap, uint32_t));
++            break;
++        case 'p':
++            kputs32("0x");
++            put_hex((uint32_t)va_arg(ap, void *));
++            break;
++        case '%':
++            kputc32('%');
++            break;
++        default:
++            kputc32('%');
++            kputc32(*fmt);
++            break;
++        }
++    }
++
++    va_end(ap);
++}
+diff --git a/kernel/arch/i386/kprintf32.h b/kernel/arch/i386/kprintf32.h
+new file mode 100644
+index 0000000..5f2ec54
+--- /dev/null
++++ b/kernel/arch/i386/kprintf32.h
+@@ -0,0 +1,20 @@
++/* kernel/arch/i386/kprintf32.h -- minimal kernel console for the i386
++ * bring-up (I386_PLAN I2).
++ *
++ * Deliberately NOT kernel/lib/kprintf.c: that fans out to the
++ * framebuffer console and klog ring, which arrive on i386 in I7.  This
++ * is the smallest formatted-output core that lets I2/I3 print their
++ * self-test verdicts on COM1; it dies when the shared kprintf becomes
++ * width-clean in I6 and the i386 kernel adopts it.  Format subset:
++ * %s %c %d %u %x %p %%, and that is all the bring-up code uses.
++ */
++
++#ifndef AURALITE_ARCH_I386_KPRINTF32_H
++#define AURALITE_ARCH_I386_KPRINTF32_H
++
++void uart32_init(void);
++void kputc32(char c);
++void kputs32(const char *s);
++void kprintf32(const char *fmt, ...);
++
++#endif /* AURALITE_ARCH_I386_KPRINTF32_H */
+diff --git a/kernel/arch/i386/main32.c b/kernel/arch/i386/main32.c
+new file mode 100644
+index 0000000..1ef3fd1
+--- /dev/null
++++ b/kernel/arch/i386/main32.c
+@@ -0,0 +1,152 @@
++/* kernel/arch/i386/main32.c -- i386 kernel entry (I386_PLAN I2).
++ *
++ * This replaces the I1 stub.  Same door (Stage 2's pmode32 hand-off,
++ * boot_info_t phys in ESI), a real room behind it: GDT + TSS, a full
++ * 256-gate IDT, the remapped 8259A PIC, the PIT at 100 Hz, and boot
++ * self-tests that mirror the x86_64 kmain's contract -- every
++ * subsystem proves itself in the log, or says why not.
++ *
++ * The init order matches kernel/kernel.c as far as this phase reaches:
++ *   uart -> banner -> boot_info check -> gdt -> idt -> pic -> sti ->
++ *   pit -> self-tests -> idle hlt loop.
++ * Memory (I3) slots between sti and the self-tests when it lands, the
++ * same place pmm_init occupies in the 64-bit order.
++ *
++ * Still compiled -malign-double: this file reads boot_info_t, and the
++ * I1 canary (mmap_count) keeps watching the cross-width layout.
++ */
++
++#include <stdint.h>
++
++#include "boot/shared/boot_info.h"
++#include "kernel/arch/i386/gdt.h"
++#include "kernel/arch/i386/idt.h"
++#include "kernel/arch/i386/irq32.h"
++#include "kernel/arch/i386/isr.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++/* isr32.c's deliberate-fault hooks. */
++void isr32_expect_breakpoint(void);
++int  isr32_breakpoint_seen(void);
++
++static const boot_info_t *boot_info;
++
++/* ---- boot_info -------------------------------------------------------- */
++
++static int boot_info_check(uint32_t phys)
++{
++    /* Paging is off (until I3): a physical address is a pointer. */
++    boot_info = (const boot_info_t *)phys;
++
++    if (boot_info->magic != BOOT_MAGIC) {
++        kprintf32("[boot]  boot_info magic BAD (hi=%x lo=%x); halting\n",
++                  (uint32_t)(boot_info->magic >> 32),
++                  (uint32_t)boot_info->magic);
++        return -1;
++    }
++
++    kprintf32("[boot]  handoff magic OK, path=%s, boot_info at %x\n",
++              boot_info->boot_from_uefi ? "UEFI" : "BIOS", phys);
++    return 0;
++}
++
++static void memmap_report(void)
++{
++    uint32_t usable_kib = 0;
++
++    for (uint32_t i = 0; i < boot_info->mmap_count; i++) {
++        const boot_mmap_entry_t *e = &boot_info->mmap[i];
++        if (e->type == BOOT_MEM_USABLE) {
++            /* 32-bit kernel: clamp accounting to the 4 GiB horizon.
++             * The plan's D3 caps supported RAM at 512 MiB anyway. */
++            uint64_t end = e->base + e->length;
++            if (e->base >= 0x100000000ULL)
++                continue;
++            if (end > 0x100000000ULL)
++                end = 0x100000000ULL;
++            usable_kib += (uint32_t)((end - e->base) / 1024);
++        }
++    }
++
++    kprintf32("[mm]    E820 entries: %u, usable below 4 GiB: %u KiB (%u MiB)\n",
++              boot_info->mmap_count, usable_kib, usable_kib / 1024);
++    kprintf32("[mm]    initrd: %x bytes at phys %x\n",
++              (uint32_t)boot_info->initrd_size,
++              (uint32_t)boot_info->initrd_phys);
++}
++
++/* ---- boot self-tests --------------------------------------------------- */
++
++static int selftest_breakpoint(void)
++{
++    /* A deliberate #BP must produce a named diagnostic and then resume
++     * execution here.  Before I2 this vector was a triple fault. */
++    isr32_expect_breakpoint();
++    __asm__ volatile("int3");
++    return isr32_breakpoint_seen() ? 0 : -1;
++}
++
++static int selftest_pit(void)
++{
++    /* The PIT must actually tick with interrupts enabled.  ~50 ms at
++     * 100 Hz is 5 ticks; wait for 3 to keep the gate fast and immune
++     * to TCG jitter, and bound the wait so a dead PIT reports instead
++     * of hanging the boot. */
++    uint32_t start = pit32_ticks();
++    for (volatile uint32_t spin = 0; spin < 50000000u; spin++) {
++        if (pit32_ticks() - start >= 3)
++            return 0;
++        __asm__ volatile("pause");
++    }
++    return -1;
++}
++
++/* ---- entry ------------------------------------------------------------- */
++
++void kmain32(uint32_t boot_info_phys)
++{
++    uart32_init();
++    kprintf32("\n[boot] UART (COM1) initialised @ 115200 baud\n");
++
++    kputs32("\n==============================================\n"
++            " Hello from AuraLite OS kernel (i386)!\n"
++            "  x86 protected mode, booted via BIOS\n"
++            "==============================================\n\n");
++    kprintf32("[kernel] AuraLite OS i386, I386_PLAN phase I2\n");
++
++    if (boot_info_check(boot_info_phys) != 0)
++        goto halt;
++    memmap_report();
++
++    gdt_init();
++    kprintf32("[boot] GDT loaded (kernel + user segments + 32-bit TSS)\n");
++
++    idt_init();
++    kprintf32("[boot] IDT installed: 256 gates\n");
++
++    pic32_init();
++    kprintf32("[boot] PIC remapped (IRQs -> vectors 32-47), all masked\n");
++
++    __asm__ volatile("sti");
++    kprintf32("[kernel] interrupts enabled, exception handling online.\n");
++
++    pit32_init(100);
++
++    /* -- self-tests: same contract as the 64-bit kmain, PASS or say why. */
++    if (selftest_breakpoint() == 0)
++        kprintf32("[isr] PASS: deliberate #BP named, dumped, resumed\n");
++    else
++        kprintf32("[isr] FAIL: #BP self-test did not round-trip\n");
++
++    if (selftest_pit() == 0)
++        kprintf32("[timer] PASS: PIT ticking (%u ticks observed)\n",
++                  pit32_ticks());
++    else
++        kprintf32("[timer] FAIL: no PIT ticks; check PIC mask/EOI path\n");
++
++    kprintf32("[kernel] I2 bring-up complete; idle (I3 adds paging/pmm/heap)\n");
++
++halt:
++    for (;;)
++        __asm__ volatile("hlt");
++}
+diff --git a/kernel/arch/i386/portio.h b/kernel/arch/i386/portio.h
+new file mode 100644
+index 0000000..f7dc716
+--- /dev/null
++++ b/kernel/arch/i386/portio.h
+@@ -0,0 +1,33 @@
++/* kernel/arch/i386/portio.h -- port I/O for the i386 kernel (I386_PLAN I2).
++ *
++ * Sibling of kernel/arch/x86_64/portio.h.  The instructions are identical
++ * at both widths; this copy exists so the i386 tree never includes an
++ * x86_64 header by accident (the include path IS the arch boundary until
++ * the arch.h forwarding header adoption finishes in I6).
++ */
++
++#ifndef AURALITE_ARCH_I386_PORTIO_H
++#define AURALITE_ARCH_I386_PORTIO_H
++
++#include <stdint.h>
++
++static inline void outb(uint16_t port, uint8_t val)
++{
++    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
++}
++
++static inline uint8_t inb(uint16_t port)
++{
++    uint8_t v;
++    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
++    return v;
++}
++
++static inline void io_wait(void)
++{
++    /* Port 0x80 is the POST diagnostic port; a write burns ~1 us and has
++     * no side effect.  Same trick irq.c uses on x86_64. */
++    outb(0x80, 0);
++}
++
++#endif /* AURALITE_ARCH_I386_PORTIO_H */
+diff --git a/kernel/arch/i386/stub/boot32.asm b/kernel/arch/i386/stub/boot32.asm
+deleted file mode 100644
+index 456534b..0000000
+--- a/kernel/arch/i386/stub/boot32.asm
++++ /dev/null
+@@ -1,61 +0,0 @@
+-; =============================================================================
+-; kernel/arch/i386/stub/boot32.asm -- i386 kernel entry point (I386_PLAN I1).
+-;
+-; Sibling of kernel/arch/x86_64/boot.asm, one width down.  Stage 2's
+-; enter_prot32 (boot/bios/stage2/pmode32.inc) jumps here in 32-bit
+-; protected mode, paging OFF, with:
+-;   * ESI = physical address of boot_info_t
+-;   * flat CS/DS/ES/FS/GS/SS (base 0, limit 4 GiB)
+-;   * a scratch ESP we do not trust
+-;
+-; Responsibilities, in order:
+-;   1. cli -- no IDT exists yet.
+-;   2. Zero .bss (the loader copied p_filesz and zero-filled to p_memsz,
+-;      but the stub does it again for the same reason boot.asm does:
+-;      the entry code must not depend on which loader ran).
+-;   3. ESP := stack_top (16 KiB in .bss -- the stub needs no more; the
+-;      real i386 kernel in I2 grows this to the 64 KiB boot.asm uses).
+-;   4. Push ESI and call kmain32 (cdecl: one stack argument).
+-;   5. If kmain32 ever returns: hlt loop.
+-; =============================================================================
+-
+-bits 32
+-
+-STACK_SIZE equ 16*1024
+-
+-section .bss
+-align 16
+-stack_bottom:
+-    resb STACK_SIZE
+-stack_top:
+-
+-section .text
+-global _start
+-extern kmain32
+-
+-_start:
+-    cli
+-
+-    ; Zero .bss.  __bss_start/__bss_end come from kernel32.ld, both
+-    ; 4-aligned by the script, so dword stores suffice.
+-    extern __bss_start
+-    extern __bss_end
+-    mov  edi, __bss_start
+-    mov  ecx, __bss_end
+-    sub  ecx, edi
+-    shr  ecx, 2
+-    xor  eax, eax
+-    rep  stosd
+-
+-    ; A real stack.  NOTE: the rep stosd above just zeroed it -- that is
+-    ; fine, nothing lives there yet.  ESI survived (rep stosd touches
+-    ; EDI/ECX/EAX only).
+-    mov  esp, stack_top
+-
+-    ; cdecl hand-off: kmain32(boot_info_phys).
+-    push esi
+-    call kmain32
+-
+-.hang:
+-    hlt
+-    jmp  .hang
+diff --git a/kernel/arch/i386/stub/main32.c b/kernel/arch/i386/stub/main32.c
+deleted file mode 100644
+index f9123da..0000000
+--- a/kernel/arch/i386/stub/main32.c
++++ /dev/null
+@@ -1,115 +0,0 @@
+-/* kernel/arch/i386/stub/main32.c -- i386 boot stub (I386_PLAN I1).
+- *
+- * This is deliberately NOT the ported kernel; it is the 32-bit sibling of
+- * BL3's "stage2 alive" banner, and it exists for the same reason that
+- * banner did: prove the *chain* before growing the *payload*.  Everything
+- * it validates -- ELF32 staging, the protected-mode entry, boot_info_t in
+- * ESI, the magic check, COM1 by raw port I/O -- is exactly the substrate
+- * the real i386 kernel (phase I2) stands on.
+- *
+- * It shares boot/shared/boot_info.h verbatim: the struct is all
+- * fixed-width fields, so the same header compiles to the same layout at
+- * both pointer widths.  That is not luck -- gen_boot_offsets.c would
+- * catch a drift -- but it is worth asserting at runtime once, which the
+- * magic check below does.
+- *
+- * Freestanding, no libc, no kernel headers beyond the shared hand-off
+- * contract.  Everything is static because nothing outside this file may
+- * link against a stub that will be deleted in phase I2.
+- */
+-
+-#include <stdint.h>
+-
+-#include "boot/shared/boot_info.h"
+-
+-/* ---- COM1 by raw port I/O (mirrors drivers/uart/uart.c, 32-bit asm) ---- */
+-
+-#define COM1 0x3F8
+-
+-static inline void outb(uint16_t port, uint8_t val)
+-{
+-    __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port));
+-}
+-
+-static inline uint8_t inb(uint16_t port)
+-{
+-    uint8_t v;
+-    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
+-    return v;
+-}
+-
+-static void uart_init(void)
+-{
+-    outb(COM1 + 1, 0x00);   /* disable interrupts             */
+-    outb(COM1 + 3, 0x80);   /* DLAB on                        */
+-    outb(COM1 + 0, 0x01);   /* divisor 1 -> 115200 baud       */
+-    outb(COM1 + 1, 0x00);
+-    outb(COM1 + 3, 0x03);   /* 8n1, DLAB off                  */
+-    outb(COM1 + 2, 0xC7);   /* FIFO on, clear, 14-byte trigger */
+-    outb(COM1 + 4, 0x0B);   /* DTR | RTS | OUT2               */
+-}
+-
+-static void uart_putc(char c)
+-{
+-    while (!(inb(COM1 + 5) & 0x20)) { /* THR empty */ }
+-    outb(COM1 + 0, (uint8_t)c);
+-}
+-
+-static void uart_puts(const char *s)
+-{
+-    while (*s) {
+-        if (*s == '\n')
+-            uart_putc('\r');
+-        uart_putc(*s++);
+-    }
+-}
+-
+-static void uart_puthex32(uint32_t v)
+-{
+-    static const char hex[] = "0123456789abcdef";
+-    uart_puts("0x");
+-    for (int shift = 28; shift >= 0; shift -= 4)
+-        uart_putc(hex[(v >> shift) & 0xF]);
+-}
+-
+-/* ---- Entry -------------------------------------------------------------- */
+-
+-void kmain32(uint32_t boot_info_phys)
+-{
+-    uart_init();
+-
+-    uart_puts("\n[kernel32] AuraLite i386 stub alive\n");
+-    uart_puts("[kernel32] protected mode, paging off, booted via BIOS\n");
+-
+-    /* Paging is off and the segments are flat, so a physical address IS a
+-     * usable pointer -- the one moment in the i386 bring-up where that
+-     * sentence is true, which is why the check lives here. */
+-    const boot_info_t *bi = (const boot_info_t *)boot_info_phys;
+-
+-    uart_puts("[kernel32] boot_info at ");
+-    uart_puthex32(boot_info_phys);
+-    uart_puts("\n");
+-
+-    if (bi->magic == BOOT_MAGIC) {
+-        uart_puts("[kernel32] boot_info handoff (ESI) magic OK\n");
+-        uart_puts("[kernel32] mmap entries: ");
+-        uart_puthex32(bi->mmap_count);
+-        uart_puts("\n");
+-        uart_puts("[kernel32] initrd size: ");
+-        uart_puthex32((uint32_t)bi->initrd_size);
+-        uart_puts(" bytes\n");
+-    } else {
+-        /* Print both halves: the low dword arriving as high (or vice
+-         * versa) would point at an offsets bug, not a corruption. */
+-        uart_puts("[kernel32] boot_info magic BAD: hi=");
+-        uart_puthex32((uint32_t)(bi->magic >> 32));
+-        uart_puts(" lo=");
+-        uart_puthex32((uint32_t)bi->magic);
+-        uart_puts("\n");
+-    }
+-
+-    uart_puts("[kernel32] I1 stub complete; halting (I2 grows this into kmain)\n");
+-
+-    for (;;)
+-        __asm__ volatile("hlt");
+-}
+diff --git a/tests/integration/i386_boot32_smoke.sh b/tests/integration/i386_boot32_smoke.sh
+index 4df2bc7..50dd95b 100755
+--- a/tests/integration/i386_boot32_smoke.sh
++++ b/tests/integration/i386_boot32_smoke.sh
+@@ -62,13 +62,18 @@ assert_no_grep() {
+ }
+ 
+ # ---- Case 1: the 32-bit CPU boots the 32-bit kernel. ----
++# NOTE (I2): the payload behind the chain evolved.  I1's assertions here
++# named the stub's banner and its "(ESI)" echo; I2 deleted the stub, so
++# this test now asserts the same *contract* through the I2 kernel's
++# lines: 32-bit code runs, boot_info arrived intact, the E820 map is
++# non-empty (the -malign-double ABI canary, as before).
+ run_qemu qemu-system-i386 "$ISO" "$LOG32"
+ assert_grep "$LOG32" "\[BL10\] taking the 32-bit path: KERNEL32.ELF"       "i386: Stage 2 branches to KERNEL32.ELF"
+ assert_grep "$LOG32" "\[BL10\] ELF32 PT_LOAD segments copied to phys"       "i386: ELF32 loader ran"
+ assert_grep "$LOG32" "\[BL10\] entering protected mode"                     "i386: protected-mode hand-off"
+-assert_grep "$LOG32" "\[kernel32\] AuraLite i386 stub alive"                "i386: stub banner"
+-assert_grep "$LOG32" "\[kernel32\] boot_info handoff (ESI) magic OK"        "i386: boot_info magic via ESI"
+-assert_no_grep "$LOG32" "mmap entries: 0x00000000"                          "i386: mmap count non-zero (ABI-alignment canary)"
++assert_grep "$LOG32" "Hello from AuraLite OS kernel (i386)!"                "i386: 32-bit kernel entered (was: stub banner)"
++assert_grep "$LOG32" "handoff magic OK"                                     "i386: boot_info magic via ESI"
++assert_grep "$LOG32" "E820 entries: [1-9]"                                  "i386: mmap count non-zero (ABI-alignment canary)"
+ assert_no_grep "$LOG32" "entering long mode"                                "i386: long mode never attempted"
+ 
+ # ---- Case 2: the same bytes still boot the 64-bit kernel. ----
+@@ -84,7 +89,7 @@ cp "$ISO" "$ISONK"
+ if mdel -i "$ISONK@@$((256 * 512))" ::/KERNEL32.ELF 2>/dev/null; then
+     run_qemu qemu-system-i386 "$ISONK" "$LOGNK"
+     assert_grep "$LOGNK" "\[BL10\] no KERNEL32.ELF on the boot partition"   "no-k32: honest refusal printed"
+-    assert_no_grep "$LOGNK" "\[kernel32\] AuraLite i386 stub alive"         "no-k32: stub does not run"
++    assert_no_grep "$LOGNK" "Hello from AuraLite OS kernel (i386)!"         "no-k32: 32-bit kernel does not run"
+     assert_no_grep "$LOGNK" "entering long mode"                            "no-k32: long mode never attempted"
+ else
+     echo "  [i386-boot32] SKIP negative control (mdel could not open the partition)"
+diff --git a/tests/integration/i386_cpu_smoke.sh b/tests/integration/i386_cpu_smoke.sh
+new file mode 100755
+index 0000000..4ec2d8d
+--- /dev/null
++++ b/tests/integration/i386_cpu_smoke.sh
+@@ -0,0 +1,91 @@
++#!/usr/bin/env bash
++# tests/integration/i386_cpu_smoke.sh -- I386_PLAN phase I2 smoke test.
++#
++# I1 proved the chain with a stub; I2 replaced the stub with the real
++# bring-up kernel.  This test asserts the whole I2 contract on the real
++# `make iso` image under qemu-system-i386:
++#
++#   * the I1 stub is gone (its banner must NOT appear);
++#   * GDT + 32-bit TSS, 256-gate IDT, PIC remap all report;
++#   * interrupts are enabled and the PIT self-test observes real ticks
++#     (this exercises gate wiring, PIC unmask and EOI end to end);
++#   * a deliberate int3 produces a NAMED diagnostic with a register
++#     dump and a cpu number (the FIX_R0 discipline), and execution
++#     RESUMES -- the "[isr] PASS" line prints after the dump;
++#   * the boot reaches the I2 idle line -- nothing triple-faulted.
++#
++# Plus the standing regression gate: the same bytes on qemu-system-x86_64
++# still boot the 64-bit kernel with no 32-bit artefacts in the log.
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ISO="$BUILD/auralite.iso"
++LOG32="$BUILD/i386_cpu.log"
++LOG64="$BUILD/i386_cpu_x64.log"
++
++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
++
++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
++    echo "[i386-cpu] SKIP: qemu-system-i386 not installed" >&2
++    exit 0
++fi
++
++fail=0
++run_qemu() {
++    local bin="$1" log="$2"
++    rm -f "$log"
++    timeout 25 "$bin" \
++        -drive format=raw,file="$ISO",if=ide,snapshot=on \
++        -m 512M \
++        -display none -serial file:"$log" -no-reboot \
++        >/dev/null 2>&1 || true
++}
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-cpu] OK   %s\n' "$desc"
++    else
++        printf '  [i386-cpu] FAIL %s\n' "$desc"
++        fail=1
++    fi
++}
++
++assert_no_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-cpu] FAIL %s\n' "$desc"
++        fail=1
++    else
++        printf '  [i386-cpu] OK   %s\n' "$desc"
++    fi
++}
++
++# ---- the i386 bring-up ----
++run_qemu qemu-system-i386 "$LOG32"
++assert_grep    "$LOG32" "Hello from AuraLite OS kernel (i386)!"        "i386: kernel banner"
++assert_no_grep "$LOG32" "i386 stub alive"                              "i386: the I1 stub is gone"
++assert_grep    "$LOG32" "handoff magic OK"                             "i386: boot_info accepted"
++assert_grep    "$LOG32" "GDT loaded (kernel + user segments + 32-bit TSS)" "i386: GDT + TSS"
++assert_grep    "$LOG32" "IDT installed: 256 gates"                     "i386: IDT"
++assert_grep    "$LOG32" "PIC remapped (IRQs -> vectors 32-47)"         "i386: PIC remap"
++assert_grep    "$LOG32" "interrupts enabled, exception handling online" "i386: sti reached"
++assert_grep    "$LOG32" "deliberate #BP self-test"                     "i386: int3 fired"
++assert_grep    "$LOG32" "vector=3 (Breakpoint)"                        "i386: exception NAMED"
++assert_grep    "$LOG32" "cpu=0"                                        "i386: diagnostic names the CPU (R0 discipline)"
++assert_grep    "$LOG32" "\[isr\] PASS: deliberate #BP named, dumped, resumed" "i386: execution resumed after the fault"
++assert_grep    "$LOG32" "\[timer\] PASS: PIT ticking"                  "i386: PIT ticks observed (gate+PIC+EOI path)"
++assert_grep    "$LOG32" "I2 bring-up complete"                         "i386: reached idle -- no triple fault"
++assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected faults"
++
++# ---- the standing x86_64 regression gate ----
++run_qemu qemu-system-x86_64 "$LOG64"
++assert_grep    "$LOG64" "Hello from AuraLite OS kernel!"               "x86_64: kernel banner unchanged"
++assert_no_grep "$LOG64" "(i386)"                                       "x86_64: no 32-bit artefacts in the log"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[i386-cpu] FAILED"
++    exit 1
++fi
++echo "[i386-cpu] all assertions passed"
+-- 
+2.47.3
+

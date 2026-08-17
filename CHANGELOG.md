@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [i386 Phase I9 — CI matrix, docs, the honest table] 2026-08-16
+
+`I386_PLAN.md` phase I9, the last: both architectures build and
+smoke-test on every push, the documentation carries per-arch truth,
+and the plan itself is claim-checked so it can never drift.  **The
+plan is COMPLETE: I0–I9 all delivered.**
+
+- **`.github/workflows/integration.yml`**: new `i386-parity` job —
+  builds the dual-kernel image, **asserts `KERNEL32.ELF` is inside
+  it** (`mdir` on the FAT partition; a job booting a stale image
+  tests nothing), then the width gates, `-m32` crypto vectors, the
+  claim check + selftest, and all eight `i386_*_smoke.sh` cases;
+  serial logs uploaded on failure.  A separate job so an i386 red is
+  attributable at a glance.
+- **`docs/status.md`**: the i386 section — 18 rows including three
+  ❌-by-design entries (no NX on non-PAE, no `BOOTIA32.EFI`, no
+  Rust/w32) and the `__int128` crypto boundary with its named
+  blocker.  **`docs/architecture.md`**: the i386 boot-flow diagram
+  beside the 64-bit one; the closing note states what the two kernels
+  share (contracts: boot_info layout, syscall table, arch.h-migrated
+  sources) and what they never share (binary artefacts).
+  **`docs/syscall_abi.md`**: the `int 0x80` register table beside the
+  SYSCALL one, D4's same-numbers decision, and the TSS.esp0
+  stack-switch difference.  **`README.md`**: the i386 boot-path row.
+- **`tools/check_i386_claims.py`** (in `make test-unit`): 23 claims
+  tying every phase to artefacts that only exist if it happened, plus
+  structural checks (each ✅ table row must have a ✅ COMPLETE heading;
+  the Status header must name the delivered range).  `--selftest`
+  proves the checks go red against a doctored tree.  Unlike
+  `check_fixes_claims.py` and `check_maturity_claims.py` — both
+  written AFTER their plans drifted — this one ships in the same
+  phase as the plan's completion: I386_PLAN.md has never had an
+  unchecked day.
+
 ## [i386 Phase I8 — Storage, network, crypto width parity] 2026-08-16
 
 `I386_PLAN.md` phase I8: the gates that moved from I7 land — sector

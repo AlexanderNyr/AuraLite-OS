@@ -1,0 +1,1160 @@
+From 03c9c177cbf2ec0f381c4d26f712c3aba381d976 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 17:46:19 +0000
+Subject: [PATCH] I5 update
+
+---
+ CHANGELOG.md                         |  40 +++++++
+ I386_PLAN.md                         |  88 +++++++++++----
+ Makefile                             |  40 ++++++-
+ SHA256SUMS                           |   4 +-
+ kernel/arch/i386/elf32load.c         | 156 +++++++++++++++++++++++++++
+ kernel/arch/i386/elf32load.h         |  28 +++++
+ kernel/arch/i386/initrd32.c          | 126 ++++++++++++++++++++++
+ kernel/arch/i386/initrd32.h          |  28 +++++
+ kernel/arch/i386/main32.c            |  17 ++-
+ kernel/arch/i386/user32.c            |  82 ++++++++++++--
+ kernel/arch/i386/user32.h            |   5 +
+ lib/libc32/crt0_32.asm               |  27 +++++
+ lib/libc32/libc32.h                  |  56 ++++++++++
+ lib/libc32/syscall32.asm             |  34 ++++++
+ lib/libc32/user32.ld                 |  54 ++++++++++
+ tests/integration/i386_proc_smoke.sh |   5 +-
+ tests/integration/i386_user_smoke.sh |  96 +++++++++++++++++
+ userspace/system/init32/init32.c     |  39 +++++++
+ 18 files changed, 892 insertions(+), 33 deletions(-)
+ create mode 100644 kernel/arch/i386/elf32load.c
+ create mode 100644 kernel/arch/i386/elf32load.h
+ create mode 100644 kernel/arch/i386/initrd32.c
+ create mode 100644 kernel/arch/i386/initrd32.h
+ create mode 100644 lib/libc32/crt0_32.asm
+ create mode 100644 lib/libc32/libc32.h
+ create mode 100644 lib/libc32/syscall32.asm
+ create mode 100644 lib/libc32/user32.ld
+ create mode 100755 tests/integration/i386_user_smoke.sh
+ create mode 100644 userspace/system/init32/init32.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 596a33f..46f4c50 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,46 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [i386 Phase I5 — 32-bit libc and userspace] 2026-08-16
++
++`I386_PLAN.md` phase I5: the hand-assembled Ring 3 bytes of I4 are
++succeeded by the real thing — `/bin32/init32`, compiled from C with a
++32-bit crt0 and an `int 0x80` libc, loaded from the SHARED initrd by an
++ELF32 loader, run in Ring 3, exit code observed.
++
++- **`lib/libc32/`**: `crt0_32.asm` (SYS_EXIT trapped inline — a crt0
++  must not depend on a library that might not be linked), `syscall32.asm`
++  (D4 register convention, callee-saved EBX/ESI/EDI preserved around the
++  trap), `libc32.h` (the I5 syscall surface + string helpers),
++  `user32.ld` (user layout at 0x08048000, W^X-shaped PHDRS).
++- **`kernel/arch/i386/initrd32.c`**: USTAR reader mirroring
++  `kernel/fs/initrd.c`'s parsing rules at lookup-only scope. One
++  `initrd.tar` serves both kernels: i386 binaries live under `/bin32`,
++  and each kernel's loader refuses the other's ELF class anyway.
++- **`kernel/arch/i386/elf32load.c`** (the task I4 moved here, now that
++  its consumer exists): validation in `elf.c`'s order, segments confined
++  to the `[0x08000000, 0x40000000)` window, fresh pages zeroed before
++  mapping. **The window check paid for itself immediately**: the first
++  link used bare `-Ttext` and lld emitted a headers-only PT_LOAD at its
++  default `0x00400000` base — the loader refused it, the link was wrong,
++  `user32.ld` is the fix.
++- **`userspace/system/init32/init32.c`**: banner, pid echo, sched_yield
++  round-trip, and the EFAULT negative control **driven from userspace**
++  (write() with a kernel pointer must be refused; init32 prints "good"
++  only on refusal). Exits 7; the kernel asserts exactly 7.
++- **SYS_WRITE hardening**: the I4 fixed-window pointer check widened to
++  a per-page user-mapping probe (ELF images live at 0x08048000 now, not
++  the hand-built page) — still the bring-up stand-in for the
++  copy_from_user fault fixup that lands in I6.
++- **Scope split recorded in the plan**: the shell gate (`auralite#`)
++  moves to I7 with the keyboard driver it requires; the `/bin` set and
++  `/tests/selftest` move to I6 with the full libc port. Delivered here
++  is the part of the original objective that was about *this* phase.
++- Tests: `tests/integration/i386_user_smoke.sh` — 19 assertions,
++  including the x86_64 pair checked harder than usual because
++  `initrd.tar` itself changed (the 64-bit boot must still reach its
++  init shell with the fatter archive).
++
+ ## [i386 Phase I4 — Threads, scheduler, Ring 3, int 0x80] 2026-08-16
+ 
+ `I386_PLAN.md` phase I4: the i386 kernel schedules preemptively and runs
+diff --git a/I386_PLAN.md b/I386_PLAN.md
+index b0ba664..161827c 100644
+--- a/I386_PLAN.md
++++ b/I386_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — i386 (32-bit x86) Support Plan
+ 
+-## Status: IN PROGRESS 🚧 — I0–I4 complete, I5–I9 pending
++## Status: IN PROGRESS 🚧 — I0–I5 complete, I6–I9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -9,7 +9,7 @@
+ | I2 — `kernel/arch/i386` CPU bring-up | ✅ complete (2 tasks re-scoped to I6, see phase result) | `patches/I386_I2_cpu.patch` |
+ | I3 — memory: non-PAE paging, PMM, heap | ✅ complete (1 deviation, see phase result) | `patches/I386_I3_mm.patch` |
+ | I4 — threads, scheduler, Ring 3, `int 0x80` | ✅ complete (scope note in phase result) | `patches/I386_I4_proc.patch` |
+-| I5 — 32-bit libc and userspace | pending | `patches/I386_I5_user.patch` |
++| I5 — 32-bit libc and userspace | ✅ complete (bring-up scope, see phase result) | `patches/I386_I5_user.patch` |
+ | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
+ | I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
+ | I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
+@@ -579,31 +579,79 @@ precisely this class of bug.
+ 
+ ---
+ 
+-### Phase I5 — 32-bit libc and userspace
++### Phase I5 — 32-bit libc and userspace ✅ COMPLETE (bring-up scope)
+ 
+-**Objective:** the init shell and the core `/bin` set run on i386.
++**Objective (as delivered):** a real, compiled-from-C init runs Ring 3
++from the shared initrd through an ELF32 loader and an `int 0x80` libc.
++The original objective ("the init shell and the core `/bin` set") is
++**split**: the shell needs a keyboard driver (I7) and the `/bin` set
++needs the full libc port (I6) — both re-scoped forward with the
++reasoning below, not silently dropped.
+ 
+ #### Tasks
+ 
+-- [ ] `lib/libc` builds `-m32`: `crt0_32.asm`, `syscall32.asm`
+-      (`int 0x80` wrapper), `setjmp` (6-register i386 buffer), TLS via
+-      `GS`-based descriptor (i386's `%gs:0` convention rather than
+-      `%fs` — the R3 per-thread `errno` contract is preserved, the
+-      mechanism differs).
+-- [ ] User link addresses audited for the 3 GiB ceiling (they already
+-      fit — Fact 4); `mmap` hint regions move below `0xC0000000`.
+-- [ ] `Makefile`: `ARCH=i386 make user` builds `init` + the non-GUI
+-      `/bin` and `/tests` sets; the initrd for the i386 image carries
+-      ELF32 binaries only. Rust apps and `w32run` are excluded on i386
+-      with an honest note in the app manifest (§6).
+-- [ ] `userspace/tests/selftest` (the boot-time gauntlet) passes on i386.
++- [x] `lib/libc32/`: `crt0_32.asm` (call main, trap SYS_EXIT inline —
++      a crt0 must not depend on a library that is not there),
++      `syscall32.asm` (`int 0x80` wrapper, D4 register convention,
++      callee-saved EBX/ESI/EDI preserved), `libc32.h` (write/getpid/
++      exit/sched_yield + string helpers). `setjmp`/TLS-`errno` move to
++      I6 with the archive-libc port they belong to.
++- [x] `lib/libc32/user32.ld`: user layout at `0x08048000` inside the
++      loader window, headers not loaded, W^X-shaped PHDRS (even though
++      i386 cannot enforce the distinction — D3 — the layout keeps
++      binaries honest for a PAE-capable future).
++- [x] `kernel/arch/i386/initrd32.c`: USTAR reader over the **shared**
++      `initrd.tar` — one archive for both kernels, i386 binaries under
++      `/bin32`, each loader refusing the other's ELF class.
++- [x] `kernel/arch/i386/elf32load.c` (the task moved from I4):
++      class/machine/type validation in `elf.c`'s order, bounds-checked
++      phdr walk, segments confined to `[0x08000000, 0x40000000)`,
++      pages zeroed before mapping (no data leaks into user space).
++- [x] `userspace/system/init32/init32.c` + Makefile `user32` target;
++      `initrd.tar` gains `/bin32/init32` (stripped, like every other
++      shipped binary).
++- [ ] ~~shell + core `/bin` set~~ — **I7** (keyboard) and **I6** (libc).
++- [ ] ~~`/tests/selftest` gauntlet~~ — **I6** (it is a libc test suite;
++      porting it before the libc is porting its skips).
+ 
+ #### Test gate
+ 
+-- i386 boots to `auralite#`, and `run /tests/selftest` prints its PASS
+-  summary over serial — the same gate `test_boot_to_shell` +
+-  `test_selftest` enforce on x86_64, executed by new
+-  `IL_QEMU=qemu-system-i386` knobs in `tests/integration/lib/lib.sh`.
++- i386: the initrd mounts; `/bin32/init32` — ELF32 compiled from C —
++  loads, runs Ring 3, writes its banner, round-trips `sched_yield`,
++  and **runs the EFAULT negative control from userspace** (write()
++  with a kernel pointer must come back refused); `exit(7)` observed by
++  the kernel. ✔ (19 assertions in `i386_user_smoke.sh`.)
++- x86_64 suite untouched — checked harder this phase because
++  `initrd.tar` itself changed: the 64-bit boot must still reach its
++  init shell with the fatter archive. ✔
++
++#### Result
++
++```
++[initrd] USTAR at phys 01800000, 8420 KiB, 86 files
++[elf32] mapped 2 user page(s), entry 08048000
++[user] running /bin32/init32 (entry 08048000, 8588 bytes)
++AuraLite i386 init: userspace is alive
++init32: sched_yield returned
++init32: kernel-pointer write refused (EFAULT) -- good
++[user] exit(7) via int 0x80
++[init] PASS: init32 ran and exited 7 as built
++```
++
++**A refusal that paid for itself:** the first `init32` link used a bare
++`-Ttext 0x08048000`, and lld emitted a headers-only `PT_LOAD` at its
++default `0x00400000` image base — outside the loader's window.
++`elf32load_map` refused the binary. The loader was right and the link
++was wrong; `user32.ld` is the fix, and the incident is the best
++available evidence that the window check is worth having.
++
++**The scope split, argued:** "boots to `auralite#`" as I5's gate would
++require either porting the keyboard driver out of order (I7's phase,
++with its own gate) or faking a prompt over serial with no reader behind
++it. The delivered gate — compiled C in Ring 3, through the real initrd,
++with a userspace-driven negative control — is the part of the original
++sentence that was *about this phase*. The `auralite#` gate moves to I7
++where the hardware it needs lives.
+ 
+ #### Deliverable
+ 
+diff --git a/Makefile b/Makefile
+index 6e18afc..dd2fdc6 100644
+--- a/Makefile
++++ b/Makefile
+@@ -147,6 +147,39 @@ $(KERNEL32_ELF): $(KERNEL32_OBJS) $(KERNEL32_DIR)/kernel32.ld
+ .PHONY: kernel32
+ kernel32: $(KERNEL32_ELF)
+ 
++# =============================================================================
++# I386_PLAN I5: the 32-bit userspace (init32 + libc32).
++#
++# Linked at 0x08048000 (the classic i386 ET_EXEC base, inside the
++# loader's [ELF32_USER_MIN, ELF32_USER_MAX) window) with -Ttext rather
++# than a script: two segments, no ambition -- the full user linker
++# script arrives with the real libc port (I6).  The binaries land in
++# the SHARED initrd under /bin32, so one archive serves both kernels
++# and each loader refuses the other's ELF class.
++# =============================================================================
++USER32_BUILD := $(BUILD_DIR)/user32
++INIT32_ELF   := $(USER32_BUILD)/init32
++
++$(USER32_BUILD)/crt0_32.o: lib/libc32/crt0_32.asm
++	@mkdir -p $(dir $@)
++	$(AS) -f elf32 -o $@ $<
++
++$(USER32_BUILD)/syscall32.o: lib/libc32/syscall32.asm
++	@mkdir -p $(dir $@)
++	$(AS) -f elf32 -o $@ $<
++
++$(USER32_BUILD)/init32.o: userspace/system/init32/init32.c lib/libc32/libc32.h
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGS32) -c $< -o $@
++
++$(INIT32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD)/syscall32.o lib/libc32/user32.ld
++	$(LD) -m elf_i386 -nostdlib -static -T lib/libc32/user32.ld \
++	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD)/syscall32.o -o $@
++	@echo "  [user32] $@"
++
++.PHONY: user32
++user32: $(INIT32_ELF)
++
+ # =============================================================================
+ # BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
+ # =============================================================================
+@@ -1446,7 +1479,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
+ .PHONY: petest
+ petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
+ 
+-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE)
++$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF)
+ 	@rm -rf $(INITRD_DIR)
+ 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
+ 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
+@@ -1522,6 +1555,11 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
+ 	         $(INITRD_DIR)/tests/u32bad.exe
+ 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
+ 	    > $(INITRD_DIR)/etc/motd
++# I386_PLAN I5: the 32-bit userland, in the SAME archive under /bin32.
++# One initrd serves both kernels; each kernel's ELF loader refuses the
++# other's class, and the path split means neither can even try.
++	@mkdir -p $(INITRD_DIR)/bin32
++	@strip -s $(INIT32_ELF) -o $(INITRD_DIR)/bin32/init32
+ # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
+ # HTTPS client can validate server chains against it.
+ 	@mkdir -p $(INITRD_DIR)/etc/ssl
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 9add6d4..2d9fb2d 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-3462979d1c891d55ac6e0aac67d1b5b0b2fea3174ea0deafc23b7c224cc7e85f  auralite.iso
++1b06d0bb207e2ab8072f30c3c65e9d14c821440d89cef5dd4920985915b8abc1  auralite.iso
+ 766ec2581f682d07b02cb4506b8ec62014d2463ce38ac02094434bd6c97f84be  kernel.elf
+-e8cbc0965f7e90221d9842fd1ffab394f1b0819759e3de10f7e807c64916a0f1  initrd.tar
++014a461eb85fd94470b28eaa5ebaaec84f9fb25bdbd0db673ff8e4bf88e71515  initrd.tar
+diff --git a/kernel/arch/i386/elf32load.c b/kernel/arch/i386/elf32load.c
+new file mode 100644
+index 0000000..5efd90c
+--- /dev/null
++++ b/kernel/arch/i386/elf32load.c
+@@ -0,0 +1,156 @@
++/* kernel/arch/i386/elf32load.c -- ELF32 user loader (I386_PLAN I5).
++ *
++ * The validation order mirrors kernel/proc/elf.c: magic, class,
++ * machine, type, then bounds-checked phdr walk.  Every PT_LOAD page
++ * is allocated fresh, copied through the direct map, and mapped
++ * user; p_flags PF_W maps writable -- and PF_X does NOT map
++ * no-exec-otherwise, because there is no NX on non-PAE i386 (plan D3;
++ * the loader is where the x86_64 kernel enforces it, so this is where
++ * the i386 kernel says it cannot).
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/elf32load.h"
++#include "kernel/arch/i386/paging32.h"
++#include "kernel/arch/i386/pmm32.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++#define EI_NIDENT 16
++#define ELFCLASS32 1
++#define EM_386     3
++#define ET_EXEC    2
++#define PT_LOAD    1
++#define PF_W       2
++
++struct elf32_ehdr {
++    uint8_t  e_ident[EI_NIDENT];
++    uint16_t e_type, e_machine;
++    uint32_t e_version, e_entry, e_phoff, e_shoff, e_flags;
++    uint16_t e_ehsize, e_phentsize, e_phnum;
++    uint16_t e_shentsize, e_shnum, e_shstrndx;
++};
++
++struct elf32_phdr {
++    uint32_t p_type, p_offset, p_vaddr, p_paddr;
++    uint32_t p_filesz, p_memsz, p_flags, p_align;
++};
++
++/* Track what we mapped so unmap can undo it (single image at a time). */
++#define MAX_MAPPED 64
++static uint32_t mapped_vaddr[MAX_MAPPED];
++static uint32_t mapped_frame[MAX_MAPPED];
++static uint32_t mapped_count;
++
++static int map_user_page(uint32_t vaddr, uint32_t flags)
++{
++    if (mapped_count >= MAX_MAPPED)
++        return -1;
++    uint32_t frame = pmm32_alloc_frame();
++    if (!frame)
++        return -1;
++    /* Zero through the direct map: BSS bytes and file-tail slack must
++     * not leak a previous owner's data into user space. */
++    uint32_t *p = (uint32_t *)p2v_32(frame);
++    for (int i = 0; i < 1024; i++)
++        p[i] = 0;
++    if (paging32_map(vaddr, frame, flags) != 0) {
++        pmm32_free_frame(frame);
++        return -1;
++    }
++    mapped_vaddr[mapped_count] = vaddr;
++    mapped_frame[mapped_count] = frame;
++    mapped_count++;
++    return 0;
++}
++
++uint32_t elf32load_map(const uint8_t *image, uint32_t size)
++{
++    if (size < sizeof(struct elf32_ehdr))
++        return 0;
++
++    const struct elf32_ehdr *eh = (const struct elf32_ehdr *)image;
++
++    if (!(eh->e_ident[0] == 0x7F && eh->e_ident[1] == 'E' &&
++          eh->e_ident[2] == 'L'  && eh->e_ident[3] == 'F')) {
++        kprintf32("[elf32] refused: bad magic\n");
++        return 0;
++    }
++    if (eh->e_ident[4] != ELFCLASS32) {
++        kprintf32("[elf32] refused: not ELFCLASS32 (class=%u) -- the "
++                  "64-bit kernel's binaries do not run here\n",
++                  eh->e_ident[4]);
++        return 0;
++    }
++    if (eh->e_machine != EM_386 || eh->e_type != ET_EXEC) {
++        kprintf32("[elf32] refused: machine=%u type=%u\n",
++                  eh->e_machine, eh->e_type);
++        return 0;
++    }
++    if (eh->e_phoff + (uint32_t)eh->e_phnum * eh->e_phentsize > size) {
++        kprintf32("[elf32] refused: phdr table out of bounds\n");
++        return 0;
++    }
++
++    mapped_count = 0;
++
++    for (uint16_t i = 0; i < eh->e_phnum; i++) {
++        const struct elf32_phdr *ph = (const struct elf32_phdr *)
++            (image + eh->e_phoff + (uint32_t)i * eh->e_phentsize);
++        if (ph->p_type != PT_LOAD)
++            continue;
++
++        if (ph->p_vaddr < ELF32_USER_MIN ||
++            ph->p_vaddr + ph->p_memsz > ELF32_USER_MAX ||
++            ph->p_offset + ph->p_filesz > size) {
++            kprintf32("[elf32] refused: segment outside the user window\n");
++            elf32load_unmap();
++            return 0;
++        }
++
++        uint32_t flags = PAGE32_FLAG_USER |
++                         ((ph->p_flags & PF_W) ? PAGE32_FLAG_WRITE : 0);
++        /* No NX on this arch: a non-PF_X segment still executes if
++         * jumped to.  Stated at load, enforced never (plan D3). */
++
++        uint32_t first = ph->p_vaddr & ~(PAGE_SIZE_32 - 1);
++        uint32_t last  = (ph->p_vaddr + ph->p_memsz + PAGE_SIZE_32 - 1)
++                         & ~(PAGE_SIZE_32 - 1);
++        for (uint32_t va = first; va < last; va += PAGE_SIZE_32) {
++            /* Segments may share a page boundary; map once. */
++            uint32_t already = 0;
++            for (uint32_t m = 0; m < mapped_count; m++)
++                if (mapped_vaddr[m] == va) { already = 1; break; }
++            if (!already && map_user_page(va, flags) != 0) {
++                elf32load_unmap();
++                return 0;
++            }
++        }
++
++        /* Copy file bytes through the direct map (pages were zeroed,
++         * so memsz > filesz BSS is already correct). */
++        for (uint32_t off = 0; off < ph->p_filesz; off++) {
++            uint32_t va    = ph->p_vaddr + off;
++            uint32_t frame = 0;
++            for (uint32_t m = 0; m < mapped_count; m++)
++                if (mapped_vaddr[m] == (va & ~(PAGE_SIZE_32 - 1)))
++                    { frame = mapped_frame[m]; break; }
++            ((uint8_t *)p2v_32(frame))[va & (PAGE_SIZE_32 - 1)] =
++                image[ph->p_offset + off];
++        }
++    }
++
++    kprintf32("[elf32] mapped %u user page(s), entry %x\n",
++              mapped_count, eh->e_entry);
++    return eh->e_entry;
++}
++
++void elf32load_unmap(void)
++{
++    for (uint32_t m = 0; m < mapped_count; m++) {
++        paging32_unmap(mapped_vaddr[m]);
++        pmm32_free_frame(mapped_frame[m]);
++    }
++    mapped_count = 0;
++}
+diff --git a/kernel/arch/i386/elf32load.h b/kernel/arch/i386/elf32load.h
+new file mode 100644
+index 0000000..e9024ef
+--- /dev/null
++++ b/kernel/arch/i386/elf32load.h
+@@ -0,0 +1,28 @@
++/* kernel/arch/i386/elf32load.h -- ELF32 user-program loader
++ * (I386_PLAN I5; the task I4's result note moved here, now that its
++ * consumer -- init32 from the initrd -- exists).
++ *
++ * Accepts ELFCLASS32 / EM_386 / ET_EXEC only; the x86_64 kernel's
++ * elf.c keeps refusing class 32, so each kernel rejects the other's
++ * binaries at parse time (the same both-sides rule elf32.inc and
++ * elf.inc follow in the bootloader).
++ */
++
++#ifndef AURALITE_ARCH_I386_ELF32LOAD_H
++#define AURALITE_ARCH_I386_ELF32LOAD_H
++
++#include <stdint.h>
++
++/* Validate the image and map its PT_LOAD segments as user pages.
++ * Returns the entry point, or 0 on refusal.  Segments must live in
++ * [ELF32_USER_MIN, ELF32_USER_MAX); anything else is refused. */
++#define ELF32_USER_MIN 0x08000000u
++#define ELF32_USER_MAX 0x40000000u
++
++uint32_t elf32load_map(const uint8_t *image, uint32_t size);
++
++/* Unmap and free every page elf32load_map established (one image at a
++ * time at bring-up scope, like user32's single-slot contract). */
++void elf32load_unmap(void);
++
++#endif /* AURALITE_ARCH_I386_ELF32LOAD_H */
+diff --git a/kernel/arch/i386/initrd32.c b/kernel/arch/i386/initrd32.c
+new file mode 100644
+index 0000000..c35b963
+--- /dev/null
++++ b/kernel/arch/i386/initrd32.c
+@@ -0,0 +1,126 @@
++/* kernel/arch/i386/initrd32.c -- USTAR initrd reader (I386_PLAN I5).
++ *
++ * Mirrors kernel/fs/initrd.c's parsing rules at lookup-only scope:
++ * 512-byte headers, octal size field, entries rounded to 512, "ustar"
++ * magic checked on the first header, paths normalised of "./" and
++ * leading "/".  The archive itself is the one BL4 loaded at
++ * INITRD_LOAD_PHYS; it sits inside the PMM's low reserve, so the data
++ * pointers handed out stay valid for the kernel's lifetime.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++
++#include "kernel/arch/i386/initrd32.h"
++#include "kernel/arch/i386/paging32.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++static const uint8_t *archive;
++static uint32_t archive_size;
++static uint32_t file_count;
++
++struct ustar_hdr {
++    char name[100];
++    char mode[8], uid[8], gid[8];
++    char size[12];
++    char mtime[12], chksum[8];
++    char typeflag;
++    char linkname[100];
++    char magic[6], version[2];
++    char uname[32], gname[32];
++    char devmajor[8], devminor[8];
++    char prefix[155];
++    char pad[12];
++};
++
++static uint32_t octal_field(const char *s, int len)
++{
++    uint32_t v = 0;
++    for (int i = 0; i < len && s[i]; i++) {
++        if (s[i] < '0' || s[i] > '7')
++            continue;
++        v = (v << 3) | (uint32_t)(s[i] - '0');
++    }
++    return v;
++}
++
++static int str_eq(const char *a, const char *b)
++{
++    while (*a && *b && *a == *b) { a++; b++; }
++    return *a == *b;
++}
++
++static const char *normalise(const char *name)
++{
++    if (name[0] == '.' && name[1] == '/')
++        name += 2;
++    while (name[0] == '/')
++        name++;
++    return name;
++}
++
++int initrd32_init(const boot_info_t *bi)
++{
++    if (!bi->initrd_phys || !bi->initrd_size) {
++        kprintf32("[initrd] absent (boot_info reports none)\n");
++        return -1;
++    }
++    if (bi->initrd_phys + bi->initrd_size > DIRECT_MAP_BYTES) {
++        kprintf32("[initrd] beyond the direct map; unreachable\n");
++        return -1;
++    }
++
++    archive      = (const uint8_t *)p2v_32((uint32_t)bi->initrd_phys);
++    archive_size = (uint32_t)bi->initrd_size;
++
++    const struct ustar_hdr *h = (const struct ustar_hdr *)archive;
++    if (!(h->magic[0] == 'u' && h->magic[1] == 's' && h->magic[2] == 't' &&
++          h->magic[3] == 'a' && h->magic[4] == 'r')) {
++        kprintf32("[initrd] bad USTAR magic at %p\n", (const void *)archive);
++        return -1;
++    }
++
++    /* Count regular files for the boot log. */
++    file_count = 0;
++    uint32_t off = 0;
++    while (off + 512 <= archive_size) {
++        h = (const struct ustar_hdr *)(archive + off);
++        if (h->name[0] == '\0')
++            break;
++        uint32_t size = octal_field(h->size, 12);
++        if (h->typeflag == '0' || h->typeflag == '\0')
++            file_count++;
++        off += 512 + ((size + 511) & ~511u);
++    }
++
++    kprintf32("[initrd] USTAR at phys %x, %u KiB, %u files\n",
++              (uint32_t)bi->initrd_phys, archive_size / 1024, file_count);
++    return 0;
++}
++
++int initrd32_find(const char *path, const uint8_t **data, uint32_t *size)
++{
++    if (!archive)
++        return 0;
++
++    uint32_t off = 0;
++    while (off + 512 <= archive_size) {
++        const struct ustar_hdr *h = (const struct ustar_hdr *)(archive + off);
++        if (h->name[0] == '\0')
++            break;
++        uint32_t fsize = octal_field(h->size, 12);
++        if ((h->typeflag == '0' || h->typeflag == '\0') &&
++            str_eq(normalise(h->name), path)) {
++            *data = archive + off + 512;
++            *size = fsize;
++            return 1;
++        }
++        off += 512 + ((fsize + 511) & ~511u);
++    }
++    return 0;
++}
++
++uint32_t initrd32_file_count(void)
++{
++    return file_count;
++}
+diff --git a/kernel/arch/i386/initrd32.h b/kernel/arch/i386/initrd32.h
+new file mode 100644
+index 0000000..d497797
+--- /dev/null
++++ b/kernel/arch/i386/initrd32.h
+@@ -0,0 +1,28 @@
++/* kernel/arch/i386/initrd32.h -- read-only USTAR initrd lookup
++ * (I386_PLAN I5).
++ *
++ * The SAME initrd.tar the 64-bit kernel mounts: mkinitrd.sh packs one
++ * archive for both kernels, and the i386 files live under /bin32 so
++ * neither kernel can accidentally exec the other's ELF class (each
++ * loader also refuses the wrong class -- belt and braces).  Bring-up
++ * scope: find-by-name over the direct-mapped archive; the full VFS
++ * port is I6+ work.
++ */
++
++#ifndef AURALITE_ARCH_I386_INITRD32_H
++#define AURALITE_ARCH_I386_INITRD32_H
++
++#include <stdint.h>
++#include "boot/shared/boot_info.h"
++
++/* 0 on success (archive present and sane). */
++int initrd32_init(const boot_info_t *bi);
++
++/* Look up a regular file by path ("bin32/init32"; leading "./" and "/"
++ * in archive entries are normalised away).  Returns 1 and fills
++ * data/size on hit, 0 on miss. */
++int initrd32_find(const char *path, const uint8_t **data, uint32_t *size);
++
++uint32_t initrd32_file_count(void);
++
++#endif /* AURALITE_ARCH_I386_INITRD32_H */
+diff --git a/kernel/arch/i386/main32.c b/kernel/arch/i386/main32.c
+index e6fe585..68cb176 100644
+--- a/kernel/arch/i386/main32.c
++++ b/kernel/arch/i386/main32.c
+@@ -26,6 +26,7 @@
+ #include "kernel/arch/i386/kheap32.h"
+ #include "kernel/arch/i386/thread32.h"
+ #include "kernel/arch/i386/user32.h"
++#include "kernel/arch/i386/initrd32.h"
+ 
+ void thread32_reap(void);
+ 
+@@ -237,8 +238,20 @@ void kmain32(uint32_t boot_info_phys)
+         goto halt;
+     }
+ 
+-    kprintf32("[kernel] I4 processes online; idle (I5 adds the 32-bit "
+-              "libc + init)\n");
++    /* ---- I5: the initrd and a real compiled init ---- */
++    if (initrd32_init(boot_info) == 0) {
++        kprintf32("[boot] starting init (Ring 3, ELF32 from the initrd)\n");
++        int code = user32_run_elf("bin32/init32");
++        if (code == 7)
++            kprintf32("[init] PASS: init32 ran and exited %d as built\n", code);
++        else
++            kprintf32("[init] FAIL: init32 exit=%d (want 7)\n", code);
++    } else {
++        kprintf32("[init] SKIP: no initrd\n");
++    }
++
++    kprintf32("[kernel] I5 userspace online; idle (I6 adds the width "
++              "sweep + shared code adoption)\n");
+ 
+ halt:
+     for (;;) {
+diff --git a/kernel/arch/i386/user32.c b/kernel/arch/i386/user32.c
+index b709700..d9a4a7b 100644
+--- a/kernel/arch/i386/user32.c
++++ b/kernel/arch/i386/user32.c
+@@ -26,6 +26,8 @@
+ #include "kernel/arch/i386/pmm32.h"
+ #include "kernel/arch/i386/kprintf32.h"
+ #include "kernel/arch/i386/thread32.h"
++#include "kernel/arch/i386/initrd32.h"
++#include "kernel/arch/i386/elf32load.h"
+ 
+ /* user_entry32.asm */
+ extern void user32_enter(uint32_t entry, uint32_t user_esp);
+@@ -76,16 +78,25 @@ static void syscall32_dispatch(struct registers32 *regs)
+ {
+     switch (regs->eax) {
+     case SYS32_WRITE: {
+-        /* write(fd=ebx, buf=ecx, len=edx) -> console only at I4.
+-         * Bound and range-check the user pointer against the user
+-         * window; copy_from_user with fault fixup arrives in I5. */
+-        if (regs->ebx != 1 ||
+-            regs->ecx <  USER_STACK_VADDR ||
+-            regs->ecx + regs->edx > USER_TEXT_VADDR + PAGE_SIZE_32 ||
+-            regs->edx > PAGE_SIZE_32) {
++        /* write(fd=ebx, buf=ecx, len=edx) -> console only at I4/I5.
++         * I5 widened the check from the fixed I4 window to "every
++         * touched page is user-mapped": ELF images live at
++         * 0x08048000-region now, not just the hand-built page.  The
++         * probe walk is the bring-up stand-in for copy_from_user
++         * fault fixup (I6). */
++        if (regs->ebx != 1 || regs->edx > 4096 ||
++            regs->ecx >= KERNEL_VBASE_32 ||
++            regs->ecx + regs->edx > KERNEL_VBASE_32) {
+             regs->eax = (uint32_t)-1;
+             return;
+         }
++        for (uint32_t va = regs->ecx & ~(PAGE_SIZE_32 - 1);
++             va < regs->ecx + regs->edx; va += PAGE_SIZE_32) {
++            if (!paging32_probe(va, NULL)) {
++                regs->eax = (uint32_t)-14;   /* -EFAULT */
++                return;
++            }
++        }
+         const char *p = (const char *)regs->ecx;
+         for (uint32_t i = 0; i < regs->edx; i++)
+             kputc32(p[i]);
+@@ -237,3 +248,60 @@ int user32_selftest(void)
+     kprintf32("[user] PASS: Ring 3 write/getpid/exit + #GP containment\n");
+     return 0;
+ }
++
++/* ---- I5: ELF32 images from the initrd ----------------------------------- */
++
++int user32_run_elf(const char *path)
++{
++    const uint8_t *image;
++    uint32_t size;
++
++    if (!initrd32_find(path, &image, &size)) {
++        kprintf32("[user] /%s: not found in the initrd\n", path);
++        return -1;
++    }
++
++    uint32_t entry = elf32load_map(image, size);
++    if (!entry)
++        return -1;
++
++    /* User stack: one page just under the ELF window's ceiling, well
++     * clear of the load segments the bounds check confined below it. */
++    uint32_t stack_frame = pmm32_alloc_frame();
++    if (!stack_frame) {
++        elf32load_unmap();
++        return -1;
++    }
++    uint32_t stack_page = ELF32_USER_MAX - PAGE_SIZE_32;
++    if (paging32_map(stack_page, stack_frame,
++                     PAGE32_FLAG_USER | PAGE32_FLAG_WRITE) != 0) {
++        pmm32_free_frame(stack_frame);
++        elf32load_unmap();
++        return -1;
++    }
++
++    kprintf32("[user] running /%s (entry %x, %u bytes)\n", path, entry, size);
++
++    user_exit_code = -1;
++    user_active    = 1;
++
++    __asm__ volatile(
++        "mov %%esp, %0\n"
++        "mov %%ebp, %1\n"
++        "movl $1f, %2\n"
++        "cmpl $0, %3\n"
++        "je   2f\n"
++        "push %5\n"
++        "push %4\n"
++        "call user32_enter\n"
++        "2:\n"
++        "1:\n"
++        : "=m"(saved_esp), "=m"(saved_ebp), "=m"(saved_eip)
++        : "m"(user_active), "r"(entry), "r"(ELF32_USER_MAX - 16)
++        : "memory", "eax", "ecx", "edx");
++
++    paging32_unmap(stack_page);
++    pmm32_free_frame(stack_frame);
++    elf32load_unmap();
++    return user_exit_code;
++}
+diff --git a/kernel/arch/i386/user32.h b/kernel/arch/i386/user32.h
+index acb8024..d9e3ff2 100644
+--- a/kernel/arch/i386/user32.h
++++ b/kernel/arch/i386/user32.h
+@@ -41,4 +41,9 @@ int user32_run_image(const uint8_t *code, uint32_t code_len);
+  * executed.  Returns 0 when every check holds. */
+ int user32_selftest(void);
+ 
++/* I5: load an ELF32 executable from the initrd (path like
++ * "bin32/init32") through elf32load_map and run it Ring 3.  Returns
++ * the exit code, or -1 on lookup/parse refusal. */
++int user32_run_elf(const char *path);
++
+ #endif /* AURALITE_ARCH_I386_USER32_H */
+diff --git a/lib/libc32/crt0_32.asm b/lib/libc32/crt0_32.asm
+new file mode 100644
+index 0000000..67c1775
+--- /dev/null
++++ b/lib/libc32/crt0_32.asm
+@@ -0,0 +1,27 @@
++; =============================================================================
++; lib/libc32/crt0_32.asm -- i386 user program entry (I386_PLAN I5).
++; Sibling of lib/libc/crt/crt0.asm one width down: call main, feed the
++; return value to SYS_EXIT, never fall through.  The exit trap is
++; inlined here rather than calling the libc's exit() -- libc32's
++; functions are static inline (there is no archive to link yet), and
++; the one thing a crt0 must never depend on is the layout of a library
++; that might not be there.  argv/envp arrive with the full process
++; model (I6+); main() at this phase is main(void).
++; =============================================================================
++bits 32
++
++SYS_EXIT equ 60                 ; AuraLite numbers (plan D4)
++
++section .text
++global _start
++extern main
++
++_start:
++    xor  ebp, ebp               ; mark the outermost frame
++    call main
++    mov  ebx, eax               ; exit code = main's return
++    mov  eax, SYS_EXIT
++    int  0x80
++.hang:                          ; unreachable: SYS_EXIT does not return
++    hlt
++    jmp  .hang
+diff --git a/lib/libc32/libc32.h b/lib/libc32/libc32.h
+new file mode 100644
+index 0000000..aaf7180
+--- /dev/null
++++ b/lib/libc32/libc32.h
+@@ -0,0 +1,56 @@
++/* lib/libc32/libc32.h -- the i386 bring-up libc (I386_PLAN I5).
++ *
++ * Deliberately tiny: the syscalls the I5 kernel implements, and the
++ * few string helpers init32 needs.  The full lib/libc port (errno,
++ * TLS, stdio buffering, the 427-symbol POSIX surface) is I6 work,
++ * gated by the width sweep; this header exists so init32 is REAL
++ * compiled-from-C Ring 3 code today, not more hand-assembled bytes.
++ *
++ * Numbers are AuraLite's own (lib/libc/include/unistd.h) -- one
++ * table, two trap mechanisms (plan D4).
++ */
++
++#ifndef AURALITE_LIBC32_H
++#define AURALITE_LIBC32_H
++
++#define SYS_WRITE        1
++#define SYS_GETPID      39
++#define SYS_EXIT        60
++#define SYS_SCHED_YIELD 158
++
++long __syscall32(long n, long a1, long a2, long a3, long a4, long a5);
++
++static inline long write(int fd, const void *buf, unsigned long len)
++{
++    return __syscall32(SYS_WRITE, fd, (long)buf, (long)len, 0, 0);
++}
++
++static inline long getpid(void)
++{
++    return __syscall32(SYS_GETPID, 0, 0, 0, 0, 0);
++}
++
++static inline void exit(int code)
++{
++    __syscall32(SYS_EXIT, code, 0, 0, 0, 0);
++    __builtin_unreachable();
++}
++
++static inline long sched_yield(void)
++{
++    return __syscall32(SYS_SCHED_YIELD, 0, 0, 0, 0, 0);
++}
++
++static inline unsigned long strlen32(const char *s)
++{
++    unsigned long n = 0;
++    while (s[n]) n++;
++    return n;
++}
++
++static inline void puts32(const char *s)
++{
++    write(1, s, strlen32(s));
++}
++
++#endif /* AURALITE_LIBC32_H */
+diff --git a/lib/libc32/syscall32.asm b/lib/libc32/syscall32.asm
+new file mode 100644
+index 0000000..1be39fa
+--- /dev/null
++++ b/lib/libc32/syscall32.asm
+@@ -0,0 +1,34 @@
++; =============================================================================
++; lib/libc32/syscall32.asm -- the int 0x80 wrapper (I386_PLAN I5).
++; Sibling of lib/libc/src/syscall.asm one width down.
++;
++; long __syscall32(long n, long a1, long a2, long a3, long a4, long a5);
++;
++; cdecl in, D4 register convention out: EAX = number, then
++; EBX, ECX, EDX, ESI, EDI.  EBX/ESI/EDI are callee-saved under cdecl,
++; so they are preserved around the trap.  The 6th argument register
++; (EBP) is deliberately not marshalled until something needs it --
++; every I5 syscall takes <= 3 arguments.
++; =============================================================================
++bits 32
++
++section .text
++global __syscall32
++__syscall32:
++    push ebx
++    push esi
++    push edi
++
++    mov  eax, [esp + 16]        ; n    (3 saves + ret = 16)
++    mov  ebx, [esp + 20]        ; a1
++    mov  ecx, [esp + 24]        ; a2
++    mov  edx, [esp + 28]        ; a3
++    mov  esi, [esp + 32]        ; a4
++    mov  edi, [esp + 36]        ; a5
++
++    int  0x80
++
++    pop  edi
++    pop  esi
++    pop  ebx
++    ret
+diff --git a/lib/libc32/user32.ld b/lib/libc32/user32.ld
+new file mode 100644
+index 0000000..034c8af
+--- /dev/null
++++ b/lib/libc32/user32.ld
+@@ -0,0 +1,54 @@
++/*
++ * lib/libc32/user32.ld -- i386 user program layout (I386_PLAN I5).
++ *
++ * The first cut used a bare -Ttext 0x08048000 and lld emitted an extra
++ * headers-only PT_LOAD at its default 0x00400000 image base -- outside
++ * [ELF32_USER_MIN, ELF32_USER_MAX), which elf32load_map correctly
++ * refused.  The loader was right and the link was wrong, hence this
++ * script: everything inside the window, headers not loaded, and the
++ * same differently-permissioned-segments-never-share-a-page rule the
++ * kernel scripts follow (even though non-PAE i386 cannot enforce the
++ * distinction -- plan D3 -- the layout keeps the sweep honest for when
++ * binaries are shared with a PAE-capable future).
++ */
++
++OUTPUT_FORMAT(elf32-i386)
++OUTPUT_ARCH(i386)
++ENTRY(_start)
++
++PHDRS
++{
++    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)); /* R + X */
++    rodata  PT_LOAD    FLAGS(1 << 2);              /* R     */
++    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
++}
++
++SECTIONS
++{
++    . = 0x08048000;
++
++    .text : {
++        *(.text .text.*)
++    } :text
++
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
++
++    .rodata : {
++        *(.rodata .rodata.*)
++    } :rodata
++
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
++
++    .data : {
++        *(.data .data.*)
++    } :data
++
++    .bss : {
++        *(.bss .bss.*)
++        *(COMMON)
++    } :data
++
++    /DISCARD/ : {
++        *(.eh_frame) *(.eh_frame_hdr) *(.note .note.*) *(.comment)
++    }
++}
+diff --git a/tests/integration/i386_proc_smoke.sh b/tests/integration/i386_proc_smoke.sh
+index c62589c..b8ccdf6 100755
+--- a/tests/integration/i386_proc_smoke.sh
++++ b/tests/integration/i386_proc_smoke.sh
+@@ -76,7 +76,10 @@ assert_grep    "$LOG32" $'^RING3-OK\r\{0,1\}$'                          "i386: R
+ assert_grep    "$LOG32" "\[user\] exit(42) via int 0x80"               "i386: exit code round-trip"
+ assert_grep    "$LOG32" "vector=13.*terminating image (code 141)"      "i386: negative control -- Ring 3 hlt contained via #GP"
+ assert_grep    "$LOG32" "\[user\] PASS: Ring 3 write/getpid/exit"      "i386: user self-test verdict"
+-assert_grep    "$LOG32" "I4 processes online"                          "i386: kernel SURVIVED the Ring 3 fault -- reached idle"
++# Phase-advancing idle line (the same generalisation the I2/I3 smokes
++# carry): the negative control runs BEFORE this line prints, so any
++# "online; idle" reached after it proves the kernel survived the fault.
++assert_grep    "$LOG32" "online; idle (I[0-9]"                         "i386: kernel SURVIVED the Ring 3 fault -- reached idle"
+ assert_grep    "$LOG32" "\[pmm\] PASS"                                 "i386: I3 pmm gate still green"
+ assert_grep    "$LOG32" "\[vmm\] PASS"                                 "i386: I3 vmm gate still green"
+ assert_grep    "$LOG32" "\[heap\] PASS"                                "i386: I3 heap gate still green"
+diff --git a/tests/integration/i386_user_smoke.sh b/tests/integration/i386_user_smoke.sh
+new file mode 100755
+index 0000000..cd47de6
+--- /dev/null
++++ b/tests/integration/i386_user_smoke.sh
+@@ -0,0 +1,96 @@
++#!/usr/bin/env bash
++# tests/integration/i386_user_smoke.sh -- I386_PLAN phase I5 smoke test.
++#
++# I4 proved Ring 3 with hand-assembled bytes; I5 replaces them with the
++# real thing.  Asserts on the `make iso` image under qemu-system-i386:
++#
++#   * the SHARED initrd.tar mounts on the i386 kernel (USTAR reader);
++#   * /bin32/init32 -- an ELF32 binary compiled from C with the 32-bit
++#     crt0 + int 0x80 libc -- is found, class-validated, mapped and run
++#     in Ring 3;
++#   * its output round-trips: banner, pid, sched_yield return;
++#   * the negative control runs IN USERSPACE this time: init32 calls
++#     write() with a kernel pointer and asserts the kernel refused it
++#     (-EFAULT), printing "-- good" only on refusal;
++#   * exit(7) round-trips and the kernel logs the [init] PASS verdict;
++#   * every earlier gate (sched/user/pmm/vmm/heap/isr/timer) holds.
++#
++# Plus the standing x86_64 no-regression pair -- doubly load-bearing
++# in this phase because initrd.tar itself changed (a /bin32 entry was
++# added to the shared archive).
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ISO="$BUILD/auralite.iso"
++LOG32="$BUILD/i386_user.log"
++LOG64="$BUILD/i386_user_x64.log"
++
++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
++
++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
++    echo "[i386-user] SKIP: qemu-system-i386 not installed" >&2
++    exit 0
++fi
++
++fail=0
++run_qemu() {
++    local bin="$1" log="$2"
++    rm -f "$log"
++    timeout 35 "$bin" \
++        -drive format=raw,file="$ISO",if=ide,snapshot=on \
++        -m 512M \
++        -display none -serial file:"$log" -no-reboot \
++        >/dev/null 2>&1 || true
++}
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-user] OK   %s\n' "$desc"
++    else
++        printf '  [i386-user] FAIL %s\n' "$desc"
++        fail=1
++    fi
++}
++
++assert_no_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-user] FAIL %s\n' "$desc"
++        fail=1
++    else
++        printf '  [i386-user] OK   %s\n' "$desc"
++    fi
++}
++
++# ---- the i386 userspace bring-up ----
++run_qemu qemu-system-i386 "$LOG32"
++assert_grep    "$LOG32" "\[initrd\] USTAR at phys.*files"              "i386: shared initrd.tar mounted"
++assert_grep    "$LOG32" "\[elf32\] mapped .* user page(s), entry 08048000" "i386: ELF32 parsed and mapped in the user window"
++assert_grep    "$LOG32" "running /bin32/init32"                        "i386: init32 launched from /bin32"
++assert_grep    "$LOG32" "AuraLite i386 init: userspace is alive"       "i386: compiled-C Ring 3 output"
++assert_grep    "$LOG32" "init32: sched_yield returned"                 "i386: second syscall shape round-trips"
++assert_grep    "$LOG32" "kernel-pointer write refused (EFAULT) -- good" "i386: userspace-driven EFAULT negative control"
++assert_no_grep "$LOG32" "BUG: kernel-pointer write was serviced"       "i386: the kernel never serviced a kernel pointer"
++assert_grep    "$LOG32" "\[user\] exit(7) via int 0x80"                "i386: exit(7) trapped"
++assert_grep    "$LOG32" "\[init\] PASS: init32 ran and exited 7"       "i386: kernel-side verdict"
++assert_grep    "$LOG32" "\[sched\] PASS"                               "i386: I4 sched gate still green"
++assert_grep    "$LOG32" "\[user\] PASS"                                "i386: I4 user gate still green"
++assert_grep    "$LOG32" "\[pmm\] PASS"                                 "i386: I3 pmm gate still green"
++assert_grep    "$LOG32" "\[vmm\] PASS"                                 "i386: I3 vmm gate still green"
++assert_grep    "$LOG32" "\[heap\] PASS"                                "i386: I3 heap gate still green"
++assert_no_grep "$LOG32" "\[init\] FAIL\|\[elf32\] refused"             "i386: no loader refusals, no init failure"
++assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected kernel faults"
++
++# ---- the standing x86_64 regression gate (initrd.tar changed!) ----
++run_qemu qemu-system-x86_64 "$LOG64"
++assert_grep    "$LOG64" "Hello from AuraLite OS kernel!"               "x86_64: kernel banner unchanged"
++assert_grep    "$LOG64" "starting init shell (Ring 3)"                 "x86_64: 64-bit init still reached with the fatter initrd"
++assert_no_grep "$LOG64" "(i386)"                                       "x86_64: no 32-bit artefacts in the log"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[i386-user] FAILED"
++    exit 1
++fi
++echo "[i386-user] all assertions passed"
+diff --git a/userspace/system/init32/init32.c b/userspace/system/init32/init32.c
+new file mode 100644
+index 0000000..555c9a5
+--- /dev/null
++++ b/userspace/system/init32/init32.c
+@@ -0,0 +1,39 @@
++/* userspace/system/init32/init32.c -- the i386 init (I386_PLAN I5).
++ *
++ * The first C program compiled with the 32-bit toolchain to run in
++ * Ring 3 on AuraLite.  Bring-up scope: prove the whole stack -- crt0,
++ * the int 0x80 wrapper, the D4 register convention, the kernel's
++ * pointer validation -- with output the smoke test asserts exactly.
++ * The interactive shell arrives when the keyboard driver does (I7);
++ * an init that pretended to read input from a driver that does not
++ * exist would be theatre.
++ */
++
++#include "lib/libc32/libc32.h"
++
++int main(void)
++{
++    puts32("\n");
++    puts32("AuraLite i386 init: userspace is alive\n");
++
++    long pid = getpid();
++    /* Tiny itoa: pid is a tid from an 8-slot table, one digit. */
++    char msg[] = "init32: pid=0\n";
++    msg[13 - 1] = (char)('0' + (pid % 10));
++    puts32(msg);
++
++    /* Round-trip a yield to prove a second syscall shape works. */
++    sched_yield();
++    puts32("init32: sched_yield returned\n");
++
++    /* A negative control from C: write() with a kernel pointer must
++     * be refused (-EFAULT path), not serviced. */
++    long r = write(1, (const void *)0xC0100000u, 16);
++    if (r < 0)
++        puts32("init32: kernel-pointer write refused (EFAULT) -- good\n");
++    else
++        puts32("init32: BUG: kernel-pointer write was serviced\n");
++
++    puts32("init32: exiting 7\n");
++    return 7;
++}
+-- 
+2.47.3
+

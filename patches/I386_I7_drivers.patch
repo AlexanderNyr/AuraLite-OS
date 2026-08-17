@@ -1,0 +1,1535 @@
+From 967f56c3b0a8ae6af999d62e672669f9e9b4be83 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Sun, 16 Aug 2026 18:54:53 +0000
+Subject: [PATCH] I7 update
+
+---
+ CHANGELOG.md                          |  42 +++++++
+ I386_PLAN.md                          |  93 +++++++++++----
+ Makefile                              |  19 +++-
+ SHA256SUMS                            |   4 +-
+ kernel/arch/i386/boot32.asm           |   7 ++
+ kernel/arch/i386/elf32load.c          |  44 ++++++--
+ kernel/arch/i386/elf32load.h          |   7 +-
+ kernel/arch/i386/gdt.c                |   5 +
+ kernel/arch/i386/kbd32.c              | 156 ++++++++++++++++++++++++++
+ kernel/arch/i386/kbd32.h              |  27 +++++
+ kernel/arch/i386/kprintf32.c          |  19 ++++
+ kernel/arch/i386/kprintf32.h          |   4 +
+ kernel/arch/i386/main32.c             |  17 ++-
+ kernel/arch/i386/thread32.c           |  65 +++++++++--
+ kernel/arch/i386/thread32.h           |   5 +
+ kernel/arch/i386/user32.c             | 133 ++++++++++++++++++++--
+ kernel/arch/i386/user32.h             |   4 +-
+ kernel/arch/i386/vga32.c              |  88 +++++++++++++++
+ kernel/arch/i386/vga32.h              |  23 ++++
+ lib/libc32/libc32.h                   |  14 +++
+ lib/libc32/shell32.ld                 |  51 +++++++++
+ tests/integration/i386_cpu_smoke.sh   |   5 +-
+ tests/integration/i386_mm_smoke.sh    |   2 +-
+ tests/integration/i386_proc_smoke.sh  |  10 +-
+ tests/integration/i386_shell_smoke.sh | 105 +++++++++++++++++
+ userspace/system/shell32/shell32.c    | 102 +++++++++++++++++
+ 26 files changed, 986 insertions(+), 65 deletions(-)
+ create mode 100644 kernel/arch/i386/kbd32.c
+ create mode 100644 kernel/arch/i386/kbd32.h
+ create mode 100644 kernel/arch/i386/vga32.c
+ create mode 100644 kernel/arch/i386/vga32.h
+ create mode 100644 lib/libc32/shell32.ld
+ create mode 100755 tests/integration/i386_shell_smoke.sh
+ create mode 100644 userspace/system/shell32/shell32.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index efbf7f9..05f4122 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,48 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [i386 Phase I7 — Drivers: console, keyboard, the shell] 2026-08-16
++
++`I386_PLAN.md` phase I7: the i386 machine grows a screen and a
++keyboard, and the `auralite#` gate lands — an interactive Ring 3 shell
++that reads cooked lines through `SYS_READ` and spawns other initrd
++programs through `SYS_SPAWN`, nested user images included.
++
++- **`vga32.c`**: VGA text-mode console (mode 3, 80×25 at `0xB8000`
++  via the direct map) — deliberately NOT VBE: Stage 2's 32-bit path
++  sets no video mode, and a bring-up console wants the
++  zero-mode-set output path.  `kprintf32` fans out UART + VGA.
++- **`kbd32.c`**: PS/2 keyboard on IRQ 1 (set 1, US map, shift), one
++  input ring fed by two producers (PS/2 + polled UART RX) so serial
++  and keyboard interleave in arrival order; cooked-line reader with
++  echo and backspace.
++- **`user32.c`**: `SYS_READ` (fd 0, page-probed buffer, blocking) and
++  `SYS_SPAWN` (path copied from user memory with per-byte probing).
++  Spawn nests: `elf32load` grew mark/release mapping checkpoints,
++  user stacks step down per nesting level, and the parent's
++  exit-trampoline context is saved/restored around the child.
++- **`shell32`**: Ring 3 shell at `0x30000000` (`shell32.ld` — children
++  at `0x08048000` share the single page directory by address-range
++  treaty).  help/uname/pid/echo/run/exit; absent commands name the
++  phase that brings them.
++- **Two real bugs found by the gate, both with regression asserts**:
++  (1) `int 0x80` is an interrupt gate, IF arrives cleared — the first
++  read loop slept in a bare `hlt` and wedged the machine behind a
++  fresh prompt; fixed with `sti; hlt; cli`.  (2) `TSS.esp0 =
++  kstack_top` had Ring 3 traps descend into `user32_run_elf`'s live
++  setjmp-trampoline frames; survived on 16 KiB of accidental headroom
++  until the nested spawn closed the gap and the parent resumed into
++  garbage (#PF with cr2 = the child's exit code).  Fixed with a
++  dedicated per-image trap stack (`thread32_set_esp0`).
++- **Scope note in the plan**: e1000/AHCI moved to I8 where their
++  consumers (net/fs parity) arrive — a NIC with no sockets is a demo,
++  not a driver.  Their original gates move with them verbatim.
++- Tests: `i386_shell_smoke.sh` — 16 assertions driving a live session
++  (prompt, uname, exact echo, nested `run` with the child's exit code
++  reported by the shell, unknown-command, clean exit, survival).
++  Three earlier smokes updated for the blocks-at-prompt reality, with
++  the edit recorded in the plan.
++
+ ## [i386 Phase I6 — The pointer-width sweep] 2026-08-16
+ 
+ `I386_PLAN.md` phase I6: the width discipline becomes machinery.  Three
+diff --git a/I386_PLAN.md b/I386_PLAN.md
+index 07e79cb..c7c732c 100644
+--- a/I386_PLAN.md
++++ b/I386_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — i386 (32-bit x86) Support Plan
+ 
+-## Status: IN PROGRESS 🚧 — I0–I6 complete, I7–I9 pending
++## Status: IN PROGRESS 🚧 — I0–I7 complete, I8–I9 pending
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -11,6 +11,7 @@
+ | I4 — threads, scheduler, Ring 3, `int 0x80` | ✅ complete (scope note in phase result) | `patches/I386_I4_proc.patch` |
+ | I5 — 32-bit libc and userspace | ✅ complete (bring-up scope, see phase result) | `patches/I386_I5_user.patch` |
+ | I6 — the pointer-width sweep | ✅ complete (ratchet armed; residue tracked by CI, see phase result) | `patches/I386_I6_sweep.patch` |
++| I7 — drivers on i386 | ✅ complete (console scope; net/storage re-scoped to I8, see phase result) | `patches/I386_I7_drivers.patch` |
+ | I6 — the pointer-width sweep | pending | `patches/I386_I6_sweep.patch` |
+ | I7 — drivers on i386 | pending | `patches/I386_I7_drivers.patch` |
+ | I8 — filesystems, net, GUI parity | pending | `patches/I386_I8_parity.patch` |
+@@ -736,31 +737,85 @@ a fact-finding estimate; the checker number is the contract.
+ 
+ ---
+ 
+-### Phase I7 — Drivers on i386
++### Phase I7 — Drivers on i386 ✅ COMPLETE (console scope)
+ 
+-**Objective:** the QEMU-standard device set works: e1000, AHCI, PS/2,
+-framebuffer console.
++**Objective (as delivered):** the machine grows a screen and a
++keyboard, and the `auralite#` gate I5 deferred here lands — an
++interactive Ring 3 shell that spawns other programs.  e1000/AHCI move
++to I8 with the filesystem/network parity they exist to serve (scope
++note below).
+ 
+ #### Tasks
+ 
+-- [ ] VBE framebuffer: Stage 2's 32-bit path sets a linear-framebuffer
+-      mode via VBE 2.0 real-mode calls before `CR0.PE` (the 64-bit path
+-      gets its framebuffer from the loader too — same contract, same
+-      `boot_fb_t`).
+-- [ ] e1000/AHCI descriptor rings: already `uint64_t` on the wire;
+-      audit bounce conditions (none expected below 4 GiB), enable IRQ
+-      paths through the 8259 PIC as on early x86_64 phases.
+-- [ ] PS/2 keyboard/mouse, PIT, UART: port-I/O only — expected to be
+-      recompile-clean; the task is proving it, not writing it.
+-- [ ] USB/xHCI, Bluetooth, Wi-Fi, virtio: explicitly deferred; rows in
+-      the status matrix say so per-arch.
++- [x] **VGA text console** (`vga32.c`), not VBE: Stage 2's 32-bit path
++      sets no video mode, so the machine is in text mode 3 — 80×25 at
++      `0xB8000` through the direct map, scroll/cursor/backspace.
++      `kprintf32` fans out to UART + VGA, the two-sink shape of the
++      64-bit kprintf.  **VBE graphics are I8 residue**: a bring-up
++      console wants the zero-mode-set path, and text mode is it.
++- [x] **PS/2 keyboard** (`kbd32.c`): IRQ 1, scancode set 1, US map,
++      shift — the one modifier a shell cannot live without.  One input
++      ring, two producers (PS/2 + polled UART RX), so serial and
++      keyboard input interleave in arrival order and the same smoke
++      test exercises both paths.
++- [x] **Blocking `SYS_READ`** (fd 0, cooked line, echo, backspace) and
++      **`SYS_SPAWN`** (path from user memory, page-probed) — the
++      syscalls a shell is made of.  Spawn nests: mark/release mapping
++      checkpoints in `elf32load`, per-level user stacks, the parent's
++      exit-trampoline context saved around the child.
++- [x] **`shell32`** (`userspace/system/shell32/`): Ring 3, linked at
++      `0x30000000` (`shell32.ld`) so children at `0x08048000` share
++      the one page directory by address-range treaty; help/uname/pid/
++      echo/run/exit, absent commands name their phase.
++- [x] PIT/UART "recompile-clean" claim: proven — both were running
++      since I2; the I7 work was the RX side only.
++- [ ] ~~e1000, AHCI~~ — **I8** (scope note below).  USB/xHCI, BT,
++      Wi-Fi, virtio: deferred as planned, per-arch rows in I9's matrix.
+ 
+ #### Test gate
+ 
+-- i386 QEMU: DHCP acquires a lease and `ping` gets an echo reply
+-  (`test_e1000_irq`-equivalent under `qemu-system-i386`); AHCI
+-  read/write self-test passes; the framebuffer console shows the boot
+-  log (VNC screenshot assert, as `test_graphics.sh` does today).
++- `i386_shell_smoke.sh` (16 assertions): drives a full session over
++  serial — prompt, uname, exact-string echo, **nested spawn** (`run
++  bin32/init32` at depth 1 with the child's output and `exit code 7`
++  reported by the shell), unknown-command diagnostic, clean exit,
++  kernel survival ✔.  x86_64 pair green ✔.
++
++#### Result
++
++Two real bugs, both found by the gate and now regression-covered:
++
++1. **The cleared-IF deadlock.**  `int 0x80` is an interrupt gate; IF
++   arrives cleared in the handler.  The first `cons32_readline` slept
++   with a bare `hlt` — a machine wedged forever behind a freshly
++   painted prompt.  Fix: `sti; hlt; cli`, with the comment carrying
++   the measurement.
++2. **esp0 bulldozing live frames.**  The setjmp-trampoline design
++   keeps `user32_run_elf`'s C frames on the kernel stack while Ring 3
++   runs — so `TSS.esp0 = kstack_top` had every trap descend INTO those
++   frames.  It *appeared* to work with 16 KiB of headroom; the nested
++   spawn moved the frames close enough for the trap to overwrite the
++   parent's saved context, and the parent resumed into garbage (#PF at
++   a heap eip; then cr2 = 0x2a — the child's exit code where a return
++   address should be, as clean a smoking gun as fault frames give).
++   Fix: a dedicated per-image trap stack, armed via
++   `thread32_set_esp0`, parent's restored around the child.  The I4
++   design note said the TSS "is the load-bearing wall"; I7 measured
++   exactly where it buckles.
++
++**Scope note, argued:** e1000/AHCI on i386 have no consumer until the
++VFS/net layers port — a NIC that DHCPs into a kernel with no sockets
++and a disk with no filesystem are demos, not drivers.  I8 is where
++their consumers arrive, so I8 is where they land, together with the
++gates the original I7 text specified (DHCP lease + ping, AHCI RW).
++What I7 delivered instead is the thing users touch first and the plan
++originally put here: the console, whole.
++
++Also delivered: three earlier smoke tests updated for the new reality
++that an input-less boot blocks at the prompt (their "reached idle"
++asserts converted to phase-scoped survival markers; the driven-session
++idle proof lives in this phase's own smoke) — recorded here because
++editing older gates is exactly the kind of change that deserves a
++paper trail.
+ 
+ #### Deliverable
+ 
+diff --git a/Makefile b/Makefile
+index 3f2a257..27e6d69 100644
+--- a/Makefile
++++ b/Makefile
+@@ -183,8 +183,22 @@ $(INIT32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD
+ 	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD)/syscall32.o -o $@
+ 	@echo "  [user32] $@"
+ 
++# I7: the interactive shell.  Linked at 0x30000000 (shell32.ld) so the
++# children it spawns at 0x08048000 share the address space -- see the
++# script's header for the treaty.
++SHELL32_ELF := $(USER32_BUILD)/shell32
++
++$(USER32_BUILD)/shell32.o: userspace/system/shell32/shell32.c lib/libc32/libc32.h
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGS32) -c $< -o $@
++
++$(SHELL32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/shell32.o $(USER32_BUILD)/syscall32.o lib/libc32/shell32.ld
++	$(LD) -m elf_i386 -nostdlib -static -T lib/libc32/shell32.ld \
++	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/shell32.o $(USER32_BUILD)/syscall32.o -o $@
++	@echo "  [user32] $@"
++
+ .PHONY: user32
+-user32: $(INIT32_ELF)
++user32: $(INIT32_ELF) $(SHELL32_ELF)
+ 
+ # =============================================================================
+ # BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
+@@ -1485,7 +1499,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
+ .PHONY: petest
+ petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
+ 
+-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF)
++$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF)
+ 	@rm -rf $(INITRD_DIR)
+ 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
+ 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
+@@ -1566,6 +1580,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
+ # other's class, and the path split means neither can even try.
+ 	@mkdir -p $(INITRD_DIR)/bin32
+ 	@strip -s $(INIT32_ELF) -o $(INITRD_DIR)/bin32/init32
++	@strip -s $(SHELL32_ELF) -o $(INITRD_DIR)/bin32/shell32
+ # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
+ # HTTPS client can validate server chains against it.
+ 	@mkdir -p $(INITRD_DIR)/etc/ssl
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 535bf92..f6723af 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-18e23706643805ef88d588f2e1bdcc0f23bd3418e9eea3e33dbac8241f3be883  auralite.iso
++ff67ac0ecef5b82ddacc90da12379b0b792699f1f6574f3432259ef176557b41  auralite.iso
+ ca42b702a84a2e7ff707483ae03b1fc5f7e46e11392f9fccbe33825bd49290f7  kernel.elf
+-8c0bdabdc7df649e72190d9bd15688fc6512808e05a973da9f7a64e2a3a990e0  initrd.tar
++5b7a546ec78b5b8a0619ea32ceaf797820f0159467ab142d76d75a871a2a410b  initrd.tar
+diff --git a/kernel/arch/i386/boot32.asm b/kernel/arch/i386/boot32.asm
+index 310a248..f6e5bc7 100644
+--- a/kernel/arch/i386/boot32.asm
++++ b/kernel/arch/i386/boot32.asm
+@@ -109,4 +109,11 @@ section .bss
+ align 16
+ stack_bottom:
+     resb STACK_SIZE
++; Exported (I7): sched32_init records this as thread 0's kernel-stack
++; top so TSS.esp0 is armed for the boot thread too.  Before this
++; export, thread 0's esp0 silently kept the LAST WORKER's freed stack
++; top after the scheduler self-test -- Ring 3 traps on the boot thread
++; then landed in reclaimed heap memory and worked purely by accident.
++global boot_stack_top
++boot_stack_top:
+ stack_top:
+diff --git a/kernel/arch/i386/elf32load.c b/kernel/arch/i386/elf32load.c
+index 5efd90c..f971731 100644
+--- a/kernel/arch/i386/elf32load.c
++++ b/kernel/arch/i386/elf32load.c
+@@ -37,11 +37,29 @@ struct elf32_phdr {
+     uint32_t p_filesz, p_memsz, p_flags, p_align;
+ };
+ 
+-/* Track what we mapped so unmap can undo it (single image at a time). */
++/* Track what we mapped so unmap can undo it.  I7 turned the single
++ * image slot into a mark/release stack: SYS_SPAWN nests -- the shell
++ * (itself a user image) traps into the kernel, and the spawn handler
++ * runs the child image from inside the shell's syscall, on the same
++ * kernel thread.  elf32load_mark() checkpoints the mapping list
++ * before the child; elf32load_unmap() releases back to the newest
++ * mark, leaving the parent's pages untouched.  The images' VIRTUAL
++ * windows must not overlap -- the shell links at 0x30000000
++ * (shell32.ld) so children at 0x08048000 fit beside it, and
++ * paging32_map's already-mapped refusal is the backstop. */
+ #define MAX_MAPPED 64
+-static uint32_t mapped_vaddr[MAX_MAPPED];
+-static uint32_t mapped_frame[MAX_MAPPED];
++#define MAX_NEST   4
++static uint32_t MV[MAX_MAPPED];
++static uint32_t MF[MAX_MAPPED];
+ static uint32_t mapped_count;
++static uint32_t marks[MAX_NEST];
++static uint32_t mark_depth;
++
++void elf32load_mark(void)
++{
++    if (mark_depth < MAX_NEST)
++        marks[mark_depth++] = mapped_count;
++}
+ 
+ static int map_user_page(uint32_t vaddr, uint32_t flags)
+ {
+@@ -59,8 +77,8 @@ static int map_user_page(uint32_t vaddr, uint32_t flags)
+         pmm32_free_frame(frame);
+         return -1;
+     }
+-    mapped_vaddr[mapped_count] = vaddr;
+-    mapped_frame[mapped_count] = frame;
++    MV[mapped_count] = vaddr;
++    MF[mapped_count] = frame;
+     mapped_count++;
+     return 0;
+ }
+@@ -121,7 +139,7 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
+             /* Segments may share a page boundary; map once. */
+             uint32_t already = 0;
+             for (uint32_t m = 0; m < mapped_count; m++)
+-                if (mapped_vaddr[m] == va) { already = 1; break; }
++                if (MV[m] == va) { already = 1; break; }
+             if (!already && map_user_page(va, flags) != 0) {
+                 elf32load_unmap();
+                 return 0;
+@@ -134,8 +152,8 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
+             uint32_t va    = ph->p_vaddr + off;
+             uint32_t frame = 0;
+             for (uint32_t m = 0; m < mapped_count; m++)
+-                if (mapped_vaddr[m] == (va & ~(PAGE_SIZE_32 - 1)))
+-                    { frame = mapped_frame[m]; break; }
++                if (MV[m] == (va & ~(PAGE_SIZE_32 - 1)))
++                    { frame = MF[m]; break; }
+             ((uint8_t *)p2v_32(frame))[va & (PAGE_SIZE_32 - 1)] =
+                 image[ph->p_offset + off];
+         }
+@@ -148,9 +166,11 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
+ 
+ void elf32load_unmap(void)
+ {
+-    for (uint32_t m = 0; m < mapped_count; m++) {
+-        paging32_unmap(mapped_vaddr[m]);
+-        pmm32_free_frame(mapped_frame[m]);
++    /* Release back to the newest mark (or to empty when unnested). */
++    uint32_t floor = mark_depth ? marks[--mark_depth] : 0;
++    for (uint32_t m = floor; m < mapped_count; m++) {
++        paging32_unmap(MV[m]);
++        pmm32_free_frame(MF[m]);
+     }
+-    mapped_count = 0;
++    mapped_count = floor;
+ }
+diff --git a/kernel/arch/i386/elf32load.h b/kernel/arch/i386/elf32load.h
+index e9024ef..0c8e4b1 100644
+--- a/kernel/arch/i386/elf32load.h
++++ b/kernel/arch/i386/elf32load.h
+@@ -21,8 +21,11 @@
+ 
+ uint32_t elf32load_map(const uint8_t *image, uint32_t size);
+ 
+-/* Unmap and free every page elf32load_map established (one image at a
+- * time at bring-up scope, like user32's single-slot contract). */
++/* I7: mark/release nesting for SYS_SPAWN.  elf32load_mark() checkpoints
++ * the mapping list before a nested child image; elf32load_unmap()
++ * releases back to the newest mark, leaving the parent's pages alone.
++ * Unnested callers just call unmap as before. */
++void elf32load_mark(void);
+ void elf32load_unmap(void);
+ 
+ #endif /* AURALITE_ARCH_I386_ELF32LOAD_H */
+diff --git a/kernel/arch/i386/gdt.c b/kernel/arch/i386/gdt.c
+index 3d61579..bc0b152 100644
+--- a/kernel/arch/i386/gdt.c
++++ b/kernel/arch/i386/gdt.c
+@@ -44,6 +44,11 @@ void tss_set_esp0(uint32_t esp0)
+     tss.esp0 = esp0;
+ }
+ 
++uint32_t tss_get_esp0(void)
++{
++    return tss.esp0;
++}
++
+ void gdt_init(void)
+ {
+     /* null */
+diff --git a/kernel/arch/i386/kbd32.c b/kernel/arch/i386/kbd32.c
+new file mode 100644
+index 0000000..744e6d5
+--- /dev/null
++++ b/kernel/arch/i386/kbd32.c
+@@ -0,0 +1,156 @@
++/* kernel/arch/i386/kbd32.c -- PS/2 keyboard + console input
++ * (I386_PLAN I7).
++ *
++ * The scancode tables mirror drivers/keyboard/keymap.c's US layout at
++ * set-1 bring-up scope (the 64-bit driver's richer key-event ring,
++ * layout selection and E0 handling are I8 residue -- the ratchet
++ * tracks the include when the shared driver ports).  Shift is the one
++ * modifier a shell cannot live without, so shift is the one modifier
++ * implemented.
++ */
++
++#include <stdint.h>
++
++#include "kernel/arch/i386/kbd32.h"
++#include "kernel/arch/i386/irq32.h"
++#include "kernel/arch/i386/isr.h"
++#include "kernel/arch/i386/portio.h"
++#include "kernel/arch/i386/kprintf32.h"
++
++#define KBD_DATA 0x60
++
++/* Scancode set 1, US layout, press codes 0x00..0x39. */
++static const char map_lo[0x3A] = {
++      0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
++   '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
++      0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
++      0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/',
++      0, '*', 0, ' '
++};
++
++static const char map_hi[0x3A] = {
++      0,  27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
++   '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
++      0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
++      0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?',
++      0, '*', 0, ' '
++};
++
++#define LSHIFT_DOWN 0x2A
++#define RSHIFT_DOWN 0x36
++#define RELEASE_BIT 0x80
++
++/* ---- the input ring ----------------------------------------------------- */
++
++#define RING_SIZE 256
++static volatile uint8_t  ring[RING_SIZE];
++static volatile uint32_t ring_head, ring_tail;   /* head = write side */
++
++static void ring_push(uint8_t c)
++{
++    uint32_t next = (ring_head + 1) % RING_SIZE;
++    if (next == ring_tail)
++        return;                     /* full: drop, never block an IRQ */
++    ring[ring_head] = c;
++    ring_head = next;
++}
++
++int cons32_getc(void)
++{
++    /* Opportunistically drain the polled UART into the same ring so
++     * serial and PS/2 input interleave in arrival order. */
++    while (uart32_has_byte())
++        ring_push(uart32_read_byte());
++
++    if (ring_tail == ring_head)
++        return -1;
++    uint8_t c = ring[ring_tail];
++    ring_tail = (ring_tail + 1) % RING_SIZE;
++    return c;
++}
++
++/* ---- the PS/2 side ------------------------------------------------------ */
++
++static int shift_down;
++
++static void kbd32_irq(struct registers32 *regs)
++{
++    (void)regs;
++    uint8_t sc = inb(KBD_DATA);
++
++    if (sc == LSHIFT_DOWN || sc == RSHIFT_DOWN) {
++        shift_down = 1;
++        return;
++    }
++    if (sc == (LSHIFT_DOWN | RELEASE_BIT) || sc == (RSHIFT_DOWN | RELEASE_BIT)) {
++        shift_down = 0;
++        return;
++    }
++    if (sc & RELEASE_BIT)
++        return;                     /* other releases: ignore */
++    if (sc >= sizeof(map_lo))
++        return;                     /* E0 extensions etc.: I8 residue */
++
++    char c = shift_down ? map_hi[sc] : map_lo[sc];
++    if (c)
++        ring_push((uint8_t)c);
++}
++
++void kbd32_init(void)
++{
++    /* Flush anything stale in the output buffer. */
++    while (inb(0x64) & 1)
++        (void)inb(KBD_DATA);
++
++    irq32_install(1, kbd32_irq);
++    irq32_unmask(1);
++    kprintf32("[boot] PS/2 keyboard on IRQ 1 (set 1, US map, shift)\n");
++}
++
++/* ---- cooked-line read ---------------------------------------------------- */
++
++uint32_t cons32_readline(char *buf, uint32_t cap)
++{
++    uint32_t n = 0;
++
++    for (;;) {
++        int ci = cons32_getc();
++        if (ci < 0) {
++            /* Nothing pending: sleep until the next interrupt (PIT or
++             * keyboard).  `sti` is load-bearing, not decoration: this
++             * runs inside an int 0x80 INTERRUPT gate, which cleared
++             * IF on entry -- a bare `hlt` here deadlocks the machine
++             * with a prompt on screen (measured: the first I7 boot
++             * did exactly that).  sti;hlt re-enables interrupts for
++             * the sleep; the CPU takes the wake interrupt after hlt
++             * retires, and cli restores the gate's contract before
++             * the ring is re-examined. */
++            __asm__ volatile("sti; hlt; cli");
++            continue;
++        }
++
++        char c = (char)ci;
++        if (c == '\r')
++            c = '\n';
++
++        if (c == '\b' || c == 0x7F) {
++            if (n > 0) {
++                n--;
++                kputs32("\b \b");
++            }
++            continue;
++        }
++
++        if (c == '\n') {
++            kputc32('\n');
++            if (n < cap)
++                buf[n++] = '\n';
++            return n;
++        }
++
++        if (n + 1 < cap) {          /* leave room for the newline */
++            buf[n++] = c;
++            kputc32(c);             /* echo */
++        }
++    }
++}
+diff --git a/kernel/arch/i386/kbd32.h b/kernel/arch/i386/kbd32.h
+new file mode 100644
+index 0000000..10c7185
+--- /dev/null
++++ b/kernel/arch/i386/kbd32.h
+@@ -0,0 +1,27 @@
++/* kernel/arch/i386/kbd32.h -- PS/2 keyboard + console input queue
++ * (I386_PLAN I7).
++ *
++ * Two producers, one queue: the PS/2 keyboard (IRQ 1, scancode set 1
++ * translated to ASCII) and the polled UART RX (drained opportunistically
++ * from the read path).  One consumer: SYS_READ on fd 0, which blocks
++ * the calling thread's Ring 3 syscall by hlt-waiting in kernel context
++ * until a line is available -- cooked mode, echo on, backspace honoured.
++ * Raw mode and termios arrive with the full tty port (plan §6 residue);
++ * a shell needs cooked lines, so cooked lines are what I7 ships.
++ */
++
++#ifndef AURALITE_ARCH_I386_KBD32_H
++#define AURALITE_ARCH_I386_KBD32_H
++
++#include <stdint.h>
++
++void kbd32_init(void);
++
++/* Non-blocking: -1 when the queue is empty, else the next byte. */
++int  cons32_getc(void);
++
++/* Blocking cooked-line read; echoes, handles backspace, returns the
++ * number of bytes written to buf (newline included when it fits). */
++uint32_t cons32_readline(char *buf, uint32_t cap);
++
++#endif /* AURALITE_ARCH_I386_KBD32_H */
+diff --git a/kernel/arch/i386/kprintf32.c b/kernel/arch/i386/kprintf32.c
+index d5ca083..772e232 100644
+--- a/kernel/arch/i386/kprintf32.c
++++ b/kernel/arch/i386/kprintf32.c
+@@ -8,6 +8,7 @@
+ 
+ #include "kernel/arch/i386/portio.h"
+ #include "kernel/arch/i386/kprintf32.h"
++#include "kernel/arch/i386/vga32.h"
+ 
+ #define COM1 0x3F8
+ 
+@@ -22,12 +23,30 @@ void uart32_init(void)
+     outb(COM1 + 4, 0x0B);
+ }
+ 
++/* I7: UART receive side, polled.  IRQ4-driven RX can follow when
++ * something needs it; the shell's read path polls from the idle
++ * loop's hlt cadence, which at human typing speed loses nothing. */
++int uart32_has_byte(void)
++{
++    return inb(COM1 + 5) & 0x01;
++}
++
++uint8_t uart32_read_byte(void)
++{
++    return inb(COM1 + 0);
++}
++
+ void kputc32(char c)
+ {
+     if (c == '\n')
+         kputc32('\r');
+     while (!(inb(COM1 + 5) & 0x20)) { }
+     outb(COM1 + 0, (uint8_t)c);
++    /* Fan out to the VGA text console once it exists (I7) -- same
++     * two-sink shape as the 64-bit kprintf.  VGA handles its own \n,
++     * so skip the \r we synthesised for the serial line. */
++    if (c != '\r' && vga32_active())
++        vga32_putc(c);
+ }
+ 
+ void kputs32(const char *s)
+diff --git a/kernel/arch/i386/kprintf32.h b/kernel/arch/i386/kprintf32.h
+index 5f2ec54..187ada5 100644
+--- a/kernel/arch/i386/kprintf32.h
++++ b/kernel/arch/i386/kprintf32.h
+@@ -17,4 +17,8 @@ void kputc32(char c);
+ void kputs32(const char *s);
+ void kprintf32(const char *fmt, ...);
+ 
++/* I7: polled UART receive (the serial side of the console's input). */
++int uart32_has_byte(void);
++unsigned char uart32_read_byte(void);
++
+ #endif /* AURALITE_ARCH_I386_KPRINTF32_H */
+diff --git a/kernel/arch/i386/main32.c b/kernel/arch/i386/main32.c
+index 68cb176..b5e0606 100644
+--- a/kernel/arch/i386/main32.c
++++ b/kernel/arch/i386/main32.c
+@@ -27,6 +27,8 @@
+ #include "kernel/arch/i386/thread32.h"
+ #include "kernel/arch/i386/user32.h"
+ #include "kernel/arch/i386/initrd32.h"
++#include "kernel/arch/i386/vga32.h"
++#include "kernel/arch/i386/kbd32.h"
+ 
+ void thread32_reap(void);
+ 
+@@ -210,6 +212,12 @@ void kmain32(uint32_t boot_info_phys)
+         goto halt;
+     }
+ 
++    /* ---- I7: the console grows a screen and a keyboard ---- */
++    vga32_init();
++    kprintf32("[boot] VGA text console online (80x25 at 0xB8000); "
++              "kprintf fans out to UART + VGA\n");
++    kbd32_init();
++
+     /* ---- I2 self-tests (still gating every boot) ---- */
+     if (selftest_breakpoint() == 0)
+         kprintf32("[isr] PASS: deliberate #BP named, dumped, resumed\n");
+@@ -246,12 +254,17 @@ void kmain32(uint32_t boot_info_phys)
+             kprintf32("[init] PASS: init32 ran and exited %d as built\n", code);
+         else
+             kprintf32("[init] FAIL: init32 exit=%d (want 7)\n", code);
++
++        /* ---- I7: the interactive shell (the auralite# gate) ---- */
++        kprintf32("[boot] starting shell (Ring 3)\n");
++        int sh = user32_run_elf("bin32/shell32");
++        kprintf32("[shell] exited %d\n", sh);
+     } else {
+         kprintf32("[init] SKIP: no initrd\n");
+     }
+ 
+-    kprintf32("[kernel] I5 userspace online; idle (I6 adds the width "
+-              "sweep + shared code adoption)\n");
++    kprintf32("[kernel] I7 console+shell online; idle (I8 adds fs/net "
++              "parity)\n");
+ 
+ halt:
+     for (;;) {
+diff --git a/kernel/arch/i386/thread32.c b/kernel/arch/i386/thread32.c
+index 7957bf2..3f54011 100644
+--- a/kernel/arch/i386/thread32.c
++++ b/kernel/arch/i386/thread32.c
+@@ -30,6 +30,11 @@ struct tcb32 {
+     uint32_t    esp;            /* saved kernel stack pointer          */
+     uint32_t    kstack_base;    /* kmalloc32 block (0 for the boot tcb) */
+     uint32_t    kstack_top;
++    uint32_t    esp0;           /* TSS.esp0 while this thread runs --
++                                 * a DEDICATED trap stack armed by
++                                 * user32 before entering Ring 3, and
++                                 * 0 for threads that never do.  See
++                                 * the I7 lesson at thread32_set_esp0. */
+     int         state;
+     const char *name;
+     thread32_fn fn;
+@@ -69,17 +74,29 @@ static void thread32_entry(void)
+     thread32_exit();
+ }
+ 
++/* boot32.asm: top of the boot stack thread 0 runs on. */
++extern uint8_t boot_stack_top[];
++
+ void sched32_init(void)
+ {
+     for (int i = 0; i < THREAD32_MAX; i++)
+         tcbs[i].state = THREAD32_STATE_FREE;
+ 
+     /* Adopt the boot context: kmain32's stack becomes thread 0's.  Its
+-     * esp is live (never read until the first switch stores it). */
+-    tcbs[0].state = THREAD32_STATE_READY;
+-    tcbs[0].name  = "boot/idle";
+-    current       = 0;
+-    sched_online  = 1;
++     * esp is live (never read until the first switch stores it).
++     * kstack_top is recorded so switch_to arms TSS.esp0 for thread 0
++     * exactly like any other thread -- the I7 shell found the gap:
++     * after the sched self-test, esp0 still pointed at the LAST
++     * WORKER'S freed stack, and the boot thread's Ring 3 traps ran on
++     * reclaimed heap until a nested spawn corrupted it (#PF with a
++     * heap eip, measured).  A thread that can host user code must own
++     * the esp0 it traps onto -- no exceptions, including thread 0. */
++    tcbs[0].state      = THREAD32_STATE_READY;
++    tcbs[0].name       = "boot/idle";
++    tcbs[0].kstack_top = (uint32_t)boot_stack_top;
++    current            = 0;
++    sched_online       = 1;
++    tss_set_esp0(tcbs[0].kstack_top);
+ 
+     kprintf32("[sched] round-robin online (BSP-only, %u slots, "
+               "%u KiB kernel stacks)\n",
+@@ -144,9 +161,14 @@ static void switch_to(int next)
+     current  = next;
+ 
+     /* Arm the ring-transition stack for the incoming thread (see the
+-     * file comment).  Thread 0 keeps the boot stack; its top is not
+-     * recorded, and it never runs Ring 3 code. */
+-    if (tcbs[next].kstack_top)
++     * file comment).  esp0 (armed by user32 while the thread hosts a
++     * Ring 3 image; see thread32_set_esp0) wins over kstack_top: the
++     * setjmp-trampoline design keeps live C frames ON the kernel
++     * stack while Ring 3 runs, so trapping onto kstack_top would
++     * bulldoze them -- the trap needs its own stack. */
++    if (tcbs[next].esp0)
++        tss_set_esp0(tcbs[next].esp0);
++    else if (tcbs[next].kstack_top)
+         tss_set_esp0(tcbs[next].kstack_top);
+ 
+     context_switch32(&tcbs[prev].esp, tcbs[next].esp);
+@@ -188,6 +210,33 @@ void thread32_reap(void)
+     __asm__ volatile("sti");
+ }
+ 
++/* I7: arm/disarm a dedicated Ring 3 trap stack for the CURRENT thread.
++ *
++ * The lesson, twice-measured, recorded once: TSS.esp0 must point at a
++ * stack that is EMPTY at trap time.  kstack_top is not it -- the
++ * setjmp-trampoline keeps user32_run_elf's live C frames on the kernel
++ * stack while Ring 3 runs, and the first version (esp0 = kstack_top)
++ * had every int 0x80 bulldoze those frames from the top down.  It
++ * *appeared* to work while 16 KiB of headroom separated the frames
++ * from the top; the nested `run` from the shell moved the frames close
++ * enough for the trap to overwrite saved_esp/saved_ebp, and the parent
++ * resumed into garbage (#PF at heap eip, then #PF at cr2=0x2a = the
++ * child's exit code where a return address should be).  user32 now
++ * allocates a trap stack per image and arms it here; disarm on exit. */
++void thread32_set_esp0(uint32_t esp0)
++{
++    tcbs[current].esp0 = esp0;
++    if (esp0)
++        tss_set_esp0(esp0);
++    else if (tcbs[current].kstack_top)
++        tss_set_esp0(tcbs[current].kstack_top);
++}
++
++uint32_t thread32_current_esp0(void)
++{
++    return tcbs[current].esp0;
++}
++
+ void sched32_tick(void)
+ {
+     if (sched_online)
+diff --git a/kernel/arch/i386/thread32.h b/kernel/arch/i386/thread32.h
+index 97729db..b8c5eec 100644
+--- a/kernel/arch/i386/thread32.h
++++ b/kernel/arch/i386/thread32.h
+@@ -43,4 +43,9 @@ int  thread32_state(int tid);
+ int  thread32_current_tid(void);
+ const char *thread32_name(int tid);
+ 
++/* I7: dedicated Ring 3 trap stack for the current thread (0 = disarm,
++ * falling back to kstack_top).  See the measured lesson in thread32.c. */
++void thread32_set_esp0(uint32_t esp0);
++uint32_t thread32_current_esp0(void);
++
+ #endif /* AURALITE_ARCH_I386_THREAD32_H */
+diff --git a/kernel/arch/i386/user32.c b/kernel/arch/i386/user32.c
+index d9a4a7b..e466454 100644
+--- a/kernel/arch/i386/user32.c
++++ b/kernel/arch/i386/user32.c
+@@ -28,6 +28,8 @@
+ #include "kernel/arch/i386/thread32.h"
+ #include "kernel/arch/i386/initrd32.h"
+ #include "kernel/arch/i386/elf32load.h"
++#include "kernel/arch/i386/kbd32.h"
++#include "kernel/arch/i386/kheap32.h"
+ 
+ /* user_entry32.asm */
+ extern void user32_enter(uint32_t entry, uint32_t user_esp);
+@@ -74,9 +76,57 @@ int user32_fault(struct registers32 *regs)
+ 
+ /* ---- int 0x80 ----------------------------------------------------------- */
+ 
++/* Copy a NUL-terminated user string, page-probing as we go.  Returns
++ * 0 on success.  The bring-up stand-in for strncpy_from_user. */
++static int copy_user_path(uint32_t uptr, char *dst, uint32_t cap)
++{
++    for (uint32_t i = 0; i < cap - 1; i++) {
++        uint32_t va = uptr + i;
++        if (va >= KERNEL_VBASE_32 || !paging32_probe(va, NULL))
++            return -1;
++        dst[i] = *(const char *)va;
++        if (!dst[i])
++            return 0;
++    }
++    return -1;                       /* unterminated within cap */
++}
++
+ static void syscall32_dispatch(struct registers32 *regs)
+ {
+     switch (regs->eax) {
++    case SYS32_READ: {
++        /* read(fd=ebx, buf=ecx, len=edx): fd 0, cooked console line.
++         * The buffer must be user-mapped and writable-by-user; probe
++         * each touched page before the blocking wait, not after. */
++        if (regs->ebx != 0 || regs->edx == 0 || regs->edx > 4096 ||
++            regs->ecx >= KERNEL_VBASE_32 ||
++            regs->ecx + regs->edx > KERNEL_VBASE_32) {
++            regs->eax = (uint32_t)-1;
++            return;
++        }
++        for (uint32_t va = regs->ecx & ~(PAGE_SIZE_32 - 1);
++             va < regs->ecx + regs->edx; va += PAGE_SIZE_32) {
++            if (!paging32_probe(va, NULL)) {
++                regs->eax = (uint32_t)-14;   /* -EFAULT */
++                return;
++            }
++        }
++        regs->eax = cons32_readline((char *)regs->ecx, regs->edx);
++        return;
++    }
++    case SYS32_SPAWN: {
++        /* spawn(path=ebx): run another initrd ELF32 to completion and
++         * return its exit code.  Nested inside the caller's own
++         * user32_run context, so the parent's setjmp slot is saved
++         * around the child -- see user32_run_elf's nesting note. */
++        char path[64];
++        if (copy_user_path(regs->ebx, path, sizeof(path)) != 0) {
++            regs->eax = (uint32_t)-14;       /* -EFAULT */
++            return;
++        }
++        regs->eax = (uint32_t)user32_run_elf(path);
++        return;
++    }
+     case SYS32_WRITE: {
+         /* write(fd=ebx, buf=ecx, len=edx) -> console only at I4/I5.
+          * I5 widened the check from the fixed I4 window to "every
+@@ -165,6 +215,17 @@ int user32_run_image(const uint8_t *code, uint32_t code_len)
+         return -1;
+     }
+ 
++    /* Dedicated trap stack (see thread32_set_esp0's measured lesson). */
++    uint8_t *trap_stack = (uint8_t *)kmalloc32(8192);
++    if (!trap_stack) {
++        paging32_unmap(USER_TEXT_VADDR);
++        paging32_unmap(USER_STACK_VADDR);
++        pmm32_free_frame(text_frame);
++        pmm32_free_frame(stack_frame);
++        return -1;
++    }
++    thread32_set_esp0((uint32_t)trap_stack + 8192);
++
+     user_exit_code = -1;
+     user_active    = 1;
+ 
+@@ -187,6 +248,8 @@ int user32_run_image(const uint8_t *code, uint32_t code_len)
+         : "memory", "eax", "ecx", "edx");
+ 
+     /* user32_leave lands here with the kernel stack rewound. */
++    thread32_set_esp0(0);
++    kfree32(trap_stack);
+     paging32_unmap(USER_TEXT_VADDR);
+     paging32_unmap(USER_STACK_VADDR);
+     pmm32_free_frame(text_frame);
+@@ -251,37 +314,71 @@ int user32_selftest(void)
+ 
+ /* ---- I5: ELF32 images from the initrd ----------------------------------- */
+ 
++/* Spawn depth: 0 = launched from kmain, 1 = child spawned by a user
++ * image (the shell).  Each nesting level needs its own stack page
++ * address AND the parent's exit-trampoline context saved around the
++ * child -- user32_leave must return control to the INNERMOST
++ * user32_run_elf, and the parent must be resumable afterwards. */
++static uint32_t spawn_depth;
++
+ int user32_run_elf(const char *path)
+ {
+     const uint8_t *image;
+     uint32_t size;
+ 
++    if (spawn_depth >= 2) {
++        kprintf32("[user] spawn depth limit (2) -- refusing\n");
++        return -1;
++    }
++
+     if (!initrd32_find(path, &image, &size)) {
+         kprintf32("[user] /%s: not found in the initrd\n", path);
+         return -1;
+     }
+ 
++    /* Checkpoint the parent's mappings (no-op at depth 0) and its
++     * exit-trampoline context. */
++    elf32load_mark();
++    uint32_t p_esp = saved_esp, p_ebp = saved_ebp, p_eip = saved_eip;
++    int p_active = user_active;
++
+     uint32_t entry = elf32load_map(image, size);
+-    if (!entry)
++    if (!entry) {
++        elf32load_unmap();          /* releases to the mark */
+         return -1;
++    }
+ 
+-    /* User stack: one page just under the ELF window's ceiling, well
+-     * clear of the load segments the bounds check confined below it. */
++    /* User stack: one page per nesting level, stepping down from the
++     * ELF window's ceiling so parent and child stacks never collide. */
++    uint32_t stack_page = ELF32_USER_MAX - PAGE_SIZE_32 * (spawn_depth + 1);
+     uint32_t stack_frame = pmm32_alloc_frame();
+-    if (!stack_frame) {
++    if (!stack_frame ||
++        paging32_map(stack_page, stack_frame,
++                     PAGE32_FLAG_USER | PAGE32_FLAG_WRITE) != 0) {
++        if (stack_frame)
++            pmm32_free_frame(stack_frame);
+         elf32load_unmap();
+         return -1;
+     }
+-    uint32_t stack_page = ELF32_USER_MAX - PAGE_SIZE_32;
+-    if (paging32_map(stack_page, stack_frame,
+-                     PAGE32_FLAG_USER | PAGE32_FLAG_WRITE) != 0) {
++
++    /* A DEDICATED trap stack for this image's Ring 3 entries (the
++     * measured lesson in thread32_set_esp0: esp0 must point at an
++     * empty stack, and kstack_top has our live frames under it).
++     * 8 KiB from the kernel heap per nesting level. */
++    uint32_t p_esp0 = thread32_current_esp0();
++    uint8_t *trap_stack = (uint8_t *)kmalloc32(8192);
++    if (!trap_stack) {
++        paging32_unmap(stack_page);
+         pmm32_free_frame(stack_frame);
+         elf32load_unmap();
+         return -1;
+     }
++    thread32_set_esp0((uint32_t)trap_stack + 8192);
+ 
+-    kprintf32("[user] running /%s (entry %x, %u bytes)\n", path, entry, size);
++    kprintf32("[user] running /%s (entry %x, %u bytes, depth %u)\n",
++              path, entry, size, spawn_depth);
+ 
++    spawn_depth++;
+     user_exit_code = -1;
+     user_active    = 1;
+ 
+@@ -297,11 +394,25 @@ int user32_run_elf(const char *path)
+         "2:\n"
+         "1:\n"
+         : "=m"(saved_esp), "=m"(saved_ebp), "=m"(saved_eip)
+-        : "m"(user_active), "r"(entry), "r"(ELF32_USER_MAX - 16)
++        : "m"(user_active), "r"(entry), "r"(stack_page + PAGE_SIZE_32 - 16)
+         : "memory", "eax", "ecx", "edx");
+ 
++    /* user32_leave lands here; the child's exit code is latched. */
++    int code = user_exit_code;
++    spawn_depth--;
++
++    thread32_set_esp0(p_esp0);      /* parent's trap stack (or disarm) */
++    kfree32(trap_stack);
+     paging32_unmap(stack_page);
+     pmm32_free_frame(stack_frame);
+-    elf32load_unmap();
+-    return user_exit_code;
++    elf32load_unmap();              /* child's pages only, to the mark */
++
++    /* Restore the parent's trampoline: the next SYS32_EXIT (the
++     * parent's own) must land in the OUTER user32_run_elf frame. */
++    saved_esp   = p_esp;
++    saved_ebp   = p_ebp;
++    saved_eip   = p_eip;
++    user_active = p_active;
++
++    return code;
+ }
+diff --git a/kernel/arch/i386/user32.h b/kernel/arch/i386/user32.h
+index d9e3ff2..3ff6dd4 100644
+--- a/kernel/arch/i386/user32.h
++++ b/kernel/arch/i386/user32.h
+@@ -20,10 +20,12 @@
+ 
+ #include <stdint.h>
+ 
+-/* AuraLite numbers (lib/libc/include/unistd.h), the I4 subset. */
++/* AuraLite numbers (lib/libc/include/unistd.h), the I4 subset + I7. */
++#define SYS32_READ       0
+ #define SYS32_WRITE      1
+ #define SYS32_GETPID    39
+ #define SYS32_EXIT      60
++#define SYS32_SPAWN     81   /* non-standard: spawn from initrd path */
+ #define SYS32_YIELD    158   /* SYS_SCHED_YIELD */
+ 
+ /* Register the int 0x80 gate (DPL=3) in the IDT. */
+diff --git a/kernel/arch/i386/vga32.c b/kernel/arch/i386/vga32.c
+new file mode 100644
+index 0000000..576d81e
+--- /dev/null
++++ b/kernel/arch/i386/vga32.c
+@@ -0,0 +1,88 @@
++/* kernel/arch/i386/vga32.c -- VGA text-mode console (I386_PLAN I7). */
++
++#include <stdint.h>
++
++#include "kernel/arch/i386/vga32.h"
++#include "kernel/arch/i386/paging32.h"
++#include "kernel/arch/i386/portio.h"
++
++#define VGA_PHYS   0xB8000u
++#define VGA_COLS   80
++#define VGA_ROWS   25
++#define VGA_ATTR   0x07        /* light grey on black */
++
++static volatile uint16_t *vram;
++static int col, row;
++static int active;
++
++static void move_cursor(void)
++{
++    uint16_t pos = (uint16_t)(row * VGA_COLS + col);
++    outb(0x3D4, 0x0F); outb(0x3D5, (uint8_t)(pos & 0xFF));
++    outb(0x3D4, 0x0E); outb(0x3D5, (uint8_t)(pos >> 8));
++}
++
++static void scroll(void)
++{
++    for (int r = 1; r < VGA_ROWS; r++)
++        for (int c = 0; c < VGA_COLS; c++)
++            vram[(r - 1) * VGA_COLS + c] = vram[r * VGA_COLS + c];
++    for (int c = 0; c < VGA_COLS; c++)
++        vram[(VGA_ROWS - 1) * VGA_COLS + c] = (VGA_ATTR << 8) | ' ';
++    row = VGA_ROWS - 1;
++}
++
++void vga32_init(void)
++{
++    vram = (volatile uint16_t *)p2v_32(VGA_PHYS);
++    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++)
++        vram[i] = (VGA_ATTR << 8) | ' ';
++    col = row = 0;
++    move_cursor();
++    active = 1;
++}
++
++int vga32_active(void)
++{
++    return active;
++}
++
++void vga32_putc(char c)
++{
++    if (!active)
++        return;
++
++    switch (c) {
++    case '\n':
++        col = 0;
++        if (++row >= VGA_ROWS)
++            scroll();
++        break;
++    case '\r':
++        col = 0;
++        break;
++    case '\b':
++        if (col > 0) {
++            col--;
++            vram[row * VGA_COLS + col] = (VGA_ATTR << 8) | ' ';
++        }
++        break;
++    case '\t':
++        col = (col + 8) & ~7;
++        if (col >= VGA_COLS) {
++            col = 0;
++            if (++row >= VGA_ROWS)
++                scroll();
++        }
++        break;
++    default:
++        vram[row * VGA_COLS + col] = (uint16_t)((VGA_ATTR << 8) | (uint8_t)c);
++        if (++col >= VGA_COLS) {
++            col = 0;
++            if (++row >= VGA_ROWS)
++                scroll();
++        }
++        break;
++    }
++    move_cursor();
++}
+diff --git a/kernel/arch/i386/vga32.h b/kernel/arch/i386/vga32.h
+new file mode 100644
+index 0000000..dd3df7c
+--- /dev/null
++++ b/kernel/arch/i386/vga32.h
+@@ -0,0 +1,23 @@
++/* kernel/arch/i386/vga32.h -- VGA text-mode console (I386_PLAN I7).
++ *
++ * The 64-bit kernel gets a linear framebuffer from its loader and
++ * draws glyphs; Stage 2's 32-bit path sets no VBE mode, so the
++ * machine is still in text mode 3 -- 80x25 cells at phys 0xB8000,
++ * reachable through the direct map.  That is not a limitation to
++ * apologise for: it is the output path that works on every VGA-class
++ * machine with zero mode-setting risk, which is exactly what a
++ * bring-up console is for.  VBE graphics are I8 residue and say so
++ * in the plan.
++ *
++ * kprintf32 fans out to BOTH sinks (UART + VGA) once vga32_init has
++ * run -- same shape as the 64-bit kprintf's console fan-out.
++ */
++
++#ifndef AURALITE_ARCH_I386_VGA32_H
++#define AURALITE_ARCH_I386_VGA32_H
++
++void vga32_init(void);
++void vga32_putc(char c);
++int  vga32_active(void);
++
++#endif /* AURALITE_ARCH_I386_VGA32_H */
+diff --git a/lib/libc32/libc32.h b/lib/libc32/libc32.h
+index aaf7180..9ab6714 100644
+--- a/lib/libc32/libc32.h
++++ b/lib/libc32/libc32.h
+@@ -13,18 +13,32 @@
+ #ifndef AURALITE_LIBC32_H
+ #define AURALITE_LIBC32_H
+ 
++#define SYS_READ         0
+ #define SYS_WRITE        1
+ #define SYS_GETPID      39
+ #define SYS_EXIT        60
++#define SYS_SPAWN       81
+ #define SYS_SCHED_YIELD 158
+ 
+ long __syscall32(long n, long a1, long a2, long a3, long a4, long a5);
+ 
++static inline long read(int fd, void *buf, unsigned long len)
++{
++    return __syscall32(SYS_READ, fd, (long)buf, (long)len, 0, 0);
++}
++
+ static inline long write(int fd, const void *buf, unsigned long len)
+ {
+     return __syscall32(SYS_WRITE, fd, (long)buf, (long)len, 0, 0);
+ }
+ 
++/* Non-standard, same number as the 64-bit SYS_SPAWN: run an initrd
++ * program to completion, return its exit code. */
++static inline long spawn(const char *path)
++{
++    return __syscall32(SYS_SPAWN, (long)path, 0, 0, 0, 0);
++}
++
+ static inline long getpid(void)
+ {
+     return __syscall32(SYS_GETPID, 0, 0, 0, 0, 0);
+diff --git a/lib/libc32/shell32.ld b/lib/libc32/shell32.ld
+new file mode 100644
+index 0000000..f90c1bb
+--- /dev/null
++++ b/lib/libc32/shell32.ld
+@@ -0,0 +1,51 @@
++/*
++ * lib/libc32/shell32.ld -- the i386 shell's layout (I386_PLAN I7).
++ *
++ * Same script as user32.ld, one number different: the shell links at
++ * 0x30000000 so the programs it spawns (children at user32.ld's
++ * 0x08048000) fit in the same address space without window collisions
++ * -- there is ONE shared page directory at I7, not per-process
++ * directories, so parent and child coexist by address-range treaty.
++ * paging32_map's already-mapped refusal is the treaty's enforcement.
++ */
++
++OUTPUT_FORMAT(elf32-i386)
++OUTPUT_ARCH(i386)
++ENTRY(_start)
++
++PHDRS
++{
++    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)); /* R + X */
++    rodata  PT_LOAD    FLAGS(1 << 2);              /* R     */
++    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
++}
++
++SECTIONS
++{
++    . = 0x30000000;
++
++    .text : {
++        *(.text .text.*)
++    } :text
++
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
++
++    .rodata : {
++        *(.rodata .rodata.*)
++    } :rodata
++
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
++
++    .data : {
++        *(.data .data.*)
++    } :data
++
++    .bss : {
++        *(.bss .bss.*)
++        *(COMMON)
++    } :data
++
++    /DISCARD/ : {
++        *(.eh_frame) *(.eh_frame_hdr) *(.note .note.*) *(.comment)
++    }
++}
+diff --git a/tests/integration/i386_cpu_smoke.sh b/tests/integration/i386_cpu_smoke.sh
+index a421212..9f24321 100755
+--- a/tests/integration/i386_cpu_smoke.sh
++++ b/tests/integration/i386_cpu_smoke.sh
+@@ -80,7 +80,10 @@ assert_grep    "$LOG32" "\[timer\] PASS: PIT ticking"                  "i386: PI
+ # complete" -> "I3 memory online" -> ...); assert the *contract* (the
+ # boot reached an idle line) rather than a phase number this test would
+ # then pin forever.
+-assert_grep    "$LOG32" "idle (I[0-9] adds\|memory online; idle"       "i386: reached idle -- no triple fault"
++# I7 note: the shell blocks on input; survival past THIS phase's scope
++# is the PIT verdict.  The driven-session idle proof lives in
++# i386_shell_smoke.sh.
++assert_grep    "$LOG32" "\[timer\] PASS"                                "i386: boot survived the CPU bring-up phase"
+ assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected faults"
+ 
+ # ---- the standing x86_64 regression gate ----
+diff --git a/tests/integration/i386_mm_smoke.sh b/tests/integration/i386_mm_smoke.sh
+index 74d01f4..fea9cdb 100755
+--- a/tests/integration/i386_mm_smoke.sh
++++ b/tests/integration/i386_mm_smoke.sh
+@@ -75,7 +75,7 @@ assert_grep    "$LOG32" "\[isr\] PASS"                                 "i386: I2
+ assert_grep    "$LOG32" "\[timer\] PASS"                               "i386: I2 PIT gate still green"
+ # Phase-advancing idle line (same generalisation i386_cpu_smoke.sh
+ # carries): assert the contract, not the phase number.
+-assert_grep    "$LOG32" "online; idle (I[0-9]"                         "i386: reached idle -- no triple fault"
++assert_grep    "$LOG32" "\\[heap\\] PASS"                                 "i386: boot survived past the memory phase (the shell blocks on input now, so the idle line needs a driven session -- i386_shell_smoke covers it)"
+ assert_no_grep "$LOG32" "FAIL"                                         "i386: no self-test failures anywhere"
+ assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no unexpected faults"
+ 
+diff --git a/tests/integration/i386_proc_smoke.sh b/tests/integration/i386_proc_smoke.sh
+index b8ccdf6..e773adc 100755
+--- a/tests/integration/i386_proc_smoke.sh
++++ b/tests/integration/i386_proc_smoke.sh
+@@ -76,10 +76,12 @@ assert_grep    "$LOG32" $'^RING3-OK\r\{0,1\}$'                          "i386: R
+ assert_grep    "$LOG32" "\[user\] exit(42) via int 0x80"               "i386: exit code round-trip"
+ assert_grep    "$LOG32" "vector=13.*terminating image (code 141)"      "i386: negative control -- Ring 3 hlt contained via #GP"
+ assert_grep    "$LOG32" "\[user\] PASS: Ring 3 write/getpid/exit"      "i386: user self-test verdict"
+-# Phase-advancing idle line (the same generalisation the I2/I3 smokes
+-# carry): the negative control runs BEFORE this line prints, so any
+-# "online; idle" reached after it proves the kernel survived the fault.
+-assert_grep    "$LOG32" "online; idle (I[0-9]"                         "i386: kernel SURVIVED the Ring 3 fault -- reached idle"
++# Survival marker, I7 revision: the shell BLOCKS on console input, so
++# an input-less boot never reaches the idle line any more.  What still
++# proves the kernel survived the negative-control fault (which fires
++# BEFORE init/shell start) is everything that runs after it: init32's
++# PASS verdict, then the shell prompt.
++assert_grep    "$LOG32" "\[init\] PASS\|auralite# "                    "i386: kernel SURVIVED the Ring 3 fault -- boot continued"
+ assert_grep    "$LOG32" "\[pmm\] PASS"                                 "i386: I3 pmm gate still green"
+ assert_grep    "$LOG32" "\[vmm\] PASS"                                 "i386: I3 vmm gate still green"
+ assert_grep    "$LOG32" "\[heap\] PASS"                                "i386: I3 heap gate still green"
+diff --git a/tests/integration/i386_shell_smoke.sh b/tests/integration/i386_shell_smoke.sh
+new file mode 100755
+index 0000000..cd32b6f
+--- /dev/null
++++ b/tests/integration/i386_shell_smoke.sh
+@@ -0,0 +1,105 @@
++#!/usr/bin/env bash
++# tests/integration/i386_shell_smoke.sh -- I386_PLAN phase I7 smoke test.
++#
++# The `auralite#` gate, delivered where I5 deferred it.  Drives the
++# interactive shell over serial on the real `make iso` image:
++#
++#   * the VGA text console and the PS/2 keyboard initialise (the input
++#     RING is shared: serial input exercises the same cons32 path the
++#     keyboard feeds);
++#   * the shell prompt appears, and each scripted command round-trips:
++#     uname, echo (exact string), a NESTED `run bin32/init32` -- a user
++#     image spawning a second user image through SYS_SPAWN, with the
++#     child's full output and `exit code 7` reported by the SHELL, not
++#     the kernel -- an unknown-command diagnostic, and a clean exit;
++#   * the kernel survives the whole session and reaches the I7 idle
++#     line; no unhandled exceptions anywhere (this catches both
++#     regressions of the two REAL bugs this phase found: the cleared-IF
++#     hlt deadlock and the esp0-bulldozes-live-frames corruption).
++#
++# Plus the standing x86_64 no-regression pair.
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ISO="$BUILD/auralite.iso"
++LOG32="$BUILD/i386_shell.log"
++LOG64="$BUILD/i386_shell_x64.log"
++
++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
++
++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
++    echo "[i386-shell] SKIP: qemu-system-i386 not installed" >&2
++    exit 0
++fi
++
++fail=0
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-shell] OK   %s\n' "$desc"
++    else
++        printf '  [i386-shell] FAIL %s\n' "$desc"
++        fail=1
++    fi
++}
++
++assert_no_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then
++        printf '  [i386-shell] FAIL %s\n' "$desc"
++        fail=1
++    else
++        printf '  [i386-shell] OK   %s\n' "$desc"
++    fi
++}
++
++# ---- the interactive session ----
++# Generous sleeps: TCG boots through every earlier phase's self-tests
++# before the prompt, and serial input typed before the first read is
++# only buffered as deep as the UART FIFO.
++rm -f "$LOG32"
++{
++    sleep 25
++    printf 'uname\n';                 sleep 2
++    printf 'echo shell-gate-echo\n';  sleep 2
++    printf 'run bin32/init32\n';      sleep 3
++    printf 'definitely-not-a-cmd\n';  sleep 2
++    printf 'exit\n';                  sleep 3
++} | timeout 50 qemu-system-i386 \
++        -drive format=raw,file="$ISO",if=ide,snapshot=on \
++        -m 512M \
++        -display none -serial stdio -no-reboot \
++        > "$LOG32" 2>/dev/null || true
++
++assert_grep    "$LOG32" "VGA text console online"                      "i386: VGA console up (kprintf second sink)"
++assert_grep    "$LOG32" "PS/2 keyboard on IRQ 1"                       "i386: keyboard driver up"
++assert_grep    "$LOG32" "auralite# "                                   "i386: the auralite# prompt (the I5-deferred gate)"
++assert_grep    "$LOG32" "AuraLite OS i386 (protected mode"             "i386: uname round-trip"
++assert_grep    "$LOG32" "^shell-gate-echo"                             "i386: echo round-trip, exact string"
++assert_grep    "$LOG32" "depth 1"                                      "i386: nested spawn ran at depth 1"
++assert_grep    "$LOG32" "init32: exiting 7"                            "i386: spawned child's own output seen"
++assert_grep    "$LOG32" "^exit code 7"                                 "i386: SHELL reported the child's exit code"
++assert_grep    "$LOG32" "definitely-not-a-cmd: unknown command"        "i386: unknown-command diagnostic"
++assert_grep    "$LOG32" "^bye"                                         "i386: clean shell exit"
++assert_grep    "$LOG32" "\[shell\] exited 0"                           "i386: kernel observed the shell's exit"
++assert_grep    "$LOG32" "console+shell online; idle"                   "i386: kernel survived the whole session"
++assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no faults (esp0 + sti;hlt regressions covered)"
++assert_no_grep "$LOG32" "FAIL"                                         "i386: no self-test failures anywhere in the boot"
++
++# ---- the standing x86_64 regression gate ----
++rm -f "$LOG64"
++timeout 35 qemu-system-x86_64 \
++        -drive format=raw,file="$ISO",if=ide,snapshot=on \
++        -m 512M \
++        -display none -serial file:"$LOG64" -no-reboot \
++        >/dev/null 2>&1 || true
++assert_grep    "$LOG64" "Hello from AuraLite OS kernel!"               "x86_64: kernel banner unchanged"
++assert_no_grep "$LOG64" "(i386)"                                       "x86_64: no 32-bit artefacts in the log"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[i386-shell] FAILED"
++    exit 1
++fi
++echo "[i386-shell] all assertions passed"
+diff --git a/userspace/system/shell32/shell32.c b/userspace/system/shell32/shell32.c
+new file mode 100644
+index 0000000..ef98b0e
+--- /dev/null
++++ b/userspace/system/shell32/shell32.c
+@@ -0,0 +1,102 @@
++/* userspace/system/shell32/shell32.c -- the i386 interactive shell
++ * (I386_PLAN I7; the `auralite#` gate I5 deferred here, delivered).
++ *
++ * A Ring 3 program end to end: reads cooked lines through SYS_READ
++ * (PS/2 keyboard or serial -- the kernel's console ring merges both),
++ * runs initrd programs through SYS_SPAWN, prints through SYS_WRITE.
++ * The command set is the honest subset of the 64-bit init shell that
++ * has kernel support at I7; each absent command names the phase that
++ * brings it rather than pretending.
++ */
++
++#include "lib/libc32/libc32.h"
++
++static int str_eq(const char *a, const char *b)
++{
++    while (*a && *b && *a == *b) { a++; b++; }
++    return *a == *b;
++}
++
++static int starts_with(const char *s, const char *pfx)
++{
++    while (*pfx) {
++        if (*s++ != *pfx++)
++            return 0;
++    }
++    return 1;
++}
++
++static void print_dec(long v)
++{
++    char buf[12];
++    int i = 0;
++    if (v < 0) { write(1, "-", 1); v = -v; }
++    do { buf[i++] = (char)('0' + v % 10); v /= 10; } while (v);
++    while (i--)
++        write(1, &buf[i], 1);
++}
++
++static void help(void)
++{
++    puts32("commands:\n");
++    puts32("  help          this text\n");
++    puts32("  uname         kernel identification\n");
++    puts32("  pid           show this shell's pid\n");
++    puts32("  echo <text>   print text\n");
++    puts32("  run <path>    spawn an initrd ELF32 (e.g. run bin32/init32)\n");
++    puts32("  exit          leave the shell\n");
++    puts32("absent on purpose: ls/cat (VFS port, I8), net tools (I8),\n");
++    puts32("gui (no framebuffer on the i386 path yet, I8)\n");
++}
++
++int main(void)
++{
++    puts32("\nAuraLite i386 shell (I7): type 'help'\n");
++
++    char line[128];
++
++    for (;;) {
++        puts32("auralite# ");
++
++        long n = read(0, line, sizeof(line) - 1);
++        if (n <= 0)
++            continue;
++        /* Strip the newline, NUL-terminate. */
++        if (line[n - 1] == '\n')
++            n--;
++        line[n] = '\0';
++        if (n == 0)
++            continue;
++
++        if (str_eq(line, "help")) {
++            help();
++        } else if (str_eq(line, "uname")) {
++            puts32("AuraLite OS i386 (protected mode, higher half, "
++                   "I386_PLAN I7)\n");
++        } else if (str_eq(line, "pid")) {
++            puts32("pid ");
++            print_dec(getpid());
++            puts32("\n");
++        } else if (starts_with(line, "echo ")) {
++            puts32(line + 5);
++            puts32("\n");
++        } else if (str_eq(line, "echo")) {
++            puts32("\n");
++        } else if (starts_with(line, "run ")) {
++            long code = spawn(line + 4);
++            if (code < 0) {
++                puts32("run: failed (not found / not ELF32 / refused)\n");
++            } else {
++                puts32("exit code ");
++                print_dec(code);
++                puts32("\n");
++            }
++        } else if (str_eq(line, "exit")) {
++            puts32("bye\n");
++            return 0;
++        } else {
++            puts32(line);
++            puts32(": unknown command (try 'help')\n");
++        }
++    }
++}
+-- 
+2.47.3
+

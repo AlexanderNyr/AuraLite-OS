@@ -309,3 +309,34 @@ Before treating the syscall layer as robust, add:
 2. a full audit of any remaining direct user-pointer paths outside syscall dispatch;
 3. per-process syscall state instead of global saved `RCX/R11/RSP`;
 4. structured error codes (`errno`-style or negative error numbers).
+
+## The i386 trap: `int 0x80` (I386_PLAN D4)
+
+The 32-bit kernel dispatches through a DPL=3 interrupt gate on vector
+`0x80` — 32-bit mode has no `SYSCALL`, and `SYSENTER` is a later
+optimisation, not a baseline.  **The syscall numbers are the same
+table** this document already lists: one table, two trap mechanisms.
+What changes is only the register marshalling:
+
+| Register | Role |
+|---|---|
+| `EAX` | Syscall number on entry; return value on exit. |
+| `EBX` | Argument 1. |
+| `ECX` | Argument 2. |
+| `EDX` | Argument 3. |
+| `ESI` | Argument 4. |
+| `EDI` | Argument 5. |
+| `EBP` | Argument 6 (reserved; nothing marshals it yet). |
+
+Linux's i386 *register convention* is adopted because every register
+allocator understands it; Linux's i386 *numbers* are deliberately not
+(plan D4) — AuraLite's numbers already track Linux-x86_64, and one
+table that is true everywhere beats two that drift.
+
+Return convention is identical to the 64-bit path: in-band negative
+errno.  The user-side wrapper is `lib/libc32/syscall32.asm`
+(`__syscall32`); the kernel side enters through the vector-0x80 stub in
+`kernel/arch/i386/isr_stubs32.asm` and dispatches in
+`kernel/arch/i386/user32.c`.  Unlike `SYSCALL`, the interrupt gate DOES
+switch stacks: `TSS.esp0` supplies a per-image dedicated trap stack
+(see the measured lesson in `kernel/arch/i386/thread32.c`).
