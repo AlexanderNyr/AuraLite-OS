@@ -50,14 +50,14 @@ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 # The linker script fixes the higher-half address; no --image-base needed.
 LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
 
-KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*') w32/src/w32_pe.c
+KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*') w32/src/w32_pe.c
 # WIN32_PLAN.md W32-3: the kernel PE loader calls the same parser the host
 # unit test and fuzz corpus exercise (D2 -- one implementation, tested once).
 # w32/src/ is freestanding C with no libc dependency, so it compiles with the
 # kernel CFLAGS unchanged.
 # I386_PLAN I1: kernel/arch/i386/ is excluded from the x86_64 kernel -- it
 # builds through the separate kernel32 target with the i686 toolchain flags.
-KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*')
+KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*')
 # NOTE: a .c and .asm file MUST NOT share a base name (e.g. foo.c + foo.asm),
 # because both compile to the same object path build/.../foo.o, which would
 # collide and double-link. Keep assembly stubs named distinctly (e.g.
@@ -98,6 +98,13 @@ deps-check:
 	@if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then \
 		echo "[deps] optional tool absent: qemu-system-riscv64 (rv64 boot tests will skip)"; \
 		echo "[deps] Debian/Ubuntu: sudo apt install qemu-system-misc"; \
+	fi
+	@# ARM64_PLAN A0: qemu-system-aarch64 is OPTIONAL, the same pattern --
+	@# clang/lld already cross-compile to aarch64, so building kernela64
+	@# needs no new tools at all; only *running* it does.
+	@if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then \
+		echo "[deps] optional tool absent: qemu-system-aarch64 (a64 boot tests will skip)"; \
+		echo "[deps] Debian/Ubuntu: sudo apt install qemu-system-arm"; \
 	fi
 
 kernel: $(KERNEL_ELF)
@@ -226,6 +233,61 @@ run-rv: kernelrv
 	qemu-system-riscv64 -machine virt -m 256M \
 	    -display none -serial stdio -no-reboot \
 	    -kernel $(KERNELRV_ELF) \
+	    $(if $(wildcard $(BUILD_DIR)/initrd.tar),-initrd $(BUILD_DIR)/initrd.tar)
+
+# =============================================================================
+# ARM64_PLAN A0: the aarch64 kernel (kernela64.elf).
+#
+# Same clang/lld toolchain, fourth target (--target=aarch64-unknown-
+# none-elf, ld.lld -m aarch64linux) -- REQUIRED_TOOLS does not grow.
+# Assembly is .S through clang's integrated GNU as, like riscv64.
+#
+# -mstrict-align: LOAD-BEARING before the MMU (plan Fact 5.1).  With
+#   SCTLR_EL1.M clear all memory is Device-nGnRnE and an unaligned
+#   access faults -- with no vector table installed yet, that is a
+#   silent hang, not a message.  A3 measures whether the flag can be
+#   dropped once paging is on; until a measurement says so, it stays.
+# -mgeneral-regs-only: no FP/SIMD registers in kernel code -- the
+#   compiler must not spill through q-registers the context switch
+#   does not save yet.  A4 owns the FPU story (the M1 lesson, costed).
+# =============================================================================
+KERNELA64_ELF  := $(BUILD_DIR)/kernela64.elf
+KERNELA64_DIR  := kernel/arch/aarch64
+KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null)
+KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
+KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
+                  $(patsubst %.S,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_ASMS))
+KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null)
+CFLAGSA64      := --target=aarch64-unknown-none-elf \
+                  -mstrict-align -mgeneral-regs-only \
+                  -std=c11 -ffreestanding -fno-stack-protector \
+                  -fno-pie -fno-pic \
+                  -Wall -Wextra -Wno-unused-parameter \
+                  -Werror \
+                  -O2 -g -I .
+
+$(BUILD_DIR)/ka64/%.o: %.c $(KERNELA64_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSA64) -c $< -o $@
+
+$(BUILD_DIR)/ka64/%.o: %.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSA64) -c $< -o $@
+
+$(KERNELA64_ELF): $(KERNELA64_OBJS) $(KERNELA64_DIR)/kernela64.ld
+	$(LD) -m aarch64linux -nostdlib -static -T $(KERNELA64_DIR)/kernela64.ld \
+	    $(KERNELA64_OBJS) -o $@
+	@echo "  [kernela64] $@ ($$(du -h $@ | cut -f1))"
+
+.PHONY: kernela64
+kernela64: $(KERNELA64_ELF)
+
+# Convenience: boot the aarch64 kernel under QEMU (serial on stdio).
+.PHONY: run-a64
+run-a64: kernela64
+	qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 256M \
+	    -display none -serial stdio -no-reboot \
+	    -kernel $(KERNELA64_ELF) \
 	    $(if $(wildcard $(BUILD_DIR)/initrd.tar),-initrd $(BUILD_DIR)/initrd.tar)
 
 SMALLSH_SRC     := userspace/system/smallsh/smallsh.c
@@ -1965,6 +2027,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_riscv_claims.py"
 	@python3 tools/check_riscv_claims.py || exit 1
 	@python3 tools/check_riscv_claims.py --selftest || exit 1
+	@echo "[unit] running tools/check_arm64_claims.py"
+	@python3 tools/check_arm64_claims.py || exit 1
+	@python3 tools/check_arm64_claims.py --selftest || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative

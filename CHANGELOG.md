@@ -2,6 +2,98 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A0 — toolchain gates + the EL1 stub] 2026-08-17
+
+`ARM64_PLAN.md` phase A0: the fourth architecture exists in the build
+system, and a banner proves the whole path — clang → lld → QEMU ELF
+load → EL1 `_start` → PL011 → PSCI power-off.
+
+- **`make kernela64`** (`build/kernela64.elf`, 28K): same clang/lld,
+  fourth target (`--target=aarch64-unknown-none-elf`, `ld.lld -m
+  aarch64linux`) — `REQUIRED_TOOLS` does not grow;
+  `qemu-system-aarch64` is the optional tool, the mingw/riscv pattern.
+  Compiled `-mstrict-align` (pre-MMU memory is Device-nGnRnE and
+  unaligned accesses fault with no vector table to say so — plan Fact
+  5.1) and `-mgeneral-regs-only` (no q-register spills before A4
+  saves FPU state — the M1 lesson, pre-paid).
+- **`kernel/arch/aarch64/boot.S`**: EL1 assert with the honest D1
+  refusal banner on EL2 entry (measured under `virtualization=on`;
+  the refusal parks in `wfi` — PSCI over `hvc` from EL2 would trap
+  into our own empty EL2 vector); DAIF masked; `.text.boot` first by
+  `kernela64.ld` even though QEMU honours `e_entry` here — the V0
+  discipline is free and all four kernels now share it.
+- **`main_a64.c`** echoes every §1 receipt so the smoke can gate them:
+  `CurrentEL: EL1`, `x0 at entry: 0x0` (NOT the DTB pointer for ELF
+  payloads — the plan's day-one trap), the FDT magic probed
+  big-endian at the RAM base `0x40000000` (refuses on mismatch —
+  every later phase stands on that address), `CNTFRQ_EL0: 62500000 Hz`
+  (frequency is a register, not a DTB field). Ends in `SYSTEM_OFF`
+  via `hvc` so every smoke run exits in under a second.
+- **`a64_boot_smoke.sh`** (10 assertions): banner, all four fact
+  echoes, PSCI exit inside the timeout, `-smp 4` prints the banner
+  exactly once (D5: assert, don't assume), EL2 refusal asserted with
+  zero kernel output after it.
+- **`tools/check_arm64_claims.py`** ships in A0 per D8 (11 claims:
+  9 phase + 2 structural, the terminal Status arithmetic armed from
+  birth), registered in `make test-unit` beside its two siblings.
+
+## [ARM64_PLAN — the fourth architecture, planned] 2026-08-17
+
+Adds the ARM (aarch64 / ARMv8-A) support plan, in the structure of
+`RISCV_PLAN.md` / `I386_PLAN.md`: dependency-ordered phases A0–A9, a
+definition of done and a test gate for each, one `.patch` per phase.
+
+- **`ARM64_PLAN.md` (new, phases A0–A9).** §1 is measured, not assumed
+  — a minimal EL1 stub was assembled, linked and booted under
+  `qemu-system-aarch64 -machine virt` during fact-finding, and the
+  banner it printed carries three plan-shaping facts: QEMU enters ELF
+  `-kernel` payloads at **EL1** (no EL3, no BL31 chain); **`x0` is NOT
+  the DTB pointer for ELF payloads** — the stub read `x0 = 0`, and a
+  second probe found the FDT magic at the **RAM base `0x40000000`**
+  (a kernel trusting the Linux-`Image` x0 promise would deref NULL on
+  day one); `CNTFRQ_EL0` reads 62.5 MHz — the timer frequency is a
+  register, not a DTB field. PSCI `SYSTEM_OFF` via `hvc` measured
+  working (the SBI-shutdown analogue); the PL011 at `0x9000000`
+  printed with zero initialisation.
+- **The virt board's DTB dumped and decompiled**: GICv2 (not a PLIC —
+  A2's main cost, a genuinely different programming model), 32
+  virtio-mmio windows at `0xa000000`, PCIe ECAM present and deferred
+  (D7), PSCI `method = "hvc"`. The 3-cell interrupt encoding's
+  off-by-32 (`SPI 16` = INTID 48) is normalised once, centrally, in A1
+  — no driver ever adds 32 itself.
+- **The reuse dividend named as the plan's thesis**: the DTB walker
+  (418 lines) and the virtio-mmio transport (201 lines) built for
+  riscv64 are almost portable already — A1/A7 *promote* them to shared
+  code with the rv64 kernel switching to the shared copy in the same
+  patch, claim-checked to a single linked object. The fourth
+  architecture should cost drivers and CPU bring-up, not another copy
+  of everything.
+- **Decisions**: aarch64 on QEMU `virt` only, arm32 and EL2 refused
+  (D1); no firmware stage, PSCI is a service not a stage, DTB from the
+  RAM base with the magic validated (D2); TTBR1 39-bit VA with 4 KB
+  granule — deliberately Sv39's geometry, and `HHDM_OFFSET` comes out
+  `0xFFFFFFC000000000` **by TTBR1 arithmetic, equal to riscv64's by
+  computation not copy-paste** — claim-checked (D3); `svc #0` into the
+  one syscall table, fourth trap mechanism (D4); boot CPU only, `PSCI
+  CPU_ON` the named exit ramp (D5); the sweep is a backend now, not a
+  discovery phase — DAIF/wfi/yield behind the four contracts, thesis:
+  zero portable-file edits (D6); shared virtio-mmio transport first,
+  PCIe deferred (D7); the claim checker ships in A0 (D8).
+- **New costs stated honestly** (§1 Fact 5): `-mstrict-align` before
+  the MMU (unaligned faults on Device memory — a task, not a debugging
+  session), MAIR Device-nGnRE mappings as load-bearing (the transport
+  will refuse to attach over a Normal mapping), explicit
+  `dsb/isb/tlbi` discipline, the GICv2 driver, the 16×128-byte vector
+  table, a 528-byte FPU frame (M1 lesson, fourth edition).
+- Toolchain measured: clang/lld/rustup all ship aarch64 targets —
+  `REQUIRED_TOOLS` does not grow; `gcc-14-aarch64-linux-gnu` declares
+  `Conflicts: gcc-multilib` (same solver conflict as the riscv cross
+  gcc, same CI job-separation rule), and the bare cross gcc arrives
+  without a libc under `--no-install-recommends` —
+  `libc6-dev-arm64-cross` is named in A8/A9 from a measured failure,
+  not a guess. `__int128` executed under `qemu-aarch64`; `EM_AARCH64 =
+  183` read from the ELF header for the fourth initrd tenant audit.
+
 ## [RV V9 — CI matrix, docs, the claim check completed] 2026-08-17
 
 RISCV_PLAN phase V9 — and the plan CLOSES: Status COMPLETE, all ten
