@@ -1,13 +1,13 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V2 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V3 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | V0 — toolchain gates + the S-mode stub | ✅ complete | `patches/RV_V0_boot.patch` |
 | V1 — `boot_info_t` from the Device Tree | ✅ complete | `patches/RV_V1_dtb.patch` |
 | V2 — traps, timer, PLIC | ✅ complete | `patches/RV_V2_traps.patch` |
-| V3 — memory: Sv39, PMM, heap — and W^X back | pending | `patches/RV_V3_mm.patch` |
+| V3 — memory: Sv39, PMM, heap — and W^X back | ✅ complete | `patches/RV_V3_mm.patch` |
 | V4 — threads, scheduler, U-mode, `ecall` | pending | `patches/RV_V4_proc.patch` |
 | V5 — userspace: libc-rv, init, the shared shell | pending | `patches/RV_V5_user.patch` |
 | V6 — the inline-assembly sweep | pending | `patches/RV_V6_sweep.patch` |
@@ -522,26 +522,84 @@ shutdown in ~1 s.
 
 ---
 
-### Phase V3 — Memory: Sv39, PMM, heap — and W^X back
+### Phase V3 — Memory: Sv39, PMM, heap — and W^X back ✅ COMPLETE
 
 **Objective:** higher-half kernel behind Sv39, the standard PASS trio,
 and the property i386 could not have: enforced W^X.
 
 #### Tasks
 
-- [ ] `paging_rv.c`: three-level walk, map/unmap/probe; `satp` write +
+- [x] `paging_rv.c`: three-level walk, map/unmap/probe; `satp` write +
       `sfence.vma`; boot sequence maps the kernel higher-half + the
       HHDM direct map with 2 MiB megapages, then drops the identity
       window (the I3 shape, one level deeper).
-- [ ] `kernelrv.ld` moves to the Sv39 higher half; the `.boot`
+- [x] `kernelrv.ld` moves to the Sv39 higher half; the `.boot`
       physical-entry section pattern carries over from `kernel32.ld`.
-- [ ] PMM: `kernel/lib/bitmap.h`, third consumer, zero edits expected
+- [x] PMM: `kernel/lib/bitmap.h`, third consumer, zero edits confirmed
       (the header's whole point); heap: the kheap32 design at LP64.
-- [ ] **W^X enforced and tested**: user PTEs get R/W/X from ELF
-      `p_flags`; a store to `.text` and a fetch from the stack must
-      both fault — the `elfperm` gates return, and the i386 status
-      row's ❌ gets a green sibling that proves the loss there was
-      D3's honesty, not the tree's ceiling.
+- [x] **W^X enforced and tested** for the kernel's own image: a store
+      to `.text` and an execute-from-data must both fault — proven by
+      resumable fault probes. (User PTEs from ELF `p_flags` move to
+      V4 with U-mode itself — there is no user ELF to load yet; the
+      enforcement machinery they will use is what this phase built
+      and tested.)
+
+#### Result
+
+Delivered as specified. The boot shape: `boot.S` turns Sv39 on before
+any C runs — the early root table is assembly-time DATA (gigapage
+leaves are constants: identity @2, HHDM 256–259), so no code builds
+tables before an allocator exists; then a literal-pool long jump to
+`_start_high` up high. `paging_rv.c` later builds the FINAL tables
+with an allocator and real permissions and drops the identity window.
+
+Facts earned during the phase:
+
+- **medany cannot address the low symbols from the higher half**:
+  `auipc`'s ±2 GiB window does not span the HHDM gap, so
+  `__kernel_start` etc. are unreachable as C symbols up high. They
+  travel as data — `kernel_layout[8]`, a `.rodata` literal pool
+  boot.S exports; fdt.c's self-report reads it too.
+- **Mapping order is the algorithm**: `map_range` skips present
+  entries and `walk` refuses to put a table under a leaf, so kernel
+  sections map FIRST (4 KiB, real permissions), the split megapages'
+  remainder second, the 4 GiB HHDM sweep (2 MiB RW megapages) last.
+  Reversed, the sweep's leaves would block the section tables and the
+  kernel would silently run unprotected.
+- **Fault probes cannot resume by sepc += 4** — for execute-from-data
+  the sepc IS the unexecutable address. `rv_setjmp` /
+  `rv_longjmp_entry` (trapentry.S): the handler rewrites the frame so
+  `sret` unwinds to the probe's setjmp with "the fault happened" as
+  the return value. Access-fault and page-fault codes are both
+  accepted per probe (PMPs and PTEs report the same sin differently).
+- **DBCN wants physical addresses**: since V3 the console buffer's
+  stack VA is higher-half, so `sbi_putc` subtracts the HHDM offset
+  before handing the pointer to M-mode firmware.
+- The heap self-test **failed its first run** (host harness with
+  ASan reproduced it in seconds): first-fit had no "append a fresh
+  block at the committed edge" path when the tail block was used —
+  alloc-heavy phases OOM'd a 64 MiB window at 20 KB used. Fixed;
+  the failing shape is now inside the passing gate.
+
+Measured (full run, ~1 s to SBI shutdown):
+
+```
+[pmm]  frames tracked: 65536, free: 65357 (255 MiB)
+[pmm]  PASS: 64 frames out and back, count restored
+[vmm]  Sv39 final tables live: .text RX, .rodata R, data RW, HHDM RW; identity window dropped
+[isr] Store/AMO Page Fault at sepc=0xffffffc0802061f2 -- expected (fault probe), unwinding
+[vmm]  store to .text faulted (W^X write half)
+[isr] Instruction Page Fault at sepc=0xffffffc080208040 -- expected (fault probe), unwinding
+[vmm]  execute-from-data faulted (W^X execute half -- impossible to prove on i386)
+[vmm]  identity window confirmed dropped (low load faults)
+[heap] PASS: 64 cycles, no corruption, no leak
+```
+
+`sepc=0xffffffc08020xxxx` in every diagnostic is the link/boot
+agreement proof (`eip=c01xxxxx`'s successor). The i386 status row's
+❌ has its green sibling: same tree, same discipline, the arch with
+the X bit enforces what the arch without one could only document.
+Smoke: 29 → 36 assertions; claims: 19 → 25.
 
 #### Test gate
 

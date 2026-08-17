@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "kernel/arch/riscv64/fdt.h"
+#include "kernel/arch/riscv64/paging_rv.h"
 
 /* ---- big-endian reads (the whole point of this file) ------------------- */
 
@@ -130,7 +131,12 @@ static void mmap_add(boot_info_t *bi, uint64_t base, uint64_t len,
 int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
               boot_info_t *bi, fdt_platform_t *plat)
 {
-    const uint8_t *dtb = (const uint8_t *)dtb_phys;
+    /* V3: boot.S turned Sv39 on before any C ran, so physical
+     * pointers no longer dereference bare -- the DTB is read through
+     * the HHDM.  (The early identity gigapage would still carry a
+     * bare read TODAY, but paging_rv_init drops it, and bootargs --
+     * which points into this buffer -- outlives that drop.) */
+    const uint8_t *dtb = (const uint8_t *)p2v_rv(dtb_phys);
 
     /* -- header ---------------------------------------------------- */
     if (be32(dtb + H_MAGIC) != FDT_MAGIC_V)
@@ -376,11 +382,13 @@ done:
                  BOOT_MEM_KERNEL);
     }
 
-    /* The kernel image itself, from the linker script's bounds. */
+    /* The kernel image itself.  The bounds are absolute low symbols
+     * the higher-half code cannot address directly (medany's auipc
+     * cannot span the HHDM gap), so boot.S exports them as data. */
     {
-        extern uint8_t __kernel_start[], __kernel_end[];
-        mmap_add(bi, (uint64_t)__kernel_start,
-                 (uint64_t)(__kernel_end - __kernel_start),
+        extern const uint64_t kernel_layout[8];
+        mmap_add(bi, kernel_layout[0],
+                 kernel_layout[7] - kernel_layout[0],
                  BOOT_MEM_KERNEL);
     }
 

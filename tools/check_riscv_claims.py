@@ -105,6 +105,32 @@ def claims():
          "claim/complete" in smoke),
     ]
 
+    # --- V3: Sv39, PMM, heap, W^X ---
+    pagec = read("kernel", "arch", "riscv64", "paging_rv.c")
+    pmmc  = read("kernel", "arch", "riscv64", "pmm_rv.c")
+    ldscr = read("kernel", "arch", "riscv64", "kernelrv.ld")
+    boots2 = read("kernel", "arch", "riscv64", "boot.S")
+    checks += [
+        ("V3: the linker script is higher-half (HHDM VMA, physical LMA)",
+         "HHDM = 0xFFFFFFC000000000" in ldscr and "AT(ADDR(" in ldscr),
+        ("V3: boot.S turns Sv39 on before any C runs",
+         "csrw  satp" in boots2 and "early_root" in boots2),
+        ("V3: the PMM is bitmap.h's third consumer, header unedited",
+         'include "kernel/lib/bitmap.h"' in pmmc and
+         "pmm32" not in read("kernel", "lib", "bitmap.h")),
+        ("V3: no W+X PTE is ever built (grep the flag combos)",
+         # pte_leaf()'s R|W|X MASK is a test, not a mapping -- excluded.
+         "PTE_R | PTE_X" in pagec and "PTE_R | PTE_W" in pagec and
+         "PTE_W | PTE_X" not in
+         "".join(l for l in pagec.splitlines() if "pte_leaf" not in l)),
+        ("V3: the vmm self-test probes all three faults",
+         "probe_store_text" in pagec and "probe_exec_data" in pagec and
+         "probe_load_identity" in pagec),
+        ("V3: the smoke test asserts higher-half sepc and the W^X pair",
+         "sepc=0xffffffc0" in smoke and
+         "execute-from-data faulted" in smoke),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the

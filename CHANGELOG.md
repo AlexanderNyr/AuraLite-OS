@@ -2,6 +2,43 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V3 — Sv39, PMM, heap — and W^X back] 2026-08-17
+
+RISCV_PLAN phase V3: the kernel lives in the Sv39 higher half behind
+real page permissions, the standard PASS trio ([pmm]/[vmm]/[heap])
+runs on the third architecture, and W^X — i386's honest ❌ — is
+enforced and PROVEN by fault.
+
+- **`boot.S` + `kernelrv.ld`:** Sv39 on before any C runs — the early
+  root table is assembly-time data (constant gigapage leaves:
+  identity @2 for the two fetches after `csrw satp`, HHDM @256–259),
+  then a literal-pool long jump high. The linker script goes
+  higher-half (VMA = HHDM + phys via `AT()`, `.boot` at VMA=LMA); low
+  absolute symbols travel as the `kernel_layout[8]` literal pool
+  because medany's `auipc` cannot span the HHDM gap.
+- **`paging_rv.c` (new):** three-level walk, map/unmap/probe; final
+  tables with an allocator: .text RX, .rodata R, data RW, HHDM as
+  2 MiB RW megapages, NO identity window. Order is load-bearing
+  (sections first, megapage sweep last — skip-if-present semantics).
+  `[vmm]` gate: positive path + three resumable fault probes — store
+  to .text, execute from data, load from the dropped identity window
+  — via a setjmp/longjmp-through-the-trap-frame mechanism in
+  trapentry.S (sepc += 4 cannot resume an exec fault; sepc IS the bad
+  address).
+- **`pmm_rv.c` (new):** `kernel/lib/bitmap.h`'s third consumer, header
+  untouched; usable-opens/non-usable-closes two-pass init over V1's
+  typed mmap; 4 GiB horizon with the D6 skip-don't-truncate line.
+- **`kheap_rv.c` (new):** kheap32's design at LP64. Its self-test
+  FAILED first (host+ASan harness reproduced instantly): first-fit
+  lacked the append-at-committed-edge path when the tail block was
+  used. Fixed; the failing shape lives inside the passing gate.
+- **`sbi.c`:** DBCN gets physical addresses — the HHDM offset comes
+  off the buffer pointer before it crosses to M-mode.
+- **`rv_boot_smoke.sh`:** 29 → 36 assertions (higher-half sepc, the
+  PASS trio, both W^X halves, identity-drop proof).
+  **`check_riscv_claims.py`:** 19 → 25 claims (incl. "no W+X PTE is
+  ever built" as a grep over the mapping code).
+
 ## [RV V2 — traps, timer, PLIC] 2026-08-17
 
 RISCV_PLAN phase V2: `stvec` catches everything with named

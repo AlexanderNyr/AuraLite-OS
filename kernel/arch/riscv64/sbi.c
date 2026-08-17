@@ -67,14 +67,17 @@ void sbi_console_init(void)
 void sbi_putc(char c)
 {
     if (have_dbcn) {
-        /* DBCN write: num_bytes, base_addr_lo, base_addr_hi.  The
-         * byte lives on the stack; satp=0 at V0, so its address IS
-         * a physical address, which is what DBCN wants.  When paging
-         * arrives (V3), this switches to the UART driver first --
-         * recorded there, not forgotten here. */
+        /* DBCN write: num_bytes, base_addr_lo, base_addr_hi -- and
+         * the address must be PHYSICAL (the SBI spec says so; OpenSBI
+         * reads the buffer from M-mode with paging off).  Since V3
+         * the stack is a higher-half VA, so the HHDM offset comes
+         * back off before the pointer crosses to the firmware.
+         * (V0..V2 ran satp=0 where VA==PA and the subtraction would
+         * have been wrong; this line is version-locked to the boot
+         * layout in boot.S, which turns Sv39 on before any C runs.) */
         char buf = c;
         sbi_call(SBI_EID_DBCN, SBI_FID_DBCN_WRITE,
-                 1, (long)(uintptr_t)&buf, 0);
+                 1, (long)((uintptr_t)&buf - 0xFFFFFFC000000000UL), 0);
     } else {
         sbi_call(SBI_EID_LEGACY_PUTCHAR, 0, (long)c, 0, 0);
     }

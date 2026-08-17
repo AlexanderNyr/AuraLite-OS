@@ -1,61 +1,84 @@
 /*
  * kernel/arch/riscv64/kernelrv.ld -- linker script for the rv64 kernel
- * (RISCV_PLAN V0).
+ * (RISCV_PLAN V0; higher-half since V3).
  *
- * V0 links at physical 0x80200000: RAM on the QEMU virt machine starts
- * at 0x80000000 and OpenSBI owns the first 2 MiB, so 0x80200000 is the
- * conventional S-mode payload address (what -kernel loads, what
- * fw_payload builds expect on real boards).  VMA = LMA, paging off --
- * the same stub-then-grow shape kernel32.ld had at I1: V3 moves the
- * kernel to the Sv39 higher half and this script grows the .boot
- * physical-entry section then, not before.
+ * V3 layout, the kernel32.ld pattern one level deeper:
  *
- * Same PHDRS discipline as the other two kernels' scripts:
- * differently-permissioned segments never share a page.  On THIS arch
- * the discipline is enforceable from V3 day one (Sv39 PTEs carry a
- * real X bit -- plan Fact 5), so the layout being right before paging
- * exists is the whole point.
+ *   .boot   VMA = LMA = 0x80200000 -- the physical-entry world.
+ *           OpenSBI jumps to the payload BASE (0x80200000, NOT
+ *           e_entry -- measured in V0), so .text.boot stays the first
+ *           byte of the first segment.  _start runs here with paging
+ *           off: hart lottery, the early Sv39 root table (also in
+ *           this section -- it must exist before any allocator), the
+ *           satp write, and the absolute jump high.
+ *
+ *   everything else: VMA = HHDM + physical, LMA = physical (AT()).
+ *           The D3 direct-map constant 0xFFFFFFC000000000 makes
+ *           "kernel virtual address" and "HHDM view of its physical
+ *           address" the SAME number -- the same trick kernel32.ld
+ *           played at 0xC0000000, with 256 GiB of headroom instead
+ *           of 896 MiB.
+ *
+ * PHDRS discipline: differently-permissioned segments never share a
+ * page, and on THIS arch the permissions are real from V3 on -- Sv39
+ * PTEs carry a genuine X bit, so paging_rv.c maps .text RX, .rodata
+ * R, .data/.bss RW from the section bounds exported here.  The .boot
+ * segment is honestly RWX in its ELF header: it is the pre-paging
+ * world, and the final tables map it read-only.
  */
 
 OUTPUT_FORMAT(elf64-littleriscv)
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
+HHDM = 0xFFFFFFC000000000;
+
 PHDRS
 {
-    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)); /* R + X */
-    rodata  PT_LOAD    FLAGS(1 << 2);              /* R     */
-    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
+    boot    PT_LOAD    FLAGS((1 << 0) | (1 << 1) | (1 << 2)); /* R+W+X */
+    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2));            /* R + X */
+    rodata  PT_LOAD    FLAGS(1 << 2);                         /* R     */
+    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2));            /* R + W */
 }
 
 SECTIONS
 {
     . = 0x80200000;
 
-    /* Image bounds: V1's FDT shim marks [__kernel_start, __kernel_end)
-     * as BOOT_MEM_KERNEL in the mmap it builds -- the same self-report
-     * the x86 loaders make on the kernel's behalf. */
+    /* Image bounds, PHYSICAL, as absolute symbols.  C code cannot
+     * take their address directly (medany's auipc cannot reach an
+     * absolute 0x80200000 from the higher half); boot.S exports them
+     * through the kernel_phys_bounds literal pool instead. */
     __kernel_start = .;
 
-    .text : {
-        /* .text.boot FIRST: OpenSBI jumps to the payload BASE
-         * (0x80200000), not to e_entry -- measured in V0, see the
-         * comment at _start in boot.S.  The linker script is what
-         * makes "first byte" and "_start" the same fact. */
-        KEEP(*(.text.boot))
+    .boot : {
+        KEEP(*(.text.boot))     /* _start == first byte: the V0 fact */
+        *(.boot.data)           /* early root table + hart lottery */
+    } :boot
+
+    . = ALIGN(4096);
+    __boot_end_phys = .;
+
+    /* ---- the higher-half switch: VMA += HHDM, LMA stays physical ---- */
+    . = . + HHDM;
+
+    __text_start = .;
+    .text : AT(ADDR(.text) - HHDM) {
         *(.text .text.*)
     } :text
+    . = ALIGN(4096);
+    __text_end = .;
 
-    . = ALIGN(CONSTANT(MAXPAGESIZE));
-
-    .rodata : {
+    __rodata_start = .;
+    .rodata : AT(ADDR(.rodata) - HHDM) {
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
     } :rodata
+    . = ALIGN(4096);
+    __rodata_end = .;
 
-    . = ALIGN(CONSTANT(MAXPAGESIZE));
-
-    .data : {
+    __data_start = .;
+    .data : AT(ADDR(.data) - HHDM) {
         *(.data .data.*)
         /* RISC-V small-data sections; __global_pointer$ would let us
          * use gp-relative addressing, but the kernel builds with
@@ -64,7 +87,7 @@ SECTIONS
         *(.sdata .sdata.*)
     } :data
 
-    .bss : {
+    .bss : AT(ADDR(.bss) - HHDM) {
         . = ALIGN(16);
         __bss_start = .;
         *(.bss .bss.*)
@@ -74,7 +97,8 @@ SECTIONS
         __bss_end = .;
     } :data
 
-    __kernel_end = .;
+    . = ALIGN(4096);
+    __kernel_end = . - HHDM;
 
     /DISCARD/ : {
         *(.eh_frame)

@@ -1,4 +1,4 @@
-/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V2).
+/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V3).
  *
  * V0 proved the chain (clang -> lld -> OpenSBI -> _start -> SBI
  * console); V1 makes this kernel the third CONSUMER of boot_info_t.
@@ -16,7 +16,10 @@
 
 #include "boot/shared/boot_info.h"
 #include "kernel/arch/riscv64/fdt.h"
+#include "kernel/arch/riscv64/kheap_rv.h"
+#include "kernel/arch/riscv64/paging_rv.h"
 #include "kernel/arch/riscv64/plic.h"
+#include "kernel/arch/riscv64/pmm_rv.h"
 #include "kernel/arch/riscv64/sbi.h"
 #include "kernel/arch/riscv64/trap.h"
 
@@ -60,7 +63,7 @@ static int boot_info_check(void)
 
     sbi_puts("[mm]   HHDM offset: ");
     put_hex64(boot_info.hhdm_offset);
-    sbi_puts(" (Sv39 direct map; the V3 contract, satp=0 today)\n");
+    sbi_puts(" (Sv39 direct map -- live since boot.S's early tables)\n");
     return 0;
 }
 
@@ -192,7 +195,10 @@ static void v2_bringup(void)
 
     /* PLIC: threshold + enable for the UART line from the DTB. */
     if (platform.plic_base) {
-        plic_init(platform.plic_base, boot_info.bsp_lapic_id);
+        /* MMIO through the HHDM: physical bases from the DTB, plus
+         * the direct-map offset (V3 -- there is no identity map). */
+        plic_init((uint64_t)p2v_rv(platform.plic_base),
+                  boot_info.bsp_lapic_id);
         plic_enable(platform.uart_irq, uart_irq_probe);
         sbi_puts("[plic] S-context enabled, threshold 0, uart irq ");
         put_udec(platform.uart_irq);
@@ -203,7 +209,7 @@ static void v2_bringup(void)
          * interrupt (IER bit 1) raises the line right now.  Wait a
          * few ticks; the handler acks and disables itself. */
         if (platform.uart_base) {
-            uart_mmio = (volatile uint8_t *)platform.uart_base;
+            uart_mmio = (volatile uint8_t *)p2v_rv(platform.uart_base);
             uart_mmio[UART_IER] = 0x02;             /* THRE on */
             uint64_t tb = platform.timebase_freq ? platform.timebase_freq
                                                  : 10000000;
@@ -237,7 +243,7 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
              " Hello from AuraLite OS kernel (riscv64)!\n"
              "  rv64gc S-mode, booted via OpenSBI\n"
              "==============================================\n\n");
-    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V2\n");
+    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V3\n");
 
     sbi_puts("[boot] boot hart: ");
     put_udec(hartid);
@@ -273,7 +279,34 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
 
     v2_bringup();
 
-    sbi_puts("[kernel] V2 complete; shutting down "
-             "(V3 adds Sv39 paging, the PMM and the heap)\n");
+    /* ---- V3: PMM -> final Sv39 tables -> heap, each gated. ---------- */
+
+    pmm_rv_init(&boot_info);
+    if (pmm_rv_selftest() == 0) {
+        sbi_puts("[pmm]  PASS: 64 frames out and back, count restored\n");
+    } else {
+        sbi_puts("[pmm]  FAIL: self-test\n");
+        sbi_shutdown();
+    }
+
+    paging_rv_init();
+    if (paging_rv_selftest() == 0) {
+        sbi_puts("[vmm]  PASS: positive path + 3 fault probes "
+                 "(W^X write, W^X exec, identity drop)\n");
+    } else {
+        sbi_puts("[vmm]  FAIL: self-test\n");
+        sbi_shutdown();
+    }
+
+    kheap_rv_init();
+    if (kheap_rv_selftest() == 0) {
+        sbi_puts("[heap] PASS: 64 cycles, no corruption, no leak\n");
+    } else {
+        sbi_puts("[heap] FAIL: self-test\n");
+        sbi_shutdown();
+    }
+
+    sbi_puts("[kernel] V3 complete; shutting down "
+             "(V4 adds threads, the scheduler, U-mode and ecall)\n");
     sbi_shutdown();
 }

@@ -113,6 +113,37 @@ uint64_t trap_jitter_events(void) { return jitter_events; }
 static volatile int expect_illegal = 0;
 static volatile int illegal_seen   = 0;
 
+/* ---- the V3 fault-probe hook ----------------------------------------------
+ *
+ * A W^X probe cannot resume by sepc += 4 (for execute-from-data, sepc
+ * points INTO the unexecutable buffer).  Instead: setjmp before the
+ * probe; on the expected scause the handler rewrites the frame so
+ * sret lands in rv_longjmp_entry (trapentry.S) with a0 = the jmp buf,
+ * unwinding to the setjmp with return value 1. */
+
+extern int  rv_setjmp(uint64_t *buf);
+extern void rv_longjmp_entry(void);
+
+static uint64_t probe_jmpbuf[14];
+static volatile int probe_armed;
+static volatile int64_t probe_cause1 = -1, probe_cause2 = -1;
+
+int trap_run_fault_probe(int64_t cause1, int64_t cause2,
+                         void (*probe)(void *), void *arg)
+{
+    if (rv_setjmp(probe_jmpbuf)) {
+        /* Landed back from the handler: the expected fault happened. */
+        return 0;
+    }
+    probe_cause1 = cause1;
+    probe_cause2 = cause2;
+    probe_armed  = 1;
+    probe(arg);
+    /* Probe returned without faulting: that is the failure. */
+    probe_armed = 0;
+    return -1;
+}
+
 /* ---- dispatcher ----------------------------------------------------------- */
 
 static void dump_frame(const rv_trap_frame_t *f, uint64_t scause,
@@ -172,6 +203,22 @@ void rv_trap(rv_trap_frame_t *f)
          * not ignored -- an unexpected interrupt is a bug report. */
         puts_("[isr] UNEXPECTED interrupt\n");
         dump_frame(f, scause, stval);
+        return;
+    }
+
+    /* The V3 fault probes: an EXPECTED W^X/identity fault unwinds to
+     * the probe's setjmp instead of resuming (sepc += 4 cannot resume
+     * an execute-from-data fault -- sepc IS the bad address). */
+    if (probe_armed &&
+        ((int64_t)scause == probe_cause1 || (int64_t)scause == probe_cause2)) {
+        probe_armed = 0;
+        puts_("[isr] ");
+        puts_(scause < 16 ? exception_names[scause] : "Unknown");
+        puts_(" at sepc=");
+        put_hex(f->sepc);
+        puts_(" -- expected (fault probe), unwinding\n");
+        f->sepc    = (uint64_t)rv_longjmp_entry;
+        f->regs[9] = (uint64_t)probe_jmpbuf;   /* regs[9] = x10 = a0 */
         return;
     }
 

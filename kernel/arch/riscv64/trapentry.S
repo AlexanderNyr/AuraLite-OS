@@ -105,3 +105,57 @@ rv_trap_vector:
 
     addi  sp, sp, 288
     sret
+
+# =============================================================================
+# rv_setjmp / rv_longjmp_entry -- the V3 fault-probe mechanism.
+#
+# A deliberate fault probe (store to .text, execute from data) cannot
+# be resumed by sepc += 4: for execute-from-data, sepc points INTO the
+# data buffer and the next word is as unexecutable as the first.  The
+# handler instead teleports back: rv_setjmp captures the callee-saved
+# world before the probe, and on an EXPECTED fault trap.c rewrites the
+# frame so sret lands in rv_longjmp_entry with a0 = the buf -- which
+# restores that world and "returns" 1 from rv_setjmp.  The setjmp
+# contract, trap-flavoured.
+#
+# buf layout: [0]=ra [1]=sp [2..13]=s0..s11  (112 bytes)
+# =============================================================================
+
+.globl rv_setjmp
+rv_setjmp:
+    sd    ra,  0(a0)
+    sd    sp,  8(a0)
+    sd    s0,  16(a0)
+    sd    s1,  24(a0)
+    sd    s2,  32(a0)
+    sd    s3,  40(a0)
+    sd    s4,  48(a0)
+    sd    s5,  56(a0)
+    sd    s6,  64(a0)
+    sd    s7,  72(a0)
+    sd    s8,  80(a0)
+    sd    s9,  88(a0)
+    sd    s10, 96(a0)
+    sd    s11, 104(a0)
+    li    a0, 0
+    ret
+
+.globl rv_longjmp_entry
+rv_longjmp_entry:
+    # a0 = buf (planted in the trap frame by trap.c)
+    ld    ra,  0(a0)
+    ld    sp,  8(a0)
+    ld    s0,  16(a0)
+    ld    s1,  24(a0)
+    ld    s2,  32(a0)
+    ld    s3,  40(a0)
+    ld    s4,  48(a0)
+    ld    s5,  56(a0)
+    ld    s6,  64(a0)
+    ld    s7,  72(a0)
+    ld    s8,  80(a0)
+    ld    s9,  88(a0)
+    ld    s10, 96(a0)
+    ld    s11, 104(a0)
+    li    a0, 1                   # rv_setjmp's second return
+    ret

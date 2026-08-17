@@ -31,6 +31,14 @@ uint64_t trap_jitter_events(void);
  * V2-only use of sscratch; V4 takes it for the trap-stack swap. */
 void trap_set_hartid(uint64_t hartid);
 
+/* V3 fault probes: run probe(arg) expecting scause cause1 or cause2.
+ * Returns 0 if the expected fault happened (control unwinds back via
+ * a setjmp in trapentry.S), -1 if the probe survived unfaulted.
+ * Access-fault/page-fault pairs are passed together because PMPs
+ * (firmware-owned) and PTEs (ours) report the same sin differently. */
+int trap_run_fault_probe(int64_t cause1, int64_t cause2,
+                         void (*probe)(void *), void *arg);
+
 /* rdtime -- the timebase counter, for the jitter pool and timers. */
 static inline uint64_t rv_rdtime(void)
 {

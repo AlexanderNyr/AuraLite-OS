@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0-V2 smoke test.
+# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0-V3 smoke test.
 #
 # The third architecture's first gate: clang -> lld -> OpenSBI ->
 # _start -> SBI console, end to end on QEMU's virt machine.
@@ -99,7 +99,16 @@ assert_grep "$LOG" "\[timer\] PASS: [0-9]* ticks observed at 100 Hz"  "SBI timer
 assert_grep "$LOG" "\[rng\]  jitter events collected: [1-9]"          "jitter pool fed from timer traps"
 assert_grep "$LOG" "\[plic\] S-context enabled, threshold 0, uart irq 10" "PLIC programmed, uart line from DTB"
 assert_grep "$LOG" "\[plic\] PASS: claim/complete round-trip"         "PLIC claim/complete with a real device irq"
-assert_grep "$LOG" "V2 complete"                                      "kernel ran to its end"
+# ---- V3: Sv39, PMM, heap, W^X ----
+assert_grep "$LOG" "\[isr\] Illegal Instruction at sepc=0xffffffc0"   "self-test sepc is HIGHER-HALF (link/boot agree)"
+assert_grep "$LOG" "\[pmm\]  PASS"                                    "pmm gate (64 frames out/back, count restored)"
+assert_grep "$LOG" "identity window dropped"                          "final tables carry no identity window"
+assert_grep "$LOG" "\[vmm\]  store to .text faulted"                  "W^X write half enforced"
+assert_grep "$LOG" "\[vmm\]  execute-from-data faulted"               "W^X execute half enforced (impossible on i386)"
+assert_grep "$LOG" "\[vmm\]  identity window confirmed dropped"       "low load faults after the drop"
+assert_grep "$LOG" "\[vmm\]  PASS"                                    "vmm gate (positive path + 3 fault probes)"
+assert_grep "$LOG" "\[heap\] PASS"                                    "heap gate (64 cycles, no corruption, no leak)"
+assert_grep "$LOG" "V3 complete"                                      "kernel ran to its end"
 
 # No unhandled trap anywhere in the boot -- the gate's last word.
 if grep -qa "UNHANDLED\|UNEXPECTED" "$LOG"; then
