@@ -257,6 +257,29 @@ def claims():
          "| Subsystem | x86_64 | i386 | riscv64 |" in plan),
     ]
 
+    # --- V9: CI, docs, the close ---
+    ci     = read(".github", "workflows", "integration.yml")
+    status = read("docs", "status.md")
+    arch_d = read("docs", "architecture.md")
+    sysabi = read("docs", "syscall_abi.md")
+    readme = read("README.md")
+    checks += [
+        ("V9: the riscv-parity CI job exists with artefact-first order",
+         "riscv-parity:" in ci and "rv_parity_smoke.sh" in ci and
+         ci.index("binrv is in the shared initrd") <
+         ci.index("rv_boot_smoke.sh")),
+        ("V9: docs/status.md has the RISC-V section with by-design rows",
+         "## RISC-V (rv64gc) — RISCV_PLAN" in status and
+         "No own M-mode firmware" in status),
+        ("V9: docs/architecture.md carries the third boot diagram",
+         "The riscv64 boot flow" in arch_d and "hart lottery" in arch_d),
+        ("V9: docs/syscall_abi.md has the ecall table beside the other two",
+         "The riscv64 trap: `ecall`" in sysabi and
+         "`a7` | Syscall number" in sysabi),
+        ("V9: README names the third boot path",
+         "RISC-V (rv64gc)" in readme and "run-rv" in readme),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the

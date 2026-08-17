@@ -1,6 +1,6 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V8 complete (phases V0–V9)
+## Status: COMPLETE ✅ — V0–V9 all delivered (scope per phase results; residue is matrix-tracked)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -13,7 +13,7 @@
 | V6 — the inline-assembly sweep | ✅ complete | `patches/RV_V6_sweep.patch` |
 | V7 — drivers: virtio-mmio, blk, net, UART RX | ✅ complete | `patches/RV_V7_drivers.patch` |
 | V8 — parity: storage, network, full crypto | ✅ complete | `patches/RV_V8_parity.patch` |
-| V9 — CI matrix, docs, the claim check | pending | `patches/RV_V9_ci.patch` |
+| V9 — CI matrix, docs, the claim check | ✅ complete | `patches/RV_V9_ci.patch` |
 
 This document answers:
 
@@ -1046,28 +1046,63 @@ where 🚧 is true.
 
 ---
 
-### Phase V9 — CI matrix, docs, the claim check completed
+### Phase V9 — CI matrix, docs, the claim check completed ✅ COMPLETE
 
 **Objective:** three architectures on every push, documentation that
 names all three, and the claim checker closing at full coverage.
 
 #### Tasks
 
-- [ ] `.github/workflows/integration.yml`: `riscv-parity` job —
-      qemu-system-misc install, `make kernelrv`, artefact-presence
-      assert (the KERNEL32-in-the-image lesson), the rv smoke family,
-      logs on failure. Separate job, attributable red, as i386-parity
-      argued.
-- [ ] `docs/status.md`: the RISC-V section with the ❌-by-design rows
-      stated (no rv32, no own M-mode firmware with D2's argument
-      linked, no PCIe yet); `docs/architecture.md`: the third boot
-      diagram; `docs/syscall_abi.md`: the `ecall` table beside the
-      other two.
-- [ ] `check_riscv_claims.py` grown to full phase coverage + the
-      structural header/table checks; `README.md` boot-paths row.
-- [ ] Rust stretch recorded honestly: target exists, `rustes`/`rsbr`
-      are *possible* — a follow-up plan's opening fact, not this
-      plan's promise.
+- [x] `.github/workflows/integration.yml`: `riscv-parity` job —
+      qemu-system-misc + qemu-user + gcc-riscv64-linux-gnu install,
+      `make kernelrv && make userrv`, artefact-presence assert (the
+      KERNEL32-in-the-image lesson: `/binrv/init` + `/binrv/smallsh`
+      grepped out of the tar, `kernelrv.elf` non-empty, BEFORE any
+      gate runs), the full rv smoke family (boot/shell/parity), the
+      executed crypto gate, the claim check, logs on failure.
+      Separate job, attributable red, as i386-parity argued.
+- [x] `docs/status.md`: the RISC-V section — 16 feature rows
+      including the ❌-by-design ones stated with their decision
+      links (no rv32 → D1, no own M-mode firmware → D2, no PCIe →
+      D7); `docs/architecture.md`: the third boot diagram (OpenSBI →
+      hart lottery → early-table satp → `_start_high` → the kmain_rv
+      gauntlet) and the three-kernels-no-shared-artefacts contract
+      list; `docs/syscall_abi.md`: the `ecall` section beside
+      `SYSCALL` and `int 0x80` — one table, three trap mechanisms,
+      with the sscratch stack-switch contract and the a0 convenient
+      accident recorded.
+- [x] `check_riscv_claims.py` at full phase coverage (V0–V9 rows) +
+      the structural header/table checks it has carried since V0;
+      terminal arithmetic armed: Status COMPLETE requires all ten
+      rows ✅. `README.md` boot-paths row added.
+- [x] Rust stretch recorded honestly (docs/status.md row "Rust
+      userspace: 🚧 possible"): `riscv64gc-unknown-none-elf` EXISTS —
+      unlike i686 — so porting `rustes`/`rsbr` is a follow-up plan's
+      opening fact, not this plan's promise.
+
+#### Result
+
+Delivered as specified. The `riscv-parity` job mirrors `i386-parity`'s
+structure stage for stage — dependency install with an assert-not-
+assume version check, build, artefact presence BEFORE gates, host
+gates, claim check, the smoke family in phase order, logs on failure.
+The claim checker closes at **59 claims** (V0: 6, V1: 5, V2: 6, V3: 6,
+V4: 7, V5: 6, V6: 5, V7: 6, V8: 5, V9: 5, plus the 2 structural
+checks), still self-failing against a doctored tree; the terminal
+Status arithmetic (COMPLETE ⇒ 10 ✅ rows) is armed and satisfied.
+
+The plan's own yardstick, restated at the close: **every phase gate in
+this plan is a measured fact.** The port found its facts one debugging
+session at a time — the payload-base jump (V0), the parent-cells reg
+decode (V1), the trap.o collision and the THRE trick (V2), the medany
+gap, the mapping order, the setjmp-through-the-frame and the heap's
+missing append path (V3), the sched deadlock, SUM-by-default, the
+DBCN .bss byte and the SPIE window (V4), the D4 number slip caught by
+the shared header (V5), the read-not-waved-through .text diff (V6),
+the no-print miniproto rule that kept i386's asserts byte-identical
+(V7), and the executed-not-compiled crypto distinction (V8) — and
+each one is now a comment at the site, a Result entry here, and a
+claim in the checker. That was the point.
 
 #### Test gate
 

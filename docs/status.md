@@ -206,6 +206,41 @@ Tests: six-case `i386_*_smoke.sh` family (~100 assertions) beside
 `test_boot_info_width.c` with its `-malign-double` negative control) and
 `tools/check_i386_claims.py` tying I386_PLAN.md to the tree.
 
+## RISC-V (rv64gc) — RISCV_PLAN
+
+The third architecture: a from-scratch S-mode kernel under
+`kernel/arch/riscv64/`, booted by OpenSBI on QEMU's `virt` machine
+(`make kernelrv && make run-rv`). Same discipline as the i386 port —
+shared portable code through `kernel/arch/arch.h`, one syscall table
+(D4), one initrd (third tenant `/binrv`), the width-sweep ratchets
+extended with ratchet 4 (`__asm__`-bearing portable files). CPU
+floor: rv64gc (D1; no rv32).
+
+| Feature | Status | Notes |
+|---|---:|---|
+| OpenSBI boot + DTB `boot_info_t` | ✅ | `-kernel` at `0x80200000`; the FDT shim is the struct's third producer. OpenSBI jumps to the payload BASE, not `e_entry` — enforced by `.text.boot` placement (measured in V0). |
+| Traps / SBI timer / PLIC | ✅ | 16 named scause codes, FIX_R0 dumps; 100 Hz SBI timer; PLIC claim/complete proven with a real 16550 THRE interrupt. |
+| Sv39 higher half + HHDM | ✅ | `0xFFFFFFC000000000` direct map; early tables are assembly-time data, satp on before any C runs. |
+| **W^X enforced** | ✅ | Real PTE X bit: store-to-.text, execute-from-data and identity-window loads all FAULT (resumable probes). The i386 ❌'s green sibling. |
+| Preemptive scheduler | ✅ | Round-robin, post-re-arm preemption, boot-hart only (D5 — SBI HSM is the SMP exit ramp). |
+| U-mode + `ecall` | ✅ | AuraLite numbers, RISC-V Linux register convention (D4); sscratch trap-stack swap (the I7 lesson pre-paid); U-faults contained as 128+scause. |
+| ELF64/EM_RISCV loader + initrd | ✅ | Three-way mutual class/machine refusal; `p_flags` become real PTE bits, W+X segments refused; `mkinitrd` audits all three tenants by `e_machine`. |
+| libcrv / initrv / shell | ✅ | `smallsh` — ONE portable-C source shared with i386 (promoted from shell32.c); `auralite#` gate green on both. Full libc port pending. |
+| virtio-mmio blk + net | ✅ | Legacy+modern transport over the 8 DTB windows; vrings shared with the PCI drivers (D7). ata32-shaped blk gate; DHCP/ARP/echo over the shared `miniproto`. VFS mount: pending. |
+| 16550 UART RX over PLIC | ✅ | Interrupt-fed cons ring; the shell smoke asserts the `rx bytes via PLIC irq` receipt. |
+| Crypto at rv64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included — `__int128` exists here) executed under `qemu-riscv64`. The `-m32` boundary's green counterpart. |
+| No rv32 | ❌ by design | Plan D1. |
+| No own M-mode firmware | ❌ by design | Plan D2: SBI is the platform contract, like the BIOS was for Stage 2. |
+| No PCIe on `virt` | ❌ by design | Plan D7: virtio-mmio covers the device set; PCIe waits for a device that needs it. |
+| SMP / vector ext / hypervisor ext | ❌ | Per plan §6; secondary harts parked safely via the boot lottery. |
+| Rust userspace | 🚧 possible | `riscv64gc-unknown-none-elf` EXISTS (unlike i686) — porting `rustes`/`rsbr` is a recorded follow-up plan's opening fact, not this plan's promise. |
+
+Tests: `rv_boot_smoke.sh` (46 assertions), `rv_shell_smoke.sh` (23),
+`rv_parity_smoke.sh` (21, one boot, x86 pair attached), plus host gates
+(`test_libatls_rv64.sh`, the third width in `test_width_sweep.sh`) and
+`tools/check_riscv_claims.py` tying RISCV_PLAN.md to the tree. CI:
+the `riscv-parity` job in `integration.yml`.
+
 ## Known low-priority limitations
 
 - **SMP scheduling is deliberately conservative.** APs are online, have CPU-local state and LAPIC timers, and enter the idle scheduler loop; normal user scheduling remains BSP-only until per-CPU run queues/TLB shootdown policy are completed.

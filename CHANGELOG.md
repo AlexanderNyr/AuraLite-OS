@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V9 — CI matrix, docs, the claim check completed] 2026-08-17
+
+RISCV_PLAN phase V9 — and the plan CLOSES: Status COMPLETE, all ten
+phases delivered, three architectures on every push.
+
+- **`.github/workflows/integration.yml`:** the `riscv-parity` job —
+  i386-parity's structure stage for stage: deps with assert-not-assume
+  version checks (qemu-system-misc, qemu-user, gcc-riscv64-linux-gnu),
+  `make kernelrv && make userrv && make iso`, artefact presence BEFORE
+  any gate (the KERNEL32 lesson: /binrv/init + /binrv/smallsh grepped
+  from the tar), width-sweep, the EXECUTED crypto gate, the claim
+  check, the smoke family in phase order (boot 46 / shell 23 / parity
+  21), serial logs on failure. Separate job, attributable red.
+- **Docs, all three arches named:** `docs/status.md` gains the RISC-V
+  section (16 rows, ❌-by-design entries linked to their decisions:
+  no rv32 → D1, no own M-mode firmware → D2, no PCIe → D7; the Rust
+  row honestly says "possible — the target EXISTS, unlike i686");
+  `docs/architecture.md` gains the third boot diagram (OpenSBI →
+  lottery → early-table satp → higher half → the kmain_rv gauntlet)
+  and the three-kernels-no-shared-artefacts contract list;
+  `docs/syscall_abi.md` gains the `ecall` section — one number table,
+  THREE trap mechanisms, sscratch's TSS.esp0 contract, the a0
+  convenient accident. README boot-paths row added.
+- **`check_riscv_claims.py` closes at 59 claims** (V0–V9 all covered
+  + the structural checks it carried since V0); the terminal Status
+  arithmetic — COMPLETE requires all ten table rows ✅ — armed and
+  satisfied; selftest still detects the doctored tree.
+- **RISCV_PLAN.md → Status: COMPLETE ✅.** The close restates the
+  yardstick: every phase gate is a measured fact, every debugging
+  session's lesson is a comment at the site, a Result entry in the
+  plan, and a claim in the checker.
+
 ## [RV V8 — parity: storage, network, full crypto] 2026-08-17
 
 RISCV_PLAN phase V8: every gate from every phase green in ONE boot —

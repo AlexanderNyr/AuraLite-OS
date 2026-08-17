@@ -340,3 +340,33 @@ errno.  The user-side wrapper is `lib/libc32/syscall32.asm`
 `kernel/arch/i386/user32.c`.  Unlike `SYSCALL`, the interrupt gate DOES
 switch stacks: `TSS.esp0` supplies a per-image dedicated trap stack
 (see the measured lesson in `kernel/arch/i386/thread32.c`).
+
+## The riscv64 trap: `ecall` (RISCV_PLAN D4)
+
+The rv64 kernel dispatches through the S-mode trap vector on the
+`ecall` instruction (`scause` 8 = environment call from U-mode).
+**The syscall numbers are the same table** — one table, THREE trap
+mechanisms now.  The register marshalling is the RISC-V Linux
+convention:
+
+| Register | Role |
+|---|---|
+| `a7` | Syscall number on entry. |
+| `a0` | Argument 1 on entry; return value on exit. |
+| `a1` | Argument 2. |
+| `a2` | Argument 3. |
+| `a3` | Argument 4. |
+| `a4` | Argument 5. |
+| `a5` | Argument 6. |
+
+Return convention is identical: in-band negative errno in `a0`.  The
+user-side wrapper is `lib/libcrv/syscall_rv.S` (`__syscall_rv` — six
+`mv` instructions; the call and trap conventions of this ISA were
+designed together).  The kernel side enters through
+`kernel/arch/riscv64/trapentry.S` and dispatches in
+`kernel/arch/riscv64/user_rv.c`.  The stack switch is `sscratch`'s
+swap-and-test: zero while in S-mode, the per-image dedicated trap
+stack while in U-mode — the `TSS.esp0` contract, this ISA's spelling
+(same measured lesson, pre-paid).  A convenient accident of the
+convention: `main`'s return value is already in `a0` where `SYS_EXIT`
+wants it, so `crt0_rv.S` only loads `a7`.

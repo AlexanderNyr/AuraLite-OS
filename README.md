@@ -126,6 +126,7 @@ staged for distribution.
 | Legacy BIOS                | SeaBIOS   | `qemu-system-x86_64 -drive format=raw,file=release/auralite.iso,if=ide`                  |
 | UEFI                       | OVMF      | `qemu-system-x86_64 -bios /usr/share/OVMF/OVMF_CODE_4M.fd -drive format=raw,file=release/auralite.iso,if=ide` |
 | **32-bit x86 (i686+)**     | SeaBIOS   | `qemu-system-i386 -drive format=raw,file=release/auralite.iso,if=ide` — same bytes; Stage 2 picks `KERNEL32.ELF` by CPUID. See `I386_PLAN.md` and the i386 section of `docs/status.md`. Pre-i686 CPUs (386/486/586) get an honest refusal on screen and serial. |
+| **RISC-V (rv64gc)**        | OpenSBI   | `make kernelrv && make run-rv` — a separate S-mode kernel (`build/kernelrv.elf`), not the ISO: QEMU's `-kernel` loads it behind the bundled OpenSBI on `-machine virt`. Same initrd (`-initrd build/initrd.tar`, tenant `/binrv`), same shell source. See `RISCV_PLAN.md` and the RISC-V section of `docs/status.md`. |
 | Real hardware (USB stick)  | either    | `dd if=release/auralite.iso of=/dev/sdX bs=4M`                                           |
 
 ### Run in QEMU

@@ -329,3 +329,82 @@ jobs:
           path: |
             build/i386_*.log
           if-no-files-found: ignore
+
+  # RISCV_PLAN V9: the third architecture on every push.  A separate
+  # job for the same reason i386-parity is one: a red X must name its
+  # architecture without anyone reading logs.
+  riscv-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & QEMU dependencies (riscv64 target included)
+        run: |
+          sudo apt-get update
+          # NO gcc-multilib here: gcc-N-riscv64-linux-gnu declares
+          # Conflicts: gcc-multilib (measured -- the first local run of
+          # this job's package list failed the apt solver).  The -m32
+          # crypto gate lives in the i386-parity job, which installs
+          # multilib and NOT the cross gcc; each width gets its own
+          # toolchain in its own job and the conflict never meets.
+          sudo apt-get install -y --no-install-recommends \
+            clang lld nasm qemu-system-x86 qemu-system-misc qemu-user \
+            gcc-riscv64-linux-gnu python3 make gcc llvm \
+            mtools dosfstools xorriso git
+          # qemu-system-misc ships qemu-system-riscv64 on Debian/Ubuntu;
+          # assert rather than assume:
+          qemu-system-riscv64 --version
+
+      - name: Install Rust bare-metal target
+        run: |
+          rustup target add x86_64-unknown-none
+          rustc --version
+
+      - name: Build the rv64 kernel and userspace
+        run: |
+          make kernelrv
+          make userrv
+
+      - name: Build the shared initrd (three tenants) + ISO
+        run: |
+          make deps-check
+          make iso
+
+      # The KERNEL32-in-the-image lesson, third verse: a build that
+      # silently dropped the rv64 tenant would let every later gate
+      # "pass" against stale artefacts.  Assert presence first.
+      - name: /binrv is in the shared initrd
+        run: |
+          tar tf build/initrd.tar | grep '\./binrv/init'
+          tar tf build/initrd.tar | grep '\./binrv/smallsh'
+          test -s build/kernelrv.elf
+
+      - name: Width-sweep ratchets (incl. ratchet 4) + third-width contract
+        run: bash tests/unit/test_width_sweep.sh
+
+      - name: Crypto vectors EXECUTED at rv64 (the complete suite)
+        run: bash tests/unit/test_libatls_rv64.sh
+
+      - name: RISCV_PLAN claim check
+        run: |
+          python3 tools/check_riscv_claims.py
+          python3 tools/check_riscv_claims.py --selftest
+
+      - name: V0-V5 -- the boot gauntlet (46 assertions)
+        run: bash tests/integration/rv_boot_smoke.sh
+
+      - name: V5+V7 -- the interactive shell over PLIC input
+        run: bash tests/integration/rv_shell_smoke.sh
+
+      - name: V8 -- the parity boot (every gate, one run, x86 pair)
+        run: bash tests/integration/rv_parity_smoke.sh
+
+      - name: Upload serial logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: riscv-serial-logs
+          path: |
+            build/rv_*.log
+          if-no-files-found: ignore

@@ -135,6 +135,49 @@ The two kernels never share a binary artefact, only contracts: the
 portable sources that migrate in through `kernel/arch/arch.h` under the
 width-sweep ratchets.
 
+## The riscv64 boot flow (RISCV_PLAN)
+
+The third architecture has no Stage 2 of ours at all: OpenSBI (the
+M-mode platform firmware QEMU bundles — plan D2, the "BIOS role") loads
+`kernelrv.elf`'s segments and jumps to the payload **base**,
+`0x80200000` — not the ELF entry point (measured in V0; `.text.boot`'s
+first-byte placement in `kernelrv.ld` is load-bearing).  There is no
+loader of ours to fill `boot_info_t`, so the kernel's own FDT shim is
+the struct's third producer.
+
+```
+OpenSBI (M-mode, qemu -machine virt -kernel build/kernelrv.elf)
+   │  a0 = boot hartid, a1 = DTB physical address, satp = 0
+   ▼
+_start (kernel/arch/riscv64/boot.S, .text.boot @ 0x80200000, VMA = LMA)
+   │  hart lottery (amoswap.d) — losers park in wfi (D5)
+   │  satp := early root table (assembly-time gigapage constants:
+   │          identity @2 for two fetches, HHDM @256..259)
+   │  literal-pool long jump high (medany cannot span the HHDM gap)
+   ▼
+_start_high (higher half at HHDM + phys)         zero .bss ; stack
+   ▼
+kmain_rv (kernel/arch/riscv64/main_rv.c)
+   ├── sbi_console_init()     DBCN probe, legacy fallback (output day 0)
+   ├── fdt_parse()            DTB → boot_info_t (magic LAST) + platform
+   ├── trap_init()            stvec, 16 named scause codes, 100 Hz SBI timer
+   ├── plic_init()            S-context; line proven with a real THRE irq
+   ├── pmm/paging/kheap       final Sv39 tables: W^X REAL, identity dropped,
+   │                          [pmm]/[vmm]/[heap] PASS + 3 fault probes
+   ├── sched_rv_init()        round-robin, boot hart only, post-re-arm preempt
+   ├── user_rv_selftest()     U-mode ecall round trip + contained csrr fault
+   ├── uart_rv_init()         16550 RX → PLIC IRQ 10 → cons ring
+   ├── vblk/vnet (virtio-mmio) ata32-shaped blk gate; shared-miniproto net gate
+   ├── initrd_rv + initrv     shared initrd.tar, ELF64/EM_RISCV from /binrv
+   └── smallsh                auralite# — the SAME source the i386 shell runs
+```
+
+Three kernels, no shared binary artefacts — only contracts:
+`boot_info_t` (offset-checked at all three widths), the one syscall
+number table (D4: `SYSCALL`, `int 0x80`, `ecall`), the shared initrd
+with per-arch tenants (`/bin`, `/bin32`, `/binrv`, `e_machine`-audited
+at pack time), and the portable sources under the four ratchets.
+
 ## Interrupt handling
 
 ```
