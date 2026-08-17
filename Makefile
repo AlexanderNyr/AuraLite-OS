@@ -127,7 +127,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # added to this list is portable code that now has i386 as a second
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
-KERNEL32_SHARED := drivers/pci/pci.c
+KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -187,7 +187,11 @@ kernel32: $(KERNEL32_ELF)
 # =============================================================================
 KERNELRV_ELF  := $(BUILD_DIR)/kernelrv.elf
 KERNELRV_DIR  := kernel/arch/riscv64
-KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null)
+# V7: kernel/net/miniproto.c is the SHARED bring-up protocol file --
+# the second consumer (net32.c is the first); the whole point of the
+# lift is that both NICs prove the same packets.
+KERNELRV_SHARED := kernel/net/miniproto.c
+KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null) $(KERNELRV_SHARED)
 KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
 KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
                  $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0-V5 smoke test.
+# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN V0-V7 smoke test.
 #
 # The third architecture's first gate: clang -> lld -> OpenSBI ->
 # _start -> SBI console, end to end on QEMU's virt machine.
@@ -116,9 +116,10 @@ assert_grep "$LOG" "\[user\] exit(42) via ecall"                      "SYS_EXIT 
 assert_grep "$LOG" "\[user\] exit code 42 round-tripped"              "exit code round trip"
 assert_grep "$LOG" "terminating image (code 130)"                     "privileged csrr contained as 128+2"
 assert_grep "$LOG" "\[user\] PASS: U-mode round trip"                 "user gate complete, kernel intact"
-assert_grep "$LOG" "console+shell online; idle"                       "kernel reaches idle after U-mode"
+assert_grep "$LOG" "console+shell+blk+net online; idle"               "kernel reaches idle after U-mode"
 assert_grep "$LOG" "\[init\] SKIP: no initrd"                        "no -initrd => V5 init honestly skipped"
-assert_grep "$LOG" "V5 complete"                                      "kernel ran to its end"
+assert_grep "$LOG" "no virtio-blk device"                            "no -device => blk honestly absent, not faked"
+assert_grep "$LOG" "V7 complete"                                      "kernel ran to its end"
 
 # No unhandled trap anywhere in the boot -- the gate's last word.
 if grep -qa "UNHANDLED\|UNEXPECTED" "$LOG"; then

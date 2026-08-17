@@ -29,6 +29,8 @@
 #include "kernel/arch/riscv64/pmm_rv.h"
 #include "kernel/arch/riscv64/sbi.h"
 #include "kernel/arch/riscv64/thread_rv.h"
+#include "kernel/arch/riscv64/uart_rv.h"
+#include "kernel/arch/arch.h"
 
 /* context_rv.S */
 extern void user_enter_rv(uint64_t entry, uint64_t user_sp,
@@ -82,21 +84,28 @@ static void user_rv_leave(rv_trap_frame_t *f, int code)
     f->regs[10] = (uint64_t)code;          /* x11 = a1 */
 }
 
-/* ---- V5: the cooked console line -------------------------------------------
+/* ---- V5: the cooked console line (V7: interrupt-fed) -----------------------
  *
- * cons32_readline's shape over sbi_getchar: echo, backspace, CR->LF,
- * the newline stored.  Blocks on wfi -- the timer keeps ticking, so
- * the poll wakes at 100 Hz; V7's UART RX interrupt replaces the poll
- * with a real sleep. */
+ * cons32_readline's shape: echo, backspace, CR->LF, the newline
+ * stored.  Since V7 the byte source is the UART RX ring fed by the
+ * PLIC (uart_rv_getc), with sbi_getchar kept as the fallback for
+ * boots where the UART driver did not come up.  The blocking wait is
+ * arch_wait_for_interrupt() -- wfi with SIE forced on.  The I7
+ * cleared-IF deadlock has an sstatus.SIE twin: a bare wfi inside an
+ * ecall trap window (SPIE off, SIE off after any nested trap) would
+ * sleep with a prompt on screen exactly the way the i386 hlt did;
+ * the helper's csrsi is the sti in sti;hlt, third spelling. */
 
 uint64_t cons_rv_readline(char *buf, uint64_t cap)
 {
     uint64_t n = 0;
 
     for (;;) {
-        int ci = sbi_getchar();
+        int ci = uart_rv_getc();
+        if (ci < 0)
+            ci = sbi_getchar();
         if (ci < 0) {
-            __asm__ volatile("wfi");
+            arch_wait_for_interrupt();
             continue;
         }
 

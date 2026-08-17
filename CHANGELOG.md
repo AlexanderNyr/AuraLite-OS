@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V7 — drivers: virtio-mmio, blk, net, UART RX] 2026-08-17
+
+RISCV_PLAN phase V7: the virt machine's real device set — and the
+interactive gate now runs on interrupt-driven input with a receipt.
+
+- **`virtio_mmio.{c,h}` (new):** the transport — magic/version/
+  device-id probe over the 8 DTB windows, status dance, queue setup
+  in BOTH flavours (legacy version=1 contiguous-PFN vring, QEMU's
+  default; modern version=2 split rings). Virtqueue structs reused
+  from `drivers/virtio/virtio_common.h` (D7); the x86 PCI path
+  untouched and proven so (`test_virtio_net` 7/7 green).
+- **`vblk_rv.{c,h}` (new):** 3-descriptor chains (header/data/status
+  — the PCI driver's request format verbatim); ata32-shaped gate:
+  known-pattern sector 0 (written FRESH by the smoke test each run —
+  a stale disk can't fake a pass) + write/readback/restore on the
+  last sector. `[blk] PASS` measured.
+- **`kernel/net/miniproto.{c,h}` (new, lifted from net32.c):** DHCP/
+  ARP/ICMP as pure portable C over an ops table; prints NOTHING —
+  callers own their log lines, which kept i386's smoke-asserted
+  output byte-identical across the refactor (verified:
+  `[net] DHCP lease: 10.0.2.15 (gw 10.0.2.2)` character for
+  character). Second consumer: **`vnet_rv.{c,h}` (new)** — RX/TX
+  queues over mmio, 10-byte legacy header; `[net] PASS: lease + ARP
+  + echo reply (payload verified)` on SLIRP.
+- **`uart_rv.{c,h}` (new):** 16550 RX through PLIC IRQ 10 into a
+  cons ring (kbd32's discipline); `cons_rv_readline` blocks on
+  `arch_wait_for_interrupt()` — the I7 cleared-IF deadlock's
+  sstatus.SIE twin, lineage in the comment. The phase's receipt:
+  `[uart] rx bytes via PLIC irq: N` — every session keystroke came
+  through the interrupt path, and the smoke test asserts N > 0.
+- **Deviations recorded in the plan's Result:** transport lives under
+  kernel/arch/riscv64/ (the x86_64 build's `find` would swallow a
+  drivers/ file); no UART access-shim (uart.c is 40 lines; a shim
+  would outweigh both bodies — D-residue).
+- **Gates:** rv_shell_smoke 15 → 23 (blk/net/uart + receipt), boot
+  smoke 45 → 46 (honest no-device SKIP asserted), i386_parity green,
+  full x86 integration filter green. Claims 43 → 49.
+
 ## [RV V6 — the inline-assembly sweep] 2026-08-17
 
 RISCV_PLAN phase V6: ratchet 4 armed at the plan's exact baseline

@@ -1,4 +1,4 @@
-/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V5).
+/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V7).
  *
  * V0 proved the chain (clang -> lld -> OpenSBI -> _start -> SBI
  * console); V1 makes this kernel the third CONSUMER of boot_info_t.
@@ -24,7 +24,10 @@
 #include "kernel/arch/riscv64/sbi.h"
 #include "kernel/arch/riscv64/thread_rv.h"
 #include "kernel/arch/riscv64/trap.h"
+#include "kernel/arch/riscv64/uart_rv.h"
 #include "kernel/arch/riscv64/user_rv.h"
+#include "kernel/arch/riscv64/vblk_rv.h"
+#include "kernel/arch/riscv64/vnet_rv.h"
 
 /* The struct the FDT shim fills.  Static in .bss (boot.S zeroed it):
  * ~9 KiB is too big for the V0 stack and there is no allocator yet. */
@@ -307,7 +310,7 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
              " Hello from AuraLite OS kernel (riscv64)!\n"
              "  rv64gc S-mode, booted via OpenSBI\n"
              "==============================================\n\n");
-    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V5\n");
+    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V7\n");
 
     sbi_puts("[boot] boot hart: ");
     put_udec(hartid);
@@ -389,6 +392,32 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
         sbi_shutdown();
     }
 
+    /* ---- V7: the virt machine's real devices. ------------------------
+     * Absence is a SKIP, not a FAIL: the boot smoke runs without
+     * -drive/-netdev and must stay green; the driver gates get their
+     * devices from rv_shell_smoke's richer QEMU line.  V2's THRE
+     * proof already ran inside v2_bringup; the RX driver now owns
+     * the line for good. */
+
+    if (platform.uart_base && platform.plic_base) {
+        uart_rv_init((uint64_t)p2v_rv(platform.uart_base),
+                     platform.uart_irq);
+    }
+
+    if (vblk_rv_init(&platform) == 0) {
+        if (vblk_rv_selftest() != 0) {
+            sbi_puts("[blk]  FAIL: self-test\n");
+            sbi_shutdown();
+        }
+    }
+
+    if (vnet_rv_init(&platform) == 0) {
+        if (vnet_rv_selftest() != 0) {
+            sbi_puts("[net]  FAIL: self-test\n");
+            sbi_shutdown();
+        }
+    }
+
     /* ---- V5: the initrd and real compiled userspace. ---------------- */
 
     if (initrd_rv_init(&boot_info) == 0) {
@@ -408,11 +437,18 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
         sbi_puts("[shell] exited ");
         put_udec((uint64_t)sh);
         sbi_puts("\n");
+
+        /* V7's receipt: every keystroke the session typed arrived
+         * through the PLIC path, and this counter is the proof the
+         * smoke test greps (a poll-fed session would leave it 0). */
+        sbi_puts("[uart] rx bytes via PLIC irq: ");
+        put_udec(uart_rv_rx_count());
+        sbi_puts("\n");
     } else {
         sbi_puts("[init] SKIP: no initrd (pass -initrd build/initrd.tar)\n");
     }
 
-    sbi_puts("[kernel] V5 complete; console+shell online; idle. "
-             "Shutting down (V6 is the asm sweep)\n");
+    sbi_puts("[kernel] V7 complete; console+shell+blk+net online; idle. "
+             "Shutting down (V8 is parity)\n");
     sbi_shutdown();
 }

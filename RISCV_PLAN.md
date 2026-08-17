@@ -1,6 +1,6 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V6 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V7 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,7 @@
 | V4 — threads, scheduler, U-mode, `ecall` | ✅ complete | `patches/RV_V4_proc.patch` |
 | V5 — userspace: libc-rv, init, the shared shell | ✅ complete | `patches/RV_V5_user.patch` |
 | V6 — the inline-assembly sweep | ✅ complete | `patches/RV_V6_sweep.patch` |
-| V7 — drivers: virtio-mmio, blk, net, UART RX | pending | `patches/RV_V7_drivers.patch` |
+| V7 — drivers: virtio-mmio, blk, net, UART RX | ✅ complete | `patches/RV_V7_drivers.patch` |
 | V8 — parity: storage, network, full crypto | pending | `patches/RV_V8_parity.patch` |
 | V9 — CI matrix, docs, the claim check | pending | `patches/RV_V9_ci.patch` |
 
@@ -877,32 +877,80 @@ ratchet down in the commit that needs it, per the plan's batch rule.
 
 ---
 
-### Phase V7 — Drivers: virtio-mmio, blk, net, UART RX
+### Phase V7 — Drivers: virtio-mmio, blk, net, UART RX ✅ COMPLETE
 
 **Objective:** the `virt` machine's real device set, through the
 existing virtqueue logic — and the interactive gate on this arch.
 
 #### Tasks
 
-- [ ] `drivers/virtio/virtio_mmio.c`: the transport — magic/version
-      probe at the 8 DTB-provided windows, feature negotiation, queue
-      setup via the mmio register layout. The virtqueue structures in
-      the existing drivers are **reused**; the PCI-specific probe is
-      factored behind a transport interface (D7's one-implementation
-      rule; the PCI path keeps working on x86, gated by its own
-      suite).
-- [ ] virtio-blk over mmio: the ata32-shaped self-test (known-bytes
-      read of our own image, write/readback/restore on the last
-      sector).
-- [ ] virtio-net over mmio: the I8-shaped gate (DHCP lease on SLIRP,
-      gateway ARP, payload-verified ICMP echo), reusing net32's
-      protocol code lifted to a shared bring-up-net file — second
-      consumer, same rule as the shell promotion.
-- [ ] UART: 16550 driver shared with x86 via an access-method shim
-      (Fact 3), RX through PLIC IRQ 10 into the cons ring;
-      `SYS_READ`'s blocking wait uses `wfi` with the V2 trap mask —
-      the I7 cleared-IF deadlock has an `sstatus.SIE` twin, and the
-      comment carries the lineage.
+- [x] `kernel/arch/riscv64/virtio_mmio.c`: the transport —
+      magic/version probe at the 8 DTB-provided windows, feature
+      negotiation, queue setup via the mmio register layout (BOTH
+      flavours: legacy version=1 contiguous-PFN vrings, which QEMU
+      virt exposes by default, and modern version=2 split rings —
+      probing beats folklore, the V0 DBCN lesson generalised). The
+      virtqueue structures are **reused** from
+      `drivers/virtio/virtio_common.h` — the same header the PCI
+      drivers use; the PCI path keeps working on x86, gated by its
+      own suite (D7). (Placed under kernel/arch/riscv64/, not
+      drivers/: the x86_64 kernel's `find kernel drivers` would
+      otherwise swallow it into that build — same reason the V5 phase
+      excluded the riscv tree from KERNEL_SRCS.)
+- [x] virtio-blk over mmio: the ata32-shaped self-test — with one
+      honest adjustment: the rv64 boot has no MBR, so "known bytes"
+      are a test pattern (`Aura` + 0x55AA) the smoke test writes to
+      the disk image FRESH each run (a stale disk must never fake a
+      pass); write/readback/restore on the last sector as specified.
+- [x] virtio-net over mmio: the I8-shaped gate (DHCP lease on SLIRP,
+      gateway ARP, payload-verified ICMP echo) — net32's protocol
+      code lifted to `kernel/net/miniproto.c`, second consumer, same
+      rule as the shell promotion. The lifted file PRINTS NOTHING
+      (results via out-params, each caller keeps its own log
+      strings) — that is what kept the i386 smoke asserts
+      byte-identical across the refactor, verified:
+      `[net] DHCP lease: 10.0.2.15 (gw 10.0.2.2)` still comes out of
+      net32.c character for character.
+- [x] UART: 16550 RX through PLIC IRQ 10 into a cons ring (kbd32's
+      ring discipline, third console); `cons_rv_readline`'s blocking
+      wait is `arch_wait_for_interrupt()` — wfi with SIE forced on;
+      the I7 cleared-IF deadlock has an `sstatus.SIE` twin and the
+      comment carries the lineage. The V6 access-method shim for a
+      SHARED 16550 driver was inspected and declined: uart.c (x86) is
+      40 lines of port I/O; a shim would be longer than both bodies —
+      recorded as D-residue for when the x86 driver grows.
+
+#### Result
+
+Delivered with the deviations noted inline above (transport location,
+blk known-bytes source, no UART shim — each with its reason). The
+driver gates, measured on `-machine virt` with
+`-global virtio-mmio.force-legacy=true -device virtio-blk-device
+-device virtio-net-device -netdev user`:
+
+```
+[uart] 16550 RX armed: IRQ through the PLIC into the cons ring
+[blk]  virtio-blk over mmio (legacy version 1): 8192 sectors (4 MiB), queue size 128
+[blk]  PASS: known-bytes read + write/readback/restore on LBA 8191
+[net]  virtio-net over mmio, MAC 52:54:00:12:34:56
+[net]  DHCP lease: 10.0.2.15
+[net]  PASS: lease + ARP + echo reply (payload verified)
+[uart] rx bytes via PLIC irq: 63
+```
+
+The last line is the phase's receipt: every keystroke of the driven
+shell session arrived through the PLIC interrupt path — a poll-fed
+session would leave the counter at 0, and the smoke test greps for
+`[1-9]`. Device absence stays a SKIP, not a FAIL: the boot smoke
+(no `-device`) asserts the honest "no virtio-blk device" line and
+runs green.
+
+Cross-checks: `test_virtio_net` (x86 virtio-PCI, 7/7) green — the
+transport split is invisible to the PCI path; `i386_parity_smoke`
+(net32 → miniproto refactor) green with byte-identical log lines;
+the full x86 integration filter run green. rv_shell_smoke: 15 → 23
+assertions (blk/net/uart gates + the PLIC receipt); boot smoke: 45 →
+46; claims: 43 → 49.
 
 #### Test gate
 

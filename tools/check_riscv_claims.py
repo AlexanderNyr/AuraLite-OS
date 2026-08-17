@@ -207,6 +207,34 @@ def claims():
          "unavailable" in archh and "virtio-mmio" in archh),
     ]
 
+    # --- V7: virtio-mmio, blk, net, UART RX ---
+    vmmio = read("kernel", "arch", "riscv64", "virtio_mmio.c")
+    vblk  = read("kernel", "arch", "riscv64", "vblk_rv.c")
+    vnet  = read("kernel", "arch", "riscv64", "vnet_rv.c")
+    uartv = read("kernel", "arch", "riscv64", "uart_rv.c")
+    net32 = read("kernel", "arch", "i386", "net32.c")
+    checks += [
+        ("V7: the mmio transport reuses virtio_common.h's vrings",
+         'include "drivers/virtio/virtio_common.h"' in
+         read("kernel", "arch", "riscv64", "virtio_mmio.h") and
+         "VM_QUEUE_PFN" in vmmio and "VM_QUEUE_READY" in vmmio),
+        ("V7: blk gate is ata32's shape (known bytes + readback/restore)",
+         "write/readback/restore" in vblk and "0x55" in vblk),
+        ("V7: miniproto is SHARED -- both NICs consume it",
+         exists("kernel", "net", "miniproto.c") and
+         "miniproto_dhcp" in vnet and "miniproto_dhcp" in net32 and
+         "KERNELRV_SHARED" in makefl and
+         "kernel/net/miniproto.c" in makefl),
+        ("V7: miniproto prints nothing (callers own their log lines)",
+         "sbi_puts" not in read("kernel", "net", "miniproto.c") and
+         "kprintf" not in read("kernel", "net", "miniproto.c")),
+        ("V7: UART RX is interrupt-fed through the PLIC ring",
+         "plic_enable" in uartv and "ring_push" in uartv and
+         "uart_rv_getc" in read("kernel", "arch", "riscv64", "user_rv.c")),
+        ("V7: the shell smoke asserts the PLIC-input receipt",
+         "rx bytes via PLIC irq" in shsmk),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the
