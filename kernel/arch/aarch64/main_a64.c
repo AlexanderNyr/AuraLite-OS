@@ -20,8 +20,10 @@
 
 #include "boot/shared/boot_info.h"
 #include "kernel/dt/fdt.h"
+#include "kernel/arch/aarch64/gic.h"
 #include "kernel/arch/aarch64/pl011.h"
 #include "kernel/arch/aarch64/psci.h"
+#include "kernel/arch/aarch64/trap_a64.h"
 
 #define RAM_BASE      0x40000000UL
 #define FDT_MAGIC_BE  0xD00DFEEDUL
@@ -151,6 +153,80 @@ static void platform_report(void)
     }
 }
 
+/* ---- A2: vectors, timer, GIC --------------------------------------------- */
+
+/* Spin until the virtual counter has advanced `cycles` -- pure
+ * busy-wait on CNTVCT, usable while interrupts do the real work. */
+static void spin_cycles(uint64_t cycles)
+{
+    uint64_t end = a64_cntvct() + cycles;
+    while (a64_cntvct() < end)
+        __asm__ volatile("yield");
+}
+
+static void a2_bringup(void)
+{
+    if (platform.gicd_base == 0 || platform.gicc_base == 0) {
+        pl011_puts("[gic]  no GICv2 in the tree; A2 gates skipped\n");
+        return;
+    }
+
+    gic_init(platform.gicd_base, platform.gicc_base);
+    pl011_puts("[gic]  GICv2 up: distributor + CPU interface, INTIDs pre-normalised\n");
+
+    trap_init_a64();
+    pl011_puts("[isr]  VBAR_EL1 installed (16 slots x 128 bytes), IRQ unmasked\n");
+
+    /* Gate 1: the deliberate fault -- named, resumed past. */
+    if (trap_selftest_a64() == 0)
+        pl011_puts("[isr]  PASS: undefined instruction named and resumed\n");
+    else
+        pl011_puts("[isr]  FAIL: self-test fault did not arrive\n");
+
+    /* Gate 1b: the alignment world model.  MMU off => Device memory
+     * => an unaligned load faults (Fact 5.1 -- the reason the whole
+     * kernel is compiled -mstrict-align).  Probe it, don't trust it. */
+    if (trap_alignment_probe_a64() == 0)
+        pl011_puts("[isr]  PASS: unaligned load faulted (Device memory, pre-MMU -- Fact 5.1 measured)\n");
+    else
+        pl011_puts("[isr]  FAIL: unaligned load did NOT fault -- the strict-align premise is wrong\n");
+
+    /* Gate 2: the tick.  CNTFRQ is 62.5 MHz (Fact 2.3); spin half a
+     * guest second and expect ~50 ticks at 100 Hz.  The band is wide
+     * (10..90) because the assertion is "the timer LIVES and re-arms",
+     * not "QEMU's scheduler is fair" -- the rv smoke's reasoning. */
+    uint64_t frq = read_cntfrq();
+    uint64_t t0 = timer_ticks_a64();
+    spin_cycles(frq / 2);
+    uint64_t seen = timer_ticks_a64() - t0;
+
+    pl011_puts("[timer] ");
+    if (seen >= 10 && seen <= 90) {
+        pl011_puts("PASS: ");
+        pl011_putdec64(seen);
+        pl011_puts(" ticks observed at 100 Hz (virtual timer, INTID 27)\n");
+    } else {
+        pl011_puts("FAIL: ");
+        pl011_putdec64(seen);
+        pl011_puts(" ticks in half a second -- timer dead or runaway\n");
+    }
+
+    /* Gate 3: the GIC bookkeeping those ticks imply. */
+    pl011_puts("[gic]  ");
+    if (gic_completions() >= seen && seen > 0) {
+        pl011_puts("PASS: claim/complete round-trip (");
+        pl011_putdec64(gic_completions());
+        pl011_puts(" completions)\n");
+    } else {
+        pl011_puts("FAIL: completions did not track ticks\n");
+    }
+
+    /* Gate 4: the jitter pool fed from those traps (the N0 shape). */
+    pl011_puts("[rng]  jitter events collected: ");
+    pl011_putdec64(trap_jitter_events_a64());
+    pl011_puts("\n");
+}
+
 void kmain_a64(uint64_t x0_at_entry)
 {
     pl011_puts("\nHello from AuraLite OS kernel (aarch64)!\n");
@@ -208,7 +284,9 @@ void kmain_a64(uint64_t x0_at_entry)
     memmap_report();
     platform_report();
 
-    pl011_puts("[kernel] A1 complete; powering off via PSCI "
-               "(A2 adds vectors, the timer, the GIC)\n");
+    a2_bringup();
+
+    pl011_puts("[kernel] A2 complete; powering off via PSCI "
+               "(A3 adds TTBR1 paging, PMM, the heap)\n");
     psci_system_off();
 }

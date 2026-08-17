@@ -55,6 +55,16 @@ _start:
     // code masks anyway rather than assuming.) ------------------------
     msr   daifset, #0xf
 
+    // ---- 2b. SPSel := 1 -- the kernel runs on SP_EL1, declared, not
+    // inherited.  MEASURED in A2: QEMU enters this ELF with SPSel=0,
+    // so the whole A0/A1 kernel unknowingly ran on SP_EL0 and the
+    // first IRQ landed in the IRQ/SP_EL0 vector row (the row whose
+    // tag exists to name exactly this bug).  The vector table's
+    // SP_EL0 rows stay panic rows BECAUSE of this line -- and A4's
+    // EL0 story gets SP_EL0 back as a free register precisely
+    // because the kernel never squats on it. ---------------------------
+    msr   spsel, #1
+
     // ---- 3. Stack up, .bss cleared.  The stack lives in .bss and
     // nothing is on it yet -- the same ordering note as the riscv64
     // entry: set sp first, zero everything, re-set nothing. -----------

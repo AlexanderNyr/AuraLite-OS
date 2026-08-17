@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A2 — exceptions, the generic timer, GICv2] 2026-08-17
+
+`ARM64_PLAN.md` phase A2: the fourth kernel takes traps with names,
+ticks at the same 100 Hz as its three siblings, and delivers
+interrupts through a real GICv2 driver. Two unpredicted facts
+measured, both only visible once trap traffic flows:
+
+- **QEMU enters ELF payloads with `SPSel = 0`** — the A0/A1 kernel
+  ran on SP_EL0 unknowingly; the first timer IRQ landed in the
+  `IRQ/SP_EL0` vector row, whose tag exists to name exactly this.
+  `msr spsel, #1` in boot.S declares the stack discipline; the
+  SP_EL0 rows stay panic rows because of it.
+- **The slot-tag formula must exist once**: vectors.S said
+  `kind*4+origin`, the dispatcher assumed `origin*4+kind`; the
+  self-test was dispatched as another row. Now tag == hardware slot
+  index; lesson recorded in vectors.S.
+- `vectors.S`: 16×128-byte table, 2048-aligned, every slot a tagged
+  jump to one shared 288-byte-frame spill path (the trapentry.S
+  discipline). `gic.c`: distributor + CPU interface, IAR/EOIR loop
+  that completes even unhandled claims (the plic_dispatch rule);
+  INTIDs arrive pre-normalised from A1 — this driver never adds 32.
+  `trap_a64.c`: ESR EC decode, R0-format dump, virtual timer at
+  `CNTFRQ_EL0 / 100` with the TVAL re-arm (the write un-asserts the
+  line — the `sbi_set_timer` property, so A4's post-EOI preemption
+  placement transfers); INTID written as `11u + 16u`, arithmetic
+  with a paper trail.
+- The `-mstrict-align` premise is now measured, not folklore: a
+  handwritten unaligned `ldr` Data-Aborts with EC 0x25 pre-MMU
+  (Fact 5.1), asserted in the smoke.
+- Gauntlet: undefined-instruction named+resumed, alignment probe,
+  48 ticks/half-second, claim/complete tracking ticks, jitter pool
+  fed. a64 smoke 27/27; `check_arm64_claims` 27; all other suites
+  green.
+
 ## [A64 A1 — boot_info_t from the Device Tree, the walker PROMOTED] 2026-08-17
 
 `ARM64_PLAN.md` phase A1: the aarch64 kernel is the fourth consumer of

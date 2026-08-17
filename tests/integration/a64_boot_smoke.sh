@@ -92,7 +92,19 @@ assert_grep "$LOG" "x0 at entry: 0x0000000000000000"               "x0 is 0, not
 assert_grep "$LOG" "DTB probe at RAM base 0x0000000040000000: magic 0x00000000D00DFEED OK" \
                                                                    "DTB magic found at the RAM base (Fact 2.2)"
 assert_grep "$LOG" "CNTFRQ_EL0: 62500000 Hz"                       "timer frequency read from the register (Fact 2.3)"
-assert_grep "$LOG" "A1 complete; powering off via PSCI"            "reached the healthy end of the phase"
+assert_grep "$LOG" "A2 complete; powering off via PSCI"            "reached the healthy end of the phase"
+
+# ---- A2: vectors, timer, GIC ----
+assert_grep "$LOG" "\[isr\]  VBAR_EL1 installed"                    "vector table live (16 x 128, SPSel=1 -- the measured A2 fact)"
+assert_grep "$LOG" "Unknown/Undefined instruction at elr=0x"        "deliberate fault NAMED with elr (EC decode)"
+assert_grep "$LOG" "\[isr\]  PASS: undefined instruction named and resumed" \
+                                                                   "fault RESUMED past (isr gate)"
+assert_grep "$LOG" "Data Abort, same EL at elr=0x"                  "unaligned load faulted with EC-decoded Data Abort (Fact 5.1 pinned)"
+assert_grep "$LOG" "\[isr\]  PASS: unaligned load faulted"          "alignment world-model probe (the -mstrict-align premise)"
+assert_grep "$LOG" "\[timer\] PASS: [0-9]* ticks observed at 100 Hz" \
+                                                                   "virtual timer ticks at 100 Hz from CNTFRQ_EL0 (INTID 27 = PPI 11 + 16)"
+assert_grep "$LOG" "\[gic\]  PASS: claim/complete round-trip"       "GICv2 IAR/EOIR flow tracks the ticks"
+assert_grep "$LOG" "\[rng\]  jitter events collected: [1-9]"        "jitter pool fed from timer traps (the N0 shape)"
 
 # PSCI power-off, not the timeout: the run must end well inside the
 # 30 s budget (generous bound; a hang eats all 30).

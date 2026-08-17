@@ -111,6 +111,44 @@ def claims():
          "handoff magic OK" in smoke),
     ]
 
+    # --- A2: exceptions, the generic timer, GICv2 ---
+    vecs  = read("kernel", "arch", "aarch64", "vectors.S")
+    trapc = read("kernel", "arch", "aarch64", "trap_a64.c")
+    gicc_ = read("kernel", "arch", "aarch64", "gic.c")
+    checks += [
+        ("A2: the 16x128 vector table with one shared spill path",
+         ".balign 2048" in vecs and ".balign 128" in vecs and
+         "a64_trap_common" in vecs and "eret" in vecs),
+        ("A2: the tag formula is position-major and its lesson is "
+         "recorded (one formula, used twice, or none)",
+         "origin * 4 + \\kind" in vecs and
+         "dispatched as if it were another row" in vecs),
+        ("A2: SPSel declared, not inherited -- the measured QEMU "
+         "SPSel=0 entry fact lives in boot.S",
+         "msr   spsel, #1" in boots and "MEASURED in A2" in boots),
+        ("A2: ESR decode names the classes; unexpected rows halt "
+         "loudly by vector name",
+         "ec_name" in trapc and "UNEXPECTED vector row" in trapc and
+         "kind_names" in trapc),
+        ("A2: the timer is CNTFRQ-derived (a register, not a DTB "
+         "field) with the TVAL re-arm property named",
+         "cntfrq_read" in trapc and "TICK_HZ" in trapc and
+         "un-asserts the line" in trapc),
+        ("A2: the timer INTID is arithmetic with a paper trail, "
+         "never a bare 27",
+         "11u + 16u" in trapc),
+        ("A2: the GIC completes even unhandled claims (no stuck "
+         "gateway -- the plic_dispatch rule)",
+         "EOIR" in gicc_ and "even for a line without" in gicc_),
+        ("A2: the smoke gates isr/timer/gic/rng PASS lines",
+         "resumed" in smoke and "ticks observed at 100 Hz" in smoke and
+         "claim/complete" in smoke and "jitter" in smoke),
+        ("A2: the alignment premise is probed, not trusted "
+         "(-mstrict-align has a measured reason)",
+         "trap_alignment_probe_a64" in trapc and
+         "unaligned load faulted" in smoke),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # Installed in A0, before a single row is green -- the D8 shape.
     done_rows = len(re.findall(r"^\| A\d .*?✅ complete", plan, re.M))

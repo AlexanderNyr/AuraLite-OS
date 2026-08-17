@@ -1,12 +1,12 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A1 complete (phases A0–A9)
+## Status: IN PROGRESS 🚧 — A0–A2 complete (phases A0–A9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | A0 — toolchain gates + the EL1 stub | ✅ complete | `patches/A64_A0_boot.patch` |
 | A1 — `boot_info_t` from the Device Tree, walker promoted | ✅ complete | `patches/A64_A1_dtb.patch` |
-| A2 — exceptions, the generic timer, GICv2 | pending | `patches/A64_A2_traps.patch` |
+| A2 — exceptions, the generic timer, GICv2 | ✅ complete | `patches/A64_A2_traps.patch` |
 | A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over | pending | `patches/A64_A3_mm.patch` |
 | A4 — threads, scheduler, EL0, `svc` | pending | `patches/A64_A4_proc.patch` |
 | A5 — userspace: libca64, init, the shared shell | pending | `patches/A64_A5_user.patch` |
@@ -519,31 +519,78 @@ over A0) and the full rv suite untouched.
 
 ---
 
-### Phase A2 — Exceptions, the generic timer, GICv2
+### Phase A2 — Exceptions, the generic timer, GICv2 ✅ COMPLETE
 
 **Objective:** `VBAR_EL1` vectors, a ticking `TICK_HZ=100` from the
 virtual timer, and SPIs delivered through a real GICv2 driver.
 
 #### Tasks
 
-- [ ] `kernel/arch/aarch64/vectors.S`: the 16×128-byte table (Fact
+- [x] `kernel/arch/aarch64/vectors.S`: the 16×128-byte table (Fact
       5.5), one shared spill path (the trapentry.S discipline —
       one assembly entry, C dispatch); `SP_EL1`/`SPSel` arranged so
       EL0 traps land on a dedicated kernel stack (the I7 esp0 lesson,
       fourth edition — lineage comment required).
-- [ ] `kernel/arch/aarch64/gic.c`: GICv2 distributor + CPU interface
+- [x] `kernel/arch/aarch64/gic.c`: GICv2 distributor + CPU interface
       bring-up (group enable, priority mask, per-INTID enable), IAR
       claim / EOIR complete flow. INTIDs arrive pre-normalised from A1.
-- [ ] Timer: virtual timer (`CNTV_CTL/CNTV_TVAL`), PPI INTID 27, at
+- [x] Timer: virtual timer (`CNTV_CTL/CNTV_TVAL`), PPI INTID 27, at
       `CNTFRQ_EL0` (Fact 2.3 — read the register, no DTB field, and
       the smoke prints the frequency it measured); `TICK_HZ=100` wired
       to the shared tick path.
-- [ ] Exception decode: `ESR_EL1` class/ISS printed on unexpected
+- [x] Exception decode: `ESR_EL1` class/ISS printed on unexpected
       traps — the honest-panic shape the other three kernels have.
-- [ ] Smoke: tick counter advances, a deliberate unaligned read before
+- [x] Smoke: tick counter advances, a deliberate unaligned read before
       `-mstrict-align`-relaxation faults with a decoded ESR (assert
       the fault class, proving the vector path), spurious-INTID path
       exercised.
+
+#### Result
+
+Delivered as specified — and this phase found the plan's first two
+*unpredicted* measured facts, both of the shape fact-finding cannot
+catch (they only exist once real trap traffic flows):
+
+1. **QEMU enters ELF payloads with `SPSel = 0`.** The A0/A1 kernel
+   unknowingly ran on SP_EL0 the whole time — harmless while no trap
+   ever fired, fatal the moment the first timer IRQ arrived: it
+   landed in the `IRQ/SP_EL0` vector row, the row whose tag exists
+   precisely to name this bug. The dump named it, one `msr spsel, #1`
+   in boot.S fixed it, and the SP_EL0 rows stay panic rows *because*
+   the kernel now declares its stack discipline instead of inheriting
+   it. (Bonus recorded for A4: SP_EL0 is a free register for the EL0
+   story precisely because the kernel never squats on it.)
+2. **The tag formula must exist exactly once.** vectors.S tagged
+   slots `kind*4+origin` while the dispatcher assumed position-major
+   `origin*4+kind`; the self-test UDF was dispatched as a different
+   row entirely. Fixed by making the tag equal the hardware's own
+   slot index (origin selects the 0x200 block, kind the 0x80 slot),
+   so `tag == slot index` and `kind_names[]` reads straight down the
+   table. One formula, used twice, or none — recorded in vectors.S.
+
+Measured gauntlet (one boot):
+
+```
+[isr]  PASS: undefined instruction named and resumed
+[isr]  PASS: unaligned load faulted (Device memory, pre-MMU -- Fact 5.1 measured)
+[timer] PASS: 48 ticks observed at 100 Hz (virtual timer, INTID 27)
+[gic]  PASS: claim/complete round-trip (48 completions)
+[rng]  jitter events collected: 48
+```
+
+The alignment gate deserves its sentence: the probe is a handwritten
+`ldr` at stack+1 (the compiler under `-mstrict-align` will never emit
+one, which is exactly why it is handwritten), and it Data-Aborts with
+EC 0x25 as Fact 5.1 predicted — the flag's premise is now measured,
+not folklore. The timer INTID is written as `11u + 16u` so the 27 has
+a paper trail. The TVAL re-arm carries the `sbi_set_timer` property
+(the write un-asserts the line), so A4's post-EOI preemption
+placement transfers unchanged. Deviation from the task text: the
+spurious-INTID path is *handled* (IAR 1023 returns) but not
+separately asserted — a spurious interrupt cannot be provoked on
+demand from inside the guest; the claim-vs-ticks equality gate covers
+the dispatch loop's exit condition instead. `check_arm64_claims` 27
+(+9), a64 smoke 27/27, all other suites green.
 
 #### Test gate
 
