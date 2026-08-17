@@ -17,6 +17,7 @@
 #define SBI_FID_PROBE_EXT  3
 
 #define SBI_EID_LEGACY_PUTCHAR  0x01
+#define SBI_EID_LEGACY_GETCHAR  0x02
 #define SBI_EID_LEGACY_SHUTDOWN 0x08
 
 #define SBI_EID_DBCN       0x4442434E   /* "DBCN" */
@@ -98,6 +99,14 @@ void sbi_puts(const char *s)
             sbi_putc('\r');
         sbi_putc(*s++);
     }
+}
+
+int sbi_getchar(void)
+{
+    /* Legacy getchar returns the byte (or -1) in a0 -- the ERROR slot
+     * of the modern convention; this call predates the split. */
+    struct sbiret r = sbi_call(SBI_EID_LEGACY_GETCHAR, 0, 0, 0, 0);
+    return (int)r.error;
 }
 
 /* ---- timer (V2) ---------------------------------------------------------- */

@@ -102,7 +102,10 @@ def claims():
         ("I7: keyboard, VGA console and the shell exist",
          exists("kernel", "arch", "i386", "kbd32.c") and
          exists("kernel", "arch", "i386", "vga32.c") and
-         exists("userspace", "system", "shell32", "shell32.c")),
+         # RISCV_PLAN V5 promoted shell32.c to the shared smallsh.c
+         # (one source, two arches); the i386 binary still builds from
+         # it and i386_shell_smoke.sh still gates its behaviour.
+         exists("userspace", "system", "smallsh", "smallsh.c")),
         ("I7: the two measured bugs carry their comments",
          "sti; hlt; cli" in kbd and "thread32_set_esp0" in thread),
 

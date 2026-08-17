@@ -50,14 +50,14 @@ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 # The linker script fixes the higher-half address; no --image-base needed.
 LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
 
-KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*') w32/src/w32_pe.c
+KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*') w32/src/w32_pe.c
 # WIN32_PLAN.md W32-3: the kernel PE loader calls the same parser the host
 # unit test and fuzz corpus exercise (D2 -- one implementation, tested once).
 # w32/src/ is freestanding C with no libc dependency, so it compiles with the
 # kernel CFLAGS unchanged.
 # I386_PLAN I1: kernel/arch/i386/ is excluded from the x86_64 kernel -- it
 # builds through the separate kernel32 target with the i686 toolchain flags.
-KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*')
+KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*')
 # NOTE: a .c and .asm file MUST NOT share a base name (e.g. foo.c + foo.asm),
 # because both compile to the same object path build/.../foo.o, which would
 # collide and double-link. Keep assembly stubs named distinctly (e.g.
@@ -221,7 +221,67 @@ kernelrv: $(KERNELRV_ELF)
 run-rv: kernelrv
 	qemu-system-riscv64 -machine virt -m 256M \
 	    -display none -serial stdio -no-reboot \
-	    -kernel $(KERNELRV_ELF)
+	    -kernel $(KERNELRV_ELF) \
+	    $(if $(wildcard $(BUILD_DIR)/initrd.tar),-initrd $(BUILD_DIR)/initrd.tar)
+
+SMALLSH_SRC     := userspace/system/smallsh/smallsh.c
+SMALLSH_DEFS32  := -DAURA_LIBC='"lib/libc32/libc32.h"' \
+                   -DAURA_PUTS=puts32 \
+                   -DAURA_UNAME='"AuraLite OS i386 (protected mode, higher half, I386_PLAN I7)"' \
+                   -DAURA_RUN_EXAMPLE='"bin32/init32"'
+SMALLSH_DEFSRV  := -DAURA_LIBC='"lib/libcrv/libcrv.h"' \
+                   -DAURA_PUTS=puts_rv \
+                   -DAURA_UNAME='"AuraLite OS riscv64 (Sv39 higher half, RISCV_PLAN V5)"' \
+                   -DAURA_RUN_EXAMPLE='"binrv/init"'
+
+# =============================================================================
+# RISCV_PLAN V5: the rv64 userspace (initrv + smallsh over libcrv).
+#
+# The I5 pattern at the third width: crt0 + ecall wrapper + a static
+# ELF at 0x08048000 (user_rv.ld), the shell at 0x30000000 (shellrv.ld,
+# the same parent/child address treaty as shell32.ld).  smallsh is the
+# PROMOTED shell32.c -- one source, two arches, seam = AURA_LIBC.
+# =============================================================================
+USERRV_BUILD := $(BUILD_DIR)/userrv
+INITRV_ELF   := $(USERRV_BUILD)/init
+SHELLRV_ELF  := $(USERRV_BUILD)/smallsh
+
+CFLAGSRV_USER := --target=riscv64 -march=rv64gc -mabi=lp64d \
+                 -mcmodel=medany -mno-relax \
+                 -std=c11 -ffreestanding -fno-stack-protector \
+                 -fno-pie -fno-pic \
+                 -Wall -Wextra -Wno-unused-parameter \
+                 -Werror \
+                 -O2 -g -I .
+
+$(USERRV_BUILD)/crt0_rv.o: lib/libcrv/crt0_rv.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSRV_USER) -c $< -o $@
+
+$(USERRV_BUILD)/syscall_rv.o: lib/libcrv/syscall_rv.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSRV_USER) -c $< -o $@
+
+$(USERRV_BUILD)/initrv.o: userspace/system/initrv/initrv.c lib/libcrv/libcrv.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSRV_USER) -c $< -o $@
+
+$(INITRV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/initrv.o $(USERRV_BUILD)/syscall_rv.o lib/libcrv/user_rv.ld
+	$(LD) -m elf64lriscv -nostdlib -static -T lib/libcrv/user_rv.ld \
+	    $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/initrv.o $(USERRV_BUILD)/syscall_rv.o -o $@
+	@echo "  [userrv] $@"
+
+$(USERRV_BUILD)/smallsh.o: $(SMALLSH_SRC) lib/libcrv/libcrv.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSRV_USER) $(SMALLSH_DEFSRV) -c $< -o $@
+
+$(SHELLRV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/smallsh.o $(USERRV_BUILD)/syscall_rv.o lib/libcrv/shellrv.ld
+	$(LD) -m elf64lriscv -nostdlib -static -T lib/libcrv/shellrv.ld \
+	    $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/smallsh.o $(USERRV_BUILD)/syscall_rv.o -o $@
+	@echo "  [userrv] $@"
+
+.PHONY: userrv
+userrv: $(INITRV_ELF) $(SHELLRV_ELF)
 
 # =============================================================================
 # I386_PLAN I5: the 32-bit userspace (init32 + libc32).
@@ -256,11 +316,17 @@ $(INIT32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD
 # I7: the interactive shell.  Linked at 0x30000000 (shell32.ld) so the
 # children it spawns at 0x08048000 share the address space -- see the
 # script's header for the treaty.
+#
+# RISCV_PLAN V5 promoted the source: shell32.c became
+# userspace/system/smallsh/smallsh.c, ONE portable-C shell compiled
+# for both bring-up arches.  The libc seam (AURA_LIBC + the identity
+# strings) is the whole per-arch surface; the i386 binary must behave
+# byte-identically and i386_shell_smoke.sh is the gate that proves it.
 SHELL32_ELF := $(USER32_BUILD)/shell32
 
-$(USER32_BUILD)/shell32.o: userspace/system/shell32/shell32.c lib/libc32/libc32.h
+$(USER32_BUILD)/shell32.o: $(SMALLSH_SRC) lib/libc32/libc32.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS32) -c $< -o $@
+	$(CC) $(CFLAGS32) $(SMALLSH_DEFS32) -c $< -o $@
 
 $(SHELL32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/shell32.o $(USER32_BUILD)/syscall32.o lib/libc32/shell32.ld
 	$(LD) -m elf_i386 -nostdlib -static -T lib/libc32/shell32.ld \
@@ -1569,7 +1635,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1651,6 +1717,14 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	@mkdir -p $(INITRD_DIR)/bin32
 	@strip -s $(INIT32_ELF) -o $(INITRD_DIR)/bin32/init32
 	@strip -s $(SHELL32_ELF) -o $(INITRD_DIR)/bin32/shell32
+# RISCV_PLAN V5: the rv64 userland, THIRD tenant under /binrv.  GNU
+# strip does not speak EM_RISCV; llvm-strip is part of the clang
+# toolchain the build already requires.
+	@mkdir -p $(INITRD_DIR)/binrv
+	@llvm-strip-19 -s $(INITRV_ELF) -o $(INITRD_DIR)/binrv/init 2>/dev/null || \
+	    llvm-strip -s $(INITRV_ELF) -o $(INITRD_DIR)/binrv/init
+	@llvm-strip-19 -s $(SHELLRV_ELF) -o $(INITRD_DIR)/binrv/smallsh 2>/dev/null || \
+	    llvm-strip -s $(SHELLRV_ELF) -o $(INITRD_DIR)/binrv/smallsh
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
 # HTTPS client can validate server chains against it.
 	@mkdir -p $(INITRD_DIR)/etc/ssl

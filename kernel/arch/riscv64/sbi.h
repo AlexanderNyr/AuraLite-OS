@@ -36,6 +36,12 @@ void sbi_console_init(void);
 void sbi_putc(char c);
 void sbi_puts(const char *s);
 
+/* Non-blocking console read: the pending byte, or -1 when none.
+ * Legacy EID 0x02 -- the return travels in the ERROR slot by that
+ * extension's convention (it predates the error/value split).  V5's
+ * cooked-line reader polls this; V7's UART driver replaces it. */
+int  sbi_getchar(void);
+
 /* TIME extension (EID 0x54494D45, "TIME"): arm the next timer
  * interrupt at an absolute timebase value.  One-shot -- the trap
  * handler re-arms.  Falls back to legacy set_timer (EID 0x00) if the

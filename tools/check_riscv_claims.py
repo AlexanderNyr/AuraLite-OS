@@ -159,6 +159,33 @@ def claims():
          "code 130" in smoke),
     ]
 
+    # --- V5: libcrv, the promoted shell, ELF loading, /binrv ---
+    elfrv  = read("kernel", "arch", "riscv64", "elfrvload.c")
+    smsh   = read("userspace", "system", "smallsh", "smallsh.c")
+    shsmk  = read("tests", "integration", "rv_shell_smoke.sh")
+    checks += [
+        ("V5: libcrv exists (crt0 + ecall wrapper + header)",
+         exists("lib", "libcrv", "crt0_rv.S") and
+         exists("lib", "libcrv", "syscall_rv.S") and
+         exists("lib", "libcrv", "libcrv.h")),
+        ("V5: the shell is PROMOTED -- one source, seam by define",
+         exists("userspace", "system", "smallsh", "smallsh.c") and
+         not exists("userspace", "system", "shell32", "shell32.c") and
+         "AURA_LIBC" in smsh and
+         "SMALLSH_DEFS32" in makefl and "SMALLSH_DEFSRV" in makefl),
+        ("V5: the loader refuses the other two arches AND W+X segments",
+         "ELFCLASS64" in elfrv and "EM_RISCV" in elfrv and
+         "W+X segment" in elfrv),
+        ("V5: p_flags become real PTE bits",
+         "PF_X" in elfrv and "PTE_X" in elfrv and
+         "p_flags honoured" in elfrv),
+        ("V5: /binrv is the initrd's third tenant",
+         "binrv/init" in makefl and "binrv/smallsh" in makefl),
+        ("V5: the shell smoke drives the same session as i386's",
+         "run binrv/init" in shsmk and "auralite# " in shsmk and
+         "definitely-not-a-cmd" in shsmk),
+    ]
+
     # Structural: the Status header and the phase table must agree.
     # While phases are pending the header says PLANNED/IN PROGRESS and
     # complete-rows == complete-headings; when it claims a range, the

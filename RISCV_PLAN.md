@@ -1,6 +1,6 @@
 # AuraLite OS — RISC-V (rv64gc) Support Plan
 
-## Status: IN PROGRESS 🚧 — V0–V4 complete (phases V0–V9)
+## Status: IN PROGRESS 🚧 — V0–V5 complete (phases V0–V9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,7 @@
 | V2 — traps, timer, PLIC | ✅ complete | `patches/RV_V2_traps.patch` |
 | V3 — memory: Sv39, PMM, heap — and W^X back | ✅ complete | `patches/RV_V3_mm.patch` |
 | V4 — threads, scheduler, U-mode, `ecall` | ✅ complete | `patches/RV_V4_proc.patch` |
-| V5 — userspace: libc-rv, init, the shared shell | pending | `patches/RV_V5_user.patch` |
+| V5 — userspace: libc-rv, init, the shared shell | ✅ complete | `patches/RV_V5_user.patch` |
 | V6 — the inline-assembly sweep | pending | `patches/RV_V6_sweep.patch` |
 | V7 — drivers: virtio-mmio, blk, net, UART RX | pending | `patches/RV_V7_drivers.patch` |
 | V8 — parity: storage, network, full crypto | pending | `patches/RV_V8_parity.patch` |
@@ -704,28 +704,83 @@ refused). Smoke: 36 → 44 assertions; claims: 25 → 32.
 
 ---
 
-### Phase V5 — Userspace: libc-rv, init, the shared shell
+### Phase V5 — Userspace: libc-rv, init, the shared shell ✅ COMPLETE
 
 **Objective:** compiled-from-C U-mode programs from the shared initrd —
 and the first *userspace source* shared across arches.
 
 #### Tasks
 
-- [ ] `lib/libcrv/`: `crt0_rv.S` (inline `SYS_EXIT` ecall — the crt0
+- [x] `lib/libcrv/`: `crt0_rv.S` (inline `SYS_EXIT` ecall — the crt0
       independence rule from I5), `syscall_rv.S` (`a7`/`a0–a5`
       marshalling), `libcrv.h` mirroring `libc32.h`'s surface.
-- [ ] **Promote the shell**: `userspace/system/shell32/shell32.c` is
-      pure portable C over the tiny libc surface — it moves to
+- [x] **Promote the shell**: `userspace/system/shell32/shell32.c` is
+      pure portable C over the tiny libc surface — it moved to
       `userspace/system/smallsh/smallsh.c` and builds for BOTH i386
       and rv64 (each with its own crt0/linker script). One shell
-      source, two bring-up arches; the i386 image keeps byte-identical
-      behaviour (its smoke family is the regression gate).
-- [ ] ELF loader: `elf64load` for `EM_RISCV`/`ET_EXEC`, refusing the
+      source, two bring-up arches; the i386 image keeps its behaviour
+      (its smoke family is the regression gate).
+- [x] ELF loader: `elfrvload` for `EM_RISCV`/`ET_EXEC`, refusing the
       other two arches' classes/machines — the three-way mutual
       refusal completing the pattern.
-- [ ] initrd: `/binrv/init` + `/binrv/smallsh`, stripped, in the one
-      shared archive; the x86_64 boot must still reach its shell with
-      the fatter tar (the I5 hard-won assert, re-armed).
+- [x] initrd: `/binrv/init` + `/binrv/smallsh`, stripped
+      (`llvm-strip` — GNU strip does not speak EM_RISCV), in the one
+      shared archive; the x86_64 boot still reaches its shell with
+      the fatter tar (the I5 hard-won assert, re-armed and green).
+
+#### Result
+
+Delivered as specified. The promotion is the phase's centrepiece and
+it came out cleaner than planned: smallsh.c differs from shell32.c by
+a seam of FOUR defines (`AURA_LIBC`, `AURA_PUTS`, `AURA_UNAME`,
+`AURA_RUN_EXAMPLE`) — the D4 one-table rule meant read/write/spawn/
+getpid/exit are the same *numbers* at both widths, so the promotion
+was a rename plus a header switch, not a port. The i386 shell smoke
+(16 assertions incl. the x86_64 no-regression pair) runs green
+against the shared source; that gate is this phase's negative
+control, and it held.
+
+Facts earned:
+
+- **V4's SYS_RV_YIELD was 24; the table says 158.** A transcription
+  slip that survived V4 because nothing dialled the number from a
+  shared header — the moment libcrv.h existed, the mismatch was
+  structural. Fixed in V5; the lesson is the D4 rule itself: numbers
+  live in ONE place or they drift.
+- **The loader's W^X is active, not passive**: p_flags map to real
+  PTE bits (PF_X→R+X, PF_W→R+W), and a segment claiming W+X together
+  is REFUSED — this loader will not build the PTE V3 promised never
+  to build. The i386 loader states permissions; this one enforces
+  them.
+- `user_rv_run_elf` inherits user32_run_elf's nesting discipline
+  verbatim: parent jmpbuf saved around the child, per-depth user
+  stack pages stepping down from the window ceiling, per-depth trap
+  stacks (the I7 lesson), mark/release unmapping. The `run
+  binrv/init` from the shell exercises all of it at depth 1.
+- The V4 flat-image self-tests still run before the V5 ELF path
+  every boot — the write window widened to span both user worlds,
+  with the page-probe loop vouching for presence.
+
+Measured (the full interactive session over the SBI console):
+
+```
+initrv: kernel-pointer write refused (EFAULT) -- good
+initrv: exiting 7
+[elfrv] mapped 2 user page(s), entry 0x0000000030000000 (p_flags honoured: PF_X->RX, PF_W->RW)
+auralite# uname
+AuraLite OS riscv64 (Sv39 higher half, RISCV_PLAN V5)
+auralite# run binrv/init
+[user] running /binrv/init (entry 0x0000000008048000, 8712 bytes, depth 1)
+exit code 7
+auralite# exit
+bye
+```
+
+New gate: `rv_shell_smoke.sh` (15 assertions — the i386 session
+script with the arch swapped, which is the point: same source, same
+transcript shape). Boot smoke: 44 → 45 assertions; claims: 32 → 38
+(+ the i386 checker's I7 claim updated for the move — it FAILED the
+moment the file moved, which is exactly the drift-detection working).
 
 #### Test gate
 

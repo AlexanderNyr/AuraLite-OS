@@ -1,4 +1,4 @@
-/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V4).
+/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V5).
  *
  * V0 proved the chain (clang -> lld -> OpenSBI -> _start -> SBI
  * console); V1 makes this kernel the third CONSUMER of boot_info_t.
@@ -16,6 +16,7 @@
 
 #include "boot/shared/boot_info.h"
 #include "kernel/arch/riscv64/fdt.h"
+#include "kernel/arch/riscv64/initrd_rv.h"
 #include "kernel/arch/riscv64/kheap_rv.h"
 #include "kernel/arch/riscv64/paging_rv.h"
 #include "kernel/arch/riscv64/plic.h"
@@ -306,7 +307,7 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
              " Hello from AuraLite OS kernel (riscv64)!\n"
              "  rv64gc S-mode, booted via OpenSBI\n"
              "==============================================\n\n");
-    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V4\n");
+    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V5\n");
 
     sbi_puts("[boot] boot hart: ");
     put_udec(hartid);
@@ -388,7 +389,30 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
         sbi_shutdown();
     }
 
-    sbi_puts("[kernel] V4 complete; kernel reaches idle. Shutting down "
-             "(V5 adds libcrv, init and the shared shell)\n");
+    /* ---- V5: the initrd and real compiled userspace. ---------------- */
+
+    if (initrd_rv_init(&boot_info) == 0) {
+        sbi_puts("[boot] starting init (U-mode, ELF64 from the initrd)\n");
+        int code = user_rv_run_elf("binrv/init");
+        if (code == 7)
+            sbi_puts("[init] PASS: initrv ran and exited 7 as built\n");
+        else {
+            sbi_puts("[init] FAIL: initrv exit=");
+            put_udec((uint64_t)code);
+            sbi_puts(" (want 7)\n");
+        }
+
+        /* The auralite# gate, third arch: the PROMOTED shell. */
+        sbi_puts("[boot] starting shell (U-mode, the shared smallsh)\n");
+        int sh = user_rv_run_elf("binrv/smallsh");
+        sbi_puts("[shell] exited ");
+        put_udec((uint64_t)sh);
+        sbi_puts("\n");
+    } else {
+        sbi_puts("[init] SKIP: no initrd (pass -initrd build/initrd.tar)\n");
+    }
+
+    sbi_puts("[kernel] V5 complete; console+shell online; idle. "
+             "Shutting down (V6 is the asm sweep)\n");
     sbi_shutdown();
 }

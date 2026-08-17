@@ -22,6 +22,8 @@
 #include <stdint.h>
 
 #include "kernel/arch/riscv64/user_rv.h"
+#include "kernel/arch/riscv64/elfrvload.h"
+#include "kernel/arch/riscv64/initrd_rv.h"
 #include "kernel/arch/riscv64/kheap_rv.h"
 #include "kernel/arch/riscv64/paging_rv.h"
 #include "kernel/arch/riscv64/pmm_rv.h"
@@ -80,6 +82,83 @@ static void user_rv_leave(rv_trap_frame_t *f, int code)
     f->regs[10] = (uint64_t)code;          /* x11 = a1 */
 }
 
+/* ---- V5: the cooked console line -------------------------------------------
+ *
+ * cons32_readline's shape over sbi_getchar: echo, backspace, CR->LF,
+ * the newline stored.  Blocks on wfi -- the timer keeps ticking, so
+ * the poll wakes at 100 Hz; V7's UART RX interrupt replaces the poll
+ * with a real sleep. */
+
+uint64_t cons_rv_readline(char *buf, uint64_t cap)
+{
+    uint64_t n = 0;
+
+    for (;;) {
+        int ci = sbi_getchar();
+        if (ci < 0) {
+            __asm__ volatile("wfi");
+            continue;
+        }
+
+        char c = (char)ci;
+        if (c == '\r')
+            c = '\n';
+
+        if (c == '\b' || c == 0x7F) {
+            if (n > 0) {
+                n--;
+                sbi_puts("\b \b");
+            }
+            continue;
+        }
+
+        if (c == '\n') {
+            sbi_putc('\n');
+            if (n < cap)
+                buf[n++] = '\n';
+            return n;
+        }
+
+        if (n + 1 < cap) {          /* leave room for the newline */
+            buf[n++] = c;
+            sbi_putc(c);            /* echo */
+        }
+    }
+}
+
+/* SUM window helpers: every user-memory access from the kernel goes
+ * through these -- the V4-measured fact that sstatus.SUM is OFF by
+ * default and a bare kernel load from a PTE_U page traps. */
+static inline void sum_on(void)
+{
+    __asm__ volatile("csrs sstatus, %0" :: "r"(1UL << 18));
+}
+static inline void sum_off(void)
+{
+    __asm__ volatile("csrc sstatus, %0" :: "r"(1UL << 18));
+}
+
+/* Copy a NUL-terminated user string.  The bring-up stand-in for
+ * strncpy_from_user: bounds inside the user window, SUM around the
+ * byte loop.  0 on success. */
+static int copy_user_path(uint64_t uptr, char *dst, uint64_t cap)
+{
+    if (uptr < ELF_RV_USER_MIN || uptr >= ELF_RV_USER_MAX)
+        return -1;
+    int rc = -1;                     /* unterminated within cap */
+    sum_on();
+    for (uint64_t i = 0; i < cap - 1; i++) {
+        if (uptr + i >= ELF_RV_USER_MAX)
+            break;
+        if (paging_rv_probe(uptr + i) == ~0UL)
+            break;
+        dst[i] = *(const char *)(uptr + i);
+        if (!dst[i]) { rc = 0; break; }
+    }
+    sum_off();
+    return rc;
+}
+
 /* ---- trap.c hooks --------------------------------------------------------- */
 
 void user_rv_syscall(rv_trap_frame_t *f)
@@ -95,34 +174,82 @@ void user_rv_syscall(rv_trap_frame_t *f)
     }
 
     switch (nr) {
+    case SYS_RV_READ: {
+        /* read(fd=a0, buf=a1, len=a2): fd 0, cooked console line.
+         * Probe every touched page BEFORE the blocking wait -- the
+         * i386 rule: validate, then sleep, not the reverse. */
+        if (a0 != 0 || a2 == 0 || a2 > 4096 ||
+            a1 < ELF_RV_USER_MIN || a1 + a2 > ELF_RV_USER_MAX) {
+            f->regs[9] = (uint64_t)-1;
+            return;
+        }
+        for (uint64_t va = a1 & ~(uint64_t)(PAGE_SIZE_RV - 1);
+             va < a1 + a2; va += PAGE_SIZE_RV) {
+            if (paging_rv_probe(va) == ~0UL) {
+                f->regs[9] = (uint64_t)-14;    /* -EFAULT */
+                return;
+            }
+        }
+        static char kline[4096];
+        uint64_t n = cons_rv_readline(kline, a2);
+        sum_on();
+        for (uint64_t i = 0; i < n; i++)
+            ((char *)a1)[i] = kline[i];
+        sum_off();
+        f->regs[9] = n;
+        return;
+    }
     case SYS_RV_WRITE: {
         /* write(fd=a0, buf=a1, len=a2): fd 1, bounds inside the user
-         * window, each byte through the console.
+         * window, pages probed (V5 widened the window from V4's two
+         * fixed pages to the ELF range, so presence is no longer
+         * implied), then the copy through the SUM window.
          *
-         * The SUM window is the mechanism here, measured the hard
-         * way: with sstatus.SUM=0 (the reset default -- SMAP's
-         * sibling, on by default on this ISA) the kernel's OWN load
-         * from a PTE_U page traps.  First run: user ecall arrived,
-         * the byte loop's load at a kernel sepc page-faulted on
-         * tval=0x40000048.  So: bounds first (SUM makes user memory
-         * reachable, not kernel memory safe -- the check is what
-         * keeps a1 from pointing at the kernel), then SUM on, copy
-         * out to a KERNEL buffer, SUM off, and only then print. */
+         * SUM is the mechanism here, measured the hard way in V4:
+         * with sstatus.SUM=0 (the reset default -- SMAP's sibling,
+         * on by default on this ISA) the kernel's OWN load from a
+         * PTE_U page traps.  Bounds first (SUM makes user memory
+         * reachable, not kernel memory safe), SUM on, copy to a
+         * KERNEL buffer, SUM off, then print. */
+        /* The window spans BOTH user worlds: ELF programs live in
+         * [ELF_RV_USER_MIN, ELF_RV_USER_MAX) and the V4 flat-image
+         * self-tests sit one page above it at USER_TEXT_VADDR_RV --
+         * the probe loop is what actually vouches for presence. */
         if (a0 != 1 || a2 == 0 || a2 > 4096 ||
-            a1 < USER_STACK_VADDR_RV ||
+            a1 < ELF_RV_USER_MIN ||
             a1 + a2 > USER_TEXT_VADDR_RV + PAGE_SIZE_RV) {
             f->regs[9] = (uint64_t)-1;
             return;
         }
+        for (uint64_t va = a1 & ~(uint64_t)(PAGE_SIZE_RV - 1);
+             va < a1 + a2; va += PAGE_SIZE_RV) {
+            if (paging_rv_probe(va) == ~0UL) {
+                f->regs[9] = (uint64_t)-14;    /* -EFAULT */
+                return;
+            }
+        }
         static char kbuf[4096];
         const char *p = (const char *)a1;
-        __asm__ volatile("csrs sstatus, %0" :: "r"(1UL << 18));  /* SUM on */
+        sum_on();
         for (uint64_t i = 0; i < a2; i++)
             kbuf[i] = p[i];
-        __asm__ volatile("csrc sstatus, %0" :: "r"(1UL << 18));  /* SUM off */
+        sum_off();
         for (uint64_t i = 0; i < a2; i++)
             sbi_putc(kbuf[i]);
         f->regs[9] = a2;
+        return;
+    }
+    case SYS_RV_SPAWN: {
+        /* spawn(path=a0): run another initrd ELF to completion and
+         * return its exit code.  Nested inside the caller's own
+         * user_rv_run context, so the parent's trampoline slot is
+         * saved and restored by user_rv_run_elf itself. */
+        char path[100];
+        if (copy_user_path(a0, path, sizeof(path)) != 0) {
+            f->regs[9] = (uint64_t)-14;        /* -EFAULT */
+            return;
+        }
+        f->regs[9] = (uint64_t)(int64_t)user_rv_run_elf(path);
         return;
     }
     case SYS_RV_GETPID:
@@ -225,6 +352,112 @@ fail_setup:
     if (stack_frame)
         pmm_rv_free_frame(stack_frame);
     return -1;
+}
+
+/* ---- V5: ELF images from the initrd -----------------------------------------
+ *
+ * user32_run_elf's shape: spawn depth 0 = launched from kmain_rv,
+ * 1 = child spawned by a user image (the shell).  Each nesting level
+ * needs its own user stack page address AND the parent's
+ * exit-trampoline context (the jmpbuf + user_active) saved around
+ * the child -- user_rv_leave must unwind to the INNERMOST run, and
+ * the parent must be resumable afterwards. */
+
+static uint64_t spawn_depth;
+
+int user_rv_run_elf(const char *path)
+{
+    const uint8_t *image;
+    uint64_t size;
+
+    if (spawn_depth >= 2) {
+        sbi_puts("[user] spawn depth limit (2) -- refusing\n");
+        return -1;
+    }
+
+    if (!initrd_rv_find(path, &image, &size)) {
+        sbi_puts("[user] /");
+        sbi_puts(path);
+        sbi_puts(": not found in the initrd\n");
+        return -1;
+    }
+
+    /* Checkpoint the parent's mappings (no-op at depth 0) and its
+     * exit-trampoline context. */
+    elfrvload_mark();
+    uint64_t p_jmpbuf[14];
+    for (int i = 0; i < 14; i++)
+        p_jmpbuf[i] = exit_jmpbuf[i];
+    int p_active = user_active;
+
+    uint64_t entry = elfrvload_map(image, size);
+    if (!entry) {
+        elfrvload_unmap();          /* releases to the mark */
+        return -1;
+    }
+
+    /* User stack: one page per nesting level, stepping down from the
+     * ELF window's ceiling so parent and child stacks never collide
+     * (one shared root table at V5 -- the address-range treaty). */
+    uint64_t stack_page  = ELF_RV_USER_MAX - PAGE_SIZE_RV * (spawn_depth + 1);
+    uint64_t stack_frame = pmm_rv_alloc_frame();
+    if (!stack_frame ||
+        paging_rv_map(stack_page, stack_frame,
+                      PTE_U | PTE_R | PTE_W) != 0) {
+        if (stack_frame)
+            pmm_rv_free_frame(stack_frame);
+        elfrvload_unmap();
+        return -1;
+    }
+
+    /* A DEDICATED trap stack per nesting level (the I7 lesson: the
+     * parent's trap stack has ITS live trap frames on it while the
+     * child runs -- the child needs an empty one). */
+    uint8_t *trap_stack = (uint8_t *)kmalloc_rv(TRAP_STACK_SIZE);
+    if (!trap_stack) {
+        paging_rv_unmap(stack_page);
+        pmm_rv_free_frame(stack_frame);
+        elfrvload_unmap();
+        return -1;
+    }
+
+    sbi_puts("[user] running /");
+    sbi_puts(path);
+    sbi_puts(" (entry ");
+    put_hex_(entry);
+    sbi_puts(", ");
+    put_udec_(size);
+    sbi_puts(" bytes, depth ");
+    put_udec_(spawn_depth);
+    sbi_puts(")\n");
+
+    spawn_depth++;
+    user_active = 1;
+
+    int rc = rv_setjmp(exit_jmpbuf);
+    if (rc == 0) {
+        user_enter_rv(entry, stack_page + PAGE_SIZE_RV - 16,
+                      (uint64_t)trap_stack + TRAP_STACK_SIZE);
+    }
+
+    /* Landed from user_rv_leave with rc = 1 + code; interrupts are
+     * off across the unwind (the V4 SPIE fact), re-open now. */
+    __asm__ volatile("csrsi sstatus, 2");
+    int code = rc - 1;
+    spawn_depth--;
+
+    kfree_rv(trap_stack);
+    paging_rv_unmap(stack_page);
+    pmm_rv_free_frame(stack_frame);
+    elfrvload_unmap();              /* child's pages only, to the mark */
+
+    /* Restore the parent's trampoline: the next SYS_EXIT (the
+     * parent's own) must land in the OUTER user_rv_run_elf frame. */
+    for (int i = 0; i < 14; i++)
+        exit_jmpbuf[i] = p_jmpbuf[i];
+    user_active = p_active;
+
+    return code;
 }
 
 /* ---- the boot self-test ------------------------------------------------------

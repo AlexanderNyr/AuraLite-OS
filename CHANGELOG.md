@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V5 — userspace: libcrv, init, the shared shell] 2026-08-17
+
+RISCV_PLAN phase V5: compiled-from-C U-mode programs from the shared
+initrd — and the first userspace SOURCE shared across arches.
+
+- **`lib/libcrv/` (new):** `crt0_rv.S` (inline SYS_EXIT ecall, the
+  crt0 independence rule; main's return is already in a0 — the D4
+  convention's convenient accident), `syscall_rv.S` (six mv
+  instructions of marshalling), `libcrv.h` mirroring libc32.h.
+- **The shell PROMOTED:** `shell32.c` → `userspace/system/smallsh/
+  smallsh.c`, one portable-C source for both bring-up arches; the
+  per-arch seam is four defines (AURA_LIBC/PUTS/UNAME/RUN_EXAMPLE).
+  The i386 shell smoke (16 assertions) is green against the shared
+  source — the phase's own negative control. The D4 slip it caught:
+  V4's SYS_RV_YIELD was 24, the table says 158; a shared header made
+  the mismatch structural and it died in review.
+- **`elfrvload.{c,h}` (new):** ELFCLASS64/EM_RISCV/ET_EXEC only — the
+  three-way mutual refusal complete. p_flags become REAL PTE bits
+  (PF_X→RX, PF_W→RW) and a W+X segment is refused outright: the
+  loader will not build the PTE V3 promised never to build.
+- **`initrd_rv.{c,h}` (new):** USTAR reader, initrd32's rules; the
+  archive gains `/binrv/init` + `/binrv/smallsh` (llvm-strip — GNU
+  strip does not speak EM_RISCV) as its third tenant; the x86_64 and
+  i386 boots still reach their shells with the fatter tar.
+- **`user_rv.c`:** SYS_READ (cooked line over sbi_getchar, wfi poll),
+  SYS_SPAWN (copy_user_path through the SUM window), `user_rv_run_elf`
+  with user32_run_elf's nesting discipline (parent jmpbuf saved,
+  per-depth stacks and trap stacks, mark/release unmapping).
+- **`rv_shell_smoke.sh` (new, 15 assertions):** the i386 session
+  script with the arch swapped — init's userspace EFAULT control,
+  uname/echo/nested-run/unknown/exit round-trips, W^X p_flags line.
+  Boot smoke: 44 → 45; claims: 32 → 38 (+ the i386 checker's I7 claim
+  updated for the move, after it correctly failed on it).
+
 ## [RV V4 — threads, scheduler, U-mode, ecall] 2026-08-17
 
 RISCV_PLAN phase V4: preemptive round-robin on the boot hart, a
