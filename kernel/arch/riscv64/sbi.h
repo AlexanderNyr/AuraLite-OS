@@ -1,0 +1,43 @@
+/* kernel/arch/riscv64/sbi.h -- Supervisor Binary Interface calls
+ * (RISCV_PLAN V0, decision D2).
+ *
+ * The SBI is the S-mode kernel's contract with the resident M-mode
+ * firmware (OpenSBI on QEMU virt and on every mainstream board) -- a
+ * frozen public specification, used the way BIOS Stage 2 used INT 13h:
+ * a platform service, not a code dependency.
+ *
+ * V0 scope: the console (output before any UART driver exists) and
+ * the probe machinery.  The legacy console extension (EID 0x01) is
+ * deprecated but universally present; the Debug Console extension
+ * (DBCN, EID 0x4442434E, "DBCN") is its replacement.  V0 probes DBCN
+ * via sbi_probe_extension and falls back -- OpenSBI version drift is
+ * a named risk in the plan, and probing is the mitigation.
+ */
+
+#ifndef AURALITE_ARCH_RISCV64_SBI_H
+#define AURALITE_ARCH_RISCV64_SBI_H
+
+#include <stdint.h>
+
+/* SBI return convention: a0 = error (0 = success), a1 = value. */
+struct sbiret {
+    long error;
+    long value;
+};
+
+/* Base extension (EID 0x10): spec version, impl id, extension probe. */
+struct sbiret sbi_get_spec_version(void);
+struct sbiret sbi_get_impl_id(void);
+struct sbiret sbi_probe_extension(long eid);
+
+/* Console: DBCN when the firmware has it, legacy putchar otherwise.
+ * sbi_console_init() picks once at boot and reports which. */
+void sbi_console_init(void);
+void sbi_putc(char c);
+void sbi_puts(const char *s);
+
+/* Legacy shutdown (EID 0x08) -- lets the smoke tests end a run without
+ * waiting for the QEMU timeout, the way -no-reboot + hlt does on x86. */
+void sbi_shutdown(void) __attribute__((noreturn));
+
+#endif /* AURALITE_ARCH_RISCV64_SBI_H */

@@ -1,0 +1,930 @@
+From 571e8cc47ddac9953d82672a62da11a69bef47be Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Mon, 17 Aug 2026 08:39:56 +0000
+Subject: [PATCH] RV V0: rv64 S-mode stub boots through OpenSBI
+
+kernelrv target (clang --target=riscv64, ld.lld -m elf64lriscv);
+boot.S hart lottery + .text.boot placement (OpenSBI jumps to the
+payload base, not e_entry -- measured); SBI console with DBCN probe
+and legacy fallback; DTB magic check; check_riscv_claims.py (8 claims,
+selftest, in test-unit); rv_boot_smoke.sh (9 assertions incl. -smp 4).
+---
+ CHANGELOG.md                       |  33 ++++++++
+ Makefile                           |  66 +++++++++++++++
+ RISCV_PLAN.md                      |  64 ++++++++++++---
+ kernel/arch/riscv64/boot.S         |  84 +++++++++++++++++++
+ kernel/arch/riscv64/kernelrv.ld    |  79 ++++++++++++++++++
+ kernel/arch/riscv64/main_rv.c      |  87 ++++++++++++++++++++
+ kernel/arch/riscv64/sbi.c          |  97 ++++++++++++++++++++++
+ kernel/arch/riscv64/sbi.h          |  43 ++++++++++
+ tests/integration/rv_boot_smoke.sh | 100 +++++++++++++++++++++++
+ tools/check_riscv_claims.py        | 124 +++++++++++++++++++++++++++++
+ 10 files changed, 767 insertions(+), 10 deletions(-)
+ create mode 100644 kernel/arch/riscv64/boot.S
+ create mode 100644 kernel/arch/riscv64/kernelrv.ld
+ create mode 100644 kernel/arch/riscv64/main_rv.c
+ create mode 100644 kernel/arch/riscv64/sbi.c
+ create mode 100644 kernel/arch/riscv64/sbi.h
+ create mode 100755 tests/integration/rv_boot_smoke.sh
+ create mode 100755 tools/check_riscv_claims.py
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index ce1ed5b..e3ad814 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,39 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [RV V0 — the third architecture boots] 2026-08-17
++
++RISCV_PLAN phase V0: `make kernelrv` builds an rv64gc S-mode stub with
++the existing clang/lld toolchain (no new required tools) and it boots
++end to end on `qemu-system-riscv64 -machine virt` through OpenSBI.
++
++- **`kernel/arch/riscv64/` (new: `boot.S`, `sbi.{c,h}`, `main_rv.c`,
++  `kernelrv.ld`).** `_start` runs the hart lottery (`amoswap.d` —
++  losers park in `wfi`), clears `.bss`, and calls `kmain_rv` with the
++  OpenSBI `a0`/`a1` handoff (hartid, DTB). The SBI layer probes DBCN
++  and falls back to the legacy console; the stub prints the banner,
++  echoes the handoff, verifies the DTB magic big-endian, and exits via
++  SBI shutdown.
++- **The phase's measured fact, now enforced structurally:** OpenSBI
++  jumps to the payload *base* (`0x80200000`), not the ELF entry point.
++  The first link had `boot.o` last, `sbi_call` at the base, and the
++  result was silence and a reset loop. `_start` now lives in
++  `.text.boot`, which `kernelrv.ld` places first — the contract is in
++  the linker script, not in object order luck.
++- **`Makefile`:** `kernelrv` / `run-rv` targets (`-march=rv64gc
++  -mabi=lp64d -mcmodel=medany -mno-relax`, `ld.lld -m elf64lriscv`);
++  `deps-check` reports `qemu-system-riscv64` as optional, the mingw
++  pattern.
++- **`tools/check_riscv_claims.py` (new, D8):** 8 claims + selftest,
++  registered in `test-unit` — the plan is claim-checked from its FIRST
++  delivered phase, not retrofitted. (Its first real run caught its own
++  Makefile registration missing.)
++- **`tests/integration/rv_boot_smoke.sh` (new):** 9 assertions —
++  OpenSBI S-mode handoff, banner, hartid, non-null DTB, big-endian
++  magic, clean SBI-shutdown exit, and `-smp 4` printing exactly one
++  banner (the lottery parked three harts). Skips cleanly without
++  qemu-system-riscv64.
++
+ ## [RISCV_PLAN — the third architecture, planned] 2026-08-17
+ 
+ Adds the RISC-V (rv64gc) support plan, in the structure of
+diff --git a/Makefile b/Makefile
+index 2d0f0ff..e10a759 100644
+--- a/Makefile
++++ b/Makefile
+@@ -91,6 +91,14 @@ deps-check:
+ 		echo "[deps] install it with: rustup target add $(RUST_TARGET)"; \
+ 		exit 127; \
+ 	fi
++	@# RISCV_PLAN V0: qemu-system-riscv64 is OPTIONAL, the mingw pattern --
++	@# absent means the rv64 smoke test skips loudly, not that the build
++	@# fails.  clang/lld already cross-compile to riscv64, so building
++	@# kernelrv needs no new tools at all; only *running* it does.
++	@if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then \
++		echo "[deps] optional tool absent: qemu-system-riscv64 (rv64 boot tests will skip)"; \
++		echo "[deps] Debian/Ubuntu: sudo apt install qemu-system-misc"; \
++	fi
+ 
+ kernel: $(KERNEL_ELF)
+ 
+@@ -160,6 +168,61 @@ $(KERNEL32_ELF): $(KERNEL32_OBJS) $(KERNEL32_DIR)/kernel32.ld
+ .PHONY: kernel32
+ kernel32: $(KERNEL32_ELF)
+ 
++# =============================================================================
++# RISCV_PLAN V0: the rv64 kernel (kernelrv.elf).
++#
++# Same clang/lld toolchain, third target (--target=riscv64 -march=rv64gc,
++# ld.lld -m elf64lriscv) -- REQUIRED_TOOLS does not grow.  Assembly is
++# .S through clang's integrated GNU as: there is no NASM on this arch.
++#
++# -mcmodel=medany: the code must be linkable anywhere in the low 2 GiB
++#   span around PC (the medlow model caps at +-2 GiB of address zero,
++#   which 0x80200000 violates).
++# -mno-relax: linker relaxation rewrites call sequences against gp; the
++#   kernel never sets __global_pointer$ (see kernelrv.ld), so relaxation
++#   must be off or the linker would emit gp-relative accesses to a
++#   register containing garbage.
++# -mabi=lp64d: rv64gc's D extension is real; the FPU context story is
++#   costed into V4 (plan risk: the M1 lesson).
++# =============================================================================
++KERNELRV_ELF  := $(BUILD_DIR)/kernelrv.elf
++KERNELRV_DIR  := kernel/arch/riscv64
++KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null)
++KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
++KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
++                 $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))
++KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h
++CFLAGSRV      := --target=riscv64 -march=rv64gc -mabi=lp64d \
++                 -mcmodel=medany -mno-relax \
++                 -std=c11 -ffreestanding -fno-stack-protector \
++                 -fno-pie -fno-pic \
++                 -Wall -Wextra -Wno-unused-parameter \
++                 -Werror \
++                 -O2 -g -I .
++
++$(BUILD_DIR)/krv/%.o: %.c $(KERNELRV_HDRS)
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGSRV) -c $< -o $@
++
++$(BUILD_DIR)/krv/%.o: %.S
++	@mkdir -p $(dir $@)
++	$(CC) $(CFLAGSRV) -c $< -o $@
++
++$(KERNELRV_ELF): $(KERNELRV_OBJS) $(KERNELRV_DIR)/kernelrv.ld
++	$(LD) -m elf64lriscv -nostdlib -static -T $(KERNELRV_DIR)/kernelrv.ld \
++	    $(KERNELRV_OBJS) -o $@
++	@echo "  [kernelrv] $@ ($$(du -h $@ | cut -f1))"
++
++.PHONY: kernelrv
++kernelrv: $(KERNELRV_ELF)
++
++# Convenience: boot the rv64 kernel under QEMU (serial on stdio).
++.PHONY: run-rv
++run-rv: kernelrv
++	qemu-system-riscv64 -machine virt -m 256M \
++	    -display none -serial stdio -no-reboot \
++	    -kernel $(KERNELRV_ELF)
++
+ # =============================================================================
+ # I386_PLAN I5: the 32-bit userspace (init32 + libc32).
+ #
+@@ -1819,6 +1882,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
+ 	@echo "[unit] running tools/check_i386_claims.py"
+ 	@python3 tools/check_i386_claims.py || exit 1
+ 	@python3 tools/check_i386_claims.py --selftest || exit 1
++	@echo "[unit] running tools/check_riscv_claims.py"
++	@python3 tools/check_riscv_claims.py || exit 1
++	@python3 tools/check_riscv_claims.py --selftest || exit 1
+ 
+ # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
+ # header self-containment sweep, matrix->archive drift check, negative
+diff --git a/RISCV_PLAN.md b/RISCV_PLAN.md
+index 8a119dd..0789e42 100644
+--- a/RISCV_PLAN.md
++++ b/RISCV_PLAN.md
+@@ -1,10 +1,10 @@
+ # AuraLite OS — RISC-V (rv64gc) Support Plan
+ 
+-## Status: PLANNED 📋 (phases V0–V9)
++## Status: IN PROGRESS 🚧 — V0 complete (phases V0–V9)
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+-| V0 — toolchain gates + the S-mode stub | pending | `patches/RV_V0_boot.patch` |
++| V0 — toolchain gates + the S-mode stub | ✅ complete | `patches/RV_V0_boot.patch` |
+ | V1 — `boot_info_t` from the Device Tree | pending | `patches/RV_V1_dtb.patch` |
+ | V2 — traps, timer, PLIC | pending | `patches/RV_V2_traps.patch` |
+ | V3 — memory: Sv39, PMM, heap — and W^X back | pending | `patches/RV_V3_mm.patch` |
+@@ -279,7 +279,7 @@ drift at all.
+ 
+ ## 3. Phases
+ 
+-### Phase V0 — Toolchain gates + the S-mode stub
++### Phase V0 — Toolchain gates + the S-mode stub ✅ COMPLETE
+ 
+ **Objective:** the third architecture exists in the build system and a
+ banner proves the whole path: clang → lld → OpenSBI → our `_start` →
+@@ -287,28 +287,72 @@ SBI console.
+ 
+ #### Tasks
+ 
+-- [ ] `Makefile`: `kernelrv` target family (`--target=riscv64
++- [x] `Makefile`: `kernelrv` target family (`--target=riscv64
+       -march=rv64gc -mabi=lp64d -mcmodel=medany`, `ld.lld -m
+       elf64lriscv`); `deps-check` learns the *optional* riscv tools the
+       way it learned mingw (absent = riscv targets skip loudly, the
+       x86 build is untouched).
+-- [ ] `kernel/arch/riscv64/boot.S` (GNU as via clang — no NASM on this
++- [x] `kernel/arch/riscv64/boot.S` (GNU as via clang — no NASM on this
+       arch): park non-boot harts (`a0 != boot hart` → `wfi` loop), set
+       up `sp`, clear `.bss`, save `a0`/`a1`, call `kmain_rv`.
+-- [ ] `kernel/arch/riscv64/sbi.c`: the `ecall`-to-M-mode wrapper —
++- [x] `kernel/arch/riscv64/sbi.c`: the `ecall`-to-M-mode wrapper —
+       `sbi_console_putchar` (legacy 0x01) and DBCN probe; the day-0
+       output path before any UART driver.
+-- [ ] `main_rv.c`: banner + hartid + DTB pointer echo, `wfi` idle.
++- [x] `main_rv.c`: banner + hartid + DTB pointer echo, `wfi` idle.
+       `kernelrv.ld`: `OUTPUT_ARCH(riscv)`, link at `0x80200000`
+       (physical for now; V3 moves it higher-half — the same
+       stub-then-grow shape I1→I3 used).
+-- [ ] `tools/check_riscv_claims.py` (D8): three claims, registered in
+-      `make test-unit`, `--selftest` included.
+-- [ ] `tests/integration/rv_boot_smoke.sh`: `qemu-system-riscv64
++- [x] `tools/check_riscv_claims.py` (D8): eight claims (not three — the
++      structural Status-vs-table checks the i386 checker ended with are
++      installed here from day one), registered in `make test-unit`,
++      `--selftest` included.
++- [x] `tests/integration/rv_boot_smoke.sh`: `qemu-system-riscv64
+       -machine virt -kernel build/kernelrv.elf`, assert the banner and
+       the OpenSBI handoff line; skip cleanly when qemu-system-riscv64
+       is absent.
+ 
++#### Result
++
++Delivered as specified, with one measured fact the plan did not
++predict — and it cost the whole debugging session of this phase:
++
++**OpenSBI ignores the ELF entry point.** fw_dynamic jumps to its
++"Domain0 Next Address" — the *payload base*, `0x80200000` — not to
++`e_entry`. The first link put `boot.o` last (find-order objects), so
++`_start` landed at `0x802003d4`, `sbi_call`'s first instruction landed
++at `0x80200000`, and the hart executed it with garbage arguments:
++silence after the OpenSBI banner, then a reset loop fetching from the
++mrom reset vector (`-d int` showed endless `fault_fetch @0x10000` and
++zero traps in our range). The fix is structural, not an object-order
++band-aid: `_start` lives in `.text.boot` and `kernelrv.ld` places
++`KEEP(*(.text.boot))` first, so "first byte of the first segment" and
++"`_start`" are the same fact by construction. A second footgun found
++on the way: linking a bare `-Ttext=` probe without a full linker
++script gave the program headers their own LOAD segment at the default
++image base — which QEMU dutifully loaded over the reset-vector region.
++Full linker script or nothing.
++
++Measured under `qemu-system-riscv64 -machine virt` (OpenSBI v1.6):
++
++```
++Domain0 Next Address        : 0x0000000080200000
++Domain0 Next Mode           : S-mode
++ Hello from AuraLite OS kernel (riscv64)!
++[kernel] AuraLite OS riscv64, RISCV_PLAN phase V0
++[boot] boot hart: 0
++[boot] DTB at phys 0x000000008fe00000
++[boot] DTB magic OK (0xD00DFEED, big-endian read)
++[kernel] V0 stub complete; shutting down (V1 adds the DTB -> boot_info walk)
++```
++
++The smoke test's 9 assertions pass, including `-smp 4` printing the
++banner exactly once (the hart lottery parked the other three harts)
++and the run ending by SBI shutdown rather than the timeout.
++`build/kernelrv.elf` is 32K; the x86_64 and i386 suites are untouched.
++The stub ends in `sbi_shutdown` rather than the planned `wfi` idle so
++every smoke run exits in under a second — V2's timer work re-introduces
++the idle loop when there is something to wake up for.
++
+ #### Test gate
+ 
+ - The stub banner appears on the SBI console under `-machine virt`;
+diff --git a/kernel/arch/riscv64/boot.S b/kernel/arch/riscv64/boot.S
+new file mode 100644
+index 0000000..b785f4f
+--- /dev/null
++++ b/kernel/arch/riscv64/boot.S
+@@ -0,0 +1,84 @@
++# =============================================================================
++# kernel/arch/riscv64/boot.S -- rv64 kernel entry point (RISCV_PLAN V0).
++#
++# The third architecture's first instructions.  OpenSBI (the M-mode
++# platform firmware -- RISCV_PLAN D2) enters here in S-mode with:
++#   a0 = hartid of the boot hart
++#   a1 = physical address of the flattened device tree
++#   satp = 0 (paging off), sstatus.SIE = 0
++#
++# GNU as syntax via clang's integrated assembler: there is no NASM on
++# this arch, and no reason to want one -- the .S path also gets the
++# C preprocessor for free.
++#
++# Responsibilities, in order (the boot32.asm shape, third verse):
++#   1. Park non-boot harts.  QEMU virt with -smp > 1 enters ALL harts
++#      here at once (unlike x86, where APs wait for a SIPI dance);
++#      anyone who is not the boot hart goes to wfi immediately and
++#      stays there until SBI HSM starts them on purpose (plan D5).
++#      "Boot hart" = whoever wins the lottery ticket at hart_lottery:
++#      the DTB does not promise hartid 0 boots first.
++#   2. sp := boot stack top (64 KiB in .bss).
++#   3. Zero .bss -- but the lottery word and the stack live there, so
++#      the clear runs BEFORE the stack is used for calls and SKIPS the
++#      lottery (it sits in .data instead, dodging the problem).
++#   4. Call kmain_rv(hartid, dtb_phys) -- a0/a1 pass through untouched.
++#   5. If kmain_rv returns: wfi loop.
++# =============================================================================
++
++.option norvc                     # no compressed insns in the entry path;
++                                  # keeps disassembly 1:1 with this file
++
++.section .data
++hart_lottery:
++    .dword 0                      # 0 = unclaimed; first amoswap wins
++
++# .text.boot, placed FIRST by kernelrv.ld -- and that placement is
++# load-bearing, not cosmetic: measured during V0 bring-up, OpenSBI
++# jumps to its "Domain0 Next Address" (0x80200000, the payload base),
++# NOT to the ELF entry point (e_entry was 0x802003d4 and was ignored;
++# the hart executed sbi.o's first function with garbage arguments).
++# The ELF entry field still names _start for readers and debuggers,
++# but the contract that actually boots the machine is "_start is the
++# first byte of the first loaded segment".
++.section .text.boot
++.globl _start
++_start:
++    # ---- 1. One hart proceeds; the rest park. -------------------------
++    la    t0, hart_lottery
++    li    t1, 1
++    amoswap.d t2, t1, (t0)        # t2 := old value, atomically set 1
++    bnez  t2, .Lpark              # somebody already won
++
++    # ---- 2. Stack for the boot hart. ----------------------------------
++    la    sp, boot_stack_top
++
++    # ---- 3. Zero .bss (the stack is in .bss but nothing is ON it yet;
++    # a0/a1 are live and must survive -- use t-registers only). ---------
++    la    t0, __bss_start
++    la    t1, __bss_end
++.Lbss_clear:
++    bgeu  t0, t1, .Lbss_done
++    sd    zero, 0(t0)
++    addi  t0, t0, 8
++    j     .Lbss_clear
++.Lbss_done:
++    # The stack was just zeroed along with the rest of .bss; sp still
++    # points at its top and nothing had been pushed.  Re-set anyway so
++    # the invariant is visible rather than inherited:
++    la    sp, boot_stack_top
++
++    # ---- 4. kmain_rv(hartid=a0, dtb_phys=a1). --------------------------
++    call  kmain_rv
++
++    # ---- 5. Not reached in a healthy boot. -----------------------------
++.Lpark:
++    wfi
++    j     .Lpark
++
++.section .bss
++.align 16
++boot_stack_bottom:
++    .space 64 * 1024
++.globl boot_stack_top
++boot_stack_top:
+diff --git a/kernel/arch/riscv64/kernelrv.ld b/kernel/arch/riscv64/kernelrv.ld
+new file mode 100644
+index 0000000..fe212f8
+--- /dev/null
++++ b/kernel/arch/riscv64/kernelrv.ld
+@@ -0,0 +1,79 @@
++/*
++ * kernel/arch/riscv64/kernelrv.ld -- linker script for the rv64 kernel
++ * (RISCV_PLAN V0).
++ *
++ * V0 links at physical 0x80200000: RAM on the QEMU virt machine starts
++ * at 0x80000000 and OpenSBI owns the first 2 MiB, so 0x80200000 is the
++ * conventional S-mode payload address (what -kernel loads, what
++ * fw_payload builds expect on real boards).  VMA = LMA, paging off --
++ * the same stub-then-grow shape kernel32.ld had at I1: V3 moves the
++ * kernel to the Sv39 higher half and this script grows the .boot
++ * physical-entry section then, not before.
++ *
++ * Same PHDRS discipline as the other two kernels' scripts:
++ * differently-permissioned segments never share a page.  On THIS arch
++ * the discipline is enforceable from V3 day one (Sv39 PTEs carry a
++ * real X bit -- plan Fact 5), so the layout being right before paging
++ * exists is the whole point.
++ */
++
++OUTPUT_FORMAT(elf64-littleriscv)
++OUTPUT_ARCH(riscv)
++ENTRY(_start)
++
++PHDRS
++{
++    text    PT_LOAD    FLAGS((1 << 0) | (1 << 2)); /* R + X */
++    rodata  PT_LOAD    FLAGS(1 << 2);              /* R     */
++    data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
++}
++
++SECTIONS
++{
++    . = 0x80200000;
++
++    .text : {
++        /* .text.boot FIRST: OpenSBI jumps to the payload BASE
++         * (0x80200000), not to e_entry -- measured in V0, see the
++         * comment at _start in boot.S.  The linker script is what
++         * makes "first byte" and "_start" the same fact. */
++        KEEP(*(.text.boot))
++        *(.text .text.*)
++    } :text
++
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
++
++    .rodata : {
++        *(.rodata .rodata.*)
++        *(.srodata .srodata.*)
++    } :rodata
++
++    . = ALIGN(CONSTANT(MAXPAGESIZE));
++
++    .data : {
++        *(.data .data.*)
++        /* RISC-V small-data sections; __global_pointer$ would let us
++         * use gp-relative addressing, but the kernel builds with
++         * -mno-relax and does not set gp -- one less register with a
++         * hidden contract in trap paths. */
++        *(.sdata .sdata.*)
++    } :data
++
++    .bss : {
++        . = ALIGN(16);
++        __bss_start = .;
++        *(.bss .bss.*)
++        *(.sbss .sbss.*)
++        *(COMMON)
++        . = ALIGN(16);
++        __bss_end = .;
++    } :data
++
++    /DISCARD/ : {
++        *(.eh_frame)
++        *(.eh_frame_hdr)
++        *(.note .note.*)
++        *(.comment)
++        *(.riscv.attributes)
++    }
++}
+diff --git a/kernel/arch/riscv64/main_rv.c b/kernel/arch/riscv64/main_rv.c
+new file mode 100644
+index 0000000..2b3cf51
+--- /dev/null
++++ b/kernel/arch/riscv64/main_rv.c
+@@ -0,0 +1,87 @@
++/* kernel/arch/riscv64/main_rv.c -- rv64 kernel entry (RISCV_PLAN V0).
++ *
++ * The V0 stub, deliberately in the I1-stub shape: prove the CHAIN --
++ * clang -> lld -> OpenSBI -> _start -> SBI console -- before growing
++ * the payload.  Everything printed here is an assertion the smoke
++ * test greps: the hartid and DTB pointer prove the a0/a1 handoff
++ * survived boot.S; the DTB magic probe proves the pointer actually
++ * points at a device tree (big-endian 0xD00DFEED -- the one place
++ * byte order bites on this port, met in the stub on purpose so V1's
++ * parser inherits a verified fact rather than an assumption).
++ *
++ * V1 replaces the magic peek with the real FDT walk into boot_info_t;
++ * this file then grows toward kmain32's shape phase by phase.
++ */
++
++#include <stdint.h>
++
++#include "kernel/arch/riscv64/sbi.h"
++
++/* ---- tiny formatting (kprintf32's opening subset; the shared
++ * kprintf arrives with the V6 sweep's console work) ---- */
++
++static void put_hex64(uint64_t v)
++{
++    static const char hex[] = "0123456789abcdef";
++    sbi_puts("0x");
++    for (int shift = 60; shift >= 0; shift -= 4)
++        sbi_putc(hex[(v >> shift) & 0xF]);
++}
++
++static void put_udec(uint64_t v)
++{
++    char buf[20];
++    int i = 0;
++    do {
++        buf[i++] = (char)('0' + v % 10);
++        v /= 10;
++    } while (v);
++    while (i--)
++        sbi_putc(buf[i]);
++}
++
++/* ---- entry -------------------------------------------------------------- */
++
++void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
++{
++    sbi_console_init();
++
++    sbi_puts("\n==============================================\n"
++             " Hello from AuraLite OS kernel (riscv64)!\n"
++             "  rv64gc S-mode, booted via OpenSBI\n"
++             "==============================================\n\n");
++    sbi_puts("[kernel] AuraLite OS riscv64, RISCV_PLAN phase V0\n");
++
++    /* The a0/a1 handoff, echoed for the smoke test. */
++    sbi_puts("[boot] boot hart: ");
++    put_udec(hartid);
++    sbi_puts("\n[boot] DTB at phys ");
++    put_hex64(dtb_phys);
++    sbi_puts("\n");
++
++    /* DTB magic: 0xD00DFEED stored BIG-endian -- the bytes in memory
++     * read D0 0D FE ED.  satp=0, so the physical pointer dereferences
++     * directly.  A wrong-endian read here would print EDFE0DD0 and
++     * the smoke test would say so. */
++    if (dtb_phys) {
++        const uint8_t *p = (const uint8_t *)dtb_phys;
++        uint32_t magic_be = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
++                            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
++        if (magic_be == 0xD00DFEED) {
++            sbi_puts("[boot] DTB magic OK (0xD00DFEED, big-endian read)\n");
++        } else {
++            sbi_puts("[boot] DTB magic BAD: ");
++            put_hex64(magic_be);
++            sbi_puts("\n");
++        }
++    } else {
++        sbi_puts("[boot] no DTB pointer -- firmware handoff broken\n");
++    }
++
++    sbi_puts("[kernel] V0 stub complete; shutting down "
++             "(V1 adds the DTB -> boot_info walk)\n");
++
++    /* Clean exit so the smoke test finishes in seconds, not at the
++     * QEMU timeout -- the -no-reboot + hlt idiom, SBI-flavoured. */
++    sbi_shutdown();
++}
+diff --git a/kernel/arch/riscv64/sbi.c b/kernel/arch/riscv64/sbi.c
+new file mode 100644
+index 0000000..ceb8efc
+--- /dev/null
++++ b/kernel/arch/riscv64/sbi.c
+@@ -0,0 +1,97 @@
++/* kernel/arch/riscv64/sbi.c -- SBI ecall wrappers (RISCV_PLAN V0).
++ *
++ * One inline-asm site, deliberately: every SBI call funnels through
++ * sbi_call() so the V6 sweep has a single audited ecall in this file
++ * rather than one per wrapper.  Register mapping per the SBI spec:
++ * a7 = EID, a6 = FID, a0..a5 = arguments, returns in a0 (error) and
++ * a1 (value).
++ */
++
++#include <stdint.h>
++
++#include "kernel/arch/riscv64/sbi.h"
++
++#define SBI_EID_BASE       0x10
++#define SBI_FID_SPEC_VER   0
++#define SBI_FID_IMPL_ID    1
++#define SBI_FID_PROBE_EXT  3
++
++#define SBI_EID_LEGACY_PUTCHAR  0x01
++#define SBI_EID_LEGACY_SHUTDOWN 0x08
++
++#define SBI_EID_DBCN       0x4442434E   /* "DBCN" */
++#define SBI_FID_DBCN_WRITE 0
++
++static struct sbiret sbi_call(long eid, long fid,
++                              long a0, long a1, long a2)
++{
++    register long r_a0 __asm__("a0") = a0;
++    register long r_a1 __asm__("a1") = a1;
++    register long r_a2 __asm__("a2") = a2;
++    register long r_a6 __asm__("a6") = fid;
++    register long r_a7 __asm__("a7") = eid;
++
++    __asm__ volatile("ecall"
++                     : "+r"(r_a0), "+r"(r_a1)
++                     : "r"(r_a2), "r"(r_a6), "r"(r_a7)
++                     : "memory");
++
++    return (struct sbiret){ .error = r_a0, .value = r_a1 };
++}
++
++struct sbiret sbi_get_spec_version(void)
++{
++    return sbi_call(SBI_EID_BASE, SBI_FID_SPEC_VER, 0, 0, 0);
++}
++
++struct sbiret sbi_get_impl_id(void)
++{
++    return sbi_call(SBI_EID_BASE, SBI_FID_IMPL_ID, 0, 0, 0);
++}
++
++struct sbiret sbi_probe_extension(long eid)
++{
++    return sbi_call(SBI_EID_BASE, SBI_FID_PROBE_EXT, eid, 0, 0);
++}
++
++/* ---- console ------------------------------------------------------------ */
++
++static int have_dbcn;   /* set once by sbi_console_init */
++
++void sbi_console_init(void)
++{
++    struct sbiret r = sbi_probe_extension(SBI_EID_DBCN);
++    have_dbcn = (r.error == 0 && r.value != 0);
++}
++
++void sbi_putc(char c)
++{
++    if (have_dbcn) {
++        /* DBCN write: num_bytes, base_addr_lo, base_addr_hi.  The
++         * byte lives on the stack; satp=0 at V0, so its address IS
++         * a physical address, which is what DBCN wants.  When paging
++         * arrives (V3), this switches to the UART driver first --
++         * recorded there, not forgotten here. */
++        char buf = c;
++        sbi_call(SBI_EID_DBCN, SBI_FID_DBCN_WRITE,
++                 1, (long)(uintptr_t)&buf, 0);
++    } else {
++        sbi_call(SBI_EID_LEGACY_PUTCHAR, 0, (long)c, 0, 0);
++    }
++}
++
++void sbi_puts(const char *s)
++{
++    while (*s) {
++        if (*s == '\n')
++            sbi_putc('\r');
++        sbi_putc(*s++);
++    }
++}
++
++void sbi_shutdown(void)
++{
++    sbi_call(SBI_EID_LEGACY_SHUTDOWN, 0, 0, 0, 0);
++    for (;;)
++        __asm__ volatile("wfi");
++}
+diff --git a/kernel/arch/riscv64/sbi.h b/kernel/arch/riscv64/sbi.h
+new file mode 100644
+index 0000000..cf0e1cf
+--- /dev/null
++++ b/kernel/arch/riscv64/sbi.h
+@@ -0,0 +1,43 @@
++/* kernel/arch/riscv64/sbi.h -- Supervisor Binary Interface calls
++ * (RISCV_PLAN V0, decision D2).
++ *
++ * The SBI is the S-mode kernel's contract with the resident M-mode
++ * firmware (OpenSBI on QEMU virt and on every mainstream board) -- a
++ * frozen public specification, used the way BIOS Stage 2 used INT 13h:
++ * a platform service, not a code dependency.
++ *
++ * V0 scope: the console (output before any UART driver exists) and
++ * the probe machinery.  The legacy console extension (EID 0x01) is
++ * deprecated but universally present; the Debug Console extension
++ * (DBCN, EID 0x4442434E, "DBCN") is its replacement.  V0 probes DBCN
++ * via sbi_probe_extension and falls back -- OpenSBI version drift is
++ * a named risk in the plan, and probing is the mitigation.
++ */
++
++#ifndef AURALITE_ARCH_RISCV64_SBI_H
++#define AURALITE_ARCH_RISCV64_SBI_H
++
++#include <stdint.h>
++
++/* SBI return convention: a0 = error (0 = success), a1 = value. */
++struct sbiret {
++    long error;
++    long value;
++};
++
++/* Base extension (EID 0x10): spec version, impl id, extension probe. */
++struct sbiret sbi_get_spec_version(void);
++struct sbiret sbi_get_impl_id(void);
++struct sbiret sbi_probe_extension(long eid);
++
++/* Console: DBCN when the firmware has it, legacy putchar otherwise.
++ * sbi_console_init() picks once at boot and reports which. */
++void sbi_console_init(void);
++void sbi_putc(char c);
++void sbi_puts(const char *s);
++
++/* Legacy shutdown (EID 0x08) -- lets the smoke tests end a run without
++ * waiting for the QEMU timeout, the way -no-reboot + hlt does on x86. */
++void sbi_shutdown(void) __attribute__((noreturn));
++
++#endif /* AURALITE_ARCH_RISCV64_SBI_H */
+diff --git a/tests/integration/rv_boot_smoke.sh b/tests/integration/rv_boot_smoke.sh
+new file mode 100755
+index 0000000..68c3df2
+--- /dev/null
++++ b/tests/integration/rv_boot_smoke.sh
+@@ -0,0 +1,100 @@
++#!/usr/bin/env bash
++# tests/integration/rv_boot_smoke.sh -- RISCV_PLAN phase V0 smoke test.
++#
++# The third architecture's first gate: clang -> lld -> OpenSBI ->
++# _start -> SBI console, end to end on QEMU's virt machine.
++#
++# Asserts:
++#   * OpenSBI hands off to our payload address in S-mode;
++#   * the stub banner appears (so the .text.boot placement contract
++#     holds -- OpenSBI jumps to the payload BASE, not e_entry, which
++#     is the V0-measured fact this test regression-covers);
++#   * the a0/a1 handoff survived: a hartid line and a non-null DTB
++#     pointer line;
++#   * the DTB magic read BIG-endian is 0xD00DFEED (the byte-order
++#     fact V1's parser will inherit);
++#   * the run ends by SBI shutdown (exit inside the timeout), not by
++#     hanging to the clock;
++#   * with -smp 4, exactly ONE banner appears: the hart lottery
++#     parked the other three harts instead of letting four kernels
++#     race the console.
++#
++# Skips cleanly when qemu-system-riscv64 is not installed (the same
++# convention as every optional-tool gate in this suite).
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ELF="$BUILD/kernelrv.elf"
++LOG="$BUILD/rv_boot.log"
++LOGSMP="$BUILD/rv_boot_smp.log"
++
++if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then
++    echo "[rv-boot] SKIP: qemu-system-riscv64 not installed" >&2
++    exit 0
++fi
++
++[ -s "$ELF" ] || make -C "$ROOT" kernelrv >/dev/null
++
++fail=0
++run_qemu() {
++    local log="$1" smp="$2"
++    rm -f "$log"
++    timeout 30 qemu-system-riscv64 -machine virt -m 256M -smp "$smp" \
++        -display none -serial file:"$log" -no-reboot \
++        -kernel "$ELF" >/dev/null 2>&1 || true
++}
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -qa "$pat" "$log"; then
++        printf '  [rv-boot] OK   %s\n' "$desc"
++    else
++        printf '  [rv-boot] FAIL %s\n' "$desc"
++        fail=1
++    fi
++}
++
++assert_count() {
++    local log="$1" pat="$2" want="$3" desc="$4"
++    local got
++    got=$(grep -ac "$pat" "$log" || true)
++    if [ "$got" -eq "$want" ]; then
++        printf '  [rv-boot] OK   %s\n' "$desc"
++    else
++        printf '  [rv-boot] FAIL %s (want %s, got %s)\n' "$desc" "$want" "$got"
++        fail=1
++    fi
++}
++
++# ---- single hart ----
++run_qemu "$LOG" 1
++assert_grep "$LOG" "Domain0 Next Address        : 0x0000000080200000" "OpenSBI hands off to the payload base"
++assert_grep "$LOG" "Domain0 Next Mode           : S-mode"             "handoff is S-mode"
++assert_grep "$LOG" "Hello from AuraLite OS kernel (riscv64)!"         "stub banner (payload-base contract holds)"
++assert_grep "$LOG" "\[boot\] boot hart: [0-9]"                        "hartid arrived in a0"
++assert_grep "$LOG" "\[boot\] DTB at phys 0x[0-9a-f]*[1-9a-f]"         "DTB pointer arrived in a1, non-null"
++assert_grep "$LOG" "DTB magic OK (0xD00DFEED, big-endian read)"       "DTB magic reads correctly big-endian"
++assert_grep "$LOG" "V0 stub complete"                                 "stub ran to its end"
++
++# The run must END (SBI shutdown), not hang: QEMU exiting before the
++# timeout leaves the log complete, which the final line already
++# proves; additionally assert the file is not still growing.
++sz1=$(wc -c < "$LOG"); sleep 1; sz2=$(wc -c < "$LOG")
++if [ "$sz1" -eq "$sz2" ]; then
++    printf '  [rv-boot] OK   run ended by SBI shutdown, not by timeout\n'
++else
++    printf '  [rv-boot] FAIL log still growing after the run\n'
++    fail=1
++fi
++
++# ---- 4 harts: the lottery must park three of them ----
++run_qemu "$LOGSMP" 4
++assert_count "$LOGSMP" "Hello from AuraLite OS kernel (riscv64)!" 1 \
++    "-smp 4: exactly one banner -- hart lottery parked the rest"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[rv-boot] FAILED"
++    exit 1
++fi
++echo "[rv-boot] all assertions passed"
+diff --git a/tools/check_riscv_claims.py b/tools/check_riscv_claims.py
+new file mode 100755
+index 0000000..fdc3c95
+--- /dev/null
++++ b/tools/check_riscv_claims.py
+@@ -0,0 +1,124 @@
++#!/usr/bin/env python3
++"""Cross-check RISCV_PLAN.md's status against the tree.
++
++Decision D8 of the plan it checks: check_i386_claims.py shipped in the
++same phase as its plan's COMPLETION and was proud of never having an
++unchecked day; this one ships in V0, the plan's FIRST delivered phase,
++and grows a claim per phase.  A plan checked from birth cannot drift
++at all.
++
++Same structure as its two predecessors: each claim ties a phase to an
++artefact that only exists if the phase happened; the plan's Status
++header is checked against its own phase table; --selftest proves the
++checks can fail (against a doctored ROOT).
++
++Usage:
++    tools/check_riscv_claims.py [--selftest]
++"""
++
++import os
++import re
++import sys
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++
++def read(*parts):
++    try:
++        with open(os.path.join(ROOT, *parts), "r", encoding="utf-8",
++                  errors="replace") as handle:
++            return handle.read()
++    except OSError:
++        return ""
++
++
++def exists(*parts):
++    return os.path.exists(os.path.join(ROOT, *parts))
++
++
++def claims():
++    plan   = read("RISCV_PLAN.md")
++    makefl = read("Makefile")
++    boots  = read("kernel", "arch", "riscv64", "boot.S")
++    ld     = read("kernel", "arch", "riscv64", "kernelrv.ld")
++
++    checks = [
++        # --- V0: toolchain gates + the S-mode stub ---
++        ("V0: the rv64 entry, SBI layer and linker script exist",
++         exists("kernel", "arch", "riscv64", "boot.S") and
++         exists("kernel", "arch", "riscv64", "sbi.c") and
++         exists("kernel", "arch", "riscv64", "kernelrv.ld")),
++        ("V0: the Makefile has the kernelrv target with the rv64 flags",
++         "kernelrv" in makefl and "-march=rv64gc" in makefl and
++         "elf64lriscv" in makefl),
++        ("V0: the hart lottery parks secondary harts",
++         "amoswap" in boots and "hart_lottery" in boots),
++        ("V0: the payload-base-not-e_entry fact is enforced in the "
++         "linker script",
++         ".text.boot" in ld and ".text.boot" in boots),
++        ("V0: boot smoke test present",
++         exists("tests", "integration", "rv_boot_smoke.sh")),
++        ("V0: this checker is registered in test-unit",
++         "check_riscv_claims.py" in makefl),
++    ]
++
++    # Structural: the Status header and the phase table must agree.
++    # While phases are pending the header says PLANNED/IN PROGRESS and
++    # complete-rows == complete-headings; when it claims a range, the
++    # range must match the table (the same checks the i386 checker
++    # ended with -- installed here from day one).
++    done_rows = len(re.findall(r"^\| V\d .*?✅ complete", plan, re.M))
++    done_heads = len(re.findall(r"^### Phase V\d .*?✅ COMPLETE", plan, re.M))
++    checks.append(("plan: every complete table row has a COMPLETE heading",
++                   done_rows == done_heads))
++
++    status_ok = False
++    if re.search(r"^## Status: PLANNED", plan, re.M):
++        status_ok = (done_rows == 0)
++    elif re.search(r"^## Status: IN PROGRESS", plan, re.M):
++        m = re.search(r"V0(?:–V(\d))? complete", plan)
++        claimed = (int(m.group(1)) + 1 if m and m.group(1) else 1) if m else 0
++        status_ok = bool(m) and claimed == done_rows
++    elif re.search(r"^## Status: COMPLETE", plan, re.M):
++        status_ok = (done_rows == 10)
++    checks.append(("plan: the Status header agrees with the table",
++                   status_ok))
++
++    return checks
++
++
++def main():
++    if "--selftest" in sys.argv:
++        results = claims()
++        if not all(passed for _, passed in results):
++            print("check_riscv_claims: SELFTEST inconclusive (tree already "
++                  "red)", file=sys.stderr)
++            return 1
++        global ROOT
++        real_root = ROOT
++        ROOT = os.path.join(real_root, "build")
++        doctored = claims()
++        ROOT = real_root
++        if all(passed for _, passed in doctored):
++            print("check_riscv_claims: SELFTEST FAIL -- checks pass against "
++                  "an empty tree", file=sys.stderr)
++            return 1
++        print("check_riscv_claims: selftest PASS (doctored tree detected)")
++        return 0
++
++    failed = 0
++    for desc, passed in claims():
++        if not passed:
++            print(f"check_riscv_claims: FAIL -- {desc}", file=sys.stderr)
++            failed += 1
++    if failed:
++        print(f"check_riscv_claims: {failed} claim(s) disagree with the tree",
++              file=sys.stderr)
++        return 1
++    print(f"check_riscv_claims: OK -- {len(claims())} claims verified "
++          f"against the tree")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.47.3
+

@@ -1,0 +1,807 @@
+From 856e9845a737f53f2662662029aee52113aa754d Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Mon, 17 Aug 2026 08:22:28 +0000
+Subject: [PATCH] RISCV_PLAN added
+
+---
+ CHANGELOG.md  |  46 ++++
+ RISCV_PLAN.md | 730 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 776 insertions(+)
+ create mode 100644 RISCV_PLAN.md
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b44f262..ce1ed5b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,52 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [RISCV_PLAN — the third architecture, planned] 2026-08-17
++
++Adds the RISC-V (rv64gc) support plan, in the structure of
++`I386_PLAN.md` / `FIXES_PLAN.md` / `USB_PLAN.md`: dependency-ordered
++phases V0–V9, a definition of done and a test gate for each, one
++`.patch` per phase.
++
++- **`RISCV_PLAN.md` (new, phases V0–V9).** §1 is measured, not assumed,
++  fact-found on this tree's build environment before a line was
++  planned: clang/lld/rustup all ship rv64 targets (`REQUIRED_TOOLS`
++  does not grow — and unlike i386, `riscv64gc-unknown-none-elf` exists,
++  so Rust userspace is possible rather than excluded); a minimal S-mode
++  stub was linked at `0x80200000` and booted through QEMU's bundled
++  OpenSBI during fact-finding; the `virt` machine's DTB was dumped and
++  decompiled (ns16550a at `0x10000000` — the same 16550 programming
++  model as COM1; eight virtio-mmio windows; PLIC; no PS/2, no VGA, no
++  PIT — every x86 bring-up device absent).
++- **The cost moved, measured**: rv64 is LP64, so the I6 width battle
++  does not recur — but **33 portable files** carry x86 inline assembly
++  (`lock cmpxchg`, `cli/sti/hlt/pause`, `cpuid/rdseed/rdtsc`) and 6 use
++  port I/O, an instruction class RISC-V does not have.  V6 extends the
++  sweep machinery with **ratchet 4** (asm-bearing portable files,
++  baseline 33) absorbing into `arch_irq_save/restore`,
++  `arch_wait_for_interrupt`, `arch_cpu_relax` and C11 atomics.
++- **Decisions**: rv64gc on QEMU `virt` only, rv32 refused (D1); OpenSBI
++  is the platform, not a chained bootloader — no own M-mode firmware,
++  argued out loud against the custom-bootloader tradition (D2); Sv39
++  higher-half with the HHDM constant moving *by contract* — the field
++  the kernel already validates rather than assumes (D3); `ecall` with
++  AuraLite's one syscall table, third trap mechanism (D4, inherited);
++  boot-hart only with SBI HSM as the named exit ramp (D5); virtio-mmio
++  before PCIe, transport split not driver fork (D7); **the claim
++  checker ships in V0** — a plan checked from birth cannot drift (D8,
++  the I9 lesson promoted from finish line to starting gun).
++- **What RISC-V restores that i386 could not have**: enforced W^X
++  (Sv39 PTEs have real X bits — the `elfperm` gates return in V3),
++  full-strength crypto (`__int128` exists at rv64, so the
++  X25519/Ed25519/P-256 boundary measured in I8 does not apply), and a
++  Rust bare-metal target.
++- Lessons pre-paid as design inputs, with lineage comments planned:
++  the I7 esp0 corruption (→ `sscratch` dedicated trap stacks from day
++  one), the I7 cleared-IF deadlock (→ the `sstatus.SIE` twin in V7's
++  blocking read), the M1 FPU corruption (→ eager F/D save with
++  `sstatus.FS` tracking, costed into V4), the xHCI fabricated-data
++  lesson (→ port-I/O files compile-fenced on riscv, never stubbed).
++
+ ## [i386 Phase I9 — CI matrix, docs, the honest table] 2026-08-16
+ 
+ `I386_PLAN.md` phase I9, the last: both architectures build and
+diff --git a/RISCV_PLAN.md b/RISCV_PLAN.md
+new file mode 100644
+index 0000000..8a119dd
+--- /dev/null
++++ b/RISCV_PLAN.md
+@@ -0,0 +1,730 @@
++# AuraLite OS — RISC-V (rv64gc) Support Plan
++
++## Status: PLANNED 📋 (phases V0–V9)
++
++| Phase | Result | Deliverable |
++|-------|--------|-------------|
++| V0 — toolchain gates + the S-mode stub | pending | `patches/RV_V0_boot.patch` |
++| V1 — `boot_info_t` from the Device Tree | pending | `patches/RV_V1_dtb.patch` |
++| V2 — traps, timer, PLIC | pending | `patches/RV_V2_traps.patch` |
++| V3 — memory: Sv39, PMM, heap — and W^X back | pending | `patches/RV_V3_mm.patch` |
++| V4 — threads, scheduler, U-mode, `ecall` | pending | `patches/RV_V4_proc.patch` |
++| V5 — userspace: libc-rv, init, the shared shell | pending | `patches/RV_V5_user.patch` |
++| V6 — the inline-assembly sweep | pending | `patches/RV_V6_sweep.patch` |
++| V7 — drivers: virtio-mmio, blk, net, UART RX | pending | `patches/RV_V7_drivers.patch` |
++| V8 — parity: storage, network, full crypto | pending | `patches/RV_V8_parity.patch` |
++| V9 — CI matrix, docs, the claim check | pending | `patches/RV_V9_ci.patch` |
++
++This document answers:
++
++> *AuraLite now boots two x86 kernels from one image. What is the honest,
++> incremental path to a third architecture that shares no instruction set
++> with the first two — and what does the tree's portability machinery
++> (the I6 ratchets, `paddr_t`, `arch.h`, the shared smoke-test shapes)
++> actually buy when the ISA changes rather than the pointer width?*
++
++It follows the structure of the existing plans (`I386_PLAN.md`,
++`FIXES_PLAN.md`, `WIN32_PLAN.md`, `USB_PLAN.md`): dependency-ordered
++phases, a definition of done and a test gate for every phase, one
++`.patch` per phase.
++
++**Baseline:** the current `main` tree, on top of the completed
++`I386_PLAN.md`. This plan **inherits** that plan's decisions where they
++transfer (D4 one-syscall-table, D6 typing rules, D7 ship-the-first-thing
++-alone) and says so per phase instead of re-arguing them.
++
++`I386_PLAN.md` §7 called the i386 port "the cheapest available audit of
++the claim that the kernel core is portable freestanding C". It was — and
++it was also an *easy* audit, because i386 shares x86's instruction set,
++byte order, port-I/O model and firmware tradition. RISC-V shares none of
++those. This plan is the audit the i386 port could not perform: the one
++where every `lock cmpxchg`, every `outb`, and every assumption that
++"firmware means BIOS or UEFI" has to stand up and identify itself.
++
++---
++
++## 1. Where things actually stand
++
++Measured against the tree and against QEMU on this machine, not assumed.
++Five facts shape this plan.
++
++### Fact 1 — The toolchain is already here, Rust included this time
++
++Verified on the build environment:
++
++```
++$ clang --target=riscv64 -march=rv64gc -ffreestanding -c t.c
++    # ELF 64-bit LSB relocatable, UCB RISC-V, RVC, double-float ABI ✓
++$ ld.lld -m elf64lriscv                                            ✓
++$ rustup target list | grep riscv64
++    riscv64gc-unknown-none-elf                                     ✓
++$ apt show qemu-system-misc     # ships qemu-system-riscv64        ✓
++```
++
++Clang and LLD cross-compile rv64 out of the box; `REQUIRED_TOOLS` does
++not grow (the one new package, `qemu-system-misc`, is a test-time
++dependency like `qemu-system-x86`). And the gap that made Rust
++impossible on i386 **does not exist here**: `riscv64gc-unknown-none-elf`
++is a tier-2 rustup target, so `rustes` and the `rsbr` bridge are
++portable in principle — recorded as V9 stretch scope, not promised.
++
++A minimal S-mode kernel was linked at `0x80200000` and booted with
++`qemu-system-riscv64 -machine virt -kernel` during fact-finding: OpenSBI
++v1.6 (bundled with QEMU) initialises, prints its banner, and jumps to
++the ELF entry. The boot path exists before the plan does.
++
++### Fact 2 — The porting cost moved: it is inline assembly now, not pointer width
++
++RV64 is LP64 — the same `sizeof(long) == sizeof(void *) == 8` model as
++x86_64. The entire I6 width battle (877 estimated sites, 361 measured,
++the `-malign-double` ABI bug) **does not recur**: `paddr_t` is naturally
++64-bit, `boot_info_t` compiles to the same layout, and the width
++ratchets stay green by construction.
++
++What recurs instead, measured:
++
++- **33 portable files** (kernel/ + drivers/, `kernel/arch/` excluded)
++  contain x86 inline assembly. Not arch code — *portable* code:
++  `spinlock.c` (`lock cmpxchg`), `scheduler.c`/`vfs.c`/`gui.c`
++  (`cli`/`sti`/`hlt` interrupt gating), `kprintf.c`, `rng.c`
++  (`cpuid`/`rdseed`), `time.c` (`rdtsc`), and every polling loop that
++  spells `pause`.
++- **6 portable files** use port I/O (`outb`/`inb`) — an instruction
++  class that **does not exist** on RISC-V. Everything is memory-mapped.
++- **24 NASM files** are x86-only by definition (the i386 port could
++  share the *dialect*; RISC-V cannot).
++
++The i386 sweep's shape transfers exactly — a counted residue, a CI
++ratchet that only goes down, arch headers absorbing sites batch by
++batch — but the *subject* is new: V6 is `atomic.h`/`barrier.h`/
++`cpu_relax()` where I6 was `paddr_t`/`uintptr_t`.
++
++### Fact 3 — The QEMU `virt` machine's device world, from its own mouth
++
++The DTB was dumped and decompiled during fact-finding
++(`-machine virt,dumpdtb=`):
++
++| Device | Where | What it means for the port |
++|---|---|---|
++| `ns16550a` UART | MMIO `0x10000000` | **The same 16550 programming model as COM1.** `uart.c`'s register offsets, FIFO setup and LSR polling carry over verbatim; only the access method changes (MMIO load/store instead of `in`/`out`). The first console is a recompile plus an access-shim, not a new driver. |
++| `virtio,mmio` ×8 | `0x10001000`–`0x10008000` | The native disk/NIC transport. The tree's virtio-blk/net drivers exist **but speak virtio-PCI** (measured: `virtio_pci_common_cfg`, `pci_find_device` in both). The virtqueue logic is transport-independent; V7's work is an mmio transport underneath it, not a rewrite. |
++| PLIC | MMIO | External interrupt routing — the IOAPIC-shaped problem, but documented in one spec and one DTB node. |
++| CLINT / `sstc` | MMIO / CSR | Timer. Via SBI `set_timer` first (one `ecall`), native `stimecmp` later. |
++| RAM | `0x80000000 + 256 MiB+` | Kernel loads at `0x80200000` (OpenSBI owns the first 2 MiB). |
++
++No PS/2, no VGA text mode, no PIT, no PIC, no CMOS: **every** x86
++bring-up device the first two kernels leaned on is absent. The console
++story starts at the 16550 and stays there until virtio-gpu (out of
++scope, §6).
++
++### Fact 4 — The firmware tradition breaks, and pretending otherwise would be theatre
++
++AuraLite's identity includes "no third-party bootloader anywhere in the
++chain". On RISC-V that sentence needs honest re-examination. The
++platform boot story is: M-mode firmware (OpenSBI — bundled with QEMU,
++shipped in the mask ROM or SPI flash of every real board) brings up the
++hart, stays resident as the **SBI** runtime (the Supervisor Binary
++Interface: timer, IPI, hart management, console — the RISC-V analogue of
++what BIOS interrupts were), and enters the kernel in S-mode with
++`a0 = hartid`, `a1 = DTB pointer`.
++
++Writing our own M-mode firmware is possible and is **refused** (decision
++D2 below, with the argument). The plan's honest framing: OpenSBI is not
++"a bootloader we chained" — it is the platform, exactly as SeaBIOS's
++INT 13h was the platform under the BIOS MBR. AuraLite's *own* code still
++owns everything from the entry point on, including the choice not to
++need a Stage 2 at all: `-kernel` loads our ELF directly, and real boards
++load it as the standard `fw_payload`/U-Boot payload.
++
++### Fact 5 — The contracts survive even though the instruction set does not
++
++What actually transfers from the two existing kernels, verified by
++reading rather than hoped:
++
++- **`boot_info_t`** is all fixed-width fields with a 64-bit
++  `hhdm_offset` the kernel *validates rather than assumes* — the I3
++  lesson that already paid once. V1 fills the same struct from the DTB;
++  `kmain`'s contract ("a physical pointer to boot_info in a register")
++  holds for the third time with a third register (`a1`-derived).
++- **The syscall table** is trap-agnostic by I386_PLAN D4: one table,
++  now three trap mechanisms (`SYSCALL`, `int 0x80`, `ecall`).
++- **The self-test discipline** — `[pmm] PASS`, `[vmm] PASS`,
++  `[sched] PASS`, negative controls, smoke families per phase — is
++  ISA-independent and is the actual reason a third port is tractable.
++- **`kernel/lib/bitmap.h`**, the USTAR reader shape, the ELF loader
++  validation order, `libatls` — portable C with host tests.
++- **W^X comes back.** Sv39 PTEs carry separate R/W/X bits: the property
++  i386 lost to non-PAE (I386_PLAN D3) is enforceable again on RISC-V,
++  and the plan restores the `elfperm`-class gates that i386 had to
++  arch-condition away.
++- **`__int128` exists on rv64** — the boundary that blocked
++  X25519/Ed25519/P-256 at `-m32` (I8's measured finding) does not exist
++  here. Full-suite crypto parity is a *test* on this arch, not a
++  research project.
++
++---
++
++## 2. Decisions
++
++### D1. rv64gc on the QEMU `virt` machine is the target; rv32 is not
++
++`rv64gc` (RVA20-profile-shaped: IMAFDC + Zicsr/Zifencei) is what QEMU's
++`virt` models, what every mainstream Linux-capable board implements, and
++what both clang and rustup name as their bare-metal default. rv32 is the
++i386 of this plan's world — a separate width port with a separate
++audience — and it gets what x86 got: nothing is *broken* for it (the
++plan's code refuses politely on a mismatched `misa`), and nobody
++pretends it is supported.
++
++QEMU is the gate, matching the repository's standing reality check. Real
++hardware (VisionFive 2, LicheePi, the SBCs) is recorded as experimental
++exactly as x86 real-hardware is.
++
++### D2. OpenSBI is the platform, not a chained bootloader — and no own M-mode firmware
++
++The one place this plan departs from the letter of the custom-bootloader
++tradition, decided out loud. Writing an M-mode AuraLite firmware would
++(a) re-implement hart bring-up, PMP setup and the SBI runtime that every
++real board already ships in ROM, (b) not run on those boards *anyway*
++(their mask ROM loads vendor SBI first), and (c) buy zero educational
++novelty that the S-mode side doesn't already offer — trap delegation,
++paging and drivers are all S-mode work.
++
++What stays true to the tradition: **no third-party code decides what our
++kernel does after entry.** No U-Boot scripts, no GRUB, no Limine
++protocol; the kernel ELF *is* the payload, entered at `_start` with the
++hart ID and a DTB, and everything after that instruction is this
++repository's code. The SBI calls the kernel makes (console putchar
++before the UART driver, `set_timer`, `hart_start` someday) are firmware
++*services* used through a frozen public spec — the exact relationship
++BIOS Stage 2 had with INT 13h.
++
++### D3. Sv39, higher-half at the Sv39 canonical top, HHDM moves — by contract, not by grep
++
++Three-level Sv39 paging (the guaranteed-available mode): 39-bit VAs,
++512 GiB, 4 KiB/2 MiB/1 GiB pages. The kernel links higher-half; the
++direct map lives at **`0xFFFFFFC000000000`** — because x86_64's
++`0xFFFF800000000000` is not a canonical Sv39 address at all.
++
++This is the I3 lesson collecting interest: `hhdm_offset` is a 64-bit
++field the boot shim writes and the kernel validates. The constant moves
++per-arch in exactly one producer and one consumer, and
++`test_boot_info_width.c`'s cross-compile asserts keep the struct honest.
++Nothing greps for `0xffff8000...` and nothing needs to.
++
++W^X is enforced from the first user mapping (Fact 5): PTE X is real, the
++user linker scripts' RX/R/RW segment discipline — which i386 kept "for a
++PAE-capable future" — pays off on the *third* arch instead.
++
++### D4. `ecall` from U-mode, AuraLite's numbers, Linux's register convention — inherited
++
++I386_PLAN D4, third verse: the syscall *numbers* are the one shared
++table; the trap is `ecall` with `a7` = number, `a0–a5` = arguments,
++`a0` = return — the RISC-V Linux convention, chosen for the same reason
++the i386 port chose Linux's i386 registers: every toolchain and every
++reader already knows it. `stvec` points at one trap entry;
++`scause`/`stval` split syscalls from faults; `sscratch` holds the
++per-hart kernel stack pointer for the U→S stack switch (the TSS.esp0
++lesson from I7, solved the way this ISA solves it).
++
++### D5. Boot-hart only at first — inherited from D5, with the exit ramp named
++
++The scheduler runs on the boot hart; secondary harts stay parked in
++OpenSBI until someone calls SBI HSM `hart_start`. Same shape as i386's
++BSP-only decision — a performance gap, not a correctness gap, recorded
++in the matrix. The exit ramp is cleaner than x86's (no trampoline
++real-mode dance; HSM hands a started hart straight to S-mode C code),
++which is precisely why it can wait.
++
++### D6. The sweep gets a fourth ratchet: inline assembly in portable code
++
++The I6 machinery extends rather than forks. `check_width_sweep.py`
++(renamed duties, same file) gains **ratchet 4: files in portable code
++containing `__asm__`** — baseline 33, measured. The absorption targets
++are three new arch-header contracts:
++
++- `kernel/arch/arch.h` grows forwarding for `arch_irq_save/restore()`,
++  `arch_wait_for_interrupt()`, `arch_cpu_relax()` — the `cli/sti/hlt/
++  pause` quartet that accounts for most of the 33.
++- `kernel/lib/spinlock.c` moves to C11 `<stdatomic.h>` (clang
++  freestanding supports it on all three targets) with the x86 fast path
++  kept only if a measured regression demands it — measure first.
++- Port I/O consumers (6 files) route through the existing `arch.h`
++  boundary; on RISC-V the header simply has no `outb` and the compiler
++  enforces what the ISA enforces.
++
++Rule inherited from I6: portable code that never runs on RISC-V keeps
++its asm until it does; the ratchet guarantees the debt only shrinks.
++
++### D7. virtio-mmio first; PCIe on `virt` is deferred
++
++The tree's virtio-blk/net drivers carry working virtqueue logic wearing
++a PCI transport. V7 splits transport from queue (`virtio_mmio.c` beside
++the existing PCI probe) rather than duplicating the drivers — the same
++one-implementation rule the w32 PE parser follows. QEMU `virt` does
++expose PCIe ECAM, but mmio is the native path, needs no bus enumeration,
++and its addresses arrive in the DTB the kernel already parses. PCIe
++lands if/when a device that only exists on PCIe matters.
++
++### D8. One repository discipline, three arches: the claim check ships WITH the plan's first phase
++
++`check_i386_claims.py` shipped in the same phase as its plan's
++completion and was proud of never having an unchecked day.
++`check_riscv_claims.py` does one better: it lands in **V0** with three
++claims (toolchain gate exists, stub boots, plan header matches the
++table) and grows a claim per phase. A plan checked from birth cannot
++drift at all.
++
++---
++
++## 3. Phases
++
++### Phase V0 — Toolchain gates + the S-mode stub
++
++**Objective:** the third architecture exists in the build system and a
++banner proves the whole path: clang → lld → OpenSBI → our `_start` →
++SBI console.
++
++#### Tasks
++
++- [ ] `Makefile`: `kernelrv` target family (`--target=riscv64
++      -march=rv64gc -mabi=lp64d -mcmodel=medany`, `ld.lld -m
++      elf64lriscv`); `deps-check` learns the *optional* riscv tools the
++      way it learned mingw (absent = riscv targets skip loudly, the
++      x86 build is untouched).
++- [ ] `kernel/arch/riscv64/boot.S` (GNU as via clang — no NASM on this
++      arch): park non-boot harts (`a0 != boot hart` → `wfi` loop), set
++      up `sp`, clear `.bss`, save `a0`/`a1`, call `kmain_rv`.
++- [ ] `kernel/arch/riscv64/sbi.c`: the `ecall`-to-M-mode wrapper —
++      `sbi_console_putchar` (legacy 0x01) and DBCN probe; the day-0
++      output path before any UART driver.
++- [ ] `main_rv.c`: banner + hartid + DTB pointer echo, `wfi` idle.
++      `kernelrv.ld`: `OUTPUT_ARCH(riscv)`, link at `0x80200000`
++      (physical for now; V3 moves it higher-half — the same
++      stub-then-grow shape I1→I3 used).
++- [ ] `tools/check_riscv_claims.py` (D8): three claims, registered in
++      `make test-unit`, `--selftest` included.
++- [ ] `tests/integration/rv_boot_smoke.sh`: `qemu-system-riscv64
++      -machine virt -kernel build/kernelrv.elf`, assert the banner and
++      the OpenSBI handoff line; skip cleanly when qemu-system-riscv64
++      is absent.
++
++#### Test gate
++
++- The stub banner appears on the SBI console under `-machine virt`;
++  the smoke test's assertions include hartid and a non-NULL DTB
++  pointer. The x86_64 and i386 suites are untouched (nothing shared is
++  edited in V0 at all).
++
++#### Deliverable
++
++`patches/RV_V0_boot.patch`
++
++---
++
++### Phase V1 — `boot_info_t` from the Device Tree
++
++**Objective:** the third producer of the one handoff struct: a
++flattened-device-tree walk fills `boot_info_t`, and `kmain_rv` starts
++consuming the same contract `kmain` and `kmain32` consume.
++
++#### Tasks
++
++- [ ] `kernel/arch/riscv64/fdt.c`: a minimal FDT parser — header
++      validation (magic `0xD00DFEED`, big-endian fields: **the one
++      place byte order bites on this port**, called out in the code),
++      `/memory` reg → `mmap[]`, `/chosen` initrd properties, UART and
++      virtio node addresses recorded for V2/V7. No full libfdt; the
++      four properties the kernel needs, bounds-checked.
++- [ ] The shim writes `hhdm_offset = 0xFFFFFFC000000000` (D3),
++      `boot_from_uefi = 0`, magic last (a partially-filled struct must
++      never carry a valid magic — same ordering Stage 2 uses).
++- [ ] Initrd: QEMU `-initrd` puts the USTAR archive in memory and its
++      range in `/chosen`; the shim translates to
++      `initrd_phys/initrd_size`. One archive, three kernels: rv64
++      binaries go under `/binrv` beside `/bin32` (the I5 layout rule,
++      third tenant).
++- [ ] `test_boot_info_width.c` grows the third compile:
++      `--target=riscv64` must produce the same offsets (LP64 — it
++      does; the assert makes "does" permanent).
++
++#### Test gate
++
++- Boot log: `handoff magic OK`, a non-zero mmap from the DTB, RAM
++  total matching `-m`, initrd found when passed. The width contract
++  compiles at all three targets; i686-without-`-malign-double` still
++  refuses (the negative control keeps its teeth).
++
++#### Deliverable
++
++`patches/RV_V1_dtb.patch`
++
++---
++
++### Phase V2 — Traps, timer, PLIC
++
++**Objective:** `stvec` catches everything with named diagnostics in the
++R0 format; time advances; external interrupts route.
++
++#### Tasks
++
++- [ ] `trap.S` + `trap.c`: full x1–x31 frame save to the per-hart
++      kernel stack, `scause` decode — the 16 exception codes and the
++      interrupt bit — printed R0-style (`cpu=hart0`, `sepc`, `stval`,
++      register dump). Deliberate-fault self-test: an illegal
++      instruction must be named and resumed past, exactly as i386's
++      `int3` gate.
++- [ ] Timer: SBI `set_timer` + `sie.STIE`; a tick counter at 100 Hz
++      (`[timer] PASS` when observed ticking, the I2 gate's shape).
++      `sstc`/`stimecmp` probe recorded for later, not required.
++- [ ] PLIC: context enable/threshold/claim/complete for the boot
++      hart's S-context; UART IRQ 10 wired as the first external line
++      (consumed in V7; proven claimable here).
++- [ ] `rng.c`'s x86 paths (`rdseed`/`rdrand`/`cpuid`) stubbed behind
++      the existing capability probe → jitter pool feeds from timer
++      traps on this arch (the N0 fallback path, reused not rewritten).
++
++#### Test gate
++
++- `[isr] PASS` (named + resumed illegal-instruction), `[timer] PASS`
++  (ticks observed), PLIC claim/complete round-trip logged; no
++  unhandled trap in a full boot.
++
++#### Deliverable
++
++`patches/RV_V2_traps.patch`
++
++---
++
++### Phase V3 — Memory: Sv39, PMM, heap — and W^X back
++
++**Objective:** higher-half kernel behind Sv39, the standard PASS trio,
++and the property i386 could not have: enforced W^X.
++
++#### Tasks
++
++- [ ] `paging_rv.c`: three-level walk, map/unmap/probe; `satp` write +
++      `sfence.vma`; boot sequence maps the kernel higher-half + the
++      HHDM direct map with 2 MiB megapages, then drops the identity
++      window (the I3 shape, one level deeper).
++- [ ] `kernelrv.ld` moves to the Sv39 higher half; the `.boot`
++      physical-entry section pattern carries over from `kernel32.ld`.
++- [ ] PMM: `kernel/lib/bitmap.h`, third consumer, zero edits expected
++      (the header's whole point); heap: the kheap32 design at LP64.
++- [ ] **W^X enforced and tested**: user PTEs get R/W/X from ELF
++      `p_flags`; a store to `.text` and a fetch from the stack must
++      both fault — the `elfperm` gates return, and the i386 status
++      row's ❌ gets a green sibling that proves the loss there was
++      D3's honesty, not the tree's ceiling.
++
++#### Test gate
++
++- `[pmm] PASS`, `[vmm] PASS`, `[heap] PASS`; the vmm self-test
++  additionally proves execute-from-data faults (new on this arch's
++  gate, impossible on i386's). A fault frame's `sepc` in the higher
++  half proves the link/boot agreement, as `eip=c01xxxxx` did.
++
++#### Deliverable
++
++`patches/RV_V3_mm.patch`
++
++---
++
++### Phase V4 — Threads, scheduler, U-mode, `ecall`
++
++**Objective:** preemptive round-robin on the boot hart and a U-mode
++program behind `sret`, with the trap stack lesson pre-paid.
++
++#### Tasks
++
++- [ ] `context_rv.S`: callee-saved switch (`s0–s11`, `ra`, `sp` — the
++      LP64 sibling of context32's set); TCBs and reaping in the
++      thread32 shape.
++- [ ] Preemption from the timer trap, **after** trap-cause
++      acknowledgement (the post-EOI placement, PLIC-flavoured).
++- [ ] U-mode entry: `sstatus.SPP=0`, `sepc=entry`, `sret`;
++      `sscratch` carries the per-image dedicated trap stack from day
++      one — the I7 esp0 corruption is a design input here, not a bug
++      to rediscover.
++- [ ] `ecall` dispatch per D4 into the existing syscall table;
++      U-mode faults contained (`128+scause`), kernel survives — with
++      the hand-assembled-image self-test and the privileged-op
++      negative control both ported (the instruction is `csrr` from an
++      S-CSR instead of `hlt`).
++
++#### Test gate
++
++- `[sched] PASS` (two never-yielding workers), `RING-U-OK` written
++  from U-mode via `ecall`, exit code round-trip, negative control
++  contained, kernel reaches idle. The x86 pair untouched.
++
++#### Deliverable
++
++`patches/RV_V4_proc.patch`
++
++---
++
++### Phase V5 — Userspace: libc-rv, init, the shared shell
++
++**Objective:** compiled-from-C U-mode programs from the shared initrd —
++and the first *userspace source* shared across arches.
++
++#### Tasks
++
++- [ ] `lib/libcrv/`: `crt0_rv.S` (inline `SYS_EXIT` ecall — the crt0
++      independence rule from I5), `syscall_rv.S` (`a7`/`a0–a5`
++      marshalling), `libcrv.h` mirroring `libc32.h`'s surface.
++- [ ] **Promote the shell**: `userspace/system/shell32/shell32.c` is
++      pure portable C over the tiny libc surface — it moves to
++      `userspace/system/smallsh/smallsh.c` and builds for BOTH i386
++      and rv64 (each with its own crt0/linker script). One shell
++      source, two bring-up arches; the i386 image keeps byte-identical
++      behaviour (its smoke family is the regression gate).
++- [ ] ELF loader: `elf64load` for `EM_RISCV`/`ET_EXEC`, refusing the
++      other two arches' classes/machines — the three-way mutual
++      refusal completing the pattern.
++- [ ] initrd: `/binrv/init` + `/binrv/smallsh`, stripped, in the one
++      shared archive; the x86_64 boot must still reach its shell with
++      the fatter tar (the I5 hard-won assert, re-armed).
++
++#### Test gate
++
++- init runs U-mode from `/binrv`, EFAULT negative control from
++  userspace, exits as built; the shell gate (`auralite# `, echo, run,
++  nested spawn, exit) passes over the SBI/UART console — the same
++  session script as `i386_shell_smoke.sh` with the arch swapped.
++- The i386 shell smoke stays green against the renamed shared source
++  (this is the phase's own negative control: a "promotion" that
++  changes behaviour is a fork wearing a costume).
++
++#### Deliverable
++
++`patches/RV_V5_user.patch`
++
++---
++
++### Phase V6 — The inline-assembly sweep
++
++**Objective:** ratchet 4 armed and burning: the 33 portable files with
++x86 asm become arch-header consumers, batch by batch, with the
++byte-identity control on every batch.
++
++#### Tasks
++
++- [ ] `arch.h` grows `arch_irq_save/restore`, `arch_wait_for_interrupt`,
++      `arch_cpu_relax` (D6) with x86_64, i386 and riscv64 backends;
++      the `cli/sti/hlt/pause` sites migrate in counted batches.
++- [ ] `spinlock.c` → C11 atomics; the x86_64 kernel's `.text` compared
++      before/after (byte-identity expected from clang's lowering; if
++      it differs, the diff is *read*, not waved through — a changed
++      spinlock is a changed kernel).
++- [ ] `check_width_sweep.py` ratchet 4: `__asm__`-bearing portable
++      files, baseline 33, self-test plants a violation.
++- [ ] The 6 port-I/O files: compile-time fenced so the riscv build of
++      any of them is a hard error naming the V7 route — never a stub
++      that silently does nothing (the xHCI lesson from USB_PLAN's
++      preamble, applied prophylactically).
++
++#### Test gate
++
++- Ratchet 4 registered and green; x86_64 `.text` byte-identical across
++  the migration batches (or the diff explained in the commit);
++  i386 + x86_64 suites green; the riscv build contains zero `__asm__`
++  outside `kernel/arch/`.
++
++#### Deliverable
++
++`patches/RV_V6_sweep.patch`
++
++---
++
++### Phase V7 — Drivers: virtio-mmio, blk, net, UART RX
++
++**Objective:** the `virt` machine's real device set, through the
++existing virtqueue logic — and the interactive gate on this arch.
++
++#### Tasks
++
++- [ ] `drivers/virtio/virtio_mmio.c`: the transport — magic/version
++      probe at the 8 DTB-provided windows, feature negotiation, queue
++      setup via the mmio register layout. The virtqueue structures in
++      the existing drivers are **reused**; the PCI-specific probe is
++      factored behind a transport interface (D7's one-implementation
++      rule; the PCI path keeps working on x86, gated by its own
++      suite).
++- [ ] virtio-blk over mmio: the ata32-shaped self-test (known-bytes
++      read of our own image, write/readback/restore on the last
++      sector).
++- [ ] virtio-net over mmio: the I8-shaped gate (DHCP lease on SLIRP,
++      gateway ARP, payload-verified ICMP echo), reusing net32's
++      protocol code lifted to a shared bring-up-net file — second
++      consumer, same rule as the shell promotion.
++- [ ] UART: 16550 driver shared with x86 via an access-method shim
++      (Fact 3), RX through PLIC IRQ 10 into the cons ring;
++      `SYS_READ`'s blocking wait uses `wfi` with the V2 trap mask —
++      the I7 cleared-IF deadlock has an `sstatus.SIE` twin, and the
++      comment carries the lineage.
++
++#### Test gate
++
++- `[blk] PASS`, `[net] PASS` (lease/ARP/echo), and the driven shell
++  session (`rv_shell_smoke.sh`) with keyboard-over-serial through the
++  PLIC path; x86 suites green — especially the virtio-PCI cases,
++  which must not notice the transport split.
++
++#### Deliverable
++
++`patches/RV_V7_drivers.patch`
++
++---
++
++### Phase V8 — Parity: storage, network, full crypto
++
++**Objective:** the parity boot — every gate from every phase green in
++one boot — plus the crypto milestone i386 could not reach.
++
++#### Tasks
++
++- [ ] `rv_parity_smoke.sh`: the I8 shape — storage + network + the
++      whole earlier gauntlet in a single boot, x86 pair attached.
++- [ ] **Full libatls at rv64**: `__int128` exists here (Fact 5), so
++      the host gate runs the *complete* suite — X25519, Ed25519,
++      P-256 included — cross-compiled riscv64 and executed under
++      `qemu-riscv64` user-mode emulation if available, host `-m32`-
++      style compile-check otherwise. The i386 plan's §6 boundary entry
++      gets its counterpart: same sources, both truths recorded.
++- [ ] The initrd's third tenant audited: one tar, three `/bin*` trees,
++      each kernel exec-refusing the other two; `mkinitrd` asserts all
++      three when all three kernels are built.
++- [ ] Status-matrix rows drafted for V9 (per-arch columns now that
++      "per-arch" means three).
++
++#### Test gate
++
++- The parity smoke green end to end; full-crypto gate green at rv64;
++  both x86 suites green with the three-tenant initrd.
++
++#### Deliverable
++
++`patches/RV_V8_parity.patch`
++
++---
++
++### Phase V9 — CI matrix, docs, the claim check completed
++
++**Objective:** three architectures on every push, documentation that
++names all three, and the claim checker closing at full coverage.
++
++#### Tasks
++
++- [ ] `.github/workflows/integration.yml`: `riscv-parity` job —
++      qemu-system-misc install, `make kernelrv`, artefact-presence
++      assert (the KERNEL32-in-the-image lesson), the rv smoke family,
++      logs on failure. Separate job, attributable red, as i386-parity
++      argued.
++- [ ] `docs/status.md`: the RISC-V section with the ❌-by-design rows
++      stated (no rv32, no own M-mode firmware with D2's argument
++      linked, no PCIe yet); `docs/architecture.md`: the third boot
++      diagram; `docs/syscall_abi.md`: the `ecall` table beside the
++      other two.
++- [ ] `check_riscv_claims.py` grown to full phase coverage + the
++      structural header/table checks; `README.md` boot-paths row.
++- [ ] Rust stretch recorded honestly: target exists, `rustes`/`rsbr`
++      are *possible* — a follow-up plan's opening fact, not this
++      plan's promise.
++
++#### Test gate
++
++- Claim check at full coverage passes and self-fails against a
++  doctored tree; all three arch jobs green from a clean clone.
++
++#### Deliverable
++
++`patches/RV_V9_ci.patch`
++
++---
++
++## 4. Order and rationale
++
++```
++V0 ── stub + claim check      (proves the path; checked from birth)
++V1 ── DTB → boot_info         (the contract's third producer)
++V2 ── traps/timer/PLIC        (V3 needs faults debuggable)
++V3 ── Sv39 + W^X              (V4 needs address spaces)
++V4 ── sched + U-mode + ecall  (V5 needs a way to run programs)
++V5 ── libc-rv + shared shell  (the auralite# gate, third arch)
++V6 ── inline-asm sweep        (needs V2–V5 to know which sites matter)
++V7 ── virtio-mmio/blk/net     (needs V3 DMA memory + V2 PLIC)
++V8 ── parity + full crypto    (needs V5 + V7)
++V9 ── CI + docs + claims      (last, asserts what now exists)
++```
++
++The same compressed-bring-up shape as the i386 plan, minus one phase:
++there is no I0-refusal analogue because there is no existing artefact
++that *hangs* on RISC-V — nothing boots at all, so the first honest
++deliverable is the stub, not a diagnostic. The claim checker moving to
++V0 (D8) is the discipline the last plan proved out, promoted from
++finish-line to starting-gun.
++
++## 5. Risks
++
++- **The V6 sweep touches running x86 code.** Migrating `spinlock.c` and
++  the irq-gating sites changes files two shipping kernels execute. The
++  byte-identity control and batch-sized commits are the mitigation; the
++  first batch that fails byte-identity stops the line until the diff is
++  understood.
++- **FDT parsing is a new input surface.** Big-endian fields, untrusted
++  lengths. The parser is deliberately four-properties-small,
++  bounds-checked, and gets a host fuzz-shaped unit test with truncated/
++  corrupt DTBs — the initrd.c allocation-failure lesson, applied at
++  birth.
++- **F/D register state in context switches.** rv64gc has 32 FP
++  registers; the M1 FPU lesson (gltest corruption under SMP) says eager
++  save/restore from day one on any thread that has touched FP, with
++  `sstatus.FS` tracking. Costed into V4, not discovered in V8.
++- **OpenSBI version drift.** The SBI spec is frozen but implementations
++  vary (legacy putchar vs DBCN). V0 probes rather than assumes, and the
++  smoke tests pin QEMU's bundled OpenSBI as the reference — same
++  QEMU-first posture as everything else.
++- **The virtio transport split regressing x86.** The PCI path has its
++  own passing suite today; the factoring in V7 is gated on that suite
++  staying green, which makes the split observable the moment it breaks
++  something.
++- **Real-hardware variance** (SoC UARTs that are almost-16550s, vendor
++  SBI quirks): out of the gate's scope, experimental label, same as
++  both x86 arches.
++
++## 6. What this plan does not do
++
++- **No rv32.** D1; a mismatched `misa` gets a polite refusal.
++- **No own M-mode firmware / SBI implementation.** D2, argued there.
++- **No PCIe on `virt`** until an mmio-less device forces it (D7).
++- **No SMP** beyond parking secondary harts safely (D5); SBI HSM is
++  the named exit ramp.
++- **No virtio-gpu / graphical console.** The 16550 is the console;
++  the compositor waits for a framebuffer story on this arch.
++- **No vector extension (V), no hypervisor extension (H).** rv64gc
++  only.
++- **No Rust userspace in-plan.** The target exists (the honest
++  difference from i386); porting `rustes`/`rsbr` is a recorded
++  follow-up, not a phase.
++- **No ACPI-on-RISC-V.** DTB is the platform description; the ACPI
++  code stays x86.
++
++## 7. A note on why this is worth doing at all
++
++The i386 port proved the kernel's *width* portability and was honest
++that it proved no more than that: same ISA, same devices, same firmware
++culture. RISC-V is the orthogonal audit — same widths, *nothing else*
++shared — and the tree is unusually well positioned for it: the handoff
++struct is loader-agnostic by construction, the syscall table is
++trap-agnostic by decision, the self-test discipline is ISA-agnostic by
++habit, and the sweep machinery knows how to turn "portable in theory"
++into a counter that only goes down. What RISC-V adds that neither x86
++arch could: W^X back without apology, `__int128` crypto at full
++strength, a Rust bare-metal target that actually exists, and a firmware
++story — SBI — that is a frozen public specification rather than forty
++years of compatibility sediment. If the portability claims survive
++*this* audit, they are properties. If they do not, the plan finds out
++one measured fact at a time, which is the only way this repository has
++ever found anything out.
+-- 
+2.47.3
+

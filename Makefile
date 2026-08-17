@@ -91,6 +91,14 @@ deps-check:
 		echo "[deps] install it with: rustup target add $(RUST_TARGET)"; \
 		exit 127; \
 	fi
+	@# RISCV_PLAN V0: qemu-system-riscv64 is OPTIONAL, the mingw pattern --
+	@# absent means the rv64 smoke test skips loudly, not that the build
+	@# fails.  clang/lld already cross-compile to riscv64, so building
+	@# kernelrv needs no new tools at all; only *running* it does.
+	@if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then \
+		echo "[deps] optional tool absent: qemu-system-riscv64 (rv64 boot tests will skip)"; \
+		echo "[deps] Debian/Ubuntu: sudo apt install qemu-system-misc"; \
+	fi
 
 kernel: $(KERNEL_ELF)
 
@@ -159,6 +167,61 @@ $(KERNEL32_ELF): $(KERNEL32_OBJS) $(KERNEL32_DIR)/kernel32.ld
 
 .PHONY: kernel32
 kernel32: $(KERNEL32_ELF)
+
+# =============================================================================
+# RISCV_PLAN V0: the rv64 kernel (kernelrv.elf).
+#
+# Same clang/lld toolchain, third target (--target=riscv64 -march=rv64gc,
+# ld.lld -m elf64lriscv) -- REQUIRED_TOOLS does not grow.  Assembly is
+# .S through clang's integrated GNU as: there is no NASM on this arch.
+#
+# -mcmodel=medany: the code must be linkable anywhere in the low 2 GiB
+#   span around PC (the medlow model caps at +-2 GiB of address zero,
+#   which 0x80200000 violates).
+# -mno-relax: linker relaxation rewrites call sequences against gp; the
+#   kernel never sets __global_pointer$ (see kernelrv.ld), so relaxation
+#   must be off or the linker would emit gp-relative accesses to a
+#   register containing garbage.
+# -mabi=lp64d: rv64gc's D extension is real; the FPU context story is
+#   costed into V4 (plan risk: the M1 lesson).
+# =============================================================================
+KERNELRV_ELF  := $(BUILD_DIR)/kernelrv.elf
+KERNELRV_DIR  := kernel/arch/riscv64
+KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null)
+KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
+KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
+                 $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))
+KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h
+CFLAGSRV      := --target=riscv64 -march=rv64gc -mabi=lp64d \
+                 -mcmodel=medany -mno-relax \
+                 -std=c11 -ffreestanding -fno-stack-protector \
+                 -fno-pie -fno-pic \
+                 -Wall -Wextra -Wno-unused-parameter \
+                 -Werror \
+                 -O2 -g -I .
+
+$(BUILD_DIR)/krv/%.o: %.c $(KERNELRV_HDRS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSRV) -c $< -o $@
+
+$(BUILD_DIR)/krv/%.o: %.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSRV) -c $< -o $@
+
+$(KERNELRV_ELF): $(KERNELRV_OBJS) $(KERNELRV_DIR)/kernelrv.ld
+	$(LD) -m elf64lriscv -nostdlib -static -T $(KERNELRV_DIR)/kernelrv.ld \
+	    $(KERNELRV_OBJS) -o $@
+	@echo "  [kernelrv] $@ ($$(du -h $@ | cut -f1))"
+
+.PHONY: kernelrv
+kernelrv: $(KERNELRV_ELF)
+
+# Convenience: boot the rv64 kernel under QEMU (serial on stdio).
+.PHONY: run-rv
+run-rv: kernelrv
+	qemu-system-riscv64 -machine virt -m 256M \
+	    -display none -serial stdio -no-reboot \
+	    -kernel $(KERNELRV_ELF)
 
 # =============================================================================
 # I386_PLAN I5: the 32-bit userspace (init32 + libc32).
@@ -1819,6 +1882,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_i386_claims.py"
 	@python3 tools/check_i386_claims.py || exit 1
 	@python3 tools/check_i386_claims.py --selftest || exit 1
+	@echo "[unit] running tools/check_riscv_claims.py"
+	@python3 tools/check_riscv_claims.py || exit 1
+	@python3 tools/check_riscv_claims.py --selftest || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative

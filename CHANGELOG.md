@@ -2,6 +2,85 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RV V0 — the third architecture boots] 2026-08-17
+
+RISCV_PLAN phase V0: `make kernelrv` builds an rv64gc S-mode stub with
+the existing clang/lld toolchain (no new required tools) and it boots
+end to end on `qemu-system-riscv64 -machine virt` through OpenSBI.
+
+- **`kernel/arch/riscv64/` (new: `boot.S`, `sbi.{c,h}`, `main_rv.c`,
+  `kernelrv.ld`).** `_start` runs the hart lottery (`amoswap.d` —
+  losers park in `wfi`), clears `.bss`, and calls `kmain_rv` with the
+  OpenSBI `a0`/`a1` handoff (hartid, DTB). The SBI layer probes DBCN
+  and falls back to the legacy console; the stub prints the banner,
+  echoes the handoff, verifies the DTB magic big-endian, and exits via
+  SBI shutdown.
+- **The phase's measured fact, now enforced structurally:** OpenSBI
+  jumps to the payload *base* (`0x80200000`), not the ELF entry point.
+  The first link had `boot.o` last, `sbi_call` at the base, and the
+  result was silence and a reset loop. `_start` now lives in
+  `.text.boot`, which `kernelrv.ld` places first — the contract is in
+  the linker script, not in object order luck.
+- **`Makefile`:** `kernelrv` / `run-rv` targets (`-march=rv64gc
+  -mabi=lp64d -mcmodel=medany -mno-relax`, `ld.lld -m elf64lriscv`);
+  `deps-check` reports `qemu-system-riscv64` as optional, the mingw
+  pattern.
+- **`tools/check_riscv_claims.py` (new, D8):** 8 claims + selftest,
+  registered in `test-unit` — the plan is claim-checked from its FIRST
+  delivered phase, not retrofitted. (Its first real run caught its own
+  Makefile registration missing.)
+- **`tests/integration/rv_boot_smoke.sh` (new):** 9 assertions —
+  OpenSBI S-mode handoff, banner, hartid, non-null DTB, big-endian
+  magic, clean SBI-shutdown exit, and `-smp 4` printing exactly one
+  banner (the lottery parked three harts). Skips cleanly without
+  qemu-system-riscv64.
+
+## [RISCV_PLAN — the third architecture, planned] 2026-08-17
+
+Adds the RISC-V (rv64gc) support plan, in the structure of
+`I386_PLAN.md` / `FIXES_PLAN.md` / `USB_PLAN.md`: dependency-ordered
+phases V0–V9, a definition of done and a test gate for each, one
+`.patch` per phase.
+
+- **`RISCV_PLAN.md` (new, phases V0–V9).** §1 is measured, not assumed,
+  fact-found on this tree's build environment before a line was
+  planned: clang/lld/rustup all ship rv64 targets (`REQUIRED_TOOLS`
+  does not grow — and unlike i386, `riscv64gc-unknown-none-elf` exists,
+  so Rust userspace is possible rather than excluded); a minimal S-mode
+  stub was linked at `0x80200000` and booted through QEMU's bundled
+  OpenSBI during fact-finding; the `virt` machine's DTB was dumped and
+  decompiled (ns16550a at `0x10000000` — the same 16550 programming
+  model as COM1; eight virtio-mmio windows; PLIC; no PS/2, no VGA, no
+  PIT — every x86 bring-up device absent).
+- **The cost moved, measured**: rv64 is LP64, so the I6 width battle
+  does not recur — but **33 portable files** carry x86 inline assembly
+  (`lock cmpxchg`, `cli/sti/hlt/pause`, `cpuid/rdseed/rdtsc`) and 6 use
+  port I/O, an instruction class RISC-V does not have.  V6 extends the
+  sweep machinery with **ratchet 4** (asm-bearing portable files,
+  baseline 33) absorbing into `arch_irq_save/restore`,
+  `arch_wait_for_interrupt`, `arch_cpu_relax` and C11 atomics.
+- **Decisions**: rv64gc on QEMU `virt` only, rv32 refused (D1); OpenSBI
+  is the platform, not a chained bootloader — no own M-mode firmware,
+  argued out loud against the custom-bootloader tradition (D2); Sv39
+  higher-half with the HHDM constant moving *by contract* — the field
+  the kernel already validates rather than assumes (D3); `ecall` with
+  AuraLite's one syscall table, third trap mechanism (D4, inherited);
+  boot-hart only with SBI HSM as the named exit ramp (D5); virtio-mmio
+  before PCIe, transport split not driver fork (D7); **the claim
+  checker ships in V0** — a plan checked from birth cannot drift (D8,
+  the I9 lesson promoted from finish line to starting gun).
+- **What RISC-V restores that i386 could not have**: enforced W^X
+  (Sv39 PTEs have real X bits — the `elfperm` gates return in V3),
+  full-strength crypto (`__int128` exists at rv64, so the
+  X25519/Ed25519/P-256 boundary measured in I8 does not apply), and a
+  Rust bare-metal target.
+- Lessons pre-paid as design inputs, with lineage comments planned:
+  the I7 esp0 corruption (→ `sscratch` dedicated trap stacks from day
+  one), the I7 cleared-IF deadlock (→ the `sstatus.SIE` twin in V7's
+  blocking read), the M1 FPU corruption (→ eager F/D save with
+  `sstatus.FS` tracking, costed into V4), the xHCI fabricated-data
+  lesson (→ port-I/O files compile-fenced on riscv, never stubbed).
+
 ## [i386 Phase I9 — CI matrix, docs, the honest table] 2026-08-16
 
 `I386_PLAN.md` phase I9, the last: both architectures build and
