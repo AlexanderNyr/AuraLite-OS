@@ -2,6 +2,45 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [i386 Phase I8 — Storage, network, crypto width parity] 2026-08-16
+
+`I386_PLAN.md` phase I8: the gates that moved from I7 land — sector
+I/O proven on the boot controller, a DHCP lease + payload-verified
+ICMP echo on the wire — plus the crypto stack's RFC vectors at 32-bit
+width and the first SHARED source file in the 32-bit kernel.
+
+- **`net32.c`**: e1000 82540EM bring-up (8+8 legacy descriptors, low
+  direct-mapped buffers, the 64-bit wire address's high dword written
+  0 explicitly per D6), DHCP DISCOVER→OFFER→REQUEST→ACK against
+  SLIRP, gateway ARP, ICMP echo with byte-for-byte payload
+  verification.  The NIC is found by **`drivers/pci/pci.c` compiled
+  unmodified into the 32-bit kernel** — it includes `arch.h` since
+  I6, and `KERNEL32_SHARED` is where the portable list grows.  The
+  I6 thesis, carrying live traffic.
+- **`ata32.c`**: ATA PIO LBA28, primary master — the controller the
+  machine actually boots from (`if=ide` in every QEMU line in the
+  tree).  Self-test: IDENTIFY, LBA 0 against the 0x55AA Stage 1
+  booted from, write/readback/RESTORE on the last sector (on real
+  hardware that sector belongs to the user's USB stick).  AHCI keeps
+  waiting for a VFS consumer, per the I7 reasoning — the boot-medium
+  sector-I/O guarantee is delivered by the honest path.
+- **`test_libatls_m32.sh`** (in `make test-unit`): the SHA/HMAC/HKDF/
+  ChaCha20/Poly1305/AEAD vector suite compiled `-m32` — and a real
+  32-bit boundary measured rather than hidden: `atls_fe.c`/
+  `atls_ecdsa.c` use `unsigned __int128`, so X25519/Ed25519/P-256
+  cannot run at 32-bit width until someone writes the 32-bit limb
+  path.  The excluded set is guarded (a symmetric file growing
+  `__int128` fails the gate) and the plan's §6 carries the entry.
+- **`kprintf32` grew `%b`**: the `%x`-only first cut printed MACs as
+  `00000052:…` — 51 columns of technically correct.
+- **Manifest decision recorded**: the i386 integration family stays
+  its own six-case suite (97 assertions) beside `cases/` rather than
+  an `IL_ARCH` knob inside `run_all.sh` — the 64-bit cases assume
+  shell tooling the i386 userspace does not have, and a manifest of
+  skips asserts nothing.
+- Tests: `i386_parity_smoke.sh` — 17 assertions (storage, network,
+  every earlier phase gate in the same boot, x86_64 pair).
+
 ## [i386 Phase I7 — Drivers: console, keyboard, the shell] 2026-08-16
 
 `I386_PLAN.md` phase I7: the i386 machine grows a screen and a

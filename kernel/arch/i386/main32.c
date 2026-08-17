@@ -29,6 +29,8 @@
 #include "kernel/arch/i386/initrd32.h"
 #include "kernel/arch/i386/vga32.h"
 #include "kernel/arch/i386/kbd32.h"
+#include "kernel/arch/i386/ata32.h"
+#include "kernel/arch/i386/net32.h"
 
 void thread32_reap(void);
 
@@ -217,6 +219,24 @@ void kmain32(uint32_t boot_info_phys)
     kprintf32("[boot] VGA text console online (80x25 at 0xB8000); "
               "kprintf fans out to UART + VGA\n");
     kbd32_init();
+
+    /* ---- I8: storage + network (the gates that moved from I7) ---- */
+    uint32_t disk_sectors = 0;
+    if (ata32_init(&disk_sectors) == 0) {
+        if (ata32_selftest() != 0) {
+            kprintf32("[ata] FAIL: self-test\n");
+            goto halt;
+        }
+    } else {
+        kprintf32("[ata] no primary-master ATA device; skipping "
+                  "(hardware without IDE: I8 residue, see plan)\n");
+    }
+
+    if (net32_init() == 0) {
+        if (net32_selftest() != 0)
+            kprintf32("[net] FAIL: self-test (continuing; network is "
+                      "not boot-critical)\n");
+    }
 
     /* ---- I2 self-tests (still gating every boot) ---- */
     if (selftest_breakpoint() == 0)

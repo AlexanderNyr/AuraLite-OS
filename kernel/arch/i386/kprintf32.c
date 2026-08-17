@@ -74,6 +74,13 @@ static void put_hex(uint32_t v)
         kputc32(hex[(v >> shift) & 0xF]);
 }
 
+static void put_hex8(uint32_t v)
+{
+    static const char hex[] = "0123456789abcdef";
+    kputc32(hex[(v >> 4) & 0xF]);
+    kputc32(hex[v & 0xF]);
+}
+
 void kprintf32(const char *fmt, ...)
 {
     va_list ap;
@@ -108,6 +115,12 @@ void kprintf32(const char *fmt, ...)
             break;
         case 'x':
             put_hex(va_arg(ap, uint32_t));
+            break;
+        case 'b':   /* two hex digits -- MAC bytes etc.  (The %x-only
+                     * first cut printed MACs as 00000052:...; a MAC
+                     * that needs 51 columns is technically correct
+                     * and practically unreadable.) */
+            put_hex8(va_arg(ap, uint32_t) & 0xFF);
             break;
         case 'p':
             kputs32("0x");

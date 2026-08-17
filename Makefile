@@ -113,7 +113,14 @@ kernel: $(KERNEL_ELF)
 # =============================================================================
 KERNEL32_ELF  := $(BUILD_DIR)/kernel32.elf
 KERNEL32_DIR  := kernel/arch/i386
-KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c')
+# I8: the first SHARED sources compiled into the 32-bit kernel -- the
+# proof of the I6 thesis.  drivers/pci/pci.c includes arch.h (migrated
+# in the I6 batch) and compiles for both widths unchanged; every file
+# added to this list is portable code that now has i386 as a second
+# consumer.  Growth rule: a file lands here only when something on
+# this side actually calls it.
+KERNEL32_SHARED := drivers/pci/pci.c
+KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
                  $(patsubst %.asm,$(BUILD_DIR)/k32/%.o,$(KERNEL32_ASMS))
@@ -1798,6 +1805,12 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # re-detects the I1 -malign-double ABI bug.
 	@echo "[unit] running tests/unit/test_width_sweep.sh"
 	@bash tests/unit/test_width_sweep.sh || exit 1
+
+# I386_PLAN I8: the crypto stack's RFC vectors at 32-bit width (the
+# symmetric subset; the __int128 boundary in atls_fe.c is measured and
+# recorded, not hidden).  Skips cleanly without gcc-multilib.
+	@echo "[unit] running tests/unit/test_libatls_m32.sh"
+	@bash tests/unit/test_libatls_m32.sh || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
