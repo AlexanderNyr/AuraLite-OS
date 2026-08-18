@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A4 — threads, scheduler, EL0, svc] 2026-08-17
+
+`ARM64_PLAN.md` phase A4: the shared scheduler shape runs aarch64
+threads, EL0 is entered and left cleanly, and `svc #0` is the fourth
+trap mechanism into the one D4 syscall table.
+
+- **The measured fact of the phase: the low half is a different
+  tree.** The first EL0 entry Instruction-Aborted at its own entry
+  point — user text had been mapped into TTBR1's tree, but VA
+  0x40000000 translates through TTBR0 on this ISA (one Sv39 root
+  covers all of VA; a VMSAv8 pair does not). `walk()` now chooses
+  the root by the VA; TTBR0 is blank at switch time and carries EL0
+  pages later; the identity probe keeps the old VA honest.
+- **What the ISA gave back: the I7 esp0 lesson costs zero
+  instructions.** EL0 traps land on SP_EL1 by hardware SPSel switch —
+  no scratch-CSR dance; `user_enter_a64` is four instructions + eret.
+- `context_a64.S`: 624-byte switch frames — callee-saved x19–x30 +
+  **eager q0–q31 + fpcr/fpsr (528 bytes, the M1 lesson; lazy-save
+  refused)**; fpcr/fpsr sit LOW in the frame (stp-x reach ends at
+  #504, the assembler said so). CPACR_EL1.FPEN opens in boot.S
+  before any switch exists (reset traps the first `stp q0,q1`, EC
+  0x07). `-mgeneral-regs-only` stays for the compiler;
+  `.arch_extension` opens the assembler's gate exactly where
+  q-registers are touched on purpose.
+- `thread_a64.c`: thread_rv.c's shape — static TCBs, kmalloc'd
+  stacks, post-EOI preemption (after `gic_dispatch` returns; EOIR
+  must complete the timer INTID first — phase-6 freeze, third
+  inheritance). `user_a64.c`: EL0 R+X user text (PXN set — W^X's
+  second axis), the A3 setjmp pair as exit trampoline, x8/x0-x5
+  convention, D4 numbers restated with the Linux-aarch64-diverges
+  note; EL0 test programs are assembler-measured bytes. PAN residue
+  named honestly (v8.0: no PAN; the copy helpers are where pan_off/
+  pan_on go when hardening lands).
+- Gauntlet: never-yielding workers preempted; **q8/q9 survive
+  deliberate clobbering across preemptive switches** (the M1 gate,
+  4th ed.); `A64-U-OK!` written from EL0 through svc; exit(42)
+  round-tripped; privileged `mrs` contained (EC 0x00 under QEMU —
+  measured, noted). a64 smoke 43 assertions; `check_arm64_claims`
+  47; all sibling suites green.
+
 ## [A64 A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over] 2026-08-17
 
 `ARM64_PLAN.md` phase A3: the fourth kernel lives in the higher half

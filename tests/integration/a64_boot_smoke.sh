@@ -92,7 +92,7 @@ assert_grep "$LOG" "x0 at entry: 0x0000000000000000"               "x0 is 0, not
 assert_grep "$LOG" "DTB probe at RAM base 0x0000000040000000: magic 0x00000000D00DFEED OK" \
                                                                    "DTB magic found at the RAM base (Fact 2.2)"
 assert_grep "$LOG" "CNTFRQ_EL0: 62500000 Hz"                       "timer frequency read from the register (Fact 2.3)"
-assert_grep "$LOG" "A3 complete; powering off via PSCI"            "reached the healthy end of the phase"
+assert_grep "$LOG" "A4 complete; powering off via PSCI"            "reached the healthy end of the phase"
 
 # ---- A2: vectors, timer, GIC ----
 assert_grep "$LOG" "\[isr\]  VBAR_EL1 installed"                    "vector table live (16 x 128, SPSel=1 -- the measured A2 fact)"
@@ -117,6 +117,16 @@ assert_grep "$LOG" "execute-from-data faulted"                      "W^X execute
 assert_grep "$LOG" "identity window confirmed dropped"              "TTBR0 blank: the low half faults (the V3 identity gate, register-flavoured)"
 assert_grep "$LOG" "unaligned load SUCCEEDS on Normal WB"           "alignment mirror gate: both polarities measured in one boot"
 assert_grep "$LOG" "\[heap\] PASS: 64 alloc/free cycles"            "heap self-test (kheap window, committed on demand)"
+
+# ---- A4: threads, scheduler, EL0, svc ----
+assert_grep "$LOG" "\[sched\] round-robin online"                   "scheduler up (624-byte switch frames: FPU eager)"
+assert_grep "$LOG" "\[sched\] PASS: two never-yielding workers"     "sched gate (preemption forced by the timer)"
+assert_grep "$LOG" "\[fpu\]  PASS: q8/q9 survived"                  "FPU state across preemptive switches (the M1 gate, 4th ed.)"
+assert_grep "$LOG" "A64-U-OK!"                                     "EL0 write(1,...) delivered the exact string (svc -> one table)"
+assert_grep "$LOG" "\[user\] exit(42) via svc"                      "SYS_EXIT reached the kernel with the D4 number (60)"
+assert_grep "$LOG" "\[user\] exit code 42 round-tripped"            "exit code carried through the longjmp unwind"
+assert_grep "$LOG" "privileged op contained (code 128"              "EL0 privileged mrs contained, kernel intact (negative control)"
+assert_grep "$LOG" "\[user\] PASS: EL0 entered"                     "the whole EL0 gauntlet green"
 
 # PSCI power-off, not the timeout: the run must end well inside the
 # 30 s budget (generous bound; a hang eats all 30).

@@ -26,7 +26,9 @@
 #include "kernel/arch/aarch64/pl011.h"
 #include "kernel/arch/aarch64/pmm_a64.h"
 #include "kernel/arch/aarch64/psci.h"
+#include "kernel/arch/aarch64/thread_a64.h"
 #include "kernel/arch/aarch64/trap_a64.h"
+#include "kernel/arch/aarch64/user_a64.h"
 
 #define RAM_BASE      0x40000000UL
 #define FDT_MAGIC_BE  0xD00DFEEDUL
@@ -279,6 +281,134 @@ static void a3_bringup(void)
         pl011_puts("[heap] FAIL: heap self-test\n");
 }
 
+/* ---- A4: threads, scheduler, EL0 -------------------------------------------
+
+   The sched gate is thread32's / V4's: two workers that NEVER yield,
+   each spinning until it has seen 3 preemptions' worth of progress
+   from the other -- possible only if the timer trap forcibly
+   switches between them.  The farewell-tail lesson transfers with
+   the shape: each worker banks a surplus after its own wait, so the
+   other's condition is payable regardless of who exits first (the
+   deadlock the rv port measured on its first cut). */
+
+static volatile uint64_t worker_count[2];
+
+static void sched_worker(void *arg)
+{
+    int me = (int)(uint64_t)arg;
+    int other = 1 - me;
+    uint64_t seen_start = worker_count[other];
+    while (worker_count[other] < seen_start + 3)
+        worker_count[me]++;             /* no yield anywhere in here */
+    for (int i = 0; i < 1000; i++)
+        worker_count[me]++;             /* the farewell surplus */
+}
+
+/* The FPU gate (the M1 regression test, fourth edition): a worker
+ * parks a distinctive pattern in q8/q9 (callee-saved by AAPCS64 --
+ * exactly the registers a lazy switch would lose), yields through
+ * many preemptions while the OTHER worker clobbers the same
+ * registers, then checks the pattern survived.  Handwritten asm:
+ * the kernel is -mgeneral-regs-only, so no compiler-generated FPU
+ * code exists to do this accidentally -- which is the point. */
+
+static volatile int fpu_result = -1;
+static volatile int fpu_done;
+static volatile int fpu_clobber_stop;
+
+static void fpu_keeper(void *arg)
+{
+    (void)arg;
+    uint64_t in0 = 0xA110CA7EDEADBEEFUL, in1 = 0x5EED5EED5EED5EEDUL;
+    uint64_t out0 = 0, out1 = 0;
+
+    /* .arch_extension: the file is compiled -mgeneral-regs-only (the
+     * COMPILER must not touch q-registers), but this probe exists
+     * precisely to touch them by hand -- the directive opens the
+     * assembler's gate without loosening the compiler's. */
+    __asm__ volatile(".arch_extension fp\n\t"
+                     ".arch_extension simd\n\t"
+                     "mov v8.d[0], %0\n\t"
+                     "mov v8.d[1], %1\n\t"
+                     "mov v9.d[0], %1\n\t"
+                     "mov v9.d[1], %0" :: "r"(in0), "r"(in1));
+
+    /* Sit through ~20 ticks; the clobberer runs meanwhile. */
+    uint64_t until = a64_cntvct() + (62500000 / 5);
+    while (a64_cntvct() < until)
+        __asm__ volatile("yield");
+
+    __asm__ volatile(".arch_extension fp\n\t"
+                     ".arch_extension simd\n\t"
+                     "mov %0, v8.d[0]\n\t"
+                     "mov %1, v9.d[1]" : "=r"(out0), "=r"(out1));
+    fpu_result = (out0 == in0 && out1 == in0) ? 0 : -1;
+    fpu_clobber_stop = 1;
+    fpu_done = 1;
+}
+
+static void fpu_clobberer(void *arg)
+{
+    (void)arg;
+    while (!fpu_clobber_stop) {
+        __asm__ volatile(".arch_extension fp\n\t"
+                         ".arch_extension simd\n\t"
+                         "movi v8.16b, #0x55\n\t"
+                         "movi v9.16b, #0xAA");
+        for (volatile int i = 0; i < 100; i++)
+            ;
+    }
+}
+
+static void a4_bringup(void)
+{
+    sched_a64_init();
+
+    /* Gate 1: forced preemption. */
+    worker_count[0] = worker_count[1] = 0;
+    int t1 = thread_a64_create("worker-a", sched_worker, (void *)0);
+    int t2 = thread_a64_create("worker-b", sched_worker, (void *)1);
+    pl011_puts("[sched] self-test: two never-yielding workers...\n");
+
+    uint64_t deadline = a64_cntvct() + 2 * read_cntfrq();
+    while ((thread_a64_state(t1) != THREAD_A64_STATE_DONE ||
+            thread_a64_state(t2) != THREAD_A64_STATE_DONE) &&
+           a64_cntvct() < deadline)
+        __asm__ volatile("wfi");
+
+    if (thread_a64_state(t1) == THREAD_A64_STATE_DONE &&
+        thread_a64_state(t2) == THREAD_A64_STATE_DONE)
+        pl011_puts("[sched] PASS: two never-yielding workers both finished "
+                   "(timer preemption is real)\n");
+    else
+        pl011_puts("[sched] FAIL: a worker starved -- preemption dead\n");
+    thread_a64_reap();
+
+    /* Gate 2: FPU state across preemptive switches (M1, 4th ed.). */
+    fpu_result = -1; fpu_done = 0; fpu_clobber_stop = 0;
+    int tk = thread_a64_create("fpu-keeper",  fpu_keeper, 0);
+    int tc = thread_a64_create("fpu-clobber", fpu_clobberer, 0);
+    pl011_puts("[fpu]  keeper parks q8/q9, clobberer overwrites, "
+               "20 ticks of preemption...\n");
+    deadline = a64_cntvct() + 2 * read_cntfrq();
+    while (!fpu_done && a64_cntvct() < deadline)
+        __asm__ volatile("wfi");
+    if (fpu_done && fpu_result == 0)
+        pl011_puts("[fpu]  PASS: q8/q9 survived preemptive clobbering "
+                   "(eager save earns its 528 bytes)\n");
+    else
+        pl011_puts("[fpu]  FAIL: FPU state lost across switches\n");
+    (void)tk; (void)tc;
+    thread_a64_reap();
+
+    /* Gate 3: EL0 round trip + the privileged negative control. */
+    if (user_a64_selftest() == 0)
+        pl011_puts("[user] PASS: EL0 entered, syscalls served, exit "
+                   "round-tripped, privilege contained\n");
+    else
+        pl011_puts("[user] FAIL: EL0 self-test\n");
+}
+
 void kmain_a64(uint64_t x0_at_entry)
 {
     pl011_puts("\nHello from AuraLite OS kernel (aarch64)!\n");
@@ -343,8 +473,9 @@ void kmain_a64(uint64_t x0_at_entry)
      * moves, .text stays RX, and the GIC windows stay Device. */
     a2_bringup();
     a3_bringup();
+    a4_bringup();
 
-    pl011_puts("[kernel] A3 complete; powering off via PSCI "
-               "(A4 adds threads, the scheduler, EL0)\n");
+    pl011_puts("[kernel] A4 complete; powering off via PSCI "
+               "(A5 adds libca64, init, the shared shell)\n");
     psci_system_off();
 }

@@ -177,9 +177,11 @@ def claims():
         ("A3: W^X twice over -- kernel text is UXN, nothing is W+X",
          "PTE_UXN" in pagec and "PTE_PXN" in pagec and
          "W^X holds twice over" in pagec),
-        ("A3: the identity window dies by BLANK TTBR0 (the register-"
-         "flavoured drop, argued in the file)",
-         "root_lo_empty" in pagec and "hand it a blank one" in pagec),
+        ("A3: the identity window dies by BLANK-at-switch TTBR0 (the "
+         "register-flavoured drop, argued in the file; A4 made the "
+         "root a live user tree and the claim tracked the change)",
+         "root_lo" in pagec and "identity window dies" in pagec and
+         "at THIS moment it is empty" in pagec),
         ("A3: the PMM is bitmap.h's fourth consumer, header unedited",
          'include "kernel/lib/bitmap.h"' in pmmc and
          "pmm_a64" not in read("kernel", "lib", "bitmap.h")),
@@ -197,6 +199,49 @@ def claims():
          "execute-from-data faulted" in smoke and
          "identity window confirmed dropped" in smoke and
          "64 alloc/free cycles" in smoke),
+    ]
+
+    # --- A4: threads, scheduler, EL0, svc ---
+    ctx    = read("kernel", "arch", "aarch64", "context_a64.S")
+    thrc   = read("kernel", "arch", "aarch64", "thread_a64.c")
+    userc  = read("kernel", "arch", "aarch64", "user_a64.c")
+    userh  = read("kernel", "arch", "aarch64", "user_a64.h")
+    mainc2 = read("kernel", "arch", "aarch64", "main_a64.c")
+    checks += [
+        ("A4: the context switch saves FPU state EAGERLY (the M1 "
+         "lesson, 528 bytes, lazy-save refused)",
+         "q30, q31" in ctx and "fpcr" in ctx and "EAGERLY" in ctx and
+         "624" in ctx),
+        ("A4: CPACR opens the FPU before any switch exists, with the "
+         "reason written down",
+         "cpacr_el1" in boots and "EC 0x07" in boots),
+        ("A4: the trap-stack contract is the hardware's SPSel switch "
+         "-- the I7 esp0 lesson costs zero instructions here",
+         "user_enter_a64" in ctx and "SPSel" in ctx and
+         "hardware feature" in ctx),
+        ("A4: preemption is post-EOI (after gic_dispatch returns), "
+         "with the phase-6 freeze lineage",
+         "sched_a64_maybe_preempt" in trapc and
+         "post-EOI" in thrc),
+        ("A4: D4 numbers spot-checked -- GETPID 39, EXIT 60, "
+         "YIELD 158, and the Linux-aarch64-diverges note",
+         "SYS_A64_GETPID  39" in userh and "SYS_A64_EXIT    60" in userh
+         and "SYS_A64_YIELD   158" in userh and
+         "diverge" in userh),
+        ("A4: the EL0 exit unwind reuses the A3 setjmp pair (one "
+         "mechanism, two tenants) with IRQ masked across it",
+         "a64_longjmp_entry" in userc and "0x3C5" in userc),
+        ("A4: the two-trees fact is recorded where it was measured "
+         "(user VAs walk TTBR0's tree, not TTBR1's)",
+         "WRONG TREE" in read("kernel", "arch", "aarch64",
+                              "paging_a64.c")),
+        ("A4: EL0 user programs are measured bytes, not hand-rolled "
+         "(the assembler is the reviewer)",
+         "MEASURED, not hand-rolled" in userc),
+        ("A4: the smoke gates sched/fpu/user including the exact "
+         "EL0 output string and the negative control",
+         "A64-U-OK!" in smoke and "never-yielding workers" in smoke and
+         "q8/q9 survived" in smoke and "privileged op contained" in smoke),
     ]
 
     # Structural: the Status header and the phase table must agree.

@@ -110,6 +110,14 @@ _start:
     msr   daifset, #0xf
     msr   spsel, #1
 
+    // CPACR_EL1.FPEN := 0b11 -- FPU/SIMD open at both ELs.  The
+    // kernel itself is -mgeneral-regs-only, but context_a64.S saves
+    // q0-q31 EAGERLY on every switch (the M1 lesson, plan Fact 5.6),
+    // and with FPEN at its reset value of 0 the very first stp q0,q1
+    // would trap EC 0x07.  Opened here, before any switch exists.
+    mov   x1, #(3 << 20)
+    msr   cpacr_el1, x1
+
     // ---- 3. MMU on: MAIR, TCR, the two early roots, SCTLR.M. --------
     // MAIR_EL1: index 0 = Device-nGnRnE (0x00), index 1 = Normal WB
     // inner+outer (0xFF).  Two indices, total (plan Fact 5.2); the

@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A3 complete (phases A0–A9)
+## Status: IN PROGRESS 🚧 — A0–A4 complete (phases A0–A9)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | A1 — `boot_info_t` from the Device Tree, walker promoted | ✅ complete | `patches/A64_A1_dtb.patch` |
 | A2 — exceptions, the generic timer, GICv2 | ✅ complete | `patches/A64_A2_traps.patch` |
 | A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over | ✅ complete | `patches/A64_A3_mm.patch` |
-| A4 — threads, scheduler, EL0, `svc` | pending | `patches/A64_A4_proc.patch` |
+| A4 — threads, scheduler, EL0, `svc` | ✅ complete | `patches/A64_A4_proc.patch` |
 | A5 — userspace: libca64, init, the shared shell | pending | `patches/A64_A5_user.patch` |
 | A6 — the sweep, fourth backend: DAIF behind the contracts | pending | `patches/A64_A6_sweep.patch` |
 | A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | pending | `patches/A64_A7_drivers.patch` |
@@ -691,25 +691,76 @@ other suites untouched and green.
 
 ---
 
-### Phase A4 — Threads, scheduler, EL0, `svc`
+### Phase A4 — Threads, scheduler, EL0, `svc` ✅ COMPLETE
 
 **Objective:** the shared scheduler runs aarch64 threads; EL0 entered;
 `svc #0` reaches the one syscall table (D4).
 
 #### Tasks
 
-- [ ] `context_a64.S`: callee-saved x19–x30 + sp switch; FPU eager
+- [x] `context_a64.S`: callee-saved x19–x30 + sp switch; FPU eager
       save of q0–q31 + fpcr/fpsr (Fact 5.6; M1 lineage comment), with
       `CPACR_EL1.FPEN` open — the "trap-and-lazy-save" tradition is
       refused with the same argument the rv64 port used.
-- [ ] EL0 entry: `spsr_el1` crafted, `eret`; per-thread kernel stack in
+- [x] EL0 entry: `spsr_el1` crafted, `eret`; per-thread kernel stack in
       `SP_EL1` (the esp0/sscratch contract, now `SPSel`-shaped —
       the claim check gets a claim on the lineage comment).
-- [ ] `svc` dispatch: ESR class 0x15 routed to the shared table; x8/x0
+- [x] `svc` dispatch: ESR class 0x15 routed to the shared table; x8/x0
       convention per D4; in-band negative errno.
-- [ ] Numbers spot-checked in the smoke: GETPID=39, EXIT=60,
+- [x] Numbers spot-checked in the smoke: GETPID=39, EXIT=60,
       SCHED_YIELD=158 — the same numbers as the other three trap
       mechanisms, asserted from EL0.
+
+#### Result
+
+Delivered as specified — with one measured fact that cost the phase
+its only debugging session, and it is a keeper:
+
+**The low half is a different tree.** The first EL0 entry
+Instruction-Aborted at its own entry point (`ec=32
+far=0x40000000`): the user text had been mapped through `walk()`
+into TTBR1's tree, but VA `0x40000000` is the LOW half, and the low
+half translates through **TTBR0** on this ISA. One Sv39 root covers
+all of VA; a VMSAv8 pair does not — the same "one address space"
+assumption the A1 walker promotion flushed out, now in its paging
+edition. `walk()` chooses the root BY THE VA now (low → TTBR0's
+tree, high → TTBR1's, the unmappable middle refused), the A3 claim
+tracked the change (TTBR0 is blank *at switch time*, populated later
+by user pages only), and the identity-window probe keeps the old VA
+honest forever.
+
+What the ISA gave back, in exchange: **the I7 esp0 lesson costs zero
+instructions here.** Any EL0 trap lands on SP_EL1 by hardware SPSel
+switch — no scratch-CSR swap-and-test, no TSS field; "arm the trap
+stack" is just "hold it in sp when eret'ing down" (user_enter_a64,
+four instructions plus eret).
+
+The gauntlet, one boot:
+
+```
+[sched] PASS: two never-yielding workers both finished (timer preemption is real)
+[fpu]  PASS: q8/q9 survived preemptive clobbering (eager save earns its 528 bytes)
+A64-U-OK!
+[user] exit(42) via svc
+[user] PASS: privileged op contained (code 128), kernel intact
+```
+
+Notes with paper trails: the 624-byte switch frame put fpcr/fpsr LOW
+(stp-x reach ends at #504 — the assembler said so); CPACR_EL1.FPEN
+opens in boot.S *before any switch exists* (reset value traps the
+first `stp q0,q1` as EC 0x07); `-mgeneral-regs-only` stays for the
+compiler while `.arch_extension` opens the assembler's gate exactly
+where q-registers are touched on purpose (context_a64.S, the FPU
+gate's probes); the EL0 test programs are assembler-measured bytes,
+not hand-rolled (the V0 pad-byte lesson — and the pasted literal
+pool is the one clang emitted). The privileged-mrs negative control
+came back EC 0x00 (QEMU raises Unknown, not the trapped-MSR class)
+— the assertion accepts any contained 128+EC, and this note records
+the measured value. Preemption is post-EOI, after `gic_dispatch`
+returns — EOIR must complete the timer INTID before a switch can
+suspend the interrupted thread (phase-6 freeze, third inheritance).
+`check_arm64_claims` 47 (+9), a64 smoke 43 assertions, all sibling
+suites green.
 
 #### Test gate
 

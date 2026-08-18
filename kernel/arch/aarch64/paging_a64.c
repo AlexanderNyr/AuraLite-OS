@@ -45,7 +45,20 @@ extern const uint64_t kernel_layout[8];
 #define BLOCK_2M    (2UL * 1024 * 1024)
 
 static uint64_t *root_hi;              /* final TTBR1 root (HHDM view) */
-static uint64_t *root_lo_empty;        /* the blank TTBR0 root */
+static uint64_t *root_lo;              /* the TTBR0 root: BLANK at switch
+                                        * time (the identity window dies),
+                                        * populated LATER by user mappings
+                                        * only -- A4's EL0 pages live here.
+                                        * The measured fact that created
+                                        * this comment: VA 0x40000000 is
+                                        * the LOW half, and the low half
+                                        * translates through TTBR0 on this
+                                        * ISA -- one Sv39 root covers all
+                                        * of VA, a VMSAv8 pair does not.
+                                        * The first EL0 entry Instruction-
+                                        * Aborted at its own entry point
+                                        * because the user text had been
+                                        * mapped into the WRONG TREE. */
 
 static void puts_(const char *s) { pl011_puts(s); }
 static void put_hex(uint64_t v)  { pl011_puthex64(v); }
@@ -86,6 +99,17 @@ static uint64_t kind_bits(int kind)
     case A64_MAP_RW_DEVICE:
         return PTE_ATTR(MAIR_IDX_DEVICE) | PTE_SH_IS | PTE_AF |
                PTE_UXN | PTE_PXN;
+    case A64_MAP_RX_USER:
+        /* EL0 text: readable+executable at EL0, read-only at EL1,
+         * PXN SET -- the kernel must never execute user pages (W^X's
+         * second axis, the A4 counterpart of A3's UXN-on-kernel). */
+        return PTE_ATTR(MAIR_IDX_NORMAL) | PTE_SH_IS | PTE_AF |
+               PTE_AP_RO | PTE_AP_EL0 | PTE_PXN;
+    case A64_MAP_RW_USER:
+        /* EL0 data/stack: RW at EL0 (and thus EL1 -- VMSAv8 couples
+         * them), executable NOWHERE. */
+        return PTE_ATTR(MAIR_IDX_NORMAL) | PTE_SH_IS | PTE_AF |
+               PTE_AP_EL0 | PTE_UXN | PTE_PXN;
     case A64_MAP_RW_NORMAL:
     default:
         return PTE_ATTR(MAIR_IDX_NORMAL) | PTE_SH_IS | PTE_AF |
@@ -94,10 +118,20 @@ static uint64_t kind_bits(int kind)
 }
 
 /* Walk to the descriptor for va at `level` (1 = 1 GiB, 2 = 2 MiB,
- * 3 = 4 KiB), allocating intermediate tables when `create`. */
+ * 3 = 4 KiB), allocating intermediate tables when `create`.  The
+ * root is CHOSEN BY THE VA: low half = TTBR0's tree (user), high
+ * half = TTBR1's (kernel) -- the two-trees fact above. */
 static uint64_t *walk(uint64_t va, int level, int create)
 {
-    uint64_t *t = root_hi;
+    uint64_t *t;
+    if (va < (1UL << 39))
+        t = root_lo;
+    else if (va >= 0xFFFFFF8000000000UL)
+        t = root_hi;
+    else
+        return 0;                      /* the unmappable middle */
+    if (!t)
+        return 0;
     for (int l = 1; l < level; l++) {
         uint64_t idx = (va >> (12 + 9 * (3 - l))) & 0x1FF;
         uint64_t pte = t[idx];
@@ -179,8 +213,8 @@ uint64_t paging_a64_probe(uint64_t va)
 
 void paging_a64_init(void)
 {
-    root_hi       = table_alloc();
-    root_lo_empty = table_alloc();
+    root_hi = table_alloc();
+    root_lo = table_alloc();
 
     /* The paging_rv_init order, which is the algorithm (its comment
      * transfers verbatim): sections first at 4 KiB, then the split
@@ -227,12 +261,14 @@ void paging_a64_init(void)
               4UL * 1024 * 1024 * 1024 - 0x40000000UL,
               kind_bits(A64_MAP_RW_NORMAL) & ~(PTE_PAGE), 2);
 
-    /* Switch: TTBR1 -> the final tables; TTBR0 -> the BLANK root (the
-     * identity window dies in one register write -- Sv39 dropped an
-     * entry, VMSAv8 hands the low half its own root and we hand it
-     * emptiness).  Break-before-make helper does the barriers. */
+    /* Switch: TTBR1 -> the final tables; TTBR0 -> the (still-)BLANK
+     * user root: the identity window dies in one register write --
+     * Sv39 dropped an entry, VMSAv8 hands the low half its own root
+     * and at THIS moment it is empty.  A4 populates it with EL0
+     * pages through the same walk(); the identity VA stays unmapped
+     * forever (the selftest's third probe keeps that honest). */
     uint64_t t1 = v2p_a64(root_hi);
-    uint64_t t0 = v2p_a64(root_lo_empty);
+    uint64_t t0 = v2p_a64(root_lo);
     __asm__ volatile("msr ttbr1_el1, %0\n\t"
                      "msr ttbr0_el1, %1" :: "r"(t1), "r"(t0));
     tlb_flush_all();

@@ -54,6 +54,8 @@ static inline uint64_t v2p_a64(const void *virt)
 #define A64_MAP_RO_NORMAL  1     /* rodata: R, XN both ways */
 #define A64_MAP_RX_NORMAL  2     /* text: R+X (PXN clear, UXN set) */
 #define A64_MAP_RW_DEVICE  3     /* MMIO: RW, XN, Device-nGnRE */
+#define A64_MAP_RX_USER    4     /* EL0 text: R+X at EL0, PXN (A4) */
+#define A64_MAP_RW_USER    5     /* EL0 data/stack: RW, XN both ways */
 
 /* Build the final kernel tables (higher-half sections with real W^X,
  * HHDM as 2 MiB Normal-WB blocks, MMIO re-attributed Device, and

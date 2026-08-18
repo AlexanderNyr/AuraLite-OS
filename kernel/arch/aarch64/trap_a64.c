@@ -29,7 +29,9 @@
 #include "kernel/arch/aarch64/gic.h"
 #include "kernel/arch/aarch64/pl011.h"
 #include "kernel/arch/aarch64/psci.h"
+#include "kernel/arch/aarch64/thread_a64.h"
 #include "kernel/arch/aarch64/trap_a64.h"
+#include "kernel/arch/aarch64/user_a64.h"
 
 #define TICK_HZ 100
 
@@ -201,9 +203,12 @@ static void timer_irq(uint32_t intid)
     jitter_last = now;
 
     ticks++;
+    sched_a64_tick();
     /* TVAL re-arm: also what un-asserts the line (ISTATUS clears when
-     * the deadline moves forward) -- the sbi_set_timer property, so
-     * A4's preemption hook goes AFTER this line when it arrives. */
+     * the deadline moves forward) -- the sbi_set_timer property.  A4's
+     * preemption hook is NOT here: it sits after gic_dispatch returns
+     * in a64_trap (post-EOI -- EOIR must complete this INTID before a
+     * context switch can suspend the interrupted thread). */
     cntv_write_tval(tick_interval);
 }
 
@@ -213,10 +218,35 @@ void a64_trap(a64_trap_frame_t *f)
 {
     uint32_t kind = (uint32_t)f->kind;
 
-    /* IRQ from the kernel's own row: the GIC has the answer. */
-    if (kind == 5) {                        /* IRQ / SP_ELx */
+    /* IRQ -- from the kernel's own row OR from EL0 (the timer does
+     * not care whom it interrupted): the GIC has the answer, and the
+     * preemption hook runs AFTER the dispatch loop returns -- every
+     * claimed INTID has been EOIR-completed by then (the post-EOI
+     * placement, fourth edition; see timer_irq's comment). */
+    if (kind == 5 || kind == 9) {           /* IRQ / SP_ELx, IRQ / EL0 */
         gic_dispatch();
+        sched_a64_maybe_preempt();
         return;
+    }
+
+    /* Synchronous from EL0: the svc gate first, contained faults
+     * second -- isr32's cs&3 check, vector-row-flavoured (the origin
+     * is IN the slot index here; no SPSR bit to test). */
+    if (kind == 8) {                        /* SYNC / EL0 (AArch64) */
+        uint64_t esr = esr_read();
+        uint32_t ec  = (uint32_t)(esr >> 26) & 0x3F;
+
+        if (ec == 0x15) {                   /* SVC (AArch64) */
+            user_a64_syscall(f);
+            return;
+        }
+        if (user_a64_fault(f, esr, far_read()))
+            return;
+        /* An EL0 trap with no active image: fall through to the
+         * halt -- it IS a kernel bug (nobody armed EL0). */
+        puts_("\n[isr] EL0 trap with no active image -- halting\n");
+        dump_frame(f, esr, far_read());
+        psci_system_off();
     }
 
     if (kind == 4) {                        /* SYNC / SP_ELx */
