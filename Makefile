@@ -681,7 +681,8 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
                 $(USER_BUILD)/rustes.elf \
                 $(USER_BUILD)/usertest.elf \
                 $(USER_BUILD)/mmapshare.elf \
-                $(USER_BUILD)/mmapfile.elf
+                $(USER_BUILD)/mmapfile.elf \
+                $(USER_BUILD)/membench.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
 # the link line names; --whole-archive is not needed here because every
@@ -842,6 +843,13 @@ $(USER_BUILD)/filesize.o: userspace/tests/filesize/filesize.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/filesize.elf: $(USER_BUILD)/filesize.o $(USER_COMMON) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/filesize.o $(USER_COMMON_LNK) -o $@
+
+# membench: the OPT_PLAN O0 copy-engine microbenchmark (O1's gate tooling).
+$(USER_BUILD)/membench.o: userspace/tests/membench/membench.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/membench.elf: $(USER_BUILD)/membench.o $(USER_COMMON) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/membench.o $(USER_COMMON_LNK) -o $@
 
 $(USER_BUILD)/dlltest.o: userspace/apps/w32run/dlltest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1569,7 +1577,7 @@ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
                 socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 \
-                usertest mmapshare mmapfile
+                usertest mmapshare mmapfile membench
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
 # Built with nasm -f win64 + lld-link, both already in REQUIRED_TOOLS (they
@@ -1847,7 +1855,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_apkg \
                 $(BUILD_DIR)/test_printf_fmt \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
-                $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
+                $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
+                $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
                 $(BUILD_DIR)/test_usb $(BUILD_DIR)/test_wm \
@@ -2281,6 +2290,14 @@ $(BUILD_DIR)/test_heap: tests/unit/test_heap.c kernel/mm/heap.c kernel/mm/heap.h
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . tests/unit/test_heap.c kernel/mm/heap.c -o $@
 
 $(BUILD_DIR)/test_string: tests/unit/test_string.c kernel/lib/string.c kernel/lib/string.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# OPT_PLAN O1: the fast rep-string backend + word-wide memcmp/strlen,
+# across the alignment × size × overlap matrix.
+$(BUILD_DIR)/test_string_ops: tests/unit/test_string_ops.c \
+                              kernel/arch/x86_64/string_fast.c \
+                              kernel/lib/string.c kernel/lib/string.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

@@ -22,6 +22,7 @@
 #include "kernel/gui/gui.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/perfstat.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/scheduler.h"
@@ -1695,6 +1696,19 @@ static void compositor_render_dirty(void) {
     if (dw > 0 && dh > 0) {
         gfx_flip_rect(dx, dy, dw, dh);
     }
+
+    /* OPT_PLAN.md O0: the partial path still re-composites the ENTIRE back
+     * buffer (Fact 3) — count a full screen of composited pixels, honestly,
+     * and only the union as flipped.  Composited − flipped is exactly the
+     * headroom phase O4 exists to claim.  (Local u64s, not casts: the
+     * width-sweep ratchet.) */
+    {
+        uint64_t pw = gfx_get_width(), ph = gfx_get_height();
+        uint64_t fw = dw, fh = dh;
+        perfstat_add(PERF_COMPOSITOR_FRAMES_PARTIAL, 1);
+        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, pw * ph);
+        perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, fw * fh);
+    }
 }
 
 static void compositor_render(void) {
@@ -1742,6 +1756,16 @@ static void compositor_render(void) {
     draw_cursor();
 
     gfx_flip();
+
+    /* OPT_PLAN.md O0: full path — whole scene composited, whole screen
+     * flipped.  (Local u64s, not casts: the width-sweep ratchet counts
+     * uint64_t casts in portable code and must only go down.) */
+    {
+        uint64_t pw = gfx_get_width(), ph = gfx_get_height();
+        perfstat_add(PERF_COMPOSITOR_FRAMES_FULL, 1);
+        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, pw * ph);
+        perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, pw * ph);
+    }
 }
 
 /* ===================================================================

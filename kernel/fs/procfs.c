@@ -15,6 +15,7 @@
 #include "drivers/timer/pit.h"
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/diagnostics.h"
+#include "kernel/lib/perfstat.h"
 
 #define PROCFS_MAX_VNODES 64
 static struct vnode procfs_vnodes[PROCFS_MAX_VNODES];
@@ -120,6 +121,18 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
         vn->mode = 0644;
         vn->size = 256;
         vn->inode_id = 8;
+        return vn;
+    }
+    if (strcmp(path, "perf") == 0) {
+        /* OPT_PLAN.md O0: the perfstat counters, one "name value" line
+         * each.  The names are perfstat.c's table; tests parse this file,
+         * so the format is an interface. */
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "perf", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_FILE;
+        vn->mode = 0644;
+        vn->size = 512;
+        vn->inode_id = 15;
         return vn;
     }
     if (strcmp(path, "sysrq-trigger") == 0) {
@@ -242,13 +255,15 @@ static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     }
     if (vn->inode_id == 0) { /* Root of /proc */
         const char *static_files[] = {"uptime", "meminfo", "cpuinfo", "version", "stat",
-                                       "loadavg", "netdev", "diskstats", "sysrq-trigger"};
-        for (int i = 0; i < 9 && n < max; i++) {
+                                       "loadavg", "netdev", "diskstats", "sysrq-trigger",
+                                       "perf"};
+        const uint64_t static_inodes[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 15};
+        for (int i = 0; i < 10 && n < max; i++) {
             memset(&out[n], 0, sizeof(out[n]));
             strncpy(out[n].name, static_files[i], VFS_PATH_MAX - 1);
             out[n].type = VFS_TYPE_FILE;
             out[n].size = 512;
-            out[n].inode = i + 1;
+            out[n].inode = static_inodes[i];
             n++;
         }
         /* Add active PIDs */
@@ -383,6 +398,14 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
                         "(FIX_R0 diagnostics test gate)\n"
                         "  o - overflow: deliberate kernel stack overflow "
                         "-> #DF (FIX_R1 IST test gate)\n");
+    } else if (vn->inode_id == 15) {
+        /* /proc/perf: the OPT_PLAN O0 counters, "name value" per line. */
+        for (int i = 0; i < perfstat_counter_count(); i++) {
+            len += ksnprintf(text + len, sizeof(text) - (size_t)len,
+                             "%s %llu\n", perfstat_name(i),
+                             (unsigned long long)perfstat_get(i));
+            if (len >= (int)sizeof(text) - 1) break;
+        }
     } else if ((vn->inode_id >> 16) != 0) {
         uint64_t pid = vn->inode_id >> 16;
         uint64_t file_type = vn->inode_id & 0xFFFF;

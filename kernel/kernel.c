@@ -12,6 +12,7 @@
 #include "kernel/mm/slab.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/klog.h"
+#include "kernel/lib/perfstat.h"
 #include "kernel/lib/stack_protector.h"
 #include "kernel/boot_info.h"
 #include "kernel/rng.h"
@@ -530,6 +531,20 @@ void kmain(boot_info_t *boot_info) {
 
     kprintf("[boot] starting init shell (Ring 3)...\n");
     user_mode_self_test();
+
+    /* OPT_PLAN.md O0: the boot-latency stamp.  One counter, one greppable
+     * line — test_perf_smoke.sh and the §6 table in the plan read this, so
+     * the format is an interface. */
+    {
+        uint64_t boot_ticks = timer_get_ticks();
+        uint32_t hz = timer_get_frequency();
+        if (hz == 0) hz = 100;
+        perfstat_set(PERF_BOOT_TICKS_TO_SHELL, boot_ticks);
+        kprintf("[perf] boot-to-shell: %llu ticks (~%llu ms @ %u Hz)\n",
+                (unsigned long long)boot_ticks,
+                (unsigned long long)(boot_ticks * 1000ULL / hz),
+                (unsigned)hz);
+    }
 
     /* The shell is now running interactively. kmain yields forever, giving
      * the shell scheduling slots. When the shell exits, kmain + idle remain. */

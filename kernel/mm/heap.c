@@ -8,6 +8,18 @@
 #include <stdint.h>
 #include "kernel/mm/heap.h"
 
+/* OPT_PLAN.md O0: count free-list nodes visited by the first-fit search.
+ * This file is also compiled on the host by tests/unit/test_heap.c, where
+ * perfstat does not exist — the hook compiles away there.  (ARCH_X86_64 is
+ * the kernel build's define; the i386/rv64/a64 kernels do not compile this
+ * file at all.) */
+#ifdef ARCH_X86_64
+#include "kernel/lib/perfstat.h"
+#define HEAP_PERF_WALK(n) perfstat_add(PERF_KMALLOC_WALK_STEPS, (n))
+#else
+#define HEAP_PERF_WALK(n) ((void)(n))
+#endif
+
 #define HEAP_ALIGN    16u
 #define HEADER_SIZE   ((uint64_t)sizeof(heap_block_t))   /* 32 */
 #define FOOTER_SIZE   ((uint64_t)sizeof(struct footer))  /* 16 */
@@ -96,8 +108,11 @@ void *heap_alloc(heap_t *h, uint64_t size) {
 
     for (;;) {
         /* First-fit search of the free list. */
+        uint64_t walk = 0;
         for (heap_block_t *b = h->free_list; b; b = b->next) {
+            walk++;
             if (b->size >= need) {
+                HEAP_PERF_WALK(walk);
                 split_block(h, b, need);
                 b->magic = HEAP_MAGIC_USED;
                 set_footer(b);
@@ -105,6 +120,7 @@ void *heap_alloc(heap_t *h, uint64_t size) {
                 return (char *)b + HEADER_SIZE;
             }
         }
+        HEAP_PERF_WALK(walk);
 
         /* No fit: try to commit more memory. */
         if (h->expand == NULL || h->expand(h, need) != 0) {

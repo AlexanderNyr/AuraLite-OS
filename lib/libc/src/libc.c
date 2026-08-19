@@ -1273,6 +1273,62 @@ int rand(void) {
 
 /* ---- String functions ---- */
 
+/* OPT_PLAN.md O1: memset/memcpy mirror the kernel's rep-string backend
+ * (kernel/arch/x86_64/string_fast.c — same shapes, same movsq-bulk +
+ * movsb-tail split, same 64-byte scalar crossover; the reasoning and the
+ * TCG measurement that forced movsq over movsb live in that file's
+ * header comment, and membench is the before/after record).  The
+ * portable byte loops remain the non-x86_64 fallback. */
+
+#ifdef __x86_64__
+
+#define AURA_STR_SMALL 64
+
+void *memset(void *dst, int c, size_t n) {
+    if (n < AURA_STR_SMALL) {
+        unsigned char *d = dst;
+        while (n--) *d++ = (unsigned char)c;
+        return dst;
+    }
+    void    *d = dst;
+    size_t   q = n >> 3;
+    size_t   r = n & 7;
+    uint64_t v = (unsigned char)c;
+    v *= 0x0101010101010101ULL;
+    __asm__ volatile ("rep stosq"
+                      : "+D"(d), "+c"(q)
+                      : "a"(v)
+                      : "memory");
+    __asm__ volatile ("rep stosb"
+                      : "+D"(d), "+c"(r)
+                      : "a"(v)
+                      : "memory");
+    return dst;
+}
+
+void *memcpy(void *dst, const void *src, size_t n) {
+    if (n < AURA_STR_SMALL) {
+        unsigned char *d = dst;
+        const unsigned char *s = src;
+        while (n--) *d++ = *s++;
+        return dst;
+    }
+    void  *d = dst;
+    size_t q = n >> 3;
+    size_t r = n & 7;
+    __asm__ volatile ("rep movsq"
+                      : "+D"(d), "+S"(src), "+c"(q)
+                      :
+                      : "memory");
+    __asm__ volatile ("rep movsb"
+                      : "+D"(d), "+S"(src), "+c"(r)
+                      :
+                      : "memory");
+    return dst;
+}
+
+#else /* !__x86_64__ */
+
 void *memset(void *dst, int c, size_t n) {
     unsigned char *d = dst;
     while (n--) *d++ = (unsigned char)c;
@@ -1286,8 +1342,23 @@ void *memcpy(void *dst, const void *src, size_t n) {
     return dst;
 }
 
+#endif /* __x86_64__ */
+
+/* Word-wide memcmp/strlen (OPT_PLAN O1) — same portable shapes as
+ * kernel/lib/string.c, see the comments there. */
 int memcmp(const void *a, const void *b, size_t n) {
     const unsigned char *pa = a, *pb = b;
+    while (n >= 8) {
+        uint64_t wa, wb;
+        __builtin_memcpy(&wa, pa, 8);
+        __builtin_memcpy(&wb, pb, 8);
+        if (wa != wb) {
+            for (int i = 0; i < 8; i++) {
+                if (pa[i] != pb[i]) return pa[i] - pb[i];
+            }
+        }
+        pa += 8; pb += 8; n -= 8;
+    }
     while (n--) {
         if (*pa != *pb) return *pa - *pb;
         pa++; pb++;
@@ -1297,8 +1368,19 @@ int memcmp(const void *a, const void *b, size_t n) {
 
 size_t strlen(const char *s) {
     const char *p = s;
-    while (*p) p++;
-    return (size_t)(p - s);
+    while (((uintptr_t)p & 7) != 0) {
+        if (*p == '\0') return (size_t)(p - s);
+        p++;
+    }
+    for (;;) {
+        uint64_t w;
+        __builtin_memcpy(&w, p, 8);
+        uint64_t zero = (w - 0x0101010101010101ULL) & ~w &
+                        0x8080808080808080ULL;
+        if (zero != 0)
+            return (size_t)(p - s) + ((size_t)__builtin_ctzll(zero) >> 3);
+        p += 8;
+    }
 }
 
 char *strcpy(char *dst, const char *src) {

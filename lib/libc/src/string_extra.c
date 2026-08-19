@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -244,11 +245,30 @@ void *memmove(void *dst, const void *src, size_t n) {
     if (d == s || n == 0) return dst;
 
     if (d < s) {
-        for (size_t i = 0; i < n; i++) d[i] = s[i];
-    } else {
-        /* Backwards, so the overlapping tail is read before it is
-         * clobbered. */
-        for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
+        /* Forward: overlap-safe in this direction.  8-byte chunks via
+         * __builtin_memcpy (one mov each), NOT a call to memcpy() — this
+         * function is extracted standalone by tools/extract_libc_impls.py
+         * for the host stdio tests, where an unresolved memcpy symbol
+         * would be a build error (OPT_PLAN O1). */
+        size_t i = 0;
+        while (i + 8 <= n) {
+            uint64_t w;
+            __builtin_memcpy(&w, s + i, 8);
+            __builtin_memcpy(d + i, &w, 8);
+            i += 8;
+        }
+        for (; i < n; i++) d[i] = s[i];
+        return dst;
     }
+    /* Backwards, so the overlapping tail is read before it is clobbered.
+     * 8-byte tail-first chunks (OPT_PLAN O1), then the byte remainder;
+     * see kernel/arch/x86_64/string_fast.c for why not std/rep. */
+    while (n >= 8) {
+        n -= 8;
+        uint64_t w;
+        __builtin_memcpy(&w, s + n, 8);
+        __builtin_memcpy(d + n, &w, 8);
+    }
+    while (n--) d[n] = s[n];
     return dst;
 }

@@ -47,6 +47,7 @@ fi
 # fails the build when this list and cases/ disagree in either direction.
 ALL_CASES=(
     test_boot_to_shell
+    test_perf_smoke
     test_shell_commands
     test_syscalls
     test_selftest

@@ -1,0 +1,65 @@
+/* perfstat.h — named monotonic performance counters (OPT_PLAN.md O0).
+ *
+ * The measuring rig the optimization plan hangs every claim on: a fixed
+ * table of counters, added to from anywhere in the kernel (IRQ context
+ * included), read out through /proc/perf.  An unread counter costs one
+ * relaxed atomic add at the site that bumps it — there is deliberately no
+ * registration, no locking and no allocation here, so the rig itself can
+ * never be the thing the numbers are measuring.
+ *
+ * Counter semantics are documented next to the enum entry that names
+ * them, because a counter whose meaning drifts is worse than no counter
+ * (the D1 rule: the number is the claim).
+ */
+#ifndef KERNEL_LIB_PERFSTAT_H
+#define KERNEL_LIB_PERFSTAT_H
+
+#include <stdint.h>
+
+enum perfstat_id {
+    /* Ticks (PIT, timer_get_frequency() Hz) from kmain entry to the
+     * "[kernel] shell active" line.  Set once per boot, not added. */
+    PERF_BOOT_TICKS_TO_SHELL = 0,
+
+    /* Compositor frames that took the full_dirty path (whole scene
+     * rendered AND whole screen flipped). */
+    PERF_COMPOSITOR_FRAMES_FULL,
+
+    /* Compositor frames that took the dirty-rect path. */
+    PERF_COMPOSITOR_FRAMES_PARTIAL,
+
+    /* Pixels COMPOSITED into the back buffer.  As of O0 the partial path
+     * still re-composites the entire scene (OPT_PLAN Fact 3), so this
+     * counts a full screen for both branches — that honesty is the point:
+     * O4's whole job is to make this number track the dirty union. */
+    PERF_COMPOSITOR_PIXELS_COMPOSITED,
+
+    /* Pixels FLIPPED back→front.  Already union-clipped on the partial
+     * path today (H1), so composited − flipped is O4's headroom. */
+    PERF_COMPOSITOR_PIXELS_FLIPPED,
+
+    /* TLB shootdown IPIs serviced with a full CR3 reload.  As of O0 that
+     * is every one of them (OPT_PLAN Fact 4); O5 splits this into
+     * full/ranged/skipped. */
+    PERF_TLB_SHOOTDOWNS_FULL,
+
+    /* Free-list nodes visited by the kernel heap's first-fit search
+     * (OPT_PLAN Fact 5).  The walk length is O6's claim, so it is O6's
+     * measurement. */
+    PERF_KMALLOC_WALK_STEPS,
+
+    /* Bytes pushed through the synchronous busy-wait UART TX path
+     * (OPT_PLAN Fact 2).  After O3 lands, this counts only ring-full
+     * spill and panic-path bytes. */
+    PERF_UART_TX_SYNC_BYTES,
+
+    PERF_COUNTER_MAX
+};
+
+void        perfstat_add(int id, uint64_t n);
+void        perfstat_set(int id, uint64_t v);
+uint64_t    perfstat_get(int id);
+int         perfstat_counter_count(void);
+const char *perfstat_name(int id);
+
+#endif /* KERNEL_LIB_PERFSTAT_H */

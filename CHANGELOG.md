@@ -2,6 +2,68 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O1 — word-wide string ops] 2026-08-19
+
+`OPT_PLAN.md` phase O1: the byte-at-a-time memcpy/memset/memmove
+(Fact 1) retired in both worlds — kernel and user libc.
+
+- `kernel/arch/x86_64/string_fast.c` (new): `rep movsq` bulk +
+  `rep movsb` tail, sub-64 B scalar path; memmove backward is 8-byte
+  tail-first chunks with DF never touched.  The file lives in the arch
+  tree because the V6 asm ratchet holds portable code at zero inline
+  assembly; `kernel/lib/string.c` keeps the portable bodies under
+  `#ifndef ARCH_X86_64` for the host tests and future shared-tree archs.
+- `kernel/lib/string.c` + `lib/libc/src/libc.c`: word-wide
+  memcmp/strlen in portable C (8-byte `__builtin_memcpy` loads,
+  has-zero-byte trick; aligned reads cannot cross a page).
+- `lib/libc/src/{libc.c,string_extra.c}`: user-space memcpy/memset get
+  the same movsq shapes; memmove's forward path is a self-contained
+  8-byte loop because `extract_libc_impls.py` compiles it standalone.
+- `tests/unit/test_string_ops.c` (new, in `UNIT_TESTS`): alignment ×
+  size × overlap matrix with guard canaries — 3052 checks green.
+- **The measured lesson, recorded in the plan:** the first draft used
+  `rep movsb` everywhere and membench refused to move (11 → 11 MB/s):
+  TCG emulates rep-string one iteration at a time, so byte-element rep
+  IS a byte loop there.  With movsq bulk: memcpy 64 KiB
+  **11 → 82 MB/s**, memset 1 MiB **342 → 1687 MB/s**, memmove 64 KiB
+  **144 → 1236 MB/s** under TCG, and nothing is lost on real ERMSB
+  hardware.  D1 (no number, no claim) caught it before the plan could
+  ship a placebo.
+- Per the phase-hygiene rule this patch also carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
+## [OPT O0 — the measuring rig] 2026-08-19
+
+`OPT_PLAN.md` phase O0: before any optimization lands, the instruments
+that will judge it.  Nothing got faster in this phase, on purpose.
+
+- `kernel/lib/perfstat.{c,h}`: eight named monotonic counters, relaxed
+  atomic adds, safe from IRQ context and from the first C instruction
+  (static storage, no init).  Read out through the new `/proc/perf`
+  ("name value" per line — the format is an interface, tests parse it).
+- Counters wired: boot-to-shell tick stamp (`kmain`, plus a greppable
+  `[perf] boot-to-shell:` line), compositor full/partial frames and
+  composited/flipped pixels (`gui.c`), full-flush TLB shootdowns
+  (`tlb_shootdown.c`), first-fit free-list walk steps (`heap.c`, compiled
+  away in the host unit build), synchronous UART TX bytes (`uart.c`).
+- `userspace/tests/membench`: fixed-format memcpy/memset/memmove
+  microbench table (`MEMBENCH <name> <bytes> <MB/s>`), O1's gate tooling.
+- `tests/integration/cases/test_perf_smoke.sh` (registered in
+  `run_all.sh`): D2-grade ratchets only — boot under 60 s of ticks,
+  idle full-recomposites bounded to one-shot events, every counter
+  present, membench runs to completion; the numbers themselves are
+  archived, not gated.
+- **Measured on first boot** (now in `OPT_PLAN.md` §6): 665 394 free-list
+  nodes walked per boot; 24 778 synchronous UART bytes by the prompt;
+  UEFI compositor composites 14.2× more pixels than it flips; and one
+  fact nobody had written down — **the BIOS boot path has no pixels**
+  (Stage 2 sets no VBE mode, so `gfx_init()` bails on `bpp != 32` and
+  every BIOS-booted GUI test exercises window logic over a 0×0
+  framebuffer; O4's pixel gate must boot OVMF).
+- The width-sweep ratchet caught the first draft of this patch adding
+  five `(uint64_t)` casts to portable code and it was reworked to add
+  none.  The gates gating the gate-maker is the system working.
+
 ## [A64 A4 — threads, scheduler, EL0, svc] 2026-08-17
 
 `ARM64_PLAN.md` phase A4: the shared scheduler shape runs aarch64

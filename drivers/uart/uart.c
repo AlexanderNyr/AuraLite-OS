@@ -2,6 +2,7 @@
 
 #include "kernel/arch/arch.h"
 #include "drivers/uart/uart.h"
+#include "kernel/lib/perfstat.h"
 
 void uart_init(void) {
     const uint16_t base = UART_COM1;
@@ -22,6 +23,10 @@ void uart_putchar(char c) {
         /* spin */
     }
     outb(base + UART_THR, (uint8_t)c);
+    /* OPT_PLAN.md O0: every byte through this synchronous path is boot
+     * latency paid at 115200 baud (Fact 2).  O3's ring drains this counter
+     * down to ring-full spill + panic bytes; until then it counts them all. */
+    perfstat_add(PERF_UART_TX_SYNC_BYTES, 1);
 }
 
 void uart_puts(const char *s) {
