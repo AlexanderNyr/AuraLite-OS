@@ -11,6 +11,7 @@
 #include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/lib/selftest.h"
+#include "kernel/gui/gui.h"
 #include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
@@ -51,6 +52,13 @@ static void timer_irq_handler(struct registers *regs) {
         timer_ticks++;
         if (sched_is_ready()) {
             signal_tick(timer_ticks);   /* fire elapsed alarm() deadlines (SIGALRM) */
+        }
+        /* OPT_PLAN.md O4: the compositor sleeps between events now; the
+         * taskbar clock and notification expiry need one wake a second.
+         * gui_poke() is a no-op until gui_init() and IRQ-safe after the
+         * O4 wait_queue fix. */
+        if (timer_freq_hz != 0 && (timer_ticks % timer_freq_hz) == 0) {
+            gui_poke();
         }
     }
     if (sched_is_ready()) {

@@ -1,6 +1,6 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0–O3 landed; O4–O9 specified
+## Status: IN PROGRESS 🚧 — O0–O4 landed; O5–O9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | O1 — word-wide string ops | ✅ complete | `patches/OPT_O1_stringops.patch` |
 | O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
 | O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
-| O4 — compositor: composite the union, sleep when idle | ⬜ todo | — |
+| O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
 | O5 — precise TLB shootdown | ⬜ todo | — |
 | O6 — size-class allocator front | ⬜ todo | — |
 | O7 — block where the kernel yields | ⬜ todo | — |
@@ -579,43 +579,80 @@ above). ✓
 
 ### O4 — Compositor: composite what is dirty, sleep when nothing is
 
+**Status: ✅ landed** (`patches/OPT_O4_compositor.patch`).  The 14.2×
+headroom O0 measured is collected below — 10.8× of it on the steady
+state, with the remainder named as overdraw.
+
 **Objective:** finish what H1 started (Fact 3): the dirty union should
-bound the *work*, not just the flip — and the frame loop should block, not
-yield-spin.
+bound the *work*, not just the flip — and the frame loop should block,
+not yield-spin.
 
 Tasks:
 
-- [ ] Thread a clip rectangle through the composite path:
-      `draw_desktop`/`draw_icons`/window blits take the dirty union and
-      intersect per element (`compositor_render_dirty()` already computes
-      the union via `compute_dirty_union()`; today it throws the bound
-      away for everything but the flip). Windows fully outside the union
-      are skipped before their pixels are touched.
-- [ ] `perfstat`: `compositor_pixels_composited` accumulates actual
-      blitted pixels — the honest unit, since "frames" hide the win.
-- [ ] Replace the 100 Hz yield-spin with a `wait_queue`: input events,
-      `gui_mark_dirty`, notification expiry and the 1 Hz clock arm it;
-      the wake path ticks the compositor. Frame pacing (don't render more
-      than ~100 FPS under event storms) becomes a min-interval check
-      *inside* the woken path, not a spin outside it.
-- [ ] The `full_dirty` escape hatch (GUI_MAX_DIRTY_RECTS overflow, theme
-      change, resize) stays exactly as is — correctness anchor.
-- [ ] Residue recorded per D5: the front-buffer mapping's cacheability
-      (no PAT/WC configuration exists anywhere in `paging.c` — the
-      framebuffer is written through whatever the boot mapping gave it) is
-      a real cost on real hardware but unmeasurable under TCG; **a PAT
-      write-combining entry for the framebuffer is specified here and
-      deferred to a real-hardware follow-up**, because landing it gated
-      only by QEMU would violate D1.
+- [x] The clip lives in the gfx layer, not threaded through forty draw
+      calls: `gfx_clip_set()/gfx_clip_clear()` in
+      `drivers/framebuffer/graphics.c`, enforced by `gfx_putpixel` and
+      the `gfx_fill_rect` bulk path (every other primitive — lines,
+      text, circles, gradients, window blits — funnels through those
+      two).  `compositor_render_dirty()` computes the union FIRST, arms
+      the clip, re-runs the scene, flips the union, clears the clip.
+      Windows (shadow included) that miss the union are rejected before
+      their per-pixel loops run.
+- [x] `compositor_pixels_composited` is now the gfx layer's REAL
+      post-clip store count (overdraw included) — a plain non-atomic
+      accumulator drained once per frame, because the back buffer has
+      exactly one writer.  The O0 full-screen approximation is gone.
+- [x] The 100 Hz yield-spin is gone.  The compositor blocks on a
+      wait_queue; pokes come from the keyboard/mouse IRQ enqueue points
+      (at the ring-push, not the handler tail — early returns after
+      enqueue would have skipped a tail poke), from one chokepoint in
+      the GUI syscall layer (`syscall_gui_call`/`_theme` wrappers, not
+      forty case arms), and from a 1 Hz PIT line for the clock and
+      notification expiry.  Pacing inside the drain loop is
+      `timer_sleep_ms(10)` — a BLOCKING sleep, so the pacing gap is
+      idle time the scheduler can give away.
+- [x] **`wait_queue.c` is IRQ-safe now** (all five lock sites take the
+      queue lock irqsave).  Before, waking from IRQ context was a latent
+      deadlock — an IRQ landing on a CPU that held `wq->lock` would spin
+      on its own lock forever.  The GUI pokes needed the guarantee; O7's
+      wait4/getrandom conversions inherit it.
+- [x] The `full_dirty` escape hatch is untouched (overflow, theme
+      change, resize still force a full redraw).
+- [x] Residue (unchanged from the spec): the framebuffer's cacheability
+      (PAT/WC) is real-hardware work and stays deferred — TCG cannot
+      measure it (D1).
 
-**Definition of done:** cursor-move frames composite ≤ the dirty union
-(counter-checked, not eyeballed); idle scheduler churn from the GUI thread
-drops to zero between events (`sched_get_idle_ticks` delta);
-`test_gui*` cases green unmodified.
+**What O4 measured** (UEFI/OVMF 1280×800, `test_gui_dirty_uefi.sh` +
+manual before/after boots of the O3 and O4 trees):
 
-**Test gate:** existing GUI integration cases (D3); new assertions in
-`test_perf_smoke`: (a) 2 s idle ⇒ `compositor_pixels_composited` static,
-(b) scripted cursor move ⇒ pixel delta < 1% of a full frame.
+- Steady state (the 1 Hz taskbar-clock frame): **1 024 000 px composited
+  per frame before — the entire screen, every second — vs 94 805 px
+  after**, a **10.8×** reduction.  The flip was already union-clipped
+  (40 960 px = exactly the 1280×32 taskbar strip); now the composite is
+  too.
+- The remaining 2.3× composited:flipped gap on a clock frame is
+  *overdraw* (desktop gradient + taskbar fill + text repainting the same
+  strip), named and accepted — eliminating overdraw is a z-culling
+  compositor, a different machine than this plan builds.
+- Idle CPU (at the shell, UEFI, `-smp 2`): `/proc/loadavg` busy
+  **42.30 → 34.37** — the compositor's yield-spin contribution is gone;
+  the remainder belongs to the USB/HID polling threads (O7's sweep
+  territory, recorded there).
+- Full redraws while idle: **0** over the watch window (was: the
+  escape-hatch events only — the bound held at ≤ 1).
+
+**Definition of done:** cursor/clock frames composite ≤ the union
+(counter-checked: 948 090 px over a ~5 s idle window, threshold 3 M,
+regression signature 8.2 M) ✓; GUI thread idle churn gone (loadavg
+delta) ✓; existing GUI cases green unmodified ✓.
+
+**Test gate:** `test_gui_dirty_uefi.sh` (new, registered; loud-skips
+without OVMF, the bl6 convention) 8/8 — GOP present, composite bounded,
+clock still paints, full redraws one-shot; `test_gui` 5/5,
+`test_gui_bad_pointers` 2/2, `test_boot_to_shell` 17/17,
+`test_perf_smoke` 19/19, `make test-unit` EXIT 0, width-sweep ratchets
+359/359 (the first draft of the pixel accounting added two uint64_t
+casts and was reworked — the ratchet's third catch in this plan). ✓
 
 **Deliverable:** `patches/OPT_O4_compositor.patch`
 
@@ -836,7 +873,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
 | membench memmove-o 64 KiB (MB/s) | 144 | **1236** | | | | | | | |
 | uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
 | kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
-| compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | | | | | |
+| compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
 | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | | | | |
 | idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
 | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |

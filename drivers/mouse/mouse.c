@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include "drivers/mouse/mouse.h"
+#include "kernel/gui/gui.h"
 #include "drivers/framebuffer/graphics.h"
 #include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
@@ -115,6 +116,8 @@ static void evt_push(const mouse_event_t *e) {
     }
     mouse_events[evt_head] = *e;
     evt_head = next;
+    /* OPT_PLAN.md O4: every queued mouse event wakes the compositor. */
+    gui_poke();
 }
 
 static void mouse_handler(struct registers *regs) {

@@ -26,6 +26,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/scheduler.h"
+#include "kernel/proc/wait_queue.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/process.h"
 #include "drivers/framebuffer/graphics.h"
@@ -154,6 +155,23 @@ static gui_cursor_t cursor = GUI_CURSOR_ARROW;
 static gui_rect_t dirty_rects[GUI_MAX_DIRTY_RECTS];
 static int dirty_count = 0;
 static volatile int full_dirty = 1;  /* start with a full redraw */
+
+/* OPT_PLAN.md O4: the compositor sleeps between events instead of
+ * yield-spinning at 100 Hz.  Anything that creates work pokes it:
+ * keyboard/mouse IRQs, the GUI syscall layer, and the PIT's 1 Hz clock
+ * line (which also drives notification expiry).  gui_pending is the
+ * lost-wakeup guard: pokes can land between the "any work?" check and
+ * the sleep, so the flag is checked under gui_wake_lock. */
+static struct wait_queue gui_wq;
+static spinlock_t gui_wake_lock;
+static volatile int gui_pending;
+static volatile int gui_wq_ready;
+
+void gui_poke(void) {
+    if (!gui_wq_ready) return;
+    __atomic_store_n(&gui_pending, 1, __ATOMIC_RELEASE);
+    wq_wake_all(&gui_wq);        /* IRQ-safe since the O4 wait_queue fix */
+}
 
 /* GUI clock. */
 static uint64_t gui_clock_base_ticks = 0;
@@ -284,6 +302,10 @@ void gui_init(void) {
     memset(icons, 0, sizeof(icons));
     memset(notifications, 0, sizeof(notifications));
     spinlock_init(&gui_lock);
+    wq_init(&gui_wq);
+    spinlock_init(&gui_wake_lock);
+    gui_pending = 1;                /* first frame draws without a poke */
+    gui_wq_ready = 1;
     focused = -1;
     cursor  = GUI_CURSOR_ARROW;
     active_theme = default_theme;
@@ -1651,7 +1673,19 @@ static void compute_dirty_union(int32_t *ox, int32_t *oy,
  * unchanged areas.
  */
 static void compositor_render_dirty(void) {
-    /* Re-composite the entire back buffer. */
+    /* OPT_PLAN.md O4: the union bounds the WORK now, not just the flip.
+     * Compute it up front, arm the gfx clip, and let every primitive
+     * refuse pixels outside it.  (BUG-32 ordering still holds: nothing
+     * has cleared dirty_count yet.) */
+    int32_t ux, uy;
+    uint32_t uw, uh;
+    compute_dirty_union(&ux, &uy, &uw, &uh);
+    if (uw == 0 || uh == 0) {
+        dirty_count = 0;
+        return;
+    }
+    gfx_clip_set(ux, uy, uw, uh);
+
     draw_desktop();
     draw_icons();
 
@@ -1672,6 +1706,18 @@ static void compositor_render_dirty(void) {
     for (int i = 0; i < na; i++) order[n++] = atop[i];
 
     for (int i = 0; i < n; i++) {
+        /* O4: whole-window fast reject — a window (shadow included)
+         * that misses the union cannot contribute a pixel; skip it
+         * before its per-pixel blit loops run. */
+        const gui_win_t *w = &windows[order[i]];
+        int off = active_theme.shadow_offset;
+        int32_t wx0 = w->x - 1, wy0 = w->y - 1;
+        int32_t wx1 = w->x + (int32_t)w->w + off + 1;
+        int32_t wy1 = w->y + (int32_t)w->h + off + 1;
+        if (wx1 <= ux || wy1 <= uy ||
+            wx0 >= ux + (int32_t)uw || wy0 >= uy + (int32_t)uh) {
+            continue;
+        }
         blit_window_decor(&windows[order[i]]);
         blit_window_content(&windows[order[i]]);
     }
@@ -1681,32 +1727,19 @@ static void compositor_render_dirty(void) {
     draw_notifications();
     draw_cursor();
 
-    /* Flip only the dirty bounding box.  Compute the union BEFORE clearing
-     * dirty_count — the caller no longer clears it beforehand (BUG-32: the
-     * old code cleared dirty_count in gui_compositor_tick() before calling
-     * this function, so compute_dirty_union() always saw dirty_count==0 and
-     * produced an empty rect, meaning gfx_flip_rect() never ran and the
-     * visible screen never updated after the first full redraw — cursor and
-     * taskbar clock appeared frozen even though the back buffer kept
-     * rendering correctly). */
-    int32_t dx, dy;
-    uint32_t dw, dh;
-    compute_dirty_union(&dx, &dy, &dw, &dh);
+    /* Flip the union we clipped the composite to (BUG-32: dirty_count is
+     * cleared only now, after the union has been consumed). */
     dirty_count = 0;
-    if (dw > 0 && dh > 0) {
-        gfx_flip_rect(dx, dy, dw, dh);
-    }
+    gfx_flip_rect(ux, uy, uw, uh);
+    gfx_clip_clear();
 
-    /* OPT_PLAN.md O0: the partial path still re-composites the ENTIRE back
-     * buffer (Fact 3) — count a full screen of composited pixels, honestly,
-     * and only the union as flipped.  Composited − flipped is exactly the
-     * headroom phase O4 exists to claim.  (Local u64s, not casts: the
-     * width-sweep ratchet.) */
+    /* OPT_PLAN.md O0/O4: composited pixels are now the REAL post-clip
+     * store count from the gfx layer (overdraw included), not a
+     * full-screen approximation — O4's whole point, measured. */
     {
-        uint64_t pw = gfx_get_width(), ph = gfx_get_height();
-        uint64_t fw = dw, fh = dh;
+        uint64_t fw = uw, fh = uh;
         perfstat_add(PERF_COMPOSITOR_FRAMES_PARTIAL, 1);
-        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, pw * ph);
+        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, gfx_take_px_counter());
         perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, fw * fh);
     }
 }
@@ -1757,13 +1790,12 @@ static void compositor_render(void) {
 
     gfx_flip();
 
-    /* OPT_PLAN.md O0: full path — whole scene composited, whole screen
-     * flipped.  (Local u64s, not casts: the width-sweep ratchet counts
-     * uint64_t casts in portable code and must only go down.) */
+    /* OPT_PLAN.md O0/O4: full path — the pixel count is the gfx layer's
+     * real post-clip store count now (clip is full-screen here). */
     {
         uint64_t pw = gfx_get_width(), ph = gfx_get_height();
         perfstat_add(PERF_COMPOSITOR_FRAMES_FULL, 1);
-        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, pw * ph);
+        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, gfx_take_px_counter());
         perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, pw * ph);
     }
 }
@@ -2359,11 +2391,26 @@ void gui_compositor_thread(void *arg) {
     gui_add_icon(20, 320, "About", 6);
 
     for (;;) {
-        gui_compositor_tick();
-        uint64_t target = timer_get_ticks() + 1; /* ~100 Hz / 100 FPS */
-        while (timer_get_ticks() < target) {
-            sched_yield();
+        /* Sleep until someone creates work (O4).  The pending flag is
+         * consumed under the lock so a poke racing this check cannot be
+         * lost — it either flips the flag before we test it, or finds
+         * us already on the wait queue and wakes us. */
+        uint64_t fl = spinlock_acquire_irqsave(&gui_wake_lock);
+        while (!__atomic_load_n(&gui_pending, __ATOMIC_ACQUIRE)) {
+            wq_wait(&gui_wq, &gui_wake_lock);
         }
+        __atomic_store_n(&gui_pending, 0, __ATOMIC_RELEASE);
+        spinlock_release_irqrestore(&gui_wake_lock, fl);
+
+        /* Drain: tick until the scene settles, pacing at the historical
+         * ~100 Hz — but through a BLOCKING sleep (sleep_deadline via
+         * timer_sleep_ms), not a yield spin, so the pacing gap is idle
+         * time the scheduler can actually give away. */
+        do {
+            gui_compositor_tick();
+            timer_sleep_ms(10);
+        } while (__atomic_load_n(&gui_pending, __ATOMIC_ACQUIRE) ||
+                 full_dirty || dirty_count > 0);
     }
 }
 

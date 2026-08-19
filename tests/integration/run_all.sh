@@ -49,6 +49,7 @@ ALL_CASES=(
     test_boot_to_shell
     test_perf_smoke
     test_selftest_modes
+    test_gui_dirty_uefi
     test_shell_commands
     test_syscalls
     test_selftest

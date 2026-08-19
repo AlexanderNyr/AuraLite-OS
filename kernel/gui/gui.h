@@ -208,6 +208,10 @@ typedef struct {
 /* Init the GUI subsystem (call once before compositor thread). */
 void gui_init(void);
 
+/* OPT_PLAN.md O4: wake the compositor — safe from IRQ context; no-op
+ * before gui_init(). */
+void gui_poke(void);
+
 /* Compositor tick: pump inputs, recompose dirty regions. */
 void gui_compositor_tick(void);
 

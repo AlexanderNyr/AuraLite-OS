@@ -21,6 +21,47 @@ static uint32_t  fb_height = 0;
 static uint32_t  fb_pitch  = 0;     /* bytes per scanline              */
 static uint8_t   r_shift, g_shift, b_shift;
 
+/* OPT_PLAN.md O4: the compositor's clip rectangle + the composited-pixel
+ * accumulator.
+ *
+ * The clip is set by compositor_render_dirty() to the dirty union before
+ * it re-runs the scene, so every primitive below refuses to touch back-
+ * buffer pixels outside it — the union bounds the WORK now, not just the
+ * flip.  Cleared (full screen) everywhere else, including gfx_init.
+ *
+ * px_written counts every back-buffer pixel actually stored, post-clip,
+ * overdraw included — the honest unit.  It is a plain (non-atomic)
+ * counter on purpose: the back buffer has exactly one writer (the
+ * compositor thread; boot-time demos run before that thread exists), so
+ * an atomic would buy nothing and cost on every pixel.  The compositor
+ * drains it into perfstat once per frame via gfx_take_px_counter(). */
+static int32_t  clip_x0, clip_y0;          /* inclusive */
+static int32_t  clip_x1, clip_y1;          /* exclusive */
+static uint64_t px_written;
+
+void gfx_clip_set(int32_t x, int32_t y, uint32_t w, uint32_t h) {
+    int32_t sw = (int32_t)fb_width, sh = (int32_t)fb_height;
+    if (x < 0) { w = (w > (uint32_t)-x) ? w + (uint32_t)x : 0; x = 0; }
+    if (y < 0) { h = (h > (uint32_t)-y) ? h + (uint32_t)y : 0; y = 0; }
+    clip_x0 = x;
+    clip_y0 = y;
+    clip_x1 = (x + (int32_t)w > sw) ? sw : x + (int32_t)w;
+    clip_y1 = (y + (int32_t)h > sh) ? sh : y + (int32_t)h;
+}
+
+void gfx_clip_clear(void) {
+    clip_x0 = 0;
+    clip_y0 = 0;
+    clip_x1 = (int32_t)fb_width;
+    clip_y1 = (int32_t)fb_height;
+}
+
+uint64_t gfx_take_px_counter(void) {
+    uint64_t v = px_written;
+    px_written = 0;
+    return v;
+}
+
 static color_t make_color(uint32_t rgb) {
     uint8_t r = (rgb >> 16) & 0xFF;
     uint8_t g = (rgb >> 8)  & 0xFF;
@@ -45,6 +86,8 @@ void gfx_init(void) {
     g_shift   = fb->green_shift;
     b_shift   = fb->blue_shift;
 
+    gfx_clip_clear();                      /* O4: full-screen clip default */
+
     /* Allocate the back buffer (same size as the framebuffer). */
     uint64_t buf_bytes = (uint64_t)fb_pitch * fb_height;
     back_fb = kmalloc(buf_bytes);
@@ -57,24 +100,40 @@ void gfx_putpixel(uint32_t x, uint32_t y, color_t color) {
     if (!back_fb || x >= fb_width || y >= fb_height) {
         return;
     }
+    /* O4: the compositor clip bounds the work. */
+    if ((int32_t)x < clip_x0 || (int32_t)x >= clip_x1 ||
+        (int32_t)y < clip_y0 || (int32_t)y >= clip_y1) {
+        return;
+    }
     /* Pre-compute the packed colour for our mask layout. */
     color_t packed = make_color(color);
     uint32_t pitch32 = fb_pitch / 4;
     back_fb[y * pitch32 + x] = packed;
+    px_written++;
 }
 
 void gfx_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t color) {
     if (!back_fb) return;   /* back buffer allocation failed (gfx_init) */
+    /* O4: intersect with the clip up front; the loops then run only over
+     * pixels that will actually be stored. */
+    int32_t x0 = (int32_t)x, y0 = (int32_t)y;
+    int32_t x1 = x0 + (int32_t)w, y1 = y0 + (int32_t)h;
+    if (x0 < clip_x0) x0 = clip_x0;
+    if (y0 < clip_y0) y0 = clip_y0;
+    if (x1 > clip_x1) x1 = clip_x1;
+    if (y1 > clip_y1) y1 = clip_y1;
+    if (x0 >= x1 || y0 >= y1) return;
     color_t packed = make_color(color);
     uint32_t pitch32 = fb_pitch / 4;
-    for (uint32_t row = 0; row < h; row++) {
-        uint32_t py = y + row;
-        if (py >= fb_height) break;
-        for (uint32_t col = 0; col < w; col++) {
-            uint32_t px = x + col;
-            if (px >= fb_width) break;
+    for (int32_t py = y0; py < y1; py++) {
+        for (int32_t px = x0; px < x1; px++) {
             back_fb[py * pitch32 + px] = packed;
         }
+    }
+    {
+        /* Local u64s, not casts: the width-sweep ratchet. */
+        uint64_t rw = (uint32_t)(x1 - x0), rh = (uint32_t)(y1 - y0);
+        px_written += rw * rh;
     }
 }
 
@@ -267,14 +326,9 @@ void gfx_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h) {
 }
 
 void gfx_clear(color_t color) {
-    if (!back_fb) return;
-    color_t packed = make_color(color);
-    uint32_t pitch32 = fb_pitch / 4;
-    for (uint32_t y = 0; y < fb_height; y++) {
-        for (uint32_t x = 0; x < fb_width; x++) {
-            back_fb[y * pitch32 + x] = packed;
-        }
-    }
+    /* O4: a clear is a full-screen fill; route it through the clipped,
+     * counted primitive so the accounting stays in one place. */
+    gfx_fill_rect(0, 0, fb_width, fb_height, color);
 }
 
 uint32_t gfx_get_width(void)  { return fb_width; }

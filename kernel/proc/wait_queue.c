@@ -1,4 +1,12 @@
-/* kernel/proc/wait_queue.c — True blocking wait queues (H4) */
+/* kernel/proc/wait_queue.c — True blocking wait queues (H4).
+ *
+ * OPT_PLAN.md O4: the queue lock is taken irqsave now.  Before, every
+ * acquire ran with interrupts as-found, which made waking from IRQ
+ * context a latent deadlock: an IRQ landing on a CPU that already held
+ * wq->lock (any wq_wait/wq_add caller) would spin on its own lock
+ * forever.  The GUI compositor's pokes come from the keyboard/mouse/PIT
+ * handlers, so the primitive has to be honest about IRQ callers — and
+ * O7's wait4/getrandom conversions will lean on the same guarantee. */
 
 #include "kernel/proc/wait_queue.h"
 #include "kernel/proc/scheduler.h"
@@ -15,15 +23,15 @@ void wq_init(struct wait_queue *wq) {
 
 void wq_add_entry(struct wait_queue *wq, struct wq_entry *entry) {
     if (!wq || !entry) return;
-    spinlock_acquire(&wq->lock);
+    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
     entry->next = wq->head;
     wq->head = entry;
-    spinlock_release(&wq->lock);
+    spinlock_release_irqrestore(&wq->lock, wqfl);
 }
 
 void wq_remove_entry(struct wait_queue *wq, struct wq_entry *entry) {
     if (!wq || !entry) return;
-    spinlock_acquire(&wq->lock);
+    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
     struct wq_entry **pp = &wq->head;
     while (*pp) {
         if (*pp == entry) {
@@ -32,7 +40,7 @@ void wq_remove_entry(struct wait_queue *wq, struct wq_entry *entry) {
         }
         pp = &(*pp)->next;
     }
-    spinlock_release(&wq->lock);
+    spinlock_release_irqrestore(&wq->lock, wqfl);
 }
 
 void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
@@ -58,7 +66,7 @@ void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
  * thread, which could still be mid context-switch-out. */
 void wq_wake_one(struct wait_queue *wq) {
     if (!wq) return;
-    spinlock_acquire(&wq->lock);
+    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
     struct wq_entry *w = wq->head;
     if (w) {
         wq->head = w->next;
@@ -70,12 +78,12 @@ void wq_wake_one(struct wait_queue *wq) {
             }
         }
     }
-    spinlock_release(&wq->lock);
+    spinlock_release_irqrestore(&wq->lock, wqfl);
 }
 
 void wq_wake_all(struct wait_queue *wq) {
     if (!wq) return;
-    spinlock_acquire(&wq->lock);
+    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
     struct wq_entry *w = wq->head;
     wq->head = NULL;
     while (w) {
@@ -88,12 +96,12 @@ void wq_wake_all(struct wait_queue *wq) {
         }
         w = w->next;
     }
-    spinlock_release(&wq->lock);
+    spinlock_release_irqrestore(&wq->lock, wqfl);
 }
 
 int wq_wake_n(struct wait_queue *wq, int n) {
     if (!wq || n <= 0) return 0;
-    spinlock_acquire(&wq->lock);
+    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
     int woken = 0;
     struct wq_entry *w = wq->head;
     struct wq_entry *prev = NULL;
@@ -113,6 +121,6 @@ int wq_wake_n(struct wait_queue *wq, int n) {
             w = w->next;
         }
     }
-    spinlock_release(&wq->lock);
+    spinlock_release_irqrestore(&wq->lock, wqfl);
     return woken;
 }

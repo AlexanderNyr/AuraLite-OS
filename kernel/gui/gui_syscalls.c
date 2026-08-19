@@ -50,7 +50,7 @@ static int require_icon_owner(int icon_idx) {
     return gui_icon_owned_by(icon_idx, pid);
 }
 
-uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
+static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5) {
     switch (op) {
     case GUI_OP_CREATE: {
@@ -284,7 +284,7 @@ uint64_t syscall_gui_event(uint64_t wid, uint64_t user_evt, uint64_t blocking) {
     return (uint64_t)r;
 }
 
-uint64_t syscall_gui_theme(uint64_t subop, uint64_t a2, uint64_t a3,
+static uint64_t syscall_gui_theme_impl(uint64_t subop, uint64_t a2, uint64_t a3,
                            uint64_t a4, uint64_t a5) {
     (void)a4; (void)a5;
     switch (subop) {
@@ -309,4 +309,23 @@ uint64_t syscall_gui_theme(uint64_t subop, uint64_t a2, uint64_t a3,
     }
     }
     return (uint64_t)-1;
+}
+
+
+/* OPT_PLAN.md O4: the compositor sleeps between events, so every
+ * mutating GUI syscall pokes it on the way out — one chokepoint instead
+ * of a poke sprinkled through forty case arms.  The read-only event
+ * fetch (syscall_gui_event) deliberately does not poke. */
+uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
+                          uint64_t a4, uint64_t a5) {
+    uint64_t r = syscall_gui_call_impl(op, a2, a3, a4, a5);
+    gui_poke();
+    return r;
+}
+
+uint64_t syscall_gui_theme(uint64_t subop, uint64_t a2, uint64_t a3,
+                           uint64_t a4, uint64_t a5) {
+    uint64_t r = syscall_gui_theme_impl(subop, a2, a3, a4, a5);
+    gui_poke();
+    return r;
 }

@@ -2,6 +2,45 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O4 — compositor: composite the union, sleep when idle] 2026-08-19
+
+`OPT_PLAN.md` phase O4: the dirty union bounds the compositor's WORK
+now, not just its flip — and between events the compositor is asleep,
+not yield-spinning at 100 Hz.
+
+- `drivers/framebuffer/graphics.{c,h}`: gfx-layer clip rectangle
+  (`gfx_clip_set`/`gfx_clip_clear`) enforced in `gfx_putpixel` and the
+  `gfx_fill_rect` bulk path — every primitive funnels through those two,
+  so the clip did not have to be threaded through forty draw calls.
+  Plus the honest pixel accumulator: `compositor_pixels_composited` is
+  the real post-clip store count (overdraw included) now, drained once
+  per frame; the O0 full-screen approximation is gone.
+- `kernel/gui/gui.c`: `compositor_render_dirty()` computes the union
+  first, arms the clip, fast-rejects windows (shadow included) that miss
+  it, flips the union, clears the clip.  The thread loop blocks on a
+  wait_queue; pokes come from the keyboard/mouse ring-push points (not
+  the handler tails — early returns after enqueue would skip those),
+  one chokepoint wrapping the GUI syscall entries, and a 1 Hz PIT line
+  for the clock/notification expiry.  Drain pacing is a BLOCKING
+  `timer_sleep_ms(10)`.
+- **`kernel/proc/wait_queue.c` is IRQ-safe now** (queue lock taken
+  irqsave at all five sites).  Waking from IRQ context was a latent
+  self-deadlock before; the GUI pokes need it, and O7 inherits it.
+- `tests/integration/cases/test_gui_dirty_uefi.sh` (new, registered,
+  129 cases): the pixel gate on the only firmware that has pixels
+  (O0's recorded fact: BIOS boots render into a 0×0 framebuffer) —
+  loud-skips without OVMF, per the bl6 convention.
+- Measured (UEFI 1280×800): the 1 Hz taskbar-clock frame composited
+  **1 024 000 px before (the whole screen, every second) → 94 805 px
+  after — 10.8×**; the residual 2.3× over the 40 960-px flip is named
+  overdraw.  Idle busy% at the shell: **42.30 → 34.37** (the remainder
+  is the USB/HID pollers — O7 territory).  Full redraws while idle: 0.
+- The width-sweep ratchet caught this phase's first draft too (two
+  uint64_t casts in the pixel accounting) — reworked to widen through
+  locals; 359/359 holds.
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
 ## [OPT O3 — buffered UART TX] 2026-08-19
 
 `OPT_PLAN.md` phase O3: the kernel log no longer busy-waits the wire

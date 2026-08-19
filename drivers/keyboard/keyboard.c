@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include "drivers/keyboard/keyboard.h"
+#include "kernel/gui/gui.h"
 #include "drivers/keyboard/keymap.h"
 #include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
@@ -82,6 +83,8 @@ static void evt_enqueue(uint32_t key, uint16_t sc, uint8_t pressed) {
     kb_events[evt_head].mods     = mods;
     kb_events[evt_head].pressed  = pressed;
     evt_head = next;
+    /* OPT_PLAN.md O4: every queued key event wakes the compositor. */
+    gui_poke();
 }
 
 static uint8_t mod_bit_for_key(uint32_t key) {

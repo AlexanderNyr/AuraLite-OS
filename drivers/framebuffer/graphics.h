@@ -67,6 +67,13 @@ void gfx_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h);
 /* Clear the back buffer to `color`. */
 void gfx_clear(color_t color);
 
+/* OPT_PLAN.md O4: compositor clip rectangle + composited-pixel counter.
+ * The clip bounds every primitive's back-buffer writes; the counter is
+ * drained once per frame by the compositor into perfstat. */
+void     gfx_clip_set(int32_t x, int32_t y, uint32_t w, uint32_t h);
+void     gfx_clip_clear(void);
+uint64_t gfx_take_px_counter(void);
+
 /* Get framebuffer dimensions. */
 uint32_t gfx_get_width(void);
 uint32_t gfx_get_height(void);
