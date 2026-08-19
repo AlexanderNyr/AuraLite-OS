@@ -72,8 +72,20 @@
 #include "drivers/virtio_blk/virtio_blk.h"
 #include "kernel/audio/audio.h"
 
+/* OPT_PLAN.md O3: IRQ-4 thunk for the UART TX ring — irq_handler_t takes
+ * a registers pointer the UART body has no use for; the adapter lives
+ * here because uart.c deliberately does not include irq.h (I6 ratchet). */
+static void uart_tx_irq_thunk(struct registers *regs) {
+    (void)regs;
+    uart_tx_irq();
+}
+
 /* Halt the (only) CPU indefinitely with interrupts off. */
 void kernel_halt(void) {
+    /* OPT_PLAN.md O3 (D4): the ring may still hold the last words —
+     * drain it synchronously before the lights go out, and latch every
+     * later byte onto the synchronous path. */
+    uart_flush();
     for (;;) {
         __asm__ volatile ("cli");
         __asm__ volatile ("hlt");
@@ -217,6 +229,14 @@ void kmain(boot_info_t *boot_info) {
             (unsigned long long)boot_get_hhdm_offset());
 
     kprintf("\n[kernel] interrupts enabled, exception handling online.\n");
+
+    /* OPT_PLAN.md O3: arm the UART TX ring now that the IDT/PIC are live.
+     * The thunk exists because uart.c deliberately does not include
+     * irq.h (the I6 include ratchet); kernel.c already does.  IRQ 4
+     * survives the IOAPIC takeover via the identity-mapped GSI 4 entry. */
+    irq_register_handler(4, uart_tx_irq_thunk);
+    uart_tx_ring_enable();
+    kprintf("[uart] TX ring armed (16 KiB buffer, THRE IRQ 4)\n");
 
     /* OPT_PLAN.md O2: pick the self-test intensity before the first
      * scaled self-test runs.  fw_cfg (QEMU) can override the build

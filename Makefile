@@ -1869,6 +1869,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_printf_fmt \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
+                $(BUILD_DIR)/test_uart_ring \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
@@ -2311,6 +2312,12 @@ $(BUILD_DIR)/test_string: tests/unit/test_string.c kernel/lib/string.c kernel/li
 $(BUILD_DIR)/test_string_ops: tests/unit/test_string_ops.c \
                               kernel/arch/x86_64/string_fast.c \
                               kernel/lib/string.c kernel/lib/string.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# OPT_PLAN O3: the UART TX ring index core — wrap, full, empty, and the
+# 2^32 counter crossing.
+$(BUILD_DIR)/test_uart_ring: tests/unit/test_uart_ring.c drivers/uart/uart_ring.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

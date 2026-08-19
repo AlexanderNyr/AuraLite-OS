@@ -26,6 +26,7 @@ static const char *const names[PERF_COUNTER_MAX] = {
     [PERF_TLB_SHOOTDOWNS_FULL]           = "tlb_shootdowns_full",
     [PERF_KMALLOC_WALK_STEPS]            = "kmalloc_walk_steps",
     [PERF_UART_TX_SYNC_BYTES]            = "uart_tx_sync_bytes",
+    [PERF_UART_TX_RING_BYTES]            = "uart_tx_ring_bytes",
 };
 
 void perfstat_add(int id, uint64_t n) {

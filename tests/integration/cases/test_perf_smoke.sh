@@ -59,9 +59,19 @@ fi
 # --- /proc/perf: every O0 counter present ---
 for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
          compositor_pixels_composited compositor_pixels_flipped \
-         tlb_shootdowns_full kmalloc_walk_steps uart_tx_sync_bytes; do
+         tlb_shootdowns_full kmalloc_walk_steps uart_tx_sync_bytes \
+         uart_tx_ring_bytes; do
     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
 done
+
+# --- O3: the TX ring carries the log; the sync path is the exception ---
+SYNC_B=$(grep -aE '^uart_tx_sync_bytes [0-9]+' "$LOG" | grep -oE '[0-9]+' | head -1)
+RING_B=$(grep -aE '^uart_tx_ring_bytes [0-9]+' "$LOG" | grep -oE '[0-9]+' | head -1)
+if [ -n "${SYNC_B:-}" ] && [ -n "${RING_B:-}" ] && [ "$RING_B" -gt "$SYNC_B" ]; then
+    il_pass "TX ring carries the majority (ring=$RING_B sync=$SYNC_B bytes)"
+else
+    il_fail "TX ring not carrying: ring=${RING_B:-none} sync=${SYNC_B:-none}"
+fi
 
 # --- idle steady state: full recomposites bounded between the two reads ---
 # One-shot full redraws are legitimate — the boot notification ("GUI

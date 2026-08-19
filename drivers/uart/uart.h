@@ -31,6 +31,11 @@ void uart_init(void);
 void uart_putchar(char c);
 void uart_puts(const char *s);
 
+/* OPT_PLAN.md O3: ring-buffered TX. */
+void uart_tx_ring_enable(void);   /* flip to ring mode (IRQ 4 must be live) */
+void uart_tx_irq(void);           /* THRE interrupt body (kernel.c thunk)   */
+void uart_flush(void);            /* drain + latch back to sync (halt path) */
+
 /* Check if a byte is available to read from the UART. */
 int  uart_has_data(void);
 

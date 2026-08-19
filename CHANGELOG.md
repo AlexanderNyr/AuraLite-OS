@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O3 — buffered UART TX] 2026-08-19
+
+`OPT_PLAN.md` phase O3: the kernel log no longer busy-waits the wire
+byte-by-byte under the global print lock — except where it must.
+
+- `drivers/uart/uart_ring.h` (new): the ring index core as pure C —
+  free-running uint32 counters, power-of-two mask — unit-tested on the
+  host across wrap/full/empty and the 2^32 counter crossing
+  (`tests/unit/test_uart_ring.c`, 75 checks, in `UNIT_TESTS`).
+- `drivers/uart/uart.c`: 16 KiB TX ring; enqueue + opportunistic
+  FIFO-burst drain (never spins), THRE IRQ 4 carries the backlog and is
+  enabled only while the ring holds bytes.  Ring-full spills
+  synchronously — the log NEVER drops a byte (D3).  `uart_flush()`
+  latches back to sync and drains with a bounded lock acquire; wired
+  into `kernel_halt()`, so the `#DF`/panic last words still arrive (D4,
+  proven by `test_panic_diag` + `test_ist_double_fault` green).
+- IRQ-4 registration via a kernel.c thunk — uart.c still includes no
+  x86_64 headers (I6 include ratchet held at 69/69); IRQ 4 survives the
+  IOAPIC takeover through the identity-mapped GSI 4 entry.
+- `perfstat`: new `uart_tx_ring_bytes`; measured at the prompt:
+  **ring 24 106 vs sync 748** — the ring carries ~97% of the log, the
+  sync remainder is exactly the pre-IDT boot banner.
+- Honestly recorded in the plan: **boot wall-clock did not move under
+  QEMU** (chardev serial is effectively infinite-baud, so the old spin
+  was nearly free there).  The 87 µs/byte win is real-hardware-shaped;
+  what QEMU keeps is the print-lock window shrinking from wire-time to
+  enqueue-time on SMP.
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
 ## [OPT O2 — fast-boot self-test knob] 2026-08-19
 
 `OPT_PLAN.md` phase O2: the boot no longer spends a literal wall-clock

@@ -1,8 +1,67 @@
-/* uart.c — 16550 UART (COM1) serial driver. */
+/* uart.c — 16550 UART (COM1) serial driver.
+ *
+ * OPT_PLAN.md O3: TX is ring-buffered and interrupt-driven once the IRQ
+ * layer is up.  The shape:
+ *
+ *   - Before uart_tx_ring_enable() (called from kmain right after the
+ *     IDT/PIC are live and interrupts are on), every byte takes the
+ *     historical synchronous path: busy-wait on LSR.THRE, one outb.
+ *     That path never goes away — it is also where panic bytes and
+ *     ring-full spill land, and PERF_UART_TX_SYNC_BYTES counts exactly
+ *     those, so /proc/perf can prove the ring is doing the carrying.
+ *
+ *   - After enable, uart_putchar() enqueues into a 16 KiB ring and then
+ *     OPPORTUNISTICALLY drains: if the FIFO is empty it writes up to 16
+ *     bytes immediately (no waiting — LSR is checked, never spun on).
+ *     When the FIFO is busy, the THRE interrupt (IRQ 4) drains the rest,
+ *     16 bytes per fire.  The THRE interrupt is enabled only while the
+ *     ring is non-empty, so an idle UART raises no interrupts at all.
+ *
+ *   - Ring full: the caller drains synchronously until there is room
+ *     (D3: a kernel log NEVER drops bytes — the ring changes who waits,
+ *     not whether bytes arrive).  Those bytes count as sync.
+ *
+ *   - uart_flush() (kernel_halt, D4): latch back to synchronous mode so
+ *     every subsequent byte — the dying words — goes straight out, then
+ *     drain whatever the ring still holds.  The lock acquire there is
+ *     BOUNDED: if the lock holder died mid-drain, torn output beats
+ *     silence.
+ *
+ * Registration note: the IRQ-4 handler is registered by kmain through a
+ * thunk in kernel.c, not here — irq_register_handler lives in
+ * kernel/arch/x86_64/irq.h and this file deliberately does not include
+ * it (the I6 include ratchet holds portable files at their current
+ * count of direct x86_64 includes; kernel.c already pays that toll).
+ * IRQ 4 works in both delivery eras: PIC (pic_unmask at registration)
+ * and, after ioapic_init(), the identity-mapped GSI 4 redirection entry.
+ */
 
 #include "kernel/arch/arch.h"
 #include "drivers/uart/uart.h"
+#include "drivers/uart/uart_ring.h"
 #include "kernel/lib/perfstat.h"
+
+#define UART_TX_RING_SIZE 16384u   /* power of two; uart_ring.h requires it */
+#define UART_FIFO_DEPTH   16       /* 16550 TX FIFO */
+
+static uint8_t     tx_buf[UART_TX_RING_SIZE];
+static uart_ring_t tx_ring;                /* zero-initialised: empty */
+static volatile int tx_ring_mode = 0;      /* 0 = sync (early/panic), 1 = ring */
+
+/* One flat byte-lock, private to the TX path.  Not the generic spinlock:
+ * uart_flush() needs a BOUNDED acquire (see header comment), and the
+ * generic API deliberately has no trylock. */
+static volatile uint8_t tx_lock;
+
+static void tx_lock_acquire(void) {
+    while (__atomic_exchange_n(&tx_lock, 1, __ATOMIC_ACQUIRE)) {
+        arch_cpu_relax();
+    }
+}
+
+static void tx_lock_release(void) {
+    __atomic_store_n(&tx_lock, 0, __ATOMIC_RELEASE);
+}
 
 void uart_init(void) {
     const uint16_t base = UART_COM1;
@@ -16,17 +75,107 @@ void uart_init(void) {
     outb(base + UART_MCR, 0x0B);           /* RTS/DSR set, OUT2 (IRQs routed) */
 }
 
-void uart_putchar(char c) {
-    const uint16_t base = UART_COM1;
-    /* Busy-wait until the transmit holding register can accept a byte. */
-    while ((inb(base + UART_LSR) & UART_LSR_THRE) == 0) {
+/* Enable/disable the THRE (transmitter-empty) interrupt, IER bit 1.  RX
+ * interrupts stay off — the TTY polls, as before. */
+static void ier_thre(int on) {
+    uint8_t v = inb(UART_COM1 + UART_IER);
+    uint8_t nv = on ? (uint8_t)(v | 0x02) : (uint8_t)(v & ~0x02);
+    if (nv != v) {
+        outb(UART_COM1 + UART_IER, nv);
+    }
+}
+
+/* One synchronous byte: the historical path, and the only place that
+ * busy-waits on THRE.  Counts into the sync perfstat. */
+static void tx_sync_byte(uint8_t c) {
+    while ((inb(UART_COM1 + UART_LSR) & UART_LSR_THRE) == 0) {
         /* spin */
     }
-    outb(base + UART_THR, (uint8_t)c);
-    /* OPT_PLAN.md O0: every byte through this synchronous path is boot
-     * latency paid at 115200 baud (Fact 2).  O3's ring drains this counter
-     * down to ring-full spill + panic bytes; until then it counts them all. */
+    outb(UART_COM1 + UART_THR, c);
     perfstat_add(PERF_UART_TX_SYNC_BYTES, 1);
+}
+
+/* Drain ring -> FIFO while the FIFO has room.  NEVER waits: LSR.THRE is
+ * checked, and if the FIFO is busy we leave the rest to the interrupt.
+ * Caller holds tx_lock. */
+static void hw_drain_locked(void) {
+    while (!uring_empty(&tx_ring)) {
+        if ((inb(UART_COM1 + UART_LSR) & UART_LSR_THRE) == 0) {
+            return;                        /* FIFO busy: IRQ takes over */
+        }
+        for (int i = 0; i < UART_FIFO_DEPTH && !uring_empty(&tx_ring); i++) {
+            outb(UART_COM1 + UART_THR,
+                 uring_pop(&tx_ring, tx_buf, UART_TX_RING_SIZE));
+            perfstat_add(PERF_UART_TX_RING_BYTES, 1);
+        }
+    }
+}
+
+void uart_putchar(char c) {
+    if (!tx_ring_mode) {
+        tx_sync_byte((uint8_t)c);
+        return;
+    }
+
+    uint64_t fl = arch_irq_save();
+    tx_lock_acquire();
+
+    /* Ring full: drain synchronously until there is room.  Never drop —
+     * the log's byte-fidelity is what every integration grep stands on. */
+    while (uring_full(&tx_ring, UART_TX_RING_SIZE)) {
+        tx_sync_byte(uring_pop(&tx_ring, tx_buf, UART_TX_RING_SIZE));
+    }
+
+    uring_push(&tx_ring, tx_buf, UART_TX_RING_SIZE, (uint8_t)c);
+    hw_drain_locked();
+    ier_thre(!uring_empty(&tx_ring));
+
+    tx_lock_release();
+    arch_irq_restore(fl);
+}
+
+/* THRE interrupt body (IRQ 4).  Registered via the kernel.c thunk;
+ * interrupts are already off in IRQ context. */
+void uart_tx_irq(void) {
+    tx_lock_acquire();
+    hw_drain_locked();
+    ier_thre(!uring_empty(&tx_ring));
+    tx_lock_release();
+}
+
+/* Flip TX into ring mode.  Called once by kmain after the IRQ-4 handler
+ * is registered. */
+void uart_tx_ring_enable(void) {
+    tx_ring_mode = 1;
+}
+
+/* Synchronous drain for the death paths (kernel_halt) and anything that
+ * must not lose bytes across a world change.  D4: after this call every
+ * future byte is synchronous too. */
+void uart_flush(void) {
+    tx_ring_mode = 0;                      /* dying words go straight out */
+
+    /* Bounded acquire: the legitimate holder drains at most one FIFO
+     * burst with IRQs off, so a million relaxed spins is geological time
+     * — if it still holds after that, it died mid-drain and we proceed
+     * unlocked (torn output beats silence at halt). */
+    int got = 0;
+    for (uint32_t i = 0; i < 1000000u; i++) {
+        if (!__atomic_exchange_n(&tx_lock, 1, __ATOMIC_ACQUIRE)) {
+            got = 1;
+            break;
+        }
+        arch_cpu_relax();
+    }
+
+    while (!uring_empty(&tx_ring)) {
+        tx_sync_byte(uring_pop(&tx_ring, tx_buf, UART_TX_RING_SIZE));
+    }
+    ier_thre(0);
+
+    if (got) {
+        tx_lock_release();
+    }
 }
 
 void uart_puts(const char *s) {

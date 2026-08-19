@@ -49,9 +49,14 @@ enum perfstat_id {
     PERF_KMALLOC_WALK_STEPS,
 
     /* Bytes pushed through the synchronous busy-wait UART TX path
-     * (OPT_PLAN Fact 2).  After O3 lands, this counts only ring-full
-     * spill and panic-path bytes. */
+     * (OPT_PLAN Fact 2).  After O3, this counts only the pre-ring boot
+     * banner, ring-full spill and panic/halt bytes. */
     PERF_UART_TX_SYNC_BYTES,
+
+    /* Bytes carried by the O3 TX ring (enqueued and later written from
+     * the opportunistic drain or the THRE interrupt).  ring >> sync is
+     * the proof the ring took over. */
+    PERF_UART_TX_RING_BYTES,
 
     PERF_COUNTER_MAX
 };

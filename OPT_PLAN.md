@@ -1,13 +1,13 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0–O2 landed; O3–O9 specified
+## Status: IN PROGRESS 🚧 — O0–O3 landed; O4–O9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | O0 — the measuring rig | ✅ complete | `patches/OPT_O0_rig.patch` |
 | O1 — word-wide string ops | ✅ complete | `patches/OPT_O1_stringops.patch` |
 | O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
-| O3 — buffered UART TX | ⬜ todo | — |
+| O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
 | O4 — compositor: composite the union, sleep when idle | ⬜ todo | — |
 | O5 — precise TLB shootdown | ⬜ todo | — |
 | O6 — size-class allocator front | ⬜ todo | — |
@@ -510,32 +510,68 @@ under the lib's `full` pin; `test_perf_smoke` 18/18 + both-modes record;
 
 ### O3 — Buffered, interrupt-driven UART TX (panic path exempt, D4)
 
+**Status: ✅ landed** (`patches/OPT_O3_uart_ring.patch`).  Measured
+results — including the one this phase deliberately does NOT get to
+claim — at the end of the section.
+
 **Objective:** stop paying 87 µs of spin per logged byte under a global
 lock (Fact 2), without losing a single byte of any log CI reads.
 
 Tasks:
 
-- [ ] TX ring (16 KiB static) in `drivers/uart/uart.c`; `uart_putchar`
-      enqueues; THRE interrupt drains up to the 16550 FIFO depth per fire.
-      IRQ 4 wiring exists (`irq.c` dispatch); the RX side already works.
-- [ ] Ring-full policy: **block-spin draining synchronously** (never drop —
-      a lossy kernel log fails D3 the moment a grep goes red; the ring only
-      changes *who waits*, not *whether bytes arrive*).
-- [ ] `uart_flush()` — drain synchronously; called by panic paths and by
-      `kernel_halt()` (D4), and before `ExitBootServices`-style handoffs
-      (`run` shutdown).
-- [ ] Early boot (before IDT/PIC ready) uses the synchronous path via a
-      `uart_tx_mode` latch flipped once the IRQ layer is up.
-- [ ] `perfstat`: `uart_tx_spins` counts synchronous-fallback bytes, so
-      the smoke test can prove the ring is actually being used.
+- [x] TX ring (16 KiB static) in `drivers/uart/uart.c`; the index core
+      is pure C in `drivers/uart/uart_ring.h` (free-running uint32
+      counters, power-of-two mask) so the host unit test can try the
+      wrap/full/empty off-by-ones without a UART in the room.
+      `uart_putchar` enqueues, then drains OPPORTUNISTICALLY — up to one
+      FIFO burst (16 bytes) whenever LSR.THRE is already set, never
+      spinning; the THRE interrupt (IRQ 4) carries the rest and is
+      enabled only while the ring is non-empty.
+- [x] Ring-full policy: drain synchronously until there is room — never
+      drop (D3: the suite's greps stand on byte-fidelity).  Spill bytes
+      count into `uart_tx_sync_bytes`.
+- [x] `uart_flush()`: latch back to synchronous mode, BOUNDED lock
+      acquire (a dead lock-holder must not silence the dying words),
+      drain, disable THRE.  Called from `kernel_halt()` — which the
+      fatal `#DF`/panic paths already funnel through (D4).
+- [x] Early boot synchronous via the mode latch; kmain arms the ring
+      right after the IDT/PIC are live.  The IRQ-4 handler is registered
+      through a thunk in kernel.c: uart.c deliberately includes no
+      x86_64 headers (the I6 include ratchet held at 69), and IRQ 4
+      survives the IOAPIC takeover via the identity-mapped GSI 4 entry
+      (`ioapic.c` programs all ISA GSIs, measured before wiring).
+- [x] `perfstat`: `uart_tx_ring_bytes` joins `uart_tx_sync_bytes`;
+      the smoke test asserts the ring carries the majority.
 
-**Definition of done:** serial logs of all integration cases byte-identical
-to baseline (the suite itself proves this); boot-to-shell drops by the
-serial-drain component; `uart_tx_spins` ≈ ring-full + panic bytes only.
+**What O3 measured:**
 
-**Test gate:** full suites (their greps are the byte-fidelity gate); a
-host-side unit test for the ring index arithmetic (wrap, full, empty —
-the three classic off-by-ones); `test_perf_smoke` numbers into §6.
+- Counter proof of adoption: **ring 24 106 bytes vs sync 748 bytes** at
+  the prompt — the sync remainder is exactly the pre-ring boot banner
+  (everything printed before the IDT is live), i.e. the ring carries
+  ~97% of the log.
+- Byte-fidelity held with zero grep edits: `test_boot_to_shell` 17/17,
+  `test_selftest_modes` 30/30, and both death-path cases
+  (`test_panic_diag`, `test_ist_double_fault`) green — the flush gets
+  the last words out through `kernel_halt()`.
+- **The claim this phase does not get to make: boot did not get
+  faster under QEMU** (full 499 → 501 ticks, noise).  QEMU's chardev
+  accepts serial bytes at effectively infinite baud — LSR.THRE is
+  almost always already set, so the old busy-wait was nearly free
+  *there*.  The 87 µs/byte cost is real-hardware-shaped (115 200 baud
+  wire), and per D1/D2 the plan records the counter proof and leaves
+  the wall-clock claim to a real-hardware follow-up.  What QEMU does
+  keep: `kprintf`'s global print_lock no longer holds all CPUs hostage
+  to the wire — the locked window is now an enqueue, which matters exactly
+  when SMP contention does.
+
+**Definition of done:** serial logs byte-identical (the suites are the
+proof) ✓; `uart_tx_sync_bytes` ≈ pre-ring banner + spill only ✓ (748);
+boot-time component honestly recorded as QEMU-invisible ✓.
+
+**Test gate:** `tests/unit/test_uart_ring.c` — 75 checks over
+empty/full boundaries, 1000 interleaved wrap laps, and the 2^32 counter
+crossing; full suites green (`test-unit` EXIT 0, boot/panic/modes cases
+above). ✓
 
 **Deliverable:** `patches/OPT_O3_uart_ring.patch`
 
@@ -798,7 +834,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
 | membench memcpy-a 1 MiB (MB/s) | 10 | **79** | | | | | | | |
 | membench memset-a 1 MiB (MB/s) | 342 | **1687** | | | | | | | |
 | membench memmove-o 64 KiB (MB/s) | 144 | **1236** | | | | | | | |
-| uart_tx_sync_bytes at prompt | 24 778 | 24 774 | | | | | | | |
+| uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
 | kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
 | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | | | | | |
 | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | | | | |
