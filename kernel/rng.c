@@ -38,6 +38,7 @@
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/selftest.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/errno.h"
 #include "drivers/timer/pit.h"
@@ -172,16 +173,40 @@ static int rng_self_test(void) {
     static uint8_t buf[RNG_SELFTEST_LEN];
     static uint32_t freq[256];
 
+    /* OPT_PLAN.md O2: FULL analyses the historical 16 KiB; FAST proves
+     * the same stuck-generator/counter failures over 2 KiB (expected
+     * count per byte value drops 64 -> 8; the +/-50%% band still
+     * catches a collapsed seed by orders of magnitude); OFF skips
+     * loudly.  Seeding itself is never skipped -- this knob trades
+     * boot-time statistics, not entropy. */
+    size_t len = (size_t)selftest_scale(RNG_SELFTEST_LEN, 2048);
+    if (len == 0) {
+        kprintf("[rng] self-test: SKIPPED (selftest=off)\n");
+        return 1;
+    }
+
     /* Generate WITHOUT the backtracking re-key noise mattering: just fill. */
-    rngc_drbg_fill(&drbg, buf, sizeof(buf));
+    rngc_drbg_fill(&drbg, buf, len);
 
     for (int i = 0; i < 256; i++) freq[i] = 0;
-    for (size_t i = 0; i < sizeof(buf); i++) freq[buf[i]]++;
+    for (size_t i = 0; i < len; i++) freq[buf[i]]++;
 
-    uint32_t expected = RNG_SELFTEST_LEN / 256;   /* 64 */
+    uint32_t expected = (uint32_t)(len / 256);
+    /* Band calibration is a Poisson question, and the historical +/-50%
+     * band is only sound at the historical size: at FULL (len 16 KiB)
+     * expected=64 and 32..96 sits ~4 sigma out.  At FAST (2 KiB)
+     * expected=8, and P(count > 12 or < 4) is ~6% PER BUCKET -- across
+     * 256 buckets an ordinary healthy boot fails almost surely (measured:
+     * "FAIL (byte 0x04 count 14, expected ~8)" on the first fast boot).
+     * So FAST keeps only an upper bound at 4x expected (P ~ 1e-10 per
+     * bucket): a stuck generator still pierces it by orders of magnitude,
+     * and a counter generator is the bit-runs test's catch, not this
+     * one's. */
+    uint32_t lo = (len == RNG_SELFTEST_LEN) ? expected / 2 : 0;
+    uint32_t hi = (len == RNG_SELFTEST_LEN) ? expected + expected / 2
+                                            : expected * 4;
     for (int i = 0; i < 256; i++) {
-        /* +-50% is wide; a stuck/counter generator misses it by orders. */
-        if (freq[i] < expected / 2 || freq[i] > expected + expected / 2) {
+        if (freq[i] < lo || freq[i] > hi) {
             kprintf("[rng] self-test: FAIL (byte 0x%02x count %u, expected ~%u)\n",
                     i, freq[i], expected);
             return 0;
@@ -190,11 +215,11 @@ static int rng_self_test(void) {
 
     /* Bit runs: count maximal runs of equal bits.  For N random bits the
      * expected count is ~N/2; allow +-10%. */
-    uint64_t nbits = (uint64_t)sizeof(buf) * 8;
+    uint64_t nbits = (uint64_t)len * 8;
     uint64_t runs = 1;
     uint64_t longest = 1, cur = 1;
     int prev = buf[0] & 1;
-    for (size_t i = 0; i < sizeof(buf); i++) {
+    for (size_t i = 0; i < len; i++) {
         for (int bit = (i == 0 ? 1 : 0); bit < 8; bit++) {
             int b = (buf[i] >> bit) & 1;
             if (b == prev) {
@@ -221,7 +246,7 @@ static int rng_self_test(void) {
 
     kprintf("[rng] self-test: PASS (%u KiB, byte-frequency + bit-runs, "
             "runs=%u longest=%u)\n",
-            (unsigned)(RNG_SELFTEST_LEN / 1024), (unsigned)runs,
+            (unsigned)(len / 1024), (unsigned)runs,
             (unsigned)longest);
     return 1;
 }

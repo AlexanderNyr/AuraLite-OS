@@ -15,6 +15,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/selftest.h"
 
 #define PAGE_SIZE 4096ULL
 #define HEAP_TAG  "[heap] "
@@ -156,11 +157,21 @@ void kheap_self_test(void) {
     enum { N = 10000 };
     static void *ptrs[N];           /* static: keep off the (small) stack */
 
-    kprintf(HEAP_TAG "self-test: %d alloc/free cycles...\n", N);
+    /* OPT_PLAN.md O2: FULL keeps N=10000 (and its O(N^2) uniqueness scan
+     * -- 50M compares of boot time under TCG); FAST proves the same
+     * splitting/coalescing/realloc invariants over 500 cycles; OFF skips
+     * loudly. */
+    int n = (int)selftest_scale(N, 500);
+    if (n == 0) {
+        kprintf(HEAP_TAG "self-test: SKIPPED (selftest=off)\n");
+        return;
+    }
+
+    kprintf(HEAP_TAG "self-test: %d alloc/free cycles...\n", n);
 
     /* Phase A: allocate N blocks of varying sizes and tag each with its
      * expected pattern (byte = index & 0xFF into the first 8 bytes). */
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < n; i++) {
         /* Sizes from 8 .. ~256 bytes, mixed to stress splitting/coalescing. */
         uint64_t sz = 8 + (uint64_t)((i * 37) % 256);
         ptrs[i] = kmalloc(sz);
@@ -177,8 +188,8 @@ void kheap_self_test(void) {
     }
 
     /* Uniqueness: every pointer must be distinct. */
-    for (int i = 0; i < N; i++) {
-        for (int j = i + 1; j < N; j++) {
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
             if (ptrs[i] == ptrs[j]) {
                 kprintf(HEAP_TAG "FAIL: duplicate pointer %p (%d/%d)\n",
                         ptrs[i], i, j);
@@ -189,11 +200,11 @@ void kheap_self_test(void) {
 
     /* Free every other block (creates a fragmented free list), then verify the
      * survivors' stamps are intact. */
-    for (int i = 0; i < N; i += 2) {
+    for (int i = 0; i < n; i += 2) {
         kfree(ptrs[i]);
         ptrs[i] = NULL;
     }
-    for (int i = 1; i < N; i += 2) {
+    for (int i = 1; i < n; i += 2) {
         uint8_t *p = (uint8_t *)ptrs[i];
         for (int k = 0; k < 8; k++) {
             if (p[k] != (uint8_t)(i + k)) {
@@ -204,7 +215,7 @@ void kheap_self_test(void) {
     }
 
     /* Re-allocate into the freed holes (exercises coalesced/split reuse). */
-    for (int i = 0; i < N; i += 2) {
+    for (int i = 0; i < n; i += 2) {
         ptrs[i] = kmalloc(16 + (uint64_t)(i % 64));
         if (ptrs[i] == NULL) {
             kprintf(HEAP_TAG "FAIL: re-alloc NULL at %d\n", i);
@@ -240,7 +251,7 @@ void kheap_self_test(void) {
     kfree(r3);
 
     /* Free everything. */
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < n; i++) {
         if (ptrs[i]) {
             kfree(ptrs[i]);
             ptrs[i] = NULL;
@@ -273,6 +284,6 @@ void kheap_self_test(void) {
         return;
     }
 
-    kprintf(HEAP_TAG "PASS: %d cycles, no corruption, no leak, realloc OK\n", N);
+    kprintf(HEAP_TAG "PASS: %d cycles, no corruption, no leak, realloc OK\n", n);
     kheap_dump();
 }

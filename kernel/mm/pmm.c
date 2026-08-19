@@ -13,6 +13,7 @@
 #include "kernel/lib/bitmap.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
+#include "kernel/lib/selftest.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/boot_info.h"
 
@@ -307,10 +308,19 @@ void pmm_self_test(void) {
     static uint64_t addrs[N];          /* static: keep it off the stack */
     uint64_t before = pmm.free_frames;
 
-    kprintf(PMM_TAG "self-test: allocating %d frames...\n", N);
+    /* OPT_PLAN.md O2: the gauntlet size follows the self-test knob.
+     * FULL keeps N=1000 and byte-identical output; FAST proves the same
+     * invariants over 100 frames; OFF skips loudly. */
+    int n = (int)selftest_scale(N, 100);
+    if (n == 0) {
+        kprintf(PMM_TAG "self-test: SKIPPED (selftest=off)\n");
+        return;
+    }
+
+    kprintf(PMM_TAG "self-test: allocating %d frames...\n", n);
 
     /* Allocate and validate each frame: non-null, page-aligned. */
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < n; i++) {
         addrs[i] = pmm_alloc_frame();
         if (addrs[i] == 0) {
             kprintf(PMM_TAG "FAIL: out of memory at index %d\n", i);
@@ -324,8 +334,8 @@ void pmm_self_test(void) {
     }
 
     /* Uniqueness: O(N^2) is fine for N=1000 and needs no allocator. */
-    for (int i = 0; i < N; i++) {
-        for (int j = i + 1; j < N; j++) {
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j < n; j++) {
             if (addrs[i] == addrs[j]) {
                 kprintf(PMM_TAG "FAIL: duplicate address 0x%016llx (%d/%d)\n",
                         (unsigned long long)addrs[i], i, j);
@@ -335,7 +345,7 @@ void pmm_self_test(void) {
     }
 
     /* Free everything; the pool must return to its starting level. */
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < n; i++) {
         pmm_free_frame(addrs[i]);
     }
 
@@ -361,5 +371,5 @@ void pmm_self_test(void) {
         return;
     }
 
-    kprintf(PMM_TAG "PASS: %d unique frames, no leak, contiguous alloc OK\n", N);
+    kprintf(PMM_TAG "PASS: %d unique frames, no leak, contiguous alloc OK\n", n);
 }

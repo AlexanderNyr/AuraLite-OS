@@ -163,6 +163,13 @@ il_run_qemu() {
     # (see TODO.md) can pin itself to 1 rather than being intermittently red.
     local smp="${IL_SMP:-2}"
 
+    # OPT_PLAN.md O2: pin the boot self-test intensity.  The kernel's
+    # BUILD default is `fast`; CI must grep the full historical self-test
+    # output, so the lib passes `full` through fw_cfg unless a case asks
+    # otherwise via IL_SELFTEST (test_selftest_modes.sh and the perf
+    # smoke exercise `fast`/`off` deliberately).
+    local selftest="${IL_SELFTEST:-full}"
+
     local base_args=(
         -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on"
         -m 512M
@@ -174,6 +181,7 @@ il_run_qemu() {
         -boot order=c
         -netdev user,id=net0
         -device "${IL_NIC},netdev=net0"
+        -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
     )
 
     # Stream queued input → QEMU stdin, capture serial output → log.

@@ -1,12 +1,12 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0, O1 landed; O2–O9 specified
+## Status: IN PROGRESS 🚧 — O0–O2 landed; O3–O9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | O0 — the measuring rig | ✅ complete | `patches/OPT_O0_rig.patch` |
 | O1 — word-wide string ops | ✅ complete | `patches/OPT_O1_stringops.patch` |
-| O2 — fast-boot self-test knob | ⬜ todo | — |
+| O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
 | O3 — buffered UART TX | ⬜ todo | — |
 | O4 — compositor: composite the union, sleep when idle | ⬜ todo | — |
 | O5 — precise TLB shootdown | ⬜ todo | — |
@@ -429,36 +429,80 @@ every destination: **3052 checks, 0 failed**, registered in
 
 ### O2 — Boot latency: make the 1-second self-test opt-in without blinding CI
 
+**Status: ✅ landed** (`patches/OPT_O2_fastboot.patch`).  Two corrections
+to this section's own spec and two measured surprises below.
+
 **Objective:** cut multi-second, fixed costs out of the default boot while
 keeping every self-test reachable and CI-enforced (D3).
 
+**Correction 1 — the knob's channel.**  The spec above said "from the
+kernel command line the loaders already pass".  Measured: **no cmdline
+plumbing exists anywhere in `boot/`** — neither the BIOS Stage 2 nor
+`BOOTX64.EFI` passes one, and `boot_info_t` has no field for it.  The
+landed channel is QEMU **fw_cfg** (`-fw_cfg
+name=opt/auralite.selftest,string=full|fast|off`, read by
+`kernel/arch/x86_64/fwcfg.c` — port I/O stays in the arch tree, the I6
+ratchet is why) with the **build default** as the fallback
+(`make SELFTEST=full|fast|off`, the FIX_R8 KEYMAP precedent — and all
+real hardware gets).  A QEMU-shaped knob for a QEMU-primary project is
+the honest fit; a bootloader cmdline is real follow-up work that belongs
+to a bootloader plan.
+
 Tasks:
 
-- [ ] A boot knob (`selftest=full|fast|off`, from the kernel command line
-      the loaders already pass; default `fast`): `full` = today's
-      behaviour; `fast` = every self-test that completes in microseconds
-      stays, the PIT 1-second measurement, the 10 000-cycle heap gauntlet,
-      the 1 000-frame PMM gauntlet and the 16 KiB RNG statistical analysis
-      shrink to their short forms (100 ms, 500 cycles, 100 frames, 2 KiB —
-      still real tests, still printing PASS/FAIL); `off` = skip, for
-      benchmarking only.
-- [ ] The PIT *calibration* (divisor programming) is untouched — only the
-      1-second *verification spin* is scaled. A 100 ms window still catches
-      a mis-programmed divisor at 10× error margin.
-- [ ] `make run` keeps `fast`; **every integration case that greps
-      self-test output boots with `selftest=full`** — one line in
-      `tests/integration/lib` where the QEMU command is built.
-- [ ] The PASS-line formats do not change (the greps must not need edits —
-      that is the D3 tripwire proving semantics held).
+- [x] `kernel/lib/selftest.{c,h}`: mode state + `selftest_scale(full,
+      fast)`; `full` = historical values and byte-identical output,
+      `fast` = same invariants at reduced sizes, `off` = skip printing
+      `SKIPPED (selftest=off)`.  Default `fast` via `make SELFTEST=`.
+- [x] `kernel/arch/x86_64/fwcfg.c`: fw_cfg signature check, FILE_DIR
+      walk (big-endian fields composed byte-by-byte), reads
+      `opt/auralite.selftest`.  Absent/garbage → build default stands.
+- [x] Scaled: PIT verification window 1 s → 100 ms (±5% band → ±20%,
+      ±1-tick quantisation at ~10 ticks; the divisor programming is
+      untouched), PMM 1000 → 100 frames, heap 10 000 → 500 cycles
+      (including its O(N²) uniqueness scan), RNG analysis 16 KiB → 2 KiB.
+      **Seeding is never skipped** — the knob trades boot-time
+      statistics, not entropy.
+- [x] `tests/integration/lib/lib.sh`: every CI boot passes
+      `-fw_cfg ...,string=full` (override: `IL_SELFTEST`).  All existing
+      self-test greps hold **unmodified** — the D3 tripwire held.
+- [x] `tests/integration/cases/test_selftest_modes.sh` (registered): all
+      three modes boot; full asserts the historical lines (1-second
+      delay, 1000 frames, 10000 cycles, 16 KiB), fast asserts the scaled
+      lines still PASS, off asserts four loud SKIPPEDs and a live shell;
+      plus the D1 gate: fast beats full by ≥ 80 ticks.
+- [x] `test_perf_smoke.sh` records both modes' boot ticks every run.
 
-**Definition of done:** default boot-to-shell drops by ≥ 1 s (the PIT
-second) plus the gauntlet time, measured by the O0 stamp; `selftest=full`
-boots byte-identical self-test output to baseline.
+**What O2 measured:**
 
-**Test gate:** full integration suite green **under `selftest=full`**;
-`test_perf_smoke` records both modes' boot times; a new case
-`test_selftest_modes.sh` asserts `full` prints every baseline PASS line
-and `fast` prints the short-form PASS lines.
+- Boot-to-shell, BIOS guest: **full 499 ticks (~5.0 s) → fast 400 ticks
+  (~4.0 s)** — almost exactly the 1-second PIT window; the heap/PMM/RNG
+  gauntlets are noise under TCG next to it.  The remaining ~4 s of the
+  fast boot is not self-tests at all: it is the boot *demo sequence*
+  (`r3d_demo(30)` renders 30 frames of 3D demo, `wm_demo`,
+  `gui_self_test` windows) plus device-init waits — recorded here as the
+  boot-latency residue, because deleting demos is a behaviour decision,
+  not an optimization.
+- **Surprise 1 (statistics):** the RNG byte-frequency band (±50%) was
+  calibrated at λ=64 and pierced immediately at fast's λ=8 — a healthy
+  boot printed `FAIL (byte 0x04 count 14, expected ~8)`, exactly the
+  Poisson math predicts (~6% per bucket × 256 buckets).  Fast mode now
+  keeps only a 4× upper bound (stuck generators miss it by orders;
+  counter generators are the bit-runs test's catch).  Full keeps the
+  historical band, byte-identical.
+- **Surprise 2 (cascade):** the faster boot reaches `rng_init()` before
+  the interrupt-jitter pool has 128 estimated bits (60 at that point),
+  so fast boots exercise the *late opportunistic seeding* path
+  (`rng_jitter_event`/`rng_available`) that slow boots never used —
+  seeding completes ~1 s later and the self-test runs there.  A latent
+  code path became load-bearing because the boot got faster; it held.
+
+**Definition of done:** default boot drops by ≥ 1 s ✓ (99 ticks);
+`selftest=full` output byte-identical ✓ (every existing grep unmodified).
+
+**Test gate:** `test_selftest_modes` 30/30; `test_boot_to_shell` 17/17
+under the lib's `full` pin; `test_perf_smoke` 18/18 + both-modes record;
+`make test-unit` EXIT 0. ✓
 
 **Deliverable:** `patches/OPT_O2_fastboot.patch`
 
@@ -748,7 +792,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
 
 | Metric | Baseline (`6bba33f` + O0) | After O1 | O2 | O3 | O4 | O5 | O6 | O7 | O8 |
 |---|---|---|---|---|---|---|---|---|---|
-| boot → shell (PIT ticks, BIOS) | 505 (~5.1 s) | 497 | | | | | | | |
+| boot → shell (PIT ticks, BIOS) | 505 (~5.1 s) | 497 | full 499 / **fast 400** | | | | | | |
 | boot → shell (PIT ticks, UEFI/OVMF) | 1345 (~13.6 s) | — | | | | | | | |
 | membench memcpy-a 64 KiB (MB/s) | 11 | **82** | | | | | | | |
 | membench memcpy-a 1 MiB (MB/s) | 10 | **79** | | | | | | | |

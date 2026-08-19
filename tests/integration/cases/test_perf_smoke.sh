@@ -87,6 +87,21 @@ il_assert_grep  "$LOG" "MEMBENCH memset-a"     "memset row"
 il_assert_grep  "$LOG" "MEMBENCH-DONE"         "membench completed"
 il_assert_grep  "$LOG" "perf-gate-end"         "shell survives the gate"
 
+# --- O2: the fast-mode boot, recorded alongside (D2: recorded, not hard-gated
+# beyond "not slower") ---
+LOG_FAST="$IL_LOGDIR/perf_smoke_fast.log"
+il_send_delay 6
+il_send "exit"
+IL_SELFTEST=fast il_run_qemu "$LOG_FAST" 30
+
+BOOT_FULL="$BOOT_TICKS"
+BOOT_FAST=$(grep -aoE '\[perf\] boot-to-shell: [0-9]+' "$LOG_FAST" | grep -oE '[0-9]+' | head -1)
+if [ -n "${BOOT_FAST:-}" ] && [ -n "${BOOT_FULL:-}" ] && [ "$BOOT_FAST" -le "$BOOT_FULL" ]; then
+    il_pass "fast boot not slower than full (full=$BOOT_FULL fast=$BOOT_FAST ticks)"
+else
+    il_fail "fast boot regressed past full: full=${BOOT_FULL:-none} fast=${BOOT_FAST:-none}"
+fi
+
 # --- the usual never-see markers ---
 il_assert_no_grep "$LOG" "PANIC"               "no kernel panic"
 il_assert_no_grep "$LOG" "TRIPLE FAULT"        "no triple-fault"

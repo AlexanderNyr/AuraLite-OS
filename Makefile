@@ -45,6 +45,19 @@ ifeq ($(KEYMAP),de)
 CFLAGS      += -DKEYBOARD_DEFAULT_LAYOUT=keymap_de
 endif
 
+# OPT_O2 (OPT_PLAN.md): build-default boot self-test intensity.  This is
+# what real hardware (no fw_cfg) gets; a QEMU boot can override it at run
+# time with -fw_cfg name=opt/auralite.selftest,string=full|fast|off, which
+# is how the integration lib pins CI boots to `full`.
+# Usage:  make SELFTEST=full
+SELFTEST ?= fast
+ifeq ($(SELFTEST),full)
+CFLAGS      += -DSELFTEST_DEFAULT_FULL
+endif
+ifeq ($(SELFTEST),off)
+CFLAGS      += -DSELFTEST_DEFAULT_OFF
+endif
+
 ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 
 # The linker script fixes the higher-half address; no --image-base needed.

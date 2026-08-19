@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O2 — fast-boot self-test knob] 2026-08-19
+
+`OPT_PLAN.md` phase O2: the boot no longer spends a literal wall-clock
+second re-proving the PIT divisor on every start — unless asked to.
+
+- `kernel/lib/selftest.{c,h}` (new): three modes.  `full` = historical
+  gauntlets, byte-identical output (CI's mode); `fast` = same invariants
+  at reduced sizes (PIT window 1 s → 100 ms, PMM 1000 → 100 frames, heap
+  10 000 → 500 cycles, RNG analysis 16 KiB → 2 KiB) — the new build
+  default (`make SELFTEST=` overrides); `off` = loud SKIPPED lines, for
+  benchmarking.  RNG *seeding* is never skipped.
+- `kernel/arch/x86_64/fwcfg.c` (new): QEMU fw_cfg probe for
+  `-fw_cfg name=opt/auralite.selftest,string=...` — the run-time
+  override channel.  The plan's spec assumed a kernel command line;
+  measured, no cmdline plumbing exists anywhere in `boot/`, and the
+  correction is recorded in the plan.
+- `tests/integration/lib/lib.sh`: every CI boot pins `full` through
+  fw_cfg (`IL_SELFTEST` overrides) — all existing self-test greps hold
+  unmodified, which was the D3 tripwire for this phase.
+- `tests/integration/cases/test_selftest_modes.sh` (new, registered):
+  all three modes, plus the D1 gate that fast beats full by ≥ 80 ticks.
+- Measured: full 499 → fast 400 ticks boot-to-shell (the PIT second,
+  almost exactly).  Two surprises recorded in the plan: the RNG
+  byte-frequency band had to be recalibrated for the smaller sample
+  (Poisson at λ=8 pierced the λ=64-calibrated ±50% band on a healthy
+  boot), and the faster boot now exercises the previously-dormant late
+  RNG seeding path (the jitter pool is no longer full by `rng_init()`).
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
 ## [OPT O1 — word-wide string ops] 2026-08-19
 
 `OPT_PLAN.md` phase O1: the byte-at-a-time memcpy/memset/memmove

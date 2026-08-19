@@ -13,6 +13,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/klog.h"
 #include "kernel/lib/perfstat.h"
+#include "kernel/lib/selftest.h"
 #include "kernel/lib/stack_protector.h"
 #include "kernel/boot_info.h"
 #include "kernel/rng.h"
@@ -216,6 +217,16 @@ void kmain(boot_info_t *boot_info) {
             (unsigned long long)boot_get_hhdm_offset());
 
     kprintf("\n[kernel] interrupts enabled, exception handling online.\n");
+
+    /* OPT_PLAN.md O2: pick the self-test intensity before the first
+     * scaled self-test runs.  fw_cfg (QEMU) can override the build
+     * default; the line is greppable and states both mode and source. */
+    {
+        extern void fwcfg_selftest_probe(void);
+        fwcfg_selftest_probe();
+        kprintf("[selftest] mode: %s (%s)\n",
+                selftest_mode_name(), selftest_mode_source());
+    }
 
     kprintf("[boot] initialising physical memory manager...\n");
     pmm_init();

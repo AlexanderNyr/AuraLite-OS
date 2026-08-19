@@ -48,6 +48,7 @@ fi
 ALL_CASES=(
     test_boot_to_shell
     test_perf_smoke
+    test_selftest_modes
     test_shell_commands
     test_syscalls
     test_selftest

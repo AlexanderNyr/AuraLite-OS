@@ -10,6 +10,7 @@
 #include "drivers/timer/pit.h"
 #include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
+#include "kernel/lib/selftest.h"
 #include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
@@ -161,20 +162,40 @@ void timer_sleep_ms(uint64_t ms) {
 }
 
 void timer_self_test(void) {
-    kprintf(TIMER_TAG "self-test: measuring 1-second delay...\n");
+    /* OPT_PLAN.md O2: the VERIFICATION window follows the self-test
+     * knob; the divisor programming above is untouched.  FULL keeps the
+     * historical 1-second wait, byte-identical output, +/-5% band.  FAST
+     * verifies over 100 ms -- ~10 ticks at 100 Hz, so the band widens to
+     * +/-20% to absorb +/-1-tick quantisation; a divisor that is wrong
+     * by 10x (the failure this test exists for) still misses it by
+     * miles.  OFF skips loudly. */
+    uint64_t window_ms = selftest_scale(1000, 100);
+    if (window_ms == 0) {
+        kprintf(TIMER_TAG "self-test: SKIPPED (selftest=off)\n");
+        return;
+    }
+    if (window_ms == 1000) {
+        kprintf(TIMER_TAG "self-test: measuring 1-second delay...\n");
+    } else {
+        kprintf(TIMER_TAG "self-test: measuring %llu-ms delay...\n",
+                (unsigned long long)window_ms);
+    }
 
     uint64_t start_ticks = timer_ticks;
-    /* Sleep ~1 second using a busy-wait independent of the tick counter: this
-       makes the test self-contained.  We read the counter before and after and
-       verify the tick delta matches the configured frequency within +/-5%. */
-    timer_sleep_ms(1000);
+    /* Sleep the window using a busy-wait independent of the tick counter:
+       this makes the test self-contained.  We read the counter before and
+       after and verify the tick delta matches the configured frequency. */
+    timer_sleep_ms(window_ms);
     uint64_t end_ticks = timer_ticks;
     uint64_t elapsed   = end_ticks - start_ticks;
 
-    /* Expected = timer_freq_hz ticks.  +/-5% band. */
-    uint64_t expected = (uint64_t)timer_freq_hz;
-    uint64_t lo = expected - expected / 20;     /* 95% */
-    uint64_t hi = expected + expected / 20;     /* 105% */
+    /* Expected ticks over the window.  +/-5% band at 1 s, +/-20% at
+       100 ms (see above). */
+    uint64_t expected = (uint64_t)timer_freq_hz * window_ms / 1000;
+    uint64_t slack = (window_ms == 1000) ? expected / 20 : expected / 5;
+    if (slack == 0) slack = 1;
+    uint64_t lo = expected - slack;
+    uint64_t hi = expected + slack;
 
     kprintf(TIMER_TAG "expected ~%llu ticks, measured %llu ticks (band %llu-%llu)\n",
             (unsigned long long)expected,
@@ -183,12 +204,19 @@ void timer_self_test(void) {
             (unsigned long long)hi);
 
     if (elapsed >= lo && elapsed <= hi) {
-        /* Integer percentage of the configured frequency. */
-        uint64_t pct = (elapsed * 100 + timer_freq_hz / 2) / timer_freq_hz;
-        kprintf(TIMER_TAG "PASS: %llu ticks in 1s (%llu%% of %u Hz)\n",
-                (unsigned long long)elapsed,
-                (unsigned long long)pct,
-                (unsigned)timer_freq_hz);
+        /* Integer percentage of the expected count over the window. */
+        uint64_t pct = (elapsed * 100 + expected / 2) / expected;
+        if (window_ms == 1000) {
+            kprintf(TIMER_TAG "PASS: %llu ticks in 1s (%llu%% of %u Hz)\n",
+                    (unsigned long long)elapsed,
+                    (unsigned long long)pct,
+                    (unsigned)timer_freq_hz);
+        } else {
+            kprintf(TIMER_TAG "PASS: %llu ticks in %llums (%llu%% of expected)\n",
+                    (unsigned long long)elapsed,
+                    (unsigned long long)window_ms,
+                    (unsigned long long)pct);
+        }
     } else {
         kprintf(TIMER_TAG "FAIL: tick count %llu outside %llu-%llu band\n",
                 (unsigned long long)elapsed,
