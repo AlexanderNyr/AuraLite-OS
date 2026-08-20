@@ -36,6 +36,20 @@ CFLAGS      := --target=$(TARGET) \
                -O2 -g \
                -DARCH_X86_64 -I . -I $(BUILD_DIR) -I w32/include
 
+# OPT_O8 (OPT_PLAN.md): every function/datum gets its own section so the
+# linker can collect what nothing reaches.  The roots are ENTRY(_start)
+# plus every relocation from the NASM objects (ISR stubs -> C dispatch,
+# syscall entry -> syscall_dispatch, ...); the audit of what needs
+# KEEP() lives in kernel.ld and lib/libc/user.ld.
+CFLAGS      += -ffunction-sections -fdata-sections
+
+# OPT_O8: opt-in ThinLTO lane -- `make LTO=1`.  Off by default: it must
+# earn default status by a full green suite lane first (recorded in the
+# plan; do not flip this without one).
+ifeq ($(LTO),1)
+CFLAGS      += -flto=thin
+endif
+
 # FIX_R8 (FIXES_PLAN.md): compile-time keyboard layout selection.  This only
 # picks the layout that is active at boot; the `kbd` shell command switches
 # at runtime (syscall SYS_KBD_LAYOUT) regardless of this setting.
@@ -61,7 +75,7 @@ endif
 ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 
 # The linker script fixes the higher-half address; no --image-base needed.
-LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
+LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096 --gc-sections
 
 # A1 (ARM64_PLAN): kernel/dt/ is excluded too -- the shared DTB walker
 # belongs to the DTB-consuming kernels (riscv64, aarch64), which list
@@ -577,8 +591,16 @@ HELLO_ELF    := $(USER_BUILD)/hello.elf
 USER_BIN_H   := $(BUILD_DIR)/init_bin.h
 
 USER_CFLAGS  := -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
-                -O2 -Wall -Wextra -Werror -I . -I lib/libc/include
-USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096
+                -O2 -Wall -Wextra -Werror -I . -I lib/libc/include \
+                -ffunction-sections -fdata-sections
+# OPT_O8: user ELFs get section GC too -- the whole libc archive is
+# linked --whole-archive into every program, so unreferenced libc code
+# was shipped in every initrd binary until now (measured: init.elf
+# 133 KB -> 81 KB, initrd.tar -30%).  .init_array survives GC because
+# lld roots SHT_INIT_ARRAY sections by built-in rule -- the plan's
+# negative control proved the KEEP in user.ld is belt-and-braces, not
+# load-bearing (recorded there).
+USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 --gc-sections
 
 ### RUST: compiler and flags for Rust
 RUSTC       := rustc

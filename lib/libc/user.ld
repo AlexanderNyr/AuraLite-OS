@@ -38,7 +38,18 @@ SECTIONS
      * __attribute__((constructor/destructor)) functions linked into a program
      * actually run.  The symbols sit outside the section blocks: they must be
      * defined even when a program has no such functions (empty table links as
-     * start == end and the walks loop zero times). */
+     * start == end and the walks loop zero times).
+     *
+     * OPT_O8: when --gc-sections landed, the plan predicted these KEEPs
+     * would become load-bearing (nothing references .init_array by
+     * relocation; the walk goes through linker symbols).  The negative
+     * control REFUTED it: with the KEEPs removed, ctortest stayed green
+     * — lld treats SHT_INIT_ARRAY sections as GC roots by built-in
+     * rule, so the array survives without them.  The KEEPs stay anyway:
+     * that root rule is a linker convention, not an ELF guarantee, and
+     * a KEEP is free.  Recorded in the plan as the phase's measured
+     * surprise (a negative control that fails to fail is information
+     * too). */
     . = ALIGN(4096);
     __init_array_start = .;
     .init_array ALIGN(8) : {

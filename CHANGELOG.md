@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O8 — linker GC + the LTO lane] 2026-08-20
+
+`OPT_PLAN.md` phase O8: nothing unreachable ships anymore.
+
+- `-ffunction-sections -fdata-sections` + `--gc-sections` for the
+  kernel and every user ELF.  Clean-rebuild numbers: **initrd.tar
+  8 806 400 → 3 061 760 (−65%)**, `init.elf` −70%, `kernel.elf` −4.9%
+  — the user binaries carried the dead weight, because the whole libc
+  archive is whole-archive-linked into each one.
+- The KEEP() audit concluded in `kernel.ld` itself: zero sections in
+  this kernel are reachable only through linker-script symbols, so
+  zero KEEPs — the comment is the audit trail.
+- **The negative control refused to fail, and that is recorded as the
+  finding:** removing user.ld's .init_array KEEPs left ctortest green —
+  lld roots SHT_INIT_ARRAY sections by built-in rule.  The KEEPs stay
+  (convention ≠ guarantee); both linker scripts now state the measured
+  truth instead of the folk theorem.
+- ThinLTO lane behind `make LTO=1`: builds, boots 17/17 — and grows
+  kernel.elf 2.35 → 3.38 MB with `-g`, with no measurable TCG speed
+  change.  Off by default, with the bar for entry recorded in the plan.
+- Also recorded: the first "after" measurement was distorted by make's
+  object staleness (flags don't invalidate .o files) — the honest
+  numbers are from a clean rebuild.
+- Gates: clean-build battery green (boot 17/17, init_array 6/6, gui
+  5/5, execve_args 16/16, perf_smoke, selftest_modes, `test-unit`
+  EXIT 0).
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
 ## [OPT O7 — block where the kernel yields] 2026-08-20
 
 `OPT_PLAN.md` phase O7: the yield-polls are gone — the biggest

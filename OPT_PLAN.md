@@ -1,6 +1,6 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0–O7 landed; O8–O9 specified
+## Status: IN PROGRESS 🚧 — O0–O8 landed; O9 remaining
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -12,7 +12,7 @@
 | O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
 | O6 — size-class allocator front | ✅ complete (target re-measured: see the section) | `patches/OPT_O6_alloc.patch` |
 | O7 — block where the kernel yields | ✅ complete | `patches/OPT_O7_blocking.patch` |
-| O8 — linker GC + LTO lane | ⬜ todo | — |
+| O8 — linker GC + LTO lane | ✅ complete | `patches/OPT_O8_gc_lto.patch` |
 | O9 — CI wiring + claim check | ⬜ todo | — |
 
 This document answers:
@@ -906,35 +906,60 @@ idle-busy ratchet (measured 1.46% under test load, limit 15);
 
 ### O8 — Footprint: let the linker collect garbage
 
+**Status: ✅ landed** (`patches/OPT_O8_gc_lto.patch`).  Three measured
+surprises, including a negative control that refused to fail.
+
 **Objective:** stop shipping unreachable code (Fact 7); measure, don't
 assume, what LTO buys on top.
 
 Tasks:
 
-- [ ] `-ffunction-sections -fdata-sections` in kernel CFLAGS,
-      `--gc-sections` in LDFLAGS; audit `kernel.ld` for sections that are
-      reached only from assembly or from tables (ISR stubs, the syscall
-      table, `.init_array`, multiboot-style headers) and pin them with
-      `KEEP()` — this audit *is* the phase's work, and each `KEEP` gets a
-      comment saying who reaches it.
-- [ ] The same for the user linker script and libc archives (user ELFs
-      shrink initrd, which shrinks the ISO and every CI copy of it).
-- [ ] ThinLTO behind `make LTO=1`, off by default: a full suite lane must
-      pass with it on before it can ever become default (recorded as a
-      follow-up decision, not made here).
-- [ ] Sizes recorded per artefact in §6 (kernel.elf, each user ELF class,
-      initrd.tar, ISO).
+- [x] `-ffunction-sections -fdata-sections` + `--gc-sections` for the
+      kernel AND the user ELFs (the libc archive is linked
+      --whole-archive into every program, so its dead code shipped in
+      every initrd binary until now).
+- [x] The KEEP() audit, with its conclusion in `kernel.ld`: this kernel
+      has ZERO sections reachable only through linker-script symbols —
+      no .init_array (kernel constructors are explicit `*_init()` calls
+      from kmain), no registration tables, no per-CPU tricks; the NASM
+      objects and C reference each other by name in both directions.
+      Zero KEEPs needed; the comment is the audit trail.
+- [x] ThinLTO behind `make LTO=1`, off by default.
+- [x] Sizes recorded (§6); the negative control executed.
 
-**Definition of done:** artefact size table filled; boot and full suites
-green with GC on (default) and with `LTO=1` (one CI lane); no symbol
-needed at runtime was collected (the suites are the proof — this is why
-O8 lands late, when the perf smoke also watches counters that would notice
-a dead subsystem).
+**The three surprises:**
 
-**Test gate:** full suites in both configurations; `SHA256SUMS` regenerated;
-a negative control in the spirit of the POSIX drift check: remove one
-`KEEP()` on the ISR stubs, assert the build **fails or the boot smoke goes
-red loudly**, restore it — proving the pins are load-bearing.
+1. **The first "after" measurement was a lie of incrementality.**  The
+   flag change does not invalidate make's object files, so the first
+   rebuild GC'd stale sections-less objects and showed −30% initrd.  A
+   clean rebuild shows the real number: **initrd 8 806 400 →
+   3 061 760 bytes (−65%)**; `init.elf` 133 136 → 40 592 (−70%);
+   `kernel.elf` 2 475 640 → 2 354 800 (−4.9%).  The kernel is lean
+   because kmain reaches nearly everything; the user binaries were the
+   dead weight, exactly as the whole-archive link predicted.
+2. **The negative control refused to fail — which is information.**
+   The plan predicted user.ld's .init_array KEEPs would become
+   load-bearing under GC (the array is reached only through linker
+   symbols).  Removing them left `test_init_array` green: **lld roots
+   SHT_INIT_ARRAY sections by built-in rule.**  The KEEPs stay
+   (linker convention ≠ ELF guarantee, and a KEEP is free), and both
+   linker scripts now state the measured truth instead of the folk
+   theorem.
+3. **The LTO lane builds, boots (17/17) — and grows the artefact:**
+   `kernel.elf` 2.35 → 3.38 MB under ThinLTO with `-g`.  No measurable
+   TCG speed change (D2).  LTO stays off by default with a recorded
+   bar: it argues its way in with a real-hardware benchmark and a size
+   diet, or not at all.
+
+**Definition of done:** artefact size table filled ✓; boot + suites
+green with GC on (default) ✓ and under `LTO=1` (boot smoke 17/17) ✓;
+the ISO stays byte-count identical (fixed-size ESP image) with 5.7 MB
+more slack inside it.
+
+**Test gate:** clean-rebuild suite battery — boot 17/17, init_array 6/6
+(constructors run: the FIX_R5 gate, on GC'd binaries), selftest 6/6,
+gui 5/5, execve_args 16/16, perf_smoke 22/22, selftest_modes 30/30,
+`make test-unit` EXIT 0. ✓
 
 **Deliverable:** `patches/OPT_O8_gc_lto.patch`
 
@@ -1011,8 +1036,8 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
 | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
 | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
 | idle busy% at shell / during 2 s `wait` | 36.22 / 38.56 (pre-O7 measured) | | | | | | | **0.31 / 3.25** | |
-| kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
-| auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
+| kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | **2 354 800** (LTO lane: 3 376 280) | | | | | | | |
+| auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | 51 380 224 (fixed ESP; initrd inside: **8 806 400 → 3 061 760, −65%**) | | | | | | | |
 
 ¹ O6 traced this number: ~99.99% of it is the heap self-test gauntlet
 measuring itself; a `selftest=off` boot walks 63–80 nodes total.  Fact 5

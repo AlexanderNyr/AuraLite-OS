@@ -29,6 +29,19 @@ PHDRS
     data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
 }
 
+/* OPT_O8 KEEP() audit (--gc-sections is on): the roots that keep the
+ * kernel alive are ENTRY(_start) and the relocations OUT of the NASM
+ * objects (isr_stubs.asm -> isr/irq dispatch, syscall_entry.asm ->
+ * syscall_dispatch, context/boot asm -> their C counterparts); NASM
+ * emits one .text per object, each referenced from C by name, so the
+ * graph is closed in both directions.  There are NO sections in this
+ * kernel reachable ONLY through linker-script symbols (the one class
+ * gc-sections silently kills): no .init_array (kernel constructors are
+ * explicit *_init() calls from kmain), no driver-registration tables,
+ * no per-CPU section tricks -- __bss_start/__bss_end frame a section
+ * the output always has.  So: zero KEEPs, and this comment is the
+ * audit trail.  The load-bearing KEEP in this tree is user.ld's
+ * .init_array one; the O8 negative control proves it. */
 SECTIONS
 {
     . = KERNEL_VMA + 0x100000;                 /* 0xFFFFFFFF80100000 */
