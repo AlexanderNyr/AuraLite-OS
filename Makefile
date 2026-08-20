@@ -291,12 +291,16 @@ KERNELA64_ELF  := $(BUILD_DIR)/kernela64.elf
 KERNELA64_DIR  := kernel/arch/aarch64
 # A1: the shared DTB walker -- the same object list entry the rv64
 # kernel carries; both consumers, one file (the promotion's whole point).
-KERNELA64_SHARED := kernel/dt/fdt.c
+# A5a [AMEND-2]: the OPT O1 portable string bodies (compiled under
+# #ifndef ARCH_X86_64) join the aarch64 kernel -- the fdt.c promotion
+# shape: shared source, single object, claim-checked.  Without it the
+# first clang-lowered memcpy CALL is a link error in ambush.
+KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c
 KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null) $(KERNELA64_SHARED)
 KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
 KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
                   $(patsubst %.S,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_ASMS))
-KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h
+KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/lib/string.h
 CFLAGSA64      := --target=aarch64-unknown-none-elf \
                   -mstrict-align -mgeneral-regs-only \
                   -std=c11 -ffreestanding -fno-stack-protector \
@@ -328,6 +332,29 @@ run-a64: kernela64
 	    -display none -serial stdio -no-reboot \
 	    -kernel $(KERNELA64_ELF) \
 	    $(if $(wildcard $(BUILD_DIR)/initrd.tar),-initrd $(BUILD_DIR)/initrd.tar)
+
+# A5a: the raw-Image packaging -- llvm-objcopy -O binary of the ELF IS
+# the Image (the header lives in boot.S, text_offset places it at the
+# ELF link address, so one binary layout serves both boot paths).  This
+# is the boot path that makes -initrd real on this board: A1 measured
+# that QEMU's ELF loader never loads it.
+KERNELA64_IMG := $(BUILD_DIR)/kernela64.img
+$(KERNELA64_IMG): $(KERNELA64_ELF)
+	@if ! command -v llvm-objcopy >/dev/null 2>&1; then \
+		echo "[kernela64-img] SKIP: llvm-objcopy not found (apt install llvm)"; \
+		exit 127; \
+	fi
+	llvm-objcopy -O binary $(KERNELA64_ELF) $@
+	@echo "  [kernela64-img] $@ ($$(du -h $@ | cut -f1))"
+
+.PHONY: kernela64-img run-a64-img
+kernela64-img: $(KERNELA64_IMG)
+
+run-a64-img: kernela64-img $(BUILD_DIR)/initrd.tar
+	qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 256M \
+	    -display none -serial stdio -no-reboot \
+	    -kernel $(KERNELA64_IMG) \
+	    -initrd $(BUILD_DIR)/initrd.tar
 
 SMALLSH_SRC     := userspace/system/smallsh/smallsh.c
 SMALLSH_DEFS32  := -DAURA_LIBC='"lib/libc32/libc32.h"' \

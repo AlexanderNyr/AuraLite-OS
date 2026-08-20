@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A4 complete (phases A0–A9)
+## Status: IN PROGRESS 🚧 — A0–A5a complete (phases A0–A9; A5 split into a/b/c)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,9 @@
 | A2 — exceptions, the generic timer, GICv2 | ✅ complete | `patches/A64_A2_traps.patch` |
 | A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over | ✅ complete | `patches/A64_A3_mm.patch` |
 | A4 — threads, scheduler, EL0, `svc` | ✅ complete | `patches/A64_A4_proc.patch` |
-| A5 — userspace: libca64, init, the shared shell | pending | `patches/A64_A5_user.patch` |
+| A5a — the Image exit ramp + shared strings | ✅ complete | `patches/A64_A5a_image.patch` |
+| A5b — libca64 + the fourth tenant | pending | `patches/A64_A5b_tenant.patch` |
+| A5c — ELF loading, EL0 shell, cross-refusals | pending | `patches/A64_A5c_shell.patch` |
 | A6 — the sweep, fourth backend: DAIF behind the contracts | pending | `patches/A64_A6_sweep.patch` |
 | A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | pending | `patches/A64_A7_drivers.patch` |
 | A8 — parity: storage, network, full crypto, fourth tenant | pending | `patches/A64_A8_parity.patch` |
@@ -854,46 +856,157 @@ suites green.
 
 ---
 
-### Phase A5 — Userspace: libca64, init, the shared shell
+### Phase A5 — Userspace (split 2026-08-20, before execution)
 
-**Objective:** the fourth tenant: `/bina64` in the one initrd, the
-shared shell sources compiled for aarch64, ELF loading with the same
-window/W^X refusals.
+A5 as originally drafted bundled three separable risks: a *boot
+protocol* change (the raw-Image packaging A1's result assigned here),
+a *build/artefact* step (the fourth tenant), and a *kernel execution*
+step (ELF loading + EL0 shell).  Each has its own failure modes and
+its own gate, so each is now a phase — the D7 ship-the-first-thing-
+alone rule applied to the plan's own structure.  Dependency order:
+A5a's Image boot is what makes `-initrd` load at all (A1's measured
+fact), so the tenant (A5b) has nothing to ride in before it; the
+loader (A5c) has nothing to load before A5b.
+
+---
+
+### Phase A5a — The Image exit ramp + the shared strings ✅ COMPLETE
+
+**Objective:** initrd-carrying boots become possible — the raw-Image
+packaging un-defers the `x0 = DTB` path A1 pinned — and the kernel
+stops being one clang-lowered `memcpy` away from a link error
+(AMEND-2).
 
 #### Tasks
 
-- [ ] `lib/libca64/`: crt0, `syscall_a64.S`, the libc surface libcrv
-      established; user linker script in the shared ELF window
-      `[0x08000000, 0x40000000)` — the constant transfers unchanged.
-- [ ] ELF loader: `EM_AARCH64 = 183` accepted by the a64 kernel, the
-      other three `e_machine`s exec-refused (and vice versa in the
-      other kernels — the existing refusal tables grow one row).
-- [ ] `mkinitrd.sh`: fourth tenant audit — `audit_tenant bina64 183
-      aarch64` (Fact 5's measured constant); the cross-copied-binary
-      negative control re-run for the new tenant.
-- [ ] `initrv`/`smallsh` sources compiled for a64 (shared sources, per
-      tradition — no forked shell).
+- [ ] `boot.S` grows the 64-byte Linux arm64 Image header at the top
+      of `.text.boot`: `code0` = a branch over the header (the header
+      IS the entry point on both paths — the V0 first-byte discipline
+      pays off a fourth time), `text_offset = 0x200000` so the Image
+      lands at the ELF link address and ONE binary layout serves both
+      boot paths, `image_size` from linker arithmetic, LE/4K flags,
+      `"ARM\x64"` magic.  The ELF path executes the same branch and
+      never notices.
+- [ ] Makefile: `build/kernela64.img` via `llvm-objcopy -O binary` +
+      `run-a64-img`; `llvm-objcopy` join the optional-tools check the
+      qemu way (absent = img target skips loudly).
+- [ ] `kmain_a64`: if `x0 != 0` and the FDT magic validates there, use
+      it (Image path — the promise A1 measured as Image-only becomes
+      load-bearing); else the RAM-base probe (ELF path).  BOTH echoes
+      stay printed; both facts stay pinned by their smokes.
 - [ ] **[AMEND-2]** `kernel/lib/string.c` joins `KERNELA64_SHARED`
-      (portable bodies compile under `#ifndef ARCH_X86_64` since
-      OPT O1) — the fdt.c promotion shape; closes OPT §7's rv64/a64
-      string-ops residue for this arch.
-- [ ] **[AMEND-7]** `user_a64.ld` links carry `--gc-sections` from
-      birth (O8's −65% initrd measurement; SHT_INIT_ARRAY is an lld
-      GC root — KEEP stays as convention).
-- [ ] **[AMEND-4]** first unmap traffic uses `TLBI VAE1IS` per-VA, not
-      `vmalle1` — the precise form is one instruction on this ISA.
-- [ ] `a64_shell_smoke.sh`: the rv_shell shape — interactive prompt,
-      builtin sweep, syscall round-trips.
+      (portable bodies under `#ifndef ARCH_X86_64` since OPT O1);
+      claim asserts the shared object links.
+- [ ] `tests/integration/a64_image_smoke.sh`: Image boot reaches the
+      A4 gauntlet's end; `x0` path taken (echo asserted); with
+      `-initrd build/initrd.tar`: `/chosen` initrd-start/end parsed
+      and `ustar` found at the parsed address (the A1 "initrd: none"
+      assertion stays in the ELF smoke — the polarity pair).
+
+#### Result
+
+Delivered as specified, first boot clean on both paths.  Measured:
+
+```
+[boot] x0 at entry: 0x0000000048400000 (DTB pointer, Image path -- magic verified)
+[boot] DTB source: x0 (Image boot protocol)
+[mm]   initrd magic: ustar OK
+[mm]   initrd: 3061760 bytes at phys 0x0000000048000000
+A64-U-OK!
+```
+
+- **One binary layout serves both paths, as designed**: the header's
+  `text_offset = 0x200000` places the Image at the ELF link address,
+  so `llvm-objcopy -O binary` of the ELF IS the Image — 148K ELF,
+  56K Image, no second linker script.  The ELF path executes the
+  header's code0 branch and never notices; every A0–A4 pin in
+  `a64_boot_smoke.sh` still greps the same bytes.
+- **A1's Image-only facts became load-bearing on schedule**: x0
+  carried the DTB (parked AFTER the initrd at `0x48400000` — noted:
+  NOT the RAM base, which is why the source choice verifies magic
+  rather than assuming either address), `/chosen` grew the initrd
+  properties, and the initrd bytes measured present by tar-magic
+  read-back — 3 061 760 bytes, which is O8's GC'd initrd riding in
+  for A5b's tenant.
+- **[AMEND-2] paid immediately**: `kernel/lib/string.o` links into
+  the a64 kernel (OPT O1's portable bodies) — the fdt.c promotion
+  shape, claim-checked.
+- The full A4 gauntlet runs to the end on the Image path (12/12 smoke
+  assertions).  `check_arm64_claims` 54 (+7).  Sibling suites: x86_64
+  boot 17/17, rv smoke green, i386 builds.
+
+#### Test gate
+
+- ELF smoke unchanged and green (both A1 pins intact) ✓; Image smoke
+  12/12 ✓; all sibling suites green ✓.
+
+#### Deliverable
+
+`patches/A64_A5a_image.patch`
+
+---
+
+### Phase A5b — libca64 + the fourth tenant
+
+**Objective:** `/bina64` exists in the one initrd, audited, before any
+kernel code tries to run it.
+
+#### Tasks
+
+- [ ] `lib/libca64/`: `crt0_a64.S`, `syscall_a64.S` (D4: `x8`/`x0`–`x5`,
+      `svc #0`), `libca64.h` — the libcrv surface, same names.
+- [ ] `user_a64.ld`: the shared ELF window `[0x08000000, 0x40000000)`;
+      **[AMEND-7]** `--gc-sections` on the link line from birth
+      (O8's −65% receipt; SHT_INIT_ARRAY is an lld GC root — KEEP is
+      convention).
+- [ ] `initrv`/`smallsh` sources compiled for a64 (shared sources, no
+      forked shell) — `usera64` target family.
+- [ ] `mkinitrd.sh`: `audit_tenant bina64 183 aarch64`; the
+      cross-copied-binary negative control re-run for the new tenant.
+- [ ] The x86_64 initrd staging picks up `/bina64` exactly as it did
+      `/binrv` — tenant bytes identical in every kernel's initrd.
+
+#### Test gate
+
+- `initrd.tar` carries `/bina64` with `EM_AARCH64` ELFs; the audit
+  passes and its negative control still fails the doctored tenant;
+  x86_64/rv64 suites untouched.
+
+#### Deliverable
+
+`patches/A64_A5b_tenant.patch`
+
+---
+
+### Phase A5c — ELF loading, the EL0 shell, cross-refusals
+
+**Objective:** the fourth tenant runs: initrd parsed on a64, ELF loaded
+with the window/W^X refusals, the shared shell interactive at EL0.
+
+#### Tasks
+
+- [ ] `initrd_a64.c`: the USTAR tenant walk (initrd_rv.c's shape) over
+      the A5a-delivered initrd.
+- [ ] `elfa64load.c`: `EM_AARCH64 = 183` accepted; window checks; W^X
+      (UXN/PXN both earning keep — A3's bonus extended to user text);
+      the other three `e_machine`s exec-refused, AND the other three
+      kernels' refusal tables grow the 183 row (asserted at least for
+      a64-rejects-rv and rv-rejects-a64).
+- [ ] **[AMEND-4]** teardown/unmap paths use `TLBI VAE1IS` per-VA —
+      the precise form is one instruction on this ISA; `vmalle1`
+      remains the documented fallback.
+- [ ] `a64_shell_smoke.sh`: the rv_shell shape — prompt, builtin sweep,
+      syscall round-trips, exit.
 
 #### Test gate
 
 - Shell prompt on aarch64; tenant audit 62/3/243/183 all enforced;
-  cross-exec refused in all directions (asserted for at least
-  a64-rejects-rv and rv-rejects-a64).
+  cross-exec refused in both asserted directions; all sibling suites
+  green.
 
 #### Deliverable
 
-`patches/A64_A5_user.patch`
+`patches/A64_A5c_shell.patch`
 
 ---
 

@@ -242,12 +242,47 @@ def claims():
          "EL0 output string and the negative control",
          "A64-U-OK!" in smoke and "never-yielding workers" in smoke and
          "q8/q9 survived" in smoke and "privileged op contained" in smoke),
+
+        # --- A5a: the Image exit ramp + the shared strings ---
+        ("A5a: boot.S carries the arm64 Image header (magic + "
+         "text_offset placing the Image at the ELF link address)",
+         'ARM\\x64' in boots and "0x200000" in boots and
+         "__image_size" in boots),
+        ("A5a: kernela64.ld computes image_size by linker arithmetic",
+         "__image_size" in ld),
+        ("A5a: the Makefile packages the Image via llvm-objcopy and "
+         "run-a64-img boots it with -initrd",
+         "llvm-objcopy -O binary" in makefl and "run-a64-img" in makefl and
+         "kernela64.img" in makefl),
+        ("A5a [AMEND-2]: kernel/lib/string.c is in KERNELA64_SHARED "
+         "(the fdt.c promotion shape)",
+         "kernel/dt/fdt.c kernel/lib/string.c" in makefl),
+        ("A5a: kmain verifies x0's magic before trusting it and names "
+         "the DTB source it chose",
+         "fdt_magic_at(x0_at_entry)" in mainc and
+         "DTB source: x0 (Image boot protocol)" in mainc),
+        ("A5a: the kernel proves initrd BYTES arrived (ustar magic "
+         "read back), not just /chosen advertised them",
+         "initrd magic: ustar OK" in mainc),
+        ("A5a: the Image smoke exists and asserts both the x0 source "
+         "and the ustar read-back",
+         "DTB source: x0" in read("tests", "integration",
+                                  "a64_image_smoke.sh") and
+         "ustar OK" in read("tests", "integration",
+                            "a64_image_smoke.sh")),
     ]
 
     # Structural: the Status header and the phase table must agree.
     # Installed in A0, before a single row is green -- the D8 shape.
-    done_rows = len(re.findall(r"^\| A\d .*?✅ complete", plan, re.M))
-    done_heads = len(re.findall(r"^### Phase A\d .*?✅ COMPLETE", plan, re.M))
+    # The A5 split (2026-08-20) taught this arithmetic the sub-phase
+    # grammar (A5a/A5b/A5c): phase labels are ordered NAMES now, not
+    # digits -- the in-phase checker-fix D6 prescribes, not a new
+    # baseline.
+    PHASE_ORDER = ["A0", "A1", "A2", "A3", "A4",
+                   "A5a", "A5b", "A5c", "A6", "A7", "A8", "A9"]
+    done_rows = len(re.findall(r"^\| A\d[abc]? .*?✅ complete", plan, re.M))
+    done_heads = len(re.findall(r"^### Phase A\d[abc]? .*?✅ COMPLETE",
+                                plan, re.M))
     checks.append(("plan: every complete table row has a COMPLETE heading",
                    done_rows == done_heads))
 
@@ -255,11 +290,14 @@ def claims():
     if re.search(r"^## Status: PLANNED", plan, re.M):
         status_ok = (done_rows == 0)
     elif re.search(r"^## Status: IN PROGRESS", plan, re.M):
-        m = re.search(r"A0(?:–A(\d))? complete", plan)
-        claimed = (int(m.group(1)) + 1 if m and m.group(1) else 1) if m else 0
-        status_ok = bool(m) and claimed == done_rows
+        m = re.search(r"A0(?:–(A\d[abc]?))? complete", plan)
+        if m:
+            label = m.group(1) if m.group(1) else "A0"
+            claimed = (PHASE_ORDER.index(label) + 1
+                       if label in PHASE_ORDER else 0)
+            status_ok = claimed == done_rows
     elif re.search(r"^## Status: COMPLETE", plan, re.M):
-        status_ok = (done_rows == 10)
+        status_ok = (done_rows == len(PHASE_ORDER))
     checks.append(("plan: the Status header agrees with the table",
                    status_ok))
 

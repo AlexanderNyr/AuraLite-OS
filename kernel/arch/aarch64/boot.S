@@ -79,8 +79,31 @@ refusal_msg:
 .section .text.boot
 .globl _start
 _start:
-    // ---- 0. Preserve x0: kmain_a64 reports it (the measured-fact
-    // echo), nothing trusts it. --------------------------------------
+    // ---- A5a: the Linux arm64 Image header, 64 bytes, doubling as
+    // the entry point.  BOTH boot paths execute code0 (the branch
+    // below): the ELF path enters at _start because ENTRY() says so,
+    // the Image path because the protocol defines entry = image
+    // start.  text_offset = 0x200000 makes QEMU place the Image at
+    // RAM base + 2 MiB = 0x40200000 -- the ELF link address -- so ONE
+    // binary layout serves both paths and every symbol keeps its
+    // meaning.  llvm-objcopy -O binary of this ELF IS the Image; no
+    // second linker script, no relocation games.
+    //   flags = bit0:0 LE, bits[2:1]=01 4K granule, bit3:0 base near
+    //   DRAM start.  image_size comes from linker arithmetic
+    //   (__image_size in kernela64.ld) and includes .bss per the
+    //   protocol ("the amount of memory to reserve").
+    b     .Lheader_end            // code0: jump the header
+    .word 0                       // code1 (pad; code0's b is 4 bytes)
+    .quad 0x200000                // text_offset
+    .quad __image_size            // image_size (memory footprint)
+    .quad 0x2                     // flags: LE, 4K
+    .quad 0, 0, 0                 // res2..res4
+    .ascii "ARM\x64"              // magic, offset 56
+    .word 0                       // res5: header ends at 64
+.Lheader_end:
+    // ---- 0. Preserve x0: kmain_a64 reports it -- and since A5a the
+    // Image path makes it REAL (x0 = DTB phys, the promise A1
+    // measured as Image-only).  Still verified, never trusted. ------
     mov   x19, x0
 
     // ---- 1. D1: this kernel is an EL1 citizen.  CurrentEL != EL1

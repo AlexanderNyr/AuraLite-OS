@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A5 split + A5a — the Image exit ramp] 2026-08-20
+
+`ARM64_PLAN.md`: A5 split into three phases before execution (a: boot
+protocol, b: artefacts/tenant, c: kernel execution — three separable
+risks, three gates; the D7 rule applied to the plan's own structure),
+and **A5a landed**.
+
+- `boot.S` carries the 64-byte Linux arm64 Image header as its entry:
+  `code0` branches over it, `text_offset = 0x200000` places the Image
+  at the ELF link address — so `llvm-objcopy -O binary` of the ELF IS
+  the Image (148K ELF → 56K Image), one binary layout for both boot
+  paths, `image_size` by linker arithmetic (`kernela64.ld`).
+- `kmain_a64`: two DTB sources, both VERIFIED — x0 with its magic read
+  back (Image path; measured parked AFTER the initrd at `0x48400000`,
+  not the RAM base) or the A1 RAM-base probe (ELF path).  Every A0–A4
+  pin in `a64_boot_smoke.sh` greps unchanged.
+- **`-initrd` is real on this board now** (A1's measured deferral,
+  un-deferred): `/chosen` parsed by the shared walker AND the bytes
+  proven present by tar-magic read-back — `initrd magic: ustar OK`,
+  3 061 760 bytes (O8's GC'd initrd, riding in for A5b's tenant).
+- **[AMEND-2] paid**: `kernel/lib/string.c` (OPT O1's portable bodies)
+  joins `KERNELA64_SHARED` — the fdt.c promotion shape, claim-checked.
+- `tests/integration/a64_image_smoke.sh` (new): 12 assertions — x0
+  source named, ustar read-back, the full A4 gauntlet to the end on
+  the Image path; skips loudly without qemu/llvm-objcopy.
+- `check_arm64_claims.py`: +7 A5a claims (54 total) — and its
+  structural arithmetic learned the sub-phase grammar (labels are
+  ordered names now, not digits; the in-phase checker fix D6
+  prescribes).
+- Sibling suites: x86_64 boot 17/17, rv smoke green, i386 builds.
+
 ## [A64 plan amendment — post-OPT audit] 2026-08-20
 
 `ARM64_PLAN.md` re-audited against the tree after OPT O0–O9 moved ten

@@ -94,6 +94,11 @@ SECTIONS
     __kernel_end_virt = .;
     __kernel_end = __kernel_end_virt - HHDM;    /* physical, for the pool */
 
+    /* A5a: the Image header's image_size field -- the whole memory
+     * footprint (bss included, per the arm64 boot protocol) measured
+     * from the load base.  Linker arithmetic, not a hand-kept number. */
+    __image_size = __kernel_end - 0x40200000;
+
     /DISCARD/ : {
         *(.comment)
         *(.eh_frame)

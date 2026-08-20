@@ -70,10 +70,24 @@ static uint64_t read_cntfrq(void)
  * through the HHDM since A3 (the low half belongs to TTBR0, which
  * the final tables blank).  Byte loads: the byte-order answer and
  * the alignment answer in one (plan Fact 5.1). */
+/* A5a: the magic probe, generalised — the Image path hands the DTB
+ * address in x0 and it is NOT the RAM base there (QEMU parks the blob
+ * after the initrd).  Same read, caller's address. */
+static uint32_t fdt_magic_at(uint64_t phys);
+
 static uint32_t fdt_magic_at_ram_base(void)
 {
     const volatile uint8_t *p =
         (const volatile uint8_t *)p2v_a64(RAM_BASE);
+
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+}
+
+static uint32_t fdt_magic_at(uint64_t phys)
+{
+    const volatile uint8_t *p =
+        (const volatile uint8_t *)p2v_a64(phys);
 
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
@@ -106,6 +120,17 @@ static void memmap_report(void)
     pl011_puts(" MiB\n");
 
     if (boot_info.initrd_phys) {
+        /* A5a: prove the bytes are REALLY there, not just advertised —
+         * a USTAR archive carries "ustar" at offset 257 of the first
+         * header block.  The A5c tenant walk will stand on this. */
+        const volatile uint8_t *tar =
+            (const volatile uint8_t *)p2v_a64(boot_info.initrd_phys);
+        int ustar_ok = boot_info.initrd_size > 262 &&
+                       tar[257] == 'u' && tar[258] == 's' &&
+                       tar[259] == 't' && tar[260] == 'a' &&
+                       tar[261] == 'r';
+        pl011_puts(ustar_ok ? "[mm]   initrd magic: ustar OK\n"
+                            : "[mm]   initrd magic: NOT a ustar archive\n");
         pl011_puts("[mm]   initrd: ");
         pl011_putdec64(boot_info.initrd_size);
         pl011_puts(" bytes at phys ");
@@ -418,24 +443,39 @@ void kmain_a64(uint64_t x0_at_entry)
     pl011_putdec64(read_currentel());
     pl011_putc('\n');
 
-    /* A0 Fact 2.2 echo, first half: x0 is NOT the DTB pointer for
-     * ELF payloads.  Print what arrived; the smoke asserts 0. */
-    pl011_puts("[boot] x0 at entry: ");
-    pl011_puthex64(x0_at_entry);
-    pl011_puts(" (not the DTB pointer for ELF payloads -- measured, plan Fact 2)\n");
-
-    /* Second half: the DTB is parked at the RAM base. */
-    uint32_t magic = fdt_magic_at_ram_base();
-
-    pl011_puts("[boot] DTB probe at RAM base ");
-    pl011_puthex64(RAM_BASE);
-    pl011_puts(": magic ");
-    pl011_puthex64(magic);
-    if (magic == FDT_MAGIC_BE) {
-        pl011_puts(" OK (big-endian read)\n");
+    /* A5a: two boot paths, one kernel.  Image boots deliver the DTB in
+     * x0 (the promise A1 measured as Image-only is load-bearing now);
+     * ELF boots deliver x0 = 0 and the DTB parked at the RAM base.
+     * VERIFIED either way -- x0 is trusted only after its magic reads
+     * back, and the ELF-path pins stay exactly as A0/A1 wrote them. */
+    uint64_t dtb_phys;
+    if (x0_at_entry != 0 && fdt_magic_at(x0_at_entry) == FDT_MAGIC_BE) {
+        dtb_phys = x0_at_entry;
+        pl011_puts("[boot] x0 at entry: ");
+        pl011_puthex64(x0_at_entry);
+        pl011_puts(" (DTB pointer, Image path -- magic verified)\n");
+        pl011_puts("[boot] DTB source: x0 (Image boot protocol)\n");
     } else {
-        pl011_puts(" MISMATCH; refusing to continue (expected 0xD00DFEED)\n");
-        psci_system_off();
+        dtb_phys = RAM_BASE;
+        /* A0 Fact 2.2 echo, first half: x0 is NOT the DTB pointer for
+         * ELF payloads.  Print what arrived; the smoke asserts 0. */
+        pl011_puts("[boot] x0 at entry: ");
+        pl011_puthex64(x0_at_entry);
+        pl011_puts(" (not the DTB pointer for ELF payloads -- measured, plan Fact 2)\n");
+
+        /* Second half: the DTB is parked at the RAM base. */
+        uint32_t magic = fdt_magic_at_ram_base();
+
+        pl011_puts("[boot] DTB probe at RAM base ");
+        pl011_puthex64(RAM_BASE);
+        pl011_puts(": magic ");
+        pl011_puthex64(magic);
+        if (magic == FDT_MAGIC_BE) {
+            pl011_puts(" OK (big-endian read)\n");
+        } else {
+            pl011_puts(" MISMATCH; refusing to continue (expected 0xD00DFEED)\n");
+            psci_system_off();
+        }
     }
 
     /* A0 Fact 2.3 echo: the timer frequency is a register. */
@@ -445,7 +485,7 @@ void kmain_a64(uint64_t x0_at_entry)
 
     /* The A1 shim: DTB -> boot_info_t, through the SHARED walker.
      * Errors are named, not numbered -- the V0/V1 tradition. */
-    int rc = fdt_parse(RAM_BASE, 0 /* boot cpu; MPIDR affinity 0 */,
+    int rc = fdt_parse(dtb_phys, 0 /* boot cpu; MPIDR affinity 0 */,
                        &boot_info, &platform);
     if (rc != 0) {
         pl011_puts("[boot] FDT parse FAILED: ");
