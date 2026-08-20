@@ -15,6 +15,16 @@
 | A8 — parity: storage, network, full crypto, fourth tenant | pending | `patches/A64_A8_parity.patch` |
 | A9 — CI matrix, docs, the claim check | pending | `patches/A64_A9_ci.patch` |
 
+> **Amended 2026-08-20 (post-OPT audit).**  Between A4 and A5 the tree
+> moved ten phases under this plan's feet: `OPT_PLAN.md` O0–O9 landed
+> (measuring rig, shared word-wide string ops, the self-test knob, the
+> UART TX ring core, precise TLB shootdown, size-class cache, blocking
+> waits, linker GC).  A0–A4's results were re-verified against today's
+> tree before amending (checker 47/47, full A4 gauntlet green, all four
+> kernels build).  §1.5 lists what the OPT series changed that A5–A9
+> can now lean on — including one A7 trap this audit caught before the
+> phase could step on it.
+
 This document answers:
 
 > *AuraLite now boots three kernels — two x86 widths and one RISC-V —
@@ -234,6 +244,76 @@ cost *drivers and CPU bring-up*, not *another copy of everything*. If
 promotion turns out harder than forking — if the walker or the
 transport is secretly riscv-shaped in some way grep cannot see — the
 phase result records that honestly and forks with a named reason.
+
+### §1.5 — Post-OPT audit (2026-08-20): what moved under the plan's feet
+
+Everything below was verified against the tree, not assumed; each item
+names the phase it amends.
+
+**AMEND-1 (A7, mandatory).  The promotion path `kernel/drivers/` walks
+into the A0 trap.**  A7 plans to promote `virtio_mmio.c` to a new
+`kernel/drivers/` directory — and the x86_64 kernel's source list is
+`find kernel drivers ...` with an exclusion list that will not know the
+new directory (measured: Makefile line 85; `kernel/dt/*` had to be
+excluded for exactly this reason in A1).  A0's Result already named
+this find(1) as "the one place where adding a directory IS editing
+shared build logic"; this time the trap is predicted instead of
+stepped on.  A7's task list now carries the exclusion edit explicitly,
+and its gate keeps the A0 rule: prove it by building all four kernels.
+
+**AMEND-2 (A5/A6).  The shared string ops the OPT series left at the
+door.**  OPT O1 rebuilt `kernel/lib/string.c` so the portable bodies
+(memcpy/memset/memmove, word-wide memcmp/strlen) compile under
+`#ifndef ARCH_X86_64` — written for exactly this consumer, recorded in
+OPT §7 as rv64/a64 residue.  Neither the rv64 nor the a64 kernel
+carries private string functions today (grep: none), which means the
+first large struct copy clang lowers to a `memcpy` CALL is a link
+error waiting in ambush.  A5 adds `kernel/lib/string.c` to
+`KERNELA64_SHARED` (the fdt.c promotion shape: shared object, claim
+asserted), closing the OPT residue line instead of forking a fifth
+copy.
+
+**AMEND-3 (A7).  PL011 TX can take the O3 ring core for free.**
+`drivers/uart/uart_ring.h` is pure C (no I/O, no locks), host-tested
+across wrap/full/empty and the 2^32 counter crossing (75 checks).
+A7's PL011 RX task grows a sibling: TX through the same ring shape —
+"same shape, different registers" was the OPT §7 assessment, and the
+index core is the part that is identical.
+
+**AMEND-4 (A5, note).  Do not import x86's TLB history.**  OPT O5
+built ranged shootdown for x86_64 out of mailboxes and IPIs because
+the ISA gave it nothing; aarch64 has `TLBI VAE1IS` — per-VA,
+inner-shareable, one instruction.  When A5's user teardown creates the
+first real unmap traffic, the precise form costs an instruction, not a
+phase.  A3's `vmalle1` helper stays correct as the fallback; this note
+exists so nobody copies the broadcast-first evolution.
+
+**AMEND-5 (A8/A9, named deferral).  fw_cfg is no longer "ignored".**
+Fact 3 waved the `virt` board's fw-cfg node off; since OPT O2 the tree
+has a fw_cfg *protocol* in production — `opt/auralite.selftest`
+selects the self-test intensity and the integration lib pins CI boots
+through it.  The aarch64 fw-cfg is MMIO (not port I/O), so the x86
+reader does not transfer as-is; the knob's *interface* does.  Recorded
+as a deferral with a name, not an absence: when a64 boots grow
+self-tests worth scaling, the protocol already exists.
+
+**AMEND-6 (A8/A9, gate hardening).  Assert the cross-toolchain EXISTS
+after install.**  This audit's own environment lost
+`riscv64-linux-gnu-gcc` to silent apt dependency failures three times
+("Setting up ..." printed, binary absent — the Conflicts field Fact 1
+measured is exactly the mechanism).  A8's crypto gate and A9's CI job
+must `command -v` the cross-gcc AFTER the install step, not trust the
+installer's exit status; the loud-SKIP path already exists for the
+genuinely-absent case.
+
+**AMEND-7 (A5).  User links inherit O8's GC from birth.**  The a64
+user linker script (`user_a64.ld`) ships with `--gc-sections` on its
+link line from the first patch — the x86 user ELFs measured −65%
+initrd from it, and a fourth tenant has no legacy to protect.  One
+measured fact transfers with it: lld roots SHT_INIT_ARRAY sections by
+built-in rule, so KEEP there is belt-and-braces, not load-bearing
+(OPT O8's negative control refuted the folk theorem — the linker
+scripts say so).
 
 ---
 
@@ -793,6 +873,15 @@ window/W^X refusals.
       negative control re-run for the new tenant.
 - [ ] `initrv`/`smallsh` sources compiled for a64 (shared sources, per
       tradition — no forked shell).
+- [ ] **[AMEND-2]** `kernel/lib/string.c` joins `KERNELA64_SHARED`
+      (portable bodies compile under `#ifndef ARCH_X86_64` since
+      OPT O1) — the fdt.c promotion shape; closes OPT §7's rv64/a64
+      string-ops residue for this arch.
+- [ ] **[AMEND-7]** `user_a64.ld` links carry `--gc-sections` from
+      birth (O8's −65% initrd measurement; SHT_INIT_ARRAY is an lld
+      GC root — KEEP stays as convention).
+- [ ] **[AMEND-4]** first unmap traffic uses `TLBI VAE1IS` per-VA, not
+      `vmalle1` — the precise form is one instruction on this ISA.
 - [ ] `a64_shell_smoke.sh`: the rv_shell shape — interactive prompt,
       builtin sweep, syscall round-trips.
 
@@ -851,7 +940,10 @@ over a fourth ISA with zero portable-file edits.
 #### Tasks
 
 - [ ] Promote `kernel/arch/riscv64/virtio_mmio.c` → `kernel/drivers/
-      virtio_mmio.c` behind the same hook treatment as the A1 walker;
+      virtio_mmio.c` behind the same hook treatment as the A1 walker
+      — **[AMEND-1] and the x86_64/i386 source-list exclusions learn
+      the new directory IN THE SAME PATCH** (the A0 find(1) lesson,
+      this time predicted: the gate builds all four kernels);
       the rv64 kernel switches to the shared copy in-patch; claim
       check asserts single-object linkage. The legacy-vs-modern lesson
       (`-global virtio-mmio.force-legacy=true`) carries over verbatim
@@ -864,6 +956,9 @@ over a fourth ISA with zero portable-file edits.
 - [ ] `vblk`/`vnet` on a64: the rv64 driver pair's shape over the
       shared transport; miniproto parity strings kept identical so
       the smoke assertions are shared text.
+- [ ] **[AMEND-3]** PL011 TX through `drivers/uart/uart_ring.h` (the
+      O3 pure index core, already host-tested) — same shape, PL011
+      registers;
 - [ ] PL011 RX: IRQ-driven (SPI 1 → INTID 33), `IMSC`/`ICR` handling;
       the blocking-read path re-tests the cleared-interrupt-mask
       deadlock lesson (I7's, already re-tested in V7 — the DAIF twin
@@ -896,6 +991,10 @@ subsystem asserted; the crypto suite EXECUTED on the target ISA.
       execution receipt), with the compile-only fallback + loud SKIP
       when the cross toolchain is absent. `libc6-dev-arm64-cross`
       named in the dep documentation (Fact 1's measured miss).
+      **[AMEND-6]** the gate `command -v`'s the cross-gcc AFTER the
+      install step — silent apt dependency failures were measured
+      three times during the OPT audit ("Setting up" printed, binary
+      absent).
 - [ ] The initrd's fourth tenant audited end-to-end (A5's audit is the
       pack-time gate; A8 re-asserts at boot: each of the four kernels
       exec-refuses the other three tenants' binaries).

@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 plan amendment — post-OPT audit] 2026-08-20
+
+`ARM64_PLAN.md` re-audited against the tree after OPT O0–O9 moved ten
+phases under its feet.  A0–A4 re-verified first (checker 47/47, the
+full A4 gauntlet green, all four kernels build); then seven amendments
+(§1.5), each tied to the phase it corrects:
+
+- **AMEND-1 (A7, mandatory):** the planned `kernel/drivers/` promotion
+  walks straight into the A0 find(1) trap — the x86_64 source list
+  will sweep the new directory (measured: the exclusion list knows
+  `kernel/dt/*` for exactly this reason).  A7's tasks now carry the
+  exclusion edit in the same patch; caught by audit, not by the build.
+- **AMEND-2 (A5):** `kernel/lib/string.c` joins `KERNELA64_SHARED` —
+  OPT O1 wrote its portable bodies for exactly this consumer, and
+  neither rv64 nor a64 carries private string functions today, so the
+  first clang-lowered `memcpy` call is a link error in ambush.
+- **AMEND-3 (A7):** PL011 TX takes `uart_ring.h` (O3's pure,
+  host-tested index core) for free.
+- **AMEND-4 (A5, note):** first unmap traffic uses `TLBI VAE1IS` —
+  aarch64 has per-VA invalidation as an instruction; do not re-import
+  x86's broadcast-first evolution.
+- **AMEND-5 (A8/A9):** fw_cfg upgraded from "ignored" to a named
+  deferral — the `opt/auralite.selftest` protocol exists in production
+  since OPT O2; the a64 reader is MMIO-shaped when wanted.
+- **AMEND-6 (A8/A9):** the crypto gate asserts the cross-gcc EXISTS
+  after install — silent apt dependency failures were measured three
+  times during the OPT audit.
+- **AMEND-7 (A5):** `user_a64.ld` links carry `--gc-sections` from
+  birth (O8's −65% initrd receipt; SHT_INIT_ARRAY is an lld GC root,
+  KEEP is convention).
+
+`check_arm64_claims.py` stays 47/47 — the amendments touch pending
+phases' specs and §1.5 only; no landed result was rewritten.
+
 ## [OPT O9 — CI wiring + the claim check; OPT_PLAN COMPLETE] 2026-08-20
 
 `OPT_PLAN.md` phase O9, and the plan closes: O0–O9 all landed, the
