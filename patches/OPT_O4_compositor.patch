@@ -1,0 +1,855 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9b0bf75..9ecb86c 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,45 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O4 — compositor: composite the union, sleep when idle] 2026-08-19
++
++`OPT_PLAN.md` phase O4: the dirty union bounds the compositor's WORK
++now, not just its flip — and between events the compositor is asleep,
++not yield-spinning at 100 Hz.
++
++- `drivers/framebuffer/graphics.{c,h}`: gfx-layer clip rectangle
++  (`gfx_clip_set`/`gfx_clip_clear`) enforced in `gfx_putpixel` and the
++  `gfx_fill_rect` bulk path — every primitive funnels through those two,
++  so the clip did not have to be threaded through forty draw calls.
++  Plus the honest pixel accumulator: `compositor_pixels_composited` is
++  the real post-clip store count (overdraw included) now, drained once
++  per frame; the O0 full-screen approximation is gone.
++- `kernel/gui/gui.c`: `compositor_render_dirty()` computes the union
++  first, arms the clip, fast-rejects windows (shadow included) that miss
++  it, flips the union, clears the clip.  The thread loop blocks on a
++  wait_queue; pokes come from the keyboard/mouse ring-push points (not
++  the handler tails — early returns after enqueue would skip those),
++  one chokepoint wrapping the GUI syscall entries, and a 1 Hz PIT line
++  for the clock/notification expiry.  Drain pacing is a BLOCKING
++  `timer_sleep_ms(10)`.
++- **`kernel/proc/wait_queue.c` is IRQ-safe now** (queue lock taken
++  irqsave at all five sites).  Waking from IRQ context was a latent
++  self-deadlock before; the GUI pokes need it, and O7 inherits it.
++- `tests/integration/cases/test_gui_dirty_uefi.sh` (new, registered,
++  129 cases): the pixel gate on the only firmware that has pixels
++  (O0's recorded fact: BIOS boots render into a 0×0 framebuffer) —
++  loud-skips without OVMF, per the bl6 convention.
++- Measured (UEFI 1280×800): the 1 Hz taskbar-clock frame composited
++  **1 024 000 px before (the whole screen, every second) → 94 805 px
++  after — 10.8×**; the residual 2.3× over the 40 960-px flip is named
++  overdraw.  Idle busy% at the shell: **42.30 → 34.37** (the remainder
++  is the USB/HID pollers — O7 territory).  Full redraws while idle: 0.
++- The width-sweep ratchet caught this phase's first draft too (two
++  uint64_t casts in the pixel accounting) — reworked to widen through
++  locals; 359/359 holds.
++- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O3 — buffered UART TX] 2026-08-19
+ 
+ `OPT_PLAN.md` phase O3: the kernel log no longer busy-waits the wire
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index b98f453..1834feb 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0–O3 landed; O4–O9 specified
++## Status: IN PROGRESS 🚧 — O0–O4 landed; O5–O9 specified
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -8,7 +8,7 @@
+ | O1 — word-wide string ops | ✅ complete | `patches/OPT_O1_stringops.patch` |
+ | O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
+ | O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
+-| O4 — compositor: composite the union, sleep when idle | ⬜ todo | — |
++| O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
+ | O5 — precise TLB shootdown | ⬜ todo | — |
+ | O6 — size-class allocator front | ⬜ todo | — |
+ | O7 — block where the kernel yields | ⬜ todo | — |
+@@ -579,43 +579,80 @@ above). ✓
+ 
+ ### O4 — Compositor: composite what is dirty, sleep when nothing is
+ 
++**Status: ✅ landed** (`patches/OPT_O4_compositor.patch`).  The 14.2×
++headroom O0 measured is collected below — 10.8× of it on the steady
++state, with the remainder named as overdraw.
++
+ **Objective:** finish what H1 started (Fact 3): the dirty union should
+-bound the *work*, not just the flip — and the frame loop should block, not
+-yield-spin.
++bound the *work*, not just the flip — and the frame loop should block,
++not yield-spin.
+ 
+ Tasks:
+ 
+-- [ ] Thread a clip rectangle through the composite path:
+-      `draw_desktop`/`draw_icons`/window blits take the dirty union and
+-      intersect per element (`compositor_render_dirty()` already computes
+-      the union via `compute_dirty_union()`; today it throws the bound
+-      away for everything but the flip). Windows fully outside the union
+-      are skipped before their pixels are touched.
+-- [ ] `perfstat`: `compositor_pixels_composited` accumulates actual
+-      blitted pixels — the honest unit, since "frames" hide the win.
+-- [ ] Replace the 100 Hz yield-spin with a `wait_queue`: input events,
+-      `gui_mark_dirty`, notification expiry and the 1 Hz clock arm it;
+-      the wake path ticks the compositor. Frame pacing (don't render more
+-      than ~100 FPS under event storms) becomes a min-interval check
+-      *inside* the woken path, not a spin outside it.
+-- [ ] The `full_dirty` escape hatch (GUI_MAX_DIRTY_RECTS overflow, theme
+-      change, resize) stays exactly as is — correctness anchor.
+-- [ ] Residue recorded per D5: the front-buffer mapping's cacheability
+-      (no PAT/WC configuration exists anywhere in `paging.c` — the
+-      framebuffer is written through whatever the boot mapping gave it) is
+-      a real cost on real hardware but unmeasurable under TCG; **a PAT
+-      write-combining entry for the framebuffer is specified here and
+-      deferred to a real-hardware follow-up**, because landing it gated
+-      only by QEMU would violate D1.
+-
+-**Definition of done:** cursor-move frames composite ≤ the dirty union
+-(counter-checked, not eyeballed); idle scheduler churn from the GUI thread
+-drops to zero between events (`sched_get_idle_ticks` delta);
+-`test_gui*` cases green unmodified.
+-
+-**Test gate:** existing GUI integration cases (D3); new assertions in
+-`test_perf_smoke`: (a) 2 s idle ⇒ `compositor_pixels_composited` static,
+-(b) scripted cursor move ⇒ pixel delta < 1% of a full frame.
++- [x] The clip lives in the gfx layer, not threaded through forty draw
++      calls: `gfx_clip_set()/gfx_clip_clear()` in
++      `drivers/framebuffer/graphics.c`, enforced by `gfx_putpixel` and
++      the `gfx_fill_rect` bulk path (every other primitive — lines,
++      text, circles, gradients, window blits — funnels through those
++      two).  `compositor_render_dirty()` computes the union FIRST, arms
++      the clip, re-runs the scene, flips the union, clears the clip.
++      Windows (shadow included) that miss the union are rejected before
++      their per-pixel loops run.
++- [x] `compositor_pixels_composited` is now the gfx layer's REAL
++      post-clip store count (overdraw included) — a plain non-atomic
++      accumulator drained once per frame, because the back buffer has
++      exactly one writer.  The O0 full-screen approximation is gone.
++- [x] The 100 Hz yield-spin is gone.  The compositor blocks on a
++      wait_queue; pokes come from the keyboard/mouse IRQ enqueue points
++      (at the ring-push, not the handler tail — early returns after
++      enqueue would have skipped a tail poke), from one chokepoint in
++      the GUI syscall layer (`syscall_gui_call`/`_theme` wrappers, not
++      forty case arms), and from a 1 Hz PIT line for the clock and
++      notification expiry.  Pacing inside the drain loop is
++      `timer_sleep_ms(10)` — a BLOCKING sleep, so the pacing gap is
++      idle time the scheduler can give away.
++- [x] **`wait_queue.c` is IRQ-safe now** (all five lock sites take the
++      queue lock irqsave).  Before, waking from IRQ context was a latent
++      deadlock — an IRQ landing on a CPU that held `wq->lock` would spin
++      on its own lock forever.  The GUI pokes needed the guarantee; O7's
++      wait4/getrandom conversions inherit it.
++- [x] The `full_dirty` escape hatch is untouched (overflow, theme
++      change, resize still force a full redraw).
++- [x] Residue (unchanged from the spec): the framebuffer's cacheability
++      (PAT/WC) is real-hardware work and stays deferred — TCG cannot
++      measure it (D1).
++
++**What O4 measured** (UEFI/OVMF 1280×800, `test_gui_dirty_uefi.sh` +
++manual before/after boots of the O3 and O4 trees):
++
++- Steady state (the 1 Hz taskbar-clock frame): **1 024 000 px composited
++  per frame before — the entire screen, every second — vs 94 805 px
++  after**, a **10.8×** reduction.  The flip was already union-clipped
++  (40 960 px = exactly the 1280×32 taskbar strip); now the composite is
++  too.
++- The remaining 2.3× composited:flipped gap on a clock frame is
++  *overdraw* (desktop gradient + taskbar fill + text repainting the same
++  strip), named and accepted — eliminating overdraw is a z-culling
++  compositor, a different machine than this plan builds.
++- Idle CPU (at the shell, UEFI, `-smp 2`): `/proc/loadavg` busy
++  **42.30 → 34.37** — the compositor's yield-spin contribution is gone;
++  the remainder belongs to the USB/HID polling threads (O7's sweep
++  territory, recorded there).
++- Full redraws while idle: **0** over the watch window (was: the
++  escape-hatch events only — the bound held at ≤ 1).
++
++**Definition of done:** cursor/clock frames composite ≤ the union
++(counter-checked: 948 090 px over a ~5 s idle window, threshold 3 M,
++regression signature 8.2 M) ✓; GUI thread idle churn gone (loadavg
++delta) ✓; existing GUI cases green unmodified ✓.
++
++**Test gate:** `test_gui_dirty_uefi.sh` (new, registered; loud-skips
++without OVMF, the bl6 convention) 8/8 — GOP present, composite bounded,
++clock still paints, full redraws one-shot; `test_gui` 5/5,
++`test_gui_bad_pointers` 2/2, `test_boot_to_shell` 17/17,
++`test_perf_smoke` 19/19, `make test-unit` EXIT 0, width-sweep ratchets
++359/359 (the first draft of the pixel accounting added two uint64_t
++casts and was reworked — the ratchet's third catch in this plan). ✓
+ 
+ **Deliverable:** `patches/OPT_O4_compositor.patch`
+ 
+@@ -836,7 +873,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ | membench memmove-o 64 KiB (MB/s) | 144 | **1236** | | | | | | | |
+ | uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
+ | kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
+-| compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | | | | | |
++| compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
+ | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | | | | |
+ | idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
+ | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
+diff --git a/drivers/framebuffer/graphics.c b/drivers/framebuffer/graphics.c
+index 9f39c73..4e7fc23 100644
+--- a/drivers/framebuffer/graphics.c
++++ b/drivers/framebuffer/graphics.c
+@@ -21,6 +21,47 @@ static uint32_t  fb_height = 0;
+ static uint32_t  fb_pitch  = 0;     /* bytes per scanline              */
+ static uint8_t   r_shift, g_shift, b_shift;
+ 
++/* OPT_PLAN.md O4: the compositor's clip rectangle + the composited-pixel
++ * accumulator.
++ *
++ * The clip is set by compositor_render_dirty() to the dirty union before
++ * it re-runs the scene, so every primitive below refuses to touch back-
++ * buffer pixels outside it — the union bounds the WORK now, not just the
++ * flip.  Cleared (full screen) everywhere else, including gfx_init.
++ *
++ * px_written counts every back-buffer pixel actually stored, post-clip,
++ * overdraw included — the honest unit.  It is a plain (non-atomic)
++ * counter on purpose: the back buffer has exactly one writer (the
++ * compositor thread; boot-time demos run before that thread exists), so
++ * an atomic would buy nothing and cost on every pixel.  The compositor
++ * drains it into perfstat once per frame via gfx_take_px_counter(). */
++static int32_t  clip_x0, clip_y0;          /* inclusive */
++static int32_t  clip_x1, clip_y1;          /* exclusive */
++static uint64_t px_written;
++
++void gfx_clip_set(int32_t x, int32_t y, uint32_t w, uint32_t h) {
++    int32_t sw = (int32_t)fb_width, sh = (int32_t)fb_height;
++    if (x < 0) { w = (w > (uint32_t)-x) ? w + (uint32_t)x : 0; x = 0; }
++    if (y < 0) { h = (h > (uint32_t)-y) ? h + (uint32_t)y : 0; y = 0; }
++    clip_x0 = x;
++    clip_y0 = y;
++    clip_x1 = (x + (int32_t)w > sw) ? sw : x + (int32_t)w;
++    clip_y1 = (y + (int32_t)h > sh) ? sh : y + (int32_t)h;
++}
++
++void gfx_clip_clear(void) {
++    clip_x0 = 0;
++    clip_y0 = 0;
++    clip_x1 = (int32_t)fb_width;
++    clip_y1 = (int32_t)fb_height;
++}
++
++uint64_t gfx_take_px_counter(void) {
++    uint64_t v = px_written;
++    px_written = 0;
++    return v;
++}
++
+ static color_t make_color(uint32_t rgb) {
+     uint8_t r = (rgb >> 16) & 0xFF;
+     uint8_t g = (rgb >> 8)  & 0xFF;
+@@ -45,6 +86,8 @@ void gfx_init(void) {
+     g_shift   = fb->green_shift;
+     b_shift   = fb->blue_shift;
+ 
++    gfx_clip_clear();                      /* O4: full-screen clip default */
++
+     /* Allocate the back buffer (same size as the framebuffer). */
+     uint64_t buf_bytes = (uint64_t)fb_pitch * fb_height;
+     back_fb = kmalloc(buf_bytes);
+@@ -57,25 +100,41 @@ void gfx_putpixel(uint32_t x, uint32_t y, color_t color) {
+     if (!back_fb || x >= fb_width || y >= fb_height) {
+         return;
+     }
++    /* O4: the compositor clip bounds the work. */
++    if ((int32_t)x < clip_x0 || (int32_t)x >= clip_x1 ||
++        (int32_t)y < clip_y0 || (int32_t)y >= clip_y1) {
++        return;
++    }
+     /* Pre-compute the packed colour for our mask layout. */
+     color_t packed = make_color(color);
+     uint32_t pitch32 = fb_pitch / 4;
+     back_fb[y * pitch32 + x] = packed;
++    px_written++;
+ }
+ 
+ void gfx_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t color) {
+     if (!back_fb) return;   /* back buffer allocation failed (gfx_init) */
++    /* O4: intersect with the clip up front; the loops then run only over
++     * pixels that will actually be stored. */
++    int32_t x0 = (int32_t)x, y0 = (int32_t)y;
++    int32_t x1 = x0 + (int32_t)w, y1 = y0 + (int32_t)h;
++    if (x0 < clip_x0) x0 = clip_x0;
++    if (y0 < clip_y0) y0 = clip_y0;
++    if (x1 > clip_x1) x1 = clip_x1;
++    if (y1 > clip_y1) y1 = clip_y1;
++    if (x0 >= x1 || y0 >= y1) return;
+     color_t packed = make_color(color);
+     uint32_t pitch32 = fb_pitch / 4;
+-    for (uint32_t row = 0; row < h; row++) {
+-        uint32_t py = y + row;
+-        if (py >= fb_height) break;
+-        for (uint32_t col = 0; col < w; col++) {
+-            uint32_t px = x + col;
+-            if (px >= fb_width) break;
++    for (int32_t py = y0; py < y1; py++) {
++        for (int32_t px = x0; px < x1; px++) {
+             back_fb[py * pitch32 + px] = packed;
+         }
+     }
++    {
++        /* Local u64s, not casts: the width-sweep ratchet. */
++        uint64_t rw = (uint32_t)(x1 - x0), rh = (uint32_t)(y1 - y0);
++        px_written += rw * rh;
++    }
+ }
+ 
+ void gfx_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t color) {
+@@ -267,14 +326,9 @@ void gfx_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h) {
+ }
+ 
+ void gfx_clear(color_t color) {
+-    if (!back_fb) return;
+-    color_t packed = make_color(color);
+-    uint32_t pitch32 = fb_pitch / 4;
+-    for (uint32_t y = 0; y < fb_height; y++) {
+-        for (uint32_t x = 0; x < fb_width; x++) {
+-            back_fb[y * pitch32 + x] = packed;
+-        }
+-    }
++    /* O4: a clear is a full-screen fill; route it through the clipped,
++     * counted primitive so the accounting stays in one place. */
++    gfx_fill_rect(0, 0, fb_width, fb_height, color);
+ }
+ 
+ uint32_t gfx_get_width(void)  { return fb_width; }
+diff --git a/drivers/framebuffer/graphics.h b/drivers/framebuffer/graphics.h
+index 51b6b61..d1ae6a7 100644
+--- a/drivers/framebuffer/graphics.h
++++ b/drivers/framebuffer/graphics.h
+@@ -67,6 +67,13 @@ void gfx_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h);
+ /* Clear the back buffer to `color`. */
+ void gfx_clear(color_t color);
+ 
++/* OPT_PLAN.md O4: compositor clip rectangle + composited-pixel counter.
++ * The clip bounds every primitive's back-buffer writes; the counter is
++ * drained once per frame by the compositor into perfstat. */
++void     gfx_clip_set(int32_t x, int32_t y, uint32_t w, uint32_t h);
++void     gfx_clip_clear(void);
++uint64_t gfx_take_px_counter(void);
++
+ /* Get framebuffer dimensions. */
+ uint32_t gfx_get_width(void);
+ uint32_t gfx_get_height(void);
+diff --git a/drivers/keyboard/keyboard.c b/drivers/keyboard/keyboard.c
+index 4c298fe..c3a78b6 100644
+--- a/drivers/keyboard/keyboard.c
++++ b/drivers/keyboard/keyboard.c
+@@ -12,6 +12,7 @@
+ 
+ #include <stdint.h>
+ #include "drivers/keyboard/keyboard.h"
++#include "kernel/gui/gui.h"
+ #include "drivers/keyboard/keymap.h"
+ #include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
+@@ -82,6 +83,8 @@ static void evt_enqueue(uint32_t key, uint16_t sc, uint8_t pressed) {
+     kb_events[evt_head].mods     = mods;
+     kb_events[evt_head].pressed  = pressed;
+     evt_head = next;
++    /* OPT_PLAN.md O4: every queued key event wakes the compositor. */
++    gui_poke();
+ }
+ 
+ static uint8_t mod_bit_for_key(uint32_t key) {
+diff --git a/drivers/mouse/mouse.c b/drivers/mouse/mouse.c
+index d0829a2..a1dea07 100644
+--- a/drivers/mouse/mouse.c
++++ b/drivers/mouse/mouse.c
+@@ -9,6 +9,7 @@
+ 
+ #include <stdint.h>
+ #include "drivers/mouse/mouse.h"
++#include "kernel/gui/gui.h"
+ #include "drivers/framebuffer/graphics.h"
+ #include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
+@@ -115,6 +116,8 @@ static void evt_push(const mouse_event_t *e) {
+     }
+     mouse_events[evt_head] = *e;
+     evt_head = next;
++    /* OPT_PLAN.md O4: every queued mouse event wakes the compositor. */
++    gui_poke();
+ }
+ 
+ static void mouse_handler(struct registers *regs) {
+diff --git a/drivers/timer/pit.c b/drivers/timer/pit.c
+index 593c630..53a01ec 100644
+--- a/drivers/timer/pit.c
++++ b/drivers/timer/pit.c
+@@ -11,6 +11,7 @@
+ #include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/lib/selftest.h"
++#include "kernel/gui/gui.h"
+ #include "kernel/arch/x86_64/cpu_local.h"
+ #include "kernel/proc/scheduler.h"
+ #include "kernel/proc/thread.h"
+@@ -52,6 +53,13 @@ static void timer_irq_handler(struct registers *regs) {
+         if (sched_is_ready()) {
+             signal_tick(timer_ticks);   /* fire elapsed alarm() deadlines (SIGALRM) */
+         }
++        /* OPT_PLAN.md O4: the compositor sleeps between events now; the
++         * taskbar clock and notification expiry need one wake a second.
++         * gui_poke() is a no-op until gui_init() and IRQ-safe after the
++         * O4 wait_queue fix. */
++        if (timer_freq_hz != 0 && (timer_ticks % timer_freq_hz) == 0) {
++            gui_poke();
++        }
+     }
+     if (sched_is_ready()) {
+         sched_tick();
+diff --git a/kernel/gui/gui.c b/kernel/gui/gui.c
+index c1e2c18..e3487c5 100644
+--- a/kernel/gui/gui.c
++++ b/kernel/gui/gui.c
+@@ -26,6 +26,7 @@
+ #include "kernel/lib/spinlock.h"
+ #include "kernel/mm/kheap.h"
+ #include "kernel/proc/scheduler.h"
++#include "kernel/proc/wait_queue.h"
+ #include "kernel/proc/thread.h"
+ #include "kernel/proc/process.h"
+ #include "drivers/framebuffer/graphics.h"
+@@ -155,6 +156,23 @@ static gui_rect_t dirty_rects[GUI_MAX_DIRTY_RECTS];
+ static int dirty_count = 0;
+ static volatile int full_dirty = 1;  /* start with a full redraw */
+ 
++/* OPT_PLAN.md O4: the compositor sleeps between events instead of
++ * yield-spinning at 100 Hz.  Anything that creates work pokes it:
++ * keyboard/mouse IRQs, the GUI syscall layer, and the PIT's 1 Hz clock
++ * line (which also drives notification expiry).  gui_pending is the
++ * lost-wakeup guard: pokes can land between the "any work?" check and
++ * the sleep, so the flag is checked under gui_wake_lock. */
++static struct wait_queue gui_wq;
++static spinlock_t gui_wake_lock;
++static volatile int gui_pending;
++static volatile int gui_wq_ready;
++
++void gui_poke(void) {
++    if (!gui_wq_ready) return;
++    __atomic_store_n(&gui_pending, 1, __ATOMIC_RELEASE);
++    wq_wake_all(&gui_wq);        /* IRQ-safe since the O4 wait_queue fix */
++}
++
+ /* GUI clock. */
+ static uint64_t gui_clock_base_ticks = 0;
+ static uint64_t gui_clock_last_second = (uint64_t)-1;
+@@ -284,6 +302,10 @@ void gui_init(void) {
+     memset(icons, 0, sizeof(icons));
+     memset(notifications, 0, sizeof(notifications));
+     spinlock_init(&gui_lock);
++    wq_init(&gui_wq);
++    spinlock_init(&gui_wake_lock);
++    gui_pending = 1;                /* first frame draws without a poke */
++    gui_wq_ready = 1;
+     focused = -1;
+     cursor  = GUI_CURSOR_ARROW;
+     active_theme = default_theme;
+@@ -1651,7 +1673,19 @@ static void compute_dirty_union(int32_t *ox, int32_t *oy,
+  * unchanged areas.
+  */
+ static void compositor_render_dirty(void) {
+-    /* Re-composite the entire back buffer. */
++    /* OPT_PLAN.md O4: the union bounds the WORK now, not just the flip.
++     * Compute it up front, arm the gfx clip, and let every primitive
++     * refuse pixels outside it.  (BUG-32 ordering still holds: nothing
++     * has cleared dirty_count yet.) */
++    int32_t ux, uy;
++    uint32_t uw, uh;
++    compute_dirty_union(&ux, &uy, &uw, &uh);
++    if (uw == 0 || uh == 0) {
++        dirty_count = 0;
++        return;
++    }
++    gfx_clip_set(ux, uy, uw, uh);
++
+     draw_desktop();
+     draw_icons();
+ 
+@@ -1672,6 +1706,18 @@ static void compositor_render_dirty(void) {
+     for (int i = 0; i < na; i++) order[n++] = atop[i];
+ 
+     for (int i = 0; i < n; i++) {
++        /* O4: whole-window fast reject — a window (shadow included)
++         * that misses the union cannot contribute a pixel; skip it
++         * before its per-pixel blit loops run. */
++        const gui_win_t *w = &windows[order[i]];
++        int off = active_theme.shadow_offset;
++        int32_t wx0 = w->x - 1, wy0 = w->y - 1;
++        int32_t wx1 = w->x + (int32_t)w->w + off + 1;
++        int32_t wy1 = w->y + (int32_t)w->h + off + 1;
++        if (wx1 <= ux || wy1 <= uy ||
++            wx0 >= ux + (int32_t)uw || wy0 >= uy + (int32_t)uh) {
++            continue;
++        }
+         blit_window_decor(&windows[order[i]]);
+         blit_window_content(&windows[order[i]]);
+     }
+@@ -1681,32 +1727,19 @@ static void compositor_render_dirty(void) {
+     draw_notifications();
+     draw_cursor();
+ 
+-    /* Flip only the dirty bounding box.  Compute the union BEFORE clearing
+-     * dirty_count — the caller no longer clears it beforehand (BUG-32: the
+-     * old code cleared dirty_count in gui_compositor_tick() before calling
+-     * this function, so compute_dirty_union() always saw dirty_count==0 and
+-     * produced an empty rect, meaning gfx_flip_rect() never ran and the
+-     * visible screen never updated after the first full redraw — cursor and
+-     * taskbar clock appeared frozen even though the back buffer kept
+-     * rendering correctly). */
+-    int32_t dx, dy;
+-    uint32_t dw, dh;
+-    compute_dirty_union(&dx, &dy, &dw, &dh);
++    /* Flip the union we clipped the composite to (BUG-32: dirty_count is
++     * cleared only now, after the union has been consumed). */
+     dirty_count = 0;
+-    if (dw > 0 && dh > 0) {
+-        gfx_flip_rect(dx, dy, dw, dh);
+-    }
++    gfx_flip_rect(ux, uy, uw, uh);
++    gfx_clip_clear();
+ 
+-    /* OPT_PLAN.md O0: the partial path still re-composites the ENTIRE back
+-     * buffer (Fact 3) — count a full screen of composited pixels, honestly,
+-     * and only the union as flipped.  Composited − flipped is exactly the
+-     * headroom phase O4 exists to claim.  (Local u64s, not casts: the
+-     * width-sweep ratchet.) */
++    /* OPT_PLAN.md O0/O4: composited pixels are now the REAL post-clip
++     * store count from the gfx layer (overdraw included), not a
++     * full-screen approximation — O4's whole point, measured. */
+     {
+-        uint64_t pw = gfx_get_width(), ph = gfx_get_height();
+-        uint64_t fw = dw, fh = dh;
++        uint64_t fw = uw, fh = uh;
+         perfstat_add(PERF_COMPOSITOR_FRAMES_PARTIAL, 1);
+-        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, pw * ph);
++        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, gfx_take_px_counter());
+         perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, fw * fh);
+     }
+ }
+@@ -1757,13 +1790,12 @@ static void compositor_render(void) {
+ 
+     gfx_flip();
+ 
+-    /* OPT_PLAN.md O0: full path — whole scene composited, whole screen
+-     * flipped.  (Local u64s, not casts: the width-sweep ratchet counts
+-     * uint64_t casts in portable code and must only go down.) */
++    /* OPT_PLAN.md O0/O4: full path — the pixel count is the gfx layer's
++     * real post-clip store count now (clip is full-screen here). */
+     {
+         uint64_t pw = gfx_get_width(), ph = gfx_get_height();
+         perfstat_add(PERF_COMPOSITOR_FRAMES_FULL, 1);
+-        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, pw * ph);
++        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, gfx_take_px_counter());
+         perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, pw * ph);
+     }
+ }
+@@ -2359,11 +2391,26 @@ void gui_compositor_thread(void *arg) {
+     gui_add_icon(20, 320, "About", 6);
+ 
+     for (;;) {
+-        gui_compositor_tick();
+-        uint64_t target = timer_get_ticks() + 1; /* ~100 Hz / 100 FPS */
+-        while (timer_get_ticks() < target) {
+-            sched_yield();
++        /* Sleep until someone creates work (O4).  The pending flag is
++         * consumed under the lock so a poke racing this check cannot be
++         * lost — it either flips the flag before we test it, or finds
++         * us already on the wait queue and wakes us. */
++        uint64_t fl = spinlock_acquire_irqsave(&gui_wake_lock);
++        while (!__atomic_load_n(&gui_pending, __ATOMIC_ACQUIRE)) {
++            wq_wait(&gui_wq, &gui_wake_lock);
+         }
++        __atomic_store_n(&gui_pending, 0, __ATOMIC_RELEASE);
++        spinlock_release_irqrestore(&gui_wake_lock, fl);
++
++        /* Drain: tick until the scene settles, pacing at the historical
++         * ~100 Hz — but through a BLOCKING sleep (sleep_deadline via
++         * timer_sleep_ms), not a yield spin, so the pacing gap is idle
++         * time the scheduler can actually give away. */
++        do {
++            gui_compositor_tick();
++            timer_sleep_ms(10);
++        } while (__atomic_load_n(&gui_pending, __ATOMIC_ACQUIRE) ||
++                 full_dirty || dirty_count > 0);
+     }
+ }
+ 
+diff --git a/kernel/gui/gui.h b/kernel/gui/gui.h
+index a673f67..f27bd38 100644
+--- a/kernel/gui/gui.h
++++ b/kernel/gui/gui.h
+@@ -208,6 +208,10 @@ typedef struct {
+ /* Init the GUI subsystem (call once before compositor thread). */
+ void gui_init(void);
+ 
++/* OPT_PLAN.md O4: wake the compositor — safe from IRQ context; no-op
++ * before gui_init(). */
++void gui_poke(void);
++
+ /* Compositor tick: pump inputs, recompose dirty regions. */
+ void gui_compositor_tick(void);
+ 
+diff --git a/kernel/gui/gui_syscalls.c b/kernel/gui/gui_syscalls.c
+index 0718fe0..d4b3af0 100644
+--- a/kernel/gui/gui_syscalls.c
++++ b/kernel/gui/gui_syscalls.c
+@@ -50,7 +50,7 @@ static int require_icon_owner(int icon_idx) {
+     return gui_icon_owned_by(icon_idx, pid);
+ }
+ 
+-uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
++static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
+                           uint64_t a4, uint64_t a5) {
+     switch (op) {
+     case GUI_OP_CREATE: {
+@@ -284,7 +284,7 @@ uint64_t syscall_gui_event(uint64_t wid, uint64_t user_evt, uint64_t blocking) {
+     return (uint64_t)r;
+ }
+ 
+-uint64_t syscall_gui_theme(uint64_t subop, uint64_t a2, uint64_t a3,
++static uint64_t syscall_gui_theme_impl(uint64_t subop, uint64_t a2, uint64_t a3,
+                            uint64_t a4, uint64_t a5) {
+     (void)a4; (void)a5;
+     switch (subop) {
+@@ -310,3 +310,22 @@ uint64_t syscall_gui_theme(uint64_t subop, uint64_t a2, uint64_t a3,
+     }
+     return (uint64_t)-1;
+ }
++
++
++/* OPT_PLAN.md O4: the compositor sleeps between events, so every
++ * mutating GUI syscall pokes it on the way out — one chokepoint instead
++ * of a poke sprinkled through forty case arms.  The read-only event
++ * fetch (syscall_gui_event) deliberately does not poke. */
++uint64_t syscall_gui_call(uint64_t op, uint64_t a2, uint64_t a3,
++                          uint64_t a4, uint64_t a5) {
++    uint64_t r = syscall_gui_call_impl(op, a2, a3, a4, a5);
++    gui_poke();
++    return r;
++}
++
++uint64_t syscall_gui_theme(uint64_t subop, uint64_t a2, uint64_t a3,
++                           uint64_t a4, uint64_t a5) {
++    uint64_t r = syscall_gui_theme_impl(subop, a2, a3, a4, a5);
++    gui_poke();
++    return r;
++}
+diff --git a/kernel/proc/wait_queue.c b/kernel/proc/wait_queue.c
+index e1f7005..c21a501 100644
+--- a/kernel/proc/wait_queue.c
++++ b/kernel/proc/wait_queue.c
+@@ -1,4 +1,12 @@
+-/* kernel/proc/wait_queue.c — True blocking wait queues (H4) */
++/* kernel/proc/wait_queue.c — True blocking wait queues (H4).
++ *
++ * OPT_PLAN.md O4: the queue lock is taken irqsave now.  Before, every
++ * acquire ran with interrupts as-found, which made waking from IRQ
++ * context a latent deadlock: an IRQ landing on a CPU that already held
++ * wq->lock (any wq_wait/wq_add caller) would spin on its own lock
++ * forever.  The GUI compositor's pokes come from the keyboard/mouse/PIT
++ * handlers, so the primitive has to be honest about IRQ callers — and
++ * O7's wait4/getrandom conversions will lean on the same guarantee. */
+ 
+ #include "kernel/proc/wait_queue.h"
+ #include "kernel/proc/scheduler.h"
+@@ -15,15 +23,15 @@ void wq_init(struct wait_queue *wq) {
+ 
+ void wq_add_entry(struct wait_queue *wq, struct wq_entry *entry) {
+     if (!wq || !entry) return;
+-    spinlock_acquire(&wq->lock);
++    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
+     entry->next = wq->head;
+     wq->head = entry;
+-    spinlock_release(&wq->lock);
++    spinlock_release_irqrestore(&wq->lock, wqfl);
+ }
+ 
+ void wq_remove_entry(struct wait_queue *wq, struct wq_entry *entry) {
+     if (!wq || !entry) return;
+-    spinlock_acquire(&wq->lock);
++    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
+     struct wq_entry **pp = &wq->head;
+     while (*pp) {
+         if (*pp == entry) {
+@@ -32,7 +40,7 @@ void wq_remove_entry(struct wait_queue *wq, struct wq_entry *entry) {
+         }
+         pp = &(*pp)->next;
+     }
+-    spinlock_release(&wq->lock);
++    spinlock_release_irqrestore(&wq->lock, wqfl);
+ }
+ 
+ void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
+@@ -58,7 +66,7 @@ void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
+  * thread, which could still be mid context-switch-out. */
+ void wq_wake_one(struct wait_queue *wq) {
+     if (!wq) return;
+-    spinlock_acquire(&wq->lock);
++    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
+     struct wq_entry *w = wq->head;
+     if (w) {
+         wq->head = w->next;
+@@ -70,12 +78,12 @@ void wq_wake_one(struct wait_queue *wq) {
+             }
+         }
+     }
+-    spinlock_release(&wq->lock);
++    spinlock_release_irqrestore(&wq->lock, wqfl);
+ }
+ 
+ void wq_wake_all(struct wait_queue *wq) {
+     if (!wq) return;
+-    spinlock_acquire(&wq->lock);
++    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
+     struct wq_entry *w = wq->head;
+     wq->head = NULL;
+     while (w) {
+@@ -88,12 +96,12 @@ void wq_wake_all(struct wait_queue *wq) {
+         }
+         w = w->next;
+     }
+-    spinlock_release(&wq->lock);
++    spinlock_release_irqrestore(&wq->lock, wqfl);
+ }
+ 
+ int wq_wake_n(struct wait_queue *wq, int n) {
+     if (!wq || n <= 0) return 0;
+-    spinlock_acquire(&wq->lock);
++    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
+     int woken = 0;
+     struct wq_entry *w = wq->head;
+     struct wq_entry *prev = NULL;
+@@ -113,6 +121,6 @@ int wq_wake_n(struct wait_queue *wq, int n) {
+             w = w->next;
+         }
+     }
+-    spinlock_release(&wq->lock);
++    spinlock_release_irqrestore(&wq->lock, wqfl);
+     return woken;
+ }
+diff --git a/tests/integration/cases/test_gui_dirty_uefi.sh b/tests/integration/cases/test_gui_dirty_uefi.sh
+new file mode 100755
+index 0000000..7179a62
+--- /dev/null
++++ b/tests/integration/cases/test_gui_dirty_uefi.sh
+@@ -0,0 +1,100 @@
++#!/usr/bin/env bash
++# test_gui_dirty_uefi.sh — the OPT_PLAN.md O4 compositor gate, on the only
++# firmware that has pixels.
++#
++# Measured fact from O0 (recorded in the plan): the BIOS boot path sets no
++# VBE mode, so every BIOS-booted GUI case exercises window logic over a
++# 0×0 framebuffer.  This case boots OVMF (GOP framebuffer) and asserts the
++# O4 contract on the real pixel counters:
++#
++#   - idle steady state composites BOUNDED work: the 1 Hz taskbar clock
++#     redraw is clipped to the dirty union now, so a ~5 s idle window
++#     costs well under one full frame of composite (measured post-O4:
++#     ~95 k px per clock frame on 1280×800; pre-O4 it was the whole
++#     1 024 000 px screen, every time — a 10.8× gap the threshold below
++#     sits between with an order of magnitude of slack on each side);
++#   - the flip path still delivers those clock frames (flipped delta > 0);
++#   - full redraws stay one-shot events (frames_full grows by ≤ 1 while
++#     we watch).
++#
++# Skip convention mirrors bl6_uefi_smoke.sh: no OVMF → loud skip, not a
++# silent green.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "GUI dirty-rect compositor on UEFI (OPT_PLAN O4)"
++
++OVMF="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
++OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
++if [ ! -f "$OVMF" ] || [ ! -f "$OVMF_VARS" ]; then
++    echo "  [gui-uefi] SKIP: OVMF firmware not found at $OVMF"
++    echo "             set OVMF_CODE=/path/to/OVMF_CODE.fd to override."
++    exit 0
++fi
++
++LOG="$IL_LOGDIR/gui_dirty_uefi.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++VARS_COPY="$IL_LOGDIR/gui_dirty_uefi_vars.fd"
++cp "$OVMF_VARS" "$VARS_COPY"
++
++# UEFI boots slower than BIOS (~40 s to the shell under TCG); the two
++# /proc/perf reads bracket an idle window that spans several 1 Hz clock
++# frames.
++il_send_delay 50
++il_send "cat /proc/perf"
++il_send_delay 5
++il_send "cat /proc/perf"
++il_send_delay 2
++il_send "exit"
++IL_SELFTEST=fast il_run_qemu "$LOG" 90 \
++    -drive "if=pflash,format=raw,readonly=on,file=$OVMF" \
++    -drive "if=pflash,format=raw,file=$VARS_COPY"
++
++il_assert_grep "$LOG" "GOP framebuffer located"        "UEFI GOP framebuffer present"
++il_assert_grep "$LOG" "auralite#"                      "reaches the shell"
++il_assert_count "$LOG" "^compositor_pixels_composited" 2 "two perf reads captured"
++
++vals() { grep -aE "^$1 [0-9]+" "$LOG" | grep -oE '[0-9]+'; }
++first() { echo "$1" | head -1; }
++last()  { echo "$1" | tail -1; }
++
++PX=$(vals compositor_pixels_composited)
++FL=$(vals compositor_pixels_flipped)
++FF=$(vals compositor_frames_full)
++PX_D=$(( $(last "$PX") - $(first "$PX") ))
++FL_D=$(( $(last "$FL") - $(first "$FL") ))
++FF_D=$(( $(last "$FF") - $(first "$FF") ))
++
++# Idle composite work bounded: post-O4 measures ~0.9 M px over this
++# window; pre-O4 measured ~8 M (one full screen per clock frame).  The
++# 3 M threshold sits an order of magnitude under the regression and a
++# comfortable 3× over the healthy value (D2: a ratchet against absurdity,
++# not a microbenchmark).
++if [ "$PX_D" -gt 0 ] && [ "$PX_D" -lt 3000000 ]; then
++    il_pass "idle composite bounded by the union (delta ${PX_D} px over ~5 s)"
++else
++    il_fail "idle composite unbounded: delta ${PX_D} px over ~5 s (limit 3000000)"
++fi
++
++if [ "$FL_D" -gt 0 ]; then
++    il_pass "clock frames still reach the screen (flipped delta ${FL_D} px)"
++else
++    il_fail "no pixels flipped while idle — the clock stopped painting"
++fi
++
++if [ "$FF_D" -le 1 ]; then
++    il_pass "full redraws stay one-shot (delta $FF_D)"
++else
++    il_fail "full redraws while idle: delta $FF_D (limit 1)"
++fi
++
++il_assert_no_grep "$LOG" "PANIC"        "no kernel panic"
++il_assert_no_grep "$LOG" "TRIPLE FAULT" "no triple-fault"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 3f0b77d..d404f39 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -49,6 +49,7 @@ ALL_CASES=(
+     test_boot_to_shell
+     test_perf_smoke
+     test_selftest_modes
++    test_gui_dirty_uefi
+     test_shell_commands
+     test_syscalls
+     test_selftest

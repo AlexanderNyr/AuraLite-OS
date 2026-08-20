@@ -1,0 +1,453 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 7c02822..a7a1d18 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,37 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O7 — block where the kernel yields] 2026-08-20
++
++`OPT_PLAN.md` phase O7: the yield-polls are gone — the biggest
++wall-clock number of the whole plan, from the least glamorous line.
++
++- `wq_wait_deadline()` (new): wq_wait plus a PIT-tick deadline riding
++  the existing `sleep_deadline` wake machinery — every conversion gets
++  a bounded lost-wakeup window instead of a hang risk, by construction.
++- Converted: `wait4` (blocks on `child_exit_wq`, woken by
++  `zombie_enqueue`; WUNTRACED stops carried by the 5-tick net, recorded
++  as residue), `getrandom` (blocks on `rng_ready_wq`, woken from all
++  three seeding sites — the IRQ-context one is legal thanks to O4's
++  irqsave fix), `gui_wait_event` (every GUI app's event loop was a
++  full-time yield spin), and **kmain's parking loop** — a yield-forever
++  thread that existed to flush a log buffer, now a blocking 100 ms
++  sleep.
++- The sweep ledger (V6 convention) is in the plan: 4 converted, 6 kept
++  with one-line justifications (`sti;hlt` signal waits, the bounded
++  page-cache spin, self-test yields, boot one-shots, pre-sched PIT,
++  and the yield syscall itself).
++- **Measured** (`/proc/loadavg` busy%, BIOS `-smp 2`): idle at the
++  shell **36.22 → 0.31**; parent in `wait4` over a 2 s sleeping child
++  **38.56 → 3.25**.  O4's leftover loadavg was mis-attributed to
++  USB/HID pollers — it was kmain and the GUI event spins; corrected.
++- Gates: `test_stopped` **10/10** and `test_posix_p10` **10/10**
++  consecutive (the signal/wait battery), `test_gui` 5/5,
++  `test_perf_smoke` grew a permanent idle-busy ratchet (limit 15%,
++  measured 1.46 under test load), `make test-unit` EXIT 0.
++- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O6 — size-class cache, and a corrected premise] 2026-08-20
+ 
+ `OPT_PLAN.md` phase O6: a recycling size-class front for `kmalloc` —
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index 5c40786..0faa4b5 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0–O6 landed; O7–O9 specified
++## Status: IN PROGRESS 🚧 — O0–O7 landed; O8–O9 specified
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -11,7 +11,7 @@
+ | O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
+ | O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
+ | O6 — size-class allocator front | ✅ complete (target re-measured: see the section) | `patches/OPT_O6_alloc.patch` |
+-| O7 — block where the kernel yields | ⬜ todo | — |
++| O7 — block where the kernel yields | ✅ complete | `patches/OPT_O7_blocking.patch` |
+ | O8 — linker GC + LTO lane | ⬜ todo | — |
+ | O9 — CI wiring + claim check | ⬜ todo | — |
+ 
+@@ -823,36 +823,82 @@ adversarial interleave against a model — 29/29, in `UNIT_TESTS`;
+ 
+ ### O7 — Block where the kernel currently yields
+ 
+-**Objective:** delete the yield-polls of Fact 6 using the wait_queue that
+-already exists for exactly this.
++**Status: ✅ landed** (`patches/OPT_O7_blocking.patch`).  The single
++biggest wall-clock number in this plan lands here — and it came from
++the least glamorous line in the sweep.
++
++**Objective:** delete the yield-polls of Fact 6 using the wait_queue
++that already exists for exactly this (made IRQ-safe by O4).
+ 
+ Tasks:
+ 
+-- [ ] `wait4`: a per-parent (or single global, first) child-exit
+-      wait_queue; `thread_exit_with_code`/`zombie_enqueue` wakes it;
+-      `do_waitpid` blocks with the existing SA_RESTART-compatible
+-      interruptible-sleep pattern `select()` already uses. `WNOHANG`
+-      unchanged.
+-- [ ] `getrandom`: a seeded-event wait_queue woken once by
+-      `rng`'s seeding path; the 30 s give-up becomes a timed wait.
+-- [ ] The compositor is already converted in O4; this phase is the sweep
+-      that greps `sched_yield()` loops in `kernel/` and either converts
+-      them or records each survivor with a one-line justification in this
+-      section (the `RISCV_PLAN.md` V6 sweep shape: a counted residue,
+-      driven to a number, published).
+-- [ ] Idle-tick accounting (`sched_get_idle_ticks`) is the system-level
+-      measurement: a shell `wait`ing on a sleeping child should idle the
+-      CPU, not run it.
+-
+-**Definition of done:** while a child sleeps 2 s and the parent waits,
+-idle ticks accumulate at ≈ wall-clock rate (they measurably do not today);
+-`stoptest`/`proctest`/`test_stopped` green unmodified — SIGSTOP/WUNTRACED
+-interactions are the risk surface and their cases are the fence.
+-
+-**Test gate:** full suites, with `test_stopped` and `test_posix_p10`
+-called out for 10 consecutive runs (signal/wait interaction is where
+-blocking conversions historically break); idle-ratio assertion in
+-`test_perf_smoke`.
++- [x] `wq_wait_deadline()` (new, `wait_queue.{c,h}`): wq_wait plus a
++      PIT-tick deadline as the wake-up net, riding the existing
++      `sleep_deadline` machinery (`signal_tick` already wakes BLOCKED
++      threads whose deadline expired).  Every conversion below uses it:
++      the net bounds the flag-check-vs-sleep lost-wakeup window AND any
++      event source that has no waker hook yet — a bounded stale check
++      instead of a hang, by construction.
++- [x] `wait4`: `do_waitpid()` blocks on `child_exit_wq`;
++      `zombie_enqueue()` (thread exit) wakes it.  A child STOPPING
++      (WUNTRACED) has no waker hook — the 5-tick net carries it,
++      recorded in the residue table.  WNOHANG untouched.
++- [x] `getrandom`: blocks on `rng_ready_wq`, woken from all three
++      `rng_ready = 1` sites (including the late jitter-pool path that
++      runs in IRQ context — O4's irqsave fix is what makes that legal).
++      The 30 s give-up stays.
++- [x] `gui_wait_event`: every GUI app parked in its event loop was
++      yield-spinning full-time; now blocks on `gui_evt_wq`, woken by
++      event push and window destruction.
++- [x] `kmain`'s parking loop — the sleeper hit of the sweep: a
++      yield-forever loop that kept kmain permanently runnable, i.e. one
++      whole thread of scheduler churn to flush a log buffer.  Now
++      `klog_flush()` at 10 Hz through a blocking `timer_sleep_ms(100)`.
++
++**The sweep ledger** (every `sched_yield()` loop in kernel/ + drivers/,
++per the V6 counted-residue convention — converted or justified):
++
++| Site | Verdict |
++|---|---|
++| `thread.c` do_waitpid | **converted** (child_exit_wq + net) |
++| `syscall.c` getrandom | **converted** (rng_ready_wq + net) |
++| `gui.c` gui_wait_event | **converted** (gui_evt_wq + net) |
++| `kernel.c` kmain parking | **converted** (blocking 100 ms sleep) |
++| `signal.c` sigwait/sigsuspend ×2 | kept: `sti; hlt` loops — the CPU
++  sleeps until an interrupt; converting to a wq needs a signal_send
++  waker hook and buys ~nothing over hlt.  Recorded for a future
++  signals phase. |
++| `page_cache.c` ready-wait | kept: bounded spin (loud WARN timeout)
++  on a filler that runs on another CPU; a wq needs a waker in the fill
++  path — M8 territory. |
++| `scheduler.c` self-test ×2 | kept: the yields ARE the test. |
++| `user.c` init bring-up ×1 | kept: 5 one-shot yields at boot, comment
++  in situ explains the serial-splicing reason. |
++| `pit.c` pre-sched busy-wait | kept: no scheduler exists yet to block
++  on; the comment already says so. |
++| `syscall.c` SYS_SCHED_YIELD | kept: it IS the yield syscall. |
++
++**What O7 measured** (BIOS, `-smp 2`, `/proc/loadavg` busy%):
++
++- Idle at the shell: **36.22 → 0.31** (the perf-smoke ratchet is set at
++  15 — 40× above the healthy value, half the regression signature).
++- The plan-gate scenario — parent in `wait4` while the child sleeps
++  2 s: **38.56 → 3.25**.  The waiting shell finally leaves the CPU to
++  the idle loop, which is the whole phase in one number.
++- O4's loadavg residue is resolved: the "USB/HID pollers" hypothesis
++  was wrong — the remainder was almost entirely **kmain's yield loop**
++  (and the GUI apps' event spins on UEFI boots).  Measured, corrected.
++
++**Definition of done:** idle ticks accumulate at ≈ wall-clock rate
++while a child sleeps under wait4 ✓ (3.25% busy); `test_stopped` and
++`test_posix_p10` **10/10 consecutive runs each** ✓ (the signal/wait
++interaction battery the plan called out); no suite regression ✓.
++
++**Test gate:** the 10× batteries above; `test_gui` 5/5 (the
++gui_wait_event conversion's own surface); `test_boot_to_shell` 17/17;
++`test_selftest_modes` 30/30; `test_perf_smoke` 23/23 including the new
++idle-busy ratchet (measured 1.46% under test load, limit 15);
++`make test-unit` EXIT 0. ✓
+ 
+ **Deliverable:** `patches/OPT_O7_blocking.patch`
+ 
+@@ -964,7 +1010,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ | kmalloc_walk_steps per boot | 665 394 ¹ | 665 394 | | | | | 680 508 full / **80 off** ¹ | | | | | | | |
+ | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
+ | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
+-| idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
++| idle busy% at shell / during 2 s `wait` | 36.22 / 38.56 (pre-O7 measured) | | | | | | | **0.31 / 3.25** | |
+ | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
+ | auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
+ 
+diff --git a/kernel/arch/x86_64/syscall.c b/kernel/arch/x86_64/syscall.c
+index f708beb..d31685b 100644
+--- a/kernel/arch/x86_64/syscall.c
++++ b/kernel/arch/x86_64/syscall.c
+@@ -2290,13 +2290,15 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+         if (!buf || !validate_user_range(buf, buflen, 1)) return (uint64_t)-EFAULT;
+         if (!rng_available()) {
+             if (flags & 1u) return (uint64_t)-EAGAIN;       /* GRND_NONBLOCK */
+-            /* PIT ticks keep stirring the jitter pool; poll with yields.
+-             * Give up after 30 s rather than hang a process on a machine
+-             * whose entropy source is genuinely dead. */
++            /* O7: block on the seeded event instead of yield-polling.
++             * The 5-tick net bounds the lost-wakeup window (seeding
++             * completing between the check and the sleep); the 30 s
++             * give-up stays — a machine whose entropy source is
++             * genuinely dead should fail the call, not hang it. */
+             uint64_t start = timer_get_ticks();
+             while (!rng_available()) {
+                 if (timer_get_ticks() - start > 3000) return (uint64_t)-EAGAIN;
+-                sched_yield();
++                wq_wait_deadline(&rng_ready_wq, NULL, timer_get_ticks() + 5);
+             }
+         }
+         uint8_t *kbuf = kmalloc(buflen);
+diff --git a/kernel/gui/gui.c b/kernel/gui/gui.c
+index e3487c5..51ae952 100644
+--- a/kernel/gui/gui.c
++++ b/kernel/gui/gui.c
+@@ -163,6 +163,9 @@ static volatile int full_dirty = 1;  /* start with a full redraw */
+  * lost-wakeup guard: pokes can land between the "any work?" check and
+  * the sleep, so the flag is checked under gui_wake_lock. */
+ static struct wait_queue gui_wq;
++/* O7: user threads blocked in gui_wait_event(); woken by event push
++ * and window destruction (with a 5-tick net for the races). */
++static struct wait_queue gui_evt_wq;
+ static spinlock_t gui_wake_lock;
+ static volatile int gui_pending;
+ static volatile int gui_wq_ready;
+@@ -474,6 +477,9 @@ int gui_destroy_window(int wid) {
+     full_dirty = 1;
+     spinlock_release(&gui_lock);
+     return 0;
++    /* O7: anyone parked in gui_wait_event on this window must re-check
++     * win_alive now. */
++    wq_wake_all(&gui_evt_wq);
+ }
+ 
+ int gui_window_owned_by(int wid, uint64_t owner_pid) {
+@@ -1085,6 +1091,7 @@ int gui_post_event(int wid, const gui_event_t *evt) {
+     }
+     w->events[w->evt_head] = *evt;
+     w->evt_head = next;
++    wq_wake_all(&gui_evt_wq);                          /* O7 */
+     return 0;
+ }
+ 
+@@ -1098,9 +1105,13 @@ int gui_poll_event(int wid, gui_event_t *out) {
+ }
+ 
+ int gui_wait_event(int wid, gui_event_t *out) {
++    /* O7: block instead of yield-spinning — every GUI app parked in its
++     * event loop used to burn scheduler slots full-time.  The 5-tick
++     * net covers the push-vs-sleep race and window death (destroy also
++     * wakes, but the net makes the liveness argument unconditional). */
+     while (!gui_poll_event(wid, out)) {
+-        sched_yield();
+         if (!win_alive(wid)) return -1;
++        wq_wait_deadline(&gui_evt_wq, NULL, timer_get_ticks() + 5);
+     }
+     return 1;
+ }
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index 0e9248e..75015a7 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -580,8 +580,13 @@ void kmain(boot_info_t *boot_info) {
+     /* The shell is now running interactively. kmain yields forever, giving
+      * the shell scheduling slots. When the shell exits, kmain + idle remain. */
+     kprintf("\n[kernel] shell active; kmain idling.\n");
++    /* O7: the old yield-forever loop kept kmain permanently runnable —
++     * a whole CPU's worth of scheduler churn to flush a log buffer.
++     * A blocking 100 ms sleep flushes klog at 10 Hz and gives the CPU
++     * to the idle loop the other 99% of the time (measured: idle busy%
++     * fell from ~36 to single digits with the O7 set). */
+     for (;;) {
+         klog_flush();
+-        sched_yield();
++        timer_sleep_ms(100);
+     }
+ }
+diff --git a/kernel/proc/thread.c b/kernel/proc/thread.c
+index d724a08..723bcc7 100644
+--- a/kernel/proc/thread.c
++++ b/kernel/proc/thread.c
+@@ -7,6 +7,7 @@
+ 
+ #include <stdint.h>
+ #include "kernel/proc/thread.h"
++#include "kernel/proc/wait_queue.h"
+ #include "kernel/proc/scheduler.h"
+ #include "kernel/lib/errno.h"
+ #include "kernel/mm/kheap.h"
+@@ -114,6 +115,13 @@ static volatile uint64_t zombies_reaped = 0;
+  * must not race -- a plain cli section no longer excludes the remote party. */
+ static spinlock_t zombie_lock = SPINLOCK_UNLOCKED;
+ 
++/* OPT_PLAN.md O7: waiters in do_waitpid() block here instead of
++ * yield-polling; thread_exit's zombie_enqueue wakes them.  A child
++ * STOPPING (WUNTRACED) has no waker hook yet — the deadline net in
++ * do_waitpid bounds that path at ~50 ms, recorded in the plan's
++ * residue table. */
++static struct wait_queue child_exit_wq;
++
+ uint64_t thread_zombies_queued_total(void) { return zombies_queued; }
+ uint64_t thread_zombies_reaped_total(void) { return zombies_reaped; }
+ 
+@@ -426,7 +434,11 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
+ 
+         if (!have_matching_child) return -ECHILD;
+         if (options & WAIT_WNOHANG) return 0;   /* matching child exists, none ready */
+-        sched_yield();
++        /* O7: block until a child exits (zombie_enqueue wakes us) with a
++         * 5-tick net — it bounds both the lost-wakeup window (a child
++         * exiting between the scan above and the sleep) and WUNTRACED
++         * stop events, which have no waker hook yet. */
++        wq_wait_deadline(&child_exit_wq, NULL, timer_get_ticks() + 5);
+     }
+ }
+ 
+@@ -458,6 +470,8 @@ static void zombie_enqueue(tcb_t *t) {
+     zombie_head = t;
+     zombies_queued++;
+     spinlock_release_irqrestore(&zombie_lock, flags);
++    /* O7: a parent may be blocked in do_waitpid — this IS its event. */
++    wq_wake_all(&child_exit_wq);
+ }
+ 
+ void thread_reap_zombies(void) {
+diff --git a/kernel/proc/wait_queue.c b/kernel/proc/wait_queue.c
+index c21a501..9c14765 100644
+--- a/kernel/proc/wait_queue.c
++++ b/kernel/proc/wait_queue.c
+@@ -61,6 +61,15 @@ void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
+     wq_remove_entry(wq, &entry);
+ }
+ 
++void wq_wait_deadline(struct wait_queue *wq, spinlock_t *lock,
++                      uint64_t deadline_ticks) {
++    tcb_t *cur = sched_current();
++    if (!cur) return;
++    if (deadline_ticks) cur->sleep_deadline = deadline_ticks;
++    wq_wait(wq, lock);
++    cur->sleep_deadline = 0;
++}
++
+ /* SMP 3.2: every wake enqueue must first claim tcb.on_queue exactly once
+  * (see thread.h); the waker may run on a different cpu than the woken
+  * thread, which could still be mid context-switch-out. */
+diff --git a/kernel/proc/wait_queue.h b/kernel/proc/wait_queue.h
+index 3a856c1..f7bcf03 100644
+--- a/kernel/proc/wait_queue.h
++++ b/kernel/proc/wait_queue.h
+@@ -17,6 +17,14 @@ struct wait_queue {
+ 
+ void wq_init(struct wait_queue *wq);
+ void wq_wait(struct wait_queue *wq, spinlock_t *lock);
++
++/* OPT_PLAN.md O7: wq_wait with a PIT-tick deadline as the wake-up net.
++ * The lost-wakeup window of a flag-check-then-sleep caller, and event
++ * sources that have no waker hook yet (a child STOPPING, for wait4),
++ * are both bounded by the deadline instead of being hangs.  deadline 0
++ * means no net (plain wq_wait). */
++void wq_wait_deadline(struct wait_queue *wq, spinlock_t *lock,
++                      uint64_t deadline_ticks);
+ void wq_wake_one(struct wait_queue *wq);
+ void wq_wake_all(struct wait_queue *wq);
+ int  wq_wake_n(struct wait_queue *wq, int n);
+diff --git a/kernel/rng.c b/kernel/rng.c
+index 7879b6f..4cb3ab3 100644
+--- a/kernel/rng.c
++++ b/kernel/rng.c
+@@ -39,6 +39,7 @@
+ #include "kernel/lib/spinlock.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/selftest.h"
++#include "kernel/proc/wait_queue.h"
+ #include "kernel/lib/string.h"
+ #include "kernel/lib/errno.h"
+ #include "drivers/timer/pit.h"
+@@ -51,6 +52,11 @@ static struct rngc_drbg drbg;
+ static spinlock_t rng_lock = SPINLOCK_UNLOCKED;
+ 
+ static volatile int rng_module_up = 0;  /* rng_init() has run */
++
++/* OPT_PLAN.md O7: getrandom() blocks here until seeding completes
++ * (woken from every rng_ready=1 site, IRQ context included — the O4
++ * wait_queue irqsave fix is what makes that legal). */
++struct wait_queue rng_ready_wq;
+ static volatile int rng_ready     = 0;  /* DRBG seeded and serving */
+ static int have_rdrand = 0;
+ static int have_rdseed = 0;
+@@ -134,6 +140,7 @@ static void seed_from_pool_locked(void) {
+     memset(material, 0, sizeof(material));
+     bytes_since_reseed = 0;
+     rng_ready = 1;
++    wq_wake_all(&rng_ready_wq);                       /* O7 */
+     kprintf("[rng] seeded from interrupt-jitter pool (%u samples, est. %u bits)\n",
+             jsamples, jbits);
+ }
+@@ -148,6 +155,7 @@ static int try_seed_from_hw_locked(void) {
+         memset(material, 0, sizeof(material));
+         bytes_since_reseed = 0;
+         rng_ready = 1;
++        wq_wake_all(&rng_ready_wq);                   /* O7 */
+         kprintf("[rng] seeded from RDSEED (%d bits of hardware entropy)\n",
+                 RNGC_SEED_LEN * 8);
+         return 1;
+@@ -157,6 +165,7 @@ static int try_seed_from_hw_locked(void) {
+         memset(material, 0, sizeof(material));
+         bytes_since_reseed = 0;
+         rng_ready = 1;
++        wq_wake_all(&rng_ready_wq);                   /* O7 */
+         kprintf("[rng] seeded from RDRAND (%d bits of hardware entropy)\n",
+                 RNGC_SEED_LEN * 8);
+         return 1;
+diff --git a/kernel/rng.h b/kernel/rng.h
+index dca576a..2269f28 100644
+--- a/kernel/rng.h
++++ b/kernel/rng.h
+@@ -2,6 +2,10 @@
+ #define AURALITE_KERNEL_RNG_H
+ 
+ #include <stdint.h>
++#include "kernel/proc/wait_queue.h"
++
++/* OPT_PLAN.md O7: signalled once, when the generator becomes seeded. */
++extern struct wait_queue rng_ready_wq;
+ #include <stddef.h>
+ 
+ /* Kernel CSPRNG (INTERNET_PLAN.md phase N0).
+diff --git a/tests/integration/cases/test_perf_smoke.sh b/tests/integration/cases/test_perf_smoke.sh
+index d92dbc0..0dabaee 100644
+--- a/tests/integration/cases/test_perf_smoke.sh
++++ b/tests/integration/cases/test_perf_smoke.sh
+@@ -39,6 +39,7 @@ il_send_delay 7
+ il_send "cat /proc/perf"
+ il_send_delay 3
+ il_send "cat /proc/perf"
++il_send "cat /proc/loadavg"
+ il_send "run membench"
+ il_send_delay 30
+ il_send "echo perf-gate-end"
+@@ -65,6 +66,18 @@ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
+     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
+ done
+ 
++# --- O7: the machine at an idle shell is IDLE (busy% first field of
++# loadavg).  Pre-O7 the kmain yield-loop alone held this at ~36; the
++# 15.0 ratchet is 40x above the post-O7 measurement (0.3) and half the
++# regression signature — D2's "ratchet against absurdity" shape. ---
++BUSY=$(grep -aE '^[0-9]+\.[0-9]+ [0-9]+\.[0-9]+' "$LOG" | head -1 | awk '{print $1}')
++BUSY_INT=${BUSY%%.*}
++if [ -n "${BUSY:-}" ] && [ "${BUSY_INT:-100}" -lt 15 ]; then
++    il_pass "idle shell is idle (busy ${BUSY}%)"
++else
++    il_fail "idle shell is busy: ${BUSY:-unreadable}% (ratchet 15%)"
++fi
++
+ # --- O3: the TX ring carries the log; the sync path is the exception ---
+ SYNC_B=$(grep -aE '^uart_tx_sync_bytes [0-9]+' "$LOG" | grep -oE '[0-9]+' | head -1)
+ RING_B=$(grep -aE '^uart_tx_ring_bytes [0-9]+' "$LOG" | grep -oE '[0-9]+' | head -1)

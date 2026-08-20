@@ -2,6 +2,31 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O9 — CI wiring + the claim check; OPT_PLAN COMPLETE] 2026-08-20
+
+`OPT_PLAN.md` phase O9, and the plan closes: O0–O9 all landed, the
+ledger is in §6, the residue in §7, and the document can no longer
+disagree with the tree without failing the build.
+
+- `tools/check_opt_claims.py` (new, the `check_fixes_claims.py` shape):
+  every ✅ phase ties to an existing deliverable patch and a matching
+  section status; the O0 rig must be present AND registered (perfstat +
+  `/proc/perf`, membench, three integration gates in `run_all.sh`, four
+  host unit gates in `UNIT_TESTS`); every §6 counter must still be
+  named in perfstat.c; header consistency both ways.  `--selftest`
+  plants a missing-deliverable violation and must catch it.
+- Wired into `make test-unit` (`tests/unit/test_opt_claims.sh`) and as
+  a CI step next to the fixes/maturity claim checks.
+- `docs/status.md` gained the Performance section — the headline table
+  (memcpy 11→82 MB/s TCG, boot −1 s, compositor 1 024 000→94 805 px per
+  clock frame, idle 36.2→0.3% busy, initrd −65%) AND the honesty notes
+  (TCG-serial caveat, the Fact 5 correction, real-hardware residue).
+- §7 residue matrix finalised: what transfers to i386/rv64/a64 as-is,
+  what is n/a and why, and the named real-hardware deferrals (PAT/WC,
+  PCID, ERMSB tuning, the ThinLTO entry bar).
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6/§7 update and this changelog entry.
+
 ## [OPT O8 — linker GC + the LTO lane] 2026-08-20
 
 `OPT_PLAN.md` phase O8: nothing unreachable ships anymore.

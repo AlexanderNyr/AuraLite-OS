@@ -91,6 +91,16 @@ jobs:
       - name: Fixes plan claim check
         run: python3 tools/check_fixes_claims.py --check
 
+      # OPT_PLAN O9.  The optimization plan documents two of its own
+      # phases whose first drafts were wrong in ways only measurement
+      # caught (O1's rep-movsb placebo, O6's phantom target) -- so its
+      # checkboxes are tied to the tree: every ✅ phase must name an
+      # existing patch, its section must agree, the O0 measuring rig
+      # must be present AND registered, and every counter the §6 ledger
+      # quotes must still exist in perfstat.c.
+      - name: Optimization plan claim check
+        run: python3 tools/check_opt_claims.py --check
+
       # AUDIT_A3.  MATURITY_PLAN.md's phase statuses are prose, and prose
       # does not fail a build: M3 and M4 had landed while still listed
       # "pending", M6 understated tcp.c, and M10 asked for USB work that

@@ -1,0 +1,849 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 9ecb86c..3bd5b9b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,42 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O5 — precise TLB shootdown] 2026-08-19
++
++`OPT_PLAN.md` phase O5: a one-page unmap no longer costs every CPU its
++entire TLB.
++
++- `kernel/arch/x86_64/tlb_shootdown.{c,h}` rewritten: per-target
++  mailboxes `{seq, cr3, va, npages}`, addressed fixed IPIs
++  (`lapic_send_ipi_fixed` + `smp_get_lapic_id`, both new exports), and
++  a handler that `invlpg`s up to 32 pages or degrades to the old full
++  CR3 reload.  **Fire-and-forget by design, not oversight**: an ack
++  protocol deadlocks against `vm_lock` (sender waits under the lock for
++  a CPU spinning on that lock with IRQs off), so the correctness rule
++  is "anything a handler cannot reconstruct becomes a FULL flush" —
++  collapsed-IPI seq gaps and torn payloads both degrade, never narrow.
++- Sender-side skip filter: `paging_switch_to()` publishes each CPU's
++  CR3; targets on a different address space are skipped as an
++  architectural fact (no PCID ⇒ CR3 load flushes everything).  PCID
++  residue recorded in the plan — it breaks exactly that fact.
++- All five broadcast sites converted: unmap and both COW resolutions
++  send one page; mprotect sends its window; fork's scattered COW
++  marking sends npages=0 (full, but only for the parent's CR3).
++- `kernel/arch/x86_64/tlb_policy.h` (new): the decision core as pure C;
++  `tests/unit/test_tlb_policy.c` (14 checks, in `UNIT_TESTS`) pins seq
++  gaps, the 2^64 wrap, npages boundaries and the skip truth table.
++  `test_mprotect.c` gained stubs for the new API (and `mprotect.c` reads
++  its address space through a `tlb_current_asid()` hook so the host test
++  does not execute a privileged CR3 read).
++- `perfstat`: `tlb_shootdowns_ranged` + `tlb_ipis_skipped` join `_full`.
++  Boot measured: **8 full broadcasts → 4 full + 4 ranged** (the fulls
++  are fork's deliberate scattered-marking requests).
++- Gate: 10/10 consecutive `test_fpu_smp` and 10/10 `test_mmap_shared`
++  at `-smp 4` (plus mmap_file/fork_cow/selftest), stale-TLB detector
++  silent throughout; `make test-unit` EXIT 0.
++- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O4 — compositor: composite the union, sleep when idle] 2026-08-19
+ 
+ `OPT_PLAN.md` phase O4: the dirty union bounds the compositor's WORK
+diff --git a/Makefile b/Makefile
+index b68b598..902e0dc 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1869,7 +1869,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_printf_fmt \
+                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
+                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
+-                $(BUILD_DIR)/test_uart_ring \
++                $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
+                 $(BUILD_DIR)/test_bitmap \
+                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
+                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
+@@ -2321,6 +2321,12 @@ $(BUILD_DIR)/test_uart_ring: tests/unit/test_uart_ring.c drivers/uart/uart_ring.
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# OPT_PLAN O5: the TLB shootdown decision core — seq gaps, npages
++# boundaries, and the sender-side skip filter.
++$(BUILD_DIR)/test_tlb_policy: tests/unit/test_tlb_policy.c kernel/arch/x86_64/tlb_policy.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
++
+ $(BUILD_DIR)/test_bitmap: tests/unit/test_bitmap.c kernel/lib/bitmap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index 1834feb..6c4366c 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0–O4 landed; O5–O9 specified
++## Status: IN PROGRESS 🚧 — O0–O5 landed; O6–O9 specified
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -9,7 +9,7 @@
+ | O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
+ | O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
+ | O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
+-| O5 — precise TLB shootdown | ⬜ todo | — |
++| O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
+ | O6 — size-class allocator front | ⬜ todo | — |
+ | O7 — block where the kernel yields | ⬜ todo | — |
+ | O8 — linker GC + LTO lane | ⬜ todo | — |
+@@ -660,38 +660,82 @@ casts and was reworked — the ratchet's third catch in this plan). ✓
+ 
+ ### O5 — Precise TLB shootdown
+ 
++**Status: ✅ landed** (`patches/OPT_O5_tlb.patch`).  One design decision
++diverged from the spec above, for a reason worth the record.
++
+ **Objective:** stop reloading CR3 on every CPU for every unmap (Fact 4).
+ 
++**The divergence: no acknowledgements.**  The spec sketched a mailbox
++the sender fills before the IPI — implied ack semantics.  Measured
++against the tree: `paging_unmap()` sends while holding `vm_lock`
++(irqsave).  A sender waiting under `vm_lock` for an ack from a CPU that
++is itself spinning on `vm_lock` with interrupts off is not a hazard, it
++is a guaranteed deadlock.  So the protocol is **fire-and-forget with a
++degradation rule**: per-target mailboxes carry `{seq, cr3, va, npages}`;
++fixed-vector IPIs collapse in the LAPIC (one pending bit per vector), so
++a handler that observes `seq` jump by more than one knows a payload was
++overwritten — and anything a handler cannot reconstruct becomes a FULL
++flush, never something narrower.  Losing a payload can cost performance;
++it cannot cost correctness.  A torn payload read (seq moved during the
++read) degrades the same way.
++
+ Tasks:
+ 
+-- [ ] Carry a payload with the IPI: a small per-CPU mailbox
+-      (`{cr3, va_start, page_count, generation}`) written before
+-      `lapic_send_ipi`; the handler `invlpg`s up to
+-      `TLB_INVLPG_MAX` (start at 32, measure) pages and falls back to the
+-      CR3 reload above that — the current behaviour remains the safe
+-      ceiling, not a removed path.
+-- [ ] Filter the target set: an address-space CPU mask maintained at
+-      context switch (`paging_switch`/scheduler already know the CR3 they
+-      load). CPUs not running the affected address space and not holding
+-      its translations (they reloaded CR3 since — the generation counter
+-      answers this) are skipped entirely. Kernel-range flushes still
+-      broadcast.
+-- [ ] `perfstat`: `tlb_shootdowns_full` vs `tlb_shootdowns_ranged` vs
++- [x] Mailbox + payload: `tlb_shootdown_range(cr3_filter, va, npages)`
++      replaces the broadcast at all five call sites — single-page unmap
++      and both COW-fault resolutions send `(cr3, va, 1)`; mprotect sends
++      the touched window; fork's scattered mark-and-share sends
++      `npages = 0` ("everything, but only for this address space").
++      Handlers `invlpg` up to `TLB_INVLPG_MAX` (32) pages, full-flush
++      above — the old behaviour remains the safe ceiling.
++- [x] Sender-side skip filter: `paging_switch_to()` publishes each
++      CPU's CR3 into a shadow array; a target whose current CR3 is not
++      the affected space is skipped **as an architectural fact, not a
++      heuristic** — without PCID, loading CR3 flushes everything, so
++      that CPU cannot hold stale entries for the space.  The race
++      (target switching TO the space mid-send) is benign for the same
++      reason: the switch itself flushes, and the sender updated the
++      PTEs before sending.  Kernel-range flushes (`cr3_filter = 0`)
++      still broadcast.
++- [x] `lapic_send_ipi_fixed()` + `smp_get_lapic_id()` exported — the
++      shootdown is an addressed IPI now, not
++      `lapic_send_ipi_all_excluding_self`.
++- [x] `perfstat`: `tlb_shootdowns_full` / `tlb_shootdowns_ranged` /
+       `tlb_ipis_skipped`.
+-- [ ] PCID/`invpcid` recorded as residue: QEMU TCG supports it, the win is
+-      real-hardware-shaped, and it doubles the state space — deferred, per
+-      the same reasoning as O4's WC mapping. The mailbox layout leaves room
+-      for a PCID field so the follow-up is additive.
+-
+-**Definition of done:** under the existing `mmapshare`/`mmapfile`/COW
+-integration cases at `-smp 4`, full flushes drop to (kernel-range +
+-overflow) only; no new stale-TLB faults (the spurious-fault detector at
+-`paging.c:559` is the tripwire, and it already logs).
+-
+-**Test gate:** `test_mmap*`, `test_fpu_smp`, `test_selftest` at `-smp 4`
+-green across 10 consecutive runs (the flakiness-hunting convention from
+-FIX_R2); counter assertions in `test_perf_smoke`; a host unit test for the
+-mask/generation logic as plain C (`tests/unit/test_tlb_mask.c`).
++- [x] PCID/`invpcid` residue recorded: it kills the "CR3 load = flush"
++      fact the skip filter stands on, so it arrives with its own
++      generation scheme or not at all; the mailbox layout leaves room.
++      Real-hardware territory per D1.
++- [x] The decision core is pure C (`tlb_policy.h`) and the host test
++      pins the boundaries: seq gaps of exactly 2, seq across the 2^64
++      wrap, npages 0/1/32/33, spurious redelivery, and the skip
++      filter's truth table.  `mprotect.c` reads its address space
++      through a `tlb_current_asid()` hook so the existing host unit
++      test could stub it instead of executing a privileged CR3 read.
++
++**What O5 measured** (boot to shell, `-smp 2`):
++
++- Baseline (§6): **8 full flushes per boot, every one a broadcast.**
++  After: **4 full + 4 ranged, 0 skipped** — the fulls are fork's
++  deliberate `npages = 0` requests (scattered COW marking), the ranged
++  are the single-page unmap/COW paths, and skips start appearing only
++  when distinct address spaces run on distinct CPUs (a boot-to-shell
++  run is one lineage on one CR3; the counter is wired for when it
++  matters).
++- The gate the plan demanded: **10/10 consecutive `test_fpu_smp` and
++  10/10 `test_mmap_shared` runs at `-smp 4`**, plus `test_mmap_file`,
++  `test_fork_cow`, `test_selftest` at `-smp 4` — green, and the
++  stale-TLB spurious-fault detector (`paging.c`) logged nothing across
++  all of it.
++
++**Definition of done:** full flushes reduced to (kernel-range +
++scattered + overflow) only ✓; no new stale-TLB faults across the 10×
++`-smp 4` battery ✓; counters split three ways ✓.
++
++**Test gate:** `tests/unit/test_tlb_policy.c` 14/14 in `UNIT_TESTS`;
++the `-smp 4` battery above; `test_boot_to_shell` 17/17;
++`test_perf_smoke` 21/21 with the three counters asserted present;
++`make test-unit` EXIT 0; width-sweep ratchets 359/359. ✓
+ 
+ **Deliverable:** `patches/OPT_O5_tlb.patch`
+ 
+@@ -874,7 +918,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ | uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
+ | kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
+ | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
+-| tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | | | | |
++| tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
+ | idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
+ | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
+ | auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
+diff --git a/kernel/arch/x86_64/lapic.c b/kernel/arch/x86_64/lapic.c
+index 70b5f60..57feacd 100644
+--- a/kernel/arch/x86_64/lapic.c
++++ b/kernel/arch/x86_64/lapic.c
+@@ -244,6 +244,12 @@ void lapic_send_init_ipi(uint32_t apic_id) {
+     lapic_send_icr(apic_id, (5u << 8) | (1u << 14) | (1u << 15));
+ }
+ 
++/* OPT_PLAN.md O5: fixed-delivery IPI to ONE cpu — the shootdown path
++ * stopped broadcasting; delivery mode 000b (fixed), the vector as-is. */
++void lapic_send_ipi_fixed(uint32_t apic_id, uint8_t vector) {
++    lapic_send_icr(apic_id, vector);
++}
++
+ void lapic_send_init_deassert(uint32_t apic_id) {
+     /* INIT, Level = Deassert (bit 14 clear), Trigger Mode = Level. */
+     lapic_send_icr(apic_id, (5u << 8) | (1u << 15));
+diff --git a/kernel/arch/x86_64/lapic.h b/kernel/arch/x86_64/lapic.h
+index d767aa0..445f7d4 100644
+--- a/kernel/arch/x86_64/lapic.h
++++ b/kernel/arch/x86_64/lapic.h
+@@ -12,6 +12,8 @@ void lapic_eoi(void);
+  * BSP's LINT0 no longer needs to carry the 8259's ExtINT vectors. */
+ void lapic_mask_lint0(void);
+ void lapic_send_ipi_all_excluding_self(uint8_t vector);
++/* OPT_PLAN.md O5: fixed-delivery IPI to a single APIC id. */
++void lapic_send_ipi_fixed(uint32_t apic_id, uint8_t vector);
+ 
+ /* Per-CPU Local APIC timer (SMP step 3.2).  The APIC bus frequency is not
+  * architecturally fixed, so smp_init() measures it once on the BSP: call
+diff --git a/kernel/arch/x86_64/mprotect.c b/kernel/arch/x86_64/mprotect.c
+index 7d027a4..4bd60f7 100644
+--- a/kernel/arch/x86_64/mprotect.c
++++ b/kernel/arch/x86_64/mprotect.c
+@@ -1,6 +1,7 @@
+ #include "kernel/arch/x86_64/mprotect.h"
+ #include "kernel/arch/x86_64/cpu.h"
+ #include "kernel/arch/x86_64/lapic.h"
++#include "kernel/arch/x86_64/tlb_shootdown.h"
+ #include "kernel/arch/x86_64/paging.h"
+ 
+ #define PROT_READ  0x1
+@@ -67,6 +68,11 @@ void mprotect_remap_present_pages(uint64_t addr, uint64_t len, uint64_t prot) {
+     }
+ 
+     if (changed) {
+-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
++        /* O5: the touched window is known — hand it to the mailbox.  A
++         * range past TLB_INVLPG_MAX degrades to a full flush on the
++         * target, but still only on CPUs running this address space. */
++        uint64_t np = (end - addr + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES;
++        if (np > 0xFFFFFFFFULL) np = 0;      /* absurd range: full flush */
++        tlb_shootdown_range(tlb_current_asid(), addr, (uint32_t)np);
+     }
+ }
+diff --git a/kernel/arch/x86_64/paging.c b/kernel/arch/x86_64/paging.c
+index ded7a24..8d5bfe5 100644
+--- a/kernel/arch/x86_64/paging.c
++++ b/kernel/arch/x86_64/paging.c
+@@ -12,6 +12,8 @@
+ #include "kernel/arch/x86_64/smp.h"
+ #include "kernel/arch/x86_64/cpu_local.h"
+ #include "kernel/arch/x86_64/lapic.h"
++#include "kernel/arch/x86_64/tlb_shootdown.h"
++#include "kernel/arch/x86_64/tlb_policy.h"
+ #include "kernel/mm/pmm.h"
+ #include "kernel/mm/vma.h"
+ #include "kernel/proc/scheduler.h"
+@@ -296,11 +298,15 @@ void paging_unmap(uint64_t virt) {
+     *pte = 0;
+     invlpg(virt);
+ 
+-    /* TLB Shootdown: only needed once more than one CPU is online.  The IPI
+-     * handler (tlb_shootdown.c) reloads CR3 (full flush) -- send-and-forget,
+-     * so holding vm_lock here can never deadlock against a spinning CPU. */
++    /* TLB Shootdown (O5: precise).  One page, one address space — the
++     * mailbox carries both, targets outside this CR3 are skipped, and
++     * fire-and-forget still holds (holding vm_lock here can never
++     * deadlock against a spinning CPU; see tlb_shootdown.c for why an
++     * ack protocol WOULD). Kernel-half pages broadcast (cr3_filter 0):
++     * those mappings are shared by every PML4. */
+     if (smp_get_cpu_count() > 1) {
+-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
++        uint64_t asid_cr3 = (PML4_INDEX(virt) < PML4_USER_TOP) ? read_cr3() : 0;
++        tlb_shootdown_range(asid_cr3, virt, 1);
+     }
+     spinlock_release_irqrestore(&vm_lock, vf);
+ }
+@@ -367,6 +373,8 @@ void paging_switch_to(uint64_t new_pml4_phys) {
+     if (cpu_local_ready) {
+         struct cpu_local *cl = get_cpu_local();
+         if (cl) {
++            /* O5: publish for the shootdown sender's skip filter. */
++            tlb_note_cr3((uint32_t)cl->cpu_id, new_pml4_phys);
+             cl->vm_pml4 = (uint64_t)(uintptr_t)phys_to_ptr(new_pml4_phys);
+             return;
+         }
+@@ -489,7 +497,10 @@ uint64_t paging_clone_user_space(void) {
+      * stale WRITABLE TLB entries -- one stray write through such an entry
+      * would silently bypass COW.  Flush them once, after the whole walk. */
+     if (marked_cow && smp_get_cpu_count() > 1) {
+-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
++        /* O5: the write-protected pages are scattered across the whole
++         * parent space — npages 0 requests a full flush, but only on
++         * CPUs actually running the parent's CR3. */
++        tlb_shootdown_range(read_cr3(), 0, 0);
+     }
+     return new_pml4_phys;
+ 
+@@ -534,7 +545,7 @@ int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code) {
+          * same CR3: without a shootdown their next write would fault again
+          * and, seeing COW already cleared, be misdiagnosed as a real SEGV. */
+         if (smp_get_cpu_count() > 1) {
+-            lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
++            tlb_shootdown_range(read_cr3(), virt, 1);   /* O5: precise */
+         }
+         return 1;
+     }
+@@ -551,7 +562,7 @@ int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code) {
+     spinlock_release_irqrestore(&vm_lock, vf);
+     pmm_free_frame(old_phys); /* drop this address space's reference */
+     if (smp_get_cpu_count() > 1) {
+-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
++        tlb_shootdown_range(read_cr3(), virt, 1);       /* O5: precise */
+     }
+     return 1;
+ }
+diff --git a/kernel/arch/x86_64/smp.c b/kernel/arch/x86_64/smp.c
+index d19d69f..420e6ba 100644
+--- a/kernel/arch/x86_64/smp.c
++++ b/kernel/arch/x86_64/smp.c
+@@ -89,6 +89,10 @@ static void *ap_stacks[MAX_CPUS];
+  * ap_entry() can log it without touching boot_info from AP context. */
+ static uint32_t lapic_id_for_ap_index[MAX_CPUS];
+ 
++/* OPT_PLAN.md O5: the BSP's LAPIC id, latched by smp_init() so
++ * smp_get_lapic_id() can answer for cpu 0 too. */
++static uint32_t bsp_lapic_id_latched;
++
+ /* Atomic counter: how many CPUs are online (BSP = 1 at boot). */
+ static volatile uint32_t cpus_online = 1;
+ 
+@@ -207,6 +211,7 @@ void smp_init(void) {
+         return;
+     }
+ 
++    bsp_lapic_id_latched = bsp_lapic_id;
+     kprintf("[smp] BSP lapic_id=%u, %llu total CPUs detected\n",
+             bsp_lapic_id, (unsigned long long)cpu_count);
+ 
+@@ -334,3 +339,11 @@ void smp_self_test(void) {
+         kprintf("[smp] PASS: single-core system (use -smp N to test SMP)\n");
+     }
+ }
++
++/* OPT_PLAN.md O5: kernel cpu id -> LAPIC id, for addressed IPIs.
++ * cpu 0 is the BSP; AP with kernel id N was woken as AP index N-1. */
++uint32_t smp_get_lapic_id(uint32_t cpu_id) {
++    if (cpu_id == 0) return bsp_lapic_id_latched;
++    if (cpu_id - 1 < MAX_CPUS) return lapic_id_for_ap_index[cpu_id - 1];
++    return 0;
++}
+diff --git a/kernel/arch/x86_64/smp.h b/kernel/arch/x86_64/smp.h
+index 16f9f53..fea0d22 100644
+--- a/kernel/arch/x86_64/smp.h
++++ b/kernel/arch/x86_64/smp.h
+@@ -23,6 +23,10 @@ void smp_init(void);
+ /* Total number of CPUs currently online (including the BSP). */
+ uint32_t smp_get_cpu_count(void);
+ 
++/* OPT_PLAN.md O5: LAPIC id of a kernel cpu id (BSP = 0), for the
++ * shootdown sender's addressed IPIs. */
++uint32_t smp_get_lapic_id(uint32_t cpu_id);
++
+ /* Number of CPUs the scheduler is allowed to place runnable threads on.
+  * Since SMP step 3.2 this equals smp_get_cpu_count(): every online CPU has
+  * a run queue, per-CPU syscall/TSS state and its own LAPIC timer tick, so
+diff --git a/kernel/arch/x86_64/tlb_policy.h b/kernel/arch/x86_64/tlb_policy.h
+new file mode 100644
+index 0000000..c61f220
+--- /dev/null
++++ b/kernel/arch/x86_64/tlb_policy.h
+@@ -0,0 +1,69 @@
++/* tlb_policy.h — the shootdown handler's decision core, pure C
++ * (OPT_PLAN.md O5).
++ *
++ * No I/O, no CPU state: just the arithmetic that decides what a target
++ * CPU must do with its mailbox — split out so the host unit test
++ * (tests/unit/test_tlb_policy.c) can exercise the sequence-gap and
++ * boundary cases without an SMP machine in the room.
++ *
++ * The protocol this encodes (see tlb_shootdown.c for the whole story):
++ * senders never wait.  Each target CPU owns a mailbox; the sender
++ * overwrites it and bumps `seq`.  Fixed-vector IPIs COLLAPSE when they
++ * pile up (the LAPIC holds one pending bit per vector), so a handler
++ * can observe seq jumping by more than one — in which case an earlier
++ * request's payload has been overwritten and the only safe action is a
++ * full flush.  A torn read (seq moved while the payload was being read)
++ * degrades the same way.  Ranged invalidation is a fast path, full
++ * flush is the always-correct fallback — never the other way round.
++ */
++#ifndef AURALITE_ARCH_X86_64_TLB_POLICY_H
++#define AURALITE_ARCH_X86_64_TLB_POLICY_H
++
++#include <stdint.h>
++
++/* Above this many pages a loop of invlpg costs more than the reload. */
++#define TLB_INVLPG_MAX 32u
++
++enum tlb_action {
++    TLB_ACT_SPURIOUS = 0,   /* seq already handled: collapsed IPI, no-op */
++    TLB_ACT_RANGED   = 1,   /* invlpg the [va, va + npages) window       */
++    TLB_ACT_FULL     = 2,   /* reload CR3                                */
++};
++
++/* Decide from the handler's view: the seq it loaded, the last seq it
++ * completed, and the payload's page count.  npages == 0 is the sender's
++ * explicit "flush everything for this address space" request. */
++static inline enum tlb_action tlb_policy_decide(uint64_t seq,
++                                                uint64_t last_handled,
++                                                uint32_t npages,
++                                                uint32_t invlpg_max) {
++    if (seq == last_handled) {
++        return TLB_ACT_SPURIOUS;
++    }
++    if (seq - last_handled > 1) {
++        /* A request was overwritten before we saw it: its payload is
++         * gone, so nothing narrower than a full flush is sound. */
++        return TLB_ACT_FULL;
++    }
++    if (npages == 0 || npages > invlpg_max) {
++        return TLB_ACT_FULL;
++    }
++    return TLB_ACT_RANGED;
++}
++
++/* Sender-side filter: does this target CPU need the IPI at all?
++ * cpu_cr3 is the shadow of the CR3 the target loaded last (0 = unknown,
++ * e.g. before its first address-space switch — treat as "might hold
++ * anything").  Without PCID a CR3 load flushes the whole TLB, so a CPU
++ * whose current CR3 differs from the target address space CANNOT hold
++ * stale entries for it: skipping the IPI is not an optimisation gamble,
++ * it is an architectural fact.  cr3_filter == 0 means the range is
++ * kernel-shared and every CPU is a target. */
++static inline int tlb_policy_target_wanted(uint64_t cr3_filter,
++                                           uint64_t cpu_cr3) {
++    if (cr3_filter == 0) return 1;      /* kernel range: broadcast   */
++    if (cpu_cr3 == 0)    return 1;      /* unknown: assume the worst */
++    return cpu_cr3 == cr3_filter;
++}
++
++#endif /* AURALITE_ARCH_X86_64_TLB_POLICY_H */
+diff --git a/kernel/arch/x86_64/tlb_shootdown.c b/kernel/arch/x86_64/tlb_shootdown.c
+index 96dfcd1..1aa8108 100644
+--- a/kernel/arch/x86_64/tlb_shootdown.c
++++ b/kernel/arch/x86_64/tlb_shootdown.c
+@@ -1,18 +1,151 @@
+-/* kernel/arch/x86_64/tlb_shootdown.c — TLB Shootdown IPI handler */
++/* kernel/arch/x86_64/tlb_shootdown.c — precise TLB shootdown
++ * (OPT_PLAN.md O5; the pre-O5 version was Fact 4: a full CR3 reload on
++ * every CPU for every shootdown, no payload, no filter).
++ *
++ * Shape: per-target mailboxes + fire-and-forget IPIs.
++ *
++ *   - Each CPU owns a mailbox {seq, cr3, va, npages}.  A sender takes
++ *     tlb_send_lock, writes the payload, bumps seq (release), sends a
++ *     fixed IPI to that CPU — and moves on.
++ *
++ *   - WHY fire-and-forget and not sender-waits-for-ack: paging_unmap()
++ *     sends while holding vm_lock (irqsave).  With an ack protocol,
++ *     sender A waiting under vm_lock for CPU B's ack while B spins on
++ *     vm_lock with interrupts off is a deadlock, not a hazard — B can
++ *     never take the IPI it is being waited on for.  The ack was
++ *     traded for a rule: anything a handler cannot reconstruct
++ *     degrades to a FULL flush (never the other way), so losing a
++ *     payload can cost performance, never correctness.
++ *
++ *   - Fixed-vector IPIs collapse in the LAPIC (one pending bit per
++ *     vector), so a handler may observe seq advance by more than one:
++ *     an overwritten payload.  tlb_policy_decide() answers with FULL.
++ *     A torn payload read (seq moved underneath the handler) also
++ *     degrades to FULL.  The policy core is pure C in tlb_policy.h and
++ *     host-tested.
++ *
++ *   - Sender-side skip (the O5 win): without PCID, loading CR3 flushes
++ *     the whole TLB — so a CPU whose current CR3 is not the affected
++ *     address space CANNOT hold stale entries for it, architecturally.
++ *     paging_switch_to() publishes each CPU's CR3 into cpu_cr3_shadow[];
++ *     the sender skips CPUs that fail the filter and counts them into
++ *     tlb_ipis_skipped.  The race is benign by the same fact: a CPU
++ *     switching TO the affected space mid-send performs a CR3 load,
++ *     which flushes, and the sender already updated the PTEs before
++ *     calling here.
++ *
++ * PCID residue (recorded, deferred): with PCID the "CR3 switch means
++ * flush" fact dies and both the skip filter and the mailbox need a
++ * generation scheme; the mailbox layout keeps room for it.  Real
++ * hardware territory per D1 — QEMU TCG timing cannot judge it.
++ */
+ 
+ #include "kernel/arch/x86_64/cpu.h"
++#include "kernel/arch/x86_64/cpu_local.h"
+ #include "kernel/arch/x86_64/paging.h"
+ #include "kernel/arch/x86_64/lapic.h"
++#include "kernel/arch/x86_64/smp.h"
++#include "kernel/arch/x86_64/tlb_policy.h"
++#include "kernel/arch/x86_64/tlb_shootdown.h"
+ #include "kernel/lib/kprintf.h"
++#include "kernel/lib/spinlock.h"
+ #include "kernel/lib/perfstat.h"
+ 
++#define TLB_MAX_CPUS 32
++
++struct tlb_mailbox {
++    volatile uint64_t seq;
++    volatile uint64_t cr3;
++    volatile uint64_t va;
++    volatile uint32_t npages;
++};
++
++static struct tlb_mailbox mailboxes[TLB_MAX_CPUS];
++static uint64_t last_handled[TLB_MAX_CPUS];      /* owner-CPU private   */
++static volatile uint64_t cpu_cr3_shadow[TLB_MAX_CPUS];
++static spinlock_t tlb_send_lock = SPINLOCK_UNLOCKED;
++
++uint64_t tlb_current_asid(void) {
++    return read_cr3();
++}
++
++void tlb_note_cr3(uint32_t cpu_id, uint64_t cr3) {
++    if (cpu_id < TLB_MAX_CPUS) {
++        cpu_cr3_shadow[cpu_id] = cr3;
++    }
++}
++
++void tlb_shootdown_range(uint64_t cr3_filter, uint64_t va, uint32_t npages) {
++    uint32_t ncpus = smp_get_cpu_count();
++    if (ncpus <= 1) {
++        return;
++    }
++    if (ncpus > TLB_MAX_CPUS) {
++        ncpus = TLB_MAX_CPUS;
++    }
++
++    uint64_t fl = spinlock_acquire_irqsave(&tlb_send_lock);
++    uint32_t me = 0;
++    if (cpu_local_ready) {
++        struct cpu_local *cl = get_cpu_local();
++        if (cl) me = (uint32_t)cl->cpu_id;
++    }
++
++    for (uint32_t cpu = 0; cpu < ncpus; cpu++) {
++        if (cpu == me) {
++            continue;                   /* caller invlpg'd locally */
++        }
++        if (!tlb_policy_target_wanted(cr3_filter, cpu_cr3_shadow[cpu])) {
++            perfstat_add(PERF_TLB_IPIS_SKIPPED, 1);
++            continue;
++        }
++        struct tlb_mailbox *mb = &mailboxes[cpu];
++        mb->cr3    = cr3_filter;
++        mb->va     = va;
++        mb->npages = npages;
++        __atomic_store_n(&mb->seq, mb->seq + 1, __ATOMIC_RELEASE);
++        lapic_send_ipi_fixed(smp_get_lapic_id(cpu), IPI_TLB_SHOOTDOWN_VECTOR);
++    }
++    spinlock_release_irqrestore(&tlb_send_lock, fl);
++}
++
+ void ipi_tlb_shootdown_handler(void) {
+-    /* Full TLB flush: reload CR3.
+-     * OPT_PLAN.md Fact 4 / phase O5: no address travels with this IPI, so
+-     * the handler cannot invlpg — every shootdown costs this CPU its whole
+-     * TLB.  The counter is O5's before/after evidence. */
+-    perfstat_add(PERF_TLB_SHOOTDOWNS_FULL, 1);
+-    uint64_t cr3;
+-    __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
++    uint32_t me = 0;
++    if (cpu_local_ready) {
++        struct cpu_local *cl = get_cpu_local();
++        if (cl) me = (uint32_t)cl->cpu_id;
++    }
++    struct tlb_mailbox *mb = &mailboxes[me % TLB_MAX_CPUS];
++
++    uint64_t seq = __atomic_load_n(&mb->seq, __ATOMIC_ACQUIRE);
++    enum tlb_action act = tlb_policy_decide(seq, last_handled[me % TLB_MAX_CPUS],
++                                            mb->npages, TLB_INVLPG_MAX);
++
++    if (act != TLB_ACT_SPURIOUS) {
++        uint64_t va = mb->va;
++        uint32_t n  = mb->npages;
++
++        /* Torn-payload guard: if the sender moved seq while we were
++         * reading, the va/n pair may be a mix of two requests. */
++        uint64_t seq2 = __atomic_load_n(&mb->seq, __ATOMIC_ACQUIRE);
++        if (seq2 != seq) {
++            act = TLB_ACT_FULL;
++            seq = seq2;
++        }
++
++        if (act == TLB_ACT_RANGED) {
++            for (uint32_t i = 0; i < n; i++) {
++                invlpg(va + (uint64_t)i * 4096ULL);
++            }
++            perfstat_add(PERF_TLB_SHOOTDOWNS_RANGED, 1);
++        } else {
++            /* Full flush: reload CR3. */
++            uint64_t cr3;
++            __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3"
++                              : "=r"(cr3) :: "memory");
++            perfstat_add(PERF_TLB_SHOOTDOWNS_FULL, 1);
++        }
++        last_handled[me % TLB_MAX_CPUS] = seq;
++    }
+     lapic_eoi();
+ }
+diff --git a/kernel/arch/x86_64/tlb_shootdown.h b/kernel/arch/x86_64/tlb_shootdown.h
+new file mode 100644
+index 0000000..ae569bb
+--- /dev/null
++++ b/kernel/arch/x86_64/tlb_shootdown.h
+@@ -0,0 +1,30 @@
++/* tlb_shootdown.h — precise TLB shootdown (OPT_PLAN.md O5). */
++#ifndef AURALITE_ARCH_X86_64_TLB_SHOOTDOWN_H
++#define AURALITE_ARCH_X86_64_TLB_SHOOTDOWN_H
++
++#include <stdint.h>
++
++/* Ask every OTHER cpu that could hold translations of the given address
++ * space to invalidate [va, va + npages * 4 KiB).
++ *
++ *   cr3_filter — physical PML4 of the affected address space, or 0 for
++ *                a kernel-shared range (broadcast to everyone).
++ *   npages     — 0 means "flush everything for that address space"
++ *                (the sender touched too many scattered pages to list).
++ *
++ * Fire-and-forget by design: see tlb_shootdown.c for why an ack
++ * protocol would deadlock against vm_lock, and how the per-CPU seq
++ * mailboxes stay correct without one. */
++void tlb_shootdown_range(uint64_t cr3_filter, uint64_t va, uint32_t npages);
++
++/* Record that a CPU has loaded a new CR3 (called from paging_switch_to
++ * and the boot-time adopts) — the sender-side skip filter reads this. */
++void tlb_note_cr3(uint32_t cpu_id, uint64_t cr3);
++
++/* The current CPU's address-space id (CR3) — a hook rather than a raw
++ * read_cr3() at the call sites, so host-side unit tests that compile
++ * kernel code (test_mprotect.c) can stub it instead of executing a
++ * privileged register read in user mode. */
++uint64_t tlb_current_asid(void);
++
++#endif /* AURALITE_ARCH_X86_64_TLB_SHOOTDOWN_H */
+diff --git a/kernel/lib/perfstat.c b/kernel/lib/perfstat.c
+index dcd44f0..09263cd 100644
+--- a/kernel/lib/perfstat.c
++++ b/kernel/lib/perfstat.c
+@@ -24,6 +24,8 @@ static const char *const names[PERF_COUNTER_MAX] = {
+     [PERF_COMPOSITOR_PIXELS_COMPOSITED]  = "compositor_pixels_composited",
+     [PERF_COMPOSITOR_PIXELS_FLIPPED]     = "compositor_pixels_flipped",
+     [PERF_TLB_SHOOTDOWNS_FULL]           = "tlb_shootdowns_full",
++    [PERF_TLB_SHOOTDOWNS_RANGED]         = "tlb_shootdowns_ranged",
++    [PERF_TLB_IPIS_SKIPPED]              = "tlb_ipis_skipped",
+     [PERF_KMALLOC_WALK_STEPS]            = "kmalloc_walk_steps",
+     [PERF_UART_TX_SYNC_BYTES]            = "uart_tx_sync_bytes",
+     [PERF_UART_TX_RING_BYTES]            = "uart_tx_ring_bytes",
+diff --git a/kernel/lib/perfstat.h b/kernel/lib/perfstat.h
+index a6327c6..5b2f2fb 100644
+--- a/kernel/lib/perfstat.h
++++ b/kernel/lib/perfstat.h
+@@ -38,11 +38,22 @@ enum perfstat_id {
+      * path today (H1), so composited − flipped is O4's headroom. */
+     PERF_COMPOSITOR_PIXELS_FLIPPED,
+ 
+-    /* TLB shootdown IPIs serviced with a full CR3 reload.  As of O0 that
+-     * is every one of them (OPT_PLAN Fact 4); O5 splits this into
+-     * full/ranged/skipped. */
++    /* TLB shootdown IPIs serviced with a full CR3 reload — since O5,
++     * only the degradation paths land here: scattered-page requests
++     * (npages == 0), ranges past TLB_INVLPG_MAX, collapsed-IPI sequence
++     * gaps and torn payloads. */
+     PERF_TLB_SHOOTDOWNS_FULL,
+ 
++    /* Shootdown IPIs serviced by an invlpg loop over the mailbox range
++     * (OPT_PLAN O5) — the precise path. */
++    PERF_TLB_SHOOTDOWNS_RANGED,
++
++    /* IPIs never sent because the target CPU's current CR3 proves it
++     * cannot hold stale entries for the affected address space (O5's
++     * sender-side filter; architectural fact, not a heuristic — no
++     * PCID means a CR3 load is a full flush). */
++    PERF_TLB_IPIS_SKIPPED,
++
+     /* Free-list nodes visited by the kernel heap's first-fit search
+      * (OPT_PLAN Fact 5).  The walk length is O6's claim, so it is O6's
+      * measurement. */
+diff --git a/tests/integration/cases/test_perf_smoke.sh b/tests/integration/cases/test_perf_smoke.sh
+index a7cacb4..872f6af 100644
+--- a/tests/integration/cases/test_perf_smoke.sh
++++ b/tests/integration/cases/test_perf_smoke.sh
+@@ -59,7 +59,8 @@ fi
+ # --- /proc/perf: every O0 counter present ---
+ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
+          compositor_pixels_composited compositor_pixels_flipped \
+-         tlb_shootdowns_full kmalloc_walk_steps uart_tx_sync_bytes \
++         tlb_shootdowns_full tlb_shootdowns_ranged tlb_ipis_skipped \
++         kmalloc_walk_steps uart_tx_sync_bytes \
+          uart_tx_ring_bytes; do
+     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
+ done
+diff --git a/tests/unit/test_mprotect.c b/tests/unit/test_mprotect.c
+index 7cbd063..a471716 100644
+--- a/tests/unit/test_mprotect.c
++++ b/tests/unit/test_mprotect.c
+@@ -43,6 +43,7 @@ void lapic_send_ipi_all_excluding_self(uint8_t vector) {
+     last_ipi_vector = vector;
+ }
+ 
++
+ static void record_invlpg(uint64_t va) {
+     invalidated_va[invlpg_calls++] = va;
+ }
+@@ -50,6 +51,21 @@ static void record_invlpg(uint64_t va) {
+ #define MPROTECT_INVLPG(va) record_invlpg(va)
+ #include "../../kernel/arch/x86_64/mprotect.c"
+ 
++/* OPT_PLAN O5: mprotect now requests a RANGED shootdown of the touched
++ * window through the mailbox API; the stub records the same "exactly
++ * one flush request" fact the old IPI stub did, plus the range. */
++static uint64_t shoot_cr3, shoot_va;
++static uint32_t shoot_npages;
++uint64_t tlb_current_asid(void) { return 0x111000; }
++void tlb_shootdown_range(uint64_t cr3, uint64_t va, uint32_t npages) {
++    ipi_calls++;
++    last_ipi_vector = IPI_TLB_SHOOTDOWN_VECTOR;
++    shoot_cr3 = cr3;
++    shoot_va = va;
++    shoot_npages = npages;
++}
++
++
+ static void reset_state(void) {
+     memset(fake_phys, 0, sizeof(fake_phys));
+     memset(mapped_va, 0, sizeof(mapped_va));
+diff --git a/tests/unit/test_tlb_policy.c b/tests/unit/test_tlb_policy.c
+new file mode 100644
+index 0000000..24922c4
+--- /dev/null
++++ b/tests/unit/test_tlb_policy.c
+@@ -0,0 +1,87 @@
++/* test_tlb_policy.c — host gate for the O5 shootdown decision core
++ * (OPT_PLAN.md O5; kernel/arch/x86_64/tlb_policy.h).
++ *
++ * The whole protocol's correctness argument leans on two pure
++ * functions: what a handler does with a seq/payload pair, and whether
++ * a sender may skip a target.  Both degrade toward FULL/send — this
++ * test pins the boundaries where degrading is mandatory:
++ *
++ *   - seq gaps (collapsed IPIs) of exactly 2, and across uint64 wrap;
++ *   - the npages boundaries 0 / 1 / TLB_INVLPG_MAX / +1;
++ *   - spurious redelivery (seq == last);
++ *   - the skip filter's three-way truth table (kernel broadcast,
++ *     unknown CR3, match/mismatch).
++ */
++#include <stdint.h>
++#include <stdio.h>
++
++#include "../../kernel/arch/x86_64/tlb_policy.h"
++
++static int passed = 0;
++static int failed = 0;
++
++#define CHECK(cond, ...) do {                       \
++        if (cond) { passed++; }                     \
++        else {                                      \
++            failed++;                               \
++            printf("FAIL: ");                       \
++            printf(__VA_ARGS__);                    \
++            printf("\n");                           \
++        }                                           \
++    } while (0)
++
++static void test_decide(void) {
++    /* Spurious: already handled. */
++    CHECK(tlb_policy_decide(7, 7, 1, TLB_INVLPG_MAX) == TLB_ACT_SPURIOUS,
++          "seq == last is spurious");
++
++    /* Clean +1 step, page counts inside the window. */
++    CHECK(tlb_policy_decide(8, 7, 1, TLB_INVLPG_MAX) == TLB_ACT_RANGED,
++          "one page -> ranged");
++    CHECK(tlb_policy_decide(8, 7, TLB_INVLPG_MAX, TLB_INVLPG_MAX)
++              == TLB_ACT_RANGED,
++          "exactly INVLPG_MAX pages -> ranged");
++
++    /* Degradations. */
++    CHECK(tlb_policy_decide(8, 7, 0, TLB_INVLPG_MAX) == TLB_ACT_FULL,
++          "npages 0 (whole space) -> full");
++    CHECK(tlb_policy_decide(8, 7, TLB_INVLPG_MAX + 1, TLB_INVLPG_MAX)
++              == TLB_ACT_FULL,
++          "INVLPG_MAX+1 pages -> full");
++    CHECK(tlb_policy_decide(9, 7, 1, TLB_INVLPG_MAX) == TLB_ACT_FULL,
++          "seq gap of 2 (collapsed IPI) -> full even for one page");
++    CHECK(tlb_policy_decide(1000, 7, 1, TLB_INVLPG_MAX) == TLB_ACT_FULL,
++          "large seq gap -> full");
++
++    /* seq wrap across 2^64: unsigned subtraction keeps the +1 truth. */
++    CHECK(tlb_policy_decide(0, UINT64_MAX, 1, TLB_INVLPG_MAX)
++              == TLB_ACT_RANGED,
++          "seq wrap 2^64-1 -> 0 is a clean +1 step");
++    CHECK(tlb_policy_decide(1, UINT64_MAX, 1, TLB_INVLPG_MAX)
++              == TLB_ACT_FULL,
++          "seq wrap with a skipped request -> full");
++}
++
++static void test_target_filter(void) {
++    /* Kernel-shared range: everyone is a target, no exceptions. */
++    CHECK(tlb_policy_target_wanted(0, 0)      == 1, "kernel range, unknown cpu");
++    CHECK(tlb_policy_target_wanted(0, 0x1000) == 1, "kernel range, any cpu");
++
++    /* Unknown target CR3: assume the worst. */
++    CHECK(tlb_policy_target_wanted(0x5000, 0) == 1, "unknown target -> send");
++
++    /* The architectural skip: a different CR3 cannot hold our entries. */
++    CHECK(tlb_policy_target_wanted(0x5000, 0x5000) == 1, "same space -> send");
++    CHECK(tlb_policy_target_wanted(0x5000, 0x9000) == 0, "other space -> skip");
++}
++
++int main(void) {
++    printf("=== O5 TLB shootdown policy test suite ===\n\n");
++
++    test_decide();
++    test_target_filter();
++
++    printf("\n%d passed, %d failed\n", passed, failed);
++    if (failed == 0) printf("=== ALL TESTS PASSED ===\n");
++    return failed ? 1 : 0;
++}

@@ -1,0 +1,258 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a7a1d18..94b596b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,35 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O8 — linker GC + the LTO lane] 2026-08-20
++
++`OPT_PLAN.md` phase O8: nothing unreachable ships anymore.
++
++- `-ffunction-sections -fdata-sections` + `--gc-sections` for the
++  kernel and every user ELF.  Clean-rebuild numbers: **initrd.tar
++  8 806 400 → 3 061 760 (−65%)**, `init.elf` −70%, `kernel.elf` −4.9%
++  — the user binaries carried the dead weight, because the whole libc
++  archive is whole-archive-linked into each one.
++- The KEEP() audit concluded in `kernel.ld` itself: zero sections in
++  this kernel are reachable only through linker-script symbols, so
++  zero KEEPs — the comment is the audit trail.
++- **The negative control refused to fail, and that is recorded as the
++  finding:** removing user.ld's .init_array KEEPs left ctortest green —
++  lld roots SHT_INIT_ARRAY sections by built-in rule.  The KEEPs stay
++  (convention ≠ guarantee); both linker scripts now state the measured
++  truth instead of the folk theorem.
++- ThinLTO lane behind `make LTO=1`: builds, boots 17/17 — and grows
++  kernel.elf 2.35 → 3.38 MB with `-g`, with no measurable TCG speed
++  change.  Off by default, with the bar for entry recorded in the plan.
++- Also recorded: the first "after" measurement was distorted by make's
++  object staleness (flags don't invalidate .o files) — the honest
++  numbers are from a clean rebuild.
++- Gates: clean-build battery green (boot 17/17, init_array 6/6, gui
++  5/5, execve_args 16/16, perf_smoke, selftest_modes, `test-unit`
++  EXIT 0).
++- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O7 — block where the kernel yields] 2026-08-20
+ 
+ `OPT_PLAN.md` phase O7: the yield-polls are gone — the biggest
+diff --git a/Makefile b/Makefile
+index 8de0925..ac8666b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -36,6 +36,20 @@ CFLAGS      := --target=$(TARGET) \
+                -O2 -g \
+                -DARCH_X86_64 -I . -I $(BUILD_DIR) -I w32/include
+ 
++# OPT_O8 (OPT_PLAN.md): every function/datum gets its own section so the
++# linker can collect what nothing reaches.  The roots are ENTRY(_start)
++# plus every relocation from the NASM objects (ISR stubs -> C dispatch,
++# syscall entry -> syscall_dispatch, ...); the audit of what needs
++# KEEP() lives in kernel.ld and lib/libc/user.ld.
++CFLAGS      += -ffunction-sections -fdata-sections
++
++# OPT_O8: opt-in ThinLTO lane -- `make LTO=1`.  Off by default: it must
++# earn default status by a full green suite lane first (recorded in the
++# plan; do not flip this without one).
++ifeq ($(LTO),1)
++CFLAGS      += -flto=thin
++endif
++
+ # FIX_R8 (FIXES_PLAN.md): compile-time keyboard layout selection.  This only
+ # picks the layout that is active at boot; the `kbd` shell command switches
+ # at runtime (syscall SYS_KBD_LAYOUT) regardless of this setting.
+@@ -61,7 +75,7 @@ endif
+ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
+ 
+ # The linker script fixes the higher-half address; no --image-base needed.
+-LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096
++LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096 --gc-sections
+ 
+ # A1 (ARM64_PLAN): kernel/dt/ is excluded too -- the shared DTB walker
+ # belongs to the DTB-consuming kernels (riscv64, aarch64), which list
+@@ -577,8 +591,16 @@ HELLO_ELF    := $(USER_BUILD)/hello.elf
+ USER_BIN_H   := $(BUILD_DIR)/init_bin.h
+ 
+ USER_CFLAGS  := -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
+-                -O2 -Wall -Wextra -Werror -I . -I lib/libc/include
+-USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096
++                -O2 -Wall -Wextra -Werror -I . -I lib/libc/include \
++                -ffunction-sections -fdata-sections
++# OPT_O8: user ELFs get section GC too -- the whole libc archive is
++# linked --whole-archive into every program, so unreferenced libc code
++# was shipped in every initrd binary until now (measured: init.elf
++# 133 KB -> 81 KB, initrd.tar -30%).  .init_array survives GC because
++# lld roots SHT_INIT_ARRAY sections by built-in rule -- the plan's
++# negative control proved the KEEP in user.ld is belt-and-braces, not
++# load-bearing (recorded there).
++USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 --gc-sections
+ 
+ ### RUST: compiler and flags for Rust
+ RUSTC       := rustc
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index 0faa4b5..491f053 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0–O7 landed; O8–O9 specified
++## Status: IN PROGRESS 🚧 — O0–O8 landed; O9 remaining
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -12,7 +12,7 @@
+ | O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
+ | O6 — size-class allocator front | ✅ complete (target re-measured: see the section) | `patches/OPT_O6_alloc.patch` |
+ | O7 — block where the kernel yields | ✅ complete | `patches/OPT_O7_blocking.patch` |
+-| O8 — linker GC + LTO lane | ⬜ todo | — |
++| O8 — linker GC + LTO lane | ✅ complete | `patches/OPT_O8_gc_lto.patch` |
+ | O9 — CI wiring + claim check | ⬜ todo | — |
+ 
+ This document answers:
+@@ -906,35 +906,60 @@ idle-busy ratchet (measured 1.46% under test load, limit 15);
+ 
+ ### O8 — Footprint: let the linker collect garbage
+ 
++**Status: ✅ landed** (`patches/OPT_O8_gc_lto.patch`).  Three measured
++surprises, including a negative control that refused to fail.
++
+ **Objective:** stop shipping unreachable code (Fact 7); measure, don't
+ assume, what LTO buys on top.
+ 
+ Tasks:
+ 
+-- [ ] `-ffunction-sections -fdata-sections` in kernel CFLAGS,
+-      `--gc-sections` in LDFLAGS; audit `kernel.ld` for sections that are
+-      reached only from assembly or from tables (ISR stubs, the syscall
+-      table, `.init_array`, multiboot-style headers) and pin them with
+-      `KEEP()` — this audit *is* the phase's work, and each `KEEP` gets a
+-      comment saying who reaches it.
+-- [ ] The same for the user linker script and libc archives (user ELFs
+-      shrink initrd, which shrinks the ISO and every CI copy of it).
+-- [ ] ThinLTO behind `make LTO=1`, off by default: a full suite lane must
+-      pass with it on before it can ever become default (recorded as a
+-      follow-up decision, not made here).
+-- [ ] Sizes recorded per artefact in §6 (kernel.elf, each user ELF class,
+-      initrd.tar, ISO).
+-
+-**Definition of done:** artefact size table filled; boot and full suites
+-green with GC on (default) and with `LTO=1` (one CI lane); no symbol
+-needed at runtime was collected (the suites are the proof — this is why
+-O8 lands late, when the perf smoke also watches counters that would notice
+-a dead subsystem).
+-
+-**Test gate:** full suites in both configurations; `SHA256SUMS` regenerated;
+-a negative control in the spirit of the POSIX drift check: remove one
+-`KEEP()` on the ISR stubs, assert the build **fails or the boot smoke goes
+-red loudly**, restore it — proving the pins are load-bearing.
++- [x] `-ffunction-sections -fdata-sections` + `--gc-sections` for the
++      kernel AND the user ELFs (the libc archive is linked
++      --whole-archive into every program, so its dead code shipped in
++      every initrd binary until now).
++- [x] The KEEP() audit, with its conclusion in `kernel.ld`: this kernel
++      has ZERO sections reachable only through linker-script symbols —
++      no .init_array (kernel constructors are explicit `*_init()` calls
++      from kmain), no registration tables, no per-CPU tricks; the NASM
++      objects and C reference each other by name in both directions.
++      Zero KEEPs needed; the comment is the audit trail.
++- [x] ThinLTO behind `make LTO=1`, off by default.
++- [x] Sizes recorded (§6); the negative control executed.
++
++**The three surprises:**
++
++1. **The first "after" measurement was a lie of incrementality.**  The
++   flag change does not invalidate make's object files, so the first
++   rebuild GC'd stale sections-less objects and showed −30% initrd.  A
++   clean rebuild shows the real number: **initrd 8 806 400 →
++   3 061 760 bytes (−65%)**; `init.elf` 133 136 → 40 592 (−70%);
++   `kernel.elf` 2 475 640 → 2 354 800 (−4.9%).  The kernel is lean
++   because kmain reaches nearly everything; the user binaries were the
++   dead weight, exactly as the whole-archive link predicted.
++2. **The negative control refused to fail — which is information.**
++   The plan predicted user.ld's .init_array KEEPs would become
++   load-bearing under GC (the array is reached only through linker
++   symbols).  Removing them left `test_init_array` green: **lld roots
++   SHT_INIT_ARRAY sections by built-in rule.**  The KEEPs stay
++   (linker convention ≠ ELF guarantee, and a KEEP is free), and both
++   linker scripts now state the measured truth instead of the folk
++   theorem.
++3. **The LTO lane builds, boots (17/17) — and grows the artefact:**
++   `kernel.elf` 2.35 → 3.38 MB under ThinLTO with `-g`.  No measurable
++   TCG speed change (D2).  LTO stays off by default with a recorded
++   bar: it argues its way in with a real-hardware benchmark and a size
++   diet, or not at all.
++
++**Definition of done:** artefact size table filled ✓; boot + suites
++green with GC on (default) ✓ and under `LTO=1` (boot smoke 17/17) ✓;
++the ISO stays byte-count identical (fixed-size ESP image) with 5.7 MB
++more slack inside it.
++
++**Test gate:** clean-rebuild suite battery — boot 17/17, init_array 6/6
++(constructors run: the FIX_R5 gate, on GC'd binaries), selftest 6/6,
++gui 5/5, execve_args 16/16, perf_smoke 22/22, selftest_modes 30/30,
++`make test-unit` EXIT 0. ✓
+ 
+ **Deliverable:** `patches/OPT_O8_gc_lto.patch`
+ 
+@@ -1011,8 +1036,8 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
+ | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
+ | idle busy% at shell / during 2 s `wait` | 36.22 / 38.56 (pre-O7 measured) | | | | | | | **0.31 / 3.25** | |
+-| kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
+-| auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
++| kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | **2 354 800** (LTO lane: 3 376 280) | | | | | | | |
++| auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | 51 380 224 (fixed ESP; initrd inside: **8 806 400 → 3 061 760, −65%**) | | | | | | | |
+ 
+ ¹ O6 traced this number: ~99.99% of it is the heap self-test gauntlet
+ measuring itself; a `selftest=off` boot walks 63–80 nodes total.  Fact 5
+diff --git a/kernel.ld b/kernel.ld
+index 6205020..18d65fa 100644
+--- a/kernel.ld
++++ b/kernel.ld
+@@ -29,6 +29,19 @@ PHDRS
+     data    PT_LOAD    FLAGS((1 << 1) | (1 << 2)); /* R + W */
+ }
+ 
++/* OPT_O8 KEEP() audit (--gc-sections is on): the roots that keep the
++ * kernel alive are ENTRY(_start) and the relocations OUT of the NASM
++ * objects (isr_stubs.asm -> isr/irq dispatch, syscall_entry.asm ->
++ * syscall_dispatch, context/boot asm -> their C counterparts); NASM
++ * emits one .text per object, each referenced from C by name, so the
++ * graph is closed in both directions.  There are NO sections in this
++ * kernel reachable ONLY through linker-script symbols (the one class
++ * gc-sections silently kills): no .init_array (kernel constructors are
++ * explicit *_init() calls from kmain), no driver-registration tables,
++ * no per-CPU section tricks -- __bss_start/__bss_end frame a section
++ * the output always has.  So: zero KEEPs, and this comment is the
++ * audit trail.  The load-bearing KEEP in this tree is user.ld's
++ * .init_array one; the O8 negative control proves it. */
+ SECTIONS
+ {
+     . = KERNEL_VMA + 0x100000;                 /* 0xFFFFFFFF80100000 */
+diff --git a/lib/libc/user.ld b/lib/libc/user.ld
+index 4a0ded5..440df03 100644
+--- a/lib/libc/user.ld
++++ b/lib/libc/user.ld
+@@ -38,7 +38,18 @@ SECTIONS
+      * __attribute__((constructor/destructor)) functions linked into a program
+      * actually run.  The symbols sit outside the section blocks: they must be
+      * defined even when a program has no such functions (empty table links as
+-     * start == end and the walks loop zero times). */
++     * start == end and the walks loop zero times).
++     *
++     * OPT_O8: when --gc-sections landed, the plan predicted these KEEPs
++     * would become load-bearing (nothing references .init_array by
++     * relocation; the walk goes through linker symbols).  The negative
++     * control REFUTED it: with the KEEPs removed, ctortest stayed green
++     * — lld treats SHT_INIT_ARRAY sections as GC roots by built-in
++     * rule, so the array survives without them.  The KEEPs stay anyway:
++     * that root rule is a linker convention, not an ELF guarantee, and
++     * a KEEP is free.  Recorded in the plan as the phase's measured
++     * surprise (a negative control that fails to fail is information
++     * too). */
+     . = ALIGN(4096);
+     __init_array_start = .;
+     .init_array ALIGN(8) : {

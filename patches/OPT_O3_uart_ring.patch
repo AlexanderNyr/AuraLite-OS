@@ -1,0 +1,681 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 1e8cdd7..9b0bf75 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,36 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O3 — buffered UART TX] 2026-08-19
++
++`OPT_PLAN.md` phase O3: the kernel log no longer busy-waits the wire
++byte-by-byte under the global print lock — except where it must.
++
++- `drivers/uart/uart_ring.h` (new): the ring index core as pure C —
++  free-running uint32 counters, power-of-two mask — unit-tested on the
++  host across wrap/full/empty and the 2^32 counter crossing
++  (`tests/unit/test_uart_ring.c`, 75 checks, in `UNIT_TESTS`).
++- `drivers/uart/uart.c`: 16 KiB TX ring; enqueue + opportunistic
++  FIFO-burst drain (never spins), THRE IRQ 4 carries the backlog and is
++  enabled only while the ring holds bytes.  Ring-full spills
++  synchronously — the log NEVER drops a byte (D3).  `uart_flush()`
++  latches back to sync and drains with a bounded lock acquire; wired
++  into `kernel_halt()`, so the `#DF`/panic last words still arrive (D4,
++  proven by `test_panic_diag` + `test_ist_double_fault` green).
++- IRQ-4 registration via a kernel.c thunk — uart.c still includes no
++  x86_64 headers (I6 include ratchet held at 69/69); IRQ 4 survives the
++  IOAPIC takeover through the identity-mapped GSI 4 entry.
++- `perfstat`: new `uart_tx_ring_bytes`; measured at the prompt:
++  **ring 24 106 vs sync 748** — the ring carries ~97% of the log, the
++  sync remainder is exactly the pre-IDT boot banner.
++- Honestly recorded in the plan: **boot wall-clock did not move under
++  QEMU** (chardev serial is effectively infinite-baud, so the old spin
++  was nearly free there).  The 87 µs/byte win is real-hardware-shaped;
++  what QEMU keeps is the print-lock window shrinking from wire-time to
++  enqueue-time on SMP.
++- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O2 — fast-boot self-test knob] 2026-08-19
+ 
+ `OPT_PLAN.md` phase O2: the boot no longer spends a literal wall-clock
+diff --git a/Makefile b/Makefile
+index d4579db..b68b598 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1869,6 +1869,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_printf_fmt \
+                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
+                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
++                $(BUILD_DIR)/test_uart_ring \
+                 $(BUILD_DIR)/test_bitmap \
+                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
+                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
+@@ -2314,6 +2315,12 @@ $(BUILD_DIR)/test_string_ops: tests/unit/test_string_ops.c \
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# OPT_PLAN O3: the UART TX ring index core — wrap, full, empty, and the
++# 2^32 counter crossing.
++$(BUILD_DIR)/test_uart_ring: tests/unit/test_uart_ring.c drivers/uart/uart_ring.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
++
+ $(BUILD_DIR)/test_bitmap: tests/unit/test_bitmap.c kernel/lib/bitmap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index d13102b..b98f453 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,13 +1,13 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0–O2 landed; O3–O9 specified
++## Status: IN PROGRESS 🚧 — O0–O3 landed; O4–O9 specified
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | O0 — the measuring rig | ✅ complete | `patches/OPT_O0_rig.patch` |
+ | O1 — word-wide string ops | ✅ complete | `patches/OPT_O1_stringops.patch` |
+ | O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
+-| O3 — buffered UART TX | ⬜ todo | — |
++| O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
+ | O4 — compositor: composite the union, sleep when idle | ⬜ todo | — |
+ | O5 — precise TLB shootdown | ⬜ todo | — |
+ | O6 — size-class allocator front | ⬜ todo | — |
+@@ -510,32 +510,68 @@ under the lib's `full` pin; `test_perf_smoke` 18/18 + both-modes record;
+ 
+ ### O3 — Buffered, interrupt-driven UART TX (panic path exempt, D4)
+ 
++**Status: ✅ landed** (`patches/OPT_O3_uart_ring.patch`).  Measured
++results — including the one this phase deliberately does NOT get to
++claim — at the end of the section.
++
+ **Objective:** stop paying 87 µs of spin per logged byte under a global
+ lock (Fact 2), without losing a single byte of any log CI reads.
+ 
+ Tasks:
+ 
+-- [ ] TX ring (16 KiB static) in `drivers/uart/uart.c`; `uart_putchar`
+-      enqueues; THRE interrupt drains up to the 16550 FIFO depth per fire.
+-      IRQ 4 wiring exists (`irq.c` dispatch); the RX side already works.
+-- [ ] Ring-full policy: **block-spin draining synchronously** (never drop —
+-      a lossy kernel log fails D3 the moment a grep goes red; the ring only
+-      changes *who waits*, not *whether bytes arrive*).
+-- [ ] `uart_flush()` — drain synchronously; called by panic paths and by
+-      `kernel_halt()` (D4), and before `ExitBootServices`-style handoffs
+-      (`run` shutdown).
+-- [ ] Early boot (before IDT/PIC ready) uses the synchronous path via a
+-      `uart_tx_mode` latch flipped once the IRQ layer is up.
+-- [ ] `perfstat`: `uart_tx_spins` counts synchronous-fallback bytes, so
+-      the smoke test can prove the ring is actually being used.
+-
+-**Definition of done:** serial logs of all integration cases byte-identical
+-to baseline (the suite itself proves this); boot-to-shell drops by the
+-serial-drain component; `uart_tx_spins` ≈ ring-full + panic bytes only.
+-
+-**Test gate:** full suites (their greps are the byte-fidelity gate); a
+-host-side unit test for the ring index arithmetic (wrap, full, empty —
+-the three classic off-by-ones); `test_perf_smoke` numbers into §6.
++- [x] TX ring (16 KiB static) in `drivers/uart/uart.c`; the index core
++      is pure C in `drivers/uart/uart_ring.h` (free-running uint32
++      counters, power-of-two mask) so the host unit test can try the
++      wrap/full/empty off-by-ones without a UART in the room.
++      `uart_putchar` enqueues, then drains OPPORTUNISTICALLY — up to one
++      FIFO burst (16 bytes) whenever LSR.THRE is already set, never
++      spinning; the THRE interrupt (IRQ 4) carries the rest and is
++      enabled only while the ring is non-empty.
++- [x] Ring-full policy: drain synchronously until there is room — never
++      drop (D3: the suite's greps stand on byte-fidelity).  Spill bytes
++      count into `uart_tx_sync_bytes`.
++- [x] `uart_flush()`: latch back to synchronous mode, BOUNDED lock
++      acquire (a dead lock-holder must not silence the dying words),
++      drain, disable THRE.  Called from `kernel_halt()` — which the
++      fatal `#DF`/panic paths already funnel through (D4).
++- [x] Early boot synchronous via the mode latch; kmain arms the ring
++      right after the IDT/PIC are live.  The IRQ-4 handler is registered
++      through a thunk in kernel.c: uart.c deliberately includes no
++      x86_64 headers (the I6 include ratchet held at 69), and IRQ 4
++      survives the IOAPIC takeover via the identity-mapped GSI 4 entry
++      (`ioapic.c` programs all ISA GSIs, measured before wiring).
++- [x] `perfstat`: `uart_tx_ring_bytes` joins `uart_tx_sync_bytes`;
++      the smoke test asserts the ring carries the majority.
++
++**What O3 measured:**
++
++- Counter proof of adoption: **ring 24 106 bytes vs sync 748 bytes** at
++  the prompt — the sync remainder is exactly the pre-ring boot banner
++  (everything printed before the IDT is live), i.e. the ring carries
++  ~97% of the log.
++- Byte-fidelity held with zero grep edits: `test_boot_to_shell` 17/17,
++  `test_selftest_modes` 30/30, and both death-path cases
++  (`test_panic_diag`, `test_ist_double_fault`) green — the flush gets
++  the last words out through `kernel_halt()`.
++- **The claim this phase does not get to make: boot did not get
++  faster under QEMU** (full 499 → 501 ticks, noise).  QEMU's chardev
++  accepts serial bytes at effectively infinite baud — LSR.THRE is
++  almost always already set, so the old busy-wait was nearly free
++  *there*.  The 87 µs/byte cost is real-hardware-shaped (115 200 baud
++  wire), and per D1/D2 the plan records the counter proof and leaves
++  the wall-clock claim to a real-hardware follow-up.  What QEMU does
++  keep: `kprintf`'s global print_lock no longer holds all CPUs hostage
++  to the wire — the locked window is now an enqueue, which matters exactly
++  when SMP contention does.
++
++**Definition of done:** serial logs byte-identical (the suites are the
++proof) ✓; `uart_tx_sync_bytes` ≈ pre-ring banner + spill only ✓ (748);
++boot-time component honestly recorded as QEMU-invisible ✓.
++
++**Test gate:** `tests/unit/test_uart_ring.c` — 75 checks over
++empty/full boundaries, 1000 interleaved wrap laps, and the 2^32 counter
++crossing; full suites green (`test-unit` EXIT 0, boot/panic/modes cases
++above). ✓
+ 
+ **Deliverable:** `patches/OPT_O3_uart_ring.patch`
+ 
+@@ -798,7 +834,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ | membench memcpy-a 1 MiB (MB/s) | 10 | **79** | | | | | | | |
+ | membench memset-a 1 MiB (MB/s) | 342 | **1687** | | | | | | | |
+ | membench memmove-o 64 KiB (MB/s) | 144 | **1236** | | | | | | | |
+-| uart_tx_sync_bytes at prompt | 24 778 | 24 774 | | | | | | | |
++| uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
+ | kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
+ | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | | | | | |
+ | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | | | | |
+diff --git a/drivers/uart/uart.c b/drivers/uart/uart.c
+index 64a1bbc..f0000c8 100644
+--- a/drivers/uart/uart.c
++++ b/drivers/uart/uart.c
+@@ -1,9 +1,68 @@
+-/* uart.c — 16550 UART (COM1) serial driver. */
++/* uart.c — 16550 UART (COM1) serial driver.
++ *
++ * OPT_PLAN.md O3: TX is ring-buffered and interrupt-driven once the IRQ
++ * layer is up.  The shape:
++ *
++ *   - Before uart_tx_ring_enable() (called from kmain right after the
++ *     IDT/PIC are live and interrupts are on), every byte takes the
++ *     historical synchronous path: busy-wait on LSR.THRE, one outb.
++ *     That path never goes away — it is also where panic bytes and
++ *     ring-full spill land, and PERF_UART_TX_SYNC_BYTES counts exactly
++ *     those, so /proc/perf can prove the ring is doing the carrying.
++ *
++ *   - After enable, uart_putchar() enqueues into a 16 KiB ring and then
++ *     OPPORTUNISTICALLY drains: if the FIFO is empty it writes up to 16
++ *     bytes immediately (no waiting — LSR is checked, never spun on).
++ *     When the FIFO is busy, the THRE interrupt (IRQ 4) drains the rest,
++ *     16 bytes per fire.  The THRE interrupt is enabled only while the
++ *     ring is non-empty, so an idle UART raises no interrupts at all.
++ *
++ *   - Ring full: the caller drains synchronously until there is room
++ *     (D3: a kernel log NEVER drops bytes — the ring changes who waits,
++ *     not whether bytes arrive).  Those bytes count as sync.
++ *
++ *   - uart_flush() (kernel_halt, D4): latch back to synchronous mode so
++ *     every subsequent byte — the dying words — goes straight out, then
++ *     drain whatever the ring still holds.  The lock acquire there is
++ *     BOUNDED: if the lock holder died mid-drain, torn output beats
++ *     silence.
++ *
++ * Registration note: the IRQ-4 handler is registered by kmain through a
++ * thunk in kernel.c, not here — irq_register_handler lives in
++ * kernel/arch/x86_64/irq.h and this file deliberately does not include
++ * it (the I6 include ratchet holds portable files at their current
++ * count of direct x86_64 includes; kernel.c already pays that toll).
++ * IRQ 4 works in both delivery eras: PIC (pic_unmask at registration)
++ * and, after ioapic_init(), the identity-mapped GSI 4 redirection entry.
++ */
+ 
+ #include "kernel/arch/arch.h"
+ #include "drivers/uart/uart.h"
++#include "drivers/uart/uart_ring.h"
+ #include "kernel/lib/perfstat.h"
+ 
++#define UART_TX_RING_SIZE 16384u   /* power of two; uart_ring.h requires it */
++#define UART_FIFO_DEPTH   16       /* 16550 TX FIFO */
++
++static uint8_t     tx_buf[UART_TX_RING_SIZE];
++static uart_ring_t tx_ring;                /* zero-initialised: empty */
++static volatile int tx_ring_mode = 0;      /* 0 = sync (early/panic), 1 = ring */
++
++/* One flat byte-lock, private to the TX path.  Not the generic spinlock:
++ * uart_flush() needs a BOUNDED acquire (see header comment), and the
++ * generic API deliberately has no trylock. */
++static volatile uint8_t tx_lock;
++
++static void tx_lock_acquire(void) {
++    while (__atomic_exchange_n(&tx_lock, 1, __ATOMIC_ACQUIRE)) {
++        arch_cpu_relax();
++    }
++}
++
++static void tx_lock_release(void) {
++    __atomic_store_n(&tx_lock, 0, __ATOMIC_RELEASE);
++}
++
+ void uart_init(void) {
+     const uint16_t base = UART_COM1;
+ 
+@@ -16,19 +75,109 @@ void uart_init(void) {
+     outb(base + UART_MCR, 0x0B);           /* RTS/DSR set, OUT2 (IRQs routed) */
+ }
+ 
+-void uart_putchar(char c) {
+-    const uint16_t base = UART_COM1;
+-    /* Busy-wait until the transmit holding register can accept a byte. */
+-    while ((inb(base + UART_LSR) & UART_LSR_THRE) == 0) {
++/* Enable/disable the THRE (transmitter-empty) interrupt, IER bit 1.  RX
++ * interrupts stay off — the TTY polls, as before. */
++static void ier_thre(int on) {
++    uint8_t v = inb(UART_COM1 + UART_IER);
++    uint8_t nv = on ? (uint8_t)(v | 0x02) : (uint8_t)(v & ~0x02);
++    if (nv != v) {
++        outb(UART_COM1 + UART_IER, nv);
++    }
++}
++
++/* One synchronous byte: the historical path, and the only place that
++ * busy-waits on THRE.  Counts into the sync perfstat. */
++static void tx_sync_byte(uint8_t c) {
++    while ((inb(UART_COM1 + UART_LSR) & UART_LSR_THRE) == 0) {
+         /* spin */
+     }
+-    outb(base + UART_THR, (uint8_t)c);
+-    /* OPT_PLAN.md O0: every byte through this synchronous path is boot
+-     * latency paid at 115200 baud (Fact 2).  O3's ring drains this counter
+-     * down to ring-full spill + panic bytes; until then it counts them all. */
++    outb(UART_COM1 + UART_THR, c);
+     perfstat_add(PERF_UART_TX_SYNC_BYTES, 1);
+ }
+ 
++/* Drain ring -> FIFO while the FIFO has room.  NEVER waits: LSR.THRE is
++ * checked, and if the FIFO is busy we leave the rest to the interrupt.
++ * Caller holds tx_lock. */
++static void hw_drain_locked(void) {
++    while (!uring_empty(&tx_ring)) {
++        if ((inb(UART_COM1 + UART_LSR) & UART_LSR_THRE) == 0) {
++            return;                        /* FIFO busy: IRQ takes over */
++        }
++        for (int i = 0; i < UART_FIFO_DEPTH && !uring_empty(&tx_ring); i++) {
++            outb(UART_COM1 + UART_THR,
++                 uring_pop(&tx_ring, tx_buf, UART_TX_RING_SIZE));
++            perfstat_add(PERF_UART_TX_RING_BYTES, 1);
++        }
++    }
++}
++
++void uart_putchar(char c) {
++    if (!tx_ring_mode) {
++        tx_sync_byte((uint8_t)c);
++        return;
++    }
++
++    uint64_t fl = arch_irq_save();
++    tx_lock_acquire();
++
++    /* Ring full: drain synchronously until there is room.  Never drop —
++     * the log's byte-fidelity is what every integration grep stands on. */
++    while (uring_full(&tx_ring, UART_TX_RING_SIZE)) {
++        tx_sync_byte(uring_pop(&tx_ring, tx_buf, UART_TX_RING_SIZE));
++    }
++
++    uring_push(&tx_ring, tx_buf, UART_TX_RING_SIZE, (uint8_t)c);
++    hw_drain_locked();
++    ier_thre(!uring_empty(&tx_ring));
++
++    tx_lock_release();
++    arch_irq_restore(fl);
++}
++
++/* THRE interrupt body (IRQ 4).  Registered via the kernel.c thunk;
++ * interrupts are already off in IRQ context. */
++void uart_tx_irq(void) {
++    tx_lock_acquire();
++    hw_drain_locked();
++    ier_thre(!uring_empty(&tx_ring));
++    tx_lock_release();
++}
++
++/* Flip TX into ring mode.  Called once by kmain after the IRQ-4 handler
++ * is registered. */
++void uart_tx_ring_enable(void) {
++    tx_ring_mode = 1;
++}
++
++/* Synchronous drain for the death paths (kernel_halt) and anything that
++ * must not lose bytes across a world change.  D4: after this call every
++ * future byte is synchronous too. */
++void uart_flush(void) {
++    tx_ring_mode = 0;                      /* dying words go straight out */
++
++    /* Bounded acquire: the legitimate holder drains at most one FIFO
++     * burst with IRQs off, so a million relaxed spins is geological time
++     * — if it still holds after that, it died mid-drain and we proceed
++     * unlocked (torn output beats silence at halt). */
++    int got = 0;
++    for (uint32_t i = 0; i < 1000000u; i++) {
++        if (!__atomic_exchange_n(&tx_lock, 1, __ATOMIC_ACQUIRE)) {
++            got = 1;
++            break;
++        }
++        arch_cpu_relax();
++    }
++
++    while (!uring_empty(&tx_ring)) {
++        tx_sync_byte(uring_pop(&tx_ring, tx_buf, UART_TX_RING_SIZE));
++    }
++    ier_thre(0);
++
++    if (got) {
++        tx_lock_release();
++    }
++}
++
+ void uart_puts(const char *s) {
+     while (*s) {
+         uart_putchar(*s++);
+diff --git a/drivers/uart/uart.h b/drivers/uart/uart.h
+index 5703c36..df802b8 100644
+--- a/drivers/uart/uart.h
++++ b/drivers/uart/uart.h
+@@ -31,6 +31,11 @@ void uart_init(void);
+ void uart_putchar(char c);
+ void uart_puts(const char *s);
+ 
++/* OPT_PLAN.md O3: ring-buffered TX. */
++void uart_tx_ring_enable(void);   /* flip to ring mode (IRQ 4 must be live) */
++void uart_tx_irq(void);           /* THRE interrupt body (kernel.c thunk)   */
++void uart_flush(void);            /* drain + latch back to sync (halt path) */
++
+ /* Check if a byte is available to read from the UART. */
+ int  uart_has_data(void);
+ 
+diff --git a/drivers/uart/uart_ring.h b/drivers/uart/uart_ring.h
+new file mode 100644
+index 0000000..de101fa
+--- /dev/null
++++ b/drivers/uart/uart_ring.h
+@@ -0,0 +1,51 @@
++/* uart_ring.h — the TX ring index core, pure C (OPT_PLAN.md O3).
++ *
++ * No I/O, no locking, no statics: just the head/tail arithmetic, split
++ * out so the host unit test (tests/unit/test_uart_ring.c) can exercise
++ * the three classic off-by-ones — wrap, full, empty — without a UART in
++ * the room.  uart.c composes these under its own lock.
++ *
++ * Convention: head and tail are FREE-RUNNING uint32 counters (they wrap
++ * mod 2^32, never mod size); an index into the buffer is `counter &
++ * (size - 1)`, so size MUST be a power of two.  count == head - tail
++ * works across the 2^32 wrap by unsigned arithmetic — that wrap is
++ * exactly what the unit test pins down.
++ */
++#ifndef AURALITE_DRIVERS_UART_RING_H
++#define AURALITE_DRIVERS_UART_RING_H
++
++#include <stdint.h>
++
++typedef struct {
++    uint32_t head;      /* producer counter (writes advance it)  */
++    uint32_t tail;      /* consumer counter (drains advance it)  */
++} uart_ring_t;
++
++static inline uint32_t uring_count(const uart_ring_t *r) {
++    return r->head - r->tail;
++}
++
++static inline int uring_empty(const uart_ring_t *r) {
++    return r->head == r->tail;
++}
++
++static inline int uring_full(const uart_ring_t *r, uint32_t size) {
++    return uring_count(r) == size;
++}
++
++/* Push one byte.  Caller must have checked !uring_full(). */
++static inline void uring_push(uart_ring_t *r, uint8_t *buf, uint32_t size,
++                              uint8_t byte) {
++    buf[r->head & (size - 1)] = byte;
++    r->head++;
++}
++
++/* Pop one byte.  Caller must have checked !uring_empty(). */
++static inline uint8_t uring_pop(uart_ring_t *r, const uint8_t *buf,
++                                uint32_t size) {
++    uint8_t b = buf[r->tail & (size - 1)];
++    r->tail++;
++    return b;
++}
++
++#endif /* AURALITE_DRIVERS_UART_RING_H */
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index 755cd21..0e9248e 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -72,8 +72,20 @@
+ #include "drivers/virtio_blk/virtio_blk.h"
+ #include "kernel/audio/audio.h"
+ 
++/* OPT_PLAN.md O3: IRQ-4 thunk for the UART TX ring — irq_handler_t takes
++ * a registers pointer the UART body has no use for; the adapter lives
++ * here because uart.c deliberately does not include irq.h (I6 ratchet). */
++static void uart_tx_irq_thunk(struct registers *regs) {
++    (void)regs;
++    uart_tx_irq();
++}
++
+ /* Halt the (only) CPU indefinitely with interrupts off. */
+ void kernel_halt(void) {
++    /* OPT_PLAN.md O3 (D4): the ring may still hold the last words —
++     * drain it synchronously before the lights go out, and latch every
++     * later byte onto the synchronous path. */
++    uart_flush();
+     for (;;) {
+         __asm__ volatile ("cli");
+         __asm__ volatile ("hlt");
+@@ -218,6 +230,14 @@ void kmain(boot_info_t *boot_info) {
+ 
+     kprintf("\n[kernel] interrupts enabled, exception handling online.\n");
+ 
++    /* OPT_PLAN.md O3: arm the UART TX ring now that the IDT/PIC are live.
++     * The thunk exists because uart.c deliberately does not include
++     * irq.h (the I6 include ratchet); kernel.c already does.  IRQ 4
++     * survives the IOAPIC takeover via the identity-mapped GSI 4 entry. */
++    irq_register_handler(4, uart_tx_irq_thunk);
++    uart_tx_ring_enable();
++    kprintf("[uart] TX ring armed (16 KiB buffer, THRE IRQ 4)\n");
++
+     /* OPT_PLAN.md O2: pick the self-test intensity before the first
+      * scaled self-test runs.  fw_cfg (QEMU) can override the build
+      * default; the line is greppable and states both mode and source. */
+diff --git a/kernel/lib/perfstat.c b/kernel/lib/perfstat.c
+index e75f2e5..dcd44f0 100644
+--- a/kernel/lib/perfstat.c
++++ b/kernel/lib/perfstat.c
+@@ -26,6 +26,7 @@ static const char *const names[PERF_COUNTER_MAX] = {
+     [PERF_TLB_SHOOTDOWNS_FULL]           = "tlb_shootdowns_full",
+     [PERF_KMALLOC_WALK_STEPS]            = "kmalloc_walk_steps",
+     [PERF_UART_TX_SYNC_BYTES]            = "uart_tx_sync_bytes",
++    [PERF_UART_TX_RING_BYTES]            = "uart_tx_ring_bytes",
+ };
+ 
+ void perfstat_add(int id, uint64_t n) {
+diff --git a/kernel/lib/perfstat.h b/kernel/lib/perfstat.h
+index 4fca43d..a6327c6 100644
+--- a/kernel/lib/perfstat.h
++++ b/kernel/lib/perfstat.h
+@@ -49,10 +49,15 @@ enum perfstat_id {
+     PERF_KMALLOC_WALK_STEPS,
+ 
+     /* Bytes pushed through the synchronous busy-wait UART TX path
+-     * (OPT_PLAN Fact 2).  After O3 lands, this counts only ring-full
+-     * spill and panic-path bytes. */
++     * (OPT_PLAN Fact 2).  After O3, this counts only the pre-ring boot
++     * banner, ring-full spill and panic/halt bytes. */
+     PERF_UART_TX_SYNC_BYTES,
+ 
++    /* Bytes carried by the O3 TX ring (enqueued and later written from
++     * the opportunistic drain or the THRE interrupt).  ring >> sync is
++     * the proof the ring took over. */
++    PERF_UART_TX_RING_BYTES,
++
+     PERF_COUNTER_MAX
+ };
+ 
+diff --git a/tests/integration/cases/test_perf_smoke.sh b/tests/integration/cases/test_perf_smoke.sh
+index 5e1caf3..a7cacb4 100644
+--- a/tests/integration/cases/test_perf_smoke.sh
++++ b/tests/integration/cases/test_perf_smoke.sh
+@@ -59,10 +59,20 @@ fi
+ # --- /proc/perf: every O0 counter present ---
+ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
+          compositor_pixels_composited compositor_pixels_flipped \
+-         tlb_shootdowns_full kmalloc_walk_steps uart_tx_sync_bytes; do
++         tlb_shootdowns_full kmalloc_walk_steps uart_tx_sync_bytes \
++         uart_tx_ring_bytes; do
+     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
+ done
+ 
++# --- O3: the TX ring carries the log; the sync path is the exception ---
++SYNC_B=$(grep -aE '^uart_tx_sync_bytes [0-9]+' "$LOG" | grep -oE '[0-9]+' | head -1)
++RING_B=$(grep -aE '^uart_tx_ring_bytes [0-9]+' "$LOG" | grep -oE '[0-9]+' | head -1)
++if [ -n "${SYNC_B:-}" ] && [ -n "${RING_B:-}" ] && [ "$RING_B" -gt "$SYNC_B" ]; then
++    il_pass "TX ring carries the majority (ring=$RING_B sync=$SYNC_B bytes)"
++else
++    il_fail "TX ring not carrying: ring=${RING_B:-none} sync=${SYNC_B:-none}"
++fi
++
+ # --- idle steady state: full recomposites bounded between the two reads ---
+ # One-shot full redraws are legitimate — the boot notification ("GUI
+ # subsystem initialized.", gui.c, 4000 ms) expires a few seconds into the
+diff --git a/tests/unit/test_uart_ring.c b/tests/unit/test_uart_ring.c
+new file mode 100644
+index 0000000..c6b5846
+--- /dev/null
++++ b/tests/unit/test_uart_ring.c
+@@ -0,0 +1,125 @@
++/* test_uart_ring.c — host gate for the O3 TX ring index core
++ * (OPT_PLAN.md O3; drivers/uart/uart_ring.h).
++ *
++ * The ring's counters are free-running uint32s and the buffer index is
++ * `counter & (size-1)` — which means the three classic ring bugs (wrap,
++ * full-vs-empty ambiguity, off-by-one at the boundary) all live in about
++ * four lines of arithmetic.  This test pins them down, including the
++ * case the kernel will not hit for months: head/tail crossing the 2^32
++ * boundary mid-stream.
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "../../drivers/uart/uart_ring.h"
++
++static int passed = 0;
++static int failed = 0;
++
++#define CHECK(cond, ...) do {                       \
++        if (cond) { passed++; }                     \
++        else {                                      \
++            failed++;                               \
++            printf("FAIL: ");                       \
++            printf(__VA_ARGS__);                    \
++            printf("\n");                           \
++        }                                           \
++    } while (0)
++
++#define SZ 16u
++
++static void test_empty_full_boundaries(void) {
++    uint8_t buf[SZ];
++    uart_ring_t r = {0, 0};
++
++    CHECK(uring_empty(&r), "fresh ring is empty");
++    CHECK(!uring_full(&r, SZ), "fresh ring is not full");
++    CHECK(uring_count(&r) == 0, "fresh count is 0");
++
++    /* Fill to exactly full. */
++    for (uint32_t i = 0; i < SZ; i++) {
++        CHECK(!uring_full(&r, SZ), "not full before push %u", i);
++        uring_push(&r, buf, SZ, (uint8_t)i);
++    }
++    CHECK(uring_full(&r, SZ), "full after SZ pushes");
++    CHECK(!uring_empty(&r), "full ring is not empty");
++    CHECK(uring_count(&r) == SZ, "count == SZ at full");
++
++    /* Drain to exactly empty, FIFO order. */
++    for (uint32_t i = 0; i < SZ; i++) {
++        CHECK(!uring_empty(&r), "not empty before pop %u", i);
++        uint8_t b = uring_pop(&r, buf, SZ);
++        CHECK(b == (uint8_t)i, "FIFO order at %u (got %u)", i, b);
++    }
++    CHECK(uring_empty(&r), "empty after SZ pops");
++    CHECK(uring_count(&r) == 0, "count 0 after drain");
++}
++
++static void test_interleaved_wraparound(void) {
++    /* Push 3 / pop 2 repeatedly: indices lap the buffer many times while
++     * the count stays small — the mask arithmetic is what's on trial. */
++    uint8_t buf[SZ];
++    uart_ring_t r = {0, 0};
++    uint8_t next_in = 0, next_out = 0;
++
++    for (int round = 0; round < 1000; round++) {
++        for (int i = 0; i < 3; i++) {
++            if (!uring_full(&r, SZ)) {
++                uring_push(&r, buf, SZ, next_in++);
++            }
++        }
++        for (int i = 0; i < 2; i++) {
++            if (!uring_empty(&r)) {
++                uint8_t b = uring_pop(&r, buf, SZ);
++                if (b != next_out) {
++                    CHECK(0, "order lost at round %d (got %u want %u)",
++                          round, b, next_out);
++                    return;
++                }
++                next_out++;
++            }
++        }
++    }
++    CHECK(1, "1000 interleaved rounds keep FIFO order");
++    CHECK(uring_count(&r) == (uint32_t)(uint8_t)(next_in - next_out) ||
++          uring_count(&r) == (uint32_t)(next_in - next_out),
++          "count consistent after interleave");
++}
++
++static void test_counter_wrap_2_32(void) {
++    /* Start both counters just below the uint32 wrap: count arithmetic
++     * must survive head wrapping to 0 while tail is still near 2^32. */
++    uint8_t buf[SZ];
++    uart_ring_t r;
++    r.head = 0xFFFFFFF8u;
++    r.tail = 0xFFFFFFF8u;
++
++    CHECK(uring_empty(&r), "empty at 2^32 - 8");
++
++    for (uint32_t i = 0; i < 12; i++) {          /* crosses the wrap */
++        uring_push(&r, buf, SZ, (uint8_t)(0x40 + i));
++    }
++    CHECK(uring_count(&r) == 12, "count 12 across the 2^32 wrap (head=%u)",
++          r.head);
++    CHECK(r.head == 4u, "head wrapped to 4");
++
++    for (uint32_t i = 0; i < 12; i++) {
++        uint8_t b = uring_pop(&r, buf, SZ);
++        CHECK(b == (uint8_t)(0x40 + i), "wrap-crossing FIFO order at %u", i);
++    }
++    CHECK(uring_empty(&r), "empty again after the wrap crossing");
++    CHECK(r.tail == r.head, "tail caught head across the wrap");
++}
++
++int main(void) {
++    printf("=== O3 UART TX ring index test suite ===\n\n");
++
++    test_empty_full_boundaries();
++    test_interleaved_wraparound();
++    test_counter_wrap_2_32();
++
++    printf("\n%d passed, %d failed\n", passed, failed);
++    if (failed == 0) printf("=== ALL TESTS PASSED ===\n");
++    return failed ? 1 : 0;
++}

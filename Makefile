@@ -2064,6 +2064,8 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # includes), the checker's own self-test, the cross-width boot_info_t
 # offset contract at both targets, and the negative control that
 # re-detects the I1 -malign-double ABI bug.
+	@echo "[unit] running tests/unit/test_opt_claims.sh"
+	@bash tests/unit/test_opt_claims.sh || exit 1
 	@echo "[unit] running tests/unit/test_width_sweep.sh"
 	@bash tests/unit/test_width_sweep.sh || exit 1
 

@@ -13,6 +13,33 @@ Legend:
   not complete.
 - ❌ **Not implemented** — no working support yet.
 
+## Performance (OPT_PLAN.md, phases O0–O9)
+
+The optimization plan's ledger lives in `OPT_PLAN.md` §6; the live
+counters are `/proc/perf` (names are an interface — `test_perf_smoke`
+parses them).  Headline numbers, all measured under QEMU/TCG on the
+plan's reference machine:
+
+| What | Before | After |
+|---|---:|---:|
+| memcpy 64 KiB (guest, TCG) | 11 MB/s | 82 MB/s |
+| memset 1 MiB (guest, TCG) | 342 MB/s | 1 687 MB/s |
+| boot → shell, default (`selftest=fast`) | ~5.1 s | ~4.0 s |
+| serial log carried by | per-byte busy-wait | 16 KiB TX ring + THRE IRQ (97% of bytes) |
+| compositor work per 1 Hz clock frame (UEFI) | 1 024 000 px (full screen) | 94 805 px (dirty union) |
+| TLB shootdown | full CR3 reload, broadcast | invlpg range, addressed + CR3-filtered |
+| idle busy% at the shell | 36.2 | 0.3 |
+| initrd.tar | 8 806 400 B | 3 061 760 B (−65%, `--gc-sections`) |
+
+Honesty notes carried from the plan: QEMU serial is effectively
+infinite-baud, so O3's wall-clock win is real-hardware-shaped (the
+counters are the in-QEMU proof); Fact 5's kmalloc walk number was the
+heap self-test measuring itself (a real boot walks ~63–80 nodes — the
+O6 size-class cache is infrastructure for runtime churn, not a boot
+fix); PAT/WC framebuffer mapping and PCID are recorded real-hardware
+residue.  `tools/check_opt_claims.py` (CI) keeps the plan's checkboxes
+tied to the tree.
+
 ## Boot and CPU
 
 | Feature | Status | Notes |

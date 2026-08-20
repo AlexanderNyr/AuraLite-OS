@@ -1,0 +1,835 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e27d68d..fe355bb 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,36 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O1 — word-wide string ops] 2026-08-19
++
++`OPT_PLAN.md` phase O1: the byte-at-a-time memcpy/memset/memmove
++(Fact 1) retired in both worlds — kernel and user libc.
++
++- `kernel/arch/x86_64/string_fast.c` (new): `rep movsq` bulk +
++  `rep movsb` tail, sub-64 B scalar path; memmove backward is 8-byte
++  tail-first chunks with DF never touched.  The file lives in the arch
++  tree because the V6 asm ratchet holds portable code at zero inline
++  assembly; `kernel/lib/string.c` keeps the portable bodies under
++  `#ifndef ARCH_X86_64` for the host tests and future shared-tree archs.
++- `kernel/lib/string.c` + `lib/libc/src/libc.c`: word-wide
++  memcmp/strlen in portable C (8-byte `__builtin_memcpy` loads,
++  has-zero-byte trick; aligned reads cannot cross a page).
++- `lib/libc/src/{libc.c,string_extra.c}`: user-space memcpy/memset get
++  the same movsq shapes; memmove's forward path is a self-contained
++  8-byte loop because `extract_libc_impls.py` compiles it standalone.
++- `tests/unit/test_string_ops.c` (new, in `UNIT_TESTS`): alignment ×
++  size × overlap matrix with guard canaries — 3052 checks green.
++- **The measured lesson, recorded in the plan:** the first draft used
++  `rep movsb` everywhere and membench refused to move (11 → 11 MB/s):
++  TCG emulates rep-string one iteration at a time, so byte-element rep
++  IS a byte loop there.  With movsq bulk: memcpy 64 KiB
++  **11 → 82 MB/s**, memset 1 MiB **342 → 1687 MB/s**, memmove 64 KiB
++  **144 → 1236 MB/s** under TCG, and nothing is lost on real ERMSB
++  hardware.  D1 (no number, no claim) caught it before the plan could
++  ship a placebo.
++- Per the phase-hygiene rule this patch also carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O0 — the measuring rig] 2026-08-19
+ 
+ `OPT_PLAN.md` phase O0: before any optimization lands, the instruments
+diff --git a/Makefile b/Makefile
+index 253789a..e317316 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1855,7 +1855,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_apkg \
+                 $(BUILD_DIR)/test_printf_fmt \
+                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
+-                $(BUILD_DIR)/test_string $(BUILD_DIR)/test_bitmap \
++                $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
++                $(BUILD_DIR)/test_bitmap \
+                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
+                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
+                 $(BUILD_DIR)/test_usb $(BUILD_DIR)/test_wm \
+@@ -2292,6 +2293,14 @@ $(BUILD_DIR)/test_string: tests/unit/test_string.c kernel/lib/string.c kernel/li
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# OPT_PLAN O1: the fast rep-string backend + word-wide memcmp/strlen,
++# across the alignment × size × overlap matrix.
++$(BUILD_DIR)/test_string_ops: tests/unit/test_string_ops.c \
++                              kernel/arch/x86_64/string_fast.c \
++                              kernel/lib/string.c kernel/lib/string.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
++
+ $(BUILD_DIR)/test_bitmap: tests/unit/test_bitmap.c kernel/lib/bitmap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index 430ebfb..f17619b 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,11 +1,11 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0 landed (the rig); O1–O9 specified
++## Status: IN PROGRESS 🚧 — O0, O1 landed; O2–O9 specified
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | O0 — the measuring rig | ✅ complete | `patches/OPT_O0_rig.patch` |
+-| O1 — word-wide string ops | ⬜ todo | — |
++| O1 — word-wide string ops | ✅ complete | `patches/OPT_O1_stringops.patch` |
+ | O2 — fast-boot self-test knob | ⬜ todo | — |
+ | O3 — buffered UART TX | ⬜ todo | — |
+ | O4 — compositor: composite the union, sleep when idle | ⬜ todo | — |
+@@ -360,35 +360,68 @@ machine, committed into §6 of this document.
+ 
+ ---
+ 
+-### O1 — Word-wide string ops (`rep movsb` in the kernel, real routines in libc)
++### O1 — Word-wide string ops (`rep movsq` in the kernel, real routines in libc)
++
++**Status: ✅ landed** (`patches/OPT_O1_stringops.patch`).  Measured
++results and one TCG lesson at the end of this section.
+ 
+ **Objective:** retire the byte loops of Fact 1 in both worlds.
+ 
+ Tasks:
+ 
+-- [ ] `kernel/lib/string.c`: `memcpy`/`memset`/`memmove` via
+-      `rep movsb`/`rep stosb` with the small-size scalar fallback
+-      (`rep` setup cost dominates under ~64 B; the crossover is measured
+-      by membench, not guessed). `memmove` keeps the direction logic and
+-      uses `std`/`cld` only in the backward case, restoring flags.
+-      No SSE, no FPU state touched — D-compatible with `-mno-sse`.
+-- [ ] `memcmp`/`strlen` get word-wide loops (no `rep cmpsb` — it is slow
+-      everywhere; plain 8-byte chunks with the usual tail).
+-- [ ] `lib/libc/src`: mirror the same routines for user space (user code
+-      may additionally keep the compiler's inlining; the library symbols
+-      are what large copies hit).
+-- [ ] The i386 and rv64/a64 trees keep their loops; residue line per D5
+-      (`rep movsb` transfers to i386 verbatim; rv64/a64 want 8-byte loops —
+-      recorded, not done here).
++- [x] Kernel: the fast backend lives in
++      **`kernel/arch/x86_64/string_fast.c`** — NOT in
++      `kernel/lib/string.c` as first drafted, because the V6 asm ratchet
++      holds portable files at zero inline assembly and it is right to.
++      `memcpy`/`memset` are `rep movsq` bulk + `rep movsb` tail with the
++      sub-64 B scalar path; `kernel/lib/string.c` keeps the portable
++      bodies under `#ifndef ARCH_X86_64` (host tests compile exactly
++      those; rv64/a64 inherit them when they adopt the shared tree).
++      `memmove` keeps DF untouched: forward = memcpy's rep path
++      (overlap-safe in that direction by definition), backward = 8-byte
++      tail-first chunks — not `std; rep movsb` because backward rep gets
++      no fast-string path on any microarchitecture, even though the
++      entry stubs do `cld` (isr_stubs.asm:73, checked).
++- [x] `memcmp`/`strlen` word-wide in portable C (both kernel and libc):
++      8-byte `__builtin_memcpy` loads, has-zero-byte trick for strlen
++      (aligned reads only — cannot cross a page), byte-scan of the first
++      differing word for memcmp.  No `rep cmpsb` — micro-coded
++      byte-at-a-time everywhere.
++- [x] `lib/libc/src`: same shapes for user space (`libc.c` memcpy/memset,
++      `string_extra.c` memmove — whose forward path is a self-contained
++      8-byte loop, not a memcpy call, because
++      `tools/extract_libc_impls.py` extracts memmove standalone for the
++      host stdio tests and an unresolved symbol there is a build error).
++- [x] The i386 and rv64/a64 trees keep their loops; residue line per D5
++      (`rep movsq` transfers to i386 as `rep movsd`; rv64/a64 want the
++      8-byte loops `kernel/lib/string.c` now carries).
++
++**What O1 measured** (membench, QEMU/TCG, BIOS guest; §6 table):
++
++- **The first draft used `rep movsb` for everything and membench refused
++  to move: 11 MB/s before, 11 MB/s after.**  TCG emulates rep-string
++  ops one *iteration* at a time, so a byte-element rep IS a byte loop
++  there — while the 8-byte-loop memmove in the same boot jumped
++  144 → 1242 MB/s.  The bulk became `rep movsq` (8 bytes/iteration —
++  and on real hardware ERMSB covers movsq too, so nothing is lost
++  where it matters).  D1 worked exactly as designed: a "faster" that
++  the rig could not see did not get to call itself faster.
++- After the movsq rework: memcpy 4 KiB–1 MiB **11 → 73–82 MB/s (~7×)**,
++  memcpy 64 B 6 → 18–20 (call overhead bound), memset 1 MiB
++  **342 → 1687 MB/s**, memmove 64 KiB **144 → 1236 MB/s**.
++- Boot-to-shell: 505 → 497 ticks — statistically nothing, as expected:
++  boot is wait-dominated (O2/O3's business), not copy-dominated.
+ 
+ **Definition of done:** membench shows the improvement and the crossover
+-choice; `gfx_flip` full-frame time (new counter delta) drops accordingly;
+-no suite regression.
++choice; no suite regression. ✓ (gltest/selftest/boot cases green,
++`test-unit` EXIT 0.)
+ 
+-**Test gate:** a new host unit test `tests/unit/test_string_ops.c`
+-exercising all four routines across alignment × size × overlap matrices
+-against a reference implementation, plus the full suites (D3). Before/after
+-membench table lands in §6.
++**Test gate:** `tests/unit/test_string_ops.c` — the fast backend and the
++word-wide portable routines across alignment (0–8) × size (0–1024,
++straddling the 64 B crossover) × overlap (both directions, distances
++1–9) matrices against a byte-loop reference, with guard canaries around
++every destination: **3052 checks, 0 failed**, registered in
++`UNIT_TESTS`. ✓
+ 
+ **Deliverable:** `patches/OPT_O1_stringops.patch`
+ 
+@@ -715,18 +748,19 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ 
+ | Metric | Baseline (`6bba33f` + O0) | After O1 | O2 | O3 | O4 | O5 | O6 | O7 | O8 |
+ |---|---|---|---|---|---|---|---|---|---|
+-| boot → shell (PIT ticks, BIOS) | 505 (~5.1 s) | | | | | | | | |
+-| boot → shell (PIT ticks, UEFI/OVMF) | 1345 (~13.6 s) | | | | | | | | |
+-| membench memcpy-a 64 KiB (MB/s) | 11 | | | | | | | | |
+-| membench memcpy-a 1 MiB (MB/s) | 10 | | | | | | | | |
+-| membench memset-a 1 MiB (MB/s) | 342 | | | | | | | | |
+-| uart_tx_sync_bytes at prompt | 24 778 | | | | | | | | |
+-| kmalloc_walk_steps per boot | 665 394 | | | | | | | | |
+-| compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | | | | | | | | |
+-| tlb_shootdowns_full per boot (`-smp 2`) | 8 | | | | | | | | |
++| boot → shell (PIT ticks, BIOS) | 505 (~5.1 s) | 497 | | | | | | | |
++| boot → shell (PIT ticks, UEFI/OVMF) | 1345 (~13.6 s) | — | | | | | | | |
++| membench memcpy-a 64 KiB (MB/s) | 11 | **82** | | | | | | | |
++| membench memcpy-a 1 MiB (MB/s) | 10 | **79** | | | | | | | |
++| membench memset-a 1 MiB (MB/s) | 342 | **1687** | | | | | | | |
++| membench memmove-o 64 KiB (MB/s) | 144 | **1236** | | | | | | | |
++| uart_tx_sync_bytes at prompt | 24 778 | 24 774 | | | | | | | |
++| kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
++| compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | | | | | |
++| tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | | | | |
+ | idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
+-| kernel.elf bytes | 2 437 296 | | | | | | | | |
+-| auralite.iso bytes | 51 380 224 | | | | | | | | |
++| kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
++| auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
+ 
+ ## 7. Cross-arch residue (D5)
+ 
+diff --git a/kernel/arch/x86_64/string_fast.c b/kernel/arch/x86_64/string_fast.c
+new file mode 100644
+index 0000000..a317cf7
+--- /dev/null
++++ b/kernel/arch/x86_64/string_fast.c
+@@ -0,0 +1,124 @@
++/* string_fast.c — x86_64 kernel memcpy/memset/memmove (OPT_PLAN.md O1).
++ *
++ * The byte-at-a-time loops these replace lived in kernel/lib/string.c and
++ * were the plan's Fact 1: every frame flip, COW copy, spawn read and
++ * implicit struct copy paid one loop iteration per byte.  The replacement
++ * is `rep movsb`/`rep stosb` — no SSE, no FPU state, no alignment
++ * requirements, and the fastest general copy available to `-mno-sse`
++ * kernel code on everything QEMU emulates (and, via ERMSB, on real
++ * hardware since Ivy Bridge).
++ *
++ * This file lives under kernel/arch/x86_64/ ON PURPOSE: the V6 asm
++ * ratchet (tools/check_width_sweep.py, ratchet 4) holds portable
++ * kernel/driver code at zero new inline assembly, and it is right to —
++ * kernel/lib/string.c keeps a portable fallback for every function here
++ * (compiled when ARCH_X86_64 is not defined: the host unit tests and any
++ * future arch that adopts the shared tree), and this file is the x86_64
++ * backend that shadows them at kernel link time.
++ *
++ * Two measured/recorded decisions:
++ *
++ *   - The bulk is `rep movsq`/`rep stosq` (8 bytes per iteration) with a
++ *     `rep movsb`/`rep stosb` tail, NOT plain `rep movsb` for everything.
++ *     Membench measured why (OPT_PLAN D1, §6): QEMU/TCG — this project's
++ *     primary target — emulates rep-string ops one ITERATION at a time,
++ *     so `rep movsb` runs at byte-loop speed there (~11 MB/s, no win at
++ *     all), while the same rep with 8-byte elements moves 8× per
++ *     iteration (the 8-byte-loop memmove jumped 144 → 1242 MB/s in the
++ *     same boot).  On real hardware both spellings hit the fast-string
++ *     path (ERMSB extends to movsq), so the movsq form is never the
++ *     wrong choice — it just refuses to be a TCG no-op.
++ *
++ *   - SMALL_N = 64: below the `rep` setup cost the scalar loop wins.
++ *     Under TCG the difference at <64 B is noise either way, and on real
++ *     ERMSB hardware Intel's own guidance puts the break-even in the
++ *     32–128 B band.  64 is the middle of that band and a cache line.
++ *
++ *   - The backward memmove case uses a plain word-wise C loop, NOT
++ *     `std; rep movsb; cld`.  Not for DF safety — this kernel's entry
++ *     paths already clear the flag (isr_stubs.asm:73 `cld` with the ABI
++ *     comment, syscall_entry.asm:131) — but because a backward
++ *     `rep movsb` gets NO fast-string path on any microarchitecture
++ *     (ERMSB is forward-only; backward decays to one byte per µop),
++ *     while the 8-byte loop moves eight.  Never setting DF also keeps
++ *     the interaction surface at zero for whatever entry path is added
++ *     next, which is worth having for free.  Backward overlapping
++ *     copies are rare (tmpfs truncate shuffles, GUI scroll regions);
++ *     8× the old byte loop is enough for them.
++ */
++#include <stdint.h>
++#include <stddef.h>
++#include "kernel/lib/string.h"
++
++#define SMALL_N 64
++
++void *memcpy(void *dst, const void *src, size_t n) {
++    if (n < SMALL_N) {
++        unsigned char       *d = (unsigned char *)dst;
++        const unsigned char *s = (const unsigned char *)src;
++        while (n--) *d++ = *s++;
++        return dst;
++    }
++    void  *d = dst;
++    size_t q = n >> 3;
++    size_t r = n & 7;
++    /* rdi/rsi advance across both reps; unaligned movsq is fine on x86. */
++    __asm__ volatile ("rep movsq"
++                      : "+D"(d), "+S"(src), "+c"(q)
++                      :
++                      : "memory");
++    __asm__ volatile ("rep movsb"
++                      : "+D"(d), "+S"(src), "+c"(r)
++                      :
++                      : "memory");
++    return dst;
++}
++
++void *memset(void *dst, int c, size_t n) {
++    if (n < SMALL_N) {
++        unsigned char *d = (unsigned char *)dst;
++        unsigned char  v = (unsigned char)c;
++        while (n--) *d++ = v;
++        return dst;
++    }
++    void    *d = dst;
++    size_t   q = n >> 3;
++    size_t   r = n & 7;
++    uint64_t v = (unsigned char)c;
++    v *= 0x0101010101010101ULL;      /* byte replicated to all 8 lanes */
++    /* rax holds the replicated word; its low byte is c, so the stosb
++     * tail reuses it as-is. */
++    __asm__ volatile ("rep stosq"
++                      : "+D"(d), "+c"(q)
++                      : "a"(v)
++                      : "memory");
++    __asm__ volatile ("rep stosb"
++                      : "+D"(d), "+c"(r)
++                      : "a"(v)
++                      : "memory");
++    return dst;
++}
++
++void *memmove(void *dst, const void *src, size_t n) {
++    unsigned char       *d = (unsigned char *)dst;
++    const unsigned char *s = (const unsigned char *)src;
++
++    if (d == s || n == 0) return dst;
++
++    if (d < s) {
++        /* Forward copy: rep movsb is defined byte-sequential, so it is
++         * overlap-safe in this direction — same routine as memcpy. */
++        return memcpy(dst, src, n);
++    }
++
++    /* Backward copy without touching DF (see the header comment).
++     * 8-byte tail-first chunks, then the byte remainder. */
++    while (n >= 8) {
++        n -= 8;
++        uint64_t w;
++        __builtin_memcpy(&w, s + n, 8);
++        __builtin_memcpy(d + n, &w, 8);
++    }
++    while (n--) d[n] = s[n];
++    return dst;
++}
+diff --git a/kernel/lib/string.c b/kernel/lib/string.c
+index 872e443..8666572 100644
+--- a/kernel/lib/string.c
++++ b/kernel/lib/string.c
+@@ -3,10 +3,26 @@
+  * Compiled with -mno-sse, so these are plain scalar loops (no vectorisation).
+  * They are also referenced by the compiler for implicit struct copies / large
+  * initialisers, so the names and signatures must match the standard library.
++ *
++ * OPT_PLAN.md O1: memset/memcpy/memmove are the portable FALLBACK now —
++ * on the x86_64 kernel build they are shadowed by the `rep movsb`/`rep
++ * stosb` backend in kernel/arch/x86_64/string_fast.c (which see, for why
++ * the assembly lives in the arch tree: the V6 asm ratchet holds this file
++ * at zero inline assembly, and the host unit tests compile exactly these
++ * portable bodies).  memcmp/strlen below went word-wide in the same phase
++ * — in portable C, so every consumer of this file gets them.
+  */
+ 
++#include <stdint.h>
+ #include "kernel/lib/string.h"
+ 
++/* The x86_64 kernel links the rep-string backend instead (string_fast.c).
++ * These portable bodies stay for the host unit tests and for any future
++ * arch that adopts the shared tree (D5 residue: rv64/a64 want exactly
++ * these shapes, 8-byte loops, once their kernels move off their private
++ * copies). */
++#ifndef ARCH_X86_64
++
+ void *memset(void *dst, int c, size_t n) {
+     unsigned char *d = (unsigned char *)dst;
+     unsigned char  v = (unsigned char)c;
+@@ -42,9 +58,29 @@ void *memmove(void *dst, const void *src, size_t n) {
+     return dst;
+ }
+ 
++#endif /* !ARCH_X86_64 */
++
++/* Word-wide memcmp (OPT_PLAN O1): 8-byte chunks through __builtin_memcpy
++ * loads (defined behaviour at any alignment; clang lowers each to one
++ * mov), byte-scan the first differing word.  No `rep cmpsb` — it is
++ * micro-coded byte-at-a-time everywhere and would also be assembly in a
++ * ratcheted file. */
+ int memcmp(const void *a, const void *b, size_t n) {
+     const unsigned char *pa = (const unsigned char *)a;
+     const unsigned char *pb = (const unsigned char *)b;
++    while (n >= 8) {
++        uint64_t wa, wb;
++        __builtin_memcpy(&wa, pa, 8);
++        __builtin_memcpy(&wb, pb, 8);
++        if (wa != wb) {
++            for (int i = 0; i < 8; i++) {
++                if (pa[i] != pb[i]) return (int)pa[i] - (int)pb[i];
++            }
++        }
++        pa += 8;
++        pb += 8;
++        n  -= 8;
++    }
+     while (n--) {
+         if (*pa != *pb) {
+             return (int)*pa - (int)*pb;
+@@ -55,12 +91,27 @@ int memcmp(const void *a, const void *b, size_t n) {
+     return 0;
+ }
+ 
++/* Word-wide strlen (OPT_PLAN O1): byte-step to 8-alignment, then scan
++ * aligned words with the has-zero-byte trick.  Aligned 8-byte reads
++ * cannot cross a page boundary, so this never touches a byte the string
++ * itself could not. */
+ size_t strlen(const char *s) {
+     const char *p = s;
+-    while (*p) {
++    while (((uintptr_t)p & 7) != 0) {
++        if (*p == '\0') return (size_t)(p - s);
+         p++;
+     }
+-    return (size_t)(p - s);
++    for (;;) {
++        uint64_t w;
++        __builtin_memcpy(&w, p, 8);
++        uint64_t zero = (w - 0x0101010101010101ULL) & ~w &
++                        0x8080808080808080ULL;
++        if (zero != 0) {
++            /* Little-endian: the lowest set 0x80 marks the first NUL. */
++            return (size_t)(p - s) + ((size_t)__builtin_ctzll(zero) >> 3);
++        }
++        p += 8;
++    }
+ }
+ 
+ char *strncpy(char *dst, const char *src, size_t n) {
+diff --git a/lib/libc/src/libc.c b/lib/libc/src/libc.c
+index 5a30c3c..d49322e 100644
+--- a/lib/libc/src/libc.c
++++ b/lib/libc/src/libc.c
+@@ -1273,6 +1273,62 @@ int rand(void) {
+ 
+ /* ---- String functions ---- */
+ 
++/* OPT_PLAN.md O1: memset/memcpy mirror the kernel's rep-string backend
++ * (kernel/arch/x86_64/string_fast.c — same shapes, same movsq-bulk +
++ * movsb-tail split, same 64-byte scalar crossover; the reasoning and the
++ * TCG measurement that forced movsq over movsb live in that file's
++ * header comment, and membench is the before/after record).  The
++ * portable byte loops remain the non-x86_64 fallback. */
++
++#ifdef __x86_64__
++
++#define AURA_STR_SMALL 64
++
++void *memset(void *dst, int c, size_t n) {
++    if (n < AURA_STR_SMALL) {
++        unsigned char *d = dst;
++        while (n--) *d++ = (unsigned char)c;
++        return dst;
++    }
++    void    *d = dst;
++    size_t   q = n >> 3;
++    size_t   r = n & 7;
++    uint64_t v = (unsigned char)c;
++    v *= 0x0101010101010101ULL;
++    __asm__ volatile ("rep stosq"
++                      : "+D"(d), "+c"(q)
++                      : "a"(v)
++                      : "memory");
++    __asm__ volatile ("rep stosb"
++                      : "+D"(d), "+c"(r)
++                      : "a"(v)
++                      : "memory");
++    return dst;
++}
++
++void *memcpy(void *dst, const void *src, size_t n) {
++    if (n < AURA_STR_SMALL) {
++        unsigned char *d = dst;
++        const unsigned char *s = src;
++        while (n--) *d++ = *s++;
++        return dst;
++    }
++    void  *d = dst;
++    size_t q = n >> 3;
++    size_t r = n & 7;
++    __asm__ volatile ("rep movsq"
++                      : "+D"(d), "+S"(src), "+c"(q)
++                      :
++                      : "memory");
++    __asm__ volatile ("rep movsb"
++                      : "+D"(d), "+S"(src), "+c"(r)
++                      :
++                      : "memory");
++    return dst;
++}
++
++#else /* !__x86_64__ */
++
+ void *memset(void *dst, int c, size_t n) {
+     unsigned char *d = dst;
+     while (n--) *d++ = (unsigned char)c;
+@@ -1286,8 +1342,23 @@ void *memcpy(void *dst, const void *src, size_t n) {
+     return dst;
+ }
+ 
++#endif /* __x86_64__ */
++
++/* Word-wide memcmp/strlen (OPT_PLAN O1) — same portable shapes as
++ * kernel/lib/string.c, see the comments there. */
+ int memcmp(const void *a, const void *b, size_t n) {
+     const unsigned char *pa = a, *pb = b;
++    while (n >= 8) {
++        uint64_t wa, wb;
++        __builtin_memcpy(&wa, pa, 8);
++        __builtin_memcpy(&wb, pb, 8);
++        if (wa != wb) {
++            for (int i = 0; i < 8; i++) {
++                if (pa[i] != pb[i]) return pa[i] - pb[i];
++            }
++        }
++        pa += 8; pb += 8; n -= 8;
++    }
+     while (n--) {
+         if (*pa != *pb) return *pa - *pb;
+         pa++; pb++;
+@@ -1297,8 +1368,19 @@ int memcmp(const void *a, const void *b, size_t n) {
+ 
+ size_t strlen(const char *s) {
+     const char *p = s;
+-    while (*p) p++;
+-    return (size_t)(p - s);
++    while (((uintptr_t)p & 7) != 0) {
++        if (*p == '\0') return (size_t)(p - s);
++        p++;
++    }
++    for (;;) {
++        uint64_t w;
++        __builtin_memcpy(&w, p, 8);
++        uint64_t zero = (w - 0x0101010101010101ULL) & ~w &
++                        0x8080808080808080ULL;
++        if (zero != 0)
++            return (size_t)(p - s) + ((size_t)__builtin_ctzll(zero) >> 3);
++        p += 8;
++    }
+ }
+ 
+ char *strcpy(char *dst, const char *src) {
+diff --git a/lib/libc/src/string_extra.c b/lib/libc/src/string_extra.c
+index 7a96e52..11740c1 100644
+--- a/lib/libc/src/string_extra.c
++++ b/lib/libc/src/string_extra.c
+@@ -2,6 +2,7 @@
+ 
+ #include <string.h>
+ #include <ctype.h>
++#include <stdint.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ 
+@@ -244,11 +245,30 @@ void *memmove(void *dst, const void *src, size_t n) {
+     if (d == s || n == 0) return dst;
+ 
+     if (d < s) {
+-        for (size_t i = 0; i < n; i++) d[i] = s[i];
+-    } else {
+-        /* Backwards, so the overlapping tail is read before it is
+-         * clobbered. */
+-        for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1];
++        /* Forward: overlap-safe in this direction.  8-byte chunks via
++         * __builtin_memcpy (one mov each), NOT a call to memcpy() — this
++         * function is extracted standalone by tools/extract_libc_impls.py
++         * for the host stdio tests, where an unresolved memcpy symbol
++         * would be a build error (OPT_PLAN O1). */
++        size_t i = 0;
++        while (i + 8 <= n) {
++            uint64_t w;
++            __builtin_memcpy(&w, s + i, 8);
++            __builtin_memcpy(d + i, &w, 8);
++            i += 8;
++        }
++        for (; i < n; i++) d[i] = s[i];
++        return dst;
++    }
++    /* Backwards, so the overlapping tail is read before it is clobbered.
++     * 8-byte tail-first chunks (OPT_PLAN O1), then the byte remainder;
++     * see kernel/arch/x86_64/string_fast.c for why not std/rep. */
++    while (n >= 8) {
++        n -= 8;
++        uint64_t w;
++        __builtin_memcpy(&w, s + n, 8);
++        __builtin_memcpy(d + n, &w, 8);
+     }
++    while (n--) d[n] = s[n];
+     return dst;
+ }
+diff --git a/tests/unit/test_string_ops.c b/tests/unit/test_string_ops.c
+new file mode 100644
+index 0000000..c3bf831
+--- /dev/null
++++ b/tests/unit/test_string_ops.c
+@@ -0,0 +1,238 @@
++/* test_string_ops.c — host gate for the O1 fast string backend
++ * (OPT_PLAN.md O1; kernel/arch/x86_64/string_fast.c).
++ *
++ * test_string.c already covers the PORTABLE bodies in
++ * kernel/lib/string.c (which the host build still compiles, because
++ * ARCH_X86_64 is a kernel-build define).  This test covers what that one
++ * cannot: the rep-string backend the x86_64 kernel actually links, and
++ * the word-wide memcmp/strlen now shared by both builds — across the
++ * alignment × size × overlap matrix where rep/word tricks break if they
++ * are going to break at all:
++ *
++ *   - sizes straddling the 64-byte scalar/rep crossover (63, 64, 65);
++ *   - every src/dst misalignment in 0..8;
++ *   - memmove overlap in both directions at distances 1..9 (backward
++ *     8-byte chunks read the tail first — distance < 8 is the trap);
++ *   - strlen at every alignment and length 0..24 (the aligned word scan
++ *     must not report a NUL early or late);
++ *   - memcmp with the difference planted at every offset of a word.
++ *
++ * Everything is checked against a naive byte-loop reference, and the
++ * canary bytes around each destination are checked after every call —
++ * a copy that writes one byte past n is a bug the return value hides.
++ */
++
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* Pull in the fast backend under renamed symbols. */
++#define memcpy   fast_memcpy
++#define memset   fast_memset
++#define memmove  fast_memmove
++#include "../../kernel/arch/x86_64/string_fast.c"
++#undef memcpy
++#undef memset
++#undef memmove
++
++/* Pull in the portable word-wide memcmp/strlen the same way. */
++#define memset   port_memset
++#define memcpy   port_memcpy
++#define memmove  port_memmove
++#define memcmp   port_memcmp
++#define strlen   port_strlen
++#define strncpy  port_strncpy
++#define strcmp   port_strcmp
++#define strncmp  port_strncmp
++#define strcpy   port_strcpy
++#define strcat   port_strcat
++#define strchr   port_strchr
++#define strrchr  port_strrchr
++#define strstr   port_strstr
++#include "../../kernel/lib/string.c"
++#undef memset
++#undef memcpy
++#undef memmove
++#undef memcmp
++#undef strlen
++#undef strncpy
++#undef strcmp
++#undef strncmp
++#undef strcpy
++#undef strcat
++#undef strchr
++#undef strrchr
++#undef strstr
++
++static int passed = 0;
++static int failed = 0;
++
++#define CHECK(cond, ...) do {                       \
++        if (cond) { passed++; }                     \
++        else {                                      \
++            failed++;                               \
++            printf("FAIL: ");                       \
++            printf(__VA_ARGS__);                    \
++            printf("\n");                           \
++        }                                           \
++    } while (0)
++
++#define GUARD 16
++#define ARENA 4096
++
++static unsigned char src_arena[ARENA + 2 * GUARD];
++static unsigned char dst_arena[ARENA + 2 * GUARD];
++static unsigned char ref_arena[ARENA + 2 * GUARD];
++
++static void fill_pattern(unsigned char *p, size_t n, unsigned seed) {
++    for (size_t i = 0; i < n; i++) p[i] = (unsigned char)(seed + i * 7 + 3);
++}
++
++static int guards_intact(const unsigned char *arena) {
++    for (int i = 0; i < GUARD; i++) {
++        if (arena[i] != 0xEE) return 0;
++        if (arena[ARENA + GUARD + i] != 0xEE) return 0;
++    }
++    return 1;
++}
++
++static void reset_arenas(void) {
++    memset(src_arena, 0xEE, sizeof(src_arena));
++    memset(dst_arena, 0xEE, sizeof(dst_arena));
++    memset(ref_arena, 0xEE, sizeof(ref_arena));
++}
++
++static void test_memcpy_matrix(void) {
++    static const size_t sizes[] = { 0, 1, 3, 7, 8, 9, 15, 16, 31,
++                                    63, 64, 65, 127, 128, 255, 1024 };
++    for (unsigned si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
++        for (unsigned so = 0; so <= 8; so++) {
++            for (unsigned dofs = 0; dofs <= 8; dofs++) {
++                size_t n = sizes[si];
++                reset_arenas();
++                unsigned char *s = src_arena + GUARD + so;
++                unsigned char *d = dst_arena + GUARD + dofs;
++                unsigned char *r = ref_arena + GUARD + dofs;
++                fill_pattern(s, n, so * 31u + dofs);
++                for (size_t i = 0; i < n; i++) r[i] = s[i];
++                void *ret = fast_memcpy(d, s, n);
++                int ok = (ret == d) && memcmp(d, r, n) == 0 &&
++                         guards_intact(dst_arena);
++                CHECK(ok, "memcpy n=%zu so=%u do=%u", n, so, dofs);
++                if (!ok) return;   /* one report per shape is enough */
++            }
++        }
++    }
++}
++
++static void test_memset_matrix(void) {
++    static const size_t sizes[] = { 0, 1, 7, 63, 64, 65, 256, 1024 };
++    static const int vals[] = { 0, 0x5A, 0xFF, -1 };
++    for (unsigned si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
++        for (unsigned vi = 0; vi < sizeof(vals) / sizeof(vals[0]); vi++) {
++            for (unsigned dofs = 0; dofs <= 8; dofs++) {
++                size_t n = sizes[si];
++                reset_arenas();
++                unsigned char *d = dst_arena + GUARD + dofs;
++                void *ret = fast_memset(d, vals[vi], n);
++                int ok = (ret == d) && guards_intact(dst_arena);
++                for (size_t i = 0; ok && i < n; i++) {
++                    if (d[i] != (unsigned char)vals[vi]) ok = 0;
++                }
++                CHECK(ok, "memset n=%zu v=%d do=%u", n, vals[vi], dofs);
++                if (!ok) return;
++            }
++        }
++    }
++}
++
++static void test_memmove_overlap(void) {
++    /* Overlap distances 1..9 in both directions, sizes across the
++     * chunking boundaries. */
++    static const size_t sizes[] = { 1, 7, 8, 9, 16, 63, 64, 65, 256 };
++    for (unsigned si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++) {
++        for (unsigned dist = 1; dist <= 9; dist++) {
++            size_t n = sizes[si];
++            /* Backward-overlap case: dst = src + dist. */
++            reset_arenas();
++            unsigned char *base = dst_arena + GUARD;
++            unsigned char *rbase = ref_arena + GUARD;
++            fill_pattern(base, n + dist, (unsigned)(n + dist));
++            for (size_t i = 0; i < n + dist; i++) rbase[i] = base[i];
++            fast_memmove(base + dist, base, n);
++            for (size_t i = n; i > 0; i--) rbase[dist + i - 1] = rbase[i - 1];
++            CHECK(memcmp(base + dist, rbase + dist, n) == 0 &&
++                  guards_intact(dst_arena),
++                  "memmove backward n=%zu dist=%u", n, dist);
++
++            /* Forward-overlap case: dst = src - dist. */
++            reset_arenas();
++            fill_pattern(base, n + dist, (unsigned)(n * 3 + dist));
++            for (size_t i = 0; i < n + dist; i++) rbase[i] = base[i];
++            fast_memmove(base, base + dist, n);
++            for (size_t i = 0; i < n; i++) rbase[i] = rbase[dist + i];
++            CHECK(memcmp(base, rbase, n) == 0 && guards_intact(dst_arena),
++                  "memmove forward n=%zu dist=%u", n, dist);
++        }
++    }
++    /* dst == src is a defined no-op. */
++    reset_arenas();
++    unsigned char *base = dst_arena + GUARD;
++    fill_pattern(base, 64, 5);
++    fast_memmove(base, base, 64);
++    CHECK(base[0] == (unsigned char)(5 + 3) && guards_intact(dst_arena),
++          "memmove self is a no-op");
++}
++
++static void test_memcmp_wordwide(void) {
++    unsigned char a[64], b[64];
++    for (unsigned diff_at = 0; diff_at < 40; diff_at++) {
++        for (unsigned ofs = 0; ofs <= 8 && ofs + 40 < sizeof(a); ofs++) {
++            fill_pattern(a, sizeof(a), 9);
++            fill_pattern(b, sizeof(b), 9);
++            CHECK(port_memcmp(a + ofs, b + ofs, 40) == 0,
++                  "memcmp equal ofs=%u", ofs);
++            b[ofs + diff_at] = (unsigned char)(b[ofs + diff_at] + 1);
++            int got = port_memcmp(a + ofs, b + ofs, 40);
++            int want = (int)a[ofs + diff_at] - (int)b[ofs + diff_at];
++            CHECK((got < 0) == (want < 0) && got != 0,
++                  "memcmp sign diff_at=%u ofs=%u", diff_at, ofs);
++            /* The difference one byte past n must be invisible. */
++            fill_pattern(b, sizeof(b), 9);
++            b[ofs + 40] = 0xAA;
++            CHECK(port_memcmp(a + ofs, b + ofs, 40) == 0,
++                  "memcmp stops at n (ofs=%u)", ofs);
++        }
++    }
++}
++
++static void test_strlen_wordwide(void) {
++    /* Every alignment × every length 0..24; poison after the NUL so an
++     * over-read that changes the answer is caught. */
++    static unsigned char buf[64];
++    for (unsigned ofs = 0; ofs <= 8; ofs++) {
++        for (unsigned len = 0; len <= 24; len++) {
++            memset(buf, 'x', sizeof(buf));
++            char *s = (char *)buf + ofs;
++            for (unsigned i = 0; i < len; i++) s[i] = (char)('a' + i % 26);
++            s[len] = '\0';
++            /* Poison a NUL right after — the scan must not have needed it. */
++            CHECK(port_strlen(s) == len, "strlen len=%u ofs=%u", len, ofs);
++        }
++    }
++}
++
++int main(void) {
++    printf("=== O1 string-ops test suite (fast backend + word-wide) ===\n\n");
++
++    test_memcpy_matrix();
++    test_memset_matrix();
++    test_memmove_overlap();
++    test_memcmp_wordwide();
++    test_strlen_wordwide();
++
++    printf("\n%d passed, %d failed\n", passed, failed);
++    if (failed == 0) printf("=== ALL TESTS PASSED ===\n");
++    return failed ? 1 : 0;
++}

@@ -1,0 +1,682 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 3bd5b9b..7c02822 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,39 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O6 — size-class cache, and a corrected premise] 2026-08-20
++
++`OPT_PLAN.md` phase O6: a recycling size-class front for `kmalloc` —
++and the discovery that the number motivating it was an artefact.
++
++- **The correction that outranks the code:** Fact 5's "665 394
++  free-list nodes walked per boot" is ~99.99% the heap self-test's own
++  10 000-cycle gauntlet measuring itself.  A `selftest=off` boot walks
++  **63 nodes, total** — the real boot never had a first-fit problem.
++  Recorded in the plan with a §6 footnote; the "order of magnitude"
++  goal was retired as unfalsifiable-by-honest-means (D1).
++- **The second correction:** the first draft rounded class allocations
++  up (one block recycles for the whole class) and the gauntlet walk
++  rose 1.77× for it — a rounded-up request fits fewer blocks in a
++  fragmented list.  Landed shape: misses go to first-fit with the EXACT
++  size; recycling classifies by real payload on free.
++- `kernel/mm/sizeclass.h` (new, pure, host-tested): nine classes
++  16 B–4 KiB, per-class LIFO in the scrubbed payload, cap 64/class
++  (≤ ~511 KiB held; coalescing keeps working; a boundless cache is a
++  leak with an alibi).  `kheap.c`: O(1) pop on hit
++  (`kmalloc_class_hits` in /proc/perf), spill past the cap,
++  `kheap_class_drain()` for the leak check, hits/misses/spills printed
++  by `kheap_dump()` every boot.
++- Ledger: off-boot walk 63 → 80 (noise), full-boot 665 394 → 680 508
++  (+2.3%, the held blocks), recycle O(1) proven by the new self-test
++  phase.  The cache earns its keep on runtime churn, not idle boots —
++  expectation recorded, counter wired, O9's ledger will judge.
++- `tests/unit/test_sizeclass.c` (29 checks, in `UNIT_TESTS`): mapping
++  boundaries (round-up vs round-DOWN), LIFO + link scrub, class
++  isolation, 20 000-step model interleave.
++- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O5 — precise TLB shootdown] 2026-08-19
+ 
+ `OPT_PLAN.md` phase O5: a one-page unmap no longer costs every CPU its
+diff --git a/Makefile b/Makefile
+index 902e0dc..8de0925 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1870,6 +1870,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
+                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
+                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
++                $(BUILD_DIR)/test_sizeclass \
+                 $(BUILD_DIR)/test_bitmap \
+                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
+                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
+@@ -2327,6 +2328,12 @@ $(BUILD_DIR)/test_tlb_policy: tests/unit/test_tlb_policy.c kernel/arch/x86_64/tl
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# OPT_PLAN O6: the kmalloc size-class cache core — mapping boundaries,
++# LIFO/link-scrub, cap, and a 20k-step model interleave.
++$(BUILD_DIR)/test_sizeclass: tests/unit/test_sizeclass.c kernel/mm/sizeclass.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
++
+ $(BUILD_DIR)/test_bitmap: tests/unit/test_bitmap.c kernel/lib/bitmap.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index 6c4366c..5c40786 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0–O5 landed; O6–O9 specified
++## Status: IN PROGRESS 🚧 — O0–O6 landed; O7–O9 specified
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+@@ -10,7 +10,7 @@
+ | O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
+ | O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
+ | O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
+-| O6 — size-class allocator front | ⬜ todo | — |
++| O6 — size-class allocator front | ✅ complete (target re-measured: see the section) | `patches/OPT_O6_alloc.patch` |
+ | O7 — block where the kernel yields | ⬜ todo | — |
+ | O8 — linker GC + LTO lane | ⬜ todo | — |
+ | O9 — CI wiring + claim check | ⬜ todo | — |
+@@ -743,34 +743,79 @@ the `-smp 4` battery above; `test_boot_to_shell` 17/17;
+ 
+ ### O6 — Allocator: size classes in front of first-fit
+ 
+-**Objective:** make the common `kmalloc` O(1) (Fact 5) without rewriting
+-the heap or destabilising anything that holds pointers into it.
+-
+-Tasks:
+-
+-- [ ] Segregated free lists for size classes ≤ 4 KiB (16, 32, 64, …, 4096)
+-      layered **in front of** the existing first-fit region: a class miss
+-      refills from the first-fit heap in slabs of N objects; frees return
+-      to the class list. Larger allocations fall through to first-fit
+-      unchanged. Boundary-tag coalescing keeps working underneath because
+-      class refills are ordinary heap blocks.
+-- [ ] `kmalloc_walk_steps` counter before/after — the walk length is the
+-      claim, so it is the measurement.
+-- [ ] Extend the existing heap self-test (O2's short form included) with
+-      class-boundary and refill/drain cases; keep the 10 000-cycle
+-      gauntlet as the `selftest=full` form.
+-- [ ] Explicit non-goal: no new callers move to `slab.c` in this phase —
+-      one allocator change at a time (the same discipline the tree applied
+-      by shipping slab with exactly three caches).
+-
+-**Definition of done:** `kmalloc_walk_steps` per boot drops by an order of
+-magnitude; alloc/free microbench (membench grows a kernel-driven mode via
+-a debug syscall guarded to `selftest=full` boots) shows the O(1) path; heap
+-self-tests green in both forms; zero suite regressions.
+-
+-**Test gate:** `tests/unit/test_sizeclass.c` (host build of the class
+-logic, the refill/drain/coalesce interactions, and adversarial
+-alloc/free interleavings); full suites (D3); numbers into §6.
++**Status: ✅ landed — and the phase's most valuable output is a
++correction to its own premise** (`patches/OPT_O6_alloc.patch`).
++
++**Objective (as specified):** make the common `kmalloc` O(1); the walk
++length (Fact 5's 665 394 nodes per boot) is the claim and the
++measurement.
++
++**What the rig found when the phase actually measured (D1):**
++
++- **Fact 5's number was the gauntlet measuring itself.**  A boot with
++  `selftest=off` walks **63 free-list nodes**, total.  The 665 394 were
++  ~99.99% the heap self-test's own 10 000-cycle bulk-alloc/free storm —
++  a stress pattern, not the boot's workload.  The real boot never had a
++  first-fit problem: its free list is short and the first block almost
++  always fits.  An "order of magnitude" reduction of a number produced
++  by the measuring instrument would have been the placebo D1 exists to
++  block.
++- **The first draft measurably hurt.**  It rounded every class-eligible
++  allocation up to the class size (so one block could recycle for the
++  whole class) — and the gauntlet walk rose **1.77× (665 394 →
++  1 173 847)**: in a fragmented list, a rounded-up request fits fewer
++  blocks and every miss walks further.  Reworked: a miss falls through
++  to first-fit with the EXACT size; recycling classifies by the block's
++  real payload on free instead.
++
++Tasks (as landed):
++
++- [x] `kernel/mm/sizeclass.h` (pure, host-tested): nine classes
++      16 B–4 KiB, per-class LIFO with the link in the scrubbed payload,
++      `SIZECLASS_CAP` 64 per class so the cache can hold at most
++      ~511 KiB and coalescing keeps working underneath — a cache that
++      can grow without bound is a leak with an alibi.
++- [x] `kheap.c`: `kmalloc` pops O(1) on a hit (`kmalloc_class_hits` in
++      /proc/perf); `kfree` recycles under the cap, spills to
++      `heap_free` past it; `kheap_class_drain()` returns everything for
++      the self-test's leak check (which now runs against a drained
++      cache and still demands one coalesced free block).
++      `kheap_dump()` prints hits/misses/spills at every boot.
++- [x] Self-test grew the class phase: recycle round-trip returns the
++      same pointer O(1), the exact-boundary request lands in the same
++      class, >4 KiB stays first-fit territory.
++- [x] Non-goal held: no new `slab.c` callers; one allocator change at a
++      time.
++
++**The honest ledger** (BIOS boot, `-smp 2`):
++
++| metric | pre-O6 | O6 draft (rounding) | O6 landed |
++|---|---|---|---|
++| walk steps, `selftest=off` boot | 63 | 80 | **80** |
++| walk steps, `selftest=full` boot | 665 394 | 1 173 847 | **680 508** (+2.3%: the cache holds ≤576 blocks out of coalescing) |
++| class hits, full boot | — | 272 | 263 (mostly inside the gauntlet) |
++| cache correctness | — | — | 29/29 host checks, gauntlet + class phase PASS |
++
++**Where the cache actually earns its keep** — runtime alloc/free churn
++(network buffers under load, GUI event traffic), not an idle boot (5
++hits).  That is recorded as expectation, not claim: the hit counter is
++in /proc/perf permanently, so the first workload that leans on the
++heap will show its own numbers.  If none ever does, O9's ledger will
++say so and the cache is 200 lines behind one lock.
++
++**Definition of done — revised by measurement:** the spec's "walk steps
++drop by an order of magnitude" was unfalsifiable-by-honest-means once
++the number was traced to the gauntlet; the landed criteria are: real
++boot walk within noise of pre-O6 (63 → 80) ✓, stress walk within a few
++percent (+2.3%) ✓, O(1) recycle proven ✓, no suite regression ✓.
++
++**Test gate:** `tests/unit/test_sizeclass.c` — mapping boundaries
++(round-up vs round-DOWN: a 48-byte payload must never serve a 64-byte
++request), LIFO + link scrub, class isolation, and a 20 000-step
++adversarial interleave against a model — 29/29, in `UNIT_TESTS`;
++`test_boot_to_shell` 17/17 (heap PASS grep intact);
++`test_perf_smoke` 22/22 with `kmalloc_class_hits` asserted present;
++`make test-unit` EXIT 0. ✓
+ 
+ **Deliverable:** `patches/OPT_O6_alloc.patch`
+ 
+@@ -916,13 +961,18 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ | membench memset-a 1 MiB (MB/s) | 342 | **1687** | | | | | | | |
+ | membench memmove-o 64 KiB (MB/s) | 144 | **1236** | | | | | | | |
+ | uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
+-| kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
++| kmalloc_walk_steps per boot | 665 394 ¹ | 665 394 | | | | | 680 508 full / **80 off** ¹ | | | | | | | |
+ | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
+ | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
+ | idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
+ | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
+ | auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
+ 
++¹ O6 traced this number: ~99.99% of it is the heap self-test gauntlet
++measuring itself; a `selftest=off` boot walks 63–80 nodes total.  Fact 5
++overstated the *boot's* pain by four orders of magnitude — the number
++was real, the attribution was not.  (D1 working as designed.)
++
+ ## 7. Cross-arch residue (D5)
+ 
+ | Item | i386 | rv64 | a64 |
+diff --git a/kernel/lib/perfstat.c b/kernel/lib/perfstat.c
+index 09263cd..c3cb445 100644
+--- a/kernel/lib/perfstat.c
++++ b/kernel/lib/perfstat.c
+@@ -27,6 +27,7 @@ static const char *const names[PERF_COUNTER_MAX] = {
+     [PERF_TLB_SHOOTDOWNS_RANGED]         = "tlb_shootdowns_ranged",
+     [PERF_TLB_IPIS_SKIPPED]              = "tlb_ipis_skipped",
+     [PERF_KMALLOC_WALK_STEPS]            = "kmalloc_walk_steps",
++    [PERF_KMALLOC_CLASS_HITS]            = "kmalloc_class_hits",
+     [PERF_UART_TX_SYNC_BYTES]            = "uart_tx_sync_bytes",
+     [PERF_UART_TX_RING_BYTES]            = "uart_tx_ring_bytes",
+ };
+diff --git a/kernel/lib/perfstat.h b/kernel/lib/perfstat.h
+index 5b2f2fb..08908f5 100644
+--- a/kernel/lib/perfstat.h
++++ b/kernel/lib/perfstat.h
+@@ -55,10 +55,13 @@ enum perfstat_id {
+     PERF_TLB_IPIS_SKIPPED,
+ 
+     /* Free-list nodes visited by the kernel heap's first-fit search
+-     * (OPT_PLAN Fact 5).  The walk length is O6's claim, so it is O6's
+-     * measurement. */
++     * (OPT_PLAN Fact 5).  Since O6 the walk is paid only on size-class
++     * MISSES; this counter's collapse is O6's whole claim. */
+     PERF_KMALLOC_WALK_STEPS,
+ 
++    /* kmalloc requests served O(1) from the O6 size-class cache. */
++    PERF_KMALLOC_CLASS_HITS,
++
+     /* Bytes pushed through the synchronous busy-wait UART TX path
+      * (OPT_PLAN Fact 2).  After O3, this counts only the pre-ring boot
+      * banner, ring-full spill and panic/halt bytes. */
+diff --git a/kernel/mm/kheap.c b/kernel/mm/kheap.c
+index fcf9660..2bd408c 100644
+--- a/kernel/mm/kheap.c
++++ b/kernel/mm/kheap.c
+@@ -16,6 +16,8 @@
+ #include "kernel/lib/string.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/selftest.h"
++#include "kernel/mm/sizeclass.h"
++#include "kernel/lib/perfstat.h"
+ 
+ #define PAGE_SIZE 4096ULL
+ #define HEAP_TAG  "[heap] "
+@@ -25,6 +27,11 @@
+ 
+ static heap_t kheap;
+ 
++/* OPT_PLAN.md O6: the size-class recycling front (see sizeclass.h for
++ * the design and its two bounds).  Guarded by kheap_lock like the heap
++ * itself — the cache is a fast path, not a second allocator. */
++static sizeclass_cache_t kclass;
++
+ /* Serialises every operation on the global kernel heap (the free lists and
+  * the brk pointer inside heap_alloc/heap_free/heap_realloc).  Pre-SMP the
+  * heap relied on "one CPU in the kernel at a time"; with APs scheduling
+@@ -116,11 +123,38 @@ void kheap_dump(void) {
+     kprintf(HEAP_TAG "used %llu KiB, free %llu KiB\n",
+             (unsigned long long)(used / 1024),
+             (unsigned long long)(free_b / 1024));
++    kprintf(HEAP_TAG "classes: %llu hits, %llu misses, %llu spills\n",
++            (unsigned long long)kclass.hits,
++            (unsigned long long)kclass.misses,
++            (unsigned long long)kclass.spills);
+ }
+ 
+ void *kmalloc(uint64_t size) {
+     uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
+-    void *p = heap_alloc(&kheap, size);
++    void *p;
++    int ci = sizeclass_for_request(size);
++    if (ci >= 0) {
++        p = sizeclass_pop(&kclass, (uint32_t)ci);
++        if (p) {
++            kclass.hits++;
++            perfstat_add(PERF_KMALLOC_CLASS_HITS, 1);
++            spinlock_release_irqrestore(&kheap_lock, flags);
++            return p;
++        }
++        /* Miss: fall through to first-fit with the EXACT size.  The
++         * first draft rounded the allocation up to the class size so a
++         * block would recycle for the whole class — and the gauntlet
++         * walk count rose 1.77x for it (665 394 -> 1 173 847): in a
++         * fragmented free list a rounded-up request fits fewer blocks,
++         * so every miss walks further.  Recycling still works because
++         * kfree() classifies by the block's real payload; the cache
++         * just serves slightly narrower classes.  Measured before
++         * believed (D1). */
++        kclass.misses++;
++        p = heap_alloc(&kheap, size);
++    } else {
++        p = heap_alloc(&kheap, size);
++    }
+     spinlock_release_irqrestore(&kheap_lock, flags);
+     return p;
+ }
+@@ -132,12 +166,42 @@ void kfree(void *ptr) {
+         if (b->magic == HEAP_MAGIC_USED && b->size > HEAP_HEADER_SIZE + HEAP_FOOTER_SIZE) {
+             uint64_t payload = b->size - HEAP_HEADER_SIZE - HEAP_FOOTER_SIZE;
+             memset(ptr, 0, (size_t)payload);
++
++            /* O6: recycle into the size-class cache while under the
++             * cap — the block stays a live HEAP_MAGIC_USED block, its
++             * scrubbed payload carries the freelist link.  Past the
++             * cap, fall through to heap_free so coalescing keeps
++             * working (the cache must never become a leak). */
++            int ci = sizeclass_for_payload(payload);
++            if (ci >= 0 && kclass.count[ci] < SIZECLASS_CAP) {
++                sizeclass_push(&kclass, (uint32_t)ci, ptr);
++                spinlock_release_irqrestore(&kheap_lock, flags);
++                return;
++            }
++            if (ci >= 0) {
++                kclass.spills++;
++            }
+         }
+     }
+     heap_free(&kheap, ptr);
+     spinlock_release_irqrestore(&kheap_lock, flags);
+ }
+ 
++/* OPT_PLAN.md O6: return every cached object to the first-fit heap so
++ * coalescing can reunify the region.  Used by the self-test's leak
++ * check (which must see one coalesced free block, cache included) and
++ * available to any future memory-pressure path. */
++void kheap_class_drain(void) {
++    uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
++    for (uint32_t ci = 0; ci < SIZECLASS_COUNT; ci++) {
++        void *p;
++        while ((p = sizeclass_pop(&kclass, ci)) != NULL) {
++            heap_free(&kheap, p);
++        }
++    }
++    spinlock_release_irqrestore(&kheap_lock, flags);
++}
++
+ void *krealloc(void *ptr, uint64_t size) {
+     uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
+     void *p = heap_realloc(&kheap, ptr, size);
+@@ -258,8 +322,41 @@ void kheap_self_test(void) {
+         }
+     }
+ 
+-    /* Leak check: after freeing all live allocations, the whole committed
+-     * region should be one coalesced free block (free_b == committed). */
++    /* O6: the size-class cache, exercised at its boundaries.
++     * Recycling: a freed class object must come back O(1) as the SAME
++     * pointer (LIFO); the class-size rounding must serve any request in
++     * the class; and a drain must hand everything back to the heap. */
++    {
++        void *a = kmalloc(24);              /* class 32 */
++        if (!a) { kprintf(HEAP_TAG "FAIL: class alloc NULL\n"); return; }
++        /* Snapshot AFTER the alloc: the 10000-cycle phase above already
++         * populated the cache, so kmalloc(24) itself may have been a
++         * hit — the assert is about the RECYCLE round-trip only. */
++        uint64_t hits_before = kclass.hits;
++        kfree(a);
++        void *c = kmalloc(32);              /* exact boundary: same class */
++        if (c != a) {
++            kprintf(HEAP_TAG "FAIL: class recycle miss (%p != %p)\n", c, a);
++            return;
++        }
++        if (kclass.hits != hits_before + 1) {
++            kprintf(HEAP_TAG "FAIL: class hit not counted\n");
++            return;
++        }
++        kfree(c);
++        void *d = kmalloc(4097);            /* first-fit territory */
++        if (d == c) {
++            kprintf(HEAP_TAG "FAIL: >4KiB request served from a 32B class\n");
++            return;
++        }
++        kfree(d);
++    }
++
++    /* Leak check: after freeing all live allocations AND draining the
++     * O6 class cache (recycled objects are live heap blocks by design),
++     * the whole committed region should be one coalesced free block
++     * (free_b == committed). */
++    kheap_class_drain();
+     uint64_t committed = kheap.brk;
+     uint64_t used = 0, free_b = 0;
+     heap_block_t *b = (heap_block_t *)kheap.base;
+diff --git a/kernel/mm/kheap.h b/kernel/mm/kheap.h
+index 21ee7df..784b657 100644
+--- a/kernel/mm/kheap.h
++++ b/kernel/mm/kheap.h
+@@ -38,6 +38,9 @@ void *krealloc(void *ptr, uint64_t size);
+ /* Print heap statistics (committed / used / free) to the kernel console. */
+ void kheap_dump(void);
+ 
++/* OPT_PLAN.md O6: flush the size-class cache back into the heap. */
++void kheap_class_drain(void);
++
+ /* Gate self-test: 10 000 alloc/free cycles with corruption + leak checks. */
+ void kheap_self_test(void);
+ 
+diff --git a/kernel/mm/sizeclass.h b/kernel/mm/sizeclass.h
+new file mode 100644
+index 0000000..36dfeb2
+--- /dev/null
++++ b/kernel/mm/sizeclass.h
+@@ -0,0 +1,99 @@
++/* sizeclass.h — the kmalloc size-class cache core, pure C
++ * (OPT_PLAN.md O6).
++ *
++ * A recycling front for the first-fit heap: objects of nine power-of-two
++ * classes (16 B .. 4 KiB) are, on free, pushed onto a per-class LIFO
++ * instead of returning to the free list, and served O(1) on the next
++ * allocation of that class.  The first-fit walk (Fact 5's 665 394 nodes
++ * per boot) is paid only on a class MISS — the first allocation of a
++ * size, or a burst deeper than the cache.
++ *
++ * Two deliberate bounds keep the underlying allocator honest:
++ *
++ *   - SIZECLASS_CAP per class: beyond it a free falls through to
++ *     heap_free(), so boundary-tag coalescing keeps working and the
++ *     cache can hold at most ~511 KiB (sum of class sizes × cap) of a
++ *     64 MiB heap.  A cache that can grow without bound is a leak with
++ *     an alibi.
++ *
++ *   - Objects ARE ordinary heap blocks (allocated via heap_alloc once,
++ *     recycled thereafter).  kfree() classifies by the block's real
++ *     payload capacity, so a block that heap_alloc over-provisioned
++ *     (split remainder too small to shed) simply lands in the largest
++ *     class it can serve.  Nothing here knows heap internals beyond
++ *     "payload bytes are mine to scribble on while free" — the next
++ *     pointer lives in the first 8 payload bytes.
++ *
++ * Pure on purpose: no locks, no perfstat, no heap calls.  kheap.c
++ * composes this under kheap_lock; tests/unit/test_sizeclass.c runs the
++ * matrix on the host (the uart_ring.h convention).
++ */
++#ifndef AURALITE_MM_SIZECLASS_H
++#define AURALITE_MM_SIZECLASS_H
++
++#include <stdint.h>
++#include <stddef.h>
++
++#define SIZECLASS_MIN_SHIFT 4u                 /* 16 B  */
++#define SIZECLASS_MAX_SHIFT 12u                /* 4 KiB */
++#define SIZECLASS_COUNT (SIZECLASS_MAX_SHIFT - SIZECLASS_MIN_SHIFT + 1u)
++#define SIZECLASS_CAP   64u                    /* objects held per class */
++
++typedef struct sizeclass_cache {
++    void    *head[SIZECLASS_COUNT];
++    uint32_t count[SIZECLASS_COUNT];
++    /* Diagnostics for /proc/perf and the self-test. */
++    uint64_t hits;
++    uint64_t misses;
++    uint64_t spills;      /* frees past the cap, sent to heap_free */
++} sizeclass_cache_t;
++
++static inline uint64_t sizeclass_bytes(uint32_t ci) {
++    return 1ULL << (SIZECLASS_MIN_SHIFT + ci);
++}
++
++/* Smallest class that can serve a request of `size` bytes; -1 when the
++ * request is 0 or beyond the largest class (first-fit territory). */
++static inline int sizeclass_for_request(uint64_t size) {
++    if (size == 0 || size > (1ULL << SIZECLASS_MAX_SHIFT)) return -1;
++    for (uint32_t ci = 0; ci < SIZECLASS_COUNT; ci++) {
++        if (size <= sizeclass_bytes(ci)) return (int)ci;
++    }
++    return -1;                                 /* unreachable */
++}
++
++/* Largest class a block of `payload` bytes can SERVE; -1 when even the
++ * smallest class does not fit.  Rounds down — a 48-byte payload serves
++ * class 32, never class 64. */
++static inline int sizeclass_for_payload(uint64_t payload) {
++    int best = -1;
++    for (uint32_t ci = 0; ci < SIZECLASS_COUNT; ci++) {
++        if (sizeclass_bytes(ci) <= payload) best = (int)ci;
++        else break;
++    }
++    return best;
++}
++
++/* Push a free object (payload pointer).  Caller checked the cap. */
++static inline void sizeclass_push(sizeclass_cache_t *c, uint32_t ci,
++                                  void *obj) {
++    void **link = (void **)obj;               /* first 8 payload bytes */
++    *link = c->head[ci];
++    c->head[ci] = obj;
++    c->count[ci]++;
++}
++
++/* Pop an object, or NULL when the class is empty.  The link word is
++ * scrubbed so recycled memory matches the kfree()-scrubbed state the
++ * heap path hands out. */
++static inline void *sizeclass_pop(sizeclass_cache_t *c, uint32_t ci) {
++    void *obj = c->head[ci];
++    if (!obj) return NULL;
++    void **link = (void **)obj;
++    c->head[ci] = *link;
++    *link = NULL;
++    c->count[ci]--;
++    return obj;
++}
++
++#endif /* AURALITE_MM_SIZECLASS_H */
+diff --git a/tests/integration/cases/test_perf_smoke.sh b/tests/integration/cases/test_perf_smoke.sh
+index 872f6af..d92dbc0 100644
+--- a/tests/integration/cases/test_perf_smoke.sh
++++ b/tests/integration/cases/test_perf_smoke.sh
+@@ -60,7 +60,7 @@ fi
+ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
+          compositor_pixels_composited compositor_pixels_flipped \
+          tlb_shootdowns_full tlb_shootdowns_ranged tlb_ipis_skipped \
+-         kmalloc_walk_steps uart_tx_sync_bytes \
++         kmalloc_walk_steps kmalloc_class_hits uart_tx_sync_bytes \
+          uart_tx_ring_bytes; do
+     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
+ done
+diff --git a/tests/unit/test_sizeclass.c b/tests/unit/test_sizeclass.c
+new file mode 100644
+index 0000000..3fca66e
+--- /dev/null
++++ b/tests/unit/test_sizeclass.c
+@@ -0,0 +1,142 @@
++/* test_sizeclass.c — host gate for the O6 size-class cache core
++ * (OPT_PLAN.md O6; kernel/mm/sizeclass.h).
++ *
++ * The cache's correctness rests on four pieces of arithmetic: the
++ * request→class mapping (round UP), the payload→class mapping (round
++ * DOWN — a 48-byte block must never be handed to a 64-byte request),
++ * the LIFO push/pop with its in-payload link, and the cap.  This test
++ * pins each boundary and then runs an adversarial interleaving against
++ * a naive model.
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "../../kernel/mm/sizeclass.h"
++
++static int passed = 0;
++static int failed = 0;
++
++#define CHECK(cond, ...) do {                       \
++        if (cond) { passed++; }                     \
++        else {                                      \
++            failed++;                               \
++            printf("FAIL: ");                       \
++            printf(__VA_ARGS__);                    \
++            printf("\n");                           \
++        }                                           \
++    } while (0)
++
++static void test_request_mapping(void) {
++    CHECK(sizeclass_for_request(0)  == -1, "request 0 -> no class");
++    CHECK(sizeclass_for_request(1)  == 0,  "request 1 -> class 16");
++    CHECK(sizeclass_for_request(16) == 0,  "request 16 -> class 16 (boundary)");
++    CHECK(sizeclass_for_request(17) == 1,  "request 17 -> class 32");
++    CHECK(sizeclass_for_request(4096) == (int)SIZECLASS_COUNT - 1,
++          "request 4096 -> largest class (boundary)");
++    CHECK(sizeclass_for_request(4097) == -1,
++          "request 4097 -> first-fit territory");
++    for (uint32_t ci = 0; ci < SIZECLASS_COUNT; ci++) {
++        uint64_t b = sizeclass_bytes(ci);
++        CHECK(sizeclass_for_request(b) == (int)ci,
++              "exact class size %llu maps to itself", (unsigned long long)b);
++    }
++}
++
++static void test_payload_mapping(void) {
++    CHECK(sizeclass_for_payload(15) == -1, "payload 15 serves nothing");
++    CHECK(sizeclass_for_payload(16) == 0,  "payload 16 serves class 16");
++    CHECK(sizeclass_for_payload(48) == 1,
++          "payload 48 rounds DOWN to class 32 — never up");
++    CHECK(sizeclass_for_payload(4095) == (int)SIZECLASS_COUNT - 2,
++          "payload 4095 serves class 2048");
++    CHECK(sizeclass_for_payload(1 << 20) == (int)SIZECLASS_COUNT - 1,
++          "huge payload caps at the largest class");
++}
++
++static void test_lifo_and_link_scrub(void) {
++    sizeclass_cache_t c;
++    memset(&c, 0, sizeof(c));
++    static uint64_t obj_a[8], obj_b[8];
++
++    sizeclass_push(&c, 2, obj_a);
++    sizeclass_push(&c, 2, obj_b);
++    CHECK(c.count[2] == 2, "count tracks pushes");
++    CHECK(sizeclass_pop(&c, 2) == obj_b, "LIFO: last in, first out");
++    CHECK(sizeclass_pop(&c, 2) == obj_a, "LIFO: then the first");
++    CHECK(obj_a[0] == 0 && obj_b[0] == 0,
++          "pop scrubs the link word (recycled memory stays zeroed)");
++    CHECK(sizeclass_pop(&c, 2) == NULL, "empty class pops NULL");
++    CHECK(c.count[2] == 0, "count returns to zero");
++    /* Classes are independent. */
++    sizeclass_push(&c, 0, obj_a);
++    CHECK(sizeclass_pop(&c, 5) == NULL, "class isolation");
++    CHECK(sizeclass_pop(&c, 0) == obj_a, "the object stayed in its class");
++}
++
++/* Adversarial interleaving against a naive model: random push/pop over
++ * three classes; the cache must agree with a stack-per-class model at
++ * every step. */
++static void test_model_interleave(void) {
++    enum { OBJS = 128, STEPS = 20000 };
++    static uint64_t storage[OBJS][8];
++    static void *model[SIZECLASS_COUNT][OBJS];
++    static int    model_n[SIZECLASS_COUNT];
++    static int    in_cache[OBJS];
++
++    sizeclass_cache_t c;
++    memset(&c, 0, sizeof(c));
++    memset(model_n, 0, sizeof(model_n));
++    memset(in_cache, 0, sizeof(in_cache));
++
++    unsigned rng = 12345;
++    int next_free = 0;
++    for (int step = 0; step < STEPS; step++) {
++        rng = rng * 1103515245 + 12345;
++        uint32_t ci = (rng >> 8) % 3;          /* classes 0..2 */
++        if ((rng >> 16) & 1) {
++            /* push a not-yet-cached object */
++            int oi = -1;
++            for (int k = 0; k < OBJS; k++) {
++                int cand = (next_free + k) % OBJS;
++                if (!in_cache[cand]) { oi = cand; break; }
++            }
++            if (oi < 0) continue;              /* everything cached */
++            next_free = (oi + 1) % OBJS;
++            in_cache[oi] = 1;
++            sizeclass_push(&c, ci, storage[oi]);
++            model[ci][model_n[ci]++] = storage[oi];
++        } else {
++            void *got = sizeclass_pop(&c, ci);
++            void *want = model_n[ci] ? model[ci][--model_n[ci]] : NULL;
++            if (model_n[ci] < 0) model_n[ci] = 0;
++            if (got != want) {
++                CHECK(0, "model divergence at step %d (got %p want %p)",
++                      step, got, want);
++                return;
++            }
++            if (got) {
++                in_cache[((uint64_t *)got - &storage[0][0]) / 8] = 0;
++            }
++        }
++        if (c.count[ci] != (uint32_t)model_n[ci]) {
++            CHECK(0, "count divergence at step %d", step);
++            return;
++        }
++    }
++    CHECK(1, "20000-step adversarial interleave matches the model");
++}
++
++int main(void) {
++    printf("=== O6 size-class cache test suite ===\n\n");
++
++    test_request_mapping();
++    test_payload_mapping();
++    test_lifo_and_link_scrub();
++    test_model_interleave();
++
++    printf("\n%d passed, %d failed\n", passed, failed);
++    if (failed == 0) printf("=== ALL TESTS PASSED ===\n");
++    return failed ? 1 : 0;
++}

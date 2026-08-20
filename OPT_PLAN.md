@@ -1,6 +1,6 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0–O8 landed; O9 remaining
+## Status: COMPLETE ✅ — O0–O9 all landed (ledger in §6, residue in §7, claim-checked in CI)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -13,7 +13,7 @@
 | O6 — size-class allocator front | ✅ complete (target re-measured: see the section) | `patches/OPT_O6_alloc.patch` |
 | O7 — block where the kernel yields | ✅ complete | `patches/OPT_O7_blocking.patch` |
 | O8 — linker GC + LTO lane | ✅ complete | `patches/OPT_O8_gc_lto.patch` |
-| O9 — CI wiring + claim check | ⬜ todo | — |
+| O9 — CI wiring + claim check | ✅ complete | `patches/OPT_O9_ci.patch` |
 
 This document answers:
 
@@ -967,35 +967,47 @@ gui 5/5, execve_args 16/16, perf_smoke 22/22, selftest_modes 30/30,
 
 ### O9 — CI wiring, docs sync, and the claim check
 
-**Objective:** close the loop so this document cannot drift from the tree
-(the `AUDIT_A7` lesson: a plan that says PLANNED while its work is shipped,
-or COMPLETE while it isn't, is worse than no plan).
+**Status: ✅ landed** (`patches/OPT_O9_ci.patch`).  The plan can no
+longer disagree with the tree without failing the build — which, given
+this plan's own history, is not a formality: two of its phases (O1, O6)
+had first drafts that were wrong in ways only measurement caught.
 
 Tasks:
 
-- [ ] `test_perf_smoke` registered and running in the CI integration job;
-      its recorded numbers archived as a build artefact.
-- [ ] `tools/check_opt_claims.py` (the `check_fixes_claims.py` shape): ties
-      each phase's checkbox state to the existence of its patch, its test
-      gate's registration, and its §6 table row — run in CI.
-- [ ] `docs/status.md` gains a Performance section with the counters and
-      the current numbers; `README.md`'s feature list is *not* touched
-      (speed is not a feature bullet, it is a table).
-- [ ] `CHANGELOG.md` entries per landed phase, as usual.
-- [ ] The D5 residue matrix (i386/rv64/a64 transfers) finalised in §7.
+- [x] `tools/check_opt_claims.py` (the `check_fixes_claims.py` shape):
+      every ✅ phase must name an existing deliverable patch and its
+      section must agree; the O0 rig must be present AND registered
+      (perfstat + `/proc/perf`, membench, the three integration gates
+      in `run_all.sh`, the four host unit gates in `UNIT_TESTS`); every
+      §6-ledger counter must still be named in perfstat.c.  Header
+      consistency both ways (COMPLETE ⇔ 10/10 ✅).
+- [x] `--selftest` negative control: a planted missing-deliverable
+      violation must be caught, or the checker is declared dead —
+      wired into `make test-unit` via `tests/unit/test_opt_claims.sh`
+      and run in CI as its own step.
+- [x] `test_perf_smoke` runs in CI by construction (registered in
+      `run_all.sh`, which the registry check enforces); its numbers
+      land in `build/integration-logs/perf_smoke.log` with the rest of
+      the archived logs.
+- [x] `docs/status.md` gained the Performance section: the headline
+      table AND the honesty notes (the TCG-serial caveat, the Fact 5
+      correction, the real-hardware residue).
+- [x] `CHANGELOG.md` has one entry per landed phase (the phase-hygiene
+      rule held since O1: every patch carries the plan + changelog).
+- [x] The D5 residue matrix finalised (§7).
 
 **Definition of done:** CI fails if this document and the tree disagree
-about what has landed.
+about what has landed ✓ (checker + selftest green in `test-unit` and as
+a CI step).
 
-**Test gate:** the claim checker itself, green in CI, plus one planted
-violation (mark O1 complete with no patch present) caught in a local run —
-the negative control convention.
+**Test gate:** `tests/unit/test_opt_claims.sh` — checker OK on the real
+tree, planted violation caught. ✓
 
 **Deliverable:** `patches/OPT_O9_ci.patch`
 
 ---
 
-## 5. What this plan deliberately does not do
+## 5. What this plan deliberately does not do## 5. What this plan deliberately does not do
 
 Named so nobody mistakes absence for oversight:
 
@@ -1044,16 +1056,25 @@ measuring itself; a `selftest=off` boot walks 63–80 nodes total.  Fact 5
 overstated the *boot's* pain by four orders of magnitude — the number
 was real, the attribution was not.  (D1 working as designed.)
 
-## 7. Cross-arch residue (D5)
+## 7. Cross-arch residue (D5) — final
 
 | Item | i386 | rv64 | a64 |
 |---|---|---|---|
-| O1 string ops | `rep movsb` transfers verbatim | 8-byte loops needed | 8-byte loops needed (or `dc zva` for memset) |
-| O2 fast-boot knob | transfers (same cmdline path) | different self-test set | different self-test set |
-| O3 UART ring | same 16550 — transfers | same 16550 model via MMIO — transfers with the access shim | PL011 — same shape, different registers |
-| O5 shootdown | single-CPU today — n/a | SBI `rfence` already ranged — ahead of x86 here | TLBI by VA exists — ahead of x86 here |
-| O7 blocking | smallsh has no wait4 — n/a | n/a | n/a |
+| O1 string ops | `rep movsq` transfers as `rep movsd` — not done | 8-byte loops now live in `kernel/lib/string.c` behind `#ifndef ARCH_X86_64`, ready for shared-tree adoption | same as rv64 (`dc zva` for memset when it lands) |
+| O2 fast-boot knob | same fw_cfg channel would work (port I/O exists) — not wired | different self-test set; SBI has no fw_cfg — build default only | different self-test set; fw_cfg exists on `-machine virt` — not wired |
+| O3 UART ring | same 16550 — `uart_ring.h` is pure and transfers as-is | same 16550 model via MMIO — ring core transfers, access shim differs | PL011 — same shape, different registers |
+| O4 compositor | n/a (no GUI on the bring-up path, by design) | n/a | n/a |
+| O5 shootdown | single-CPU today — n/a | SBI `rfence` is ALREADY ranged — rv64 is ahead of pre-O5 x86 here | TLBI-by-VA exists — ditto |
+| O6 size-class cache | `sizeclass.h` is pure C — transfers when a kheap exists there | same | same |
+| O7 blocking waits | smallsh has no wait4 — n/a | thread_rv has its own park/wake — n/a | same |
+| O8 gc-sections | applies as-is (`CFLAGS32`/LDFLAGS32) — not flipped, needs its own suite pass | applies as-is — same condition | same |
 
-The rv64/a64 lines on O5 are worth reading twice: the RISC-V and ARM ISAs
-hand the kernel ranged remote invalidation as a primitive. The x86_64 tree
-is the one that has to build it — which is exactly why it is a phase.
+Real-hardware residue (named where it arose, deferred per D1):
+PAT/write-combining framebuffer mapping (O4), PCID + the generation
+scheme it forces on the shootdown filter (O5), ERMSB crossover tuning
+and the O3 wall-clock claim (O1/O3), the ThinLTO entry bar (O8).
+
+The rv64/a64 lines on O5 are worth reading twice: the RISC-V and ARM
+ISAs hand the kernel ranged remote invalidation as a primitive.  The
+x86_64 tree is the one that had to build it — which is exactly why it
+was a phase.

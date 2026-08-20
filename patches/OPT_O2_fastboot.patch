@@ -1,0 +1,933 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index fe355bb..1e8cdd7 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,36 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [OPT O2 — fast-boot self-test knob] 2026-08-19
++
++`OPT_PLAN.md` phase O2: the boot no longer spends a literal wall-clock
++second re-proving the PIT divisor on every start — unless asked to.
++
++- `kernel/lib/selftest.{c,h}` (new): three modes.  `full` = historical
++  gauntlets, byte-identical output (CI's mode); `fast` = same invariants
++  at reduced sizes (PIT window 1 s → 100 ms, PMM 1000 → 100 frames, heap
++  10 000 → 500 cycles, RNG analysis 16 KiB → 2 KiB) — the new build
++  default (`make SELFTEST=` overrides); `off` = loud SKIPPED lines, for
++  benchmarking.  RNG *seeding* is never skipped.
++- `kernel/arch/x86_64/fwcfg.c` (new): QEMU fw_cfg probe for
++  `-fw_cfg name=opt/auralite.selftest,string=...` — the run-time
++  override channel.  The plan's spec assumed a kernel command line;
++  measured, no cmdline plumbing exists anywhere in `boot/`, and the
++  correction is recorded in the plan.
++- `tests/integration/lib/lib.sh`: every CI boot pins `full` through
++  fw_cfg (`IL_SELFTEST` overrides) — all existing self-test greps hold
++  unmodified, which was the D3 tripwire for this phase.
++- `tests/integration/cases/test_selftest_modes.sh` (new, registered):
++  all three modes, plus the D1 gate that fast beats full by ≥ 80 ticks.
++- Measured: full 499 → fast 400 ticks boot-to-shell (the PIT second,
++  almost exactly).  Two surprises recorded in the plan: the RNG
++  byte-frequency band had to be recalibrated for the smaller sample
++  (Poisson at λ=8 pierced the λ=64-calibrated ±50% band on a healthy
++  boot), and the faster boot now exercises the previously-dormant late
++  RNG seeding path (the jitter pool is no longer full by `rng_init()`).
++- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
++  status/§6 update and this changelog entry.
++
+ ## [OPT O1 — word-wide string ops] 2026-08-19
+ 
+ `OPT_PLAN.md` phase O1: the byte-at-a-time memcpy/memset/memmove
+diff --git a/Makefile b/Makefile
+index e317316..d4579db 100644
+--- a/Makefile
++++ b/Makefile
+@@ -45,6 +45,19 @@ ifeq ($(KEYMAP),de)
+ CFLAGS      += -DKEYBOARD_DEFAULT_LAYOUT=keymap_de
+ endif
+ 
++# OPT_O2 (OPT_PLAN.md): build-default boot self-test intensity.  This is
++# what real hardware (no fw_cfg) gets; a QEMU boot can override it at run
++# time with -fw_cfg name=opt/auralite.selftest,string=full|fast|off, which
++# is how the integration lib pins CI boots to `full`.
++# Usage:  make SELFTEST=full
++SELFTEST ?= fast
++ifeq ($(SELFTEST),full)
++CFLAGS      += -DSELFTEST_DEFAULT_FULL
++endif
++ifeq ($(SELFTEST),off)
++CFLAGS      += -DSELFTEST_DEFAULT_OFF
++endif
++
+ ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
+ 
+ # The linker script fixes the higher-half address; no --image-base needed.
+diff --git a/OPT_PLAN.md b/OPT_PLAN.md
+index f17619b..d13102b 100644
+--- a/OPT_PLAN.md
++++ b/OPT_PLAN.md
+@@ -1,12 +1,12 @@
+ # AuraLite OS — General Performance Optimization Plan
+ 
+-## Status: IN PROGRESS 🚧 — O0, O1 landed; O2–O9 specified
++## Status: IN PROGRESS 🚧 — O0–O2 landed; O3–O9 specified
+ 
+ | Phase | Result | Deliverable |
+ |-------|--------|-------------|
+ | O0 — the measuring rig | ✅ complete | `patches/OPT_O0_rig.patch` |
+ | O1 — word-wide string ops | ✅ complete | `patches/OPT_O1_stringops.patch` |
+-| O2 — fast-boot self-test knob | ⬜ todo | — |
++| O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
+ | O3 — buffered UART TX | ⬜ todo | — |
+ | O4 — compositor: composite the union, sleep when idle | ⬜ todo | — |
+ | O5 — precise TLB shootdown | ⬜ todo | — |
+@@ -429,36 +429,80 @@ every destination: **3052 checks, 0 failed**, registered in
+ 
+ ### O2 — Boot latency: make the 1-second self-test opt-in without blinding CI
+ 
++**Status: ✅ landed** (`patches/OPT_O2_fastboot.patch`).  Two corrections
++to this section's own spec and two measured surprises below.
++
+ **Objective:** cut multi-second, fixed costs out of the default boot while
+ keeping every self-test reachable and CI-enforced (D3).
+ 
++**Correction 1 — the knob's channel.**  The spec above said "from the
++kernel command line the loaders already pass".  Measured: **no cmdline
++plumbing exists anywhere in `boot/`** — neither the BIOS Stage 2 nor
++`BOOTX64.EFI` passes one, and `boot_info_t` has no field for it.  The
++landed channel is QEMU **fw_cfg** (`-fw_cfg
++name=opt/auralite.selftest,string=full|fast|off`, read by
++`kernel/arch/x86_64/fwcfg.c` — port I/O stays in the arch tree, the I6
++ratchet is why) with the **build default** as the fallback
++(`make SELFTEST=full|fast|off`, the FIX_R8 KEYMAP precedent — and all
++real hardware gets).  A QEMU-shaped knob for a QEMU-primary project is
++the honest fit; a bootloader cmdline is real follow-up work that belongs
++to a bootloader plan.
++
+ Tasks:
+ 
+-- [ ] A boot knob (`selftest=full|fast|off`, from the kernel command line
+-      the loaders already pass; default `fast`): `full` = today's
+-      behaviour; `fast` = every self-test that completes in microseconds
+-      stays, the PIT 1-second measurement, the 10 000-cycle heap gauntlet,
+-      the 1 000-frame PMM gauntlet and the 16 KiB RNG statistical analysis
+-      shrink to their short forms (100 ms, 500 cycles, 100 frames, 2 KiB —
+-      still real tests, still printing PASS/FAIL); `off` = skip, for
+-      benchmarking only.
+-- [ ] The PIT *calibration* (divisor programming) is untouched — only the
+-      1-second *verification spin* is scaled. A 100 ms window still catches
+-      a mis-programmed divisor at 10× error margin.
+-- [ ] `make run` keeps `fast`; **every integration case that greps
+-      self-test output boots with `selftest=full`** — one line in
+-      `tests/integration/lib` where the QEMU command is built.
+-- [ ] The PASS-line formats do not change (the greps must not need edits —
+-      that is the D3 tripwire proving semantics held).
+-
+-**Definition of done:** default boot-to-shell drops by ≥ 1 s (the PIT
+-second) plus the gauntlet time, measured by the O0 stamp; `selftest=full`
+-boots byte-identical self-test output to baseline.
+-
+-**Test gate:** full integration suite green **under `selftest=full`**;
+-`test_perf_smoke` records both modes' boot times; a new case
+-`test_selftest_modes.sh` asserts `full` prints every baseline PASS line
+-and `fast` prints the short-form PASS lines.
++- [x] `kernel/lib/selftest.{c,h}`: mode state + `selftest_scale(full,
++      fast)`; `full` = historical values and byte-identical output,
++      `fast` = same invariants at reduced sizes, `off` = skip printing
++      `SKIPPED (selftest=off)`.  Default `fast` via `make SELFTEST=`.
++- [x] `kernel/arch/x86_64/fwcfg.c`: fw_cfg signature check, FILE_DIR
++      walk (big-endian fields composed byte-by-byte), reads
++      `opt/auralite.selftest`.  Absent/garbage → build default stands.
++- [x] Scaled: PIT verification window 1 s → 100 ms (±5% band → ±20%,
++      ±1-tick quantisation at ~10 ticks; the divisor programming is
++      untouched), PMM 1000 → 100 frames, heap 10 000 → 500 cycles
++      (including its O(N²) uniqueness scan), RNG analysis 16 KiB → 2 KiB.
++      **Seeding is never skipped** — the knob trades boot-time
++      statistics, not entropy.
++- [x] `tests/integration/lib/lib.sh`: every CI boot passes
++      `-fw_cfg ...,string=full` (override: `IL_SELFTEST`).  All existing
++      self-test greps hold **unmodified** — the D3 tripwire held.
++- [x] `tests/integration/cases/test_selftest_modes.sh` (registered): all
++      three modes boot; full asserts the historical lines (1-second
++      delay, 1000 frames, 10000 cycles, 16 KiB), fast asserts the scaled
++      lines still PASS, off asserts four loud SKIPPEDs and a live shell;
++      plus the D1 gate: fast beats full by ≥ 80 ticks.
++- [x] `test_perf_smoke.sh` records both modes' boot ticks every run.
++
++**What O2 measured:**
++
++- Boot-to-shell, BIOS guest: **full 499 ticks (~5.0 s) → fast 400 ticks
++  (~4.0 s)** — almost exactly the 1-second PIT window; the heap/PMM/RNG
++  gauntlets are noise under TCG next to it.  The remaining ~4 s of the
++  fast boot is not self-tests at all: it is the boot *demo sequence*
++  (`r3d_demo(30)` renders 30 frames of 3D demo, `wm_demo`,
++  `gui_self_test` windows) plus device-init waits — recorded here as the
++  boot-latency residue, because deleting demos is a behaviour decision,
++  not an optimization.
++- **Surprise 1 (statistics):** the RNG byte-frequency band (±50%) was
++  calibrated at λ=64 and pierced immediately at fast's λ=8 — a healthy
++  boot printed `FAIL (byte 0x04 count 14, expected ~8)`, exactly the
++  Poisson math predicts (~6% per bucket × 256 buckets).  Fast mode now
++  keeps only a 4× upper bound (stuck generators miss it by orders;
++  counter generators are the bit-runs test's catch).  Full keeps the
++  historical band, byte-identical.
++- **Surprise 2 (cascade):** the faster boot reaches `rng_init()` before
++  the interrupt-jitter pool has 128 estimated bits (60 at that point),
++  so fast boots exercise the *late opportunistic seeding* path
++  (`rng_jitter_event`/`rng_available`) that slow boots never used —
++  seeding completes ~1 s later and the self-test runs there.  A latent
++  code path became load-bearing because the boot got faster; it held.
++
++**Definition of done:** default boot drops by ≥ 1 s ✓ (99 ticks);
++`selftest=full` output byte-identical ✓ (every existing grep unmodified).
++
++**Test gate:** `test_selftest_modes` 30/30; `test_boot_to_shell` 17/17
++under the lib's `full` pin; `test_perf_smoke` 18/18 + both-modes record;
++`make test-unit` EXIT 0. ✓
+ 
+ **Deliverable:** `patches/OPT_O2_fastboot.patch`
+ 
+@@ -748,7 +792,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
+ 
+ | Metric | Baseline (`6bba33f` + O0) | After O1 | O2 | O3 | O4 | O5 | O6 | O7 | O8 |
+ |---|---|---|---|---|---|---|---|---|---|
+-| boot → shell (PIT ticks, BIOS) | 505 (~5.1 s) | 497 | | | | | | | |
++| boot → shell (PIT ticks, BIOS) | 505 (~5.1 s) | 497 | full 499 / **fast 400** | | | | | | |
+ | boot → shell (PIT ticks, UEFI/OVMF) | 1345 (~13.6 s) | — | | | | | | | |
+ | membench memcpy-a 64 KiB (MB/s) | 11 | **82** | | | | | | | |
+ | membench memcpy-a 1 MiB (MB/s) | 10 | **79** | | | | | | | |
+diff --git a/drivers/timer/pit.c b/drivers/timer/pit.c
+index 90ec4d3..593c630 100644
+--- a/drivers/timer/pit.c
++++ b/drivers/timer/pit.c
+@@ -10,6 +10,7 @@
+ #include "drivers/timer/pit.h"
+ #include "kernel/arch/arch.h"
+ #include "kernel/arch/x86_64/irq.h"
++#include "kernel/lib/selftest.h"
+ #include "kernel/arch/x86_64/cpu_local.h"
+ #include "kernel/proc/scheduler.h"
+ #include "kernel/proc/thread.h"
+@@ -161,20 +162,40 @@ void timer_sleep_ms(uint64_t ms) {
+ }
+ 
+ void timer_self_test(void) {
+-    kprintf(TIMER_TAG "self-test: measuring 1-second delay...\n");
++    /* OPT_PLAN.md O2: the VERIFICATION window follows the self-test
++     * knob; the divisor programming above is untouched.  FULL keeps the
++     * historical 1-second wait, byte-identical output, +/-5% band.  FAST
++     * verifies over 100 ms -- ~10 ticks at 100 Hz, so the band widens to
++     * +/-20% to absorb +/-1-tick quantisation; a divisor that is wrong
++     * by 10x (the failure this test exists for) still misses it by
++     * miles.  OFF skips loudly. */
++    uint64_t window_ms = selftest_scale(1000, 100);
++    if (window_ms == 0) {
++        kprintf(TIMER_TAG "self-test: SKIPPED (selftest=off)\n");
++        return;
++    }
++    if (window_ms == 1000) {
++        kprintf(TIMER_TAG "self-test: measuring 1-second delay...\n");
++    } else {
++        kprintf(TIMER_TAG "self-test: measuring %llu-ms delay...\n",
++                (unsigned long long)window_ms);
++    }
+ 
+     uint64_t start_ticks = timer_ticks;
+-    /* Sleep ~1 second using a busy-wait independent of the tick counter: this
+-       makes the test self-contained.  We read the counter before and after and
+-       verify the tick delta matches the configured frequency within +/-5%. */
+-    timer_sleep_ms(1000);
++    /* Sleep the window using a busy-wait independent of the tick counter:
++       this makes the test self-contained.  We read the counter before and
++       after and verify the tick delta matches the configured frequency. */
++    timer_sleep_ms(window_ms);
+     uint64_t end_ticks = timer_ticks;
+     uint64_t elapsed   = end_ticks - start_ticks;
+ 
+-    /* Expected = timer_freq_hz ticks.  +/-5% band. */
+-    uint64_t expected = (uint64_t)timer_freq_hz;
+-    uint64_t lo = expected - expected / 20;     /* 95% */
+-    uint64_t hi = expected + expected / 20;     /* 105% */
++    /* Expected ticks over the window.  +/-5% band at 1 s, +/-20% at
++       100 ms (see above). */
++    uint64_t expected = (uint64_t)timer_freq_hz * window_ms / 1000;
++    uint64_t slack = (window_ms == 1000) ? expected / 20 : expected / 5;
++    if (slack == 0) slack = 1;
++    uint64_t lo = expected - slack;
++    uint64_t hi = expected + slack;
+ 
+     kprintf(TIMER_TAG "expected ~%llu ticks, measured %llu ticks (band %llu-%llu)\n",
+             (unsigned long long)expected,
+@@ -183,12 +204,19 @@ void timer_self_test(void) {
+             (unsigned long long)hi);
+ 
+     if (elapsed >= lo && elapsed <= hi) {
+-        /* Integer percentage of the configured frequency. */
+-        uint64_t pct = (elapsed * 100 + timer_freq_hz / 2) / timer_freq_hz;
+-        kprintf(TIMER_TAG "PASS: %llu ticks in 1s (%llu%% of %u Hz)\n",
+-                (unsigned long long)elapsed,
+-                (unsigned long long)pct,
+-                (unsigned)timer_freq_hz);
++        /* Integer percentage of the expected count over the window. */
++        uint64_t pct = (elapsed * 100 + expected / 2) / expected;
++        if (window_ms == 1000) {
++            kprintf(TIMER_TAG "PASS: %llu ticks in 1s (%llu%% of %u Hz)\n",
++                    (unsigned long long)elapsed,
++                    (unsigned long long)pct,
++                    (unsigned)timer_freq_hz);
++        } else {
++            kprintf(TIMER_TAG "PASS: %llu ticks in %llums (%llu%% of expected)\n",
++                    (unsigned long long)elapsed,
++                    (unsigned long long)window_ms,
++                    (unsigned long long)pct);
++        }
+     } else {
+         kprintf(TIMER_TAG "FAIL: tick count %llu outside %llu-%llu band\n",
+                 (unsigned long long)elapsed,
+diff --git a/kernel/arch/x86_64/fwcfg.c b/kernel/arch/x86_64/fwcfg.c
+new file mode 100644
+index 0000000..6b69e85
+--- /dev/null
++++ b/kernel/arch/x86_64/fwcfg.c
+@@ -0,0 +1,109 @@
++/* fwcfg.c — QEMU fw_cfg probe for the self-test knob (OPT_PLAN.md O2).
++ *
++ * Reads -fw_cfg name=opt/auralite.selftest,string=full|fast|off and, if
++ * present, overrides the build-default self-test mode before any of the
++ * scaled self-tests run.  This is how the integration lib pins every CI
++ * boot to `full` (tests/integration/lib/lib.sh) while `make run` and
++ * real hardware get the build default.
++ *
++ * Interface (QEMU docs/specs/fw_cfg.txt, x86 flavour): write a 16-bit
++ * selector to port 0x510, then read the item's bytes one at a time from
++ * port 0x511.  Selector 0x0000 must yield the "QEMU" signature; selector
++ * 0x0019 (FILE_DIR) yields a big-endian u32 count followed by 64-byte
++ * entries { be32 size; be16 select; u16 reserved; char name[56]; }.
++ * Everything multi-byte in the directory is BIG-endian — composed here
++ * byte by byte, which sidesteps both the endianness and the width-cast
++ * ratchet in one move.
++ *
++ * On real hardware (no fw_cfg) the signature read returns open-bus
++ * garbage, the probe returns quietly, and the build default stands.
++ * This file lives in kernel/arch/x86_64/ because port I/O is an x86
++ * instruction class and the I6 ratchet holds portable files at their
++ * current count of it.
++ */
++#include <stdint.h>
++#include "kernel/arch/x86_64/portio.h"
++#include "kernel/lib/selftest.h"
++#include "kernel/lib/string.h"
++
++#define FW_CFG_SELECTOR   0x510
++#define FW_CFG_DATA       0x511
++#define FW_CFG_SIGNATURE  0x0000
++#define FW_CFG_FILE_DIR   0x0019
++
++#define SELFTEST_FILE     "opt/auralite.selftest"
++
++static uint32_t read_be32(void) {
++    uint32_t v = 0;
++    for (int i = 0; i < 4; i++) {
++        v = (v << 8) | inb(FW_CFG_DATA);
++    }
++    return v;
++}
++
++static uint16_t read_be16(void) {
++    uint16_t hi = inb(FW_CFG_DATA);
++    uint16_t lo = inb(FW_CFG_DATA);
++    return (uint16_t)((hi << 8) | lo);
++}
++
++void fwcfg_selftest_probe(void) {
++    /* Signature: absent fw_cfg reads as open bus, not "QEMU". */
++    outw(FW_CFG_SELECTOR, FW_CFG_SIGNATURE);
++    char sig[4];
++    for (int i = 0; i < 4; i++) {
++        sig[i] = (char)inb(FW_CFG_DATA);
++    }
++    if (sig[0] != 'Q' || sig[1] != 'E' || sig[2] != 'M' || sig[3] != 'U') {
++        return;                            /* no fw_cfg: default stands */
++    }
++
++    /* Walk the file directory for our knob. */
++    outw(FW_CFG_SELECTOR, FW_CFG_FILE_DIR);
++    uint32_t count = read_be32();
++    if (count > 256) {
++        return;                            /* implausible: treat as absent */
++    }
++
++    uint32_t knob_size   = 0;
++    uint16_t knob_select = 0;
++    int      found       = 0;
++    for (uint32_t i = 0; i < count; i++) {
++        uint32_t size   = read_be32();
++        uint16_t select = read_be16();
++        (void)read_be16();                 /* reserved */
++        char name[57];
++        for (int k = 0; k < 56; k++) {
++            name[k] = (char)inb(FW_CFG_DATA);
++        }
++        name[56] = '\0';
++        if (!found && strcmp(name, SELFTEST_FILE) == 0) {
++            knob_size   = size;
++            knob_select = select;
++            found       = 1;
++            /* Keep reading: the data port is sequential, and bailing
++             * mid-directory costs nothing anyway once we have the key. */
++        }
++    }
++    if (!found || knob_size == 0 || knob_size > 15) {
++        return;
++    }
++
++    outw(FW_CFG_SELECTOR, knob_select);
++    char val[16];
++    uint32_t n;
++    for (n = 0; n < knob_size; n++) {
++        val[n] = (char)inb(FW_CFG_DATA);
++    }
++    val[n] = '\0';
++
++    if (strcmp(val, "full") == 0) {
++        selftest_set_mode(SELFTEST_FULL, "fw_cfg");
++    } else if (strcmp(val, "fast") == 0) {
++        selftest_set_mode(SELFTEST_FAST, "fw_cfg");
++    } else if (strcmp(val, "off") == 0) {
++        selftest_set_mode(SELFTEST_OFF, "fw_cfg");
++    }
++    /* Unrecognised strings leave the default in place: a typo in a QEMU
++     * flag should degrade to normal behaviour, not to silence. */
++}
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index 0e87241..755cd21 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -13,6 +13,7 @@
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/klog.h"
+ #include "kernel/lib/perfstat.h"
++#include "kernel/lib/selftest.h"
+ #include "kernel/lib/stack_protector.h"
+ #include "kernel/boot_info.h"
+ #include "kernel/rng.h"
+@@ -217,6 +218,16 @@ void kmain(boot_info_t *boot_info) {
+ 
+     kprintf("\n[kernel] interrupts enabled, exception handling online.\n");
+ 
++    /* OPT_PLAN.md O2: pick the self-test intensity before the first
++     * scaled self-test runs.  fw_cfg (QEMU) can override the build
++     * default; the line is greppable and states both mode and source. */
++    {
++        extern void fwcfg_selftest_probe(void);
++        fwcfg_selftest_probe();
++        kprintf("[selftest] mode: %s (%s)\n",
++                selftest_mode_name(), selftest_mode_source());
++    }
++
+     kprintf("[boot] initialising physical memory manager...\n");
+     pmm_init();
+     pmm_self_test();
+diff --git a/kernel/lib/selftest.c b/kernel/lib/selftest.c
+new file mode 100644
+index 0000000..9d4f154
+--- /dev/null
++++ b/kernel/lib/selftest.c
+@@ -0,0 +1,46 @@
++/* selftest.c — boot self-test intensity knob (OPT_PLAN.md O2).
++ *
++ * Portable state only; the fw_cfg probe that can override the build
++ * default lives in kernel/arch/x86_64/fwcfg.c (port I/O stays in the
++ * arch tree — the I6/V6 ratchets hold portable files at zero new port
++ * I/O and zero new assembly, and they are right to).
++ */
++#include "kernel/lib/selftest.h"
++
++/* Build default: make SELFTEST=full|fast|off (Makefile maps it onto one
++ * of these defines; fast when unset). */
++#if defined(SELFTEST_DEFAULT_FULL)
++#define SELFTEST_DEFAULT SELFTEST_FULL
++#elif defined(SELFTEST_DEFAULT_OFF)
++#define SELFTEST_DEFAULT SELFTEST_OFF
++#else
++#define SELFTEST_DEFAULT SELFTEST_FAST
++#endif
++
++static selftest_mode_t mode   = SELFTEST_DEFAULT;
++static const char     *source = "build default";
++
++selftest_mode_t selftest_mode(void) { return mode; }
++
++void selftest_set_mode(selftest_mode_t m, const char *src) {
++    mode   = m;
++    source = src ? src : "?";
++}
++
++const char *selftest_mode_name(void) {
++    switch (mode) {
++    case SELFTEST_FULL: return "full";
++    case SELFTEST_FAST: return "fast";
++    default:            return "off";
++    }
++}
++
++const char *selftest_mode_source(void) { return source; }
++
++uint64_t selftest_scale(uint64_t full_value, uint64_t fast_value) {
++    switch (mode) {
++    case SELFTEST_FULL: return full_value;
++    case SELFTEST_FAST: return fast_value;
++    default:            return 0;
++    }
++}
+diff --git a/kernel/lib/selftest.h b/kernel/lib/selftest.h
+new file mode 100644
+index 0000000..1aae8d0
+--- /dev/null
++++ b/kernel/lib/selftest.h
+@@ -0,0 +1,47 @@
++/* selftest.h — boot self-test intensity knob (OPT_PLAN.md O2).
++ *
++ * Three modes, one question: how much of the boot should be spent
++ * re-proving invariants that CI already proves on every push?
++ *
++ *   SELFTEST_FULL  — today's behaviour, byte-identical output.  What CI
++ *                    boots (the integration lib pins it via fw_cfg), so
++ *                    every PASS-line grep keeps its teeth.
++ *   SELFTEST_FAST  — the default boot.  Every self-test still RUNS and
++ *                    still prints PASS/FAIL — only the gauntlet sizes
++ *                    shrink (1 s PIT window → 100 ms, 10 000 heap cycles
++ *                    → 500, 1 000 PMM frames → 100, 16 KiB RNG analysis
++ *                    → 2 KiB).  A mis-programmed divisor, a broken free
++ *                    list or a stuck RNG still fails loudly.
++ *   SELFTEST_OFF   — benchmarking only: the scaled tests print SKIPPED.
++ *
++ * The mode comes from (in priority order):
++ *   1. QEMU fw_cfg: -fw_cfg name=opt/auralite.selftest,string=full
++ *      (kernel/arch/x86_64/fwcfg.c — the O2 plan text assumed "the
++ *      kernel command line the loaders already pass"; measured, no such
++ *      plumbing exists anywhere in boot/, and fw_cfg is the honest
++ *      QEMU-shaped channel for a QEMU-primary project).
++ *   2. The build default: make SELFTEST=full|fast|off, the KEYMAP
++ *      precedent (FIX_R8) — which is also all real hardware gets.
++ */
++#ifndef KERNEL_LIB_SELFTEST_H
++#define KERNEL_LIB_SELFTEST_H
++
++#include <stdint.h>
++
++typedef enum {
++    SELFTEST_OFF  = 0,
++    SELFTEST_FAST = 1,
++    SELFTEST_FULL = 2,
++} selftest_mode_t;
++
++selftest_mode_t selftest_mode(void);
++void            selftest_set_mode(selftest_mode_t m, const char *source);
++const char     *selftest_mode_name(void);
++const char     *selftest_mode_source(void);
++
++/* The one scaling rule: FULL keeps the historical value (output stays
++ * byte-identical), FAST takes the reduced one, OFF returns 0 and the
++ * caller prints its SKIPPED line. */
++uint64_t selftest_scale(uint64_t full_value, uint64_t fast_value);
++
++#endif /* KERNEL_LIB_SELFTEST_H */
+diff --git a/kernel/mm/kheap.c b/kernel/mm/kheap.c
+index dbb3afb..fcf9660 100644
+--- a/kernel/mm/kheap.c
++++ b/kernel/mm/kheap.c
+@@ -15,6 +15,7 @@
+ #include "kernel/lib/spinlock.h"
+ #include "kernel/lib/string.h"
+ #include "kernel/lib/kprintf.h"
++#include "kernel/lib/selftest.h"
+ 
+ #define PAGE_SIZE 4096ULL
+ #define HEAP_TAG  "[heap] "
+@@ -156,11 +157,21 @@ void kheap_self_test(void) {
+     enum { N = 10000 };
+     static void *ptrs[N];           /* static: keep off the (small) stack */
+ 
+-    kprintf(HEAP_TAG "self-test: %d alloc/free cycles...\n", N);
++    /* OPT_PLAN.md O2: FULL keeps N=10000 (and its O(N^2) uniqueness scan
++     * -- 50M compares of boot time under TCG); FAST proves the same
++     * splitting/coalescing/realloc invariants over 500 cycles; OFF skips
++     * loudly. */
++    int n = (int)selftest_scale(N, 500);
++    if (n == 0) {
++        kprintf(HEAP_TAG "self-test: SKIPPED (selftest=off)\n");
++        return;
++    }
++
++    kprintf(HEAP_TAG "self-test: %d alloc/free cycles...\n", n);
+ 
+     /* Phase A: allocate N blocks of varying sizes and tag each with its
+      * expected pattern (byte = index & 0xFF into the first 8 bytes). */
+-    for (int i = 0; i < N; i++) {
++    for (int i = 0; i < n; i++) {
+         /* Sizes from 8 .. ~256 bytes, mixed to stress splitting/coalescing. */
+         uint64_t sz = 8 + (uint64_t)((i * 37) % 256);
+         ptrs[i] = kmalloc(sz);
+@@ -177,8 +188,8 @@ void kheap_self_test(void) {
+     }
+ 
+     /* Uniqueness: every pointer must be distinct. */
+-    for (int i = 0; i < N; i++) {
+-        for (int j = i + 1; j < N; j++) {
++    for (int i = 0; i < n; i++) {
++        for (int j = i + 1; j < n; j++) {
+             if (ptrs[i] == ptrs[j]) {
+                 kprintf(HEAP_TAG "FAIL: duplicate pointer %p (%d/%d)\n",
+                         ptrs[i], i, j);
+@@ -189,11 +200,11 @@ void kheap_self_test(void) {
+ 
+     /* Free every other block (creates a fragmented free list), then verify the
+      * survivors' stamps are intact. */
+-    for (int i = 0; i < N; i += 2) {
++    for (int i = 0; i < n; i += 2) {
+         kfree(ptrs[i]);
+         ptrs[i] = NULL;
+     }
+-    for (int i = 1; i < N; i += 2) {
++    for (int i = 1; i < n; i += 2) {
+         uint8_t *p = (uint8_t *)ptrs[i];
+         for (int k = 0; k < 8; k++) {
+             if (p[k] != (uint8_t)(i + k)) {
+@@ -204,7 +215,7 @@ void kheap_self_test(void) {
+     }
+ 
+     /* Re-allocate into the freed holes (exercises coalesced/split reuse). */
+-    for (int i = 0; i < N; i += 2) {
++    for (int i = 0; i < n; i += 2) {
+         ptrs[i] = kmalloc(16 + (uint64_t)(i % 64));
+         if (ptrs[i] == NULL) {
+             kprintf(HEAP_TAG "FAIL: re-alloc NULL at %d\n", i);
+@@ -240,7 +251,7 @@ void kheap_self_test(void) {
+     kfree(r3);
+ 
+     /* Free everything. */
+-    for (int i = 0; i < N; i++) {
++    for (int i = 0; i < n; i++) {
+         if (ptrs[i]) {
+             kfree(ptrs[i]);
+             ptrs[i] = NULL;
+@@ -273,6 +284,6 @@ void kheap_self_test(void) {
+         return;
+     }
+ 
+-    kprintf(HEAP_TAG "PASS: %d cycles, no corruption, no leak, realloc OK\n", N);
++    kprintf(HEAP_TAG "PASS: %d cycles, no corruption, no leak, realloc OK\n", n);
+     kheap_dump();
+ }
+diff --git a/kernel/mm/pmm.c b/kernel/mm/pmm.c
+index 7ca66cf..7065bdc 100644
+--- a/kernel/mm/pmm.c
++++ b/kernel/mm/pmm.c
+@@ -13,6 +13,7 @@
+ #include "kernel/lib/bitmap.h"
+ #include "kernel/lib/spinlock.h"
+ #include "kernel/lib/string.h"
++#include "kernel/lib/selftest.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/boot_info.h"
+ 
+@@ -307,10 +308,19 @@ void pmm_self_test(void) {
+     static uint64_t addrs[N];          /* static: keep it off the stack */
+     uint64_t before = pmm.free_frames;
+ 
+-    kprintf(PMM_TAG "self-test: allocating %d frames...\n", N);
++    /* OPT_PLAN.md O2: the gauntlet size follows the self-test knob.
++     * FULL keeps N=1000 and byte-identical output; FAST proves the same
++     * invariants over 100 frames; OFF skips loudly. */
++    int n = (int)selftest_scale(N, 100);
++    if (n == 0) {
++        kprintf(PMM_TAG "self-test: SKIPPED (selftest=off)\n");
++        return;
++    }
++
++    kprintf(PMM_TAG "self-test: allocating %d frames...\n", n);
+ 
+     /* Allocate and validate each frame: non-null, page-aligned. */
+-    for (int i = 0; i < N; i++) {
++    for (int i = 0; i < n; i++) {
+         addrs[i] = pmm_alloc_frame();
+         if (addrs[i] == 0) {
+             kprintf(PMM_TAG "FAIL: out of memory at index %d\n", i);
+@@ -324,8 +334,8 @@ void pmm_self_test(void) {
+     }
+ 
+     /* Uniqueness: O(N^2) is fine for N=1000 and needs no allocator. */
+-    for (int i = 0; i < N; i++) {
+-        for (int j = i + 1; j < N; j++) {
++    for (int i = 0; i < n; i++) {
++        for (int j = i + 1; j < n; j++) {
+             if (addrs[i] == addrs[j]) {
+                 kprintf(PMM_TAG "FAIL: duplicate address 0x%016llx (%d/%d)\n",
+                         (unsigned long long)addrs[i], i, j);
+@@ -335,7 +345,7 @@ void pmm_self_test(void) {
+     }
+ 
+     /* Free everything; the pool must return to its starting level. */
+-    for (int i = 0; i < N; i++) {
++    for (int i = 0; i < n; i++) {
+         pmm_free_frame(addrs[i]);
+     }
+ 
+@@ -361,5 +371,5 @@ void pmm_self_test(void) {
+         return;
+     }
+ 
+-    kprintf(PMM_TAG "PASS: %d unique frames, no leak, contiguous alloc OK\n", N);
++    kprintf(PMM_TAG "PASS: %d unique frames, no leak, contiguous alloc OK\n", n);
+ }
+diff --git a/kernel/rng.c b/kernel/rng.c
+index a11b7e9..7879b6f 100644
+--- a/kernel/rng.c
++++ b/kernel/rng.c
+@@ -38,6 +38,7 @@
+ #include "kernel/arch/x86_64/cpu.h"
+ #include "kernel/lib/spinlock.h"
+ #include "kernel/lib/kprintf.h"
++#include "kernel/lib/selftest.h"
+ #include "kernel/lib/string.h"
+ #include "kernel/lib/errno.h"
+ #include "drivers/timer/pit.h"
+@@ -172,16 +173,40 @@ static int rng_self_test(void) {
+     static uint8_t buf[RNG_SELFTEST_LEN];
+     static uint32_t freq[256];
+ 
++    /* OPT_PLAN.md O2: FULL analyses the historical 16 KiB; FAST proves
++     * the same stuck-generator/counter failures over 2 KiB (expected
++     * count per byte value drops 64 -> 8; the +/-50%% band still
++     * catches a collapsed seed by orders of magnitude); OFF skips
++     * loudly.  Seeding itself is never skipped -- this knob trades
++     * boot-time statistics, not entropy. */
++    size_t len = (size_t)selftest_scale(RNG_SELFTEST_LEN, 2048);
++    if (len == 0) {
++        kprintf("[rng] self-test: SKIPPED (selftest=off)\n");
++        return 1;
++    }
++
+     /* Generate WITHOUT the backtracking re-key noise mattering: just fill. */
+-    rngc_drbg_fill(&drbg, buf, sizeof(buf));
++    rngc_drbg_fill(&drbg, buf, len);
+ 
+     for (int i = 0; i < 256; i++) freq[i] = 0;
+-    for (size_t i = 0; i < sizeof(buf); i++) freq[buf[i]]++;
+-
+-    uint32_t expected = RNG_SELFTEST_LEN / 256;   /* 64 */
++    for (size_t i = 0; i < len; i++) freq[buf[i]]++;
++
++    uint32_t expected = (uint32_t)(len / 256);
++    /* Band calibration is a Poisson question, and the historical +/-50%
++     * band is only sound at the historical size: at FULL (len 16 KiB)
++     * expected=64 and 32..96 sits ~4 sigma out.  At FAST (2 KiB)
++     * expected=8, and P(count > 12 or < 4) is ~6% PER BUCKET -- across
++     * 256 buckets an ordinary healthy boot fails almost surely (measured:
++     * "FAIL (byte 0x04 count 14, expected ~8)" on the first fast boot).
++     * So FAST keeps only an upper bound at 4x expected (P ~ 1e-10 per
++     * bucket): a stuck generator still pierces it by orders of magnitude,
++     * and a counter generator is the bit-runs test's catch, not this
++     * one's. */
++    uint32_t lo = (len == RNG_SELFTEST_LEN) ? expected / 2 : 0;
++    uint32_t hi = (len == RNG_SELFTEST_LEN) ? expected + expected / 2
++                                            : expected * 4;
+     for (int i = 0; i < 256; i++) {
+-        /* +-50% is wide; a stuck/counter generator misses it by orders. */
+-        if (freq[i] < expected / 2 || freq[i] > expected + expected / 2) {
++        if (freq[i] < lo || freq[i] > hi) {
+             kprintf("[rng] self-test: FAIL (byte 0x%02x count %u, expected ~%u)\n",
+                     i, freq[i], expected);
+             return 0;
+@@ -190,11 +215,11 @@ static int rng_self_test(void) {
+ 
+     /* Bit runs: count maximal runs of equal bits.  For N random bits the
+      * expected count is ~N/2; allow +-10%. */
+-    uint64_t nbits = (uint64_t)sizeof(buf) * 8;
++    uint64_t nbits = (uint64_t)len * 8;
+     uint64_t runs = 1;
+     uint64_t longest = 1, cur = 1;
+     int prev = buf[0] & 1;
+-    for (size_t i = 0; i < sizeof(buf); i++) {
++    for (size_t i = 0; i < len; i++) {
+         for (int bit = (i == 0 ? 1 : 0); bit < 8; bit++) {
+             int b = (buf[i] >> bit) & 1;
+             if (b == prev) {
+@@ -221,7 +246,7 @@ static int rng_self_test(void) {
+ 
+     kprintf("[rng] self-test: PASS (%u KiB, byte-frequency + bit-runs, "
+             "runs=%u longest=%u)\n",
+-            (unsigned)(RNG_SELFTEST_LEN / 1024), (unsigned)runs,
++            (unsigned)(len / 1024), (unsigned)runs,
+             (unsigned)longest);
+     return 1;
+ }
+diff --git a/tests/integration/cases/test_perf_smoke.sh b/tests/integration/cases/test_perf_smoke.sh
+index 87ba96c..5e1caf3 100644
+--- a/tests/integration/cases/test_perf_smoke.sh
++++ b/tests/integration/cases/test_perf_smoke.sh
+@@ -87,6 +87,21 @@ il_assert_grep  "$LOG" "MEMBENCH memset-a"     "memset row"
+ il_assert_grep  "$LOG" "MEMBENCH-DONE"         "membench completed"
+ il_assert_grep  "$LOG" "perf-gate-end"         "shell survives the gate"
+ 
++# --- O2: the fast-mode boot, recorded alongside (D2: recorded, not hard-gated
++# beyond "not slower") ---
++LOG_FAST="$IL_LOGDIR/perf_smoke_fast.log"
++il_send_delay 6
++il_send "exit"
++IL_SELFTEST=fast il_run_qemu "$LOG_FAST" 30
++
++BOOT_FULL="$BOOT_TICKS"
++BOOT_FAST=$(grep -aoE '\[perf\] boot-to-shell: [0-9]+' "$LOG_FAST" | grep -oE '[0-9]+' | head -1)
++if [ -n "${BOOT_FAST:-}" ] && [ -n "${BOOT_FULL:-}" ] && [ "$BOOT_FAST" -le "$BOOT_FULL" ]; then
++    il_pass "fast boot not slower than full (full=$BOOT_FULL fast=$BOOT_FAST ticks)"
++else
++    il_fail "fast boot regressed past full: full=${BOOT_FULL:-none} fast=${BOOT_FAST:-none}"
++fi
++
+ # --- the usual never-see markers ---
+ il_assert_no_grep "$LOG" "PANIC"               "no kernel panic"
+ il_assert_no_grep "$LOG" "TRIPLE FAULT"        "no triple-fault"
+diff --git a/tests/integration/cases/test_selftest_modes.sh b/tests/integration/cases/test_selftest_modes.sh
+new file mode 100755
+index 0000000..0fe004c
+--- /dev/null
++++ b/tests/integration/cases/test_selftest_modes.sh
+@@ -0,0 +1,97 @@
++#!/usr/bin/env bash
++# test_selftest_modes.sh — the OPT_PLAN.md O2 self-test knob, all three
++# positions.
++#
++# The contract this asserts:
++#   full — byte-compatible with the historical boot: the 1-second PIT
++#          verification line, the 1000-frame PMM gauntlet, the
++#          10000-cycle heap gauntlet, the 16 KiB RNG analysis, and every
++#          PASS line the pre-O2 tree printed (test_boot_to_shell's greps
++#          continue to hold because the lib pins CI boots to full).
++#   fast — every scaled test still RUNS and still prints PASS, at the
++#          reduced sizes (100 ms / 100 frames / 500 cycles / 2 KiB).
++#   off  — the scaled tests print SKIPPED, and the boot still reaches
++#          the interactive shell (off trades proof for speed, not
++#          correctness of the boot itself).
++#
++# Plus the D1 point of the whole phase: the fast boot must actually be
++# faster than the full boot, by at least the 1-second PIT window it no
++# longer spends — asserted via the [perf] boot stamp, in ticks, on the
++# same machine, in the same run.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "selftest modes (OPT_PLAN O2)"
++
++LOG_FULL="$IL_LOGDIR/selftest_full.log"
++LOG_FAST="$IL_LOGDIR/selftest_fast.log"
++LOG_OFF="$IL_LOGDIR/selftest_off.log"
++trap il_dump_on_error EXIT
++
++# ---- boot 1: full ----
++IL_LAST_LOG="$LOG_FULL"
++il_send_delay 6
++il_send "exit"
++IL_SELFTEST=full il_run_qemu "$LOG_FULL" 30
++
++il_assert_grep "$LOG_FULL" "\[selftest\] mode: full \(fw_cfg\)"        "full: mode line names fw_cfg"
++il_assert_grep "$LOG_FULL" "measuring 1-second delay"                  "full: the 1 s PIT window"
++il_assert_grep "$LOG_FULL" "self-test: allocating 1000 frames"         "full: 1000-frame PMM gauntlet"
++il_assert_grep "$LOG_FULL" "self-test: 10000 alloc/free cycles"        "full: 10000-cycle heap gauntlet"
++il_assert_grep "$LOG_FULL" "PASS \(16 KiB, byte-frequency"             "full: 16 KiB RNG analysis"
++il_assert_grep "$LOG_FULL" "\[pmm\] PASS:"                             "full: PMM PASS"
++il_assert_grep "$LOG_FULL" "\[heap\] PASS:"                            "full: heap PASS"
++il_assert_grep "$LOG_FULL" "\[timer\] PASS:.*in 1s"                    "full: timer PASS, 1 s form"
++il_assert_grep "$LOG_FULL" "auralite#"                                 "full: reaches the shell"
++
++# ---- boot 2: fast ----
++IL_LAST_LOG="$LOG_FAST"
++il_send_delay 6
++il_send "exit"
++IL_SELFTEST=fast il_run_qemu "$LOG_FAST" 30
++
++il_assert_grep "$LOG_FAST" "\[selftest\] mode: fast \(fw_cfg\)"        "fast: mode line names fw_cfg"
++il_assert_grep "$LOG_FAST" "measuring 100-ms delay"                    "fast: the 100 ms PIT window"
++il_assert_grep "$LOG_FAST" "self-test: allocating 100 frames"          "fast: 100-frame PMM gauntlet"
++il_assert_grep "$LOG_FAST" "self-test: 500 alloc/free cycles"          "fast: 500-cycle heap gauntlet"
++il_assert_grep "$LOG_FAST" "PASS \(2 KiB, byte-frequency"              "fast: 2 KiB RNG analysis"
++il_assert_grep "$LOG_FAST" "\[pmm\] PASS:"                             "fast: PMM still PASSes"
++il_assert_grep "$LOG_FAST" "\[heap\] PASS:"                            "fast: heap still PASSes"
++il_assert_grep "$LOG_FAST" "\[timer\] PASS:.*in 100ms"                 "fast: timer PASS, 100 ms form"
++il_assert_grep "$LOG_FAST" "auralite#"                                 "fast: reaches the shell"
++
++# ---- boot 3: off ----
++IL_LAST_LOG="$LOG_OFF"
++il_send_delay 6
++il_send "exit"
++IL_SELFTEST=off il_run_qemu "$LOG_OFF" 30
++
++il_assert_grep "$LOG_OFF" "\[selftest\] mode: off \(fw_cfg\)"          "off: mode line names fw_cfg"
++il_assert_grep "$LOG_OFF" "\[pmm\] self-test: SKIPPED \(selftest=off\)"   "off: PMM skipped loudly"
++il_assert_grep "$LOG_OFF" "\[heap\] self-test: SKIPPED \(selftest=off\)"  "off: heap skipped loudly"
++il_assert_grep "$LOG_OFF" "\[timer\] self-test: SKIPPED \(selftest=off\)" "off: timer skipped loudly"
++il_assert_grep "$LOG_OFF" "\[rng\] self-test: SKIPPED \(selftest=off\)"   "off: RNG analysis skipped loudly"
++il_assert_grep "$LOG_OFF" "auralite#"                                  "off: still reaches the shell"
++
++# ---- the D1 assertion: fast is measurably faster than full ----
++ticks_of() { grep -aoE '\[perf\] boot-to-shell: [0-9]+' "$1" | grep -oE '[0-9]+' | head -1; }
++T_FULL=$(ticks_of "$LOG_FULL")
++T_FAST=$(ticks_of "$LOG_FAST")
++if [ -n "${T_FULL:-}" ] && [ -n "${T_FAST:-}" ] && \
++   [ $(( T_FULL - T_FAST )) -ge 80 ]; then
++    il_pass "fast boot beats full by >= 80 ticks (full=$T_FULL fast=$T_FAST)"
++else
++    il_fail "fast boot not measurably faster: full=${T_FULL:-none} fast=${T_FAST:-none} (need >= 80 tick gap)"
++fi
++
++# ---- never-see markers, all three boots ----
++for l in "$LOG_FULL" "$LOG_FAST" "$LOG_OFF"; do
++    il_assert_no_grep "$l" "PANIC"               "no panic ($(basename "$l"))"
++    il_assert_no_grep "$l" "TRIPLE FAULT"        "no triple-fault ($(basename "$l"))"
++done
++
++il_summary
+diff --git a/tests/integration/lib/lib.sh b/tests/integration/lib/lib.sh
+index 2a8d3db..66550d8 100644
+--- a/tests/integration/lib/lib.sh
++++ b/tests/integration/lib/lib.sh
+@@ -163,6 +163,13 @@ il_run_qemu() {
+     # (see TODO.md) can pin itself to 1 rather than being intermittently red.
+     local smp="${IL_SMP:-2}"
+ 
++    # OPT_PLAN.md O2: pin the boot self-test intensity.  The kernel's
++    # BUILD default is `fast`; CI must grep the full historical self-test
++    # output, so the lib passes `full` through fw_cfg unless a case asks
++    # otherwise via IL_SELFTEST (test_selftest_modes.sh and the perf
++    # smoke exercise `fast`/`off` deliberately).
++    local selftest="${IL_SELFTEST:-full}"
++
+     local base_args=(
+         -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on"
+         -m 512M
+@@ -174,6 +181,7 @@ il_run_qemu() {
+         -boot order=c
+         -netdev user,id=net0
+         -device "${IL_NIC},netdev=net0"
++        -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
+     )
+ 
+     # Stream queued input → QEMU stdin, capture serial output → log.
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 9ade8db..3f0b77d 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -48,6 +48,7 @@ fi
+ ALL_CASES=(
+     test_boot_to_shell
+     test_perf_smoke
++    test_selftest_modes
+     test_shell_commands
+     test_syscalls
+     test_selftest
