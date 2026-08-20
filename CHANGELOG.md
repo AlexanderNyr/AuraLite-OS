@@ -2,6 +2,42 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O5 — precise TLB shootdown] 2026-08-19
+
+`OPT_PLAN.md` phase O5: a one-page unmap no longer costs every CPU its
+entire TLB.
+
+- `kernel/arch/x86_64/tlb_shootdown.{c,h}` rewritten: per-target
+  mailboxes `{seq, cr3, va, npages}`, addressed fixed IPIs
+  (`lapic_send_ipi_fixed` + `smp_get_lapic_id`, both new exports), and
+  a handler that `invlpg`s up to 32 pages or degrades to the old full
+  CR3 reload.  **Fire-and-forget by design, not oversight**: an ack
+  protocol deadlocks against `vm_lock` (sender waits under the lock for
+  a CPU spinning on that lock with IRQs off), so the correctness rule
+  is "anything a handler cannot reconstruct becomes a FULL flush" —
+  collapsed-IPI seq gaps and torn payloads both degrade, never narrow.
+- Sender-side skip filter: `paging_switch_to()` publishes each CPU's
+  CR3; targets on a different address space are skipped as an
+  architectural fact (no PCID ⇒ CR3 load flushes everything).  PCID
+  residue recorded in the plan — it breaks exactly that fact.
+- All five broadcast sites converted: unmap and both COW resolutions
+  send one page; mprotect sends its window; fork's scattered COW
+  marking sends npages=0 (full, but only for the parent's CR3).
+- `kernel/arch/x86_64/tlb_policy.h` (new): the decision core as pure C;
+  `tests/unit/test_tlb_policy.c` (14 checks, in `UNIT_TESTS`) pins seq
+  gaps, the 2^64 wrap, npages boundaries and the skip truth table.
+  `test_mprotect.c` gained stubs for the new API (and `mprotect.c` reads
+  its address space through a `tlb_current_asid()` hook so the host test
+  does not execute a privileged CR3 read).
+- `perfstat`: `tlb_shootdowns_ranged` + `tlb_ipis_skipped` join `_full`.
+  Boot measured: **8 full broadcasts → 4 full + 4 ranged** (the fulls
+  are fork's deliberate scattered-marking requests).
+- Gate: 10/10 consecutive `test_fpu_smp` and 10/10 `test_mmap_shared`
+  at `-smp 4` (plus mmap_file/fork_cow/selftest), stale-TLB detector
+  silent throughout; `make test-unit` EXIT 0.
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
 ## [OPT O4 — compositor: composite the union, sleep when idle] 2026-08-19
 
 `OPT_PLAN.md` phase O4: the dirty union bounds the compositor's WORK

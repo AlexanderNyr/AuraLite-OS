@@ -1,6 +1,7 @@
 #include "kernel/arch/x86_64/mprotect.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/lapic.h"
+#include "kernel/arch/x86_64/tlb_shootdown.h"
 #include "kernel/arch/x86_64/paging.h"
 
 #define PROT_READ  0x1
@@ -67,6 +68,11 @@ void mprotect_remap_present_pages(uint64_t addr, uint64_t len, uint64_t prot) {
     }
 
     if (changed) {
-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+        /* O5: the touched window is known — hand it to the mailbox.  A
+         * range past TLB_INVLPG_MAX degrades to a full flush on the
+         * target, but still only on CPUs running this address space. */
+        uint64_t np = (end - addr + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES;
+        if (np > 0xFFFFFFFFULL) np = 0;      /* absurd range: full flush */
+        tlb_shootdown_range(tlb_current_asid(), addr, (uint32_t)np);
     }
 }

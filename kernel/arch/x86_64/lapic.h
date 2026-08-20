@@ -12,6 +12,8 @@ void lapic_eoi(void);
  * BSP's LINT0 no longer needs to carry the 8259's ExtINT vectors. */
 void lapic_mask_lint0(void);
 void lapic_send_ipi_all_excluding_self(uint8_t vector);
+/* OPT_PLAN.md O5: fixed-delivery IPI to a single APIC id. */
+void lapic_send_ipi_fixed(uint32_t apic_id, uint8_t vector);
 
 /* Per-CPU Local APIC timer (SMP step 3.2).  The APIC bus frequency is not
  * architecturally fixed, so smp_init() measures it once on the BSP: call

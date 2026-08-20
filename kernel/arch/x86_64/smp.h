@@ -23,6 +23,10 @@ void smp_init(void);
 /* Total number of CPUs currently online (including the BSP). */
 uint32_t smp_get_cpu_count(void);
 
+/* OPT_PLAN.md O5: LAPIC id of a kernel cpu id (BSP = 0), for the
+ * shootdown sender's addressed IPIs. */
+uint32_t smp_get_lapic_id(uint32_t cpu_id);
+
 /* Number of CPUs the scheduler is allowed to place runnable threads on.
  * Since SMP step 3.2 this equals smp_get_cpu_count(): every online CPU has
  * a run queue, per-CPU syscall/TSS state and its own LAPIC timer tick, so

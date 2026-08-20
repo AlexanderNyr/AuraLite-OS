@@ -12,6 +12,8 @@
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/arch/x86_64/lapic.h"
+#include "kernel/arch/x86_64/tlb_shootdown.h"
+#include "kernel/arch/x86_64/tlb_policy.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/vma.h"
 #include "kernel/proc/scheduler.h"
@@ -296,11 +298,15 @@ void paging_unmap(uint64_t virt) {
     *pte = 0;
     invlpg(virt);
 
-    /* TLB Shootdown: only needed once more than one CPU is online.  The IPI
-     * handler (tlb_shootdown.c) reloads CR3 (full flush) -- send-and-forget,
-     * so holding vm_lock here can never deadlock against a spinning CPU. */
+    /* TLB Shootdown (O5: precise).  One page, one address space — the
+     * mailbox carries both, targets outside this CR3 are skipped, and
+     * fire-and-forget still holds (holding vm_lock here can never
+     * deadlock against a spinning CPU; see tlb_shootdown.c for why an
+     * ack protocol WOULD). Kernel-half pages broadcast (cr3_filter 0):
+     * those mappings are shared by every PML4. */
     if (smp_get_cpu_count() > 1) {
-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+        uint64_t asid_cr3 = (PML4_INDEX(virt) < PML4_USER_TOP) ? read_cr3() : 0;
+        tlb_shootdown_range(asid_cr3, virt, 1);
     }
     spinlock_release_irqrestore(&vm_lock, vf);
 }
@@ -367,6 +373,8 @@ void paging_switch_to(uint64_t new_pml4_phys) {
     if (cpu_local_ready) {
         struct cpu_local *cl = get_cpu_local();
         if (cl) {
+            /* O5: publish for the shootdown sender's skip filter. */
+            tlb_note_cr3((uint32_t)cl->cpu_id, new_pml4_phys);
             cl->vm_pml4 = (uint64_t)(uintptr_t)phys_to_ptr(new_pml4_phys);
             return;
         }
@@ -489,7 +497,10 @@ uint64_t paging_clone_user_space(void) {
      * stale WRITABLE TLB entries -- one stray write through such an entry
      * would silently bypass COW.  Flush them once, after the whole walk. */
     if (marked_cow && smp_get_cpu_count() > 1) {
-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+        /* O5: the write-protected pages are scattered across the whole
+         * parent space — npages 0 requests a full flush, but only on
+         * CPUs actually running the parent's CR3. */
+        tlb_shootdown_range(read_cr3(), 0, 0);
     }
     return new_pml4_phys;
 
@@ -534,7 +545,7 @@ int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code) {
          * same CR3: without a shootdown their next write would fault again
          * and, seeing COW already cleared, be misdiagnosed as a real SEGV. */
         if (smp_get_cpu_count() > 1) {
-            lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+            tlb_shootdown_range(read_cr3(), virt, 1);   /* O5: precise */
         }
         return 1;
     }
@@ -551,7 +562,7 @@ int paging_handle_cow_fault(uint64_t fault_addr, uint64_t err_code) {
     spinlock_release_irqrestore(&vm_lock, vf);
     pmm_free_frame(old_phys); /* drop this address space's reference */
     if (smp_get_cpu_count() > 1) {
-        lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+        tlb_shootdown_range(read_cr3(), virt, 1);       /* O5: precise */
     }
     return 1;
 }

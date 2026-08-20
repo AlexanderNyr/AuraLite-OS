@@ -59,7 +59,8 @@ fi
 # --- /proc/perf: every O0 counter present ---
 for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
          compositor_pixels_composited compositor_pixels_flipped \
-         tlb_shootdowns_full kmalloc_walk_steps uart_tx_sync_bytes \
+         tlb_shootdowns_full tlb_shootdowns_ranged tlb_ipis_skipped \
+         kmalloc_walk_steps uart_tx_sync_bytes \
          uart_tx_ring_bytes; do
     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
 done

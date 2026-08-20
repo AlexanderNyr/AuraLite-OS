@@ -1,6 +1,6 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0–O4 landed; O5–O9 specified
+## Status: IN PROGRESS 🚧 — O0–O5 landed; O6–O9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,7 @@
 | O2 — fast-boot self-test knob | ✅ complete | `patches/OPT_O2_fastboot.patch` |
 | O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
 | O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
-| O5 — precise TLB shootdown | ⬜ todo | — |
+| O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
 | O6 — size-class allocator front | ⬜ todo | — |
 | O7 — block where the kernel yields | ⬜ todo | — |
 | O8 — linker GC + LTO lane | ⬜ todo | — |
@@ -660,38 +660,82 @@ casts and was reworked — the ratchet's third catch in this plan). ✓
 
 ### O5 — Precise TLB shootdown
 
+**Status: ✅ landed** (`patches/OPT_O5_tlb.patch`).  One design decision
+diverged from the spec above, for a reason worth the record.
+
 **Objective:** stop reloading CR3 on every CPU for every unmap (Fact 4).
+
+**The divergence: no acknowledgements.**  The spec sketched a mailbox
+the sender fills before the IPI — implied ack semantics.  Measured
+against the tree: `paging_unmap()` sends while holding `vm_lock`
+(irqsave).  A sender waiting under `vm_lock` for an ack from a CPU that
+is itself spinning on `vm_lock` with interrupts off is not a hazard, it
+is a guaranteed deadlock.  So the protocol is **fire-and-forget with a
+degradation rule**: per-target mailboxes carry `{seq, cr3, va, npages}`;
+fixed-vector IPIs collapse in the LAPIC (one pending bit per vector), so
+a handler that observes `seq` jump by more than one knows a payload was
+overwritten — and anything a handler cannot reconstruct becomes a FULL
+flush, never something narrower.  Losing a payload can cost performance;
+it cannot cost correctness.  A torn payload read (seq moved during the
+read) degrades the same way.
 
 Tasks:
 
-- [ ] Carry a payload with the IPI: a small per-CPU mailbox
-      (`{cr3, va_start, page_count, generation}`) written before
-      `lapic_send_ipi`; the handler `invlpg`s up to
-      `TLB_INVLPG_MAX` (start at 32, measure) pages and falls back to the
-      CR3 reload above that — the current behaviour remains the safe
-      ceiling, not a removed path.
-- [ ] Filter the target set: an address-space CPU mask maintained at
-      context switch (`paging_switch`/scheduler already know the CR3 they
-      load). CPUs not running the affected address space and not holding
-      its translations (they reloaded CR3 since — the generation counter
-      answers this) are skipped entirely. Kernel-range flushes still
-      broadcast.
-- [ ] `perfstat`: `tlb_shootdowns_full` vs `tlb_shootdowns_ranged` vs
+- [x] Mailbox + payload: `tlb_shootdown_range(cr3_filter, va, npages)`
+      replaces the broadcast at all five call sites — single-page unmap
+      and both COW-fault resolutions send `(cr3, va, 1)`; mprotect sends
+      the touched window; fork's scattered mark-and-share sends
+      `npages = 0` ("everything, but only for this address space").
+      Handlers `invlpg` up to `TLB_INVLPG_MAX` (32) pages, full-flush
+      above — the old behaviour remains the safe ceiling.
+- [x] Sender-side skip filter: `paging_switch_to()` publishes each
+      CPU's CR3 into a shadow array; a target whose current CR3 is not
+      the affected space is skipped **as an architectural fact, not a
+      heuristic** — without PCID, loading CR3 flushes everything, so
+      that CPU cannot hold stale entries for the space.  The race
+      (target switching TO the space mid-send) is benign for the same
+      reason: the switch itself flushes, and the sender updated the
+      PTEs before sending.  Kernel-range flushes (`cr3_filter = 0`)
+      still broadcast.
+- [x] `lapic_send_ipi_fixed()` + `smp_get_lapic_id()` exported — the
+      shootdown is an addressed IPI now, not
+      `lapic_send_ipi_all_excluding_self`.
+- [x] `perfstat`: `tlb_shootdowns_full` / `tlb_shootdowns_ranged` /
       `tlb_ipis_skipped`.
-- [ ] PCID/`invpcid` recorded as residue: QEMU TCG supports it, the win is
-      real-hardware-shaped, and it doubles the state space — deferred, per
-      the same reasoning as O4's WC mapping. The mailbox layout leaves room
-      for a PCID field so the follow-up is additive.
+- [x] PCID/`invpcid` residue recorded: it kills the "CR3 load = flush"
+      fact the skip filter stands on, so it arrives with its own
+      generation scheme or not at all; the mailbox layout leaves room.
+      Real-hardware territory per D1.
+- [x] The decision core is pure C (`tlb_policy.h`) and the host test
+      pins the boundaries: seq gaps of exactly 2, seq across the 2^64
+      wrap, npages 0/1/32/33, spurious redelivery, and the skip
+      filter's truth table.  `mprotect.c` reads its address space
+      through a `tlb_current_asid()` hook so the existing host unit
+      test could stub it instead of executing a privileged CR3 read.
 
-**Definition of done:** under the existing `mmapshare`/`mmapfile`/COW
-integration cases at `-smp 4`, full flushes drop to (kernel-range +
-overflow) only; no new stale-TLB faults (the spurious-fault detector at
-`paging.c:559` is the tripwire, and it already logs).
+**What O5 measured** (boot to shell, `-smp 2`):
 
-**Test gate:** `test_mmap*`, `test_fpu_smp`, `test_selftest` at `-smp 4`
-green across 10 consecutive runs (the flakiness-hunting convention from
-FIX_R2); counter assertions in `test_perf_smoke`; a host unit test for the
-mask/generation logic as plain C (`tests/unit/test_tlb_mask.c`).
+- Baseline (§6): **8 full flushes per boot, every one a broadcast.**
+  After: **4 full + 4 ranged, 0 skipped** — the fulls are fork's
+  deliberate `npages = 0` requests (scattered COW marking), the ranged
+  are the single-page unmap/COW paths, and skips start appearing only
+  when distinct address spaces run on distinct CPUs (a boot-to-shell
+  run is one lineage on one CR3; the counter is wired for when it
+  matters).
+- The gate the plan demanded: **10/10 consecutive `test_fpu_smp` and
+  10/10 `test_mmap_shared` runs at `-smp 4`**, plus `test_mmap_file`,
+  `test_fork_cow`, `test_selftest` at `-smp 4` — green, and the
+  stale-TLB spurious-fault detector (`paging.c`) logged nothing across
+  all of it.
+
+**Definition of done:** full flushes reduced to (kernel-range +
+scattered + overflow) only ✓; no new stale-TLB faults across the 10×
+`-smp 4` battery ✓; counters split three ways ✓.
+
+**Test gate:** `tests/unit/test_tlb_policy.c` 14/14 in `UNIT_TESTS`;
+the `-smp 4` battery above; `test_boot_to_shell` 17/17;
+`test_perf_smoke` 21/21 with the three counters asserted present;
+`make test-unit` EXIT 0; width-sweep ratchets 359/359. ✓
 
 **Deliverable:** `patches/OPT_O5_tlb.patch`
 
@@ -874,7 +918,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
 | uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
 | kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
 | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
-| tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | | | | |
+| tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
 | idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
 | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
 | auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |

@@ -43,12 +43,28 @@ void lapic_send_ipi_all_excluding_self(uint8_t vector) {
     last_ipi_vector = vector;
 }
 
+
 static void record_invlpg(uint64_t va) {
     invalidated_va[invlpg_calls++] = va;
 }
 
 #define MPROTECT_INVLPG(va) record_invlpg(va)
 #include "../../kernel/arch/x86_64/mprotect.c"
+
+/* OPT_PLAN O5: mprotect now requests a RANGED shootdown of the touched
+ * window through the mailbox API; the stub records the same "exactly
+ * one flush request" fact the old IPI stub did, plus the range. */
+static uint64_t shoot_cr3, shoot_va;
+static uint32_t shoot_npages;
+uint64_t tlb_current_asid(void) { return 0x111000; }
+void tlb_shootdown_range(uint64_t cr3, uint64_t va, uint32_t npages) {
+    ipi_calls++;
+    last_ipi_vector = IPI_TLB_SHOOTDOWN_VECTOR;
+    shoot_cr3 = cr3;
+    shoot_va = va;
+    shoot_npages = npages;
+}
+
 
 static void reset_state(void) {
     memset(fake_phys, 0, sizeof(fake_phys));

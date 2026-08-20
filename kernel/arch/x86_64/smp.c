@@ -89,6 +89,10 @@ static void *ap_stacks[MAX_CPUS];
  * ap_entry() can log it without touching boot_info from AP context. */
 static uint32_t lapic_id_for_ap_index[MAX_CPUS];
 
+/* OPT_PLAN.md O5: the BSP's LAPIC id, latched by smp_init() so
+ * smp_get_lapic_id() can answer for cpu 0 too. */
+static uint32_t bsp_lapic_id_latched;
+
 /* Atomic counter: how many CPUs are online (BSP = 1 at boot). */
 static volatile uint32_t cpus_online = 1;
 
@@ -207,6 +211,7 @@ void smp_init(void) {
         return;
     }
 
+    bsp_lapic_id_latched = bsp_lapic_id;
     kprintf("[smp] BSP lapic_id=%u, %llu total CPUs detected\n",
             bsp_lapic_id, (unsigned long long)cpu_count);
 
@@ -333,4 +338,12 @@ void smp_self_test(void) {
     } else {
         kprintf("[smp] PASS: single-core system (use -smp N to test SMP)\n");
     }
+}
+
+/* OPT_PLAN.md O5: kernel cpu id -> LAPIC id, for addressed IPIs.
+ * cpu 0 is the BSP; AP with kernel id N was woken as AP index N-1. */
+uint32_t smp_get_lapic_id(uint32_t cpu_id) {
+    if (cpu_id == 0) return bsp_lapic_id_latched;
+    if (cpu_id - 1 < MAX_CPUS) return lapic_id_for_ap_index[cpu_id - 1];
+    return 0;
 }

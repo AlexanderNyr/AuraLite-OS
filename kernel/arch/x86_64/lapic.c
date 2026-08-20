@@ -244,6 +244,12 @@ void lapic_send_init_ipi(uint32_t apic_id) {
     lapic_send_icr(apic_id, (5u << 8) | (1u << 14) | (1u << 15));
 }
 
+/* OPT_PLAN.md O5: fixed-delivery IPI to ONE cpu — the shootdown path
+ * stopped broadcasting; delivery mode 000b (fixed), the vector as-is. */
+void lapic_send_ipi_fixed(uint32_t apic_id, uint8_t vector) {
+    lapic_send_icr(apic_id, vector);
+}
+
 void lapic_send_init_deassert(uint32_t apic_id) {
     /* INIT, Level = Deassert (bit 14 clear), Trigger Mode = Level. */
     lapic_send_icr(apic_id, (5u << 8) | (1u << 15));

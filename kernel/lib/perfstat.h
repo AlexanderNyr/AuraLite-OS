@@ -38,10 +38,21 @@ enum perfstat_id {
      * path today (H1), so composited − flipped is O4's headroom. */
     PERF_COMPOSITOR_PIXELS_FLIPPED,
 
-    /* TLB shootdown IPIs serviced with a full CR3 reload.  As of O0 that
-     * is every one of them (OPT_PLAN Fact 4); O5 splits this into
-     * full/ranged/skipped. */
+    /* TLB shootdown IPIs serviced with a full CR3 reload — since O5,
+     * only the degradation paths land here: scattered-page requests
+     * (npages == 0), ranges past TLB_INVLPG_MAX, collapsed-IPI sequence
+     * gaps and torn payloads. */
     PERF_TLB_SHOOTDOWNS_FULL,
+
+    /* Shootdown IPIs serviced by an invlpg loop over the mailbox range
+     * (OPT_PLAN O5) — the precise path. */
+    PERF_TLB_SHOOTDOWNS_RANGED,
+
+    /* IPIs never sent because the target CPU's current CR3 proves it
+     * cannot hold stale entries for the affected address space (O5's
+     * sender-side filter; architectural fact, not a heuristic — no
+     * PCID means a CR3 load is a full flush). */
+    PERF_TLB_IPIS_SKIPPED,
 
     /* Free-list nodes visited by the kernel heap's first-fit search
      * (OPT_PLAN Fact 5).  The walk length is O6's claim, so it is O6's
