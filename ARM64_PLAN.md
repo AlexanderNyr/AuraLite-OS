@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A5a complete (phases A0–A9; A5 split into a/b/c)
+## Status: IN PROGRESS 🚧 — A0–A5b complete (phases A0–A9; A5 split into a/b/c)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,7 @@
 | A3 — memory: TTBR1 39-bit VA, PMM, heap — W^X twice over | ✅ complete | `patches/A64_A3_mm.patch` |
 | A4 — threads, scheduler, EL0, `svc` | ✅ complete | `patches/A64_A4_proc.patch` |
 | A5a — the Image exit ramp + shared strings | ✅ complete | `patches/A64_A5a_image.patch` |
-| A5b — libca64 + the fourth tenant | pending | `patches/A64_A5b_tenant.patch` |
+| A5b — libca64 + the fourth tenant | ✅ complete | `patches/A64_A5b_tenant.patch` |
 | A5c — ELF loading, EL0 shell, cross-refusals | pending | `patches/A64_A5c_shell.patch` |
 | A6 — the sweep, fourth backend: DAIF behind the contracts | pending | `patches/A64_A6_sweep.patch` |
 | A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | pending | `patches/A64_A7_drivers.patch` |
@@ -946,7 +946,7 @@ A64-U-OK!
 
 ---
 
-### Phase A5b — libca64 + the fourth tenant
+### Phase A5b — libca64 + the fourth tenant ✅ COMPLETE
 
 **Objective:** `/bina64` exists in the one initrd, audited, before any
 kernel code tries to run it.
@@ -966,11 +966,35 @@ kernel code tries to run it.
 - [ ] The x86_64 initrd staging picks up `/bina64` exactly as it did
       `/binrv` — tenant bytes identical in every kernel's initrd.
 
+#### Result
+
+Delivered as specified.  The fourth tenant exists, is audited, and no
+kernel has been taught to run it yet — by design (that is A5c's one
+job).
+
+- `lib/libca64/`: the libcrv surface at the fourth trap mechanism.
+  The svc wrapper is six moves — the D4 "arguments shuffle down one
+  register" accident holds a fourth time, and `main`'s return arriving
+  where SYS_EXIT wants it holds too (crt0 comment carries the lineage).
+- The SHARED shell compiled unmodified through the AURA_LIBC seam —
+  the V5 promotion pays its fourth dividend; `smallsh` needed zero
+  edits for a fourth ISA it has never met.
+- **[AMEND-7] paid**: both a64 user links carry `--gc-sections` from
+  birth (`-ffunction-sections -fdata-sections` in CFLAGSA64_USER).
+- `mkinitrd` audits `bina64` against `e_machine 183`; the packaged tar
+  measured: `/bina64/init` + `/bina64/smallsh`, 92 files, 3.2M.  The
+  **negative control executed live**: an rv64 binary planted in
+  `bina64/` fails the pack with the guilty file NAMED
+  (`bina64/evil-rv has e_machine=243, expected 183`) and exit 1.
+- Sibling gates after the initrd change: x86_64 boot 17/17, rv smoke
+  green, a64 ELF + Image smokes green (the Image smoke now carries the
+  four-tenant tar into RAM every run).  `check_arm64_claims` 60 (+6).
+
 #### Test gate
 
-- `initrd.tar` carries `/bina64` with `EM_AARCH64` ELFs; the audit
-  passes and its negative control still fails the doctored tenant;
-  x86_64/rv64 suites untouched.
+- `initrd.tar` carries `/bina64` with `EM_AARCH64` ELFs ✓; the audit
+  passes and its negative control fails the doctored tenant (named,
+  exit 1) ✓; x86_64/rv64/a64 suites untouched ✓.
 
 #### Deliverable
 

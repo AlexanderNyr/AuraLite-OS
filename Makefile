@@ -365,6 +365,10 @@ SMALLSH_DEFSRV  := -DAURA_LIBC='"lib/libcrv/libcrv.h"' \
                    -DAURA_PUTS=puts_rv \
                    -DAURA_UNAME='"AuraLite OS riscv64 (Sv39 higher half, RISCV_PLAN V5)"' \
                    -DAURA_RUN_EXAMPLE='"binrv/init"'
+SMALLSH_DEFSA64 := -DAURA_LIBC='"lib/libca64/libca64.h"' \
+                   -DAURA_PUTS=puts_a64 \
+                   -DAURA_UNAME='"AuraLite OS aarch64 (TTBR1 higher half, ARM64_PLAN A5)"' \
+                   -DAURA_RUN_EXAMPLE='"bina64/init"'
 
 # =============================================================================
 # RISCV_PLAN V5: the rv64 userspace (initrv + smallsh over libcrv).
@@ -414,6 +418,55 @@ $(SHELLRV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/smallsh.o $(USERRV_BUI
 
 .PHONY: userrv
 userrv: $(INITRV_ELF) $(SHELLRV_ELF)
+
+# =============================================================================
+# ARM64_PLAN A5b: the aarch64 userland (inita64 + smallsh over libca64),
+# FOURTH tenant under /bina64.  The V5 pattern at the fourth trap
+# mechanism: crt0 + svc wrapper + static-inline libc + the SHARED shell
+# source -- no forked shell, the AURA_LIBC seam is the whole per-arch
+# surface.  [AMEND-7]: --gc-sections on the link lines from birth (the
+# O8 measurement transfers; a fourth tenant has no legacy to protect).
+# =============================================================================
+USERA64_BUILD := $(BUILD_DIR)/usera64
+INITA64_ELF   := $(USERA64_BUILD)/init
+SHELLA64_ELF  := $(USERA64_BUILD)/smallsh
+
+CFLAGSA64_USER := --target=aarch64-unknown-none-elf \
+                  -std=c11 -ffreestanding -fno-stack-protector \
+                  -fno-pie -fno-pic \
+                  -Wall -Wextra -Wno-unused-parameter \
+                  -Werror \
+                  -O2 -g -I . \
+                  -ffunction-sections -fdata-sections
+
+$(USERA64_BUILD)/crt0_a64.o: lib/libca64/crt0_a64.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSA64_USER) -c $< -o $@
+
+$(USERA64_BUILD)/syscall_a64.o: lib/libca64/syscall_a64.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSA64_USER) -c $< -o $@
+
+$(USERA64_BUILD)/inita64.o: userspace/system/inita64/inita64.c lib/libca64/libca64.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSA64_USER) -c $< -o $@
+
+$(INITA64_ELF): $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/inita64.o $(USERA64_BUILD)/syscall_a64.o lib/libca64/user_a64.ld
+	$(LD) -m aarch64linux -nostdlib -static --gc-sections -T lib/libca64/user_a64.ld \
+	    $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/inita64.o $(USERA64_BUILD)/syscall_a64.o -o $@
+	@echo "  [usera64] $@"
+
+$(USERA64_BUILD)/smallsh.o: $(SMALLSH_SRC) lib/libca64/libca64.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGSA64_USER) $(SMALLSH_DEFSA64) -c $< -o $@
+
+$(SHELLA64_ELF): $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/smallsh.o $(USERA64_BUILD)/syscall_a64.o lib/libca64/shella64.ld
+	$(LD) -m aarch64linux -nostdlib -static --gc-sections -T lib/libca64/shella64.ld \
+	    $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/smallsh.o $(USERA64_BUILD)/syscall_a64.o -o $@
+	@echo "  [usera64] $@"
+
+.PHONY: usera64
+usera64: $(INITA64_ELF) $(SHELLA64_ELF)
 
 # =============================================================================
 # I386_PLAN I5: the 32-bit userspace (init32 + libc32).
@@ -1783,7 +1836,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1873,6 +1926,14 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	    llvm-strip -s $(INITRV_ELF) -o $(INITRD_DIR)/binrv/init
 	@llvm-strip-19 -s $(SHELLRV_ELF) -o $(INITRD_DIR)/binrv/smallsh 2>/dev/null || \
 	    llvm-strip -s $(SHELLRV_ELF) -o $(INITRD_DIR)/binrv/smallsh
+# ARM64_PLAN A5b: the aarch64 userland, FOURTH tenant under /bina64.
+# Same llvm-strip note as /binrv (GNU strip does not speak EM_AARCH64
+# reliably either; llvm-strip ships with clang).
+	@mkdir -p $(INITRD_DIR)/bina64
+	@llvm-strip-19 -s $(INITA64_ELF) -o $(INITRD_DIR)/bina64/init 2>/dev/null || \
+	    llvm-strip -s $(INITA64_ELF) -o $(INITRD_DIR)/bina64/init
+	@llvm-strip-19 -s $(SHELLA64_ELF) -o $(INITRD_DIR)/bina64/smallsh 2>/dev/null || \
+	    llvm-strip -s $(SHELLA64_ELF) -o $(INITRD_DIR)/bina64/smallsh
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
 # HTTPS client can validate server chains against it.
 	@mkdir -p $(INITRD_DIR)/etc/ssl

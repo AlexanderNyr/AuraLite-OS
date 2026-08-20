@@ -64,8 +64,9 @@ trap 'rm -rf "$STAGING" "$FILELIST"' EXIT
 
 tar --format=ustar --no-recursion -cf "$OUTPUT" -C "$STAGING" -T "$FILELIST"
 
-# RISCV_PLAN V8: the three-tenant audit.  One tar serves three
-# kernels -- /bin (x86_64 ELF64), /bin32 (i386 ELF32), /binrv (rv64
+# RISCV_PLAN V8 (+ARM64_PLAN A5b): the tenant audit.  One tar serves four
+# kernels -- /bin (x86_64 ELF64), /bin32 (i386 ELF32), /binrv (rv64,
+# e_machine 243), /bina64 (aarch64, e_machine 183) -- and each
 # ELF64) -- and each kernel's loader refuses the other two's
 # binaries.  The audit here is the packaging half of that contract:
 # when a tenant directory is present, its ELF machine type must match
@@ -91,8 +92,9 @@ audit_tenant() {
         fi
     done
 }
-audit_tenant bin   62  x86_64
-audit_tenant bin32 3   i386
-audit_tenant binrv 243 riscv64
+audit_tenant bin    62  x86_64
+audit_tenant bin32  3   i386
+audit_tenant binrv  243 riscv64
+audit_tenant bina64 183 aarch64
 
 echo "[mkinitrd] wrote $OUTPUT ($(du -h "$OUTPUT" | cut -f1), $(find "$STAGING" -type f | wc -l) files, $(find "$STAGING" -mindepth 1 -type d | wc -l) subdirectories)"

@@ -2,6 +2,31 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A5b — libca64 + the fourth tenant] 2026-08-20
+
+`ARM64_PLAN.md` phase A5b: `/bina64` exists in the one initrd, audited
+at pack time, before any kernel is taught to run it (A5c's job).
+
+- `lib/libca64/` (new): `crt0_a64.S`, the six-move `svc #0` wrapper
+  (D4: x8 number, x0–x5 args — the register-shuffle accident holds a
+  fourth time), `libca64.h` with the libcrv surface, `user_a64.ld`
+  (0x08048000, the shared window) + `shella64.ld` (0x30000000, the
+  spawn treaty).
+- `userspace/system/inita64/inita64.c` (new): initrv's shape — pid,
+  yield round-trip, the kernel-pointer EFAULT negative control (same
+  HHDM constant as rv64, by D3 arithmetic), exit 7.
+- The SHARED smallsh compiled for a64 through the `AURA_LIBC` seam
+  with zero source edits — the V5 promotion's fourth dividend.
+- **[AMEND-7] paid**: both a64 user links carry `--gc-sections` +
+  function/data-sections from birth.
+- `tools/mkinitrd.sh`: `audit_tenant bina64 183 aarch64`; the
+  cross-copied-binary negative control executed live — a planted rv64
+  ELF fails the pack with the guilty file named, exit 1.  Tar measured:
+  92 files, 3.2M, `/bina64/{init,smallsh}` aboard.
+- `check_arm64_claims.py`: +6 A5b claims (60 total).  Siblings green:
+  x86_64 boot 17/17, rv smoke, both a64 smokes (the Image smoke now
+  ferries the four-tenant tar every run).
+
 ## [A64 A5 split + A5a — the Image exit ramp] 2026-08-20
 
 `ARM64_PLAN.md`: A5 split into three phases before execution (a: boot

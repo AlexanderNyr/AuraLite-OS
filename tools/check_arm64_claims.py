@@ -270,6 +270,31 @@ def claims():
                                   "a64_image_smoke.sh") and
          "ustar OK" in read("tests", "integration",
                             "a64_image_smoke.sh")),
+
+        # --- A5b: libca64 + the fourth tenant ---
+        ("A5b: libca64 exists (crt0, svc wrapper, header, both linker "
+         "scripts)",
+         exists("lib", "libca64", "crt0_a64.S") and
+         exists("lib", "libca64", "syscall_a64.S") and
+         exists("lib", "libca64", "libca64.h") and
+         exists("lib", "libca64", "user_a64.ld") and
+         exists("lib", "libca64", "shella64.ld")),
+        ("A5b: the svc wrapper speaks D4 (x8 number, svc #0)",
+         "mov   x8, x0" in read("lib", "libca64", "syscall_a64.S") and
+         "svc   #0" in read("lib", "libca64", "syscall_a64.S")),
+        ("A5b: the shared shell compiles for a64 through the AURA_LIBC "
+         "seam (no forked shell)",
+         "SMALLSH_DEFSA64" in makefl and
+         'libca64.h' in makefl and "bina64/init" in makefl),
+        ("A5b [AMEND-7]: the a64 user links carry --gc-sections from "
+         "birth",
+         makefl.count("--gc-sections -T lib/libca64/") == 2),
+        ("A5b: mkinitrd audits the fourth tenant (e_machine 183)",
+         "audit_tenant bina64 183 aarch64" in read("tools",
+                                                   "mkinitrd.sh")),
+        ("A5b: the initrd staging ships /bina64 (init + smallsh)",
+         "$(INITRD_DIR)/bina64/init" in makefl and
+         "$(INITRD_DIR)/bina64/smallsh" in makefl),
     ]
 
     # Structural: the Status header and the phase table must agree.
