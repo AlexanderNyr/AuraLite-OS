@@ -38,6 +38,9 @@ void *krealloc(void *ptr, uint64_t size);
 /* Print heap statistics (committed / used / free) to the kernel console. */
 void kheap_dump(void);
 
+/* OPT_PLAN.md O6: flush the size-class cache back into the heap. */
+void kheap_class_drain(void);
+
 /* Gate self-test: 10 000 alloc/free cycles with corruption + leak checks. */
 void kheap_self_test(void);
 

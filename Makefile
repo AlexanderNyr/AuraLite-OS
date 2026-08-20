@@ -1870,6 +1870,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
+                $(BUILD_DIR)/test_sizeclass \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
@@ -2324,6 +2325,12 @@ $(BUILD_DIR)/test_uart_ring: tests/unit/test_uart_ring.c drivers/uart/uart_ring.
 # OPT_PLAN O5: the TLB shootdown decision core — seq gaps, npages
 # boundaries, and the sender-side skip filter.
 $(BUILD_DIR)/test_tlb_policy: tests/unit/test_tlb_policy.c kernel/arch/x86_64/tlb_policy.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# OPT_PLAN O6: the kmalloc size-class cache core — mapping boundaries,
+# LIFO/link-scrub, cap, and a 20k-step model interleave.
+$(BUILD_DIR)/test_sizeclass: tests/unit/test_sizeclass.c kernel/mm/sizeclass.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

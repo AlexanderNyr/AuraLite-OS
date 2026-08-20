@@ -16,6 +16,8 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/selftest.h"
+#include "kernel/mm/sizeclass.h"
+#include "kernel/lib/perfstat.h"
 
 #define PAGE_SIZE 4096ULL
 #define HEAP_TAG  "[heap] "
@@ -24,6 +26,11 @@
 #define MIB         (1024ULL * 1024ULL)
 
 static heap_t kheap;
+
+/* OPT_PLAN.md O6: the size-class recycling front (see sizeclass.h for
+ * the design and its two bounds).  Guarded by kheap_lock like the heap
+ * itself — the cache is a fast path, not a second allocator. */
+static sizeclass_cache_t kclass;
 
 /* Serialises every operation on the global kernel heap (the free lists and
  * the brk pointer inside heap_alloc/heap_free/heap_realloc).  Pre-SMP the
@@ -116,11 +123,38 @@ void kheap_dump(void) {
     kprintf(HEAP_TAG "used %llu KiB, free %llu KiB\n",
             (unsigned long long)(used / 1024),
             (unsigned long long)(free_b / 1024));
+    kprintf(HEAP_TAG "classes: %llu hits, %llu misses, %llu spills\n",
+            (unsigned long long)kclass.hits,
+            (unsigned long long)kclass.misses,
+            (unsigned long long)kclass.spills);
 }
 
 void *kmalloc(uint64_t size) {
     uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
-    void *p = heap_alloc(&kheap, size);
+    void *p;
+    int ci = sizeclass_for_request(size);
+    if (ci >= 0) {
+        p = sizeclass_pop(&kclass, (uint32_t)ci);
+        if (p) {
+            kclass.hits++;
+            perfstat_add(PERF_KMALLOC_CLASS_HITS, 1);
+            spinlock_release_irqrestore(&kheap_lock, flags);
+            return p;
+        }
+        /* Miss: fall through to first-fit with the EXACT size.  The
+         * first draft rounded the allocation up to the class size so a
+         * block would recycle for the whole class — and the gauntlet
+         * walk count rose 1.77x for it (665 394 -> 1 173 847): in a
+         * fragmented free list a rounded-up request fits fewer blocks,
+         * so every miss walks further.  Recycling still works because
+         * kfree() classifies by the block's real payload; the cache
+         * just serves slightly narrower classes.  Measured before
+         * believed (D1). */
+        kclass.misses++;
+        p = heap_alloc(&kheap, size);
+    } else {
+        p = heap_alloc(&kheap, size);
+    }
     spinlock_release_irqrestore(&kheap_lock, flags);
     return p;
 }
@@ -132,9 +166,39 @@ void kfree(void *ptr) {
         if (b->magic == HEAP_MAGIC_USED && b->size > HEAP_HEADER_SIZE + HEAP_FOOTER_SIZE) {
             uint64_t payload = b->size - HEAP_HEADER_SIZE - HEAP_FOOTER_SIZE;
             memset(ptr, 0, (size_t)payload);
+
+            /* O6: recycle into the size-class cache while under the
+             * cap — the block stays a live HEAP_MAGIC_USED block, its
+             * scrubbed payload carries the freelist link.  Past the
+             * cap, fall through to heap_free so coalescing keeps
+             * working (the cache must never become a leak). */
+            int ci = sizeclass_for_payload(payload);
+            if (ci >= 0 && kclass.count[ci] < SIZECLASS_CAP) {
+                sizeclass_push(&kclass, (uint32_t)ci, ptr);
+                spinlock_release_irqrestore(&kheap_lock, flags);
+                return;
+            }
+            if (ci >= 0) {
+                kclass.spills++;
+            }
         }
     }
     heap_free(&kheap, ptr);
+    spinlock_release_irqrestore(&kheap_lock, flags);
+}
+
+/* OPT_PLAN.md O6: return every cached object to the first-fit heap so
+ * coalescing can reunify the region.  Used by the self-test's leak
+ * check (which must see one coalesced free block, cache included) and
+ * available to any future memory-pressure path. */
+void kheap_class_drain(void) {
+    uint64_t flags = spinlock_acquire_irqsave(&kheap_lock);
+    for (uint32_t ci = 0; ci < SIZECLASS_COUNT; ci++) {
+        void *p;
+        while ((p = sizeclass_pop(&kclass, ci)) != NULL) {
+            heap_free(&kheap, p);
+        }
+    }
     spinlock_release_irqrestore(&kheap_lock, flags);
 }
 
@@ -258,8 +322,41 @@ void kheap_self_test(void) {
         }
     }
 
-    /* Leak check: after freeing all live allocations, the whole committed
-     * region should be one coalesced free block (free_b == committed). */
+    /* O6: the size-class cache, exercised at its boundaries.
+     * Recycling: a freed class object must come back O(1) as the SAME
+     * pointer (LIFO); the class-size rounding must serve any request in
+     * the class; and a drain must hand everything back to the heap. */
+    {
+        void *a = kmalloc(24);              /* class 32 */
+        if (!a) { kprintf(HEAP_TAG "FAIL: class alloc NULL\n"); return; }
+        /* Snapshot AFTER the alloc: the 10000-cycle phase above already
+         * populated the cache, so kmalloc(24) itself may have been a
+         * hit — the assert is about the RECYCLE round-trip only. */
+        uint64_t hits_before = kclass.hits;
+        kfree(a);
+        void *c = kmalloc(32);              /* exact boundary: same class */
+        if (c != a) {
+            kprintf(HEAP_TAG "FAIL: class recycle miss (%p != %p)\n", c, a);
+            return;
+        }
+        if (kclass.hits != hits_before + 1) {
+            kprintf(HEAP_TAG "FAIL: class hit not counted\n");
+            return;
+        }
+        kfree(c);
+        void *d = kmalloc(4097);            /* first-fit territory */
+        if (d == c) {
+            kprintf(HEAP_TAG "FAIL: >4KiB request served from a 32B class\n");
+            return;
+        }
+        kfree(d);
+    }
+
+    /* Leak check: after freeing all live allocations AND draining the
+     * O6 class cache (recycled objects are live heap blocks by design),
+     * the whole committed region should be one coalesced free block
+     * (free_b == committed). */
+    kheap_class_drain();
     uint64_t committed = kheap.brk;
     uint64_t used = 0, free_b = 0;
     heap_block_t *b = (heap_block_t *)kheap.base;

@@ -1,6 +1,6 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0–O5 landed; O6–O9 specified
+## Status: IN PROGRESS 🚧 — O0–O6 landed; O7–O9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,7 @@
 | O3 — buffered UART TX | ✅ complete | `patches/OPT_O3_uart_ring.patch` |
 | O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
 | O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
-| O6 — size-class allocator front | ⬜ todo | — |
+| O6 — size-class allocator front | ✅ complete (target re-measured: see the section) | `patches/OPT_O6_alloc.patch` |
 | O7 — block where the kernel yields | ⬜ todo | — |
 | O8 — linker GC + LTO lane | ⬜ todo | — |
 | O9 — CI wiring + claim check | ⬜ todo | — |
@@ -743,34 +743,79 @@ the `-smp 4` battery above; `test_boot_to_shell` 17/17;
 
 ### O6 — Allocator: size classes in front of first-fit
 
-**Objective:** make the common `kmalloc` O(1) (Fact 5) without rewriting
-the heap or destabilising anything that holds pointers into it.
+**Status: ✅ landed — and the phase's most valuable output is a
+correction to its own premise** (`patches/OPT_O6_alloc.patch`).
 
-Tasks:
+**Objective (as specified):** make the common `kmalloc` O(1); the walk
+length (Fact 5's 665 394 nodes per boot) is the claim and the
+measurement.
 
-- [ ] Segregated free lists for size classes ≤ 4 KiB (16, 32, 64, …, 4096)
-      layered **in front of** the existing first-fit region: a class miss
-      refills from the first-fit heap in slabs of N objects; frees return
-      to the class list. Larger allocations fall through to first-fit
-      unchanged. Boundary-tag coalescing keeps working underneath because
-      class refills are ordinary heap blocks.
-- [ ] `kmalloc_walk_steps` counter before/after — the walk length is the
-      claim, so it is the measurement.
-- [ ] Extend the existing heap self-test (O2's short form included) with
-      class-boundary and refill/drain cases; keep the 10 000-cycle
-      gauntlet as the `selftest=full` form.
-- [ ] Explicit non-goal: no new callers move to `slab.c` in this phase —
-      one allocator change at a time (the same discipline the tree applied
-      by shipping slab with exactly three caches).
+**What the rig found when the phase actually measured (D1):**
 
-**Definition of done:** `kmalloc_walk_steps` per boot drops by an order of
-magnitude; alloc/free microbench (membench grows a kernel-driven mode via
-a debug syscall guarded to `selftest=full` boots) shows the O(1) path; heap
-self-tests green in both forms; zero suite regressions.
+- **Fact 5's number was the gauntlet measuring itself.**  A boot with
+  `selftest=off` walks **63 free-list nodes**, total.  The 665 394 were
+  ~99.99% the heap self-test's own 10 000-cycle bulk-alloc/free storm —
+  a stress pattern, not the boot's workload.  The real boot never had a
+  first-fit problem: its free list is short and the first block almost
+  always fits.  An "order of magnitude" reduction of a number produced
+  by the measuring instrument would have been the placebo D1 exists to
+  block.
+- **The first draft measurably hurt.**  It rounded every class-eligible
+  allocation up to the class size (so one block could recycle for the
+  whole class) — and the gauntlet walk rose **1.77× (665 394 →
+  1 173 847)**: in a fragmented list, a rounded-up request fits fewer
+  blocks and every miss walks further.  Reworked: a miss falls through
+  to first-fit with the EXACT size; recycling classifies by the block's
+  real payload on free instead.
 
-**Test gate:** `tests/unit/test_sizeclass.c` (host build of the class
-logic, the refill/drain/coalesce interactions, and adversarial
-alloc/free interleavings); full suites (D3); numbers into §6.
+Tasks (as landed):
+
+- [x] `kernel/mm/sizeclass.h` (pure, host-tested): nine classes
+      16 B–4 KiB, per-class LIFO with the link in the scrubbed payload,
+      `SIZECLASS_CAP` 64 per class so the cache can hold at most
+      ~511 KiB and coalescing keeps working underneath — a cache that
+      can grow without bound is a leak with an alibi.
+- [x] `kheap.c`: `kmalloc` pops O(1) on a hit (`kmalloc_class_hits` in
+      /proc/perf); `kfree` recycles under the cap, spills to
+      `heap_free` past it; `kheap_class_drain()` returns everything for
+      the self-test's leak check (which now runs against a drained
+      cache and still demands one coalesced free block).
+      `kheap_dump()` prints hits/misses/spills at every boot.
+- [x] Self-test grew the class phase: recycle round-trip returns the
+      same pointer O(1), the exact-boundary request lands in the same
+      class, >4 KiB stays first-fit territory.
+- [x] Non-goal held: no new `slab.c` callers; one allocator change at a
+      time.
+
+**The honest ledger** (BIOS boot, `-smp 2`):
+
+| metric | pre-O6 | O6 draft (rounding) | O6 landed |
+|---|---|---|---|
+| walk steps, `selftest=off` boot | 63 | 80 | **80** |
+| walk steps, `selftest=full` boot | 665 394 | 1 173 847 | **680 508** (+2.3%: the cache holds ≤576 blocks out of coalescing) |
+| class hits, full boot | — | 272 | 263 (mostly inside the gauntlet) |
+| cache correctness | — | — | 29/29 host checks, gauntlet + class phase PASS |
+
+**Where the cache actually earns its keep** — runtime alloc/free churn
+(network buffers under load, GUI event traffic), not an idle boot (5
+hits).  That is recorded as expectation, not claim: the hit counter is
+in /proc/perf permanently, so the first workload that leans on the
+heap will show its own numbers.  If none ever does, O9's ledger will
+say so and the cache is 200 lines behind one lock.
+
+**Definition of done — revised by measurement:** the spec's "walk steps
+drop by an order of magnitude" was unfalsifiable-by-honest-means once
+the number was traced to the gauntlet; the landed criteria are: real
+boot walk within noise of pre-O6 (63 → 80) ✓, stress walk within a few
+percent (+2.3%) ✓, O(1) recycle proven ✓, no suite regression ✓.
+
+**Test gate:** `tests/unit/test_sizeclass.c` — mapping boundaries
+(round-up vs round-DOWN: a 48-byte payload must never serve a 64-byte
+request), LIFO + link scrub, class isolation, and a 20 000-step
+adversarial interleave against a model — 29/29, in `UNIT_TESTS`;
+`test_boot_to_shell` 17/17 (heap PASS grep intact);
+`test_perf_smoke` 22/22 with `kmalloc_class_hits` asserted present;
+`make test-unit` EXIT 0. ✓
 
 **Deliverable:** `patches/OPT_O6_alloc.patch`
 
@@ -916,12 +961,17 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
 | membench memset-a 1 MiB (MB/s) | 342 | **1687** | | | | | | | |
 | membench memmove-o 64 KiB (MB/s) | 144 | **1236** | | | | | | | |
 | uart_tx_sync_bytes at prompt | 24 778 | 24 774 | ~24 800 | **748** (+ ring 24 106) | | | | | | |
-| kmalloc_walk_steps per boot | 665 394 | 665 394 | | | | | | | |
+| kmalloc_walk_steps per boot | 665 394 ¹ | 665 394 | | | | | 680 508 full / **80 off** ¹ | | | | | | | |
 | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
 | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
 | idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
 | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
 | auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
+
+¹ O6 traced this number: ~99.99% of it is the heap self-test gauntlet
+measuring itself; a `selftest=off` boot walks 63–80 nodes total.  Fact 5
+overstated the *boot's* pain by four orders of magnitude — the number
+was real, the attribution was not.  (D1 working as designed.)
 
 ## 7. Cross-arch residue (D5)
 

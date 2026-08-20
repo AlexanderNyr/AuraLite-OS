@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O6 — size-class cache, and a corrected premise] 2026-08-20
+
+`OPT_PLAN.md` phase O6: a recycling size-class front for `kmalloc` —
+and the discovery that the number motivating it was an artefact.
+
+- **The correction that outranks the code:** Fact 5's "665 394
+  free-list nodes walked per boot" is ~99.99% the heap self-test's own
+  10 000-cycle gauntlet measuring itself.  A `selftest=off` boot walks
+  **63 nodes, total** — the real boot never had a first-fit problem.
+  Recorded in the plan with a §6 footnote; the "order of magnitude"
+  goal was retired as unfalsifiable-by-honest-means (D1).
+- **The second correction:** the first draft rounded class allocations
+  up (one block recycles for the whole class) and the gauntlet walk
+  rose 1.77× for it — a rounded-up request fits fewer blocks in a
+  fragmented list.  Landed shape: misses go to first-fit with the EXACT
+  size; recycling classifies by real payload on free.
+- `kernel/mm/sizeclass.h` (new, pure, host-tested): nine classes
+  16 B–4 KiB, per-class LIFO in the scrubbed payload, cap 64/class
+  (≤ ~511 KiB held; coalescing keeps working; a boundless cache is a
+  leak with an alibi).  `kheap.c`: O(1) pop on hit
+  (`kmalloc_class_hits` in /proc/perf), spill past the cap,
+  `kheap_class_drain()` for the leak check, hits/misses/spills printed
+  by `kheap_dump()` every boot.
+- Ledger: off-boot walk 63 → 80 (noise), full-boot 665 394 → 680 508
+  (+2.3%, the held blocks), recycle O(1) proven by the new self-test
+  phase.  The cache earns its keep on runtime churn, not idle boots —
+  expectation recorded, counter wired, O9's ledger will judge.
+- `tests/unit/test_sizeclass.c` (29 checks, in `UNIT_TESTS`): mapping
+  boundaries (round-up vs round-DOWN), LIFO + link scrub, class
+  isolation, 20 000-step model interleave.
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
 ## [OPT O5 — precise TLB shootdown] 2026-08-19
 
 `OPT_PLAN.md` phase O5: a one-page unmap no longer costs every CPU its

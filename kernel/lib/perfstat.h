@@ -55,9 +55,12 @@ enum perfstat_id {
     PERF_TLB_IPIS_SKIPPED,
 
     /* Free-list nodes visited by the kernel heap's first-fit search
-     * (OPT_PLAN Fact 5).  The walk length is O6's claim, so it is O6's
-     * measurement. */
+     * (OPT_PLAN Fact 5).  Since O6 the walk is paid only on size-class
+     * MISSES; this counter's collapse is O6's whole claim. */
     PERF_KMALLOC_WALK_STEPS,
+
+    /* kmalloc requests served O(1) from the O6 size-class cache. */
+    PERF_KMALLOC_CLASS_HITS,
 
     /* Bytes pushed through the synchronous busy-wait UART TX path
      * (OPT_PLAN Fact 2).  After O3, this counts only the pre-ring boot

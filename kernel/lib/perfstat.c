@@ -27,6 +27,7 @@ static const char *const names[PERF_COUNTER_MAX] = {
     [PERF_TLB_SHOOTDOWNS_RANGED]         = "tlb_shootdowns_ranged",
     [PERF_TLB_IPIS_SKIPPED]              = "tlb_ipis_skipped",
     [PERF_KMALLOC_WALK_STEPS]            = "kmalloc_walk_steps",
+    [PERF_KMALLOC_CLASS_HITS]            = "kmalloc_class_hits",
     [PERF_UART_TX_SYNC_BYTES]            = "uart_tx_sync_bytes",
     [PERF_UART_TX_RING_BYTES]            = "uart_tx_ring_bytes",
 };
