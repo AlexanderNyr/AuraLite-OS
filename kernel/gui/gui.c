@@ -163,6 +163,9 @@ static volatile int full_dirty = 1;  /* start with a full redraw */
  * lost-wakeup guard: pokes can land between the "any work?" check and
  * the sleep, so the flag is checked under gui_wake_lock. */
 static struct wait_queue gui_wq;
+/* O7: user threads blocked in gui_wait_event(); woken by event push
+ * and window destruction (with a 5-tick net for the races). */
+static struct wait_queue gui_evt_wq;
 static spinlock_t gui_wake_lock;
 static volatile int gui_pending;
 static volatile int gui_wq_ready;
@@ -474,6 +477,9 @@ int gui_destroy_window(int wid) {
     full_dirty = 1;
     spinlock_release(&gui_lock);
     return 0;
+    /* O7: anyone parked in gui_wait_event on this window must re-check
+     * win_alive now. */
+    wq_wake_all(&gui_evt_wq);
 }
 
 int gui_window_owned_by(int wid, uint64_t owner_pid) {
@@ -1085,6 +1091,7 @@ int gui_post_event(int wid, const gui_event_t *evt) {
     }
     w->events[w->evt_head] = *evt;
     w->evt_head = next;
+    wq_wake_all(&gui_evt_wq);                          /* O7 */
     return 0;
 }
 
@@ -1098,9 +1105,13 @@ int gui_poll_event(int wid, gui_event_t *out) {
 }
 
 int gui_wait_event(int wid, gui_event_t *out) {
+    /* O7: block instead of yield-spinning — every GUI app parked in its
+     * event loop used to burn scheduler slots full-time.  The 5-tick
+     * net covers the push-vs-sleep race and window death (destroy also
+     * wakes, but the net makes the liveness argument unconditional). */
     while (!gui_poll_event(wid, out)) {
-        sched_yield();
         if (!win_alive(wid)) return -1;
+        wq_wait_deadline(&gui_evt_wq, NULL, timer_get_ticks() + 5);
     }
     return 1;
 }

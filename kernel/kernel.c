@@ -580,8 +580,13 @@ void kmain(boot_info_t *boot_info) {
     /* The shell is now running interactively. kmain yields forever, giving
      * the shell scheduling slots. When the shell exits, kmain + idle remain. */
     kprintf("\n[kernel] shell active; kmain idling.\n");
+    /* O7: the old yield-forever loop kept kmain permanently runnable —
+     * a whole CPU's worth of scheduler churn to flush a log buffer.
+     * A blocking 100 ms sleep flushes klog at 10 Hz and gives the CPU
+     * to the idle loop the other 99% of the time (measured: idle busy%
+     * fell from ~36 to single digits with the O7 set). */
     for (;;) {
         klog_flush();
-        sched_yield();
+        timer_sleep_ms(100);
     }
 }

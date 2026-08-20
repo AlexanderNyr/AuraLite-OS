@@ -39,6 +39,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/selftest.h"
+#include "kernel/proc/wait_queue.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/errno.h"
 #include "drivers/timer/pit.h"
@@ -51,6 +52,11 @@ static struct rngc_drbg drbg;
 static spinlock_t rng_lock = SPINLOCK_UNLOCKED;
 
 static volatile int rng_module_up = 0;  /* rng_init() has run */
+
+/* OPT_PLAN.md O7: getrandom() blocks here until seeding completes
+ * (woken from every rng_ready=1 site, IRQ context included — the O4
+ * wait_queue irqsave fix is what makes that legal). */
+struct wait_queue rng_ready_wq;
 static volatile int rng_ready     = 0;  /* DRBG seeded and serving */
 static int have_rdrand = 0;
 static int have_rdseed = 0;
@@ -134,6 +140,7 @@ static void seed_from_pool_locked(void) {
     memset(material, 0, sizeof(material));
     bytes_since_reseed = 0;
     rng_ready = 1;
+    wq_wake_all(&rng_ready_wq);                       /* O7 */
     kprintf("[rng] seeded from interrupt-jitter pool (%u samples, est. %u bits)\n",
             jsamples, jbits);
 }
@@ -148,6 +155,7 @@ static int try_seed_from_hw_locked(void) {
         memset(material, 0, sizeof(material));
         bytes_since_reseed = 0;
         rng_ready = 1;
+        wq_wake_all(&rng_ready_wq);                   /* O7 */
         kprintf("[rng] seeded from RDSEED (%d bits of hardware entropy)\n",
                 RNGC_SEED_LEN * 8);
         return 1;
@@ -157,6 +165,7 @@ static int try_seed_from_hw_locked(void) {
         memset(material, 0, sizeof(material));
         bytes_since_reseed = 0;
         rng_ready = 1;
+        wq_wake_all(&rng_ready_wq);                   /* O7 */
         kprintf("[rng] seeded from RDRAND (%d bits of hardware entropy)\n",
                 RNGC_SEED_LEN * 8);
         return 1;

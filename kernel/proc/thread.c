@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "kernel/proc/thread.h"
+#include "kernel/proc/wait_queue.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/lib/errno.h"
 #include "kernel/mm/kheap.h"
@@ -113,6 +114,13 @@ static volatile uint64_t zombies_reaped = 0;
  * thread_exit() on one CPU and do_waitpid()/thread_reap_zombies() on another
  * must not race -- a plain cli section no longer excludes the remote party. */
 static spinlock_t zombie_lock = SPINLOCK_UNLOCKED;
+
+/* OPT_PLAN.md O7: waiters in do_waitpid() block here instead of
+ * yield-polling; thread_exit's zombie_enqueue wakes them.  A child
+ * STOPPING (WUNTRACED) has no waker hook yet — the deadline net in
+ * do_waitpid bounds that path at ~50 ms, recorded in the plan's
+ * residue table. */
+static struct wait_queue child_exit_wq;
 
 uint64_t thread_zombies_queued_total(void) { return zombies_queued; }
 uint64_t thread_zombies_reaped_total(void) { return zombies_reaped; }
@@ -426,7 +434,11 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
 
         if (!have_matching_child) return -ECHILD;
         if (options & WAIT_WNOHANG) return 0;   /* matching child exists, none ready */
-        sched_yield();
+        /* O7: block until a child exits (zombie_enqueue wakes us) with a
+         * 5-tick net — it bounds both the lost-wakeup window (a child
+         * exiting between the scan above and the sleep) and WUNTRACED
+         * stop events, which have no waker hook yet. */
+        wq_wait_deadline(&child_exit_wq, NULL, timer_get_ticks() + 5);
     }
 }
 
@@ -458,6 +470,8 @@ static void zombie_enqueue(tcb_t *t) {
     zombie_head = t;
     zombies_queued++;
     spinlock_release_irqrestore(&zombie_lock, flags);
+    /* O7: a parent may be blocked in do_waitpid — this IS its event. */
+    wq_wake_all(&child_exit_wq);
 }
 
 void thread_reap_zombies(void) {

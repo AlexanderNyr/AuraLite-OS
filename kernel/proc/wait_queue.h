@@ -17,6 +17,14 @@ struct wait_queue {
 
 void wq_init(struct wait_queue *wq);
 void wq_wait(struct wait_queue *wq, spinlock_t *lock);
+
+/* OPT_PLAN.md O7: wq_wait with a PIT-tick deadline as the wake-up net.
+ * The lost-wakeup window of a flag-check-then-sleep caller, and event
+ * sources that have no waker hook yet (a child STOPPING, for wait4),
+ * are both bounded by the deadline instead of being hangs.  deadline 0
+ * means no net (plain wq_wait). */
+void wq_wait_deadline(struct wait_queue *wq, spinlock_t *lock,
+                      uint64_t deadline_ticks);
 void wq_wake_one(struct wait_queue *wq);
 void wq_wake_all(struct wait_queue *wq);
 int  wq_wake_n(struct wait_queue *wq, int n);

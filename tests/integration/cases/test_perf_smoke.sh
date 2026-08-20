@@ -39,6 +39,7 @@ il_send_delay 7
 il_send "cat /proc/perf"
 il_send_delay 3
 il_send "cat /proc/perf"
+il_send "cat /proc/loadavg"
 il_send "run membench"
 il_send_delay 30
 il_send "echo perf-gate-end"
@@ -64,6 +65,18 @@ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
          uart_tx_ring_bytes; do
     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
 done
+
+# --- O7: the machine at an idle shell is IDLE (busy% first field of
+# loadavg).  Pre-O7 the kmain yield-loop alone held this at ~36; the
+# 15.0 ratchet is 40x above the post-O7 measurement (0.3) and half the
+# regression signature — D2's "ratchet against absurdity" shape. ---
+BUSY=$(grep -aE '^[0-9]+\.[0-9]+ [0-9]+\.[0-9]+' "$LOG" | head -1 | awk '{print $1}')
+BUSY_INT=${BUSY%%.*}
+if [ -n "${BUSY:-}" ] && [ "${BUSY_INT:-100}" -lt 15 ]; then
+    il_pass "idle shell is idle (busy ${BUSY}%)"
+else
+    il_fail "idle shell is busy: ${BUSY:-unreadable}% (ratchet 15%)"
+fi
 
 # --- O3: the TX ring carries the log; the sync path is the exception ---
 SYNC_B=$(grep -aE '^uart_tx_sync_bytes [0-9]+' "$LOG" | grep -oE '[0-9]+' | head -1)

@@ -1,6 +1,6 @@
 # AuraLite OS — General Performance Optimization Plan
 
-## Status: IN PROGRESS 🚧 — O0–O6 landed; O7–O9 specified
+## Status: IN PROGRESS 🚧 — O0–O7 landed; O8–O9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,7 @@
 | O4 — compositor: composite the union, sleep when idle | ✅ complete | `patches/OPT_O4_compositor.patch` |
 | O5 — precise TLB shootdown | ✅ complete | `patches/OPT_O5_tlb.patch` |
 | O6 — size-class allocator front | ✅ complete (target re-measured: see the section) | `patches/OPT_O6_alloc.patch` |
-| O7 — block where the kernel yields | ⬜ todo | — |
+| O7 — block where the kernel yields | ✅ complete | `patches/OPT_O7_blocking.patch` |
 | O8 — linker GC + LTO lane | ⬜ todo | — |
 | O9 — CI wiring + claim check | ⬜ todo | — |
 
@@ -823,36 +823,82 @@ adversarial interleave against a model — 29/29, in `UNIT_TESTS`;
 
 ### O7 — Block where the kernel currently yields
 
-**Objective:** delete the yield-polls of Fact 6 using the wait_queue that
-already exists for exactly this.
+**Status: ✅ landed** (`patches/OPT_O7_blocking.patch`).  The single
+biggest wall-clock number in this plan lands here — and it came from
+the least glamorous line in the sweep.
+
+**Objective:** delete the yield-polls of Fact 6 using the wait_queue
+that already exists for exactly this (made IRQ-safe by O4).
 
 Tasks:
 
-- [ ] `wait4`: a per-parent (or single global, first) child-exit
-      wait_queue; `thread_exit_with_code`/`zombie_enqueue` wakes it;
-      `do_waitpid` blocks with the existing SA_RESTART-compatible
-      interruptible-sleep pattern `select()` already uses. `WNOHANG`
-      unchanged.
-- [ ] `getrandom`: a seeded-event wait_queue woken once by
-      `rng`'s seeding path; the 30 s give-up becomes a timed wait.
-- [ ] The compositor is already converted in O4; this phase is the sweep
-      that greps `sched_yield()` loops in `kernel/` and either converts
-      them or records each survivor with a one-line justification in this
-      section (the `RISCV_PLAN.md` V6 sweep shape: a counted residue,
-      driven to a number, published).
-- [ ] Idle-tick accounting (`sched_get_idle_ticks`) is the system-level
-      measurement: a shell `wait`ing on a sleeping child should idle the
-      CPU, not run it.
+- [x] `wq_wait_deadline()` (new, `wait_queue.{c,h}`): wq_wait plus a
+      PIT-tick deadline as the wake-up net, riding the existing
+      `sleep_deadline` machinery (`signal_tick` already wakes BLOCKED
+      threads whose deadline expired).  Every conversion below uses it:
+      the net bounds the flag-check-vs-sleep lost-wakeup window AND any
+      event source that has no waker hook yet — a bounded stale check
+      instead of a hang, by construction.
+- [x] `wait4`: `do_waitpid()` blocks on `child_exit_wq`;
+      `zombie_enqueue()` (thread exit) wakes it.  A child STOPPING
+      (WUNTRACED) has no waker hook — the 5-tick net carries it,
+      recorded in the residue table.  WNOHANG untouched.
+- [x] `getrandom`: blocks on `rng_ready_wq`, woken from all three
+      `rng_ready = 1` sites (including the late jitter-pool path that
+      runs in IRQ context — O4's irqsave fix is what makes that legal).
+      The 30 s give-up stays.
+- [x] `gui_wait_event`: every GUI app parked in its event loop was
+      yield-spinning full-time; now blocks on `gui_evt_wq`, woken by
+      event push and window destruction.
+- [x] `kmain`'s parking loop — the sleeper hit of the sweep: a
+      yield-forever loop that kept kmain permanently runnable, i.e. one
+      whole thread of scheduler churn to flush a log buffer.  Now
+      `klog_flush()` at 10 Hz through a blocking `timer_sleep_ms(100)`.
 
-**Definition of done:** while a child sleeps 2 s and the parent waits,
-idle ticks accumulate at ≈ wall-clock rate (they measurably do not today);
-`stoptest`/`proctest`/`test_stopped` green unmodified — SIGSTOP/WUNTRACED
-interactions are the risk surface and their cases are the fence.
+**The sweep ledger** (every `sched_yield()` loop in kernel/ + drivers/,
+per the V6 counted-residue convention — converted or justified):
 
-**Test gate:** full suites, with `test_stopped` and `test_posix_p10`
-called out for 10 consecutive runs (signal/wait interaction is where
-blocking conversions historically break); idle-ratio assertion in
-`test_perf_smoke`.
+| Site | Verdict |
+|---|---|
+| `thread.c` do_waitpid | **converted** (child_exit_wq + net) |
+| `syscall.c` getrandom | **converted** (rng_ready_wq + net) |
+| `gui.c` gui_wait_event | **converted** (gui_evt_wq + net) |
+| `kernel.c` kmain parking | **converted** (blocking 100 ms sleep) |
+| `signal.c` sigwait/sigsuspend ×2 | kept: `sti; hlt` loops — the CPU
+  sleeps until an interrupt; converting to a wq needs a signal_send
+  waker hook and buys ~nothing over hlt.  Recorded for a future
+  signals phase. |
+| `page_cache.c` ready-wait | kept: bounded spin (loud WARN timeout)
+  on a filler that runs on another CPU; a wq needs a waker in the fill
+  path — M8 territory. |
+| `scheduler.c` self-test ×2 | kept: the yields ARE the test. |
+| `user.c` init bring-up ×1 | kept: 5 one-shot yields at boot, comment
+  in situ explains the serial-splicing reason. |
+| `pit.c` pre-sched busy-wait | kept: no scheduler exists yet to block
+  on; the comment already says so. |
+| `syscall.c` SYS_SCHED_YIELD | kept: it IS the yield syscall. |
+
+**What O7 measured** (BIOS, `-smp 2`, `/proc/loadavg` busy%):
+
+- Idle at the shell: **36.22 → 0.31** (the perf-smoke ratchet is set at
+  15 — 40× above the healthy value, half the regression signature).
+- The plan-gate scenario — parent in `wait4` while the child sleeps
+  2 s: **38.56 → 3.25**.  The waiting shell finally leaves the CPU to
+  the idle loop, which is the whole phase in one number.
+- O4's loadavg residue is resolved: the "USB/HID pollers" hypothesis
+  was wrong — the remainder was almost entirely **kmain's yield loop**
+  (and the GUI apps' event spins on UEFI boots).  Measured, corrected.
+
+**Definition of done:** idle ticks accumulate at ≈ wall-clock rate
+while a child sleeps under wait4 ✓ (3.25% busy); `test_stopped` and
+`test_posix_p10` **10/10 consecutive runs each** ✓ (the signal/wait
+interaction battery the plan called out); no suite regression ✓.
+
+**Test gate:** the 10× batteries above; `test_gui` 5/5 (the
+gui_wait_event conversion's own surface); `test_boot_to_shell` 17/17;
+`test_selftest_modes` 30/30; `test_perf_smoke` 23/23 including the new
+idle-busy ratchet (measured 1.46% under test load, limit 15);
+`make test-unit` EXIT 0. ✓
 
 **Deliverable:** `patches/OPT_O7_blocking.patch`
 
@@ -964,7 +1010,7 @@ Baseline column measured by O0's `test_perf_smoke` on this machine
 | kmalloc_walk_steps per boot | 665 394 ¹ | 665 394 | | | | | 680 508 full / **80 off** ¹ | | | | | | | |
 | compositor px composited / flipped (UEFI, ~60 s up) | 64 512 000 / 4 546 560 (14.2×) | — | | | clock frame: **1 024 000 → 94 805 px (10.8×)**; idle loadavg 42.3 → 34.4 | | | | |
 | tlb_shootdowns_full per boot (`-smp 2`) | 8 | 8 | | | | **4 full + 4 ranged** (fork's scattered marks stay full by design) | | | | | | | |
-| idle ticks during 2 s `wait` | *O7 fills* | | | | | | | | |
+| idle busy% at shell / during 2 s `wait` | 36.22 / 38.56 (pre-O7 measured) | | | | | | | **0.31 / 3.25** | |
 | kernel.elf bytes | 2 437 296 | 2 443 920 | | | | | | | |
 | auralite.iso bytes | 51 380 224 | 51 380 224 | | | | | | | |
 

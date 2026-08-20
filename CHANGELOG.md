@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OPT O7 — block where the kernel yields] 2026-08-20
+
+`OPT_PLAN.md` phase O7: the yield-polls are gone — the biggest
+wall-clock number of the whole plan, from the least glamorous line.
+
+- `wq_wait_deadline()` (new): wq_wait plus a PIT-tick deadline riding
+  the existing `sleep_deadline` wake machinery — every conversion gets
+  a bounded lost-wakeup window instead of a hang risk, by construction.
+- Converted: `wait4` (blocks on `child_exit_wq`, woken by
+  `zombie_enqueue`; WUNTRACED stops carried by the 5-tick net, recorded
+  as residue), `getrandom` (blocks on `rng_ready_wq`, woken from all
+  three seeding sites — the IRQ-context one is legal thanks to O4's
+  irqsave fix), `gui_wait_event` (every GUI app's event loop was a
+  full-time yield spin), and **kmain's parking loop** — a yield-forever
+  thread that existed to flush a log buffer, now a blocking 100 ms
+  sleep.
+- The sweep ledger (V6 convention) is in the plan: 4 converted, 6 kept
+  with one-line justifications (`sti;hlt` signal waits, the bounded
+  page-cache spin, self-test yields, boot one-shots, pre-sched PIT,
+  and the yield syscall itself).
+- **Measured** (`/proc/loadavg` busy%, BIOS `-smp 2`): idle at the
+  shell **36.22 → 0.31**; parent in `wait4` over a 2 s sleeping child
+  **38.56 → 3.25**.  O4's leftover loadavg was mis-attributed to
+  USB/HID pollers — it was kmain and the GUI event spins; corrected.
+- Gates: `test_stopped` **10/10** and `test_posix_p10` **10/10**
+  consecutive (the signal/wait battery), `test_gui` 5/5,
+  `test_perf_smoke` grew a permanent idle-busy ratchet (limit 15%,
+  measured 1.46 under test load), `make test-unit` EXIT 0.
+- Per the phase-hygiene rule this patch carries the OPT_PLAN.md
+  status/§6 update and this changelog entry.
+
 ## [OPT O6 — size-class cache, and a corrected premise] 2026-08-20
 
 `OPT_PLAN.md` phase O6: a recycling size-class front for `kmalloc` —

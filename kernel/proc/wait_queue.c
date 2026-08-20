@@ -61,6 +61,15 @@ void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
     wq_remove_entry(wq, &entry);
 }
 
+void wq_wait_deadline(struct wait_queue *wq, spinlock_t *lock,
+                      uint64_t deadline_ticks) {
+    tcb_t *cur = sched_current();
+    if (!cur) return;
+    if (deadline_ticks) cur->sleep_deadline = deadline_ticks;
+    wq_wait(wq, lock);
+    cur->sleep_deadline = 0;
+}
+
 /* SMP 3.2: every wake enqueue must first claim tcb.on_queue exactly once
  * (see thread.h); the waker may run on a different cpu than the woken
  * thread, which could still be mid context-switch-out. */

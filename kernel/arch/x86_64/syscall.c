@@ -2290,13 +2290,15 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (!buf || !validate_user_range(buf, buflen, 1)) return (uint64_t)-EFAULT;
         if (!rng_available()) {
             if (flags & 1u) return (uint64_t)-EAGAIN;       /* GRND_NONBLOCK */
-            /* PIT ticks keep stirring the jitter pool; poll with yields.
-             * Give up after 30 s rather than hang a process on a machine
-             * whose entropy source is genuinely dead. */
+            /* O7: block on the seeded event instead of yield-polling.
+             * The 5-tick net bounds the lost-wakeup window (seeding
+             * completing between the check and the sleep); the 30 s
+             * give-up stays — a machine whose entropy source is
+             * genuinely dead should fail the call, not hang it. */
             uint64_t start = timer_get_ticks();
             while (!rng_available()) {
                 if (timer_get_ticks() - start > 3000) return (uint64_t)-EAGAIN;
-                sched_yield();
+                wq_wait_deadline(&rng_ready_wq, NULL, timer_get_ticks() + 5);
             }
         }
         uint8_t *kbuf = kmalloc(buflen);

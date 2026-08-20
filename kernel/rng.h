@@ -2,6 +2,10 @@
 #define AURALITE_KERNEL_RNG_H
 
 #include <stdint.h>
+#include "kernel/proc/wait_queue.h"
+
+/* OPT_PLAN.md O7: signalled once, when the generator becomes seeded. */
+extern struct wait_queue rng_ready_wq;
 #include <stddef.h>
 
 /* Kernel CSPRNG (INTERNET_PLAN.md phase N0).
