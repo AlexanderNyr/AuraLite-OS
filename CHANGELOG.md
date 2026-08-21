@@ -2,6 +2,42 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A9 — the plan closes through arithmetic: CI, docs, 90 claims] 2026-08-21
+
+`ARM64_PLAN.md` phase A9 — and the plan itself: **COMPLETE**.  The D8
+checker's terminal condition (armed in A0, taught sub-phases at the
+A5 split) accepts `## Status: COMPLETE` only against 12 green rows
+and 12 COMPLETE headings; this entry could not be written first.
+
+- `.github/workflows/integration.yml`: the `aarch64-parity` job —
+  riscv-parity's shape with the measured lessons carried: no
+  `gcc-multilib` (the Conflicts field, job-separation rule),
+  `libc6-dev-arm64-cross` named (Fact 1), and **[AMEND-6]** as its
+  own step — `command -v` the cross tools and `test -e` the cross
+  libc's `string.h` AFTER install; an installer's exit status is not
+  a binary's existence (measured three times).  Artefact-first
+  (`/bina64` grepped from the tar before any boot), then width sweep,
+  EXECUTED crypto, claim checker + selftest, all five a64 smokes,
+  logs-on-failure.
+- `docs/status.md`: the ARM section — every ✅ tied to its gate, every
+  ❌ naming its decision (D1 arm32/EL2 refusals, D7 PCIe deferral),
+  AMEND-5 and the libc residue recorded, the Rust row's honest fourth
+  edition.
+- `docs/architecture.md`: the fourth boot diagram (both entry paths:
+  ELF `-kernel` with the DTB at the RAM base, Image with x0
+  magic-verified); "Four kernels, no shared binary artefacts — only
+  contracts", with the promoted single-source files named.
+- `docs/syscall_abi.md`: the `svc #0` section — one number table,
+  FOUR trap mechanisms; the A5c SP_EL0 lesson pinned in the ABI doc.
+- `README.md`: the fourth boot-path row (`make kernela64 && make
+  run-a64`, Image protocol noted).
+- `check_arm64_claims.py` closed out: **90 claims** (+5), selftest,
+  terminal arithmetic satisfied by the table turning green.
+- Gates at close: a64_parity 26/26, atls-a64 5/5 EXECUTED, five a64
+  smokes green, rv_parity 21/21, x86_64 17/17, test-unit end-to-end;
+  ratchets 359/69/0/29 — the fourth ISA cost zero portable-file
+  edits, and the counters are where V6 armed them.
+
 ## [A64 A8 — parity: one boot, the full gauntlet; crypto EXECUTED at aarch64] 2026-08-21
 
 `ARM64_PLAN.md` phase A8: the I8/V8 gauntlet on the fourth arch.

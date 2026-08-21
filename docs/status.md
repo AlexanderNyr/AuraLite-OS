@@ -268,6 +268,51 @@ Tests: `rv_boot_smoke.sh` (46 assertions), `rv_shell_smoke.sh` (23),
 `tools/check_riscv_claims.py` tying RISCV_PLAN.md to the tree. CI:
 the `riscv-parity` job in `integration.yml`.
 
+## ARM (aarch64 / ARMv8-A) — ARM64_PLAN
+
+The fourth architecture: a from-scratch EL1 kernel under
+`kernel/arch/aarch64/`, booted on QEMU's `virt` machine
+(`make kernela64 && make run-a64`; the arm64 Image boot protocol via
+`make run-a64-img`, which is also the `-initrd` path). Same
+discipline, fourth application: shared portable code through
+`kernel/arch/arch.h` (the DAIF irqflags backend closed over portable
+code with ZERO portable-file edits — the D6 thesis, measured in A6),
+one syscall table (D4, `svc #0`), one initrd (fourth tenant
+`/bina64`), the shared DTB walker and virtio-mmio transport both
+consumed from their promoted homes. CPU floor: ARMv8-A aarch64 at
+EL1 (D1; no arm32, no EL2 entry).
+
+| Feature | Status | Notes |
+|---|---:|---|
+| EL1 boot + DTB `boot_info_t` | ✅ | ELF `-kernel` (DTB parked at the RAM base, x0 measured ≠ DTB) AND the arm64 Image header (x0 IS the DTB, magic-verified before trust); the shared walker is the struct's fourth producer. |
+| Traps / generic timer / GICv2 | ✅ | VBAR vectors with named EC codes; CNTV at 100 Hz from `CNTFRQ_EL0` (a register, not a DTB field); GIC claim/EOI proven with real interrupts; INTIDs pre-normalised by the walker (SPI+32/PPI+16 in ONE place). |
+| TTBR1 higher half + HHDM | ✅ | 39-bit VA, `0xFFFFFFC000000000` direct map; TTBR0 blanked after init; MAIR: Device-nGnRE for MMIO, Normal WB for RAM — both alignment polarities MEASURED (Device faults, Normal succeeds). |
+| **W^X enforced** | ✅ | PXN+UXN both ways: store-to-.text, execute-from-data, execute-from-user-data all FAULT (resumable probes); the ELF loader refuses W+X segments outright. |
+| Preemptive scheduler | ✅ | Round-robin, post-EOI preemption hook, boot CPU only (D5 — PSCI `CPU_ON` is the named SMP ramp). FPU q-regs survive clobbering switches (eager save). |
+| EL0 + `svc #0` | ✅ | AuraLite numbers, AAPCS64-friendly convention (D4); per-image dedicated trap stack; EL0 faults contained and named. The A5c measured lesson pinned: the trap frame does NOT carry `SP_EL0` — nested spawn saves/restores it explicitly. |
+| ELF64/EM_AARCH64 loader + initrd | ✅ | Four-way mutual class/machine refusal, all three foreign tenants refused BY NAME in one live session (A8); `p_flags` become real PTE bundles; user stacks carry guard holes between nesting levels. |
+| libca64 / inita64 / shell | ✅ | `smallsh` — the SAME portable source, fourth build, `--gc-sections` from birth; `auralite#` green with exit codes round-tripping. Full libc port pending (same residue class as rv64). |
+| virtio-mmio blk + net | ✅ | The PROMOTED transport (`kernel/drivers/virtio_mmio.c` — one source, rv64 and a64 both link it); attach REFUSED over non-Device mappings (MAIR checked, Fact 5.2 by refusal); ata32-shaped blk gate; DHCP/ARP/echo over the shared `miniproto` (third consumer). |
+| PL011 RX/TX over GIC | ✅ | RX: IRQ-fed cons ring (INTID 33 from the DTB), counted receipt (`rx bytes via GIC irq`) asserted by the smokes; TX: the O3 `uart_ring.h` index core under the A6 irqflags contract, drained before PSCI power-off. |
+| Crypto at aarch64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included) EXECUTED under `qemu-aarch64` — the second LP64 tenant through the `__int128` path (umulh edition). Deps named: `gcc-aarch64-linux-gnu`, `libc6-dev-arm64-cross`, `qemu-user`. |
+| No arm32, no EL2 entry | ❌ by design | Plan D1: `CurrentEL != EL1` refuses with a banner (EL2 parks in `wfi` — an `hvc` from EL2 would trap into our own empty vectors); aapcs32 never enters the tree. |
+| No PCIe on `virt` | ❌ by design | Plan D7: the ECAM window is measured and named in the plan; virtio-mmio covers the device set until a device needs it. |
+| SMP / SVE / big.LITTLE | ❌ | Per plan §4; PSCI `CPU_ON` is the recorded exit ramp (D5). |
+| fw-cfg self-test knob | 🚧 deferred | AMEND-5: the x86 fw_cfg protocol's interface transfers, the port-I/O reader does not (aarch64 fw-cfg is MMIO); deferred with a name, not an absence. |
+| Rust userspace | 🚧 possible | `aarch64-unknown-none` EXISTS (like rv64, unlike i686) — porting `rustes`/`rsbr` stays a follow-up plan's opening fact, not this plan's promise. |
+
+Tests: `a64_boot_smoke.sh` (41 assertions, ELF path),
+`a64_image_smoke.sh` (12, Image protocol + initrd bytes),
+`a64_shell_smoke.sh` (interactive EL0 session, log-size fuse armed —
+the measured prompt-flood lesson), `a64_drivers_smoke.sh` (15, blk +
+net + IRQ receipt), `a64_parity_smoke.sh` (26, one boot, every phase
+gate, the refusal matrix row, x86 pair attached), plus host gates
+(`test_libatls_a64.sh` EXECUTED, the fourth width and its compile
+lanes in `test_width_sweep.sh`) and `tools/check_arm64_claims.py`
+tying ARM64_PLAN.md to the tree. CI: the `aarch64-parity` job in
+`integration.yml` (with the AMEND-6 toolchain-existence assert after
+install).
+
 ## Known low-priority limitations
 
 - **SMP scheduling is deliberately conservative.** APs are online, have CPU-local state and LAPIC timers, and enter the idle scheduler loop; normal user scheduling remains BSP-only until per-CPU run queues/TLB shootdown policy are completed.

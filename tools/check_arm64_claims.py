@@ -466,6 +466,41 @@ def claims():
         ("A8: the plan carries the four-column status matrix draft "
          "for A9",
          "| Subsystem | x86_64 | i386 | riscv64 | aarch64 |" in plan),
+
+        # --- A9: CI matrix, docs, the close-out ---
+        ("A9: the aarch64-parity CI job exists with the AMEND-6 "
+         "toolchain-existence assert AFTER install",
+         "aarch64-parity:" in read(".github", "workflows",
+                                   "integration.yml") and
+         "command -v aarch64-linux-gnu-gcc" in
+         read(".github", "workflows", "integration.yml") and
+         "libc6-dev-arm64-cross" in read(".github", "workflows",
+                                         "integration.yml")),
+        ("A9: the CI job is artefact-first and runs the executed "
+         "crypto gate + all five a64 smokes",
+         "bina64/init" in read(".github", "workflows",
+                               "integration.yml") and
+         "test_libatls_a64.sh" in read(".github", "workflows",
+                                       "integration.yml") and
+         "a64_parity_smoke.sh" in read(".github", "workflows",
+                                       "integration.yml")),
+        ("A9: docs/status.md carries the ARM section with by-design "
+         "refusals named and the honest Rust row",
+         "## ARM (aarch64 / ARMv8-A)" in read("docs", "status.md") and
+         "No arm32, no EL2 entry" in read("docs", "status.md") and
+         "aarch64-unknown-none" in read("docs", "status.md")),
+        ("A9: architecture.md has the fourth boot diagram and stopped "
+         "saying three kernels",
+         "## The aarch64 boot flow" in read("docs",
+                                            "architecture.md") and
+         "Four kernels, no shared binary artefacts" in
+         read("docs", "architecture.md")),
+        ("A9: the ABI doc speaks svc #0 (one table, four mechanisms) "
+         "and the README carries the fourth boot-path row",
+         "The aarch64 trap: `svc #0`" in read("docs",
+                                              "syscall_abi.md") and
+         "one table, FOUR trap" in read("docs", "syscall_abi.md") and
+         "make kernela64 && make run-a64" in read("README.md")),
     ]
 
     # Structural: the Status header and the phase table must agree.

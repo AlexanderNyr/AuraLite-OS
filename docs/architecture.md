@@ -178,6 +178,58 @@ number table (D4: `SYSCALL`, `int 0x80`, `ecall`), the shared initrd
 with per-arch tenants (`/bin`, `/bin32`, `/binrv`, `e_machine`-audited
 at pack time), and the portable sources under the four ratchets.
 
+## The aarch64 boot flow (ARM64_PLAN)
+
+The fourth architecture boots two ways, one kernel: QEMU's ELF
+`-kernel` loader enters `_start` at EL1 with the DTB parked at the
+RAM base and `x0` measured NOT to be the DTB pointer (plan Fact 2) —
+or the arm64 **Image** boot protocol (the header lives in `boot.S`:
+`code0` jumps it, `text_offset` places the Image at the ELF link
+address so one set of symbols serves both paths), where `x0` IS the
+DTB and is trusted only after its magic reads back.  Only the Image
+path carries `-initrd` on this board (measured in A5a).
+
+```
+QEMU -machine virt (-kernel kernela64.elf | kernela64.img -initrd initrd.tar)
+   │  EL = EL1 (D1: CurrentEL != EL1 refuses with a banner; EL2 parks in wfi)
+   ▼
+_start (kernel/arch/aarch64/boot.S)
+   │  x0 stashed; DAIF masked; sp set; .bss zeroed
+   │  MAIR/TCR programmed; early TTBR0 (identity) + TTBR1 (HHDM blocks)
+   │  MMU on -- literal-pool long jump high (the medany lesson's sibling)
+   ▼
+_start_high (higher half at HHDM + phys)
+   ▼
+kmain_a64 (kernel/arch/aarch64/main_a64.c)
+   ├── pl011 banner            day-0 console (QEMU reset state transmits)
+   ├── DTB source chosen       x0 magic-verified (Image) | RAM base (ELF)
+   ├── fdt_parse()             the SHARED walker -> boot_info_t + platform
+   │                           (INTIDs normalised HERE: SPI+32/PPI+16 once)
+   ├── trap_init_a64()         VBAR vectors, CNTV 100 Hz from CNTFRQ_EL0, GICv2
+   ├── pmm/paging/kheap        final TTBR1 tables: W^X via PXN+UXN, TTBR0
+   │                           blanked, both alignment polarities measured
+   ├── sched + EL0 self-test   round-robin, eager FPU; svc round trip,
+   │                           privileged-op negative control contained
+   ├── pl011_rx_init()         PL011 RX -> GIC INTID 33 -> cons ring;
+   │                           TX through the O3 uart_ring core [AMEND-3]
+   ├── vblk/vnet (virtio-mmio) the PROMOTED transport (kernel/drivers/),
+   │                           attach refused over non-Device mappings
+   ├── initrd_a64 + inita64    shared initrd.tar, ELF64/EM_AARCH64 from /bina64
+   └── smallsh                 auralite# — the SAME source, fourth build;
+                               ends by PSCI SYSTEM_OFF, never by timeout
+```
+
+Four kernels, no shared binary artefacts — only contracts:
+`boot_info_t` (offset-checked at all four widths — x86_64, i686 with
+`-malign-double`, rv64, a64), the one syscall number table (D4:
+`SYSCALL`, `int 0x80`, `ecall`, `svc #0`), the shared initrd with
+per-arch tenants (`/bin`, `/bin32`, `/binrv`, `/bina64`,
+`e_machine`-audited at pack time and mutually exec-refused at boot),
+the promoted single-source files (`kernel/dt/fdt.c`,
+`kernel/net/miniproto.c`, `kernel/drivers/virtio_mmio.c`,
+`drivers/uart/uart_ring.h`, `userspace/system/smallsh/smallsh.c`),
+and the portable sources under the four width-sweep ratchets.
+
 ## Interrupt handling
 
 ```

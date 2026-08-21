@@ -370,3 +370,35 @@ stack while in U-mode — the `TSS.esp0` contract, this ISA's spelling
 (same measured lesson, pre-paid).  A convenient accident of the
 convention: `main`'s return value is already in `a0` where `SYS_EXIT`
 wants it, so `crt0_rv.S` only loads `a7`.
+
+## The aarch64 trap: `svc #0` (ARM64_PLAN D4)
+
+The a64 kernel dispatches through the VBAR_EL1 vector table on the
+`svc` instruction (ESR EC 0x15 = SVC from AArch64 state).  **The
+syscall numbers are the same table** — one table, FOUR trap
+mechanisms now.  The register marshalling is the AArch64 Linux
+convention:
+
+| Register | Role |
+|---|---|
+| `x8` | Syscall number on entry. |
+| `x0` | Argument 1 on entry; return value on exit. |
+| `x1` | Argument 2. |
+| `x2` | Argument 3. |
+| `x3` | Argument 4. |
+| `x4` | Argument 5. |
+
+Return convention is identical: in-band negative errno in `x0`.  The
+user-side wrapper is `lib/libca64/syscall_a64.S` (`__syscall_a64` —
+six moves; AAPCS64's argument registers and the kernel's syscall
+registers overlap by design of the convention we chose).  The kernel
+side enters through `kernel/arch/aarch64/vectors.S` and dispatches in
+`kernel/arch/aarch64/user_a64.c`.  The stack story is the `TSS.esp0`
+contract that this ISA answers with register banking: EL0 traps
+arrive on the banked EL1 stack pointer, aimed at a per-image
+dedicated trap stack — with one measured caveat pinned where it was
+paid for (A5c): the trap frame does NOT carry `SP_EL0`, so nested
+spawns save and restore the user stack pointer explicitly, or the
+parent shell's read loop floods `-EFAULT` at serial speed (a
+45-second log of nothing but prompts — the bug that armed the
+log-size fuses).

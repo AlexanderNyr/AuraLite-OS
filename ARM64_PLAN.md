@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A8 complete (phases A0–A9; A5 split into a/b/c)
+## Status: COMPLETE ✅ — A0–A9 landed (phases A0–A9; A5 split into a/b/c); closed 2026-08-21
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -15,7 +15,7 @@
 | A6 — the sweep, fourth backend: DAIF behind the contracts | ✅ complete | `patches/A64_A6_sweep.patch` |
 | A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | ✅ complete | `patches/A64_A7_drivers.patch` |
 | A8 — parity: storage, network, full crypto, fourth tenant | ✅ complete | `patches/A64_A8_parity.patch` |
-| A9 — CI matrix, docs, the claim check | pending | `patches/A64_A9_ci.patch` |
+| A9 — CI matrix, docs, the claim check | ✅ complete | `patches/A64_A9_ci.patch` |
 
 > **Amended 2026-08-20 (post-OPT audit).**  Between A4 and A5 the tree
 > moved ten phases under this plan's feet: `OPT_PLAN.md` O0–O9 landed
@@ -1400,33 +1400,99 @@ test-unit end-to-end with the new gate registered;
 
 ---
 
-### Phase A9 — CI matrix, docs, the claim check
+### Phase A9 — CI matrix, docs, the claim check ✅ COMPLETE
 
 **Objective:** the fourth line in the matrix; the docs tell the truth;
 the plan closes only through checker arithmetic.
 
 #### Tasks
 
-- [ ] `.github/workflows/integration.yml`: `aarch64-parity` job — the
+- [x] `.github/workflows/integration.yml`: `aarch64-parity` job — the
       riscv-parity shape: measured dep list (**no `gcc-multilib`**,
       same Conflicts, same job-separation rule; **with
       `libc6-dev-arm64-cross`**, Fact 1), assert-not-assume tool
       checks, artefact-first order (`/bina64` grepped from the tar
       before any boot), width sweep, EXECUTED crypto gate, all claim
       checkers + selftests, smokes, logs-on-failure.
-- [ ] `docs/status.md`: the aarch64 section, by-design entries naming
+- [x] `docs/status.md`: the aarch64 section, by-design entries naming
       their decisions (D1 arm32/EL2 refusals, D7 PCIe deferral); the
       Rust row honest, fourth edition.
-- [ ] `docs/architecture.md`: the fourth boot diagram (QEMU ELF load →
+- [x] `docs/architecture.md`: the fourth boot diagram (QEMU ELF load →
       EL1 `_start` → DTB-at-RAM-base → MMU high half); "four kernels,
       no shared binary artefacts — only contracts" updated from three.
-- [ ] `docs/syscall_abi.md`: the `svc #0` section — one number table,
+- [x] `docs/syscall_abi.md`: the `svc #0` section — one number table,
       four trap mechanisms.
-- [ ] `README.md`: the fourth boot-path row (`make kernela64 && make
+- [x] `README.md`: the fourth boot-path row (`make kernela64 && make
       run-a64`).
-- [ ] `check_arm64_claims.py` closed out to full phase coverage;
+- [x] `check_arm64_claims.py` closed out to full phase coverage;
       terminal Status arithmetic (armed since A0) satisfied by turning
       the last table row green, not by editing prose.
+
+#### Result
+
+**The plan closes the way it opened: through arithmetic.**  The D8
+checker has counted table rows against COMPLETE headings since A0,
+learned the sub-phase grammar at the A5 split, and now closes at the
+terminal condition — `## Status: COMPLETE` is accepted only when all
+12 phase rows are green, and this paragraph could not be written
+before they were.  Final count: **90 claims** verified against the
+tree, selftest detecting a doctored ROOT, wired into `make test-unit`
+and both parity CI jobs.
+
+**CI: the fourth matrix line.**  `aarch64-parity` is riscv-parity's
+shape with the measured lessons carried over: no `gcc-multilib` in
+the dep list (the Conflicts field, same job-separation rule),
+`libc6-dev-arm64-cross` named explicitly (Fact 1 — the cross gcc
+alone leaves the static crypto gate dying at `<string.h>`), and
+**[AMEND-6]** as its own step: `command -v aarch64-linux-gnu-gcc`,
+`command -v qemu-aarch64` and a literal `test -e` on the cross libc's
+`string.h` AFTER the install — an installer's exit status is not a
+binary's existence, measured three times.  Artefact-first order:
+`/bina64/{init,smallsh}` grepped from the tar and both kernel
+artefacts `test -s`'d before any boot; then the width sweep with the
+fourth-width lanes, the EXECUTED crypto gate, the claim checker +
+selftest, and all five a64 smokes (boot/image/shell/drivers/parity),
+serial logs uploaded on failure.
+
+**Docs: the truth, restated where people read it.**  `docs/status.md`
+grew the ARM section — every ✅ tied to the gate that measures it,
+every ❌ naming its decision (D1: arm32 and EL2 entry refused with a
+banner, the EL2 case parking in `wfi` because an `hvc` from EL2 traps
+into our own empty vectors; D7: PCIe ECAM measured, named, deferred),
+the deferrals honest (AMEND-5 fw-cfg, the libc residue class, the
+Rust row's fourth edition: `aarch64-unknown-none` exists, porting
+stays a follow-up's opening fact).  `docs/architecture.md` carries
+the fourth boot diagram — both entry paths (ELF `-kernel` with the
+DTB parked at the RAM base and x0 measured NOT the DTB; the Image
+header with x0 magic-verified) — and the closing paragraph now reads
+**four kernels, no shared binary artefacts, only contracts**, with
+the contract list grown to name the promoted single-source files.
+`docs/syscall_abi.md` documents `svc #0`: one number table, FOUR trap
+mechanisms, the x8/x0..x4 convention, and the A5c `SP_EL0` lesson
+pinned in the ABI doc because that is where the next port will look
+first.  `README.md` gained the fourth boot-path row.
+
+**The measured facts of this port, restated at the close (the
+RISCV_PLAN tradition):** x0 at ELF entry is NOT the DTB pointer — the
+DTB sits at the RAM base, and only the Image protocol delivers it in
+x0 (Fact 2, load-bearing since A5a).  CNTFRQ is a register, not a DTB
+field (Fact 2.3).  Pre-MMU memory is Device-nGnRnE and unaligned
+loads FAULT there while succeeding on Normal WB — both polarities
+carry standing gates (Fact 5.1).  Device registers behind Normal
+mappings are a bug class, prevented since A7 by attach-time refusal,
+not convention (Fact 5.2).  The GIC banks SPI+32/PPI+16 — normalised
+in ONE place, the walker, and nowhere else (A1).  The trap frame does
+not carry SP_EL0 (A5c, paid for in a 20 MB prompt flood, pinned in
+three smokes and the ABI doc).  DAIF's polarity is inverted relative
+to IF/SIE — documented in the one header allowed to look (A6).  And
+the D6 thesis held to the end: the fourth ISA cost **zero
+portable-file edits**, all four ratchets sit exactly where V6 armed
+them — 359/69/0/29.
+
+**Gates at close:** a64_parity 26/26, atls-a64 5/5 EXECUTED, all five
+a64 smokes green, rv_parity 21/21, x86_64 17/17, i386 suite green,
+test-unit end-to-end, `check_arm64_claims` 90/90 + selftest, terminal
+arithmetic satisfied: 12 rows, 12 COMPLETE headings, one Status line.
 
 #### Test gate
 

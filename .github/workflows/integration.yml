@@ -418,3 +418,97 @@ jobs:
           path: |
             build/rv_*.log
           if-no-files-found: ignore
+
+  aarch64-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & QEMU dependencies (aarch64 target included)
+        run: |
+          sudo apt-get update
+          # NO gcc-multilib here and NO riscv cross-gcc either: the
+          # riscv job measured the Conflicts field the hard way, and
+          # the same job-separation rule applies -- each width gets
+          # its own toolchain in its own job and the conflict never
+          # meets.  libc6-dev-arm64-cross is named EXPLICITLY: the
+          # cross gcc alone does not pull the target libc (ARM64_PLAN
+          # Fact 1 -- the static crypto gate would die at <string.h>).
+          sudo apt-get install -y --no-install-recommends \
+            clang lld nasm qemu-system-x86 qemu-system-arm qemu-user \
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+            python3 make gcc llvm \
+            mtools dosfstools xorriso git
+
+      # [AMEND-6] Assert the tools EXIST after install -- the OPT
+      # audit's environment lost a cross-gcc to silent apt dependency
+      # failures three times ("Setting up" printed, binary absent).
+      # An installer's exit status is not a binary's existence.
+      - name: Assert the cross toolchain actually exists (AMEND-6)
+        run: |
+          command -v aarch64-linux-gnu-gcc
+          command -v qemu-aarch64
+          qemu-system-aarch64 --version
+          test -e /usr/aarch64-linux-gnu/include/string.h
+
+      - name: Install Rust bare-metal target
+        run: |
+          rustup target add x86_64-unknown-none
+          rustc --version
+
+      - name: Build the aarch64 kernel, userspace and Image
+        run: |
+          make kernela64
+          make usera64
+          make kernela64-img
+
+      - name: Build the shared initrd (four tenants) + ISO
+        run: |
+          make deps-check
+          make iso
+
+      # The KERNEL32-in-the-image lesson, fourth verse: a build that
+      # silently dropped the a64 tenant would let every later gate
+      # "pass" against stale artefacts.  Assert presence first.
+      - name: /bina64 is in the shared initrd
+        run: |
+          tar tf build/initrd.tar | grep '\./bina64/init'
+          tar tf build/initrd.tar | grep '\./bina64/smallsh'
+          test -s build/kernela64.elf
+          test -s build/kernela64.img
+
+      - name: Width-sweep ratchets + the fourth width and its lanes
+        run: bash tests/unit/test_width_sweep.sh
+
+      - name: Crypto vectors EXECUTED at aarch64 (the complete suite)
+        run: bash tests/unit/test_libatls_a64.sh
+
+      - name: ARM64_PLAN claim check
+        run: |
+          python3 tools/check_arm64_claims.py
+          python3 tools/check_arm64_claims.py --selftest
+
+      - name: A0-A4 -- the boot gauntlet (ELF path)
+        run: bash tests/integration/a64_boot_smoke.sh
+
+      - name: A5a -- the Image boot protocol (x0 DTB + initrd bytes)
+        run: bash tests/integration/a64_image_smoke.sh
+
+      - name: A5c -- the interactive shell at EL0 (fuse armed)
+        run: bash tests/integration/a64_shell_smoke.sh
+
+      - name: A7 -- blk + net over the promoted transport, IRQ console
+        run: bash tests/integration/a64_drivers_smoke.sh
+
+      - name: A8 -- the parity boot (every gate, one run, x86 pair)
+        run: bash tests/integration/a64_parity_smoke.sh
+
+      - name: Upload serial logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-serial-logs
+          path: |
+            build/a64_*.log
+          if-no-files-found: ignore
