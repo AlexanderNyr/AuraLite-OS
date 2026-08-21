@@ -48,6 +48,11 @@ void diag_early_dump(const struct registers *r, const char *exception_name);
  * many per-CPU IST1 stacks are programmed.  Prints exactly one line. */
 void diag_ist_self_check(void);
 
+/* HW_PLAN H0: the CPU feature receipt lines ([cpu] features / IA32_PAT)
+ * -- printed at boot, gated by the H-phases.  Lives here because
+ * cpuid/rdmsr are x86 by nature (width-sweep ratchet 2 enforced it). */
+void diag_cpu_feature_receipts(void);
+
 /* Deliberate kernel fault for the FIX_R0 test gate, triggered from
  * /proc/sysrq-trigger: a write to unmapped address 0.  Returns only if
  * the fault unexpectedly did not happen (which the test then reports). */

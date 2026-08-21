@@ -360,3 +360,32 @@ void diag_trigger_kernel_stack_overflow(void) {
      *   post-R1: #DF runs on IST1, the R0 dump prints, the machine halts. */
     diag_stack_burn(100000);
 }
+
+/* ---- HW_PLAN H0: the CPU feature receipts --------------------------------
+ *
+ * One line per boot, printed before anything acts on the features, so
+ * every lane (qemu64, -cpu max, metal) leaves a record of what the CPU
+ * actually offered -- the receipt IS the compatibility matrix (HW D4),
+ * and H2/H3/H4 gate on these exact lines.  Measured at H0: qemu64 TCG
+ * says pat=1 pcid=0 invpcid=0 erms=0; -cpu max TCG says erms=1 and
+ * STILL pcid=0 invpcid=0 (which re-scoped H4 into a deferral).
+ *
+ * Bits: PAT CPUID.1:EDX.16; PCID 1:ECX.17; INVPCID 7.0:EBX.10;
+ * ERMS 7.0:EBX.9.  IA32_PAT is MSR 0x277 (reset default
+ * 0x0007040600070406 -- no write-combining entry until H3 programs
+ * one).  This body lives in the arch tree because cpuid/rdmsr are x86
+ * by nature; a first draft in kernel/kernel.c raised width-sweep
+ * ratchet 2 to 70/69 -- the ratchet did its job, the code moved. */
+void diag_cpu_feature_receipts(void)
+{
+    uint32_t ecx1, edx1, ebx7;
+
+    cpuid_count(1, 0, 0, 0, &ecx1, &edx1);
+    cpuid_count(7, 0, 0, &ebx7, 0, 0);
+    kprintf("[cpu]   features: pat=%d pcid=%d invpcid=%d erms=%d\n",
+            (int)((edx1 >> 16) & 1), (int)((ecx1 >> 17) & 1),
+            (int)((ebx7 >> 10) & 1), (int)((ebx7 >> 9) & 1));
+    if ((edx1 >> 16) & 1)
+        kprintf("[cpu]   IA32_PAT = 0x%016llx\n",
+                (unsigned long long)read_msr(0x277));
+}

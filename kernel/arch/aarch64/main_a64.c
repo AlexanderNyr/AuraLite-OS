@@ -32,6 +32,7 @@
 #include "kernel/arch/aarch64/initrd_a64.h"
 #include "kernel/arch/aarch64/vblk_a64.h"
 #include "kernel/arch/aarch64/vnet_a64.h"
+#include "kernel/arch/aarch64/membench_a64.h"
 
 #define RAM_BASE      0x40000000UL
 #define FDT_MAGIC_BE  0xD00DFEEDUL
@@ -529,6 +530,11 @@ void kmain_a64(uint64_t x0_at_entry)
     if (platform.uart_base && platform.uart_irq)
         pl011_rx_init(platform.uart_irq);
     pl011_tx_ring_enable();
+
+    /* HW_PLAN H0: bench the LINKED string ops (kernel/lib/string.c,
+     * [AMEND-2]'s adoptee) -- the byte-loop baseline H1 must beat,
+     * on this tenant's own clock (CNTFRQ is a register, Fact 2.3). */
+    membench_a64_run(read_cntfrq());
 
     if (vblk_a64_init(&platform) == 0) {
         if (vblk_a64_selftest() != 0) {

@@ -25,6 +25,7 @@
 #include "kernel/arch/riscv64/thread_rv.h"
 #include "kernel/arch/riscv64/trap.h"
 #include "kernel/arch/riscv64/uart_rv.h"
+#include "kernel/arch/riscv64/membench_rv.h"
 #include "kernel/arch/riscv64/user_rv.h"
 #include "kernel/arch/riscv64/vblk_rv.h"
 #include "kernel/arch/riscv64/vnet_rv.h"
@@ -415,6 +416,14 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
         uart_rv_init((uint64_t)p2v_rv(platform.uart_base),
                      platform.uart_irq);
     }
+
+    /* HW_PLAN H0: bench the LINKED string ops (kernel/lib/string.c,
+     * adopted by this kernel in the same phase -- the OPT §7 residue
+     * line paid).  Numbers before changes: this table is the byte-
+     * loop baseline H1's word loops must beat, on this tenant's own
+     * clock. */
+    membench_rv_run(platform.timebase_freq ? platform.timebase_freq
+                                           : 10000000);
 
     if (vblk_rv_init(&platform) == 0) {
         if (vblk_rv_selftest() != 0) {

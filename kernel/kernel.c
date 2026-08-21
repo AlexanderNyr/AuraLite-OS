@@ -216,6 +216,15 @@ void kmain(boot_info_t *boot_info) {
     kprintf("[kernel] %s version %s\n", AURALITE_NAME, AURALITE_VERSION);
     kprintf("[kernel] build: %s %s\n", __DATE__, __TIME__);
 
+    /* HW_PLAN H0: the feature receipts.  One line per boot, printed
+     * before anything acts on them, so every lane (qemu64, -cpu max,
+     * metal) leaves a record of what the CPU actually offered -- the
+     * receipt IS the compatibility matrix (HW D4), and the H2/H3/H4
+     * phases gate on these exact lines.  Body lives in the arch tree
+     * (diagnostics.c): cpuid/rdmsr are x86 by nature, and ratchet 2
+     * fired when a first draft put them here -- working as built. */
+    diag_cpu_feature_receipts();
+
     kprintf("[boot]  handoff magic=0x%016llx path=%s\n",
             (unsigned long long)boot_info->magic,
             boot_info->boot_from_uefi ? "UEFI" : "BIOS");

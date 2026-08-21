@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HW H0 — the rig: rv64/a64 membench, x86 feature receipts, two surprises] 2026-08-21
+
+`HW_PLAN.md` opens (the OPT §7 residue: real-hardware package +
+string-ops parity) and lands its rig — numbers before changes, third
+edition.  The rig immediately earned its keep twice:
+
+- **Surprise 1:** the DTB tenants' "byte loops" measure 249–568 MB/s
+  (rv64 memcpy 249/413, memset 434, memmove 370; a64 197/288, 568,
+  254 — TCG), not the x86-legend ~10: clang at -O2 already unrolls
+  these loops on rv64gc/aarch64.  The residue line was true about
+  the source, not the codegen; H1's gate is reworded to the honest
+  fork (land if it beats THIS, close the residue by measurement if
+  it ties).
+- **Surprise 2:** `-cpu max` under TCG does NOT expose PCID
+  (`pat=1 pcid=0 invpcid=0 erms=1`; qemu64: all but pat 0) — no QEMU
+  lane can EXECUTE a PCID kernel, so H4 is re-scoped from
+  implementation to a written design + deferral protocol before a
+  line of TLB code was written.
+- `membench_rv.c` / `membench_a64.c`: boot-time bench of the LINKED
+  `kernel/lib/string.c` bodies (verified passes — a fast wrong copy
+  fails loudly), on each tenant's own clock.  The rv64 kernel
+  ADOPTED string.c in this phase (it linked no string ops at all —
+  the bench forced the question the residue table left open).
+- x86 receipts every boot: `[cpu] features: pat= pcid= invpcid=
+  erms=` + `IA32_PAT` readback (0x0007040600070406 measured — the
+  reset default, no WC entry; H3's printed starting point).  The
+  receipt code's first draft sat in kernel/kernel.c and raised
+  width-sweep ratchet 2 to 70/69 — the ratchet fired as built, the
+  code moved to the arch tree (diagnostics.c).
+- Smokes: rv_boot 47 OK (+2), a64_boot 45 OK (+2), perf_smoke +2
+  receipt asserts; `tools/check_hw_claims.py` ships with the plan
+  (fifth in the D8 family, 8 claims + selftest), wired into
+  test-unit; ratchets 359/69/0/29.
+
 ## [CI shards — the 2-hour integration step becomes six parallel themes] 2026-08-21
 
 The third matrix run ("CI fix 2", 32481642045) turned riscv-parity

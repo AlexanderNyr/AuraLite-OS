@@ -238,12 +238,15 @@ KERNELRV_DIR  := kernel/arch/riscv64
 # out of kernel/arch/riscv64/ -- both DTB-consuming kernels compile
 # this one file, and the claim checkers assert it (a promotion that
 # forked would be worse than no promotion).
-KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c kernel/drivers/virtio_mmio.c
+# H0 (HW_PLAN): kernel/lib/string.c adopted -- the OPT §7 residue line
+# ("8-byte loops ready for shared-tree adoption") paid; membench_rv
+# measures exactly these linked bodies, and H1 makes them word-wide.
+KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c kernel/drivers/virtio_mmio.c kernel/lib/string.c
 KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null) $(KERNELRV_SHARED)
 KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
 KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
                  $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))
-KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h
+KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h kernel/lib/string.h
 CFLAGSRV      := --target=riscv64 -march=rv64gc -mabi=lp64d \
                  -mcmodel=medany -mno-relax \
                  -std=c11 -ffreestanding -fno-stack-protector \
@@ -2193,6 +2196,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_arm64_claims.py"
 	@python3 tools/check_arm64_claims.py || exit 1
 	@python3 tools/check_arm64_claims.py --selftest || exit 1
+	@echo "[unit] running tools/check_hw_claims.py"
+	@python3 tools/check_hw_claims.py || exit 1
+	@python3 tools/check_hw_claims.py --selftest || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative

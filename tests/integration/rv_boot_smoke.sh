@@ -126,6 +126,10 @@ assert_grep "$LOG" "\[init\] SKIP: no initrd"                        "no -initrd
 assert_grep "$LOG" "no virtio-blk device"                            "no -device => blk honestly absent, not faked"
 assert_grep "$LOG" "V7 complete"                                      "kernel ran to its end"
 
+# ---- HW_PLAN H0: the string-ops bench over the LINKED string.c ----
+assert_grep "$LOG" "\[bench\] memcpy 64KiB: [0-9]* MB/s"              "membench ran (the linked kernel/lib/string.c bodies)"
+assert_grep "$LOG" "\[bench\] done (linked string ops"                "membench completed all verified passes"
+
 # No unhandled trap anywhere in the boot -- the gate's last word.
 if grep -qa "UNHANDLED\|UNEXPECTED" "$LOG"; then
     printf '  [rv-boot] FAIL unhandled/unexpected trap in the boot log\n'

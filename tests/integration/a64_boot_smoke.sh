@@ -94,6 +94,10 @@ assert_grep "$LOG" "DTB probe at RAM base 0x0000000040000000: magic 0x00000000D0
 assert_grep "$LOG" "CNTFRQ_EL0: 62500000 Hz"                       "timer frequency read from the register (Fact 2.3)"
 assert_grep "$LOG" "A4 complete; powering off via PSCI"            "reached the healthy end of the phase"
 
+# ---- HW_PLAN H0: the string-ops bench over the LINKED string.c ----
+assert_grep "$LOG" "\[bench\] memcpy 64KiB: [0-9]* MB/s"           "membench ran (the linked kernel/lib/string.c bodies)"
+assert_grep "$LOG" "\[bench\] done (linked string ops"             "membench completed all verified passes"
+
 # ---- A2: vectors, timer, GIC ----
 assert_grep "$LOG" "\[isr\]  VBAR_EL1 installed"                    "vector table live (16 x 128, SPSel=1 -- the measured A2 fact)"
 assert_grep "$LOG" "Unknown/Undefined instruction at elr=0xFFFFFFC0" \

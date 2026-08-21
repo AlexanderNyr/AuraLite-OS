@@ -103,6 +103,11 @@ else
     il_fail "full recomposites while idle: ${FULL_FIRST:-none} -> ${FULL_LAST:-none} (limit: +1)"
 fi
 
+# --- HW_PLAN H0: the CPU feature receipts (every lane prints them) ---
+il_assert_grep  "$LOG" "\[cpu\]   features: pat=[01] pcid=[01] invpcid=[01] erms=[01]" \
+                                                "CPU feature receipt printed (H2/H3/H4 ground truth)"
+il_assert_grep  "$LOG" "\[cpu\]   IA32_PAT = 0x" "IA32_PAT readback printed (H3's starting point)"
+
 # --- membench ran to completion and produced the table ---
 il_assert_grep  "$LOG" "MEMBENCH begin"        "membench started"
 il_assert_count "$LOG" "MEMBENCH memcpy-a"  4  "aligned memcpy rows (4 sizes)"
