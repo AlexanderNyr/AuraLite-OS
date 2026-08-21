@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HW H3 — PAT programmed, framebuffer write-combining, both lanes pinned] 2026-08-21
+
+`HW_PLAN.md` H3: the O4 residue — the framebuffer's HHDM range goes
+WC via PAT entry 4.
+
+- PAT programming lives in `paging_cpu_features_init()` — the one
+  function that already runs on the BSP AND in every AP's
+  `ap_entry()` (PAT is per-CPU like EFER/CR4; an AP left at reset
+  PAT against the BSP's WC PTEs would be attribute aliasing on metal
+  that TCG never shows).  PA4 := WC, low four entries keep reset
+  defaults; the printed line is the READBACK
+  (`0x0007040100070406`), not the intent.
+- `paging_fb_set_wc()`: walks the fb's HHDM range 4 KiB at a time —
+  `split_huge_page` (built for MMIO BARs, same job) carves the
+  boot-time huge pages so ONLY pitch×height bytes change type; PTEs
+  get PAT=1 PCD=0 PWT=0 + `invlpg`.  The probe line decodes the
+  first PTE after the fact: `fb: WC via PAT4 (1000 pages; PTE PAT=1
+  PCD=0 PWT=0)` — 1000 pages = 1280×800×4 exactly (UEFI GOP).
+- Both worlds pinned: gui_dirty_uefi asserts the readback + the
+  decoded PTE line; perf_smoke (BIOS, no linear fb) asserts the
+  honest skip — a lane asserting nothing would let the remap
+  silently stop running.  PAT-less CPUs refuse separately.
+- Gates: gui shard 16/16 (dirty-rect/compositor/opengl/virgl/
+  gbrowser/w32/doom pixel-green over WC PTEs), perf_smoke 32,
+  cpumax 5/5, x86 17/17, ratchets 359/69/0/29; `check_hw_claims`
+  18 (+3) + selftest.  Throughput = §6 metal receipt (TCG ignores
+  memory types; this phase proves the split, flags, flush, and a
+  boot that still draws).
+
 ## [HW H2 — ERMSB: the receipt wired to the crossover, both lanes pinned] 2026-08-21
 
 `HW_PLAN.md` H2: the O1/O3 residue — the small-copy crossover in the

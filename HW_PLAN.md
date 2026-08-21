@@ -1,13 +1,13 @@
 # AuraLite OS — Real-Hardware Package + String-Ops Parity Plan
 
-## Status: IN PROGRESS 🚧 — H0–H2 complete (phases H0–H5)
+## Status: IN PROGRESS 🚧 — H0–H3 complete (phases H0–H5)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | H0 — the rig: rv64/a64 membench, x86 feature receipts | ✅ complete | `patches/HW_H0_rig.patch` |
 | H1 — word-wide portable string ops (the rv64/a64 decision) | ✅ complete | `patches/HW_H1_stringops.patch` |
 | H2 — ERMSB: the receipt and the crossover | ✅ complete | `patches/HW_H2_ermsb.patch` |
-| H3 — PAT + write-combining framebuffer | pending | `patches/HW_H3_pat.patch` |
+| H3 — PAT + write-combining framebuffer | ✅ complete | `patches/HW_H3_pat.patch` |
 | H4 — PCID: the measured absence and the deferral protocol | pending | `patches/HW_H4_pcid.patch` |
 | H5 — close-out: docs, CI, the hardware receipt protocol | pending | `patches/HW_H5_close.patch` |
 
@@ -278,7 +278,7 @@ can prove (D2).
 
 ---
 
-### Phase H3 — PAT + write-combining framebuffer
+### Phase H3 — PAT + write-combining framebuffer ✅ COMPLETE
 
 **Objective:** the O4 residue: the framebuffer is mapped WB-or-UC
 today; real hardware wants WC.  Program IA32_PAT entry 4 to WC,
@@ -286,16 +286,55 @@ plumb a PTE mapping kind that selects it, remap the framebuffer.
 
 #### Tasks
 
-- [ ] `IA32_PAT` PA4 := WC (low four entries keep reset defaults —
+- [x] `IA32_PAT` PA4 := WC (low four entries keep reset defaults —
       existing mappings keep their meaning; the receipt line proves
       it).
-- [ ] Paging: a WC mapping kind (PAT bit + PCD/PWT selection for
+- [x] Paging: a WC mapping kind (PAT bit + PCD/PWT selection for
       entry 4), used by the framebuffer map path only.
-- [ ] Probe line: the fb PTE decoded at boot (`[mm] fb: WC via PAT4`).
-- [ ] Correctness under TCG: gui/graphics/compositor cases
+- [x] Probe line: the fb PTE decoded at boot (`[mm] fb: WC via PAT4`).
+- [x] Correctness under TCG: gui/graphics/compositor cases
       pixel-identical (TCG ignores memory types — which is exactly
       why this phase's perf claim is a §6 receipt slot, not a TCG
       number).
+
+#### Result
+
+**PAT programming lives where per-CPU state already lives.**
+`paging_cpu_features_init()` — the one function that runs on the BSP
+AND in every AP's `ap_entry()` (it exists because EFER/CR4 reset per
+CPU; PAT resets the same way) — now writes PA4 := WC, keeping the
+low four entries at reset defaults so every existing mapping keeps
+its meaning.  An AP left at reset PAT while the BSP writes WC PTEs
+would be attribute aliasing on metal that TCG would never show; the
+placement closes that hole by construction.  The line printed is the
+READBACK, not the intent (D1): `IA32_PAT: PA4=WC (readback
+0x0007040100070406)` — asserted verbatim on the BIOS lane
+(perf_smoke) and the UEFI lane (gui_dirty_uefi).
+
+**The remap is exact and self-describing.**  `paging_fb_set_wc()`
+walks the framebuffer's HHDM range 4 KiB at a time; `walk_pte`'s
+existing `split_huge_page` machinery (built for MMIO BARs — this is
+the same shape of job) carves the boot-time huge pages so ONLY the
+fb's pitch×height bytes change type; each PTE gets PAT=1 PCD=0 PWT=0
+(entry 4; on a 4-KiB PTE the PAT bit sits where PS sits one level up,
+and the code says so out loud), each page gets `invlpg`.  The probe
+line decodes what the FIRST PTE actually says after the loop, not
+what the function meant: `fb: WC via PAT4 (1000 pages; PTE PAT=1
+PCD=0 PWT=0)` — and 1000 pages is 1280×800×4 bytes exactly, the
+UEFI GOP mode\'s arithmetic showing its work.
+
+**Both worlds pinned, including the empty one:** the BIOS lane has
+no linear framebuffer, so its assertion is the honest skip line
+(`fb: none present; WC remap skipped`) — a lane that asserts nothing
+would let the remap silently stop running.  PAT-less CPUs refuse
+separately (D4: runtime, no knob).
+
+**Gates:** the full gui shard 16/16 (1321 s — dirty-rect, compositor,
+opengl, virgl, gbrowser, w32, doom all pixel-green over WC PTEs),
+perf_smoke 32 assertions, cpumax 5/5, x86 17/17, ratchets
+359/69/0/29.  THROUGHPUT stays a §6 metal receipt: TCG ignores
+memory types by construction — what this phase proves is the split,
+the flags, the flush, and a boot that still draws (D2).
 
 #### Test gate
 
@@ -305,8 +344,6 @@ plumb a PTE mapping kind that selects it, remap the framebuffer.
 #### Deliverable
 
 `patches/HW_H3_pat.patch`
-
----
 
 ### Phase H4 — PCID: the measured absence and the deferral protocol
 

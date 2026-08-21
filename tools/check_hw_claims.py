@@ -119,6 +119,29 @@ def claims():
          "pre-H2" in read("tests", "integration",
                           "x86_cpumax_smoke.sh") and
          "recorded here as `-cpu max` residue" in plan),
+
+        # --- H3: PAT + WC framebuffer ---
+        ("H3: PAT PA4=WC is programmed in the per-CPU features path "
+         "(BSP + every AP), readback printed",
+         "PA4 := WC" in read("kernel", "arch", "x86_64", "paging.c") and
+         "PA4=WC (readback" in read("kernel", "arch", "x86_64",
+                                    "paging.c") and
+         "paging_cpu_features_init" in read("kernel", "arch", "x86_64",
+                                            "smp.c")),
+        ("H3: the fb remap exists, splits huge pages exactly, and "
+         "prints the DECODED first PTE",
+         "paging_fb_set_wc" in read("kernel", "arch", "x86_64",
+                                    "paging.c") and
+         "fb: WC via PAT4" in read("kernel", "arch", "x86_64",
+                                   "paging.c") and
+         "paging_fb_set_wc" in read("kernel", "kernel.c")),
+        ("H3: both lanes pinned -- the UEFI WC decode and the BIOS "
+         "honest skip",
+         "fb: WC via PAT4 (1000 pages" in
+         read("tests", "integration", "cases",
+              "test_gui_dirty_uefi.sh") and
+         "fb: none present; WC remap skipped" in
+         read("tests", "integration", "cases", "test_perf_smoke.sh")),
     ]
 
     # Structural: the Status header and the phase table must agree

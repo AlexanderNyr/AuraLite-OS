@@ -126,6 +126,12 @@ uint64_t paging_get_kernel_pml4(void);
  * and reset to bare-metal defaults when an AP comes out of INIT. */
 void paging_cpu_features_init(void);
 
+/* HW_PLAN H3: remap the framebuffer's HHDM range write-combining
+ * (PAT entry 4; PTEs get PAT=1 PCD=0 PWT=0, huge pages split as
+ * needed).  Call after paging_init(); prints the probe line the
+ * smokes pin, refuses loudly without a framebuffer or PAT. */
+void paging_fb_set_wc(void);
+
 /* Clone all user-space pages from the current address space into a new one.
  * Returns the new PML4 physical address, or 0 on failure. Used by fork(). */
 uint64_t paging_clone_user_space(void);

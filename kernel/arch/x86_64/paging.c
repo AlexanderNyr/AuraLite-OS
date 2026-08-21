@@ -134,6 +134,31 @@ void paging_cpu_features_init(void) {
         if (is_bsp) kprintf(VMM_TAG "SMAP enabled\n");
     }
     write_cr4(cr4);
+
+    /* HW_PLAN H3: program IA32_PAT entry PA4 = WC (0x01).  The low
+     * four entries keep their reset defaults (WB/WT/UC-/UC), so every
+     * existing mapping keeps its meaning; PA4 was an unused duplicate
+     * of PA0 (reset value 0x0007040600070406 -- H0's printed fact).
+     * A 4-KiB PTE selects PA4 with PAT=1, PCD=0, PWT=0 -- the combo
+     * paging_fb_set_wc() writes.  PAT is a PER-CPU MSR and this
+     * function is the one place that already runs on the BSP AND in
+     * every AP's ap_entry() -- an AP left at the reset PAT while the
+     * BSP writes WC PTEs would be an attribute-aliasing bug on metal
+     * (TCG would never notice; that is exactly why it is fenced here
+     * and not left to luck).  CPUID.1:EDX.16 gates it (D4: runtime,
+     * no knob) -- PAT-less parts keep reset behaviour and the fb
+     * remap refuses separately. */
+    uint32_t d1, c1;
+    cpuid_count(1, 0, &a, &b, &c1, &d1);
+    if ((d1 >> 16) & 1) {
+        uint64_t pat = read_msr(0x277);
+        pat = (pat & ~(0x7ULL << 32)) | (0x1ULL << 32);   /* PA4 := WC */
+        write_msr(0x277, pat);
+        /* Print the READBACK, not the intent (D1): what the MSR says
+         * after the write is the fact the smoke pins. */
+        if (is_bsp) kprintf(VMM_TAG "IA32_PAT: PA4=WC (readback 0x%016llx)\n",
+                            (unsigned long long)read_msr(0x277));
+    }
 }
 
 void paging_init(void) {
@@ -755,4 +780,73 @@ void paging_self_test(void) {
      * We no longer trigger it at boot (it would halt before later phases run).
      * The Phase 2 IDT + CR2 reporting remain live, so any real unmapped access
      * would still produce a clean fault dump. */
+}
+
+/* ---- HW_PLAN H3: the write-combining framebuffer -------------------------
+ *
+ * The framebuffer is reached through the HHDM, which the boot maps as
+ * plain WB huge pages -- correct, but on metal every pixel store then
+ * competes for cache lines and orders like normal memory.  WC is the
+ * memory type made for exactly this traffic (streaming stores, no
+ * read-for-ownership), and it needs two pieces: the PAT entry
+ * (PA4=WC, programmed per-CPU in paging_cpu_features_init) and PTEs
+ * that select it.  A 4-KiB PTE selects PA4 with PAT=1 PCD=0 PWT=0;
+ * the PAT bit on a 4-KiB PTE is bit 7 -- the same position PS holds
+ * one level up, which is why the flag reuses PAGE_FLAG_PS below and
+ * says so out loud.
+ *
+ * walk_pte(create=1) transparently splits the HHDM's 1-GiB/2-MiB
+ * leaves into 4-KiB PTEs for the touched range only (split_huge_page
+ * exists for precisely this shape of job), so the remap is exact to
+ * the framebuffer's pitch*height bytes and neighbours keep WB.
+ *
+ * TCG ignores memory types entirely -- the gui suite gating this
+ * phase proves pixel-identity, and the THROUGHPUT claim stays a
+ * metal receipt (HW_PLAN D2/\u00a76).  What TCG does prove: the split,
+ * the flags, the flush, and a boot that still draws. */
+void paging_fb_set_wc(void) {
+    boot_fb_t *fb = boot_get_framebuffer();
+    if (fb == NULL || fb->phys_base == 0) {
+        kprintf(VMM_TAG "fb: none present; WC remap skipped\n");
+        return;
+    }
+
+    uint32_t a, b, c, d;
+    cpuid_count(1, 0, &a, &b, &c, &d);
+    if (!((d >> 16) & 1)) {
+        kprintf(VMM_TAG "fb: CPU has no PAT; keeping boot-time attributes\n");
+        return;
+    }
+
+    uint64_t len   = (uint64_t)fb->pitch * (uint64_t)fb->height;
+    uint64_t base  = hhdm + fb->phys_base;
+    uint64_t pages = 0;
+
+    for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
+        uint64_t *pte = walk_pte(base + off, 1);
+        if (pte == NULL || !(*pte & PAGE_FLAG_PRESENT)) {
+            kprintf(VMM_TAG "fb: page at +0x%llx not mapped; WC remap "
+                    "aborted after %llu pages\n",
+                    (unsigned long long)off, (unsigned long long)pages);
+            return;
+        }
+        /* PAT=1 (bit 7 == PAGE_FLAG_PS's position on a 4-KiB PTE),
+         * PCD=0, PWT=0 => PAT entry 4 => WC. */
+        *pte = (*pte | PAGE_FLAG_PS)
+             & ~(PAGE_FLAG_CACHE_DISABLE | PAGE_FLAG_WRITE_THROUGH);
+        invlpg(base + off);
+        pages++;
+    }
+
+    /* The probe line the smokes pin: decode what the FIRST PTE really
+     * says now, not what this function meant to write. */
+    uint64_t *pte0 = walk_pte(base, 0);
+    if (pte0 != NULL) {
+        kprintf(VMM_TAG "fb: WC via PAT4 (%llu pages; PTE PAT=%d PCD=%d "
+                "PWT=%d)\n",
+                (unsigned long long)pages,
+                (int)!!(*pte0 & PAGE_FLAG_PS),
+                (int)!!(*pte0 & PAGE_FLAG_CACHE_DISABLE),
+                (int)!!(*pte0 & PAGE_FLAG_WRITE_THROUGH));
+    }
 }

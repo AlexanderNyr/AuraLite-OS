@@ -94,6 +94,14 @@ else
     il_fail "full redraws while idle: delta $FF_D (limit 1)"
 fi
 
+# --- HW_PLAN H3: the WC framebuffer, pinned where the fb exists ---
+# (the BIOS lanes have no linear framebuffer and assert the honest
+# skip line instead -- see test_perf_smoke.sh)
+il_assert_grep_fixed "$LOG" "IA32_PAT: PA4=WC (readback 0x0007040100070406)" \
+                                        "PAT readback shows the WC entry (not the intent -- the MSR)"
+il_assert_grep_fixed "$LOG" "fb: WC via PAT4 (1000 pages; PTE PAT=1 PCD=0 PWT=0)" \
+                                        "fb PTEs decode WC (PAT=1 PCD=0 PWT=0, exact page count)"
+
 il_assert_no_grep "$LOG" "PANIC"        "no kernel panic"
 il_assert_no_grep "$LOG" "TRIPLE FAULT" "no triple-fault"
 

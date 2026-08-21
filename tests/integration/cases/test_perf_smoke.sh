@@ -109,6 +109,13 @@ il_assert_grep  "$LOG" "\[cpu\]   features: pat=[01] pcid=[01] invpcid=[01] erms
 il_assert_grep  "$LOG" "\[cpu\]   IA32_PAT = 0x" "IA32_PAT readback printed (H3's starting point)"
 il_assert_grep_fixed "$LOG" "memcpy small-copy crossover: 64 (no ERMS)" \
                                                 "H2: qemu64 keeps the measured-good 64 threshold"
+# HW H3 on the BIOS lane: PAT gets its WC entry everywhere, but this
+# boot has no linear framebuffer -- the HONEST SKIP is the assertion
+# (the WC-decoded PTE lines live in test_gui_dirty_uefi's UEFI lane).
+il_assert_grep_fixed "$LOG" "IA32_PAT: PA4=WC (readback 0x0007040100070406)" \
+                                                "H3: PAT readback shows the WC entry"
+il_assert_grep_fixed "$LOG" "fb: none present; WC remap skipped" \
+                                                "H3: no fb on BIOS => the remap refuses honestly"
 
 # --- membench ran to completion and produced the table ---
 il_assert_grep  "$LOG" "MEMBENCH begin"        "membench started"

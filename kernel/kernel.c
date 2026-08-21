@@ -265,6 +265,12 @@ void kmain(boot_info_t *boot_info) {
     paging_init();
     paging_self_test();
 
+    /* HW H3: the framebuffer goes write-combining (PAT4) now that the
+     * VMM can split the HHDM's huge pages under it.  On TCG this is a
+     * correctness-only change (memory types are ignored there); the
+     * probe line it prints is what the smokes pin. */
+    paging_fb_set_wc();
+
     kprintf("[boot] initialising kernel heap...\n");
     kheap_init();
     kheap_self_test();
