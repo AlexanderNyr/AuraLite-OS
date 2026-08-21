@@ -107,6 +107,8 @@ fi
 il_assert_grep  "$LOG" "\[cpu\]   features: pat=[01] pcid=[01] invpcid=[01] erms=[01]" \
                                                 "CPU feature receipt printed (H2/H3/H4 ground truth)"
 il_assert_grep  "$LOG" "\[cpu\]   IA32_PAT = 0x" "IA32_PAT readback printed (H3's starting point)"
+il_assert_grep_fixed "$LOG" "memcpy small-copy crossover: 64 (no ERMS)" \
+                                                "H2: qemu64 keeps the measured-good 64 threshold"
 
 # --- membench ran to completion and produced the table ---
 il_assert_grep  "$LOG" "MEMBENCH begin"        "membench started"

@@ -96,6 +96,29 @@ def claims():
          "NOT unrolled" in plan),
         ("H1: the numbers table carries the measured win",
          "2449" in plan and "1964" in plan and "3178" in plan),
+
+        # --- H2: ERMSB receipt + crossover ---
+        ("H2: the crossover is runtime and CPUID-fed (string_fast_init "
+         "reads ERMS, 64 -> 0)",
+         exists("kernel", "arch", "x86_64", "string_fast.h") and
+         "string_fast_init" in read("kernel", "arch", "x86_64",
+                                    "string_fast.c") and
+         "small_n = 0" in read("kernel", "arch", "x86_64",
+                               "string_fast.c") and
+         "string_fast_init" in read("kernel", "arch", "x86_64",
+                                    "diagnostics.c")),
+        ("H2: both lanes pin their threshold line (qemu64 keeps 64, "
+         "-cpu max drops to 0)",
+         "crossover: 64 (no ERMS)" in read("tests", "integration",
+                                           "cases",
+                                           "test_perf_smoke.sh") and
+         "crossover: 0 (ERMS fast-string)" in
+         read("tests", "integration", "x86_cpumax_smoke.sh")),
+        ("H2: the -cpu max shell-banner oddity is recorded as "
+         "pre-existing (control run), not hidden",
+         "pre-H2" in read("tests", "integration",
+                          "x86_cpumax_smoke.sh") and
+         "recorded here as `-cpu max` residue" in plan),
     ]
 
     # Structural: the Status header and the phase table must agree

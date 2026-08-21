@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HW H2 — ERMSB: the receipt wired to the crossover, both lanes pinned] 2026-08-21
+
+`HW_PLAN.md` H2: the O1/O3 residue — the small-copy crossover in the
+x86 rep-string backend is runtime and CPUID-fed.
+
+- `string_fast_init()` (new, called from the H0 receipt printer —
+  the receipt's first consumer): reads CPUID.7.0:EBX.9 once, drops
+  the `small_n` threshold 64 → 0 on ERMS parts (the SDM fast-string
+  contract: no setup cliff, the scalar pre-loop is pure overhead
+  there); qemu64 TCG has no ERMS and keeps the O1-measured 64.  The
+  active threshold prints every boot.
+- New `x86_cpumax_smoke.sh` (5 assertions): the `-cpu max` lane —
+  `erms=1` receipt, `crossover: 0 (ERMS fast-string)`, kernel
+  reaches the shell handoff with the 0-byte threshold live, no
+  panic.  perf_smoke (+1, 30 assertions) pins the qemu64 side:
+  `crossover: 64 (no ERMS)`, membench within this sandbox's
+  (measured-wide) TCG noise band.
+- Found and fenced, not fixed: under `-cpu max` the userspace
+  shell's banner never reaches the serial log (kernel handoff line
+  does) — the CONTROL RUN on the pre-H2 kernel behaves identically,
+  so it is recorded as pre-existing `-cpu max` residue in the plan,
+  and the smoke asserts the kernel-side line.
+- The wall-clock half stays a §6 metal receipt (D2): TCG emulates
+  rep-string per-iteration regardless of ERMS — this phase proves
+  detection and wiring, which is what TCG can prove.
+- Gates: perf_smoke 30, cpumax 5/5, x86 17/17, ratchets 359/69/0/29,
+  `check_hw_claims` 15 (+3) + selftest.
+
 ## [HW H1 — word-wide string ops: the fork resolves, with a corrected reason] 2026-08-21
 
 `HW_PLAN.md` H1: the OPT §7 string-ops residue paid in code, after

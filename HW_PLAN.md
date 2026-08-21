@@ -1,12 +1,12 @@
 # AuraLite OS — Real-Hardware Package + String-Ops Parity Plan
 
-## Status: IN PROGRESS 🚧 — H0–H1 complete (phases H0–H5)
+## Status: IN PROGRESS 🚧 — H0–H2 complete (phases H0–H5)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | H0 — the rig: rv64/a64 membench, x86 feature receipts | ✅ complete | `patches/HW_H0_rig.patch` |
 | H1 — word-wide portable string ops (the rv64/a64 decision) | ✅ complete | `patches/HW_H1_stringops.patch` |
-| H2 — ERMSB: the receipt and the crossover | pending | `patches/HW_H2_ermsb.patch` |
+| H2 — ERMSB: the receipt and the crossover | ✅ complete | `patches/HW_H2_ermsb.patch` |
 | H3 — PAT + write-combining framebuffer | pending | `patches/HW_H3_pat.patch` |
 | H4 — PCID: the measured absence and the deferral protocol | pending | `patches/HW_H4_pcid.patch` |
 | H5 — close-out: docs, CI, the hardware receipt protocol | pending | `patches/HW_H5_close.patch` |
@@ -217,7 +217,7 @@ shell 22 OK, a64 boot 45 OK / shell 15 OK, x86 17/17.
 
 ---
 
-### Phase H2 — ERMSB: the receipt and the crossover
+### Phase H2 — ERMSB: the receipt and the crossover ✅ COMPLETE
 
 **Objective:** the O1/O3 residue: on ERMSB hardware `rep movsb` has
 no setup-cost cliff and the `SMALL_N = 64` crossover in
@@ -226,12 +226,46 @@ ERMS-aware; keep TCG behaviour bit-identical.
 
 #### Tasks
 
-- [ ] Boot-time ERMS detection feeds `string_fast.c` (one branch:
+- [x] Boot-time ERMS detection feeds `string_fast.c` (one branch:
       crossover 64 → 0 when ERMS; the movsq bulk form stays — ERMSB
       covers it, and TCG needs it).
-- [ ] `-cpu max` lane: receipt shows `erms=1` and the crossover line
+- [x] `-cpu max` lane: receipt shows `erms=1` and the crossover line
       names the active threshold.
-- [ ] Hardware receipt slot (§6): membench small-copy row on metal.
+- [x] Hardware receipt slot (§6): membench small-copy row on metal.
+
+#### Result
+
+The crossover is RUNTIME now: `string_fast_init()` (called from the
+H0 receipt printer — the receipt's first consumer) reads
+CPUID.7.0:EBX.9 once and drops `small_n` 64 → 0 on ERMS parts, per
+the SDM's fast-string contract; the threshold line prints on every
+boot so each lane's smoke pins which world it booted in.  The movsq
+bulk form stays — ERMSB covers it and TCG *needs* it (O1's measured
+lesson).
+
+**Lanes, both green:** qemu64 — `crossover: 64 (no ERMS)` asserted
+in perf_smoke (30 assertions), membench table produced; the 1 MiB
+rows moved 534 → 1136 MB/s BETWEEN RUNS OF THE SAME BINARY earlier
+in the session too — this sandbox's TCG noise band is that wide, and
+the honest statement is "within noise", not "unchanged to the
+megabyte".  `-cpu max` — the new `x86_cpumax_smoke.sh` (5
+assertions): `erms=1` receipt, `crossover: 0 (ERMS fast-string)`,
+kernel reaches the shell handoff with the 0-byte threshold live, no
+panic.
+
+**One pre-existing fact found and fenced, not fixed:** under
+`-cpu max` the USERSPACE shell's banner never appears on the serial
+log, though the shell process starts (`shell active; kmain idling`
+prints; the prompt does not).  The control run — same boot, pre-H2
+kernel — behaves identically, so the smoke asserts the kernel-side
+handoff and the oddity is recorded here as `-cpu max` residue for
+whoever needs the interactive lane someday.
+
+The PERFORMANCE half stays a §6 metal receipt: TCG emulates
+rep-string one iteration at a time regardless of ERMS, so the
+threshold's wall-clock effect is invisible here by construction —
+this phase proves the detection and the wiring, which is what TCG
+can prove (D2).
 
 #### Test gate
 

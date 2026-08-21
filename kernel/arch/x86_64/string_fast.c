@@ -49,11 +49,37 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "kernel/lib/string.h"
+#include "kernel/arch/x86_64/string_fast.h"
+#include "kernel/arch/x86_64/cpu.h"
+#include "kernel/lib/kprintf.h"
 
-#define SMALL_N 64
+/* HW_PLAN H2: the small-copy crossover is RUNTIME now.  The compile-
+ * time SMALL_N = 64 was tuned for the wrong machine on ERMSB parts:
+ * enhanced rep movsb/stosb has no setup-cost cliff (Intel SDM vol.1
+ * 7.3.9.3 -- "fast-string operation ... optimized to provide high
+ * performance even for small counts"), so the scalar pre-loop is pure
+ * overhead there.  string_fast_init() reads CPUID.7.0:EBX.9 once at
+ * boot and drops the threshold to 0 on ERMS parts; qemu64 TCG has no
+ * ERMS (measured, H0's receipt) and keeps the measured-good 64.  The
+ * threshold line is printed so every lane's smoke can pin which world
+ * it booted in -- and so the metal receipt (plan §6) has its line. */
+static size_t small_n = 64;     /* the O1-measured default; see above */
+
+void string_fast_init(void)
+{
+    uint32_t ebx7;
+
+    cpuid_count(7, 0, 0, &ebx7, 0, 0);
+    if ((ebx7 >> 9) & 1) {
+        small_n = 0;
+        kprintf("[cpu]   memcpy small-copy crossover: 0 (ERMS fast-string)\n");
+    } else {
+        kprintf("[cpu]   memcpy small-copy crossover: 64 (no ERMS)\n");
+    }
+}
 
 void *memcpy(void *dst, const void *src, size_t n) {
-    if (n < SMALL_N) {
+    if (n < small_n) {
         unsigned char       *d = (unsigned char *)dst;
         const unsigned char *s = (const unsigned char *)src;
         while (n--) *d++ = *s++;
@@ -75,7 +101,7 @@ void *memcpy(void *dst, const void *src, size_t n) {
 }
 
 void *memset(void *dst, int c, size_t n) {
-    if (n < SMALL_N) {
+    if (n < small_n) {
         unsigned char *d = (unsigned char *)dst;
         unsigned char  v = (unsigned char)c;
         while (n--) *d++ = v;

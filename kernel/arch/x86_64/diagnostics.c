@@ -18,6 +18,7 @@
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
+#include "kernel/arch/x86_64/string_fast.h"
 #include "kernel/boot_info.h"
 #include "kernel/lib/kprintf.h"
 
@@ -388,4 +389,9 @@ void diag_cpu_feature_receipts(void)
     if ((edx1 >> 16) & 1)
         kprintf("[cpu]   IA32_PAT = 0x%016llx\n",
                 (unsigned long long)read_msr(0x277));
+
+    /* HW H2: the receipt's first consumer -- the rep-string backend
+     * picks its small-copy crossover off the same CPUID bit and
+     * prints the threshold line right under the receipt. */
+    string_fast_init();
 }
