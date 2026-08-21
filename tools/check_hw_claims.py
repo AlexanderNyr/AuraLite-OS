@@ -77,6 +77,25 @@ def claims():
          "byte loops; PCID absent under -cpu max TCG)",
          "clang at -O2 already" in plan and
          "does not expose PCID" in plan),
+
+        # --- H1: word-wide portable string ops ---
+        ("H1: the word bodies exist with the strict-align-proof "
+         "spelling (may_alias word type, co-alignment fork)",
+         "may_alias" in read("kernel", "lib", "string.c") and
+         "sw_word" in read("kernel", "lib", "string.c") and
+         "Co-aligned" in read("kernel", "lib", "string.c")),
+        ("H1: the host suite tortures the new seams (offset x size "
+         "x overlap sweep)",
+         "test_word_sweep_memcpy" in read("tests", "unit",
+                                          "test_string.c") and
+         "test_word_sweep_memmove_overlap" in read("tests", "unit",
+                                                   "test_string.c")),
+        ("H1: the H0 attribution correction is recorded (the O6 "
+         "tradition -- the number was real, the attribution was not)",
+         "the attribution was not" in plan and
+         "NOT unrolled" in plan),
+        ("H1: the numbers table carries the measured win",
+         "2449" in plan and "1964" in plan and "3178" in plan),
     ]
 
     # Structural: the Status header and the phase table must agree

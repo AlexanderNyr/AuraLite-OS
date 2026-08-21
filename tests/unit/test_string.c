@@ -331,6 +331,79 @@ TEST(test_strcpy_returns_dst) {
     CHECK(ret == dst);
 }
 
+/* ---- HW_PLAN H1: the word-path alignment/overlap torture sweep ----
+ *
+ * The word-wide bodies have SEAMS the old byte loops did not: the
+ * n>=16 threshold, the byte head that earns alignment, the co-aligned
+ * vs mixed-alignment fork, and the backward word loop.  Every seam is
+ * an off-by-one habitat, so this sweep crosses sizes that straddle
+ * the threshold and word boundaries with every src/dst offset pair in
+ * a word, against a reference byte copy, with canary bytes checked
+ * around the destination window (an overwrite past n is a heap bug
+ * wearing a fast-copy costume). */
+
+TEST(test_word_sweep_memcpy) {
+    static const size_t sizes[] = {1, 7, 8, 9, 15, 16, 17, 23, 24, 31,
+                                   32, 33, 63, 64, 65, 100, 129};
+    unsigned char src[192], dst[192], ref[192];
+    for (size_t si = 0; si < sizeof(sizes)/sizeof(sizes[0]); si++) {
+        for (int so = 0; so < 8; so++) {
+            for (int dofs = 0; dofs < 8; dofs++) {
+                size_t n = sizes[si];
+                for (size_t i = 0; i < sizeof(src); i++) {
+                    src[i] = (unsigned char)(i * 7 + 3);
+                    dst[i] = ref[i] = (unsigned char)(0xC0 + (i & 0x3F));
+                }
+                kmemcpy(dst + dofs, src + so, n);
+                for (size_t i = 0; i < n; i++) ref[dofs + i] = src[so + i];
+                CHECK(memcmp(dst, ref, sizeof(dst)) == 0);
+            }
+        }
+    }
+}
+
+TEST(test_word_sweep_memset) {
+    static const size_t sizes[] = {1, 8, 15, 16, 17, 31, 32, 33, 100};
+    unsigned char dst[192], ref[192];
+    for (size_t si = 0; si < sizeof(sizes)/sizeof(sizes[0]); si++) {
+        for (int dofs = 0; dofs < 8; dofs++) {
+            size_t n = sizes[si];
+            for (size_t i = 0; i < sizeof(dst); i++)
+                dst[i] = ref[i] = (unsigned char)(0xC0 + (i & 0x3F));
+            kmemset(dst + dofs, 0x5A, n);
+            for (size_t i = 0; i < n; i++) ref[dofs + i] = 0x5A;
+            CHECK(memcmp(dst, ref, sizeof(dst)) == 0);
+        }
+    }
+}
+
+TEST(test_word_sweep_memmove_overlap) {
+    static const size_t sizes[] = {15, 16, 17, 33, 64, 100};
+    /* shift = how far dst is from src, both directions; small shifts
+     * force maximum overlap through both the forward (memcpy) and
+     * backward word paths. */
+    static const int shifts[] = {1, 7, 8, 9, 16};
+    unsigned char buf[224], ref[224];
+    for (size_t si = 0; si < sizeof(sizes)/sizeof(sizes[0]); si++) {
+        for (size_t hi = 0; hi < sizeof(shifts)/sizeof(shifts[0]); hi++) {
+            size_t n = sizes[si];
+            int    h = shifts[hi];
+            /* backward-overlap direction: dst = src + h */
+            for (size_t i = 0; i < sizeof(buf); i++)
+                buf[i] = ref[i] = (unsigned char)(i * 5 + 1);
+            kmemmove(buf + 32 + h, buf + 32, n);
+            for (size_t i = n; i-- > 0; ) ref[32 + h + i] = ref[32 + i];
+            CHECK(memcmp(buf, ref, sizeof(buf)) == 0);
+            /* forward-overlap direction: dst = src - h */
+            for (size_t i = 0; i < sizeof(buf); i++)
+                buf[i] = ref[i] = (unsigned char)(i * 5 + 1);
+            kmemmove(buf + 32, buf + 32 + h, n);
+            for (size_t i = 0; i < n; i++) ref[32 + i] = ref[32 + h + i];
+            CHECK(memcmp(buf, ref, sizeof(buf)) == 0);
+        }
+    }
+}
+
 int main(void) {
     printf("=== String/Memory Function Tests ===\n\n");
 
@@ -357,6 +430,11 @@ int main(void) {
     RUN(test_memmove_overlap_backward);
     RUN(test_memmove_zero_len);
     RUN(test_memmove_self_copy);
+
+    printf("--- word-path sweep (HW H1) ---\n");
+    RUN(test_word_sweep_memcpy);
+    RUN(test_word_sweep_memset);
+    RUN(test_word_sweep_memmove_overlap);
 
     printf("--- memcmp ---\n");
     RUN(test_memcmp_equal);

@@ -17,15 +17,47 @@
 #include "kernel/lib/string.h"
 
 /* The x86_64 kernel links the rep-string backend instead (string_fast.c).
- * These portable bodies stay for the host unit tests and for any future
- * arch that adopts the shared tree (D5 residue: rv64/a64 want exactly
- * these shapes, 8-byte loops, once their kernels move off their private
- * copies). */
+ * These portable bodies stay for the host unit tests and for the DTB
+ * tenants (rv64 adopted this file in HW H0; a64 in A5a [AMEND-2]).
+ *
+ * HW_PLAN H1: word-wide.  H0 measured the old byte loops at 249 (rv64)
+ * / 197 (a64) MB/s under TCG and the disassembly showed clang had NOT
+ * widened them (lbu/sb and ldrb/strb, one byte per iteration -- H0's
+ * first reading blamed auto-unrolling; the objdump corrected it, the
+ * plan records the correction).  These bodies move 8 bytes per
+ * iteration instead.
+ *
+ * Two portability facts drive the shape:
+ *
+ *   - a64 compiles with -mstrict-align, so the compiler may only emit
+ *     wide loads/stores it can PROVE aligned.  A `sw_word *` cast is
+ *     that proof (C's own rule: a validly-derefenced T* is aligned for
+ *     T) -- which is why the fast paths earn 8-byte alignment with a
+ *     byte head first, and why the mixed-alignment middle uses
+ *     __builtin_memcpy loads (correct everywhere; the compiler lowers
+ *     them per target's alignment rules).
+ *
+ *   - Plain `uint64_t *` casts into byte buffers would be an aliasing
+ *     violation the optimiser is entitled to punish; `sw_word` carries
+ *     __attribute__((may_alias)) so the word accesses are exempt, the
+ *     same contract __builtin_memcpy provides -- but with the
+ *     alignment assertion strict-align needs. */
 #ifndef ARCH_X86_64
+
+typedef uint64_t __attribute__((may_alias)) sw_word;
 
 void *memset(void *dst, int c, size_t n) {
     unsigned char *d = (unsigned char *)dst;
     unsigned char  v = (unsigned char)c;
+
+    if (n >= 16) {
+        while ((uintptr_t)d & 7) { *d++ = v; n--; }
+        sw_word w = v;
+        w |= w << 8; w |= w << 16; w |= w << 32;
+        sw_word *dw = (sw_word *)d;
+        while (n >= 8) { *dw++ = w; n -= 8; }
+        d = (unsigned char *)dw;
+    }
     while (n--) {
         *d++ = v;
     }
@@ -35,6 +67,32 @@ void *memset(void *dst, int c, size_t n) {
 void *memcpy(void *dst, const void *src, size_t n) {
     unsigned char       *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
+
+    if (n >= 16) {
+        if ((((uintptr_t)d ^ (uintptr_t)s) & 7) == 0) {
+            /* Co-aligned: one byte head buys BOTH sides 8-byte
+             * alignment; the loop is one aligned load + store per 8
+             * bytes on every target, strict-align included. */
+            while ((uintptr_t)d & 7) { *d++ = *s++; n--; }
+            sw_word             *dw = (sw_word *)d;
+            const sw_word       *sw = (const sw_word *)s;
+            while (n >= 8) { *dw++ = *sw++; n -= 8; }
+            d = (unsigned char *)dw;
+            s = (const unsigned char *)sw;
+        } else {
+            /* Mixed alignment: aligned stores, __builtin_memcpy
+             * loads (correct at any alignment; rv64 lowers to one
+             * ld, strict-align a64 to byte loads -- still one wide
+             * STORE per 8, and mixed alignment is the rare case). */
+            while ((uintptr_t)d & 7) { *d++ = *s++; n--; }
+            while (n >= 8) {
+                uint64_t w;
+                __builtin_memcpy(&w, s, 8);
+                *(sw_word *)d = w;
+                d += 8; s += 8; n -= 8;
+            }
+        }
+    }
     while (n--) {
         *d++ = *s++;
     }
@@ -44,16 +102,25 @@ void *memcpy(void *dst, const void *src, size_t n) {
 void *memmove(void *dst, const void *src, size_t n) {
     unsigned char       *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
+
     if (d < s) {
-        while (n--) {
-            *d++ = *s++;
-        }
-    } else {
-        d += n;
-        s += n;
-        while (n--) {
-            *--d = *--s;
-        }
+        return memcpy(dst, src, n);   /* forward copy is overlap-safe */
+    }
+
+    /* Backward.  Word path only when co-aligned; the tail-first byte
+     * head buys alignment at the TOP end this time. */
+    d += n;
+    s += n;
+    if (n >= 16 && (((uintptr_t)d ^ (uintptr_t)s) & 7) == 0) {
+        while ((uintptr_t)d & 7) { *--d = *--s; n--; }
+        sw_word       *dw = (sw_word *)d;
+        const sw_word *sw = (const sw_word *)s;
+        while (n >= 8) { *--dw = *--sw; n -= 8; }
+        d = (unsigned char *)dw;
+        s = (const unsigned char *)sw;
+    }
+    while (n--) {
+        *--d = *--s;
     }
     return dst;
 }

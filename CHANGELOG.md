@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HW H1 — word-wide string ops: the fork resolves, with a corrected reason] 2026-08-21
+
+`HW_PLAN.md` H1: the OPT §7 string-ops residue paid in code, after
+the phase's opening objdump overturned H0's mechanism story.
+
+- **The correction first (the O6 tradition):** clang had NOT unrolled
+  the byte loops — both DTB kernels' memcpy was byte-per-iteration
+  (`lbu/sb`, `ldrb/strb`), and H0's 249/197 MB/s baselines were just
+  modern TCG at ~1.2 G guest-insns/s.  The x86 "11 MB/s" legend was
+  a fact about a slower TCG epoch.  H0's numbers stand; its
+  mechanism paragraph now carries the dated correction.
+- `kernel/lib/string.c`: word-wide memset/memcpy/memmove.  The
+  load-bearing type is `sw_word` (`uint64_t` + `may_alias`): the
+  cast asserts the alignment `-mstrict-align` a64 requires before
+  clang emits wide accesses (a builtin-only spelling silently
+  degrades to byte loads there), the attribute waives the aliasing
+  rule a bare cast would break.  Co-alignment fork: byte head earns
+  both sides alignment → one aligned load+store per 8; mixed
+  alignment keeps wide stores with `__builtin_memcpy` loads.
+  Codegen VERIFIED by objdump on both targets (`ld/sd`, `ldr/str x`).
+- Measured (TCG, §5): rv64 memcpy 1 MiB-eq 413 → **2449 MB/s**
+  (5.9×), memset → **2553**; a64 memcpy → **1964** (6.8×), memset →
+  **3178**; memmove-overlap 2.4× both.  The 8-byte loop refuses to
+  be a TCG no-op — O1's exact thesis, now true on three tenants.
+- Controls: x86 `string.o` `.text` byte-identical (measured, the
+  shadowing contract); `test_string` grew the word-path torture
+  sweep (offsets × threshold-straddling sizes × both overlap
+  directions, canaries checked) — 43/43.
+- Gates: rv boot 47 / shell 22, a64 boot 45 / shell 15, x86 17/17,
+  `check_hw_claims` 12 (+4) + selftest.
+
 ## [HW H0 — the rig: rv64/a64 membench, x86 feature receipts, two surprises] 2026-08-21
 
 `HW_PLAN.md` opens (the OPT §7 residue: real-hardware package +

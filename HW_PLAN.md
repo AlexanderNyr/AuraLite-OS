@@ -1,11 +1,11 @@
 # AuraLite OS — Real-Hardware Package + String-Ops Parity Plan
 
-## Status: IN PROGRESS 🚧 — H0 complete (phases H0–H5)
+## Status: IN PROGRESS 🚧 — H0–H1 complete (phases H0–H5)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | H0 — the rig: rv64/a64 membench, x86 feature receipts | ✅ complete | `patches/HW_H0_rig.patch` |
-| H1 — word-wide portable string ops (the rv64/a64 win) | pending | `patches/HW_H1_stringops.patch` |
+| H1 — word-wide portable string ops (the rv64/a64 decision) | ✅ complete | `patches/HW_H1_stringops.patch` |
 | H2 — ERMSB: the receipt and the crossover | pending | `patches/HW_H2_ermsb.patch` |
 | H3 — PAT + write-combining framebuffer | pending | `patches/HW_H3_pat.patch` |
 | H4 — PCID: the measured absence and the deferral protocol | pending | `patches/HW_H4_pcid.patch` |
@@ -108,6 +108,16 @@ The rv64 kernel also ADOPTED `kernel/lib/string.c` in this phase
 (it linked no string ops at all before; the bench forced the
 question the residue table had left open).
 
+> **Correction, H1 (same day, the O6 tradition — the number was
+> real, the attribution was not):** the H1 objdump showed clang had
+> NOT unrolled anything — both kernels' memcpy was a plain
+> byte-per-iteration loop (`lbu/sb`, `ldrb/strb`).  The 249/197 MB/s
+> baselines are simply what ~1.2 G guest-insns/s of modern TCG does
+> to a 4–5-instruction byte loop on this host.  The x86 "11 MB/s"
+> legend was a fact about a slower TCG epoch, not about codegen.
+> Nothing in H0's numbers changes; the mechanism paragraph above was
+> wrong and this note is its receipt.
+
 Second: **`-cpu max` under TCG does not expose PCID.**  Receipts:
 qemu64 → `pat=1 pcid=0 invpcid=0 erms=0`; `-cpu max` → `pat=1
 pcid=0 invpcid=0 erms=1`.  Both lanes: `IA32_PAT =
@@ -131,7 +141,7 @@ land.
 
 ---
 
-### Phase H1 — Word-wide portable string ops (the rv64/a64 decision)
+### Phase H1 — Word-wide portable string ops (the rv64/a64 decision) ✅ COMPLETE
 
 **Objective:** pay the §7 residue line the D1 way: write the 8-byte
 bodies (the memcmp/strlen shape, D3 — no asm), MEASURE them against
@@ -139,15 +149,57 @@ H0's now-known-unrolled baseline, and keep them only if they win.
 
 #### Tasks
 
-- [ ] `kernel/lib/string.c`: word-wide bodies — aligned-word fast
+- [x] `kernel/lib/string.c`: word-wide bodies — aligned-word fast
       path, `__builtin_memcpy` 8-byte loads/stores for the unaligned
       middle (defined behaviour), byte head/tail.  `-mstrict-align`
       on a64 makes the aligned path mandatory, not stylistic.
-- [ ] The x86_64 kernel keeps `string_fast.c` (shadowing unchanged) —
+- [x] The x86_64 kernel keeps `string_fast.c` (shadowing unchanged) —
       byte-identity control on its objects.
-- [ ] Host unit tests compile these exact bodies; overlap/alignment
+- [x] Host unit tests compile these exact bodies; overlap/alignment
       edges extended if the sweep finds a gap.
-- [ ] Membench re-run on both tenants; §5 columns filled.
+- [x] Membench re-run on both tenants; §5 columns filled.
+
+#### Result
+
+**The fork resolved in favour of the code — decisively, and for a
+corrected reason.**  The phase opened with an objdump (before
+touching anything), which overturned H0's mechanism story: clang had
+NOT unrolled the byte loops — both kernels' memcpy was a plain
+byte-per-iteration loop, and H0's healthy-looking baselines were
+just modern TCG executing ~1.2 G guest-insns/s.  The correction is
+recorded in H0's Result (the O6 tradition).  That made the word
+loops' case straightforward: 8 bytes per iteration against 1.
+
+The bodies: `sw_word` (`uint64_t` + `__attribute__((may_alias))`) is
+the load-bearing type — the cast asserts the 8-byte alignment that
+`-mstrict-align` a64 REQUIRES before clang will emit a wide access
+(a `__builtin_memcpy`-only spelling would silently degrade to byte
+loads there, because the builtin cannot prove alignment), and the
+attribute waives the aliasing rule that a bare `uint64_t *` into a
+byte buffer would break.  memcpy forks on co-alignment: byte head
+earns both sides 8-byte alignment, then one aligned load + store per
+8; the mixed-alignment middle keeps aligned STORES and takes
+`__builtin_memcpy` loads (one `ld` on rv64; byte loads on
+strict-align a64, honestly — still one wide store per 8, and mixed
+alignment is the rare case).  memmove's backward path plays the same
+trick from the top end.  Verified codegen, not assumed: objdump
+shows `ld/sd` (rv64) and `ldr/str x` (a64) in the loops.
+
+**Numbers (TCG, same sandbox, §5):** rv64 memcpy 64 KiB 249 → **814**
+MB/s, 1 MiB-eq 413 → **2449** (5.9×), memset 434 → **2553** (5.9×),
+memmove-overlap 370 → **887**; a64 memcpy 197 → **623**, 288 →
+**1964** (6.8×), memset 568 → **3178** (5.6×), memmove 254 → **617**.
+(The 64 KiB single-pass rows carry first-pass TCG translation cost;
+the 1 MiB-eq rows are the steady state.)
+
+**Controls:** x86 `string.o` `.text` byte-identical before/after
+(the `#ifndef ARCH_X86_64` fence plus `string_fast.c` shadowing —
+measured, not trusted).  The host suite compiles these exact bodies:
+`test_string` grew a word-path torture sweep — every src/dst offset
+pair in a word crossed with sizes straddling the n≥16 threshold and
+word boundaries, plus overlap sweeps in both directions with canary
+bytes around the window — 43/43 (was 40).  Gates: rv boot 47 OK /
+shell 22 OK, a64 boot 45 OK / shell 15 OK, x86 17/17.
 
 #### Test gate
 
@@ -297,14 +349,14 @@ All TCG on this sandbox unless a receipt row says otherwise.
 
 | Metric | H0 baseline | H1 | H2 | H3 |
 |---|---|---|---|---|
-| rv64 memcpy 64 KiB (MB/s) | 249 | | | |
-| rv64 memcpy 1 MiB-eq (MB/s) | 413 | | | |
-| rv64 memset 1 MiB-eq (MB/s) | 434 | | | |
-| rv64 memmove-overlap 64 KiB (MB/s) | 370 | | | |
-| a64 memcpy 64 KiB (MB/s) | 197 | | | |
-| a64 memcpy 1 MiB-eq (MB/s) | 288 | | | |
-| a64 memset 1 MiB-eq (MB/s) | 568 | | | |
-| a64 memmove-overlap 64 KiB (MB/s) | 254 | | | |
+| rv64 memcpy 64 KiB (MB/s) | 249 | **814** | | |
+| rv64 memcpy 1 MiB-eq (MB/s) | 413 | **2449** | | |
+| rv64 memset 1 MiB-eq (MB/s) | 434 | **2553** | | |
+| rv64 memmove-overlap 64 KiB (MB/s) | 370 | **887** | | |
+| a64 memcpy 64 KiB (MB/s) | 197 | **623** | | |
+| a64 memcpy 1 MiB-eq (MB/s) | 288 | **1964** | | |
+| a64 memset 1 MiB-eq (MB/s) | 568 | **3178** | | |
+| a64 memmove-overlap 64 KiB (MB/s) | 254 | **617** | | |
 | x86 receipts (qemu64) | pat=1 pcid=0 invpcid=0 erms=0; PAT=0x0007040600070406 | | | |
 | x86 receipts (-cpu max) | pat=1 **pcid=0 invpcid=0** erms=1; PAT same | | | |
 
