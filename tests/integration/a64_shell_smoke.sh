@@ -93,7 +93,8 @@ assert_grep "depth 1"                                            "spawn nesting 
 assert_grep "exit code 7"                                        "nested exit code ROUND-TRIPS (the exit_code_box pin)"
 assert_grep "refused: machine 243 (riscv64"                      "cross-tenant refusal, NAMED (a64 rejects rv)"
 assert_grep "\[shell\] exited 0"                                 "clean shell exit"
-assert_grep "A5c complete; powering off"                         "the session ends by PSCI, not timeout"
+assert_grep "A7 complete; console+shell+blk+net online"          "the session ends by PSCI, not timeout"
+assert_grep "rx bytes via GIC irq: [1-9]"                        "A7: every session keystroke arrived through the GIC path"
 
 # ---- never-see ----
 assert_no_grep "READ EFAULT"                                     "no EFAULT flood (the SP_EL0 pin)"

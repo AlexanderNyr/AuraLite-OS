@@ -2,6 +2,51 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A7 — the promoted transport: blk + net + IRQ console on the fourth tenant] 2026-08-21
+
+`ARM64_PLAN.md` phase A7: storage and network through the PROMOTED
+virtio-mmio transport, console interrupt-fed both ways.  Every gate
+green on the first boot of the wired kernel.
+
+- `kernel/drivers/virtio_mmio.c` (promoted from kernel/arch/riscv64/,
+  the fdt.c treatment): arch reach-outs became a `vmmio_arch_ops`
+  table; BOTH MMIO kernels link the one source (`KERNELRV_SHARED` +
+  `KERNELA64_SHARED`), the rv copy is deleted, not forked.  The file
+  is portable code now and the ratchets prove it stayed clean:
+  `fence rw, rw` → `__atomic_thread_fence(SEQ_CST)` (same fence back
+  on rv64, `dmb ish` on a64); all four counters at baseline
+  (359/69/0/29).  **[AMEND-1] paid as predicted**: `kernel/drivers/`
+  joined the x86_64 find(1) exclusions in the same patch (i386's list
+  is a positive find over its own dir — needed nothing, measured);
+  all four kernels built first try.
+- The attach-time attribute gate: `paging_a64_attr_index()` reads the
+  live MAIR index and the transport REFUSES a non-Device window
+  before the first register read (Fact 5.2 by refusal, not
+  convention).  The rv hook returns 1 with the Sv39-without-Svpbmt
+  asymmetry documented where it lives (PMAs decide; nothing to walk).
+- `vblk_a64` + `vnet_a64`: the rv shapes over the shared transport,
+  parity strings byte-identical (shared smoke text by construction).
+  Measured: blk legacy v1, 8192 sectors, known-bytes + write/readback/
+  restore on LBA 8191; net DHCP 10.0.2.15 → ARP → ICMP echo with
+  payload `auralite-a64-ping` verified — miniproto's THIRD consumer.
+- **[AMEND-3]**: PL011 TX rides `drivers/uart/uart_ring.h` (the O3
+  index core, 75 host checks before it saw this UART) under
+  `arch_irq_save/restore` — the A6 DAIF backend earning its keep;
+  sync path kept for early boot/panic; PSCI SYSTEM_OFF drains the
+  ring first (a power-off with ringed bytes eats the log tail the
+  smokes assert on).
+- PL011 RX: IRQ-fed via GIC INTID 33 (SPI 1, from the DTB through
+  A1's normalisation), IMSC/ICR, drain-all-per-claim (the V2 level
+  lesson); polled fallback until the GIC is up.  The receipt is
+  counted: `rx bytes via GIC irq: 11` for the smoke's 11-keystroke
+  session — a poll-fed session would print 0.
+- Gates: new `a64_drivers_smoke.sh` 15/15 (fuse, force-legacy pin,
+  both PASSes, receipt, no-FAIL); a64 shell/boot/image green;
+  rv_parity 21/21 over the shared object (the promotion's
+  non-regression gate), rv boot/shell green; x86_64 17/17; test-unit
+  end-to-end; `check_arm64_claims` 80 (+7); the riscv checker's V7
+  transport claim follows the promoted file.
+
 ## [A64 A6 — the sweep closes over the fourth ISA: DAIF behind the contracts] 2026-08-21
 
 `ARM64_PLAN.md` phase A6: the D6 thesis, measured — **zero portable

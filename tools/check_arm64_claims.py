@@ -378,6 +378,54 @@ def claims():
                                     "test_width_sweep.sh") and
          "KERNELA64_SHARED" in read("tests", "unit",
                                     "test_width_sweep.sh")),
+
+        # --- A7: drivers -- the promoted transport, blk, net, PL011 ---
+        ("A7: the virtio-mmio transport is PROMOTED and single-source "
+         "(kernel/drivers/, both MMIO kernels list it, the rv copy is "
+         "gone)",
+         exists("kernel", "drivers", "virtio_mmio.c") and
+         not exists("kernel", "arch", "riscv64", "virtio_mmio.c") and
+         makefl.count("kernel/drivers/virtio_mmio.c") >= 2),
+        ("A7 [AMEND-1]: the x86 find learned kernel/drivers/ IN THE "
+         "SAME PATCH (the A0 trap predicted, not stepped on)",
+         "-not -path 'kernel/drivers/*'" in makefl),
+        ("A7: the transport refuses non-Device windows at attach time "
+         "(Fact 5.2 by refusal; the rv hook records the Sv39 "
+         "asymmetry honestly)",
+         "mmio_is_device" in read("kernel", "drivers",
+                                  "virtio_mmio.c") and
+         "paging_a64_attr_index" in read("kernel", "arch", "aarch64",
+                                         "vmmio_a64.c") and
+         "PMAs" in read("kernel", "arch", "riscv64", "vmmio_rv.c")),
+        ("A7: the promoted transport is portable-clean -- builtin "
+         "fences, no inline asm (ratchet 4 stays put)",
+         "__atomic_thread_fence" in read("kernel", "drivers",
+                                         "virtio_mmio.c") and
+         "__asm__" not in read("kernel", "drivers", "virtio_mmio.c")),
+        ("A7: the a64 blk/net pair keeps the rv64 parity strings and "
+         "pings as itself",
+         "known-bytes read + write/readback/restore" in
+         read("kernel", "arch", "aarch64", "vblk_a64.c") and
+         "auralite-a64-ping" in read("kernel", "arch", "aarch64",
+                                     "vnet_a64.c") and
+         "miniproto_dhcp" in read("kernel", "arch", "aarch64",
+                                  "vnet_a64.c")),
+        ("A7 [AMEND-3]: PL011 TX rides the O3 ring core, and the ring "
+         "drains before PSCI takes the log's tail",
+         'drivers/uart/uart_ring.h' in read("kernel", "arch", "aarch64",
+                                            "pl011.c") and
+         "uring_push" in read("kernel", "arch", "aarch64", "pl011.c") and
+         "pl011_tx_flush" in read("kernel", "arch", "aarch64",
+                                  "psci.c")),
+        ("A7: PL011 RX is IRQ-fed through the GIC with the counted "
+         "receipt, and the smoke pins it with the force-legacy lesson",
+         "IMSC" in read("kernel", "arch", "aarch64", "pl011.c") and
+         "gic_enable" in read("kernel", "arch", "aarch64", "pl011.c") and
+         "rx bytes via GIC irq" in mainc and
+         "force-legacy=true" in read("tests", "integration",
+                                     "a64_drivers_smoke.sh") and
+         "log-size fuse" in read("tests", "integration",
+                                 "a64_drivers_smoke.sh")),
     ]
 
     # Structural: the Status header and the phase table must agree.

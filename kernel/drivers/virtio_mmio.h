@@ -1,19 +1,30 @@
-/* kernel/arch/riscv64/virtio_mmio.h -- the virtio-mmio transport
- * (RISCV_PLAN V7, decision D7).
+/* kernel/drivers/virtio_mmio.h -- the virtio-mmio transport
+ * (RISCV_PLAN V7, decision D7; PROMOTED from kernel/arch/riscv64/ in
+ * ARM64_PLAN A7 -- the fdt.c treatment: one source file, every
+ * MMIO-transport kernel compiles it, the claim checkers assert the
+ * single-source linkage).
  *
- * The virt machine's 8 virtio windows (V1 recorded them from the DTB)
- * speak virtio over plain MMIO registers -- no PCI, no capabilities,
- * just a fixed layout at each 0x1000 window (virtio spec 4.2, the
- * "legacy interface" version=1 flavour QEMU virt exposes by default,
- * plus version=2 handled where it differs).
+ * The virt machines' virtio windows (riscv64: 8, aarch64: 32 -- both
+ * recorded from the DTB by the shared walker) speak virtio over plain
+ * MMIO registers -- no PCI, no capabilities, just a fixed layout at
+ * each window (virtio spec 4.2, the "legacy interface" version=1
+ * flavour QEMU virt exposes by default, plus version=2 handled where
+ * it differs).
  *
  * The virtqueue STRUCTURES (vring_desc/avail/used) come from
  * drivers/virtio/virtio_common.h -- the same header the PCI drivers
  * use; only the transport differs (D7's one-implementation rule).
+ *
+ * What the promotion changed: the file no longer calls any arch's
+ * allocator, console or clock by name.  Each tenant hands over a
+ * vmmio_arch_ops table -- and the aarch64 table's mmio_is_device hook
+ * turns Fact 5.2's bug class (device registers behind a Normal
+ * mapping: reordered, combined, speculated) into a REFUSAL at attach
+ * time instead of a convention in a comment.
  */
 
-#ifndef AURALITE_ARCH_RISCV64_VIRTIO_MMIO_H
-#define AURALITE_ARCH_RISCV64_VIRTIO_MMIO_H
+#ifndef AURALITE_DRIVERS_VIRTIO_MMIO_H
+#define AURALITE_DRIVERS_VIRTIO_MMIO_H
 
 #include <stdint.h>
 
@@ -56,10 +67,37 @@
 #define VM_S_DRIVER_OK  4
 #define VM_S_FEATURES_OK 8
 
+/* The legacy layout's page granule.  Both tenants run 4 KiB frames
+ * (PAGE_SIZE_RV and PAGE_SIZE_A64 agree); this constant is what goes
+ * into VM_GUEST_PAGE_SZ and what the vring pad rounds to, so it must
+ * equal the granularity of alloc_frame below -- a tenant with a
+ * different frame size would need a field here, and none exists. */
+#define VMMIO_PAGE 4096u
+
+/* The arch services the transport consumes -- the promotion seam.
+ * Everything the rv64 original reached for by name (pmm_rv_alloc_
+ * frame, p2v_rv, sbi_puts, rv_rdtime) arrives through this table
+ * instead. */
+struct vmmio_arch_ops {
+    uint64_t (*alloc_frame)(void);   /* one physical frame, 0 = OOM */
+    void    *(*p2v)(uint64_t phys);  /* HHDM view of that frame */
+    void     (*puts)(const char *s); /* the boot console */
+    uint64_t (*ticks)(void);         /* monotonic counter ... */
+    uint64_t  ticks_per_sec;         /* ... at this rate (deadlines) */
+    /* 1 = this VA is mapped with device attributes (or the arch has
+     * no per-PTE attributes to check -- riscv64's Sv39 without
+     * Svpbmt leaves memory types to the PMAs, and its hook says so
+     * honestly).  0 = Normal mapping: the transport REFUSES the
+     * window (aarch64, Fact 5.2 -- prevented by refusal, not
+     * convention). */
+    int      (*mmio_is_device)(const volatile void *va);
+};
+
 /* One probed device: window VA + a single legacy-layout virtqueue.
  * The legacy vring is ONE contiguous allocation (desc, avail, pad to
  * page, used) whose PFN goes in VM_QUEUE_PFN. */
 struct vmmio_dev {
+    const struct vmmio_arch_ops *ops;
     volatile uint8_t   *base;      /* HHDM VA of the window */
     uint32_t            version;   /* 1 or 2 */
     uint32_t            device_id;
@@ -74,8 +112,8 @@ struct vmmio_dev {
 /* Scan `count` windows at bases[] (HHDM VAs) for device_id; on hit,
  * negotiate features (accepting none -- bring-up scope), set up
  * queue 0, and mark DRIVER_OK.  Returns 0 and fills *dev, or -1. */
-int vmmio_probe(struct vmmio_dev *dev, uint64_t *bases, uint32_t count,
-                uint32_t device_id);
+int vmmio_probe(struct vmmio_dev *dev, const struct vmmio_arch_ops *ops,
+                const uint64_t *bases, uint32_t count, uint32_t device_id);
 
 /* Post a descriptor chain (already written into dev->desc[0..n-1],
  * head at index 0) and busy-wait for the used ring to advance.
@@ -85,4 +123,4 @@ int vmmio_submit_wait(struct vmmio_dev *dev, int ndesc);
 /* Read a device-config byte (VM_CONFIG + off). */
 uint8_t vmmio_cfg8(struct vmmio_dev *dev, uint32_t off);
 
-#endif /* AURALITE_ARCH_RISCV64_VIRTIO_MMIO_H */
+#endif /* AURALITE_DRIVERS_VIRTIO_MMIO_H */

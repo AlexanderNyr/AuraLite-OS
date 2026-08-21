@@ -82,14 +82,19 @@ LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096 --gc-section
 # it explicitly in their KERNEL*_SHARED variables.  x86 has no DTB and
 # no dt_phys_to_virt definition; the A0 lesson (this find IS the
 # shared build logic) caught its second victim here, at link time.
-KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*' -not -path 'kernel/dt/*') w32/src/w32_pe.c
+# A7 [AMEND-1]: kernel/drivers/ excluded the same way, IN THE SAME
+# PATCH that created it (the promoted virtio-mmio transport lives
+# there; the MMIO-transport kernels list it in their SHARED
+# variables, and x86 device access is PCI).  The trap predicted in
+# the amendment instead of stepped on a third time.
+KERNEL_SRCS := $(shell find kernel drivers -name '*.c' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*' -not -path 'kernel/dt/*' -not -path 'kernel/drivers/*') w32/src/w32_pe.c
 # WIN32_PLAN.md W32-3: the kernel PE loader calls the same parser the host
 # unit test and fuzz corpus exercise (D2 -- one implementation, tested once).
 # w32/src/ is freestanding C with no libc dependency, so it compiles with the
 # kernel CFLAGS unchanged.
 # I386_PLAN I1: kernel/arch/i386/ is excluded from the x86_64 kernel -- it
 # builds through the separate kernel32 target with the i686 toolchain flags.
-KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*')
+KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch/i386/*' -not -path 'kernel/arch/riscv64/*' -not -path 'kernel/arch/aarch64/*' -not -path 'kernel/drivers/*')
 # NOTE: a .c and .asm file MUST NOT share a base name (e.g. foo.c + foo.asm),
 # because both compile to the same object path build/.../foo.o, which would
 # collide and double-link. Keep assembly stubs named distinctly (e.g.
@@ -233,12 +238,12 @@ KERNELRV_DIR  := kernel/arch/riscv64
 # out of kernel/arch/riscv64/ -- both DTB-consuming kernels compile
 # this one file, and the claim checkers assert it (a promotion that
 # forked would be worse than no promotion).
-KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c
+KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c kernel/drivers/virtio_mmio.c
 KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null) $(KERNELRV_SHARED)
 KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
 KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
                  $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))
-KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h
+KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h
 CFLAGSRV      := --target=riscv64 -march=rv64gc -mabi=lp64d \
                  -mcmodel=medany -mno-relax \
                  -std=c11 -ffreestanding -fno-stack-protector \
@@ -295,12 +300,16 @@ KERNELA64_DIR  := kernel/arch/aarch64
 # #ifndef ARCH_X86_64) join the aarch64 kernel -- the fdt.c promotion
 # shape: shared source, single object, claim-checked.  Without it the
 # first clang-lowered memcpy CALL is a link error in ambush.
-KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c
+# A7: the promoted virtio-mmio transport and the shared miniproto
+# join -- the fourth tenant's blk/net drivers ride the SAME transport
+# object the rv64 pair switched to in this patch, and the THIRD
+# miniproto consumer proves the same packets.
+KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c kernel/net/miniproto.c kernel/drivers/virtio_mmio.c
 KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null) $(KERNELA64_SHARED)
 KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
 KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
                   $(patsubst %.S,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_ASMS))
-KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/lib/string.h
+KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/lib/string.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h drivers/uart/uart_ring.h
 CFLAGSA64      := --target=aarch64-unknown-none-elf \
                   -mstrict-align -mgeneral-regs-only \
                   -std=c11 -ffreestanding -fno-stack-protector \

@@ -30,6 +30,8 @@
 #include "kernel/arch/aarch64/trap_a64.h"
 #include "kernel/arch/aarch64/user_a64.h"
 #include "kernel/arch/aarch64/initrd_a64.h"
+#include "kernel/arch/aarch64/vblk_a64.h"
+#include "kernel/arch/aarch64/vnet_a64.h"
 
 #define RAM_BASE      0x40000000UL
 #define FDT_MAGIC_BE  0xD00DFEEDUL
@@ -516,6 +518,32 @@ void kmain_a64(uint64_t x0_at_entry)
     a3_bringup();
     a4_bringup();
 
+    /* ---- A7: the virt machine's real devices. ------------------------
+     * Absence is a SKIP, not a FAIL: the boot smoke runs without
+     * -drive/-netdev and must stay green; the driver gates get their
+     * devices from a64_drivers_smoke's richer QEMU line (main_rv.c's
+     * V7 stanza, fourth arch).  The console goes interrupt-fed both
+     * ways first: RX through the GIC (INTID from A1's normalisation),
+     * TX through the O3 ring core [AMEND-3]. */
+
+    if (platform.uart_base && platform.uart_irq)
+        pl011_rx_init(platform.uart_irq);
+    pl011_tx_ring_enable();
+
+    if (vblk_a64_init(&platform) == 0) {
+        if (vblk_a64_selftest() != 0) {
+            pl011_puts("[blk]  FAIL: self-test\n");
+            psci_system_off();
+        }
+    }
+
+    if (vnet_a64_init(&platform) == 0) {
+        if (vnet_a64_selftest() != 0) {
+            pl011_puts("[net]  FAIL: self-test\n");
+            psci_system_off();
+        }
+    }
+
     /* ---- A5c: the initrd and real compiled userspace (the fourth
      * tenant).  Only Image boots carry an initrd on this board (the
      * A5a fact); an ELF boot reports the absence honestly and keeps
@@ -538,7 +566,15 @@ void kmain_a64(uint64_t x0_at_entry)
         pl011_putdec64((uint64_t)sh);
         pl011_puts("\n");
 
-        pl011_puts("[kernel] A5c complete; powering off via PSCI\n");
+        /* A7's receipt: every keystroke the session typed arrived
+         * through the GIC path, and this counter is the proof the
+         * smoke test greps (a poll-fed session would leave it 0). */
+        pl011_puts("[uart] rx bytes via GIC irq: ");
+        pl011_putdec64(pl011_rx_count());
+        pl011_puts("\n");
+
+        pl011_puts("[kernel] A7 complete; console+shell+blk+net online; "
+                   "powering off via PSCI\n");
         psci_system_off();
     }
 

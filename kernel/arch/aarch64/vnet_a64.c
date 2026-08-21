@@ -1,25 +1,30 @@
-/* kernel/arch/riscv64/vnet_rv.c -- virtio-net over mmio (RISCV_PLAN V7).
+/* kernel/arch/aarch64/vnet_a64.c -- virtio-net over mmio (ARM64_PLAN
+ * A7; vnet_rv.c's shape over the PROMOTED transport).
  *
  * Two queues (0 = RX, 1 = TX), every frame prefixed by the 10-byte
  * virtio-net header (no features negotiated => the legacy 10-byte
  * layout, no mrg_rxbuf).  The PROTOCOLS above the frames are
- * kernel/net/miniproto.c -- the second consumer, the code the i386
- * gate already proved against SLIRP; this file only moves bytes.
+ * kernel/net/miniproto.c -- the THIRD consumer (net32.c, vnet_rv.c,
+ * now this file); the packets that satisfied SLIRP for two tenants
+ * satisfy it for the fourth, and only the ops table is new.
  *
  * The transport keeps vmmio_probe's one-queue setup for queue 0 and
  * repeats the dance manually for queue 1 (the probe helper stays
- * simple; two call sites would not).
+ * simple; two call sites would not).  Log strings match vnet_rv.c's
+ * byte for byte except the ping payload, which carries this arch's
+ * name -- each tenant pings as itself so a crossed wire is visible.
  */
 
 #include <stdint.h>
 
-#include "kernel/arch/riscv64/vnet_rv.h"
+#include "kernel/arch/aarch64/vnet_a64.h"
 #include "kernel/drivers/virtio_mmio.h"
-#include "kernel/arch/riscv64/vmmio_rv.h"
-#include "kernel/arch/riscv64/paging_rv.h"
-#include "kernel/arch/riscv64/pmm_rv.h"
-#include "kernel/arch/riscv64/sbi.h"
-#include "kernel/arch/riscv64/trap.h"
+#include "kernel/arch/aarch64/vmmio_a64.h"
+#include "kernel/arch/aarch64/paging_a64.h"
+#include "kernel/arch/aarch64/pmm_a64.h"
+#include "kernel/arch/aarch64/pl011.h"
+#include "kernel/arch/aarch64/trap_a64.h"
+#include "kernel/arch/aarch64/irqflags.h"
 #include "kernel/net/miniproto.h"
 
 #define VNET_HDR_LEN 10
@@ -50,11 +55,16 @@ static inline void wr32(volatile uint8_t *b, uint32_t off, uint32_t v)
     *(volatile uint32_t *)(b + off) = v;
 }
 
+static inline void fence_a64(void)
+{
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
 static void put_hexb_(uint8_t v)
 {
     static const char hex[] = "0123456789abcdef";
-    sbi_putc(hex[v >> 4]);
-    sbi_putc(hex[v & 0xF]);
+    pl011_putc(hex[v >> 4]);
+    pl011_putc(hex[v & 0xF]);
 }
 
 /* Queue-1 setup, the legacy contiguous-vring dance again. */
@@ -69,22 +79,22 @@ static int setup_tx_queue(void)
 
     uint32_t desc_bytes  = 16u * tx_qsize;
     uint32_t avail_bytes = 6u + 2u * tx_qsize;
-    uint32_t used_off    = (desc_bytes + avail_bytes + PAGE_SIZE_RV - 1)
-                           & ~(PAGE_SIZE_RV - 1);
+    uint32_t used_off    = (desc_bytes + avail_bytes + PAGE_SIZE_A64 - 1)
+                           & ~(PAGE_SIZE_A64 - 1);
     uint32_t total       = used_off + 6u + 8u * tx_qsize;
-    uint32_t npages      = (total + PAGE_SIZE_RV - 1) / PAGE_SIZE_RV;
+    uint32_t npages      = (total + PAGE_SIZE_A64 - 1) / PAGE_SIZE_A64;
 
-    uint64_t first = pmm_rv_alloc_frame();
+    uint64_t first = pmm_a64_alloc_frame();
     if (!first)
         return -1;
     uint64_t prev = first;
     for (uint32_t i = 1; i < npages; i++) {
-        uint64_t f = pmm_rv_alloc_frame();
-        if (f != prev + PAGE_SIZE_RV)
+        uint64_t f = pmm_a64_alloc_frame();
+        if (f != prev + PAGE_SIZE_A64)
             return -1;
         prev = f;
     }
-    uint8_t *ring = (uint8_t *)p2v_rv(first);
+    uint8_t *ring = (uint8_t *)p2v_a64(first);
     for (uint32_t i = 0; i < total; i++)
         ring[i] = 0;
 
@@ -94,8 +104,8 @@ static int setup_tx_queue(void)
 
     if (rxq.version == 1) {
         wr32(b, VM_QUEUE_NUM, tx_qsize);
-        wr32(b, VM_QUEUE_ALIGN, PAGE_SIZE_RV);
-        wr32(b, VM_QUEUE_PFN, (uint32_t)(first / PAGE_SIZE_RV));
+        wr32(b, VM_QUEUE_ALIGN, PAGE_SIZE_A64);
+        wr32(b, VM_QUEUE_PFN, (uint32_t)(first / PAGE_SIZE_A64));
     } else {
         uint64_t desc_phys  = first;
         uint64_t avail_phys = first + desc_bytes;
@@ -113,9 +123,9 @@ static int setup_tx_queue(void)
     return 0;
 }
 
-/* Keep the RX queue stocked: every buffer is one 2-descriptor-free
- * chain (header+data share the buffer; no features => device writes
- * the 10-byte header first). */
+/* Keep the RX queue stocked: every buffer is one descriptor (header+
+ * data share the buffer; no features => device writes the 10-byte
+ * header first). */
 static void rx_post(int slot)
 {
     rxq.desc[slot].addr  = rxbuf_phys[slot];
@@ -123,22 +133,22 @@ static void rx_post(int slot)
     rxq.desc[slot].flags = VRING_DESC_F_WRITE;
     rxq.desc[slot].next  = 0;
     rxq.avail->ring[rxq.avail->idx % rxq.qsize] = (uint16_t)slot;
-    __asm__ volatile("fence rw, rw" ::: "memory");
+    fence_a64();
     rxq.avail->idx++;
-    __asm__ volatile("fence rw, rw" ::: "memory");
+    fence_a64();
     wr32((volatile uint8_t *)rxq.base, VM_QUEUE_NOTIFY, 0);
 }
 
-int vnet_rv_init(const fdt_platform_t *plat)
+int vnet_a64_init(const fdt_platform_t *plat)
 {
     uint64_t bases[FDT_MAX_VIRTIO];
     for (uint32_t i = 0; i < plat->virtio_count; i++)
-        bases[i] = (uint64_t)p2v_rv(plat->virtio_base[i]);
+        bases[i] = (uint64_t)p2v_a64(plat->virtio_base[i]);
 
-    if (vmmio_probe(&rxq, vmmio_rv_ops(), bases, plat->virtio_count,
+    if (vmmio_probe(&rxq, vmmio_a64_ops(), bases, plat->virtio_count,
                     VM_DEV_NET) != 0) {
-        sbi_puts("[net]  no virtio-net device on the mmio windows "
-                 "(pass -netdev/-device to attach one)\n");
+        pl011_puts("[net]  no virtio-net device on the mmio windows "
+                   "(pass -netdev/-device to attach one)\n");
         return -1;
     }
     if (setup_tx_queue() != 0)
@@ -150,33 +160,33 @@ int vnet_rv_init(const fdt_platform_t *plat)
         our_mac[i] = vmmio_cfg8(&rxq, (uint32_t)i);
 
     for (int i = 0; i < RX_BUFS; i++) {
-        rxbuf_phys[i] = pmm_rv_alloc_frame();
+        rxbuf_phys[i] = pmm_a64_alloc_frame();
         if (!rxbuf_phys[i])
             return -1;
-        rxbuf[i] = (uint8_t *)p2v_rv(rxbuf_phys[i]);
+        rxbuf[i] = (uint8_t *)p2v_a64(rxbuf_phys[i]);
         rx_post(i);
     }
-    txbuf_phys = pmm_rv_alloc_frame();
+    txbuf_phys = pmm_a64_alloc_frame();
     if (!txbuf_phys)
         return -1;
-    txbuf = (uint8_t *)p2v_rv(txbuf_phys);
+    txbuf = (uint8_t *)p2v_a64(txbuf_phys);
 
-    sbi_puts("[net]  virtio-net over mmio, MAC ");
+    pl011_puts("[net]  virtio-net over mmio, MAC ");
     for (int i = 0; i < 6; i++) {
         put_hexb_(our_mac[i]);
         if (i < 5)
-            sbi_putc(':');
+            pl011_putc(':');
     }
-    sbi_puts("\n");
+    pl011_puts("\n");
     ready = 1;
     return 0;
 }
 
 /* ---- the miniproto ops ---------------------------------------------------- */
 
-static void net_send_rv(const uint8_t *frame, uint32_t len)
+static void net_send_a64(const uint8_t *frame, uint32_t len)
 {
-    if (!ready || len + VNET_HDR_LEN > PAGE_SIZE_RV)
+    if (!ready || len + VNET_HDR_LEN > PAGE_SIZE_A64)
         return;
     for (int i = 0; i < VNET_HDR_LEN; i++)
         txbuf[i] = 0;
@@ -189,15 +199,15 @@ static void net_send_rv(const uint8_t *frame, uint32_t len)
     txd[0].flags = 0;
     txd[0].next  = 0;
     txa->ring[txa->idx % tx_qsize] = 0;
-    __asm__ volatile("fence rw, rw" ::: "memory");
+    fence_a64();
     txa->idx++;
-    __asm__ volatile("fence rw, rw" ::: "memory");
+    fence_a64();
     volatile uint8_t *b = rxq.base;
     wr32(b, VM_QUEUE_NOTIFY, 1);
 
-    uint64_t deadline = rv_rdtime() + 10000000;
-    while (txu->idx == before && rv_rdtime() < deadline)
-        __asm__ volatile("fence rw, rw" ::: "memory");
+    uint64_t deadline = a64_cntvct() + vmmio_a64_ops()->ticks_per_sec;
+    while (txu->idx == before && a64_cntvct() < deadline)
+        fence_a64();
     tx_last_used = txu->idx;
 
     uint32_t is = rd32(b, VM_INT_STATUS);
@@ -205,11 +215,11 @@ static void net_send_rv(const uint8_t *frame, uint32_t len)
         wr32(b, VM_INT_ACK, is);
 }
 
-static uint32_t net_poll_rv(uint8_t *out, uint32_t cap)
+static uint32_t net_poll_a64(uint8_t *out, uint32_t cap)
 {
     if (!ready || rxq.used->idx == rxq.last_used_idx)
         return 0;
-    __asm__ volatile("fence rw, rw" ::: "memory");
+    fence_a64();
 
     struct vring_used_elem *e =
         &rxq.used->ring[rxq.last_used_idx % rxq.qsize];
@@ -234,50 +244,51 @@ static uint32_t net_poll_rv(uint8_t *out, uint32_t cap)
     return flen;
 }
 
-static uint64_t ticks_rv(void) { return timer_ticks(); }
-static void relax_rv(void) { __asm__ volatile("fence rw, rw" ::: "memory"); }
+static uint64_t ticks_a64_(void) { return timer_ticks_a64(); }
+static void relax_a64_(void) { arch_cpu_relax(); }   /* A6's contract */
 
 static const struct miniproto_ops vnet_ops = {
-    .send    = net_send_rv,
-    .poll    = net_poll_rv,
-    .ticks   = ticks_rv,
-    .relax   = relax_rv,
+    .send    = net_send_a64,
+    .poll    = net_poll_a64,
+    .ticks   = ticks_a64_,
+    .relax   = relax_a64_,
     .tick_hz = 100,
     .mac     = our_mac,
 };
 
-int vnet_rv_selftest(void)
+int vnet_a64_selftest(void)
 {
     uint32_t our_ip = 0, gw_ip = 0;
     uint8_t gw_mac[6];
-    static const uint8_t payload[] = "auralite-rv64-ping";
+    static const uint8_t payload[] = "auralite-a64-ping";
 
-    sbi_puts("[net]  self-test: DHCP -> ARP -> ICMP echo (shared miniproto)...\n");
+    pl011_puts("[net]  self-test: DHCP -> ARP -> ICMP echo "
+               "(shared miniproto)...\n");
     if (miniproto_dhcp(&vnet_ops, &our_ip, &gw_ip) != 0) {
-        sbi_puts("[net]  FAIL: no DHCP lease\n");
+        pl011_puts("[net]  FAIL: no DHCP lease\n");
         return -1;
     }
-    sbi_puts("[net]  DHCP lease: ");
+    pl011_puts("[net]  DHCP lease: ");
     for (int i = 0; i < 4; i++) {
         uint64_t oct = (our_ip >> (8 * i)) & 0xFF;
         char buf[4]; int n = 0;
         do { buf[n++] = (char)('0' + oct % 10); oct /= 10; } while (oct);
-        while (n--) sbi_putc(buf[n]);
-        if (i < 3) sbi_putc('.');
+        while (n--) pl011_putc(buf[n]);
+        if (i < 3) pl011_putc('.');
     }
-    sbi_puts("\n");
+    pl011_puts("\n");
 
     if (miniproto_arp_gw(&vnet_ops, our_ip, gw_ip, gw_mac) != 0) {
-        sbi_puts("[net]  FAIL: gateway ARP unanswered\n");
+        pl011_puts("[net]  FAIL: gateway ARP unanswered\n");
         return -1;
     }
-    sbi_puts("[net]  ARP: gateway resolved\n");
+    pl011_puts("[net]  ARP: gateway resolved\n");
 
     if (miniproto_icmp_ping(&vnet_ops, our_ip, gw_ip, gw_mac,
                             payload, sizeof(payload)) != 0) {
-        sbi_puts("[net]  FAIL: no ICMP echo reply\n");
+        pl011_puts("[net]  FAIL: no ICMP echo reply\n");
         return -1;
     }
-    sbi_puts("[net]  PASS: lease + ARP + echo reply (payload verified)\n");
+    pl011_puts("[net]  PASS: lease + ARP + echo reply (payload verified)\n");
     return 0;
 }

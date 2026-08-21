@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "kernel/arch/aarch64/psci.h"
+#include "kernel/arch/aarch64/pl011.h"
 
 #define PSCI_SYSTEM_OFF 0x84000008u
 
@@ -33,6 +34,10 @@ static uint64_t psci_call(uint64_t fid)
 
 void psci_system_off(void)
 {
+    /* A7: the TX ring must drain before the power goes -- the boot
+     * log's tail is where the smoke assertions live, and SYSTEM_OFF
+     * takes ringed-but-unsent bytes with it. */
+    pl011_tx_flush();
     psci_call(PSCI_SYSTEM_OFF);
     /* SYSTEM_OFF does not return; if it somehow did, park honestly
      * rather than executing past the end of the world. */

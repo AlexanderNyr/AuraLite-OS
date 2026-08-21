@@ -226,6 +226,26 @@ uint64_t paging_a64_probe(uint64_t va)
     return ~0UL;
 }
 
+/* A7: the MAIR index of the leaf mapping covering va, or -1 if
+ * unmapped.  This is what lets the promoted virtio transport REFUSE
+ * a window that is not Device-attributed (Fact 5.2's bug class --
+ * device registers behind Normal memory are reordered/combined --
+ * prevented by a measured check instead of a mapping convention).
+ * Same walk as paging_a64_probe; the attribute bits are AttrIndx,
+ * PTE bits [4:2]. */
+int paging_a64_attr_index(uint64_t va)
+{
+    for (int level = 1; level <= 3; level++) {
+        uint64_t *pte = walk(va, level, 0);
+        if (!pte || !(*pte & PTE_VALID))
+            continue;
+        int is_leaf = (level == 3) || !(*pte & PTE_TABLE);
+        if (is_leaf)
+            return (int)((*pte >> 2) & 0x7);
+    }
+    return -1;
+}
+
 /* ---- init ------------------------------------------------------------------ */
 
 void paging_a64_init(void)

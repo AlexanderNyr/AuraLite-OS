@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A6 complete (phases A0–A9; A5 split into a/b/c)
+## Status: IN PROGRESS 🚧 — A0–A7 complete (phases A0–A9; A5 split into a/b/c)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -13,7 +13,7 @@
 | A5b — libca64 + the fourth tenant | ✅ complete | `patches/A64_A5b_tenant.patch` |
 | A5c — ELF loading, EL0 shell, cross-refusals | ✅ complete | `patches/A64_A5c_shell.patch` |
 | A6 — the sweep, fourth backend: DAIF behind the contracts | ✅ complete | `patches/A64_A6_sweep.patch` |
-| A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | pending | `patches/A64_A7_drivers.patch` |
+| A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | ✅ complete | `patches/A64_A7_drivers.patch` |
 | A8 — parity: storage, network, full crypto, fourth tenant | pending | `patches/A64_A8_parity.patch` |
 | A9 — CI matrix, docs, the claim check | pending | `patches/A64_A9_ci.patch` |
 
@@ -1184,14 +1184,14 @@ a64_shell green, `make iso` clean.
 
 ---
 
-### Phase A7 — Drivers: virtio-mmio (shared transport), blk, net, PL011 RX
+### Phase A7 — Drivers: virtio-mmio (shared transport), blk, net, PL011 RX ✅ COMPLETE
 
 **Objective:** storage and network through the *promoted* transport
 (Fact 6), interrupt-driven console RX.
 
 #### Tasks
 
-- [ ] Promote `kernel/arch/riscv64/virtio_mmio.c` → `kernel/drivers/
+- [x] Promote `kernel/arch/riscv64/virtio_mmio.c` → `kernel/drivers/
       virtio_mmio.c` behind the same hook treatment as the A1 walker
       — **[AMEND-1] and the x86_64/i386 source-list exclusions learn
       the new directory IN THE SAME PATCH** (the A0 find(1) lesson,
@@ -1200,21 +1200,92 @@ a64_shell green, `make iso` clean.
       check asserts single-object linkage. The legacy-vs-modern lesson
       (`-global virtio-mmio.force-legacy=true`) carries over verbatim
       and stays in the QEMU lines.
-- [ ] a64 wiring: Device-nGnRE mappings asserted (A3's MAIR index —
+- [x] a64 wiring: Device-nGnRE mappings asserted (A3's MAIR index —
       the transport refuses to attach over a Normal mapping; Fact
       5.2's bug class prevented by refusal, not convention), GICv2
       INTIDs from A1's normalisation, contiguous-vring PMM discipline
       inherited (adjacency-checked, fail loudly).
-- [ ] `vblk`/`vnet` on a64: the rv64 driver pair's shape over the
+- [x] `vblk`/`vnet` on a64: the rv64 driver pair's shape over the
       shared transport; miniproto parity strings kept identical so
       the smoke assertions are shared text.
-- [ ] **[AMEND-3]** PL011 TX through `drivers/uart/uart_ring.h` (the
+- [x] **[AMEND-3]** PL011 TX through `drivers/uart/uart_ring.h` (the
       O3 pure index core, already host-tested) — same shape, PL011
       registers;
-- [ ] PL011 RX: IRQ-driven (SPI 1 → INTID 33), `IMSC`/`ICR` handling;
+- [x] PL011 RX: IRQ-driven (SPI 1 → INTID 33), `IMSC`/`ICR` handling;
       the blocking-read path re-tests the cleared-interrupt-mask
       deadlock lesson (I7's, already re-tested in V7 — the DAIF twin
       this time).
+
+#### Result
+
+**The promotion.** `kernel/drivers/virtio_mmio.c` is the rv64
+transport with its arch reach-outs (pmm_rv_alloc_frame, p2v_rv,
+sbi_puts, rv_rdtime) replaced by a `vmmio_arch_ops` table — the fdt.c
+treatment, one source file, and BOTH MMIO kernels link the shared
+copy (`KERNELRV_SHARED` and `KERNELA64_SHARED` both list it; the
+kernel/arch/riscv64/ copy is deleted, not forked).  [AMEND-1] paid
+exactly as predicted: `kernel/drivers/` joined the x86_64 find(1)
+exclusion list in the same patch (the i386 list needed nothing — it
+is a positive `find` over its own arch directory plus an explicit
+shared list, measured, not assumed), and the gate built all four
+kernels first try.  The promoted file is portable code now, and the
+ratchets prove it stayed clean: `fence rw, rw` became
+`__atomic_thread_fence(SEQ_CST)` (the compiler lowers it back to that
+very fence on rv64, `dmb ish` on a64), and all four counters sit at
+baseline — casts 359/359, x64-includes 69/69, cross-arch 0, asm-files
+29/29.  The rv64 non-regression gate: rv_parity_smoke 21/21 over the
+shared object, rv_boot + rv_shell green.
+
+**The a64 wiring, and the hook that is the port's whole point:** the
+transport now REFUSES a window that is not Device-attributed.
+`paging_a64_attr_index()` walks the live tables and reports the MAIR
+index; `vmmio_a64.c`'s `mmio_is_device` requires `MAIR_IDX_DEVICE`
+before the first register read (Fact 5.2's reordered/combined device
+access — prevented by refusal, not convention).  The rv64 hook
+returns 1 with the asymmetry documented where it lives: Sv39 without
+Svpbmt has no per-PTE attribute bits to check — PMAs decide, and the
+hook says so instead of faking a walk.  The contiguous-vring
+adjacency check transfers unchanged and held (both PMMs walk their
+bitmaps upward; the check is what makes that a contract).
+
+**blk + net on the fourth tenant, measured on the first boot:**
+virtio-blk attached legacy version 1 (the force-legacy lesson pinned
+in the smoke's QEMU line AND asserted in the banner), 8192 sectors —
+known-bytes sector-0 read + write/readback/restore on LBA 8191,
+PASS.  virtio-net: MAC 52:54:00:12:34:56 from config space, then the
+SHARED miniproto — the THIRD consumer — took DHCP (10.0.2.15), ARP,
+and a payload-verified ICMP echo, pinging as `auralite-a64-ping`
+(each tenant pings as itself so a crossed wire is visible).  Log
+strings are vnet_rv.c's byte for byte, so the smoke assertions are
+shared text by construction.
+
+**The console went interrupt-fed both ways.**  [AMEND-3]: PL011 TX
+rides `drivers/uart/uart_ring.h` — the O3 index core, host-tested
+across wrap/full/empty and the 2^32 crossing before it ever saw this
+UART; the file adds only the PL011 spelling of "FIFO has room"
+(FR.TXFF) and "interrupt me when it drains" (IMSC.TXIM), with the
+sync path kept for early boot and panic (uart.c's rule).  The ring
+manipulation runs under `arch_irq_save/restore` — the A6 DAIF
+backend earning its keep a week after it landed.  PSCI SYSTEM_OFF
+now drains the ring first: a power-off with ringed-but-unsent bytes
+would eat the log tail where every smoke assertion lives.  RX: IRQ
+33 (SPI 1, A1's normalisation, taken from the DTB not hardcoded),
+IMSC.RXIM + receive-timeout, the handler drains ALL pending bytes
+per claim (the V2 level-line lesson) into a second ring;
+`pl011_try_getc()` pops it, and the A5c polled read remains as the
+pre-GIC fallback.  The receipt is counted and printed —
+`rx bytes via GIC irq: 11` for the smoke's 11-keystroke session
+(`uname\n` + `exit\n`), a number a poll-fed session would leave 0.
+
+**Gates:** the new a64_drivers_smoke — 15 assertions incl. the
+log-size fuse, the force-legacy pin, both driver PASSes, the IRQ
+receipt, no-FAIL/no-UNHANDLED — green; a64_shell_smoke re-pinned to
+the A7 ending and grew the receipt assert (15 green lines incl. the
+fuse); a64 boot/image green; rv_parity
+21/21, rv boot/shell green; x86_64 boot-to-shell 17/17; test-unit
+end-to-end; `check_arm64_claims` 80 (+7); check_riscv_claims' V7
+transport claim follows the promoted file (in-flight checker edit,
+D6's rule).
 
 #### Test gate
 

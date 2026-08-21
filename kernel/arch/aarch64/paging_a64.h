@@ -71,6 +71,11 @@ int  paging_a64_unmap(uint64_t va);
 /* Physical address behind va, or ~0UL if not mapped. */
 uint64_t paging_a64_probe(uint64_t va);
 
+/* A7: MAIR AttrIndx of the leaf mapping at va (MAIR_IDX_DEVICE /
+ * MAIR_IDX_NORMAL), or -1 if unmapped -- the virtio transport's
+ * attach-time Device-attribute gate reads this. */
+int paging_a64_attr_index(uint64_t va);
+
 /* The [vmm] gate: map/write/alias-read/unmap, then the three fault
  * probes (store to .text, execute from data, load from the dropped
  * identity window).  Returns 0 on pass. */

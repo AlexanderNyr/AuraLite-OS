@@ -1,4 +1,5 @@
-/* kernel/arch/riscv64/vblk_rv.c -- virtio-blk over mmio (RISCV_PLAN V7).
+/* kernel/arch/aarch64/vblk_a64.c -- virtio-blk over mmio (ARM64_PLAN
+ * A7; vblk_rv.c's shape verbatim over the PROMOTED transport).
  *
  * The request format is the PCI driver's exactly (virtio-blk is
  * transport-agnostic by design): a 16-byte header descriptor, a data
@@ -6,20 +7,19 @@
  * drivers/virtio_blk/virtio_blk.c posts.  Capacity comes from the
  * mmio config space (le64 at offset 0).
  *
- * The self-test is ata32_selftest's shape verbatim: sector 0 of the
- * attached disk must carry known bytes, then write/readback/restore
- * on the LAST sector (on real hardware that disk is somebody's SD
- * card; leave it as found).
+ * The log strings are the rv64 driver's byte for byte (the miniproto
+ * parity discipline extended to storage): the smoke assertions are
+ * shared text, so a driver that drifts is a driver that fails.
  */
 
 #include <stdint.h>
 
-#include "kernel/arch/riscv64/vblk_rv.h"
+#include "kernel/arch/aarch64/vblk_a64.h"
 #include "kernel/drivers/virtio_mmio.h"
-#include "kernel/arch/riscv64/vmmio_rv.h"
-#include "kernel/arch/riscv64/paging_rv.h"
-#include "kernel/arch/riscv64/pmm_rv.h"
-#include "kernel/arch/riscv64/sbi.h"
+#include "kernel/arch/aarch64/vmmio_a64.h"
+#include "kernel/arch/aarch64/paging_a64.h"
+#include "kernel/arch/aarch64/pmm_a64.h"
+#include "kernel/arch/aarch64/pl011.h"
 
 #define VBLK_T_IN   0
 #define VBLK_T_OUT  1
@@ -39,51 +39,44 @@ static uint64_t capacity;
 static uint64_t dma_phys;
 static uint8_t *dma;
 
-static void put_udec_(uint64_t v)
-{
-    char buf[20]; int i = 0;
-    do { buf[i++] = (char)('0' + v % 10); v /= 10; } while (v);
-    while (i--) sbi_putc(buf[i]);
-}
-
-int vblk_rv_init(const fdt_platform_t *plat)
+int vblk_a64_init(const fdt_platform_t *plat)
 {
     uint64_t bases[FDT_MAX_VIRTIO];
     for (uint32_t i = 0; i < plat->virtio_count; i++)
-        bases[i] = (uint64_t)p2v_rv(plat->virtio_base[i]);
+        bases[i] = (uint64_t)p2v_a64(plat->virtio_base[i]);
 
-    if (vmmio_probe(&dev, vmmio_rv_ops(), bases, plat->virtio_count,
+    if (vmmio_probe(&dev, vmmio_a64_ops(), bases, plat->virtio_count,
                     VM_DEV_BLK) != 0) {
-        sbi_puts("[blk]  no virtio-blk device on the mmio windows "
-                 "(pass -drive/-device to attach one)\n");
+        pl011_puts("[blk]  no virtio-blk device on the mmio windows "
+                   "(pass -drive/-device to attach one)\n");
         return -1;
     }
 
-    dma_phys = pmm_rv_alloc_frame();
+    dma_phys = pmm_a64_alloc_frame();
     if (!dma_phys)
         return -1;
-    dma = (uint8_t *)p2v_rv(dma_phys);
+    dma = (uint8_t *)p2v_a64(dma_phys);
 
     /* Config space: capacity le64 at offset 0. */
     capacity = 0;
     for (int i = 7; i >= 0; i--)
         capacity = (capacity << 8) | vmmio_cfg8(&dev, (uint32_t)i);
 
-    sbi_puts("[blk]  virtio-blk over mmio (legacy version ");
-    put_udec_(dev.version);
-    sbi_puts("): ");
-    put_udec_(capacity);
-    sbi_puts(" sectors (");
-    put_udec_(capacity / 2048);
-    sbi_puts(" MiB), queue size ");
-    put_udec_(dev.qsize);
-    sbi_puts("\n");
+    pl011_puts("[blk]  virtio-blk over mmio (legacy version ");
+    pl011_putdec64(dev.version);
+    pl011_puts("): ");
+    pl011_putdec64(capacity);
+    pl011_puts(" sectors (");
+    pl011_putdec64(capacity / 2048);
+    pl011_puts(" MiB), queue size ");
+    pl011_putdec64(dev.qsize);
+    pl011_puts("\n");
     ready = 1;
     return 0;
 }
 
-int vblk_rv_available(void) { return ready; }
-uint64_t vblk_rv_sector_count(void) { return capacity; }
+int vblk_a64_available(void) { return ready; }
+uint64_t vblk_a64_sector_count(void) { return capacity; }
 
 static int vblk_op(uint32_t type, uint64_t lba, uint8_t *buf512)
 {
@@ -124,53 +117,54 @@ static int vblk_op(uint32_t type, uint64_t lba, uint8_t *buf512)
     return 0;
 }
 
-int vblk_rv_read(uint64_t lba, uint8_t *buf512)
+int vblk_a64_read(uint64_t lba, uint8_t *buf512)
 {
     return vblk_op(VBLK_T_IN, lba, buf512);
 }
 
-int vblk_rv_write(uint64_t lba, const uint8_t *buf512)
+int vblk_a64_write(uint64_t lba, const uint8_t *buf512)
 {
     return vblk_op(VBLK_T_OUT, lba, (uint8_t *)buf512);
 }
 
-int vblk_rv_selftest(void)
+int vblk_a64_selftest(void)
 {
     static uint8_t sec[512], pattern[512], readback[512];
 
-    /* 1. Sector 0 carries bytes the smoke test PUT there (the rv64
-     * boot has no MBR -- the test disk is written with a known
+    /* 1. Sector 0 carries bytes the smoke test PUT there (no MBR on
+     * this board either -- the test disk is written with a known
      * pattern before the run; asserting our own bytes is the same
      * "read what we know" contract ata32 got from Stage 1's MBR). */
-    if (vblk_rv_read(0, sec) != 0)
+    if (vblk_a64_read(0, sec) != 0)
         return -1;
     if (!(sec[0] == 'A' && sec[1] == 'u' && sec[2] == 'r' &&
           sec[3] == 'a' && sec[510] == 0x55 && sec[511] == 0xAA)) {
-        sbi_puts("[blk]  FAIL: sector 0 lacks the known test pattern\n");
+        pl011_puts("[blk]  FAIL: sector 0 lacks the known test pattern\n");
         return -1;
     }
 
     /* 2. Write/readback/restore on the last sector. */
     uint64_t victim = capacity - 1;
-    if (vblk_rv_read(victim, sec) != 0)
+    if (vblk_a64_read(victim, sec) != 0)
         return -1;
     for (int i = 0; i < 512; i++)
         pattern[i] = (uint8_t)(i ^ 0xA5);
-    if (vblk_rv_write(victim, pattern) != 0)
+    if (vblk_a64_write(victim, pattern) != 0)
         return -1;
-    if (vblk_rv_read(victim, readback) != 0)
+    if (vblk_a64_read(victim, readback) != 0)
         return -1;
     for (int i = 0; i < 512; i++) {
         if (readback[i] != pattern[i]) {
-            sbi_puts("[blk]  FAIL: readback mismatch\n");
+            pl011_puts("[blk]  FAIL: readback mismatch\n");
             return -1;
         }
     }
-    if (vblk_rv_write(victim, sec) != 0)    /* restore */
+    if (vblk_a64_write(victim, sec) != 0)    /* restore */
         return -1;
 
-    sbi_puts("[blk]  PASS: known-bytes read + write/readback/restore on LBA ");
-    put_udec_(victim);
-    sbi_puts("\n");
+    pl011_puts("[blk]  PASS: known-bytes read + write/readback/restore "
+               "on LBA ");
+    pl011_putdec64(victim);
+    pl011_puts("\n");
     return 0;
 }

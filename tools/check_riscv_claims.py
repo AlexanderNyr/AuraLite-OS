@@ -220,7 +220,10 @@ def claims():
     ]
 
     # --- V7: virtio-mmio, blk, net, UART RX ---
-    vmmio = read("kernel", "arch", "riscv64", "virtio_mmio.c")
+    # ARM64_PLAN A7 PROMOTED the transport to kernel/drivers/ (the
+    # fdt.c treatment); this claim family follows the file, and the
+    # single-source linkage is asserted by check_arm64_claims.
+    vmmio = read("kernel", "drivers", "virtio_mmio.c")
     vblk  = read("kernel", "arch", "riscv64", "vblk_rv.c")
     vnet  = read("kernel", "arch", "riscv64", "vnet_rv.c")
     uartv = read("kernel", "arch", "riscv64", "uart_rv.c")
@@ -228,7 +231,7 @@ def claims():
     checks += [
         ("V7: the mmio transport reuses virtio_common.h's vrings",
          'include "drivers/virtio/virtio_common.h"' in
-         read("kernel", "arch", "riscv64", "virtio_mmio.h") and
+         read("kernel", "drivers", "virtio_mmio.h") and
          "VM_QUEUE_PFN" in vmmio and "VM_QUEUE_READY" in vmmio),
         ("V7: blk gate is ata32's shape (known bytes + readback/restore)",
          "write/readback/restore" in vblk and "0x55" in vblk),
