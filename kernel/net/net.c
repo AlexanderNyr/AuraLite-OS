@@ -92,8 +92,16 @@ struct icmp_hdr {
 #define NET_ARP_TIMEOUT_TICKS        100
 #define NET_ICMP_TIMEOUT_TICKS       200
 #define NET_UDP_TIMEOUT_TICKS        200
-#define NET_DHCP_OFFER_TIMEOUT_TICKS 500
-#define NET_DHCP_ACK_TIMEOUT_TICKS   500
+/* TIMEFIX follow-up (2026-08-21): these were 500 ticks each -- which
+ * the PIT mode-3 bug silently halved to 2.5 s real; once the clock ran
+ * honestly, a failing DHCP burned a full 10 s of boot (measured on a
+ * user's WHPX box: OFFER arrived, ACK never did, +5 s).  slirp answers
+ * in single-digit milliseconds and real servers well under a second;
+ * 3 s for the OFFER and 1.5 s for the ACK keep an order-of-magnitude
+ * margin while making the honest-failure path cheap.  The fallback IP
+ * already exists for exactly this case. */
+#define NET_DHCP_OFFER_TIMEOUT_TICKS 300
+#define NET_DHCP_ACK_TIMEOUT_TICKS   150
 
 /* ---- State ---- */
 static uint8_t  our_mac[6];
@@ -853,7 +861,12 @@ int net_dhcp(void) {
     dhcp->htype = 1;
     dhcp->hlen  = 6;
     dhcp->xid   = htonl_(dhcp_xid);
-    dhcp->flags = htons_(0x0000);   /* unicast reply OK */
+    /* BROADCAST flag (RFC 2131 s.4.1): we cannot reliably receive a
+     * unicast ACK at an address we do not hold yet -- the measured
+     * WHPX failure mode was exactly OFFER-received/ACK-never (the
+     * server unicast the ACK to the still-unconfigured address).
+     * Asking for a broadcast reply is the standard client answer. */
+    dhcp->flags = htons_(0x8000);
     memcpy(dhcp->chaddr, our_mac, 6);
     dhcp->cookie = htonl_(DHCP_MAGIC_COOKIE);
 

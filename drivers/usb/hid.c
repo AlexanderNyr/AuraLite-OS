@@ -379,11 +379,24 @@ static void hid_poll_once(hid_dev_t *h) {
     {
         int nonzero = 0;
         for (int bi = 0; bi < ret; bi++) if (report[bi]) { nonzero = 1; break; }
-        if (nonzero)
-            kprintf("[hid] report from addr=%d ep=0x%02x len=%d: %02x %02x %02x %02x\n",
-                    h->dev->address, h->ep_in, ret,
-                    report[0], ret > 1 ? report[1] : 0,
-                    ret > 2 ? report[2] : 0, ret > 3 ? report[3] : 0);
+        if (nonzero) {
+            /* Rate-limited: a real mouse streams dozens of reports per
+             * second and this line turned into console spam on the first
+             * hardware-ish run (measured: a WHPX boot log drowned in
+             * [hid] lines).  The first few prove the pipe is alive (and
+             * keep the smoke's assertion); after that, one line per 256
+             * keeps the counter honest without the flood. */
+            static uint64_t hid_report_logged;
+            hid_report_logged++;
+            if (hid_report_logged <= 8 || (hid_report_logged & 255) == 0) {
+                kprintf("[hid] report from addr=%d ep=0x%02x len=%d: %02x %02x %02x %02x\n",
+                        h->dev->address, h->ep_in, ret,
+                        report[0], ret > 1 ? report[1] : 0,
+                        ret > 2 ? report[2] : 0, ret > 3 ? report[3] : 0);
+            } else if (hid_report_logged == 9) {
+                kprintf("[hid] further reports suppressed (1 in 256 logged)\n");
+            }
+        }
     }
     if (h->generic == 1) process_generic_mouse_report(h, report, (uint32_t)ret);
     else if (h->generic == 2) process_generic_keyboard_report(h, report, (uint32_t)ret);

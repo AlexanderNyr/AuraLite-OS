@@ -2,6 +2,43 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HWRUN fixes — the first WHPX field report, answered in three fixes] 2026-08-21
+
+A user booted the ISO on Windows/WHPX — the first hardware-ish run —
+and reported a ~30 s boot with the console crawling at 3-4 lines/s
+plus a mouse-log flood.  Root causes found by measurement, all three:
+
+- **The crawl was H3's framebuffer going write-combining**: WC reads
+  are uncached, and `fb_scroll()` memmove'd the whole screen THROUGH
+  the framebuffer — ~4 MB of uncached reads per printed line.  TCG
+  ignores memory types, so no QEMU gate could see it (HW_PLAN D2
+  called the throughput half metal-only; the first receipt came back
+  negative for exactly this path).  Fix: the classic WC discipline —
+  the console now mirrors pixels in a system-RAM shadow, scrolls in
+  RAM, and only ever WRITES to the fb.  The shadow is PMM-backed and
+  armed right after pmm_init: a first draft used a static 8 MB .bss
+  array and BOTH boot loaders' fixed layouts collapsed under the
+  10 MB RW segment (measured: UEFI died in an early exception, BIOS
+  never bannered) — runtime frames have no such opinion.
+- **DHCP burned 5 s on the user's box**: OFFER arrived, ACK never —
+  the classic unicast-ACK-to-an-unconfigured-address failure.  The
+  REQUEST now sets the RFC 2131 BROADCAST flag (slirp still leases:
+  measured, full PASS), and the fail-path budgets drop 500→300
+  (OFFER) / 500→150 (ACK) ticks — the old 500s were tuned when the
+  mode-3 bug silently halved them.
+- **The `[hid] report` flood is rate-limited**: first 8 reports, then
+  one per 256 with an explicit suppression notice — a real mouse
+  streams dozens per second and the log drowned.
+- Diagnosability (the CI thread of the same day): `run_all.sh` now
+  tees every case's own ✔/✘ output into
+  `build/integration-logs/<case>.out`, so a red shard's artifact
+  names the failing ASSERT, not just the failing case
+  (PIPESTATUS-guarded — tee must not mask the case's exit code;
+  negative control run).
+- Re-verified: UEFI full-device replica boots with `[fb] WC shadow
+  armed (4000 KiB RAM)` and a full DHCP lease; networking 8/8,
+  usb_hid_input 9/9, gui_dirty_uefi 10 asserts, boot-to-shell 17/17.
+
 ## [TIMEFIX — the wall clock ran 2x fast: PIT mode 3 → mode 2, measured end to end] 2026-08-21
 
 User-reported: OS time runs twice as fast as real time.  Reproduced,

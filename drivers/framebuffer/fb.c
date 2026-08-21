@@ -5,8 +5,26 @@
 #include "drivers/framebuffer/fb.h"
 #include "drivers/framebuffer/psf.h"
 #include "kernel/boot_info.h"
+#include "kernel/mm/pmm.h"
+#include "kernel/lib/kprintf.h"
 
 static uint32_t *fb_addr = NULL;
+
+/* HW H3 follow-up, measured on the first hardware-ish run (WHPX,
+ * 2026-08-21): H3 made the framebuffer write-combining, and WC READS
+ * are uncached by definition -- fb_scroll() used to memmove the whole
+ * screen THROUGH the framebuffer, so every scrolled line re-read ~4 MB
+ * of uncached memory and the boot console crawled at a few lines per
+ * second (TCG ignores memory types, which is why no QEMU gate ever
+ * saw it; HW_PLAN D2 said the throughput half only exists on metal,
+ * and the first receipt came back negative for exactly this path).
+ * The fix is the classic WC discipline: NEVER read the framebuffer.
+ * All console pixels are mirrored in a system-RAM shadow; scrolls
+ * move memory in RAM and then stream WRITES to the fb -- the access
+ * pattern WC exists to make fast.  Sized for up to 1920x1080x32;
+ * larger modes honestly fall back to the in-place path. */
+#define FB_SHADOW_MAX_PX (1920u * 1080u)
+static uint32_t *fb_shadow = NULL;      /* NULL => in-place legacy path */
 static uint64_t fb_width = 0, fb_height = 0, fb_pitch = 0;
 static uint32_t fb_fg, fb_bg;
 static int fb_cursor_col, fb_cursor_row, fb_cols, fb_rows;
@@ -23,7 +41,10 @@ static inline uint32_t *pixel_addr(uint32_t x, uint32_t y) {
 }
 
 static void fb_putpixel(uint32_t x, uint32_t y, uint32_t color) {
-    if (x < fb_width && y < fb_height) *pixel_addr(x, y) = color;
+    if (x < fb_width && y < fb_height) {
+        if (fb_shadow) fb_shadow[y * (fb_pitch / 4) + x] = color;
+        *pixel_addr(x, y) = color;      /* write-only: WC-friendly */
+    }
 }
 
 static void fb_draw_char(unsigned char c, uint32_t ox, uint32_t oy) {
@@ -45,6 +66,30 @@ static void fb_draw_char(unsigned char c, uint32_t ox, uint32_t oy) {
 
 static void fb_scroll(void) {
     uint32_t pitch32 = (uint32_t)(fb_pitch / 4);
+
+    if (fb_shadow) {
+        /* Scroll in RAM (cached reads), clear the fresh bottom rows in
+         * RAM, then stream the whole visible image to the fb as pure
+         * sequential writes -- zero framebuffer reads on this path. */
+        for (uint32_t y = font_height; y < fb_height; y++) {
+            uint32_t *src = fb_shadow + y * pitch32;
+            uint32_t *dst = fb_shadow + (y - font_height) * pitch32;
+            for (uint32_t x = 0; x < fb_width; x++) dst[x] = src[x];
+        }
+        for (uint32_t y = fb_height - font_height; y < fb_height; y++) {
+            uint32_t *row = fb_shadow + y * pitch32;
+            for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
+        }
+        for (uint32_t y = 0; y < fb_height; y++) {
+            uint32_t *src = fb_shadow + y * pitch32;
+            uint32_t *dst = fb_addr   + y * pitch32;
+            for (uint32_t x = 0; x < fb_width; x++) dst[x] = src[x];
+        }
+        return;
+    }
+
+    /* In-place fallback (mode larger than the shadow): reads the fb --
+     * slow over WC, but honest and correct. */
     for (uint32_t y = font_height; y < fb_height; y++) {
         uint32_t *src = fb_addr + y * pitch32;
         uint32_t *dst = fb_addr + (y - font_height) * pitch32;
@@ -97,6 +142,12 @@ void fb_clear(void) {
         uint32_t *row = fb_addr + y * pitch32;
         for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
     }
+    if (fb_shadow) {
+        for (uint32_t y = 0; y < fb_height; y++) {
+            uint32_t *row = fb_shadow + y * pitch32;
+            for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
+        }
+    }
     fb_cursor_col = fb_cursor_row = 0;
 }
 
@@ -120,4 +171,37 @@ void fb_putchar(char c) {
         break;
     }
     if (fb_cursor_row >= fb_rows) { fb_scroll(); fb_cursor_row = fb_rows - 1; }
+}
+
+/* Arm the RAM shadow once the PMM exists (called from kmain right
+ * after pmm_init).  A first draft made the shadow a static 8 MB .bss
+ * array -- and both boot loaders' fixed physical layouts collapsed
+ * under a kernel whose RW segment grew from 1.7 MB to 10 MB (measured:
+ * UEFI died in an early exception, BIOS never reached the banner).
+ * Runtime frames have no such opinion.  The one-time fb->shadow copy
+ * below is the LAST framebuffer read this file ever performs; the
+ * few dozen boot lines printed before the PMM never scroll, so the
+ * in-place window is read-free in practice too. */
+void fb_arm_shadow(void) {
+    if (!fb_addr || fb_shadow) return;
+    uint64_t px = (fb_pitch / 4) * fb_height;
+    if (px == 0 || px > FB_SHADOW_MAX_PX) {
+        kprintf("[fb] mode too large for the WC shadow (%llu px); "
+                "console scroll stays in-place\n",
+                (unsigned long long)px);
+        return;
+    }
+    uint64_t bytes  = px * 4;
+    uint64_t frames = (bytes + 4095) / 4096;
+    paddr_t phys = pmm_alloc_contiguous(frames);
+    if (!phys) {
+        kprintf("[fb] no contiguous frames for the WC shadow; "
+                "console scroll stays in-place\n");
+        return;
+    }
+    uint32_t *sh = (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + phys);
+    for (uint64_t i = 0; i < px; i++) sh[i] = fb_addr[i];
+    fb_shadow = sh;
+    kprintf("[fb] WC shadow armed (%llu KiB RAM): framebuffer is "
+            "write-only from here\n", (unsigned long long)(bytes / 1024));
 }

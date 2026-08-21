@@ -302,7 +302,15 @@ for case_name in "${ALL_CASES[@]}"; do
 
     print_banner "▶ $case_name"
     t0=$(date +%s)
-    if bash "$script"; then
+    # The case's own stdout (its per-assert ✔/✘ lines) goes to the
+    # artifact too: GitHub step stdout is admin-only on public repos,
+    # and the serial logs alone cannot name a failing ASSERT -- the
+    # first sharded runs proved results-*.txt names the failing CASE,
+    # this file names the failing LINE.
+    CASE_OUT="$ROOT/build/integration-logs/${case_name}.out"
+    bash "$script" 2>&1 | tee "$CASE_OUT"
+    case_rc=${PIPESTATUS[0]}          # tee's 0 must not mask the case
+    if [ "$case_rc" -eq 0 ]; then
         dt=$(( $(date +%s) - t0 ))
         echo "${C_G}${C_BOLD}✔ PASS${C_END} $case_name  ${C_DIM}(${dt}s)${C_END}"
         echo "PASS $case_name ${dt}s" >> "$RESULTS"

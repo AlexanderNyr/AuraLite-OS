@@ -17,6 +17,11 @@ void fb_init(void);
 void fb_putchar(char c);
 void fb_clear(void);
 
+/* HW H3 follow-up: arm the system-RAM console shadow (keeps the WC
+ * framebuffer write-only).  Call once after pmm_init(); safe no-op
+ * without a framebuffer or when already armed. */
+void fb_arm_shadow(void);
+
 /* Disable / enable framebuffer console output (UART logging continues).
  * The GUI compositor owns the framebuffer once it starts, so the console
  * stops scribbling on top of windows. */

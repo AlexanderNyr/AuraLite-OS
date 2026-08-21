@@ -259,6 +259,10 @@ void kmain(boot_info_t *boot_info) {
 
     kprintf("[boot] initialising physical memory manager...\n");
     pmm_init();
+    /* HW H3 follow-up: the fb console's RAM shadow needs frames; arm
+     * it the moment they exist so scrolls never read WC memory (the
+     * measured WHPX 3-4-lines/s crawl). */
+    fb_arm_shadow();
     pmm_self_test();
 
     kprintf("[boot] initialising virtual memory manager...\n");
