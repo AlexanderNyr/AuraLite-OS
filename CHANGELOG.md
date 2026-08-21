@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CI shards — the 2-hour integration step becomes six parallel themes] 2026-08-21
+
+The third matrix run ("CI fix 2", 32481642045) turned riscv-parity
+and aarch64-parity green for the first time in the repository's
+history; the one remaining wall-clock hog was qemu-integration's
+single 129-case step — measured 2 h 08 m on a shared runner, longer
+than every other job combined.
+
+- `run_all.sh` grew thematic CI shards: `--group
+  core|posix|fs|usb|net|gui` (34/21/11/28/19/16 cases).  The
+  partition lives NEXT TO the case list it partitions and is
+  SELF-CHECKED on every invocation — each case must match exactly
+  one group regex, so a future case that matches none (or two)
+  REFUSES to run instead of silently dropping out of CI: the
+  AUDIT_A0 disease (27 cases on disk that CI never ran) does not get
+  a second chapter.  `--check-groups` exposes the check as a named
+  CI step in qemu-integration.
+- `integration.yml`: the big step is replaced by the
+  `integration-cases` matrix job — six parallel shards,
+  `fail-fast: false` (one shard's failure must not cancel another's
+  evidence), 90-minute fence each; wall clock drops from ~2 h to the
+  slowest shard.
+- Diagnosability, the lesson this whole CI episode kept teaching:
+  `run_all.sh` now writes `build/integration-logs/results-<group>.txt`
+  — every case PASS/FAIL with duration — and each shard uploads it
+  with the serial logs on failure.  Step stdout is admin-only on
+  public repos and serial logs alone cannot name the failing case
+  (measured while chasing the first matrix runs); this file can.
+- Measured locally before shipping: `--check-groups` OK (129 cases,
+  6 groups, exactly-one each), unknown group refused, and the full
+  fs shard end-to-end — 11/11 PASS in 571 s with the results file
+  written.
+
 ## [A64 CI hotfix 2 — the runner's QEMU, measured: OpenSBI padding + the lost RX edge] 2026-08-21
 
 The second matrix run (32471304249, "CI fix") moved the failures

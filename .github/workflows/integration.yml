@@ -180,15 +180,18 @@ jobs:
         env:
           NO_COLOR: "1"
 
-      # `make test-integration` runs every case in
-      # tests/integration/run_all.sh, which includes all six Win32 gates:
-      # test_w32_pe_loader, _kernel32, _user32, _crt, _loadlibrary and
-      # _integration.  They add roughly 9 minutes to this job (70-120s each,
-      # measured), which the 240-minute timeout absorbs comfortably.
-      - name: Run QEMU integration tests
-        run: make test-integration
-        env:
-          NO_COLOR: "1"
+      # The 129-case suite used to run HERE as one ~2 h step; it now
+      # runs as six parallel thematic shards in the integration-cases
+      # matrix job below (measured 2 h 08 m at the last single-job
+      # run -- longer than every other job combined).  What stays in
+      # THIS job is the partition check: every registered case must
+      # belong to exactly one shard, so a new case cannot silently
+      # drop out of CI (the AUDIT_A0 disease, 27 cases never run,
+      # does not get a second chapter).  run_all.sh re-checks this on
+      # every invocation as well; this step just makes the refusal a
+      # named line in the log.
+      - name: Integration shard partition check
+        run: bash tests/integration/run_all.sh --check-groups
 
       - name: Upload serial logs on failure
         if: failure()
@@ -199,6 +202,67 @@ jobs:
             build/integration-logs/
             build/bl*.log
             build/bl*.mem
+          if-no-files-found: ignore
+
+  # The 129 QEMU integration cases, split into six THEMATIC SHARDS
+  # running in parallel (2026-08-21; the user-visible win: ~2 h of
+  # wall clock becomes the slowest shard's ~25 min).  The partition
+  # lives in run_all.sh next to the case list and is self-checked on
+  # every invocation -- see the partition-check step above.
+  # fail-fast is off: one shard's failure must not cancel the others,
+  # or a bad net case would hide a good usb run's evidence.
+  integration-cases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, posix, fs, usb, net, gui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & QEMU dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
+            mtools ovmf socat dosfstools e2fsprogs \
+            autoconf automake libtool git
+
+      # The gui shard carries the six w32 gates; mingw builds their
+      # example binaries.  Installed for every shard (uniform steps
+      # beat per-shard special cases; +15 s).
+      - name: Install mingw-w64
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            mingw-w64 mingw-w64-tools
+
+      - name: Install Rust bare-metal target
+        run: |
+          rustup target add x86_64-unknown-none
+          rustc --version
+
+      - name: Build the ISO
+        run: |
+          make deps-check
+          make iso
+
+      - name: Run the ${{ matrix.group }} shard
+        run: bash tests/integration/run_all.sh --group ${{ matrix.group }}
+        env:
+          NO_COLOR: "1"
+
+      # results-<group>.txt names every case PASS/FAIL with duration:
+      # step stdout is admin-only on public repos, and serial logs
+      # alone cannot say which case failed (measured the hard way
+      # while chasing the first matrix runs).
+      - name: Upload shard logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-${{ matrix.group }}
+          path: |
+            build/integration-logs/
           if-no-files-found: ignore
 
   # DOOM_PLAN.md D6.  A SEPARATE job, and deliberately not part of the gate

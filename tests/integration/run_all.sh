@@ -2,10 +2,12 @@
 # tests/integration/run_all.sh — orchestrate every QEMU integration test.
 #
 # Usage:
-#   tests/integration/run_all.sh             # run everything
-#   tests/integration/run_all.sh --fast      # skip slow/flaky tests
-#   tests/integration/run_all.sh ahci usb    # run only matching cases
-#   FILTER=ahci tests/integration/run_all.sh # same via env
+#   tests/integration/run_all.sh                 # run everything
+#   tests/integration/run_all.sh --fast          # skip slow/flaky tests
+#   tests/integration/run_all.sh ahci usb        # run only matching cases
+#   FILTER=ahci tests/integration/run_all.sh     # same via env
+#   tests/integration/run_all.sh --group usb     # one CI shard (see below)
+#   tests/integration/run_all.sh --check-groups  # verify the shard partition
 #
 # Exit code is 0 only if every case PASSes.
 
@@ -25,14 +27,19 @@ fi
 # ---- argument parsing ----
 FAST=0
 FILTER="${FILTER:-}"
+GROUP=""
+CHECK_GROUPS=0
 ARGS=()
-for a in "$@"; do
-    case "$a" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --fast|-f) FAST=1 ;;
+        --group)   GROUP="$2"; shift ;;
+        --check-groups) CHECK_GROUPS=1 ;;
         -h|--help)
             sed -n '2,12p' "$0" ; exit 0 ;;
-        *) ARGS+=("$a") ;;
+        *) ARGS+=("$1") ;;
     esac
+    shift
 done
 if [ "${#ARGS[@]}" -gt 0 ]; then
     FILTER="$(IFS='|'; echo "${ARGS[*]}")"
@@ -188,6 +195,62 @@ ALL_CASES=(
 # them.
 SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read'
 
+# ---- thematic CI shards (2026-08-21) ----
+#
+# One 129-case job ran ~2 h on a shared runner; six thematic shards run
+# in parallel instead.  The partition lives HERE, next to the list it
+# partitions, and is SELF-CHECKED on every invocation: each case must
+# match EXACTLY ONE group regex.  A new case that matches none (or two)
+# refuses to run rather than silently dropping out of CI — the
+# AUDIT_A0 disease (27 cases on disk that CI never ran) does not get a
+# second chapter.
+GROUP_NAMES="core posix fs usb net gui"
+group_re() {
+    case "$1" in
+        core)  echo '^test_(boot_to_shell|perf_smoke|selftest|selftest_modes|shell_commands|syscalls|execve_args|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
+        posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|shell_all|sysmon_data|userspace_apps)$' ;;
+        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|devfs|procfs|tmpfs|diskfs)$' ;;
+        usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|xhci_[a-z]+)$' ;;
+        net)   echo '^test_(networking|dns_cache|ip_frag|e1000_irq|virtio_net|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_options|ipv6_ping6|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
+        gui)   echo '^test_(gui|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;
+        *)     echo '' ;;
+    esac
+}
+
+check_groups() {
+    local bad=0 c n g re
+    for c in "${ALL_CASES[@]}"; do
+        n=0
+        for g in $GROUP_NAMES; do
+            re=$(group_re "$g")
+            [[ "$c" =~ $re ]] && n=$((n+1))
+        done
+        if [ "$n" -ne 1 ]; then
+            echo "${C_R}shard partition BROKEN: $c matches $n group(s); every case must match exactly one — fix group_re() in $0${C_END}"
+            bad=1
+        fi
+    done
+    return "$bad"
+}
+
+# The partition is checked on EVERY run (129 x 6 regex matches is
+# free); --check-groups checks and exits, for the CI step and the
+# curious.
+if ! check_groups; then
+    exit 2
+fi
+if [ "$CHECK_GROUPS" -eq 1 ]; then
+    echo "shard partition OK: every case matches exactly one of: $GROUP_NAMES"
+    exit 0
+fi
+if [ -n "$GROUP" ]; then
+    FILTER=$(group_re "$GROUP")
+    if [ -z "$FILTER" ]; then
+        echo "${C_R}unknown group '$GROUP' (have: $GROUP_NAMES)${C_END}"
+        exit 2
+    fi
+fi
+
 # ---- prereqs ----
 need=(qemu-system-x86_64 python3 xorriso clang ld.lld nasm)
 missing=0
@@ -206,6 +269,14 @@ fi
 pass=0; fail=0; skipped=0
 FAILED_LIST=()
 total_t0=$(date +%s)
+
+# Per-case verdicts land in the artifact CI uploads: step stdout is
+# admin-only on GitHub, serial logs alone cannot say which case
+# failed (measured while chasing the first matrix runs), but this
+# file travels with the logs and names names.
+RESULTS="$ROOT/build/integration-logs/results-${GROUP:-all}.txt"
+mkdir -p "$ROOT/build/integration-logs"
+: > "$RESULTS"
 
 print_banner() {
     echo
@@ -234,16 +305,19 @@ for case_name in "${ALL_CASES[@]}"; do
     if bash "$script"; then
         dt=$(( $(date +%s) - t0 ))
         echo "${C_G}${C_BOLD}✔ PASS${C_END} $case_name  ${C_DIM}(${dt}s)${C_END}"
+        echo "PASS $case_name ${dt}s" >> "$RESULTS"
         pass=$((pass+1))
     else
         dt=$(( $(date +%s) - t0 ))
         echo "${C_R}${C_BOLD}✘ FAIL${C_END} $case_name  ${C_DIM}(${dt}s)${C_END}"
+        echo "FAIL $case_name ${dt}s" >> "$RESULTS"
         fail=$((fail+1))
         FAILED_LIST+=("$case_name")
     fi
 done
 
 total_dt=$(( $(date +%s) - total_t0 ))
+echo "SUMMARY pass=$pass fail=$fail skipped=$skipped time=${total_dt}s group=${GROUP:-all}" >> "$RESULTS"
 
 echo
 echo "${C_BOLD}════════════════════════ SUMMARY ════════════════════════${C_END}"
