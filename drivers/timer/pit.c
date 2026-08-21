@@ -24,11 +24,22 @@
  * Command byte for channel 0:
  *   bits 7-6 = 00  -> select channel 0
  *   bits 5-4 = 11  -> access mode: lobyte then hibyte
- *   bits 3-1 = 011 -> operating mode 3 (square wave)
+ *   bits 3-1 = 010 -> operating mode 2 (rate generator)
  *   bit  0    = 0  -> binary counting (not BCD)
- *   => 0b00110110 = 0x36
- */
-#define PIT_CMD_CHAN0_LOHI_MODE3 0x36
+ *   => 0b00110100 = 0x34
+ *
+ * MODE 2, NOT MODE 3 — a measured lesson (2026-08-21).  Mode 3's
+ * square wave has TWO output transitions per period, and QEMU 10's
+ * PIT delivers a vector-32 interrupt for each of them: the guest
+ * measured 13.0M TSC between IRQs in mode 3 and exactly 26.0M in
+ * mode 2 (same divisor 11932), i.e. mode 3 ticked at 200 Hz while
+ * claiming 100.  /proc/uptime ran 2.02x wall clock (20 s real -> 40.4 s
+ * guest, measured via a timed serial session) — the "OS clock runs
+ * twice as fast" bug.  Mode 2 emits ONE pulse per period, which is
+ * why every production kernel programs channel 0 with 0x34; the
+ * interrupt rate now matches the programmed rate on QEMU and on the
+ * datasheet alike. */
+#define PIT_CMD_CHAN0_LOHI_MODE2 0x34
 
 static volatile uint64_t timer_ticks    = 0;
 static uint32_t          timer_freq_hz  = 0;
@@ -88,7 +99,7 @@ void pit_init(uint32_t frequency) {
     timer_freq_hz = (uint32_t)(PIT_BASE_FREQUENCY / divisor);
 
     /* Program channel 0: command, then low byte, then high byte. */
-    outb(PIT_MODE_CMD, PIT_CMD_CHAN0_LOHI_MODE3);
+    outb(PIT_MODE_CMD, PIT_CMD_CHAN0_LOHI_MODE2);
     outb(PIT_CHANNEL0_DATA, (uint8_t)(divisor & 0xFF));
     outb(PIT_CHANNEL0_DATA, (uint8_t)((divisor >> 8) & 0xFF));
 
@@ -102,7 +113,7 @@ void pit_init(uint32_t frequency) {
     timer_ticks = 0;
     irq_register_handler(TIMER_IRQ, timer_irq_handler);
 
-    kprintf(TIMER_TAG "PIT channel 0: mode 3, divisor %u -> %u Hz"
+    kprintf(TIMER_TAG "PIT channel 0: mode 2, divisor %u -> %u Hz"
             " (%u Hz requested)\n",
             (unsigned)divisor, (unsigned)timer_freq_hz, (unsigned)frequency);
 }

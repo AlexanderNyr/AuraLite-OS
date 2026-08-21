@@ -7,7 +7,7 @@
  * 8254 Programmable Interval Timer driver.
  *
  * PIT channel 0 is wired to IRQ 0 (remapped to CPU vector 32 by the PIC in
- * Phase 2). We program it in mode 3 (square wave) at a configurable frequency,
+ * Phase 2). We program it in mode 2 (rate generator) at a configurable frequency,
  * register an IRQ 0 handler that increments a global monotonic tick counter,
  * and provide a busy-wait sleep based on that counter.
  *
@@ -31,7 +31,7 @@
 #define TIMER_IRQ 0
 
 /*
- * Configure channel 0 in mode 3 (square wave) at the given frequency, register
+ * Configure channel 0 in mode 2 (rate generator) at the given frequency, register
  * the IRQ 0 handler, and unmask IRQ 0.  `frequency` is clamped to [1, 65535].
  */
 void pit_init(uint32_t frequency);

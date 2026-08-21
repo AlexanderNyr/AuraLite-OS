@@ -82,7 +82,11 @@ void irq32_dispatch(struct registers32 *regs)
 /* ---- PIT ------------------------------------------------------------- */
 
 #define PIT_BASE_HZ              1193182u
-#define PIT_CMD_CHAN0_LOHI_MODE3 0x36
+/* Mode 2, not mode 3: the x86_64 tree measured QEMU 10 delivering an
+ * interrupt on BOTH square-wave transitions (200 Hz from a 100 Hz
+ * divisor, wall clock 2x fast — see drivers/timer/pit.c for the
+ * numbers).  The i386 kernel carried the same 0x36; same fix. */
+#define PIT_CMD_CHAN0_LOHI_MODE2 0x34
 
 static volatile uint32_t timer_ticks;
 
@@ -103,7 +107,7 @@ void pit32_init(uint32_t freq_hz)
 {
     uint32_t divisor = PIT_BASE_HZ / freq_hz;
 
-    outb(0x43, PIT_CMD_CHAN0_LOHI_MODE3);
+    outb(0x43, PIT_CMD_CHAN0_LOHI_MODE2);
     outb(0x40, (uint8_t)(divisor & 0xFF));
     outb(0x40, (uint8_t)((divisor >> 8) & 0xFF));
 

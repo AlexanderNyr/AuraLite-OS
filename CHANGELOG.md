@@ -2,6 +2,43 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [TIMEFIX — the wall clock ran 2x fast: PIT mode 3 → mode 2, measured end to end] 2026-08-21
+
+User-reported: OS time runs twice as fast as real time.  Reproduced,
+mechanism isolated, fixed, re-measured — the whole chain in numbers:
+
+- **Reproduced:** a timed serial session read `/proc/uptime` twice
+  with a 20 s REAL pause between reads: guest delta 40.4 s = 2.02×.
+- **Hardware side exonerated first:** QEMU's own IRQ statistics
+  showed the PIT line rising at exactly 100.1 edges/s; `info lapic`
+  showed the LVT timer masked (no second source); `info pic` showed
+  one clean IOAPIC entry (pin 2 → vector 32, edge, unmasked).
+- **Kernel counting exonerated next:** a throwaway probe counted
+  vector-32 dispatches vs `timer_ticks` — 1:1 (no double increment),
+  but 200 dispatches per REAL second at the idle shell, with
+  UNIFORM 13.0M-TSC gaps (a periodic 200 Hz source, not paired
+  re-delivery).
+- **The mechanism, isolated by experiment:** reprogramming channel 0
+  from mode 3 (0x36, square wave) to mode 2 (0x34, rate generator)
+  doubled the inter-IRQ gap to 26.0M TSC at the same divisor 11932.
+  Mode 3's output has TWO transitions per period and QEMU 10
+  delivers an interrupt for each; mode 2 emits one pulse per period
+  — which is why production kernels program 0x34 for IRQ0.
+- **Fixed in both tenants that carry a PIT:** `drivers/timer/pit.c`
+  (x86_64) and `kernel/arch/i386/irq32.c` (the i386 kernel carried
+  the identical 0x36), with the measured story written at the
+  constant.
+- **Re-measured end to end:** the same 20 s-pause session now reads
+  a 20.2 s guest delta (1.01×).
+- Knock-on audit (tick-denominated gates re-run in HONEST ticks):
+  selftest_modes' fast-vs-full gap = 93 ticks, still ≥ the 50 fence;
+  the full core shard 34/34 (1661 s), boot-to-shell 17/17,
+  perf_smoke 34, signals/stopped/timestamps green, i386 boot32
+  green, cpumax 5/5, ratchets 359/69/0/29.  Historical note: every
+  earlier "N ticks (~X ms)" line in the logs was internally
+  consistent but its ms conversion was 2×-optimistic; tick-unit
+  numbers (the OPT §6 ledger) remain valid as tick counts.
+
 ## [HW H5 — the plan closes: docs, the -cpu max CI lane, the receipt protocol] 2026-08-21
 
 `HW_PLAN.md` — **COMPLETE**, six phases, closed through the D8
