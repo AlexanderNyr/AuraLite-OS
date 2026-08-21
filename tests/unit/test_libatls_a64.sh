@@ -96,7 +96,38 @@ fi
 # Fallback: compile-only through the freestanding clang target.
 echo "[atls-a64] no aarch64-linux-gnu-gcc + qemu-aarch64; compile-only fallback"
 echo "           (install gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user)"
+
+# Bare-metal clang triples search NO hosted include path (measured on
+# the first four-job CI run: the a64 fallback died at <string.h> on
+# the runner that has no cross libc -- which is exactly the machine
+# this branch exists for).  The sources' hosted surface is four
+# prototypes; stub them, because layout and constant-expression
+# checking -- this branch's whole job -- needs declarations, not glibc.
+STUB=build/atls_stub_include
+mkdir -p "$STUB"
+cat > "$STUB/string.h" <<'EOF'
+#ifndef ATLS_STUB_STRING_H
+#define ATLS_STUB_STRING_H
+#include <stddef.h>
+void *memcpy(void *d, const void *s, size_t n);
+void *memmove(void *d, const void *s, size_t n);
+void *memset(void *p, int c, size_t n);
+int   memcmp(const void *a, const void *b, size_t n);
+size_t strlen(const char *s);
+int   strcmp(const char *a, const char *b);
+int   strncmp(const char *a, const char *b, size_t n);
+char *strchr(const char *s, int c);
+#endif
+EOF
+cat > "$STUB/stdio.h" <<'EOF'
+#ifndef ATLS_STUB_STDIO_H
+#define ATLS_STUB_STDIO_H
+int printf(const char *fmt, ...);
+#endif
+EOF
+
 if clang --target=aarch64-unknown-none-elf -mgeneral-regs-only -ffreestanding \
+        -isystem "$STUB" \
         $CFLAGS -c $SRCS 2> build/atls_a64_build.log; then
     rm -f ./*.o
     echo "[atls-a64] PASS (compile-only): all 19 sources build at aarch64;"

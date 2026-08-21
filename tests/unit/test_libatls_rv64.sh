@@ -85,7 +85,36 @@ fi
 
 # Fallback: compile-only through the freestanding clang target.
 echo "[atls-rv64] no riscv64-linux-gnu-gcc + qemu-riscv64; compile-only fallback"
+
+# Hardened alongside the a64 gate's fallback (ARM64_PLAN A9 hotfix):
+# whether a bare clang triple searches /usr/include is a clang-version
+# accident, and the hosted surface here is four prototypes.  Stub
+# them; this branch checks layout and constant expressions, not glibc.
+STUB=build/atls_stub_include
+mkdir -p "$STUB"
+cat > "$STUB/string.h" <<'EOF'
+#ifndef ATLS_STUB_STRING_H
+#define ATLS_STUB_STRING_H
+#include <stddef.h>
+void *memcpy(void *d, const void *s, size_t n);
+void *memmove(void *d, const void *s, size_t n);
+void *memset(void *p, int c, size_t n);
+int   memcmp(const void *a, const void *b, size_t n);
+size_t strlen(const char *s);
+int   strcmp(const char *a, const char *b);
+int   strncmp(const char *a, const char *b, size_t n);
+char *strchr(const char *s, int c);
+#endif
+EOF
+cat > "$STUB/stdio.h" <<'EOF'
+#ifndef ATLS_STUB_STDIO_H
+#define ATLS_STUB_STDIO_H
+int printf(const char *fmt, ...);
+#endif
+EOF
+
 if clang --target=riscv64 -march=rv64gc -mabi=lp64d -ffreestanding \
+        -isystem "$STUB" \
         $CFLAGS -c $SRCS 2> build/atls_rv64_build.log; then
     rm -f ./*.o
     echo "[atls-rv64] PASS (compile-only): all 19 sources build at rv64;"

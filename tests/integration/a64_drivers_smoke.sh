@@ -74,12 +74,19 @@ assert_no_grep() {
 }
 
 # ---- the one boot: devices attached, a short interactive session ----
+# Sleeps and the timeout are sized for a COLD CI RUNNER, not for a
+# fast local box: the first four-job matrix run reached the prompt at
+# ~t+55s under shared-runner TCG and `timeout 60` killed QEMU mid-
+# session ("auralite# un" was the log's last line -- every driver
+# gate above it was green).  Piped input is buffered, so typing
+# "early" is harmless; killing QEMU late is not possible -- it exits
+# by PSCI when the session ends.
 rm -f "$LOG"
 {
-    sleep 6
-    printf 'uname\n';  sleep 1
-    printf 'exit\n';   sleep 2
-} | timeout 60 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
+    sleep 8
+    printf 'uname\n';  sleep 2
+    printf 'exit\n';   sleep 3
+} | timeout 180 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
         -m 256M -display none -serial stdio -no-reboot \
         -kernel "$IMG" -initrd "$INITRD" \
         -global virtio-mmio.force-legacy=true \

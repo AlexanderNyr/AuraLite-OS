@@ -1494,6 +1494,36 @@ a64 smokes green, rv_parity 21/21, x86_64 17/17, i386 suite green,
 test-unit end-to-end, `check_arm64_claims` 90/90 + selftest, terminal
 arithmetic satisfied: 12 rows, 12 COMPLETE headings, one Status line.
 
+**Post-close hotfix (2026-08-21, same day).**  The first four-job CI
+run (run 32467266053) was read the measured way — jobs API + the
+failure artifact — and taught three lessons, none of them new code:
+
+1. *riscv-parity, crypto step*: red since the job existed — the dep
+   list never named `libc6-dev-riscv64-cross`, and the runner image
+   does not pull it transitively (the EXACT mechanism AMEND-6
+   predicted, `<string.h>` edition; this sandbox measured the same
+   miss during its own restores).  Fixed: the dep named, plus the
+   AMEND-6 existence-assert step back-ported to the job that taught
+   the lesson.
+2. *qemu-integration, host unit tests*: red since V8 — the crypto
+   gates' compile-only fallback trusts a bare clang triple to search
+   `/usr/include`, which is a clang-version accident (`-none-elf`
+   never does; reproduced locally).  Fixed in BOTH fallbacks: the
+   hosted surface is four prototypes, now stubbed into
+   `build/atls_stub_include/` — the fallback checks layout, not
+   glibc.
+3. *aarch64-parity, drivers smoke*: every gate in the artifact's
+   serial log is GREEN; `timeout 60` killed QEMU at `auralite# un` —
+   the prompt takes ~55 s under shared-runner TCG.  Fixed: the a64
+   session smokes now treat the timeout as an upper fence (180 s),
+   not a schedule — QEMU still ends by PSCI, so green runs pay
+   nothing.
+
+The `Run QEMU integration tests` step's failure predates this plan
+entirely (red since at least I6, 2026-08-16, duration 2 h 03 m at the
+V7 run) and is tracked separately — the full 129-case suite re-run
+locally to split tree-truth from runner-truth.
+
 #### Test gate
 
 - The full four-arch matrix green in CI; every A-claim verified;

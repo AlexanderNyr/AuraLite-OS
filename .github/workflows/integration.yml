@@ -360,11 +360,24 @@ jobs:
           # toolchain in its own job and the conflict never meets.
           sudo apt-get install -y --no-install-recommends \
             clang lld nasm qemu-system-x86 qemu-system-misc qemu-user \
-            gcc-riscv64-linux-gnu python3 make gcc llvm \
+            gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
+            python3 make gcc llvm \
             mtools dosfstools xorriso git
           # qemu-system-misc ships qemu-system-riscv64 on Debian/Ubuntu;
           # assert rather than assume:
           qemu-system-riscv64 --version
+
+      # [AMEND-6], back-ported to the job that taught the lesson: the
+      # first four-job matrix run FAILED here because the runner image
+      # stopped pulling the cross libc transitively -- the exact
+      # "Setting up printed, binary absent" mechanism, string.h
+      # edition.  libc6-dev-riscv64-cross is now named above, and this
+      # step asserts existence AFTER install.
+      - name: Assert the cross toolchain actually exists (AMEND-6)
+        run: |
+          command -v riscv64-linux-gnu-gcc
+          command -v qemu-riscv64
+          test -e /usr/riscv64-linux-gnu/include/string.h
 
       - name: Install Rust bare-metal target
         run: |

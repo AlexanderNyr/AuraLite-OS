@@ -2,6 +2,48 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 CI hotfix — the first four-job matrix run, read and answered] 2026-08-21
+
+CI run 32467266053 ("A9 update") measured through the jobs API and
+the failure artifact.  Three failures, three fixes — and the finding
+that two of them PREDATE the ARM64 series (red since V8 and since the
+job existed, respectively):
+
+- `riscv-parity` / crypto EXECUTED: `libc6-dev-riscv64-cross` was
+  never in the dep list and the runner image stopped pulling it
+  transitively — the exact "Setting up printed, binary absent"
+  mechanism AMEND-6 predicted.  Dep named; the AMEND-6
+  existence-assert step (`command -v` + `test -e` on the cross
+  `string.h`) back-ported to the riscv job.
+- `qemu-integration` / host unit tests (red since V8): the crypto
+  gates' compile-only fallback trusted a bare clang triple to search
+  `/usr/include` — a clang-version accident (`aarch64-…-none-elf`
+  never does; reproduced locally).  Both fallbacks now stub the
+  four hosted prototypes into `build/atls_stub_include/`; verified
+  locally with the cross toolchains masked out of PATH (both gates
+  PASS compile-only) and unmasked (both PASS EXECUTED, 5/5).
+- `aarch64-parity` / drivers smoke: the artifact's serial log shows
+  EVERY driver gate green ([blk] PASS, [net] DHCP/ARP/echo PASS) and
+  the log cut at `auralite# un` — `timeout 60` fired with the prompt
+  arriving at ~55 s under shared-runner TCG.  The a64 session smokes
+  (shell/drivers/parity) now use timeout 150–180 as an upper fence,
+  not a schedule; QEMU still exits by PSCI, so fast runs pay nothing.
+  All five a64 smokes re-run green locally after the change.
+- Recorded, not hidden: `Run QEMU integration tests` in
+  qemu-integration is red since at least I6 (2026-08-16, pre-ARM64) —
+  being re-measured with a full local 129-case run to split
+  tree-truth from runner-truth.  First measured catch from that run:
+  `test_selftest_modes`' D1 margin (fast beats full by >= 80 ticks)
+  tripped at gap=79 under loaded TCG — the assert's noise floor, not
+  the knob (the off-mode SKIPPED lines prove the mechanism).  Margin
+  re-set to 50 ticks with the measurement recorded in the case; the
+  magnitude proof survives, the flake class does not.
+- Fourth finding, measured on a clean upstream clone: the O9 merge
+  never committed `patches/OPT_O9_ci.patch`, and `check_opt_claims`
+  (rightly) fails its deliverable claim — which reddens `make
+  test-unit` on CI regardless of every fix above.  The hotfix patch
+  ships the missing file; the checker was correct and is untouched.
+
 ## [A64 A9 — the plan closes through arithmetic: CI, docs, 90 claims] 2026-08-21
 
 `ARM64_PLAN.md` phase A9 — and the plan itself: **COMPLETE**.  The D8

@@ -70,15 +70,19 @@ assert_no_grep() {
 }
 
 # ---- the one boot: everything attached, the refusal matrix in-session ----
+# CI-runner sizing (the a64_drivers lesson from the first matrix run):
+# the prompt can take ~55s under shared-runner TCG; input is pipe-
+# buffered so early typing is harmless, and QEMU ends by PSCI -- the
+# timeout only needs to be an upper fence, not a schedule.
 rm -f "$LOG"
 {
-    sleep 6
-    printf 'uname\n';           sleep 1
-    printf 'run bin/init\n';    sleep 1
-    printf 'run bin32/init32\n'; sleep 1
-    printf 'run binrv/init\n';  sleep 1
-    printf 'exit\n';            sleep 2
-} | timeout 60 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
+    sleep 8
+    printf 'uname\n';           sleep 2
+    printf 'run bin/init\n';    sleep 2
+    printf 'run bin32/init32\n'; sleep 2
+    printf 'run binrv/init\n';  sleep 2
+    printf 'exit\n';            sleep 3
+} | timeout 180 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
         -m 256M -display none -serial stdio -no-reboot \
         -kernel "$IMG" -initrd "$TAR" \
         -global virtio-mmio.force-legacy=true \

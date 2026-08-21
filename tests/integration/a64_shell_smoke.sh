@@ -66,7 +66,7 @@ rm -f "$LOG"
     printf 'run bina64/init\n';  sleep 2
     printf 'run binrv/init\n';   sleep 1
     printf 'exit\n';             sleep 1
-} | timeout 45 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
+} | timeout 150 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
         -m 256M -display none -serial stdio -no-reboot \
         -kernel "$IMG" -initrd "$TAR" > "$LOG" 2>/dev/null || true
 tr -d '\r' < "$LOG" > "$LOG.clean" && mv "$LOG.clean" "$LOG"
