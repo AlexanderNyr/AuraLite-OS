@@ -34,4 +34,9 @@ int  pl011_try_getc(void);
  * smoke greps -- a poll-fed session would leave it 0). */
 uint64_t pl011_rx_count(void);
 
+/* Bytes recovered by the FR poll after a lost RX edge (QEMU 8.2,
+ * measured on CI -- see pl011_try_getc).  Printed beside the
+ * receipt so a lossy host is visible, not hidden. */
+uint64_t pl011_rx_polled_count(void);
+
 #endif /* AURALITE_ARCH_AARCH64_PL011_H */

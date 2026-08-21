@@ -129,6 +129,7 @@ static uint8_t     rx_buf[RX_RING_SIZE];
 static uart_ring_t rx_ring;
 static volatile int rx_armed;
 static volatile uint64_t rx_count;
+static volatile uint64_t rx_polled_count;   /* lost-edge recoveries */
 
 static void pl011_irq(uint32_t intid)
 {
@@ -175,8 +176,23 @@ int pl011_try_getc(void)
     if (rx_armed) {
         int c = -1;
         arch_irqflags_t f = arch_irq_save();
-        if (!uring_empty(&rx_ring))
+        if (!uring_empty(&rx_ring)) {
             c = uring_pop(&rx_ring, rx_buf, RX_RING_SIZE);
+        } else if (!(*reg32(PL011_FR) & PL011_FR_RXFE)) {
+            /* LOST-EDGE RECOVERY (measured on the first CI matrix
+             * runs, QEMU 8.2: the drivers-smoke session stalled at
+             * `auralite# un` -- byte-for-byte identical logs at 60 s
+             * AND 180 s timeouts, so not timing but a dropped RX
+             * interrupt edge with bytes queued in the chardev during
+             * a long boot).  A byte sitting in the pl011 with no IRQ
+             * ever coming would hang the shell forever; the 100 Hz
+             * timer already wakes the read loop's wfi, so polling FR
+             * here turns that hang into a <=10 ms hiccup.  Counted
+             * separately -- the IRQ receipt the smokes assert must
+             * stay a receipt for IRQs. */
+            c = (int)(*reg32(PL011_DR) & 0xFF);
+            rx_polled_count++;
+        }
         arch_irq_restore(f);
         return c;
     }
@@ -192,6 +208,11 @@ int pl011_try_getc(void)
 uint64_t pl011_rx_count(void)
 {
     return rx_count;
+}
+
+uint64_t pl011_rx_polled_count(void)
+{
+    return rx_polled_count;
 }
 
 /* ---- the A0 printers, unchanged above the putc seam ---- */

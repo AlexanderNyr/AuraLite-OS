@@ -74,19 +74,23 @@ assert_no_grep() {
 }
 
 # ---- the one boot: devices attached, a short interactive session ----
-# Sleeps and the timeout are sized for a COLD CI RUNNER, not for a
-# fast local box: the first four-job matrix run reached the prompt at
-# ~t+55s under shared-runner TCG and `timeout 60` killed QEMU mid-
-# session ("auralite# un" was the log's last line -- every driver
-# gate above it was green).  Piped input is buffered, so typing
-# "early" is harmless; killing QEMU late is not possible -- it exits
-# by PSCI when the session ends.
+# Input is PROMPT-DRIVEN, not sleep-scheduled (the second CI lesson
+# here: under shared-runner TCG the prompt can take ~55 s, and bytes
+# queued into the chardev during a long boot tickled a QEMU 8.2
+# lost-RX-edge stall -- deterministic, byte-identical logs at 60 s
+# and 180 s timeouts).  The writer watches the live log for the
+# prompt and only then types; the guest side additionally recovers
+# lost edges by FR polling (see pl011_try_getc).  The timeout stays
+# an upper fence -- QEMU exits by PSCI on a healthy run.
 rm -f "$LOG"
 {
-    sleep 8
+    for _ in $(seq 1 150); do
+        grep -qa "auralite# " "$LOG" 2>/dev/null && break
+        sleep 1
+    done
     printf 'uname\n';  sleep 2
     printf 'exit\n';   sleep 3
-} | timeout 180 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
+} | timeout 240 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
         -m 256M -display none -serial stdio -no-reboot \
         -kernel "$IMG" -initrd "$INITRD" \
         -global virtio-mmio.force-legacy=true \

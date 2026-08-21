@@ -74,8 +74,13 @@ assert_count() {
 
 # ---- single hart ----
 run_qemu "$LOG" 1
-assert_grep "$LOG" "Domain0 Next Address        : 0x0000000080200000" "OpenSBI hands off to the payload base"
-assert_grep "$LOG" "Domain0 Next Mode           : S-mode"             "handoff is S-mode"
+# OpenSBI's banner column width varies by version (measured: v1.6
+# pads Next Address to 8 spaces, the CI runner's v1.3 to 6 -- the
+# exact-string form failed the first time this smoke ever ran on a
+# runner).  The FACTS asserted -- the payload base and S-mode -- are
+# version-independent; the whitespace is not, so it is a wildcard.
+assert_grep "$LOG" "Domain0 Next Address *: 0x0000000080200000" "OpenSBI hands off to the payload base"
+assert_grep "$LOG" "Domain0 Next Mode *: S-mode"             "handoff is S-mode"
 assert_grep "$LOG" "Hello from AuraLite OS kernel (riscv64)!"         "stub banner (payload-base contract holds)"
 assert_grep "$LOG" "\[boot\] boot hart: [0-9]"                        "hartid arrived in a0"
 assert_grep "$LOG" "\[boot\] DTB at phys 0x[0-9a-f]*[1-9a-f]"         "DTB pointer arrived in a1, non-null"

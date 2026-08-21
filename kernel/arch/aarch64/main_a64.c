@@ -568,10 +568,14 @@ void kmain_a64(uint64_t x0_at_entry)
 
         /* A7's receipt: every keystroke the session typed arrived
          * through the GIC path, and this counter is the proof the
-         * smoke test greps (a poll-fed session would leave it 0). */
+         * smoke test greps (a poll-fed session would leave it 0).
+         * Lost-edge recoveries are printed beside it, not folded in
+         * -- a lossy host stays visible. */
         pl011_puts("[uart] rx bytes via GIC irq: ");
         pl011_putdec64(pl011_rx_count());
-        pl011_puts("\n");
+        pl011_puts(" (+");
+        pl011_putdec64(pl011_rx_polled_count());
+        pl011_puts(" polled recoveries)\n");
 
         pl011_puts("[kernel] A7 complete; console+shell+blk+net online; "
                    "powering off via PSCI\n");

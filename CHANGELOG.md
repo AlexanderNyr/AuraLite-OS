@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 CI hotfix 2 — the runner's QEMU, measured: OpenSBI padding + the lost RX edge] 2026-08-21
+
+The second matrix run (32471304249, "CI fix") moved the failures
+forward — crypto and host-unit-tests now pass — and exposed two
+runner-environment facts the first run's artifacts could not:
+
+- `rv_boot_smoke` failed the FIRST time it ever ran on CI: the
+  runner's QEMU 8.2 bundles **OpenSBI v1.3**, which pads the banner's
+  `Domain0 Next Address` column two spaces narrower than the local
+  v1.6 the assert strings were written against.  The facts asserted
+  (payload base, S-mode) are version-independent; the whitespace is
+  not — both asserts now wildcard the padding.
+- `a64_drivers_smoke` failed AGAIN at `auralite# un` with the log
+  **byte-for-byte identical** to the 60 s-timeout run — at 180 s.
+  Not timing: a deterministic QEMU 8.2 lost-RX-edge stall when bytes
+  queue into the chardev during a long boot (the deviceless shell
+  smoke, whose boot is short, passes on the same runner).  Two
+  defences, both shipped: the device smokes' input is now
+  PROMPT-DRIVEN (the writer greps the live log for `auralite# `
+  before typing — sleep schedules lose to shared-runner TCG), and
+  `pl011_try_getc` grew a lost-edge recovery — ring empty but
+  FR.RXFE clear means a byte is trapped with no IRQ coming; the
+  100 Hz timer already wakes the read loop's `wfi`, so an FR poll
+  turns a forever-hang into a <=10 ms hiccup.  Recoveries are
+  COUNTED SEPARATELY and printed beside the IRQ receipt
+  (`rx bytes via GIC irq: N (+M polled recoveries)`) — a lossy host
+  stays visible, and the receipt stays a receipt for IRQs (measured
+  locally: 56 (+0)).
+- Re-run after the fixes: rv_boot 45 OK, a64 boot/image/shell 15 OK,
+  drivers 15 OK, parity 26 OK, all checkers green, ratchets at
+  baseline.
+
 ## [A64 CI hotfix — the first four-job matrix run, read and answered] 2026-08-21
 
 CI run 32467266053 ("A9 update") measured through the jobs API and

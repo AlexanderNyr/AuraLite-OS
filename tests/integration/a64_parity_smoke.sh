@@ -70,19 +70,22 @@ assert_no_grep() {
 }
 
 # ---- the one boot: everything attached, the refusal matrix in-session ----
-# CI-runner sizing (the a64_drivers lesson from the first matrix run):
-# the prompt can take ~55s under shared-runner TCG; input is pipe-
-# buffered so early typing is harmless, and QEMU ends by PSCI -- the
-# timeout only needs to be an upper fence, not a schedule.
+# Prompt-driven input (the a64_drivers CI lesson: sleep schedules
+# lose to shared-runner TCG, and early-queued bytes tickled a QEMU
+# 8.2 lost-RX-edge stall).  The writer waits for the live log to show
+# the prompt, then types; the timeout is only an upper fence.
 rm -f "$LOG"
 {
-    sleep 8
+    for _ in $(seq 1 150); do
+        grep -qa "auralite# " "$LOG" 2>/dev/null && break
+        sleep 1
+    done
     printf 'uname\n';           sleep 2
     printf 'run bin/init\n';    sleep 2
     printf 'run bin32/init32\n'; sleep 2
     printf 'run binrv/init\n';  sleep 2
     printf 'exit\n';            sleep 3
-} | timeout 180 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
+} | timeout 240 qemu-system-aarch64 -machine virt -cpu cortex-a72 \
         -m 256M -display none -serial stdio -no-reboot \
         -kernel "$IMG" -initrd "$TAR" \
         -global virtio-mmio.force-legacy=true \
