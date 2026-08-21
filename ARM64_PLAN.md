@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A7 complete (phases A0–A9; A5 split into a/b/c)
+## Status: IN PROGRESS 🚧 — A0–A8 complete (phases A0–A9; A5 split into a/b/c)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -14,7 +14,7 @@
 | A5c — ELF loading, EL0 shell, cross-refusals | ✅ complete | `patches/A64_A5c_shell.patch` |
 | A6 — the sweep, fourth backend: DAIF behind the contracts | ✅ complete | `patches/A64_A6_sweep.patch` |
 | A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | ✅ complete | `patches/A64_A7_drivers.patch` |
-| A8 — parity: storage, network, full crypto, fourth tenant | pending | `patches/A64_A8_parity.patch` |
+| A8 — parity: storage, network, full crypto, fourth tenant | ✅ complete | `patches/A64_A8_parity.patch` |
 | A9 — CI matrix, docs, the claim check | pending | `patches/A64_A9_ci.patch` |
 
 > **Amended 2026-08-20 (post-OPT audit).**  Between A4 and A5 the tree
@@ -1299,16 +1299,16 @@ D6's rule).
 
 ---
 
-### Phase A8 — Parity: storage, network, full crypto, fourth tenant
+### Phase A8 — Parity: storage, network, full crypto, fourth tenant ✅ COMPLETE
 
 **Objective:** the I8/V8 gauntlet on aarch64 — one boot, every
 subsystem asserted; the crypto suite EXECUTED on the target ISA.
 
 #### Tasks
 
-- [ ] `a64_parity_smoke.sh`: the V8 shape — one QEMU run from banner
+- [x] `a64_parity_smoke.sh`: the V8 shape — one QEMU run from banner
       through drivers, `assert_no_grep FAIL` over the whole log.
-- [ ] **Full libatls at aarch64**: cross-compiled
+- [x] **Full libatls at aarch64**: cross-compiled
       `aarch64-linux-gnu-gcc -static` and EXECUTED under
       `qemu-aarch64` (both measured present; Fact 5 has the `__int128`
       execution receipt), with the compile-only fallback + loud SKIP
@@ -1318,10 +1318,76 @@ subsystem asserted; the crypto suite EXECUTED on the target ISA.
       install step — silent apt dependency failures were measured
       three times during the OPT audit ("Setting up" printed, binary
       absent).
-- [ ] The initrd's fourth tenant audited end-to-end (A5's audit is the
+- [x] The initrd's fourth tenant audited end-to-end (A5's audit is the
       pack-time gate; A8 re-asserts at boot: each of the four kernels
       exec-refuses the other three tenants' binaries).
-- [ ] Status-matrix rows drafted for A9.
+- [x] Status-matrix rows drafted for A9.
+
+#### Result
+
+**The parity boot: 26 green lines in one run.**  `a64_parity_smoke.sh`
+boots the Image path with the full device set and asserts one gate
+per phase — A0 banner, A1 handoff, A2 isr+timer/GIC, A3
+pmm/vmm/heap with BOTH alignment polarities (the Device-faults /
+Normal-succeeds pair only this arch measures), A4
+sched/fpu/EL0/`A64-U-OK!`, A5 init-exits-7 + the shared shell, A7
+blk+net+the IRQ receipt — then `assert_no_grep FAIL` over the whole
+log, the A5c log-size fuse first (5266 bytes, intact), the PSCI
+ending, and the standing x86_64 no-regression pair (the four-tenant
+tar must not break the first tenant's boot; it did not).
+
+**The refusal matrix got its fourth row, live.**  One shell session
+runs all three foreign tenants and the a64 kernel refuses each the
+way the contract demands: `/bin/init` → `refused: machine 62 (x86_64
+-- wrong kernel)`, `/bin32/init32` → `refused: not ELFCLASS64` (the
+i386 tenant falls at the class check, before machine is even read),
+`/binrv/init` → `refused: machine 243 (riscv64 -- the /binrv tenant,
+wrong kernel)`.  With V8's and A5c's assertions this completes the
+measured half of the 4×3 matrix that matters at boot: every kernel
+that can be handed a foreign tenant's binary in a smoke refuses it
+by name, not by crash.
+
+**Crypto: the COMPLETE suite EXECUTED at aarch64.**
+`test_libatls_a64.sh` — the rv64 gate's fourth spelling:
+`aarch64-linux-gnu-gcc -static` + `qemu-aarch64`, all five suites
+(hash/AEAD/X25519/Ed25519/ECDSA) pass EXECUTED, making aarch64 the
+second LP64 tenant through the `__int128` path the -m32 boundary
+cannot reach — umulh here where rv64 lowers to mulhu, which is
+exactly why execution and not compilation is the gate (a wide-multiply
+bug produces plausible-looking wrong field elements).  The deps are
+named in the gate (`gcc-aarch64-linux-gnu`, `libc6-dev-arm64-cross`,
+`qemu-user` — Fact 1's measured miss), the compile-only fallback
+SKIPs loudly, and **[AMEND-6]** is recorded in the gate itself: the
+`command -v` is the truth, an installer's exit status is not a
+binary's existence (A9's CI job must repeat the check after its
+install step).  Registered in `make test-unit` beside the rv64 gate.
+
+**Status matrix, drafted for A9** (the V8 table + the fourth column;
+A9 lands it in the docs):
+
+| Subsystem | x86_64 | i386 | riscv64 | aarch64 |
+|---|---:|---:|---:|---:|
+| Boot path | ✅ BIOS+UEFI ISO | ✅ same ISO, refusal-gated | ✅ OpenSBI `-kernel` | ✅ ELF `-kernel` + Image protocol (A5a) |
+| Memory (PMM/VMM/heap) | ✅ | ✅ (no PAE ⇒ no NX) | ✅ Sv39 | ✅ TTBR1 39-bit, W^X twice over |
+| W^X enforced | ✅ NX | ❌ honest (D3) | ✅ PTE X-bit, loader refuses W+X | ✅ PXN/UXN, loader refuses W+X |
+| Threads/sched | ✅ SMP | ✅ BSP-only | ✅ boot-hart only (D5) | ✅ boot-CPU only (D5, PSCI ramp named) |
+| User mode + syscalls | ✅ SYSCALL | ✅ int 0x80 | ✅ ecall (D4 numbers) | ✅ svc #0 (D4 numbers) |
+| Userspace | ✅ full libc | 🚧 libc32 subset | 🚧 libcrv subset (V8 residue) | 🚧 libca64 subset (same residue class) |
+| Shell | ✅ init shell | ✅ smallsh (shared) | ✅ smallsh (same source) | ✅ smallsh (same source, fourth build) |
+| Storage | ✅ AHCI+virtio-PCI | ✅ ATA PIO | ✅ virtio-mmio blk | ✅ virtio-mmio blk (PROMOTED transport) |
+| Network | ✅ e1000+virtio stack | ✅ e1000 miniproto | ✅ virtio-mmio + shared miniproto | ✅ virtio-mmio + shared miniproto (third consumer) |
+| Crypto vectors | ✅ host suite | 🧪 symmetric only (-m32 boundary) | ✅ COMPLETE suite executed | ✅ COMPLETE suite executed (umulh edition) |
+| Console input | ✅ PS/2+serial ring | ✅ PS/2+serial ring | ✅ 16550/PLIC irq ring | ✅ PL011/GIC irq ring (O3 core both ways) |
+
+Residue, recorded not hidden: the full libc port (errno/TLS/malloc
+over mmap) stays a named non-goal exactly as it does for rv64; PIE
+loading waits on it; fw-cfg self-test knob is AMEND-5's named
+deferral; SMP is D5's named ramp on both DTB tenants.
+
+**Gates:** a64_parity 26/26; atls-a64 5/5 EXECUTED; a64
+shell/drivers/boot/image green; rv_parity 21/21; x86_64 17/17;
+test-unit end-to-end with the new gate registered;
+`check_arm64_claims` 85 (+5).
 
 #### Test gate
 

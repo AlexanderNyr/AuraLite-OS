@@ -2173,6 +2173,12 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@bash tests/unit/test_libatls_m32.sh || exit 1
 	@echo "[unit] running tests/unit/test_libatls_rv64.sh"
 	@bash tests/unit/test_libatls_rv64.sh || exit 1
+# ARM64_PLAN A8: the same complete suite EXECUTED at aarch64 (the
+# second LP64 tenant; umulh where rv64 says mulhu).  Skips to
+# compile-only without gcc-aarch64-linux-gnu + libc6-dev-arm64-cross
+# + qemu-user -- named deps, [AMEND-6]'s command -v discipline.
+	@echo "[unit] running tests/unit/test_libatls_a64.sh"
+	@bash tests/unit/test_libatls_a64.sh || exit 1
 
 # I386_PLAN I9: the plan cannot drift from the tree -- each phase's
 # claims are tied to artefacts that only exist if the phase happened,

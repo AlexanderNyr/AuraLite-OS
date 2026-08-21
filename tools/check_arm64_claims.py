@@ -426,6 +426,46 @@ def claims():
                                      "a64_drivers_smoke.sh") and
          "log-size fuse" in read("tests", "integration",
                                  "a64_drivers_smoke.sh")),
+
+        # --- A8: parity -- one boot, the full gauntlet + crypto ---
+        ("A8: the parity smoke exists in the V8 shape (one boot, "
+         "per-phase asserts, the no-FAIL sweep, the fuse, the x86_64 "
+         "pair)",
+         "one assert per phase gate" in read("tests", "integration",
+                                             "a64_parity_smoke.sh") and
+         'assert_no_grep "FAIL"' in read("tests", "integration",
+                                         "a64_parity_smoke.sh") and
+         "log-size fuse" in read("tests", "integration",
+                                 "a64_parity_smoke.sh") and
+         "no-regression pair" in read("tests", "integration",
+                                      "a64_parity_smoke.sh")),
+        ("A8: the refusal matrix's fourth row runs LIVE -- all three "
+         "foreign tenants refused in one session",
+         "machine 62" in read("tests", "integration",
+                              "a64_parity_smoke.sh") and
+         "not ELFCLASS64" in read("tests", "integration",
+                                  "a64_parity_smoke.sh") and
+         "machine 243" in read("tests", "integration",
+                               "a64_parity_smoke.sh")),
+        ("A8: the crypto gate EXECUTES the complete suite at aarch64 "
+         "(static cross-gcc + qemu-user, the rv64 gate's shape)",
+         "aarch64-linux-gnu-gcc -static" in read("tests", "unit",
+                                                 "test_libatls_a64.sh") and
+         "qemu-aarch64" in read("tests", "unit",
+                                "test_libatls_a64.sh") and
+         "test_atls_ecdsa" in read("tests", "unit",
+                                   "test_libatls_a64.sh") and
+         "test_libatls_a64.sh" in makefl),
+        ("A8 [AMEND-6]: the gate names its deps and records the "
+         "command -v discipline; the fallback SKIPs loudly",
+         "libc6-dev-arm64-cross" in read("tests", "unit",
+                                         "test_libatls_a64.sh") and
+         "AMEND-6" in read("tests", "unit", "test_libatls_a64.sh") and
+         "compile-only fallback" in read("tests", "unit",
+                                         "test_libatls_a64.sh")),
+        ("A8: the plan carries the four-column status matrix draft "
+         "for A9",
+         "| Subsystem | x86_64 | i386 | riscv64 | aarch64 |" in plan),
     ]
 
     # Structural: the Status header and the phase table must agree.

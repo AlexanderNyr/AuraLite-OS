@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A8 — parity: one boot, the full gauntlet; crypto EXECUTED at aarch64] 2026-08-21
+
+`ARM64_PLAN.md` phase A8: the I8/V8 gauntlet on the fourth arch.
+
+- `a64_parity_smoke.sh` (new): 26 green lines in ONE boot — banner
+  through drivers, one assert per phase gate (incl. the
+  both-polarities alignment pair only this arch measures), the A5c
+  log-size fuse first (5266 bytes), `assert_no_grep FAIL` over the
+  whole log, PSCI ending, and the standing x86_64 no-regression pair
+  (the four-tenant tar did not break the first tenant).
+- The refusal matrix's fourth row, LIVE in one session: `/bin/init`
+  refused `machine 62 (x86_64)`, `/bin32/init32` refused
+  `not ELFCLASS64` (the class check fires before machine is read),
+  `/binrv/init` refused `machine 243 (riscv64)`.  Together with V8's
+  and A5c's assertions, every kernel a smoke can hand a foreign
+  binary now refuses it by name, not by crash.
+- `test_libatls_a64.sh` (new, registered in test-unit): the COMPLETE
+  crypto suite — hash/AEAD/X25519/Ed25519/ECDSA — cross-compiled
+  `aarch64-linux-gnu-gcc -static` and EXECUTED under `qemu-aarch64`,
+  5/5.  The second LP64 tenant through the `__int128` path (-m32's
+  recorded boundary): umulh where rv64 says mulhu, which is why
+  execution, not compilation, is the gate.  Deps named
+  (`gcc-aarch64-linux-gnu`, `libc6-dev-arm64-cross`, `qemu-user` —
+  Fact 1's measured miss), compile-only fallback SKIPs loudly,
+  **[AMEND-6]** recorded in the gate: `command -v` is the truth, an
+  installer's exit status is not a binary's existence.
+- The four-column status matrix drafted in the plan (A9 lands it in
+  the docs); residue recorded, not hidden (libc subset class, PIE,
+  AMEND-5's fw-cfg deferral, D5's SMP ramp).
+- Gates: a64_parity 26/26, atls-a64 5/5 EXECUTED, a64
+  shell/drivers/boot/image green, rv_parity 21/21, x86_64 17/17,
+  test-unit end-to-end; `check_arm64_claims` 85 (+5).
+
 ## [A64 A7 — the promoted transport: blk + net + IRQ console on the fourth tenant] 2026-08-21
 
 `ARM64_PLAN.md` phase A7: storage and network through the PROMOTED
