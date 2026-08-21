@@ -180,6 +180,12 @@ jobs:
         env:
           NO_COLOR: "1"
 
+      # HW_PLAN H2/H5: the -cpu max lane -- the one TCG configuration
+      # exposing ERMS.  Detection + wiring proof (the performance half
+      # is a metal receipt by design).
+      - name: HW -- the -cpu max feature lane (ERMS receipt + crossover)
+        run: bash tests/integration/x86_cpumax_smoke.sh
+
       # The 129-case suite used to run HERE as one ~2 h step; it now
       # runs as six parallel thematic shards in the integration-cases
       # matrix job below (measured 2 h 08 m at the last single-job

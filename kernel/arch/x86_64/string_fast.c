@@ -50,8 +50,6 @@
 #include <stddef.h>
 #include "kernel/lib/string.h"
 #include "kernel/arch/x86_64/string_fast.h"
-#include "kernel/arch/x86_64/cpu.h"
-#include "kernel/lib/kprintf.h"
 
 /* HW_PLAN H2: the small-copy crossover is RUNTIME now.  The compile-
  * time SMALL_N = 64 was tuned for the wrong machine on ERMSB parts:
@@ -65,6 +63,15 @@
  * it booted in -- and so the metal receipt (plan §6) has its line. */
 static size_t small_n = 64;     /* the O1-measured default; see above */
 
+/* The init is KERNEL wiring (cpuid + kprintf); the host unit test
+ * includes this file for the copy BODIES and must not inherit kernel
+ * link dependencies -- measured the hard way: the H2 draft without
+ * this guard broke test_string_ops at host link (undefined kprintf),
+ * caught by the H5 full test-unit run. */
+#ifdef ARCH_X86_64
+#include "kernel/arch/x86_64/cpu.h"
+#include "kernel/lib/kprintf.h"
+
 void string_fast_init(void)
 {
     uint32_t ebx7;
@@ -77,6 +84,7 @@ void string_fast_init(void)
         kprintf("[cpu]   memcpy small-copy crossover: 64 (no ERMS)\n");
     }
 }
+#endif /* ARCH_X86_64 */
 
 void *memcpy(void *dst, const void *src, size_t n) {
     if (n < small_n) {

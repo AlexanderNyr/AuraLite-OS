@@ -164,6 +164,23 @@ def claims():
          "pcid_generation_wraps reserved at zero" in
          read("tests", "integration", "cases",
               "test_perf_smoke.sh")),
+
+        # --- H5: close-out ---
+        ("H5: docs/status.md carries the HW rows with the TCG/metal "
+         "split stated",
+         "Real-hardware package + string-ops parity" in
+         read("docs", "status.md") and
+         "TCG-half" in read("docs", "status.md")),
+        ("H5: the -cpu max lane runs in CI",
+         "x86_cpumax_smoke.sh" in read(".github", "workflows",
+                                       "integration.yml")),
+        ("H5: the receipt protocol is paste-the-line-back concrete",
+         "paste" in plan and "run membench" in plan and
+         "D-PCID-5 trigger" in plan),
+        ("H5: the plan records what its planner did not expect (the "
+         "series' yield)",
+         "did not expect" in plan and
+         "doing its job" in plan),
     ]
 
     # Structural: the Status header and the phase table must agree

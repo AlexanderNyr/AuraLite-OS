@@ -313,6 +313,22 @@ tying ARM64_PLAN.md to the tree. CI: the `aarch64-parity` job in
 `integration.yml` (with the AMEND-6 toolchain-existence assert after
 install).
 
+## Real-hardware package + string-ops parity — HW_PLAN
+
+The OPT_PLAN residue, paid (HW_PLAN.md, H0–H5).  Every hardware
+feature here splits into a TCG-checkable correctness half (landed,
+gated) and a metal performance half (a named receipt slot in
+HW_PLAN §6 — TCG cannot measure it and the docs do not pretend).
+
+| Feature | Status | Notes |
+|---|---:|---|
+| CPU feature receipts | ✅ | `[cpu] features: pat= pcid= invpcid= erms=` + `IA32_PAT` readback printed every boot on every lane — the receipt IS the compatibility matrix.  Measured: qemu64 has only PAT; `-cpu max` adds ERMS and still no PCID. |
+| Word-wide portable string ops | ✅ | `kernel/lib/string.c` moves 8 bytes/iteration (may_alias word type — the strict-align-proof spelling); rv64 memcpy 413→2449 MB/s, a64 288→1964 (TCG).  rv64 adopted the shared file in H0; x86 keeps its rep-string backend (byte-identical control). |
+| ERMSB crossover | ✅ TCG-half | Runtime, CPUID-fed: 64 (no ERMS, the O1-measured default) → 0 on ERMS parts; threshold line printed and pinned on both lanes.  Small-copy wall-clock: metal receipt. |
+| PAT + WC framebuffer | ✅ TCG-half | PA4:=WC per-CPU (BSP + APs — attribute aliasing fenced by construction); fb HHDM range remapped exactly (huge pages split), PTE decode printed (`fb: WC via PAT4`).  gui shard pixel-green.  Flip throughput: metal receipt. |
+| PCID | 📋 design | No executable lane exists (measured: `-cpu max` TCG lacks PCID, CI has no KVM) — five named design decisions written in HW_PLAN H4, `/proc/perf` receipt slots reserved at zero and pinned there; implementation re-opens on the first `pcid=1` lane (D-PCID-5). |
+| rv64/a64 membench | ✅ | Boot-time bench of the LINKED string ops, verified passes, smoke-asserted on both tenants — the standing regression net for any future string-ops change. |
+
 ## Known low-priority limitations
 
 - **SMP scheduling is deliberately conservative.** APs are online, have CPU-local state and LAPIC timers, and enter the idle scheduler loop; normal user scheduling remains BSP-only until per-CPU run queues/TLB shootdown policy are completed.

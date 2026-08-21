@@ -1,6 +1,6 @@
 # AuraLite OS — Real-Hardware Package + String-Ops Parity Plan
 
-## Status: IN PROGRESS 🚧 — H0–H4 complete (phases H0–H5)
+## Status: COMPLETE ✅ — H0–H5 all landed (numbers in §5, receipts protocol in §6); closed 2026-08-21
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,7 @@
 | H2 — ERMSB: the receipt and the crossover | ✅ complete | `patches/HW_H2_ermsb.patch` |
 | H3 — PAT + write-combining framebuffer | ✅ complete | `patches/HW_H3_pat.patch` |
 | H4 — PCID: the measured absence and the deferral protocol | ✅ complete | `patches/HW_H4_pcid.patch` |
-| H5 — close-out: docs, CI, the hardware receipt protocol | pending | `patches/HW_H5_close.patch` |
+| H5 — close-out: docs, CI, the hardware receipt protocol | ✅ complete | `patches/HW_H5_close.patch` |
 
 ## 1. Where this plan comes from
 
@@ -427,7 +427,7 @@ diff is two enum rows, two name strings, and this text.
 
 `patches/HW_H4_pcid.patch`
 
-### Phase H5 — Close-out: docs, CI, the hardware receipt protocol
+### Phase H5 — Close-out: docs, CI, the hardware receipt protocol ✅ COMPLETE
 
 **Objective:** the plan closes through checker arithmetic; the
 hardware half becomes a protocol someone with metal can run in ten
@@ -435,14 +435,40 @@ minutes.
 
 #### Tasks
 
-- [ ] `docs/status.md`: the feature rows (PAT/WC, PCID, ERMS) with
+- [x] `docs/status.md`: the feature rows (PAT/WC, PCID, ERMS) with
       their TCG-correctness/hardware-performance split stated.
-- [ ] CI: a `-cpu max` lane where it pays (the H4 smoke); the
-      qemu64 lanes stay primary.
-- [ ] §6 receipt protocol finalised: exact commands, exact lines to
+- [x] CI: a `-cpu max` lane where it pays (the H2 smoke joins
+      qemu-integration); the qemu64 lanes stay primary.
+- [x] §6 receipt protocol finalised: exact commands, exact lines to
       paste back, and the table that holds them.
-- [ ] `check_hw_claims.py` closed to full coverage; terminal Status
+- [x] `check_hw_claims.py` closed to full coverage; terminal Status
       arithmetic.
+
+#### Result
+
+The docs carry the split honestly (a "✅ TCG-half" is a new status
+word, and it means exactly what it says); the `-cpu max` lane runs
+on every push now (detection + wiring, the halves TCG can prove);
+§6 is a paste-the-line-back protocol with the exact expected
+formats; and the checker closes the plan the D8 way — `## Status:
+COMPLETE` is accepted only against six green rows, which this
+paragraph could not precede.  Final count: 25 claims + selftest,
+wired into test-unit since H0.
+
+What this plan measured that its planner did not expect — the
+series' real yield, in D1's spirit: TCG at ~1.2 G insn/s made byte
+loops look healthy until the objdump said otherwise (H0→H1); clang
+never unrolled them (the correction is dated, in H0's Result);
+`-cpu max` has no PCID, which turned an implementation phase into a
+design phase before any TLB code existed to regret (H0→H4); and the
+one first-draft that put cpuid receipts in portable code was caught
+by ratchet 2 within the minute (H0).  Every one of those catches
+was a rig or a ratchet doing its job.
+
+#### Test gate
+
+- Checker green with terminal arithmetic; the CI lane runs; docs
+  rows match the tree.
 
 #### Deliverable
 
@@ -478,8 +504,16 @@ All TCG on this sandbox unless a receipt row says otherwise.
 
 ## 6. Hardware receipt slots (D2 — filled only from metal)
 
-| Receipt | Command | Line to paste | Value |
+The protocol: boot `release/auralite.iso` on the target machine with
+a serial capture (or a phone camera on the console), run the listed
+command, paste the listed line(s) back into this table with the
+machine named.  Ten minutes, no toolchain needed on the target.
+
+| Receipt | Command | Line(s) to paste | Machine / value |
 |---|---|---|---|
-| ERMSB small-copy crossover | `run membench` on metal | the <64 B rows | — |
-| WC framebuffer flip rate | gui + `/proc/perf` compositor counters on metal | px/s before/after H3 | — |
-| PCID switch cost | boot metal, `/proc/perf` | `cr3_noflush_switches` + wall-clock delta | — |
+| Feature ground truth | (boots by itself) | `[cpu]   features: ...` + `[vmm] IA32_PAT: PA4=WC (readback ...)` | — |
+| ERMSB crossover active | (boots by itself) | `[cpu]   memcpy small-copy crossover: ...` | — |
+| ERMSB small-copy throughput | `run membench` at the shell | the `MEMBENCH memcpy-a 64` and `4096` rows | — |
+| WC framebuffer proof + flip rate | (boots by itself); then `cat /proc/perf` after ~30 s of GUI | `[vmm] fb: WC via PAT4 (...)` + both `compositor_pixels_*` counters, twice ~30 s apart | — |
+| PCID present? (the D-PCID-5 trigger) | (boots by itself) | `[cpu]   features: ... pcid=1 invpcid=...` — if 1, HW_PLAN H4 re-opens | — |
+| PCID win (post-re-open only) | `cat /proc/perf` after a busy minute | `cr3_noflush_switches N` (N > 0), `tlb_ipis_skipped` not collapsed | — |

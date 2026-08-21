@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HW H5 — the plan closes: docs, the -cpu max CI lane, the receipt protocol] 2026-08-21
+
+`HW_PLAN.md` — **COMPLETE**, six phases, closed through the D8
+checker's terminal arithmetic (25 claims + selftest; `## Status:
+COMPLETE` accepted only against six green rows).
+
+- `docs/status.md`: the "Real-hardware package + string-ops parity"
+  section — every feature row states its TCG-correctness /
+  hardware-performance split ("✅ TCG-half" is a status word and it
+  means exactly what it says; PCID is honestly "📋 design").
+- CI: `x86_cpumax_smoke.sh` joins qemu-integration — the ERMS
+  detection + wiring lane runs on every push.
+- HW_PLAN §6 finalised as a paste-the-line-back protocol: boot the
+  ISO on metal with serial capture, run one command per receipt,
+  paste the named lines — ten minutes, no toolchain on the target;
+  the `pcid=1` receipt is explicitly the D-PCID-5 re-open trigger.
+- The series' recorded yield (what the rigs caught that the planner
+  did not expect): TCG's ~1.2 G insn/s masking byte loops until the
+  objdump spoke; clang never having unrolled them (dated correction
+  in H0); `-cpu max` lacking PCID, turning an implementation phase
+  into a design phase before any TLB code existed to regret; and
+  ratchet 2 catching the one portable-code receipt draft within the
+  minute.  Every catch was a rig or a ratchet doing its job.
+- One more catch, same category: H2's `string_fast_init` draft
+  leaked kernel link deps (kprintf) into the host unit test that
+  includes the file for its copy bodies — broke `test_string_ops`
+  at host link, caught by this phase's full `make test-unit`,
+  fenced with `#ifdef ARCH_X86_64` and the lesson written at the
+  fence.
+
 ## [HW H4 — PCID: the written design, the reserved receipts, the deferral kept honest] 2026-08-21
 
 `HW_PLAN.md` H4, re-scoped by H0's own measurement (no QEMU
