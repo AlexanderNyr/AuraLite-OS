@@ -40,6 +40,9 @@
 #include "kernel/arch/aarch64/pl011.h"
 #include "kernel/arch/aarch64/pmm_a64.h"
 #include "kernel/arch/aarch64/thread_a64.h"
+#include "kernel/arch/aarch64/initrd_a64.h"
+#include "kernel/arch/aarch64/elfa64load.h"
+#include "kernel/arch/aarch64/kheap_a64.h"
 
 /* context_a64.S */
 extern void user_enter_a64(uint64_t entry, uint64_t user_sp,
@@ -85,6 +88,77 @@ static void user_a64_leave(a64_trap_frame_t *f, int code)
 
 /* ---- trap_a64.c hooks ------------------------------------------------------ */
 
+/* ---- A5c: the cooked console line (cons_rv_readline's shape) --------------
+ *
+ * Echo, backspace, CR->LF, newline stored.  Byte source: the polled
+ * PL011 RX (IRQ-driven RX is A7).  The blocking wait is
+ * `daifclr, #2; wfi` -- the svc trap path runs with IRQs masked, so a
+ * bare wfi here would sleep with a prompt on screen forever: the
+ * rv64 comment's sstatus.SIE twin, DAIF spelling (the I7 cleared-IF
+ * deadlock, fourth edition).  The 100 Hz timer bounds every wait.
+ * THIS function is what makes the shell's read() BLOCK -- without it
+ * smallsh spins printing prompts as fast as the serial line drains
+ * (measured the loud way: a 45-second boot log of nothing but
+ * `auralite#`). */
+static uint64_t cons_a64_readline(char *buf, uint64_t cap)
+{
+    uint64_t n = 0;
+
+    for (;;) {
+        int ci = pl011_try_getc();
+        if (ci < 0) {
+            __asm__ volatile("msr daifclr, #2\n\twfi" ::: "memory");
+            continue;
+        }
+
+        char c = (char)ci;
+        if (c == '\r')
+            c = '\n';
+
+        if (c == '\b' || c == 0x7F) {
+            if (n > 0) {
+                n--;
+                pl011_puts("\b \b");
+            }
+            continue;
+        }
+
+        if (c == '\n') {
+            pl011_putc('\n');
+            if (n < cap)
+                buf[n++] = '\n';
+            return n;
+        }
+
+        if (n + 1 < cap) {          /* leave room for the newline */
+            buf[n++] = c;
+            pl011_putc(c);          /* echo */
+        }
+    }
+}
+
+/* Copy a NUL-terminated user path (probe every touched page first --
+ * validate, then dereference; no PAN on v8.0, so the probe IS the
+ * fence). */
+static int copy_user_path(uint64_t uptr, char *dst, uint64_t cap)
+{
+    if (uptr < ELF_A64_USER_MIN ||
+        uptr >= USER_TEXT_VADDR_A64 + PAGE_SIZE_A64)
+        return -1;
+    for (uint64_t i = 0; i < cap; i++) {
+        uint64_t va = uptr + i;
+        if (va >= USER_TEXT_VADDR_A64 + PAGE_SIZE_A64)
+            return -1;
+        if ((i == 0 || (va & (PAGE_SIZE_A64 - 1)) == 0) &&
+            paging_a64_probe(va) == ~0UL)
+            return -1;
+        dst[i] = *(const char *)va;
+        if (dst[i] == '\0')
+            return 0;
+    }
+    return -1;                      /* unterminated within cap */
+}
+
 void user_a64_syscall(a64_trap_frame_t *f)
 {
     uint64_t nr = f->regs[8];              /* x8 */
@@ -98,14 +172,64 @@ void user_a64_syscall(a64_trap_frame_t *f)
     }
 
     switch (nr) {
+    case SYS_A64_READ: {
+        /* read(fd=x0, buf=x1, len=x2): fd 0, cooked console line.
+         * Probe every touched page BEFORE the blocking wait -- the
+         * i386 rule: validate, then sleep, not the reverse. */
+        if (a0 != 0 || a2 == 0 || a2 > 4096 ||
+            a1 < ELF_A64_USER_MIN ||
+            a1 + a2 > USER_TEXT_VADDR_A64 + PAGE_SIZE_A64) {
+            f->regs[0] = (uint64_t)-1;
+            return;
+        }
+        for (uint64_t va = a1 & ~(uint64_t)(PAGE_SIZE_A64 - 1);
+             va < a1 + a2; va += PAGE_SIZE_A64) {
+            if (paging_a64_probe(va) == ~0UL) {
+                static int read_faults;
+                if (read_faults < 3) {
+                    read_faults++;
+                    pl011_puts("[user] READ EFAULT: va=");
+                    put_hex_(va);
+                    pl011_puts(" buf=");
+                    put_hex_(a1);
+                    pl011_putc('\n');
+                }
+                f->regs[0] = (uint64_t)-14;    /* -EFAULT */
+                return;
+            }
+        }
+        static char kline[4096];
+        uint64_t n = cons_a64_readline(kline, a2);
+        for (uint64_t i = 0; i < n; i++)
+            ((char *)a1)[i] = kline[i];
+        f->regs[0] = n;
+        return;
+    }
+    case SYS_A64_SPAWN: {
+        /* spawn(path=x0): run another initrd ELF to completion and
+         * return its exit code (the rv64 nesting contract:
+         * user_a64_run_elf saves/restores the parent's trampoline). */
+        char path[100];
+        if (copy_user_path(a0, path, sizeof(path)) != 0) {
+            f->regs[0] = (uint64_t)-14;        /* -EFAULT */
+            return;
+        }
+        f->regs[0] = (uint64_t)(int64_t)user_a64_run_elf(path);
+        return;
+    }
     case SYS_A64_WRITE: {
         /* write(fd=x0, buf=x1, len=x2): fd 1, bounds inside the user
          * window, pages probed, then the copy to a KERNEL buffer
          * before printing.  No PAN on v8.0 (see the header comment)
          * -- the bounds+probe pair is what stands between a user
          * pointer and the kernel's console either way. */
+        /* A5c widened the window: ELF programs live in
+         * [ELF_A64_USER_MIN, ELF_A64_USER_MAX) and the A4 flat-image
+         * self-tests sit at USER_TEXT_VADDR_A64 just above it -- the
+         * probe loop is what actually vouches for presence (the rv64
+         * V5 shape). */
         if (a0 != 1 || a2 == 0 || a2 > 4096 ||
-            a1 < USER_STACK_VADDR_A64 ||
+            a1 < ELF_A64_USER_MIN ||
             a1 + a2 > USER_TEXT_VADDR_A64 + PAGE_SIZE_A64) {
             f->regs[0] = (uint64_t)-1;
             return;
@@ -245,6 +369,160 @@ fail_setup:
  * V0 pad-byte lesson says the assembler is the reviewer, and the
  * literal pool the assembler emitted (msg address at +0x30, ldr
  * literal) is kept exactly as it fell out. */
+/* ---- A5c: ELF images from the initrd (user_rv_run_elf's contract) ---------
+ *
+ * spawn depth 0 = launched from kmain_a64, 1 = a child the shell
+ * spawned.  Each nesting level gets its own user stack page (stepping
+ * down from the ELF window's ceiling -- the address-range treaty) and
+ * its own trap stack (the I7 lesson: the parent's trap stack holds
+ * ITS live frames while the child runs), and the parent's
+ * exit-trampoline context is saved around the child.  All of it in
+ * TTBR0's tree (the A4 two-trees fact) -- and every unmap on the way
+ * out is a precise TLBI VAE1IS now ([AMEND-4], paging_a64_unmap). */
+
+static uint64_t spawn_depth;
+
+int user_a64_run_elf(const char *path)
+{
+    const uint8_t *image;
+    uint64_t size;
+
+    if (spawn_depth >= 2) {
+        pl011_puts("[user] spawn depth limit (2) -- refusing\n");
+        return -1;
+    }
+
+    if (!initrd_a64_find(path, &image, &size)) {
+        pl011_puts("[user] /");
+        pl011_puts(path);
+        pl011_puts(": not found in the initrd\n");
+        return -1;
+    }
+
+    /* Checkpoint the parent's mappings (no-op at depth 0) and its
+     * exit-trampoline context. */
+    elfa64load_mark();
+    uint64_t p_jmpbuf[14];
+    for (int i = 0; i < 14; i++)
+        p_jmpbuf[i] = exit_jmpbuf[i];
+    int p_active = user_active;
+    /* THE fix this phase paid a debugging session for: the trap frame
+     * does not carry SP_EL0 (the vectors spill GPRs+elr+spsr only), so
+     * a nested user_enter_a64 silently re-points the PARENT's EL0
+     * stack at the child's -- which the child's exit then unmaps.  The
+     * parent resumes with its sp inside a dead page and every read()
+     * floods -EFAULT (measured: 20 MB of prompts in 40 s, buf equal to
+     * the CHILD's stack top minus its frame -- the "impossible" 0x500C
+     * depth was the two levels' top-to-top distance all along).  Save
+     * the banked register with the rest of the parent's context. */
+    uint64_t p_sp_el0;
+    __asm__ volatile("mrs %0, sp_el0" : "=r"(p_sp_el0));
+
+    uint64_t entry = elfa64load_map(image, size);
+    if (!entry) {
+        elfa64load_unmap();         /* releases to the mark */
+        return -1;
+    }
+
+    /* User stack: FOUR pages per nesting level plus an unmapped guard
+     * page between levels.  The rv64 one-page-per-level layout was
+     * ported first and measured broken here: aarch64 frames are fatter
+     * (AAPCS64 16-byte alignment, clang -O2 spills), the shell's SP
+     * grew down THROUGH its single page onto the child's -- legal
+     * while the child lived, vaporised when the child's exit unmapped
+     * it, and every parent read() after that was an EFAULT flood of
+     * prompts.  The guard hole turns a future overflow into a
+     * contained EL0 fault instead of a silent lease on the
+     * neighbour's page. */
+    enum { USTACK_PAGES = 8, USTACK_STRIDE = USTACK_PAGES + 1 };
+    /* 8 pages + a guard hole per level.  The "20 KiB deep shell" that
+     * first justified widening this was the SP_EL0 bug wearing a
+     * disguise (see below) -- but the width stays: stacks that share
+     * no border with a neighbour turn a future overflow into a
+     * contained EL0 fault instead of a lease on someone else's page. */
+    uint64_t stack_top  = ELF_A64_USER_MAX -
+        (uint64_t)PAGE_SIZE_A64 * USTACK_STRIDE * spawn_depth;
+    uint64_t stack_lo   = stack_top - (uint64_t)PAGE_SIZE_A64 * USTACK_PAGES;
+    uint64_t stack_frames[USTACK_PAGES];
+    uint32_t stacked = 0;
+    for (; stacked < USTACK_PAGES; stacked++) {
+        uint64_t fr = pmm_a64_alloc_frame();
+        if (!fr ||
+            paging_a64_map(stack_lo + (uint64_t)PAGE_SIZE_A64 * stacked,
+                           fr, A64_MAP_RW_USER) != 0) {
+            if (fr)
+                pmm_a64_free_frame(fr);
+            break;
+        }
+        stack_frames[stacked] = fr;
+    }
+    if (stacked < USTACK_PAGES) {
+        while (stacked--) {
+            paging_a64_unmap(stack_lo + (uint64_t)PAGE_SIZE_A64 * stacked);
+            pmm_a64_free_frame(stack_frames[stacked]);
+        }
+        elfa64load_unmap();
+        return -1;
+    }
+
+    uint8_t *trap_stack = (uint8_t *)kmalloc_a64(TRAP_STACK_SIZE);
+    if (!trap_stack) {
+        for (uint32_t s = 0; s < USTACK_PAGES; s++) {
+            paging_a64_unmap(stack_lo + (uint64_t)PAGE_SIZE_A64 * s);
+            pmm_a64_free_frame(stack_frames[s]);
+        }
+        elfa64load_unmap();
+        return -1;
+    }
+
+    pl011_puts("[user] running /");
+    pl011_puts(path);
+    pl011_puts(" (entry ");
+    put_hex_(entry);
+    pl011_puts(", ");
+    put_udec_(size);
+    pl011_puts(" bytes, depth ");
+    put_udec_(spawn_depth);
+    pl011_puts(")\n");
+
+    spawn_depth++;
+    user_active = 1;
+
+    int rc = a64_setjmp(exit_jmpbuf);
+    if (rc == 0) {
+        user_enter_a64(entry, stack_top - 16,
+                       (uint64_t)trap_stack + TRAP_STACK_SIZE);
+    }
+
+    /* Landed from user_a64_leave (setjmp returns 1; the code travels
+     * in exit_code_box -- the A4 trampoline's convention, NOT the rv
+     * rc-1 encoding; copying that cost this phase its first bug:
+     * every child "exited 0").  IRQs are masked across the unwind --
+     * re-open now that sp is this kernel stack again. */
+    __asm__ volatile("msr daifclr, #2" ::: "memory");
+    (void)rc;
+    int code = exit_code_box;
+    spawn_depth--;
+
+    kfree_a64(trap_stack);
+    for (uint32_t s = 0; s < USTACK_PAGES; s++) {
+        paging_a64_unmap(stack_lo + (uint64_t)PAGE_SIZE_A64 * s);
+        pmm_a64_free_frame(stack_frames[s]);
+    }
+    elfa64load_unmap();             /* child's pages only, to the mark */
+
+    /* Restore the parent's trampoline AND its EL0 stack pointer (see
+     * the save above): the next SYS_EXIT must land in the OUTER frame,
+     * and the eret back to the parent must resume on the PARENT's
+     * stack. */
+    for (int i = 0; i < 14; i++)
+        exit_jmpbuf[i] = p_jmpbuf[i];
+    user_active = p_active;
+    __asm__ volatile("msr sp_el0, %0" :: "r"(p_sp_el0));
+
+    return code;
+}
+
 static const uint8_t prog_ok[] = {
     /*  mov x8,#1; mov x0,#1; ldr x1,=0x40000048; mov x2,#10; svc #0
      *  mov x8,#39; svc #0;  mov x8,#60; mov x0,#42; svc #0; udf     */

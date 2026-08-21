@@ -10,4 +10,7 @@ void pl011_puts(const char *s);
 void pl011_puthex64(uint64_t v);
 void pl011_putdec64(uint64_t v);
 
+/* A5c: polled RX -- one byte or -1 (empty FIFO).  IRQ RX is A7. */
+int  pl011_try_getc(void);
+
 #endif /* AURALITE_ARCH_AARCH64_PL011_H */

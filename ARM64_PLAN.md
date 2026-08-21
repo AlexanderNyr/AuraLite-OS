@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A5b complete (phases A0–A9; A5 split into a/b/c)
+## Status: IN PROGRESS 🚧 — A0–A5c complete (phases A0–A9; A5 split into a/b/c)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,7 @@
 | A4 — threads, scheduler, EL0, `svc` | ✅ complete | `patches/A64_A4_proc.patch` |
 | A5a — the Image exit ramp + shared strings | ✅ complete | `patches/A64_A5a_image.patch` |
 | A5b — libca64 + the fourth tenant | ✅ complete | `patches/A64_A5b_tenant.patch` |
-| A5c — ELF loading, EL0 shell, cross-refusals | pending | `patches/A64_A5c_shell.patch` |
+| A5c — ELF loading, EL0 shell, cross-refusals | ✅ complete | `patches/A64_A5c_shell.patch` |
 | A6 — the sweep, fourth backend: DAIF behind the contracts | pending | `patches/A64_A6_sweep.patch` |
 | A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | pending | `patches/A64_A7_drivers.patch` |
 | A8 — parity: storage, network, full crypto, fourth tenant | pending | `patches/A64_A8_parity.patch` |
@@ -1002,7 +1002,7 @@ job).
 
 ---
 
-### Phase A5c — ELF loading, the EL0 shell, cross-refusals
+### Phase A5c — ELF loading, the EL0 shell, cross-refusals ✅ COMPLETE
 
 **Objective:** the fourth tenant runs: initrd parsed on a64, ELF loaded
 with the window/W^X refusals, the shared shell interactive at EL0.
@@ -1022,11 +1022,60 @@ with the window/W^X refusals, the shared shell interactive at EL0.
 - [ ] `a64_shell_smoke.sh`: the rv_shell shape — prompt, builtin sweep,
       syscall round-trips, exit.
 
+#### Result
+
+Delivered — `auralite#` lives on the fourth architecture, and the
+phase paid for two measured facts that are now regression pins:
+
+```
+[init] PASS: inita64 ran and exited 7 as built
+auralite# uname
+AuraLite OS aarch64 (TTBR1 higher half, ARM64_PLAN A5)
+auralite# run bina64/init      -> depth 1 ... exit code 7
+auralite# run binrv/init       -> refused: machine 243 (riscv64 -- the /binrv tenant, wrong kernel)
+[shell] exited 0
+[kernel] A5c complete; powering off via PSCI
+```
+
+1. **The banked register the trap frame does not carry.**  The first
+   interactive session flooded 20 MB of `auralite#` in 40 s: after a
+   nested spawn returned, every parent `read()` was an instant
+   `-EFAULT`.  Hunted with throttled named-refusal prints: the parent
+   shell's buffer address was INSIDE the dead child's stack — the
+   vectors spill GPRs+ELR+SPSR but not SP_EL0, so the child's
+   `user_enter_a64` silently re-pointed the PARENT's EL0 stack, and
+   the child's exit unmapped it out from under the parent.  Fixed by
+   saving/restoring SP_EL0 with the rest of the parent context in
+   `user_a64_run_elf`; the smoke pins it twice (no `READ EFAULT` +
+   the log-size fuse that fails the test at 200 KB instead of letting
+   a flood eat the workspace).  A first "fix" (wider stacks) was a
+   misdiagnosis — the "20 KiB deep shell" was the two levels'
+   top-to-top distance wearing a disguise — recorded because the
+   wrong fix LOOKED plausible for one whole rebuild.
+2. **The rv64 exit convention does not transfer.**  rc-1 encoding is
+   riscv's; the A4 trampoline travels `exit_code_box` — the first
+   draft copied the former and every child "exited 0".  The smoke's
+   `exit code 7` assertion is the pin.
+
+The rest as specified: `initrd_a64.c`/`elfa64load.c` are the rv
+shapes (the walk unchanged; the loader speaks A64_MAP_* bundles, so
+every user page carries PXN, W+X refused, and a new `A64_MAP_RO_USER`
+makes PF-neither rodata enforced-read-only); the cooked `read()`
+blocks on `wfi` with DAIF re-opened (the I7 deadlock's fourth
+spelling — and the difference between a shell and a prompt flood);
+user stacks are 8 pages with an unmapped guard hole between nesting
+levels; **[AMEND-4] paid** — `paging_a64_unmap` is one `TLBI VAE1IS`,
+not `vmalle1`; the other three kernels' refusal tables grew the named
+183 row, and both cross-refusal directions ran live (a64-rejects-rv
+in-session above; rv-rejects-a64: `refused: machine 183 (aarch64 --
+the /bina64 tenant)`).  `check_arm64_claims` 68 (+8).
+
 #### Test gate
 
-- Shell prompt on aarch64; tenant audit 62/3/243/183 all enforced;
-  cross-exec refused in both asserted directions; all sibling suites
-  green.
+- `a64_shell_smoke.sh` 15/15 (prompt, builtins, nested spawn
+  round-trip, named cross-refusal, PSCI ending, the flood fuse) ✓;
+  rv-rejects-a64 measured live ✓; siblings green: a64 boot + image
+  smokes, rv shell smoke, x86_64 boot 17/17, i386 builds ✓.
 
 #### Deliverable
 

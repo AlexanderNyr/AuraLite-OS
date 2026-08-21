@@ -34,6 +34,21 @@ static volatile uint32_t *reg32(uint32_t off)
     return (volatile uint32_t *)(PL011_BASE + off);
 }
 
+/* A5c: polled RX for the cooked console line.  FR bit 4 (RXFE) high
+ * means the RX FIFO is empty; DR low byte is the character.  QEMU's
+ * reset-state UART receives without initialisation just as it
+ * transmits (the A0 fact's other half).  IRQ-driven RX is A7's task
+ * -- this is the SBI-getchar-shaped fallback the rv64 port also
+ * started with. */
+int pl011_try_getc(void)
+{
+    volatile uint32_t *fr = (volatile uint32_t *)(PL011_BASE + 0x18);
+    volatile uint32_t *dr = (volatile uint32_t *)(PL011_BASE + 0x00);
+    if (*fr & (1u << 4))
+        return -1;
+    return (int)(*dr & 0xFF);
+}
+
 void pl011_putc(char c)
 {
     while (*reg32(PL011_FR) & PL011_FR_TXFF)

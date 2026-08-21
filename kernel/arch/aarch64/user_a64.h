@@ -16,6 +16,7 @@
  * said "one table, ours".  Nothing renumbers. */
 #define SYS_A64_READ    0
 #define SYS_A64_WRITE   1
+#define SYS_A64_SPAWN  81
 #define SYS_A64_GETPID  39
 #define SYS_A64_EXIT    60
 #define SYS_A64_YIELD   158
@@ -32,6 +33,10 @@ int user_a64_run_image(const uint8_t *code, uint64_t code_len);
 /* The [user] gate: the exit-42 round trip + the privileged-op
  * negative control.  0 = pass. */
 int user_a64_selftest(void);
+
+/* A5c: run an initrd ELF (fourth tenant) to completion at EL0;
+ * returns its exit code, or negative on refusal/not-found. */
+int user_a64_run_elf(const char *path);
 
 /* trap_a64.c hooks: the SVC path and the contained-fault path. */
 void user_a64_syscall(a64_trap_frame_t *f);

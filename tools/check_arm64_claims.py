@@ -295,6 +295,48 @@ def claims():
         ("A5b: the initrd staging ships /bina64 (init + smallsh)",
          "$(INITRD_DIR)/bina64/init" in makefl and
          "$(INITRD_DIR)/bina64/smallsh" in makefl),
+
+        # --- A5c: ELF loading, the EL0 shell, cross-refusals ---
+        ("A5c: the fourth tenant's kernel plumbing exists (initrd walk "
+         "+ ELF loader)",
+         exists("kernel", "arch", "aarch64", "initrd_a64.c") and
+         exists("kernel", "arch", "aarch64", "elfa64load.c")),
+        ("A5c: the loader accepts 183 and refuses the other three "
+         "tenants BY NAME",
+         "EM_AARCH64 183" in read("kernel", "arch", "aarch64",
+                                  "elfa64load.c").replace("#define EM_AARCH64 183",
+                                                          "EM_AARCH64 183") and
+         "riscv64 -- the /binrv tenant" in read("kernel", "arch",
+                                                "aarch64", "elfa64load.c")),
+        ("A5c: the other kernels' refusal tables grew the 183 row",
+         "aarch64, the /bina64 tenant" in read("kernel", "proc", "elf.c") and
+         "aarch64 -- the /bina64 tenant" in read("kernel", "arch",
+                                                 "riscv64", "elfrvload.c")),
+        ("A5c: read() BLOCKS -- the cooked line waits on wfi with IRQs "
+         "re-enabled (the I7 deadlock's DAIF edition, and the fix for "
+         "the measured prompt flood)",
+         "daifclr, #2" in read("kernel", "arch", "aarch64", "user_a64.c") and
+         "cons_a64_readline" in read("kernel", "arch", "aarch64",
+                                     "user_a64.c")),
+        ("A5c: the nested-spawn SP_EL0 save/restore exists (the phase's "
+         "measured bug, pinned where it was fixed)",
+         "mrs %0, sp_el0" in read("kernel", "arch", "aarch64",
+                                  "user_a64.c") and
+         "msr sp_el0, %0" in read("kernel", "arch", "aarch64",
+                                  "user_a64.c")),
+        ("A5c [AMEND-4]: unmap is a precise TLBI VAE1IS, not vmalle1",
+         "tlbi vae1is" in read("kernel", "arch", "aarch64",
+                               "paging_a64.c")),
+        ("A5c: user stacks carry a guard hole between nesting levels",
+         "USTACK_STRIDE = USTACK_PAGES + 1" in read("kernel", "arch",
+                                                    "aarch64",
+                                                    "user_a64.c")),
+        ("A5c: the shell smoke exists with the log-size fuse and the "
+         "exit-code round-trip pin",
+         "log-size fuse" in read("tests", "integration",
+                                 "a64_shell_smoke.sh") and
+         "exit code 7" in read("tests", "integration",
+                               "a64_shell_smoke.sh")),
     ]
 
     # Structural: the Status header and the phase table must agree.

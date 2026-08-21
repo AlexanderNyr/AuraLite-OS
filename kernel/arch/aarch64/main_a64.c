@@ -29,6 +29,7 @@
 #include "kernel/arch/aarch64/thread_a64.h"
 #include "kernel/arch/aarch64/trap_a64.h"
 #include "kernel/arch/aarch64/user_a64.h"
+#include "kernel/arch/aarch64/initrd_a64.h"
 
 #define RAM_BASE      0x40000000UL
 #define FDT_MAGIC_BE  0xD00DFEEDUL
@@ -514,6 +515,32 @@ void kmain_a64(uint64_t x0_at_entry)
     a2_bringup();
     a3_bringup();
     a4_bringup();
+
+    /* ---- A5c: the initrd and real compiled userspace (the fourth
+     * tenant).  Only Image boots carry an initrd on this board (the
+     * A5a fact); an ELF boot reports the absence honestly and keeps
+     * the A4 ending. ---- */
+    if (initrd_a64_init(&boot_info) == 0) {
+        pl011_puts("[boot] starting init (EL0, ELF64 from the initrd)\n");
+        int code = user_a64_run_elf("bina64/init");
+        if (code == 7)
+            pl011_puts("[init] PASS: inita64 ran and exited 7 as built\n");
+        else {
+            pl011_puts("[init] FAIL: inita64 exit=");
+            pl011_putdec64((uint64_t)code);
+            pl011_puts(" (want 7)\n");
+        }
+
+        /* The auralite# gate, fourth arch: the PROMOTED shell. */
+        pl011_puts("[boot] starting shell (EL0, the shared smallsh)\n");
+        int sh = user_a64_run_elf("bina64/smallsh");
+        pl011_puts("[shell] exited ");
+        pl011_putdec64((uint64_t)sh);
+        pl011_puts("\n");
+
+        pl011_puts("[kernel] A5c complete; powering off via PSCI\n");
+        psci_system_off();
+    }
 
     pl011_puts("[kernel] A4 complete; powering off via PSCI "
                "(A5 adds libca64, init, the shared shell)\n");

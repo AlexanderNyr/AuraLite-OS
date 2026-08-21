@@ -2,6 +2,43 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A5c — the fourth tenant runs: EL0 shell, cross-refusals] 2026-08-20
+
+`ARM64_PLAN.md` phase A5c: `auralite#` on the fourth architecture —
+init exits 7 as built, the SHARED smallsh is interactive at EL0,
+nested spawn round-trips its exit code, and every cross-tenant binary
+is refused by NAME in both measured directions.
+
+- `initrd_a64.c` + `elfa64load.c` (new): the rv64 shapes; the loader
+  speaks the `A64_MAP_*` bundles so every user page carries PXN, W+X
+  is refused, and the new `A64_MAP_RO_USER` bundle makes PF-neither
+  rodata enforced-read-only.
+- `read()` finally BLOCKS: cooked console line over polled PL011 RX
+  (`pl011_try_getc`, IRQ RX stays A7) waiting on `wfi` with DAIF
+  re-opened — the I7 cleared-IF deadlock's fourth spelling, and the
+  literal difference between a shell and 20 MB of prompt flood.
+- **The phase's measured bug, now a pinned lesson: the trap frame does
+  not carry SP_EL0.**  A nested spawn re-pointed the parent shell's
+  EL0 stack at the child's; the child's exit unmapped it; every parent
+  read() flooded -EFAULT at serial speed.  `user_a64_run_elf`
+  saves/restores the banked register with the parent context; the
+  smoke pins the fix twice (no `READ EFAULT` + a 200 KB log-size fuse
+  so this bug class fails fast instead of eating the workspace).  The
+  first "fix" (wider stacks) was a recorded misdiagnosis.
+- Second convention trap: the rv64 `rc-1` exit encoding is not the A4
+  trampoline's (`exit_code_box`) — first draft made every child "exit
+  0"; the smoke's `exit code 7` assertion is the pin.
+- User stacks: 8 pages per nesting level with an unmapped guard hole
+  between levels (an overflow is a contained EL0 fault, not a lease on
+  the neighbour's page).  **[AMEND-4] paid**: `paging_a64_unmap` is a
+  precise `TLBI VAE1IS` now, not `vmalle1`.
+- Cross-refusals: the a64 loader names all three foreign tenants; the
+  x86_64 and rv64 refusal messages grew the named 183 row; both
+  directions executed live.
+- `a64_shell_smoke.sh` (new): 15 assertions including the flood fuse;
+  `check_arm64_claims` 68 (+8).  Siblings green: a64 boot/image, rv
+  shell, x86_64 boot 17/17, i386 builds.
+
 ## [A64 A5b — libca64 + the fourth tenant] 2026-08-20
 
 `ARM64_PLAN.md` phase A5b: `/bina64` exists in the one initrd, audited

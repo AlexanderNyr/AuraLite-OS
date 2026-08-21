@@ -110,6 +110,13 @@ static uint64_t kind_bits(int kind)
          * them), executable NOWHERE. */
         return PTE_ATTR(MAIR_IDX_NORMAL) | PTE_SH_IS | PTE_AF |
                PTE_AP_EL0 | PTE_UXN | PTE_PXN;
+    case A64_MAP_RO_USER:
+        /* EL0 rodata (A5c): readable at EL0 and EL1, writable nowhere
+         * (AP[2]|AP[1] = RO-all), executable nowhere.  The loader's
+         * PF-neither bundle -- rodata is enforced read-only here, not
+         * merely unwritten. */
+        return PTE_ATTR(MAIR_IDX_NORMAL) | PTE_SH_IS | PTE_AF |
+               PTE_AP_RO | PTE_AP_EL0 | PTE_UXN | PTE_PXN;
     case A64_MAP_RW_NORMAL:
     default:
         return PTE_ATTR(MAIR_IDX_NORMAL) | PTE_SH_IS | PTE_AF |
@@ -190,7 +197,17 @@ int paging_a64_unmap(uint64_t va)
     if (!pte || !(*pte & PTE_VALID))
         return -1;
     *pte = 0;
-    tlb_flush_all();
+    /* [AMEND-4] (OPT O5's cross-arch note made task): this ISA hands
+     * out per-VA invalidation as ONE instruction -- x86_64 had to
+     * build mailboxes and IPIs for the same precision.  TLBI VAE1IS
+     * wants VA[55:12] in bits [43:0]; inner-shareable covers future
+     * SMP (D5's exit ramp) at no cost today.  tlb_flush_all() remains
+     * the documented fallback for whole-space teardowns. */
+    __asm__ volatile("dsb ishst\n\t"
+                     "tlbi vae1is, %0\n\t"
+                     "dsb ish\n\t"
+                     "isb"
+                     :: "r"(va >> 12) : "memory");
     return 0;
 }
 

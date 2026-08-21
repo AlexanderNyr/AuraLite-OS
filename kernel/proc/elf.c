@@ -57,7 +57,12 @@ static int validate_elf(const struct elf64_ehdr *eh, uint64_t size) {
         return 0;
     }
     if (eh->e_machine != EM_X86_64) {
-        kprintf(ELF_TAG "not x86_64 (e_machine=%u)\n", eh->e_machine);
+        /* A5c: the fourth tenant's machine named, like the others --
+         * a /bina64 binary reaching this loader is a staging bug, and
+         * the refusal should say so instead of printing a bare number. */
+        kprintf(ELF_TAG "not x86_64 (e_machine=%u%s)\n", eh->e_machine,
+                eh->e_machine == 183 ? " -- aarch64, the /bina64 tenant" :
+                eh->e_machine == 243 ? " -- riscv64, the /binrv tenant" : "");
         return 0;
     }
     if (eh->e_ehsize < sizeof(struct elf64_ehdr)) {
