@@ -1,6 +1,6 @@
 # AuraLite OS — ARM (aarch64 / ARMv8-A) Support Plan
 
-## Status: IN PROGRESS 🚧 — A0–A5c complete (phases A0–A9; A5 split into a/b/c)
+## Status: IN PROGRESS 🚧 — A0–A6 complete (phases A0–A9; A5 split into a/b/c)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -12,7 +12,7 @@
 | A5a — the Image exit ramp + shared strings | ✅ complete | `patches/A64_A5a_image.patch` |
 | A5b — libca64 + the fourth tenant | ✅ complete | `patches/A64_A5b_tenant.patch` |
 | A5c — ELF loading, EL0 shell, cross-refusals | ✅ complete | `patches/A64_A5c_shell.patch` |
-| A6 — the sweep, fourth backend: DAIF behind the contracts | pending | `patches/A64_A6_sweep.patch` |
+| A6 — the sweep, fourth backend: DAIF behind the contracts | ✅ complete | `patches/A64_A6_sweep.patch` |
 | A7 — drivers: virtio-mmio (shared transport), blk, net, PL011 RX | pending | `patches/A64_A7_drivers.patch` |
 | A8 — parity: storage, network, full crypto, fourth tenant | pending | `patches/A64_A8_parity.patch` |
 | A9 — CI matrix, docs, the claim check | pending | `patches/A64_A9_ci.patch` |
@@ -1083,28 +1083,94 @@ the /bina64 tenant)`).  `check_arm64_claims` 68 (+8).
 
 ---
 
-### Phase A6 — The sweep, fourth backend: DAIF behind the contracts
+### Phase A6 — The sweep, fourth backend: DAIF behind the contracts ✅ COMPLETE
 
 **Objective:** prove the D6 thesis — the four irqflags contracts close
 over a fourth ISA with zero portable-file edits.
 
 #### Tasks
 
-- [ ] `kernel/arch/aarch64/irqflags.h`: `arch_irq_save/restore` via
+- [x] `kernel/arch/aarch64/irqflags.h`: `arch_irq_save/restore` via
       DAIF (`mrs daif` / `msr daifset, #2` — note: no single-
       instruction read-and-mask like `csrrc`; the two-instruction
       window is safe because an interrupt taken between them is not
       lost, merely early — comment explains, mirroring the pushfq;cli
       note), `arch_wait_for_interrupt` = `wfi`, `arch_cpu_relax` =
       `yield`.
-- [ ] `kernel/arch/arch.h`: the third `#elif` becomes a fourth; the
+- [x] `kernel/arch/arch.h`: the third `#elif` becomes a fourth; the
       "one contract, N backends" comment updated to stop counting.
-- [ ] Ratchet 4 re-measured: if the port needed zero portable-file
+- [x] Ratchet 4 re-measured: if the port needed zero portable-file
       edits, that *is* the phase result headline; any residue paid
       down is listed file-by-file. Baselines only go down.
-- [ ] `test_width_sweep.sh` gains the a64 compile lanes (the V6
+- [x] `test_width_sweep.sh` gains the a64 compile lanes (the V6
       pattern: portable files compiled `--target=aarch64` with asm
       forbidden outside arch/).
+
+#### Result
+
+**Zero portable files needed edits — the headline number is 0.** The
+fourth backend went in without touching a single file outside
+`kernel/arch/` and `tests/`: all four ratchets sit exactly at
+baseline after the phase — casts 359/359, x64-includes 69/69,
+cross-arch 0, asm-files 29/29. Nothing to pay down file-by-file
+because the V6 sweep already left portable code speaking the four
+contracts; aarch64 only had to answer them.
+
+The backend itself (`kernel/arch/aarch64/irqflags.h`): `arch_irq_save`
+is honestly TWO instructions (`mrs daif`; `msr daifset, #2`) — aarch64
+has no `csrrc`-style read-and-mask, and the header documents why the
+window is safe (an interrupt inside it is delivered *early*, never
+lost, and the mask lands before the caller's next instruction — the
+pushfq;cli argument, DAIF spelling). `arch_wait_for_interrupt` is
+`msr daifclr, #2; wfi` — the *exact* two-instruction sequence A5c's
+prompt-flood debugging measured its way to; A6 makes it the contract
+instead of an inline idiom, and `cons_a64_readline` now calls
+`arch_wait_for_interrupt()` on the shell's blocking read path. The
+backend is EXECUTED under the 15-assert shell smoke, not just
+compiled (a64_shell_smoke re-run: 15/15, fuse intact at 4933 bytes).
+`arch_cpu_relax` = `yield`. The saved-flags polarity flip (DAIF.I set
+= masked, where IF/SIE set = enabled) is documented as one more
+reason no portable file may peek at the bits.
+
+`arch.h` grew the fourth `#elif` in BOTH blocks: irqflags forwards to
+the DAIF backend, and port I/O gets the aarch64 copy of the riscv
+fence — `inb`..`outl` declared `unavailable` with the message naming
+virtio-mmio (A7) as the device route. The comment stopped counting
+backends: the count was the only thing in the file that needed
+editing when aarch64 arrived, which is the D6 thesis proving itself.
+
+The byte-identity control, upgraded from V6's whole-`.text` diff to
+object granularity because the link is not deterministic here
+(`kernel.c` prints `__DATE__ __TIME__`): two clean x86_64 builds,
+base vs A6, all 129 objects compared — **128 byte-identical; the one
+difference is kernel.o, exactly 3 bytes, all inside the banner
+timestamp string, its .text byte-identical**. The fourth branch
+changed zero generated x86 code, measured at the only granularity
+where the claim is falsifiable.
+
+`test_width_sweep.sh` gained four a64 lanes, all green: (1) the
+boot_info offset contract compiles at the fourth width (LP64 again —
+must agree with AMD64/rv64 by _Static_assert); (2) an irqflags probe
+TU exercising all four contracts through `arch.h`, compiled once per
+target — x86_64, i386, rv64, a64 — so a drifting backend signature
+turns exactly one lane red; (3) the NEGATIVE control: a TU calling
+`inb()` must *refuse* to compile at aarch64 and the error must name
+the virtio-mmio route (a fence that silently stubs is the xHCI
+lesson); (4) zero `__asm__` reaches the a64 compile of the
+`KERNELA64_SHARED` files — checked on the *preprocessed* output,
+because a textual grep would lie about string.c's `#ifdef`-fenced x86
+fast paths, and with the file list read from the Makefile variable so
+the lane cannot drift from the build.
+
+One measured drift found and fixed while re-running the full gate:
+`check_riscv_claims.py`'s V8 mkinitrd claim matched `audit_tenant`
+lines with exact spaces, and A5b's column realignment (when `/bina64`
+joined the audit) had silently broken it — caught by the first full
+`make test-unit` since the A5c string edits, fixed by making the
+claim whitespace-tolerant (the in-phase checker-fix D6 prescribes).
+Full regression sweep after: test-unit green end-to-end, x86_64
+boot-to-shell 17/17, rv_boot + rv_shell green, a64_boot + a64_image +
+a64_shell green, `make iso` clean.
 
 #### Test gate
 

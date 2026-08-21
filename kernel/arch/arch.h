@@ -26,16 +26,19 @@
 #ifndef AURALITE_ARCH_ARCH_H
 #define AURALITE_ARCH_ARCH_H
 
-/* Port I/O (the I6 block).  x86-only by nature: riscv64 has no port
- * address space -- device access there is MMIO through the HHDM, and
- * a portable file that needs inb/outb is an x86 driver by definition.
+/* Port I/O (the I6 block).  x86-only by nature: neither riscv64 nor
+ * aarch64 has a port address space -- device access there is MMIO
+ * through the HHDM, and a portable file that needs inb/outb is an
+ * x86 driver by definition.
  *
- * The riscv branch declares the functions UNAVAILABLE rather than
- * stubbing them or #erroring the whole header: including arch.h for
- * its irqflags block must stay legal on riscv, but the first USE of
- * a port function is a hard compile error naming the V7 route.  A
- * port write that silently does nothing is how the xHCI-shaped bugs
- * of USB_PLAN lore are born (RISCV_PLAN V6, the fence task). */
+ * The MMIO-only branches declare the functions UNAVAILABLE rather
+ * than stubbing them or #erroring the whole header: including arch.h
+ * for its irqflags block must stay legal everywhere, but the first
+ * USE of a port function is a hard compile error naming that arch's
+ * device route.  A port write that silently does nothing is how the
+ * xHCI-shaped bugs of USB_PLAN lore are born (RISCV_PLAN V6, the
+ * fence task; the aarch64 branch is ARM64_PLAN A6's copy of the same
+ * fence). */
 #if defined(__x86_64__)
 #  include "kernel/arch/x86_64/portio.h"
 #elif defined(__i386__)
@@ -57,21 +60,43 @@ static inline uint32_t inl(uint16_t port)
     __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
 static inline void     outl(uint16_t port, uint32_t val)
     __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
+#elif defined(__aarch64__)
+#  include <stdint.h>
+#  define AURALITE_NO_PORTIO_MSG \
+    "port I/O does not exist on aarch64; this driver is x86-only -- " \
+    "virtio-mmio (ARM64_PLAN A7) is the aarch64 device route"
+static inline uint8_t  inb(uint16_t port)
+    __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
+static inline void     outb(uint16_t port, uint8_t val)
+    __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
+static inline uint16_t inw(uint16_t port)
+    __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
+static inline void     outw(uint16_t port, uint16_t val)
+    __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
+static inline uint32_t inl(uint16_t port)
+    __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
+static inline void     outl(uint16_t port, uint32_t val)
+    __attribute__((unavailable(AURALITE_NO_PORTIO_MSG)));
 #else
 #  error "arch.h: no port layer for this target"
 #endif
 
 /* Interrupt masking + spin-wait (the V6 block, D6): arch_irq_save /
- * arch_irq_restore / arch_wait_for_interrupt / arch_cpu_relax, one
- * contract, three backends.  Every cli/sti/hlt/pause in portable code
- * migrates onto these -- counted by check_width_sweep.py's ratchet 4,
- * lowered batch by batch. */
+ * arch_irq_restore / arch_wait_for_interrupt / arch_cpu_relax -- one
+ * contract, a backend per architecture the tree builds for.  (This
+ * comment used to count them; it stopped at four, because the count
+ * was the only thing here that needed editing when aarch64 arrived
+ * -- which is the D6 thesis proving itself.)  Every cli/sti/hlt/pause
+ * in portable code migrates onto these -- counted by
+ * check_width_sweep.py's ratchet 4, lowered batch by batch. */
 #if defined(__x86_64__)
 #  include "kernel/arch/x86_64/irqflags.h"
 #elif defined(__i386__)
 #  include "kernel/arch/i386/irqflags.h"
 #elif defined(__riscv)
 #  include "kernel/arch/riscv64/irqflags.h"
+#elif defined(__aarch64__)
+#  include "kernel/arch/aarch64/irqflags.h"
 #endif
 
 #endif /* AURALITE_ARCH_ARCH_H */

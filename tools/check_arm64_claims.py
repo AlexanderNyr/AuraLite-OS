@@ -337,6 +337,47 @@ def claims():
                                  "a64_shell_smoke.sh") and
          "exit code 7" in read("tests", "integration",
                                "a64_shell_smoke.sh")),
+
+        # --- A6: the sweep, fourth backend -- DAIF behind the contracts ---
+        ("A6: the DAIF backend exists with all four contracts and the "
+         "two-instruction-window honesty note",
+         "arch_irq_save" in read("kernel", "arch", "aarch64",
+                                 "irqflags.h") and
+         "daifset, #2" in read("kernel", "arch", "aarch64",
+                               "irqflags.h") and
+         "yield" in read("kernel", "arch", "aarch64", "irqflags.h") and
+         "DELIVERED, not lost" in read("kernel", "arch", "aarch64",
+                                       "irqflags.h")),
+        ("A6: arch.h forwards aarch64 in BOTH blocks (irqflags + the "
+         "port-I/O fence naming the virtio-mmio route)",
+         read("kernel", "arch", "arch.h").count(
+             "#elif defined(__aarch64__)") == 2 and
+         "ARM64_PLAN A7" in read("kernel", "arch", "arch.h") and
+         'kernel/arch/aarch64/irqflags.h' in read("kernel", "arch",
+                                                  "arch.h")),
+        ("A6: the arch.h comment stopped counting backends (the count "
+         "was the only edit the file needed)",
+         "a backend per architecture" in read("kernel", "arch",
+                                              "arch.h") and
+         "one contract, three backends" not in read("kernel", "arch",
+                                                    "arch.h")),
+        ("A6: the backend is executed on the shell's blocking read "
+         "path, not just compiled",
+         "arch_wait_for_interrupt()" in read("kernel", "arch", "aarch64",
+                                             "user_a64.c") and
+         'kernel/arch/aarch64/irqflags.h' in read("kernel", "arch",
+                                                  "aarch64",
+                                                  "user_a64.c")),
+        ("A6: the width sweep carries the a64 lanes -- fourth width, "
+         "four-target probe, the inb() negative control, zero asm "
+         "after preprocessing",
+         "biw_a64.o" in read("tests", "unit", "test_width_sweep.sh") and
+         "width_irqflags_probe.c" in read("tests", "unit",
+                                          "test_width_sweep.sh") and
+         "width_portio_neg" in read("tests", "unit",
+                                    "test_width_sweep.sh") and
+         "KERNELA64_SHARED" in read("tests", "unit",
+                                    "test_width_sweep.sh")),
     ]
 
     # Structural: the Status header and the phase table must agree.

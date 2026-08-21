@@ -43,6 +43,7 @@
 #include "kernel/arch/aarch64/initrd_a64.h"
 #include "kernel/arch/aarch64/elfa64load.h"
 #include "kernel/arch/aarch64/kheap_a64.h"
+#include "kernel/arch/aarch64/irqflags.h"   /* A6: the DAIF backend */
 
 /* context_a64.S */
 extern void user_enter_a64(uint64_t entry, uint64_t user_sp,
@@ -99,7 +100,10 @@ static void user_a64_leave(a64_trap_frame_t *f, int code)
  * THIS function is what makes the shell's read() BLOCK -- without it
  * smallsh spins printing prompts as fast as the serial line drains
  * (measured the loud way: a 45-second boot log of nothing but
- * `auralite#`). */
+ * `auralite#`).  Since A6 the wait is spelled through the irqflags
+ * contract -- arch_wait_for_interrupt() IS those two instructions;
+ * the backend runs on the shell's hottest blocking path, not just in
+ * a compile lane. */
 static uint64_t cons_a64_readline(char *buf, uint64_t cap)
 {
     uint64_t n = 0;
@@ -107,7 +111,7 @@ static uint64_t cons_a64_readline(char *buf, uint64_t cap)
     for (;;) {
         int ci = pl011_try_getc();
         if (ci < 0) {
-            __asm__ volatile("msr daifclr, #2\n\twfi" ::: "memory");
+            arch_wait_for_interrupt();
             continue;
         }
 

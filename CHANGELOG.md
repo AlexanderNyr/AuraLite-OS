@@ -2,6 +2,51 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [A64 A6 — the sweep closes over the fourth ISA: DAIF behind the contracts] 2026-08-21
+
+`ARM64_PLAN.md` phase A6: the D6 thesis, measured — **zero portable
+files needed edits** to give the irqflags contracts their fourth
+backend.  All four ratchets sit exactly at baseline (casts 359/359,
+x64-includes 69/69, cross-arch 0, asm-files 29/29).
+
+- `kernel/arch/aarch64/irqflags.h` (new): `arch_irq_save` is honestly
+  TWO instructions (`mrs daif`; `msr daifset, #2` — no `csrrc`-style
+  read-and-mask on this ISA; the header documents why the window is
+  safe: an interrupt inside it is delivered *early*, never lost).
+  `arch_wait_for_interrupt` = `msr daifclr, #2; wfi` — the exact
+  sequence A5c's prompt-flood debugging measured its way to, now the
+  contract instead of an inline idiom.  `arch_cpu_relax` = `yield`.
+  The DAIF polarity flip (I set = masked) is documented as one more
+  reason portable code may never peek at the saved bits.
+- The backend is EXECUTED, not just compiled: `cons_a64_readline`'s
+  blocking wait now goes through `arch_wait_for_interrupt()`;
+  a64_shell_smoke re-run 15/15 with the fuse intact (4933 bytes).
+- `kernel/arch/arch.h`: fourth `#elif` in BOTH blocks — the DAIF
+  irqflags forward, and the aarch64 copy of the port-I/O fence
+  (`inb`..`outl` unavailable, error names the A7 virtio-mmio route).
+  The "one contract, N backends" comment stopped counting: the count
+  was the only edit the file needed, which is the thesis proving
+  itself.
+- Byte-identity control, upgraded to OBJECT granularity (the link is
+  non-deterministic: kernel.c prints `__DATE__ __TIME__`): clean base
+  vs A6 x86_64 builds, 129 objects — 128 byte-identical, kernel.o
+  differs by exactly 3 bytes, all in the banner timestamp, .text
+  byte-identical.  The fourth branch changed zero generated x86 code.
+- `test_width_sweep.sh` +4 a64 lanes: the fourth-width boot_info
+  compile (LP64); the four-target irqflags probe (one drifting
+  backend = exactly one red lane); the negative control (`inb()` at
+  aarch64 must FAIL naming virtio-mmio); zero `__asm__` in the
+  PREPROCESSED a64 output of `KERNELA64_SHARED` (textual grep would
+  lie about string.c's fenced x86 fast paths; the file list is read
+  from the Makefile so the lane cannot drift).
+- Measured drift, fixed where found: `check_riscv_claims.py`'s V8
+  mkinitrd claim matched exact spaces and A5b's `audit_tenant` column
+  realignment had silently broken it — caught by the first full
+  `make test-unit` since A5c, made whitespace-tolerant.
+- Gates: test-unit green end-to-end, x86_64 boot-to-shell 17/17,
+  rv_boot + rv_shell, a64 boot/image/shell, `make iso` clean;
+  `check_arm64_claims` 73 (+5).
+
 ## [A64 A5c — the fourth tenant runs: EL0 shell, cross-refusals] 2026-08-20
 
 `ARM64_PLAN.md` phase A5c: `auralite#` on the fourth architecture —

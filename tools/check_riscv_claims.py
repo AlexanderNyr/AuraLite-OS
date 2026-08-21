@@ -262,9 +262,13 @@ def claims():
          "RING-U-OK" in parity and "rx bytes via PLIC irq" in parity and
          'assert_no_grep "FAIL"' in parity),
         ("V8: mkinitrd audits all three tenants by e_machine",
-         "audit_tenant bin   62" in mkinit and
-         "audit_tenant bin32 3" in mkinit and
-         "audit_tenant binrv 243" in mkinit),
+         # Whitespace-tolerant since ARM64_PLAN A5b realigned the
+         # audit_tenant column when /bina64 joined (measured the hard
+         # way: exact-space matching broke this claim silently until
+         # the next full test-unit run).
+         re.search(r"audit_tenant bin\s+62", mkinit) is not None and
+         re.search(r"audit_tenant bin32\s+3", mkinit) is not None and
+         re.search(r"audit_tenant binrv\s+243", mkinit) is not None),
         ("V8: the plan carries the per-arch status matrix draft",
          "| Subsystem | x86_64 | i386 | riscv64 |" in plan),
     ]
