@@ -72,6 +72,19 @@ enum perfstat_id {
      * the proof the ring took over. */
     PERF_UART_TX_RING_BYTES,
 
+    /* HW_PLAN H4: RESERVED AT ZERO.  CR3 loads that carried bit 63
+     * (NOFLUSH) because the target PCID's translations were still
+     * valid.  Stays zero until the PCID implementation lands — which
+     * waits for a lane that can EXECUTE it (no QEMU configuration
+     * here exposes PCID; measured in HW H0).  The counter exists NOW
+     * so the first metal/KVM boot has its receipt slot ready. */
+    PERF_CR3_NOFLUSH_SWITCHES,
+
+    /* HW_PLAN H4: RESERVED AT ZERO.  12-bit PCID space exhaustions
+     * (generation wrap => full flush + re-allocation).  Same deferral,
+     * same reason. */
+    PERF_PCID_GENERATION_WRAPS,
+
     PERF_COUNTER_MAX
 };
 

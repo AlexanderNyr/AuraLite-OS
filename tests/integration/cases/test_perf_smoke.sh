@@ -66,6 +66,14 @@ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
 done
 
+# --- HW H4: the PCID receipt slots, reserved AT ZERO (the counters
+# exist before the implementation, which waits for a lane that can
+# execute PCID at all -- HW_PLAN H4's deferral protocol).  Asserting
+# the exact zero pins the "reserved, untouched" contract: any code
+# that starts bumping these without the H4 re-open gate is a drift. ---
+il_assert_grep "$LOG" "^cr3_noflush_switches 0\$"  "H4: cr3_noflush_switches reserved at zero"
+il_assert_grep "$LOG" "^pcid_generation_wraps 0\$" "H4: pcid_generation_wraps reserved at zero"
+
 # --- O7: the machine at an idle shell is IDLE (busy% first field of
 # loadavg).  Pre-O7 the kmain yield-loop alone held this at ~36; the
 # 15.0 ratchet is 40x above the post-O7 measurement (0.3) and half the

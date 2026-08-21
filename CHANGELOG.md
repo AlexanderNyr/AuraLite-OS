@@ -2,6 +2,31 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HW H4 — PCID: the written design, the reserved receipts, the deferral kept honest] 2026-08-21
+
+`HW_PLAN.md` H4, re-scoped by H0's own measurement (no QEMU
+configuration here EXECUTES a PCID kernel: `-cpu max` TCG says
+`pcid=0 invpcid=0`, KVM absent locally and on CI runners) — TLB
+correctness code with no executable lane is a worse theatre than
+unvalidated numbers, so the phase ships a design, not an
+implementation:
+
+- Five named decisions written into the plan, reviewed against
+  `tlb_shootdown.c` (whose header already names this residue):
+  D-PCID-1 per-CPU 12-bit bump allocation; D-PCID-2 generation wrap
+  = one full flush + lazy re-allocation; D-PCID-3 NOFLUSH (CR3.63)
+  re-entry, counted; D-PCID-4 the O5 sender-side filter INVERTS its
+  justification and learns generations (a differing CR3 no longer
+  proves absence of stale entries), `invpcid` type 0 in the handler;
+  D-PCID-5 the re-open gate — a lane printing `pcid=1` runs the
+  core shard and shows `cr3_noflush_switches` moving.
+- `/proc/perf` reserves both counters AT ZERO now
+  (`cr3_noflush_switches`, `pcid_generation_wraps`); perf_smoke
+  asserts the exact zeros — bumping them without the D-PCID-5 gate
+  is pinned as drift.  perf_smoke 34 assertions.
+- No behavioural change anywhere else: two enum rows, two name
+  strings, and the design text.
+
 ## [HW H3 — PAT programmed, framebuffer write-combining, both lanes pinned] 2026-08-21
 
 `HW_PLAN.md` H3: the O4 residue — the framebuffer's HHDM range goes

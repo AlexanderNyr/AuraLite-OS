@@ -142,6 +142,28 @@ def claims():
               "test_gui_dirty_uefi.sh") and
          "fb: none present; WC remap skipped" in
          read("tests", "integration", "cases", "test_perf_smoke.sh")),
+
+        # --- H4: PCID -- the written design + the deferral protocol ---
+        ("H4: the design is written with named decisions, reviewed "
+         "against the O5 shootdown code",
+         "D-PCID-1" in plan and "D-PCID-4" in plan and
+         "D-PCID-5" in plan and
+         "tlb_shootdown.c" in plan),
+        ("H4: the receipt slots are reserved at zero in /proc/perf",
+         "PERF_CR3_NOFLUSH_SWITCHES" in read("kernel", "lib",
+                                             "perfstat.h") and
+         "cr3_noflush_switches" in read("kernel", "lib",
+                                        "perfstat.c") and
+         "pcid_generation_wraps" in read("kernel", "lib",
+                                         "perfstat.c")),
+        ("H4: the smoke pins the counters AT ZERO (bumping them "
+         "without the re-open gate is a drift)",
+         "cr3_noflush_switches reserved at zero" in
+         read("tests", "integration", "cases",
+              "test_perf_smoke.sh") and
+         "pcid_generation_wraps reserved at zero" in
+         read("tests", "integration", "cases",
+              "test_perf_smoke.sh")),
     ]
 
     # Structural: the Status header and the phase table must agree

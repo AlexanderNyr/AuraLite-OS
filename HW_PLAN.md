@@ -1,6 +1,6 @@
 # AuraLite OS — Real-Hardware Package + String-Ops Parity Plan
 
-## Status: IN PROGRESS 🚧 — H0–H3 complete (phases H0–H5)
+## Status: IN PROGRESS 🚧 — H0–H4 complete (phases H0–H5)
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | H1 — word-wide portable string ops (the rv64/a64 decision) | ✅ complete | `patches/HW_H1_stringops.patch` |
 | H2 — ERMSB: the receipt and the crossover | ✅ complete | `patches/HW_H2_ermsb.patch` |
 | H3 — PAT + write-combining framebuffer | ✅ complete | `patches/HW_H3_pat.patch` |
-| H4 — PCID: the measured absence and the deferral protocol | pending | `patches/HW_H4_pcid.patch` |
+| H4 — PCID: the measured absence and the deferral protocol | ✅ complete | `patches/HW_H4_pcid.patch` |
 | H5 — close-out: docs, CI, the hardware receipt protocol | pending | `patches/HW_H5_close.patch` |
 
 ## 1. Where this plan comes from
@@ -345,7 +345,7 @@ the flags, the flush, and a boot that still draws (D2).
 
 `patches/HW_H3_pat.patch`
 
-### Phase H4 — PCID: the measured absence and the deferral protocol
+### Phase H4 — PCID: the measured absence and the deferral protocol ✅ COMPLETE
 
 **Objective:** the O5 residue, resolved the D1 way.  H0 measured
 that NO QEMU configuration available here executes a PCID-enabled
@@ -358,17 +358,64 @@ correctness paths are a worse theatre than un-validated numbers.
 
 #### Tasks
 
-- [ ] The receipt line (H0's) stays the standing probe: the first
+- [x] The receipt line (H0's) stays the standing probe: the first
       lane that prints `pcid=1` — a KVM runner, a metal boot — is
       the lane this phase's implementation half re-opens on.
-- [ ] The design is WRITTEN (not coded): PCID allocation, generation
+- [x] The design is WRITTEN (not coded): PCID allocation, generation
       wrap, NOFLUSH re-entry, the O5 filter's generation interplay,
       `invpcid`-vs-CR3-toggle — reviewed against the O5 shootdown
       code so the future implementer inherits decisions, not a
       blank page.
-- [ ] `/proc/perf` reserves the counter names
+- [x] `/proc/perf` reserves the counter names
       (`cr3_noflush_switches`, `pcid_generation_wraps`) at zero —
       the metal receipt has a slot the moment it exists.
+
+#### Result — the written design
+
+Reviewed against `kernel/arch/x86_64/tlb_shootdown.c` (whose own
+header already names this exact residue at lines 27–37: the O5
+sender-side skip is an ARCHITECTURAL fact only while "CR3 load =
+full flush" holds, and PCID is the feature that breaks it).
+
+**D-PCID-1: allocation.**  One PCID per address space, allocated at
+CR3-install time from a per-CPU 12-bit bump counter (1..4095; PCID 0
+stays the kernel\'s).  Per-CPU, not global: PCIDs are a per-TLB
+namespace, a global allocator would serialise spawns for no
+architectural gain, and the wrap arithmetic stays local.
+
+**D-PCID-2: generation wrap.**  When the bump counter wraps, bump a
+per-CPU GENERATION, do one full non-PCID flush (CR4.PCIDE toggle or
+`invpcid` type 2 all-context), and lazily re-allocate PCIDs on next
+switch (an address space remembers `(cpu, pcid, generation)`; a
+stale generation means "allocate fresh, no flush needed — the wrap
+already flushed").  Count it in `pcid_generation_wraps`.
+
+**D-PCID-3: the switch.**  Re-entering a live `(pcid, generation)`
+loads CR3 with bit 63 (NOFLUSH) and counts `cr3_noflush_switches` —
+the counter IS the win, measured, exactly like O5\'s
+`tlb_ipis_skipped`.
+
+**D-PCID-4: the O5 filter learns generations.**  The sender-side
+skip\'s justification inverts: with PCID a target CPU whose current
+CR3 differs from the victim MAY STILL hold stale entries for it.
+The filter therefore skips only when the target\'s recorded
+generation for the victim address space is stale (wrapped since it
+last ran there) — otherwise it must IPI, and the handler uses
+`invpcid` type 0 (per-VA, per-PCID) where CPUID.7.0:EBX.10 says so,
+falling back to a NOFLUSH-less CR3 reload of the victim PCID.
+`cpu_cr3_shadow[]` grows a paired `cpu_as_generation[]`; the mailbox
+grows the target PCID.
+
+**D-PCID-5: the gate that re-opens this phase.**  A lane printing
+`pcid=1` in the H0 receipt (KVM runner, metal serial capture) runs:
+boot → full core shard → `/proc/perf` shows `cr3_noflush_switches`
+moving and `tlb_ipis_skipped` NOT regressing to zero.  Until such a
+lane exists, the implementation does not.
+
+Counters reserved and visible now (`/proc/perf`: both names print at
+0 — asserted in perf_smoke), so the first PCID-capable boot has its
+receipt slots waiting.  No behavioural change anywhere else: the
+diff is two enum rows, two name strings, and this text.
 
 #### Test gate
 
@@ -379,8 +426,6 @@ correctness paths are a worse theatre than un-validated numbers.
 #### Deliverable
 
 `patches/HW_H4_pcid.patch`
-
----
 
 ### Phase H5 — Close-out: docs, CI, the hardware receipt protocol
 

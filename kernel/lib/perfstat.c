@@ -30,6 +30,8 @@ static const char *const names[PERF_COUNTER_MAX] = {
     [PERF_KMALLOC_CLASS_HITS]            = "kmalloc_class_hits",
     [PERF_UART_TX_SYNC_BYTES]            = "uart_tx_sync_bytes",
     [PERF_UART_TX_RING_BYTES]            = "uart_tx_ring_bytes",
+    [PERF_CR3_NOFLUSH_SWITCHES]          = "cr3_noflush_switches",
+    [PERF_PCID_GENERATION_WRAPS]         = "pcid_generation_wraps",
 };
 
 void perfstat_add(int id, uint64_t n) {
