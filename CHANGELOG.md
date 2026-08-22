@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R0 — the rig: the ledger goes machine-checked] 2026-08-22
+
+`tools/residue_harvest.py` (the metric is the tool), the 48-row
+`docs/residue_ledger.md` with an exit gate per W row, and
+`check_residue_claims.py` in test-unit with the DEBT RATCHET: the
+harvester runs live on every check and any marker-count drift from
+`tools/residue_baseline.txt` fails CI naming the file and delta —
+new residue anywhere must register in the ledger or the build is
+red.  Negative control at birth: a planted "deferred" line failed
+the checker with `DOOM_PLAN.md ('2','3')`.
+
+Two rig catches against the plan's own §2 draft, amended
+same-commit: hand-summed class totals were wrong (27/6/3/12 →
+W 33 · M 5 · N 2 · S 8), and the draft's counts came from a wider
+grep (155 live marker lines is the number that now holds).
+
+## [RESIDUE plan — the ledger series: find every leftover, class it, do it] 2026-08-22
+
+Twenty-two plans end with honest residue lists in twenty-two
+places, plus TODO.md's 570 lines, plus status.md's 🚧 rows — and
+nothing machine-checks that the sum is complete or shrinking.
+RESIDUE_PLAN.md (R0–R12) is the ledger series the user asked for:
+the harvest ran across every plan (marker counts quoted per file),
+and §2 pins **48 ledger rows** classed honestly: 27 W (doable under
+QEMU — phases R1–R10), 6 M (metal-only — the R11 user-executable
+package), 3 N (non-goals that must be re-affirmed loudly or
+reversed, never dropped), 12 S (sub-series that get measured opener
+facts at R12, the OPT-§7-opens-HW_PLAN shape).
+
+The headline discovery of the harvest: **H4's D-PCID-5 re-open gate
+has already FIRED** — the user's WHPX boot log printed `pcid=1` —
+so PCID moves M→W and is scheduled work inside R11 (CR3-toggle
+fallback; the perfstat counters leave their pinned zero the same
+commit a lane proves them).
+
+R0 ships the rig next: tools/residue_harvest.py (live marker
+counts), docs/residue_ledger.md (the living table), and
+check_residue_claims.py pinning 48 rows / 27-6-3-12 class totals —
+new debt anywhere without a ledger row becomes a CI failure.
+
 ## [PARITY P9 — the series closes: CI lanes, the living matrix, the arithmetic] 2026-08-22
 
 PARITY_PLAN.md is COMPLETE — P0–P9, ten patches, 41 checker claims
