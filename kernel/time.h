@@ -55,4 +55,12 @@ void itimer_tick_real(uint64_t current_ticks);
 /* Called from scheduler for VIRTUAL/PROF */
 void itimer_account_cpu(uint64_t ticks, int in_kernel);
 
+/* R6 (ledger RES-03's decision executed): the TIME SEAM.  Portable
+ * consumers (procfs, select) read ticks through these two names;
+ * the x86 body forwards to the PIT driver, and a port that links
+ * those consumers one day provides its own body instead of its own
+ * include.  kernel/fs carries ZERO driver headers again. */
+uint64_t ktime_ticks(void);
+uint32_t ktime_hz(void);
+
 #endif /* AURALITE_KERNEL_TIME_H */

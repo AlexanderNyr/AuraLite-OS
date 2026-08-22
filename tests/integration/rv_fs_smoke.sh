@@ -59,6 +59,7 @@ rm -f "$LOG"
     printf 'ls /\n';           sleep 2
     printf 'stat LINUX.TXT\n'; sleep 2
     printf 'cat LINUX.TXT\n';  sleep 2
+    printf 'run binrv/fsio\n';       sleep 3
     printf 'exit\n';           sleep 2
 } | timeout 180 qemu-system-riscv64 \
         -machine virt -m 256M \
@@ -116,6 +117,8 @@ assert_grep "file, ${SEED_LEN} bytes"                     "P4 stat: size through
 assert_grep "(${SEED_LEN} bytes)"                         "P4 cat: lseek(END) size receipt"
 assert_no_grep "ls: cannot open"                          "P4: open('/') succeeded"
 assert_no_grep "cat: cannot open"                         "P4: open(file) succeeded"
+# R6: malloc + stdio-lite round-trip through the mounted fs.
+assert_grep "fsio: PASS malloc+stdio round-trip (48 bytes)" "R6: brk/malloc/fopen-create/fwrite/fread, one source"
 assert_no_grep "UNHANDLED EXCEPTION"                      "no unhandled trap anywhere in the boot"
 
 if [ "$fail" -ne 0 ]; then

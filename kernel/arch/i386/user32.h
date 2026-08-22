@@ -36,6 +36,7 @@
 #define SYS32_STAT       4
 #define SYS32_LSEEK      8
 #define SYS32_READDIR   78
+#define SYS32_BRK       12   /* R6 */
 
 /* Register the int 0x80 gate (DPL=3) in the IDT. */
 void syscall32_init(void);

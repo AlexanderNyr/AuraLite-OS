@@ -23,6 +23,8 @@
 
 #include "kernel/arch/riscv64/user_rv.h"
 #include "kernel/arch/riscv64/fsglue_rv.h"
+#include "kernel/arch/riscv64/paging_rv.h"
+#include "kernel/arch/riscv64/pmm_rv.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/vfsmount.h"
 #include "lib/abi/fsabi.h"
@@ -205,6 +207,29 @@ static int copy_out_user(uint64_t dst, const void *src, uint64_t len)
     return 0;
 }
 
+/* ---- R6: the brk heap -------------------------------------------------
+ * One shared user address space (bring-up ports), one heap window:
+ * [0x20000000, +1 MiB), demand-mapped U+RW pages.  brk(0) queries;
+ * pages stay mapped across images (same floor as the fd table). */
+#define RV_HEAP_BASE 0x20000000UL
+#define RV_HEAP_MAX  (RV_HEAP_BASE + 0x100000UL)
+static uint64_t rv_heap_end;
+
+static int copy_in_user(void *dst, uint64_t src, uint64_t len)
+{
+    if (len == 0 || src < ELF_RV_USER_MIN || src + len > ELF_RV_USER_MAX)
+        return -1;
+    for (uint64_t va = src & ~(uint64_t)(PAGE_SIZE_RV - 1);
+         va < src + len; va += PAGE_SIZE_RV)
+        if (paging_rv_probe(va) == ~0UL)
+            return -1;
+    sum_on();
+    for (uint64_t i = 0; i < len; i++)
+        ((char *)dst)[i] = ((const char *)src)[i];
+    sum_off();
+    return 0;
+}
+
 static struct vnode *rvfd_lookup(const char *path)
 {
     /* R2: resolution goes through the SHARED mount table.  The
@@ -289,6 +314,29 @@ void user_rv_syscall(rv_trap_frame_t *f)
         return;
     }
     case SYS_RV_WRITE: {
+        /* R6: fd >= 3 writes a FILE through the vnode's ops. */
+        if (a0 >= RVFD_BASE && a0 < RVFD_BASE + RVFD_MAX) {
+            int i = (int)(a0 - RVFD_BASE);
+            const struct vfs_ops *ops = rvfds[i].used ? rvfds[i].vn->ops : 0;
+            if (!rvfds[i].used || !ops || !ops->write || a2 == 0) {
+                f->regs[9] = (uint64_t)-9;             /* -EBADF */
+                return;
+            }
+            static uint8_t wbuf[4096];
+            uint64_t want = a2 > sizeof(wbuf) ? sizeof(wbuf) : a2;
+            if (copy_in_user(wbuf, a1, want) != 0) {
+                f->regs[9] = (uint64_t)-14;            /* -EFAULT */
+                return;
+            }
+            int64_t put = ops->write(rvfds[i].vn, rvfds[i].pos, wbuf, want);
+            if (put < 0) {
+                f->regs[9] = (uint64_t)-5;             /* -EIO */
+                return;
+            }
+            rvfds[i].pos += (uint64_t)put;
+            f->regs[9] = (uint64_t)put;
+            return;
+        }
         /* write(fd=a0, buf=a1, len=a2): fd 1, bounds inside the user
          * window, pages probed (V5 widened the window from V4's two
          * fixed pages to the ELF range, so presence is no longer
@@ -348,6 +396,23 @@ void user_rv_syscall(rv_trap_frame_t *f)
             return;
         }
         struct vnode *vn = rvfd_lookup(path);
+        if (!vn && (a1 & 1)) {
+            /* R6: O_CREAT-lite -- flags bit 0 asks the mounted fs
+             * to create the file (vfsm_create, ops->create). */
+            char abs[104];
+            const char *p = path;
+            if (p[0] != '/') {
+                abs[0] = '/';
+                unsigned k = 0;
+                while (p[k] && k + 2 < sizeof(abs)) {
+                    abs[k + 1] = p[k];
+                    k++;
+                }
+                abs[k + 1] = 0;
+                p = abs;
+            }
+            vn = vfsm_create(p);
+        }
         if (!vn) {
             f->regs[9] = (uint64_t)-2;                 /* -ENOENT */
             return;
@@ -453,6 +518,36 @@ void user_rv_syscall(rv_trap_frame_t *f)
         de.is_dir = (ents[a1].type == VFS_TYPE_DIR);
         f->regs[9] = copy_out_user(a2, &de, sizeof(de)) == 0
                          ? 1 : (uint64_t)-14;
+        return;
+    }
+
+    case SYS_RV_BRK: {
+        /* R6: brk(0) queries; otherwise set, demand-mapping U+RW
+         * pages inside the fixed window.  Shrink keeps the pages
+         * (floor, stated). */
+        if (rv_heap_end == 0)
+            rv_heap_end = RV_HEAP_BASE;
+        if (a0 == 0) {
+            f->regs[9] = rv_heap_end;
+            return;
+        }
+        if (a0 < RV_HEAP_BASE || a0 > RV_HEAP_MAX) {
+            f->regs[9] = (uint64_t)-12;                /* -ENOMEM */
+            return;
+        }
+        uint64_t want = (a0 + PAGE_SIZE_RV - 1) & ~(uint64_t)(PAGE_SIZE_RV - 1);
+        uint64_t have = (rv_heap_end + PAGE_SIZE_RV - 1) & ~(uint64_t)(PAGE_SIZE_RV - 1);
+        for (uint64_t va = have; va < want; va += PAGE_SIZE_RV) {
+            if (paging_rv_probe(va) != ~0UL)
+                continue;                              /* already mapped */
+            uint64_t pa = pmm_rv_alloc_frame();
+            if (!pa || paging_rv_map(va, pa, PTE_U | PTE_R | PTE_W) != 0) {
+                f->regs[9] = (uint64_t)-12;
+                return;
+            }
+        }
+        rv_heap_end = a0;
+        f->regs[9] = rv_heap_end;
         return;
     }
 

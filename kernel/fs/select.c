@@ -8,7 +8,7 @@
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/time.h"
-#include "drivers/timer/pit.h"
+#include "kernel/time.h"      /* R6: the time seam */
 #include "kernel/mm/kheap.h"
 #include <stdint.h>
 
@@ -101,12 +101,12 @@ static int do_select_kernel(int nfds, fd_set *r, fd_set *w, fd_set *e,
 
         uint64_t old_sleep = cur->sleep_deadline;
         if (timeout) {
-            uint64_t freq = timer_get_frequency();
+            uint64_t freq = ktime_hz();
             if (freq == 0) freq = 100;
             uint64_t total_ticks = (uint64_t)timeout->tv_sec * freq +
                                    (uint64_t)timeout->tv_usec * freq / 1000000ULL;
             if (total_ticks > 0) {
-                cur->sleep_deadline = timer_get_ticks() + total_ticks;
+                cur->sleep_deadline = ktime_ticks() + total_ticks;
             }
         }
 

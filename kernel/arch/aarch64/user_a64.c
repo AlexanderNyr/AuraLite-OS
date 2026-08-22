@@ -45,6 +45,7 @@
 #include "kernel/arch/aarch64/kheap_a64.h"
 #include "kernel/arch/aarch64/irqflags.h"   /* A6: the DAIF backend */
 #include "kernel/arch/aarch64/fsglue_a64.h"  /* P4: mounted ops */
+#include "kernel/arch/aarch64/pmm_a64.h"     /* R6: the brk heap */
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/vfsmount.h"
 #include "lib/abi/fsabi.h"
@@ -193,6 +194,24 @@ static int copy_out_user(uint64_t dst, const void *src, uint64_t len)
     return 0;
 }
 
+/* ---- R6: the brk heap (user_rv.c's mirror) ------------------------- */
+#define A64_HEAP_BASE 0x20000000UL
+#define A64_HEAP_MAX  (A64_HEAP_BASE + 0x100000UL)
+static uint64_t a64_heap_end;
+
+static int copy_in_user(void *dst, uint64_t src, uint64_t len)
+{
+    if (len == 0 || src < ELF_A64_USER_MIN || src + len > A64_USER_END)
+        return -1;
+    for (uint64_t va = src & ~(uint64_t)(PAGE_SIZE_A64 - 1);
+         va < src + len; va += PAGE_SIZE_A64)
+        if (paging_a64_probe(va) == ~0UL)
+            return -1;
+    for (uint64_t i = 0; i < len; i++)
+        ((char *)dst)[i] = ((const char *)src)[i];
+    return 0;
+}
+
 static struct vnode *a64fd_lookup(const char *path)
 {
     /* R2: the shared mount table (user_rv.c's mirror). */
@@ -292,6 +311,29 @@ void user_a64_syscall(a64_trap_frame_t *f)
         return;
     }
     case SYS_A64_WRITE: {
+        /* R6: fd >= 3 writes a FILE through the vnode's ops. */
+        if (a0 >= A64FD_BASE && a0 < A64FD_BASE + A64FD_MAX) {
+            int i = (int)(a0 - A64FD_BASE);
+            const struct vfs_ops *ops = a64fds[i].used ? a64fds[i].vn->ops : 0;
+            if (!a64fds[i].used || !ops || !ops->write || a2 == 0) {
+                f->regs[0] = (uint64_t)-9;             /* -EBADF */
+                return;
+            }
+            static uint8_t wbuf[4096];
+            uint64_t want = a2 > sizeof(wbuf) ? sizeof(wbuf) : a2;
+            if (copy_in_user(wbuf, a1, want) != 0) {
+                f->regs[0] = (uint64_t)-14;            /* -EFAULT */
+                return;
+            }
+            int64_t put = ops->write(a64fds[i].vn, a64fds[i].pos, wbuf, want);
+            if (put < 0) {
+                f->regs[0] = (uint64_t)-5;             /* -EIO */
+                return;
+            }
+            a64fds[i].pos += (uint64_t)put;
+            f->regs[0] = (uint64_t)put;
+            return;
+        }
         /* write(fd=x0, buf=x1, len=x2): fd 1, bounds inside the user
          * window, pages probed, then the copy to a KERNEL buffer
          * before printing.  No PAN on v8.0 (see the header comment)
@@ -331,6 +373,21 @@ void user_a64_syscall(a64_trap_frame_t *f)
             return;
         }
         struct vnode *vn = a64fd_lookup(path);
+        if (!vn && (a1 & 1)) {                          /* R6: O_CREAT-lite */
+            char abs[104];
+            const char *p = path;
+            if (p[0] != '/') {
+                abs[0] = '/';
+                unsigned k = 0;
+                while (p[k] && k + 2 < sizeof(abs)) {
+                    abs[k + 1] = p[k];
+                    k++;
+                }
+                abs[k + 1] = 0;
+                p = abs;
+            }
+            vn = vfsm_create(p);
+        }
         if (!vn) {
             f->regs[0] = (uint64_t)-2;                 /* -ENOENT */
             return;
@@ -436,6 +493,33 @@ void user_a64_syscall(a64_trap_frame_t *f)
         de.is_dir = (ents[a1].type == VFS_TYPE_DIR);
         f->regs[0] = copy_out_user(a2, &de, sizeof(de)) == 0
                          ? 1 : (uint64_t)-14;
+        return;
+    }
+
+    case SYS_A64_BRK: {
+        if (a64_heap_end == 0)
+            a64_heap_end = A64_HEAP_BASE;
+        if (a0 == 0) {
+            f->regs[0] = a64_heap_end;
+            return;
+        }
+        if (a0 < A64_HEAP_BASE || a0 > A64_HEAP_MAX) {
+            f->regs[0] = (uint64_t)-12;                /* -ENOMEM */
+            return;
+        }
+        uint64_t want = (a0 + PAGE_SIZE_A64 - 1) & ~(uint64_t)(PAGE_SIZE_A64 - 1);
+        uint64_t have = (a64_heap_end + PAGE_SIZE_A64 - 1) & ~(uint64_t)(PAGE_SIZE_A64 - 1);
+        for (uint64_t va = have; va < want; va += PAGE_SIZE_A64) {
+            if (paging_a64_probe(va) != ~0UL)
+                continue;
+            uint64_t pa = pmm_a64_alloc_frame();
+            if (!pa || paging_a64_map(va, pa, A64_MAP_RW_USER) != 0) {
+                f->regs[0] = (uint64_t)-12;
+                return;
+            }
+        }
+        a64_heap_end = a0;
+        f->regs[0] = a64_heap_end;
         return;
     }
 

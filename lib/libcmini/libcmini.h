@@ -34,6 +34,7 @@
 #define SYS_CLOSE        3
 #define SYS_STAT         4
 #define SYS_LSEEK        8
+#define SYS_BRK         12
 #define SYS_GETPID      39
 #define SYS_EXIT        60
 #define SYS_READDIR     78
@@ -206,6 +207,149 @@ static inline void aura_printf(const char *fmt, ...)
     }
     __builtin_va_end(ap);
     write(1, out, o);
+}
+
+/* ---- R6: the heap ------------------------------------------------------
+ * brk-backed malloc/free with a first-fit free list (K&R shape).
+ * The FLOOR contract: no thread safety (single-threaded ports), no
+ * trimming back to the kernel, 16-byte aligned blocks. */
+
+static inline long brk_(unsigned long end)
+{
+    return AURA_SYSCALL(SYS_BRK, (long)end, 0, 0, 0, 0);
+}
+
+struct aura_blk {
+    unsigned long   size;          /* payload bytes */
+    struct aura_blk *next;         /* next FREE block (free list) */
+};
+
+static struct aura_blk *aura_freelist;
+static unsigned long aura_brk_cur;
+
+static inline void *malloc(unsigned long n)
+{
+    if (n == 0)
+        n = 1;
+    n = (n + 15ul) & ~15ul;
+    struct aura_blk **pp = &aura_freelist;
+    for (struct aura_blk *b = aura_freelist; b; pp = &b->next, b = b->next) {
+        if (b->size >= n) {
+            *pp = b->next;
+            return (char *)b + sizeof(struct aura_blk);
+        }
+    }
+    if (aura_brk_cur == 0)
+        aura_brk_cur = (unsigned long)brk_(0);
+    unsigned long need = sizeof(struct aura_blk) + n;
+    long r = brk_(aura_brk_cur + need);
+    if (r < 0 || (unsigned long)r < aura_brk_cur + need)
+        return 0;                   /* honest OOM */
+    struct aura_blk *b = (struct aura_blk *)aura_brk_cur;
+    aura_brk_cur = (unsigned long)r;
+    b->size = n;
+    b->next = 0;
+    return (char *)b + sizeof(struct aura_blk);
+}
+
+static inline void free(void *p)
+{
+    if (!p)
+        return;
+    struct aura_blk *b =
+        (struct aura_blk *)((char *)p - sizeof(struct aura_blk));
+    b->next = aura_freelist;
+    aura_freelist = b;
+}
+
+/* ---- R6: stdio-lite -----------------------------------------------------
+ * FILE is an fd plus an error flag; four static slots per program
+ * (single-file bring-up binaries).  fopen modes: "r" opens, "w"
+ * opens-or-CREATES (the ports' O_CREAT-lite bit) and truncates by
+ * ignoring old length -- honest note: no O_TRUNC exists yet, so a
+ * shorter rewrite leaves a longer file's tail; fsio sizes its data
+ * accordingly.  fprintf carries the aura_printf verb subset. */
+
+typedef struct {
+    int fd;
+    int used;
+    int err;
+} FILE;
+
+static FILE aura_files[4];
+
+static inline FILE *fopen(const char *path, const char *mode)
+{
+    int flags = (mode && mode[0] == 'w') ? 1 : 0;
+    long fd = open(path, flags);
+    if (fd < 0)
+        return 0;
+    for (unsigned i = 0; i < sizeof(aura_files)/sizeof(aura_files[0]); i++) {
+        if (!aura_files[i].used) {
+            aura_files[i].fd = (int)fd;
+            aura_files[i].used = 1;
+            aura_files[i].err = 0;
+            return &aura_files[i];
+        }
+    }
+    close((int)fd);
+    return 0;
+}
+
+static inline int fclose(FILE *f)
+{
+    if (!f || !f->used)
+        return -1;
+    f->used = 0;
+    return (int)close(f->fd);
+}
+
+static inline unsigned long fwrite(const void *p, unsigned long sz,
+                                   unsigned long n, FILE *f)
+{
+    if (!f || !f->used)
+        return 0;
+    unsigned long total = sz * n, done = 0;
+    const char *s = p;
+    while (done < total) {
+        long w = write(f->fd, s + done, total - done);
+        if (w <= 0) { f->err = 1; break; }
+        done += (unsigned long)w;
+    }
+    return sz ? done / sz : 0;
+}
+
+static inline unsigned long fread(void *p, unsigned long sz,
+                                  unsigned long n, FILE *f)
+{
+    if (!f || !f->used)
+        return 0;
+    unsigned long total = sz * n, done = 0;
+    char *d = p;
+    while (done < total) {
+        long r = read(f->fd, d + done, total - done);
+        if (r <= 0) break;
+        done += (unsigned long)r;
+    }
+    return sz ? done / sz : 0;
+}
+
+static inline char *fgets(char *dst, int cap, FILE *f)
+{
+    if (!f || !f->used || cap < 2)
+        return 0;
+    int i = 0;
+    while (i < cap - 1) {
+        char c;
+        long r = read(f->fd, &c, 1);
+        if (r <= 0) break;
+        dst[i++] = c;
+        if (c == '\n') break;
+    }
+    if (i == 0)
+        return 0;
+    dst[i] = 0;
+    return dst;
 }
 
 #endif /* AURALITE_LIBCMINI_H */

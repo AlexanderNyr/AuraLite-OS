@@ -26,6 +26,7 @@
 #define SYS_RV_STAT      4
 #define SYS_RV_LSEEK     8
 #define SYS_RV_READDIR  78
+#define SYS_RV_BRK      12   /* R6: the heap syscall (one table, D4) */
 
 /* Run a flat U-mode image (code copied to a fresh user page at
  * USER_TEXT_VADDR_RV, stack below it) to completion; returns its exit

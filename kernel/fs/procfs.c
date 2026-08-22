@@ -12,7 +12,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/net/netdev.h"
 #include "kernel/fs/blkdev.h"
-#include "drivers/timer/pit.h"
+#include "kernel/time.h"      /* R6: the time seam */
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/lib/perfstat.h"
@@ -301,8 +301,8 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
     int len = 0;
 
     if (vn->inode_id == 1) {
-        uint64_t ticks = timer_get_ticks();
-        uint32_t freq  = timer_get_frequency();
+        uint64_t ticks = ktime_ticks();
+        uint32_t freq  = ktime_hz();
         if (freq == 0) freq = 100;
         len = ksnprintf(text, sizeof(text), "%llu.%02llu\n",
                         (unsigned long long)(ticks / freq),

@@ -35,8 +35,8 @@ int vfs_ofd_is_writable(struct ofd *o) { return force_writable || (o->access_mod
 
 void wq_add_entry(struct wait_queue *q, struct wq_entry *e) { (void)q; (void)e; wq_add_calls++; }
 void wq_remove_entry(struct wait_queue *q, struct wq_entry *e) { (void)q; (void)e; wq_remove_calls++; }
-uint32_t timer_get_frequency(void) { return 100; }
-uint64_t timer_get_ticks(void) { return 1000; }
+uint32_t ktime_hz(void) { return 100; }
+uint64_t ktime_ticks(void) { return 1000; }
 
 #include "../../kernel/fs/select.c"
 

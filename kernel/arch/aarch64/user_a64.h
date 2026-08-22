@@ -27,6 +27,7 @@
 #define SYS_A64_STAT      4
 #define SYS_A64_LSEEK     8
 #define SYS_A64_READDIR  78
+#define SYS_A64_BRK      12  /* R6 */
 
 /* Register convention: x8 = number, x0-x5 = args, x0 = return with
  * in-band negative errno (the Linux aarch64 convention, kept). */

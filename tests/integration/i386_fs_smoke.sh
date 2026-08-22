@@ -56,6 +56,7 @@ rm -f "$LOG"
     done
     printf 'ls /ext2\n';              sleep 2
     printf 'cat /ext2/LINUX.TXT\n';   sleep 2
+    printf 'run bin32/fsio\n';       sleep 3
     printf 'exit\n';                  sleep 2
 } | timeout 120 qemu-system-i386 \
         -drive format=raw,file="$ISO",if=ide,snapshot=on \
@@ -105,6 +106,8 @@ assert_grep "$TOKEN"                                  "cat returned this run's t
 assert_grep "cat LINUX.TXT (${SEED_LEN} bytes)"       "and with the right length"
 assert_no_grep "\[fs32\] cat: "                       "no cat failure path taken"
 assert_no_grep "\[ata\] FAIL"                         "no ATA failure"
+# R6: malloc + stdio-lite round-trip through the mounted fs.
+assert_grep "fsio: PASS malloc+stdio round-trip (48 bytes)" "R6: brk/malloc/fopen-create/fwrite/fread, one source"
 assert_no_grep "Page Fault\|kernel panic"             "no fault anywhere in the boot"
 
 if [ "$fail" -ne 0 ]; then

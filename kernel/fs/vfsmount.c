@@ -60,6 +60,15 @@ struct vnode *vfsm_lookup(const char *path)
     return mounts[m].ops->lookup(mounts[m].fs_data, rel);
 }
 
+struct vnode *vfsm_create(const char *path)
+{
+    const char *rel = 0;
+    int m = vfsm_find(path, &rel);
+    if (m < 0) return 0;
+    if (!mounts[m].ops || !mounts[m].ops->create) return 0;
+    return mounts[m].ops->create(mounts[m].fs_data, rel);
+}
+
 int vfsm_slots(void)
 {
     return VFS_MAX_MOUNTS;

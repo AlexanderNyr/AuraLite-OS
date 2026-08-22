@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R5 complete; R6 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R6 complete; R7 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,7 @@
 | R3 — i386 TCP/sockets (the last I8 line) | ✅ complete | `patches/RESIDUE_R3_tcp32.patch` |
 | R4 — GICv3 + the a64 x16 run | ✅ complete | `patches/RESIDUE_R4_gicv3.patch` |
 | R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | ✅ complete | `patches/RESIDUE_R5_sched.patch` |
-| R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | pending | `patches/RESIDUE_R6_libc2.patch` |
+| R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | ✅ complete | `patches/RESIDUE_R6_libc2.patch` |
 | R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | pending | `patches/RESIDUE_R7_ecam.patch` |
 | R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | pending | `patches/RESIDUE_R8_rust.patch` |
 | R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | pending | `patches/RESIDUE_R9_net.patch` |
@@ -363,13 +363,33 @@ on our own status.md edit within minutes of existing).
       rv_smp (+2 asserts), a64_smp (+2), test_fpu_smp (+1), and
       the single-CPU boots hold every old pin.
 
-### R6 — libc v2 on the ports
-- [ ] brk/mmap-lite syscalls (the D4 number table grows; checker
-      pins move), malloc over them, stdio-lite (FILE over fd,
-      fprintf/fgets subset), errno-thread-safety NOT claimed (no
-      TLS yet — named).
-- [ ] Exit: one port program allocates, writes a file through
-      stdio, reads it back — three ports, one source.
+### R6 — libc v2 on the ports — ✅ COMPLETE
+- [x] `brk` (number 12, the D4 table; checker pins moved 11→12
+      same-commit) on all three ports: a fixed [0x20000000, +1 MiB)
+      window demand-mapped U+RW, query-by-zero, shrink keeps pages
+      (floor, stated).  The WRITE syscall grew the file lane
+      (fd≥3 → vn->ops->write; the i386 initrd flavor answers an
+      honest -EROFS), and OPEN grew O_CREAT-lite (flags bit 0 →
+      the new `vfsm_create()`, ops->create through the mounts).
+- [x] libcmini v2: K&R first-fit malloc/free over brk (no threads,
+      no trim — the floor says so), stdio-lite (FILE=fd+err, four
+      slots; fopen "r"/"w"-creates, fread/fwrite/fgets/fclose; no
+      O_TRUNC yet — named, fsio sizes its data accordingly).
+      errno-thread-safety NOT claimed (no TLS — named).
+- [x] The ktime seam (RES-03's decision executed): `ktime_ticks()/
+      ktime_hz()` in kernel/time.h, x86 bodies forward to the PIT;
+      procfs.c and select.c dropped their driver includes — the
+      parity checker's per-file pit pins DROPPED in this commit and
+      kernel/fs carries exactly ONE non-storage driver include
+      (msc.h, still honestly pinned).
+- [x] Exit ran on ALL THREE ports, one source: `fsio` (initrd,
+      three builds) mallocs, fopen("w")-creates /R6IO.TXT on the
+      mounted ext2 (path fallback /ext2 on i386), fwrites 48 bytes,
+      freads them back, byte-compares — `fsio: PASS malloc+stdio
+      round-trip (48 bytes)` printed by the SAME line on rv64, a64
+      and i386, asserted in all three fs smokes.  RES-17 and RES-19
+      closed; RES-18 (PIE) stays OPEN — relocation is real work,
+      not a floor.
 
 ### R7 — PCIe ECAM on virt
 - [ ] ECAM walker on rv64+a64 (the measured `pcie@10000000`),

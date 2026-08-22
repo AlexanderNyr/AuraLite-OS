@@ -2,6 +2,25 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R6 — libc v2: malloc + stdio round-trip on three ports, one source] 2026-08-22
+
+`brk` joins the D4 number table (12; pins 11→12) on rv64/a64/i386 —
+a demand-mapped U+RW heap window with query-by-zero and an honest
+no-trim floor.  WRITE grew the file lane (vn->ops->write; initrd
+fds answer -EROFS), OPEN grew O_CREAT-lite via the new
+`vfsm_create()`.  libcmini v2: K&R malloc/free over brk +
+stdio-lite (FILE=fd, fopen/fread/fwrite/fgets/fclose; no O_TRUNC
+yet, named).  The ktime seam paid RES-03's decision: procfs/select
+read `ktime_ticks()/ktime_hz()` from kernel/time.h and the parity
+checker's pit.h per-file pins are GONE — kernel/fs is down to one
+pinned non-storage include (msc.h).
+
+Proof, one source three ports: `fsio` mallocs, creates /R6IO.TXT
+on the mounted ext2, writes 48 bytes, reads them back, compares —
+the same `fsio: PASS malloc+stdio round-trip (48 bytes)` line
+printed and asserted on rv64, a64 AND i386.  RES-17/19 closed;
+RES-18 (PIE) stays open for real relocation work.
+
 ## [RESIDUE R5 — user code off the boot CPU on every SMP port] 2026-08-22
 
 x86: the "BSP-only scheduling" status row was the series' THIRD

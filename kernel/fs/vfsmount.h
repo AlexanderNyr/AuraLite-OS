@@ -32,6 +32,11 @@ int vfsm_find(const char *path, const char **out_rel);
  * machinery for them lives). */
 struct vnode *vfsm_lookup(const char *path);
 
+/* R6: create a regular file through the mounts (ops->create), for
+ * the ports' O_CREAT lane.  NULL when no mount matches or the fs
+ * cannot create. */
+struct vnode *vfsm_create(const char *path);
+
 /* Table access for vfs.c's reverse mapping (vnode → path). */
 int vfsm_slots(void);
 const struct vfs_mount *vfsm_get(int idx);

@@ -435,7 +435,15 @@ $(SHELLRV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/smallsh.o $(USERRV_BUI
 	@echo "  [userrv] $@"
 
 .PHONY: userrv
-userrv: $(INITRV_ELF) $(SHELLRV_ELF)
+FSIORV_ELF   := $(USERRV_BUILD)/fsio
+$(USERRV_BUILD)/fsiorv.o: userspace/tests/fsio/fsio.c lib/libcrv/libcrv.h lib/libcmini/libcmini.h lib/abi/fsabi.h
+	@mkdir -p $(USERRV_BUILD)
+	$(CC) $(CFLAGSRV_USER) -DAURA_LIBC='"lib/libcrv/libcrv.h"' -c $< -o $@
+$(FSIORV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/fsiorv.o $(USERRV_BUILD)/syscall_rv.o lib/libcrv/user_rv.ld
+	$(LD) -m elf64lriscv -nostdlib -static -T lib/libcrv/user_rv.ld \
+	    $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/fsiorv.o $(USERRV_BUILD)/syscall_rv.o -o $@
+
+userrv: $(INITRV_ELF) $(SHELLRV_ELF) $(FSIORV_ELF)
 
 # =============================================================================
 # ARM64_PLAN A5b: the aarch64 userland (inita64 + smallsh over libca64),
@@ -484,7 +492,15 @@ $(SHELLA64_ELF): $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/smallsh.o $(USERA6
 	@echo "  [usera64] $@"
 
 .PHONY: usera64
-usera64: $(INITA64_ELF) $(SHELLA64_ELF)
+FSIOA64_ELF  := $(USERA64_BUILD)/fsio
+$(USERA64_BUILD)/fsioa64.o: userspace/tests/fsio/fsio.c lib/libca64/libca64.h lib/libcmini/libcmini.h lib/abi/fsabi.h
+	@mkdir -p $(USERA64_BUILD)
+	$(CC) $(CFLAGSA64_USER) -DAURA_LIBC='"lib/libca64/libca64.h"' -c $< -o $@
+$(FSIOA64_ELF): $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/fsioa64.o $(USERA64_BUILD)/syscall_a64.o lib/libca64/user_a64.ld
+	$(LD) -m aarch64linux -nostdlib -static -T lib/libca64/user_a64.ld \
+	    $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/fsioa64.o $(USERA64_BUILD)/syscall_a64.o -o $@
+
+usera64: $(INITA64_ELF) $(SHELLA64_ELF) $(FSIOA64_ELF)
 
 # =============================================================================
 # I386_PLAN I5: the 32-bit userspace (init32 + libc32).
@@ -537,7 +553,15 @@ $(SHELL32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/shell32.o $(USER32_BUI
 	@echo "  [user32] $@"
 
 .PHONY: user32
-user32: $(INIT32_ELF) $(SHELL32_ELF)
+FSIO32_ELF   := $(USER32_BUILD)/fsio32
+$(USER32_BUILD)/fsio32.o: userspace/tests/fsio/fsio.c lib/libc32/libc32.h lib/libcmini/libcmini.h lib/abi/fsabi.h
+	@mkdir -p $(USER32_BUILD)
+	$(CC) $(CFLAGS32) -DAURA_LIBC='"lib/libc32/libc32.h"' -c $< -o $@
+$(FSIO32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/fsio32.o $(USER32_BUILD)/syscall32.o lib/libc32/user32.ld
+	$(LD) -m elf_i386 -nostdlib -static -T lib/libc32/user32.ld \
+	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/fsio32.o $(USER32_BUILD)/syscall32.o -o $@
+
+user32: $(INIT32_ELF) $(SHELL32_ELF) $(FSIO32_ELF)
 
 # =============================================================================
 # BL2: BIOS Stage 1 (MBR) -- flat 512-byte binary.
@@ -1854,7 +1878,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1936,6 +1960,7 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	@mkdir -p $(INITRD_DIR)/bin32
 	@strip -s $(INIT32_ELF) -o $(INITRD_DIR)/bin32/init32
 	@strip -s $(SHELL32_ELF) -o $(INITRD_DIR)/bin32/shell32
+	@strip -s $(FSIO32_ELF) -o $(INITRD_DIR)/bin32/fsio
 # RISCV_PLAN V5: the rv64 userland, THIRD tenant under /binrv.  GNU
 # strip does not speak EM_RISCV; llvm-strip is part of the clang
 # toolchain the build already requires.
@@ -1944,6 +1969,8 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	    llvm-strip -s $(INITRV_ELF) -o $(INITRD_DIR)/binrv/init
 	@llvm-strip-19 -s $(SHELLRV_ELF) -o $(INITRD_DIR)/binrv/smallsh 2>/dev/null || \
 	    llvm-strip -s $(SHELLRV_ELF) -o $(INITRD_DIR)/binrv/smallsh
+	@llvm-strip-19 -s $(FSIORV_ELF) -o $(INITRD_DIR)/binrv/fsio 2>/dev/null || \
+	    llvm-strip -s $(FSIORV_ELF) -o $(INITRD_DIR)/binrv/fsio
 # ARM64_PLAN A5b: the aarch64 userland, FOURTH tenant under /bina64.
 # Same llvm-strip note as /binrv (GNU strip does not speak EM_AARCH64
 # reliably either; llvm-strip ships with clang).
@@ -1952,6 +1979,8 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	    llvm-strip -s $(INITA64_ELF) -o $(INITRD_DIR)/bina64/init
 	@llvm-strip-19 -s $(SHELLA64_ELF) -o $(INITRD_DIR)/bina64/smallsh 2>/dev/null || \
 	    llvm-strip -s $(SHELLA64_ELF) -o $(INITRD_DIR)/bina64/smallsh
+	@llvm-strip-19 -s $(FSIOA64_ELF) -o $(INITRD_DIR)/bina64/fsio 2>/dev/null || \
+	    llvm-strip -s $(FSIOA64_ELF) -o $(INITRD_DIR)/bina64/fsio
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
 # HTTPS client can validate server chains against it.
 	@mkdir -p $(INITRD_DIR)/etc/ssl

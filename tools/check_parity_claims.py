@@ -37,10 +37,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The ratchet keeps the stricter number.  P0's first catch.
 # P1 cut the seam: 41 -> 0, and 0 it stays.
 AHCI_IN_FS_PIN = 0
-SYSCALL_CASE_PIN = {       # P4 landed: 6 -> 11 on every port.
-    ("kernel/arch/riscv64/user_rv.c",  r"case SYS_RV_\w+:"):  11,
-    ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 11,
-    ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   11,
+SYSCALL_CASE_PIN = {       # P4: 6 -> 11; RESIDUE R6 added brk: 12.
+    ("kernel/arch/riscv64/user_rv.c",  r"case SYS_RV_\w+:"):  12,
+    ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 12,
+    ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   12,
 }
 FS_FILE_COUNT = 21         # kernel/fs/*.c (19 at P0; +blkdev.c P1; +vfsmount.c R2).
 
@@ -189,8 +189,8 @@ def claims():
     # --- file: a new driver include ANYWHERE in fs fails here even
     # --- at the same total.
     DRIVER_INC_ALLOW = {
-        "procfs.c": 1,   # drivers/timer/pit.h -- time seam residue
-        "select.c": 1,   # drivers/timer/pit.h -- same residue class
+        # procfs.c / select.c paid at RESIDUE R6: the ktime seam
+        # (kernel/time.h) took the pit.h coupling out of fs.
         "usbfs.c":  1,   # drivers/usb/msc.h   -- USB seam residue
     }
     inc_ok = True
@@ -201,9 +201,9 @@ def claims():
         if n != DRIVER_INC_ALLOW.get(os.path.basename(src), 0):
             inc_ok = False
     checks.append((
-        "P1: zero STORAGE driver headers in kernel/fs; the three "
-        "non-storage couplings (pit.h x2, msc.h) are pinned residue "
-        "per file",
+        "P1/R6: zero STORAGE driver headers in kernel/fs; msc.h is "
+        "the one pinned non-storage coupling left (pit.h x2 paid by "
+        "the R6 ktime seam)",
         inc_ok and len(fs_sources()) > 0))
 
     # --- P2: the rv64 adoption is SHARED objects, not forks (the

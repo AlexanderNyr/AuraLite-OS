@@ -30,6 +30,7 @@
 #include "lib/abi/fsabi.h"          /* P4: the shared file ABI */
 #include "kernel/fs/vfs.h"           /* R2: vnode-backed fds */
 #include "kernel/fs/vfsmount.h"
+#include "kernel/arch/i386/pmm32.h"      /* R6: the brk heap */
 #include "kernel/arch/i386/elf32load.h"
 #include "kernel/arch/i386/kbd32.h"
 #include "kernel/arch/i386/kheap32.h"
@@ -124,6 +125,26 @@ static int copy_out_user32(uint32_t dst, const void *src, uint32_t len)
     return 0;
 }
 
+/* ---- R6: the brk heap (the third mirror) --------------------------- */
+#define HEAP32_BASE 0x20000000u
+#define HEAP32_MAX  (HEAP32_BASE + 0x100000u)
+static uint32_t heap32_end;
+
+static int copy_in_user32(void *dst, uint32_t src, uint32_t len)
+{
+    if (len == 0 || src >= KERNEL_VBASE_32 || src + len > KERNEL_VBASE_32)
+        return -1;
+    for (uint32_t va = src & ~(PAGE_SIZE_32 - 1);
+         va < src + len; va += PAGE_SIZE_32)
+        if (!paging32_probe(va, NULL))
+            return -1;
+    const char *s = (const char *)src;
+    char *d = dst;
+    for (uint32_t i = 0; i < len; i++)
+        d[i] = s[i];
+    return 0;
+}
+
 static const char *fd32_normalise(const char *p)
 {
     while (*p == '/')
@@ -211,6 +232,39 @@ static void syscall32_dispatch(struct registers32 *regs)
         return;
     }
     case SYS32_WRITE: {
+        /* R6: fd >= 3 writes a FILE through the vnode's ops (the
+         * initrd flavor stays read-only, honestly). */
+        if (regs->ebx >= FD32_BASE && regs->ebx < FD32_BASE + FD32_MAX) {
+            uint32_t i = regs->ebx - FD32_BASE;
+            if (!fds32[i].used) {
+                regs->eax = (uint32_t)-9;              /* -EBADF */
+                return;
+            }
+            if (!fds32[i].vn) {
+                regs->eax = (uint32_t)-30;             /* -EROFS: initrd */
+                return;
+            }
+            const struct vfs_ops *ops = fds32[i].vn->ops;
+            if (!ops || !ops->write || regs->edx == 0) {
+                regs->eax = (uint32_t)-9;
+                return;
+            }
+            static uint8_t wbuf[4096];
+            uint32_t want = regs->edx > sizeof(wbuf)
+                                ? (uint32_t)sizeof(wbuf) : regs->edx;
+            if (copy_in_user32(wbuf, regs->ecx, want) != 0) {
+                regs->eax = (uint32_t)-14;             /* -EFAULT */
+                return;
+            }
+            int64_t put = ops->write(fds32[i].vn, fds32[i].pos, wbuf, want);
+            if (put < 0) {
+                regs->eax = (uint32_t)-5;              /* -EIO */
+                return;
+            }
+            fds32[i].pos += (uint32_t)put;
+            regs->eax = (uint32_t)put;
+            return;
+        }
         /* write(fd=ebx, buf=ecx, len=edx) -> console only at I4/I5.
          * I5 widened the check from the fixed I4 window to "every
          * touched page is user-mapped": ELF images live at
@@ -248,8 +302,11 @@ static void syscall32_dispatch(struct registers32 *regs)
         struct vnode *vn = 0;
         const uint8_t *data = 0;
         uint32_t size = 0;
-        if (path[0] == '/')
+        if (path[0] == '/') {
             vn = vfsm_lookup(path);
+            if (!vn && (regs->ecx & 1))                /* R6: O_CREAT-lite */
+                vn = vfsm_create(path);
+        }
         if (!vn) {
             const char *p = fd32_normalise(path);
             if (p[0] == '\0') {
@@ -399,6 +456,34 @@ static void syscall32_dispatch(struct registers32 *regs)
         de.is_dir = 0;              /* the initrd view lists files */
         regs->eax = copy_out_user32(regs->edx, &de, sizeof(de)) == 0
                         ? 1 : (uint32_t)-14;
+        return;
+    }
+
+    case SYS32_BRK: {
+        if (heap32_end == 0)
+            heap32_end = HEAP32_BASE;
+        if (regs->ebx == 0) {
+            regs->eax = heap32_end;
+            return;
+        }
+        if (regs->ebx < HEAP32_BASE || regs->ebx > HEAP32_MAX) {
+            regs->eax = (uint32_t)-12;                 /* -ENOMEM */
+            return;
+        }
+        uint32_t want = (regs->ebx + PAGE_SIZE_32 - 1) & ~(PAGE_SIZE_32 - 1);
+        uint32_t have = (heap32_end + PAGE_SIZE_32 - 1) & ~(PAGE_SIZE_32 - 1);
+        for (uint32_t va = have; va < want; va += PAGE_SIZE_32) {
+            if (paging32_probe(va, NULL))
+                continue;
+            uint32_t pa = pmm32_alloc_frame();
+            if (!pa || paging32_map(va, pa,
+                    PAGE32_FLAG_WRITE | PAGE32_FLAG_USER) != 0) {
+                regs->eax = (uint32_t)-12;
+                return;
+            }
+        }
+        heap32_end = regs->ebx;
+        regs->eax = heap32_end;
         return;
     }
 

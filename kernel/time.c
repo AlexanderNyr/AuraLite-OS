@@ -273,3 +273,15 @@ void itimer_account_cpu(uint64_t ticks, int in_kernel) {
         }
     }
 }
+/* R6: the time seam bodies (x86: the PIT is the tick source). */
+#include "drivers/timer/pit.h"
+
+uint64_t ktime_ticks(void)
+{
+    return timer_get_ticks();
+}
+
+uint32_t ktime_hz(void)
+{
+    return timer_get_frequency();
+}
