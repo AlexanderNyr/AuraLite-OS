@@ -1,12 +1,12 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R1 complete; R2 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R2 complete; R3 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | R0 — the rig: the harvester + the machine-checked registry | ✅ complete | `patches/RESIDUE_R0_rig.patch` |
 | R1 — the small-payoff cluster (flake remedy, oddity, seam pins) | ✅ complete | `patches/RESIDUE_R1_small.patch` |
-| R2 — VFS on the ports (the vfs.c:71 unlock) | pending | `patches/RESIDUE_R2_vfs.patch` |
+| R2 — VFS on the ports (the vfs.c:71 unlock) | ✅ complete | `patches/RESIDUE_R2_vfs.patch` |
 | R3 — i386 TCP/sockets (the last I8 line) | pending | `patches/RESIDUE_R3_tcp32.patch` |
 | R4 — GICv3 + the a64 x16 run | pending | `patches/RESIDUE_R4_gicv3.patch` |
 | R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | pending | `patches/RESIDUE_R5_sched.patch` |
@@ -235,18 +235,31 @@ the harvest's first lesson is that debt lists rot in both
 directions, and the ratchet now guards the WIP rows too (it fired
 on our own status.md edit within minutes of existing).
 
-### R2 — VFS on the ports (the vfs.c:71 unlock)
-- [ ] The `sti` at vfs.c:71 becomes an arch-irqflags call (the A6
-      DAIF/V6 pattern already in the tree); measure what ELSE vfs.c
-      pulls (llvm-nm, the P2 method) and provide it via the fsglue
-      files — no forks.
-- [ ] vfs.c + tmpfs/devfs/cwd/symlink/buffer_cache join the three
-      shared lists where the link survives; `[vfs] mounted /` prints
-      on rv64/a64 for real (RES-09); i386 shell open() resolves
-      through the mounts (RES-08); the P4 fd layers swap their
-      ad-hoc resolvers for vfs lookups.
-- [ ] Exit: fs smokes gain `mounted /` + shell `cat /ext2/...` on
-      all three ports; every existing pin holds.
+### R2 — VFS on the ports (the vfs.c:71 unlock) — ✅ COMPLETE
+- [x] **Measurement re-scoped the unlock (the P2 method, again):**
+      the `sti` at vfs.c:71 is not a splinter to pull — it sits in
+      the PIPE wait, and the whole fd/OFD layer around it is
+      honestly coupled to the x86 thread layer (tcb fd tables, wait
+      queues, signals, slab).  What IS portable — the mount table,
+      longest-prefix matching, lookup across mounts — was split
+      VERBATIM into `kernel/fs/vfsmount.c` (the 21st fs file; the
+      parity checker's live lanes caught the count within minutes
+      and the pin moved 20→21 same-commit).  vfs.c DELEGATES to it:
+      one copy of the mount logic, four widths linking it.
+- [x] `[vfs] mounted '/'` prints on rv64 AND a64 from SHARED code
+      (RES-09 closed); the P4 fd layers swapped their ad-hoc
+      resolvers for `vfsm_lookup()` and read through `vn->ops`
+      (multi-fs-ready); i386 mounts ext2 at `/ext2`, its shell
+      open()/stat()/readdir() resolve absolute paths through the
+      mount table with the initrd as the relative-name fallback
+      (RES-08 closed): `ls /ext2` and `cat /ext2/LINUX.TXT` typed
+      at the live prompt, token byte-exact.
+- [x] Exit gates ran: rv_fs 19 asserts, a64_fs 19, i386_fs 16 (with
+      the new interactive session), i386_shell green; the x86_64
+      fs group 11/11 through the DELEGATED vfs.c (571 s); full
+      test-unit green.  RES-06 stays OPEN, honestly narrowed: the
+      remaining coupling is the fd half, and its disposition
+      belongs to a scheduler-aware phase, not to a mount phase.
 
 ### R3 — i386 TCP/sockets
 - [ ] Measure the gap: net32 speaks the e1000 miniproto; the x86_64

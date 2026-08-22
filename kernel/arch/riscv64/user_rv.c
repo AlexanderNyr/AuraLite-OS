@@ -24,6 +24,7 @@
 #include "kernel/arch/riscv64/user_rv.h"
 #include "kernel/arch/riscv64/fsglue_rv.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/vfsmount.h"
 #include "lib/abi/fsabi.h"
 #include "kernel/arch/riscv64/elfrvload.h"
 #include "kernel/arch/riscv64/initrd_rv.h"
@@ -206,12 +207,21 @@ static int copy_out_user(uint64_t dst, const void *src, uint64_t len)
 
 static struct vnode *rvfd_lookup(const char *path)
 {
-    const struct vfs_ops *ops = rvfs_ops();
-    if (!ops || !ops->lookup)
-        return 0;
-    while (*path == '/')
-        path++;                     /* ext2_lookup: "" is the root */
-    return ops->lookup(0, path);
+    /* R2: resolution goes through the SHARED mount table.  The
+     * shell may pass relative names (P4's cat LINUX.TXT); absolute
+     * them against the root mount. */
+    char abs[104];
+    if (path[0] != '/') {
+        abs[0] = '/';
+        unsigned k = 0;
+        while (path[k] && k + 2 < sizeof(abs)) {
+            abs[k + 1] = path[k];
+            k++;
+        }
+        abs[k + 1] = 0;
+        return vfsm_lookup(abs);
+    }
+    return vfsm_lookup(path);
 }
 
 /* ---- trap.c hooks --------------------------------------------------------- */
@@ -237,7 +247,7 @@ void user_rv_syscall(rv_trap_frame_t *f)
          * (pos advances); fd 0 keeps the cooked console path below. */
         if (a0 >= RVFD_BASE && a0 < RVFD_BASE + RVFD_MAX) {
             int i = (int)(a0 - RVFD_BASE);
-            const struct vfs_ops *ops = rvfs_ops();
+            const struct vfs_ops *ops = rvfds[i].used ? rvfds[i].vn->ops : 0;
             if (!rvfds[i].used || !ops || !ops->read || a2 == 0) {
                 f->regs[9] = (uint64_t)-9;             /* -EBADF */
                 return;
@@ -337,10 +347,6 @@ void user_rv_syscall(rv_trap_frame_t *f)
             f->regs[9] = (uint64_t)-14;                /* -EFAULT */
             return;
         }
-        if (!rvfs_ops()) {
-            f->regs[9] = (uint64_t)-19;                /* -ENODEV */
-            return;
-        }
         struct vnode *vn = rvfd_lookup(path);
         if (!vn) {
             f->regs[9] = (uint64_t)-2;                 /* -ENOENT */
@@ -404,7 +410,7 @@ void user_rv_syscall(rv_trap_frame_t *f)
         }
         struct vnode *vn = rvfd_lookup(path);
         if (!vn) {
-            f->regs[9] = (uint64_t)(rvfs_ops() ? -2 : -19);
+            f->regs[9] = (uint64_t)(rvfs_ops() ? -2 : -19);  /* -ENOENT / -ENODEV */
             return;
         }
         struct aura_stat st;
@@ -422,8 +428,8 @@ void user_rv_syscall(rv_trap_frame_t *f)
             f->regs[9] = (uint64_t)-9;
             return;
         }
-        const struct vfs_ops *ops = rvfs_ops();
         struct vnode *vn = rvfds[a0 - RVFD_BASE].vn;
+        const struct vfs_ops *ops = vn ? vn->ops : 0;
         if (!ops || !ops->readdir || vn->type != VFS_TYPE_DIR) {
             f->regs[9] = (uint64_t)-20;                /* -ENOTDIR */
             return;

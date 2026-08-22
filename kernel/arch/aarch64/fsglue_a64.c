@@ -19,6 +19,7 @@
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/ext2.h"
+#include "kernel/fs/vfsmount.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/arch/aarch64/kheap_a64.h"
 #include "kernel/arch/aarch64/pl011.h"
@@ -114,9 +115,10 @@ void a64fs_bringup(void)
         kprintf("[a64fs] ext2 mount failed on blkdev %d\n", dev);
         return;
     }
-    kprintf("[a64fs] mounted ext2 on blkdev %d (ops-level; fd layer: P4)\n",
+    kprintf("[a64fs] mounted ext2 on blkdev %d (VFS-mounted since R2)\n",
             dev);
     mounted_ops = &ext2_ops;
+    vfsm_mount("/", &ext2_ops, 0);      /* R2: the shared mount table */
 
     ext2_self_test();
     ext2_list();

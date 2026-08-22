@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/vfsmount.h"   /* R2: the mount core moved out */
 #include "kernel/fs/execpolicy.h"
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
@@ -122,7 +123,8 @@ static int64_t pipe_write_op(struct vnode *vn, uint64_t pos, const void *buf, ui
 static const struct vfs_ops pipe_read_ops  = { .read = pipe_read_op };
 static const struct vfs_ops pipe_write_ops = { .write = pipe_write_op };
 
-static struct vfs_mount mounts[VFS_MAX_MOUNTS];
+/* R2: the mount table lives in vfsmount.c now (one copy, every
+ * architecture links it); this file DELEGATES. */
 /* Fallback table for early boot or unusual calls before sched_init().  Normal
  * threads/processes use tcb_t::fd_table, so fd numbers are process-local. */
 static struct ofd *fallback_fd_table[VFS_MAX_FDS];
@@ -317,50 +319,23 @@ static int alloc_fd_slot_ptr(struct ofd **t, int start) {
 }
 
 void vfs_init(void) {
-    memset(mounts, 0, sizeof(mounts));
     memset(fallback_fd_table, 0, sizeof(fallback_fd_table));
     memset(fallback_cloexec, 0, sizeof(fallback_cloexec));
     memset(named_fifos, 0, sizeof(named_fifos));
 }
 
 int vfs_mount(const char *path, const struct vfs_ops *ops, void *fs_data) {
-    for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
-        if (!mounts[i].in_use) {
-            strncpy(mounts[i].mount_path, path, VFS_PATH_MAX - 1);
-            mounts[i].ops      = ops;
-            mounts[i].fs_data  = fs_data;
-            mounts[i].in_use   = 1;
-            kprintf("[vfs] mounted '%s'\n", path);
-            return 0;
-        }
-    }
-    return -ENOSPC;   /* mount table full */
+    return vfsm_mount(path, ops, fs_data);
 }
 
-/* Find the longest matching mount for a path. */
+/* Find the longest matching mount for a path (delegated). */
 static int find_mount(const char *path, const char **out_rel) {
-    if (path[0] != '/') return -1;
-    int best_mount = -1;
-    size_t best_len = 0;
-    size_t path_len = strlen(path);
-    for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
-        if (!mounts[i].in_use) continue;
-        size_t mlen = strlen(mounts[i].mount_path);
-        if (mlen > path_len) continue;
-        if (memcmp(mounts[i].mount_path, path, mlen) == 0) {
-            /* Avoid matching /tmpfile to /tmp. Root is a special prefix. */
-            if (mlen > 1 && path[mlen] != '\0' && path[mlen] != '/') continue;
-            if (mlen > best_len) {
-                best_len = mlen;
-                best_mount = i;
-            }
-        }
-    }
-    if (best_mount < 0) return -1;
-    const char *rel = path + best_len;
-    if (*rel == '/') rel++;
-    if (out_rel) *out_rel = rel;
-    return best_mount;
+    return vfsm_find(path, out_rel);
+}
+
+/* The mount entry accessor every former mounts[i] site goes through. */
+static const struct vfs_mount *mnt(int i) {
+    return vfsm_get(i);
 }
 
 /* Resolve a path to a vnode (no creation). */
@@ -381,9 +356,10 @@ int vfs_vnode_path(const struct vnode *vn, char *out, size_t out_len) {
     if (!vn || !out || out_len < 2) return -1;
 
     const char *mp = 0;
-    for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
-        if (mounts[i].in_use && mounts[i].ops == vn->ops) {
-            mp = mounts[i].mount_path;
+    for (int i = 0; i < vfsm_slots(); i++) {
+        const struct vfs_mount *e = vfsm_get(i);
+        if (e && e->ops == vn->ops) {
+            mp = e->mount_path;
             break;
         }
     }
@@ -608,7 +584,7 @@ static struct vnode *resolve_path_follow(const char *path, int depth) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return NULL;
-    return mounts[m].ops->lookup(mounts[m].fs_data, rel);
+    return mnt(m)->ops->lookup(mnt(m)->fs_data, rel);
 }
 
 static struct vnode *resolve_path(const char *path) {
@@ -678,8 +654,8 @@ int vfs_open(const char *path, int flags, int mode) {
         const char *rel = NULL;
         int m = find_mount(path, &rel);
         if (m < 0) return -ENOENT;
-        if (!mounts[m].ops->create) return -EROFS;   /* fs cannot create */
-        vn = mounts[m].ops->create(mounts[m].fs_data, rel);
+        if (!mnt(m)->ops->create) return -EROFS;   /* fs cannot create */
+        vn = mnt(m)->ops->create(mnt(m)->fs_data, rel);
         if (vn == NULL) return -EACCES;
 
         vn->mode = masked_mode ? masked_mode : (0644u & ~umask);
@@ -1155,8 +1131,8 @@ int vfs_mkdir(const char *path, uint32_t mode) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return -ENOENT;
-    if (!mounts[m].ops->mkdir) return -ENOSYS;
-    int r = (int)vfs_wrap_err(mounts[m].ops->mkdir(mounts[m].fs_data, rel), EACCES);
+    if (!mnt(m)->ops->mkdir) return -ENOSYS;
+    int r = (int)vfs_wrap_err(mnt(m)->ops->mkdir(mnt(m)->fs_data, rel), EACCES);
     if (r == 0) {
         struct vnode *vn = resolve_path(path);
         if (vn) {
@@ -1180,8 +1156,8 @@ int vfs_rmdir(const char *path) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return -ENOENT;
-    if (!mounts[m].ops->rmdir) return -ENOSYS;
-    return (int)vfs_wrap_err(mounts[m].ops->rmdir(mounts[m].fs_data, rel), ENOENT);
+    if (!mnt(m)->ops->rmdir) return -ENOSYS;
+    return (int)vfs_wrap_err(mnt(m)->ops->rmdir(mnt(m)->fs_data, rel), ENOENT);
 }
 
 int vfs_unlink(const char *path) {
@@ -1202,8 +1178,8 @@ int vfs_unlink(const char *path) {
     const char *rel = NULL;
     int m = find_mount(path, &rel);
     if (m < 0) return -ENOENT;
-    if (!mounts[m].ops->unlink) return -ENOSYS;
-    return (int)vfs_wrap_err(mounts[m].ops->unlink(mounts[m].fs_data, rel), ENOENT);
+    if (!mnt(m)->ops->unlink) return -ENOSYS;
+    return (int)vfs_wrap_err(mnt(m)->ops->unlink(mnt(m)->fs_data, rel), ENOENT);
 }
 
 int vfs_rename(const char *from, const char *to) {
@@ -1219,9 +1195,9 @@ int vfs_rename(const char *from, const char *to) {
     int m_to   = find_mount(to,   &rel_to);
     if (m_from < 0 || m_to < 0) return -ENOENT;
     if (m_from != m_to) return -EXDEV;          /* cross-device link */
-    if (!mounts[m_from].ops->rename) return -ENOSYS;
+    if (!mnt(m_from)->ops->rename) return -ENOSYS;
     return (int)vfs_wrap_err(
-        mounts[m_from].ops->rename(mounts[m_from].fs_data, rel_from, rel_to),
+        mnt(m_from)->ops->rename(mnt(m_from)->fs_data, rel_from, rel_to),
         ENOENT);
 }
 
@@ -1332,14 +1308,14 @@ int vfs_link(const char *oldpath, const char *newpath) {
     int m_new = find_mount(newpath, &rel_new);
     if (m_old < 0 || m_new < 0) return -ENOENT;
     if (m_old != m_new) return -EXDEV;            /* cross-device link */
-    if (!mounts[m_old].ops->link) return -EPERM;  /* FAT32/exFAT & co. */
+    if (!mnt(m_old)->ops->link) return -EPERM;  /* FAT32/exFAT & co. */
 
     struct vnode *pvn = resolve_parent_vnode(newpath);
     int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
     if (err != 0) return err;
 
     return (int)vfs_wrap_err(
-        mounts[m_old].ops->link(mounts[m_old].fs_data, rel_old, rel_new),
+        mnt(m_old)->ops->link(mnt(m_old)->fs_data, rel_old, rel_new),
         ENOENT);
 }
 

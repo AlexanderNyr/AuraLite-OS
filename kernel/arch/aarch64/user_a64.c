@@ -46,6 +46,7 @@
 #include "kernel/arch/aarch64/irqflags.h"   /* A6: the DAIF backend */
 #include "kernel/arch/aarch64/fsglue_a64.h"  /* P4: mounted ops */
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/vfsmount.h"
 #include "lib/abi/fsabi.h"
 
 /* context_a64.S */
@@ -194,12 +195,19 @@ static int copy_out_user(uint64_t dst, const void *src, uint64_t len)
 
 static struct vnode *a64fd_lookup(const char *path)
 {
-    const struct vfs_ops *ops = a64fs_ops();
-    if (!ops || !ops->lookup)
-        return 0;
-    while (*path == '/')
-        path++;                     /* ext2_lookup: "" is the root */
-    return ops->lookup(0, path);
+    /* R2: the shared mount table (user_rv.c's mirror). */
+    char abs[104];
+    if (path[0] != '/') {
+        abs[0] = '/';
+        unsigned k = 0;
+        while (path[k] && k + 2 < sizeof(abs)) {
+            abs[k + 1] = path[k];
+            k++;
+        }
+        abs[k + 1] = 0;
+        return vfsm_lookup(abs);
+    }
+    return vfsm_lookup(path);
 }
 
 void user_a64_syscall(a64_trap_frame_t *f)
@@ -222,7 +230,7 @@ void user_a64_syscall(a64_trap_frame_t *f)
         /* P4: fd >= 3 reads a FILE through the mounted ops table. */
         if (a0 >= A64FD_BASE && a0 < A64FD_BASE + A64FD_MAX) {
             int i = (int)(a0 - A64FD_BASE);
-            const struct vfs_ops *ops = a64fs_ops();
+            const struct vfs_ops *ops = a64fds[i].used ? a64fds[i].vn->ops : 0;
             if (!a64fds[i].used || !ops || !ops->read || a2 == 0) {
                 f->regs[0] = (uint64_t)-9;             /* -EBADF */
                 return;
@@ -322,10 +330,6 @@ void user_a64_syscall(a64_trap_frame_t *f)
             f->regs[0] = (uint64_t)-14;                /* -EFAULT */
             return;
         }
-        if (!a64fs_ops()) {
-            f->regs[0] = (uint64_t)-19;                /* -ENODEV */
-            return;
-        }
         struct vnode *vn = a64fd_lookup(path);
         if (!vn) {
             f->regs[0] = (uint64_t)-2;                 /* -ENOENT */
@@ -407,8 +411,8 @@ void user_a64_syscall(a64_trap_frame_t *f)
             f->regs[0] = (uint64_t)-9;
             return;
         }
-        const struct vfs_ops *ops = a64fs_ops();
         struct vnode *vn = a64fds[a0 - A64FD_BASE].vn;
+        const struct vfs_ops *ops = vn ? vn->ops : 0;
         if (!ops || !ops->readdir || vn->type != VFS_TYPE_DIR) {
             f->regs[0] = (uint64_t)-20;                /* -ENOTDIR */
             return;

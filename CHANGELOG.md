@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R2 — one mount table, four widths; the shell reads /ext2 on i386] 2026-08-22
+
+The vfs.c:71 story re-measured: the `sti` lives in the PIPE wait,
+and the fd/OFD machinery around it is honestly x86-thread-coupled —
+so the unlock is a SPLIT, not a fix.  `kernel/fs/vfsmount.c` now
+carries the mount table + longest-prefix find + cross-mount lookup
+(moved verbatim; vfs.c delegates through one accessor), and all
+four widths link the same object.  Receipts: `[vfs] mounted '/'`
+on rv64/a64 printed by shared code; i386 mounts ext2 at /ext2 and
+its shell resolves absolute paths through the mount table (initrd
+stays the relative fallback) — `cat /ext2/LINUX.TXT` at the live
+prompt, token byte-exact.  Port fd layers now read through
+`vn->ops` (multi-fs-ready).
+
+- The parity checker's live lanes flagged the 21st fs file within
+  minutes (21/21 compile on all three lanes; pin 20→21 same-commit)
+  — the rig noticing NEW code is the rig working.
+- x86 regression: the fs group 11/11 through the delegated vfs.c;
+  all port smokes green with the new asserts (rv 19, a64 19,
+  i386_fs 16 incl. the interactive /ext2 session).
+- Ledger: RES-08, RES-09 DONE@R2; RES-06 narrowed and held open
+  (the fd half belongs to a scheduler-aware phase).  OPEN 40.
+
 ## [RESIDUE R1 — six rows moved, one sharpened, the ratchet bit its keeper] 2026-08-22
 
 The small-payoff cluster: RES-01 (UHCI TD waits now bounded by two

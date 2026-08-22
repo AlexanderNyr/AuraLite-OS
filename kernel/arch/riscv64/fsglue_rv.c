@@ -22,6 +22,7 @@
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/ext2.h"
+#include "kernel/fs/vfsmount.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/arch/riscv64/kheap_rv.h"
 #include "kernel/arch/riscv64/sbi.h"
@@ -124,9 +125,13 @@ void rvfs_bringup(void)
         kprintf("[rvfs] ext2 mount failed on blkdev %d\n", dev);
         return;
     }
-    kprintf("[rvfs] mounted ext2 on blkdev %d (ops-level; fd layer: P4)\n",
+    kprintf("[rvfs] mounted ext2 on blkdev %d (VFS-mounted since R2)\n",
             dev);
     mounted_ops = &ext2_ops;
+    /* R2 (RES-09): the REAL mount table -- vfsmount.c is the same
+     * object x86_64's vfs.c delegates to; the '[vfs] mounted' line
+     * below is printed by shared code, not an arch imitation. */
+    vfsm_mount("/", &ext2_ops, 0);
 
     ext2_self_test();
     ext2_list();

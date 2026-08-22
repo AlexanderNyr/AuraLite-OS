@@ -18,6 +18,7 @@
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/ext2.h"
+#include "kernel/fs/vfsmount.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/arch/i386/kheap32.h"
 #include "kernel/arch/i386/vga32.h"
@@ -132,7 +133,10 @@ void fs32_bringup(void)
         kprintf("[fs32] ext2 mount failed on blkdev %d\n", d1);
         return;
     }
-    kprintf("[fs32] mounted ext2 on blkdev %d (ops-level)\n", d1);
+    kprintf("[fs32] mounted ext2 on blkdev %d (VFS-mounted since R2)\n", d1);
+    /* R2 (RES-08): the shared mount table -- same object, third
+     * width; the shell's open() resolves through it. */
+    vfsm_mount("/ext2", &ext2_ops, 0);
 
     ext2_self_test();
     ext2_list();

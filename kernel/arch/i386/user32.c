@@ -28,6 +28,8 @@
 #include "kernel/arch/i386/thread32.h"
 #include "kernel/arch/i386/initrd32.h"
 #include "lib/abi/fsabi.h"          /* P4: the shared file ABI */
+#include "kernel/fs/vfs.h"           /* R2: vnode-backed fds */
+#include "kernel/fs/vfsmount.h"
 #include "kernel/arch/i386/elf32load.h"
 #include "kernel/arch/i386/kbd32.h"
 #include "kernel/arch/i386/kheap32.h"
@@ -101,9 +103,10 @@ static int copy_user_path(uint32_t uptr, char *dst, uint32_t cap)
 #define FD32_MAX  8
 
 static struct {
-    const uint8_t *data;
+    const uint8_t *data;         /* initrd flavor */
     uint32_t       size;
     uint32_t       pos;
+    struct vnode  *vn;           /* R2: VFS flavor (NULL = initrd) */
     int            used;
 } fds32[FD32_MAX];
 
@@ -140,6 +143,30 @@ static void syscall32_dispatch(struct registers32 *regs)
             uint32_t i = regs->ebx - FD32_BASE;
             if (!fds32[i].used || regs->edx == 0) {
                 regs->eax = (uint32_t)-9;              /* -EBADF */
+                return;
+            }
+            if (fds32[i].vn) {                     /* R2: VFS read */
+                const struct vfs_ops *ops = fds32[i].vn->ops;
+                if (!ops || !ops->read) {
+                    regs->eax = (uint32_t)-9;
+                    return;
+                }
+                static uint8_t fbuf[4096];
+                uint32_t want = regs->edx > sizeof(fbuf)
+                                    ? (uint32_t)sizeof(fbuf) : regs->edx;
+                int64_t got = ops->read(fds32[i].vn, fds32[i].pos,
+                                        fbuf, want);
+                if (got < 0) {
+                    regs->eax = (uint32_t)-5;          /* -EIO */
+                    return;
+                }
+                if (got > 0 &&
+                    copy_out_user32(regs->ecx, fbuf, (uint32_t)got) != 0) {
+                    regs->eax = (uint32_t)-14;
+                    return;
+                }
+                fds32[i].pos += (uint32_t)got;
+                regs->eax = (uint32_t)got;
                 return;
             }
             uint32_t left = fds32[i].size - fds32[i].pos;
@@ -215,22 +242,30 @@ static void syscall32_dispatch(struct registers32 *regs)
             regs->eax = (uint32_t)-14;                 /* -EFAULT */
             return;
         }
-        const char *p = fd32_normalise(path);
-        const uint8_t *data;
-        uint32_t size;
-        if (p[0] == '\0') {
-            /* the root directory: a listable fd with no bytes */
-            data = 0;
-            size = 0;
-        } else if (!initrd32_find(p, &data, &size)) {
-            regs->eax = (uint32_t)-2;                  /* -ENOENT */
-            return;
+        /* R2: absolute paths resolve through the SHARED mount table
+         * first (ext2 at /ext2); the initrd stays the fallback
+         * namespace for the relative names P4 shipped with. */
+        struct vnode *vn = 0;
+        const uint8_t *data = 0;
+        uint32_t size = 0;
+        if (path[0] == '/')
+            vn = vfsm_lookup(path);
+        if (!vn) {
+            const char *p = fd32_normalise(path);
+            if (p[0] == '\0') {
+                data = 0;                /* listable root, no bytes */
+                size = 0;
+            } else if (!initrd32_find(p, &data, &size)) {
+                regs->eax = (uint32_t)-2;              /* -ENOENT */
+                return;
+            }
         }
         for (uint32_t i = 0; i < FD32_MAX; i++) {
             if (!fds32[i].used) {
                 fds32[i].data = data;
                 fds32[i].size = size;
                 fds32[i].pos  = 0;
+                fds32[i].vn   = vn;
                 fds32[i].used = 1;
                 regs->eax = FD32_BASE + i;
                 return;
@@ -263,7 +298,10 @@ static void syscall32_dispatch(struct registers32 *regs)
         switch (regs->edx) {
         case AURA_SEEK_SET: base = 0;             break;
         case AURA_SEEK_CUR: base = fds32[i].pos;  break;
-        case AURA_SEEK_END: base = fds32[i].size; break;
+        case AURA_SEEK_END:
+            base = fds32[i].vn ? (uint32_t)fds32[i].vn->size
+                               : fds32[i].size;
+            break;
         default:
             regs->eax = (uint32_t)-22;                 /* -EINVAL */
             return;
@@ -283,9 +321,20 @@ static void syscall32_dispatch(struct registers32 *regs)
             regs->eax = (uint32_t)-14;
             return;
         }
-        const char *p = fd32_normalise(path);
         struct aura_stat st;
         st._pad = 0;
+        if (path[0] == '/') {                          /* R2 */
+            struct vnode *vn = vfsm_lookup(path);
+            if (vn) {
+                st.size = vn->size;
+                st.is_dir = (vn->type == VFS_TYPE_DIR);
+                regs->eax = copy_out_user32(regs->ecx, &st,
+                                            sizeof(st)) == 0
+                                ? 0 : (uint32_t)-14;
+                return;
+            }
+        }
+        const char *p = fd32_normalise(path);
         if (p[0] == '\0') {
             st.size = 0;
             st.is_dir = 1;
@@ -308,6 +357,32 @@ static void syscall32_dispatch(struct registers32 *regs)
         if (regs->ebx < FD32_BASE || regs->ebx >= FD32_BASE + FD32_MAX ||
             !fds32[regs->ebx - FD32_BASE].used) {
             regs->eax = (uint32_t)-9;
+            return;
+        }
+        uint32_t fdi = regs->ebx - FD32_BASE;
+        if (fds32[fdi].vn) {                           /* R2: VFS dir */
+            struct vnode *dvn = fds32[fdi].vn;
+            const struct vfs_ops *ops = dvn->ops;
+            if (!ops || !ops->readdir || dvn->type != VFS_TYPE_DIR) {
+                regs->eax = (uint32_t)-20;             /* -ENOTDIR */
+                return;
+            }
+            static struct vfs_dirent ents[32];
+            int n = ops->readdir(dvn, ents, 32);
+            if (n < 0) { regs->eax = (uint32_t)-5; return; }
+            if ((int32_t)regs->ecx < 0 || (int32_t)regs->ecx >= n) {
+                regs->eax = 0;                         /* end */
+                return;
+            }
+            struct aura_dirent de;
+            for (unsigned k = 0; k < sizeof(de.name); k++) de.name[k] = 0;
+            for (unsigned k = 0; k + 1 < sizeof(de.name) &&
+                                 ents[regs->ecx].name[k]; k++)
+                de.name[k] = ents[regs->ecx].name[k];
+            de.is_dir = (ents[regs->ecx].type == VFS_TYPE_DIR);
+            regs->eax = copy_out_user32(regs->edx, &de,
+                                        sizeof(de)) == 0
+                            ? 1 : (uint32_t)-14;
             return;
         }
         const char *name;

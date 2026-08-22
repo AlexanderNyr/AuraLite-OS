@@ -49,11 +49,19 @@ SEED_LEN=$(wc -c < "$SEED")
 rm -f "$SEED"
 
 rm -f "$LOG"
-timeout 90 qemu-system-i386 \
+{
+    for _ in $(seq 1 60); do
+        grep -qa "auralite# " "$LOG" 2>/dev/null && break
+        sleep 1
+    done
+    printf 'ls /ext2\n';              sleep 2
+    printf 'cat /ext2/LINUX.TXT\n';   sleep 2
+    printf 'exit\n';                  sleep 2
+} | timeout 120 qemu-system-i386 \
         -drive format=raw,file="$ISO",if=ide,snapshot=on \
         -drive format=raw,file="$DISK",if=ide,index=1 \
-        -m 256M -display none -serial file:"$LOG" -no-reboot \
-        < /dev/null > /dev/null 2>&1 || true
+        -m 256M -display none -serial stdio -no-reboot \
+        > "$LOG" 2>/dev/null || true
 
 tr -d '\r' < "$LOG" > "$LOG.clean" && mv "$LOG.clean" "$LOG"
 
@@ -89,6 +97,9 @@ assert_grep "\[blkdev\] blk1 = ata1"                  "slave registered with the
 assert_grep "\[ext2\] mounted existing volume"        "SHARED ext2.c (-m32 build) recognised the volume"
 assert_grep "\[ext2\] blkdev 1 mounted"               "the shared second-disk picker chose blk1"
 assert_grep "\[fs32\] mounted ext2 on blkdev 1"       "arch glue receipt"
+assert_grep "\[vfs\] mounted '/ext2'"                 "R2: the SHARED mount table took /ext2"
+assert_grep "  LINUX.TXT"                             "R2 shell ls /ext2 through the mounts"
+assert_grep "(${SEED_LEN} bytes)"                     "R2 shell cat /ext2/... (lseek size receipt)"
 assert_grep "\[ext2\] PASS:"                          "ext2 self-test (write/dir/indirect/rename) on i386"
 assert_grep "$TOKEN"                                  "cat returned this run's token byte-exact"
 assert_grep "cat LINUX.TXT (${SEED_LEN} bytes)"       "and with the right length"

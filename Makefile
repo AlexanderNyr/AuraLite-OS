@@ -172,7 +172,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/ext2.c kernel/lib/string.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c kernel/lib/string.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -243,7 +243,7 @@ KERNELRV_DIR  := kernel/arch/riscv64
 # ("8-byte loops ready for shared-tree adoption") paid; membench_rv
 # measures exactly these linked bodies, and H1 makes them word-wide.
 KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c kernel/drivers/virtio_mmio.c kernel/lib/string.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/ext2.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c
 KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null) $(KERNELRV_SHARED)
 KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
 KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
@@ -311,7 +311,7 @@ KERNELA64_DIR  := kernel/arch/aarch64
 # object the rv64 pair switched to in this patch, and the THIRD
 # miniproto consumer proves the same packets.
 KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c kernel/net/miniproto.c kernel/drivers/virtio_mmio.c \
-                    kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/ext2.c
+                    kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c
 KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null) $(KERNELA64_SHARED)
 KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
 KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
