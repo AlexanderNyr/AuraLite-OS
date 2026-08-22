@@ -2,6 +2,64 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P0 — the rig, and its first two catches] 2026-08-22
+
+`tools/check_parity_claims.py` (sixth of the D8 family, wired into
+`make test-unit` + selftest): 12 claims, two of them LIVE — every
+run re-compiles all 19 kernel/fs files `-fsyntax-only` under both
+DTB-tenant flag sets (~1.3 s), so Fact 1 can never rot into a
+quoted number.  Ratchets pin EXACTLY and fail in both directions:
+ahci-in-fs at 41, syscall cases at 6/6/6 (rv/a64/i386), reserved
+artefact names per phase (the registry-reservation idea, moved into
+the checker because ALL_CASES rightly mirrors only files that exist
+today — deviation named in the plan).
+
+The rig caught the plan's own draft twice before the phase closed:
+
+- **41 call sites, not 28** — the draft counted grep lines; several
+  lines carry two ahci calls.  The ratchet keeps the stricter
+  number (Fact 1 amended).
+- **The draft syntax lanes ran without -Werror** — with it,
+  btrfs/ext4/f2fs trip `-Wunused-function` (#ifdef'd-out callers),
+  a class the x86_64 build silences and tenant CFLAGS don't.  Zero
+  porting errors either way; the lanes mirror the x86_64 policy and
+  the three files are named for the day one joins a tenant build.
+
+512-sector stance measured, not assumed: `AHCI_SECTOR_SIZE 512`,
+vblk's `buf512` contract, ata32's 256-word PIO loop — the checker
+asserts all three.  Full `make test-unit`: green, all seven
+checkers OK (width sweep untouched at 359/69/0/29).
+
+## [PARITY plan — the catch-up series for i386/rv64/a64] 2026-08-22
+
+Three closed plans left the same residue class named in three
+places: no mounted VFS outside x86_64, six syscalls per port, SMP
+ramps with no engine, 70-line libc headers next to a 10 921-line
+libc.  PARITY_PLAN.md (P0–P9) turns those names into phases, and
+the opening measurements say the biggest item is cheap:
+
+- **The fs tree is already portable.** All 19 kernel/fs files
+  compile clean under BOTH DTB-tenant flag sets today (19/19
+  `-fsyntax-only`, rv64 and a64 — the A6/V6 sweeps paid this
+  forward).  The real blocker is 28 direct `ahci_*` call sites in
+  8 fs files: a missing block-device seam, not a port.  P1 cuts
+  the seam (`blkdev_ops`, D2) and arms a 28→0 ratchet (D3).
+- i386 fs cost measured at 32 `-Wshorten-64-to-32` errors in 14
+  files (P7 pays it through the existing 359-cast ratchet, D6).
+- Syscall surface counted: 6 cases per port vs ~290 on x86_64;
+  P4 widens each port to 11 (OPEN/CLOSE/READDIR/STAT/LSEEK).
+- SMP: rv64 `hart_lottery` and a64 `.Lpark` exist; `sbi.c` has no
+  HSM, `psci.c` no CPU_ON (grep-verified).  P5/P6 add the engines,
+  receipts counted against `-smp 4`; schedulers stay single-CPU by
+  decision D5, residue named.
+- P8 promotes a shared libcmini (floor, not ceiling — the full
+  libc port remains the named non-goal).
+
+Plan only in this entry; P0 (rig + `check_parity_claims.py`) is
+next.  Baseline for the series: upstream 747d008, all four kernels
+link green, elf sizes recorded in the plan (601 656 / 308 144 for
+the DTB tenants).
+
 ## [CIRED fixes — seven red cases, one real conformance catch] 2026-08-21
 
 The sharded CI's new per-case artifacts (results-*.txt + <case>.out)

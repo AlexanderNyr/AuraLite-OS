@@ -2199,6 +2199,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_hw_claims.py"
 	@python3 tools/check_hw_claims.py || exit 1
 	@python3 tools/check_hw_claims.py --selftest || exit 1
+	@echo "[unit] running tools/check_parity_claims.py"
+	@python3 tools/check_parity_claims.py || exit 1
+	@python3 tools/check_parity_claims.py --selftest || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
