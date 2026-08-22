@@ -493,3 +493,55 @@ int ahci_write_sector(uint32_t port, uint64_t lba, const void *buf) {
     return ahci_write(port, lba, 1, buf);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* PARITY_PLAN.md P1: the blkdev seam.                                */
+/*                                                                    */
+/* Every detected port registers as one block device, in detection    */
+/* order — so blkdev id N is exactly the disk ahci_get_nth_port(N)    */
+/* used to name, and the boot-time mount assignments (kernel.c) keep  */
+/* their meaning to the byte.  The driver includes the seam header;   */
+/* the seam never includes the driver.                                */
+/* ------------------------------------------------------------------ */
+
+#include "kernel/fs/blkdev.h"
+
+static int ahci_bd_read(void *ctx, uint64_t lba, uint32_t count, void *buf)
+{
+    return ahci_read((uint32_t)(uintptr_t)ctx, lba, count, buf);
+}
+
+static int ahci_bd_write(void *ctx, uint64_t lba, uint32_t count,
+                         const void *buf)
+{
+    return ahci_write((uint32_t)(uintptr_t)ctx, lba, count, buf);
+}
+
+static const struct blkdev_ops ahci_bd_ops = {
+    .read         = ahci_bd_read,
+    .write        = ahci_bd_write,
+    .sector_count = 0,          /* honest: the driver never reads capacity */
+};
+
+static char ahci_bd_names[BLKDEV_MAX][8];
+
+void ahci_register_blkdevs(void)
+{
+    for (int n = 0; n < BLKDEV_MAX; n++) {
+        int port = ahci_get_nth_port(n);
+        if (port < 0)
+            break;
+        char *name = ahci_bd_names[n];
+        name[0] = 'a'; name[1] = 'h'; name[2] = 'c'; name[3] = 'i';
+        name[4] = (char)('0' + (n % 10)); name[5] = '\0';
+        int dev = blkdev_register(name, &ahci_bd_ops,
+                                  (void *)(uintptr_t)port,
+                                  AHCI_SECTOR_SIZE);
+        if (dev < 0) {
+            kprintf("[blkdev] REFUSED %s (port %d): rc=%d\n",
+                    name, port, dev);
+            break;
+        }
+        kprintf("[blkdev] blk%d = %s (AHCI port %d)\n", dev, name, port);
+    }
+}

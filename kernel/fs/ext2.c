@@ -29,7 +29,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/ext2.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 #include "kernel/lib/errno.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
@@ -137,7 +137,7 @@ struct ext2_dir_entry {
 
 /* ----- Mount state ----- */
 struct ext2_mount {
-    int      ahci_port;
+    int      bdev;      /* blkdev id (P1) */
     uint32_t fs_base_lba;        /* absolute LBA of the start of FS */
     uint32_t fs_lba_count;       /* size of FS area in 512-byte sectors */
     uint32_t block_size;
@@ -188,10 +188,10 @@ static uint32_t ext2_now(void) {
 
 static int read_blocks(uint32_t fs_lba, uint32_t count, void *buf) {
     /* fs_lba here is a 512-byte LBA RELATIVE to fs_base_lba */
-    return ahci_read((uint32_t)es.ahci_port, es.fs_base_lba + fs_lba, count, buf);
+    return blkdev_read(es.bdev, es.fs_base_lba + fs_lba, count, buf);
 }
 static int write_blocks(uint32_t fs_lba, uint32_t count, const void *buf) {
-    return ahci_write((uint32_t)es.ahci_port, es.fs_base_lba + fs_lba, count, buf);
+    return blkdev_write(es.bdev, es.fs_base_lba + fs_lba, count, buf);
 }
 
 /* Read/write one filesystem block (block_size bytes = block_size/512 sectors). */
@@ -1481,16 +1481,16 @@ int ext2_init(int prefer_port) {
     memset(&es, 0, sizeof(es));
     memset(vcache, 0, sizeof(vcache));
 
-    /* Pick AHCI port: prefer requested, then 2nd disk, then 1st. */
+    /* Pick a blkdev: prefer requested, then the 2nd disk, then the 1st. */
     int p = -1;
     if (prefer_port >= 0) p = prefer_port;
-    if (p < 0) p = ahci_get_nth_port(1);
-    if (p < 0) p = ahci_get_first_port();
+    if (p < 0 && blkdev_count() > 1) p = 1;
+    if (p < 0 && blkdev_count() > 0) p = 0;
     if (p < 0) {
         kprintf("[ext2] no AHCI disk available; not mounted\n");
         return -1;
     }
-    es.ahci_port    = p;
+    es.bdev         = p;
     es.fs_base_lba  = 0;     /* assume whole-disk filesystem; offset = 0 */
     es.fs_lba_count = 0;     /* unused */
 

@@ -16,7 +16,7 @@
  *
  * VFS integration:
  *   All paths are relative to mount root (/f2fs).
- *   Uses existing AHCI driver (ahci_read/ahci_write).
+ *   Uses the blkdev seam (blkdev_read/blkdev_write; P1).
  *   Mounted at /f2fs — see kernel.c.
  */
 
@@ -27,7 +27,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 
 /* ============================================================================
  * SECTION 1: F2FS ON-DISK STRUCTURES
@@ -248,7 +248,7 @@ struct f2fs_sit_entry {
  * ============================================================================ */
 
 struct f2fs_mount {
-    int       ahci_port;
+    int       bdev;     /* blkdev id (P1) */
     uint32_t  sector_size;
     uint32_t  page_size;
     uint32_t  seg_size;          /* segment size in bytes */
@@ -331,13 +331,13 @@ static uint32_t seg_off_to_lba(uint32_t seg_no, uint32_t offset) {
 
 /* Read one page (block) */
 static int read_page(uint32_t lba, void *buf) {
-    return ahci_read(f2m.ahci_port, lba * F2FS_SECTOR_PER_PAGE,
+    return blkdev_read(f2m.bdev, lba * F2FS_SECTOR_PER_PAGE,
                      F2FS_SECTOR_PER_PAGE, buf);
 }
 
 /* Write one page (block) */
 static int write_page(uint32_t lba, const void *buf) {
-    return ahci_write(f2m.ahci_port, lba * F2FS_SECTOR_PER_PAGE,
+    return blkdev_write(f2m.bdev, lba * F2FS_SECTOR_PER_PAGE,
                       F2FS_SECTOR_PER_PAGE, buf);
 }
 
@@ -1217,7 +1217,7 @@ static int format_f2fs(void) {
 int f2fs_init(int prefer_port) {
     memset(&f2m, 0, sizeof(f2m));
     memset(fv4pool, 0, sizeof(fv4pool));
-    f2m.ahci_port = prefer_port;
+    f2m.bdev = prefer_port;
     spinlock_init(&f2m.alloc_lock);
 
     if (!f2fs_scratch) f2fs_scratch = (uint8_t *)kmalloc(F2FS_PAGE_SIZE);

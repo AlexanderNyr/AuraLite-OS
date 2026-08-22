@@ -2025,6 +2025,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_virtio_net \
                 $(BUILD_DIR)/test_stack_guard \
                 $(BUILD_DIR)/test_select_stack \
+                $(BUILD_DIR)/test_blkdev \
                 $(BUILD_DIR)/test_vma \
                 $(BUILD_DIR)/test_page_cache \
                 $(BUILD_DIR)/test_mprotect \
@@ -2603,6 +2604,16 @@ $(BUILD_DIR)/test_stack_guard: tests/unit/test_stack_guard.c
 $(BUILD_DIR)/test_select_stack: tests/unit/test_select_stack.c kernel/fs/select.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# PARITY P1: the blkdev seam, compiled as-is (pure table code) with a
+# RAM-backed fake device and fault injection.  ASan+UBSan because the
+# seam is exactly where a size mix-up becomes silent corruption.
+$(BUILD_DIR)/test_blkdev: tests/unit/test_blkdev.c kernel/fs/blkdev.c \
+                          kernel/fs/blkdev.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined -I . \
+	          tests/unit/test_blkdev.c kernel/fs/blkdev.c -o $@
 
 $(BUILD_DIR)/test_vma: tests/unit/test_vma.c
 	@mkdir -p $(BUILD_DIR)

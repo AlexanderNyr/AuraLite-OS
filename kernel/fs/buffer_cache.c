@@ -1,7 +1,7 @@
 #include "kernel/fs/buffer_cache.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/string.h"
 
@@ -83,8 +83,8 @@ bool bc_evict(void) {
 int bc_sync(struct buffer *buf) {
     if (!buf->dirty) return 0;
     
-    /* Call AHCI driver to write sector */
-    if (ahci_write_sector(buf->device_id, buf->block_num, buf->data) != 0) {
+    /* Write the sector through the blkdev seam (P1). */
+    if (blkdev_write_sector((int)buf->device_id, buf->block_num, buf->data) != 0) {
         return -1;
     }
     
@@ -142,7 +142,7 @@ struct buffer *bc_get(uint32_t device_id, uint64_t block_num) {
     }
 
     /* 3. Load data from disk into the candidate buffer */
-    if (ahci_read_sector(device_id, block_num, candidate->data) != 0) {
+    if (blkdev_read_sector((int)device_id, block_num, candidate->data) != 0) {
         kprintf("[bc] ERROR: Failed to read sector %llu from device %u\n", block_num, device_id);
         spinlock_release(&bc_lock);
         return NULL;

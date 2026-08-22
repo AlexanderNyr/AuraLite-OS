@@ -1,11 +1,11 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0 complete; P1 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P1 complete; P2 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | P0 — the rig: blkdev seam audit + claims checker | ✅ complete | `patches/PARITY_P0_rig.patch` |
-| P1 — the block-device layer (x86_64 byte-honest refactor) | pending | `patches/PARITY_P1_blkdev.patch` |
+| P1 — the block-device layer (x86_64 byte-honest refactor) | ✅ complete | `patches/PARITY_P1_blkdev.patch` |
 | P2 — ext2 mounted on rv64 (vblk behind the seam) | pending | `patches/PARITY_P2_rvfs.patch` |
 | P3 — ext2 mounted on a64 (the shared-transport dividend) | pending | `patches/PARITY_P3_a64fs.patch` |
 | P4 — the syscall widening: open/read/close on three ports | pending | `patches/PARITY_P4_syscalls.patch` |
@@ -198,17 +198,60 @@ the plan's own draft measurements, both now amended in Fact 1:
 Live lanes cost ~1.3 s per checker run (38 clang -fsyntax-only
 invocations), paid on every `make test-unit` from now on.
 
-### P1 — the block-device layer
-- [ ] `kernel/fs/blkdev.{c,h}`: ops table + registry.  AHCI wraps
-      into `blkdev_ahci` on x86_64; **all 41 call sites** converted;
-      ratchet 41 → 0.
-- [ ] Proof of byte-honesty: the fs integration shard (11 cases)
-      green before/after; `results-fs.txt` quoted in the phase
-      result.  procfs's ahci lines become blkdev lines (the one
-      user-visible diff, named).
-- [ ] Host unit test: `tests/unit/test_blkdev.c` — a RAM-backed
-      fake device, mount ext2 image over it, read a file, compare
-      sha256 (host-runnable, no QEMU).
+### P1 — the block-device layer — ✅ COMPLETE
+- [x] `kernel/fs/blkdev.{c,h}`: ops table + registry.  AHCI wraps
+      into `ahci_register_blkdevs()` (driver-side, detection order,
+      so blkdev id N is exactly the old N-th port); **all 41 call
+      sites** converted; ratchet 41 → 0 (pin edited same-commit).
+- [x] Proof of byte-honesty: the fs integration shard (11 cases)
+      green after the cut; `results-fs.txt` quoted in the phase
+      result.  procfs's diskstats row is the one user-visible diff,
+      named: label `ahci0` → `blk0`, and the counters are
+      filesystem-layer now (the AHCI self-test's probe sectors no
+      longer count).
+- [x] Host unit test: `tests/unit/test_blkdev.c` — RAM-backed fake
+      device with fault injection, ASan+UBSan, 27 checks: ids/order,
+      the 512-refusal, batch-vs-per-sector agreement, bounds, stats
+      counting only successful seam traffic, the ext2 superblock
+      magic 0xEF53 parsed through the seam, the slot cap.
+      **Deviation, named:** the draft promised mkfs.ext2 + sha256
+      here; that wants e2fsprogs on every runner, so the end-to-end
+      file-read proof stays with the in-guest ext2/fat32 cases that
+      now run through the seam, and the unit test pins the seam
+      semantics themselves.
+
+#### P1 result
+
+Kernel: 2 364 904 → 2 371 128 bytes (+6 224 for the seam + wrappers).
+The fs shard, clean run through the seam — results-fs.txt verbatim:
+11/11 (ahci_large_read 100s, ahci_rw 25s, fat32_persistence 50s,
+fat32_full 35s, ext2 66s, fs_stress 80s, devfs 30s, procfs 30s,
+tmpfs 35s, diskfs 60s, fat32_mkdir 60s; total 571s).  A rig lesson
+paid on the way: the first shard attempt ran TWICE concurrently
+(a stray background copy survived a tool timeout), two QEMUs shared
+the scratch disks and results files, and fs_stress/diskfs "failed"
+with interleaved markers — caught by the .out file showing 13/12
+assertions from two interleaved runs, re-run serially, 11/11.
+`make test-unit` green end-to-end (27/27 blkdev checks; all seven
+claim checkers; width sweep untouched — the x64-include ratchet
+counts `kernel/arch/x86_64/` includes, and this cut removed driver
+includes, which ratchet 2 never tracked).
+
+The include-rule claim (stronger than the call ratchet: kernel/fs
+may include no driver header at all) earned its keep immediately —
+it found THREE pre-existing non-storage couplings the plan never
+measured: `drivers/timer/pit.h` in procfs.c and select.c (a time
+seam question, some future plan's), `drivers/usb/msc.h` in usbfs.c
+(the USB seam question).  All three are pinned per-file in the
+checker as named residue; a new driver include anywhere in fs fails
+even at the same total.
+
+Failure-path strings ("no AHCI disk available", "no second AHCI
+disk") are deliberately UNTOUCHED: the disk-present cases pin their
+absence as negative greps, and rewording them in the same commit
+that touches the I/O path would blind exactly the tripwires meant
+to catch this commit's mistakes.  P2 rewords them when the strings
+become lies (on a tenant they would be), together with the greps.
 
 ### P2 — ext2 mounted on rv64
 - [ ] `vblk_rv` registers as blkdev; `vfs.c ext2.c buffer_cache.c
@@ -290,20 +333,34 @@ invocations), paid on every `make test-unit` from now on.
 (Counts land here when P9 closes the plan; the checker enforces the
 table above matches patches/ on disk.)
 
-## 6. The seam, designed once
+## 6. The seam, designed once (amended at P1, deviations named)
 
     struct blkdev_ops {
-        int (*read_sector)(void *ctx, uint64_t lba, void *buf512);
-        int (*write_sector)(void *ctx, uint64_t lba, const void *buf512);
-        uint64_t (*sector_count)(void *ctx);
+        int (*read)(void *ctx, uint64_t lba, uint32_t count, void *buf);
+        int (*write)(void *ctx, uint64_t lba, uint32_t count, const void *buf);
+        uint64_t (*sector_count)(void *ctx);   /* optional */
     };
-    int blkdev_register(const char *name, const struct blkdev_ops *ops, void *ctx);
+    int blkdev_register(const char *name, const struct blkdev_ops *ops,
+                        void *ctx, uint32_t sector_size);
 
-Four slots, 512-byte sectors (all three backends present 512 today
-— AHCI logical, virtio-blk default, ATA PIO; measured at P0, and if
-a backend ever reports otherwise the register call refuses loudly
-rather than lying).  fs code takes a `int dev` where it used to
-imply "the AHCI port"; diskfs/fat32/ext2 mount calls name the
-device explicitly.  No partition table parsing enters this plan —
-the fs-lba offsets stay where they are (fat32.c already carries
-them), and GPT is residue if anyone asks.
+Two P1 amendments to the draft, both named:
+
+- **Eight slots, not four.**  The x86 boot already mounts SEVEN
+  disk-backed filesystems (kernel.c: diskfs, fat32, ext2, exfat,
+  ext4, btrfs, f2fs/ntfs on ids 0–6 — counted, not assumed); the
+  draft's four would have refused the fifth disk on day one.
+- **The ops carry a count.**  AHCI does one DMA for a multi-sector
+  read; the draft's per-sector-only shape would have silently split
+  ext2's 2-sector superblock read into two DMAs — a performance
+  regression smuggled in as a refactor.  Single-sector backends
+  (vblk today) loop on their side of the seam.
+
+512-byte sectors only (all three backends present 512 today —
+measured at P0, asserted by the checker), and `blkdev_register`
+REFUSES any other `sector_size` rather than lying (rc -2; the unit
+test pins it).  fs code takes an `int dev` where it used to imply
+"the AHCI port"; boot-time mount assignments keep their meaning to
+the byte because AHCI registers in detection order.  No partition
+table parsing enters this plan — the fs-lba offsets stay where they
+are (fat32.c already carries them), and GPT is residue if anyone
+asks.

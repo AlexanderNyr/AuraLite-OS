@@ -26,7 +26,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 
 /* ============================================================================
  * SECTION 1: EXT4 ON-DISK STRUCTURES
@@ -274,7 +274,7 @@ struct ext4_journal_header {
  * ============================================================================ */
 
 struct ext4_mount {
-    int       ahci_port;
+    int       bdev;     /* blkdev id (P1) */
     uint32_t  base_lba;
     uint32_t  block_size;
     uint32_t  blocks_per_group;
@@ -368,12 +368,12 @@ static uint32_t ext4_block_lba(uint32_t block_no) {
  * ============================================================================ */
 
 static int read_block(uint32_t block_no, void *buf) {
-    return ahci_read(m4.ahci_port, ext4_block_lba(block_no),
+    return blkdev_read(m4.bdev, ext4_block_lba(block_no),
                      m4.block_size / 512, buf);
 }
 
 static int write_block(uint32_t block_no, const void *buf) {
-    return ahci_write(m4.ahci_port, ext4_block_lba(block_no),
+    return blkdev_write(m4.bdev, ext4_block_lba(block_no),
                       m4.block_size / 512, buf);
 }
 
@@ -1336,7 +1336,7 @@ static int format_ext4(void) {
 int ext4_init(int prefer_port) {
     memset(&m4, 0, sizeof(m4));
     memset(v4pool, 0, sizeof(v4pool));
-    m4.ahci_port = prefer_port;
+    m4.bdev = prefer_port;
     m4.base_lba = 128;
     m4.block_size = 4096;
     spinlock_init(&m4.alloc_lock);

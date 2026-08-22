@@ -35,13 +35,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 41 OCCURRENCES on 28 grep lines: the plan's opening measurement
 # counted lines; the rig counts call sites (several lines carry two).
 # The ratchet keeps the stricter number.  P0's first catch.
-AHCI_IN_FS_PIN = 41        # P1 takes this to 0 and it stays 0.
+# P1 cut the seam: 41 -> 0, and 0 it stays.
+AHCI_IN_FS_PIN = 0
 SYSCALL_CASE_PIN = {       # P4 takes all three to 11.
     ("kernel/arch/riscv64/user_rv.c",  r"case SYS_RV_\w+:"):  6,
     ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 6,
     ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   6,
 }
-FS_FILE_COUNT = 19         # kernel/fs/*.c, all of which must compile.
+FS_FILE_COUNT = 20         # kernel/fs/*.c (19 at P0; blkdev.c joined at P1).
 
 # Flag sets copied from the Makefile's CFLAGSRV / CFLAGSA64 (compile
 # flags only; -Werror deliberately kept so new warnings fail here
@@ -176,6 +177,34 @@ def claims():
             f"pin: {path} carries exactly {pin} syscall cases "
             f"(measured {count}; P4 moves this pin to 11)",
             count == pin and text != ""))
+
+    # --- P1: the seam guarantee, stated as an include rule.  The
+    # --- ratchet above counts ahci CALLS; this counts the stronger
+    # --- thing -- kernel/fs may include NO driver header at all (the
+    # --- driver includes the seam, never the other way around).
+    # --- P1's catch: the rule found THREE pre-existing non-storage
+    # --- couplings the plan never measured -- pit.h in procfs/select
+    # --- (a TIME seam question, not this plan's) and usb/msc.h in
+    # --- usbfs (the USB seam question).  Named residue, pinned per
+    # --- file: a new driver include ANYWHERE in fs fails here even
+    # --- at the same total.
+    DRIVER_INC_ALLOW = {
+        "procfs.c": 1,   # drivers/timer/pit.h -- time seam residue
+        "select.c": 1,   # drivers/timer/pit.h -- same residue class
+        "usbfs.c":  1,   # drivers/usb/msc.h   -- USB seam residue
+    }
+    inc_ok = True
+    for src in fs_sources() + sorted(
+            glob.glob(os.path.join(ROOT, "kernel", "fs", "*.h"))):
+        with open(src, "r", encoding="utf-8", errors="replace") as handle:
+            n = len(re.findall(r'#include\s+"drivers/', handle.read()))
+        if n != DRIVER_INC_ALLOW.get(os.path.basename(src), 0):
+            inc_ok = False
+    checks.append((
+        "P1: zero STORAGE driver headers in kernel/fs; the three "
+        "non-storage couplings (pit.h x2, msc.h) are pinned residue "
+        "per file",
+        inc_ok and len(fs_sources()) > 0))
 
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).

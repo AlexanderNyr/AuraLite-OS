@@ -28,7 +28,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 
 /* ============================================================================
  * SECTION 1: BTRFS ON-DISK STRUCTURES
@@ -217,7 +217,7 @@ struct btrfs_inode {
  * ============================================================================ */
 
 struct btrfs_mount {
-    int       ahci_port;
+    int       bdev;     /* blkdev id (P1) */
     uint64_t  generation;
     uint64_t  nodesize;
     uint64_t  sectorsize;
@@ -284,11 +284,11 @@ static inline void w32(uint8_t *p, uint32_t v) {
  * ============================================================================ */
 
 static int btrfs_read_block(uint64_t lba, void *buf) {
-    return ahci_read(btrfs_m.ahci_port, lba / 512,
+    return blkdev_read(btrfs_m.bdev, lba / 512,
                      btrfs_m.block_size / 512, buf);
 }
 static int btrfs_write_block(uint64_t lba, const void *buf) {
-    return ahci_write(btrfs_m.ahci_port, lba / 512,
+    return blkdev_write(btrfs_m.bdev, lba / 512,
                       btrfs_m.block_size / 512, buf);
 }
 
@@ -894,7 +894,7 @@ static int format_btrfs(void) {
 int btrfs_init(int prefer_port) {
     memset(&btrfs_m, 0, sizeof(btrfs_m));
     memset(bv4pool, 0, sizeof(bv4pool));
-    btrfs_m.ahci_port = prefer_port;
+    btrfs_m.bdev = prefer_port;
     spinlock_init(&btrfs_m.lock);
 
     if (!btrfs_scratch) btrfs_scratch = (uint8_t *)kmalloc(BTRFS_NODE_SIZE);

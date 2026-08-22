@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P1 — the blkdev seam: 41 → 0] 2026-08-22
+
+`kernel/fs/blkdev.{c,h}`: one narrow table (multi-sector read/write
++ optional sector_count; 512-only, refuse-loudly at registration)
+between every filesystem and every block driver.  All 41 direct
+`ahci_*` call sites in kernel/fs converted; the parity checker's
+ratchet pin moved 41 → 0 in this commit and fails in both
+directions from here on.  AHCI registers its ports in detection
+order (`ahci_register_blkdevs()`, driver side), so blkdev id N is
+exactly the disk the old `ahci_get_nth_port(N)` named and every
+boot-time mount keeps its meaning.
+
+- Two §6 draft amendments, named in the plan: eight slots (the x86
+  boot already mounts seven disk-backed filesystems), and ops that
+  carry a `count` (a per-sector-only seam would have split AHCI's
+  batched DMA reads — a regression smuggled in as a refactor).
+- The stronger include-rule claim (kernel/fs includes NO driver
+  header) immediately found three pre-existing non-storage
+  couplings the plan never measured: pit.h in procfs/select, msc.h
+  in usbfs.  Pinned per-file as named residue; any new driver
+  include in fs fails the checker even at the same total.
+- User-visible diffs, both named: /proc/diskstats row is `blk0` and
+  counts filesystem-layer traffic (driver self-test probes no
+  longer inflate it); diskfs's ready-line says `blkdev 0`.
+  Failure-path strings deliberately untouched — the disk-present
+  cases pin their ABSENCE, and rewording them in the commit that
+  touches the I/O path would blind exactly those tripwires.
+- Proof: fs shard clean 11/11 through the seam (571s, quoted in the
+  plan); host seam test 27/27 under ASan+UBSan (fault injection,
+  batch-vs-per-sector agreement, the 0xEF53 superblock read; ASan
+  caught the test's own 4-into-3-sector buffer bug before it
+  shipped); full `make test-unit` green; kernel +6 224 bytes.
+- Rig lesson, recorded: the first shard attempt ran twice
+  concurrently (a stray background copy survived a tool timeout),
+  two QEMUs shared scratch disks, fs_stress/diskfs "failed" with
+  interleaved markers.  Serial re-run: green.  Detection: a .out
+  file claiming 13/12 assertions.
+
 ## [PARITY P0 — the rig, and its first two catches] 2026-08-22
 
 `tools/check_parity_claims.py` (sixth of the D8 family, wired into

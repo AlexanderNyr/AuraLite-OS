@@ -13,7 +13,7 @@
 #define BC_MAX_BUFFERS 1024
 
 struct buffer {
-    uint32_t device_id;      /* ID of the disk device (e.g. AHCI port) */
+    uint32_t device_id;      /* blkdev id (P1; was an AHCI port before the seam) */
     uint64_t block_num;      /* LBA / Sector number */
     uint8_t  data[BC_BLOCK_SIZE];
     

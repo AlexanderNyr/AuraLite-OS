@@ -11,7 +11,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/net/netdev.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 #include "drivers/timer/pit.h"
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/diagnostics.h"
@@ -381,14 +381,16 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
                         (unsigned long long)rxb, (unsigned long long)rxp,
                         (unsigned long long)txb, (unsigned long long)txp);
     } else if (vn->inode_id == 8) {
-        /* /proc/diskstats: cumulative sectors read/written across every
-         * AHCI port (see ahci_get_stats()). Not broken down per-device
-         * yet -- AuraLite currently only exposes one active AHCI
-         * controller's aggregate counters. */
+        /* /proc/diskstats: cumulative sectors read/written through the
+         * blkdev seam, all devices aggregated (see blkdev_get_stats()).
+         * P1 semantic shift, named: driver-internal traffic (the AHCI
+         * self-test's probe sectors) no longer counts -- these are
+         * filesystem-layer counters now, and the row is labelled blk0
+         * accordingly. */
         uint64_t sread = 0, swritten = 0;
-        ahci_get_stats(&sread, &swritten);
+        blkdev_get_stats(&sread, &swritten);
         len = ksnprintf(text, sizeof(text),
-                        "   1    0 ahci0 0 0 %llu 0 0 0 %llu 0 0 0 0\n",
+                        "   1    0 blk0 0 0 %llu 0 0 0 %llu 0 0 0 0\n",
                         (unsigned long long)sread, (unsigned long long)swritten);
     } else if (vn->inode_id == 9) {
         /* /proc/sysrq-trigger read: list the supported commands. */

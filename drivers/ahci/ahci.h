@@ -48,6 +48,11 @@ void ahci_self_test(void);
 int ahci_read_sector(uint32_t port, uint64_t lba, void *buf);
 int ahci_write_sector(uint32_t port, uint64_t lba, const void *buf);
 
+/* PARITY P1: register every detected port with the blkdev seam
+ * (kernel/fs/blkdev.h), in detection order.  Call once, after
+ * ahci_init(). */
+void ahci_register_blkdevs(void);
+
 /* Cumulative sector counters across every AHCI port, maintained by
  * ahci_read()/ahci_write() (and therefore also by the single-sector
  * wrappers above, which call through them). Either output pointer may be

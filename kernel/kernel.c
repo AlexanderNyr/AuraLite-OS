@@ -26,6 +26,7 @@
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/blkdev.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
 #include "kernel/fs/procfs.h"
@@ -395,6 +396,7 @@ void kmain(boot_info_t *boot_info) {
     kprintf("[boot] initialising AHCI SATA driver...\n");
     ahci_init();
     ahci_self_test();
+    ahci_register_blkdevs();   /* PARITY P1: ports become blkdev ids */
     if (diskfs_init() == 0) {
         vfs_mount("/disk", &diskfs_ops, NULL);
         diskfs_self_test();
@@ -409,10 +411,11 @@ void kmain(boot_info_t *boot_info) {
         kprintf("[boot] virtio-blk initialized\n");
     }
 
-    /* ext2 prefers the *second* AHCI disk so /fat and /ext2 stay independent.
+    /* ext2 prefers the *second* disk so /fat and /ext2 stay independent.
      * If only one disk is present, ext2 falls back to it (but skips formatting
-     * to avoid clobbering FAT32). */
-    if (ahci_get_nth_port(1) >= 0) {
+     * to avoid clobbering FAT32).  Since P1 these are blkdev ids: id N is the
+     * N-th detected disk, whatever the driver behind it. */
+    if (blkdev_count() > 1) {
         if (ext2_init(-1) == 0) {
             vfs_mount("/ext2", &ext2_ops, NULL);
             ext2_self_test();
@@ -424,47 +427,47 @@ void kmain(boot_info_t *boot_info) {
 
     /* ========================================================================
      * Experimental Filesystems (Phase 14+)
-     * To avoid auto-format collisions on the primary disk (port 0) or ext2 disk (port 1),
-     * each experimental FS requires its own dedicated AHCI port (separate disks).
+     * To avoid auto-format collisions on the primary disk (blkdev 0) or ext2
+     * disk (blkdev 1), each experimental FS requires its own dedicated disk.
      * ======================================================================== */
     kprintf("[boot] initialising buffer cache and experimental filesystems...\n");
     bc_init();
 
-    int port_exfat = ahci_get_nth_port(2);
-    if (port_exfat >= 0) {
-        exfat_init(port_exfat);
+    int dev_exfat = (blkdev_count() > 2) ? 2 : -1;
+    if (dev_exfat >= 0) {
+        exfat_init(dev_exfat);
         vfs_mount("/exfat", &exfat_ops, NULL);
     } else {
         kprintf("[exfat] no 3rd AHCI disk; /exfat not mounted\n");
     }
 
-    int port_ext4 = ahci_get_nth_port(3);
-    if (port_ext4 >= 0) {
-        ext4_init(port_ext4);
+    int dev_ext4 = (blkdev_count() > 3) ? 3 : -1;
+    if (dev_ext4 >= 0) {
+        ext4_init(dev_ext4);
         vfs_mount("/ext4", &ext4_ops, NULL);
     } else {
         kprintf("[ext4] no 4th AHCI disk; /ext4 not mounted\n");
     }
 
-    int port_btrfs = ahci_get_nth_port(4);
-    if (port_btrfs >= 0) {
-        btrfs_init(port_btrfs);
+    int dev_btrfs = (blkdev_count() > 4) ? 4 : -1;
+    if (dev_btrfs >= 0) {
+        btrfs_init(dev_btrfs);
         vfs_mount("/btrfs", &btrfs_ops, NULL);
     } else {
         kprintf("[btrfs] no 5th AHCI disk; /btrfs not mounted\n");
     }
 
-    int port_f2fs = ahci_get_nth_port(5);
-    if (port_f2fs >= 0) {
-        f2fs_init(port_f2fs);
+    int dev_f2fs = (blkdev_count() > 5) ? 5 : -1;
+    if (dev_f2fs >= 0) {
+        f2fs_init(dev_f2fs);
         vfs_mount("/f2fs", &f2fs_ops, NULL);
     } else {
         kprintf("[f2fs] no 6th AHCI disk; /f2fs not mounted\n");
     }
 
-    int port_ntfs = ahci_get_nth_port(6);
-    if (port_ntfs >= 0) {
-        ntfs_init(port_ntfs);
+    int dev_ntfs = (blkdev_count() > 6) ? 6 : -1;
+    if (dev_ntfs >= 0) {
+        ntfs_init(dev_ntfs);
         vfs_mount("/ntfs", &ntfs_ops, NULL);
     } else {
         kprintf("[ntfs] no 7th AHCI disk; /ntfs not mounted\n");

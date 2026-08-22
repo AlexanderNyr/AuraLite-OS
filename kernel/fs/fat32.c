@@ -29,7 +29,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/fat32.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/klog.h"
 #include "kernel/lib/string.h"
@@ -62,7 +62,7 @@
 
 /* ---- Mount state (single mount instance for now) ---- */
 struct fat32_mount {
-    int       ahci_port;
+    int       bdev;     /* blkdev id (P1) */
     uint32_t  base_lba;         /* volume start LBA */
     uint16_t  bytes_per_sect;   /* always 512 in our usage */
     uint8_t   sect_per_clus;    /* 1, 2, 4, … */
@@ -152,19 +152,19 @@ static inline void wr32(uint8_t *p, uint32_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF;
 
 /* ---- Block I/O ---- */
 static int read_sect_abs(uint32_t lba, void *buf) {
-    return ahci_read((uint32_t)fs.ahci_port, lba, 1, buf);
+    return blkdev_read(fs.bdev, lba, 1, buf);
 }
 static int write_sect_abs(uint32_t lba, const void *buf) {
-    return ahci_write((uint32_t)fs.ahci_port, lba, 1, buf);
+    return blkdev_write(fs.bdev, lba, 1, buf);
 }
 static uint32_t cluster_to_lba(uint32_t cl) {
     return fs.data_lba + (cl - 2u) * fs.sect_per_clus;
 }
 static int read_cluster(uint32_t cl, void *buf) {
-    return ahci_read((uint32_t)fs.ahci_port, cluster_to_lba(cl), fs.sect_per_clus, buf);
+    return blkdev_read(fs.bdev, cluster_to_lba(cl), fs.sect_per_clus, buf);
 }
 static int write_cluster(uint32_t cl, const void *buf) {
-    return ahci_write((uint32_t)fs.ahci_port, cluster_to_lba(cl), fs.sect_per_clus, buf);
+    return blkdev_write(fs.bdev, cluster_to_lba(cl), fs.sect_per_clus, buf);
 }
 
 /* ---- FAT access ---- */
@@ -1526,8 +1526,8 @@ void fat32_list(void) {
 int fat32_init(void) {
     memset(&fs, 0, sizeof(fs));
     memset(vinfo_pool, 0, sizeof(vinfo_pool));
-    fs.ahci_port = ahci_get_first_port();
-    if (fs.ahci_port < 0) {
+    fs.bdev = (blkdev_count() > 0) ? 0 : -1;
+    if (fs.bdev < 0) {
         kprintf("[fat32] no AHCI disk; FAT32 disabled\n");
         return -1;
     }

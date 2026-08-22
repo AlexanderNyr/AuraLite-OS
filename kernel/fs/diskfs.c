@@ -1,6 +1,6 @@
-/* diskfs.c — tiny AHCI-backed persistent read/write filesystem.
+/* diskfs.c — tiny persistent read/write filesystem over the blkdev seam.
  *
- * Layout on the first AHCI disk:
+ * Layout on the first disk (blkdev 0):
  *   LBA 2: superblock
  *   LBA 3: 8 fixed-size file table entries
  *   LBA 4..: file data, 8 sectors (4 KiB) per file slot
@@ -12,7 +12,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/diskfs.h"
-#include "drivers/ahci/ahci.h"
+#include "kernel/fs/blkdev.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 
@@ -21,7 +21,7 @@
 #define DISKFS_MAX_FILES 8
 #define DISKFS_NAME_MAX 48
 #define DISKFS_FILE_SECTORS 8
-#define DISKFS_MAX_FILE_SIZE (DISKFS_FILE_SECTORS * AHCI_SECTOR_SIZE)
+#define DISKFS_MAX_FILE_SIZE (DISKFS_FILE_SECTORS * BLKDEV_SECTOR_SIZE)
 #define DISKFS_SUPER_LBA 2
 #define DISKFS_TABLE_LBA 3
 #define DISKFS_DATA_LBA  5
@@ -31,7 +31,7 @@ struct diskfs_super {
     uint32_t version;
     uint32_t max_files;
     uint32_t file_sectors;
-    uint8_t reserved[AHCI_SECTOR_SIZE - 16];
+    uint8_t reserved[BLKDEV_SECTOR_SIZE - 16];
 } __attribute__((packed));
 
 struct diskfs_entry {
@@ -48,7 +48,7 @@ struct diskfs_entry {
 
 typedef char static_assert_entry_size[(sizeof(struct diskfs_entry) == 128) ? 1 : -1];
 
-static int disk_port = -1;
+static int disk_dev = -1;
 static struct diskfs_entry entries[DISKFS_MAX_FILES];
 static struct vnode vnodes[DISKFS_MAX_FILES];
 
@@ -59,26 +59,26 @@ static int valid_name(const char *path) {
 }
 
 static int read_sector(uint64_t lba, void *buf) {
-    return ahci_read((uint32_t)disk_port, lba, 1, buf);
+    return blkdev_read(disk_dev, lba, 1, buf);
 }
 
 static int write_sector(uint64_t lba, const void *buf) {
-    return ahci_write((uint32_t)disk_port, lba, 1, buf);
+    return blkdev_write(disk_dev, lba, 1, buf);
 }
 
 static void sync_table(void) {
-    uint8_t sector[AHCI_SECTOR_SIZE * 2];
+    uint8_t sector[BLKDEV_SECTOR_SIZE * 2];
     memset(sector, 0, sizeof(sector));
     memcpy(sector, entries, sizeof(entries));
     write_sector(DISKFS_TABLE_LBA, sector);
-    write_sector(DISKFS_TABLE_LBA + 1, sector + AHCI_SECTOR_SIZE);
+    write_sector(DISKFS_TABLE_LBA + 1, sector + BLKDEV_SECTOR_SIZE);
 }
 
 static void load_table(void) {
-    uint8_t sector[AHCI_SECTOR_SIZE * 2];
+    uint8_t sector[BLKDEV_SECTOR_SIZE * 2];
     memset(sector, 0, sizeof(sector));
     if (read_sector(DISKFS_TABLE_LBA, sector) == 0 &&
-        read_sector(DISKFS_TABLE_LBA + 1, sector + AHCI_SECTOR_SIZE) == 0) {
+        read_sector(DISKFS_TABLE_LBA + 1, sector + BLKDEV_SECTOR_SIZE) == 0) {
         memcpy(entries, sector, sizeof(entries));
     }
 }
@@ -114,8 +114,8 @@ static int format_diskfs(void) {
 }
 
 int diskfs_init(void) {
-    disk_port = ahci_get_first_port();
-    if (disk_port < 0) {
+    disk_dev = (blkdev_count() > 0) ? 0 : -1;
+    if (disk_dev < 0) {
         kprintf("[diskfs] no AHCI disk available; /disk not mounted\n");
         return -1;
     }
@@ -135,7 +135,7 @@ int diskfs_init(void) {
         load_table();
     }
     rebuild_vnodes();
-    kprintf("[diskfs] tiny persistent filesystem ready on AHCI port %d\n", disk_port);
+    kprintf("[diskfs] tiny persistent filesystem ready on blkdev %d\n", disk_dev);
     return 0;
 }
 
@@ -191,7 +191,7 @@ static int64_t diskfs_read(struct vnode *vn, uint64_t pos,
 
     uint8_t tmp[DISKFS_MAX_FILE_SIZE];
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
-        if (read_sector(e->start_lba + s, tmp + s * AHCI_SECTOR_SIZE) != 0) return -1;
+        if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -1;
     }
     memcpy(buf, tmp + pos, count);
     e->atime = vfs_now();
@@ -209,7 +209,7 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     uint8_t tmp[DISKFS_MAX_FILE_SIZE];
     memset(tmp, 0, sizeof(tmp));
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
-        (void)read_sector(e->start_lba + s, tmp + s * AHCI_SECTOR_SIZE);
+        (void)read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE);
     }
     memcpy(tmp + pos, buf, count);
     uint64_t end = pos + count;
@@ -217,7 +217,7 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     e->mtime = e->ctime = vfs_now();
 
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
-        if (write_sector(e->start_lba + s, tmp + s * AHCI_SECTOR_SIZE) != 0) return -1;
+        if (write_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -1;
     }
     sync_table();
     rebuild_vnodes();
@@ -296,7 +296,7 @@ void diskfs_list(void) {
 }
 
 void diskfs_self_test(void) {
-    if (disk_port < 0) return;
+    if (disk_dev < 0) return;
     kprintf("[diskfs] self-test: create/write/read /disk/persist.txt...\n");
     struct vnode *vn = diskfs_create(NULL, "persist.txt");
     if (!vn) { kprintf("[diskfs] FAIL: create failed\n"); return; }
