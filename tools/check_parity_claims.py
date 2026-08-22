@@ -233,6 +233,29 @@ def claims():
         "vblk_rv_selftest" in read("kernel", "arch", "riscv64",
                                    "main_rv.c")))
 
+    # --- P3: the a64 adoption is the SAME shared set (fourth seam
+    # --- consumer), and the deviation budget closed at ZERO portable
+    # --- lines -- both glues are arch-side mirrors.
+    makefl_a64 = re.search(r"KERNELA64_SHARED :=.*?(?:\n\n|\nKERNELA64_SRCS)",
+                           makefl, re.S)
+    a64_shared = makefl_a64.group(0) if makefl_a64 else ""
+    checks.append((
+        "P3: KERNELA64_SHARED carries the identical fs adoption set",
+        all(t in a64_shared for t in
+            ("kernel/fs/blkdev.c", "kernel/fs/ext2.c",
+             "kernel/lib/kprintf.c", "kernel/lib/spinlock.c"))))
+    checks.append((
+        "P3: the a64 glue mirrors the rv64 surface (sinks, heap, "
+        "vfs_now, looped single-sector ops) and the sniff keeps the "
+        "pattern gate",
+        "a64fs_bringup" in read("kernel", "arch", "aarch64",
+                                "fsglue_a64.c") and
+        "vfs_now" in read("kernel", "arch", "aarch64", "fsglue_a64.c") and
+        "no test pattern; filesystem media" in
+        read("kernel", "arch", "aarch64", "main_a64.c") and
+        "vblk_a64_selftest" in read("kernel", "arch", "aarch64",
+                                    "main_a64.c")))
+
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).
     for phase in PHASE_ORDER:

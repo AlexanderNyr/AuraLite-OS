@@ -31,6 +31,7 @@
 #include "kernel/arch/aarch64/user_a64.h"
 #include "kernel/arch/aarch64/initrd_a64.h"
 #include "kernel/arch/aarch64/vblk_a64.h"
+#include "kernel/arch/aarch64/fsglue_a64.h"
 #include "kernel/arch/aarch64/vnet_a64.h"
 #include "kernel/arch/aarch64/membench_a64.h"
 
@@ -537,9 +538,22 @@ void kmain_a64(uint64_t x0_at_entry)
     membench_a64_run(read_cntfrq());
 
     if (vblk_a64_init(&platform) == 0) {
-        if (vblk_a64_selftest() != 0) {
-            pl011_puts("[blk]  FAIL: self-test\n");
-            psci_system_off();
+        /* Two kinds of media (the P2 dispatch, mirrored): the parity
+         * smokes' pattern disk keeps its A7 selftest gate verbatim;
+         * anything else is filesystem media and goes behind the
+         * blkdev seam. */
+        static uint8_t sec0[512];
+        int is_pattern = (vblk_a64_read(0, sec0) == 0 &&
+                          sec0[0] == 'A' && sec0[1] == 'u' &&
+                          sec0[2] == 'r' && sec0[3] == 'a');
+        if (is_pattern) {
+            if (vblk_a64_selftest() != 0) {
+                pl011_puts("[blk]  FAIL: self-test\n");
+                psci_system_off();
+            }
+        } else {
+            pl011_puts("[blk]  sector 0: no test pattern; filesystem media\n");
+            a64fs_bringup();
         }
     }
 

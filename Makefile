@@ -309,12 +309,14 @@ KERNELA64_DIR  := kernel/arch/aarch64
 # join -- the fourth tenant's blk/net drivers ride the SAME transport
 # object the rv64 pair switched to in this patch, and the THIRD
 # miniproto consumer proves the same packets.
-KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c kernel/net/miniproto.c kernel/drivers/virtio_mmio.c
+KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c kernel/net/miniproto.c kernel/drivers/virtio_mmio.c \
+                    kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/ext2.c
 KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null) $(KERNELA64_SHARED)
 KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
 KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
                   $(patsubst %.S,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_ASMS))
-KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/lib/string.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h drivers/uart/uart_ring.h
+KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/lib/string.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h drivers/uart/uart_ring.h \
+                  kernel/lib/kprintf.h kernel/lib/spinlock.h kernel/fs/blkdev.h kernel/fs/ext2.h kernel/fs/vfs.h
 CFLAGSA64      := --target=aarch64-unknown-none-elf \
                   -mstrict-align -mgeneral-regs-only \
                   -std=c11 -ffreestanding -fno-stack-protector \

@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P3 — the shared ext2 mounts on aarch64; deviation budget: zero] 2026-08-22
+
+Fourth consumer of the blkdev seam, and the cheapest phase of the
+series so far: ZERO portable lines changed.  KERNELA64_SHARED took
+the identical adoption set (blkdev.c, ext2.c, kprintf.c,
+spinlock.c); the whole a64 cost is `fsglue_a64.c` — fsglue_rv.c's
+mirror with pl011 for the kprintf sink, kmalloc_a64/kfree_a64,
+vfs_now from cntvct/cntfrq — plus the same sector-0 sniff in
+main_a64.c (parity pattern → A7 selftest gate verbatim; filesystem
+media → the seam).  Receipts identical to P2's: blk0 registered,
+`[ext2] mounted existing volume`, self-test PASS, cat of the
+debugfs-seeded LINUX.TXT byte-exact.  kernela64.elf 308 144 →
+408 104 (+99 960; rv64 paid +260 488 for the same objects —
+codegen differs, both recorded).
+
+- `a64_fs_smoke.sh` 12/12; a64_parity_smoke and a64_boot_smoke
+  re-run green; x86/rv64 builds and full test-unit green (23
+  parity claims).
+- **The rig bit itself, recorded:** the smoke was derived from
+  rv_fs_smoke.sh with sed, and `s/\[rvfs\]/[a64fs]/` in shell
+  single quotes parsed as backslash + character class {r,v,f,s,\},
+  matched the `\r` in `tr -d '\r'`, and rewrote it into a filter
+  deleting the LITERAL characters a 6 4 f s [ ] from every log
+  line.  The first run failed looking exactly like serial
+  corruption ("conole+hell", "AurLite"); diagnosis: the dropped
+  set was constant across the whole log, the untouched drivers
+  smoke ran clean, and a `-serial file:` boot was byte-perfect.
+  Derivation by sed joins quoting-QEMU-output on the do-not list.
+- Folded in: the deployed P1's CI run came back red on ONE assert —
+  test_sysmon_data pins the /proc/diskstats label, and the P1 grep
+  audit missed it because the audit command ended in `| head -8`
+  (the match was line nine).  Now pins `blk0`; green locally.  A
+  truncated audit is not an audit.
+
 ## [PARITY P2 — the shared ext2 mounts on rv64] 2026-08-22
 
 The seam pays out on its first tenant: `kernel/fs/ext2.c` — ZERO

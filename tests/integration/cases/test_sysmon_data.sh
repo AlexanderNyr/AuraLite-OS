@@ -36,7 +36,7 @@ il_assert_grep "$LOG" "[0-9]+\\.[0-9][0-9] [0-9]+\\.[0-9][0-9] [0-9]+\\.[0-9][0-
     "loadavg has real load/runnable-thread fields"
 il_assert_grep "$LOG" "Inter-|" "netdev header present"
 il_assert_grep "$LOG" "e1000:" "netdev shows the active NIC's stats row"
-il_assert_grep "$LOG" "ahci0" "diskstats shows the AHCI stats row"
+il_assert_grep "$LOG" "blk0" "diskstats shows the blkdev stats row (P1: seam-level counters)"
 il_assert_grep "$LOG" "cores" "cpuinfo shows a real (SMP-derived) core count"
 il_assert_grep "$LOG" "loaded 3 segment" "gsysmon launched as a real ELF process"
 

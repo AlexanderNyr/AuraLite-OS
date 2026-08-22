@@ -1,13 +1,13 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P2 complete; P3 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P3 complete; P4 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | P0 — the rig: blkdev seam audit + claims checker | ✅ complete | `patches/PARITY_P0_rig.patch` |
 | P1 — the block-device layer (x86_64 byte-honest refactor) | ✅ complete | `patches/PARITY_P1_blkdev.patch` |
 | P2 — ext2 mounted on rv64 (vblk behind the seam) | ✅ complete | `patches/PARITY_P2_rvfs.patch` |
-| P3 — ext2 mounted on a64 (the shared-transport dividend) | pending | `patches/PARITY_P3_a64fs.patch` |
+| P3 — ext2 mounted on a64 (the shared-transport dividend) | ✅ complete | `patches/PARITY_P3_a64fs.patch` |
 | P4 — the syscall widening: open/read/close on three ports | pending | `patches/PARITY_P4_syscalls.patch` |
 | P5 — SMP rv64: SBI HSM hart_start | pending | `patches/PARITY_P5_rvsmp.patch` |
 | P6 — SMP a64: PSCI CPU_ON | pending | `patches/PARITY_P6_a64smp.patch` |
@@ -302,13 +302,45 @@ re-run green).  ext2.c itself: ZERO edits beyond the two strings —
 the same object list x86 links, now mounting on a second
 architecture.
 
-### P3 — ext2 mounted on a64
-- [ ] Same seam, fourth consumer: vblk_a64 registers, the same
-      shared objects join KERNELA64_SHARED, `a64_fs_smoke.sh`
-      mirrors P2's proof (kernela64.elf baseline: 308 144 bytes).
-- [ ] Deviation budget: if a64 needs ONE line different from rv64
-      outside arch/, that line is quoted in the phase result and
-      justified, or the seam is wrong.
+### P3 — ext2 mounted on a64 — ✅ COMPLETE
+- [x] Same seam, fourth consumer: vblk_a64 registers, the identical
+      shared set (blkdev.c ext2.c kprintf.c spinlock.c) joined
+      KERNELA64_SHARED, `a64_fs_smoke.sh` (12 asserts) mirrors P2's
+      proof.  kernela64.elf 308 144 → 408 104 (+99 960 — smaller
+      than rv64's +260 488 for the same objects; codegen differs,
+      both numbers recorded as measured).
+- [x] Deviation budget CLOSED AT ZERO: no portable line changed at
+      all.  The entire a64 cost is arch-side — `fsglue_a64.c`
+      (fsglue_rv.c's mirror: pl011 sink, kmalloc_a64/kfree_a64,
+      vfs_now from cntvct/cntfrq, looped single-sector vblk ops)
+      plus the same sector-0 sniff in main_a64.c keeping A7's
+      pattern-disk selftest gate verbatim.
+
+#### P3 result
+
+Same receipts, second DTB tenant: blk0 = vblk0 (8192 sectors) →
+`[ext2] mounted existing volume` → self-test PASS →
+`cat LINUX.TXT (25 bytes)` byte-exact.  a64_fs_smoke.sh 12/12;
+a64_parity_smoke.sh and a64_boot_smoke.sh re-run green (pattern
+lane intact).  One rig catch on the way, recorded because the rig
+bit ITSELF: the smoke was derived from rv_fs_smoke.sh with sed, and
+the expression `s/\[rvfs\]/[a64fs]/` — a backslash-escaped
+bracket in shell single quotes — parsed as `\` + character class
+{r,v,f,s,\}, matched the `\r` inside `tr -d '\r'`, and rewrote it
+to `tr -d '[a64fs]'`: a filter deleting the LITERAL characters
+a 6 4 f s [ ] from every log line.  The first smoke run failed with
+receipts that LOOKED like serial corruption ("conole+hell",
+"AurLite") — diagnosed by the character SET being constant across
+the whole log, control-run against the untouched drivers smoke, and
+a clean `-serial file:` boot.  Derivation by sed is now on the
+same list as quoting QEMU output: convenient, and it lies.
+
+Also folded here: CI run 32560908558 (the deployed P1) came back
+red on ONE assert — test_sysmon_data pins the /proc/diskstats row
+label, and P1's grep audit MISSED it because the audit command
+ended in `| head -8` and the sysmon match was line nine.  The case
+now pins `blk0` (green locally, 6/6).  A truncated audit is not an
+audit; recorded next to the sed lesson.
 
 ### P4 — the syscall widening
 - [ ] OPEN/CLOSE/READDIR/STAT/LSEEK on all three ports (6 → 11
