@@ -20,6 +20,9 @@ il_run_qemu "$LOG" 50 \
 il_assert_grep "$LOG" "\[hub\] full hub driver initialized.*max.*hubs.*ports.*depth" "Hub driver full init with max"
 il_assert_grep "$LOG" "\[xhci\] starting port scan" "xHCI port scan"
 il_assert_grep "$LOG" "device attached" "Device attached"
-il_assert_grep "$LOG" "\[hub\] PASS: hub driver full support ready" "Hub PASS"
+# The kernel's REAL pass line (a phantom "full support ready" phrase
+# was asserted here for months and never existed -- caught the first
+# time this AUDIT_A0 case ran on CI, then reproduced locally).
+il_assert_grep_fixed "$LOG" "[hub] PASS: 1 hub(s) attached" "Hub PASS (real line: the attached hub counted)"
 il_assert_no_grep "$LOG" "Page Fault|kernel panic|hub.*failed|TD chain timeout" "no hub faults"
 il_summary

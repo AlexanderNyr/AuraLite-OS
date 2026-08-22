@@ -210,9 +210,9 @@
 | sem_trywait | ✅ | |
 | sem_post | ✅ | |
 | sem_getvalue | ✅ | |
-| sem_open | 🔶 | Q7; partial since Q12: needs MAP_SHARED (/dev/shm) backing, mmap() unimplemented -> ENOSYS. Planned Q14/Q15 |
-| sem_close | 🔶 | Q7; partial since Q12, see sem_open |
-| sem_unlink | 🔶 | Q7; partial since Q12, see sem_open |
+| sem_open | ✅ | Q7; partial Q12→2026-08-21: the MAP_SHARED backing landed and conformtest CAUGHT the stale ENOSYS expectation on its first CI run — closed, proven end to end |
+| sem_close | ✅ | Q7; closed with sem_open (2026-08-21) |
+| sem_unlink | ✅ | Q7; closed with sem_open (2026-08-21) |
 | sem_timedwait | ✅ | Q7 |
 
 ## `<signal.h>`

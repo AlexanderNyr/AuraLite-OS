@@ -17,6 +17,6 @@ il_run_qemu "$LOG" 35 \
 il_assert_grep "$LOG" "\[xhci\] controller running" "xHCI running"
 il_assert_grep "$LOG" "\[audio\] full USB Audio driver initialized" "Audio driver init"
 il_assert_grep "$LOG" "\[isoc\] full isoc framework init" "Isoc framework for audio"
-il_assert_grep "$LOG" "\[audio\] PASS: USB Audio full support ready" "Audio PASS"
+il_assert_grep_fixed "$LOG" "[audio] PASS: 1 USB audio device(s) attached" "Audio PASS (real line: the attached device counted)"
 il_assert_no_grep "$LOG" "Page Fault|kernel panic" "no audio faults"
 il_summary

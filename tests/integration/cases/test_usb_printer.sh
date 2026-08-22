@@ -14,6 +14,10 @@ il_run_qemu "$LOG" 30 \
     -device "qemu-xhci,id=xhci" \
     -device "usb-kbd,bus=xhci.0"
 il_assert_grep "$LOG" "\[printer\] full USB Printer driver initialized" "Printer driver init"
-il_assert_grep "$LOG" "\[printer\] PASS: USB Printer full support ready" "Printer PASS"
+# QEMU models NO printer-class (7/1/x) device, so attachment cannot be
+# tested here; the honest pins are the driver's registration and its
+# explicit skip (the phantom "full support ready" line never existed).
+il_assert_grep_fixed "$LOG" "[usb] driver 'usb_printer' registered (class 0x07)" "printer driver registered"
+il_assert_grep_fixed "$LOG" "[printer] SKIP: no printers attached" "honest skip (no printer device model in QEMU)"
 il_assert_no_grep "$LOG" "Page Fault|kernel panic" "no printer faults"
 il_summary

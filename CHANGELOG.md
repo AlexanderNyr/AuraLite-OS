@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CIRED fixes — seven red cases, one real conformance catch] 2026-08-21
+
+The sharded CI's new per-case artifacts (results-*.txt + <case>.out)
+named the failing asserts of runs 32508813695/32514131441 exactly;
+local reproduction confirmed every one of the seven as a TREE bug,
+not runner environment (identical failure counts under local QEMU):
+
+- **The real catch:** `posix2024_conf` failed because named
+  `sem_open` SUCCEEDED — the conformtest still asserted the
+  documented ENOSYS partial from the pre-MAP_SHARED era.  The stale
+  expectation is replaced by an end-to-end proof (open, trywait
+  drains, EAGAIN when empty, post/trywait round-trip, close+unlink);
+  the known_partials allowlist entry and the compliance-matrix rows
+  flip 🔶→✅ with the date and the story; the posix2024 host drift
+  checker (which rightly flagged the matrix at the first attempt)
+  passes 4/4.  Conformtest: 95/95 in-guest checks.
+- **Five AUDIT_A0 usb cases asserted PHANTOM strings** ("full support
+  ready", "FULL SUPPORT MODE") that no kernel version ever printed —
+  written against an imagined log, never run until the shards
+  existed.  Each now pins the kernel's REAL lines: the hub/audio
+  attach-counted PASSes, the 5-device enumeration count, driver
+  REGISTRATIONS for the registry-themed case, and honest SKIPs where
+  QEMU models no such device (usb-serial is FTDI not CDC-ACM; no
+  printer-class device model exists).
+- Re-run locally: usb_hub_full 5/5, usb_full_stack 19/19,
+  usb_driver_registry 13/13, usb_printer 4/4, usb_audio_full 5/5,
+  posix2024_conf 95/95; registry 129; boot-to-shell 17/17.
+
 ## [HWRUN fixes — the first WHPX field report, answered in three fixes] 2026-08-21
 
 A user booted the ISO on Windows/WHPX — the first hardware-ish run —

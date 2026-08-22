@@ -15,7 +15,7 @@
  *   3. posix_spawn with an explicit argv/envp (fork+exec with live
  *      callee-saved registers, see kernel/proc/fork_return.asm);
  *   4. message-queue send/receive round-trip on the same descriptor;
- *   5. named semaphores: documented partial (sem_open fails with ENOSYS:
+ *   5. named semaphores: WORK now (the ENOSYS documented-partial era
  *      needs MAP_SHARED backing, see tests/posix2024/known_partials.txt),
  *      plus process-private unnamed semaphore sanity (init/wait/post/
  *      trywait-EAGAIN/destroy);
@@ -369,12 +369,32 @@ static void test_mq_notify(void) {
 /* 5. Semaphores: named = documented partial; unnamed = in-process     */
 /* ------------------------------------------------------------------ */
 static void test_sem(void) {
-    /* Named: POSIX wants them on shared memory (/dev/shm); the kernel has
-     * no MAP_SHARED backing yet, so sem_open must fail with ENOSYS (see
-     * tests/posix2024/known_partials.txt; planned for Q14/Q15). */
-    sem_t *s = sem_open("/q12sem", O_CREAT | O_EXCL, 0600, 0);
-    CHECK("sem: named sem_open is the documented partial (ENOSYS)",
-          s == SEM_FAILED && errno == ENOSYS);
+    /* Named semaphores: ONCE the documented partial (ENOSYS while the
+     * kernel had no MAP_SHARED backing) -- but MAP_SHARED landed and
+     * sem_open started succeeding, which this suite CAUGHT as a stale
+     * expectation on its first CI run (2026-08-21: the check failed
+     * with errno=0, i.e. success).  The partial is closed; asserting
+     * a working feature still fails would be the drift this suite
+     * exists to prevent, so the check now proves the named semaphore
+     * actually WORKS end to end. */
+    errno = 0;
+    sem_t *s = sem_open("/q12sem", O_CREAT | O_EXCL, 0600, 1);
+    CHECK("sem: named sem_open works (former documented partial, closed)",
+          s != SEM_FAILED);
+    if (s != SEM_FAILED) {
+        errno = 0;
+        CHECK("sem: named trywait takes the initial count",
+              sem_trywait(s) == 0);
+        errno = 0;
+        CHECK("sem: named trywait on empty fails EAGAIN",
+              sem_trywait(s) == -1 && errno == EAGAIN);
+        errno = 0;
+        CHECK("sem: named post/trywait round-trips",
+              sem_post(s) == 0 && sem_trywait(s) == 0);
+        errno = 0;
+        CHECK("sem: named close + unlink",
+              sem_close(s) == 0 && sem_unlink("/q12sem") == 0);
+    }
 
     /* Process-private unnamed semaphore sanity. */
     sem_t us;

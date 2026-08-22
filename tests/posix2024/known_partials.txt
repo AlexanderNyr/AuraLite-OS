@@ -6,13 +6,8 @@
 # functional" row -- it can neither grow silently nor disappear
 # undocumented.  One token per line; '#' comments allowed.
 #
-# Named semaphores (sem_open/sem_close/sem_unlink): POSIX requires them to
-#   live on shared memory (/dev/shm); the kernel has no mmap(MAP_SHARED)
-#   backing yet, so sem_open fails with ENOSYS.  Process-private unnamed
-#   semaphores (sem_init/sem_wait/sem_post/sem_trywait) are implemented and
-#   are NOT partials.
-# (mq_notify was a partial until Q15, and the System V IPC family until
-#   Q14; both are now fully implemented and their rows are ✅ in the matrix.)
-sem_open
-sem_close
-sem_unlink
+# Named semaphores (sem_open/sem_close/sem_unlink): CLOSED 2026-08-21.
+#   This entry used to document sem_open failing ENOSYS while the kernel
+#   had no MAP_SHARED backing.  MAP_SHARED landed; conformtest's first
+#   CI run caught the stale expectation (sem_open succeeded, errno=0),
+#   and the suite now proves named semaphores work end to end.

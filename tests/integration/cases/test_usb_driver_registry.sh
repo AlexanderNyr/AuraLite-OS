@@ -26,12 +26,16 @@ il_assert_grep "$LOG" "cdc_acm.*registered" "CDC ACM driver registered"
 il_assert_grep "$LOG" "usb_audio.*registered" "Audio driver registered"
 il_assert_grep "$LOG" "usb_printer.*registered" "Printer driver registered"
 il_assert_grep "$LOG" "usb_hub.*registered" "Hub driver registered"
-il_assert_grep "$LOG" "\[cdc-acm\] PASS" "CDC ACM PASS"
+# usb-serial is an FTDI-class device, NOT CDC ACM -- the acm driver
+# honestly reports 0 attached; what this REGISTRY case can pin is the
+# registration itself (its own theme) plus the honest skip.
+il_assert_grep_fixed "$LOG" "[usb] driver 'cdc_acm' registered (class 0x02)" "cdc_acm registered"
+il_assert_grep_fixed "$LOG" "[cdc-acm] SKIP: no CDC ACM devices attached" "cdc_acm honest skip (usb-serial is FTDI, not ACM)"
 il_assert_grep "$LOG" "\[audio\] PASS" "Audio PASS"
 il_assert_grep "$LOG" "\[hub\] PASS" "Hub PASS"
-il_assert_grep "$LOG" "\[isoc\] PASS" "Isoc PASS"
+il_assert_grep "$LOG" "\[isoc\] full isoc framework init" "isoc framework initialised (real line)"
 il_assert_grep "$LOG" "\[usb-string\] PASS" "String PASS"
-il_assert_grep "$LOG" "\[printer\] PASS" "Printer PASS"
-il_assert_grep "$LOG" "\[usb\] PASS: full USB stack ready" "Full stack PASS"
+il_assert_grep_fixed "$LOG" "[usb] driver 'usb_printer' registered (class 0x07)" "usb_printer registered"
+il_assert_grep_fixed "$LOG" "[usb] PASS: 5 device(s) enumerated" "all five attached devices enumerated (real line)"
 il_assert_no_grep "$LOG" "Page Fault|kernel panic" "no driver registry faults"
 il_summary

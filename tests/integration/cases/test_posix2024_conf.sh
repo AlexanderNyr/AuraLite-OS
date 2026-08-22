@@ -12,8 +12,9 @@
 #     ace", env[0]=A=Q12, and argv_terminated=1;
 #   - mqueue send/receive round-trip; clock_nanosleep TIMER_ABSTIME;
 #     getentropy bounds; scandir alphasort/versionsort ordering;
-#   - named semaphores fail with the documented partial errno (ENOSYS) and
-#     process-private unnamed semaphores still work.
+#   - named semaphores WORK (the ENOSYS documented-partial closed when
+#     MAP_SHARED landed -- this suite caught the stale expectation on
+#     its first CI run) and process-private unnamed ones still work.
 #
 # This case is the guest half of the Q12 gate: the host half
 # (tests/posix2024/run_host.sh) runs as part of `make test-unit`.
@@ -114,8 +115,12 @@ il_assert_grep_fixed "$LOG" "CONFORMTEST PASS mq_notify: SIGEV_THREAD runs the n
     "SIGEV_THREAD runs the notification function on a fresh pthread"
 
 # ---- semaphores ----
-il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sem: named sem_open is the documented partial (ENOSYS)" \
-    "named sem_open fails with the documented partial errno ENOSYS"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sem: named sem_open works (former documented partial, closed)" \
+    "named sem_open works (the former partial, closed by measurement)"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sem: named trywait on empty fails EAGAIN" \
+    "named semaphore counts correctly (EAGAIN when drained)"
+il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sem: named close + unlink" \
+    "named semaphore lifecycle completes"
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS sem: sem_trywait EAGAIN when empty" \
     "sem_trywait reports EAGAIN on an empty semaphore"
 
