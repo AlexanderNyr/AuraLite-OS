@@ -1,6 +1,6 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P8 complete; P9 next; plan committed 2026-08-22
+## Status: COMPLETE ✅ — P0–P9 all landed (arithmetic in §5); closed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -13,7 +13,7 @@
 | P6 — SMP a64: PSCI CPU_ON (+ the x16 amendment) | ✅ complete | `patches/PARITY_P6_a64smp.patch` |
 | P7 — i386: the fs width pay-down + ATA behind the seam | ✅ complete | `patches/PARITY_P7_i386fs.patch` |
 | P8 — libc subset promotion for the DTB tenants | ✅ complete | `patches/PARITY_P8_libc.patch` |
-| P9 — CI lanes, docs, the honest matrix flip | pending | `patches/PARITY_P9_ci.patch` |
+| P9 — CI lanes, docs, the honest matrix flip | ✅ complete | `patches/PARITY_P9_ci.patch` |
 
 ## 1. Where this plan comes from
 
@@ -519,23 +519,62 @@ duplication count is the real number: three copies of every wrapper
 became one.  smallsh and the three inits rebuilt over the shared
 body with zero behavioral diffs — every existing smoke pin held.
 
-### P9 — CI, docs, the matrix flip
-- [ ] Integration lanes: the new smokes join their parity jobs
-      (riscv-parity, aarch64-parity, i386-parity) — no new jobs
-      unless a timing measurement says the shards need it.
-- [ ] `docs/status.md` + ARM64_PLAN's matrix: Storage stays ✅ but
-      gains "(mounted VFS)" on three ports; Userspace 🚧 cells
-      annotated with the libcmini floor; SMP row appears with
-      honest counts (`x86: N CPUs scheduled; rv64/a64: 4 online,
-      1 scheduled — residue named`).
-- [ ] Terminal arithmetic: claims counted, checker totals quoted,
-      residue list (per-CPU runqueues on DTB tenants, i386 TCP,
-      full libc, PCIe ECAM, Rust rows) carried forward by name.
+### P9 — CI, docs, the matrix flip — ✅ COMPLETE
+- [x] Five lanes joined their parity jobs (i386_fs; rv_fs + rv_smp;
+      a64_fs + a64_smp) — no new jobs (measured locally: the fs
+      smokes run 10–120 s, the smp smokes under 2 s except a64's
+      TCG -smp 8 boot; the parity jobs absorb that).  e2fsprogs
+      added to the three jobs' installs so the fs lanes GATE
+      instead of skipping.
+- [x] `docs/status.md` gained the four-width parity section: the
+      fs row ✅ everywhere with ONE ext2.c, syscall surface 11/11/11,
+      the libcmini floor, and the SMP row with honest counts
+      (15+1 online @ -smp 16 on rv64, 7+1 @ -smp 8 on a64 — both
+      "1 scheduled, receipts only, D5").  The historical matrices
+      in ARM64_PLAN/RISCV_PLAN stay as their plans' closing records
+      — status.md is the LIVING matrix (deviation from the draft
+      wording, named: editing closed plans' terminal tables would
+      rewrite history rather than report it).
+- [x] Terminal arithmetic in §5; residue carried forward by name
+      (also mirrored into status.md's parity section).
 
-## 5. Terminal arithmetic — filled at close
+## 5. Terminal arithmetic — closed 2026-08-22
 
-(Counts land here when P9 closes the plan; the checker enforces the
-table above matches patches/ on disk.)
+Ten phases, ten patches (PARITY_plan + P0_rig..P9_ci).  The checker
+holds **41 claims**, three of them LIVE compile lanes (every
+kernel/fs file must build as rv64, a64, and i386 with
+-Wshorten-64-to-32, on every `make test-unit`), plus its selftest.
+
+Ratchets moved, all same-commit:
+- ahci-in-fs: 41 → 0 (and a stronger include rule: kernel/fs
+  includes no driver header; three pre-existing non-storage
+  couplings pinned per-file).
+- width-sweep casts: 359 → 355 (the i386 fs pay-down DELETED four
+  (uint64_t) casts; 32 -Wshorten errors → 0).
+- syscall pins: 6 → 11 on all three ports (exact, both directions).
+
+Proof surface added: 5 smokes / 66+ asserts (rv_fs 18, a64_fs 18,
+i386_fs 13, rv_smp 10 across two lanes incl. -smp 16, a64_smp 7),
+one host unit test (blkdev, 27 checks, ASan+UBSan), five CI lanes.
+Sizes, measured: x86_64 2 364 904 → 2 371 128; i386 154 164 →
+265 880; rv64 601 656 → 891 888; a64 308 144 → 418 400.  libc
+lines: 326 triplicated → 269 (211 shared + 58 shims).
+
+The rig's catch list (what the series would have shipped broken
+without it): the 28-vs-41 undercount; the -Werror-less draft lanes;
+the sed-eaten `tr -d '\r'`; the head-8-truncated grep audit; the
+25-byte pinned token; ASan's 4-into-3 buffer in the seam test's own
+draft; the .rodata jump pool relocation; the P4/P8 fsabi claim
+amendment.  Caught is the rig's job — every one is recorded where
+it happened.
+
+Residue, named (also in docs/status.md): a64 -smp 16 behind a GICv3
+driver; tenant per-CPU runqueues; i386 TCP/sockets; the full libc;
+vfs.c-on-tenants (the `sti` at vfs.c:71 + scheduler coupling);
+buffer_cache/tmpfs/devfs adoption behind it; the i386 shell fd
+layer still initrd-backed; pit.h×2 + msc.h couplings; GPT; PCIe
+ECAM; Rust rows for rv64/a64; the one-occurrence usb_hub TD-timeout
+runner flake (remedy named: guest-time TD waits).
 
 ## 6. The seam, designed once (amended at P1, deviations named)
 

@@ -329,6 +329,46 @@ HW_PLAN §6 — TCG cannot measure it and the docs do not pretend).
 | PCID | 📋 design | No executable lane exists (measured: `-cpu max` TCG lacks PCID, CI has no KVM) — five named design decisions written in HW_PLAN H4, `/proc/perf` receipt slots reserved at zero and pinned there; implementation re-opens on the first `pcid=1` lane (D-PCID-5). |
 | rv64/a64 membench | ✅ | Boot-time bench of the LINKED string ops, verified passes, smoke-asserted on both tenants — the standing regression net for any future string-ops change. |
 
+## Platform parity — PARITY_PLAN (P0–P9)
+
+The catch-up series that turned three plans' shared residue into
+receipts.  One block-device seam (`kernel/fs/blkdev.h`), four
+consumers; ONE `ext2.c` mounting on every width the tree builds.
+
+| Row | x86_64 | i386 | rv64 | a64 |
+|-----|--------|------|------|-----|
+| Filesystem (the SAME ext2.c) | ✅ AHCI via seam | ✅ ATA slave via seam | ✅ vblk via seam | ✅ vblk via seam |
+| Storage driver → fs coupling | 0 (was 41 direct ahci calls) | 0 | 0 | 0 |
+| Syscall surface | ~290 | 11 | 11 | 11 |
+| Bring-up libc | full lib/libc | libcmini shim | libcmini shim | libcmini shim |
+| SMP | ✅ scheduled | — (no ramp) | ✅ 15+1 @ -smp 16, IPI 15/15 | ✅ 7+1 @ -smp 8, IPI 7/7 |
+| SMP scheduling | per-CPU runqueues | — | 1 scheduled (receipts only, D5) | 1 scheduled (receipts only, D5) |
+
+Proof lanes in CI (`i386-parity` / `riscv-parity` /
+`aarch64-parity`): `i386_fs_smoke` (13), `rv_fs_smoke` (18),
+`a64_fs_smoke` (18), `rv_smp_smoke` (-smp 4 AND -smp 16),
+`a64_smp_smoke` (-smp 8 — GICv2's architectural ceiling).  The
+parity checker (`tools/check_parity_claims.py`) runs THREE live
+compile lanes on every `make test-unit`: all kernel/fs files must
+build as rv64, a64 AND i386 (`-Wshorten-64-to-32 -Werror`).
+
+Width debt: the i386 pay-down (32 errors → 0) DELETED four
+`(uint64_t)` casts — the sweep baseline clicked 359 → 355.
+
+Named residue, carried forward: a64 `-smp 16` needs a GICv3 driver
+(v2 has 8 CPU interfaces — architectural); tenant schedulers stay
+single-CPU (per-CPU runqueues are their own series); i386
+TCP/sockets (unchanged since I8); the full libc port (libcmini is
+the floor, not the ceiling); vfs.c on the tenants (raw x86 `sti`
+at vfs.c:71 + scheduler coupling — path-level VFS waits on it);
+buffer_cache/tmpfs/devfs adoption rides the same blocker; the
+i386 shell fd layer still serves the initrd (ext2 reaches the
+shell with the VFS work); pit.h×2 + msc.h fs couplings (time/USB
+seam questions, pinned per-file); GPT partitions; PCIe ECAM; the
+Rust rows for rv64/a64; one observed test_usb_hub TD-timeout
+runner flake (1 occurrence, local repro green — remedy if it
+recurs: guest-time TD waits).
+
 ## Known low-priority limitations
 
 - **SMP scheduling is deliberately conservative.** APs are online, have CPU-local state and LAPIC timers, and enter the idle scheduler loop; normal user scheduling remains BSP-only until per-CPU run queues/TLB shootdown policy are completed.

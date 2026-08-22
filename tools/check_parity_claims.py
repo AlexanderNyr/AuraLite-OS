@@ -395,6 +395,23 @@ def claims():
             "userspace/system/inita64/inita64.c")) and
         "NAMED NON-GOAL" in read("lib", "libcmini", "libcmini.h")))
 
+    # --- P9: the lanes run in CI and the matrix flip is written.
+    wf = read(".github", "workflows", "integration.yml")
+    checks.append((
+        "P9: all five parity smokes are CI lanes in their parity "
+        "jobs, and the fs lanes' e2fsprogs dependency is installed",
+        all(t in wf for t in
+            ("rv_fs_smoke.sh", "rv_smp_smoke.sh", "a64_fs_smoke.sh",
+             "a64_smp_smoke.sh", "i386_fs_smoke.sh")) and
+        wf.count("e2fsprogs") >= 5))
+    checks.append((
+        "P9: docs/status.md carries the four-width parity matrix "
+        "with the honest SMP row and the named residue list",
+        "Platform parity — PARITY_PLAN" in read("docs", "status.md")
+        and "receipts only, D5" in read("docs", "status.md")
+        and "Named residue, carried forward" in read("docs",
+                                                     "status.md")))
+
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).
     for phase in PHASE_ORDER:

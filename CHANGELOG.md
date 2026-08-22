@@ -2,6 +2,26 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P9 — the series closes: CI lanes, the living matrix, the arithmetic] 2026-08-22
+
+PARITY_PLAN.md is COMPLETE — P0–P9, ten patches, 41 checker claims
+(three live compile lanes), and a docs/status.md section that IS
+the four-width matrix now: one ext2.c mounting via one seam on
+x86_64/i386/rv64/a64, 11 syscalls per port over one number table,
+libcmini as the shared floor, SMP receipts 15+1@-smp16 (rv64) and
+7+1@-smp8 (a64, GICv2's architectural ceiling).
+
+- Five smokes joined their parity jobs as CI lanes (e2fsprogs added
+  to those jobs so the fs lanes GATE instead of skipping).
+- Deviation named: the closed plans' terminal matrices stay as
+  history; status.md carries the living one.
+- Ratchet totals: ahci-in-fs 41→0; width casts 359→355; syscall
+  pins 6→11×3.  Sizes and line counts quoted in §5.
+- Residue carried forward by name (GICv3 for a64 x16, tenant
+  runqueues, i386 TCP, full libc, vfs.c-on-tenants behind the
+  vfs.c:71 `sti`, GPT, PCIe ECAM, Rust rows, the one-occurrence
+  usb_hub runner flake).
+
 ## [PARITY P8 — libcmini: one libc body, three port shims] 2026-08-22
 
 The measurement made this a rename, not a design: libc32.h /

@@ -345,7 +345,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang lld nasm qemu-system-x86 python3 make gcc llvm \
+            clang lld nasm qemu-system-x86 python3 make gcc llvm e2fsprogs \
             mtools dosfstools gcc-multilib git
           # qemu-system-x86 ships qemu-system-i386 on Debian/Ubuntu;
           # assert rather than assume:
@@ -401,6 +401,9 @@ jobs:
       - name: I8 -- storage + network parity
         run: bash tests/integration/i386_parity_smoke.sh
 
+      - name: PARITY P7 -- the shared ext2 on the ATA slave
+        run: bash tests/integration/i386_fs_smoke.sh
+
       - name: Upload serial logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -429,7 +432,7 @@ jobs:
           # multilib and NOT the cross gcc; each width gets its own
           # toolchain in its own job and the conflict never meets.
           sudo apt-get install -y --no-install-recommends \
-            clang lld nasm qemu-system-x86 qemu-system-misc qemu-user \
+            clang lld nasm qemu-system-x86 qemu-system-misc qemu-user e2fsprogs \
             gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
             python3 make gcc llvm \
             mtools dosfstools xorriso git
@@ -493,6 +496,12 @@ jobs:
       - name: V8 -- the parity boot (every gate, one run, x86 pair)
         run: bash tests/integration/rv_parity_smoke.sh
 
+      - name: PARITY P2+P4 -- the shared ext2 + the file five
+        run: bash tests/integration/rv_fs_smoke.sh
+
+      - name: PARITY P5+x16 -- SMP receipts (-smp 4 and -smp 16)
+        run: bash tests/integration/rv_smp_smoke.sh
+
       - name: Upload serial logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -519,7 +528,7 @@ jobs:
           # cross gcc alone does not pull the target libc (ARM64_PLAN
           # Fact 1 -- the static crypto gate would die at <string.h>).
           sudo apt-get install -y --no-install-recommends \
-            clang lld nasm qemu-system-x86 qemu-system-arm qemu-user \
+            clang lld nasm qemu-system-x86 qemu-system-arm qemu-user e2fsprogs \
             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
             python3 make gcc llvm \
             mtools dosfstools xorriso git
@@ -586,6 +595,12 @@ jobs:
 
       - name: A8 -- the parity boot (every gate, one run, x86 pair)
         run: bash tests/integration/a64_parity_smoke.sh
+
+      - name: PARITY P3+P4 -- the shared ext2 + the file five
+        run: bash tests/integration/a64_fs_smoke.sh
+
+      - name: PARITY P6 -- SMP receipts (-smp 8, the GICv2 ceiling)
+        run: bash tests/integration/a64_smp_smoke.sh
 
       - name: Upload serial logs on failure
         if: failure()
