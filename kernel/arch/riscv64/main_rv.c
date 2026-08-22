@@ -29,6 +29,7 @@
 #include "kernel/arch/riscv64/user_rv.h"
 #include "kernel/arch/riscv64/vblk_rv.h"
 #include "kernel/arch/riscv64/fsglue_rv.h"
+#include "kernel/arch/riscv64/smp_rv.h"
 #include "kernel/arch/riscv64/vnet_rv.h"
 
 /* The struct the FDT shim fills.  Static in .bss (boot.S zeroed it):
@@ -425,6 +426,10 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
      * clock. */
     membench_rv_run(platform.timebase_freq ? platform.timebase_freq
                                            : 10000000);
+
+    /* PARITY P5: secondaries up, counted, one IPI round-trip (D5:
+     * receipts, not scheduling). */
+    smp_rv_bringup(hartid, &boot_info);
 
     if (vblk_rv_init(&platform) == 0) {
         /* Two kinds of media arrive here: the parity smoke's pattern

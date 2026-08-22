@@ -2,6 +2,28 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P5 — SMP rv64: three harts up, one IPI, all counted] 2026-08-22
+
+SBI HSM (hart_start) + sPI (send_ipi) in sbi.c; `_secondary_start`
+in boot.S — the winner path minus the lottery, with the jump target
+in the LOW literal pool (the first link attempt put it in .rodata
+and lld refused with a PCREL_HI20 out-of-range: auipc cannot span
+the HHDM gap from a 0x8020xxxx PC; the medany pool rule now has a
+third user, kernel_layout[8] carrying the entry PA).  Per-hart
+8 KiB stacks ride HSM's opaque argument; secondaries report in,
+poll sip.SSIP for one IPI round-trip, and park in wfi — receipts,
+not scheduling (D5: per-CPU runqueues stay named residue, and the
+honest line is "3 online, 1 scheduled").
+
+- rv_smp_smoke.sh: 8 asserts, exact counts (`grep -c` = 3 report-ins,
+  3 named acks; boot hart is id 3 on QEMU virt and nothing assumes
+  otherwise); no trap-path involvement at all.
+- Dividend measured: the first concurrent print storm this port
+  ever had came out line-clean, because P2's kprintf adoption
+  brought the spinlock with it.
+- Single-hart runs say "[smp] nothing to start"; rv_boot, rv_parity,
+  rv_fs re-run green.  Checker: +2 claims (27).
+
 ## [PARITY P4 — the file five: 6 → 11 syscalls on every port] 2026-08-22
 
 OPEN/CLOSE/STAT/LSEEK/READDIR land on rv64, a64 and i386 (numbers

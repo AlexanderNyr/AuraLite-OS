@@ -54,6 +54,8 @@ hart_lottery:
 boot_jump_pool:
     .dword _start_high            # VMA in the higher-half .text
     .dword boot_stack_top         # VMA in the higher-half .bss
+secondary_jump_pool:              # P5: read by _secondary_start (low)
+    .dword _secondary_high        # VMA of the secondary's high half
 
 # .text.boot, placed FIRST by kernelrv.ld -- and that placement is
 # load-bearing, not cosmetic: measured during V0 bring-up, OpenSBI
@@ -92,6 +94,36 @@ _start:
 .Lpark:
     wfi
     j     .Lpark
+
+# ---- PARITY P5: the HSM secondary entry ----------------------------
+# sbi_hart_start lands each started hart here (M->S handoff): a0 =
+# hartid, a1 = opaque -- this hart's stack TOP (high-half VA), chosen
+# by the boot hart.  The winner path's three moves minus the lottery:
+# satp on, long jump high, C.  a0/a1 ride untouched (t-regs only).
+.globl _secondary_start
+_secondary_start:
+    la    t0, early_root
+    srli  t0, t0, 12
+    li    t1, 8
+    slli  t1, t1, 60
+    or    t0, t0, t1
+    csrw  satp, t0
+    sfence.vma
+    la    t0, secondary_jump_pool # low PC-relative -> identity-mapped LMA
+    ld    t1, 0(t0)
+    jr    t1
+
+# The secondary's higher half: stack from a1, then C.  Parking after
+# secondary_main_rv returns is the hart's terminal state (D5: no
+# scheduler on this port yet -- the receipt is the deliverable).
+.section .text
+.globl _secondary_high
+_secondary_high:
+    mv    sp, a1
+    call  secondary_main_rv
+.Lsec_park:
+    wfi
+    j     .Lsec_park
 
 # =============================================================================
 # The higher-half world.  From here every address is HHDM-shaped; la
@@ -139,6 +171,7 @@ kernel_layout:
     .dword __rodata_end           # [5]
     .dword __data_start           # [6] .data start, VMA
     .dword __kernel_end           # [7] image end, PHYS
+    .dword _secondary_start       # [8] P5: HSM secondary entry, PHYS
 
 .section .bss
 .align 16

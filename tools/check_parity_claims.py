@@ -281,6 +281,29 @@ def claims():
         "absent on purpose: ls/cat" not in
         read("userspace", "system", "smallsh", "smallsh.c")))
 
+    # --- P5: SMP rv64 -- HSM engine present, receipts counted, and
+    # --- the D5 boundary explicit (no scheduler claims).
+    checks.append((
+        "P5: sbi.c carries HSM hart_start and sPI send_ipi (the two "
+        "extensions the plan promised)",
+        "sbi_hart_start" in read("kernel", "arch", "riscv64", "sbi.c") and
+        "0x48534D" in read("kernel", "arch", "riscv64", "sbi.c") and
+        "sbi_send_ipi" in read("kernel", "arch", "riscv64", "sbi.c") and
+        "0x735049" in read("kernel", "arch", "riscv64", "sbi.c")))
+    checks.append((
+        "P5: the secondary path exists end-to-end (boot.S entry + "
+        "pool slot + smp_rv.c report-in) and stays OFF the trap path "
+        "(sip polling, D5 named)",
+        "_secondary_start" in read("kernel", "arch", "riscv64",
+                                   "boot.S") and
+        "secondary_jump_pool" in read("kernel", "arch", "riscv64",
+                                      "boot.S") and
+        "secondary_main_rv" in read("kernel", "arch", "riscv64",
+                                    "smp_rv.c") and
+        "csrr %0, sip" in read("kernel", "arch", "riscv64",
+                               "smp_rv.c") and
+        "NAMED" in read("kernel", "arch", "riscv64", "smp_rv.c")))
+
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).
     for phase in PHASE_ORDER:

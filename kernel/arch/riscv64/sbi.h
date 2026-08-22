@@ -49,6 +49,18 @@ int  sbi_getchar(void);
  * console). */
 void sbi_set_timer(uint64_t stime_value);
 
+/* PARITY P5 -- HSM (EID 0x48534D "HSM"): start a stopped hart at a
+ * PHYSICAL address with one opaque argument (we pass the stack top).
+ * And sPI (EID 0x735049 "sPI"): software IPIs by hart mask.  Both
+ * are spec v0.2+ extensions; OpenSBI has carried them for years, and
+ * the smoke probes nothing because a FAILED call reports its error
+ * code in the receipt instead of guessing. */
+struct sbiret sbi_hart_start(unsigned long hartid,
+                             unsigned long start_paddr,
+                             unsigned long opaque);
+struct sbiret sbi_send_ipi(unsigned long hart_mask,
+                           unsigned long hart_mask_base);
+
 /* Legacy shutdown (EID 0x08) -- lets the smoke tests end a run without
  * waiting for the QEMU timeout, the way -no-reboot + hlt does on x86. */
 void sbi_shutdown(void) __attribute__((noreturn));

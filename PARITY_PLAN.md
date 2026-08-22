@@ -1,6 +1,6 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P4 complete; P5 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P5 complete; P6 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,7 @@
 | P2 — ext2 mounted on rv64 (vblk behind the seam) | ✅ complete | `patches/PARITY_P2_rvfs.patch` |
 | P3 — ext2 mounted on a64 (the shared-transport dividend) | ✅ complete | `patches/PARITY_P3_a64fs.patch` |
 | P4 — the syscall widening: open/read/close on three ports | ✅ complete | `patches/PARITY_P4_syscalls.patch` |
-| P5 — SMP rv64: SBI HSM hart_start | pending | `patches/PARITY_P5_rvsmp.patch` |
+| P5 — SMP rv64: SBI HSM hart_start | ✅ complete | `patches/PARITY_P5_rvsmp.patch` |
 | P6 — SMP a64: PSCI CPU_ON | pending | `patches/PARITY_P6_a64smp.patch` |
 | P7 — i386: the fs width pay-down + ATA behind the seam | pending | `patches/PARITY_P7_i386fs.patch` |
 | P8 — libc subset promotion for the DTB tenants | pending | `patches/PARITY_P8_libc.patch` |
@@ -379,13 +379,39 @@ Regression: rv_parity, a64_drivers, i386_shell full sessions
 green; x86_64 kernel untouched and rebuilt; full test-unit green
 (25 parity claims; width sweep untouched at 359/69/0/29).
 
-### P5 — SMP rv64
-- [ ] `sbi.c` gains the HSM extension (EID 0x48534D):
-      `sbi_hart_start`; secondary entry in boot.S (skip the
-      lottery, take a per-hart stack, report in).
-- [ ] `-smp 4` in the smoke; receipt: 3 × `[smp] hart N online
-      (stack=..)` + one IPI round-trip line via sbi_send_ipi.
-- [ ] Secondaries park in wfi idle — no scheduler claims (D5).
+### P5 — SMP rv64 — ✅ COMPLETE
+- [x] `sbi.c` gained HSM (EID 0x48534D, hart_start) AND sPI (EID
+      0x735049, send_ipi).  Secondary entry `_secondary_start` in
+      boot.S: the winner path's three moves minus the lottery (satp
+      on, long jump high via `secondary_jump_pool` — which had to
+      live in the LOW literal pool next to boot_jump_pool, because
+      auipc from a 0x8020xxxx PC cannot span the HHDM gap; the
+      first link said so with a relocation error, quoted in the
+      result).  Per-hart 8 KiB stacks handed over as HSM's opaque
+      argument; the entry PA travels as `kernel_layout[8]` (the
+      medany pool rule, third user).
+- [x] `rv_smp_smoke.sh` (8 asserts, counted not assumed): `-smp 4`
+      → boot hart (id 3 on QEMU virt, NOT 0 — the smoke does not
+      assume) starts the other three, `grep -c` finds EXACTLY 3
+      report-ins and EXACTLY 3 named ack lines, `online: 3/3`,
+      `IPI round-trip: 3/3 ack(s)`.
+- [x] Secondaries poll sip.SSIP and park in wfi — deliberately OFF
+      the trap path (the trap vector, its stacks and sscratch
+      discipline stay single-hart property until a scheduler phase
+      claims otherwise; D5 named in smp_rv.c).  Single-hart runs
+      print an honest `[smp] nothing to start` — rv_boot, rv_parity
+      and rv_fs smokes re-run green.
+
+#### P5 result
+
+First -smp 4 boot: 3/3 online from their own stacks, IPI 3/3, and
+the report-in lines are CLEAN under concurrent printing — the P2
+adoption of kernel/lib/kprintf.c brought its spinlock along, so the
+first three-hart print storm this port ever had was serialized by
+code that landed three phases earlier.  One relocation lesson
+recorded above (the low pool); zero portable-line changes; the
+kernel still shuts down by PSCI at the end of a healthy run, which
+makes the smoke sub-second.
 
 ### P6 — SMP a64
 - [ ] `psci.c` gains CPU_ON (0xC4000003, the function the file's

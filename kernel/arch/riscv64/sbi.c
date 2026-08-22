@@ -21,6 +21,10 @@
 #define SBI_EID_LEGACY_SHUTDOWN 0x08
 
 #define SBI_EID_DBCN       0x4442434E   /* "DBCN" */
+#define SBI_EID_HSM        0x48534D     /* "HSM" (P5) */
+#define SBI_FID_HART_START 0
+#define SBI_EID_IPI        0x735049     /* "sPI" (P5) */
+#define SBI_FID_SEND_IPI   0
 #define SBI_FID_DBCN_WRITE 0
 
 static struct sbiret sbi_call(long eid, long fid,
@@ -38,6 +42,21 @@ static struct sbiret sbi_call(long eid, long fid,
                      : "memory");
 
     return (struct sbiret){ .error = r_a0, .value = r_a1 };
+}
+
+struct sbiret sbi_hart_start(unsigned long hartid,
+                             unsigned long start_paddr,
+                             unsigned long opaque)
+{
+    return sbi_call(SBI_EID_HSM, SBI_FID_HART_START,
+                    (long)hartid, (long)start_paddr, (long)opaque);
+}
+
+struct sbiret sbi_send_ipi(unsigned long hart_mask,
+                           unsigned long hart_mask_base)
+{
+    return sbi_call(SBI_EID_IPI, SBI_FID_SEND_IPI,
+                    (long)hart_mask, (long)hart_mask_base, 0);
 }
 
 struct sbiret sbi_get_spec_version(void)
