@@ -19,6 +19,14 @@
 #define SYS_RV_SPAWN   81
 #define SYS_RV_YIELD   158
 
+/* PARITY P4: the file five (one table, D4 -- same values at every
+ * width; see lib/abi/fsabi.h for the shared structs). */
+#define SYS_RV_OPEN      2
+#define SYS_RV_CLOSE     3
+#define SYS_RV_STAT      4
+#define SYS_RV_LSEEK     8
+#define SYS_RV_READDIR  78
+
 /* Run a flat U-mode image (code copied to a fresh user page at
  * USER_TEXT_VADDR_RV, stack below it) to completion; returns its exit
  * code, or 128+scause if it faulted, or -1 on setup failure. */

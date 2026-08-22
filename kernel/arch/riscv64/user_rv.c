@@ -22,6 +22,9 @@
 #include <stdint.h>
 
 #include "kernel/arch/riscv64/user_rv.h"
+#include "kernel/arch/riscv64/fsglue_rv.h"
+#include "kernel/fs/vfs.h"
+#include "lib/abi/fsabi.h"
 #include "kernel/arch/riscv64/elfrvload.h"
 #include "kernel/arch/riscv64/initrd_rv.h"
 #include "kernel/arch/riscv64/kheap_rv.h"
@@ -168,6 +171,49 @@ static int copy_user_path(uint64_t uptr, char *dst, uint64_t cap)
     return rc;
 }
 
+/* ---- PARITY P4: the fd layer -------------------------------------------- */
+/* Dispatcher state, by the same right as the dispatcher itself is
+ * arch code.  fd 0/1/2 stay the console; 3..10 are files on the
+ * filesystem fsglue mounted (NULL ops = every file syscall says
+ * -ENODEV, honestly).  One shell, no threads to race: a fixed table
+ * with no locks is the truth of this bring-up port, not a shortcut. */
+
+#define RVFD_BASE  3
+#define RVFD_MAX   8
+
+static struct {
+    struct vnode *vn;
+    uint64_t      pos;
+    int           used;
+} rvfds[RVFD_MAX];
+
+/* Validate + copy INTO user memory (the READ case's probe loop,
+ * factored): 0 on success. */
+static int copy_out_user(uint64_t dst, const void *src, uint64_t len)
+{
+    if (len == 0 || dst < ELF_RV_USER_MIN || dst + len > ELF_RV_USER_MAX)
+        return -1;
+    for (uint64_t va = dst & ~(uint64_t)(PAGE_SIZE_RV - 1);
+         va < dst + len; va += PAGE_SIZE_RV)
+        if (paging_rv_probe(va) == ~0UL)
+            return -1;
+    sum_on();
+    for (uint64_t i = 0; i < len; i++)
+        ((char *)dst)[i] = ((const char *)src)[i];
+    sum_off();
+    return 0;
+}
+
+static struct vnode *rvfd_lookup(const char *path)
+{
+    const struct vfs_ops *ops = rvfs_ops();
+    if (!ops || !ops->lookup)
+        return 0;
+    while (*path == '/')
+        path++;                     /* ext2_lookup: "" is the root */
+    return ops->lookup(0, path);
+}
+
 /* ---- trap.c hooks --------------------------------------------------------- */
 
 void user_rv_syscall(rv_trap_frame_t *f)
@@ -187,6 +233,30 @@ void user_rv_syscall(rv_trap_frame_t *f)
         /* read(fd=a0, buf=a1, len=a2): fd 0, cooked console line.
          * Probe every touched page BEFORE the blocking wait -- the
          * i386 rule: validate, then sleep, not the reverse. */
+        /* P4: fd >= 3 reads a FILE through the mounted ops table
+         * (pos advances); fd 0 keeps the cooked console path below. */
+        if (a0 >= RVFD_BASE && a0 < RVFD_BASE + RVFD_MAX) {
+            int i = (int)(a0 - RVFD_BASE);
+            const struct vfs_ops *ops = rvfs_ops();
+            if (!rvfds[i].used || !ops || !ops->read || a2 == 0) {
+                f->regs[9] = (uint64_t)-9;             /* -EBADF */
+                return;
+            }
+            static uint8_t fbuf[4096];
+            uint64_t want = a2 > sizeof(fbuf) ? sizeof(fbuf) : a2;
+            int64_t got = ops->read(rvfds[i].vn, rvfds[i].pos, fbuf, want);
+            if (got < 0) {
+                f->regs[9] = (uint64_t)-5;             /* -EIO */
+                return;
+            }
+            if (got > 0 && copy_out_user(a1, fbuf, (uint64_t)got) != 0) {
+                f->regs[9] = (uint64_t)-14;            /* -EFAULT */
+                return;
+            }
+            rvfds[i].pos += (uint64_t)got;
+            f->regs[9] = (uint64_t)got;
+            return;
+        }
         if (a0 != 0 || a2 == 0 || a2 > 4096 ||
             a1 < ELF_RV_USER_MIN || a1 + a2 > ELF_RV_USER_MAX) {
             f->regs[9] = (uint64_t)-1;
@@ -261,6 +331,125 @@ void user_rv_syscall(rv_trap_frame_t *f)
         f->regs[9] = (uint64_t)(int64_t)user_rv_run_elf(path);
         return;
     }
+    case SYS_RV_OPEN: {
+        char path[100];
+        if (copy_user_path(a0, path, sizeof(path)) != 0) {
+            f->regs[9] = (uint64_t)-14;                /* -EFAULT */
+            return;
+        }
+        if (!rvfs_ops()) {
+            f->regs[9] = (uint64_t)-19;                /* -ENODEV */
+            return;
+        }
+        struct vnode *vn = rvfd_lookup(path);
+        if (!vn) {
+            f->regs[9] = (uint64_t)-2;                 /* -ENOENT */
+            return;
+        }
+        for (int i = 0; i < RVFD_MAX; i++) {
+            if (!rvfds[i].used) {
+                rvfds[i].vn = vn;
+                rvfds[i].pos = 0;
+                rvfds[i].used = 1;
+                f->regs[9] = (uint64_t)(RVFD_BASE + i);
+                return;
+            }
+        }
+        f->regs[9] = (uint64_t)-24;                    /* -EMFILE */
+        return;
+    }
+
+    case SYS_RV_CLOSE: {
+        if (a0 < RVFD_BASE || a0 >= RVFD_BASE + RVFD_MAX ||
+            !rvfds[a0 - RVFD_BASE].used) {
+            f->regs[9] = (uint64_t)-9;                 /* -EBADF */
+            return;
+        }
+        rvfds[a0 - RVFD_BASE].used = 0;
+        f->regs[9] = 0;
+        return;
+    }
+
+    case SYS_RV_LSEEK: {
+        if (a0 < RVFD_BASE || a0 >= RVFD_BASE + RVFD_MAX ||
+            !rvfds[a0 - RVFD_BASE].used) {
+            f->regs[9] = (uint64_t)-9;                 /* -EBADF */
+            return;
+        }
+        int i = (int)(a0 - RVFD_BASE);
+        int64_t off = (int64_t)a1;
+        uint64_t base;
+        switch (a2) {
+        case AURA_SEEK_SET: base = 0;                  break;
+        case AURA_SEEK_CUR: base = rvfds[i].pos;       break;
+        case AURA_SEEK_END: base = rvfds[i].vn->size;  break;
+        default:
+            f->regs[9] = (uint64_t)-22;                /* -EINVAL */
+            return;
+        }
+        if (off < 0 && (uint64_t)(-off) > base) {
+            f->regs[9] = (uint64_t)-22;
+            return;
+        }
+        rvfds[i].pos = base + (uint64_t)off;
+        f->regs[9] = rvfds[i].pos;
+        return;
+    }
+
+    case SYS_RV_STAT: {
+        char path[100];
+        if (copy_user_path(a0, path, sizeof(path)) != 0) {
+            f->regs[9] = (uint64_t)-14;
+            return;
+        }
+        struct vnode *vn = rvfd_lookup(path);
+        if (!vn) {
+            f->regs[9] = (uint64_t)(rvfs_ops() ? -2 : -19);
+            return;
+        }
+        struct aura_stat st;
+        st.size   = vn->size;
+        st.is_dir = (vn->type == VFS_TYPE_DIR);
+        st._pad   = 0;
+        f->regs[9] = copy_out_user(a1, &st, sizeof(st)) == 0
+                         ? 0 : (uint64_t)-14;
+        return;
+    }
+
+    case SYS_RV_READDIR: {
+        if (a0 < RVFD_BASE || a0 >= RVFD_BASE + RVFD_MAX ||
+            !rvfds[a0 - RVFD_BASE].used) {
+            f->regs[9] = (uint64_t)-9;
+            return;
+        }
+        const struct vfs_ops *ops = rvfs_ops();
+        struct vnode *vn = rvfds[a0 - RVFD_BASE].vn;
+        if (!ops || !ops->readdir || vn->type != VFS_TYPE_DIR) {
+            f->regs[9] = (uint64_t)-20;                /* -ENOTDIR */
+            return;
+        }
+        static struct vfs_dirent ents[32];
+        int n = ops->readdir(vn, ents, 32);
+        if (n < 0) {
+            f->regs[9] = (uint64_t)-5;
+            return;
+        }
+        if ((int64_t)a1 < 0 || (int64_t)a1 >= n) {
+            f->regs[9] = 0;                            /* end */
+            return;
+        }
+        struct aura_dirent de;
+        for (unsigned k = 0; k < sizeof(de.name); k++)
+            de.name[k] = 0;
+        for (unsigned k = 0; k + 1 < sizeof(de.name) &&
+                             ents[a1].name[k]; k++)
+            de.name[k] = ents[a1].name[k];
+        de.is_dir = (ents[a1].type == VFS_TYPE_DIR);
+        f->regs[9] = copy_out_user(a2, &de, sizeof(de)) == 0
+                         ? 1 : (uint64_t)-14;
+        return;
+    }
+
     case SYS_RV_GETPID:
         f->regs[9] = (uint64_t)thread_rv_current_tid();
         return;

@@ -67,9 +67,12 @@ static void help(void)
     sh_puts("  pid           show this shell's pid\n");
     sh_puts("  echo <text>   print text\n");
     sh_puts("  run <path>    spawn an initrd ELF (e.g. run " AURA_RUN_EXAMPLE ")\n");
+    sh_puts("  ls [path]     list a directory (P4: through open/readdir)\n");
+    sh_puts("  cat <path>    print a file (P4: open/lseek/read)\n");
+    sh_puts("  stat <path>   size and kind (P4: stat)\n");
     sh_puts("  exit          leave the shell\n");
-    sh_puts("absent on purpose: ls/cat (VFS port), net tools,\n");
-    sh_puts("gui (no framebuffer on this bring-up path)\n");
+    sh_puts("absent on purpose: net tools, gui (no framebuffer on\n");
+    sh_puts("this bring-up path)\n");
 }
 
 int main(void)
@@ -112,6 +115,52 @@ int main(void)
                 sh_puts("exit code ");
                 print_dec(code);
                 sh_puts("\n");
+            }
+        } else if (str_eq(line, "ls") || starts_with(line, "ls ")) {
+            const char *path = str_eq(line, "ls") ? "/" : line + 3;
+            long fd = open(path, 0);
+            if (fd < 0) {
+                sh_puts("ls: cannot open (no fs mounted, or no such dir)\n");
+            } else {
+                struct aura_dirent de;
+                long i, got = 0;
+                for (i = 0; readdir((int)fd, i, &de) > 0; i++) {
+                    sh_puts("  ");
+                    sh_puts(de.name);
+                    if (de.is_dir)
+                        sh_puts("/");
+                    sh_puts("\n");
+                    got++;
+                }
+                if (!got)
+                    sh_puts("  (empty)\n");
+                close((int)fd);
+            }
+        } else if (starts_with(line, "cat ")) {
+            long fd = open(line + 4, 0);
+            if (fd < 0) {
+                sh_puts("cat: cannot open\n");
+            } else {
+                /* lseek round-trip first: size via SEEK_END, rewind. */
+                long size = lseek((int)fd, 0, AURA_SEEK_END);
+                lseek((int)fd, 0, AURA_SEEK_SET);
+                char buf[64];
+                long r;
+                while ((r = read((int)fd, buf, sizeof(buf))) > 0)
+                    write(1, buf, (unsigned long)r);
+                sh_puts("\n(");
+                print_dec(size);
+                sh_puts(" bytes)\n");
+                close((int)fd);
+            }
+        } else if (starts_with(line, "stat ")) {
+            struct aura_stat st;
+            if (stat(line + 5, &st) < 0) {
+                sh_puts("stat: failed\n");
+            } else {
+                sh_puts(st.is_dir ? "dir, " : "file, ");
+                print_dec((long)st.size);
+                sh_puts(" bytes\n");
             }
         } else if (str_eq(line, "exit")) {
             sh_puts("bye\n");

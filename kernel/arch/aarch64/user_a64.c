@@ -44,6 +44,9 @@
 #include "kernel/arch/aarch64/elfa64load.h"
 #include "kernel/arch/aarch64/kheap_a64.h"
 #include "kernel/arch/aarch64/irqflags.h"   /* A6: the DAIF backend */
+#include "kernel/arch/aarch64/fsglue_a64.h"  /* P4: mounted ops */
+#include "kernel/fs/vfs.h"
+#include "lib/abi/fsabi.h"
 
 /* context_a64.S */
 extern void user_enter_a64(uint64_t entry, uint64_t user_sp,
@@ -163,6 +166,42 @@ static int copy_user_path(uint64_t uptr, char *dst, uint64_t cap)
     return -1;                      /* unterminated within cap */
 }
 
+/* ---- PARITY P4: the fd layer (user_rv.c's mirror; no PAN on v8.0,
+ * so the copy helpers are plain loops with probe checks) ---------- */
+
+#define A64FD_BASE  3
+#define A64FD_MAX   8
+#define A64_USER_END (USER_TEXT_VADDR_A64 + PAGE_SIZE_A64)
+
+static struct {
+    struct vnode *vn;
+    uint64_t      pos;
+    int           used;
+} a64fds[A64FD_MAX];
+
+static int copy_out_user(uint64_t dst, const void *src, uint64_t len)
+{
+    if (len == 0 || dst < ELF_A64_USER_MIN || dst + len > A64_USER_END)
+        return -1;
+    for (uint64_t va = dst & ~(uint64_t)(PAGE_SIZE_A64 - 1);
+         va < dst + len; va += PAGE_SIZE_A64)
+        if (paging_a64_probe(va) == ~0UL)
+            return -1;
+    for (uint64_t i = 0; i < len; i++)
+        ((char *)dst)[i] = ((const char *)src)[i];
+    return 0;
+}
+
+static struct vnode *a64fd_lookup(const char *path)
+{
+    const struct vfs_ops *ops = a64fs_ops();
+    if (!ops || !ops->lookup)
+        return 0;
+    while (*path == '/')
+        path++;                     /* ext2_lookup: "" is the root */
+    return ops->lookup(0, path);
+}
+
 void user_a64_syscall(a64_trap_frame_t *f)
 {
     uint64_t nr = f->regs[8];              /* x8 */
@@ -180,6 +219,29 @@ void user_a64_syscall(a64_trap_frame_t *f)
         /* read(fd=x0, buf=x1, len=x2): fd 0, cooked console line.
          * Probe every touched page BEFORE the blocking wait -- the
          * i386 rule: validate, then sleep, not the reverse. */
+        /* P4: fd >= 3 reads a FILE through the mounted ops table. */
+        if (a0 >= A64FD_BASE && a0 < A64FD_BASE + A64FD_MAX) {
+            int i = (int)(a0 - A64FD_BASE);
+            const struct vfs_ops *ops = a64fs_ops();
+            if (!a64fds[i].used || !ops || !ops->read || a2 == 0) {
+                f->regs[0] = (uint64_t)-9;             /* -EBADF */
+                return;
+            }
+            static uint8_t fbuf[4096];
+            uint64_t want = a2 > sizeof(fbuf) ? sizeof(fbuf) : a2;
+            int64_t got = ops->read(a64fds[i].vn, a64fds[i].pos, fbuf, want);
+            if (got < 0) {
+                f->regs[0] = (uint64_t)-5;             /* -EIO */
+                return;
+            }
+            if (got > 0 && copy_out_user(a1, fbuf, (uint64_t)got) != 0) {
+                f->regs[0] = (uint64_t)-14;            /* -EFAULT */
+                return;
+            }
+            a64fds[i].pos += (uint64_t)got;
+            f->regs[0] = (uint64_t)got;
+            return;
+        }
         if (a0 != 0 || a2 == 0 || a2 > 4096 ||
             a1 < ELF_A64_USER_MIN ||
             a1 + a2 > USER_TEXT_VADDR_A64 + PAGE_SIZE_A64) {
@@ -254,6 +316,125 @@ void user_a64_syscall(a64_trap_frame_t *f)
         f->regs[0] = a2;
         return;
     }
+    case SYS_A64_OPEN: {
+        char path[100];
+        if (copy_user_path(a0, path, sizeof(path)) != 0) {
+            f->regs[0] = (uint64_t)-14;                /* -EFAULT */
+            return;
+        }
+        if (!a64fs_ops()) {
+            f->regs[0] = (uint64_t)-19;                /* -ENODEV */
+            return;
+        }
+        struct vnode *vn = a64fd_lookup(path);
+        if (!vn) {
+            f->regs[0] = (uint64_t)-2;                 /* -ENOENT */
+            return;
+        }
+        for (int i = 0; i < A64FD_MAX; i++) {
+            if (!a64fds[i].used) {
+                a64fds[i].vn = vn;
+                a64fds[i].pos = 0;
+                a64fds[i].used = 1;
+                f->regs[0] = (uint64_t)(A64FD_BASE + i);
+                return;
+            }
+        }
+        f->regs[0] = (uint64_t)-24;                    /* -EMFILE */
+        return;
+    }
+
+    case SYS_A64_CLOSE: {
+        if (a0 < A64FD_BASE || a0 >= A64FD_BASE + A64FD_MAX ||
+            !a64fds[a0 - A64FD_BASE].used) {
+            f->regs[0] = (uint64_t)-9;                 /* -EBADF */
+            return;
+        }
+        a64fds[a0 - A64FD_BASE].used = 0;
+        f->regs[0] = 0;
+        return;
+    }
+
+    case SYS_A64_LSEEK: {
+        if (a0 < A64FD_BASE || a0 >= A64FD_BASE + A64FD_MAX ||
+            !a64fds[a0 - A64FD_BASE].used) {
+            f->regs[0] = (uint64_t)-9;                 /* -EBADF */
+            return;
+        }
+        int i = (int)(a0 - A64FD_BASE);
+        int64_t off = (int64_t)a1;
+        uint64_t base;
+        switch (a2) {
+        case AURA_SEEK_SET: base = 0;                   break;
+        case AURA_SEEK_CUR: base = a64fds[i].pos;       break;
+        case AURA_SEEK_END: base = a64fds[i].vn->size;  break;
+        default:
+            f->regs[0] = (uint64_t)-22;                /* -EINVAL */
+            return;
+        }
+        if (off < 0 && (uint64_t)(-off) > base) {
+            f->regs[0] = (uint64_t)-22;
+            return;
+        }
+        a64fds[i].pos = base + (uint64_t)off;
+        f->regs[0] = a64fds[i].pos;
+        return;
+    }
+
+    case SYS_A64_STAT: {
+        char path[100];
+        if (copy_user_path(a0, path, sizeof(path)) != 0) {
+            f->regs[0] = (uint64_t)-14;
+            return;
+        }
+        struct vnode *vn = a64fd_lookup(path);
+        if (!vn) {
+            f->regs[0] = (uint64_t)(a64fs_ops() ? -2 : -19);
+            return;
+        }
+        struct aura_stat st;
+        st.size   = vn->size;
+        st.is_dir = (vn->type == VFS_TYPE_DIR);
+        st._pad   = 0;
+        f->regs[0] = copy_out_user(a1, &st, sizeof(st)) == 0
+                         ? 0 : (uint64_t)-14;
+        return;
+    }
+
+    case SYS_A64_READDIR: {
+        if (a0 < A64FD_BASE || a0 >= A64FD_BASE + A64FD_MAX ||
+            !a64fds[a0 - A64FD_BASE].used) {
+            f->regs[0] = (uint64_t)-9;
+            return;
+        }
+        const struct vfs_ops *ops = a64fs_ops();
+        struct vnode *vn = a64fds[a0 - A64FD_BASE].vn;
+        if (!ops || !ops->readdir || vn->type != VFS_TYPE_DIR) {
+            f->regs[0] = (uint64_t)-20;                /* -ENOTDIR */
+            return;
+        }
+        static struct vfs_dirent ents[32];
+        int n = ops->readdir(vn, ents, 32);
+        if (n < 0) {
+            f->regs[0] = (uint64_t)-5;
+            return;
+        }
+        if ((int64_t)a1 < 0 || (int64_t)a1 >= n) {
+            f->regs[0] = 0;                            /* end */
+            return;
+        }
+        struct aura_dirent de;
+        for (unsigned k = 0; k < sizeof(de.name); k++)
+            de.name[k] = 0;
+        for (unsigned k = 0; k + 1 < sizeof(de.name) &&
+                             ents[a1].name[k]; k++)
+            de.name[k] = ents[a1].name[k];
+        de.is_dir = (ents[a1].type == VFS_TYPE_DIR);
+        f->regs[0] = copy_out_user(a2, &de, sizeof(de)) == 0
+                         ? 1 : (uint64_t)-14;
+        return;
+    }
+
     case SYS_A64_GETPID:
         f->regs[0] = (uint64_t)thread_a64_current_tid();
         return;

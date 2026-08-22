@@ -37,10 +37,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The ratchet keeps the stricter number.  P0's first catch.
 # P1 cut the seam: 41 -> 0, and 0 it stays.
 AHCI_IN_FS_PIN = 0
-SYSCALL_CASE_PIN = {       # P4 takes all three to 11.
-    ("kernel/arch/riscv64/user_rv.c",  r"case SYS_RV_\w+:"):  6,
-    ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 6,
-    ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   6,
+SYSCALL_CASE_PIN = {       # P4 landed: 6 -> 11 on every port.
+    ("kernel/arch/riscv64/user_rv.c",  r"case SYS_RV_\w+:"):  11,
+    ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 11,
+    ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   11,
 }
 FS_FILE_COUNT = 20         # kernel/fs/*.c (19 at P0; blkdev.c joined at P1).
 
@@ -175,7 +175,7 @@ def claims():
         count = len(re.findall(pattern, text))
         checks.append((
             f"pin: {path} carries exactly {pin} syscall cases "
-            f"(measured {count}; P4 moves this pin to 11)",
+            f"(measured {count}; the file five landed at P4)",
             count == pin and text != ""))
 
     # --- P1: the seam guarantee, stated as an include rule.  The
@@ -255,6 +255,31 @@ def claims():
         read("kernel", "arch", "aarch64", "main_a64.c") and
         "vblk_a64_selftest" in read("kernel", "arch", "aarch64",
                                     "main_a64.c")))
+
+    # --- P4: one ABI file, six includers -- the layout cannot drift
+    # --- because there is exactly one of it.
+    fsabi_users = 0
+    for path in ("lib/libcrv/libcrv.h", "lib/libca64/libca64.h",
+                 "lib/libc32/libc32.h",
+                 "kernel/arch/riscv64/user_rv.c",
+                 "kernel/arch/aarch64/user_a64.c",
+                 "kernel/arch/i386/user32.c"):
+        if "lib/abi/fsabi.h" in read(*path.split("/")):
+            fsabi_users += 1
+    checks.append((
+        f"P4: all six trap-boundary files include the ONE fsabi.h "
+        f"(measured {fsabi_users}/6)",
+        fsabi_users == 6 and exists("lib", "abi", "fsabi.h")))
+    checks.append((
+        "P4: smallsh grew ls/cat/stat THROUGH the wrappers (shared "
+        "source, three builds), and the old absent-on-purpose line "
+        "is gone",
+        "readdir((int)fd" in read("userspace", "system", "smallsh",
+                                  "smallsh.c") and
+        "AURA_SEEK_END" in read("userspace", "system", "smallsh",
+                                "smallsh.c") and
+        "absent on purpose: ls/cat" not in
+        read("userspace", "system", "smallsh", "smallsh.c")))
 
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).

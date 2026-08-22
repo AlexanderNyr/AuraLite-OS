@@ -21,6 +21,13 @@
 #define SYS_A64_EXIT    60
 #define SYS_A64_YIELD   158
 
+/* PARITY P4: the file five (one table, D4). */
+#define SYS_A64_OPEN      2
+#define SYS_A64_CLOSE     3
+#define SYS_A64_STAT      4
+#define SYS_A64_LSEEK     8
+#define SYS_A64_READDIR  78
+
 /* Register convention: x8 = number, x0-x5 = args, x0 = return with
  * in-band negative errno (the Linux aarch64 convention, kept). */
 

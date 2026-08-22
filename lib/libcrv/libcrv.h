@@ -21,6 +21,15 @@
 #define SYS_SPAWN       81
 #define SYS_SCHED_YIELD 158
 
+/* PARITY P4: the file five (same numbers at every width). */
+#define SYS_OPEN         2
+#define SYS_CLOSE        3
+#define SYS_STAT         4
+#define SYS_LSEEK        8
+#define SYS_READDIR     78
+
+#include "lib/abi/fsabi.h"
+
 long __syscall_rv(long n, long a1, long a2, long a3, long a4, long a5);
 
 static inline long read(int fd, void *buf, unsigned long len)
@@ -66,6 +75,36 @@ static inline unsigned long strlen_rv(const char *s)
 static inline void puts_rv(const char *s)
 {
     write(1, s, strlen_rv(s));
+}
+
+
+/* ---- PARITY P4: open/close/lseek/stat/readdir ---------------------- */
+
+static inline long open(const char *path, int flags)
+{
+    return __syscall_rv(SYS_OPEN, (long)path, flags, 0, 0, 0);
+}
+
+static inline long close(int fd)
+{
+    return __syscall_rv(SYS_CLOSE, fd, 0, 0, 0, 0);
+}
+
+static inline long lseek(int fd, long off, int whence)
+{
+    return __syscall_rv(SYS_LSEEK, fd, off, whence, 0, 0);
+}
+
+static inline long stat(const char *path, struct aura_stat *st)
+{
+    return __syscall_rv(SYS_STAT, (long)path, (long)st, 0, 0, 0);
+}
+
+/* One entry per call: readdir(fd, index, out).  1 = entry filled,
+ * 0 = end of directory, negative = error. */
+static inline long readdir(int fd, long index, struct aura_dirent *de)
+{
+    return __syscall_rv(SYS_READDIR, fd, index, (long)de, 0, 0);
 }
 
 #endif /* AURALITE_LIBCRV_H */

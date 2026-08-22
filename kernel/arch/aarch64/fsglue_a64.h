@@ -5,4 +5,8 @@
 /* Register vblk with the blkdev seam, mount ext2, prove a read. */
 void a64fs_bringup(void);
 
+/* P4: the mounted filesystem's ops table, or NULL. */
+struct vfs_ops;
+const struct vfs_ops *a64fs_ops(void);
+
 #endif /* AURALITE_ARCH_AARCH64_FSGLUE_A64_H */

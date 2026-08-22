@@ -45,15 +45,22 @@ dd if=/dev/zero of="$DISK" bs=1M count=4 status=none
 "$MKFS" -q -b 1024 -I 128 -F "$DISK" >/dev/null 2>&1
 SEED="$BUILD/rv_fs_seed.$$.txt"
 echo "hello from linux mkfs $TOKEN" > "$SEED"
+SEED_LEN=$(wc -c < "$SEED")
 "$DEBUGFS" -w -R "write $SEED LINUX.TXT" "$DISK" >/dev/null 2>&1
 rm -f "$SEED"
 
 # ---- one boot ----
 rm -f "$LOG"
 {
-    sleep 8
-    printf 'exit\n'; sleep 2
-} | timeout 120 qemu-system-riscv64 \
+    for _ in $(seq 1 90); do
+        grep -qa "auralite# " "$LOG" 2>/dev/null && break
+        sleep 1
+    done
+    printf 'ls /\n';           sleep 2
+    printf 'stat LINUX.TXT\n'; sleep 2
+    printf 'cat LINUX.TXT\n';  sleep 2
+    printf 'exit\n';           sleep 2
+} | timeout 180 qemu-system-riscv64 \
         -machine virt -m 256M \
         -display none -serial stdio -no-reboot \
         -kernel "$ELF" -initrd "$TAR" \
@@ -101,6 +108,13 @@ assert_grep "LINUX.TXT"                                   "seeded file visible"
 assert_grep "$TOKEN"                                      "cat returned this run's token byte-exact"
 assert_no_grep "\[rvfs\] cat: "                           "no cat failure path taken"
 assert_no_grep "\[blk\]  FAIL"                            "no vblk failure"
+# ---- P4: the same file, this time from USERSPACE via the file five ----
+assert_grep "  LINUX.TXT"                                 "P4 ls: readdir lists the seeded file"
+assert_grep "lost+found/"                                 "P4 ls: directories carry the slash"
+assert_grep "file, ${SEED_LEN} bytes"                     "P4 stat: size through the trap"
+assert_grep "(${SEED_LEN} bytes)"                         "P4 cat: lseek(END) size receipt"
+assert_no_grep "ls: cannot open"                          "P4: open('/') succeeded"
+assert_no_grep "cat: cannot open"                         "P4: open(file) succeeded"
 assert_no_grep "UNHANDLED EXCEPTION"                      "no unhandled trap anywhere in the boot"
 
 if [ "$fail" -ne 0 ]; then

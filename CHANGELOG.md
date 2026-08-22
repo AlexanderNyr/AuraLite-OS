@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P4 — the file five: 6 → 11 syscalls on every port] 2026-08-22
+
+OPEN/CLOSE/STAT/LSEEK/READDIR land on rv64, a64 and i386 (numbers
+2/3/4/8/78 at every width — the D4 one-table rule).  One new ABI
+header, `lib/abi/fsabi.h`, is included by all six trap-boundary
+files — three bring-up libcs, three dispatchers — so aura_stat/
+aura_dirent cannot drift (16/64 bytes, -m32-stable, checker counts
+the includers 6/6).  Backing stores honest per port: the DTB
+tenants read the P2/P3-mounted ext2 through fsglue's ops getter
+(-ENODEV before a mount), i386 serves its initrd read-only until
+P7.  smallsh: ls/cat/stat builtins through the wrappers, shared
+source, three builds; the help's "absent on purpose: ls/cat" line
+is gone because it stopped being true.
+
+- Proof, interactive on all three ports: rv/a64 fs smokes type
+  ls / + stat + cat at the live prompt (18 asserts each);
+  i386_shell_smoke lists the initrd and cats /etc/motd (5 new
+  asserts).  ls prints the directory slash; cat prints the
+  lseek(SEEK_END) size receipt.
+- Draft bug caught by the first live run: asserts pinned
+  "25 bytes" from a manual seed, but the token embeds PID+epoch —
+  length varies per run.  The smokes now `wc -c` the seed they
+  just wrote.  A quoted number rots even at one run old.
+- Checker: syscall pins moved 6 -> 11 same-commit (both-direction
+  ratchet), +2 P4 claims (25 total).  Regression: rv_parity,
+  a64_drivers, i386_shell, x86_64 build, full test-unit — green.
+
 ## [PARITY P3 — the shared ext2 mounts on aarch64; deviation budget: zero] 2026-08-22
 
 Fourth consumer of the blkdev seam, and the cheapest phase of the

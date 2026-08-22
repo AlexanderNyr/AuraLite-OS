@@ -95,6 +95,16 @@ static const struct blkdev_ops vblk_bd_ops = {
  * ops table -- the smoke pins every line this prints plus ext2.c's own
  * "[ext2] mounted existing volume" receipt. */
 
+/* P4: the dispatcher asks for the mounted ops table (NULL until
+ * rvfs_bringup succeeds) -- the fd layer lives in user_rv.c, the
+ * MOUNT knowledge lives here, neither reaches into the other. */
+static const struct vfs_ops *mounted_ops;
+
+const struct vfs_ops *rvfs_ops(void)
+{
+    return mounted_ops;
+}
+
 void rvfs_bringup(void)
 {
     int dev = blkdev_register("vblk0", &vblk_bd_ops, 0, BLKDEV_SECTOR_SIZE);
@@ -109,8 +119,9 @@ void rvfs_bringup(void)
         kprintf("[rvfs] ext2 mount failed on blkdev %d\n", dev);
         return;
     }
-    kprintf("[rvfs] mounted ext2 on blkdev %d (ops-level; VFS waits on P4)\n",
+    kprintf("[rvfs] mounted ext2 on blkdev %d (ops-level; fd layer: P4)\n",
             dev);
+    mounted_ops = &ext2_ops;
 
     ext2_self_test();
     ext2_list();

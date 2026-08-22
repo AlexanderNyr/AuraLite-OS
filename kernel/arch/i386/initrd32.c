@@ -124,3 +124,28 @@ uint32_t initrd32_file_count(void)
 {
     return file_count;
 }
+
+/* PARITY P4: the N-th regular file's name and size (readdir's
+ * backend; same walk as initrd32_find, indexed).  1 on hit. */
+int initrd32_stat_index(uint32_t idx, const char **name, uint32_t *size)
+{
+    if (!archive)
+        return 0;
+    uint32_t off = 0, seen = 0;
+    while (off + 512 <= archive_size) {
+        const struct ustar_hdr *h = (const struct ustar_hdr *)(archive + off);
+        if (h->name[0] == '\0')
+            break;
+        uint32_t fsize = octal_field(h->size, 12);
+        if (h->typeflag == '0' || h->typeflag == '\0') {
+            if (seen == idx) {
+                *name = normalise(h->name);
+                *size = fsize;
+                return 1;
+            }
+            seen++;
+        }
+        off += 512 + ((fsize + 511) & ~511u);
+    }
+    return 0;
+}

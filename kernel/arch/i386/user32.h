@@ -28,6 +28,15 @@
 #define SYS32_SPAWN     81   /* non-standard: spawn from initrd path */
 #define SYS32_YIELD    158   /* SYS_SCHED_YIELD */
 
+/* PARITY P4: the file five (one table, D4).  The i386 backing store
+ * is the INITRD (read-only) until P7 mounts ext2 through the seam --
+ * the honest bring-up filesystem this port already has. */
+#define SYS32_OPEN       2
+#define SYS32_CLOSE      3
+#define SYS32_STAT       4
+#define SYS32_LSEEK      8
+#define SYS32_READDIR   78
+
 /* Register the int 0x80 gate (DPL=3) in the IDT. */
 void syscall32_init(void);
 

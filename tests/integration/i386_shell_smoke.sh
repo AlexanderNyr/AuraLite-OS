@@ -65,6 +65,9 @@ rm -f "$LOG32"
     printf 'uname\n';                 sleep 2
     printf 'echo shell-gate-echo\n';  sleep 2
     printf 'run bin32/init32\n';      sleep 3
+    printf 'ls /\n';                  sleep 2
+    printf 'stat etc/motd\n';         sleep 2
+    printf 'cat etc/motd\n';          sleep 2
     printf 'definitely-not-a-cmd\n';  sleep 2
     printf 'exit\n';                  sleep 3
 } | timeout 50 qemu-system-i386 \
@@ -81,6 +84,12 @@ assert_grep    "$LOG32" "^shell-gate-echo"                             "i386: ec
 assert_grep    "$LOG32" "depth 1"                                      "i386: nested spawn ran at depth 1"
 assert_grep    "$LOG32" "init32: exiting 7"                            "i386: spawned child's own output seen"
 assert_grep    "$LOG32" "^exit code 7"                                 "i386: SHELL reported the child's exit code"
+# ---- PARITY P4: the file five over the initrd ----
+assert_grep    "$LOG32" "  etc/motd"                                   "i386 P4 ls: readdir lists the initrd"
+assert_grep    "$LOG32" "file, "                                       "i386 P4 stat: size through the trap"
+assert_grep    "$LOG32" "filesystem layout: see docs/filesystem.md"    "i386 P4 cat: motd content read through fd"
+assert_no_grep "$LOG32" "ls: cannot open"                              "i386 P4: open('/') succeeded"
+assert_no_grep "$LOG32" "cat: cannot open"                             "i386 P4: open(etc/motd) succeeded"
 assert_grep    "$LOG32" "definitely-not-a-cmd: unknown command"        "i386: unknown-command diagnostic"
 assert_grep    "$LOG32" "^bye"                                         "i386: clean shell exit"
 assert_grep    "$LOG32" "\[shell\] exited 0"                           "i386: kernel observed the shell's exit"

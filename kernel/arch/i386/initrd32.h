@@ -25,4 +25,7 @@ int initrd32_find(const char *path, const uint8_t **data, uint32_t *size);
 
 uint32_t initrd32_file_count(void);
 
+/* PARITY P4: the N-th regular file (readdir's backend).  1 on hit. */
+int initrd32_stat_index(uint32_t idx, const char **name, uint32_t *size);
+
 #endif /* AURALITE_ARCH_I386_INITRD32_H */

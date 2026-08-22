@@ -1,6 +1,6 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P3 complete; P4 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P4 complete; P5 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | P1 — the block-device layer (x86_64 byte-honest refactor) | ✅ complete | `patches/PARITY_P1_blkdev.patch` |
 | P2 — ext2 mounted on rv64 (vblk behind the seam) | ✅ complete | `patches/PARITY_P2_rvfs.patch` |
 | P3 — ext2 mounted on a64 (the shared-transport dividend) | ✅ complete | `patches/PARITY_P3_a64fs.patch` |
-| P4 — the syscall widening: open/read/close on three ports | pending | `patches/PARITY_P4_syscalls.patch` |
+| P4 — the syscall widening: open/read/close on three ports | ✅ complete | `patches/PARITY_P4_syscalls.patch` |
 | P5 — SMP rv64: SBI HSM hart_start | pending | `patches/PARITY_P5_rvsmp.patch` |
 | P6 — SMP a64: PSCI CPU_ON | pending | `patches/PARITY_P6_a64smp.patch` |
 | P7 — i386: the fs width pay-down + ATA behind the seam | pending | `patches/PARITY_P7_i386fs.patch` |
@@ -342,13 +342,42 @@ ended in `| head -8` and the sysmon match was line nine.  The case
 now pins `blk0` (green locally, 6/6).  A truncated audit is not an
 audit; recorded next to the sed lesson.
 
-### P4 — the syscall widening
-- [ ] OPEN/CLOSE/READDIR/STAT/LSEEK on all three ports (6 → 11
-      cases each; checker pins 11).
-- [ ] smallsh grows `ls` and `cat` builtins THROUGH the new
-      syscalls (shared source, three builds — the smallsh contract).
-- [ ] Receipts: `ls /` output over serial on rv64, a64, i386
-      smokes; each case registered.
+### P4 — the syscall widening — ✅ COMPLETE
+- [x] OPEN/CLOSE/READDIR/STAT/LSEEK on all three ports, 6 → 11
+      cases each (checker pins 11 exactly).  Same numbers at every
+      width (2/3/4/8/78 — the D4 one-table rule), arch-private
+      dispatchers, and ONE new ABI header — `lib/abi/fsabi.h` —
+      included by all six trap-boundary files (three libcs, three
+      dispatchers; the checker counts 6/6), so the struct layout
+      cannot drift because there is exactly one of it.
+      Backing stores per port, honest: rv64/a64 read the mounted
+      ext2 through fsglue's ops getter (NULL ops → every file
+      syscall answers -ENODEV); i386 serves the INITRD read-only
+      until P7 mounts ext2 through the seam.  fd 0/1/2 stay the
+      console; 3..10 are files; the fd table is dispatcher state
+      by the same right as the dispatcher itself is arch code.
+- [x] smallsh grew `ls` (open+readdir+close), `cat`
+      (open+lseek(END)+rewind+read loop) and `stat` builtins —
+      shared source, three builds, and the old help line "absent
+      on purpose: ls/cat (VFS port)" is GONE because it stopped
+      being true.
+- [x] Receipts on all three ports, live shell sessions in the
+      smokes: rv_fs_smoke and a64_fs_smoke type ls//stat/cat at
+      the prompt (18 asserts each — directory slash, byte-exact
+      token, lseek size receipt with the seed length computed
+      per-run, not quoted); i386_shell_smoke lists the initrd and
+      cats /etc/motd through the fd path (5 new asserts).
+
+#### P4 result
+
+One draft bug caught by the first live run: the smoke asserts
+pinned "25 bytes" from a manual seed, but the token embeds PID and
+epoch — the seed length VARIES per run.  The asserts now compute
+`wc -c` of the seed they just wrote.  A quoted number rots even
+when it is one run old.
+Regression: rv_parity, a64_drivers, i386_shell full sessions
+green; x86_64 kernel untouched and rebuilt; full test-unit green
+(25 parity claims; width sweep untouched at 359/69/0/29).
 
 ### P5 — SMP rv64
 - [ ] `sbi.c` gains the HSM extension (EID 0x48534D):

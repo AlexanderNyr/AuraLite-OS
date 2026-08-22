@@ -27,6 +27,7 @@
 #include "kernel/arch/i386/kprintf32.h"
 #include "kernel/arch/i386/thread32.h"
 #include "kernel/arch/i386/initrd32.h"
+#include "lib/abi/fsabi.h"          /* P4: the shared file ABI */
 #include "kernel/arch/i386/elf32load.h"
 #include "kernel/arch/i386/kbd32.h"
 #include "kernel/arch/i386/kheap32.h"
@@ -91,6 +92,42 @@ static int copy_user_path(uint32_t uptr, char *dst, uint32_t cap)
     return -1;                       /* unterminated within cap */
 }
 
+/* ---- PARITY P4: the fd layer over the initrd ------------------------ */
+/* Read-only files backed by the direct-mapped ustar archive: an open
+ * fd is a (data, size, pos) triple.  ext2-through-the-seam arrives
+ * with P7; until then the initrd is this port's honest filesystem. */
+
+#define FD32_BASE 3
+#define FD32_MAX  8
+
+static struct {
+    const uint8_t *data;
+    uint32_t       size;
+    uint32_t       pos;
+    int            used;
+} fds32[FD32_MAX];
+
+static int copy_out_user32(uint32_t dst, const void *src, uint32_t len)
+{
+    if (len == 0 || dst >= KERNEL_VBASE_32 || dst + len > KERNEL_VBASE_32)
+        return -1;
+    for (uint32_t va = dst & ~(PAGE_SIZE_32 - 1);
+         va < dst + len; va += PAGE_SIZE_32)
+        if (!paging32_probe(va, NULL))
+            return -1;
+    const char *s = src;
+    for (uint32_t i = 0; i < len; i++)
+        ((char *)dst)[i] = s[i];
+    return 0;
+}
+
+static const char *fd32_normalise(const char *p)
+{
+    while (*p == '/')
+        p++;
+    return p;
+}
+
 static void syscall32_dispatch(struct registers32 *regs)
 {
     switch (regs->eax) {
@@ -98,6 +135,25 @@ static void syscall32_dispatch(struct registers32 *regs)
         /* read(fd=ebx, buf=ecx, len=edx): fd 0, cooked console line.
          * The buffer must be user-mapped and writable-by-user; probe
          * each touched page before the blocking wait, not after. */
+        /* P4: fd >= 3 reads an initrd-backed file. */
+        if (regs->ebx >= FD32_BASE && regs->ebx < FD32_BASE + FD32_MAX) {
+            uint32_t i = regs->ebx - FD32_BASE;
+            if (!fds32[i].used || regs->edx == 0) {
+                regs->eax = (uint32_t)-9;              /* -EBADF */
+                return;
+            }
+            uint32_t left = fds32[i].size - fds32[i].pos;
+            uint32_t want = regs->edx < left ? regs->edx : left;
+            if (want > 0 &&
+                copy_out_user32(regs->ecx, fds32[i].data + fds32[i].pos,
+                                want) != 0) {
+                regs->eax = (uint32_t)-14;             /* -EFAULT */
+                return;
+            }
+            fds32[i].pos += want;
+            regs->eax = want;
+            return;
+        }
         if (regs->ebx != 0 || regs->edx == 0 || regs->edx > 4096 ||
             regs->ecx >= KERNEL_VBASE_32 ||
             regs->ecx + regs->edx > KERNEL_VBASE_32) {
@@ -153,6 +209,124 @@ static void syscall32_dispatch(struct registers32 *regs)
         regs->eax = regs->edx;
         return;
     }
+    case SYS32_OPEN: {
+        char path[64];
+        if (copy_user_path(regs->ebx, path, sizeof(path)) != 0) {
+            regs->eax = (uint32_t)-14;                 /* -EFAULT */
+            return;
+        }
+        const char *p = fd32_normalise(path);
+        const uint8_t *data;
+        uint32_t size;
+        if (p[0] == '\0') {
+            /* the root directory: a listable fd with no bytes */
+            data = 0;
+            size = 0;
+        } else if (!initrd32_find(p, &data, &size)) {
+            regs->eax = (uint32_t)-2;                  /* -ENOENT */
+            return;
+        }
+        for (uint32_t i = 0; i < FD32_MAX; i++) {
+            if (!fds32[i].used) {
+                fds32[i].data = data;
+                fds32[i].size = size;
+                fds32[i].pos  = 0;
+                fds32[i].used = 1;
+                regs->eax = FD32_BASE + i;
+                return;
+            }
+        }
+        regs->eax = (uint32_t)-24;                     /* -EMFILE */
+        return;
+    }
+
+    case SYS32_CLOSE: {
+        if (regs->ebx < FD32_BASE || regs->ebx >= FD32_BASE + FD32_MAX ||
+            !fds32[regs->ebx - FD32_BASE].used) {
+            regs->eax = (uint32_t)-9;                  /* -EBADF */
+            return;
+        }
+        fds32[regs->ebx - FD32_BASE].used = 0;
+        regs->eax = 0;
+        return;
+    }
+
+    case SYS32_LSEEK: {
+        if (regs->ebx < FD32_BASE || regs->ebx >= FD32_BASE + FD32_MAX ||
+            !fds32[regs->ebx - FD32_BASE].used) {
+            regs->eax = (uint32_t)-9;                  /* -EBADF */
+            return;
+        }
+        uint32_t i = regs->ebx - FD32_BASE;
+        int32_t off = (int32_t)regs->ecx;
+        uint32_t base;
+        switch (regs->edx) {
+        case AURA_SEEK_SET: base = 0;             break;
+        case AURA_SEEK_CUR: base = fds32[i].pos;  break;
+        case AURA_SEEK_END: base = fds32[i].size; break;
+        default:
+            regs->eax = (uint32_t)-22;                 /* -EINVAL */
+            return;
+        }
+        if (off < 0 && (uint32_t)(-off) > base) {
+            regs->eax = (uint32_t)-22;
+            return;
+        }
+        fds32[i].pos = base + (uint32_t)off;
+        regs->eax = fds32[i].pos;
+        return;
+    }
+
+    case SYS32_STAT: {
+        char path[64];
+        if (copy_user_path(regs->ebx, path, sizeof(path)) != 0) {
+            regs->eax = (uint32_t)-14;
+            return;
+        }
+        const char *p = fd32_normalise(path);
+        struct aura_stat st;
+        st._pad = 0;
+        if (p[0] == '\0') {
+            st.size = 0;
+            st.is_dir = 1;
+        } else {
+            const uint8_t *data;
+            uint32_t size;
+            if (!initrd32_find(p, &data, &size)) {
+                regs->eax = (uint32_t)-2;              /* -ENOENT */
+                return;
+            }
+            st.size = size;
+            st.is_dir = 0;
+        }
+        regs->eax = copy_out_user32(regs->ecx, &st, sizeof(st)) == 0
+                        ? 0 : (uint32_t)-14;
+        return;
+    }
+
+    case SYS32_READDIR: {
+        if (regs->ebx < FD32_BASE || regs->ebx >= FD32_BASE + FD32_MAX ||
+            !fds32[regs->ebx - FD32_BASE].used) {
+            regs->eax = (uint32_t)-9;
+            return;
+        }
+        const char *name;
+        uint32_t size;
+        if (!initrd32_stat_index(regs->ecx, &name, &size)) {
+            regs->eax = 0;                             /* end */
+            return;
+        }
+        struct aura_dirent de;
+        for (unsigned k = 0; k < sizeof(de.name); k++)
+            de.name[k] = 0;
+        for (unsigned k = 0; k + 1 < sizeof(de.name) && name[k]; k++)
+            de.name[k] = name[k];
+        de.is_dir = 0;              /* the initrd view lists files */
+        regs->eax = copy_out_user32(regs->edx, &de, sizeof(de)) == 0
+                        ? 1 : (uint32_t)-14;
+        return;
+    }
+
     case SYS32_GETPID:
         regs->eax = (uint32_t)thread32_current_tid();
         return;
