@@ -83,9 +83,34 @@ fi
 assert_no_grep "CPU_ON.*FAILED"                     "no PSCI start failure"
 assert_no_grep "UNHANDLED\|SYNC EXCEPTION\|panic"   "no trap anywhere in the boot"
 
+# ---- R4: the GICv3 x16 lane (the ceiling GICv2 could not lift) ------
+LOG16="$BUILD/a64_smp16.log"
+rm -f "$LOG16"
+timeout 240 qemu-system-aarch64 \
+        -machine virt,gic-version=3 -cpu cortex-a72 -smp 16 -m 256M \
+        -display none -serial file:"$LOG16" -no-reboot \
+        -kernel "$ELF" \
+        < /dev/null > /dev/null 2>&1 || true
+tr -d '\r' < "$LOG16" > "$LOG16.clean" && mv "$LOG16.clean" "$LOG16"
+
+C16=$(grep -ac "online (stack top" "$LOG16" || true)
+if [ "$C16" -eq 15 ]; then
+    echo "  [a64-smp] OK   x16/GICv3 lane: exactly 15 secondaries reported in"
+else
+    echo "  [a64-smp] FAIL x16/GICv3 report-ins: $C16 (expected 15)" >&2
+    fail=1
+fi
+if grep -qa "\[smp\] IPI round-trip: 15/15 ack(s)" "$LOG16"; then
+    echo "  [a64-smp] OK   x16/GICv3 lane: affinity SGIs acked 15/15"
+else
+    echo "  [a64-smp] FAIL x16/GICv3 lane: IPI 15/15 missing" >&2
+    fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
-    echo "[a64-smp] FAILED — log tail:" >&2
-    tail -25 "$LOG" >&2
+    echo "[a64-smp] FAILED — log tails:" >&2
+    tail -20 "$LOG" >&2
+    tail -20 "$LOG16" >&2
     exit 1
 fi
-echo "[a64-smp] all assertions passed"
+echo "[a64-smp] all assertions passed (v2 -smp 8 and GICv3 -smp 16)"

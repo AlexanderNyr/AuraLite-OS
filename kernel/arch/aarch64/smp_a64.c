@@ -27,6 +27,7 @@
 
 #include "kernel/arch/aarch64/smp_a64.h"
 #include "kernel/arch/aarch64/psci.h"
+#include "kernel/arch/aarch64/gic.h"      /* R4: the v3 lane */
 #include "kernel/lib/kprintf.h"
 
 extern const uint64_t kernel_layout[];       /* boot.S; [8] = secondary PA */
@@ -34,6 +35,13 @@ extern const uint64_t kernel_layout[];       /* boot.S; [8] = secondary PA */
 #define SMP_A64_MAX   16   /* x16 like rv64; v2 reality caps runs at 8 */
 #define SEC_STACK_SZ  8192
 #define SGI_ID        0u
+
+/* R4: v3 redistributor offsets (own-frame SGI polling; see gic.c). */
+#define GICR_SGI_OFF    0x10000u
+#define GICR_IGROUPR0   0x0080u
+#define GICR_ISPENDR0   0x0200u
+#define GICR_ICPENDR0   0x0280u
+#define ICC_SGI1R_EL1   "S3_0_C12_C11_5"
 
 /* Banked GIC registers (offsets from the DTB-discovered bases). */
 #define GICD_ISENABLER0 0x100u
@@ -74,6 +82,35 @@ void secondary_main_a64(void)
                      + SEC_STACK_SZ),
             (unsigned long long)n);
 
+    if (gic_is_v3()) {
+        /* R4: wake OUR redistributor, then poll the SGI pending bit
+         * in it -- off the trap path AND off the CPU interface (the
+         * receipt needs delivery to the redistributor, nothing
+         * more; D5 unchanged). */
+        volatile uint8_t *rd = gic_v3_own_rdist();
+        gic_v3_wake_rdist(rd);
+        /* ICC_SGI1R generates GROUP-1 SGIs; at reset IGROUPR0 marks
+         * every SGI group 0, and a group-mismatched SGI is DISCARDED
+         * at the redistributor -- the first 0/15 run taught this
+         * line.  Claim our SGI into group 1 before listening. */
+        *(volatile uint32_t *)(rd + GICR_SGI_OFF + GICR_IGROUPR0) |=
+            1u << SGI_ID;
+        volatile uint32_t *pend =
+            (volatile uint32_t *)(rd + GICR_SGI_OFF + GICR_ISPENDR0);
+        volatile uint32_t *clr =
+            (volatile uint32_t *)(rd + GICR_SGI_OFF + GICR_ICPENDR0);
+        for (;;) {
+            if (*pend & (1u << SGI_ID)) {
+                *clr = 1u << SGI_ID;
+                kprintf("[smp] core %llu: IPI received, parking\n",
+                        (unsigned long long)id);
+                atomic_add(&ipi_acks, 1);
+                return;             /* boot.S parks us in wfi */
+            }
+            __asm__ volatile("wfe");
+        }
+    }
+
     /* This core's banked interface: unmask everything, enable SGI 0,
      * enable the interface — then poll IAR. */
     gicd[GICD_ISENABLER0 / 4] = 1u << SGI_ID;
@@ -102,10 +139,30 @@ void secondary_main_a64(void)
     }
 }
 
-static void spin_delay(uint64_t loops)
+/* R4: waits are bounded by GUEST TIME, not iterations -- the R1
+ * UHCI lesson, re-learned here when a loaded 16-vCPU TCG run
+ * expired the old 100M-iteration budget at 10/15 acks.  CNTVCT
+ * ticks at CNTFRQ regardless of how slowly this vCPU is scheduled. */
+static uint64_t cnt_now(void)
 {
-    for (volatile uint64_t i = 0; i < loops; i++)
-        ;
+    uint64_t v;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+    return v;
+}
+
+static uint64_t cnt_freq(void)
+{
+    uint64_t f;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+    return f ? f : 62500000ull;
+}
+
+static void wait_counter(volatile uint64_t *ctr, uint64_t want,
+                         uint64_t seconds)
+{
+    uint64_t deadline = cnt_now() + seconds * cnt_freq();
+    while (*ctr < want && cnt_now() < deadline)
+        __asm__ volatile("yield");
 }
 
 void smp_a64_bringup(const boot_info_t *bi,
@@ -127,7 +184,10 @@ void smp_a64_bringup(const boot_info_t *bi,
 
     uint64_t entry_pa = kernel_layout[8];
     uint32_t started = 0;
-    uint32_t sgi_targets = 0;
+    uint32_t sgi_targets = 0;                    /* v2: 8 CPUTargetList bits */
+    static uint16_t sgi_targets_v3[(SMP_A64_MAX + 15) / 16];  /* v3: aff0 per aff1 */
+    for (unsigned z = 0; z < sizeof(sgi_targets_v3)/sizeof(sgi_targets_v3[0]); z++)
+        sgi_targets_v3[z] = 0;
 
     for (uint32_t i = 0; i < ncpus; i++) {
         uint64_t mpidr = bi->cpus[i].lapic_id;   /* MPIDR slot */
@@ -143,22 +203,37 @@ void smp_a64_bringup(const boot_info_t *bi,
             continue;
         }
         sgi_targets |= 1u << (mpidr & 0x7u);     /* v2: 8 target bits */
+        sgi_targets_v3[(mpidr >> 8) & 0xFFu] |=
+            (uint16_t)(1u << (mpidr & 0xFu));    /* v3: aff0 bit in its cluster */
         started++;
     }
 
-    for (int t = 0; t < 1000 && cores_online < started; t++)
-        spin_delay(100000);
+    wait_counter(&cores_online, started, 60);
     kprintf("[smp] online: %llu/%u started core(s)\n",
             (unsigned long long)cores_online, started);
 
     if (cores_online > 0) {
-        /* One SGI to the whole target list; sev first so pollers in
-         * wfe wake even if their interface latched late. */
         __asm__ volatile("dsb ish" ::: "memory");
-        gicd[GICD_SGIR / 4] = ((uint32_t)sgi_targets << 16) | SGI_ID;
+        if (gic_is_v3()) {
+            /* R4: affinity-routed SGIs -- one ICC_SGI1R_EL1 write
+             * per aff1 cluster (target list = 16 aff0 bits). */
+            for (uint32_t cl = 0; cl < (SMP_A64_MAX + 15) / 16; cl++) {
+                uint16_t tl = sgi_targets_v3[cl];
+                if (!tl)
+                    continue;
+                uint64_t v = (uint64_t)tl |
+                             ((uint64_t)cl << 16) |
+                             ((uint64_t)SGI_ID << 24);
+                __asm__ volatile("msr " ICC_SGI1R_EL1 ", %0" :: "r"(v));
+            }
+            __asm__ volatile("isb");
+        } else {
+            /* One SGI to the whole target list; sev first so pollers
+             * in wfe wake even if their interface latched late. */
+            gicd[GICD_SGIR / 4] = ((uint32_t)sgi_targets << 16) | SGI_ID;
+        }
         __asm__ volatile("sev" ::: "memory");
-        for (int t = 0; t < 1000 && ipi_acks < cores_online; t++)
-            spin_delay(100000);
+        wait_counter(&ipi_acks, cores_online, 60);
         kprintf("[smp] IPI round-trip: %llu/%llu ack(s)\n",
                 (unsigned long long)ipi_acks,
                 (unsigned long long)cores_online);

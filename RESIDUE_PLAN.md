@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R3 complete; R4 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R4 complete; R5 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | R1 — the small-payoff cluster (flake remedy, oddity, seam pins) | ✅ complete | `patches/RESIDUE_R1_small.patch` |
 | R2 — VFS on the ports (the vfs.c:71 unlock) | ✅ complete | `patches/RESIDUE_R2_vfs.patch` |
 | R3 — i386 TCP/sockets (the last I8 line) | ✅ complete | `patches/RESIDUE_R3_tcp32.patch` |
-| R4 — GICv3 + the a64 x16 run | pending | `patches/RESIDUE_R4_gicv3.patch` |
+| R4 — GICv3 + the a64 x16 run | ✅ complete | `patches/RESIDUE_R4_gicv3.patch` |
 | R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | pending | `patches/RESIDUE_R5_sched.patch` |
 | R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | pending | `patches/RESIDUE_R6_libc2.patch` |
 | R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | pending | `patches/RESIDUE_R7_ecam.patch` |
@@ -296,12 +296,33 @@ on our own status.md edit within minutes of existing).
       drained through kprintf's lock.  Both smp smokes re-run
       green.
 
-### R4 — GICv3 + a64 x16
-- [ ] GICv3 driver (redistributors + ICC sysregs + affinity SGIs
-      via ICC_SGI1R_EL1), selected by DTB compatible; GICv2 stays
-      for -smp<=8 boards.
-- [ ] Exit: a64_smp_smoke grows the -smp 16 lane (15 report-ins,
-      IPI 15/15, gic-version=3); the v2 lane stays.
+### R4 — GICv3 + a64 x16 — ✅ COMPLETE
+- [x] gic.c grew the v3 lane: redistributor walk by GICR_TYPER
+      affinity, WAKER wake, ICC sysregs by S-encoding (SRE/PMR/
+      IGRPEN1/IAR1/EOIR1 under -mgeneral-regs-only), GICD ARE+G1NS,
+      IROUTER written 0 explicitly (never trusting reset), SGI/PPI
+      config in the PE's OWN redistributor frame.  smp_a64:
+      affinity SGIs via ICC_SGI1R_EL1 per aff1 cluster; secondaries
+      poll their own GICR_ISPENDR0 — off the trap path AND off the
+      CPU interface (D5 unchanged).
+- [x] **Three catches, each by a red run, each named:** (1) the
+      draft detected v3 by READING GICD_PIDR2 — and hung every v2
+      boot, because QEMU's v2 distributor is 4 KiB and +0xFFE8 is
+      UNASSIGNED space; detection moved to the DTB compatible
+      (fdt_platform_t.gic_is_v3), where it belonged.  (2) the first
+      v3 IPI scored 0/15: ICC_SGI1R generates GROUP-1 SGIs and
+      reset IGROUPR0 marks SGI0 group 0 — a group-mismatched SGI is
+      DISCARDED; secondaries now claim their SGI into group 1
+      before listening.  (3) the smoke's first x16 run scored
+      10/15: the bringup's iteration-bounded waits were vCPU-speed
+      bets — the R1 UHCI lesson re-learned; both tenants' waits now
+      run on GUEST TIME (CNTVCT/rdtime deadlines).
+- [x] Exit ran: a64_smp_smoke carries BOTH lanes — v2 -smp 8
+      (7/7+7/7) and GICv3 -smp 16 (15 report-ins counted, IPI
+      15/15).  Full a64 battery + rv_smp re-run green (one stale-
+      IMG scare on the way: the .img lags the .elf unless rebuilt).
+      The last ARCHITECTURAL ceiling of the x16 request is lifted;
+      docs/status.md's living matrix updated.
 
 ### R5 — schedulers
 - [ ] Tenants: per-hart/core runqueues, timer-tick preemption on

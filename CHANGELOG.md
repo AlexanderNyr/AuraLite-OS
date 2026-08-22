@@ -2,6 +2,26 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R4 — GICv3: aarch64 runs -smp 16, 15/15 online, 15/15 IPI] 2026-08-22
+
+gic.c grew a DTB-chosen v3 lane (redistributor walk by affinity,
+WAKER, ICC sysregs by S-encoding, ARE+G1NS, explicit IROUTER=0);
+smp_a64 sends affinity SGIs via ICC_SGI1R_EL1 per cluster and the
+secondaries poll their OWN redistributor's ISPENDR0 — off the trap
+path and off the CPU interface, receipts not scheduling.  The v2
+lane is untouched and both run in a64_smp_smoke (7/7+7/7 at v2
+-smp 8; 15+15 at GICv3 -smp 16).  RES-13 paid: the x16 ceiling on
+a64 was GICv2's, and it is gone.
+
+Three red-run catches, recorded: PIDR2-probe detection hung every
+v2 boot (QEMU's v2 GICD is 4 KiB; +0xFFE8 is unassigned — the DTB
+compatible is the honest source, now in fdt_platform_t); the first
+v3 IPI scored 0/15 (reset IGROUPR0 makes SGI0 group 0 and group-
+mismatched SGIs are DISCARDED; targets claim group 1 first); the
+first x16 smoke scored 10/15 (iteration-bounded bringup waits were
+vCPU-speed bets — the R1 lesson; both tenants now wait on
+CNTVCT/rdtime deadlines).
+
 ## [RESIDUE R3 — the shared TCP round-trips on i386] 2026-08-22
 
 kernel/net measured first: all ten files -m32-clean, tcp.c needs

@@ -73,7 +73,14 @@ typedef struct {
                                           * stays 0 there. */
     uint64_t plic_base;                  /* PLIC (riscv); 0 = not found */
     uint64_t gicd_base;                  /* GICv2 distributor (aarch64) */
-    uint64_t gicc_base;                  /* GICv2 CPU interface (aarch64) */
+    uint64_t gicc_base;                  /* GICv2 CPU interface (aarch64) --
+                                          * or the GICR redistributor region
+                                          * when gic_is_v3 says so (R4) */
+    uint32_t gic_is_v3;                  /* R4: from the DTB compatible --
+                                          * QEMU's v2 distributor is a 4 KiB
+                                          * region and PIDR2 lives at +0xFFE8,
+                                          * so probe-by-read ABORTS on v2;
+                                          * the DTB is the honest source */
     uint32_t intc_kind;                  /* FDT_INTC_* */
     uint32_t psci_method;                /* FDT_PSCI_* */
     uint64_t virtio_base[FDT_MAX_VIRTIO];/* virtio-mmio windows */

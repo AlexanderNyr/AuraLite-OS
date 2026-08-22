@@ -476,7 +476,13 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                      compat_has(list, len, "sifive,plic-1.0.0"))
                 ndev[depth] = DEV_PLIC;
             else if (compat_has(list, len, "arm,cortex-a15-gic") ||
-                     compat_has(list, len, "arm,gic-400"))
+                     compat_has(list, len, "arm,gic-400") ||
+                     (compat_has(list, len, "arm,gic-v3") &&
+                      (plat->gic_is_v3 = 1)))
+                /* R4: v3 hands the SAME two-range shape -- range 0 is
+                 * the distributor, range 1 the REDISTRIBUTOR region;
+                 * the slot names stay, gic.c's PIDR2 read decides
+                 * what the second base means. */
                 ndev[depth] = DEV_GIC;
             else if (compat_has(list, len, "virtio,mmio"))
                 ndev[depth] = DEV_VIRTIO;

@@ -341,7 +341,7 @@ consumers; ONE `ext2.c` mounting on every width the tree builds.
 | Storage driver → fs coupling | 0 (was 41 direct ahci calls) | 0 | 0 | 0 |
 | Syscall surface | ~290 | 11 | 11 | 11 |
 | Bring-up libc | full lib/libc | libcmini shim | libcmini shim | libcmini shim |
-| SMP | ✅ scheduled | — (no ramp) | ✅ 15+1 @ -smp 16, IPI 15/15 | ✅ 7+1 @ -smp 8, IPI 7/7 |
+| SMP | ✅ scheduled | — (no ramp) | ✅ 15+1 @ -smp 16, IPI 15/15 | ✅ 15+1 @ -smp 16 (GICv3, R4) and 7+1 @ -smp 8 (GICv2) |
 | SMP scheduling | per-CPU runqueues | — | 1 scheduled (receipts only, D5) | 1 scheduled (receipts only, D5) |
 
 Proof lanes in CI (`i386-parity` / `riscv-parity` /
@@ -355,8 +355,9 @@ build as rv64, a64 AND i386 (`-Wshorten-64-to-32 -Werror`).
 Width debt: the i386 pay-down (32 errors → 0) DELETED four
 `(uint64_t)` casts — the sweep baseline clicked 359 → 355.
 
-Named residue, carried forward: a64 `-smp 16` needs a GICv3 driver
-(v2 has 8 CPU interfaces — architectural); tenant schedulers stay
+Named residue, carried forward (RES-13 PAID at R4: gic.c carries a
+DTB-chosen GICv3 lane — redistributors, ICC sysregs, affinity SGIs —
+and a64_smp_smoke proves -smp 16 at 15/15+15/15): tenant schedulers stay
 single-CPU (per-CPU runqueues are their own series); i386
 TCP/sockets (unchanged since I8); the full libc port (libcmini is
 the floor, not the ceiling); vfs.c on the tenants (raw x86 `sti`

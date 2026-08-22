@@ -73,9 +73,21 @@ void secondary_main_rv(uint64_t hartid)
     }
 }
 
-static void spin_delay(uint64_t loops)
+/* R4: guest-time bounds (the R1 UHCI lesson; the a64 side measured
+ * the failure at 10/15 acks under a loaded 16-vCPU TCG run).
+ * rdtime advances at the DTB timebase regardless of vCPU speed. */
+static uint64_t cnt_now(void)
 {
-    for (volatile uint64_t i = 0; i < loops; i++)
+    uint64_t t;
+    __asm__ volatile("rdtime %0" : "=r"(t));
+    return t;
+}
+
+static void wait_counter(volatile uint64_t *ctr, uint64_t want,
+                         uint64_t seconds)
+{
+    uint64_t deadline = cnt_now() + seconds * 10000000ull; /* 10 MHz */
+    while (*ctr < want && cnt_now() < deadline)
         ;
 }
 
@@ -113,8 +125,7 @@ void smp_rv_bringup(uint64_t boot_hartid, const boot_info_t *bi)
 
     /* Wait for the report-ins (TCG is slow; bounded spin, honest
      * count either way). */
-    for (int t = 0; t < 1000 && harts_online < started; t++)
-        spin_delay(100000);
+    wait_counter(&harts_online, started, 60);
     kprintf("[smp] online: %llu/%u started hart(s)\n",
             (unsigned long long)harts_online, started);
 
@@ -125,8 +136,7 @@ void smp_rv_bringup(uint64_t boot_hartid, const boot_info_t *bi)
             kprintf("[smp] send_ipi FAILED: SBI error %ld\n", r.error);
             return;
         }
-        for (int t = 0; t < 1000 && ipi_acks < harts_online; t++)
-            spin_delay(100000);
+        wait_counter(&ipi_acks, harts_online, 60);
         kprintf("[smp] IPI round-trip: %llu/%llu ack(s)\n",
                 (unsigned long long)ipi_acks,
                 (unsigned long long)harts_online);

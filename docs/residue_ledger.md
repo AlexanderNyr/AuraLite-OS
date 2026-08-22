@@ -24,7 +24,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-10 | W | DONE@R3 | i386 TCP/sockets absent — net32 is miniproto only (I386 I8) | one TCP payload round-trips in an i386 smoke |
 | RES-11 | S | OPEN | i386 compositor/GUI (I386 I8) | opener fact measured at R12 |
 | RES-12 | S | OPEN | i386 VBE graphics; text mode is the console (I386 I7) | opener fact measured at R12 |
-| RES-13 | W | OPEN | a64 -smp 16 needs GICv3; v2 = 8 ifaces architectural (PARITY P6) | a64_smp_smoke -smp 16 lane: 15 online, IPI 15/15 |
+| RES-13 | W | DONE@R4 | a64 -smp 16 needs GICv3; v2 = 8 ifaces architectural (PARITY P6) | a64_smp_smoke -smp 16 lane: 15 online, IPI 15/15 |
 | RES-14 | W | OPEN | tenant SMP receipts-only; secondaries park (PARITY D5) | a user thread RUNS on a secondary; receipt counted |
 | RES-15 | W | OPEN | x86 user scheduling BSP-only (status.md) | user thread observed scheduled on an AP; case pins it |
 | RES-16 | W | OPEN | device IRQ waking a hlt-ed AP unproven (MATURITY) | receipt line in an SMP case |
@@ -65,7 +65,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses: OPEN 39, DONE@R1 6, DONE@R2 2, DONE@R3 1 (RES-10).
+amended same-commit, catch recorded).  Statuses: OPEN 38, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1 (RES-13).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

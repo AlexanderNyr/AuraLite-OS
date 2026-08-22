@@ -214,7 +214,8 @@ static void a2_bringup(void)
      * Normal rule arrives with A7; the kernel's own drivers get the
      * right attributes by construction here). */
     gic_init((uint64_t)p2v_a64(platform.gicd_base),
-             (uint64_t)p2v_a64(platform.gicc_base));
+             (uint64_t)p2v_a64(platform.gicc_base),
+             (int)platform.gic_is_v3);
 
     /* PARITY P6: secondaries up via PSCI CPU_ON, counted, one SGI
      * round-trip (D5: receipts, not scheduling).  Same HHDM bases
