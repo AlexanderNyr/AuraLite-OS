@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R1 — six rows moved, one sharpened, the ratchet bit its keeper] 2026-08-22
+
+The small-payoff cluster: RES-01 (UHCI TD waits now bounded by two
+seconds of GUEST TIME, not 200M vCPU spins — the recorded runner
+flake's remedy; usb_hub green), RES-04 (`blkdev_partition_kind()`:
+GPT/MBR sniffed through the seam ops, loud IGNORE receipts at all
+four registration sites, a bare 0x55AA boot sector is never called
+a partition table; +9 host asserts), RES-05 (the debt was a STALE
+DOC — FIX_R1 armed IST1 on #DF long ago with a live gate; status.md
+corrected, and the harvester's status-wip ratchet fired on that
+very edit: 16→15, baseline moved same-commit), RES-40 (the G13
+virtio-gpu init hang NO LONGER REPRODUCES — scanout answers, shell
+up; test_virgl_gpu's ENABLE_FULL_ASSERTS flipped to 1, full battery
+green for the first time; TODO rewritten with the trail kept),
+RES-35 (measured: O8 gc-sections on tenants REFUSED with numbers —
+−68% "savings" was deleted live code, five smokes red, reverted;
+O1 superseded by P7; O6 deferred to R6), RES-03 (docs/seams.md:
+time seam lands in R6, msc.h pin stays honestly x86-only).
+
+RES-02 stays open but SHARPENED: under -cpu max the shell starts
+and its first SYS_WRITE never lands; ERMS and x2APIC exonerated by
+A/B boots.  Ledger: OPEN 42, DONE@R1 6.
+
 ## [RESIDUE R0 — the rig: the ledger goes machine-checked] 2026-08-22
 
 `tools/residue_harvest.py` (the metric is the tool), the 48-row

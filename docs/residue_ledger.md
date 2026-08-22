@@ -12,11 +12,11 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 | ID | Class | Status | Item (source) | Exit gate |
 |----|-------|--------|---------------|-----------|
-| RES-01 | W | OPEN | UHCI TD waits iteration-bounded; 1 runner flake seen (PARITY §5) | uhci.c waits on PIT ticks; usb shard green ×1 local |
-| RES-02 | W | OPEN | `-cpu max` shell-banner oddity, pre-H2 control (HW H2) | x86_cpumax_smoke explains or no longer shows the line |
-| RES-03 | W | OPEN | pit.h ×2 + msc.h couplings in kernel/fs, pinned per-file (PARITY P1) | seam decision note written; pins updated or removed |
-| RES-04 | W | OPEN | no partition parse: raw mounts silently ignore GPT/MBR (PARITY §6) | probe prints named skip on partitioned media; smoke pins it |
-| RES-05 | W | OPEN | TSS IST1 filled but no gate uses it (status.md) | double-fault lane uses IST1 with a receipt, or ist fill removed |
+| RES-01 | W | DONE@R1 | UHCI TD waits iteration-bounded; 1 runner flake seen (PARITY §5) | uhci.c waits on PIT ticks; usb shard green ×1 local |
+| RES-02 | W | OPEN | `-cpu max` shell-banner oddity — R1 narrowed: shell STARTS, first SYS_WRITE never lands; ERMS and x2APIC exonerated by A/B boots | smoke explains it or the line appears |
+| RES-03 | W | DONE@R1 | pit.h ×2 + msc.h couplings in kernel/fs, pinned per-file (PARITY P1) | seam decision note written; pins updated or removed |
+| RES-04 | W | DONE@R1 | no partition parse: raw mounts silently ignore GPT/MBR (PARITY §6) | probe prints named skip on partitioned media; smoke pins it |
+| RES-05 | W | DONE@R1 | TSS IST1 filled but no gate uses it (status.md) | double-fault lane uses IST1 with a receipt, or ist fill removed |
 | RES-06 | W | OPEN | vfs.c raw `sti` @ vfs.c:71 blocks every port (PARITY P2) | vfs.c compiles for rv64/a64/i386 in the live lanes |
 | RES-07 | W | OPEN | buffer_cache/tmpfs/devfs/cwd/symlink not adopted on ports (PARITY P2) | objects join the three shared lists; link green |
 | RES-08 | W | OPEN | i386 shell fd layer initrd-only (PARITY P4/P7) | i386 shell cats /ext2 file through VFS; smoke pins it |
@@ -46,12 +46,12 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-32 | M | OPEN | ERMSB crossover tuning needs real silicon (HW H2) | R11 package line; user paste-back |
 | RES-33 | M | OPEN | O3 wall-clock, O8 ThinLTO bar, membench metal numbers (OPT §7/HW §6) | R11 package lines |
 | RES-34 | W | OPEN | fast-boot knob unwired on i386; a64 fw-cfg AMEND-5 deferred (OPT §7/ARM64) | knob toggles in a smoke on both |
-| RES-35 | W | OPEN | O1 rep-movsd i386 / O6 sizeclass ports / O8 gc-sections ports — unmeasured (OPT §7) | measured; done or refused with numbers |
+| RES-35 | W | DONE@R1 | O1/O6/O8 measured at R1: O8 REFUSED with numbers (naive --gc-sections on kernelrv "saves" 68% by deleting live boot/trap sections — all five smokes red; needs a KEEP() audit, folded into the R12 hand-off notes); O1 superseded (P7 linked word-wide string.c on i386); O6 deferred to R6 where port allocation actually grows | measured; done or refused with numbers |
 | RES-36 | S | OPEN | MSI/MSI-X for virtio + virtio-gpu (MATURITY) | opener fact at R12 |
 | RES-37 | M | OPEN | IOAPIC base is QEMU-hardcoded; discovery is metal work (MATURITY) | R11 package line |
 | RES-38 | S | OPEN | OHCI/EHCI/xHCI full transfer scheduling; HID beyond UHCI; BOT short-packet line (USB/TODO) | opener fact at R12 |
 | RES-39 | S | OPEN | Bluetooth USB transport; Wi-Fi chipset backend (TODO/status) | opener fact at R12 |
-| RES-40 | W | OPEN | virtio-gpu init hang found by G13, bisected pre-G11d (TODO) | repro'd + fixed, or narrowed with a new fact |
+| RES-40 | W | DONE@R1 | virtio-gpu init hang found by G13, bisected pre-G11d (TODO) | repro'd + fixed, or narrowed with a new fact |
 | RES-41 | S | OPEN | TGSI backend for VirGL DRAW_VBO (GL G13) | opener fact at R12 |
 | RES-42 | W | OPEN | POSIX leftovers: readline/scanf/jobs/epoll + posix2024 known_partials (POSIX/POSIX2024) | each entry triaged: scheduled or re-affirmed, at R12 |
 | RES-43 | N | OPEN | W32 deferred W-surface, BitBlt, LoadLibraryW, kernel import binding (WIN32 D-numbers) | re-affirmed with D-numbers at R12 |
@@ -65,7 +65,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses at R0: OPEN 48.
+amended same-commit, catch recorded).  Statuses: OPEN 42, DONE@R1 6 (RES-01/03/04/05/35/40; 35 closed as measured-and-refused, 05 closed as stale-doc, 40 closed as no-longer-reproduces).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

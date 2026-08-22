@@ -543,5 +543,11 @@ void ahci_register_blkdevs(void)
             break;
         }
         kprintf("[blkdev] blk%d = %s (AHCI port %d)\n", dev, name, port);
+        int pk = blkdev_partition_kind(dev);
+        if (pk > 0)
+            kprintf("[blkdev] blk%d carries a %s partition table; raw "
+                    "mounts IGNORE it (RES-04: no partition parsing "
+                    "by design)\n", dev,
+                    pk == BLKDEV_PART_GPT ? "GPT" : "MBR");
     }
 }

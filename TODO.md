@@ -439,9 +439,15 @@ for the feature matrix.
   `gfx_fill_rect()` now does too, so on a machine where the back-buffer
   allocation failed every drawing entry point degrades quietly.
 
-- **⚠ The virtio-gpu driver hangs during initialisation when a device is
-  actually attached.** Booting with `-device virtio-gpu-pci` stops after
-  `[virtio-gpu] found modern GPU` and never reaches the shell.
+- **RESOLVED (residue ledger R1, RES-40): the virtio-gpu init hang no
+  longer reproduces.** A current boot with `-device virtio-gpu-pci`
+  answers GET_DISPLAY_INFO (`scanout 0: 1280x800`), reaches the shell,
+  and `test_virgl_gpu.sh` now runs with ENABLE_FULL_ASSERTS=1 — green.
+  The fix was never made deliberately for this symptom; the G13/K1
+  backing-store work is the era it disappeared in.  The original
+  record kept below for the trail:
+  Booting with `-device virtio-gpu-pci` used to stop after
+  `[virtio-gpu] found modern GPU` and never reach the shell.
 
   *Not caused by any GL phase:* bisected to before G11d — commit `9188c85`
   hangs identically. It was simply never exercised, because no integration

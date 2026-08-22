@@ -61,7 +61,12 @@ assert_grep "memcpy small-copy crossover: 0 (ERMS fast-string)" "the backend pic
 # interactive shell's banner does not appear on the serial log under
 # -cpu max even though the shell process starts -- a pre-existing
 # -cpu max oddity recorded in HW_PLAN H2's result, not this phase's
-# regression (the control run proves it).  The kernel reaching
+# regression (the control run proves it).  RES-02 (residue ledger)
+# narrowed it further: the shell PROCESS starts (kernel receipts
+# print, boot-to-shell tick prints) but its first SYS_WRITE never
+# reaches serial; two suspects EXONERATED by A/B boots --
+# qemu64,+erms shows the banner (ERMS/string_fast innocent) and
+# max,-x2apic still hides it (x2APIC innocent).  Still open.  The kernel reaching
 # "shell active" with the 0-byte crossover live is this lane's
 # actual claim.
 assert_grep "shell active; kmain idling"                      "boot reached the shell handoff with the 0-byte crossover live"

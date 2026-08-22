@@ -1,11 +1,11 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0 complete; R1 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R1 complete; R2 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | R0 — the rig: the harvester + the machine-checked registry | ✅ complete | `patches/RESIDUE_R0_rig.patch` |
-| R1 — the small-payoff cluster (flake remedy, oddity, seam pins) | pending | `patches/RESIDUE_R1_small.patch` |
+| R1 — the small-payoff cluster (flake remedy, oddity, seam pins) | ✅ complete | `patches/RESIDUE_R1_small.patch` |
 | R2 — VFS on the ports (the vfs.c:71 unlock) | pending | `patches/RESIDUE_R2_vfs.patch` |
 | R3 — i386 TCP/sockets (the last I8 line) | pending | `patches/RESIDUE_R3_tcp32.patch` |
 | R4 — GICv3 + the a64 x16 run | pending | `patches/RESIDUE_R4_gicv3.patch` |
@@ -183,22 +183,57 @@ executable under QEMU, every one with a gate.  The rig caught the
 plan twice before its first phase closed — which is the entire
 argument for building rigs first.
 
-### R1 — the small-payoff cluster
-- [ ] RES-01: UHCI TD wait → guest-time bound (PIT ticks), smoke
-      unchanged (the flake remedy, pre-paid).
-- [ ] RES-02: reproduce the -cpu max banner oddity with today's
-      tree; fix or record the sharper diagnosis.
-- [ ] RES-05: give IST1 its gate (double-fault lane) or unfill it —
-      whichever the measurement argues.
-- [ ] RES-04: partition-table probe that REFUSES loudly (GPT/MBR
-      detected → named skip, not silent raw mount).
-- [ ] RES-40: attach-GPU repro of the G13 init hang; fix or narrow.
-- [ ] RES-35: measure first (i386 rep movsd candidate sites, port
-      kheap sizeclass counters, ports' dead-code bytes under
-      gc-sections); do what the numbers justify, record what they
-      refuse.
-- [ ] RES-03: write the time-seam/USB-seam decision notes (fix or
-      re-pin with a design owner).
+### R1 — the small-payoff cluster — ✅ COMPLETE (6 of 7 closed, 1 sharpened)
+- [x] RES-01 DONE: the UHCI TD wait is bounded by GUEST TIME (2 s of
+      PIT ticks; interrupts are on in that window) with the
+      iteration count demoted to a broken-timer backstop.
+      test_usb_hub re-run green.
+- [x] RES-02 SHARPENED, stays open: reproduced on today's tree —
+      the shell PROCESS starts (kernel receipts print) but its
+      first SYS_WRITE never reaches serial.  Two suspects
+      EXONERATED by A/B boots: qemu64,+erms shows the banner
+      (string_fast innocent), max,-x2apic still hides it (x2APIC
+      innocent).  Facts recorded in the cpumax smoke's comment.
+- [x] RES-05 DONE — the debt was in the DOC: FIX_R1 armed
+      `idt_set_ist(8, 1)` long ago, with a live gate
+      (test_ist_double_fault.sh) and an A/B unarm knob.  The stale
+      status.md TSS row (🚧 "allocated but unused") corrected to ✅ —
+      and the harvester's own status-wip ratchet TRIPPED on that
+      edit (16→15), proving the debt machinery watches its own
+      bookkeeping; baseline moved same-commit per protocol.
+- [x] RES-04 DONE: `blkdev_partition_kind()` — pure sniff through
+      the ops (GPT at LBA1; MBR only when 0x55AA AND a non-empty
+      entry, so a bare boot sector is never called a partition
+      table).  Loud IGNORE receipts at all four registration
+      sites; 9 new host asserts pin the logic under ASan.
+- [x] RES-40 DONE — no longer reproduces: a current
+      `-device virtio-gpu-pci` boot answers GET_DISPLAY_INFO
+      (`scanout 0: 1280x800`) and reaches the shell; the fix was
+      never made for this symptom (the G13/K1 backing era removed
+      it).  test_virgl_gpu.sh's ENABLE_FULL_ASSERTS flipped to 1 —
+      the case's full battery is green for the first time.  TODO
+      entry rewritten as RESOLVED with the trail kept.
+- [x] RES-35 DONE, measured-and-refused where the numbers said so:
+      **O8 REFUSED** — naive `--gc-sections` on kernelrv "saves"
+      606 160 bytes (895 432 → 285 728, −68%) by DELETING live
+      boot/trap/pool sections: all five rv smokes red; a KEEP()
+      audit of three linker scripts is the real price, recorded in
+      the ledger.  **O1 SUPERSEDED** — P7 already links the H1
+      word-wide string.c on i386.  **O6 DEFERRED to R6** where port
+      allocation actually grows.  Experiment reverted; smokes green
+      again.
+- [x] RES-03 DONE: `docs/seams.md` — the time seam folds into R6
+      (`ktime_ticks()`, both pit.h pins drop there); the msc.h pin
+      STAYS as the honest record of an x86-only coupling until
+      RES-38's sub-series grows a second USB architecture.
+
+#### R1 result
+
+Six rows moved, one sharpened; two of the six closed by CORRECTING
+RECORDS rather than code (RES-05 stale doc, RES-40 stale TODO) —
+the harvest's first lesson is that debt lists rot in both
+directions, and the ratchet now guards the WIP rows too (it fired
+on our own status.md edit within minutes of existing).
 
 ### R2 — VFS on the ports (the vfs.c:71 unlock)
 - [ ] The `sti` at vfs.c:71 becomes an arch-irqflags call (the A6

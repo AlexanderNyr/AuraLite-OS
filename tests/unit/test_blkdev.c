@@ -159,6 +159,27 @@ int main(void)
           (uint16_t)(rbuf[56] | (rbuf[57] << 8)) == 0xEF53,
           "ext2 magic 0xEF53 parses from the seam's bytes");
 
+    /* -- 4b. RES-04: the partition sniff (pure, through the ops) ------- */
+    uint8_t z[2 * BLKDEV_SECTOR_SIZE];
+    memset(z, 0, sizeof(z));
+    CHECK(blkdev_write(a, 0, 2, z) == 0, "sectors 0-1 zeroed");
+    CHECK(blkdev_partition_kind(a) == BLKDEV_PART_NONE,
+          "blank media: no partition table");
+    z[510] = 0x55; z[511] = 0xAA;
+    CHECK(blkdev_write(a, 0, 2, z) == 0, "bare 0x55AA boot sector written");
+    CHECK(blkdev_partition_kind(a) == BLKDEV_PART_NONE,
+          "a bare boot sector is NOT called a partition table");
+    z[0x1BE + 4] = 0x83;                    /* one Linux entry */
+    CHECK(blkdev_write(a, 0, 2, z) == 0, "MBR with one entry written");
+    CHECK(blkdev_partition_kind(a) == BLKDEV_PART_MBR,
+          "MBR with a non-empty entry detected");
+    memcpy(z + BLKDEV_SECTOR_SIZE, "EFI PART", 8);
+    CHECK(blkdev_write(a, 0, 2, z) == 0, "GPT header planted at LBA 1");
+    CHECK(blkdev_partition_kind(a) == BLKDEV_PART_GPT,
+          "GPT wins over the protective MBR");
+    CHECK(blkdev_partition_kind(9) < 0,
+          "sniffing an invalid device reports the read error");
+
     /* -- 5. the slot cap ------------------------------------------------ */
     int got = 0;
     for (int i = 0; i < BLKDEV_MAX; i++)

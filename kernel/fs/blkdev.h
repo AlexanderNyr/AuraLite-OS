@@ -67,6 +67,17 @@ int blkdev_write_sector(int dev, uint64_t lba, const void *buf512);
 /* Total sectors, or 0 when the backend does not say. */
 uint64_t blkdev_sector_count(int dev);
 
+/* RES-04 (ledger): partition-table sniff.  The seam mounts RAW
+ * offsets and IGNORES partition tables by design (PARITY §6); this
+ * probe exists so that ignoring is LOUD.  Reads sectors 0-1 through
+ * the ops (pure logic; the host unit test runs it on a RAM device).
+ * Returns 0 = no table, 1 = MBR with at least one non-empty entry,
+ * 2 = GPT, negative = read error. */
+#define BLKDEV_PART_NONE 0
+#define BLKDEV_PART_MBR  1
+#define BLKDEV_PART_GPT  2
+int blkdev_partition_kind(int dev);
+
 /* Cumulative sectors read/written through the seam, all devices.
  * Feeds /proc/diskstats.  NOTE the honest semantic shift from the
  * pre-seam counters: driver-internal traffic (ahci_self_test's MBR

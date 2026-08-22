@@ -114,6 +114,11 @@ void rvfs_bringup(void)
     }
     kprintf("[blkdev] blk%d = vblk0 (virtio-mmio, %llu sectors)\n",
             dev, (unsigned long long)blkdev_sector_count(dev));
+    int pk = blkdev_partition_kind(dev);
+    if (pk > 0)
+        kprintf("[blkdev] blk%d carries a %s partition table; raw "
+                "mounts IGNORE it (RES-04)\n", dev,
+                pk == BLKDEV_PART_GPT ? "GPT" : "MBR");
 
     if (ext2_init(dev) != 0) {
         kprintf("[rvfs] ext2 mount failed on blkdev %d\n", dev);

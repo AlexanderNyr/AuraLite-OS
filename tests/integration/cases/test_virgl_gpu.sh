@@ -75,7 +75,7 @@ echo "[virgl] using -device $GPU_DEV"
 il_run_qemu "$LOG" 300 -device "$GPU_DEV"
 
 # Set to 1 once the virtio-gpu driver initialisation hang is fixed.
-ENABLE_FULL_ASSERTS=0
+ENABLE_FULL_ASSERTS=1   # RES-40: the init hang no longer reproduces (R1); full asserts armed
 
 # 1. The kernel must find the device.  Without this the rest is vacuous: the
 #    test would be re-running the software path under a different name.

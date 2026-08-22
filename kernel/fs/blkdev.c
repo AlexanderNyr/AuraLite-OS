@@ -98,6 +98,28 @@ uint64_t blkdev_sector_count(int dev)
     return s->ops->sector_count(s->ctx);
 }
 
+int blkdev_partition_kind(int dev)
+{
+    unsigned char sec[2 * BLKDEV_SECTOR_SIZE];
+    if (blkdev_read(dev, 0, 2, sec) != 0)
+        return -1;
+    /* GPT: the protective header lives at LBA 1, "EFI PART". */
+    const unsigned char *h = sec + BLKDEV_SECTOR_SIZE;
+    if (h[0] == 'E' && h[1] == 'F' && h[2] == 'I' && h[3] == ' ' &&
+        h[4] == 'P' && h[5] == 'A' && h[6] == 'R' && h[7] == 'T')
+        return BLKDEV_PART_GPT;
+    /* MBR: 0x55AA signature AND at least one non-empty entry --
+     * a bare boot sector (FAT VBR, our own stage1) also carries
+     * 0x55AA, and calling THAT a partition table would be the lie
+     * this probe exists to prevent. */
+    if (sec[510] == 0x55 && sec[511] == 0xAA) {
+        for (int e = 0; e < 4; e++)
+            if (sec[0x1BE + e * 16 + 4] != 0)   /* type byte */
+                return BLKDEV_PART_MBR;
+    }
+    return BLKDEV_PART_NONE;
+}
+
 void blkdev_get_stats(uint64_t *out_sectors_read,
                       uint64_t *out_sectors_written)
 {

@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include "drivers/usb/uhci.h"
+#include "drivers/timer/pit.h"      /* RES-01: guest-time TD bound */
 #include "drivers/pci/pci.h"
 #include "kernel/arch/arch.h"
 #include "kernel/mm/pmm.h"
@@ -172,17 +173,28 @@ static int uhci_schedule_tds(volatile struct uhci_td *first_td,
         frame_list[i] = (uint32_t)qh_phys | (1u << 1);
     }
     if (saved_flags & 0x200ULL) __asm__ volatile("sti" ::: "memory");
-    int timeout = 200000000;
-    while (timeout-- > 0) {
+    /* RES-01 (ledger): the wait is bounded by GUEST TIME, not by an
+     * iteration count.  200M pause-iterations meant "however long
+     * this vCPU takes to spin that far" -- a starved shared runner
+     * once stretched the device's 1ms frames past it and produced
+     * the one recorded TD-timeout flake.  Two seconds of PIT time is
+     * 2000 frame walks: interrupts are on in this window, the tick
+     * advances regardless of vCPU speed.  The iteration fuse stays
+     * as a backstop for a broken timer (interrupts off would
+     * otherwise make this loop eternal). */
+    uint64_t td_deadline = timer_get_ticks() + 200;   /* 2 s @ 100 Hz */
+    long td_fuse = 2000000000L;
+    int td_timed_out = 1;
+    while (timer_get_ticks() < td_deadline && td_fuse-- > 0) {
         uint32_t el = qh->element_link;
-        if ((el & 0x1) && ((el & ~0xFUL) == 0)) break;
+        if ((el & 0x1) && ((el & ~0xFUL) == 0)) { td_timed_out = 0; break; }
         __asm__ volatile("pause");
     }
     __asm__ volatile("cli" ::: "memory");
     for (int i = 0; i < UHCI_FRAME_COUNT; i++) frame_list[i] = saved_frame0;
     if (saved_flags & 0x200ULL) __asm__ volatile("sti" ::: "memory");
     int result = 0;
-    if (timeout < 0) {
+    if (td_timed_out) {
         kprintf("[uhci] TD chain timeout (el=0x%08x)\n", qh->element_link);
         result = -1;
     } else if (last_td->ctrl & (TD_CTRL_STALLED | TD_CTRL_DATA_BUF | TD_CTRL_BABBLE | TD_CTRL_BITSTUFF)) {

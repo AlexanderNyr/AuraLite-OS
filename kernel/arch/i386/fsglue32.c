@@ -119,6 +119,11 @@ void fs32_bringup(void)
                              BLKDEV_SECTOR_SIZE);
     kprintf("[blkdev] blk%d = ata1 (primary slave, %u sectors)\n",
             d1, ata32_drive_sectors(1));
+    int pk = blkdev_partition_kind(d1);
+    if (pk > 0)
+        kprintf("[blkdev] blk%d carries a %s partition table; raw "
+                "mounts IGNORE it (RES-04)\n", d1,
+                pk == BLKDEV_PART_GPT ? "GPT" : "MBR");
 
     /* ext2_init(-1): the shared picker prefers the SECOND device
      * when more than one is registered -- the x86_64 rule, verbatim,
