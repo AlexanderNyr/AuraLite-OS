@@ -26,7 +26,7 @@
 
 extern const uint64_t kernel_layout[];       /* boot.S; [8] = secondary PA */
 
-#define SMP_RV_MAX   8
+#define SMP_RV_MAX   16  /* x16: the P6 amendment; QEMU virt takes -smp 16 */
 #define SEC_STACK_SZ 8192
 
 /* Per-hart stacks, .bss.  Static because the harts outlive every

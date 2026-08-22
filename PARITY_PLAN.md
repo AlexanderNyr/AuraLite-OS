@@ -1,6 +1,6 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P5 complete; P6 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P6 complete; P7 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,7 @@
 | P3 — ext2 mounted on a64 (the shared-transport dividend) | ✅ complete | `patches/PARITY_P3_a64fs.patch` |
 | P4 — the syscall widening: open/read/close on three ports | ✅ complete | `patches/PARITY_P4_syscalls.patch` |
 | P5 — SMP rv64: SBI HSM hart_start | ✅ complete | `patches/PARITY_P5_rvsmp.patch` |
-| P6 — SMP a64: PSCI CPU_ON | pending | `patches/PARITY_P6_a64smp.patch` |
+| P6 — SMP a64: PSCI CPU_ON (+ the x16 amendment) | ✅ complete | `patches/PARITY_P6_a64smp.patch` |
 | P7 — i386: the fs width pay-down + ATA behind the seam | pending | `patches/PARITY_P7_i386fs.patch` |
 | P8 — libc subset promotion for the DTB tenants | pending | `patches/PARITY_P8_libc.patch` |
 | P9 — CI lanes, docs, the honest matrix flip | pending | `patches/PARITY_P9_ci.patch` |
@@ -413,11 +413,41 @@ recorded above (the low pool); zero portable-line changes; the
 kernel still shuts down by PSCI at the end of a healthy run, which
 makes the smoke sub-second.
 
-### P6 — SMP a64
-- [ ] `psci.c` gains CPU_ON (0xC4000003, the function the file's
-      own comment promised); vectors/boot.S secondary path;
-      GIC SGI for the IPI receipt.
-- [ ] Same receipt shape as P5, `-smp 4`, counted lines.
+### P6 — SMP a64 (+ the x16 amendment) — ✅ COMPLETE
+- [x] `psci.c` delivers CPU_ON (0xC4000003 SMC64 over the hvc
+      conduit — the function its own A0 comment promised as "D5's
+      named exit ramp").  `_secondary_start` in boot.S: the boot
+      path's moves minus the header dance — DAIF masked, SPSel=1,
+      FPEN open, the SAME early roots into TTBR0/1, SCTLR.M, long
+      jump high through `secondary_jump_pool` (placed in the LOW
+      pool from the start — the P5 relocation lesson paid forward).
+      Entry PA rides `kernel_layout[8]`, stacks ride CPU_ON's
+      context argument.
+- [x] The IPI receipt is a GICv2 SGI, and secondaries POLL their
+      BANKED CPU interface (own ISENABLER0 bit, own GICC_CTLR/PMR,
+      claim from IAR with PSTATE.I masked — the interface signals,
+      the core never vectors): off the trap path, same D5 shape as
+      rv64.  `a64_smp_smoke.sh` (written by hand — the P3 sed
+      lesson): -smp 8 → exactly 7 report-ins counted, `online:
+      7/7`, `IPI round-trip: 7/7 ack(s)`, 7 named ack lines.
+- [x] **The x16 amendment (user request), measured not wished:**
+      both tenants now carry code max 16 (SMP_RV_MAX/SMP_A64_MAX);
+      rv64 PROVES it — rv_smp_smoke.sh grew a second lane, `-smp
+      16` → exactly 15 report-ins, `IPI round-trip: 15/15 ack(s)`.
+      On a64 the ceiling is ARCHITECTURAL, not ours: GICv2 has 8
+      CPU interfaces and 8 SGIR target bits, and QEMU virt refuses
+      `-smp 16` with gic-version=2.  The a64 x16 run needs a GICv3
+      driver (affinity-routed SGIs via ICC_SGI1R_EL1) — NAMED
+      RESIDUE, carried to P9's list.
+
+#### P6 result
+
+First -smp 8 boot: 7/7 online from their own stacks, SGI acked
+7/7 through seven banked interfaces.  First -smp 16 boot on rv64:
+15/15 online, IPI 15/15.  Single-core runs on both tenants print
+the honest `nothing to start`; a64_boot, a64_parity, a64_drivers,
+a64_fs, rv_boot, rv_parity, rv_fs all re-run green.  Zero portable
+lines changed; the whole phase is arch-side plus two smokes.
 
 ### P7 — i386: fs width pay-down + ATA behind the seam
 - [ ] The 32 shorten-64-to-32 errors in 14 files → 0; width-sweep

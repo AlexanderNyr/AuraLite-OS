@@ -67,6 +67,8 @@ early_ttbr1:
 boot_jump_pool:
     .quad _start_high             // VMA in the higher-half .text
     .quad boot_stack_top          // VMA in the higher-half .bss
+secondary_jump_pool:              // P6: read by _secondary_start (low)
+    .quad _secondary_high         // VMA of the secondary's high half
 
 // The refusal string lives HERE, in the low .boot world, because the
 // refusal path runs before (instead of) the jump high -- an adr from
@@ -239,6 +241,49 @@ _start_high:
 // cannot address absolute low symbols, so the CONTRACT is a data pool
 // on every arch -- one walker, one access pattern.
 .align 3
+// ---- PARITY P6: the PSCI CPU_ON secondary entry ---------------------
+// CPU_ON lands each started core here at EL1, MMU off, x0 = context
+// (this core's stack TOP, high-half VA, chosen by the boot CPU).
+// The boot path's moves minus the header dance: DAIF masked, SPSel=1,
+// FPEN open, the SAME early roots, SCTLR.M, long jump high.  x19
+// carries the stack across the enable (x0 is clobber-prone).
+.section .text.boot
+.globl _secondary_start
+_secondary_start:
+    mov   x19, x0
+    msr   daifset, #0xf
+    msr   spsel, #1
+    mov   x1, #(3 << 20)
+    msr   cpacr_el1, x1
+    mov   x1, #0xFF00
+    msr   mair_el1, x1
+    ldr   x1, =(25 | (0x1 << 8) | (0x1 << 10) | (0x3 << 12) | (25 << 16) | (0x1 << 24) | (0x1 << 26) | (0x3 << 28) | (0x2 << 30) | (0x2 << 32))
+    msr   tcr_el1, x1
+    adr   x1, early_ttbr0
+    msr   ttbr0_el1, x1
+    adr   x1, early_ttbr1
+    msr   ttbr1_el1, x1
+    dsb   ish
+    isb
+    mrs   x1, sctlr_el1
+    orr   x1, x1, #1
+    msr   sctlr_el1, x1
+    isb
+    adr   x1, secondary_jump_pool // low PC-relative -> identity LMA
+    ldr   x2, [x1]
+    br    x2
+
+// The secondary's higher half: stack from x19, then C; park after.
+.section .text
+.globl _secondary_high
+_secondary_high:
+    mov   sp, x19
+    bl    secondary_main_a64
+.Lsec_park:
+    wfi
+    b     .Lsec_park
+
+.section .rodata
 .globl kernel_layout
 kernel_layout:
     .quad __kernel_start          // [0] image start, PHYS
@@ -249,6 +294,7 @@ kernel_layout:
     .quad __rodata_end            // [5]
     .quad __data_start            // [6] .data start, VMA
     .quad __kernel_end            // [7] image end, PHYS
+    .quad _secondary_start        // [8] P6: PSCI CPU_ON entry, PHYS
 
 .section .bss
 .align 16

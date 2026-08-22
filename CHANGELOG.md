@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P6 — SMP aarch64] 2026-08-22
+
+psci.c delivers the CPU_ON its own A0 comment promised (0xC4000003
+over hvc, three-argument conduit added); `_secondary_start` in a64
+boot.S rides the SAME early translation roots as the boot path and
+jumps high through a low-pool literal (the P5 relocation lesson,
+paid forward instead of re-learned).  Secondaries report in from
+CPU_ON's context stacks, bring up their BANKED GICv2 interfaces,
+and ack one SGI by polling IAR with PSTATE.I masked — off the trap
+path, receipts not scheduling (D5).
+
+- a64_smp_smoke.sh (hand-written; the P3 sed lesson): -smp 8 →
+  exactly 7 counted report-ins, online 7/7, SGI 7/7.
+- **x16 (user request): code max 16 on BOTH tenants; rv64 proves
+  it live** — rv_smp_smoke.sh's new second lane boots -smp 16 and
+  counts 15 report-ins + IPI 15/15.  The a64 ceiling is GICv2's
+  own: 8 CPU interfaces, 8 SGIR target bits, QEMU refuses more;
+  GICv3 (ICC_SGI1R_EL1 affinity SGIs) is the named residue that
+  lifts it.
+- Single-core runs stay honest ("nothing to start"); all seven
+  prior smokes re-run green on both tenants.  Checker: +3 claims
+  (31, with the P6 artefact row).
+
 ## [PARITY P5 — SMP rv64: three harts up, one IPI, all counted] 2026-08-22
 
 SBI HSM (hart_start) + sPI (send_ipi) in sbi.c; `_secondary_start`

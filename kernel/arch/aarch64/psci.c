@@ -23,6 +23,7 @@
 #include "kernel/arch/aarch64/pl011.h"
 
 #define PSCI_SYSTEM_OFF 0x84000008u
+#define PSCI_CPU_ON_64  0xC4000003u   /* P6: SMC64 CPU_ON */
 
 static uint64_t psci_call(uint64_t fid)
 {
@@ -30,6 +31,29 @@ static uint64_t psci_call(uint64_t fid)
 
     __asm__ volatile("hvc #0" : "+r"(x0) : : "memory");
     return x0;
+}
+
+/* P6: the three-argument conduit CPU_ON needs (x1..x3 live). */
+static uint64_t psci_call3(uint64_t fid, uint64_t a1, uint64_t a2,
+                           uint64_t a3)
+{
+    register uint64_t x0 __asm__("x0") = fid;
+    register uint64_t x1 __asm__("x1") = a1;
+    register uint64_t x2 __asm__("x2") = a2;
+    register uint64_t x3 __asm__("x3") = a3;
+
+    __asm__ volatile("hvc #0"
+                     : "+r"(x0)
+                     : "r"(x1), "r"(x2), "r"(x3)
+                     : "memory");
+    return x0;
+}
+
+long psci_cpu_on(uint64_t target_mpidr, uint64_t entry_pa,
+                 uint64_t context)
+{
+    return (long)psci_call3(PSCI_CPU_ON_64, target_mpidr, entry_pa,
+                            context);
 }
 
 void psci_system_off(void)

@@ -304,6 +304,33 @@ def claims():
                                "smp_rv.c") and
         "NAMED" in read("kernel", "arch", "riscv64", "smp_rv.c")))
 
+    # --- P6: SMP a64 -- the promised CPU_ON exists, the secondary
+    # --- path is end-to-end, and the x16 boundary is MEASURED (code
+    # --- max 16 both tenants; GICv2 caps a64 runs at 8; rv proves 16).
+    checks.append((
+        "P6: psci.c delivers the CPU_ON its A0 comment promised "
+        "(0xC4000003), and boot.S has the secondary entry + pool",
+        "psci_cpu_on" in read("kernel", "arch", "aarch64", "psci.c") and
+        "0xC4000003" in read("kernel", "arch", "aarch64", "psci.c") and
+        "_secondary_start" in read("kernel", "arch", "aarch64",
+                                   "boot.S") and
+        "secondary_jump_pool" in read("kernel", "arch", "aarch64",
+                                      "boot.S")))
+    checks.append((
+        "P6: the a64 IPI is a banked-interface POLL (off the trap "
+        "path) and the GICv2 8-core ceiling is named in the code",
+        "GICC_IAR" in read("kernel", "arch", "aarch64", "smp_a64.c") and
+        "architecturally 8" in read("kernel", "arch", "aarch64",
+                                    "smp_a64.c")))
+    checks.append((
+        "P6/x16: both tenants carry SMP max 16 (rv proves -smp 16 "
+        "live in its smoke's second lane)",
+        "SMP_RV_MAX   16" in read("kernel", "arch", "riscv64",
+                                  "smp_rv.c") and
+        "SMP_A64_MAX   16" in read("kernel", "arch", "aarch64",
+                                   "smp_a64.c") and
+        "-smp 16" in read("tests", "integration", "rv_smp_smoke.sh")))
+
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).
     for phase in PHASE_ORDER:

@@ -32,6 +32,7 @@
 #include "kernel/arch/aarch64/initrd_a64.h"
 #include "kernel/arch/aarch64/vblk_a64.h"
 #include "kernel/arch/aarch64/fsglue_a64.h"
+#include "kernel/arch/aarch64/smp_a64.h"
 #include "kernel/arch/aarch64/vnet_a64.h"
 #include "kernel/arch/aarch64/membench_a64.h"
 
@@ -214,6 +215,13 @@ static void a2_bringup(void)
      * right attributes by construction here). */
     gic_init((uint64_t)p2v_a64(platform.gicd_base),
              (uint64_t)p2v_a64(platform.gicc_base));
+
+    /* PARITY P6: secondaries up via PSCI CPU_ON, counted, one SGI
+     * round-trip (D5: receipts, not scheduling).  Same HHDM bases
+     * the GIC driver just took. */
+    smp_a64_bringup(&boot_info,
+                    (uint64_t)p2v_a64(platform.gicd_base),
+                    (uint64_t)p2v_a64(platform.gicc_base));
     pl011_puts("[gic]  GICv2 up: distributor + CPU interface, INTIDs pre-normalised\n");
 
     trap_init_a64();
