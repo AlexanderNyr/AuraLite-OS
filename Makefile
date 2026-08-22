@@ -241,12 +241,14 @@ KERNELRV_DIR  := kernel/arch/riscv64
 # H0 (HW_PLAN): kernel/lib/string.c adopted -- the OPT §7 residue line
 # ("8-byte loops ready for shared-tree adoption") paid; membench_rv
 # measures exactly these linked bodies, and H1 makes them word-wide.
-KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c kernel/drivers/virtio_mmio.c kernel/lib/string.c
+KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c kernel/drivers/virtio_mmio.c kernel/lib/string.c \
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/ext2.c
 KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null) $(KERNELRV_SHARED)
 KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
 KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
                  $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))
-KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h kernel/lib/string.h
+KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h kernel/lib/string.h \
+                 kernel/lib/kprintf.h kernel/lib/spinlock.h kernel/fs/blkdev.h kernel/fs/ext2.h kernel/fs/vfs.h
 CFLAGSRV      := --target=riscv64 -march=rv64gc -mabi=lp64d \
                  -mcmodel=medany -mno-relax \
                  -std=c11 -ffreestanding -fno-stack-protector \

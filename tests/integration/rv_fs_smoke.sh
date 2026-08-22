@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# rv_fs_smoke.sh — PARITY_PLAN.md P2: ext2 mounted on rv64, proven.
+#
+# One boot of the rv64 kernel with a HOST-FORMATTED ext2 image (the
+# exact mkfs.ext2 recipe test_ext2.sh uses on x86) on virtio-mmio blk:
+#   - vblk sniffs sector 0, sees no parity pattern, hands the disk to
+#     the blkdev seam (the pattern disk's selftest gate is untouched —
+#     rv_parity_smoke.sh keeps proving that lane);
+#   - the SHARED ext2.c (same object list as x86: KERNELRV_SHARED)
+#     mounts it and self-tests read/write/dir/indirect;
+#   - a known file seeded with debugfs is read back through the ops
+#     table and its per-run token must appear byte-exact.
+#
+# QEMU output goes to a file only (the standing rule); 200KB fuse.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+BUILD="$ROOT/build"
+ELF="$BUILD/kernelrv.elf"
+TAR="$BUILD/initrd.tar"
+DISK="$BUILD/rv_fs_ext2.img"
+LOG="$BUILD/rv_fs.log"
+
+if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then
+    echo "[rv-fs] SKIP: qemu-system-riscv64 not installed" >&2
+    exit 0
+fi
+
+MKFS=""; DEBUGFS=""
+for p in /sbin/mkfs.ext2 /usr/sbin/mkfs.ext2; do [ -x "$p" ] && MKFS="$p"; done
+for p in /sbin/debugfs  /usr/sbin/debugfs;  do [ -x "$p" ] && DEBUGFS="$p"; done
+if [ -z "$MKFS" ] || [ -z "$DEBUGFS" ]; then
+    echo "[rv-fs] SKIP: e2fsprogs not installed (need mkfs.ext2 + debugfs)" >&2
+    exit 0
+fi
+
+[ -s "$ELF" ] || make -C "$ROOT" kernelrv >/dev/null
+[ -s "$TAR" ] || make -C "$ROOT" "$TAR" >/dev/null
+
+# ---- the image: mkfs on the host, one seeded file with a run token ----
+TOKEN="RVFS_$$_$(date +%s)"
+rm -f "$DISK"
+dd if=/dev/zero of="$DISK" bs=1M count=4 status=none
+"$MKFS" -q -b 1024 -I 128 -F "$DISK" >/dev/null 2>&1
+SEED="$BUILD/rv_fs_seed.$$.txt"
+echo "hello from linux mkfs $TOKEN" > "$SEED"
+"$DEBUGFS" -w -R "write $SEED LINUX.TXT" "$DISK" >/dev/null 2>&1
+rm -f "$SEED"
+
+# ---- one boot ----
+rm -f "$LOG"
+{
+    sleep 8
+    printf 'exit\n'; sleep 2
+} | timeout 120 qemu-system-riscv64 \
+        -machine virt -m 256M \
+        -display none -serial stdio -no-reboot \
+        -kernel "$ELF" -initrd "$TAR" \
+        -global virtio-mmio.force-legacy=true \
+        -drive file="$DISK",format=raw,if=none,id=hd \
+        -device virtio-blk-device,drive=hd \
+        > "$LOG" 2>/dev/null || true
+
+tr -d '\r' < "$LOG" > "$LOG.clean" && mv "$LOG.clean" "$LOG"
+
+if [ "$(wc -c < "$LOG")" -gt 200000 ]; then
+    echo "[rv-fs] FAIL: log exceeds the 200KB fuse (runaway output)" >&2
+    exit 1
+fi
+
+fail=0
+assert_grep() {
+    local pat="$1" desc="$2"
+    if grep -qa "$pat" "$LOG"; then
+        echo "  [rv-fs] OK   $desc"
+    else
+        echo "  [rv-fs] FAIL $desc (pattern: $pat)" >&2
+        fail=1
+    fi
+}
+assert_no_grep() {
+    local pat="$1" desc="$2"
+    if grep -qa "$pat" "$LOG"; then
+        echo "  [rv-fs] FAIL $desc (found: $pat)" >&2
+        fail=1
+    else
+        echo "  [rv-fs] OK   $desc"
+    fi
+}
+
+# ---- the receipts, one per link in the chain ----
+assert_grep "virtio-blk over mmio"                        "vblk transport up"
+assert_grep "sector 0: no test pattern; filesystem media" "media sniff took the fs lane"
+assert_grep "\[blkdev\] blk0 = vblk0"                     "vblk registered with the seam"
+assert_grep "\[ext2\] mounted existing volume"            "SHARED ext2.c recognised the host-formatted volume"
+assert_grep "\[ext2\] blkdev 0 mounted"                   "ext2 names the seam device, not a driver"
+assert_grep "\[rvfs\] mounted ext2 on blkdev 0"           "arch glue receipt"
+assert_grep "\[ext2\] PASS:"                              "ext2 self-test (write/dir/indirect/rename) on rv64"
+assert_grep "LINUX.TXT"                                   "seeded file visible"
+assert_grep "$TOKEN"                                      "cat returned this run's token byte-exact"
+assert_no_grep "\[rvfs\] cat: "                           "no cat failure path taken"
+assert_no_grep "\[blk\]  FAIL"                            "no vblk failure"
+assert_no_grep "UNHANDLED EXCEPTION"                      "no unhandled trap anywhere in the boot"
+
+if [ "$fail" -ne 0 ]; then
+    echo "[rv-fs] FAILED — log tail:" >&2
+    tail -30 "$LOG" >&2
+    exit 1
+fi
+echo "[rv-fs] all assertions passed"

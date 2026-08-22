@@ -1,12 +1,12 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P1 complete; P2 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P2 complete; P3 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | P0 — the rig: blkdev seam audit + claims checker | ✅ complete | `patches/PARITY_P0_rig.patch` |
 | P1 — the block-device layer (x86_64 byte-honest refactor) | ✅ complete | `patches/PARITY_P1_blkdev.patch` |
-| P2 — ext2 mounted on rv64 (vblk behind the seam) | pending | `patches/PARITY_P2_rvfs.patch` |
+| P2 — ext2 mounted on rv64 (vblk behind the seam) | ✅ complete | `patches/PARITY_P2_rvfs.patch` |
 | P3 — ext2 mounted on a64 (the shared-transport dividend) | pending | `patches/PARITY_P3_a64fs.patch` |
 | P4 — the syscall widening: open/read/close on three ports | pending | `patches/PARITY_P4_syscalls.patch` |
 | P5 — SMP rv64: SBI HSM hart_start | pending | `patches/PARITY_P5_rvsmp.patch` |
@@ -253,16 +253,54 @@ that touches the I/O path would blind exactly the tripwires meant
 to catch this commit's mistakes.  P2 rewords them when the strings
 become lies (on a tenant they would be), together with the greps.
 
-### P2 — ext2 mounted on rv64
-- [ ] `vblk_rv` registers as blkdev; `vfs.c ext2.c buffer_cache.c
-      devfs.c tmpfs.c cwd.c symlink.c` join KERNELRV_SHARED (the
-      string.c promotion shape).
-- [ ] Boot receipt: `[vfs] mounted / (ext2, N inodes)` on the rv64
-      serial log; `rv_fs_smoke.sh` boots with `-drive` +
-      virtio-mmio-blk carrying the SAME ext2.img the x86 tests use,
-      cats a known file, compares content.
-- [ ] Linker-size delta measured and quoted (kernelrv.elf is
-      601 656 bytes today — the phase result records the growth).
+### P2 — ext2 mounted on rv64 — ✅ COMPLETE
+- [x] `vblk_rv` registers as blkdev (single-sector backend, the
+      seam's count looped arch-side per §6); the adoption set that
+      MEASUREMENT picked — `blkdev.c ext2.c kprintf.c spinlock.c` —
+      joined KERNELRV_SHARED unchanged (the string.c promotion
+      shape).  **Deviation, named: the task list above was written
+      from the plan's draft; llvm-nm re-scoped it.**  vfs.c does not
+      even COMPILE on this target (a raw x86 `sti` at vfs.c:71 — one
+      of the width sweep's 29 allowed asm files — plus the
+      scheduler/thread coupling); buffer_cache/devfs/tmpfs/cwd/
+      symlink link against vfs.c symbols (vfs_now aside) or serve
+      paths no rv64 consumer exists for yet.  ext2 needs none of
+      them: measured undefined-symbol surface = blkdev_*, kmalloc/
+      kfree, kprintf, vfs_now, string.h — provided by 40 lines of
+      arch glue (`fsglue_rv.c`), not forks.
+- [x] Boot receipts (all pinned by the smoke): `[blkdev] blk0 =
+      vblk0 (virtio-mmio, 8192 sectors)`, ext2.c's own `[ext2]
+      mounted existing volume: block_size=1024, groups=1,
+      blocks=4096, inodes=1024`, `[rvfs] mounted ext2 on blkdev 0
+      (ops-level; VFS waits on P4)` — the draft's `[vfs] mounted /`
+      line was vfs.c's to print, and vfs.c stayed home; the honest
+      receipt names what actually mounted.  `rv_fs_smoke.sh` (12
+      asserts) seeds LINUX.TXT via debugfs with a per-run token and
+      the kernel cats it back through `ext2_ops.lookup/read` —
+      byte-exact token match.
+- [x] Size delta: kernelrv.elf 601 656 → 862 144 (+260 488 for
+      kprintf+spinlock+blkdev+ext2, measured).  The pattern-disk
+      lane is intact: sector-0 sniff dispatches (parity pattern →
+      V7 selftest gate verbatim; anything else → the seam), and
+      rv_parity_smoke.sh re-run green after the change.
+- [x] The two ext2 strings that would have been lies off-x86
+      reworded WITH grep audit ("no AHCI disk available"/"AHCI port
+      %d mounted" → "no block device available"/"blkdev %d
+      mounted"); x86's test_ext2 pins neither (checked before the
+      edit), and diskfs's identical-sounding string stays because
+      its case pins the ABSENCE of it (the P1 tripwire argument).
+
+#### P2 result
+
+The chain, from the first boot with the seam in place: vblk 8192
+sectors → blk0 registered → shared ext2.c recognises the
+host-mkfs'd volume → self-test PASS (write/dir/indirect/rename on
+rv64) → `cat LINUX.TXT (25 bytes)` returns the seeded line.
+rv_fs_smoke.sh 12/12; rv_parity_smoke.sh still green (pattern lane
+untouched); x86 fs cases unaffected by the reword (test_ext2
+re-run green).  ext2.c itself: ZERO edits beyond the two strings —
+the same object list x86 links, now mounting on a second
+architecture.
 
 ### P3 — ext2 mounted on a64
 - [ ] Same seam, fourth consumer: vblk_a64 registers, the same

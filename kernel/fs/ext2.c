@@ -1487,7 +1487,7 @@ int ext2_init(int prefer_port) {
     if (p < 0 && blkdev_count() > 1) p = 1;
     if (p < 0 && blkdev_count() > 0) p = 0;
     if (p < 0) {
-        kprintf("[ext2] no AHCI disk available; not mounted\n");
+        kprintf("[ext2] no block device available; not mounted\n");
         return -1;
     }
     es.bdev         = p;
@@ -1499,7 +1499,7 @@ int ext2_init(int prefer_port) {
         return -1;
     }
     es.mounted = 1;
-    kprintf("[ext2] AHCI port %d mounted at /ext2\n", p);
+    kprintf("[ext2] blkdev %d mounted at /ext2\n", p);
     return 0;
 }
 

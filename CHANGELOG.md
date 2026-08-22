@@ -2,6 +2,32 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P2 — the shared ext2 mounts on rv64] 2026-08-22
+
+The seam pays out on its first tenant: `kernel/fs/ext2.c` — ZERO
+edits beyond two honest string rewords — now mounts a
+host-formatted volume on riscv64, self-tests write/dir/indirect/
+rename, and cats a debugfs-seeded file back byte-exact.
+KERNELRV_SHARED grew by exactly what llvm-nm said was needed:
+blkdev.c, ext2.c, kprintf.c, spinlock.c (the last compiles for
+rv64 with zero undefined symbols — the V6 atomics work, still
+paying).  40 lines of arch glue (`fsglue_rv.c`: three kprintf
+sinks, kmalloc/kfree onto kheap_rv, vfs_now from rdtime, vblk's
+single-sector ops looped behind the seam) — no forks.
+
+- **Measurement re-scoped the plan's draft, deviation named:**
+  vfs.c does not even compile on this target (raw x86 `sti` at
+  vfs.c:71, one of the width sweep's 29 allowed asm files, plus
+  scheduler coupling); buffer_cache/devfs/tmpfs/cwd/symlink wait
+  with it.  ext2 needed none of them.  Path-level API is P4's.
+- vblk keeps V7's pattern-disk selftest gate VERBATIM: sector-0
+  sniff dispatches (parity pattern → old gate; anything else → the
+  seam).  rv_parity_smoke.sh re-run green after the change.
+- New smoke `rv_fs_smoke.sh`, 12 asserts, per-run token, e2fsprogs
+  skip, 200KB fuse; x86 regression: test_ext2 re-run green, full
+  test-unit green (20 parity claims now, three new P2 claims).
+- kernelrv.elf 601 656 → 862 144 (+260 488, measured).
+
 ## [PARITY P1 — the blkdev seam: 41 → 0] 2026-08-22
 
 `kernel/fs/blkdev.{c,h}`: one narrow table (multi-sector read/write

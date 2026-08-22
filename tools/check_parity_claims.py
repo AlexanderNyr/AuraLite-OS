@@ -206,6 +206,33 @@ def claims():
         "per file",
         inc_ok and len(fs_sources()) > 0))
 
+    # --- P2: the rv64 adoption is SHARED objects, not forks (the
+    # --- string.c promotion shape, asserted the same way).
+    makefl_rv = re.search(r"KERNELRV_SHARED :=.*?(?:\n\n|\nKERNELRV_SRCS)",
+                          makefl, re.S)
+    rv_shared = makefl_rv.group(0) if makefl_rv else ""
+    checks.append((
+        "P2: KERNELRV_SHARED carries the fs adoption set unchanged "
+        "(blkdev.c, ext2.c, kprintf.c, spinlock.c)",
+        all(t in rv_shared for t in
+            ("kernel/fs/blkdev.c", "kernel/fs/ext2.c",
+             "kernel/lib/kprintf.c", "kernel/lib/spinlock.c"))))
+    checks.append((
+        "P2: the arch glue provides the measured surface and vfs.c's "
+        "absence is a NAMED blocker, not a silent one",
+        "uart_putchar" in read("kernel", "arch", "riscv64", "fsglue_rv.c")
+        and "vfs_now" in read("kernel", "arch", "riscv64", "fsglue_rv.c")
+        and "sti` at vfs.c:71" in read("kernel", "arch", "riscv64",
+                                       "fsglue_rv.c")
+        and "vfs.c:71" in read("PARITY_PLAN.md")))
+    checks.append((
+        "P2: the pattern-disk gate survived (the sniff dispatches, "
+        "rv_parity_smoke's lane is intact)",
+        "no test pattern; filesystem media" in
+        read("kernel", "arch", "riscv64", "main_rv.c") and
+        "vblk_rv_selftest" in read("kernel", "arch", "riscv64",
+                                   "main_rv.c")))
+
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).
     for phase in PHASE_ORDER:

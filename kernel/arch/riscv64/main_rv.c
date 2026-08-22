@@ -28,6 +28,7 @@
 #include "kernel/arch/riscv64/membench_rv.h"
 #include "kernel/arch/riscv64/user_rv.h"
 #include "kernel/arch/riscv64/vblk_rv.h"
+#include "kernel/arch/riscv64/fsglue_rv.h"
 #include "kernel/arch/riscv64/vnet_rv.h"
 
 /* The struct the FDT shim fills.  Static in .bss (boot.S zeroed it):
@@ -426,9 +427,26 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
                                            : 10000000);
 
     if (vblk_rv_init(&platform) == 0) {
-        if (vblk_rv_selftest() != 0) {
-            sbi_puts("[blk]  FAIL: self-test\n");
-            sbi_shutdown();
+        /* Two kinds of media arrive here: the parity smoke's pattern
+         * disk (sector 0 starts with "Aura" -- V7's known-bytes gate)
+         * and P2's filesystem images.  Sniff sector 0 and dispatch:
+         * the pattern disk keeps its full selftest gate verbatim, a
+         * filesystem disk goes behind the blkdev seam instead (its
+         * write/readback proof is ext2's own self-test). */
+        static uint8_t sec0[512];
+        int is_pattern = (vblk_rv_read(0, sec0) == 0 &&
+                          sec0[0] == 'A' && sec0[1] == 'u' &&
+                          sec0[2] == 'r' && sec0[3] == 'a');
+        if (is_pattern) {
+            if (vblk_rv_selftest() != 0) {
+                sbi_puts("[blk]  FAIL: self-test\n");
+                sbi_shutdown();
+            }
+        } else {
+            sbi_puts("[blk]  sector 0: no test pattern; filesystem media\n");
+            /* PARITY P2: put the disk behind the blkdev seam and
+             * mount the shared ext2 on it. */
+            rvfs_bringup();
         }
     }
 
