@@ -269,6 +269,36 @@ static int icmp_ping_gw(void)
                                payload, sizeof(payload));
 }
 
+/* ---- R3 (RESIDUE ledger RES-10): the raw lane the netdev seam
+ * wraps.  The miniproto machinery above stays byte-identical; these
+ * exports let kernel/net/tcp.c drive the SAME rings through
+ * kernel/net/netdev.c. */
+
+void net32_send_frame(const void *frame, uint32_t len)
+{
+    net_send(frame, len);
+}
+
+uint32_t net32_poll_frame(void *out, uint32_t cap)
+{
+    return net_poll(out, cap);
+}
+
+void net32_get_mac(uint8_t out[6])
+{
+    for (int i = 0; i < 6; i++)
+        out[i] = our_mac[i];
+}
+
+uint32_t net32_our_ip(void)  { return our_ip; }
+uint32_t net32_gw_ip(void)   { return gw_ip; }
+
+void net32_gw_mac(uint8_t out[6])
+{
+    for (int i = 0; i < 6; i++)
+        out[i] = gw_mac[i];
+}
+
 int net32_selftest(void)
 {
     (void)htons16; (void)htonl32;

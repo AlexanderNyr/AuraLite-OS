@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R3 — the shared TCP round-trips on i386] 2026-08-22
+
+kernel/net measured first: all ten files -m32-clean, tcp.c needs
+no scheduler (netdev seam + four helpers + ticks — llvm-nm's list),
+netdev.c is kprintf+memset pure.  tcp.c + netdev.c joined
+KERNEL32_SHARED unchanged; netglue32.c wraps net32's e1000 rings
+behind `struct netdev`, answers ARP with the gateway (default-route
+bring-up, stated), passes ipfrag through (X4 absence named), and
+runs one round-trip: `ESTABLISHED` + `PASS: round-trip 15 byte(s):
+HELLO-FROM-HOST` against a real socat listener behind SLIRP's
+10.0.2.2.  socket.c stays home with RES-06's fd remainder —
+sched_current is its honest blocker.
+
+- Two byte-order bugs caught by PACKET CAPTURE, not by guessing:
+  a SYN to 2.2.0.10, then a checksum-OK SYN from source 15.2.0.10
+  — network-vs-host order at the glue boundary, one swap32 both
+  directions.
+- i386_parity_smoke carries the lane with an honest-skip branch;
+  shell/fs smokes print the skip and stay green.  kernel32.elf
+  276 712 → 335 288.  CFLAGS32 gained -Wno-unused-function — the
+  P0 decision executed the day shared files joined this build.
+- Ledger: RES-10 DONE@R3.  OPEN 39.
+- Folded in: R1's CI run lost ONE a64_smp ack line to the PSCI
+  power-off racing a loaded runner's ring (counter said 7/7, log
+  carried 6 lines).  Both tenants now print the ack line BEFORE
+  ticking the counter — the summary implies the lines drained.
+  Deterministic, not a timeout bump.
+
 ## [RESIDUE R2 — one mount table, four widths; the shell reads /ext2 on i386] 2026-08-22
 
 The vfs.c:71 story re-measured: the `sti` lives in the PIPE wait,

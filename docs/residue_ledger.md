@@ -21,7 +21,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-07 | W | OPEN | buffer_cache/tmpfs/devfs/cwd/symlink not adopted on ports (PARITY P2) | objects join the three shared lists; link green |
 | RES-08 | W | DONE@R2 | i386 shell fd layer initrd-only (PARITY P4/P7) | i386 shell cats /ext2 file through VFS; smoke pins it |
 | RES-09 | W | DONE@R2 | no path-level VFS mounts on rv64/a64 (PARITY P2) | `[vfs] mounted /` printed on both tenants; smokes pin it |
-| RES-10 | W | OPEN | i386 TCP/sockets absent — net32 is miniproto only (I386 I8) | one TCP payload round-trips in an i386 smoke |
+| RES-10 | W | DONE@R3 | i386 TCP/sockets absent — net32 is miniproto only (I386 I8) | one TCP payload round-trips in an i386 smoke |
 | RES-11 | S | OPEN | i386 compositor/GUI (I386 I8) | opener fact measured at R12 |
 | RES-12 | S | OPEN | i386 VBE graphics; text mode is the console (I386 I7) | opener fact measured at R12 |
 | RES-13 | W | OPEN | a64 -smp 16 needs GICv3; v2 = 8 ifaces architectural (PARITY P6) | a64_smp_smoke -smp 16 lane: 15 online, IPI 15/15 |
@@ -65,7 +65,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses: OPEN 40, DONE@R1 6, DONE@R2 2 (RES-08/09; RES-06 narrowed and held open — the honest split).
+amended same-commit, catch recorded).  Statuses: OPEN 39, DONE@R1 6, DONE@R2 2, DONE@R3 1 (RES-10).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

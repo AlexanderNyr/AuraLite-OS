@@ -1,13 +1,13 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R2 complete; R3 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R3 complete; R4 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | R0 — the rig: the harvester + the machine-checked registry | ✅ complete | `patches/RESIDUE_R0_rig.patch` |
 | R1 — the small-payoff cluster (flake remedy, oddity, seam pins) | ✅ complete | `patches/RESIDUE_R1_small.patch` |
 | R2 — VFS on the ports (the vfs.c:71 unlock) | ✅ complete | `patches/RESIDUE_R2_vfs.patch` |
-| R3 — i386 TCP/sockets (the last I8 line) | pending | `patches/RESIDUE_R3_tcp32.patch` |
+| R3 — i386 TCP/sockets (the last I8 line) | ✅ complete | `patches/RESIDUE_R3_tcp32.patch` |
 | R4 — GICv3 + the a64 x16 run | pending | `patches/RESIDUE_R4_gicv3.patch` |
 | R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | pending | `patches/RESIDUE_R5_sched.patch` |
 | R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | pending | `patches/RESIDUE_R6_libc2.patch` |
@@ -261,13 +261,40 @@ on our own status.md edit within minutes of existing).
       remaining coupling is the fd half, and its disposition
       belongs to a scheduler-aware phase, not to a mount phase.
 
-### R3 — i386 TCP/sockets
-- [ ] Measure the gap: net32 speaks the e1000 miniproto; the x86_64
-      TCP lives in kernel/net/tcp.c (width-clean? the sweep says —
-      run the lane).  Adopt tcp.c + socket.c behind the netdev seam
-      or record the measured blocker per file.
-- [ ] Exit: an i386 smoke round-trips one TCP payload against the
-      QEMU user-net stack, `results` receipts counted.
+### R3 — i386 TCP/sockets — ✅ COMPLETE
+- [x] The measurement: the ENTIRE kernel/net tree is already
+      -m32-clean (0 errors, all ten files), and llvm-nm showed
+      tcp.c needs no scheduler at all — only the netdev seam, four
+      net.c helpers, string/kprintf and a tick source.  netdev.c
+      itself needs kprintf+memset: a pure seam.  So tcp.c and
+      netdev.c joined KERNEL32_SHARED UNCHANGED; `netglue32.c`
+      provides the surface (net32 ring wrappers behind `struct
+      netdev`, gateway-only ARP — a default-route bring-up SAYS so,
+      passthrough ipfrag_step with the X4 absence named, pit32
+      ticks).  socket.c stays home: it needs sched_current, and the
+      fd story belongs with RES-06's narrowed remainder.
+- [x] **Two byte-order catches by packet capture** (filter-dump +
+      a hand checksum walk): the first SYN went to 2.2.0.10 (dst
+      swapped), the second went FROM 15.2.0.10 (src swapped — the
+      capture showed a checksum-OK SYN with an impossible source).
+      net32 speaks network order, tcp.c host order; one swap32 at
+      the glue boundary, both directions.
+- [x] Exit ran: `[tcp] [h=0] ESTABLISHED` + `[tcp32] PASS:
+      round-trip 15 byte(s): HELLO-FROM-HOST` against a REAL host
+      listener behind SLIRP's 10.0.2.2 (socat).  i386_parity_smoke
+      carries the lane (with an honest-skip branch when no
+      listener exists — i386_shell/i386_fs boots print the skip and
+      stay green).  kernel32.elf 276 712 → 335 288.  The last
+      struck-through I8 line — TCP — is paid; the compositor line
+      remains with RES-11/12.
+- [x] Folded in: CI run 32579828982 (deployed R1) came back red on
+      ONE a64_smp assert — core 5's ack LINE lost to the PSCI
+      power-off on a loaded runner while its ack COUNTER landed
+      (log shows 6 ack lines + "7/7").  Deterministic fix on both
+      tenants: the ack line prints BEFORE the counter ticks, so the
+      boot CPU's N/N summary now implies every per-CPU line already
+      drained through kprintf's lock.  Both smp smokes re-run
+      green.
 
 ### R4 — GICv3 + a64 x16
 - [ ] GICv3 driver (redistributors + ICC sysregs + affinity SGIs

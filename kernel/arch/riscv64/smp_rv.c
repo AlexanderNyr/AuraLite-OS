@@ -59,9 +59,14 @@ void secondary_main_rv(uint64_t hartid)
         __asm__ volatile("csrr %0, sip" : "=r"(sip));
         if (sip & (1UL << 1)) {
             __asm__ volatile("csrc sip, %0" :: "r"(1UL << 1));
-            atomic_add(&ipi_acks, 1);
+            /* R3 CI fix: the LINE goes out BEFORE the counter ticks.
+             * kprintf serialises under its lock, so once the boot
+             * CPU sees acks==N every per-CPU ack line has already
+             * drained -- run 32579828982 lost core 5's line to the
+             * PSCI power-off racing a slow runner's ring. */
             kprintf("[smp] hart %llu: IPI received, parking\n",
                     (unsigned long long)hartid);
+            atomic_add(&ipi_acks, 1);
             return;                 /* boot.S parks us in wfi */
         }
         __asm__ volatile("wfi");

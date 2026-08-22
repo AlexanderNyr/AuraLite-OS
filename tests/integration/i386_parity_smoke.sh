@@ -68,7 +68,21 @@ assert_no_grep() {
 }
 
 # ---- the i386 parity boot ----
+# R3 (RES-10): a REAL host peer behind SLIRP's 10.0.2.2 for the
+# shared-TCP round-trip receipt.  socat is optional on a dev box --
+# without it the kernel prints its honest skip and the TCP asserts
+# below turn into skip-line asserts.
+TCP_PEER=0
+if command -v socat >/dev/null 2>&1; then
+    socat TCP-LISTEN:8032,fork,reuseaddr SYSTEM:'printf "HELLO-FROM-HOST\n"' >/dev/null 2>&1 &
+    SOCAT_PID=$!
+    TCP_PEER=1
+    sleep 1
+fi
+
 run_qemu qemu-system-i386 "$LOG32"
+
+[ "$TCP_PEER" = "1" ] && kill "$SOCAT_PID" 2>/dev/null || true
 
 # storage
 assert_grep    "$LOG32" "\[ata\] primary master: .* sectors"           "i386: ATA IDENTIFY (PIO LBA28)"
@@ -78,6 +92,14 @@ assert_grep    "$LOG32" "\[net\] e1000 82540EM at PCI"                 "i386: NI
 assert_grep    "$LOG32" "\[net\] DHCP lease: 10.0.2.15"                "i386: DHCP lease acquired on SLIRP"
 assert_grep    "$LOG32" "\[net\] ARP: gateway is"                      "i386: gateway ARP resolved"
 assert_grep    "$LOG32" "\[net\] PASS: lease + ARP + echo reply (payload verified)" "i386: ICMP echo round-trip, payload byte-checked"
+# ---- R3: the shared kernel/net/tcp.c on the netdev seam ----
+assert_grep    "$LOG32" "\[netdev\] e1000-32 registered"               "i386 R3: net32 rings behind the netdev seam"
+if [ "$TCP_PEER" = "1" ]; then
+    assert_grep "$LOG32" "\[tcp\] \[h=0\] ESTABLISHED"               "i386 R3: shared tcp.c completed the handshake"
+    assert_grep "$LOG32" "\[tcp32\] PASS: round-trip 15 byte(s): HELLO-FROM-HOST" "i386 R3: one TCP payload round-tripped against a real host peer"
+else
+    assert_grep "$LOG32" "\[tcp32\] no peer on 10.0.2.2:8032"          "i386 R3: honest skip without a listener"
+fi
 # the earlier gauntlet, same boot
 assert_grep    "$LOG32" "\[pmm\] PASS"                                 "i386: I3 pmm gate still green"
 assert_grep    "$LOG32" "\[vmm\] PASS"                                 "i386: I3 vmm gate still green"

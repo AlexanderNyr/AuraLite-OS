@@ -29,4 +29,13 @@ int  net32_init(void);
  * Returns 0 on PASS. */
 int  net32_selftest(void);
 
+/* R3: the raw-frame lane + lease accessors the netdev seam wraps
+ * (valid after a green selftest). */
+void     net32_send_frame(const void *frame, uint32_t len);
+uint32_t net32_poll_frame(void *out, uint32_t cap);
+void     net32_get_mac(uint8_t out[6]);
+uint32_t net32_our_ip(void);
+uint32_t net32_gw_ip(void);
+void     net32_gw_mac(uint8_t out[6]);
+
 #endif /* AURALITE_ARCH_I386_NET32_H */

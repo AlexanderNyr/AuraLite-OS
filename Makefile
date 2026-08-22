@@ -172,7 +172,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c kernel/lib/string.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netdev.c kernel/fs/ext2.c kernel/lib/string.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -188,6 +188,7 @@ CFLAGS32      := --target=i686-elf \
                  -malign-double \
                  -fno-omit-frame-pointer \
                  -Wall -Wextra -Wno-unused-parameter \
+                 -Wno-unused-function \
                  -Werror -Wshorten-64-to-32 \
                  -O2 -g -I .
 

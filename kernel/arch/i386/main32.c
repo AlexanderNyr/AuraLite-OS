@@ -32,6 +32,7 @@
 #include "kernel/arch/i386/ata32.h"
 #include "kernel/arch/i386/fsglue32.h"
 #include "kernel/arch/i386/net32.h"
+#include "kernel/arch/i386/netglue32.h"
 
 void thread32_reap(void);
 
@@ -240,6 +241,9 @@ void kmain32(uint32_t boot_info_phys)
         if (net32_selftest() != 0)
             kprintf32("[net] FAIL: self-test (continuing; network is "
                       "not boot-critical)\n");
+        else
+            /* R3: the shared TCP behind the netdev seam. */
+            net32_tcp_bringup();
     }
 
     /* ---- I2 self-tests (still gating every boot) ---- */

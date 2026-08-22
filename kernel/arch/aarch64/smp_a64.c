@@ -86,9 +86,14 @@ void secondary_main_a64(void)
         uint32_t intid = iar & 0x3FFu;
         if (intid == SGI_ID) {
             gicc[GICC_EOIR / 4] = iar;
-            atomic_add(&ipi_acks, 1);
+            /* R3 CI fix: the LINE goes out BEFORE the counter ticks.
+             * kprintf serialises under its lock, so once the boot
+             * CPU sees acks==N every per-CPU ack line has already
+             * drained -- run 32579828982 lost core 5's line to the
+             * PSCI power-off racing a slow runner's ring. */
             kprintf("[smp] core %llu: IPI received, parking\n",
                     (unsigned long long)id);
+            atomic_add(&ipi_acks, 1);
             return;                 /* boot.S parks us in wfi */
         }
         if (intid != 1023u)          /* not ours: complete and move on */
