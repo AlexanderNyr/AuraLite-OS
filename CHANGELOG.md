@@ -2,6 +2,28 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P8 — libcmini: one libc body, three port shims] 2026-08-22
+
+The measurement made this a rename, not a design: libc32.h /
+libcrv.h / libca64.h diffed byte-identical modulo the name suffix
+and include guard — 326 lines saying the same thing three times.
+Now: `lib/libcmini/libcmini.h` (211 lines — the eleven D4 wrappers,
+errno from negative returns with raw returns preserved, the string
+family, a 256-byte truncating %s%c%d%u%x printf into SYS_WRITE) and
+three ≤20-line shims carrying exactly what differs per port: the
+trap symbol and two back-compat name defines.  The checker pins the
+shims at ≤30 lines so wrappers cannot silently grow back.
+
+- Deviation named: the string family is self-contained inlines, not
+  forwards to kernel/lib/string.c — per-port userspace objects for
+  four one-line loops is the wrong trade at the floor; the full
+  libc port owns that decision (and REMAINS the named non-goal).
+- Live printf receipt on all three ports for free: the inits' tiny
+  itoa became aura_printf("...: pid=%d") with byte-identical
+  output — the existing smoke pins prove the printf unchanged.
+- rv_fs, a64_fs, i386_shell, i386_fs re-run green over the rebuilt
+  userspace.  Checker: +2 claims.
+
 ## [PARITY P7 — i386 mounts the shared ext2; the width debt PAYS] 2026-08-22
 
 The 32 -Wshorten-64-to-32 errors across 14 fs files are gone — all

@@ -256,20 +256,27 @@ def claims():
         "vblk_a64_selftest" in read("kernel", "arch", "aarch64",
                                     "main_a64.c")))
 
-    # --- P4: one ABI file, six includers -- the layout cannot drift
-    # --- because there is exactly one of it.
-    fsabi_users = 0
-    for path in ("lib/libcrv/libcrv.h", "lib/libca64/libca64.h",
-                 "lib/libc32/libc32.h",
-                 "kernel/arch/riscv64/user_rv.c",
-                 "kernel/arch/aarch64/user_a64.c",
-                 "kernel/arch/i386/user32.c"):
-        if "lib/abi/fsabi.h" in read(*path.split("/")):
-            fsabi_users += 1
+    # --- P4 (amended at P8): one ABI file at the trap boundary.
+    # --- Kernel side: the three dispatchers include fsabi.h
+    # --- directly.  Userspace side: since P8 the ONE include lives
+    # --- in libcmini.h and the three port shims include THAT --
+    # --- fewer includers is the point, not a regression.
+    fsabi_kernel = sum(
+        1 for path in ("kernel/arch/riscv64/user_rv.c",
+                       "kernel/arch/aarch64/user_a64.c",
+                       "kernel/arch/i386/user32.c")
+        if "lib/abi/fsabi.h" in read(*path.split("/")))
+    shims_via_mini = sum(
+        1 for path in ("lib/libcrv/libcrv.h", "lib/libca64/libca64.h",
+                       "lib/libc32/libc32.h")
+        if "lib/libcmini/libcmini.h" in read(*path.split("/")))
     checks.append((
-        f"P4: all six trap-boundary files include the ONE fsabi.h "
-        f"(measured {fsabi_users}/6)",
-        fsabi_users == 6 and exists("lib", "abi", "fsabi.h")))
+        f"P4/P8: fsabi.h reaches every trap boundary (dispatchers "
+        f"{fsabi_kernel}/3 direct; shims {shims_via_mini}/3 via "
+        "libcmini, which includes it once)",
+        fsabi_kernel == 3 and shims_via_mini == 3 and
+        "lib/abi/fsabi.h" in read("lib", "libcmini", "libcmini.h") and
+        exists("lib", "abi", "fsabi.h")))
     checks.append((
         "P4: smallsh grew ls/cat/stat THROUGH the wrappers (shared "
         "source, three builds), and the old absent-on-purpose line "
@@ -361,6 +368,32 @@ def claims():
         f"-Wshorten-64-to-32 ({passes}/{total}, expected "
         f"{FS_FILE_COUNT}/{FS_FILE_COUNT})",
         passes == FS_FILE_COUNT and total == FS_FILE_COUNT))
+
+    # --- P8: one libc body, three shims -- and the shims must STAY
+    # --- shims (a port header that grows a wrapper back fails here).
+    shim_ok = True
+    for hdr in ("lib/libc32/libc32.h", "lib/libcrv/libcrv.h",
+                "lib/libca64/libca64.h"):
+        text = read(*hdr.split("/"))
+        lines = len(text.splitlines())
+        if not ("AURA_SYSCALL" in text and
+                "lib/libcmini/libcmini.h" in text and lines <= 30):
+            shim_ok = False
+    checks.append((
+        "P8: the three port headers are <=30-line shims over ONE "
+        "libcmini.h (326 triplicated lines before the cut)",
+        shim_ok and exists("lib", "libcmini", "libcmini.h")))
+    checks.append((
+        "P8: the floor is real -- errno set from negative returns, "
+        "the mini printf exists AND runs live in every init "
+        "(byte-identical pid line)",
+        "__aura_ret" in read("lib", "libcmini", "libcmini.h") and
+        "aura_printf" in read("lib", "libcmini", "libcmini.h") and
+        all("aura_printf" in read(*p.split("/")) for p in (
+            "userspace/system/initrv/initrv.c",
+            "userspace/system/init32/init32.c",
+            "userspace/system/inita64/inita64.c")) and
+        "NAMED NON-GOAL" in read("lib", "libcmini", "libcmini.h")))
 
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).

@@ -1,6 +1,6 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P7 complete; P8 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P8 complete; P9 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -12,7 +12,7 @@
 | P5 — SMP rv64: SBI HSM hart_start | ✅ complete | `patches/PARITY_P5_rvsmp.patch` |
 | P6 — SMP a64: PSCI CPU_ON (+ the x16 amendment) | ✅ complete | `patches/PARITY_P6_a64smp.patch` |
 | P7 — i386: the fs width pay-down + ATA behind the seam | ✅ complete | `patches/PARITY_P7_i386fs.patch` |
-| P8 — libc subset promotion for the DTB tenants | pending | `patches/PARITY_P8_libc.patch` |
+| P8 — libc subset promotion for the DTB tenants | ✅ complete | `patches/PARITY_P8_libc.patch` |
 | P9 — CI lanes, docs, the honest matrix flip | pending | `patches/PARITY_P9_ci.patch` |
 
 ## 1. Where this plan comes from
@@ -487,16 +487,37 @@ pay-down that MEASURABLY shrank the width debt instead of growing
 it (355 < 359 — fixing -m32 truncation by deleting (uint64_t)
 casts is the sweep working exactly as designed).
 
-### P8 — libc subset promotion
-- [ ] `lib/libcmini/` (one source set, three builds): errno, the
-      string.h family (forwarding to kernel/lib/string.c bodies
-      userspace-side), open/read/write/close/lseek wrappers over
-      P4's syscalls, a 256-byte fd-less printf into SYS_WRITE.
-- [ ] libc32/libcrv/libca64 headers shrink to includes of the
-      shared one; line counts before/after quoted.
-- [ ] Full-libc port (TLS, malloc-over-mmap, stdio buffering)
-      REMAINS the named non-goal — this phase moves the floor, not
-      the ceiling.
+### P8 — libc subset promotion — ✅ COMPLETE
+- [x] `lib/libcmini/libcmini.h` (211 lines, one body): the eleven
+      wrappers over the D4 number table, errno set from negative
+      returns (raw returns preserved — no caller changed), the
+      string family as self-contained inlines (**deviation from the
+      draft, named: NOT forwards to kernel/lib/string.c — userspace
+      objects would each need the .c compiled per-port and linked,
+      and a bring-up shim earning three extra link lines to save
+      four one-line loops is the wrong trade; the full libc port
+      owns that decision**), and a 256-byte truncating printf
+      (%s %c %d %u %x) into SYS_WRITE.
+- [x] The measurement that made this a rename, not a design: the
+      three port headers diffed BYTE-IDENTICAL modulo suffix and
+      include guard.  326 triplicated lines → three ≤20-line shims
+      (trap prototype + AURA_SYSCALL + include + two back-compat
+      defines) + the one body.  The checker pins the shims at ≤30
+      lines so they cannot silently grow wrappers back.
+- [x] Live receipt on every port: the three init programs' tiny
+      hand-rolled itoa became `aura_printf("...: pid=%d")` — output
+      byte-identical, so the existing smoke pins PROVE the printf
+      without a single assert changing.  rv_fs, a64_fs, i386_shell,
+      i386_fs smokes re-run green over the rebuilt userspace.
+- [x] Full-libc port (TLS, malloc-over-mmap, stdio buffering)
+      REMAINS the named non-goal — floor moved, ceiling untouched.
+
+#### P8 result
+
+Line arithmetic: 326 → 269 total (211 shared + 58 shims), and the
+duplication count is the real number: three copies of every wrapper
+became one.  smallsh and the three inits rebuilt over the shared
+body with zero behavioral diffs — every existing smoke pin held.
 
 ### P9 — CI, docs, the matrix flip
 - [ ] Integration lanes: the new smokes join their parity jobs

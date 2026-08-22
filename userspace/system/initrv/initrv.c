@@ -14,11 +14,9 @@ int main(void)
     puts_rv("\n");
     puts_rv("AuraLite rv64 init: userspace is alive\n");
 
-    long pid = getpid();
-    /* Tiny itoa: pid is a tid from an 8-slot table, one digit. */
-    char msg[] = "initrv: pid=0\n";
-    msg[13 - 1] = (char)('0' + (pid % 10));
-    puts_rv(msg);
+    /* P8: the shared mini-printf, live on every port -- the
+     * output is byte-identical to the old tiny itoa. */
+    aura_printf("initrv: pid=%d\n", (int)getpid());
 
     /* Round-trip a yield to prove a second syscall shape works. */
     sched_yield();

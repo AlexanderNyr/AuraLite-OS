@@ -415,7 +415,7 @@ $(USERRV_BUILD)/syscall_rv.o: lib/libcrv/syscall_rv.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGSRV_USER) -c $< -o $@
 
-$(USERRV_BUILD)/initrv.o: userspace/system/initrv/initrv.c lib/libcrv/libcrv.h
+$(USERRV_BUILD)/initrv.o: userspace/system/initrv/initrv.c lib/libcrv/libcrv.h lib/libcmini/libcmini.h lib/abi/fsabi.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGSRV_USER) -c $< -o $@
 
@@ -424,7 +424,7 @@ $(INITRV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/initrv.o $(USERRV_BUILD
 	    $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/initrv.o $(USERRV_BUILD)/syscall_rv.o -o $@
 	@echo "  [userrv] $@"
 
-$(USERRV_BUILD)/smallsh.o: $(SMALLSH_SRC) lib/libcrv/libcrv.h
+$(USERRV_BUILD)/smallsh.o: $(SMALLSH_SRC) lib/libcrv/libcrv.h lib/libcmini/libcmini.h lib/abi/fsabi.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGSRV_USER) $(SMALLSH_DEFSRV) -c $< -o $@
 
@@ -464,7 +464,7 @@ $(USERA64_BUILD)/syscall_a64.o: lib/libca64/syscall_a64.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGSA64_USER) -c $< -o $@
 
-$(USERA64_BUILD)/inita64.o: userspace/system/inita64/inita64.c lib/libca64/libca64.h
+$(USERA64_BUILD)/inita64.o: userspace/system/inita64/inita64.c lib/libca64/libca64.h lib/libcmini/libcmini.h lib/abi/fsabi.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGSA64_USER) -c $< -o $@
 
@@ -473,7 +473,7 @@ $(INITA64_ELF): $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/inita64.o $(USERA64
 	    $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/inita64.o $(USERA64_BUILD)/syscall_a64.o -o $@
 	@echo "  [usera64] $@"
 
-$(USERA64_BUILD)/smallsh.o: $(SMALLSH_SRC) lib/libca64/libca64.h
+$(USERA64_BUILD)/smallsh.o: $(SMALLSH_SRC) lib/libca64/libca64.h lib/libcmini/libcmini.h lib/abi/fsabi.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGSA64_USER) $(SMALLSH_DEFSA64) -c $< -o $@
 
@@ -506,7 +506,7 @@ $(USER32_BUILD)/syscall32.o: lib/libc32/syscall32.asm
 	@mkdir -p $(dir $@)
 	$(AS) -f elf32 -o $@ $<
 
-$(USER32_BUILD)/init32.o: userspace/system/init32/init32.c lib/libc32/libc32.h
+$(USER32_BUILD)/init32.o: userspace/system/init32/init32.c lib/libc32/libc32.h lib/libcmini/libcmini.h lib/abi/fsabi.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS32) -c $< -o $@
 
@@ -526,7 +526,7 @@ $(INIT32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD
 # byte-identically and i386_shell_smoke.sh is the gate that proves it.
 SHELL32_ELF := $(USER32_BUILD)/shell32
 
-$(USER32_BUILD)/shell32.o: $(SMALLSH_SRC) lib/libc32/libc32.h
+$(USER32_BUILD)/shell32.o: $(SMALLSH_SRC) lib/libc32/libc32.h lib/libcmini/libcmini.h lib/abi/fsabi.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS32) $(SMALLSH_DEFS32) -c $< -o $@
 

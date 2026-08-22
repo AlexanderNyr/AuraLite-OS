@@ -16,11 +16,9 @@ int main(void)
     puts32("\n");
     puts32("AuraLite i386 init: userspace is alive\n");
 
-    long pid = getpid();
-    /* Tiny itoa: pid is a tid from an 8-slot table, one digit. */
-    char msg[] = "init32: pid=0\n";
-    msg[13 - 1] = (char)('0' + (pid % 10));
-    puts32(msg);
+    /* P8: the shared mini-printf, live on every port -- the
+     * output is byte-identical to the old tiny itoa. */
+    aura_printf("init32: pid=%d\n", (int)getpid());
 
     /* Round-trip a yield to prove a second syscall shape works. */
     sched_yield();
