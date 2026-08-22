@@ -1137,7 +1137,7 @@ static int64_t fat32_read_impl(struct vnode *vn, uint64_t pos, void *buf, uint64
         if (read_cluster(cl, cluster_buf) != 0) return -1;
         uint64_t chunk = fs.bytes_per_clus - off;
         if (chunk > count - done) chunk = count - done;
-        memcpy(out + done, cluster_buf + off, chunk);
+        memcpy(out + done, cluster_buf + off, (size_t)chunk);
         done += chunk;
         /* Step to the next cluster only when this one is exhausted. */
         if ((pos + done) % fs.bytes_per_clus == 0) {
@@ -1181,7 +1181,7 @@ static int64_t fat32_write_impl(struct vnode *vn, uint64_t pos, const void *buf,
         if (read_cluster(cl, cluster_buf) != 0) return -1;
         uint64_t chunk = fs.bytes_per_clus - off;
         if (chunk > count - done) chunk = count - done;
-        memcpy(cluster_buf + off, in + done, chunk);
+        memcpy(cluster_buf + off, in + done, (size_t)chunk);
         if (write_cluster(cl, cluster_buf) != 0) return -1;
         done += chunk;
     }

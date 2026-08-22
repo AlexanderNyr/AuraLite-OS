@@ -59,14 +59,22 @@ static int wait_drq(void)
     return -1;
 }
 
-static void select_lba(uint32_t lba, uint8_t count)
+/* P7: drive 0 = master (0xE0), drive 1 = slave (0xF0, DEV bit).
+ * The slave lane exists because the blkdev seam wants the ext2 disk
+ * SEPARATE from the boot disk -- the same second-disk rule the
+ * x86_64 boot has used since forever. */
+static uint32_t slave_sectors;      /* 0 = no slave */
+
+static void select_lba_d(int drive, uint32_t lba, uint8_t count)
 {
-    outb(ATA_DRIVE, (uint8_t)(0xE0 | ((lba >> 24) & 0x0F)));  /* master, LBA */
+    uint8_t dev = drive ? 0xF0 : 0xE0;
+    outb(ATA_DRIVE, (uint8_t)(dev | ((lba >> 24) & 0x0F)));
     outb(ATA_COUNT, count);
     outb(ATA_LBA0, (uint8_t)lba);
     outb(ATA_LBA1, (uint8_t)(lba >> 8));
     outb(ATA_LBA2, (uint8_t)(lba >> 16));
 }
+
 
 int ata32_init(uint32_t *total_sectors)
 {
@@ -99,16 +107,42 @@ int ata32_init(uint32_t *total_sectors)
 
     kprintf32("[ata] primary master: %u sectors (%u MiB), PIO LBA28\n",
               disk_sectors, disk_sectors / 2048);
+
+    /* P7: probe the primary SLAVE the same way.  Absent slave reads
+     * status 0 after IDENTIFY select -- an honest miss, not an error. */
+    outb(ATA_DRIVE, 0xF0);
+    outb(ATA_COUNT, 0);
+    outb(ATA_LBA0, 0);
+    outb(ATA_LBA1, 0);
+    outb(ATA_LBA2, 0);
+    outb(ATA_CMD, CMD_IDENTIFY);
+    if (inb(ATA_STATUS) != 0 &&
+        wait_not_busy() == 0 && wait_drq() == 0) {
+        uint16_t sid[256];
+        for (int i = 0; i < 256; i++)
+            sid[i] = inw(ATA_DATA);
+        slave_sectors = (uint32_t)sid[60] | ((uint32_t)sid[61] << 16);
+        kprintf32("[ata] primary slave: %u sectors (%u MiB), PIO LBA28\n",
+                  slave_sectors, slave_sectors / 2048);
+    } else {
+        kprintf32("[ata] no primary slave (single-disk boot)\n");
+    }
     return 0;
 }
 
-int ata32_read(uint32_t lba, uint8_t *buf512)
+/* P7: the drive-parametrised pair the blkdev seam calls. */
+uint32_t ata32_drive_sectors(int drive)
 {
-    if (lba >= disk_sectors)
+    return drive ? slave_sectors : disk_sectors;
+}
+
+int ata32_read_drv(int drive, uint32_t lba, uint8_t *buf512)
+{
+    if (lba >= ata32_drive_sectors(drive))
         return -1;
     if (wait_not_busy() != 0)
         return -1;
-    select_lba(lba, 1);
+    select_lba_d(drive, lba, 1);
     outb(ATA_CMD, CMD_READ);
     if (wait_drq() != 0)
         return -1;
@@ -118,13 +152,13 @@ int ata32_read(uint32_t lba, uint8_t *buf512)
     return 0;
 }
 
-int ata32_write(uint32_t lba, const uint8_t *buf512)
+int ata32_write_drv(int drive, uint32_t lba, const uint8_t *buf512)
 {
-    if (lba >= disk_sectors)
+    if (lba >= ata32_drive_sectors(drive))
         return -1;
     if (wait_not_busy() != 0)
         return -1;
-    select_lba(lba, 1);
+    select_lba_d(drive, lba, 1);
     outb(ATA_CMD, CMD_WRITE);
     if (wait_drq() != 0)
         return -1;
@@ -133,6 +167,18 @@ int ata32_write(uint32_t lba, const uint8_t *buf512)
         outw(ATA_DATA, w[i]);
     outb(ATA_CMD, CMD_FLUSH);
     return wait_not_busy();
+}
+
+/* The pre-P7 master-only names, kept verbatim for every existing
+ * caller (selftest, the I7/I8 gates). */
+int ata32_read(uint32_t lba, uint8_t *buf512)
+{
+    return ata32_read_drv(0, lba, buf512);
+}
+
+int ata32_write(uint32_t lba, const uint8_t *buf512)
+{
+    return ata32_write_drv(0, lba, buf512);
 }
 
 int ata32_selftest(void)

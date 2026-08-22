@@ -436,7 +436,7 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
     if (pos >= (uint64_t)len) return 0;
     uint64_t copy_len = len - pos;
     if (copy_len > count) copy_len = count;
-    memcpy(buf, text + pos, copy_len);
+    memcpy(buf, text + pos, (size_t)copy_len);
     return (int64_t)copy_len;
 }
 
@@ -449,7 +449,7 @@ static int procfs_stat(struct vnode *vn, struct vfs_stat *out) {
     out->size  = vn->size;
     out->inode = vn->inode_id;
     out->nlink = 1;
-    out->blocks = (vn->size + 4095) / 4096;
+    out->blocks = (uint32_t)((vn->size + 4095) / 4096);
     return 0;
 }
 

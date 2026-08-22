@@ -578,10 +578,10 @@ static int64_t inode_read(struct ext2_inode *inode, uint64_t pos, void *buf, uin
         if (chunk > count - done) chunk = count - done;
         if (bno == 0) {
             /* sparse hole — fill with zero */
-            memset(out + done, 0, chunk);
+            memset(out + done, 0, (size_t)chunk);
         } else {
             if (read_block(bno, block_buf) != 0) return -1;
-            memcpy(out + done, block_buf + off, chunk);
+            memcpy(out + done, block_buf + off, (size_t)chunk);
         }
         done += chunk;
     }
@@ -600,7 +600,7 @@ static int64_t inode_write(uint32_t ino, struct ext2_inode *inode,
         if (read_block(bno, block_buf) != 0) return -1;
         uint64_t chunk = es.block_size - off;
         if (chunk > count - done) chunk = count - done;
-        memcpy(block_buf + off, in + done, chunk);
+        memcpy(block_buf + off, in + done, (size_t)chunk);
         if (write_block(bno, block_buf) != 0) return -1;
         done += chunk;
     }

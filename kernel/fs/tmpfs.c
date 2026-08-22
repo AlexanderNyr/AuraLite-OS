@@ -281,7 +281,7 @@ static int ensure_capacity(struct tmpfs_data *d, uint64_t need) {
     uint8_t *new_data = krealloc(d->data, cap);
     if (!new_data) return -1;
     if (cap > d->capacity) {
-        memset(new_data + d->capacity, 0, cap - d->capacity);
+        memset(new_data + d->capacity, 0, (size_t)(cap - d->capacity));
     }
     d->data = new_data;
     d->capacity = cap;
@@ -294,7 +294,7 @@ static int64_t tmpfs_read(struct vnode *vn, uint64_t pos,
     struct tmpfs_data *d = f ? f->d : NULL;
     if (!d || pos >= d->size) return 0;
     if (pos + count > d->size) count = d->size - pos;
-    memcpy(buf, d->data + pos, count);
+    memcpy(buf, d->data + pos, (size_t)count);
     d->atime = vfs_now();
     vn->atime = d->atime;
     return (int64_t)count;
@@ -308,7 +308,7 @@ static int64_t tmpfs_write(struct vnode *vn, uint64_t pos,
     uint64_t end = pos + count;
     if (end < pos) return -EINVAL;             /* size_t/offset overflow */
     if (ensure_capacity(d, end) != 0) return -ENOSPC;
-    memcpy(d->data + pos, buf, count);
+    memcpy(d->data + pos, buf, (size_t)count);
     if (end > d->size) {
         d->size = end;
         vn->size = end;
@@ -445,9 +445,9 @@ static int tmpfs_truncate(struct vnode *vn, uint64_t new_size) {
     }
     if (new_size < d->size) {
         /* shrinking: data above new_size becomes garbage; zero it. */
-        memset(d->data + new_size, 0, d->size - new_size);
+        memset(d->data + new_size, 0, (size_t)(d->size - new_size));
     } else if (new_size > d->size) {
-        memset(d->data + d->size, 0, new_size - d->size);
+        memset(d->data + d->size, 0, (size_t)(new_size - d->size));
     }
     d->size = new_size;
     vn->size = new_size;

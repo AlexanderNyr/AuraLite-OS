@@ -331,6 +331,37 @@ def claims():
                                    "smp_a64.c") and
         "-smp 16" in read("tests", "integration", "rv_smp_smoke.sh")))
 
+    # --- P7: i386 -- the width debt is PAID (live lane below), the
+    # --- slave lane exists, and the adoption set is the same four
+    # --- shared objects plus string.c and the div helpers.
+    checks.append((
+        "P7: KERNEL32_SHARED carries the same fs adoption set "
+        "(+string.c; div64_32.c supplies __udivdi3)",
+        all(t in makefl for t in ("kernel/fs/blkdev.c", )) and
+        "kernel/fs/ext2.c kernel/lib/string.c" in makefl and
+        "__udivdi3" in read("kernel", "arch", "i386", "div64_32.c")))
+    checks.append((
+        "P7: ata32 has the drive-parametrised lane and the glue "
+        "mounts on the SLAVE (the boot disk stays the selftest's)",
+        "ata32_read_drv" in read("kernel", "arch", "i386", "ata32.c") and
+        "primary slave" in read("kernel", "arch", "i386", "ata32.c") and
+        "ext2_init(-1)" in read("kernel", "arch", "i386",
+                                "fsglue32.c")))
+
+    # --- P7 LIVE: the whole fs tree compiles under CFLAGS32's OWN
+    # --- strictness (-Wshorten-64-to-32) -- the pay-down cannot rot.
+    I386_FLAGS = ("--target=i686-elf -std=c11 -ffreestanding "
+                  "-fno-stack-protector -fno-pie -fno-pic "
+                  "-malign-double -Wall -Wextra -Wno-unused-parameter "
+                  "-Wno-unused-function -Werror -Wshorten-64-to-32 "
+                  "-O2").split()
+    passes, total = live_syntax_pass(I386_FLAGS)
+    checks.append((
+        f"live: kernel/fs compiles -fsyntax-only as i386 WITH "
+        f"-Wshorten-64-to-32 ({passes}/{total}, expected "
+        f"{FS_FILE_COUNT}/{FS_FILE_COUNT})",
+        passes == FS_FILE_COUNT and total == FS_FILE_COUNT))
+
     # --- Completed phases must have their reserved artefacts (the
     # --- registry-reservation contract).
     for phase in PHASE_ORDER:

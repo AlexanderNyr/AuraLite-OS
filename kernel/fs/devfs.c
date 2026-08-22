@@ -114,7 +114,7 @@ static int64_t devfs_read(struct vnode *vn, uint64_t pos,
     case DEV_NULL:
         return 0;   /* EOF */
     case DEV_ZERO:
-        memset(buf, 0, count);
+        memset(buf, 0, (size_t)count);
         return (int64_t)count;
     case DEV_TTY:
         /* Drain whatever the line discipline has committed (may be 0; the

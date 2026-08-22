@@ -171,7 +171,8 @@ KERNEL32_DIR  := kernel/arch/i386
 # added to this list is portable code that now has i386 as a second
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
-KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c
+KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/ext2.c kernel/lib/string.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \

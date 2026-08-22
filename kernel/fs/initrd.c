@@ -378,7 +378,7 @@ static int64_t initrd_read(struct vnode *vn, uint64_t pos,
         count = f->size - pos;
     }
     const uint8_t *src = (const uint8_t *)(initrd.base + f->data_offset + pos);
-    memcpy(buf, src, count);
+    memcpy(buf, src, (size_t)count);
     return (int64_t)count;
 }
 

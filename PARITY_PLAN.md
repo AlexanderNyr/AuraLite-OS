@@ -1,6 +1,6 @@
 # AuraLite OS — Platform Parity Plan (i386 / rv64 / a64 catch-up)
 
-## Status: IN PROGRESS — P0–P6 complete; P7 next; plan committed 2026-08-22
+## Status: IN PROGRESS — P0–P7 complete; P8 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,7 @@
 | P4 — the syscall widening: open/read/close on three ports | ✅ complete | `patches/PARITY_P4_syscalls.patch` |
 | P5 — SMP rv64: SBI HSM hart_start | ✅ complete | `patches/PARITY_P5_rvsmp.patch` |
 | P6 — SMP a64: PSCI CPU_ON (+ the x16 amendment) | ✅ complete | `patches/PARITY_P6_a64smp.patch` |
-| P7 — i386: the fs width pay-down + ATA behind the seam | pending | `patches/PARITY_P7_i386fs.patch` |
+| P7 — i386: the fs width pay-down + ATA behind the seam | ✅ complete | `patches/PARITY_P7_i386fs.patch` |
 | P8 — libc subset promotion for the DTB tenants | pending | `patches/PARITY_P8_libc.patch` |
 | P9 — CI lanes, docs, the honest matrix flip | pending | `patches/PARITY_P9_ci.patch` |
 
@@ -449,15 +449,43 @@ the honest `nothing to start`; a64_boot, a64_parity, a64_drivers,
 a64_fs, rv_boot, rv_parity, rv_fs all re-run green.  Zero portable
 lines changed; the whole phase is arch-side plus two smokes.
 
-### P7 — i386: fs width pay-down + ATA behind the seam
-- [ ] The 32 shorten-64-to-32 errors in 14 files → 0; width-sweep
-      baseline 359 clicks down by the sites actually fixed (the
-      number lands in the phase result, not promised here).
-- [ ] `ata32` registers as blkdev; KERNEL32 links the same fs
-      objects (they are -m32-clean after the pay-down, by
-      construction); i386 smoke mounts ext2, cats the known file.
-- [ ] TCP/sockets on i386 stay NAMED RESIDUE (unchanged since I8;
-      this plan does storage parity, not net parity).
+### P7 — i386: fs width pay-down + ATA behind the seam — ✅ COMPLETE
+- [x] 32 → 0.  Every error was the same class: a clamped uint64_t
+      length flowing into a size_t sink (memcpy/memset) — the clamp
+      was always upstream, and the (size_t) casts now document it at
+      the narrowing point.  **The ratchet clicked 359 → 355**: the
+      four select.c sites were `(uint64_t)nfds` casts feeding
+      memset — on -m32 the (uint64_t) WAS the bug, and the fix was
+      its removal (baseline edited same-commit).  The checker gained
+      a THIRD live lane: all 20 fs files compile under CFLAGS32's
+      own -Wshorten-64-to-32 -Werror on every test-unit run.
+- [x] ata32 grew the drive-parametrised lane (primary SLAVE probed
+      at init; master untouched — its MBR is the selftest's).  Both
+      drives register with the seam (ata0/ata1); the shared
+      `ext2_init(-1)` picker chooses the SECOND device — the x86_64
+      /ext2 rule, verbatim, in 32-bit code nobody edited.
+      KERNEL32_SHARED took the same four objects + string.c;
+      `div64_32.c` supplies the __udivdi3 family -m32 codegen calls
+      (i686 has no 64-bit divide; freestanding carries its own).
+      fsglue32: COM1+VGA sinks, kmalloc32 (with an honest >4G
+      refusal — kheap.h's contract is 64-bit sizes), vfs_now from
+      pit32_ticks/100.  kernel32.elf 154 164 → 265 880.
+- [x] `i386_fs_smoke.sh` (13 asserts, hand-written): BIOS boot of
+      the real `make iso` image + slave ext2 disk → probe receipt,
+      both seam registrations, `[ext2] mounted existing volume`,
+      the second-disk pick, self-test PASS, byte-exact token cat
+      with computed length.  Single-disk boots print the honest
+      "no second disk" pair — i386_shell_smoke re-run green.
+- [x] TCP/sockets on i386 stay NAMED RESIDUE (unchanged since I8).
+
+#### P7 result
+
+The parity matrix's fs row is now ✅ at all four widths, and the
+proof object is the SAME ext2.c: x86_64 links it, rv64 and a64
+adopted it at P2/P3, i386 compiles it -m32 after a 32-cast
+pay-down that MEASURABLY shrank the width debt instead of growing
+it (355 < 359 — fixing -m32 truncation by deleting (uint64_t)
+casts is the sweep working exactly as designed).
 
 ### P8 — libc subset promotion
 - [ ] `lib/libcmini/` (one source set, three builds): errno, the

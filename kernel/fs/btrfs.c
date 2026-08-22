@@ -716,7 +716,7 @@ static int64_t btrfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
         uint64_t avail = ram - pos;
         if (avail > count) avail = count;
         /* Data starts after the extent item header (48 bytes) */
-        memcpy(buf, (uint8_t*)ei + 48 + pos, avail);
+        memcpy(buf, (uint8_t*)ei + 48 + pos, (size_t)avail);
         return (int64_t)avail;
     }
 
@@ -729,7 +729,7 @@ static int64_t btrfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
     if (avail > count) avail = count;
 
     if (btrfs_read_block(disk_byte, btrfs_node_buf) != 0) return -1;
-    memcpy(buf, btrfs_node_buf + pos, avail);
+    memcpy(buf, btrfs_node_buf + pos, (size_t)avail);
     return (int64_t)avail;
 }
 
@@ -742,7 +742,7 @@ static int64_t btrfs_write(struct vnode *vn, uint64_t pos, const void *buf, uint
     uint64_t new_lba = alloc_and_write_node(btrfs_node_buf);
     if (!new_lba) return -1;
 
-    memcpy(btrfs_node_buf, buf, count);
+    memcpy(btrfs_node_buf, buf, (size_t)count);
     if (btrfs_write_block(new_lba, btrfs_node_buf) != 0) return -1;
 
     /* Create/update extent item */
@@ -919,7 +919,7 @@ int btrfs_init(int prefer_port) {
         sb = (struct btrfs_superblock *)btrfs_scratch;
     }
 
-    btrfs_m.block_size = sb->nodesize ? sb->nodesize : 4096;
+    btrfs_m.block_size = sb->nodesize ? (uint32_t)sb->nodesize : 4096;
     btrfs_m.nodesize = btrfs_m.block_size;
     btrfs_m.sectorsize = sb->sectorsize ? sb->sectorsize : 4096;
     btrfs_m.total_bytes = sb->total_bytes;

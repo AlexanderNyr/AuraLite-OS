@@ -30,6 +30,7 @@
 #include "kernel/arch/i386/vga32.h"
 #include "kernel/arch/i386/kbd32.h"
 #include "kernel/arch/i386/ata32.h"
+#include "kernel/arch/i386/fsglue32.h"
 #include "kernel/arch/i386/net32.h"
 
 void thread32_reap(void);
@@ -227,6 +228,9 @@ void kmain32(uint32_t boot_info_phys)
             kprintf32("[ata] FAIL: self-test\n");
             goto halt;
         }
+        /* PARITY P7: drives behind the blkdev seam; the shared ext2
+         * mounts on the slave when one is attached. */
+        fs32_bringup();
     } else {
         kprintf32("[ata] no primary-master ATA device; skipping "
                   "(hardware without IDE: I8 residue, see plan)\n");

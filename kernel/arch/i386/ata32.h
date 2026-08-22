@@ -17,6 +17,13 @@
 /* 0 on success.  Identify fills total LBA28 sector count. */
 int ata32_init(uint32_t *total_sectors);
 int ata32_read(uint32_t lba, uint8_t *buf512);
+
+/* P7: drive-parametrised lane for the blkdev seam.  drive 0 =
+ * primary master (the boot disk), 1 = primary slave (probed at
+ * init; sectors 0 when absent). */
+int ata32_read_drv(int drive, uint32_t lba, uint8_t *buf512);
+int ata32_write_drv(int drive, uint32_t lba, const uint8_t *buf512);
+uint32_t ata32_drive_sectors(int drive);
 int ata32_write(uint32_t lba, const uint8_t *buf512);
 
 /* Boot self-test: IDENTIFY, read LBA 0 (verify 0x55AA), then a

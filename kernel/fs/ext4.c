@@ -771,7 +771,7 @@ static int64_t ext4_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t cou
         if (read_block(pblock, ext4_cluster_buf) != 0) return -1;
         uint64_t chunk = m4.block_size - off_in_block;
         if (chunk > count - done) chunk = count - done;
-        memcpy(out + done, ext4_cluster_buf + off_in_block, chunk);
+        memcpy(out + done, ext4_cluster_buf + off_in_block, (size_t)chunk);
         done += chunk;
     }
     return (int64_t)done;
@@ -821,7 +821,7 @@ static int64_t ext4_write(struct vnode *vn, uint64_t pos, const void *buf, uint6
         if (read_block(pblock, ext4_cluster_buf) != 0) return -1;
         uint64_t chunk = m4.block_size - off_in_block;
         if (chunk > count - done) chunk = count - done;
-        memcpy(ext4_cluster_buf + off_in_block, in + done, chunk);
+        memcpy(ext4_cluster_buf + off_in_block, in + done, (size_t)chunk);
 
         /* Journal the block */
         if (journal_log_block(pblock, ext4_cluster_buf) != 0) return -1;

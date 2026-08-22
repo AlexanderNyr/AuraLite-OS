@@ -64,7 +64,7 @@ static int64_t exfat_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
     uint64_t available = BC_BLOCK_SIZE - offset_in_cluster;
     uint64_t to_copy = (count < available) ? count : available;
     
-    memcpy(buf, b->data + offset_in_cluster, to_copy);
+    memcpy(buf, b->data + offset_in_cluster, (size_t)to_copy);
     bc_release(b);
     return to_copy;
 }
@@ -80,7 +80,7 @@ static int64_t exfat_write(struct vnode *vn, uint64_t pos, const void *buf, uint
     uint64_t available = BC_BLOCK_SIZE - offset_in_cluster;
     uint64_t to_copy = (count < available) ? count : available;
     
-    memcpy(b->data + offset_in_cluster, buf, to_copy);
+    memcpy(b->data + offset_in_cluster, buf, (size_t)to_copy);
     b->dirty = true;
     bc_release(b);
     return to_copy;

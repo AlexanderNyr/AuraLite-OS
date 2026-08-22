@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [PARITY P7 — i386 mounts the shared ext2; the width debt PAYS] 2026-08-22
+
+The 32 -Wshorten-64-to-32 errors across 14 fs files are gone — all
+one class (clamped u64 lengths into size_t sinks; the casts now
+document the clamp at the narrowing point) — and the width-sweep
+ratchet CLICKED DOWN 359 → 355, because select.c's four sites were
+`(uint64_t)nfds` casts whose removal WAS the -m32 fix.  The parity
+checker gained a third live lane: kernel/fs must compile under
+CFLAGS32's own strictness on every run.
+
+- ata32: primary-slave probe + drive-parametrised read/write (the
+  master stays the boot disk the selftest pins).  Both drives
+  behind the seam as ata0/ata1; the shared `ext2_init(-1)` picker
+  chooses the slave — the x86_64 second-disk rule in 32-bit code
+  nobody edited.
+- KERNEL32_SHARED: blkdev.c ext2.c kprintf.c spinlock.c string.c;
+  div64_32.c supplies __udivdi3/__umoddi3/__divdi3/__moddi3 (i686
+  has no 64-bit divide; -m32 codegen libcalls, freestanding pays
+  its own way).  fsglue32: COM1+VGA sinks, kmalloc32 with an
+  honest >4G refusal, vfs_now = pit32_ticks/100.  kernel32.elf
+  154 164 → 265 880.
+- i386_fs_smoke.sh 13/13 (hand-written): BIOS boot of the real ISO
+  + slave ext2 image, probe → seam → mount → self-test PASS →
+  byte-exact token cat.  Single-disk boots print the honest "no
+  second disk"; i386_shell_smoke re-run green.
+- The fs row of the parity matrix is ✅ at all four widths with ONE
+  ext2.c.  Checker: 36 claims.
+
 ## [PARITY P6 — SMP aarch64] 2026-08-22
 
 psci.c delivers the CPU_ON its own A0 comment promised (0xC4000003

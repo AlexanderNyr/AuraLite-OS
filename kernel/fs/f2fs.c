@@ -730,7 +730,7 @@ static int64_t f2fs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t cou
         if (read_page(phys_lba, f2fs_page_buf) != 0) return -1;
         uint64_t chunk = F2FS_PAGE_SIZE - off_in_block;
         if (chunk > count - done) chunk = count - done;
-        memcpy(out + done, f2fs_page_buf + off_in_block, chunk);
+        memcpy(out + done, f2fs_page_buf + off_in_block, (size_t)chunk);
         done += chunk;
     }
     return (int64_t)done;
@@ -764,7 +764,7 @@ static int64_t f2fs_write(struct vnode *vn, uint64_t pos, const void *buf, uint6
         if (read_page(phys_lba, f2fs_page_buf) != 0) return -1;
         uint64_t chunk = F2FS_PAGE_SIZE - off_in_block;
         if (chunk > count - done) chunk = count - done;
-        memcpy(f2fs_page_buf + off_in_block, in + done, chunk);
+        memcpy(f2fs_page_buf + off_in_block, in + done, (size_t)chunk);
 
         /* LFS write: always write to new block location */
         uint32_t new_lba = alloc_next_data_block();

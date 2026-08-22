@@ -74,10 +74,10 @@ static int do_select_kernel(int nfds, fd_set *r, fd_set *w, fd_set *e,
                 kfree(wwqs);
                 return -ENOMEM;
             }
-            memset(rentries, 0, sizeof(*rentries) * (uint64_t)nfds);
-            memset(wentries, 0, sizeof(*wentries) * (uint64_t)nfds);
-            memset(rwqs, 0, sizeof(*rwqs) * (uint64_t)nfds);
-            memset(wwqs, 0, sizeof(*wwqs) * (uint64_t)nfds);
+            memset(rentries, 0, sizeof(*rentries) * (size_t)nfds);
+            memset(wentries, 0, sizeof(*wentries) * (size_t)nfds);
+            memset(rwqs, 0, sizeof(*rwqs) * (size_t)nfds);
+            memset(wwqs, 0, sizeof(*wwqs) * (size_t)nfds);
         }
 
         for (int fd = 0; fd < nfds; fd++) {

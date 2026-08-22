@@ -372,7 +372,7 @@ static int64_t usbfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
         uint32_t len = make_info(info);
         if (pos >= len) return 0;
         if (pos + count > len) count = len - pos;
-        memcpy(buf, info + pos, count);
+        memcpy(buf, info + pos, (size_t)count);
         return (int64_t)count;
     }
     if (vn->inode_id == USBFS_INO_SECTOR0) return read_raw(pos, buf, count, MSC_SECTOR_SIZE);

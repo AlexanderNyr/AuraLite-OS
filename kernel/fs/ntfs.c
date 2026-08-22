@@ -57,7 +57,7 @@ static int64_t ntfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t cou
     
     uint64_t available = BC_BLOCK_SIZE - (pos % BC_BLOCK_SIZE);
     uint64_t to_copy = (count < available) ? count : available;
-    memcpy(buf, b->data + (pos % BC_BLOCK_SIZE), to_copy);
+    memcpy(buf, b->data + (pos % BC_BLOCK_SIZE), (size_t)to_copy);
     
     bc_release(b);
     return to_copy;

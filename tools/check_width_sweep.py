@@ -47,7 +47,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured at the I6 landing commit.  When your change removes casts or
 # migrates includes to arch.h, lower the number in the SAME commit --
 # that is the ratchet clicking, and the whole point.
-BASELINE_UINT64_CASTS = 359   # was 361 at I6 landing; slab.c paid 2
+BASELINE_UINT64_CASTS = 355   # was 359; P7 removed select.c's four (the -m32 fix WAS the removal)
 BASELINE_X64_INCLUDES = 69    # was 80; the portio.h -> arch.h batch paid 11
 BASELINE_ASM_FILES    = 29    # was 33 at V6 arming; the first batch paid 4
                               # (spinlock->C11, kprintf, time, scheduler)

@@ -193,7 +193,7 @@ static int64_t diskfs_read(struct vnode *vn, uint64_t pos,
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
         if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -1;
     }
-    memcpy(buf, tmp + pos, count);
+    memcpy(buf, tmp + pos, (size_t)count);
     e->atime = vfs_now();
     sync_table();
     rebuild_vnodes();
@@ -211,7 +211,7 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
         (void)read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE);
     }
-    memcpy(tmp + pos, buf, count);
+    memcpy(tmp + pos, buf, (size_t)count);
     uint64_t end = pos + count;
     if (end > e->size) e->size = (uint32_t)end;
     e->mtime = e->ctime = vfs_now();
