@@ -19,6 +19,9 @@ typedef struct {
  * timebase_freq comes from the DTB (/cpus timebase-frequency). */
 void trap_init(uint32_t timebase_freq);
 
+/* R5: stvec-only install for a secondary (no timer, no SIE). */
+void trap_init_secondary(void);
+
 /* Ticks observed so far (the [timer] gate reads this). */
 uint64_t timer_ticks(void);
 

@@ -20,6 +20,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD="$ROOT/build"
 ELF="$BUILD/kernela64.elf"
+IMG="$BUILD/kernela64.img"
+TAR="$BUILD/initrd.tar"
 LOG="$BUILD/a64_smp.log"
 
 if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
@@ -28,12 +30,14 @@ if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
 fi
 
 [ -s "$ELF" ] || make -C "$ROOT" kernela64 >/dev/null
+[ -s "$IMG" ] || make -C "$ROOT" kernela64-img >/dev/null
+[ -s "$TAR" ] || make -C "$ROOT" build/initrd.tar >/dev/null
 
 rm -f "$LOG"
 timeout 180 qemu-system-aarch64 \
         -machine virt -cpu cortex-a72 -smp 8 -m 256M \
         -display none -serial file:"$LOG" -no-reboot \
-        -kernel "$ELF" \
+        -kernel "$IMG" -initrd "$TAR" \
         < /dev/null > /dev/null 2>&1 || true
 
 tr -d '\r' < "$LOG" > "$LOG.clean" && mv "$LOG.clean" "$LOG"
@@ -82,6 +86,9 @@ else
 fi
 assert_no_grep "CPU_ON.*FAILED"                     "no PSCI start failure"
 assert_no_grep "UNHANDLED\|SYNC EXCEPTION\|panic"   "no trap anywhere in the boot"
+# R5 (RES-14): user code OFF the boot core, receipts counted.
+assert_grep "init ran at EL0 ON CORE"               "R5: init executed on a secondary core"
+assert_grep "inita64: exiting 7"                    "R5: the user code itself spoke from that core"
 
 # ---- R4: the GICv3 x16 lane (the ceiling GICv2 could not lift) ------
 LOG16="$BUILD/a64_smp16.log"

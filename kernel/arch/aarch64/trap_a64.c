@@ -369,6 +369,16 @@ uint64_t trap_jitter_events_a64(void)
 
 extern char a64_vectors[];             /* vectors.S; 2048-aligned */
 
+/* R5: a secondary core's trap surface -- VBAR only.  No timer, no
+ * DAIF unmask: the user job runs with IRQs masked (SVCs and faults
+ * are synchronous), so the boot core's tick and GIC state are never
+ * touched from here. */
+void trap_init_a64_secondary(void)
+{
+    __asm__ volatile("msr vbar_el1, %0; isb"
+                     : : "r"((uint64_t)a64_vectors));
+}
+
 void trap_init_a64(void)
 {
     /* Vectors first: from this line on, a fault has a name. */

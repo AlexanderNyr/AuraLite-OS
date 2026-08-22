@@ -25,8 +25,8 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-11 | S | OPEN | i386 compositor/GUI (I386 I8) | opener fact measured at R12 |
 | RES-12 | S | OPEN | i386 VBE graphics; text mode is the console (I386 I7) | opener fact measured at R12 |
 | RES-13 | W | DONE@R4 | a64 -smp 16 needs GICv3; v2 = 8 ifaces architectural (PARITY P6) | a64_smp_smoke -smp 16 lane: 15 online, IPI 15/15 |
-| RES-14 | W | OPEN | tenant SMP receipts-only; secondaries park (PARITY D5) | a user thread RUNS on a secondary; receipt counted |
-| RES-15 | W | OPEN | x86 user scheduling BSP-only (status.md) | user thread observed scheduled on an AP; case pins it |
+| RES-14 | W | DONE@R5 | tenant SMP receipts-only — R5: init runs at U-mode/EL0 ON a secondary on BOTH tenants (strictly serialized one-job mailbox; per-hart stvec/VBAR, adopted final translation roots).  Preemptive multi-CPU runqueues on tenants remain the S-class successor, folded into RES-46's hand-off notes | a user thread RUNS on a secondary; receipt counted |
+| RES-15 | W | DONE@R5 | x86 "BSP-only" was the THIRD stale doc row: per-CPU runqueues + least-loaded placement + stealing landed at SMP 3.2 — R5 added the once-printed receipt (`user thread pid=N on AP cpu=M`) and test_fpu_smp pins it | user thread observed scheduled on an AP; case pins it |
 | RES-16 | W | OPEN | device IRQ waking a hlt-ed AP unproven (MATURITY) | receipt line in an SMP case |
 | RES-17 | W | OPEN | full libc floor on ports: no malloc/stdio/TLS (RISCV V8 / PARITY P8) | port program mallocs + stdio round-trip, three ports |
 | RES-18 | W | OPEN | PIE loading on ports waits on RES-17 (ARM64 close) | a PIE binary runs on one tenant; receipt |
@@ -65,7 +65,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses: OPEN 38, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1 (RES-13).
+amended same-commit, catch recorded).  Statuses: OPEN 36, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2 (RES-14/15; RES-16 stays OPEN — device-IRQ-wakes-AP needs the IOAPIC AP-routing increment).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

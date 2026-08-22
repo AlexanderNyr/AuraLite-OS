@@ -141,6 +141,18 @@ void schedule(void) {
     }
 
     if (next && next->pml4_phys != 0) {
+        /* R5 (ledger RES-15): the one-time receipt that a USER
+         * thread runs off the BSP.  The runqueues, least-loaded
+         * placement and stealing landed at SMP 3.2; the status row
+         * saying "BSP-only" outlived the code -- this line is the
+         * measured answer, printed once so no smoke output drifts. */
+        static volatile int ap_user_receipt_done;
+        struct cpu_local *cl = get_cpu_local();
+        if (cl->cpu_id != 0 && !ap_user_receipt_done &&
+            !__sync_lock_test_and_set(&ap_user_receipt_done, 1)) {
+            kprintf("[sched] R5 receipt: user thread pid=%d on AP cpu=%u\n",
+                    (int)next->id, (unsigned)cl->cpu_id);
+        }
         paging_switch_to(next->pml4_phys);
     } else if (next) {
         /* Idle/kernel threads have no address space of their own.  Do NOT

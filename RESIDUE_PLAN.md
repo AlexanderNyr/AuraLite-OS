@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R4 complete; R5 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R5 complete; R6 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,7 @@
 | R2 — VFS on the ports (the vfs.c:71 unlock) | ✅ complete | `patches/RESIDUE_R2_vfs.patch` |
 | R3 — i386 TCP/sockets (the last I8 line) | ✅ complete | `patches/RESIDUE_R3_tcp32.patch` |
 | R4 — GICv3 + the a64 x16 run | ✅ complete | `patches/RESIDUE_R4_gicv3.patch` |
-| R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | pending | `patches/RESIDUE_R5_sched.patch` |
+| R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | ✅ complete | `patches/RESIDUE_R5_sched.patch` |
 | R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | pending | `patches/RESIDUE_R6_libc2.patch` |
 | R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | pending | `patches/RESIDUE_R7_ecam.patch` |
 | R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | pending | `patches/RESIDUE_R8_rust.patch` |
@@ -324,14 +324,44 @@ on our own status.md edit within minutes of existing).
       The last ARCHITECTURAL ceiling of the x16 request is lifted;
       docs/status.md's living matrix updated.
 
-### R5 — schedulers
-- [ ] Tenants: per-hart/core runqueues, timer-tick preemption on
-      secondaries, one user thread observed to RUN on a secondary
-      (receipt: `pid=N on hart 2`).
-- [ ] x86: user threads schedule beyond the BSP (status.md's own
-      conservative note), device IRQ wakes a hlt-ed AP (RES-16).
-- [ ] Exit: counted receipts on all three SMP-capable ports; every
-      existing single-CPU pin holds.
+### R5 — schedulers — ✅ COMPLETE (scoped by measurement, remainder named)
+- [x] **x86 first, because the measurement flipped the task:** the
+      "BSP-only user scheduling" status row was the THIRD stale doc
+      line this series has caught — scheduler_rq.c has carried
+      per-CPU queues, least-loaded placement and work stealing
+      since SMP 3.2, with its own comment saying threads on AP
+      queues "actually execute there".  D1 demanded a receipt, not
+      a doc edit: the scheduler now prints ONCE when an AP first
+      runs a user thread — `[sched] R5 receipt: user thread pid=6
+      on AP cpu=1` on a -smp 4 boot — and test_fpu_smp pins it
+      (RES-15 closed with evidence, the row corrected).
+- [x] Tenants: user code RUNS OFF the boot CPU on both — a strictly
+      serialized one-job mailbox hands `init` to a parked
+      secondary, which adopts the final translation roots
+      (satp / TTBR0+TTBR1 published by the paging layer), installs
+      its own trap vector (stvec/VBAR, no timer, no interrupt
+      unmask — exceptions only), and runs it to exit:
+      `[smp] init ran at U-mode ON HART 3` / `at EL0 ON CORE 2`,
+      with the user program's own lines printed from that CPU.
+      user_rv/user_a64 statics stay single-entrant BY CONSTRUCTION
+      (the boot CPU waits) — receipts, not a scheduler (RES-14's
+      gate met; preemptive tenant runqueues named to the hand-off).
+- [x] Three catches on the way, each by a counted red run: QEMU
+      ignores `-initrd` for a64 ELF payloads (the A1 fact bit the
+      smoke; the v2 lane boots the IMG now); wfe-parked v3 pollers
+      lost the SGI wakeup at 13/15 (sev landed before two
+      redistributors latched); the yield-spin "fix" made it WORSE
+      at 10/15 (fifteen spinning vCPUs starve stragglers on a
+      loaded host) — the shape that holds is wfe sleepers + the
+      boot core RE-SEVING every wait pass, 15/15 again.  The
+      deployed R4's CI run confirmed the diagnosis independently:
+      2/15 on the shared runner, same race, fix already riding
+      in this patch.
+- [x] RES-16 stays OPEN, honestly: a DEVICE interrupt waking a
+      hlt-ed AP needs the IOAPIC AP-routing increment — its own
+      work, not this phase's afterthought.  Exit gates ran:
+      rv_smp (+2 asserts), a64_smp (+2), test_fpu_smp (+1), and
+      the single-CPU boots hold every old pin.
 
 ### R6 — libc v2 on the ports
 - [ ] brk/mmap-lite syscalls (the D4 number table grows; checker

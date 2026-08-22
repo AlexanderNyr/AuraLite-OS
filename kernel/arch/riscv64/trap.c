@@ -284,6 +284,16 @@ int trap_selftest(void)
 
 extern void rv_trap_vector(void);   /* trapentry.S */
 
+/* R5: a secondary hart's trap surface -- stvec only.  No STIE/SEIE:
+ * the hart runs its user job with interrupts MASKED (syscalls and
+ * faults are exceptions, they do not need SIE), so the boot hart's
+ * timer/scheduler state is never touched from here (D5's line). */
+void trap_init_secondary(void)
+{
+    extern void rv_trap_vector(void);
+    __asm__ volatile("csrw stvec, %0" :: "r"((uint64_t)rv_trap_vector));
+}
+
 void trap_init(uint32_t timebase_freq)
 {
     /* Direct mode: low bits 00.  trapentry.S aligns the symbol to 4. */

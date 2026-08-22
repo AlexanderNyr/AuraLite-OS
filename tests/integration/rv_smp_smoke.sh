@@ -14,6 +14,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD="$ROOT/build"
 ELF="$BUILD/kernelrv.elf"
+TAR="$BUILD/initrd.tar"
 LOG="$BUILD/rv_smp.log"
 
 if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then
@@ -22,12 +23,13 @@ if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then
 fi
 
 [ -s "$ELF" ] || make -C "$ROOT" kernelrv >/dev/null
+[ -s "$TAR" ] || make -C "$ROOT" build/initrd.tar >/dev/null
 
 rm -f "$LOG"
 timeout 120 qemu-system-riscv64 \
         -machine virt -smp 4 -m 256M \
         -display none -serial file:"$LOG" -no-reboot \
-        -kernel "$ELF" \
+        -kernel "$ELF" -initrd "$TAR" \
         < /dev/null > /dev/null 2>&1 || true
 
 tr -d '\r' < "$LOG" > "$LOG.clean" && mv "$LOG.clean" "$LOG"
@@ -77,6 +79,9 @@ fi
 assert_no_grep "hart_start.*FAILED"                 "no HSM start failure"
 assert_no_grep "send_ipi FAILED"                    "no IPI send failure"
 assert_no_grep "UNHANDLED EXCEPTION"                "no unhandled trap anywhere in the boot"
+# R5 (RES-14): user code OFF the boot hart, receipts counted.
+assert_grep "init ran at U-mode ON HART"           "R5: init executed on a secondary hart"
+assert_grep "initrv: exiting 7"                    "R5: the user code itself spoke from that hart"
 
 # ---- the x16 lane (the P6 amendment): same kernel, -smp 16 ----------
 LOG16="$BUILD/rv_smp16.log"

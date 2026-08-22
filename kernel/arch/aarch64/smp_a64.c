@@ -28,6 +28,9 @@
 #include "kernel/arch/aarch64/smp_a64.h"
 #include "kernel/arch/aarch64/psci.h"
 #include "kernel/arch/aarch64/gic.h"      /* R4: the v3 lane */
+#include "kernel/arch/aarch64/paging_a64.h"  /* R5 */
+#include "kernel/arch/aarch64/trap_a64.h"
+#include "kernel/arch/aarch64/user_a64.h"
 #include "kernel/lib/kprintf.h"
 
 extern const uint64_t kernel_layout[];       /* boot.S; [8] = secondary PA */
@@ -54,7 +57,14 @@ extern const uint64_t kernel_layout[];       /* boot.S; [8] = secondary PA */
 static uint8_t sec_stacks[SMP_A64_MAX][SEC_STACK_SZ]
     __attribute__((aligned(16)));
 
+static uint64_t cnt_now(void);          /* fwd: defined with the waits */
+static uint64_t cnt_freq(void);
+
 static volatile uint64_t cores_online;
+static volatile uint64_t job_post;      /* R5: 1 = run init */
+static volatile uint64_t job_core;
+static volatile uint64_t job_done;
+static volatile int      job_code;
 static volatile uint64_t ipi_acks;
 static volatile uint32_t *gicd;              /* HHDM VAs, set by bringup */
 static volatile uint32_t *gicc;
@@ -105,8 +115,15 @@ void secondary_main_a64(void)
                 kprintf("[smp] core %llu: IPI received, parking\n",
                         (unsigned long long)id);
                 atomic_add(&ipi_acks, 1);
-                return;             /* boot.S parks us in wfi */
+                goto job_loop;      /* R5 */
             }
+            /* R5, second draft.  wfe alone lost wakeups (13/15: sev
+             * landed before two redistributors latched the SGI);
+             * a yield spin made it WORSE (10/15: fifteen spinning
+             * vCPUs starve the stragglers on a loaded host).  The
+             * shape that holds: sleep in wfe here, and the BOOT
+             * core re-sevs every wait iteration -- the sleeper can
+             * miss one event but never the stream. */
             __asm__ volatile("wfe");
         }
     }
@@ -131,12 +148,57 @@ void secondary_main_a64(void)
             kprintf("[smp] core %llu: IPI received, parking\n",
                     (unsigned long long)id);
             atomic_add(&ipi_acks, 1);
-            return;                 /* boot.S parks us in wfi */
+            goto job_loop;          /* R5 */
         }
         if (intid != 1023u)          /* not ours: complete and move on */
             gicc[GICC_EOIR / 4] = iar;
         __asm__ volatile("wfe");
     }
+
+job_loop:
+    /* R5: one strictly-serialized user job (smp_rv.c's mirror --
+     * the boot core waits, so user_a64.c's one-image statics stay
+     * single-entrant).  sev from the boot core wakes the wfe. */
+    for (;;) {
+        if (job_post) {
+            uint64_t claim = __atomic_exchange_n(&job_post, 0,
+                                                 __ATOMIC_SEQ_CST);
+            if (claim) {
+                job_core = id;
+                __asm__ volatile("msr ttbr1_el1, %0\n\t"
+                                 "msr ttbr0_el1, %1\n\t"
+                                 "tlbi vmalle1\n\t"
+                                 "dsb ish\n\t"
+                                 "isb"
+                                 :: "r"(paging_a64_final_ttbr1),
+                                    "r"(paging_a64_final_ttbr0));
+                trap_init_a64_secondary();
+                job_code = user_a64_run_elf("bina64/init");
+                __atomic_store_n(&job_done, 1, __ATOMIC_SEQ_CST);
+                return;             /* park */
+            }
+        }
+        __asm__ volatile("wfe");
+    }
+}
+
+/* R5: run bina64/init at EL0 on ONE parked secondary. */
+int smp_a64_run_init_on_secondary(int *out_core)
+{
+    if (cores_online == 0)
+        return -1000;
+    job_post = 1;
+    __asm__ volatile("dsb ish; sev" ::: "memory");
+    uint64_t deadline = cnt_now() + 60ull * cnt_freq();
+    while (!job_done && cnt_now() < deadline)
+        __asm__ volatile("yield");
+    if (!job_done) {
+        job_post = 0;
+        return -1001;
+    }
+    if (out_core)
+        *out_core = (int)job_core;
+    return job_code;
 }
 
 /* R4: waits are bounded by GUEST TIME, not iterations -- the R1
@@ -233,7 +295,15 @@ void smp_a64_bringup(const boot_info_t *bi,
             gicd[GICD_SGIR / 4] = ((uint32_t)sgi_targets << 16) | SGI_ID;
         }
         __asm__ volatile("sev" ::: "memory");
-        wait_counter(&ipi_acks, cores_online, 60);
+        {
+            /* Re-sev while waiting: pending SGIs latched after a
+             * sleeper's poll get another event, every pass. */
+            uint64_t dl = cnt_now() + 60ull * cnt_freq();
+            while (ipi_acks < cores_online && cnt_now() < dl) {
+                __asm__ volatile("sev" ::: "memory");
+                __asm__ volatile("yield");
+            }
+        }
         kprintf("[smp] IPI round-trip: %llu/%llu ack(s)\n",
                 (unsigned long long)ipi_acks,
                 (unsigned long long)cores_online);

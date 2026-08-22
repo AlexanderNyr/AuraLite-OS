@@ -37,6 +37,9 @@ static inline uint64_t v2p_rv(const void *virt)
  * After this returns, a low virtual address is a fault. */
 void paging_rv_init(void);
 
+/* R5: the final satp value (0 until paging_rv_init ran). */
+extern uint64_t paging_rv_final_satp;
+
 /* 4 KiB mappings in the final tables.  flags = PTE_R/W/X/U as needed
  * (PTE_V, PTE_A, PTE_D are added internally).  Returns 0 or -1. */
 int  paging_rv_map(uint64_t va, uint64_t pa, uint64_t flags);

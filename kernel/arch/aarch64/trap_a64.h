@@ -22,6 +22,9 @@ typedef struct {
  * the timer INTID through the GIC, unmask IRQ in DAIF. */
 void trap_init_a64(void);
 
+/* R5: VBAR-only install for a secondary (no timer, no unmask). */
+void trap_init_a64_secondary(void);
+
 /* Ticks observed so far (the [timer] gate reads this). */
 uint64_t timer_ticks_a64(void);
 

@@ -32,6 +32,7 @@
 #include "kernel/arch/aarch64/initrd_a64.h"
 #include "kernel/arch/aarch64/vblk_a64.h"
 #include "kernel/arch/aarch64/fsglue_a64.h"
+#include "kernel/lib/kprintf.h"
 #include "kernel/arch/aarch64/smp_a64.h"
 #include "kernel/arch/aarch64/vnet_a64.h"
 #include "kernel/arch/aarch64/membench_a64.h"
@@ -579,7 +580,19 @@ void kmain_a64(uint64_t x0_at_entry)
      * the A4 ending. ---- */
     if (initrd_a64_init(&boot_info) == 0) {
         pl011_puts("[boot] starting init (EL0, ELF64 from the initrd)\n");
-        int code = user_a64_run_elf("bina64/init");
+        /* R5 (ledger RES-14): with secondaries online, init runs ON
+         * ONE OF THEM.  Single-core boots keep the old path. */
+        int r5_core = -1;
+        int code = smp_a64_run_init_on_secondary(&r5_core);
+        if (code == -1000) {
+            code = user_a64_run_elf("bina64/init");
+        } else if (code == -1001) {
+            pl011_puts("[smp] R5 FAIL: secondary never took the job\n");
+            code = user_a64_run_elf("bina64/init");
+        } else {
+            kprintf("[smp] init ran at EL0 ON CORE %d "
+                    "(R5: user code off the boot core)\n", r5_core);
+        }
         if (code == 7)
             pl011_puts("[init] PASS: inita64 ran and exited 7 as built\n");
         else {

@@ -2,6 +2,30 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R5 — user code off the boot CPU on every SMP port] 2026-08-22
+
+x86: the "BSP-only scheduling" status row was the series' THIRD
+stale doc line — per-CPU queues/stealing landed at SMP 3.2; R5
+added the D1 receipt (`[sched] R5 receipt: user thread pid=6 on AP
+cpu=1`, printed once, pinned by test_fpu_smp) and corrected the
+row.  Tenants: a strictly serialized one-job mailbox runs `init`
+ON a parked secondary on BOTH rv64 and a64 — final translation
+roots published by the paging layer, per-CPU stvec/VBAR installs
+with no timer and no unmask (exceptions only), user statics
+single-entrant by construction: `init ran at U-mode ON HART 3` /
+`at EL0 ON CORE 2`, the program's own output printed from that
+CPU.  RES-14+RES-15 closed; RES-16 (device IRQ wakes a hlt-ed AP)
+stays open, named for the IOAPIC AP-routing increment.
+
+Three counted catches: QEMU ignores -initrd for a64 ELF payloads
+(the A1 fact; the smoke's v2 lane boots the IMG); wfe pollers lost
+SGI wakeups at 13/15; the yield-spin "fix" starved stragglers at
+10/15 — wfe sleepers + a re-sev-ing boot core is the shape that
+holds at 15/15.  The deployed R4's CI run then CONFIRMED the
+diagnosis from the other side: the shared two-core runner scored
+2/15 on the same wfe race — the fix was already in this patch
+before the red arrived.
+
 ## [RESIDUE R4 — GICv3: aarch64 runs -smp 16, 15/15 online, 15/15 IPI] 2026-08-22
 
 gic.c grew a DTB-chosen v3 lane (redistributor walk by affinity,

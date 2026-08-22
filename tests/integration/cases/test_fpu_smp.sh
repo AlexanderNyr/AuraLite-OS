@@ -31,6 +31,11 @@ il_send "exit"
 
 il_run_qemu "$LOG" 60 -smp 4
 
+# R5 (residue ledger RES-15): the runqueues have been per-CPU since
+# SMP 3.2 -- this pins the once-printed receipt that a USER thread
+# actually ran on an AP, which the stale status row denied.
+il_assert_grep "$LOG" "R5 receipt: user thread pid=.* on AP cpu=" "R5: user thread observed on an AP"
+
 # The four threads each finished and matched their single-threaded reference.
 il_assert_grep    "$LOG" "FPSTRESS PASS"                "all four FP threads matched their reference"
 il_assert_grep    "$LOG" "\\[fpustress\\] 4/4 threads correct" "no thread lost FPU state to a context switch"

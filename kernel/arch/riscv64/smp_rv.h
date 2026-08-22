@@ -14,4 +14,10 @@ void smp_rv_bringup(uint64_t boot_hartid, const boot_info_t *bi);
 /* The started hart's C half (called from boot.S's secondary path). */
 void secondary_main_rv(uint64_t hartid);
 
+/* R5: run binrv/init at U-mode on ONE parked secondary (strictly
+ * serialized; the boot hart waits).  Returns the exit code, or
+ * -1000 (no secondaries) / -1001 (timeout).  *out_hart names the
+ * hart that ran it. */
+int smp_rv_run_init_on_secondary(int *out_hart);
+
 #endif /* AURALITE_ARCH_RISCV64_SMP_RV_H */

@@ -17,4 +17,8 @@ void smp_a64_bringup(const boot_info_t *bi,
 /* The started core's C half (called from boot.S). */
 void secondary_main_a64(void);
 
+/* R5: run bina64/init at EL0 on ONE parked secondary (strictly
+ * serialized).  Exit code, or -1000 (none) / -1001 (timeout). */
+int smp_a64_run_init_on_secondary(int *out_core);
+
 #endif /* AURALITE_ARCH_AARCH64_SMP_A64_H */

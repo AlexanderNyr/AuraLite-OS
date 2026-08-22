@@ -405,10 +405,11 @@ def claims():
              "a64_smp_smoke.sh", "i386_fs_smoke.sh")) and
         wf.count("e2fsprogs") >= 5))
     checks.append((
-        "P9: docs/status.md carries the four-width parity matrix "
-        "with the honest SMP row and the named residue list",
+        "P9 (amended at RESIDUE R5): the living matrix's SMP row "
+        "moved from receipts-only to user-on-secondary -- the claim "
+        "moves WITH the row, not against it",
         "Platform parity — PARITY_PLAN" in read("docs", "status.md")
-        and "receipts only, D5" in read("docs", "status.md")
+        and "R5: init RAN on a secondary" in read("docs", "status.md")
         and "Named residue, carried forward" in read("docs",
                                                      "status.md")))
 

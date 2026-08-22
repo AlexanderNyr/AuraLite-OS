@@ -27,6 +27,10 @@
 #include <stdint.h>
 
 #include "kernel/arch/aarch64/paging_a64.h"
+
+/* R5: the final translation roots, published for secondary cores. */
+uint64_t paging_a64_final_ttbr1;
+uint64_t paging_a64_final_ttbr0;
 #include "kernel/arch/aarch64/pl011.h"
 #include "kernel/arch/aarch64/pmm_a64.h"
 #include "kernel/arch/aarch64/trap_a64.h"
@@ -306,6 +310,8 @@ void paging_a64_init(void)
      * forever (the selftest's third probe keeps that honest). */
     uint64_t t1 = v2p_a64(root_hi);
     uint64_t t0 = v2p_a64(root_lo);
+    paging_a64_final_ttbr1 = t1;       /* R5: secondaries adopt both */
+    paging_a64_final_ttbr0 = t0;
     __asm__ volatile("msr ttbr1_el1, %0\n\t"
                      "msr ttbr0_el1, %1" :: "r"(t1), "r"(t0));
     tlb_flush_all();

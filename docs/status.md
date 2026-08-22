@@ -342,7 +342,7 @@ consumers; ONE `ext2.c` mounting on every width the tree builds.
 | Syscall surface | ~290 | 11 | 11 | 11 |
 | Bring-up libc | full lib/libc | libcmini shim | libcmini shim | libcmini shim |
 | SMP | ✅ scheduled | — (no ramp) | ✅ 15+1 @ -smp 16, IPI 15/15 | ✅ 15+1 @ -smp 16 (GICv3, R4) and 7+1 @ -smp 8 (GICv2) |
-| SMP scheduling | per-CPU runqueues | — | 1 scheduled (receipts only, D5) | 1 scheduled (receipts only, D5) |
+| SMP scheduling | per-CPU runqueues + stealing (receipt on AP) | — | 1 scheduled; R5: init RAN on a secondary hart | 1 scheduled; R5: init RAN on a secondary core |
 
 Proof lanes in CI (`i386-parity` / `riscv-parity` /
 `aarch64-parity`): `i386_fs_smoke` (13), `rv_fs_smoke` (18),
@@ -372,7 +372,7 @@ recurs: guest-time TD waits).
 
 ## Known low-priority limitations
 
-- **SMP scheduling is deliberately conservative.** APs are online, have CPU-local state and LAPIC timers, and enter the idle scheduler loop; normal user scheduling remains BSP-only until per-CPU run queues/TLB shootdown policy are completed.
+- **SMP scheduling (corrected by the residue ledger's R5 pass — this row was stale twice over).**  Per-CPU run queues, least-loaded placement and work stealing have been live since SMP 3.2, and user threads DO run on APs: the scheduler prints a one-time receipt (`[sched] R5 receipt: user thread pid=N on AP cpu=M`) and `test_fpu_smp` pins it.  Remaining named gap: a DEVICE interrupt waking a hlt-ed AP (ledger RES-16 — needs IOAPIC AP routing).
 - **TCP is intentionally minimal.** TCP receive uses timed waits over the IRQ-capable e1000 driver and has basic one-segment fixed-RTO retransmission for SYN/data/FIN, but the stack still supports a small fixed number of streams and lacks production features such as congestion control, sliding windows and richer packet queues.
 - **Advanced filesystems are prototypes.** `ext4`, `btrfs`, `f2fs`, `ntfs` and `exfat` are scaffolding/experimental readers, not robust general-purpose filesystem implementations; timestamp support is currently best covered in VFS/tmpfs/diskfs/FAT32/ext2.
 - **Hardware coverage is mostly virtualized.** Integration coverage is QEMU-first, with some VirtualBox/VMware-oriented device IDs; broad real-hardware validation is still pending.

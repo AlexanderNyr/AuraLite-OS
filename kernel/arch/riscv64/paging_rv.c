@@ -21,6 +21,11 @@
 #include <stdint.h>
 
 #include "kernel/arch/riscv64/paging_rv.h"
+
+/* R5: the final satp, published for secondary harts (they boot on
+ * early_root and must see the SAME final tables before running the
+ * user image the boot hart's elf loader mapped into them). */
+uint64_t paging_rv_final_satp;
 #include "kernel/arch/riscv64/pmm_rv.h"
 #include "kernel/arch/riscv64/sbi.h"
 #include "kernel/arch/riscv64/trap.h"
@@ -196,6 +201,7 @@ void paging_rv_init(void)
     /* satp -> the final tables.  NO identity entry was created: the
      * low half of the VA space is now guaranteed to fault. */
     uint64_t satp = (8UL << 60) | (v2p_rv(root) >> 12);
+    paging_rv_final_satp = satp;       /* R5: secondaries adopt it */
     __asm__ volatile("csrw satp, %0; sfence.vma" :: "r"(satp) : "memory");
 
     puts_("[vmm]  Sv39 final tables live: .text RX, .rodata R, data RW, "

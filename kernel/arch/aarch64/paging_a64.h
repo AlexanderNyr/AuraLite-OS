@@ -64,6 +64,10 @@ static inline uint64_t v2p_a64(const void *virt)
  * After this returns, a low virtual address is a fault. */
 void paging_a64_init(void);
 
+/* R5: final roots (0 until paging_a64_init ran). */
+extern uint64_t paging_a64_final_ttbr1;
+extern uint64_t paging_a64_final_ttbr0;
+
 /* 4 KiB mappings in the final tables.  kind = A64_MAP_*. */
 int  paging_a64_map(uint64_t va, uint64_t pa, int kind);
 int  paging_a64_unmap(uint64_t va);

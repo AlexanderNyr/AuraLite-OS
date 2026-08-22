@@ -466,7 +466,22 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
 
     if (initrd_rv_init(&boot_info) == 0) {
         sbi_puts("[boot] starting init (U-mode, ELF64 from the initrd)\n");
-        int code = user_rv_run_elf("binrv/init");
+        /* R5 (ledger RES-14): with secondaries online, init runs ON
+         * ONE OF THEM -- U-mode entry, syscalls and exit off the
+         * boot hart, receipt named below.  Single-hart boots keep
+         * the old path bit-for-bit. */
+        int r5_hart = -1;
+        int code = smp_rv_run_init_on_secondary(&r5_hart);
+        if (code == -1000) {
+            code = user_rv_run_elf("binrv/init");
+        } else if (code == -1001) {
+            sbi_puts("[smp] R5 FAIL: secondary never took the job\n");
+            code = user_rv_run_elf("binrv/init");
+        } else {
+            sbi_puts("[smp] init ran at U-mode ON HART ");
+            put_udec((uint64_t)r5_hart);
+            sbi_puts(" (R5: user code off the boot hart)\n");
+        }
         if (code == 7)
             sbi_puts("[init] PASS: initrv ran and exited 7 as built\n");
         else {

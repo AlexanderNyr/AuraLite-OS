@@ -23,6 +23,9 @@
 #include "kernel/arch/riscv64/sbi.h"
 #include "kernel/lib/kprintf.h"
 #include "boot/shared/boot_info.h"
+#include "kernel/arch/riscv64/paging_rv.h"
+#include "kernel/arch/riscv64/trap.h"
+#include "kernel/arch/riscv64/user_rv.h"
 
 extern const uint64_t kernel_layout[];       /* boot.S; [8] = secondary PA */
 
@@ -42,6 +45,12 @@ static uint64_t atomic_add(volatile uint64_t *p, uint64_t v)
 {
     return __atomic_add_fetch(p, v, __ATOMIC_SEQ_CST);
 }
+
+static unsigned long online_mask;       /* R5: who to kick for a job */
+static volatile uint64_t job_post;      /* 1 = run init */
+static volatile uint64_t job_hart;      /* who took it */
+static volatile uint64_t job_done;
+static volatile int      job_code;
 
 /* The secondary's C half (boot.S calls this with a0=hartid intact). */
 void secondary_main_rv(uint64_t hartid)
@@ -67,7 +76,28 @@ void secondary_main_rv(uint64_t hartid)
             kprintf("[smp] hart %llu: IPI received, parking\n",
                     (unsigned long long)hartid);
             atomic_add(&ipi_acks, 1);
-            return;                 /* boot.S parks us in wfi */
+            break;                  /* R5: fall through to the job loop */
+        }
+        __asm__ volatile("wfi");
+    }
+
+    /* R5: wait for one job (or none, forever -- boot.S parks us when
+     * we return).  First taker wins via amoswap on job_post. */
+    for (;;) {
+        if (job_post) {
+            uint64_t claim = __atomic_exchange_n(&job_post, 0,
+                                                 __ATOMIC_SEQ_CST);
+            if (claim) {
+                job_hart = hartid;
+                /* Adopt the boot hart's FINAL tables and install our
+                 * own stvec (no timer, no SIE -- exceptions only). */
+                __asm__ volatile("csrw satp, %0; sfence.vma"
+                                 :: "r"(paging_rv_final_satp) : "memory");
+                trap_init_secondary();
+                job_code = user_rv_run_elf("binrv/init");
+                __atomic_store_n(&job_done, 1, __ATOMIC_SEQ_CST);
+                return;             /* park */
+            }
         }
         __asm__ volatile("wfi");
     }
@@ -89,6 +119,35 @@ static void wait_counter(volatile uint64_t *ctr, uint64_t want,
     uint64_t deadline = cnt_now() + seconds * 10000000ull; /* 10 MHz */
     while (*ctr < want && cnt_now() < deadline)
         ;
+}
+
+/* ---- R5: the one-job mailbox ---------------------------------------
+ * Strictly serialized user execution on a secondary: the boot hart
+ * posts ONE job and WAITS; user_rv.c's statics (one image at a time,
+ * by its own comment) stay single-entrant because exactly one hart
+ * is ever inside them.  Receipts, then a scheduler when a scheduler
+ * phase earns it -- this lane proves U-mode entry, syscalls and
+ * faults work OFF the boot hart, which is the prerequisite the
+ * ledger row actually names. */
+int smp_rv_run_init_on_secondary(int *out_hart)
+{
+    if (harts_online == 0)
+        return -1000;                   /* no secondaries: caller keeps
+                                         * the boot-hart path */
+    job_post = 1;
+    /* wfi needs a pending interrupt to wake -- kick everyone who is
+     * parked; the winner amoswaps the job, the rest go back to wfi. */
+    sbi_send_ipi(online_mask, 0);
+    uint64_t deadline = cnt_now() + 60ull * 10000000ull;
+    while (!job_done && cnt_now() < deadline)
+        ;
+    if (!job_done) {
+        job_post = 0;
+        return -1001;                   /* honest timeout */
+    }
+    if (out_hart)
+        *out_hart = (int)job_hart;
+    return job_code;
 }
 
 void smp_rv_bringup(uint64_t boot_hartid, const boot_info_t *bi)
@@ -120,6 +179,7 @@ void smp_rv_bringup(uint64_t boot_hartid, const boot_info_t *bi)
             continue;
         }
         mask |= 1UL << hid;
+        online_mask = mask;             /* R5: published for the mailbox */
         started++;
     }
 
