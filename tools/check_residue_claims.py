@@ -97,6 +97,48 @@ def claims():
             "in the same commit)",
             not drift and len(baseline) > 0))
 
+    # --- R7: ECAM + virtio-pci (when the plan says the phase landed) ----
+    if re.search(r"^### R7[^\n]*✅ COMPLETE", plan, re.M):
+        makefl = read("Makefile")
+        ecam_c = read("kernel", "drivers", "pci_ecam.c")
+        vpci_c = read("kernel", "drivers", "virtio_pci.c")
+        checks.append((
+            "R7: the two shared transports exist and BOTH tenants list "
+            "them (single source, twice linked)",
+            ecam_c != "" and vpci_c != "" and
+            makefl.count("kernel/drivers/pci_ecam.c") >= 2 and
+            makefl.count("kernel/drivers/virtio_pci.c") >= 2))
+        checks.append((
+            "R7: the shared transports obey the portable rules "
+            "(no inline asm, no bare width casts)",
+            "__asm__" not in ecam_c and "__asm__" not in vpci_c and
+            "(uint64_t)" not in ecam_c and "(uint64_t)" not in vpci_c))
+        checks.append((
+            "R7: fdt.c names pci-host-ecam-generic and the walker "
+            "prints the receipt",
+            "pci-host-ecam-generic" in read("kernel", "dt", "fdt.c") and
+            "[pci] ECAM: " in ecam_c))
+        checks.append((
+            "R7: virtio_pci is MODERN — VERSION_1 offered back, "
+            "FEATURES_OK verified by read-back",
+            "VERSION_1" in vpci_c and "VM_S_FEATURES_OK" in vpci_c))
+        checks.append((
+            "R7: both fs smokes carry the PCI mount lane and pin the "
+            "transport-truth blkdev line",
+            all("virtio-blk over PCI (modern, VERSION_1)" in
+                read("tests", "integration", s) and
+                "vblk0 (virtio-pci" in read("tests", "integration", s)
+                for s in ("rv_fs_smoke.sh", "a64_fs_smoke.sh"))))
+        checks.append((
+            "R7 rider: the v3 group claim precedes the online count "
+            "(the R5/R6 CI reds' one cause) and the smp smoke asserts "
+            "the v3 timer",
+            "BEFORE this core counts itself online"
+            in read("kernel", "arch", "aarch64", "smp_a64.c") and
+            "GICD_IGROUPR" in read("kernel", "arch", "aarch64", "gic.c")
+            and "\\[timer\\] PASS"
+            in read("tests", "integration", "a64_smp_smoke.sh")))
+
     # --- R0 structure ---------------------------------------------------
     checks.append((
         "R0: the amended class totals are recorded as a CATCH in both "

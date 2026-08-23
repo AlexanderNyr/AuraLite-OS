@@ -113,6 +113,29 @@ else
     echo "  [a64-smp] FAIL x16/GICv3 lane: IPI 15/15 missing" >&2
     fail=1
 fi
+# R7 riders (the R5 CI red, both halves): the group claim moved
+# BEFORE the online count (a group-0 SGI is DISCARDED, so a late
+# claimer lost its only shot -- core 9, 14/15 on the runner), and
+# gic_enable now claims lines into group 1 too -- which is the line
+# that had been keeping this lane's TIMER silent (0 ticks) since R4.
+if grep -qa "\[gic\]  GICv3 up" "$LOG16"; then
+    echo "  [a64-smp] OK   x16/GICv3 lane: the gic banner names v3"
+else
+    echo "  [a64-smp] FAIL x16/GICv3 lane: v3 banner missing" >&2
+    fail=1
+fi
+if grep -qa "\[timer\] PASS" "$LOG16"; then
+    echo "  [a64-smp] OK   x16/GICv3 lane: the timer ticks through GICv3 (R7 rider)"
+else
+    echo "  [a64-smp] FAIL x16/GICv3 lane: timer silent on v3" >&2
+    fail=1
+fi
+if grep -qa "\[gic\]  PASS: claim/complete" "$LOG16"; then
+    echo "  [a64-smp] OK   x16/GICv3 lane: completions track ticks (R7 rider)"
+else
+    echo "  [a64-smp] FAIL x16/GICv3 lane: claim/complete broken" >&2
+    fail=1
+fi
 
 if [ "$fail" -ne 0 ]; then
     echo "[a64-smp] FAILED — log tails:" >&2

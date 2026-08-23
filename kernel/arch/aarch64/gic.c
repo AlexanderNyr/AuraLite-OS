@@ -32,6 +32,7 @@
 #include "kernel/arch/aarch64/gic.h"
 
 #define GICD_CTLR         0x000u
+#define GICD_IGROUPR      0x080u   /* R7 rider: group claim (v3) */
 #define GICD_ISENABLER    0x100u
 #define GICD_IPRIORITYR   0x400u
 #define GICD_ITARGETSR    0x800u
@@ -176,15 +177,27 @@ void gic_enable(uint32_t intid, gic_handler_t fn)
 
     if (gic_v3) {
         if (intid < 32) {
-            /* SGI/PPI: this PE's own redistributor SGI frame. */
+            /* SGI/PPI: this PE's own redistributor SGI frame.
+             * R7 rider: claim the line into GROUP 1 first -- reset
+             * IGROUPR0 is all-group-0, ICC_IGRPEN1 enables group 1
+             * only, and a group-0 line stays silent (the R4 SGI
+             * lesson, finally applied HERE too: this line is why
+             * the GICv3 lane's timer read 0 ticks in half a
+             * second while v2 ticked fine). */
             volatile uint8_t *sgi = gic_v3_own_rdist() + GICR_SGI_OFF;
+            *(volatile uint32_t *)(sgi + GICD_IGROUPR) |= 1u << intid;
             *(volatile uint8_t *)(sgi + GICD_IPRIORITYR + intid) = 0xA0;
             *(volatile uint32_t *)(sgi + GICD_ISENABLER) =
                 1u << intid;
         } else {
             /* SPI: same GICD offsets as v2 for priority/enable;
              * routing is affinity-based -- 0 = Aff 0.0.0.0, the
-             * boot PE, stated instead of trusting reset values. */
+             * boot PE, stated instead of trusting reset values.
+             * R7 rider: group 1 claimed here as well (GICD_IGROUPR
+             * banks by 32 lines). */
+            *(volatile uint32_t *)(gicd + GICD_IGROUPR +
+                                   (intid / 32) * 4) |=
+                1u << (intid % 32);
             volatile uint8_t *prio =
                 (volatile uint8_t *)(gicd + GICD_IPRIORITYR + intid);
             *prio = 0xA0;

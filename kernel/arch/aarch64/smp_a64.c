@@ -85,6 +85,26 @@ static uint64_t my_aff0(void)
 void secondary_main_a64(void)
 {
     uint64_t id = my_aff0();
+
+    /* R7 rider (the R5 CI red, dissected): on v3 the SGI's group
+     * claim must happen BEFORE this core counts itself online.  The
+     * boot core fires ONE SGI the moment the counter says everyone
+     * is here -- and a group-0 SGI is DISCARDED at the redistributor,
+     * not left pending (the first 0/15 run's lesson).  A core that
+     * incremented first and claimed second can lose its only shot
+     * forever; core 9 did exactly that on the R5 run (14/15, its
+     * "online" line printed after the boot core's count).  v2 never
+     * flaked here because a v2 SGI latches pending even while the
+     * target's interface is still down. */
+    volatile uint8_t *rd = 0;
+    if (gic_is_v3()) {
+        rd = gic_v3_own_rdist();
+        gic_v3_wake_rdist(rd);
+        *(volatile uint32_t *)(rd + GICR_SGI_OFF + GICR_IGROUPR0) |=
+            1u << SGI_ID;
+        __asm__ volatile("dsb sy" ::: "memory");
+    }
+
     uint64_t n = atomic_add(&cores_online, 1);
     kprintf("[smp] core %llu online (stack top %p, #%llu)\n",
             (unsigned long long)id,
@@ -92,19 +112,12 @@ void secondary_main_a64(void)
                      + SEC_STACK_SZ),
             (unsigned long long)n);
 
-    if (gic_is_v3()) {
-        /* R4: wake OUR redistributor, then poll the SGI pending bit
-         * in it -- off the trap path AND off the CPU interface (the
-         * receipt needs delivery to the redistributor, nothing
-         * more; D5 unchanged). */
-        volatile uint8_t *rd = gic_v3_own_rdist();
-        gic_v3_wake_rdist(rd);
-        /* ICC_SGI1R generates GROUP-1 SGIs; at reset IGROUPR0 marks
-         * every SGI group 0, and a group-mismatched SGI is DISCARDED
-         * at the redistributor -- the first 0/15 run taught this
-         * line.  Claim our SGI into group 1 before listening. */
-        *(volatile uint32_t *)(rd + GICR_SGI_OFF + GICR_IGROUPR0) |=
-            1u << SGI_ID;
+    if (rd) {
+        /* R4: poll the SGI pending bit in OUR redistributor -- off
+         * the trap path AND off the CPU interface (the receipt needs
+         * delivery to the redistributor, nothing more; D5
+         * unchanged).  The group claim already happened above,
+         * before the counter. */
         volatile uint32_t *pend =
             (volatile uint32_t *)(rd + GICR_SGI_OFF + GICR_ISPENDR0);
         volatile uint32_t *clr =

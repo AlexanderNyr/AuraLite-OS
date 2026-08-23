@@ -121,9 +121,66 @@ assert_no_grep "cat: cannot open"                         "P4: open(file) succee
 assert_grep "fsio: PASS malloc+stdio round-trip (48 bytes)" "R6: brk/malloc/fopen-create/fwrite/fread, one source"
 assert_no_grep "UNHANDLED EXCEPTION"                      "no unhandled trap anywhere in the boot"
 
+# ---- R7: the SAME mount chain over the SECOND transport (virtio-pci) ----
+# A fresh disk with a fresh token, attached as virtio-blk-pci.  This
+# board's ECAM sits ABOVE 4 GiB (QEMU's highmem layout) -- the lane
+# also proves the tenant's VA carve, not just the shared walker.
+TOKEN2="A64PCI_$$_$(date +%s)"
+DISK2="$BUILD/a64_fs_pci_ext2.img"
+LOGP="$BUILD/a64_fs_pci.log"
+rm -f "$DISK2"
+dd if=/dev/zero of="$DISK2" bs=1M count=4 status=none
+"$MKFS" -q -b 1024 -I 128 -F "$DISK2" >/dev/null 2>&1
+SEED2="$BUILD/a64_fs_pci_seed.$$.txt"
+echo "hello over pci $TOKEN2" > "$SEED2"
+"$DEBUGFS" -w -R "write $SEED2 LINUX.TXT" "$DISK2" >/dev/null 2>&1
+rm -f "$SEED2"
+
+rm -f "$LOGP"
+{
+    for _ in $(seq 1 90); do
+        grep -qa "auralite# " "$LOGP" 2>/dev/null && break
+        sleep 1
+    done
+    printf 'cat LINUX.TXT\n';  sleep 2
+    printf 'exit\n';           sleep 3
+} | timeout 240 qemu-system-aarch64 \
+        -machine virt -cpu cortex-a72 -m 256M \
+        -display none -serial stdio -no-reboot \
+        -kernel "$IMG" -initrd "$TAR" \
+        -drive file="$DISK2",format=raw,if=none,id=hd \
+        -device virtio-blk-pci,drive=hd \
+        > "$LOGP" 2>/dev/null || true
+
+tr -d '\r' < "$LOGP" > "$LOGP.clean" && mv "$LOGP.clean" "$LOGP"
+
+if [ "$(wc -c < "$LOGP")" -gt 200000 ]; then
+    echo "[a64-fs] FAIL: PCI-lane log exceeds the 200KB fuse" >&2
+    exit 1
+fi
+
+assert_grep_p() {
+    local pat="$1" desc="$2"
+    if grep -qa "$pat" "$LOGP"; then
+        echo "  [a64-fs] OK   $desc"
+    else
+        echo "  [a64-fs] FAIL $desc (pattern: $pat)" >&2
+        fail=1
+    fi
+}
+assert_grep_p "\[pci\] ECAM: "                            "R7: the ECAM walk printed its receipt"
+assert_grep_p "1af4:1001 class 0100"                      "R7: virtio-blk-pci named on bus 0"
+assert_grep_p "virtio-blk over PCI (modern, VERSION_1)"   "R7: the second transport negotiated modern"
+assert_grep_p "\[blkdev\] blk0 = vblk0 (virtio-pci"       "R7: the seam line tells the transport truth"
+assert_grep_p "\[ext2\] mounted existing volume"          "R7: the SHARED ext2.c mounted over PCI"
+assert_grep_p "\[ext2\] PASS:"                            "R7: ext2 self-test (write path) over PCI"
+assert_grep_p "$TOKEN2"                                   "R7: cat returned the PCI disk's token byte-exact"
+
 if [ "$fail" -ne 0 ]; then
     echo "[a64-fs] FAILED — log tail:" >&2
     tail -30 "$LOG" >&2
+    echo "[a64-fs] PCI-lane log tail:" >&2
+    tail -30 "$LOGP" >&2
     exit 1
 fi
-echo "[a64-fs] all assertions passed"
+echo "[a64-fs] all assertions passed (mmio and PCI lanes)"

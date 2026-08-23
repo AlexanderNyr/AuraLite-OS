@@ -13,6 +13,10 @@ int vblk_rv_init(const fdt_platform_t *plat);
 int vblk_rv_available(void);
 uint64_t vblk_rv_sector_count(void);
 
+/* R7: which transport answered the probe -- "virtio-mmio" or
+ * "virtio-pci" (fsglue's blkdev line prints the truth). */
+const char *vblk_rv_transport(void);
+
 int vblk_rv_read(uint64_t lba, uint8_t *buf512);
 int vblk_rv_write(uint64_t lba, const uint8_t *buf512);
 

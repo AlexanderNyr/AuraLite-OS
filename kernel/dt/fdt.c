@@ -237,14 +237,19 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
      * assumption the promotion exists to flush out: the riscv virt
      * tree has no device nodes with children, so a single scalar
      * passed V1's gates for a year. */
-    enum dev_kind { DEV_NONE, DEV_UART, DEV_PLIC, DEV_GIC, DEV_VIRTIO };
+    enum dev_kind { DEV_NONE, DEV_UART, DEV_PLIC, DEV_GIC, DEV_VIRTIO,
+                    DEV_PCIE };
     uint64_t cur_reg_base = 0;
     const uint8_t *nreg[MAX_DEPTH];
+    uint32_t nreg_len[MAX_DEPTH];
+    const uint8_t *nranges[MAX_DEPTH];   /* R7: the pcie node's ranges */
+    uint32_t nranges_len[MAX_DEPTH];
     const uint8_t *nirq_raw[MAX_DEPTH];
     uint32_t nirq_len[MAX_DEPTH];
     enum dev_kind ndev[MAX_DEPTH];
     for (int i = 0; i < MAX_DEPTH; i++) {
-        nreg[i] = 0; nirq_raw[i] = 0; nirq_len[i] = 0; ndev[i] = DEV_NONE;
+        nreg[i] = 0; nreg_len[i] = 0; nranges[i] = 0; nranges_len[i] = 0;
+        nirq_raw[i] = 0; nirq_len[i] = 0; ndev[i] = DEV_NONE;
     }
 
     /* Deferred raw `interrupts` for the devices that keep theirs. */
@@ -293,7 +298,9 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                 else if (node_is(name, "psci"))       in_psci  = depth;
             }
             node_is_cpu = (in_cpus >= 0 && node_is(name, "cpu"));
-            nreg[depth] = 0; nirq_raw[depth] = 0; nirq_len[depth] = 0;
+            nreg[depth] = 0; nreg_len[depth] = 0;
+            nranges[depth] = 0; nranges_len[depth] = 0;
+            nirq_raw[depth] = 0; nirq_len[depth] = 0;
             ndev[depth] = DEV_NONE;
             continue;
         }
@@ -331,10 +338,54 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                     plat->virtio_base[i] = cur_reg_base;
                     vio_irq_raw[i] = nirq_raw[depth];
                     vio_irq_len[i] = nirq_len[depth];
+                } else if (dv == DEV_PCIE && plat->pcie_ecam_base == 0) {
+                    /* R7: reg = <ECAM base size> with the PARENT's
+                     * cells (both boards: 2/2).  The SIZE matters
+                     * here -- it bounds the bus walk (1 MiB per
+                     * bus). */
+                    uint32_t sc = scells[depth > 0 ? depth - 1 : 0];
+                    if (nreg_len[depth] < (ac + sc) * 4)
+                        goto pcie_done;  /* truncated reg: no ECAM */
+                    plat->pcie_ecam_base = cur_reg_base;
+                    plat->pcie_ecam_size =
+                        (sc == 2) ? be64(rg + ac * 4) : be32(rg + ac * 4);
+                    /* ranges decodes with THIS node's cells (3/2 per
+                     * the PCI binding) against the parent's address
+                     * cells.  Entry: <phys.hi phys.mid phys.lo>
+                     * <parent addr> <size>; phys.hi bits 25:24 name
+                     * the space -- 0b10 is 32-bit memory, the window
+                     * BARs live in.  IO (0b01) and 64-bit (0b11)
+                     * entries are skipped, not misread. */
+                    const uint8_t *rp = nranges[depth];
+                    uint32_t rlen = nranges_len[depth];
+                    uint32_t cac = acells[depth];      /* 3 */
+                    uint32_t csc = scells[depth];      /* 2 */
+                    uint32_t one = (cac + ac + csc) * 4;
+                    if (rp && cac == 3) {
+                        for (uint32_t off = 0; off + one <= rlen;
+                             off += one) {
+                            uint32_t hi = be32(rp + off);
+                            if (((hi >> 24) & 0x03u) != 0x02u)
+                                continue;
+                            uint64_t mid = be32(rp + off + 4);
+                            plat->pcie_mmio_pci =
+                                (mid << 32) | be32(rp + off + 8);
+                            plat->pcie_mmio_cpu =
+                                (ac == 2) ? be64(rp + off + 12)
+                                          : be32(rp + off + 12);
+                            plat->pcie_mmio_size =
+                                (csc == 2) ? be64(rp + off + 12 + ac * 4)
+                                           : be32(rp + off + 12 + ac * 4);
+                            break;
+                        }
+                    }
+                    pcie_done: ;
                 }
             }
             if (depth >= 0) {
-                nreg[depth] = 0; nirq_raw[depth] = 0; nirq_len[depth] = 0;
+                nreg[depth] = 0; nreg_len[depth] = 0;
+                nranges[depth] = 0; nranges_len[depth] = 0;
+                nirq_raw[depth] = 0; nirq_len[depth] = 0;
                 ndev[depth] = DEV_NONE;
             }
             node_is_cpu = 0;
@@ -460,6 +511,12 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
         /* -- devices: compatible decides, reg is remembered ---------- */
         if (depth >= 0 && streq(pname, "reg")) {
             nreg[depth] = val;
+            nreg_len[depth] = len;
+            continue;
+        }
+        if (depth >= 0 && streq(pname, "ranges") && len >= 4) {
+            nranges[depth] = val;        /* R7: decoded at END_NODE */
+            nranges_len[depth] = len;
             continue;
         }
         if (depth >= 0 && streq(pname, "interrupts") && len >= 4) {
@@ -486,6 +543,8 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                 ndev[depth] = DEV_GIC;
             else if (compat_has(list, len, "virtio,mmio"))
                 ndev[depth] = DEV_VIRTIO;
+            else if (compat_has(list, len, "pci-host-ecam-generic"))
+                ndev[depth] = DEV_PCIE;  /* R7: reg + ranges at END_NODE */
             continue;
         }
     }

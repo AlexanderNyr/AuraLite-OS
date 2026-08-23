@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R6 complete; R7 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R7 complete; R8 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,7 @@
 | R4 — GICv3 + the a64 x16 run | ✅ complete | `patches/RESIDUE_R4_gicv3.patch` |
 | R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | ✅ complete | `patches/RESIDUE_R5_sched.patch` |
 | R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | ✅ complete | `patches/RESIDUE_R6_libc2.patch` |
-| R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | pending | `patches/RESIDUE_R7_ecam.patch` |
+| R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | ✅ complete | `patches/RESIDUE_R7_ecam.patch` |
 | R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | pending | `patches/RESIDUE_R8_rust.patch` |
 | R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | pending | `patches/RESIDUE_R9_net.patch` |
 | R10 — the crypto width line: 32-bit limbs for atls_fe | pending | `patches/RESIDUE_R10_fe32.patch` |
@@ -391,11 +391,53 @@ on our own status.md edit within minutes of existing).
       closed; RES-18 (PIE) stays OPEN — relocation is real work,
       not a floor.
 
-### R7 — PCIe ECAM on virt
-- [ ] ECAM walker on rv64+a64 (the measured `pcie@10000000`),
+### R7 — PCIe ECAM on virt — ✅ COMPLETE
+- [x] ECAM walker on rv64+a64 (the measured `pcie@10000000`),
       virtio-pci as the SECOND transport behind the same virtio
       core, one device (blk) proven over it.
-- [ ] Exit: `[pci] ECAM: N functions` + vblk-over-PCI mount lane.
+- [x] Exit: `[pci] ECAM: N functions` + vblk-over-PCI mount lane.
+
+Result: fdt.c learned `pci-host-ecam-generic` (reg = ECAM window
+WITH size; `ranges` decoded with the node's own 3/2 cells against
+the parent's — the 32-bit non-prefetchable entry is where BARs go).
+Measured, not assumed: rv64 ECAM 0x30000000 (+256 MiB), window
+0x40000000; a64 ECAM 0x40_10000000 — ABOVE 4 GiB, where the HHDM
+formula wraps out of the 39-bit window, so the a64 tenant maps bus 0
+at a VA CARVE (HHDM+0x20000000, a hole by construction) while rv64's
+full-4G HHDM just points.  Two new SHARED portable files (both
+tenants' Makefile lists, zero width-casts, zero inline asm — the
+sweep stayed 355/69/29): `kernel/drivers/pci_ecam.c` (config
+accessors, bus-0 walk with the Fact 5.2 attribute gate, BAR
+placement — `-kernel` boots arrive with BARs all-zero and decode
+off, so placement is ours, bump-cursor over the DTB window) and
+`kernel/drivers/virtio_pci.c` (MODERN transport: vendor-capability
+walk, VERSION_1 REQUIRED and acked — accept-none is a legacy-mmio
+habit a modern device refuses; same vring structs, same three-chain
+blk request, same vmmio_arch_ops seam).  vblk on both tenants falls
+through to PCI when the mmio windows are empty; fsglue's blkdev line
+now prints the transport TRUTH (`vblk0 (virtio-pci, ...)`).  Exit
+receipts on both: `[pci] ECAM: 2/3 function(s)` (host bridge 1b36:
+0008 + 1af4:1001), `virtio-blk over PCI (modern, VERSION_1): 8192
+sectors`, ext2 mounted + self-test PASS + token cat — new PCI lanes
+in rv_fs/a64_fs smokes.  Deviation, named: the FIRST draft walked
+ECAM before the mmio probes and the a64 legacy vring's contiguity
+check refused — the walk's ~260 page-table frames moved the PMM
+cursor onto the initrd hole.  The walk now runs AFTER the mmio
+probes (lazily inside the vblk fallback when the PCI lane needs it
+first; idempotent).  RIDERS (the R5/R6 CI reds, both dissected from
+the runner logs): (1) smp_a64.c claims the SGI into group 1 BEFORE
+counting itself online — a group-0 SGI is DISCARDED, not pended, so
+a late claimer lost its only shot (14/15 on the R5 run — core 9's
+online line printed after the boot core's count; 7/15 on R6 — the
+race is load-sensitive; v2 never flaked because v2 SGIs latch
+pending); (2) gic_enable's v3 branch now claims IGROUPR too — the
+same R4 lesson unapplied HERE is why the GICv3 lane's timer read
+`0 ticks in half a second` since R4: PPI 30 sat in group 0 under an
+IGRPEN1-only interface.  After the rider: `[timer] PASS: 16 ticks
+... INTID 27` and `[gic] PASS: claim/complete` on the v3 lane, both
+now asserted (plus the banner honestly names v3; 15/15 held over
+three consecutive local -smp 16 runs).  RES-20 and RES-21 closed.
+kernelrv.elf 977936, kernela64.elf 462016.
 
 ### R8 — Rust rows
 - [ ] rustes/rsbr built for `riscv64gc-unknown-none-elf` and

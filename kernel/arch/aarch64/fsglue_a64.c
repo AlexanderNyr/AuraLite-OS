@@ -103,8 +103,9 @@ void a64fs_bringup(void)
         kprintf("[blkdev] REFUSED vblk0: rc=%d\n", dev);
         return;
     }
-    kprintf("[blkdev] blk%d = vblk0 (virtio-mmio, %llu sectors)\n",
-            dev, (unsigned long long)blkdev_sector_count(dev));
+    kprintf("[blkdev] blk%d = vblk0 (%s, %llu sectors)\n",
+            dev, vblk_a64_transport(),
+            (unsigned long long)blkdev_sector_count(dev));
     int pk = blkdev_partition_kind(dev);
     if (pk > 0)
         kprintf("[blkdev] blk%d carries a %s partition table; raw "

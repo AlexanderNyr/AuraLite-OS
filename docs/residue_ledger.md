@@ -31,8 +31,8 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-17 | W | DONE@R6 | full libc floor on ports: no malloc/stdio/TLS (RISCV V8 / PARITY P8) | port program mallocs + stdio round-trip, three ports |
 | RES-18 | W | OPEN | PIE loading on ports waits on RES-17 (ARM64 close) | a PIE binary runs on one tenant; receipt |
 | RES-19 | W | DONE@R6 | userspace dynamic allocation needs brk/mmap (TODO.md) | brk/mmap-lite syscalls exist; pins move 11→N |
-| RES-20 | W | OPEN | PCIe ECAM deferred on virt, both tenants (RISCV/ARM64 D7) | `[pci] ECAM: N functions` on rv64+a64 |
-| RES-21 | W | OPEN | virtio-pci transport unused on tenants (TODO.md) | vblk-over-PCI mounts ext2 in a lane |
+| RES-20 | W | DONE@R7 | PCIe ECAM deferred on virt, both tenants (RISCV/ARM64 D7) — R7: shared pci_ecam.c walks bus 0 on both (a64's ECAM measured ABOVE 4 GiB; VA carve, not HHDM folklore), BAR placement ours (`-kernel` boots arrive all-zero) | `[pci] ECAM: N functions` on rv64+a64 |
+| RES-21 | W | DONE@R7 | virtio-pci transport unused on tenants (TODO.md) — R7: shared virtio_pci.c, MODERN with VERSION_1 acked, same vrings/request/seam as mmio; vblk falls through when the windows are empty | vblk-over-PCI mounts ext2 in a lane |
 | RES-22 | W | OPEN | Rust row rv64: target exists, nothing built (RISCV close) | rustes/rsbr receipt line on rv64 |
 | RES-23 | W | OPEN | Rust row a64: same class (ARM64 close) | same receipt on a64 |
 | RES-24 | W | OPEN | IPv6 SLAAC/sockets/dual-stack recorded at X7 (REALINTERNET) | ping6 a SLAAC address; dual-stack fetch receipt |
@@ -65,7 +65,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses: OPEN 34, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor).
+amended same-commit, catch recorded).  Statuses: OPEN 32, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

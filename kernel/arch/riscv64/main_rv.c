@@ -28,6 +28,7 @@
 #include "kernel/arch/riscv64/membench_rv.h"
 #include "kernel/arch/riscv64/user_rv.h"
 #include "kernel/arch/riscv64/vblk_rv.h"
+#include "kernel/arch/riscv64/pci_rv.h"
 #include "kernel/arch/riscv64/fsglue_rv.h"
 #include "kernel/arch/riscv64/smp_rv.h"
 #include "kernel/arch/riscv64/vnet_rv.h"
@@ -461,6 +462,12 @@ void kmain_rv(uint64_t hartid, uint64_t dtb_phys)
             sbi_shutdown();
         }
     }
+
+    /* RESIDUE R7: the ECAM walk's receipt on every boot -- AFTER the
+     * mmio probes (their legacy vrings demand contiguous frames; the
+     * walk's page tables would move the cursor under them), and a
+     * no-op when the vblk PCI fallback already walked. */
+    pci_rv_init(&platform);
 
     /* ---- V5: the initrd and real compiled userspace. ---------------- */
 

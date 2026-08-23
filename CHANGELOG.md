@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R7 — PCIe ECAM + virtio-pci on both DTB tenants, and the GICv3 group-claim riders] 2026-08-22
+
+fdt.c learned `pci-host-ecam-generic` (reg WITH size; `ranges`
+decoded 3/2-cells for the 32-bit non-prefetchable BAR window).  Two
+new SHARED portable files behind the same vmmio_arch_ops seam:
+`kernel/drivers/pci_ecam.c` — config accessors, bus-0 walk with the
+Fact 5.2 attribute gate, BAR placement (a `-kernel` boot arrives
+with BARs all-zero and memory decode off; placement is OURS, a bump
+cursor over the DTB window) — and `kernel/drivers/virtio_pci.c` —
+the MODERN transport: vendor-cap walk, VERSION_1 required and acked
+(a modern device REFUSES accept-none at FEATURES_OK), same vrings,
+same three-chain blk request.  Measured asymmetry, kept in the
+tenants: rv64's ECAM sits at 0x30000000 under its full-4G HHDM;
+a64's sits at 0x40_10000000 — above 4 GiB, where the HHDM formula
+wraps — so pci_a64.c maps bus 0 at a VA carve (HHDM+0x20000000, a
+hole by construction).  vblk on both tenants falls through to PCI
+when the mmio windows are empty; the blkdev line prints the
+transport truth.  Deviation, named: the walk first ran BEFORE the
+mmio probes and the legacy vring's contiguity check refused (the
+walk's page tables moved the PMM cursor onto the initrd hole) — it
+now runs after, lazily when the PCI lane needs it first.  Exit on
+both tenants, asserted in new rv_fs/a64_fs PCI lanes: `[pci] ECAM:
+N function(s)`, `virtio-blk over PCI (modern, VERSION_1)`, ext2
+mount + self-test + token cat.  RIDERS — the R5 (14/15) and R6
+(7/15) CI reds dissected to one cause: on GICv3 a group-0 SGI is
+DISCARDED, not pended.  smp_a64.c now claims group 1 BEFORE
+counting itself online (core 9 lost the race on the R5 runner), and
+gic_enable's v3 branch claims IGROUPR too — which also resurrects
+the v3 lane's TIMER (`0 ticks` since R4: PPI 30 sat in group 0);
+`[timer] PASS` and `[gic] PASS: claim/complete` now asserted in the
+-smp 16 lane.  RES-20/21 closed; ledger OPEN 34→32.  kernelrv.elf
+977936, kernela64.elf 462016.
+
 ## [RESIDUE R6 — libc v2: malloc + stdio round-trip on three ports, one source] 2026-08-22
 
 `brk` joins the D4 number table (12; pins 11→12) on rv64/a64/i386 —

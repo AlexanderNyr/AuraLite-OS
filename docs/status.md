@@ -258,7 +258,7 @@ floor: rv64gc (D1; no rv32).
 | Crypto at rv64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included — `__int128` exists here) executed under `qemu-riscv64`. The `-m32` boundary's green counterpart. |
 | No rv32 | ❌ by design | Plan D1. |
 | No own M-mode firmware | ❌ by design | Plan D2: SBI is the platform contract, like the BIOS was for Stage 2. |
-| No PCIe on `virt` | ❌ by design | Plan D7: virtio-mmio covers the device set; PCIe waits for a device that needs it. |
+| PCIe ECAM + virtio-pci | ✅ (R7) | The D7 deferral paid: shared `pci_ecam.c` walks bus 0 (`[pci] ECAM: N functions`), shared `virtio_pci.c` is the modern second transport (VERSION_1 acked), and vblk falls through to it when the mmio windows are empty — ext2 mounted over PCI, asserted in the rv_fs PCI lane. |
 | SMP / vector ext / hypervisor ext | ❌ | Per plan §6; secondary harts parked safely via the boot lottery. |
 | Rust userspace | 🚧 possible | `riscv64gc-unknown-none-elf` EXISTS (unlike i686) — porting `rustes`/`rsbr` is a recorded follow-up plan's opening fact, not this plan's promise. |
 
@@ -296,7 +296,7 @@ EL1 (D1; no arm32, no EL2 entry).
 | PL011 RX/TX over GIC | ✅ | RX: IRQ-fed cons ring (INTID 33 from the DTB), counted receipt (`rx bytes via GIC irq`) asserted by the smokes; TX: the O3 `uart_ring.h` index core under the A6 irqflags contract, drained before PSCI power-off. |
 | Crypto at aarch64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included) EXECUTED under `qemu-aarch64` — the second LP64 tenant through the `__int128` path (umulh edition). Deps named: `gcc-aarch64-linux-gnu`, `libc6-dev-arm64-cross`, `qemu-user`. |
 | No arm32, no EL2 entry | ❌ by design | Plan D1: `CurrentEL != EL1` refuses with a banner (EL2 parks in `wfi` — an `hvc` from EL2 would trap into our own empty vectors); aapcs32 never enters the tree. |
-| No PCIe on `virt` | ❌ by design | Plan D7: the ECAM window is measured and named in the plan; virtio-mmio covers the device set until a device needs it. |
+| PCIe ECAM + virtio-pci | ✅ (R7) | The D7 deferral paid: the measured ECAM sits ABOVE 4 GiB on this board (VA carve, not HHDM folklore); shared walker + modern transport, vblk-over-PCI ext2 mount asserted in the a64_fs PCI lane. |
 | SMP / SVE / big.LITTLE | ❌ | Per plan §4; PSCI `CPU_ON` is the recorded exit ramp (D5). |
 | fw-cfg self-test knob | 🚧 deferred | AMEND-5: the x86 fw_cfg protocol's interface transfers, the port-I/O reader does not (aarch64 fw-cfg is MMIO); deferred with a name, not an absence. |
 | Rust userspace | 🚧 possible | `aarch64-unknown-none` EXISTS (like rv64, unlike i686) — porting `rustes`/`rsbr` stays a follow-up plan's opening fact, not this plan's promise. |
@@ -365,8 +365,8 @@ at vfs.c:71 + scheduler coupling — path-level VFS waits on it);
 buffer_cache/tmpfs/devfs adoption rides the same blocker; the
 i386 shell fd layer still serves the initrd (ext2 reaches the
 shell with the VFS work); pit.h×2 + msc.h fs couplings (time/USB
-seam questions, pinned per-file); GPT partitions; PCIe ECAM; the
-Rust rows for rv64/a64; one observed test_usb_hub TD-timeout
+seam questions, pinned per-file); GPT partitions; the
+Rust rows for rv64/a64 (PCIe ECAM paid at R7); one observed test_usb_hub TD-timeout
 runner flake (1 occurrence, local repro green — remedy if it
 recurs: guest-time TD waits).
 

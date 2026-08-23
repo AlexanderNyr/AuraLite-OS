@@ -14,6 +14,10 @@ int vblk_a64_init(const fdt_platform_t *plat);
 int vblk_a64_available(void);
 uint64_t vblk_a64_sector_count(void);
 
+/* R7: which transport answered the probe -- "virtio-mmio" or
+ * "virtio-pci" (fsglue's blkdev line prints the truth). */
+const char *vblk_a64_transport(void);
+
 int vblk_a64_read(uint64_t lba, uint8_t *buf512);
 int vblk_a64_write(uint64_t lba, const uint8_t *buf512);
 

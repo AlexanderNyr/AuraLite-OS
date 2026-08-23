@@ -16,7 +16,9 @@
 
 #include "kernel/arch/riscv64/vblk_rv.h"
 #include "kernel/drivers/virtio_mmio.h"
+#include "kernel/drivers/virtio_pci.h"
 #include "kernel/arch/riscv64/vmmio_rv.h"
+#include "kernel/arch/riscv64/pci_rv.h"
 #include "kernel/arch/riscv64/paging_rv.h"
 #include "kernel/arch/riscv64/pmm_rv.h"
 #include "kernel/arch/riscv64/sbi.h"
@@ -32,6 +34,8 @@ struct vblk_req_hdr {
 };
 
 static struct vmmio_dev dev;
+static struct vpci_dev pdev;             /* R7: the second transport */
+static int use_pci;
 static int ready;
 static uint64_t capacity;
 
@@ -54,6 +58,29 @@ int vblk_rv_init(const fdt_platform_t *plat)
 
     if (vmmio_probe(&dev, vmmio_rv_ops(), bases, plat->virtio_count,
                     VM_DEV_BLK) != 0) {
+        /* R7 (ledger RES-21): the SECOND transport.  No blk on the
+         * mmio windows -- walk the ECAM bus (lazily HERE, not before
+         * the mmio probes: the walk's page-table frames move the PMM
+         * cursor, and the legacy vring's contiguity check caught
+         * exactly that when the walk ran first -- deviation named in
+         * the plan) and ask for virtio-blk-pci, modern, VERSION_1. */
+        if (!pci_rv_ecam())
+            pci_rv_init(plat);
+        struct pci_ecam *e = pci_rv_ecam();
+        if (e && vpci_blk_probe(&pdev, vmmio_rv_ops(), e,
+                                pci_rv_map_mmio) == 0) {
+            use_pci = 1;
+            capacity = pdev.capacity;
+            sbi_puts("[blk]  virtio-blk over PCI (modern, VERSION_1): ");
+            put_udec_(capacity);
+            sbi_puts(" sectors (");
+            put_udec_(capacity / 2048);
+            sbi_puts(" MiB), queue size ");
+            put_udec_(pdev.qsize);
+            sbi_puts("\n");
+            ready = 1;
+            return 0;
+        }
         sbi_puts("[blk]  no virtio-blk device on the mmio windows "
                  "(pass -drive/-device to attach one)\n");
         return -1;
@@ -84,11 +111,19 @@ int vblk_rv_init(const fdt_platform_t *plat)
 
 int vblk_rv_available(void) { return ready; }
 uint64_t vblk_rv_sector_count(void) { return capacity; }
+const char *vblk_rv_transport(void)
+{
+    return use_pci ? "virtio-pci" : "virtio-mmio";
+}
 
 static int vblk_op(uint32_t type, uint64_t lba, uint8_t *buf512)
 {
     if (!ready || lba >= capacity)
         return -1;
+
+    if (use_pci)                         /* R7: same request, second
+                                          * transport's doorbell */
+        return vpci_blk_rw(&pdev, type == VBLK_T_OUT, lba, buf512);
 
     struct vblk_req_hdr *hdr = (struct vblk_req_hdr *)dma;
     uint8_t *data   = dma + 512;

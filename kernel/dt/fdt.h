@@ -90,6 +90,18 @@ typedef struct {
     uint32_t virtio_count;
     const char *bootargs;                /* /chosen bootargs, NUL-terminated,
                                           * points INTO the DTB; 0 if absent */
+    /* RESIDUE R7: the pci-host-ecam-generic node (both virt boards
+     * carry one; ARM64_PLAN D7 measured it and deferred).  reg is the
+     * ECAM window; the 32-bit non-prefetchable entry of `ranges` is
+     * where BARs may be placed (pci-side address goes INTO the BAR,
+     * cpu-side is what the kernel maps -- identical on rv64's board,
+     * distinct numbers kept anyway because assuming they match is
+     * exactly the class of shortcut the ledger exists to catch). */
+    uint64_t pcie_ecam_base;             /* 0 = no ECAM node found */
+    uint64_t pcie_ecam_size;
+    uint64_t pcie_mmio_cpu;              /* cpu address of the mem32 window */
+    uint64_t pcie_mmio_pci;              /* pci address of the same window */
+    uint64_t pcie_mmio_size;
 } fdt_platform_t;
 
 /* Arch contract 1: translate the physical DTB address into something

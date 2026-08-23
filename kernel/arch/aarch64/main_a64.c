@@ -31,6 +31,7 @@
 #include "kernel/arch/aarch64/user_a64.h"
 #include "kernel/arch/aarch64/initrd_a64.h"
 #include "kernel/arch/aarch64/vblk_a64.h"
+#include "kernel/arch/aarch64/pci_a64.h"
 #include "kernel/arch/aarch64/fsglue_a64.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/arch/aarch64/smp_a64.h"
@@ -224,7 +225,12 @@ static void a2_bringup(void)
     smp_a64_bringup(&boot_info,
                     (uint64_t)p2v_a64(platform.gicd_base),
                     (uint64_t)p2v_a64(platform.gicc_base));
-    pl011_puts("[gic]  GICv2 up: distributor + CPU interface, INTIDs pre-normalised\n");
+    if (platform.gic_is_v3)
+        pl011_puts("[gic]  GICv3 up: distributor (ARE|G1NS) + redistributors "
+                   "+ ICC sysregs, INTIDs pre-normalised\n");
+    else
+        pl011_puts("[gic]  GICv2 up: distributor + CPU interface, INTIDs "
+                   "pre-normalised\n");
 
     trap_init_a64();
     pl011_puts("[isr]  VBAR_EL1 installed (16 slots x 128 bytes), IRQ unmasked\n");
@@ -573,6 +579,12 @@ void kmain_a64(uint64_t x0_at_entry)
             psci_system_off();
         }
     }
+
+    /* RESIDUE R7: the ECAM walk's receipt on every boot -- AFTER the
+     * mmio probes (their legacy vrings demand contiguous frames; the
+     * walk's page tables would move the cursor under them), and a
+     * no-op when the vblk PCI fallback already walked. */
+    pci_a64_init(&platform);
 
     /* ---- A5c: the initrd and real compiled userspace (the fourth
      * tenant).  Only Image boots carry an initrd on this board (the
