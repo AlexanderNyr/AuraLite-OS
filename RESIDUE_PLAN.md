@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R11 complete; R12 next; plan committed 2026-08-22
+## Status: COMPLETE ✅ — R0–R12 all landed; the ledger is terminal (OPEN 6, named); closed 2026-08-23
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -16,7 +16,7 @@
 | R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | ✅ complete | `patches/RESIDUE_R9_net.patch` |
 | R10 — the crypto width line: 32-bit limbs for atls_fe | ✅ complete | `patches/RESIDUE_R10_fe32.patch` |
 | R11 — the real-hardware package v2 (user-executable; PCID's D-PCID-5 trigger EXISTS) | ✅ complete | `patches/RESIDUE_R11_metal.patch` |
-| R12 — close-out: re-affirmed non-goals, the ledger arithmetic | pending | `patches/RESIDUE_R12_close.patch` |
+| R12 — close-out: re-affirmed non-goals, the ledger arithmetic | ✅ complete | `patches/RESIDUE_R12_close.patch` |
 
 ## 1. Where this plan comes from
 
@@ -603,15 +603,91 @@ and test_metal_null carries the same greps in CI (registry
 PENDING-USER@R11 — a new ledger status, arithmetic-checked, that
 says exactly what it says.
 
-### R12 — close-out
-- [ ] Every N row re-affirmed with its D-number; every S row handed
-      off with its opener fact measured; TODO.md rewritten to point
-      at the ledger instead of duplicating it; POSIX partial-list
-      triaged entry by entry.
-- [ ] Terminal arithmetic; the ledger's class totals at close
+### R12 — close-out — ✅ COMPLETE
+- [x] Every N row re-affirmed with its D-number; every S row handed
+      off with its opener fact measured; TODO.md kept IN FULL (the
+      user's call — the file's fine grain and investigation
+      narratives are the detail no 48-row ledger carries) and
+      ANNOTATED against the ledger: a headline pointer names the
+      ledger as the machine-checked index, and every stale entry
+      got an inline Done-receipt in the file's own style; POSIX
+      partial-list triaged entry by entry.
+- [x] Terminal arithmetic; the ledger's class totals at close
       quoted against the harvest totals at open.
+
+Result: the close-out did what the whole series was for — it caught
+the duplicate ledger LYING.  TODO.md (576 lines, 26 boxes) carried
+SIX rows the tree had already closed, one of them in its opening
+paragraph: the IST/#DF row (closed R1), virtio-net "currently
+polling" (closed R9), "once brk/mmap exist" (mmap is syscall 9;
+brk landed ×3 ports at R6), "add virtio-blk" (three transports in
+tree), "add symlinks" (test_fifo_symlinks in the posix shard),
+"add CI artifacts" (six upload-artifact steps — the R4/R5 CI
+dissections were DONE from them).  The first draft of this phase
+REWROTE the file down to a pointer map — and the user caught in
+review what that dropped: the ~45-entry fine-grained limitation
+register (OFD atomicity, path canonicalisation, tty gaps, stub
+alignment, the RX-ring idle drain…) that duplication-hygiene does
+NOT license deleting.  The landed shape is the user's: TODO.md
+stays IN FULL (639 lines now — it GREW, by receipts), every stale
+entry annotated in place in the file's own ~~strikethrough~~ +
+**Done (…)** style, unchecked boxes carrying their ledger row or
+class.  The audit that produced those annotations found SEVEN
+more stale rows nobody had flagged (uaccess #PF fixup — closed
+M3; MAP_SHARED — shmem.c; auxv — M5; posix_spawn.c exists; tmpfs
+mkdir — Q12; mkdir(mode) — in stat.h; tan/fmod/atan — in math.h).
+THIRTEEN stale rows in one file: the number is the argument for
+the machine-checked index, and the harvest ratchet now pins the
+file's live-box count (26→20; six closed WITH receipts, the
+baseline moved same-commit).  POSIX triage: known_partials
+measured EMPTY (the last row, sem_open, closed by conformtest's
+own CI catch on 2026-08-21); readline/scanf/jobs are POSIX_PLAN's
+own named deferrals, re-affirmed; epoll re-affirmed a non-goal
+(poll rides select).  Two ledger rows turned out PART-STALE at
+hand-off and were corrected in the same breath: RES-46's "skeleton
+FS" (ext4 is 1429 lines with write paths — what all five lack is
+ONE CI case: zero in run_all.sh) and RES-47's "no isolation"
+(gui_syscalls.c already gates 36 cases behind require_owner).
+All eight S hand-offs carry measured openers in their rows; both
+N rows re-affirmed with their D-numbers, none silently reversed.
+Rider: the R11 deploy dropped the exec bits on the two new
+scripts (patch(1) vs git-apply mode headers) — test_metal_null's
+[ -x ] failed the core shard on the 644 checkout EXACTLY as
+diagnosed before the run finished (the R11 CI run's only red job:
+integration-cases/core); the gate now checks presence (everything
+runs through bash) and the mode-loss class is named here.  Terminal
+arithmetic in §5.
 
 ## 5. Terminal arithmetic — filled at close
 
-(Counts land here at R12; the checker enforces the table above
-against patches/ and the ledger against the tree.)
+Filled at R12, checker-enforced both ways (the table above against
+patches/, the ledger against the tree, the harvest against the
+baseline).
+
+**The ledger, 48 rows, at close:**
+
+| Class | Pinned | Disposition at close |
+|-------|--------|----------------------|
+| W (work) | 33 | 27 DONE across R1–R12; **6 OPEN, named**: RES-02 (`-cpu max` first-SYS_WRITE, two exonerations on record), RES-06 (the fd/OFD/pipe half of vfs.c, narrowed), RES-07 (cache/tmpfs/devfs/cwd/symlink port adoption), RES-16 (IOAPIC→AP wake), RES-18 (PIE on tenants), RES-26 (HTTPS-over-IPv6, narrowed to the TCP layer) |
+| M (metal) | 5 | 1 DONE@R11 — RES-37, the "metal-only" row that WASN'T (the MADT walk runs fine under QEMU; only the disagreement needs metal); 4 PENDING-USER@R11 behind `tools/metal_receipts.sh` |
+| N (non-goal) | 2 | 2 RE-AFFIRMED@R12 with their D-numbers; none silently reversed |
+| S (hand-off) | 8 | 8 HANDED-OFF@R12, every row carrying a MEASURED opener fact |
+
+28 DONE + 2 RE-AFFIRMED + 8 HANDED-OFF + 4 PENDING-USER + 6 OPEN = 48. ✓
+
+**The harvest, open → close:**
+
+| Metric | At R0 (open) | At R12 (close) |
+|--------|--------------|----------------|
+| Plan-file residue markers (21 closed plans) | 155 | 155 — closed plans are HISTORY; their residue lists were transcribed into the ledger, not edited out of the record |
+| TODO.md unchecked boxes | 26 | **20** — the file is kept IN FULL (it GREW, 576→639 lines, by receipts); six boxes closed WITH inline receipts, and THIRTEEN stale entries total now carry `**Done (…)**` annotations in the file's own style |
+| status.md 🚧/🔶 rows | 16 | **12** — each flip rode the phase that earned it (TSS@R1, two Rust rows@R8, AMEND-5@R11), ratchet moved same-commit every time |
+
+The number this series was aimed at: **34 OPEN rows at R0, 6 at
+R12** — and every one of the six says on its face what would close
+it.  The catches along the way that only this shape of work finds:
+FIVE stale doc rows (RES-05, RES-15, RES-27, plus TODO's IST and
+virtio-net paragraphs), two part-stale ledger rows corrected at
+hand-off (RES-46/47), one legend dissolved by pcap (R9's "SLIRP
+limitation" = five of our own bugs), and one QEMU-hardcode
+cross-checked against ACPI on every boot from now on.

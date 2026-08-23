@@ -313,6 +313,56 @@ def claims():
             "test_metal_null"
             in read("tests", "integration", "run_all.sh")))
 
+    # --- R12: close-out (when the plan says it landed) ------------------
+    if re.search(r"^### R12[^\n]*✅ COMPLETE", plan, re.M):
+        todo = read("TODO.md")
+        checks.append((
+            "R12: the ledger is terminal — no row still promises "
+            "future work 'at R12', and every S hand-off carries a "
+            "measured opener",
+            "at R12" not in ledger and
+            ledger.count("OPENER, measured") == 8 and
+            ledger.count("HANDED-OFF@R12") >= 8))
+        checks.append((
+            "R12: TODO.md is kept IN FULL and annotated — the headline "
+            "note names the ledger as the index, the file kept its "
+            "fine grain (>=550 lines), and the six sweep receipts are "
+            "inline",
+            "RESIDUE R12 note" in todo and
+            "docs/residue_ledger.md" in todo and
+            len(todo.splitlines()) >= 550 and
+            "test_ist_double_fault" in todo and
+            "RX via IRQ wake" in todo and
+            "upload-artifact" in todo))
+        todo_flat = " ".join(todo.split())
+        checks.append((
+            "R12: the follow-up audit's seven receipts are inline too "
+            "(shmem/posix_spawn/tmpfs-mkdir/uaccess named with their "
+            "closers)",
+            "shmem.c" in todo and "posix_spawn.c" in todo and
+            "tmpfs.c:229" in todo and
+            todo_flat.count("R12 audit receipt") >= 7))
+        checks.append((
+            "R12: the terminal arithmetic is filled and sums to the "
+            "row pin",
+            "= 48. ✓" in plan and "34 OPEN rows at R0, 6 at" in plan))
+        kp = read("tests", "posix2024", "known_partials.txt")
+        active = [l for l in kp.splitlines()
+                  if l.strip() and not l.strip().startswith("#")]
+        checks.append((
+            "R12: posix2024 known_partials measured EMPTY (the triage "
+            "fact is live, not quoted)",
+            kp != "" and len(active) == 0))
+        checks.append((
+            "R12: the R11 mode-loss catch is fixed in the gate "
+            "(presence, not exec bit — patch(1) drops mode headers)",
+            "[ -x ../../tools" not in read("tests", "integration",
+                                           "cases",
+                                           "test_metal_null.sh") and
+            "exec bit not required" in read("tests", "integration",
+                                            "cases",
+                                            "test_metal_null.sh")))
+
     # --- R0 structure ---------------------------------------------------
     checks.append((
         "R0: the amended class totals are recorded as a CATCH in both "

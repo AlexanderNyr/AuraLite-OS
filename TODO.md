@@ -5,13 +5,37 @@ known limitations and future work for the post-phase tree. See
 [`PLAN.md`](PLAN.md) for milestone history and [`docs/status.md`](docs/status.md)
 for the feature matrix.
 
+**RESIDUE R12 note — read this first.** The machine-checked INDEX of
+coarse debt is [`docs/residue_ledger.md`](docs/residue_ledger.md) (48
+rows, class/status arithmetic enforced by
+`tools/check_residue_claims.py`, marker counts ratcheted against
+`tools/residue_baseline.txt`); when this file and the ledger disagree,
+the ledger wins.  This file is kept IN FULL — its fine-grained
+entries and investigation narratives are the detail no 48-row ledger
+can carry — but full duplication drifts, and the R12 audit measured
+exactly how much: **thirteen entries below claimed something the tree
+had already closed.**  Each one now carries an inline
+`**Done (…)**` receipt in this file's own style, left in place so the
+history of being wrong stays readable (six caught by the R12 sweep:
+IST/#DF, virtio-net polling, brk/mmap, virtio-blk, symlinks, CI
+artifacts; seven more by the follow-up audit the user's review
+triggered: uaccess #PF fixup, MAP_SHARED, auxv, posix_spawn, tmpfs
+mkdir, mkdir(mode), tan/fmod/atan).  Unchecked boxes that remain are
+LIVE and each names its ledger row or its class.
+
 ---
 
 ## Current Known Limitations
 
 ### Kernel / CPU / scheduling
 
-- **The IST is allocated but never used, so a bad-stack fault triple-faults.** (`FIXES_PLAN.md` R1)
+- ~~**The IST is allocated but never used, so a bad-stack fault triple-faults.**~~
+  **Done (`FIXES_PLAN.md` R1; re-verified RESIDUE R1 / ledger RES-05):**
+  `idt_set_ist(8, 1)` arms IST1 for the double-fault gate, and
+  `tests/integration/cases/test_ist_double_fault.sh` drives a
+  kernel-stack fault end to end and asserts the named `#DF`
+  diagnostic instead of a silent triple-fault reset.  The paragraph
+  below is the original record, kept for the trail:
   `tss_init()` allocates a per-CPU IST1 stack and panics on OOM allocating it
   (`kernel/arch/x86_64/tss.c`), and `tss_entries[cpu].ist1_low/high` are
   filled in — but `idt_set_gate()` hardcodes `idt[n].ist = 0`
@@ -101,13 +125,26 @@ for the feature matrix.
   Source Overrides should come from the ACPI MADT (parsed in the bootloader)
   rather than the hard-coded QEMU defaults — and fully interrupt-driven device
   data paths (virtio-net IRQ RX; MSI/MSI-X for virtio/virtio-gpu).
+  **Partially Done since that was written:** the MADT *base address*
+  check landed at RESIDUE R11 / ledger RES-37 (the kernel walks
+  RSDP→RSDT/XSDT→MADT itself and prints `[ioapic] base ... (MADT
+  agree)` — a disagreeing machine gets named at boot), and virtio-net
+  IRQ RX landed at RESIDUE R9 / ledger RES-28 (`wq_wait_deadline`
+  sleeps, the `RX via IRQ wake` receipt is CI-pinned).  Still open:
+  Interrupt Source Overrides from the MADT, device IRQ waking a
+  hlt-ed AP (ledger RES-16), and MSI/MSI-X (ledger RES-36, opener
+  measured: the virtio-pci cap walk parses only vendor caps today).
 
 #### P10 / POSIX follow-ups
 
-- **`MAP_SHARED` is not truly shared.** Anonymous `MAP_SHARED` is accepted but
+- ~~**`MAP_SHARED` is not truly shared.** Anonymous `MAP_SHARED` is accepted but
   degraded to a private mapping (no cross-process shared page-cache VMAs yet),
-  and file-backed `MAP_SHARED` returns `-ENOSYS`. Implement real shared VMAs
-  with write-back before relying on `mmap`-based IPC.
+  and file-backed `MAP_SHARED` returns `-ENOSYS`.~~ **Done (R12 audit
+  receipt):** `kernel/mm/shmem.c` provides real anonymous shared
+  objects for `MAP_SHARED|MAP_ANONYMOUS`; the posix2024
+  known_partials entry for `sem_open` closed on the back of it
+  (2026-08-21, caught by conformtest's own CI run).  Still future:
+  file-backed `MAP_SHARED` write-back (see "User VM" below).
 - **execve passes argv/envp but no real auxv.** The initial process stack is
   built per the System V AMD64 ABI (argc/argv/NULL/envp/NULL) but the auxiliary
   vector contains only an `AT_NULL` terminator. Add `AT_PAGESZ`/`AT_RANDOM`/etc.
@@ -119,18 +156,25 @@ for the feature matrix.
   scans it (new `sys/auxv.h`). Also fixed a latent bug: the init shell booted
   on a garbage stack frame (no argc/argv/envp at all) -- now a valid ABI frame.
   Gate: /tests/auxvtest + test_auxv.sh (6/6); exec/spawn/argv tests still green.
-- **No `execvpe`/`fexecve`/`posix_spawn`.** Only `execve`/`execv`/`execvp`
-  wrappers exist; `execvp` honours `PATH` (default `/bin`) with no per-segment
-  `EACCES` retry semantics.
+- **No `execvpe`/`fexecve`.** ~~No `posix_spawn`.~~ **posix_spawn Done
+  (R12 audit receipt: `lib/libc/src/posix_spawn.c` exists);**
+  `execvpe`/`fexecve` prototypes now appear in headers — treat them
+  as open until an in-tree test proves the implementations.  `execvp`
+  honours `PATH` (default `/bin`) with no per-segment `EACCES` retry
+  semantics.
 - **`epoll` is not implemented** (low priority): `poll()` is provided in libc on
   top of `select()`; `epoll_create1`/`epoll_ctl`/`epoll_wait` are unimplemented.
 
 ### Security / syscall robustness
 
-- **User pointer validation is basic.** Syscall dispatch now uses
+- ~~**User pointer validation is basic.** Syscall dispatch now uses
   `validate_user_range`, `copy_from_user` and `copy_to_user`, but AuraLite still
-  lacks a fault-recovering uaccess mechanism and a full audit of every future
-  user-pointer path.
+  lacks a fault-recovering uaccess mechanism~~ **Done
+  (`MATURITY_PLAN.md` M3, R12 audit receipt):** the uaccess copies
+  run through a `#PF` fixup path, so TOCTOU/unmap during a copy
+  returns an error instead of panicking; `tools/audit_user_pointers.py`
+  runs in test-unit, so new user-pointer paths are audited by
+  construction rather than by checkbox.
 - ~~**No `errno` or structured negative error codes.** Most failures return
   `-1`.~~ **Done (P1):** in-band negative-errno ABI; kernel returns `-EXXX`,
   libc decodes to `errno`/`-1`. See `docs/syscall_abi.md`.
@@ -237,8 +281,10 @@ for the feature matrix.
   same OFD mechanism meanwhile.
 - **O_APPEND atomicity** currently relies on the single-threaded VFS; needs a
   per-vnode write lock once FS access becomes preemptible/SMP.
-- **mkdir() still takes only a path** (no `mode_t`); POSIX `mkdir(path, mode)`
-  and `umask` arrive in P7. `sys/stat.h` deliberately omits the mkdir prototype.
+- ~~**mkdir() still takes only a path** (no `mode_t`); POSIX `mkdir(path, mode)`
+  and `umask` arrive in P7. `sys/stat.h` deliberately omits the mkdir prototype.~~
+  **Done (P7, R12 audit receipt):** `sys/stat.h:58` declares
+  `int mkdir(const char *path, mode_t mode)`.
 - **O_NONBLOCK** is honored for pipes (EAGAIN); devices/sockets that can block
   are not yet wired to it.
 - ~~**Socket/net syscalls return bare `-1`.**~~ **Done (`FIXES_PLAN.md` R7,
@@ -255,8 +301,11 @@ for the feature matrix.
   `assert.h`, `ctype.h` (+impl), `math.h` (+impl). `stdint.h`/`stdarg.h` use the
   freestanding compiler headers.
 - **libm accuracy is series-based (~1e-9), not last-ULP**, and only covers the
-  ten functions listed in `math.h`; no `tan/asin/atan2/fmod/modf/frexp`, no
-  `float` variants, no errno/`HUGE_VAL` domain-error reporting. Revisit in P10.
+  functions listed in `math.h`; no `float` variants, no errno/`HUGE_VAL`
+  domain-error reporting.  ~~no `tan/asin/atan2/fmod/modf/frexp`~~
+  **Partially Done (R12 audit receipt):** `math.h` carries `tan`,
+  `fmod`, `atan` and friends today; the accuracy and domain-error
+  halves of this entry stay live.
 - ~~**`errno` is a single global, not thread-local.**~~ **Done (`FIXES_PLAN.md`
   R3 → `patches/FIX_R3_tls_errno.patch`,`/tests/errnotest`,
   `tests/integration/cases/test_tls_errno.sh`).** `errno` now lives in
@@ -347,11 +396,15 @@ for the feature matrix.
   ext2's `bmap()`, and the `sched_init()` kmain TCB — now fail the
   mount/format/init with a diagnostic too; every remaining site in the sweep
   was already NULL-checked.
-- **tmpfs has no `mkdir`.** `/tmp` and `/opt` are flat: `tmpfs_ops` has no
+- ~~**tmpfs has no `mkdir`.** `/tmp` and `/opt` are flat: `tmpfs_ops` has no
   `.mkdir` entry and `valid_name()` rejects any path containing a slash, so
-  `mkdir /tmp/x` fails and always has. Directories work on FAT32 and ext2.
-  Found while fixing `test_shell_all.sh`, which had been asserting that the
-  mkdir *succeeded* — the case is not in `run_all.sh`, so nothing had run it.
+  `mkdir /tmp/x` fails and always has.~~ **Done (Q12, R12 audit
+  receipt):** `tmpfs_mkdir`/rmdir/rename landed
+  (`kernel/fs/tmpfs.c:229`) — directory mutation fills exactly the
+  holes this entry named.  The original catch stands as history:
+  found while fixing `test_shell_all.sh`, which had been asserting
+  that the mkdir *succeeded* — the case is not in `run_all.sh`, so
+  nothing had run it.
 - ~~**`.init_array` is never executed.**~~ **Done (`FIXES_PLAN.md` R5 →
   `patches/FIX_R5_init_array.patch`, `/tests/ctortest`,
   `tests/integration/cases/test_init_array.sh`).** `user.ld` now keeps
@@ -412,7 +465,11 @@ for the feature matrix.
 ### Networking
 
 - **Network I/O transition in progress.** e1000 now has an INTx IRQ-capable RX/TX core and software RX queue; TCP, ARP, DHCP, ICMP, and kernel UDP/DNS receive waits use bounded IRQ-backed NIC waits. UDP user sockets and a basic fixed-RTO TCP retransmission path are implemented; remaining N2 work is deeper socket blocking edge cases and production TCP features.
-- **NIC backend abstraction (netdev).** The IP stack now talks to an active NIC through `kernel/net/netdev.{h,c}` rather than calling a driver directly. e1000 is the default; modern virtio-net (`drivers/virtio_net/`) is a fully working fallback (DHCP/ICMP/DNS/TCP validated under QEMU `-device virtio-net-pci`). virtio-net is currently a polling data path with no IRQ.
+- **NIC backend abstraction (netdev).** The IP stack now talks to an active NIC through `kernel/net/netdev.{h,c}` rather than calling a driver directly. e1000 is the default; modern virtio-net (`drivers/virtio_net/`) is a fully working fallback (DHCP/ICMP/DNS/TCP validated under QEMU `-device virtio-net-pci`). ~~virtio-net is currently a polling data path with no IRQ.~~
+  **Done (RESIDUE R9 / ledger RES-28, R12 audit receipt):** the RX
+  ISR + wake existed but nothing ever slept; timed waits now sleep in
+  `wq_wait_deadline` and the `[virtio-net] RX via IRQ wake` receipt
+  is pinned in `test_virtio_net.sh`.
 - **Minimal TCP.** User space now has process-owned socket-style handles, and
   the underlying TCP transport now has a one-segment fixed-RTO retransmission
   strategy for SYN/data/FIN. It still lacks congestion control, sliding windows
@@ -492,7 +549,7 @@ for the feature matrix.
 
 - [x] Strict per-segment user ELF permissions and NX for user data/stack.
 - [x] Basic user pointer validation and safe copy helpers for syscall dispatch.
-- [ ] Fault-recovering user access and continued audits for new syscall paths.
+- [x] Fault-recovering user access (**Done, MATURITY M3:** #PF-fixup uaccess; `tools/audit_user_pointers.py` audits new paths in test-unit).
 - [x] Copy-on-write `fork`.
 - [x] User `mmap` / `munmap` / `brk` baseline syscalls (eager private mappings; true lazy/shared VMAs remain future work).
 - [x] Slab allocator for common fixed-size kernel objects.
@@ -519,9 +576,9 @@ for the feature matrix.
 - [ ] Broaden AHCI compatibility beyond the QEMU test path.
 - [ ] Add fsck/recovery tooling or defensive consistency checks for FAT32/ext2.
 - [x] Add baseline file timestamps for VFS stat plus tmpfs, diskfs, ext2 and FAT32. Remaining permission-mode persistence/audit across every experimental FS stays future work.
-- [ ] Add symbolic links and richer path handling where useful.
-- [ ] Add block cache and writeback policy instead of direct synchronous writes.
-- [ ] Add virtio-blk / virtio-scsi or NVMe as modern virtual storage targets.
+- [x] Add symbolic links (**Done:** `kernel/fs/symlink.c`; `test_fifo_symlinks` runs in the posix CI shard).  Richer path handling (canonicalisation) stays live — see the VFS entry above.
+- [ ] Add block cache and writeback policy instead of direct synchronous writes (the LAYER exists on x86_64 — `kernel/fs/buffer_cache.c`, status 🧪; port adoption is ledger RES-07).
+- [x] Add virtio-blk as a modern virtual storage target (**Done:** `drivers/virtio_blk/` on x86_64, virtio-mmio vblk on both DTB tenants, virtio-pci as the second transport at RESIDUE R7).  virtio-scsi / NVMe stay future work (ledger RES-46's neighbourhood).
 
 ### Networking
 
@@ -537,18 +594,19 @@ for the feature matrix.
 - [x] Basic one-segment TCP retransmission and fixed RTO for SYN/data/FIN. Better packet queues, congestion control and sliding windows remain future work.
 - [x] netdev NIC abstraction with boot-time backend selection (e1000 default, virtio-net fallback).
 - [x] virtio-net modern data-path driver (RX/TX virtqueues, 12-byte hdr, MAC from device cfg).
-- [ ] virtio-net IRQ-driven RX (currently polling); vmxnet3 / e1000e data-path drivers.
+- [x] virtio-net IRQ-driven RX (**Done, RESIDUE R9 / ledger RES-28:** timed waits sleep in `wq_wait_deadline`, the `RX via IRQ wake` receipt is CI-pinned).
+- [ ] vmxnet3 / e1000e data-path drivers (ledger RES-46; e1000.c is the reference).
 
 ### USB and wireless
 
 - [x] Add stable OHCI/EHCI/xHCI control/bulk backend API hooks into `usb_core`.
-- [ ] Complete OHCI ED/TD transfer scheduling.
-- [ ] Complete EHCI async/control/bulk qTD transfers and MSC backend.
-- [ ] Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts.
+- [ ] Complete OHCI ED/TD transfer scheduling. (ledger RES-38; opener measured: uhci.c 555 lines is the complete reference, ohci 709/ehci 865/xhci 1995 with 3 named stubs)
+- [ ] Complete EHCI async/control/bulk qTD transfers and MSC backend. (ledger RES-38)
+- [ ] Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts. (ledger RES-38)
 - [x] USB HID keyboard/mouse class drivers for UHCI Boot Protocol devices.
-- [ ] Generic HID report parsing and OHCI/EHCI/xHCI HID transport.
-- [ ] Real Bluetooth USB transport and at least one tested HCI controller path.
-- [ ] Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer.
+- [ ] Generic HID report parsing and OHCI/EHCI/xHCI HID transport. (ledger RES-38)
+- [ ] Real Bluetooth USB transport and at least one tested HCI controller path. (ledger RES-39; opener measured: bt.c 215 lines already rides uhci_bulk/control — the missing piece is a non-UHCI controller path, not protocol)
+- [ ] Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer. (ledger RES-39; opener measured: wifi.c 370 lines carries the full open-auth flow over a "registered wireless NIC", of which the tree has zero)
 
 ### GUI and userspace
 
@@ -556,21 +614,26 @@ for the feature matrix.
 - [x] Clean up GUI windows when the owning process exits.
 - [x] Basic GUI process ownership enforcement for user-facing window syscalls.
 - [x] Audit every GUI sub-op for out-of-range/negative wid and bad userspace pointers (with integration test).
-- [ ] Stronger compositor/client isolation and permission model for GUI internals.
-- [ ] More complete text input, clipboard and focus behavior.
-- [ ] Persisted user settings/theme.
+- [ ] Stronger compositor/client isolation and permission model for GUI internals. (ledger RES-47; opener measured: gui_syscalls.c ALREADY gates 36 syscall cases behind require_owner/require_icon_owner — the series starts at a clipboard ACL, not at zero)
+- [ ] More complete text input, clipboard and focus behavior. (ledger RES-47)
+- [ ] Persisted user settings/theme. (ledger RES-47)
 - [x] USB Manager GUI (`/gusb`) wired to `/usb` hotplug/storage status.
 - [ ] More GUI apps and richer file editor/terminal behavior.
-- [ ] Dynamic user-space allocation once `brk`/`mmap` exist.
+- [x] Dynamic user-space allocation (**Done:** `SYS_MMAP` (9) is a live x86_64 syscall; `SYS_BRK` (12) landed on ALL THREE ports at RESIDUE R6 with malloc/stdio on top — `fsio` round-trip ×3).
 
 ### Infrastructure and docs
 
 - [x] Sync `docs/status.md`, `TODO.md`, and `CHANGELOG.md` for completed H1–H8 hardening work.
-- [ ] Keep `README.md`, `docs/status.md`, `docs/syscall_abi.md` and
+- [x] Keep `README.md`, `docs/status.md`, `docs/syscall_abi.md` and
       `docs/driver_guide.md` in sync with every future feature change.
+      (**Mechanised, which beats a checkbox:** the D8 checker family —
+      opt/hw/i386/riscv/arm64/parity/residue/fixes/maturity claims,
+      width sweep, test registry, residue harvest ratchet — fails the
+      build when a doc and the tree disagree.  THIS file's thirteen
+      stale rows are the argument.)
 - [ ] Add GDB helper scripts / pretty-printers for kernel structures.
 - [ ] Reduce integration-test timing flakiness around process spawn and serial
       input pacing.
 - [x] Add fsck-style FAT32/ext2 churn + reboot regression test case (`test_fs_stress.sh`).
 - [x] Add integration cases for GUI bad-pointer hardening, process-exit GUI cleanup, FD lifecycle.
-- [ ] Add CI artifacts for screenshots and QEMU serial logs on every failure.
+- [x] Add CI artifacts for QEMU serial logs on every failure (**Done:** `.github/workflows/integration.yml` carries six `upload-artifact` steps; the R4/R5 CI dissections were done FROM those artifacts).  Screenshots stay future work.

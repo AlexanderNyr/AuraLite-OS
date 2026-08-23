@@ -2,6 +2,51 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R12 — close-out: the duplicate ledger was lying, thirteen receipts prove it] 2026-08-23
+
+The RESIDUE series closes.  The close-out's one real discovery is
+the argument for the whole series: TODO.md — 576 lines, 26 unchecked
+boxes, nominally "current known limitations" — carried SIX rows the
+tree had already closed, one of them in its opening paragraph
+(IST/#DF: closed R1; virtio-net "currently polling": closed R9;
+"once brk/mmap exist": mmap is syscall 9 and brk landed ×3 ports at
+R6; "add virtio-blk": three transports in tree; "add symlinks":
+test_fifo_symlinks runs in CI; "add CI artifacts": six
+upload-artifact steps that the R4/R5 dissections were done FROM).
+The first draft of this phase rewrote the file down to a pointer
+map — and the user caught in review what that dropped: the
+~45-entry fine-grained limitation register those same 576 lines
+carried.  The landed shape is the user's: TODO.md stays IN FULL
+(it GREW, 576→639 lines, by receipts) — a headline note names the
+ledger as the machine-checked index, and every stale entry is
+annotated in place in the file's own ~~strikethrough~~ +
+**Done (…)** style.  The audit that produced the annotations
+closed SEVEN more stale rows nobody had flagged (uaccess #PF
+fixup — M3; MAP_SHARED — shmem.c; auxv — M5; posix_spawn.c; tmpfs
+mkdir — Q12; mkdir(mode); tan/fmod/atan).  THIRTEEN stale rows in
+one file — the number is the argument for the machine-checked
+index, and the harvest ratchet now pins the live-box count
+(26→20, six closed with receipts, baseline same-commit; the
+rewrite also got caught by its OWN checker once — a checkbox
+literal in explanatory prose).  POSIX triage: known_partials
+measured EMPTY (sem_open, the last row, closed by conformtest's CI
+catch); readline/scanf/jobs re-affirmed as POSIX_PLAN's own named
+deferrals; epoll re-affirmed a non-goal.  Both N rows re-affirmed
+with D-numbers.  All eight S rows HANDED-OFF with measured openers
+— and two were PART-STALE at hand-off, corrected in the same
+breath: RES-46's "skeleton FS" (ext4 is 1429 lines WITH write
+paths; what all five lack is one CI case — zero in run_all.sh) and
+RES-47's "no isolation" (gui_syscalls.c already gates 36 cases
+behind require_owner).  Rider: the R11 deploy dropped exec bits
+(patch(1) vs git-apply mode headers) — the R11 CI run's ONLY red
+job (integration-cases/core) failed on exactly the [ -x ] this
+predicted; test_metal_null now checks presence, the mode-loss
+class is named in the plan.  Terminal
+arithmetic: 28 DONE + 2 RE-AFFIRMED + 8 HANDED-OFF + 4
+PENDING-USER + 6 OPEN = 48 ✓; the aim line reads 34 OPEN at R0 →
+6 at R12, every survivor stating on its face what closes it.
+RESIDUE_PLAN: COMPLETE ✅.
+
 ## [RESIDUE R11 — PCID in (TCG-inert, host-tested), the metal package v2, and both tenant knobs] 2026-08-23
 
 The phase opened with a sharper measurement: `-cpu qemu64,+pcid` is

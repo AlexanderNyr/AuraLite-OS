@@ -24,9 +24,12 @@ IL_LAST_LOG="$LOG"
 trap 'il_dump_on_error' EXIT
 
 # The package pieces exist before anything boots (cwd is
-# tests/integration; the tree root is two levels up).
-if [ -x ../../tools/metal_receipts.sh ]; then
-    il_pass "package script exists and is executable (tools/metal_receipts.sh)"
+# tests/integration; the tree root is two levels up).  Presence, not
+# the exec bit: the R11 deploy measured that patch(1) drops mode
+# headers git-apply honours, so a 644 checkout is a legal state —
+# everything in this tree runs the scripts through bash anyway.
+if [ -f ../../tools/metal_receipts.sh ]; then
+    il_pass "package script exists (tools/metal_receipts.sh; bash-run, exec bit not required)"
 else
     il_fail "package script missing (tools/metal_receipts.sh)"
 fi
