@@ -24,6 +24,8 @@
 #include "kernel/arch/aarch64/kheap_a64.h"
 #include "kernel/arch/aarch64/paging_a64.h"
 #include "kernel/arch/aarch64/pl011.h"
+#include "kernel/arch/aarch64/fwcfg_a64.h"
+#include "kernel/lib/selftest.h"
 #include "kernel/arch/aarch64/pmm_a64.h"
 #include "kernel/arch/aarch64/psci.h"
 #include "kernel/arch/aarch64/thread_a64.h"
@@ -300,13 +302,17 @@ static void a3_bringup(void)
     /* PMM first (paging's table_alloc feeds from it), then the final
      * tables, then the heap on top of both -- the V3 order. */
     pmm_a64_init(&boot_info);
-    if (pmm_a64_selftest() == 0)
+    if (selftest_mode() == SELFTEST_OFF)
+        pl011_puts("[pmm]  SKIPPED: self-test (mode=off)\n");
+    else if (pmm_a64_selftest() == 0)
         pl011_puts("[pmm]  PASS: 64 distinct frames out and back, count restored\n");
     else
         pl011_puts("[pmm]  FAIL: frame allocator self-test\n");
 
     paging_a64_init();
-    if (paging_a64_selftest() == 0)
+    if (selftest_mode() == SELFTEST_OFF)
+        pl011_puts("[vmm]  SKIPPED: self-test (mode=off)\n");
+    else if (paging_a64_selftest() == 0)
         pl011_puts("[vmm]  PASS: positive map cycle + three fault probes\n");
     else
         pl011_puts("[vmm]  FAIL: paging self-test\n");
@@ -321,7 +327,9 @@ static void a3_bringup(void)
         pl011_puts("[vmm]  FAIL: unaligned load still faults on Normal memory\n");
 
     kheap_a64_init();
-    if (kheap_a64_selftest() == 0)
+    if (selftest_mode() == SELFTEST_OFF)
+        pl011_puts("[heap] SKIPPED: self-test (mode=off)\n");
+    else if (kheap_a64_selftest() == 0)
         pl011_puts("[heap] PASS: 64 alloc/free cycles, patterns intact, zero leak\n");
     else
         pl011_puts("[heap] FAIL: heap self-test\n");
@@ -526,6 +534,16 @@ void kmain_a64(uint64_t x0_at_entry)
 
     memmap_report();
     platform_report();
+
+    /* R11 (RES-34): the fw-cfg knob — AMEND-5's MMIO reader, wired.
+     * Runs off the boot MMU's Device plateau; prints the mode either
+     * way so the smoke can pin both directions. */
+    fwcfg_a64_selftest_probe(platform.fwcfg_base);
+    pl011_puts("[selftest] mode=");
+    pl011_puts(selftest_mode_name());
+    pl011_puts(" (source: ");
+    pl011_puts(selftest_mode_source());
+    pl011_puts(")\n");
 
     /* a2 first: the vector table must exist before a3's fault probes
      * arm (a W^X probe with VBAR unset is a hang, not a test --

@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R10 complete; R11 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R11 complete; R12 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -15,7 +15,7 @@
 | R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | ✅ complete | `patches/RESIDUE_R8_rust.patch` |
 | R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | ✅ complete | `patches/RESIDUE_R9_net.patch` |
 | R10 — the crypto width line: 32-bit limbs for atls_fe | ✅ complete | `patches/RESIDUE_R10_fe32.patch` |
-| R11 — the real-hardware package v2 (user-executable; PCID's D-PCID-5 trigger EXISTS) | pending | `patches/RESIDUE_R11_metal.patch` |
+| R11 — the real-hardware package v2 (user-executable; PCID's D-PCID-5 trigger EXISTS) | ✅ complete | `patches/RESIDUE_R11_metal.patch` |
 | R12 — close-out: re-affirmed non-goals, the ledger arithmetic | pending | `patches/RESIDUE_R12_close.patch` |
 
 ## 1. Where this plan comes from
@@ -552,17 +552,56 @@ path the -m32 gate cannot reach" epilogues.  status.md's 🧪 crypto
 row flipped ✅ (a 🧪 row — the harvest ratchet counts 🚧/🔶 only,
 so the baseline honestly does NOT move this phase).
 
-### R11 — the real-hardware package v2 (+ PCID, which stopped being metal-only)
-- [ ] PCID: D-PCID-1..5 implemented (CR3-toggle fallback, no
+### R11 — the real-hardware package v2 (+ PCID, which stopped being metal-only) — ✅ COMPLETE
+- [x] PCID: D-PCID-1..5 implemented (CR3-toggle fallback, no
       INVPCID on the user's machine), counters un-pinned from zero,
       a WHPX-targeted receipt block for the user to paste back.
-- [ ] The metal bundle: PAT/WC fps probe, ERMSB crossover sweep,
+- [x] The metal bundle: PAT/WC fps probe, ERMSB crossover sweep,
       membench, O3 wall-clock, IOAPIC base discovery — one script,
       one paste-back section per HW §6 v2.  fw_cfg knobs (RES-34)
       wired so the metal runs can toggle fast-boot.
-- [ ] Exit: the package exists and runs under QEMU as a NULL test;
+- [x] Exit: the package exists and runs under QEMU as a NULL test;
       metal numbers arrive when the user runs it (recorded as
       pending-user, not failure).
+
+Result: the phase opened with one more measurement that sharpened
+everything after it: `-cpu qemu64,+pcid` is REFUSED by TCG ("TCG
+doesn't support requested feature: CPUID.01H:ECX.pcid") — so H0's
+"no QEMU configuration executes PCID" was not a `-cpu max` accident
+but a TCG ceiling, and the only executable lane for the decisions
+is a HOST test.  PCID landed the O5 way: pcid_policy.h is pure C
+(hash-slot allocator, generation revocation, the D-PCID-4 filter,
+the de-own narrow action — each with its correctness fact written
+at the site), test_pcid_policy pins 24 decisions; pcid.c owns the
+per-CPU tables/counters; paging.c gates CR4.PCIDE on CPUID and
+routes every switch through pcid_cr3_for(); tlb_shootdown.c's
+sender filter generalises (resident→IPI, non-owner→skip,
+stale-gen→skip, live-right→IPI) and its handler serves non-resident
+victims by DE-OWNING their slot (no invpcid on the user's machine;
+eviction's own CR3 load is the flush).  Deviation, named: D-PCID-1
+prescribed a bump-4095 allocator; the landed one is a deterministic
+hash slot in 1..255 (a bump needs a reverse map — 48 KiB/CPU or a
+search; a collision costs a PCID-scoped flush, never correctness).
+Kernel-half map/unmap/protect bump the local generation (invlpg
+only reaches the current PCID).  On every TCG lane the feature bit
+is 0 and ALL of it is inert — byte-identical logs, and the perf
+smoke now SELF-SELECTS: pcid=0 lanes pin both counters at zero AND
+the absence of the enable line; a pcid=1 lane (WHPX, a KVM runner
+some day) flips the same case to demanding cr3_noflush_switches>0.
+RES-34: fwcfg32.c (same port protocol) and fwcfg_a64.c (the
+AMEND-5 MMIO reader — BE selector at +8, base from a new
+`qemu,fw-cfg-mmio` DTB row) feed the ONE shared selftest.c, newly
+a KERNEL32/KERNELA64_SHARED row; both smokes pin default-fast AND
+off→SKIPPED (i386_shell +5 asserts, a64_boot +4).  RES-37: the
+kernel now walks RSDP→RSDT/XSDT→MADT itself (both loaders already
+published rsdp_phys) and prints `[ioapic] base ... (MADT agree)` —
+QEMU agrees (NULL fact); a disagreeing machine gets named at boot.
+The package: tools/metal_receipts.sh + docs/metal_receipts.md (9
+slots, the WHPX PCID block is slots 5/6), --null-test green 7/7,
+and test_metal_null carries the same greps in CI (registry
+130→131, core shard).  M-rows RES-30/32/33/48 move to
+PENDING-USER@R11 — a new ledger status, arithmetic-checked, that
+says exactly what it says.
 
 ### R12 — close-out
 - [ ] Every N row re-affirmed with its D-number; every S row handed

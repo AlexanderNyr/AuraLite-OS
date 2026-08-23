@@ -259,6 +259,60 @@ def claims():
             "a 32-bit limb path is required first"
             not in read("docs", "status.md")))
 
+    # --- R11: PCID + the metal package (when the plan says it landed) ---
+    if re.search(r"^### R11[^\n]*✅ COMPLETE", plan, re.M):
+        pcid_pol = read("kernel", "arch", "x86_64", "pcid_policy.h")
+        pcid_c   = read("kernel", "arch", "x86_64", "pcid.c")
+        tlb_c    = read("kernel", "arch", "x86_64", "tlb_shootdown.c")
+        pag_c    = read("kernel", "arch", "x86_64", "paging.c")
+        perf_sh  = read("tests", "integration", "cases",
+                        "test_perf_smoke.sh")
+        checks.append((
+            "R11: the PCID decision core is pure C with a host gate, "
+            "and the named deviation is written where it lives",
+            "pcid_policy_sender_skip" in pcid_pol and
+            "DEVIATION FROM THE WRITTEN DESIGN, NAMED" in pcid_pol and
+            "pcid_policy.h" in read("Makefile") and
+            "test_pcid_policy" in read("Makefile")))
+        checks.append((
+            "R11: the plumbing is feature-gated (CR4.PCIDE from CPUID, "
+            "switches routed through pcid_cr3_for, handler de-owns "
+            "non-resident victims)",
+            "pcid_cr4_bit" in pag_c and "pcid_cr3_for" in pag_c and
+            "pcid_local_deown" in tlb_c and
+            "pcid_sender_may_skip" in tlb_c and
+            "No invpcid anywhere here" in pcid_c))
+        checks.append((
+            "R11: the perf smoke un-pinned the counters by SELF-SELECTING "
+            "on the feature bit (zero pinned on pcid=0, movement demanded "
+            "on pcid=1)",
+            "cr3_noflush_switches stays zero" in perf_sh and
+            "cr3_noflush_switches [1-9]" in perf_sh))
+        checks.append((
+            "R11/RES-34: both tenant knobs feed the ONE shared "
+            "selftest.c (Makefile rows) and both smokes pin the toggle",
+            read("Makefile").count("kernel/lib/selftest.c") >= 2 and
+            "SKIPPED: self-test (mode=off)"
+            in read("tests", "integration", "i386_shell_smoke.sh") and
+            "mode=off (source: fw-cfg)"
+            in read("tests", "integration", "a64_boot_smoke.sh") and
+            "qemu,fw-cfg-mmio" in read("kernel", "dt", "fdt.c")))
+        checks.append((
+            "R11/RES-37: the kernel-side MADT walk exists and the QEMU "
+            "agreement line is pinned in the NULL case",
+            "madt_ioapic_base" in read("kernel", "arch", "x86_64",
+                                       "ioapic.c") and
+            "MADT agree" in read("tests", "integration", "cases",
+                                 "test_metal_null.sh")))
+        checks.append((
+            "R11: the package ships (script + paste-back doc with the "
+            "WHPX PCID block) and the NULL case is registered",
+            "--null-test" in read("tools", "metal_receipts.sh") and
+            "cr3_noflush_switches"
+            in read("docs", "metal_receipts.md") and
+            "test_metal_null"
+            in read("tests", "integration", "run_all.sh")))
+
     # --- R0 structure ---------------------------------------------------
     checks.append((
         "R0: the amended class totals are recorded as a CATCH in both "

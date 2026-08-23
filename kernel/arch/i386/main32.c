@@ -24,6 +24,8 @@
 #include "kernel/arch/i386/paging32.h"
 #include "kernel/arch/i386/pmm32.h"
 #include "kernel/arch/i386/kheap32.h"
+#include "kernel/arch/i386/fwcfg32.h"
+#include "kernel/lib/selftest.h"
 #include "kernel/arch/i386/thread32.h"
 #include "kernel/arch/i386/user32.h"
 #include "kernel/arch/i386/initrd32.h"
@@ -193,25 +195,39 @@ void kmain32(uint32_t boot_info_phys)
 
     pit32_init(100);
 
+    /* R11 (RES-34): the fw_cfg knob, wired.  Same protocol and file
+     * name as the x86_64 probe; the shared selftest.c state it feeds
+     * is now a KERNEL32_SHARED row.  Printed unconditionally so the
+     * smoke can pin the mode either way. */
+    fwcfg32_selftest_probe();
+    kprintf32("[selftest32] mode=%s (source: %s)\n",
+              selftest_mode_name(), selftest_mode_source());
+
     /* ---- I3: memory ---- */
     paging32_init();
     paging32_drop_identity();
 
     kprintf32("[boot] initialising physical memory manager...\n");
     pmm32_init(boot_info);
-    if (pmm32_selftest() != 0) {
+    if (selftest_mode() == SELFTEST_OFF) {
+        kprintf32("[pmm] SKIPPED: self-test (mode=off)\n");
+    } else if (pmm32_selftest() != 0) {
         kprintf32("[pmm] FAIL: self-test\n");
         goto halt;
     }
 
-    if (paging32_selftest() != 0) {
+    if (selftest_mode() == SELFTEST_OFF) {
+        kprintf32("[vmm] SKIPPED: self-test (mode=off)\n");
+    } else if (paging32_selftest() != 0) {
         kprintf32("[vmm] FAIL: self-test\n");
         goto halt;
     }
 
     kprintf32("[boot] initialising kernel heap...\n");
     kheap32_init();
-    if (kheap32_selftest() != 0) {
+    if (selftest_mode() == SELFTEST_OFF) {
+        kprintf32("[heap] SKIPPED: self-test (mode=off)\n");
+    } else if (kheap32_selftest() != 0) {
         kprintf32("[heap] FAIL: self-test\n");
         goto halt;
     }

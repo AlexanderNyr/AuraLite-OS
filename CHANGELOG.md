@@ -2,6 +2,43 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R11 — PCID in (TCG-inert, host-tested), the metal package v2, and both tenant knobs] 2026-08-23
+
+The phase opened with a sharper measurement: `-cpu qemu64,+pcid` is
+REFUSED by TCG ("TCG doesn't support requested feature") — H0's "no
+QEMU config executes PCID" was a TCG ceiling, not a `-cpu max`
+accident.  So PCID landed the O5 way: the decisions live in
+pcid_policy.h, pure C — hash-slot allocation (deviation from
+D-PCID-1's bump-4095 NAMED where it lives: a bump needs a reverse
+map; a slot collision costs a PCID-scoped flush, never correctness),
+generation revocation as the invpcid-less full flush, the D-PCID-4
+sender filter (resident→IPI, non-owner→skip, stale-gen→skip,
+live-NOFLUSH-right→IPI), and the handler's narrow action for
+non-resident victims: DE-OWN the slot, let eviction's own CR3 load
+do the flushing.  test_pcid_policy pins 24 decisions on the host —
+the only executable rig these decisions have.  pcid.c owns the
+per-CPU tables and the two counters; paging.c gates CR4.PCIDE on
+CPUID.01H:ECX.17 and routes every switch through pcid_cr3_for();
+kernel-half map/unmap/protect bump the local generation (invlpg
+only reaches the current PCID).  Every TCG lane boots pcid=0 and
+ALL of it is inert — and the perf smoke now SELF-SELECTS on the
+feature line: pcid=0 pins both counters at zero AND no enable line;
+pcid=1 (the user's WHPX machine — the D-PCID-5 trigger) demands
+cr3_noflush_switches>0.  RES-34 closed: fwcfg32.c (same port
+protocol) + fwcfg_a64.c (AMEND-5's MMIO reader, BE selector at +8,
+`qemu,fw-cfg-mmio` DTB row) feed the ONE shared selftest.c, newly a
+KERNEL32/KERNELA64_SHARED row; both smokes pin default-fast and
+off→SKIPPED.  RES-37 closed: the kernel walks RSDP→RSDT/XSDT→MADT
+itself (both loaders already published rsdp_phys) — `[ioapic] base
+0xfec00000 (MADT agree)` in QEMU, a disagreeing machine gets named
+at boot.  The package: tools/metal_receipts.sh + docs/
+metal_receipts.md (9 slots; the WHPX PCID block is 5/6), NULL test
+7/7 locally and as test_metal_null in CI (registry 130→131, core
+shard).  status.md: AMEND-5 🚧→✅ (harvest 13→12, baseline moved
+same-commit) and the PCID 📋→✅(TCG-inert).  Ledger: DONE@R11 3
+(RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — a new
+status that says exactly what it says).  OPEN 25→18.
+
 ## [RESIDUE R10 — the crypto width line: 104 vector checks at -m32, and the prescribed fix wasn't the built one] 2026-08-23
 
 RES-29 closed: X25519/Ed25519/P-256 now run at 32-bit width.  The

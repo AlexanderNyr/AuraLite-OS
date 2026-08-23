@@ -14,6 +14,7 @@
 #include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/tlb_shootdown.h"
 #include "kernel/arch/x86_64/tlb_policy.h"
+#include "kernel/arch/x86_64/pcid.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/vma.h"
 #include "kernel/proc/scheduler.h"
@@ -150,6 +151,24 @@ void paging_cpu_features_init(void) {
      * remap refuses separately. */
     uint32_t d1, c1;
     cpuid_count(1, 0, &a, &b, &c1, &d1);
+
+    /* RESIDUE R11 / HW H4: CR4.PCIDE when CPUID.01H:ECX.17 says PCID
+     * exists.  Measured: no TCG lane ever gets here with the bit set
+     * (`+pcid` is refused by TCG with a warning), so on every CI boot
+     * this adds NOTHING to CR4 and the log — the executable lane is
+     * the user's WHPX machine (pcid=1 invpcid=0 in their boot log,
+     * the D-PCID-5 trigger).  Legal here: long mode, and the current
+     * CR3 is the page-aligned kernel PML4 (low 12 bits zero). */
+    uint64_t pcide = pcid_cr4_bit((int)((c1 >> 17) & 1), is_bsp);
+    if (pcide) {
+        /* The main CR4 write above has already happened; PCIDE gets its
+         * own second write so the SMEP/SMAP path stays byte-identical
+         * on every PCID-less lane (which is ALL of TCG). */
+        write_cr4(read_cr4() | pcide);
+        if (is_bsp) kprintf(VMM_TAG "PCID enabled (hash-slot alloc, "
+                            "CR3-reload+generation fallback, no invpcid)\n");
+    }
+
     if ((d1 >> 16) & 1) {
         uint64_t pat = read_msr(0x277);
         pat = (pat & ~(0x7ULL << 32)) | (0x1ULL << 32);   /* PA4 := WC */
@@ -172,6 +191,7 @@ void paging_init(void) {
     uint64_t cr3 = read_cr3();
     kernel_pml4_phys = cr3 & PAGE_ADDR_MASK;
     pml4 = (uint64_t *)phys_to_ptr(kernel_pml4_phys);
+    pcid_set_kernel_pml4(kernel_pml4_phys);   /* R11: slot 0 / PCID 0 */
 
     /* Enable the NX (No-Execute) execution-disable bit in page tables. */
     uint64_t efer = read_msr(MSR_EFER);
@@ -307,9 +327,16 @@ void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
                 (unsigned long long)virt);
         return;
     }
+    int was_present = (*pte & PAGE_FLAG_PRESENT) != 0;
     *pte = (phys & PAGE_ADDR_MASK) | flags;
     /* Flush any stale TLB entry for this virtual address. */
     invlpg(virt);
+    /* R11: a REMAP of a live kernel-half page must also revoke the
+     * other PCIDs' cached translation (fresh maps had nothing cached,
+     * so gate on the old PTE being present). */
+    if (was_present && PML4_INDEX(virt) >= PML4_USER_TOP) {
+        pcid_local_gen_bump();
+    }
     spinlock_release_irqrestore(&vm_lock, vf);
 }
 
@@ -322,6 +349,15 @@ void paging_unmap(uint64_t virt) {
     }
     *pte = 0;
     invlpg(virt);
+
+    /* R11: invlpg only reaches the CURRENT pcid.  A kernel-half page
+     * is cached under every PCID this CPU has run, so revoke all
+     * NOFLUSH rights — each other address space re-enters FRESH (its
+     * whole PCID flushed) before it could consult the stale entry.
+     * Inactive boots: no-op. */
+    if (PML4_INDEX(virt) >= PML4_USER_TOP) {
+        pcid_local_gen_bump();
+    }
 
     /* TLB Shootdown (O5: precise).  One page, one address space — the
      * mailbox carries both, targets outside this CR3 are skipped, and
@@ -345,6 +381,11 @@ int paging_protect(uint64_t virt, uint64_t flags) {
     }
     *pte = (*pte & PAGE_ADDR_MASK) | flags;
     invlpg(virt);
+    /* R11: same kernel-half rule as paging_unmap — the old permission
+     * may live on under other PCIDs on this CPU. */
+    if (PML4_INDEX(virt) >= PML4_USER_TOP) {
+        pcid_local_gen_bump();
+    }
     spinlock_release_irqrestore(&vm_lock, vf);
     return 0;
 }
@@ -394,7 +435,10 @@ void paging_switch_to(uint64_t new_pml4_phys) {
     if (new_pml4_phys == 0) {
         return;
     }
-    write_cr3(new_pml4_phys);
+    /* R11: with PCIDE on, the CR3 value carries the policy's slot and
+     * (when re-entry is granted) the NOFLUSH bit; inactive boots get
+     * the bare PML4 back — the historical write, bit-for-bit. */
+    write_cr3(pcid_cr3_for(new_pml4_phys));
     if (cpu_local_ready) {
         struct cpu_local *cl = get_cpu_local();
         if (cl) {

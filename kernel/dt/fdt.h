@@ -102,6 +102,8 @@ typedef struct {
     uint64_t pcie_mmio_cpu;              /* cpu address of the mem32 window */
     uint64_t pcie_mmio_pci;              /* pci address of the same window */
     uint64_t pcie_mmio_size;
+    uint64_t fwcfg_base;                 /* qemu,fw-cfg-mmio; 0 = none
+                                          * (R11/RES-34: the a64 knob) */
 } fdt_platform_t;
 
 /* Arch contract 1: translate the physical DTB address into something

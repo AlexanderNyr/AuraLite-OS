@@ -96,6 +96,23 @@ assert_grep    "$LOG32" "\[shell\] exited 0"                           "i386: ke
 assert_grep    "$LOG32" "console+shell online; idle"                   "i386: kernel survived the whole session"
 assert_no_grep "$LOG32" "UNHANDLED EXCEPTION"                          "i386: no faults (esp0 + sti;hlt regressions covered)"
 assert_no_grep "$LOG32" "FAIL"                                         "i386: no self-test failures anywhere in the boot"
+# ---- R11 (RES-34): the fw_cfg knob, default direction ----
+assert_grep    "$LOG32" "\[selftest32\] mode=fast (source: build default)" \
+                                                                       "i386 R11: knob default is fast/build-default"
+assert_no_grep "$LOG32" "SKIPPED: self-test"                           "i386 R11: nothing skipped on the default boot"
+
+# ---- R11 (RES-34): the fw_cfg knob, off direction — the toggle IS the gate ----
+LOGOFF="$BUILD/i386_selftest_off.log"
+rm -f "$LOGOFF"
+timeout 35 qemu-system-i386 \
+        -drive format=raw,file="$ISO",if=ide,snapshot=on \
+        -m 512M \
+        -display none -serial file:"$LOGOFF" -no-reboot \
+        -fw_cfg name=opt/auralite.selftest,string=off \
+        >/dev/null 2>&1 || true
+assert_grep    "$LOGOFF" "\[selftest32\] mode=off (source: fw_cfg)"    "i386 R11: fw_cfg off reaches the shared selftest state"
+assert_grep    "$LOGOFF" "\[pmm\] SKIPPED: self-test (mode=off)"       "i386 R11: pmm self-test skipped, loudly"
+assert_grep    "$LOGOFF" "\[heap\] SKIPPED: self-test (mode=off)"      "i386 R11: heap self-test skipped, loudly"
 
 # ---- the standing x86_64 regression gate ----
 rm -f "$LOG64"

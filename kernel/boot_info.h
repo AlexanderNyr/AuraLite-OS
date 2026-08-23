@@ -53,4 +53,8 @@ uint64_t boot_get_initrd(uint64_t *out_size);
 boot_cpu_t *boot_get_smp_info(uint64_t *out_count,
                               uint32_t *out_bsp_lapic_id);
 
+/* ACPI RSDP physical address (0 if neither loader located one).
+ * RESIDUE R11: consumed by the IOAPIC's MADT base check. */
+uint64_t boot_get_rsdp(void);
+
 #endif /* AURALITE_KERNEL_BOOT_INFO_H */

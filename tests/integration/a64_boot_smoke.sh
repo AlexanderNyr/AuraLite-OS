@@ -179,6 +179,20 @@ assert_grep "$LOGEL2" "CurrentEL != EL1; refusing to boot (ARM64_PLAN D1)" \
 assert_count "$LOGEL2" "Hello from AuraLite OS kernel (aarch64)!" 0 \
     "no kernel banner on the refusal path"
 
+# ---- R11 (RES-34): the fw-cfg MMIO knob (AMEND-5's deferral ends) ----
+# Default boot (the $LOG from the first lane) must be untouched;
+# an explicit off must reach the shared selftest state over MMIO.
+assert_grep "$LOG" "\[selftest\] mode=fast (source: build default)" \
+    "a64 R11: knob default is fast/build-default"
+LOGKNOB="$BUILD/a64_selftest_off.log"
+run_qemu "$LOGKNOB" 1 virt -fw_cfg name=opt/auralite.selftest,string=off
+assert_grep "$LOGKNOB" "\[selftest\] mode=off (source: fw-cfg)" \
+    "a64 R11: fw-cfg MMIO probe reads the knob (BE selector at +8)"
+assert_grep "$LOGKNOB" "\[pmm\]  SKIPPED: self-test (mode=off)" \
+    "a64 R11: pmm self-test skipped, loudly"
+assert_grep "$LOGKNOB" "\[heap\] SKIPPED: self-test (mode=off)" \
+    "a64 R11: heap self-test skipped, loudly"
+
 if [ "$fail" -ne 0 ]; then
     echo "[a64-boot] FAILURES above; log: $LOG" >&2
     exit 1

@@ -34,10 +34,16 @@
  *     which flushes, and the sender already updated the PTEs before
  *     calling here.
  *
- * PCID residue (recorded, deferred): with PCID the "CR3 switch means
- * flush" fact dies and both the skip filter and the mailbox need a
- * generation scheme; the mailbox layout keeps room for it.  Real
- * hardware territory per D1 — QEMU TCG timing cannot judge it.
+ * PCID (RESIDUE R11; was "recorded, deferred" here since O5): with
+ * CR4.PCIDE the "CR3 switch means flush" fact dies, exactly as this
+ * header predicted.  The generation scheme it called for lives in
+ * pcid_policy.h/pcid.c: the sender filter asks the target's slot
+ * table for a live NOFLUSH right (D-PCID-4), and the handler serves
+ * non-resident victims by DE-OWNING their slot (their next entry
+ * reloads CR3 with NOFLUSH=0, which flushes that PCID before any
+ * stale entry could be used — no invpcid needed, the user's machine
+ * has none).  On every PCID-less boot (all of TCG, measured) the
+ * historical paths run bit-for-bit.
  */
 
 #include "kernel/arch/x86_64/cpu.h"
@@ -47,6 +53,7 @@
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/tlb_policy.h"
 #include "kernel/arch/x86_64/tlb_shootdown.h"
+#include "kernel/arch/x86_64/pcid.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/perfstat.h"
@@ -71,7 +78,10 @@ uint64_t tlb_current_asid(void) {
 
 void tlb_note_cr3(uint32_t cpu_id, uint64_t cr3) {
     if (cpu_id < TLB_MAX_CPUS) {
-        cpu_cr3_shadow[cpu_id] = cr3;
+        /* R11: normalise to the address field — with PCIDE the loaded
+         * CR3 carries a PCID in [11:0]; the filters below compare
+         * ADDRESS SPACES, not raw register values. */
+        cpu_cr3_shadow[cpu_id] = cr3 & PCID_CR3_ADDR_MASK;
     }
 }
 
@@ -83,6 +93,9 @@ void tlb_shootdown_range(uint64_t cr3_filter, uint64_t va, uint32_t npages) {
     if (ncpus > TLB_MAX_CPUS) {
         ncpus = TLB_MAX_CPUS;
     }
+    /* R11: callers pass read_cr3(), which carries PCID bits when
+     * PCIDE is on; the filter compares address spaces. */
+    cr3_filter &= PCID_CR3_ADDR_MASK;
 
     uint64_t fl = spinlock_acquire_irqsave(&tlb_send_lock);
     uint32_t me = 0;
@@ -95,7 +108,22 @@ void tlb_shootdown_range(uint64_t cr3_filter, uint64_t va, uint32_t npages) {
         if (cpu == me) {
             continue;                   /* caller invlpg'd locally */
         }
-        if (!tlb_policy_target_wanted(cr3_filter, cpu_cr3_shadow[cpu])) {
+        /* Sender filter.  Without PCID: O5's architectural fact (a CR3
+         * load flushes everything).  With PCID that fact is DEAD —
+         * D-PCID-4's generalisation asks the target's slot table
+         * whether the victim still holds a live NOFLUSH right there
+         * (owner match + current generation); resident targets are
+         * always IPI'd.  Kernel broadcasts (filter 0) reach everyone
+         * in both regimes. */
+        int skip;
+        if (pcid_active() && cr3_filter != 0) {
+            skip = pcid_sender_may_skip(cpu, cr3_filter,
+                                        cpu_cr3_shadow[cpu]);
+        } else {
+            skip = !tlb_policy_target_wanted(cr3_filter,
+                                             cpu_cr3_shadow[cpu]);
+        }
+        if (skip) {
             perfstat_add(PERF_TLB_IPIS_SKIPPED, 1);
             continue;
         }
@@ -122,28 +150,74 @@ void ipi_tlb_shootdown_handler(void) {
                                             mb->npages, TLB_INVLPG_MAX);
 
     if (act != TLB_ACT_SPURIOUS) {
-        uint64_t va = mb->va;
-        uint32_t n  = mb->npages;
+        uint64_t va     = mb->va;
+        uint32_t n      = mb->npages;
+        uint64_t victim = mb->cr3;      /* already address-normalised */
 
         /* Torn-payload guard: if the sender moved seq while we were
-         * reading, the va/n pair may be a mix of two requests. */
+         * reading, the va/n/victim triple may be a mix of two
+         * requests. */
         uint64_t seq2 = __atomic_load_n(&mb->seq, __ATOMIC_ACQUIRE);
         if (seq2 != seq) {
-            act = TLB_ACT_FULL;
+            act    = TLB_ACT_FULL;
+            victim = 0;                 /* R11: widest reading — treat
+                                         * the mixed payload as a
+                                         * kernel broadcast */
             seq = seq2;
         }
 
-        if (act == TLB_ACT_RANGED) {
-            for (uint32_t i = 0; i < n; i++) {
-                invlpg(va + (uint64_t)i * 4096ULL);
+        if (!pcid_active()) {
+            if (act == TLB_ACT_RANGED) {
+                for (uint32_t i = 0; i < n; i++) {
+                    invlpg(va + (uint64_t)i * 4096ULL);
+                }
+                perfstat_add(PERF_TLB_SHOOTDOWNS_RANGED, 1);
+            } else {
+                /* Full flush: reload CR3. */
+                uint64_t cr3;
+                __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3"
+                                  : "=r"(cr3) :: "memory");
+                perfstat_add(PERF_TLB_SHOOTDOWNS_FULL, 1);
             }
-            perfstat_add(PERF_TLB_SHOOTDOWNS_RANGED, 1);
         } else {
-            /* Full flush: reload CR3. */
-            uint64_t cr3;
-            __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3"
-                              : "=r"(cr3) :: "memory");
-            perfstat_add(PERF_TLB_SHOOTDOWNS_FULL, 1);
+            /* R11: with PCIDE, invlpg and a CR3 reload only reach the
+             * CURRENT pcid.  Three victims, three actions:
+             *   kernel broadcast (victim 0): serve the current pcid
+             *     the narrow/full way, revoke everyone else's NOFLUSH
+             *     (their next entry flushes their pcid before use);
+             *   the current address space: the historical action is
+             *     exactly right;
+             *   a non-resident space: nothing we can invalidate
+             *     directly without invpcid (the user's machine has
+             *     none) — de-own its slot, forcing its next entry
+             *     FRESH.  Cheaper than any flush and sound by
+             *     pcid_policy.h's fact 1. */
+            uint64_t cur = read_cr3() & PCID_CR3_ADDR_MASK;
+            if (act == TLB_ACT_RANGED) {
+                if (victim == 0 || victim == cur) {
+                    for (uint32_t i = 0; i < n; i++) {
+                        invlpg(va + (uint64_t)i * 4096ULL);
+                    }
+                    if (victim == 0) {
+                        pcid_local_gen_bump();
+                    }
+                } else {
+                    pcid_local_deown(victim);
+                }
+                perfstat_add(PERF_TLB_SHOOTDOWNS_RANGED, 1);
+            } else {
+                if (victim == 0 || victim == cur) {
+                    uint64_t cr3;
+                    __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3"
+                                      : "=r"(cr3) :: "memory");
+                    if (victim == 0) {
+                        pcid_local_gen_bump();
+                    }
+                } else {
+                    pcid_local_deown(victim);
+                }
+                perfstat_add(PERF_TLB_SHOOTDOWNS_FULL, 1);
+            }
         }
         last_handled[me % TLB_MAX_CPUS] = seq;
     }

@@ -66,13 +66,26 @@ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
 done
 
-# --- HW H4: the PCID receipt slots, reserved AT ZERO (the counters
-# exist before the implementation, which waits for a lane that can
-# execute PCID at all -- HW_PLAN H4's deferral protocol).  Asserting
-# the exact zero pins the "reserved, untouched" contract: any code
-# that starts bumping these without the H4 re-open gate is a drift. ---
-il_assert_grep "$LOG" "^cr3_noflush_switches 0\$"  "H4: cr3_noflush_switches reserved at zero"
-il_assert_grep "$LOG" "^pcid_generation_wraps 0\$" "H4: pcid_generation_wraps reserved at zero"
+# --- HW H4 → RESIDUE R11: the PCID counters are now BACKED by the
+# implementation (pcid.c), gated on CR4.PCIDE.  TCG has no PCID
+# (measured: +pcid refused), so on every CI lane the feature line says
+# pcid=0 and both counters MUST still read zero — a nonzero value here
+# means the accounting fired without the feature, which is exactly the
+# drift this pin exists to catch.  On a pcid=1 lane (the user's WHPX
+# machine, a KVM runner some day) the D-PCID-5 acceptance inverts:
+# cr3_noflush_switches must MOVE — that half lives in the metal
+# package (docs/metal_receipts.md, slots 5/6). ---
+if grep -aqE 'features: pat=[01] pcid=1' "$LOG"; then
+    il_assert_grep "$LOG" "^cr3_noflush_switches [1-9][0-9]*" \
+        "R11/D-PCID-5: pcid=1 lane, cr3_noflush_switches moving"
+    il_assert_grep "$LOG" "\[vmm\] PCID enabled" \
+        "R11: the CR4.PCIDE enable line on a pcid=1 lane"
+else
+    il_assert_grep "$LOG" "^cr3_noflush_switches 0\$"  "R11: pcid=0 lane, cr3_noflush_switches stays zero"
+    il_assert_grep "$LOG" "^pcid_generation_wraps 0\$" "R11: pcid=0 lane, pcid_generation_wraps stays zero"
+    il_assert_no_grep "$LOG" "\[vmm\] PCID enabled" \
+        "R11: no PCIDE enable line on a pcid=0 boot"
+fi
 
 # --- O7: the machine at an idle shell is IDLE (busy% first field of
 # loadavg).  Pre-O7 the kmain yield-loop alone held this at ~36; the

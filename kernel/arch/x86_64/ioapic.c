@@ -10,8 +10,18 @@
  * assumed at the PC-standard base 0xFEC00000, and the one legacy remap that
  * matters -- ISA IRQ0 (the PIT) is wired to GSI 2 -- is hard-coded.  Real
  * machines publish the IOAPIC base and any further Interrupt Source Overrides
- * in the ACPI MADT; parsing that in the bootloader and feeding it here is the
- * documented real-hardware follow-up.
+ * in the ACPI MADT.
+ *
+ * RESIDUE R11 (RES-37): the MADT half of that follow-up is in.  Both
+ * loaders already publish rsdp_phys; madt_ioapic_base() below walks
+ * RSDP -> RSDT/XSDT -> MADT and returns the first type-1 (I/O APIC)
+ * entry's address.  The kernel still USES the PC-standard base -- what
+ * changed is that the boot now prints whether ACPI agrees with the
+ * hardcode ("MADT agree" / "MADT says 0x..., hardcode stands" /
+ * "no MADT") -- so the metal receipt package can carry the discovery
+ * line, and a machine where the two differ is named on sight instead
+ * of silently mis-programmed.  Interrupt Source Overrides remain the
+ * recorded residue.
  *
  * Safety: if no I/O APIC is present (the version register reads as
  * all-zero/all-one), this returns non-zero WITHOUT touching the PIC, so the
@@ -74,11 +84,125 @@ static uint64_t io_make_isa_entry(int vector, uint32_t dest_apic_id) {
          | (((uint64_t)(dest_apic_id & 0xFF)) << 56); /* [63:56] dest APIC ID */
 }
 
+/* ------------------------------------------------------------------ */
+/* MADT walk (R11 / RES-37).  Read-only, boot-time, single-threaded.   */
+/* ------------------------------------------------------------------ */
+
+/* Map [phys, phys+len) at hhdm+phys and return the pointer.  ACPI
+ * tables live in reserved memory the HHDM prebuild may not cover, so
+ * map explicitly -- same approach the register window below uses.
+ * paging_map is idempotent for an already-mapped page. */
+static const uint8_t *acpi_map(uint64_t hhdm, uint64_t phys, uint64_t len) {
+    uint64_t first = phys & ~0xFFFULL;
+    uint64_t last  = (phys + len - 1) & ~0xFFFULL;
+    for (uint64_t p = first; p <= last; p += 0x1000) {
+        paging_map(hhdm + p, p, PAGE_FLAGS_MMIO);
+    }
+    return (const uint8_t *)(uintptr_t)(hhdm + phys);
+}
+
+static uint32_t rd32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint64_t rd64(const uint8_t *p) {
+    return (uint64_t)rd32(p) | ((uint64_t)rd32(p + 4) << 32);
+}
+
+/* First type-1 (I/O APIC) entry's address from the MADT, or 0 when
+ * anything on the way is absent/implausible.  Length caps keep a
+ * corrupt table from walking us off a cliff. */
+static uint64_t madt_ioapic_base(uint64_t hhdm) {
+    uint64_t rsdp_phys = boot_get_rsdp();
+    if (!rsdp_phys) {
+        return 0;
+    }
+    const uint8_t *rsdp = acpi_map(hhdm, rsdp_phys, 36);
+
+    /* Revision >= 2: prefer the XSDT (64-bit pointers at +24), fall
+     * back to the RSDT (32-bit pointers at +16) -- the same order
+     * stage2's own MADT walk uses. */
+    uint64_t sdt_phys = 0;
+    int      wide     = 0;
+    if (rsdp[15] >= 2) {
+        sdt_phys = rd64(rsdp + 24);
+        wide     = 1;
+    }
+    if (!sdt_phys) {
+        sdt_phys = rd32(rsdp + 16);
+        wide     = 0;
+    }
+    if (!sdt_phys) {
+        return 0;
+    }
+
+    const uint8_t *sdt = acpi_map(hhdm, sdt_phys, 36);
+    uint32_t sdt_len = rd32(sdt + 4);
+    if (sdt_len < 36 || sdt_len > 0x10000) {
+        return 0;
+    }
+    sdt = acpi_map(hhdm, sdt_phys, sdt_len);
+
+    uint32_t esize   = wide ? 8 : 4;
+    uint32_t entries = (sdt_len - 36) / esize;
+    for (uint32_t i = 0; i < entries; i++) {
+        uint64_t tbl_phys = wide ? rd64(sdt + 36 + i * 8)
+                                 : rd32(sdt + 36 + i * 4);
+        if (!tbl_phys) {
+            continue;
+        }
+        const uint8_t *tbl = acpi_map(hhdm, tbl_phys, 44);
+        if (tbl[0] != 'A' || tbl[1] != 'P' || tbl[2] != 'I' ||
+            tbl[3] != 'C') {
+            continue;
+        }
+        uint32_t tlen = rd32(tbl + 4);
+        if (tlen < 44 || tlen > 0x10000) {
+            return 0;
+        }
+        tbl = acpi_map(hhdm, tbl_phys, tlen);
+
+        /* Interrupt-controller structures start at +44:
+         * [type:1][len:1][payload]; type 1 = I/O APIC, address at +4. */
+        uint32_t off = 44;
+        while (off + 2 <= tlen) {
+            uint8_t etype = tbl[off];
+            uint8_t elen  = tbl[off + 1];
+            if (elen < 2 || off + elen > tlen) {
+                break;                      /* corrupt list: stop, named 0 */
+            }
+            if (etype == 1 && elen >= 12) {
+                return rd32(tbl + off + 4);
+            }
+            off += elen;
+        }
+    }
+    return 0;
+}
+
 int ioapic_init(void) {
     uint64_t hhdm = boot_get_hhdm_offset();
     if (!hhdm) {
         kprintf("[ioapic] no HHDM offset; staying on PIC\n");
         return -1;
+    }
+
+    /* R11 (RES-37): ask the ACPI MADT where the I/O APIC really is and
+     * print the comparison against the PC-standard hardcode.  QEMU is
+     * the NULL test (they agree); a metal machine where they differ is
+     * named at boot -- that line is a receipt slot in the R11 package. */
+    uint64_t madt_base = madt_ioapic_base(hhdm);
+    if (madt_base == 0) {
+        kprintf("[ioapic] base 0x%llx (no MADT I/O APIC entry found)\n",
+                (unsigned long long)IOAPIC_PHYS);
+    } else if (madt_base == IOAPIC_PHYS) {
+        kprintf("[ioapic] base 0x%llx (MADT agree)\n",
+                (unsigned long long)IOAPIC_PHYS);
+    } else {
+        kprintf("[ioapic] base 0x%llx (MADT says 0x%llx, hardcode stands"
+                " -- named, not silent)\n",
+                (unsigned long long)IOAPIC_PHYS,
+                (unsigned long long)madt_base);
     }
 
     /* Map the I/O APIC MMIO window into the HHDM region. */

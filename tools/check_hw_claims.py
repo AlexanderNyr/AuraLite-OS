@@ -156,14 +156,17 @@ def claims():
                                         "perfstat.c") and
          "pcid_generation_wraps" in read("kernel", "lib",
                                          "perfstat.c")),
-        ("H4: the smoke pins the counters AT ZERO (bumping them "
-         "without the re-open gate is a drift)",
-         "cr3_noflush_switches reserved at zero" in
+        ("H4->R11: the smoke SELF-SELECTS on the feature bit (the "
+         "re-open gate FIRED — RESIDUE R11 implemented D-PCID-1..4; "
+         "pcid=0 lanes still pin both counters at zero, pcid=1 lanes "
+         "demand movement)",
+         "cr3_noflush_switches stays zero" in
          read("tests", "integration", "cases",
               "test_perf_smoke.sh") and
-         "pcid_generation_wraps reserved at zero" in
+         "cr3_noflush_switches [1-9]" in
          read("tests", "integration", "cases",
-              "test_perf_smoke.sh")),
+              "test_perf_smoke.sh") and
+         "pcid_cr3_for" in read("kernel", "arch", "x86_64", "pcid.c")),
 
         # --- H5: close-out ---
         ("H5: docs/status.md carries the HW rows with the TCG/metal "

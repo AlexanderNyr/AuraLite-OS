@@ -117,3 +117,10 @@ boot_cpu_t *boot_get_smp_info(uint64_t *out_count,
     }
     return g_boot_info->cpus;
 }
+
+uint64_t boot_get_rsdp(void) {
+    /* Both loaders publish it: stage2's acpi_find_rsdp (BIOS scan +
+     * checksum) and efi_main's EFI_ACPI_TABLE_GUID lookup.  0 = not
+     * located (RESIDUE R11: the IOAPIC MADT check consumes this). */
+    return g_boot_info ? g_boot_info->rsdp_phys : 0;
+}

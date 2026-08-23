@@ -41,14 +41,14 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-27 | W | DONE@R9 | /apps/http still hand-rolled — the FOURTH stale doc row: http.c has been libahttp's keep-alive client since X2/X6 (header says so, Makefile links libahttp, http_get/x6 cases pin the behaviour); R9 recorded the catch, zero code needed | app links libahttp; behavior pins hold |
 | RES-28 | W | DONE@R9 | virtio-net RX polls; IRQ RX pending — HALF-stale: the ISR + wq wake existed, but nothing ever slept (timed waits pause-spun), so the interrupt was decorative.  R9: wq_wait_deadline in the timed path + counted receipt (vmxnet3/e1000e data paths stay S → RES-46 class) | RX-via-IRQ receipt in net case (pinned) |
 | RES-29 | W | DONE@R10 | atls_fe needed 32-bit limbs; -m32 crypto was blocked (I386/status) — closed: packed 8×uint32 radix-2^32 fe core + P256 limb parameterisation, same API | X25519/Ed25519/P-256 vectors green at -m32 ✔ (104 checks ×2 lanes: FORCE32 + real -m32) |
-| RES-30 | M | OPEN | PAT/WC framebuffer win measurable only on metal (OPT §7/HW H3) | R11 package line; user paste-back |
-| RES-31 | W | OPEN | PCID: D-PCID-5 gate FIRED (user WHPX log `pcid=1`) — implement with CR3-toggle fallback (HW H4) | counters leave pinned zero; WHPX receipt block shipped |
-| RES-32 | M | OPEN | ERMSB crossover tuning needs real silicon (HW H2) | R11 package line; user paste-back |
-| RES-33 | M | OPEN | O3 wall-clock, O8 ThinLTO bar, membench metal numbers (OPT §7/HW §6) | R11 package lines |
-| RES-34 | W | OPEN | fast-boot knob unwired on i386; a64 fw-cfg AMEND-5 deferred (OPT §7/ARM64) | knob toggles in a smoke on both |
+| RES-30 | M | PENDING-USER@R11 | PAT/WC framebuffer win measurable only on metal (OPT §7/HW H3) | R11 package slot 4 ships; user paste-back is the number's only source |
+| RES-31 | W | DONE@R11 | PCID: D-PCID-5 gate FIRED (user WHPX log `pcid=1`) — D-PCID-1..4 implemented: pcid_policy.h (host-tested, 24 checks) + pcid.c, CR3-reload+generation fallback, no invpcid; named deviation: hash-slot 1..255, not the written bump-4095 | counters un-pinned (perf smoke self-selects by feature bit); WHPX receipt block = docs/metal_receipts.md slots 5/6 ✔ |
+| RES-32 | M | PENDING-USER@R11 | ERMSB crossover tuning needs real silicon (HW H2) | R11 package slots 2/3 ship; user paste-back |
+| RES-33 | M | PENDING-USER@R11 | O3 wall-clock, O8 ThinLTO bar, membench metal numbers (OPT §7/HW §6) | R11 package slots 3/8/9 ship |
+| RES-34 | W | DONE@R11 | fast-boot knob unwired on i386; a64 fw-cfg AMEND-5 deferred — closed: fwcfg32.c (same port protocol) + fwcfg_a64.c (MMIO, BE selector at +8, DTB-discovered) feed the SHARED selftest.c, newly a KERNEL32/KERNELA64_SHARED row | knob toggles in a smoke on both ✔ (i386_shell: mode=off + 2 SKIPPED; a64_boot: mode=off + 2 SKIPPED) |
 | RES-35 | W | DONE@R1 | O1/O6/O8 measured at R1: O8 REFUSED with numbers (naive --gc-sections on kernelrv "saves" 68% by deleting live boot/trap sections — all five smokes red; needs a KEEP() audit, folded into the R12 hand-off notes); O1 superseded (P7 linked word-wide string.c on i386); O6 deferred to R6 where port allocation actually grows | measured; done or refused with numbers |
 | RES-36 | S | OPEN | MSI/MSI-X for virtio + virtio-gpu (MATURITY) | opener fact at R12 |
-| RES-37 | M | OPEN | IOAPIC base is QEMU-hardcoded; discovery is metal work (MATURITY) | R11 package line |
+| RES-37 | M | DONE@R11 | IOAPIC base was QEMU-hardcoded with no cross-check — closed: the kernel walks RSDP→RSDT/XSDT→MADT (both loaders publish rsdp_phys) and prints agree/disagree-by-name; QEMU NULL: `(MADT agree)` asserted. Interrupt Source Overrides remain the named residue in ioapic.c | `[ioapic] base ... (MADT agree)` pinned in test_metal_null; package slot 7 carries the metal line |
 | RES-38 | S | OPEN | OHCI/EHCI/xHCI full transfer scheduling; HID beyond UHCI; BOT short-packet line (USB/TODO) | opener fact at R12 |
 | RES-39 | S | OPEN | Bluetooth USB transport; Wi-Fi chipset backend (TODO/status) | opener fact at R12 |
 | RES-40 | W | DONE@R1 | virtio-gpu init hang found by G13, bisected pre-G11d (TODO) | repro'd + fixed, or narrowed with a new fact |
@@ -59,13 +59,13 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-45 | W | OPEN | TODO.md hygiene tail (fsck, writeback cache, AHCI breadth, GDB scripts, CI artifacts, spawn-timing) | every line dispositioned at R12; TODO points at ledger |
 | RES-46 | S | OPEN | skeleton FS data paths (exFAT/NTFS/ext4/btrfs/f2fs 🚧) + vmxnet3/e1000e | opener fact at R12 |
 | RES-47 | S | OPEN | GUI isolation/permissions, clipboard/focus, settings (TODO) | opener fact at R12 |
-| RES-48 | M | OPEN | HW §6 metal receipts never exercised on user's machine | R11 package; pending-user is a status, not a failure |
+| RES-48 | M | PENDING-USER@R11 | HW §6 metal receipts never exercised on user's machine | R11 package ships (tools/metal_receipts.sh, NULL test CI-pinned); pending-user is a status, not a failure |
 
 ## Arithmetic (checker-enforced)
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses: OPEN 25, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29).
+amended same-commit, catch recorded).  Statuses: OPEN 18, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29), DONE@R11 3 (RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — the package ships and NULL-tests green; the numbers are the user's move, and pending-user is a status, not a failure).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

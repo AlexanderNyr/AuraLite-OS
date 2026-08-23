@@ -298,7 +298,7 @@ EL1 (D1; no arm32, no EL2 entry).
 | No arm32, no EL2 entry | ❌ by design | Plan D1: `CurrentEL != EL1` refuses with a banner (EL2 parks in `wfi` — an `hvc` from EL2 would trap into our own empty vectors); aapcs32 never enters the tree. |
 | PCIe ECAM + virtio-pci | ✅ (R7) | The D7 deferral paid: the measured ECAM sits ABOVE 4 GiB on this board (VA carve, not HHDM folklore); shared walker + modern transport, vblk-over-PCI ext2 mount asserted in the a64_fs PCI lane. |
 | SMP / SVE / big.LITTLE | ❌ | Per plan §4; PSCI `CPU_ON` is the recorded exit ramp (D5). |
-| fw-cfg self-test knob | 🚧 deferred | AMEND-5: the x86 fw_cfg protocol's interface transfers, the port-I/O reader does not (aarch64 fw-cfg is MMIO); deferred with a name, not an absence. |
+| fw-cfg self-test knob | ✅ | RESIDUE R11 (RES-34): AMEND-5's deferral ends — `fwcfg_a64.c` is the MMIO reader (big-endian selector at +8, base from the DTB's `qemu,fw-cfg-mmio` node), feeding the same shared `selftest.c` as x86_64 and i386. `a64_boot_smoke` pins default-fast AND off→SKIPPED. |
 | Rust userspace | ✅ (R8) | `rustes`/`rsbr` built for `aarch64-unknown-none` from the SAME two sources (cfg'd svc/cntvct), run from the initrd — the x86_64 receipt byte-exact, asserted in the a64_fs smoke; CNTKCTL_EL1 opened for the EL0 counter read. |
 
 Tests: `a64_boot_smoke.sh` (41 assertions, ELF path),
@@ -326,7 +326,7 @@ HW_PLAN §6 — TCG cannot measure it and the docs do not pretend).
 | Word-wide portable string ops | ✅ | `kernel/lib/string.c` moves 8 bytes/iteration (may_alias word type — the strict-align-proof spelling); rv64 memcpy 413→2449 MB/s, a64 288→1964 (TCG).  rv64 adopted the shared file in H0; x86 keeps its rep-string backend (byte-identical control). |
 | ERMSB crossover | ✅ TCG-half | Runtime, CPUID-fed: 64 (no ERMS, the O1-measured default) → 0 on ERMS parts; threshold line printed and pinned on both lanes.  Small-copy wall-clock: metal receipt. |
 | PAT + WC framebuffer | ✅ TCG-half | PA4:=WC per-CPU (BSP + APs — attribute aliasing fenced by construction); fb HHDM range remapped exactly (huge pages split), PTE decode printed (`fb: WC via PAT4`).  gui shard pixel-green.  Flip throughput: metal receipt. |
-| PCID | 📋 design | No executable lane exists (measured: `-cpu max` TCG lacks PCID, CI has no KVM) — five named design decisions written in HW_PLAN H4, `/proc/perf` receipt slots reserved at zero and pinned there; implementation re-opens on the first `pcid=1` lane (D-PCID-5). |
+| PCID | ✅ (TCG-inert) | RESIDUE R11: D-PCID-1..4 implemented — `pcid_policy.h` (pure C, host-tested: 24 checks) + `pcid.c`, CR4.PCIDE gated on CPUID, hash-slot allocation (named deviation from the bump-4095 write-up), NOFLUSH re-entry counted in `cr3_noflush_switches`, generation revocation in `pcid_generation_wraps`, the O5 sender filter generalised, handler de-owns non-resident victims — **no invpcid anywhere** (the user's WHPX machine has none). Measured this phase: TCG refuses `+pcid` outright, so every CI lane boots pcid=0 and the code is inert byte-for-byte; the perf smoke self-selects by the feature bit. The executable lane is the user's WHPX machine — `docs/metal_receipts.md` slots 5/6 are the D-PCID-5 acceptance. |
 | rv64/a64 membench | ✅ | Boot-time bench of the LINKED string ops, verified passes, smoke-asserted on both tenants — the standing regression net for any future string-ops change. |
 
 ## Platform parity — PARITY_PLAN (P0–P9)

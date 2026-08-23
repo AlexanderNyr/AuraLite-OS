@@ -238,7 +238,7 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
      * tree has no device nodes with children, so a single scalar
      * passed V1's gates for a year. */
     enum dev_kind { DEV_NONE, DEV_UART, DEV_PLIC, DEV_GIC, DEV_VIRTIO,
-                    DEV_PCIE };
+                    DEV_PCIE, DEV_FWCFG };
     uint64_t cur_reg_base = 0;
     const uint8_t *nreg[MAX_DEPTH];
     uint32_t nreg_len[MAX_DEPTH];
@@ -380,6 +380,11 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                         }
                     }
                     pcie_done: ;
+                } else if (dv == DEV_FWCFG && plat->fwcfg_base == 0) {
+                    /* R11/RES-34: AMEND-5's deferral ends here — the
+                     * a64 fw-cfg is MMIO, its base is DTB truth like
+                     * every other window on this board. */
+                    plat->fwcfg_base = cur_reg_base;
                 }
             }
             if (depth >= 0) {
@@ -545,6 +550,8 @@ int fdt_parse(uint64_t dtb_phys, uint64_t boot_hartid,
                 ndev[depth] = DEV_VIRTIO;
             else if (compat_has(list, len, "pci-host-ecam-generic"))
                 ndev[depth] = DEV_PCIE;  /* R7: reg + ranges at END_NODE */
+            else if (compat_has(list, len, "qemu,fw-cfg-mmio"))
+                ndev[depth] = DEV_FWCFG; /* R11/RES-34: the a64 knob */
             continue;
         }
     }

@@ -172,7 +172,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netdev.c kernel/fs/ext2.c kernel/lib/string.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netdev.c kernel/fs/ext2.c kernel/lib/string.c kernel/lib/selftest.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -315,7 +315,7 @@ KERNELA64_DIR  := kernel/arch/aarch64
 # miniproto consumer proves the same packets.
 KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c kernel/net/miniproto.c kernel/drivers/virtio_mmio.c \
                     kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c \
-                    kernel/drivers/pci_ecam.c kernel/drivers/virtio_pci.c
+                    kernel/drivers/pci_ecam.c kernel/drivers/virtio_pci.c kernel/lib/selftest.c
 KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null) $(KERNELA64_SHARED)
 KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
 KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
@@ -2080,6 +2080,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
+                $(BUILD_DIR)/test_pcid_policy \
                 $(BUILD_DIR)/test_sizeclass \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -2553,6 +2554,12 @@ $(BUILD_DIR)/test_uart_ring: tests/unit/test_uart_ring.c drivers/uart/uart_ring.
 # OPT_PLAN O5: the TLB shootdown decision core — seq gaps, npages
 # boundaries, and the sender-side skip filter.
 $(BUILD_DIR)/test_tlb_policy: tests/unit/test_tlb_policy.c kernel/arch/x86_64/tlb_policy.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# RESIDUE R11: the PCID allocation/switch/filter core — the ONLY
+# executable rig for these decisions (TCG has no PCID; measured).
+$(BUILD_DIR)/test_pcid_policy: tests/unit/test_pcid_policy.c kernel/arch/x86_64/pcid_policy.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
