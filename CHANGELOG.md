@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [DOCS refresh — every live .md audited against the tree, one patch] 2026-08-23
+
+The R12 lesson applied to the whole documentation set: all 23 LIVE
+documents audited (the 22 closed *_PLAN.md files, the BL reports,
+MATURITY_AUDIT and the CLA texts are HISTORY and stay untouched, per
+the series' own rule).  Eighteen stale statements found and fixed,
+by name:  README.md carried SEVEN — "minimal single-connection TCP
+client" (the tree has 8-conn TCP + BSD sockets + a server + TLS 1.3
++ HTTPS), an IPv6 line frozen at X7 (R9's SLAAC/NDP end-to-end
+landing missing), "OHCI/EHCI/xHCI focus on bring-up and detection"
+(xHCI has real rings U1–U9), "dirty-rect compositor currently forces
+full redraws" (O4 landed; the perf smoke PINS zero full redraws at
+idle), "networking is polling-based" (IRQ-backed since the N-series,
+twice), "address-space reaping not implemented yet" (H2), and the
+xhci_bulk_transfer "synthesises BOT replies" warning (the U-series
+built the real rings; xhci.c:750 says "used to synthesise").
+docs/syscall_abi.md: "blocking syscalls are mostly polling/spin-
+based" → the H4 wait-queue truth.  docs/driver_guide.md: "driver
+model is polling-based" ×2 → the O3/N-series/R9 reality per driver.
+docs/opengl.md: the "Known issue: SMP" section still blamed a
+BSP-only scheduler out of a TODO that no longer says it — rewritten
+as RESOLVED with the R2 dissection → M1 FXSAVE cure → 373/373 @
+-smp 4 receipt chain.  docs/seams.md: the TIME seam note still said
+"lands in R6" — R6 landed it; marked LANDED with the pin-drop
+receipt.  docs/status.md: "PAT/WC and PCID are recorded real-
+hardware residue" → PCID is implemented since R11, TCG-inert.
+docs/virtual_machines.md: "devices behind EHCI/xHCI not usable by
+MSC" → xHCI bulk is real; plus a new WHPX section (the pcid=1 lane
+and its D-PCID-5 protocol).  docs/architecture.md: ioapic_init now
+described with its R11 MADT cross-check.  Additions, not just
+repairs: docs/rust_application_guide.md §7 and rsbr_app_doc.md grew
+the R8 three-ISA story (both were silent on the tenants); README's
+documentation map and docs/README.md index now list the ledger,
+metal receipts, seams, usb/filesystem/tls/trust-store docs that
+existed but were unfindable.  Nothing in plans/ was edited: closed
+plans are history, and the harvest ratchet (155 plan markers,
+untouched) enforces exactly that.
+
 ## [RESIDUE R12 — close-out: the duplicate ledger was lying, thirteen receipts prove it] 2026-08-23
 
 The RESIDUE series closes.  The close-out's one real discovery is

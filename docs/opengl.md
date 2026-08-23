@@ -771,13 +771,18 @@ make test-unit                              # all host tests
 bash tests/integration/cases/test_opengl.sh # in QEMU
 ```
 
-### Known issue: SMP
+### Known issue: SMP — RESOLVED
 
-Under `-smp 2`, roughly one `/gltest` run in three fails a different, arbitrary
-check; under `-smp 1` the same binary passes every time. This matches the
-kernel's documented SMP limitation (`TODO.md`: scheduling remains BSP-only) and
-is unrelated to libgl, which is single-threaded. The GL test simply runs long
-enough to hit the existing window.
+This section used to record a real corruption: under `-smp 2` roughly one
+`/gltest` run in three failed a different, arbitrary check.  The dissection
+(FIXES R2) proved it was NOT a GL bug and NOT the then-suspected scheduler
+limitation: the kernel switched no FPU/SSE state, so a thread migrated
+mid-computation resumed with another CPU's xmm registers.  MATURITY M1 landed
+the cure — eager `fxsave`/`fxrstor` in the context switch with a per-TCB
+512-byte area — and `gltest` passes 373/373 under `-smp 4`; the `IL_SMP=1`
+pin was removed from `test_opengl.sh`, and `test_fpu_smp.sh` stands guard.
+(The old text blamed "TODO.md: scheduling remains BSP-only", which was stale
+twice over — APs run user threads, and the R5 receipt pins it.)
 
 ---
 

@@ -297,3 +297,20 @@ When adding a new Rust application to the repository:
    make -j$(nproc) test-unit
    make iso
    ```
+
+---
+
+## 7. Rust on the riscv64 / aarch64 tenants (RESIDUE R8)
+
+The x86_64 guide above transfers to both DTB tenants: `rustes` builds
+for `riscv64gc-unknown-none-elf` and `aarch64-unknown-none` through
+the same one-source recipe (`rustc --emit obj` + the tenant's own
+layout script; `_start` comes from the rlib) and runs from
+`/binrv/rustes` and `/bina64/rustes` in the one four-tenant initrd.
+`lib/rsbr/common.rs` carries `cfg`-gated syscall shims for all three
+ISAs (`syscall`/`ecall a7`/`svc #0 x8` — the same D4 numbers the C
+shims share), and the cycle counter is `rdtsc`/`rdtime`/`cntvct_el0`
+per arch.  The receipt strings are shared text: the benchmark output
+is byte-identical on all three, asserted in the rv_fs/a64_fs smokes.
+Install the targets with
+`rustup target add riscv64gc-unknown-none-elf aarch64-unknown-none`.

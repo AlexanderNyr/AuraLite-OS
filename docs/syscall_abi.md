@@ -160,7 +160,10 @@ Current caveats:
   suitable for true SMP syscall concurrency yet;
 - syscall handlers use `validate_user_range`, `copy_from_user` and
   `copy_to_user`; the copy primitives have a #PF fixup path for TOCTOU/unmap races;
-- blocking syscalls are mostly polling/spin-based.
+- blocking syscalls sleep on wait queues (`kernel/proc/wait_queue.c`, H4):
+  pipes, futexes, `select()`, `nanosleep()` and the NIC receive paths block
+  properly; `SA_RESTART` re-dispatches interrupted blocking syscalls from
+  `sigreturn` (H7).  A few edges (e.g. `wait4`) still yield-poll.
 
 ## Syscall table
 

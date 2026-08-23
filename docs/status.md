@@ -36,8 +36,11 @@ infinite-baud, so O3's wall-clock win is real-hardware-shaped (the
 counters are the in-QEMU proof); Fact 5's kmalloc walk number was the
 heap self-test measuring itself (a real boot walks ~63–80 nodes — the
 O6 size-class cache is infrastructure for runtime churn, not a boot
-fix); PAT/WC framebuffer mapping and PCID are recorded real-hardware
-residue.  `tools/check_opt_claims.py` (CI) keeps the plan's checkboxes
+fix); PAT/WC framebuffer mapping remains recorded real-hardware
+residue (the R11 metal package carries its receipt slot), and PCID is
+IMPLEMENTED since RESIDUE R11 — TCG-inert, host-tested, waiting on
+the user's WHPX machine for its D-PCID-5 numbers.
+`tools/check_opt_claims.py` (CI) keeps the plan's checkboxes
 tied to the tree.
 
 ## Boot and CPU

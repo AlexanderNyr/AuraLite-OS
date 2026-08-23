@@ -57,7 +57,9 @@ kmain (kernel/kernel.c)
    ├── slab_init()           tcb_cache, ofd_cache, vnode_cache
    ├── tss_init()            TSS with RSP0 + IST1 (#DF stack), per CPU
    ├── smp_init()            wake APs via ACPI MADT + ap_trampoline.asm
-   ├── ioapic_init()         I/O APIC discovery; legacy PIC/PIT remain available
+   ├── ioapic_init()         I/O APIC bring-up; base cross-checked against the
+   │                          ACPI MADT since RESIDUE R11 (`[ioapic] base ...
+   │                          (MADT agree)`); legacy PIC/PIT remain available
    ├── pit_init(100)         100 Hz timer (IRQ 0)
    ├── rng_init()            ChaCha20 CSPRNG; RDSEED/RDRAND or IRQ-jitter pool
    ├── sched_init()          round-robin scheduler + idle thread

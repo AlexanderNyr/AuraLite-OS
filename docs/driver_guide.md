@@ -40,7 +40,8 @@ Location: `drivers/uart/`
 - Port base: `0x3F8` (COM1).
 - Baud rate: 115200.
 - Used by `kprintf` and as shell stdin via `SYS_READ(fd=0)`.
-- Driver model is polling-based.
+- Driver model: TX is synchronous with an interrupt-drained ring for the log
+  (OPT O3); RX is polled by the shell path.
 
 Important functions:
 
@@ -156,7 +157,9 @@ Implementation notes:
 - legacy TX/RX descriptor rings;
 - descriptor rings and packet buffers are PMM-allocated for DMA;
 - MMIO BAR0 is explicitly mapped because device MMIO is not covered by HHDM;
-- I/O is polling-based;
+- I/O is IRQ-capable since the N-series: an INTx-driven RX/TX core with a
+  software RX queue; TCP/DNS/DHCP receive paths use bounded IRQ-backed waits
+  (virtio-net's RX likewise sleeps on its IRQ wake since RESIDUE R9);
 - RX polls RDH rather than relying only on descriptor status visibility.
 
 Unsupported virtual NICs:

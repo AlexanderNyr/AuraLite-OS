@@ -30,15 +30,22 @@ additional post-phase extensions.
 - x86_64 long mode, higher-half kernel.
 - GDT, IDT, PIC IRQ dispatch, TSS, SYSCALL/SYSRET.
 - Physical memory manager, virtual memory manager, kernel heap.
-- Preemptive round-robin scheduler and kernel threads.
+- Preemptive round-robin scheduler and kernel threads; SMP with per-CPU run
+  queues, work stealing, per-CPU LAPIC timers and precise TLB shootdown —
+  user threads demonstrably run on APs (`test_fpu_smp` pins the receipt).
 - Ring 3 ELF loading and minimal libc.
 - Initrd-backed VFS plus `/dev/null`, `/dev/zero`, writable `/tmp`, `/disk`,
   full FAT32 at `/fat`, and ext2 at `/ext2` when a second AHCI disk is present.
 - AHCI SATA sector read/write on QEMU-style AHCI disks.
-- e1000 networking with ARP, IPv4, ICMP, DHCP/fallback addressing, UDP DNS and
-  a minimal single-connection TCP client.
-- IPv6 (X7 first landing): link-local address, NDP/Router Discovery, ICMPv6
-  echo (`ping6`); SLAAC/sockets/dual-stack are recorded follow-ups.
+- e1000 networking (INTx IRQ-backed RX/TX) with ARP, IPv4, ICMP, DHCP/fallback
+  addressing, UDP and DNS (with a TCP fallback for >512-byte answers), BSD
+  socket ABI (`bind`/`listen`/`accept`), per-connection TCP up to 8 streams
+  with a basic retransmission path, and TLS 1.3 + an HTTPS client
+  (`libahttp`, trust store at `/etc/ssl/roots.pem`).
+- IPv6: link-local + NDP/Router Discovery + ICMPv6 echo (X7), and since
+  RESIDUE R9: SLAAC, an NS→NA responder, off-link routing — `ping6` answers
+  end-to-end in CI.  Still deferred: AF_INET6 sockets, TCP-over-IPv6,
+  dual-stack (ledger RES-26).
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
   kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus, 100 FPS guaranteed refresh rate), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.
@@ -53,16 +60,23 @@ additional post-phase extensions.
   - `exfat` & `ntfs`: Skeleton/scaffolding drivers (`/exfat`, `/ntfs`).
 - Per-process address spaces, `spawn`, `fork`, `execve`, `wait4` are present but
   simplified.
-- USB host-controller support is uneven: UHCI has working control/bulk
-  transfers and can drive USB Mass Storage; OHCI, EHCI and xHCI currently focus
-  on controller/port bring-up and detection.
+- USB host-controller support: UHCI, OHCI, EHCI and xHCI all have QEMU-tested
+  HID paths; xHCI carries real command/event/transfer rings (control with
+  short-packet/stall recovery, bulk, interrupt endpoints, nested hubs with
+  route strings).  Breadth beyond the QEMU-tested cases — full HID
+  collections, EHCI split transactions, isochronous devices — is tracked in
+  the residue ledger (RES-38).
 - AHCI detects/initialises ports and DMA read/write passes the QEMU AHCI test
   disk self-test; broader real-hardware coverage remains experimental.
-- USB Mass Storage is ready through UHCI. MSC devices behind OHCI/EHCI/xHCI
-  remain future work until those transfer backends are completed.
+- USB Mass Storage runs through UHCI and the xHCI bulk path; hotplugged FAT32
+  media is exposed read-only under `/usb/fat`.  Writable FAT32 and ext2
+  automount on USB remain future work.
 - Bluetooth HCI and Wi-Fi 802.11 layers are protocol frameworks that require
   working lower-level USB/chipset drivers.
-- GUI v2.0 adds a theme engine, desktop icons, notifications, window snapping, start menu, and context menus, but the dirty-rect compositor currently forces full redraws each frame (partial redraw pending integration testing).
+- GUI v2.0 adds a theme engine, desktop icons, notifications, window snapping,
+  start menu, and context menus; the compositor's dirty-rect partial redraw is
+  live (OPT O4) and the perf smoke pins that an idle shell takes NO full
+  redraws.
 
 See [`docs/status.md`](docs/status.md) for a detailed support matrix.
 
@@ -746,13 +760,26 @@ Start here:
 - [`docs/README.md`](docs/README.md) — documentation index.
 - [`docs/build_and_run.md`](docs/build_and_run.md) — build/run/troubleshooting.
 - [`docs/status.md`](docs/status.md) — current feature and limitation matrix.
+- [`docs/residue_ledger.md`](docs/residue_ledger.md) — the machine-checked
+  debt ledger (48 rows; the RESIDUE series' terminal state).
+- [`TODO.md`](TODO.md) — fine-grained known limitations, annotated against the
+  ledger.
 - [`docs/architecture.md`](docs/architecture.md) — kernel architecture.
 - [`docs/memory_map.md`](docs/memory_map.md) — virtual/physical memory layout.
 - [`docs/syscall_abi.md`](docs/syscall_abi.md) — syscall ABI and numbers.
 - [`docs/driver_guide.md`](docs/driver_guide.md) — driver inventory and notes.
+- [`docs/usb.md`](docs/usb.md) — the USB stack: controllers, classes, honest
+  approximation notes.
+- [`docs/filesystem.md`](docs/filesystem.md) — filesystem layout and drivers.
+- [`docs/metal_receipts.md`](docs/metal_receipts.md) — the real-hardware
+  receipt package (RESIDUE R11): boot it, paste the lines back.
 - [`docs/virtual_machines.md`](docs/virtual_machines.md) — VirtualBox/VMware setup.
 - [`docs/virtual_driver_matrix.md`](docs/virtual_driver_matrix.md) — QEMU/VirtualBox/VMware device compatibility matrix.
 - [`docs/opengl.md`](docs/opengl.md) — the software OpenGL 1.1/1.3 stack: supported subset, mipmapping, multitexturing, framebuffer objects, behaviour notes, performance.
+- [`tls.md`](tls.md) — the TLS 1.3 stack: capabilities, limitations, security
+  properties.
+- [`docs/trust_store.md`](docs/trust_store.md) — the shipped roots and their
+  lifecycle decision.
 - [`PLAN.md`](PLAN.md) — historical phase plan.
 - [`GL_PLAN.md`](GL_PLAN.md) — the OpenGL stack (complete).
 - [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
@@ -801,17 +828,23 @@ Short version:
   disappears mid-copy returns an error instead of panicking the kernel
   (`kernel/proc/usercopy.c`).
 - `fork`/`execve`/`wait4` are simplified and not POSIX-complete.
-- Dead TCBs and kernel stacks are deferred-reaped, but full user address-space/page-table reaping is not implemented yet.
-- Networking is polling-based. User space has process-owned socket-style handles, and the TCP transport supports per-connection state up to 8 streams.
+- Dead TCBs and kernel stacks are deferred-reaped, and full user
+  address-space/page-table reaping runs through `paging_free_address_space()`
+  in `thread_reap_zombies()` (H2).
+- Networking is IRQ-backed, not polling: e1000 has an INTx RX/TX core,
+  virtio-net RX sleeps on the IRQ wake (`wq_wait_deadline`, RESIDUE R9), and
+  TCP/DNS/DHCP receive paths use bounded IRQ-backed waits.  User space has
+  process-owned socket-style handles, and the TCP transport supports
+  per-connection state up to 8 streams.
 - `/disk` is intentionally tiny: flat namespace, 8 files maximum, 4 KiB per file.
 - FAT32 and ext2 are featureful enough for integration tests, but their hardware
   coverage is primarily QEMU/AHCI and they should still be treated as hobby OS
   filesystems rather than production-grade implementations.
-- USB MSC currently uses the UHCI backend; OHCI/EHCI/xHCI transfer engines are
-  not wired to class drivers yet. `xhci_bulk_transfer()` in particular does not
-  queue TRBs — it synthesises Bulk-Only-Transport replies so the MSC class
-  driver can be exercised, and the sector it returns has no FAT32 BPB. Do not
-  rely on xHCI for storage until real transfer rings land.
+- USB MSC runs through UHCI and the xHCI bulk path — the old
+  synthesised-BOT-reply shim is gone (`xhci_bulk_transfer` queues real TRBs
+  since the U-series; `drivers/usb/xhci.c` documents where the synthesis used
+  to live).  OHCI/EHCI transfer engines are not wired to the MSC class driver
+  yet (ledger RES-38).
 - The keyboard ships US and DE layouts, selectable at build time
   (`make KEYMAP=de`) and switchable at runtime with the `kbd` command
   (`SYS_KBD_LAYOUT`). There are still no dead keys, so layouts needing them are

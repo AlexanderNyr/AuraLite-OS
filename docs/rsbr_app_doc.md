@@ -86,3 +86,14 @@ Developers do not need to implement low-level runtime symbols. RSBR abstractly m
 1. **Runtime Definition:** RSBR acts as the root crate, defining the global `_start` entry point and the mandatory `#[panic_handler]`.
 2. **Main Invocation:** It securely transfers execution control to your defined `pub fn main() -> i32`.
 3. **Implicit Cleanup:** Upon execution completion, RSBR traps the returned `i32` register value and automatically routes it through `exit(code)` to prevent core hangs.
+
+---
+
+## Three ISAs, one bridge (RESIDUE R8)
+
+RSBR is not x86-only: `common.rs` carries `cfg(target_arch)` siblings
+of the syscall shims (x86_64 `syscall`, riscv64 `ecall`/a7, aarch64
+`svc #0`/x8) and a per-arch cycle counter.  The tenant builds link no
+C archive — implicit `memset`/`memcpy`/`memcmp` land in a `cfg`-gated
+intrinsics module that is OFF on x86_64.  The same application source
+produces byte-identical receipts on all three architectures.

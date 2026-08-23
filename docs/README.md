@@ -27,10 +27,30 @@ This directory contains the technical documentation for AuraLite OS.
 
 - [`../README.md`](../README.md) — project overview and quickstart.
 - [`../PLAN.md`](../PLAN.md) — historical milestone plan.
-- [`../TODO.md`](../TODO.md) — future work and known limitations.
+- [`../TODO.md`](../TODO.md) — fine-grained known limitations, kept in full
+  and annotated against the residue ledger (R12).
 - [`../CHANGELOG.md`](../CHANGELOG.md) — chronological changes.
+- [`../tls.md`](../tls.md) — the TLS 1.3 stack: capabilities, limitations,
+  security properties.
 - [`../WIN32_PLAN.md`](../WIN32_PLAN.md) — the Win32 personality plan, its
   legal grounding, and phase-by-phase status.
+
+## Specialised references in this directory
+
+- [`residue_ledger.md`](residue_ledger.md) — the machine-checked debt ledger
+  (48 rows, checker-enforced arithmetic; the RESIDUE series' terminal state).
+- [`metal_receipts.md`](metal_receipts.md) — the real-hardware receipt
+  package (RESIDUE R11): nine paste-back slots, the WHPX PCID block.
+- [`seams.md`](seams.md) — seam decision notes for the pinned driver
+  couplings (the TIME seam landed @R6; the USB seam pin stands).
+- [`usb.md`](usb.md) — the USB stack with its honest approximation table.
+- [`filesystem.md`](filesystem.md) — filesystem layout and drivers.
+- [`opengl.md`](opengl.md) — the software GL stack.
+- [`trust_store.md`](trust_store.md) — shipped roots and lifecycle decision.
+- [`posix2024_compliance.md`](posix2024_compliance.md) — the conformance
+  matrix (partial rows allowlist measured EMPTY at R12).
+- [`rsbr_app_doc.md`](rsbr_app_doc.md) — pure-Rust applications over the
+  RSBR bridge (three ISAs since R8).
 
 ## Documentation conventions
 

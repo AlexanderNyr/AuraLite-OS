@@ -129,8 +129,9 @@ make run-usb-msc
 ```
 
 In VirtualBox/VMware, prefer exposing USB 1.1/UHCI-compatible storage if you
-want to test AuraLite's MSC path. Devices behind EHCI/xHCI may be detected but
-are not yet usable by the MSC class driver.
+want to test AuraLite's MSC path.  xHCI-attached storage also works (the U5
+bulk rings are real); devices behind OHCI/EHCI may be detected but are not
+yet usable by the MSC class driver (ledger RES-38).
 
 ## Serial output
 
@@ -140,3 +141,16 @@ Both generated VM configs redirect COM1 to a file:
 - VMware: `vm/vmware/AuraLite-OS.vmwarevm/serial.log`
 
 This captures the same UART output used by QEMU's `-serial stdio` mode.
+
+## WHPX (QEMU on Windows with Hyper-V acceleration)
+
+`qemu-system-x86_64 -accel whpx` boots the same ISO with the host
+CPU's real feature set — which matters for exactly one receipt: a
+WHPX boot reports `pcid=1 invpcid=0` in the `[cpu] features:` line,
+making it the only known lane that executes the PCID path (RESIDUE
+R11; TCG refuses `+pcid` outright).  On such a boot the kernel prints
+`[vmm] PCID enabled (hash-slot alloc, CR3-reload+generation fallback,
+no invpcid)` and `/proc/perf`'s `cr3_noflush_switches` starts moving.
+That is the D-PCID-5 acceptance — see
+[`metal_receipts.md`](metal_receipts.md), slots 5/6, for the exact
+paste-back protocol.
