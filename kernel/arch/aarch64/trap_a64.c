@@ -377,6 +377,11 @@ void trap_init_a64_secondary(void)
 {
     __asm__ volatile("msr vbar_el1, %0; isb"
                      : : "r"((uint64_t)a64_vectors));
+    /* R8: open the EL0 counter gate (EL0PCTEN|EL0VCTEN) -- cntvct_
+     * el0 at EL0 traps while CNTKCTL_EL1 sits at its UNKNOWN reset;
+     * the Rust row's cycle read is the measurement.  Per core,
+     * because R5 runs init ON a secondary. */
+    __asm__ volatile("msr cntkctl_el1, %0" :: "r"(3UL));
 }
 
 void trap_init_a64(void)
@@ -384,6 +389,10 @@ void trap_init_a64(void)
     /* Vectors first: from this line on, a fault has a name. */
     __asm__ volatile("msr vbar_el1, %0; isb"
                      : : "r"((uint64_t)a64_vectors));
+
+    /* R8: open the EL0 counter gate -- same line the secondary init
+     * carries; see trap_init_a64_secondary. */
+    __asm__ volatile("msr cntkctl_el1, %0" :: "r"(3UL));
 
     /* The tick, from the register that cannot lie (Fact 2.3). */
     uint64_t frq = cntfrq_read();

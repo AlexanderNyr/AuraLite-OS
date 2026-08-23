@@ -1,10 +1,18 @@
 #![no_std]
 #![no_main]
 
+// RESIDUE R8: the same benchmark on three ISAs -- the receipt lines
+// are IDENTICAL by construction (the plan's exit is "the same
+// receipt line the x86_64 edition prints"); only the cycle counter
+// is per-arch: rdtsc / rdtime / cntvct_el0.  The tenant kernels
+// open the U-mode counter gates (scounteren, CNTKCTL_EL1) in the
+// same R8 commit -- measured by this program running, not assumed.
+
 extern crate rsbr;
 
-use rsbr::{print, println, getpid, exit};
+use rsbr::{print, println, getpid};
 
+#[cfg(target_arch = "x86_64")]
 fn read_tsc() -> u64 {
     unsafe {
         let low: u32;
@@ -16,6 +24,25 @@ fn read_tsc() -> u64 {
             options(nostack)
         );
         ((high as u64) << 32) | (low as u64)
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn read_tsc() -> u64 {
+    unsafe {
+        let t: u64;
+        core::arch::asm!("rdtime {}", out(reg) t, options(nostack));
+        t
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn read_tsc() -> u64 {
+    unsafe {
+        let t: u64;
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) t,
+                         options(nostack));
+        t
     }
 }
 

@@ -447,7 +447,30 @@ $(FSIORV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/fsiorv.o $(USERRV_BUILD
 	$(LD) -m elf64lriscv -nostdlib -static -T lib/libcrv/user_rv.ld \
 	    $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/fsiorv.o $(USERRV_BUILD)/syscall_rv.o -o $@
 
-userrv: $(INITRV_ELF) $(SHELLRV_ELF) $(FSIORV_ELF)
+### RUST (RESIDUE R8): the rv64 edition of the rustes/rsbr row --
+### the SAME two sources (cfg'd trap instruction, cfg'd counter),
+### the tenant's own user layout script.  _start lives in the rlib.
+RUST_TARGET_RV := riscv64gc-unknown-none-elf
+RUSTFLAGSRV    := --target=$(RUST_TARGET_RV) -C relocation-model=static -C opt-level=2 -C debug-assertions=no
+RSBRRV_RLIB    := $(BUILD_DIR)/librsbr_rv.rlib
+RUSTESRV_ELF   := $(USERRV_BUILD)/rustes
+
+$(RSBRRV_RLIB): lib/rsbr/common.rs
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGSRV) --crate-type rlib -o $@ $<
+	@echo "[rustc] $@"
+
+$(USERRV_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBRRV_RLIB)
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGSRV) --emit obj --extern rsbr=$(RSBRRV_RLIB) -o $@ $<
+	@echo "[rustc] $@"
+
+$(RUSTESRV_ELF): $(USERRV_BUILD)/rustes.o $(RSBRRV_RLIB) lib/libcrv/user_rv.ld
+	$(LD) -m elf64lriscv -nostdlib -static -T lib/libcrv/user_rv.ld \
+	    $(USERRV_BUILD)/rustes.o $(RSBRRV_RLIB) -o $@
+	@echo "  [userrv] $@"
+
+userrv: $(INITRV_ELF) $(SHELLRV_ELF) $(FSIORV_ELF) $(RUSTESRV_ELF)
 
 # =============================================================================
 # ARM64_PLAN A5b: the aarch64 userland (inita64 + smallsh over libca64),
@@ -504,7 +527,29 @@ $(FSIOA64_ELF): $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/fsioa64.o $(USERA64
 	$(LD) -m aarch64linux -nostdlib -static -T lib/libca64/user_a64.ld \
 	    $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/fsioa64.o $(USERA64_BUILD)/syscall_a64.o -o $@
 
-usera64: $(INITA64_ELF) $(SHELLA64_ELF) $(FSIOA64_ELF)
+### RUST (RESIDUE R8): the aarch64 edition -- same two sources,
+### same receipt, the fourth tenant's layout script.
+RUST_TARGET_A64 := aarch64-unknown-none
+RUSTFLAGSA64    := --target=$(RUST_TARGET_A64) -C relocation-model=static -C opt-level=2 -C debug-assertions=no
+RSBRA64_RLIB    := $(BUILD_DIR)/librsbr_a64.rlib
+RUSTESA64_ELF   := $(USERA64_BUILD)/rustes
+
+$(RSBRA64_RLIB): lib/rsbr/common.rs
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGSA64) --crate-type rlib -o $@ $<
+	@echo "[rustc] $@"
+
+$(USERA64_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBRA64_RLIB)
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGSA64) --emit obj --extern rsbr=$(RSBRA64_RLIB) -o $@ $<
+	@echo "[rustc] $@"
+
+$(RUSTESA64_ELF): $(USERA64_BUILD)/rustes.o $(RSBRA64_RLIB) lib/libca64/user_a64.ld
+	$(LD) -m aarch64linux -nostdlib -static -T lib/libca64/user_a64.ld \
+	    $(USERA64_BUILD)/rustes.o $(RSBRA64_RLIB) -o $@
+	@echo "  [usera64] $@"
+
+usera64: $(INITA64_ELF) $(SHELLA64_ELF) $(FSIOA64_ELF) $(RUSTESA64_ELF)
 
 # =============================================================================
 # I386_PLAN I5: the 32-bit userspace (init32 + libc32).
@@ -1882,7 +1927,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1975,6 +2020,8 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	    llvm-strip -s $(SHELLRV_ELF) -o $(INITRD_DIR)/binrv/smallsh
 	@llvm-strip-19 -s $(FSIORV_ELF) -o $(INITRD_DIR)/binrv/fsio 2>/dev/null || \
 	    llvm-strip -s $(FSIORV_ELF) -o $(INITRD_DIR)/binrv/fsio
+	@llvm-strip-19 -s $(RUSTESRV_ELF) -o $(INITRD_DIR)/binrv/rustes 2>/dev/null || \
+	    llvm-strip -s $(RUSTESRV_ELF) -o $(INITRD_DIR)/binrv/rustes
 # ARM64_PLAN A5b: the aarch64 userland, FOURTH tenant under /bina64.
 # Same llvm-strip note as /binrv (GNU strip does not speak EM_AARCH64
 # reliably either; llvm-strip ships with clang).
@@ -1985,6 +2032,8 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	    llvm-strip -s $(SHELLA64_ELF) -o $(INITRD_DIR)/bina64/smallsh
 	@llvm-strip-19 -s $(FSIOA64_ELF) -o $(INITRD_DIR)/bina64/fsio 2>/dev/null || \
 	    llvm-strip -s $(FSIOA64_ELF) -o $(INITRD_DIR)/bina64/fsio
+	@llvm-strip-19 -s $(RUSTESA64_ELF) -o $(INITRD_DIR)/bina64/rustes 2>/dev/null || \
+	    llvm-strip -s $(RUSTESA64_ELF) -o $(INITRD_DIR)/bina64/rustes
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
 # HTTPS client can validate server chains against it.
 	@mkdir -p $(INITRD_DIR)/etc/ssl

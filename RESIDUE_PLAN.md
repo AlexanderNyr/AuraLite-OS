@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R7 complete; R8 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R8 complete; R9 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -12,7 +12,7 @@
 | R5 — schedulers: per-CPU runqueues on the tenants, APs beyond idle on x86 | ✅ complete | `patches/RESIDUE_R5_sched.patch` |
 | R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | ✅ complete | `patches/RESIDUE_R6_libc2.patch` |
 | R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | ✅ complete | `patches/RESIDUE_R7_ecam.patch` |
-| R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | pending | `patches/RESIDUE_R8_rust.patch` |
+| R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | ✅ complete | `patches/RESIDUE_R8_rust.patch` |
 | R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | pending | `patches/RESIDUE_R9_net.patch` |
 | R10 — the crypto width line: 32-bit limbs for atls_fe | pending | `patches/RESIDUE_R10_fe32.patch` |
 | R11 — the real-hardware package v2 (user-executable; PCID's D-PCID-5 trigger EXISTS) | pending | `patches/RESIDUE_R11_metal.patch` |
@@ -439,10 +439,34 @@ now asserted (plus the banner honestly names v3; 15/15 held over
 three consecutive local -smp 16 runs).  RES-20 and RES-21 closed.
 kernelrv.elf 977936, kernela64.elf 462016.
 
-### R8 — Rust rows
-- [ ] rustes/rsbr built for `riscv64gc-unknown-none-elf` and
+### R8 — Rust rows — ✅ COMPLETE
+- [x] rustes/rsbr built for `riscv64gc-unknown-none-elf` and
       `aarch64-unknown-none`, run from initrd on both tenants.
-- [ ] Exit: the same receipt line the x86_64 edition prints.
+- [x] Exit: the same receipt line the x86_64 edition prints.
+
+Result: ONE bridge, THREE ISAs — lib/rsbr/common.rs grew cfg
+siblings of the x86_64 syscall shims (ecall a7 / svc #0 x8, the SAME
+D4 numbers the C shims share) and rustes.rs a cfg'd cycle counter
+(rdtsc / rdtime / cntvct_el0); the x86_64 blocks are the original
+row untouched and every receipt string is shared text, so `=== Rust
+Benchmark ===` … `Sum: 499999500000` … `Benchmark complete!` print
+IDENTICALLY on all three — asserted (for the first time anywhere:
+no test had ever pinned even the x86 row) in the rv_fs and a64_fs
+smokes.  The tenants link no C archive, so the compiler's implicit
+mem-intrinsics land in a cfg'd memset/memcpy/memcmp module (OFF on
+x86_64, which keeps taking them from the user libc — duplicate
+symbols refused by construction).  Link recipe = the fsio recipe:
+rustc --emit obj + the tenant's own user layout script, _start from
+the rlib, entries `/binrv/rustes` and `/bina64/rustes` in the one
+four-tenant initrd.  MEASURED GATES, the phase's real kernel work:
+U-mode/EL0 counter reads TRAP at both tenants' reset state —
+scounteren (CY|TM|IR) and CNTKCTL_EL1 (EL0PCTEN|EL0VCTEN) are now
+opened in trap_init AND trap_init_secondary (R5's lesson: init runs
+ON a secondary; a boot-hart-only gate would have been a flake
+factory).  CI: all six jobs build the one initrd, so all six
+install both tenant targets.  status.md's two 🚧 Rust rows flipped
+✅ — the harvest ratchet CLICKED (status-wip 15→13, baseline moved
+in this same commit).  RES-22 and RES-23 closed.
 
 ### R9 — the net cluster
 - [ ] RES-24/25/26/27/28(IRQ-RX): SLAAC, dual-stack resolution,

@@ -292,12 +292,21 @@ void trap_init_secondary(void)
 {
     extern void rv_trap_vector(void);
     __asm__ volatile("csrw stvec, %0" :: "r"((uint64_t)rv_trap_vector));
+    /* R8: open the U-mode counter gate (CY|TM|IR) -- rdtime at
+     * U-mode traps as illegal instruction while scounteren is at
+     * its reset 0; the Rust row's cycle read is the measurement.
+     * Per hart, because R5 runs init ON a secondary. */
+    __asm__ volatile("csrw scounteren, %0" :: "r"(7UL));
 }
 
 void trap_init(uint32_t timebase_freq)
 {
     /* Direct mode: low bits 00.  trapentry.S aligns the symbol to 4. */
     csr_write(stvec, (uint64_t)rv_trap_vector);
+
+    /* R8: open the U-mode counter gate (CY|TM|IR) -- same line the
+     * secondary init carries; see trap_init_secondary. */
+    __asm__ volatile("csrw scounteren, %0" :: "r"(7UL));
 
     /* The hart id, parked in sscratch for diagnostics ONLY in V2.
      * V4 repurposes sscratch for the U-mode trap-stack swap (the plan

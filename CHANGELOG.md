@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R8 — the Rust rows: one bridge, three ISAs] 2026-08-23
+
+lib/rsbr/common.rs grew cfg siblings of the x86_64 syscall shims
+(ecall a7 / svc #0 x8 — the same D4 numbers the C shims share) and
+rustes.rs a cfg'd cycle counter (rdtsc / rdtime / cntvct_el0); the
+x86_64 blocks are the original row untouched, every receipt string
+is shared text.  `rustes` now builds for riscv64gc-unknown-none-elf
+and aarch64-unknown-none through the fsio link recipe (rustc --emit
+obj + the tenant's own layout script, _start from the rlib) and runs
+from `/binrv/rustes` and `/bina64/rustes` in the one four-tenant
+initrd — `=== Rust Benchmark ===` … `Sum: 499999500000` …
+`Benchmark complete!` byte-identical on all three, asserted in the
+rv_fs/a64_fs smokes (the FIRST pin of any Rust row — even x86's was
+never asserted).  The tenants link no C archive: implicit
+mem-intrinsics land in a cfg'd memset/memcpy/memcmp module, OFF on
+x86_64.  The measured kernel work: U-mode/EL0 counter reads trap at
+reset — scounteren and CNTKCTL_EL1 gates opened in trap_init AND
+trap_init_secondary (R5's lesson: init runs on a secondary).  All
+six CI jobs install both tenant targets (one initrd, six builders).
+status.md's two 🚧 Rust rows flipped ✅ — harvest ratchet clicked
+(status-wip 15→13, baseline moved same-commit).  RES-22/23 closed;
+ledger OPEN 32→30.
+
 ## [RESIDUE R7 — PCIe ECAM + virtio-pci on both DTB tenants, and the GICv3 group-claim riders] 2026-08-22
 
 fdt.c learned `pci-host-ecam-generic` (reg WITH size; `ranges`

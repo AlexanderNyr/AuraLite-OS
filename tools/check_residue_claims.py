@@ -139,6 +139,38 @@ def claims():
             and "\\[timer\\] PASS"
             in read("tests", "integration", "a64_smp_smoke.sh")))
 
+    # --- R8: the Rust rows (when the plan says the phase landed) --------
+    if re.search(r"^### R8[^\n]*✅ COMPLETE", plan, re.M):
+        makefl = read("Makefile")
+        common = read("lib", "rsbr", "common.rs")
+        rustes = read("userspace", "apps", "rustes", "rustes.rs")
+        checks.append((
+            "R8: one bridge, three ISAs — common.rs carries all three "
+            "cfg'd trap instructions, rustes.rs all three counters",
+            all(k in common for k in
+                ('target_arch = "x86_64"', 'target_arch = "riscv64"',
+                 'target_arch = "aarch64"', '"ecall"', '"svc #0"')) and
+            all(k in rustes for k in ("rdtsc", "rdtime", "cntvct_el0"))))
+        checks.append((
+            "R8: both tenant editions build through the Makefile and "
+            "ship in the initrd copy list",
+            "riscv64gc-unknown-none-elf" in makefl and
+            "aarch64-unknown-none" in makefl and
+            "binrv/rustes" in makefl and "bina64/rustes" in makefl))
+        checks.append((
+            "R8: the counter gates opened on BOTH init paths per "
+            "tenant (R5's init-on-a-secondary lesson)",
+            read("kernel", "arch", "riscv64",
+                 "trap.c").count("scounteren") >= 2 and
+            read("kernel", "arch", "aarch64",
+                 "trap_a64.c").count("cntkctl_el1") >= 2))
+        checks.append((
+            "R8: the shared receipt is asserted on both tenants "
+            "(the first pin of any Rust row)",
+            all("=== Rust Benchmark ===" in read("tests", "integration", s)
+                and "Sum: 499999500000" in read("tests", "integration", s)
+                for s in ("rv_fs_smoke.sh", "a64_fs_smoke.sh"))))
+
     # --- R0 structure ---------------------------------------------------
     checks.append((
         "R0: the amended class totals are recorded as a CATCH in both "

@@ -260,7 +260,7 @@ floor: rv64gc (D1; no rv32).
 | No own M-mode firmware | ❌ by design | Plan D2: SBI is the platform contract, like the BIOS was for Stage 2. |
 | PCIe ECAM + virtio-pci | ✅ (R7) | The D7 deferral paid: shared `pci_ecam.c` walks bus 0 (`[pci] ECAM: N functions`), shared `virtio_pci.c` is the modern second transport (VERSION_1 acked), and vblk falls through to it when the mmio windows are empty — ext2 mounted over PCI, asserted in the rv_fs PCI lane. |
 | SMP / vector ext / hypervisor ext | ❌ | Per plan §6; secondary harts parked safely via the boot lottery. |
-| Rust userspace | 🚧 possible | `riscv64gc-unknown-none-elf` EXISTS (unlike i686) — porting `rustes`/`rsbr` is a recorded follow-up plan's opening fact, not this plan's promise. |
+| Rust userspace | ✅ (R8) | `rustes`/`rsbr` built for `riscv64gc-unknown-none-elf` from the SAME two sources (cfg'd ecall/rdtime), run from the initrd — the x86_64 receipt byte-exact, asserted in the rv_fs smoke; scounteren opened for the U-mode counter read. |
 
 Tests: `rv_boot_smoke.sh` (46 assertions), `rv_shell_smoke.sh` (23),
 `rv_parity_smoke.sh` (21, one boot, x86 pair attached), plus host gates
@@ -299,7 +299,7 @@ EL1 (D1; no arm32, no EL2 entry).
 | PCIe ECAM + virtio-pci | ✅ (R7) | The D7 deferral paid: the measured ECAM sits ABOVE 4 GiB on this board (VA carve, not HHDM folklore); shared walker + modern transport, vblk-over-PCI ext2 mount asserted in the a64_fs PCI lane. |
 | SMP / SVE / big.LITTLE | ❌ | Per plan §4; PSCI `CPU_ON` is the recorded exit ramp (D5). |
 | fw-cfg self-test knob | 🚧 deferred | AMEND-5: the x86 fw_cfg protocol's interface transfers, the port-I/O reader does not (aarch64 fw-cfg is MMIO); deferred with a name, not an absence. |
-| Rust userspace | 🚧 possible | `aarch64-unknown-none` EXISTS (like rv64, unlike i686) — porting `rustes`/`rsbr` stays a follow-up plan's opening fact, not this plan's promise. |
+| Rust userspace | ✅ (R8) | `rustes`/`rsbr` built for `aarch64-unknown-none` from the SAME two sources (cfg'd svc/cntvct), run from the initrd — the x86_64 receipt byte-exact, asserted in the a64_fs smoke; CNTKCTL_EL1 opened for the EL0 counter read. |
 
 Tests: `a64_boot_smoke.sh` (41 assertions, ELF path),
 `a64_image_smoke.sh` (12, Image protocol + initrd bytes),
@@ -365,8 +365,8 @@ at vfs.c:71 + scheduler coupling — path-level VFS waits on it);
 buffer_cache/tmpfs/devfs adoption rides the same blocker; the
 i386 shell fd layer still serves the initrd (ext2 reaches the
 shell with the VFS work); pit.h×2 + msc.h fs couplings (time/USB
-seam questions, pinned per-file); GPT partitions; the
-Rust rows for rv64/a64 (PCIe ECAM paid at R7); one observed test_usb_hub TD-timeout
+seam questions, pinned per-file); GPT partitions (PCIe ECAM
+paid at R7, the Rust rows at R8); one observed test_usb_hub TD-timeout
 runner flake (1 occurrence, local repro green — remedy if it
 recurs: guest-time TD waits).
 

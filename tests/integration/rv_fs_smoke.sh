@@ -60,6 +60,7 @@ rm -f "$LOG"
     printf 'stat LINUX.TXT\n'; sleep 2
     printf 'cat LINUX.TXT\n';  sleep 2
     printf 'run binrv/fsio\n';       sleep 3
+    printf 'run binrv/rustes\n';     sleep 3
     printf 'exit\n';           sleep 2
 } | timeout 180 qemu-system-riscv64 \
         -machine virt -m 256M \
@@ -119,6 +120,12 @@ assert_no_grep "ls: cannot open"                          "P4: open('/') succeed
 assert_no_grep "cat: cannot open"                         "P4: open(file) succeeded"
 # R6: malloc + stdio-lite round-trip through the mounted fs.
 assert_grep "fsio: PASS malloc+stdio round-trip (48 bytes)" "R6: brk/malloc/fopen-create/fwrite/fread, one source"
+# R8: the Rust row -- same two sources as x86_64, cfg'd trap/counter,
+# run from the initrd; rdtime at U-mode rides the new scounteren gate.
+assert_grep "=== Rust Benchmark ==="                      "R8: rustes (riscv64gc-unknown-none-elf) started"
+assert_grep "Sum: 499999500000"                           "R8: the arithmetic receipt, byte-exact"
+assert_grep "Benchmark complete!"                         "R8: rustes ran to completion (rdtime gate open)"
+assert_no_grep "panic occurred"                           "R8: no Rust panic path taken"
 assert_no_grep "UNHANDLED EXCEPTION"                      "no unhandled trap anywhere in the boot"
 
 # ---- R7: the SAME mount chain over the SECOND transport (virtio-pci) ----
