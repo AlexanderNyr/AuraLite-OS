@@ -31,9 +31,16 @@ trap il_dump_on_error EXIT
 il_send_delay 8
 il_send "ping6 fe80::5054:ff:fe12:3456"
 il_send_delay 2
+# R9 (ledger RES-24): the SLAAC + off-link lane.  The "SLIRP filtering
+# limitation" the X7 landing recorded turned out to be OUR bugs (bad
+# NDP checksums/lengths/offsets -- five of them, pcap-named); with
+# NDP real, SLIRP answers RS with an RA (prefix fec0::/64, A-flag),
+# the kernel forms the SLAAC address, and fec0::2 answers echo.
+il_send "ping6 fec0::2"
+il_send_delay 4
 il_send "exit"
 
-il_run_qemu "$LOG" 25
+il_run_qemu "$LOG" 40
 
 il_assert_grep_fixed "$LOG" "[net6] link-local fe80::5054:ff:fe12:3456" \
     "kernel derives the link-local address from the NIC MAC"
@@ -43,6 +50,12 @@ il_assert_grep_fixed "$LOG" "ping6 fe80::5054:ff:fe12:3456" \
     "ping6 command invoked"
 il_assert_grep_fixed "$LOG" "Reply received from fe80::5054:ff:fe12:3456" \
     "self-ping of the link-local address answered (deterministic IPv6 echo gate)"
+il_assert_grep_fixed "$LOG" "[net6] SLAAC address fec0::5054:ff:fe12:3456" \
+    "R9: SLAAC address formed from the RA prefix + EUI-64"
+il_assert_grep_fixed "$LOG" "[net6] router fe80::2" \
+    "R9: default router learned from the RA"
+il_assert_grep_fixed "$LOG" "Reply received from fec0::2" \
+    "R9: off-link echo answered (the whole NDP path, real wire)"
 il_assert_no_grep_fixed "$LOG" "[net6] self-test FAIL" \
     "no IPv6 self-test failure"
 

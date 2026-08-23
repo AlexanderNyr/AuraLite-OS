@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R9 — the net cluster: the "SLIRP limitation" was five of our own bugs] 2026-08-23
+
+pcap -v dissolved X7's legend ("QEMU SLIRP filtering blocks IPv6
+peer echo — manual run only"): RS/NS left with icmp_len four bytes
+long and checksums over uninitialised tails; wire checksums were
+stored byte-swapped (the R3 byte-order class, ICMPv6 edition); the
+NA target was read at +12 instead of +8; RA options were parsed
+from +8 instead of +16 and unicast-only while solicited RAs ride
+ff02::1; the echo validator was a coin that always said drop.  With
+NDP real: SLAAC from the RA prefix (fec0::/64 + EUI-64), router
+learning, an NS→NA responder (the missing half without which no
+peer could deliver to us), off-link routing, source selection —
+`ping6 fec0::2` answers END-TO-END in CI now.  Fallout: the DHCP
+builders never wrote tos/flags_frag (stack garbage blessed by its
+own checksum — exposed by the reshaped stack, dropped by SLIRP as
+a fragment, fixed at both sites), e1000 needed RFC 4861's three
+solicitations (RS #1 races NIC bring-up) and MPE+MTA opened for
+33:33 multicast.  DNS grew the RFC 1035 s4.2.2 TCP fallback (same
+server, length-prefixed, real 664-byte answer over guestfwd; the
+NAMED one-shot DNSCTL_FORCE_TC knob drives the lane — test_dns_tcp,
+7/7, registry 129→130).  RES-27 closed as the FOURTH stale doc row
+(http.c has been libahttp since X2/X6).  RES-28 closed half-stale:
+the RX ISR + wake existed but nothing ever slept — timed waits now
+wq_wait_deadline, receipt `[virtio-net] RX via IRQ wake` pinned.
+RES-26 (HTTPS-over-IPv6) stays OPEN, narrowed to exactly the TCP
+layer.  Ledger OPEN 30→26.
+
 ## [RESIDUE R8 — the Rust rows: one bridge, three ISAs] 2026-08-23
 
 lib/rsbr/common.rs grew cfg siblings of the x86_64 syscall shims

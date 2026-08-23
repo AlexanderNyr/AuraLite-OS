@@ -40,6 +40,10 @@ il_run_qemu "$LOG" 25
 il_assert_grep    "$LOG" "\\[virtio-net\\] ready"              "virtio-net brought up"
 il_assert_grep    "$LOG" "\\[netdev\\] active NIC: virtio-net" "virtio-net is the active NIC"
 il_assert_grep    "$LOG" "\\[net\\] using NIC: virtio-net"     "stack runs over virtio-net"
+# R9 (ledger RES-28): the RX path SLEEPS on the wait queue the IRQ
+# handler wakes (wq_wait_deadline) instead of pause-spinning -- the
+# receipt prints on the first packet that arrives after a real wake.
+il_assert_grep    "$LOG" "\\[virtio-net\\] RX via IRQ wake"    "R9: RX slept and was woken by the interrupt"
 il_assert_no_grep "$LOG" "\\[tcp\\] FAIL"                      "no TCP failure"
 il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"                 "no exception in net path"
 il_assert_no_grep "$LOG" "PANIC"                               "no panic in net path"

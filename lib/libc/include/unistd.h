@@ -32,6 +32,7 @@
 #define DNSCTL_FLUSH       2   /* drop all cache entries */
 #define DNSCTL_SET_SERVERS 3   /* buf: uint32_t[] host-order IPs (len bytes) */
 #define DNSCTL_GET_SERVERS 4   /* buf: uint32_t[] -> server count */
+#define DNSCTL_FORCE_TC    5   /* R9: one-shot synthetic-TC (TCP fallback lane) */
 
 typedef struct {
     char     name[256];

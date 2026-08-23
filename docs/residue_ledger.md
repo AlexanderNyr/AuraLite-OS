@@ -35,11 +35,11 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-21 | W | DONE@R7 | virtio-pci transport unused on tenants (TODO.md) — R7: shared virtio_pci.c, MODERN with VERSION_1 acked, same vrings/request/seam as mmio; vblk falls through when the windows are empty | vblk-over-PCI mounts ext2 in a lane |
 | RES-22 | W | DONE@R8 | Rust row rv64: target exists, nothing built (RISCV close) — R8: same two sources, cfg'd ecall/rdtime, initrd `/binrv/rustes`; scounteren gate opened per hart | rustes/rsbr receipt line on rv64 |
 | RES-23 | W | DONE@R8 | Rust row a64: same class (ARM64 close) — R8: cfg'd svc/cntvct, initrd `/bina64/rustes`; CNTKCTL_EL1 gate opened per core | same receipt on a64 |
-| RES-24 | W | OPEN | IPv6 SLAAC/sockets/dual-stack recorded at X7 (REALINTERNET) | ping6 a SLAAC address; dual-stack fetch receipt |
-| RES-25 | W | OPEN | TCP DNS fallback on truncated UDP (REALINTERNET X3) | >512B answer resolves via TCP; case pins it |
-| RES-26 | W | OPEN | HTTPS-over-IPv6 fetch receipt missing (INTERNET N8) | one fetch receipt in a case |
-| RES-27 | W | OPEN | /apps/http still hand-rolled, not libahttp (INTERNET) | app links libahttp; behavior pins hold |
-| RES-28 | W | OPEN | virtio-net RX polls; IRQ RX pending (TODO/status; vmxnet3/e1000e data paths stay S → RES-46 class) | RX-via-IRQ receipt in net case |
+| RES-24 | W | DONE@R9 | IPv6 SLAAC/sockets/dual-stack recorded at X7 — R9: SLAAC formed from the RA prefix (A-flag /64 + EUI-64), router learned, NS→NA responder added, off-link echo E2E in CI.  The "SLIRP filter" X7 blamed was FIVE of our own NDP bugs, pcap-named.  Sockets/dual-stack ride RES-26 | ping6 a SLAAC address (fec0::2 answered; case pins it) |
+| RES-25 | W | DONE@R9 | TCP DNS fallback on truncated UDP (X3) — R9: RFC 1035 s4.2.2 length-prefixed retry against the SAME server; named one-shot knob (DNSCTL_FORCE_TC) drives the lane, the TCP wire and the 664-byte answer are real (guestfwd fixture) | >512B answer resolves via TCP; case pins it |
+| RES-26 | W | OPEN | HTTPS-over-IPv6 fetch receipt missing (INTERNET N8) — R9 NARROWED: the v6 substrate below it now WORKS end-to-end (SLAAC/NDP/echo, CI-pinned); the one blocker left is the TCP layer itself, v4-wired through conn state + ARP + inline IPv4 headers (tcp.c) and an ip4-only socket ABI | one fetch receipt in a case |
+| RES-27 | W | DONE@R9 | /apps/http still hand-rolled — the FOURTH stale doc row: http.c has been libahttp's keep-alive client since X2/X6 (header says so, Makefile links libahttp, http_get/x6 cases pin the behaviour); R9 recorded the catch, zero code needed | app links libahttp; behavior pins hold |
+| RES-28 | W | DONE@R9 | virtio-net RX polls; IRQ RX pending — HALF-stale: the ISR + wq wake existed, but nothing ever slept (timed waits pause-spun), so the interrupt was decorative.  R9: wq_wait_deadline in the timed path + counted receipt (vmxnet3/e1000e data paths stay S → RES-46 class) | RX-via-IRQ receipt in net case (pinned) |
 | RES-29 | W | OPEN | atls_fe needs 32-bit limbs; -m32 crypto blocked (I386/status) | X25519/Ed25519/P-256 vectors green at -m32 |
 | RES-30 | M | OPEN | PAT/WC framebuffer win measurable only on metal (OPT §7/HW H3) | R11 package line; user paste-back |
 | RES-31 | W | OPEN | PCID: D-PCID-5 gate FIRED (user WHPX log `pcid=1`) — implement with CR3-toggle fallback (HW H4) | counters leave pinned zero; WHPX receipt block shipped |
@@ -65,7 +65,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses: OPEN 30, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23).
+amended same-commit, catch recorded).  Statuses: OPEN 26, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

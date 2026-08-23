@@ -63,6 +63,13 @@
 #define RCTL_EN       (1u << 1)    /* Receiver Enable */
 #define RCTL_SECRC    (1u << 26)   /* Strip Ethernet CRC */
 #define RCTL_BAM      (1u << 15)   /* Broadcast Accept Mode (accept broadcasts) */
+#define RCTL_MPE      (1u << 4)    /* Multicast Promiscuous Enable -- R9: IPv6
+                                    * RAs ride 33:33:00:00:00:01 and the MTA
+                                    * hash table is unprogrammed; without MPE
+                                    * the NIC ate every Router Advertisement
+                                    * (the virtio NIC does not filter, which
+                                    * is why only the e1000 lane missed SLAAC
+                                    * -- measured, both NICs, same boot). */
 #define RCTL_BSIZE_2048  0          /* BSIZE=00 -> 2048 bytes */
 
 /* TCTL bits */
@@ -429,7 +436,14 @@ int e1000_init(void) {
 
     /* Enable RX: EN=1, SECRC=1 (strip CRC), BSIZE=0 (2048), BAM=1 (accept
      * broadcasts — needed for DHCP), UPE=1 (unicast promiscuous). */
-    mmio_write(E1000_RCTL, RCTL_EN | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_BAM | (1u << 3));
+    /* R9: open the multicast table too -- IPv6 NDP rides 33:33:xx
+     * group addresses.  MTA[0..127] = all-ones accepts every hash
+     * bucket; belt to MPE's braces (measured: this QEMU's e1000
+     * still dropped the RA with MPE alone). */
+    for (int mta = 0; mta < 128; mta++)
+        mmio_write(0x5200 + mta * 4, 0xFFFFFFFFu);
+    mmio_write(E1000_RCTL, RCTL_EN | RCTL_SECRC | RCTL_BSIZE_2048 | RCTL_BAM |
+                           RCTL_MPE | (1u << 3));
 
     e1000_irq_line = pci_get_interrupt_line(pci_bus, pci_dev, pci_func);
     if (e1000_irq_line < 16) {

@@ -171,6 +171,51 @@ def claims():
                 and "Sum: 499999500000" in read("tests", "integration", s)
                 for s in ("rv_fs_smoke.sh", "a64_fs_smoke.sh"))))
 
+    # --- R9: the net cluster (when the plan says the phase landed) ------
+    if re.search(r"^### R9[^\n]*✅ COMPLETE", plan, re.M):
+        ipv6 = read("kernel", "net", "ipv6.c")
+        dns = read("kernel", "net", "dns.c")
+        checks.append((
+            "R9: the five NDP catches are fixed in the tree (lengths 4+body, "
+            "serialised checksums, NA target at +8, RA options at +16, "
+            "RFC 1071 validation)",
+            "icmp_len = 4 + (uint32_t)sizeof(body)" in ipv6 and
+            "htons16(cs)" in ipv6 and
+            "buf + 14 + 40 + 8, target->b, 16" in ipv6 and
+            "buf + 14 + 40 + 16" in ipv6 and
+            "if (want != 0) return 1;" in ipv6))
+        checks.append((
+            "R9: SLAAC + the NS→NA responder exist and the ping6 case pins "
+            "the fec0::2 end-to-end echo",
+            "SLAAC address" in ipv6 and "ICMP6_NS && len >=" in ipv6 and
+            "Reply received from fec0::2"
+            in read("tests", "integration", "cases", "test_ipv6_ping6.sh")))
+        checks.append((
+            "R9: the DNS TCP fallback is the RFC 1035 s4.2.2 shape and its "
+            "case rides the NAMED knob",
+            "dns_wire_query_tcp" in dns and "DNSCTL_FORCE_TC"
+            in read("kernel", "net", "dns.h") and
+            "TCP fallback answer" in dns and
+            "dnstc" in read("tests", "integration", "cases",
+                            "test_dns_tcp.sh")))
+        checks.append((
+            "R9: the DHCP builders write tos AND flags_frag at both sites "
+            "(the stack-garbage catch)",
+            read("kernel", "net", "net.c").count("ip->flags_frag  = 0;")
+            >= 2))
+        checks.append((
+            "R9: virtio-net's timed RX wait sleeps (wq_wait_deadline) and "
+            "the receipt is pinned",
+            "wq_wait_deadline(&vnet_rx_wq"
+            in read("drivers", "virtio_net", "virtio_net.c") and
+            "RX via IRQ wake" in read("tests", "integration", "cases",
+                                      "test_virtio_net.sh")))
+        checks.append((
+            "R9: RES-27 closed as a stale row against a tree that agrees "
+            "(http.c IS the libahttp client)",
+            'ahttp_client_get' in read("userspace", "apps", "http",
+                                       "http.c")))
+
     # --- R0 structure ---------------------------------------------------
     checks.append((
         "R0: the amended class totals are recorded as a CATCH in both "

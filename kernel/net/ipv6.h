@@ -23,6 +23,11 @@ void net_ipv6_init(void);
 /* The derived link-local address, or NULL if the stack is not up. */
 const ipv6_addr_t *net_ipv6_linklocal(void);
 
+/* R9 (ledger RES-24): the SLAAC address formed from an RA's
+ * autonomous /64 prefix + our EUI-64 interface id, or NULL until a
+ * Router Advertisement carried one. */
+const ipv6_addr_t *net_ipv6_global(void);
+
 /* Send an ICMPv6 echo request to `target` (resolving the neighbour MAC via
  * NDP first) and poll for the echo reply.  Returns 0 on success, -1 on
  * failure (ARP/NDP failure, TX error, or timeout).  Pinging our own

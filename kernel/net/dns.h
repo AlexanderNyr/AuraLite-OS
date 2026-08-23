@@ -33,6 +33,11 @@ typedef struct {
 #define DNSCTL_FLUSH       2   /* drop all cache entries                     */
 #define DNSCTL_SET_SERVERS 3   /* buf: uint32_t[] host-order IPs (len/4)     */
 #define DNSCTL_GET_SERVERS 4   /* buf: uint32_t[], returns server count      */
+#define DNSCTL_FORCE_TC    5   /* R9 (RES-25) TEST KNOB, named: the next UDP
+                                * answer is synthesised as truncated (TC=1),
+                                * so a lane can drive the REAL TCP fallback
+                                * against a real server without root-bound
+                                * port-53 fixtures.  One-shot. */
 
 /* Reset the module: empty cache, default server list (QEMU SLIRP DNS). */
 void dns_init(void);
@@ -56,6 +61,9 @@ void dns_cache_flush(void);
  * This is the implementation behind net_dns_resolve() and SYS_DNS.
  */
 uint32_t dns_resolve_ipv4(const char *hostname);
+
+/* R9: arm the one-shot synthetic-TC switch (DNSCTL_FORCE_TC). */
+void dns_force_tc_once(void);
 
 /* Boot-time self-test (called from net_dns_self_test). */
 void dns_self_test(void);

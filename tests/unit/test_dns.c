@@ -56,6 +56,27 @@ void spinlock_release(spinlock_t *l) { (void)l; }
 int      rng_available(void) { return 0; }
 uint64_t rng_u64(void)       { return 0; }
 
+/* R9: TCP stubs for the fallback carriage -- linked, and exercised
+ * only as a REFUSAL on the host (tcp_open fails), which is exactly
+ * what a truncated answer with no live TCP stack should meet.  The
+ * end-to-end fallback is the guest case's job (test_dns_tcp). */
+int tcp_open(uint32_t dst_ip, uint16_t dst_port) {
+    (void)dst_ip; (void)dst_port;
+    return -1;
+}
+int tcp_send_h(int h, const void *data, uint32_t len) {
+    (void)h; (void)data; (void)len;
+    return -1;
+}
+int tcp_recv_h(int h, void *buf, uint32_t bufsize) {
+    (void)h; (void)buf; (void)bufsize;
+    return -1;
+}
+int tcp_close_h(int h) {
+    (void)h;
+    return -1;
+}
+
 /* UDP stubs: only linked, never called — dns_set_transport_for_tests()
  * replaces the wire transport in every resolver test. */
 int net_udp_sendto(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,

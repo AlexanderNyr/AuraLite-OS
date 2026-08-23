@@ -49,6 +49,16 @@ static ipv6_addr_t router_ll;
 static uint8_t     router_mac[6];
 static int         have_router = 0;
 
+/* R9 (ledger RES-24): the SLAAC address -- RA Prefix Information
+ * (autonomous, /64) + our EUI-64 interface id.  Formed in the same
+ * RA walk that learns the router; 0 until an RA carries the A-flag. */
+static ipv6_addr_t our_global;
+static int         have_global = 0;
+
+/* RFC 4861 s4.6.2: Prefix Information option. */
+#define NDP_OPT_PREFIX   3
+#define NDP_PFX_FLAG_A   0x40
+
 /* IPv6 header (40 bytes, no extension headers). */
 struct ipv6_hdr {
     uint32_t ver_tc_fl;    /* 6<<28 | tc<<20 | flow */
@@ -99,6 +109,16 @@ static void ip6_fill_hdr(struct ipv6_hdr *ip, const ipv6_addr_t *src,
 }
 
 /* ---- Neighbor Discovery: resolve the link-layer address of a neighbour. ---- */
+
+/* R9: fe80::/10 test + source selection (RFC 6724's floor: global
+ * source for a global destination, link-local otherwise). */
+static int is_linklocal6(const ipv6_addr_t *a) {
+    return a->b[0] == 0xFE && (a->b[1] & 0xC0) == 0x80;
+}
+static const ipv6_addr_t *src_for(const ipv6_addr_t *dst) {
+    return (!is_linklocal6(dst) && have_global) ? &our_global : &our_ll;
+}
+
 static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
     /* Our own addresses resolve to our own MAC. */
     if (ipv6_eq(target, &our_ll) == 0) {
@@ -107,6 +127,14 @@ static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
     }
     /* The learned router resolves without a fresh NS/NA. */
     if (have_router && ipv6_eq(target, &router_ll) == 0) {
+        memcpy(out_mac, router_mac, 6);
+        return 0;
+    }
+    /* R9: an off-link destination (not fe80::/10, not our own /64
+     * prefix) goes to the default router -- the routing decision the
+     * X7 draft did not need while everything was link-local. */
+    if (!is_linklocal6(target) && have_router &&
+        !(have_global && memcmp(target->b, our_global.b, 8) == 0)) {
         memcpy(out_mac, router_mac, 6);
         return 0;
     }
@@ -127,7 +155,16 @@ static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
     ic.type = ICMP6_NS;
     ic.code = 0;
     ic.checksum = 0;
-    uint32_t icmp_len = 8 + (uint32_t)sizeof(body);
+    /* R9 CATCH (pcap-verified): the X7 draft declared 8+sizeof(body)
+     * here, but the wire message is 4 fixed bytes (type/code/cksum)
+     * + body -- body already CARRIES the 4 reserved bytes.  The old
+     * length overshot by 4: the checksum covered uninitialised tail
+     * bytes and the payload_len lied, so every NS left this machine
+     * with a bad checksum and SLIRP silently dropped it.  THAT --
+     * not a SLIRP filtering limitation -- is why X7's peer lanes
+     * never answered; the echo paths never had the bug (their 8
+     * counts ident+seq, which echo messages genuinely carry). */
+    uint32_t icmp_len = 4 + (uint32_t)sizeof(body);
     /* Build a temporary ICMP message to checksum. */
     uint8_t msg[8 + 4 + 16 + 8];
     memcpy(msg, &ic, 4);
@@ -135,7 +172,11 @@ static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
     memset(msg + 2, 0, 2);   /* checksum field zeroed */
     uint16_t cs = ipv6_checksum_pseudo(&our_ll, &snm, icmp_len,
                                        IPV6_NEXT_ICMP6, msg, icmp_len);
-    ic.checksum = cs;
+    /* R9 CATCH, layer two (the R3 byte-order class, ICMPv6 edition):
+     * the helper returns the HOST-ORDER checksum -- a struct store
+     * on this little-endian machine swapped it on the wire (pcap:
+     * 0xe071 -> 0x71e0).  Every struct-store below now serialises. */
+    ic.checksum = htons16(cs);
 
     /* Assemble the frame: eth(14) + ipv6(40) + icmp6(8) + body(28). */
     uint8_t pkt[14 + 40 + 8 + (4 + 16 + 8)];
@@ -160,19 +201,25 @@ static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
         uint64_t now = timer_get_ticks();
         int n = netdev_recv_wait(buf, sizeof(buf), deadline > now ? deadline - now : 0);
         if (n <= 0) break;
-        if (n < (int)(14 + 40 + 8 + 4 + 16)) continue;
+        if (n < (int)(14 + 40 + 4 + 4 + 16)) continue;
         struct eth_hdr *eh = (struct eth_hdr *)buf;
         if (htons16(eh->et) != ETHERTYPE_IPV6) continue;
         struct ipv6_hdr *ip = (struct ipv6_hdr *)(buf + 14);
         if (ip->next_header != IPV6_NEXT_ICMP6) continue;
-        if (ipv6_eq((ipv6_addr_t *)ip->dst, &our_ll) != 0) continue;
+        if (ipv6_eq((ipv6_addr_t *)ip->dst, &our_ll) != 0) {
+            net_ipv6_handle_frame(buf, n);   /* R9: serve NDP meanwhile */
+            continue;
+        }
         struct icmp6_hdr *ic = (struct icmp6_hdr *)(buf + 14 + 40);
         if (ic->type != ICMP6_NA) continue;
-        /* flags(4) + target(16); options follow. */
-        if (memcmp(buf + 14 + 40 + 8 + 4, target->b, 16) != 0) continue;
-        /* first option: type(1) len(1) addr(6) */
-        const uint8_t *opt = buf + 14 + 40 + 8 + 4 + 16;
-        int avail = n - (14 + 40 + 8 + 4 + 16);
+        /* R9 CATCH, layer three: RFC 4861 puts the NA target at
+         * ICMP+8 (type,code,cksum,flags4) and options at ICMP+24;
+         * the X7 draft read +12/+28 -- four bytes deep into the
+         * target, so a REAL NA could never match.  Fixed offsets,
+         * measured against SLIRP's 32-byte NA on the wire. */
+        if (memcmp(buf + 14 + 40 + 8, target->b, 16) != 0) continue;
+        const uint8_t *opt = buf + 14 + 40 + 8 + 16;
+        int avail = n - (14 + 40 + 8 + 16);
         if (avail >= 8 && opt[0] == NDP_OPT_TGT_LL) {
             memcpy(out_mac, opt + 2, 6);
             return 0;
@@ -202,13 +249,16 @@ void net_ipv6_discover(void) {
     ic.type = ICMP6_RS;
     ic.code = 0;
     ic.checksum = 0;
-    uint32_t icmp_len = 8 + (uint32_t)sizeof(body);
+    /* R9 CATCH: same +4 overshoot as the NS (see ndp_resolve) --
+     * the RS that "SLIRP never answered" was leaving with a bad
+     * checksum and four garbage tail bytes.  pcap -v named it. */
+    uint32_t icmp_len = 4 + (uint32_t)sizeof(body);
     uint8_t msg[8 + 4 + 8];
     memcpy(msg, &ic, 4);
     memcpy(msg + 4, body, sizeof(body));
     memset(msg + 2, 0, 2);
-    ic.checksum = ipv6_checksum_pseudo(&our_ll, &ar, icmp_len,
-                                       IPV6_NEXT_ICMP6, msg, icmp_len);
+    ic.checksum = htons16(ipv6_checksum_pseudo(&our_ll, &ar, icmp_len,
+                                       IPV6_NEXT_ICMP6, msg, icmp_len));
 
     uint8_t pkt[14 + 40 + 8 + (4 + 8)];
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)pkt;
@@ -220,15 +270,21 @@ void net_ipv6_discover(void) {
     memcpy(pkt + 14 + 40, &ic, 4);
     memcpy(pkt + 14 + 40 + 4, body, sizeof(body));
 
+    /* R9: three solicitations, not one -- RFC 4861 s6.3.7 sends up
+     * to MAX_RTR_SOLICITATIONS(3); the first RS can race the NIC's
+     * own bring-up (measured on the e1000 lane: the RA answering
+     * RS #1 never reached the ring, RS #2's always did). */
+    uint8_t buf[2048];
+    for (int attempt = 0; attempt < 3 && !have_router; attempt++) {
     if (net_eth_send(ar_mac, ETHERTYPE_IPV6, pkt + 14, 40 + 8 + (uint32_t)sizeof(body)) < 0) {
         kprintf("[net6] RS TX failed\n");
         return;
     }
-    kprintf("[net6] router solicitation sent\n");
+    kprintf("[net6] router solicitation sent%s\n",
+            attempt ? " (retry)" : "");
 
     /* Wait briefly for a Router Advertisement: source is the router's
      * link-local; the source-link-layer option carries its MAC. */
-    uint8_t buf[2048];
     uint64_t deadline = timer_get_ticks() + 60;
     while (timer_get_ticks() < deadline) {
         uint64_t now = timer_get_ticks();
@@ -241,28 +297,59 @@ void net_ipv6_discover(void) {
         if (ip->next_header != IPV6_NEXT_ICMP6) continue;
         struct icmp6_hdr *ic = (struct icmp6_hdr *)(buf + 14 + 40);
         if (ic->type != ICMP6_RA) continue;
-        if (ipv6_eq((ipv6_addr_t *)ip->dst, &our_ll) != 0) continue;
-        /* options follow the 8-byte RA header */
-        const uint8_t *opt = buf + 14 + 40 + 8;
-        int avail = n - (14 + 40 + 8);
+        /* R9: a solicited RA arrives on the ALL-NODES multicast
+         * ff02::1 (SLIRP does exactly that, 200 us after the RS) --
+         * the X7 draft demanded our unicast and dropped every one. */
+        ipv6_addr_t alln;
+        memset(alln.b, 0, 16);
+        alln.b[0] = 0xFF; alln.b[1] = 0x02; alln.b[15] = 0x01;
+        if (ipv6_eq((ipv6_addr_t *)ip->dst, &our_ll) != 0 &&
+            ipv6_eq((ipv6_addr_t *)ip->dst, &alln) != 0) continue;
+        /* options follow the 8-byte RA header -- R9: ONE walk now
+         * collects both the router's link-layer address AND the
+         * Prefix Information option (SLAAC).  The X7 draft returned
+         * at the first SRC_LL and never saw the prefix behind it. */
+        /* RFC 4861 s4.2: the RA fixed part is 16 bytes (type,code,
+         * cksum, hop-limit, M/O, lifetime, reachable, retrans) --
+         * options start at ICMP+16, not +8 (the draft parsed the
+         * reachable-time field as an option type and always broke). */
+        const uint8_t *opt = buf + 14 + 40 + 16;
+        int avail = n - (14 + 40 + 16);
+        int got_mac = 0;
         while (avail >= 8) {
             uint8_t ot = opt[0], ol = opt[1];
             int olen = (int)ol * 8;
             if (olen < 8 || olen > avail) break;
-            if (ot == NDP_OPT_SRC_LL && olen >= 8) {
+            if (ot == NDP_OPT_SRC_LL && olen >= 8 && !got_mac) {
                 memcpy(router_mac, opt + 2, 6);
                 memcpy(router_ll.b, ip->src, 16);
-                have_router = 1;
-                char r[48];
-                ipv6_ntop(&router_ll, r, sizeof(r));
-                kprintf("[net6] router %s at %02x:%02x:%02x:%02x:%02x:%02x\n",
-                        r, router_mac[0], router_mac[1], router_mac[2],
-                        router_mac[3], router_mac[4], router_mac[5]);
-                return;
+                got_mac = 1;
+            } else if (ot == NDP_OPT_PREFIX && olen >= 32 &&
+                       !have_global &&
+                       opt[2] == 64 && (opt[3] & NDP_PFX_FLAG_A)) {
+                /* SLAAC: prefix(64) + EUI-64 interface id -- the
+                 * SAME low 8 bytes the link-local carries. */
+                memcpy(our_global.b, opt + 16, 8);
+                memcpy(our_global.b + 8, our_ll.b + 8, 8);
+                have_global = 1;
+                char g[48];
+                ipv6_ntop(&our_global, g, sizeof(g));
+                kprintf("[net6] SLAAC address %s (RA prefix /64 + "
+                        "EUI-64, A-flag set)\n", g);
             }
             opt += olen;
             avail -= olen;
         }
+        if (got_mac) {
+            have_router = 1;
+            char r[48];
+            ipv6_ntop(&router_ll, r, sizeof(r));
+            kprintf("[net6] router %s at %02x:%02x:%02x:%02x:%02x:%02x\n",
+                    r, router_mac[0], router_mac[1], router_mac[2],
+                    router_mac[3], router_mac[4], router_mac[5]);
+            return;
+        }
+    }
     }
     kprintf("[net6] no router advertisement (offline link or no router)\n");
 }
@@ -273,6 +360,8 @@ void net_ipv6_discover(void) {
  * `req_src_mac` is the Ethernet source MAC of the request (where to reply). */
 static void icmp6_send_echo_reply(const uint8_t req_src_mac[6],
                                   const ipv6_addr_t *req_src,
+                                  const ipv6_addr_t *reply_src, /* R9: the
+                                   * address the request was addressed to */
                                   const uint8_t *req_hdr,   /* 8-byte ICMPv6 hdr */
                                   const uint8_t *payload, uint32_t plen) {
     if (plen > 256) plen = 256;
@@ -285,8 +374,8 @@ static void icmp6_send_echo_reply(const uint8_t req_src_mac[6],
     memcpy(msg + 4, req_hdr + 4, 4);        /* ident + seq from the request */
     memcpy(msg + 8, payload, plen);
     uint32_t icmp_len = 8 + plen;
-    ic.checksum = ipv6_checksum_pseudo(&our_ll, req_src, icmp_len,
-                                       IPV6_NEXT_ICMP6, msg, icmp_len);
+    ic.checksum = htons16(ipv6_checksum_pseudo(reply_src, req_src, icmp_len,
+                                       IPV6_NEXT_ICMP6, msg, icmp_len));
 
     uint8_t pkt[14 + 40 + 8 + 256];
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)pkt;
@@ -294,7 +383,7 @@ static void icmp6_send_echo_reply(const uint8_t req_src_mac[6],
     memcpy(eh->src, our_mac, 6);
     eh->et = htons16(ETHERTYPE_IPV6);
     struct ipv6_hdr *ip = (struct ipv6_hdr *)(pkt + 14);
-    ip6_fill_hdr(ip, &our_ll, req_src, (uint16_t)icmp_len, IPV6_HOP_LIMIT);
+    ip6_fill_hdr(ip, reply_src, req_src, (uint16_t)icmp_len, IPV6_HOP_LIMIT);
     memcpy(pkt + 14 + 40, &ic, 4);
     memcpy(pkt + 14 + 40 + 4, req_hdr + 4, 4);
     memcpy(pkt + 14 + 40 + 8, payload, plen);
@@ -311,8 +400,54 @@ int net_ipv6_handle_frame(const uint8_t *frame, int len) {
     if (htons16(eh->et) != ETHERTYPE_IPV6) return 0;
     struct ipv6_hdr *ip = (struct ipv6_hdr *)(frame + 14);
     if (ip->next_header != IPV6_NEXT_ICMP6) return 0;
-    /* only echo requests addressed to us */
-    if (ipv6_eq((ipv6_addr_t *)ip->dst, &our_ll) != 0) return 0;
+    struct icmp6_hdr *ic0 = (struct icmp6_hdr *)(frame + 14 + 40);
+
+    /* R9: answer Neighbor Solicitations about OUR addresses -- the
+     * missing half of NDP.  Without this no peer (SLIRP included)
+     * can ever resolve us, so nothing addressed to the SLAAC
+     * address could be DELIVERED: the pcap showed our sum-ok echo
+     * to fec0::2 vanish because the reply had no MAC to ride on.
+     * An NS arrives on the solicited-node multicast (or unicast),
+     * NOT on our address -- it must be handled before the dst
+     * filter below. */
+    if (ic0->type == ICMP6_NS && len >= (int)(14 + 40 + 4 + 4 + 16)) {
+        const uint8_t *tgt = frame + 14 + 40 + 8;
+        const ipv6_addr_t *ours = 0;
+        if (memcmp(tgt, our_ll.b, 16) == 0)
+            ours = &our_ll;
+        else if (have_global && memcmp(tgt, our_global.b, 16) == 0)
+            ours = &our_global;
+        if (!ours)
+            return 0;
+        /* NA: flags Solicited|Override, target, TGT_LL option. */
+        uint8_t msg[4 + 4 + 16 + 8];
+        memset(msg, 0, sizeof(msg));
+        msg[0] = ICMP6_NA;
+        msg[4] = 0x60;                   /* S|O */
+        memcpy(msg + 8, tgt, 16);
+        msg[24] = NDP_OPT_TGT_LL;
+        msg[25] = 1;
+        memcpy(msg + 26, our_mac, 6);
+        uint32_t icmp_len = (uint32_t)sizeof(msg);
+        uint16_t cs = ipv6_checksum_pseudo(ours, (ipv6_addr_t *)ip->src,
+                                           icmp_len, IPV6_NEXT_ICMP6,
+                                           msg, icmp_len);
+        msg[2] = (uint8_t)(cs >> 8);
+        msg[3] = (uint8_t)cs;
+        uint8_t pkt[14 + 40 + 4 + 4 + 16 + 8];
+        struct ipv6_hdr *rip = (struct ipv6_hdr *)(pkt + 14);
+        ip6_fill_hdr(rip, ours, (ipv6_addr_t *)ip->src,
+                     (uint16_t)icmp_len, IPV6_NDP_HOP_LIMIT);
+        memcpy(pkt + 14 + 40, msg, sizeof(msg));
+        net_eth_send(eh->src, ETHERTYPE_IPV6, pkt + 14,
+                     40 + icmp_len);
+        return 1;
+    }
+
+    /* only echo requests addressed to us (R9: either address) */
+    if (ipv6_eq((ipv6_addr_t *)ip->dst, &our_ll) != 0 &&
+        !(have_global && ipv6_eq((ipv6_addr_t *)ip->dst, &our_global) == 0))
+        return 0;
     struct icmp6_hdr *ic = (struct icmp6_hdr *)(frame + 14 + 40);
     if (ic->type != ICMP6_ECHO_REQ) return 0;
 
@@ -320,13 +455,22 @@ int net_ipv6_handle_frame(const uint8_t *frame, int len) {
     uint16_t plen = htons16(ip->payload_len);
     if (plen < 8) return 1;                 /* consume a malformed request */
     if ((uint32_t)(14 + 40 + plen) > (uint32_t)len) return 1;
+    /* R9: the RFC 1071 invariant -- summing the message WITH its
+     * (correct) checksum in place yields 0xFFFF, so the helper's
+     * complement is 0.  The X7 draft compared a fresh checksum
+     * against the raw field, which can never match (the fresh sum
+     * already covers that field) -- every validated request was
+     * being judged by a coin that always said drop, and the
+     * self-test never noticed because "dropped" and "answered"
+     * both count as consumed. */
     uint16_t want = ipv6_checksum_pseudo((ipv6_addr_t *)ip->src,
                                          (ipv6_addr_t *)ip->dst,
                                          plen, IPV6_NEXT_ICMP6,
                                          frame + 14 + 40, plen);
-    if (want != ic->checksum) return 1;      /* drop a corrupt request */
+    if (want != 0) return 1;                 /* drop a corrupt request */
 
     icmp6_send_echo_reply(eh->src, (ipv6_addr_t *)ip->src,
+                          (ipv6_addr_t *)ip->dst,
                           (const uint8_t *)ic, frame + 14 + 40 + 8, plen - 8);
     return 1;
 }
@@ -337,10 +481,16 @@ int net_ping6(const ipv6_addr_t *target) {
 
     /* Pinging our own link-local is a loopback: we answer ourselves, so no
      * frame leaves the machine and the result is deterministic. */
-    if (ipv6_eq(target, &our_ll) == 0) {
+    if (ipv6_eq(target, &our_ll) == 0 ||
+        (have_global && ipv6_eq(target, &our_global) == 0)) {
         kprintf("[net6] ICMPv6 echo reply (self, loopback)\n");
         return 0;
     }
+
+    /* R9: source selection -- a global destination is spoken to FROM
+     * the SLAAC address (a link-local source crossing the router is
+     * exactly what RFC 4007 zones forbid). */
+    const ipv6_addr_t *src = src_for(target);
 
     uint8_t dst_mac[6];
     if (ndp_resolve(target, dst_mac) != 0) {
@@ -363,9 +513,9 @@ int net_ping6(const ipv6_addr_t *target) {
     msg[6] = 0x00; msg[7] = 0x01;        /* seq */
     memcpy(msg + 8, data, 16);
     uint32_t icmp_len = 8 + 16;
-    uint16_t cs = ipv6_checksum_pseudo(&our_ll, target, icmp_len,
+    uint16_t cs = ipv6_checksum_pseudo(src, target, icmp_len,
                                        IPV6_NEXT_ICMP6, msg, icmp_len);
-    ic.checksum = cs;
+    ic.checksum = htons16(cs);          /* R9: serialise (see ndp_resolve) */
 
     uint8_t pkt[14 + 40 + 8 + 16];
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)pkt;
@@ -373,7 +523,7 @@ int net_ping6(const ipv6_addr_t *target) {
     memcpy(eh->src, our_mac, 6);
     eh->et = htons16(ETHERTYPE_IPV6);
     struct ipv6_hdr *ip = (struct ipv6_hdr *)(pkt + 14);
-    ip6_fill_hdr(ip, &our_ll, target, (uint16_t)icmp_len, IPV6_HOP_LIMIT);
+    ip6_fill_hdr(ip, src, target, (uint16_t)icmp_len, IPV6_HOP_LIMIT);
     memcpy(pkt + 14 + 40, &ic, 4);
     memset(pkt + 14 + 40 + 4, 0, 4);
     pkt[14 + 40 + 4] = 0x00; pkt[14 + 40 + 5] = 0x01;
@@ -399,9 +549,15 @@ int net_ping6(const ipv6_addr_t *target) {
         if (htons16(eh->et) != ETHERTYPE_IPV6) continue;
         struct ipv6_hdr *ip = (struct ipv6_hdr *)(buf + 14);
         if (ip->next_header != IPV6_NEXT_ICMP6) continue;
-        /* reply must come from `target` and be addressed to us */
-        if (ipv6_eq((ipv6_addr_t *)ip->src, target) != 0) continue;
-        if (ipv6_eq((ipv6_addr_t *)ip->dst, &our_ll) != 0) continue;
+        /* R9: the peer may interleave ITS OWN NDP (SLIRP solicits
+         * our SLAAC address before it can deliver the reply) --
+         * feed everything that is not our reply to the responder
+         * instead of skipping it. */
+        if (ipv6_eq((ipv6_addr_t *)ip->src, target) != 0 ||
+            ipv6_eq((ipv6_addr_t *)ip->dst, src) != 0) {
+            net_ipv6_handle_frame(buf, n);
+            continue;
+        }
         struct icmp6_hdr *ic = (struct icmp6_hdr *)(buf + 14 + 40);
         if (ic->type != ICMP6_ECHO_REP) continue;
         kprintf("[net6] ICMPv6 echo reply received from %s (seq %u)\n",
@@ -426,6 +582,11 @@ void net_ipv6_init(void) {
 
 const ipv6_addr_t *net_ipv6_linklocal(void) {
     return ipv6_up ? &our_ll : NULL;
+}
+
+/* R9: the SLAAC address, or NULL until an autonomous /64 arrived. */
+const ipv6_addr_t *net_ipv6_global(void) {
+    return (ipv6_up && have_global) ? &our_global : NULL;
 }
 
 /* ---- Offline boot self-test. ---- */

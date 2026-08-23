@@ -249,6 +249,7 @@ static void cmd_help(void) {
     puts("  dnscache    - show DNS cache and servers");
     puts("  dnsset <ip> [ip2] - override DNS servers (debug)");
     puts("  dnsflush    - clear the DNS cache");
+    puts("  dnstc       - force the next DNS answer truncated (TCP fallback test)");
     puts("  ping <host> - ping a hostname via ICMP");
     puts("  ping6 <addr>- ping an IPv6 link-local neighbour (e.g. fe80::2)");
     puts("  ps          - list processes (stub)");
@@ -872,6 +873,11 @@ do_dispatch:
         cmd_dnsset(argc, cmd_argv);
     } else if (strcmp(cmd, "dnsflush") == 0) {
         cmd_dnsflush();
+    } else if (strcmp(cmd, "dnstc") == 0) {
+        if (dnsctl(DNSCTL_FORCE_TC, 0, 0) == 0)
+            puts("dnstc: next DNS answer will be truncated (one shot)");
+        else
+            puts("dnstc: failed");
     } else if (strcmp(cmd, "ping") == 0) {
         cmd_ping(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "ping6") == 0) {

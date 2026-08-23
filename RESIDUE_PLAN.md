@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R8 complete; R9 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R9 complete; R10 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -13,7 +13,7 @@
 | R6 — libc v2: mmap/brk + malloc + stdio-lite on the ports | ✅ complete | `patches/RESIDUE_R6_libc2.patch` |
 | R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | ✅ complete | `patches/RESIDUE_R7_ecam.patch` |
 | R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | ✅ complete | `patches/RESIDUE_R8_rust.patch` |
-| R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | pending | `patches/RESIDUE_R9_net.patch` |
+| R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | ✅ complete | `patches/RESIDUE_R9_net.patch` |
 | R10 — the crypto width line: 32-bit limbs for atls_fe | pending | `patches/RESIDUE_R10_fe32.patch` |
 | R11 — the real-hardware package v2 (user-executable; PCID's D-PCID-5 trigger EXISTS) | pending | `patches/RESIDUE_R11_metal.patch` |
 | R12 — close-out: re-affirmed non-goals, the ledger arithmetic | pending | `patches/RESIDUE_R12_close.patch` |
@@ -468,11 +468,51 @@ install both tenant targets.  status.md's two 🚧 Rust rows flipped
 ✅ — the harvest ratchet CLICKED (status-wip 15→13, baseline moved
 in this same commit).  RES-22 and RES-23 closed.
 
-### R9 — the net cluster
-- [ ] RES-24/25/26/27/28(IRQ-RX): SLAAC, dual-stack resolution,
-      TCP-DNS fallback, /apps/http on libahttp, virtio-net IRQ RX.
-- [ ] Exit: `ping6` a SLAAC address; one HTTPS-over-IPv6 fetch
-      receipt; DNS answers >512B resolve via TCP.
+### R9 — the net cluster — ✅ COMPLETE
+- [x] RES-24/25/27/28(IRQ-RX): SLAAC, TCP-DNS fallback, /apps/http
+      on libahttp, virtio-net IRQ RX.  RES-26 (HTTPS-over-IPv6)
+      stays OPEN, NARROWED — deviation named below.
+- [x] Exit: `ping6` a SLAAC address (fec0::2 answered end-to-end,
+      CI-pinned); DNS answers >512B resolve via TCP (664-byte
+      answer, real wire, CI-pinned).  The HTTPS-over-IPv6 receipt
+      moves with RES-26: its ONE remaining blocker is the TCP
+      layer (v4-wired conn state + ARP + inline IPv4 headers),
+      not the v6 substrate — which this phase made real.
+
+Result: the phase's biggest catch is HISTORICAL — X7's "QEMU SLIRP
+filtering limitation (Launchpad #1724590), peer echo is a manual
+run" was a LEGEND.  pcap -v named FIVE of our own bugs: (1) RS and
+NS declared icmp_len 4 bytes long (header double-counted), so every
+solicitation left with a checksum computed over uninitialised tail
+bytes; (2) checksums were STORED byte-swapped (host-order helper,
+struct store — the R3 byte-order class, ICMPv6 edition; the echo
+paths were self-consistent so nothing internal ever noticed); (3)
+the NA-wait read the target at ICMP+12 instead of +8, so a real NA
+could never match; (4) the RA-wait parsed options from ICMP+8
+instead of +16 (the fixed part is 16 bytes) AND demanded a unicast
+dst while solicited RAs arrive on ff02::1; (5) the echo validator
+checksummed the message WITH its checksum and compared against the
+field — a coin that always said drop, invisible because dropped
+and answered both count as consumed.  With NDP real: RA→SLAAC
+(fec0::/64 + EUI-64), router learned, an NS→NA responder added
+(without it no peer can DELIVER anything — SLIRP's reply died
+resolving us), off-link routing + RFC 6724-floor source selection,
+and `ping6 fec0::2` answers end-to-end in CI.  Fallout catches:
+the DHCP builders never wrote tos/flags_frag (stack garbage,
+blessed by a checksum computed over it — the R9 stack reshape
+exposed it; measured as a SLIRP drop, fixed at both sites), and
+the e1000 lane needed MAX_RTR_SOLICITATIONS retries (RS #1 races
+the NIC bring-up; measured, RS #2 always lands) plus MPE+MTA
+opened for 33:33 multicast.  RES-25: RFC 1035 s4.2.2 TCP retry
+against the same server, driven by the NAMED one-shot knob
+(DNSCTL_FORCE_TC → `dnstc`); the TCP wire and the 664-byte answer
+are real (guestfwd fixture, no root-bound port 53) — test_dns_tcp,
+7/7.  RES-27 was the FOURTH stale doc row (http.c has been
+libahttp since X2/X6).  RES-28 was HALF-stale: ISR + wake existed,
+nothing ever slept — timed waits now wq_wait_deadline and the
+`RX via IRQ wake` receipt is pinned.  New case test_dns_tcp
+(registry 129→130, net shard); ipv6_ping6 grew the SLAAC lane;
+virtio_net pins the IRQ receipt.
 
 ### R10 — the crypto width line
 - [ ] 32-bit limb path for atls_fe (X25519/Ed25519/P-256 at -m32),

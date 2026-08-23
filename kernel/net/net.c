@@ -749,11 +749,20 @@ int net_dhcp(void) {
         memcpy(eh->src_mac, our_mac, 6);
         eh->ethertype = htons_(ETHERTYPE_IPV4);
 
-        /* IP. */
+        /* IP.  R9 CATCH: tos and flags_frag were never written --
+         * stack garbage rode in them since the first DHCP landing,
+         * and the header checksum BLESSED the garbage (computed
+         * over it).  The boot happened to leave zeros there until
+         * the R9 ipv6 work reshaped the stack: then tos=0xFF,
+         * frag-offset=65528 -- and SLIRP dropped the DISCOVER as a
+         * mid-stream fragment.  pcap -v named it; every field is
+         * now written. */
         struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + 14);
         ip->version_ihl = (4 << 4) | 5;
+        ip->tos         = 0;
         ip->total_length= htons_((uint16_t)ip_len);
         ip->ident       = htons_(0x1234);
+        ip->flags_frag  = 0;
         ip->ttl         = 64;
         ip->protocol    = IP_PROTO_UDP;
         ip->src_ip      = htonl_(client_ip);      /* 0.0.0.0 */
@@ -898,8 +907,11 @@ int net_dhcp(void) {
 
         struct ipv4_hdr *ip = (struct ipv4_hdr *)(frame + 14);
         ip->version_ihl = (4 << 4) | 5;
+        ip->tos         = 0;           /* R9: was stack garbage (see
+                                        * the DISCOVER builder's catch) */
         ip->total_length= htons_((uint16_t)ip_len);
         ip->ident       = htons_(0x1235);
+        ip->flags_frag  = 0;
         ip->ttl         = 64;
         ip->protocol    = IP_PROTO_UDP;
         ip->src_ip      = htonl_(client_ip);       /* 0.0.0.0 */

@@ -1274,6 +1274,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             dns_set_servers(ips, n);
             return (uint64_t)n;
         }
+        case DNSCTL_FORCE_TC:
+            dns_force_tc_once();       /* R9: one-shot TC (see dns.h) */
+            return 0;
         case DNSCTL_GET_SERVERS: {
             if (!validate_user_range((const void *)(uintptr_t)a2, a3, 1)) return (uint64_t)-EFAULT;
             uint32_t ips[DNS_SERVERS_MAX];

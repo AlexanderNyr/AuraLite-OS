@@ -179,7 +179,7 @@ il_run_qemu() {
         -no-reboot
         -cpu "$IL_CPU"
         -boot order=c
-        -netdev user,id=net0
+        -netdev "user,id=net0${IL_NETDEV_OPTS:-}"
         -device "${IL_NIC},netdev=net0"
         -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
     )

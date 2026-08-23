@@ -152,6 +152,8 @@ static uint8_t mac[6];
 static int have_mac;
 
 static struct wait_queue vnet_rx_wq;
+static volatile uint64_t vnet_irq_wakes;  /* R9: RX interrupts seen */
+static int vnet_irq_receipt_printed;      /* one line, first sleep-wake */
 
 static uint16_t pci_read16_at(uint8_t off) {
     uint32_t v = pci_config_read(pci_bus, pci_dev, pci_func, off & 0xFC);
@@ -307,6 +309,8 @@ static void virtio_net_irq_handler(struct registers *regs) {
      * The interrupt handler only acknowledges the device and wakes a waiter;
      * descriptor consumption and recycling stay in the polling receive path. */
     if (isr_cfg) (void)*isr_cfg;
+    vnet_irq_wakes++;                    /* R9 (RES-28): counted, printed
+                                          * by the receive path receipt */
     wq_wake_all(&vnet_rx_wq);
     /* EOI is handled by the common ISR dispatcher. */
 }
@@ -512,14 +516,30 @@ int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
             wq_wait(&vnet_rx_wq, NULL);
         }
     } else {
-        /* Timed wait — poll until a packet arrives or timeout expires. */
+        /* Timed wait -- R9 (ledger RES-28): SLEEP on the wait queue
+         * the IRQ handler wakes, bounded by the deadline net
+         * (wq_wait_deadline, the O7 shape) -- this used to be a
+         * pause-spin, which made the registered RX interrupt
+         * decorative: nothing ever slept, so nothing was ever
+         * woken.  The first packet that arrives after a real
+         * sleep-wake prints the receipt the ledger asks for. */
         uint64_t start = timer_get_ticks();
         for (;;) {
             int n = virtio_net_recv(out, bufsize);
-            if (n != 0) return n;
+            if (n != 0) {
+                if (!vnet_irq_receipt_printed && vnet_irq_wakes > 0) {
+                    vnet_irq_receipt_printed = 1;
+                    kprintf("[virtio-net] RX via IRQ wake: slept, not "
+                            "spun (%llu interrupt(s) so far)\n",
+                            (unsigned long long)vnet_irq_wakes);
+                }
+                return n;
+            }
             if (!virtio_net_link_up()) return -1;
-            if (timer_get_ticks() - start >= timeout_ticks) return 0;
-            __asm__ volatile ("pause");
+            uint64_t now = timer_get_ticks();
+            if (now - start >= timeout_ticks) return 0;
+            wq_wait_deadline(&vnet_rx_wq, NULL,
+                             start + timeout_ticks);
         }
     }
 }

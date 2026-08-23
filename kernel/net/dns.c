@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include "kernel/net/dns.h"
 #include "kernel/net/dns_parse.h"
+#include "kernel/net/tcp.h"
 #include "kernel/net/net.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
@@ -107,6 +108,33 @@ static uint16_t dns_next_id(void) {
     return (uint16_t)((uint16_t)r ^ (uint16_t)t ^ seq);
 }
 
+/* R9: one-shot TC injection (DNSCTL_FORCE_TC) -- the UDP leg is
+ * synthesised, the TCP fallback it triggers is REAL wire. */
+static volatile int g_force_tc;
+void dns_force_tc_once(void) { g_force_tc = 1; }
+
+/* Build the type-A question into query[]; returns the length or -1.
+ * Shared by the UDP transport and the R9 TCP fallback (RES-25) --
+ * one builder, two carriages, so the fallback can never ask a
+ * subtly different question. */
+static int dns_build_query(const char *qname, uint8_t *query, int cap,
+                           uint16_t *out_id) {
+    if (cap < 12) return -1;
+    memset(query, 0, (size_t)cap);
+    uint16_t id = dns_next_id();
+    query[0] = (uint8_t)(id >> 8); query[1] = (uint8_t)id;
+    query[2] = 0x01; query[3] = 0x00;              /* RD */
+    query[4] = 0;    query[5] = 1;                 /* QDCOUNT=1 */
+    int name_len = dns_encode_name(qname, query + 12, cap - 12);
+    if (name_len < 0) return -1;
+    int q_off = 12 + name_len;
+    if (q_off + 4 > cap) return -1;
+    query[q_off]     = 0; query[q_off + 1] = DNS_RTYPE_A;   /* type A   */
+    query[q_off + 2] = 0; query[q_off + 3] = 1;             /* class IN */
+    *out_id = id;
+    return q_off + 4;
+}
+
 /*
  * One DNS query round against one server: build the type-A question, send it
  * from DNS_LOCAL_PORT, wait (bounded) for the reply from that server:53.
@@ -115,19 +143,23 @@ static uint16_t dns_next_id(void) {
 static int dns_wire_query(uint32_t server_ip, const char *qname,
                           uint8_t *resp, int cap) {
     uint8_t query[512];
-    memset(query, 0, sizeof(query));
+    uint16_t id = 0;
+    int query_len = dns_build_query(qname, query, (int)sizeof(query), &id);
+    if (query_len < 0) return -1;
 
-    uint16_t id = dns_next_id();
-    query[0] = (uint8_t)(id >> 8); query[1] = (uint8_t)id;
-    query[2] = 0x01; query[3] = 0x00;              /* RD */
-    query[4] = 0;    query[5] = 1;                 /* QDCOUNT=1 */
-
-    int name_len = dns_encode_name(qname, query + 12, (int)sizeof(query) - 12);
-    if (name_len < 0) return -1;
-    int q_off = 12 + name_len;
-    query[q_off]     = 0; query[q_off + 1] = DNS_RTYPE_A;   /* type A   */
-    query[q_off + 2] = 0; query[q_off + 3] = 1;             /* class IN */
-    int query_len = q_off + 4;
+    if (g_force_tc) {
+        /* The armed knob: answer OURSELVES with a bare truncated
+         * header (QR|RD|RA|TC, zero counts) carrying the real ID.
+         * The resolver takes the same TRUNCATED branch a >512B
+         * answer forces, and the TCP retry that follows is real. */
+        g_force_tc = 0;
+        memset(resp, 0, 12);
+        resp[0] = (uint8_t)(id >> 8); resp[1] = (uint8_t)id;
+        resp[2] = 0x83; resp[3] = 0x80;
+        kprintf("[dns] FORCE_TC: synthesising a truncated UDP answer "
+                "(test knob, one shot)\n");
+        return 12;
+    }
 
     if (net_udp_sendto(server_ip, 53, DNS_LOCAL_PORT, query, query_len) != 0)
         return -1;
@@ -145,6 +177,69 @@ static int dns_wire_query(uint32_t server_ip, const char *qname,
         if (rid != id) return -1;
     }
     return n;
+}
+
+/* R9 (ledger RES-25): the TCP carriage for truncated answers.  RFC
+ * 1035 s4.2.2: two-byte length prefix each way, same message format.
+ * A fresh ID is used (a TC retry is a new transaction) and checked.
+ * Returns the response length, or -1. */
+static int dns_wire_query_tcp(uint32_t server_ip, const char *qname,
+                              uint8_t *resp, int cap) {
+    uint8_t query[512];
+    uint16_t id = 0;
+    int query_len = dns_build_query(qname, query, (int)sizeof(query), &id);
+    if (query_len < 0) return -1;
+
+    tcp_handle_t h = tcp_open(server_ip, 53);
+    if (h < 0) {
+        kprintf("[dns] TCP connect to server:53 failed\n");
+        return -1;
+    }
+    uint8_t pfx[2] = { (uint8_t)(query_len >> 8), (uint8_t)query_len };
+    if (tcp_send_h(h, pfx, 2) < 0 ||
+        tcp_send_h(h, query, (uint32_t)query_len) < 0) {
+        tcp_close_h(h);
+        return -1;
+    }
+
+    /* Collect the length prefix, then exactly that many bytes (a
+     * segment boundary may fall anywhere -- accumulate, do not
+     * assume one recv = one message).  tcp_recv_h is non-blocking
+     * (0 = nothing yet), so the loop is bounded by wall clock. */
+    uint8_t acc[2 + 1024];
+    int have = 0;
+    int want = 2;
+    uint64_t deadline = timer_get_ticks() + DNS_QUERY_TIMEOUT_TICKS * 2;
+    while (have < want) {
+        int n = tcp_recv_h(h, acc + have, (uint32_t)(sizeof(acc) - have));
+        if (n < 0)
+            break;
+        if (n == 0) {
+            if (timer_get_ticks() > deadline)
+                break;
+            continue;
+        }
+        have += n;
+        if (want == 2 && have >= 2) {
+            int mlen = (acc[0] << 8) | acc[1];
+            if (mlen <= 0 || mlen > (int)sizeof(acc) - 2)
+                break;
+            want = 2 + mlen;
+        }
+    }
+    tcp_close_h(h);
+    if (want == 2 || have < want)
+        return -1;
+    int mlen = want - 2;
+    if (mlen > cap)
+        return -1;                       /* caller's buffer decides */
+    if (mlen >= 2) {
+        uint16_t rid = (uint16_t)((acc[2] << 8) | acc[3]);
+        if (rid != id)
+            return -1;
+    }
+    memcpy(resp, acc + 2, (size_t)mlen);
+    return mlen;
 }
 
 static dns_transport_fn g_transport = dns_wire_query;
@@ -217,7 +312,7 @@ uint32_t dns_resolve_ipv4(const char *hostname) {
             }
             if (got >= 0) used_server = srv[s];
         }
-        (void)used_server;
+
 
         if (got < 0) {
             kprintf("[dns] FAIL: '%s' unresolved (all %d server(s) silent)\n",
@@ -229,6 +324,23 @@ uint32_t dns_resolve_ipv4(const char *hostname) {
         uint16_t rid = (uint16_t)((resp[0] << 8) | resp[1]);
         dns_result_t r;
         int pr = dns_parse_response(resp, got, current, rid, &r);
+
+        /* R9 (RES-25): a TC answer re-asks the SAME server over TCP
+         * before the switch judges the result -- the fallback the X3
+         * landing deferred with a name. */
+        if (pr == DNS_PARSE_TRUNCATED) {
+            kprintf("[dns] '%s' reply truncated (TC) — retrying over "
+                    "TCP (RFC 1035 s4.2.2)\n", current);
+            got = dns_wire_query_tcp(used_server, current, resp,
+                                     (int)sizeof(resp));
+            if (got <= 0) {
+                kprintf("[dns] FAIL: TCP fallback carried no answer\n");
+                return 0;
+            }
+            kprintf("[dns] PASS: TCP fallback answer, %d bytes\n", got);
+            rid = (uint16_t)((resp[0] << 8) | resp[1]);
+            pr = dns_parse_response(resp, got, current, rid, &r);
+        }
 
         switch (pr) {
         case DNS_PARSE_ANSWER:
@@ -262,8 +374,8 @@ uint32_t dns_resolve_ipv4(const char *hostname) {
         }
 
         case DNS_PARSE_TRUNCATED:
-            kprintf("[dns] '%s' reply truncated (TC) — TCP fallback deferred "
-                    "to X4/X6; failing loudly per D7\n", current);
+            kprintf("[dns] '%s' STILL truncated over TCP — malformed "
+                    "server, failing loudly per D7\n", current);
             return 0;
 
         default:
