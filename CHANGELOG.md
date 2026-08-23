@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE R10 — the crypto width line: 104 vector checks at -m32, and the prescribed fix wasn't the built one] 2026-08-23
+
+RES-29 closed: X25519/Ed25519/P-256 now run at 32-bit width.  The
+old m32 gate's comment prescribed "the 25.5-limb reduction path";
+what won instead is a PACKED representation — atls_fe.h selects
+eight uint32 limbs in radix 2^32 (uint64_t accumulators, schoolbook
+8×8→16, reduction via 2^256 ≡ 38 mod p) whenever __int128 is
+absent, or under -DATLS_FE_FORCE32 on a 64-bit host.  Every
+operation returns a fully carried value < 2^256, so correctness
+never depends on caller call patterns the way the 51-bit shape's
+deferred carries do; fold range arguments sit at their call sites;
+fixed trip counts and shift-derived borrows keep secret data
+branch-free.  atls_ecdsa.c was parameterised, not forked: the same
+shift-and-subtract algorithm takes limb type/count from a width
+selector (P256_QUAD packs the four uint64 constants into eight
+uint32 limbs; atls_dlimb is __int128 or uint64_t).  The generic fe
+tail was already API-shaped and is shared verbatim.  Receipts (D1):
+the five-suite battery — hash 32, AEAD 18, X25519 27 (RFC 7748 +
+ten Wycheproof low-order triples + the 1000-iteration ladder),
+Ed25519 17, ECDSA 10 = 104 checks — green ×4: native 64-bit
+regression, FORCE32, real -m32, and the rv64/a64 gates rerun
+untouched-green.  test_libatls_m32.sh now runs BOTH 32-bit lanes
+(FORCE32 needs no multilib; -m32 when the host can) and keeps the
+no-__int128 guard on the eight symmetric sources — fe/ecdsa are
+exempt BY NAME because compiling them at -m32 IS the guard.  Three
+would-be stale doc rows (the RES-05/15/27 class) rewritten in the
+same commit they became lies: the m32 header, the rv64/a64
+"cannot reach" epilogues.  status.md crypto row 🧪→✅ — a 🧪 row,
+so the harvest ratchet (🚧/🔶 only) honestly does NOT move.
+Ledger OPEN 26→25.
+
 ## [RESIDUE R9 — the net cluster: the "SLIRP limitation" was five of our own bugs] 2026-08-23
 
 pcap -v dissolved X7's legend ("QEMU SLIRP filtering blocks IPv6

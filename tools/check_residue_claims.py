@@ -216,6 +216,49 @@ def claims():
             'ahttp_client_get' in read("userspace", "apps", "http",
                                        "http.c")))
 
+    # --- R10: the crypto width line (when the plan says it landed) ------
+    if re.search(r"^### R10[^\n]*✅ COMPLETE", plan, re.M):
+        fe_h = read("lib", "libatls", "src", "atls_fe.h")
+        fe_c = read("lib", "libatls", "src", "atls_fe.c")
+        ec_c = read("lib", "libatls", "src", "atls_ecdsa.c")
+        m32 = read("tests", "unit", "test_libatls_m32.sh")
+        checks.append((
+            "R10: the width selector exists (packed 8x-uint32 fe when "
+            "__int128 is absent, FORCE32 override) and the 64-bit core "
+            "kept its radix-2^51 shape",
+            "ATLS_FE_WIDTH32" in fe_h and "ATLS_FE_FORCE32" in fe_h and
+            "#define ATLS_FE_LIMBS 8" in fe_h and
+            "fe32_fold38" in fe_c and "MASK51" in fe_c))
+        checks.append((
+            "R10: atls_ecdsa is limb-parameterised, not forked "
+            "(P256_QUAD packs the same constants; atls_dlimb doubles)",
+            "P256_QUAD" in ec_c and "atls_dlimb" in ec_c and
+            "#define P256_LIMBS 8" in ec_c and
+            "#define P256_LIMB_BITS 32" in ec_c))
+        checks.append((
+            "R10: the m32 gate runs the COMPLETE five-suite battery in "
+            "BOTH lanes (FORCE32 native + real -m32)",
+            "test_atls_ecdsa" in m32 and "test_atls_ed25519" in m32 and
+            "ATLS_FE_FORCE32" in m32 and "cc -m32" in m32))
+        checks.append((
+            "R10: the symmetric no-__int128 guard survived the flip "
+            "(those eight sources have no width ifdef to hide behind)",
+            "NO128_SRCS" in m32 and
+            "__int128" not in read("lib", "libatls", "src",
+                                   "atls_chacha20.c")))
+        checks.append((
+            "R10: the stale -m32-boundary epilogues were rewritten in "
+            "the rv64/a64 gates the same commit they became lies",
+            "cannot reach" not in read("tests", "unit",
+                                       "test_libatls_rv64.sh") and
+            "cannot reach" not in read("tests", "unit",
+                                       "test_libatls_a64.sh")))
+        checks.append((
+            "R10: the status row flipped (no '32-bit limb path is "
+            "required' left in status.md)",
+            "a 32-bit limb path is required first"
+            not in read("docs", "status.md")))
+
     # --- R0 structure ---------------------------------------------------
     checks.append((
         "R0: the amended class totals are recorded as a CATCH in both "

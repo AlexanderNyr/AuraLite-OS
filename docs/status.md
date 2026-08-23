@@ -223,7 +223,7 @@ older CPUs get an honest two-console refusal, 386 included.
 | VGA text console + PS/2 keyboard | ✅ | Mode 3 at `0xB8000`; scancode set 1, shift. Framebuffer/VBE graphics: pending. |
 | ATA PIO storage | ✅ | LBA28 on the boot controller; IDENTIFY + known-bytes read + write/readback/restore self-test. AHCI: waiting on a VFS consumer. |
 | e1000 + DHCP/ARP/ICMP | ✅ | 82540EM; SLIRP lease + gateway ARP + payload-verified echo. Sockets/TCP/DNS: pending the net-stack port. |
-| Crypto at 32-bit width | 🧪 | Symmetric suite (SHA/HMAC/HKDF/ChaCha20/Poly1305/AEAD) passes RFC vectors at `-m32`. **X25519/Ed25519/P-256 blocked**: `atls_fe.c` uses `__int128`; a 32-bit limb path is required first. |
+| Crypto at 32-bit width | ✅ | RESIDUE R10: the COMPLETE suite (hash/AEAD/X25519/Ed25519/P-256, 104 checks) passes at `-m32` — `atls_fe.h` selects a packed 8×uint32 radix-2^32 field core and `atls_ecdsa.c` an 8×uint32 limb parameterisation where `__int128` is absent. Two lanes in `test_libatls_m32.sh`: `-DATLS_FE_FORCE32` on the native host (runs even without multilib) + the real `-m32` ABI. |
 | VFS / FAT32 / ext2 / TCP / GUI | 🚧 | Residue tracked by ratchet 2 (x86_64-include count); lands as the shared subsystems finish the arch.h migration. |
 | Rust userspace / w32 / USB / BT / Wi-Fi | ❌ | Per plan §6: no `i686-unknown-none` target; w32 is PE32+ by design; USB et al. deferred. |
 | UEFI (`BOOTIA32.EFI`) | ❌ by design | BIOS/CSM only on i386 (plan D2). |
@@ -255,7 +255,7 @@ floor: rv64gc (D1; no rv32).
 | libcrv / initrv / shell | ✅ | `smallsh` — ONE portable-C source shared with i386 (promoted from shell32.c); `auralite#` gate green on both. Full libc port pending. |
 | virtio-mmio blk + net | ✅ | Legacy+modern transport over the 8 DTB windows; vrings shared with the PCI drivers (D7). ata32-shaped blk gate; DHCP/ARP/echo over the shared `miniproto`. VFS mount: pending. |
 | 16550 UART RX over PLIC | ✅ | Interrupt-fed cons ring; the shell smoke asserts the `rx bytes via PLIC irq` receipt. |
-| Crypto at rv64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included — `__int128` exists here) executed under `qemu-riscv64`. The `-m32` boundary's green counterpart. |
+| Crypto at rv64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included — `__int128` exists here) executed under `qemu-riscv64`. Since R10 the `-m32` gate runs the same five suites through the 32-bit limb path; this lane keeps the `__int128` limb path honest per-ISA. |
 | No rv32 | ❌ by design | Plan D1. |
 | No own M-mode firmware | ❌ by design | Plan D2: SBI is the platform contract, like the BIOS was for Stage 2. |
 | PCIe ECAM + virtio-pci | ✅ (R7) | The D7 deferral paid: shared `pci_ecam.c` walks bus 0 (`[pci] ECAM: N functions`), shared `virtio_pci.c` is the modern second transport (VERSION_1 acked), and vblk falls through to it when the mmio windows are empty — ext2 mounted over PCI, asserted in the rv_fs PCI lane. |
@@ -294,7 +294,7 @@ EL1 (D1; no arm32, no EL2 entry).
 | libca64 / inita64 / shell | ✅ | `smallsh` — the SAME portable source, fourth build, `--gc-sections` from birth; `auralite#` green with exit codes round-tripping. Full libc port pending (same residue class as rv64). |
 | virtio-mmio blk + net | ✅ | The PROMOTED transport (`kernel/drivers/virtio_mmio.c` — one source, rv64 and a64 both link it); attach REFUSED over non-Device mappings (MAIR checked, Fact 5.2 by refusal); ata32-shaped blk gate; DHCP/ARP/echo over the shared `miniproto` (third consumer). |
 | PL011 RX/TX over GIC | ✅ | RX: IRQ-fed cons ring (INTID 33 from the DTB), counted receipt (`rx bytes via GIC irq`) asserted by the smokes; TX: the O3 `uart_ring.h` index core under the A6 irqflags contract, drained before PSCI power-off. |
-| Crypto at aarch64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included) EXECUTED under `qemu-aarch64` — the second LP64 tenant through the `__int128` path (umulh edition). Deps named: `gcc-aarch64-linux-gnu`, `libc6-dev-arm64-cross`, `qemu-user`. |
+| Crypto at aarch64 | ✅ | The **complete** libatls suite (X25519/Ed25519/P-256 included) EXECUTED under `qemu-aarch64` — the second LP64 tenant through the `__int128` limb path (umulh edition; since R10 the `-m32` gate covers the 32-bit limb path). Deps named: `gcc-aarch64-linux-gnu`, `libc6-dev-arm64-cross`, `qemu-user`. |
 | No arm32, no EL2 entry | ❌ by design | Plan D1: `CurrentEL != EL1` refuses with a banner (EL2 parks in `wfi` — an `hvc` from EL2 would trap into our own empty vectors); aapcs32 never enters the tree. |
 | PCIe ECAM + virtio-pci | ✅ (R7) | The D7 deferral paid: the measured ECAM sits ABOVE 4 GiB on this board (VA carve, not HHDM folklore); shared walker + modern transport, vblk-over-PCI ext2 mount asserted in the a64_fs PCI lane. |
 | SMP / SVE / big.LITTLE | ❌ | Per plan §4; PSCI `CPU_ON` is the recorded exit ramp (D5). |

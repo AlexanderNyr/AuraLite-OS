@@ -40,7 +40,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-26 | W | OPEN | HTTPS-over-IPv6 fetch receipt missing (INTERNET N8) — R9 NARROWED: the v6 substrate below it now WORKS end-to-end (SLAAC/NDP/echo, CI-pinned); the one blocker left is the TCP layer itself, v4-wired through conn state + ARP + inline IPv4 headers (tcp.c) and an ip4-only socket ABI | one fetch receipt in a case |
 | RES-27 | W | DONE@R9 | /apps/http still hand-rolled — the FOURTH stale doc row: http.c has been libahttp's keep-alive client since X2/X6 (header says so, Makefile links libahttp, http_get/x6 cases pin the behaviour); R9 recorded the catch, zero code needed | app links libahttp; behavior pins hold |
 | RES-28 | W | DONE@R9 | virtio-net RX polls; IRQ RX pending — HALF-stale: the ISR + wq wake existed, but nothing ever slept (timed waits pause-spun), so the interrupt was decorative.  R9: wq_wait_deadline in the timed path + counted receipt (vmxnet3/e1000e data paths stay S → RES-46 class) | RX-via-IRQ receipt in net case (pinned) |
-| RES-29 | W | OPEN | atls_fe needs 32-bit limbs; -m32 crypto blocked (I386/status) | X25519/Ed25519/P-256 vectors green at -m32 |
+| RES-29 | W | DONE@R10 | atls_fe needed 32-bit limbs; -m32 crypto was blocked (I386/status) — closed: packed 8×uint32 radix-2^32 fe core + P256 limb parameterisation, same API | X25519/Ed25519/P-256 vectors green at -m32 ✔ (104 checks ×2 lanes: FORCE32 + real -m32) |
 | RES-30 | M | OPEN | PAT/WC framebuffer win measurable only on metal (OPT §7/HW H3) | R11 package line; user paste-back |
 | RES-31 | W | OPEN | PCID: D-PCID-5 gate FIRED (user WHPX log `pcid=1`) — implement with CR3-toggle fallback (HW H4) | counters leave pinned zero; WHPX receipt block shipped |
 | RES-32 | M | OPEN | ERMSB crossover tuning needs real silicon (HW H2) | R11 package line; user paste-back |
@@ -65,7 +65,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 
 Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
 R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses: OPEN 26, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer).
+amended same-commit, catch recorded).  Statuses: OPEN 25, DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29).
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

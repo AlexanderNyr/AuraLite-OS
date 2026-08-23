@@ -4,10 +4,20 @@
 /* atls_fe.h — field arithmetic modulo p = 2^255 - 19, shared by X25519
  * and Ed25519 (INTERNET_PLAN.md phase N1).  Internal header.
  *
- * Representation: five 64-bit limbs in radix 2^51 (curve25519-donna-64
- * shape), multiplied with unsigned __int128 accumulators.  This is
- * userspace code (the guest userspace build is plain 64-bit C), so
- * __int128 is available; the kernel never compiles this file.
+ * TWO representations, selected by limb width (RESIDUE_PLAN R10):
+ *
+ *   64-bit (__int128 available): five limbs in radix 2^51
+ *   (curve25519-donna-64 shape), multiplied with unsigned __int128
+ *   accumulators.  The original N1 path, byte-identical.
+ *
+ *   32-bit (-m32 / any ILP32 target, or -DATLS_FE_FORCE32 on a 64-bit
+ *   host for differential runs): eight PACKED uint32_t limbs in radix
+ *   2^32, multiplied with plain uint64_t accumulators into a 16-limb
+ *   product, reduced via 2^256 ≡ 38 (mod p).  Every operation returns
+ *   a fully carried value < 2^256 (not necessarily < p), so callers
+ *   never see width-dependent semantics; tobytes canonicalises.
+ *
+ * The API below is width-agnostic; nothing outside atls_fe.c reads .v.
  *
  * Everything here is straight-line except atls_fe_cswap's callers and the
  * final conditional subtraction in tobytes (both branch-free masked
@@ -17,8 +27,17 @@
 
 #include <stdint.h>
 
+#if !defined(__SIZEOF_INT128__) || defined(ATLS_FE_FORCE32)
+#define ATLS_FE_WIDTH32 1
+typedef uint32_t atls_fe_limb;
+#define ATLS_FE_LIMBS 8
+#else
+typedef uint64_t atls_fe_limb;
+#define ATLS_FE_LIMBS 5
+#endif
+
 typedef struct {
-    uint64_t v[5];
+    atls_fe_limb v[ATLS_FE_LIMBS];
 } atls_fe;
 
 void atls_fe_0(atls_fe *r);

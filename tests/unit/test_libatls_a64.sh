@@ -3,9 +3,10 @@
 # at aarch64, the COMPLETE suite.
 #
 # The fourth width for libatls, and the second LP64-with-__int128
-# tenant: like rv64 (and unlike -m32, whose boundary I386_PLAN §6
-# records), aarch64 runs everything the host suite runs -- X25519,
-# Ed25519, P-256 ECDSA included.  Plan Fact 5 holds the measured
+# tenant: like rv64, aarch64 runs everything the host suite runs --
+# X25519, Ed25519, P-256 ECDSA included (since RESIDUE_PLAN R10 the
+# -m32 gate runs them too, through the 32-bit limb path -- I386_PLAN
+# §6's boundary is closed).  Plan Fact 5 holds the measured
 # __int128 execution receipt from fact-finding; this gate turns the
 # receipt into a standing assertion.
 #
@@ -56,7 +57,8 @@ for f in $SRCS; do
     fi
 done
 
-# The suites that exercise the __int128 path the -m32 gate cannot:
+# The suites that exercise the 64-bit __int128 limb path (the -m32
+# gate runs the same five through the R10 32-bit limb path):
 TESTS="test_atls_hash test_atls_aead test_atls_x25519 test_atls_ed25519 test_atls_ecdsa"
 
 CFLAGS="-std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include -I lib/libatls/src -I ."
@@ -89,7 +91,8 @@ if command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 && \
     fi
     echo "[atls-a64] PASS: the COMPLETE suite (hash/AEAD/X25519/Ed25519/ECDSA)"
     echo "           executed at aarch64 -- the second LP64 tenant to run the"
-    echo "           __int128 path the -m32 gate cannot reach (umulh edition)"
+    echo "           __int128 limb path (umulh edition; the -m32 gate covers"
+    echo "           the R10 32-bit limb path)"
     exit 0
 fi
 

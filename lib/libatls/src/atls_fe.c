@@ -1,28 +1,61 @@
-/* atls_fe.c — field arithmetic mod p = 2^255 - 19.
+/* atls_fe.c — field arithmetic mod p = 2^255 - 19, at TWO limb widths
+ * (RESIDUE_PLAN R10; the width is chosen in atls_fe.h).
  *
- * Five limbs in radix 2^51.  After mul/sq each limb is bounded by about
- * 2^52, which keeps every __int128 accumulator far below 2^127.
+ * 64-bit path: five limbs in radix 2^51.  After mul/sq each limb is
+ * bounded by about 2^52, which keeps every __int128 accumulator far
+ * below 2^127.  The original N1 code, unchanged.
+ *
+ * 32-bit path: eight PACKED uint32_t limbs in radix 2^32 with plain
+ * uint64_t accumulators.  Deliberately simpler than the 25.5-bit
+ * unsaturated shape: every operation fully propagates carries and
+ * returns a value < 2^256 (not necessarily < p), reduced through
+ * 2^256 ≡ 38 (mod p).  Correctness does not depend on caller call
+ * patterns, and each fold's range argument is written at its site.
+ * All loops run a fixed trip count; borrows/carries come from shifts,
+ * not comparisons, so the path stays branch-free on secret data.
+ *
+ * The generic tail (exponentiations, canonical-encoding predicates) is
+ * shared verbatim by both widths: it is written against the API only.
  */
 
 #include "atls_fe.h"
 #include "atls/atls.h"
 
-#define MASK51 0x7ffffffffffffULL
-
-typedef unsigned __int128 u128;
+/* ------------------------------------------------------------------ */
+/* Width-independent trivia: written once, against ATLS_FE_LIMBS.      */
+/* ------------------------------------------------------------------ */
 
 void atls_fe_0(atls_fe *r) {
-    for (int i = 0; i < 5; i++) r->v[i] = 0;
+    for (int i = 0; i < ATLS_FE_LIMBS; i++) r->v[i] = 0;
 }
 
 void atls_fe_1(atls_fe *r) {
     r->v[0] = 1;
-    for (int i = 1; i < 5; i++) r->v[i] = 0;
+    for (int i = 1; i < ATLS_FE_LIMBS; i++) r->v[i] = 0;
 }
 
 void atls_fe_copy(atls_fe *r, const atls_fe *a) {
-    for (int i = 0; i < 5; i++) r->v[i] = a->v[i];
+    for (int i = 0; i < ATLS_FE_LIMBS; i++) r->v[i] = a->v[i];
 }
+
+void atls_fe_cswap(atls_fe *a, atls_fe *b, uint64_t swap) {
+    atls_fe_limb mask = (atls_fe_limb)0 - (atls_fe_limb)swap; /* 0 or 1 */
+    for (int i = 0; i < ATLS_FE_LIMBS; i++) {
+        atls_fe_limb x = (a->v[i] ^ b->v[i]) & mask;
+        a->v[i] ^= x;
+        b->v[i] ^= x;
+    }
+}
+
+#if !defined(ATLS_FE_WIDTH32)
+
+/* ------------------------------------------------------------------ */
+/* 64-bit core: five limbs, radix 2^51, __int128 accumulators.         */
+/* ------------------------------------------------------------------ */
+
+#define MASK51 0x7ffffffffffffULL
+
+typedef unsigned __int128 u128;
 
 void atls_fe_add(atls_fe *r, const atls_fe *a, const atls_fe *b) {
     for (int i = 0; i < 5; i++) r->v[i] = a->v[i] + b->v[i];
@@ -131,15 +164,6 @@ void atls_fe_sq(atls_fe *r, const atls_fe *a) {
     for (int i = 0; i < 5; i++) r->v[i] = out[i];
 }
 
-void atls_fe_cswap(atls_fe *a, atls_fe *b, uint64_t swap) {
-    uint64_t mask = (uint64_t)0 - swap;   /* swap must be 0 or 1 */
-    for (int i = 0; i < 5; i++) {
-        uint64_t x = (a->v[i] ^ b->v[i]) & mask;
-        a->v[i] ^= x;
-        b->v[i] ^= x;
-    }
-}
-
 void atls_fe_frombytes(atls_fe *r, const uint8_t b[32]) {
     uint64_t w[4];
     for (int i = 0; i < 4; i++) {
@@ -195,6 +219,178 @@ void atls_fe_tobytes(uint8_t out[32], const atls_fe *a) {
         }
     }
 }
+
+#else /* ATLS_FE_WIDTH32 */
+
+/* ------------------------------------------------------------------ */
+/* 32-bit core: eight packed uint32_t limbs, radix 2^32, uint64_t      */
+/* accumulators.  Invariant: every public operation returns a fully    */
+/* carried value < 2^256.                                              */
+/* ------------------------------------------------------------------ */
+
+/* t += c * 38, full fixed-length carry chain; returns the carry out of
+ * bit 255 (0 or 1).  c*38 must fit 2^38-ish — every caller's c is at
+ * most a few hundred, argued at the call sites. */
+static uint32_t fe32_fold38(uint32_t t[8], uint64_t c) {
+    uint64_t acc = (uint64_t)t[0] + c * 38u;
+    t[0] = (uint32_t)acc;
+    acc >>= 32;
+    for (int i = 1; i < 8; i++) {
+        acc += t[i];
+        t[i] = (uint32_t)acc;
+        acc >>= 32;
+    }
+    return (uint32_t)acc;
+}
+
+void atls_fe_add(atls_fe *r, const atls_fe *a, const atls_fe *b) {
+    uint32_t t[8];
+    uint64_t acc = 0;
+    for (int i = 0; i < 8; i++) {
+        acc += (uint64_t)a->v[i] + b->v[i];
+        t[i] = (uint32_t)acc;
+        acc >>= 32;
+    }
+    /* acc ≤ 1.  First fold adds ≤ 38; if THAT carries, the remainder
+     * was < 38, so the second fold (+38) lands below 76 — no carry. */
+    acc = fe32_fold38(t, acc);
+    (void)fe32_fold38(t, acc);
+    for (int i = 0; i < 8; i++) r->v[i] = t[i];
+}
+
+/* t -= w (single word), full fixed-length borrow chain; returns the
+ * borrow out of bit 255 (0 or 1).  Borrows are extracted with a shift,
+ * not a comparison, to stay branch-free. */
+static uint32_t fe32_sub_word(uint32_t t[8], uint64_t w) {
+    uint64_t br = 0;
+    for (int i = 0; i < 8; i++) {
+        uint64_t d = (uint64_t)t[i] - (w & 0xffffffffu) - br;
+        t[i] = (uint32_t)d;
+        br = (d >> 63) & 1;         /* 1 iff the subtraction wrapped */
+        w >>= 32;
+    }
+    return (uint32_t)br;
+}
+
+void atls_fe_sub(atls_fe *r, const atls_fe *a, const atls_fe *b) {
+    uint32_t t[8];
+    uint64_t br = 0;
+    for (int i = 0; i < 8; i++) {
+        uint64_t d = (uint64_t)a->v[i] - b->v[i] - br;
+        t[i] = (uint32_t)d;
+        br = (d >> 63) & 1;
+    }
+    /* t ≡ a - b + 2^256·br, and 2^256 ≡ 38: take the 38 back out.
+     * If that underflows again the wrapped value is ≥ 2^256 - 38, so
+     * the third pass cannot underflow — fixed two extra passes. */
+    br = fe32_sub_word(t, br * 38u);
+    (void)fe32_sub_word(t, br * 38u);
+    for (int i = 0; i < 8; i++) r->v[i] = t[i];
+}
+
+void atls_fe_neg(atls_fe *r, const atls_fe *a) {
+    atls_fe zero;
+    atls_fe_0(&zero);
+    atls_fe_sub(r, &zero, a);
+}
+
+void atls_fe_mul(atls_fe *r, const atls_fe *a, const atls_fe *b) {
+    uint32_t p[16], t[8];
+    uint64_t acc, carry;
+
+    /* Schoolbook 8x8 -> 16 limbs.  p[i+8] is untouched before its
+     * write (rows j<8 touch p[i..i+7] only), so the carry lands on a
+     * virgin limb — same shape as atls_ecdsa's nmul, minus the while. */
+    for (int i = 0; i < 16; i++) p[i] = 0;
+    for (int i = 0; i < 8; i++) {
+        carry = 0;
+        for (int j = 0; j < 8; j++) {
+            acc = (uint64_t)p[i + j] + (uint64_t)a->v[i] * b->v[j] + carry;
+            p[i + j] = (uint32_t)acc;
+            carry = acc >> 32;
+        }
+        p[i + 8] = (uint32_t)carry;
+    }
+
+    /* Reduce: lo + 38·hi.  Per limb: (2^32-1) + 38·(2^32-1) + carry,
+     * so carry stays ≤ 39; the word out of bit 255 is ≤ 39 too. */
+    carry = 0;
+    for (int i = 0; i < 8; i++) {
+        acc = (uint64_t)p[i] + (uint64_t)p[i + 8] * 38u + carry;
+        t[i] = (uint32_t)acc;
+        carry = acc >> 32;
+    }
+    /* carry ≤ 39: first fold adds ≤ 1482; if it carries, the remainder
+     * was < 1482 and the second fold (+38) cannot carry. */
+    carry = fe32_fold38(t, carry);
+    (void)fe32_fold38(t, carry);
+    for (int i = 0; i < 8; i++) r->v[i] = t[i];
+}
+
+void atls_fe_mul_small(atls_fe *r, const atls_fe *a, uint64_t s) {
+    /* s < 2^64 ≤ two limbs: delegate to the generic multiply. */
+    atls_fe fs;
+    atls_fe_0(&fs);
+    fs.v[0] = (uint32_t)s;
+    fs.v[1] = (uint32_t)(s >> 32);
+    atls_fe_mul(r, a, &fs);
+}
+
+void atls_fe_sq(atls_fe *r, const atls_fe *a) {
+    /* No specialised squaring at this width: auditability over speed,
+     * the same trade atls_ecdsa.c documents for its reduction. */
+    atls_fe_mul(r, a, a);
+}
+
+void atls_fe_frombytes(atls_fe *r, const uint8_t b[32]) {
+    for (int i = 0; i < 8; i++) {
+        r->v[i] = (uint32_t)b[i * 4] |
+                  ((uint32_t)b[i * 4 + 1] << 8) |
+                  ((uint32_t)b[i * 4 + 2] << 16) |
+                  ((uint32_t)b[i * 4 + 3] << 24);
+    }
+    r->v[7] &= 0x7fffffffu;                  /* bit 255 dropped here */
+}
+
+void atls_fe_tobytes(uint8_t out[32], const atls_fe *a) {
+    /* p = 2^255 - 19, packed radix 2^32. */
+    static const uint32_t p32[8] = {
+        0xffffffedu, 0xffffffffu, 0xffffffffu, 0xffffffffu,
+        0xffffffffu, 0xffffffffu, 0xffffffffu, 0x7fffffffu,
+    };
+    uint32_t t[8];
+    for (int i = 0; i < 8; i++) t[i] = a->v[i];
+
+    /* Input is < 2^256 = 2p + 38, so at most TWO conditional
+     * subtractions of p reach the canonical range [0, p). */
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t g[8];
+        uint64_t br = 0;
+        for (int i = 0; i < 8; i++) {
+            uint64_t d = (uint64_t)t[i] - p32[i] - br;
+            g[i] = (uint32_t)d;
+            br = (d >> 63) & 1;
+        }
+        /* Keep g iff the subtraction did NOT borrow. */
+        uint32_t mask = (uint32_t)br - 1u;   /* all-ones iff br == 0 */
+        for (int i = 0; i < 8; i++) {
+            t[i] ^= (t[i] ^ g[i]) & mask;
+        }
+    }
+
+    for (int i = 0; i < 8; i++) {
+        out[i * 4]     = (uint8_t)t[i];
+        out[i * 4 + 1] = (uint8_t)(t[i] >> 8);
+        out[i * 4 + 2] = (uint8_t)(t[i] >> 16);
+        out[i * 4 + 3] = (uint8_t)(t[i] >> 24);
+    }
+}
+
+#endif /* ATLS_FE_WIDTH32 */
+
+/* ------------------------------------------------------------------ */
+/* Width-independent tail: written against the API only.               */
+/* ------------------------------------------------------------------ */
 
 /* Generic square-and-multiply over a little-endian 32-byte exponent.
  * Variable-time over the exponent — acceptable: both exponents below

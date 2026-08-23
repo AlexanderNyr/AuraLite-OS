@@ -2,9 +2,11 @@
 # tests/unit/test_libatls_rv64.sh -- RISCV_PLAN V8: the crypto stack
 # at rv64, the COMPLETE suite.
 #
-# The i386 gate (test_libatls_m32.sh) runs the symmetric subset and
-# records a real boundary: atls_fe.c and atls_ecdsa.c need unsigned
-# __int128, which -m32 does not have.  rv64 is LP64 with __int128
+# The i386 gate (test_libatls_m32.sh) once ran only the symmetric
+# subset -- atls_fe.c and atls_ecdsa.c needed unsigned __int128, which
+# -m32 does not have.  RESIDUE_PLAN R10 closed that boundary with a
+# 32-bit limb path, so BOTH gates now run the complete suite; this one
+# still matters because rv64 is LP64 with __int128
 # (plan Fact 5), so THIS gate runs everything the host suite runs --
 # X25519, Ed25519, P-256 ECDSA included.  Same sources, both truths
 # recorded: the i386 plan's §6 boundary entry gets its green
@@ -46,7 +48,8 @@ for f in $SRCS; do
     fi
 done
 
-# The suites that exercise the __int128 path the -m32 gate cannot:
+# The suites that exercise the 64-bit __int128 limb path (the -m32
+# gate runs the same five through the R10 32-bit limb path):
 TESTS="test_atls_hash test_atls_aead test_atls_x25519 test_atls_ed25519 test_atls_ecdsa"
 
 CFLAGS="-std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include -I lib/libatls/src -I ."
@@ -78,8 +81,8 @@ if command -v riscv64-linux-gnu-gcc >/dev/null 2>&1 && \
         exit 1
     fi
     echo "[atls-rv64] PASS: the COMPLETE suite (hash/AEAD/X25519/Ed25519/ECDSA)"
-    echo "            executed at rv64 -- the __int128 path the -m32 gate"
-    echo "            cannot reach (I386_PLAN §6's green counterpart)"
+    echo "            executed at rv64 -- the __int128 limb path (the -m32"
+    echo "            gate covers the R10 32-bit limb path)"
     exit 0
 fi
 

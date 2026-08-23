@@ -1,6 +1,6 @@
 # AuraLite OS — Residue Ledger Plan (every named leftover, found, classed, scheduled)
 
-## Status: IN PROGRESS — R0–R9 complete; R10 next; plan committed 2026-08-22
+## Status: IN PROGRESS — R0–R10 complete; R11 next; plan committed 2026-08-22
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -14,7 +14,7 @@
 | R7 — PCIe ECAM on virt (rv64 + a64), virtio-pci as second transport | ✅ complete | `patches/RESIDUE_R7_ecam.patch` |
 | R8 — Rust rows: rv64 + a64 editions of rustes/rsbr | ✅ complete | `patches/RESIDUE_R8_rust.patch` |
 | R9 — the net cluster (SLAAC/dual-stack, TCP-DNS fallback, libahttp port) | ✅ complete | `patches/RESIDUE_R9_net.patch` |
-| R10 — the crypto width line: 32-bit limbs for atls_fe | pending | `patches/RESIDUE_R10_fe32.patch` |
+| R10 — the crypto width line: 32-bit limbs for atls_fe | ✅ complete | `patches/RESIDUE_R10_fe32.patch` |
 | R11 — the real-hardware package v2 (user-executable; PCID's D-PCID-5 trigger EXISTS) | pending | `patches/RESIDUE_R11_metal.patch` |
 | R12 — close-out: re-affirmed non-goals, the ledger arithmetic | pending | `patches/RESIDUE_R12_close.patch` |
 
@@ -514,10 +514,43 @@ nothing ever slept — timed waits now wq_wait_deadline and the
 (registry 129→130, net shard); ipv6_ping6 grew the SLAAC lane;
 virtio_net pins the IRQ receipt.
 
-### R10 — the crypto width line
-- [ ] 32-bit limb path for atls_fe (X25519/Ed25519/P-256 at -m32),
+### R10 — the crypto width line — ✅ COMPLETE
+- [x] 32-bit limb path for atls_fe (X25519/Ed25519/P-256 at -m32),
       Wycheproof + RFC vectors at 32-bit width, the i386 crypto row
       flips 🧪→✅.
+
+Result: RES-29 closed with LESS code than the row assumed.  The
+"25.5-limb reduction path" the old m32 gate's comment prescribed
+was never built — a packed representation won on auditability:
+atls_fe.h selects eight uint32 limbs in radix 2^32 (plain uint64_t
+accumulators, schoolbook 8×8→16, reduced via 2^256 ≡ 38 mod p)
+whenever `__int128` is absent, or under `-DATLS_FE_FORCE32` on a
+64-bit host.  Every operation returns a fully carried value
+< 2^256, so correctness never depends on caller call patterns the
+way the unsaturated 51-bit shape's deferred carries do; each
+fold's range argument is written at its site; fixed trip counts,
+shift-derived borrows — branch-free on secret data.  atls_ecdsa.c
+did NOT get a second implementation: the SAME shift-and-subtract
+algorithm now takes its limb type/count from a width selector
+(P256_QUAD packs the four uint64 constants into eight uint32
+limbs; atls_dlimb is __int128 or uint64_t), diff mostly indices.
+The generic fe tail (fe_pow, the encoding predicates) is shared
+verbatim by both widths — it was already written against the API.
+Receipts, D1 numbers: the COMPLETE five-suite battery (hash 32,
+AEAD 18, X25519 27 — RFC 7748 + ten Wycheproof low-order triples +
+the 1000-iteration ladder, Ed25519 17, ECDSA P-256 10; 104 checks)
+green ×4: native 64-bit (regression), FORCE32 on the 64-bit host,
+real -m32, and the rv64/a64 gates rerun untouched-green.  The m32
+gate now runs BOTH lanes — FORCE32 always (no multilib needed),
+-m32 when the host can — and keeps the no-__int128 guard on the
+eight symmetric sources, which have no width ifdef to hide behind;
+atls_fe.c/atls_ecdsa.c are exempt BY NAME because lane B compiling
+them IS the guard.  Three stale-doc rows of the RES-05/15/27 class
+were rewritten in the same commit they became lies: the m32 gate's
+"THIS comment is the map" header, and the rv64/a64 gates' "the
+path the -m32 gate cannot reach" epilogues.  status.md's 🧪 crypto
+row flipped ✅ (a 🧪 row — the harvest ratchet counts 🚧/🔶 only,
+so the baseline honestly does NOT move this phase).
 
 ### R11 — the real-hardware package v2 (+ PCID, which stopped being metal-only)
 - [ ] PCID: D-PCID-1..5 implemented (CR3-toggle fallback, no

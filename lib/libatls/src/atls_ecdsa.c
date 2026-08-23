@@ -5,8 +5,11 @@
  * (see the X1 rationale); without it, roughly half of real HTTPS chains abort
  * with unsupported_certificate.
  *
- * Representation: big unsigned integers as 4 x uint64 little-endian limbs
- * (256-bit), products as 8 limbs (512-bit).  Modular reduction is a generic
+ * Representation: big unsigned integers as little-endian limbs — 4 x
+ * uint64 with __int128 products where the ABI has them, 8 x uint32 with
+ * uint64 products otherwise (the R10 32-bit width line; same algorithm,
+ * the limb width is a compile-time parameter below).  Products span
+ * twice the limb count (512 bits).  Modular reduction is a generic
  * bit-by-bit shift-and-subtract over the 512-bit product, correct for ANY
  * modulus — deliberately simpler than the NIST P-256 fast reduction so the
  * two moduli used here (field prime p and group order n) share one auditable
@@ -24,55 +27,82 @@
 /* Constants (little-endian uint64 limbs).                             */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Limb width (RESIDUE_PLAN R10).  64-bit limbs with __int128 doubles  */
+/* where the ABI has them; eight 32-bit limbs with uint64_t doubles    */
+/* otherwise (-m32 / ILP32), or under -DATLS_FE_FORCE32 on a 64-bit    */
+/* host for differential runs.  Same algorithm at both widths — only   */
+/* the limb count and the accumulator type change.                     */
+/* ------------------------------------------------------------------ */
+
+#if !defined(__SIZEOF_INT128__) || defined(ATLS_FE_FORCE32)
+typedef uint32_t atls_limb;
+typedef uint64_t atls_dlimb;
+#define P256_LIMBS 8
+#define P256_LIMB_BITS 32
+/* Four 64-bit words -> eight little-endian 32-bit limbs. */
+#define P256_QUAD(w0, w1, w2, w3)                                  \
+    { { (uint32_t)(w0), (uint32_t)((w0) >> 32),                    \
+        (uint32_t)(w1), (uint32_t)((w1) >> 32),                    \
+        (uint32_t)(w2), (uint32_t)((w2) >> 32),                    \
+        (uint32_t)(w3), (uint32_t)((w3) >> 32) } }
+#else
 typedef uint64_t atls_limb;
+typedef unsigned __int128 atls_dlimb;
 #define P256_LIMBS 4
+#define P256_LIMB_BITS 64
+#define P256_QUAD(w0, w1, w2, w3) { { (w0), (w1), (w2), (w3) } }
+#endif
+
+#define P256_WLIMBS (P256_LIMBS * 2)
+
+/* Bit `bit` of a little-endian limb array (p256n or p256w). */
+#define P256_BIT(P, bit) \
+    (((P)->d[(bit) / P256_LIMB_BITS] >> ((bit) % P256_LIMB_BITS)) & 1)
 
 /* 256-bit integer, little-endian limbs. */
 typedef struct { atls_limb d[P256_LIMBS]; } p256n;
 /* 512-bit product, little-endian limbs. */
-typedef struct { atls_limb d[8]; } p256w;
+typedef struct { atls_limb d[P256_WLIMBS]; } p256w;
 
 /* The secp256r1 field prime  p = 2^256 - 2^224 + 2^192 + 2^96 - 1. */
-static const p256n P256_P = {
-    { UINT64_C(0xffffffffffffffff), UINT64_C(0x00000000ffffffff),
-      UINT64_C(0x0000000000000000), UINT64_C(0xffffffff00000001) }
-};
+static const p256n P256_P = P256_QUAD(
+    UINT64_C(0xffffffffffffffff), UINT64_C(0x00000000ffffffff),
+    UINT64_C(0x0000000000000000), UINT64_C(0xffffffff00000001));
 /* The secp256r1 group order  n. */
-static const p256n P256_N = {
-    { UINT64_C(0xf3b9cac2fc632551), UINT64_C(0xbce6faada7179e84),
-      UINT64_C(0xffffffffffffffff), UINT64_C(0xffffffff00000000) }
-};
+static const p256n P256_N = P256_QUAD(
+    UINT64_C(0xf3b9cac2fc632551), UINT64_C(0xbce6faada7179e84),
+    UINT64_C(0xffffffffffffffff), UINT64_C(0xffffffff00000000));
 /* Curve coefficient  b  (Weierstrass y^2 = x^3 - 3x + b). */
-static const p256n P256_B = {
-    { UINT64_C(0x3bce3c3e27d2604b), UINT64_C(0x651d06b0cc53b0f6),
-      UINT64_C(0xb3ebbd55769886bc), UINT64_C(0x5ac635d8aa3a93e7) }
-};
+static const p256n P256_B = P256_QUAD(
+    UINT64_C(0x3bce3c3e27d2604b), UINT64_C(0x651d06b0cc53b0f6),
+    UINT64_C(0xb3ebbd55769886bc), UINT64_C(0x5ac635d8aa3a93e7));
 /* Base point G (affine). */
-static const p256n P256_GX = {
-    { UINT64_C(0xf4a13945d898c296), UINT64_C(0x77037d812deb33a0),
-      UINT64_C(0xf8bce6e563a440f2), UINT64_C(0x6b17d1f2e12c4247) }
-};
-static const p256n P256_GY = {
-    { UINT64_C(0xcbb6406837bf51f5), UINT64_C(0x2bce33576b315ece),
-      UINT64_C(0x8ee7eb4a7c0f9e16), UINT64_C(0x4fe342e2fe1a7f9b) }
-};
+static const p256n P256_GX = P256_QUAD(
+    UINT64_C(0xf4a13945d898c296), UINT64_C(0x77037d812deb33a0),
+    UINT64_C(0xf8bce6e563a440f2), UINT64_C(0x6b17d1f2e12c4247));
+static const p256n P256_GY = P256_QUAD(
+    UINT64_C(0xcbb6406837bf51f5), UINT64_C(0x2bce33576b315ece),
+    UINT64_C(0x8ee7eb4a7c0f9e16), UINT64_C(0x4fe342e2fe1a7f9b));
 
 /* ------------------------------------------------------------------ */
 /* Raw 256-bit arithmetic (mod 2^256).                                 */
 /* ------------------------------------------------------------------ */
 
 static void nz(p256n *r) {
-    r->d[0] = r->d[1] = r->d[2] = r->d[3] = 0;
+    for (int i = 0; i < P256_LIMBS; i++) r->d[i] = 0;
 }
 static void nset1(p256n *r) {
-    r->d[0] = 1; r->d[1] = r->d[2] = r->d[3] = 0;
+    r->d[0] = 1;
+    for (int i = 1; i < P256_LIMBS; i++) r->d[i] = 0;
 }
 static void ncopy(p256n *r, const p256n *a) {
-    r->d[0] = a->d[0]; r->d[1] = a->d[1];
-    r->d[2] = a->d[2]; r->d[3] = a->d[3];
+    for (int i = 0; i < P256_LIMBS; i++) r->d[i] = a->d[i];
 }
 static int niszero(const p256n *a) {
-    return (a->d[0] | a->d[1] | a->d[2] | a->d[3]) == 0;
+    atls_limb acc = 0;
+    for (int i = 0; i < P256_LIMBS; i++) acc |= a->d[i];
+    return acc == 0;
 }
 
 /* Compare two 256-bit integers as unsigned.  -1, 0 or 1. */
@@ -113,31 +143,31 @@ static atls_limb nsub(p256n *r, const p256n *a, const p256n *b) {
     return borrow;
 }
 
-/* 512-bit product: r = a * b (4 limbs -> 8 limbs). */
+/* 512-bit product: r = a * b (P256_LIMBS limbs -> twice that). */
 static void nmul(p256w *r, const p256n *a, const p256n *b) {
-    for (int i = 0; i < 8; i++) r->d[i] = 0;
+    for (int i = 0; i < P256_WLIMBS; i++) r->d[i] = 0;
     for (int i = 0; i < P256_LIMBS; i++) {
         atls_limb carry = 0;
         for (int j = 0; j < P256_LIMBS; j++) {
-            unsigned __int128 t =
-                (unsigned __int128)r->d[i + j] +
-                (unsigned __int128)a->d[i] * (unsigned __int128)b->d[j] +
-                (unsigned __int128)carry;
+            atls_dlimb t =
+                (atls_dlimb)r->d[i + j] +
+                (atls_dlimb)a->d[i] * (atls_dlimb)b->d[j] +
+                (atls_dlimb)carry;
             r->d[i + j] = (atls_limb)t;
-            carry = (atls_limb)(t >> 64);
+            carry = (atls_limb)(t >> P256_LIMB_BITS);
         }
         int k = i + P256_LIMBS;
         while (carry) {
-            unsigned __int128 t = (unsigned __int128)r->d[k] + carry;
+            atls_dlimb t = (atls_dlimb)r->d[k] + carry;
             r->d[k] = (atls_limb)t;
-            carry = (atls_limb)(t >> 64);
+            carry = (atls_limb)(t >> P256_LIMB_BITS);
             k++;
         }
     }
 }
 
 static int wcmp(const p256w *a, const p256w *b) {
-    for (int i = 7; i >= 0; i--) {
+    for (int i = P256_WLIMBS - 1; i >= 0; i--) {
         if (a->d[i] != b->d[i])
             return a->d[i] < b->d[i] ? -1 : 1;
     }
@@ -145,7 +175,7 @@ static int wcmp(const p256w *a, const p256w *b) {
 }
 static void wsub(p256w *r, const p256w *a, const p256w *b) {
     atls_limb borrow = 0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < P256_WLIMBS; i++) {
         atls_limb t = a->d[i] - b->d[i];
         atls_limb b1 = (a->d[i] < b->d[i]) ? 1 : 0;
         atls_limb diff = t - borrow;
@@ -163,23 +193,23 @@ static void wsub(p256w *r, const p256w *a, const p256w *b) {
  * reduction; correct for any M in [1, 2^256). */
 static void nmod_reduce(p256n *r, const p256w *A, const p256n *M) {
     p256w R;
-    for (int i = 0; i < 8; i++) R.d[i] = 0;
+    for (int i = 0; i < P256_WLIMBS; i++) R.d[i] = 0;
     p256w Mp;
-    for (int i = 0; i < 4; i++) Mp.d[i] = M->d[i];
-    for (int i = 4; i < 8; i++) Mp.d[i] = 0;
+    for (int i = 0; i < P256_LIMBS; i++) Mp.d[i] = M->d[i];
+    for (int i = P256_LIMBS; i < P256_WLIMBS; i++) Mp.d[i] = 0;
 
     for (int bit = 511; bit >= 0; bit--) {
         /* R = R << 1 | A.bit(bit) */
         atls_limb carry = 0;
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < P256_WLIMBS; i++) {
             atls_limb nr = (R.d[i] << 1) | carry;
-            carry = R.d[i] >> 63;
+            carry = R.d[i] >> (P256_LIMB_BITS - 1);
             R.d[i] = nr;
         }
-        R.d[0] |= (A->d[bit >> 6] >> (bit & 63)) & 1;
+        R.d[0] |= (atls_limb)P256_BIT(A, bit);
         if (wcmp(&R, &Mp) >= 0) wsub(&R, &R, &Mp);
     }
-    for (int i = 0; i < 4; i++) r->d[i] = R.d[i];
+    for (int i = 0; i < P256_LIMBS; i++) r->d[i] = R.d[i];
 }
 
 /* r = a + b mod M */
@@ -227,8 +257,8 @@ static void nmod_mul(p256n *r, const p256n *a, const p256n *b,
 static void nmod_self(p256n *r, const p256n *a, const p256n *M) {
     if (ncmp(a, M) >= 0) {
         p256w w;
-        for (int i = 0; i < 4; i++) w.d[i] = a->d[i];
-        for (int i = 4; i < 8; i++) w.d[i] = 0;
+        for (int i = 0; i < P256_LIMBS; i++) w.d[i] = a->d[i];
+        for (int i = P256_LIMBS; i < P256_WLIMBS; i++) w.d[i] = 0;
         nmod_reduce(r, &w, M);
     } else {
         ncopy(r, a);
@@ -246,7 +276,7 @@ static void nmod_inv(p256n *r, const p256n *a, const p256n *M) {
     ncopy(&base, a);
     for (int bit = 255; bit >= 0; bit--) {
         nmod_mul(&res, &res, &res, M);       /* res = res^2 */
-        if ((e.d[bit >> 6] >> (bit & 63)) & 1)
+        if (P256_BIT(&e, bit))
             nmod_mul(&res, &res, &base, M);
     }
     ncopy(r, &res);
@@ -265,7 +295,7 @@ static int nfrom_be(p256n *r, const uint8_t *p, size_t len) {
         atls_limb carry = 0;
         for (int j = 0; j < P256_LIMBS; j++) {
             atls_limb v = (r->d[j] << 8) | carry;
-            carry = r->d[j] >> 56;
+            carry = r->d[j] >> (P256_LIMB_BITS - 8);
             r->d[j] = v;
         }
         r->d[0] |= p[i];
@@ -389,7 +419,7 @@ static void pt_mul(p256pt *r, const p256n *k, const p256pt *p,
     pt_inf(&acc);
     for (int bit = 255; bit >= 0; bit--) {
         if (!pt_is_inf(&acc)) pt_double(&acc, &acc, M);
-        if ((k->d[bit >> 6] >> (bit & 63)) & 1)
+        if (P256_BIT(k, bit))
             pt_add(&acc, &acc, p, M);
     }
     *r = acc;
