@@ -19,8 +19,8 @@ NIC + DNS).  At the shell:
 run http https://www.ietf.org/
 ```
 
-`/http` loads `/etc/ssl/roots.pem` (DigiCert Global Root CA,
-DigiCert Global Root G3, ISRG Root X1) and talks TLS 1.3 with
+`/http` loads `/etc/ssl/roots.pem` (sixteen public roots; see
+[`trust_store.md`](trust_store.md)) and talks TLS 1.3 with
 ChaCha20-Poly1305 and the Y6 ClientHello (0x11EC first).
 
 ## The receipt slots
@@ -49,11 +49,11 @@ ChaCha20, P-256 SHA-256 CV, and a root we actually ship.
 
 ## CATCH, named
 
-1. **Trust store is three roots.** Cloudflare and example.com
-   negotiate the hybrid group but chain to GlobalSign / SSL.com,
-   which are not in `/etc/ssl/roots.pem`.  Slot 3 is a group
-   receipt; a `root not in trust store` line is an honest X8
-   diagnosis, not a Y6 regression.
+1. **Trust store is sixteen roots** (DigiCert / ISRG / GTS /
+   GlobalSign / SSL.com / Amazon / USERTrust — see
+   [`trust_store.md`](trust_store.md)).  A host that still chains
+   to something we do not carry prints `root not in trust store`
+   (X8), not a generic TLS error.
 2. **RSA-PSS is verified** (`rsa_pss_rsae_sha256`, EMSA-PSS SHA-256,
    MGF1, saltLen=32).  RES-53 is DONE.  A host whose leaf is RSA
    (rust-lang.org) no longer dies at CertificateVerify.

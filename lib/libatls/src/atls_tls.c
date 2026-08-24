@@ -326,6 +326,9 @@ static int read_record(atls_tls *t, uint8_t *rtype, size_t *rlen) {
 static int read_hs_message_raw(atls_tls *t, uint8_t **msg_out,
                                size_t *msg_len) {
     while (1) {
+        /* Drop TLS 1.3 inner padding left after the previous message. */
+        if (t->hs_len > 0 && t->hs_buf[0] == 0)
+            t->hs_len = 0;
         if (t->hs_len >= 4) {
             uint32_t mlen = atls_rd24(t->hs_buf + 1);
             if (mlen + 4 <= t->hs_len) {
@@ -372,21 +375,17 @@ static int read_hs_message_raw(atls_tls *t, uint8_t **msg_out,
         }
 
         if (inner_type == ATLS_CT_HANDSHAKE) {
-            /* TLS 1.3 records may contain zero-padding between the
-             * handshake message and the inner content type byte.
-             * Only append the actual message bytes (header + body). */
-            size_t msg_content_len = plain_len;
-            if (plain_len >= 4) {
-                uint32_t mlen = atls_rd24(plain + 1);
-                size_t full_msg = 4 + mlen;
-                if (full_msg <= plain_len)
-                    msg_content_len = full_msg;
-            }
-            if (t->hs_len + msg_content_len > MAX_HS_BUF)
+            /* A TLS 1.3 record may hold several handshake messages
+             * back-to-back (EE + Certificate + CV + Finished is the
+             * usual first encrypted flight).  Keep every byte; the
+             * length prefixes split them.  Inner padding is zeros
+             * AFTER the last message — handshake type 0 is unused,
+             * so a leftover that starts with 0 is padding. */
+            if (t->hs_len + plain_len > MAX_HS_BUF)
                 return fail(t, ATLS_ALERT_INTERNAL_ERROR);
-            for (size_t i = 0; i < msg_content_len; i++)
+            for (size_t i = 0; i < plain_len; i++)
                 t->hs_buf[t->hs_len + i] = plain[i];
-            t->hs_len += msg_content_len;
+            t->hs_len += plain_len;
         } else if (inner_type == ATLS_CT_ALERT) {
             if (plain_len >= 2) {
                 t->alert_recv = plain[1];
@@ -534,23 +533,35 @@ uint16_t atls_tls_negotiated_group(const atls_tls *t) {
 static int send_hs(atls_tls *t, uint8_t type,
                    const uint8_t *body, size_t body_len,
                    int encrypted) {
-    uint8_t msg[65536 + 4];
+    size_t need = 4 + body_len;
+    uint8_t stack[512];
+    uint8_t *msg = stack;
+    uint8_t *heap = NULL;
+    if (need > sizeof stack) {
+        heap = (uint8_t *)malloc(need);
+        if (!heap) return ATLS_ERR_INPUT;
+        msg = heap;
+    }
     size_t msg_len = atls_tls_hs_frame(type, body, body_len, msg);
+    int rc;
     if (encrypted && t->hs_keys_set) {
         uint8_t rec[ATLS_TLS_MAX_RECORD + 5];
         size_t rlen;
-        int rc = atls_tls_encrypt_record(&t->hs_tx, ATLS_CT_HANDSHAKE,
-                                         msg, msg_len, rec, &rlen);
-        if (rc != ATLS_OK) return rc;
-        return send_all(t, rec, rlen);
+        rc = atls_tls_encrypt_record(&t->hs_tx, ATLS_CT_HANDSHAKE,
+                                     msg, msg_len, rec, &rlen);
+        if (rc == ATLS_OK) rc = send_all(t, rec, rlen);
+    } else {
+        rc = send_record(t, ATLS_CT_HANDSHAKE, msg, msg_len);
     }
-    return send_record(t, ATLS_CT_HANDSHAKE, msg, msg_len);
+    if (heap) { atls_wipe(heap, need); free(heap); }
+    return rc;
 }
 
 /* Send a post-handshake message encrypted under app keys. */
 static int send_app_hs(atls_tls *t, uint8_t type,
                        const uint8_t *body, size_t body_len) {
-    uint8_t msg[65536 + 4];
+    uint8_t msg[512];
+    if (4 + body_len > sizeof msg) return ATLS_ERR_INPUT;
     size_t msg_len = atls_tls_hs_frame(type, body, body_len, msg);
     if (!t->app_keys_set) return ATLS_ERR_TLS;
     uint8_t rec[ATLS_TLS_MAX_RECORD + 5];

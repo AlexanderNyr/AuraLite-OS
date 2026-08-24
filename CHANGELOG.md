@@ -2,6 +2,21 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HTTPS: packed TLS records, bigger e1000 RX, more roots] 2026-08-24
+
+Live sites failed with `AHTTP_ERR_TLS` / `hrc=-13` (peer EOF) because
+the TLS 1.3 reader kept only the first handshake message in an
+encrypted record and dropped the rest — Google/Cloudflare pack
+EncryptedExtensions + Certificate + CertificateVerify + Finished
+in one flight.  The reader now keeps every message; leftover zeros
+are padding.  The e1000 RX ring grew 8→64 (software queue 16→64)
+so a handshake flight no longer overruns the NIC.  The trust store
+is 3→16 public roots (GTS, GlobalSign, SSL.com, Amazon, USERTrust,
+ISRG X2, DigiCert G2).  gbrowser shows `ahttp_strerror` instead of
+a bare `-4`.  `wttr.in` #GP during handshake is addressed by not
+walking garbage leftover bytes and by 16-byte-aligning ML-KEM
+polys (misaligned SSE on KVM).
+
 ## [Fatal STOP screen (BSOD) with named codes] 2026-08-24
 
 A kernel-mode fault now paints a blue screen after the lock-free serial

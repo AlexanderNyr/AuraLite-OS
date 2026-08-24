@@ -281,6 +281,7 @@ int ahttp_url_parse(const char *url, ahttp_url *out) {
 static const atls_trust_root *g_roots;
 static int                    g_num_roots;
 static const atls_time_now   *g_now;
+static int                    g_last_tls_error;
 
 void ahttp_set_trust_roots(const atls_trust_root *roots, int num_roots,
                            const atls_time_now *now) {
@@ -299,7 +300,7 @@ int ahttp_load_trust_roots(const char *path, atls_trust_root *roots,
     if (!path || !roots || !derbuf || !out_count || max_roots <= 0) return -1;
     int fd = open(path, 0);
     if (fd < 0) return -1;
-    static char pem[16384];
+    static char pem[65536];
     size_t n = 0;
     for (;;) {
         ssize_t got = read(fd, pem + n, sizeof(pem) - 1 - n);
@@ -440,6 +441,7 @@ static int transport_connect(transport *t, const char *host, int port, int use_t
         t->tls = atls_tls_new(&cfg, tls_send_cb, tls_recv_cb, t);
         if (!t->tls) { closesocket(t->fd); return AHTTP_ERR_TLS; }
         int hrc = atls_tls_handshake(t->tls);
+        g_last_tls_error = hrc;
         /* Y7: the live-web paste line.  Printed even when certval
          * fails so a PQ-preferring peer still names the group. */
         {
@@ -1256,4 +1258,30 @@ void ahttp_response_free(ahttp_response *r) {
     if (r->body) free(r->body);
     if (r->final_url) free(r->final_url);
     free(r);
+}
+
+const char *ahttp_strerror(int err, int tls_hrc) {
+    switch (err) {
+    case AHTTP_OK:           return "ok";
+    case AHTTP_ERR_URL:      return "bad URL";
+    case AHTTP_ERR_DNS:      return "DNS failed";
+    case AHTTP_ERR_CONNECT:  return "TCP connect failed";
+    case AHTTP_ERR_TLS:
+        if (tls_hrc == ATLS_CERTVAL_ERR_UNKNOWN_ROOT)
+            return "TLS: certificate authority not in trust store";
+        if (tls_hrc == ATLS_CERTVAL_ERR_EXPIRED)
+            return "TLS: certificate expired";
+        if (tls_hrc == ATLS_CERTVAL_ERR_HOSTNAME)
+            return "TLS: hostname does not match certificate";
+        if (tls_hrc == ATLS_ERR_PEER_EOF)
+            return "TLS: peer closed during handshake";
+        return "TLS handshake failed";
+    case AHTTP_ERR_REQUEST:  return "send failed";
+    case AHTTP_ERR_RESPONSE: return "bad HTTP response";
+    case AHTTP_ERR_REDIRECT: return "redirect failed";
+    case AHTTP_ERR_TOO_LARGE:return "response too large";
+    case AHTTP_ERR_NOMEM:    return "out of memory";
+    case AHTTP_ERR_METHOD:   return "bad HTTP method";
+    default:                 return "request failed";
+    }
 }

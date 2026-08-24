@@ -15,8 +15,8 @@
 #include "string.h"
 #include "stdio.h"
 
-#define MAX_ROOTS 16
-#define DERBUF    (16 * 4096)
+#define MAX_ROOTS 32
+#define DERBUF    (32 * 4096)
 
 /* Extract the first commonName (2.5.4.3 = 0x55 0x04 0x03) string value from
  * a DER-encoded X.501 Name.  Returns 0 on success, -1 if not found.  The
@@ -62,7 +62,7 @@ static void print_date(const atls_x509_time *t, char *out, size_t outlen) {
 }
 
 int main(void) {
-    static char pem[16384];
+    static char pem[65536];
     static uint8_t der[DERBUF];
     static atls_trust_root roots[MAX_ROOTS];
 

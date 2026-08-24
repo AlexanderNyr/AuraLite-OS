@@ -84,7 +84,8 @@ static void test_decode_all_roots(void) {
         if (!e) break;
         pos += (size_t)(e - block) + strlen("-----END CERTIFICATE-----") + 1;
     }
-    CHECK(count == 3, "all 3 roots in roots.pem decode and parse");
+    CHECK(count >= 3 && count <= 32,
+          "all shipped roots in roots.pem decode and parse");
     free(pem);
 }
 

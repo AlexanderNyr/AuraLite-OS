@@ -119,7 +119,7 @@ static uint8_t *tx_buffers[E1000_NUM_TX_DESC];
 static uint8_t *rx_buffers[E1000_NUM_RX_DESC];
 static uint32_t tx_tail = 0;
 
-#define E1000_SW_RX_QUEUE_LEN 16
+#define E1000_SW_RX_QUEUE_LEN 64
 struct sw_rx_packet {
     uint16_t len;
     uint8_t  data[E1000_PKT_BUF_SIZE];

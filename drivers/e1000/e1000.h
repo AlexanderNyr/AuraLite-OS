@@ -27,8 +27,8 @@
 #define E1000_DEVICE_82543GC 0x1004
 #define E1000_DEVICE_ID      E1000_DEVICE_82540EM
 
-#define E1000_NUM_TX_DESC  8
-#define E1000_NUM_RX_DESC  8
+#define E1000_NUM_TX_DESC  32
+#define E1000_NUM_RX_DESC  64
 #define E1000_PKT_BUF_SIZE 2048
 
 /* Initialise the e1000: find it on PCI, map MMIO, set up TX/RX rings.

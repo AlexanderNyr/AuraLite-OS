@@ -302,6 +302,40 @@ static void test_absurd_record_length(void) {
     CHECK(rc != ATLS_OK, "absurd record length refused");
 }
 
+/* Two handshake messages in one TLS 1.3 record (the usual first
+ * encrypted flight).  Decrypt must return BOTH, not just the first. */
+static void test_packed_handshake_record(void) {
+    uint8_t ts[32];
+    for (int i = 0; i < 32; i++) ts[i] = (uint8_t)(i * 7 + 3);
+    atls_tls_keys k;
+    CHECK(atls_tls_derive_record_keys(ts, &k) == ATLS_OK, "pack: derive keys");
+
+    uint8_t ee[8], fin[8], packed[16];
+    size_t ee_len = atls_tls_hs_frame(ATLS_HS_ENCRYPTED_EXTENSIONS,
+                                      (const uint8_t *)"\x00\x00", 2, ee);
+    size_t fin_len = atls_tls_hs_frame(ATLS_HS_FINISHED,
+                                       (const uint8_t *)"abcd", 4, fin);
+    memcpy(packed, ee, ee_len);
+    memcpy(packed + ee_len, fin, fin_len);
+    size_t packed_len = ee_len + fin_len;
+
+    uint8_t rec[256];
+    size_t rlen = 0;
+    CHECK(atls_tls_encrypt_record(&k, ATLS_CT_HANDSHAKE,
+                                  packed, packed_len, rec, &rlen) == ATLS_OK,
+          "pack: encrypt two HS messages");
+
+    atls_tls_keys krx;
+    CHECK(atls_tls_derive_record_keys(ts, &krx) == ATLS_OK, "pack: rx keys");
+    uint8_t inner = 0, pt[64];
+    size_t pt_len = 0;
+    CHECK(atls_tls_decrypt_record(&krx, rec, rlen, &inner, pt, &pt_len)
+          == ATLS_OK, "pack: decrypt");
+    CHECK(inner == ATLS_CT_HANDSHAKE, "pack: inner type is handshake");
+    CHECK(pt_len == packed_len, "pack: both messages survive decrypt");
+    CHECK(memcmp(pt, packed, packed_len) == 0, "pack: plaintext is EE||Finished");
+}
+
 
 /* ---- Test: RSA-PSS-SHA256 verify (RES-53) ---- */
 static void test_pss_verify(void) {
@@ -461,6 +495,7 @@ int main(void) {
     test_key_update(port);
     test_large_transfer(port);
     test_absurd_record_length();
+    test_packed_handshake_record();
 
     cleanup_s_server();
 

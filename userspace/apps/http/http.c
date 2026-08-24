@@ -49,10 +49,10 @@ static void fetch_once(const char *url) {
 /* Attach a PEM trust store to the client.  Returns the root count, 0
  * when the file cannot be used (CertificateVerify-only fallback). */
 static int client_load_roots(ahttp_client *c, const char *path) {
-    static atls_trust_root roots[16];
-    static uint8_t root_der[16384];
+    static atls_trust_root roots[32];
+    static uint8_t root_der[65536];
     int num_roots = 0;
-    if (ahttp_load_trust_roots(path, roots, root_der, 16,
+    if (ahttp_load_trust_roots(path, roots, root_der, 32,
                                sizeof(root_der), &num_roots) == 0) {
         ahttp_client_set_trust_roots(c, roots, num_roots, NULL);
         return num_roots;

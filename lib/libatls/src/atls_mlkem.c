@@ -66,7 +66,7 @@ static const int16_t k_basemul[128] = {
      2110,  1219,  2935,   394,   885,  2444,  2154,  1175,
 };
 
-typedef int16_t poly[N];
+typedef int16_t poly[N] __attribute__((aligned(16)));
 typedef poly polyvec[K];
 
 /* Reduce a product (or a wider sum) into [0, q).  The compiler

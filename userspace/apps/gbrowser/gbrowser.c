@@ -237,6 +237,7 @@ static void page_load_html(const char *html, size_t len) {
 
 static ahttp_client *g_http;
 static int           g_http_roots = -1;   /* -1 = not tried yet */
+static int           g_last_tls_hrc;
 
 static ahttp_client *wv_http_client(void) {
     if (!g_http) {
@@ -277,6 +278,7 @@ static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out
     if (!r) return -1;   /* OOM */
     if (r->error != AHTTP_OK) {
         int rc = r->error;   /* already negative */
+        g_last_tls_hrc = r->tls_error;
         ahttp_response_free(r);
         return rc;
     }
@@ -332,12 +334,16 @@ static void navigate_ex(const char *url_text, int push) {
     printf("[gbrowser] nav: fetching %s\n", fmt);
     char *body = NULL;
     size_t blen = 0;
+    g_last_tls_hrc = 0;
     int rc = wv_fetch_url(&u, &body, &blen);
     if (rc != 0) {
-        printf("[gbrowser] nav: fetch failed (%d) for %s\n", rc, fmt);
-        char page[256];
+        const char *why = ahttp_strerror(rc, g_last_tls_hrc);
+        printf("[gbrowser] nav: fetch failed (%d) for %s — %s\n",
+               rc, fmt, why);
+        char page[384];
         int pl = snprintf(page, sizeof(page),
-            "<body><h1>Load failed</h1><p>%s (%d)</p></body>", fmt, rc);
+            "<body><h1>Load failed</h1><p>%s</p><p>%s (%d)</p></body>",
+            fmt, why, rc);
         page_load_html(page, (size_t)pl > 0 ? (size_t)pl : 0);
         strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
         if (push && hist_pos < HIST_MAX - 1) {

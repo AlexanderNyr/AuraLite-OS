@@ -47,7 +47,11 @@ typedef struct {
     int   redirects_used;   /* number of 3xx hops followed (X6) */
     int   reused_connection;/* 1 if the final fetch reused a cached socket (X6) */
     int   error;            /* 0 on success, negative on error */
+    int   tls_error;        /* raw ATLS/certval code when error == AHTTP_ERR_TLS */
 } ahttp_response;
+
+/* Human-readable AHTTP_ERR_* (and TLS detail when tls_hrc != 0). */
+const char *ahttp_strerror(int err, int tls_hrc);
 
 /* Error codes. */
 #define AHTTP_OK                0
