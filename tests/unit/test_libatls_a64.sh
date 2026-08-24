@@ -48,7 +48,8 @@ SRCS="lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c
       lib/libatls/src/atls_x509.c lib/libatls/src/atls_tls_keys.c
       lib/libatls/src/atls_tls.c lib/libatls/src/atls_rsa.c
       lib/libatls/src/atls_certval.c lib/libatls/src/atls_ecdsa.c
-      lib/libatls/src/atls_pem.c"
+      lib/libatls/src/atls_pem.c lib/libatls/src/atls_sha3.c
+      lib/libatls/src/atls_mlkem.c"
 
 for f in $SRCS; do
     if [ ! -f "$f" ]; then
@@ -59,7 +60,7 @@ done
 
 # The suites that exercise the 64-bit __int128 limb path (the -m32
 # gate runs the same five through the R10 32-bit limb path):
-TESTS="test_atls_hash test_atls_aead test_atls_x25519 test_atls_ed25519 test_atls_ecdsa"
+TESTS="test_atls_hash test_atls_aead test_atls_x25519 test_atls_ed25519 test_atls_ecdsa test_atls_mlkem"
 
 CFLAGS="-std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include -I lib/libatls/src -I ."
 
@@ -133,7 +134,7 @@ if clang --target=aarch64-unknown-none-elf -mgeneral-regs-only -ffreestanding \
         -isystem "$STUB" \
         $CFLAGS -c $SRCS 2> build/atls_a64_build.log; then
     rm -f ./*.o
-    echo "[atls-a64] PASS (compile-only): all 19 sources build at aarch64;"
+    echo "[atls-a64] PASS (compile-only): all 21 sources build at aarch64;"
     echo "           EXECUTION SKIPPED -- install gcc-aarch64-linux-gnu,"
     echo "           libc6-dev-arm64-cross and qemu-user for the real gate"
     exit 0

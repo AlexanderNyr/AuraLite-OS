@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
 
-## Status: IN PROGRESS — Y0–Y4 complete; Y5 next; plan committed 2026-08-23
+## Status: IN PROGRESS — Y0–Y5 complete; Y6 next; plan committed 2026-08-23
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,7 @@
 | Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | ✅ complete | `patches/RINET2_Y2_seam.patch` |
 | Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | ✅ complete | `patches/RINET2_Y3_tcp6.patch` |
 | Y4 — HTTPS-over-IPv6: the RES-26 receipt | ✅ complete | `patches/RINET2_Y4_https6.patch` |
-| Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | pending | `patches/RINET2_Y5_mlkem.patch` |
+| Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | ✅ complete | `patches/RINET2_Y5_mlkem.patch` |
 | Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | pending | `patches/RINET2_Y6_hybrid.patch` |
 | Y7 — close-out: the live-web fetch protocol, residue to the ledger | pending | `patches/RINET2_Y7_close.patch` |
 
@@ -281,21 +281,36 @@ DNS-SAN only; CertificateVerify still runs).  Guest receipt
 `[https6] PASS: status 200 body 3912 via v6` from `/tests/https6`.
 RES-26 is DONE@Y4; ledger OPEN 6→5.
 
-### Y5 — ML-KEM-768 (FIPS 203)
-- [ ] `lib/libatls/src/atls_mlkem.c`: K-PKE + the FO transform,
+### Y5 — ML-KEM-768 (FIPS 203) — ✅ COMPLETE
+- [x] `lib/libatls/src/atls_mlkem.c`: K-PKE + the FO transform,
       768-parameter set only; NTT/invNTT over Z_q[X]/(X^256+1),
       centered binomial sampling, SHAKE via a new atls_sha3.c
       (Keccak-f[1600] — also needed by the FIPS 203 hashes G/H/J).
-- [ ] Constant-time discipline: no secret-dependent branches or
+- [x] Constant-time discipline: no secret-dependent branches or
       table lookups (D7's grep extends to the new files).
-- [ ] Host gate: NIST KAT vectors (keygen/encaps/decaps), negative
+- [x] Host gate: NIST KAT vectors (keygen/encaps/decaps), negative
       controls (corrupted ciphertext → implicit-rejection secret,
       not an error path — the FO contract).
-- [ ] The i386 question is measured, not assumed: the reference
+- [x] The i386 question is measured, not assumed: the reference
       arithmetic is 16/32-bit friendly (q = 3329); the -m32 gate
       grows the new files (the R10 lane pattern).
-- [ ] Exit: KAT battery green on x86_64 host, -m32, rv64, a64 (the
+- [x] Exit: KAT battery green on x86_64 host, -m32, rv64, a64 (the
       four-width crypto precedent from R10).
+
+Result: ML-KEM-768 is a userspace primitive, not a TLS group
+(Y6 wires 0x11EC).  `atls_sha3.c` is Keccak-f[1600] + SHA3-256/512
++ SHAKE128/256 (5 FIPS 202 shorts green).  `atls_mlkem.c` is the
+768 set only (k=3, η1=η2=2, du=10, dv=4); KeyGen_internal domain-
+separates G(d ‖ k).  Host gate `test_atls_mlkem` is **23/23**:
+ACVP sample keyGen ek+dk, encaps ct+ss, decaps ss (NIST
+`ML-KEM-*-FIPS203` sample set), a local round-trip, and the FO
+contract — a flipped ciphertext byte returns `ATLS_OK` and
+`J(z ‖ ct)`, not the honest K.  Four widths EXECUTED:
+x86_64 host, `-m32` (FORCE32 + real ILP32), `qemu-riscv64`,
+`qemu-aarch64`.  CATCH, named at D7: `test_atls_hash`'s
+`file_contains` read 8 KiB and would have missed a banned token
+past the first page of `atls_mlkem.c`; the scan is whole-file
+now and the new TUs join the list.
 
 ### Y6 — X25519MLKEM768
 - [ ] ClientHello offers 0x11EC alongside X25519; key-share =

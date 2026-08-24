@@ -2,6 +2,20 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y5 — ML-KEM-768 (FIPS 203)] 2026-08-24
+
+libatls grows the FIPS 203 primitive Y6 will offer inside
+`X25519MLKEM768`.  `atls_sha3.c` is Keccak-f[1600] + SHA3-256/512
++ SHAKE128/256.  `atls_mlkem.c` is ML-KEM-768 only (K-PKE + FO;
+NTT/invNTT over Z_3329[X]/(X^256+1); CBD η=2).  Host gate
+`test_atls_mlkem` is 23/23: 5 FIPS 202 shorts, ACVP sample
+keyGen/encaps/decaps, a local round-trip, and implicit rejection
+(`J(z‖ct)`, not an error).  EXECUTED at four widths: x86_64,
+`-m32` (FORCE32 + ILP32), rv64, a64.  CATCH, named at D7: the
+8 KiB `file_contains` cap would have missed a token past the
+first page of `atls_mlkem.c`; the scan is whole-file and the
+new TUs join the list.
+
 ## [RINET2 Y4 — HTTPS-over-IPv6: RES-26 closes] 2026-08-24
 
 libahttp learns the second family.  `ahttp_url_parse` accepts RFC 3986

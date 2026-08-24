@@ -933,7 +933,8 @@ LIBATLS_OBJS := $(USER_BUILD)/atls_common.o $(USER_BUILD)/atls_sha256.o \
                 $(USER_BUILD)/atls_der.o $(USER_BUILD)/atls_x509.o \
                 $(USER_BUILD)/atls_tls_keys.o $(USER_BUILD)/atls_tls.o \
                 $(USER_BUILD)/atls_rsa.o $(USER_BUILD)/atls_certval.o \
-                $(USER_BUILD)/atls_ecdsa.o $(USER_BUILD)/atls_pem.o
+                $(USER_BUILD)/atls_ecdsa.o $(USER_BUILD)/atls_pem.o \
+                $(USER_BUILD)/atls_sha3.o $(USER_BUILD)/atls_mlkem.o
 LIBATLS      := $(USER_LIBDIR)/libatls.a
 USER_CFLAGS  += -I lib/libatls/include
 
@@ -2162,6 +2163,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_atls_certval \
                 $(BUILD_DIR)/test_atls_ecdsa \
                 $(BUILD_DIR)/test_atls_pem \
+                $(BUILD_DIR)/test_atls_mlkem \
                 $(BUILD_DIR)/test_ahttp_https \
                 $(BUILD_DIR)/test_ahttp \
                 $(BUILD_DIR)/test_wv_html \
@@ -2348,7 +2350,8 @@ LIBATLS_SRCS := lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c \
                 lib/libatls/src/atls_der.c lib/libatls/src/atls_x509.c \
                 lib/libatls/src/atls_tls_keys.c lib/libatls/src/atls_tls.c \
                 lib/libatls/src/atls_rsa.c lib/libatls/src/atls_certval.c \
-                lib/libatls/src/atls_ecdsa.c lib/libatls/src/atls_pem.c
+                lib/libatls/src/atls_ecdsa.c lib/libatls/src/atls_pem.c \
+                lib/libatls/src/atls_sha3.c lib/libatls/src/atls_mlkem.c
 LIBATLS_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include
 
 $(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
@@ -2404,6 +2407,13 @@ $(BUILD_DIR)/test_atls_pem: tests/unit/test_atls_pem.c $(LIBATLS_SRCS) \
                             lib/libatls/include/atls/pem.h etc/ssl/roots.pem
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) $(TLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
+# REALINTERNET2 Y5: ML-KEM-768 + SHA3/SHAKE, ACVP KATs.
+$(BUILD_DIR)/test_atls_mlkem: tests/unit/test_atls_mlkem.c $(LIBATLS_SRCS) \
+                              lib/libatls/include/atls/mlkem.h \
+                              tests/unit/atls_mlkem_kat.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) -I . $(LIBATLS_SRCS) $< -o $@
 
 # HTTP client (N6): URL parsing tests.
 $(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/src/ahttp.c \

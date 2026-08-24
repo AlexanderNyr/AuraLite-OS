@@ -39,7 +39,8 @@ SRCS="lib/libatls/src/atls_common.c lib/libatls/src/atls_sha256.c
       lib/libatls/src/atls_x509.c lib/libatls/src/atls_tls_keys.c
       lib/libatls/src/atls_tls.c lib/libatls/src/atls_rsa.c
       lib/libatls/src/atls_certval.c lib/libatls/src/atls_ecdsa.c
-      lib/libatls/src/atls_pem.c"
+      lib/libatls/src/atls_pem.c lib/libatls/src/atls_sha3.c
+      lib/libatls/src/atls_mlkem.c"
 
 # Sources that must never grow a bare __int128 (no width ifdef there).
 NO128_SRCS="lib/libatls/src/atls_common.c
@@ -49,7 +50,9 @@ NO128_SRCS="lib/libatls/src/atls_common.c
             lib/libatls/src/atls_hkdf.c
             lib/libatls/src/atls_chacha20.c
             lib/libatls/src/atls_poly1305.c
-            lib/libatls/src/atls_aead.c"
+            lib/libatls/src/atls_aead.c
+            lib/libatls/src/atls_sha3.c
+            lib/libatls/src/atls_mlkem.c"
 
 for f in $SRCS; do
     if [ ! -f "$f" ]; then
@@ -65,7 +68,7 @@ for f in $NO128_SRCS; do
     fi
 done
 
-TESTS="test_atls_hash test_atls_aead test_atls_x25519 test_atls_ed25519 test_atls_ecdsa"
+TESTS="test_atls_hash test_atls_aead test_atls_x25519 test_atls_ed25519 test_atls_ecdsa test_atls_mlkem"
 CFLAGS="-std=c11 -Wall -Wextra -Werror -O2 -I lib/libatls/include -I lib/libatls/src -I ."
 
 mkdir -p build

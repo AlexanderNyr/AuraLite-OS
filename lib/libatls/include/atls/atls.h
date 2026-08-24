@@ -23,6 +23,9 @@
  *   X25519             RFC 7748
  *   Ed25519 verify     RFC 8032 (verification only, per D4: no signing,
  *                      no key generation — certificate chains need verify)
+ *   SHA3-256/512       FIPS 202            (Y5: FIPS 203 G/H)
+ *   SHAKE128/256       FIPS 202            (Y5: FIPS 203 XOF/PRF/J)
+ *   ML-KEM-768         FIPS 203            (Y5; see atls/mlkem.h)
  *
  * Not implemented here: RSA-PKCS#1v1.5 verification lands with certificate
  * validation (phase N5), and the TLS protocol itself is N3/N4.
@@ -94,6 +97,27 @@ void atls_sha512_init(atls_sha512_ctx *c);
 void atls_sha512_update(atls_sha512_ctx *c, const void *data, size_t len);
 void atls_sha512_final(atls_sha512_ctx *c, uint8_t out[64]);
 void atls_sha512(const void *data, size_t len, uint8_t out[64]);
+
+/* ---- SHA3 / SHAKE (FIPS 202) — Y5 ---- */
+
+typedef struct {
+    uint64_t s[25];
+    uint8_t  buf[200];
+    size_t   rate;
+    size_t   nbuf;
+    int      squeezing;
+} atls_keccak_ctx;
+
+void atls_sha3_256(const void *data, size_t len, uint8_t out[32]);
+void atls_sha3_512(const void *data, size_t len, uint8_t out[64]);
+void atls_shake128(const void *data, size_t len, uint8_t *out, size_t outlen);
+void atls_shake256(const void *data, size_t len, uint8_t *out, size_t outlen);
+
+void atls_shake128_init(atls_keccak_ctx *c);
+void atls_shake256_init(atls_keccak_ctx *c);
+void atls_keccak_absorb(atls_keccak_ctx *c, const void *data, size_t len);
+void atls_keccak_finalize(atls_keccak_ctx *c, uint8_t pad);
+void atls_keccak_squeeze(atls_keccak_ctx *c, uint8_t *out, size_t len);
 
 /* ---- HMAC-SHA256 (RFC 2104) ---- */
 

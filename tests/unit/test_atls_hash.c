@@ -216,11 +216,27 @@ static void test_ct_eq(void) {
 static int file_contains(const char *path, const char *needle) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
-    char buf[8192];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    /* Whole-file scan: atls_mlkem.c is >8 KiB, so a cap would miss
+     * a banned token past the first page (Y5 catch, named). */
+    int hit = 0;
+    size_t nlen = strlen(needle);
+    char buf[4096];
+    size_t keep = 0;
+    for (;;) {
+        size_t n = fread(buf + keep, 1, sizeof(buf) - 1 - keep, f);
+        size_t total = keep + n;
+        buf[total] = 0;
+        if (strstr(buf, needle)) { hit = 1; break; }
+        if (n == 0) break;
+        if (total > nlen) {
+            memmove(buf, buf + total - nlen, nlen);
+            keep = nlen;
+        } else {
+            keep = total;
+        }
+    }
     fclose(f);
-    buf[n] = 0;
-    return strstr(buf, needle) != NULL;
+    return hit;
 }
 
 static void test_d7_no_memcmp(void) {
@@ -237,6 +253,8 @@ static void test_d7_no_memcmp(void) {
         "lib/libatls/src/atls_fe.c",
         "lib/libatls/src/atls_x25519.c",
         "lib/libatls/src/atls_ed25519.c",
+        "lib/libatls/src/atls_sha3.c",
+        "lib/libatls/src/atls_mlkem.c",
     };
     static const char *banned[] = {
         "memcmp(", "strncmp(", "bcmp(", "strcmp(",

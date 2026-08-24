@@ -236,6 +236,46 @@ def claims():
             os.path.exists(os.path.join(ROOT, "patches",
                                         "RINET2_Y4_https6.patch"))))
 
+    # --- Y5: ML-KEM-768 (FIPS 203) --------------------------------------
+    if re.search(r"^### Y5[^\n]*✅ COMPLETE", plan, re.M):
+        mlkem = read("lib", "libatls", "src", "atls_mlkem.c")
+        sha3 = read("lib", "libatls", "src", "atls_sha3.c")
+        testh = read("tests", "unit", "test_atls_hash.c")
+        testm = read("tests", "unit", "test_atls_mlkem.c")
+        makefile = read("Makefile")
+        checks.append((
+            "Y5: atls_mlkem.c is 768-only K-PKE + FO with NTT/invNTT",
+            "ntt(" in mlkem and "invntt(" in mlkem and
+            "sample_cbd2" in mlkem and "kbar" in mlkem and
+            "ATLS_MLKEM768" in read("lib", "libatls", "include",
+                                    "atls", "mlkem.h")))
+        checks.append((
+            "Y5: atls_sha3.c is Keccak-f[1600] + SHA3/SHAKE",
+            "keccakf" in sha3 and "atls_sha3_256" in sha3 and
+            "atls_shake128" in sha3 and "atls_shake256" in sha3))
+        checks.append((
+            "Y5: the host KAT + FO gate is registered",
+            "test_atls_mlkem" in makefile and
+            "ACVP" in testm and "J(z || ct)" in testm))
+        checks.append((
+            "Y5: D7's grep grew the new files and scans whole-file",
+            "atls_sha3.c" in testh and "atls_mlkem.c" in testh and
+            "Whole-file scan" in testh))
+        checks.append((
+            "Y5: the four-width scripts execute test_atls_mlkem",
+            "atls_mlkem.c" in read("tests", "unit",
+                                   "test_libatls_m32.sh") and
+            "test_atls_mlkem" in read("tests", "unit",
+                                      "test_libatls_m32.sh") and
+            "test_atls_mlkem" in read("tests", "unit",
+                                      "test_libatls_rv64.sh") and
+            "test_atls_mlkem" in read("tests", "unit",
+                                      "test_libatls_a64.sh")))
+        checks.append((
+            "Y5: the phase patch exists",
+            os.path.exists(os.path.join(ROOT, "patches",
+                                        "RINET2_Y5_mlkem.patch"))))
+
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))
     done_heads = len(re.findall(r"^### Y\d+[^\n]*✅ COMPLETE", plan, re.M))
