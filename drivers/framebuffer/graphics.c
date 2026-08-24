@@ -276,6 +276,38 @@ void gfx_fill_circle(uint32_t cx, uint32_t cy, uint32_t r, color_t color) {
     }
 }
 
+void gfx_back_get_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_t *dst) {
+    if (!back_fb || !dst || w == 0 || h == 0) return;
+    uint32_t pitch32 = fb_pitch / 4;
+    for (uint32_t row = 0; row < h; row++) {
+        int32_t sy = y + (int32_t)row;
+        for (uint32_t col = 0; col < w; col++) {
+            int32_t sx = x + (int32_t)col;
+            uint32_t pix = 0;
+            if (sx >= 0 && sy >= 0 &&
+                (uint32_t)sx < fb_width && (uint32_t)sy < fb_height) {
+                pix = back_fb[(uint32_t)sy * pitch32 + (uint32_t)sx];
+            }
+            dst[row * w + col] = pix;
+        }
+    }
+}
+
+void gfx_back_put_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, const uint32_t *src) {
+    if (!back_fb || !src || w == 0 || h == 0) return;
+    uint32_t pitch32 = fb_pitch / 4;
+    for (uint32_t row = 0; row < h; row++) {
+        int32_t sy = y + (int32_t)row;
+        for (uint32_t col = 0; col < w; col++) {
+            int32_t sx = x + (int32_t)col;
+            if (sx >= 0 && sy >= 0 &&
+                (uint32_t)sx < fb_width && (uint32_t)sy < fb_height) {
+                back_fb[(uint32_t)sy * pitch32 + (uint32_t)sx] = src[row * w + col];
+            }
+        }
+    }
+}
+
 void gfx_flip(void) {
     if (!back_fb || !front_fb) {
         return;

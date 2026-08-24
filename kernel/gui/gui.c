@@ -151,6 +151,14 @@ static spinlock_t gui_lock;
 static int focused = -1;
 static gui_cursor_t cursor = GUI_CURSOR_ARROW;
 
+/* Software cursor underlay.  The sprite is stamped onto the back buffer
+ * only for the flip, then restored so the back buffer stays scene-only.
+ * last_drawn_* is the position that actually reached the front. */
+#define CURSOR_SAVE_W 24
+#define CURSOR_SAVE_H 24
+static uint32_t cursor_under[CURSOR_SAVE_W * CURSOR_SAVE_H];
+static int last_drawn_mx = -1, last_drawn_my = -1;
+
 /* Dirty-rect tracking. */
 static gui_rect_t dirty_rects[GUI_MAX_DIRTY_RECTS];
 static int dirty_count = 0;
@@ -1420,6 +1428,28 @@ static void draw_cursor(void) {
     }
 }
 
+static void cursor_stamp_and_flip_full(void) {
+    int mx = -1, my = -1;
+    int have = mouse_get_position(&mx, &my);
+    if (have) gfx_back_get_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
+    draw_cursor();
+    gfx_flip();
+    if (have) gfx_back_put_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
+    last_drawn_mx = have ? mx : -1;
+    last_drawn_my = have ? my : -1;
+}
+
+static void cursor_stamp_and_flip_rect(int32_t ux, int32_t uy, uint32_t uw, uint32_t uh) {
+    int mx = -1, my = -1;
+    int have = mouse_get_position(&mx, &my);
+    if (have) gfx_back_get_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
+    draw_cursor();
+    gfx_flip_rect(ux, uy, uw, uh);
+    if (have) gfx_back_put_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
+    last_drawn_mx = have ? mx : -1;
+    last_drawn_my = have ? my : -1;
+}
+
 /* ---- Built-in GUI application launcher ---- */
 
 typedef struct gui_app_entry {
@@ -1736,12 +1766,12 @@ static void compositor_render_dirty(void) {
     draw_snap_preview();
     draw_taskbar();
     draw_notifications();
-    draw_cursor();
 
     /* Flip the union we clipped the composite to (BUG-32: dirty_count is
-     * cleared only now, after the union has been consumed). */
+     * cleared only now, after the union has been consumed).  Cursor is
+     * stamped for the flip only, then peeled off the back buffer. */
     dirty_count = 0;
-    gfx_flip_rect(ux, uy, uw, uh);
+    cursor_stamp_and_flip_rect(ux, uy, uw, uh);
     gfx_clip_clear();
 
     /* OPT_PLAN.md O0/O4: composited pixels are now the REAL post-clip
@@ -1796,10 +1826,8 @@ static void compositor_render(void) {
     /* Notifications. */
     draw_notifications();
 
-    /* Cursor (always on top). */
-    draw_cursor();
-
-    gfx_flip();
+    /* Cursor stamped for the flip only, then peeled off the back buffer. */
+    cursor_stamp_and_flip_full();
 
     /* OPT_PLAN.md O0/O4: full path — the pixel count is the gfx layer's
      * real post-clip store count now (clip is full-screen here). */
@@ -2316,30 +2344,26 @@ void gui_compositor_tick(void) {
     kb_event_t ke;
     while (keyboard_get_event(&ke)) route_key_event(&ke);
 
-    /* Track cursor movement: mark old and new cursor region dirty. */
+    /* Dirty the last FRONT cursor (not just the last mouse read) plus
+     * the current one, and the bbox between them.  The sprite is peeled
+     * off the back buffer after every flip; the front still needs those
+     * rects or the old stamp stays visible. */
     int mx, my;
     if (mouse_get_position(&mx, &my)) {
-        static int prev_mx = -1, prev_my = -1;
-        if (prev_mx != mx || prev_my != my) {
-            /* Cover the whole path between last composed position and
-             * now.  A 16×16 stamp at only the endpoints left a dotted
-             * trail whenever the compositor skipped frames (USB tablet
-             * streams dozens of reports per 10 ms tick). */
-            const int pad = 16, ext = 24;
-            int32_t x0, y0, x1, y1;
-            if (prev_mx >= 0 && prev_my >= 0) {
-                x0 = (prev_mx < mx ? prev_mx : mx) - pad;
-                y0 = (prev_my < my ? prev_my : my) - pad;
-                x1 = (prev_mx > mx ? prev_mx : mx) + ext;
-                y1 = (prev_my > my ? prev_my : my) + ext;
-            } else {
-                x0 = mx - pad; y0 = my - pad;
-                x1 = mx + ext; y1 = my + ext;
-            }
+        if (last_drawn_mx != mx || last_drawn_my != my) {
+            const int pad = 8, ext = CURSOR_SAVE_W;
+            int ox = (last_drawn_mx >= 0) ? last_drawn_mx : mx;
+            int oy = (last_drawn_my >= 0) ? last_drawn_my : my;
+            gui_mark_dirty(ox - pad, oy - pad, (uint32_t)(ext + pad * 2),
+                           (uint32_t)(CURSOR_SAVE_H + pad * 2));
+            gui_mark_dirty(mx - pad, my - pad, (uint32_t)(ext + pad * 2),
+                           (uint32_t)(CURSOR_SAVE_H + pad * 2));
+            int32_t x0 = (ox < mx ? ox : mx) - pad;
+            int32_t y0 = (oy < my ? oy : my) - pad;
+            int32_t x1 = (ox > mx ? ox : mx) + ext + pad;
+            int32_t y1 = (oy > my ? oy : my) + CURSOR_SAVE_H + pad;
             if (x1 > x0 && y1 > y0)
                 gui_mark_dirty(x0, y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0));
-            prev_mx = mx;
-            prev_my = my;
         }
     }
 

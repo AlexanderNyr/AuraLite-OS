@@ -384,8 +384,12 @@ static void hid_poll_once(hid_dev_t *h) {
      * (boot protocol len=8) stay rate-limited so test_usb_hid_input can
      * still see usage 0x08/0x12; pointer reports log once per device. */
     {
+        /* Pointer = generic mouse, boot mouse, or any non-8-byte report
+         * that is not a parsed keyboard.  QEMU usb-tablet is len=6;
+         * boot keyboard (test_usb_hid_input) is len=8. */
         int is_pointer = (h->generic == 1) ||
-                         (h->generic == 0 && h->protocol == HID_PROTO_MOUSE);
+                         (h->protocol == HID_PROTO_MOUSE) ||
+                         (h->generic != 2 && ret > 0 && ret != 8);
         int nonzero = 0;
         for (int bi = 0; bi < ret; bi++) if (report[bi]) { nonzero = 1; break; }
         if (nonzero) {

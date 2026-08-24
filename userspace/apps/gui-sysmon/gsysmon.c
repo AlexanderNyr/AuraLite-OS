@@ -42,14 +42,30 @@ static int read_proc_file(const char *path, char *buf, int bufsize) {
     return (int)n;
 }
 
-/* Parse the first field of /proc/loadavg ("busy%.frac ...") into an integer
- * percentage 0-100, rounded to the nearest whole percent. */
+/* Sample /proc/stat twice (this refresh vs the last) and compute
+ * busy-delta / total-delta.  /proc/loadavg is a 1 s kernel window and
+ * used to be lifetime busy/total — either way a single read is the
+ * boot self-test average (~20%) and never came down. */
+static unsigned long long last_busy, last_idle;
+static int have_stat;
+
 static int read_cpu_percent(void) {
-    char buf[64];
-    if (read_proc_file("/proc/loadavg", buf, sizeof(buf)) <= 0) return 0;
-    int whole = 0, frac = 0;
-    sscanf(buf, "%d.%d", &whole, &frac);
-    int pct = whole + (frac >= 50 ? 1 : 0);
+    char buf[128];
+    if (read_proc_file("/proc/stat", buf, sizeof(buf)) <= 0) return 0;
+    unsigned long long user = 0, nice = 0, sys = 0, idle = 0;
+    if (sscanf(buf, "cpu %llu %llu %llu %llu", &user, &nice, &sys, &idle) < 4)
+        return 0;
+    unsigned long long busy = user + nice + sys;
+    int pct = 0;
+    if (have_stat) {
+        unsigned long long db = (busy >= last_busy) ? (busy - last_busy) : 0;
+        unsigned long long di = (idle >= last_idle) ? (idle - last_idle) : 0;
+        unsigned long long dt = db + di;
+        if (dt) pct = (int)((db * 100ULL) / dt);
+    }
+    last_busy = busy;
+    last_idle = idle;
+    have_stat = 1;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     return pct;

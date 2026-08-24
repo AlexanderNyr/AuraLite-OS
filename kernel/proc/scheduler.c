@@ -45,6 +45,7 @@ static volatile uint64_t cpu_idle_ticks[SCHED_MAX_CPUS];
 static uint64_t win_snap_total, win_snap_idle;
 static uint32_t win_busy_x100;
 static uint32_t win_ticks_left;
+static int      win_armed;
 
 uint64_t sched_get_total_ticks(void) {
     uint64_t sum = 0;
@@ -250,12 +251,18 @@ void sched_tick(void) {
                 win_ticks_left = hz;
                 uint64_t t = sched_get_total_ticks();
                 uint64_t i = sched_get_idle_ticks();
-                uint64_t dt = t - win_snap_total;
-                uint64_t di = i - win_snap_idle;
-                if (di > dt) di = dt;
-                win_busy_x100 = dt ? (uint32_t)(((dt - di) * 10000ULL) / dt) : 0;
+                /* First fold only arms the snapshot.  Publishing on
+                 * tick 0 used the lifetime total (boot self-tests)
+                 * and gsysmon showed ~20% until the next second. */
+                if (win_armed) {
+                    uint64_t dt = t - win_snap_total;
+                    uint64_t di = i - win_snap_idle;
+                    if (di > dt) di = dt;
+                    win_busy_x100 = dt ? (uint32_t)(((dt - di) * 10000ULL) / dt) : 0;
+                }
                 win_snap_total = t;
                 win_snap_idle = i;
+                win_armed = 1;
             } else {
                 win_ticks_left--;
             }

@@ -54,6 +54,13 @@ void gfx_gradient_v(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 void gfx_draw_circle(uint32_t cx, uint32_t cy, uint32_t r, color_t color);
 void gfx_fill_circle(uint32_t cx, uint32_t cy, uint32_t r, color_t color);
 
+/* Copy a rectangle of packed back-buffer pixels.  The software cursor
+ * saves the scene, stamps itself, flips, then restores: cursor pixels
+ * must not remain in the back buffer or a later dirty clip that misses
+ * them reprints a dotted trail.  These ignore the compositor clip. */
+void gfx_back_get_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_t *dst);
+void gfx_back_put_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, const uint32_t *src);
+
 /* Flip the back buffer to the front (copy to the visible framebuffer). */
 void gfx_flip(void);
 

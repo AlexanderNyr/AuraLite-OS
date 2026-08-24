@@ -4,15 +4,16 @@ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
 ## [GUI: no cursor trail, honest CPU%, no HID mouse spam] 2026-08-24
 
-Three bugs from a live QEMU screenshot.  (1) Software cursor left a
-dotted trail: dirty stamps were 16×16 at the endpoints only, so any
-skipped compositor frame kept the old pixels.  The dirty region is
-now the bounding box of last-drawn and current position plus pad.
-(2) gsysmon's CPU bar was lifetime busy/total (boot self-tests stuck
-at ~20%).  `/proc/loadavg` now uses a 1-second window from
-`sched_tick`.  (3) QEMU USB tablet reports (len=6) were kprintf'd
-on every move.  Pointer devices log the first report only; keyboard
-reports stay rate-limited for `test_usb_hid_input`.
+Three bugs from a live QEMU screenshot.  A first pass (dirty bbox +
+lifetime window + pointer log-once) was not enough: the cursor sprite
+stayed in the back buffer, so a later clip that missed a stamp
+reprinted a dotted trail; `/proc/loadavg` published the boot-lifetime
+sample on tick 0; a tablet classified anything-but-generic-1 still
+flooded.  Now: (1) cursor is stamped for the flip only and peeled off
+the back buffer; dirty uses the last FRONT position.  (2) gsysmon
+samples `/proc/stat` twice (busy-delta/total-delta); the kernel
+window does not publish until one second has elapsed.  (3) any
+non-8-byte HID report that is not a parsed keyboard logs once.
 
 ## [BIOS VGA console: the screen is no longer blank] 2026-08-24
 
