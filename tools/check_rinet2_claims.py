@@ -276,6 +276,46 @@ def claims():
             os.path.exists(os.path.join(ROOT, "patches",
                                         "RINET2_Y5_mlkem.patch"))))
 
+    # --- Y6: X25519MLKEM768 hybrid handshake ----------------------------
+    if y6_done:
+        tls_h = read("lib", "libatls", "include", "atls", "tls.h")
+        testh = read("tests", "unit", "test_atls_tls.c")
+        guest = read("tests", "integration", "cases",
+                     "test_x25519mlkem.sh")
+        checks.append((
+            "Y6: ClientHello names both groups and the hybrid share "
+            "is ML-KEM ek ∥ X25519 (0x11EC)",
+            "ATLS_GROUP_X25519MLKEM768" in tls and
+            "0x11EC" in tls and
+            "ATLS_MLKEM768_EK_BYTES + 32" in tls and
+            "ATLS_GROUP_X25519" in tls))
+        checks.append((
+            "Y6: selected_group accepts either share; IKM is "
+            "ML-KEM-ss ∥ X25519-ss",
+            "atls_tls_derive_handshake_secrets_ikm" in tls and
+            "atls_mlkem768_decaps" in tls and
+            "ikmlen = 64" in tls))
+        checks.append((
+            "Y6: the public API surfaces the negotiated group",
+            "ATLS_TLS_GROUP_X25519MLKEM768" in tls_h and
+            "atls_tls_negotiated_group" in tls_h))
+        checks.append((
+            "Y6: host interop is pinned to both fixtures "
+            "(X25519 D4 + X25519MLKEM768)",
+            "start_s_server_groups" in testh and
+            "X25519MLKEM768" in testh and
+            "\"X25519\"" in testh))
+        checks.append((
+            "Y6: the guest receipt is registered "
+            "([tls] PASS: X25519MLKEM768)",
+            "[tls] PASS: X25519MLKEM768" in guest and
+            "test_x25519mlkem" in read("tests", "integration",
+                                       "run_all.sh")))
+        checks.append((
+            "Y6: the phase patch exists",
+            os.path.exists(os.path.join(ROOT, "patches",
+                                        "RINET2_Y6_hybrid.patch"))))
+
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))
     done_heads = len(re.findall(r"^### Y\d+[^\n]*✅ COMPLETE", plan, re.M))

@@ -20,6 +20,7 @@
 #include "atls/tls.h"
 #include "atls/x509.h"
 #include "atls/ecdsa.h"
+#include "atls/mlkem.h"
 #include <string.h>
 
 /* Provided by the process's libc / test harness. */
@@ -46,6 +47,9 @@ struct atls_tls {
 
     uint8_t x_priv[32];
     uint8_t x_pub[32];
+    uint8_t mlkem_ek[ATLS_MLKEM768_EK_BYTES];
+    uint8_t mlkem_dk[ATLS_MLKEM768_DK_BYTES];
+    uint16_t negotiated_group;
 
     uint8_t session_id[32];
     uint8_t cookie[MAX_COOKIE];
@@ -240,10 +244,11 @@ static size_t build_client_hello(atls_tls *t, uint8_t *ch,
     atls_wr16(p, (uint16_t)hnlen); p += 2;
     for (size_t i = 0; i < hnlen; i++) *p++ = (uint8_t)t->hostname[i];
 
-    /* supported_groups */
+    /* supported_groups: hybrid first (0x11EC), then plain X25519 (D4). */
     atls_wr16(p, ATLS_EXT_SUPPORTED_GROUPS); p += 2;
+    atls_wr16(p, 6); p += 2;
     atls_wr16(p, 4); p += 2;
-    atls_wr16(p, 2); p += 2;
+    atls_wr16(p, ATLS_GROUP_X25519MLKEM768); p += 2;
     atls_wr16(p, ATLS_GROUP_X25519); p += 2;
 
     /* signature_algorithms */
@@ -273,12 +278,28 @@ static size_t build_client_hello(atls_tls *t, uint8_t *ch,
         for (size_t i = 0; i < t->cookie_len; i++) *p++ = t->cookie[i];
     }
 
+    /* Both shares so neither a hybrid-only nor an X25519-only server
+     * needs HelloRetryRequest (D4 + Y6).  Hybrid share is IETF order:
+     * ML-KEM-768 encapsulation key (1184) ∥ X25519 public (32). */
     atls_wr16(p, ATLS_EXT_KEY_SHARE); p += 2;
-    atls_wr16(p, 38); p += 2;
-    atls_wr16(p, 36); p += 2;
-    atls_wr16(p, ATLS_GROUP_X25519); p += 2;
-    atls_wr16(p, 32); p += 2;
-    for (int i = 0; i < 32; i++) *p++ = t->x_pub[i];
+    {
+        const uint16_t hyb_klen = (uint16_t)(ATLS_MLKEM768_EK_BYTES + 32);
+        const uint16_t hyb_ent  = (uint16_t)(4 + hyb_klen);
+        const uint16_t x_ent    = 36;
+        const uint16_t list_len = (uint16_t)(hyb_ent + x_ent);
+        atls_wr16(p, (uint16_t)(2 + list_len)); p += 2;
+        atls_wr16(p, list_len); p += 2;
+
+        atls_wr16(p, ATLS_GROUP_X25519MLKEM768); p += 2;
+        atls_wr16(p, hyb_klen); p += 2;
+        for (int i = 0; i < ATLS_MLKEM768_EK_BYTES; i++)
+            *p++ = t->mlkem_ek[i];
+        for (int i = 0; i < 32; i++) *p++ = t->x_pub[i];
+
+        atls_wr16(p, ATLS_GROUP_X25519); p += 2;
+        atls_wr16(p, 32); p += 2;
+        for (int i = 0; i < 32; i++) *p++ = t->x_pub[i];
+    }
 
     atls_wr16(ext_len_ptr, (uint16_t)(p - ext_start));
     return (size_t)(p - ch);
@@ -503,6 +524,10 @@ const char *atls_tls_negotiated_alpn(const atls_tls *t) {
     return t->alpn_selected;
 }
 
+uint16_t atls_tls_negotiated_group(const atls_tls *t) {
+    return t ? t->negotiated_group : 0;
+}
+
 /* ---- Send a handshake message ---- */
 
 static int send_hs(atls_tls *t, uint8_t type,
@@ -574,11 +599,23 @@ int atls_tls_handshake(atls_tls *t) {
     rc = atls_x25519(t->x_pub, t->x_priv, ATLS_X25519_BASEPOINT);
     if (rc != ATLS_OK) return rc;
 
+    {
+        uint8_t d[32], z[32];
+        rc = fill_random(d, 32);
+        if (rc != ATLS_OK) return rc;
+        rc = fill_random(z, 32);
+        if (rc != ATLS_OK) return rc;
+        rc = atls_mlkem768_keygen(t->mlkem_ek, t->mlkem_dk, d, z);
+        atls_wipe(d, 32);
+        atls_wipe(z, 32);
+        if (rc != ATLS_OK) return rc;
+    }
+
     atls_tls_transcript_init(&t->transcript);
 
 send_ch: ;
     /* 2. Build and send ClientHello. */
-    uint8_t ch[1024];
+    uint8_t ch[2048];
     size_t ch_body_len = build_client_hello(t, ch + 4, legacy_random);
     ch[0] = ATLS_HS_CLIENT_HELLO;
     atls_wr24(ch + 1, (uint32_t)ch_body_len);
@@ -590,6 +627,7 @@ send_ch: ;
     /* 3. Wait for ServerHello. */
     int got_sh = 0;
     uint8_t server_x25519[32];
+    uint8_t server_mlkem_ct[ATLS_MLKEM768_CT_BYTES];
 
     while (!got_sh) {
         uint8_t *msg;
@@ -654,12 +692,38 @@ send_ch: ;
                     return fail(t, ATLS_ALERT_PROTOCOL_VERSION);
                 version_seen = 1;
             } else if (etype == ATLS_EXT_KEY_SHARE) {
-                if (elen != 36 || atls_rd16(edata + 2) != 32)
-                    return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
-                selected_group = atls_rd16(edata);
-                for (int i = 0; i < 32; i++)
-                    server_x25519[i] = edata[4 + i];
-                key_share_seen = 1;
+                /* HRR carries only the selected group (2 octets).
+                 * ServerHello carries one KeyShareEntry. */
+                if (hrr_detected) {
+                    if (elen != 2)
+                        return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                    selected_group = atls_rd16(edata);
+                    key_share_seen = 1;
+                } else {
+                    if (elen < 4)
+                        return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                    selected_group = atls_rd16(edata);
+                    uint16_t klen = atls_rd16(edata + 2);
+                    if ((size_t)klen + 4 != elen)
+                        return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                    if (selected_group == ATLS_GROUP_X25519) {
+                        if (klen != 32)
+                            return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                        for (int i = 0; i < 32; i++)
+                            server_x25519[i] = edata[4 + i];
+                    } else if (selected_group == ATLS_GROUP_X25519MLKEM768) {
+                        if (klen != ATLS_MLKEM768_CT_BYTES + 32)
+                            return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                        for (int i = 0; i < ATLS_MLKEM768_CT_BYTES; i++)
+                            server_mlkem_ct[i] = edata[4 + i];
+                        for (int i = 0; i < 32; i++)
+                            server_x25519[i] =
+                                edata[4 + ATLS_MLKEM768_CT_BYTES + i];
+                    } else {
+                        return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                    }
+                    key_share_seen = 1;
+                }
             } else if (etype == ATLS_EXT_COOKIE && hrr_detected) {
                 if (elen > MAX_COOKIE)
                     return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
@@ -684,32 +748,54 @@ send_ch: ;
             atls_wr24(mh_msg + 1, 32);
             for (int i = 0; i < 32; i++) mh_msg[4 + i] = h_ch1[i];
             atls_tls_transcript_update(&t->transcript, mh_msg, 36);
-            if (selected_group != ATLS_GROUP_X25519)
+            if (selected_group != ATLS_GROUP_X25519 &&
+                selected_group != ATLS_GROUP_X25519MLKEM768)
                 return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
             goto send_ch;
         }
 
-        if (selected_group != ATLS_GROUP_X25519)
+        if (selected_group != ATLS_GROUP_X25519 &&
+            selected_group != ATLS_GROUP_X25519MLKEM768)
             return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+        t->negotiated_group = selected_group;
         got_sh = 1;
     }
 
-    /* 4. DHE. */
-    uint8_t dhe[32];
-    rc = atls_x25519(dhe, t->x_priv, server_x25519);
-    if (rc != ATLS_OK) return fail(t, ATLS_ALERT_HANDSHAKE_FAILURE);
-    uint8_t acc = 0;
-    for (int i = 0; i < 32; i++) acc |= dhe[i];
-    if (acc == 0) return fail(t, ATLS_ALERT_HANDSHAKE_FAILURE);
+    /* 4. Shared secret: X25519, or ML-KEM-ss ∥ X25519-ss (Y6). */
+    uint8_t ikm[64];
+    size_t ikmlen = 32;
+    {
+        uint8_t x_ss[32];
+        rc = atls_x25519(x_ss, t->x_priv, server_x25519);
+        if (rc != ATLS_OK) return fail(t, ATLS_ALERT_HANDSHAKE_FAILURE);
+        uint8_t acc = 0;
+        for (int i = 0; i < 32; i++) acc |= x_ss[i];
+        if (acc == 0) return fail(t, ATLS_ALERT_HANDSHAKE_FAILURE);
+        if (t->negotiated_group == ATLS_GROUP_X25519MLKEM768) {
+            uint8_t mlkem_ss[32];
+            rc = atls_mlkem768_decaps(mlkem_ss, server_mlkem_ct, t->mlkem_dk);
+            if (rc != ATLS_OK) {
+                atls_wipe(x_ss, 32);
+                return fail(t, ATLS_ALERT_HANDSHAKE_FAILURE);
+            }
+            for (int i = 0; i < 32; i++) ikm[i] = mlkem_ss[i];
+            for (int i = 0; i < 32; i++) ikm[32 + i] = x_ss[i];
+            ikmlen = 64;
+            atls_wipe(mlkem_ss, 32);
+        } else {
+            for (int i = 0; i < 32; i++) ikm[i] = x_ss[i];
+        }
+        atls_wipe(x_ss, 32);
+    }
 
     /* 5. Handshake secrets. */
     uint8_t h_ch_sh[32];
     atls_tls_transcript_snapshot(&t->transcript, h_ch_sh);
-    rc = atls_tls_derive_handshake_secrets(dhe, h_ch_sh,
-                                           t->client_hs_secret,
-                                           t->server_hs_secret,
-                                           t->master);
-    atls_wipe(dhe, 32);
+    rc = atls_tls_derive_handshake_secrets_ikm(ikm, ikmlen, h_ch_sh,
+                                               t->client_hs_secret,
+                                               t->server_hs_secret,
+                                               t->master);
+    atls_wipe(ikm, sizeof ikm);
     if (rc != ATLS_OK) return rc;
 
     rc = atls_tls_derive_record_keys(t->server_hs_secret, &t->hs_rx);

@@ -2,6 +2,22 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y6 — X25519MLKEM768 hybrid handshake] 2026-08-24
+
+ClientHello offers `0x11EC` alongside X25519 and sends both key
+shares.  Hybrid share is IETF order: ML-KEM-768 ek (1184) ∥
+X25519 public (32) = 1216; IKM is ML-KEM ss ∥ X25519 ss (64)
+into the existing HKDF schedule.  A server that picks plain
+X25519 keeps the pre-Y6 handshake (D4).  Host `test_atls_tls`
+is 32/32 (X25519 fixture + `s_server -groups X25519MLKEM768`,
+`group=0x11ec`).  Guest `test_x25519mlkem.sh` prints
+`[tls] PASS: X25519MLKEM768` and `[tlstest] ALL PASS` (7/7).
+CATCH, named at the ClientHello: a 0x11EC offer without a
+matching KeyShareEntry is `bad key share` / alert 47 on
+OpenSSL 3.5.6.  CATCH, named at N3: `test_tls.sh` is pinned
+`-groups X25519` so OpenSSL 3.5's default list cannot pull
+the hybrid path into the old fixture.
+
 ## [RINET2 Y5 — ML-KEM-768 (FIPS 203)] 2026-08-24
 
 libatls grows the FIPS 203 primitive Y6 will offer inside

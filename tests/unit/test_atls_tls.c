@@ -75,7 +75,7 @@ static void cleanup_s_server(void) {
     }
 }
 
-static int start_s_server(int port) {
+static int start_s_server_groups(int port, const char *groups) {
     /* Generate Ed25519 cert */
     snprintf(cert_path, sizeof cert_path, "/tmp/atls_test_cert_%d.pem", port);
     snprintf(key_path, sizeof(key_path), "/tmp/atls_test_key_%d.pem", port);
@@ -95,6 +95,7 @@ static int start_s_server(int port) {
         execlp("openssl", "openssl", "s_server",
                "-accept", port_str,
                "-cert", cert_path, "-key", key_path,
+               "-groups", groups,
                "-www", "-alpn", "http/1.1", "-quiet",
                (char *)NULL);
         _exit(1);
@@ -104,6 +105,11 @@ static int start_s_server(int port) {
     /* Wait for server to be ready */
     usleep(500000);
     return 0;
+}
+
+/* D4: existing X25519-only fixture. */
+static int start_s_server(int port) {
+    return start_s_server_groups(port, "X25519");
 }
 
 static int connect_to(int port) {
@@ -139,6 +145,8 @@ static void test_full_handshake(int port) {
     printf("  handshake rc=%d alert_sent=%d alert_recv=%d\n",
            rc, atls_tls_last_alert_sent(t), atls_tls_last_alert_received(t));
     CHECK(rc == ATLS_OK, "TLS 1.3 handshake succeeds");
+    CHECK(atls_tls_negotiated_group(t) == ATLS_TLS_GROUP_X25519,
+          "plain X25519 selected (D4)");
 
     if (rc == ATLS_OK) {
         const char *alpn = atls_tls_negotiated_alpn(t);
@@ -280,6 +288,34 @@ static void test_absurd_record_length(void) {
     CHECK(rc != ATLS_OK, "absurd record length refused");
 }
 
+static void test_hybrid_handshake(int port) {
+    int fd = connect_to(port);
+    CHECK(fd >= 0, "hyb: connect");
+    host_io io = { .fd = fd };
+    atls_tls_config cfg = { .hostname = "localhost", .alpn = "http/1.1" };
+    atls_tls *t = atls_tls_new(&cfg, host_send, host_recv, &io);
+    CHECK(t != NULL, "hyb: new");
+    int rc = atls_tls_handshake(t);
+    printf("  hybrid handshake rc=%d group=0x%04x alert_sent=%d alert_recv=%d\n",
+           rc, (unsigned)atls_tls_negotiated_group(t),
+           atls_tls_last_alert_sent(t), atls_tls_last_alert_received(t));
+    CHECK(rc == ATLS_OK, "hyb: TLS 1.3 handshake succeeds");
+    CHECK(atls_tls_negotiated_group(t) == ATLS_TLS_GROUP_X25519MLKEM768,
+          "hyb: selected X25519MLKEM768");
+    if (rc == ATLS_OK) {
+        const char *req = "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n";
+        int w = atls_tls_write(t, (const uint8_t *)req, strlen(req));
+        CHECK(w > 0, "hyb: application write");
+        uint8_t resp[4096];
+        size_t resp_len = 0;
+        rc = atls_tls_read(t, resp, sizeof(resp) - 1, &resp_len);
+        CHECK(rc == ATLS_OK && resp_len > 0, "hyb: application data");
+        atls_tls_close(t);
+    }
+    atls_tls_free(t);
+    close(fd);
+}
+
 int main(void) {
     int port = 14433 + (getpid() % 1000);
 
@@ -296,6 +332,15 @@ int main(void) {
     test_large_transfer(port);
     test_absurd_record_length();
 
+    cleanup_s_server();
+
+    /* Y6: hybrid interop against openssl -groups X25519MLKEM768. */
+    int hport = port + 17;
+    if (start_s_server_groups(hport, "X25519MLKEM768") != 0) {
+        printf("FAIL: could not start hybrid s_server\n");
+        return 1;
+    }
+    test_hybrid_handshake(hport);
     cleanup_s_server();
 
     printf("\n=== %d/%d passed ===\n", tests_run - tests_failed, tests_run);

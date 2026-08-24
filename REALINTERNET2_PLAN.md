@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
 
-## Status: IN PROGRESS — Y0–Y5 complete; Y6 next; plan committed 2026-08-23
+## Status: IN PROGRESS — Y0–Y6 complete; Y7 next; plan committed 2026-08-23
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,7 @@
 | Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | ✅ complete | `patches/RINET2_Y3_tcp6.patch` |
 | Y4 — HTTPS-over-IPv6: the RES-26 receipt | ✅ complete | `patches/RINET2_Y4_https6.patch` |
 | Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | ✅ complete | `patches/RINET2_Y5_mlkem.patch` |
-| Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | pending | `patches/RINET2_Y6_hybrid.patch` |
+| Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | ✅ complete | `patches/RINET2_Y6_hybrid.patch` |
 | Y7 — close-out: the live-web fetch protocol, residue to the ledger | pending | `patches/RINET2_Y7_close.patch` |
 
 ## 1. Where this plan comes from (measured, not assumed)
@@ -312,18 +312,37 @@ x86_64 host, `-m32` (FORCE32 + real ILP32), `qemu-riscv64`,
 past the first page of `atls_mlkem.c`; the scan is whole-file
 now and the new TUs join the list.
 
-### Y6 — X25519MLKEM768
-- [ ] ClientHello offers 0x11EC alongside X25519; key-share =
+### Y6 — X25519MLKEM768 — ✅ COMPLETE
+- [x] ClientHello offers 0x11EC alongside X25519; key-share =
       ML-KEM encaps key ∥ X25519 public (the IETF draft order);
       shared secret = ML-KEM ss ∥ X25519 ss into the existing
       HKDF schedule.
-- [ ] Server-side selected_group handling accepts either group;
+- [x] Server-side selected_group handling accepts either group;
       plain-X25519 servers negotiate exactly as before (D4).
-- [ ] CI interop gate: `openssl s_server -groups X25519MLKEM768`
+- [x] CI interop gate: `openssl s_server -groups X25519MLKEM768`
       fixture (the X-series pattern); the fetch completes and the
       transcript names the group.
-- [ ] Exit: `[tls] PASS: X25519MLKEM768` in CI; the X9 "PEER_EOF
+- [x] Exit: `[tls] PASS: X25519MLKEM768` in CI; the X9 "PEER_EOF
       against Cloudflare" sentence becomes closable by a user run.
+
+Result: the ClientHello carries both groups and both key shares
+(hybrid first).  Hybrid share is 1216 octets — ML-KEM-768 ek
+(1184) ∥ X25519 public (32); server share is ct (1088) ∥ X25519
+public (32) = 1120; IKM into HKDF-Extract is ML-KEM ss ∥ X25519
+ss (64).  Host gate `test_atls_tls` is **32/32**: the X25519
+fixture (D4, `-groups X25519`) stays green; a second
+`s_server -groups X25519MLKEM768` negotiates `group=0x11ec`
+and exchanges application data.  Guest
+`tests/integration/cases/test_x25519mlkem.sh` against
+`:4434` prints `[tls] PASS: X25519MLKEM768` and
+`[tlstest] ALL PASS` (7/7 asserts).  CATCH, named at the
+ClientHello: offering 0x11EC without a matching KeyShareEntry
+makes OpenSSL 3.5.6 `extract_keyshares` emit `bad key share`
+(alert 47); both entries travel so neither a hybrid-only nor
+an X25519-only peer needs HelloRetryRequest.  CATCH, named at
+the N3 fixture: OpenSSL 3.5's default group list includes
+`X25519MLKEM768`, so `test_tls.sh` is pinned `-groups X25519`
+and stays the fast D4 path.
 
 ### Y7 — close-out
 - [ ] The live-web protocol: a metal_receipts-style section — the

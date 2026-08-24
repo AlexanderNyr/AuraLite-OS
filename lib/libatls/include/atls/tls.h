@@ -4,7 +4,8 @@
 /* atls/tls.h — TLS 1.3 client (INTERNET_PLAN.md phase N3).
  *
  * TLS 1.3 only (D3), one cipher suite — TLS_CHACHA20_POLY1305_SHA256
- * (D4), X25519 key agreement, no PSK/resumption/0-RTT/client certs (D6).
+ * (D4), X25519 or X25519MLKEM768 (Y6) key agreement, no
+ * PSK/resumption/0-RTT/client certs (D6).
  * The client verifies the server's CertificateVerify signature for
  * Ed25519 leaves; RSA and ECDSA chains are refused (not silently
  * skipped) until phase N5.
@@ -27,6 +28,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define ATLS_TLS_GROUP_X25519         0x001d
+#define ATLS_TLS_GROUP_X25519MLKEM768 0x11EC
 
 typedef struct atls_tls atls_tls;
 
@@ -87,6 +91,9 @@ const uint8_t *atls_tls_peer_cert(const atls_tls *t, size_t *len);
 
 /* The ALPN protocol the server selected, or NULL. */
 const char *atls_tls_negotiated_alpn(const atls_tls *t);
+
+/* Named group the server selected (0x001d or 0x11EC), or 0. */
+uint16_t atls_tls_negotiated_group(const atls_tls *t);
 
 #ifdef __cplusplus
 }

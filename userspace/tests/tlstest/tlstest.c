@@ -118,6 +118,20 @@ int main(int argc, char **argv) {
            atls_tls_last_alert_received(tls));
     CHECK(rc == ATLS_OK, "TLS 1.3 handshake verified");
 
+    if (rc == ATLS_OK) {
+        uint16_t g = atls_tls_negotiated_group(tls);
+        if (g == ATLS_TLS_GROUP_X25519MLKEM768) {
+            printf("[tls] PASS: X25519MLKEM768\n");
+            CHECK(1, "group X25519MLKEM768");
+        } else if (g == ATLS_TLS_GROUP_X25519) {
+            printf("[tls] PASS: X25519\n");
+            CHECK(1, "group X25519");
+        } else {
+            printf("[tlstest] negotiated group 0x%04x\n", (unsigned)g);
+            CHECK(0, "known named group");
+        }
+    }
+
     if (rc != ATLS_OK) {
         atls_tls_free(tls);
         closesocket(fd);

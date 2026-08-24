@@ -71,11 +71,11 @@ static int derive_secret(const uint8_t secret[32],
                                       messages_hash, 32, out, 32);
 }
 
-int atls_tls_derive_handshake_secrets(const uint8_t dhe[32],
-                                      const uint8_t h_ch_sh[32],
-                                      uint8_t chs[32],
-                                      uint8_t shs[32],
-                                      uint8_t master[32]) {
+int atls_tls_derive_handshake_secrets_ikm(const uint8_t *ikm, size_t ikmlen,
+                                          const uint8_t h_ch_sh[32],
+                                          uint8_t chs[32],
+                                          uint8_t shs[32],
+                                          uint8_t master[32]) {
     static const uint8_t zeros[32] = { 0 };
     uint8_t early_secret[32];
     uint8_t derived_early[32];
@@ -83,6 +83,8 @@ int atls_tls_derive_handshake_secrets(const uint8_t dhe[32],
     uint8_t derived_hs[32];
     uint8_t empty_hash[32];
     int rc;
+
+    if (!ikm || ikmlen == 0) return ATLS_ERR_INPUT;
 
     /* EarlySecret = HKDF-Extract(0, 0) */
     rc = atls_hkdf_extract(zeros, 32, zeros, 32, early_secret);
@@ -95,8 +97,9 @@ int atls_tls_derive_handshake_secrets(const uint8_t dhe[32],
     rc = derive_secret(early_secret, "derived", empty_hash, derived_early);
     if (rc != ATLS_OK) return rc;
 
-    /* HandshakeSecret = HKDF-Extract(derived_early, ECDHE) */
-    rc = atls_hkdf_extract(derived_early, 32, dhe, 32, handshake_secret);
+    /* HandshakeSecret = HKDF-Extract(derived_early, IKM)
+     * IKM is ECDHE (32) or ML-KEM-ss ∥ X25519-ss (64). */
+    rc = atls_hkdf_extract(derived_early, 32, ikm, ikmlen, handshake_secret);
     if (rc != ATLS_OK) return rc;
 
     /* client_handshake_traffic_secret = Derive-Secret(handshake_secret,
@@ -122,6 +125,15 @@ int atls_tls_derive_handshake_secrets(const uint8_t dhe[32],
     atls_wipe(derived_hs, 32);
 
     return rc;
+}
+
+int atls_tls_derive_handshake_secrets(const uint8_t dhe[32],
+                                      const uint8_t h_ch_sh[32],
+                                      uint8_t chs[32],
+                                      uint8_t shs[32],
+                                      uint8_t master[32]) {
+    return atls_tls_derive_handshake_secrets_ikm(dhe, 32, h_ch_sh,
+                                                 chs, shs, master);
 }
 
 int atls_tls_derive_app_secrets(const uint8_t master[32],

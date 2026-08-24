@@ -41,8 +41,12 @@ if ! openssl req -x509 -newkey ed25519 \
     exit 1
 fi
 
+# D4: pin the N3 fixture to plain X25519.  OpenSSL 3.5's default
+# group list includes X25519MLKEM768; our ClientHello prefers 0x11EC,
+# so an unpinned s_server would take the hybrid path (Y6's gate).
 openssl s_server -accept 4433 \
     -cert "$FIXDIR/server.crt" -key "$FIXDIR/server.key" \
+    -groups X25519 \
     -www -alpn http/1.1 -quiet >/dev/null 2>&1 &
 S_SERVER_PID=$!
 sleep 1

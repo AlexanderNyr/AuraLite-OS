@@ -145,6 +145,7 @@ ALL_CASES=(
     test_ipv6_ping6
     test_tcp6
     test_https6
+    test_x25519mlkem
     test_trust_store
     test_graphics
     test_smp
@@ -215,7 +216,7 @@ group_re() {
         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|shell_all|sysmon_data|userspace_apps)$' ;;
         fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|devfs|procfs|tmpfs|diskfs)$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|xhci_[a-z]+)$' ;;
-        net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|virtio_net|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_options|ipv6_ping6|tcp6|https6|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
+        net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|virtio_net|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
         gui)   echo '^test_(gui|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;
         *)     echo '' ;;
     esac

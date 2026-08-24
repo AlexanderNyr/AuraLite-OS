@@ -63,7 +63,8 @@
 #define ATLS_SIG_ED25519               0x0807
 
 /* ---- Named groups ---- */
-#define ATLS_GROUP_X25519 0x001d
+#define ATLS_GROUP_X25519            0x001d
+#define ATLS_GROUP_X25519MLKEM768    0x11EC   /* Y6: IETF hybrid */
 
 /* ---- Extension types ---- */
 #define ATLS_EXT_SERVER_NAME        0
@@ -112,6 +113,12 @@ int atls_tls_derive_handshake_secrets(const uint8_t dhe[32],
                                       uint8_t chs[32],
                                       uint8_t shs[32],
                                       uint8_t master[32]);
+/* Y6: same schedule, IKM may be ML-KEM-ss ∥ X25519-ss (64 octets). */
+int atls_tls_derive_handshake_secrets_ikm(const uint8_t *ikm, size_t ikmlen,
+                                          const uint8_t h_ch_sh[32],
+                                          uint8_t chs[32],
+                                          uint8_t shs[32],
+                                          uint8_t master[32]);
 
 /* Derives application traffic secrets from the master secret and the
  * hash of the full handshake transcript through server Finished. */
