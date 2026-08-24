@@ -317,3 +317,92 @@ void fb_arm_shadow(void) {
     kprintf("[fb] WC shadow armed (%llu KiB RAM): framebuffer is "
             "write-only from here\n", (unsigned long long)(bytes / 1024));
 }
+
+/* ---- Fatal stop screen ------------------------------------------------ */
+
+#if defined(__x86_64__)
+#define BSOD_VGA_ATTR  0x1F   /* white on blue */
+#endif
+
+static void bsod_draw_glyph(uint32_t ox, uint32_t oy, unsigned char c,
+                            uint32_t fg, uint32_t bg) {
+    const struct psf_font *f = psf_get_font();
+    if (!f || !fb_addr) return;
+    uint32_t idx = c;
+    if (idx >= f->num_glyphs) idx = 0;
+    const uint8_t *glyph = f->data + idx * f->bytes_per_glyph;
+    for (uint32_t row = 0; row < f->height; row++) {
+        const uint8_t *row_bytes = glyph + row * f->bytes_per_row;
+        for (uint32_t col = 0; col < f->width; col++) {
+            uint8_t byte = row_bytes[col / 8];
+            uint8_t bit_pos = 7 - (col % 8);
+            uint32_t pix = (byte >> bit_pos) & 1 ? fg : bg;
+            fb_putpixel(ox + col, oy + row, pix);
+        }
+    }
+}
+
+void fb_bsod_paint(const char *const *lines, int nlines) {
+    uint32_t blue = 0, white = 0;
+    if (fb_addr && fb_width && fb_height) {
+        blue  = make_color(0, 0, 170);
+        white = make_color(255, 255, 255);
+        {
+            uint32_t pitch32 = (uint32_t)(fb_pitch / 4);
+            for (uint32_t y = 0; y < fb_height; y++) {
+                uint32_t *row = fb_addr + y * pitch32;
+                for (uint32_t x = 0; x < fb_width; x++) row[x] = blue;
+            }
+            if (fb_shadow) {
+                for (uint32_t y = 0; y < fb_height; y++) {
+                    uint32_t *row = fb_shadow + y * pitch32;
+                    for (uint32_t x = 0; x < fb_width; x++) row[x] = blue;
+                }
+            }
+        }
+        {
+            const struct psf_font *f = psf_get_font();
+            uint32_t gh = f ? f->height : 16;
+            uint32_t gw = f ? f->width  : 8;
+            uint32_t x0 = gw * 2;
+            uint32_t y  = gh;
+            int i;
+            for (i = 0; i < nlines; i++) {
+                const char *s = lines[i] ? lines[i] : "";
+                uint32_t x = x0;
+                while (*s) {
+                    bsod_draw_glyph(x, y, (unsigned char)*s, white, blue);
+                    x += gw;
+                    if (x + gw >= fb_width) break;
+                    s++;
+                }
+                y += gh + 2;
+                if (y + gh >= fb_height) break;
+            }
+        }
+        fb_console_on = 0;
+        return;
+    }
+
+#if defined(__x86_64__)
+    if (vga_text_on && vga_text) {
+        int r, c, i;
+        for (r = 0; r < VGA_ROWS; r++)
+            for (c = 0; c < VGA_COLS; c++)
+                vga_text[r * VGA_COLS + c] = (BSOD_VGA_ATTR << 8) | ' ';
+        for (i = 0; i < nlines && i < VGA_ROWS; i++) {
+            const char *s = lines[i] ? lines[i] : "";
+            c = 2;
+            while (*s && c < VGA_COLS - 1) {
+                vga_text[i * VGA_COLS + c] =
+                    (uint16_t)((BSOD_VGA_ATTR << 8) | (unsigned char)*s);
+                s++;
+                c++;
+            }
+        }
+        fb_cursor_row = 0;
+        fb_cursor_col = 0;
+        vga_move_cursor();
+    }
+#endif
+}

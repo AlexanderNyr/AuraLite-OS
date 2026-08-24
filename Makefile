@@ -2102,6 +2102,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_dns_aaaa \
                 $(BUILD_DIR)/test_sizeclass \
                 $(BUILD_DIR)/test_bitmap \
+                $(BUILD_DIR)/test_bsod \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
                 $(BUILD_DIR)/test_libc $(BUILD_DIR)/test_3d \
                 $(BUILD_DIR)/test_usb $(BUILD_DIR)/test_wm \
@@ -2623,6 +2624,11 @@ $(BUILD_DIR)/test_sizeclass: tests/unit/test_sizeclass.c kernel/mm/sizeclass.h
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_bitmap: tests/unit/test_bitmap.c kernel/lib/bitmap.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# STOP-code table: the shipping bsod.c (host stubs via AURALITE_BSOD_HOST_TEST).
+$(BUILD_DIR)/test_bsod: tests/unit/test_bsod.c kernel/lib/bsod.c kernel/lib/bsod.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

@@ -2,6 +2,17 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Fatal STOP screen (BSOD) with named codes] 2026-08-24
+
+A kernel-mode fault now paints a blue screen after the lock-free serial
+dump.  STOP `0x00000000`–`0x1F` is the CPU vector (`PAGE_FAULT`,
+`DOUBLE_FAULT`, …); `0x00001xxx` is software (`KASSERT`, `KEXPLICIT`,
+`KCANARY`, `KSTACK`, `KRECURSE`, `KHALT`).  User-mode faults stay POSIX
+signals.  Meanings live in `docs/bsod.md`; the table in
+`kernel/lib/bsod.c` is the source of truth (`test_bsod` compiles it).
+`write /proc/sysrq-trigger c` / `o` still halt with one boot banner and
+now also print `[bsod] STOP=…`.
+
 ## [GUI: no cursor trail, honest CPU%, no HID mouse spam] 2026-08-24
 
 Three bugs from a live QEMU screenshot.  A first pass (dirty bbox +

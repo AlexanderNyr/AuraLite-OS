@@ -57,6 +57,12 @@ il_assert_grep "$LOG" "RAX=0x[0-9a-f]{16}"                          "register st
 il_assert_grep "$LOG" "Stack trace"                                 "stack trace printed"
 il_assert_grep "$LOG" "from KERNEL mode \(cpu[0-9]+\)"              "regular exception log also names the CPU"
 
+# 4b. The fatal path also paints a named STOP (serial banner first).
+il_assert_grep_fixed "$LOG" "[bsod] STOP=0x000000000000000e PAGE_FAULT" \
+    "STOP 0x0E PAGE_FAULT banner"
+il_assert_grep_fixed "$LOG" "[bsod] see docs/bsod.md" \
+    "STOP docs pointer"
+
 # 5. No silent reset: exactly one boot means the machine halted with the
 #    diagnostic on the wire instead of triple-faulting into a reboot.
 boots=$(grep -c "Hello from AuraLite OS kernel!" "$LOG" || true)

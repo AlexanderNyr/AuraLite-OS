@@ -16,6 +16,7 @@
 
 static uint32_t *front_fb = NULL;   /* the visible Limine framebuffer */
 static uint32_t *back_fb  = NULL;   /* off-screen render target       */
+static volatile int bsod_seized;    /* 1 => flips are no-ops          */
 static uint32_t  fb_width  = 0;
 static uint32_t  fb_height = 0;
 static uint32_t  fb_pitch  = 0;     /* bytes per scanline              */
@@ -308,7 +309,12 @@ void gfx_back_put_rect(int32_t x, int32_t y, uint32_t w, uint32_t h, const uint3
     }
 }
 
+void gfx_bsod_seize(void) {
+    bsod_seized = 1;
+}
+
 void gfx_flip(void) {
+    if (bsod_seized) return;
     if (!back_fb || !front_fb) {
         return;
     }
@@ -332,6 +338,7 @@ void gfx_flip(void) {
  * avoid bandwidth on idle frames.
  */
 void gfx_flip_rect(int32_t x, int32_t y, uint32_t w, uint32_t h) {
+    if (bsod_seized) return;
     if (!back_fb || !front_fb) return;
     uint32_t pitch32 = fb_pitch / 4;
 

@@ -49,6 +49,12 @@ il_assert_grep "$LOG" "Stack trace"                                 "stack trace
 il_assert_grep "$LOG" "\[DOUBLE FAULT\] cpu[0-9]+"                  "double-fault handler message names the CPU"
 il_assert_grep "$LOG" "running on IST1"                             "handler reports it is on the IST stack"
 
+# 3b. The fatal path also paints a named STOP (serial banner first).
+il_assert_grep_fixed "$LOG" "[bsod] STOP=0x0000000000000008 DOUBLE_FAULT" \
+    "STOP 0x08 DOUBLE_FAULT banner"
+il_assert_grep_fixed "$LOG" "[bsod] see docs/bsod.md" \
+    "STOP docs pointer"
+
 # 4. No silent reset: before FIX_R1 this trigger produced a triple fault and
 #    QEMU would start the boot again — a second banner.  Exactly one banner
 #    means the machine halted with the diagnostic on the wire.

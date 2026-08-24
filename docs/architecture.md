@@ -248,10 +248,13 @@ isr_common_stub
    ▼
 isr_handler (isr.c)
    ├── vector < 32  : exception
-   │     if from USER mode (CS & 3 == 3): kill the thread, schedule()
-   │     else: dump registers + stack trace + CR2 (if #PF), halt
+   │     if from USER mode (CS & 3 == 3): POSIX signal / kill the thread
+   │     else: lock-free [diag] dump, then blue STOP screen, halt
    └── vector 32-47 : IRQ -> pic_eoi() BEFORE handler, then dispatch
 ```
+
+Kernel-mode stops are documented in [`bsod.md`](bsod.md). User-mode faults
+never become a STOP: they stay POSIX signals.
 
 The PIC EOI is sent **before** the handler so the timer can deliver the next
 tick after a context switch inside the handler (preemptive scheduling).

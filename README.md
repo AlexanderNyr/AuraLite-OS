@@ -765,6 +765,7 @@ Start here:
 - [`TODO.md`](TODO.md) — fine-grained known limitations, annotated against the
   ledger.
 - [`docs/architecture.md`](docs/architecture.md) — kernel architecture.
+- [`docs/bsod.md`](docs/bsod.md) — STOP codes on the fatal blue screen.
 - [`docs/memory_map.md`](docs/memory_map.md) — virtual/physical memory layout.
 - [`docs/syscall_abi.md`](docs/syscall_abi.md) — syscall ABI and numbers.
 - [`docs/driver_guide.md`](docs/driver_guide.md) — driver inventory and notes.

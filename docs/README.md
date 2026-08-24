@@ -51,6 +51,7 @@ This directory contains the technical documentation for AuraLite OS.
   matrix (partial rows allowlist measured EMPTY at R12).
 - [`rsbr_app_doc.md`](rsbr_app_doc.md) — pure-Rust applications over the
   RSBR bridge (three ISAs since R8).
+- [`bsod.md`](bsod.md) — STOP codes painted on the fatal blue screen.
 
 ## Documentation conventions
 

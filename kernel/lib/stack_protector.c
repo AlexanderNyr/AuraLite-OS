@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "kernel/lib/stack_protector.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/bsod.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/proc/scheduler.h"
@@ -162,6 +163,7 @@ void __stack_chk_fail(void) {
 
     kprintf("[security] STACK CORRUPTION DETECTED in kernel (cpu%u)\n",
             diag_cpu_id());
+    bsod_show(BSOD_KCANARY, class, diag_cpu_id(), ret_addr, rsp);
     kernel_halt();
     for (;;) {
         __asm__ volatile ("cli; hlt");

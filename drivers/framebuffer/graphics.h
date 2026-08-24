@@ -85,4 +85,8 @@ uint64_t gfx_take_px_counter(void);
 uint32_t gfx_get_width(void);
 uint32_t gfx_get_height(void);
 
+/* Fatal stop: further gfx_flip / gfx_flip_rect become no-ops so an
+ * AP compositor cannot overwrite the blue screen. */
+void gfx_bsod_seize(void);
+
 #endif /* AURALITE_DRIVERS_FRAMEBUFFER_GRAPHICS_H */

@@ -15,6 +15,7 @@
 #include "kernel/mm/vma.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/assert.h"
+#include "kernel/lib/bsod.h"
 
 /* Map a Ring-3 CPU exception vector to the POSIX signal it raises. */
 static int exception_to_signal(uint64_t vec) {
@@ -129,6 +130,8 @@ void isr_handler(struct registers *r) {
                     "(cannot push a frame for the original fault) -- "
                     "running on IST1, halting; before FIX_R1 this was a "
                     "silent reset\n", diag_cpu_id());
+            bsod_show(BSOD_STOP_CPU(8), msg, diag_cpu_id(),
+                      r->rip, r->err_code);
             kernel_halt();
         }
 
@@ -196,6 +199,8 @@ void isr_handler(struct registers *r) {
                      * by diag_early_dump() above. */
                     kprintf("[GUARD] kernel stack overflow is fatal; "
                             "halting cpu%u.\n", diag_cpu_id());
+                    bsod_show(BSOD_KSTACK, gdesc ? gdesc : "kernel stack overflow",
+                              diag_cpu_id(), r->rip, read_cr2());
                     kernel_halt();
                 }
                 /* User-mode guard hit: let the SIGSEGV path below terminate or
@@ -253,9 +258,10 @@ void isr_handler(struct registers *r) {
 
         /* Kernel-mode exception: truly fatal.  The register state and the
          * stack trace were already emitted on the serial console by
-         * diag_early_dump() above (before any lockable/fallible output); a
-         * duplicate kprintf dump would only add lock-deadlock exposure on
-         * an already-broken machine, so there is nothing left to print. */
+         * diag_early_dump() above (before any lockable/fallible output).
+         * The blue screen is best-effort after that dump. */
+        bsod_show(BSOD_STOP_CPU((uint32_t)r->int_no), msg, diag_cpu_id(),
+                  r->rip, (r->int_no == 14) ? read_cr2() : r->err_code);
         kernel_halt();
     } else if (r->int_no < 48) {
         /* Hardware IRQ (PIC-remapped vectors 32-47). */

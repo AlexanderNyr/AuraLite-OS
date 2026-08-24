@@ -32,4 +32,9 @@ void fb_arm_shadow(void);
 void fb_set_console_enabled(int on);
 int  fb_console_enabled(void);
 
+/* Fatal stop screen: fill the linear FB (or the VGA text console) with
+ * a blue background and paint `lines`.  No locks, no allocation.
+ * Called only from bsod_show() after the serial dump. */
+void fb_bsod_paint(const char *const *lines, int nlines);
+
 #endif /* AURALITE_DRIVERS_FRAMEBUFFER_FB_H */

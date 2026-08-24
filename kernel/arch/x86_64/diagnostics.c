@@ -21,6 +21,7 @@
 #include "kernel/arch/x86_64/string_fast.h"
 #include "kernel/boot_info.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/bsod.h"
 
 /* ------------------------------------------------------------------------
  * Lock-free serial output (COM1), safe from any context.
@@ -203,6 +204,8 @@ void diag_early_dump(const struct registers *r, const char *exception_name) {
     if (diag_nesting != 0) {
         diag_early_puts("[diag] recursive fault inside the diagnostics dump; "
                         "suppressing nested dump\n");
+        bsod_show(BSOD_KRECURSE, "fault inside diagnostic dump",
+                  diag_cpu_id(), r ? r->rip : 0, 0);
         return;
     }
     diag_nesting++;

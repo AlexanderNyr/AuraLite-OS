@@ -393,9 +393,11 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
         len = ksnprintf(text, sizeof(text),
                         "AuraLite sysrq trigger commands:\n"
                         "  c - crash: deliberate kernel page fault "
-                        "(FIX_R0 diagnostics test gate)\n"
+                        "(FIX_R0 diagnostics test gate; "
+                        "STOP 0x0000000E PAGE_FAULT)\n"
                         "  o - overflow: deliberate kernel stack overflow "
-                        "-> #DF (FIX_R1 IST test gate)\n");
+                        "-> #DF (FIX_R1 IST test gate; "
+                        "STOP 0x00000008 DOUBLE_FAULT)\n");
     } else if (vn->inode_id == 15) {
         /* /proc/perf: the OPT_PLAN O0 counters, "name value" per line. */
         for (int i = 0; i < perfstat_counter_count(); i++) {
