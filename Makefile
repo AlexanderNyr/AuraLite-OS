@@ -2081,6 +2081,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
                 $(BUILD_DIR)/test_pcid_policy \
+                $(BUILD_DIR)/test_tcp_cc \
                 $(BUILD_DIR)/test_sizeclass \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -2563,6 +2564,13 @@ $(BUILD_DIR)/test_tlb_policy: tests/unit/test_tlb_policy.c kernel/arch/x86_64/tl
 # RESIDUE R11: the PCID allocation/switch/filter core — the ONLY
 # executable rig for these decisions (TCG has no PCID; measured).
 $(BUILD_DIR)/test_pcid_policy: tests/unit/test_pcid_policy.c kernel/arch/x86_64/pcid_policy.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# REALINTERNET2 Y1: the congestion-control arithmetic — loss and
+# reordering are manufactured HERE, deterministically (D2); the guest
+# lanes assert counters, not timing.
+$(BUILD_DIR)/test_tcp_cc: tests/unit/test_tcp_cc.c kernel/net/tcp_cc.h kernel/net/tcp_m6.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

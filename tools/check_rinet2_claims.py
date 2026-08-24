@@ -105,6 +105,38 @@ def claims():
             "test_tcp_x5" in read("Makefile") and
             "test_tcp_m6" in read("Makefile")))
 
+    # --- Y1: congestion control (when the plan says it landed) ---------
+    if y1_done:
+        cc_h = read("kernel", "net", "tcp_cc.h")
+        checks.append((
+            "Y1: the growth arithmetic is a pure-C core with a host "
+            "gate, and tcp.c drives cwnd from it",
+            "tcpcc_iw" in cc_h and "tcpcc_ack_grow" in cc_h and
+            "tcpcc_iw(TCP_MSS)" in tcp and
+            "tcpcc_ack_grow(" in tcp and
+            "tcpcc_rto_cwnd(" in tcp and
+            "test_tcp_cc" in read("Makefile")))
+        checks.append((
+            "Y1: the wide-open init and the '+= 1460' growth are gone "
+            "(the 'until N7' placeholder is retired)",
+            tcp.count("cwnd    = TCP_WINDOW") == 0 and
+            "c->cwnd += 1460" not in tcp and
+            "until N7 brings" not in tcp))
+        checks.append((
+            "Y1: one ssthresh formula for both loss signals (the RTO "
+            "path uses the m6 helper too)",
+            tcp.count("tcpm6_recovery_ssthresh") >= 2))
+        checks.append((
+            "Y1: the recovery-deflate has an EDGE (the latent "
+            "every-ACK clamp is fixed and named)",
+            "was_recovery && !c->dupack.in_recovery" in tcp and
+            "LATENT" in tcp))
+        checks.append((
+            "Y1: the guest receipt is pinned — the x5 1 MiB lane "
+            "demands tcp_cwnd_limited_sends > 0",
+            "tcp_cwnd_limited_sends [1-9]"
+            in read("tests", "integration", "cases", "test_tcp_x5.sh")))
+
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))
     done_heads = len(re.findall(r"^### Y\d+[^\n]*✅ COMPLETE", plan, re.M))

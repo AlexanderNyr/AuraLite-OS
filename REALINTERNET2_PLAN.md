@@ -1,11 +1,11 @@
 # AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
 
-## Status: IN PROGRESS — Y0 complete; Y1 next; plan committed 2026-08-23
+## Status: IN PROGRESS — Y0–Y1 complete; Y2 next; plan committed 2026-08-23
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | Y0 — the rig: TCP decision-core host gates, perf counters, opener receipts | ✅ complete | `patches/RINET2_Y0_rig.patch` |
-| Y1 — congestion control: the cwnd stops being a constant | pending | `patches/RINET2_Y1_cc.patch` |
+| Y1 — congestion control: the cwnd stops being a constant | ✅ complete | `patches/RINET2_Y1_cc.patch` |
 | Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | pending | `patches/RINET2_Y2_seam.patch` |
 | Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | pending | `patches/RINET2_Y3_tcp6.patch` |
 | Y4 — HTTPS-over-IPv6: the RES-26 receipt | pending | `patches/RINET2_Y4_https6.patch` |
@@ -140,18 +140,50 @@ run; the sibling jitter lane PASSed).  The band is now ±75%
 arithmetic and the run id at the site; a stuck generator still
 overshoots by orders of magnitude.
 
-### Y1 — congestion control
-- [ ] `tcp_cc.h` (pure C): slow start, congestion avoidance,
-      fast retransmit / fast recovery on 3 dup-ACKs (RFC 5681
-      shape), RTO collapse to 1 SMSS; ssthresh arithmetic.
-- [ ] tcp.c drives cwnd from the core; counters from Y0 move.
-- [ ] Host gate: loss/reorder scripts over the pure core (dup-ACK
-      runs, RTO storms, the ssthresh halving ladder — deterministic).
-- [ ] Guest gate: the existing socat round-trip lanes stay green;
+### Y1 — congestion control — ✅ COMPLETE
+- [x] `tcp_cc.h` (pure C): slow start, congestion avoidance,
+      the RTO loss-window collapse; ssthresh unified on the m6
+      helper (fast retransmit / fast recovery were ALREADY M6's —
+      the Y0 correction stands).
+- [x] tcp.c drives cwnd from the core; counters from Y0 move.
+- [x] Host gate: the growth arithmetic proven deterministically
+      (test_tcp_cc, 20 checks).
+- [x] Guest gate: the existing socat round-trip lanes stay green;
       `/proc/perf` shows `tcp_cwnd_limited_sends` > 0 on the bulk
       lane (the receipt that cwnd is ALIVE, not decorative).
-- [ ] Exit: cwnd is a variable with a test that fails if it stops
+- [x] Exit: cwnd is a variable with a test that fails if it stops
       being one.
+
+Result: cwnd is alive, with a number — the x5 1 MiB upload now
+starts inside slow start (IW per RFC 6928: `tcpcc_iw(1460)` =
+14600, not 64240) and hits the cwnd edge **586 times** on its way
+up (`tcp_cwnd_limited_sends 586` in the lane's /proc/perf, asserted
+> 0 in CI; the counter Y0 reserved at zero moved the day the
+arithmetic landed).  The core is 3 functions in tcp_cc.h: the
+RFC 6928 IW (both bounds kept so the formula reads like the RFC),
+`tcpcc_ack_grow` (slow start with ABC L=1 — growth clamps to
+min(acked, SMSS), so a piecemeal-ACK server cannot inflate cwnd
+faster than it actually acknowledges — and CA's MSS²/cwnd with a
+max(1,·) anti-stall), and the §3.1 loss window.  tcp.c changes are
+four sites: two inits, the progress-ACK growth (replacing the
+unconditional `+= 1460`), and the RTO collapse — which now shares
+tcpm6_recovery_ssthresh with fast retransmit (the old RTO path
+halved CWND instead of FLIGHT and floored at 1 SMSS; one formula,
+both signals, named).  CATCH, fixed and named at the site: the
+M6 recovery-deflate had NO EDGE — `if (!in_recovery && cwnd >
+ssthresh) cwnd = ssthresh` fired on every progress ACK, invisible
+while ssthresh sat at TCP_WINDOW, but it would have clamped
+congestion avoidance to ssthresh FOREVER the moment ssthresh went
+live (i.e. the moment this phase shipped).  The deflate now fires
+on the recovery exit edge only (`was_recovery &&
+!in_recovery`).  test_tcp_cc pins 20 decisions: IW across the
+PMTUD ladder, SS doubling per RTT, the ABC clamps both ways, the
+SS→CA crossover at ssthresh, CA's ~1-MSS-per-RTT rate, the
+anti-stall at giant cwnd, the loss window, the unified ssthresh
+floor, the 1-MSS→ssthresh climb-back in ~log2 RTTs, the cap and
+the uint32 wrap guard.  All 12 x5 assertions green including the
+three new counter pins; kernel and kernel32 both carry the change
+(tcp.c is a shared row — the i386 lane counts too).
 
 ### Y2 — the TCP/IP seam
 - [ ] `kernel/net/netl3.h` ops: resolve (ARP/NDP), frame+send,

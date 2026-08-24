@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include "kernel/net/tcp.h"
 #include "kernel/net/tcp_x5.h"
+#include "kernel/net/tcp_cc.h"
 #include "kernel/net/tcp_m6.h"
 #include "kernel/net/tcp_m6c.h"
 #include "kernel/net/tcp_m6d.h"
@@ -777,8 +778,9 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     conns[new_h].snd_wnd = (!pend && ntohs_(rx.window)) ?
                            ntohs_(rx.window) : TCP_WINDOW;
     conns[new_h].rcv_wnd = TCP_WINDOW;
-    conns[new_h].cwnd    = TCP_WINDOW;
-    conns[new_h].ssthresh= TCP_WINDOW;
+    conns[new_h].cwnd    = tcpcc_iw(TCP_MSS);  /* Y1: RFC 6928 IW */
+    conns[new_h].ssthresh= TCP_WINDOW;         /* "arbitrarily high",
+                                                * RFC 5681 §3.1 */
 
     /* Quick poll for the ACK */
     struct tcp_hdr ack_rx;
@@ -878,8 +880,9 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
 
     /* N3 fix: initialise the sliding-window fields so tcp_send does not
      * immediately conclude "window full" (0 >= min(0,0)) and spin forever
-     * waiting for an ACK.  cwnd is wide open until N7 brings real
-     * congestion control + buffered out-of-order receive. */
+     * waiting for an ACK.  Y1: cwnd starts at the RFC 6928 initial
+     * window and GROWS (tcp_cc.h) — the old "wide open until N7"
+     * placeholder is retired. */
     conns[h].snd_una = conn_seq;
     tcpm6_dupack_init(&conns[h].dupack);   /* M6 */
     tcpm6c_retxq_init(&conns[h].retxq);    /* M6c */
@@ -889,8 +892,10 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     conns[h].snd_nxt = conn_seq;
     conns[h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
     conns[h].rcv_wnd = TCP_WINDOW;
-    conns[h].cwnd    = TCP_WINDOW;
-    conns[h].ssthresh= TCP_WINDOW;
+    conns[h].cwnd    = tcpcc_iw(TCP_MSS);      /* Y1: RFC 6928 IW —
+                                                * slow start actually
+                                                * RUNS from here */
+    conns[h].ssthresh= TCP_WINDOW;             /* "arbitrarily high" */
 
     kprintf("[tcp] [h=%d] ESTABLISHED (seq=%u, ack=%u, peer_wnd=%u)\n",
             h, conn_seq, conn_ack, conns[h].snd_wnd);
@@ -1064,6 +1069,7 @@ int tcp_send(const void *data, uint32_t len) {
                  * carries data or moves the window is NOT a duplicate ACK
                  * (RFC 5681 s2) -- counting those would make the stack
                  * retransmit into a receiver that is merely slow. */
+                uint8_t was_recovery = c->dupack.in_recovery; /* Y1: edge */
                 tcpm6_ack_kind_t kind =
                     tcpm6_on_ack(&c->dupack, c->snd_una, acked, c->snd_nxt,
                                  data_len > 0,
@@ -1122,7 +1128,8 @@ int tcp_send(const void *data, uint32_t len) {
                 if (acked > c->snd_una) {
                     /* Progress: slide, sample RTT (Karn: only if the
                      * covered segment was never retransmitted), reset
-                     * the loss counters, grow cwnd (slow start). */
+                     * the loss counters, grow cwnd (tcp_cc.h). */
+                    uint32_t acked_delta = acked - c->snd_una;   /* Y1 */
                     c->snd_una = acked;
                     c->consec_tmo = 0;
                     c->eff_mss = tcpx5_mss_ladder(0);
@@ -1142,15 +1149,22 @@ int tcp_send(const void *data, uint32_t len) {
                      * This also clears any sacked flags with the segments,
                      * so a later SACK cannot refer to a retired sequence. */
                     tcpm6c_retxq_ack(&c->retxq, acked);
-                    if (!c->dupack.in_recovery && c->cwnd > c->ssthresh &&
-                        c->ssthresh > 0) {
+                    if (was_recovery && !c->dupack.in_recovery &&
+                        c->cwnd > c->ssthresh && c->ssthresh > 0) {
                         /* M6: leaving fast recovery deflates cwnd back to
                          * ssthresh rather than keeping the inflated value
-                         * (RFC 5681 s3.2 step 6). */
+                         * (RFC 5681 s3.2 step 6).  Y1 fixed a LATENT
+                         * defect here: the old condition had no edge —
+                         * it fired on EVERY progress ACK with
+                         * cwnd > ssthresh, which was invisible while
+                         * ssthresh was pinned at TCP_WINDOW but would
+                         * have clamped congestion avoidance to ssthresh
+                         * forever the moment ssthresh went live. */
                         c->cwnd = c->ssthresh;
                     }
-                    c->cwnd += 1460;
-                    if (c->cwnd > TCP_WINDOW) c->cwnd = TCP_WINDOW;
+                    c->cwnd = tcpcc_ack_grow(c->cwnd, c->ssthresh,
+                                             c->eff_mss, acked_delta,
+                                             TCP_WINDOW);   /* Y1: SS/CA */
                 }
             } else {
                 /* Timeout: congestion (or a swallowed segment).  Back the
@@ -1160,9 +1174,14 @@ int tcp_send(const void *data, uint32_t len) {
                 tcpx5_rto_backoff(&c->rto);
                 perfstat_add(PERF_TCP_RTO_EVENTS, 1);
                 c->eff_mss = tcpx5_mss_ladder(c->consec_tmo);
-                c->ssthresh = c->cwnd / 2;
-                if (c->ssthresh < 1460) c->ssthresh = 1460;
-                c->cwnd = 1460;
+                /* Y1: ONE ssthresh formula for both loss signals —
+                 * max(FlightSize/2, 2*SMSS), the same m6 helper the
+                 * fast-retransmit path uses (the old RTO path halved
+                 * cwnd instead of flight and floored at 1 SMSS); cwnd
+                 * collapses to the RFC 5681 §3.1 loss window. */
+                c->ssthresh = tcpm6_recovery_ssthresh(
+                    c->snd_nxt - c->snd_una, c->eff_mss);
+                c->cwnd = tcpcc_rto_cwnd(c->eff_mss);
                 if (c->consec_tmo > TCP_X5_MAX_TMO) {
                     kprintf("[tcp] send failed: %u consecutive RTOs "
                             "(backoff to %u ms) — giving up\n",

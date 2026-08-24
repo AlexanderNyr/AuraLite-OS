@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y1 — congestion control: cwnd is alive, 586 receipts say so] 2026-08-24
+
+The exact debt Y0 measured is paid: `tcp_cc.h` (pure C, the
+x5/m6/pcid pattern) carries the RFC 6928 initial window, slow start
+with ABC L=1 (growth clamps to min(acked, SMSS) — a piecemeal-ACK
+server cannot inflate cwnd faster than it acknowledges), congestion
+avoidance's MSS²/cwnd with an anti-stall max(1,·), and the §3.1
+loss-window collapse.  tcp.c changes are four sites: two inits (IW
+= 14600, not the wide-open 64240 — slow start actually RUNS now),
+the progress-ACK growth replacing the unconditional `+= 1460`, and
+the RTO collapse — now sharing tcpm6_recovery_ssthresh with fast
+retransmit (the old RTO path halved CWND instead of FLIGHT and
+floored at 1 SMSS; one formula, both loss signals).  CATCH, fixed
+at the site: the M6 recovery-deflate had NO EDGE — it re-clamped
+cwnd to ssthresh on EVERY progress ACK, invisible while ssthresh
+was pinned wide open, lethal to congestion avoidance the moment
+this phase made ssthresh live; it now fires on the recovery-exit
+edge only.  Receipts: test_tcp_cc pins 20 decisions on the host
+(IW ladder, SS doubling, ABC both ways, SS→CA crossover, CA rate,
+anti-stall, loss window, unified ssthresh, the log2 climb-back,
+cap, wrap guard); the x5 1 MiB lane hits the cwnd edge 586 times
+(`tcp_cwnd_limited_sends 586` — the counter Y0 reserved at zero,
+now asserted > 0 in CI) with all 12 assertions green; both kernels
+carry it (tcp.c is a shared row — i386 counts too).  The Y0
+opener pin for the cwnd constant retired with the phase, exactly
+as the checker was built to demand.
+
 ## [RINET2 Y0 — the rig, whose first catch is the plan itself] 2026-08-23
 
 The tenth D8 checker (`check_rinet2_claims.py`) arrives holding the
