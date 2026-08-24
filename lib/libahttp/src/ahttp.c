@@ -41,7 +41,9 @@ extern int send(int, const void *, uint32_t);
 extern int recv(int, void *, uint32_t);
 extern int closesocket(int);
 extern int getentropy(void *, size_t);
-#include "unistd.h"   /* open/read/close for the trust-store loader */
+#include "unistd.h"   /* open/read/close + connectaddr */
+#include "sys/socket.h"
+#include "netinet/in.h"
 #else
 /* Host: use standard POSIX. */
 #include <sys/socket.h>
@@ -71,6 +73,17 @@ static int host_recv(int fd, void *buf, size_t cap) {
 
 /* DNS resolver (AuraLite libc). */
 extern uint32_t dns_resolve(const char *hostname);
+#ifdef __AURALITE__
+extern int dns_resolve_aaaa(const char *hostname, uint8_t out[16]);
+#else
+/* Host tests stub AAAA unless they provide their own. */
+static int dns_resolve_aaaa(const char *hostname, uint8_t out[16]) {
+    (void)hostname; (void)out;
+    return -1;
+}
+#endif
+
+#include "kernel/net/dualstack.h"
 
 /* ---- small ascii helpers (case-insensitive, NUL-safe) ---- */
 
@@ -90,6 +103,103 @@ static uint32_t parse_ip(const char *s) {
     unsigned a = 0, b = 0, c = 0, d = 0;
     if (sscanf(s, "%u.%u.%u.%u", &a, &b, &c, &d) == 4)
         return (a << 24) | (b << 16) | (c << 8) | d;
+    return 0;
+}
+
+/* RFC 4291 textual IPv6 (including ::).  Returns 0 and writes 16 octets. */
+static int parse_ip6(const char *s, uint8_t out[16]) {
+    unsigned parts[8];
+    int n = 0, skip = -1;
+    if (!s || !out) return -1;
+    if (*s == ':') {
+        if (s[1] != ':') return -1;
+        skip = 0;
+        s += 2;
+        if (!*s) {
+            memset(out, 0, 16);
+            return 0;
+        }
+    }
+    while (*s) {
+        if (*s == ':') {
+            if (skip >= 0) return -1;
+            skip = n;
+            s++;
+            if (!*s) break;
+            continue;
+        }
+        unsigned v = 0;
+        int digits = 0;
+        while (*s && *s != ':') {
+            int h = -1;
+            if (*s >= '0' && *s <= '9') h = *s - '0';
+            else if (*s >= 'a' && *s <= 'f') h = *s - 'a' + 10;
+            else if (*s >= 'A' && *s <= 'F') h = *s - 'A' + 10;
+            else return -1;
+            v = (v << 4) | (unsigned)h;
+            if (v > 0xFFFFu) return -1;
+            s++;
+            digits++;
+            if (digits > 4) return -1;
+        }
+        if (n >= 8) return -1;
+        parts[n++] = v;
+        if (*s == ':') {
+            s++;
+            if (!*s) return -1;
+        }
+    }
+    if (skip < 0) {
+        if (n != 8) return -1;
+    } else {
+        int z = 8 - n;
+        if (z <= 0) return -1;
+        for (int i = n - 1; i >= skip; i--) parts[i + z] = parts[i];
+        for (int i = 0; i < z; i++) parts[skip + i] = 0;
+    }
+    for (int i = 0; i < 8; i++) {
+        out[i * 2]     = (uint8_t)(parts[i] >> 8);
+        out[i * 2 + 1] = (uint8_t)(parts[i] & 0xFF);
+    }
+    return 0;
+}
+
+static int ahttp_connect_v4(int *fd_out, uint32_t ip, uint16_t port) {
+#ifdef __AURALITE__
+    int fd = socket(2, 1, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, ip, port) != 0) { closesocket(fd); return -1; }
+#else
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    if (host_connect_ip(fd, ip, port) != 0) { close(fd); return -1; }
+#endif
+    *fd_out = fd;
+    return 0;
+}
+
+static int ahttp_connect_v6(int *fd_out, const uint8_t addr[16], uint16_t port) {
+    struct sockaddr_in6 sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin6_family = AF_INET6;
+    sa.sin6_port = htons((uint16_t)port);
+    memcpy(sa.sin6_addr.s6_addr, addr, 16);
+#ifdef __AURALITE__
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    if (connectaddr(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        closesocket(fd);
+        return -1;
+    }
+#else
+    int fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        close(fd);
+        return -1;
+    }
+#endif
+    *fd_out = fd;
     return 0;
 }
 
@@ -113,21 +223,44 @@ int ahttp_url_parse(const char *url, ahttp_url *out) {
         return AHTTP_ERR_URL;
     }
 
-    /* Host[:port]. */
-    const char *host_start = p;
-    while (*p && *p != '/' && *p != ':' && *p != '?' && *p != '#') p++;
-    size_t host_len = (size_t)(p - host_start);
-    if (host_len == 0 || host_len >= sizeof(out->host)) return AHTTP_ERR_URL;
-    for (size_t i = 0; i < host_len; i++) out->host[i] = host_start[i];
-    out->host[host_len] = 0;
-
-    /* Port. */
-    if (*p == ':') {
+    /* Host[:port], or RFC 3986 [IPv6][:port].  A colon inside the
+     * brackets is the address, not the port separator. */
+    if (*p == '[') {
         p++;
-        out->port = 0;
-        while (*p >= '0' && *p <= '9') {
-            out->port = out->port * 10 + (*p - '0');
+        const char *host_start = p;
+        while (*p && *p != ']') p++;
+        if (*p != ']') return AHTTP_ERR_URL;
+        size_t host_len = (size_t)(p - host_start);
+        if (host_len == 0 || host_len >= sizeof(out->host)) return AHTTP_ERR_URL;
+        for (size_t i = 0; i < host_len; i++) out->host[i] = host_start[i];
+        out->host[host_len] = 0;
+        p++; /* skip ']' */
+        if (*p == ':') {
             p++;
+            out->port = 0;
+            int saw_digit = 0;
+            while (*p >= '0' && *p <= '9') {
+                out->port = out->port * 10 + (*p - '0');
+                p++;
+                saw_digit = 1;
+            }
+            if (!saw_digit) return AHTTP_ERR_URL;
+        }
+    } else {
+        const char *host_start = p;
+        while (*p && *p != '/' && *p != ':' && *p != '?' && *p != '#') p++;
+        size_t host_len = (size_t)(p - host_start);
+        if (host_len == 0 || host_len >= sizeof(out->host)) return AHTTP_ERR_URL;
+        for (size_t i = 0; i < host_len; i++) out->host[i] = host_start[i];
+        out->host[host_len] = 0;
+
+        if (*p == ':') {
+            p++;
+            out->port = 0;
+            while (*p >= '0' && *p <= '9') {
+                out->port = out->port * 10 + (*p - '0');
+                p++;
+            }
         }
     }
 
@@ -255,29 +388,50 @@ static int transport_connect(transport *t, const char *host, int port, int use_t
     t->is_tls = use_tls;
     t->tls = NULL;
 
-    /* Resolve host. */
-    uint32_t ip = parse_ip(host);
-    if (!ip) ip = dns_resolve(host);
-    if (!ip) return AHTTP_ERR_DNS;
+    /* Y4: resolve A + AAAA, pick (v6 preferred when an AAAA exists),
+     * dial v6, fall back to v4 serially. */
+    uint8_t aaaa[16];
+    int have_aaaa = 0, have_a = 0;
+    uint32_t ip4 = parse_ip(host);
+    if (ip4) have_a = 1;
+    if (parse_ip6(host, aaaa) == 0) have_aaaa = 1;
+    if (!have_a && !have_aaaa) {
+        ip4 = dns_resolve(host);
+        if (ip4) have_a = 1;
+        if (dns_resolve_aaaa(host, aaaa) == 0) have_aaaa = 1;
+    }
+    if (!have_a && !have_aaaa) return AHTTP_ERR_DNS;
 
-    /* TCP connect. */
-#ifdef __AURALITE__
-    t->fd = socket(2 /*AF_INET*/, 1 /*SOCK_STREAM*/, 0);
-#else
-    t->fd = socket(AF_INET, SOCK_STREAM, 0);
-#endif
-    if (t->fd < 0) return AHTTP_ERR_CONNECT;
-#ifdef __AURALITE__
-    int rc = connect(t->fd, ip, (uint16_t)port);
-#else
-    int rc = host_connect_ip(t->fd, ip, (uint16_t)port);
-#endif
-    if (rc != 0) { closesocket(t->fd); return AHTTP_ERR_CONNECT; }
+    int pick = dualstack_pick(have_aaaa ? 1 : 0, have_aaaa, have_a);
+    t->fd = -1;
+    if (pick == DS_V6) {
+        printf("[ahttp] dial v6 %s:%d\n", host, port);
+        if (ahttp_connect_v6(&t->fd, aaaa, (uint16_t)port) != 0) {
+            if (have_a) {
+                printf("[ahttp] v6 failed, falling back to v4\n");
+                if (ahttp_connect_v4(&t->fd, ip4, (uint16_t)port) != 0)
+                    return AHTTP_ERR_CONNECT;
+            } else {
+                return AHTTP_ERR_CONNECT;
+            }
+        }
+    } else if (pick == DS_V4) {
+        printf("[ahttp] dial v4 %s:%d\n", host, port);
+        if (ahttp_connect_v4(&t->fd, ip4, (uint16_t)port) != 0)
+            return AHTTP_ERR_CONNECT;
+    } else {
+        return AHTTP_ERR_DNS;
+    }
 
     /* TLS handshake (REALINTERNET_PLAN X2). */
     if (use_tls) {
         atls_tls_config cfg;
         memset(&cfg, 0, sizeof(cfg));
+        /* SNI still needs a name (atls_tls_new refuses NULL).  CATCH,
+         * named at TLS: atls hostname match is DNS-SAN only, so an
+         * IP-literal fetch would fail ATLS_CERTVAL_ERR_HOSTNAME if a
+         * trust store were loaded.  Guest https6 carries no roots —
+         * CertificateVerify still runs; SAN match is skipped. */
         cfg.hostname = host;
         cfg.alpn = "http/1.1";
         cfg.roots = roots;
@@ -830,14 +984,25 @@ static int client_exchange(ahttp_client *c, const ahttp_url *u,
 
         reader *rd = &c->conn.rd;
 
-        /* Build request.  Pathological path lengths are refused loudly. */
+        /* Build request.  Pathological path lengths are refused loudly.
+         * IPv6 Host is [addr] (RFC 3986 / RFC 9110). */
+        char hosthdr[300];
+        if (strchr(u->host, ':')) {
+            int def = (strcmp(u->scheme, "https") == 0) ? 443 : 80;
+            if (u->port != def)
+                snprintf(hosthdr, sizeof hosthdr, "[%s]:%d", u->host, u->port);
+            else
+                snprintf(hosthdr, sizeof hosthdr, "[%s]", u->host);
+        } else {
+            snprintf(hosthdr, sizeof hosthdr, "%s", u->host);
+        }
         char req[4096];
         int rlen = snprintf(req, sizeof(req),
             "%s %s HTTP/1.1\r\n"
             "Host: %s\r\n"
             "Connection: keep-alive\r\n"
             "Accept: */*\r\n",
-            method, u->path, u->host);
+            method, u->path, hosthdr);
         if (rlen <= 0 || (size_t)rlen >= sizeof(req)) return AHTTP_ERR_URL;
         size_t off = (size_t)rlen;
         if (body_len > 0) {

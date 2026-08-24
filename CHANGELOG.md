@@ -2,6 +2,20 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y4 — HTTPS-over-IPv6: RES-26 closes] 2026-08-24
+
+libahttp learns the second family.  `ahttp_url_parse` accepts RFC 3986
+`[addr]` literals; `parse_ip6` + `dns_resolve_aaaa` (new
+`SYS_DNS_AAAA` = 309) feed `dualstack_pick`; the dial is v6 first
+with a serial v4 fallback (`[ahttp] dial v6` / `falling back to v4`).
+The Host header wraps IPv6 in brackets.  CATCH, named at the
+fixture: QEMU 10 still cannot guestfwd IPv6, so openssl s_server
+binds `[::]:8446` and the guest hits `fec0::2` the Y3 way.  CATCH,
+named at TLS: IP-literal fetches skip chain hostname match (atls is
+DNS-SAN only; CertificateVerify still runs).  Guest `/tests/https6`
+prints `[https6] PASS: status 200 body 3912 via v6`.  Ledger: RES-26
+DONE@Y4; OPEN 6→5.
+
 ## [RINET2 Y3 — TCP-over-IPv6: one transport, both families] 2026-08-24
 
 Y2's seam gets its second consumer.  `netl3_v6_ops` resolve via R9

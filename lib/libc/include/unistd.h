@@ -63,6 +63,7 @@ typedef struct {
 #define SYS_SOCKET_LISTEN  306
 #define SYS_SOCKET_ACCEPT  307
 #define SYS_SOCKET_CONNECT6 308   /* Y3: connect to a sockaddr_in6 */
+#define SYS_DNS_AAAA        309   /* Y4: resolve AAAA into 16 octets */
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 
 /* File-descriptor extensions. */
@@ -238,6 +239,7 @@ int         prog_path_count(void);
 const char *prog_path_entry(int index);
 int     aura_readdir(const char *path, void *out, int max);
 uint32_t dns_resolve(const char *hostname);
+int      dns_resolve_aaaa(const char *hostname, uint8_t out[16]);
 int     dnsctl(int op, void *buf, uint32_t len);
 
 /* ---- Network syscalls ---- */

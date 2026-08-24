@@ -125,6 +125,7 @@ typedef struct {
 #define SYS_SOCKET_LISTEN  306
 #define SYS_SOCKET_ACCEPT  307
 #define SYS_SOCKET_CONNECT6 308   /* Y3: connect(sockaddr_in6) */
+#define SYS_DNS_AAAA        309   /* Y4: resolve AAAA into 16 octets */
 
 /* File-descriptor extensions. */
 #define SYS_DUP    32
@@ -1091,6 +1092,20 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EFAULT;
         }
         return net_dns_resolve(host);
+    }
+    case SYS_DNS_AAAA: {
+        char host[SYSCALL_PATH_MAX];
+        uint8_t addr[16];
+        if (copy_string_from_user(host, (const char *)(uintptr_t)a1,
+                                  sizeof(host)) != 0)
+            return (uint64_t)-EFAULT;
+        if (a2 == 0) return (uint64_t)-EFAULT;
+        if (!validate_user_range((void *)(uintptr_t)a2, 16, 1))
+            return (uint64_t)-EFAULT;
+        if (dns_resolve_aaaa(host, addr) != 0) return (uint64_t)-1;
+        if (copy_to_user((void *)(uintptr_t)a2, addr, 16) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
     }
     case SYS_SOCKET:
         return (uint64_t)socket_create((int)a1, (int)a2, (int)a3);

@@ -54,6 +54,16 @@ static void test_url_parse(void) {
           strcmp(u.host, "10.0.2.2") == 0 && u.port == 18080,
           "URL: http://10.0.2.2:18080/index.html");
 
+    CHECK(ahttp_url_parse("https://[fec0::2]:8446/", &u) == AHTTP_OK &&
+          strcmp(u.scheme, "https") == 0 && strcmp(u.host, "fec0::2") == 0 &&
+          u.port == 8446 && strcmp(u.path, "/") == 0,
+          "URL: https://[fec0::2]:8446/");
+
+    CHECK(ahttp_url_parse("http://[::1]/x", &u) == AHTTP_OK &&
+          strcmp(u.host, "::1") == 0 && u.port == 80 &&
+          strcmp(u.path, "/x") == 0,
+          "URL: http://[::1]/x");
+
     CHECK(ahttp_url_parse("ftp://example.com", &u) == AHTTP_ERR_URL,
           "URL: ftp:// rejected");
 

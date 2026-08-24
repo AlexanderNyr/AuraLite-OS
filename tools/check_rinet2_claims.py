@@ -210,6 +210,32 @@ def claims():
             os.path.exists(os.path.join(ROOT, "patches",
                                         "RINET2_Y3_tcp6.patch"))))
 
+    # --- Y4: HTTPS-over-IPv6 (RES-26) -----------------------------------
+    if re.search(r"^### Y4[^\n]*✅ COMPLETE", plan, re.M):
+        ahttp = read("lib", "libahttp", "src", "ahttp.c")
+        ledger = read("docs", "residue_ledger.md")
+        checks.append((
+            "Y4: libahttp dials v6 (parse_ip6 + connectaddr/AAAA) and "
+            "falls back to v4",
+            "parse_ip6" in ahttp and "dial v6" in ahttp and
+            "falling back to v4" in ahttp and
+            "dns_resolve_aaaa" in ahttp))
+        checks.append((
+            "Y4: the guest receipt is registered (test_https6 greps "
+            "[https6] PASS)",
+            "[https6] PASS" in read("tests", "integration", "cases",
+                                    "test_https6.sh") and
+            "test_https6" in read("tests", "integration", "run_all.sh")))
+        checks.append((
+            "Y4: RES-26 flipped to DONE@Y4 and the ledger OPEN count "
+            "dropped 6→5",
+            "| RES-26 | W | DONE@Y4 |" in ledger and
+            ledger.count("| OPEN |") == 5))
+        checks.append((
+            "Y4: the phase patch exists",
+            os.path.exists(os.path.join(ROOT, "patches",
+                                        "RINET2_Y4_https6.patch"))))
+
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))
     done_heads = len(re.findall(r"^### Y\d+[^\n]*✅ COMPLETE", plan, re.M))

@@ -356,6 +356,11 @@ uint32_t dns_resolve(const char *hostname) {
     return (uint32_t)syscall(SYS_DNS, (uint64_t)hostname, 0, 0, 0, 0, 0);
 }
 
+int dns_resolve_aaaa(const char *hostname, uint8_t out[16]) {
+    return (int)syscall_ret(syscall(SYS_DNS_AAAA, (uint64_t)hostname,
+                                    (uint64_t)out, 0, 0, 0, 0));
+}
+
 int dnsctl(int op, void *buf, uint32_t len) {
     return (int)syscall_ret(syscall(SYS_DNSCTL, (uint64_t)op,
                                     (uint64_t)buf, (uint64_t)len, 0, 0, 0));

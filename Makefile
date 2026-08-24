@@ -884,6 +884,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/ctortest.elf $(USER_BUILD)/errnotest.elf \
                 $(USER_BUILD)/cryptotest.elf $(USER_BUILD)/x509test.elf \
                 $(USER_BUILD)/tlstest.elf $(USER_BUILD)/httpx6.elf \
+                $(USER_BUILD)/https6.elf \
                 $(USER_BUILD)/rustes.elf \
                 $(USER_BUILD)/usertest.elf \
                 $(USER_BUILD)/mmapshare.elf \
@@ -1269,6 +1270,19 @@ $(USER_BUILD)/httpx6.elf: $(USER_BUILD)/httpx6.o $(USER_BUILD)/ahttp.o \
                           $(USER_COMMON) $(LIBATLS) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/httpx6.o $(USER_BUILD)/ahttp.o \
+	      $(USER_COMMON_LNK) $(LIBATLS) -o $@
+	@echo "[link] $@ (libahttp + libatls)"
+
+# ---- https6 (REALINTERNET2 Y4): HTTPS-over-IPv6 guest receipt ----
+$(USER_BUILD)/https6.o: userspace/tests/https6/https6.c \
+                        lib/libahttp/include/ahttp/http.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/https6.elf: $(USER_BUILD)/https6.o $(USER_BUILD)/ahttp.o \
+                          $(USER_COMMON) $(LIBATLS) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/https6.o $(USER_BUILD)/ahttp.o \
 	      $(USER_COMMON_LNK) $(LIBATLS) -o $@
 	@echo "[link] $@ (libahttp + libatls)"
 
@@ -1782,7 +1796,7 @@ INITRD_DEMOS := guess snake glcube glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 \
+                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \
                 usertest mmapshare mmapfile membench
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
@@ -2397,7 +2411,7 @@ $(BUILD_DIR)/test_ahttp: tests/unit/test_ahttp.c lib/libahttp/src/ahttp.c \
                          $(LIBATLS_SRCS)
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	           -I lib/libahttp/include -I lib/libatls/include -I lib/libatls/src \
+	           -I . -I lib/libahttp/include -I lib/libatls/include -I lib/libatls/src \
 	           lib/libahttp/src/ahttp.c $(LIBATLS_SRCS) $< -o $@
 
 # HTTPS client end-to-end (REALINTERNET_PLAN X2): real libahttp + libatls
@@ -2407,7 +2421,7 @@ $(BUILD_DIR)/test_ahttp_https: tests/unit/test_ahttp_https.c \
                                lib/libahttp/include/ahttp/http.h $(LIBATLS_SRCS)
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
-	           -I lib/libahttp/include -I lib/libatls/include -I lib/libatls/src \
+	           -I . -I lib/libahttp/include -I lib/libatls/include -I lib/libatls/src \
 	           lib/libahttp/src/ahttp.c $(LIBATLS_SRCS) $< -o $@
 
 # Web view HTML tokeniser (WEBVIEW_PLAN W1): the REAL userspace source is

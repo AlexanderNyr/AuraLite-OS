@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
 
-## Status: IN PROGRESS — Y0–Y3 complete; Y4 next; plan committed 2026-08-23
+## Status: IN PROGRESS — Y0–Y4 complete; Y5 next; plan committed 2026-08-23
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | Y1 — congestion control: the cwnd stops being a constant | ✅ complete | `patches/RINET2_Y1_cc.patch` |
 | Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | ✅ complete | `patches/RINET2_Y2_seam.patch` |
 | Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | ✅ complete | `patches/RINET2_Y3_tcp6.patch` |
-| Y4 — HTTPS-over-IPv6: the RES-26 receipt | pending | `patches/RINET2_Y4_https6.patch` |
+| Y4 — HTTPS-over-IPv6: the RES-26 receipt | ✅ complete | `patches/RINET2_Y4_https6.patch` |
 | Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | pending | `patches/RINET2_Y5_mlkem.patch` |
 | Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | pending | `patches/RINET2_Y6_hybrid.patch` |
 | Y7 — close-out: the live-web fetch protocol, residue to the ledger | pending | `patches/RINET2_Y7_close.patch` |
@@ -259,15 +259,27 @@ to the R9 NDP responder (the same "serve NDP meanwhile" shape
 sockaddr_in6 retired with the phase.
 Happy-eyeballs remains a named non-goal.
 
-### Y4 — HTTPS-over-IPv6 (RES-26 closes)
-- [ ] libahttp resolves AAAA, dials v6, falls back v4; the TLS layer
+### Y4 — HTTPS-over-IPv6 (RES-26 closes) — ✅ COMPLETE
+- [x] libahttp resolves AAAA, dials v6, falls back v4; the TLS layer
       is transport-agnostic already (it reads/writes a handle).
-- [ ] Guest gate: an HTTPS fetch over IPv6 against the local
-      s_server fixture behind guestfwd — the exact receipt RES-26's
-      exit line names.
-- [ ] Ledger: RES-26 → DONE@Y4; the terminal OPEN count drops 6→5.
-- [ ] Exit: `[https6] PASS` pinned in CI; ledger arithmetic moved
+- [x] Guest gate: an HTTPS fetch over IPv6 against the local
+      s_server fixture on SLIRP's ipv6-host (same-port listener —
+      guestfwd is IPv4-only on QEMU 10, the Y3 catch).
+- [x] Ledger: RES-26 → DONE@Y4; the terminal OPEN count drops 6→5.
+- [x] Exit: `[https6] PASS` pinned in CI; ledger arithmetic moved
       same-commit.
+
+Result: HTTPS rides the Y3 transport.  `ahttp_url_parse` accepts
+`[fec0::2]:port`; `parse_ip6` + `dns_resolve_aaaa` (SYS_DNS_AAAA=309)
+feed `dualstack_pick` (a learned AAAA is enough to prefer v6 —
+userspace has no SLAAC query this phase); the dial is v6 first,
+serial v4 fallback, logged `[ahttp] dial v6`.  CATCH, named at the
+fixture: QEMU 10 still cannot guestfwd IPv6, so s_server binds
+`[::]:8446` and the guest hits `fec0::2` the Y3 way.  CATCH, named
+at TLS: IP-literal fetches skip chain hostname match (atls is
+DNS-SAN only; CertificateVerify still runs).  Guest receipt
+`[https6] PASS: status 200 body 3912 via v6` from `/tests/https6`.
+RES-26 is DONE@Y4; ledger OPEN 6→5.
 
 ### Y5 — ML-KEM-768 (FIPS 203)
 - [ ] `lib/libatls/src/atls_mlkem.c`: K-PKE + the FO transform,
