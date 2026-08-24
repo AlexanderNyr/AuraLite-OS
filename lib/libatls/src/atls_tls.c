@@ -21,6 +21,7 @@
 #include "atls/x509.h"
 #include "atls/ecdsa.h"
 #include "atls/mlkem.h"
+#include "atls_rsa.h"
 #include <string.h>
 
 /* Provided by the process's libc / test harness. */
@@ -972,6 +973,23 @@ send_ch: ;
                 rc = atls_ecdsa_p256_verify(sig, sig_len,
                                             leaf.spki_key.data,
                                             content, content_len);
+                if (rc != ATLS_OK)
+                    return fail(t, ATLS_ALERT_DECRYPT_ERROR);
+            } else if (sig_scheme == ATLS_SIG_RSA_PSS_RSAE_SHA256) {
+                /* RES-53: we advertised 0x0804; now we verify it. */
+                if (!atls_oid_eq(&leaf.spki_alg_oid,
+                                 ATLS_OID_RSA_ENCRYPTION, 9))
+                    return fail(t, ATLS_ALERT_ILLEGAL_PARAMETER);
+                const uint8_t *n_bytes, *e_bytes;
+                size_t n_len, e_len;
+                if (atls_rsa_parse_spki(leaf.spki_key.data, leaf.spki_key.len,
+                                        &n_bytes, &n_len,
+                                        &e_bytes, &e_len) != ATLS_OK)
+                    return fail(t, ATLS_ALERT_BAD_CERTIFICATE);
+                rc = atls_rsa_verify_pss_sha256(sig, sig_len,
+                                                content, content_len,
+                                                n_bytes, n_len,
+                                                e_bytes, e_len);
                 if (rc != ATLS_OK)
                     return fail(t, ATLS_ALERT_DECRYPT_ERROR);
             } else {

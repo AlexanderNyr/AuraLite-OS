@@ -2,6 +2,15 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RES-53 — RSA-PSS-SHA256 CertificateVerify] 2026-08-24
+
+ClientHello advertised `rsa_pss_rsae_sha256` (0x0804) and then
+refused it.  `atls_rsa_verify_pss_sha256` is EMSA-PSS with
+SHA-256 / MGF1-SHA-256 / saltLen=32 (RFC 8017, TLS 1.3).
+Host `test_atls_tls` is 41/41: openssl PSS vector + flipped-sig
+refuse + full handshake against `s_server` with an RSA-2048
+leaf.  RES-53 → DONE; ledger OPEN 6→5.
+
 ## [RINET2 Y7 — close-out: live-web protocol + ledger] 2026-08-24
 
 REALINTERNET2 is COMPLETE.  `docs/live_web.md` is the

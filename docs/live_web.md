@@ -42,7 +42,7 @@ Measured 2026-08-24 against OpenSSL 3.5.6 on the build host:
 | `www.ietf.org` | `X25519MLKEM768` + `TLS_CHACHA20_POLY1305_SHA256` | `ecdsa_secp256r1_sha256` | ISRG Root X1 (via X2) |
 | `www.cloudflare.com` | same | `ecdsa_secp256r1_sha256` | **no** — GTS / GlobalSign |
 | `example.com` | same | (CF / SSL.com chain) | **no** — SSL.com / AAA |
-| `rust-lang.org` | same | `rsa_pss_rsae_sha256` | ISRG Root X1 — **CV refused** (RES-53) |
+| `rust-lang.org` | same | `rsa_pss_rsae_sha256` | ISRG Root X1 — CV now verified (RES-53 DONE) |
 
 Pick slot 1's host because it is the intersection of: hybrid,
 ChaCha20, P-256 SHA-256 CV, and a root we actually ship.
@@ -54,10 +54,9 @@ ChaCha20, P-256 SHA-256 CV, and a root we actually ship.
    which are not in `/etc/ssl/roots.pem`.  Slot 3 is a group
    receipt; a `root not in trust store` line is an honest X8
    diagnosis, not a Y6 regression.
-2. **RSA-PSS is advertised and not verified** (`rsa_pss_rsae_sha256`
-   sits in ClientHello `signature_algorithms`; the verify switch
-   is Ed25519 / ECDSA P-256 SHA-256 only).  A host whose leaf is
-   RSA (rust-lang.org today) will fail CertificateVerify.  RES-53.
+2. **RSA-PSS is verified** (`rsa_pss_rsae_sha256`, EMSA-PSS SHA-256,
+   MGF1, saltLen=32).  RES-53 is DONE.  A host whose leaf is RSA
+   (rust-lang.org) no longer dies at CertificateVerify.
 3. **Not CI.** QEMU/SLIRP can reach the internet on a networked
    host, but the public web is not deterministic.  Do not add a
    `test_live_web.sh` that dials a real name.

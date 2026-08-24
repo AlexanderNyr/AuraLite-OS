@@ -343,7 +343,9 @@ def claims():
             "| RES-50 | N | RE-AFFIRMED@Y7 |" in ledger and
             "| RES-51 | N | RE-AFFIRMED@Y7 |" in ledger and
             "| RES-52 | S | HANDED-OFF@Y7 |" in ledger and
-            "| RES-53 | W | OPEN |" in ledger))
+            "| RES-53 | W | DONE |" in ledger and
+            "atls_rsa_verify_pss_sha256" in
+            read("lib", "libatls", "src", "atls_rsa.c")))
         checks.append((
             "Y7: §5 quotes the Y0 opener greps against the close",
             "ip4" in plan and "**0**" in plan and

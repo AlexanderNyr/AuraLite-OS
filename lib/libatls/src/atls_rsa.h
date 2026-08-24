@@ -47,4 +47,17 @@ int atls_rsa_verify_pkcs1v15(const uint8_t *sig, size_t sig_len,
                              const uint8_t *n_bytes, size_t n_len,
                              const uint8_t *e_bytes, size_t e_len);
 
+/* RSA-PSS-RSAE-SHA256 (RFC 8017 EMSA-PSS, MGF1-SHA-256, saltLen=32).
+ * TLS 1.3 CertificateVerify scheme 0x0804. */
+int atls_rsa_verify_pss_sha256(const uint8_t *sig, size_t sig_len,
+                               const uint8_t *msg, size_t msg_len,
+                               const uint8_t *n_bytes, size_t n_len,
+                               const uint8_t *e_bytes, size_t e_len);
+
+/* Parse RSAPublicKey (SPKI BIT STRING contents) into n and e
+ * (pointers into `key`, leading 0x00 sign bytes stripped). */
+int atls_rsa_parse_spki(const uint8_t *key, size_t key_len,
+                        const uint8_t **n_out, size_t *n_len,
+                        const uint8_t **e_out, size_t *e_len);
+
 #endif /* LIBATLS_ATLS_RSA_H */

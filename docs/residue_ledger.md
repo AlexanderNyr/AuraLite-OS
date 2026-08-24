@@ -64,7 +64,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-50 | N | RE-AFFIRMED@Y7 | Happy-eyeballs connection racing — dual-stack still picks then falls back serially (REALINTERNET2 §4) | re-affirmed; no racing |
 | RES-51 | N | RE-AFFIRMED@Y7 | No DTLS, no QUIC, no TLS client certificates, no standalone ML-KEM TLS group, no kernel-side TLS (D4 + §4) | re-affirmed |
 | RES-52 | S | HANDED-OFF@Y7 | TCP window scaling — the 64240 window stays | OPENER, measured: `TCP_WINDOW` is 64240; grep `wscale`/`TCPOPT`/`shift_cnt` across tcp.c+tcp.h is 0 |
-| RES-53 | W | OPEN | TLS CertificateVerify: `rsa_pss_rsae_sha256` is advertised in ClientHello and not verified (only Ed25519 + ecdsa_secp256r1_sha256 run).  rust-lang.org (RSA leaf, ISRG X1) fails here | implement PSS verify, or stop advertising the scheme |
+| RES-53 | W | DONE | TLS CertificateVerify: `rsa_pss_rsae_sha256` — RSASSA-PSS SHA-256 / MGF1 / saltLen=32; host `test_atls_tls` 41/41 (openssl vector + RSA s_server) | PSS verify lands; rust-lang.org CV is no longer the refusal |
 
 ## Arithmetic (checker-enforced)
 
@@ -73,8 +73,9 @@ Rows: 53.  Classes: **W 34 · M 6 · N 4 · S 9**.  The R0 recount
 and was WRONG — amended same-commit, catch recorded) is the
 historical pin; Y7 appended RES-49..53.  Statuses at CLOSE: OPEN 6 (RES-02/06/07/16/18/26 — named survivors, none hidden: two narrowed oddities, three port-adoption rows, one IOAPIC-routing row), DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29), DONE@R11 3 (RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — the package ships and NULL-tests green; the numbers are the user's move, and pending-user is a status, not a failure), DONE@R12 2 (RES-42/45), RE-AFFIRMED@R12 2 (RES-43/44), HANDED-OFF@R12 8 (RES-11/12/36/38/39/41/46/47 — every one leaves with a MEASURED opener fact in its row).
 Y4: RES-26 → DONE@Y4; OPEN then 5 (RES-02/06/07/16/18).
-Y7: +5 rows (RES-49..53); OPEN now 6 (the five R-series survivors
-plus RES-53).  PENDING-USER@Y7 1, RE-AFFIRMED@Y7 2,
+Y7: +5 rows (RES-49..53); OPEN was 6 (the five R-series survivors
+plus RES-53).  PSS verify flipped RES-53 → DONE; OPEN back to 5
+(RES-02/06/07/16/18).  PENDING-USER@Y7 1, RE-AFFIRMED@Y7 2,
 HANDED-OFF@Y7 1.
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the

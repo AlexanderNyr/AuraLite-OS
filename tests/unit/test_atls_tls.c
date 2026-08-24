@@ -22,7 +22,9 @@
 
 #include "atls/atls.h"
 #include "atls/tls.h"
+#include "atls/x509.h"
 #include "atls_tls_int.h"
+#include "atls_rsa.h"
 
 static int tests_run = 0, tests_failed = 0;
 #define CHECK(cond, name) do { \
@@ -288,6 +290,122 @@ static void test_absurd_record_length(void) {
     CHECK(rc != ATLS_OK, "absurd record length refused");
 }
 
+
+/* ---- Test: RSA-PSS-SHA256 verify (RES-53) ---- */
+static void test_pss_verify(void) {
+    if (system("openssl genrsa -out /tmp/atls_pss.key 2048 >/dev/null 2>&1") != 0) {
+        CHECK(0, "pss: genrsa");
+        return;
+    }
+    if (system("openssl req -x509 -new -key /tmp/atls_pss.key "
+               "-out /tmp/atls_pss.crt -days 1 -nodes -subj /CN=pss "
+               ">/dev/null 2>&1") != 0) {
+        CHECK(0, "pss: self-signed cert");
+        return;
+    }
+    if (system("openssl x509 -in /tmp/atls_pss.crt -outform DER "
+               "-out /tmp/atls_pss.der >/dev/null 2>&1") != 0) {
+        CHECK(0, "pss: der");
+        return;
+    }
+    FILE *f = fopen("/tmp/pss.msg", "wb");
+    if (!f) { CHECK(0, "pss: write msg"); return; }
+    const char *msg = "atls-pss-kat-1";
+    fwrite(msg, 1, strlen(msg), f);
+    fclose(f);
+    if (system("openssl dgst -sha256 -sign /tmp/atls_pss.key "
+               "-sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32 "
+               "-out /tmp/pss.sig /tmp/pss.msg >/dev/null 2>&1") != 0) {
+        CHECK(0, "pss: openssl sign");
+        return;
+    }
+
+    uint8_t der[4096], sig[512];
+    size_t der_len, sig_len;
+    f = fopen("/tmp/atls_pss.der", "rb");
+    if (!f) { CHECK(0, "pss: read der"); return; }
+    der_len = fread(der, 1, sizeof der, f);
+    fclose(f);
+    f = fopen("/tmp/pss.sig", "rb");
+    if (!f) { CHECK(0, "pss: read sig"); return; }
+    sig_len = fread(sig, 1, sizeof sig, f);
+    fclose(f);
+
+    atls_x509_cert cert;
+    CHECK(atls_x509_parse(der, der_len, &cert) == ATLS_OK, "pss: parse cert");
+    const uint8_t *n, *e;
+    size_t n_len, e_len;
+    CHECK(atls_rsa_parse_spki(cert.spki_key.data, cert.spki_key.len,
+                              &n, &n_len, &e, &e_len) == ATLS_OK,
+          "pss: parse SPKI");
+    int rc = atls_rsa_verify_pss_sha256(sig, sig_len,
+                                        (const uint8_t *)msg, strlen(msg),
+                                        n, n_len, e, e_len);
+    CHECK(rc == ATLS_OK, "pss: openssl vector verifies");
+    sig[0] ^= 0x01;
+    rc = atls_rsa_verify_pss_sha256(sig, sig_len,
+                                    (const uint8_t *)msg, strlen(msg),
+                                    n, n_len, e, e_len);
+    CHECK(rc != ATLS_OK, "pss: flipped signature refused");
+    unlink("/tmp/atls_pss.key");
+    unlink("/tmp/atls_pss.crt");
+    unlink("/tmp/atls_pss.der");
+    unlink("/tmp/pss.msg");
+    unlink("/tmp/pss.sig");
+}
+
+static int start_s_server_rsa(int port) {
+    snprintf(cert_path, sizeof cert_path, "/tmp/atls_test_cert_%d.pem", port);
+    snprintf(key_path, sizeof key_path, "/tmp/atls_test_key_%d.pem", port);
+    char cmd[2048];
+    snprintf(cmd, sizeof cmd,
+        "openssl req -x509 -newkey rsa:2048 -keyout %s -out %s "
+        "-days 1 -nodes -subj /CN=localhost "
+        "-addext subjectAltName=DNS:localhost 2>/dev/null",
+        key_path, cert_path);
+    if (system(cmd) != 0) return -1;
+    s_server_pid = fork();
+    if (s_server_pid == 0) {
+        char port_str[16];
+        snprintf(port_str, sizeof port_str, "%d", port);
+        execlp("openssl", "openssl", "s_server",
+               "-accept", port_str,
+               "-cert", cert_path, "-key", key_path,
+               "-groups", "X25519",
+               "-www", "-alpn", "http/1.1", "-quiet",
+               (char *)NULL);
+        _exit(1);
+    }
+    if (s_server_pid < 0) return -1;
+    usleep(500000);
+    return 0;
+}
+
+static void test_rsa_pss_handshake(int port) {
+    int fd = connect_to(port);
+    CHECK(fd >= 0, "psshs: connect");
+    host_io io = { .fd = fd };
+    atls_tls_config cfg = { .hostname = "localhost", .alpn = "http/1.1" };
+    atls_tls *t = atls_tls_new(&cfg, host_send, host_recv, &io);
+    CHECK(t != NULL, "psshs: new");
+    int rc = atls_tls_handshake(t);
+    printf("  pss handshake rc=%d alert_sent=%d alert_recv=%d\n",
+           rc, atls_tls_last_alert_sent(t), atls_tls_last_alert_received(t));
+    CHECK(rc == ATLS_OK, "psshs: TLS 1.3 + rsa_pss_rsae_sha256");
+    if (rc == ATLS_OK) {
+        const char *req = "GET / HTTP/1.0\r\nHost: localhost\r\n\r\n";
+        CHECK(atls_tls_write(t, (const uint8_t *)req, strlen(req)) > 0,
+              "psshs: write");
+        uint8_t resp[4096];
+        size_t resp_len = 0;
+        rc = atls_tls_read(t, resp, sizeof(resp) - 1, &resp_len);
+        CHECK(rc == ATLS_OK && resp_len > 0, "psshs: application data");
+        atls_tls_close(t);
+    }
+    atls_tls_free(t);
+    close(fd);
+}
+
 static void test_hybrid_handshake(int port) {
     int fd = connect_to(port);
     CHECK(fd >= 0, "hyb: connect");
@@ -341,6 +459,17 @@ int main(void) {
         return 1;
     }
     test_hybrid_handshake(hport);
+    cleanup_s_server();
+
+    test_pss_verify();
+
+    /* RES-53: RSA leaf → CertificateVerify rsa_pss_rsae_sha256. */
+    int rport = port + 31;
+    if (start_s_server_rsa(rport) != 0) {
+        printf("FAIL: could not start RSA s_server\n");
+        return 1;
+    }
+    test_rsa_pss_handshake(rport);
     cleanup_s_server();
 
     printf("\n=== %d/%d passed ===\n", tests_run - tests_failed, tests_run);

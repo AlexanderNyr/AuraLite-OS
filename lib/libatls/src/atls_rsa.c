@@ -269,3 +269,175 @@ int atls_rsa_verify_pkcs1v15(const uint8_t *sig, size_t sig_len,
 
     return ATLS_OK;
 }
+
+/* ---- SPKI / RSAPublicKey parse ---- */
+
+static int der_take_len(const uint8_t *p, size_t len, size_t *pos, size_t *out) {
+    if (*pos >= len) return -1;
+    uint8_t b = p[(*pos)++];
+    if (b < 0x80) {
+        *out = b;
+        return 0;
+    }
+    int n = b & 0x7f;
+    if (n == 0 || n > 3 || *pos + (size_t)n > len) return -1;
+    size_t L = 0;
+    for (int i = 0; i < n; i++) L = (L << 8) | p[(*pos)++];
+    *out = L;
+    return 0;
+}
+
+int atls_rsa_parse_spki(const uint8_t *key, size_t key_len,
+                        const uint8_t **n_out, size_t *n_len,
+                        const uint8_t **e_out, size_t *e_len) {
+    if (!key || !n_out || !n_len || !e_out || !e_len) return ATLS_ERR_INPUT;
+    if (key_len < 4 || key[0] != 0x30) return ATLS_ERR_BAD_ENCODING;
+    size_t pos = 1, seq_len = 0;
+    if (der_take_len(key, key_len, &pos, &seq_len) != 0) return ATLS_ERR_BAD_ENCODING;
+    if (pos + seq_len > key_len) return ATLS_ERR_BAD_ENCODING;
+    size_t end = pos + seq_len;
+
+    if (pos >= end || key[pos] != 0x02) return ATLS_ERR_BAD_ENCODING;
+    pos++;
+    size_t nl = 0;
+    if (der_take_len(key, end, &pos, &nl) != 0) return ATLS_ERR_BAD_ENCODING;
+    if (pos + nl > end || nl == 0) return ATLS_ERR_BAD_ENCODING;
+    const uint8_t *n = key + pos;
+    pos += nl;
+    if (n[0] == 0x00 && nl > 1) { n++; nl--; }
+
+    if (pos >= end || key[pos] != 0x02) return ATLS_ERR_BAD_ENCODING;
+    pos++;
+    size_t el = 0;
+    if (der_take_len(key, end, &pos, &el) != 0) return ATLS_ERR_BAD_ENCODING;
+    if (pos + el > end || el == 0) return ATLS_ERR_BAD_ENCODING;
+    const uint8_t *e = key + pos;
+    if (e[0] == 0x00 && el > 1) { e++; el--; }
+
+    *n_out = n; *n_len = nl;
+    *e_out = e; *e_len = el;
+    return ATLS_OK;
+}
+
+/* ---- RSA-PSS-SHA256 (RFC 8017 EMSA-PSS-VERIFY, TLS 1.3 0x0804) ---- */
+
+static void mgf1_sha256(const uint8_t *seed, size_t seed_len,
+                        uint8_t *out, size_t out_len) {
+    uint8_t hash[32], ctr[4];
+    size_t off = 0;
+    uint32_t c = 0;
+    while (off < out_len) {
+        ctr[0] = (uint8_t)(c >> 24);
+        ctr[1] = (uint8_t)(c >> 16);
+        ctr[2] = (uint8_t)(c >> 8);
+        ctr[3] = (uint8_t)c;
+        atls_sha256_ctx ctx;
+        atls_sha256_init(&ctx);
+        atls_sha256_update(&ctx, seed, seed_len);
+        atls_sha256_update(&ctx, ctr, 4);
+        atls_sha256_final(&ctx, hash);
+        size_t take = out_len - off;
+        if (take > 32) take = 32;
+        for (size_t i = 0; i < take; i++) out[off + i] = hash[i];
+        off += take;
+        c++;
+    }
+}
+
+static int n_bitlen(const uint8_t *n, size_t n_len) {
+    size_t i = 0;
+    while (i < n_len && n[i] == 0) i++;
+    if (i == n_len) return 0;
+    int bits = (int)((n_len - i) * 8);
+    uint8_t b = n[i];
+    while (b && (b & 0x80) == 0) { bits--; b = (uint8_t)(b << 1); }
+    return bits;
+}
+
+static int rsa_public_em(uint8_t *em, size_t em_len,
+                         const uint8_t *sig, size_t sig_len,
+                         const uint8_t *n_bytes, size_t n_len,
+                         const uint8_t *e_bytes, size_t e_len) {
+    atls_bignum n, e, s, m;
+    atls_bn_from_bytes(&n, n_bytes, n_len);
+    atls_bn_from_bytes(&e, e_bytes, e_len);
+    atls_bn_from_bytes(&s, sig, sig_len);
+    if (atls_bn_is_zero(&n) || atls_bn_is_zero(&e)) return ATLS_ERR_INPUT;
+    if (atls_bn_cmp(&s, &n) >= 0) return ATLS_ERR_BAD_SIGNATURE;
+    atls_bn_mod_exp(&m, &s, &e, &n);
+    for (size_t i = 0; i < em_len; i++) em[i] = 0;
+    for (int i = 0; i < m.used; i++) {
+        int start = (int)em_len - 4 * (i + 1);
+        if (start < 0) break;
+        em[start + 0] = (uint8_t)(m.v[i] >> 24);
+        em[start + 1] = (uint8_t)(m.v[i] >> 16);
+        em[start + 2] = (uint8_t)(m.v[i] >> 8);
+        em[start + 3] = (uint8_t)(m.v[i]);
+    }
+    return ATLS_OK;
+}
+
+int atls_rsa_verify_pss_sha256(const uint8_t *sig, size_t sig_len,
+                               const uint8_t *msg, size_t msg_len,
+                               const uint8_t *n_bytes, size_t n_len,
+                               const uint8_t *e_bytes, size_t e_len) {
+    if (!sig || !msg || !n_bytes || !e_bytes) return ATLS_ERR_INPUT;
+    if (sig_len == 0 || n_len == 0 || e_len == 0) return ATLS_ERR_INPUT;
+    if (n_len > ATLS_RSA_MAX_BITS / 8) return ATLS_ERR_INPUT;
+
+    uint8_t em[ATLS_RSA_MAX_BITS / 8];
+    int rc = rsa_public_em(em, n_len, sig, sig_len, n_bytes, n_len,
+                           e_bytes, e_len);
+    if (rc != ATLS_OK) return rc;
+
+    int modBits = n_bitlen(n_bytes, n_len);
+    if (modBits < 8 * 32 + 16) return ATLS_ERR_BAD_SIGNATURE;
+    int emBits = modBits - 1;
+    size_t emLen = (size_t)((emBits + 7) / 8);
+    const uint8_t *EM = em;
+    if (emLen == n_len) {
+        EM = em;
+    } else if (emLen + 1 == n_len) {
+        if (em[0] != 0) return ATLS_ERR_BAD_SIGNATURE;
+        EM = em + 1;
+    } else {
+        return ATLS_ERR_BAD_SIGNATURE;
+    }
+
+    const size_t hLen = 32, sLen = 32;
+    if (emLen < hLen + sLen + 2) return ATLS_ERR_BAD_SIGNATURE;
+    if (EM[emLen - 1] != 0xbc) return ATLS_ERR_BAD_SIGNATURE;
+
+    size_t dbLen = emLen - hLen - 1;
+    const uint8_t *maskedDB = EM;
+    const uint8_t *H = EM + dbLen;
+
+    int unused = 8 * (int)emLen - emBits;
+    if (unused < 0 || unused > 7) return ATLS_ERR_BAD_SIGNATURE;
+    if (unused && (maskedDB[0] & (uint8_t)(0xFFu << (8 - unused))))
+        return ATLS_ERR_BAD_SIGNATURE;
+
+    uint8_t dbMask[ATLS_RSA_MAX_BITS / 8];
+    uint8_t DB[ATLS_RSA_MAX_BITS / 8];
+    mgf1_sha256(H, hLen, dbMask, dbLen);
+    for (size_t i = 0; i < dbLen; i++) DB[i] = (uint8_t)(maskedDB[i] ^ dbMask[i]);
+    if (unused) DB[0] = (uint8_t)(DB[0] & (0xFFu >> unused));
+
+    size_t ps_len = dbLen - sLen - 1;
+    for (size_t i = 0; i < ps_len; i++) {
+        if (DB[i] != 0x00) return ATLS_ERR_BAD_SIGNATURE;
+    }
+    if (DB[ps_len] != 0x01) return ATLS_ERR_BAD_SIGNATURE;
+    const uint8_t *salt = DB + ps_len + 1;
+
+    uint8_t mHash[32];
+    atls_sha256(msg, msg_len, mHash);
+    uint8_t Mp[8 + 32 + 32];
+    for (int i = 0; i < 8; i++) Mp[i] = 0;
+    for (int i = 0; i < 32; i++) Mp[8 + i] = mHash[i];
+    for (int i = 0; i < 32; i++) Mp[40 + i] = salt[i];
+    uint8_t Hp[32];
+    atls_sha256(Mp, 72, Hp);
+    if (!atls_ct_eq(Hp, H, 32)) return ATLS_ERR_BAD_SIGNATURE;
+    return ATLS_OK;
+}
