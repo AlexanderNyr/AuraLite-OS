@@ -215,6 +215,58 @@ int dns_parse_response(const uint8_t *msg, int len, const char *qname,
     return DNS_PARSE_NODATA;
 }
 
+int dns_parse_aaaa(const uint8_t *msg, int len, const char *qname,
+                   uint16_t expect_id, uint8_t out_aaaa[16], uint32_t *out_ttl) {
+    if (!msg || len < 12 || !qname || !out_aaaa) return DNS_PARSE_BAD;
+    if (rd16(msg + 0) != expect_id) return DNS_PARSE_BAD;
+    uint16_t flags = rd16(msg + 2);
+    if (!(flags & 0x8000)) return DNS_PARSE_BAD;
+    if (flags & 0x0200)    return DNS_PARSE_TRUNCATED;
+    uint16_t rcode = (uint16_t)(flags & 0x000F);
+    uint16_t qd = rd16(msg + 4), an = rd16(msg + 6);
+    int pos = 12;
+    int i;
+    char expected[DNS_MAX_NAME + 1];
+
+    for (i = 0; i < qd; i++) {
+        char qn[DNS_MAX_NAME + 1];
+        int end;
+        if (dns_name_read(msg, len, pos, qn, sizeof(qn), &end) != 0)
+            return DNS_PARSE_BAD;
+        pos = end + 4;
+        if (pos > len) return DNS_PARSE_BAD;
+    }
+    copy_lower(expected, sizeof(expected), qname);
+
+    for (i = 0; i < an; i++) {
+        char owner[DNS_MAX_NAME + 1];
+        int end;
+        uint16_t type, klass, rdlen;
+        uint32_t ttl;
+        int rdata;
+        if (dns_name_read(msg, len, pos, owner, sizeof(owner), &end) != 0)
+            return DNS_PARSE_BAD;
+        pos = end;
+        if (pos + 10 > len) return DNS_PARSE_BAD;
+        type  = rd16(msg + pos);
+        klass = rd16(msg + pos + 2);
+        ttl   = rd32(msg + pos + 4);
+        rdlen = rd16(msg + pos + 8);
+        rdata = pos + 10;
+        if (rdata + rdlen > len) return DNS_PARSE_BAD;
+        if (klass == 1 && type == DNS_RTYPE_AAAA && rdlen == 16 &&
+            ci_equal(owner, expected)) {
+            int k;
+            for (k = 0; k < 16; k++) out_aaaa[k] = msg[rdata + k];
+            if (out_ttl) *out_ttl = ttl;
+            return DNS_PARSE_ANSWER;
+        }
+        pos = rdata + rdlen;
+    }
+    if (rcode == DNS_RCODE_NXDOMAIN) return DNS_PARSE_NXDOMAIN;
+    return DNS_PARSE_NODATA;
+}
+
 /* ---- cache core ---- */
 
 void dns_cache_reset(dns_cache_t *c) {

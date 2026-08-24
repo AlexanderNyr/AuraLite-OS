@@ -62,6 +62,7 @@ typedef struct {
 #define SYS_SOCKET_BIND    305
 #define SYS_SOCKET_LISTEN  306
 #define SYS_SOCKET_ACCEPT  307
+#define SYS_SOCKET_CONNECT6 308   /* Y3: connect to a sockaddr_in6 */
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 
 /* File-descriptor extensions. */
@@ -255,6 +256,8 @@ int     net_ping6(const uint8_t addr[16]);
 /* Socket-style network API. */
 int     socket(int domain, int type, int protocol);
 int     connect(int sock, uint32_t ip, uint16_t port);
+struct sockaddr;
+int     connectaddr(int sock, const struct sockaddr *addr, unsigned addrlen);
 int     send(int sock, const void *data, uint32_t len);
 int     recv(int sock, void *buf, uint32_t bufsize);
 int     closesocket(int sock);

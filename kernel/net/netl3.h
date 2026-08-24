@@ -31,9 +31,12 @@
 
 #define NETL3_PROTO_TCP  6
 #define NETL3_ETH_IP     0x0800u
+#define NETL3_ETH_IPV6   0x86DDu
 #define NETL3_V4_MSS     1460u    /* Ethernet payload − 20 − 20 */
+#define NETL3_V6_MSS     1440u    /* Ethernet payload − 40 − 20 */
 #define NETL3_V4_IDENT   3u       /* the pre-seam sender's constant */
 #define NETL3_V4_TTL     64u
+#define NETL3_V6_HOP     64u
 #define NETL3_MIN_FRAME  60u
 
 typedef struct {
@@ -100,6 +103,14 @@ static inline netl3_addr_t netl3_addr_from_v4(uint32_t host) {
 static inline uint32_t netl3_v4_host(const netl3_addr_t *a) {
     return ((uint32_t)a->addr[0] << 24) | ((uint32_t)a->addr[1] << 16) |
            ((uint32_t)a->addr[2] <<  8) |  (uint32_t)a->addr[3];
+}
+
+static inline netl3_addr_t netl3_addr_from_v6(const uint8_t b[16]) {
+    netl3_addr_t a;
+    netl3_zero(&a, sizeof a);
+    a.family = NETL3_AF_INET6;
+    if (b) netl3_copy(a.addr, b, 16);
+    return a;
 }
 
 static inline int netl3_addr_eq(const netl3_addr_t *a, const netl3_addr_t *b) {
@@ -261,10 +272,104 @@ static inline int netl3_v4_parse(const uint8_t *frame, int len, netl3_pkt_t *out
     return 0;
 }
 
+/* RFC 8200 s8.1 v6 pseudo-header + segment.  Returns the field
+ * htons'd, the same store convention as netl3_v4_pseudo. */
+static inline uint16_t netl3_v6_pseudo(const uint8_t src[16],
+                                       const uint8_t dst[16],
+                                       uint8_t proto, const void *l4,
+                                       uint32_t l4_len) {
+    uint8_t ph[40];
+    uint32_t sum;
+    netl3_copy(ph, src, 16);
+    netl3_copy(ph + 16, dst, 16);
+    ph[32] = (uint8_t)(l4_len >> 24);
+    ph[33] = (uint8_t)(l4_len >> 16);
+    ph[34] = (uint8_t)(l4_len >> 8);
+    ph[35] = (uint8_t)l4_len;
+    ph[36] = 0;
+    ph[37] = 0;
+    ph[38] = 0;
+    ph[39] = proto;
+    sum = netl3_sum_octets(ph, 40);
+    sum += netl3_sum_octets((const uint8_t *)l4, l4_len);
+    return netl3_htons(netl3_fold(sum));
+}
+
+static inline uint32_t netl3_v6_mss(void) { return NETL3_V6_MSS; }
+
+/* Ethernet + IPv6 around an L4 segment.  No IPv6 header checksum.
+ * l3_total is reported as 40+payload so tcp.c's payload arithmetic
+ * (total − hdr − tcp_hdr) stays family-agnostic. */
+static inline uint32_t netl3_v6_build(uint8_t *pkt, uint32_t pkt_cap,
+                                      const uint8_t src_mac[6],
+                                      const uint8_t dst_mac[6],
+                                      const uint8_t src[16],
+                                      const uint8_t dst[16],
+                                      uint8_t proto,
+                                      const void *l4, uint32_t l4_len) {
+    uint32_t frame_len = 14u + 40u + l4_len;
+    uint8_t *ip, *l4dst;
+    uint32_t i;
+
+    if (pkt_cap < frame_len) return 0;
+    if (frame_len < NETL3_MIN_FRAME && pkt_cap < NETL3_MIN_FRAME) return 0;
+
+    netl3_copy(pkt + 0, dst_mac, 6);
+    netl3_copy(pkt + 6, src_mac, 6);
+    pkt[12] = (uint8_t)(NETL3_ETH_IPV6 >> 8);
+    pkt[13] = (uint8_t)(NETL3_ETH_IPV6 & 0xFF);
+
+    ip = pkt + 14;
+    netl3_zero(ip, 40);
+    ip[0] = (uint8_t)(6 << 4);                 /* version 6 */
+    ip[4] = (uint8_t)(l4_len >> 8);
+    ip[5] = (uint8_t)(l4_len & 0xFF);
+    ip[6] = proto;
+    ip[7] = (uint8_t)NETL3_V6_HOP;
+    netl3_copy(ip + 8, src, 16);
+    netl3_copy(ip + 24, dst, 16);
+
+    l4dst = pkt + 14 + 40;
+    netl3_copy(l4dst, l4, l4_len);
+    if (l4_len >= 18 && (proto == NETL3_PROTO_TCP || proto == 17)) {
+        uint16_t cs = netl3_v6_pseudo(src, dst, proto, l4dst, l4_len);
+        netl3_copy(l4dst + 16, &cs, 2);
+    }
+
+    if (frame_len < NETL3_MIN_FRAME) {
+        for (i = frame_len; i < NETL3_MIN_FRAME; i++) pkt[i] = 0;
+        frame_len = NETL3_MIN_FRAME;
+    }
+    return frame_len;
+}
+
+static inline int netl3_v6_parse(const uint8_t *frame, int len, netl3_pkt_t *out) {
+    uint16_t etype, plen;
+    if (len < 14 + 40) return -1;
+    etype = (uint16_t)((frame[12] << 8) | frame[13]);
+    if (etype != NETL3_ETH_IPV6) return -1;
+    if ((frame[14] >> 4) != 6) return -1;
+    plen = (uint16_t)((frame[18] << 8) | frame[19]);
+    if (len < 14 + 40 + (int)plen) {
+        /* short frame: still accept if we have the L4 header */
+        if (len < 14 + 40 + 20) return -1;
+    }
+    out->src        = netl3_addr_from_v6(frame + 14 + 8);
+    out->dst        = netl3_addr_from_v6(frame + 14 + 24);
+    out->proto      = frame[14 + 6];
+    out->l3_hdr_len = 40;
+    out->l3_total   = (uint16_t)(40 + plen);
+    out->l4_off     = 54;
+    out->frame      = frame;
+    out->frame_len  = len;
+    return 0;
+}
+
 /* ---- kernel-side entry points (defined in netl3.c) ------------------- */
 
 const struct netl3_ops *netl3_ops_for(const netl3_addr_t *a);
 int  netl3_input(const uint8_t *frame, int len, netl3_pkt_t *out);
 extern const struct netl3_ops netl3_v4_ops;
+extern const struct netl3_ops netl3_v6_ops;
 
 #endif /* AURALITE_NET_NETL3_H */

@@ -11,6 +11,9 @@
 #define AF_INET6    10
 
 #define PF_INET     AF_INET
+#define PF_INET6    AF_INET6
+
+/* sockaddr_in6 is declared in <netinet/in.h> (included above). Y3. */
 
 /* Socket types. */
 #define SOCK_STREAM 1

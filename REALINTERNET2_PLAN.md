@@ -1,13 +1,13 @@
 # AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
 
-## Status: IN PROGRESS — Y0–Y2 complete; Y3 next; plan committed 2026-08-23
+## Status: IN PROGRESS — Y0–Y3 complete; Y4 next; plan committed 2026-08-23
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | Y0 — the rig: TCP decision-core host gates, perf counters, opener receipts | ✅ complete | `patches/RINET2_Y0_rig.patch` |
 | Y1 — congestion control: the cwnd stops being a constant | ✅ complete | `patches/RINET2_Y1_cc.patch` |
 | Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | ✅ complete | `patches/RINET2_Y2_seam.patch` |
-| Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | pending | `patches/RINET2_Y3_tcp6.patch` |
+| Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | ✅ complete | `patches/RINET2_Y3_tcp6.patch` |
 | Y4 — HTTPS-over-IPv6: the RES-26 receipt | pending | `patches/RINET2_Y4_https6.patch` |
 | Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | pending | `patches/RINET2_Y5_mlkem.patch` |
 | Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | pending | `patches/RINET2_Y6_hybrid.patch` |
@@ -218,17 +218,46 @@ parse of a built frame, short-frame refuse, v6 ethertype refuse);
 (`kernel.elf`, `kernel32.elf` — netglue32 untouched).  The Y0
 opener pin for inline-IPv4 retired with the phase.
 
-### Y3 — TCP-over-IPv6 + AF_INET6 + AAAA
-- [ ] netl3 v6 implementation: NDP resolve (R9's neighbour cache),
+### Y3 — TCP-over-IPv6 + AF_INET6 + AAAA — ✅ COMPLETE
+- [x] netl3 v6 implementation: NDP resolve (R9's neighbour cache),
       v6 pseudo-header, no-fragment MSS from the v6 MTU.
-- [ ] `AF_INET6` end-to-end through the socket syscalls; `connect`
-      to a `sockaddr_in6` opens over v6.
-- [ ] DNS: AAAA queries + dual-stack selection (v6 preferred when a
-      global address exists — the R9 source-selection floor; v4
-      fallback otherwise; no happy-eyeballs racing, named non-goal).
-- [ ] Guest gate: TCP round-trip to `fec0::2` over SLIRP guestfwd
-      (the R9 fixture pattern), pinned in a new case.
-- [ ] Exit: `[tcp6] PASS: round-trip N byte(s)` in CI.
+- [x] `AF_INET6` end-to-end through the socket syscalls; `connectaddr`
+      to a `sockaddr_in6` opens over v6 (`SYS_SOCKET_CONNECT6` = 308).
+- [x] DNS: AAAA parse + query (`dns_parse_aaaa` / `dns_resolve_aaaa`)
+      and dual-stack selection in `dualstack.h` (v6 preferred when a
+      global address exists; v4 fallback otherwise).
+- [x] Guest gate: TCP round-trip to `fec0::2:8036` (SLIRP vhost,
+      same-port host listener — guestfwd is IPv4-only on QEMU 10),
+      pinned in `test_tcp6.sh`.
+- [x] Exit: `[tcp6] PASS: round-trip N byte(s)` in CI.
+
+Result: one transport, both families — no `tcp6.c`.  `netl3_v6_ops`
+is the second consumer of the Y2 seam: resolve is R9's NDP (exported
+as `net_ipv6_resolve`), output builds Ethernet+IPv6 (ethertype
+0x86DD, hop 64, MSS 1440), input demuxes 0x86DD before the v4
+fragment table can see it.  `tcp_open_addr` is the family-agnostic
+open; `tcp_open(uint32_t)` is a v4 wrapper so every existing caller
+is unchanged.  CATCH, named: i386 has no v6 stack, so netglue32
+stubs `net_ipv6_resolve` / `net_ipv6_src_for` to fail closed — the
+SHARED row still compiles (D3), TCP-over-IPv6 is x86_64 this phase.
+`sockaddr_in6` landed in `<netinet/in.h>` and is named in
+`<sys/socket.h>` so the Y0 opener pin flips.  AAAA is parsed and
+queried; the A cache stays IPv4-shaped (AAAA is not inserted there).
+`dualstack_pick` is 8 host checks.  `test_netl3` is 40/40 (v6 build/parse added); it grew the v6
+build/parse pins; `test_dns_aaaa` pins type 28 / fec0::2 / TC / bad
+ID.  The guest receipt is the same shape as i386's `[tcp32] PASS`:
+a boot probe to fec0::2:8036, skip-loud when nobody is listening,
+`[tcp6] PASS: round-trip 15 byte(s): PONG-FROM-HOST` when the case's listener is.
+CATCH, named at the fixture: QEMU 10 rejects
+`guestfwd=tcp:[fec0::2]:8036-...` ("Invalid guest forwarding rule");
+fec0::2 is SLIRP's ipv6-host, so the host binds :8036 like tcp32
+binds :8032.  CATCH, named at the RX loop: the first boot's pcap
+was four SYNs and zero SYN-ACKs — TCP owned the NIC and ate SLIRP's
+NS for our SLAAC address; `tcp_recv_segment` now feeds every frame
+to the R9 NDP responder (the same "serve NDP meanwhile" shape
+`net_ping6` already had).  The Y0 opener pins for AAAA /
+sockaddr_in6 retired with the phase.
+Happy-eyeballs remains a named non-goal.
 
 ### Y4 — HTTPS-over-IPv6 (RES-26 closes)
 - [ ] libahttp resolves AAAA, dials v6, falls back v4; the TLS layer

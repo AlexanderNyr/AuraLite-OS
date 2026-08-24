@@ -386,6 +386,7 @@ void kmain(boot_info_t *boot_info) {
         net_self_test();
         net_dns_self_test();
         tcp_x5_self_test();   /* X5: concurrent-connection + full-table gate */
+        tcp6_self_test();     /* Y3: TCP-over-IPv6 receipt (skips if no peer) */
     } else if (net_status > 0) {
         kprintf("[net] fallback IP active; skipping online self-tests to keep boot fast\n");
     } else {

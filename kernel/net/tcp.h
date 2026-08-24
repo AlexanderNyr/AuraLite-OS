@@ -2,6 +2,7 @@
 #define AURALITE_NET_TCP_H
 
 #include <stdint.h>
+#include "kernel/net/netl3.h"
 
 /*
  * Minimal TCP implementation (client + basic server accept).
@@ -60,6 +61,9 @@ static inline int tcp_state_can_recv(tcp_state_t s) {
 typedef int tcp_handle_t;
 
 tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port);
+/* Y3: family-agnostic open.  tcp_open() is this with a v4 address. */
+tcp_handle_t tcp_open_addr(const netl3_addr_t *dst, uint16_t dst_port);
+void tcp6_self_test(void);
 tcp_handle_t tcp_listen(uint16_t port);
 /* M6e: listen with an explicit backlog and SO_REUSEADDR.  tcp_listen() is
  * this with (1, 0).  Returns -EADDRINUSE when the port is genuinely taken

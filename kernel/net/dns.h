@@ -62,6 +62,10 @@ void dns_cache_flush(void);
  */
 uint32_t dns_resolve_ipv4(const char *hostname);
 
+/* Y3: type-AAAA query.  Writes 16 octets on success (0), -1 on miss.
+ * Not cached this phase — the A cache stays IPv4-shaped. */
+int dns_resolve_aaaa(const char *hostname, uint8_t out[16]);
+
 /* R9: arm the one-shot synthetic-TC switch (DNSCTL_FORCE_TC). */
 void dns_force_tc_once(void);
 

@@ -124,6 +124,7 @@ typedef struct {
 #define SYS_SOCKET_BIND    305
 #define SYS_SOCKET_LISTEN  306
 #define SYS_SOCKET_ACCEPT  307
+#define SYS_SOCKET_CONNECT6 308   /* Y3: connect(sockaddr_in6) */
 
 /* File-descriptor extensions. */
 #define SYS_DUP    32
@@ -771,6 +772,7 @@ int is_restartable(uint64_t num) {
         case SYS_SOCKET_RECV:
         case SYS_SOCKET_SEND:
         case SYS_SOCKET_CONNECT:
+        case SYS_SOCKET_CONNECT6:
         case SYS_SOCKET_ACCEPT:
         case SYS_SENDTO:
         case SYS_RECVFROM:
@@ -1094,6 +1096,15 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)socket_create((int)a1, (int)a2, (int)a3);
     case SYS_SOCKET_CONNECT:
         return (uint64_t)socket_connect((int)a1, (uint32_t)a2, (uint16_t)a3);
+    case SYS_SOCKET_CONNECT6: {
+        uint8_t addr[16];
+        if (a2 == 0) return (uint64_t)-EFAULT;
+        if (!validate_user_range((const void *)(uintptr_t)a2, 16, 0))
+            return (uint64_t)-EFAULT;
+        if (copy_from_user(addr, (const void *)(uintptr_t)a2, 16) != 0)
+            return (uint64_t)-EFAULT;
+        return (uint64_t)socket_connect6((int)a1, addr, (uint16_t)a3);
+    }
     case SYS_SOCKET_SEND: {
         if (a3 == 0) return 0;
         const void *user_buf = (const void *)(uintptr_t)a2;

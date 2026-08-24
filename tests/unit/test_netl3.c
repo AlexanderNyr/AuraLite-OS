@@ -235,6 +235,38 @@ static void test_pseudo_matches_legacy(void) {
     CHECK(a == b, "pseudo-header checksum matches the pre-seam function");
 }
 
+static void test_v6(void) {
+    uint8_t l4[20], frame[128];
+    uint8_t smac[6] = {0x52,0x54,0,0x12,0x34,0x56};
+    uint8_t dmac[6] = {0x52,0x54,0,0x12,0x34,0};
+    uint8_t src[16], dst[16];
+    netl3_addr_t a;
+    netl3_pkt_t pkt;
+    uint32_t n;
+
+    memset(src, 0, 16); src[0] = 0xfe; src[1] = 0xc0; src[15] = 0x15;
+    memset(dst, 0, 16); dst[0] = 0xfe; dst[1] = 0xc0; dst[15] = 0x02;
+    a = netl3_addr_from_v6(dst);
+    CHECK(a.family == NETL3_AF_INET6, "v6 family is 10");
+    CHECK(a.addr[15] == 2 && a.addr[0] == 0xfe, "v6 octets land");
+    CHECK(netl3_v6_mss() == 1440, "v6 MSS is 1440 (1500-40-20)");
+
+    make_syn(l4, 40000, 8036);
+    n = netl3_v6_build(frame, sizeof frame, smac, dmac, src, dst,
+                       NETL3_PROTO_TCP, l4, 20);
+    CHECK(n == 74, "v6 SYN is 14+40+20 (got %u)", n);
+    CHECK(frame[12] == 0x86 && frame[13] == 0xDD, "ethertype is 0x86DD");
+    CHECK((frame[14] >> 4) == 6, "IP version is 6");
+    CHECK(frame[14 + 6] == 6, "next-header is TCP");
+    CHECK(netl3_v6_parse(frame, (int)n, &pkt) == 0, "v6 parse accepts built frame");
+    CHECK(pkt.l4_off == 54 && pkt.l3_hdr_len == 40, "L4 at 54, hdr 40");
+    CHECK(pkt.proto == 6, "parsed proto is TCP");
+    CHECK(pkt.src.family == NETL3_AF_INET6 && pkt.src.addr[15] == 0x15,
+          "parsed src is the v6 we built");
+    CHECK(netl3_v4_parse(frame, (int)n, &pkt) != 0,
+          "v4 parser refuses a v6 frame");
+}
+
 int main(void) {
     test_addr();
     test_mss_and_ops_shape();
@@ -242,6 +274,7 @@ int main(void) {
     test_ab_syn();
     test_ab_data();
     test_parse();
+    test_v6();
 
     printf("test_netl3: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

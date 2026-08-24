@@ -27,6 +27,7 @@
 #include "kernel/arch/i386/irq32.h"
 #include "kernel/net/netdev.h"
 #include "kernel/net/tcp.h"
+#include "kernel/net/ipv6.h"
 #include "kernel/lib/kprintf.h"
 
 /* ---- the tick source tcp.c links against ----------------------------- */
@@ -64,6 +65,30 @@ const uint8_t *net_ipfrag_step(const uint8_t *frame, int len,
 {
     *out_len = len;                    /* passthrough; X4 not ported */
     return frame;
+}
+
+/* Y3: netl3.c's v6 ops are a SHARED row, so these two symbols must
+ * exist on i386.  There is no v6 stack on this port — resolve fails
+ * closed and src_for is NULL.  Named: TCP-over-IPv6 is x86_64 only
+ * this phase. */
+int net_ipv6_resolve(const ipv6_addr_t *target, uint8_t out_mac[6])
+{
+    (void)target;
+    (void)out_mac;
+    return -1;
+}
+
+const ipv6_addr_t *net_ipv6_src_for(const ipv6_addr_t *dst)
+{
+    (void)dst;
+    return 0;
+}
+
+int net_ipv6_handle_frame(const uint8_t *frame, int len)
+{
+    (void)frame;
+    (void)len;
+    return 0;
 }
 
 /* ---- the netdev registration ------------------------------------------ */

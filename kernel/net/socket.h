@@ -13,11 +13,13 @@
  */
 
 #define AURA_AF_INET      2
+#define AURA_AF_INET6     10
 #define AURA_SOCK_STREAM  1
 #define AURA_SOCK_DGRAM   2
 
 int64_t socket_create(int domain, int type, int protocol);
 int64_t socket_connect(int sid, uint32_t ip, uint16_t port);
+int64_t socket_connect6(int sid, const uint8_t addr[16], uint16_t port);
 int64_t socket_send(int sid, const void *buf, uint32_t len);
 int64_t socket_recv(int sid, void *buf, uint32_t len);
 int64_t socket_close(int sid);

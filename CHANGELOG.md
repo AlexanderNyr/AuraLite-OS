@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y3 — TCP-over-IPv6: one transport, both families] 2026-08-24
+
+Y2's seam gets its second consumer.  `netl3_v6_ops` resolve via R9
+NDP, frame Ethernet+IPv6 (0x86DD, hop 64, MSS 1440), and demux
+0x86DD in `netl3_input` before the v4 fragment table can see the
+datagram.  `tcp_open_addr` is the family-agnostic open;
+`tcp_open(uint32_t)` is a v4 wrapper.  Socket path: `AF_INET6`
+accepted by `socket()`, `SYS_SOCKET_CONNECT6` (308) + libc
+`connectaddr(sockaddr_in6)`.  DNS: `dns_parse_aaaa` / `dns_resolve_aaaa`
+(type 28); A cache stays IPv4-shaped.  `dualstack_pick` is the
+host-tested selection core (v6 iff global+AAAA, else v4).  CATCH:
+i386 stubs the two v6 symbols so the SHARED netl3.c row still
+compiles (D3); TCP-over-IPv6 is x86_64 this phase.  Receipts:
+test_netl3 40/40 (v6 build/parse added), test_dualstack 8/8, test_dns_aaaa 6/6, guest
+`[tcp6] PASS: round-trip 15 byte(s): PONG-FROM-HOST` via test_tcp6.  CATCH, named at the fixture: QEMU 10's guestfwd parser is
+IPv4-only (`tcp:[fec0::2]:8036-...` is "Invalid guest forwarding
+rule"), so the host binds :8036 like tcp32 binds :8032 — fec0::2
+is SLIRP's ipv6-host.  CATCH, named at the RX loop: the first
+boot's pcap was four SYNs and zero SYN-ACKs because TCP owned the
+NIC and ate SLIRP's NS; `tcp_recv_segment` now feeds every frame
+to the R9 NDP responder.  The Y0 AAAA / sockaddr_in6
+opener pins retired.
+
 ## [RINET2 Y2 — the TCP/IP seam: tcp.c stops spelling L3] 2026-08-24
 
 The exact debt Y0 pinned is paid: `tcp.c` greps `ip4`+`ipv4` at 0

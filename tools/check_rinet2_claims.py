@@ -170,10 +170,45 @@ def claims():
             "Y2: netl3.c is a KERNEL32_SHARED row (D3: i386 compiles "
             "against the seam unchanged)",
             "kernel/net/netl3.c" in k32))
+        if not y3_done:
+            checks.append((
+                "Y2: libc still has no sockaddr_in6 (Y3's pin is untouched)",
+                "sockaddr_in6" not in read("lib", "libc", "include",
+                                           "sys", "socket.h")))
+
+    # --- Y3: TCP-over-IPv6 + AF_INET6 + AAAA ---------------------------
+    if y3_done:
+        makefile = read("Makefile")
         checks.append((
-            "Y2: libc still has no sockaddr_in6 (Y3's pin is untouched)",
-            "sockaddr_in6" not in read("lib", "libc", "include",
-                                       "sys", "socket.h")))
+            "Y3: netl3_v6_ops exist and ops_for dispatches INET6",
+            "netl3_v6_ops" in read("kernel", "net", "netl3.c") and
+            "NETL3_AF_INET6" in read("kernel", "net", "netl3.c")))
+        checks.append((
+            "Y3: tcp_open_addr + tcp6_self_test are the transport entry",
+            "tcp_open_addr" in tcp and "tcp6_self_test" in tcp and
+            "[tcp6] PASS" in tcp))
+        checks.append((
+            "Y3: DNS has an AAAA path and libc has sockaddr_in6",
+            "AAAA" in dns and
+            "sockaddr_in6" in read("lib", "libc", "include",
+                                   "netinet", "in.h") and
+            "sockaddr_in6" in read("lib", "libc", "include",
+                                   "sys", "socket.h")))
+        checks.append((
+            "Y3: dualstack pick is a pure-C core with a host gate",
+            "dualstack_pick" in read("kernel", "net", "dualstack.h") and
+            "test_dualstack" in makefile and
+            "test_dns_aaaa" in makefile))
+        checks.append((
+            "Y3: the guest receipt is registered (test_tcp6 greps "
+            "[tcp6] PASS)",
+            "[tcp6] PASS" in read("tests", "integration", "cases",
+                                  "test_tcp6.sh") and
+            "test_tcp6" in read("tests", "integration", "run_all.sh")))
+        checks.append((
+            "Y3: the phase patch exists",
+            os.path.exists(os.path.join(ROOT, "patches",
+                                        "RINET2_Y3_tcp6.patch"))))
 
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))

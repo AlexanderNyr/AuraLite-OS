@@ -26,6 +26,7 @@
 #include "kernel/net/tcp_m6d.h"
 #include "kernel/net/tcp_m6e.h"
 #include "kernel/net/netl3.h"
+#include "kernel/net/ipv6.h"
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
@@ -291,6 +292,11 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
         int n = netdev_recv_wait(buf, sizeof(buf), remaining);
         if (n < 0) return -1;
         if (n == 0) break;
+        /* Y3 CATCH: while TCP owns the NIC, SLIRP's NS for our
+         * SLAAC address must still reach the R9 responder.  The
+         * first boot's pcap was four SYNs and zero SYN-ACKs —
+         * slirp had no MAC to ride the reply on. */
+        net_ipv6_handle_frame(buf, n);
         netl3_pkt_t pkt;
         if (netl3_input(buf, n, &pkt) != 0) continue;
         if (pkt.proto != NETL3_PROTO_TCP) continue;
@@ -405,6 +411,7 @@ static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
         int n = netdev_recv_wait(buf, sizeof(buf), remaining);
         if (n < 0) return got_one ? 0 : -1;
         if (n == 0) break;
+        net_ipv6_handle_frame(buf, n);
         netl3_pkt_t pkt;
         if (netl3_input(buf, n, &pkt) != 0) continue;
         if (pkt.proto != NETL3_PROTO_TCP) continue;
@@ -659,7 +666,7 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     return new_h;
 }
 
-tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
+tcp_handle_t tcp_open_addr(const netl3_addr_t *dst, uint16_t dst_port) {
     int h = alloc_handle();
     if (h < 0) {
         kprintf("[tcp] no free connection slots\n");
@@ -668,7 +675,12 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     int saved = active_h;
     active_h = h;
 
-    conn_peer = netl3_addr_from_v4(dst_ip);
+    if (!dst) {
+        conns[h].in_use = 0;
+        active_h = saved;
+        return -EINVAL;
+    }
+    conn_peer = *dst;
     conn_dst_port = dst_port;
 
     /* FIX_R7: fail a dead route fast and SPECIFICALLY.  Before this the SYN
@@ -681,10 +693,14 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
         uint8_t probe_mac[6];
         const struct netl3_ops *l3 = netl3_ops_for(&conn_peer);
         if (!l3 || l3->resolve(&conn_peer, probe_mac) != 0) {
-            kprintf("[tcp] [h=%d] %u.%u.%u.%u is unreachable (resolve failed)\n",
-                    h,
-                    (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-                    (dst_ip >> 8) & 0xFF, dst_ip & 0xFF);
+            if (conn_peer.family == NETL3_AF_INET) {
+                uint32_t ip = netl3_v4_host(&conn_peer);
+                kprintf("[tcp] [h=%d] %u.%u.%u.%u is unreachable (resolve failed)\n",
+                        h, (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                        (ip >> 8) & 0xFF, ip & 0xFF);
+            } else {
+                kprintf("[tcp] [h=%d] v6 peer is unreachable (resolve failed)\n", h);
+            }
             conns[h].in_use = 0;
             active_h = saved;
             return -EHOSTUNREACH;
@@ -698,11 +714,15 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     conn_state = TCP_SYN_SENT;
     tcp_rx_stash_reset();   /* no leftovers may leak across connections */
 
-    kprintf("[tcp] [h=%d] connecting to %u.%u.%u.%u:%u (src port %u)...\n",
-            h,
-            (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
-            (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
-            dst_port, conn_src_port);
+    if (conn_peer.family == NETL3_AF_INET) {
+        uint32_t ip = netl3_v4_host(&conn_peer);
+        kprintf("[tcp] [h=%d] connecting to %u.%u.%u.%u:%u (src port %u)...\n",
+                h, (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                (ip >> 8) & 0xFF, ip & 0xFF, dst_port, conn_src_port);
+    } else {
+        kprintf("[tcp] [h=%d] connecting to v6 :%u (src port %u)...\n",
+                h, dst_port, conn_src_port);
+    }
 
     uint32_t syn_seq = conn_seq;
     tcp_send_retx_segment(TCP_SYN, NULL, 0, syn_seq, conn_ack);
@@ -766,6 +786,51 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     /* Leave active_h pointing at this handle so the very first send/recv
      * works out of the box. */
     return h;
+}
+
+tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
+    netl3_addr_t a = netl3_addr_from_v4(dst_ip);
+    return tcp_open_addr(&a, dst_port);
+}
+
+#define TCP6_PEER_PORT 8036
+
+void tcp6_self_test(void) {
+    uint8_t fec02[16];
+    netl3_addr_t dst;
+    tcp_handle_t h;
+    static const char ping[] = "PING-FROM-TCP6\n";
+    char reply[128];
+    int n, i;
+
+    memset(fec02, 0, sizeof fec02);
+    fec02[0] = 0xfe;
+    fec02[1] = 0xc0;
+    fec02[15] = 2;
+    dst = netl3_addr_from_v6(fec02);
+
+    kprintf("[tcp6] probing fec0::2:%u...\n", TCP6_PEER_PORT);
+    h = tcp_open_addr(&dst, TCP6_PEER_PORT);
+    if (h < 0) {
+        kprintf("[tcp6] no peer on fec0::2:%u (SYN unanswered); "
+                "round-trip skipped\n", TCP6_PEER_PORT);
+        return;
+    }
+    if (tcp_send_h(h, ping, sizeof(ping) - 1) < 0) {
+        kprintf("[tcp6] send failed after connect\n");
+        tcp_close_h(h);
+        return;
+    }
+    n = tcp_recv_h(h, reply, sizeof(reply) - 1);
+    if (n <= 0) {
+        kprintf("[tcp6] connected + sent, but no reply payload\n");
+        tcp_close_h(h);
+        return;
+    }
+    reply[n] = '\0';
+    for (i = 0; i < n; i++) if (reply[i] == '\n') reply[i] = ' ';
+    kprintf("[tcp6] PASS: round-trip %d byte(s): %s\n", n, reply);
+    tcp_close_h(h);
 }
 
 int tcp_send_h(tcp_handle_t h, const void *data, uint32_t len) {

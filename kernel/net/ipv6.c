@@ -119,6 +119,18 @@ static const ipv6_addr_t *src_for(const ipv6_addr_t *dst) {
     return (!is_linklocal6(dst) && have_global) ? &our_global : &our_ll;
 }
 
+static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]);
+
+int net_ipv6_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
+    if (!target || !out_mac) return -1;
+    return ndp_resolve(target, out_mac);
+}
+
+const ipv6_addr_t *net_ipv6_src_for(const ipv6_addr_t *dst) {
+    if (!dst) return 0;
+    return src_for(dst);
+}
+
 static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
     /* Our own addresses resolve to our own MAC. */
     if (ipv6_eq(target, &our_ll) == 0) {

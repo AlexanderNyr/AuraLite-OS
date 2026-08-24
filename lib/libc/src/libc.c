@@ -404,6 +404,32 @@ int connect(int sock, uint32_t ip, uint16_t port) {
                                     port, 0, 0, 0));
 }
 
+int connectaddr(int sock, const struct sockaddr *addr, unsigned addrlen) {
+    if (!addr) { errno = EFAULT; return -1; }
+    if (addr->sa_family == AF_INET) {
+        const struct sockaddr_in *sin;
+        uint32_t ip;
+        uint16_t port;
+        if (addrlen < sizeof(struct sockaddr_in)) { errno = EINVAL; return -1; }
+        sin = (const struct sockaddr_in *)addr;
+        ip = ntohl(sin->sin_addr.s_addr);
+        port = ntohs(sin->sin_port);
+        return connect(sock, ip, port);
+    }
+    if (addr->sa_family == AF_INET6) {
+        const struct sockaddr_in6 *s6;
+        uint16_t port;
+        if (addrlen < sizeof(struct sockaddr_in6)) { errno = EINVAL; return -1; }
+        s6 = (const struct sockaddr_in6 *)addr;
+        port = ntohs(s6->sin6_port);
+        return (int)syscall_ret(syscall(SYS_SOCKET_CONNECT6, (uint64_t)sock,
+                                        (uint64_t)s6->sin6_addr.s6_addr,
+                                        port, 0, 0, 0));
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
 int send(int sock, const void *data, uint32_t len) {
     return (int)syscall_ret(syscall(SYS_SOCKET_SEND, (uint64_t)sock,
                                     (uint64_t)data, len, 0, 0, 0));

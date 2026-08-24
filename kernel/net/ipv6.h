@@ -43,4 +43,10 @@ int net_ipv6_handle_frame(const uint8_t *frame, int len);
  * derivation, ICMPv6 pseudo-header checksum against a reference vector. */
 void net_ipv6_self_test(void);
 
+/* Y3: the netl3 v6 ops call these.  resolve is ndp_resolve; src_for
+ * is the R9 RFC 6724 floor (global src for a global dst).  Either
+ * may return failure/NULL when the v6 stack is not up. */
+int net_ipv6_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]);
+const ipv6_addr_t *net_ipv6_src_for(const ipv6_addr_t *dst);
+
 #endif /* AURALITE_NET_IPV6_H */

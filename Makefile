@@ -2083,6 +2083,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_pcid_policy \
                 $(BUILD_DIR)/test_tcp_cc \
                 $(BUILD_DIR)/test_netl3 \
+                $(BUILD_DIR)/test_dualstack \
+                $(BUILD_DIR)/test_dns_aaaa \
                 $(BUILD_DIR)/test_sizeclass \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -2578,6 +2580,15 @@ $(BUILD_DIR)/test_tcp_cc: tests/unit/test_tcp_cc.c kernel/net/tcp_cc.h kernel/ne
 # REALINTERNET2 Y2: the TCP/IP seam — the pre-seam sender is the A
 # side of a pcap A/B; netl3_v4_build must match it byte-for-byte.
 $(BUILD_DIR)/test_netl3: tests/unit/test_netl3.c kernel/net/netl3.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# REALINTERNET2 Y3: dual-stack pick + AAAA parse.
+$(BUILD_DIR)/test_dualstack: tests/unit/test_dualstack.c kernel/net/dualstack.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_dns_aaaa: tests/unit/test_dns_aaaa.c kernel/net/dns_parse.c kernel/net/dns_parse.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

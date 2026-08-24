@@ -26,6 +26,7 @@
 #define DNS_RTYPE_A         1
 #define DNS_RTYPE_CNAME     5
 #define DNS_RTYPE_SOA       6
+#define DNS_RTYPE_AAAA      28
 #define DNS_RCODE_NOERROR   0
 #define DNS_RCODE_NXDOMAIN  3
 
@@ -65,6 +66,12 @@ typedef struct {
  */
 int dns_parse_response(const uint8_t *msg, int len, const char *qname,
                        uint16_t expect_id, dns_result_t *out);
+
+/* Y3: parse a type-AAAA answer.  Returns DNS_PARSE_ANSWER and writes
+ * 16 bytes into out_aaaa on success; the other DNS_PARSE_* codes have
+ * the same meaning as dns_parse_response. */
+int dns_parse_aaaa(const uint8_t *msg, int len, const char *qname,
+                   uint16_t expect_id, uint8_t out_aaaa[16], uint32_t *out_ttl);
 
 /* ---- cache core (pure: caller supplies the clock) ---- */
 

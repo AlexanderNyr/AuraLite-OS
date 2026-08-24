@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include "kernel/net/socket.h"
 #include "kernel/net/tcp.h"
+#include "kernel/net/netl3.h"
 #include "kernel/net/net.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
@@ -64,7 +65,7 @@ static socket_t *get_owned_socket(int sid) {
  * propagate verbatim or map explicitly). */
 
 int64_t socket_create(int domain, int type, int protocol) {
-    if (domain != AURA_AF_INET) return -EAFNOSUPPORT;
+    if (domain != AURA_AF_INET && domain != AURA_AF_INET6) return -EAFNOSUPPORT;
     if (type != AURA_SOCK_STREAM && type != AURA_SOCK_DGRAM) return -EINVAL;
     for (int i = 0; i < SOCKET_MAX; i++) {
         if (sockets[i].state == SOCK_SLOT_FREE) {
@@ -90,6 +91,25 @@ int64_t socket_connect(int sid, uint32_t ip, uint16_t port) {
     if (h < 0) return h;   /* -ECONNREFUSED / -EHOSTUNREACH / -ETIMEDOUT / -EMFILE */
     s->state = SOCK_SLOT_CONNECTED;
     s->peer_ip = ip;
+    s->peer_port = port;
+    s->tcp_handle = h;
+    return 0;
+}
+
+int64_t socket_connect6(int sid, const uint8_t addr[16], uint16_t port) {
+    socket_t *s = get_owned_socket(sid);
+    netl3_addr_t dst;
+    int h;
+    if (!s) return -EBADF;
+    if (s->state != SOCK_SLOT_OPEN) return -EINVAL;
+    if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
+    if (!addr) return -EFAULT;
+    if (s->domain != AURA_AF_INET6 && s->domain != AURA_AF_INET)
+        return -EAFNOSUPPORT;
+    dst = netl3_addr_from_v6(addr);
+    h = tcp_open_addr(&dst, port);
+    if (h < 0) return h;
+    s->state = SOCK_SLOT_CONNECTED;
     s->peer_port = port;
     s->tcp_handle = h;
     return 0;

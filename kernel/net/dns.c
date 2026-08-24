@@ -117,8 +117,8 @@ void dns_force_tc_once(void) { g_force_tc = 1; }
  * Shared by the UDP transport and the R9 TCP fallback (RES-25) --
  * one builder, two carriages, so the fallback can never ask a
  * subtly different question. */
-static int dns_build_query(const char *qname, uint8_t *query, int cap,
-                           uint16_t *out_id) {
+static int dns_build_query_type(const char *qname, uint16_t qtype,
+                                uint8_t *query, int cap, uint16_t *out_id) {
     if (cap < 12) return -1;
     memset(query, 0, (size_t)cap);
     uint16_t id = dns_next_id();
@@ -129,7 +129,8 @@ static int dns_build_query(const char *qname, uint8_t *query, int cap,
     if (name_len < 0) return -1;
     int q_off = 12 + name_len;
     if (q_off + 4 > cap) return -1;
-    query[q_off]     = 0; query[q_off + 1] = DNS_RTYPE_A;   /* type A   */
+    query[q_off]     = (uint8_t)(qtype >> 8);
+    query[q_off + 1] = (uint8_t)(qtype & 0xFF);
     query[q_off + 2] = 0; query[q_off + 3] = 1;             /* class IN */
     *out_id = id;
     return q_off + 4;
@@ -144,7 +145,7 @@ static int dns_wire_query(uint32_t server_ip, const char *qname,
                           uint8_t *resp, int cap) {
     uint8_t query[512];
     uint16_t id = 0;
-    int query_len = dns_build_query(qname, query, (int)sizeof(query), &id);
+    int query_len = dns_build_query_type(qname, DNS_RTYPE_A, query, (int)sizeof(query), &id);
     if (query_len < 0) return -1;
 
     if (g_force_tc) {
@@ -187,7 +188,7 @@ static int dns_wire_query_tcp(uint32_t server_ip, const char *qname,
                               uint8_t *resp, int cap) {
     uint8_t query[512];
     uint16_t id = 0;
-    int query_len = dns_build_query(qname, query, (int)sizeof(query), &id);
+    int query_len = dns_build_query_type(qname, DNS_RTYPE_A, query, (int)sizeof(query), &id);
     if (query_len < 0) return -1;
 
     tcp_handle_t h = tcp_open(server_ip, 53);
@@ -388,6 +389,52 @@ uint32_t dns_resolve_ipv4(const char *hostname) {
     kprintf("[dns] FAIL: '%s' CNAME chain exceeds %d levels\n",
             name, DNS_MAX_CNAME_DEPTH);
     return 0;
+}
+
+
+int dns_resolve_aaaa(const char *hostname, uint8_t out[16]) {
+    if (!hostname || !*hostname || !out) return -1;
+    char name[DNS_MAX_NAME + 1];
+    int i = 0;
+    for (; hostname[i] && i < DNS_MAX_NAME; i++) {
+        char c = hostname[i];
+        name[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    name[i] = 0;
+    if (i > 0 && name[i - 1] == '.') name[i - 1] = 0;
+    if (!name[0]) return -1;
+
+    uint8_t query[512], resp[1024];
+    uint16_t id = 0;
+    int qlen = dns_build_query_type(name, DNS_RTYPE_AAAA, query,
+                                    (int)sizeof(query), &id);
+    if (qlen < 0) return -1;
+
+    uint32_t srv[DNS_SERVERS_MAX];
+    int nsrv = dns_get_servers(srv, DNS_SERVERS_MAX);
+    int got = -1;
+    for (int s = 0; s < nsrv && got < 0; s++) {
+        if (net_udp_sendto(srv[s], 53, DNS_LOCAL_PORT, query, qlen) != 0)
+            continue;
+        uint32_t got_ip = 0;
+        uint16_t got_port = 0;
+        int n = net_udp_recvfrom(DNS_LOCAL_PORT, &got_ip, &got_port,
+                                 resp, (uint32_t)sizeof(resp),
+                                 DNS_QUERY_TIMEOUT_TICKS);
+        if (n < 12) continue;
+        if (got_ip != srv[s] || got_port != 53) continue;
+        uint16_t rid = (uint16_t)((resp[0] << 8) | resp[1]);
+        if (rid != id) continue;
+        uint32_t ttl = 0;
+        if (dns_parse_aaaa(resp, n, name, rid, out, &ttl) == DNS_PARSE_ANSWER) {
+            kprintf("[dns] AAAA '%s' -> %02x%02x:... (ttl %us)\n",
+                    name, out[0], out[1], ttl);
+            return 0;
+        }
+        got = n;
+    }
+    kprintf("[dns] AAAA FAIL: '%s' unresolved\n", name);
+    return -1;
 }
 
 void dns_self_test(void) {
