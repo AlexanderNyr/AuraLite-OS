@@ -16,6 +16,10 @@
  * (RFC 6298-style SRTT/RTTVAR with exponential backoff), a PMTUD
  * black-hole segment-size ladder, and inbound segment sequencing
  * (in-order / duplicate / partial-duplicate / single-gap out-of-order).
+ *
+ * RINET2 Y2: L3 is reached only through netl3 (kernel/net/netl3.h).
+ * tcp_open() still takes a host-order v4 address; the connection key
+ * inside is family + 16 bytes so Y3 does not have to widen it again.
  */
 
 /* TCP connection states. */

@@ -137,6 +137,44 @@ def claims():
             "tcp_cwnd_limited_sends [1-9]"
             in read("tests", "integration", "cases", "test_tcp_x5.sh")))
 
+    # --- Y2: the TCP/IP seam (when the plan says it landed) ------------
+    if y2_done:
+        netl3 = read("kernel", "net", "netl3.h")
+        makefile = read("Makefile")
+        k32 = makefile.split("KERNEL32_SHARED")[1][:800] if \
+            "KERNEL32_SHARED" in makefile else ""
+        checks.append((
+            "Y2: netl3.h is the seam (ops + family+16-byte key + v4 build)",
+            "struct netl3_ops" in netl3 and
+            "netl3_addr_t" in netl3 and
+            "netl3_v4_build" in netl3 and
+            "NETL3_AF_INET6" in netl3))
+        checks.append((
+            "Y2: tcp.c has zero inline IPv4 spellings (the opener pin "
+            "moved 7→0)",
+            tcp.count("ip4") + tcp.count("ipv4") == 0))
+        checks.append((
+            "Y2: tcp.c drives the seam (ops_for / resolve / output / input) "
+            "and the connection key is family + 16 bytes",
+            "netl3_ops_for" in tcp and
+            "l3->resolve" in tcp and
+            "l3->output" in tcp and
+            "netl3_input" in tcp and
+            "netl3_addr_t peer" in tcp))
+        checks.append((
+            "Y2: the host A/B gate is registered and the phase patch exists",
+            "test_netl3" in makefile and
+            os.path.exists(os.path.join(ROOT, "patches",
+                                        "RINET2_Y2_seam.patch"))))
+        checks.append((
+            "Y2: netl3.c is a KERNEL32_SHARED row (D3: i386 compiles "
+            "against the seam unchanged)",
+            "kernel/net/netl3.c" in k32))
+        checks.append((
+            "Y2: libc still has no sockaddr_in6 (Y3's pin is untouched)",
+            "sockaddr_in6" not in read("lib", "libc", "include",
+                                       "sys", "socket.h")))
+
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))
     done_heads = len(re.findall(r"^### Y\d+[^\n]*✅ COMPLETE", plan, re.M))

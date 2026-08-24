@@ -1,12 +1,12 @@
 # AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
 
-## Status: IN PROGRESS — Y0–Y1 complete; Y2 next; plan committed 2026-08-23
+## Status: IN PROGRESS — Y0–Y2 complete; Y3 next; plan committed 2026-08-23
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | Y0 — the rig: TCP decision-core host gates, perf counters, opener receipts | ✅ complete | `patches/RINET2_Y0_rig.patch` |
 | Y1 — congestion control: the cwnd stops being a constant | ✅ complete | `patches/RINET2_Y1_cc.patch` |
-| Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | pending | `patches/RINET2_Y2_seam.patch` |
+| Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | ✅ complete | `patches/RINET2_Y2_seam.patch` |
 | Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | pending | `patches/RINET2_Y3_tcp6.patch` |
 | Y4 — HTTPS-over-IPv6: the RES-26 receipt | pending | `patches/RINET2_Y4_https6.patch` |
 | Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | pending | `patches/RINET2_Y5_mlkem.patch` |
@@ -185,18 +185,38 @@ the uint32 wrap guard.  All 12 x5 assertions green including the
 three new counter pins; kernel and kernel32 both carry the change
 (tcp.c is a shared row — the i386 lane counts too).
 
-### Y2 — the TCP/IP seam
-- [ ] `kernel/net/netl3.h` ops: resolve (ARP/NDP), frame+send,
-      pseudo-header checksum, MSS hint — the v4 implementation is
-      TODAY's code moved behind the ops, byte-identical wire output
-      (pcap A/B as the gate).
-- [ ] The connection key widens (family + 16-byte address union);
-      the socket ABI grows `AF_INET6`/`sockaddr_in6` definitions
-      (wired in Y3).
-- [ ] i386: netglue32 compiles against the seam unchanged; the
-      i386_parity smoke lane stays green (D3's standing constraint).
-- [ ] Exit: zero inline-IPv4 references left in tcp.c (the Y0
-      checker pin flips from 7 to 0); all existing net lanes green.
+### Y2 — the TCP/IP seam — ✅ COMPLETE
+- [x] `kernel/net/netl3.h` ops: resolve, frame+send, pseudo-header
+      checksum, MSS hint — the v4 implementation is TODAY's code
+      moved behind the ops, byte-identical wire output (pcap A/B
+      as the gate).
+- [x] The connection key widens (family + 16-byte `netl3_addr_t`);
+      `NETL3_AF_INET6` is numbered to match libc `AF_INET6` (=10).
+      `sockaddr_in6` stays out of libc (Y3 wires the ABI; the Y0
+      opener pin is untouched).
+- [x] i386: netglue32 is unchanged; `netl3.c` is a KERNEL32_SHARED
+      row so the port compiles against the seam (D3).
+- [x] Exit: zero inline-IPv4 references left in tcp.c (the Y0
+      checker pin flips from 7 to 0).
+
+Result: the transport no longer spells L3.  `struct netl3_ops`
+carries the four named members (resolve / output / pseudo / mss);
+`netl3_v4_ops` is today's sender moved — IP ident=3, DF, TTL=64,
+RFC 793 v4 pseudo-header, 60-byte pad — and `netl3_input` is the
+shared ethertype demux (0x0800 today; Y3 adds 0x86DD behind the
+same function, not a `tcp6.c`).  tcp.c's connection key is
+`netl3_addr_t peer` (family + 16 octets); `tcp_open(uint32_t)` is
+unchanged so every existing caller keeps compiling.  CATCH, named
+at the site: the pre-seam sender stored `htons(~sum)` into a
+packed `uint16_t`, so the A/B copies those two bytes rather than
+writing network-order octets by hand — the first draft of the
+builder failed the SYN frame on exactly that store.  Receipts:
+`test_netl3` pins 28 decisions (address key, family numbers, MSS,
+ops shape, pseudo match, SYN pad-to-60 A/B, odd-length data A/B,
+parse of a built frame, short-frame refuse, v6 ethertype refuse);
+`tcp.c` greps `ip4`+`ipv4` at 0 (was 7); both kernels link
+(`kernel.elf`, `kernel32.elf` — netglue32 untouched).  The Y0
+opener pin for inline-IPv4 retired with the phase.
 
 ### Y3 — TCP-over-IPv6 + AF_INET6 + AAAA
 - [ ] netl3 v6 implementation: NDP resolve (R9's neighbour cache),

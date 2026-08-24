@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y2 — the TCP/IP seam: tcp.c stops spelling L3] 2026-08-24
+
+The exact debt Y0 pinned is paid: `tcp.c` greps `ip4`+`ipv4` at 0
+(was 7).  `kernel/net/netl3.h` is the seam — `struct netl3_ops`
+(resolve / output / pseudo / mss), a family+16-byte address key,
+and a freestanding v4 builder whose wire is the pre-seam sender
+byte-for-byte (ident=3, DF, TTL=64, RFC 793 pseudo-header, 60-byte
+pad).  `netl3.c` is the four helpers tcp.c used to call by name
+(ARP, our address, netdev_send, ipfrag) wrapped as `netl3_v4_ops`;
+it is a KERNEL32_SHARED row so i386 compiles against the seam
+unchanged (netglue32.c is not edited — D3).  The public
+`tcp_open(uint32_t)` ABI is unchanged; Y3 hangs a v6 ops
+implementation on the same transport and wires `sockaddr_in6`.
+CATCH, named at the builder: the first draft wrote checksum octets
+in network order by hand and failed the SYN A/B; the pre-seam
+sender assigned `htons(~sum)` into a packed `uint16_t`, and the
+builder now copies those two bytes.  Receipts: `test_netl3` 28/28
+(address key, family numbers matching libc AF_INET/AF_INET6, MSS,
+ops shape, pseudo match, SYN pad-to-60 A/B, odd-length data A/B,
+parse, short-frame refuse, v6-ethertype refuse); both kernels
+link.  The Y0 opener pin for inline-IPv4 retired with the phase,
+exactly as the checker was built to demand.
+
 ## [RINET2 Y1 — congestion control: cwnd is alive, 586 receipts say so] 2026-08-24
 
 The exact debt Y0 measured is paid: `tcp_cc.h` (pure C, the

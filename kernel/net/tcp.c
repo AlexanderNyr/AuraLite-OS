@@ -1,7 +1,10 @@
 /* tcp.c — minimal TCP client implementation.
  *
  * Implements: active open (three-way handshake), data send/recv, and clean
- * teardown. Uses the existing IP/ARP layers from net.c.
+ * teardown.  The network layer is reached ONLY through netl3 (Y2): this
+ * file no longer spells an L3 header, an ARP call or a v4
+ * pseudo-header.  The connection key is family + 16 bytes so Y3 can
+ * hang a v6 ops implementation on the same transport.
  *
  * Design:
  *   - Small fixed table of connection handles (TCP_MAX_CONNS).
@@ -11,7 +14,7 @@
  *   - X5: adaptive RTO (RFC 6298-style, exponential backoff), PMTUD
  *     black-hole segment-size ladder, and in-order / duplicate /
  *     partial-duplicate / single-gap out-of-order receive handling.
- *   - Correct sequence numbers, ACKs, and TCP checksum (with pseudo-header).
+ *   - Correct sequence numbers, ACKs, and TCP checksum (netl3 pseudo).
  */
 
 #include <stdint.h>
@@ -22,7 +25,7 @@
 #include "kernel/net/tcp_m6c.h"
 #include "kernel/net/tcp_m6d.h"
 #include "kernel/net/tcp_m6e.h"
-#include "kernel/net/net.h"
+#include "kernel/net/netl3.h"
 #include "kernel/net/netdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
@@ -37,10 +40,8 @@
 #define TCP_PSH  0x08
 #define TCP_ACK  0x10
 
-#define IP_PROTO_TCP  6
-
 #define TCP_WINDOW  64240   /* a generous window */
-#define TCP_MSS     1460    /* max segment size (typical Ethernet) */
+#define TCP_MSS     NETL3_V4_MSS  /* default; the live value is ops->mss() */
 #define TCP_RECV_TIMEOUT_TICKS 100
 #define TCP_RTO_TICKS 20
 #define TCP_MAX_RETRIES 3
@@ -66,26 +67,6 @@ struct tcp_hdr {
     uint16_t urgent_ptr;   /* network byte order */
 } __attribute__((packed));
 
-/* ---- IPv4 header (same as net.c — redefined here for self-containment) ---- */
-struct ipv4_hdr {
-    uint8_t  version_ihl;
-    uint8_t  tos;
-    uint16_t total_length;
-    uint16_t ident;
-    uint16_t flags_frag;
-    uint8_t  ttl;
-    uint8_t  protocol;
-    uint16_t checksum;
-    uint32_t src_ip;
-    uint32_t dst_ip;
-} __attribute__((packed));
-
-struct eth_hdr {
-    uint8_t  dst_mac[6];
-    uint8_t  src_mac[6];
-    uint16_t ethertype;
-} __attribute__((packed));
-
 /* ---- Byte-swap helpers (local copies, matching net.c) ---- */
 static uint16_t htons_(uint16_t v) { return (v >> 8) | (v << 8); }
 static uint32_t htonl_(uint32_t v) {
@@ -95,54 +76,11 @@ static uint32_t htonl_(uint32_t v) {
 static uint32_t ntohl_(uint32_t v) { return htonl_(v); }
 static uint16_t ntohs_(uint16_t v) { return htons_(v); }
 
-/* ---- Internet checksum with TCP pseudo-header (RFC 1071 + RFC 793) ---- */
-static uint16_t tcp_checksum(const void *tcp_seg, uint32_t tcp_len,
-                             uint32_t src_ip_host, uint32_t dst_ip_host) {
-    /* src_ip_host and dst_ip_host are in HOST byte order (octet1 << 24 | ...).
-     * We extract octets and build big-endian 16-bit words to match the
-     * pseudo-header format. */
-    const uint8_t *p = (const uint8_t *)tcp_seg;
-    uint32_t sum = 0;
-
-    /* Pseudo-header: src_ip (4 bytes as 2 big-endian words) */
-    sum += (uint16_t)(((src_ip_host >> 24) & 0xFF) << 8 |
-                      ((src_ip_host >> 16) & 0xFF));
-    sum += (uint16_t)(((src_ip_host >> 8)  & 0xFF) << 8 |
-                      (src_ip_host & 0xFF));
-
-    /* dst_ip (4 bytes as 2 big-endian words) */
-    sum += (uint16_t)(((dst_ip_host >> 24) & 0xFF) << 8 |
-                      ((dst_ip_host >> 16) & 0xFF));
-    sum += (uint16_t)(((dst_ip_host >> 8)  & 0xFF) << 8 |
-                      (dst_ip_host & 0xFF));
-
-    /* zero(1) + protocol(1) = 0x0006 */
-    sum += IP_PROTO_TCP;
-
-    /* TCP segment length (big-endian 16-bit) */
-    sum += (uint16_t)(((tcp_len >> 8) & 0xFF) << 8 | (tcp_len & 0xFF));
-
-    /* Sum the TCP segment bytes (big-endian 16-bit words). */
-    uint32_t len = tcp_len;
-    while (len > 1) {
-        sum += (uint16_t)(p[0] << 8 | p[1]);
-        p += 2;
-        len -= 2;
-    }
-    if (len) {
-        sum += p[0] << 8;
-    }
-    while (sum >> 16) {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-    return htons_((uint16_t)(~sum & 0xFFFF));
-}
-
 /* ---- Per-connection state -------------------------------------------- */
 typedef struct {
     int          in_use;
     tcp_state_t  state;
-    uint32_t     dst_ip;       /* host byte order */
+    netl3_addr_t peer;         /* Y2: family + 16-byte key */
     uint16_t     dst_port;
     uint16_t     src_port;     /* our ephemeral port */
     uint32_t     seq;          /* our next sequence number */
@@ -203,34 +141,20 @@ static int active_h = -1;
 /* For brevity the rest of this file still talks about conn_state/conn_seq/...
  * Those names are now thin macros over the active handle. */
 #define conn_state   (conns[active_h].state)
-#define conn_dst_ip  (conns[active_h].dst_ip)
+#define conn_peer    (conns[active_h].peer)
 #define conn_dst_port (conns[active_h].dst_port)
 #define conn_src_port (conns[active_h].src_port)
 #define conn_seq     (conns[active_h].seq)
 #define conn_ack     (conns[active_h].ack)
 
-/* Our MAC and IP — read from net.c at connect time. */
-static uint8_t  our_mac[6];
-static uint32_t our_ip;
-
 /* Defined next to tcp_recv() below; resets the per-connection RX stash. */
 static void tcp_rx_stash_reset(void);
-
-/* Access net.c's internals (declared here, not in net.h for encapsulation). */
-extern void net_get_mac(uint8_t mac[6]);
-extern uint32_t net_get_our_ip(void);
-extern int net_arp_resolve(uint32_t target_ip, uint8_t out_mac[6]);
-extern int net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
-                        const void *payload, uint32_t plen);
 
 /* ---- Send a TCP segment ---- */
 static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_len,
                                 uint32_t seq, uint32_t ack) {
-    uint8_t dst_mac[6];
-    if (net_arp_resolve(conn_dst_ip, dst_mac) != 0) {
-        kprintf("[tcp] ARP resolve failed for peer\n");
-        return;
-    }
+    const struct netl3_ops *l3 = netl3_ops_for(&conn_peer);
+    uint32_t mss = (l3 && l3->mss) ? l3->mss() : TCP_MSS;
 
     /* M6c: a SYN now carries options.  Until this phase data_offset was
      * hardcoded to 5<<4, so the stack had never emitted a single TCP
@@ -239,24 +163,22 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
     uint8_t optbuf[8];
     uint32_t optlen = 0;
     if (flags & TCP_SYN) {
-        optlen = tcpm6c_build_syn_opts(optbuf, TCP_MSS, 1);
+        optlen = tcpm6c_build_syn_opts(optbuf, mss, 1);
         /* Report what actually went on the wire, derived from the header
          * length we are about to write -- not from a constant.  The gate
          * greps this, so a SYN that silently loses its options (the state
          * this phase started from) turns the case red. */
         kprintf("[tcp] SYN options: %u bytes, hdr=%u, mss=%u sack-perm\n",
-                optlen, 20u + optlen, (unsigned)TCP_MSS);
+                optlen, 20u + optlen, (unsigned)mss);
     }
 
     uint32_t tcp_hdr_len = 20 + optlen;
     uint32_t tcp_total = tcp_hdr_len + data_len;
-    uint32_t ip_total = 20 + tcp_total;
-    uint32_t frame_len = 14 + ip_total;
+    uint8_t l4[20 + 8 + TCP_MSS];
 
-    uint8_t pkt[1518];
-
-    /* TCP header. */
-    struct tcp_hdr *tcp = (struct tcp_hdr *)(pkt + 14 + 20);
+    /* TCP header.  Checksum left 0 — l3->output fills the
+     * pseudo-header sum so this file never names the L3 format. */
+    struct tcp_hdr *tcp = (struct tcp_hdr *)l4;
     tcp->src_port   = htons_(conn_src_port);
     tcp->dst_port   = htons_(conn_dst_port);
     tcp->seq        = htonl_(seq);
@@ -267,55 +189,13 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
     tcp->checksum   = 0;
     tcp->urgent_ptr = 0;
 
-    /* M6c: options sit between the fixed header and the payload. */
-    if (optlen > 0) {
-        memcpy(pkt + 14 + 20 + 20, optbuf, optlen);
+    if (optlen > 0) memcpy(l4 + 20, optbuf, optlen);
+    if (data && data_len > 0) memcpy(l4 + 20 + optlen, data, data_len);
+
+    if (!l3 || l3->output(&conn_peer, NETL3_PROTO_TCP, l4, tcp_total) != 0) {
+        kprintf("[tcp] resolve/output failed for peer\n");
+        return;
     }
-
-    /* Copy data after the TCP header (past any options). */
-    if (data && data_len > 0) {
-        memcpy(pkt + 14 + 20 + 20 + optlen, data, data_len);
-    }
-
-    /* Compute the TCP checksum over the pseudo-header + segment. */
-    tcp->checksum = tcp_checksum(tcp, tcp_total, our_ip, conn_dst_ip);
-
-    /* IPv4 header. */
-    struct ipv4_hdr *ip = (struct ipv4_hdr *)(pkt + 14);
-    ip->version_ihl = (4 << 4) | 5;
-    ip->tos         = 0;
-    ip->total_length= htons_((uint16_t)ip_total);
-    ip->ident       = htons_(3);
-    ip->flags_frag  = htons_(0x4000);   /* Don't Fragment */
-    ip->ttl         = 64;
-    ip->protocol    = IP_PROTO_TCP;
-    ip->checksum    = 0;
-    ip->src_ip      = htonl_(our_ip);
-    ip->dst_ip      = htonl_(conn_dst_ip);
-
-    /* Compute IP checksum (RFC 1071 over the 20-byte header). */
-    {
-        const uint8_t *p = (const uint8_t *)ip;
-        uint32_t sum = 0;
-        for (int i = 0; i < 20; i += 2) {
-            sum += (uint16_t)(p[i] << 8 | p[i + 1]);
-        }
-        while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
-        ip->checksum = htons_((uint16_t)(~sum & 0xFFFF));
-    }
-
-    /* Ethernet header. */
-    struct eth_hdr *eh = (struct eth_hdr *)pkt;
-    memcpy(eh->dst_mac, dst_mac, 6);
-    memcpy(eh->src_mac, our_mac, 6);
-    eh->ethertype = htons_(0x0800);
-
-    /* Pad to minimum Ethernet frame size. */
-    if (frame_len < 60) {
-        memset(pkt + frame_len, 0, 60 - frame_len);
-        frame_len = 60;
-    }
-    netdev_send(pkt, frame_len);
 }
 
 static void tcp_send_segment(uint8_t flags, const void *data, uint32_t data_len) {
@@ -411,19 +291,13 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
         int n = netdev_recv_wait(buf, sizeof(buf), remaining);
         if (n < 0) return -1;
         if (n == 0) break;
-        int fl = 0;
-        const uint8_t *f = net_ipfrag_step(buf, n, &fl);    /* X4 reassembly */
-        if (!f) continue;
-        if (fl < (int)(14 + 20 + 20)) continue;
+        netl3_pkt_t pkt;
+        if (netl3_input(buf, n, &pkt) != 0) continue;
+        if (pkt.proto != NETL3_PROTO_TCP) continue;
+        if (!netl3_addr_eq(&pkt.src, &conn_peer)) continue;
+        if (pkt.frame_len < (int)(pkt.l4_off + 20)) continue;
 
-        struct eth_hdr *eh = (struct eth_hdr *)f;
-        if (htons_(eh->ethertype) != 0x0800) continue;
-
-        struct ipv4_hdr *ip = (struct ipv4_hdr *)(f + 14);
-        if (ip->protocol != IP_PROTO_TCP) continue;
-        if (ntohl_(ip->src_ip) != conn_dst_ip) continue;
-
-        struct tcp_hdr *tcp = (struct tcp_hdr *)(f + 14 + 20);
+        struct tcp_hdr *tcp = (struct tcp_hdr *)(pkt.frame + pkt.l4_off);
         if (ntohs_(tcp->src_port) != conn_dst_port) continue;
         if (ntohs_(tcp->dst_port) != conn_src_port) continue;
 
@@ -437,7 +311,7 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
         }
 
         /* Extract payload (if any).
-         * Use ip->total_length (not frame size n) to avoid counting
+         * Use the L3 total (not frame size n) to avoid counting
          * Ethernet padding as TCP payload — the NIC pads short frames
          * to the 60-byte minimum. */
         uint8_t hdr_words = tcp->data_offset >> 4;
@@ -481,14 +355,14 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
             conns[active_h].sack_nblk = 0;
         }
 
-        uint32_t ip_hdr_bytes = (uint32_t)((ip->version_ihl & 0x0F) * 4);
-        uint32_t ip_total = ntohs_(ip->total_length);
-        uint32_t payload_start = 14 + ip_hdr_bytes + tcp_hdr_bytes;
-        int32_t payload_len = (int32_t)(ip_total - ip_hdr_bytes - tcp_hdr_bytes);
+        uint32_t payload_start = (uint32_t)pkt.l4_off + tcp_hdr_bytes;
+        int32_t payload_len = (int32_t)pkt.l3_total
+                            - (int32_t)pkt.l3_hdr_len
+                            - (int32_t)tcp_hdr_bytes;
 
         if (payload_len > 0 && out_data && max_data > 0) {
             if (payload_len > (int32_t)max_data) payload_len = (int32_t)max_data;
-            memcpy(out_data, f + payload_start, payload_len);
+            memcpy(out_data, pkt.frame + payload_start, payload_len);
         }
         if (out_data_len) *out_data_len = (payload_len > 0) ? payload_len : 0;
         return 0;
@@ -531,23 +405,17 @@ static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
         int n = netdev_recv_wait(buf, sizeof(buf), remaining);
         if (n < 0) return got_one ? 0 : -1;
         if (n == 0) break;
-        int fl = 0;
-        const uint8_t *f = net_ipfrag_step(buf, n, &fl);    /* X4 reassembly */
-        if (!f) continue;
-        if (fl < (int)(14 + 20 + 20)) continue;
+        netl3_pkt_t pkt;
+        if (netl3_input(buf, n, &pkt) != 0) continue;
+        if (pkt.proto != NETL3_PROTO_TCP) continue;
+        if (pkt.frame_len < (int)(pkt.l4_off + 20)) continue;
 
-        struct eth_hdr *eh = (struct eth_hdr *)f;
-        if (htons_(eh->ethertype) != 0x0800) continue;
-
-        struct ipv4_hdr *ip = (struct ipv4_hdr *)(f + 14);
-        if (ip->protocol != IP_PROTO_TCP) continue;
-
-        struct tcp_hdr *tcp = (struct tcp_hdr *)(f + 14 + 20);
+        struct tcp_hdr *tcp = (struct tcp_hdr *)(pkt.frame + pkt.l4_off);
         if (ntohs_(tcp->dst_port) != src_port) continue;
         if (!(tcp->flags & TCP_SYN)) continue;
 
         /* Found a SYN segment for our listening port! */
-        uint32_t sip = ntohl_(ip->src_ip);
+        uint32_t sip = netl3_v4_host(&pkt.src);
         uint16_t sport = ntohs_(tcp->src_port);
 
         /* M6e: the first SYN is served directly; any further one, from a
@@ -672,8 +540,6 @@ tcp_handle_t tcp_listen_backlog(uint16_t port, uint32_t backlog,
         kprintf("[tcp] no free connection slots for listen\n");
         return -EMFILE;   /* FIX_R7 */
     }
-    net_get_mac(our_mac);
-    our_ip = net_get_our_ip();
     conns[h].src_port = port;
     conns[h].state = TCP_LISTEN;
     conns[h].reuseaddr = reuseaddr ? 1 : 0;
@@ -749,7 +615,7 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
 
     int saved = active_h;
     active_h = new_h;
-    conn_dst_ip = src_ip;
+    conn_peer = netl3_addr_from_v4(src_ip);
     conn_dst_port = src_port;
     conn_src_port = conns[h].src_port;
     conn_seq = 0x2000 + (uint32_t)new_h * 0x100;
@@ -802,22 +668,20 @@ tcp_handle_t tcp_open(uint32_t dst_ip, uint16_t dst_port) {
     int saved = active_h;
     active_h = h;
 
-    /* Initialise our identity from the net layer. */
-    net_get_mac(our_mac);
-    our_ip = net_get_our_ip();
-    conn_dst_ip = dst_ip;
+    conn_peer = netl3_addr_from_v4(dst_ip);
     conn_dst_port = dst_port;
 
     /* FIX_R7: fail a dead route fast and SPECIFICALLY.  Before this the SYN
-     * section below silently dropped the segment when ARP resolution failed
+     * section below silently dropped the segment when resolve failed
      * and the caller waited out the full retry ladder, surfacing a
      * meaningless timeout for what was really "no route to host".
      * Distinguishing this from ETIMEDOUT below is exactly what the R7 test
-     * gate asserts on. */
+     * gate asserts on.  Y2: the probe goes through the seam. */
     {
         uint8_t probe_mac[6];
-        if (net_arp_resolve(dst_ip, probe_mac) != 0) {
-            kprintf("[tcp] [h=%d] %u.%u.%u.%u is unreachable (ARP failed)\n",
+        const struct netl3_ops *l3 = netl3_ops_for(&conn_peer);
+        if (!l3 || l3->resolve(&conn_peer, probe_mac) != 0) {
+            kprintf("[tcp] [h=%d] %u.%u.%u.%u is unreachable (resolve failed)\n",
                     h,
                     (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
                     (dst_ip >> 8) & 0xFF, dst_ip & 0xFF);
@@ -953,11 +817,7 @@ static int tcp_connect_legacy_body_unused(uint32_t dst_ip, uint16_t dst_port) {
         return -1;
     }
 
-    /* Initialise our identity from the net layer. */
-    net_get_mac(our_mac);
-    our_ip = net_get_our_ip();
-
-    conn_dst_ip = dst_ip;
+    conn_peer = netl3_addr_from_v4(dst_ip);
     conn_dst_port = dst_port;
     conn_src_port = 40000 + (uint16_t)(timer_get_ticks() & 0xFF);
 

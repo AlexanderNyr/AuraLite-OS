@@ -172,7 +172,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netdev.c kernel/fs/ext2.c kernel/lib/string.c kernel/lib/selftest.c kernel/lib/perfstat.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/lib/string.c kernel/lib/selftest.c kernel/lib/perfstat.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -2082,6 +2082,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
                 $(BUILD_DIR)/test_pcid_policy \
                 $(BUILD_DIR)/test_tcp_cc \
+                $(BUILD_DIR)/test_netl3 \
                 $(BUILD_DIR)/test_sizeclass \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -2571,6 +2572,12 @@ $(BUILD_DIR)/test_pcid_policy: tests/unit/test_pcid_policy.c kernel/arch/x86_64/
 # reordering are manufactured HERE, deterministically (D2); the guest
 # lanes assert counters, not timing.
 $(BUILD_DIR)/test_tcp_cc: tests/unit/test_tcp_cc.c kernel/net/tcp_cc.h kernel/net/tcp_m6.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# REALINTERNET2 Y2: the TCP/IP seam — the pre-seam sender is the A
+# side of a pcap A/B; netl3_v4_build must match it byte-for-byte.
+$(BUILD_DIR)/test_netl3: tests/unit/test_netl3.c kernel/net/netl3.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
