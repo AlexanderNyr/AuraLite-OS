@@ -17,6 +17,10 @@ void fb_init(void);
 void fb_putchar(char c);
 void fb_clear(void);
 
+/* After paging_init(): punch a 4 KiB UC map of 0xB8000 so the BIOS
+ * VGA fallback survives the drop of the loader identity map. */
+void fb_vga_lock_mmio(void);
+
 /* HW H3 follow-up: arm the system-RAM console shadow (keeps the WC
  * framebuffer write-only).  Call once after pmm_init(); safe no-op
  * without a framebuffer or when already armed. */

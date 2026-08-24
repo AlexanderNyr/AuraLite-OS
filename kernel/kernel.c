@@ -268,6 +268,7 @@ void kmain(boot_info_t *boot_info) {
 
     kprintf("[boot] initialising virtual memory manager...\n");
     paging_init();
+    fb_vga_lock_mmio();
     paging_self_test();
 
     /* HW H3: the framebuffer goes write-combining (PAT4) now that the

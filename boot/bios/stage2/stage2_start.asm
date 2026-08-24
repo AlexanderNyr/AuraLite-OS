@@ -73,10 +73,17 @@ stage2_entry:
     mov  sp, 0x7C00
     sti
 
+    ; Force VGA text mode 3.  SeaBIOS starts there; a leftover graphics
+    ; mode (or a firmware that never programmed the CRTC) would leave
+    ; the monitor dark for the entire BIOS path — there is no VBE
+    ; linear framebuffer in this loader.
+    mov  ax, 0x0003
+    int  0x10
+
     ; UART early-init so subsequent modules can log through uart16_putc.
     call uart16_init
     mov  si, msg_hello
-    call uart16_puts
+    call log16_puts
 
     ; Zero the boot_info_t block via ES:DI = BOOT_INFO_SEG:0000.
     ; The generated BOOT_INFO_SIZEOF guard above ensures the fixed 12 KiB
@@ -118,11 +125,11 @@ stage2_entry:
     ; ---- Real-mode services (BL3) ----
     call detect_memory              ; E820 -> boot_info.mmap[]
     mov  si, msg_e820_ok
-    call uart16_puts
+    call log16_puts
 
     call enable_a20                 ; ensure A20 is on
     mov  si, msg_a20_ok
-    call uart16_puts
+    call log16_puts
 
     ; ---- Disk read self-test (BL3.disk) ----------------------------
     ; Read LBA 0 (the boot sector / MBR) back into a scratch buffer at
@@ -153,11 +160,11 @@ stage2_entry:
     cmp  ax, 0xAA55                     ; little-endian boot signature
     jne  .disk_fail
     mov  si, msg_disk_ok
-    call uart16_puts
+    call log16_puts
     jmp  .disk_done
 .disk_fail:
     mov  si, msg_disk_fail
-    call uart16_puts
+    call log16_puts
 .disk_done:
 
     ; ---- Unreal-mode self-test (BL3.unreal) ------------------------
@@ -177,11 +184,11 @@ stage2_entry:
     cmp  eax, 0xDEADC0DE
     jne  .unreal_fail
     mov  si, msg_unreal_ok
-    call uart16_puts
+    call log16_puts
     jmp  .unreal_done
 .unreal_fail:
     mov  si, msg_unreal_fail
-    call uart16_puts
+    call log16_puts
 .unreal_done:
 
     ; ---- Long-mode capability check (BL10 / I386_PLAN I0+I1) --------
@@ -200,8 +207,7 @@ stage2_entry:
     jnc  .lm_ok
     mov  byte [lm_absent], 1
     mov  si, msg_no_lm_1
-    call uart16_puts
-    call vga_puts
+    call log16_puts
 
     ; I3: the 32-bit kernel's floor is i686-class (plan D1) -- it
     ; builds its direct map from PSE 4 MiB pages.  A 486/586 must get
@@ -210,18 +216,15 @@ stage2_entry:
     call check_i686
     jnc  .i686_ok
     mov  si, msg_below_floor
-    call uart16_puts
-    call vga_puts
+    call log16_puts
     mov  si, msg_no_lm_2
-    call uart16_puts
-    call vga_puts
+    call log16_puts
 .floor_hang:
     hlt
     jmp  .floor_hang
 .i686_ok:
     mov  si, msg_lm_32path
-    call uart16_puts
-    call vga_puts
+    call log16_puts
 
     ; I3: the 32-bit kernel direct-maps phys [0, 896 MiB) at
     ; 0xC0000000 and validates hhdm_offset against that (the same
@@ -239,7 +242,7 @@ stage2_entry:
     jmp  .lm_done
 .lm_ok:
     mov  si, msg_lm_ok
-    call uart16_puts
+    call log16_puts
 .lm_done:
 
     ; ---- ACPI MADT CPU enumeration (BL9.smp) ------------------------
@@ -254,14 +257,14 @@ stage2_entry:
     test eax, eax
     jz   .acpi_no_rsdp
     mov  si, msg_acpi_rsdp_ok
-    call uart16_puts
+    call log16_puts
     call acpi_parse_madt
     mov  si, msg_acpi_madt_done
-    call uart16_puts
+    call log16_puts
     jmp  .acpi_done
 .acpi_no_rsdp:
     mov  si, msg_acpi_no_rsdp
-    call uart16_puts
+    call log16_puts
 .acpi_done:
 
     ; ---- FAT32 lookup + load self-test (BL4.fat) -------------------
@@ -277,7 +280,7 @@ stage2_entry:
     jc   .fat_skip
 .fat_init_done:
     mov  si, msg_fat_init_ok
-    call uart16_puts
+    call log16_puts
 
     ; Look up the kernel this CPU can execute (I386_PLAN I1):
     ; KERNEL.ELF (x86_64) when long mode exists, KERNEL32.ELF (i386)
@@ -290,7 +293,7 @@ stage2_entry:
     call fat_find
     jc   .fat_no_kernel
     mov  si, msg_fat_found
-    call uart16_puts
+    call log16_puts
 
     ; Load the file to flat 0x00200000 (2 MiB) as a staging buffer.
     ; ELF parsing then copies each PT_LOAD segment to its physical
@@ -304,7 +307,7 @@ stage2_entry:
     call fat_load
     jc   .fat_load_fail
     mov  si, msg_fat_load_ok
-    call uart16_puts
+    call log16_puts
 
     ; Parse the ELF and copy its PT_LOAD segments to their physical
     ; addresses.  Requires FS still be in unreal-mode flat form; we
@@ -320,14 +323,14 @@ stage2_entry:
     call elf_load
     jc   .elf_fail
     mov  si, msg_elf_ok
-    call uart16_puts
+    call log16_puts
     jmp  .elf_parsed
 .parse_elf32:
     mov  eax, 0x00200000
     call elf32_load
     jc   .elf_fail
     mov  si, msg_elf32_ok
-    call uart16_puts
+    call log16_puts
 .elf_parsed:
 
     ; Load the optional initrd into the upper half of the kernel's fixed
@@ -358,20 +361,20 @@ stage2_entry:
     mov  dword [es:BOOT_INITRD_S_OFF + 4], 0
     pop  es
     mov  si, msg_initrd_ok
-    call uart16_puts
+    call log16_puts
     jmp  .initrd_done
 
 .initrd_not_found:
     mov  si, msg_initrd_missing
-    call uart16_puts
+    call log16_puts
     jmp  .initrd_done
 .initrd_too_large:
     mov  si, msg_initrd_too_large
-    call uart16_puts
+    call log16_puts
     jmp  .initrd_done
 .initrd_load_fail:
     mov  si, msg_initrd_load_fail
-    call uart16_puts
+    call log16_puts
 .initrd_done:
 
     ; ---- Final hand-off: one of two exits, chosen by the BL10 verdict.
@@ -381,13 +384,13 @@ stage2_entry:
     ; Build the 4-level page tables at PT_BASE.  Uses FS (unreal flat).
     call build_page_tables
     mov  si, msg_pt_ok
-    call uart16_puts
+    call log16_puts
 
     ; Announce final hand-off, then take the CPU into long mode.
     ; This call never returns; the last real-mode byte we execute is
     ; the `mov cr0, eax` inside enter_long_mode.
     mov  si, msg_lm_go
-    call uart16_puts
+    call log16_puts
     call enter_long_mode
     ; unreachable
     jmp  .fat_done
@@ -396,14 +399,14 @@ stage2_entry:
     ; 32-bit path (I1): no page tables here -- the i386 kernel enables
     ; paging itself in phase I3.  enter_prot32 never returns.
     mov  si, msg_pm32_go
-    call uart16_puts
+    call log16_puts
     call enter_prot32
     ; unreachable
     jmp  .fat_done
 
 .elf_fail:
     mov  si, msg_elf_fail
-    call uart16_puts
+    call log16_puts
     jmp  .fat_done
 .fat_no_kernel:
     ; On the 32-bit path a missing KERNEL32.ELF is the I0 refusal case:
@@ -413,21 +416,19 @@ stage2_entry:
     cmp  byte [lm_absent], 0
     je   .fat_no_kernel64
     mov  si, msg_no_k32
-    call uart16_puts
-    call vga_puts
+    call log16_puts
     mov  si, msg_no_lm_2
-    call uart16_puts
-    call vga_puts
+    call log16_puts
 .no_k32_hang:
     hlt
     jmp  .no_k32_hang
 .fat_no_kernel64:
     mov  si, msg_fat_no_kernel
-    call uart16_puts
+    call log16_puts
     jmp  .fat_done
 .fat_load_fail:
     mov  si, msg_fat_load_fail
-    call uart16_puts
+    call log16_puts
 .fat_skip:
 .fat_done:
 
@@ -436,7 +437,7 @@ stage2_entry:
     ; build page tables, enter long mode, and jump to _start.  For now
     ; we announce success and halt so the smoke test can grep for it.
     mov  si, msg_bl3_done
-    call uart16_puts
+    call log16_puts
 
 .hang:
     hlt
@@ -489,6 +490,15 @@ lm_absent:  db 0        ; BL10 verdict: 1 = no long mode, take the 32-bit path
 ; --------------------------------------------------------------------------
 ; Included modules (order matters only for symbol resolution)
 ; --------------------------------------------------------------------------
+; --------------------------------------------------------------------------
+; log16_puts -- UART and VGA teletype.  SI is preserved (both callees
+; push/pop it) so the existing "mov si / call" sites stay one line.
+; --------------------------------------------------------------------------
+log16_puts:
+    call uart16_puts
+    call vga_puts
+    ret
+
 ; --------------------------------------------------------------------------
 ; vga_puts -- INT 10h teletype output of the NUL-terminated string at DS:SI.
 ;

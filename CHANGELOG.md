@@ -2,6 +2,16 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [BIOS VGA console: the screen is no longer blank] 2026-08-24
+
+BIOS Stage 2 never programs VBE, so `boot_info.fb` is zeros and
+`fb_putchar` was a no-op — the monitor stayed dark (serial still
+worked).  Stage 2 now sets VGA text mode 3 and mirrors every
+`log16_puts` banner through INT 10h.  The x86_64 kernel falls
+back to 80×25 at `0xB8000` (HHDM) when there is no 32-bpp
+framebuffer, and keeps that console after the compositor starts
+(there is nothing else to paint).  UEFI GOP is unchanged.
+
 ## [RES-53 — RSA-PSS-SHA256 CertificateVerify] 2026-08-24
 
 ClientHello advertised `rsa_pss_rsae_sha256` (0x0804) and then

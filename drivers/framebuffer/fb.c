@@ -7,8 +7,25 @@
 #include "kernel/boot_info.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
+#if defined(__x86_64__)
+#include "kernel/arch/x86_64/portio.h"
+#include "kernel/arch/x86_64/paging.h"
+#endif
 
 static uint32_t *fb_addr = NULL;
+
+/* BIOS Stage 2 never programs VBE: boot_info.fb is zeros and the
+ * monitor is still in VGA text mode 3.  Without this fallback
+ * fb_putchar is a no-op and the screen stays blank for the whole
+ * BIOS boot (UEFI GOP is unaffected — it takes the 32-bpp path). */
+#if defined(__x86_64__)
+#define VGA_TEXT_PHYS  0xB8000u
+#define VGA_COLS       80
+#define VGA_ROWS       25
+#define VGA_ATTR       0x07
+static volatile uint16_t *vga_text;
+static int vga_text_on;
+#endif
 
 /* HW H3 follow-up, measured on the first hardware-ish run (WHPX,
  * 2026-08-21): H3 made the framebuffer write-combining, and WC READS
@@ -101,6 +118,73 @@ static void fb_scroll(void) {
     }
 }
 
+#if defined(__x86_64__)
+static void vga_move_cursor(void) {
+    uint16_t pos = (uint16_t)(fb_cursor_row * VGA_COLS + fb_cursor_col);
+    outb(0x3D4, 0x0F); outb(0x3D5, (uint8_t)(pos & 0xFF));
+    outb(0x3D4, 0x0E); outb(0x3D5, (uint8_t)(pos >> 8));
+}
+
+static void vga_scroll(void) {
+    for (int r = 1; r < VGA_ROWS; r++)
+        for (int c = 0; c < VGA_COLS; c++)
+            vga_text[(r - 1) * VGA_COLS + c] = vga_text[r * VGA_COLS + c];
+    for (int c = 0; c < VGA_COLS; c++)
+        vga_text[(VGA_ROWS - 1) * VGA_COLS + c] = (VGA_ATTR << 8) | ' ';
+    fb_cursor_row = VGA_ROWS - 1;
+}
+
+static void vga_text_init(void) {
+    /* Identity map is still live (loader PML4).  HHDM 2 MiB pages can
+     * alias the VGA hole as RAM; write the real 0xB8000 until
+     * fb_vga_lock_mmio() installs a 4 KiB UC PTE. */
+    vga_text = (volatile uint16_t *)(uintptr_t)VGA_TEXT_PHYS;
+    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++)
+        vga_text[i] = (VGA_ATTR << 8) | ' ';
+    fb_cols = VGA_COLS;
+    fb_rows = VGA_ROWS;
+    fb_cursor_col = fb_cursor_row = 0;
+    vga_move_cursor();
+    vga_text_on = 1;
+}
+
+static void vga_text_putc(unsigned char uc) {
+    if (!vga_text_on) return;
+    switch (uc) {
+    case '\n':
+        fb_cursor_col = 0;
+        if (++fb_cursor_row >= VGA_ROWS) vga_scroll();
+        break;
+    case '\r':
+        fb_cursor_col = 0;
+        break;
+    case '\b':
+        if (fb_cursor_col > 0) {
+            fb_cursor_col--;
+            vga_text[fb_cursor_row * VGA_COLS + fb_cursor_col] =
+                (VGA_ATTR << 8) | ' ';
+        }
+        break;
+    case '\t':
+        fb_cursor_col = (fb_cursor_col + 8) & ~7;
+        if (fb_cursor_col >= VGA_COLS) {
+            fb_cursor_col = 0;
+            if (++fb_cursor_row >= VGA_ROWS) vga_scroll();
+        }
+        break;
+    default:
+        vga_text[fb_cursor_row * VGA_COLS + fb_cursor_col] =
+            (uint16_t)((VGA_ATTR << 8) | uc);
+        if (++fb_cursor_col >= VGA_COLS) {
+            fb_cursor_col = 0;
+            if (++fb_cursor_row >= VGA_ROWS) vga_scroll();
+        }
+        break;
+    }
+    vga_move_cursor();
+}
+#endif
+
 void fb_init(void) {
     /* Initialise the PSF font subsystem unconditionally, before any early
      * return below. The font is used not just by this text console but by
@@ -116,7 +200,15 @@ void fb_init(void) {
     psf_init();
 
     boot_fb_t *fb = boot_get_framebuffer();
-    if (!fb || fb->bpp != 32) { fb_addr = NULL; return; }
+    if (!fb || fb->bpp != 32 || fb->phys_base == 0 ||
+        fb->width == 0 || fb->height == 0) {
+        fb_addr = NULL;
+#if defined(__x86_64__)
+        vga_text_init();
+        kprintf("[fb] VGA text 80x25 @ 0xB8000 (BIOS: no linear framebuffer)\n");
+#endif
+        return;
+    }
     const struct psf_font *f = psf_get_font();
     if (!f) { fb_addr = NULL; return; }
     font_width = f->width; font_height = f->height;
@@ -150,6 +242,19 @@ void fb_clear(void) {
     }
     fb_cursor_col = fb_cursor_row = 0;
 }
+
+#if defined(__x86_64__)
+void fb_vga_lock_mmio(void) {
+    if (!vga_text_on) return;
+    uint64_t virt = boot_get_hhdm_offset() + VGA_TEXT_PHYS;
+    paging_map(virt, VGA_TEXT_PHYS, PAGE_FLAGS_MMIO);
+    vga_text = (volatile uint16_t *)(uintptr_t)virt;
+    kprintf("[fb] VGA MMIO locked virt=0x%llx\n",
+            (unsigned long long)virt);
+}
+#else
+void fb_vga_lock_mmio(void) {}
+#endif
 
 void fb_set_console_enabled(int on) { fb_console_on = on ? 1 : 0; }
 int  fb_console_enabled(void)       { return fb_console_on; }
