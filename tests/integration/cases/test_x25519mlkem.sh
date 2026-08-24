@@ -13,6 +13,15 @@ il_have qemu-system-x86_64 openssl
 
 il_section "Y6: X25519MLKEM768 vs local openssl s_server"
 
+# ubuntu-latest still ships OpenSSL 3.0/3.4; the hybrid group landed
+# in 3.5.  Skip loudly — the primitive is still gated by host
+# test_atls_mlkem, and this case runs for real wherever 3.5+ is installed.
+if ! openssl list -tls-groups 2>/dev/null | grep -qi X25519MLKEM768; then
+    il_skip "host openssl has no X25519MLKEM768 (need 3.5+)"
+    il_summary
+    exit 0
+fi
+
 LOG="$IL_LOGDIR/x25519mlkem.log"
 IL_LAST_LOG="$LOG"
 

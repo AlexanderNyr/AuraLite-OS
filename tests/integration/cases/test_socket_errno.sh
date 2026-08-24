@@ -37,7 +37,7 @@ il_assert_grep_fixed "$LOG" "SOCKTEST PASS recv() on a closed socket yields EBAD
     "recv() on a closed socket yields EBADF"
 il_assert_grep_fixed "$LOG" "SOCKTEST PASS the 33rd socket() of a process fails with EMFILE" \
     "socket table exhaustion yields EMFILE"
-il_assert_grep_fixed "$LOG" "SOCKTEST PASS socket(AF_INET6) yields EAFNOSUPPORT" \
+il_assert_grep_fixed "$LOG" "SOCKTEST PASS socket(AF_UNIX) yields EAFNOSUPPORT" \
     "an unsupported address family yields EAFNOSUPPORT"
 il_assert_grep_fixed "$LOG" "SOCKTEST PASS strerror names the network causes" \
     "strerror() names the cause"

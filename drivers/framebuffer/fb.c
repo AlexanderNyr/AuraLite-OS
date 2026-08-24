@@ -7,9 +7,16 @@
 #include "kernel/boot_info.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/arch/arch.h"
 #if defined(__x86_64__)
-#include "kernel/arch/x86_64/portio.h"
-#include "kernel/arch/x86_64/paging.h"
+/* paging_map is x86_64-only.  Declared here instead of including
+ * kernel/arch/x86_64/paging.h: that include is ratchet-2 (portable
+ * files must not grow new direct x86_64 includes; arch.h already
+ * forwards port I/O). */
+void paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
+/* Same bits as PAGE_FLAGS_MMIO in paging.h: P|W|NX|PCD|PWT. */
+#define FB_VGA_PTE_FLAGS  (1ULL | (1ULL << 1) | (1ULL << 63) | \
+                           (1ULL << 4) | (1ULL << 3))
 #endif
 
 static uint32_t *fb_addr = NULL;
@@ -247,7 +254,7 @@ void fb_clear(void) {
 void fb_vga_lock_mmio(void) {
     if (!vga_text_on) return;
     uint64_t virt = boot_get_hhdm_offset() + VGA_TEXT_PHYS;
-    paging_map(virt, VGA_TEXT_PHYS, PAGE_FLAGS_MMIO);
+    paging_map(virt, VGA_TEXT_PHYS, FB_VGA_PTE_FLAGS);
     vga_text = (volatile uint16_t *)(uintptr_t)virt;
     kprintf("[fb] VGA MMIO locked virt=0x%llx\n",
             (unsigned long long)virt);

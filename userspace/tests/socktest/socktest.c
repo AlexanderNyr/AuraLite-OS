@@ -95,11 +95,12 @@ int main(void) {
           "the 33rd socket() of a process fails with EMFILE");
     for (int i = 0; i < n; i++) closesocket(opened[i]);
 
-    /* ---- 5. An unsupported address family is EAFNOSUPPORT ---- */
+    /* ---- 5. An unsupported address family is EAFNOSUPPORT ----
+     * AF_INET6 (10) has been a real family since Y3; AF_UNIX is not. */
     errno = 0;
-    r = socket(10 /* AF_INET6 */, SOCK_STREAM, 0);
+    r = socket(AF_UNIX, SOCK_STREAM, 0);
     CHECK(r < 0 && errno == EAFNOSUPPORT,
-          "socket(AF_INET6) yields EAFNOSUPPORT");
+          "socket(AF_UNIX) yields EAFNOSUPPORT");
 
     if (failures == 0) {
         printf("SOCKTEST ALL PASS\n");
