@@ -210,9 +210,20 @@ static int rng_self_test(void) {
      * So FAST keeps only an upper bound at 4x expected (P ~ 1e-10 per
      * bucket): a stuck generator still pierces it by orders of magnitude,
      * and a counter generator is the bit-runs test's catch, not this
-     * one's. */
-    uint32_t lo = (len == RNG_SELFTEST_LEN) ? expected / 2 : 0;
-    uint32_t hi = (len == RNG_SELFTEST_LEN) ? expected + expected / 2
+     * one's.
+     *
+     * RINET2 Y0 rider -- the FULL band's own 4-sigma bill came due: CI
+     * run 32659367782 (the DOCS commit, kernel bytes identical to the
+     * green R12 run) failed a jitter boot with "byte 0x42 count 100,
+     * expected ~64" -- count 100 is 4.5 sigma, P ~ 1.2e-5 per bucket,
+     * ~3e-3 per boot across 256 buckets: a once-in-hundreds-of-boots
+     * statistical certainty, not a generator defect (the same boot's
+     * second jitter lane PASSed).  FULL now bounds at expected +/- 75%
+     * (16..112): P(count >= 112 | lambda=64) ~ 3.4e-8, ~9e-6 per boot
+     * -- once per ~110k boots -- while a stuck/collapsed generator
+     * still overshoots by orders of magnitude. */
+    uint32_t lo = (len == RNG_SELFTEST_LEN) ? expected / 4 : 0;
+    uint32_t hi = (len == RNG_SELFTEST_LEN) ? expected + (expected * 3) / 4
                                             : expected * 4;
     for (int i = 0; i < 256; i++) {
         if (freq[i] < lo || freq[i] > hi) {

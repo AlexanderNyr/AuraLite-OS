@@ -2,6 +2,70 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y0 — the rig, whose first catch is the plan itself] 2026-08-23
+
+The tenth D8 checker (`check_rinet2_claims.py`) arrives holding the
+plan's opener facts as LIVE pins — cwnd-wide-open, inline-IPv4,
+zero-AAAA, zero-AF_INET6, X25519-only — each pin phase-gated so the
+phase that moves a fact must move its pin in the same commit.  And
+the rig's first catch is the PLAN: its §1 was understated, the A3
+precedent verbatim — the M6 layer (missed by the plan's greps)
+already carries dup-ACK classification, fast retransmit/recovery
+WITH the RFC 5681 §3.2 ssthresh arithmetic, a real retransmit
+queue, SACK, Nagle, delayed ACK, TIME_WAIT, listen backlog,
+SO_REUSEADDR and keepalive, each with a host gate (test_tcp_x5 +
+test_tcp_m6{,c,d,e} — the plan's "never had their own unit test"
+was flatly wrong).  The "no SACK" non-goal was moot on arrival:
+struck, receipt in place.  Y1's true debt is now EXACT — cwnd
+GROWTH (init is wide open so slow start never runs; the per-ACK
+increase is an unconditional +=1460 with no SS/CA split; collapse
+and recovery-deflate already exist).  Landed: four transport
+counters end-to-end (tcp_retransmits and tcp_rto_events LIVE off
+X5's paths; tcp_fast_retransmits on M6's trigger;
+tcp_cwnd_limited_sends reserved at zero until Y1 BY CONSTRUCTION —
+the H4 pattern), perfstat.c newly a KERNEL32_SHARED row (the i386
+lane counts too), and the perfstat.h H4 comments de-staled (R11
+implemented what they still called deferred).  RIDER, the red CI
+on the DOCS commit dissected: test_rng's FULL byte-frequency band
+(±50% ≈ 4σ) paid its own bill — byte 0x42 count 100 (≈4.5σ) on a
+kernel byte-identical to the green R12 run, sibling lane green.
+Band now ±75% (16..112, once per ~110k boots), arithmetic and run
+id at the site.  The harvest ratchet caught the plan file twice
+across two commits (7 markers at commit, 8 after Y0's own Result
+added one) — baseline moved same-commit both times, which is the
+rig doing its job on its own paperwork.
+
+## [REALINTERNET2 plan — the transport grows up, the handshake goes post-quantum] 2026-08-23
+
+The next series, planned on measured openers (D1 from line one):
+REALINTERNET closed at X9 with one honest sentence about the real
+web — Cloudflare ends the fetch with PEER_EOF because our
+ClientHello offers only X25519 where the modern web prefers the
+X25519MLKEM768 hybrid — and RESIDUE left exactly one OPEN row
+pointing at the transport (RES-26: TCP is v4-wired; the v6
+substrate under it works end-to-end since R9).  The plan's opener
+facts, measured on this tree: X5 already landed MORE transport than
+the docs used to admit (sliding window, RFC 6298 RTO with Karn,
+PMTUD ladder, single-gap OOO — 1556 lines, -m32-clean since R3) but
+cwnd is a CONSTANT (tcp.c:875 says "wide open until N7" — N7 never
+came); tcp.c spells IPv4 inline in 7 places; AF_INET6 and AAAA grep
+to zero; atls_tls.c rejects every group but X25519 at :687/:692.
+Eight phases, Y0–Y7: the rig (host gates for the decision cores —
+the tcp_x5.h precedent — plus perfstat rows reserved at zero, the
+H4 pattern); congestion control as a pure-C core (RFC 5681 shape,
+deterministic loss scripts on the host, receipt counters in the
+guest); the TCP/IP seam (inline-IPv4 count 7→0, pcap A/B
+byte-identity as the gate, i386/netglue32 held green by D3);
+TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack; the HTTPS-over-IPv6
+receipt that closes RES-26; ML-KEM-768 per FIPS 203 (KAT-gated,
+constant-time discipline, the R10 four-width battery); the
+X25519MLKEM768 hybrid handshake interop-gated against openssl;
+close-out with a user-run live-web protocol (CI stays
+deterministic, D5).  Non-goals named: no happy-eyeballs, no
+SACK/window-scaling, no QUIC/DTLS, no standalone-PQ group.  The
+harvest ratchet caught its own plan file on commit (7 new markers,
+baseline moved same-commit — the rig working as built).
+
 ## [DOCS refresh — every live .md audited against the tree, one patch] 2026-08-23
 
 The R12 lesson applied to the whole documentation set: all 23 LIVE

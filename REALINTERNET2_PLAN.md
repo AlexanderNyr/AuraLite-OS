@@ -1,0 +1,246 @@
+# AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
+
+## Status: IN PROGRESS — Y0 complete; Y1 next; plan committed 2026-08-23
+
+| Phase | Result | Deliverable |
+|-------|--------|-------------|
+| Y0 — the rig: TCP decision-core host gates, perf counters, opener receipts | ✅ complete | `patches/RINET2_Y0_rig.patch` |
+| Y1 — congestion control: the cwnd stops being a constant | pending | `patches/RINET2_Y1_cc.patch` |
+| Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | pending | `patches/RINET2_Y2_seam.patch` |
+| Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | pending | `patches/RINET2_Y3_tcp6.patch` |
+| Y4 — HTTPS-over-IPv6: the RES-26 receipt | pending | `patches/RINET2_Y4_https6.patch` |
+| Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | pending | `patches/RINET2_Y5_mlkem.patch` |
+| Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | pending | `patches/RINET2_Y6_hybrid.patch` |
+| Y7 — close-out: the live-web fetch protocol, residue to the ledger | pending | `patches/RINET2_Y7_close.patch` |
+
+## 1. Where this plan comes from (measured, not assumed)
+
+REALINTERNET (X1–X9) ended with a working TLS 1.3 + HTTPS client and
+one honest sentence about the real web: a fetch against Cloudflare
+ends in `ATLS_ERR_PEER_EOF` because "the server expects a PQ-hybrid
+key share (`X25519MLKEM768`); our ClientHello offers only X25519"
+(REALINTERNET_PLAN.md:253-257 — the recorded follow-up this plan
+picks up).  The RESIDUE series then closed the IPv6 SUBSTRATE
+(R9: SLAAC, NDP both halves, `ping6 fec0::2` end-to-end in CI) and
+left exactly one OPEN row pointing here: **RES-26** — "HTTPS-over-
+IPv6 fetch receipt missing; the one blocker left is the TCP layer
+itself, v4-wired through conn state + ARP + inline IPv4 headers".
+
+The opener facts, measured on the tree this plan is committed to:
+
+- **The transport is better than its own docs said** (the DOCS
+  refresh corrected them): X5 already landed a sliding send window
+  (min(cwnd, peer wnd)), RFC 6298-style adaptive RTO with Karn and
+  exponential backoff, a PMTUD black-hole ladder, and single-gap
+  out-of-order receive.  tcp.c is 1556 lines and — PARITY R3's
+  receipt — compiles `-m32`-clean and runs on i386 behind netglue32.
+- **But cwnd is a constant**: `conns[h].cwnd = TCP_WINDOW` at
+  tcp.c:774/886, and the comment at :875 says it plainly — "cwnd is
+  wide open until N7 brings real [congestion control]".  N7 never
+  came; this plan is where it lands.
+- **The transport spells IPv4 inline**: 7 direct ip4 references in
+  tcp.c; the connection key, the pseudo-header checksum and the ARP
+  resolve are all v4-shaped; the socket ABI has no `AF_INET6` and
+  `sockaddr_in6` appears nowhere in libc (grep: zero hits).
+- **DNS has no AAAA path** (grep dns.c: zero hits) — dual-stack
+  cannot even learn a v6 address today.
+- **The PQ gap is one group**: atls_tls.c negotiates exactly
+  `ATLS_GROUP_X25519` (:687/:692 reject anything else).  The modern
+  public web (Cloudflare et al.) prefers `X25519MLKEM768` (the
+  IETF hybrid, code point 0x11EC).  ML-KEM-768 is FIPS 203 —
+  standardised, KAT-vectored, implementable in the same
+  userspace-library shape as the rest of libatls.
+- **The rig precedent exists**: tcp_x5.h holds 7 pure static-inline
+  decision helpers — the O5/R11 "policy core in a header, host test
+  drives it" pattern is already TCP practice in this tree.
+
+## 2. Decisions
+
+### D1. Measured, not assumed (inherited)
+Every phase lands with numbers in its Result; no number, no claim.
+
+### D2. The decision cores stay host-testable
+Congestion control, retransmit-queue arithmetic and the dual-stack
+address-selection rules land as pure-C headers next to tcp_x5.h,
+each with a host unit gate.  QEMU/SLIRP cannot manufacture loss and
+reordering on demand; a host test can, deterministically.  The
+in-guest lanes then assert RECEIPTS (counters moving, fetches
+completing), not timing.
+
+### D3. One transport, both families
+No `tcp6.c` fork.  Y2 cuts a seam (the network-layer ops the
+transport calls to resolve, frame and checksum) and Y3 adds the v6
+implementation behind it — the same shape as PARITY's blkdev seam
+and R7's vmmio ops.  The i386 lane (netglue32) keeps compiling
+against the seam; PARITY parity is a standing constraint, checked by
+the existing i386 smoke.
+
+### D4. Post-quantum is hybrid or nothing
+Y5/Y6 implement ML-KEM-768 and offer it ONLY inside
+`X25519MLKEM768` (concatenated shares, both secrets fed to the
+schedule).  No standalone-PQ mode, no downgrade of the existing
+X25519 path: a server that picks plain X25519 gets exactly the
+handshake that passes today's gates.  D7 (constant-time on secrets)
+applies to the ML-KEM arithmetic as it does to atls_fe.
+
+### D5. Interop gates run against reference peers
+The hybrid handshake is proven against `openssl s_server` with
+`-groups X25519MLKEM768` in CI (the X-series' fixture pattern); the
+LIVE-web fetch is a user-run protocol (metal_receipts style), not a
+CI dependency — CI must stay deterministic.
+
+### D6. Phase hygiene (inherited)
+Every phase: CHANGELOG entry, plan table + section updated, one
+patch in patches/, checker claims added the same commit
+(`tools/check_rinet2_claims.py` arrives with Y0), deviations named.
+
+## 3. Phases
+
+### Y0 — the rig — ✅ COMPLETE
+- [x] `tools/check_rinet2_claims.py` (the D8 family's tenth member)
+      + selftest; wired into test-unit.
+- [x] perfstat rows: `tcp_retransmits`, `tcp_fast_retransmits`,
+      `tcp_rto_events`, `tcp_cwnd_limited_sends` — visible in
+      `/proc/perf` from day one (the H4-counter precedent: the slot
+      exists before the win).
+- [x] Host gates for the decision cores stand (CORRECTED, see
+      Result: test_tcp_x5 + the M6 quartet already exist).
+- [x] Opener receipts pinned in the checker: the cwnd-constant line,
+      the zero-AAAA grep, the zero-AF_INET6 grep, the X25519-only
+      negotiation lines.
+- [x] Exit: test-unit green with the new gates; counters print at 0.
+
+Result: the rig's first catch is the PLAN — its own §1 was
+understated, the A3 precedent verbatim.  Reading the M6 layer
+(which the plan's greps had missed) shows MATURITY M6/M6c/M6d/M6e
+already carry: dup-ACK classification per RFC 5681 §2 (window
+updates don't count), fast retransmit/recovery WITH the §3.2
+ssthresh arithmetic, a real retransmit queue, SACK (RFC 2018),
+Nagle + TCP_NODELAY, delayed ACK, TIME_WAIT/CLOSE_WAIT/LAST_ACK,
+listen backlog, SO_REUSEADDR, keepalive — each with a host unit
+gate (test_tcp_x5 + test_tcp_m6{,c,d,e}; the plan's "they have
+never had their own unit test" was flatly wrong, tcp_x5.h's own
+header names its test).  The §4 "no SACK" non-goal was moot on
+arrival — struck, with the receipt in place.  What Y1 truly owes
+is now EXACT: cwnd GROWTH — the init is wide open
+(cwnd=ssthresh=TCP_WINDOW at tcp.c:774/886, so slow start never
+runs before the first loss), and the per-ACK increase is an
+unconditional `cwnd += 1460` (no SS/CA split; CA wants
+MSS²/cwnd).  The collapse (RTO → ssthresh=cwnd/2, cwnd=1 MSS) and
+the recovery deflate already exist.  The four counters landed
+end-to-end (enum, wire names, tcp.c increments; retransmits and
+RTO events are LIVE — X5's paths count them; cwnd-limited is
+reserved at zero until Y1 by construction) and perfstat.c became
+a KERNEL32_SHARED row so the i386 lane counts too.  RIDER: the
+red CI on the DOCS commit dissected — test_rng's FULL
+byte-frequency band (±50% = 4σ) finally paid its own bill (byte
+0x42 count 100 ≈ 4.5σ; kernel bytes identical to the green R12
+run; the sibling jitter lane PASSed).  The band is now ±75%
+(16..112, P≈9e-6 per boot — once per ~110k boots) with the
+arithmetic and the run id at the site; a stuck generator still
+overshoots by orders of magnitude.
+
+### Y1 — congestion control
+- [ ] `tcp_cc.h` (pure C): slow start, congestion avoidance,
+      fast retransmit / fast recovery on 3 dup-ACKs (RFC 5681
+      shape), RTO collapse to 1 SMSS; ssthresh arithmetic.
+- [ ] tcp.c drives cwnd from the core; counters from Y0 move.
+- [ ] Host gate: loss/reorder scripts over the pure core (dup-ACK
+      runs, RTO storms, the ssthresh halving ladder — deterministic).
+- [ ] Guest gate: the existing socat round-trip lanes stay green;
+      `/proc/perf` shows `tcp_cwnd_limited_sends` > 0 on the bulk
+      lane (the receipt that cwnd is ALIVE, not decorative).
+- [ ] Exit: cwnd is a variable with a test that fails if it stops
+      being one.
+
+### Y2 — the TCP/IP seam
+- [ ] `kernel/net/netl3.h` ops: resolve (ARP/NDP), frame+send,
+      pseudo-header checksum, MSS hint — the v4 implementation is
+      TODAY's code moved behind the ops, byte-identical wire output
+      (pcap A/B as the gate).
+- [ ] The connection key widens (family + 16-byte address union);
+      the socket ABI grows `AF_INET6`/`sockaddr_in6` definitions
+      (wired in Y3).
+- [ ] i386: netglue32 compiles against the seam unchanged; the
+      i386_parity smoke lane stays green (D3's standing constraint).
+- [ ] Exit: zero inline-IPv4 references left in tcp.c (the Y0
+      checker pin flips from 7 to 0); all existing net lanes green.
+
+### Y3 — TCP-over-IPv6 + AF_INET6 + AAAA
+- [ ] netl3 v6 implementation: NDP resolve (R9's neighbour cache),
+      v6 pseudo-header, no-fragment MSS from the v6 MTU.
+- [ ] `AF_INET6` end-to-end through the socket syscalls; `connect`
+      to a `sockaddr_in6` opens over v6.
+- [ ] DNS: AAAA queries + dual-stack selection (v6 preferred when a
+      global address exists — the R9 source-selection floor; v4
+      fallback otherwise; no happy-eyeballs racing, named non-goal).
+- [ ] Guest gate: TCP round-trip to `fec0::2` over SLIRP guestfwd
+      (the R9 fixture pattern), pinned in a new case.
+- [ ] Exit: `[tcp6] PASS: round-trip N byte(s)` in CI.
+
+### Y4 — HTTPS-over-IPv6 (RES-26 closes)
+- [ ] libahttp resolves AAAA, dials v6, falls back v4; the TLS layer
+      is transport-agnostic already (it reads/writes a handle).
+- [ ] Guest gate: an HTTPS fetch over IPv6 against the local
+      s_server fixture behind guestfwd — the exact receipt RES-26's
+      exit line names.
+- [ ] Ledger: RES-26 → DONE@Y4; the terminal OPEN count drops 6→5.
+- [ ] Exit: `[https6] PASS` pinned in CI; ledger arithmetic moved
+      same-commit.
+
+### Y5 — ML-KEM-768 (FIPS 203)
+- [ ] `lib/libatls/src/atls_mlkem.c`: K-PKE + the FO transform,
+      768-parameter set only; NTT/invNTT over Z_q[X]/(X^256+1),
+      centered binomial sampling, SHAKE via a new atls_sha3.c
+      (Keccak-f[1600] — also needed by the FIPS 203 hashes G/H/J).
+- [ ] Constant-time discipline: no secret-dependent branches or
+      table lookups (D7's grep extends to the new files).
+- [ ] Host gate: NIST KAT vectors (keygen/encaps/decaps), negative
+      controls (corrupted ciphertext → implicit-rejection secret,
+      not an error path — the FO contract).
+- [ ] The i386 question is measured, not assumed: the reference
+      arithmetic is 16/32-bit friendly (q = 3329); the -m32 gate
+      grows the new files (the R10 lane pattern).
+- [ ] Exit: KAT battery green on x86_64 host, -m32, rv64, a64 (the
+      four-width crypto precedent from R10).
+
+### Y6 — X25519MLKEM768
+- [ ] ClientHello offers 0x11EC alongside X25519; key-share =
+      ML-KEM encaps key ∥ X25519 public (the IETF draft order);
+      shared secret = ML-KEM ss ∥ X25519 ss into the existing
+      HKDF schedule.
+- [ ] Server-side selected_group handling accepts either group;
+      plain-X25519 servers negotiate exactly as before (D4).
+- [ ] CI interop gate: `openssl s_server -groups X25519MLKEM768`
+      fixture (the X-series pattern); the fetch completes and the
+      transcript names the group.
+- [ ] Exit: `[tls] PASS: X25519MLKEM768` in CI; the X9 "PEER_EOF
+      against Cloudflare" sentence becomes closable by a user run.
+
+### Y7 — close-out
+- [ ] The live-web protocol: a metal_receipts-style section — the
+      user runs the fetch against a real PQ-preferring host and
+      pastes the transcript line (pending-user, not CI).
+- [ ] Residue to the ledger: every leftover named, classed W/M/N/S,
+      appended with fresh RES- rows; harvest baseline moved.
+- [ ] Terminal arithmetic against the Y0 opener receipts.
+
+## 4. What this plan deliberately does not do
+
+- No happy-eyeballs connection racing (dual-stack picks, then
+  falls back serially) — named non-goal, revisit on measured pain.
+- No TCP window scaling — the 64240 window stays; a follow-up row if
+  bulk numbers demand it.  ~~No SACK~~ **struck at Y0 — stale on
+  arrival: SACK landed with MATURITY M6d (RFC 2018, tcp_m6d.h + the
+  retransmit queue M6c laid) before this plan was written; the Y0 rig
+  measured the layer this plan's opener section had missed.**
+- No DTLS, no QUIC, no TLS client certificates.
+- No standalone ML-KEM TLS group (hybrid only, D4).
+- No kernel-side TLS: the crypto stays userspace libatls (N-series
+  D2 stands).
+
+## 5. Terminal arithmetic — filled at close
+
+(Y7 quotes the Y0 opener receipts against the closing state; the
+checker enforces the table above against patches/ and the counters
+against /proc/perf.)

@@ -26,6 +26,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/errno.h"
+#include "kernel/lib/perfstat.h"
 #include "drivers/timer/pit.h"
 
 /* ---- TCP flags (in the 9-bit flags field, offset 12-13 of the header) ---- */
@@ -352,6 +353,11 @@ static void tcp_clear_retx(void) {
 static void tcp_retransmit_last(void) {
     if (!conns[active_h].retx_valid) return;
     tcp_conn_t *c = &conns[active_h];
+
+    /* RINET2 Y0: every path that resends bytes goes through here —
+     * one counter site covers SYN retries, RTO resends and the M6
+     * fast-retransmit trigger alike. */
+    perfstat_add(PERF_TCP_RETRANSMITS, 1);
 
     /* Karn: mark before sending so no RTT sample is taken off this ACK. */
     c->retx_ever = 1;
@@ -1023,6 +1029,16 @@ int tcp_send(const void *data, uint32_t len) {
         uint32_t chunk = tcpx5_send_chunk(c->snd_una, c->snd_nxt, c->cwnd,
                                           c->snd_wnd, c->eff_mss,
                                           len - bytes_sent);
+        /* RINET2 Y0: count sends that hit the cwnd EDGE while cwnd is
+         * the binding budget (cwnd < peer window, and this chunk fills
+         * flight up to cwnd — or nothing fit at all).  The receipt that
+         * congestion control is ALIVE.  Reserved at zero until Y1:
+         * today cwnd inits at TCP_WINDOW, so before the first loss the
+         * budget is never cwnd's. */
+        if (c->cwnd < c->snd_wnd &&
+            (c->snd_nxt - c->snd_una) + chunk >= c->cwnd) {
+            perfstat_add(PERF_TCP_CWND_LIMITED_SENDS, 1);
+        }
         if (chunk == 0) {
             /* Window full: wait one *effective* (adaptive) RTO.  Visible
              * (throttled): the piecemeal-ACK gate greps this marker. */
@@ -1078,6 +1094,7 @@ int tcp_send(const void *data, uint32_t len) {
                         c->snd_nxt - c->snd_una, c->eff_mss);
                     c->cwnd = tcpm6_recovery_cwnd(c->ssthresh, c->eff_mss,
                                                   c->dupack.dup_count);
+                    perfstat_add(PERF_TCP_FAST_RETRANSMITS, 1);
                     kprintf("[tcp] fast retransmit: %u dup ACKs for %u "
                             "(ssthresh %u, cwnd %u)\n",
                             c->dupack.dup_count, acked, c->ssthresh, c->cwnd);
@@ -1141,6 +1158,7 @@ int tcp_send(const void *data, uint32_t len) {
                  * retransmit.  Give up visibly after TCP_X5_MAX_TMO. */
                 c->consec_tmo++;
                 tcpx5_rto_backoff(&c->rto);
+                perfstat_add(PERF_TCP_RTO_EVENTS, 1);
                 c->eff_mss = tcpx5_mss_ladder(c->consec_tmo);
                 c->ssthresh = c->cwnd / 2;
                 if (c->ssthresh < 1460) c->ssthresh = 1460;

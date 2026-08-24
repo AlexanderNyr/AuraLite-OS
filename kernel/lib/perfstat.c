@@ -32,6 +32,10 @@ static const char *const names[PERF_COUNTER_MAX] = {
     [PERF_UART_TX_RING_BYTES]            = "uart_tx_ring_bytes",
     [PERF_CR3_NOFLUSH_SWITCHES]          = "cr3_noflush_switches",
     [PERF_PCID_GENERATION_WRAPS]         = "pcid_generation_wraps",
+    [PERF_TCP_RETRANSMITS]               = "tcp_retransmits",
+    [PERF_TCP_FAST_RETRANSMITS]          = "tcp_fast_retransmits",
+    [PERF_TCP_RTO_EVENTS]                = "tcp_rto_events",
+    [PERF_TCP_CWND_LIMITED_SENDS]        = "tcp_cwnd_limited_sends",
 };
 
 void perfstat_add(int id, uint64_t n) {

@@ -72,18 +72,30 @@ enum perfstat_id {
      * the proof the ring took over. */
     PERF_UART_TX_RING_BYTES,
 
-    /* HW_PLAN H4: RESERVED AT ZERO.  CR3 loads that carried bit 63
-     * (NOFLUSH) because the target PCID's translations were still
-     * valid.  Stays zero until the PCID implementation lands — which
-     * waits for a lane that can EXECUTE it (no QEMU configuration
-     * here exposes PCID; measured in HW H0).  The counter exists NOW
-     * so the first metal/KVM boot has its receipt slot ready. */
+    /* HW_PLAN H4 → RESIDUE R11: BACKED by the implementation now
+     * (pcid.c counts NOFLUSH re-entries granted by pcid_policy.h).
+     * Still zero on every TCG lane — TCG has no PCID (measured at
+     * R11: `+pcid` is refused) — so the perf smoke pins zero there
+     * and demands movement on a pcid=1 lane (the user's WHPX
+     * machine; metal_receipts.md slots 5/6). */
     PERF_CR3_NOFLUSH_SWITCHES,
 
-    /* HW_PLAN H4: RESERVED AT ZERO.  12-bit PCID space exhaustions
-     * (generation wrap => full flush + re-allocation).  Same deferral,
-     * same reason. */
+    /* HW_PLAN H4 → RESIDUE R11: generation bumps (the lazy full
+     * flush of the invpcid-less fallback).  Same gating, same
+     * receipt slots. */
     PERF_PCID_GENERATION_WRAPS,
+
+    /* REALINTERNET2 Y0: the transport counters.  Retransmissions and
+     * RTO events are LIVE from day one (X5's retransmit path counts
+     * them); fast retransmits count M6's dup-ACK trigger; the
+     * cwnd-limited counter is RESERVED AT ZERO until Y1 makes cwnd a
+     * variable (today cwnd == TCP_WINDOW, so the send budget is
+     * never cwnd-bound — the H4 pattern: the slot exists before the
+     * win). */
+    PERF_TCP_RETRANSMITS,
+    PERF_TCP_FAST_RETRANSMITS,
+    PERF_TCP_RTO_EVENTS,
+    PERF_TCP_CWND_LIMITED_SENDS,
 
     PERF_COUNTER_MAX
 };

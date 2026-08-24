@@ -172,7 +172,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netdev.c kernel/fs/ext2.c kernel/lib/string.c kernel/lib/selftest.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netdev.c kernel/fs/ext2.c kernel/lib/string.c kernel/lib/selftest.c kernel/lib/perfstat.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -2295,6 +2295,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_residue_claims.py"
 	@python3 tools/check_residue_claims.py || exit 1
 	@python3 tools/check_residue_claims.py --selftest || exit 1
+	@echo "[unit] running tools/check_rinet2_claims.py"
+	@python3 tools/check_rinet2_claims.py || exit 1
+	@python3 tools/check_rinet2_claims.py --selftest || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
