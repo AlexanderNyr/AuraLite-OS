@@ -1,6 +1,6 @@
 # AuraLite OS — Real Internet II (the transport grows up, the handshake goes post-quantum)
 
-## Status: IN PROGRESS — Y0–Y6 complete; Y7 next; plan committed 2026-08-23
+## Status: COMPLETE — Y0–Y7 closed 2026-08-24
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,7 @@
 | Y4 — HTTPS-over-IPv6: the RES-26 receipt | ✅ complete | `patches/RINET2_Y4_https6.patch` |
 | Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | ✅ complete | `patches/RINET2_Y5_mlkem.patch` |
 | Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | ✅ complete | `patches/RINET2_Y6_hybrid.patch` |
-| Y7 — close-out: the live-web fetch protocol, residue to the ledger | pending | `patches/RINET2_Y7_close.patch` |
+| Y7 — close-out: the live-web fetch protocol, residue to the ledger | ✅ complete | `patches/RINET2_Y7_close.patch` |
 
 ## 1. Where this plan comes from (measured, not assumed)
 
@@ -344,13 +344,32 @@ the N3 fixture: OpenSSL 3.5's default group list includes
 `X25519MLKEM768`, so `test_tls.sh` is pinned `-groups X25519`
 and stays the fast D4 path.
 
-### Y7 — close-out
-- [ ] The live-web protocol: a metal_receipts-style section — the
+### Y7 — close-out — ✅ COMPLETE
+- [x] The live-web protocol: a metal_receipts-style section — the
       user runs the fetch against a real PQ-preferring host and
       pastes the transcript line (pending-user, not CI).
-- [ ] Residue to the ledger: every leftover named, classed W/M/N/S,
-      appended with fresh RES- rows; harvest baseline moved.
-- [ ] Terminal arithmetic against the Y0 opener receipts.
+- [x] Residue to the ledger: every leftover named, classed W/M/N/S,
+      appended as RES-49..53; this plan's harvest stays 8 (no new
+      marker lines).
+- [x] Terminal arithmetic against the Y0 opener receipts.
+
+Result: the series is closed with numbers, not a live-web CI
+lane (D5).  `docs/live_web.md` is the paste-back protocol;
+`libahttp` prints `[tls] group=` after every handshake so the
+line exists even when chain validation refuses the peer.
+Host openssl 3.5.6, 2026-08-24: `www.ietf.org`,
+`www.cloudflare.com` and `example.com` all negotiate
+`X25519MLKEM768` + `TLS_CHACHA20_POLY1305_SHA256`.
+`www.ietf.org` is the slot-1 host (P-256 SHA-256 CV + ISRG
+Root X1).  CATCH, named at the store: Cloudflare / example.com
+chain to GlobalSign / SSL.com — three shipped roots, so slot 3
+is a group receipt, not an HTTP 200.  CATCH, named at CV:
+`rsa_pss_rsae_sha256` is advertised and not verified
+(`rust-lang.org` fails there) — RES-53.  CATCH, named at Y4:
+`test_https6.sh` is pinned `-groups X25519` so OpenSSL 3.5
+cannot pull hybrid into the 90s IPv6 fixture.  Ledger grew
+48→53; OPEN 5→6 (only RES-53 is new work).  Y0 opener vs
+this tree is §5.
 
 ## 4. What this plan deliberately does not do
 
@@ -368,6 +387,18 @@ and stays the fast D4 path.
 
 ## 5. Terminal arithmetic — filled at close
 
-(Y7 quotes the Y0 opener receipts against the closing state; the
-checker enforces the table above against patches/ and the counters
-against /proc/perf.)
+Y0 opener facts vs this tree, measured 2026-08-24.  The checker
+pins the same greps.
+
+| Y0 opener | Y7 close |
+|-----------|----------|
+| `conns[h].cwnd = TCP_WINDOW` at two inits; comment "until N7" | both inits are `tcpcc_iw(TCP_MSS)`; x5 1 MiB lane hit the edge **586** times (`tcp_cwnd_limited_sends 586`) |
+| tcp.c `ip4`+`ipv4` = 7 | **0** |
+| dns.c AAAA = 0; no `sockaddr_in6` | AAAA = **3**; `sockaddr_in6` in `<netinet/in.h>` and `<sys/socket.h>` |
+| `ATLS_GROUP_X25519` only (reject anything else) | `0x11EC` + `0x001d`; host `test_atls_tls` **32/32**; guest `[tls] PASS: X25519MLKEM768` |
+| RES-26 OPEN (HTTPS-over-IPv6) | DONE@Y4; the five R-series OPEN rows stay (RES-02/06/07/16/18); Y7 adds RES-53 |
+| tcp.c 1556 lines | **1518** (L3 moved behind `netl3`) |
+
+Patches named in the table: Y7 writes `RINET2_Y7_close.patch` this
+close.  The four Y0 counters still exist in `/proc/perf`; cwnd-limited
+is live, not decorative.

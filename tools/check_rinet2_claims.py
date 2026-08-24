@@ -227,10 +227,14 @@ def claims():
                                     "test_https6.sh") and
             "test_https6" in read("tests", "integration", "run_all.sh")))
         checks.append((
-            "Y4: RES-26 flipped to DONE@Y4 and the ledger OPEN count "
-            "dropped 6→5",
+            "Y4: RES-26 flipped to DONE@Y4 and the five R-series "
+            "OPEN rows remain named",
             "| RES-26 | W | DONE@Y4 |" in ledger and
-            ledger.count("| OPEN |") == 5))
+            "| RES-02 | W | OPEN |" in ledger and
+            "| RES-06 | W | OPEN |" in ledger and
+            "| RES-07 | W | OPEN |" in ledger and
+            "| RES-16 | W | OPEN |" in ledger and
+            "| RES-18 | W | OPEN |" in ledger))
         checks.append((
             "Y4: the phase patch exists",
             os.path.exists(os.path.join(ROOT, "patches",
@@ -315,6 +319,44 @@ def claims():
             "Y6: the phase patch exists",
             os.path.exists(os.path.join(ROOT, "patches",
                                         "RINET2_Y6_hybrid.patch"))))
+
+    # --- Y7: close-out --------------------------------------------------
+    if re.search(r"^### Y7[^\n]*✅ COMPLETE", plan, re.M):
+        live = read("docs", "live_web.md")
+        ahttp = read("lib", "libahttp", "src", "ahttp.c")
+        ledger = read("docs", "residue_ledger.md")
+        checks.append((
+            "Y7: the live-web protocol is a paste-back (pending-user, "
+            "not a CI dial of a public name)",
+            "pending-user" in live and
+            "run http https://www.ietf.org/" in live and
+            "[tls] group=X25519MLKEM768" in live and
+            "Not CI" in live))
+        checks.append((
+            "Y7: libahttp prints [tls] group= after the handshake",
+            "[tls] group=X25519MLKEM768" in ahttp and
+            "atls_tls_negotiated_group" in ahttp))
+        checks.append((
+            "Y7: leftover rows landed (live-web / happy-eyeballs / "
+            "window scale / rsa_pss)",
+            "| RES-49 | M | PENDING-USER@Y7 |" in ledger and
+            "| RES-50 | N | RE-AFFIRMED@Y7 |" in ledger and
+            "| RES-51 | N | RE-AFFIRMED@Y7 |" in ledger and
+            "| RES-52 | S | HANDED-OFF@Y7 |" in ledger and
+            "| RES-53 | W | OPEN |" in ledger))
+        checks.append((
+            "Y7: §5 quotes the Y0 opener greps against the close",
+            "ip4" in plan and "**0**" in plan and
+            "0x11EC" in plan and "32/32" in plan and
+            "586" in plan))
+        checks.append((
+            "Y7: the Y4 IPv6 fixture is pinned to X25519 (D4)",
+            "-groups X25519" in read("tests", "integration", "cases",
+                                     "test_https6.sh")))
+        checks.append((
+            "Y7: the phase patch exists",
+            os.path.exists(os.path.join(ROOT, "patches",
+                                        "RINET2_Y7_close.patch"))))
 
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))

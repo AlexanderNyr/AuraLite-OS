@@ -36,8 +36,12 @@ openssl req -new -x509 -key "$FIXDIR/leaf.key" -out "$FIXDIR/leaf.pem" \
 }
 
 # Listen on IPv6; SLIRP's vhost connect lands on ::1 (Y3 measurement).
+# D4 / Y7: pin X25519.  OpenSSL 3.5's default list includes
+# X25519MLKEM768; our ClientHello prefers 0x11EC, and a hybrid
+# handshake on TCG would blow the Y4 90s budget.
 openssl s_server -accept "[::]:${HTTPS6_PORT}" \
     -cert "$FIXDIR/leaf.pem" -key "$FIXDIR/leaf.key" \
+    -groups X25519 \
     -www -alpn http/1.1 -quiet >/dev/null 2>&1 &
 S_SERVER_PID=$!
 sleep 1
@@ -45,6 +49,7 @@ if ! kill -0 "$S_SERVER_PID" 2>/dev/null; then
     # Older openssl: -6 -accept PORT
     openssl s_server -6 -accept "${HTTPS6_PORT}" \
         -cert "$FIXDIR/leaf.pem" -key "$FIXDIR/leaf.key" \
+        -groups X25519 \
         -www -alpn http/1.1 -quiet >/dev/null 2>&1 &
     S_SERVER_PID=$!
     sleep 1

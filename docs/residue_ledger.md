@@ -60,13 +60,22 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-46 | S | HANDED-OFF@R12 | FS data paths + modern NICs — the row itself was part-stale: exfat 103 / ntfs 79 lines ARE probe skeletons, but ext4 1429 / btrfs 969 / f2fs 1309 lines (ext4 carries delayed allocation and write paths) — what NONE of the five have is a single CI case (zero in run_all.sh) | OPENER, measured: the five-filesystem line count is 3889 with 0 CI cases — the series starts with a mount+read case per FS, not with code; vmxnet3/e1000e (and NVMe) start from e1000.c/virtio_blk.c as references |
 | RES-47 | S | HANDED-OFF@R12 | GUI isolation/permissions, clipboard/focus, settings (TODO) — part-stale too: gui_syscalls.c ALREADY gates 36 syscall cases behind require_owner/require_icon_owner | OPENER, measured: ownership gates exist (27 permission/owner sites); clipboard has 5 references (zero cross-process model); settings persistence has no backing file — the series starts at a clipboard ACL, not at zero |
 | RES-48 | M | PENDING-USER@R11 | HW §6 metal receipts never exercised on user's machine | R11 package ships (tools/metal_receipts.sh, NULL test CI-pinned); pending-user is a status, not a failure |
+| RES-49 | M | PENDING-USER@Y7 | Live-web PQ-hybrid fetch against a real host (the X9 PEER_EOF sentence) | paste `[tls] group=X25519MLKEM768` from `run http https://www.ietf.org/` into docs/live_web.md |
+| RES-50 | N | RE-AFFIRMED@Y7 | Happy-eyeballs connection racing — dual-stack still picks then falls back serially (REALINTERNET2 §4) | re-affirmed; no racing |
+| RES-51 | N | RE-AFFIRMED@Y7 | No DTLS, no QUIC, no TLS client certificates, no standalone ML-KEM TLS group, no kernel-side TLS (D4 + §4) | re-affirmed |
+| RES-52 | S | HANDED-OFF@Y7 | TCP window scaling — the 64240 window stays | OPENER, measured: `TCP_WINDOW` is 64240; grep `wscale`/`TCPOPT`/`shift_cnt` across tcp.c+tcp.h is 0 |
+| RES-53 | W | OPEN | TLS CertificateVerify: `rsa_pss_rsae_sha256` is advertised in ClientHello and not verified (only Ed25519 + ecdsa_secp256r1_sha256 run).  rust-lang.org (RSA leaf, ISRG X1) fails here | implement PSS verify, or stop advertising the scheme |
 
 ## Arithmetic (checker-enforced)
 
-Rows: 48.  Classes: **W 33 · M 5 · N 2 · S 8** (recounted by the
-R0 rig; the plan §2 draft hand-summed 27/6/3/12 and was WRONG —
-amended same-commit, catch recorded).  Statuses at CLOSE: OPEN 6 (RES-02/06/07/16/18/26 — named survivors, none hidden: two narrowed oddities, three port-adoption rows, one IOAPIC-routing row), DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29), DONE@R11 3 (RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — the package ships and NULL-tests green; the numbers are the user's move, and pending-user is a status, not a failure), DONE@R12 2 (RES-42/45), RE-AFFIRMED@R12 2 (RES-43/44), HANDED-OFF@R12 8 (RES-11/12/36/38/39/41/46/47 — every one leaves with a MEASURED opener fact in its row).
-Y4: RES-26 → DONE@Y4; OPEN now 5 (RES-02/06/07/16/18).
+Rows: 53.  Classes: **W 34 · M 6 · N 4 · S 9**.  The R0 recount
+**W 33 · M 5 · N 2 · S 8** (the plan §2 draft hand-summed 27/6/3/12
+and was WRONG — amended same-commit, catch recorded) is the
+historical pin; Y7 appended RES-49..53.  Statuses at CLOSE: OPEN 6 (RES-02/06/07/16/18/26 — named survivors, none hidden: two narrowed oddities, three port-adoption rows, one IOAPIC-routing row), DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29), DONE@R11 3 (RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — the package ships and NULL-tests green; the numbers are the user's move, and pending-user is a status, not a failure), DONE@R12 2 (RES-42/45), RE-AFFIRMED@R12 2 (RES-43/44), HANDED-OFF@R12 8 (RES-11/12/36/38/39/41/46/47 — every one leaves with a MEASURED opener fact in its row).
+Y4: RES-26 → DONE@Y4; OPEN then 5 (RES-02/06/07/16/18).
+Y7: +5 rows (RES-49..53); OPEN now 6 (the five R-series survivors
+plus RES-53).  PENDING-USER@Y7 1, RE-AFFIRMED@Y7 2,
+HANDED-OFF@Y7 1.
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

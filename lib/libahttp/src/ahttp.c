@@ -440,6 +440,17 @@ static int transport_connect(transport *t, const char *host, int port, int use_t
         t->tls = atls_tls_new(&cfg, tls_send_cb, tls_recv_cb, t);
         if (!t->tls) { closesocket(t->fd); return AHTTP_ERR_TLS; }
         int hrc = atls_tls_handshake(t->tls);
+        /* Y7: the live-web paste line.  Printed even when certval
+         * fails so a PQ-preferring peer still names the group. */
+        {
+            uint16_t g = atls_tls_negotiated_group(t->tls);
+            if (g == ATLS_TLS_GROUP_X25519MLKEM768)
+                printf("[tls] group=X25519MLKEM768\n");
+            else if (g == ATLS_TLS_GROUP_X25519)
+                printf("[tls] group=X25519\n");
+            else
+                printf("[tls] group=0x%04x\n", (unsigned)g);
+        }
         if (hrc != ATLS_OK) {
             /* X8: surface the *reason* for a certificate-validation failure,
              * not a generic handshake error — an untrusted chain must read as

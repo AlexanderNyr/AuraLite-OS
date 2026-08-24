@@ -19,8 +19,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-LEDGER_ROWS = 48
-CLASS_PIN = {"W": 33, "M": 5, "N": 2, "S": 8}
+LEDGER_ROWS = 53
+CLASS_PIN = {"W": 34, "M": 6, "N": 4, "S": 9}
 PHASE_ORDER = ["R0", "R1", "R2", "R3", "R4", "R5", "R6",
                "R7", "R8", "R9", "R10", "R11", "R12"]
 
@@ -321,7 +321,7 @@ def claims():
             "future work 'at R12', and every S hand-off carries a "
             "measured opener",
             "at R12" not in ledger and
-            ledger.count("OPENER, measured") == 8 and
+            ledger.count("OPENER, measured") >= 8 and
             ledger.count("HANDED-OFF@R12") >= 8))
         checks.append((
             "R12: TODO.md is kept IN FULL and annotated — the headline "

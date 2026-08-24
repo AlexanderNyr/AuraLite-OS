@@ -2,6 +2,21 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2 Y7 — close-out: live-web protocol + ledger] 2026-08-24
+
+REALINTERNET2 is COMPLETE.  `docs/live_web.md` is the
+metal_receipts-style paste-back: `run http https://www.ietf.org/`
+and keep `[tls] group=X25519MLKEM768`.  libahttp prints that
+line after every handshake.  Host openssl 3.5.6 (2026-08-24):
+ietf / Cloudflare / example.com all take X25519MLKEM768 +
+ChaCha20.  CATCH, named at the store: Cloudflare/example.com
+are not in the three shipped roots.  CATCH, named at CV:
+rsa_pss is advertised and not verified (RES-53).  CATCH, named
+at Y4: test_https6 pinned `-groups X25519`.  Ledger 48→53
+(RES-49..53); OPEN 5→6.  §5 quotes the Y0 opener greps against
+the closing tree (ip4+ipv4 7→0, AAAA 0→3, group 0x11EC,
+cwnd-limited 586).  This plan's harvest stays 8.
+
 ## [RINET2 Y6 — X25519MLKEM768 hybrid handshake] 2026-08-24
 
 ClientHello offers `0x11EC` alongside X25519 and sends both key
