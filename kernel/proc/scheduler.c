@@ -42,6 +42,9 @@ spinlock_t sched_lock = SPINLOCK_UNLOCKED;
 #define SCHED_MAX_CPUS 32
 static volatile uint64_t cpu_total_ticks[SCHED_MAX_CPUS];
 static volatile uint64_t cpu_idle_ticks[SCHED_MAX_CPUS];
+static uint64_t win_snap_total, win_snap_idle;
+static uint32_t win_busy_x100;
+static uint32_t win_ticks_left;
 
 uint64_t sched_get_total_ticks(void) {
     uint64_t sum = 0;
@@ -52,6 +55,9 @@ uint64_t sched_get_idle_ticks(void) {
     uint64_t sum = 0;
     for (int i = 0; i < SCHED_MAX_CPUS; i++) sum += cpu_idle_ticks[i];
     return sum;
+}
+uint32_t sched_get_busy_pct_x100(void) {
+    return win_busy_x100;
 }
 
 int sched_is_ready(void) { return scheduler_ready; }
@@ -233,6 +239,26 @@ void sched_tick(void) {
         cpu_total_ticks[local->cpu_id]++;
         if (local->current == local->idle) {
             cpu_idle_ticks[local->cpu_id]++;
+        }
+        /* BSP folds a 1-second window so /proc/loadavg is not the
+         * lifetime average (boot self-tests + kmain otherwise stick
+         * at ~20% forever). */
+        if (local->cpu_id == 0) {
+            if (win_ticks_left == 0) {
+                uint32_t hz = timer_get_frequency();
+                if (hz == 0) hz = 100;
+                win_ticks_left = hz;
+                uint64_t t = sched_get_total_ticks();
+                uint64_t i = sched_get_idle_ticks();
+                uint64_t dt = t - win_snap_total;
+                uint64_t di = i - win_snap_idle;
+                if (di > dt) di = dt;
+                win_busy_x100 = dt ? (uint32_t)(((dt - di) * 10000ULL) / dt) : 0;
+                win_snap_total = t;
+                win_snap_idle = i;
+            } else {
+                win_ticks_left--;
+            }
         }
     }
     /* We are inside the timer IRQ handler, so IF is already clear. */

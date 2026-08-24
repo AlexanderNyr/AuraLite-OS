@@ -351,13 +351,9 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
          * fields 2-3 (5/15 min) are not tracked separately and mirror
          * field 1. Last two fields (runnable/total threads, last PID) use
          * real data from thread_get_all()/tid allocation. */
-        uint64_t total = sched_get_total_ticks();
-        uint64_t idle  = sched_get_idle_ticks();
-        uint64_t busy_pct_x100 = 0; /* busy% * 100, i.e. 2 decimal digits */
-        if (total > 0) {
-            uint64_t busy = (total >= idle) ? (total - idle) : 0;
-            busy_pct_x100 = (busy * 10000) / total;
-        }
+        /* 1-second window from sched_tick, not lifetime busy/total
+         * (that number is boot self-tests and never comes down). */
+        uint64_t busy_pct_x100 = sched_get_busy_pct_x100();
         tcb_t *list[64];
         int nthreads = thread_get_all(list, 64);
         int runnable = 0;

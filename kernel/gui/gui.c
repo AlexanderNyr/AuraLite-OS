@@ -2321,10 +2321,23 @@ void gui_compositor_tick(void) {
     if (mouse_get_position(&mx, &my)) {
         static int prev_mx = -1, prev_my = -1;
         if (prev_mx != mx || prev_my != my) {
+            /* Cover the whole path between last composed position and
+             * now.  A 16×16 stamp at only the endpoints left a dotted
+             * trail whenever the compositor skipped frames (USB tablet
+             * streams dozens of reports per 10 ms tick). */
+            const int pad = 16, ext = 24;
+            int32_t x0, y0, x1, y1;
             if (prev_mx >= 0 && prev_my >= 0) {
-                gui_mark_dirty(prev_mx - 1, prev_my - 1, 16, 16);
+                x0 = (prev_mx < mx ? prev_mx : mx) - pad;
+                y0 = (prev_my < my ? prev_my : my) - pad;
+                x1 = (prev_mx > mx ? prev_mx : mx) + ext;
+                y1 = (prev_my > my ? prev_my : my) + ext;
+            } else {
+                x0 = mx - pad; y0 = my - pad;
+                x1 = mx + ext; y1 = my + ext;
             }
-            gui_mark_dirty(mx - 1, my - 1, 16, 16);
+            if (x1 > x0 && y1 > y0)
+                gui_mark_dirty(x0, y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0));
             prev_mx = mx;
             prev_my = my;
         }

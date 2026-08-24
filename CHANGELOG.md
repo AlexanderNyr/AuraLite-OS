@@ -2,6 +2,18 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GUI: no cursor trail, honest CPU%, no HID mouse spam] 2026-08-24
+
+Three bugs from a live QEMU screenshot.  (1) Software cursor left a
+dotted trail: dirty stamps were 16×16 at the endpoints only, so any
+skipped compositor frame kept the old pixels.  The dirty region is
+now the bounding box of last-drawn and current position plus pad.
+(2) gsysmon's CPU bar was lifetime busy/total (boot self-tests stuck
+at ~20%).  `/proc/loadavg` now uses a 1-second window from
+`sched_tick`.  (3) QEMU USB tablet reports (len=6) were kprintf'd
+on every move.  Pointer devices log the first report only; keyboard
+reports stay rate-limited for `test_usb_hid_input`.
+
 ## [BIOS VGA console: the screen is no longer blank] 2026-08-24
 
 BIOS Stage 2 never programs VBE, so `boot_info.fb` is zeros and

@@ -75,6 +75,8 @@ void sched_idle(void);
  */
 uint64_t sched_get_total_ticks(void);
 uint64_t sched_get_idle_ticks(void);
+/* Busy percent over the last ~1 s, times 100 (1234 => 12.34%). */
+uint32_t sched_get_busy_pct_x100(void);
 
 /* Gate self-test: two threads print interleaved messages, demonstrating both
  * cooperative (yield) and preemptive (timer-driven) context switching. */

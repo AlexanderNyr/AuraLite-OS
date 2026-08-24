@@ -74,6 +74,7 @@ typedef struct {
     uint8_t      last_keys[16];
     uint8_t      last_key_count;
     int          generic;  /* 0=boot, 1=generic pointer, 2=generic keyboard */
+    int          logged_first; /* first pointer report already printed */
     hid_report_parser_t parser;
 } hid_dev_t;
 
@@ -375,26 +376,38 @@ static void hid_poll_once(hid_dev_t *h) {
      * drives the PS/2 controller, so "characters reached the shell" alone
      * cannot distinguish a working USB HID path from the emulated PS/2
      * keyboard answering instead.  This line is emitted only when a report
-     * actually arrives over the USB interrupt endpoint. */
+     * actually arrives over the USB interrupt endpoint.
+     *
+     * Mice (boot protocol len=3/4, QEMU tablet len=6) stream dozens of
+     * reports per second.  Logging those drowned the console and burned
+     * measurable CPU (kprintf under the compositor).  Keyboard reports
+     * (boot protocol len=8) stay rate-limited so test_usb_hid_input can
+     * still see usage 0x08/0x12; pointer reports log once per device. */
     {
+        int is_pointer = (h->generic == 1) ||
+                         (h->generic == 0 && h->protocol == HID_PROTO_MOUSE);
         int nonzero = 0;
         for (int bi = 0; bi < ret; bi++) if (report[bi]) { nonzero = 1; break; }
         if (nonzero) {
-            /* Rate-limited: a real mouse streams dozens of reports per
-             * second and this line turned into console spam on the first
-             * hardware-ish run (measured: a WHPX boot log drowned in
-             * [hid] lines).  The first few prove the pipe is alive (and
-             * keep the smoke's assertion); after that, one line per 256
-             * keeps the counter honest without the flood. */
-            static uint64_t hid_report_logged;
-            hid_report_logged++;
-            if (hid_report_logged <= 8 || (hid_report_logged & 255) == 0) {
-                kprintf("[hid] report from addr=%d ep=0x%02x len=%d: %02x %02x %02x %02x\n",
-                        h->dev->address, h->ep_in, ret,
-                        report[0], ret > 1 ? report[1] : 0,
-                        ret > 2 ? report[2] : 0, ret > 3 ? report[3] : 0);
-            } else if (hid_report_logged == 9) {
-                kprintf("[hid] further reports suppressed (1 in 256 logged)\n");
+            if (is_pointer) {
+                if (!h->logged_first) {
+                    h->logged_first = 1;
+                    kprintf("[hid] report from addr=%d ep=0x%02x len=%d: %02x %02x %02x %02x\n",
+                            h->dev->address, h->ep_in, ret,
+                            report[0], ret > 1 ? report[1] : 0,
+                            ret > 2 ? report[2] : 0, ret > 3 ? report[3] : 0);
+                }
+            } else {
+                static uint64_t hid_kbd_logged;
+                hid_kbd_logged++;
+                if (hid_kbd_logged <= 8 || (hid_kbd_logged & 255) == 0) {
+                    kprintf("[hid] report from addr=%d ep=0x%02x len=%d: %02x %02x %02x %02x\n",
+                            h->dev->address, h->ep_in, ret,
+                            report[0], ret > 1 ? report[1] : 0,
+                            ret > 2 ? report[2] : 0, ret > 3 ? report[3] : 0);
+                } else if (hid_kbd_logged == 9) {
+                    kprintf("[hid] further reports suppressed (1 in 256 logged)\n");
+                }
             }
         }
     }
