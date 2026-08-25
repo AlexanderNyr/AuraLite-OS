@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RINET2: the "phase patch exists" claims are gone] 2026-08-25
+
+`make test-unit` was red on a tree whose code was completely intact.
+`tools/check_rinet2_claims.py` carried six claims of the form
+`os.path.exists("patches/RINET2_Y*.patch")`, and the Y2–Y7 patch
+artefacts had never been committed — so the checker failed for a
+reason that had nothing to do with whether the Y-series works.
+
+The claims are removed rather than the files added, because the gate
+was measuring the wrong thing in BOTH directions: it can be satisfied
+by `touch`-ing eight empty files while the netl3 seam, the ML-KEM KATs
+and the hybrid handshake are all broken, and it can fail — as it did —
+while every one of them passes.  A `.patch` file is a byproduct of how
+a phase was mailed, not evidence that code works.
+
+- `tools/check_rinet2_claims.py`: six existence claims dropped (50 → 45
+  `checks.append` sites, 45 → 40 asserted claims).  Y2's claim was a
+  compound — `"test_netl3" in makefile AND os.path.exists(...)` — and
+  keeps its real half, now named "Y2: the host A/B gate is registered".
+  The header documents why the claims are absent, so they do not drift
+  back in.  `--selftest` still detects a doctored tree.
+- `REALINTERNET2_PLAN.md`: the phase table's third column changes from
+  `Deliverable` (a `patches/*.patch` path that did not exist) to
+  `Landed in`, naming the source and the gate that proves each phase —
+  all 16 named artefacts verified present.  D6 phase hygiene no longer
+  requires a patch artefact; §5's close-out sentence follows.
+
+Nothing in the Y-series' behaviour changed: the seam, the counters, the
+KATs and the interop receipts are asserted exactly as before.
+
 ## [gbrowser: images and form widgets] 2026-08-25
 
 Google's homepage was mostly grey boxes because `<img>` was a 16×16

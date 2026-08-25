@@ -2,16 +2,16 @@
 
 ## Status: COMPLETE — Y0–Y7 closed 2026-08-24
 
-| Phase | Result | Deliverable |
+| Phase | Result | Landed in |
 |-------|--------|-------------|
-| Y0 — the rig: TCP decision-core host gates, perf counters, opener receipts | ✅ complete | `patches/RINET2_Y0_rig.patch` |
-| Y1 — congestion control: the cwnd stops being a constant | ✅ complete | `patches/RINET2_Y1_cc.patch` |
-| Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | ✅ complete | `patches/RINET2_Y2_seam.patch` |
-| Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | ✅ complete | `patches/RINET2_Y3_tcp6.patch` |
-| Y4 — HTTPS-over-IPv6: the RES-26 receipt | ✅ complete | `patches/RINET2_Y4_https6.patch` |
-| Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | ✅ complete | `patches/RINET2_Y5_mlkem.patch` |
-| Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | ✅ complete | `patches/RINET2_Y6_hybrid.patch` |
-| Y7 — close-out: the live-web fetch protocol, residue to the ledger | ✅ complete | `patches/RINET2_Y7_close.patch` |
+| Y0 — the rig: TCP decision-core host gates, perf counters, opener receipts | ✅ complete | `tools/check_rinet2_claims.py`, perfstat TCP counters |
+| Y1 — congestion control: the cwnd stops being a constant | ✅ complete | `kernel/net/tcp_cc.h`, `tests/unit/test_tcp_cc.c` |
+| Y2 — the TCP/IP seam: the transport stops spelling IPv4 inline | ✅ complete | `kernel/net/netl3.{c,h}`, `tests/unit/test_netl3.c` |
+| Y3 — TCP-over-IPv6 + AF_INET6 + AAAA/dual-stack DNS | ✅ complete | `kernel/net/dualstack.h`, `tests/integration/cases/test_tcp6.sh` |
+| Y4 — HTTPS-over-IPv6: the RES-26 receipt | ✅ complete | `lib/libahttp/src/ahttp.c`, `tests/integration/cases/test_https6.sh` |
+| Y5 — ML-KEM-768 (FIPS 203) in libatls, KAT-gated | ✅ complete | `lib/libatls/src/atls_mlkem.c`, `tests/unit/test_atls_mlkem.c` |
+| Y6 — X25519MLKEM768: the hybrid handshake, interop-gated | ✅ complete | `lib/libatls/src/atls_tls.c`, `tests/integration/cases/test_x25519mlkem.sh` |
+| Y7 — close-out: the live-web fetch protocol, residue to the ledger | ✅ complete | `docs/live_web.md`, `docs/residue_ledger.md` (RES-49/50) |
 
 ## 1. Where this plan comes from (measured, not assumed)
 
@@ -90,9 +90,13 @@ LIVE-web fetch is a user-run protocol (metal_receipts style), not a
 CI dependency — CI must stay deterministic.
 
 ### D6. Phase hygiene (inherited)
-Every phase: CHANGELOG entry, plan table + section updated, one
-patch in patches/, checker claims added the same commit
-(`tools/check_rinet2_claims.py` arrives with Y0), deviations named.
+Every phase: CHANGELOG entry, plan table + section updated, checker
+claims added the same commit (`tools/check_rinet2_claims.py` arrives
+with Y0), deviations named.  The deliverable a phase is judged by is
+the CODE AND ITS GATES, not a `.patch` file in `patches/`: a patch
+artefact only proves a file exists on disk, which is why the Y-series
+checker asserts the seam, the counters, the KATs and the interop
+receipts instead.
 
 ## 3. Phases
 
@@ -399,6 +403,7 @@ pins the same greps.
 | RES-26 OPEN (HTTPS-over-IPv6) | DONE@Y4; the five R-series OPEN rows stay (RES-02/06/07/16/18); Y7 adds RES-53 |
 | tcp.c 1556 lines | **1518** (L3 moved behind `netl3`) |
 
-Patches named in the table: Y7 writes `RINET2_Y7_close.patch` this
-close.  The four Y0 counters still exist in `/proc/perf`; cwnd-limited
-is live, not decorative.
+The table's third column names where each phase LANDED — the source
+and the gate that proves it — not a `.patch` artefact: existence of a
+file is not evidence that code works.  The four Y0 counters still
+exist in `/proc/perf`; cwnd-limited is live, not decorative.

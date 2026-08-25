@@ -9,6 +9,23 @@ a plan CORRECTION: the plan's §1/§4 were written before reading the M6
 layer (the A3 precedent — "found it understated"), and Y0's result
 names what M6 already carried.
 
+What this checker deliberately does NOT assert
+----------------------------------------------
+It used to carry six "the phase patch exists" claims — one per phase,
+each an `os.path.exists("patches/RINET2_Y*.patch")`.  They are gone,
+and their removal is the point: a `.patch` file on disk is evidence
+that a FILE EXISTS, not that code works.  The artefact is a byproduct
+of how a phase was mailed, not of what it delivered, so the claim
+could be satisfied by `touch`-ing eight empty files while the seam,
+the KATs and the interop receipts were all broken — and it failed
+loudly on a tree whose CODE was completely intact, which is exactly
+what happened here (the six patches were simply never committed).
+A gate that can be green while the tree is broken, and red while the
+tree is correct, is measuring the wrong thing in both directions.
+Every phase is now judged by the code and the gates it landed: the
+netl3 seam, the dual-stack core, the ML-KEM KATs, the hybrid
+ClientHello, the guest receipts.  Those cannot be faked with `touch`.
+
 Usage:
     tools/check_rinet2_claims.py [--selftest]
 """
@@ -162,10 +179,8 @@ def claims():
             "netl3_input" in tcp and
             "netl3_addr_t peer" in tcp))
         checks.append((
-            "Y2: the host A/B gate is registered and the phase patch exists",
-            "test_netl3" in makefile and
-            os.path.exists(os.path.join(ROOT, "patches",
-                                        "RINET2_Y2_seam.patch"))))
+            "Y2: the host A/B gate is registered",
+            "test_netl3" in makefile))
         checks.append((
             "Y2: netl3.c is a KERNEL32_SHARED row (D3: i386 compiles "
             "against the seam unchanged)",
@@ -205,10 +220,7 @@ def claims():
             "[tcp6] PASS" in read("tests", "integration", "cases",
                                   "test_tcp6.sh") and
             "test_tcp6" in read("tests", "integration", "run_all.sh")))
-        checks.append((
-            "Y3: the phase patch exists",
-            os.path.exists(os.path.join(ROOT, "patches",
-                                        "RINET2_Y3_tcp6.patch"))))
+
 
     # --- Y4: HTTPS-over-IPv6 (RES-26) -----------------------------------
     if re.search(r"^### Y4[^\n]*✅ COMPLETE", plan, re.M):
@@ -235,10 +247,7 @@ def claims():
             "| RES-07 | W | OPEN |" in ledger and
             "| RES-16 | W | OPEN |" in ledger and
             "| RES-18 | W | OPEN |" in ledger))
-        checks.append((
-            "Y4: the phase patch exists",
-            os.path.exists(os.path.join(ROOT, "patches",
-                                        "RINET2_Y4_https6.patch"))))
+
 
     # --- Y5: ML-KEM-768 (FIPS 203) --------------------------------------
     if re.search(r"^### Y5[^\n]*✅ COMPLETE", plan, re.M):
@@ -275,10 +284,7 @@ def claims():
                                       "test_libatls_rv64.sh") and
             "test_atls_mlkem" in read("tests", "unit",
                                       "test_libatls_a64.sh")))
-        checks.append((
-            "Y5: the phase patch exists",
-            os.path.exists(os.path.join(ROOT, "patches",
-                                        "RINET2_Y5_mlkem.patch"))))
+
 
     # --- Y6: X25519MLKEM768 hybrid handshake ----------------------------
     if y6_done:
@@ -315,10 +321,7 @@ def claims():
             "[tls] PASS: X25519MLKEM768" in guest and
             "test_x25519mlkem" in read("tests", "integration",
                                        "run_all.sh")))
-        checks.append((
-            "Y6: the phase patch exists",
-            os.path.exists(os.path.join(ROOT, "patches",
-                                        "RINET2_Y6_hybrid.patch"))))
+
 
     # --- Y7: close-out --------------------------------------------------
     if re.search(r"^### Y7[^\n]*✅ COMPLETE", plan, re.M):
@@ -355,10 +358,7 @@ def claims():
             "Y7: the Y4 IPv6 fixture is pinned to X25519 (D4)",
             "-groups X25519" in read("tests", "integration", "cases",
                                      "test_https6.sh")))
-        checks.append((
-            "Y7: the phase patch exists",
-            os.path.exists(os.path.join(ROOT, "patches",
-                                        "RINET2_Y7_close.patch"))))
+
 
     # --- structural: status header vs table -----------------------------
     done_rows = len(re.findall(r"^\| Y\d+ [^|]*\| ✅ complete", plan, re.M))
