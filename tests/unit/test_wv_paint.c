@@ -365,6 +365,38 @@ static void test_scroll_budget(void) {
     free(doc);
 }
 
+static void test_image_blit(void) {
+    /* A bound 2×2 image is nearest-neighbour copied; an unbound IMAGE
+     * is the grey placeholder.  Neither path may disturb the W4 hash
+     * document (this test uses its own display list). */
+    reset();
+    uint32_t pix[4] = { 0x00FF0000u, 0x0000FF00u, 0x000000FFu, 0x00FFFFFFu };
+    wv_img_slot sl;
+    sl.px = pix;
+    sl.w = 2;
+    sl.h = 2;
+    wv_paint_set_images(&P, &sl, 1);
+    memset(&la.items[0], 0, sizeof(la.items[0]));
+    la.items[0].type = WV_D_IMAGE;
+    la.items[0].x = 10;
+    la.items[0].y = 20;
+    la.items[0].w = 2;
+    la.items[0].h = 2;
+    la.items[0].img_id = 1;
+    la.item_count = 1;
+    wv_paint_run(&P, &la, 0);
+    CK(px(10, 20) == 0x00FF0000u);
+    CK(px(11, 20) == 0x0000FF00u);
+    CK(px(10, 21) == 0x000000FFu);
+    CK(px(11, 21) == 0x00FFFFFFu);
+
+    la.items[0].img_id = 0;
+    la.items[0].bg = 0x00E0E0E0u;
+    memset(page, 0, sizeof(page));
+    wv_paint_run(&P, &la, 0);
+    CK(px(10, 20) == 0x00E0E0E0u);
+}
+
 static void test_cull_off_screen(void) {
     /* Items far outside the viewport must not be painted: paint a page
      * scrolled past its end — the buffer must stay pure paper. */
@@ -409,6 +441,7 @@ int main(void) {
     test_reference_hash();
     test_scroll_equivalence();
     test_scroll_budget();
+    test_image_blit();
     test_cull_off_screen();
     test_fuzz_paint();
 

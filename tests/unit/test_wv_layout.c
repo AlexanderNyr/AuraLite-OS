@@ -281,7 +281,8 @@ static void test_placeholders(void) {
     int img_seen = 0;
     for (size_t i = 0; i < la.item_count; i++) {
         const wv_disp_t *it = &la.items[i];
-        if (it->type == WV_D_BOX && it->w == 16 && it->h == 16)
+        if ((it->type == WV_D_BOX || it->type == WV_D_IMAGE) &&
+            it->w == 16 && it->h == 16)
             img_seen = 1;
     }
     CK(img_seen == 1);
@@ -303,6 +304,44 @@ static void test_placeholders(void) {
             cv_seen = 1;
     }
     CK(cv_seen == 1);
+    CK(layout_consistent());
+}
+
+static void test_img_and_widgets(void) {
+    /* sized <img> becomes WV_D_IMAGE with src in the pool; the line box
+     * grows to the image height so later content does not overlap. */
+    int n = layout("<body><p><img width=272 height=92 src=/logo.png></body>", 600);
+    CK(n > 0);
+    int seen = 0;
+    for (size_t i = 0; i < la.item_count; i++) {
+        const wv_disp_t *it = &la.items[i];
+        if (it->type == WV_D_IMAGE && it->w == 272 && it->h == 92) {
+            seen = 1;
+            CK(it->text_len > 0);
+            CK(strcmp(wv_layout_str(&la, it->text_off), "/logo.png") == 0);
+        }
+    }
+    CK(seen == 1);
+    CK(la.content_h >= 92);
+
+    n = layout("<body><p><input type=text value=hello>"
+               "<input type=hidden value=secret>"
+               "<button value=Go></p></body>", 600);
+    CK(n > 0);
+    int field = 0, btn = 0, hello = 0, go = 0, secret = 0;
+    for (size_t i = 0; i < la.item_count; i++) {
+        const wv_disp_t *it = &la.items[i];
+        if (it->type == WV_D_BOX && it->widget == 1 && it->w == 160) field = 1;
+        if (it->type == WV_D_BOX && it->widget == 2 && it->w == 80) btn = 1;
+        if (it->type == WV_D_TEXT && strcmp(itext(i), "hello") == 0) hello = 1;
+        if (it->type == WV_D_TEXT && strcmp(itext(i), "Go") == 0) go = 1;
+        if (it->type == WV_D_TEXT && strcmp(itext(i), "secret") == 0) secret = 1;
+    }
+    CK(field == 1);
+    CK(btn == 1);
+    CK(hello == 1);
+    CK(go == 1);
+    CK(secret == 0);            /* type=hidden produces no box or label */
     CK(layout_consistent());
 }
 
@@ -355,7 +394,21 @@ static void test_5000_boxes_budget(void) {
 
     CK(ni == 10001);          /* root + 5000 boxes + 5000 words */
     CK(bl.truncated == 0);
-    CK(layout_consistent());
+    /* Check `bl`, not the shared `la` helper: this test reuses `lpool`,
+     * which would make layout_consistent() (it walks `la`) see garbage. */
+    {
+        int okc = 1;
+        for (size_t i = 0; i < bl.item_count; i++) {
+            const wv_disp_t *it = &bl.items[i];
+            if (it->x < 0 || it->y < 0) okc = 0;
+            if (it->type == WV_D_TEXT) {
+                if (it->text_len == 0) okc = 0;
+                if ((size_t)it->text_off + it->text_len + 1 > bl.pool_used)
+                    okc = 0;
+            }
+        }
+        CK(okc);
+    }
     CK(us < 7500);            /* the W0 frame budget (QEMU-TCG number) */
     printf("  (5000 boxes laid out in %ld us)\n", us);
     free(doc);
@@ -400,6 +453,7 @@ int main(void) {
     test_hidden_elements();
     test_inline_styles();
     test_placeholders();
+    test_img_and_widgets();
     test_5000_boxes_budget();
     test_expected_list_mismatch_report();
     test_fuzz_layout();

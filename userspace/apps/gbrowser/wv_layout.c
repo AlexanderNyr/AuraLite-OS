@@ -62,6 +62,14 @@ static int wv_void_inline(const char *s, uint32_t len) {
     return wv_name_is(s, len, "br") || wv_name_is(s, len, "img");
 }
 
+/* Replaced elements: painted as widgets / images, children skipped. */
+static int wv_replaced(const char *s, uint32_t len) {
+    return wv_name_is(s, len, "input") ||
+           wv_name_is(s, len, "button") ||
+           wv_name_is(s, len, "textarea") ||
+           wv_name_is(s, len, "select");
+}
+
 /* ---- UA stylesheet ---- */
 
 typedef struct { int32_t l, t, r, b; } ua_box;
@@ -186,6 +194,136 @@ static int wv_attr_int(const wv_dom_t *d, uint32_t node, const char *name) {
     return -1;
 }
 
+static void finish_line(wv_layout_t *L, wv_blk_t *b);
+
+static const char *wv_attr_str(const wv_dom_t *d, uint32_t node,
+                               const char *name, uint32_t *len_out) {
+    const wv_dom_node_t *nd = &d->nodes[node];
+    for (uint32_t i = 0; i < nd->attr_count; i++) {
+        size_t idx = (size_t)nd->attr_base + i;
+        if (idx >= d->attr_count) break;
+        const wv_attr_t *at = &d->attrs[idx];
+        if (strcmp(wv_dom_str(d, at->name_off), name) != 0) continue;
+        if (len_out) *len_out = at->value_len;
+        return wv_dom_str(d, at->value_off);
+    }
+    if (len_out) *len_out = 0;
+    return NULL;
+}
+
+/* Place an inline replaced box (image or widget) on the current line. */
+static void layout_replaced(wv_layout_t *L, wv_blk_t *b, wv_disp_t *it) {
+    int32_t right = b->content_x + b->content_w;
+    int32_t w = (int32_t)it->w;
+    int32_t step = b->line_h > 0 ? b->line_h : WV_LINE_H;
+    if (b->inl_has_text) {
+        if (b->inl_x + WV_GLYPH_W + w > right && w <= b->content_w) {
+            finish_line(L, b);
+            b->inl_y += step;
+            b->inl_x = b->content_x;
+            b->inl_has_text = 0;
+            b->line_h = WV_LINE_H;
+        } else {
+            b->inl_x += WV_GLYPH_W;
+        }
+    }
+    it->x = b->inl_x;
+    it->y = b->inl_y;
+    int idx = wv_layout_add_item(L, it);
+    if ((int32_t)it->h > b->line_h) b->line_h = (int32_t)it->h;
+    if (!b->inl_has_text && b->line_start < 0)
+        b->line_start = idx;
+    b->line_w = b->inl_x + w - b->content_x;
+    b->inl_x += w;
+    b->inl_has_text = 1;
+}
+
+static void layout_img(wv_layout_t *L, const wv_dom_t *d, uint32_t node,
+                       wv_blk_t *b) {
+    int aw = wv_attr_int(d, node, "width");
+    int ah = wv_attr_int(d, node, "height");
+    int iw = (aw > 0 && aw <= 800) ? aw : 16;
+    int ih = (ah > 0 && ah <= 600) ? ah : 16;
+    uint32_t slen = 0;
+    const char *src = wv_attr_str(d, node, "src", &slen);
+    wv_disp_t it;
+    memset(&it, 0, sizeof(it));
+    it.type = WV_D_IMAGE;
+    it.w = (uint32_t)iw;
+    it.h = (uint32_t)ih;
+    it.bg = 0x00E0E0E0u;
+    it.border = 1;
+    it.border_color = 0x00A0A0A0u;
+    if (src && slen > 0) {
+        it.text_off = wv_layout_pool_put(L, src, slen);
+        it.text_len = slen;
+    }
+    layout_replaced(L, b, &it);
+}
+
+static void layout_widget(wv_layout_t *L, const wv_dom_t *d, uint32_t node,
+                          wv_blk_t *b, const char *name, uint32_t nlen) {
+    uint32_t tlen = 0;
+    const char *typ = wv_attr_str(d, node, "type", &tlen);
+    if (wv_name_is(name, nlen, "input") && typ && tlen == 6 &&
+        typ[0] == 'h' && typ[1] == 'i' && typ[2] == 'd')
+        return;   /* type=hidden */
+    int kind = 1;   /* field */
+    int iw = 160, ih = 20;
+    if (wv_name_is(name, nlen, "button") ||
+        (typ && ((tlen == 6 && typ[0] == 's' && typ[1] == 'u') ||
+                 (tlen == 6 && typ[0] == 'b' && typ[1] == 'u') ||
+                 (tlen == 5 && typ[0] == 'r' && typ[1] == 'e')))) {
+        kind = 2; iw = 80; ih = 22;
+    } else if (typ && ((tlen == 8 && typ[0] == 'c' && typ[1] == 'h') ||
+                       (tlen == 5 && typ[0] == 'r' && typ[1] == 'a'))) {
+        kind = 3; iw = 14; ih = 14;
+    } else if (wv_name_is(name, nlen, "textarea")) {
+        kind = 1; iw = 200; ih = 48;
+    } else if (wv_name_is(name, nlen, "select")) {
+        kind = 2; iw = 120; ih = 20;
+    }
+    uint32_t vlen = 0;
+    const char *val = wv_attr_str(d, node, "value", &vlen);
+    if (!val) val = wv_attr_str(d, node, "placeholder", &vlen);
+    wv_disp_t it;
+    memset(&it, 0, sizeof(it));
+    it.type = WV_D_BOX;
+    it.w = (uint32_t)iw;
+    it.h = (uint32_t)ih;
+    it.widget = (uint8_t)kind;
+    if (kind == 2) {
+        it.bg = 0x00E8E8ECu;
+        it.border = 1;
+        it.border_color = 0x00606070u;
+    } else if (kind == 3) {
+        it.bg = 0x00FFFFFFu;
+        it.border = 1;
+        it.border_color = 0x00404048u;
+    } else {
+        it.bg = 0x00FFFFFFu;
+        it.border = 1;
+        it.border_color = 0x00707080u;
+    }
+    layout_replaced(L, b, &it);
+    if (val && vlen > 0 && kind != 3) {
+        uint32_t show = vlen;
+        if (show > 18) show = 18;
+        wv_disp_t tx;
+        memset(&tx, 0, sizeof(tx));
+        tx.type = WV_D_TEXT;
+        tx.x = it.x + 4;
+        tx.y = it.y + ((int32_t)it.h - WV_LINE_H) / 2;
+        if (tx.y < it.y) tx.y = it.y;
+        tx.w = show * WV_GLYPH_W;
+        tx.h = WV_LINE_H;
+        tx.fg = 0x00202028u;
+        tx.text_off = wv_layout_pool_put(L, val, show);
+        tx.text_len = show;
+        wv_layout_add_item(L, &tx);
+    }
+}
+
 /* ---- word layout ---- */
 
 /* Align the finished line: shift every text item of the current line by
@@ -213,9 +351,10 @@ static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
     if (b->inl_has_text) {
         if (b->inl_x + WV_GLYPH_W + w > right) {
             finish_line(L, b);                  /* align the old line */
-            b->inl_y += WV_LINE_H;              /* wrap */
+            b->inl_y += b->line_h > 0 ? b->line_h : WV_LINE_H;
             b->inl_x = b->content_x;
             b->inl_has_text = 0;
+            b->line_h = WV_LINE_H;
         } else {
             b->inl_x += WV_GLYPH_W;             /* the space between words */
         }
@@ -248,9 +387,10 @@ static void layout_word(wv_layout_t *L, wv_blk_t *b, const wv_inl_t *st,
 static void layout_br(wv_layout_t *L, wv_blk_t *b) {
     if (!b->inl_has_text) return;    /* leading breaks collapse */
     finish_line(L, b);
-    b->inl_y += WV_LINE_H;
+    b->inl_y += b->line_h > 0 ? b->line_h : WV_LINE_H;
     b->inl_x = b->content_x;
     b->inl_has_text = 0;
+    b->line_h = WV_LINE_H;
 }
 
 static void layout_text_node(wv_layout_t *L, const wv_dom_t *d, uint32_t node,
@@ -410,6 +550,7 @@ static void open_block(wv_layout_t *L, const wv_dom_t *d, uint32_t node) {
     b->align = st.align;
     b->line_start = -1;
     b->line_w = 0;
+    b->line_h = WV_LINE_H;
 
     /* push a base inline style for this block: block styles (colour,
      * font-weight) inherit into the text inside it */
@@ -435,8 +576,9 @@ static void close_block(wv_layout_t *L) {
     finish_line(L, b);                           /* align the last line */
     if (L->inl_used > b->inl_mark) L->inl_used = b->inl_mark;
     int32_t ch = b->cur_y;
-    if (b->inl_has_text && b->inl_y + WV_LINE_H > ch)
-        ch = b->inl_y + WV_LINE_H;
+    int32_t lh = b->line_h > 0 ? b->line_h : WV_LINE_H;
+    if (b->inl_has_text && b->inl_y + lh > ch)
+        ch = b->inl_y + lh;
     uint32_t bh = (uint32_t)((ch - b->content_top) + b->p_t + b->p_b);
     if (bh < b->min_h) bh = b->min_h;
     b->box_h = bh;
@@ -448,6 +590,7 @@ static void close_block(wv_layout_t *L) {
     parent->inl_x = parent->content_x;
     parent->inl_y = parent->cur_y;
     parent->inl_has_text = 0;
+    parent->line_h = WV_LINE_H;
 
     L->blk_used--;
 }
@@ -489,6 +632,7 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w,
         root->inl_mark = 0;
         root->line_start = -1;
         root->line_w = 0;
+        root->line_h = WV_LINE_H;
         L->blk_used = 1;
 
         wv_disp_t it;
@@ -596,29 +740,18 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w,
                 }
                 continue;
             }
-            if (wv_inline_tag(name, nlen)) {
-                if (wv_void_inline(name, nlen)) {
-                    /* <br> / <img>: act on the current line, no subtree */
+            if (wv_inline_tag(name, nlen) || wv_replaced(name, nlen)) {
+                if (wv_void_inline(name, nlen) || wv_replaced(name, nlen)) {
+                    /* <br> / <img> / form widgets: act on the current line */
                     if (wv_name_is(name, nlen, "br")) {
                         if (L->blk_used >= 1)
                             layout_br(L, &L->blks[L->blk_used - 1]);
-                    } else { /* img: inline placeholder box */
-                        if (L->blk_used >= 1) {
-                            wv_blk_t *b = &L->blks[L->blk_used - 1];
-                            wv_disp_t it;
-                            memset(&it, 0, sizeof(it));
-                            it.type = WV_D_BOX;
-                            it.x = b->inl_x;
-                            it.y = b->inl_y;
-                            it.w = 16;
-                            it.h = 16;
-                            it.bg = 0x00E0E0E0u;
-                            wv_layout_add_item(L, &it);
-                            if (b->inl_has_text)
-                                b->inl_x += WV_GLYPH_W;
-                            b->inl_x += 16;
-                            b->inl_has_text = 1;
-                        }
+                    } else if (L->blk_used >= 1) {
+                        wv_blk_t *b = &L->blks[L->blk_used - 1];
+                        if (wv_name_is(name, nlen, "img"))
+                            layout_img(L, d, node, b);
+                        else
+                            layout_widget(L, d, node, b, name, nlen);
                     }
                     /* skip children (void elements have none) */
                     uint32_t ns = nd->next_sibling;
@@ -688,8 +821,9 @@ int wv_layout_run(wv_layout_t *L, const wv_dom_t *d, int32_t viewport_w,
     if (L->blk_used >= 1) {
         wv_blk_t *root = &L->blks[0];
         int32_t ch = root->cur_y;
-        if (root->inl_has_text && root->inl_y + WV_LINE_H > ch)
-            ch = root->inl_y + WV_LINE_H;
+        int32_t rlh = root->line_h > 0 ? root->line_h : WV_LINE_H;
+        if (root->inl_has_text && root->inl_y + rlh > ch)
+            ch = root->inl_y + rlh;
         root->box_h = (uint32_t)(ch > 0 ? ch : 0);
         wv_disp_t *it = wv_layout_item(L, root->box_item);
         if (it) it->h = root->box_h;

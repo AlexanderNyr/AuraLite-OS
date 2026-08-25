@@ -29,14 +29,23 @@
 
 #define WV_FONT_W 8
 #define WV_FONT_H 16
+#define WV_MAX_IMG 8
+
+typedef struct {
+    const uint32_t *px;
+    int w, h;
+} wv_img_slot;
 
 typedef struct {
     uint32_t *page;         /* caller's pixel buffer (XRGB8888) */
     int32_t   w, h;         /* buffer size in pixels */
     const uint8_t *glyphs;  /* 256 glyphs × 16 bytes, MSB-first rows */
+    const wv_img_slot *imgs;
+    int nimg;
 } wv_paint_t;
 
 void wv_paint_init(wv_paint_t *P, uint32_t *page, int32_t w, int32_t h);
+void wv_paint_set_images(wv_paint_t *P, const wv_img_slot *imgs, int n);
 
 /* Fill a rectangle, clipped to the buffer.  (x,y) is the top-left. */
 void wv_paint_rect(wv_paint_t *P, int32_t x, int32_t y,

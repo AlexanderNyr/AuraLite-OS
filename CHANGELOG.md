@@ -2,6 +2,19 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [gbrowser: images and form widgets] 2026-08-25
+
+Google's homepage was mostly grey boxes because `<img>` was a 16×16
+placeholder and the search field was invisible.  gbrowser now fetches
+up to eight images (relative, absolute, protocol-relative, `data:`),
+decodes PNG (8-bit gray/rgb/palette/rgba, no Adam7), baseline JPEG,
+GIF first frame and 24/32-bpp BMP, and nearest-neighbour blits them.
+`<input>`/`<button>`/`<textarea>`/`<select>` become visible widgets
+(`type=hidden` is skipped).  A tall image grows the line box so later
+text does not paint on top of the logo.  The demo-page paint hash
+stays `0xA29E776C` (that document has no `<img>`).  Still no JS, SVG
+or video; P-384/SHA-384 (`example.com`) is unchanged.
+
 ## [HTTPS: leftover app records, CP1251 glyphs, wttr.in] 2026-08-25
 
 Live `https://wttr.in/` handshook and certval'd but HTTP died with

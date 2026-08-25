@@ -48,6 +48,48 @@ void wv_paint_init(wv_paint_t *P, uint32_t *page, int32_t w, int32_t h) {
         wv_font_ready = 1;
     }
     P->glyphs = wv_font_glyphs;
+    P->imgs = 0;
+    P->nimg = 0;
+}
+
+void wv_paint_set_images(wv_paint_t *P, const wv_img_slot *imgs, int n) {
+    P->imgs = imgs;
+    P->nimg = n;
+}
+
+static void wv_paint_image(wv_paint_t *P, const wv_disp_t *it, int32_t py) {
+    int32_t dw = (int32_t)it->w, dh = (int32_t)it->h;
+    if (dw <= 0 || dh <= 0) return;
+    const uint32_t *src = NULL;
+    int sw = 0, sh = 0;
+    if (it->img_id > 0 && P->imgs && (int)it->img_id <= P->nimg) {
+        const wv_img_slot *s = &P->imgs[it->img_id - 1];
+        if (s->px && s->w > 0 && s->h > 0) {
+            src = s->px; sw = s->w; sh = s->h;
+        }
+    }
+    if (!src) {
+        uint32_t fill = it->bg ? it->bg : 0x00E0E0E0u;
+        wv_paint_rect(P, it->x, py, dw, dh, fill);
+        if (it->border)
+            wv_paint_rect(P, it->x, py, dw, 1, it->border_color);
+        return;
+    }
+    int32_t row, col;
+    for (row = 0; row < dh; row++) {
+        int32_t sy = py + row;
+        if (sy < 0 || sy >= P->h) continue;
+        int srcy = row * sh / dh;
+        if (srcy >= sh) srcy = sh - 1;
+        uint32_t *line = P->page + (size_t)sy * P->w;
+        for (col = 0; col < dw; col++) {
+            int32_t sx = it->x + col;
+            if (sx < 0 || sx >= P->w) continue;
+            int srcx = col * sw / dw;
+            if (srcx >= sw) srcx = sw - 1;
+            line[sx] = src[(size_t)srcy * (size_t)sw + (size_t)srcx] | 0x00000000u;
+        }
+    }
 }
 
 void wv_paint_rect(wv_paint_t *P, int32_t x, int32_t y,
@@ -139,7 +181,10 @@ void wv_paint_run(wv_paint_t *P, const wv_layout_t *L, int32_t scroll_y) {
     for (size_t i = 0; i < L->item_count; i++) {
         const wv_disp_t *it = &L->items[i];
         int32_t py = it->y - scroll_y;
-        if (it->type == WV_D_BOX) {
+        if (it->type == WV_D_IMAGE) {
+            if (py + (int32_t)it->h <= 0 || py >= P->h) continue;
+            wv_paint_image(P, it, py);
+        } else if (it->type == WV_D_BOX) {
             if (py + (int32_t)it->h <= 0 || py >= P->h) continue;
             if (it->bg)
                 wv_paint_rect(P, it->x, py, (int32_t)it->w, (int32_t)it->h, it->bg);
@@ -193,9 +238,12 @@ void wv_paint_band(wv_paint_t *P, const wv_layout_t *L, int32_t scroll_y,
     for (size_t i = 0; i < L->item_count; i++) {
         const wv_disp_t *it = &L->items[i];
         int32_t py = it->y - scroll_y;
-        int32_t ih = (it->type == WV_D_BOX) ? (int32_t)it->h : WV_FONT_H;
+        int32_t ih = (it->type == WV_D_BOX || it->type == WV_D_IMAGE)
+                         ? (int32_t)it->h : WV_FONT_H;
         if (py + ih <= band_top || py >= band_top + band_h) continue;
-        if (it->type == WV_D_BOX) {
+        if (it->type == WV_D_IMAGE) {
+            wv_paint_image(P, it, py);
+        } else if (it->type == WV_D_BOX) {
             /* CLIP the box to the band: its part above the band was
              * already painted by the retained buffer, and repainting it
              * would erase content drawn on top of it.  (A box fully

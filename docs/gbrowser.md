@@ -33,9 +33,9 @@ These are plan decisions, not TODOs; each has a pointer to where it lives.
 
 | Limitation | Why | Reference |
 |---|---|---|
-| **HTTPS is real, not complete** | TLS 1.3 + chain validation against `/etc/ssl/roots.pem`.  Missing: P-384/SHA-384 leaf signatures (`example.com` / `ietf.org` still `hrc=-26`), images, JS. | `WEBVIEW_PLAN.md` D6, `docs/live_web.md` |
+| **HTTPS is real, not complete** | TLS 1.3 + chain validation against `/etc/ssl/roots.pem`.  Missing: P-384/SHA-384 leaf signatures (`example.com` / `ietf.org` still `hrc=-26`), JS, SVG, video. | `WEBVIEW_PLAN.md` D6, `docs/live_web.md` |
 | **No JavaScript** | A JS engine is larger than the whole plan and would not fit `SPAWN_MAX_IMAGE` (1 MiB). Permanent within this plan. | `WEBVIEW_PLAN.md` D5 |
-| **No images** | PNG/JPEG/GIF decoders are each a phase in their own right; they belong in a follow-up once boxes exist to hold them. | `WEBVIEW_PLAN.md` §7 |
+| **Images are decoded, not complete** | PNG (8-bit, no Adam7), baseline JPEG, GIF first frame, BMP 24/32.  Cap 8 images / 800×600.  No SVG, no APNG, no video. | this document §13 |
 | **No proportional fonts** | The only rasteriser is PSF2 8×16 monospace. `<b>` is rendered as a synthesised double-strike until a real font path exists. | `WEBVIEW_PLAN.md` D7 |
 | **No CSS beyond a named subset** | `display` (`block`/`inline`/`none`), `color`, `background-color`, `width`, `height`, `margin`, `padding`, `border`, `font-weight`, `text-align`. Adding to the list is a decision, not a slope. | `WEBVIEW_PLAN.md` D4 |
 | **No standards compliance claim** | This renders a deliberately chosen subset. | `WEBVIEW_PLAN.md` §7 |
@@ -154,8 +154,10 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
   whitespace dropped), word wrap at the content edge, `<br>`, `<pre>`
   preserving whitespace, inline style stack for `<b>`/`<strong>` (bold),
   `<a>` (blue + underline), `<u>` (underline) — nesting-safe.
-- Placeholders: `<img>` 16×16 inline box; `<hr>` rule; `<canvas width
-  height>` block (W7 backs it with an FBO).
+- Replaced content: `<img>` is an inline box (width/height attributes,
+  else 16×16) whose `src` is fetched and painted; `<input>` / `<button>`
+  / `<textarea>` / `<select>` become visible form widgets; `<hr>` rule;
+  `<canvas width height>` block (W7 backs it with an FBO).
 - Hidden elements (head, title, style, script, meta, link, base, noscript)
   produce no boxes.
 - Gate: `tests/unit/test_wv_layout.c` — 79 host checks, 0 failures: wrap,

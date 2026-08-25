@@ -1543,6 +1543,7 @@ $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/aurag
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gbrowser.o: userspace/apps/gbrowser/gbrowser.c lib/libauragui/include/auragui.h \
                          userspace/apps/gbrowser/wv_html.h userspace/apps/gbrowser/wv_dom.h \
+                         userspace/apps/gbrowser/wv_image.h userspace/apps/gbrowser/wv_paint.h \
                          lib/libahttp/include/ahttp/http.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_html.o: userspace/apps/gbrowser/wv_html.c userspace/apps/gbrowser/wv_html.h
@@ -1568,6 +1569,11 @@ $(USER_BUILD)/wv_http.o: userspace/apps/gbrowser/wv_http.c userspace/apps/gbrows
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_canvas.o: userspace/apps/gbrowser/wv_canvas.c userspace/apps/gbrowser/wv_canvas.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I lib/libgl/include -c $< -o $@
+$(USER_BUILD)/wv_inflate.o: userspace/apps/gbrowser/wv_inflate.c userspace/apps/gbrowser/wv_inflate.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/wv_image.o: userspace/apps/gbrowser/wv_image.c userspace/apps/gbrowser/wv_image.h \
+                          userspace/apps/gbrowser/wv_inflate.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # gbrowser links the tokeniser + DOM builder + layout + painter + css; the
 # generic %.elf pattern rule does not know about them, so give explicit
@@ -1576,7 +1582,9 @@ $(USER_BUILD)/gbrowser.elf: $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
                            $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
                            $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
                            $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
-                           $(USER_BUILD)/wv_canvas.o $(USER_BUILD)/ahttp.o \
+                           $(USER_BUILD)/wv_canvas.o \
+                           $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
+                           $(USER_BUILD)/ahttp.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) $(USER_GL_OBJ) \
                            $(LIBATLS) lib/libc/user.ld
 	@mkdir -p $(dir $@)
@@ -1584,9 +1592,11 @@ $(USER_BUILD)/gbrowser.elf: $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
 	      $(USER_BUILD)/wv_dom.o $(USER_BUILD)/wv_layout.o \
 	      $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
 	      $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
-	      $(USER_BUILD)/wv_canvas.o $(USER_BUILD)/ahttp.o \
+	      $(USER_BUILD)/wv_canvas.o \
+	      $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
+	      $(USER_BUILD)/ahttp.o \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) $(USER_GL_OBJ) $(LIBATLS) -o $@
-	@echo "[link] $@ (wv_* + libgl canvas + libahttp/libatls https X6)"
+	@echo "[link] $@ (wv_* + images + libgl canvas + libahttp/libatls https X6)"
 $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2175,6 +2185,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_wv_css \
                 $(BUILD_DIR)/test_wv_http \
                 $(BUILD_DIR)/test_wv_canvas \
+                $(BUILD_DIR)/test_wv_image \
                 $(BUILD_DIR)/test_uaccess \
                 $(BUILD_DIR)/test_ahci_serialisation \
                 $(BUILD_DIR)/test_vma_m4 \
@@ -2497,6 +2508,17 @@ $(BUILD_DIR)/test_wv_canvas: tests/unit/test_wv_canvas.c \
 	$(HOST_CC) $(LIBGL_TEST_CFLAGS) -I userspace/apps/gbrowser \
 	           tests/unit/test_wv_canvas.c userspace/apps/gbrowser/wv_canvas.c \
 	           $(LIBGL_TEST_SRCS) $(LIBGL_TEST_STUB) -o $@ -lm
+
+# Web view image decode (PNG/JPEG/GIF/BMP + inflate): REAL sources.
+$(BUILD_DIR)/test_wv_image: tests/unit/test_wv_image.c \
+                            userspace/apps/gbrowser/wv_inflate.c \
+                            userspace/apps/gbrowser/wv_inflate.h \
+                            userspace/apps/gbrowser/wv_image.c \
+                            userspace/apps/gbrowser/wv_image.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	           tests/unit/test_wv_image.c userspace/apps/gbrowser/wv_inflate.c \
+	           userspace/apps/gbrowser/wv_image.c -o $@
 
 # M3 (MATURITY_PLAN.md): fault-recovering uaccess validation layer.
 $(BUILD_DIR)/test_uaccess: tests/unit/test_uaccess.c kernel/proc/usercopy.h

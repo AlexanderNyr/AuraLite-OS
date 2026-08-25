@@ -8,8 +8,9 @@
  * the cost of the plumbing, measured rather than guessed.
  *
  * The window itself states the plan's limitations (D6/W0 objective): no
- * HTTPS, no JavaScript, no images, monospace glyphs only.  The limitation
- * must be discoverable by reading, not by pointing at a blank window.
+ * JavaScript, no SVG/video, monospace glyphs only.  Images (PNG/JPEG/GIF/BMP)
+ * and form widgets are painted.  The limitation must be discoverable by
+ * reading, not by pointing at a blank window.
  *
  * Conventions inherited from the tree:
  *   - /tmp/gbrowser.frames holds an optional decimal frame count (same
@@ -37,6 +38,7 @@
 #include "wv_url.h"
 #include "wv_http.h"
 #include "wv_canvas.h"
+#include "wv_image.h"
 #include "ahttp/http.h"   /* X6: https via libahttp (keep-alive + TLS 1.3) */
 
 /* The page surface.  VIEW_W x VIEW_H x 4 bytes = 1.92 MiB on the heap. */
@@ -146,6 +148,10 @@ static char      current_url_str[WV_URL_MAX_URL] = "";   /* base for links */
  * GL is NOT on the paint critical path). */
 static uint32_t *cv_px = 0;
 static int       cv_w = 0, cv_h = 0, cv_valid = 0;
+
+#define PAGE_MAX_IMG WV_MAX_IMG
+static wv_img_slot g_imgs[PAGE_MAX_IMG];
+static int         g_nimg = 0;
 
 /* page-build arenas, global so load_html() can rebuild them */
 static wv_token_t    g_tt[2048];
@@ -259,6 +265,8 @@ static char *wrap_plain(const char *s, size_t n, size_t *out_len) {
 }
 
 static void page_load_html(const char *html, size_t len);
+static void page_load_images(void);
+static void page_free_images(void);
 
 static void page_load_body(const char *body, size_t blen, const char *hdrs) {
     int html = looks_like_html(body, blen);
@@ -327,6 +335,7 @@ static void page_load_html(const char *html, size_t len) {
         printf("[gbrowser] canvas: rendered %dx%d cube in %ld us\n", w, h, us);
         break;   /* one canvas per page is enough for the built-in scenes */
     }
+    page_load_images();
 }
 
 /* ---- Fetch path: libahttp keep-alive client (REALINTERNET_PLAN X6) ----
@@ -414,6 +423,72 @@ static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out
     return 0;
 }
 
+static void page_free_images(void) {
+    int i;
+    for (i = 0; i < g_nimg; i++) {
+        if (g_imgs[i].px) free((void *)g_imgs[i].px);
+        g_imgs[i].px = 0;
+        g_imgs[i].w = g_imgs[i].h = 0;
+    }
+    g_nimg = 0;
+    wv_paint_set_images(&P, 0, 0);
+}
+
+static void page_load_images(void) {
+    page_free_images();
+    wv_url_t base;
+    int have_base = current_url_str[0] &&
+                    wv_url_parse(current_url_str, &base) && base.ok;
+    static char got[PAGE_MAX_IMG][WV_URL_MAX_URL];
+    size_t i;
+    for (i = 0; i < lay.item_count && g_nimg < PAGE_MAX_IMG; i++) {
+        wv_disp_t *it = &lay.items[i];
+        if (it->type != WV_D_IMAGE || it->text_len == 0) continue;
+        const char *src = wv_layout_str(&lay, it->text_off);
+        if (!src || !src[0]) continue;
+        int k, dup = -1;
+        for (k = 0; k < g_nimg; k++)
+            if (strcmp(got[k], src) == 0) { dup = k; break; }
+        if (dup >= 0) { it->img_id = (uint16_t)(dup + 1); continue; }
+
+        uint32_t *px = NULL;
+        int iw = 0, ih = 0;
+        int rc = -1;
+        if (strncmp(src, "data:", 5) == 0) {
+            rc = wv_image_decode_data_url(src, &px, &iw, &ih);
+        } else if (have_base) {
+            wv_url_t u;
+            if (!wv_url_resolve(src, &base, &u) || !u.ok) continue;
+            char *body = NULL;
+            size_t blen = 0;
+            if (wv_fetch_url(&u, &body, &blen, NULL) != 0 || !body) {
+                printf("[gbrowser] img: fetch fail %s\n", src);
+                continue;
+            }
+            if (blen > 0)
+                rc = wv_image_decode((const uint8_t *)body, blen, &px, &iw, &ih);
+            free(body);
+        } else {
+            continue;
+        }
+        if (rc != 0 || !px) {
+            printf("[gbrowser] img: decode fail %s\n", src);
+            continue;
+        }
+        size_t sl = strlen(src);
+        if (sl >= WV_URL_MAX_URL) sl = WV_URL_MAX_URL - 1;
+        memcpy(got[g_nimg], src, sl);
+        got[g_nimg][sl] = 0;
+        g_imgs[g_nimg].px = px;
+        g_imgs[g_nimg].w = iw;
+        g_imgs[g_nimg].h = ih;
+        it->img_id = (uint16_t)(g_nimg + 1);
+        printf("[gbrowser] img: %dx%d %s\n", iw, ih, src);
+        g_nimg++;
+    }
+    wv_paint_set_images(&P, g_imgs, g_nimg);
+}
+
 /* The window title follows the current page. */
 static void set_title_for_url(void) {
     char t[96];
@@ -473,6 +548,8 @@ static void navigate_ex(const char *url_text, int push) {
         return;
     }
     printf("[gbrowser] nav: loaded %u bytes from %s\n", (unsigned)blen, fmt);
+    strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
+    current_url_str[WV_URL_MAX_URL - 1] = 0;
     page_load_body(body, blen, hdrs);
     printf("[gbrowser] nav: html built (items=%u, h=%u)\n",
            (unsigned)lay.item_count, (unsigned)lay.content_h);
@@ -525,6 +602,7 @@ static void nav_forward(void) {
 /* Home: back to the built-in demo page. */
 static void go_home(void) {
     printf("[gbrowser] home\n");
+    page_free_images();
     page_build();      /* forward-declared below */
     on_page = 1;
     repaint();
@@ -1188,6 +1266,8 @@ int main(void) {
     }
 
 done:
+    page_free_images();
+    if (cv_px) { free(cv_px); cv_px = 0; }
     printf("[gbrowser] W0 scaffold complete\n");
     ag_window_destroy(wid);
     free(page);
