@@ -74,14 +74,17 @@ static void bn_mul(atls_bignum *r, const atls_bignum *a, const atls_bignum *b) {
     for (int i = 0; i < a->used; i++) {
         uint64_t carry = 0;
         for (int j = 0; j < b->used || carry; j++) {
-            uint64_t prod = (uint64_t)r->v[i + j]
+            int idx = i + j;
+            if (idx >= ATLS_RSA_MAX_LIMBS) break;
+            uint64_t prod = (uint64_t)r->v[idx]
                           + (uint64_t)a->v[i] * (j < b->used ? b->v[j] : 0)
                           + carry;
-            r->v[i + j] = (uint32_t)prod;
+            r->v[idx] = (uint32_t)prod;
             carry = prod >> 32;
         }
     }
     r->used = a->used + b->used;
+    if (r->used > ATLS_RSA_MAX_LIMBS) r->used = ATLS_RSA_MAX_LIMBS;
     while (r->used > 0 && r->v[r->used - 1] == 0) r->used--;
 }
 
@@ -112,28 +115,35 @@ found_a:
     for (int bit = a_bits - 1; bit >= 0; bit--) {
         /* Shift r left by 1, OR in the current bit of a. */
         uint64_t carry = 0;
-        for (int j = 0; j <= r->used; j++) {
-            uint64_t val = (uint64_t)r->v[j] * 2 + carry;
+        int lim = r->used;
+        if (lim < 1) lim = 1;
+        if (lim > ATLS_RSA_MAX_LIMBS) lim = ATLS_RSA_MAX_LIMBS;
+        for (int j = 0; j < lim; j++) {
+            uint64_t val = ((uint64_t)r->v[j] << 1) | carry;
             r->v[j] = (uint32_t)val;
             carry = val >> 32;
         }
-        if (r->used == 0 && carry == 0) { /* keep used */ }
-        r->used++;
+        if (carry && lim < ATLS_RSA_MAX_LIMBS) {
+            r->v[lim] = (uint32_t)carry;
+            r->used = lim + 1;
+        } else {
+            r->used = lim;
+        }
         while (r->used > 0 && r->v[r->used - 1] == 0) r->used--;
 
         /* Add the current bit from a. */
         int word = bit / 32;
         int bit_in_word = bit % 32;
         if (word < a->used && (a->v[word] & (1u << bit_in_word))) {
-            uint64_t c = r->v[0] + 1;
+            uint64_t c = (uint64_t)r->v[0] + 1;
             r->v[0] = (uint32_t)c;
             c >>= 32;
-            for (int j = 1; c && j <= r->used; j++) {
+            for (int j = 1; c && j < ATLS_RSA_MAX_LIMBS; j++) {
                 uint64_t val = (uint64_t)r->v[j] + c;
                 r->v[j] = (uint32_t)val;
                 c = val >> 32;
+                if (j + 1 > r->used) r->used = j + 1;
             }
-            if (c) { r->v[r->used] = (uint32_t)c; r->used++; }
         }
 
         /* If r >= m, subtract m. */

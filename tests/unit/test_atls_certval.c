@@ -345,6 +345,54 @@ static void test_ecdsa_chain_flipped_signature(void) {
     CHECK(rc == ATLS_CERTVAL_ERR_SIGNATURE, "ECDSA chain with flipped signature refused");
 }
 
+static void test_pinned_intermediate(void) {
+    /* Pin the intermediate.  The chain still carries the root after it
+     * (as Google sends WE2 then GTS R4).  Walk must stop at the pin
+     * and not demand the rest of the presented chain. */
+    atls_certval_ctx ctx;
+    atls_trust_root roots[1] = { { test_intermediate_der,
+                                   test_intermediate_der_len } };
+    atls_certval_init(&ctx, roots, 1);
+    const uint8_t *chain[3] = {
+        test_leaf_der, test_intermediate_der, ecdsa_leaf_der
+    };
+    size_t lens[3] = {
+        test_leaf_der_len, test_intermediate_der_len, ecdsa_leaf_der_len
+    };
+    atls_time_now now = get_test_time();
+    int rc = atls_certval_verify(&ctx, chain, lens, 3,
+                                 "example.auraos.dev", &now);
+    CHECK(rc == ATLS_CERTVAL_OK,
+          "chain stops at pinned intermediate (ignores leftover certs)");
+}
+
+static void test_rsa4096_self_signed(void) {
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "openssl req -x509 -newkey rsa:4096 -keyout /tmp/n5_r4k.key "
+        "-out /tmp/n5_r4k.pem -days 365 -nodes "
+        "-subj '/CN=RSA4096 Test' "
+        "-addext 'basicConstraints=CA:FALSE' "
+        "-addext 'keyUsage=digitalSignature' 2>/dev/null && "
+        "openssl x509 -in /tmp/n5_r4k.pem -outform DER -out /tmp/n5_r4k.der "
+        "2>/dev/null");
+    if (system(cmd) != 0) { CHECK(0, "RSA-4096 cert generation"); return; }
+    uint8_t der[8192];
+    size_t n;
+    FILE *f = fopen("/tmp/n5_r4k.der", "rb");
+    if (!f) { CHECK(0, "RSA-4096 cert read"); return; }
+    n = fread(der, 1, sizeof der, f);
+    fclose(f);
+    atls_certval_ctx ctx;
+    atls_trust_root roots[1] = { { der, n } };
+    atls_certval_init(&ctx, roots, 1);
+    const uint8_t *chain[1] = { der };
+    size_t lens[1] = { n };
+    atls_time_now now = get_test_time();
+    int rc = atls_certval_verify(&ctx, chain, lens, 1, NULL, &now);
+    CHECK(rc == ATLS_CERTVAL_OK, "RSA-4096 PKCS#1v1.5 self-signed verifies");
+}
+
 int main(void) {
     printf("=== N5 Certificate Validation Test Suite ===\n\n");
 
@@ -374,6 +422,8 @@ int main(void) {
           "ECDSA test certificates generated");
     test_ecdsa_chain_valid();
     test_ecdsa_chain_flipped_signature();
+    test_pinned_intermediate();
+    test_rsa4096_self_signed();
 
     printf("\n=== %d/%d passed ===\n", tests_run - tests_failed, tests_run);
     return tests_failed ? 1 : 0;

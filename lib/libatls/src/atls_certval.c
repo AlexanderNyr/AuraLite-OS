@@ -205,50 +205,69 @@ int atls_certval_verify(atls_certval_ctx *ctx,
             return ATLS_CERTVAL_ERR_CHAIN;
     }
 
-    /* 1. Verify chain links. */
-    for (int i = 0; i < chain_len - 1; i++) {
-        /* issuer[i] must equal subject[i+1]. */
-        if (certs[i].issuer.len != certs[i + 1].subject.len) {
-            return ATLS_CERTVAL_ERR_CHAIN;
-        }
-        for (size_t j = 0; j < certs[i].issuer.len; j++) {
-            if (certs[i].issuer.data[j] != certs[i + 1].subject.data[j]) {
-                return ATLS_CERTVAL_ERR_CHAIN;
+    /* 1–2. Walk leaf → … and stop at the first cert whose issuer is
+     * a trust anchor (or which is itself an anchor).  Google sends
+     * leaf + WE2 + GTS R4; R4 is P-384/SHA-384 which we cannot
+     * verify, but WE2 can be pinned and the walk must not insist on
+     * the rest of the presented chain. */
+    int found_root = 0;
+    int trusted_upto = -1;
+    for (int i = 0; i < chain_len; i++) {
+        for (int r = 0; r < ctx->num_roots; r++) {
+            atls_x509_cert root;
+            if (atls_x509_parse(ctx->roots[r].der, ctx->roots[r].der_len,
+                                &root) != ATLS_OK)
+                continue;
+            if (certs[i].issuer.len == root.subject.len) {
+                int match = 1;
+                for (size_t j = 0; j < certs[i].issuer.len; j++) {
+                    if (certs[i].issuer.data[j] != root.subject.data[j]) {
+                        match = 0; break;
+                    }
+                }
+                if (match) {
+                    int ssrc = verify_cert_signature(&certs[i], &root);
+                    if (ssrc != ATLS_CERTVAL_OK) return ssrc;
+                    found_root = 1;
+                    trusted_upto = i;
+                    break;
+                }
+            }
+            if (certs[i].subject.len == root.subject.len &&
+                certs[i].spki.len == root.spki.len) {
+                int same = 1;
+                for (size_t j = 0; j < certs[i].subject.len; j++) {
+                    if (certs[i].subject.data[j] != root.subject.data[j]) {
+                        same = 0; break;
+                    }
+                }
+                if (same) {
+                    for (size_t j = 0; j < certs[i].spki.len; j++) {
+                        if (certs[i].spki.data[j] != root.spki.data[j]) {
+                            same = 0; break;
+                        }
+                    }
+                }
+                if (same) { found_root = 1; trusted_upto = i; break; }
             }
         }
-        /* Signature of cert[i] verified by cert[i+1]'s public key. */
+        if (found_root) break;
+        if (i + 1 >= chain_len) break;
+        if (certs[i].issuer.len != certs[i + 1].subject.len)
+            return ATLS_CERTVAL_ERR_CHAIN;
+        for (size_t j = 0; j < certs[i].issuer.len; j++) {
+            if (certs[i].issuer.data[j] != certs[i + 1].subject.data[j])
+                return ATLS_CERTVAL_ERR_CHAIN;
+        }
         int src = verify_cert_signature(&certs[i], &certs[i + 1]);
         if (src != ATLS_CERTVAL_OK) return src;
     }
-
-    /* 2. Verify last cert against trust store. */
-    const atls_x509_cert *last = &certs[chain_len - 1];
-    int found_root = 0;
-    for (int r = 0; r < ctx->num_roots; r++) {
-        atls_x509_cert root;
-        if (atls_x509_parse(ctx->roots[r].der, ctx->roots[r].der_len,
-                            &root) != ATLS_OK)
-            continue;
-        /* issuer[last] == subject[root]? */
-        if (last->issuer.len != root.subject.len) continue;
-        int match = 1;
-        for (size_t j = 0; j < last->issuer.len; j++) {
-            if (last->issuer.data[j] != root.subject.data[j]) {
-                match = 0; break;
-            }
-        }
-        if (!match) continue;
-        /* Verify last cert's signature with root's public key. */
-        int ssrc = verify_cert_signature(last, &root);
-        if (ssrc != ATLS_CERTVAL_OK) return ssrc;
-        found_root = 1;
-        break;
-    }
     if (!found_root) return ATLS_CERTVAL_ERR_UNKNOWN_ROOT;   /* X8 diagnosis */
 
-    /* 3. Validity dates. */
+    /* 3. Validity dates (only the prefix we actually trusted). */
+    int ncheck = trusted_upto + 1;
     if (now) {
-        for (int i = 0; i < chain_len; i++) {
+        for (int i = 0; i < ncheck; i++) {
             if (!atls_certval_time_valid(&certs[i].not_before,
                                          &certs[i].not_after, now)) {
                 return ATLS_CERTVAL_ERR_EXPIRED;
@@ -275,12 +294,10 @@ int atls_certval_verify(atls_certval_ctx *ctx,
     /* 5. Basic constraints.
      * - Leaf: cA must NOT be TRUE.
      * - Intermediates: cA must be TRUE. */
-    for (int i = 1; i < chain_len; i++) printf(" cert[%d].is_ca=%d", i, certs[i].is_ca);
-    printf("\n");
     if (certs[0].is_ca) {
         return ATLS_CERTVAL_ERR_CA;
     }
-    for (int i = 1; i < chain_len; i++) {
+    for (int i = 1; i < ncheck; i++) {
         if (!certs[i].is_ca) {
             return ATLS_CERTVAL_ERR_CA;
         }
@@ -289,7 +306,7 @@ int atls_certval_verify(atls_certval_ctx *ctx,
     /* 6. Key usage.
      * - CA certs: keyCertSign (bit 5) must be set.
      * - Leaf: digitalSignature (bit 0) or keyEncipherment (bit 2). */
-    for (int i = 1; i < chain_len; i++) {
+    for (int i = 1; i < ncheck; i++) {
         if (certs[i].key_usage_present && !(certs[i].key_usage & (1 << 5)))
             return ATLS_CERTVAL_ERR_KEYUSAGE;
     }

@@ -23,6 +23,7 @@
 #include "atls/mlkem.h"
 #include "atls_rsa.h"
 #include <string.h>
+#include <stdio.h>
 
 /* Provided by the process's libc / test harness. */
 extern int getentropy(void *buffer, size_t length);
@@ -651,7 +652,9 @@ send_ch: ;
         if (mtype != ATLS_HS_SERVER_HELLO) {
             return fail(t, ATLS_ALERT_UNEXPECTED_MESSAGE);
         }
-        consume_hs_message(t);
+        /* Consume AFTER parsing: a packed record leaves the next
+         * handshake message in hs_buf, and consume memmoves it over
+         * this one.  ServerHello is usually alone; still be correct. */
 
         uint8_t *body = msg + 4;
         size_t body_len = msg_len - 4;
@@ -750,6 +753,7 @@ send_ch: ;
             return fail(t, ATLS_ALERT_MISSING_EXTENSION);
 
         atls_tls_transcript_update(&t->transcript, msg, msg_len);
+        consume_hs_message(t);
 
         if (hrr_detected) {
             uint8_t h_ch1[32];
@@ -837,9 +841,11 @@ send_ch: ;
         uint8_t h_before_update[32];
         atls_tls_transcript_snapshot(&t->transcript, h_before_update);
 
-        /* Update transcript with the DECRYPTED handshake message. */
+        /* Update transcript with the DECRYPTED handshake message.
+         * Consume AFTER the branch: Google/Cloudflare pack
+         * EE+Certificate+CV+Finished in one record, and consume
+         * memmoves the leftover over `msg`/`body`. */
         atls_tls_transcript_update(&t->transcript, msg, msg_len);
-        consume_hs_message(t);
 
         if (mtype == ATLS_HS_ENCRYPTED_EXTENSIONS) {
             if (hs_state != EXPECT_EE)
@@ -1066,6 +1072,7 @@ send_ch: ;
         } else {
             return fail(t, ATLS_ALERT_UNEXPECTED_MESSAGE);
         }
+        consume_hs_message(t);
     }
 
     /* Full chain validation (REALINTERNET_PLAN X2).  Only when a trust
@@ -1089,6 +1096,7 @@ send_ch: ;
              * validation code (X8) so the caller can say "root not in trust
              * store" (ATLS_CERTVAL_ERR_UNKNOWN_ROOT) instead of only a generic
              * handshake failure. */
+            printf("[tls] certval rc=%d\n", vrc);
             (void)fail(t, ATLS_ALERT_BAD_CERTIFICATE);
             return vrc;
         }

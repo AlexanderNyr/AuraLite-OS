@@ -13,9 +13,11 @@
 #include <stddef.h>
 
 /* Maximum RSA modulus size in bits (2048 is the common case;
- * 4096-bit support costs nothing except memory). */
+ * 4096-bit support is required for ISRG Root YR / X1).  Limb count
+ * is doubled so a 4096×4096 schoolbook product fits — the first
+ * 4096-bit verify wrote past v[128] and #GP'd the guest. */
 #define ATLS_RSA_MAX_BITS 4096
-#define ATLS_RSA_MAX_LIMBS (ATLS_RSA_MAX_BITS / 32)
+#define ATLS_RSA_MAX_LIMBS ((ATLS_RSA_MAX_BITS / 32) * 2)
 
 /* Big unsigned integer: limbs[0] is least significant. */
 typedef struct {

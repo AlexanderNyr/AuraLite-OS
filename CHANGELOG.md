@@ -2,6 +2,20 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HTTPS: packed-record consume, RSA-4096, google.com] 2026-08-24
+
+Live `https://google.com/` still failed after the packed-record keep-all
+fix: `consume_hs_message` ran *before* the Certificate/CV parser, so a
+record that held EE+Cert+CV+Finished memmoved the leftover over the
+message being parsed (`hrc=-11` `alert_sent=42`, `leaf_len=0`).
+Consume is now after the branch.  `wttr.in` #GP'd in certval: 4096-bit
+RSA (ISRG Root YR) wrote a schoolbook product past `atls_bignum.v[128]`.
+Limb count is 2× and the shift/mul loops are bounded.  SAN cap 16→64
+so `google.com` is not truncated off a 70-name Google leaf.
+`atls_certval_verify` stops at the first trusted issuer — GTS WE2 is
+pinned because R4 is P-384/SHA-384.  Host: google.com handshake +
+certval OK; wttr.in RSA-4096 verifies (no crash).
+
 ## [HTTPS: packed TLS records, bigger e1000 RX, more roots] 2026-08-24
 
 Live sites failed with `AHTTP_ERR_TLS` / `hrc=-13` (peer EOF) because

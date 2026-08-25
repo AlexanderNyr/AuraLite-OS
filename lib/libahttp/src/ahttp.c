@@ -1273,6 +1273,12 @@ const char *ahttp_strerror(int err, int tls_hrc) {
             return "TLS: certificate expired";
         if (tls_hrc == ATLS_CERTVAL_ERR_HOSTNAME)
             return "TLS: hostname does not match certificate";
+        if (tls_hrc == ATLS_CERTVAL_ERR_UNSUPPORTED)
+            return "TLS: unsupported certificate signature algorithm";
+        if (tls_hrc == ATLS_CERTVAL_ERR_SIGNATURE)
+            return "TLS: certificate signature verification failed";
+        if (tls_hrc == ATLS_CERTVAL_ERR_CHAIN)
+            return "TLS: certificate chain broken";
         if (tls_hrc == ATLS_ERR_PEER_EOF)
             return "TLS: peer closed during handshake";
         return "TLS handshake failed";

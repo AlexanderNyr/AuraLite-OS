@@ -243,11 +243,11 @@ static ahttp_client *wv_http_client(void) {
     if (!g_http) {
         g_http = ahttp_client_new();
         if (!g_http) return NULL;
-        static atls_trust_root roots[16];
-        static uint8_t root_der[16384];
+        static atls_trust_root roots[32];
+        static uint8_t root_der[65536];
         int n = 0;
         if (ahttp_load_trust_roots("/etc/ssl/roots.pem", roots, root_der,
-                                   16, sizeof(root_der), &n) == 0) {
+                                   32, sizeof(root_der), &n) == 0) {
             ahttp_client_set_trust_roots(g_http, roots, n, NULL);
             g_http_roots = n;
             printf("[gbrowser] fetch: %d trust root(s) from /etc/ssl/roots.pem\n", n);

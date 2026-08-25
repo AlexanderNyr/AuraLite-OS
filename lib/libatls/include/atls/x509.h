@@ -33,7 +33,7 @@
 extern "C" {
 #endif
 
-#define ATLS_X509_MAX_DNS_NAMES 16
+#define ATLS_X509_MAX_DNS_NAMES 64
 
 /* A raw slice of the input DER.  Valid for as long as the input buffer
  * the certificate was parsed from is valid. */

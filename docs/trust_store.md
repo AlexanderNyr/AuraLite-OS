@@ -55,9 +55,10 @@ the bytes in this repo can be audited against the source.
 | Amazon Root CA 1 | self-signed | `8E:CD:E6:88:4F:3D:87:B1:12:5B:A3:1A:C3:FC:B1:3D:70:16:DE:7F:57:CC:90:4F:E1:CB:97:C6:AE:98:19:6E` | 2015-05-26 | **2038-01-17** | Amazon |
 | Starfield Services Root G2 | self-signed | `56:8D:69:05:A2:C8:87:08:A4:B3:02:51:90:ED:CF:ED:B1:97:4A:60:6A:13:C6:E5:29:0F:CB:2A:E6:3E:DA:B5` | 2009-09-01 | **2037-12-31** | Amazon / Starfield |
 | USERTrust RSA CA | self-signed | `E7:93:C9:B0:2F:D8:AA:13:E2:1C:31:22:8A:CC:B0:81:19:64:3B:74:9C:89:89:64:B1:74:6D:46:C3:D4:CB:D2` | 2010-02-01 | **2038-01-18** | Sectigo / USERTrust |
+| GTS WE2 (intermediate pin) | GTS Root R4 | `9C:3F:2F:D1:1C:57:D7:C6:49:AD:5A:09:32:C0:F0:D2:97:56:F6:A0:A1:C7:4C:43:E1:E8:9A:62:D6:4C:D3:20` | 2023-12-13 | **2029-02-20** | Google Trust Services — pinned because R4 signs WE2 with ECDSA-SHA384/P-384, which libatls cannot verify yet. Leaf→WE2 is P-256 SHA-256. |
 
-Earliest expiry: **DigiCert Global Root CA on 2031-11-10**. That is the natural
-"rotate the store" checkpoint.
+Seventeen entries. Earliest *root* expiry: **DigiCert Global Root CA on 2031-11-10**.
+The WE2 pin expires **2029-02-20** — rotate or land P-384 before then.
 
 ## 3. Rotation procedure (the chosen path, end to end)
 

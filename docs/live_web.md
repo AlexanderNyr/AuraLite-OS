@@ -19,8 +19,8 @@ NIC + DNS).  At the shell:
 run http https://www.ietf.org/
 ```
 
-`/http` loads `/etc/ssl/roots.pem` (sixteen public roots; see
-[`trust_store.md`](trust_store.md)) and talks TLS 1.3 with
+`/http` loads `/etc/ssl/roots.pem` (seventeen public roots + the
+GTS WE2 pin; see [`trust_store.md`](trust_store.md)) and talks TLS 1.3 with
 ChaCha20-Poly1305 and the Y6 ClientHello (0x11EC first).
 
 ## The receipt slots
@@ -49,11 +49,14 @@ ChaCha20, P-256 SHA-256 CV, and a root we actually ship.
 
 ## CATCH, named
 
-1. **Trust store is sixteen roots** (DigiCert / ISRG / GTS /
-   GlobalSign / SSL.com / Amazon / USERTrust — see
-   [`trust_store.md`](trust_store.md)).  A host that still chains
-   to something we do not carry prints `root not in trust store`
-   (X8), not a generic TLS error.
+1. **Trust store is seventeen entries** (sixteen public roots +
+   the GTS WE2 intermediate pin — see [`trust_store.md`](trust_store.md)).
+   A host that still chains to something we do not carry prints
+   `root not in trust store` (X8), not a generic TLS error.
+   Packed TLS 1.3 records (Google/Cloudflare) are reassembled
+   without destroying the current handshake message.  RSA-4096
+   verify no longer overflows.  SAN matching keeps 64 dNSNames
+   so `google.com` is not lost behind `*.google.com`.
 2. **RSA-PSS is verified** (`rsa_pss_rsae_sha256`, EMSA-PSS SHA-256,
    MGF1, saltLen=32).  RES-53 is DONE.  A host whose leaf is RSA
    (rust-lang.org) no longer dies at CertificateVerify.

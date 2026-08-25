@@ -31,8 +31,8 @@ il_run_qemu "$LOG" 25
 
 il_assert_grep_fixed "$LOG" "AuraLite OS trust store: /etc/ssl/roots.pem" \
     "trustinfo reads the shipped trust store"
-il_assert_grep_fixed "$LOG" "16 trust root(s)." \
-    "sixteen roots are decoded"
+il_assert_grep_fixed "$LOG" "17 trust root(s)." \
+    "seventeen roots are decoded"
 il_assert_grep_fixed "$LOG" "DigiCert Global Root CA         2031-11-10" \
     "DigiCert Global Root CA expiry visible (2031-11-10)"
 il_assert_grep_fixed "$LOG" "DigiCert Global Root G3         2038-01-15" \
