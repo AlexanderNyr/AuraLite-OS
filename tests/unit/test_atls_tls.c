@@ -270,6 +270,15 @@ static void test_large_transfer(int port) {
 
     uint8_t resp[65536];
     size_t total = 0;
+    /* First read is deliberately smaller than a typical app record so
+     * atls_tls_read must hold the leftover (the wttr.in -6 bug). */
+    {
+        size_t chunk = 0;
+        rc = atls_tls_read(t, resp, 64, &chunk);
+        CHECK(rc == ATLS_OK && chunk > 0 && chunk <= 64,
+              "large: first slice (cap 64)");
+        total = chunk;
+    }
     while (1) {
         size_t chunk = 0;
         rc = atls_tls_read(t, resp + total, sizeof(resp) - total, &chunk);

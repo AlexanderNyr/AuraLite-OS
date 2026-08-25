@@ -94,6 +94,14 @@ struct atls_tls {
     uint8_t hs_buf[MAX_HS_BUF];
     size_t  hs_len;
 
+    /* Leftover decrypted application data.  A TLS record can be 16 KiB;
+     * ahttp reads 4 KiB at a time.  Without this hold, the tail of a
+     * large record is discarded and chunked HTTP (wttr.in) dies with
+     * AHTTP_ERR_RESPONSE. */
+    uint8_t app_hold[ATLS_TLS_MAX_RECORD];
+    size_t  app_hold_len;
+    size_t  app_hold_off;
+
     int alert_sent;
     int alert_recv;
     int done;
@@ -440,6 +448,20 @@ int atls_tls_read(atls_tls *t, uint8_t *buf, size_t cap, size_t *out) {
     if (!t || !t->done || t->closed || !out) return ATLS_ERR_INPUT;
     *out = 0;
 
+    if (t->app_hold_off < t->app_hold_len) {
+        size_t n = t->app_hold_len - t->app_hold_off;
+        if (n > cap) n = cap;
+        for (size_t i = 0; i < n; i++)
+            buf[i] = t->app_hold[t->app_hold_off + i];
+        t->app_hold_off += n;
+        if (t->app_hold_off >= t->app_hold_len) {
+            t->app_hold_len = 0;
+            t->app_hold_off = 0;
+        }
+        *out = n;
+        return ATLS_OK;
+    }
+
     while (1) {
         uint8_t rtype;
         size_t rlen;
@@ -472,6 +494,18 @@ int atls_tls_read(atls_tls *t, uint8_t *buf, size_t cap, size_t *out) {
             if (take > cap) take = cap;
             for (size_t i = 0; i < take; i++) buf[i] = plain[i];
             *out = take;
+            /* ahttp's reader cap is 4 KiB; wttr.in ships ~8 KiB of
+             * chunked weather in one TLS app record.  Keep the tail. */
+            if (plain_len > take) {
+                size_t rest = plain_len - take;
+                for (size_t i = 0; i < rest; i++)
+                    t->app_hold[i] = plain[take + i];
+                t->app_hold_len = rest;
+                t->app_hold_off = 0;
+            } else {
+                t->app_hold_len = 0;
+                t->app_hold_off = 0;
+            }
             return ATLS_OK;
         } else if (inner_type == ATLS_CT_ALERT) {
             if (plain_len >= 2) {

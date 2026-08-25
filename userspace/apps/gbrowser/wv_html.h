@@ -18,10 +18,18 @@
  *
  * Deliberate simplifications vs WHATWG HTML, documented so they are
  * decisions rather than accidents:
- *   - Character references are only the five named ones plus numeric
- *     (&#NN; / &#xNN;), and a reference must end in ';' to be consumed.
+ *   - Character references: the five XML named ones plus a small HTML
+ *     set (nbsp, copy, reg, ndash, mdash, hellip, laquo, raquo) and
+ *     numeric &#NN; / &#xNN;.  A reference must end in ';' to be consumed.
+ *     Code points are mapped to one windows-1251 glyph byte (the paint
+ *     font's high half); anything outside that set becomes '?'.
+ *   - Text is either UTF-8 (decoded, then mapped) or a single-byte
+ *     set (windows-1251 / ISO-8859-1).  A document that *claims*
+ *     charset=UTF-8 but is not valid UTF-8 (Google.ru's homepage) is
+ *     treated as windows-1251.  One source byte / decoded character
+ *     becomes one glyph byte so layout's "1 byte = 1 cell" stays true.
  *   - Names are normalised to lower case (as HTML requires); values are
- *     kept verbatim except for character references.
+ *     kept verbatim except for character references and charset mapping.
  *   - NUL bytes are replaced with U+FFFD, which the 8-bit font cannot
  *     represent, so the replacement is '?' (0x3F).
  *   - <!DOCTYPE ...> content and comment content are capped; CDATA is

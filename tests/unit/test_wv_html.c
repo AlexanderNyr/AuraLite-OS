@@ -167,6 +167,28 @@ static void test_char_refs(void) {
     CK(n == 2);
     CK(expect(0, WV_T_TEXT, 0, "a &unknown; b &amp c", 0, 0));
 
+    /* Live-page named refs: &nbsp; is a space, &copy; is CP1251 0xA9. */
+    n = tok("x&nbsp;&copy;2026");
+    CK(n == 2);
+    CK(expect(0, WV_T_TEXT, 0, "x \xA9""2026", 0, 0));
+
+    /* UTF-8 "Почта" maps to the CP1251 glyph bytes. */
+    {
+        static const char u8[] = "\xD0\x9F\xD0\xBE\xD1\x87\xD1\x82\xD0\xB0";
+        n = tok_buf(u8, sizeof(u8) - 1);
+        CK(n == 2);
+        CK(expect(0, WV_T_TEXT, 0, "\xCF\xEE\xF7\xF2\xE0", 0, 0));
+    }
+
+    /* Google.ru: meta claims UTF-8 but the text is windows-1251. */
+    {
+        static const char lie[] =
+            "<meta charset=UTF-8>\xCF\xEE\xF7\xF2\xE0";
+        n = tok_buf(lie, sizeof(lie) - 1);
+        CK(n == 3);   /* START meta, TEXT Почта, EOF */
+        CK(expect(1, WV_T_TEXT, 0, "\xCF\xEE\xF7\xF2\xE0", 0, 0));
+    }
+
     /* refs inside attribute values */
     n = tok("<a t=\"a&amp;b\" u='&#x21;' v=x&amp;y>");
     CK(n == 2);

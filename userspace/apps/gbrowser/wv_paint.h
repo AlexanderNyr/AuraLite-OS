@@ -5,8 +5,9 @@
  * the buffer, and boxes entirely outside the viewport are skipped — that
  * is the difference between scrolling a long page smoothly and not.
  *
- * Glyphs come from the project's PSF2 VGA 8×16 font (the same
- * psf2_default_font_data the kernel console uses, embedded as data).
+ * Glyphs come from the project's PSF2 VGA 8×16 font for ASCII 0x00–0x7F
+ * (the same blob the kernel console uses) plus a windows-1251 overlay
+ * for 0x80–0xFF so Cyrillic text is a real letter, not a CP437 dingbat.
  * Synthesised bold (plan D7) draws each glyph twice, one pixel apart —
  * the honest 1980s approach.
  *

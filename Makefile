@@ -1555,7 +1555,8 @@ $(USER_BUILD)/wv_layout.o: userspace/apps/gbrowser/wv_layout.c userspace/apps/gb
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_paint.o: userspace/apps/gbrowser/wv_paint.c userspace/apps/gbrowser/wv_paint.h \
                           userspace/apps/gbrowser/wv_layout.h \
-                          drivers/framebuffer/psf2_default_font.inc
+                          drivers/framebuffer/psf2_default_font.inc \
+                          userspace/apps/gbrowser/wv_cp1251_font.inc
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_css.o: userspace/apps/gbrowser/wv_css.c userspace/apps/gbrowser/wv_css.h \
                         userspace/apps/gbrowser/wv_dom.h

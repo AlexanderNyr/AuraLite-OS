@@ -2,6 +2,23 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HTTPS: leftover app records, CP1251 glyphs, wttr.in] 2026-08-25
+
+Live `https://wttr.in/` handshook and certval'd but HTTP died with
+`AHTTP_ERR_RESPONSE` (`-6`): the weather body is one ~8 KiB TLS
+application record and `atls_tls_read` copied 4 KiB (ahttp's reader
+cap) then discarded the rest, so the chunked decoder never saw the
+payload.  Leftover plaintext is held and served on the next read.
+gbrowser treats `text/plain` as `<pre>` (ANSI CSI stripped) so the
+report is a page, not a blank box.
+
+`https://google.com/` already loaded; the Russian homepage is
+windows-1251 (the meta tag lies `charset=UTF-8`) and `&nbsp;` /
+`&copy;` were left literal.  The tokeniser maps UTF-8 when the
+bytes are actually valid UTF-8, otherwise keeps CP1251; named
+entities include nbsp/copy; paint overlays DejaVu 8×16 glyphs on
+0x80–0xFF and keeps VGA ASCII below that.
+
 ## [HTTPS: packed-record consume, RSA-4096, google.com] 2026-08-24
 
 Live `https://google.com/` still failed after the packed-record keep-all

@@ -46,6 +46,171 @@ static int wv_eq_ci(const char *s, size_t pos, size_t len, const char *lit) {
     return 1;
 }
 
+/* ---- charset: UTF-8 vs windows-1251, mapped to one glyph byte ----
+ * The paint font's high half is CP1251.  Layout treats one stored byte as
+ * one cell, so every decoded character collapses to a single glyph. */
+
+static unsigned char wv_map_cp(uint32_t cp) {
+    if (cp == 0) return '?';
+    if (cp < 0x80u) return (unsigned char)cp;
+    if (cp == 0x00A0u) return ' ';                 /* NBSP → space */
+    if (cp >= 0x0410u && cp <= 0x044Fu)
+        return (unsigned char)(0xC0u + (cp - 0x0410u));
+    switch (cp) {
+    case 0x0401: return 0xA8; /* Ё */
+    case 0x0451: return 0xB8; /* ё */
+    case 0x0402: return 0x80; case 0x0403: return 0x81;
+    case 0x0453: return 0x83; case 0x0409: return 0x8A;
+    case 0x040A: return 0x8C; case 0x040C: return 0x8D;
+    case 0x040B: return 0x8E; case 0x040F: return 0x8F;
+    case 0x0452: return 0x90; case 0x0459: return 0x9A;
+    case 0x045A: return 0x9C; case 0x045C: return 0x9D;
+    case 0x045B: return 0x9E; case 0x045F: return 0x9F;
+    case 0x040E: return 0xA1; case 0x045E: return 0xA2;
+    case 0x0408: return 0xA3; case 0x0490: return 0xA5;
+    case 0x0404: return 0xAA; case 0x0407: return 0xAF;
+    case 0x0406: return 0xB2; case 0x0456: return 0xB3;
+    case 0x0491: return 0xB4; case 0x2116: return 0xB9;
+    case 0x0454: return 0xBA; case 0x0458: return 0xBC;
+    case 0x0405: return 0xBD; case 0x0455: return 0xBE;
+    case 0x0457: return 0xBF;
+    case 0x00A4: return 0xA4; case 0x00A6: return 0xA6;
+    case 0x00A7: return 0xA7; case 0x00A9: return 0xA9;
+    case 0x00AB: return 0xAB; case 0x00AC: return 0xAC;
+    case 0x00AD: return 0xAD; case 0x00AE: return 0xAE;
+    case 0x00B0: return 0xB0; case 0x00B1: return 0xB1;
+    case 0x00B5: return 0xB5; case 0x00B6: return 0xB6;
+    case 0x00B7: return 0xB7; case 0x00BB: return 0xBB;
+    case 0x201A: return 0x82; case 0x201E: return 0x84;
+    case 0x2026: return 0x85; case 0x2020: return 0x86;
+    case 0x2021: return 0x87; case 0x20AC: return 0x88;
+    case 0x2030: return 0x89; case 0x2039: return 0x8B;
+    case 0x2018: return 0x91; case 0x2019: return 0x92;
+    case 0x201C: return 0x93; case 0x201D: return 0x94;
+    case 0x2022: return 0x95; case 0x2013: return 0x96;
+    case 0x2014: return 0x97; case 0x2015: return '-';
+    case 0x2122: return 0x99; case 0x203A: return 0x9B;
+    /* wttr.in weather art (UTF-8 box drawing / arrows) */
+    case 0x2190: return '<'; case 0x2192: return '>';
+    case 0x2191: return '^'; case 0x2193: return 'v';
+    default:
+        if (cp >= 0x2500u && cp <= 0x2501u) return '-';
+        if (cp >= 0x2502u && cp <= 0x2503u) return '|';
+        if (cp >= 0x2504u && cp <= 0x257Fu) return '+';
+        if (cp >= 0x2580u && cp <= 0x259Fu) return '#';
+        return '?';
+    }
+}
+
+static int wv_utf8_info(const char *s, size_t n, int *has_multi) {
+    size_t i = 0;
+    if (has_multi) *has_multi = 0;
+    while (i < n) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80u) { i++; continue; }
+        size_t need;
+        if ((c & 0xE0u) == 0xC0u) need = 2;
+        else if ((c & 0xF0u) == 0xE0u) need = 3;
+        else if ((c & 0xF8u) == 0xF0u) need = 4;
+        else return 0;
+        if (c == 0xC0u || c == 0xC1u || c >= 0xF5u) return 0;
+        if (i + need > n) return 0;
+        for (size_t k = 1; k < need; k++) {
+            if (((unsigned char)s[i + k] & 0xC0u) != 0x80u) return 0;
+        }
+        if (has_multi) *has_multi = 1;
+        i += need;
+    }
+    return 1;
+}
+
+static int wv_ci_match_at(const char *s, size_t n, size_t i, const char *lit) {
+    size_t k = 0;
+    while (lit[k]) {
+        if (i + k >= n) return 0;
+        if (wv_to_lower((unsigned char)s[i + k]) != (unsigned char)lit[k]) return 0;
+        k++;
+    }
+    return 1;
+}
+
+/* 1 = decode UTF-8; 0 = treat each high byte as a CP1251 glyph. */
+static int wv_should_utf8(const char *s, size_t n) {
+    int claimed_utf8 = 0, claimed_bytes = 0;
+    size_t scan = n < 8192 ? n : 8192;
+    for (size_t i = 0; i + 7 < scan; i++) {
+        if (!wv_ci_match_at(s, scan, i, "charset")) continue;
+        size_t j = i + 7;
+        while (j < scan && (s[j] == ' ' || s[j] == '\t')) j++;
+        if (j >= scan || s[j] != '=') continue;
+        j++;
+        while (j < scan && (s[j] == ' ' || s[j] == '"' || s[j] == '\'')) j++;
+        if (wv_ci_match_at(s, scan, j, "utf-8") || wv_ci_match_at(s, scan, j, "utf8"))
+            claimed_utf8 = 1;
+        else if (wv_ci_match_at(s, scan, j, "windows-1251") ||
+                 wv_ci_match_at(s, scan, j, "cp1251") ||
+                 wv_ci_match_at(s, scan, j, "iso-8859-1") ||
+                 wv_ci_match_at(s, scan, j, "latin1"))
+            claimed_bytes = 1;
+    }
+    int multi = 0;
+    int valid = wv_utf8_info(s, n, &multi);
+    if (claimed_bytes) return 0;
+    if (claimed_utf8) return valid;     /* Google.ru claims UTF-8, sends 1251 */
+    return valid && multi;
+}
+
+static size_t wv_utf8_one(const char *s, size_t n, size_t i, uint32_t *cp) {
+    unsigned char c = (unsigned char)s[i];
+    if (c < 0x80u) { *cp = c; return 1; }
+    if ((c & 0xE0u) == 0xC0u && i + 2 <= n) {
+        unsigned char c1 = (unsigned char)s[i + 1];
+        if ((c1 & 0xC0u) != 0x80u) return 0;
+        *cp = ((uint32_t)(c & 0x1Fu) << 6) | (uint32_t)(c1 & 0x3Fu);
+        if (*cp < 0x80u) return 0;
+        return 2;
+    }
+    if ((c & 0xF0u) == 0xE0u && i + 3 <= n) {
+        unsigned char c1 = (unsigned char)s[i + 1];
+        unsigned char c2 = (unsigned char)s[i + 2];
+        if ((c1 & 0xC0u) != 0x80u || (c2 & 0xC0u) != 0x80u) return 0;
+        *cp = ((uint32_t)(c & 0x0Fu) << 12) |
+              ((uint32_t)(c1 & 0x3Fu) << 6) | (uint32_t)(c2 & 0x3Fu);
+        if (*cp < 0x800u) return 0;
+        return 3;
+    }
+    if ((c & 0xF8u) == 0xF0u && i + 4 <= n) {
+        unsigned char c1 = (unsigned char)s[i + 1];
+        unsigned char c2 = (unsigned char)s[i + 2];
+        unsigned char c3 = (unsigned char)s[i + 3];
+        if ((c1 & 0xC0u) != 0x80u || (c2 & 0xC0u) != 0x80u ||
+            (c3 & 0xC0u) != 0x80u) return 0;
+        *cp = ((uint32_t)(c & 0x07u) << 18) |
+              ((uint32_t)(c1 & 0x3Fu) << 12) |
+              ((uint32_t)(c2 & 0x3Fu) << 6) | (uint32_t)(c3 & 0x3Fu);
+        if (*cp < 0x10000u || *cp > 0x10FFFFu) return 0;
+        return 4;
+    }
+    return 0;
+}
+
+/* One display glyph.  Returns how many source bytes were consumed. */
+static size_t wv_consume_glyph(const char *s, size_t n, size_t i,
+                               int utf8, unsigned char *out) {
+    if (i >= n) { *out = '?'; return 0; }
+    unsigned char c = (unsigned char)s[i];
+    if (c == 0) { *out = '?'; return 1; }
+    if (!utf8 || c < 0x80u) {
+        *out = c;
+        return 1;
+    }
+    uint32_t cp = 0;
+    size_t adv = wv_utf8_one(s, n, i, &cp);
+    if (adv == 0) { *out = (c == 0) ? '?' : c; return 1; }
+    *out = wv_map_cp(cp);
+    return adv;
+}
+
 /* ---- arena helpers ---- */
 
 void wv_arena_init(wv_arena_t *a, wv_token_t *toks, size_t tok_cap,
@@ -151,19 +316,21 @@ static int wv_try_char_ref(const char *s, size_t len, size_t *i,
         if (digits == 0) return 0;
         if (j >= len || s[j] != ';') return 0;      /* must end in ';' */
         if (val > 0x10FFFFu) val = 0xFFFDu;          /* out of range -> U+FFFD */
-        if (val == 0 || val > 0xFFu) out[0] = '?';   /* 8-bit font ceiling */
-        else out[0] = (char)val;
+        out[0] = (char)wv_map_cp(val);
         *i = j + 1;
         *out_len = 1;
         return 1;
     }
 
-    /* The five named references. */
-    static const struct { const char *name; char ch; } named[] = {
+    /* Named references: XML five + the ones live pages actually send. */
+    static const struct { const char *name; unsigned char ch; } named[] = {
         { "amp",  '&' }, { "lt", '<' }, { "gt", '>' },
         { "quot", '"' }, { "apos", '\'' },
+        { "nbsp", ' ' }, { "copy", 0xA9 }, { "reg", 0xAE },
+        { "ndash", 0x96 }, { "mdash", 0x97 }, { "hellip", 0x85 },
+        { "laquo", 0xAB }, { "raquo", 0xBB },
     };
-    for (size_t k = 0; k < 5; k++) {
+    for (size_t k = 0; k < sizeof named / sizeof named[0]; k++) {
         size_t nl = 0;
         while (named[k].name[nl]) nl++;
         if (p + 1 + nl >= len) continue;
@@ -172,7 +339,7 @@ static int wv_try_char_ref(const char *s, size_t len, size_t *i,
             if (s[p + 1 + m] != named[k].name[m]) { match = 0; break; }
         if (!match) continue;
         if (s[p + 1 + nl] != ';') continue;
-        out[0] = named[k].ch;
+        out[0] = (char)named[k].ch;
         *i = p + 1 + nl + 1;
         *out_len = 1;
         return 1;
@@ -208,6 +375,7 @@ int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len) {
                   a->pool, a->pool_cap);
 
     size_t pos = 0;
+    int utf8_mode = wv_should_utf8(html, len);
     int state = ST_TEXT;
     uint32_t line = 1, col = 1;
 
@@ -346,10 +514,10 @@ int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len) {
                 state = ST_TAG_OPEN;
                 ADV();
             } else if (c == '&') {
-                char ref[1]; size_t rl = 0; size_t save = pos;
-                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
+                char ref[8]; size_t rl = 0; size_t save = pos;
+                if (wv_try_char_ref(html, len, &pos, ref, 8, &rl)) {
                     if (text_len == 0) { tok_line = line; tok_col = col; }
-                    TXT_PUSH(ref[0]);
+                    for (size_t ri = 0; ri < rl; ri++) TXT_PUSH(ref[ri]);
                     COUNT_ADV(save, pos);       /* pos already advanced */
                 } else {
                     if (text_len == 0) { tok_line = line; tok_col = col; }
@@ -357,9 +525,12 @@ int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len) {
                     ADV();
                 }
             } else {
+                unsigned char g = 0;
+                size_t adv = wv_consume_glyph(html, len, pos, utf8_mode, &g);
                 if (text_len == 0) { tok_line = line; tok_col = col; }
-                TXT_PUSH(c == 0 ? '?' : (char)c);
-                ADV();
+                TXT_PUSH((char)g);
+                if (adv <= 1) ADV();
+                else ADV_N(adv);
             }
             break;
 
@@ -547,20 +718,20 @@ int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len) {
                 state = ST_AFTER_ATTR_VALUE;
                 ADV();
             } else if (c == '&') {
-                char ref[1]; size_t rl = 0; size_t save = pos;
-                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
-                    ATTRV_PUSH(ref[0]);
+                char ref[8]; size_t rl = 0; size_t save = pos;
+                if (wv_try_char_ref(html, len, &pos, ref, 8, &rl)) {
+                    for (size_t ri = 0; ri < rl; ri++) ATTRV_PUSH(ref[ri]);
                     COUNT_ADV(save, pos);       /* pos already advanced */
                 } else {
                     ATTRV_PUSH('&');
                     ADV();
                 }
-            } else if (c == 0) {
-                ATTRV_PUSH('?');
-                ADV();
             } else {
-                ATTRV_PUSH(c);
-                ADV();
+                unsigned char g = 0;
+                size_t adv = wv_consume_glyph(html, len, pos, utf8_mode, &g);
+                ATTRV_PUSH((char)g);
+                if (adv <= 1) ADV();
+                else ADV_N(adv);
             }
             break;
 
@@ -569,20 +740,20 @@ int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len) {
                 state = ST_AFTER_ATTR_VALUE;
                 ADV();
             } else if (c == '&') {
-                char ref[1]; size_t rl = 0; size_t save = pos;
-                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
-                    ATTRV_PUSH(ref[0]);
+                char ref[8]; size_t rl = 0; size_t save = pos;
+                if (wv_try_char_ref(html, len, &pos, ref, 8, &rl)) {
+                    for (size_t ri = 0; ri < rl; ri++) ATTRV_PUSH(ref[ri]);
                     COUNT_ADV(save, pos);       /* pos already advanced */
                 } else {
                     ATTRV_PUSH('&');
                     ADV();
                 }
-            } else if (c == 0) {
-                ATTRV_PUSH('?');
-                ADV();
             } else {
-                ATTRV_PUSH(c);
-                ADV();
+                unsigned char g = 0;
+                size_t adv = wv_consume_glyph(html, len, pos, utf8_mode, &g);
+                ATTRV_PUSH((char)g);
+                if (adv <= 1) ADV();
+                else ADV_N(adv);
             }
             break;
 
@@ -596,20 +767,20 @@ int wv_html_tokenize(wv_arena_t *a, const char *html, size_t len) {
                 state = ST_TEXT;
                 ADV();
             } else if (c == '&') {
-                char ref[1]; size_t rl = 0; size_t save = pos;
-                if (wv_try_char_ref(html, len, &pos, ref, 1, &rl)) {
-                    ATTRV_PUSH(ref[0]);
+                char ref[8]; size_t rl = 0; size_t save = pos;
+                if (wv_try_char_ref(html, len, &pos, ref, 8, &rl)) {
+                    for (size_t ri = 0; ri < rl; ri++) ATTRV_PUSH(ref[ri]);
                     COUNT_ADV(save, pos);       /* pos already advanced */
                 } else {
                     ATTRV_PUSH('&');
                     ADV();
                 }
-            } else if (c == 0) {
-                ATTRV_PUSH('?');
-                ADV();
             } else {
-                ATTRV_PUSH(c);
-                ADV();
+                unsigned char g = 0;
+                size_t adv = wv_consume_glyph(html, len, pos, utf8_mode, &g);
+                ATTRV_PUSH((char)g);
+                if (adv <= 1) ADV();
+                else ADV_N(adv);
             }
             break;
 

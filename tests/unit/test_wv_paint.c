@@ -247,7 +247,7 @@ static void test_reference_hash(void) {
 "<p id=\"footer\">AuraLite Browser \u2014 GUI</p>"
 "</body>";
     uint32_t h = render(doc, 800, 0);
-    CK(h == 0xE57F068Cu);   /* reference — update deliberately */
+    CK(h == 0xA29E776Cu);   /* reference — update deliberately */
     if (h != 0x8F9E9A21u)
         printf("  (got 0x%08x)\n", h);
 }

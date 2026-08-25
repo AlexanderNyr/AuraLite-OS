@@ -29,12 +29,25 @@ static void wv_memmove(void *dst, const void *src, size_t n) {
 
 /* The kernel console's VGA 8x16 PSF2 font, embedded as data. */
 #include "../../../drivers/framebuffer/psf2_default_font.inc"
+/* windows-1251 high half (0x80–0xFF) so Cyrillic text is a real letter. */
+#include "wv_cp1251_font.inc"
+
+static uint8_t wv_font_glyphs[256 * 16];
+static int wv_font_ready;
 
 void wv_paint_init(wv_paint_t *P, uint32_t *page, int32_t w, int32_t h) {
     P->page = page;
     P->w = w;
     P->h = h;
-    P->glyphs = psf2_default_font_data + 32;   /* skip the PSF2 header */
+    if (!wv_font_ready) {
+        const uint8_t *vga = psf2_default_font_data + 32;
+        for (size_t i = 0; i < 128u * 16u; i++)
+            wv_font_glyphs[i] = vga[i];
+        for (size_t i = 0; i < 128u * 16u; i++)
+            wv_font_glyphs[128u * 16u + i] = wv_cp1251_font[i];
+        wv_font_ready = 1;
+    }
+    P->glyphs = wv_font_glyphs;
 }
 
 void wv_paint_rect(wv_paint_t *P, int32_t x, int32_t y,

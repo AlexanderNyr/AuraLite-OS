@@ -33,7 +33,7 @@ These are plan decisions, not TODOs; each has a pointer to where it lives.
 
 | Limitation | Why | Reference |
 |---|---|---|
-| **No HTTPS** | TLS 1.3 is its own plan of comparable size (crypto, X.509, trust store). A browser that appears to do HTTPS but validates nothing would be a liability. | `WEBVIEW_PLAN.md` D6, `INTERNET_PLAN.md` |
+| **HTTPS is real, not complete** | TLS 1.3 + chain validation against `/etc/ssl/roots.pem`.  Missing: P-384/SHA-384 leaf signatures (`example.com` / `ietf.org` still `hrc=-26`), images, JS. | `WEBVIEW_PLAN.md` D6, `docs/live_web.md` |
 | **No JavaScript** | A JS engine is larger than the whole plan and would not fit `SPAWN_MAX_IMAGE` (1 MiB). Permanent within this plan. | `WEBVIEW_PLAN.md` D5 |
 | **No images** | PNG/JPEG/GIF decoders are each a phase in their own right; they belong in a follow-up once boxes exist to hold them. | `WEBVIEW_PLAN.md` §7 |
 | **No proportional fonts** | The only rasteriser is PSF2 8×16 monospace. `<b>` is rendered as a synthesised double-strike until a real font path exists. | `WEBVIEW_PLAN.md` D7 |
@@ -181,7 +181,7 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
   boxes clipped to the band so a box straddling the band edge cannot erase
   content painted above it.
 - **The hash gate**: `wv_paint_hash()` (FNV-1a) pins a fixed document to
-  reference `0xFC12ACDC` in the host test, and `/apps/gbrowser` prints the
+  reference `0xA29E776C` in the host test, and `/apps/gbrowser` prints the
   same value at boot (`paint smoke: PASS`) — the guest and host agree, so
   a rendering change is a deliberate act with an updated expectation.
 - Gate: `tests/unit/test_wv_paint.c` — 42 host checks, 0 failures,

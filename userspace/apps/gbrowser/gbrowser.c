@@ -175,6 +175,112 @@ static void page_build(void);
 static void set_title_for_url(void);
 static char hover_url[WV_URL_MAX_URL] = "";   /* link under the cursor */
 
+/* Case-insensitive "does this header block advertise this type?". */
+static int hdr_has_type(const char *hdrs, const char *needle) {
+    if (!hdrs || !needle) return 0;
+    size_t nl = strlen(needle);
+    for (const char *p = hdrs; *p; p++) {
+        size_t i = 0;
+        while (needle[i]) {
+            char a = p[i], b = needle[i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+            if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+            if (a != b) break;
+            i++;
+        }
+        if (i == nl) return 1;
+    }
+    return 0;
+}
+
+static int looks_like_html(const char *b, size_t n) {
+    size_t i = 0;
+    while (i < n && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' ||
+                     b[i] == '\r' || b[i] == '\f'))
+        i++;
+    return i < n && b[i] == '<';
+}
+
+/* Drop CSI / OSC so wttr.in's colour weather art is readable as text. */
+static size_t strip_ansi(char *dst, size_t cap, const char *s, size_t n) {
+    size_t o = 0;
+    for (size_t i = 0; i < n && o + 1 < cap; ) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 0x1B && i + 1 < n && s[i + 1] == '[') {
+            i += 2;
+            while (i < n) {
+                unsigned char d = (unsigned char)s[i++];
+                if ((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z')) break;
+            }
+            continue;
+        }
+        if (c == 0x1B && i + 1 < n && s[i + 1] == ']') {
+            i += 2;
+            while (i < n && s[i] != 0x07) {
+                if (s[i] == 0x1B && i + 1 < n && s[i + 1] == '\\') { i += 2; break; }
+                i++;
+            }
+            if (i < n && s[i] == 0x07) i++;
+            continue;
+        }
+        dst[o++] = s[i++];
+    }
+    if (o < cap) dst[o] = 0;
+    return o;
+}
+
+/* Wrap a non-HTML body so the tokeniser/layout show it as preformatted text. */
+static char *wrap_plain(const char *s, size_t n, size_t *out_len) {
+    char *tmp = malloc(n + 1);
+    if (!tmp) return NULL;
+    size_t tn = strip_ansi(tmp, n + 1, s, n);
+    /* Worst case every byte is '&' → "&amp;" (5×) plus <pre></pre>. */
+    size_t cap = tn * 5 + 16;
+    char *out = malloc(cap);
+    if (!out) { free(tmp); return NULL; }
+    size_t o = 0;
+    const char *pre = "<pre>";
+    while (*pre) out[o++] = *pre++;
+    for (size_t i = 0; i < tn && o + 6 < cap; i++) {
+        char c = tmp[i];
+        if (c == '&') { out[o++] = '&'; out[o++] = 'a'; out[o++] = 'm';
+                        out[o++] = 'p'; out[o++] = ';'; }
+        else if (c == '<') { out[o++] = '&'; out[o++] = 'l'; out[o++] = 't';
+                             out[o++] = ';'; }
+        else if (c == 0) { out[o++] = '?'; }
+        else out[o++] = c;
+    }
+    const char *end = "</pre>";
+    while (*end && o + 1 < cap) out[o++] = *end++;
+    out[o] = 0;
+    free(tmp);
+    *out_len = o;
+    return out;
+}
+
+static void page_load_html(const char *html, size_t len);
+
+static void page_load_body(const char *body, size_t blen, const char *hdrs) {
+    int html = looks_like_html(body, blen);
+    if (hdrs) {
+        if (hdr_has_type(hdrs, "text/html")) html = 1;
+        else if (hdr_has_type(hdrs, "text/plain") ||
+                 hdr_has_type(hdrs, "text/css") ||
+                 hdr_has_type(hdrs, "application/json"))
+            html = 0;
+    }
+    if (!html) {
+        size_t wlen = 0;
+        char *wrapped = wrap_plain(body, blen, &wlen);
+        if (wrapped) {
+            page_load_html(wrapped, wlen);
+            free(wrapped);
+            return;
+        }
+    }
+    page_load_html(body, blen);
+}
+
 /* Rebuild DOM + CSS + layout from raw HTML (a loaded page). */
 static void page_load_html(const char *html, size_t len) {
     wv_arena_t toks_a;
@@ -265,9 +371,11 @@ static ahttp_client *wv_http_client(void) {
 /* Fetch http:// or https:// URL and load its body.  Returns 0 on success;
  * -status on an HTTP error, an ahttp error code (<0) on transport/TLS
  * failure.  libahttp's own timeouts cap worst-case wait. */
-static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out) {
+static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out,
+                        char **hdrs_out) {
     *body_out = NULL;
     *body_len_out = 0;
+    if (hdrs_out) *hdrs_out = NULL;
 
     ahttp_client *c = wv_http_client();
     if (!c) return -1;
@@ -292,6 +400,14 @@ static int wv_fetch_url(const wv_url_t *u, char **body_out, size_t *body_len_out
     memcpy(body, r->body, r->body_len);
     body[r->body_len] = 0;
     size_t bl = r->body_len;
+    if (hdrs_out && r->headers && r->headers_len) {
+        char *h = malloc(r->headers_len + 1);
+        if (h) {
+            memcpy(h, r->headers, r->headers_len);
+            h[r->headers_len] = 0;
+            *hdrs_out = h;
+        }
+    }
     ahttp_response_free(r);
     *body_out = body;
     *body_len_out = bl;
@@ -333,9 +449,10 @@ static void navigate_ex(const char *url_text, int push) {
 
     printf("[gbrowser] nav: fetching %s\n", fmt);
     char *body = NULL;
+    char *hdrs = NULL;
     size_t blen = 0;
     g_last_tls_hrc = 0;
-    int rc = wv_fetch_url(&u, &body, &blen);
+    int rc = wv_fetch_url(&u, &body, &blen, &hdrs);
     if (rc != 0) {
         const char *why = ahttp_strerror(rc, g_last_tls_hrc);
         printf("[gbrowser] nav: fetch failed (%d) for %s — %s\n",
@@ -356,10 +473,11 @@ static void navigate_ex(const char *url_text, int push) {
         return;
     }
     printf("[gbrowser] nav: loaded %u bytes from %s\n", (unsigned)blen, fmt);
-    page_load_html(body, blen);
+    page_load_body(body, blen, hdrs);
     printf("[gbrowser] nav: html built (items=%u, h=%u)\n",
            (unsigned)lay.item_count, (unsigned)lay.content_h);
     free(body);
+    free(hdrs);
     strncpy(current_url_str, fmt, WV_URL_MAX_URL - 1);
     if (push && hist_pos < HIST_MAX - 1) {
         hist_pos++;
@@ -476,7 +594,7 @@ static void paint_smoke(void) {
     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);
     wv_paint_run(&P, &lay, 0);
     uint32_t h = wv_paint_hash(page, VIEW_W, VIEW_H);
-    int ok = (h == 0xE57F068Cu);
+    int ok = (h == 0xA29E776Cu);
     printf("[gbrowser] paint smoke: %s (hash=0x%08x)\n", ok ? "PASS" : "FAIL", h);
 }
 

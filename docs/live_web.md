@@ -56,7 +56,10 @@ ChaCha20, P-256 SHA-256 CV, and a root we actually ship.
    Packed TLS 1.3 records (Google/Cloudflare) are reassembled
    without destroying the current handshake message.  RSA-4096
    verify no longer overflows.  SAN matching keeps 64 dNSNames
-   so `google.com` is not lost behind `*.google.com`.
+   so `google.com` is not lost behind `*.google.com`.  A TLS
+   application record larger than the 4 KiB HTTP reader (wttr.in
+   ships the weather in one ~8 KiB record) keeps the leftover
+   instead of dropping it (`AHTTP_ERR_RESPONSE` / `-6`).
 2. **RSA-PSS is verified** (`rsa_pss_rsae_sha256`, EMSA-PSS SHA-256,
    MGF1, saltLen=32).  RES-53 is DONE.  A host whose leaf is RSA
    (rust-lang.org) no longer dies at CertificateVerify.
