@@ -24,8 +24,14 @@
 #include "sys/wait.h"
 #include "signal.h"
 
-#define INPUT_MAX 256
-#define MAX_ARGS  8
+/* SELFHOST SH2: INPUT_MAX 256 -> 512 and MAX_ARGS 8 -> 32 so the guest
+ * toolchain's link lines fit (a tcc link of the userland names crt0,
+ * libc, malloc, env, string/stdlib extras, the app and libtcc1.a --
+ * 9+ argv entries, beyond the old 8-slot cap, which silently truncated
+ * the line and produced "unresolved reference to '__libc_start_main'"
+ * from a tcc that never saw libc.o). */
+#define INPUT_MAX 512
+#define MAX_ARGS  32
 
 /* Line buffer and token storage (in BSS, zero-filled by the ELF loader). */
 static char input_line[INPUT_MAX];

@@ -2,6 +2,60 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH2 — the guest toolchain rebuilds the userland] 2026-08-26
+
+`SELFHOST_PLAN.md` phase SH2: AuraLite now builds its own userland from
+source, inside itself.  No host tool touches the pipeline after boot.
+
+- **In-guest build of libc + apps:** `/bin/tcc` assembles
+  `tools/selfhost/tcc_crt0.s` (crt0 stack decode, `syscall()` wrapper,
+  `__sigreturn` — GNU as, tcc's own assembler), compiles `libc.c`
+  (+ malloc/env/string_extra/stdlib_extra + `tcc_builtins.c`), and
+  links the apps with `/apps/tcc/libtcc1.a`.  The rebuilt `sysinfo`
+  **runs** and prints its full banner; a receipt program prints
+  `[selfhost] userland rebuild PASS: 2 binaries (sysinfo, editor)`.
+- **Sources staged in the initrd** under `/src` (libc headers with
+  `../` includes flattened for tcc, `.c` sources, the glue, the apps),
+  plus a self-contained `/apps/tcc/include/stdint.h` (the repo's is an
+  `#include_next` wrapper).
+- **Four bugs fixed along the way (all in the ledger):**
+  - `malloc()` payloads were 8-aligned (24-byte header); clang-built
+    code in the guest tcc faulted on 16-byte `movaps` (`#GP(0)` while
+    compiling libc.c).  Header is now 32 bytes: 16-aligned payloads for
+    every program.
+  - The shell capped argv at 8 and lines at 256, so tcc link lines
+    were silently truncated (`unresolved reference to
+    '__libc_start_main'` from a link that never saw libc.o).
+    `MAX_ARGS` 8->32, `INPUT_MAX` 256->512.
+  - tcc ignores `__attribute__((naked))` and emits a prologue before
+    inline asm, so a C `_start` decoded the stack wrong and
+    page-faulted on garbage argv; the crt0 is a `.s` file instead.
+  - tcc ships no `<stdint.h>`; a self-contained one is staged.
+- **Gate:** `test_selfhost_userland.sh` (4/4, ~5 min in QEMU/TCG),
+  registered in the `selfhost` shard (137 cases).
+
+## [No .patch artefacts, no patch checks] 2026-08-26
+
+The `.patch`-file existence checks are gone, everywhere.
+
+- `tools/check_selfhost_claims.py` and `tools/check_opt_claims.py` no
+  longer assert that a ✅ phase has a deliverable patch in `patches/`
+  (and no longer flag a patch that exists while its phase is not ✅).
+  Their `--selftest` negative controls were re-pointed at checks that
+  actually mean something: a missing phase-table row (opt) and a
+  missing checker file / drifted receipt (selfhost).
+- `SELFHOST_PLAN.md` no longer names patch files: the status table has
+  no deliverable column, phase sections have no "Deliverable. patches/…"
+  lines, and decision **D9** records the rule.  The precedent is
+  `check_rinet2_claims.py`, which already dropped its
+  `os.path.exists("patches/RINET2_Y*.patch")` claims: a patch on disk
+  proves a file exists, not that code works.  The gates that prove a
+  phase are unit tests, integration cases and greppable receipts —
+  exactly what the remaining checks assert.
+- The two SH0/SH1 patch files themselves (`FIX_RTL8139_SHARD.patch`,
+  `SELFHOST_SH1_limits_tcc.patch`) are not shipped; the RTL8139 shard
+  registration and all SH1 changes live in the tree directly.
+
 ## [SELFHOST SH1 — the guest TinyCC toolchain] 2026-08-26
 
 `SELFHOST_PLAN.md` phase SH1: AuraLite now compiles and links C **inside

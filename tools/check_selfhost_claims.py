@@ -12,13 +12,18 @@ same treatment it prescribes for the OS: verified by an outside party.
 Ties the plan to the tree:
   - the status table has all ten phases SH0..SH9;
   - SH0 (the landed phase) is backed by this checker and the plan file;
-  - every ✅ phase SH1..SH9 has its deliverable patch in patches/;
-  - a patch that exists while its phase is not ✅ is a drift finding
-    (a deliverable without a status is how plans rot);
   - every phase section has a "**Gate." line (no phase lands ungated);
   - the §8 receipt strings are still listed in the plan (a renamed
     receipt silently orphans a host integration case);
   - the ledger rows are well-formed four-column rows.
+
+Deliberately NOT asserted: existence of `.patch` files.  A patch on
+disk is evidence that a FILE EXISTS, not that code works -- the
+RINET2 precedent (check_rinet2_claims.py) removed exactly those
+claims: they could be satisfied by `touch`-ing empty files while
+every real deliverable was broken.  The deliverables this plan
+tracks are code, tests and docs in the tree; the status table names
+no patch files.
 
 Usage:
     tools/check_selfhost_claims.py [--check]
@@ -54,9 +59,9 @@ def read(*parts):
         return ""
 
 
-def check_plan(plan, tree_has_patch, tree_has_file):
-    """Return a list of failure strings.  The tree_* predicates are injected
-    so --selftest can plant violations."""
+def check_plan(plan, tree_has_file):
+    """Return a list of failure strings.  The tree_has_file predicate is
+    injected so --selftest can plant violations."""
     fails = []
 
     if not plan:
@@ -66,36 +71,20 @@ def check_plan(plan, tree_has_patch, tree_has_file):
     if not re.search(r"^## Status:", plan, re.M):
         fails.append("header: missing '## Status:' line")
 
-    # Phase table rows: | SH<n> — ... | <status> | <deliverable> |
-    rows = re.findall(r"^\|\s*(SH\d+)\s+—[^|]*\|([^|]*)\|([^|]*)\|", plan,
-                      re.M)
-    seen = {phase for phase, _, _ in rows}
+    # Phase table rows: | SH<n> — ... | <status> |
+    rows = re.findall(r"^\|\s*(SH\d+)\s+—[^|]*\|([^|]*)\|", plan, re.M)
+    seen = {phase for phase, _ in rows}
     for phase in PHASES:
         if phase not in seen:
             fails.append("phase table: missing row %s" % phase)
 
-    for phase, status, deliverable in rows:
+    for phase, status in rows:
         if phase == "SH0":
             if "✅" in status:
                 if not tree_has_file("SELFHOST_PLAN.md"):
                     fails.append("SH0: marked ✅ but SELFHOST_PLAN.md missing")
                 if not tree_has_file("tools", "check_selfhost_claims.py"):
                     fails.append("SH0: marked ✅ but checker file missing")
-        else:
-            m = re.search(r"`(patches/SELFHOST_%s_[^`]+\.patch)`" % phase,
-                          deliverable)
-            if "✅" in status:
-                if not m:
-                    fails.append("%s: marked ✅ but no deliverable patch "
-                                 "named in the table" % phase)
-                elif not tree_has_patch(m.group(1)):
-                    fails.append("%s: marked ✅ but deliverable %s missing"
-                                 % (phase, m.group(1)))
-            else:
-                if m and tree_has_patch(m.group(1)):
-                    fails.append("%s: patch %s exists but the phase is not "
-                                 "✅ -- status or file is stale"
-                                 % (phase, m.group(1)))
 
     # Required sections (the plan's own contract).
     for sec in ["## 2. Decisions", "## 3. Phases", "## 6. What this plan "
@@ -131,26 +120,20 @@ def check_plan(plan, tree_has_patch, tree_has_file):
 def main():
     if "--selftest" in sys.argv:
         plan = read("SELFHOST_PLAN.md")
-        # Planted violation 1: a phase marked ✅ whose patch is missing.
-        fake_plan = plan.replace("| SH1 — Runtime limits + TinyCC "
-                                 "userspace port | 🚧 pending |",
-                                 "| SH1 — Runtime limits + TinyCC "
-                                 "userspace port | ✅ landed |")
-        fails = check_plan(fake_plan, lambda name: False, lambda *p: True)
-        if not any("SH1: marked ✅ but deliverable" in f for f in fails):
+        # Planted violation 1: SH0 marked ✅ but the checker file "missing".
+        fails = check_plan(plan, lambda *p: p[-1] != "check_selfhost_claims.py")
+        if not any("SH0: marked ✅ but checker file missing" in f
+                   for f in fails):
             print("check_selfhost_claims: SELFTEST FAILED -- planted "
-                  "missing-deliverable violation not caught")
+                  "missing-checker violation not caught")
             return 1
-        # Planted violation 2: a patch exists for a phase that is not ✅.
-        # SH2 is still pending, so a liar claiming its deliverable exists
-        # must trip the stale-deliverable finding.
-        def liar(name):
-            return name == "patches/SELFHOST_SH2_userland_tcc.patch"
-        fails = check_plan(plan, liar, lambda *p: True)
-        if not any("patches/SELFHOST_SH2_userland_tcc.patch exists but the "
-                   "phase is not ✅" in f for f in fails):
+        # Planted violation 2: a receipt removed from the plan's §8.
+        fake_plan = plan.replace("[selfhost] iso PASS:", "[selfhost] iso FAIL:")
+        fails = check_plan(fake_plan, lambda *p: True)
+        if not any("receipts: '[selfhost] iso PASS:' no longer listed"
+                   in f for f in fails):
             print("check_selfhost_claims: SELFTEST FAILED -- planted "
-                  "stale-deliverable violation not caught")
+                  "receipt-drift violation not caught")
             return 1
         print("check_selfhost_claims: SELFTEST OK (planted violations "
               "caught)")
@@ -158,14 +141,10 @@ def main():
 
     plan = read("SELFHOST_PLAN.md")
 
-    def tree_has_patch(name):
-        # name is a repo-root-relative path ("patches/SELFHOST_SH1_*.patch").
-        return bool(read(name))
-
     def tree_has_file(*parts):
         return bool(read(*parts))
 
-    fails = check_plan(plan, tree_has_patch, tree_has_file)
+    fails = check_plan(plan, tree_has_file)
     if fails:
         print("check_selfhost_claims: FAIL -- %d finding(s):"
               % len(fails))

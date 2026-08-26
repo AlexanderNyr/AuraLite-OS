@@ -8,6 +8,14 @@ typedef struct block_meta {
     size_t size;
     struct block_meta *next;
     int free;
+    size_t pad;   /* SELFHOST SH2: header is 32 bytes so every malloc()
+                     payload is 16-byte aligned (max_align_t).  The old
+                     24-byte header misaligned every block by 8, which is
+                     fine for scalar code but faults (GP#0) the moment a
+                     clang-built binary -- the guest tcc -- does a 16-byte
+                     movaps on a malloc'd buffer.  sbrk() hands out
+                     page-aligned chunks, so a 16-multiple header keeps
+                     every payload 16-aligned for the life of the block. */
 } block_meta;
 
 #define META_SIZE sizeof(block_meta)

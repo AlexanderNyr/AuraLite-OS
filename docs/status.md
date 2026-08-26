@@ -81,6 +81,7 @@ tied to the tree.
 | Ring 3 user mode | ✅ | ELF entry via `iretq`. |
 | ELF loader | ✅ | Loads PT_LOAD segments at linked virtual addresses. |
 | `spawn` | 🧪 | Used by shell `run <prog>` and integration-tested. |
+| **Self-hosting toolchain** | 🧪 | SELFHOST_PLAN.md SH1+SH2: guest TinyCC (`make selfhost-deps selfhost-tcc`) compiles, links and runs AuraLite's own userland in-guest (`/bin/tcc`, sources under `/src` in the initrd; `test_selfhost_tcc.sh` + `test_selfhost_userland.sh` in the `selfhost` shard). `SPAWN_MAX_IMAGE` 16 MiB, user stack 4 MiB, tmpfs 256 files/volume, malloc 16-aligned, shell MAX_ARGS 32 / INPUT_MAX 512 — all raised/fixed for the compiler workload. |
 | `fork` | 🧪 | COW fork via `paging_clone_user_space()` (O(page-tables) not O(address-space)); simplified PID semantics. |
 | `execve` | 🧪 | Replaces current address space, simplified. |
 | `wait4` / `wait` | 🧪 | Yield-polling, no precise child PID semantics. |

@@ -48,7 +48,12 @@
 /* 41 entries are packed today.  The runtime reorganisation in FSLAYOUT_PLAN
  * phase F3 keeps compatibility aliases for a while, which roughly doubles the
  * count, so the old ceiling of 64 would have been hit mid-plan. */
-#define INITRD_MAX_FILES 192
+/* SELFHOST SH2: 192 -> 512.  The initrd now also carries the /src
+ * userland source tree for the in-guest toolchain (headers + .c +
+ * glue + apps, ~113 files), which blew the old cap and silently
+ * dropped /tests/selfhost_hello.c.  The table is ~40 KiB of kernel
+ * BSS at 512 entries; still bounded, not unbounded. */
+#define INITRD_MAX_FILES 512
 #define INITRD_MAX_DIRS  32
 
 struct initrd_file {

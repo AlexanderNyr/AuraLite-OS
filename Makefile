@@ -2067,13 +2067,29 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 # SELFHOST SH1: stage the guest toolchain when present (make selfhost-deps
 # selfhost-tcc).  Binary -> /bin/tcc; tcc's own headers and the guest
 # libtcc1.a live under /apps/tcc (CONFIG_TCCDIR, compiled into tcc.c).
+# SELFHOST SH2: stage the userland SOURCES the guest tcc rebuilds, under
+# /src (libc sources+headers, the C-only crt0/syscall glue, and the apps
+# the SH2 gate rebuilds).  Only .c/.s/.h — the NASM files stay out; tcc_crt0.s
+# replaces them (crt0.asm, syscall.asm, sigreturn.asm).
 	@if [ -f $(SELFHOST_TCC) ]; then \
 	    strip -s $(SELFHOST_TCC) -o $(INITRD_DIR)/bin/tcc; \
 	    mkdir -p $(INITRD_DIR)/apps/tcc/include; \
 	    cp -r $(SELFHOST_SRC)/include/. $(INITRD_DIR)/apps/tcc/include/; \
 	    cp $(SELFHOST_LIBTCC1) $(INITRD_DIR)/apps/tcc/libtcc1.a; \
 	    cp tools/selfhost/hello.c $(INITRD_DIR)/tests/selfhost_hello.c; \
-	    echo "[selfhost] staged guest tcc into initrd (/bin/tcc + /apps/tcc + /tests/selfhost_hello.c)"; \
+	    cp tools/selfhost/stdint.h $(INITRD_DIR)/apps/tcc/include/stdint.h; \
+	    mkdir -p $(INITRD_DIR)/src/libc/include $(INITRD_DIR)/src/libc/src \
+	             $(INITRD_DIR)/src/apps; \
+	    cp -r lib/libc/include/. $(INITRD_DIR)/src/libc/include/; \
+	    find $(INITRD_DIR)/src/libc/include -name '*.h' -exec \
+	        sed -i 's|#include "\.\./|#include "|' {} +; \
+	    cp lib/libc/src/*.c $(INITRD_DIR)/src/libc/src/; \
+	    cp tools/selfhost/tcc_crt0.s $(INITRD_DIR)/src/libc/tcc_crt0.s; \
+	    cp tools/selfhost/tcc_builtins.c $(INITRD_DIR)/src/libc/tcc_builtins.c; \
+	    cp userspace/apps/sysinfo/sysinfo.c $(INITRD_DIR)/src/apps/sysinfo.c; \
+	    cp userspace/apps/editor/editor.c $(INITRD_DIR)/src/apps/editor.c; \
+    cp tools/selfhost/userland_ok.c $(INITRD_DIR)/src/apps/userland_ok.c; \
+	    echo "[selfhost] staged guest tcc into initrd (/bin/tcc + /apps/tcc + /src userland sources)"; \
 	else \
 	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \
 	fi

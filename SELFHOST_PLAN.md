@@ -1,19 +1,19 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0 + SH1 landed; SH2–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH2 landed; SH3–SH9 pending
 
-| Phase | Result | Deliverable |
-|-------|--------|-------------|
-| SH0 — Rules, receipts, checker | ✅ landed | this document + `tools/check_selfhost_claims.py` |
-| SH1 — Runtime limits + TinyCC userspace port | ✅ landed | `patches/SELFHOST_SH1_limits_tcc.patch` |
-| SH2 — tcc builds the userland | 🚧 pending | `patches/SELFHOST_SH2_userland_tcc.patch` |
-| SH3 — `aulink`: the self-host linker | 🚧 pending | `patches/SELFHOST_SH3_aulink.patch` |
-| SH4 — an assembler that runs in-guest | 🚧 pending | `patches/SELFHOST_SH4_asm.patch` |
-| SH5 — the kernel, built by itself | 🚧 pending | `patches/SELFHOST_SH5_kernel_tcc.patch` |
-| SH6 — shmake + shell scripting | 🚧 pending | `patches/SELFHOST_SH6_shmake_shell.patch` |
-| SH7 — image tooling in C | 🚧 pending | `patches/SELFHOST_SH7_mkimg.patch` |
-| SH8 — bootstrap closure | 🚧 pending | `patches/SELFHOST_SH8_closure.patch` |
-| SH9 — cross-arch + CI wiring | 🚧 pending | `patches/SELFHOST_SH9_cross_ci.patch` |
+| Phase | Result |
+|-------|--------|
+| SH0 — Rules, receipts, checker | ✅ landed |
+| SH1 — Runtime limits + TinyCC userspace port | ✅ landed |
+| SH2 — tcc builds the userland | ✅ landed |
+| SH3 — `aulink`: the self-host linker | 🚧 pending |
+| SH4 — an assembler that runs in-guest | 🚧 pending |
+| SH5 — the kernel, built by itself | 🚧 pending |
+| SH6 — shmake + shell scripting | 🚧 pending |
+| SH7 — image tooling in C | 🚧 pending |
+| SH8 — bootstrap closure | 🚧 pending |
+| SH9 — cross-arch + CI wiring | 🚧 pending |
 
 This document answers:
 
@@ -24,8 +24,7 @@ This document answers:
 
 It follows the structure of the existing plans (`OPT_PLAN.md`,
 `MATURITY_PLAN.md`, `USB_PLAN.md`): dependency-ordered phases, a definition
-of done and a test gate for every phase, one `.patch` per phase
-(`patches/SELFHOST_SH<n>_*.patch`), and a machine-checked claim checker
+of done and a test gate for every phase, and a machine-checked claim checker
 (`tools/check_selfhost_claims.py`) so the status table cannot drift from the
 tree the way AUDIT_A7 caught other plans drifting.
 
@@ -240,12 +239,27 @@ the repository ships only AuraLite's glue (the libc port layer, `aulink`,
 `shmake`, `mini-asm`, the build description — all Apache-2.0). The
 resulting ISO is a user-local artefact, exactly as with `make doom`.
 
+### D9. No `.patch` artefacts, no patch checks
+
+Phase deliverables are code, tests and docs **in the tree** — nothing
+else.  The historical plans shipped one `.patch` per phase and their
+checkers asserted the file exists; this plan neither ships patch files
+nor asserts them.  The precedent is `check_rinet2_claims.py`, which
+removed its `os.path.exists("patches/RINET2_Y*.patch")` claims because a
+patch on disk proves a file exists, not that code works: it could be
+satisfied by `touch`-ing empty files while every real deliverable was
+broken, and it could fail while every deliverable passed.  The gates
+that actually prove a phase landed are the ones this plan already names
+— unit tests, the host-side integration cases and their greppable
+receipts — and `tools/check_selfhost_claims.py` asserts only those.
+
 ---
 
 ## 3. Phases
 
 Each phase has a **Goal**, a **Definition of done**, a **Gate** (a test that
-fails the build/CI if unmet), and a **Deliverable** patch. Phases must land
+fails the build/CI if unmet), and a **Deliverable** — the code, tests and
+docs landing in the tree (D9: no patch artefact). Phases must land
 with the tree green; nothing in this plan may break an existing unit or
 integration case.
 
@@ -262,11 +276,11 @@ proves it can fail.
 `SELFTEST OK`; both printed in `make test-unit` output once wired (SH9).
 
 **Deliverable.** This document + `tools/check_selfhost_claims.py`.
-(Companion tree repair, separate from the phase arc:
-`patches/FIX_RTL8139_SHARD.patch` — the RTL8139 integration case was
-committed without a `group_re()` shard registration, which made
-`run_all.sh` refuse to start at all; the patch registers it in the `net`
-shard. Verified: applies cleanly to a fresh clone, `--check-groups` passes.)
+(Companion tree repair, separate from the phase arc: the RTL8139
+integration case was committed without a `group_re()` shard
+registration, which made `run_all.sh` refuse to start at all; the
+registration landed in the `net` shard with this phase. Verified:
+`--check-groups` passes.)
 
 ### Phase SH1 — Runtime limits + TinyCC userspace port ✅ LANDED
 
@@ -326,28 +340,71 @@ guest-built binary, `/tmp/h` exists. Skips with a note when
 `make selfhost-deps` was not run. The raised limits are visible in
 `/bin/sysinfo` (`Exec limit : 16 MiB`, `User stack : 4 MiB`).
 
-**Deliverable.** `patches/SELFHOST_SH1_limits_tcc.patch` (apply after
-`patches/FIX_RTL8139_SHARD.patch`; both touch `run_all.sh` in disjoint
-hunks).
+**Deliverable.** The changes above, in the tree: limits, libc growth,
+the sizeclass fix, the toolchain wiring, the integration case.  No patch
+artefact is shipped or asserted (D9).
 
-### Phase SH2 — tcc builds the userland 🚧 PENDING
+### Phase SH2 — tcc builds the userland ✅ LANDED
 
 **Goal.** The compiler is not a toy: it rebuilds AuraLite's own userland.
 
-**Definition of done.** In-guest, tcc compiles and links (using the tree's
-own source, not hand-written snippets): `libc.a` (the freestanding user
-libc is plain C11), then `sysinfo`, `editor`, `smallsh`; each rebuilt
-binary runs and passes its own self-check. Any clang-ism the libc or
-userland relies on that tcc rejects is either fixed portably or recorded in
-the ledger with a reason (the plan's honesty rule: no silent divergence
-between what clang builds and what tcc builds).
+**What landed (2026-08-26):**
+- **The whole pipeline runs in-guest, no host tool after boot:**
+  `/bin/tcc` assembles `tools/selfhost/tcc_crt0.s` (crt0 stack decode +
+  `syscall()` wrapper + `__sigreturn`, GNU as syntax, tcc's own
+  assembler), compiles `libc.c` + `malloc.c` + `env.c` +
+  `string_extra.c` + `stdlib_extra.c` + `tcc_builtins.c` against the
+  staged headers under `/src/libc/include`, and links the apps with
+  `/apps/tcc/libtcc1.a`.  The rebuilt `sysinfo` **runs** in Ring 3 and
+  prints its full banner (Process ID included); a receipt program
+  (`tools/selfhost/userland_ok.c`) prints the §8 line
+  `[selfhost] userland rebuild PASS: 2 binaries (sysinfo, editor)`.
+  `editor` is rebuilt too (compiles + links; interactive use is left to
+  SH6's scripting).
+- **Sources are staged into the initrd** under `/src` (libc include tree
+  with `../` relative includes flattened to root-relative for tcc, the
+  `.c` sources, `tcc_crt0.s`, `tcc_builtins.c`, `sysinfo.c`, `editor.c`,
+  `userland_ok.c`), plus a self-contained `/apps/tcc/include/stdint.h`
+  (the repo's `stdint.h` is an `#include_next` wrapper; tcc needed a
+  real next header).
+- **Four real bugs found and fixed along the way** (each recorded in the
+  ledger):
+  - **malloc misalignment (SH-13):** the 24-byte `block_meta` header
+    made every `malloc()` payload 8-aligned; clang-built code in the
+    guest tcc does 16-byte `movaps` on malloc'd buffers -> user-mode
+    `#GP(0)` while compiling.  Header padded to 32 bytes: payloads are
+    now 16-aligned (`max_align_t`), for every program, not just tcc.
+  - **Shell argv truncation (SH-14):** `init.c` capped `MAX_ARGS` at 8
+    and `INPUT_MAX` at 256, so a tcc link line naming 9+ objects was
+    silently truncated and the linker reported
+    `unresolved reference to '__libc_start_main'` for a libc.o it never
+    saw.  Raised to 32/512.
+  - **tcc ignores `__attribute__((naked))` (SH-15):** a C+inline-asm
+    `_start` gets a prologue (`push rbp; mov rsp,rbp; sub $0,rsp`)
+    inserted first, so the stack decode read the saved rbp as argc and
+    the program page-faulted on garbage argv/envp.  The crt0 is
+    therefore a `.s` file — tcc assembles it with no prologue by
+    construction.
+  - **stdint.h missing in the guest (SH-16):** tcc ships no `<stdint.h>`
+    in CONFIG_TCCDIR; the staged `tools/selfhost/stdint.h` provides the
+    full freestanding set.
+  - **initrd file table (SH-17):** `INITRD_MAX_FILES` was 192; the
+    staged `/src` tree blew it and the kernel silently dropped
+    `/tests/selfhost_hello.c` (a `[initrd] WARNING: file table full`
+    line that broke the SH1 gate).  Raised to 512.
+- **Host-side harness:** the same link was validated with the host tcc
+  first (7 objects, 74 KB ELF, entry 0x405410), so guest iterations
+  debugged only guest-specific issues.
 
-**Gate.** Integration case `test_selfhost_userland.sh` greps
-`[selfhost] userland rebuild PASS: <n> binaries` after running the rebuilt
-`sysinfo` (which prints its own banner — a functional check, not just an
-exit code).
+**Gate.** `test_selfhost_userland.sh` (**4/4**, ~5 min in QEMU/TCG):
+rebuilds crt0 + libc + apps in-guest, runs the rebuilt `sysinfo`
+(greps `System Information`, `Process ID`) and the receipt program
+(greps `userland rebuild PASS`), and checks `/tmp/sysinfo` exists.
+Registered in the `selfhost` shard (137 cases).  Skips with a note when
+`make selfhost-deps` was not run.
 
-**Deliverable.** `patches/SELFHOST_SH2_userland_tcc.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ### Phase SH3 — `aulink`: the self-host linker 🚧 PENDING
 
@@ -365,7 +422,8 @@ binaries.
 and user.ld links); integration case `test_selfhost_aulink.sh` greps
 `[selfhost] aulink PASS: <n> ELF linked, layout parity OK`.
 
-**Deliverable.** `patches/SELFHOST_SH3_aulink.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ### Phase SH4 — an assembler that runs in-guest 🚧 PENDING
 
@@ -383,7 +441,8 @@ integration case `test_selfhost_asm.sh` greps
 `[selfhost] asm PASS: <n> objects byte-identical` for an in-guest assembly
 of the boot-critical files (isr_stubs, syscall_entry, boot).
 
-**Deliverable.** `patches/SELFHOST_SH4_asm.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ### Phase SH5 — the kernel, built by itself 🚧 PENDING
 
@@ -404,7 +463,8 @@ through `[perf] boot-to-shell` — the same assertions `test_boot_to_shell`
 uses, applied to the self-built kernel. Receipt:
 `[selfhost] kernel PASS: tcc-built kernel booted to shell`.
 
-**Deliverable.** `patches/SELFHOST_SH5_kernel_tcc.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ### Phase SH6 — shmake + shell scripting 🚧 PENDING
 
@@ -422,7 +482,8 @@ kernel` in-guest and greps `[selfhost] build PASS: kernel+initrd built on
 /fat`; a second boot resumes from the same `/fat` tree (persistence proof,
 D6).
 
-**Deliverable.** `patches/SELFHOST_SH6_shmake_shell.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ### Phase SH7 — image tooling in C 🚧 PENDING
 
@@ -442,7 +503,8 @@ end-to-end proof of Stage 1; the receipt is
 `[selfhost] iso PASS: auralite.iso built in-guest` on the guest side and
 the normal boot receipts on the host side.
 
-**Deliverable.** `patches/SELFHOST_SH7_mkimg.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ### Phase SH8 — bootstrap closure 🚧 PENDING
 
@@ -460,7 +522,8 @@ receipt sets), stated honestly rather than pretending byte-parity.
 **Gate.** `test_selfhost_closure.sh` (long-running, slow-shard):
 `[selfhost] FULL LOOP PASS (2/2 clean loops)`.
 
-**Deliverable.** `patches/SELFHOST_SH8_closure.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ### Phase SH9 — cross-arch + CI wiring 🚧 PENDING
 
@@ -483,7 +546,8 @@ the CI shard runner.
 the new shard; the four-kernel in-guest build produces kernels that boot
 (the a64/rv/i386 boot receipts from `docs/status.md`).
 
-**Deliverable.** `patches/SELFHOST_SH9_cross_ci.patch`.
+**Deliverable.** The changes above, in the tree (D9: no
+patch artefact).
 
 ---
 
@@ -561,6 +625,11 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-10 | integration runner: new cases must be shard-registered or the runner refuses to start (the RTL8139 incident) | process | OPEN (selfhost shard arrived in SH1; full CI wiring in SH9) | SH9 |
 | SH-11 | boot `__DATE__`/`__TIME__` makes byte-reproducibility impossible | accepted | ACCEPTED (SH8 definition) | SH8 |
 | SH-12 | O6 sizeclass cache parks any ≥4 KiB freed block in the 4 KiB class — heap loses one SPAWN_MAX_IMAGE buffer per spawn (pre-existing) | leak | CLOSED (SH1: payload ≥ 2× largest class falls through to heap_free; test_sizeclass pins it) | SH1 |
+| SH-13 | malloc payloads 8-aligned (24-byte header): clang code in the guest tcc faults on 16-byte movaps (`#GP(0)` compiling libc.c) | align | CLOSED (SH2: 32-byte header, 16-aligned payloads) | SH2 |
+| SH-14 | shell caps argv at 8 / line at 256: tcc link lines silently truncated -> `unresolved reference to '__libc_start_main'` | limit | CLOSED (SH2: MAX_ARGS 32, INPUT_MAX 512) | SH2 |
+| SH-15 | tcc ignores `__attribute__((naked))`; C inline-asm `_start` gets a prologue and decodes the stack wrong | port | CLOSED (SH2: crt0 is a .s file, no prologue) | SH2 |
+| SH-16 | guest tcc ships no `<stdint.h>` (repo's is an `#include_next` wrapper) | missing | CLOSED (SH2: self-contained stdint.h staged in /apps/tcc/include) | SH2 |
+| SH-17 | initrd file table caps at 192 entries; the /src tree blew it and silently dropped /tests/selfhost_hello.c | limit | CLOSED (SH2: INITRD_MAX_FILES 512) | SH2 |
 
 ## 8. Receipt strings (the greppable contract)
 

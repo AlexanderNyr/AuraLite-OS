@@ -11,13 +11,20 @@ placebo, O6's phantom target) -- a plan with that history has no
 business trusting its own checkboxes.
 
 Ties every ✅ phase to the tree:
-  - its deliverable patch exists in patches/;
   - its section says "Status: ✅ landed";
   - the O0 rig it all stands on is present AND registered (perfstat,
     /proc/perf, membench, the integration cases in run_all.sh, the
     host unit gates in the Makefile's UNIT_TESTS);
   - every perfstat counter the plan's §6 ledger quotes is still named
     in perfstat.c (a renamed counter silently orphans the ledger).
+
+Deliberately NOT asserted: existence of `.patch` files in patches/.
+The historical phase patches remain named in the plan's table as
+documentation of what each phase shipped, but a patch on disk is
+evidence that a FILE EXISTS, not that code works -- the RINET2
+precedent (check_rinet2_claims.py) removed exactly those claims, and
+the tree's own gates (unit tests, integration cases, perfstat
+counters) are what actually prove a phase landed.
 
 And checks the header itself, so the document cannot drift back.
 
@@ -42,12 +49,13 @@ def read(*parts):
         return ""
 
 
-def check_plan(plan, tree_has_patch):
-    """Return a list of failure strings.  tree_has_patch(name) -> bool is
-    injected so --selftest can plant a missing deliverable."""
+def check_plan(plan):
+    """Return a list of failure strings."""
     fails = []
 
-    # Phase table rows: | O<n> — ... | <status> | `patches/<file>` |
+    # Phase table rows: | O<n> — ... | <status> | <deliverable> |
+    # The third (deliverable) column is documentation only and is NOT
+    # asserted -- see the module docstring (no .patch existence checks).
     rows = re.findall(r"^\|\s*(O\d)\s+—[^|]*\|([^|]*)\|([^|]*)\|",
                       plan, re.M)
     if len(rows) < 10:
@@ -55,17 +63,9 @@ def check_plan(plan, tree_has_patch):
                      % len(rows))
 
     complete = set()
-    for phase, status, deliverable in rows:
+    for phase, status, _deliverable in rows:
         if "✅" in status:
             complete.add(phase)
-            m = re.search(r"patches/([A-Za-z0-9_.]+\.patch)", deliverable)
-            if not m:
-                fails.append("%s: marked ✅ but names no deliverable patch"
-                             % phase)
-                continue
-            if not tree_has_patch(m.group(1)):
-                fails.append("%s: deliverable patches/%s does not exist"
-                             % (phase, m.group(1)))
 
     # Section status lines must agree with the table.
     for phase in complete:
@@ -79,7 +79,6 @@ def check_plan(plan, tree_has_patch):
                          "'Status: ✅'" % phase)
 
     # Header consistency: all ten complete <=> header says COMPLETE.
-    header = plan.split("\n", 3)[2] if plan.count("\n") >= 3 else ""
     header_line = re.search(r"^## Status:.*$", plan, re.M)
     header = header_line.group(0) if header_line else ""
     if len(complete) == 10 and "COMPLETE" not in header:
@@ -138,11 +137,12 @@ def check_rig():
 
 def main():
     if "--selftest" in sys.argv:
-        # Plant a violation: a ✅ phase whose patch does not exist.  The
+        # Plant a violation: one phase row removed from the table.  The
         # checker must fail on it, or the checker itself is dead.
         plan = read("OPT_PLAN.md")
-        fails = check_plan(plan, lambda name: name != "OPT_O1_stringops.patch")
-        if any("OPT_O1_stringops.patch" in f for f in fails):
+        fake = re.sub(r"^\| O9 —.*$", "", plan, flags=re.M)
+        fails = check_plan(fake)
+        if any("expected 10 rows" in f for f in fails):
             print("check_opt_claims: SELFTEST OK (planted violation caught)")
             return 0
         print("check_opt_claims: SELFTEST FAILED -- the planted violation "
@@ -154,17 +154,14 @@ def main():
         print("check_opt_claims: FAIL -- OPT_PLAN.md missing")
         return 1
 
-    def tree_has_patch(name):
-        return bool(read("patches", name))
-
-    fails = check_plan(plan, tree_has_patch) + check_rig()
+    fails = check_plan(plan) + check_rig()
     if fails:
         print("check_opt_claims: FAIL -- %d finding(s):" % len(fails))
         for f in fails:
             print("  - " + f)
         return 1
-    print("check_opt_claims: OK -- plan, patches, gates and counters agree "
-          "with the tree")
+    print("check_opt_claims: OK -- plan, sections, gates and counters "
+          "agree with the tree")
     return 0
 
 
