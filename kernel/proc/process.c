@@ -57,7 +57,9 @@ struct exec_elfinfo {
 };
 
 #define USER_STACK_TOP         0x7FFFF0000000ULL
-#define USER_STACK_SIZE        0x100000ULL  /* 1 MiB usable user stack */
+/* SELFHOST SH1: 4 MiB usable user stack (was 1 MiB); see guard.c for the
+ * rationale -- the four USER_STACK_SIZE sites must stay in sync. */
+#define USER_STACK_SIZE        0x400000ULL  /* 4 MiB usable user stack */
 #define USER_STACK_GUARD_SIZE  0x1000ULL
 
 /* Saved user-mode state from the syscall entry (set in syscall_entry.asm). */
@@ -767,11 +769,24 @@ static void spawn_thread(void *arg) {
      * "segment file range out of bounds" -- a message about the ELF, for a
      * problem that was really "your binary is bigger than the buffer".  That
      * cost real debugging time when /gltest grew past the limit, so the
-     * limit is now both larger and, more importantly, DIAGNOSED. */
-    #define SPAWN_MAX_IMAGE (1024 * 1024)
+     * limit is now both larger and, more importantly, DIAGNOSED.
+     *
+     * SELFHOST SH1: raised 1 MiB -> 16 MiB.  The 1 MiB cap was arbitrary and
+     * refused a static TinyCC binary (~1.5-2 MiB) with the "larger than the
+     * executable limit" message.  16 MiB is still bounded (a deliberately
+     * widened exec surface, not an unbounded one) and comfortably fits tcc
+     * plus headroom for -g debug info. */
+    #define SPAWN_MAX_IMAGE (16 * 1024 * 1024)
 
     uint8_t *buf = kmalloc(SPAWN_MAX_IMAGE);
     if (!buf) {
+        /* SELFHOST SH1: this used to be a SILENT thread_exit() -- the
+         * second `run <prog>` of a session died with no diagnostic and
+         * "1 frames" at reap.  Diagnose, don't vanish. */
+        kprintf("[proc] spawn: '%s' OOM: cannot allocate %d KiB image "
+                "buffer (kheap exhausted?)\n",
+                path, SPAWN_MAX_IMAGE / 1024);
+        kheap_dump();
         vfs_close(fd);
         memset(path, 0, strlen(path) + 1);
         kfree(path);

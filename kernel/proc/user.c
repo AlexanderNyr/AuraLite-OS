@@ -23,7 +23,8 @@
 #include "kernel/lib/kprintf.h"
 
 #define USER_STACK_TOP         0x7FFFF0000000ULL    /* near top of user half */
-#define USER_STACK_SIZE        0x100000ULL          /* 1 MiB usable bytes    */
+/* SELFHOST SH1: 4 MiB usable user stack (was 1 MiB); see guard.c. */
+#define USER_STACK_SIZE        0x400000ULL          /* 4 MiB usable bytes    */
 #define USER_STACK_GUARD_SIZE  0x1000ULL            /* low guard page        */
 
 /* Implemented in user_entry.asm — the actual iretq to Ring 3. */

@@ -26,7 +26,10 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 
-#define TMPFS_MAX_FILES 64
+/* SELFHOST SH1: 64 files per volume was the ceiling the very first
+ * compiler-workload smoke hit (a build scratch dir needs more than a
+ * handful of files).  256 is still a bounded table, not an unbounded one. */
+#define TMPFS_MAX_FILES 256
 
 struct tmpfs_data {
     uint8_t *data;

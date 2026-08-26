@@ -190,6 +190,7 @@ ALL_CASES=(
     # Graphics and userspace
     test_3d_render
     test_virgl_gpu
+    test_selfhost_tcc
     test_shell_all
     test_sysmon_data
     test_userspace_apps
@@ -210,7 +211,7 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 # refuses to run rather than silently dropping out of CI — the
 # AUDIT_A0 disease (27 cases on disk that CI never ran) does not get a
 # second chapter.
-GROUP_NAMES="core posix fs usb net gui"
+GROUP_NAMES="core posix fs usb net gui selfhost"
 group_re() {
     case "$1" in
         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
@@ -219,6 +220,7 @@ group_re() {
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|xhci_[a-z]+)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
         gui)   echo '^test_(gui|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;
+        selfhost) echo '^test_selfhost_' ;;
         *)     echo '' ;;
     esac
 }

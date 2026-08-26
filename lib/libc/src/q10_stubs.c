@@ -585,3 +585,31 @@ int msgctl(int msqid, int cmd, struct msqid_ds *buf) {
 void setutxent(void) {}
 void endutxent(void) {}
 struct utmpx *getutxent(void) { return NULL; }
+
+/* =============================== dlfcn ==================================== */
+
+/* SELFHOST SH1: dynamic linking does not exist on AuraLite -- user
+ * binaries are static ELF (user.ld), and the w32 personality's
+ * LoadLibrary uses its own PE loader, not these.  tcc's ELF linker
+ * calls dlsym(RTLD_DEFAULT, ...) to resolve symbols from the host
+ * process; the honest answer is "not here", so linking falls through
+ * to the not-found path instead of pretending. */
+
+void *dlopen(const char *filename, int flags) {
+    (void)filename; (void)flags;
+    return NULL;
+}
+
+void *dlsym(void *handle, const char *symbol) {
+    (void)handle; (void)symbol;
+    return NULL;
+}
+
+int dlclose(void *handle) {
+    (void)handle;
+    return 0;
+}
+
+char *dlerror(void) {
+    return "dynamic linking is not supported on AuraLite";
+}

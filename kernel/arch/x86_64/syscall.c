@@ -259,7 +259,8 @@ static int utimens_resolve(uint64_t user_times, uint64_t *atime, uint64_t *mtime
 /* Keep the heap well below the user stack so brk growth cannot collide with
  * the fixed high-address stack mapping. */
 #define USER_STACK_TOP        0x7FFFF0000000ULL
-#define USER_STACK_SIZE       0x100000ULL  /* 1 MiB usable user stack */
+/* SELFHOST SH1: 4 MiB usable user stack (was 1 MiB); see guard.c. */
+#define USER_STACK_SIZE       0x400000ULL  /* 4 MiB usable user stack */
 #define USER_STACK_GUARD_SIZE 0x1000ULL
 #define USER_MMAP_BASE        0x0000400000000000ULL
 #define USER_MMAP_MAX         0x0000700000000000ULL

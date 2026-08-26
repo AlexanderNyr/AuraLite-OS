@@ -48,6 +48,7 @@ double hypot(double x, double y);
 double fma(double x, double y, double z);
 double frexp(double x, int *exp);
 double ldexp(double x, int exp);
+long double ldexpl(long double x, int exp);   /* SELFHOST SH1 (tcc) */
 double modf(double x, double *iptr);
 double nearbyint(double x);
 double remainder(double x, double y);

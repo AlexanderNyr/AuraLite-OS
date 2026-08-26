@@ -11,7 +11,11 @@
  * in sync with process.c.
  */
 #define USER_STACK_TOP         0x7FFFF0000000ULL
-#define USER_STACK_SIZE        0x100000ULL  /* 1 MiB usable user stack */
+/* SELFHOST SH1: 4 MiB usable user stack (was 1 MiB).  A real C compiler
+ * (tcc) recurses deeper than 1 MiB during parsing/codegen; the 1 MiB
+ * depth was the recurring ceiling behind "spawn crashes on big files".
+ * Keep in sync with process.c / user.c / syscall.c. */
+#define USER_STACK_SIZE        0x400000ULL  /* 4 MiB usable user stack */
 #define USER_STACK_GUARD_SIZE  0x1000ULL
 #define USER_STACK_ENTROPY     (0x10ULL * 0x1000ULL) /* choose_user_stack_top() slack */
 

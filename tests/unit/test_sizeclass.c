@@ -51,8 +51,19 @@ static void test_payload_mapping(void) {
           "payload 48 rounds DOWN to class 32 — never up");
     CHECK(sizeclass_for_payload(4095) == (int)SIZECLASS_COUNT - 2,
           "payload 4095 serves class 2048");
-    CHECK(sizeclass_for_payload(1 << 20) == (int)SIZECLASS_COUNT - 1,
-          "huge payload caps at the largest class");
+    /* SELFHOST SH1: oversized blocks must NOT be parked in the largest
+     * class -- the O6 leak that exhausted the 64 MiB heap one
+     * SPAWN_MAX_IMAGE buffer per spawn.  Blocks within the class's own
+     * range (payload < 2x class) still recycle; anything beyond falls
+     * through to heap_free(). */
+    CHECK(sizeclass_for_payload(8191) == (int)SIZECLASS_COUNT - 1,
+          "payload 8191 still recycles in the 4 KiB class (its own range)");
+    CHECK(sizeclass_for_payload(8192) == -1,
+          "payload 8192 falls through to the heap (no larger class)");
+    CHECK(sizeclass_for_payload(1 << 20) == -1,
+          "huge payload (e.g. a freed 1 MiB+ image buffer) goes to heap_free");
+    CHECK(sizeclass_for_payload(16 << 20) == -1,
+          "16 MiB SPAWN_MAX_IMAGE buffer goes to heap_free (the leak gate)");
 }
 
 static void test_lifo_and_link_scrub(void) {

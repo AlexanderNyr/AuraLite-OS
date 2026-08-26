@@ -180,6 +180,13 @@ double ldexp(double x, int e) {
     return r;
 }
 
+/* SELFHOST SH1: ldexpl -- long-double spelling tcc's float-literal
+ * parser calls (tccpp.c, strtold path).  This libc's long double is
+ * double, so the delegating implementation is exact. */
+long double ldexpl(long double x, int e) {
+    return (long double)ldexp((double)x, e);
+}
+
 /* modf(x): split into integer and fractional parts (both with sign of x). */
 double modf(double x, double *iptr) {
     double ip = trunc(x);

@@ -789,6 +789,7 @@ LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o $(USER_BUILD)/rwlock.o $(USER_BUILD)/
                    $(USER_BUILD)/utsname.o $(USER_BUILD)/resource.o \
                    $(USER_BUILD)/math_extra.o $(USER_BUILD)/stdio_extra.o \
                    $(USER_BUILD)/stdlib_extra.o $(USER_BUILD)/string_extra.o \
+                   $(USER_BUILD)/time_extra.o \
                    $(USER_BUILD)/posix_extra.o $(USER_BUILD)/posix_spawn.o $(USER_BUILD)/q10_stubs.o \
                    $(USER_BUILD)/progpath.o $(USER_BUILD)/apkg.o
 
@@ -1780,6 +1781,98 @@ vmware: iso
 vm-configs: vbox vmware
 
 # Build the initrd (USTAR tarball of userspace binaries).
+# ============================================================================
+# SELFHOST_PLAN.md SH1 -- guest TinyCC toolchain (D8: tcc sources are
+# FETCHED by `make selfhost-deps`, never vendored; the repo ships only
+# AuraLite glue: tools/selfhost/tcc_glue.c and this wiring).
+#
+#   make selfhost-deps   fetch TinyCC (mob) into build/selfhost/tcc-src
+#   make selfhost-tcc    build the guest tcc ELF + guest libtcc1.a
+#
+# The toolchain is OPTIONAL for a normal build: `make iso` stages it into
+# the initrd only when the fetched source is present, so offline/CI builds
+# are unchanged.  The self-host integration cases skip with a printed note
+# when it is absent; wiring them into CI lands in SH9.
+# ============================================================================
+SELFHOST_DIR     := $(BUILD_DIR)/selfhost
+SELFHOST_SRC     := $(SELFHOST_DIR)/tcc-src
+SELFHOST_OBJDIR  := $(SELFHOST_DIR)/obj
+SELFHOST_TCC     := $(SELFHOST_DIR)/tcc.elf
+SELFHOST_LIBTCC1 := $(SELFHOST_DIR)/libtcc1.a
+# tccrun.c is deliberately excluded: -run is unsupported on AuraLite, and
+# tools/selfhost/tcc_glue.c stubs tcc_run()/tcc_run_free().  tcctools.c is
+# #included by tcc.c upstream, so it is not a separate object either.
+SELFHOST_TCC_SRCS := tcc.c libtcc.c tccpp.c tccgen.c tccdbg.c tccelf.c \
+                     tccasm.c x86_64-gen.c x86_64-link.c i386-asm.c
+SELFHOST_TCC_OBJS := $(addprefix $(SELFHOST_OBJDIR)/,$(SELFHOST_TCC_SRCS:.c=.o)) \
+                     $(SELFHOST_OBJDIR)/tcc_glue.o
+
+SELFHOST_TCC_CFLAGS := --target=x86_64-elf -std=gnu11 -ffreestanding \
+    -fno-stack-protector -fno-pie -fno-pic -O2 -g \
+    -I $(SELFHOST_SRC) -I lib/libc/include \
+    -DONE_SOURCE=0 -DCONFIG_TCC_STATIC \
+    -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable \
+    -Wno-sign-compare -Wno-pointer-sign -Wno-unknown-pragmas \
+    -Wno-deprecated-non-prototype
+
+.PHONY: selfhost-deps selfhost-tcc
+selfhost-deps:
+	@if [ -d $(SELFHOST_SRC)/.git ] || [ -d $(SELFHOST_SRC) ]; then \
+	    echo "[selfhost] tcc source already present at $(SELFHOST_SRC)"; \
+	else \
+	    echo "[selfhost] fetching TinyCC (mob) -> $(SELFHOST_SRC)"; \
+	    mkdir -p $(SELFHOST_DIR); \
+	    git clone --depth 1 --branch mob \
+	        https://github.com/TinyCC/tinycc.git $(SELFHOST_SRC); \
+	fi
+	@cd $(SELFHOST_SRC) && grep -q 'CONFIG_TCCDIR "/apps/tcc"' config.h || \
+	    sed -i 's|^#define CONFIG_TCCDIR .*|#define CONFIG_TCCDIR "/apps/tcc"|' config.h
+	@echo "[selfhost] tcc source ready: $$(cd $(SELFHOST_SRC) && cat VERSION) @ $$(git -C $(SELFHOST_SRC) rev-parse --short HEAD 2>/dev/null || echo n/a)"
+
+$(SELFHOST_OBJDIR)/%.o: $(SELFHOST_SRC)/%.c | selfhost-deps
+	@mkdir -p $(SELFHOST_OBJDIR)
+	$(CC) $(SELFHOST_TCC_CFLAGS) -c $< -o $@
+	@echo "  [selfhost] $@"
+
+$(SELFHOST_OBJDIR)/tcc_glue.o: tools/selfhost/tcc_glue.c | selfhost-deps
+	@mkdir -p $(SELFHOST_OBJDIR)
+	$(CC) $(SELFHOST_TCC_CFLAGS) -c $< -o $@
+	@echo "  [selfhost] $@"
+
+$(SELFHOST_TCC): $(SELFHOST_TCC_OBJS) $(LIBAURAC) $(USER_BUILD)/crt0.o lib/libc/user.ld
+	$(LD) -m elf_x86_64 -nostdlib -static -T lib/libc/user.ld \
+	    -z max-page-size=4096 --gc-sections \
+	    $(USER_BUILD)/crt0.o $(SELFHOST_TCC_OBJS) \
+	    --whole-archive $(LIBAURAC) --no-whole-archive -o $@
+	@echo "  [selfhost] $@"
+
+# Guest libtcc1.a: the x86_64 runtime tcc links into the programs it builds
+# (64-bit div/mod helpers, va_list save area, alloca, __dso_handle, ...).
+# alloca-bt.o / bcheck / bt-* / runmain / tcov are backtrace/check/-run
+# support this tree does not build.
+SELFHOST_LIB1_OBJS := libtcc1.o stdatomic.o atomic.o builtin.o alloca.o va_list.o dsohandle.o
+$(SELFHOST_LIBTCC1): $(addprefix $(SELFHOST_OBJDIR)/lib1/,$(SELFHOST_LIB1_OBJS))
+	$(AR) rcs $@ $(addprefix $(SELFHOST_OBJDIR)/lib1/,$(SELFHOST_LIB1_OBJS))
+	@echo "  [selfhost] $@"
+
+$(SELFHOST_OBJDIR)/lib1/%.o: $(SELFHOST_SRC)/lib/%.c | selfhost-deps
+	@mkdir -p $(SELFHOST_OBJDIR)/lib1
+	$(CC) $(SELFHOST_TCC_CFLAGS) -c $< -o $@
+	@echo "  [selfhost] $@"
+
+$(SELFHOST_OBJDIR)/lib1/alloca.o: $(SELFHOST_SRC)/lib/alloca.S | selfhost-deps
+	@mkdir -p $(SELFHOST_OBJDIR)/lib1
+	$(CC) $(SELFHOST_TCC_CFLAGS) -c $< -o $@
+	@echo "  [selfhost] $@"
+
+$(SELFHOST_OBJDIR)/lib1/atomic.o: $(SELFHOST_SRC)/lib/atomic.S | selfhost-deps
+	@mkdir -p $(SELFHOST_OBJDIR)/lib1
+	$(CC) $(SELFHOST_TCC_CFLAGS) -c $< -o $@
+	@echo "  [selfhost] $@"
+
+selfhost-tcc: $(SELFHOST_TCC) $(SELFHOST_LIBTCC1)
+	@echo "[selfhost] guest toolchain ready: $(SELFHOST_TCC) + $(SELFHOST_LIBTCC1)"
+
 INITRD_DIR := $(USER_BUILD)/initrd_root
 # ---- The runtime filesystem layout (FSLAYOUT_PLAN phase F3) ----
 #
@@ -1953,7 +2046,7 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF)
+$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -1971,6 +2064,19 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/demos/$$p; done
 	@for p in $(INITRD_TESTS); do \
 	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/tests/$$p; done
+# SELFHOST SH1: stage the guest toolchain when present (make selfhost-deps
+# selfhost-tcc).  Binary -> /bin/tcc; tcc's own headers and the guest
+# libtcc1.a live under /apps/tcc (CONFIG_TCCDIR, compiled into tcc.c).
+	@if [ -f $(SELFHOST_TCC) ]; then \
+	    strip -s $(SELFHOST_TCC) -o $(INITRD_DIR)/bin/tcc; \
+	    mkdir -p $(INITRD_DIR)/apps/tcc/include; \
+	    cp -r $(SELFHOST_SRC)/include/. $(INITRD_DIR)/apps/tcc/include/; \
+	    cp $(SELFHOST_LIBTCC1) $(INITRD_DIR)/apps/tcc/libtcc1.a; \
+	    cp tools/selfhost/hello.c $(INITRD_DIR)/tests/selfhost_hello.c; \
+	    echo "[selfhost] staged guest tcc into initrd (/bin/tcc + /apps/tcc + /tests/selfhost_hello.c)"; \
+	else \
+	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \
+	fi
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
 # These used to be `cp foo.elf foo.pkg` -- a renamed executable with no

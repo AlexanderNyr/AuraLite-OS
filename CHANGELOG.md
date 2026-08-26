@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH1 — the guest TinyCC toolchain] 2026-08-26
+
+`SELFHOST_PLAN.md` phase SH1: AuraLite now compiles and links C **inside
+itself**.  The first link of the self-hosting chain:
+
+- **Runtime limits raised** (the compiler workload needed it): exec-image
+  cap `SPAWN_MAX_IMAGE` 1 MiB → 16 MiB (the old cap was arbitrary and
+  refused a ~1.3 MiB tcc); user stack 1 MiB → 4 MiB at all four sites
+  (`syscall.c`, `guard.c`, `process.c`, `user.c`); `TMPFS_MAX_FILES` 64 →
+  256.  `/bin/sysinfo` prints the new numbers.
+- **TinyCC 0.9.28rc in the guest** (`make selfhost-deps selfhost-tcc`;
+  sources fetched, never vendored — the DOOM precedent, D8): cross-built
+  with clang against AuraLite's own libc into a 1.3 MiB static ELF,
+  staged as `/bin/tcc` with `/apps/tcc/{include,libtcc1.a}`.  `-run` is
+  unsupported (`tools/selfhost/tcc_glue.c`); in-guest it compiles and
+  **links with its own ELF linker** (`run tcc -nostdlib -o /tmp/h
+  /tests/selfhost_hello.c` → entry `0x401688`, 2123 bytes) and the result
+  runs, printing the receipt `[selfhost] tcc PASS: 1 binary built and
+  run`.  `test_selfhost_tcc.sh` (4/4) is registered in the new `selfhost`
+  integration shard.
+- **libc growth the port needed:** `<sys/time.h>`; `time_extra.c`
+  (gmtime/localtime/mktime/asctime/ctime/strftime — civil-from-days,
+  no timezone, honest about it); `ldexpl`; dlfcn stubs + `RTLD_DEFAULT`
+  (tccelf calls `dlsym(RTLD_DEFAULT, …)`; dynamic linking does not exist,
+  the stubs say so instead of pretending).
+- **A pre-existing O6 leak, exposed and fixed:** the size-class cache
+  parked *any* freed block ≥ 4 KiB in the 4 KiB class, so every freed
+  `SPAWN_MAX_IMAGE` buffer vanished from the heap — one 16 MiB per spawn,
+  OOM after ~4 spawns, *silently* (the kmalloc-failure path in
+  `spawn_thread` was a bare `thread_exit()`; it now prints `[proc] spawn:
+  … OOM` + a `[heap]` dump).  `sizeclass_for_payload()` falls through to
+  `heap_free()` for payloads ≥ 2× the largest class; `test_sizeclass`
+  pins both directions (8191 recycles, 8192/1 MiB/16 MiB fall through).
+  Verified in-guest: repeated spawns (same binary included) all load full
+  address spaces.
+
+Also on the way: the integration runner grew its seventh shard
+(`selfhost`), and `SELFHOST_PLAN.md`'s ledger gained row SH-12 for the
+sizeclass leak (closed by this phase).
+
 ## [Realtek RTL8139 family: a real data path] 2026-08-25
 
 The virtual-hardware catalog has carried `10ec:8139` as "known / no data

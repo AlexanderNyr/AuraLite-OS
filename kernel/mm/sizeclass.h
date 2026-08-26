@@ -71,6 +71,17 @@ static inline int sizeclass_for_payload(uint64_t payload) {
         if (sizeclass_bytes(ci) <= payload) best = (int)ci;
         else break;
     }
+    /* SELFHOST SH1 (fix of a pre-existing O6 leak): a block whose payload
+     * is >= 2x the largest class must NOT be parked in that class.  The
+     * old loop happily classified ANY oversized block into the 4 KiB
+     * class -- including every freed SPAWN_MAX_IMAGE buffer -- and the
+     * cache never returned it to the heap free list, so the 64 MiB heap
+     * lost one full 16 MiB per spawn and OOM'd after ~4 spawns.  Blocks
+     * within the class's own range (payload < 2x class) keep the
+     * over-provision recycling the O6 comment describes; anything
+     * bigger falls through to heap_free() and coalescing. */
+    if (best >= 0 && payload >= sizeclass_bytes((uint32_t)best) * 2u)
+        return -1;
     return best;
 }
 
