@@ -136,6 +136,7 @@ ALL_CASES=(
     test_ip_frag
     test_e1000_irq
     test_virtio_net
+    test_rtl8139
     test_udp_sockets
     test_http_get
     test_http_x6

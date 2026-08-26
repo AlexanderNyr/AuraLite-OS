@@ -21,6 +21,7 @@ See also [`status.md`](status.md) for a feature matrix.
 | PIT | `drivers/timer/` | ✅ | 100 Hz system tick and sleeps. |
 | PCI | `drivers/pci/` | ✅ | Config-space reads/writes and simple scanning. |
 | e1000 NIC | `drivers/e1000/` | ✅ | Intel 8254x legacy TX/RX rings. |
+| RTL8139 NIC | `drivers/rtl8139/` | ✅ | Realtek 8139 family: RX ring buffer + 4 TX descriptors, INTx-driven. |
 | AHCI | `drivers/ahci/` | ✅/🧪 | SATA controller/port setup and DMA sector read/write self-test. |
 | UHCI | `drivers/usb/uhci.c` | ✅/🧪 | USB 1.1 controller + CONTROL/BULK TD/QH transfers. |
 | OHCI | `drivers/usb/ohci.c` | 🚧 | Controller/port bring-up. |
@@ -164,10 +165,89 @@ Implementation notes:
 
 Unsupported virtual NICs:
 
-- virtio-net;
 - VMware vmxnet3;
 - Intel e1000e unless a dedicated compatible path is added;
 - VirtualBox PCnet adapters.
+
+(virtio-net and the Realtek 8139 family both have drivers — see below and
+`drivers/virtio_net/`.)
+
+## RTL8139 networking
+
+Location: `drivers/rtl8139/`
+
+The Realtek 8139 is the most widely cloned 100 Mbit part ever shipped: it is
+QEMU's `-device rtl8139`, and the chip on a very large number of PCI cards
+and older motherboards.
+
+| Device | PCI ID | Common source |
+|---|---|---|
+| RTL8139/8139C/8139D | `10ec:8139` | QEMU `-device rtl8139`, most PCI cards |
+| RTL8139B CardBus | `10ec:8138` | laptop CardBus adapters |
+| RTL8100 | `10ec:8100` | low-power onboard variant |
+| RTL8139C+/8130 | `10ec:8130` | later onboard variant |
+
+Backend priority in `net_init()` is e1000 → virtio-net → rtl8139; the first
+NIC registered with the netdev layer becomes the active one.
+
+Implementation notes:
+
+- **Port I/O, not MMIO.** The chip answers the same 256-byte register file at
+  BAR0 (I/O space) and BAR1 (memory space); this driver uses BAR0, so it needs
+  no `paging_map()` of a device window. That also keeps it inside the portable
+  include budget `tools/check_width_sweep.py` ratchets — nothing here includes
+  `kernel/arch/x86_64/` directly.
+- **A receive RING, not a descriptor array.** One flat buffer the chip fills
+  continuously, each frame preceded by a 4-byte header (status + length).
+- INTx-driven: the handler drains the ring into a software RX queue and wakes
+  sleepers; `recv_wait()` sleeps on that queue with the O7 deadline as its
+  lost-wakeup net. The one-shot `[rtl8139] RX via IRQ wake` line is the
+  receipt that the interrupt — not the polling fallback — did the work.
+- TX pads to the 60-byte Ethernet minimum: the chip will not transmit a runt,
+  and an unpadded 42-byte ARP request is silently dropped by the wire (which
+  presents as "DHCP never completes").
+- **32-bit DMA is a hard limit.** `RBSTART` and `TSAD0..3` are 32 bits, so
+  every buffer must live below 4 GiB. The driver checks and refuses by name
+  rather than programming a truncated address and corrupting memory.
+
+### The two ring sizes (the bug this driver was born with)
+
+The single most dangerous thing about the 8139 ring is that it has *two*
+sizes, and confusing them kills the receiver permanently:
+
+- `RTL8139_RX_WRAP_LEN` (8192) is the **ring proper** — the size `RCR.RBLEN`
+  selects, and therefore the modulus the *chip* wraps at. Every offset the
+  driver computes and every CAPR it programs must be taken modulo this.
+- `RTL8139_RX_BUF_LEN` (8192 + 16 + 1500) is the **allocation** — the ring,
+  plus header slack, plus a pad the chip may overrun into because `RCR.WRAP`
+  is set (so a frame near the end runs past it in one piece instead of being
+  split).
+
+Measured on this tree: a first draft used the allocation as the modulus.
+DHCP, ping, DNS and sixteen concurrent TCP connections all passed — and then
+the receiver died after roughly 128 packets, producing 23 `ARP timeout` /
+`resolve/output failed` lines with **no error bit set anywhere**, because a
+CAPR past the ring proper simply convinces the chip its buffer is full and
+`CMD.BUFE` never clears again. The arithmetic now lives in
+`drivers/rtl8139/rtl8139_ring.h` and is gated on the host by
+`tests/unit/test_rtl8139_ring.c` (203 checks); the guest gate is
+`tests/integration/cases/test_rtl8139.sh`, which asserts those two strings
+are absent.
+
+Two other quirks the ring header handles, each host-tested:
+
+- the header's length field **includes** the 4-byte Ethernet FCS, which must
+  be stripped or every frame arrives 4 bytes too long;
+- `CAPR` reads back **16 bytes behind** the true offset — a documented
+  hardware bias, and the 16-bit wrap in its inverse was itself a bug the host
+  test caught before it ever ran.
+
+### Not supported
+
+RTL8169/8168/8111 gigabit parts (`10ec:8168`, `10ec:8169`) are a *different*
+chip with descriptor rings, not this ring buffer. They are listed in the
+virtual-hardware catalog as known-without-a-data-path; QEMU does not emulate
+them, so a driver could not be gated here.
 
 ## AHCI
 

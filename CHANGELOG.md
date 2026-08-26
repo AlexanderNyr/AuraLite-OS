@@ -2,6 +2,65 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Realtek RTL8139 family: a real data path] 2026-08-25
+
+The virtual-hardware catalog has carried `10ec:8139` as "known / no data
+path" since it was written.  It now moves bytes: `drivers/rtl8139/` is a
+complete driver for the most widely cloned 100 Mbit part ever shipped —
+QEMU's `-device rtl8139`, and the chip on a great many PCI cards and older
+motherboards.
+
+- **`drivers/rtl8139/rtl8139.{c,h}` (new).**  Port-I/O register file via
+  BAR0 (no MMIO window to map), an 8 KiB RX **ring buffer** walked through
+  CAPR/CBR, four hardware TX descriptors round-robin, and an INTx handler
+  that drains receives into a software queue and wakes sleepers.  Accepts
+  `10ec:8139` / `8138` / `8100` / `8130`.  `recv_wait()` sleeps on the queue
+  the interrupt wakes with the O7 deadline as its lost-wakeup net, and
+  prints `[rtl8139] RX via IRQ wake` once — the receipt that the interrupt,
+  not the polling fallback, did the work (the R9/RES-28 precedent).
+- **Two hardware facts the driver refuses to paper over.**  TX pads to the
+  60-byte Ethernet minimum, because the chip will not transmit a runt and an
+  unpadded 42-byte ARP request is eaten by the wire (presenting as "DHCP
+  never completes").  And `RBSTART`/`TSAD0..3` are 32 bits, so a buffer
+  above 4 GiB is refused **by name** rather than programmed truncated —
+  a truncated DMA address corrupts whatever lives at the low alias.
+- **`drivers/rtl8139/rtl8139_ring.h` (new) + `tests/unit/test_rtl8139_ring.c`
+  (new, 203 checks).**  The D2 pattern this tree already uses for TCP
+  (`tcp_x5.h`, `tcp_cc.h`): the arithmetic that is easy to get wrong lives in
+  a header with no hardware in it, so a HOST test can drive the cases QEMU
+  cannot be asked to produce — a frame that wraps the ring end, a CRC-error
+  frame, a length field that lies.
+- **The bug this driver was born with, measured and pinned.**  The first
+  draft used the RX **allocation** size (8192+16+1500) as the ring modulus
+  instead of the **ring proper** that `RCR.RBLEN` selects (8192).  Under QEMU
+  it booted clean: DHCP got a lease, ICMP passed, DNS resolved a real
+  address, sixteen concurrent TCP connections established — and then the
+  receiver died after roughly 128 packets, leaving 23 `ARP timeout` /
+  `resolve/output failed` lines and **no error bit set anywhere**, because a
+  CAPR past the ring proper convinces the chip its buffer is full and
+  `CMD.BUFE` never clears again.  The two sizes are now separate named
+  constants with the reasoning written at the definition; the host gate
+  asserts the relationship (not a copy of the number), and its negative
+  control fires 8 failures when the modulus is put back.  A second, smaller
+  bug — the CAPR −16 inverse needing a 16-bit wrap before the ring modulo —
+  was caught by the same test before it ever reached hardware.
+- **`tests/integration/cases/test_rtl8139.sh` (new, 18/18).**  Boots with
+  `IL_NIC=rtl8139` so e1000 and virtio-net are genuinely absent, then asserts
+  the whole stack over the Realtek NIC (DHCP + ICMP + DNS + the X5 TCP gate)
+  plus the IRQ receipt, and asserts the two stall strings are ABSENT.
+  Registered in `run_all.sh` (135 cases).
+- **Wiring and docs.**  `net_init()` falls back e1000 → virtio-net → rtl8139;
+  the catalog's Realtek rows flip to `active` and gain the 8169/8168 gigabit
+  IDs as honestly known-without-a-data-path (a different chip, and QEMU does
+  not emulate it, so no gate could exist).  `docs/driver_guide.md` gains the
+  driver section including the two-ring-sizes trap; `docs/status.md` and the
+  virtual-driver matrix follow.
+
+All three `check_width_sweep.py` ratchets stay exactly at baseline
+(casts 355/355, x64-includes 69/69, asm-files 29/29): the driver spends no
+portable-include budget — it declares `irq_register_handler` locally rather
+than including `kernel/arch/x86_64/irq.h`, as e1000 and virtio-net each do.
+
 ## [RINET2: the "phase patch exists" claims are gone] 2026-08-25
 
 `make test-unit` was red on a tree whose code was completely intact.

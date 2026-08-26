@@ -2143,6 +2143,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_slab \
                 $(BUILD_DIR)/test_virgl \
                 $(BUILD_DIR)/test_virtio_net \
+                $(BUILD_DIR)/test_rtl8139_ring \
                 $(BUILD_DIR)/test_stack_guard \
                 $(BUILD_DIR)/test_select_stack \
                 $(BUILD_DIR)/test_blkdev \
@@ -2774,6 +2775,16 @@ $(BUILD_DIR)/test_virgl: tests/unit/test_virgl.c drivers/gpu/virgl.h
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_virtio_net: tests/unit/test_virtio_net.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# The RTL8139 RX-ring decision core (D2: policy in a header, host test
+# drives it).  Compiles the REAL drivers/rtl8139/rtl8139_ring.h -- no
+# re-declaration -- so the driver and this gate cannot drift.  The
+# wrap, CRC-strip and CAPR-bias cases are ones QEMU cannot be asked to
+# produce on demand; the CAPR 16-bit wrap bug was caught HERE.
+$(BUILD_DIR)/test_rtl8139_ring: tests/unit/test_rtl8139_ring.c \
+                                drivers/rtl8139/rtl8139_ring.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

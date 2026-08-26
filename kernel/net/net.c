@@ -8,6 +8,7 @@
 #include "kernel/net/net.h"
 #include "drivers/e1000/e1000.h"
 #include "drivers/virtio_net/virtio_net.h"
+#include "drivers/rtl8139/rtl8139.h"
 #include "kernel/net/netdev.h"
 #include "kernel/net/dns.h"
 #include "kernel/net/ip_reasm.h"
@@ -1015,14 +1016,21 @@ int net_init(void) {
     gateway_ip = ip_from_octets(GW_IP_O0, GW_IP_O1, GW_IP_O2, GW_IP_O3);
 
     /* Backend selection: e1000 is the default NIC.  When it is absent we fall
-     * back to a modern virtio-net device.  The first NIC registered with the
-     * netdev layer becomes the active one, so e1000 takes priority. */
+     * back to a modern virtio-net device, and then to the Realtek RTL8139
+     * family -- the most widely cloned Fast Ethernet part there is, and the
+     * NIC a great deal of older physical hardware (and every `-device
+     * rtl8139' VM) actually presents.  The first NIC registered with the
+     * netdev layer becomes the active one, so the order here IS the
+     * priority: paravirtual before emulated-gigabit before 100 Mbit. */
     int have_nic = 0;
     if (e1000_init() == 0) {
         e1000_register_netdev();
         have_nic = 1;
     } else if (virtio_net_init() == 0) {
         virtio_net_register_netdev();
+        have_nic = 1;
+    } else if (rtl8139_init() == 0) {
+        rtl8139_register_netdev();
         have_nic = 1;
     }
     if (!have_nic || !netdev_active()) {

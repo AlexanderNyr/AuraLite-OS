@@ -33,7 +33,7 @@ Boot log prefix:
 
 | Category | Devices recognised |
 |---|---|
-| Alternative NICs | Intel e1000e `8086:10d3`, AMD PCnet `1022:2000`, RTL8139 `10ec:8139`, VMware VMXNET3 `15ad:07b0`, virtio-net `1af4:1000/1041`. |
+| Alternative NICs | Realtek RTL8139 `10ec:8139` (driven — `drivers/rtl8139/`), virtio-net `1af4:1000/1041` (driven). Recognised without a data path: Intel e1000e `8086:10d3`, AMD PCnet `1022:2000`, VMware VMXNET3 `15ad:07b0`, Realtek RTL8169/8168 `10ec:8169/8168`. |
 | Alternative storage | PIIX IDE `8086:7010/7111`, virtio-blk `1af4:1001/1042`, virtio-scsi `1af4:1004/1048`, VMware PVSCSI `15ad:07c0`, LSI SCSI/SAS, BusLogic. |
 | GPUs | VMware SVGA II, VirtualBox VMSVGA/VBoxVGA, QXL, virtio-gpu. These currently rely on the bootloader-provided framebuffer only (virtio-gpu/VirGL are experimental acceleration paths; see `TODO.md`). |
 | Audio | AC'97, Intel HDA, Ensoniq ES1371. |
