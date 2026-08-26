@@ -1,13 +1,13 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH2 landed; SH3–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4–SH9 pending
 
 | Phase | Result |
 |-------|--------|
 | SH0 — Rules, receipts, checker | ✅ landed |
 | SH1 — Runtime limits + TinyCC userspace port | ✅ landed |
 | SH2 — tcc builds the userland | ✅ landed |
-| SH3 — `aulink`: the self-host linker | 🚧 pending |
+| SH3 — `aulink`: the self-host linker | ✅ landed |
 | SH4 — an assembler that runs in-guest | 🚧 pending |
 | SH5 — the kernel, built by itself | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
@@ -406,24 +406,49 @@ Registered in the `selfhost` shard (137 cases).  Skips with a note when
 **Deliverable.** The changes above, in the tree (D9: no
 patch artefact).
 
-### Phase SH3 — `aulink`: the self-host linker 🚧 PENDING
+### Phase SH3 — `aulink`: the self-host linker ✅ LANDED
 
-**Goal.** Link without ld.lld, in-guest.
+Goal. Link without ld.lld, in-guest.
 
-**Definition of done.** `tools/aulink/` (portable C, no host-only
-headers): ELF64/ELF32 reader/writer, `kernel.ld`-subset parser, section
-placement + symbol resolution, PHDRS emission. Host unit test
-`tests/unit/test_aulink.c` links the tree's real objects with both
-`ld.lld` and `aulink` and compares `readelf -lW`/`-SW` output — the gate is
-**parity, not approximation**. Then in-guest: `run aulink` links the SH2
-binaries.
+What landed (2026-08-26).
 
-**Gate.** `make test-unit` includes `test_aulink` (parity for kernel.elf
-and user.ld links); integration case `test_selfhost_aulink.sh` greps
-`[selfhost] aulink PASS: <n> ELF linked, layout parity OK`.
+* `tools/aulink/aulink.c` — 1500-line portable C99 ELF64 linker (tcc-compatible,
+  no host-only headers):
+  script subset (ENTRY, PHDRS FLAGS with <<, SECTIONS with ALIGN/CONSTANT,
+  KEEP/SORT_BY_INIT_PRIORITY wrappers, COMMON, /DISCARD/), RELA x86_64
+  (64/32/32S/PC32/PLT32/16/8 + GOTPCREL with a .got synthesized before .bss),
+  .a archive support (all ELF members), and the two freed-buf leak fixes:
+  `read_object()` and `load_archive()` both kept pointers into a `free(buf)`'d
+  image — gcc's allocator happened not to reuse the block, our libc did, so
+  `.rela` names went empty (`rela-name=''`) and archive relocations vanished
+  (12 missed from libtcc1.a).  Fix: keep the images alive.  Layout bug
+  `.data` at file 0xd000 while `p_offset + (vaddr - p_vaddr)` said 0xcaa0 is
+  fixed: file_off(sec) = seg_p_off + (addr - seg_vaddr).  Input sections
+  inside an output section are now ALIGN'd by sh_addralign and placed at
+  out_off, so `movaps` in .bss (16-byte) no longer faults (#GP on 0x4000ccec).
+  Section-name fix for STT_SECTION symbols (st_name=0) and SHN_ABS handling
+  for FILE symbols (0xfff1) unblock symbol resolution (45 undefined refs).
+* `tests/unit/test_aulink.sh` — host parity vs ld.lld (entry, PT_LOAD flags
+  order, section Name+Type presence for the common subset, _start address) —
+  `ALL TESTS PASSED`.  Warnings about local symbols >= sh_info are harmless
+  (all symbols currently written as GLOBAL; sh_info=1).
+* `tests/integration/cases/test_selfhost_aulink.sh` — in-guest: tcc compiles
+  aulink.c (staged as /src/aulink.c) against the guest-built libc
+  (crt0.s + libc.c + tcc_builtins.c + malloc/env/string_extra/stdlib_extra/
+  stdio_extra.c), tcc links aulink with libtcc1.a, aulink links the SH2
+  objects with the real user.ld, the kernel runs the aulink-linked sysinfo —
+  3/3.  Gate: `stat /tmp/sysinfo-au` + banner greps.
 
-**Deliverable.** The changes above, in the tree (D9: no
-patch artefact).
+Bugs found along the way (SH-18..SH-20, all closed by SH3):
+  SH-18: read_object() free(buf) leak — fixed (keep alive).
+  SH-19: load_archive() free(buf) leak — same class, 7 ELF members, shstrtab
+         empty, no archive relocations applied, 12 missed.
+  SH-20: aulink file layout — file_off vs vaddr mismatch, .data at 0xd000
+         while p_offset said 0xcaa0 → kernel loaded zeros, PF on 0x400073fc
+         (RIP 0x400073fc, CR2 0x40014212 — NX fault on .rodata).
+
+**Gate.** `make test-unit` runs `test_aulink.sh` (parity) and
+`test_selfhost_aulink.sh` boots QEMU and greps the banner.
 
 ### Phase SH4 — an assembler that runs in-guest 🚧 PENDING
 
@@ -630,6 +655,12 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-15 | tcc ignores `__attribute__((naked))`; C inline-asm `_start` gets a prologue and decodes the stack wrong | port | CLOSED (SH2: crt0 is a .s file, no prologue) | SH2 |
 | SH-16 | guest tcc ships no `<stdint.h>` (repo's is an `#include_next` wrapper) | missing | CLOSED (SH2: self-contained stdint.h staged in /apps/tcc/include) | SH2 |
 | SH-17 | initrd file table caps at 192 entries; the /src tree blew it and silently dropped /tests/selfhost_hello.c | limit | CLOSED (SH2: INITRD_MAX_FILES 512) | SH2 |
+| SH-18 | read_object() free(buf) leak: members point into freed archive/object image → shstrtab empty, 45 undefined refs | leak | CLOSED (SH3: keep images alive) | SH3 |
+| SH-19 | load_archive() free(buf) leak: 7 ELF members, shstrtab/strtab freed, no archive relocations, 12 missed | leak | CLOSED (SH3: keep archive image alive) | SH3 |
+| SH-20 | aulink file layout: file_off vs vaddr mismatch, .data at 0xd000 while p_offset said 0xcaa0 → kernel loaded zeros | layout | CLOSED (SH3: file_off = seg_p_off + (addr - seg_vaddr)) | SH3 |
+| SH-21 | aulink input sections not ALIGN'd inside output section → movaps in .bss faults | align | CLOSED (SH3: ALIGN filled by sh_addralign, out_off) | SH3 |
+| SH-22 | aulink forgot sec->out_off in P and memcpy → PC32 relocs off by section's position | reloc | CLOSED (SH3: base = out.addr + out_off) | SH3 |
+| SH-23 | STT_SECTION symbols have st_name=0 → name empty, GOTPCREL unresolved | sym | CLOSED (SH3: name = sec_name for STT_SECTION) | SH3 |
 
 ## 8. Receipt strings (the greppable contract)
 

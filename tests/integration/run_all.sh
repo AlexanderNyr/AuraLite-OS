@@ -192,6 +192,7 @@ ALL_CASES=(
     test_virgl_gpu
     test_selfhost_tcc
     test_selfhost_userland
+    test_selfhost_aulink
     test_shell_all
     test_sysmon_data
     test_userspace_apps

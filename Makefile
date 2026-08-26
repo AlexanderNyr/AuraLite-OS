@@ -1825,8 +1825,16 @@ selfhost-deps:
 	    git clone --depth 1 --branch mob \
 	        https://github.com/TinyCC/tinycc.git $(SELFHOST_SRC); \
 	fi
-	@cd $(SELFHOST_SRC) && grep -q 'CONFIG_TCCDIR "/apps/tcc"' config.h || \
-	    sed -i 's|^#define CONFIG_TCCDIR .*|#define CONFIG_TCCDIR "/apps/tcc"|' config.h
+	@cd $(SELFHOST_SRC) && if [ ! -f config.h ]; then \
+	    echo '[selfhost] generating minimal config.h for guest build'; \
+	    printf '%s\n' '#define TCC_VERSION "0.9.28rc"' '#define TCC_TARGET_X86_64 1' '#define CONFIG_TCCDIR "/apps/tcc"' '#define CONFIG_TCC_PREDEFS 1' '#define CONFIG_TCC_CRTPREFIX "/usr/lib/x86_64-linux-gnu"' '#define CONFIG_TCC_LIBPATHS "/usr/lib/x86_64-linux-gnu:/usr/lib"' '#define CONFIG_TRIPLET "x86_64-linux-gnu"' '#define CONFIG_OS_RELEASE "Linux"' > config.h; \
+	else \
+	    grep -q 'CONFIG_TCCDIR "/apps/tcc"' config.h || sed -i 's|^#define CONFIG_TCCDIR .*|#define CONFIG_TCCDIR "/apps/tcc"|' config.h; \
+	fi
+	@cd $(SELFHOST_SRC) && if [ ! -f tccdefs_.h ]; then \
+	    echo '[selfhost] generating tccdefs_.h'; \
+	    $(HOST_CC) -DC2STR conftest.c -o c2str && ./c2str include/tccdefs.h tccdefs_.h && rm -f c2str; \
+	fi
 	@echo "[selfhost] tcc source ready: $$(cd $(SELFHOST_SRC) && cat VERSION) @ $$(git -C $(SELFHOST_SRC) rev-parse --short HEAD 2>/dev/null || echo n/a)"
 
 $(SELFHOST_OBJDIR)/%.o: $(SELFHOST_SRC)/%.c | selfhost-deps
@@ -1872,6 +1880,24 @@ $(SELFHOST_OBJDIR)/lib1/atomic.o: $(SELFHOST_SRC)/lib/atomic.S | selfhost-deps
 
 selfhost-tcc: $(SELFHOST_TCC) $(SELFHOST_LIBTCC1)
 	@echo "[selfhost] guest toolchain ready: $(SELFHOST_TCC) + $(SELFHOST_LIBTCC1)"
+
+# SELFHOST SH3: aulink -- the self-host ELF linker (no ld.lld in-guest).
+AULINK_DIR := tools/aulink
+AULINK_SRC := $(AULINK_DIR)/aulink.c
+AULINK_HOST := $(BUILD_DIR)/aulink
+AULINK_GUEST := $(BUILD_DIR)/selfhost/aulink.elf
+$(AULINK_HOST): $(AULINK_SRC)
+	@mkdir -p $(dir $@)
+	cc -std=c99 -O2 -o $@ $<
+	@echo "  [aulink] $@"
+$(AULINK_GUEST): $(AULINK_SRC) $(LIBAURAC) $(USER_BUILD)/crt0.o lib/libc/user.ld | selfhost-deps
+	@mkdir -p $(dir $@) $(SELFHOST_OBJDIR)/aulink
+	$(CC) --target=x86_64-elf -std=gnu11 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -g -I lib/libc/include -c $< -o $(SELFHOST_OBJDIR)/aulink/aulink.o
+	$(LD) -m elf_x86_64 -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 --gc-sections $(USER_BUILD)/crt0.o $(SELFHOST_OBJDIR)/aulink/aulink.o --whole-archive $(LIBAURAC) --no-whole-archive -o $@
+	@echo "  [selfhost] $@"
+.PHONY: selfhost-aulink
+selfhost-aulink: $(AULINK_HOST) $(AULINK_GUEST)
+	@echo "[selfhost] aulink ready: $(AULINK_HOST) + $(AULINK_GUEST)"
 
 INITRD_DIR := $(USER_BUILD)/initrd_root
 # ---- The runtime filesystem layout (FSLAYOUT_PLAN phase F3) ----
@@ -2089,6 +2115,8 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
 	    cp userspace/apps/sysinfo/sysinfo.c $(INITRD_DIR)/src/apps/sysinfo.c; \
 	    cp userspace/apps/editor/editor.c $(INITRD_DIR)/src/apps/editor.c; \
     cp tools/selfhost/userland_ok.c $(INITRD_DIR)/src/apps/userland_ok.c; \
+    cp tools/aulink/aulink.c $(INITRD_DIR)/src/aulink.c; \
+    cp lib/libc/user.ld $(INITRD_DIR)/src/libc/user.ld; \
 	    echo "[selfhost] staged guest tcc into initrd (/bin/tcc + /apps/tcc + /src userland sources)"; \
 	else \
 	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \
@@ -2234,6 +2262,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_dualstack \
                 $(BUILD_DIR)/test_dns_aaaa \
                 $(BUILD_DIR)/test_sizeclass \
+                $(BUILD_DIR)/test_aulink \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_bsod \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \

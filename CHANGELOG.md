@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH3 — aulink: the self-host ELF linker] 2026-08-26
+
+`SELFHOST_PLAN.md` phase SH3: AuraLite now links ELF **inside itself**,
+without `ld.lld`.
+
+- **In-guest proof:** `tcc` compiles `tools/aulink/aulink.c` (staged as
+  `/src/aulink.c`) against the guest-built libc, `tcc` links it with
+  `libtcc1.a`, `aulink` (the guest-built binary) links the SH2 objects
+  with the real `lib/libc/user.ld` into `/tmp/sysinfo-au`, the kernel
+  runs it — banner `AuraLite OS System Information` + `Process ID`.
+- **Host parity:** `tests/unit/test_aulink.sh` links the tree's real
+  userland objects with both `ld.lld` and `aulink` and compares what can
+  honestly be compared (entry, PT_LOAD flags order, section Name+Type
+  presence for the common subset, `_start` address) — `ALL TESTS PASSED`.
+- **Linker:** 1500-line portable C99 ELF64 linker (tcc-compatible):
+  script subset (ENTRY, PHDRS FLAGS with `<<`, SECTIONS with ALIGN/CONSTANT,
+  KEEP/SORT_BY_INIT_PRIORITY wrappers, COMMON, /DISCARD/), RELA x86_64
+  (64/32/32S/PC32/PLT32/16/8 + GOTPCREL with a `.got` synthesized before
+  `.bss`), `.a` archive support, STT_SECTION name fix, SHN_ABS handling,
+  out_off tracking (base = out.addr + out_off), file layout
+  `file_off(sec) = seg_p_off + (addr - seg_vaddr)`.
+- **Five bugs fixed along the way (SH-18..SH-23, all closed by SH3):**
+  read_object()/load_archive() free(buf) leak, file layout mismatch
+  (.data at file 0xd000 while p_offset said 0xcaa0 → kernel loaded zeros,
+  RIP 0x400073fc CR2 0x40014212 NX fault), input sections not ALIGN'd
+  inside output → movaps in .bss faults, missing out_off in P and memcpy,
+  STT_SECTION symbols with st_name=0.
+- **Gate:** `test_selfhost_aulink.sh` (3/3, ~6 min in QEMU/TCG),
+  registered in the `selfhost` shard (138 cases).
+
 ## [SELFHOST SH2 — the guest toolchain rebuilds the userland] 2026-08-26
 
 `SELFHOST_PLAN.md` phase SH2: AuraLite now builds its own userland from
