@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4d, SH4a landed; SH5–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4e, SH4a+SH4b landed (3/4 flat objects byte-identical); SH5–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -8,11 +8,12 @@
 | SH1 — Runtime limits + TinyCC userspace port | ✅ landed |
 | SH2 — tcc builds the userland | ✅ landed |
 | SH3 — `aulink`: the self-host linker | ✅ landed |
-| SH4 — an assembler that runs in-guest (umbrella; split into SH4a–SH4d) | 🚧 pending |
+| SH4 — an assembler that runs in-guest (umbrella; split into SH4a–SH4e) | 🚧 pending |
 | SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object | ✅ landed |
-| SH4b — `-f bin` byte-parity across all four boot files | 🚧 pending |
-| SH4c — ELF64 backend, readelf parity on the kernel/libc objects | 🚧 pending |
-| SH4d — ELF32 backend + the in-guest assembly run | 🚧 pending |
+| SH4b — 64-bit mode + REX + the SMP trampoline, byte-identical (3/4 flat) | ✅ landed |
+| SH4c — `stage2_start.asm` byte-parity: %include/%if + SIB/segment-override encoder (4/4 flat) | 🚧 pending |
+| SH4d — ELF64 backend, readelf parity on the kernel/libc objects | 🚧 pending |
+| SH4e — ELF32 backend + the in-guest assembly run | 🚧 pending |
 | SH5 — the kernel, built by itself | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
@@ -490,10 +491,10 @@ layout nasm does not guarantee, so the plan's own bar for them is *readelf
 parity*, not byte parity.  Splitting along that gradient makes each step
 land a measured, falsifiable increment instead of one big-bang claim.
 
-**Definition of done.** The union of SH4a–SH4d.  D4 (port nasm vs write
+**Definition of done.** The union of SH4a–SH4e.  D4 (port nasm vs write
 `mini-asm`) is resolved by measurement in SH4a, not asserted.
 
-**Gate.** The union of the SH4a–SH4d gates; the terminal one is SH4d's
+**Gate.** The union of the SH4a–SH4e gates; the terminal one is SH4e's
 in-guest `test_selfhost_asm.sh`.
 
 **Deliverable.** The changes below, in the tree (D9: no patch artefact).
@@ -560,31 +561,67 @@ Receipt: `[selfhost] asm PASS (bin): 2/4 flat objects byte-identical`.
 
 ---
 
-### Phase SH4b — `-f bin` byte-parity across all four boot files 🚧 PENDING
+### Phase SH4b — 64-bit mode + REX + the SMP trampoline, byte-identical ✅ LANDED (2026-08-27)
 
-**Goal.** Extend the encoder and preprocessor until every `-f bin` file in
-the tree is byte-identical to nasm.
+**Goal.** Grow the encoder past the 16-bit MBR subset to the next flat file,
+`boot/smp/ap_trampoline.asm`, which exercises everything the MBRs did not:
+64-bit mode, REX prefixes, RIP-size operand/address handling, control
+registers and the far jump into long mode.
 
-**Scope.** Grows SH4a's core to cover: the full `%macro`/`%endmacro`
-(one-arg) and `%rep`/`%endrep` expansion (`isr_stubs*` patterns), the
-`%if/%else/%endif` conditional assembly and the 13-file `%include` chain in
-`stage2_start.asm`, `%error`, `alignb`, and the remaining 16-bit real-mode
-encoder cases the boot code needs (BIOS INT calls, `o64`/operand-size
-prefixes, `seg`/`org` fixes).  Targets: `mbr.asm`, `mbr_dual.asm`,
-`stage2_start.asm` (+ its 13 includes), `ap_trampoline.asm`.
+**Scope (what landed).** `bits 32/64` tracking; 64-bit registers
+(`rax`..`rdi`, `r8`..`r15`); REX.W/REX.R/REX.B emission; the operand-size
+prefix (`0x66`) chosen per mode; the accumulator `moffs` short form
+(`A0`-`A3`) that nasm prefers for `mov eax,[abs]` in 16/32-bit; absolute
+memory via SIB-with-no-base in 64-bit (`48 8B 24 25 …`, matching nasm's
+choice over the longer `moffs64`); `mov crN`/`mov crN`(`0F 20`/`0F 22`),
+`rdmsr`/`wrmsr`, `lgdt`/`lidt`, indirect `jmp reg` (`FF /4`), and the
+`add/or/…/cmp reg,imm` family with nasm's imm8-vs-accumulator-imm32 selection.
+Local-label scoping is now tracked during the assembly walk (not just at load),
+so a local label inside an *expression* — the far jump's `jmp 0x08:.long64` —
+resolves correctly.
 
-**Definition of done.** mini-asm `-f bin` output is **byte-for-byte**
-identical to nasm on all four flat files.
+**Definition of done — MET.** mini-asm `-f bin` reproduces nasm
+**byte-for-byte** on `boot/smp/ap_trampoline.asm` (158 B), alongside the two
+MBR variants from SH4a — **3 of the 4** flat objects.
 
-**Gate.** The SH4a host parity harness now byte-compares all four `-f bin`
-files and is green in `make test-unit`.  Receipt:
+**Gate.** MET. `tests/unit/test_asm_parity.sh` now byte-compares three `-f bin`
+files (mbr, mbr_dual, ap_trampoline), green in `make test-unit`.  Receipt:
+`[selfhost] asm PASS (bin): 3/4 flat objects byte-identical`.  The FAIL path
+stays live: `stage2_start.asm` is deliberately uncovered and mini-asm refuses
+it at `%include` — the honest SH4c boundary, not a silent wrong byte.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH4c — `stage2_start.asm` byte-parity: %include/%if + the full encoder 🚧 PENDING
+
+**Goal.** Bring the last and largest flat file, `boot/bios/stage2/stage2_start.asm`
+(548 lines + 13 `%include`d `.inc` files), to byte-for-byte parity — which
+completes the `-f bin` set at 4/4.
+
+**Scope.** The preprocessor the boot chain actually uses — `%include` (15
+sites), `%if/%else/%endif`, `%error` (NOT `%macro`/`%rep`: a measured survey
+found those only in the `-f elf*` `isr_stubs*` files, so they belong to
+SH4d/SH4e, not here).  Plus the encoder surface stage2 needs and the MBRs did
+not: SIB addressing with base+index*scale+disp (114 such operands, e.g.
+`[fs:edi + 3*8 + 4]`), segment-override prefixes (`fs:`/`es:`/…), `bits 32`
+protected-mode code, and the remaining mnemonics (`cpuid`, `in`/`out`,
+`imul`, `movzx`, `loop`, `push`/`pop` imm, `rol`/`shl`/`shr`, `setcc`, …).
+
+**Definition of done.** mini-asm `-f bin` output is **byte-for-byte** identical
+to nasm on `stage2_start.asm` (with its include chain), making the flat set
+4/4.
+
+**Gate.** The host parity harness byte-compares all four `-f bin` files, green
+in `make test-unit`.  Receipt:
 `[selfhost] asm PASS (bin): 4/4 flat objects byte-identical`.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
 ---
 
-### Phase SH4c — ELF64 backend, readelf parity on the kernel/libc objects 🚧 PENDING
+### Phase SH4d — ELF64 backend, readelf parity on the kernel/libc objects 🚧 PENDING
 
 **Goal.** Add the `elf64` emitter so the kernel/libc `-f elf64` objects
 reach structural parity with nasm.
@@ -592,11 +629,12 @@ reach structural parity with nasm.
 **Scope.** ELF64 header, program/section headers, `.symtab`/`.strtab`/
 `.shstrtab`, and the `R_X86_64_*` relocations the tree emits
 (`64`/`PC32`/`32S`/`PLT32`/`GOTPCREL`), plus `global`/`extern`/`section`
-attribute handling and `align`/`alignb` in an ELF context.  Per the SH4
-definition of done, ELF output is compared **via readelf**, not
-byte-for-byte (nasm does not guarantee ELF byte layout).  Targets: the 13
-`-f elf64` files, boot-critical ones first (`isr_stubs.asm`,
-`syscall_entry.asm`, `boot.asm`).
+attribute handling, `align`/`alignb` in an ELF context, and the
+`%macro`/`%endmacro`/`%rep`/`%assign` preprocessor that `isr_stubs.asm` and
+`syscall_entry.asm` use (`%rep 256` stub tables).  Per the SH4 definition of
+done, ELF output is compared **via readelf**, not byte-for-byte (nasm does not
+guarantee ELF byte layout).  Targets: the 13 `-f elf64` files, boot-critical
+ones first (`isr_stubs.asm`, `syscall_entry.asm`, `boot.asm`).
 
 **Definition of done.** For every `-f elf64` file, `readelf -SW`/`-sW`/`-rW`
 of the mini-asm object matches nasm's on section names/types/flags, symbol
@@ -610,13 +648,13 @@ green in `make test-unit` on the 13 files.  Receipt:
 
 ---
 
-### Phase SH4d — ELF32 backend + the in-guest assembly run 🚧 PENDING
+### Phase SH4e — ELF32 backend + the in-guest assembly run 🚧 PENDING
 
 **Goal.** Finish the format coverage (elf32) and make the assembler actually
 run *in-guest* — the phase's namesake.
 
 **Scope.** The `elf32` emitter for the 7 `-f elf32` files
-(`kernel/arch/i386/*`, `lib/libc32/*`), readelf-parity as in SH4c.  Then
+(`kernel/arch/i386/*`, `lib/libc32/*`), readelf-parity as in SH4d.  Then
 mini-asm is built by the guest tcc (SH2) and run inside AuraLite to assemble
 the boot-critical sources, proving the assembler self-hosts, not just that it
 matches nasm on the host.
@@ -825,9 +863,11 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-21 | aulink input sections not ALIGN'd inside output section → movaps in .bss faults | align | CLOSED (SH3: ALIGN filled by sh_addralign, out_off) | SH3 |
 | SH-22 | aulink forgot sec->out_off in P and memcpy → PC32 relocs off by section's position | reloc | CLOSED (SH3: base = out.addr + out_off) | SH3 |
 | SH-23 | STT_SECTION symbols have st_name=0 → name empty, GOTPCREL unresolved | sym | CLOSED (SH3: name = sec_name for STT_SECTION) | SH3 |
-| SH-24 | SH4 "byte-identical assembler for all 29 .asm" is a multi-kLOC x86 assembler across FOUR output formats (bin/elf64/elf32/win64) — too large for one falsifiable step | scope | OPEN (split into SH4a–SH4d along the format gradient, 2026-08-27) | SH4a |
+| SH-24 | SH4 "byte-identical assembler for all 29 .asm" is a multi-kLOC x86 assembler across FOUR output formats (bin/elf64/elf32/win64) — too large for one falsifiable step | scope | OPEN (split into SH4a–SH4e along the format gradient, 2026-08-27) | SH4a |
 | SH-25 | -f win64 (COFF, ms_abi) for w32/tests/*.asm (5 files) is a fifth format | scope | ACCEPTED (out of the self-host closure — Win32 test fixtures, not inputs to building the OS; D1 scope) | — |
 | SH-26 | D4 unresolved: port nasm vs write mini-asm | decision | CLOSED (SH4a, measured: nasm needs 79 libc imports + ~150 kLOC; mini-asm 821 LOC byte-exact on 2/4 flat files → mini-asm) | SH4a |
+| SH-27 | SH4b "all four flat files" bundled the full SIB/segment-override encoder (stage2: 114 SIB operands, 15 %include, bits 32) with the far simpler trampoline — too large for one step | scope | CLOSED (re-split 2026-08-27: SH4b=trampoline, SH4c=stage2; elf phases re-lettered SH4d/SH4e) | SH4b |
+| SH-28 | mini-asm flat-file byte-parity | progress | OPEN (SH4b landed 3/4: mbr, mbr_dual, ap_trampoline; stage2 pending in SH4c) | SH4c |
 
 ## 8. Receipt strings (the greppable contract)
 

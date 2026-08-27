@@ -277,14 +277,27 @@ static long long eval_str(const char *s) {
 /* registers                                                           */
 /* ------------------------------------------------------------------ */
 
+static int g_bits = 16;   /* current `bits` mode: 16, 32 or 64 */
+
+static int reg8(const char *s) {
+    static const char *n[] = {"al","cl","dl","bl","ah","ch","dh","bh"};
+    for (int i = 0; i < 8; i++) if (!strcmp(s, n[i])) return i;
+    return -1;
+}
 static int reg16(const char *s) {
     static const char *n[] = {"ax","cx","dx","bx","sp","bp","si","di"};
     for (int i = 0; i < 8; i++) if (!strcmp(s, n[i])) return i;
     return -1;
 }
-static int reg8(const char *s) {
-    static const char *n[] = {"al","cl","dl","bl","ah","ch","dh","bh"};
+static int reg32(const char *s) {
+    static const char *n[] = {"eax","ecx","edx","ebx","esp","ebp","esi","edi"};
     for (int i = 0; i < 8; i++) if (!strcmp(s, n[i])) return i;
+    return -1;
+}
+static int reg64(const char *s) {
+    static const char *n[] = {"rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi",
+                              "r8","r9","r10","r11","r12","r13","r14","r15"};
+    for (int i = 0; i < 16; i++) if (!strcmp(s, n[i])) return i;
     return -1;
 }
 static int sreg(const char *s) {
@@ -292,20 +305,35 @@ static int sreg(const char *s) {
     for (int i = 0; i < 6; i++) if (!strcmp(s, n[i])) return i;
     return -1;
 }
+static int creg(const char *s) {
+    static const char *n[] = {"cr0","cr1","cr2","cr3","cr4","cr5","cr6","cr7"};
+    for (int i = 0; i < 8; i++) if (!strcmp(s, n[i])) return i;
+    return -1;
+}
 static int modrm(int mod, int reg, int rm) {
     return ((mod & 3) << 6) | ((reg & 7) << 3) | (rm & 7);
+}
+
+/* Operand-size prefix (0x66) is needed when the operand width differs from
+ * the mode's default (16 in bits16, 32 in bits32/bits64).  64-bit operands
+ * use REX.W instead, and 8-bit operands never take it. */
+static int need_66(int width) {
+    if (width == 8 || width == 64) return 0;
+    int defw = (g_bits == 16) ? 16 : 32;
+    return width != defw;
 }
 
 /* ------------------------------------------------------------------ */
 /* operands                                                            */
 /* ------------------------------------------------------------------ */
 
-enum { OP_NONE, OP_REG8, OP_REG16, OP_SREG, OP_MEM, OP_IMM, OP_FAR };
+enum { OP_NONE, OP_REG, OP_SREG, OP_CR, OP_MEM, OP_IMM, OP_FAR };
 
 typedef struct {
-    int  kind;
-    int  reg;
-    char text[256];
+    int kind;
+    int reg;        /* register index (0-15) */
+    int width;      /* 8/16/32/64 for OP_REG */
+    char text[256]; /* IMM/FAR text, or MEM displacement expression */
 } Operand;
 
 /* Split on commas that are outside brackets and quotes. */
@@ -344,7 +372,7 @@ static int split_operands(const char *s, char out[][256], int max) {
 }
 
 static void parse_operand(const char *s, Operand *o) {
-    o->kind = OP_NONE; o->reg = 0; o->text[0] = 0;
+    o->kind = OP_NONE; o->reg = 0; o->width = 0; o->text[0] = 0;
     while (*s == ' ' || *s == '\t') s++;
     if (!*s) return;
     if (*s == '[') {
@@ -357,9 +385,12 @@ static void parse_operand(const char *s, Operand *o) {
         return;
     }
     int r;
-    if ((r = reg8(s)) >= 0)  { o->kind = OP_REG8;  o->reg = r; return; }
-    if ((r = reg16(s)) >= 0) { o->kind = OP_REG16; o->reg = r; return; }
-    if ((r = sreg(s)) >= 0)  { o->kind = OP_SREG;  o->reg = r; return; }
+    if ((r = reg8(s)) >= 0)  { o->kind = OP_REG; o->reg = r; o->width = 8;  return; }
+    if ((r = reg16(s)) >= 0) { o->kind = OP_REG; o->reg = r; o->width = 16; return; }
+    if ((r = reg32(s)) >= 0) { o->kind = OP_REG; o->reg = r; o->width = 32; return; }
+    if ((r = reg64(s)) >= 0) { o->kind = OP_REG; o->reg = r; o->width = 64; return; }
+    if ((r = sreg(s)) >= 0)  { o->kind = OP_SREG; o->reg = r; return; }
+    if ((r = creg(s)) >= 0)  { o->kind = OP_CR; o->reg = r; return; }
     for (const char *q = s; *q; q++)
         if (*q == ':') { o->kind = OP_FAR; snprintf(o->text, sizeof o->text, "%s", s); return; }
     o->kind = OP_IMM;
@@ -394,6 +425,7 @@ typedef struct {
     int   jump_long;
     int   jump_far;
     char *jump_target;
+    char *global_set;   /* if this line defines a global label, its name */
 } AsmLine;
 
 static AsmLine *g_lines = NULL;
@@ -468,7 +500,7 @@ static void load_line(char *text, int line_no) {
                 char full[300];
                 const char *nm = st;
                 if (st[0] == '.') snprintf(full, sizeof full, "%s%s", g_cur_global, st);
-                else g_cur_global = xstrdup(st);
+                else { g_cur_global = xstrdup(st); L->global_set = xstrdup(st); }
                 if (st[0] == '.') nm = full;
                 L->label = xstrdup(nm);
                 p = after + 1;
@@ -503,16 +535,24 @@ static void load_line(char *text, int line_no) {
 
     if (!strcmp(L->mnem, "jmp") || !strcmp(L->mnem, "call") || jcc_cc(L->mnem) >= 0) {
         if (L->nops == 1) {
-            L->is_jump = 1;
-            for (const char *q = L->ops[0]; *q; q++)
-                if (*q == ':') { L->jump_far = 1; break; }
-            if (!L->jump_far) {
-                const char *t = L->ops[0];
-                char full[300];
-                if (t[0] == '.') snprintf(full, sizeof full, "%s%s", g_cur_global, t);
-                else snprintf(full, sizeof full, "%s", t);
-                L->jump_target = xstrdup(full);
-                sym_intern(full);
+            int is_jcc = jcc_cc(L->mnem) >= 0;
+            int is_reg = reg8(L->ops[0]) >= 0 || reg16(L->ops[0]) >= 0 ||
+                         reg32(L->ops[0]) >= 0 || reg64(L->ops[0]) >= 0;
+            int is_far = 0;
+            for (const char *q = L->ops[0]; *q; q++) if (*q == ':') { is_far = 1; break; }
+            if (!is_jcc && is_reg) {
+                L->is_jump = 0;   /* indirect jmp/call reg: fixed size, encode_instr handles it */
+            } else {
+                L->is_jump = 1;
+                L->jump_far = is_far;
+                if (!is_far) {
+                    const char *t = L->ops[0];
+                    char full[300];
+                    if (t[0] == '.') snprintf(full, sizeof full, "%s%s", g_cur_global, t);
+                    else snprintf(full, sizeof full, "%s", t);
+                    L->jump_target = xstrdup(full);
+                    sym_intern(full);
+                }
             }
         }
     }
@@ -559,128 +599,272 @@ static int emit_data(const char *mnem, AsmLine *L, int emit) {
 
 static int encode_instr(AsmLine *L, int emit, int *changed) {
     const char *m = L->mnem;
-    Operand a = {OP_NONE,0,{0}}, b = {OP_NONE,0,{0}};
+    Operand a = {OP_NONE,0,0,{0}}, b = {OP_NONE,0,0,{0}};
     if (L->nops >= 1) parse_operand(L->ops[0], &a);
     if (L->nops >= 2) parse_operand(L->ops[1], &b);
 
+    /* ---- zero-operand ---- */
     if (L->nops == 0) {
-        struct { const char *n; int op; } z[] = {
+        struct { const char *n; int op; } z1[] = {
             {"cli",0xFA},{"sti",0xFB},{"hlt",0xF4},{"ret",0xC3},{"lodsb",0xAC},
             {"cld",0xFC},{"std",0xFD},{"nop",0x90},{NULL,0}
         };
-        for (int i = 0; z[i].n; i++) if (!strcmp(m, z[i].n)) {
-            if (emit) out_byte((uint8_t)z[i].op);
+        for (int i = 0; z1[i].n; i++) if (!strcmp(m, z1[i].n)) {
+            if (emit) out_byte((uint8_t)z1[i].op);
             return 1;
         }
-        if (!strcmp(m, "ud2")) { if (emit) { out_byte(0x0F); out_byte(0x0B); } return 2; }
+        struct { const char *n; int op; } z2[] = {   /* 0F xx */
+            {"ud2",0x0B},{"rdmsr",0x32},{"wrmsr",0x30},{"cpuid",0xA2},{NULL,0}
+        };
+        for (int i = 0; z2[i].n; i++) if (!strcmp(m, z2[i].n)) {
+            if (emit) { out_byte(0x0F); out_byte((uint8_t)z2[i].op); }
+            return 2;
+        }
+        if (!strcmp(m, "pusha") || !strcmp(m, "pushad")) { if (emit) out_byte(0x60); return 1; }
+        if (!strcmp(m, "popa")  || !strcmp(m, "popad"))  { if (emit) out_byte(0x61); return 1; }
+        if (!strcmp(m, "pushf") || !strcmp(m, "pushfd")) { if (emit) out_byte(0x9C); return 1; }
+        if (!strcmp(m, "popf")  || !strcmp(m, "popfd"))  { if (emit) out_byte(0x9D); return 1; }
         die("unsupported zero-operand instruction '%s'", m);
     }
 
+    /* ---- int imm8 ---- */
     if (!strcmp(m, "int") && L->nops == 1 && a.kind == OP_IMM) {
         long long v = eval_str(a.text);
         if (emit) { out_byte(0xCD); out_byte((uint8_t)v); }
         return 2;
     }
 
-    if (L->is_jump) {
-        if (L->jump_far) {
+    /* ---- jmp / call ---- */
+    if (!strcmp(m, "jmp") || !strcmp(m, "call")) {
+        int is_call = m[0] == 'c';
+        if (a.kind == OP_REG) {                 /* indirect: FF /4 (jmp), FF /2 (call) */
+            int rf = is_call ? 2 : 4;
+            int rex = (g_bits == 64 && a.reg >= 8) ? 0x41 : 0;
+            if (emit) {
+                if (rex) out_byte((uint8_t)rex);
+                out_byte(0xFF);
+                out_byte((uint8_t)modrm(3, rf, a.reg));
+            }
+            return 2 + (rex ? 1 : 0);
+        }
+        if (a.kind == OP_FAR) {                 /* far jmp seg:off -> EA */
             char buf[256]; snprintf(buf, sizeof buf, "%s", a.text);
-            char *colon = strchr(buf, ':');
-            *colon = 0;
-            long long seg = eval_str(buf);
-            long long off = eval_str(colon + 1);
+            char *colon = strchr(buf, ':'); *colon = 0;
+            long long seg = eval_str(buf), off = eval_str(colon + 1);
             if (emit) { out_byte(0xEA); out_le((unsigned long long)off, 2);
                         out_le((unsigned long long)seg, 2); }
             return 5;
         }
+        /* near displacement jump/call (jump_target resolved at load time) */
         Sym *t = sym_find(L->jump_target);
         long long target = (t && t->defined) ? t->val : 0;
         int cc = jcc_cc(m);
-        int is_call = !strcmp(m, "call");
-        int is_jmp  = !strcmp(m, "jmp");
-
         if (is_call) {
             long long rel = target - (g_pc + 3);
             if (emit) { out_byte(0xE8); out_le((unsigned long long)rel, 2); }
             return 3;
         }
         if (!emit) {
-            /* sizing pass: pick the shortest form that fits, nasm-style */
             if (!L->jump_long) {
                 long long rel = target - (g_pc + 2);
                 if (rel < -128 || rel > 127) { L->jump_long = 1; if (changed) *changed = 1; }
             } else {
-                int sz = is_jmp ? 3 : 4;
-                long long rel = target - (g_pc + sz);
+                long long rel = target - (g_pc + 3);
                 if (rel >= -128 && rel <= 127) { L->jump_long = 0; if (changed) *changed = 1; }
             }
-            return L->jump_long ? (is_jmp ? 3 : 4) : 2;
+            return L->jump_long ? 3 : 2;
         }
-        /* final emit: honour the resolved flag */
         if (!L->jump_long) {
             long long rel = target - (g_pc + 2);
-            if (is_jmp) out_byte(0xEB); else out_byte((uint8_t)(0x70 + cc));
+            if (cc >= 0) out_byte((uint8_t)(0x70 + cc)); else out_byte(0xEB);
             out_byte((uint8_t)rel);
             return 2;
         } else {
-            int sz = is_jmp ? 3 : 4;
-            long long rel = target - (g_pc + sz);
-            if (is_jmp) out_byte(0xE9);
-            else { out_byte(0x0F); out_byte((uint8_t)(0x80 + cc)); }
-            out_le((unsigned long long)rel, 2);
-            return sz;
+            long long rel = target - (g_pc + 3);
+            out_byte(0xE9); out_le((unsigned long long)rel, 2);
+            return 3;
         }
     }
 
+    /* ---- conditional jumps ---- */
+    if (jcc_cc(m) >= 0) {
+        int cc = jcc_cc(m);
+        Sym *t = sym_find(L->jump_target);
+        long long target = (t && t->defined) ? t->val : 0;
+        if (!emit) {
+            if (!L->jump_long) {
+                long long rel = target - (g_pc + 2);
+                if (rel < -128 || rel > 127) { L->jump_long = 1; if (changed) *changed = 1; }
+            } else {
+                long long rel = target - (g_pc + 4);
+                if (rel >= -128 && rel <= 127) { L->jump_long = 0; if (changed) *changed = 1; }
+            }
+            return L->jump_long ? 4 : 2;
+        }
+        if (!L->jump_long) {
+            long long rel = target - (g_pc + 2);
+            out_byte((uint8_t)(0x70 + cc)); out_byte((uint8_t)rel);
+            return 2;
+        } else {
+            long long rel = target - (g_pc + 4);
+            out_byte(0x0F); out_byte((uint8_t)(0x80 + cc)); out_le((unsigned long long)rel, 2);
+            return 4;
+        }
+    }
+
+    /* ---- lgdt / lidt [mem] ---- */
+    if ((!strcmp(m, "lgdt") || !strcmp(m, "lidt")) && a.kind == OP_MEM) {
+        int rf = m[2] == 'd' ? 2 : 3;
+        long long d = eval_str(a.text);
+        if (emit) {
+            out_byte(0x0F); out_byte(0x01);
+            if (g_bits == 16)      { out_byte((uint8_t)modrm(0, rf, 6)); out_le((unsigned long long)d, 2); }
+            else if (g_bits == 32) { out_byte((uint8_t)modrm(0, rf, 5)); out_le((unsigned long long)d, 4); }
+            else                   { out_byte((uint8_t)modrm(0, rf, 4)); out_byte(0x25); out_le((unsigned long long)d, 4); }
+        }
+        return (g_bits == 16) ? 5 : 6;
+    }
+
+    /* ---- mov ---- */
     if (!strcmp(m, "mov")) {
-        if (a.kind == OP_SREG && b.kind == OP_REG16) {
-            if (emit) { out_byte(0x8E); out_byte((uint8_t)modrm(3, a.reg, b.reg)); } return 2; }
-        if (a.kind == OP_REG16 && b.kind == OP_SREG) {
-            if (emit) { out_byte(0x8C); out_byte((uint8_t)modrm(3, b.reg, a.reg)); } return 2; }
-        if (a.kind == OP_REG8 && b.kind == OP_IMM) {
-            long long v = eval_str(b.text);
-            if (emit) { out_byte((uint8_t)(0xB0 + a.reg)); out_byte((uint8_t)v); } return 2; }
-        if (a.kind == OP_REG16 && b.kind == OP_IMM) {
-            long long v = eval_str(b.text);
-            if (emit) { out_byte((uint8_t)(0xB8 + a.reg)); out_le((unsigned long long)v, 2); } return 3; }
-        if (a.kind == OP_MEM && b.kind == OP_REG8) {
-            long long d = eval_str(a.text);
-            if (emit) { out_byte(0x88); out_byte((uint8_t)modrm(0, b.reg, 6)); out_le((unsigned long long)d, 2); } return 4; }
-        if (a.kind == OP_REG8 && b.kind == OP_MEM) {
-            long long d = eval_str(b.text);
-            if (emit) { out_byte(0x8A); out_byte((uint8_t)modrm(0, a.reg, 6)); out_le((unsigned long long)d, 2); } return 4; }
-        if (a.kind == OP_MEM && b.kind == OP_REG16) {
-            long long d = eval_str(a.text);
-            if (emit) { out_byte(0x89); out_byte((uint8_t)modrm(0, b.reg, 6)); out_le((unsigned long long)d, 2); } return 4; }
-        if (a.kind == OP_REG16 && b.kind == OP_MEM) {
-            long long d = eval_str(b.text);
-            if (emit) { out_byte(0x8B); out_byte((uint8_t)modrm(0, a.reg, 6)); out_le((unsigned long long)d, 2); } return 4; }
-        die("unsupported 'mov' form");
-    }
-    if (!strcmp(m, "xor")) {
-        if (a.kind == OP_REG16 && b.kind == OP_REG16) {
-            if (emit) { out_byte(0x31); out_byte((uint8_t)modrm(3, b.reg, a.reg)); } return 2; }
-        if (a.kind == OP_REG8 && b.kind == OP_REG8) {
-            if (emit) { out_byte(0x30); out_byte((uint8_t)modrm(3, b.reg, a.reg)); } return 2; }
-        die("unsupported 'xor' form");
-    }
-    if (!strcmp(m, "test")) {
-        if (a.kind == OP_REG8 && b.kind == OP_REG8) {
-            if (emit) { out_byte(0x84); out_byte((uint8_t)modrm(3, b.reg, a.reg)); } return 2; }
-        if (a.kind == OP_REG16 && b.kind == OP_REG16) {
-            if (emit) { out_byte(0x85); out_byte((uint8_t)modrm(3, b.reg, a.reg)); } return 2; }
-        die("unsupported 'test' form");
-    }
-    if (!strcmp(m, "cmp") && a.kind == OP_REG16 && b.kind == OP_IMM) {
-        long long v = eval_str(b.text);
-        if (v >= -128 && v <= 127) {
-            if (emit) { out_byte(0x83); out_byte((uint8_t)modrm(3, 7, a.reg)); out_byte((uint8_t)v); }
+        if (a.kind == OP_SREG && b.kind == OP_REG) {
+            if (emit) { out_byte(0x8E); out_byte((uint8_t)modrm(3, a.reg, b.reg)); }
+            return 2;
+        }
+        if (a.kind == OP_REG && b.kind == OP_SREG) {
+            if (emit) { out_byte(0x8C); out_byte((uint8_t)modrm(3, b.reg, a.reg)); }
+            return 2;
+        }
+        if (a.kind == OP_CR && b.kind == OP_REG) {   /* mov crN, r32 */
+            if (emit) { out_byte(0x0F); out_byte(0x22); out_byte((uint8_t)modrm(3, a.reg, b.reg)); }
             return 3;
         }
-        if (emit) { out_byte(0x81); out_byte((uint8_t)modrm(3, 7, a.reg)); out_le((unsigned long long)v, 2); }
-        return 4;
+        if (a.kind == OP_REG && b.kind == OP_CR) {   /* mov r32, crN */
+            if (emit) { out_byte(0x0F); out_byte(0x20); out_byte((uint8_t)modrm(3, b.reg, a.reg)); }
+            return 3;
+        }
+        if (a.kind == OP_REG && b.kind == OP_IMM) {  /* mov reg, imm */
+            long long v = eval_str(b.text);
+            int w = a.width, p66 = need_66(w);
+            int rex = (g_bits == 64 && (w == 64 || a.reg >= 8))
+                      ? (0x40 | (w == 64 ? 8 : 0) | (a.reg >= 8 ? 1 : 0)) : 0;
+            int immw = (w == 8) ? 1 : (w == 16 ? 2 : 4);
+            if (emit) {
+                if (p66) out_byte(0x66);
+                if (rex) out_byte((uint8_t)rex);
+                out_byte((uint8_t)((w == 8 ? 0xB0 : 0xB8) + (a.reg & 7)));
+                out_le((unsigned long long)v, immw);
+            }
+            return 1 + (p66?1:0) + (rex?1:0) + immw;
+        }
+        /* mov acc,[abs] / mov [abs],acc -> moffs (bits16/32, shorter than /r) */
+        if (g_bits != 64 && a.kind == OP_REG && a.reg == 0 && b.kind == OP_MEM) {
+            long long d = eval_str(b.text);
+            int w = a.width, p66 = need_66(w), addrw = (g_bits == 16) ? 2 : 4;
+            int opc = (w == 8) ? 0xA0 : 0xA1;
+            if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)opc);
+                        out_le((unsigned long long)d, addrw); }
+            return 1 + (p66?1:0) + addrw;
+        }
+        if (g_bits != 64 && a.kind == OP_MEM && b.kind == OP_REG && b.reg == 0) {
+            long long d = eval_str(a.text);
+            int w = b.width, p66 = need_66(w), addrw = (g_bits == 16) ? 2 : 4;
+            int opc = (w == 8) ? 0xA2 : 0xA3;
+            if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)opc);
+                        out_le((unsigned long long)d, addrw); }
+            return 1 + (p66?1:0) + addrw;
+        }
+        /* mov mem,reg (88/89) ; mov reg,mem (8A/8B) -- absolute disp */
+        if ((a.kind == OP_MEM && b.kind == OP_REG) || (a.kind == OP_REG && b.kind == OP_MEM)) {
+            int memfirst = (a.kind == OP_MEM);
+            Operand *rg = memfirst ? &b : &a;
+            Operand *me = memfirst ? &a : &b;
+            long long d = eval_str(me->text);
+            int w = rg->width, p66 = need_66(w);
+            int rex = (g_bits == 64 && (w == 64 || rg->reg >= 8))
+                      ? (0x40 | (w == 64 ? 8 : 0) | (rg->reg >= 8 ? 4 : 0)) : 0;
+            int opc = memfirst ? (w == 8 ? 0x88 : 0x89) : (w == 8 ? 0x8A : 0x8B);
+            int dsz = (g_bits == 16) ? 2 : 4;
+            int sib = (g_bits == 64) ? 1 : 0;
+            if (emit) {
+                if (p66) out_byte(0x66);
+                if (rex) out_byte((uint8_t)rex);
+                out_byte((uint8_t)opc);
+                if (g_bits == 16)      { out_byte((uint8_t)modrm(0, rg->reg, 6)); out_le((unsigned long long)d, 2); }
+                else if (g_bits == 32) { out_byte((uint8_t)modrm(0, rg->reg, 5)); out_le((unsigned long long)d, 4); }
+                else                   { out_byte((uint8_t)modrm(0, rg->reg, 4)); out_byte(0x25); out_le((unsigned long long)d, 4); }
+            }
+            return 1 + (p66?1:0) + (rex?1:0) + 1 + sib + dsz;   /* opc + modrm + sib? + disp */
+        }
+        die("unsupported 'mov' form");
     }
-    die("unsupported instruction '%s' (SH4a subset)", m);
+
+    /* ---- xor / test reg, reg ---- */
+    if (!strcmp(m, "xor") || !strcmp(m, "test")) {
+        if (a.kind == OP_REG && b.kind == OP_REG && a.width == b.width) {
+            int w = a.width, p66 = need_66(w);
+            int rex = (g_bits == 64 && (w == 64 || a.reg >= 8 || b.reg >= 8))
+                      ? (0x40 | (w == 64 ? 8 : 0) | (b.reg >= 8 ? 4 : 0) | (a.reg >= 8 ? 1 : 0)) : 0;
+            int opc = (!strcmp(m, "xor") ? 0x30 : 0x84) + (w == 8 ? 0 : 1);
+            if (emit) {
+                if (p66) out_byte(0x66);
+                if (rex) out_byte((uint8_t)rex);
+                out_byte((uint8_t)opc);
+                out_byte((uint8_t)modrm(3, b.reg, a.reg));
+            }
+            return 1 + (p66?1:0) + (rex?1:0) + 1;
+        }
+        die("unsupported '%s' form", m);
+    }
+
+    /* ---- add/or/adc/sbb/and/sub/xor/cmp reg, imm ---- */
+    {
+        struct { const char *n; int digit; int acc32; } ar[] = {
+            {"add",0,0x05},{"or",1,0x0D},{"adc",2,0x15},{"sbb",3,0x1D},
+            {"and",4,0x25},{"sub",5,0x2D},{"xor",6,0x35},{"cmp",7,0x3D},{NULL,0,0}
+        };
+        for (int i = 0; ar[i].n; i++) {
+            if (strcmp(m, ar[i].n)) continue;
+            if (a.kind == OP_REG && b.kind == OP_IMM) {
+                long long v = eval_str(b.text);
+                int w = a.width, p66 = need_66(w);
+                int rex = (g_bits == 64 && (w == 64 || a.reg >= 8))
+                          ? (0x40 | (w == 64 ? 8 : 0) | (a.reg >= 8 ? 1 : 0)) : 0;
+                int is_acc = (a.reg == 0) && (w != 8);
+                if (v >= -128 && v <= 127) {           /* 83 /digit imm8 */
+                    if (emit) {
+                        if (p66) out_byte(0x66);
+                        if (rex) out_byte((uint8_t)rex);
+                        out_byte(0x83);
+                        out_byte((uint8_t)modrm(3, ar[i].digit, a.reg));
+                        out_byte((uint8_t)v);
+                    }
+                    return 1 + (p66?1:0) + (rex?1:0) + 1 + 1;
+                }
+                int immw = (w == 16) ? 2 : 4;
+                if (is_acc) {                          /* 05/0D/... imm */
+                    if (emit) {
+                        if (p66) out_byte(0x66);
+                        if (rex) out_byte((uint8_t)rex);
+                        out_byte((uint8_t)ar[i].acc32);
+                        out_le((unsigned long long)v, immw);
+                    }
+                    return 1 + (p66?1:0) + (rex?1:0) + immw;
+                }
+                if (emit) {                            /* 81 /digit imm */
+                    if (p66) out_byte(0x66);
+                    if (rex) out_byte((uint8_t)rex);
+                    out_byte(0x81);
+                    out_byte((uint8_t)modrm(3, ar[i].digit, a.reg));
+                    out_le((unsigned long long)v, immw);
+                }
+                return 1 + (p66?1:0) + (rex?1:0) + 1 + immw;
+            }
+            die("unsupported '%s' form", m);
+        }
+    }
+
+    die("unsupported instruction '%s' (SH4b subset)", m);
     return 0;
 }
 
@@ -723,6 +907,7 @@ static int do_times(AsmLine *L, int emit, int *changed) {
 
 static int assemble_line(AsmLine *L, int emit, int *changed) {
     g_line_no = L->line_no;
+    if (L->global_set) g_cur_global = L->global_set;   /* track scope for local-label refs in expressions */
 
     if (L->label) {
         Sym *s = sym_intern(L->label);
@@ -736,7 +921,8 @@ static int assemble_line(AsmLine *L, int emit, int *changed) {
 
     if (!strcmp(m, "bits")) {
         long long v = eval_str(L->ops[0]);
-        if (v != 16) die("SH4a supports 'bits 16' only (got %lld)", v);
+        if (v != 16 && v != 32 && v != 64) die("unsupported 'bits %lld' (16/32/64)", v);
+        g_bits = (int)v;
         return 0;
     }
     if (!strcmp(m, "org")) { g_org = eval_str(L->ops[0]); g_pc = g_org; return 0; }
@@ -800,6 +986,7 @@ int main(int argc, char **argv) {
     while (changed && iter < 50) {
         changed = 0; iter++;
         g_pc = g_org = 0;
+        g_cur_global = "";
         out_reset();
         for (int i = 0; i < g_nlines; i++)
             assemble_line(&g_lines[i], 0, &changed);
@@ -808,6 +995,7 @@ int main(int argc, char **argv) {
     /* final emit: every symbol must now be defined */
     g_allow_undef = 0;
     g_pc = g_org = 0;
+    g_cur_global = "";
     out_reset();
     for (int i = 0; i < g_nlines; i++)
         assemble_line(&g_lines[i], 1, NULL);

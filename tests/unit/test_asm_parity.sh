@@ -17,14 +17,16 @@ set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
 
-# The four `-f bin` (flat) objects in the tree.  SH4a lands the two MBR
-# variants (same 16-bit instruction subset); SH4b brings stage2_start.asm
-# (needs %include/%if and a wider encoder) and ap_trampoline.asm (needs
-# lgdt/lidt/ltr and friends).  Keep in sync with the plan's SH4 survey.
+# The four `-f bin` (flat) objects in the tree.  SH4a landed the two MBR
+# variants; SH4b added the SMP trampoline (64-bit mode, REX, control regs,
+# far jmp).  SH4c brings stage2_start.asm, which needs %include/%if and the
+# full encoder (SIB, segment overrides, bits 32).  Keep in sync with the
+# plan's SH4 survey.
 FLAT_TOTAL=4
 COVERED=(
     boot/bios/stage1/mbr.asm
     boot/bios/stage1/mbr_dual.asm
+    boot/smp/ap_trampoline.asm
 )
 
 if ! command -v nasm >/dev/null 2>&1; then

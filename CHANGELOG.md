@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH4b — mini-asm: 64-bit mode + the SMP trampoline, 3/4 flat] 2026-08-27
+
+`SELFHOST_PLAN.md` phase SH4b: mini-asm grows past the 16-bit MBR subset to
+the next flat file, `boot/smp/ap_trampoline.asm`, byte-for-byte.
+
+- **Re-split first (ledger SH-27).** The original SH4b ("all four flat files")
+  bundled the full SIB/segment-override encoder that `stage2_start.asm` needs
+  (a measured 114 base+index*scale+disp operands, 15 `%include`, `bits 32`)
+  with the far simpler trampoline. Split: **SH4b = trampoline (3/4)**,
+  **SH4c = stage2 (4/4)**; the ELF phases re-letter to SH4d/SH4e. A survey
+  also found `%macro`/`%rep` live only in the `-f elf*` `isr_stubs*` files,
+  so they move to SH4d, not the flat-file phases.
+- **Encoder growth** (`tools/mini-asm/mini-asm.c`, now 1009 lines): `bits 32/64`;
+  64-bit registers `rax`..`r15`; REX.W/R/X/B; the operand-size prefix `0x66`
+  chosen per mode; nasm's accumulator `moffs` short form (`A0`-`A3`) for
+  `mov eax,[abs]`; absolute memory via SIB-no-base in 64-bit (`48 8B 24 25 …`,
+  matching nasm over the longer `moffs64`); `mov crN` (`0F 20`/`0F 22`),
+  `rdmsr`/`wrmsr`, `lgdt`/`lidt`, indirect `jmp reg` (`FF /4`), and
+  `add/or/…/cmp reg,imm` with nasm's imm8-vs-accumulator-imm32 selection.
+  Local-label scope is now tracked during the assembly walk, so a local label
+  inside an *expression* (the far jump's `jmp 0x08:.long64`) resolves.
+- **Gate:** `tests/unit/test_asm_parity.sh` now byte-compares three `-f bin`
+  files. Result: `[selfhost] asm PASS (bin): 3/4 flat objects byte-identical`
+  (mbr 512 B, mbr_dual 512 B, ap_trampoline 158 B). The FAIL path stays live —
+  `stage2_start.asm` is uncovered and mini-asm refuses it at `%include`.
+- Two encoder bugs found and fixed against the byte reference during the port:
+  a size/emit mismatch (a spurious `+1` in seven instruction-length formulas
+  that shifted every label) and stale local-label scope in expressions.
+
 ## [SELFHOST SH4a — mini-asm: byte-identical to nasm on the boot MBRs] 2026-08-27
 
 `SELFHOST_PLAN.md` phase SH4a: the D4 assembler decision is resolved by
