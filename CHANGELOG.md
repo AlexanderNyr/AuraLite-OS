@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH4c — mini-asm: stage2 byte-parity, 4/4 flat complete] 2026-08-27
+
+`SELFHOST_PLAN.md` phase SH4c: the last and largest flat file,
+`boot/bios/stage2/stage2_start.asm` (548 lines + 13 `%include`d `.inc`), is
+now **byte-for-byte identical to nasm** (5632 bytes) — the `-f bin` set is
+complete at 4/4.
+
+- **Preprocessor:** `%include` (recursive, `-I` paths), `%if/%else/%endif`
+  (relational operators added to the expression evaluator), `%error`,
+  object-like `%define`, and `global`/`extern`/`section` no-ops.
+- **Encoder:** full effective-address model — SIB (base+index*scale+disp),
+  segment-override prefixes, the `0x67` address-size override, disp8/disp32
+  shortest-form with nasm's zero-displacement omission, accumulator `moffs`
+  (incl. with a segment prefix), 64-bit SIB-no-base absolute, and nasm's
+  `mov r64, imm32` → 32-bit-form optimization.  Instructions: `push`/`pop`
+  (reg/sreg + the `pusha`/`pushad`/`pushf`/`pushfd` 0x66 logic), `mov reg,reg`,
+  `mov mem,imm`, the full ALU/`test` matrix (incl. `test acc,imm` A8/A9,
+  `ALU al,imm8` short forms, `test r/m,imm` F6/F7), `movzx`, `in`/`out`,
+  `imul`, `mul`/`div`/`not`/`neg`/`inc`/`dec` (FE/FF vs F6/F7), `lea`, `loop`,
+  shifts, `rep`+string ops, far `dword`/`word`, `abs`/`rel`, `align N, db X`.
+- **Bugs found by diffing per-instruction lengths vs `ndisasm`:** a
+  `split_operands` off-by-one that skipped a string operand's opening quote
+  (dropping its tail bytes and shifting every later label), the missing `0x67`,
+  the accumulator imm short forms, `inc/dec` FE/FF, `pushad`/`pushfd` 0x66,
+  and the `mov r64,imm32` optimization.
+- **Gate:** `tests/unit/test_asm_parity.sh` now covers all four `-f bin` files
+  (generating `boot_offsets.inc` if absent) →
+  `[selfhost] asm PASS (bin): 4/4 flat objects byte-identical`.
+
 ## [SELFHOST SH4b — mini-asm: 64-bit mode + the SMP trampoline, 3/4 flat] 2026-08-27
 
 `SELFHOST_PLAN.md` phase SH4b: mini-asm grows past the 16-bit MBR subset to

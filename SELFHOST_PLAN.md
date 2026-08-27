@@ -11,7 +11,7 @@
 | SH4 — an assembler that runs in-guest (umbrella; split into SH4a–SH4e) | 🚧 pending |
 | SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object | ✅ landed |
 | SH4b — 64-bit mode + REX + the SMP trampoline, byte-identical (3/4 flat) | ✅ landed |
-| SH4c — `stage2_start.asm` byte-parity: %include/%if + SIB/segment-override encoder (4/4 flat) | 🚧 pending |
+| SH4c — `stage2_start.asm` byte-parity: %include/%if + SIB/segment-override encoder (4/4 flat) | ✅ landed |
 | SH4d — ELF64 backend, readelf parity on the kernel/libc objects | 🚧 pending |
 | SH4e — ELF32 backend + the in-guest assembly run | 🚧 pending |
 | SH5 — the kernel, built by itself | 🚧 pending |
@@ -594,7 +594,7 @@ it at `%include` — the honest SH4c boundary, not a silent wrong byte.
 
 ---
 
-### Phase SH4c — `stage2_start.asm` byte-parity: %include/%if + the full encoder 🚧 PENDING
+### Phase SH4c — `stage2_start.asm` byte-parity: %include/%if + the full encoder ✅ LANDED (2026-08-27)
 
 **Goal.** Bring the last and largest flat file, `boot/bios/stage2/stage2_start.asm`
 (548 lines + 13 `%include`d `.inc` files), to byte-for-byte parity — which
@@ -613,29 +613,32 @@ protected-mode code, and the remaining mnemonics (`cpuid`, `in`/`out`,
 to nasm on `stage2_start.asm` (with its include chain), making the flat set
 4/4.
 
-**Progress (2026-08-27, partial — NOT landed).** The preprocessor half is in:
-`%include` (recursive, via `-I` paths — the 13-file stage2 chain expands),
-`%if/%else/%endif` (with relational operators added to the expression
-evaluator), `%error`, object-like `%define` (boot_offsets.inc's integer
-constants), and the ELF `global`/`extern`/`section` no-ops that `-f bin`
-ignores.  The encoder has grown a full effective-address model — `[abs]`,
-`[base+disp]`, `[seg:base+disp]`, `[base+index]` (SIB), 16- vs 32-bit
-addressing with the `0x67` address-size override, segment-override prefixes,
-disp8/disp32 shortest-form selection, the accumulator `moffs` short form (incl.
-with a segment prefix), and the 64-bit SIB-no-base absolute form — plus
-`push`/`pop` (reg/sreg), `mov reg,reg`, `mov mem,imm`, the full ALU/`test`
-matrix (reg/mem/imm), `movzx`, `in`/`out`, `imul` (2/3-operand), `mul`/`div`/
-`not`/`neg`/`inc`/`dec`, `lea`, `loop`, shifts, `rep`+string ops, far jumps
-with `dword`/`word`, and the `abs`/`rel` hint.  **`stage2_start.asm` now
-assembles end-to-end to the correct 5632-byte size** (was: died at `push`,
-line 91); the three landed flat objects stay byte-identical (regression clean).
-Remaining to 4/4: a residual ~3-byte layout divergence (an `align` fill /
-padding difference at the image tail) that cascades into the label-address
-displacements — being narrowed against the byte reference.  Receipt still
-`3/4` until stage2 matches byte-for-byte.
+**Result — MET (4/4).** `stage2_start.asm` (with its 13-file include chain)
+is now **byte-for-byte identical to nasm** (5632 bytes).  The preprocessor
+half: `%include` (recursive, via `-I` paths), `%if/%else/%endif` (relational
+operators added to the expression evaluator), `%error`, object-like `%define`
+(boot_offsets.inc's integer constants), and the ELF `global`/`extern`/
+`section` no-ops that `-f bin` ignores.  The encoder grew a full
+effective-address model — `[abs]`, `[base+disp]`, `[seg:base+disp]`,
+`[base+index]` (SIB), 16- vs 32-bit addressing with the `0x67` address-size
+override, segment-override prefixes, disp8/disp32 shortest-form selection
+(including nasm's omission of a zero displacement), the accumulator `moffs`
+short form (incl. with a segment prefix), the 64-bit SIB-no-base absolute
+form, and nasm's `mov r64, imm32` → 32-bit-form optimization — plus
+`push`/`pop` (reg/sreg, with the `pusha`/`pushad`/`pushf`/`pushfd` 0x66
+logic), `mov reg,reg`, `mov mem,imm`, the full ALU/`test` matrix (reg/mem/imm,
+including the `test acc,imm` A8/A9 and `ALU al,imm8` accumulator short forms
+and `test r/m,imm` F6/F7), `movzx`, `in`/`out` (with `need_66`), `imul`
+(2/3-operand), `mul`/`div`/`not`/`neg`/`inc`/`dec` (FE/FF vs F6/F7), `lea`,
+`loop`, shifts, `rep`+string ops, far jumps with `dword`/`word`, the
+`abs`/`rel` hint, and `align N, db X` explicit fill.  The last divergences
+were found by diffing per-instruction lengths against `ndisasm`: a
+`split_operands` off-by-one that dropped a string operand's tail, the `0x67`
+address-size prefix, the accumulator imm short forms, `inc/dec` FE/FF, and
+the `mov r64,imm32` optimization.
 
-**Gate.** The host parity harness byte-compares all four `-f bin` files, green
-in `make test-unit`.  Receipt:
+**Gate.** MET. The host parity harness byte-compares all four `-f bin` files,
+green in `make test-unit`.  Receipt:
 `[selfhost] asm PASS (bin): 4/4 flat objects byte-identical`.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).

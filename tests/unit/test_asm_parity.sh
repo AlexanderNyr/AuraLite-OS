@@ -27,6 +27,7 @@ COVERED=(
     boot/bios/stage1/mbr.asm
     boot/bios/stage1/mbr_dual.asm
     boot/smp/ap_trampoline.asm
+    boot/bios/stage2/stage2_start.asm
 )
 
 if ! command -v nasm >/dev/null 2>&1; then
@@ -47,6 +48,15 @@ if ! cc -std=c99 -O2 -Wall -Wextra -Werror -o "$MINI" tools/mini-asm/mini-asm.c 
 fi
 echo "PASS: mini-asm compiles cleanly with host cc (-Werror)"
 
+# stage2_start.asm %includes build/boot_offsets.inc (a generated header); build
+# it if absent so the parity check is self-contained outside `make test-unit`.
+if [ ! -f "$BUILD/boot_offsets.inc" ] && [ -f tools/gen_boot_offsets.c ]; then
+    if cc -std=c11 -I . tools/gen_boot_offsets.c -o "$BUILD/gen_boot_offsets" 2>/dev/null; then
+        "$BUILD/gen_boot_offsets" --asm > "$BUILD/boot_offsets.inc" 2>/dev/null
+    fi
+fi
+INC="-I . -I build/"
+
 FAILED=0
 IDENTICAL=0
 for src in "${COVERED[@]}"; do
@@ -57,12 +67,12 @@ for src in "${COVERED[@]}"; do
     fi
     ref="$BUILD/.parity_ref.bin"
     got="$BUILD/.parity_got.bin"
-    if ! nasm -f bin "$src" -o "$ref" 2>/dev/null; then
+    if ! nasm -f bin $INC "$src" -o "$ref" 2>/dev/null; then
         echo "FAIL: nasm could not assemble $src"
         FAILED=1
         continue
     fi
-    if ! "$MINI" -f bin "$src" -o "$got" 2>"$BUILD/.parity_err"; then
+    if ! "$MINI" -f bin $INC "$src" -o "$got" 2>"$BUILD/.parity_err"; then
         echo "FAIL: mini-asm could not assemble $src"
         sed 's/^/    /' "$BUILD/.parity_err"
         FAILED=1

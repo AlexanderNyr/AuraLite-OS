@@ -401,6 +401,8 @@ static int split_operands(const char *s, char out[][256], int max) {
             s++;
             while (*s == ' ' || *s == '\t') s++;
             start = s;
+            s--;   /* compensate for the for-loop's s++ so the next operand's
+                    * first char (e.g. an opening quote) is still scanned */
         }
     }
     {
@@ -940,10 +942,15 @@ static int emit_mem(int rf, Operand *m, int emit) {
         }
         return 1 + 4;
     }
-    if (!m->has_disp && base != 5) { mod = 0; dsz = 0; }       /* [base], not ebp */
-    else if (!m->has_disp && base == 5) { mod = 1; dsz = 1; disp = 0; }  /* [ebp] -> disp8=0 */
-    else if (disp >= -128 && disp <= 127) { mod = 1; dsz = 1; }
-    else { mod = 2; dsz = 4; }
+    if (base < 0) {   /* SIB with no base: mod00 + SIB base=5 forces disp32 */
+        mod = 0; dsz = 4;
+    } else {
+        long long eff = m->has_disp ? disp : 0;
+        if (eff == 0 && base != 5) { mod = 0; dsz = 0; }              /* [base(+0)], not ebp */
+        else if (eff == 0 && base == 5) { mod = 1; dsz = 1; disp = 0; }  /* [ebp] -> disp8=0 */
+        else if (eff >= -128 && eff <= 127) { mod = 1; dsz = 1; }
+        else { mod = 2; dsz = 4; }
+    }
 
     if (!need_sib) {
         if (emit) {
@@ -995,10 +1002,26 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
             if (emit) { out_byte(0x0F); out_byte((uint8_t)z2[i].op); }
             return 2;
         }
-        if (!strcmp(m, "pusha") || !strcmp(m, "pushad")) { if (emit) out_byte(0x60); return 1; }
-        if (!strcmp(m, "popa")  || !strcmp(m, "popad"))  { if (emit) out_byte(0x61); return 1; }
-        if (!strcmp(m, "pushf") || !strcmp(m, "pushfd")) { if (emit) out_byte(0x9C); return 1; }
-        if (!strcmp(m, "popf")  || !strcmp(m, "popfd"))  { if (emit) out_byte(0x9D); return 1; }
+        if (!strcmp(m, "pusha") || !strcmp(m, "pushad") ||
+            !strcmp(m, "popa")  || !strcmp(m, "popad")) {
+            int ispush = (m[1] == 'u');
+            int is32 = (m[strlen(m)-1] == 'd');          /* pushad/popad */
+            int implied = is32 ? 32 : 16;
+            int defw = (g_bits == 16) ? 16 : 32;
+            int p66 = (implied != defw);
+            if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)(ispush ? 0x60 : 0x61)); }
+            return (p66?1:0) + 1;
+        }
+        if (!strcmp(m, "pushf") || !strcmp(m, "pushfd") ||
+            !strcmp(m, "popf")  || !strcmp(m, "popfd")) {
+            int ispush = (m[1] == 'u');
+            int is32 = (m[strlen(m)-1] == 'd');          /* pushfd/popfd */
+            int implied = is32 ? 32 : 16;
+            int defw = (g_bits == 16) ? 16 : 32;
+            int p66 = (implied != defw);
+            if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)(ispush ? 0x9C : 0x9D)); }
+            return (p66?1:0) + 1;
+        }
         die("unsupported zero-operand instruction '%s'", m);
     }
 
@@ -1129,10 +1152,14 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
         }
         if (a.kind == OP_REG && b.kind == OP_IMM) {  /* mov reg, imm */
             long long v = eval_str(b.text);
-            int w = a.width, p66 = need_66(w);
+            int w = a.width;
+            /* nasm: mov r64, imm that fits in unsigned 32 bits uses the 32-bit
+             * form (B8+r imm32, no REX.W) -- the 32-bit write zero-extends. */
+            if (w == 64 && v >= 0 && v <= 0xFFFFFFFFLL) w = 32;
+            int p66 = need_66(w);
             int rex = (g_bits == 64 && (w == 64 || a.reg >= 8))
                       ? (0x40 | (w == 64 ? 8 : 0) | (a.reg >= 8 ? 1 : 0)) : 0;
-            int immw = (w == 8) ? 1 : (w == 16 ? 2 : 4);
+            int immw = (w == 8) ? 1 : (w == 16) ? 2 : (w == 32) ? 4 : 8;
             if (emit) {
                 if (p66) out_byte(0x66);
                 if (rex) out_byte((uint8_t)rex);
@@ -1284,7 +1311,28 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
                 int ismem = (dst->kind == OP_MEM);
                 int a67 = ismem ? need_67(dst->aregs) : 0;
                 int memsz = ismem ? emit_mem(digit, dst, 0) : 0;
+                /* test acc, imm -> A8 (8-bit) / A9 (16/32-bit) accumulator form */
+                if (istest && !ismem && dst->reg == 0) {
+                    int opc = (w == 8) ? 0xA8 : 0xA9;
+                    int immw = (w == 8) ? 1 : (w == 16 ? 2 : 4);
+                    if (emit) {
+                        if (p66) out_byte(0x66);
+                        if (rex) out_byte((uint8_t)rex);
+                        out_byte((uint8_t)opc);
+                        out_le((unsigned long long)v, immw);
+                    }
+                    return (p66?1:0) + (rex?1:0) + 1 + immw;
+                }
                 if (w == 8) {   /* 0xF6-style: 80 /digit imm8 */
+                    /* ALU al, imm8 -> accumulator short form 04/0C/14/1C/24/2C/34/3C */
+                    if (!istest && !ismem && dst->reg == 0) {
+                        if (emit) {
+                            if (rex) out_byte((uint8_t)rex);
+                            out_byte((uint8_t)(digit*8 + 4));
+                            out_byte((uint8_t)v);
+                        }
+                        return (rex?1:0) + 1 + 1;
+                    }
                     int opct = istest ? 0xF6 : 0x80;
                     if (emit) {
                         if (segpre) out_byte((uint8_t)dst->seg);
@@ -1295,6 +1343,19 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
                         out_byte((uint8_t)v);
                     }
                     return segpre + (a67?1:0) + (rex?1:0) + 1 + memsz + (ismem?0:1) + 1;
+                }
+                if (istest) {   /* test r/m16/32, imm -> F7 /0, imm at full width (no 0x83 form) */
+                    int immw = (w == 16) ? 2 : 4;
+                    if (emit) {
+                        if (segpre) out_byte((uint8_t)dst->seg);
+                        if (p66) out_byte(0x66);
+                        if (a67) out_byte(0x67);
+                        if (rex) out_byte((uint8_t)rex);
+                        out_byte(0xF7);
+                        if (ismem) emit_mem(0, dst, 1); else out_byte((uint8_t)modrm(3, 0, dst->reg));
+                        out_le((unsigned long long)v, immw);
+                    }
+                    return segpre + (p66?1:0) + (a67?1:0) + (rex?1:0) + 1 + memsz + (ismem?0:1) + immw;
                 }
                 if (v >= -128 && v <= 127) {   /* 83 /digit imm8 sign-extended */
                     if (emit) {
@@ -1417,7 +1478,7 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
 
     /* ---- in / out ---- */
     if (!strcmp(m, "in") && a.kind == OP_REG) {
-        int p66 = (a.width == 16) != (g_bits == 16) ? 1 : 0;
+        int p66 = need_66(a.width);
         if (b.kind == OP_IMM) {
             long long port = eval_str(b.text);
             if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)(a.width==8?0xE4:0xE5));
@@ -1431,7 +1492,7 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
         die("unsupported 'in' form");
     }
     if (!strcmp(m, "out") && b.kind == OP_REG) {
-        int p66 = (b.width == 16) != (g_bits == 16) ? 1 : 0;
+        int p66 = need_66(b.width);
         if (a.kind == OP_IMM) {
             long long port = eval_str(a.text);
             if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)(b.width==8?0xE6:0xE7));
@@ -1525,7 +1586,8 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
                     if (a.seg) out_byte((uint8_t)a.seg);
                     if (p66) out_byte(0x66);
                     if (a67) out_byte(0x67);
-                    out_byte((uint8_t)(w==8?0xF6:0xF7));
+                    /* inc/dec use FE/FF; test/not/neg/mul/div use F6/F7 */
+                    out_byte((uint8_t)(un[i].op0f ? (w==8?0xFE:0xFF) : (w==8?0xF6:0xF7)));
                     emit_mem(un[i].digit, &a, 1);
                 }
                 return segpre+(p66?1:0)+(a67?1:0)+1+memsz;
