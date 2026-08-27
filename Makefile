@@ -2072,7 +2072,10 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+$(BUILD_DIR)/initrd.tar: tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
+                         kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
+                         kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2117,6 +2120,16 @@ $(BUILD_DIR)/initrd.tar: $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $
     cp tools/selfhost/userland_ok.c $(INITRD_DIR)/src/apps/userland_ok.c; \
     cp tools/aulink/aulink.c $(INITRD_DIR)/src/aulink.c; \
     cp lib/libc/user.ld $(INITRD_DIR)/src/libc/user.ld; \
+    cp tools/mini-asm/mini-asm.c $(INITRD_DIR)/src/mini-asm.c; \
+    mkdir -p $(INITRD_DIR)/src/selfhost/ref; \
+    cp kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
+       kernel/arch/x86_64/boot.asm $(INITRD_DIR)/src/selfhost/; \
+    cp $(BUILD_DIR)/asm_offsets.inc $(INITRD_DIR)/src/selfhost/asm_offsets.inc; \
+    for f in isr_stubs syscall_entry boot; do \
+        $(BUILD_DIR)/mini-asm --file-sym /src/selfhost/$$f.asm \
+            -f elf64 -I . -I $(BUILD_DIR)/ \
+            kernel/arch/x86_64/$$f.asm -o $(INITRD_DIR)/src/selfhost/ref/$$f.o; \
+    done; \
 	    echo "[selfhost] staged guest tcc into initrd (/bin/tcc + /apps/tcc + /src userland sources)"; \
 	else \
 	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \

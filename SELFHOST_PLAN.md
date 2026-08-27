@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4e, SH4a+SH4b+SH4c landed (4/4 flat + 13/13 elf64 readelf-parity); SH4d done, SH4e + SH5–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete: 4/4 flat byte-identical, 13/13 elf64 + 7/7 elf32 readelf-parity, in-guest assembly run PASS); SH5–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -8,12 +8,12 @@
 | SH1 — Runtime limits + TinyCC userspace port | ✅ landed |
 | SH2 — tcc builds the userland | ✅ landed |
 | SH3 — `aulink`: the self-host linker | ✅ landed |
-| SH4 — an assembler that runs in-guest (umbrella; split into SH4a–SH4e) | 🚧 pending |
+| SH4 — an assembler that runs in-guest (umbrella; split into SH4a–SH4e) | ✅ landed |
 | SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object | ✅ landed |
 | SH4b — 64-bit mode + REX + the SMP trampoline, byte-identical (3/4 flat) | ✅ landed |
 | SH4c — `stage2_start.asm` byte-parity: %include/%if + SIB/segment-override encoder (4/4 flat) | ✅ landed |
 | SH4d — ELF64 backend, readelf parity on the kernel/libc objects | ✅ landed |
-| SH4e — ELF32 backend + the in-guest assembly run | 🚧 pending |
+| SH4e — ELF32 backend + the in-guest assembly run | ✅ landed |
 | SH5 — the kernel, built by itself | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
@@ -700,7 +700,7 @@ parity is not decorative.
 
 ---
 
-### Phase SH4e — ELF32 backend + the in-guest assembly run 🚧 PENDING
+### Phase SH4e — ELF32 backend + the in-guest assembly run ✅ LANDED (2026-08-27)
 
 **Goal.** Finish the format coverage (elf32) and make the assembler actually
 run *in-guest* — the phase's namesake.
@@ -711,13 +711,57 @@ mini-asm is built by the guest tcc (SH2) and run inside AuraLite to assemble
 the boot-critical sources, proving the assembler self-hosts, not just that it
 matches nasm on the host.
 
-**Definition of done.** elf32 readelf parity on the 7 files; AND an in-guest
-mini-asm assembles the boot-critical files with the recorded receipt.
+**Result — MET.** Two halves.
 
-**Gate.** Integration case `tests/integration/cases/test_selfhost_asm.sh`
-(registered in the `selfhost` shard) boots QEMU and greps
-`[selfhost] asm PASS: <n> objects byte-identical` for the in-guest assembly
-of the boot-critical files (isr_stubs, syscall_entry, boot).
+*ELF32 emitter (7/7 readelf parity).* `mini-asm -f elf32` writes real ELF32
+objects: 52-byte header (EM_386), 40-byte section headers, 16-byte symtab
+entries, and — the structural difference from ELF64 — **SHT_REL**
+relocations: the addend lives in the field, not in the entry (`R_386_32` /
+`R_386_PC32`, same type numbers as their R_X86_64 siblings).  Measured
+against nasm, the 7 files match on section headers, symtab (FILE/SECTION/
+LOCAL-including-equ/ GLOBAL with unused externs dropped), relocations and
+section DATA bytes.  Two rules that only ELF32 exposes: absolute symbol
+references (mov reg,sym / mov mem,sym / [sym] / dd sym / far-jump offsets)
+**always** relocate, even within the same section (the base is a link-time
+constant), while PC-relative references resolve within a section.  The
+symtab places equ constants in *definition order* interleaved with labels
+(boot32's `STACK_SIZE` at line 87 lands after `.fill_pde` at line 52), not
+all upfront.
+
+Encoder/preprocessor growth for the elf32 files: `%+` token pasting
+(`dd isr_stub_%+v` → `isr_stub_0`), logical `&&`/`||` in `%if` (isr_stubs32's
+error-code test — and the C short-circuit bug in the evaluator that left the
+right operand unconsumed), parenthesised scaled indexes (`[edi +
+(ecx+768)*4]` folds the constant into the displacement), `ltr r/m16`,
+`iret`/`iretd` (66 only in bits 16), the `pusha`/`pushf` 66 rule (66 only in
+bits 16 AND only for the `d` forms), `mov r16, sreg` 66 prefix, and
+ELF32 symbol-immediates for `mov`.  The i386 kernel links with
+mini-asm-built asm objects and boots to the shell.
+
+*In-guest run.* `tools/mini-asm/mini-asm.c` is staged into the initrd as
+`/src/mini-asm.c` along with the three boot-critical sources
+(`/src/selfhost/{isr_stubs,syscall_entry,boot}.asm`), `asm_offsets.inc` and
+host-built reference objects (`/src/selfhost/ref/*.o`, built with
+`--file-sym /src/selfhost/<f>.asm` so the FILE symbol matches the guest
+path).  The guest tcc compiles mini-asm.c, the SH3 aulink recipe links it,
+and `test_selfhost_asm.sh` runs it with the new `--check-dir` mode
+(multi-source + byte-compare), which prints the receipt.  Two guest-only
+bugs were found and fixed: the 2 MiB `%rep`/`%macro` body arrays and the
+1 MiB elf32 rela buffer sat on the C stack (fine on a host, fatal against
+the 4 MiB guest user stack) and now live on the heap; and the shell's
+`mkdir` takes one argument at a time.
+
+**Definition of done — MET.** elf32 readelf parity on all 7 files; the
+in-guest (tcc-built) mini-asm assembles isr_stubs.asm, syscall_entry.asm
+and boot.asm **byte-identical** to the host-built references, receipt
+`[selfhost] asm PASS: 3/3 objects byte-identical`.
+
+**Gate.** MET. `tests/integration/cases/test_selfhost_asm.sh` (registered in
+the `selfhost` shard) boots QEMU, builds mini-asm with the guest tcc and
+greps `[selfhost] asm PASS: 3/3 objects byte-identical` — 2/2 assertions.
+`tests/unit/test_asm_parity.sh` gained the elf32 readelf-comparison mode:
+`[selfhost] asm PASS (elf32): 7/7 objects readelf-parity`, alongside the
+existing `4/4` bin and `13/13` elf64 lines.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 

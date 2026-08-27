@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH4e — mini-asm: the ELF32 backend + the in-guest assembly run] 2026-08-27
+
+`SELFHOST_PLAN.md` phase SH4e closes the SH4 umbrella: the `-f elf32`
+emitter reaches readelf parity on all 7 i386/libc32 files, and mini-asm
+**runs inside AuraLite** — built by the guest tcc, it assembles the
+boot-critical sources byte-identical to the host-built references.
+
+- **ELF32 backend (7/7 readelf parity).** 52-byte header (EM_386),
+  40-byte section headers, 16-byte symtab entries, and **SHT_REL**
+  relocations (addend in the field, not the entry).  Two rules only ELF32
+  exposes: absolute symbol references always relocate, even within the
+  same section; and equ constants land in the symtab in *definition
+  order* interleaved with labels (boot32's `STACK_SIZE` at line 87 sits
+  after `.fill_pde` at line 52), not all upfront.
+- **Encoder/preprocessor for the elf32 dialect:** `%+` token pasting
+  (`dd isr_stub_%+v` → `isr_stub_0`), logical `&&`/`||` in `%if` (with a
+  C short-circuit fix that left the right operand unconsumed),
+  parenthesised scaled indexes (`[edi + (ecx+768)*4]`), `ltr r/m16`,
+  `iret`/`iretd`, the `pusha`/`pushf`/`mov r16,sreg` 66-prefix rules, and
+  ELF32 symbol-immediates for `mov`.  The i386 kernel links with
+  mini-asm-built asm objects and boots to the shell.
+- **In-guest run.** mini-asm.c + the three boot-critical sources +
+  `asm_offsets.inc` + host-built reference objects are staged into the
+  initrd (`/src/selfhost/`), the guest tcc builds the assembler, and the
+  new `--check-dir` mode (multi-source + byte-compare) prints the receipt.
+  Two guest-only bugs fixed along the way: the 2 MiB `%rep`/`%macro` body
+  arrays and the 1 MiB elf32 rela buffer moved from the C stack (the 4 MiB
+  guest user stack overflowed) to the heap.
+- **Gate.** `tests/integration/cases/test_selfhost_asm.sh` (selfhost
+  shard): `[selfhost] asm PASS: 3/3 objects byte-identical`, 2/2
+  assertions.  `tests/unit/test_asm_parity.sh` gained the elf32 mode:
+  `[selfhost] asm PASS (elf32): 7/7 objects readelf-parity` (with the
+  existing `4/4` bin and `13/13` elf64 lines).
+
 ## [SELFHOST SH4d — mini-asm: the ELF64 backend, 13/13 readelf-parity] 2026-08-27
 
 `SELFHOST_PLAN.md` phase SH4d: `tools/mini-asm/mini-asm.c` grows a real

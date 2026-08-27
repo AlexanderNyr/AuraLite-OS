@@ -210,4 +210,86 @@ if [ "$FAILED" -eq 0 ]; then
 else
     echo "[selfhost] asm FAIL (elf64): $IDENTICAL/$ELF_TOTAL objects readelf-parity"
 fi
+
+# ---------------------------------------------------------------------------
+# SH4e: the `-f elf32` readelf-parity mode.
+#
+# ELF32 differs structurally from ELF64: 52-byte header, 40-byte section
+# headers, 16-byte symtab entries, and -- most importantly -- SHT_REL
+# relocations (the addend lives in the field, not in the entry).  The parity
+# bar is the same as SH4d (readelf comparison + section data bytes).
+#
+# Covered: the 7 `-f elf32` files (kernel/arch/i386/* x5, lib/libc32/* x2).
+ELF32_TOTAL=7
+ELF32_COVERED=(
+    kernel/arch/i386/boot32.asm
+    kernel/arch/i386/context32.asm
+    kernel/arch/i386/gdt_flush32.asm
+    kernel/arch/i386/isr_stubs32.asm
+    kernel/arch/i386/user_entry32.asm
+    lib/libc32/crt0_32.asm
+    lib/libc32/syscall32.asm
+)
+
+FAILED=0
+IDENTICAL=0
+for src in "${ELF32_COVERED[@]}"; do
+    if [ ! -f "$src" ]; then
+        echo "FAIL: covered elf32 source missing: $src"
+        FAILED=1
+        continue
+    fi
+    ref="$BUILD/.parity_ref_elf32.o"
+    got="$BUILD/.parity_got_elf32.o"
+    if ! nasm -f elf32 "$src" -o "$ref" 2>/dev/null; then
+        echo "FAIL: nasm could not assemble $src"
+        FAILED=1
+        continue
+    fi
+    if ! "$MINI" -f elf32 "$src" -o "$got" 2>"$BUILD/.parity_err"; then
+        echo "FAIL: mini-asm could not assemble $src (elf32)"
+        sed 's/^/    /' "$BUILD/.parity_err"
+        FAILED=1
+        continue
+    fi
+    if ! diff <(readelf -SW "$ref" 2>/dev/null | tail -n +4 | awk '{printf "%s %s %s %s %s %s %s\n",$3,$4,$7,$9,$10,$11,$12}') \
+              <(readelf -SW "$got" 2>/dev/null | tail -n +4 | awk '{printf "%s %s %s %s %s %s %s\n",$3,$4,$7,$9,$10,$11,$12}') > "$BUILD/.secdiff" 2>&1; then
+        echo "FAIL: $src section headers differ from nasm (elf32)"
+        sed 's/^/    /' "$BUILD/.secdiff" | head -6
+        FAILED=1
+        continue
+    fi
+    if ! diff <(readelf -sW "$ref" 2>/dev/null | tail -n +4 | awk '{printf "%s %s %s %s %s\n",$2,$4,$5,$7,$8}') \
+              <(readelf -sW "$got" 2>/dev/null | tail -n +4 | awk '{printf "%s %s %s %s %s\n",$2,$4,$5,$7,$8}') > "$BUILD/.symdiff" 2>&1; then
+        echo "FAIL: $src symbol table differs from nasm (elf32)"
+        sed 's/^/    /' "$BUILD/.symdiff" | head -6
+        FAILED=1
+        continue
+    fi
+    if ! diff <(readelf -rW "$ref" 2>/dev/null | grep R_386 | awk '{printf "%s %s %s %s\n",$1,$3,$4,$5}') \
+              <(readelf -rW "$got" 2>/dev/null | grep R_386 | awk '{printf "%s %s %s %s\n",$1,$3,$4,$5}') > "$BUILD/.reldiff" 2>&1; then
+        echo "FAIL: $src relocations differ from nasm (elf32)"
+        sed 's/^/    /' "$BUILD/.reldiff" | head -6
+        FAILED=1
+        continue
+    fi
+    for s in $(readelf -SW "$ref" 2>/dev/null | awk '$2 ~ /^\.(boot|text|rodata|data|bss)$/ {print $2}'); do
+        if ! cmp -s <(objcopy -O binary --only-section="$s" "$ref" /dev/stdout 2>/dev/null) \
+                     <(objcopy -O binary --only-section="$s" "$got" /dev/stdout 2>/dev/null); then
+            echo "FAIL: $src section $s data differs from nasm (elf32)"
+            FAILED=1
+            continue 2
+        fi
+    done
+    echo "PASS: $(basename "$src") -- readelf parity with nasm (elf32)"
+    IDENTICAL=$((IDENTICAL + 1))
+    rm -f "$ref" "$got"
+done
+
+echo
+if [ "$FAILED" -eq 0 ]; then
+    echo "[selfhost] asm PASS (elf32): $IDENTICAL/$ELF32_TOTAL objects readelf-parity"
+else
+    echo "[selfhost] asm FAIL (elf32): $IDENTICAL/$ELF32_TOTAL objects readelf-parity"
+fi
 exit $([ "$FAILED" -eq 0 ] && echo 0 || echo 1)

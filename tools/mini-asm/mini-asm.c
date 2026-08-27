@@ -93,6 +93,7 @@ static int  g_nglobals = 0;
 /* ---- ELF64 output (SH4d) ---- */
 static int g_fmt_elf = 0;     /* -f elf64 */
 static int g_default_rel = 0; /* `default rel` */
+static const char *g_file_sym = NULL;  /* --file-sym: override the FILE symbol (SH4e in-guest refs) */
 
 #define SHF_WRITE     0x1
 #define SHF_ALLOC     0x2
@@ -336,6 +337,10 @@ static int is_ident_char(int c) {
     return is_ident_start(c) || (c >= '0' && c <= '9');
 }
 
+static long long parse_rel(Expr *e);
+static long long parse_land(Expr *e);
+static long long parse_lor(Expr *e);
+
 static long long parse_atom(Expr *e) {
     skip_ws(e);
     const char *s = e->p;
@@ -442,7 +447,8 @@ static long long parse_bitor(Expr *e) {
     for (;;) {
         skip_ws(e);
         char c = *e->p;
-        if (c == '|') { e->p++; v |= parse_add(e); }
+        /* `||` belongs to the logical layer above; never eat it here */
+        if (c == '|' && e->p[1] != '|') { e->p++; v |= parse_add(e); }
         else if (c == '^') { e->p++; v ^= parse_add(e); }
         else break;
     }
@@ -452,13 +458,36 @@ static long long parse_bitand(Expr *e) {
     long long v = parse_bitor(e);
     for (;;) {
         skip_ws(e);
-        if (*e->p == '&') { e->p++; v &= parse_bitor(e); }
+        if (*e->p == '&' && e->p[1] != '&') { e->p++; v &= parse_bitor(e); }
         else break;
     }
     return v;
 }
 /* relational / equality (for %if).  Shifts (<< >>) are handled deeper in
  * parse_mul, so a lone < or > here is a comparison. */
+static long long parse_land(Expr *e) {
+    long long v = parse_rel(e);
+    for (;;) {
+        skip_ws(e);
+        /* parse the right side unconditionally: `v && rhs` short-circuits in
+         * C and would leave e->p unmoved when v is 0 (a %if must always
+         * consume its full expression). */
+        if (e->p[0] == '&' && e->p[1] == '&') { e->p += 2; long long r = parse_rel(e); v = v && r; }
+        else break;
+    }
+    return v;
+}
+
+static long long parse_lor(Expr *e) {
+    long long v = parse_land(e);
+    for (;;) {
+        skip_ws(e);
+        if (e->p[0] == '|' && e->p[1] == '|') { e->p += 2; long long r = parse_land(e); v = v || r; }
+        else break;
+    }
+    return v;
+}
+
 static long long parse_rel(Expr *e) {
     long long v = parse_bitand(e);
     for (;;) {
@@ -485,7 +514,7 @@ static long long parse_rel(Expr *e) {
     return v;
 }
 
-static long long parse_expr(Expr *e) { return parse_rel(e); }
+static long long parse_expr(Expr *e) { return parse_lor(e); }
 
 static long long eval_str(const char *s) {
     Expr e; e.p = s;
@@ -668,7 +697,7 @@ static void parse_mem(const char *s, Operand *o) {
         if (tl >= sizeof term) tl = sizeof term - 1;
         memcpy(term, ts, tl); term[tl] = 0;
 
-        /* is the term "reg" or "reg*scale"? */
+        /* is the term "reg" or "reg*scale" (or "(reg + const)*scale")? */
         char *star = strchr(term, '*');
         char regname[64]; int scale = 1; int isreg = 0; int r = -1;
         if (star) {
@@ -678,6 +707,40 @@ static void parse_mem(const char *s, Operand *o) {
                 memcpy(regname, term, rl); regname[rl] = 0;
                 char *sc = star + 1; while (*sc==' '||*sc=='\t') sc++;
                 scale = (int)eval_str(sc);
+                /* SH4e: "(reg + const)*scale" -> index=reg, disp += const*scale.
+                 * Only a leading bare register may be an index, so peel the
+                 * parens and fold the constant into the displacement. */
+                if (regname[0] == '(') {
+                    size_t rl2 = strlen(regname);
+                    if (rl2 >= 2 && regname[rl2-1] == ')') {
+                        char inner[128];
+                        size_t il = rl2 - 2;
+                        if (il >= sizeof inner) il = sizeof inner - 1;
+                        memcpy(inner, regname + 1, il); inner[il] = 0;
+                        char *plus = strchr(inner, '+');
+                        char *minus = strchr(inner, '-');
+                        char *op = plus ? plus : minus;
+                        if (op) {
+                            char regpart[64]; size_t pl = (size_t)(op - inner);
+                            while (pl && (inner[pl-1]==' '||inner[pl-1]=='\t')) pl--;
+                            if (pl < sizeof regpart) {
+                                memcpy(regpart, inner, pl); regpart[pl] = 0;
+                                char *cpart = op + 1; while (*cpart==' '||*cpart=='\t') cpart++;
+                                long long cst = eval_str(cpart);
+                                if (plus) cst = +cst; else cst = -cst;
+                                /* fold const*scale into the disp string */
+                                char fold[256];
+                                snprintf(fold, sizeof fold, "%s%lld", disp[0] ? "+" : "", cst * scale);
+                                if (strlen(disp) + strlen(fold) + 1 > sizeof disp)
+                                    die("memory displacement too long");
+                                strcat(disp, fold);
+                                snprintf(regname, sizeof regname, "%.63s", regpart);
+                            }
+                        } else {
+                            snprintf(regname, sizeof regname, "%.63s", inner);
+                        }
+                    }
+                }
                 isreg = 1;
             }
         } else {
@@ -995,6 +1058,28 @@ static char *subst_macros(const char *s) {
         char out[8192]; size_t n = 0;
         const char *p = cur;
         while (*p) {
+            /* SH4e: nasm `%+` token pasting (`isr_stub_%+v` -> `isr_stub_0`).
+             * The left token is the identifier already sitting at the end of
+             * `out`; the right token is resolved through the text macros. */
+            if (p[0] == '%' && p[1] == '+') {
+                size_t lstart = n;
+                while (lstart > 0 && ident_char(out[lstart-1])) lstart--;
+                p += 2;
+                const char *rt = p;
+                while (ident_char(*p)) p++;
+                char rname[256];
+                size_t rl = (size_t)(p - rt);
+                if (rl >= sizeof rname) rl = sizeof rname - 1;
+                memcpy(rname, rt, rl); rname[rl] = 0;
+                const char *resolved = rname;
+                TextMacro *rm = tmacro_find(rname);
+                if (rm) resolved = rm->text;
+                size_t r2 = strlen(resolved);
+                if (n + r2 + 1 > sizeof out) die("substitution too long");
+                memcpy(out + n, resolved, r2); n += r2;
+                changed = 1;
+                continue;
+            }
             if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '_' ||
                 *p == '$' || (*p == '.' && p[1] && ident_char(p[1]))) {
                 const char *st = p;
@@ -1107,14 +1192,17 @@ static void macro_invoke(MacroDef *md, const char *argtail, int line_no) {
 static void pp_lines(SrcLine *lines, int n) {
     int taking[64], taken[64], parent[64], sp = 0;
 
-    /* %macro definition collection */
+    /* %macro definition collection (body on the heap: 512x512 on the stack
+     * would join the %rep body below at >2 MiB per frame -- fine on a host,
+     * but the in-guest user stack is only 4 MiB and %rep 256 recursion
+     * pushed it over). */
     char mdef_name[64]; int mdef_params = 0;
-    char mdef_body[512][512]; int mdef_nbody = 0;
+    char (*mdef_body)[512] = NULL; int mdef_nbody = 0;
     int in_mdef = 0;
 
     /* %rep collection */
     long long rep_count = 0;
-    char rep_body[4096][512]; int rep_nbody = 0;
+    char (*rep_body)[512] = NULL; int rep_nbody = 0;
     int in_rep = 0;
 
     for (int i = 0; i < n; i++) {
@@ -1133,6 +1221,7 @@ static void pp_lines(SrcLine *lines, int n) {
                 in_mdef = 0;
             } else if (cur) {
                 if (mdef_nbody >= 512) die("%%macro body too large");
+                if (!mdef_body) mdef_body = xmalloc(512 * 512);
                 snprintf(mdef_body[mdef_nbody], 512, "%s", s);
                 mdef_nbody++;
             }
@@ -1154,6 +1243,7 @@ static void pp_lines(SrcLine *lines, int n) {
                 in_rep = 0;
             } else if (cur) {
                 if (rep_nbody >= 4096) die("%%rep body too large");
+                if (!rep_body) rep_body = xmalloc(4096 * 512);
                 snprintf(rep_body[rep_nbody], 512, "%s", s);
                 rep_nbody++;
             }
@@ -1313,6 +1403,8 @@ static void pp_lines(SrcLine *lines, int n) {
     if (sp != 0) die("unterminated %%if");
     if (in_mdef) die("unterminated %%macro");
     if (in_rep) die("unterminated %%rep");
+    free(mdef_body);
+    free(rep_body);
 }
 
 static void preprocess(const char *path, int depth) {
@@ -1362,28 +1454,45 @@ static int emit_data(const char *mnem, AsmLine *L, int emit) {
             if (*s != q) die("unterminated string");
             continue;
         }
-        /* SH4d: `dq sym` in ELF64.  Same-section targets resolve; defined
-         * cross-section targets relocate against the SECTION symbol with the
-         * value as addend; externs relocate against the symbol.  nasm's
-         * R_X86_64_64, exactly. */
+        /* SH4d/SH4e: `dq sym` in ELF64 / `dd sym` in ELF32.  Same-section
+         * targets resolve; defined cross-section targets relocate against
+         * the SECTION symbol with the value as addend; externs relocate
+         * against the symbol.  R_X86_64_64 == R_386_32 == 1, so the type
+         * number is shared; ELF32 (REL) stores the addend in the field,
+         * ELF64 (RELA) stores it in the entry with a zero field. */
         char symname[300];
-        if (g_fmt_elf && width == 8 &&
+        int symw = (g_fmt_elf == 2) ? 4 : 8;
+        if (g_fmt_elf && width == symw &&
             parse_symref(s, symname, sizeof symname) == 0) {
             Sym *sy = sym_find(symname);
             if (sy && sy->is_equ) {
-                if (emit) out_le((unsigned long long)sy->val, 8);
+                if (emit) out_le((unsigned long long)sy->val, width);
+            } else if (g_fmt_elf == 2) {
+                /* ELF32 absolute pointers always relocate (R_386_32), even
+                 * to the same section: the section base is a link-time
+                 * constant, so the field carries the value as addend. */
+                if (emit) {
+                    if (sy && sy->defined) {
+                        out_le((unsigned long long)sy->val, width);
+                        reloc_add(g_cursec, (uint32_t)g_pc, 1, sy->sec, NULL, sy->val);
+                    } else {
+                        out_le(0, width);
+                        reloc_add(g_cursec, (uint32_t)g_pc, 1,
+                                  -1, sy ? sy : sym_intern(symname), 0);
+                    }
+                }
             } else if (sy && sy->defined && sy->sec == g_cursec) {
-                if (emit) out_le((unsigned long long)sy->val, 8);
+                if (emit) out_le((unsigned long long)sy->val, width);
             } else if (sy && sy->defined) {
                 if (emit) {
-                    out_le(0, 8);
-                    reloc_add(g_cursec, (uint32_t)g_pc, R_X86_64_64,
+                    out_le(0, width);
+                    reloc_add(g_cursec, (uint32_t)g_pc, 1,
                               sy->sec, NULL, sy->val);
                 }
             } else {
                 if (emit) {
-                    out_le(0, 8);
-                    reloc_add(g_cursec, (uint32_t)g_pc, R_X86_64_64,
+                    out_le(0, width);
+                    reloc_add(g_cursec, (uint32_t)g_pc, 1,
                               -1, sy ? sy : sym_intern(symname), 0);
                 }
             }
@@ -1555,7 +1664,22 @@ static int emit_mem(int rf, Operand *m, int emit) {
         }
         if (emit) {
             out_byte((uint8_t)modrm(0, rf, 5));
-            out_le((unsigned long long)disp, 4);
+            /* SH4e: ELF32 absolute [sym] -> R_386_32 ALWAYS (even same
+             * section: the base is a link-time constant). */
+            if (g_fmt_elf == 2 && issym) {
+                if (dsym && dsym->defined && !dsym->is_equ) {
+                    out_le((unsigned long long)dsym->val, 4);
+                    reloc_add(g_cursec, (uint32_t)(g_pc + 1), 1, dsym->sec, NULL, dsym->val);
+                } else if (!dsym || !dsym->defined) {
+                    out_le(0, 4);
+                    reloc_add(g_cursec, (uint32_t)(g_pc + 1), 1,
+                              -1, dsym ? dsym : sym_intern(symname), 0);
+                } else {
+                    out_le((unsigned long long)disp, 4);
+                }
+            } else {
+                out_le((unsigned long long)disp, 4);
+            }
         }
         return 1 + 4;
     }
@@ -1645,23 +1769,26 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
 
         if (!strcmp(m, "pusha") || !strcmp(m, "pushad") ||
             !strcmp(m, "popa")  || !strcmp(m, "popad")) {
+            /* measured: 66 appears ONLY in bits 16 (pushad/popad there);
+             * in bits 32 nasm emits 60/61 for both the a and ad forms. */
             int ispush = (m[1] == 'u');
-            int is32 = (m[strlen(m)-1] == 'd');          /* pushad/popad */
-            int implied = is32 ? 32 : 16;
-            int defw = (g_bits == 16) ? 16 : 32;
-            int p66 = (implied != defw);
+            /* measured: 66 appears only in bits 16 AND only for the 'd'
+             * forms (pushad); in bits 32 both pusha and pushad are 60. */
+            int p66 = (g_bits == 16) && (m[strlen(m)-1] == 'd');
             if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)(ispush ? 0x60 : 0x61)); }
             return (p66?1:0) + 1;
         }
         if (!strcmp(m, "pushf") || !strcmp(m, "pushfd") ||
             !strcmp(m, "popf")  || !strcmp(m, "popfd")) {
             int ispush = (m[1] == 'u');
-            int is32 = (m[strlen(m)-1] == 'd');          /* pushfd/popfd */
-            int implied = is32 ? 32 : 16;
-            int defw = (g_bits == 16) ? 16 : 32;
-            int p66 = (implied != defw);
+            int p66 = (g_bits == 16) && (m[strlen(m)-1] == 'd');
             if (emit) { if (p66) out_byte(0x66); out_byte((uint8_t)(ispush ? 0x9C : 0x9D)); }
             return (p66?1:0) + 1;
+        }
+        /* iret/iretd: CF; 66 prefix only in bits 16 (measured) */
+        if (!strcmp(m, "iret") || !strcmp(m, "iretd")) {
+            if (emit) { if (g_bits == 16) out_byte(0x66); out_byte(0xCF); }
+            return (g_bits == 16) ? 2 : 1;
         }
         die("unsupported zero-operand instruction '%s'", m);
     }
@@ -1702,14 +1829,33 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
         if (a.kind == OP_FAR) {                 /* far jmp seg:off -> EA */
             char buf[256]; snprintf(buf, sizeof buf, "%s", a.text);
             char *colon = strchr(buf, ':'); *colon = 0;
-            long long seg = eval_str(buf), off = eval_str(colon + 1);
+            long long seg = eval_str(buf);
             int offw = (a.memsize == 32) ? 4 : (a.memsize == 16) ? 2 : (g_bits == 16 ? 2 : 4);
             int defw = (g_bits == 16) ? 2 : 4;
             int p66 = (offw != defw);
+            char offname[300];
+            int offsym = parse_symref(colon + 1, offname, sizeof offname) == 0;
+            Sym *osy = offsym ? sym_find(offname) : NULL;
+            long long off = 0;
+            if (offsym && osy && osy->defined && !osy->is_equ) {
+                off = osy->val;
+            } else if (offsym && osy && osy->is_equ) {
+                off = osy->val;
+            } else if (!offsym) {
+                off = eval_str(colon + 1);
+            }
             if (emit) {
                 if (p66) out_byte(0x66);
                 out_byte(0xEA);
-                out_le((unsigned long long)off, offw);
+                /* SH4e: ELF32 far-jump offset that names a label relocates
+                 * (R_386_32 against the target section, field = value). */
+                if (g_fmt_elf == 2 && offsym && osy && osy->defined && !osy->is_equ) {
+                    out_le((unsigned long long)off, offw);
+                    reloc_add(g_cursec, (uint32_t)(g_pc + 1 + (p66?1:0)), 1,
+                              osy->sec, NULL, off);
+                } else {
+                    out_le((unsigned long long)off, offw);
+                }
                 out_le((unsigned long long)seg, 2);
             }
             return (p66?1:0) + 1 + offw + 2;
@@ -1735,7 +1881,7 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
             if (need_reloc) {
                 if (emit) {
                     out_byte(0xE8);
-                    out_le(0, 4);
+                    out_le((g_fmt_elf == 2) ? 0xFFFFFFFCULL : 0, 4);
                     reloc_add(g_cursec, (uint32_t)(g_pc + 1), R_X86_64_PC32,
                               (t && t->defined && !t->is_equ) ? t->sec : -1,
                               (t && t->defined && !t->is_equ) ? NULL : t,
@@ -1769,7 +1915,7 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
         } else {
             if (need_reloc) {
                 out_byte(0xE9);
-                out_le(0, 4);
+                out_le((g_fmt_elf == 2) ? 0xFFFFFFFCULL : 0, 4);
                 reloc_add(g_cursec, (uint32_t)(g_pc + 1), R_X86_64_PC32,
                           (t && t->defined && !t->is_equ) ? t->sec : -1,
                           (t && t->defined && !t->is_equ) ? NULL : t,
@@ -1824,6 +1970,28 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
         return segpre + (a67?1:0) + 2 + memsz;
     }
 
+    /* ---- ltr r/m16: 0F 00 /3 ---- */
+    if (!strcmp(m, "ltr")) {
+        int rf = 3;
+        if (a.kind == OP_REG) {
+            if (emit) { out_byte(0x0F); out_byte(0x00); out_byte((uint8_t)modrm(3, rf, a.reg)); }
+            return 3;
+        }
+        if (a.kind == OP_MEM) {
+            int segpre = a.seg ? 1 : 0;
+            int a67 = need_67(a.aregs);
+            int memsz = emit_mem(rf, &a, 0);
+            if (emit) {
+                if (a.seg) out_byte((uint8_t)a.seg);
+                if (a67) out_byte(0x67);
+                out_byte(0x0F); out_byte(0x00);
+                emit_mem(rf, &a, 1);
+            }
+            return segpre + (a67?1:0) + 2 + memsz;
+        }
+        die("unsupported 'ltr' form");
+    }
+
     /* ---- fxsave/fxrstor/ldmxcsr/stmxcsr [mem]: 0F AE /digit (SH4d) ---- */
     {
         struct { const char *n; int digit; } fx[] = {
@@ -1852,8 +2020,11 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
             return 2;
         }
         if (a.kind == OP_REG && b.kind == OP_SREG) {
-            if (emit) { out_byte(0x8C); out_byte((uint8_t)modrm(3, b.reg, a.reg)); }
-            return 2;
+            /* measured: the 66 prefix applies only when the GPR is 16-bit
+             * (mov ax,ds = 66 8C D8); mov ds,ax = 8E D8 with no prefix. */
+            int p66 = need_66(a.width);
+            if (emit) { if (p66) out_byte(0x66); out_byte(0x8C); out_byte((uint8_t)modrm(3, b.reg, a.reg)); }
+            return (p66?1:0) + 2;
         }
         if (a.kind == OP_CR && b.kind == OP_REG) {   /* mov crN, r32 */
             if (emit) { out_byte(0x0F); out_byte(0x22); out_byte((uint8_t)modrm(3, a.reg, b.reg)); }
@@ -1864,6 +2035,32 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
             return 3;
         }
         if (a.kind == OP_REG && b.kind == OP_IMM) {  /* mov reg, imm */
+            /* SH4e: ELF32 `mov reg, sym` -> B8+r imm32 with R_386_32 when
+             * the symbol is extern or in another section (boot32.asm's
+             * `mov edi, __bss_start`).  Same-section targets resolve. */
+            char immname[300];
+            if (g_fmt_elf == 2 && parse_symref(b.text, immname, sizeof immname) == 0) {
+                Sym *sy = sym_find(immname);
+                int w = a.width;
+                if (w != 32 && w != 16) die("ELF32 mov reg,sym only for 16/32-bit regs");
+                int p66 = (w == 16);
+                if (emit) {
+                    if (p66) out_byte(0x66);
+                    out_byte((uint8_t)((w == 8 ? 0xB0 : 0xB8) + (a.reg & 7)));
+                    if (sy && sy->is_equ) {
+                        out_le((unsigned long long)sy->val, w == 16 ? 2 : 4);
+                    } else if (sy && sy->defined && !sy->is_equ) {
+                        /* ELF32: always relocate; same-section field=value */
+                        out_le((unsigned long long)sy->val, w == 16 ? 2 : 4);
+                        reloc_add(g_cursec, (uint32_t)(g_pc + 1 + (p66?1:0)), 1, sy->sec, NULL, sy->val);
+                    } else {
+                        out_le(0, w == 16 ? 2 : 4);
+                        reloc_add(g_cursec, (uint32_t)(g_pc + 1 + (p66?1:0)), 1,
+                                  -1, sy ? sy : sym_intern(immname), 0);
+                    }
+                }
+                return (p66?1:0) + 1 + (w == 16 ? 2 : 4);
+            }
             long long v = eval_str(b.text);
             int w = a.width;
             /* nasm's 64-bit choices, shortest first:
@@ -1948,6 +2145,37 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
         }
         /* mov mem, imm -> C6 /0 (8-bit) or C7 /0 (16/32-bit) */
         if (a.kind == OP_MEM && b.kind == OP_IMM) {
+            /* SH4e: ELF32 `mov dword [mem], sym` -> C7 /0 imm32 with R_386_32
+             * for extern/cross-section symbols. */
+            char immname[300];
+            if (g_fmt_elf == 2 && parse_symref(b.text, immname, sizeof immname) == 0) {
+                Sym *sy = sym_find(immname);
+                int w = a.memsize ? a.memsize : 32;
+                if (w != 32 && w != 16) die("ELF32 mov mem,sym only for 16/32-bit");
+                int p66 = (w == 16);
+                int segpre = a.seg ? 1 : 0;
+                int a67 = need_67(a.aregs);
+                int memsz = emit_mem(0, &a, 0);
+                int immw = (w == 16) ? 2 : 4;
+                if (emit) {
+                    if (a.seg) out_byte((uint8_t)a.seg);
+                    if (p66) out_byte(0x66);
+                    if (a67) out_byte(0x67);
+                    out_byte(0xC7);
+                    emit_mem(0, &a, 1);
+                    uint32_t foff = (uint32_t)(g_pc + segpre + (p66?1:0) + (a67?1:0) + 1 + memsz);
+                    if (sy && sy->is_equ) {
+                        out_le((unsigned long long)sy->val, immw);
+                    } else if (sy && sy->defined && !sy->is_equ) {
+                        out_le((unsigned long long)sy->val, immw);
+                        reloc_add(g_cursec, foff, 1, sy->sec, NULL, sy->val);
+                    } else {
+                        out_le(0, immw);
+                        reloc_add(g_cursec, foff, 1, -1, sy ? sy : sym_intern(immname), 0);
+                    }
+                }
+                return segpre + (p66?1:0) + (a67?1:0) + 1 + memsz + immw;
+            }
             long long v = eval_str(b.text);
             int w = a.memsize ? a.memsize : (g_bits == 16 ? 16 : 32);
             int p66 = need_66(w);
@@ -2466,6 +2694,7 @@ static int assemble_line(AsmLine *L, int emit, int *changed) {
         s->defined = 1;
         s->is_equ = 1;
         s->sec = -2;   /* ABS */
+        if (g_fmt_elf) sym_local_add(s);   /* nasm: LOCAL ABS, definition order */
         return 0;
     }
 
@@ -2626,7 +2855,8 @@ static void write_elf(const char *inpath, const char *outpath) {
     int sym_name[2048];
     sym_name[0] = 0;                       /* NULL sym: no name */
     sym_name[1] = (int)strtab_len;         /* FILE */
-    { size_t L = strlen(inpath); memcpy(strtab+strtab_len, inpath, L); strtab_len += L; strtab[strtab_len++]=0; }
+    { const char *fs = g_file_sym ? g_file_sym : inpath;
+      size_t L = strlen(fs); memcpy(strtab+strtab_len, fs, L); strtab_len += L; strtab[strtab_len++]=0; }
     for (int i = 0; i < g_nsecs; i++) sym_name[2 + i] = 0;   /* nasm: SECTION syms have no name in .strtab */
     int local_base = 2 + g_nsecs;
     for (int i = 0; i < g_nlocals; i++) {
@@ -2800,8 +3030,8 @@ static void write_elf(const char *inpath, const char *outpath) {
         sh[i+1].sh_addralign = (uint64_t)g_secs[i].align;
     }
     {
-        /* shstrtab holds:   + user section names + ".shstrtab" + ".symtab"
-         * + ".strtab" + ".rela.<sec>" names (in that append order). */
+        /* shstrtab layout: user section names, then ".shstrtab", ".symtab",
+         * ".strtab" and ".rela.<sec>" names, in that append order. */
         int off = 1;
         for (int i = 0; i < g_nsecs; i++) off += (int)strlen(g_secs[i].name) + 1;
         int o_shstrtab = off;
@@ -2855,32 +3085,286 @@ static void write_elf(const char *inpath, const char *outpath) {
     fclose(f);
 }
 
-int main(int argc, char **argv) {
-    const char *inpath = NULL, *outpath = NULL, *fmt = "bin";
 
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-f") && i + 1 < argc) fmt = argv[++i];
-        else if (!strcmp(argv[i], "-o") && i + 1 < argc) outpath = argv[++i];
-        else if (!strcmp(argv[i], "-I") && i + 1 < argc) {
-            if (g_nincdirs < 16) g_incdirs[g_nincdirs++] = argv[++i];
-            else i++;
-        }
-        else if (!strncmp(argv[i], "-I", 2) && argv[i][2]) {
-            if (g_nincdirs < 16) g_incdirs[g_nincdirs++] = argv[i] + 2;
-        }
-        else if (argv[i][0] == '-') { fprintf(stderr, "mini-asm: unknown option '%s'\n", argv[i]); return 2; }
-        else inpath = argv[i];
+/* ------------------------------------------------------------------ */
+/* ELF32 writer (SH4e).  Same symtab/strtab ordering as ELF64 (the SH4d   */
+/* rules carry over unchanged: FILE, SECTION, LOCALs incl. equ ABS,       */
+/* GLOBAL with unused externs dropped); only the record sizes and the     */
+/* relocation format differ -- ELF32 uses SHT_REL (addend in the field,   */
+/* which the emit paths already patched), ELF64 uses SHT_RELA.            */
+/* ------------------------------------------------------------------ */
+
+static void write_elf32(const char *inpath, const char *outpath) {
+    int shstr_idx = 1 + g_nsecs;
+    int symtab_idx = shstr_idx + 1;
+    int strtab_idx = symtab_idx + 1;
+    int nrela_secs = 0;
+    for (int i = 0; i < g_nsecs; i++)
+        for (int j = 0; j < g_nrelocs; j++)
+            if (g_relocs[j].sec == i) { nrela_secs++; break; }
+
+    uint8_t shstr[4096]; size_t shstr_len = 1; shstr[0] = 0;
+    int sh_name[16];
+    for (int i = 0; i < g_nsecs; i++) {
+        sh_name[i] = (int)shstr_len;
+        size_t L = strlen(g_secs[i].name);
+        memcpy(shstr + shstr_len, g_secs[i].name, L);
+        shstr_len += L; shstr[shstr_len++] = 0;
     }
-    if (!inpath) { fprintf(stderr, "usage: mini-asm -f bin|elf64 input.asm -o out\n"); return 2; }
-    g_fmt_elf = !strcmp(fmt, "elf64");
-    if (strcmp(fmt, "bin") && !g_fmt_elf) {
-        fprintf(stderr, "mini-asm: supports -f bin and -f elf64 only (SH4d)\n");
-        return 2;
+    { const char *n = ".shstrtab"; memcpy(shstr+shstr_len, n, strlen(n)); shstr_len += strlen(n); shstr[shstr_len++]=0; }
+    { const char *n = ".symtab";   memcpy(shstr+shstr_len, n, strlen(n)); shstr_len += strlen(n); shstr[shstr_len++]=0; }
+    { const char *n = ".strtab";   memcpy(shstr+shstr_len, n, strlen(n)); shstr_len += strlen(n); shstr[shstr_len++]=0; }
+    int rela_name[16];
+    for (int i = 0; i < g_nsecs; i++) {
+        int has = 0;
+        for (int j = 0; j < g_nrelocs; j++) if (g_relocs[j].sec == i) { has = 1; break; }
+        if (!has) continue;
+        rela_name[i] = (int)shstr_len;
+        char nm[64]; snprintf(nm, sizeof nm, ".rel%s", g_secs[i].name);
+        size_t L = strlen(nm);
+        memcpy(shstr + shstr_len, nm, L); shstr_len += L; shstr[shstr_len++] = 0;
     }
 
+    uint8_t strtab[16384]; size_t strtab_len = 1; strtab[0] = 0;
+    int sym_name[2048];
+    sym_name[0] = 0;
+    sym_name[1] = (int)strtab_len;
+    { const char *fs = g_file_sym ? g_file_sym : inpath;
+      size_t L = strlen(fs); memcpy(strtab+strtab_len, fs, L); strtab_len += L; strtab[strtab_len++]=0; }
+    for (int i = 0; i < g_nsecs; i++) sym_name[2 + i] = 0;
+    int local_base = 2 + g_nsecs;
+    for (int i = 0; i < g_nlocals; i++) {
+        sym_name[local_base + i] = (int)strtab_len;
+        size_t L = strlen(g_locals[i]->name);
+        memcpy(strtab + strtab_len, g_locals[i]->name, L);
+        strtab_len += L; strtab[strtab_len++] = 0;
+    }
+    static Sym *g_eff[2048];
+    int ngeff = 0;
+    for (int i = 0; i < g_nglobals; i++) {
+        Sym *sy = g_globals[i];
+        if (sy->is_extern && !sy->defined) {
+            int used = 0;
+            for (int j = 0; j < g_nrelocs; j++)
+                if (g_relocs[j].tsec < 0 && g_relocs[j].tsym == sy) { used = 1; break; }
+            if (!used) continue;
+        }
+        g_eff[ngeff++] = sy;
+    }
+    int global_base = local_base + g_nlocals;
+    for (int i = 0; i < ngeff; i++) {
+        sym_name[global_base + i] = (int)strtab_len;
+        size_t L = strlen(g_eff[i]->name);
+        memcpy(strtab + strtab_len, g_eff[i]->name, L);
+        strtab_len += L; strtab[strtab_len++] = 0;
+    }
+    int nsyms = global_base + ngeff;
+
+    /* Elf32_Sym: name(4) value(4) size(4) info(1) other(1) shndx(2) */
+    uint8_t symtab[2048 * 16];
+    memset(symtab, 0, sizeof symtab);
+    {   uint8_t *s = symtab + 16;
+        le32(s, (uint32_t)sym_name[1]);
+        s[12] = (0 << 4) | 4;   /* LOCAL, FILE */
+        le16(s+14, SHN_ABS);
+    }
+    for (int i = 0; i < g_nsecs; i++) {
+        uint8_t *s = symtab + (2 + i) * 16;
+        le32(s, 0);            /* SECTION syms: no name */
+        s[12] = (0 << 4) | 3;  /* LOCAL, SECTION */
+        le16(s+14, (uint16_t)g_secs[i].secidx);
+    }
+    for (int i = 0; i < g_nlocals; i++) {
+        Sym *sy = g_locals[i];
+        uint8_t *s = symtab + (local_base + i) * 16;
+        le32(s, (uint32_t)sym_name[local_base + i]);
+        le32(s+4, (uint32_t)sy->val);
+        s[12] = (0 << 4) | 0;
+        if (sy->sec >= 0) le16(s+14, (uint16_t)g_secs[sy->sec].secidx);
+        else if (sy->is_equ) le16(s+14, SHN_ABS);
+        else le16(s+14, SHN_UNDEF);
+    }
+    for (int i = 0; i < ngeff; i++) {
+        Sym *sy = g_eff[i];
+        uint8_t *s = symtab + (global_base + i) * 16;
+        le32(s, (uint32_t)sym_name[global_base + i]);
+        le32(s+4, (uint32_t)(sy->defined ? sy->val : 0));
+        s[12] = (1 << 4) | 0;
+        if (sy->is_extern) le16(s+14, SHN_UNDEF);
+        else if (sy->sec >= 0) le16(s+14, (uint16_t)g_secs[sy->sec].secidx);
+        else le16(s+14, SHN_UNDEF);
+    }
+    int first_global = global_base;
+
+    /* Elf32_Rel: offset(4) info(4); addends already live in the fields.
+     * (heap: 16x64 KiB on the stack would hurt the 4 MiB guest stack) */
+    uint8_t (*relbuf)[65536] = xmalloc(16 * 65536);
+    size_t reln[16];
+    int rela_sec[16];
+    memset(reln, 0, sizeof reln);
+    for (int i = 0; i < g_nsecs; i++) rela_sec[i] = -1;
+    int nrela = 0;
+    for (int i = 0; i < g_nsecs; i++)
+        for (int j = 0; j < g_nrelocs; j++)
+            if (g_relocs[j].sec == i) { rela_sec[i] = nrela++; break; }
+    for (int i = 0; i < g_nrelocs; i++) {
+        Reloc *r = &g_relocs[i];
+        int symidx;
+        if (r->tsec >= 0) symidx = 2 + r->tsec;
+        else {
+            symidx = -1;
+            for (int k = 0; k < ngeff; k++)
+                if (g_eff[k] == r->tsym) { symidx = global_base + k; break; }
+            if (symidx < 0) die("relocation target '%s' never declared", r->tsym ? r->tsym->name : "?");
+        }
+        uint8_t *e = relbuf[rela_sec[r->sec]] + reln[rela_sec[r->sec]] * 8;
+        le32(e, (uint32_t)r->off);
+        le32(e+4, ((uint32_t)symidx << 8) | (uint32_t)r->type);
+        reln[rela_sec[r->sec]]++;
+    }
+
+    /* layout */
+    obj = NULL; obj_len = 0; obj_cap = 0;
+    obj_zero(52);
+    uint32_t sh_offset[16]; uint32_t sh_size[16];
+    for (int i = 0; i < g_nsecs; i++) {
+        obj_align((size_t)(g_secs[i].align ? g_secs[i].align : 1));
+        sh_offset[i] = (uint32_t)obj_len;
+        sh_size[i] = (uint32_t)g_secs[i].size;
+        if (g_secs[i].type != SHT_NOBITS)
+            obj_bytes(g_secs[i].data ? g_secs[i].data : (uint8_t*)"", g_secs[i].len);
+    }
+    uint32_t shstr_off = (uint32_t)obj_len; obj_bytes(shstr, shstr_len);
+    uint32_t strtab_off = (uint32_t)obj_len; obj_bytes(strtab, strtab_len);
+    obj_align(4);
+    uint32_t symtab_off = (uint32_t)obj_len;
+    obj_bytes(symtab, (size_t)nsyms * 16);
+    uint32_t rela_off[16];
+    for (int i = 0; i < g_nsecs; i++) {
+        int ri = rela_sec[i];
+        if (ri < 0) continue;
+        obj_align(4);
+        rela_off[ri] = (uint32_t)obj_len;
+        obj_bytes(relbuf[ri], reln[ri] * 8);
+    }
+    obj_align(4);
+    uint32_t e_shoff = (uint32_t)obj_len;
+    int e_shnum = 1 + g_nsecs + 3 + nrela_secs;
+    int e_shstrndx = shstr_idx;
+
+    /* ELF32 header (52 bytes) */
+    uint8_t eh[52]; memset(eh, 0, sizeof eh);
+    eh[0]=0x7F; eh[1]='E'; eh[2]='L'; eh[3]='F';
+    eh[4]=1; eh[5]=1; eh[6]=1;
+    le16(eh+16, 1);      /* ET_REL */
+    le16(eh+18, 3);      /* EM_386 */
+    le32(eh+20, 1);
+    le32(eh+32, e_shoff);
+    le16(eh+40, 52);     /* e_ehsize */
+    le16(eh+46, 40);     /* e_shentsize */
+    le16(eh+48, (uint16_t)e_shnum);
+    le16(eh+50, (uint16_t)e_shstrndx);
+    memcpy(obj, eh, 52);
+
+    /* section headers (40 bytes each) */
+    for (int i = 0; i < e_shnum; i++) {
+        uint8_t b[40]; memset(b, 0, 40);
+        if (i == 0) { obj_bytes(b, 40); continue; }
+        if (i <= g_nsecs) {
+            int s = i - 1;
+            le32(b, (uint32_t)sh_name[s]);
+            le32(b+4, (uint32_t)g_secs[s].type);
+            le32(b+8, (uint32_t)g_secs[s].flags);
+            le32(b+16, sh_offset[s]);
+            le32(b+20, sh_size[s]);
+            le32(b+32, (uint32_t)g_secs[s].align);
+            obj_bytes(b, 40);
+            continue;
+        }
+        if (i == shstr_idx) {
+            int off = 1;
+            for (int s = 0; s < g_nsecs; s++) off += (int)strlen(g_secs[s].name) + 1;
+            le32(b, (uint32_t)off);
+            le32(b+4, 3);              /* SHT_STRTAB */
+            le32(b+16, shstr_off);
+            le32(b+20, (uint32_t)shstr_len);
+            le32(b+32, 1);
+            obj_bytes(b, 40); continue;
+        }
+        if (i == symtab_idx) {
+            int off = 1;
+            for (int s = 0; s < g_nsecs; s++) off += (int)strlen(g_secs[s].name) + 1;
+            le32(b, (uint32_t)(off + (int)strlen(".shstrtab") + 1));
+            le32(b+4, 2);              /* SHT_SYMTAB */
+            le32(b+16, symtab_off);
+            le32(b+20, (uint32_t)nsyms * 16);
+            le32(b+24, (uint32_t)strtab_idx);
+            le32(b+28, (uint32_t)first_global);
+            le32(b+32, 4);
+            le32(b+36, 16);            /* entsize */
+            obj_bytes(b, 40); continue;
+        }
+        if (i == strtab_idx) {
+            int off = 1;
+            for (int s = 0; s < g_nsecs; s++) off += (int)strlen(g_secs[s].name) + 1;
+            le32(b, (uint32_t)(off + (int)strlen(".shstrtab") + 1 + (int)strlen(".symtab") + 1));
+            le32(b+4, 3);              /* SHT_STRTAB */
+            le32(b+16, strtab_off);
+            le32(b+20, (uint32_t)strtab_len);
+            le32(b+32, 1);
+            obj_bytes(b, 40); continue;
+        }
+        /* .rel.<sec> */
+        {
+            int ri = i - (strtab_idx + 1);
+            int sec = -1;
+            for (int s = 0; s < g_nsecs; s++) if (rela_sec[s] == ri) { sec = s; break; }
+            le32(b, (uint32_t)rela_name[sec]);
+            le32(b+4, 9);              /* SHT_REL */
+            le32(b+16, rela_off[ri]);
+            le32(b+20, (uint32_t)(reln[ri] * 8));
+            le32(b+24, (uint32_t)symtab_idx);
+            le32(b+28, (uint32_t)g_secs[sec].secidx);
+            le32(b+32, 4);
+            le32(b+36, 8);             /* entsize */
+            obj_bytes(b, 40);
+        }
+    }
+
+    FILE *f = fopen(outpath, "wb");
+    if (!f) { fprintf(stderr, "mini-asm: cannot write '%s'\n", outpath); exit(2); }
+    fwrite(obj, 1, obj_len, f);
+    fclose(f);
+    free(relbuf);
+}
+
+/* reset all per-source global state so a second input file starts clean */
+static void reset_asm_state(void) {
+    g_nlines = 0;
+    g_nplines = 0;
+    g_nsyms = 0;
+    g_nlocals = 0;
+    g_nglobals = 0;
+    g_nsecs = 0;
+    g_nrelocs = 0;
+    g_ntmacros = 0;
+    g_nmacrodefs = 0;
+    g_cur_global = "";
+    g_cursec = -1;
+    g_bits = 16;
+    g_default_rel = 0;
+    g_line_no = 0;
+}
+
+/* assemble one source to outpath (bin/elf32/elf64) */
+static int assemble_source(const char *inpath, const char *outpath) {
     load_file(inpath);
 
-    /* equ constants (pc-independent) first, so forward references resolve */
+    /* equ constants (pc-independent) first, so forward references resolve.
+     * NOTE: sym_local_add() happens later in assemble_line(), at the line's
+     * source position -- nasm emits equ constants in definition order
+     * interleaved with labels, not all upfront (boot32's STACK_SIZE, defined
+     * at line 87, lands after .fill_pde at line 52). */
     for (int i = 0; i < g_nlines; i++) {
         AsmLine *L = &g_lines[i];
         if (L->is_equ) {
@@ -2889,7 +3373,6 @@ int main(int argc, char **argv) {
             s->defined = 1;
             s->is_equ = 1;
             s->sec = -2;   /* ABS */
-            if (g_fmt_elf) sym_local_add(s);   /* nasm: LOCAL ABS in symtab */
         }
     }
 
@@ -2920,14 +3403,109 @@ int main(int argc, char **argv) {
     for (int i = 0; i < g_nlines; i++)
         assemble_line(&g_lines[i], 1, NULL);
 
-    if (!outpath) outpath = g_fmt_elf ? "a.o" : "a.bin";
-    if (g_fmt_elf) {
-        write_elf(inpath, outpath);
-        return 0;
-    }
+    if (g_fmt_elf == 1) { write_elf(inpath, outpath); return 0; }
+    if (g_fmt_elf == 2) { write_elf32(inpath, outpath); return 0; }
     FILE *f = fopen(outpath, "wb");
     if (!f) { fprintf(stderr, "mini-asm: cannot write '%s'\n", outpath); return 2; }
     fwrite(g_out, 1, g_out_len, f);
     fclose(f);
     return 0;
+}
+
+/* strip the directory part of a path (for --check-dir output naming) */
+static const char *path_basename(const char *p) {
+    const char *b = p;
+    for (const char *q = p; *q; q++) if (*q == '/') b = q + 1;
+    return b;
+}
+
+int main(int argc, char **argv) {
+    const char *inputs[64]; int ninputs = 0;
+    const char *outpath = NULL, *checkdir = NULL, *fmt = "bin";
+
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-f") && i + 1 < argc) fmt = argv[++i];
+        else if (!strcmp(argv[i], "-o") && i + 1 < argc) outpath = argv[++i];
+        else if (!strcmp(argv[i], "--check-dir") && i + 1 < argc) checkdir = argv[++i];
+        else if (!strcmp(argv[i], "--file-sym") && i + 1 < argc) g_file_sym = argv[++i];
+        else if (!strcmp(argv[i], "-I") && i + 1 < argc) {
+            if (g_nincdirs < 16) g_incdirs[g_nincdirs++] = argv[++i];
+            else i++;
+        }
+        else if (!strncmp(argv[i], "-I", 2) && argv[i][2]) {
+            if (g_nincdirs < 16) g_incdirs[g_nincdirs++] = argv[i] + 2;
+        }
+        else if (argv[i][0] == '-') { fprintf(stderr, "mini-asm: unknown option '%s'\n", argv[i]); return 2; }
+        else if (ninputs < 64) inputs[ninputs++] = argv[i];
+    }
+    if (!ninputs) { fprintf(stderr, "usage: mini-asm -f bin|elf32|elf64 [-I dir] [-o out|--check-dir refdir] input.asm [...]\n"); return 2; }
+    g_fmt_elf = !strcmp(fmt, "elf64") ? 1 : (!strcmp(fmt, "elf32") ? 2 : 0);
+    if (strcmp(fmt, "bin") && !g_fmt_elf) {
+        fprintf(stderr, "mini-asm: supports -f bin, -f elf32 and -f elf64 (SH4e)\n");
+        return 2;
+    }
+
+    /* --check-dir mode: assemble every input into the directory named by -o
+     * (default ".") and byte-compare each result against refdir/<base>.o,
+     * printing the SH4e in-guest receipt.  Without --check-dir, a single
+     * input writes to -o exactly (backward compatible); multiple inputs with
+     * -o write into the directory. */
+    int bad = 0, identical = 0, total = 0;
+    for (int i = 0; i < ninputs; i++) {
+        const char *in = inputs[i];
+        const char *base = path_basename(in);
+        char out[1024];
+        if (checkdir) {
+            char b2[512]; snprintf(b2, sizeof b2, "%s", base);
+            char *dot = strrchr(b2, '.');
+            if (dot) *dot = 0;
+            snprintf(out, sizeof out, "%s/%s.o", outpath ? outpath : ".", b2);
+        } else if (ninputs == 1) {
+            snprintf(out, sizeof out, "%s", outpath ? outpath : (g_fmt_elf ? "a.o" : "a.bin"));
+        } else {
+            char b2[512]; snprintf(b2, sizeof b2, "%s", base);
+            char *dot = strrchr(b2, '.');
+            if (dot) *dot = 0;
+            snprintf(out, sizeof out, "%s/%s.o", outpath ? outpath : ".", b2);
+        }
+        if (i > 0) reset_asm_state();
+        if (assemble_source(in, out) != 0) { bad = 1; continue; }
+        total++;
+        if (checkdir) {
+            char b2[512]; snprintf(b2, sizeof b2, "%s", base);
+            char *dot = strrchr(b2, '.');
+            if (dot) *dot = 0;
+            char ref[1024];
+            snprintf(ref, sizeof ref, "%s/%s.o", checkdir, b2);
+            FILE *a = fopen(out, "rb"), *b = fopen(ref, "rb");
+            int same = 0;
+            if (a && b) {
+                int c, d; same = 1;
+                for (;;) {
+                    c = fgetc(a); d = fgetc(b);
+                    if (c != d) { same = 0; break; }
+                    if (c == EOF) break;
+                }
+                if (c == EOF && d != EOF) same = 0;
+            } else same = 0;
+            if (a) fclose(a);
+            if (b) fclose(b);
+            if (same) {
+                printf("[selfhost] asm %s byte-identical\n", base);
+                identical++;
+            } else {
+                printf("[selfhost] asm %s DIFFERS from reference\n", base);
+                bad = 1;
+            }
+        }
+    }
+    if (checkdir) {
+        if (!bad) {
+            printf("[selfhost] asm PASS: %d/%d objects byte-identical\n", identical, total);
+            return 0;
+        }
+        printf("[selfhost] asm FAIL: %d/%d objects byte-identical\n", identical, total);
+        return 1;
+    }
+    return bad ? 1 : 0;
 }
