@@ -2,6 +2,24 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FIX — `make test-unit` aborted on a phantom `build/test_aulink`] 2026-08-27
+
+SH3 added `$(BUILD_DIR)/test_aulink` to the `UNIT_TESTS` list, but the SH3
+gate is a **script** (`tests/unit/test_aulink.sh`), not a C binary, and no
+rule ever built `build/test_aulink`.  Result: `make test-unit` died with
+`No rule to make target 'build/test_aulink', needed by 'test-unit'` before
+running a single test — and the aulink parity gate never ran in CI at all,
+despite the SH3 changelog claiming it as a gate.  The host `qemu-integration`
+job was red on `main` (10/11 checks green, this one failing) as a consequence.
+
+- Removed the phantom `build/test_aulink` from `UNIT_TESTS`.
+- Wired the real gate as a shell step in the `test-unit` recipe, next to
+  `test_userlibs.sh` (both inspect built artefacts and skip cleanly when the
+  userland objects are absent).
+- Verified: `make -n test-unit` resolves (exit 0, no "No rule");
+  `tests/unit/test_aulink.sh` passes on both paths — clean-skip without
+  userland objects, and full `ld.lld`-vs-`aulink` parity with them built.
+
 ## [SELFHOST SH3 — aulink: the self-host ELF linker] 2026-08-26
 
 `SELFHOST_PLAN.md` phase SH3: AuraLite now links ELF **inside itself**,

@@ -2262,7 +2262,6 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_dualstack \
                 $(BUILD_DIR)/test_dns_aaaa \
                 $(BUILD_DIR)/test_sizeclass \
-                $(BUILD_DIR)/test_aulink \
                 $(BUILD_DIR)/test_bitmap \
                 $(BUILD_DIR)/test_bsod \
                 $(BUILD_DIR)/test_net $(BUILD_DIR)/test_kprintf \
@@ -2415,6 +2414,17 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # when the archives have not been built.
 	@echo "[unit] running tests/unit/test_userlibs.sh"
 	@bash tests/unit/test_userlibs.sh || exit 1
+
+# SELFHOST_PLAN SH3: aulink vs ld.lld parity.  This is a script, not a C
+# binary -- it compiles tools/aulink/aulink.c with the host cc, links the
+# tree's real userland objects with BOTH linkers and compares what is
+# honestly comparable -- so it belongs with the shell gates below, not in
+# $(UNIT_TESTS), which is a list of executables to build.  (It was listed
+# there once, as a build/test_aulink target that had no rule: make aborted
+# the whole suite with "No rule to make target 'build/test_aulink'".)  It
+# skips cleanly when the userland objects have not been built.
+	@echo "[unit] running tests/unit/test_aulink.sh"
+	@bash tests/unit/test_aulink.sh || exit 1
 
 # WIN32_PLAN.md W32-0: provenance/licensing enforcement, plus its negative
 # control -- a checker that never fails is indistinguishable from a clean tree.
