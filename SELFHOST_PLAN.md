@@ -613,6 +613,27 @@ protected-mode code, and the remaining mnemonics (`cpuid`, `in`/`out`,
 to nasm on `stage2_start.asm` (with its include chain), making the flat set
 4/4.
 
+**Progress (2026-08-27, partial — NOT landed).** The preprocessor half is in:
+`%include` (recursive, via `-I` paths — the 13-file stage2 chain expands),
+`%if/%else/%endif` (with relational operators added to the expression
+evaluator), `%error`, object-like `%define` (boot_offsets.inc's integer
+constants), and the ELF `global`/`extern`/`section` no-ops that `-f bin`
+ignores.  The encoder has grown a full effective-address model — `[abs]`,
+`[base+disp]`, `[seg:base+disp]`, `[base+index]` (SIB), 16- vs 32-bit
+addressing with the `0x67` address-size override, segment-override prefixes,
+disp8/disp32 shortest-form selection, the accumulator `moffs` short form (incl.
+with a segment prefix), and the 64-bit SIB-no-base absolute form — plus
+`push`/`pop` (reg/sreg), `mov reg,reg`, `mov mem,imm`, the full ALU/`test`
+matrix (reg/mem/imm), `movzx`, `in`/`out`, `imul` (2/3-operand), `mul`/`div`/
+`not`/`neg`/`inc`/`dec`, `lea`, `loop`, shifts, `rep`+string ops, far jumps
+with `dword`/`word`, and the `abs`/`rel` hint.  **`stage2_start.asm` now
+assembles end-to-end to the correct 5632-byte size** (was: died at `push`,
+line 91); the three landed flat objects stay byte-identical (regression clean).
+Remaining to 4/4: a residual ~3-byte layout divergence (an `align` fill /
+padding difference at the image tail) that cascades into the label-address
+displacements — being narrowed against the byte reference.  Receipt still
+`3/4` until stage2 matches byte-for-byte.
+
 **Gate.** The host parity harness byte-compares all four `-f bin` files, green
 in `make test-unit`.  Receipt:
 `[selfhost] asm PASS (bin): 4/4 flat objects byte-identical`.
