@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4d (see below); SH5–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -8,7 +8,11 @@
 | SH1 — Runtime limits + TinyCC userspace port | ✅ landed |
 | SH2 — tcc builds the userland | ✅ landed |
 | SH3 — `aulink`: the self-host linker | ✅ landed |
-| SH4 — an assembler that runs in-guest | 🚧 pending |
+| SH4 — an assembler that runs in-guest (umbrella; split into SH4a–SH4d) | 🚧 pending |
+| SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object | 🚧 pending |
+| SH4b — `-f bin` byte-parity across all four boot files | 🚧 pending |
+| SH4c — ELF64 backend, readelf parity on the kernel/libc objects | 🚧 pending |
+| SH4d — ELF32 backend + the in-guest assembly run | 🚧 pending |
 | SH5 — the kernel, built by itself | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
@@ -450,24 +454,155 @@ Bugs found along the way (SH-18..SH-20, all closed by SH3):
 **Gate.** `make test-unit` runs `test_aulink.sh` (parity) and
 `test_selfhost_aulink.sh` boots QEMU and greps the banner.
 
-### Phase SH4 — an assembler that runs in-guest 🚧 PENDING
+### Phase SH4 — an assembler that runs in-guest (umbrella) 🚧 PENDING
 
 **Goal.** Assemble `boot/` and `kernel/` `.asm` without nasm.
 
-**Definition of done.** SH4 spike (V0): measure nasm-port vs `mini-asm`
-against byte-identical-object parity for every `.asm` in the tree
-(`-f bin` outputs compared byte-for-byte; `-f elf64/elf32` outputs
-compared via readelf). The chosen path lands; the spike's numbers are
-written into the phase section (the OPT O0 discipline: the measurement is
-part of the deliverable).
+**Why this is split.** The original SH4 was written as one phase, but its
+own definition of done — *byte-identical parity for every `.asm` in the
+tree* — is a multi-thousand-line x86 assembler, not a step.  A measured
+survey of the tree (2026-08-27) fixes the real surface:
 
-**Gate.** Host parity test (all tree `.asm` files) in `make test-unit`;
-integration case `test_selfhost_asm.sh` greps
-`[selfhost] asm PASS: <n> objects byte-identical` for an in-guest assembly
+- **29 `.asm` files**, in **four** output formats, not one:
+  - `-f bin` (flat, no relocations, no symbol table — pure bytes at `org`):
+    **4 files** — `boot/bios/stage1/mbr.asm` (162),
+    `boot/bios/stage1/mbr_dual.asm` (104),
+    `boot/bios/stage2/stage2_start.asm` (548, `%include`s 13 `.inc`, uses
+    `%if/%else`), `boot/smp/ap_trampoline.asm` (120, generated).
+  - `-f elf64`: **13 files** — `kernel/arch/x86_64/*` (5), `kernel/proc/*`
+    (4), `lib/libc/crt/*` (3) + `lib/libc/src/syscall.asm`.
+  - `-f elf32`: **7 files** — `kernel/arch/i386/*` (5), `lib/libc32/*` (2).
+  - `-f win64` (COFF, `ms_abi`): **5 files** — `w32/tests/*`.  These are
+    Win32-personality *test fixtures*, not inputs to building the OS; they
+    are scoped OUT of the self-host closure (ledger SH-25).
+- **Preprocessor surface** (shared by every file): `%include`, `%define`,
+  `%assign`, `%macro`/`%endmacro` (one-arg), `%rep`/`%endrep` (incl. `%rep 256`),
+  `%if/%else/%endif`, `%error`.
+- **Encoder surface**: ~80 distinct mnemonics including the awkward ones
+  (`o64` prefix, `ldmxcsr`, `fxsave`/`fxrstor`, `wrmsr`/`rdmsr`, `rep`
+  prefixes), across `bits 16/32/64`.
+
+The four formats have very different byte-parity costs.  `-f bin` has no
+relocations and no symbol table, so its output is pure encoder+preprocessor
+bytes — the strictest bar (byte-for-byte) is also the most achievable there.
+The ELF formats need a header/section/symtab/relocation emitter whose byte
+layout nasm does not guarantee, so the plan's own bar for them is *readelf
+parity*, not byte parity.  Splitting along that gradient makes each step
+land a measured, falsifiable increment instead of one big-bang claim.
+
+**Definition of done.** The union of SH4a–SH4d.  D4 (port nasm vs write
+`mini-asm`) is resolved by measurement in SH4a, not asserted.
+
+**Gate.** The union of the SH4a–SH4d gates; the terminal one is SH4d's
+in-guest `test_selfhost_asm.sh`.
+
+**Deliverable.** The changes below, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object 🚧 PENDING
+
+**Goal.** Resolve D4 with numbers, and stand up `tools/mini-asm/mini-asm.c`
+far enough to assemble ONE real flat file byte-for-byte identically to nasm.
+
+**Scope.** The spike measures both D4 paths concretely: (a) *port nasm* —
+upstream size and its libc footprint (nasm needs a real libc; the guest libc
+is AuraLite's own), recorded as a cost; (b) *mini-asm* — the in-tree dialect
+surface measured above, recorded as a cost.  The decision is written into
+this section with the numbers (OPT O0 discipline: the measurement is part of
+the deliverable).  Then the mini-asm core lands: tokenizer, expression
+evaluator, label resolver (two-pass), the preprocessor subset
+(`%include`/`%define`/`%assign`), the x86 encoder for the mnemonics the
+target file actually uses, and the `-f bin` emitter (`org`, section
+concatenation, `times`/`align`/`resb`, `db`/`dw`/`dd`/`dq`).
+
+**Definition of done.** `mini-asm -f bin` reproduces nasm's output
+**byte-for-byte** on the simplest real flat file
+(`boot/bios/stage1/mbr_dual.asm`, 104 lines).  The spike's numbers (both
+paths) are written here.
+
+**Gate.** Host parity harness (a `tests/unit/test_asm_parity.sh` or
+`tools/check_mini_asm.py`) byte-compares mini-asm vs nasm on the covered
+file(s) and is wired into `make test-unit`; it fails the build on any byte
+difference.  Receipt: `[selfhost] asm PASS (bin): 1/4 flat objects
+byte-identical`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH4b — `-f bin` byte-parity across all four boot files 🚧 PENDING
+
+**Goal.** Extend the encoder and preprocessor until every `-f bin` file in
+the tree is byte-identical to nasm.
+
+**Scope.** Grows SH4a's core to cover: the full `%macro`/`%endmacro`
+(one-arg) and `%rep`/`%endrep` expansion (`isr_stubs*` patterns), the
+`%if/%else/%endif` conditional assembly and the 13-file `%include` chain in
+`stage2_start.asm`, `%error`, `alignb`, and the remaining 16-bit real-mode
+encoder cases the boot code needs (BIOS INT calls, `o64`/operand-size
+prefixes, `seg`/`org` fixes).  Targets: `mbr.asm`, `mbr_dual.asm`,
+`stage2_start.asm` (+ its 13 includes), `ap_trampoline.asm`.
+
+**Definition of done.** mini-asm `-f bin` output is **byte-for-byte**
+identical to nasm on all four flat files.
+
+**Gate.** The SH4a host parity harness now byte-compares all four `-f bin`
+files and is green in `make test-unit`.  Receipt:
+`[selfhost] asm PASS (bin): 4/4 flat objects byte-identical`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH4c — ELF64 backend, readelf parity on the kernel/libc objects 🚧 PENDING
+
+**Goal.** Add the `elf64` emitter so the kernel/libc `-f elf64` objects
+reach structural parity with nasm.
+
+**Scope.** ELF64 header, program/section headers, `.symtab`/`.strtab`/
+`.shstrtab`, and the `R_X86_64_*` relocations the tree emits
+(`64`/`PC32`/`32S`/`PLT32`/`GOTPCREL`), plus `global`/`extern`/`section`
+attribute handling and `align`/`alignb` in an ELF context.  Per the SH4
+definition of done, ELF output is compared **via readelf**, not
+byte-for-byte (nasm does not guarantee ELF byte layout).  Targets: the 13
+`-f elf64` files, boot-critical ones first (`isr_stubs.asm`,
+`syscall_entry.asm`, `boot.asm`).
+
+**Definition of done.** For every `-f elf64` file, `readelf -SW`/`-sW`/`-rW`
+of the mini-asm object matches nasm's on section names/types/flags, symbol
+names/bindings/section indices, and relocation types/addends.
+
+**Gate.** The host parity harness gains an elf64 readelf-comparison mode,
+green in `make test-unit` on the 13 files.  Receipt:
+`[selfhost] asm PASS (elf64): <n> objects readelf-parity`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH4d — ELF32 backend + the in-guest assembly run 🚧 PENDING
+
+**Goal.** Finish the format coverage (elf32) and make the assembler actually
+run *in-guest* — the phase's namesake.
+
+**Scope.** The `elf32` emitter for the 7 `-f elf32` files
+(`kernel/arch/i386/*`, `lib/libc32/*`), readelf-parity as in SH4c.  Then
+mini-asm is built by the guest tcc (SH2) and run inside AuraLite to assemble
+the boot-critical sources, proving the assembler self-hosts, not just that it
+matches nasm on the host.
+
+**Definition of done.** elf32 readelf parity on the 7 files; AND an in-guest
+mini-asm assembles the boot-critical files with the recorded receipt.
+
+**Gate.** Integration case `tests/integration/cases/test_selfhost_asm.sh`
+(registered in the `selfhost` shard) boots QEMU and greps
+`[selfhost] asm PASS: <n> objects byte-identical` for the in-guest assembly
 of the boot-critical files (isr_stubs, syscall_entry, boot).
 
-**Deliverable.** The changes above, in the tree (D9: no
-patch artefact).
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
 
 ### Phase SH5 — the kernel, built by itself 🚧 PENDING
 
@@ -661,6 +796,8 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-21 | aulink input sections not ALIGN'd inside output section → movaps in .bss faults | align | CLOSED (SH3: ALIGN filled by sh_addralign, out_off) | SH3 |
 | SH-22 | aulink forgot sec->out_off in P and memcpy → PC32 relocs off by section's position | reloc | CLOSED (SH3: base = out.addr + out_off) | SH3 |
 | SH-23 | STT_SECTION symbols have st_name=0 → name empty, GOTPCREL unresolved | sym | CLOSED (SH3: name = sec_name for STT_SECTION) | SH3 |
+| SH-24 | SH4 "byte-identical assembler for all 29 .asm" is a multi-kLOC x86 assembler across FOUR output formats (bin/elf64/elf32/win64) — too large for one falsifiable step | scope | OPEN (split into SH4a–SH4d along the format gradient, 2026-08-27) | SH4a |
+| SH-25 | -f win64 (COFF, ms_abi) for w32/tests/*.asm (5 files) is a fifth format | scope | ACCEPTED (out of the self-host closure — Win32 test fixtures, not inputs to building the OS; D1 scope) | — |
 
 ## 8. Receipt strings (the greppable contract)
 
@@ -671,6 +808,8 @@ plan still lists them, so a renamed receipt fails the build:
 [selfhost] tcc PASS: <n> binaries built and run
 [selfhost] userland rebuild PASS: <n> binaries
 [selfhost] aulink PASS: <n> ELF linked, layout parity OK
+[selfhost] asm PASS (bin): <n>/4 flat objects byte-identical
+[selfhost] asm PASS (elf64): <n> objects readelf-parity
 [selfhost] asm PASS: <n> objects byte-identical
 [selfhost] kernel PASS: tcc-built kernel booted to shell
 [selfhost] build PASS: kernel+initrd built on /fat

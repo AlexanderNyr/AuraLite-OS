@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST — SH4 split into SH4a–SH4d] 2026-08-27
+
+SH4 ("an assembler that runs in-guest") was written as one phase, but its own
+definition of done — byte-identical parity for **every** `.asm` in the tree —
+is a multi-thousand-line x86 assembler, not a single falsifiable step.  A
+measured survey of the tree fixes the real surface and the natural seams:
+
+- **29 `.asm` files in four output formats**, not one: `-f bin` (4 flat boot
+  files, no relocations/symtab), `-f elf64` (13 kernel/libc files),
+  `-f elf32` (7 i386 files), `-f win64`/COFF (5 w32 test fixtures).
+- Preprocessor surface: `%include`/`%define`/`%assign`/`%macro`/`%rep`
+  (incl. `%rep 256`)/`%if`/`%error`.  Encoder surface: ~80 mnemonics across
+  `bits 16/32/64`, including `o64`, `ldmxcsr`, `fxsave`, `wrmsr`, `rep`.
+
+The formats have very different byte-parity costs (`-f bin` is pure
+encoder+preprocessor bytes; ELF needs a header/symtab/relocation emitter whose
+byte layout nasm does not guarantee, so the plan's bar there is *readelf
+parity*).  SH4 is therefore split along that gradient, each step landing a
+measured increment:
+
+- **SH4a** — spike (resolve D4 port-nasm-vs-mini-asm with numbers) + mini-asm
+  core + first byte-identical flat object (`mbr_dual.asm`).
+- **SH4b** — `-f bin` byte-parity on all four boot files (full `%macro`/`%rep`/
+  `%if`, the 13-file `%include` chain).
+- **SH4c** — ELF64 backend, readelf parity on the 13 kernel/libc objects.
+- **SH4d** — ELF32 backend + the in-guest assembly run (`test_selfhost_asm.sh`).
+
+The `-f win64` COFF fixtures are scoped OUT of the self-host closure (ledger
+SH-25): they are Win32-personality test inputs, not something the OS needs to
+assemble to build itself.  Ledger SH-24 records the split rationale.  No code
+changed — this is a plan correction; `check_selfhost_claims.py` (and its
+`--selftest`) stay green, and the §8 receipt contract keeps
+`[selfhost] asm PASS:` while adding the `(bin)`/`(elf64)` interim receipts.
+
 ## [FIX — `make test-unit` aborted on a phantom `build/test_aulink`] 2026-08-27
 
 SH3 added `$(BUILD_DIR)/test_aulink` to the `UNIT_TESTS` list, but the SH3
