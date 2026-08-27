@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4e, SH4a+SH4b landed (3/4 flat objects byte-identical); SH5–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4e, SH4a+SH4b+SH4c landed (4/4 flat + 13/13 elf64 readelf-parity); SH4d done, SH4e + SH5–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -12,7 +12,7 @@
 | SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object | ✅ landed |
 | SH4b — 64-bit mode + REX + the SMP trampoline, byte-identical (3/4 flat) | ✅ landed |
 | SH4c — `stage2_start.asm` byte-parity: %include/%if + SIB/segment-override encoder (4/4 flat) | ✅ landed |
-| SH4d — ELF64 backend, readelf parity on the kernel/libc objects | 🚧 pending |
+| SH4d — ELF64 backend, readelf parity on the kernel/libc objects | ✅ landed |
 | SH4e — ELF32 backend + the in-guest assembly run | 🚧 pending |
 | SH5 — the kernel, built by itself | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
@@ -645,28 +645,56 @@ green in `make test-unit`.  Receipt:
 
 ---
 
-### Phase SH4d — ELF64 backend, readelf parity on the kernel/libc objects 🚧 PENDING
+### Phase SH4d — ELF64 backend, readelf parity on the kernel/libc objects ✅ LANDED (2026-08-27)
 
 **Goal.** Add the `elf64` emitter so the kernel/libc `-f elf64` objects
 reach structural parity with nasm.
 
-**Scope.** ELF64 header, program/section headers, `.symtab`/`.strtab`/
-`.shstrtab`, and the `R_X86_64_*` relocations the tree emits
-(`64`/`PC32`/`32S`/`PLT32`/`GOTPCREL`), plus `global`/`extern`/`section`
-attribute handling, `align`/`alignb` in an ELF context, and the
-`%macro`/`%endmacro`/`%rep`/`%assign` preprocessor that `isr_stubs.asm` and
-`syscall_entry.asm` use (`%rep 256` stub tables).  Per the SH4 definition of
-done, ELF output is compared **via readelf**, not byte-for-byte (nasm does not
-guarantee ELF byte layout).  Targets: the 13 `-f elf64` files, boot-critical
-ones first (`isr_stubs.asm`, `syscall_entry.asm`, `boot.asm`).
+**Scope.** ELF64 header, section headers, `.symtab`/`.strtab`/
+`.shstrtab`, and the `R_X86_64_*` relocations the tree emits, plus
+`global`/`extern`/`section`/`default rel` attribute handling, `align`/
+`alignb` in an ELF context, and the `%macro`/`%endmacro`/`%rep`/`%assign`
+preprocessor that `isr_stubs.asm` uses (`%rep 256` stub tables + `%rep 224`
+NOERR stubs).  Per the SH4 definition of done, ELF output is compared **via
+readelf**, not byte-for-byte (nasm does not guarantee ELF byte layout).
+Targets: all 13 `-f elf64` files, boot-critical ones first.
 
-**Definition of done.** For every `-f elf64` file, `readelf -SW`/`-sW`/`-rW`
-of the mini-asm object matches nasm's on section names/types/flags, symbol
-names/bindings/section indices, and relocation types/addends.
+**Result — MET (13/13).** `mini-asm -f elf64` now emits a real ELF64
+relocatable object: ELF header, section headers, per-section data, symtab/
+strtab/shstrtab and `.rela.*` sections.  Measured against nasm, the output
+matches on section names/types/flags/sizes/aligns, symbol values/bindings/
+section indices (FILE + SECTION entries, LOCAL-then-GLOBAL order, equ
+constants as LOCAL ABS, unused externs dropped), relocation offsets/types/
+addends (R_X86_64_PC32 with the -4 addend, R_X86_64_64 reduced to the
+SECTION symbol + value), and the emitted section DATA bytes — 13/13.
 
-**Gate.** The host parity harness gains an elf64 readelf-comparison mode,
-green in `make test-unit` on the 13 files.  Receipt:
-`[selfhost] asm PASS (elf64): <n> objects readelf-parity`.
+Encoder growth required by the elf64 files (none of it exercised by the
+`-f bin` set): 64-bit base/index registers (REX.B/REX.X, SIB fields), the
+`rel`/`abs` hint + `default rel` → RIP-relative mod00/rm101 with
+same-section resolution vs cross-section/extern PC32 relocations (a segment
+prefix like `[gs:8]` stays absolute SIB-no-base, matching nasm), `mov r64,
+imm` shortest-form selection (unsigned-32 zero-extend, then C7 /0
+sign-extended, then imm64), `push imm8/imm32` (incl. `push qword N`),
+`inc`/`dec` via FF /digit in 64-bit mode (0x40+r would be a REX prefix),
+REX.W on 64-bit shifts, `o64 sysret`, `fninit`, `fxsave`/`fxrstor`/
+`ldmxcsr`, `iretq`/`retfq`, `pushfq`/`popfq`, `syscall`, indirect
+`jmp`/`call [mem]` (which load_line previously misclassified as a near
+jump), and the string-op 66-prefix rule (8-bit ops must not get one).
+
+Preprocessor growth: `%macro`/`%endmacro` (up to 8 args, `%1..%9`
+substitution) and `%rep`/`%endrep` (bodies re-processed per iteration — the
+handlers had to stop mutating shared body lines).  `%define`/`%assign` were
+converted from assembler symbols to nasm-faithful **text macros** substituted
+into every line before assembly, which is exactly what makes
+`%rep` + `%assign i i+1` + `TABLE_ENTRY i` produce `dq isr0..isr255`.
+
+**Gate.** MET. `tests/unit/test_asm_parity.sh` gained the elf64
+readelf-comparison mode (sections/symtab/relocs + section-data bytes), green
+in `make test-unit`: 4/4 bin + 13/13 elf64.  Receipt:
+`[selfhost] asm PASS (elf64): 13/13 objects readelf-parity`.  Beyond the
+gate, a kernel whose nine assembly objects were built by mini-asm links with
+ld.lld and **boots to the interactive shell in QEMU** — the structural
+parity is not decorative.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 

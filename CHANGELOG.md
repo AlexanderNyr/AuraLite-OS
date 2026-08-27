@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH4d — mini-asm: the ELF64 backend, 13/13 readelf-parity] 2026-08-27
+
+`SELFHOST_PLAN.md` phase SH4d: `tools/mini-asm/mini-asm.c` grows a real
+`-f elf64` emitter, and every one of the 13 `-f elf64` kernel/libc assembly
+files now matches nasm under `readelf` (section headers, symbol table,
+relocations) **and** byte-for-byte in the section data.
+
+- **The ELF64 writer.** ELF header, section headers, per-section data
+  (NOBITS `.bss` carries size without bytes), `.symtab`/`.strtab`/
+  `.shstrtab`, `.rela.*` sections.  Symtab matches nasm's exact emission
+  order — FILE, SECTION (no strtab name), LOCALs in definition order
+  (including `equ` constants as LOCAL ABS), GLOBALs in extern/definition
+  order with **unused externs dropped** (nasm omits them; `extern main` in
+  crt0.asm is the proof case).
+- **Relocations.** `R_X86_64_PC32` (nasm's `-4` addend) and `R_X86_64_64`
+  reduced to the SECTION symbol + value addend, exactly like nasm.
+  Same-section targets resolve at assembly (no relocation); cross-section
+  and extern targets emit one.
+- **64-bit encoder surface** the `-f bin` files never exercised: `default
+  rel`/`rel` → RIP-relative mod00/rm101; a segment prefix (`[gs:8]`)
+  forces absolute SIB-no-base (measured); REX.B/REX.X for r8+ base/index
+  and 3-bit SIB fields; `mov r64, imm` shortest form (unsigned-32
+  zero-extend → C7 /0 sign-extended → imm64); `push imm8/imm32`;
+  `inc`/`dec` as FF /digit in 64-bit mode (0x40+r is a REX prefix there);
+  REX.W shifts; `o64 sysret`; `fninit`; `fxsave`/`fxrstor`/`ldmxcsr`;
+  `iretq`/`retfq`; `pushfq`/`popfq` (plain 9C/9D — no REX.W, measured);
+  `syscall`; indirect `jmp`/`call [mem]`; string ops without a spurious
+  66 prefix on 8-bit forms.
+- **Preprocessor.** `%macro`/`%endmacro` (args `%1..%9`) and
+  `%rep`/`%endrep`.  `%define`/`%assign` became nasm-faithful **text
+  macros** substituted into every line before assembly — the mechanism
+  behind isr_stubs' `%rep 256` + `%assign i i+1` + `TABLE_ENTRY i`
+  producing `dq isr0..isr255`.  Handlers now copy their line before
+  parsing so `%rep` bodies survive re-processing.
+- **Gate.** `tests/unit/test_asm_parity.sh` gained the elf64
+  readelf-comparison mode.  Receipt: `[selfhost] asm PASS (bin): 4/4 flat
+  objects byte-identical` + `[selfhost] asm PASS (elf64): 13/13 objects
+  readelf-parity`.  A kernel whose nine asm objects were built by mini-asm
+  links with ld.lld and boots to the interactive shell in QEMU.
+
 ## [SELFHOST SH4c — mini-asm: stage2 byte-parity, 4/4 flat complete] 2026-08-27
 
 `SELFHOST_PLAN.md` phase SH4c: the last and largest flat file,
