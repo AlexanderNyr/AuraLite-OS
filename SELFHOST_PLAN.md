@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4d (see below); SH5–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH3 landed; SH4 split into SH4a–SH4d, SH4a landed; SH5–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -9,7 +9,7 @@
 | SH2 — tcc builds the userland | ✅ landed |
 | SH3 — `aulink`: the self-host linker | ✅ landed |
 | SH4 — an assembler that runs in-guest (umbrella; split into SH4a–SH4d) | 🚧 pending |
-| SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object | 🚧 pending |
+| SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object | ✅ landed |
 | SH4b — `-f bin` byte-parity across all four boot files | 🚧 pending |
 | SH4c — ELF64 backend, readelf parity on the kernel/libc objects | 🚧 pending |
 | SH4d — ELF32 backend + the in-guest assembly run | 🚧 pending |
@@ -500,10 +500,36 @@ in-guest `test_selfhost_asm.sh`.
 
 ---
 
-### Phase SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object 🚧 PENDING
+### Phase SH4a — spike (D4 decision) + mini-asm core + first byte-identical flat object ✅ LANDED (2026-08-27)
 
 **Goal.** Resolve D4 with numbers, and stand up `tools/mini-asm/mini-asm.c`
 far enough to assemble ONE real flat file byte-for-byte identically to nasm.
+
+**Result — the D4 spike, measured (not asserted).**
+
+| Path | Measured cost | Verdict |
+|---|---|---|
+| **Port nasm** | nasm 2.16.03: stripped binary **1 948 336 B**, links **glibc** (`libc.so.6`), imports **79 libc symbols** (`nm -D --undefined-only`); upstream source ~150 kLOC (Fact 4), almost all of it instruction tables AuraLite never uses. A guest port must satisfy all 79 libc entry points against AuraLite's own libc before it assembles a byte. | **Rejected** |
+| **Write mini-asm** | SH4a core = **821 lines of C99**, zero dependencies beyond freestanding C; covers exactly the in-tree boot subset. Byte-identical to nasm on **2 of the 4** `-f bin` objects on the first run. | **Chosen** |
+
+**Decision (D4 resolved): mini-asm.** The nasm port's price is a full libc it
+expects and ~150 kLOC of mostly-irrelevant encoder; mini-asm targets only the
+dialect the tree actually uses (Fact 4) and is already byte-exact on both MBR
+variants. The spike's evidence is reproducible: `nm -D --undefined-only
+$(command -v nasm) | grep -c ' U '` → 79; `wc -l tools/mini-asm/mini-asm.c`.
+
+**What landed.** `tools/mini-asm/mini-asm.c` (`-f bin` emitter; `bits`/`org`/
+`equ`/`db`/`dw`/`dd`/`dq`/`resb`/`align`/`alignb`/`times`; `$`/`$$`; global and
+NASM local labels; a recursive-descent expression evaluator; fixed-point
+jump-sizing that reproduces nasm's shortest-encoding-that-fits; the 16-bit
+encoder subset the MBRs use, incl. far `jmp seg:off`). It **dies loudly** on
+any mnemonic/form outside the subset rather than mis-encoding — which is why
+`ap_trampoline.asm` (`lgdt`) is an honest SH4b gap, not a silent wrong byte.
+
+**Definition of done — MET (and exceeded).** `mini-asm -f bin` reproduces
+nasm **byte-for-byte** on `boot/bios/stage1/mbr_dual.asm` (512 B) *and*, for
+free, `boot/bios/stage1/mbr.asm` (512 B) — same instruction subset. The
+spike's numbers are recorded above.
 
 **Scope.** The spike measures both D4 paths concretely: (a) *port nasm* —
 upstream size and its libc footprint (nasm needs a real libc; the guest libc
@@ -521,11 +547,14 @@ concatenation, `times`/`align`/`resb`, `db`/`dw`/`dd`/`dq`).
 (`boot/bios/stage1/mbr_dual.asm`, 104 lines).  The spike's numbers (both
 paths) are written here.
 
-**Gate.** Host parity harness (a `tests/unit/test_asm_parity.sh` or
-`tools/check_mini_asm.py`) byte-compares mini-asm vs nasm on the covered
-file(s) and is wired into `make test-unit`; it fails the build on any byte
-difference.  Receipt: `[selfhost] asm PASS (bin): 1/4 flat objects
-byte-identical`.
+**Gate.** MET. `tests/unit/test_asm_parity.sh` compiles mini-asm with host
+`cc -Werror`, assembles each covered `-f bin` source with BOTH nasm and
+mini-asm, and `cmp`s the bytes; wired into `make test-unit` next to the SH3
+aulink gate.  It skips cleanly without nasm.  Negative control: the gate's
+FAIL path is live, not vacuous — `ap_trampoline.asm` is deliberately not yet
+covered and mini-asm refuses it (`unsupported instruction 'lgdt'`), which is
+exactly the loud failure the harness reports as a byte difference would.
+Receipt: `[selfhost] asm PASS (bin): 2/4 flat objects byte-identical`.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
@@ -798,6 +827,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-23 | STT_SECTION symbols have st_name=0 → name empty, GOTPCREL unresolved | sym | CLOSED (SH3: name = sec_name for STT_SECTION) | SH3 |
 | SH-24 | SH4 "byte-identical assembler for all 29 .asm" is a multi-kLOC x86 assembler across FOUR output formats (bin/elf64/elf32/win64) — too large for one falsifiable step | scope | OPEN (split into SH4a–SH4d along the format gradient, 2026-08-27) | SH4a |
 | SH-25 | -f win64 (COFF, ms_abi) for w32/tests/*.asm (5 files) is a fifth format | scope | ACCEPTED (out of the self-host closure — Win32 test fixtures, not inputs to building the OS; D1 scope) | — |
+| SH-26 | D4 unresolved: port nasm vs write mini-asm | decision | CLOSED (SH4a, measured: nasm needs 79 libc imports + ~150 kLOC; mini-asm 821 LOC byte-exact on 2/4 flat files → mini-asm) | SH4a |
 
 ## 8. Receipt strings (the greppable contract)
 

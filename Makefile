@@ -2426,6 +2426,12 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tests/unit/test_aulink.sh"
 	@bash tests/unit/test_aulink.sh || exit 1
 
+# SELFHOST_PLAN SH4a: mini-asm vs nasm byte-parity on the flat-binary boot
+# objects.  Script, not a C binary (it compiles tools/mini-asm and diffs
+# against nasm), so it joins the shell gates.  Skips cleanly without nasm.
+	@echo "[unit] running tests/unit/test_asm_parity.sh"
+	@bash tests/unit/test_asm_parity.sh || exit 1
+
 # WIN32_PLAN.md W32-0: provenance/licensing enforcement, plus its negative
 # control -- a checker that never fails is indistinguishable from a clean tree.
 	@echo "[unit] running tools/check_provenance.sh"

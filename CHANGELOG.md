@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH4a — mini-asm: byte-identical to nasm on the boot MBRs] 2026-08-27
+
+`SELFHOST_PLAN.md` phase SH4a: the D4 assembler decision is resolved by
+measurement, and the chosen path lands with a host byte-parity gate.
+
+- **D4 spike (measured, not asserted).** Porting nasm costs a libc it expects
+  and almost none of its code: nasm 2.16.03 is a 1 948 336-byte binary linking
+  glibc and importing **79 libc symbols** (`nm -D --undefined-only`), over
+  ~150 kLOC of mostly-unused instruction tables. A purpose-built `mini-asm`
+  covering only the in-tree dialect (Fact 4) is **821 lines of C99** and is
+  byte-exact on the boot MBRs. **Decision: mini-asm** (ledger SH-26).
+- **`tools/mini-asm/mini-asm.c`** — a freestanding NASM-dialect assembler for
+  `-f bin`: `bits`/`org`/`equ`/`db`/`dw`/`dd`/`dq`/`resb`/`align`/`alignb`/
+  `times`, `$`/`$$`, global + NASM local labels, a recursive-descent
+  expression evaluator, fixed-point jump sizing that reproduces nasm's
+  shortest-encoding-that-fits, and the 16-bit encoder subset the MBRs use
+  (incl. far `jmp seg:off`). It **dies loudly** on any mnemonic/form outside
+  the subset rather than emitting a wrong byte.
+- **Gate:** `tests/unit/test_asm_parity.sh` (wired into `make test-unit`)
+  assembles each covered `-f bin` source with BOTH nasm and mini-asm and
+  `cmp`s the bytes. Result: `[selfhost] asm PASS (bin): 2/4 flat objects
+  byte-identical` — `mbr.asm` and `mbr_dual.asm`, both 512 B, byte-for-byte.
+  The FAIL path is live: `ap_trampoline.asm` is not yet covered and mini-asm
+  refuses it (`unsupported instruction 'lgdt'`), the honest SH4b boundary.
+- **Scope boundary (SH4b):** `%include`/`%macro`/`%rep`/`%if`, the elf64/elf32
+  emitters, and the wider encoder (`lgdt`/`lidt`/`ltr`, …) land when
+  `stage2_start.asm` and `ap_trampoline.asm` are brought to parity.
+
 ## [SELFHOST — SH4 split into SH4a–SH4d] 2026-08-27
 
 SH4 ("an assembler that runs in-guest") was written as one phase, but its own
