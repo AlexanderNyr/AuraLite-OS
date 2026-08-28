@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete: 4/4 flat byte-identical, 13/13 elf64 + 7/7 elf32 readelf-parity, in-guest assembly run PASS); SH5–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete); SH5 split into SH5a–SH5d, SH5a landed (spike: tcc+aulink kernel links AND boots at the higher half); SH5b–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -14,7 +14,11 @@
 | SH4c — `stage2_start.asm` byte-parity: %include/%if + SIB/segment-override encoder (4/4 flat) | ✅ landed |
 | SH4d — ELF64 backend, readelf parity on the kernel/libc objects | ✅ landed |
 | SH4e — ELF32 backend + the in-guest assembly run | ✅ landed |
-| SH5 — the kernel, built by itself | 🚧 pending |
+| SH5 — the kernel, built by itself (split into SH5a–SH5d) | 🚧 pending |
+| SH5a — spike: tcc codegen links AND boots at the higher half | ✅ landed |
+| SH5b — aulink kernel.ld layout parity vs ld.lld | 🚧 pending |
+| SH5c — the kernel compiled by tcc (flag story + delta) | 🚧 pending |
+| SH5d — the in-guest build + terminal boot gate | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
 | SH8 — bootstrap closure | 🚧 pending |
@@ -767,27 +771,103 @@ existing `4/4` bin and `13/13` elf64 lines.
 
 ---
 
-### Phase SH5 — the kernel, built by itself 🚧 PENDING
+### Phase SH5 — the kernel, built by itself 🚧 PENDING (split into SH5a–SH5d)
 
 **Goal.** The x86_64 kernel links and boots when tcc + aulink built it.
 
-**Definition of done.** SH5 spike first: does tcc's RIP-relative codegen
-link at `0xFFFFFFFF80100000` with `aulink`? If yes: `kernel.elf` built
-entirely in-guest (tcc + aulink, no clang/ld.lld), with the clang-only
-flags (Fact 2) either ported (tcc equivalents), dropped with a measured
-footprint delta recorded, or replaced by aulink-side layout guarantees. If
-the spike says no, the honest fallback is recorded in the ledger: the
-kernel keeps its host compiler while userland self-hosts — a documented
-partial, not a silent one.
+**Why this is split.** The original SH5 bundled a measured spike, a linker
+phase, a compiler port and a boot gate into one phase — the same mistake
+SH4 made.  The clang-only flags (Fact 2) are four different problems with
+four different answers: `-mcmodel=kernel` is answered by measurement
+(SH5a), the aulink-side layout guarantees are a linker phase (SH5b), the
+flag story + code fixes are a compiler phase (SH5c), and the guest build +
+terminal boot is the gate (SH5d).  Splitting along that gradient makes each
+step land a falsifiable increment.
 
-**Gate.** Integration case boots the guest-built `kernel.elf` (host QEMU,
-`-kernel` path or ISO from SH7) and greps the standard boot receipts
-through `[perf] boot-to-shell` — the same assertions `test_boot_to_shell`
-uses, applied to the self-built kernel. Receipt:
+| Sub-phase | Result |
+|---|---|
+| SH5a — spike: tcc codegen links AND boots at the higher half | ✅ landed (2026-08-27) |
+| SH5b — aulink: kernel.ld layout parity vs ld.lld on the real kernel objects | 🚧 pending |
+| SH5c — the kernel, compiled by tcc (flag story + measured delta) | 🚧 pending |
+| SH5d — the in-guest build + the terminal boot gate | 🚧 pending |
+
+**Definition of done (umbrella).** SH5a answers the spike question with
+numbers and a boot; SH5b proves aulink's kernel.ld output matches ld.lld's
+layout on the real objects; SH5c builds `kernel.elf` from the kernel's C
+sources with tcc (host first); SH5d builds it entirely in-guest (tcc +
+aulink + mini-asm, no clang/ld.lld) and boots it to the shell.
+
+**Gate.** Integration case boots the guest-built `kernel.elf`
+(host QEMU, ISO path) and greps the standard boot receipts through
+`[perf] boot-to-shell` — the same assertions `test_boot_to_shell` uses,
+applied to the self-built kernel. Receipt:
+`[selfhost] kernel PASS: tcc-built kernel booted to shell`.
+(host QEMU, ISO path) and greps the standard boot receipts through
+`[perf] boot-to-shell` — the same assertions `test_boot_to_shell` uses,
+applied to the self-built kernel. Receipt:
 `[selfhost] kernel PASS: tcc-built kernel booted to shell`.
 
 **Deliverable.** The changes above, in the tree (D9: no
 patch artefact).
+
+---
+
+### Phase SH5a — spike: tcc codegen links AND boots at the higher half ✅ LANDED (2026-08-27)
+
+**Goal.** Answer Fact 2's measured question end-to-end: does TinyCC's
+x86_64 codegen link at `0xFFFFFFFF80100000` with aulink — and does the
+result actually boot?  If the answer is no, the honest fallback (kernel
+keeps its host compiler) is recorded here instead.
+
+**Result — MET (booted).** A minimal spike kernel — the real
+`kernel/arch/x86_64/boot.asm` assembled by mini-asm (SH4d) + a
+dependency-free `kmain.c` (`tools/selfhost/spike/kmain.c`) compiled by a
+HOST tcc built from the same mob source the guest toolchain uses
+(`make selfhost-host-tcc`; a private copy so `./configure` can never poison
+the guest tree) — linked by aulink (SH3) against the real `kernel.ld`, was
+packed into a dual-boot ISO with the tree's own `mkisoimage_dual.sh` and
+booted in QEMU:
+
+```
+[BL4] entering long mode; jumping to kernel _start
+[selfhost] SH5a spike: tcc+aulink kernel booted at the higher half
+[selfhost] spike marker = 0x000000005a15a5e2 (expected 0x5a15a5e2)
+```
+
+**The measurement.** `readelf -r` on the tcc object shows ONLY
+`R_X86_64_PC32`, `R_X86_64_PLT32` and `R_X86_64_64` — **zero 32-bit
+absolute relocations**.  tcc's x86_64 codegen is almost entirely
+RIP-relative (function calls are PLT32, global data is reached through
+`lea [rip+disp]`), so the higher-half link address is representable without
+`-mcmodel=kernel` — the small-model overflow that forces that flag on
+gcc/clang simply does not arise.  The spike kernel's `spike_marker` global
+(0x5A15A5E2 after `+1`) round-trips through exactly such a RIP-relative
+relocation, which is why the receipt line is part of the gate.
+
+**Flag story (first instalment).** `-mcmodel=kernel` — not needed (this
+phase, measured).  `-fno-pie -fno-pic` — tcc ignores (its codegen is
+RIP-relative either way).  `-mno-red-zone` — tcc has no red-zone usage in
+the code it emits (confirmed on the spike object; the interrupt-safety
+argument still needs the SH5c audit).  `-fstack-protector-strong` /
+`-ffunction-sections` / `-fdata-sections` — tcc lacks them; `--gc-sections`
+cannot run without the sections, so SH5c records the footprint delta
+honestly.  The two tree changes this phase needed: `kernel.ld` maps tcc's
+read-only data section (`.data.ro`, where tcc puts string literals) into
+the rodata PHDR — the clang build never emits it, so it is a no-op there
+and load-bearing here; and aulink's expression evaluator gained `|` / `&`
+(the bitwise operators kernel.ld's `PHDRS FLAGS((1<<0)|(1<<2))` needs;
+SH3's aulink had `<< >> + - * /` but not the bitwise OR).
+
+**Gate.** MET. Host: `tests/unit/test_sh5_spike.sh` compiles the spike,
+asserts no 32-bit absolute relocations and readelf-asserts the linked ELF
+(entry `0xffffffff80100000`, 3 PT_LOADs `R E / R / RW`, higher-half
+`__bss_start`/`__bss_end`); green in `make test-unit`, skips cleanly
+without the host tcc.  Boot: `tests/integration/cases/
+test_selfhost_kernel_spike.sh` (selfhost shard) boots the spike ISO and
+greps the two receipt lines, 2/2 assertions.  Receipt:
+`[selfhost] spike PASS: tcc+aulink kernel links at the higher half`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
 ### Phase SH6 — shmake + shell scripting 🚧 PENDING
 

@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH5a — spike: tcc+aulink kernel links AND boots at the higher half] 2026-08-27
+
+`SELFHOST_PLAN.md` phase SH5a answers the SH5 measured question (Fact 2)
+end-to-end: a minimal kernel — the real `boot.asm` assembled by mini-asm,
+plus a dependency-free `kmain.c` compiled by a HOST tcc built from the same
+mob source the guest toolchain uses — is linked by aulink against the real
+`kernel.ld`, packed into the dual-boot ISO and **boots in QEMU**, printing
+its receipt from `0xFFFFFFFF80100000`.
+
+- **The measurement.** `readelf -r` on the tcc object shows ONLY
+  `R_X86_64_PC32` / `R_X86_64_PLT32` / `R_X86_64_64` — zero 32-bit absolute
+  relocations, so the higher-half link address is representable without
+  `-mcmodel=kernel` (the small-model overflow that forces that flag on
+  gcc/clang does not arise: tcc's data access is RIP-relative).  The spike
+  kernel's `.data` global round-trips through exactly such a relocation and
+  prints `spike marker = 0x000000005a15a5e2`.
+- **Tree changes.** `kernel.ld` maps tcc's read-only data section
+  (`.data.ro`, where tcc puts string literals) into the rodata PHDR — a
+  no-op for the clang build, load-bearing for tcc.  aulink's expression
+  evaluator gained `|` / `&` (kernel.ld's `PHDRS FLAGS((1<<0)|(1<<2))`
+  needs the bitwise OR).  New `make selfhost-host-tcc` builds the host tcc
+  from a private copy of the guest's tcc source, so `./configure` can never
+  poison the guest tree (selfhost-deps also repairs a stray host config.h).
+- **New sources.** `tools/selfhost/spike/kmain.c`; host gate
+  `tests/unit/test_sh5_spike.sh` (no 32-bit absolutes + readelf asserts on
+  the linked ELF: entry, 3 PT_LOADs, higher-half bss); boot case
+  `tests/integration/cases/test_selfhost_kernel_spike.sh` (2/2 assertions).
+  Receipt: `[selfhost] spike PASS: tcc+aulink kernel links at the higher
+  half`.  SH5 is split into SH5a (spike, this) / SH5b (aulink layout parity
+  vs ld.lld) / SH5c (kernel compiled by tcc, flag story) / SH5d (in-guest
+  build + terminal boot gate).
+
 ## [SELFHOST SH4e — mini-asm: the ELF32 backend + the in-guest assembly run] 2026-08-27
 
 `SELFHOST_PLAN.md` phase SH4e closes the SH4 umbrella: the `-f elf32`

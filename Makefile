@@ -1825,17 +1825,36 @@ selfhost-deps:
 	    git clone --depth 1 --branch mob \
 	        https://github.com/TinyCC/tinycc.git $(SELFHOST_SRC); \
 	fi
-	@cd $(SELFHOST_SRC) && if [ ! -f config.h ]; then \
+	@cd $(SELFHOST_SRC) && if [ ! -f config.h ] || ! grep -q 'CONFIG_TCCDIR "/apps/tcc"' config.h; then \
 	    echo '[selfhost] generating minimal config.h for guest build'; \
 	    printf '%s\n' '#define TCC_VERSION "0.9.28rc"' '#define TCC_TARGET_X86_64 1' '#define CONFIG_TCCDIR "/apps/tcc"' '#define CONFIG_TCC_PREDEFS 1' '#define CONFIG_TCC_CRTPREFIX "/usr/lib/x86_64-linux-gnu"' '#define CONFIG_TCC_LIBPATHS "/usr/lib/x86_64-linux-gnu:/usr/lib"' '#define CONFIG_TRIPLET "x86_64-linux-gnu"' '#define CONFIG_OS_RELEASE "Linux"' > config.h; \
-	else \
-	    grep -q 'CONFIG_TCCDIR "/apps/tcc"' config.h || sed -i 's|^#define CONFIG_TCCDIR .*|#define CONFIG_TCCDIR "/apps/tcc"|' config.h; \
 	fi
 	@cd $(SELFHOST_SRC) && if [ ! -f tccdefs_.h ]; then \
 	    echo '[selfhost] generating tccdefs_.h'; \
 	    $(HOST_CC) -DC2STR conftest.c -o c2str && ./c2str include/tccdefs.h tccdefs_.h && rm -f c2str; \
 	fi
 	@echo "[selfhost] tcc source ready: $$(cd $(SELFHOST_SRC) && cat VERSION) @ $$(git -C $(SELFHOST_SRC) rev-parse --short HEAD 2>/dev/null || echo n/a)"
+
+# SH5a: a HOST tcc built from the same mob source the guest toolchain uses
+# (in a private copy, so ./configure can never poison the guest tree).  The
+# spike kernel and the SH5 host gates compile with this binary; the guest
+# builds tcc itself from $(SELFHOST_SRC) at runtime.
+SELFHOST_HOST_SRC := $(BUILD_DIR)/selfhost/host-tcc-src
+SELFHOST_HOST_TCC := $(BUILD_DIR)/selfhost/host-tcc-src/tcc
+
+.PHONY: selfhost-host-tcc
+selfhost-host-tcc: $(SELFHOST_HOST_TCC)
+
+$(SELFHOST_HOST_TCC): | selfhost-deps
+	@if [ ! -d $(SELFHOST_HOST_SRC) ]; then \
+	    echo "[selfhost] copying tcc source for the host build -> $(SELFHOST_HOST_SRC)"; \
+	    cp -r $(SELFHOST_SRC) $(SELFHOST_HOST_SRC); \
+	fi
+	@cd $(SELFHOST_HOST_SRC) && \
+	    ./configure --cc=gcc >/dev/null 2>&1 && \
+	    $(MAKE) -j4 >/dev/null 2>&1 && \
+	    test -x ./tcc
+	@echo "  [selfhost] host tcc: $(SELFHOST_HOST_TCC) ($$($(SELFHOST_HOST_TCC) -v 2>&1 | head -1))"
 
 $(SELFHOST_OBJDIR)/%.o: $(SELFHOST_SRC)/%.c | selfhost-deps
 	@mkdir -p $(SELFHOST_OBJDIR)
@@ -2444,6 +2463,13 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # against nasm), so it joins the shell gates.  Skips cleanly without nasm.
 	@echo "[unit] running tests/unit/test_asm_parity.sh"
 	@bash tests/unit/test_asm_parity.sh || exit 1
+
+# SELFHOST_PLAN SH5a: the spike -- tcc (host build of the same mob source the
+# guest uses) + aulink + mini-asm produce a kernel that links at the higher
+# half with no 32-bit absolute relocations.  Script (compiles the tools and
+# inspects the output with readelf).  Skips cleanly without the host tcc.
+	@echo "[unit] running tests/unit/test_sh5_spike.sh"
+	@bash tests/unit/test_sh5_spike.sh || exit 1
 
 # WIN32_PLAN.md W32-0: provenance/licensing enforcement, plus its negative
 # control -- a checker that never fails is indistinguishable from a clean tree.

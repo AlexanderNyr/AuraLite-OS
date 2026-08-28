@@ -207,6 +207,8 @@ static uint64_t expr_value(void){
     for(;;){
         if(is_sym_c('+')){next_tok(); v+=expr_term();}
         else if(is_sym_c('-')){next_tok(); v-=expr_term();}
+        else if(is_sym_c('|')){next_tok(); v|=expr_term();}
+        else if(is_sym_c('&')){next_tok(); v&=expr_term();}
         else break;
     }
     return v;

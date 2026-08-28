@@ -194,6 +194,7 @@ ALL_CASES=(
     test_selfhost_userland
     test_selfhost_aulink
     test_selfhost_asm
+    test_selfhost_kernel_spike
     test_shell_all
     test_sysmon_data
     test_userspace_apps

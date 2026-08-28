@@ -56,6 +56,11 @@ SECTIONS
     /* ---- Read-only data ---- */
     .rodata : {
         *(.rodata .rodata.*)
+        /* SH5: TinyCC places read-only data (string literals, const) in
+         * `.data.ro`, not `.rodata` -- the clang build never emits it, so
+         * mapping it here is a no-op for the host build and load-bearing
+         * for the tcc-built kernel. */
+        *(.data.ro) *(.data.ro.*)
     } :rodata
 
     . += CONSTANT(MAXPAGESIZE);
