@@ -578,9 +578,30 @@ static void got_setup(void){
     got_out_idx=n_out+1; /* 1-based (0 NULL) */
     n_out++;
     if(bss){
+        uint64_t old_bss = bss->addr;
         uint64_t new_bss = (g->addr+g->size+15)&~15ULL;
         bss->addr=new_bss;
         cur_addr = new_bss + bss->size;
+        /* SH5c (kernel link): the .got is inserted at the old .bss base and
+         * .bss moves up, but every symbol address was already computed from
+         * the pre-insertion layout.  Without this fixup __bss_start keeps
+         * pointing at the OLD .bss base -- which is now inside .got -- and
+         * a consumer that zeroes .bss through the script symbols (the
+         * kernel's boot.asm does exactly that) wipes the relocation slots
+         * and every GOT-relative address becomes 0.  The userland never
+         * hit this: user.ld defines no __bss_* symbols and the kernel's
+         * ELF loader zeroes user .bss from the PHDR, which the .got is
+         * not part of.  Move every defined symbol at/after the old .bss
+         * base with the section (object symbols inside .bss, script
+         * symbols like __bss_start/__bss_end/end). */
+        if(new_bss>old_bss){
+            uint64_t delta=new_bss-old_bss;
+            for(int i=0;i<n_syms;i++){
+                struct in_sym *s=all_syms[i];
+                if(!s->defined) continue;
+                if(s->addr>=old_bss) s->addr+=delta;
+            }
+        }
     }
 }
 

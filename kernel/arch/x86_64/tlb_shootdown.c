@@ -46,6 +46,12 @@
  * historical paths run bit-for-bit.
  */
 
+/* SELFHOST SH5c: <stdatomic.h> is where tcc's __atomic_*_n macros and the
+ * __ATOMIC_* memory-order constants live (clang/gcc have them as compiler
+ * builtins/predefined macros and ignore the header).  Without it tcc
+ * compiles __atomic_store_n as an implicit function call and dies on
+ * __ATOMIC_RELEASE. */
+#include <stdatomic.h>
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/arch/x86_64/paging.h"

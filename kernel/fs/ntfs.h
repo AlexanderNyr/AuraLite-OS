@@ -4,6 +4,9 @@
 #include "kernel/fs/vfs.h"
 #include <stdint.h>
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ntfs_boot_sector {
     uint8_t  jump[3];
     char     oem_id[8];
@@ -17,7 +20,13 @@ struct ntfs_boot_sector {
     uint16_t sectors_per_mft_cluster;
     uint16_t fragments;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ntfs_mft_record {
     char     magic[4];       /* "FILE" */
     uint16_t update_seq_off;
@@ -31,6 +40,9 @@ struct ntfs_mft_record {
     uint32_t allocated_size;
     uint64_t base_cluster;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 void ntfs_init(int device_id);
 extern const struct vfs_ops ntfs_ops;

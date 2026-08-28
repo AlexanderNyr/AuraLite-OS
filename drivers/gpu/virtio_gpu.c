@@ -70,6 +70,9 @@
 #define VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM     2
 #define VGPU_RESOURCE_ID                      1
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_pci_common_cfg {
     uint32_t device_feature_select;
     uint32_t device_feature;
@@ -88,31 +91,61 @@ struct virtio_pci_common_cfg {
     uint64_t queue_driver;
     uint64_t queue_device;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_desc {
     uint64_t addr;
     uint32_t len;
     uint16_t flags;
     uint16_t next;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_avail {
     uint16_t flags;
     uint16_t idx;
     uint16_t ring[VGPU_Q_SIZE];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_used_elem {
     uint32_t id;
     uint32_t len;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_used {
     uint16_t flags;
     uint16_t idx;
     struct vring_used_elem ring[VGPU_Q_SIZE];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_ctrl_hdr {
     uint32_t type;
     uint32_t flags;
@@ -120,22 +153,46 @@ struct virtio_gpu_ctrl_hdr {
     uint32_t ctx_id;
     uint32_t padding;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_rect {
     uint32_t x, y, width, height;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_display_one {
     struct virtio_gpu_rect r;
     uint32_t enabled;
     uint32_t flags;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_resp_display_info {
     struct virtio_gpu_ctrl_hdr hdr;
     struct virtio_gpu_display_one pmodes[16];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_resource_create_2d {
     struct virtio_gpu_ctrl_hdr hdr;
     uint32_t resource_id;
@@ -143,27 +200,51 @@ struct virtio_gpu_resource_create_2d {
     uint32_t width;
     uint32_t height;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_mem_entry {
     uint64_t addr;
     uint32_t length;
     uint32_t padding;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_resource_attach_backing_1 {
     struct virtio_gpu_ctrl_hdr hdr;
     uint32_t resource_id;
     uint32_t nr_entries;
     struct virtio_gpu_mem_entry entry;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_set_scanout {
     struct virtio_gpu_ctrl_hdr hdr;
     struct virtio_gpu_rect r;
     uint32_t scanout_id;
     uint32_t resource_id;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_transfer_to_host_2d {
     struct virtio_gpu_ctrl_hdr hdr;
     struct virtio_gpu_rect r;
@@ -171,26 +252,50 @@ struct virtio_gpu_transfer_to_host_2d {
     uint32_t resource_id;
     uint32_t padding;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_resource_flush {
     struct virtio_gpu_ctrl_hdr hdr;
     struct virtio_gpu_rect r;
     uint32_t resource_id;
     uint32_t padding;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_ctx_create {
     struct virtio_gpu_ctrl_hdr hdr;
     uint32_t nlen;
     char debug_name[64];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_ctx_resource {
     struct virtio_gpu_ctrl_hdr hdr;
     uint32_t resource_id;
     uint32_t padding;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_resource_create_3d {
     struct virtio_gpu_ctrl_hdr hdr;
     uint32_t resource_id;
@@ -206,12 +311,24 @@ struct virtio_gpu_resource_create_3d {
     uint32_t flags;
     uint32_t padding;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_box {
     uint32_t x, y, z;
     uint32_t w, h, d;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_transfer_host_3d {
     struct virtio_gpu_ctrl_hdr hdr;
     struct virtio_gpu_box box;
@@ -221,12 +338,21 @@ struct virtio_gpu_transfer_host_3d {
     uint32_t stride;
     uint32_t layer_stride;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_gpu_cmd_submit {
     struct virtio_gpu_ctrl_hdr hdr;
     uint32_t size;
     uint32_t padding;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 static virtio_gpu_info_t info = {
     .backend_name = "none",
@@ -804,8 +930,14 @@ void virtio_gpu_resource_release_memory(uint32_t resource_id) {
     /* Detach before freeing: the device must stop referring to these frames
      * before they can be handed to anyone else. */
     if (virtio_gpu_available()) {
+        #if defined(__TINYC__)
+        #pragma pack(push, 1)
+        #endif
         struct { struct virtio_gpu_ctrl_hdr hdr; uint32_t resource_id;
                  uint32_t padding; } __attribute__((packed)) detach;
+        #if defined(__TINYC__)
+        #pragma pack(pop)
+        #endif
         memset(&detach, 0, sizeof(detach));
         detach.hdr.type = VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING;
         detach.resource_id = resource_id;

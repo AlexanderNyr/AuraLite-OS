@@ -53,6 +53,9 @@
 
 /* ---- HBA structures (all packed, DMA-visible) ---- */
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct hba_cmd_hdr {
     uint16_t info;       /* [0:4]=CFL, [5]=A, [6]=W, [8:15]=PRDTL */
     uint16_t reserved0;
@@ -61,27 +64,48 @@ struct hba_cmd_hdr {
     uint32_t ctbau;
     uint32_t reserved1[4];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct hba_prdt {
     uint32_t dba;
     uint32_t dbau;
     uint32_t reserved;
     uint32_t dbc_i;      /* [0:21]=DBC-1, [30]=I */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct hba_cmd_tbl {
     uint8_t cfis[64];
     uint8_t acmd[64];
     uint8_t reserved[0x80 - 128];
     struct hba_prdt prdt[1];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct sata_fis_h2d {
     uint8_t fis_type, pm_ctrl, command, feature_low;
     uint8_t lba0, lba1, lba2, device;
     uint8_t lba3, lba4, lba5, feature_high;
     uint8_t count_low, count_high, icc, control;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 #define ATA_READ_DMA_EXT   0x25
 #define ATA_WRITE_DMA_EXT  0x35

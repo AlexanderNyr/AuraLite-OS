@@ -169,3 +169,22 @@ void __stack_chk_fail(void) {
         __asm__ volatile ("cli; hlt");
     }
 }
+
+/* abort() — SELFHOST_PLAN.md SH5c.
+ *
+ * The kernel has no libc, but the tcc runtime does call abort(): libtcc1's
+ * va_list helper (linked since SH5c: tcc lowers va_arg through __va_arg)
+ * ends in abort() on an unreachable argument-class default.  Freestanding
+ * clang never references the symbol, so the clang build keeps its exact
+ * previous content (gc-sections drops this); the tcc build needs it.
+ * A kernel abort is a fatal bug report, same lane as __stack_chk_fail. */
+__attribute__((noreturn, no_stack_protector))
+void abort(void) {
+    diag_early_puts("[diag] abort() called by the compiler runtime\n");
+    bsod_show(BSOD_KEXPLICIT, "abort() in compiler runtime", diag_cpu_id(),
+              (uintptr_t)__builtin_return_address(0), 0);
+    kernel_halt();
+    for (;;) {
+        __asm__ volatile ("cli; hlt");
+    }
+}

@@ -33,6 +33,9 @@
  * ============================================================================ */
 
 /* ext4 Superblock (512 bytes, starts at offset 1024 in block 0) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_sb {
     uint32_t  s_inodes_count;           /* Total inode count */
     uint32_t  s_blocks_count_lo;        /* Total blocks count (low 32 bits) */
@@ -93,8 +96,14 @@ struct ext4_sb {
     uint32_t  s_s_inode_generation;     /* Inode generation */
     uint32_t  s_reserved;               /* Padding */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ext4 block group descriptor (minimum 32 bytes) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_bg_desc {
     uint32_t bg_block_bitmap_lo;       /* Low 32 bits of block bitmap block */
     uint32_t bg_inode_bitmap_lo;       /* Low 32 bits of inode bitmap block */
@@ -117,8 +126,14 @@ struct ext4_bg_desc {
     uint16_t bg_pad;                   /* Padding */
     uint32_t bg_reserved[3];           /* Reserved */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ext4 inode (variable size, minimum 128 bytes, usually 256) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_inode {
     uint16_t i_mode;            /* File mode */
     uint16_t i_uid_lo;          /* Low 16 bits of UID */
@@ -139,8 +154,14 @@ struct ext4_inode {
     uint32_t i_faddr;           /* Fragment address (obsolete) */
     uint8_t  i_osd2[12];        /* OS dependent 2 */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ext4 extent tree header (12 bytes) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_extent_header {
     uint16_t eh_magic;          /* 0xF30A */
     uint16_t eh_entries;        /* Number of valid entries */
@@ -148,24 +169,42 @@ struct ext4_extent_header {
     uint16_t eh_depth;          /* Depth of this node in tree (0=leaf) */
     uint32_t eh_generation;     /* Generation (not used in current ext4) */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ext4 extent (12 bytes) — used in leaf nodes */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_extent {
     uint32_t ee_block;          /* First logical block in this extent */
     uint16_t ee_len;            /* Number of blocks in this extent (max 32768) */
     uint16_t ee_start_hi;       /* High 16 bits of physical block number */
     uint32_t ee_start_lo;       /* Low 32 bits of physical block number */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ext4 extent index (12 bytes) — used in internal (non-leaf) nodes */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_extent_idx {
     uint32_t ei_block;          /* Logical block this index covers */
     uint32_t ei_leaf_lo;        /* Low 32 bits of child node physical block */
     uint16_t ei_leaf_hi;        /* High 16 bits of child node physical block */
     uint16_t ei_unused;         /* Unused */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Directory entry */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_dirent {
     uint32_t inode;             /* Inode number (0 = unused) */
     uint16_t rec_len;           /* Directory entry length */
@@ -173,8 +212,14 @@ struct ext4_dirent {
     uint8_t  file_type;         /* File type */
     char     name[];            /* Name (variable) */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Journal superblock */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_journal_sb {
     uint32_t header_version;
     uint32_t block_type;
@@ -196,8 +241,14 @@ struct ext4_journal_sb {
     uint32_t h_chksum;
     uint32_t reserved[44];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Journal transaction header */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext4_journal_header {
     uint32_t magic;             /* 0xC03B3998 */
     uint32_t block_type;        /* 1=commit, 2=superblock, 3=descriptor, 4=revoke */
@@ -206,6 +257,9 @@ struct ext4_journal_header {
     uint32_t flags;
     uint32_t reserved[3];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ============================================================================
  * SECTION 2: CONSTANTS AND DEFINES

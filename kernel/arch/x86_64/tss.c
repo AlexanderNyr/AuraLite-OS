@@ -14,6 +14,7 @@
 #include "kernel/arch/x86_64/cpu_local.h"
 #include "kernel/arch/x86_64/idt.h"
 #include "kernel/arch/x86_64/paging.h"
+#include "kernel/proc/thread_stack.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
@@ -30,13 +31,15 @@
  * page immediately follows this slot's usable top, so a wild access just
  * above the stack faults too.
  *
- * The region starts right after the guarded thread-stack pool
- * (THREAD_STACK_REGION_BASE + 128 slots * 24 KiB = 0xFFFFFFFF8C300000);
- * keep in sync with thread.c if that layout ever changes. */
+ * The region starts right after the guarded thread-stack pool.  SELFHOST
+ * SH5c: the base is now DERIVED from thread.h's region macros -- it used
+ * to be the hardcoded 0xFFFFFFFF8C300000 (128 slots x 24 KiB), which the
+ * 32-KiB thread stacks silently overran: the pool grew to 5 MiB and the
+ * first thread's stack memset wiped the #DF IST1 stacks. */
 #define IST_STACK_PAGES        (TSS_STACK_SIZE / 4096)
 #define IST_STACK_GUARD_PAGES  1
 #define IST_STACK_SLOT_BYTES   ((IST_STACK_PAGES + IST_STACK_GUARD_PAGES) * 4096ULL)
-#define IST_STACK_REGION_BASE  0xFFFFFFFF8C300000ULL
+#define IST_STACK_REGION_BASE  THREAD_STACK_REGION_END
 
 static struct tss_entry tss_entries[MAX_TSS_CPUS];
 static struct gdt_entry per_cpu_gdt[MAX_TSS_CPUS][GDT_NUM_ENTRIES];

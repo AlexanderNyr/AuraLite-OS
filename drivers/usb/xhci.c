@@ -155,12 +155,18 @@
 #define XHCI_SPEED_SUPER      4    /* 5 Gbps */
 
 /* ---- TRB (Transfer Request Block) — 16 bytes ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct xhci_trb {
     uint32_t param;      /* parameter (data buffer ptr, length, etc.) */
     uint32_t status;     /* status (transfer length, etc.) */
     uint32_t control;    /* control (type, cycle, slot, endpoint, etc.) */
     uint32_t flags;      /* actually part of control high bits */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* TRB types (bits 10-15 of the control field). */
 #define XHCI_TRB_TYPE_SHIFT   10
@@ -200,12 +206,18 @@ struct xhci_trb {
 #define XHCI_TRB_IOC         (1u << 5)    /* Interrupt On Completion */
 
 /* ---- Event Ring Segment Table Entry — 16 bytes ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct xhci_erst_entry {
     uint32_t addr_lo;     /* segment address low */
     uint32_t addr_hi;     /* segment address high */
     uint32_t size;        /* number of TRBs in segment */
     uint32_t reserved;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- Driver state ---- */
 static volatile uint8_t *cap_regs = NULL;

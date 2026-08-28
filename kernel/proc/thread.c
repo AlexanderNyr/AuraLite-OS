@@ -7,6 +7,9 @@
 
 #include <stdint.h>
 #include "kernel/proc/thread.h"
+/* SELFHOST SH5c: the __sync_* spellings above are tcc macros (kernel/lib/
+ * atomic_compat.h); clang keeps its builtins. */
+#include "kernel/lib/atomic_compat.h"
 #include "kernel/proc/wait_queue.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/lib/errno.h"
@@ -32,13 +35,11 @@ extern void context_switch(tcb_t *old, tcb_t *new);
 
 static uint64_t next_tid = 1;
 
-#define THREAD_STACK_SLOT_SIZE  ((THREAD_STACK_PAGES + 2 * THREAD_STACK_GUARD_PAGES) * 4096ULL)
-/* Placed 64 MiB after KHEAP_BASE (kernel/mm/kheap.h) -- i.e. exactly at the
- * kernel heap's current ceiling (KHEAP_LIMIT) -- so kheap growth can never
- * run into the thread kernel-stack region. Keep these two constants in sync
- * if either region's size changes. */
-#define THREAD_STACK_REGION_BASE 0xFFFFFFFF8C000000ULL
-#define THREAD_STACK_MAX_SLOTS   128
+/* SELFHOST SH5c: the stack geometry (SLOT_SIZE / REGION_BASE / MAX_SLOTS /
+ * REGION_END) lives in kernel/proc/thread_stack.h -- tss.c derives its IST
+ * region base from REGION_END, so the old "hardcode 128 slots * 24 KiB"
+ * arithmetic (which the 32-KiB stacks overran, wiping the IST1 stacks)
+ * cannot come back. */
 
 static uint8_t thread_stack_slots[THREAD_STACK_MAX_SLOTS];
 static spinlock_t thread_stack_lock = SPINLOCK_UNLOCKED;

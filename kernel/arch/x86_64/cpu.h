@@ -83,15 +83,27 @@ static inline void irq_restore(uint64_t flags) {
     }
 }
 
+/* SELFHOST SH5c: tcc's built-in assembler (mob 2ba12e8) knows neither the
+ * STAC nor the CLAC mnemonic, so under __TINYC__ the same instructions are
+ * emitted from their encodings (0F 01 CB / 0F 01 CA).  Identical machine
+ * code on both compilers; nasm/clang keep parsing the mnemonic. */
+#ifdef __TINYC__
+#define AURA_ASM_STAC ".byte 0x0f, 0x01, 0xcb"
+#define AURA_ASM_CLAC ".byte 0x0f, 0x01, 0xca"
+#else
+#define AURA_ASM_STAC "stac"
+#define AURA_ASM_CLAC "clac"
+#endif
+
 static inline void user_access_enable(void) {
     if (cpu_smap_is_active) {
-        __asm__ volatile ("stac" ::: "memory");
+        __asm__ volatile (AURA_ASM_STAC ::: "memory");
     }
 }
 
 static inline void user_access_disable(void) {
     if (cpu_smap_is_active) {
-        __asm__ volatile ("clac" ::: "memory");
+        __asm__ volatile (AURA_ASM_CLAC ::: "memory");
     }
 }
 

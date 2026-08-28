@@ -41,6 +41,20 @@
 #include "drivers/uart/uart_ring.h"
 #include "kernel/lib/perfstat.h"
 
+/* SELFHOST SH5c: the GCC-style atomic spellings this file uses are tcc
+ * builtins only in their non-_n forms.  tcc's <stdatomic.h> supplies
+ * __atomic_store_n/__atomic_load_n macros and the __ATOMIC_* orders, but
+ * has no __atomic_exchange_n — map it onto the 4-argument __atomic_exchange
+ * that both tcc and clang/gcc implement natively (result delivered through
+ * the third argument on gcc/clang; tcc also returns it, which we ignore). */
+#include <stdatomic.h>
+#ifdef __TINYC__
+#define __atomic_exchange_n(ptr, val, mo)                                 \
+    ({ __typeof__(*(ptr)) __v = (val), __r;                               \
+       __atomic_exchange((ptr), &__v, &__r, (mo));                        \
+       __r; })
+#endif
+
 #define UART_TX_RING_SIZE 16384u   /* power of two; uart_ring.h requires it */
 #define UART_FIFO_DEPTH   16       /* 16550 TX FIFO */
 

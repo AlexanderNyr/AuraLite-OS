@@ -4,7 +4,7 @@
  *
  *   virt 0x0000000000000000..0x40000000    identity, 1 GiB
  *   virt 0xffff800000000000..0xffff800040000000  HHDM, 1 GiB (shares PD0)
- *   virt 0xFFFFFFFF80000000..0xFFFFFFFF80400000  kernel image, 4 MiB
+ *   virt 0xFFFFFFFF80000000..0xFFFFFFFF80600000  kernel image, 6 MiB
  *
  * UEFI itself hands us a CPU already in long mode with an identity
  * map covering the whole system.  When we call ExitBootServices the
@@ -92,9 +92,14 @@ EFI_STATUS efi_setup_hhdm_paging(EFI_BOOT_SERVICES *BS) {
     /* PDPT_khigh[510]: kernel virt 0xFFFFFFFF80000000..+2 MiB. */
     pdpt_high[510] = (uint64_t)(uintptr_t)pd_kernel | PTE_P | PTE_W;
 
-    /* PD_kernel: two 2-MiB pages mapping phys 0..4 MiB. */
+    /* PD_kernel: three 2-MiB pages mapping phys 0..6 MiB.  SELFHOST SH5c:
+     * the window was 4 MiB and the clang kernel peaked at 3.96 MiB; the
+     * tcc-built kernel (no -O2, no --gc-sections) spans 4.27 MiB and
+     * faulted its .bss zero-fill on the unmapped 4-MiB boundary.  Keep this
+     * in sync with the BIOS loader's PD511 (paging.inc). */
     pd_kernel[0] = (0x00000000ULL) | PTE_PS | PTE_P | PTE_W;
     pd_kernel[1] = (0x00200000ULL) | PTE_PS | PTE_P | PTE_W;
+    pd_kernel[2] = (0x00400000ULL) | PTE_PS | PTE_P | PTE_W;
 
     /* PML4: identity and HHDM share the same PDPT (both cover 0..64 GiB).
      * Kernel higher half at PML4[511]. */

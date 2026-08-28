@@ -34,6 +34,9 @@
  * ============================================================================ */
 
 /* F2FS superblock (4096 bytes) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_superblock {
     uint32_t magic;               /* 0xF2F20210 */
     uint16_t major_ver;           /* 0x20 */
@@ -99,8 +102,14 @@ struct f2fs_superblock {
     uint32_t total_zones;         /* total zones */
     uint8_t  reserved[188];       /* more reserved */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* F2FS checkpoint (stored at cp_blkaddr, 4KB) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_checkpoint {
     uint64_t  checkpoint_ver;     /* version */
     uint64_t  user_block_count;   /* user addressable blocks */
@@ -123,8 +132,14 @@ struct f2fs_checkpoint {
     uint8_t   checkpoint_pack[16];/* checkpoint pack info */
     uint8_t   reserved[3532];     /* padding to 4096 bytes */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* F2FS node block header (embedded in every node block) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_node_header {
     uint32_t nid;           /* Node ID (inode or internal) */
     uint32_t ino;           /* Owner inode number */
@@ -134,8 +149,14 @@ struct f2fs_node_header {
     uint32_t next_neof;     /* Next free node offset in this segment */
     uint32_t checksum;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* F2FS inode (stored in inode node blocks, 4096 bytes total) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_inode {
     uint16_t mode;              /* File mode (POSIX) */
     uint16_t reserved0;
@@ -162,16 +183,28 @@ struct f2fs_inode {
     uint32_t reserved3[2];
     uint32_t checksum;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* F2FS extent (inline extent stored in inode) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_extent {
     uint32_t e_blk;     /* Starting logical block */
     uint32_t e_len;     /* Number of blocks in extent */
     uint32_t e_start;   /* Starting physical block */
     uint32_t e_reserved;/* Reserved */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* F2FS directory entry (variable size, 8-byte minimum) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_dir_entry {
     uint32_t ino;           /* Inode number */
     uint16_t name_len;      /* Name length in characters */
@@ -179,16 +212,28 @@ struct f2fs_dir_entry {
     uint8_t  reserved;      /* Padding */
     uint32_t name[];        /* Name (UTF-8, variable) */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* F2FS segment summary entry (one per block in a segment) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_summary {
     uint32_t nid;       /* Node ID (inode number of owner) */
     uint8_t  type;      /* Block type: 0=node, 1=data */
     uint8_t  version;   /* Version */
     uint16_t offset;    /* Block offset within file (for data) or node offset (for node) */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* F2FS segment information (SIT) entry */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct f2fs_sit_entry {
     uint8_t  valid_blocks;   /* Number of valid blocks in segment */
     uint8_t  reserved;
@@ -198,6 +243,9 @@ struct f2fs_sit_entry {
     uint32_t unused;
     uint32_t mtime;          /* Segment age / modification time */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ============================================================================
  * SECTION 2: CONSTANTS AND DEFINES

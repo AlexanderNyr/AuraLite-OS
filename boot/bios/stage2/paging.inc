@@ -189,10 +189,18 @@ build_page_tables:
     dec  ecx
     jnz  .pd3
 
-    ; ---- PD511[0..1]: 2 x 2-MiB pages mapping virt 0xFFFFFFFF80000000
-    ;                   .. +4 MiB to physical 0 .. 4 MiB.  Kernel image
+    ; ---- PD511[0..2]: 3 x 2-MiB pages mapping virt 0xFFFFFFFF80000000
+    ;                   .. +6 MiB to physical 0 .. 6 MiB.  Kernel image
     ;                   sits at phys 0x100000 which is inside the first
-    ;                   2-MiB page. ---------------------------------------
+    ;                   2-MiB page.  SELFHOST SH5c: the window was 2 x 2 MiB
+    ;                   (4 MiB) and the clang kernel peaked at 3.96 MiB --
+    ;                   the tcc-built kernel (no -O2, no --gc-sections)
+    ;                   needs 4.27 MiB and faulted its .bss zero-fill on the
+    ;                   unmapped 4-MiB boundary.  6 MiB gives that build
+    ;                   ~1.7 MiB of headroom; the PMM keeps the whole low
+    ;                   40 MiB out of the allocator, so the extra physical
+    ;                   window costs nothing.  The UEFI loader maps the
+    ;                   same window (efi_paging.c) -- keep them in sync.
     mov  edi, PD511_ADDR
     mov  eax, 0x00000000 | (PTE_PS | PTE_P | PTE_W)
     mov  [fs:edi + 0], eax
@@ -200,6 +208,9 @@ build_page_tables:
     mov  eax, 0x00200000 | (PTE_PS | PTE_P | PTE_W)
     mov  [fs:edi + 8], eax
     mov  dword [fs:edi + 12], 0
+    mov  eax, 0x00400000 | (PTE_PS | PTE_P | PTE_W)
+    mov  [fs:edi + 16], eax
+    mov  dword [fs:edi + 20], 0
 
     popad
     ret

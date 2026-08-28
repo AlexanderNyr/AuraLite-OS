@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 /* exFAT Main Boot Region Structures */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct exfat_boot_region {
     uint8_t  jump[3];
     char     oem_name[8];
@@ -21,7 +24,13 @@ struct exfat_boot_region {
     uint16_t boot_region_offset;
     uint16_t checksum;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct exfat_dir_entry {
     uint8_t  type;
     uint8_t  set_flags;
@@ -32,6 +41,9 @@ struct exfat_dir_entry {
     uint64_t size;
     uint64_t first_cluster;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 void exfat_init(int device_id);
 extern const struct vfs_ops exfat_ops;

@@ -15,6 +15,9 @@
 #define PCI_STATUS_CAP_LIST 0x10
 #define PCI_CAP_VENDOR      0x09
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_pci_common_cfg {
     uint32_t device_feature_select;
     uint32_t device_feature;
@@ -33,7 +36,13 @@ struct virtio_pci_common_cfg {
     uint64_t queue_driver;
     uint64_t queue_device;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vblk_queue {
     struct vring_desc  *desc;
     struct vring_avail *avail;
@@ -43,6 +52,9 @@ struct vblk_queue {
     uint16_t            last_used_idx;
     uint16_t            notify_off;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 static int init_attempted = 0;
 static int init_result = -1;

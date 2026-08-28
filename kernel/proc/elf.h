@@ -38,6 +38,9 @@
 #define PF_R          0x4
 
 /* ELF64 header (64 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct elf64_ehdr {
     uint8_t  e_ident[16];
     uint16_t e_type;
@@ -54,8 +57,14 @@ struct elf64_ehdr {
     uint16_t e_shnum;
     uint16_t e_shstrndx;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ELF64 program header (56 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct elf64_phdr {
     uint32_t p_type;
     uint32_t p_flags;
@@ -66,6 +75,9 @@ struct elf64_phdr {
     uint64_t p_memsz;
     uint64_t p_align;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /*
  * Load an ELF64 binary from memory (the embedded image).

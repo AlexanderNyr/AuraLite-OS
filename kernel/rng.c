@@ -84,15 +84,31 @@ static inline int popcnt16(uint32_t v) {
 
 /* ---- hardware sources ---- */
 
+/* SELFHOST SH5c: tcc's assembler (mob 2ba12e8) lacks the RDRAND and RDSEED
+ * mnemonics, so under __TINYC__ the same instructions are emitted from
+ * their encodings, pinned to RAX ("=a") so the ModRM byte is fixed:
+ *   rdrand rax = 48 0F C7 F0    rdseed rax = 48 0F C7 F8
+ * The clang/gcc path keeps the mnemonic and the original "=r" constraint,
+ * byte-identical to the pre-SH5c codegen. */
 static int hw_rdseed64(uint64_t *out) {
     unsigned char ok = 0;
+#ifdef __TINYC__
+    __asm__ volatile (".byte 0x48, 0x0f, 0xc7, 0xf8; setc %1"
+                      : "=a"(*out), "=qm"(ok));
+#else
     __asm__ volatile ("rdseed %0; setc %1" : "=r"(*out), "=qm"(ok));
+#endif
     return ok ? 1 : 0;
 }
 
 static int hw_rdrand64(uint64_t *out) {
     unsigned char ok = 0;
+#ifdef __TINYC__
+    __asm__ volatile (".byte 0x48, 0x0f, 0xc7, 0xf0; setc %1"
+                      : "=a"(*out), "=qm"(ok));
+#else
     __asm__ volatile ("rdrand %0; setc %1" : "=r"(*out), "=qm"(ok));
+#endif
     return ok ? 1 : 0;
 }
 

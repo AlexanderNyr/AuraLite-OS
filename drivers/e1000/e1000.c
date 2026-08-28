@@ -87,6 +87,9 @@
  *   byte  12:   status (bit0=DD descriptor done)
  *   byte  13:   CSS (checksum start)
  *   bytes 14-15: special */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct tx_desc {
     uint64_t addr;
     uint16_t length;
@@ -96,8 +99,14 @@ struct tx_desc {
     uint8_t  css;
     uint16_t special;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Legacy RX descriptor (16 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct rx_desc {
     uint64_t addr;        /* physical address of the packet buffer */
     uint16_t length;      /* received packet length */
@@ -106,6 +115,9 @@ struct rx_desc {
     uint8_t  errors;      /* error bits */
     uint16_t special;     /* special field */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 static volatile uint32_t *mmio = NULL;   /* HHDM-mapped register file */
 static uint8_t  mac_addr[6];

@@ -1,4 +1,7 @@
 #include "kernel/mm/page_cache.h"
+/* SELFHOST SH5c: tcc's __atomic_*_n macros + __ATOMIC_* orders come from
+ * its <stdatomic.h>; see kernel/arch/x86_64/tlb_shootdown.c. */
+#include <stdatomic.h>
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/lib/spinlock.h"

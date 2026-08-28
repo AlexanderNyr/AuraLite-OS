@@ -75,6 +75,9 @@ typedef enum {
 /* ---- 802.11 frame structures ---- */
 
 /* Frame Control (2 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct wifi_frame_ctrl {
     uint8_t  protocol    : 2;
     uint8_t  type        : 2;
@@ -88,8 +91,14 @@ struct wifi_frame_ctrl {
     uint8_t  protected_  : 1;
     uint8_t  order       : 1;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Management frame header (24 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct wifi_mgmt_hdr {
     struct wifi_frame_ctrl fc;
     uint16_t duration;
@@ -98,33 +107,60 @@ struct wifi_mgmt_hdr {
     uint8_t  addr3[6];   /* BSSID */
     uint16_t seq_ctrl;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Beacon / Probe Response fixed fields (12 bytes after the mgmt header). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct wifi_beacon_fixed {
     uint64_t timestamp;
     uint16_t beacon_interval;
     uint16_t capability;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Authentication frame body (6 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct wifi_auth_body {
     uint16_t auth_alg;
     uint16_t auth_transaction;
     uint16_t status_code;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Association Request fixed fields (4 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct wifi_assoc_req_body {
     uint16_t capability;
     uint16_t listen_interval;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Association Response body (6 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct wifi_assoc_resp_body {
     uint16_t capability;
     uint16_t status_code;
     uint16_t aid;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- Scan result ---- */
 typedef struct {

@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete); SH5 split into SH5a–SH5d, SH5a+SH5b landed (spike boots; aulink kernel.ld layout matches ld.lld on the real objects); SH5c–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete); SH5 split into SH5a–SH5d, SH5a+SH5b+SH5c landed (spike boots; aulink kernel.ld layout matches ld.lld on the real objects; tcc compiles the whole kernel and the tcc-built kernel boots to the shell on the host); SH5d–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -17,7 +17,7 @@
 | SH5 — the kernel, built by itself (split into SH5a–SH5d) | 🚧 pending |
 | SH5a — spike: tcc codegen links AND boots at the higher half | ✅ landed |
 | SH5b — aulink kernel.ld layout parity vs ld.lld | ✅ landed |
-| SH5c — the kernel compiled by tcc (flag story + delta) | 🚧 pending |
+| SH5c — the kernel compiled by tcc (flag story + delta) | ✅ landed |
 | SH5d — the in-guest build + terminal boot gate | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
@@ -787,8 +787,8 @@ step land a falsifiable increment.
 | Sub-phase | Result |
 |---|---|
 | SH5a — spike: tcc codegen links AND boots at the higher half | ✅ landed (2026-08-27) |
-| SH5b — aulink: kernel.ld layout parity vs ld.lld on the real kernel objects | 🚧 pending |
-| SH5c — the kernel, compiled by tcc (flag story + measured delta) | 🚧 pending |
+| SH5b — aulink: kernel.ld layout parity vs ld.lld on the real kernel objects | ✅ landed (2026-08-28) |
+| SH5c — the kernel, compiled by tcc (flag story + measured delta) | ✅ landed (2026-08-28) |
 | SH5d — the in-guest build + the terminal boot gate | 🚧 pending |
 
 **Definition of done (umbrella).** SH5a answers the spike question with
@@ -919,15 +919,121 @@ objects.  Receipt:
 
 ---
 
-### Phase SH5c — the kernel, compiled by tcc (flag story + measured delta) 🚧 PENDING
+### Phase SH5c — the kernel, compiled by tcc (flag story + measured delta) ✅ LANDED (2026-08-28)
 
 **Goal.** Build `kernel.elf` from the kernel's C sources with tcc (host
 first), closing the remaining Fact 2 flag story (`-mno-red-zone` audit,
 stack-protector absence, the missing function-sections → no-gc footprint
 delta) with measured numbers.
 
-**Gate.** Host link of the tcc-built kernel objects with aulink; the
-flag-delta table recorded in this section.  Boot moves to SH5d.
+**Result — MET (and the tcc kernel boots).** All 126 kernel C files compile
+with the host tcc (mob 2ba12e8), the 9 kernel `.asm` files assemble with
+mini-asm, and aulink links the result against the real `kernel.ld`:
+`build/selfhost/kernel-tcc.elf`.  Beyond the phase's host-link gate, the
+tcc-built kernel was packed into a dual-boot ISO with the tree's own
+`mkisoimage_dual.sh` and booted in QEMU: standard boot receipts through
+`[perf] boot-to-shell: 310 ticks (~3131 ms)` (clang: 302 ticks — +2.7%
+under TCG), `selftest=full` 19 PASS / 0 FAIL, the Ring 3 shell answers
+`uname -a`, and `/bin/sysinfo` runs and exits cleanly through the
+tcc-compiled syscall path.  Booting is still SH5d's gate (the build must
+move in-guest first); this boot is recorded as evidence, not as SH5d met.
+
+**Code fixes the full-kernel compile forced (all inert for the clang build
+— every clang object's code sections are byte-identical to before, only
+DWARF line tables shifted):**
+
+- **`__attribute__((packed))` does not pack in tcc.**  tccgen.c consults
+  `a.packed` only for a struct's final alignment, never for member
+  placement — the x86_64 kernel's 124 packed sites (AHCI descriptors, USB
+  descriptors, TCP/IP headers, on-disk structures) would have silently
+  kept natural layout.  `#pragma pack(push, 1)` is the one spelling that
+  packs members on both compilers, so every packed aggregate now carries a
+  `__TINYC__`-guarded pragma pair (`tools/selfhost/packify_packed.py`
+  performed the mechanical 124-site wrap).  Parity is machine-checked, not
+  assumed: `tools/selfhost/gen_packed_probe.py` probes the sizeof of all
+  119 packed aggregates, compiled by clang and by tcc — all 119 match.
+- **tcc has no `__sync_*` builtins** — a `__sync_fetch_and_add` compiles
+  as an implicit width-blind external call.  The queue-claim protocol
+  (`on_queue`), TID/refcount counters and `ap_user_receipt_done` are
+  spelled with the legacy names; `kernel/lib/atomic_compat.h` maps the
+  five forms the tree uses onto `__atomic_*` builtins (per-site width
+  correct, barrier semantics per gcc's model) under `__TINYC__`.
+- **tcc lacks `__atomic_*_n` and `__ATOMIC_*`** as builtins: they come
+  from tcc's `<stdatomic.h>` — now included by the five files that spell
+  atomics directly (`tlb_shootdown.c`, `gui.c`, `perfstat.c`,
+  `page_cache.c`, `uart.c`; uart also maps `__atomic_exchange_n`, which
+  tcc's header lacks, onto the 4-arg `__atomic_exchange`).
+- **tcc's assembler knows neither STAC/CLAC nor RDRAND/RDSEED.**  Under
+  `__TINYC__` the same instructions are emitted from their encodings
+  (cpu.h: `0F 01 CB/CA`; rng.c: `48 0F C7 F0/F8`, pinned to RAX so the
+  ModRM is fixed).
+- **Member `aligned(16)` is ignored by tcc** — the TCB's FXSAVE area moved
+  8 bytes under tcc, every field after it shifted, and the asm context
+  switch (via `asm_offsets.inc`) wrote `switch_parked` into the wrong
+  slot: a deterministic early-boot deadlock.  The area is now a union
+  with a `long double` member (natural 16-byte alignment in BOTH
+  compilers — FXSAVE of a misaligned operand is #GP, this is not
+  cosmetic).  `gen_asm_offsets` output is asserted identical from tcc-
+  and cc-built generators.
+- **tcc's frames are ~4x clang's**: it does not overlap stack slots of
+  locals from disjoint switch cases, so `syscall_dispatch`'s per-case
+  buffers sum to a 19 968-byte frame (clang: 4 616).  Kernel thread stacks
+  grow 16 → 32 KiB (`kernel/proc/thread_stack.h`), and the IST region base
+  is now DERIVED from the thread-stack region end instead of hardcoding
+  the old 24-KiB-slot arithmetic (which the 32-KiB stacks silently
+  overran, wiping the #DF IST1 stacks).
+- **The loader's kernel window was 4 MiB** (2 × 2-MiB pages in both
+  `paging.inc` and `efi_paging.c`); the clang kernel peaked at 3.96 MiB
+  and the tcc kernel needs 4.27 MiB.  Both loaders now map 6 MiB.  The
+  PMM already keeps the low 40 MiB out of the allocator, so the extra
+  window costs nothing.
+- **tcc emits `R_X86_64_GOTPCREL` (295 across the kernel)** for
+  address-of-global operands.  aulink synthesised a `.got` for these but
+  left the script's `__bss_start/__bss_end` at their pre-insertion
+  addresses — `__bss_start` pointed INSIDE the `.got`, and boot.asm's
+  .bss sweep zeroed every relocation slot (the userland never hit this:
+  user.ld defines no `__bss_*` and the kernel's ELF loader zeroes user
+  .bss from the PHDR, which the .got is not part of).  aulink now shifts
+  every symbol at/after the old .bss base with the section.  Also
+  `abort()` — libtcc1's `__va_arg` helper (tcc lowers va_arg through it)
+  ends in abort() — is provided by the kernel (stack_protector.c, the
+  compiler-runtime lane).
+- The kernel link pulls five libtcc1 members (atomic.S, stdatomic.c,
+  builtin.c, alloca.S, va_list.c) — the runtime helpers tcc's codegen
+  actually calls.
+
+**The flag-delta table (all measured on this tree, QEMU/TCG):**
+
+| Flag / property | clang (shipped) | tcc (SH5c) | delta |
+|---|---|---|---|
+| `-mcmodel=kernel` | required (32-bit absolutes unrepresentable) | **not needed**: 0 × `R_X86_64_32/32S` across all 126 objects (SH5a's spike measurement, extended to the full kernel) | closed |
+| `-mno-red-zone` | required | **not needed**: 0 negative-rsp memory operands across all 126 objects (tcc's codegen is frame-based) | closed |
+| `-mno-mmx/-mno-sse/-mno-sse2` | enforced (0 xmm) | 1 191 xmm instructions in 4 objects (render3d 1 053, virgl 114, kprintf 16, bt 8) | safe *because* boot.asm enables CR4.OSFXSR before kmain and M1's eager FXSAVE preserves xmm state across switches; kprintf's are read-only varargs spills — measured, not assumed |
+| `-fstack-protector-strong` | 310 instrumented call sites | 0 (flag absent) | accepted: kernel loses canaries; guard pages + the #DF IST lane remain |
+| `-ffunction-sections -fdata-sections` + `--gc-sections` | yes | no flags, no gc | `.text`: 469 885 (gc) vs 518 589 (clang no-gc) vs 771 581 (tcc no-gc): gc saves clang 9.4%, tcc's codegen is +48.8% over clang-no-gc |
+| `.rodata` / `.data` / `.bss` | 124 948 / 608 / 2 499 872 | 120 821 / 2 712 / 2 504 256 | bss ~identical (static arrays dominate) |
+| kernel file size | 2 489 120 B (with `-g`, gc) | 1 218 504 B (no debug info) | not directly comparable; the section table above is the honest compare |
+| boot → shell (`selftest=fast`) | 302 ticks (~3 050 ms) | 310 ticks (~3 131 ms) | +2.7% under TCG |
+| boot → shell (`selftest=full`) | (CI lane) | 397 ticks (~4 010 ms), 19 PASS / 0 FAIL | the tcc kernel runs the full boot self-test suite |
+| deepest frame | `syscall_dispatch` 4 616 B | 19 968 B | thread stacks 16 → 32 KiB |
+| runtime helpers | none | 5 libtcc1 members, 295 GOTPCREL relocs resolved through aulink's synthesised `.got` | the honest cost of the tcc lane |
+
+**Gate.** MET.  Host: `tests/unit/test_sh5c_kernel_tcc.sh` (registered in
+`make test-unit`; 13 assertions) runs `tools/selfhost/build_kernel_tcc.sh`
+(tcc compiles the 126 C files, mini-asm assembles the 9 asm files, aulink
+links `kernel-tcc.elf`), asserts the ELF shape (entry == `_start`, 3
+PT_LOADs `R E / R / RW`, ordered higher-half `__bss_start/__bss_end`), the
+flag audits (0 32-bit absolutes, 0 red-zone references, 0 canaries,
+kprintf's xmm ops are reads only) and both layout parities (tcc/cc
+`asm_offsets.inc` identical; 119 packed structs sizeof clang==tcc); skips
+cleanly without the host tcc / libtcc1.a.  Boot smoke:
+`tests/integration/cases/test_selfhost_kernel_tcc.sh` (selfhost shard) —
+19/19 assertions: standard boot receipts through `[perf] boot-to-shell`,
+`uname -a` answered, `/bin/sysinfo` run and reaped, no PANIC/TRIPLE
+FAULT/STOP.  Receipt:
+`[selfhost] sh5c PASS: tcc compiles the kernel; aulink links it at the higher half`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
 ---
 
@@ -1094,7 +1200,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-03 | `TMPFS_MAX_FILES` 64 per volume; source tree is 1269 files | limit | CLOSED (256, SH1) | SH1 |
 | SH-04 | smallsh: no pipes/redirects/variables/loops | missing | OPEN | SH6 |
 | SH-05 | ISO tooling is host python3/mtools (Fact 5) | missing | OPEN | SH7 |
-| SH-06 | kernel CFLAGS clang-only, `-mcmodel=kernel` unportable (Fact 2) | port | OPEN | SH5 |
+| SH-06 | kernel CFLAGS clang-only, `-mcmodel=kernel` unportable (Fact 2) | port | CLOSED (SH5a measured it unnecessary; SH5c compiled all 126 files and recorded the flag-delta table) | SH5 |
 | SH-07 | `OPEN_MAX` 64 — adequacy unknown until the spike | limit | CLOSED (tcc ran on 64 fds, SH1) | SH1 |
 | SH-08 | rustc/rsbr not self-hostable in this plan | accepted | ACCEPTED (D1 scope) | — |
 | SH-09 | TinyCC LGPL-2.1 vs Apache-2.0 tree | licensing | ACCEPTED (D8, DOOM precedent) | — |

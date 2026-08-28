@@ -56,6 +56,9 @@
 #define TCP_X5_MAX_TMO 10u
 
 /* ---- TCP header (20 bytes minimum) ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct tcp_hdr {
     uint16_t src_port;     /* network byte order */
     uint16_t dst_port;     /* network byte order */
@@ -67,6 +70,9 @@ struct tcp_hdr {
     uint16_t checksum;     /* network byte order */
     uint16_t urgent_ptr;   /* network byte order */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- Byte-swap helpers (local copies, matching net.c) ---- */
 static uint16_t htons_(uint16_t v) { return (v >> 8) | (v << 8); }

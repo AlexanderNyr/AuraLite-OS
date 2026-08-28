@@ -2,6 +2,73 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH5c — the kernel, compiled by tcc; the tcc-built kernel boots] 2026-08-28
+
+`SELFHOST_PLAN.md` phase SH5c: all 126 kernel C files compile with the host
+tcc (mob 2ba12e8), the 9 kernel `.asm` files assemble with mini-asm, and
+aulink links `build/selfhost/kernel-tcc.elf` against the real `kernel.ld`
+(`make selfhost-kernel-tcc`, driven by `tools/selfhost/build_kernel_tcc.sh`).
+Beyond the phase's host-link gate, the tcc-built kernel boots in QEMU to
+the Ring 3 shell (boot-to-shell 310 ticks vs clang's 302 — +2.7% under
+TCG; `selftest=full` 19 PASS / 0 FAIL; `/bin/sysinfo` runs and exits
+cleanly).  Every code change below is inert for the clang build (code
+sections byte-identical; only DWARF line tables shifted).
+
+- **`__attribute__((packed))` does not pack members in tcc** (tccgen.c
+  consults `a.packed` for final struct alignment only).  All 124 packed
+  sites in the x86_64 kernel now carry a `__TINYC__`-guarded
+  `#pragma pack(push, 1)` pair (mechanically wrapped by
+  `tools/selfhost/packify_packed.py`).  Parity machine-checked:
+  `tools/selfhost/gen_packed_probe.py` + the SH5c gate compare the sizeof
+  of all 119 packed aggregates under clang and tcc — all match.
+- **tcc has no `__sync_*` builtins.**  `kernel/lib/atomic_compat.h` maps
+  the five legacy spellings the tree uses onto `__atomic_*` builtins
+  (per-site width correct, gcc barrier semantics) under `__TINYC__`;
+  included by the seven files that spell them.
+- **tcc lacks `__atomic_*_n`/`__ATOMIC_*`** — they come from tcc's
+  `<stdatomic.h>`, now included by the five files spelling atomics
+  directly; uart.c also maps `__atomic_exchange_n` (absent from tcc's
+  header) onto the 4-arg `__atomic_exchange`.
+- **tcc's assembler lacks STAC/CLAC/RDRAND/RDSEED** — emitted from their
+  byte encodings under `__TINYC__` (cpu.h, rng.c; RAX-pinned so the
+  ModRM is fixed; the clang path keeps mnemonics and `=r` constraints).
+- **Member `aligned(16)` is ignored by tcc** — the TCB's FXSAVE area
+  shifted 8 bytes under tcc and the asm context switch wrote
+  `switch_parked` into the wrong slot (deterministic early-boot
+  deadlock).  The area is now a union with a `long double` member:
+  natural 16-byte alignment in both compilers.  The SH5c gate asserts
+  tcc- and cc-generated `asm_offsets.inc` are identical.
+- **tcc frames ~4x clang's** (`syscall_dispatch`: 19 968 B vs 4 616 B —
+  tcc does not overlap locals of disjoint switch cases): kernel thread
+  stacks grow 16 → 32 KiB; the stack geometry moved to
+  `kernel/proc/thread_stack.h` and tss.c's IST base is now DERIVED from
+  the region end (the hardcoded 24-KiB-slot arithmetic was silently
+  overrun, wiping the #DF IST1 stacks).
+- **Loader kernel window 4 → 6 MiB** (`paging.inc` + `efi_paging.c`,
+  kept in sync): the clang kernel peaked at 3.96 MiB; the tcc kernel
+  spans 4.27 MiB and faulted its .bss zero-fill on the 4-MiB boundary.
+- **aulink: `.got` insertion no longer corrupts script symbols.**  tcc
+  emits 295 `R_X86_64_GOTPCREL`s; aulink's synthesised `.got` moved `.bss`
+  but left `__bss_start/__bss_end` at pre-insertion addresses —
+  `__bss_start` pointed inside the `.got` and boot.asm's bss sweep zeroed
+  the relocation slots.  Symbols at/after the old `.bss` base now shift
+  with the section.  (The userland never hit this: user.ld defines no
+  `__bss_*` and the kernel zeroes user .bss from the PHDR.)
+- **`abort()` provided by the kernel** (stack_protector.c): libtcc1's
+  `__va_arg` helper ends in abort(); clang never references the symbol.
+- **Flag-delta table recorded in the plan** (`-mcmodel=kernel` and
+  `-mno-red-zone` measured unnecessary — 0 32-bit absolutes, 0 red-zone
+  references across all 126 objects; canaries 310→0; SSE 0→1 191
+  instructions, safe because boot.asm enables CR4.OSFXSR before kmain;
+  no-gc `.text` +48.8% over clang-no-gc; boot +2.7%).
+- **Gates.** `tests/unit/test_sh5c_kernel_tcc.sh` (`make test-unit`,
+  13 assertions: build, ELF shape, flag audits, asm-offsets parity,
+  packed-layout parity 119/119; skips cleanly without the host tcc) and
+  `tests/integration/cases/test_selfhost_kernel_tcc.sh` (selfhost shard,
+  19/19: standard boot receipts, `uname -a`, Ring 3 child reaped, no
+  PANIC/TRIPLE FAULT/STOP).  Receipt:
+  `[selfhost] sh5c PASS: tcc compiles the kernel; aulink links it at the higher half`.
+
 ## [SELFHOST SH5b — aulink: kernel.ld layout parity vs ld.lld on the real kernel] 2026-08-28
 
 `SELFHOST_PLAN.md` phase SH5b: aulink now reproduces ld.lld's kernel.ld

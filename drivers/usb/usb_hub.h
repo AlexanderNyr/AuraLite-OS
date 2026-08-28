@@ -8,6 +8,9 @@
 #define USB_HUB_MAX_DEPTH 5
 #define USB_HUB_MAX_HUBS  8
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_hub_descriptor_full {
     uint8_t  bDescLength;
     uint8_t  bDescriptorType;
@@ -18,7 +21,13 @@ struct usb_hub_descriptor_full {
     uint8_t  DeviceRemovable[4];
     uint8_t  PortPwrCtrlMask[4];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_ss_hub_descriptor {
     uint8_t  bDescLength;
     uint8_t  bDescriptorType;
@@ -30,6 +39,9 @@ struct usb_ss_hub_descriptor {
     uint16_t wHubDelay;
     uint16_t DeviceRemovable;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 typedef struct {
     int in_use;

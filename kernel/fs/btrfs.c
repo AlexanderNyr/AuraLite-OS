@@ -35,6 +35,9 @@
  * ============================================================================ */
 
 /* Btrfs superblock (4KB) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_superblock {
     uint8_t  csum[32];               /* Checksum (SHA256, simplified to zeros for now) */
     uint8_t  fs_uuid[16];            /* Filesystem UUID */
@@ -65,22 +68,40 @@ struct btrfs_superblock {
     uint64_t compat_flags2;          /* Additional compatible flags */
     uint8_t  reserved[928];          /* Reserved for future use */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Btrfs key (20 bytes) — used to locate items in trees */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_key {
     uint64_t objectid;   /* ObjectID (type of item) */
     uint64_t type;       /* Item type */
     uint64_t offset;     /* Offset within the object */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Item header in a tree leaf */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_item {
     uint64_t key_offset;    /* Key offset (copied from key.offset) */
     uint32_t offset;        /* Offset of item data within leaf */
     uint32_t size;          /* Size of item data */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* B-tree node/leaf header (same structure for both) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_header {
     uint8_t  csum[32];      /* Checksum of content */
     uint8_t  fs_uuid[16];    /* Filesystem UUID */
@@ -91,8 +112,14 @@ struct btrfs_header {
     uint8_t  level;          /* B-tree level (0 = leaf) */
     uint8_t  reserved[7];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Btrfs extent item (in extent tree) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_extent_item {
     uint64_t flags;          /* Extent flags */
     uint64_t generation;     /* Generation when created */
@@ -106,8 +133,14 @@ struct btrfs_extent_item {
     uint64_t extent_offset;  /* Logical offset within the extent */
     uint64_t extent_num_bytes; /* Logical bytes within extent */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Root item (in root tree) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_root_item {
     uint64_t inode_generation;
     uint64_t flags;
@@ -138,8 +171,14 @@ struct btrfs_root_item {
     uint64_t nr_issues;
     uint8_t  flags2;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Directory item */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_dir_item {
     uint64_t location_objectid;
     uint64_t location_type;
@@ -149,8 +188,14 @@ struct btrfs_dir_item {
     uint8_t  dir_type;
     uint8_t  name[];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Inode item (in filesystem tree) */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct btrfs_inode {
     uint64_t generation;
     uint64_t transid;
@@ -172,6 +217,9 @@ struct btrfs_inode {
     uint64_t mtime_sec;
     uint64_t otime_sec;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ============================================================================
  * SECTION 2: CONSTANTS AND DEFINES

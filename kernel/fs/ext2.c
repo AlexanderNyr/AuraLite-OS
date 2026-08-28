@@ -36,6 +36,9 @@
 #include "kernel/mm/kheap.h"
 
 /* ----- On-disk superblock (offsets per ext2 spec) ----- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext2_super {
     uint32_t s_inodes_count;
     uint32_t s_blocks_count;
@@ -74,6 +77,9 @@ struct ext2_super {
     /* … many more fields, irrelevant to us … */
     uint8_t  padding[1024 - 204];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 #define EXT2_MAGIC          0xEF53
 #define EXT2_GOOD_OLD_REV   0
@@ -83,6 +89,9 @@ struct ext2_super {
 #define EXT2_FIRST_USER_INO 11
 
 /* ----- Group descriptor (32 bytes for rev 0/1) ----- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext2_group_desc {
     uint32_t bg_block_bitmap;
     uint32_t bg_inode_bitmap;
@@ -93,8 +102,14 @@ struct ext2_group_desc {
     uint16_t bg_pad;
     uint8_t  bg_reserved[12];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ----- Inode (rev 0 = 128 bytes) ----- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext2_inode {
     uint16_t i_mode;
     uint16_t i_uid;
@@ -115,6 +130,9 @@ struct ext2_inode {
     uint32_t i_faddr;
     uint8_t  i_osd2[12];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 #define EXT2_S_IFMT   0xF000
 #define EXT2_S_IFREG  0x8000
@@ -127,6 +145,9 @@ struct ext2_inode {
 #define EXT2_FT_DIR      2
 #define EXT2_FT_SYMLINK  7
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ext2_dir_entry {
     uint32_t inode;
     uint16_t rec_len;
@@ -134,6 +155,9 @@ struct ext2_dir_entry {
     uint8_t  file_type;
     char     name[];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ----- Mount state ----- */
 struct ext2_mount {

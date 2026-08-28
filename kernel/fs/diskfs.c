@@ -26,6 +26,12 @@
 #define DISKFS_TABLE_LBA 3
 #define DISKFS_DATA_LBA  5
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct diskfs_super {
     uint32_t magic;
     uint32_t version;
@@ -33,7 +39,19 @@ struct diskfs_super {
     uint32_t file_sectors;
     uint8_t reserved[BLKDEV_SECTOR_SIZE - 16];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct diskfs_entry {
     uint8_t in_use;
     uint8_t reserved0[3];
@@ -45,6 +63,12 @@ struct diskfs_entry {
     char name[DISKFS_NAME_MAX];
     uint8_t reserved1[44];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 typedef char static_assert_entry_size[(sizeof(struct diskfs_entry) == 128) ? 1 : -1];
 

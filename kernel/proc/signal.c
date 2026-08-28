@@ -15,6 +15,9 @@
 
 #include <stdint.h>
 #include "kernel/proc/signal.h"
+/* SELFHOST SH5c: the __sync_* spellings above are tcc macros (kernel/lib/
+ * atomic_compat.h); clang keeps its builtins. */
+#include "kernel/lib/atomic_compat.h"
 #include "kernel/proc/thread.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/usercopy.h"

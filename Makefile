@@ -1900,6 +1900,18 @@ $(SELFHOST_OBJDIR)/lib1/atomic.o: $(SELFHOST_SRC)/lib/atomic.S | selfhost-deps
 selfhost-tcc: $(SELFHOST_TCC) $(SELFHOST_LIBTCC1)
 	@echo "[selfhost] guest toolchain ready: $(SELFHOST_TCC) + $(SELFHOST_LIBTCC1)"
 
+# SELFHOST SH5c: the x86_64 kernel, built by the self-host toolchain on the
+# host (tcc compiles the C, mini-asm assembles the .asm, aulink links with
+# the real kernel.ld; libtcc1 contributes the runtime helpers tcc's codegen
+# calls).  Produces build/selfhost/kernel-tcc.elf (+ .iso with --iso) and
+# prints the flag-delta measurements.  Gate: tests/unit/test_sh5c_kernel_tcc.sh
+# (link + audits + layout parities); boot smoke:
+# tests/integration/cases/test_selfhost_kernel_tcc.sh.  Requires
+# selfhost-deps + selfhost-tcc + selfhost-host-tcc.
+.PHONY: selfhost-kernel-tcc
+selfhost-kernel-tcc:
+	@bash tools/selfhost/build_kernel_tcc.sh $(EXTRA_SH5C_ARGS)
+
 # SELFHOST SH3: aulink -- the self-host ELF linker (no ld.lld in-guest).
 AULINK_DIR := tools/aulink
 AULINK_SRC := $(AULINK_DIR)/aulink.c
@@ -2477,6 +2489,16 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # absent.
 	@echo "[unit] running tests/unit/test_sh5b_layout.sh"
 	@bash tests/unit/test_sh5b_layout.sh || exit 1
+
+# SELFHOST_PLAN SH5c: the kernel, compiled by tcc (host build of the same
+# mob source the guest uses).  tools/selfhost/build_kernel_tcc.sh builds
+# kernel-tcc.elf (tcc + mini-asm + aulink); the gate asserts the ELF shape,
+# the flag audits (no 32-bit absolutes, no red-zone use, no canaries, xmm
+# reads-only in kprintf) and the two layout parities (asm offsets, packed
+# struct sizeof clang<->tcc).  Skips cleanly without the host tcc /
+# libtcc1.a.
+	@echo "[unit] running tests/unit/test_sh5c_kernel_tcc.sh"
+	@bash tests/unit/test_sh5c_kernel_tcc.sh || exit 1
 
 # WIN32_PLAN.md W32-0: provenance/licensing enforcement, plus its negative
 # control -- a checker that never fails is indistinguishable from a clean tree.

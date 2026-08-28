@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "kernel/proc/thread_stack.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/proc/signal.h"
 #include "kernel/time_types.h"
@@ -20,9 +21,7 @@
  */
 
 #define THREAD_NAME_MAX    64
-#define THREAD_STACK_SIZE  (16 * 1024)   /* 16 KiB usable per kernel thread */
-#define THREAD_STACK_GUARD_PAGES 1
-#define THREAD_STACK_PAGES       (THREAD_STACK_SIZE / 4096)
+/* Stack geometry (size/slots/region) lives in kernel/proc/thread_stack.h. */
 #define SCHED_QUANTUM      5              /* default tick slice (50ms @100Hz) */
 
 /* Max processes (for the wait/child-tracking arrays). */
@@ -223,9 +222,22 @@ typedef struct tcb {
      * allocation sites need no FPU initialisation of their own.
      *
      * fpu_area MUST be 16-byte aligned for FXSAVE/FXRSTOR; the TCB slab cache
-     * is created with align=16 so the absolute address is 16-aligned. */
+     * is created with align=16 so the absolute address is 16-aligned.
+     *
+     * SELFHOST SH5c: the alignment used to ride
+     * __attribute__((aligned(16))) on the member -- which tcc silently
+     * ignores (on members and member types alike), landing fpu_area 8
+     * bytes lower than clang and shifting every field after it: the two
+     * compilers disagreed on the TCB layout and the asm context switch
+     * (asm_offsets.inc) wrote switch_parked into the wrong slot.  A union
+     * with a long double member carries natural 16-byte alignment in BOTH
+     * compilers, so the layout is identical everywhere.  FXSAVE of a
+     * misaligned operand is #GP; this is not cosmetic. */
     uint8_t  fpu_valid;
-    uint8_t  fpu_area[512] __attribute__((aligned(16)));
+    union fpu_image {
+        uint8_t     bytes[512];
+        long double align16;   /* natural align 16; never accessed */
+    } fpu_area;
 } tcb_t;
 
 /* Allocate/free a guarded kernel stack for an already-zeroed TCB. */

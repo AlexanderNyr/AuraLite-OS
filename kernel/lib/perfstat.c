@@ -9,6 +9,9 @@
  * (static storage, no init required), which uart_putchar needs.
  */
 #include <stdint.h>
+/* SELFHOST SH5c: tcc's __atomic_*_n macros + __ATOMIC_* orders come from
+ * its <stdatomic.h>; see kernel/arch/x86_64/tlb_shootdown.c. */
+#include <stdatomic.h>
 #include "kernel/lib/perfstat.h"
 
 /* Plain uint64_t + __atomic builtins (not C11 _Atomic: clang refuses the

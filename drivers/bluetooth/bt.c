@@ -24,24 +24,42 @@
 /* ---- HCI packet structures ---- */
 
 /* HCI command header (4 bytes, sent via control or bulk OUT). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct hci_cmd_hdr {
     uint8_t  packet_type;   /* HCI_CMD_PKT = 0x01 */
     uint16_t opcode;        /* OGF << 10 | OCF */
     uint8_t  param_len;     /* number of parameter bytes following */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* HCI event header (3 bytes, received via bulk/interrupt IN). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct hci_evt_hdr {
     uint8_t  packet_type;   /* HCI_EVT_PKT = 0x04 */
     uint8_t  event;         /* event code */
     uint8_t  param_len;     /* parameter length */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Command Complete event parameters (after the header). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct hci_cmd_complete {
     uint8_t  num_packets;
     uint16_t opcode;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- Driver state ---- */
 static usb_device_t *bt_dev = NULL;

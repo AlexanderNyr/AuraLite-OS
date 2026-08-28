@@ -19,6 +19,9 @@
 
 #include <stdint.h>
 #include <stddef.h>
+/* SELFHOST SH5c: tcc's __atomic_*_n macros + __ATOMIC_* orders come from
+ * its <stdatomic.h>; see kernel/arch/x86_64/tlb_shootdown.c. */
+#include <stdatomic.h>
 #include "kernel/gui/gui.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"

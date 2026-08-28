@@ -7,6 +7,9 @@
 
 #include <stdint.h>
 #include "kernel/fs/vfs.h"
+/* SELFHOST SH5c: the __sync_* spellings above are tcc macros (kernel/lib/
+ * atomic_compat.h); clang keeps its builtins. */
+#include "kernel/lib/atomic_compat.h"
 #include "kernel/fs/vfsmount.h"   /* R2: the mount core moved out */
 #include "kernel/fs/execpolicy.h"
 #include "kernel/lib/errno.h"

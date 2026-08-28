@@ -60,6 +60,9 @@ static int         have_global = 0;
 #define NDP_PFX_FLAG_A   0x40
 
 /* IPv6 header (40 bytes, no extension headers). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ipv6_hdr {
     uint32_t ver_tc_fl;    /* 6<<28 | tc<<20 | flow */
     uint16_t payload_len;  /* network byte order */
@@ -68,13 +71,22 @@ struct ipv6_hdr {
     uint8_t  src[16];
     uint8_t  dst[16];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ICMPv6 header (4 bytes + type-specific payload). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct icmp6_hdr {
     uint8_t  type;
     uint8_t  code;
     uint16_t checksum;     /* network byte order */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 static uint16_t htons16(uint16_t v) { return (uint16_t)((v >> 8) | (v << 8)); }
 
@@ -192,7 +204,13 @@ static int ndp_resolve(const ipv6_addr_t *target, uint8_t out_mac[6]) {
 
     /* Assemble the frame: eth(14) + ipv6(40) + icmp6(8) + body(28). */
     uint8_t pkt[14 + 40 + 8 + (4 + 16 + 8)];
+    #if defined(__TINYC__)
+    #pragma pack(push, 1)
+    #endif
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)pkt;
+    #if defined(__TINYC__)
+    #pragma pack(pop)
+    #endif
     memcpy(eh->dst, snm_mac, 6);
     memcpy(eh->src, our_mac, 6);
     eh->et = htons16(ETHERTYPE_IPV6);
@@ -273,7 +291,13 @@ void net_ipv6_discover(void) {
                                        IPV6_NEXT_ICMP6, msg, icmp_len));
 
     uint8_t pkt[14 + 40 + 8 + (4 + 8)];
+    #if defined(__TINYC__)
+    #pragma pack(push, 1)
+    #endif
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)pkt;
+    #if defined(__TINYC__)
+    #pragma pack(pop)
+    #endif
     memcpy(eh->dst, ar_mac, 6);
     memcpy(eh->src, our_mac, 6);
     eh->et = htons16(ETHERTYPE_IPV6);
@@ -390,7 +414,13 @@ static void icmp6_send_echo_reply(const uint8_t req_src_mac[6],
                                        IPV6_NEXT_ICMP6, msg, icmp_len));
 
     uint8_t pkt[14 + 40 + 8 + 256];
+    #if defined(__TINYC__)
+    #pragma pack(push, 1)
+    #endif
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)pkt;
+    #if defined(__TINYC__)
+    #pragma pack(pop)
+    #endif
     memcpy(eh->dst, req_src_mac, 6);
     memcpy(eh->src, our_mac, 6);
     eh->et = htons16(ETHERTYPE_IPV6);
@@ -408,7 +438,13 @@ static void icmp6_send_echo_reply(const uint8_t req_src_mac[6],
 int net_ipv6_handle_frame(const uint8_t *frame, int len) {
     if (!ipv6_up) return 0;
     if (len < (int)(14 + 40 + 8)) return 0;
+    #if defined(__TINYC__)
+    #pragma pack(push, 1)
+    #endif
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)frame;
+    #if defined(__TINYC__)
+    #pragma pack(pop)
+    #endif
     if (htons16(eh->et) != ETHERTYPE_IPV6) return 0;
     struct ipv6_hdr *ip = (struct ipv6_hdr *)(frame + 14);
     if (ip->next_header != IPV6_NEXT_ICMP6) return 0;
@@ -530,7 +566,13 @@ int net_ping6(const ipv6_addr_t *target) {
     ic.checksum = htons16(cs);          /* R9: serialise (see ndp_resolve) */
 
     uint8_t pkt[14 + 40 + 8 + 16];
+    #if defined(__TINYC__)
+    #pragma pack(push, 1)
+    #endif
     struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)pkt;
+    #if defined(__TINYC__)
+    #pragma pack(pop)
+    #endif
     memcpy(eh->dst, dst_mac, 6);
     memcpy(eh->src, our_mac, 6);
     eh->et = htons16(ETHERTYPE_IPV6);
@@ -661,7 +703,13 @@ void net_ipv6_self_test(void) {
      * frame, validates the checksum, and emits an echo reply). */
     {
         uint8_t req[14 + 40 + 8 + 8];
+        #if defined(__TINYC__)
+        #pragma pack(push, 1)
+        #endif
         struct eth_hdr { uint8_t dst[6], src[6]; uint16_t et; } __attribute__((packed)) *eh = (void *)req;
+        #if defined(__TINYC__)
+        #pragma pack(pop)
+        #endif
         memcpy(eh->dst, our_mac, 6);
         uint8_t peer_mac[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 };
         memcpy(eh->src, peer_mac, 6);

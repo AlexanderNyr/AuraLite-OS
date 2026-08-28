@@ -12,6 +12,9 @@
 
 #define KERNEL_CODE_SELECTOR 0x08
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct idt_entry {
     uint16_t offset_low;    /* bits 0..15 of handler address  */
     uint16_t selector;      /* code segment selector in GDT    */
@@ -21,12 +24,21 @@ struct idt_entry {
     uint32_t offset_high;   /* bits 32..63                      */
     uint32_t zero;          /* reserved, must be 0              */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* 10-byte pseudo-descriptor loaded by LIDT. */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct idt_ptr {
     uint16_t limit;         /* one less than table size in bytes */
     uint64_t base;          /* linear address of the IDT          */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /*
  * type_attr encodings (present | DPL<<5 | 0 | gate type).

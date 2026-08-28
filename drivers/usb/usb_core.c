@@ -332,6 +332,9 @@ static const char *speed_name(usb_speed_t s) {
 #define USB_HUB_FEAT_PORT_RESET   4
 #define USB_HUB_FEAT_PORT_POWER   8
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_hub_desc {
     uint8_t  bDescLength;
     uint8_t  bDescriptorType;
@@ -341,6 +344,9 @@ struct usb_hub_desc {
     uint8_t  bHubContrCurrent;
     uint8_t  variable[16];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 static usb_device_t *usb_find_by_location(usb_ctrl_type_t ctrl, int port) {
     for (int i = 0; i < USB_MAX_DEVICES; i++)

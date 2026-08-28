@@ -22,6 +22,9 @@
  * triple fault.
  */
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct tss_entry {
     uint32_t reserved0;
     uint32_t rsp0_low;
@@ -51,6 +54,9 @@ struct tss_entry {
     uint16_t reserved5;
     uint16_t iomap_base;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Build per-CPU TSS state and load the BSP TSS. */
 void tss_init(void);

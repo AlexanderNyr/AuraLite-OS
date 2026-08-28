@@ -38,6 +38,9 @@
 #define GDT_SEL_UDATA_R3 0x1B      /* user data segment, RPL=3 */
 #define GDT_SEL_TSS    0x28
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct gdt_entry {
     uint16_t limit_low;
     uint16_t base_low;
@@ -46,12 +49,21 @@ struct gdt_entry {
     uint8_t  granularity;   /* bits 0-3: limit[19:16]; bits 4-7: flags G/D/L/A */
     uint8_t  base_high;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* 10-byte pseudo-descriptor loaded by LGDT: 16-bit limit + 64-bit base. */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct gdt_ptr {
     uint16_t limit;
     uint64_t base;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Build the GDT and load it. */
 void gdt_init(void);

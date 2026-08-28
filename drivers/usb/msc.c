@@ -29,6 +29,9 @@
 #define CBW_FLAGS_OUT  0x00
 #define CBW_FLAGS_IN   0x80
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct msc_cbw {
     uint32_t dCBWSignature;
     uint32_t dCBWTag;
@@ -38,6 +41,9 @@ struct msc_cbw {
     uint8_t  bCBWCBLength;
     uint8_t  cbwcb[16];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- CSW (Command Status Wrapper) — 13 bytes ---- */
 #define CSW_SIGNATURE  0x53425355   /* "USBS" */
@@ -45,12 +51,18 @@ struct msc_cbw {
 #define CSW_STATUS_FAILED 0x01
 #define CSW_STATUS_PHASE  0x02
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct msc_csw {
     uint32_t dCSWSignature;
     uint32_t dCSWTag;
     uint32_t dCSWDataResidue;
     uint8_t  bCSWStatus;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- SCSI commands ---- */
 #define SCSI_INQUIRY      0x12

@@ -43,13 +43,22 @@ extern uint64_t timer_get_ticks(void);
 #define GW_IP_O3 2
 
 /* ---- Ethernet header (14 bytes) ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct eth_hdr {
     uint8_t  dst_mac[6];
     uint8_t  src_mac[6];
     uint16_t ethertype;   /* network byte order */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- ARP packet (28 bytes over Ethernet) ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct arp_pkt {
     uint16_t hw_type;    /* 1 = Ethernet */
     uint16_t proto_type; /* 0x0800 = IPv4 */
@@ -61,8 +70,14 @@ struct arp_pkt {
     uint8_t  target_mac[6];
     uint32_t target_ip;  /* host byte order */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- IPv4 header (20 bytes, no options) ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct ipv4_hdr {
     uint8_t  version_ihl;   /* (4<<4) | 5 */
     uint8_t  tos;
@@ -75,8 +90,14 @@ struct ipv4_hdr {
     uint32_t src_ip;        /* network byte order */
     uint32_t dst_ip;        /* network byte order */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- ICMP header (8 bytes + data) ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct icmp_hdr {
     uint8_t  type;
     uint8_t  code;
@@ -84,6 +105,9 @@ struct icmp_hdr {
     uint16_t ident;
     uint16_t seq;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- Receive wait budgets ----
  * Keep boot responsive on hypervisors with disconnected/unsupported virtual
@@ -484,12 +508,18 @@ int net_ping(uint32_t target_ip) {
 }
 
 /* ---- UDP header (8 bytes) ---- */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct udp_hdr {
     uint16_t src_port;
     uint16_t dst_port;
     uint16_t length;    /* header + data, network byte order */
     uint16_t checksum;  /* 0 = no checksum (legal for IPv4/UDP) */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /*
  * Send a UDP datagram to dst_ip:dst_port with the given payload.
@@ -644,6 +674,9 @@ static int net_udp_recv(uint32_t src_ip, uint16_t src_port,
  */
 #define DHCP_MIN_PKT_SIZE 300
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct dhcp_pkt {
     uint8_t  op;
     uint8_t  htype;
@@ -662,6 +695,9 @@ struct dhcp_pkt {
     uint32_t cookie;
     uint8_t  options[0];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Append a DHCP option to `buf` at position `pos`. Returns new pos. */
 static int dhcp_add_option(uint8_t *buf, int pos, uint8_t code,

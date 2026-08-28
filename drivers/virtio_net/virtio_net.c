@@ -66,6 +66,9 @@
  * field, so its size is 12 bytes even when MRG_RXBUF is not negotiated. */
 #define VNET_HDR_LEN  12
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_pci_common_cfg {
     uint32_t device_feature_select;
     uint32_t device_feature;
@@ -84,33 +87,63 @@ struct virtio_pci_common_cfg {
     uint64_t queue_driver;
     uint64_t queue_device;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_desc {
     uint64_t addr;
     uint32_t len;
     uint16_t flags;
     uint16_t next;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_avail {
     uint16_t flags;
     uint16_t idx;
     uint16_t ring[VNET_Q_SIZE];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_used_elem {
     uint32_t id;
     uint32_t len;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct vring_used {
     uint16_t flags;
     uint16_t idx;
     struct vring_used_elem ring[VNET_Q_SIZE];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* virtio_net_hdr.  Under VIRTIO_F_VERSION_1 num_buffers is always present
  * (12 bytes total), independent of MRG_RXBUF, for both TX and RX. */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct virtio_net_hdr {
     uint8_t  flags;
     uint8_t  gso_type;
@@ -120,6 +153,9 @@ struct virtio_net_hdr {
     uint16_t csum_offset;
     uint16_t num_buffers;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Per-queue state. */
 struct vnet_queue {

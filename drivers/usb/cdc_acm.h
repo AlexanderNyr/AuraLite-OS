@@ -7,12 +7,18 @@
 #define CDC_ACM_MAX_DEVICES 4
 #define CDC_ACM_BUFFER_SIZE 512
 
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct cdc_line_coding {
     uint32_t dwDTERate;
     uint8_t bCharFormat;
     uint8_t bParityType;
     uint8_t bDataBits;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 #define CDC_CTRL_DTR (1<<0)
 #define CDC_CTRL_RTS (1<<1)

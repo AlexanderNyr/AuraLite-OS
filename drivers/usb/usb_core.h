@@ -164,22 +164,37 @@
 #define USB_FEAT_TEST_MODE 2
 
 /* BOS descriptor for USB 2.1+ */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_bos_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
     uint16_t wTotalLength;
     uint8_t  bNumDeviceCaps;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* BOS Device Capability */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_cap_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
     uint8_t  bDevCapabilityType;
     uint8_t  data[];
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* SS Endpoint Companion */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_ss_ep_comp_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
@@ -187,8 +202,14 @@ struct usb_ss_ep_comp_desc {
     uint8_t  bmAttributes;
     uint16_t wBytesPerInterval;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Interface Association Descriptor */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_iad_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
@@ -199,10 +220,16 @@ struct usb_iad_desc {
     uint8_t  bFunctionProtocol;
     uint8_t  iFunction;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- USB data structures ---- */
 
 /* Device descriptor (18 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_device_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
@@ -219,8 +246,14 @@ struct usb_device_desc {
     uint8_t  iSerialNumber;
     uint8_t  bNumConfigurations;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Configuration descriptor (9 bytes, followed by interface + endpoint descs). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_config_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
@@ -231,8 +264,14 @@ struct usb_config_desc {
     uint8_t  bmAttributes;
     uint8_t  bMaxPower;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Interface descriptor (9 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_interface_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
@@ -244,8 +283,14 @@ struct usb_interface_desc {
     uint8_t  bInterfaceProtocol;
     uint8_t  iInterface;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Endpoint descriptor (7 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_endpoint_desc {
     uint8_t  bLength;
     uint8_t  bDescriptorType;
@@ -254,8 +299,14 @@ struct usb_endpoint_desc {
     uint16_t wMaxPacketSize;
     uint8_t  bInterval;          /* polling interval in ms (for interrupt) */
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* Setup packet (8 bytes). */
+#if defined(__TINYC__)
+#pragma pack(push, 1)
+#endif
 struct usb_setup_pkt {
     uint8_t  bmRequestType;
     uint8_t  bRequest;
@@ -263,6 +314,9 @@ struct usb_setup_pkt {
     uint16_t wIndex;
     uint16_t wLength;
 } __attribute__((packed));
+#if defined(__TINYC__)
+#pragma pack(pop)
+#endif
 
 /* ---- USB device record ---- */
 typedef enum {
