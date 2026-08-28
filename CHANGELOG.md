@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH5b — aulink: kernel.ld layout parity vs ld.lld on the real kernel] 2026-08-28
+
+`SELFHOST_PLAN.md` phase SH5b: aulink now reproduces ld.lld's kernel.ld
+layout on the REAL kernel (all 135 clang/nasm objects), not just the
+two-object spike.  Compared against ld.lld WITHOUT `--gc-sections` (gc is
+an OPT O8 footprint optimisation for clang's function-sections, not
+semantics; the tcc build SH5c/d has no function-sections and needs none).
+
+- **SHF_MERGE|SHF_STRINGS pools.** ld.lld merges string sections
+  (`.rodata.str1.1`, `.str1.16`) and fixed-size constant sections
+  (`.rodata.cst4/cst16/cst32`) into per-section-NAME pools (by name, not
+  entsize: str1.16 and cst16 share entsize 16 but get separate pools).
+  aulink builds the same pools at the first merge section's position,
+  excludes the originals from the layout, and re-bases every relocation
+  against them onto the pool address (handling the PC-relative -4 addend
+  bias).  Without this `.rodata` was ~0x258 too large.
+- **Section-start alignment.** Output sections are re-aligned by the max
+  input alignment AFTER the input groups are parsed (kernel.ld has no
+  explicit `ALIGN()` on `.rodata`).
+- **Symbols inside section blocks.** `__bss_start`/`__bss_end` are defined
+  around `*(.bss)` inside the `.bss` block; aulink left `cur_addr` at the
+  block start, so `__bss_end == __bss_start` (boot.asm would zero a 0-byte
+  bss -- silently fine on QEMU's zeroed RAM, fatal on real hardware).
+  `cur_addr` now tracks `o->addr + o->size` after each input group.
+- **Gate.** `tests/unit/test_sh5b_layout.sh` (in `make test-unit`,
+  17/17): entry, PT_LOAD count+flags, `.text` addr+size 1:1, `.data`/`.bss`
+  sizes 1:1, `.rodata` addr + ≤0x10 size delta (documented merge-order),
+  identical `.text` symbol addresses, ordered `__bss_*`.  Receipt:
+  `[selfhost] layout PASS: aulink kernel.ld layout matches ld.lld (entry, PHDRs, .text 1:1, symbols)`.
+
 ## [SELFHOST SH5a — spike: tcc+aulink kernel links AND boots at the higher half] 2026-08-27
 
 `SELFHOST_PLAN.md` phase SH5a answers the SH5 measured question (Fact 2)

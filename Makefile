@@ -2471,6 +2471,13 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tests/unit/test_sh5_spike.sh"
 	@bash tests/unit/test_sh5_spike.sh || exit 1
 
+# SELFHOST_PLAN SH5b: aulink kernel.ld layout parity vs ld.lld on the real
+# kernel objects (entry, PT_LOADs, .text 1:1, key symbols, documented
+# .rodata merge delta).  Skips cleanly when the kernel objects or ld.lld are
+# absent.
+	@echo "[unit] running tests/unit/test_sh5b_layout.sh"
+	@bash tests/unit/test_sh5b_layout.sh || exit 1
+
 # WIN32_PLAN.md W32-0: provenance/licensing enforcement, plus its negative
 # control -- a checker that never fails is indistinguishable from a clean tree.
 	@echo "[unit] running tools/check_provenance.sh"

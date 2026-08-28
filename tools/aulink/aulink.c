@@ -26,6 +26,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef HAVE_STRNLEN
+static size_t aulink_strnlen(const char *s, size_t n){
+    size_t i=0; while(i<n&&s[i]) i++; return i;
+}
+#define strnlen aulink_strnlen
+#endif
 
 #define MAX_INPUTS   256
 #define MAX_SECTIONS 4096
@@ -53,6 +59,8 @@
 
 #define SHF_WRITE 0x1
 #define SHF_ALLOC 0x2
+#define SHF_MERGE 0x10
+#define SHF_STRINGS 0x20
 #define SHF_EXECINSTR 0x4
 
 #define PT_LOAD 1
@@ -98,6 +106,15 @@ struct in_sec {
     int out_idx; /* -1 unassigned, -2 discard, >=0 out */
     uint64_t out_off;
     struct in_obj *obj;
+    /* SH5b: SHF_MERGE|SHF_STRINGS support.  A merge section's contents are
+     * deduplicated into a per-entsize pool that is placed FIRST in the
+     * owning output section; every relocation against the original section
+     * is re-based onto the pool via mpool[] (binary-searched by morig[]). */
+    uint64_t entsize;
+    int is_merge, is_pool;
+    struct in_sec *pool;       /* for a merge section: its pool */
+    uint32_t *morig, *mpool, *mlen;
+    int mcount;
 };
 
 struct in_sym {
@@ -262,6 +279,9 @@ static int read_object_buf(uint8_t *buf,size_t sz,int idx,const char *path){
         struct in_sec *sec=&o->secs[si];
         snprintf(sec->name,sizeof sec->name,"%s",sec_name(o,(uint32_t)i));
         sec->type=h->sh_type; sec->flags=h->sh_flags; sec->align=h->sh_addralign?h->sh_addralign:1;
+        if(h->sh_flags&SHF_MERGE){
+            sec->is_merge=1; sec->entsize=h->sh_entsize?h->sh_entsize:1;
+        }
         sec->size=h->sh_size; sec->data=(h->sh_type==SHT_NOBITS)?NULL:(buf+h->sh_offset);
         sec->out_idx=-1; sec->obj=o; sec->out_off=0;
         if(n_secs>=MAX_SECTIONS){fprintf(stderr,"aulink: too many sections\n"); return -1;}
@@ -350,6 +370,7 @@ static void parse_input_group(int out_idx,int sort_by_name){
     if(is_sym_c(')')) next_tok();
     struct in_sec *match[MAX_SECTIONS]; int nm=0;
     for(int i=0;i<n_secs;i++){struct in_sec *s=all_secs[i]; if(s->out_idx!=-1) continue;
+        if(s->is_merge&&!s->is_pool) continue;   /* SH5b: contents live in the pool */
         for(int p=0;p<npat;p++) if(pat_match(pats[p],s->name)){if(nm<MAX_SECTIONS) match[nm++]=s; s->out_idx=out_idx; break;}}
     if(sort_by_name&&nm>1) qsort(match,(size_t)nm,sizeof(match[0]),cmp_sec_name);
     struct out_sec *o=&out_secs[out_idx];
@@ -441,7 +462,13 @@ static void parse_script(void){
                                 if(sec_align>o->align) o->align=sec_align;
                                 uint64_t a=o->align?o->align:1; cur_addr=(cur_addr+a-1)&~(a-1); o->addr=cur_addr;
                                 while(!is_sym_c('}')&&sc.tok!=0){
-                                    if(sc.tok_text[0]=='*'){next_tok(); if(is_sym_c('(')) parse_input_group(out_idx,0);}
+                                    if(sc.tok_text[0]=='*'){next_tok(); if(is_sym_c('(')) parse_input_group(out_idx,0);
+                                        /* symbols defined INSIDE this block
+                                         * (e.g. kernel.ld's __bss_start/__bss_end
+                                         * around *(.bss)) must see the current
+                                         * end of the output section, not the
+                                         * section's start. */
+                                        cur_addr=o->addr+o->size;}
                                     else if(sc.tok==1&&(strcmp(sc.tok_text,"KEEP")==0||strcmp(sc.tok_text,"SORT_BY_INIT_PRIORITY")==0)) parse_keep_wrapper(out_idx);
                                     else if(is_dot()){next_tok(); if(is_sym_c('=')){next_tok(); cur_addr=expr_value(); if(is_sym_c(';')) next_tok();}}
                                     else if(sc.tok==1){
@@ -452,6 +479,16 @@ static void parse_script(void){
                                 if(is_sym_c('}')) next_tok();
                                 if(is_sym_c(':')){next_tok(); if(sc.tok==1){for(int p=0;p<sc.phdr_count;p++) if(strcmp(sc.phdrs[p].name,sc.tok_text)==0) ph=p; next_tok();}}
                                 out_secs[out_idx].phdr=ph;
+                                /* SH5b: the input groups may have raised
+                                 * o->align past what the script said (no
+                                 * ALIGN() in kernel.ld -> it was 1); GNU
+                                 * ld aligns the section start by the max
+                                 * input align, so re-align now that the
+                                 * groups are known. */
+                                if(o->align>1){
+                                    uint64_t na=(o->addr+o->align-1)&~(o->align-1);
+                                    if(na!=o->addr){ cur_addr+=(na-o->addr); o->addr=na; }
+                                }
                                 uint64_t end=o->addr+o->size; if(cur_addr>end) end=cur_addr; cur_addr=end;
                             }
                         }
@@ -580,6 +617,36 @@ static void apply_relocations(int collect_only){
                     continue;
                 }
                 uint64_t S=sym_addr(sym); uint64_t P=base+off; uint8_t *where=sec->data?sec->data+off:NULL;
+                /* SH5b: a relocation against a merge section targets one of
+                 * its strings; the string lives in the pool now, so re-base
+                 * the addend (which is the string's offset in the original
+                 * section) onto the pool address. */
+                {
+                    struct in_sec *msym=NULL;
+                    if(sym->obj){
+                        int mai=alloc_index_for_shndx(sym->obj,sym->shndx);
+                        if(mai>=0&&sym->obj->secs[mai].is_merge) msym=&sym->obj->secs[mai];
+                    }
+                    if(msym&&msym->pool&&msym->mcount){
+                        /* PC-relative relocations carry the standard -4
+                         * bias (disp32 is measured from the end of the
+                         * instruction): the element offset is addend+4.
+                         * Absolute ones (64/32/32S) use the addend as-is. */
+                        int pc=(type==R_X86_64_PC32||type==R_X86_64_PLT32);
+                        int64_t want=(int64_t)addend+(pc?4:0);
+                        int lo=0,hi=msym->mcount-1,found=-1;
+                        while(lo<=hi){int mid=(lo+hi)/2;
+                            if(want>=(int64_t)msym->morig[mid]&&want<(int64_t)(msym->morig[mid]+msym->mlen[mid])){found=mid;break;}
+                            else if(want<(int64_t)msym->morig[mid]) hi=mid-1; else lo=mid+1;}
+                        if(found>=0){
+                            struct in_sec *pool=msym->pool;
+                            S=out_secs[pool->out_idx].addr+pool->out_off;
+                            addend=(int64_t)msym->mpool[found]-(pc?4:0);
+                        } else {
+                            fprintf(stderr,"aulink: merge addend 0x%llx out of range in %s\n",(unsigned long long)addend,msym->name); errors++;
+                        }
+                    }
+                }
                 switch(type){
                 case R_X86_64_64:{uint64_t v=S+(uint64_t)addend; if(where) for(int b=0;b<8;b++) where[b]=(uint8_t)(v>>(8*b)); break;}
                 case R_X86_64_32: case R_X86_64_32S:{
@@ -717,6 +784,132 @@ static void write_output(const char *path){
     free(out); free(shstr); free(strtab); free(symtab); free(sec_off); free(all);
 }
 
+/* ---- SH5b: SHF_MERGE|SHF_STRINGS pools ---- */
+static uint8_t *pool_data; static size_t pool_len, pool_cap;
+static struct { uint32_t hash, off, len; } *pent; static int npent, cpent;
+static int pool_buckets[8192]; static int *pnext; static int nbuckets=8192;
+
+static uint32_t str_hash(const uint8_t *p, size_t n){
+    uint32_t h=2166136261u; for(size_t i=0;i<n;i++){h^=p[i]; h*=16777619u;} return h;
+}
+/* find/add a byte string in the pool; returns the pool offset */
+static uint32_t pool_add(const uint8_t *p, size_t n, size_t align){
+    if(align>1){ pool_len=(pool_len+align-1)&~(align-1); }
+    uint32_t h=str_hash(p,n);
+    int b=(int)(h&(nbuckets-1));
+    for(int idx=pool_buckets[b]; idx>=0; idx=pnext[idx]){
+        if(pent[idx].hash==h&&pent[idx].len==(uint32_t)n&&
+           memcmp(pool_data+pent[idx].off,p,n)==0) return pent[idx].off;
+    }
+    if(pool_len+n>pool_cap){ pool_cap=pool_cap?pool_cap*2:16384; while(pool_len+n>pool_cap) pool_cap*=2;
+        pool_data=realloc(pool_data,pool_cap); if(!pool_data){fprintf(stderr,"aulink: oom pool\n"); exit(1);} }
+    uint32_t off=(uint32_t)pool_len;
+    memcpy(pool_data+off,p,n); pool_len+=n;
+    if(npent>=cpent){ cpent=cpent?cpent*2:1024; pent=realloc(pent,(size_t)cpent*sizeof*pent);
+        pnext=realloc(pnext,(size_t)cpent*sizeof(int)); if(!pent||!pnext){fprintf(stderr,"aulink: oom pent\n"); exit(1);} }
+    pent[npent].hash=h; pent[npent].off=off; pent[npent].len=(uint32_t)n;
+    pnext[npent]=pool_buckets[b]; pool_buckets[b]=npent; npent++;
+    return off;
+}
+
+static void build_merge_pools(void){
+    /* pool keys: the section-name suffix (str1.1, str1.16, cst4, cst16,
+     * cst32) -- ld.lld merges per section NAME, not per entsize (str1.16
+     * and cst16 share entsize 16 but get separate pools). */
+    char keys[16][64]; int nkeys=0;
+    for(int i=0;i<n_secs;i++) if(all_secs[i]->is_merge){
+        const char *nm=all_secs[i]->name; const char *dot=strrchr(nm,'.');
+        const char *key=dot?dot+1:nm;
+        int seen=0; for(int k=0;k<nkeys;k++) if(strcmp(keys[k],key)==0){seen=1;break;}
+        if(!seen&&nkeys<16) snprintf(keys[nkeys++],64,"%s",key);
+    }
+    if(!nkeys) return;
+    for(int e=0;e<nkeys;e++){
+        const char *key=keys[e];
+        uint64_t es=0;
+        for(int i=0;i<n_secs;i++) if(all_secs[i]->is_merge){
+            const char *nm=all_secs[i]->name; const char *dot=strrchr(nm,'.');
+            if(strcmp(dot?dot+1:nm,key)==0){es=all_secs[i]->entsize;break;}
+        }
+        pool_data=NULL; pool_len=0; pool_cap=0; npent=0; cpent=0;
+        for(int i=0;i<nbuckets;i++) pool_buckets[i]=-1;
+        pnext=NULL;
+        /* pool section created below; first pass assigns every merge section
+         * a map and grows the pool in section order (== object order, which
+         * is how ld.lld orders the merged strings too) */
+        for(int i=0;i<n_secs;i++){
+            struct in_sec *s=all_secs[i];
+            if(!s->is_merge||s->type==SHT_NOBITS) continue;
+            { const char *nm=s->name; const char *dot=strrchr(nm,'.');
+              if(strcmp(dot?dot+1:nm,key)!=0) continue; }
+            /* count elements */
+            int is_str=(s->flags&SHF_STRINGS)!=0;
+            int cnt=0; size_t off=0;
+            while(off<s->size){
+                if(is_str&&es==1){ const uint8_t *z=memchr(s->data+off,0,s->size-off); if(!z) break; off+=(size_t)(z-(s->data+off))+1; }
+                else off+=es;
+                cnt++;
+            }
+            if(!cnt) continue;
+            s->morig=malloc((size_t)cnt*sizeof(uint32_t));
+            s->mpool=malloc((size_t)cnt*sizeof(uint32_t));
+            s->mlen  =malloc((size_t)cnt*sizeof(uint32_t));
+            s->mcount=cnt;
+            int idx=0; off=0;
+            while(off<s->size){
+                size_t alen;
+                uint32_t poff;
+                if(is_str&&es==1){
+                    const uint8_t *z=memchr(s->data+off,0,s->size-off);
+                    if(!z) break;
+                    alen=(size_t)(z-(s->data+off))+1;   /* incl NUL */
+                    poff=pool_add(s->data+off,alen,1);
+                }else if(is_str){
+                    alen=strnlen((const char*)s->data+off,(size_t)es);
+                    poff=pool_add(s->data+off,alen,(size_t)s->align?s->align:1);
+                }else{
+                    alen=(size_t)es;                    /* fixed-size constants */
+                    poff=pool_add(s->data+off,alen,(size_t)s->align?s->align:1);
+                }
+                s->morig[idx]=(uint32_t)off;
+                s->mpool[idx]=poff;
+                s->mlen[idx]=(uint32_t)alen;
+                idx++;
+                off+=(is_str&&es==1)?alen:es;
+            }
+            s->mcount=idx;
+        }
+        /* build the pool section and prepend it to all_secs */
+        if(pool_len){
+            struct in_sec *pool=calloc(1,sizeof *pool);
+            snprintf(pool->name,sizeof pool->name,".rodata.%s.pool",key);
+            pool->type=SHT_PROGBITS; pool->flags=SHF_ALLOC;
+            pool->align=1; for(int i=0;i<n_secs;i++)
+                if(all_secs[i]->is_merge&&all_secs[i]->align>pool->align){
+                    const char *nm=all_secs[i]->name; const char *dot=strrchr(nm,'.');
+                    if(strcmp(dot?dot+1:nm,key)==0) pool->align=all_secs[i]->align; }
+            pool->size=pool_len;
+            pool->data=malloc(pool_len); memcpy(pool->data,pool_data,pool_len);
+            pool->out_idx=-1; pool->is_pool=1; pool->entsize=es;
+            for(int i=0;i<n_secs;i++) if(all_secs[i]->is_merge){
+                const char *nm=all_secs[i]->name; const char *dot=strrchr(nm,'.');
+                if(strcmp(dot?dot+1:nm,key)==0) all_secs[i]->pool=pool; }
+            /* insert before the FIRST merge section of this entsize, so the
+             * pool lands where ld.lld places the merged strings (the other
+             * merge sections of this entsize are dropped from the layout;
+             * their bytes live in the pool). */
+            int pos=n_secs;
+            for(int i=0;i<n_secs;i++)
+                if(all_secs[i]->is_merge){
+                    const char *nm=all_secs[i]->name; const char *dot=strrchr(nm,'.');
+                    if(strcmp(dot?dot+1:nm,key)==0){pos=i;break;} }
+            memmove(&all_secs[pos+1],&all_secs[pos],(size_t)(n_secs-pos)*sizeof(all_secs[0]));
+            all_secs[pos]=pool; n_secs++;
+        }
+        free(pent); free(pnext); pent=NULL; pnext=NULL;
+    }
+}
+
 int main(int argc,char **argv){
     const char *script=NULL,*out=NULL;
     int i=1;
@@ -735,6 +928,7 @@ int main(int argc,char **argv){
     fseek(sf,0,SEEK_END); long ssz=ftell(sf); fseek(sf,0,SEEK_SET);
     sc.text=malloc((size_t)ssz+1); if(fread(sc.text,1,(size_t)ssz,sf)!=(size_t)ssz) return 1;
     sc.text[ssz]=0; sc.len=(size_t)ssz; fclose(sf);
+    build_merge_pools();
     cur_addr=0;
     parse_script();
     int got_n=0; apply_relocations(1); got_n=n_got; /* collect GOT */

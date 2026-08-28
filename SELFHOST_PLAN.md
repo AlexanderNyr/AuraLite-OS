@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete); SH5 split into SH5a–SH5d, SH5a landed (spike: tcc+aulink kernel links AND boots at the higher half); SH5b–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete); SH5 split into SH5a–SH5d, SH5a+SH5b landed (spike boots; aulink kernel.ld layout matches ld.lld on the real objects); SH5c–SH9 pending
 
 | Phase | Result |
 |-------|--------|
@@ -16,7 +16,7 @@
 | SH4e — ELF32 backend + the in-guest assembly run | ✅ landed |
 | SH5 — the kernel, built by itself (split into SH5a–SH5d) | 🚧 pending |
 | SH5a — spike: tcc codegen links AND boots at the higher half | ✅ landed |
-| SH5b — aulink kernel.ld layout parity vs ld.lld | 🚧 pending |
+| SH5b — aulink kernel.ld layout parity vs ld.lld | ✅ landed |
 | SH5c — the kernel compiled by tcc (flag story + delta) | 🚧 pending |
 | SH5d — the in-guest build + terminal boot gate | 🚧 pending |
 | SH6 — shmake + shell scripting | 🚧 pending |
@@ -868,6 +868,79 @@ greps the two receipt lines, 2/2 assertions.  Receipt:
 `[selfhost] spike PASS: tcc+aulink kernel links at the higher half`.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+### Phase SH5b — aulink: kernel.ld layout parity vs ld.lld on the real kernel objects ✅ LANDED (2026-08-28)
+
+**Goal.** Prove aulink reproduces ld.lld's kernel.ld layout on the REAL
+kernel (all 135 clang/nasm objects), not just the two-object spike.  The
+honest comparison runs ld.lld WITHOUT `--gc-sections` so both sides link
+the same input sections (gc is an OPT O8 footprint optimisation for the
+clang build -- it needs `-ffunction-sections`, which tcc does not provide
+and SH5c/d do not need; without gc a clang kernel does not boot, equally
+for both linkers, which is why the boot gate is SH5d's).
+
+**Result — MET.** aulink links the full kernel and matches ld.lld on:
+entry point (`_start`), PT_LOAD count + flags (`R E / R / RW`), `.text`
+address AND size 1:1, `.data`/`.bss` sizes 1:1, `.rodata` start address,
+and every key `.text` symbol at an IDENTICAL address (`_start`, `kmain`,
+`syscall_entry`, `context_switch`, `uart_init`).  `.rodata` size matches
+within 0x10 (0.005%) and `isr_table` (the one `.rodata` symbol) within the
+same delta.
+
+**aulink changes (real bugs found by the 135-object comparison):**
+- **SHF_MERGE|SHF_STRINGS pools.** ld.lld merges string sections
+  (`.rodata.str1.1`, `.str1.16`) and fixed-size constant sections
+  (`.rodata.cst4/cst16/cst32`) into per-section-NAME pools (ld.lld merges
+  by name, not entsize -- str1.16 and cst16 share entsize 16 but get
+  separate pools).  aulink now builds the same pools, placed at the first
+  merge section's position, excludes the originals from the layout, and
+  re-bases every relocation against them onto the pool address (PC-relative
+  addends carry the standard -4 bias and are handled).  Without this,
+  `.rodata` was ~0x258 larger than ld.lld's.
+- **Section-start alignment.** The output section start is now re-aligned
+  by the max input alignment AFTER the input groups are parsed (kernel.ld
+  has no explicit `ALIGN()` on `.rodata`, so aulink started it at the
+  `. += CONSTANT(MAXPAGESIZE)` result +0 instead of aligning by the
+  inputs' 16).
+- **Symbols inside section blocks.** `__bss_start`/`__bss_end` are defined
+  around `*(.bss)` INSIDE the `.bss` block; aulink left `cur_addr` at the
+  block start while parsing inputs, so `__bss_end == __bss_start` -- the
+  kernel's boot.asm would zero a 0-byte bss (silently fine on QEMU's
+  zeroed RAM, fatal on real hardware).  `cur_addr` now tracks
+  `o->addr + o->size` after each input group.
+
+**Gate.** MET. `tests/unit/test_sh5b_layout.sh` (registered in
+`make test-unit`) links the kernel with both linkers and asserts the layout
+above, 17/17 assertions; skips cleanly without ld.lld or the kernel
+objects.  Receipt:
+`[selfhost] layout PASS: aulink kernel.ld layout matches ld.lld (entry, PHDRs, .text 1:1, symbols)`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH5c — the kernel, compiled by tcc (flag story + measured delta) 🚧 PENDING
+
+**Goal.** Build `kernel.elf` from the kernel's C sources with tcc (host
+first), closing the remaining Fact 2 flag story (`-mno-red-zone` audit,
+stack-protector absence, the missing function-sections → no-gc footprint
+delta) with measured numbers.
+
+**Gate.** Host link of the tcc-built kernel objects with aulink; the
+flag-delta table recorded in this section.  Boot moves to SH5d.
+
+---
+
+### Phase SH5d — the in-guest build + the terminal boot gate 🚧 PENDING
+
+**Goal.** Build the kernel entirely in-guest (tcc + aulink + mini-asm, no
+clang/ld.lld) and boot it to the shell.
+
+**Gate.** Integration case boots the guest-built `kernel.elf` and greps the
+standard boot receipts through `[perf] boot-to-shell`.  Receipt:
+`[selfhost] kernel PASS: tcc-built kernel booted to shell`.
+
+---
 
 ### Phase SH6 — shmake + shell scripting 🚧 PENDING
 
