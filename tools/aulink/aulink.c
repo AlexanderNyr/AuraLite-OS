@@ -15,6 +15,9 @@
  *     *(COMMON), /DISCARD/, ALIGN(), CONSTANT(MAXPAGESIZE), << >>.
  *   - No --gc-sections (footprint nicety, not semantics -- SH3 D3).
  *   - Simple .a archive support (all ELF members).
+ *   - A directory argument expands to its lexically sorted immediate *.o
+ *     children.  This keeps the SH5d kernel link below the guest shell's
+ *     command-line/argument ceiling without making object order incidental.
  *
  * Host unit test: tests/unit/test_aulink.sh (parity vs ld.lld).
  * In-guest: test_selfhost_aulink.sh compiles this with tcc and links.
@@ -26,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #ifndef HAVE_STRNLEN
 static size_t aulink_strnlen(const char *s, size_t n){
     size_t i=0; while(i<n&&s[i]) i++; return i;
@@ -343,6 +347,64 @@ static int load_archive(const char *path,int *p_idx){
     }
     /* keep buf alive -- members point into it */
     return loaded;
+}
+
+/* ---- directory input expansion (SH5d) ---------------------------------- */
+/* AULink ordinarily receives one object name per argv item.  AuraLite's
+ * bootstrap shell intentionally has a small argument vector, while a full
+ * kernel has well over one hundred objects.  Treating a directory as a
+ * deterministic object set avoids both a giant command line and accidental
+ * host-directory enumeration order in the linked image. */
+static int has_object_suffix(const char *name){
+    size_t n=strlen(name);
+    return n>2 && name[n-2]=='.' && name[n-1]=='o';
+}
+static int cmp_input_path(const void *a,const void *b){
+    const char *const *pa=(const char *const *)a;
+    const char *const *pb=(const char *const *)b;
+    return strcmp(*pa,*pb);
+}
+static int path_is_directory(const char *path){
+    DIR *d=opendir(path);
+    if(!d) return 0;
+    closedir(d);
+    return 1;
+}
+static int load_directory(const char *path,int *p_idx){
+    char *names[MAX_INPUTS];
+    int n=0, loaded=0, bad=0;
+    DIR *d=opendir(path);
+    if(!d){fprintf(stderr,"aulink: cannot open object directory %s\n",path); return -1;}
+    for(;;){
+        struct dirent *ent=readdir(d);
+        if(!ent) break;
+        if(!has_object_suffix(ent->d_name)) continue;
+        if(*p_idx+n>=MAX_INPUTS){
+            fprintf(stderr,"aulink: too many inputs while reading directory %s\n",path);
+            bad=1; break;
+        }
+        size_t pl=strlen(path), nl=strlen(ent->d_name);
+        if(pl+1+nl+1>512){
+            fprintf(stderr,"aulink: object path too long: %s/%s\n",path,ent->d_name);
+            bad=1; continue;
+        }
+        names[n]=malloc(pl+1+nl+1);
+        if(!names[n]){fprintf(stderr,"aulink: out of memory reading directory %s\n",path); bad=1; break;}
+        memcpy(names[n],path,pl);
+        names[n][pl]='/';
+        memcpy(names[n]+pl+1,ent->d_name,nl+1);
+        n++;
+    }
+    closedir(d);
+    if(n>1) qsort(names,(size_t)n,sizeof(names[0]),cmp_input_path);
+    for(int i=0;i<n;i++){
+        if(read_object(names[i],*p_idx)==0){(*p_idx)++; loaded++;}
+        else bad=1;
+        free(names[i]);
+    }
+    if(n==0){fprintf(stderr,"aulink: object directory %s contains no *.o inputs\n",path); bad=1;}
+    if(!bad) fprintf(stderr,"aulink: added %d object(s) from directory %s\n",loaded,path);
+    return bad ? -1 : loaded;
 }
 
 /* ---- layout helpers ---- */
@@ -941,8 +1003,15 @@ int main(int argc,char **argv){
         if(argv[i][0]=='-'&&argv[i][1]!=0) continue;
         const char *p=argv[i];
         size_t l=strlen(p);
-        if(l>=2&&strcmp(p+l-2,".a")==0){load_archive(p,&n_objs);}
-        else if(read_object(p,n_objs)==0) n_objs++;
+        if(l>=2&&strcmp(p+l-2,".a")==0){
+            if(load_archive(p,&n_objs)<0) errors++;
+        } else if(path_is_directory(p)) {
+            if(load_directory(p,&n_objs)<0) errors++;
+        } else if(read_object(p,n_objs)==0) {
+            n_objs++;
+        } else {
+            errors++;
+        }
     }
     if(n_objs==0){fprintf(stderr,"aulink: no inputs\n"); return 1;}
     FILE *sf=fopen(script,"rb"); if(!sf){fprintf(stderr,"aulink: cannot open script %s\n",script); return 1;}

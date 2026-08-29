@@ -12,7 +12,12 @@ cc -std=c99 -O2 -o "$AULINK" "$ROOT/tools/aulink/aulink.c" || { echo "FAIL: auli
 echo "PASS: aulink compiles with host cc"
 
 OBJS="build/user/crt0.o build/user/syscall.o build/user/libc.o build/user/malloc.o build/user/env.o build/user/string_extra.o build/user/stdlib_extra.o build/user/sigreturn.o build/user/setjmp.o build/user/sysinfo.o"
-if [ ! -f build/user/libc.o ]; then echo "SKIP: userland objects not built (run 'make user' first)"; exit 0; fi
+for o in $OBJS; do
+    if [ ! -f "$o" ]; then
+        echo "SKIP: userland objects not built (missing $o; run 'make user' first)"
+        exit 0
+    fi
+done
 
 LD_OUT="$ROOT/build/aulink-ld-sysinfo.elf"
 AU_OUT="$ROOT/build/aulink-sysinfo.elf"
@@ -20,9 +25,51 @@ AU_OUT="$ROOT/build/aulink-sysinfo.elf"
 ld.lld -m elf_x86_64 -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 --gc-sections $OBJS -o "$LD_OUT" || { echo "FAIL: ld.lld could not link"; exit 1; }
 "$AULINK" -T lib/libc/user.ld -o "$AU_OUT" $OBJS || { echo "FAIL: aulink could not link"; exit 1; }
 
+# SH5d: a full kernel cannot fit into AuraLite's intentionally small shell
+# argv.  Give aulink a directory whose ordinal prefixes preserve the explicit
+# object order above; it must enumerate only *.o files, sort them, and produce
+# the same executable entry rather than relying on readdir() order.
+OBJDIR=$(mktemp -d "$ROOT/build/aulink-dir.XXXXXX")
+EMPTYDIR=$(mktemp -d "$ROOT/build/aulink-empty.XXXXXX")
+trap 'rm -rf "$OBJDIR" "$EMPTYDIR"' EXIT
+n=0
+for o in $OBJS; do
+    n=$((n + 1))
+    cp "$o" "$OBJDIR/$(printf '%02d' "$n")-$(basename "$o")"
+done
+# Only immediate *.o children are inputs; neither a nested object nor a
+# non-object sidecar may influence the deterministic link set.
+mkdir "$OBJDIR/nested"
+cp build/user/crt0.o "$OBJDIR/nested/00-hidden.o"
+printf 'not an object\n' > "$OBJDIR/README"
+DIR_OUT="$ROOT/build/aulink-sysinfo-dir.elf"
+DIR_LOG="$ROOT/build/aulink-sysinfo-dir.log"
+"$AULINK" -T lib/libc/user.ld -o "$DIR_OUT" "$OBJDIR" >"$DIR_LOG" 2>&1 \
+    || { echo "FAIL: aulink directory-input link failed"; exit 1; }
+if grep -Fq "aulink: added $n object(s) from directory $OBJDIR" "$DIR_LOG"; then
+    echo "PASS: directory input expands $n sorted immediate object files"
+else
+    echo "FAIL: directory input did not report its sorted object set"; FAILED=1
+fi
+if cmp -s "$AU_OUT" "$DIR_OUT"; then
+    echo "PASS: lexical directory expansion reproduces explicit object-order ELF byte-for-byte"
+else
+    echo "FAIL: directory expansion did not preserve the explicit lexical object order"; FAILED=1
+fi
+EMPTY_LOG="$ROOT/build/aulink-empty.log"
+if "$AULINK" -T lib/libc/user.ld -o "$ROOT/build/aulink-empty.elf" "$EMPTYDIR" >"$EMPTY_LOG" 2>&1; then
+    echo "FAIL: aulink accepted an empty object directory"; FAILED=1
+elif grep -Fq "contains no *.o inputs" "$EMPTY_LOG"; then
+    echo "PASS: empty object directory is rejected with a diagnostic"
+else
+    echo "FAIL: empty object directory lacked its diagnostic"; FAILED=1
+fi
+
 e_ld=$(readelf -h "$LD_OUT" | awk '/Entry point/{print $4}')
 e_au=$(readelf -h "$AU_OUT" | awk '/Entry point/{print $4}')
+e_dir=$(readelf -h "$DIR_OUT" | awk '/Entry point/{print $4}')
 check "$e_ld" "$e_au" "entry point matches ($e_ld)"
+check "$e_au" "$e_dir" "directory-input entry point matches explicit input order"
 
 ph_ld=$(readelf -lW "$LD_OUT" | awk '/LOAD/{print $7}')
 ph_au=$(readelf -lW "$AU_OUT" | awk '/LOAD/{print $7}')

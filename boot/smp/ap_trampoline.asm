@@ -3,7 +3,7 @@
 ;
 ; Assembled to a flat binary (`nasm -f bin`; no linker, no ELF headers),
 ; embedded into the kernel as ap_trampoline_blob[] (see
-; tools/gen_ap_trampoline_inc.py + build/ap_trampoline.inc), and copied by
+; tools/gen_ap_trampoline_inc.c + build/ap_trampoline.inc), and copied by
 ; smp_init() (kernel/arch/x86_64/smp.c) to the fixed low physical address
 ; SMP_TRAMPOLINE_CODE_PHYS = 0x8000 before every SIPI.
 ;

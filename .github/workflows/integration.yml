@@ -225,7 +225,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, posix, fs, usb, net, gui]
+        group: [core, posix, fs, usb, net, gui, selfhost]
     steps:
       - uses: actions/checkout@v4
 
@@ -252,6 +252,24 @@ jobs:
           rustup target add aarch64-unknown-none
           rustc --version
 
+      # The selfhost shard is the only one whose cases need a compiler that
+      # is itself built for AuraLite.  Every case in it SKIPs when the
+      # toolchain is absent, and a shard where all seven cases skip reports
+      # green -- exactly the "gate that quietly does nothing" this workflow
+      # already refuses elsewhere (see the mingw-w64 note above).  So build
+      # the toolchain here, before `make iso`, because the initrd only stages
+      # /bin/tcc and the /src source closure when it exists.
+      # selfhost-host-tcc covers the two cases (spike, kernel-tcc) that
+      # compile on the host with the same mob source the guest uses.
+      - name: Build the guest self-host toolchain (selfhost shard only)
+        if: matrix.group == 'selfhost'
+        run: |
+          make selfhost-deps
+          make selfhost-tcc
+          make selfhost-host-tcc
+          test -f build/selfhost/tcc.elf
+          test -f build/selfhost/libtcc1.a
+
       - name: Build the ISO
         run: |
           make deps-check
@@ -261,6 +279,25 @@ jobs:
         run: bash tests/integration/run_all.sh --group ${{ matrix.group }}
         env:
           NO_COLOR: "1"
+
+      # run_all.sh records only PASS/FAIL lines, so a case that skipped is
+      # simply absent here.  For the selfhost shard that absence is the
+      # interesting signal: it would mean the toolchain silently went missing
+      # and the whole arc stopped being verified while CI stayed green.
+      - name: Assert the selfhost gates really ran (selfhost shard only)
+        if: matrix.group == 'selfhost'
+        run: |
+          results=build/integration-logs/results-selfhost.txt
+          cat "$results"
+          for c in test_selfhost_tcc test_selfhost_userland test_selfhost_aulink \
+                   test_selfhost_asm test_selfhost_kernel_spike \
+                   test_selfhost_kernel_tcc test_selfhost_kernel_guest; do
+            if ! grep -q "^PASS $c " "$results"; then
+              echo "::error::$c did not PASS -- it skipped or failed, so the self-host arc is not verified"
+              exit 1
+            fi
+          done
+          echo "all 7 selfhost gates ran and passed"
 
       # results-<group>.txt names every case PASS/FAIL with duration:
       # step stdout is admin-only on public repos, and serial logs

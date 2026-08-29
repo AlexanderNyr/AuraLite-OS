@@ -85,6 +85,15 @@ static void test_width_and_flags(void) {
     SAME("[%05d]", -42);          /* the sign precedes the zero padding */
     SAME("[%-5d]", -42);
     SAME("[%1d]", 123456);        /* width smaller than the value */
+
+    /* TinyCC's diagnostics use argument-driven alignment and bounded source
+     * excerpts, so test the * grammar rather than only literal fields. */
+    SAME("[%*d]", 5, 42);
+    SAME("[%*d]", -5, 42);        /* negative width implies '-' */
+    SAME("[%.*d]", 3, 7);
+    SAME("[%.*s]", 3, "abcdef");
+    SAME("[%*.*s]", 6, 3, "abcdef");
+    SAME("[%.*s]", -1, "abcdef");
 }
 
 /* ---- precision on integers --------------------------------------------- */

@@ -118,6 +118,19 @@ int strncasecmp(const char *s1, const char *s2, size_t n) {
 
 /* ---- POSIX.1-2024 extended string/memory functions (Phase Q3) ---- */
 
+/* C's bounded byte search.  Besides completing <string.h>, this keeps the
+ * self-host linker self-contained: its SH5d directory mode scans ELF string
+ * sections without having to pull in the very large POSIX catch-all object. */
+void *memchr(const void *src, int c, size_t n) {
+    const unsigned char *p = (const unsigned char *)src;
+    unsigned char needle = (unsigned char)c;
+    while (n--) {
+        if (*p == needle) return (void *)p;
+        p++;
+    }
+    return NULL;
+}
+
 void *memccpy(void *dst, const void *src, int c, size_t n) {
     const unsigned char *s = src;
     unsigned char *d = dst, uc = (unsigned char)c;

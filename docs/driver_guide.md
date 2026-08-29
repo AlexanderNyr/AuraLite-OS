@@ -53,6 +53,26 @@ int  uart_has_data(void);
 char uart_getchar(void);
 ```
 
+### Consequence for host-side automation
+
+Because RX is polled rather than interrupt-driven, the guest only drains the
+16550's 16-byte FIFO while the shell is actually in its read loop.  A host
+harness that types the next command on a wall-clock schedule therefore loses
+bytes whenever a foreground program (a compiler, say) owns the CPU — the
+failure is a silently truncated command, not an error.
+
+Any test that drives a long-running guest job must therefore be
+**prompt-aware**: send a line, then wait for a fresh `auralite#` before
+sending the next.  `tests/integration/lib/prompt_qemu.py` implements exactly
+that transport (used through `il_send_prompt` / `il_run_qemu_prompt` in
+`tests/integration/lib/lib.sh`); SELFHOST SH5d feeds ~170 in-guest compiler
+invocations through it.  It also requires every `run` command to reach exit
+code 0 — the kernel already prints
+`[thread] '<name>' (tid N) exited (code=N)` for each exiting thread — so a
+failing compile stops the queue instead of surfacing later as a link error.
+`tests/unit/test_prompt_qemu.sh` covers both behaviours against a stub guest.
+Do not "fix" a slow serial test by lengthening its sleeps.
+
 ## Framebuffer and graphics
 
 The bootloader hands over a linear 32-bpp framebuffer in `boot_info_t`

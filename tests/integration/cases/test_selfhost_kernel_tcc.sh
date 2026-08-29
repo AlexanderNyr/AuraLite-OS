@@ -31,6 +31,13 @@ fi
 
 # ---- build the tcc kernel + ISO BEFORE il_init (which would otherwise
 # ---- insist on the canonical build/auralite.iso) ------------------------
+# build_kernel_tcc.sh creates this directory itself, but the shell has to open
+# the redirect target BEFORE that script starts, so the parent must already
+# exist.  Without this mkdir the case died at line 1 of the build with
+# "No such file or directory" and reported a missing kernel-tcc.iso -- a
+# failure that named the wrong thing entirely.  It went unnoticed because the
+# case skips unless host tcc was built, and no CI job built it.
+mkdir -p "$ROOT/build/selfhost/kernel-tcc"
 if ! ( cd "$ROOT" && bash tools/selfhost/build_kernel_tcc.sh --iso ) >"$ROOT/build/selfhost/kernel-tcc/iso-build.log" 2>&1; then
     echo "${C_RED}[lib] tcc kernel build failed${C_RESET}"
     tail -15 "$ROOT/build/selfhost/kernel-tcc/iso-build.log" | sed 's/^/    /'

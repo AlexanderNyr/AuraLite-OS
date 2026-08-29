@@ -1,14 +1,19 @@
 /*
  * test_string_ext.c — host-side unit test for Phase Q3 string/memory
- * extensions (memccpy, memmem, stpcpy, stpncpy, strlcpy, strlcat,
+ * extensions (memchr, memccpy, memmem, stpcpy, stpncpy, strlcpy, strlcat,
  * strverscmp, strsignal).
  *
  * Compiled with the host compiler and linked against the host libc.
- * The implementation being tested is in libc/src/string_extra.c but this test
- * re-implements the same algorithms standalone (or simply verifies semantics
- * using the host functions where available) to avoid linking against the
- * freestanding runtime. For functions not available on the host, we compile
+ * Most of the functions under test are re-implemented here standalone (or
+ * verified with the host's own equivalent) to avoid linking against the
+ * freestanding runtime.  For functions not available on the host, we compile
  * and inline a local copy.
+ *
+ * memchr is the exception, deliberately: it is linked in as the SHIPPED body
+ * via tools/extract_libc_impls.py (renamed auralite_memchr so GCC's builtin
+ * cannot shadow it), because SELFHOST SH5d made it load-bearing for aulink's
+ * in-guest ELF string scan.  A re-implementation there would prove nothing
+ * about the code the guest actually links.
  */
 
 #include <stdio.h>
@@ -296,9 +301,67 @@ static void test_strsignal_func(void) {
 
 /* ---- Main ---- */
 
+/* ---- memchr: the SHIPPED implementation, not a local copy --------------- */
+/* SELFHOST SH5d added memchr() to string_extra.c because aulink's
+ * merge-pool scan needs to locate string terminators inside raw ELF
+ * sections.  tools/extract_libc_impls.py pulls the real body out and renames
+ * it to auralite_memchr -- calling plain memchr() here would let GCC expand
+ * it into its own builtin and the shipped code would never execute (the same
+ * trap the extractor documents for memmove). */
+extern void *auralite_memchr(const void *s, int c, size_t n);
+
+static void test_memchr_func(void) {
+    const char *s = "AuraLite";              /* 8 chars + NUL */
+    const unsigned char raw[] = {0x00, 0x01, 0x7f, 0x80, 0xff, 'A', 0x00, 0x41};
+
+    /* Basic hit / miss / empty-length semantics.  A(0)u(1)r(2)a(3)L(4)... */
+    CHECK(auralite_memchr(s, 'L', 8) == s + 4);
+    CHECK(auralite_memchr(s, 'z', 8) == NULL);
+    CHECK(auralite_memchr(s, 'A', 0) == NULL);   /* n==0 finds nothing */
+
+    /* The NUL terminator is a normal byte: this is exactly how aulink finds
+     * the end of a string inside a SHF_STRINGS section. */
+    CHECK(auralite_memchr(s, 0, 9) == s + 8);
+    CHECK(auralite_memchr(raw, 0, 1) == raw);            /* leading NUL */
+    CHECK(auralite_memchr(raw + 1, 0, 6) == raw + 6);    /* interior NUL */
+
+    /* Bytes >= 0x80 must compare as unsigned.  A signed comparison turns
+     * needle 0x80 into -128 and silently misses every high byte in an ELF
+     * string pool, which is the failure mode this entry point exists for. */
+    CHECK(auralite_memchr(raw, 0x80, sizeof raw) == raw + 3);
+    CHECK(auralite_memchr(raw, 0xff, sizeof raw) == raw + 4);
+    CHECK(auralite_memchr(raw, 0x7f, sizeof raw) == raw + 2);
+
+    /* The same bytes reached through a negative int, as a caller holding an
+     * `int c` from getchar()/fgetc() would pass them. */
+    CHECK(auralite_memchr(raw, -128, sizeof raw) == raw + 3);
+    CHECK(auralite_memchr(raw, -1, sizeof raw) == raw + 4);
+
+    /* The length is a hard bound: a match at or beyond n must not be seen. */
+    CHECK(auralite_memchr(raw, 'A', 5) == NULL);
+    CHECK(auralite_memchr(raw, 'A', 6) == raw + 5);
+
+    /* Cross-check the shipped body against the host's memchr over buffers
+     * with embedded NULs and high bytes, for every length and every needle. */
+    for (size_t len = 0; len <= sizeof raw; len++) {
+        for (int c = 0; c < 256; c++) {
+            void *want = memchr(raw, c, len);
+            void *got = auralite_memchr(raw, c, len);
+            if (want != got) {
+                printf("  FAIL: memchr(len=%zu, c=%d): host=%p aura=%p\n",
+                       len, c, want, got);
+                failed++;
+                return;
+            }
+        }
+    }
+    passed++;
+}
+
 int main(void) {
     printf("test_string_ext:\n");
 
+    test_memchr_func();
     test_memccpy_func();
     test_memmem_func();
     test_stpcpy_func();

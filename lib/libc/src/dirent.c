@@ -7,13 +7,16 @@
  * read-only directory traversal POSIX programs perform.
  */
 
-#include "lib/libc/include/dirent.h"
-#include "lib/libc/include/unistd.h"
-#include "lib/libc/include/fcntl.h"   /* Q13: O_RDONLY/O_DIRECTORY for opendir */
-#include "lib/libc/include/stdio.h"   /* Q13: snprintf for fdopendir's path */
-#include "lib/libc/include/stdlib.h"
-#include "lib/libc/include/string.h"
-#include "lib/libc/include/errno.h"
+/* Use public include names, not repository-relative paths.  The old form
+ * happened to work in the host tree but failed after this source was staged
+ * at /src/libc/src for the in-guest self-host build. */
+#include <dirent.h>
+#include <unistd.h>
+#include <fcntl.h>   /* Q13: O_RDONLY/O_DIRECTORY for opendir */
+#include <stdio.h>   /* Q13: snprintf for fdopendir's path */
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 
 #define DIRENT_MAX 256   /* entries snapshotted per directory */
 

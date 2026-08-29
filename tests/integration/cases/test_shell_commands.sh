@@ -14,6 +14,9 @@ IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
 MARK="MARK_$$_$(date +%s)"
+# Keep words separate: this catches output reordering when echo mixes buffered
+# stdio separators with direct write() payloads.
+ECHO_MARK="$MARK spaced output"
 
 il_send_delay 6
 il_send "help"
@@ -26,7 +29,7 @@ il_send "free"
 il_send_delay 1
 il_send "ls /"
 il_send_delay 1
-il_send "echo $MARK"
+il_send "echo $ECHO_MARK"
 il_send_delay 1
 il_send "ps"
 il_send_delay 1
@@ -49,7 +52,9 @@ il_assert_grep "$LOG" "(free|usable|MiB|KiB)" "free output"
 il_assert_grep "$LOG" "bin/"                "ls / shows the bin directory"
 il_assert_grep "$LOG" "apps/"               "ls / shows the apps directory"
 
-il_assert_grep "$LOG" "$MARK"               "echo round-tripped marker"
+# The input echo begins with `echo `, so an anchored line proves cmd_echo's
+# own output has preserved both spaces and ordering.
+il_assert_grep "$LOG" "^$ECHO_MARK$"          "echo round-tripped multiword marker"
 
 # the program ran, whatever directory it now lives in
 il_assert_grep "$LOG" "(Hello|hello)"       "/hello ran"

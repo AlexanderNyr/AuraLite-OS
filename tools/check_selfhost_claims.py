@@ -11,7 +11,8 @@ same treatment it prescribes for the OS: verified by an outside party.
 
 Ties the plan to the tree:
   - the status table has all ten phases SH0..SH9;
-  - SH0 (the landed phase) is backed by this checker and the plan file;
+  - landed phases that own terminal tree artefacts (SH0, SH5) are backed by
+    those files, so a status flip cannot outlive the code it claims;
   - every phase section has a "**Gate." line (no phase lands ungated);
   - the §8 receipt strings are still listed in the plan (a renamed
     receipt silently orphans a host integration case);
@@ -85,6 +86,34 @@ def check_plan(plan, tree_has_file):
                     fails.append("SH0: marked ✅ but SELFHOST_PLAN.md missing")
                 if not tree_has_file("tools", "check_selfhost_claims.py"):
                     fails.append("SH0: marked ✅ but checker file missing")
+        if phase == "SH5" and "✅" in status:
+            # SH5's whole claim is "the guest built the kernel", and the only
+            # durable evidence of that is the gate that ran the build plus the
+            # portable generators the guest had to use.  If any of them is
+            # renamed or deleted, the ✅ becomes prose again -- exactly the
+            # drift AUDIT_A7/A3 found in the other plans.
+            for parts in [
+                ("tests", "integration", "cases",
+                 "test_selfhost_kernel_guest.sh"),
+                ("tests", "integration", "lib", "prompt_qemu.py"),
+                ("tests", "unit", "test_sh5d_generators.sh"),
+                ("tools", "gen_user_binary.c"),
+                ("tools", "gen_ap_trampoline_inc.c"),
+                ("tools", "aulink", "aulink.c"),
+            ]:
+                if not tree_has_file(*parts):
+                    fails.append("SH5: marked ✅ but %s missing"
+                                 % "/".join(parts))
+            # SH5 also *removed* the Python-only header emitters from the
+            # kernel build path; their C twins are what the guest compiles.
+            # A resurrected .py would mean the in-guest build no longer
+            # covers the path the plan says it covers.
+            for parts in [("tools", "gen_user_binary.py"),
+                          ("tools", "gen_ap_trampoline_inc.py")]:
+                if tree_has_file(*parts):
+                    fails.append("SH5: marked ✅ but %s is back in the tree "
+                                 "(the kernel header path must stay C-only)"
+                                 % "/".join(parts))
 
     # Required sections (the plan's own contract).
     for sec in ["## 2. Decisions", "## 3. Phases", "## 6. What this plan "
@@ -135,6 +164,22 @@ def main():
             print("check_selfhost_claims: SELFTEST FAILED -- planted "
                   "receipt-drift violation not caught")
             return 1
+        # Planted violation 3: SH5 ✅ while its terminal gate case is gone.
+        # The predicate models the real tree (the Python emitters really are
+        # deleted) minus the gate case, so only the missing-artefact check
+        # can fire and the assertion below is specific to it.
+        if any("✅" in st for ph, st in
+               re.findall(r"^\|\s*(SH\d+)\s+—[^|]*\|([^|]*)\|", plan, re.M)
+               if ph == "SH5"):
+            gone = ("test_selfhost_kernel_guest.sh", "gen_user_binary.py",
+                    "gen_ap_trampoline_inc.py")
+            fails = check_plan(plan, lambda *p: p[-1] not in gone)
+            if not any("SH5: marked ✅ but tests/integration/cases/"
+                       "test_selfhost_kernel_guest.sh missing" in f
+                       for f in fails):
+                print("check_selfhost_claims: SELFTEST FAILED -- planted "
+                      "SH5-artefact violation not caught")
+                return 1
         print("check_selfhost_claims: SELFTEST OK (planted violations "
               "caught)")
         return 0

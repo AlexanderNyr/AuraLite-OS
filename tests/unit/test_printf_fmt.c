@@ -98,6 +98,16 @@ int main(void) {
     FMT("  matrix       1.0      [available]  rain",
         "  %-12s %-8s %-12s %s", "matrix", "1.0", "[available]", "rain");
 
+    /* --- dynamic width / precision: tcc's diagnostic path --- */
+    FMT("   abc",       "%*s", 6, "abc");
+    FMT("abc   ",       "%*s", -6, "abc");  /* negative width => '-' */
+    FMT("    42",       "%*d", 6, 42);
+    FMT("abc",          "%.3s", "abcdef");
+    FMT("abc",          "%.*s", 3, "abcdef");
+    FMT("abcdef",       "%.*s", -1, "abcdef"); /* negative => omitted */
+    FMT("   abc",       "%*.*s", 6, 3, "abcdef");
+    FMT("007",          "%.*d", 3, 7);
+
     /* --- widths on other conversions --- */
     FMT("2a        ",   "%-10x", 42);
     FMT("        2a",   "%10x", 42);

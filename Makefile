@@ -713,13 +713,14 @@ $(BUILD_DIR)/%.o: %.asm
 
 # Auto-generated nasm struct-offset include (keeps hand-written asm in sync
 # with tcb_t).  Built by a tiny host program using offsetof().
-$(BUILD_DIR)/gen_asm_offsets: tools/gen_asm_offsets.c kernel/proc/thread.h
+$(BUILD_DIR)/gen_asm_offsets: tools/gen_asm_offsets.c kernel/proc/thread.h \
+                                kernel/arch/x86_64/cpu_local.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -I . $< -o $@
 
 $(BUILD_DIR)/asm_offsets.inc: $(BUILD_DIR)/gen_asm_offsets
 	@mkdir -p $(dir $@)
-	$< > $@
+	$< $@
 
 # context.asm %includes asm_offsets.inc for TCB field offsets;
 # syscall_entry.asm %includes it for the per-CPU struct cpu_local slots.
@@ -739,9 +740,15 @@ $(AP_TRAMPOLINE_BIN): $(AP_TRAMPOLINE_SRC)
 	@mkdir -p $(dir $@)
 	$(AS) -f bin -o $@ $<
 
-$(AP_TRAMPOLINE_INC): $(AP_TRAMPOLINE_BIN) tools/gen_ap_trampoline_inc.py
+# SH5d: C twin of the old Python emitter.  Its optional output argument is
+# also what lets the guest build produce this header without shell redirects.
+$(BUILD_DIR)/gen_ap_trampoline_inc: tools/gen_ap_trampoline_inc.c
 	@mkdir -p $(dir $@)
-	python3 tools/gen_ap_trampoline_inc.py $< > $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $< -o $@
+
+$(AP_TRAMPOLINE_INC): $(AP_TRAMPOLINE_BIN) $(BUILD_DIR)/gen_ap_trampoline_inc
+	@mkdir -p $(dir $@)
+	$(BUILD_DIR)/gen_ap_trampoline_inc $< $@
 	@echo "  [ap-trampoline] $@"
 
 # smp.c #includes build/ap_trampoline.inc directly.
@@ -1675,10 +1682,15 @@ $(HELLO_ELF): $(USER_BUILD)/hello.o $(USER_COMMON) lib/libc/user.ld
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/hello.o $(USER_COMMON_LNK) -o $@
 	@echo "[link] $(HELLO_ELF)"
 
-# Embed init.elf into the kernel as a C array.
-$(USER_BIN_H): $(INIT_ELF) tools/gen_user_binary.py
+# Embed init.elf into the kernel as a C array.  SH5d uses the same portable
+# generator in-guest, so no Python-only binary emitter remains in this path.
+$(BUILD_DIR)/gen_user_binary: tools/gen_user_binary.c
 	@mkdir -p $(dir $@)
-	python3 tools/gen_user_binary.py $(INIT_ELF) $@ init_bin
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $< -o $@
+
+$(USER_BIN_H): $(INIT_ELF) $(BUILD_DIR)/gen_user_binary
+	@mkdir -p $(dir $@)
+	$(BUILD_DIR)/gen_user_binary $(INIT_ELF) $@ init_bin
 
 # user.c includes the generated init_bin.h; ensure it exists first.
 $(BUILD_DIR)/kernel/proc/user.o: $(USER_BIN_H)
@@ -1799,6 +1811,22 @@ SELFHOST_SRC     := $(SELFHOST_DIR)/tcc-src
 SELFHOST_OBJDIR  := $(SELFHOST_DIR)/obj
 SELFHOST_TCC     := $(SELFHOST_DIR)/tcc.elf
 SELFHOST_LIBTCC1 := $(SELFHOST_DIR)/libtcc1.a
+# SH5d stages this complete source closure into the initrd.  Listing EVERY
+# staged input (not merely kernel/) as a make prerequisite prevents a stale
+# bootstrap image from claiming an in-guest build while compiling yesterday's
+# libc/tool/header source.  The fetched tcc include tree is optional, just as
+# the guest tcc itself is; suppress find's harmless absent-bootstrap warning.
+SELFHOST_KERNEL_STAGE := $(shell find kernel drivers boot w32 \
+                                      lib/libc/include lib/libc/src -type f) \
+                         $(shell find $(SELFHOST_SRC)/include -type f 2>/dev/null) \
+                         kernel.ld lib/libc/user.ld \
+                         tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
+                         tools/selfhost/tcc_crt0.s tools/selfhost/tcc_builtins.c \
+                         tools/selfhost/stdint.h tools/selfhost/hello.c \
+                         tools/selfhost/userland_ok.c \
+                         userspace/apps/sysinfo/sysinfo.c userspace/apps/editor/editor.c \
+                         tools/gen_asm_offsets.c tools/gen_user_binary.c \
+                         tools/gen_ap_trampoline_inc.c
 # tccrun.c is deliberately excluded: -run is unsupported on AuraLite, and
 # tools/selfhost/tcc_glue.c stubs tcc_run()/tcc_run_free().  tcctools.c is
 # #included by tcc.c upstream, so it is not a separate object either.
@@ -2103,7 +2131,17 @@ $(BUILD_DIR)/user/petest.obj: w32/tests/petest.asm
 .PHONY: petest
 petest: $(PETEST_EXE) $(PETEST_RELOC_EXE)
 
-$(BUILD_DIR)/initrd.tar: tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
+# Host reference assembler used only while staging SH4 parity objects into
+# the bootstrap initrd.  It must be an explicit prerequisite: before SH5d
+# this command was called from the initrd recipe without a producing target,
+# so a clean tree silently staged no reference objects.
+$(BUILD_DIR)/mini-asm: tools/mini-asm/mini-asm.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c99 -O2 -o $@ $<
+
+$(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
+                         tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
+                         $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
                          $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
@@ -2131,6 +2169,14 @@ $(BUILD_DIR)/initrd.tar: tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
 # /src (libc sources+headers, the C-only crt0/syscall glue, and the apps
 # the SH2 gate rebuilds).  Only .c/.s/.h — the NASM files stay out; tcc_crt0.s
 # replaces them (crt0.asm, syscall.asm, sigreturn.asm).
+#
+# SELFHOST SH5d extends that closure with kernel/, drivers/, boot/, w32/,
+# kernel.ld, init.elf and C twins of the three generated-header tools.  They
+# live under /src at their repository paths, so the source's existing
+# #include "kernel/..." / "build/..." conventions remain valid with -I/src
+# and a writable /tmp/sh5d/build overlay.  The complete stage is intentional:
+# the guest, not a host compiler, turns every x86_64 kernel source into the
+# final /fat/KERNEL.ELF.
 	@if [ -f $(SELFHOST_TCC) ]; then \
 	    strip -s $(SELFHOST_TCC) -o $(INITRD_DIR)/bin/tcc; \
 	    mkdir -p $(INITRD_DIR)/apps/tcc/include; \
@@ -2139,7 +2185,7 @@ $(BUILD_DIR)/initrd.tar: tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
 	    cp tools/selfhost/hello.c $(INITRD_DIR)/tests/selfhost_hello.c; \
 	    cp tools/selfhost/stdint.h $(INITRD_DIR)/apps/tcc/include/stdint.h; \
 	    mkdir -p $(INITRD_DIR)/src/libc/include $(INITRD_DIR)/src/libc/src \
-	             $(INITRD_DIR)/src/apps; \
+	             $(INITRD_DIR)/src/apps $(INITRD_DIR)/src/selfhost; \
 	    cp -r lib/libc/include/. $(INITRD_DIR)/src/libc/include/; \
 	    find $(INITRD_DIR)/src/libc/include -name '*.h' -exec \
 	        sed -i 's|#include "\.\./|#include "|' {} +; \
@@ -2152,6 +2198,11 @@ $(BUILD_DIR)/initrd.tar: tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
     cp tools/aulink/aulink.c $(INITRD_DIR)/src/aulink.c; \
     cp lib/libc/user.ld $(INITRD_DIR)/src/libc/user.ld; \
     cp tools/mini-asm/mini-asm.c $(INITRD_DIR)/src/mini-asm.c; \
+    cp -a kernel drivers boot w32 $(INITRD_DIR)/src/; \
+    cp kernel.ld $(INITRD_DIR)/src/kernel.ld; \
+    cp $(INIT_ELF) $(INITRD_DIR)/src/selfhost/init.elf; \
+    cp tools/gen_asm_offsets.c tools/gen_user_binary.c \
+       tools/gen_ap_trampoline_inc.c $(INITRD_DIR)/src/selfhost/; \
     mkdir -p $(INITRD_DIR)/src/selfhost/ref; \
     cp kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
        kernel/arch/x86_64/boot.asm $(INITRD_DIR)/src/selfhost/; \
@@ -2161,7 +2212,7 @@ $(BUILD_DIR)/initrd.tar: tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
             -f elf64 -I . -I $(BUILD_DIR)/ \
             kernel/arch/x86_64/$$f.asm -o $(INITRD_DIR)/src/selfhost/ref/$$f.o; \
     done; \
-	    echo "[selfhost] staged guest tcc into initrd (/bin/tcc + /apps/tcc + /src userland sources)"; \
+	    echo "[selfhost] staged guest tcc + SH5d kernel source closure into initrd"; \
 	else \
 	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \
 	fi
@@ -2458,6 +2509,19 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # when the archives have not been built.
 	@echo "[unit] running tests/unit/test_userlibs.sh"
 	@bash tests/unit/test_userlibs.sh || exit 1
+
+# SELFHOST_PLAN SH5d: the C replacements for Python-only generated-header
+# emitters preserve stdout compatibility and support explicit output paths,
+# which is what the in-guest shell can invoke without redirection.
+	@echo "[unit] running tests/unit/test_sh5d_generators.sh"
+	@bash tests/unit/test_sh5d_generators.sh || exit 1
+
+# SELFHOST_PLAN SH5d: the prompt-aware serial transport that drives the
+# in-guest build.  Its per-command zero-exit gate is what turns "the guest
+# build broke" into "command 41/167 failed", so it is tested against a stub
+# guest instead of only through a multi-minute QEMU boot.
+	@echo "[unit] running tests/unit/test_prompt_qemu.sh"
+	@bash tests/unit/test_prompt_qemu.sh || exit 1
 
 # SELFHOST_PLAN SH3: aulink vs ld.lld parity.  This is a script, not a C
 # binary -- it compiles tools/aulink/aulink.c with the host cc, links the
@@ -3068,9 +3132,13 @@ $(BUILD_DIR)/test_boot_offsets: tests/unit/test_boot_offsets.c boot/shared/boot_
 # setjmp.h, threads.h) #includes cleanly and that their non-builtin logic
 # behaves correctly.
 # ---- Phase Q3: string extension unit test ----
-$(BUILD_DIR)/test_string_ext: tests/unit/test_string_ext.c
+$(BUILD_DIR)/test_string_ext: tests/unit/test_string_ext.c \
+                              lib/libc/src/string_extra.c \
+                              tools/extract_libc_impls.py
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+	@python3 tools/extract_libc_impls.py $(BUILD_DIR)/libc_impls_gen.c
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< \
+	          $(BUILD_DIR)/libc_impls_gen.c -o $@
 
 # ---- Phase Q2: stdio extension unit test ----
 $(BUILD_DIR)/test_stdio_ext: tests/unit/test_stdio_ext.c

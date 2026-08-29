@@ -39,11 +39,17 @@ il_send "run tcc -c -I/src/libc/include -o /tmp/o/se2.o /src/libc/src/stdlib_ext
 il_send_delay 4
 il_send "run tcc -c -I/src/libc/include -o /tmp/o/se3.o /src/libc/src/stdio_extra.c"
 il_send_delay 4
+# SH5d gave aulink a directory operand (opendir/readdir/closedir), so its
+# in-guest link now needs dirent.o in the bootstrap libc set.  Without it the
+# link dies on unresolved references and every assertion below fails with a
+# message about a missing sysinfo banner, which points nowhere near the cause.
+il_send "run tcc -c -I/src/libc/include -o /tmp/o/d.o /src/libc/src/dirent.c"
+il_send_delay 4
 il_send "run tcc -c -I/src/libc/include -o /tmp/o/sysinfo.o /src/apps/sysinfo.c"
 il_send_delay 4
 il_send "run tcc -c -I/src/libc/include -o /tmp/o/aulink.o /src/aulink.c"
 il_send_delay 8
-il_send "run tcc -nostdlib -static -o /tmp/aulink /tmp/o/crt0.o /tmp/o/libc.o /tmp/o/bi.o /tmp/o/malloc.o /tmp/o/env.o /tmp/o/se.o /tmp/o/se2.o /tmp/o/se3.o /tmp/o/aulink.o /apps/tcc/libtcc1.a"
+il_send "run tcc -nostdlib -static -o /tmp/aulink /tmp/o/crt0.o /tmp/o/libc.o /tmp/o/bi.o /tmp/o/malloc.o /tmp/o/env.o /tmp/o/se.o /tmp/o/se2.o /tmp/o/se3.o /tmp/o/d.o /tmp/o/aulink.o /apps/tcc/libtcc1.a"
 il_send_delay 10
 il_send "run /tmp/aulink -T /src/libc/user.ld -o /tmp/sysinfo-au /tmp/o/crt0.o /tmp/o/libc.o /tmp/o/bi.o /tmp/o/malloc.o /tmp/o/env.o /tmp/o/se.o /tmp/o/se2.o /tmp/o/se3.o /tmp/o/sysinfo.o /apps/tcc/libtcc1.a"
 il_send_delay 10
@@ -58,5 +64,10 @@ il_run_qemu "$LOG" 300
 il_assert_grep "$LOG" "System Information"   "aulink-linked sysinfo runs and prints its banner"
 il_assert_grep "$LOG" "Process ID"           "aulink-linked sysinfo reaches getpid()"
 il_assert_grep "$LOG" "Size:"                "aulink wrote /tmp/sysinfo-au"
+# Name the actual cause when the in-guest toolchain link breaks.  Before this
+# the only signal was a missing sysinfo banner, which is three steps downstream
+# of an unresolved reference in tcc's own output.
+il_assert_no_grep "$LOG" "unresolved reference|tcc: error|spawn: .*not found" \
+                                           "guest tcc built and launched aulink cleanly"
 
 il_summary

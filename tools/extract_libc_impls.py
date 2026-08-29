@@ -55,6 +55,14 @@ def main():
     out.append(extract("lib/libc/src/string_extra.c",
                        "void *memmove(void *dst, const void *src, size_t n) {",
                        "auralite_memmove"))
+    # SELFHOST SH5d added memchr() so aulink's merge-pool scan can find string
+    # terminators inside raw ELF sections without dragging in posix_extra.c.
+    # Extracted (not re-implemented) and renamed for the same reason as
+    # memmove: GCC expands a call to plain memchr() into its own builtin, so
+    # a test calling it by name would never reach the shipped code.
+    out.append(extract("lib/libc/src/string_extra.c",
+                       "void *memchr(const void *src, int c, size_t n) {",
+                       "auralite_memchr"))
     out.append(extract("lib/libc/src/stdlib_extra.c",
                        "int abs(int v) {", "auralite_abs"))
 

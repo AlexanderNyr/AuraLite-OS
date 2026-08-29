@@ -196,6 +196,9 @@ ALL_CASES=(
     test_selfhost_asm
     test_selfhost_kernel_spike
     test_selfhost_kernel_tcc
+    # SH5d terminal gate: the kernel is compiled, assembled, and linked by
+    # guest-built tools, persisted through the guest FAT, then booted again.
+    test_selfhost_kernel_guest
     test_shell_all
     test_sysmon_data
     test_userspace_apps
@@ -205,7 +208,11 @@ ALL_CASES=(
 # test_doom boots UEFI and reads a 28 MB IWAD; test_ahci_large_read reads
 # 16 MiB.  Both are correctness gates rather than smoke tests, so --fast skips
 # them.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read'
+# test_selfhost_kernel_guest is the slowest case in the suite by design: it
+# compiles 126 kernel C files and assembles 9 more *inside* the guest under
+# TCG, then boots the result.  --fast skips it exactly like the other
+# correctness-over-speed gates above.
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$'
 
 # ---- thematic CI shards (2026-08-21) ----
 #

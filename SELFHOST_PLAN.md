@@ -1,6 +1,6 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH4 landed (SH4 = SH4a–SH4e complete); SH5 split into SH5a–SH5d, SH5a+SH5b+SH5c landed (spike boots; aulink kernel.ld layout matches ld.lld on the real objects; tcc compiles the whole kernel and the tcc-built kernel boots to the shell on the host); SH5d–SH9 pending
+## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -14,11 +14,11 @@
 | SH4c — `stage2_start.asm` byte-parity: %include/%if + SIB/segment-override encoder (4/4 flat) | ✅ landed |
 | SH4d — ELF64 backend, readelf parity on the kernel/libc objects | ✅ landed |
 | SH4e — ELF32 backend + the in-guest assembly run | ✅ landed |
-| SH5 — the kernel, built by itself (split into SH5a–SH5d) | 🚧 pending |
+| SH5 — the kernel, built by itself (split into SH5a–SH5d) | ✅ landed |
 | SH5a — spike: tcc codegen links AND boots at the higher half | ✅ landed |
 | SH5b — aulink kernel.ld layout parity vs ld.lld | ✅ landed |
 | SH5c — the kernel compiled by tcc (flag story + delta) | ✅ landed |
-| SH5d — the in-guest build + terminal boot gate | 🚧 pending |
+| SH5d — the in-guest build + terminal boot gate | ✅ landed |
 | SH6 — shmake + shell scripting | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
 | SH8 — bootstrap closure | 🚧 pending |
@@ -100,7 +100,7 @@ than porting lld (LLVM-scale) or forking tcc's linker.
 The tree assembles ~30 files: `boot/bios/stage1/*`, `boot/bios/stage2/*`
 (flat binaries, `-f bin`), `kernel/arch/*/isr_stubs*.asm`,
 `syscall_entry.asm`, `context*.asm`, `boot.asm`, `boot32.asm`,
-`ap_trampoline.asm` (generated from `ngen_ap_trampoline_inc.py`), per-arch
+`ap_trampoline.asm` (assembled flat and embedded by `tools/gen_ap_trampoline_inc.c`), per-arch
 crt0/syscall wrappers (`-f elf64`/`elf32`). The dialect is flat NASM syntax
 with `%include`; no macros beyond the tree's own. Two candidate paths —
 port nasm (a self-contained C program, ~150 kLOC, needs a real libc) or
@@ -111,10 +111,11 @@ write `mini-asm` for the exact in-tree subset — are a SH4 spike decision
 
 `tools/mkinitrd.sh` (tar), `tools/mkisoimage_dual.sh` (mformat/mcopy +
 **inline python3** patching the FAT BPB), `tools/gen_boot_offsets.c`
-(host `cc` — this one is already portable C), `tools/gen_user_binary.py`,
-`tools/ngen_ap_trampoline_inc.py`, `tools/gen_wv_cp1251_font.py`,
-`tools/mkapkg.c`. Each needs a C twin that runs in-guest before the loop
-can close (SH7).
+(host `cc` — already portable C), and `tools/gen_wv_cp1251_font.py` remain
+host-side image/build tooling.  SH5d replaced the kernel-path
+`gen_user_binary.py` and `gen_ap_trampoline_inc.py` recipes with portable C
+emitters, deleted both Python originals, and made `gen_asm_offsets.c`
+file-output-capable; the remaining image loop still belongs to SH7.
 
 ### Fact 6 — Runtime limits a real compiler workload hits today
 
@@ -229,10 +230,14 @@ build descriptions.
 
 ### D6. The worktree lives on `/fat`, tmpfs is scratch only
 
-1269 source files cannot fit in 64-slot tmpfs (Fact 6); `/fat` is writable,
-persistent and full-featured today. `run_qemu.sh` grows the build disk to
-256 MiB (a parameter). Reboot persistence is a requirement, not a nicety:
-a build that dies at phase 6 of 9 must resume, not restart.
+A full durable worktree cannot fit in the original 64-slot tmpfs; `/fat` is
+writable, persistent and full-featured today. `run_qemu.sh` can grow the
+build disk to 256 MiB (a parameter). SH5d deliberately uses separated
+256-slot `/tmp/sh5d/{cobj,aobj,...}` directories only for transient objects
+and persists just its 1.22 MiB final ELF to the stock 4 MiB `/fat`; SH6's
+resumable build worktree follows this decision fully. Reboot persistence is a
+requirement, not a nicety: a build that dies at phase 6 of 9 must resume, not
+restart.
 
 ### D7. The host is the judge
 
@@ -771,7 +776,7 @@ existing `4/4` bin and `13/13` elf64 lines.
 
 ---
 
-### Phase SH5 — the kernel, built by itself 🚧 PENDING (split into SH5a–SH5d)
+### Phase SH5 — the kernel, built by itself ✅ LANDED (2026-08-28; SH5a–SH5d)
 
 **Goal.** The x86_64 kernel links and boots when tcc + aulink built it.
 
@@ -789,7 +794,7 @@ step land a falsifiable increment.
 | SH5a — spike: tcc codegen links AND boots at the higher half | ✅ landed (2026-08-27) |
 | SH5b — aulink: kernel.ld layout parity vs ld.lld on the real kernel objects | ✅ landed (2026-08-28) |
 | SH5c — the kernel, compiled by tcc (flag story + measured delta) | ✅ landed (2026-08-28) |
-| SH5d — the in-guest build + the terminal boot gate | 🚧 pending |
+| SH5d — the in-guest build + the terminal boot gate | ✅ landed (2026-08-28) |
 
 **Definition of done (umbrella).** SH5a answers the spike question with
 numbers and a boot; SH5b proves aulink's kernel.ld output matches ld.lld's
@@ -798,10 +803,6 @@ sources with tcc (host first); SH5d builds it entirely in-guest (tcc +
 aulink + mini-asm, no clang/ld.lld) and boots it to the shell.
 
 **Gate.** Integration case boots the guest-built `kernel.elf`
-(host QEMU, ISO path) and greps the standard boot receipts through
-`[perf] boot-to-shell` — the same assertions `test_boot_to_shell` uses,
-applied to the self-built kernel. Receipt:
-`[selfhost] kernel PASS: tcc-built kernel booted to shell`.
 (host QEMU, ISO path) and greps the standard boot receipts through
 `[perf] boot-to-shell` — the same assertions `test_boot_to_shell` uses,
 applied to the self-built kernel. Receipt:
@@ -1037,14 +1038,98 @@ FAULT/STOP.  Receipt:
 
 ---
 
-### Phase SH5d — the in-guest build + the terminal boot gate 🚧 PENDING
+### Phase SH5d — the in-guest build + the terminal boot gate ✅ LANDED (2026-08-28)
 
 **Goal.** Build the kernel entirely in-guest (tcc + aulink + mini-asm, no
 clang/ld.lld) and boot it to the shell.
 
-**Gate.** Integration case boots the guest-built `kernel.elf` and greps the
-standard boot receipts through `[perf] boot-to-shell`.  Receipt:
+**Result — MET.** `tests/integration/cases/test_selfhost_kernel_guest.sh`
+boots a normal bootstrap image with a blank 16 MiB AHCI disk, then drives the
+existing no-script shell with a prompt-aware serial transport.  On boot #1,
+`/bin/tcc` compiles all **126** x86_64 kernel C sources in `/src` into
+`/tmp/sh5d/cobj`; a guest-tcc-built `mini-asm` emits all **9** x86_64 kernel
+assembly objects into `/tmp/sh5d/aobj`; and a guest-tcc-built `aulink` accepts
+the two directories in lexical order, links them with the guest-staged
+`libtcc1.a` and `/src/kernel.ld`, and writes `/fat/KERNEL.ELF`.  No host C
+compiler, NASM, linker, Python generator, host-built tree kernel C/asm object,
+or host kernel-link command is in that first-boot build path.  The bootstrap
+`tcc`/`libtcc1.a` and already bootstrapped `init.elf` user program are explicit
+seed inputs; closing those remaining bootstrap inputs is SH8 scope, not a
+hidden kernel compiler or linker input.
+
+The generated inputs are real guest programs too: C replacements for the
+former Python emitters write `asm_offsets.inc`, `ap_trampoline.inc`, and
+`init_bin.h` through explicit output-path arguments (smallsh has no `>`).
+Both Python originals are **deleted**, so no host interpreter remains in the
+kernel header path at all; `tools/check_selfhost_claims.py` now fails if
+either one reappears while SH5 is marked landed.  The guest build required
+the narrowly scoped closure repairs recorded below: `memchr` and dynamic `*`
+printf width/precision for tcc/aulink diagnostics, staged-build-safe libc
+directory includes, aulink immediate-directory `*.o` expansion, and initrd
+metadata raised to 1,024 files / 128 directories.  The actual staged archive
+measured **720 files, 78 subdirectories** (plus the archive's own `./` root
+entry) against those 1024/128 bounds.  The host reference `build/mini-asm` is
+now an explicit initrd prerequisite rather than a formerly implicit,
+clean-tree-missing command.
+
+The produced FAT file measured **1,220,552 bytes**.  It fits the stock
+8,192-sector (4 MiB) FAT volume (8,095 usable clusters) with substantial
+headroom, so this phase deliberately does **not** change the global FAT
+formatting default or rely on an unimplemented AHCI capacity query.  Scratch
+objects stay in `/tmp`; only the final kernel crosses the persistence boundary.
+
+For the terminal proof, the host uses mtools only to extract that exact file
+at FAT LBA 64, then the existing host image writer packs it for boot #2
+(image tooling is explicitly still SH7 scope).  Boot #2 reached the ordinary
+Ring 3 shell, answered `uname -a`, ran `/bin/sysinfo`, and reported the usual
+IDT/TSS/SYSCALL/HHDM, PMM/VMM/scheduler/VFS/SMP, and `[perf] boot-to-shell`
+receipts: **26/26 host assertions passed**, including the second-guest
+terminal receipt, the explicit 1,220,552 B ≤ 4,144,640 B FAT payload
+measurement, and a transport receipt proving all **167** queued commands were
+each delivered behind a fresh prompt.  The extracted ELF is `EXEC`/X86-64
+with `e_entry == _start == 0xffffffff801bbbe0`, and boot #2 reported
+`[perf] boot-to-shell: 391 ticks (~3949 ms @ 99 Hz)`.
+
+**Transport discipline.** `tests/integration/lib/prompt_qemu.py` sends one
+command per fresh `auralite#` and refuses to continue past a `run` command
+that did not exit zero (the kernel's own `[thread] ... exited (code=N)` line
+is the receipt).  Without that, the first failing `tcc` in a 126-file queue
+would be followed by another hundred compiles and an unrelated-looking link
+error.  Both behaviours are unit-tested against a stub guest in
+`tests/unit/test_prompt_qemu.sh`, and the new `memchr` is tested as the
+*shipped* body (extracted and renamed, so GCC's builtin cannot shadow it) in
+`tests/unit/test_string_ext.c` — a mutation of its unsigned comparison is
+caught by 5 assertions.  `docs/driver_guide.md` §UART records why
+prompt-aware driving is mandatory and why lengthening sleeps is not a fix.
+
+**Gate.** MET.  The registered selfhost-shard case above performs both boots,
+asserts the exact 126-C and 9-asm directory expansions, extracts and validates
+the x86_64 ELF, and greps the standard boot receipts through
+`[perf] boot-to-shell`.  It is in `SLOW_CASES_RE`, so `--fast` skips it like
+the other correctness-over-speed gates.  Receipt:
 `[selfhost] kernel PASS: tcc-built kernel booted to shell`.
+
+**CI wiring pulled forward from SH9.** `run_all.sh` has defined a `selfhost`
+shard since 2026-08-21, but `.github/workflows/integration.yml` listed only
+`core/posix/fs/usb/net/gui` in its matrix — so every self-host gate, including
+this one, was skipped on every push while CI reported green.  A phase gate
+that never executes is not a gate, so the matrix now includes `selfhost`: the
+job builds `selfhost-deps`/`selfhost-tcc`/`selfhost-host-tcc` before
+`make iso` (the initrd stages `/bin/tcc` and the `/src` closure only when they
+exist), and a final step requires a `PASS` line for all seven selfhost cases,
+since `run_all.sh` records only PASS/FAIL and a silent skip shows up purely as
+an absence.  The remainder of SH9 (cross-arch self-hosting) is unaffected.
+
+Running the whole shard rather than the new gate alone immediately paid for
+itself: it exposed `test_selfhost_aulink.sh` failing to link aulink in-guest
+(the bootstrap libc set predated the directory operand, so `opendir` was
+unresolved and the failure reported itself as a missing sysinfo banner) and a
+pre-existing ordering bug in `test_selfhost_kernel_tcc.sh`, which redirected
+its build log into a directory that only the script it was about to run
+creates.  Neither is visible from the SH5d gate passing on its own.  Measured
+after both fixes: **7/7 selfhost cases PASS, 0 failed** (1187 s).
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
 ---
 
@@ -1211,7 +1296,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-14 | shell caps argv at 8 / line at 256: tcc link lines silently truncated -> `unresolved reference to '__libc_start_main'` | limit | CLOSED (SH2: MAX_ARGS 32, INPUT_MAX 512) | SH2 |
 | SH-15 | tcc ignores `__attribute__((naked))`; C inline-asm `_start` gets a prologue and decodes the stack wrong | port | CLOSED (SH2: crt0 is a .s file, no prologue) | SH2 |
 | SH-16 | guest tcc ships no `<stdint.h>` (repo's is an `#include_next` wrapper) | missing | CLOSED (SH2: self-contained stdint.h staged in /apps/tcc/include) | SH2 |
-| SH-17 | initrd file table caps at 192 entries; the /src tree blew it and silently dropped /tests/selfhost_hello.c | limit | CLOSED (SH2: INITRD_MAX_FILES 512) | SH2 |
+| SH-17 | initrd metadata caps silently dropped staged self-host sources | limit | CLOSED (SH2: files 192→512; SH5d: full source closure requires 1,024 files / 128 dirs, measured 720 / 78) | SH2/SH5d |
 | SH-18 | read_object() free(buf) leak: members point into freed archive/object image → shstrtab empty, 45 undefined refs | leak | CLOSED (SH3: keep images alive) | SH3 |
 | SH-19 | load_archive() free(buf) leak: 7 ELF members, shstrtab/strtab freed, no archive relocations, 12 missed | leak | CLOSED (SH3: keep archive image alive) | SH3 |
 | SH-20 | aulink file layout: file_off vs vaddr mismatch, .data at 0xd000 while p_offset said 0xcaa0 → kernel loaded zeros | layout | CLOSED (SH3: file_off = seg_p_off + (addr - seg_vaddr)) | SH3 |
@@ -1222,7 +1307,11 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-25 | -f win64 (COFF, ms_abi) for w32/tests/*.asm (5 files) is a fifth format | scope | ACCEPTED (out of the self-host closure — Win32 test fixtures, not inputs to building the OS; D1 scope) | — |
 | SH-26 | D4 unresolved: port nasm vs write mini-asm | decision | CLOSED (SH4a, measured: nasm needs 79 libc imports + ~150 kLOC; mini-asm 821 LOC byte-exact on 2/4 flat files → mini-asm) | SH4a |
 | SH-27 | SH4b "all four flat files" bundled the full SIB/segment-override encoder (stage2: 114 SIB operands, 15 %include, bits 32) with the far simpler trampoline — too large for one step | scope | CLOSED (re-split 2026-08-27: SH4b=trampoline, SH4c=stage2; elf phases re-lettered SH4d/SH4e) | SH4b |
-| SH-28 | mini-asm flat-file byte-parity | progress | OPEN (SH4b landed 3/4: mbr, mbr_dual, ap_trampoline; stage2 pending in SH4c) | SH4c |
+| SH-28 | mini-asm flat-file byte-parity | progress | CLOSED (SH4c: all 4/4 flat boot objects byte-identical) | SH4c |
+| SH-29 | Python-only generated-header emitters cannot run under smallsh (no redirection or Python) | port | CLOSED (SH5d: portable C emitters accept explicit output paths; host stdout compatibility tested) | SH5d |
+| SH-30 | a 135-object kernel link line exceeds smallsh argv limits and directory enumeration is nondeterministic | limit | CLOSED (SH5d: aulink lexically expands immediate `*.o` directory inputs; guest gate proves 126 C + 9 asm) | SH5d |
+| SH-31 | sleep-fed UART commands are lost while guest tcc owns the polling console | process | CLOSED (SH5d: prompt_qemu transport sends each next command only after a fresh `auralite#`) | SH5d |
+| SH-32 | initrd's SH4 reference assembler was invoked without a build prerequisite on a clean tree | build | CLOSED (SH5d: explicit `build/mini-asm` target stages the reference objects) | SH5d |
 
 ## 8. Receipt strings (the greppable contract)
 

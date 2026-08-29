@@ -2,6 +2,115 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH5d — terminal in-guest kernel build and second-boot gate] 2026-08-28
+
+`SELFHOST_PLAN.md` SH5 is now complete.  The new registered selfhost-shard
+case `tests/integration/cases/test_selfhost_kernel_guest.sh` boots a bootstrap
+image, sends each command only after a fresh `auralite#` prompt, and makes the
+guest build the next x86_64 kernel itself: `/bin/tcc` compiles all 126 C
+sources, a guest-tcc-built `mini-asm` emits all 9 `.asm` objects, and a
+guest-tcc-built `aulink` links lexical object directories through `/src/kernel.ld`
+to `/fat/KERNEL.ELF`.  The host extracts precisely that FAT-LBA-64 file and
+uses the existing image writer only to conduct the terminal second boot.
+The resulting 1,220,552-byte ELF (`EXEC`/X86-64, `e_entry == _start ==
+0xffffffff801bbbe0`) fits the stock 4 MiB FAT volume; boot #2 reaches the Ring
+3 shell, answers `uname`, runs `sysinfo`, reports `[perf] boot-to-shell: 391
+ticks (~3949 ms @ 99 Hz)`, and passes all **26/26** host assertions (including
+the terminal receipt emitted by the second guest shell, 1,220,552 B ≤
+4,144,640 B usable FAT payload, and a transport receipt for all 167
+prompt-gated commands).  Receipt:
+`[selfhost] kernel PASS: tcc-built kernel booted to shell`.
+
+- **Generated-header closure.** New portable C emitters replace the build
+  path's Python-only `gen_user_binary.py` and `gen_ap_trampoline_inc.py`, and
+  **both Python originals are deleted** — no host interpreter is left anywhere
+  in the kernel header path.  The existing C offset generator now also accepts
+  an explicit output path, which works with smallsh's deliberately
+  redirection-free command grammar, and keeps its historical two-column
+  layout so `build/asm_offsets.inc` stays byte-identical to the pre-SH5d
+  output (verified against the `a094838` generator).  The host Makefile
+  retains stdout compatibility and `test_sh5d_generators.sh` validates both
+  modes.
+- **Guest tool/runtime closure.** `memchr`, dynamic printf `*` width and
+  precision (including negative semantics and bounded `%s`), and public libc
+  include paths make the guest-built aulink and all generators compile/link
+  cleanly.  `tests/unit/test_printf_fmt.c` and `test_printf_format.c` cover
+  the formatter behavior; `tests/unit/test_string_ext.c` now covers `memchr`
+  as the **shipped** body (extracted via `tools/extract_libc_impls.py` and
+  renamed, because GCC expands a plain `memchr()` call into its own builtin
+  and would never reach the code under test).  Signed-vs-unsigned mutation of
+  that comparison is caught by 5 assertions, including a byte-for-byte
+  cross-check against the host's `memchr` over high-byte and embedded-NUL
+  buffers — the exact data aulink scans in ELF string pools.
+- **Argument-safe kernel link.** `aulink` now accepts an immediate directory
+  of `*.o` inputs, sorts full paths lexically, and diagnoses empty/error cases.
+  This replaces an impossible 135-object smallsh line; `test_aulink.sh` checks
+  the ordered directory-input link alongside its existing linker parity test.
+- **Bootstrap staging and clean-tree correctness.** The initrd carries the
+  kernel/drivers/boot/w32 source closure, generators and `init.elf`, with
+  fixed metadata bounds raised to 1,024 files / 128 dirs (measured staging:
+  720 files / 78 dirs).  Every staged source/header is an initrd prerequisite,
+  and the host mini-asm used for SH4 reference objects is now an explicit
+  `build/mini-asm` target rather than a missing clean-tree command.
+- **Reliable guest transport.** `prompt_qemu.py` starts QEMU in its own
+  process group and sends each queued build command only after the next shell
+  prompt, avoiding line loss while tcc owns the polling UART; it terminates
+  only that process group (never a broad `pkill`).  It now also requires every
+  `run` command to reach **exit code 0** before sending the next one, using
+  the kernel's own `[thread] '<name>' (tid N) exited (code=N)` receipt
+  (`kernel/proc/thread.c`); a failing compile therefore stops a 167-command
+  queue at command N instead of surfacing minutes later as a link error.
+  `IL_PROMPT_CHECK_EXIT=0` / `--no-check-run-exit` opts out for callers that
+  queue commands meant to fail.  Its own progress lines are kept out of the
+  serial log and captured in `IL_PROMPT_DRIVER_LOG` instead.
+- **Transport and hygiene under test.** New `tests/unit/test_prompt_qemu.sh`
+  (in `make test-unit`) drives the real transport against a stub guest that
+  speaks the same serial contract, covering: clean completion, non-zero exit
+  halting with the command and code named, a missing exit receipt halting,
+  builtins not being held to a receipt, the opt-out flag, and the
+  `complete (N/N commands sent)` line the integration case asserts on.  The
+  SH5d case is registered in `SLOW_CASES_RE` so `--fast` skips it, and
+  `test_sh5d_generators.sh` creates `build/` itself — it used to `mktemp` into
+  a `.gitignore`d directory that does not exist on a fresh clone, which failed
+  `make test-unit` before any `make iso`.
+- **Plan status tied to the tree.** `tools/check_selfhost_claims.py` now
+  verifies SH5's ✅ against its artefacts (`test_selfhost_kernel_guest.sh`,
+  `prompt_qemu.py`, `test_sh5d_generators.sh`, both C generators, `aulink.c`)
+  and fails if a deleted Python emitter returns, so the status row cannot
+  outlive the code it claims; `--selftest` plants that violation to prove the
+  check can fail.
+- **The shard now runs in CI.** `run_all.sh` has partitioned a `selfhost`
+  shard since 2026-08-21, but the workflow matrix only listed
+  `core/posix/fs/usb/net/gui`, so all seven self-host gates were skipped on
+  every push while CI reported green.  The matrix gains `selfhost`, the job
+  builds `selfhost-deps` + `selfhost-tcc` + `selfhost-host-tcc` before
+  `make iso` (the initrd only stages `/bin/tcc` and the `/src` closure once
+  they exist), and a closing step asserts each of the seven cases has a
+  `PASS` line in `results-selfhost.txt` — `run_all.sh` records only PASS/FAIL,
+  so a silently skipped gate is an absence, and that absence now fails the
+  build.
+- **Two latent breakages that only a full shard run exposes.** Running all
+  seven cases together, rather than the new gate alone, found both:
+  - `test_selfhost_aulink.sh` (SH3) links `aulink` in-guest against a bootstrap
+    libc object set that predates the directory operand, so the link died on
+    `unresolved reference to 'opendir'/'readdir'/'closedir'` and all three
+    assertions failed as a *missing sysinfo banner* — three steps downstream of
+    the cause.  The set gains `dirent.o`, and the case now asserts
+    `no "unresolved reference|tcc: error|spawn: ... not found"` so a future
+    toolchain-link break names itself.
+  - `test_selfhost_kernel_tcc.sh` (SH5c, untouched by this phase) redirected
+    its build log into `build/selfhost/kernel-tcc/` before
+    `build_kernel_tcc.sh` — which is what creates that directory — had run, so
+    the case aborted on line 1 of the build reporting a missing
+    `kernel-tcc.iso`.  It never surfaced because the case skips unless host tcc
+    exists and no CI job built it; the caller now `mkdir -p`s the directory.
+  Both were invisible to the new gate passing on its own, which is the
+  argument for the CI step above.
+- **Receipt correctness.** Shell `echo` now writes separators directly instead
+  of interleaving buffered `putchar` calls with raw writes; the shell gate
+  asserts an anchored multi-word echo line, so typed serial input cannot be
+  mistaken for a completed guest receipt.
+
 ## [SELFHOST SH5c — the kernel, compiled by tcc; the tcc-built kernel boots] 2026-08-28
 
 `SELFHOST_PLAN.md` phase SH5c: all 126 kernel C files compile with the host

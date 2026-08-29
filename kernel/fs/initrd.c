@@ -48,13 +48,15 @@
 /* 41 entries are packed today.  The runtime reorganisation in FSLAYOUT_PLAN
  * phase F3 keeps compatibility aliases for a while, which roughly doubles the
  * count, so the old ceiling of 64 would have been hit mid-plan. */
-/* SELFHOST SH2: 192 -> 512.  The initrd now also carries the /src
- * userland source tree for the in-guest toolchain (headers + .c +
- * glue + apps, ~113 files), which blew the old cap and silently
- * dropped /tests/selfhost_hello.c.  The table is ~40 KiB of kernel
- * BSS at 512 entries; still bounded, not unbounded. */
-#define INITRD_MAX_FILES 512
-#define INITRD_MAX_DIRS  32
+/* SELFHOST SH5d: 512 -> 1024 files, 32 -> 128 directories.  The image now
+ * carries the complete x86_64 kernel source closure (kernel/, drivers/,
+ * boot/, w32/ and generated-tool sources) so tcc can build the next kernel
+ * inside AuraLite.  Keep these fixed, auditable bounds rather than silently
+ * dropping the tail of a USTAR archive: 1024 file records cost about 272 KiB
+ * of BSS and 128 directory records about 32 KiB, modest beside the kernel's
+ * existing multi-megabyte static tables. */
+#define INITRD_MAX_FILES 1024
+#define INITRD_MAX_DIRS  128
 
 struct initrd_file {
     char     name[VFS_PATH_MAX];

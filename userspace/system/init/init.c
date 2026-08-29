@@ -186,11 +186,14 @@ static void cmd_cat(const char *path) {
 }
 
 static void cmd_echo(int argc, char **argv) {
+    /* Do not mix buffered stdio (putchar) with direct write() calls here:
+     * delayed buffered separators used to arrive after all arguments, turning
+     * `echo one two` into `onetwo ` on the serial console. */
     for (int i = 1; i < argc; i++) {
-        if (i > 1) putchar(' ');
+        if (i > 1) write(1, " ", 1);
         write(1, argv[i], strlen(argv[i]));
     }
-    putchar('\n');
+    write(1, "\n", 1);
 }
 
 static void cmd_write_file(int argc, char **argv) {

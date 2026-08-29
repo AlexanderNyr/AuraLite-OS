@@ -153,7 +153,7 @@ at index 4 so SYSRET's `SS=base+8, CS=base+16` formula produces DPL-3 selectors.
   (`syscall.asm`), C wrappers (write/read/_exit/getpid).
 - ELF64 loader: validates Ehdr, maps PT_LOAD segments with USER perms, skips
   already-mapped pages (co-located text/rodata), zero-fills `.bss`.
-- Binary embedding: `gen_user_binary.py` converts the compiled ELF to a C array.
+- Binary embedding: `gen_user_binary.c` converts the compiled ELF to a C array.
 - `o64 sysret` (64-bit operand SYSRET) for correct CS loading.
 
 ### Phase 10 — VFS

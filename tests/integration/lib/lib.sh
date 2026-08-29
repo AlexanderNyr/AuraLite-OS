@@ -11,7 +11,16 @@
 #   il_run_qemu <log> <timeout_s> [-- <extra qemu args>]
 #                                        boot the ISO; serial → <log>;
 #                                        stdin gets shell commands via il_send().
+#   il_run_qemu_prompt <log> <timeout> [extra qemu args]
+#                                        run il_send_prompt() commands only
+#                                        after a fresh auralite# prompt, and
+#                                        require every `run` command to exit 0
+#                                        (IL_PROMPT_CHECK_EXIT=0 disables).
+#                                        Sets IL_PROMPT_DRIVER_LOG to the
+#                                        transport's own progress/diagnostic
+#                                        log; <log> stays pure serial output.
 #   il_send "<text>"                   — queue text to be sent into serial
+#   il_send_prompt "<text>"            — queue text for prompt-aware serial
 #                                        (call BEFORE il_run_qemu).
 #   il_send_delay <secs>               — queue a sleep between commands.
 #   il_assert_grep <log> "<pattern>" "<human description>"
@@ -46,6 +55,7 @@ IL_FAIL_COUNT=0
 IL_ASSERT_COUNT=0
 IL_FAILED_ASSERTS=()
 IL_INPUT_QUEUE=""    # accumulated shell input; flushed via il_run_qemu
+IL_PROMPT_QUEUE=""   # commands gated by a fresh prompt via il_run_qemu_prompt
 
 # -------- init --------
 il_init() {
@@ -116,6 +126,11 @@ PY
 # -------- input queue (sent to QEMU's serial stdin) --------
 il_send() { IL_INPUT_QUEUE+="$1"$'\n'; }
 il_send_raw() { IL_INPUT_QUEUE+="$1"; }
+# Long compiler jobs cannot be driven with guessed sleeps: while tcc owns the
+# polling serial path, a later line can vanish before the shell reads it.
+# Keep this queue separate from the legacy sleep-based one so existing cases
+# retain their exact timing semantics.
+il_send_prompt() { IL_PROMPT_QUEUE+="$1"$'\n'; }
 il_send_delay() {
     # Emit a literal sleep marker. We turn it into a real sleep at run time.
     IL_INPUT_QUEUE+=$'\x1b__SLEEP__'"$1"$'\n'
@@ -200,6 +215,71 @@ il_run_qemu() {
 
     # Reset queue for next sub-test in the same script.
     IL_INPUT_QUEUE=""
+    return 0
+}
+
+# Prompt-aware sibling of il_run_qemu.  SH5d queues more than one hundred
+# tcc/mini-asm invocations; sleep-delayed input is unsafe because AuraLite's
+# serial driver is polling based and drops a command sent while the compiler
+# still owns the CPU.  prompt_qemu.py is deliberately only a serial transport:
+# all compilation, assembly and linking still happen inside the guest.
+#
+# Usage: il_send_prompt "..."; ...; il_run_qemu_prompt LOG TIMEOUT [qemu args]
+il_run_qemu_prompt() {
+    local log="$1"; shift
+    local timeout_s="$1"; shift
+    local extra=( "$@" )
+    local smp="${IL_SMP:-2}"
+    local selftest="${IL_SELFTEST:-full}"
+    local base_args=(
+        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on"
+        -m 512M
+        -smp "$smp"
+        -display none
+        -serial stdio
+        -no-reboot
+        -cpu "$IL_CPU"
+        -boot order=c
+        -netdev "user,id=net0${IL_NETDEV_OPTS:-}"
+        -device "${IL_NIC},netdev=net0"
+        -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
+    )
+    local queue rc had_errexit=0
+    [[ $- == *e* ]] && had_errexit=1
+    mkdir -p "$(dirname "$log")"
+    queue=$(mktemp "${IL_LOGDIR:-$(dirname "$log")}/prompt-queue.XXXXXX") || return 1
+    printf '%s' "$IL_PROMPT_QUEUE" > "$queue"
+    export IL_LAST_LOG="$log"
+    # prompt_qemu.py's own progress/diagnostic lines are NOT serial output, so
+    # they do not belong in the serial log -- but they are the first thing to
+    # read when a long guest build stalls, so they get their own artefact.
+    IL_PROMPT_DRIVER_LOG="${log%.log}-driver.log"
+    export IL_PROMPT_DRIVER_LOG
+
+    # prompt_qemu.py requires every `run` command to reach exit code 0 before
+    # it sends the next one (the kernel prints a thread-exit receipt for each).
+    # That is what keeps a single failing tcc invocation from being followed by
+    # a hundred more compiles and an unrelated-looking link error.  Callers
+    # queueing commands that are *meant* to fail set IL_PROMPT_CHECK_EXIT=0.
+    local prompt_args=()
+    [ "${IL_PROMPT_CHECK_EXIT:-1}" -eq 0 ] && prompt_args+=(--no-check-run-exit)
+
+    set +e
+    python3 "$IL_ROOT/tests/integration/lib/prompt_qemu.py" \
+        --log "$log" --timeout "$timeout_s" --commands "$queue" \
+        "${prompt_args[@]}" -- \
+        "$IL_QEMU" "${base_args[@]}" "${extra[@]}" 2>&1 \
+        | tee "$IL_PROMPT_DRIVER_LOG"
+    rc=${PIPESTATUS[0]}
+    [ "$had_errexit" -eq 1 ] && set -e
+    rm -f "$queue"
+    IL_PROMPT_QUEUE=""
+
+    if [ "$rc" -ne 0 ]; then
+        echo "${C_YELLOW}[lib] prompt-aware QEMU driver exited rc=$rc; inspect $log${C_RESET}"
+    fi
+    # Preserve il_run_qemu's assertion-first contract: a bad QEMU process
+    # still leaves a serial log that gives every diagnostic its own assertion.
     return 0
 }
 

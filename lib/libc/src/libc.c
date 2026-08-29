@@ -1515,15 +1515,45 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
             else if (*fmt == '0') { zero = 1; fmt++; }
             else break;
         }
-        while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
+        /* A compiler's diagnostics lean heavily on %*s and %.*s to align
+         * source snippets.  Consume the dynamic fields here, before any
+         * conversion arguments, exactly as C specifies.  A negative dynamic
+         * width is the same as '-' plus its magnitude; a negative precision
+         * means that precision was omitted. */
+        if (*fmt == '*') {
+            width = va_arg(ap, int);
+            fmt++;
+            if (width < 0) {
+                left = 1;
+                /* INT_MIN is not useful as a printable field width, but do
+                 * not overflow when normalising it.  Saturating is safer
+                 * than making the formatter invoke undefined behaviour. */
+                if (width == (-2147483647 - 1)) width = 2147483647;
+                else width = -width;
+            }
+        } else {
+            while (*fmt >= '0' && *fmt <= '9') {
+                width = width * 10 + (*fmt - '0');
+                fmt++;
+            }
+        }
         /* Precision.  Parsed for every conversion (and ignored by the
          * integer ones) so that "%.2f" and "%.3s" consume their digits
          * instead of leaving them to be printed as literal text. */
         int prec = -1;
         if (*fmt == '.') {
             fmt++;
-            prec = 0;
-            while (*fmt >= '0' && *fmt <= '9') { prec = prec * 10 + (*fmt - '0'); fmt++; }
+            if (*fmt == '*') {
+                prec = va_arg(ap, int);
+                fmt++;
+                if (prec < 0) prec = -1;
+            } else {
+                prec = 0;
+                while (*fmt >= '0' && *fmt <= '9') {
+                    prec = prec * 10 + (*fmt - '0');
+                    fmt++;
+                }
+            }
         }
         /* Left-justification and zero-padding are mutually exclusive; POSIX
          * says '0' is ignored when '-' is present. */
@@ -1615,7 +1645,11 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
             const char *str = va_arg(ap, const char *);
             if (!str) str = "(null)";
             int slen = 0;
-            while (str[slen]) slen++;
+            /* String precision is a maximum byte count, not a padding
+             * minimum.  This is the half of %.*s tcc needs for caret/source
+             * excerpts in diagnostics; it must also work with a literal
+             * %.Ns. */
+            while (str[slen] && (prec < 0 || slen < prec)) slen++;
             int spad = width - slen;
             if (!left) { while (spad-- > 0) s->emit(s, ' '); }
             for (int i = 0; i < slen; i++) s->emit(s, str[i]);
