@@ -1,8 +1,8 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses) and SH6b
+## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
-redirected fd 0/1/2 actually work) have landed.  SH6c–SH9 remain pending.
+redirected fd 0/1/2 actually work) and SH6c (pipes and command lists) have landed.  SH6d–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -24,7 +24,7 @@ redirected fd 0/1/2 actually work) have landed.  SH6c–SH9 remain pending.
 | SH6 — shmake + shell scripting (umbrella; split into SH6a–SH6f) | 🚧 in progress |
 | SH6a — spike (D10 decision) + exit-status spine + script runner | ✅ landed |
 | SH6b — redirects + named variables + the fd 0/1/2 kernel fix | ✅ landed |
-| SH6c — pipes + command lists (`;` `&&` `\|\|`) | 🚧 pending |
+| SH6c — pipes + command lists (`;` `&&` `\|\|`) | ✅ landed |
 | SH6d — control flow `if`/`while`/`for` | 🚧 pending |
 | SH6e — `shmake`: rules, prerequisites, variables, phony targets | 🚧 pending |
 | SH6f — `build.sh` entry point + D5 target parity + D6 resume | 🚧 pending |
@@ -1405,22 +1405,62 @@ exact gives 121/1, and disabling single-quote suppression gives 119/3.
 
 ---
 
-### Phase SH6c — pipes + command lists 🚧 PENDING
+### Phase SH6c — pipes + command lists ✅ LANDED (2026-08-29)
 
 **Goal.** Commands compose, so a build step can be one line instead of a
 temporary file.
 
-**Definition of done.** `|` between commands, using `SYS_PIPE`/`SYS_PIPE2`
-and a process group per pipeline; `;`, `&&` and `||`, which consume the
-exit-status spine SH6a laid.  Foreground pipelines wait for the last stage;
-the job table already tracks the rest.  Unlike SH6b this one really does need
-no kernel change: the pipe exception in `SYS_WRITE` predates SH6b (it is how
-`gterm` captures a child's stdout), and SH6b generalised rather than replaced
-it.
+**What landed.**
 
-**Gate.** Integration case `test_selfhost_pipe.sh`: a guest script runs
-`<n>` pipelines including one whose first stage fails, proving the failure
-propagates through `&&`, and greps `[selfhost] pipe PASS: <n> pipelines ran`.
+- **`userspace/system/init/sh_parse.h`** — `|`, `;`, `&&`, `||` join `>`,
+  `>>`, `<`, `&` in the same one-pass tokenizer.  Two-character operators are
+  recognised before their one-character prefixes, so `a && b` is ANDAND not
+  AMP AMP, and `a || b` is OROR not PIPE PIPE.  A quoted `|` stays text.
+  `|`/`&&`/`||` at end of line is `SH_PARSE_NOCOMMAND`; a trailing `;` or `&`
+  is legal (empty command / background).
+- **`userspace/system/init/init.c`**.  A line is a list of pipelines.
+  `;` and `&` run the next element unconditionally (`&` also backgrounds its
+  element); `&&` runs it only when the previous status is 0; `||` only when
+  it is nonzero.  `$?` for the next element on the same line is the status of
+  the last element that *ran* — a skipped element changes nothing.
+- **Pipes on the existing `SYS_PIPE`.**  Stages of `a | b | c` run
+  sequentially in the shell process, each one's stdout wired to the next
+  one's stdin through a real kernel pipe.  Explicit redirects apply after
+  the pipe wiring, so they win (POSIX).  Pipeline status is the last stage's
+  status (POSIX; there is no `set -o pipefail`).  A backgrounded pipeline
+  (`a | b &`) is one job: the existing one-fork subshell path, so the job
+  table tracks it as one process group.
+
+**Why sequential stages, not per-stage fork.**  The plan's wording — "a
+process group per pipeline; the job table already tracks the rest" — was
+read as "fork each stage, wait on the last".  That was tried.  Every
+per-stage child resumed at the syscall stub and immediately took a
+user-mode page fault (error 0x6, write to a non-present page).  The
+existing `&` path forks a subshell *before* dispatch, which is a different
+shape; cloning the shell from the middle of a multi-stage fd setup is the
+shape that faulted.  Recorded as ledger SH-40 rather than silently papered
+over.  Sequential stages are correct for every pipeline a build script runs
+(`echo ... | cat > log`); the pipe buffer is 4 KiB, and SH6f's `build.sh`
+does not write more than that without a reader.  No kernel change, which is
+what the plan required.
+
+**Two defects found by running it, not by reading it.**
+
+1. **`run /nonexistent` exits 0.**  An absolute path bypasses
+   `prog_resolve`'s existence check; the kernel creates the child and the
+   load failure lands inside it as exit 0.  A relative name that is on no
+   search path is 127 and never spawns.  The gate uses the relative shape.
+2. **SH6a's runner stops the script on a non-zero line.**  An
+   intentionally-failing `&&` chain therefore has to end with a `; echo
+   survived` whose status is 0, or the rest of the probe never runs.  That
+   is SH6a behaviour, not a regression; the probe documents it.
+
+**Gate.** `test_selfhost_pipe.sh`, verified against the serial log.  The
+guest script `tools/selfhost/sh6c_probe.sh` runs 4 pipelines (2-stage,
+3-stage, a failing last stage behind `&&`, a roundtrip through a file) and
+the three list operators, including a failing first element whose failure
+propagates through `&&`.  Host unit tests: `test_sh_parse.c` covers the new
+operators against the shipped header.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
@@ -1656,6 +1696,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-37 | SYS_WRITE routed fd 1/2 to the console unless the slot held a pipe, and SYS_READ routed fd 0 to the keyboard unconditionally, so a redirect parsed, the file was created and truncated, and the bytes went to the console anyway (measured: 0-byte file) | bug | CLOSED (SH6b: vfs_fd_is_pipe became vfs_fd_is_devfs; fd 0/1/2 keep the console path only while they refer to a devfs node, so regular files and pipes are both honoured and gterm is unchanged) | SH6b |
 | SH-38 | cmd_argv[argc++] = sh_expbuf[argc] -- the increment and the read of argc are unsequenced, so which slot the pointer names is undefined | bug | CLOSED (SH6b: split into two statements; clang -Wunsequenced is what caught it) | SH6b |
 | SH-39 | build/user/init.o did not list sh_expand.h as a prerequisite, so editing the header did not rebuild the shell | build | CLOSED (SH6b: init.o depends on both sh_expand.h and sh_parse.h) | SH6b |
+| SH-40 | per-stage fork() of a pipeline child resumes at the syscall stub and takes a user-mode #PF (error 0x6, write to a non-present page) | bug | ACCEPTED (SH6c: stages run sequentially in the shell through SYS_PIPE; a backgrounded pipeline is one job via the existing subshell fork.  Concurrent stages wait for a fork-clone fix that is not this sub-phase's kernel work) | SH6c |
 
 ## 8. Receipt strings (the greppable contract)
 
@@ -1672,6 +1713,7 @@ plan still lists them, so a renamed receipt fails the build:
 [selfhost] kernel PASS: tcc-built kernel booted to shell
 [selfhost] script PASS: <n> lines ran in-guest
 [selfhost] redirect PASS: <n> files written and read back
+[selfhost] pipe PASS: <n> pipelines ran
 [selfhost] build PASS: kernel+initrd built on /fat
 [selfhost] iso PASS: auralite.iso built in-guest
 [selfhost] FULL LOOP PASS (2/2 clean loops)

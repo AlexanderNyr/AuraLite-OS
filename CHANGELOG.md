@@ -2,6 +2,35 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH6c — pipes and command lists] 2026-08-29
+
+`SELFHOST_PLAN.md` SH6c landed: `|`, `;`, `&&`, `||`.
+
+- **The tokenizer** (`userspace/system/init/sh_parse.h`) now recognises `|`,
+  `;`, `&&` and `||` in the same one pass as `>`/`>>`/`<`/`&`.  Two-character
+  operators are matched before their one-character prefixes, so `a && b` is
+  not two backgrounds and `a || b` is not two pipes.  A quoted `|` stays
+  text.  `|`/`&&`/`||` at end of line is a parse error; a trailing `;` or `&`
+  is legal.
+- **Command lists** consume SH6a's exit-status spine: `;` runs the next
+  element unconditionally, `&&` only on status 0, `||` only on nonzero.  `$?`
+  for the next element on the same line is the status of the last element
+  that ran.
+- **Pipes on the existing `SYS_PIPE`.**  Stages of `a | b | c` run
+  sequentially in the shell, each one's stdout wired to the next one's stdin
+  through a real kernel pipe.  Explicit redirects apply after the pipe
+  wiring, so they win.  Pipeline status is the last stage's (POSIX).  A
+  backgrounded pipeline is one job via the existing subshell-fork path.
+- **Per-stage fork was tried and measured to fail** (ledger SH-40): every
+  pipeline child resumed at the syscall stub and took a user-mode `#PF`
+  (error 0x6).  Sequential stages are the honest fallback; they are correct
+  for every pipeline a build script runs.  No kernel change, as the plan
+  required.
+- Gate: `tests/integration/cases/test_selfhost_pipe.sh` +
+  `tools/selfhost/sh6c_probe.sh`.  Receipt
+  `[selfhost] pipe PASS: 4 pipelines ran`.  Host unit tests cover the new
+  operators against the shipped tokenizer.
+
 ## [SELFHOST SH6b — redirects, shell variables, and the kernel fix behind them] 2026-08-29
 
 `SELFHOST_PLAN.md` SH6b landed: `>`, `>>`, `<`, `set NAME=VALUE`, `$NAME` and

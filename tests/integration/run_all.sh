@@ -195,6 +195,7 @@ ALL_CASES=(
     # skip -- listed first for that reason.
     test_selfhost_script
     test_selfhost_redirect
+    test_selfhost_pipe
     test_selfhost_tcc
     test_selfhost_userland
     test_selfhost_aulink

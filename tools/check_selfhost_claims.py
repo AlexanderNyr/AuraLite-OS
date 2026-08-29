@@ -47,6 +47,7 @@ RECEIPTS = [
     "[selfhost] kernel PASS:",
     "[selfhost] script PASS:",
     "[selfhost] redirect PASS:",
+    "[selfhost] pipe PASS:",
     "[selfhost] build PASS:",
     "[selfhost] iso PASS:",
     "[selfhost] FULL LOOP PASS",

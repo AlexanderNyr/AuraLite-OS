@@ -2146,6 +2146,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/selfhost/sh6a_probe.sh tools/selfhost/sh6a_nested.sh \
                          tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
                          tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
+                         tools/selfhost/sh6c_probe.sh \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
@@ -2229,6 +2230,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp tools/selfhost/sh6a_probe.sh tools/selfhost/sh6a_nested.sh \
 	      tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
 	      tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
+	      tools/selfhost/sh6c_probe.sh \
 	      $(INITRD_DIR)/tests/
 # Package archives apm installs from (SDK_PLAN phase S4).
 #

@@ -209,11 +209,97 @@ static void test_realistic_lines(void) {
     is_word(5, "/tmp/x");
 }
 
+static void test_list_operators(void) {
+    /* SH6c: | ; && || are operators, recognised in the same pass as > < &. */
+    CHECK(tok("a | b") == 3);
+    is_word(0, "a");
+    is_op(1, SH_TOK_PIPE);
+    is_word(2, "b");
+
+    CHECK(tok("a|b") == 3);
+    is_op(1, SH_TOK_PIPE);
+
+    CHECK(tok("a | b | c") == 5);
+    is_op(1, SH_TOK_PIPE);
+    is_op(3, SH_TOK_PIPE);
+
+    CHECK(tok("a ; b") == 3);
+    is_op(1, SH_TOK_SEMI);
+    is_word(2, "b");
+
+    /* && is an AND, not a background &. */
+    CHECK(tok("a && b") == 3);
+    is_op(1, SH_TOK_ANDAND);
+    is_word(2, "b");
+    CHECK(tok("a&&b") == 3);
+    is_op(1, SH_TOK_ANDAND);
+
+    /* A lone & is still background. */
+    CHECK(tok("a & b") == 3);
+    is_op(1, SH_TOK_AMP);
+
+    /* || is an OR, not two pipes. */
+    CHECK(tok("a || b") == 3);
+    is_op(1, SH_TOK_OROR);
+    is_word(2, "b");
+    CHECK(tok("a||b") == 3);
+    is_op(1, SH_TOK_OROR);
+
+    /* Every list operator on one line. */
+    CHECK(tok("a && b | c || d ; e & f") == 11);
+    is_word(0, "a");
+    is_op(1, SH_TOK_ANDAND);
+    is_word(2, "b");
+    is_op(3, SH_TOK_PIPE);
+    is_word(4, "c");
+    is_op(5, SH_TOK_OROR);
+    is_word(6, "d");
+    is_op(7, SH_TOK_SEMI);
+    is_word(8, "e");
+    is_op(9, SH_TOK_AMP);
+    is_word(10, "f");
+
+    /* A `|` inside quotes is text, not a stage join. */
+    CHECK(tok("echo \"a | b\"") == 2);
+    is_word(0, "echo");
+    is_word(1, "\"a | b\"");
+    CHECK(tok("echo 'a ; b'") == 2);
+    is_word(1, "'a ; b'");
+    CHECK(tok("echo \"x && y\" | cat") == 4);
+    is_word(1, "\"x && y\"");
+    is_op(2, SH_TOK_PIPE);
+
+    /* An operator glued to a word ends the word, as with >. */
+    CHECK(tok("a|b;c") == 5);
+    is_word(0, "a");
+    is_op(1, SH_TOK_PIPE);
+    is_word(2, "b");
+    is_op(3, SH_TOK_SEMI);
+    is_word(4, "c");
+
+    /* | && || cannot end a line: no command where one is due. */
+    CHECK(tok("a |") == SH_PARSE_NOCOMMAND);
+    CHECK(tok("a |   ") == SH_PARSE_NOCOMMAND);
+    CHECK(tok("a &&") == SH_PARSE_NOCOMMAND);
+    CHECK(tok("a ||") == SH_PARSE_NOCOMMAND);
+    CHECK(tok("a ||  ") == SH_PARSE_NOCOMMAND);
+
+    /* ; and & MAY end a line. */
+    CHECK(tok("a ;") == 2);
+    is_op(1, SH_TOK_SEMI);
+    CHECK(tok("a &") == 2);
+    is_op(1, SH_TOK_AMP);
+}
+
 static void test_tok_name(void) {
     CHECK(strcmp(sh_tok_name(SH_TOK_GT), ">") == 0);
     CHECK(strcmp(sh_tok_name(SH_TOK_GGT), ">>") == 0);
     CHECK(strcmp(sh_tok_name(SH_TOK_LT), "<") == 0);
     CHECK(strcmp(sh_tok_name(SH_TOK_AMP), "&") == 0);
+    CHECK(strcmp(sh_tok_name(SH_TOK_PIPE), "|") == 0);
+    CHECK(strcmp(sh_tok_name(SH_TOK_SEMI), ";") == 0);
+    CHECK(strcmp(sh_tok_name(SH_TOK_ANDAND), "&&") == 0);
+    CHECK(strcmp(sh_tok_name(SH_TOK_OROR), "||") == 0);
     CHECK(strcmp(sh_tok_name(SH_TOK_WORD), "word") == 0);
 }
 
@@ -227,6 +313,7 @@ int main(void) {
     test_background();
     test_limits();
     test_realistic_lines();
+    test_list_operators();
     test_tok_name();
 
     printf("  %d passed, %d failed\n", passed, failed);

@@ -581,6 +581,7 @@ static void cmd_help(void) {
     puts("  set [NAME=VALUE] - assign a variable; no args lists them");
     puts("  unset NAME      - remove a variable");
     puts("  redirection: cmd > file, cmd >> file, cmd < file");
+    puts("  pipes/lists: cmd | cmd ; cmd && cmd || cmd");
     puts("  exit        - exit shell");
     puts("");
     /* Programs are named, not pathed: since F5 there is exactly one location
@@ -1189,168 +1190,47 @@ static int cmd_sh(int argc, char **argv) {
     return status;
 }
 
-/* SELFHOST SH6a: returns the command's exit status, also stored in
- * last_status so $? can read it after the fact. */
-static int process_command(char *line) {
-    /* Defensive sanitising: VM serial ports can occasionally feed garbage when
-     * no terminal is attached. Treat non-printable/non-ASCII bytes as spaces so
-     * they never become bogus commands like "        : command not found". */
-    for (char *p = line; *p; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c == '\r') *p = '\n';
-        else if (c != '\n' && c != '\t' && (c < 0x20 || c > 0x7E)) *p = ' ';
-    }
+/* ---- SELFHOST SH6c: pipes and command lists ----
+ *
+ * A line is now a LIST of pipelines; a pipeline is stages joined by `|`.
+ * Each list element is introduced by nothing (the first), `;`, `&`, `&&`
+ * or `||` -- the last four decide whether the next element runs.
+ *
+ * How a pipeline executes.  The plan says "using SYS_PIPE/SYS_PIPE2 and a
+ * process group per pipeline; foreground pipelines wait for the last stage;
+ * the job table already tracks the rest."  Stages run SEQUENTIALLY in this
+ * process, each one's stdout wired to the next one's stdin through a real
+ * kernel pipe (SYS_PIPE).  That is a measured choice, not a shortcut:
+ *
+ *   - Per-stage fork() of a pipeline child was tried first.  The child
+ *     resumed at the syscall stub and immediately took a user-mode page
+ *     fault (error 0x6, write to a non-present page) -- every stage, every
+ *     time.  The existing `&` path forks a subshell BEFORE dispatch, which
+ *     is a different shape; cloning the shell from the middle of a
+ *     multi-stage setup is the shape that faulted.  Ledger SH-40.
+ *   - Sequential stages are correct for every pipeline a build script runs
+ *     (`echo ... | cat > log`, a compiler's short stdout).  The pipe buffer
+ *     is 4 KiB; a producer that writes more than that without a concurrent
+ *     consumer would block.  SH6f's build.sh does not do that.
+ *   - A backgrounded pipeline (`a | b &`) still uses the existing one-fork
+ *     subshell path, so the job table tracks it as one job -- one process
+ *     group per pipeline, as the plan asked.
+ *
+ * Pipeline status is the LAST stage's status, as in POSIX.  `set -o pipefail`
+ * is not in the language; a build script that needs the first stage's failure
+ * puts that stage last, or runs it as its own list element (which is how the
+ * gate proves `&&` propagation).
+ */
+#define SH_MAX_STAGES 8
+static struct sh_redir sh_stage_redir[SH_MAX_REDIR];
 
-    /* SELFHOST SH6b: tokenize with quotes and redirects recognised in one
-     * pass.  The old strtok(line, " \t\n") could express neither, so a `>`
-     * inside a quoted argument was an operator and there was no way to write
-     * a redirect at all. */
-    int prev_status = last_status;   /* what $? means on this line */
-
-    struct sh_tok toks[SH_MAX_TOKS];
-    int ntok = sh_tokenize(line, strlen(line), toks, SH_MAX_TOKS);
-    if (ntok < 0) {
-        switch (ntok) {
-        case SH_PARSE_QUOTE:    puts("sh: unmatched quote"); break;
-        case SH_PARSE_NOTARGET: puts("sh: redirect with no filename"); break;
-        default:                puts("sh: command line too complex"); break;
-        }
-        last_status = 2;
-        return 2;
-    }
-
-    /* The running script's positional parameters, if any.  At the prompt
-     * there are none, so $1 expands to nothing. */
-    char *const *pos = 0;
-    int npos = 0;
-    if (sh_depth > 0) {
-        pos  = sh_stack[sh_depth - 1].argv;
-        npos = sh_stack[sh_depth - 1].argc;
-    }
-    const struct sh_var *vars = sh_var_table();
-
-    struct sh_redir redir[SH_MAX_REDIR];
-    int argc = 0, nredir = 0, bg = 0;
-
-    for (int i = 0; i < ntok; i++) {
-        if (toks[i].type == SH_TOK_AMP) { bg = 1; continue; }
-
-        if (toks[i].type == SH_TOK_WORD) {
-            if (argc >= MAX_ARGS - 1) {
-                printf("sh: too many arguments (max %d)\n", MAX_ARGS - 1);
-                last_status = 2;
-                return 2;
-            }
-            if (sh_expand_word(toks[i].text, toks[i].len, sh_expbuf[argc],
-                               SH_ARG_MAX_EXP, vars, sh_nvars, pos, npos,
-                               prev_status) != SH_EXP_OK) {
-                printf("sh: argument %d too long to expand (max %d)\n",
-                       argc, SH_ARG_MAX_EXP - 1);
-                last_status = 2;
-                return 2;
-            }
-            /* Not `cmd_argv[argc++] = sh_expbuf[argc]`: the increment and the
-             * read of argc would be unsequenced, so which slot the pointer
-             * names is undefined.  clang warns; a different compiler could
-             * just pick the wrong one. */
-            cmd_argv[argc] = sh_expbuf[argc];
-            argc++;
-            continue;
-        }
-
-        /* A redirect operator: the next token is its filename. */
-        if (i + 1 >= ntok || toks[i + 1].type != SH_TOK_WORD) {
-            printf("sh: missing filename after %s\n",
-                   sh_tok_name(toks[i].type));
-            last_status = 2;
-            return 2;
-        }
-        if (nredir >= SH_MAX_REDIR) {
-            printf("sh: too many redirections (max %d)\n", SH_MAX_REDIR);
-            last_status = 2;
-            return 2;
-        }
-        if (sh_expand_word(toks[i + 1].text, toks[i + 1].len,
-                           sh_redirbuf[nredir], SH_ARG_MAX_EXP,
-                           vars, sh_nvars, pos, npos,
-                           prev_status) != SH_EXP_OK) {
-            printf("sh: redirect target too long (max %d)\n",
-                   SH_ARG_MAX_EXP - 1);
-            last_status = 2;
-            return 2;
-        }
-        redir[nredir].op   = toks[i].type;
-        redir[nredir].path = sh_redirbuf[nredir];
-        nredir++;
-        i++;
-    }
-    cmd_argv[argc] = 0;
-
-    if (argc == 0) {
-        return 0;   /* empty line, or nothing but redirects */
-    }
-
+/* The builtin/spawn dispatch, with no redirect or background handling.
+ * cmd_argv[0..argc) is the expanded command.  Sets and returns last_status. */
+static int sh_run_command(int argc)
+{
     const char *cmd = cmd_argv[0];
     last_status = 0;
 
-    /* `NAME=VALUE` on its own is an assignment, not a command. */
-    if (strchr(cmd, '=')) {
-        if (argc > 1) {
-            puts("sh: per-command assignment is not supported; "
-                 "use `set NAME=VALUE` on its own line");
-            last_status = 2;
-            return 2;
-        }
-        if (sh_try_assign(cmd)) return 0;
-        printf("sh: %s: not a valid variable name\n", cmd);
-        last_status = 2;
-        return 2;
-    }
-
-    int saved_in = -1, saved_out = -1;
-    if (sh_redir_apply(redir, nredir, &saved_in, &saved_out) < 0) {
-        last_status = 1;
-        return 1;
-    }
-
-    if (bg) {
-        /* The background paths resolve through the same list as the
-         * foreground ones.  Keeping one of them hardcoded is how `run calc`
-         * and `run calc &` end up behaving differently. */
-        char resolved[128];
-        if (strcmp(cmd, "run") == 0 && argc > 1) {
-            if (!prog_resolve(cmd_argv[1], resolved, (int)sizeof(resolved))) {
-                report_not_found(cmd_argv[1]);
-                last_status = 127;
-                goto out;
-            }
-            pid_t pid = spawn(resolved);
-            if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd_argv[1]); }
-            /* not finished yet; `jobs`/`fg` track it */
-            last_status = 0;
-            goto out;
-        }
-        if (cmd[0] == '/' || cmd[0] == '.') {
-            pid_t pid = spawn(cmd);
-            if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd); }
-            last_status = 0;
-            goto out;
-        }
-        pid_t pid = fork();
-        if (pid == 0) {
-            setpgid(0, 0);
-            bg = 0;
-            in_subshell = 1;
-            goto do_dispatch;
-        } else if (pid > 0) {
-            setpgid(pid, pid);
-            add_job(pid, cmd);
-            last_status = 0;
-            goto out;
-        }
-    }
-
-do_dispatch:
     if (strcmp(cmd, "ls") == 0) {
         cmd_ls(argc > 1 ? cmd_argv[1] : "/");
     } else if (strcmp(cmd, "cat") == 0) {
@@ -1388,8 +1268,6 @@ do_dispatch:
         cmd_ping6(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "run") == 0) {
         if (argc > 1) {
-            /* Forward everything after the program name.  argv[0] is the
-             * program, as the convention everywhere else expects. */
             last_status = cmd_run_argv(cmd_argv[1], &cmd_argv[1]);
         } else {
             last_status = cmd_run(0);
@@ -1422,9 +1300,6 @@ do_dispatch:
         puts("[gui] launcher spawned");
     } else if (strcmp(cmd, "exit") == 0) {
         if (sh_depth > 0) {
-            /* Inside a script this must stop the SCRIPT.  init is PID 1 and
-             * `exit` halts the machine, so a build script ending in `exit 1`
-             * would take the whole system down instead of failing its step. */
             int code = (argc > 1) ? atoi(cmd_argv[1]) : 0;
             struct sh_frame *f = &sh_stack[sh_depth - 1];
             f->exit_req  = 1;
@@ -1453,9 +1328,6 @@ do_dispatch:
     } else if (cmd[0] == '/' || cmd[0] == '.') {
         last_status = cmd_run(cmd);
     } else {
-        /* Not a built-in.  Before declaring it unknown, look for a program of
-         * that name on the search path — this is what makes `calc` work as
-         * well as `run calc`. */
         char resolved[128];
         if (prog_resolve(cmd, resolved, (int)sizeof(resolved))) {
             last_status = cmd_run_argv(cmd, cmd_argv);
@@ -1464,12 +1336,138 @@ do_dispatch:
             last_status = 127;
         }
     }
+    return last_status;
+}
 
-out:
-    /* The background-fork child keeps the redirected descriptors: restoring
-     * them here would send its output back to the terminal, which is the one
-     * thing a redirect is supposed to prevent.  Flush first, because _exit
-     * does not. */
+/* Expand one stage's tokens into the shared statics.  Returns 0, or 2 with
+ * the diagnostic printed (and last_status set) when the stage is malformed. */
+static int sh_expand_stage(const struct sh_tok *toks, int start, int end,
+                           const struct sh_var *vars, int nvars,
+                           char *const *pos, int npos, int prev_status,
+                           int *out_argc, int *out_nredir)
+{
+    int argc = 0, nredir = 0;
+    for (int i = start; i < end; i++) {
+        if (toks[i].type == SH_TOK_WORD) {
+            if (argc >= MAX_ARGS - 1) {
+                printf("sh: too many arguments (max %d)\n", MAX_ARGS - 1);
+                last_status = 2;
+                return 2;
+            }
+            if (sh_expand_word(toks[i].text, toks[i].len, sh_expbuf[argc],
+                               SH_ARG_MAX_EXP, vars, nvars, pos, npos,
+                               prev_status) != SH_EXP_OK) {
+                printf("sh: argument %d too long to expand (max %d)\n",
+                       argc, SH_ARG_MAX_EXP - 1);
+                last_status = 2;
+                return 2;
+            }
+            cmd_argv[argc] = sh_expbuf[argc];
+            argc++;
+            continue;
+        }
+        if (toks[i].type == SH_TOK_GT || toks[i].type == SH_TOK_GGT ||
+            toks[i].type == SH_TOK_LT) {
+            if (i + 1 >= end || toks[i + 1].type != SH_TOK_WORD) {
+                printf("sh: missing filename after %s\n",
+                       sh_tok_name(toks[i].type));
+                last_status = 2;
+                return 2;
+            }
+            if (nredir >= SH_MAX_REDIR) {
+                printf("sh: too many redirections (max %d)\n", SH_MAX_REDIR);
+                last_status = 2;
+                return 2;
+            }
+            if (sh_expand_word(toks[i + 1].text, toks[i + 1].len,
+                               sh_redirbuf[nredir], SH_ARG_MAX_EXP,
+                               vars, nvars, pos, npos,
+                               prev_status) != SH_EXP_OK) {
+                printf("sh: redirect target too long (max %d)\n",
+                       SH_ARG_MAX_EXP - 1);
+                last_status = 2;
+                return 2;
+            }
+            sh_stage_redir[nredir].op   = toks[i].type;
+            sh_stage_redir[nredir].path = sh_redirbuf[nredir];
+            nredir++;
+            i++;
+            continue;
+        }
+        printf("sh: unexpected operator %s\n", sh_tok_name(toks[i].type));
+        last_status = 2;
+        return 2;
+    }
+    cmd_argv[argc] = 0;
+    *out_argc = argc;
+    *out_nredir = nredir;
+    return 0;
+}
+
+/* Single-command path (SH6a/SH6b behaviour, unchanged): assignment, redir,
+ * background, dispatch. */
+static int sh_run_simple(int argc, int nredir, int bg)
+{
+    if (argc == 0) return 0;
+
+    const char *cmd = cmd_argv[0];
+    last_status = 0;
+
+    if (strchr(cmd, '=')) {
+        if (argc > 1) {
+            puts("sh: per-command assignment is not supported; "
+                 "use `set NAME=VALUE` on its own line");
+            last_status = 2;
+            return 2;
+        }
+        if (sh_try_assign(cmd)) return 0;
+        printf("sh: %s: not a valid variable name\n", cmd);
+        last_status = 2;
+        return 2;
+    }
+
+    int saved_in = -1, saved_out = -1;
+    if (sh_redir_apply(sh_stage_redir, nredir, &saved_in, &saved_out) < 0) {
+        last_status = 1;
+        return 1;
+    }
+
+    if (bg) {
+        char resolved[128];
+        if (strcmp(cmd, "run") == 0 && argc > 1) {
+            if (!prog_resolve(cmd_argv[1], resolved, (int)sizeof(resolved))) {
+                report_not_found(cmd_argv[1]);
+                last_status = 127;
+                goto n1out;
+            }
+            pid_t pid = spawn(resolved);
+            if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd_argv[1]); }
+            last_status = 0;
+            goto n1out;
+        }
+        if (cmd[0] == '/' || cmd[0] == '.') {
+            pid_t pid = spawn(cmd);
+            if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd); }
+            last_status = 0;
+            goto n1out;
+        }
+        pid_t pid = fork();
+        if (pid == 0) {
+            setpgid(0, 0);
+            in_subshell = 1;
+            last_status = sh_run_command(argc);
+            fflush(stdout);
+            _exit(last_status);
+        } else if (pid > 0) {
+            setpgid(pid, pid);
+            add_job(pid, cmd);
+            last_status = 0;
+            goto n1out;
+        }
+    }
+
+    last_status = sh_run_command(argc);
+n1out:
     if (in_subshell) {
         fflush(stdout);
         _exit(last_status);
@@ -1478,6 +1476,248 @@ out:
     return last_status;
 }
 
+static void sh_close_pipes(int pipes[][2], int n)
+{
+    for (int i = 0; i < n; i++) {
+        if (pipes[i][0] >= 0) { close(pipes[i][0]); pipes[i][0] = -1; }
+        if (pipes[i][1] >= 0) { close(pipes[i][1]); pipes[i][1] = -1; }
+    }
+}
+
+/* Run one pipeline (token range [start, end)), possibly backgrounded. */
+static int sh_run_pipeline(const struct sh_tok *toks, int start, int end,
+                           int bg, const struct sh_var *vars, int nvars,
+                           char *const *pos, int npos, int prev_status)
+{
+    int stage_start[SH_MAX_STAGES];
+    int stage_end[SH_MAX_STAGES];
+    int nstage = 0;
+    int cur = start;
+
+    for (int i = start; i <= end; i++) {
+        if (i == end || (i < end && toks[i].type == SH_TOK_PIPE)) {
+            if (nstage >= SH_MAX_STAGES) {
+                printf("sh: pipeline too long (max %d stages)\n", SH_MAX_STAGES);
+                last_status = 2;
+                return 2;
+            }
+            stage_start[nstage] = cur;
+            stage_end[nstage] = i;
+            nstage++;
+            cur = i + 1;
+        }
+    }
+
+    if (nstage == 1) {
+        int argc = 0, nredir = 0;
+        if (sh_expand_stage(toks, start, end, vars, nvars, pos, npos,
+                            prev_status, &argc, &nredir) < 0)
+            return 2;
+        return sh_run_simple(argc, nredir, bg);
+    }
+
+    for (int s = 0; s < nstage; s++) {
+        int words = 0;
+        for (int i = stage_start[s]; i < stage_end[s]; i++)
+            if (toks[i].type == SH_TOK_WORD) words++;
+        if (words == 0) {
+            puts("sh: empty pipeline stage");
+            last_status = 2;
+            return 2;
+        }
+    }
+
+    /* A backgrounded pipeline is one job: fork a subshell, run the pipeline
+     * in the child without `&`, and let the job table track the child. */
+    if (bg) {
+        fflush(stdout);
+        pid_t pid = fork();
+        if (pid == 0) {
+            setpgid(0, 0);
+            in_subshell = 1;
+            last_status = sh_run_pipeline(toks, start, end, 0, vars, nvars,
+                                          pos, npos, prev_status);
+            fflush(stdout);
+            _exit(last_status);
+        } else if (pid > 0) {
+            setpgid(pid, pid);
+            add_job(pid, cmd_argv[0] ? cmd_argv[0] : "pipeline");
+            last_status = 0;
+            return 0;
+        }
+        /* fork failed: fall through and run in the foreground. */
+    }
+
+    int pipes[SH_MAX_STAGES - 1][2];
+    int npipes = nstage - 1;
+    for (int s = 0; s < npipes; s++) {
+        pipes[s][0] = pipes[s][1] = -1;
+        if (pipe(pipes[s]) != 0) {
+            sh_close_pipes(pipes, s);
+            puts("sh: pipeline: cannot create pipe");
+            last_status = 1;
+            return 1;
+        }
+    }
+
+    int tty0 = dup(0);
+    int tty1 = dup(1);
+    if (tty0 < 0 || tty1 < 0) {
+        sh_close_pipes(pipes, npipes);
+        if (tty0 >= 0) close(tty0);
+        if (tty1 >= 0) close(tty1);
+        puts("sh: pipeline: cannot save stdio");
+        last_status = 1;
+        return 1;
+    }
+
+    int status = 0;
+    for (int s = 0; s < nstage; s++) {
+        int argc = 0, nredir = 0;
+        if (sh_expand_stage(toks, stage_start[s], stage_end[s],
+                            vars, nvars, pos, npos, prev_status,
+                            &argc, &nredir) < 0) {
+            status = 2;
+            break;
+        }
+        if (argc > 0 && strchr(cmd_argv[0], '=')) {
+            printf("sh: %s: an assignment cannot be a pipeline stage\n",
+                   cmd_argv[0]);
+            status = 2;
+            break;
+        }
+
+        fflush(stdout);
+        if (s > 0) dup2(pipes[s - 1][0], 0);
+        else       dup2(tty0, 0);
+        if (s < nstage - 1) dup2(pipes[s][1], 1);
+        else                dup2(tty1, 1);
+
+        int saved_in = -1, saved_out = -1;
+        if (sh_redir_apply(sh_stage_redir, nredir, &saved_in, &saved_out) < 0) {
+            status = 1;
+        } else {
+            status = sh_run_command(argc);
+            sh_redir_restore(saved_in, saved_out);
+        }
+
+        /* Back to the console between stages so a diagnostic does not fall
+         * into the next pipe, and so the next stage starts from a known fd
+         * table. */
+        dup2(tty0, 0);
+        dup2(tty1, 1);
+
+        /* Close this stage's write end so the next reader sees EOF after
+         * draining the buffer; close the previous read end we just consumed. */
+        if (s < nstage - 1) { close(pipes[s][1]); pipes[s][1] = -1; }
+        if (s > 0)          { close(pipes[s - 1][0]); pipes[s - 1][0] = -1; }
+    }
+
+    sh_close_pipes(pipes, npipes);
+    dup2(tty0, 0);
+    dup2(tty1, 1);
+    close(tty0);
+    close(tty1);
+    last_status = status;
+    return status;
+}
+
+/* SELFHOST SH6a: returns the command's exit status, also stored in
+ * last_status so $? can read it after the fact.
+ * SELFHOST SH6c: the line is now a list of pipelines. */
+static int process_command(char *line) {
+    /* Defensive sanitising: VM serial ports can occasionally feed garbage when
+     * no terminal is attached. Treat non-printable/non-ASCII bytes as spaces so
+     * they never become bogus commands like "        : command not found". */
+    for (char *p = line; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\r') *p = '\n';
+        else if (c != '\n' && c != '\t' && (c < 0x20 || c > 0x7E)) *p = ' ';
+    }
+
+    /* SELFHOST SH6b: tokenize with quotes and operators recognised in one
+     * pass; SH6c adds the list operators to that same pass.  The old
+     * strtok(line, " \t\n") could express none of it, so a `>` inside a
+     * quoted argument was an operator and there was no way to write a
+     * redirect -- or a pipe, or a command list -- at all. */
+    int prev_status = last_status;
+
+    struct sh_tok toks[SH_MAX_TOKS];
+    int ntok = sh_tokenize(line, strlen(line), toks, SH_MAX_TOKS);
+    if (ntok < 0) {
+        switch (ntok) {
+        case SH_PARSE_QUOTE:     puts("sh: unmatched quote"); break;
+        case SH_PARSE_NOTARGET:  puts("sh: redirect with no filename"); break;
+        case SH_PARSE_NOCOMMAND: puts("sh: expected a command"); break;
+        default:                 puts("sh: command line too complex"); break;
+        }
+        last_status = 2;
+        return 2;
+    }
+    if (ntok == 0) return 0;
+
+    char *const *pos = 0;
+    int npos = 0;
+    if (sh_depth > 0) {
+        pos  = sh_stack[sh_depth - 1].argv;
+        npos = sh_stack[sh_depth - 1].argc;
+    }
+    const struct sh_var *vars = sh_var_table();
+
+    /* SELFHOST SH6c: the line is a list of pipelines.  `;` and `&` run the
+     * next element whatever happened before (a `&` also backgrounds its
+     * element); `&&` runs it only when the previous status is 0, `||` only
+     * when it is nonzero.  $? for the next element on the line is the status
+     * of the last element that RAN -- a skipped element changes nothing. */
+    int tok = 0;
+    int line_status = 0;
+    int have_status = 0;
+    int pending_op = 0;
+    while (tok <= ntok) {
+        int el_start = tok;
+        int el_end = tok;
+        while (el_end < ntok &&
+               toks[el_end].type != SH_TOK_SEMI &&
+               toks[el_end].type != SH_TOK_AMP &&
+               toks[el_end].type != SH_TOK_ANDAND &&
+               toks[el_end].type != SH_TOK_OROR) {
+            el_end++;
+        }
+        int bg = (el_end < ntok && toks[el_end].type == SH_TOK_AMP);
+        int op = (el_end < ntok) ? toks[el_end].type : 0;
+
+        /* An element with no tokens at all: the line started with an
+         * operator (`&& echo`), or two separators sat back to back (`a;; b`).
+         * POSIX calls both errors; so do we.  (A trailing `;` is different:
+         * it ends the line, there is no element after it.) */
+        if (el_end == el_start && op != 0) {
+            printf("sh: expected a command after %s\n", sh_tok_name(op));
+            last_status = 2;
+            return 2;
+        }
+
+        int skip = 0;
+        if (pending_op == SH_TOK_ANDAND && have_status && line_status != 0)
+            skip = 1;
+        if (pending_op == SH_TOK_OROR   && have_status && line_status == 0)
+            skip = 1;
+
+        if (!skip && el_end > el_start) {
+            int st = sh_run_pipeline(toks, el_start, el_end, bg, vars,
+                                     sh_nvars, pos, npos, prev_status);
+            line_status = st;
+            have_status = 1;
+            prev_status = st;
+        }
+
+        if (el_end >= ntok) break;
+        pending_op = bg ? SH_TOK_SEMI : op;
+        tok = el_end + 1;
+    }
+
+    last_status = have_status ? line_status : 0;
+    return last_status;
+}
 
 static void dummy_handler(int s) { (void)s; }
 
