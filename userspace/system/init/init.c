@@ -353,6 +353,100 @@ static int sh_line_is_blank(const char *s) {
     return (*s == '\0' || *s == '#');
 }
 
+/* ---- SELFHOST SH6d: control-flow source ----
+ *
+ * if/while/for span lines, so they cannot live only in process_command.
+ * A sh_src is either the running script frame or a collected body (an
+ * array of line pointers into that frame's text).  Nested compounds
+ * collect from the body they sit in, not from the frame -- otherwise a
+ * nested `if` inside a `while` would steal lines past `done`.
+ *
+ * Keywords stay WORDS in the tokenizer.  Whether `if` opens a compound
+ * depends on it being the first word of a line, which is a command-level
+ * fact, not a token-level one.  Quoting `if` therefore keeps it a command
+ * name, matching POSIX reserved-word rules for this subset.
+ */
+enum {
+    SH_KW_NONE = 0,
+    SH_KW_IF, SH_KW_THEN, SH_KW_ELIF, SH_KW_ELSE, SH_KW_FI,
+    SH_KW_WHILE, SH_KW_DO, SH_KW_DONE,
+    SH_KW_FOR, SH_KW_IN, SH_KW_BREAK
+};
+
+#define SH_MAX_BODY  64
+#define SH_MAX_LOOP  1024
+
+struct sh_src {
+    struct sh_frame *f;     /* script frame; NULL at the prompt */
+    char           **lines; /* collected body; takes precedence over f */
+    int             nlines;
+    int             iline;
+    char           *unread; /* one-line pushback */
+};
+
+static int sh_loop_depth = 0;
+static int sh_break_req  = 0;
+
+static int sh_word_kw(const struct sh_tok *t)
+{
+    if (!t || t->type != SH_TOK_WORD) return SH_KW_NONE;
+#define SH_K(s, id) \
+    if (t->len == sizeof(s) - 1 && memcmp(t->text, s, t->len) == 0) return (id)
+    SH_K("if",    SH_KW_IF);
+    SH_K("then",  SH_KW_THEN);
+    SH_K("elif",  SH_KW_ELIF);
+    SH_K("else",  SH_KW_ELSE);
+    SH_K("fi",    SH_KW_FI);
+    SH_K("while", SH_KW_WHILE);
+    SH_K("do",    SH_KW_DO);
+    SH_K("done",  SH_KW_DONE);
+    SH_K("for",   SH_KW_FOR);
+    SH_K("in",    SH_KW_IN);
+    SH_K("break", SH_KW_BREAK);
+#undef SH_K
+    return SH_KW_NONE;
+}
+
+static int sh_kw_open(int k)  { return k == SH_KW_IF || k == SH_KW_WHILE || k == SH_KW_FOR; }
+static int sh_kw_close(int k) { return k == SH_KW_FI || k == SH_KW_DONE; }
+
+static int sh_src_next(struct sh_src *s, char **out)
+{
+    if (!s) return 0;
+    if (s->unread) {
+        *out = s->unread;
+        s->unread = 0;
+        return 1;
+    }
+    if (s->lines) {
+        if (s->iline >= s->nlines) return 0;
+        *out = s->lines[s->iline++];
+        return 1;
+    }
+    if (s->f) {
+        char *line;
+        if (!sh_next_line(s->f, &line)) return 0;
+        s->f->line++;
+        *out = line;
+        return 1;
+    }
+    return 0;
+}
+
+static void sh_src_unread(struct sh_src *s, char *line)
+{
+    s->unread = line;
+}
+
+static int sh_stopped(void)
+{
+    if (sh_break_req) return 1;
+    if (sh_depth > 0 && sh_stack[sh_depth - 1].exit_req) return 1;
+    return 0;
+}
+
+static int sh_exec_line(struct sh_src *src, char *line);
+
 static void add_job(pid_t pgid, const char *cmd) {
     for (int i = 0; i < MAX_JOBS; i++) {
         if (job_list[i].id == 0) {
@@ -582,6 +676,8 @@ static void cmd_help(void) {
     puts("  unset NAME      - remove a variable");
     puts("  redirection: cmd > file, cmd >> file, cmd < file");
     puts("  pipes/lists: cmd | cmd ; cmd && cmd || cmd");
+    puts("  if/then/elif/else/fi, while/do/done, for x in ...; break");
+    puts("  true/false   - status 0 / 1");
     puts("  exit        - exit shell");
     puts("");
     /* Programs are named, not pathed: since F5 there is exactly one location
@@ -1171,16 +1267,19 @@ static int cmd_sh(int argc, char **argv) {
      * Expanding the whole line first would let a variable's value inject an
      * argument or a redirect operator; per-token expansion means a value can
      * only ever add text inside the argument it landed in. */
-    while (sh_next_line(f, &line)) {
-        f->line++;
-        if (sh_line_is_blank(line)) continue;
-
-        status = process_command(line);
-        if (f->exit_req) { status = f->exit_code; break; }
-        if (status != 0) {
-            printf("sh: %s:%d: command failed with status %d\n",
-                   f->path, f->line, status);
-            break;
+    {
+        struct sh_src src;
+        memset(&src, 0, sizeof src);
+        src.f = f;
+        while (sh_src_next(&src, &line)) {
+            if (sh_line_is_blank(line)) continue;
+            status = sh_exec_line(&src, line);
+            if (f->exit_req) { status = f->exit_code; break; }
+            if (status != 0) {
+                printf("sh: %s:%d: command failed with status %d\n",
+                       f->path, f->line, status);
+                break;
+            }
         }
     }
 
@@ -1231,7 +1330,22 @@ static int sh_run_command(int argc)
     const char *cmd = cmd_argv[0];
     last_status = 0;
 
-    if (strcmp(cmd, "ls") == 0) {
+    if (strcmp(cmd, "true") == 0) {
+        last_status = 0;
+        return 0;
+    } else if (strcmp(cmd, "false") == 0) {
+        last_status = 1;
+        return 1;
+    } else if (strcmp(cmd, "break") == 0) {
+        if (sh_loop_depth <= 0) {
+            puts("sh: break: only meaningful in a loop");
+            last_status = 0;
+            return 0;
+        }
+        sh_break_req = 1;
+        last_status = 0;
+        return 0;
+    } else if (strcmp(cmd, "ls") == 0) {
         cmd_ls(argc > 1 ? cmd_argv[1] : "/");
     } else if (strcmp(cmd, "cat") == 0) {
         cmd_cat(argc > 1 ? cmd_argv[1] : 0);
@@ -1708,6 +1822,8 @@ static int process_command(char *line) {
             line_status = st;
             have_status = 1;
             prev_status = st;
+            if (sh_break_req) break;
+            if (sh_depth > 0 && sh_stack[sh_depth - 1].exit_req) break;
         }
 
         if (el_end >= ntok) break;
@@ -1717,6 +1833,639 @@ static int process_command(char *line) {
 
     last_status = have_status ? line_status : 0;
     return last_status;
+}
+
+/* ---- SELFHOST SH6d: if / while / for / break ----
+ *
+ * The subset build.sh needs, branching on the SH6a status spine.
+ * `case`, functions, `trap` and arithmetic are out of scope.
+ *
+ * A compound is one command as far as cmd_sh is concerned: a failing
+ * *condition* is consumed by the construct (so `if false; then` does not
+ * abort the script), and the construct's status is the last command of
+ * the taken branch, or 0 if no branch ran.  Body lines do not go through
+ * cmd_sh's "stop on nonzero" loop -- that applies to the if/while/for as
+ * a unit, which is POSIX without `set -e` plus SH6a's top-level stop.
+ *
+ * `true`/`false` are tiny status builtins so a condition does not have to
+ * be `echo` (prints) or `run nosuch` (127 and a diagnostic).  `break` is
+ * only meaningful inside a loop.
+ *
+ * Bodies of a collected compound are run through a sh_src that names
+ * those lines, not the script frame.  A nested `if` that called
+ * sh_next_line on the frame would consume the outer `done`.
+ */
+
+static int sh_toks_span(const struct sh_tok *toks, int start, int end,
+                        char *dst, size_t cap)
+{
+    if (end <= start) { dst[0] = '\0'; return 0; }
+    const char *a = toks[start].text;
+    const char *b = toks[end - 1].text + toks[end - 1].len;
+    size_t n = (size_t)(b - a);
+    if (n >= cap) return -1;
+    memcpy(dst, a, n);
+    dst[n] = '\0';
+    return 0;
+}
+
+static int sh_find_kw(const struct sh_tok *toks, int start, int ntok, int want)
+{
+    int depth = 0;
+    for (int i = start; i < ntok; i++) {
+        int k = sh_word_kw(&toks[i]);
+        if (depth == 0 && k == want) return i;
+        if (sh_kw_open(k) && i != start) depth++;
+        if (sh_kw_close(k) && depth > 0) depth--;
+    }
+    return -1;
+}
+
+static int sh_line_delta(const struct sh_tok *toks, int ntok)
+{
+    int d = 0;
+    for (int i = 0; i < ntok; i++) {
+        int k = sh_word_kw(&toks[i]);
+        if (sh_kw_open(k))  d++;
+        if (sh_kw_close(k)) d--;
+    }
+    return d;
+}
+
+static int sh_wanted(int k, const int *want, int nwant)
+{
+    for (int i = 0; i < nwant; i++) if (k == want[i]) return 1;
+    return 0;
+}
+
+static int sh_trim_semi(const struct sh_tok *toks, int end)
+{
+    if (end > 0 && toks[end - 1].type == SH_TOK_SEMI) return end - 1;
+    return end;
+}
+
+static int sh_skip_semi_tok(const struct sh_tok *toks, int i, int ntok)
+{
+    if (i < ntok && toks[i].type == SH_TOK_SEMI) return i + 1;
+    return i;
+}
+
+/* Collect body lines until a closer at depth 0.  The closer line is
+ * pushed back, not included.  Returns 0, 2 on error, -1 on EOF. */
+static int sh_collect_until(struct sh_src *src, const int *want, int nwant,
+                            char **body, int max, int *nout)
+{
+    *nout = 0;
+    if (!src) return -1;
+    char *line;
+    int depth = 0;
+    while (sh_src_next(src, &line)) {
+        if (sh_line_is_blank(line)) continue;
+        struct sh_tok t[SH_MAX_TOKS];
+        int n = sh_tokenize(line, strlen(line), t, SH_MAX_TOKS);
+        if (n < 0) {
+            puts("sh: syntax error in compound command");
+            return 2;
+        }
+        int first = (n > 0) ? sh_word_kw(&t[0]) : SH_KW_NONE;
+        if (depth == 0 && sh_wanted(first, want, nwant)) {
+            sh_src_unread(src, line);
+            return 0;
+        }
+        depth += sh_line_delta(t, n);
+        if (depth < 0) depth = 0;
+        if (*nout >= max) {
+            puts("sh: compound command too large");
+            return 2;
+        }
+        body[(*nout)++] = line;
+    }
+    return -1;
+}
+
+static int sh_run_lines(char **lines, int n)
+{
+    struct sh_src inner;
+    memset(&inner, 0, sizeof inner);
+    inner.lines  = lines;
+    inner.nlines = n;
+    int st = 0;
+    char *line;
+    while (sh_src_next(&inner, &line)) {
+        if (sh_line_is_blank(line)) continue;
+        st = sh_exec_line(&inner, line);
+        if (sh_stopped()) break;
+    }
+    return st;
+}
+
+/* Prepend an optional first body fragment (the rest of a `then`/`do`
+ * line) onto collected subsequent lines and run them as one source. */
+static int sh_run_body(char *first, char **lines, int n)
+{
+    char *all[SH_MAX_BODY + 1];
+    int nall = 0;
+    if (first && first[0]) {
+        if (nall >= SH_MAX_BODY + 1) {
+            puts("sh: compound command too large");
+            return 2;
+        }
+        all[nall++] = first;
+    }
+    for (int i = 0; i < n; i++) {
+        if (nall >= SH_MAX_BODY + 1) {
+            puts("sh: compound command too large");
+            return 2;
+        }
+        all[nall++] = lines[i];
+    }
+    if (nall == 0) return 0;
+    return sh_run_lines(all, nall);
+}
+
+static int sh_skip_until(struct sh_src *src, int closer)
+{
+    int want = closer;
+    char *discard[SH_MAX_BODY];
+    int n = 0;
+    int r = sh_collect_until(src, &want, 1, discard, SH_MAX_BODY, &n);
+    if (r == -1) {
+        printf("sh: unexpected EOF looking for '%s'\n",
+               closer == SH_KW_FI ? "fi" : "done");
+        return 2;
+    }
+    if (r) return r;
+    char *line;
+    if (!sh_src_next(src, &line)) {
+        printf("sh: unexpected EOF looking for '%s'\n",
+               closer == SH_KW_FI ? "fi" : "done");
+        return 2;
+    }
+    return 0;
+}
+
+/* Remainder after a keyword on a taken line.  Static until the next call;
+ * callers who need it later copy. */
+static char sh_restbuf[INPUT_MAX];
+
+static int sh_take_kw_line(struct sh_src *src, int want, const char *name,
+                           char **rest)
+{
+    *rest = 0;
+    if (!src) {
+        printf("sh: missing '%s'\n", name);
+        return 2;
+    }
+    char *line;
+    while (sh_src_next(src, &line)) {
+        if (sh_line_is_blank(line)) continue;
+        struct sh_tok t[SH_MAX_TOKS];
+        int n = sh_tokenize(line, strlen(line), t, SH_MAX_TOKS);
+        if (n < 0) return 2;
+        if (n > 0 && sh_word_kw(&t[0]) == want) {
+            int start = sh_skip_semi_tok(t, 1, n);
+            if (start < n) {
+                if (sh_toks_span(t, start, n, sh_restbuf, sizeof sh_restbuf) < 0) {
+                    puts("sh: command too long");
+                    return 2;
+                }
+            } else {
+                sh_restbuf[0] = '\0';
+            }
+            *rest = sh_restbuf;
+            return 0;
+        }
+        sh_src_unread(src, line);
+        printf("sh: expected '%s'\n", name);
+        return 2;
+    }
+    printf("sh: unexpected EOF looking for '%s'\n", name);
+    return 2;
+}
+
+static int sh_eval_cond(const char *cond)
+{
+    if (!cond || !cond[0]) {
+        puts("sh: empty condition");
+        return 2;
+    }
+    return process_command((char *)cond);
+}
+
+/* After a one-line `fi`/`done`, optionally run the rest of the line
+ * (`if c; then b; fi; echo next`).  The separator decides whether it
+ * runs, matching SH6c's list rules. */
+static int sh_after_compound(struct sh_src *src, const struct sh_tok *toks,
+                             int closer, int ntok, int st)
+{
+    int i = closer + 1;
+    if (i >= ntok) return st;
+    int op = toks[i].type;
+    int run = 0;
+    if (op == SH_TOK_SEMI || op == SH_TOK_AMP) { run = 1; i++; }
+    else if (op == SH_TOK_ANDAND) { run = (st == 0); i++; }
+    else if (op == SH_TOK_OROR)   { run = (st != 0); i++; }
+    else {
+        puts("sh: expected a separator after compound command");
+        return 2;
+    }
+    if (i >= ntok) return st;
+    if (!run) return st;
+    char rest[INPUT_MAX];
+    if (sh_toks_span(toks, i, ntok, rest, sizeof rest) < 0) return 2;
+    return sh_exec_line(src, rest);
+}
+
+static int sh_rewrite_if(const struct sh_tok *toks, int from, int ntok,
+                         char *dst, size_t cap)
+{
+    if (cap < 4) return -1;
+    dst[0] = 'i'; dst[1] = 'f'; dst[2] = ' ';
+    if (from >= ntok) { dst[2] = '\0'; return 0; }
+    const char *a = toks[from].text;
+    const char *b = toks[ntok - 1].text + toks[ntok - 1].len;
+    size_t n = (size_t)(b - a);
+    if (n + 4 > cap) return -1;
+    memcpy(dst + 3, a, n);
+    dst[3 + n] = '\0';
+    return 0;
+}
+
+static int sh_do_if(struct sh_src *src, struct sh_tok *toks, int ntok)
+{
+    char cond[INPUT_MAX];
+    int then_at = sh_find_kw(toks, 1, ntok, SH_KW_THEN);
+    int cond_end = (then_at >= 0) ? then_at : ntok;
+    cond_end = sh_trim_semi(toks, cond_end);
+    if (cond_end <= 1) { puts("sh: if: empty condition"); return 2; }
+    if (sh_toks_span(toks, 1, cond_end, cond, sizeof cond) < 0) {
+        puts("sh: if: condition too long");
+        return 2;
+    }
+
+    char first_body[INPUT_MAX];
+    first_body[0] = '\0';
+    int have_first = 0;
+
+    if (then_at >= 0) {
+        int rest = sh_skip_semi_tok(toks, then_at + 1, ntok);
+        int oneline_fi = sh_find_kw(toks, rest, ntok, SH_KW_FI);
+        if (oneline_fi >= 0) {
+            int elif_at = sh_find_kw(toks, rest, oneline_fi, SH_KW_ELIF);
+            int else_at = sh_find_kw(toks, rest, oneline_fi, SH_KW_ELSE);
+            int taken = (sh_eval_cond(cond) == 0);
+            if (taken) {
+                int body_end = oneline_fi;
+                if (else_at >= 0 && else_at < body_end) body_end = else_at;
+                if (elif_at >= 0 && elif_at < body_end) body_end = elif_at;
+                body_end = sh_trim_semi(toks, body_end);
+                int st = 0;
+                if (body_end > rest) {
+                    if (sh_toks_span(toks, rest, body_end, first_body,
+                                     sizeof first_body) < 0) return 2;
+                    st = process_command(first_body);
+                }
+                return sh_after_compound(src, toks, oneline_fi, ntok, st);
+            }
+            if (elif_at >= 0) {
+                char rec[INPUT_MAX];
+                if (sh_rewrite_if(toks, elif_at + 1, ntok, rec, sizeof rec) < 0)
+                    return 2;
+                return sh_exec_line(src, rec);
+            }
+            if (else_at >= 0) {
+                int body_start = sh_skip_semi_tok(toks, else_at + 1, ntok);
+                int body_end = sh_trim_semi(toks, oneline_fi);
+                int st = 0;
+                if (body_end > body_start) {
+                    if (sh_toks_span(toks, body_start, body_end, first_body,
+                                     sizeof first_body) < 0) return 2;
+                    st = process_command(first_body);
+                }
+                return sh_after_compound(src, toks, oneline_fi, ntok, st);
+            }
+            return sh_after_compound(src, toks, oneline_fi, ntok, 0);
+        }
+        if (rest < ntok) {
+            if (sh_toks_span(toks, rest, ntok, first_body, sizeof first_body) < 0)
+                return 2;
+            have_first = first_body[0] != '\0';
+        }
+    } else {
+        char *rest = 0;
+        int r = sh_take_kw_line(src, SH_KW_THEN, "then", &rest);
+        if (r) return r;
+        if (rest && rest[0]) {
+            strncpy(first_body, rest, sizeof first_body - 1);
+            first_body[sizeof first_body - 1] = '\0';
+            have_first = 1;
+        }
+    }
+
+    char *body[SH_MAX_BODY];
+    int nbody = 0;
+    static const int then_closers[] = { SH_KW_ELIF, SH_KW_ELSE, SH_KW_FI };
+    int r = sh_collect_until(src, then_closers, 3, body, SH_MAX_BODY, &nbody);
+    if (r == -1) { puts("sh: unexpected EOF looking for 'fi'"); return 2; }
+    if (r) return r;
+
+    int taken = (sh_eval_cond(cond) == 0);
+    int result = 0;
+    if (taken) {
+        result = sh_run_body(have_first ? first_body : 0, body, nbody);
+        return sh_skip_until(src, SH_KW_FI) ? 2 : result;
+    }
+
+    char *cline;
+    if (!sh_src_next(src, &cline)) {
+        puts("sh: unexpected EOF looking for 'fi'");
+        return 2;
+    }
+    struct sh_tok ct[SH_MAX_TOKS];
+    int cn = sh_tokenize(cline, strlen(cline), ct, SH_MAX_TOKS);
+    int ckw = (cn > 0) ? sh_word_kw(&ct[0]) : SH_KW_NONE;
+    if (ckw == SH_KW_FI) return 0;
+    if (ckw == SH_KW_ELSE) {
+        char else_first[INPUT_MAX];
+        else_first[0] = '\0';
+        int have_ef = 0;
+        int s = sh_skip_semi_tok(ct, 1, cn);
+        if (s < cn) {
+            if (sh_toks_span(ct, s, cn, else_first, sizeof else_first) < 0)
+                return 2;
+            have_ef = else_first[0] != '\0';
+        }
+        char *ebody[SH_MAX_BODY];
+        int ne = 0;
+        static const int fi_only[] = { SH_KW_FI };
+        r = sh_collect_until(src, fi_only, 1, ebody, SH_MAX_BODY, &ne);
+        if (r == -1) { puts("sh: unexpected EOF looking for 'fi'"); return 2; }
+        if (r) return r;
+        result = sh_run_body(have_ef ? else_first : 0, ebody, ne);
+        char *fi_line;
+        if (!sh_src_next(src, &fi_line)) {
+            puts("sh: unexpected EOF looking for 'fi'");
+            return 2;
+        }
+        return result;
+    }
+    if (ckw == SH_KW_ELIF) {
+        char rec[INPUT_MAX];
+        if (sh_rewrite_if(ct, 1, cn, rec, sizeof rec) < 0) return 2;
+        return sh_exec_line(src, rec);
+    }
+    puts("sh: expected 'fi', 'else' or 'elif'");
+    return 2;
+}
+
+static int sh_do_while(struct sh_src *src, struct sh_tok *toks, int ntok)
+{
+    char cond[INPUT_MAX];
+    int do_at = sh_find_kw(toks, 1, ntok, SH_KW_DO);
+    int cond_end = (do_at >= 0) ? do_at : ntok;
+    cond_end = sh_trim_semi(toks, cond_end);
+    if (cond_end <= 1) { puts("sh: while: empty condition"); return 2; }
+    if (sh_toks_span(toks, 1, cond_end, cond, sizeof cond) < 0) {
+        puts("sh: while: condition too long");
+        return 2;
+    }
+
+    char first_body[INPUT_MAX];
+    first_body[0] = '\0';
+    int have_first = 0;
+
+    if (do_at >= 0) {
+        int rest = sh_skip_semi_tok(toks, do_at + 1, ntok);
+        int oneline_done = sh_find_kw(toks, rest, ntok, SH_KW_DONE);
+        if (oneline_done >= 0) {
+            int body_end = sh_trim_semi(toks, oneline_done);
+            char body[INPUT_MAX];
+            body[0] = '\0';
+            if (body_end > rest) {
+                if (sh_toks_span(toks, rest, body_end, body, sizeof body) < 0)
+                    return 2;
+            }
+            sh_loop_depth++;
+            int result = 0;
+            int n = 0;
+            struct sh_src empty;
+            memset(&empty, 0, sizeof empty);
+            for (;;) {
+                if (++n > SH_MAX_LOOP) {
+                    puts("sh: loop limit exceeded");
+                    sh_loop_depth--;
+                    last_status = 2;
+                    return 2;
+                }
+                if (sh_eval_cond(cond) != 0) { result = 0; break; }
+                if (body[0]) result = sh_exec_line(&empty, body);
+                if (sh_break_req) { sh_break_req = 0; result = 0; break; }
+                if (sh_depth > 0 && sh_stack[sh_depth - 1].exit_req) break;
+            }
+            sh_loop_depth--;
+            return sh_after_compound(src, toks, oneline_done, ntok, result);
+        }
+        if (rest < ntok) {
+            if (sh_toks_span(toks, rest, ntok, first_body, sizeof first_body) < 0)
+                return 2;
+            have_first = first_body[0] != '\0';
+        }
+    } else {
+        char *rest = 0;
+        int r = sh_take_kw_line(src, SH_KW_DO, "do", &rest);
+        if (r) return r;
+        if (rest && rest[0]) {
+            strncpy(first_body, rest, sizeof first_body - 1);
+            first_body[sizeof first_body - 1] = '\0';
+            have_first = 1;
+        }
+    }
+
+    char *body[SH_MAX_BODY];
+    int nbody = 0;
+    static const int done_only[] = { SH_KW_DONE };
+    int r = sh_collect_until(src, done_only, 1, body, SH_MAX_BODY, &nbody);
+    if (r == -1) { puts("sh: unexpected EOF looking for 'done'"); return 2; }
+    if (r) return r;
+
+    sh_loop_depth++;
+    int result = 0;
+    int n = 0;
+    for (;;) {
+        if (++n > SH_MAX_LOOP) {
+            puts("sh: loop limit exceeded");
+            sh_loop_depth--;
+            last_status = 2;
+            return 2;
+        }
+        if (sh_eval_cond(cond) != 0) { result = 0; break; }
+        result = sh_run_body(have_first ? first_body : 0, body, nbody);
+        if (sh_break_req) { sh_break_req = 0; result = 0; break; }
+        if (sh_depth > 0 && sh_stack[sh_depth - 1].exit_req) break;
+    }
+    sh_loop_depth--;
+    char *done_line;
+    if (!sh_src_next(src, &done_line)) {
+        puts("sh: unexpected EOF looking for 'done'");
+        return 2;
+    }
+    return result;
+}
+
+static int sh_do_for(struct sh_src *src, struct sh_tok *toks, int ntok)
+{
+    if (ntok < 4 || toks[1].type != SH_TOK_WORD) {
+        puts("sh: for: expected name");
+        return 2;
+    }
+    if (sh_word_kw(&toks[2]) != SH_KW_IN) {
+        puts("sh: for: expected 'in'");
+        return 2;
+    }
+
+    char name[SH_VAR_NAME_MAX];
+    if (toks[1].len >= sizeof name) { puts("sh: for: name too long"); return 2; }
+    memcpy(name, toks[1].text, toks[1].len);
+    name[toks[1].len] = '\0';
+    if (!sh_is_name_start(name[0])) {
+        printf("sh: for: '%s' is not a valid name\n", name);
+        return 2;
+    }
+
+    int do_at = sh_find_kw(toks, 3, ntok, SH_KW_DO);
+    int list_end = (do_at >= 0) ? do_at : ntok;
+    list_end = sh_trim_semi(toks, list_end);
+
+    char vals[MAX_ARGS][SH_ARG_MAX_EXP];
+    int nvals = 0;
+    char *const *pos = 0;
+    int npos = 0;
+    if (sh_depth > 0) {
+        pos  = sh_stack[sh_depth - 1].argv;
+        npos = sh_stack[sh_depth - 1].argc;
+    }
+    const struct sh_var *vars = sh_var_table();
+    for (int i = 3; i < list_end; i++) {
+        if (toks[i].type != SH_TOK_WORD) {
+            printf("sh: for: unexpected %s in word list\n",
+                   sh_tok_name(toks[i].type));
+            return 2;
+        }
+        if (nvals >= MAX_ARGS) { puts("sh: for: too many words"); return 2; }
+        if (sh_expand_word(toks[i].text, toks[i].len, vals[nvals],
+                           SH_ARG_MAX_EXP, vars, sh_nvars, pos, npos,
+                           last_status) != SH_EXP_OK) {
+            puts("sh: for: word too long to expand");
+            return 2;
+        }
+        nvals++;
+    }
+
+    char first_body[INPUT_MAX];
+    first_body[0] = '\0';
+    int have_first = 0;
+
+    if (do_at >= 0) {
+        int rest = sh_skip_semi_tok(toks, do_at + 1, ntok);
+        int done_at = sh_find_kw(toks, rest, ntok, SH_KW_DONE);
+        if (done_at >= 0) {
+            int body_end = sh_trim_semi(toks, done_at);
+            char body[INPUT_MAX];
+            body[0] = '\0';
+            if (body_end > rest) {
+                if (sh_toks_span(toks, rest, body_end, body, sizeof body) < 0)
+                    return 2;
+            }
+            sh_loop_depth++;
+            int result = 0;
+            struct sh_src empty;
+            memset(&empty, 0, sizeof empty);
+            for (int i = 0; i < nvals; i++) {
+                if (sh_var_set(name, vals[i]) != 0) {
+                    printf("sh: for: cannot assign %s\n", name);
+                    sh_loop_depth--;
+                    return 2;
+                }
+                if (body[0]) result = sh_exec_line(&empty, body);
+                if (sh_break_req) { sh_break_req = 0; result = 0; break; }
+                if (sh_depth > 0 && sh_stack[sh_depth - 1].exit_req) break;
+            }
+            sh_loop_depth--;
+            return sh_after_compound(src, toks, done_at, ntok, result);
+        }
+        if (rest < ntok) {
+            if (sh_toks_span(toks, rest, ntok, first_body, sizeof first_body) < 0)
+                return 2;
+            have_first = first_body[0] != '\0';
+        }
+    } else {
+        char *rest = 0;
+        int r = sh_take_kw_line(src, SH_KW_DO, "do", &rest);
+        if (r) return r;
+        if (rest && rest[0]) {
+            strncpy(first_body, rest, sizeof first_body - 1);
+            first_body[sizeof first_body - 1] = '\0';
+            have_first = 1;
+        }
+    }
+
+    char *body[SH_MAX_BODY];
+    int nbody = 0;
+    static const int done_only[] = { SH_KW_DONE };
+    int r = sh_collect_until(src, done_only, 1, body, SH_MAX_BODY, &nbody);
+    if (r == -1) { puts("sh: unexpected EOF looking for 'done'"); return 2; }
+    if (r) return r;
+
+    sh_loop_depth++;
+    int result = 0;
+    for (int i = 0; i < nvals; i++) {
+        if (sh_var_set(name, vals[i]) != 0) {
+            printf("sh: for: cannot assign %s\n", name);
+            sh_loop_depth--;
+            return 2;
+        }
+        result = sh_run_body(have_first ? first_body : 0, body, nbody);
+        if (sh_break_req) { sh_break_req = 0; result = 0; break; }
+        if (sh_depth > 0 && sh_stack[sh_depth - 1].exit_req) break;
+    }
+    sh_loop_depth--;
+    char *done_line;
+    if (!sh_src_next(src, &done_line)) {
+        puts("sh: unexpected EOF looking for 'done'");
+        return 2;
+    }
+    return result;
+}
+
+/* Dispatch one line: a compound opener, or a SH6c list. */
+static int sh_exec_line(struct sh_src *src, char *line)
+{
+    for (char *p = line; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\r') *p = '\n';
+        else if (c != '\n' && c != '\t' && (c < 0x20 || c > 0x7E)) *p = ' ';
+    }
+    struct sh_tok toks[SH_MAX_TOKS];
+    int ntok = sh_tokenize(line, strlen(line), toks, SH_MAX_TOKS);
+    if (ntok < 0) return process_command(line);
+    if (ntok == 0) return 0;
+    int kw = sh_word_kw(&toks[0]);
+    int st;
+    if (kw == SH_KW_IF) {
+        st = sh_do_if(src, toks, ntok);
+    } else if (kw == SH_KW_WHILE) {
+        st = sh_do_while(src, toks, ntok);
+    } else if (kw == SH_KW_FOR) {
+        st = sh_do_for(src, toks, ntok);
+    } else if (kw == SH_KW_THEN || kw == SH_KW_ELIF || kw == SH_KW_ELSE ||
+               kw == SH_KW_FI || kw == SH_KW_DO || kw == SH_KW_DONE) {
+        printf("sh: unexpected '%.*s'\n", (int)toks[0].len, toks[0].text);
+        st = 2;
+    } else {
+        st = process_command(line);
+    }
+    last_status = st;
+    return st;
 }
 
 static void dummy_handler(int s) { (void)s; }
@@ -1765,8 +2514,13 @@ int main(void) {
         }
         input_line[n] = '\0';
 
-        /* Process the command. */
-        process_command(input_line);
+        /* Process the command.  Compounds (if/while/for) start a line;
+         * a one-liner at the prompt has no further source. */
+        {
+            struct sh_src prompt;
+            memset(&prompt, 0, sizeof prompt);
+            (void)sh_exec_line(&prompt, input_line);
+        }
     }
 
     return 0;

@@ -190,12 +190,13 @@ ALL_CASES=(
     # Graphics and userspace
     test_3d_render
     test_virgl_gpu
-    # SH6a/SH6b: the shell runs scripts, with redirects and variables.  No
-    # guest toolchain needed, so unlike the SH1-SH5 cases below these never
-    # skip -- listed first for that reason.
+    # SH6a–SH6d: the shell runs scripts, with redirects, variables, pipes,
+    # lists and control flow.  No guest toolchain needed, so unlike the
+    # SH1-SH5 cases below these never skip -- listed first for that reason.
     test_selfhost_script
     test_selfhost_redirect
     test_selfhost_pipe
+    test_selfhost_control
     test_selfhost_tcc
     test_selfhost_userland
     test_selfhost_aulink

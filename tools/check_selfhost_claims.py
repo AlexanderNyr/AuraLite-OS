@@ -48,6 +48,7 @@ RECEIPTS = [
     "[selfhost] script PASS:",
     "[selfhost] redirect PASS:",
     "[selfhost] pipe PASS:",
+    "[selfhost] control PASS:",
     "[selfhost] build PASS:",
     "[selfhost] iso PASS:",
     "[selfhost] FULL LOOP PASS",

@@ -291,6 +291,39 @@ static void test_list_operators(void) {
     is_op(1, SH_TOK_AMP);
 }
 
+static void test_keywords_are_words(void) {
+    /* SH6d: if/then/elif/else/fi/while/do/done/for/in/break stay words.
+     * The tokenizer has no keyword type; reserved words are recognised
+     * by the command dispatcher when they open a line. */
+    CHECK(tok("if true; then echo x; fi") == 8);
+    is_word(0, "if");
+    is_word(1, "true");
+    is_op(2, SH_TOK_SEMI);
+    is_word(3, "then");
+    is_word(4, "echo");
+    is_word(5, "x");
+    is_op(6, SH_TOK_SEMI);
+    is_word(7, "fi");
+
+    CHECK(tok("while true; do break; done") == 7);
+    is_word(0, "while");
+    is_word(3, "do");
+    is_word(4, "break");
+    is_word(6, "done");
+
+    CHECK(tok("for x in a b c; do echo $x; done") == 12);
+    is_word(0, "for");
+    is_word(1, "x");
+    is_word(2, "in");
+    is_word(8, "echo");
+    is_word(9, "$x");
+    is_word(11, "done");
+
+    /* A quoted `if` is still a word, not a reserved-word token. */
+    CHECK(tok("'if' true") == 2);
+    is_word(0, "'if'");
+}
+
 static void test_tok_name(void) {
     CHECK(strcmp(sh_tok_name(SH_TOK_GT), ">") == 0);
     CHECK(strcmp(sh_tok_name(SH_TOK_GGT), ">>") == 0);
@@ -314,6 +347,7 @@ int main(void) {
     test_limits();
     test_realistic_lines();
     test_list_operators();
+    test_keywords_are_words();
     test_tok_name();
 
     printf("  %d passed, %d failed\n", passed, failed);

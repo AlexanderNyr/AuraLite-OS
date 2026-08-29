@@ -2,7 +2,8 @@
 
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
-redirected fd 0/1/2 actually work) and SH6c (pipes and command lists) have landed.  SH6d–SH9 remain pending.
+redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
+(control flow) have landed.  SH6e–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -25,7 +26,7 @@ redirected fd 0/1/2 actually work) and SH6c (pipes and command lists) have lande
 | SH6a — spike (D10 decision) + exit-status spine + script runner | ✅ landed |
 | SH6b — redirects + named variables + the fd 0/1/2 kernel fix | ✅ landed |
 | SH6c — pipes + command lists (`;` `&&` `\|\|`) | ✅ landed |
-| SH6d — control flow `if`/`while`/`for` | 🚧 pending |
+| SH6d — control flow `if`/`while`/`for` | ✅ landed |
 | SH6e — `shmake`: rules, prerequisites, variables, phony targets | 🚧 pending |
 | SH6f — `build.sh` entry point + D5 target parity + D6 resume | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
@@ -173,7 +174,8 @@ The builtin count is *distinct* dispatch names, not raw `strcmp` hits: `run`
 appears twice (once in the background path, once in the foreground dispatch),
 so the grep count reads 32 where the distinct count is 31.  Measured with
 `grep -o 'strcmp(cmd, "[a-z_0-9]*") == 0' | sort -u | wc -l` on the SH5d base;
-SH6a's `sh` makes it 32 and SH6b's `set`/`unset` make it 34.
+SH6a's `sh` makes it 32, SH6b's `set`/`unset` make it 34, and SH6d's
+`true`/`false`/`break` make it 37.
 
 ### Fact 9 — Persistent writable storage exists and is exercised
 
@@ -1466,21 +1468,54 @@ operators against the shipped header.
 
 ---
 
-### Phase SH6d — control flow `if`/`while`/`for` 🚧 PENDING
+### Phase SH6d — control flow `if`/`while`/`for` ✅ LANDED (2026-08-29)
 
 **Goal.** The subset of shell control flow `build.sh` actually needs — no
 more, since every construct added here is one more thing SH8's closure has to
 rebuild with tcc.
 
-**Definition of done.** `if`/`elif`/`else`/`fi`, `while`/`do`/`done` and
-`for x in <words>`; all three branch on the exit status SH6a introduced.
-`case`, functions, `trap` and arithmetic are explicitly out (Fact 8's bar was
-never "POSIX shell", it was "enough for `build.sh`").
+**What landed.**
 
-**Gate.** Integration case `test_selfhost_control.sh`: a guest script
-exercises a taken and an untaken branch, a loop with a known iteration count
-and an early `break`, and greps
-`[selfhost] control PASS: <n> branches and loops ran`.
+- **Keywords stay words.**  `if`/`then`/`elif`/`else`/`fi`/`while`/`do`/
+  `done`/`for`/`in`/`break` are not tokenizer operators.  Whether `if` opens
+  a compound depends on it being the first word of a line, which is a
+  command-level fact.  Quoting `if` therefore keeps it a command name.
+- **`userspace/system/init/init.c`.**  A line whose first word is `if`/
+  `while`/`for` is a compound, consumed as one command by `cmd_sh`.  A
+  failing *condition* does not abort the script (so `if false; then` is not
+  a top-level `false`); the construct's status is the last command of the
+  taken branch, or 0 if no branch ran.  Body lines do not go through
+  `cmd_sh`'s "stop on nonzero" loop.
+- **A line-source, not a second reader on the frame.**  `struct sh_src` is
+  either the running script frame or a collected body (an array of line
+  pointers into that frame's text).  Nested compounds collect from the body
+  they sit in.  Collecting a nested `if` with `sh_next_line` on the frame
+  was tried in the design and would swallow the outer `done` — ledger SH-41.
+  Depth on collect is the net open/close per line, so a one-line nested
+  `if inner; then e; fi` is delta 0 and does not increment past the outer
+  closer.
+- **`true`/`false`/`break` builtins.**  A condition must not have to be
+  `echo` (prints) or `run nosuch` (127 and a diagnostic).  `break` leaves
+  the enclosing loop; outside a loop it warns and is not an error.
+  `SH_MAX_LOOP` 1024 stops a `while true` without `break`.
+- **`for x in <words>`.**  `in` is required (the positional-parameter form
+  is out of scope).  The list is expanded once, before the loop; `$x` in
+  the body re-expands each iteration.
+
+**One-liners at the prompt work** (`if true; then echo x; fi`); multi-line
+compounds need a script, because the prompt has no continuation reader.
+
+**Deliberately out of scope.**  `case`, functions, `trap`, arithmetic,
+`until`, `for` without `in`, and a compound that is not the first word of
+its line (`echo x; if true; then ...` is a list whose second element is
+the command `if`, not a compound).
+
+**Gate.** `test_selfhost_control.sh` + `tools/selfhost/sh6d_probe.sh`.
+A taken and an untaken branch, an elif, a `for` with a known iteration
+count, a `while` with an early `break` and a nested `if` inside the body,
+plus the same constructs typed at the prompt.  Receipt
+`[selfhost] control PASS: 5 branches and loops ran`.  Host unit tests
+pin that the keywords stay words against the shipped tokenizer.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
@@ -1660,7 +1695,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-01 | exec-image cap 1 MiB (`SPAWN_MAX_IMAGE`) blocks a real compiler | limit | CLOSED (16 MiB, SH1) | SH1 |
 | SH-02 | user stack 1 MiB (4 sites) too shallow for compiler recursion | limit | CLOSED (4 MiB, SH1) | SH1 |
 | SH-03 | `TMPFS_MAX_FILES` 64 per volume; source tree is 1269 files | limit | CLOSED (256, SH1) | SH1 |
-| SH-04 | shell: no pipes/redirects/variables/loops (Fact 8 named smallsh; the x86_64 shell is init.c, see D10) | missing | OPEN (SH6a landed the script runner and the exit-status spine; pipes, redirects, variables and loops remain) | SH6a-SH6d |
+| SH-04 | shell: no pipes/redirects/variables/loops (Fact 8 named smallsh; the x86_64 shell is init.c, see D10) | missing | CLOSED (SH6a script runner + status spine; SH6b redirects + variables; SH6c pipes + lists; SH6d if/while/for/break) | SH6a-SH6d |
 | SH-05 | ISO tooling is host python3/mtools (Fact 5) | missing | OPEN | SH7 |
 | SH-06 | kernel CFLAGS clang-only, `-mcmodel=kernel` unportable (Fact 2) | port | CLOSED (SH5a measured it unnecessary; SH5c compiled all 126 files and recorded the flag-delta table) | SH5 |
 | SH-07 | `OPEN_MAX` 64 — adequacy unknown until the spike | limit | CLOSED (tcc ran on 64 fds, SH1) | SH1 |
@@ -1697,6 +1732,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-38 | cmd_argv[argc++] = sh_expbuf[argc] -- the increment and the read of argc are unsequenced, so which slot the pointer names is undefined | bug | CLOSED (SH6b: split into two statements; clang -Wunsequenced is what caught it) | SH6b |
 | SH-39 | build/user/init.o did not list sh_expand.h as a prerequisite, so editing the header did not rebuild the shell | build | CLOSED (SH6b: init.o depends on both sh_expand.h and sh_parse.h) | SH6b |
 | SH-40 | per-stage fork() of a pipeline child resumes at the syscall stub and takes a user-mode #PF (error 0x6, write to a non-present page) | bug | ACCEPTED (SH6c: stages run sequentially in the shell through SYS_PIPE; a backgrounded pipeline is one job via the existing subshell fork.  Concurrent stages wait for a fork-clone fix that is not this sub-phase's kernel work) | SH6c |
+| SH-41 | collecting a nested `if` inside a `while` body with `sh_next_line` on the script frame swallows the outer `done` | bug | CLOSED (SH6d: compounds collect from a line-source; a nested compound reads the collected body, not the frame.  Depth on collect is net open/close per line, so `if inner; then e; fi` is delta 0) | SH6d |
 
 ## 8. Receipt strings (the greppable contract)
 
@@ -1714,6 +1750,7 @@ plan still lists them, so a renamed receipt fails the build:
 [selfhost] script PASS: <n> lines ran in-guest
 [selfhost] redirect PASS: <n> files written and read back
 [selfhost] pipe PASS: <n> pipelines ran
+[selfhost] control PASS: <n> branches and loops ran
 [selfhost] build PASS: kernel+initrd built on /fat
 [selfhost] iso PASS: auralite.iso built in-guest
 [selfhost] FULL LOOP PASS (2/2 clean loops)

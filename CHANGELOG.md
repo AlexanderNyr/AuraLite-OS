@@ -2,6 +2,32 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH6d — control flow] 2026-08-29
+
+`SELFHOST_PLAN.md` SH6d landed: `if`/`elif`/`else`/`fi`, `while`/`do`/`done`,
+`for x in <words>`, `break`.
+
+- **Keywords stay words.**  The tokenizer does not grow a keyword type;
+  `if`/`while`/`for` are recognised when they open a line.  Quoting `if`
+  keeps it a command name.
+- **A line-source.**  Compounds span lines, so `cmd_sh` feeds a `sh_src`
+  (the script frame, or a collected body) rather than calling
+  `process_command` on each line in isolation.  Nested compounds collect
+  from the body they sit in — collecting a nested `if` from the frame
+  would swallow the outer `done` (ledger SH-41).  Depth on collect is the
+  net open/close per line, so `if inner; then e; fi` is delta 0.
+- **A compound is one command.**  A failing *condition* does not abort the
+  script; the construct's status is the last command of the taken branch,
+  or 0 if none ran.  Body lines do not go through SH6a's top-level stop.
+- **`true`/`false`/`break` builtins.**  A condition does not have to be
+  `echo` or `run nosuch`.  `break` leaves the enclosing loop;
+  `SH_MAX_LOOP` 1024 stops a `while true` without one.  `for x in` requires
+  `in`; the list is expanded once.
+- Gate: `tests/integration/cases/test_selfhost_control.sh` +
+  `tools/selfhost/sh6d_probe.sh`.  Receipt
+  `[selfhost] control PASS: 5 branches and loops ran`.  Host unit tests
+  pin that the keywords stay words.
+
 ## [SELFHOST SH6c — pipes and command lists] 2026-08-29
 
 `SELFHOST_PLAN.md` SH6c landed: `|`, `;`, `&&`, `||`.

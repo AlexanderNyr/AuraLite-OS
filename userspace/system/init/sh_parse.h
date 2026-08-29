@@ -24,6 +24,8 @@
  *     followed by a redirect.  Adding it would be inventing a stream that
  *     does not exist.
  *   - here-documents.  Not in any sub-phase's scope.
+ *   - reserved-word tokens.  SH6d's `if`/`while`/`for` stay SH_TOK_WORD;
+ *     the command dispatcher recognises them when they open a line.
  */
 
 #ifndef AURALITE_SH_PARSE_H
