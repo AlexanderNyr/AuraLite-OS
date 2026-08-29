@@ -49,6 +49,7 @@ RECEIPTS = [
     "[selfhost] redirect PASS:",
     "[selfhost] pipe PASS:",
     "[selfhost] control PASS:",
+    "[selfhost] shmake PASS:",
     "[selfhost] build PASS:",
     "[selfhost] iso PASS:",
     "[selfhost] FULL LOOP PASS",
@@ -118,6 +119,18 @@ def check_plan(plan, tree_has_file):
                     fails.append("SH5: marked ✅ but %s is back in the tree "
                                  "(the kernel header path must stay C-only)"
                                  % "/".join(parts))
+
+    # SH6e is a sub-phase (SH6e, not SH6), so the SH\d+ table walk above
+    # does not see it.  Pin the artefacts the ✅ claims independently.
+    if re.search(r"^\\| SH6e .*\\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "shmake", "shmake.c"),
+            ("tests", "integration", "cases", "test_selfhost_shmake.sh"),
+            ("tests", "unit", "test_shmake.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH6e: marked ✅ but %s missing"
+                             % "/".join(parts))
 
     # Required sections (the plan's own contract).
     for sec in ["## 2. Decisions", "## 3. Phases", "## 6. What this plan "

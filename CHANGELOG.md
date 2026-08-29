@@ -2,6 +2,25 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH6e — shmake] 2026-08-29
+
+`SELFHOST_PLAN.md` SH6e landed: `tools/shmake/shmake.c`, a POSIX-subset make
+(rules, prerequisites, `CC = tcc` / `$(CC)`, `.PHONY`, timestamps).
+
+- **Not GNU make.**  Explicit targets only.  Pattern rules, `include`,
+  `ifeq`, `$(wildcard)`/`$(shell)`, VPATH and `-j` are out of scope (D5).
+- **Recipes are argv, not `sh -c`.**  AuraLite has no `/bin/sh` (D10;
+  `system()` is ENOSYS), so the expanded recipe is split on whitespace and
+  exec'd — `spawnv` in-guest, `fork`+`execvp` on the host (ledger SH-42).
+- **`/bin/shmake` is a normal user ELF**, so the gate never skips.  Source
+  is staged at `/src/shmake.c` when the guest tcc is present (SH8 rebuilds
+  it).  D5's host Makefile vs `build.sh` target-set checker lands with SH6f.
+- Gate: `tests/integration/cases/test_selfhost_shmake.sh` +
+  `tools/selfhost/sh6e_probe.sh`.  A three-node graph: touching `a.in`
+  rebuilds `a.out` and `app` and does not rebuild `b.out`.  Receipt
+  `[selfhost] shmake PASS: 3 targets up to date`.  Host unit tests pin the
+  same graph plus `.PHONY`, `-C` and cycles.
+
 ## [SELFHOST SH6d — control flow] 2026-08-29
 
 `SELFHOST_PLAN.md` SH6d landed: `if`/`elif`/`else`/`fi`, `while`/`do`/`done`,

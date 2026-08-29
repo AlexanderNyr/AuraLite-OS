@@ -290,7 +290,7 @@ jobs:
           results=build/integration-logs/results-selfhost.txt
           cat "$results"
           for c in test_selfhost_script test_selfhost_redirect test_selfhost_pipe \
-                   test_selfhost_control \
+                   test_selfhost_control test_selfhost_shmake \
                    test_selfhost_tcc test_selfhost_userland test_selfhost_aulink \
                    test_selfhost_asm test_selfhost_kernel_spike \
                    test_selfhost_kernel_tcc test_selfhost_kernel_guest; do
@@ -299,7 +299,7 @@ jobs:
               exit 1
             fi
           done
-          echo "all 11 selfhost gates ran and passed"
+          echo "all 12 selfhost gates ran and passed"
 
       # results-<group>.txt names every case PASS/FAIL with duration:
       # step stdout is admin-only on public repos, and serial logs

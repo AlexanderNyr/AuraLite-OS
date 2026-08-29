@@ -1823,6 +1823,7 @@ SELFHOST_KERNEL_STAGE := $(shell find kernel drivers boot w32 \
                          $(shell find $(SELFHOST_SRC)/include -type f 2>/dev/null) \
                          kernel.ld lib/libc/user.ld \
                          tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
+                         tools/shmake/shmake.c \
                          tools/selfhost/tcc_crt0.s tools/selfhost/tcc_builtins.c \
                          tools/selfhost/stdint.h tools/selfhost/hello.c \
                          tools/selfhost/userland_ok.c \
@@ -1959,6 +1960,33 @@ $(AULINK_GUEST): $(AULINK_SRC) $(LIBAURAC) $(USER_BUILD)/crt0.o lib/libc/user.ld
 .PHONY: selfhost-aulink
 selfhost-aulink: $(AULINK_HOST) $(AULINK_GUEST)
 	@echo "[selfhost] aulink ready: $(AULINK_HOST) + $(AULINK_GUEST)"
+
+# SELFHOST SH6e: shmake -- POSIX-subset make (rules, vars, .PHONY, timestamps).
+# Guest ELF is a normal user program so the SH6e gate never skips (no tcc fetch).
+# Host binary is compiled by tests/unit/test_shmake.sh; the rule below is for
+# `make build/shmake` and the test-unit script.
+SHMAKE_SRC   := tools/shmake/shmake.c
+SHMAKE_HOST  := $(BUILD_DIR)/shmake
+SHMAKE_ELF   := $(USER_BUILD)/shmake.elf
+SH6E_STAMP_ELF := $(USER_BUILD)/sh6e_stamp.elf
+$(SHMAKE_HOST): $(SHMAKE_SRC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c99 -Wall -Wextra -Werror -O2 -o $@ $<
+	@echo "  [shmake] $@"
+$(USER_BUILD)/shmake.o: $(SHMAKE_SRC) $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(SHMAKE_ELF): $(USER_BUILD)/shmake.o $(USER_COMMON) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/shmake.o $(USER_COMMON_LNK) -o $@
+	@echo "[link] $(SHMAKE_ELF)"
+$(USER_BUILD)/sh6e_stamp.o: tools/selfhost/sh6e_stamp.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(SH6E_STAMP_ELF): $(USER_BUILD)/sh6e_stamp.o $(USER_COMMON) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/sh6e_stamp.o $(USER_COMMON_LNK) -o $@
+	@echo "[link] $(SH6E_STAMP_ELF)"
 
 INITRD_DIR := $(USER_BUILD)/initrd_root
 # ---- The runtime filesystem layout (FSLAYOUT_PLAN phase F3) ----
@@ -2147,6 +2175,9 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
                          tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
                          tools/selfhost/sh6c_probe.sh tools/selfhost/sh6d_probe.sh \
+                         tools/selfhost/sh6e_probe.sh tools/selfhost/sh6e.mk \
+                         tools/selfhost/sh6e_stamp.c tools/shmake/shmake.c \
+                         $(SHMAKE_ELF) $(SH6E_STAMP_ELF) \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
@@ -2160,6 +2191,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # debugging; nothing in the OS reads user-space symtabs at runtime.
 	@strip -s $(INIT_ELF) -o $(INITRD_DIR)/bin/init
 	@strip -s $(HELLO_ELF) -o $(INITRD_DIR)/bin/hello
+	@strip -s $(SHMAKE_ELF) -o $(INITRD_DIR)/bin/shmake
+	@strip -s $(SH6E_STAMP_ELF) -o $(INITRD_DIR)/tests/sh6e_stamp
 	@for p in apm play sysinfo; do \
 	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/bin/$$p; done
 	@for p in $(INITRD_APPS); do \
@@ -2202,6 +2235,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	    cp userspace/apps/editor/editor.c $(INITRD_DIR)/src/apps/editor.c; \
     cp tools/selfhost/userland_ok.c $(INITRD_DIR)/src/apps/userland_ok.c; \
     cp tools/aulink/aulink.c $(INITRD_DIR)/src/aulink.c; \
+    cp tools/shmake/shmake.c $(INITRD_DIR)/src/shmake.c; \
     cp lib/libc/user.ld $(INITRD_DIR)/src/libc/user.ld; \
     cp tools/mini-asm/mini-asm.c $(INITRD_DIR)/src/mini-asm.c; \
     cp -a kernel drivers boot w32 $(INITRD_DIR)/src/; \
@@ -2231,6 +2265,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	      tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
 	      tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
 	      tools/selfhost/sh6c_probe.sh tools/selfhost/sh6d_probe.sh \
+	      tools/selfhost/sh6e_probe.sh tools/selfhost/sh6e.mk \
 	      $(INITRD_DIR)/tests/
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
@@ -2551,6 +2586,13 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # skips cleanly when the userland objects have not been built.
 	@echo "[unit] running tests/unit/test_aulink.sh"
 	@bash tests/unit/test_aulink.sh || exit 1
+
+# SELFHOST_PLAN SH6e: shmake semantics (rules, vars, .PHONY, timestamps).
+# Script, not a C binary -- it compiles tools/shmake/shmake.c with the host
+# cc and drives a temp worktree.  Belongs with the shell gates, not in
+# $(UNIT_TESTS).
+	@echo "[unit] running tests/unit/test_shmake.sh"
+	@bash tests/unit/test_shmake.sh || exit 1
 
 # SELFHOST_PLAN SH4a: mini-asm vs nasm byte-parity on the flat-binary boot
 # objects.  Script, not a C binary (it compiles tools/mini-asm and diffs

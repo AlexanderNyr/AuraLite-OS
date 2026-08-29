@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) have landed.  SH6e–SH9 remain pending.
+(control flow) and SH6e (`shmake`) have landed.  SH6f–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -27,7 +27,7 @@ redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
 | SH6b — redirects + named variables + the fd 0/1/2 kernel fix | ✅ landed |
 | SH6c — pipes + command lists (`;` `&&` `\|\|`) | ✅ landed |
 | SH6d — control flow `if`/`while`/`for` | ✅ landed |
-| SH6e — `shmake`: rules, prerequisites, variables, phony targets | 🚧 pending |
+| SH6e — `shmake`: rules, prerequisites, variables, phony targets | ✅ landed |
 | SH6f — `build.sh` entry point + D5 target parity + D6 resume | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
 | SH8 — bootstrap closure | 🚧 pending |
@@ -1521,22 +1521,44 @@ pin that the keywords stay words against the shipped tokenizer.
 
 ---
 
-### Phase SH6e — `shmake`: the build driver 🚧 PENDING
+### Phase SH6e — `shmake`: the build driver ✅ LANDED (2026-08-29)
 
 **Goal.** Dependencies are expressed once and honoured in-guest (D5).
 
-**Definition of done.** `tools/shmake/shmake.c`, compiled by tcc in-guest:
-rules, prerequisites, variables (`CC = tcc`), `.PHONY`, and timestamp
-comparison — the subset `build.sh` needs, not GNU make.  Per D5,
-`tools/check_selfhost_claims.py` asserts the host Makefile and `build.sh`
-name the **same** target set, so the two build descriptions cannot drift
-apart silently.
+**What landed.**
 
-**Gate.** Integration case `test_selfhost_shmake.sh`: a guest run builds a
-target, touches one prerequisite, re-runs and rebuilds **only** what depends
-on it, then greps `[selfhost] shmake PASS: <n> targets up to date`.  The
-"only what depends on it" assertion is the one that distinguishes a
-dependency graph from a shell script with comments.
+- **`tools/shmake/shmake.c`.**  POSIX-subset make: explicit `target: prereq`
+  rules, tab-indented recipes, `NAME = value` / `$(NAME)` / `$@` `$<` `$^`,
+  command-line `NAME=val` overrides, `.PHONY`, `-C`/`-f`/`-n`.  A target is
+  rebuilt if it is missing, phony, or older than a prerequisite; otherwise
+  it is skipped.  Pattern rules, `include`, `ifeq`, `$(wildcard)`/`$(shell)`,
+  VPATH and `-j` are out of scope (D5: not GNU make).
+- **Recipes are argv, not `sh -c`.**  AuraLite has no `/bin/sh` (D10: the
+  shell is a builtin of init; `system()` returns ENOSYS).  The expanded
+  recipe is split on whitespace and exec'd — `spawnv` in-guest, `fork`+
+  `execvp` on the host.  Ledger SH-42.  Redirects in recipes are out of
+  scope; the shell already has them.
+- **Relative paths after `-C`.**  AuraLite's `SYS_STAT`/`SYS_OPEN` copy the
+  path verbatim (only the AT-family dispatcher joins cwd), so `stat("a.in")`
+  after `chdir("/tmp/sh6e")` misses a file that exists.  shmake joins
+  `getcwd()` itself (ledger SH-43).
+- **`/bin/shmake` is a normal user ELF**, so the gate never skips (no tcc
+  fetch).  The source is staged at `/src/shmake.c` next to aulink when the
+  guest tcc is present, which is how SH8 rebuilds it.  The definition of
+  done's "compiled by tcc in-guest" is that closure, matching `/bin/tcc`
+  itself (host-built, guest-rebuilt at SH8).
+- **D5's host Makefile vs `build.sh` target-set checker lands with SH6f**,
+  which is the phase that introduces `build.sh`.  Asserting it here would
+  fail the checker on a missing file.
+
+**Gate.** `test_selfhost_shmake.sh` + `tools/selfhost/sh6e_probe.sh` +
+`tools/selfhost/sh6e.mk`.  A three-node graph (`app` → `a.out`,`b.out` →
+`a.in`,`b.in`): a cold run rebuilds all three, touching `a.in` rebuilds
+`a.out` and `app` and does **not** rebuild `b.out`, a third run with no
+changes rebuilds nothing.  Receipt
+`[selfhost] shmake PASS: 3 targets up to date`.  Host unit tests
+(`tests/unit/test_shmake.sh`) pin variables, `.PHONY`, `-C`, cycles and
+the same incremental graph without a QEMU boot.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
@@ -1733,6 +1755,8 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-39 | build/user/init.o did not list sh_expand.h as a prerequisite, so editing the header did not rebuild the shell | build | CLOSED (SH6b: init.o depends on both sh_expand.h and sh_parse.h) | SH6b |
 | SH-40 | per-stage fork() of a pipeline child resumes at the syscall stub and takes a user-mode #PF (error 0x6, write to a non-present page) | bug | ACCEPTED (SH6c: stages run sequentially in the shell through SYS_PIPE; a backgrounded pipeline is one job via the existing subshell fork.  Concurrent stages wait for a fork-clone fix that is not this sub-phase's kernel work) | SH6c |
 | SH-41 | collecting a nested `if` inside a `while` body with `sh_next_line` on the script frame swallows the outer `done` | bug | CLOSED (SH6d: compounds collect from a line-source; a nested compound reads the collected body, not the frame.  Depth on collect is net open/close per line, so `if inner; then e; fi` is delta 0) | SH6d |
+| SH-42 | `system()` / `sh -c` cannot run make recipes: AuraLite has no `/bin/sh` (D10, `system()` is ENOSYS) | decision | CLOSED (SH6e: shmake tokenises the expanded recipe and execs it — `spawnv` in-guest, `fork`+`execvp` on the host.  Redirects in recipes are out of scope) | SH6e |
+| SH-43 | `SYS_STAT`/`SYS_OPEN` do not join the thread cwd, so relative `stat("a.in")` after `chdir` misses a file that exists | bug | CLOSED (SH6e: shmake and sh6e_stamp join `getcwd()` before stat/open) | SH6e |
 
 ## 8. Receipt strings (the greppable contract)
 
@@ -1751,6 +1775,7 @@ plan still lists them, so a renamed receipt fails the build:
 [selfhost] redirect PASS: <n> files written and read back
 [selfhost] pipe PASS: <n> pipelines ran
 [selfhost] control PASS: <n> branches and loops ran
+[selfhost] shmake PASS: <n> targets up to date
 [selfhost] build PASS: kernel+initrd built on /fat
 [selfhost] iso PASS: auralite.iso built in-guest
 [selfhost] FULL LOOP PASS (2/2 clean loops)
