@@ -26,6 +26,7 @@
 #include "signal.h"
 
 #include "sh_expand.h"
+#include "sh_parse.h"
 
 /* SELFHOST SH2: INPUT_MAX 256 -> 512 and MAX_ARGS 8 -> 32 so the guest
  * toolchain's link lines fit (a tcc link of the userland names crt0,
@@ -94,6 +95,197 @@ static int last_status = 0;
  * script's point into its parent's text buffer.  Copying removes both hazards
  * for 8 KiB of BSS. */
 static char sh_argbuf[SH_MAX_DEPTH][MAX_ARGS][SH_ARG_MAX];
+
+/* ---- SELFHOST SH6b: named variables, quotes and redirects ----
+ *
+ * Three limits, each chosen from something measured rather than guessed:
+ *
+ *   SH_MAX_TOKS   a line can carry at most MAX_ARGS arguments plus two tokens
+ *                 per redirect; the longest command any integration case sends
+ *                 is 14 words.  Twice MAX_ARGS plus slack is far beyond that,
+ *                 and unlike the old strtok loop the parser REPORTS an
+ *                 overflow instead of silently dropping the tail -- silent
+ *                 truncation is ledger SH-14.
+ *   SH_ARG_MAX_EXP  expansion can make a word longer than the line it came
+ *                 from ($OUT/$1.o with a long $OUT), so arguments get their
+ *                 own buffers rather than pointing into input_line.
+ *   SH_MAX_VARS   `set` is for build configuration, not for data.
+ */
+#define SH_MAX_TOKS     (MAX_ARGS * 2 + 8)
+#define SH_MAX_REDIR    4
+#define SH_ARG_MAX_EXP  512
+#define SH_MAX_VARS     32
+#define SH_VAR_NAME_MAX 32
+#define SH_VAR_VAL_MAX  128
+
+/* Expanded arguments and redirect targets.  Static, because cmd_argv is read
+ * after process_command's own frame is gone in the background-fork path. */
+static char sh_expbuf[MAX_ARGS][SH_ARG_MAX_EXP];
+static char sh_redirbuf[SH_MAX_REDIR][SH_ARG_MAX_EXP];
+
+static char sh_var_name[SH_MAX_VARS][SH_VAR_NAME_MAX];
+static char sh_var_val[SH_MAX_VARS][SH_VAR_VAL_MAX];
+static struct sh_var sh_vars[SH_MAX_VARS];
+static int sh_nvars = 0;
+
+struct sh_redir {
+    int         op;      /* SH_TOK_GT / SH_TOK_GGT / SH_TOK_LT */
+    const char *path;
+};
+
+/* The variable table as the expander sees it. */
+static const struct sh_var *sh_var_table(void) {
+    for (int i = 0; i < sh_nvars; i++) {
+        sh_vars[i].name  = sh_var_name[i];
+        sh_vars[i].value = sh_var_val[i];
+    }
+    return sh_vars;
+}
+
+static int sh_var_index(const char *name) {
+    for (int i = 0; i < sh_nvars; i++)
+        if (strcmp(sh_var_name[i], name) == 0) return i;
+    return -1;
+}
+
+/* Returns 0 on success, -1 when the name is malformed or the table is full. */
+static int sh_var_set(const char *name, const char *value) {
+    if (!name || !*name || !sh_is_name_start(name[0])) return -1;
+    for (const char *q = name + 1; *q; q++)
+        if (!sh_is_name_char(*q)) return -1;
+
+    int i = sh_var_index(name);
+    if (i < 0) {
+        if (sh_nvars >= SH_MAX_VARS) return -1;
+        i = sh_nvars++;
+        strncpy(sh_var_name[i], name, SH_VAR_NAME_MAX - 1);
+        sh_var_name[i][SH_VAR_NAME_MAX - 1] = '\0';
+    }
+    strncpy(sh_var_val[i], value, SH_VAR_VAL_MAX - 1);
+    sh_var_val[i][SH_VAR_VAL_MAX - 1] = '\0';
+    return 0;
+}
+
+static void sh_var_unset(const char *name) {
+    int i = sh_var_index(name);
+    if (i < 0) return;
+    for (int k = i; k < sh_nvars - 1; k++) {
+        strcpy(sh_var_name[k], sh_var_name[k + 1]);
+        strcpy(sh_var_val[k],  sh_var_val[k + 1]);
+    }
+    sh_nvars--;
+}
+
+/* Recognise a bare `NAME=VALUE` word, which is an assignment rather than a
+ * command.  Checked before the search path so `CC=tcc` cannot be mistaken for
+ * a program named "CC=tcc". */
+static int sh_try_assign(const char *word) {
+    const char *eq = strchr(word, '=');
+    if (!eq || eq == word) return 0;
+    char name[SH_VAR_NAME_MAX];
+    size_t n = (size_t)(eq - word);
+    if (n >= sizeof name) return 0;
+    memcpy(name, word, n);
+    name[n] = '\0';
+    if (!sh_is_name_start(name[0])) return 0;
+    for (size_t i = 1; i < n; i++)
+        if (!sh_is_name_char(name[i])) return 0;
+    return sh_var_set(name, eq + 1) == 0;
+}
+
+/* Apply redirections by swapping fd 0/1, remembering what was there.
+ *
+ * The same mechanism serves builtins and spawned programs: a builtin writes to
+ * fd 1 like anything else, and a child inherits the parent's descriptor table
+ * at spawn.  stdout is flushed on both sides of the swap, because buffered
+ * output must reach the ORIGINAL destination -- flushing after the dup2 would
+ * put the previous command's tail into this command's file. */
+static void sh_redir_restore(int saved_in, int saved_out) {
+    fflush(stdout);
+    if (saved_out >= 0) { dup2(saved_out, 1); close(saved_out); }
+    if (saved_in  >= 0) { dup2(saved_in,  0); close(saved_in); }
+}
+
+static int sh_redir_apply(const struct sh_redir *r, int n,
+                          int *saved_in, int *saved_out) {
+    *saved_in = -1;
+    *saved_out = -1;
+    if (n == 0) return 0;
+
+    fflush(stdout);
+    for (int i = 0; i < n; i++) {
+        int flags, target;
+        switch (r[i].op) {
+        case SH_TOK_LT: flags = O_RDONLY;                        target = 0; break;
+        case SH_TOK_GT: flags = O_WRONLY | O_CREAT | O_TRUNC;    target = 1; break;
+        default:        flags = O_WRONLY | O_CREAT | O_APPEND;   target = 1; break;
+        }
+
+        int fd = open(r[i].path, flags, 0644);
+        if (fd < 0) {
+            /* Restore BEFORE reporting, so the message reaches the terminal
+             * rather than a file that was half-redirected already. */
+            sh_redir_restore(*saved_in, *saved_out);
+            *saved_in = -1;
+            *saved_out = -1;
+            printf("sh: %s: cannot open for %s\n",
+                   r[i].path, sh_tok_name(r[i].op));
+            return -1;
+        }
+
+        int *saved = (target == 0) ? saved_in : saved_out;
+        if (*saved < 0) *saved = dup(target);
+        if (*saved < 0 || dup2(fd, target) < 0) {
+            close(fd);
+            sh_redir_restore(*saved_in, *saved_out);
+            *saved_in = -1;
+            *saved_out = -1;
+            printf("sh: cannot redirect fd %d\n", target);
+            return -1;
+        }
+        close(fd);
+    }
+    return 0;
+}
+
+/* `set` with no arguments lists the table; with arguments it assigns. */
+static int cmd_set(int argc, char **argv) {
+    if (argc < 2) {
+        for (int i = 0; i < sh_nvars; i++)
+            printf("%s=%s\n", sh_var_name[i], sh_var_val[i]);
+        return 0;
+    }
+    for (int i = 1; i < argc; i++) {
+        const char *eq = strchr(argv[i], '=');
+        if (!eq || eq == argv[i]) {
+            printf("set: %s: expected NAME=VALUE\n", argv[i]);
+            return 2;
+        }
+        char name[SH_VAR_NAME_MAX];
+        size_t n = (size_t)(eq - argv[i]);
+        if (n >= sizeof name) {
+            printf("set: name too long (max %d)\n", SH_VAR_NAME_MAX - 1);
+            return 2;
+        }
+        memcpy(name, argv[i], n);
+        name[n] = '\0';
+        if (sh_var_set(name, eq + 1) != 0) {
+            printf("set: %s: bad name or table full (max %d variables)\n",
+                   name, SH_MAX_VARS);
+            return 2;
+        }
+    }
+    return 0;
+}
+
+static int cmd_unset(int argc, char **argv) {
+    if (argc < 2) {
+        puts("unset: missing variable name");
+        return 2;
+    }
+    for (int i = 1; i < argc; i++) sh_var_unset(argv[i]);
+    return 0;
+}
 
 /* Read a whole file into a fresh malloc'd buffer.  Scripts are read in full
  * so that a nested `sh` cannot clobber the outer script's buffer mid-run. */
@@ -279,12 +471,14 @@ static void cmd_ls(const char *path) {
     listdir(path);
 }
 
+/* SELFHOST SH6b: with no argument, cat reads fd 0.  Before this the `<`
+ * redirect had nothing to feed -- every builtin that could consume stdin
+ * demanded a filename instead -- so `cat < file` printed "missing file" and
+ * the feature was syntax without a use.  At the prompt that means `cat`
+ * alone echoes the console until end of input, which is what every other
+ * cat does. */
 static void cmd_cat(const char *path) {
-    if (!path) {
-        puts("cat: missing file");
-        return;
-    }
-    int fd = open(path, O_RDONLY);
+    int fd = path ? open(path, O_RDONLY) : 0;
     if (fd < 0) {
         printf("cat: %s: no such file\n", path);
         return;
@@ -294,7 +488,7 @@ static void cmd_cat(const char *path) {
     while ((n = read(fd, buf, sizeof(buf))) > 0) {
         write(1, buf, (size_t)n);
     }
-    close(fd);
+    if (path) close(fd);   /* never close fd 0 -- it is the shell's input */
 }
 
 static void cmd_echo(int argc, char **argv) {
@@ -383,7 +577,10 @@ static void cmd_help(void) {
     puts("  apm [cmd]   - AuraLite Package Manager");
     puts("  kbd [name]  - show/set keyboard layout (us, de)");
     puts("  help        - show this help");
-    puts("  sh <file> [args] - run a script ($0..$9, $#, $?)");
+    puts("  sh <file> [args] - run a script ($0..$9, $#, $?, $NAME)");
+    puts("  set [NAME=VALUE] - assign a variable; no args lists them");
+    puts("  unset NAME      - remove a variable");
+    puts("  redirection: cmd > file, cmd >> file, cmd < file");
     puts("  exit        - exit shell");
     puts("");
     /* Programs are named, not pathed: since F5 there is exactly one location
@@ -966,23 +1163,18 @@ static int cmd_sh(int argc, char **argv) {
     f->path = f->argv[0];
     sh_depth++;
 
-    char expanded[INPUT_MAX];
     char *line;
     int status = 0;
 
+    /* SH6b moved expansion into process_command, where it can run per token.
+     * Expanding the whole line first would let a variable's value inject an
+     * argument or a redirect operator; per-token expansion means a value can
+     * only ever add text inside the argument it landed in. */
     while (sh_next_line(f, &line)) {
         f->line++;
         if (sh_line_is_blank(line)) continue;
 
-        if (sh_expand_positional(line, strlen(line), expanded,
-                                 sizeof expanded, f->argv, f->argc,
-                                 last_status) != SH_EXP_OK) {
-            printf("sh: %s:%d: line too long to expand\n", f->path, f->line);
-            status = 2;
-            break;
-        }
-
-        status = process_command(expanded);
+        status = process_command(line);
         if (f->exit_req) { status = f->exit_code; break; }
         if (status != 0) {
             printf("sh: %s:%d: command failed with status %d\n",
@@ -1009,33 +1201,117 @@ static int process_command(char *line) {
         else if (c != '\n' && c != '\t' && (c < 0x20 || c > 0x7E)) *p = ' ';
     }
 
-    /* Tokenize the line into command + arguments. */
-    int argc = 0;
-    char *tok = strtok(line, " \t\n");
-    while (tok && argc < MAX_ARGS - 1) {
-        cmd_argv[argc++] = tok;
-        tok = strtok(0, " \t\n");
+    /* SELFHOST SH6b: tokenize with quotes and redirects recognised in one
+     * pass.  The old strtok(line, " \t\n") could express neither, so a `>`
+     * inside a quoted argument was an operator and there was no way to write
+     * a redirect at all. */
+    int prev_status = last_status;   /* what $? means on this line */
+
+    struct sh_tok toks[SH_MAX_TOKS];
+    int ntok = sh_tokenize(line, strlen(line), toks, SH_MAX_TOKS);
+    if (ntok < 0) {
+        switch (ntok) {
+        case SH_PARSE_QUOTE:    puts("sh: unmatched quote"); break;
+        case SH_PARSE_NOTARGET: puts("sh: redirect with no filename"); break;
+        default:                puts("sh: command line too complex"); break;
+        }
+        last_status = 2;
+        return 2;
+    }
+
+    /* The running script's positional parameters, if any.  At the prompt
+     * there are none, so $1 expands to nothing. */
+    char *const *pos = 0;
+    int npos = 0;
+    if (sh_depth > 0) {
+        pos  = sh_stack[sh_depth - 1].argv;
+        npos = sh_stack[sh_depth - 1].argc;
+    }
+    const struct sh_var *vars = sh_var_table();
+
+    struct sh_redir redir[SH_MAX_REDIR];
+    int argc = 0, nredir = 0, bg = 0;
+
+    for (int i = 0; i < ntok; i++) {
+        if (toks[i].type == SH_TOK_AMP) { bg = 1; continue; }
+
+        if (toks[i].type == SH_TOK_WORD) {
+            if (argc >= MAX_ARGS - 1) {
+                printf("sh: too many arguments (max %d)\n", MAX_ARGS - 1);
+                last_status = 2;
+                return 2;
+            }
+            if (sh_expand_word(toks[i].text, toks[i].len, sh_expbuf[argc],
+                               SH_ARG_MAX_EXP, vars, sh_nvars, pos, npos,
+                               prev_status) != SH_EXP_OK) {
+                printf("sh: argument %d too long to expand (max %d)\n",
+                       argc, SH_ARG_MAX_EXP - 1);
+                last_status = 2;
+                return 2;
+            }
+            /* Not `cmd_argv[argc++] = sh_expbuf[argc]`: the increment and the
+             * read of argc would be unsequenced, so which slot the pointer
+             * names is undefined.  clang warns; a different compiler could
+             * just pick the wrong one. */
+            cmd_argv[argc] = sh_expbuf[argc];
+            argc++;
+            continue;
+        }
+
+        /* A redirect operator: the next token is its filename. */
+        if (i + 1 >= ntok || toks[i + 1].type != SH_TOK_WORD) {
+            printf("sh: missing filename after %s\n",
+                   sh_tok_name(toks[i].type));
+            last_status = 2;
+            return 2;
+        }
+        if (nredir >= SH_MAX_REDIR) {
+            printf("sh: too many redirections (max %d)\n", SH_MAX_REDIR);
+            last_status = 2;
+            return 2;
+        }
+        if (sh_expand_word(toks[i + 1].text, toks[i + 1].len,
+                           sh_redirbuf[nredir], SH_ARG_MAX_EXP,
+                           vars, sh_nvars, pos, npos,
+                           prev_status) != SH_EXP_OK) {
+            printf("sh: redirect target too long (max %d)\n",
+                   SH_ARG_MAX_EXP - 1);
+            last_status = 2;
+            return 2;
+        }
+        redir[nredir].op   = toks[i].type;
+        redir[nredir].path = sh_redirbuf[nredir];
+        nredir++;
+        i++;
     }
     cmd_argv[argc] = 0;
 
     if (argc == 0) {
-        return 0;   /* empty line */
+        return 0;   /* empty line, or nothing but redirects */
     }
-
-    int bg = 0;
-    size_t len = strlen(cmd_argv[argc - 1]);
-    if (len > 0 && cmd_argv[argc - 1][len - 1] == '&') {
-        bg = 1;
-        if (len == 1) {
-            cmd_argv[--argc] = 0;
-        } else {
-            cmd_argv[argc - 1][len - 1] = '\0';
-        }
-    }
-    if (argc == 0) return 0;
 
     const char *cmd = cmd_argv[0];
     last_status = 0;
+
+    /* `NAME=VALUE` on its own is an assignment, not a command. */
+    if (strchr(cmd, '=')) {
+        if (argc > 1) {
+            puts("sh: per-command assignment is not supported; "
+                 "use `set NAME=VALUE` on its own line");
+            last_status = 2;
+            return 2;
+        }
+        if (sh_try_assign(cmd)) return 0;
+        printf("sh: %s: not a valid variable name\n", cmd);
+        last_status = 2;
+        return 2;
+    }
+
+    int saved_in = -1, saved_out = -1;
+    if (sh_redir_apply(redir, nredir, &saved_in, &saved_out) < 0) {
+        last_status = 1;
+        return 1;
+    }
 
     if (bg) {
         /* The background paths resolve through the same list as the
@@ -1045,16 +1321,20 @@ static int process_command(char *line) {
         if (strcmp(cmd, "run") == 0 && argc > 1) {
             if (!prog_resolve(cmd_argv[1], resolved, (int)sizeof(resolved))) {
                 report_not_found(cmd_argv[1]);
-                return 127;
+                last_status = 127;
+                goto out;
             }
             pid_t pid = spawn(resolved);
             if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd_argv[1]); }
-            return 0;   /* not finished yet; `jobs`/`fg` track it */
+            /* not finished yet; `jobs`/`fg` track it */
+            last_status = 0;
+            goto out;
         }
         if (cmd[0] == '/' || cmd[0] == '.') {
             pid_t pid = spawn(cmd);
             if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd); }
-            return 0;
+            last_status = 0;
+            goto out;
         }
         pid_t pid = fork();
         if (pid == 0) {
@@ -1065,7 +1345,8 @@ static int process_command(char *line) {
         } else if (pid > 0) {
             setpgid(pid, pid);
             add_job(pid, cmd);
-            return 0;
+            last_status = 0;
+            goto out;
         }
     }
 
@@ -1155,6 +1436,10 @@ do_dispatch:
         }
     } else if (strcmp(cmd, "sh") == 0) {
         last_status = cmd_sh(argc, cmd_argv);
+    } else if (strcmp(cmd, "set") == 0) {
+        last_status = cmd_set(argc, cmd_argv);
+    } else if (strcmp(cmd, "unset") == 0) {
+        last_status = cmd_unset(argc, cmd_argv);
     } else if (strcmp(cmd, "jobs") == 0) {
         cmd_jobs();
     } else if (strcmp(cmd, "fg") == 0) {
@@ -1179,7 +1464,17 @@ do_dispatch:
             last_status = 127;
         }
     }
-    if (in_subshell) _exit(last_status);
+
+out:
+    /* The background-fork child keeps the redirected descriptors: restoring
+     * them here would send its output back to the terminal, which is the one
+     * thing a redirect is supposed to prevent.  Flush first, because _exit
+     * does not. */
+    if (in_subshell) {
+        fflush(stdout);
+        _exit(last_status);
+    }
+    sh_redir_restore(saved_in, saved_out);
     return last_status;
 }
 

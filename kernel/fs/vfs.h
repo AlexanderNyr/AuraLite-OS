@@ -265,7 +265,17 @@ int     vfs_dup2(int oldfd, int newfd);
 int     vfs_pipe(int out_fds[2]);
 /* pipe2(): like pipe() but applies O_CLOEXEC / O_NONBLOCK atomically. */
 int     vfs_pipe2(int out_fds[2], int flags);
-int     vfs_fd_is_pipe(int fd);
+/* True when @fd of the CURRENT thread refers to a devfs node (/dev/tty0,
+ * /dev/null, /dev/zero).  SYS_READ and SYS_WRITE use this to decide whether
+ * fd 0/1/2 still means "the console" or has been redirected elsewhere: only
+ * devfs-backed standard descriptors take the hard-wired console path, so a
+ * dup2 of a regular file or a pipe onto fd 0/1/2 is honoured.  Degenerate
+ * slots (empty, out of range) answer true to preserve the old behaviour.
+ *
+ * SELFHOST SH6b.  This replaces vfs_fd_is_pipe(), which made the same
+ * decision but only for pipes -- so `gterm` could capture a child's stdout
+ * while `cmd > file` silently went to the console and left an empty file. */
+int     vfs_fd_is_devfs(int fd);
 /* fcntl(2): F_GETFL/F_SETFL/F_DUPFD/F_DUPFD_CLOEXEC plus the F_GETFD/F_SETFD
  * flag commands.  Returns a non-negative result or a negative errno. */
 int     vfs_fcntl(int fd, int cmd, int arg);

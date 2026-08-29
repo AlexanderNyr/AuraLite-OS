@@ -826,7 +826,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
              * — /dev/tty0 from init, /dev/null from vfs_ensure_std_fds() —
              * keeps the historical locked console path, so shell-visible
              * behavior is unchanged. */
-            if (vfs_fd_is_pipe((int)a1)) {
+            /* Not a devfs node, so fd 1/2 has been redirected: honour it.
+             * This used to test for a pipe only, which is why gterm could
+             * capture a child's stdout while `cmd > file` went to the console
+             * and left a zero-byte file behind (SELFHOST SH6b). */
+            if (!vfs_fd_is_devfs((int)a1)) {
                 return (uint64_t)syscall_vfs_write((int)a1, user_buf, a3);
             }
             char tmp[SYSCALL_IO_CHUNK];
@@ -854,7 +858,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (a3 != 0 && !validate_user_range(user_buf, a3, 1)) {
             return (uint64_t)-EFAULT;
         }
-        if (fd == 0) {
+        /* SELFHOST SH6b: fd 0 means "the console" only while it still refers
+         * to a devfs node.  Once a shell redirects it (`cmd < file`) the slot
+         * holds a regular file and must be read through the VFS -- otherwise
+         * the redirect parses, the file opens, and the command silently reads
+         * the keyboard instead.  The fall-through below is the VFS read. */
+        if (fd == 0 && vfs_fd_is_devfs(0)) {
             /* stdin: line input from PS/2 keyboard and/or serial UART. */
             uint64_t count = a3;
             uint64_t got = 0;

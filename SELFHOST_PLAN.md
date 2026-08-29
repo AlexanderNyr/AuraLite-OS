@@ -1,8 +1,8 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is now split into SH6a–SH6f and SH6a has landed: the shell runs
-scripts with positional parameters and a real exit status.  SH6b–SH9 remain
-pending.
+## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses) and SH6b
+(redirects, named variables, quote-aware parsing, and the kernel fix that made
+redirected fd 0/1/2 actually work) have landed.  SH6c–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -23,7 +23,7 @@ pending.
 | SH5d — the in-guest build + terminal boot gate | ✅ landed |
 | SH6 — shmake + shell scripting (umbrella; split into SH6a–SH6f) | 🚧 in progress |
 | SH6a — spike (D10 decision) + exit-status spine + script runner | ✅ landed |
-| SH6b — redirects + named variables | 🚧 pending |
+| SH6b — redirects + named variables + the fd 0/1/2 kernel fix | ✅ landed |
 | SH6c — pipes + command lists (`;` `&&` `\|\|`) | 🚧 pending |
 | SH6d — control flow `if`/`while`/`for` | 🚧 pending |
 | SH6e — `shmake`: rules, prerequisites, variables, phony targets | 🚧 pending |
@@ -164,10 +164,16 @@ for x86_64. `smallsh.c` is **173 lines** with **no builtin dispatch at
 all**, and it is the shell for the *other* architectures only
 (`kernel/arch/aarch64/main_a64.c:635-636`, `kernel/arch/riscv64/main_rv.c:501-502`).
 The x86_64 boot shell that every self-host gate drives is
-`userspace/system/init/init.c` — **1009 lines**, **33 builtins**, job
+`userspace/system/init/init.c` — **1009 lines**, **31 builtins**, job
 control, and the `auralite#` prompt `prompt_qemu.py` waits on. Its gaps
 were the same ones (`pipe`/`getenv`/`setenv`/`source`/`$VAR`: 0 hits each),
 so the conclusion stands, but SH6's work happens in `init.c`. See D10.
+
+The builtin count is *distinct* dispatch names, not raw `strcmp` hits: `run`
+appears twice (once in the background path, once in the foreground dispatch),
+so the grep count reads 32 where the distinct count is 31.  Measured with
+`grep -o 'strcmp(cmd, "[a-z_0-9]*") == 0' | sort -u | wc -l` on the SH5d base;
+SH6a's `sh` makes it 32 and SH6b's `set`/`unset` make it 34.
 
 ### Fact 9 — Persistent writable storage exists and is exercised
 
@@ -293,7 +299,7 @@ pointed at the wrong file.  Three candidates, measured 2026-08-29:
 
 | Path | Measured cost | Verdict |
 |---|---|---|
-| **Promote `smallsh`** | `smallsh.c` is **173 lines** (`str_eq`, `starts_with`, `print_dec`, `help`, `main`) with **no builtin dispatch**.  Promoting it to the x86_64 shell means re-implementing all **33** `init` builtins, the job table, `prog_resolve` and the `auralite#` read loop that `prompt_qemu.py` and all 143 integration cases depend on — then keeping two x86_64 shells in sync forever. | **Rejected** |
+| **Promote `smallsh`** | `smallsh.c` is **173 lines** (`str_eq`, `starts_with`, `print_dec`, `help`, `main`) with **no builtin dispatch**.  Promoting it to the x86_64 shell means re-implementing all **31** `init` builtins, the job table, `prog_resolve` and the `auralite#` read loop that `prompt_qemu.py` and all 143 integration cases depend on — then keeping two x86_64 shells in sync forever. | **Rejected** |
 | **New `/bin/sh` program** | The builtins, the search path and the job table are all `static` inside `init.c`.  A separate program would have to duplicate or export all three, and `init` would still have to spawn it — so the scripting work gets paid twice, and a script could not use a builtin. | **Rejected** |
 | **Extend `init.c`** | Purely additive: **+229 lines** on 1009, no existing dispatch branch rewritten, and the runner reuses the builtin set that already exists.  `sh` is one more entry beside the other 33. | **Chosen** |
 
@@ -1182,18 +1188,27 @@ that has to survive being interrupted.  A measured survey of the tree
   ledger SH-04 both say *smallsh*, but `userspace/system/smallsh/smallsh.c`
   is **173 lines** with **no builtin dispatch**, and it serves aarch64 and
   riscv64 only.  The x86_64 boot shell that every self-host gate drives is
-  `userspace/system/init/init.c` — **1009 lines**, **33 builtins**, job
+  `userspace/system/init/init.c` — **1009 lines**, **31 builtins**, job
   control, and the `auralite#` prompt.  The plan's own hedge, *smallsh **(or
   its promoted successor)***, was an unresolved decision; SH6a resolves it by
   measurement and records it as D10.
-- **Pipes and redirects need no kernel work.**  `SYS_PIPE` (22), `SYS_PIPE2`
-  (293) and `SYS_DUP2` (33) are real implementations in
-  `kernel/arch/x86_64/syscall.c:1385/1387/1406`, wrapped by
-  `lib/libc/src/libc.c:722-731`.  Measured in `init.c` before SH6a: `pipe`
-  **0** hits, `getenv` **0**, `setenv` **0**, `source` **0**, `expand` **0**,
-  `$VAR` **0**.  The gap is entirely in the shell's parser, so each language
-  feature can be its own independently gated step instead of one
-  kernel-and-shell change.
+- **The shell had no parser for any of it.**  Measured in `init.c` before
+  SH6a: `pipe` **0** hits, `getenv` **0**, `setenv` **0**, `source` **0**,
+  `expand` **0**, `$VAR` **0**.  So the language features can each be their own
+  independently gated step rather than one big change.
+- **Correction, measured 2026-08-29 during SH6b.**  This survey originally
+  claimed *"pipes and redirects need no kernel work"* because `SYS_PIPE` (22),
+  `SYS_PIPE2` (293) and `SYS_DUP2` (33) are implemented
+  (`kernel/arch/x86_64/syscall.c:1385/1387/1406`) and wrapped
+  (`lib/libc/src/libc.c:722-731`).  That measured the wrong thing.  The
+  syscalls exist and work, but `SYS_WRITE` routes fd 1/2 to the console
+  unconditionally, with an exception **only for pipes** (added so `gterm` can
+  capture a child's stdout), and `SYS_READ` routes fd 0 to the keyboard
+  unconditionally.  So `dup2` succeeded, the target file was created and
+  truncated — and the bytes went to the console, leaving a zero-byte file.
+  Measured, not inferred: `echo AAA > /tmp/p1.txt` printed `AAA` and `stat`
+  reported **0 bytes**.  Redirects therefore did need a kernel change
+  (ledger SH-37); pipes did not, because the pipe exception already existed.
 - **There was no exit status to branch on.**  Every builtin returned `void`,
   and `cmd_run_argv` computed the child's `waitpid` status and then threw it
   away — so a failing compile was indistinguishable from a succeeding one.
@@ -1233,7 +1248,7 @@ commands with arguments.
 
 | Path | Measured cost | Verdict |
 |---|---|---|
-| **Promote `smallsh`** | **173 lines**, no builtin dispatch; aarch64/riscv64 only.  Promotion means re-implementing **33** builtins + job table + search path + the `auralite#` read loop that 143 integration cases wait on, and then keeping two x86_64 shells in sync. | **Rejected** |
+| **Promote `smallsh`** | **173 lines**, no builtin dispatch; aarch64/riscv64 only.  Promotion means re-implementing **31** builtins + job table + search path + the `auralite#` read loop that 143 integration cases wait on, and then keeping two x86_64 shells in sync. | **Rejected** |
 | **New `/bin/sh`** | Builtins, `prog_resolve` and the job table are `static` in `init.c`; a separate program duplicates or exports all three, still needs `init` to spawn it, and cannot use a builtin from a script. | **Rejected** |
 | **Extend `init.c`** | Additive: **+229 lines** on 1009, no existing dispatch branch rewritten, runner reuses the builtins already there. | **Chosen** |
 
@@ -1302,22 +1317,89 @@ is the point of the exit path.  `UNREACHABLE-AFTER-FAILURE` and
 
 ---
 
-### Phase SH6b — redirects + named variables 🚧 PENDING
+### Phase SH6b — redirects + named variables ✅ LANDED (2026-08-29)
 
 **Goal.** A script can write to a file and read a variable, without the host
 having to stage the result.
 
-**Definition of done.** `>`, `>>` and `<` on any command, implemented with
-the kernel's existing `SYS_DUP2` (no kernel change — measured in the SH6
-survey); `set NAME=VALUE` plus `$NAME` expansion, which extends
-`sh_expand.h` rather than replacing it (`$PATH` already survives SH6a
-verbatim, so nothing has to migrate).  Quoting rules arrive here, because
-`>` inside a quoted string must not redirect.
+**What landed.**
 
-**Gate.** Integration case `test_selfhost_redirect.sh`: a guest script writes
-a file with `>`, appends with `>>`, reads it back with `<`, and greps
-`[selfhost] redirect PASS: <n> files written and read back`.  A unit test
-covers the redirect/quoting parser on the host.
+- **`userspace/system/init/sh_parse.h`** — new, **163 lines**, pure.  A
+  quote-aware tokenizer that recognises `'…'`, `"…"`, `\x` and the operators
+  `>`, `>>`, `<`, `&` **in one pass**.  One pass is not a stylistic choice:
+  whether `>` is an operator depends on whether it is quoted, so a two-pass
+  design (find the redirects, then split) redirects on a `>` that was inside a
+  string.  A word therefore ends at the first *unquoted* operator, and
+  `foo>bar` yields three tokens as POSIX does.
+- **`userspace/system/init/sh_expand.h`** — **159 → 283 lines**.  A single
+  entry point `sh_expand_word()` replaces SH6a's `sh_expand_positional()`,
+  adding named variables and quote awareness.  Two expanders with different
+  quoting rules would drift, and the only caller wanted the quote-aware one.
+  Expansion runs **per token**, which is what stops a variable's value from
+  injecting an extra argument or an operator — the classic shell injection bug
+  that expanding the whole line first would reintroduce.
+- **`userspace/system/init/init.c`** — **1238 → 1533 lines**.  `set
+  NAME=VALUE` / `set` / `unset`, bare `NAME=VALUE`, redirects applied by
+  swapping fd 0/1 around both builtins and spawns, and `cat` with no argument
+  reading fd 0 (before that, `<` had nothing to feed: every builtin that could
+  consume stdin demanded a filename, so `cat < file` printed "missing file"
+  and the feature was syntax without a use).
+- **The kernel fix** — `kernel/fs/vfs.c`, `kernel/fs/vfs.h`,
+  `kernel/arch/x86_64/syscall.c` (**+32/−7**).  See the survey correction
+  above: `SYS_WRITE` sent fd 1/2 to the console unless the slot held a *pipe*,
+  and `SYS_READ` sent fd 0 to the keyboard unconditionally.  The predicate
+  `vfs_fd_is_pipe()` became the more general `vfs_fd_is_devfs()`: fd 0/1/2
+  take the hard-wired console path only while they still refer to a devfs node
+  (`/dev/tty0`, `/dev/null`), so a redirect to a regular file is honoured while
+  the console path and `gterm`'s pipe capture are both unchanged.
+
+**Two defects found by running it, not by reading it.**
+
+1. **The redirect was syntax without effect.**  `echo AAA > /tmp/p1.txt`
+   printed `AAA` on the console and left a **0-byte** file: `open` +
+   `O_TRUNC` had run, `dup2` had succeeded, and the bytes went to the console
+   anyway.  This is the measurement that falsified the SH6 survey's "no kernel
+   work" claim (ledger SH-37).
+2. **`cmd_argv[argc++] = sh_expbuf[argc]`** — the increment and the read of
+   `argc` are unsequenced, so which slot the pointer names is undefined.
+   clang warned; another compiler could simply have picked the wrong one
+   (ledger SH-38).
+
+**One SH6a behaviour changed, and the full shard is what caught it.**  SH6a
+left an unknown `$NAME` verbatim specifically to avoid pre-empting this phase;
+now that named variables exist, an unset name expands to nothing, which is the
+POSIX rule.  `sh6a_probe.sh`'s `env=$PATH` line and its host assertion both
+encoded the old behaviour, so `test_selfhost_script` went red the moment SH6b
+landed.  Both were updated to put `$PATH` behind single quotes (which SH6b made
+suppress expansion), and this is recorded rather than quietly patched: a
+sub-phase that silently invalidates its predecessor's gate is how an arc starts
+testing nothing.  Running the whole shard, not just the new case, is the reason
+it surfaced.
+
+**Deliberately out of scope.**  `2>` and friends (the shell has one output
+stream, so there is nothing to redirect); here-documents; and subshell
+variable scoping — `sh <file>` runs in the **current** shell, so a variable it
+sets survives, which is POSIX `.`/`source` semantics rather than POSIX `sh`.
+SH6a documented the runner that way; if SH6f's `build.sh` needs isolation it
+can add it.
+
+**Gate.** `test_selfhost_redirect.sh`, **15/15 assertions**, verified against
+the serial log.  The load-bearing one is `cat < $LOG > /tmp/sh6b_copy.txt`:
+both directions on a single line, because a parser that handled only `>` would
+pass every other check while `<` silently did nothing.  Also asserted: a `>`
+inside double quotes stays text, `>>` appends instead of truncating, `set`
+with no arguments lists the table, `unset` removes rather than empties, an
+unopenable target is reported, an unmatched quote is refused **with its line
+number** (`sh: /tests/sh6b_fail.sh:8: command failed with status 2`) instead
+of being tokenized into something plausible, and the shell still answers
+afterwards.
+
+Host unit tests, both against the shipped headers: `test_sh_parse.c`
+**87 assertions** (quotes, operators, unterminated quotes, the exact
+token-array boundary) and `test_sh_expand.c` **122 assertions** (positional
+parameters, variables, greedy name matching, quote rules, the exact overflow
+boundary).  Mutation-checked: making variable lookup prefix-based instead of
+exact gives 121/1, and disabling single-quote suppression gives 119/3.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
@@ -1328,10 +1410,13 @@ covers the redirect/quoting parser on the host.
 **Goal.** Commands compose, so a build step can be one line instead of a
 temporary file.
 
-**Definition of done.** `|` between commands, implemented with the kernel's
-existing `SYS_PIPE`/`SYS_PIPE2` and a process group per pipeline; `;`, `&&`
-and `||`, which consume the exit-status spine SH6a laid.  Foreground
-pipelines wait for the last stage; the job table already tracks the rest.
+**Definition of done.** `|` between commands, using `SYS_PIPE`/`SYS_PIPE2`
+and a process group per pipeline; `;`, `&&` and `||`, which consume the
+exit-status spine SH6a laid.  Foreground pipelines wait for the last stage;
+the job table already tracks the rest.  Unlike SH6b this one really does need
+no kernel change: the pipe exception in `SYS_WRITE` predates SH6b (it is how
+`gterm` captures a child's stdout), and SH6b generalised rather than replaced
+it.
 
 **Gate.** Integration case `test_selfhost_pipe.sh`: a guest script runs
 `<n>` pipelines including one whose first stage fails, proving the failure
@@ -1565,9 +1650,12 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-31 | sleep-fed UART commands are lost while guest tcc owns the polling console | process | CLOSED (SH5d: prompt_qemu transport sends each next command only after a fresh `auralite#`) | SH5d |
 | SH-32 | initrd's SH4 reference assembler was invoked without a build prerequisite on a clean tree | build | CLOSED (SH5d: explicit `build/mini-asm` target stages the reference objects) | SH5d |
 | SH-33 | SH6 bundled a make implementation, four shell language features and a resumable build entry point: three deliverables with no shared code path | scope | CLOSED (split into SH6a-SH6f along the dependency order: status spine, then language features, then shmake, then build.sh; 2026-08-29) | SH6a |
-| SH-34 | D10 unresolved: extend init.c vs promote smallsh vs write a new /bin/sh | decision | CLOSED (SH6a, measured: smallsh is 173 lines with no builtin dispatch and serves aarch64/riscv64 only; a new /bin/sh would duplicate 33 static builtins; extending init.c is +229 lines and purely additive) | SH6a |
+| SH-34 | D10 unresolved: extend init.c vs promote smallsh vs write a new /bin/sh | decision | CLOSED (SH6a, measured: smallsh is 173 lines with no builtin dispatch and serves aarch64/riscv64 only; a new /bin/sh would duplicate 31 static builtins; extending init.c is +229 lines and purely additive) | SH6a |
 | SH-35 | shell `exit` called `_exit(0)` unconditionally, so inside a script it halted PID 1 instead of failing one build step | bug | CLOSED (SH6a: `sh_depth > 0` stops the script; test_selfhost_script.sh asserts the prompt still answers after `exit 3`) | SH6a |
 | SH-36 | sh_expand_putnum reported overflow only when it wrote nothing, so a partial numeric expansion returned success with truncated digits | bug | CLOSED (SH6a: putnum reports a short write; pinned by a mutation test, 63/1 mutated vs 64/0 shipped) | SH6a |
+| SH-37 | SYS_WRITE routed fd 1/2 to the console unless the slot held a pipe, and SYS_READ routed fd 0 to the keyboard unconditionally, so a redirect parsed, the file was created and truncated, and the bytes went to the console anyway (measured: 0-byte file) | bug | CLOSED (SH6b: vfs_fd_is_pipe became vfs_fd_is_devfs; fd 0/1/2 keep the console path only while they refer to a devfs node, so regular files and pipes are both honoured and gterm is unchanged) | SH6b |
+| SH-38 | cmd_argv[argc++] = sh_expbuf[argc] -- the increment and the read of argc are unsequenced, so which slot the pointer names is undefined | bug | CLOSED (SH6b: split into two statements; clang -Wunsequenced is what caught it) | SH6b |
+| SH-39 | build/user/init.o did not list sh_expand.h as a prerequisite, so editing the header did not rebuild the shell | build | CLOSED (SH6b: init.o depends on both sh_expand.h and sh_parse.h) | SH6b |
 
 ## 8. Receipt strings (the greppable contract)
 
@@ -1583,6 +1671,7 @@ plan still lists them, so a renamed receipt fails the build:
 [selfhost] asm PASS: <n> objects byte-identical
 [selfhost] kernel PASS: tcc-built kernel booted to shell
 [selfhost] script PASS: <n> lines ran in-guest
+[selfhost] redirect PASS: <n> files written and read back
 [selfhost] build PASS: kernel+initrd built on /fat
 [selfhost] iso PASS: auralite.iso built in-guest
 [selfhost] FULL LOOP PASS (2/2 clean loops)

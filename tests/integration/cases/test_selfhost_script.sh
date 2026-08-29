@@ -60,8 +60,12 @@ il_assert_grep "$LOG" "sh6a: pwd-status=0" \
     "\$? carries the previous line's exit status"
 
 # ---- $$ is literal and unknown names are left alone for SH6b ----
-il_assert_grep "$LOG" 'sh6a: dollar=\$ env=\$PATH' \
-    "\$\$ yields one literal dollar; \$PATH passes through untouched"
+# SH6b changed this: an unquoted $PATH is now an unset variable and expands to
+# nothing (POSIX), so the "passes through untouched" property moved behind
+# single quotes, which SH6b made suppress expansion.  Updated here rather than
+# left asserting behaviour the tree no longer has.
+il_assert_grep "$LOG" 'sh6a: dollar=\$ quoted=\$PATH' \
+    "\$\$ yields one literal dollar; a single-quoted \$PATH survives verbatim"
 
 # ---- nesting: each frame keeps its own positional parameters ----
 il_assert_grep "$LOG" "sh6a: nested script=/tests/sh6a_nested.sh target=kernel depth-ok" \

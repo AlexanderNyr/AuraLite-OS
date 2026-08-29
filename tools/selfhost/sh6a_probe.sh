@@ -8,8 +8,10 @@
 #   - whole-line comments and blank lines are skipped;
 #   - $0 is the script name, $1 the first argument, $# the argument count;
 #   - $? carries the previous line's exit status;
-#   - $$ yields a literal dollar and an unknown name ($PATH) is passed
-#     through untouched, so SH6b can define named variables later;
+#   - $$ yields a literal dollar, and a single-quoted '$PATH' survives
+#     verbatim because SH6b made single quotes suppress expansion (an
+#     UNQUOTED $PATH now expands to nothing, which is the POSIX rule for an
+#     unset variable -- see SH6b, which changed this line and its assertion);
 #   - a nested `sh` call works and returns to this script.
 #
 # The final line is the receipt the host greps for.  Its count is the number
@@ -19,7 +21,7 @@
 echo [selfhost] sh6a: script=$0 target=$1 args=$#
 pwd
 echo [selfhost] sh6a: pwd-status=$?
-echo [selfhost] sh6a: dollar=$$ env=$PATH
+echo [selfhost] sh6a: dollar=$$ quoted='$PATH'
 sh /tests/sh6a_nested.sh $1
 echo [selfhost] sh6a: nested-status=$?
 echo [selfhost] script PASS: 7 lines ran in-guest

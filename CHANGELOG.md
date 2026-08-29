@@ -2,6 +2,75 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH6b — redirects, shell variables, and the kernel fix behind them] 2026-08-29
+
+`SELFHOST_PLAN.md` SH6b landed: `>`, `>>`, `<`, `set NAME=VALUE`, `$NAME` and
+the quote-aware tokenizer all three depend on.
+
+- **A quote-aware tokenizer** in the new pure `userspace/system/init/sh_parse.h`
+  (163 lines).  Quotes and redirects are recognised in **one pass**, which is
+  not a stylistic choice: whether `>` is an operator depends on whether it is
+  quoted, so a two-pass design redirects on a `>` that was inside a string.
+  The old `strtok(line, " \t\n")` made every `>` an operator, so
+  `echo "a > b"` could not be printed at all.
+- **Named variables and quote-aware expansion** in a rewritten
+  `sh_expand_word()` (159 → 283 lines), replacing SH6a's
+  `sh_expand_positional()`.  Two expanders with different quoting rules would
+  drift.  Expansion runs **per token**, so a variable's value can add text
+  inside the argument it landed in but can never inject an extra argument or an
+  operator — the injection bug that expanding the whole line first would
+  reintroduce.
+- **`set` / `unset` / bare `NAME=VALUE`**, redirects applied by swapping fd 0/1
+  around both builtins and spawns, and `cat` with no argument reading fd 0 —
+  before that, `<` had nothing to feed and `cat < file` printed "missing file",
+  so the feature was syntax without a use.
+- **A kernel fix that the SH6 survey said was unnecessary.**  The survey
+  claimed pipes and redirects needed no kernel work because `SYS_PIPE`,
+  `SYS_PIPE2` and `SYS_DUP2` are implemented.  That measured the wrong thing:
+  `SYS_WRITE` routed fd 1/2 to the console unless the slot held a **pipe**
+  (added so `gterm` can capture a child's stdout), and `SYS_READ` routed fd 0
+  to the keyboard unconditionally.  So a redirect parsed, `open`+`O_TRUNC`
+  created the file, `dup2` succeeded — and the bytes went to the console,
+  leaving a **0-byte** file.  Measured, not inferred.  `vfs_fd_is_pipe()`
+  became the more general `vfs_fd_is_devfs()`: fd 0/1/2 keep the hard-wired
+  console path only while they still refer to a devfs node (`/dev/tty0`,
+  `/dev/null`), so regular files and pipes are both honoured and `gterm` is
+  unchanged (`kernel/fs/vfs.c`, `kernel/fs/vfs.h`,
+  `kernel/arch/x86_64/syscall.c`, +32/−7).  Ledger SH-37; the survey text is
+  corrected in place rather than quietly rewritten.
+- **A second defect, caught by the compiler.**  `cmd_argv[argc++] =
+  sh_expbuf[argc]` is unsequenced — which slot the pointer names is undefined.
+  clang's `-Wunsequenced` flagged it; another compiler could simply have picked
+  the wrong one (ledger SH-38).  Also fixed: `build/user/init.o` never listed
+  `sh_expand.h` as a prerequisite, so editing the header did not rebuild the
+  shell (ledger SH-39).
+- **Tests.** `tests/unit/test_sh_parse.c` **87 assertions** and
+  `test_sh_expand.c` **122 assertions**, both against the shipped headers, both
+  wired into `make test-unit`.  Mutation-checked: prefix-based variable lookup
+  gives 121/1, disabled single-quote suppression gives 119/3.
+  `tests/integration/cases/test_selfhost_redirect.sh` — **15/15**, selfhost
+  shard, needs no guest toolchain so it never skips.  Its load-bearing
+  assertion is `cat < $LOG > /tmp/sh6b_copy.txt`: both directions on one line,
+  because a parser that handled only `>` would pass every other check while `<`
+  silently did nothing.  Receipt
+  `[selfhost] redirect PASS: 2 files written and read back`.
+- **One SH6a behaviour changed, caught by running the whole shard.**  SH6a left
+  an unknown `$NAME` verbatim to avoid pre-empting this phase; now that named
+  variables exist, an unset name expands to nothing (POSIX).  `sh6a_probe.sh`
+  and its assertion encoded the old behaviour, so `test_selfhost_script` went
+  red.  Both now put `$PATH` behind single quotes.  Recorded rather than
+  quietly patched: a sub-phase that silently invalidates its predecessor's gate
+  is how an arc starts testing nothing.
+- **Out of scope, stated rather than left ambiguous.**  `2>` (the shell has one
+  output stream), here-documents, and subshell variable scoping — `sh <file>`
+  runs in the current shell, so a variable it sets survives: POSIX
+  `.`/`source` semantics, not POSIX `sh`.
+- **Docs.** Plan: survey correction, SH6b marked landed with measurements,
+  ledger SH-37…SH-39, the new §8 receipt, and a note on SH6c that pipes really
+  do need no kernel change.  `tools/check_selfhost_claims.py` asserts
+  `[selfhost] redirect PASS:`.  The CI anti-skip ratchet now requires all 9
+  selfhost gates.  `docs/status.md` updated.
+
 ## [SELFHOST SH6a — the shell runs scripts: exit-status spine + `sh <file>`] 2026-08-29
 
 `SELFHOST_PLAN.md` SH6 was one phase bundling a `make` implementation, four
@@ -17,7 +86,7 @@ builtins**, job control, the `auralite#` prompt.  Which shell carries scripting
 was an open decision hedged in the plan's own words ("*smallsh **(or its
 promoted successor)***"); it is now **D10**, resolved by measurement:
 extending `init.c` is +229 additive lines, promoting `smallsh` would mean
-re-implementing 33 builtins plus the job table, search path and read loop that
+re-implementing 31 builtins plus the job table, search path and read loop that
 143 integration cases wait on, and a separate `/bin/sh` would duplicate all of
 it and still be unable to call a builtin from a script.
 

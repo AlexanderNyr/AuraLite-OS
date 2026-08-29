@@ -11,6 +11,7 @@
  * atomic_compat.h); clang keeps its builtins. */
 #include "kernel/lib/atomic_compat.h"
 #include "kernel/fs/vfsmount.h"   /* R2: the mount core moved out */
+#include "kernel/fs/devfs.h"     /* SH6b: devfs_ops, for vfs_fd_is_devfs() */
 #include "kernel/fs/execpolicy.h"
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
@@ -946,16 +947,26 @@ int vfs_pipe(int out_fds[2]) {
     return vfs_pipe2(out_fds, 0);
 }
 
-/* vfs_fd_is_pipe() — true when @fd of the CURRENT thread holds a pipe end.
- * Used by SYS_WRITE: fd 1/2 historically go straight to the console, but
- * when dup2() has wired a pipe into fd 1/2 (the way gterm captures a
- * spawned program's stdout) the bytes must reach the pipe instead. */
-int vfs_fd_is_pipe(int fd) {
-    if (fd < 0 || fd >= VFS_MAX_FDS) return 0;
+/* vfs_fd_is_devfs() — true when @fd of the CURRENT thread refers to a devfs
+ * node.  Used by SYS_READ and SYS_WRITE to decide whether fd 0/1/2 still means
+ * "the console" or has been redirected.
+ *
+ * SELFHOST SH6b.  This was vfs_fd_is_pipe(), which answered the same question
+ * but only for pipes: gterm could capture a spawned program's stdout, while
+ * `cmd > file` created and truncated the file and then wrote to the console
+ * anyway.  Testing for devfs instead of for pipe covers both, and leaves the
+ * console path (/dev/tty0, /dev/null) exactly where it was. */
+int vfs_fd_is_devfs(int fd) {
+    /* The degenerate cases answer "yes" on purpose.  SYS_READ/SYS_WRITE fall
+     * back to the hard-wired console when this returns true, so an empty or
+     * vnode-less slot must keep the historical behaviour rather than being
+     * routed into the VFS as -EBADF.  Only a slot that demonstrably holds a
+     * real, non-devfs file is treated as a redirection. */
+    if (fd < 0 || fd >= VFS_MAX_FDS) return 1;
     struct ofd **t = current_fd_table();
     struct ofd *o = t[fd];
-    if (!o || (uintptr_t)o == 1 || !o->vn) return 0;
-    return o->vn->ops == &pipe_read_ops || o->vn->ops == &pipe_write_ops;
+    if (!o || (uintptr_t)o == 1 || !o->vn) return 1;
+    return o->vn->ops == &devfs_ops;
 }
 
 int vfs_set_cloexec(int fd, int on) {

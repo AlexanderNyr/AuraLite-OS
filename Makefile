@@ -1612,7 +1612,9 @@ $(USER_BUILD)/hello.o: userspace/apps/hello/hello.c lib/libc/include/unistd.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-$(USER_BUILD)/init.o: userspace/system/init/init.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/init.o: userspace/system/init/init.c \
+                 userspace/system/init/sh_expand.h \
+                 userspace/system/init/sh_parse.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2143,6 +2145,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
                          tools/selfhost/sh6a_probe.sh tools/selfhost/sh6a_nested.sh \
                          tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
+                         tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
@@ -2225,6 +2228,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # nothing execs them.
 	@cp tools/selfhost/sh6a_probe.sh tools/selfhost/sh6a_nested.sh \
 	      tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
+	      tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
 	      $(INITRD_DIR)/tests/
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
@@ -2412,6 +2416,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_pthread_ext \
                 $(BUILD_DIR)/test_string_ext \
                 $(BUILD_DIR)/test_sh_expand \
+                $(BUILD_DIR)/test_sh_parse \
                 $(BUILD_DIR)/test_stdio_seek \
                 $(BUILD_DIR)/test_printf_format \
                 $(BUILD_DIR)/test_stdio_ext \
@@ -3157,6 +3162,13 @@ $(BUILD_DIR)/test_string_ext: tests/unit/test_string_ext.c \
 # test instead of the code the guest shell actually runs.
 $(BUILD_DIR)/test_sh_expand: tests/unit/test_sh_expand.c \
                              userspace/system/init/sh_expand.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# SELFHOST SH6b: the quote-aware tokenizer and redirect extractor.  Same rule
+# as test_sh_expand -- the test includes the shipped header and calls it.
+$(BUILD_DIR)/test_sh_parse: tests/unit/test_sh_parse.c \
+                            userspace/system/init/sh_parse.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
