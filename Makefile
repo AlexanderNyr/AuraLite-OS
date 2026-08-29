@@ -108,6 +108,12 @@ KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
 
 all: iso
 
+# SELFHOST_PLAN.md D5: the in-guest tools/selfhost/Selfhost.mk must name
+# exactly this set.  check_selfhost_claims.py compares the two lists so
+# the host Makefile and the guest build description cannot drift.
+SELFHOST_TARGETS := kernel initrd iso user
+
+
 # Fail early with actionable messages instead of a later "command not found".
 deps-check:
 	@missing=0; \
@@ -2177,6 +2183,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/selfhost/sh6c_probe.sh tools/selfhost/sh6d_probe.sh \
                          tools/selfhost/sh6e_probe.sh tools/selfhost/sh6e.mk \
                          tools/selfhost/sh6e_stamp.c tools/shmake/shmake.c \
+                         tools/selfhost/build.sh tools/selfhost/Selfhost.mk \
+                         tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
                          $(SHMAKE_ELF) $(SH6E_STAMP_ELF) \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
@@ -2266,7 +2274,11 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	      tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
 	      tools/selfhost/sh6c_probe.sh tools/selfhost/sh6d_probe.sh \
 	      tools/selfhost/sh6e_probe.sh tools/selfhost/sh6e.mk \
+	      tools/selfhost/build.sh tools/selfhost/Selfhost.mk \
+	      tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
 	      $(INITRD_DIR)/tests/
+	@cp tools/selfhost/Selfhost.mk $(INITRD_DIR)/tests/sh6f.mk
+	@cp tools/selfhost/build.sh $(INITRD_DIR)/tests/build.sh
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
 # These used to be `cp foo.elf foo.pkg` -- a renamed executable with no
@@ -2593,6 +2605,10 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 # $(UNIT_TESTS).
 	@echo "[unit] running tests/unit/test_shmake.sh"
 	@bash tests/unit/test_shmake.sh || exit 1
+
+# SELFHOST_PLAN SH6f: D5 target-set ratchet + shmake resume through Selfhost.mk.
+	@echo "[unit] running tests/unit/test_build_sh.sh"
+	@bash tests/unit/test_build_sh.sh || exit 1
 
 # SELFHOST_PLAN SH4a: mini-asm vs nasm byte-parity on the flat-binary boot
 # objects.  Script, not a C binary (it compiles tools/mini-asm and diffs

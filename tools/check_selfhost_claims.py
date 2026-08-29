@@ -122,7 +122,7 @@ def check_plan(plan, tree_has_file):
 
     # SH6e is a sub-phase (SH6e, not SH6), so the SH\d+ table walk above
     # does not see it.  Pin the artefacts the ✅ claims independently.
-    if re.search(r"^\\| SH6e .*\\| ✅", plan, re.M):
+    if re.search(r"^\| SH6e .*\| ✅", plan, re.M):
         for parts in [
             ("tools", "shmake", "shmake.c"),
             ("tests", "integration", "cases", "test_selfhost_shmake.sh"),
@@ -131,6 +131,30 @@ def check_plan(plan, tree_has_file):
             if not tree_has_file(*parts):
                 fails.append("SH6e: marked ✅ but %s missing"
                              % "/".join(parts))
+
+    if re.search(r"^\| SH6f .*\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "selfhost", "build.sh"),
+            ("tools", "selfhost", "Selfhost.mk"),
+            ("tests", "integration", "cases", "test_selfhost_build.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH6f: marked ✅ but %s missing"
+                             % "/".join(parts))
+        # D5: host Makefile and Selfhost.mk name the same target set.
+        make_txt = read("Makefile")
+        guest_txt = read("tools", "selfhost", "Selfhost.mk")
+        hm = re.search(r"^SELFHOST_TARGETS\s*:?=\s*(.*)$", make_txt, re.M)
+        gm = re.search(r"^# SELFHOST_TARGETS:\s*(.*)$", guest_txt, re.M)
+        hs = set(hm.group(1).split()) if hm else None
+        gs = set(gm.group(1).split()) if gm else None
+        if hs is None:
+            fails.append("D5: Makefile missing SELFHOST_TARGETS")
+        if gs is None:
+            fails.append("D5: Selfhost.mk missing SELFHOST_TARGETS")
+        if hs is not None and gs is not None and hs != gs:
+            fails.append("D5: target set drift Makefile=%s Selfhost.mk=%s"
+                         % (" ".join(sorted(hs)), " ".join(sorted(gs))))
 
     # Required sections (the plan's own contract).
     for sec in ["## 2. Decisions", "## 3. Phases", "## 6. What this plan "

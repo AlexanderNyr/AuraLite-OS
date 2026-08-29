@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) and SH6e (`shmake`) have landed.  SH6f–SH9 remain pending.
+(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -22,13 +22,13 @@ redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
 | SH5b — aulink kernel.ld layout parity vs ld.lld | ✅ landed |
 | SH5c — the kernel compiled by tcc (flag story + delta) | ✅ landed |
 | SH5d — the in-guest build + terminal boot gate | ✅ landed |
-| SH6 — shmake + shell scripting (umbrella; split into SH6a–SH6f) | 🚧 in progress |
+| SH6 — shmake + shell scripting (umbrella; split into SH6a–SH6f) | ✅ landed |
 | SH6a — spike (D10 decision) + exit-status spine + script runner | ✅ landed |
 | SH6b — redirects + named variables + the fd 0/1/2 kernel fix | ✅ landed |
 | SH6c — pipes + command lists (`;` `&&` `\|\|`) | ✅ landed |
 | SH6d — control flow `if`/`while`/`for` | ✅ landed |
 | SH6e — `shmake`: rules, prerequisites, variables, phony targets | ✅ landed |
-| SH6f — `build.sh` entry point + D5 target parity + D6 resume | 🚧 pending |
+| SH6f — `build.sh` entry point + D5 target parity + D6 resume | ✅ landed |
 | SH7 — image tooling in C | 🚧 pending |
 | SH8 — bootstrap closure | 🚧 pending |
 | SH9 — cross-arch + CI wiring | 🚧 pending |
@@ -1176,7 +1176,7 @@ after both fixes: **7/7 selfhost cases PASS, 0 failed** (1187 s).
 
 ---
 
-### Phase SH6 — shmake + shell scripting (umbrella) 🚧 IN PROGRESS
+### Phase SH6 — shmake + shell scripting (umbrella) ✅ LANDED (2026-08-29)
 
 **Goal.** Build scripts run in-guest.
 
@@ -1564,23 +1564,36 @@ the same incremental graph without a QEMU boot.
 
 ---
 
-### Phase SH6f — `build.sh`: the single entry point (terminal gate) 🚧 PENDING
+### Phase SH6f — `build.sh`: the single entry point (terminal gate) ✅ LANDED (2026-08-29)
 
 **Goal.** One command, in-guest, drives kernel + initrd — and can be
 interrupted and resumed.
 
-**Definition of done.** `build.sh` at the root of the `/fat` worktree drives
-kernel and initrd through `shmake`, with the target set mirrored against the
-host Makefile (D5).  Per D6 the worktree lives on `/fat` with tmpfs as
-scratch, and the build is **resumable**: a run killed at phase 6 of 9
-continues from phase 6 on the next boot rather than restarting.  That is what
-makes the remaining phases practical — without it every interrupted SH7/SH8
-run costs a full rebuild.
+**What landed.**
 
-**Gate.** Integration case `test_selfhost_build.sh` runs `sh build.sh kernel`
-in-guest and greps `[selfhost] build PASS: kernel+initrd built on /fat`; a
-second boot resumes from the same `/fat` tree (persistence proof, D6) and the
-receipt appears again without recompiling what was already built.
+- **`tools/selfhost/build.sh`** + **`tools/selfhost/Selfhost.mk`.**  The
+  entry point is `sh build.sh kernel`.  There is no `test`/`[` builtin, so
+  the script does not branch on `$1`; extra words are ignored.  An
+  interrupted run is `shmake -C /fat phase6`, then `build.sh` again.
+- **Nine steps, timestamps on `/fat`.**  Phases 1–6 are durable stamps
+  (`/fat/P1`…`/fat/P6`); 7 writes `/fat/KERNEL`, 8 writes `/fat/INITRD`;
+  9 is the receipt printed by `build.sh`.  Recipes are `sh6e_stamp` (the
+  SH6f driver proof).  SH7 replaces the `iso` recipe; SH8 replaces the
+  stamp recipes with tcc/aulink/mini-asm.  The target names stay.
+- **D5.**  `SELFHOST_TARGETS := kernel initrd iso user` in the host
+  Makefile and `# SELFHOST_TARGETS: kernel initrd iso user` in
+  `Selfhost.mk`.  `check_selfhost_claims.py` compares the two sets.
+  `$(FAT)` in target names expands at parse time (command-line `FAT=`
+  overrides the file default `/fat`).
+- **D6.**  Products live on `/fat`.  `/tmp/build` is scratch and does not
+  survive a reboot.  The gate attaches a private AHCI disk so the volume
+  is the same across two boots.
+
+**Gate.** `test_selfhost_build.sh`: boot 1 stages the worktree, stops at
+phase 6 of 9, resumes through `sh build.sh kernel` and greps
+`[selfhost] build PASS: kernel+initrd built on /fat`; boot 2 attaches the
+same FAT disk, reprints the receipt and does **not** rebuild KERNEL/INITRD.
+Host unit tests pin D5 and the same stop/resume graph without QEMU.
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
@@ -1757,6 +1770,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-41 | collecting a nested `if` inside a `while` body with `sh_next_line` on the script frame swallows the outer `done` | bug | CLOSED (SH6d: compounds collect from a line-source; a nested compound reads the collected body, not the frame.  Depth on collect is net open/close per line, so `if inner; then e; fi` is delta 0) | SH6d |
 | SH-42 | `system()` / `sh -c` cannot run make recipes: AuraLite has no `/bin/sh` (D10, `system()` is ENOSYS) | decision | CLOSED (SH6e: shmake tokenises the expanded recipe and execs it — `spawnv` in-guest, `fork`+`execvp` on the host.  Redirects in recipes are out of scope) | SH6e |
 | SH-43 | `SYS_STAT`/`SYS_OPEN` do not join the thread cwd, so relative `stat("a.in")` after `chdir` misses a file that exists | bug | CLOSED (SH6e: shmake and sh6e_stamp join `getcwd()` before stat/open) | SH6e |
+| SH-44 | no `test`/`[` builtin, so `build.sh` cannot branch on `$1` | decision | CLOSED (SH6f: `sh build.sh kernel` is the API and ignores extra words; an interrupted run is `shmake -C /fat phase6` then `build.sh` again) | SH6f |
 
 ## 8. Receipt strings (the greppable contract)
 

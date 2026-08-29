@@ -190,15 +190,16 @@ ALL_CASES=(
     # Graphics and userspace
     test_3d_render
     test_virgl_gpu
-    # SH6a–SH6e: the shell runs scripts, with redirects, variables, pipes,
-    # lists and control flow, and shmake honours a dependency graph.  No
-    # guest toolchain needed, so unlike the SH1-SH5 cases below these
-    # never skip -- listed first for that reason.
+    # SH6a–SH6f: the shell runs scripts, with redirects, variables, pipes,
+    # lists and control flow, shmake honours a graph, and build.sh resumes
+    # from /fat.  No guest toolchain needed, so unlike the SH1-SH5 cases
+    # below these never skip -- listed first for that reason.
     test_selfhost_script
     test_selfhost_redirect
     test_selfhost_pipe
     test_selfhost_control
     test_selfhost_shmake
+    test_selfhost_build
     test_selfhost_tcc
     test_selfhost_userland
     test_selfhost_aulink

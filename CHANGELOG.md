@@ -2,6 +2,26 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH6f — build.sh] 2026-08-29
+
+`SELFHOST_PLAN.md` SH6f landed (SH6 complete): `build.sh` is the in-guest
+entry point, D5 target-set parity, D6 resume from `/fat`.
+
+- **`sh build.sh kernel`** stages a `/fat` worktree and drives
+  `Selfhost.mk` through shmake.  No `test`/`[` builtin, so the script does
+  not branch on `$1` (ledger SH-44).  An interrupted run is
+  `shmake -C /fat phase6`, then `build.sh` again.
+- **Nine steps on `/fat`.**  Phases 1–6 are durable stamps; 7/8 write
+  `/fat/KERNEL` and `/fat/INITRD`; 9 is the receipt.  Recipes are
+  `sh6e_stamp` (the driver proof).  SH7/SH8 replace recipes, not names.
+- **D5.**  `SELFHOST_TARGETS := kernel initrd iso user` in the host
+  Makefile equals `# SELFHOST_TARGETS:` in `Selfhost.mk`; the checker
+  compares the sets.
+- **D6.**  Products persist on a private AHCI FAT volume; `/tmp/build` is
+  scratch.  Boot 2 reprints the receipt without rebuilding.
+- Gate: `tests/integration/cases/test_selfhost_build.sh`.  Receipt
+  `[selfhost] build PASS: kernel+initrd built on /fat`.
+
 ## [SELFHOST SH6e — shmake] 2026-08-29
 
 `SELFHOST_PLAN.md` SH6e landed: `tools/shmake/shmake.c`, a POSIX-subset make

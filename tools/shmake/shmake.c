@@ -271,14 +271,23 @@ static int is_ident_start(int c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
 }
 
+static char *expand_dup(const char *s) {
+    char buf[MAX_EXPAND];
+    if (expand_into(buf, (int)sizeof buf, s, 0, 0, 0, 0) < 0)
+        die("expansion overflow");
+    return astrdup(buf);
+}
+
 static void add_prereq(struct rule *r, const char *name) {
     int i;
+    const char *exp;
     if (!name[0]) return;
+    exp = expand_dup(name);
     for (i = 0; i < r->nprereq; i++) {
-        if (strcmp(r->prereqs[i], name) == 0) return;
+        if (strcmp(r->prereqs[i], exp) == 0) return;
     }
     if (r->nprereq >= MAX_PREREQS) dief("too many prerequisites on ", r->target);
-    r->prereqs[r->nprereq++] = astrdup(name);
+    r->prereqs[r->nprereq++] = exp;
 }
 
 static void parse_prereqs(struct rule *r, char *rest) {
@@ -328,11 +337,11 @@ static void parse_rule_line(char *s) {
             start = p;
             while (*p && *p != ' ' && *p != '\t') p++;
             if (*p) *p++ = 0;
-            mark_phony(start);
+            mark_phony(expand_dup(start));
         }
         return;
     }
-    cur_rule = rule_add(target);
+    cur_rule = rule_add(expand_dup(target));
     parse_prereqs(cur_rule, colon + 1);
 }
 
