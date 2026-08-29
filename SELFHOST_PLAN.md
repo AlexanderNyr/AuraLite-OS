@@ -1,6 +1,8 @@
 # AuraLite OS — Self-Hosting Plan
 
-## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6–SH9 remain pending.
+## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is now split into SH6a–SH6f and SH6a has landed: the shell runs
+scripts with positional parameters and a real exit status.  SH6b–SH9 remain
+pending.
 
 | Phase | Result |
 |-------|--------|
@@ -19,7 +21,13 @@
 | SH5b — aulink kernel.ld layout parity vs ld.lld | ✅ landed |
 | SH5c — the kernel compiled by tcc (flag story + delta) | ✅ landed |
 | SH5d — the in-guest build + terminal boot gate | ✅ landed |
-| SH6 — shmake + shell scripting | 🚧 pending |
+| SH6 — shmake + shell scripting (umbrella; split into SH6a–SH6f) | 🚧 in progress |
+| SH6a — spike (D10 decision) + exit-status spine + script runner | ✅ landed |
+| SH6b — redirects + named variables | 🚧 pending |
+| SH6c — pipes + command lists (`;` `&&` `\|\|`) | 🚧 pending |
+| SH6d — control flow `if`/`while`/`for` | 🚧 pending |
+| SH6e — `shmake`: rules, prerequisites, variables, phony targets | 🚧 pending |
+| SH6f — `build.sh` entry point + D5 target parity + D6 resume | 🚧 pending |
 | SH7 — image tooling in C | 🚧 pending |
 | SH8 — bootstrap closure | 🚧 pending |
 | SH9 — cross-arch + CI wiring | 🚧 pending |
@@ -151,6 +159,16 @@ argv/envp, `EXEC_MAX_ARGS`), but there is **no pipe, redirect, variable,
 loop or script support** (0 hits). Build scripts cannot run until SH6.
 The spawn/argv machinery is already a solid foundation to build on.
 
+**Correction, measured 2026-08-29 (SH6a).** This fact names the wrong file
+for x86_64. `smallsh.c` is **173 lines** with **no builtin dispatch at
+all**, and it is the shell for the *other* architectures only
+(`kernel/arch/aarch64/main_a64.c:635-636`, `kernel/arch/riscv64/main_rv.c:501-502`).
+The x86_64 boot shell that every self-host gate drives is
+`userspace/system/init/init.c` — **1009 lines**, **33 builtins**, job
+control, and the `auralite#` prompt `prompt_qemu.py` waits on. Its gaps
+were the same ones (`pipe`/`getenv`/`setenv`/`source`/`$VAR`: 0 hits each),
+so the conclusion stands, but SH6's work happens in `init.c`. See D10.
+
 ### Fact 9 — Persistent writable storage exists and is exercised
 
 `/fat` (FAT32: subdirs, LFN read+write, mkdir/rmdir/rename, FSInfo) and
@@ -266,6 +284,23 @@ broken, and it could fail while every deliverable passed.  The gates
 that actually prove a phase landed are the ones this plan already names
 — unit tests, the host-side integration cases and their greppable
 receipts — and `tools/check_selfhost_claims.py` asserts only those.
+
+### D10. The scripting shell is `init.c`, not `smallsh` and not a new `/bin/sh`
+
+Resolved by measurement in SH6a, the same way D4 was.  The plan's own hedge
+— *smallsh **(or its promoted successor)*** — left this open, and Fact 8
+pointed at the wrong file.  Three candidates, measured 2026-08-29:
+
+| Path | Measured cost | Verdict |
+|---|---|---|
+| **Promote `smallsh`** | `smallsh.c` is **173 lines** (`str_eq`, `starts_with`, `print_dec`, `help`, `main`) with **no builtin dispatch**.  Promoting it to the x86_64 shell means re-implementing all **33** `init` builtins, the job table, `prog_resolve` and the `auralite#` read loop that `prompt_qemu.py` and all 143 integration cases depend on — then keeping two x86_64 shells in sync forever. | **Rejected** |
+| **New `/bin/sh` program** | The builtins, the search path and the job table are all `static` inside `init.c`.  A separate program would have to duplicate or export all three, and `init` would still have to spawn it — so the scripting work gets paid twice, and a script could not use a builtin. | **Rejected** |
+| **Extend `init.c`** | Purely additive: **+229 lines** on 1009, no existing dispatch branch rewritten, and the runner reuses the builtin set that already exists.  `sh` is one more entry beside the other 33. | **Chosen** |
+
+The consequence worth recording: `smallsh` stays the aarch64/riscv64 shell and
+**does not** gain scripting in this plan.  Cross-arch shell parity is SH9's
+problem, not SH6's, and pretending otherwise would have inflated every SH6
+sub-phase by a second implementation.
 
 ---
 
@@ -1133,24 +1168,241 @@ after both fixes: **7/7 selfhost cases PASS, 0 failed** (1187 s).
 
 ---
 
-### Phase SH6 — shmake + shell scripting 🚧 PENDING
+### Phase SH6 — shmake + shell scripting (umbrella) 🚧 IN PROGRESS
 
 **Goal.** Build scripts run in-guest.
 
-**Definition of done.** `shmake` (POSIX-subset make, C, in-guest): rules,
-prerequisites, variables, phony targets — the subset `build.sh` needs.
-smallsh (or its promoted successor) gains pipes, redirects, environment
-variables and `for`/`if` — the subset `build.sh` needs. `build.sh` is the
-single entry point that drives kernel + initrd on `/fat` (targets
-mirrored with the host Makefile per D5).
+**Why this is split.** The original SH6 was written as one phase, but its
+definition of done bundles three deliverables that share no code path: a
+POSIX-subset `make`, four shell language features, and a build entry point
+that has to survive being interrupted.  A measured survey of the tree
+(2026-08-29) fixes the real surface:
 
-**Gate.** Integration case `test_selfhost_build.sh` runs `sh build.sh
-kernel` in-guest and greps `[selfhost] build PASS: kernel+initrd built on
-/fat`; a second boot resumes from the same `/fat` tree (persistence proof,
-D6).
+- **The shell the plan names is not the shell that matters.**  Fact 8 and
+  ledger SH-04 both say *smallsh*, but `userspace/system/smallsh/smallsh.c`
+  is **173 lines** with **no builtin dispatch**, and it serves aarch64 and
+  riscv64 only.  The x86_64 boot shell that every self-host gate drives is
+  `userspace/system/init/init.c` — **1009 lines**, **33 builtins**, job
+  control, and the `auralite#` prompt.  The plan's own hedge, *smallsh **(or
+  its promoted successor)***, was an unresolved decision; SH6a resolves it by
+  measurement and records it as D10.
+- **Pipes and redirects need no kernel work.**  `SYS_PIPE` (22), `SYS_PIPE2`
+  (293) and `SYS_DUP2` (33) are real implementations in
+  `kernel/arch/x86_64/syscall.c:1385/1387/1406`, wrapped by
+  `lib/libc/src/libc.c:722-731`.  Measured in `init.c` before SH6a: `pipe`
+  **0** hits, `getenv` **0**, `setenv` **0**, `source` **0**, `expand` **0**,
+  `$VAR` **0**.  The gap is entirely in the shell's parser, so each language
+  feature can be its own independently gated step instead of one
+  kernel-and-shell change.
+- **There was no exit status to branch on.**  Every builtin returned `void`,
+  and `cmd_run_argv` computed the child's `waitpid` status and then threw it
+  away — so a failing compile was indistinguishable from a succeeding one.
+  Nothing above that (`&&`, `if`, a build script that stops) can exist until
+  the spine does.
 
-**Deliverable.** The changes above, in the tree (D9: no
-patch artefact).
+Those three facts give a strict dependency order: the status spine and the
+script runner first, then the language features that consume the status, then
+`shmake`, then the entry point that needs all of them.
+
+| Sub-phase | Adds | Gate (grep) |
+|---|---|---|
+| **SH6a** | exit-status spine; `sh <file> [args]` with `$0..$9`/`$#`/`$?`; line-numbered failures | `[selfhost] script PASS: <n> lines ran in-guest` |
+| **SH6b** | redirects `>` `>>` `<` on the existing `SYS_DUP2`; named variables (`set`, `$NAME`) | `[selfhost] redirect PASS: <n> files written and read back` |
+| **SH6c** | pipes `\|` on the existing `SYS_PIPE`; command lists `;` `&&` `\|\|` | `[selfhost] pipe PASS: <n> pipelines ran` |
+| **SH6d** | control flow `if`/`while`/`for` — the subset `build.sh` needs | `[selfhost] control PASS: <n> branches and loops ran` |
+| **SH6e** | `shmake`: rules, prerequisites, variables, phony targets | `[selfhost] shmake PASS: <n> targets up to date` |
+| **SH6f** | `build.sh` as the single entry point; D5 host/guest target parity; D6 resume from `/fat` | `[selfhost] build PASS: kernel+initrd built on /fat` (terminal) |
+
+**Definition of done.** The union of SH6a–SH6f.  D10 (`init.c` vs `smallsh`
+vs a new `/bin/sh`) is resolved by measurement in SH6a, not asserted.
+
+**Gate.** The union of the SH6a–SH6f gates; the terminal one is SH6f's
+in-guest `test_selfhost_build.sh`.
+
+**Deliverable.** The changes below, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH6a — spike (D10 decision) + exit-status spine + script runner ✅ LANDED (2026-08-29)
+
+**Goal.** Resolve D10 with numbers, and give the shell the two things every
+later sub-phase stands on: an exit status, and the ability to run a file of
+commands with arguments.
+
+**Result — the D10 spike, measured (not asserted).**
+
+| Path | Measured cost | Verdict |
+|---|---|---|
+| **Promote `smallsh`** | **173 lines**, no builtin dispatch; aarch64/riscv64 only.  Promotion means re-implementing **33** builtins + job table + search path + the `auralite#` read loop that 143 integration cases wait on, and then keeping two x86_64 shells in sync. | **Rejected** |
+| **New `/bin/sh`** | Builtins, `prog_resolve` and the job table are `static` in `init.c`; a separate program duplicates or exports all three, still needs `init` to spawn it, and cannot use a builtin from a script. | **Rejected** |
+| **Extend `init.c`** | Additive: **+229 lines** on 1009, no existing dispatch branch rewritten, runner reuses the builtins already there. | **Chosen** |
+
+**Decision (D10): extend `init.c`.**  Recorded as a decision because it is
+load-bearing for SH6b–SH6f and because it corrects Fact 8, which named the
+wrong file.  Consequence: `smallsh` stays the aarch64/riscv64 shell and gains
+no scripting here — cross-arch shell parity is SH9's scope.
+
+**What landed.**
+
+- `userspace/system/init/sh_expand.h` — **159 lines**, pure (no syscalls, no
+  globals, no allocation): positional-parameter expansion for `$0..$9`, `$#`,
+  `$?`, `$$`.  Unknown names such as `$PATH` pass through **verbatim** so
+  SH6b can define them without a migration.  It is a header rather than code
+  inside `init.c` precisely so the host can compile and test the shipped body.
+- `userspace/system/init/init.c` — **1009 → 1238 lines**.  `process_command`
+  returns a status; `cmd_run_argv` returns the child's exit code (128+n on a
+  signal) instead of discarding it; `sh <file> [args]` runs a script with a
+  4-deep frame stack, each frame owning its own positional parameters; `exit N`
+  inside a script stops the script.
+- `tests/unit/test_sh_expand.c` — **64 assertions** against the shipped header
+  (not a re-implementation), including the exact overflow boundary.
+- `tools/selfhost/sh6a_{probe,nested,fail,exit}.sh` — four in-guest scripts,
+  staged into the initrd at `/tests` **unconditionally** (unlike the guest tcc
+  they need no fetched dependency, so this gate never skips).
+- `tests/integration/cases/test_selfhost_script.sh` — **12 assertions**,
+  registered in the `selfhost` shard.
+
+**Two real defects found by writing the gate, not by reading the code.**
+
+1. **`exit` inside a script halted the machine.**  `init` *is* PID 1 and the
+   shell's `exit` calls `_exit(0)`, so the first build script ending in
+   `exit 1` would have powered the system off instead of failing its step.
+   The fix is the `sh_depth > 0` check; the proof is the last assertion in the
+   case — after `sh6a_exit.sh` the host sends one more command and requires it
+   to round-trip.  A shell that reports failure by halting would pass every
+   other assertion.
+2. **Partial numeric overflow read as success.**  `sh_expand_putnum` reported
+   an error only when it wrote *nothing*; a `$?` of 255 expanding into a
+   2-byte buffer returned `SH_EXP_OK` with the text `"2"`.  A silently wrong
+   number is worse than an error, and silent truncation is exactly how
+   ledger SH-14 turned a tcc link line into
+   `unresolved reference to '__libc_start_main'`.  Caught by a mutation test:
+   removing the `*over = 1` fails the suite (63/1) and restoring it passes
+   (64/0).
+
+**Gate.** `test_selfhost_script.sh`, **12/12 assertions**, verified against
+the serial log rather than self-report:
+
+```
+[selfhost] sh6a: script=/tests/sh6a_probe.sh target=kernel args=1
+[selfhost] sh6a: pwd-status=0
+[selfhost] sh6a: dollar=$ env=$PATH
+[selfhost] sh6a: nested script=/tests/sh6a_nested.sh target=kernel depth-ok
+[selfhost] script PASS: 7 lines ran in-guest
+this_command_does_not_exist_xyz: command not found
+sh: /tests/sh6a_fail.sh:8: command failed with status 127
+SH6A_STILL_ALIVE
+```
+
+The line number `:8:` is the point of the failure path, and `SH6A_STILL_ALIVE`
+is the point of the exit path.  `UNREACHABLE-AFTER-FAILURE` and
+`UNREACHABLE-AFTER-EXIT` must be **absent**.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH6b — redirects + named variables 🚧 PENDING
+
+**Goal.** A script can write to a file and read a variable, without the host
+having to stage the result.
+
+**Definition of done.** `>`, `>>` and `<` on any command, implemented with
+the kernel's existing `SYS_DUP2` (no kernel change — measured in the SH6
+survey); `set NAME=VALUE` plus `$NAME` expansion, which extends
+`sh_expand.h` rather than replacing it (`$PATH` already survives SH6a
+verbatim, so nothing has to migrate).  Quoting rules arrive here, because
+`>` inside a quoted string must not redirect.
+
+**Gate.** Integration case `test_selfhost_redirect.sh`: a guest script writes
+a file with `>`, appends with `>>`, reads it back with `<`, and greps
+`[selfhost] redirect PASS: <n> files written and read back`.  A unit test
+covers the redirect/quoting parser on the host.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH6c — pipes + command lists 🚧 PENDING
+
+**Goal.** Commands compose, so a build step can be one line instead of a
+temporary file.
+
+**Definition of done.** `|` between commands, implemented with the kernel's
+existing `SYS_PIPE`/`SYS_PIPE2` and a process group per pipeline; `;`, `&&`
+and `||`, which consume the exit-status spine SH6a laid.  Foreground
+pipelines wait for the last stage; the job table already tracks the rest.
+
+**Gate.** Integration case `test_selfhost_pipe.sh`: a guest script runs
+`<n>` pipelines including one whose first stage fails, proving the failure
+propagates through `&&`, and greps `[selfhost] pipe PASS: <n> pipelines ran`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH6d — control flow `if`/`while`/`for` 🚧 PENDING
+
+**Goal.** The subset of shell control flow `build.sh` actually needs — no
+more, since every construct added here is one more thing SH8's closure has to
+rebuild with tcc.
+
+**Definition of done.** `if`/`elif`/`else`/`fi`, `while`/`do`/`done` and
+`for x in <words>`; all three branch on the exit status SH6a introduced.
+`case`, functions, `trap` and arithmetic are explicitly out (Fact 8's bar was
+never "POSIX shell", it was "enough for `build.sh`").
+
+**Gate.** Integration case `test_selfhost_control.sh`: a guest script
+exercises a taken and an untaken branch, a loop with a known iteration count
+and an early `break`, and greps
+`[selfhost] control PASS: <n> branches and loops ran`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH6e — `shmake`: the build driver 🚧 PENDING
+
+**Goal.** Dependencies are expressed once and honoured in-guest (D5).
+
+**Definition of done.** `tools/shmake/shmake.c`, compiled by tcc in-guest:
+rules, prerequisites, variables (`CC = tcc`), `.PHONY`, and timestamp
+comparison — the subset `build.sh` needs, not GNU make.  Per D5,
+`tools/check_selfhost_claims.py` asserts the host Makefile and `build.sh`
+name the **same** target set, so the two build descriptions cannot drift
+apart silently.
+
+**Gate.** Integration case `test_selfhost_shmake.sh`: a guest run builds a
+target, touches one prerequisite, re-runs and rebuilds **only** what depends
+on it, then greps `[selfhost] shmake PASS: <n> targets up to date`.  The
+"only what depends on it" assertion is the one that distinguishes a
+dependency graph from a shell script with comments.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH6f — `build.sh`: the single entry point (terminal gate) 🚧 PENDING
+
+**Goal.** One command, in-guest, drives kernel + initrd — and can be
+interrupted and resumed.
+
+**Definition of done.** `build.sh` at the root of the `/fat` worktree drives
+kernel and initrd through `shmake`, with the target set mirrored against the
+host Makefile (D5).  Per D6 the worktree lives on `/fat` with tmpfs as
+scratch, and the build is **resumable**: a run killed at phase 6 of 9
+continues from phase 6 on the next boot rather than restarting.  That is what
+makes the remaining phases practical — without it every interrupted SH7/SH8
+run costs a full rebuild.
+
+**Gate.** Integration case `test_selfhost_build.sh` runs `sh build.sh kernel`
+in-guest and greps `[selfhost] build PASS: kernel+initrd built on /fat`; a
+second boot resumes from the same `/fat` tree (persistence proof, D6) and the
+receipt appears again without recompiling what was already built.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
 
 ### Phase SH7 — image tooling in C 🚧 PENDING
 
@@ -1283,7 +1535,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-01 | exec-image cap 1 MiB (`SPAWN_MAX_IMAGE`) blocks a real compiler | limit | CLOSED (16 MiB, SH1) | SH1 |
 | SH-02 | user stack 1 MiB (4 sites) too shallow for compiler recursion | limit | CLOSED (4 MiB, SH1) | SH1 |
 | SH-03 | `TMPFS_MAX_FILES` 64 per volume; source tree is 1269 files | limit | CLOSED (256, SH1) | SH1 |
-| SH-04 | smallsh: no pipes/redirects/variables/loops | missing | OPEN | SH6 |
+| SH-04 | shell: no pipes/redirects/variables/loops (Fact 8 named smallsh; the x86_64 shell is init.c, see D10) | missing | OPEN (SH6a landed the script runner and the exit-status spine; pipes, redirects, variables and loops remain) | SH6a-SH6d |
 | SH-05 | ISO tooling is host python3/mtools (Fact 5) | missing | OPEN | SH7 |
 | SH-06 | kernel CFLAGS clang-only, `-mcmodel=kernel` unportable (Fact 2) | port | CLOSED (SH5a measured it unnecessary; SH5c compiled all 126 files and recorded the flag-delta table) | SH5 |
 | SH-07 | `OPEN_MAX` 64 — adequacy unknown until the spike | limit | CLOSED (tcc ran on 64 fds, SH1) | SH1 |
@@ -1312,6 +1564,10 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-30 | a 135-object kernel link line exceeds smallsh argv limits and directory enumeration is nondeterministic | limit | CLOSED (SH5d: aulink lexically expands immediate `*.o` directory inputs; guest gate proves 126 C + 9 asm) | SH5d |
 | SH-31 | sleep-fed UART commands are lost while guest tcc owns the polling console | process | CLOSED (SH5d: prompt_qemu transport sends each next command only after a fresh `auralite#`) | SH5d |
 | SH-32 | initrd's SH4 reference assembler was invoked without a build prerequisite on a clean tree | build | CLOSED (SH5d: explicit `build/mini-asm` target stages the reference objects) | SH5d |
+| SH-33 | SH6 bundled a make implementation, four shell language features and a resumable build entry point: three deliverables with no shared code path | scope | CLOSED (split into SH6a-SH6f along the dependency order: status spine, then language features, then shmake, then build.sh; 2026-08-29) | SH6a |
+| SH-34 | D10 unresolved: extend init.c vs promote smallsh vs write a new /bin/sh | decision | CLOSED (SH6a, measured: smallsh is 173 lines with no builtin dispatch and serves aarch64/riscv64 only; a new /bin/sh would duplicate 33 static builtins; extending init.c is +229 lines and purely additive) | SH6a |
+| SH-35 | shell `exit` called `_exit(0)` unconditionally, so inside a script it halted PID 1 instead of failing one build step | bug | CLOSED (SH6a: `sh_depth > 0` stops the script; test_selfhost_script.sh asserts the prompt still answers after `exit 3`) | SH6a |
+| SH-36 | sh_expand_putnum reported overflow only when it wrote nothing, so a partial numeric expansion returned success with truncated digits | bug | CLOSED (SH6a: putnum reports a short write; pinned by a mutation test, 63/1 mutated vs 64/0 shipped) | SH6a |
 
 ## 8. Receipt strings (the greppable contract)
 
@@ -1326,6 +1582,7 @@ plan still lists them, so a renamed receipt fails the build:
 [selfhost] asm PASS (elf64): <n> objects readelf-parity
 [selfhost] asm PASS: <n> objects byte-identical
 [selfhost] kernel PASS: tcc-built kernel booted to shell
+[selfhost] script PASS: <n> lines ran in-guest
 [selfhost] build PASS: kernel+initrd built on /fat
 [selfhost] iso PASS: auralite.iso built in-guest
 [selfhost] FULL LOOP PASS (2/2 clean loops)

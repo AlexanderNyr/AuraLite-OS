@@ -2,6 +2,67 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH6a — the shell runs scripts: exit-status spine + `sh <file>`] 2026-08-29
+
+`SELFHOST_PLAN.md` SH6 was one phase bundling a `make` implementation, four
+shell language features and a resumable build entry point.  It is now split
+into **SH6a–SH6f** along the dependency order a measured survey exposed
+(ledger SH-33), and the first sub-phase has landed.
+
+The survey also corrected the plan: Fact 8 and ledger SH-04 both named
+`smallsh`, but `userspace/system/smallsh/smallsh.c` is **173 lines** with no
+builtin dispatch and serves aarch64/riscv64 only.  The x86_64 boot shell every
+self-host gate drives is `userspace/system/init/init.c` — **1009 lines**, **33
+builtins**, job control, the `auralite#` prompt.  Which shell carries scripting
+was an open decision hedged in the plan's own words ("*smallsh **(or its
+promoted successor)***"); it is now **D10**, resolved by measurement:
+extending `init.c` is +229 additive lines, promoting `smallsh` would mean
+re-implementing 33 builtins plus the job table, search path and read loop that
+143 integration cases wait on, and a separate `/bin/sh` would duplicate all of
+it and still be unable to call a builtin from a script.
+
+- **Exit-status spine.** `process_command` returns a status and `cmd_run_argv`
+  returns the child's exit code (128+n when a signal killed it) instead of
+  computing it from `waitpid` and throwing it away.  Without this, `&&`, `if`
+  and a build script that stops on failure are all impossible — a failing
+  compile was indistinguishable from a succeeding one.
+- **`sh <file> [args...]`.** A script runner with a 4-deep frame stack, each
+  frame owning its own positional parameters, so a nested `sh` receives its own
+  arguments.  Positional expansion (`$0..$9`, `$#`, `$?`, `$$`) lives in the new
+  **pure** `userspace/system/init/sh_expand.h` (159 lines: no syscalls, no
+  globals, no allocation) precisely so the host can compile and test the shipped
+  body rather than a copy of it.  Unknown names such as `$PATH` pass through
+  verbatim, so SH6b can add named variables without a migration.
+- **Pipes and redirects need no kernel work** (measured): `SYS_PIPE` (22),
+  `SYS_PIPE2` (293) and `SYS_DUP2` (33) are already implemented in
+  `kernel/arch/x86_64/syscall.c:1385/1387/1406` and wrapped in
+  `lib/libc/src/libc.c:722-731`.  SH6b/SH6c are therefore parser work only.
+- **Two defects found by writing the gate, not by reading the code.**
+  1. `exit` inside a script **halted the machine**: `init` is PID 1 and `exit`
+     calls `_exit(0)`, so the first build script ending in `exit 1` would have
+     powered off instead of failing its step.  `sh_depth > 0` now stops the
+     script; the case proves it by requiring the shell to answer one more
+     command afterwards — a shell that reported failure by halting would pass
+     every other assertion (ledger SH-35).
+  2. `sh_expand_putnum` reported overflow only when it wrote *nothing*, so a
+     `$?` of 255 into a 2-byte buffer returned success containing `"2"`.
+     Silent truncation is exactly how ledger SH-14 turned a tcc link line into
+     `unresolved reference to '__libc_start_main'` (ledger SH-36).
+- **Tests.** `tests/unit/test_sh_expand.c` — **64 assertions** against the
+  shipped header including the exact overflow boundary; a mutation test confirms
+  they bite (removing the short-write report gives 63/1, restoring it 64/0).
+  `tests/integration/cases/test_selfhost_script.sh` — **12/12 assertions**,
+  registered in the `selfhost` shard, driving four scripts staged into the
+  initrd at `/tests` **unconditionally** (they need no fetched toolchain, so
+  unlike the SH1–SH5 cases this gate never skips).  Verified against the serial
+  log: `[selfhost] script PASS: 7 lines ran in-guest`,
+  `sh: /tests/sh6a_fail.sh:8: command failed with status 127`, `SH6A_STILL_ALIVE`,
+  and neither `UNREACHABLE-AFTER-FAILURE` nor `UNREACHABLE-AFTER-EXIT`.
+- **Docs.** Plan: status table, Fact 8 correction, D10, the SH6 umbrella with a
+  measured survey, sub-phases SH6b–SH6f, ledger rows SH-33…SH-36 and the new §8
+  receipt.  `tools/check_selfhost_claims.py` now asserts
+  `[selfhost] script PASS:`.  `docs/status.md` updated.
+
 ## [SELFHOST SH5d — terminal in-guest kernel build and second-boot gate] 2026-08-28
 
 `SELFHOST_PLAN.md` SH5 is now complete.  The new registered selfhost-shard

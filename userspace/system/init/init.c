@@ -21,8 +21,11 @@
 #include "fcntl.h"
 #include "string.h"
 #include "stdio.h"
+#include "stdlib.h"
 #include "sys/wait.h"
 #include "signal.h"
+
+#include "sh_expand.h"
 
 /* SELFHOST SH2: INPUT_MAX 256 -> 512 and MAX_ARGS 8 -> 32 so the guest
  * toolchain's link lines fit (a tcc link of the userland names crt0,
@@ -48,6 +51,115 @@ struct job {
 static struct job job_list[MAX_JOBS];
 static int next_job_id = 1;
 static int in_subshell = 0;
+
+/* ---- SELFHOST SH6a: exit status and script execution ----
+ *
+ * The shell had no notion of a command failing: every builtin returned void
+ * and cmd_run_argv computed the child's wait status and then threw it away.
+ * Nothing downstream could branch on an error, which is the first thing a
+ * build script needs -- `sh build.sh kernel` must stop when a compile fails,
+ * not carry on and report success.
+ *
+ * So SH6a lays the two pieces every later sub-phase stands on:
+ *
+ *   last_status  exit status of the most recent command, also what $? reads;
+ *   cmd_sh()     `sh <file> [args...]` runs a file of commands in this same
+ *                shell, with positional parameters and line-numbered errors.
+ *
+ * The script runs in-process rather than as a separate /bin/sh because the
+ * builtins, the search path and the job table all live here; a separate
+ * program would have to re-implement or re-expose all three.  See D10.
+ */
+#define SH_MAX_DEPTH 4          /* nested `sh` calls; build.sh needs 1 */
+#define SH_ARG_MAX   64         /* per-argument copy limit */
+#define SH_FILE_MAX  (64 * 1024)
+
+struct sh_frame {
+    const char *path;               /* script being run, for diagnostics */
+    int         line;               /* 1-based line number inside it */
+    int         argc;               /* positional params, argv-style */
+    char       *argv[MAX_ARGS];
+    char       *text;               /* whole file; owned by this frame */
+    size_t      text_len;
+    size_t      cursor;
+    int         exit_req;           /* an `exit N` asked to stop the script */
+    int         exit_code;
+};
+static struct sh_frame sh_stack[SH_MAX_DEPTH];
+static int sh_depth = 0;
+static int last_status = 0;
+
+/* Positional arguments are copied here rather than aliased.  At the top level
+ * they point into input_line, which the next prompt read overwrites; a nested
+ * script's point into its parent's text buffer.  Copying removes both hazards
+ * for 8 KiB of BSS. */
+static char sh_argbuf[SH_MAX_DEPTH][MAX_ARGS][SH_ARG_MAX];
+
+/* Read a whole file into a fresh malloc'd buffer.  Scripts are read in full
+ * so that a nested `sh` cannot clobber the outer script's buffer mid-run. */
+static char *read_whole_file(const char *path, size_t *out_len) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+
+    size_t cap = 1024, len = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { close(fd); return 0; }
+
+    /* The `+ 1` reserves the byte the NUL terminator needs after the loop.
+     * Without it the invariant is still safe -- the growth check runs before
+     * every read, so `len == cap` is always caught on the next pass -- but
+     * only by an argument this subtle, and a boundary that needs a proof to
+     * be correct is a boundary that will be broken by the next edit. */
+    for (;;) {
+        if (len + 256 + 1 > cap) {
+            if (cap >= SH_FILE_MAX) {
+                printf("sh: %s: script larger than %d bytes\n",
+                       path, SH_FILE_MAX);
+                free(buf);
+                close(fd);
+                return 0;
+            }
+            cap *= 2;
+            if (cap > SH_FILE_MAX) cap = SH_FILE_MAX;
+            char *nb = (char *)realloc(buf, cap);
+            if (!nb) { free(buf); close(fd); return 0; }
+            buf = nb;
+        }
+        ssize_t n = read(fd, buf + len, 256);
+        if (n < 0) { free(buf); close(fd); return 0; }
+        if (n == 0) break;
+        len += (size_t)n;
+    }
+    close(fd);
+    buf[len] = '\0';
+    *out_len = len;
+    return buf;
+}
+
+/* Pull the next line out of a frame's text, in place.  Returns 0 at EOF.
+ * The line is NUL-terminated by overwriting the newline. */
+static int sh_next_line(struct sh_frame *f, char **out) {
+    if (f->cursor >= f->text_len) return 0;
+
+    char *start = f->text + f->cursor;
+    char *nl = (char *)memchr(start, '\n', f->text_len - f->cursor);
+    if (nl) {
+        *nl = '\0';
+        f->cursor = (size_t)(nl - f->text) + 1;
+    } else {
+        f->cursor = f->text_len;
+    }
+    *out = start;
+    return 1;
+}
+
+/* A line that carries nothing: empty, or whitespace, or a whole-line comment.
+ * A '#' later in the line is NOT a comment yet -- that needs quoting rules to
+ * get right (`echo a#b` is legal), which is SH6b. */
+static int sh_line_is_blank(const char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    return (*s == '\0' || *s == '#');
+}
 
 static void add_job(pid_t pgid, const char *cmd) {
     for (int i = 0; i < MAX_JOBS; i++) {
@@ -271,6 +383,7 @@ static void cmd_help(void) {
     puts("  apm [cmd]   - AuraLite Package Manager");
     puts("  kbd [name]  - show/set keyboard layout (us, de)");
     puts("  help        - show this help");
+    puts("  sh <file> [args] - run a script ($0..$9, $#, $?)");
     puts("  exit        - exit shell");
     puts("");
     /* Programs are named, not pathed: since F5 there is exactly one location
@@ -324,10 +437,10 @@ static void report_not_found(const char *name) {
  * or NULL for no arguments at all.  Before SDK_PLAN phase S3 there was no way
  * to pass any: the convention was to write them to a file the child agreed to
  * read (/tmp/apm.args and friends). */
-static void cmd_run_argv(const char *prog, char *const argv[]);
+static int  cmd_run_argv(const char *prog, char *const argv[]);
 
 /* No-argument form, for the call sites that have nothing to pass. */
-static void cmd_run(const char *prog) { cmd_run_argv(prog, 0); }
+static int  cmd_run(const char *prog) { return cmd_run_argv(prog, 0); }
 
 /* Does @path name a PE image that imports anything?  (WIN32_PLAN.md W32-8.)
  *
@@ -384,15 +497,20 @@ static int pe_needs_w32run(const char *path) {
     return (imp_rva != 0 && imp_size != 0);
 }
 
-static void cmd_run_argv(const char *prog, char *const argv[]) {
+/* Returns the child's exit status (128+n if a signal killed it), or the
+ * shell's own error codes when the program never ran: 2 usage, 127 not
+ * found, 126 spawn failed, 1 waitpid failed.  SELFHOST SH6a: this used to
+ * compute `status` from waitpid and discard it, so a failing program was
+ * indistinguishable from a succeeding one. */
+static int cmd_run_argv(const char *prog, char *const argv[]) {
     if (!prog) {
         puts("run: missing program name");
-        return;
+        return 2;
     }
     char resolved[128];
     if (!prog_resolve(prog, resolved, (int)sizeof(resolved))) {
         report_not_found(prog);
-        return;
+        return 127;
     }
     prog = resolved;
 
@@ -416,7 +534,7 @@ static void cmd_run_argv(const char *prog, char *const argv[]) {
             /* Saying so beats spawning it anyway and letting it fault with
              * no explanation. */
             printf("[shell] %s needs w32run, which is not installed\n", prog);
-            return;
+            return 127;
         }
     }
 
@@ -426,7 +544,7 @@ static void cmd_run_argv(const char *prog, char *const argv[]) {
     if (pid < 0) {
         printf("run: failed to spawn %s\n", prog);
         fflush(stdout);
-        return;
+        return 126;
     }
     setpgid(pid, pid);
     tcsetpgrp(0, pid);
@@ -441,16 +559,21 @@ static void cmd_run_argv(const char *prog, char *const argv[]) {
 
     tcsetpgrp(0, getpid());
 
+    int rc;
     if (got < 0) {
         printf("[shell] waitpid failed for %s\n", prog);
+        rc = 1;
     } else if (WIFSTOPPED(status)) {
         add_job(pid, prog);
         job_list[next_job_id - 2].running = 0;
         printf("\n[%d] Stopped %s\n", job_list[next_job_id - 2].id, prog);
+        rc = 0;   /* suspended, not failed; `fg` resumes it */
     } else {
         printf("[shell] child exited\n");
+        rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
     }
     fflush(stdout);
+    return rc;
 }
 
 static void cmd_ping(const char *host) {
@@ -788,7 +911,95 @@ static void cmd_kbd(const char *arg) {
     }
 }
 
-static void process_command(char *line) {
+static int process_command(char *line);
+
+/* SELFHOST SH6a: `sh <file> [args...]` runs a file of shell commands in this
+ * same shell.
+ *
+ *   - positional parameters follow the usual convention, so $0 is the script
+ *     name and $1 the first argument (`sh build.sh kernel` sees $1 == kernel);
+ *   - a failing line stops the script and is reported with its line number,
+ *     because a build log that says "failed" without saying where is useless;
+ *   - `exit N` inside the script stops the script, not the machine.
+ *
+ * Returns the status of the failing line, or 0 if every line succeeded. */
+static int cmd_sh(int argc, char **argv) {
+    if (argc < 2 || !argv[1] || argv[1][0] == '\0') {
+        puts("sh: missing script name");
+        return 2;
+    }
+    if (sh_depth >= SH_MAX_DEPTH) {
+        printf("sh: nesting too deep (max %d)\n", SH_MAX_DEPTH);
+        return 2;
+    }
+
+    size_t text_len = 0;
+    char *text = read_whole_file(argv[1], &text_len);
+    if (!text) {
+        printf("sh: %s: cannot read script\n", argv[1]);
+        return 127;
+    }
+
+    struct sh_frame *f = &sh_stack[sh_depth];
+    f->line      = 0;
+    f->text      = text;
+    f->text_len  = text_len;
+    f->cursor    = 0;
+    f->exit_req  = 0;
+    f->exit_code = 0;
+
+    /* Copy the positional parameters, argv[1..] -> $0..: argv[1] is the
+     * script name, so $0 is the script and $1 the first argument. */
+    f->argc = 0;
+    for (int i = 1; i < argc && f->argc < MAX_ARGS - 1; i++) {
+        char *dst = sh_argbuf[sh_depth][f->argc];
+        strncpy(dst, argv[i], SH_ARG_MAX - 1);
+        dst[SH_ARG_MAX - 1] = '\0';
+        f->argv[f->argc++] = dst;
+    }
+    f->argv[f->argc] = 0;
+
+    /* Diagnostics name the script, so the path must outlive the caller's
+     * line buffer.  $0 already holds a private copy of it -- point there
+     * rather than aliasing argv[1], which lives in the parent frame's
+     * expansion buffer when this `sh` was itself called from a script. */
+    f->path = f->argv[0];
+    sh_depth++;
+
+    char expanded[INPUT_MAX];
+    char *line;
+    int status = 0;
+
+    while (sh_next_line(f, &line)) {
+        f->line++;
+        if (sh_line_is_blank(line)) continue;
+
+        if (sh_expand_positional(line, strlen(line), expanded,
+                                 sizeof expanded, f->argv, f->argc,
+                                 last_status) != SH_EXP_OK) {
+            printf("sh: %s:%d: line too long to expand\n", f->path, f->line);
+            status = 2;
+            break;
+        }
+
+        status = process_command(expanded);
+        if (f->exit_req) { status = f->exit_code; break; }
+        if (status != 0) {
+            printf("sh: %s:%d: command failed with status %d\n",
+                   f->path, f->line, status);
+            break;
+        }
+    }
+
+    sh_depth--;
+    free(text);
+    last_status = status;
+    return status;
+}
+
+/* SELFHOST SH6a: returns the command's exit status, also stored in
+ * last_status so $? can read it after the fact. */
+static int process_command(char *line) {
     /* Defensive sanitising: VM serial ports can occasionally feed garbage when
      * no terminal is attached. Treat non-printable/non-ASCII bytes as spaces so
      * they never become bogus commands like "        : command not found". */
@@ -808,7 +1019,7 @@ static void process_command(char *line) {
     cmd_argv[argc] = 0;
 
     if (argc == 0) {
-        return;   /* empty line */
+        return 0;   /* empty line */
     }
 
     int bg = 0;
@@ -821,9 +1032,10 @@ static void process_command(char *line) {
             cmd_argv[argc - 1][len - 1] = '\0';
         }
     }
-    if (argc == 0) return;
+    if (argc == 0) return 0;
 
     const char *cmd = cmd_argv[0];
+    last_status = 0;
 
     if (bg) {
         /* The background paths resolve through the same list as the
@@ -833,16 +1045,16 @@ static void process_command(char *line) {
         if (strcmp(cmd, "run") == 0 && argc > 1) {
             if (!prog_resolve(cmd_argv[1], resolved, (int)sizeof(resolved))) {
                 report_not_found(cmd_argv[1]);
-                return;
+                return 127;
             }
             pid_t pid = spawn(resolved);
             if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd_argv[1]); }
-            return;
+            return 0;   /* not finished yet; `jobs`/`fg` track it */
         }
         if (cmd[0] == '/' || cmd[0] == '.') {
             pid_t pid = spawn(cmd);
             if (pid > 0) { setpgid(pid, pid); add_job(pid, cmd); }
-            return;
+            return 0;
         }
         pid_t pid = fork();
         if (pid == 0) {
@@ -853,7 +1065,7 @@ static void process_command(char *line) {
         } else if (pid > 0) {
             setpgid(pid, pid);
             add_job(pid, cmd);
-            return;
+            return 0;
         }
     }
 
@@ -883,10 +1095,12 @@ do_dispatch:
     } else if (strcmp(cmd, "dnsflush") == 0) {
         cmd_dnsflush();
     } else if (strcmp(cmd, "dnstc") == 0) {
-        if (dnsctl(DNSCTL_FORCE_TC, 0, 0) == 0)
+        if (dnsctl(DNSCTL_FORCE_TC, 0, 0) == 0) {
             puts("dnstc: next DNS answer will be truncated (one shot)");
-        else
+        } else {
             puts("dnstc: failed");
+            last_status = 1;
+        }
     } else if (strcmp(cmd, "ping") == 0) {
         cmd_ping(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "ping6") == 0) {
@@ -895,9 +1109,9 @@ do_dispatch:
         if (argc > 1) {
             /* Forward everything after the program name.  argv[0] is the
              * program, as the convention everywhere else expects. */
-            cmd_run_argv(cmd_argv[1], &cmd_argv[1]);
+            last_status = cmd_run_argv(cmd_argv[1], &cmd_argv[1]);
         } else {
-            cmd_run(0);
+            last_status = cmd_run(0);
         }
     } else if (strcmp(cmd, "ps") == 0) {
         cmd_ps();
@@ -926,8 +1140,21 @@ do_dispatch:
         }
         puts("[gui] launcher spawned");
     } else if (strcmp(cmd, "exit") == 0) {
-        puts("Goodbye!");
-        _exit(0);
+        if (sh_depth > 0) {
+            /* Inside a script this must stop the SCRIPT.  init is PID 1 and
+             * `exit` halts the machine, so a build script ending in `exit 1`
+             * would take the whole system down instead of failing its step. */
+            int code = (argc > 1) ? atoi(cmd_argv[1]) : 0;
+            struct sh_frame *f = &sh_stack[sh_depth - 1];
+            f->exit_req  = 1;
+            f->exit_code = code;
+            last_status  = code;
+        } else {
+            puts("Goodbye!");
+            _exit(0);
+        }
+    } else if (strcmp(cmd, "sh") == 0) {
+        last_status = cmd_sh(argc, cmd_argv);
     } else if (strcmp(cmd, "jobs") == 0) {
         cmd_jobs();
     } else if (strcmp(cmd, "fg") == 0) {
@@ -939,19 +1166,21 @@ do_dispatch:
     } else if (strcmp(cmd, "sleep") == 0) {
         cmd_sleep(argc > 1 ? cmd_argv[1] : "0");
     } else if (cmd[0] == '/' || cmd[0] == '.') {
-        cmd_run(cmd);
+        last_status = cmd_run(cmd);
     } else {
         /* Not a built-in.  Before declaring it unknown, look for a program of
          * that name on the search path — this is what makes `calc` work as
          * well as `run calc`. */
         char resolved[128];
         if (prog_resolve(cmd, resolved, (int)sizeof(resolved))) {
-            cmd_run_argv(cmd, cmd_argv);
+            last_status = cmd_run_argv(cmd, cmd_argv);
         } else {
             printf("%s: command not found\n", cmd);
+            last_status = 127;
         }
     }
-    if (in_subshell) _exit(0);
+    if (in_subshell) _exit(last_status);
+    return last_status;
 }
 
 

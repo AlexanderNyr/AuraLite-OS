@@ -190,6 +190,9 @@ ALL_CASES=(
     # Graphics and userspace
     test_3d_render
     test_virgl_gpu
+    # SH6a: the shell runs scripts.  No guest toolchain needed, so unlike the
+    # SH1-SH5 cases below it never skips -- listed first for that reason.
+    test_selfhost_script
     test_selfhost_tcc
     test_selfhost_userland
     test_selfhost_aulink

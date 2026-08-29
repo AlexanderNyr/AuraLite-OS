@@ -45,6 +45,7 @@ RECEIPTS = [
     "[selfhost] aulink PASS:",
     "[selfhost] asm PASS:",
     "[selfhost] kernel PASS:",
+    "[selfhost] script PASS:",
     "[selfhost] build PASS:",
     "[selfhost] iso PASS:",
     "[selfhost] FULL LOOP PASS",

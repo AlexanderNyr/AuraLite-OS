@@ -2141,6 +2141,8 @@ $(BUILD_DIR)/mini-asm: tools/mini-asm/mini-asm.c
 
 $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
+                         tools/selfhost/sh6a_probe.sh tools/selfhost/sh6a_nested.sh \
+                         tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
@@ -2216,6 +2218,14 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	else \
 	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \
 	fi
+# SELFHOST SH6a: the shell's own test scripts, staged under /tests.
+# Unconditional, unlike the guest tcc above: they need no fetched dependency,
+# so the SH6a gate runs on a plain `make iso` and is not skipped on a tree
+# without the toolchain.  They are data, not programs -- the shell reads them,
+# nothing execs them.
+	@cp tools/selfhost/sh6a_probe.sh tools/selfhost/sh6a_nested.sh \
+	      tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
+	      $(INITRD_DIR)/tests/
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
 # These used to be `cp foo.elf foo.pkg` -- a renamed executable with no
@@ -2401,6 +2411,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_q1_headers \
                 $(BUILD_DIR)/test_pthread_ext \
                 $(BUILD_DIR)/test_string_ext \
+                $(BUILD_DIR)/test_sh_expand \
                 $(BUILD_DIR)/test_stdio_seek \
                 $(BUILD_DIR)/test_printf_format \
                 $(BUILD_DIR)/test_stdio_ext \
@@ -3139,6 +3150,15 @@ $(BUILD_DIR)/test_string_ext: tests/unit/test_string_ext.c \
 	@python3 tools/extract_libc_impls.py $(BUILD_DIR)/libc_impls_gen.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< \
 	          $(BUILD_DIR)/libc_impls_gen.c -o $@
+
+# SELFHOST SH6a: the shell's positional-parameter expander.  The test includes
+# userspace/system/init/sh_expand.h and calls the shipped body, so no
+# extraction step is needed -- and no re-implementation, which would test the
+# test instead of the code the guest shell actually runs.
+$(BUILD_DIR)/test_sh_expand: tests/unit/test_sh_expand.c \
+                             userspace/system/init/sh_expand.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
 # ---- Phase Q2: stdio extension unit test ----
 $(BUILD_DIR)/test_stdio_ext: tests/unit/test_stdio_ext.c
