@@ -2261,6 +2261,8 @@ $(BUILD_DIR)/mini-asm: tools/mini-asm/mini-asm.c
 
 $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
+                         $(MBR_DUAL_BIN) $(STAGE2_BIN) \
+                         $(if $(wildcard $(SELFHOST_SRC)),$(addprefix $(SELFHOST_SRC)/,$(SELFHOST_TCC_SRCS)) $(SELFHOST_SRC)/config.h $(SELFHOST_SRC)/tccdefs_.h $(wildcard $(SELFHOST_SRC)/*.h)) \
                          tools/selfhost/sh6a_probe.sh tools/selfhost/sh6a_nested.sh \
                          tools/selfhost/sh6a_fail.sh tools/selfhost/sh6a_exit.sh \
                          tools/selfhost/sh6b_probe.sh tools/selfhost/sh6b_fail.sh \
