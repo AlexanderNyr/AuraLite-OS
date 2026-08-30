@@ -51,6 +51,7 @@ RECEIPTS = [
     "[selfhost] control PASS:",
     "[selfhost] shmake PASS:",
     "[selfhost] build PASS:",
+    "[selfhost] sha256 PASS:",
     "[selfhost] iso PASS:",
     "[selfhost] FULL LOOP PASS",
 ]
@@ -155,6 +156,21 @@ def check_plan(plan, tree_has_file):
         if hs is not None and gs is not None and hs != gs:
             fails.append("D5: target set drift Makefile=%s Selfhost.mk=%s"
                          % (" ".join(sorted(hs)), " ".join(sorted(gs))))
+
+    # SH7a is a sub-phase (SH7a, not SH7), so the SH\d+ table walk does not
+    # see it.  Pin the artefacts the ✅ claims independently, like SH6e/SH6f:
+    # the tool source, its host unit test, and the in-guest gate case.
+    if re.search(r"^\| SH7a .*\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "selfhost", "sha256sum.c"),
+            ("tools", "selfhost", "sh7a_probe.sh"),
+            ("tests", "unit", "test_sha256sum.c"),
+            ("tests", "integration", "cases",
+             "test_selfhost_sha256sum.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH7a: marked ✅ but %s missing"
+                             % "/".join(parts))
 
     # Required sections (the plan's own contract).
     for sec in ["## 2. Decisions", "## 3. Phases", "## 6. What this plan "

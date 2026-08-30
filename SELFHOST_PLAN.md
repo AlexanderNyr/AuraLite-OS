@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7–SH9 remain pending.
+(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (the in-guest `sha256sum`, reusing the single libatls SHA-256 with a FIPS selftest and an exit-status parity mode) has landed.  SH7b–SH7e and SH8–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -29,7 +29,12 @@ redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
 | SH6d — control flow `if`/`while`/`for` | ✅ landed |
 | SH6e — `shmake`: rules, prerequisites, variables, phony targets | ✅ landed |
 | SH6f — `build.sh` entry point + D5 target parity + D6 resume | ✅ landed |
-| SH7 — image tooling in C | 🚧 pending |
+| SH7 — image tooling in C (umbrella; split into SH7a–SH7e) | 🚧 in progress |
+| SH7a — `sha256sum`: the in-guest hash tool (libatls SHA-256, selftest + parity modes) | ✅ landed |
+| SH7b — `mkinitrd`: USTAR writer in C | 🚧 pending |
+| SH7c — `gen_boot_offsets` twin staged + run in-guest | 🚧 pending |
+| SH7d — `mkiso`: MBR + GPT + FAT32 ESP writer in C | 🚧 pending |
+| SH7e — `sh build.sh iso` + host boots the guest ISO (terminal gate) | 🚧 pending |
 | SH8 — bootstrap closure | 🚧 pending |
 | SH9 — cross-arch + CI wiring | 🚧 pending |
 
@@ -1599,26 +1604,118 @@ Host unit tests pin D5 and the same stop/resume graph without QEMU.
 
 ---
 
-### Phase SH7 — image tooling in C 🚧 PENDING
+### Phase SH7 — image tooling in C (umbrella; split into SH7a–SH7e) 🚧 IN PROGRESS
 
-**Goal.** The ISO is assembled in-guest.
+**Goal.** The ISO is assembled in-guest: the pieces Fact 5 lists as
+host-only (`tar`/USTAR, `mformat`/`mcopy`, the BPB-patching python3, the
+hash verification) get C twins the guest tcc can compile and `sh build.sh
+iso` can run, producing `auralite.iso` on `/fat` with no host image tool in
+the loop.
 
-**Definition of done.** C twins for the host-only pieces (Fact 5):
-`mkinitrd` (USTAR writer — the format the kernel already parses),
-`mkiso` (MBR + GPT + FAT32 ESP writer replacing mformat/mcopy/python;
-the BPB patch python3 does inline becomes a `mkiso` flag), `sha256sum`
-(reuse the SHA-256 already in `libatls` — one implementation, tested
-once), plus `gen_boot_offsets` twin (the existing one is already portable
-C). `sh build.sh iso` produces `auralite.iso` on `/fat`.
+**Why it is split.** Like SH4 and SH6, SH7 bundles several deliverables
+with no shared code path — a hash tool, a tar writer, a FAT/MBR/GPT disk
+writer and the boot-assembly glue — so it lands one falsifiable twin at a
+time along the dependency order: verify first (SH7a), then the payloads
+(SH7b), then the generated header (SH7c), then the disk image (SH7d), then
+the end-to-end boot (SH7e).
 
-**Gate.** Host boots the guest-built ISO (test `test_selfhost_iso.sh`)
-and greps the standard boot receipts to the shell. This is the first
-end-to-end proof of Stage 1; the receipt is
-`[selfhost] iso PASS: auralite.iso built in-guest` on the guest side and
-the normal boot receipts on the host side.
+**Definition of done (the union of SH7a–SH7e).** C twins for the
+host-only pieces: `sha256sum` (SH7a), `mkinitrd` (SH7b — a USTAR writer
+for the format the kernel already parses), `gen_boot_offsets` (SH7c —
+the existing generator is already portable C; the sub-phase stages it and
+proves the guest runs it), `mkiso` (SH7d — MBR + GPT + FAT32 ESP writer
+replacing mformat/mcopy/python; the BPB patch python3 does inline becomes
+a `mkiso` flag).  SH7e runs `sh build.sh iso` in-guest and boots the
+result.
+
+**Gate.** The terminal gate is SH7e: the host boots the guest-built ISO
+(`test_selfhost_iso.sh`) and greps the standard boot receipts to the
+shell — the first end-to-end proof of Stage 1.  Each earlier sub-phase has
+its own greppable receipt (below).
 
 **Deliverable.** The changes above, in the tree (D9: no
 patch artefact).
+
+---
+
+### Phase SH7a — `sha256sum`: the in-guest hash tool ✅ LANDED (2026-08-30)
+
+**Goal.** Before any image is assembled in-guest, the build loop needs a
+way to verify its own products with a tool the guest can run.
+
+**What landed.**
+
+- **`tools/selfhost/sha256sum.c` → `/bin/sha256sum`.**  A coreutils-shaped
+  hash program (files as args, stdin with no args, `<hex>␠␠<name>`
+  output).  It adds **no** hash implementation: it calls the SHA-256 the
+  tree already ships and tests in `libatls` (the same code the TLS stack
+  and `cryptotest` use) — "one implementation, tested once", per the SH7
+  definition.
+- **Two parity modes that branch on the exit status.**  The scripting
+  shell (D10) has no `cut`/`grep` for a build script to parse a digest
+  line, so the tool verifies itself: `--selftest` runs the published FIPS
+  180-4 / RFC 6234 vectors (empty, `"abc"`, the million-`'a'`
+  multi-block case) and `--eq FILE` hashes stdin and a file and exits 0
+  iff they are byte-identical in digest.  That makes content verification a
+  `$?` test inside `build.sh`, not a string parse.
+- **Guest + host gate on the same bytes.**  The stripped ELF ships at
+  `/bin/sha256sum`; `tools/selfhost/sh7a_probe.sh` runs in-guest.  The host
+  unit test `tests/unit/test_sha256sum.c` `#include`s the **real** tool
+  source (with `main()` compiled out) and links the **real** libatls, so
+  the logic is pinned at dev speed without a VM.
+
+**Gate.** `test_selfhost_sha256sum.sh` (selfhost shard): the probe prints
+the selftest result, the stdin digest line, a stdin↔file MATCH, and a
+negative-control mismatch is detected; the receipt is
+`[selfhost] sha256 PASS: selftest + stdin + file parity verified in-guest`.
+The host `make test-unit` runs `test_sha256sum`.
+
+**Deliverable.** The changes above, in the tree (D9: no patch artefact).
+
+---
+
+### Phase SH7b — `mkinitrd`: USTAR writer in C 🚧 PENDING
+
+**Goal.** Replace host `tar` with a guest C program that writes the USTAR
+archive the kernel's initrd parser already reads (the format is fixed by
+`kernel/fs/initrd.c`, so this is a writer for a known reader, with the
+hard-link metadata the layout relies on).
+
+**Gate.** Guest-built initrd boots to the shell with the same file set;
+receipt `[selfhost] mkinitrd PASS: <n> members written in-guest`.
+
+### Phase SH7c — `gen_boot_offsets` twin staged in-guest 🚧 PENDING
+
+**Goal.** `tools/gen_boot_offsets.c` is already portable C (it is a host
+unit test, `test_boot_offsets`); this sub-phase stages it into the guest
+source closure and proves the guest builds and runs it, so the boot-offset
+header needs no host step.
+
+**Gate.** Guest-generated `boot_offsets.h` is byte-identical to the host
+one; receipt `[selfhost] boot-offset header PASS: generated in-guest`.
+
+### Phase SH7d — `mkiso`: MBR + GPT + FAT32 ESP writer in C 🚧 PENDING
+
+**Goal.** Replace `mformat`/`mcopy` and the inline BPB-patching python3
+with one C program that lays down the MBR, the GPT and a FAT32 ESP and
+installs the kernel + EFI bootloader (the BPB patch becomes a `mkiso`
+flag).  This is the largest twin; the host `mkisoimage*` scripts define
+the on-disk bytes it must reproduce.
+
+**Gate.** A host tool can mount/inspect the guest-written image and the
+files land at the right paths; receipt
+`[selfhost] mkiso PASS: <image> written in-guest`.
+
+### Phase SH7e — assemble and boot the guest ISO (terminal gate) 🚧 PENDING
+
+**Goal.** `sh build.sh iso` runs the SH7a–SH7d twins in order and produces
+`auralite.iso` on `/fat`; the host then boots that ISO.  This is the first
+end-to-end proof of Stage 1.
+
+**Gate.** Host boots the guest-built ISO (`test_selfhost_iso.sh`) and
+greps the standard boot receipts to the shell; the guest-side receipt is
+`[selfhost] iso PASS: auralite.iso built in-guest` and the host side shows
+the normal boot receipts.
 
 ### Phase SH8 — bootstrap closure 🚧 PENDING
 
@@ -1731,7 +1828,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-02 | user stack 1 MiB (4 sites) too shallow for compiler recursion | limit | CLOSED (4 MiB, SH1) | SH1 |
 | SH-03 | `TMPFS_MAX_FILES` 64 per volume; source tree is 1269 files | limit | CLOSED (256, SH1) | SH1 |
 | SH-04 | shell: no pipes/redirects/variables/loops (Fact 8 named smallsh; the x86_64 shell is init.c, see D10) | missing | CLOSED (SH6a script runner + status spine; SH6b redirects + variables; SH6c pipes + lists; SH6d if/while/for/break) | SH6a-SH6d |
-| SH-05 | ISO tooling is host python3/mtools (Fact 5) | missing | OPEN | SH7 |
+| SH-05 | ISO tooling is host python3/mtools (Fact 5) | missing | OPEN (split into SH7a–SH7e; SH7a sha256sum landed 2026-08-30) | SH7 |
 | SH-06 | kernel CFLAGS clang-only, `-mcmodel=kernel` unportable (Fact 2) | port | CLOSED (SH5a measured it unnecessary; SH5c compiled all 126 files and recorded the flag-delta table) | SH5 |
 | SH-07 | `OPEN_MAX` 64 — adequacy unknown until the spike | limit | CLOSED (tcc ran on 64 fds, SH1) | SH1 |
 | SH-08 | rustc/rsbr not self-hostable in this plan | accepted | ACCEPTED (D1 scope) | — |
@@ -1771,6 +1868,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-42 | `system()` / `sh -c` cannot run make recipes: AuraLite has no `/bin/sh` (D10, `system()` is ENOSYS) | decision | CLOSED (SH6e: shmake tokenises the expanded recipe and execs it — `spawnv` in-guest, `fork`+`execvp` on the host.  Redirects in recipes are out of scope) | SH6e |
 | SH-43 | `SYS_STAT`/`SYS_OPEN` do not join the thread cwd, so relative `stat("a.in")` after `chdir` misses a file that exists | bug | CLOSED (SH6e: shmake and sh6e_stamp join `getcwd()` before stat/open) | SH6e |
 | SH-44 | no `test`/`[` builtin, so `build.sh` cannot branch on `$1` | decision | CLOSED (SH6f: `sh build.sh kernel` is the API and ignores extra words; an interrupted run is `shmake -C /fat phase6` then `build.sh` again) | SH6f |
+| SH-45 | SH7 bundles a hash tool, a USTAR writer, a FAT/MBR/GPT disk writer and the boot-assembly glue: four deliverables with no shared code path | scope | CLOSED (split into SH7a–SH7e along the dependency order — verify, payloads, generated header, disk image, then boot; SH7a landed 2026-08-30) | SH7a |
 
 ## 8. Receipt strings (the greppable contract)
 
@@ -1791,6 +1889,7 @@ plan still lists them, so a renamed receipt fails the build:
 [selfhost] control PASS: <n> branches and loops ran
 [selfhost] shmake PASS: <n> targets up to date
 [selfhost] build PASS: kernel+initrd built on /fat
+[selfhost] sha256 PASS: selftest + stdin + file parity verified in-guest
 [selfhost] iso PASS: auralite.iso built in-guest
 [selfhost] FULL LOOP PASS (2/2 clean loops)
 ```

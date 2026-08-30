@@ -1241,6 +1241,23 @@ $(USER_BUILD)/cryptotest.elf: $(USER_BUILD)/cryptotest.o $(USER_COMMON) \
 	      $(LIBATLS) -o $@
 	@echo "[link] $@ (libatls)"
 
+# ---- sha256sum (SELFHOST_PLAN.md SH7a): in-guest hash tool ----
+# The first SH7 C twin (image-tooling-in-C).  It adds no hash implementation:
+# it calls the same libatls SHA-256 the TLS stack and cryptotest use, so the
+# in-guest build loop has a coreutils-shaped `sha256sum` for its receipts with
+# one implementation, tested once.  Host twin is test_sha256sum below.
+$(USER_BUILD)/sha256sum.o: tools/selfhost/sha256sum.c \
+                            lib/libatls/include/atls/atls.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/sha256sum.elf: $(USER_BUILD)/sha256sum.o $(USER_COMMON) \
+                              $(LIBATLS) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/sha256sum.o $(USER_COMMON_LNK) \
+	      $(LIBATLS) -o $@
+	@echo "[link] $@ (libatls)"
+
 # ---- x509test (INTERNET_PLAN.md N2): in-guest X.509 gate ----
 # The crafted-DER builders are compiled once more, with guest flags, so the
 # in-QEMU depth gate runs the identical bytes the host battery uses.
@@ -2201,6 +2218,9 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@strip -s $(HELLO_ELF) -o $(INITRD_DIR)/bin/hello
 	@strip -s $(SHMAKE_ELF) -o $(INITRD_DIR)/bin/shmake
 	@strip -s $(SH6E_STAMP_ELF) -o $(INITRD_DIR)/tests/sh6e_stamp
+# SELFHOST SH7a: the in-guest hash tool lands on the search PATH as a normal
+# /bin program, so `sh build.sh` can verify build products by name.
+	@strip -s $(USER_BUILD)/sha256sum.elf -o $(INITRD_DIR)/bin/sha256sum
 	@for p in apm play sysinfo; do \
 	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/bin/$$p; done
 	@for p in $(INITRD_APPS); do \
@@ -2276,6 +2296,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	      tools/selfhost/sh6e_probe.sh tools/selfhost/sh6e.mk \
 	      tools/selfhost/build.sh tools/selfhost/Selfhost.mk \
 	      tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
+	      tools/selfhost/sh7a_probe.sh \
 	      $(INITRD_DIR)/tests/
 	@cp tools/selfhost/Selfhost.mk $(INITRD_DIR)/tests/sh6f.mk
 	@cp tools/selfhost/build.sh $(INITRD_DIR)/tests/build.sh
@@ -2479,6 +2500,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_sysvipc \
                 $(BUILD_DIR)/test_keymap \
                 $(BUILD_DIR)/test_rng \
+                $(BUILD_DIR)/test_sha256sum \
                 $(BUILD_DIR)/test_atls_hash $(BUILD_DIR)/test_atls_aead \
                 $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519 \
                 $(BUILD_DIR)/test_atls_x509 \
@@ -2747,6 +2769,16 @@ $(BUILD_DIR)/test_atls_hash: tests/unit/test_atls_hash.c $(LIBATLS_SRCS) \
                              lib/libatls/include/atls/atls.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) $(LIBATLS_SRCS) $< -o $@
+
+# SH7a (SELFHOST_PLAN.md): the in-guest sha256sum tool, host-tested against
+# the real libatls SHA-256 with published vectors.  The tool source is
+# #included with SHA256SUM_NO_MAIN so the same bytes the guest ships are the
+# bytes under test (no second copy).
+$(BUILD_DIR)/test_sha256sum: tests/unit/test_sha256sum.c \
+                             tools/selfhost/sha256sum.c $(LIBATLS_SRCS) \
+                             lib/libatls/include/atls/atls.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) -I . $(LIBATLS_SRCS) $< -o $@
 
 $(BUILD_DIR)/test_atls_aead: tests/unit/test_atls_aead.c $(LIBATLS_SRCS) \
                              lib/libatls/include/atls/atls.h

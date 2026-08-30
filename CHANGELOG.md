@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH7a — in-guest sha256sum] 2026-08-30
+
+`SELFHOST_PLAN.md` SH7 is split into SH7a–SH7e (the C image twins, in
+dependency order: hash → USTAR writer → boot-offset header → MBR/GPT/FAT
+writer → boot the guest ISO); the first sub-phase landed.
+
+- **`/bin/sha256sum`** (`tools/selfhost/sha256sum.c`): a coreutils-shaped
+  hash tool the guest build loop uses to verify products.  It adds **no**
+  hash implementation — it calls the single SHA-256 the tree already ships
+  and tests in `libatls` ("one implementation, tested once").
+- **Parity via exit status, not string parsing.**  The scripting shell
+  (D10) has no `cut`/`grep` for a build script, so `--selftest` runs the
+  published FIPS 180-4 / RFC 6234 vectors (empty, `"abc"`, the
+  million-`'a'` block) and `--eq FILE` hashes stdin and a file, exiting 0
+  iff the digests match — content verification becomes a `$?` branch.
+- Gates: host `tests/unit/test_sha256sum.c` (10 checks, `#include`s the
+  real tool + links the real libatls) and guest
+  `tests/integration/cases/test_selfhost_sha256sum.sh` (7/7, selfhost
+  shard, needs no guest toolchain) via `tools/selfhost/sh7a_probe.sh`.
+  Receipt `[selfhost] sha256 PASS: selftest + stdin + file parity
+  verified in-guest`.
+- `check_selfhost_claims.py` pins the SH7a artefacts and the new receipt.
+
 ## [SELFHOST SH6f — build.sh] 2026-08-29
 
 `SELFHOST_PLAN.md` SH6f landed (SH6 complete): `build.sh` is the in-guest
