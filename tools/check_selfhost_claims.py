@@ -52,6 +52,8 @@ RECEIPTS = [
     "[selfhost] shmake PASS:",
     "[selfhost] build PASS:",
     "[selfhost] sha256 PASS:",
+    "[selfhost] mkinitrd PASS:",
+    "[selfhost] boot-offset header PASS:",
     "[selfhost] iso PASS:",
     "[selfhost] FULL LOOP PASS",
 ]
@@ -170,6 +172,47 @@ def check_plan(plan, tree_has_file):
         ]:
             if not tree_has_file(*parts):
                 fails.append("SH7a: marked ✅ but %s missing"
+                             % "/".join(parts))
+
+    # SH7b is likewise a sub-phase: the in-guest USTAR writer.  Pin the tool
+    # source, its host unit test, the in-guest probe and the integration case.
+    if re.search(r"^\| SH7b .*\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "selfhost", "mkinitrd.c"),
+            ("tools", "selfhost", "sh7b_probe.sh"),
+            ("tests", "unit", "test_mkinitrd.c"),
+            ("tests", "integration", "cases",
+             "test_selfhost_mkinitrd.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH7b: marked ✅ but %s missing"
+                             % "/".join(parts))
+
+    # SH7c: the in-guest boot_info_t offset generator/verifier.
+    if re.search(r"^\| SH7c .*\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "selfhost", "bootoffsets.c"),
+            ("tools", "selfhost", "sh7c_probe.sh"),
+            ("tests", "unit", "test_bootoffsets_twin.c"),
+            ("tests", "integration", "cases",
+             "test_selfhost_bootoffsets.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH7c: marked ✅ but %s missing"
+                             % "/".join(parts))
+
+    # SH7d: the in-guest MBR + GPT + FAT32 ESP writer.  Pin the tool source,
+    # its host twin test, the in-guest probe and the integration case.
+    if re.search(r"^\| SH7d .*\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "selfhost", "mkiso.c"),
+            ("tools", "selfhost", "sh7d_probe.sh"),
+            ("tests", "unit", "test_mkiso.c"),
+            ("tests", "integration", "cases",
+             "test_selfhost_mkiso.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH7d: marked ✅ but %s missing"
                              % "/".join(parts))
 
     # Required sections (the plan's own contract).

@@ -209,6 +209,15 @@ ALL_CASES=(
     # SH5d terminal gate: the kernel is compiled, assembled, and linked by
     # guest-built tools, persisted through the guest FAT, then booted again.
     test_selfhost_kernel_guest
+    # SH7a–SH7d: image tooling in C that needs no guest toolchain -- the
+    # /bin/sha256sum hash tool, the /bin/mkinitrd USTAR writer, the
+    # /bin/bootoffsets header generator and the /bin/mkiso MBR+GPT+FAT32
+    # writer are normal user ELFs, so like the SH6 cases these never skip on
+    # a plain make iso.
+    test_selfhost_sha256sum
+    test_selfhost_mkinitrd
+    test_selfhost_bootoffsets
+    test_selfhost_mkiso
     test_shell_all
     test_sysmon_data
     test_userspace_apps

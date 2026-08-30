@@ -2,6 +2,101 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH7d — in-guest mkiso MBR+GPT+FAT32 image writer] 2026-08-30
+
+The fourth and largest "image tooling in C" twin (SELFHOST_PLAN.md SH7d):
+the hybrid ISO is assembled by one freestanding C program, replacing host
+`mformat`/`mcopy` and the inline python3 BPB patch — on both the guest and
+the host image loop.
+
+- **`/bin/mkiso`** (`tools/selfhost/mkiso.c`): lays down the entire disk
+  the BIOS Stage 2 and OVMF both read. The dual MBR is spliced from
+  `mbr_dual.bin` and patched with the `0xAA55DEAD` disk id, a bootable
+  `0x0C` FAT32-LBA slot (start LBA 256) and the `0xEE` GPT-protective slot;
+  Stage 2 is spliced at LBA 34. The primary GPT (header at LBA 1,
+  128×128 B entry array at LBA 2, `"EFI PART"`, ESP type GUID
+  `C12A7328-…`, header and array CRC32) and its backup are written. The
+  FAT32 ESP is built rather than patched — two FATs, reserved 32 with
+  FSInfo at sector 1 and backup BPB/FSInfo at 6/7, `TotSec16 == 0` (count
+  only in `TotSec32`), FAT[0] `0x0FFFFFF8`, FAT[1] and root cluster 2 as
+  EOC, label `AURALITE`, and the 8.3 tree (`EFI/BOOT/BOOTX64.EFI`,
+  `KERNEL.ELF` at `/` and in `EFI/BOOT/`, `INITRD.TAR`, `KERNEL32.ELF`)
+  laid through contiguous cluster chains. CRC32 (the zlib polynomial) is
+  local; no libc surface beyond stdio/string. `--esp-mb` sets the size
+  (default 48, floor 40) and the ≥65525-data-cluster FAT32 floor is
+  enforced so OVMF never classifies the volume as FAT16.
+- **The host `make iso` uses the same C source.** The `iso-dual` recipe
+  now assembles the image with a host build of `mkiso.c` (`$(MKISO_HOST)`)
+  instead of `tools/mkisoimage_dual.sh` + mtools; `mformat`/`mcopy` are no
+  longer in the ISO path.
+- **Verified bootable on both firmware paths.** The C-written image boots
+  in QEMU under OVMF (firmware walks the GPT, mounts the FAT32 ESP, runs
+  `BOOTX64.EFI`, loads `KERNEL.ELF`+`INITRD.TAR`, `booted via UEFI`) and
+  under SeaBIOS (Stage 2 parses the FAT BPB, `booted via BIOS`); mtools
+  reads the volume back and every file extracts byte-identical.
+- **Gates:** host `tests/unit/test_mkiso.c` `#include`s the real writer
+  (`MKISO_NO_MAIN`) and parses the produced image (MBR table, primary and
+  backup GPT header/array CRCs, ESP type GUID, FAT32 BPB with
+  `TotSec16==0` and ≥65525 clusters, FSInfo signatures, reserved FAT
+  entries, the 8.3 layout, and a file-byte round-trip through the cluster
+  chains) plus the sub-floor rejection and the 10-check in-guest selftest;
+  in-guest `tests/integration/cases/test_selfhost_mkiso.sh` runs
+  `tools/selfhost/sh7d_probe.sh` (`--selftest`, assemble a real 48 MiB
+  image onto `/fat` from the staged `/tests/mbr_dual.bin` +
+  `/tests/stage2.bin`, and an `--esp-mb 8` negative control); receipt
+  `[selfhost] mkiso PASS: <image> written in-guest`.
+
+## [SELFHOST SH7c — in-guest bootoffsets generator/verifier] 2026-08-30
+
+The third "image tooling in C" twin (SELFHOST_PLAN.md SH7c): the boot-offset
+header needs no host step in the self-host loop.
+
+- **`/bin/bootoffsets`** (`tools/selfhost/bootoffsets.c`): a freestanding-C
+  twin of the host generator (`tools/gen_boot_offsets.c`). Both derive every
+  constant with `offsetof(boot_info_t, …)` / `sizeof(boot_info_t)` from the
+  same `boot/shared/boot_info.h`. Modes: `--c` emits `boot_offsets.h`,
+  `--asm` the NASM `%define` form, `--check` recomputes and, when built with
+  `AURA_HAVE_BOOT_OFFSETS_GEN`, compares against the host-generated `*_C`
+  constants (magic 0, fb 8, mmap_count 6184, hhdm 6192, initrd phys/size
+  6200/6208, cpus 6224, rsdp 7760, uefi 7768, sizeof 7776).
+- **Gates:** host `tests/unit/test_bootoffsets_twin.c` (22 checks)
+  `#include`s the real twin compiled with the genuine host-generated header
+  and asserts every offset and both emitted forms match; in-guest
+  `tests/integration/cases/test_selfhost_bootoffsets.sh` runs
+  `tools/selfhost/sh7c_probe.sh` (`--check`, regenerate `--c`/`--asm`, and a
+  bad-usage negative control); receipt
+  `[selfhost] boot-offset header PASS: generated in-guest`.
+
+## [SELFHOST SH7b — in-guest mkinitrd USTAR writer] 2026-08-30
+
+The second "image tooling in C" twin (SELFHOST_PLAN.md SH7b): host `tar` no
+longer needs to be in the in-guest image loop.
+
+- **`/bin/mkinitrd`** (`tools/selfhost/mkinitrd.c`): a freestanding-C USTAR
+  (POSIX tar) writer for the exact format the kernel initrd parser reads
+  (`kernel/fs/initrd.c`). It walks a directory tree and emits 512-byte ustar
+  headers (`ustar\0` magic at 257, typeflag `'0'`/`'5'` at 156, octal
+  size/mode fields, unsigned checksum, `"./"`-prefixed names) plus
+  zero-padded data blocks and the two zero end-of-archive blocks. Member
+  ordering reproduces `tools/mkinitrd.sh` (subdirectory contents before
+  root-level, byte-sorted per depth group); mode is derived from the source
+  (0755/0644/0755). No hash or new dependency — stdio/libc only.
+- **Three modes the scripting shell branches on via exit status** (no
+  cut/grep needed): `mkinitrd <dir> <out.tar>` packs; `mkinitrd --list
+  <tar>` re-parses the archive with the tool's own reader; `mkinitrd
+  --selftest` packs a tree, reads it back and requires the member count to
+  round-trip.
+- **Gates:** host `tests/unit/test_mkinitrd.c` (18 checks) `#include`s the
+  real writer (`MKINITRD_NO_MAIN`) and asserts GNU `tar` lists/extracts the
+  output, every member round-trips byte-identically, the executable bit
+  survives, the header fields are correct and the archive is 512-byte
+  blocked; a full 119-file initrd re-packed by this writer boots in QEMU
+  (`[initrd] parsed 119 file(s) in 11 directories`). In-guest,
+  `tests/integration/cases/test_selfhost_mkinitrd.sh` runs
+  `tools/selfhost/sh7b_probe.sh` (round-trip selftest, pack + `--list`, and
+  a missing-archive negative control); receipt
+  `[selfhost] mkinitrd PASS: <n> members written in-guest`.
+
 ## [SELFHOST SH7a — in-guest sha256sum] 2026-08-30
 
 `SELFHOST_PLAN.md` SH7 is split into SH7a–SH7e (the C image twins, in

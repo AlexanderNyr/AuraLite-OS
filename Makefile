@@ -670,6 +670,16 @@ $(BOOT_OFFSETS_GEN): tools/gen_boot_offsets.c boot/shared/boot_info.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -I . $< -o $@
 
+# SH7d host build of the MBR+GPT+FAT32 image writer (same source as the guest
+# /bin/mkiso).  `make iso` uses this instead of mkisoimage_dual.sh + mtools so
+# the host and the guest assemble the boot image with one C implementation.
+MKISO_HOST := $(BUILD_DIR)/mkiso
+$(MKISO_HOST): tools/selfhost/mkiso.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	           -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L $< -o $@
+	@echo "  [mkiso] $@"
+
 $(BOOT_OFFSETS_INC): $(BOOT_OFFSETS_GEN)
 	@mkdir -p $(dir $@)
 	$< --asm > $@
@@ -1258,6 +1268,55 @@ $(USER_BUILD)/sha256sum.elf: $(USER_BUILD)/sha256sum.o $(USER_COMMON) \
 	      $(LIBATLS) -o $@
 	@echo "[link] $@ (libatls)"
 
+# ---- mkinitrd (SELFHOST_PLAN.md SH7b): in-guest USTAR writer ----
+# The SH7b C twin for host `tar`.  Pure freestanding C (stdio/libc only, no
+# libatls) writing the exact USTAR layout kernel/fs/initrd.c parses.  The host
+# twin test (test_mkinitrd below) #includes this same source with
+# MKINITRD_NO_MAIN and proves GNU tar accepts the output and the kernel boots
+# it -- "the bytes the guest ships are the bytes under test".
+$(USER_BUILD)/mkinitrd.o: tools/selfhost/mkinitrd.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/mkinitrd.elf: $(USER_BUILD)/mkinitrd.o $(USER_COMMON) \
+                            lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/mkinitrd.o $(USER_COMMON_LNK) -o $@
+	@echo "[link] $@"
+
+# ---- bootoffsets (SELFHOST_PLAN.md SH7c): in-guest boot_info_t offset
+# generator/verifier.  Freestanding C over the SAME boot/shared/boot_info.h the
+# host generator (tools/gen_boot_offsets.c) uses; computes offsets with
+# offsetof() in the guest so the boot-offset header needs no host step.  Host
+# twin test: tests/unit/test_bootoffsets_twin.c.
+$(USER_BUILD)/bootoffsets.o: tools/selfhost/bootoffsets.c \
+                            boot/shared/boot_info.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/bootoffsets.elf: $(USER_BUILD)/bootoffsets.o $(USER_COMMON) \
+                              lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/bootoffsets.o $(USER_COMMON_LNK) -o $@
+	@echo "[link] $@"
+
+# ---- mkiso (SELFHOST_PLAN.md SH7d): in-guest MBR + GPT + FAT32 ESP writer
+# The SH7d C twin for the host mkisoimage_dual.sh + mformat/mcopy + inline
+# python3 BPB patch.  Pure freestanding C (stdio/libc only) that lays down the
+# whole hybrid disk image the BIOS Stage 2 and OVMF both read.  The host twin
+# test (test_mkiso below) #includes this same source with MKISO_NO_MAIN and
+# parses the result back (MBR table, GPT CRCs, FAT32 BPB, file round-trip);
+# the produced image also boots on SeaBIOS AND OVMF. */
+$(USER_BUILD)/mkiso.o: tools/selfhost/mkiso.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/mkiso.elf: $(USER_BUILD)/mkiso.o $(USER_COMMON) \
+                         lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/mkiso.o $(USER_COMMON_LNK) -o $@
+	@echo "[link] $@"
+
 # ---- x509test (INTERNET_PLAN.md N2): in-guest X.509 gate ----
 # The crafted-DER builders are compiled once more, with guest flags, so the
 # in-QEMU depth gate runs the identical bytes the host battery uses.
@@ -1782,8 +1841,14 @@ ESP_MB ?= 48
 export ESP_MB
 
 .PHONY: iso-dual
-iso-dual: deps-check kernel kernel32 $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN)
-	@bash tools/mkisoimage_dual.sh $(KERNEL_ELF) $(EFI_BIN) $(DUAL_ISO_IMAGE)
+# SH7d: the hybrid image is assembled by the C mkiso (same source as the
+# guest /bin/mkiso), not the host mformat/mcopy + python mkisoimage_dual.sh.
+iso-dual: deps-check kernel kernel32 $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(STAGE2_BIN) $(EFI_BIN) $(MKISO_HOST)
+	@ESP_MB=$(ESP_MB) $(MKISO_HOST) --esp-mb $(ESP_MB) \
+	    --mbr $(MBR_DUAL_BIN) --stage2 $(STAGE2_BIN) \
+	    --kernel $(KERNEL_ELF) --efi $(EFI_BIN) \
+	    --initrd $(BUILD_DIR)/initrd.tar --kernel32 $(BUILD_DIR)/kernel32.elf \
+	    $(DUAL_ISO_IMAGE)
 
 # ---- BL8: `make iso` uses the custom dual-boot loader ---------------------
 .PHONY: iso
@@ -2203,7 +2268,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/selfhost/build.sh tools/selfhost/Selfhost.mk \
                          tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
                          $(SHMAKE_ELF) $(SH6E_STAMP_ELF) \
-                         $(USER_BUILD)/sha256sum.elf \
+                         $(USER_BUILD)/sha256sum.elf $(USER_BUILD)/mkinitrd.elf \
+                         $(USER_BUILD)/bootoffsets.elf $(USER_BUILD)/mkiso.elf \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
@@ -2222,6 +2288,16 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # SELFHOST SH7a: the in-guest hash tool lands on the search PATH as a normal
 # /bin program, so `sh build.sh` can verify build products by name.
 	@strip -s $(USER_BUILD)/sha256sum.elf -o $(INITRD_DIR)/bin/sha256sum
+# SELFHOST SH7b: the in-guest USTAR writer lands on the search PATH as
+# /bin/mkinitrd so `sh build.sh initrd` can re-pack the image with no host
+# tar in the loop.
+	@strip -s $(USER_BUILD)/mkinitrd.elf -o $(INITRD_DIR)/bin/mkinitrd
+# SELFHOST SH7c: the in-guest boot_info_t offset generator/verifier.
+	@strip -s $(USER_BUILD)/bootoffsets.elf -o $(INITRD_DIR)/bin/bootoffsets
+# SELFHOST SH7d: the in-guest MBR+GPT+FAT32 ESP writer lands on the search
+# PATH as /bin/mkiso so `sh build.sh iso` can build the image with no host
+# mformat/mcopy/python in the loop.
+	@strip -s $(USER_BUILD)/mkiso.elf -o $(INITRD_DIR)/bin/mkiso
 	@for p in apm play sysinfo; do \
 	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/bin/$$p; done
 	@for p in $(INITRD_APPS); do \
@@ -2297,10 +2373,16 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	      tools/selfhost/sh6e_probe.sh tools/selfhost/sh6e.mk \
 	      tools/selfhost/build.sh tools/selfhost/Selfhost.mk \
 	      tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
-	      tools/selfhost/sh7a_probe.sh \
+	      tools/selfhost/sh7a_probe.sh tools/selfhost/sh7b_probe.sh \
+	      tools/selfhost/sh7c_probe.sh tools/selfhost/sh7d_probe.sh \
 	      $(INITRD_DIR)/tests/
 	@cp tools/selfhost/Selfhost.mk $(INITRD_DIR)/tests/sh6f.mk
 	@cp tools/selfhost/build.sh $(INITRD_DIR)/tests/build.sh
+# SELFHOST SH7d: stage the boot blobs the in-guest mkiso splices (the dual
+# MBR and Stage 2 flat binary), so the SH7d probe can assemble a real hybrid
+# image entirely in-guest and hand the resulting bytes to be booted.
+	@cp $(MBR_DUAL_BIN) $(INITRD_DIR)/tests/mbr_dual.bin
+	@cp $(STAGE2_BIN)   $(INITRD_DIR)/tests/stage2.bin
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
 # These used to be `cp foo.elf foo.pkg` -- a renamed executable with no
@@ -2502,6 +2584,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_keymap \
                 $(BUILD_DIR)/test_rng \
                 $(BUILD_DIR)/test_sha256sum \
+                $(BUILD_DIR)/test_mkinitrd \
+                $(BUILD_DIR)/test_bootoffsets_twin \
+                $(BUILD_DIR)/test_mkiso \
                 $(BUILD_DIR)/test_atls_hash $(BUILD_DIR)/test_atls_aead \
                 $(BUILD_DIR)/test_atls_x25519 $(BUILD_DIR)/test_atls_ed25519 \
                 $(BUILD_DIR)/test_atls_x509 \
@@ -2780,6 +2865,33 @@ $(BUILD_DIR)/test_sha256sum: tests/unit/test_sha256sum.c \
                              lib/libatls/include/atls/atls.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) $(LIBATLS_TEST_CFLAGS) -I . $(LIBATLS_SRCS) $< -o $@
+
+# SH7b host gate: #includes the real USTAR writer and proves GNU tar accepts
+# the output, every member round-trips byte-identically, and the 512-byte
+# header layout (ustar magic, typeflag, "./" name prefix) is what the kernel
+# reads.
+$(BUILD_DIR)/test_mkinitrd: tests/unit/test_mkinitrd.c tools/selfhost/mkinitrd.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -D_DEFAULT_SOURCE \
+	           -D_POSIX_C_SOURCE=200809L -I . $< -o $@
+
+# SH7c host gate: #includes the in-guest bootoffsets twin and, compiled with
+# the real host-generated boot_offsets.h, asserts every offsetof() value (and
+# the header/inc emission) matches the host generator.
+$(BUILD_DIR)/test_bootoffsets_twin: tests/unit/test_bootoffsets_twin.c \
+                                    tools/selfhost/bootoffsets.c \
+                                    boot/shared/boot_info.h $(BOOT_OFFSETS_H)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -D_DEFAULT_SOURCE \
+	           -I . -I $(BUILD_DIR) $< -o $@
+
+# SH7d host gate: #includes the real MBR+GPT+FAT32 writer and parses the
+# image it produces (MBR table, GPT header/array CRCs, FAT32 BPB/FSInfo/FAT,
+# 8.3 directory layout, file-byte round-trip through the cluster chains).
+$(BUILD_DIR)/test_mkiso: tests/unit/test_mkiso.c tools/selfhost/mkiso.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -D_DEFAULT_SOURCE \
+	           -D_POSIX_C_SOURCE=200809L -I . $< -o $@
 
 $(BUILD_DIR)/test_atls_aead: tests/unit/test_atls_aead.c $(LIBATLS_SRCS) \
                              lib/libatls/include/atls/atls.h
