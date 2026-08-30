@@ -64,30 +64,35 @@ run /bin/tcc -nostdlib -static -o /fat/mini-asm /tmp/sh8/lib/crt0.o /tmp/sh8/lib
 echo '[selfhost] sh8: tool chain rebuilt (aulink + mini-asm from tcc0)'
 
 # ==== T2. the compiler self-builds (tcc0 -> tcc1 -> tcc2) ==================
-# Build the full libc the compiler links against.  The seed /bin/tcc was
-# linked against libaurac.a; tcc1/tcc2 must link against the SAME libc, but
-# compiled here by tcc (no host archive, no `ar` in the guest -- the aulink
-# directory mode carries it).  The runtime asm objects come from mini-asm.
+# Build the closure libc the compiler links against.  The seed /bin/tcc was
+# linked against libaurac.a; tcc1/tcc2 link against this tcc-compiled set
+# instead (no host archive, no `ar` in the guest -- the aulink directory mode
+# carries it).  This is the SH8 closure subset: libc + malloc + env +
+# string/stdlib/stdio extras + dirent + getopt + progpath + math_extra +
+# time_extra + tcc_builtins + the SH8 runtime shims (rt.o).
+#
+# It deliberately EXCLUDES the libaurac members that do not compile under tcc
+# or that tcc's own codegen/runtime never references:
+#   compat.c     - _Complex (tcc: 'incompatible types')
+#   posix_extra/posix_spawn/pwd/q10_stubs/regex/resource/utsname/apkg
+#                - GCC __ATOMIC_* etc., not tcc-compilable
+#   pthread/rwlock/barrier/spin - __ATOMIC_*; tcc's own embedded-thread load
+#                paths are stubbed by tcc_closure_runtime.c instead.
+# The runtime asm objects come from mini-asm (SH4).
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/libc.o /src/libc/src/libc.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/malloc.o /src/libc/src/malloc.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/compat.o /src/libc/src/compat.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/dirent.o /src/libc/src/dirent.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/env.o /src/libc/src/env.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/getopt.o /src/libc/src/getopt.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/math_extra.o /src/libc/src/math_extra.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/posix_extra.o /src/libc/src/posix_extra.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/posix_spawn.o /src/libc/src/posix_spawn.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/progpath.o /src/libc/src/progpath.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/pwd.o /src/libc/src/pwd.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/q10_stubs.o /src/libc/src/q10_stubs.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/regex.o /src/libc/src/regex.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/resource.o /src/libc/src/resource.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/stdio_extra.o /src/libc/src/stdio_extra.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/stdlib_extra.o /src/libc/src/stdlib_extra.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/string_extra.o /src/libc/src/string_extra.c
 run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/time_extra.o /src/libc/src/time_extra.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/utsname.o /src/libc/src/utsname.c
-run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/apkg.o /src/libc/src/apkg.c
+run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/bi.o /src/libc/tcc_builtins.c
+# SH8 runtime shims (dlopen/dlsym/sem_* stubs), staged as /src/libc/tcc_closure_runtime.c.
+run /bin/tcc -c -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic -O2 -I/src/libc/include -o /tmp/sh8/libcobj/rt.o /src/libc/tcc_closure_runtime.c
 # the libc runtime objects that are NASM-format (mini-asm, SH4), not C.
 run /fat/mini-asm -f elf64 -I/src -o /tmp/sh8/libcobj/syscall.o /src/libc/src/syscall.asm
 run /fat/mini-asm -f elf64 -I/src -o /tmp/sh8/libcobj/sigreturn.o /src/libc/crt/sigreturn.asm

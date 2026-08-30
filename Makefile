@@ -1915,6 +1915,7 @@ SELFHOST_KERNEL_STAGE := $(shell find kernel drivers boot w32 \
                          tools/selfhost/sh8_closure.sh \
                          tools/selfhost/gen_kernel_build.sh \
                          tools/selfhost/tcc_crt0.s tools/selfhost/tcc_builtins.c \
+                         tools/selfhost/tcc_closure_runtime.c \
                          tools/selfhost/stdint.h tools/selfhost/hello.c \
                          tools/selfhost/userland_ok.c \
                          userspace/apps/sysinfo/sysinfo.c userspace/apps/editor/editor.c \
@@ -2340,6 +2341,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	    cp lib/libc/src/*.c $(INITRD_DIR)/src/libc/src/; \
 	    cp tools/selfhost/tcc_crt0.s $(INITRD_DIR)/src/libc/tcc_crt0.s; \
 	    cp tools/selfhost/tcc_builtins.c $(INITRD_DIR)/src/libc/tcc_builtins.c; \
+	    cp tools/selfhost/tcc_closure_runtime.c $(INITRD_DIR)/src/libc/tcc_closure_runtime.c; \
 	    cp lib/libc/src/*.asm $(INITRD_DIR)/src/libc/src/; \
 	    mkdir -p $(INITRD_DIR)/src/libc/crt; \
 	    cp lib/libc/crt/*.asm $(INITRD_DIR)/src/libc/crt/; \

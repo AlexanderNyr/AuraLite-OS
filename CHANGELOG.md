@@ -29,10 +29,35 @@ unverified against a running guest.
   §8 receipt + per-stage receipts.  Registered in `run_all.sh`; the SH8 pin is
   staged in `check_selfhost_claims.py` (activates when SH8 is marked ✅).
 
+- **Closure link narrowed + host-validated.**  The blocker that stopped SH8 at
+  the tcc link was that the driver's T2 stage compiled the **whole** libaurac
+  member set, but aulink (no `--whole-archive`, no symbol GC) links *every*
+  object, so the members that are not tcc-compilable — `compat.c` (`_Complex`);
+  `posix_extra.c`/`posix_spawn.c`/`pwd.c`/`q10_stubs.c`/`regex.c`/`resource.c`/
+  `utsname.c`/`apkg.c` and `pthread/{pthread,rwlock,barrier,spin}.c` (GCC
+  `__ATOMIC_*`) — aborted the link with 15+ undefined refs (and the pthread
+  sources were never even staged under `/src/libc/src/pthread/`).  The driver
+  now builds a **narrowed closure libc** (libc, malloc, env, string/stdlib/
+  stdio extras, dirent, getopt, progpath, math_extra, time_extra,
+  tcc_builtins) plus `tools/selfhost/tcc_closure_runtime.c`, a small runtime
+  shim providing the only POSIX symbols tcc's objects leave behind
+  (`dlopen`/`dlsym`/`dlclose`/`dlerror`, `sem_*`).  `localtime`, `setjmp`/
+  `longjmp`, `ldexpl` come from the libc; `__builtin_fabs/sqrt/nanf/huge_val/
+  bswap16/32` are folded by tcc's codegen.  `tools/selfhost/host_validate_
+  closure.sh` reproduces the compile+link on the host and links `tcc1` cleanly
+  (no `undefined reference` lines); it is a dev aid, not a CI case.
+
 > **Honest status.**  The closure driver and gate are scaffold-complete and
-> statically verified (generator output, staging, checker, shard partition);
-> they have not been booted.  The on-disk closure may need debugging under the
-> slow-shard run before `[selfhost] FULL LOOP PASS (2/2 clean loops)` is live.
+> statically verified (generator output, staging, checker, shard partition),
+> and the closure's tcc1 link is now host-validated clean with the narrowed
+> libc + runtime shim; the slow-shard boot has still **not** been executed, so
+> `[selfhost] FULL LOOP PASS (2/2 clean loops)` is not yet live.  Two obstacles
+> remain for the boot: the gate's `make iso` bootstrap hard-requires `rustc` +
+> the `x86_64-unknown-none` target, and the seed tcc0 (a freestanding
+> guest-ABI ELF) must be verified to compile `tccpp.c` when it runs as a
+> first-class guest process (it segfaults on that file when invoked directly on
+> the Linux host — consistent with a host-ABI mismatch, not a codegen defect,
+> since the host-build tcc compiles the same sources).
 
 ## [SELFHOST SH7e — assemble and boot the guest ISO (terminal gate)] 2026-08-30
 

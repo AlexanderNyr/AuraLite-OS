@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed.  SH8 is in progress -- its closure wiring (the in-guest closure driver, the kernel-build generator, the tcc source closure and the slow-shard gate) is in the tree and statically verified, but the slow-shard double-loop boot has not been executed; SH9 remains pending.
+(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed.  SH8 is in progress -- its closure wiring (the in-guest closure driver, the kernel-build generator, the tcc source closure and the slow-shard gate) is in the tree and statically verified, and the closure's own link step is now **host-validated clean** (the closure libc is narrowed to a tcc-compilable subset plus a small runtime shim, and the host aulink produces a `tcc1` with no undefined refs), but the slow-shard double-loop boot has not been executed; SH9 remains pending.
 
 | Phase | Result |
 |-------|--------|
@@ -1877,7 +1877,28 @@ receipt sets), stated honestly rather than pretending byte-parity.
 
 **What is in the tree.**  SH8 is wired and staged, but its slow-shard gate has
 **not** been executed yet — no `[selfhost] FULL LOOP PASS (2/2 clean loops)`
-in a boot log, so this phase is honest as "in progress", not "landed".
+in a boot log — so this phase is honest as "in progress", not "landed".
+
+**Closure link is host-validated.**  The blocker that stopped the closure at
+the tcc link was that `sh8_closure.sh`'s T2 stage compiled the **whole**
+`libaurac.a` member set, but aulink (no `--whole-archive`, no symbol-GC) links
+every object, so the members that are not tcc-compilable (`compat.c` using
+`_Complex`; `posix_extra.c`/`posix_spawn.c`/`pwd.c`/`q10_stubs.c`/`regex.c`/
+`resource.c`/`utsname.c`/`apkg.c` and `pthread/{pthread,rwlock,barrier,spin}.c`
+using GCC `__ATOMIC_*`) aborted the link with 15+ undefined refs.  The driver
+now builds a **narrowed closure libc** — the subset tcc's own codegen/runtime
+actually references (libc, malloc, env, string/stdlib/stdio extras, dirent,
+getopt, progpath, math_extra, time_extra, tcc_builtins) plus a small runtime
+shim, `tools/selfhost/tcc_closure_runtime.c`, that supplies the only POSIX
+symbols tcc's objects leave behind (`dlopen`/`dlsym`/`dlclose`/`dlerror`,
+`sem_init`/`sem_wait`/`sem_post`/`sem_trywait`/`sem_destroy`).  `localtime`,
+`setjmp`/`longjmp` and `ldexpl` come from the libc (`time_extra.c`,
+`crt/setjmp.asm`, `math_extra.c`); `__builtin_fabs`/`sqrt`/`nanf`/`huge_val`/
+`bswap16`/`bswap32` are folded by tcc's own codegen.  `tools/selfhost/
+host_validate_closure.sh` reproduces the T1/T2 compile+link on the host with no
+guest: it compiles the closure libc + all 11 tcc units with the host tcc and
+links `tcc1` with the host aulink, currently clean (no `undefined reference`
+lines).  It is a development aid, not a CI case.
 
 - **`tools/selfhost/sh8_closure.sh`** — the real in-guest closure driver.  With
   the seed tcc0 (`/bin/tcc`) it builds the tool libc and the SH3/SH4 linkers
@@ -1894,6 +1915,13 @@ in a boot log, so this phase is honest as "in progress", not "landed".
   x86_64 sources without needing command substitution, glob, `set --` or long
   variables (none of which init.c's shell has).  The generated script is staged
   into the initrd as `/src/selfhost/kernel_build.sh`.
+- **`tools/selfhost/tcc_closure_runtime.c`** — the SH8 runtime shim (see the
+  closure-link note above); it is staged into the initrd as
+  `/src/libc/tcc_closure_runtime.c` and compiled by the guest tcc into the
+  closure libc set.
+- **`tools/selfhost/host_validate_closure.sh`** — the host-side closure-link
+  aid (see above).  It is not a CI case; the acceptance gate remains
+  `test_selfhost_closure.sh`.
 - **Staging (`Makefile`)** — `make iso` now stages the TinyCC source closure
   (`tcc.c`, `libtcc.c`, `tccpp.c`, `tccgen.c`, `tccdbg.c`, `tccelf.c`,
   `tccasm.c`, `x86_64-gen.c`, `x86_64-link.c`, `i386-asm.c`, `tcc_glue.c`,
@@ -1909,9 +1937,24 @@ in a boot log, so this phase is honest as "in progress", not "landed".
 
 **Gate.** `test_selfhost_closure.sh` (long-running, slow-shard):
 `[selfhost] FULL LOOP PASS (2/2 clean loops)`.  **Status: not yet run** — the
-in-tree driver and gate are scaffold-complete and statically verified, but the
-closure boot has not been executed in this session, so the receipt strings are
-unverified against a running guest.
+in-tree driver and gate are scaffold-complete and statically verified, and the
+closure's tcc link is host-validated clean, but the closure boot has not been
+executed in this session, so the receipt strings are unverified against a
+running guest.  Two obstacles to that boot remain and are recorded as known
+risks rather than hidden:
+
+- The gate rebuilds the bootstrap via `make iso`, whose `deps-check` hard-
+  requires `rustc` + the `x86_64-unknown-none` target.  That Rust dependency is
+  upstream of the SH8 closure and must be present on the machine that boots the
+  gate.
+- The seed `tcc0` is a freestanding, guest-ABI ELF (`build/selfhost/tcc.elf`,
+  linked with `user.ld` + the AuraLite crt0).  Running it *directly on the
+  Linux host* it segfaults while compiling the large `tccpp.c`, even though it
+  faithfully compiles smaller C inputs — consistent with a host-ABI mismatch
+  when a guest binary is run outside AuraLite, not with a defect in tcc's code
+  generation (the host-build tcc compiles the same sources).  It must be
+  verified to compile `tccpp.c` correctly when it runs *as a first-class guest
+  process*; this can only be checked in the AuraLite guest, not on the host.
 
 **Deliverable.** The changes above, in the tree (D9: no
 patch artefact).
