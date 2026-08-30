@@ -1912,6 +1912,8 @@ SELFHOST_KERNEL_STAGE := $(shell find kernel drivers boot w32 \
                          kernel.ld lib/libc/user.ld \
                          tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
                          tools/shmake/shmake.c \
+                         tools/selfhost/sh8_closure.sh \
+                         tools/selfhost/gen_kernel_build.sh \
                          tools/selfhost/tcc_crt0.s tools/selfhost/tcc_builtins.c \
                          tools/selfhost/stdint.h tools/selfhost/hello.c \
                          tools/selfhost/userland_ok.c \
@@ -2336,6 +2338,9 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	    cp lib/libc/src/*.c $(INITRD_DIR)/src/libc/src/; \
 	    cp tools/selfhost/tcc_crt0.s $(INITRD_DIR)/src/libc/tcc_crt0.s; \
 	    cp tools/selfhost/tcc_builtins.c $(INITRD_DIR)/src/libc/tcc_builtins.c; \
+	    cp lib/libc/src/*.asm $(INITRD_DIR)/src/libc/src/; \
+	    mkdir -p $(INITRD_DIR)/src/libc/crt; \
+	    cp lib/libc/crt/*.asm $(INITRD_DIR)/src/libc/crt/; \
 	    cp userspace/apps/sysinfo/sysinfo.c $(INITRD_DIR)/src/apps/sysinfo.c; \
 	    cp userspace/apps/editor/editor.c $(INITRD_DIR)/src/apps/editor.c; \
     cp tools/selfhost/userland_ok.c $(INITRD_DIR)/src/apps/userland_ok.c; \
@@ -2357,6 +2362,16 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
             -f elf64 -I . -I $(BUILD_DIR)/ \
             kernel/arch/x86_64/$$f.asm -o $(INITRD_DIR)/src/selfhost/ref/$$f.o; \
     done; \
+    mkdir -p $(INITRD_DIR)/src/tcc; \
+    cp $(addprefix $(SELFHOST_SRC)/,$(SELFHOST_TCC_SRCS)) \
+       $(INITRD_DIR)/src/tcc/; \
+    cp tools/selfhost/tcc_glue.c $(INITRD_DIR)/src/tcc/tcc_glue.c; \
+    cp $(SELFHOST_SRC)/config.h $(SELFHOST_SRC)/tccdefs_.h \
+       $(INITRD_DIR)/src/tcc/; \
+    cp $(SELFHOST_SRC)/*.h $(INITRD_DIR)/src/tcc/; \
+    cp -r $(SELFHOST_SRC)/include $(INITRD_DIR)/src/tcc/include; \
+    bash tools/selfhost/gen_kernel_build.sh > \
+       $(INITRD_DIR)/src/selfhost/kernel_build.sh; \
 	    echo "[selfhost] staged guest tcc + SH5d kernel source closure into initrd"; \
 	else \
 	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \
@@ -2375,7 +2390,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	      tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
 	      tools/selfhost/sh7a_probe.sh tools/selfhost/sh7b_probe.sh \
 	      tools/selfhost/sh7c_probe.sh tools/selfhost/sh7d_probe.sh \
-	      tools/selfhost/sh7e_probe.sh \
+	      tools/selfhost/sh7e_probe.sh tools/selfhost/sh8_closure.sh \
 	      $(INITRD_DIR)/tests/
 	@cp tools/selfhost/Selfhost.mk $(INITRD_DIR)/tests/sh6f.mk
 	@cp tools/selfhost/build.sh $(INITRD_DIR)/tests/build.sh

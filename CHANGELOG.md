@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH8 — bootstrap closure: in-tree wiring, gate NOT yet run] 2026-08-30
+
+Stage 2 of D1 (SELFHOST_PLAN.md SH8): the toolchain closes on itself.  This
+lands the closure **wiring in the tree**; it is deliberately marked "in
+progress", because the slow-shard gate that proves it (`[selfhost] FULL LOOP
+PASS (2/2 clean loops)`) has **not** been executed — the receipt strings are
+unverified against a running guest.
+
+- **`tools/selfhost/sh8_closure.sh`** — the real in-guest closure driver.  With
+  the seed tcc0 it builds the tool libc + the SH3/SH4 linkers (aulink,
+  mini-asm), then the full libc + tcc sources -> tcc1 (hashed), then tcc1 ->
+  tcc2 (hashed); rebuilds the host-visible generators; and runs the assembly
+  loop (kernel from source -> initrd -> hybrid ISO) twice from a cleaned `/fat`,
+  printing the §8 receipt.
+- **`tools/selfhost/gen_kernel_build.sh`** — the host generator that emits the
+  flat in-guest kernel-build script (126 C + 9 asm x86_64 sources, same SH5d
+  enumeration) staged as `/src/selfhost/kernel_build.sh`; the guest shell has
+  no command substitution, glob, `set --` or long variables, so the enumeration
+  is done on the host as data.
+- **Staging** — `make iso` stages the TinyCC source closure (`/src/tcc`),
+  the generated kernel build, and `sh8_closure.sh` (`/tests`); these join
+  `SELFHOST_KERNEL_STAGE` so a stale bootstrap cannot claim an in-guest build.
+- **`tests/integration/cases/test_selfhost_closure.sh`** — the slow-shard host
+  gate (selfhost shard): pre-formatted 64 MiB AHCI `/fat`, driver run, greps the
+  §8 receipt + per-stage receipts.  Registered in `run_all.sh`; the SH8 pin is
+  staged in `check_selfhost_claims.py` (activates when SH8 is marked ✅).
+
+> **Honest status.**  The closure driver and gate are scaffold-complete and
+> statically verified (generator output, staging, checker, shard partition);
+> they have not been booted.  The on-disk closure may need debugging under the
+> slow-shard run before `[selfhost] FULL LOOP PASS (2/2 clean loops)` is live.
+
 ## [SELFHOST SH7e — assemble and boot the guest ISO (terminal gate)] 2026-08-30
 
 The first end-to-end proof of Stage 1 (SELFHOST_PLAN.md SH7e): `sh build.sh iso`

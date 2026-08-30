@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed.  SH8–SH9 remain pending.
+(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed.  SH8 is in progress -- its closure wiring (the in-guest closure driver, the kernel-build generator, the tcc source closure and the slow-shard gate) is in the tree and statically verified, but the slow-shard double-loop boot has not been executed; SH9 remains pending.
 
 | Phase | Result |
 |-------|--------|
@@ -35,7 +35,7 @@ redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
 | SH7c — `bootoffsets`: boot_info_t offset generator/verifier in-guest (offsetof parity vs host) | ✅ landed |
 | SH7d — `mkiso`: MBR + GPT + FAT32 ESP writer in C (hybrid image boots BIOS+UEFI) | ✅ landed |
 | SH7e — `sh build.sh iso` + host boots the guest ISO (terminal gate) | ✅ landed |
-| SH8 — bootstrap closure | 🚧 pending |
+| SH8 — bootstrap closure | 🚧 in progress |
 | SH9 — cross-arch + CI wiring | 🚧 pending |
 
 This document answers:
@@ -1862,7 +1862,7 @@ greps the standard boot receipts to the shell; the guest-side receipt is
 `[selfhost] iso PASS: auralite.iso built in-guest` and the host side shows
 the normal boot receipts.
 
-### Phase SH8 — bootstrap closure 🚧 PENDING
+### Phase SH8 — bootstrap closure 🚧 IN PROGRESS
 
 **Goal.** No host toolchain anywhere in the loop, twice in a row.
 
@@ -1875,8 +1875,43 @@ kernel banner means the two ISOs are not byte-identical — the gate is
 **functional reproducibility** (both boot to the shell with identical
 receipt sets), stated honestly rather than pretending byte-parity.
 
+**What is in the tree.**  SH8 is wired and staged, but its slow-shard gate has
+**not** been executed yet — no `[selfhost] FULL LOOP PASS (2/2 clean loops)`
+in a boot log, so this phase is honest as "in progress", not "landed".
+
+- **`tools/selfhost/sh8_closure.sh`** — the real in-guest closure driver.  With
+  the seed tcc0 (`/bin/tcc`) it builds the tool libc and the SH3/SH4 linkers
+  (aulink, mini-asm); then it compiles the full libc + tcc sources with tcc0
+  and links tcc1 with aulink, and compiles the same tcc sources with tcc1 and
+  links tcc2 — each binary hashed with the SH7a twin.  It rebuilds the
+  host-visible generators and then runs the assembly loop twice, each time from
+  a cleaned `/fat`, driving the generated `/src/selfhost/kernel_build.sh`
+  through the stage compiler, packing the initrd with `/bin/mkinitrd` and
+  splicing the hybrid image with `/bin/mkiso`.  It prints the §8 receipt.
+- **`tools/selfhost/gen_kernel_build.sh`** — the host generator that emits the
+  in-guest kernel build script (a flat `run <tool> ...` sequence) from the
+  same SH5d source enumeration, so the guest can compile all 126 C + 9 asm
+  x86_64 sources without needing command substitution, glob, `set --` or long
+  variables (none of which init.c's shell has).  The generated script is staged
+  into the initrd as `/src/selfhost/kernel_build.sh`.
+- **Staging (`Makefile`)** — `make iso` now stages the TinyCC source closure
+  (`tcc.c`, `libtcc.c`, `tccpp.c`, `tccgen.c`, `tccdbg.c`, `tccelf.c`,
+  `tccasm.c`, `x86_64-gen.c`, `x86_64-link.c`, `i386-asm.c`, `tcc_glue.c`,
+  the tcc include tree, `config.h`, `tccdefs_.h` and the top-level headers)
+  under `/src/tcc` so the guest can rebuild tcc from source; it stages the
+  generated `kernel_build.sh`, and `sh8_closure.sh` under `/tests`.  These
+  files are added to `SELFHOST_KERNEL_STAGE` so a stale bootstrap image cannot
+  claim an in-guest build while shipping older sources.
+- **The host gate** `test_selfhost_closure.sh` (selfhost shard) gives the guest
+  a persistent, pre-formatted 64 MiB AHCI `/fat`, runs the probe, and greps the
+  §8 receipt plus the per-stage receipts (tcc1/tcc2 built, loop 1 / loop 2 PASS,
+  the kernel assembly line, and a guard against any in-guest build error).
+
 **Gate.** `test_selfhost_closure.sh` (long-running, slow-shard):
-`[selfhost] FULL LOOP PASS (2/2 clean loops)`.
+`[selfhost] FULL LOOP PASS (2/2 clean loops)`.  **Status: not yet run** — the
+in-tree driver and gate are scaffold-complete and statically verified, but the
+closure boot has not been executed in this session, so the receipt strings are
+unverified against a running guest.
 
 **Deliverable.** The changes above, in the tree (D9: no
 patch artefact).

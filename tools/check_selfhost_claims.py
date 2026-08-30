@@ -228,6 +228,21 @@ def check_plan(plan, tree_has_file):
                 fails.append("SH7e: marked ✅ but %s missing"
                              % "/".join(parts))
 
+    # SH8: the bootstrap closure.  Pin the in-guest closure driver, the host
+    # generator that emits the kernel build script, and the slow-shard gate.
+    # The generator lives in the tree (so the kernel_build.sh the ISO stages is
+    # reproducible from the SH5d source list); it is not fetched.
+    if re.search(r"^\| SH8 .*\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "selfhost", "sh8_closure.sh"),
+            ("tools", "selfhost", "gen_kernel_build.sh"),
+            ("tests", "integration", "cases",
+             "test_selfhost_closure.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH8: marked ✅ but %s missing"
+                             % "/".join(parts))
+
     # Required sections (the plan's own contract).
     for sec in ["## 2. Decisions", "## 3. Phases", "## 6. What this plan "
                 "does not do", "## 7. Ledger", "## 8. Receipt strings"]:
