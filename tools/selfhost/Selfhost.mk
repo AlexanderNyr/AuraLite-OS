@@ -55,6 +55,18 @@ INITRD:
 
 initrd: INITRD
 
+# SH7e: assemble the guest image in-guest.  The recipe runs the SH7a-SH7d
+# twins in order and writes /fat/auralite.iso from the prebuilt /fat
+# artefacts (SH5's /fat/KERNEL.ELF + the EFI loader) plus the initrd payload
+# packed by /bin/mkinitrd.  Recipes are one exec per line (no shell, no
+# redirects, no $(shell)/$(wildcard)), so each twin is its own recipe line
+# and a failing line stops the build.  SH8 replaces /fat/KERNEL.ELF with the
+# guest-tcc-built kernel; the target name does not change (D5).
 iso: kernel
+	sha256sum --selftest
+	mkinitrd --selftest
+	bootoffsets --check
+	mkinitrd /fat/initrd-payload /fat/initrd.tar
+	mkiso --esp-mb 48 --mbr /tests/mbr_dual.bin --stage2 /tests/stage2.bin --kernel /fat/KERNEL.ELF --efi /fat/BOOTX64.EFI --initrd /fat/initrd.tar /fat/auralite.iso
 
 user: initrd

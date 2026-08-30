@@ -215,6 +215,19 @@ def check_plan(plan, tree_has_file):
                 fails.append("SH7d: marked ✅ but %s missing"
                              % "/".join(parts))
 
+    # SH7e: the terminal ISO-assembly gate.  Pin the in-guest probe and the
+    # host integration case; the wiring it drives (build.sh + Selfhost.mk) is
+    # already pinned under SH6f (D5), so SH7e pins only what it adds.
+    if re.search(r"^\| SH7e .*\| ✅", plan, re.M):
+        for parts in [
+            ("tools", "selfhost", "sh7e_probe.sh"),
+            ("tests", "integration", "cases",
+             "test_selfhost_iso.sh"),
+        ]:
+            if not tree_has_file(*parts):
+                fails.append("SH7e: marked ✅ but %s missing"
+                             % "/".join(parts))
+
     # Required sections (the plan's own contract).
     for sec in ["## 2. Decisions", "## 3. Phases", "## 6. What this plan "
                 "does not do", "## 7. Ledger", "## 8. Receipt strings"]:

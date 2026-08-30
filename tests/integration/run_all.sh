@@ -218,6 +218,7 @@ ALL_CASES=(
     test_selfhost_mkinitrd
     test_selfhost_bootoffsets
     test_selfhost_mkiso
+    test_selfhost_iso
     test_shell_all
     test_sysmon_data
     test_userspace_apps

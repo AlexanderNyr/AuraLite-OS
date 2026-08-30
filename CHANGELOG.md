@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH7e — assemble and boot the guest ISO (terminal gate)] 2026-08-30
+
+The first end-to-end proof of Stage 1 (SELFHOST_PLAN.md SH7e): `sh build.sh iso`
+runs the SH7a–SH7d twins in order and assembles `/fat/auralite.iso` in-guest
+with no host compiler in the loop.  This is the ISO-only assembly half; the
+full in-guest kernel/libc/userland compile is SH8.
+
+- **`Selfhost.mk` `iso` recipe is real.**  The SH6f dependency stub
+  (`iso: kernel`) now runs the four twins in SH7a–SH7d order inside the in-guest
+  shmake graph — `sha256sum --selftest`, `mkinitrd --selftest`,
+  `bootoffsets --check`, then `mkinitrd` packs the /fat initrd payload to
+  `/fat/initrd.tar` and `mkiso` splices the staged boot blobs
+  (`/tests/mbr_dual.bin` + `/tests/stage2.bin`), `/fat/KERNEL.ELF`,
+  `/fat/BOOTX64.EFI` and `/fat/initrd.tar` into `/fat/auralite.iso`.  Recipes
+  are one exec per line (no `sh -c`, no redirects, no `$(shell)`/`$(wildcard)`),
+  so each twin is its own line and a failing line stops the build.  The target
+  set stays `kernel initrd iso user` (D5).
+- **`build.sh` learns `sh build.sh iso`.**  Where the SH6f entry point ignored
+  extra words, it now hands `$1` through to `shmake`.  D10 leaves no
+  `test`/`[` and no string comparison, so build.sh does not branch on `$1`'s
+  value — it always (re)builds the SH6f pair (keeping the SH6f receipt
+  truthful) and additionally builds the caller-requested target, so
+  `sh build.sh iso` yields the pair and then the `iso` target.
+- **`tools/selfhost/sh7e_probe.sh`.**  In-guest terminal gate: stages the /fat
+  worktree, runs the four twins' self-checks in order (`[selfhost] sh7e:
+  twins-in-order`), then drives `sh /fat/build.sh iso` and prints the §8 receipt
+  `[selfhost] iso PASS: auralite.iso built in-guest`.  Needs no guest
+  toolchain (the twins are normal user ELFs), so like the other SH7 cases it
+  does not skip on a plain `make iso`.  Assembly inputs use the same
+  SH7d-proof stand-ins (`/bin/init` as the kernel slot, `/tests/petest.exe` as
+  the EFI app) when no SH5-compiled `/fat/KERNEL.ELF` is present.
+- **Host gate `tests/integration/cases/test_selfhost_iso.sh`** (selfhost shard)
+  gives the guest a persistent AHCI `/fat`, pre-formatted at its real size (the
+  default 4 MiB superfloppy cannot hold the ≥40 MiB image the SH7d writer
+  needs), runs the probe, and greps the receipt plus each twin's self-check.
+  `tools/selfhost/sh7e_probe.sh` is staged into the initrd under `/tests`, and
+  `check_selfhost_claims.py` pins SH7e to its probe + integration case.
+
 ## [SELFHOST SH7d — in-guest mkiso MBR+GPT+FAT32 image writer] 2026-08-30
 
 The fourth and largest "image tooling in C" twin (SELFHOST_PLAN.md SH7d):

@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) have landed.  SH7e and SH8–SH9 remain pending.
+(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed.  SH8–SH9 remain pending.
 
 | Phase | Result |
 |-------|--------|
@@ -34,7 +34,7 @@ redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
 | SH7b — `mkinitrd`: USTAR writer in C (the format kernel/fs/initrd.c reads; host-tested vs GNU tar + booted) | ✅ landed |
 | SH7c — `bootoffsets`: boot_info_t offset generator/verifier in-guest (offsetof parity vs host) | ✅ landed |
 | SH7d — `mkiso`: MBR + GPT + FAT32 ESP writer in C (hybrid image boots BIOS+UEFI) | ✅ landed |
-| SH7e — `sh build.sh iso` + host boots the guest ISO (terminal gate) | 🚧 pending |
+| SH7e — `sh build.sh iso` + host boots the guest ISO (terminal gate) | ✅ landed |
 | SH8 — bootstrap closure | 🚧 pending |
 | SH9 — cross-arch + CI wiring | 🚧 pending |
 
@@ -1812,11 +1812,50 @@ control; the receipt is
 `[selfhost] mkiso PASS: <image> written in-guest`.  The host
 `make test-unit` runs `test_mkiso`.
 
-### Phase SH7e — assemble and boot the guest ISO (terminal gate) 🚧 PENDING
+### Phase SH7e — assemble and boot the guest ISO (terminal gate) ✅ LANDED (2026-08-30)
 
 **Goal.** `sh build.sh iso` runs the SH7a–SH7d twins in order and produces
 `auralite.iso` on `/fat`; the host then boots that ISO.  This is the first
 end-to-end proof of Stage 1.
+
+**What landed.**
+
+- **The `iso` recipe is real, not a dependency stub.**  `Selfhost.mk`'s `iso`
+  target (which SH6f left as `iso: kernel`) now runs the four twins in SH7a–SH7d
+  order inside the in-guest shmake graph: `sha256sum --selftest`, `mkinitrd
+  --selftest`, `bootoffsets --check`, then `mkinitrd` packs the /fat initrd
+  payload into `/fat/initrd.tar` and `mkiso` splices the staged boot blobs
+  (`/tests/mbr_dual.bin` + `/tests/stage2.bin`) with `/fat/KERNEL.ELF` +
+  `/fat/BOOTX64.EFI` + `/fat/initrd.tar` into `/fat/auralite.iso`.  shmake runs
+  one exec per recipe line (no shell, no redirects, no `$(shell)/$(wildcard)`),
+  so each twin is its own line and a failing line stops the build.  The target
+  set is unchanged (D5): kernel / initrd / iso / user.
+- **`sh build.sh iso` is wired.**  `build.sh` was previously "extra words are
+  ignored"; it now hands `$1` through to `shmake`.  Because D10 leaves no
+  `test`/`[` builtin and no string comparison, build.sh does not branch on
+  `$1`'s value — it always (re)builds the SH6f pair (so the SH6f receipt stays
+  truthful) and additionally builds the caller-requested target.  So
+  `sh build.sh iso` first yields kernel+initrd, then the `iso` target, whose
+  recipe runs the twins in order.
+- **`tools/selfhost/sh7e_probe.sh`** is the in-guest terminal gate.  It stages
+  the /fat worktree, runs the four twins' self-checks in order
+  (`[selfhost] sh7e: twins-in-order`), then drives `sh /fat/build.sh iso` and
+  prints `[selfhost] iso PASS: auralite.iso built in-guest`.  It needs no guest
+  toolchain (the twins are normal user ELFs), so like the other SH7 cases it
+  does not skip on a plain `make iso`.  Assembly inputs use the same SH7d-proof
+  stand-ins (`/bin/init` as the kernel slot, `/tests/petest.exe` as the EFI
+  app) when no SH5-compiled `/fat/KERNEL.ELF` is present.
+- **The host gate is `test_selfhost_iso.sh`.**  It gives the guest a persistent
+  AHCI `/fat`, pre-formatted at its true size (the default 4 MiB superfloppy
+  cannot hold the ≥40 MiB image the SH7d writer requires), runs the probe, and
+  greps the §8 receipt plus each twin's own self-check.
+
+**Note on scope.**  SH7e assembles the ISO from prebuilt /fat artefacts — no
+code is compiled in-guest.  The full in-guest compile of kernel/libc/userland
+(tcc → aulink → mini-asm → the real `/fat/KERNEL.ELF`) is SH8 "bootstrap
+closure"; SH7e wiring simply consumes whatever `/fat/KERNEL.ELF` and the EFI
+loader are present, so the assembled image is bootable once SH8 supplies a
+real guest-built kernel.
 
 **Gate.** Host boots the guest-built ISO (`test_selfhost_iso.sh`) and
 greps the standard boot receipts to the shell; the guest-side receipt is

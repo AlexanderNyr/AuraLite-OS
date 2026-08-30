@@ -2375,6 +2375,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	      tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
 	      tools/selfhost/sh7a_probe.sh tools/selfhost/sh7b_probe.sh \
 	      tools/selfhost/sh7c_probe.sh tools/selfhost/sh7d_probe.sh \
+	      tools/selfhost/sh7e_probe.sh \
 	      $(INITRD_DIR)/tests/
 	@cp tools/selfhost/Selfhost.mk $(INITRD_DIR)/tests/sh6f.mk
 	@cp tools/selfhost/build.sh $(INITRD_DIR)/tests/build.sh
