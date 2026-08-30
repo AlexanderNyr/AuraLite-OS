@@ -75,11 +75,16 @@ int main(void) {
             FILE *in = fopen("/tmp/aura_sha256_stdin.bin", "wb");
             if (in) { fputs(payload, in); fclose(in); }
         }
-        freopen("/tmp/aura_sha256_stdin.bin", "rb", stdin);
-        if (fp) rc_same = eq_mode(eqpath);
+        /* freopen returns the new stream; glibc's fortified freopen is declared
+         * __attribute__((warn_unused_result)) (live under _FORTIFY_SOURCE on
+         * Ubuntu/CI), so the result must be consumed -- a (void) cast does not
+         * silence -Wunused-result.  A failed redirect is a real environment
+         * failure, so it also gates the eq_mode calls. */
+        FILE *rin = freopen("/tmp/aura_sha256_stdin.bin", "rb", stdin);
+        if (fp && rin) rc_same = eq_mode(eqpath);
 
-        freopen("/dev/null", "rb", stdin);   /* empty stdin -> different bytes */
-        if (fp) rc_diff = eq_mode(eqpath);
+        rin = freopen("/dev/null", "rb", stdin);   /* empty stdin -> different bytes */
+        if (fp && rin) rc_diff = eq_mode(eqpath);
 
         CHECK(rc_same == 0, "eq_mode: identical stdin/file content reports MATCH (exit 0)");
         CHECK(rc_diff == 1, "eq_mode: differing content reports MISMATCH (exit 1)");
