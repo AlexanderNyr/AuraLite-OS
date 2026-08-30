@@ -2203,6 +2203,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          tools/selfhost/build.sh tools/selfhost/Selfhost.mk \
                          tools/selfhost/sh6f_boot1.sh tools/selfhost/sh6f_boot2.sh \
                          $(SHMAKE_ELF) $(SH6E_STAMP_ELF) \
+                         $(USER_BUILD)/sha256sum.elf \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
