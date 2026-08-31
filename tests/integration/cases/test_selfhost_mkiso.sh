@@ -92,7 +92,7 @@ il_send "echo SH7D_STILL_ALIVE"
 il_send_delay 2
 il_send "exit"
 
-il_run_qemu "$LOG" 90 "${AHCI[@]}"
+il_run_qemu "$LOG" 900 "${AHCI[@]}"
 
 # ---- the §8 receipt ----
 il_assert_grep "$LOG" "\[selfhost\] mkiso PASS: .* written in-guest" \

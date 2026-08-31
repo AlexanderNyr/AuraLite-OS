@@ -37,7 +37,12 @@ il_send "exit"
 il_run_qemu "$LOG" 60
 
 # ---- the §8 receipt ----
-il_assert_grep "$LOG" "\\[selfhost\\] shmake PASS: 3 targets up to date" \
+# The receipt is `[selfhost] shmake PASS: 3 targets up to date`, but the
+# kernel's `[thread] reaped ...` line can land on the same serial line and
+# split the `[selfhost]` prefix from the rest, so match the receipt text
+# alone (the exit-0 run and every behavioural assertion above already prove
+# the probe completed).
+il_assert_grep "$LOG" "shmake PASS: 3 targets up to date" \
     "the probe script ran to completion"
 
 # ---- cold run (GEN=1): every recipe ran ----

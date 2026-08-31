@@ -106,7 +106,7 @@ il_send "echo SH7E_STILL_ALIVE"
 il_send_delay 2
 il_send "exit"
 
-il_run_qemu "$LOG" 100 "${AHCI[@]}"
+il_run_qemu "$LOG" 900 "${AHCI[@]}"
 
 # ---- the §8 receipt ----
 il_assert_grep "$LOG" "\\[selfhost\\] iso PASS: auralite.iso built in-guest" \

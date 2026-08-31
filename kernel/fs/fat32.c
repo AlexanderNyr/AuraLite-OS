@@ -1172,23 +1172,47 @@ static int64_t fat32_write_impl(struct vnode *vn, uint64_t pos, const void *buf,
     uint32_t head = ensure_chain(v->first_cluster, clusters);
     if (!head) return -1;
     v->first_cluster = head;
+
     const uint8_t *in = (const uint8_t *)buf;
     uint64_t done = 0;
+
+    /* Walk the chain INCREMENTALLY, mirroring fat32_read_impl(), instead of
+     * calling chain_at() for every cluster.  chain_at() restarts from the
+     * chain head each time -- following cl_idx links, each a fat_get() (a
+     * 512-byte disk read) -- so writing N clusters costs N*(N-1)/2 FAT reads
+     * on top of the N data reads: quadratic.  For the ~48 MiB image that
+     * mkiso assembles onto /fat (≈96 k clusters at 512 B/cluster) that is
+     * ~4.6 BILLION extra reads, which is not slow so much as never finishing.
+     * Advancing one link per cluster makes it linear; the chain is walked
+     * once to reach the starting cluster, which matters only for a seek into
+     * the middle of a file (as in fat32_read_impl). */
+    uint32_t cl_idx = (uint32_t)(pos / fs.bytes_per_clus);
+    uint32_t cl = chain_at_hinted(v, cl_idx);
     while (done < count) {
-        uint32_t cl_idx = (uint32_t)((pos + done) / fs.bytes_per_clus);
-        uint32_t off    = (uint32_t)((pos + done) % fs.bytes_per_clus);
-        uint32_t cl = chain_at(v->first_cluster, cl_idx);
+        if (!cl) break;
+        uint32_t off = (uint32_t)((pos + done) % fs.bytes_per_clus);
         if (read_cluster(cl, cluster_buf) != 0) return -1;
         uint64_t chunk = fs.bytes_per_clus - off;
         if (chunk > count - done) chunk = count - done;
         memcpy(cluster_buf + off, in + done, (size_t)chunk);
         if (write_cluster(cl, cluster_buf) != 0) return -1;
         done += chunk;
+        /* Step to the next cluster only when this one is exhausted. */
+        if ((pos + done) % fs.bytes_per_clus == 0) {
+            uint32_t next = fat_get(cl);
+            cl = (next < 2 || next >= FAT_BAD) ? 0 : next;
+            if (cl) {
+                v->hint_idx     = (uint32_t)((pos + done) / fs.bytes_per_clus);
+                v->hint_cluster = cl;
+            }
+        }
     }
-    if (end > v->size) v->size = (uint32_t)end;
-    v->vnode.size = v->size;
-    update_sfn_entry(v->parent_cluster, v->dirent_offset, v->first_cluster, v->size);
-    read_entry_times(v->parent_cluster, v->dirent_offset, &vn->ctime, &vn->mtime, &vn->atime);
+    if (done > 0) {
+        if (end > v->size) v->size = (uint32_t)end;
+        v->vnode.size = v->size;
+        update_sfn_entry(v->parent_cluster, v->dirent_offset, v->first_cluster, v->size);
+        read_entry_times(v->parent_cluster, v->dirent_offset, &vn->ctime, &vn->mtime, &vn->atime);
+    }
     return (int64_t)done;
 }
 

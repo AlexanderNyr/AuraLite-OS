@@ -2,6 +2,39 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH9 — first split CI run: FAT32 write-path linearization + SH7d/SH7e img timeouts] 2026-08-31
+
+The first real run of the three-way selfhost shard exposed two remaining gates
+as **CI-timeout** (not logic) issues; both are now fixed.
+
+- **`selfhost-closure` went 8/8 PASS** (SH8 on CI confirmed).  `selfhost-script`
+  went 5/6 — `test_selfhost_shmake` failed **only** on its final receipt grep:
+  the guest reached the line, but the kernel's `[thread] reaped '/bin/shmake'`
+  serial message landed on the same line and split the `[selfhost]` prefix off
+  `shmake PASS: 3 targets up to date`.  The gate now greps the receipt text
+  alone (`shmake PASS: 3 targets up to date`); every behavioural assertion
+  above it already proves the probe completed.
+- **`selfhost-img` went 3/5** — `test_selfhost_mkiso` and `test_selfhost_iso`
+  both killed QEMU while `mkiso --esp-mb 48` was writing the ~48 MiB image to
+  `/fat`.  Root cause is genuine, in the kernel, not the probe (the probe
+  syntax bugs from the previous entry are confirmed gone): `fat32_write_impl`
+  still walked the cluster chain with `chain_at()` **from the head on every
+  cluster**, i.e. the quadratic `N*(N-1)/2` link walk the read path had
+  already been linearised — plus each cluster allocation rewrote both FAT
+  mirrors and the FSInfo sector.  For a 48 MiB file at 512 B/sector that is
+  ~96 k clusters ≈ 4.6 B extra chain reads + a lot of redundant FAT/FSInfo
+  I/O, which under TCG never finished in the old 90 s / 100 s budget.
+- **Kernel fix:** `fat32_write_impl` now walks the chain **incrementally**
+  (`chain_at_hinted` + one-link advance on cluster exhaustion), mirroring the
+  proven `fat32_read_impl`; the whole operation is once again linear rather
+  than "so slow it never finishes".
+- **CI fix:** the guest AHCI driver sustains only ~740 KB/s under TCG, so a
+  single 48 MiB write is inherently multi-minute on a 512 B/sector `/fat`
+  (SH8 already allowed 1400 s for the same writes).  The SH7d/SH7e host gates'
+  QEMU timeout was raised from 90 s / 100 s to **900 s** to match that reality
+  ("give it room" per the probe comments), the same allowance SH8 has always
+  used.
+
 ## [SELFHOST SH9 — cross-arch + CI wiring: spike measured, CI half landed] 2026-08-30
 
 Stage 2.5 of D1 (SELFHOST_PLAN.md SH9): keep the self-host loop honest.
