@@ -333,12 +333,12 @@ static inline void w32(uint8_t *p, uint32_t v) {
  * ============================================================================ */
 
 static int btrfs_read_block(uint64_t lba, void *buf) {
-    return blkdev_read(btrfs_m.bdev, lba / 512,
-                     btrfs_m.block_size / 512, buf);
+    return fs_read_block(btrfs_m.bdev, lba / 512,
+                       btrfs_m.block_size / 512, buf);
 }
 static int btrfs_write_block(uint64_t lba, const void *buf) {
-    return blkdev_write(btrfs_m.bdev, lba / 512,
-                      btrfs_m.block_size / 512, buf);
+    return fs_write_block(btrfs_m.bdev, lba / 512,
+                        btrfs_m.block_size / 512, buf);
 }
 
 /* Read a tree node/leaf by LBA */

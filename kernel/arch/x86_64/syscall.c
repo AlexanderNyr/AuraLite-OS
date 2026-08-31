@@ -1012,6 +1012,15 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             return (uint64_t)-EBADF;
         struct ofd *fo = fc->fd_table[a1];
         page_cache_flush(fo);
+        /* F2 (FSFULL_PLAN.md): after the page cache, give the
+         * filesystem a chance to flush its own cache (the five
+         * experimental FSes route block I/O through the shared buffer
+         * cache and set `.sync` to fs_cache_sync).  A filesystem with
+         * no `.sync` (NULL) is left untouched. */
+        struct vnode *vn = fo->vn;
+        if (vn && vn->ops && vn->ops->sync) {
+            vn->ops->sync(vn->fs_data);
+        }
         return 0;
     }
     case SYS_CLOSE:

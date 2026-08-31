@@ -11,6 +11,12 @@ static struct buffer *lru_head = NULL; /* Most recently used */
 static struct buffer *lru_tail = NULL; /* Least recently used */
 static spinlock_t bc_lock = SPINLOCK_UNLOCKED;
 
+/* F2: cache-hit/miss counters.  These let a case prove the "one I/O
+ * path" claim: a repeated read bumps HITS while the raw AHCI sector
+ * count (blkdev_get_stats) stays bounded. */
+static uint64_t bc_hits = 0;
+static uint64_t bc_misses = 0;
+
 /* Helper: Remove buffer from LRU list */
 static void lru_remove(struct buffer *buf) {
     if (buf->prev) buf->prev->next = buf->next;
@@ -99,6 +105,7 @@ struct buffer *bc_get(uint32_t device_id, uint64_t block_num) {
     struct buffer *curr = lru_head;
     while (curr) {
         if (curr->device_id == device_id && curr->block_num == block_num) {
+            bc_hits++;
             curr->lock_count++;
             lru_touch(curr);
             spinlock_release(&bc_lock);
@@ -106,6 +113,7 @@ struct buffer *bc_get(uint32_t device_id, uint64_t block_num) {
         }
         curr = curr->next;
     }
+    bc_misses++;
 
     /* 2. Not found. Find an empty or evictable buffer */
     struct buffer *candidate = NULL;
@@ -176,4 +184,52 @@ void bc_flush_all(void) {
         curr = curr->next;
     }
     spinlock_release(&bc_lock);
+}
+
+/* ============================================================================
+ * F2 — shared cache-backed block I/O for the five filesystems (see the
+ * header comment for the rationale).
+ * ============================================================================ */
+
+int fs_read_block(int dev, uint64_t lba, uint32_t count, void *buf) {
+    uint8_t *p = (uint8_t *)buf;
+    for (uint32_t i = 0; i < count; i++) {
+        struct buffer *b = bc_get((uint32_t)dev, lba + i);
+        if (!b) return -1;
+        memcpy(p, b->data, BC_BLOCK_SIZE);
+        bc_release(b);
+        p += BC_BLOCK_SIZE;
+    }
+    return 0;
+}
+
+int fs_write_block(int dev, uint64_t lba, uint32_t count, const void *buf) {
+    const uint8_t *p = (const uint8_t *)buf;
+    for (uint32_t i = 0; i < count; i++) {
+        struct buffer *b = bc_get((uint32_t)dev, lba + i);
+        if (!b) return -1;
+        memcpy(b->data, p, BC_BLOCK_SIZE);
+        b->dirty = true;
+        bc_release(b);
+        p += BC_BLOCK_SIZE;
+    }
+    return 0;
+}
+
+int fs_cache_sync(void *fs_data) {
+    (void)fs_data;
+    bc_flush_all();
+    /* F2 receipt: cache health at the flush point.  Greppable so an
+     * integration case can assert that a repeat read raised hits with
+     * the AHCI sector count bounded. */
+    uint64_t h, m;
+    bc_get_stats(&h, &m);
+    kprintf("[bc] hits=%llu misses=%llu\n", (unsigned long long)h,
+            (unsigned long long)m);
+    return 0;
+}
+
+void bc_get_stats(uint64_t *out_hits, uint64_t *out_misses) {
+    if (out_hits)   *out_hits   = bc_hits;
+    if (out_misses) *out_misses = bc_misses;
 }

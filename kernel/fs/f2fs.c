@@ -378,16 +378,16 @@ static uint32_t seg_off_to_lba(uint32_t seg_no, uint32_t offset) {
     return seg_to_lba(seg_no) + offset;
 }
 
-/* Read one page (block) */
+/* Read one page (block) through the shared cache (F2) */
 static int read_page(uint32_t lba, void *buf) {
-    return blkdev_read(f2m.bdev, lba * F2FS_SECTOR_PER_PAGE,
-                     F2FS_SECTOR_PER_PAGE, buf);
+    return fs_read_block(f2m.bdev, lba * F2FS_SECTOR_PER_PAGE,
+                       F2FS_SECTOR_PER_PAGE, buf);
 }
 
-/* Write one page (block) */
+/* Write one page (block) through the shared cache (F2) */
 static int write_page(uint32_t lba, const void *buf) {
-    return blkdev_write(f2m.bdev, lba * F2FS_SECTOR_PER_PAGE,
-                      F2FS_SECTOR_PER_PAGE, buf);
+    return fs_write_block(f2m.bdev, lba * F2FS_SECTOR_PER_PAGE,
+                        F2FS_SECTOR_PER_PAGE, buf);
 }
 
 /* ============================================================================

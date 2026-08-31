@@ -66,6 +66,7 @@ static int64_t ntfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t cou
 const struct vfs_ops ntfs_ops = {
     .lookup = ntfs_lookup,
     .read = ntfs_read,
+    .sync = fs_cache_sync,   /* F2: flush the shared cache on sync */
 };
 
 /* Returns 0 on success (volume looks like NTFS), -1 otherwise.  The
@@ -73,14 +74,14 @@ const struct vfs_ops ntfs_ops = {
  * never written to (FSFULL_PLAN.md F1). */
 int ntfs_init(int device_id) {
     ntfs_dev_id = device_id;
-    struct buffer *b = bc_get(device_id, 0);
-    if (!b) {
+    /* F2: read the boot sector through the shared cache-backed helper. */
+    uint8_t sector0[BC_BLOCK_SIZE];
+    if (fs_read_block(device_id, 0, 1, sector0) != 0) {
         kprintf("[ntfs] sector 0 of device %d unreadable; /ntfs not mounted\n",
                 device_id);
         return -1;
     }
-    memcpy(&boot, b->data, sizeof(struct ntfs_boot_sector));
-    bc_release(b);
+    memcpy(&boot, sector0, sizeof(struct ntfs_boot_sector));
     if (memcmp(boot.oem_id, "NTFS    ", 8) != 0) {
         kprintf("[ntfs] not NTFS signature (OEM '%.8s'); /ntfs not mounted\n",
                 boot.oem_id);

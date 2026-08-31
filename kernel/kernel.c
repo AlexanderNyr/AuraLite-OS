@@ -407,6 +407,15 @@ void kmain(boot_info_t *boot_info) {
         kprintf("[net] network unavailable; continuing boot without online self-tests\n");
     }
 
+    /* F2 (FSFULL_PLAN.md): the buffer cache is created BEFORE any
+     * filesystem touches a device, so exFAT/NTFS (which already read
+     * through bc_get) and now ext4/btrfs/f2fs (which read through the
+     * shared fs_read_block/fs_write_block helpers) never hit an
+     * uninitialised cache.  bc_init only allocates its pool from the
+     * kernel heap (kheap_init above), so it is safe to run here. */
+    kprintf("[boot] initialising buffer cache...\n");
+    bc_init();
+
     /* AHCI SATA driver. */
     kprintf("[boot] initialising AHCI SATA driver...\n");
     ahci_init();
@@ -445,9 +454,6 @@ void kmain(boot_info_t *boot_info) {
      * To avoid auto-format collisions on the primary disk (blkdev 0) or ext2
      * disk (blkdev 1), each experimental FS requires its own dedicated disk.
      * ======================================================================== */
-    kprintf("[boot] initialising buffer cache and experimental filesystems...\n");
-    bc_init();
-
     /* FSFULL F1: mount each experimental filesystem ONLY when its init
      * accepted the volume.  Three distinguishable states, each with its
      * own greppable line: no disk present, mounted, refused (foreign or

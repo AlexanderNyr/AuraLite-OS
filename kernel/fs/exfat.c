@@ -90,6 +90,7 @@ const struct vfs_ops exfat_ops = {
     .lookup = exfat_lookup,
     .read = exfat_read,
     .write = exfat_write,
+    .sync = fs_cache_sync,   /* F2: flush the shared cache on sync */
 };
 
 /* Returns 0 on success (volume looks like exFAT), -1 otherwise.  The
@@ -97,14 +98,15 @@ const struct vfs_ops exfat_ops = {
  * never written to (FSFULL_PLAN.md F1). */
 int exfat_init(int device_id) {
     exfat_dev_id = device_id;
-    struct buffer *b = bc_get(device_id, 0);
-    if (!b) {
+    /* F2: read the boot region through the shared cache-backed helper
+     * (sector 0, one 512-byte sector) so no FS path bypasses the cache. */
+    uint8_t sector0[BC_BLOCK_SIZE];
+    if (fs_read_block(device_id, 0, 1, sector0) != 0) {
         kprintf("[exfat] sector 0 of device %d unreadable; /exfat not mounted\n",
                 device_id);
         return -1;
     }
-    memcpy(&boot_region, b->data, sizeof(struct exfat_boot_region));
-    bc_release(b);
+    memcpy(&boot_region, sector0, sizeof(struct exfat_boot_region));
     if (memcmp(boot_region.oem_name, "EXFAT   ", 8) != 0) {
         kprintf("[exfat] not exFAT signature (OEM '%.8s'); /exfat not mounted\n",
                 boot_region.oem_name);

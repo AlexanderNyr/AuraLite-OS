@@ -213,9 +213,10 @@ def claims():
     rv_shared = makefl_rv.group(0) if makefl_rv else ""
     checks.append((
         "P2: KERNELRV_SHARED carries the fs adoption set unchanged "
-        "(blkdev.c, ext2.c, kprintf.c, spinlock.c)",
+        "(blkdev.c, ext2.c, buffer_cache.c, kprintf.c, spinlock.c)",
         all(t in rv_shared for t in
             ("kernel/fs/blkdev.c", "kernel/fs/ext2.c",
+             "kernel/fs/buffer_cache.c",
              "kernel/lib/kprintf.c", "kernel/lib/spinlock.c"))))
     checks.append((
         "P2: the arch glue provides the measured surface and vfs.c's "
@@ -243,6 +244,7 @@ def claims():
         "P3: KERNELA64_SHARED carries the identical fs adoption set",
         all(t in a64_shared for t in
             ("kernel/fs/blkdev.c", "kernel/fs/ext2.c",
+             "kernel/fs/buffer_cache.c",
              "kernel/lib/kprintf.c", "kernel/lib/spinlock.c"))))
     checks.append((
         "P3: the a64 glue mirrors the rv64 surface (sinks, heap, "
@@ -344,8 +346,10 @@ def claims():
     checks.append((
         "P7: KERNEL32_SHARED carries the same fs adoption set "
         "(+string.c; div64_32.c supplies __udivdi3)",
-        all(t in makefl for t in ("kernel/fs/blkdev.c", )) and
-        "kernel/fs/ext2.c kernel/lib/string.c" in makefl and
+        all(t in makefl for t in ("kernel/fs/blkdev.c",
+                                  "kernel/fs/ext2.c",
+                                  "kernel/fs/buffer_cache.c", )) and
+        "kernel/fs/buffer_cache.c kernel/lib/string.c" in makefl and
         "__udivdi3" in read("kernel", "arch", "i386", "div64_32.c")))
     checks.append((
         "P7: ata32 has the drive-parametrised lane and the glue "

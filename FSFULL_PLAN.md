@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2–F7 planned 📋
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3–F7 planned 📋
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -288,26 +288,32 @@ re-formatted; F1 now refuses it honestly (F4b).
 
 ---
 
-### Phase F2 — One block I/O path: buffer cache under everything ✅ planned
+### Phase F2 — One block I/O path: buffer cache under everything ✅ DONE
 
 **Objective:** all five filesystems read and write through `bc_get`/
 `bc_release`; the two-stack fact in §1.3 dies.
 
 #### Tasks
 
-- [ ] `bc_init()` moves before `ahci_register_blkdevs()` in `kmain` so the
-      cache exists before any FS touches a device.
-- [ ] `bc_get`/`bc_release` become the only sector access in the five; the
+- [x] `bc_init()` moves before `ahci_register_blkdevs()` in `kmain` so the
+      cache exists before any FS touches a device (`[boot] initialising
+      buffer cache...` now precedes the AHCI section).
+- [x] `bc_get`/`bc_release` become the only sector access in the five; the
       direct `blkdev_read/write` calls in ext4/btrfs/f2fs go through a
       shared 4 KiB `fs_read_block(dev, lba, buf)` / `fs_write_block`
       helper (in `kernel/fs/buffer_cache.c`), replacing the per-FS
       `read_block`/`write_block` copies.
-- [ ] exfat/ntfs stop reading the boot region through an uninitialised
-      cache; they use the same helpers.
-- [ ] `bc_sync` is exported to the VFS `sync` slot so a filesystem can
-      flush on `sync`/umount; the five set `.sync`.
-- [ ] (RES-07) the buffer cache compiles on all four widths (shared lists),
-      so the x86-only pin in RES-07 closes.
+- [x] exfat/ntfs stop reading the boot region through an uninitialised
+      cache; they use the same helpers (`fs_read_block` on sector 0).
+- [x] `bc_sync` is exported to the VFS `sync` slot so a filesystem can
+      flush on `sync`/umount; the five set `.sync` (`fs_cache_sync`,
+      which flushes the cache and prints the `[bc] hits=N misses=M`
+      receipt).  The x86_64 `fsync()` path calls the vnode's `.sync`
+      after the page-cache flush.
+- [x] (RES-07) the buffer cache compiles on all four widths (shared lists),
+      so the x86-only pin in RES-07 closes (`kernel/fs/buffer_cache.c`
+      joins KERNEL32_SHARED, KERNELRV_SHARED and KERNELA64_SHARED;
+      `make kernel32/kernelrv/kernela64` link green).
 
 #### Test gate
 
@@ -321,7 +327,7 @@ re-formatted; F1 now refuses it honestly (F4b).
 
 #### Deliverable
 
-`patches/FS_F2_bcache_seam.patch`
+`patches/FS_F2_bcache_seam.patch` ✅
 
 ---
 
@@ -624,7 +630,7 @@ and is out of scope here, named in this plan's D-notes.
 ## 7. Checklist
 
 - [x] F1 mount safety (knob, refusal, no-write negative control)
-- [ ] F2 buffer-cache seam (one I/O path, bc before ahci, `.sync` slots)
+- [x] F2 buffer-cache seam (one I/O path, bc before ahci, `.sync` slots)
 - [ ] F3 ext4 (interop harness, 64-bit, rmdir/rename/link/settimes,
       symlinks, HTree-parse, journal refusal)
 - [ ] F4 f2fs (NAT/SIT/SSA, CP validation, rename/rmdir, multi-segment)

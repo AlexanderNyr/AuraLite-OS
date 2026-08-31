@@ -423,13 +423,13 @@ static uint32_t ext4_block_lba(uint32_t block_no) {
  * ============================================================================ */
 
 static int read_block(uint32_t block_no, void *buf) {
-    return blkdev_read(m4.bdev, ext4_block_lba(block_no),
-                     m4.block_size / 512, buf);
+    return fs_read_block(m4.bdev, ext4_block_lba(block_no),
+                       m4.block_size / 512, buf);
 }
 
 static int write_block(uint32_t block_no, const void *buf) {
-    return blkdev_write(m4.bdev, ext4_block_lba(block_no),
-                      m4.block_size / 512, buf);
+    return fs_write_block(m4.bdev, ext4_block_lba(block_no),
+                        m4.block_size / 512, buf);
 }
 
 static int read_inode(uint32_t ino, struct ext4_inode *out) {

@@ -49,6 +49,28 @@ struct buffer *bc_get(uint32_t device_id, uint64_t block_num) {
 
 void bc_release(struct buffer *buf) { (void)buf; }
 
+/* F2 (FSFULL_PLAN.md): the drivers now read the boot region through the
+ * shared cache-backed helpers, so the host lane provides them (mirroring
+ * the real buffer_cache.c implementations over the same fake cache). */
+int fs_read_block(int dev, uint64_t lba, uint32_t count, void *buf) {
+    uint8_t *p = (uint8_t *)buf;
+    for (uint32_t i = 0; i < count; i++) {
+        struct buffer *b = bc_get((uint32_t)dev, lba + i);
+        if (!b) return -1;
+        memcpy(p, b->data, BC_BLOCK_SIZE);
+        bc_release(b);
+        p += BC_BLOCK_SIZE;
+    }
+    return 0;
+}
+
+int fs_write_block(int dev, uint64_t lba, uint32_t count, const void *buf) {
+    (void)dev; (void)lba; (void)count; (void)buf;
+    return 0;
+}
+
+int fs_cache_sync(void *fs_data) { (void)fs_data; return 0; }
+
 /* ---- test harness ---- */
 
 static int failures = 0;

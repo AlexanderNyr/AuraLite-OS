@@ -2,6 +2,42 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FSFULL F2 — one block I/O path: the buffer cache under all five filesystems] 2026-08-31
+
+`FSFULL_PLAN.md` phase F2: the two-I/O-stack fact dies — every experimental
+filesystem now reads and writes through the shared buffer cache, and the
+cache is alive before any of them mounts.
+
+- `kernel/fs/buffer_cache.{c,h}`: new shared, cache-backed helpers
+  `fs_read_block(dev, lba, count, buf)` / `fs_write_block(...)` that route
+  N 512-byte sectors through `bc_get`/`bc_release`; `fs_cache_sync(fs_data)`
+  as the `.sync` slot (flushes the whole cache, prints the
+  `[bc] hits=N misses=M` receipt); `bc_get_stats()` exposes the new
+  hit/miss counters fed by `bc_get`.
+- `kernel/fs/ext4.c`, `kernel/fs/btrfs.c`, `kernel/fs/f2fs.c`: their direct
+  `blkdev_read/write` block I/O is replaced by the shared
+  `fs_read_block`/`fs_write_block` helpers — no cache-less path remains.
+- `kernel/fs/exfat.c`, `kernel/fs/ntfs.c`: read the boot region through
+  `fs_read_block` (sector 0) instead of a bare `bc_get`, and set `.sync =
+  fs_cache_sync`.  Their cluster reads were already cache-backed.
+- `kernel/kernel.c`: `bc_init()` moves to before `ahci_register_blkdevs()`
+  (new `[boot] initialising buffer cache...` line), so the cache exists
+  before any filesystem touches a device — exFAT/NTFS never hit an
+  uninitialised cache.
+- `kernel/arch/x86_64/syscall.c`: the `fsync()` path now calls the vnode's
+  `.sync` after the page-cache flush, so a filesystem can push its cache
+  before the caller sees success.
+- RES-07: `kernel/fs/buffer_cache.c` joins `KERNEL32_SHARED`,
+  `KERNELRV_SHARED` and `KERNELA64_SHARED`; `make kernel32`, `make
+  kernelrv`, `make kernela64` and `make kernel` all link green (four widths).
+  The parity claims checker's P2/P3/P7 expectations are updated to include
+  `buffer_cache.c` in the shared adoption set.
+- `tests/unit/test_exfat_ntfs.c`: the host lane stubs `fs_read_block`,
+  `fs_write_block` and `fs_cache_sync` (mirroring the real implementations)
+  so the drivers compile as-is.
+- `make test-unit` green; boot reaches the shell with the buffer cache
+  armed before AHCI.
+
 ## [FSFULL F1 — mount safety: auto-format is opt-in; exFAT/NTFS stop lying at mount] 2026-08-31
 
 `FSFULL_PLAN.md` phase F1: no experimental filesystem driver may destroy a
