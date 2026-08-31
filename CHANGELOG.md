@@ -2,6 +2,58 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FSFULL F1 — mount safety: auto-format is opt-in; exFAT/NTFS stop lying at mount] 2026-08-31
+
+`FSFULL_PLAN.md` phase F1: no experimental filesystem driver may destroy a
+foreign volume by default.
+
+- **Auto-format is now opt-in.** ext4, f2fs and btrfs used to format any
+  device whose superblock was absent or foreign — a disk containing user
+  data that is not that filesystem was overwritten at boot with no
+  confirmation and no refusal mode. The format branch is now gated on a
+  `FS_MOUNT_FORMAT` knob: build default **0 = refuse** (`make iso
+  FS_MOUNT_FORMAT=1` opts in), run-time override
+  `-fw_cfg name=opt/auralite.fsformat,string=1` (the selftest-knob
+  channel, OPT O2). A refused mount prints
+  `[ext4] not ext4 magic (0x...); format disabled (FS_MOUNT_FORMAT=0)`
+  and returns **without writing a single sector**.
+- **exFAT/NTFS stop lying at mount.** Both drivers now verify the on-disk
+  OEM signature (`"EXFAT   "` / `"NTFS    "`) and refuse a foreign volume
+  instead of parsing garbage; `exfat_init`/`ntfs_init` return `int`.
+- **Failed inits no longer mount.** `kernel.c` mounts each experimental
+  filesystem only when its `*_init` succeeded, and prints a distinct
+  `foreign volume on device N` line — the old code called `vfs_mount`
+  unconditionally, so a refused/uninitialised driver still resolved as
+  `/ext4`.
+- **Knob plumbing:** `kernel/fs/fsformat.{h,c}` (build default + source
+  label, printed at boot as `[fsformat] auto-format: DISABLED (build)`);
+  `kernel/arch/x86_64/fwcfg.c` refactored onto a shared
+  `fwcfg_read_string()` helper with byte-identical selftest behaviour.
+- **Gates:** `tests/unit/test_fsformat.c` (pins the OFF default and the
+  coercion rules, compiles the real source); `tests/unit/test_exfat_ntfs.c`
+  (compiles the real drivers against stubs — the NTFS slot is blkdev 6,
+  unreachable from a 6-port AHCI controller, so this host lane is the
+  NTFS refusal test); `tests/integration/cases/test_fsformat_knob.sh`
+  (5 foreign volumes → named refusals + **byte-identical disk hashes**
+  with the knob off; the same disks format, mount and serve a `ls /f2fs`
+  readdir with the knob on). Registered in `run_all.sh` and
+  `make test-unit`. The write-path round-trip is deliberately limited to
+  `/f2fs` readdir: file writes through the experimental drivers trip
+  pre-existing breakage unrelated to F1 (see below), which must not gate
+  the mount-safety work.
+- **Pre-existing bugs found while building the F1 gates (NOT fixed here,
+  parked for later phases):** (1) ext4's data path is unstable — even a
+  plain `ls /ext4` or a `write`/`cat` of one file trips KCANARY (stack
+  protector) in `read_inode`; reproduced identically on pristine
+  `origin/main` 06be2ab, so it is not an F1 regression (F3 territory).
+  (2) f2fs `path_resolve` cannot distinguish "directory missing" from
+  "final component missing", so VFS `open(O_CREAT)` always fails
+  ("cannot open/create"); `f2fs_create` only works when called directly
+  (F4 territory). (3) btrfs's first superblock read happens with
+  `block_size == 0`, so a pre-existing btrfs volume reads as "unreadable"
+  and, pre-F1, was always re-formatted; the F1 gate now refuses it
+  honestly (F4b territory).
+
 ## [SELFHOST SH9 — second split CI run: mkiso/iso img gates green; shell echo made line-atomic] 2026-08-31
 
 After the FAT32 write-path linearization + 900 s timeouts landed, the img shard

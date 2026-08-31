@@ -92,12 +92,24 @@ const struct vfs_ops exfat_ops = {
     .write = exfat_write,
 };
 
-void exfat_init(int device_id) {
+/* Returns 0 on success (volume looks like exFAT), -1 otherwise.  The
+ * caller mounts only on success; a foreign volume is refused loudly and
+ * never written to (FSFULL_PLAN.md F1). */
+int exfat_init(int device_id) {
     exfat_dev_id = device_id;
     struct buffer *b = bc_get(device_id, 0);
-    if (b) {
-        memcpy(&boot_region, b->data, sizeof(struct exfat_boot_region));
-        bc_release(b);
-        kprintf("[fs] exFAT initialised on device %d\n", device_id);
+    if (!b) {
+        kprintf("[exfat] sector 0 of device %d unreadable; /exfat not mounted\n",
+                device_id);
+        return -1;
     }
+    memcpy(&boot_region, b->data, sizeof(struct exfat_boot_region));
+    bc_release(b);
+    if (memcmp(boot_region.oem_name, "EXFAT   ", 8) != 0) {
+        kprintf("[exfat] not exFAT signature (OEM '%.8s'); /exfat not mounted\n",
+                boot_region.oem_name);
+        return -1;
+    }
+    kprintf("[fs] exFAT initialised on device %d\n", device_id);
+    return 0;
 }

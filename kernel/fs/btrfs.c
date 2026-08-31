@@ -23,6 +23,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/btrfs.h"
+#include "kernel/fs/fsformat.h"
 #include "kernel/fs/buffer_cache.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
@@ -952,8 +953,14 @@ int btrfs_init(int prefer_port) {
         return -1;
     }
 
-    /* Read superblock */
+    /* Read superblock.  FSFULL F1: auto-formatting is opt-in; with the
+     * gate off, an unreadable or foreign superblock is refused loudly
+     * and not a single sector is written. */
     if (btrfs_read_block(BTRFS_SUPER_OFFSET, btrfs_scratch) != 0) {
+        if (!fs_format_allowed()) {
+            kprintf("[btrfs] superblock unreadable; format disabled (FS_MOUNT_FORMAT=0)\n");
+            return -1;
+        }
         kprintf("[btrfs] cannot read superblock, formatting...\n");
         if (format_btrfs() != 0) return -1;
         if (btrfs_read_block(BTRFS_SUPER_OFFSET, btrfs_scratch) != 0) return -1;
@@ -961,6 +968,10 @@ int btrfs_init(int prefer_port) {
 
     struct btrfs_superblock *sb = (struct btrfs_superblock *)btrfs_scratch;
     if (memcmp(sb->magic, BTRFS_MAGIC, 8) != 0) {
+        if (!fs_format_allowed()) {
+            kprintf("[btrfs] not btrfs magic; format disabled (FS_MOUNT_FORMAT=0)\n");
+            return -1;
+        }
         kprintf("[btrfs] not btrfs magic, formatting...\n");
         if (format_btrfs() != 0) return -1;
         if (btrfs_read_block(BTRFS_SUPER_OFFSET, btrfs_scratch) != 0) return -1;

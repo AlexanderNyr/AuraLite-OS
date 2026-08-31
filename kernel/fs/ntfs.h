@@ -44,7 +44,9 @@ struct ntfs_mft_record {
 #pragma pack(pop)
 #endif
 
-void ntfs_init(int device_id);
+/* 0 on success (NTFS signature verified), -1 on refusal — the caller
+ * mounts only on success (FSFULL_PLAN.md F1). */
+int ntfs_init(int device_id);
 extern const struct vfs_ops ntfs_ops;
 
 #endif /* AURALITE_FS_NTFS_H */

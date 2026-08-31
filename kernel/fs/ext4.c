@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include "kernel/fs/ext4.h"
 #include "kernel/fs/buffer_cache.h"
+#include "kernel/fs/fsformat.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/spinlock.h"
@@ -1402,8 +1403,14 @@ int ext4_init(int prefer_port) {
         return -1;
     }
 
-    /* Read superblock */
+    /* Read superblock.  FSFULL F1: auto-formatting is opt-in; with the
+     * gate off, an unreadable or foreign superblock is refused loudly
+     * and not a single sector is written. */
     if (read_block(0, ext4_scratch) != 0) {
+        if (!fs_format_allowed()) {
+            kprintf("[ext4] superblock unreadable; format disabled (FS_MOUNT_FORMAT=0)\n");
+            return -1;
+        }
         kprintf("[ext4] cannot read superblock, formatting...\n");
         if (format_ext4() != 0) return -1;
         if (read_block(0, ext4_scratch) != 0) return -1;
@@ -1411,6 +1418,11 @@ int ext4_init(int prefer_port) {
 
     struct ext4_sb *sb = (struct ext4_sb *)ext4_scratch;
     if (sb->s_magic != EXT4_MAGIC) {
+        if (!fs_format_allowed()) {
+            kprintf("[ext4] not ext4 magic (0x%04X); format disabled (FS_MOUNT_FORMAT=0)\n",
+                    sb->s_magic);
+            return -1;
+        }
         kprintf("[ext4] not ext4 magic (0x%04X), formatting...\n", sb->s_magic);
         if (format_ext4() != 0) return -1;
         if (read_block(0, ext4_scratch) != 0) return -1;

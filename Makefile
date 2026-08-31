@@ -72,6 +72,18 @@ ifeq ($(SELFTEST),off)
 CFLAGS      += -DSELFTEST_DEFAULT_OFF
 endif
 
+# FSFULL_F1 (FSFULL_PLAN.md): build-default auto-format gate for the
+# experimental filesystems (ext4/f2fs/btrfs).  Default is 0 = REFUSE:
+# a foreign or unreadable superblock is never formatted or written to.
+# A QEMU boot can override it at run time with
+# -fw_cfg name=opt/auralite.fsformat,string=1, which is how the
+# integration cases drive the format lane.
+# Usage:  make iso FS_MOUNT_FORMAT=1
+FS_MOUNT_FORMAT ?= 0
+ifeq ($(FS_MOUNT_FORMAT),1)
+CFLAGS      += -DFS_MOUNT_FORMAT_DEFAULT=1
+endif
+
 ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 
 # The linker script fixes the higher-half address; no --image-base needed.
@@ -2635,7 +2647,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_abi \
                 $(BUILD_DIR)/test_w32_kernel32 \
                 $(BUILD_DIR)/test_w32_argv \
-                $(BUILD_DIR)/test_w32_exports
+                $(BUILD_DIR)/test_w32_exports \
+                $(BUILD_DIR)/test_fsformat \
+                $(BUILD_DIR)/test_exfat_ntfs
 
 # WIN32_PLAN.md phases W32-1/W32-2: the w32 personality's host-side gates.
 # Both test files #include the implementation directly, so there is no w32
@@ -3354,6 +3368,31 @@ $(BUILD_DIR)/test_blkdev: tests/unit/test_blkdev.c kernel/fs/blkdev.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined -I . \
 	          tests/unit/test_blkdev.c kernel/fs/blkdev.c -o $@
+
+# FSFULL_F1: the auto-format gate, compiled as-is.  Trivial state, but
+# the default value is the safety property — the test pins it so a
+# future `make FS_MOUNT_FORMAT=1` cannot silently become the default.
+$(BUILD_DIR)/test_fsformat: tests/unit/test_fsformat.c kernel/fs/fsformat.c \
+                            kernel/fs/fsformat.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined -I . \
+	          tests/unit/test_fsformat.c kernel/fs/fsformat.c -o $@
+
+# FSFULL_F1: the exFAT/NTFS mount-refusal paths, compiled as-is against
+# stubs.  The NTFS slot (blkdev 6) is unreachable from a single 6-port
+# AHCI controller in QEMU, so this host lane is the NTFS refusal test.
+# The kernel builds the drivers with -Wno-unused-parameter (vfs_ops ABI
+# slots are often deliberately unused); the host lane keeps the same
+# tolerance rather than forcing driver edits for the test's sake.
+$(BUILD_DIR)/test_exfat_ntfs: tests/unit/test_exfat_ntfs.c kernel/fs/exfat.c \
+                              kernel/fs/ntfs.c kernel/fs/exfat.h \
+                              kernel/fs/ntfs.h kernel/fs/buffer_cache.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -O1 -g \
+	          -fsanitize=address,undefined -I . \
+	          tests/unit/test_exfat_ntfs.c kernel/fs/exfat.c kernel/fs/ntfs.c \
+	          -o $@
 
 $(BUILD_DIR)/test_vma: tests/unit/test_vma.c
 	@mkdir -p $(BUILD_DIR)

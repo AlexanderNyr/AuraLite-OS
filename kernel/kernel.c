@@ -41,6 +41,7 @@
 #include "kernel/fs/btrfs.h"
 #include "kernel/fs/f2fs.h"
 #include "kernel/fs/ntfs.h"
+#include "kernel/fs/fsformat.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
@@ -258,6 +259,18 @@ void kmain(boot_info_t *boot_info) {
                 selftest_mode_name(), selftest_mode_source());
     }
 
+    /* FSFULL_PLAN.md F1: the auto-format gate for the experimental
+     * filesystems, probed before any of them can mount.  fw_cfg can
+     * override the build default; the line is greppable and states both
+     * value and source. */
+    {
+        extern void fwcfg_fsformat_probe(void);
+        fwcfg_fsformat_probe();
+        kprintf("[fsformat] auto-format: %s (%s)\n",
+                fs_format_allowed() ? "ENABLED" : "DISABLED",
+                fs_format_source());
+    }
+
     kprintf("[boot] initialising physical memory manager...\n");
     pmm_init();
     /* HW H3 follow-up: the fb console's RAM shadow needs frames; arm
@@ -435,42 +448,68 @@ void kmain(boot_info_t *boot_info) {
     kprintf("[boot] initialising buffer cache and experimental filesystems...\n");
     bc_init();
 
+    /* FSFULL F1: mount each experimental filesystem ONLY when its init
+     * accepted the volume.  Three distinguishable states, each with its
+     * own greppable line: no disk present, mounted, refused (foreign or
+     * unreadable volume).  A refused init must never be followed by
+     * vfs_mount — a mounted-but-uninitialised driver is how /ext4 used
+     * to resolve into garbage. */
     int dev_exfat = (blkdev_count() > 2) ? 2 : -1;
     if (dev_exfat >= 0) {
-        exfat_init(dev_exfat);
-        vfs_mount("/exfat", &exfat_ops, NULL);
+        if (exfat_init(dev_exfat) == 0) {
+            vfs_mount("/exfat", &exfat_ops, NULL);
+        } else {
+            kprintf("[exfat] foreign volume on device %d; /exfat not mounted\n",
+                    dev_exfat);
+        }
     } else {
         kprintf("[exfat] no 3rd AHCI disk; /exfat not mounted\n");
     }
 
     int dev_ext4 = (blkdev_count() > 3) ? 3 : -1;
     if (dev_ext4 >= 0) {
-        ext4_init(dev_ext4);
-        vfs_mount("/ext4", &ext4_ops, NULL);
+        if (ext4_init(dev_ext4) == 0) {
+            vfs_mount("/ext4", &ext4_ops, NULL);
+        } else {
+            kprintf("[ext4] foreign volume on device %d; /ext4 not mounted\n",
+                    dev_ext4);
+        }
     } else {
         kprintf("[ext4] no 4th AHCI disk; /ext4 not mounted\n");
     }
 
     int dev_btrfs = (blkdev_count() > 4) ? 4 : -1;
     if (dev_btrfs >= 0) {
-        btrfs_init(dev_btrfs);
-        vfs_mount("/btrfs", &btrfs_ops, NULL);
+        if (btrfs_init(dev_btrfs) == 0) {
+            vfs_mount("/btrfs", &btrfs_ops, NULL);
+        } else {
+            kprintf("[btrfs] foreign volume on device %d; /btrfs not mounted\n",
+                    dev_btrfs);
+        }
     } else {
         kprintf("[btrfs] no 5th AHCI disk; /btrfs not mounted\n");
     }
 
     int dev_f2fs = (blkdev_count() > 5) ? 5 : -1;
     if (dev_f2fs >= 0) {
-        f2fs_init(dev_f2fs);
-        vfs_mount("/f2fs", &f2fs_ops, NULL);
+        if (f2fs_init(dev_f2fs) == 0) {
+            vfs_mount("/f2fs", &f2fs_ops, NULL);
+        } else {
+            kprintf("[f2fs] foreign volume on device %d; /f2fs not mounted\n",
+                    dev_f2fs);
+        }
     } else {
         kprintf("[f2fs] no 6th AHCI disk; /f2fs not mounted\n");
     }
 
     int dev_ntfs = (blkdev_count() > 6) ? 6 : -1;
     if (dev_ntfs >= 0) {
-        ntfs_init(dev_ntfs);
-        vfs_mount("/ntfs", &ntfs_ops, NULL);
+        if (ntfs_init(dev_ntfs) == 0) {
+            vfs_mount("/ntfs", &ntfs_ops, NULL);
+        } else {
+            kprintf("[ntfs] foreign volume on device %d; /ntfs not mounted\n",
+                    dev_ntfs);
+        }
     } else {
         kprintf("[ntfs] no 7th AHCI disk; /ntfs not mounted\n");
     }

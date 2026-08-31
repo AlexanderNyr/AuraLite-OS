@@ -1,10 +1,14 @@
-/* fwcfg.c — QEMU fw_cfg probe for the self-test knob (OPT_PLAN.md O2).
+/* fwcfg.c — QEMU fw_cfg probes for the boot knobs (OPT_PLAN.md O2,
+ * FSFULL_PLAN.md F1).
  *
- * Reads -fw_cfg name=opt/auralite.selftest,string=full|fast|off and, if
- * present, overrides the build-default self-test mode before any of the
- * scaled self-tests run.  This is how the integration lib pins every CI
- * boot to `full` (tests/integration/lib/lib.sh) while `make run` and
- * real hardware get the build default.
+ * Reads -fw_cfg name=opt/auralite.selftest,string=full|fast|off and
+ * -fw_cfg name=opt/auralite.fsformat,string=0|1 and, when present,
+ * overrides the build defaults (kernel/lib/selftest.c,
+ * kernel/fs/fsformat.c) before any scaled self-test runs or any
+ * experimental filesystem is mounted.  This is how the integration lib
+ * pins every CI boot to `full` (tests/integration/lib/lib.sh) and how a
+ * dev boot opts into auto-formatting, while `make run` and real hardware
+ * get the build default.
  *
  * Interface (QEMU docs/specs/fw_cfg.txt, x86 flavour): write a 16-bit
  * selector to port 0x510, then read the item's bytes one at a time from
@@ -16,7 +20,7 @@
  * ratchet in one move.
  *
  * On real hardware (no fw_cfg) the signature read returns open-bus
- * garbage, the probe returns quietly, and the build default stands.
+ * garbage, the probes return quietly, and the build defaults stand.
  * This file lives in kernel/arch/x86_64/ because port I/O is an x86
  * instruction class and the I6 ratchet holds portable files at their
  * current count of it.
@@ -24,6 +28,7 @@
 #include <stdint.h>
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/lib/selftest.h"
+#include "kernel/fs/fsformat.h"
 #include "kernel/lib/string.h"
 
 #define FW_CFG_SELECTOR   0x510
@@ -32,6 +37,7 @@
 #define FW_CFG_FILE_DIR   0x0019
 
 #define SELFTEST_FILE     "opt/auralite.selftest"
+#define FSFORMAT_FILE     "opt/auralite.fsformat"
 
 static uint32_t read_be32(void) {
     uint32_t v = 0;
@@ -47,7 +53,12 @@ static uint16_t read_be16(void) {
     return (uint16_t)((hi << 8) | lo);
 }
 
-void fwcfg_selftest_probe(void) {
+/* Find `wanted` in the fw_cfg file directory and read its bytes as a
+ * NUL-terminated string into `out` (out_max bytes incl. the NUL).
+ * Returns 1 on success, 0 when fw_cfg is absent, the file is missing,
+ * or the value is implausibly large — each of which must degrade to the
+ * build defaults, never to noise. */
+static int fwcfg_read_string(const char *wanted, char *out, int out_max) {
     /* Signature: absent fw_cfg reads as open bus, not "QEMU". */
     outw(FW_CFG_SELECTOR, FW_CFG_SIGNATURE);
     char sig[4];
@@ -55,14 +66,14 @@ void fwcfg_selftest_probe(void) {
         sig[i] = (char)inb(FW_CFG_DATA);
     }
     if (sig[0] != 'Q' || sig[1] != 'E' || sig[2] != 'M' || sig[3] != 'U') {
-        return;                            /* no fw_cfg: default stands */
+        return 0;                            /* no fw_cfg: defaults stand */
     }
 
     /* Walk the file directory for our knob. */
     outw(FW_CFG_SELECTOR, FW_CFG_FILE_DIR);
     uint32_t count = read_be32();
     if (count > 256) {
-        return;                            /* implausible: treat as absent */
+        return 0;                            /* implausible: treat as absent */
     }
 
     uint32_t knob_size   = 0;
@@ -71,13 +82,13 @@ void fwcfg_selftest_probe(void) {
     for (uint32_t i = 0; i < count; i++) {
         uint32_t size   = read_be32();
         uint16_t select = read_be16();
-        (void)read_be16();                 /* reserved */
+        (void)read_be16();                   /* reserved */
         char name[57];
         for (int k = 0; k < 56; k++) {
             name[k] = (char)inb(FW_CFG_DATA);
         }
         name[56] = '\0';
-        if (!found && strcmp(name, SELFTEST_FILE) == 0) {
+        if (!found && strcmp(name, wanted) == 0) {
             knob_size   = size;
             knob_select = select;
             found       = 1;
@@ -85,17 +96,24 @@ void fwcfg_selftest_probe(void) {
              * mid-directory costs nothing anyway once we have the key. */
         }
     }
-    if (!found || knob_size == 0 || knob_size > 15) {
-        return;
+    if (!found || knob_size == 0 || knob_size > (uint32_t)out_max) {
+        return 0;
     }
 
     outw(FW_CFG_SELECTOR, knob_select);
-    char val[16];
     uint32_t n;
     for (n = 0; n < knob_size; n++) {
-        val[n] = (char)inb(FW_CFG_DATA);
+        out[n] = (char)inb(FW_CFG_DATA);
     }
-    val[n] = '\0';
+    out[n] = '\0';
+    return 1;
+}
+
+void fwcfg_selftest_probe(void) {
+    char val[16];
+    if (!fwcfg_read_string(SELFTEST_FILE, val, (int)sizeof(val) - 1)) {
+        return;
+    }
 
     if (strcmp(val, "full") == 0) {
         selftest_set_mode(SELFTEST_FULL, "fw_cfg");
@@ -106,4 +124,20 @@ void fwcfg_selftest_probe(void) {
     }
     /* Unrecognised strings leave the default in place: a typo in a QEMU
      * flag should degrade to normal behaviour, not to silence. */
+}
+
+void fwcfg_fsformat_probe(void) {
+    char val[16];
+    if (!fwcfg_read_string(FSFORMAT_FILE, val, (int)sizeof(val) - 1)) {
+        return;
+    }
+
+    if (val[0] == '1') {
+        fs_format_set(1, "fw_cfg");
+    } else if (val[0] == '0') {
+        fs_format_set(0, "fw_cfg");
+    }
+    /* Anything else (including a multi-byte value) leaves the build
+     * default in place: a typo in a QEMU flag must degrade to the SAFE
+     * state, and the safe state is the default (refuse). */
 }

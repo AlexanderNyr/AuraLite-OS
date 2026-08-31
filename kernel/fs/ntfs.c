@@ -68,12 +68,24 @@ const struct vfs_ops ntfs_ops = {
     .read = ntfs_read,
 };
 
-void ntfs_init(int device_id) {
+/* Returns 0 on success (volume looks like NTFS), -1 otherwise.  The
+ * caller mounts only on success; a foreign volume is refused loudly and
+ * never written to (FSFULL_PLAN.md F1). */
+int ntfs_init(int device_id) {
     ntfs_dev_id = device_id;
     struct buffer *b = bc_get(device_id, 0);
-    if (b) {
-        memcpy(&boot, b->data, sizeof(struct ntfs_boot_sector));
-        bc_release(b);
-        kprintf("[fs] NTFS initialised on device %d\n", device_id);
+    if (!b) {
+        kprintf("[ntfs] sector 0 of device %d unreadable; /ntfs not mounted\n",
+                device_id);
+        return -1;
     }
+    memcpy(&boot, b->data, sizeof(struct ntfs_boot_sector));
+    bc_release(b);
+    if (memcmp(boot.oem_id, "NTFS    ", 8) != 0) {
+        kprintf("[ntfs] not NTFS signature (OEM '%.8s'); /ntfs not mounted\n",
+                boot.oem_id);
+        return -1;
+    }
+    kprintf("[fs] NTFS initialised on device %d\n", device_id);
+    return 0;
 }

@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include "kernel/fs/f2fs.h"
 #include "kernel/fs/buffer_cache.h"
+#include "kernel/fs/fsformat.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/spinlock.h"
@@ -1275,8 +1276,14 @@ int f2fs_init(int prefer_port) {
         return -1;
     }
 
-    /* Read superblock */
+    /* Read superblock.  FSFULL F1: auto-formatting is opt-in; with the
+     * gate off, an unreadable or foreign superblock is refused loudly
+     * and not a single sector is written. */
     if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) {
+        if (!fs_format_allowed()) {
+            kprintf("[f2fs] superblock unreadable; format disabled (FS_MOUNT_FORMAT=0)\n");
+            return -1;
+        }
         kprintf("[f2fs] cannot read superblock, formatting...\n");
         if (format_f2fs() != 0) return -1;
         if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) return -1;
@@ -1284,6 +1291,11 @@ int f2fs_init(int prefer_port) {
 
     struct f2fs_superblock *sb = (struct f2fs_superblock *)f2fs_scratch;
     if (sb->magic != F2FS_MAGIC) {
+        if (!fs_format_allowed()) {
+            kprintf("[f2fs] not F2FS magic (0x%08X); format disabled (FS_MOUNT_FORMAT=0)\n",
+                    sb->magic);
+            return -1;
+        }
         kprintf("[f2fs] not F2FS magic (0x%08X), formatting...\n", sb->magic);
         if (format_f2fs() != 0) return -1;
         if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) return -1;

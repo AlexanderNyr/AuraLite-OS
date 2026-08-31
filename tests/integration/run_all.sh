@@ -116,6 +116,7 @@ ALL_CASES=(
     test_fat32_full
     test_ext2
     test_fs_stress
+    test_fsformat_knob
     test_usb_msc
     test_usb_hid
     test_usb_ohci

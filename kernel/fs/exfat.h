@@ -45,7 +45,9 @@ struct exfat_dir_entry {
 #pragma pack(pop)
 #endif
 
-void exfat_init(int device_id);
+/* 0 on success (exFAT signature verified), -1 on refusal — the caller
+ * mounts only on success (FSFULL_PLAN.md F1). */
+int exfat_init(int device_id);
 extern const struct vfs_ops exfat_ops;
 
 #endif /* AURALITE_FS_EXFAT_H */
