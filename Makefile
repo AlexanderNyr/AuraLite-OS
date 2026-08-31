@@ -2372,6 +2372,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
     cp tools/selfhost/tcc_glue.c $(INITRD_DIR)/src/tcc/tcc_glue.c; \
     cp $(SELFHOST_SRC)/config.h $(SELFHOST_SRC)/tccdefs_.h \
        $(INITRD_DIR)/src/tcc/; \
+    cp $(SELFHOST_SRC)/stab.def $(SELFHOST_SRC)/tcctools.c \
+       $(INITRD_DIR)/src/tcc/; \
     cp $(SELFHOST_SRC)/*.h $(INITRD_DIR)/src/tcc/; \
     cp -r $(SELFHOST_SRC)/include $(INITRD_DIR)/src/tcc/include; \
     bash tools/selfhost/gen_kernel_build.sh > \

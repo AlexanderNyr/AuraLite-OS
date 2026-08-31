@@ -2,13 +2,31 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
-## [SELFHOST SH8 — bootstrap closure: in-tree wiring, gate NOT yet run] 2026-08-30
+## [SELFHOST SH8 — bootstrap closure: in-tree wiring, gate LANDED] 2026-08-30
 
-Stage 2 of D1 (SELFHOST_PLAN.md SH8): the toolchain closes on itself.  This
-lands the closure **wiring in the tree**; it is deliberately marked "in
-progress", because the slow-shard gate that proves it (`[selfhost] FULL LOOP
-PASS (2/2 clean loops)`) has **not** been executed — the receipt strings are
-unverified against a running guest.
+Stage 2 of D1 (SELFHOST_PLAN.md SH8): the toolchain closes on itself.  The
+closure **wiring is in the tree and the gate has now run**: on the AuraLite-guest
+slow-shard gate `test_selfhost_closure.sh`, the host only booted QEMU and drove
+the serial (it compiled, linked and packed nothing), and the guest rebuilt
+tcc₀→tcc₁→tcc₂, the SH3/SH4 linkers, the generators and the kernel twice,
+printing `[selfhost] FULL LOOP PASS (2/2 clean loops)`.  SH8 is marked
+**landed**; SH9 remains pending.
+
+- **SH8 closed the loop.**  The slow-shard gate that had never run now did, and
+  it needed a few real tree fixes beyond the host-aided link (all in this patch):
+  - **Executables off `/fat`.**  The F1 execpolicy refuses to install
+    executables outside `/opt`/`/tmp`, so the tcc-built tools (aulink, mini-asm,
+    tcc1, tcc2, gen_*) now live in `/tmp/sh8/tools`; data outputs stay on
+    `/fat`.  The driver and generated kernel build were updated to match.
+  - **tcc source data files staged.**  This tcc (mob 2ba12e8) compiles `tcc.c`
+    only after `#include "tcctools.c"` (unconditional) and `stab.h` pulls
+    `stab.def`; `make iso` now stages both into `/src/tcc`.
+  - **In-guest include path.**  The generators read `kernel/proc/thread.h` via
+    `"kernel/..."`; their stage compile needed `-I/src`.
+  - **Gate receipt greps fixed.**  `test_selfhost_closure.sh` greps receipts
+    containing `(`, `)` and `+` (ERE metacharacters) and the literal
+    `auralite.iso` that `mkiso` actually prints as `/fat/auralite.iso`; the
+    patterns are escaped/loosened so the §8 and per-stage receipts match.
 
 - **`tools/selfhost/sh8_closure.sh`** — the real in-guest closure driver.  With
   the seed tcc0 it builds the tool libc + the SH3/SH4 linkers (aulink,

@@ -119,15 +119,15 @@ il_send "exit"
 il_run_qemu "$LOG" 1400 "${AHCI[@]}"
 
 # ---- the §8 receipt, only after both loops are clean ----------------------
-il_assert_grep "$LOG" "\[selfhost\] FULL LOOP PASS (2/2 clean loops)" \
+il_assert_grep "$LOG" "\[selfhost\] FULL LOOP PASS \(2/2 clean loops\)" \
     "the closure ran both loops cleanly (the §8 receipt)"
 il_assert_grep "$LOG" "\[selfhost\] sh8: worktree staged" \
     "the driver set up its worktree"
-il_assert_grep "$LOG" "\[selfhost\] sh8: tool chain rebuilt (aulink + mini-asm from tcc0)" \
+il_assert_grep "$LOG" "\[selfhost\] sh8: tool chain rebuilt \(aulink \+ mini-asm from tcc0\)" \
     "the SH3/SH4 linkers were rebuilt from the seed tcc"
-il_assert_grep "$LOG" "\[selfhost\] sh8: tcc1 built in-guest (compiled by tcc0" \
+il_assert_grep "$LOG" "\[selfhost\] sh8: tcc1 built in-guest \(compiled by tcc0" \
     "tcc1 was compiled by the seed tcc0"
-il_assert_grep "$LOG" "\[selfhost\] sh8: tcc2 built in-guest (compiled by tcc1" \
+il_assert_grep "$LOG" "\[selfhost\] sh8: tcc2 built in-guest \(compiled by tcc1" \
     "tcc2 was compiled by tcc1 (a tcc->tcc->tcc chain)"
 il_assert_grep "$LOG" "\[selfhost\] sh8: generators rebuilt" \
     "the host-visible generators rebuilt in-guest"
@@ -139,7 +139,7 @@ il_assert_grep "$LOG" "\[selfhost\] sh8: loop 2 PASS" \
 # ---- each stage compiled a real artifact ----------------------------------
 il_assert_grep "$LOG" "\[selfhost\] sh8: kernel assembled in-guest" \
     "the generated kernel build compiled all kernel sources and linked them"
-il_assert_grep "$LOG" "\[selfhost\] mkiso PASS: auralite.iso written in-guest" \
+il_assert_grep "$LOG" "\[selfhost\] mkiso PASS: .*written in-guest" \
     "both loops spliced a hybrid ISO on /fat"
 il_assert_grep "$LOG" "sha256" \
     "the chain and loop artifacts were hashed (SH7a twin)"
