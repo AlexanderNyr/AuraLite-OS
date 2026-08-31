@@ -588,12 +588,26 @@ static void cmd_cat(const char *path) {
 static void cmd_echo(int argc, char **argv) {
     /* Do not mix buffered stdio (putchar) with direct write() calls here:
      * delayed buffered separators used to arrive after all arguments, turning
-     * `echo one two` into `onetwo ` on the serial console. */
+     * `echo one two` into `onetwo ` on the serial console.
+     *
+     * Assemble the whole line and emit it with a SINGLE write() so the kernel
+     * writes it under one print_lock.  Writing each argument and each space as
+     * its own write() released print_lock between syscalls, letting an SMP
+     * kernel kprintf() (e.g. `[thread] reaped ...`) splice into the middle of
+     * the serial line -- the recurring source of flaky console-marker
+     * integration tests (shmake, sh7c).  A single write() of a short line maps
+     * to one kputs_locked() and cannot be interleaved. */
+    char buf[INPUT_MAX + 32];
+    size_t n = 0;
     for (int i = 1; i < argc; i++) {
-        if (i > 1) write(1, " ", 1);
-        write(1, argv[i], strlen(argv[i]));
+        if (i > 1 && n + 1 < sizeof(buf)) buf[n++] = ' ';
+        size_t len = strlen(argv[i]);
+        if (len > sizeof(buf) - 1 - n) len = sizeof(buf) - 1 - n;
+        memcpy(buf + n, argv[i], len);
+        n += len;
     }
-    write(1, "\n", 1);
+    if (n < sizeof(buf)) buf[n++] = '\n';
+    write(1, buf, n);
 }
 
 static void cmd_write_file(int argc, char **argv) {

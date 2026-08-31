@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH9 — second split CI run: mkiso/iso img gates green; shell echo made line-atomic] 2026-08-31
+
+After the FAT32 write-path linearization + 900 s timeouts landed, the img shard
+went green and the only remaining selfhost failure was a **serial-marker race**,
+now fixed at the source.
+
+- **`selfhost-closure` 8/8 PASS, `selfhost-script` 6/6 PASS** (including
+  `test_selfhost_shmake`), **`selfhost-img` 4/5** — `test_selfhost_mkiso` and
+  `test_selfhost_iso` now PASS (each at the ~900 s wire, confirming the
+  FAT32 write path is linear but the 48 MiB write is still TCG-bound).
+- **`test_selfhost_bootoffsets` flaked 1/8** on the `sh7c: s2-c-header-generated`
+  receipt — a **race, not a logic bug**: the probe ran to completion and every
+  `--check`/`--asm`/bad-usage assertion passed.
+- **Root cause found in the shell.** `cmd_echo` issued a **separate `write()`
+  syscall for every argument, every space, and the newline**.  Each write()
+  syscall takes and releases `print_lock` individually, so an SMP kernel
+  `kprintf("[thread] reaped '<prog>' ...")` running on another CPU could splice
+  between two of those syscalls — splitting one serial marker line and making
+  console-grep integration tests flaky (the same mechanism as the earlier
+  `shmake` receipt).  `cmd_echo` now **assembles the whole line and emits it in
+  a single `write()`**, so the kernel's console writer (which already clamps
+  user-mode `/dev/tty0` writes under `print_lock` via `kputs_locked`) renders
+  it atomically and cannot be interleaved.
+- **Host gate `tests/integration/cases/test_selfhost_bootoffsets.sh`** made the
+  S2/S3 receipt assertions match the tail text alone (`s2-c-header-generated` /
+  `s3-asm-inc-generated`) instead of the whole `[selfhost] sh7c: ` line, as a
+  defensive no-op regardless of where the split lands.
+
 ## [SELFHOST SH9 — first split CI run: FAT32 write-path linearization + SH7d/SH7e img timeouts] 2026-08-31
 
 The first real run of the three-way selfhost shard exposed two remaining gates

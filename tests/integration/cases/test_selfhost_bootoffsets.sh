@@ -41,9 +41,13 @@ il_assert_grep "$LOG" "sizeof\(boot_info_t\) = 7776" \
     "the guest struct sizeof matches the host (7776)"
 
 # ---- S2/S3: both the C header and NASM inc forms regenerate ----
-il_assert_grep "$LOG" "sh7c: s2-c-header-generated" \
+# The receipts are `[selfhost] sh7c: s2-c-header-generated` / `s3-asm-inc-generated`,
+# but an SMP kernel `[thread] reaped ...` line can land on the same serial line
+# and split the `[selfhost] sh7c: ` prefix off the tail, so match the tail
+# text alone (the exit-status branches above already prove the tool ran).
+il_assert_grep "$LOG" "s2-c-header-generated" \
     "the C boot_offsets.h form regenerated in-guest"
-il_assert_grep "$LOG" "sh7c: s3-asm-inc-generated" \
+il_assert_grep "$LOG" "s3-asm-inc-generated" \
     "the NASM boot_offsets.inc form regenerated in-guest"
 
 # ---- S4: negative control (unknown mode rejected) ----
