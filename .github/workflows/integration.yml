@@ -212,11 +212,18 @@ jobs:
             build/bl*.mem
           if-no-files-found: ignore
 
-  # The 129 QEMU integration cases, split into six THEMATIC SHARDS
+  # The 129 QEMU integration cases, split into THEMATIC SHARDS
   # running in parallel (2026-08-21; the user-visible win: ~2 h of
   # wall clock becomes the slowest shard's ~25 min).  The partition
   # lives in run_all.sh next to the case list and is self-checked on
   # every invocation -- see the partition-check step above.
+  # The selfhost arc is itself three shards (2026-08-31): the SH8
+  # closure is ~23 min in the guest plus its idle budget, so it must
+  # not serialize behind the scripting cases.  selfhost-closure holds
+  # the toolchain/kernel cases (the only ones needing /bin/tcc, so it
+  # is the only selfhost shard that builds the toolchain);
+  # selfhost-script (SH6) and selfhost-img (SH7) need no guest
+  # toolchain and never skip on a plain `make iso`.
   # fail-fast is off: one shard's failure must not cancel the others,
   # or a bad net case would hide a good usb run's evidence.
   integration-cases:
@@ -225,7 +232,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, posix, fs, usb, net, gui, selfhost]
+        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img]
     steps:
       - uses: actions/checkout@v4
 
@@ -252,17 +259,17 @@ jobs:
           rustup target add aarch64-unknown-none
           rustc --version
 
-      # The selfhost shard is the only one whose cases need a compiler that
-      # is itself built for AuraLite.  Every case in it SKIPs when the
-      # toolchain is absent, and a shard where all seven cases skip reports
+      # selfhost-closure is the only shard whose cases need a compiler that
+      # is itself built for AuraLite.  Every such case SKIPs when the
+      # toolchain is absent, and a shard where all of them skip reports
       # green -- exactly the "gate that quietly does nothing" this workflow
       # already refuses elsewhere (see the mingw-w64 note above).  So build
       # the toolchain here, before `make iso`, because the initrd only stages
       # /bin/tcc and the /src source closure when it exists.
       # selfhost-host-tcc covers the two cases (spike, kernel-tcc) that
       # compile on the host with the same mob source the guest uses.
-      - name: Build the guest self-host toolchain (selfhost shard only)
-        if: matrix.group == 'selfhost'
+      - name: Build the guest self-host toolchain (selfhost-closure only)
+        if: matrix.group == 'selfhost-closure'
         run: |
           make selfhost-deps
           make selfhost-tcc
@@ -281,25 +288,56 @@ jobs:
           NO_COLOR: "1"
 
       # run_all.sh records only PASS/FAIL lines, so a case that skipped is
-      # simply absent here.  For the selfhost shard that absence is the
+      # simply absent here.  For the selfhost shards that absence is the
       # interesting signal: it would mean the toolchain silently went missing
-      # and the whole arc stopped being verified while CI stayed green.
-      - name: Assert the selfhost gates really ran (selfhost shard only)
-        if: matrix.group == 'selfhost'
+      # (closure) or a gate never ran, and the arc stopped being verified
+      # while CI stayed green.  Each selfhost shard asserts its own list so a
+      # skipped SH6/SH7 gate is caught too.
+      - name: Assert the selfhost gates really ran (selfhost-script)
+        if: matrix.group == 'selfhost-script'
         run: |
-          results=build/integration-logs/results-selfhost.txt
+          results=build/integration-logs/results-selfhost-script.txt
           cat "$results"
-          for c in test_selfhost_script test_selfhost_redirect test_selfhost_pipe \
-                   test_selfhost_control test_selfhost_shmake test_selfhost_build \
-                   test_selfhost_tcc test_selfhost_userland test_selfhost_aulink \
-                   test_selfhost_asm test_selfhost_kernel_spike \
-                   test_selfhost_kernel_tcc test_selfhost_kernel_guest; do
+          for c in test_selfhost_script test_selfhost_redirect \
+                   test_selfhost_pipe test_selfhost_control \
+                   test_selfhost_shmake test_selfhost_build; do
             if ! grep -q "^PASS $c " "$results"; then
               echo "::error::$c did not PASS -- it skipped or failed, so the self-host arc is not verified"
               exit 1
             fi
           done
-          echo "all 13 selfhost gates ran and passed"
+          echo "all 6 selfhost-script gates ran and passed"
+
+      - name: Assert the selfhost gates really ran (selfhost-closure)
+        if: matrix.group == 'selfhost-closure'
+        run: |
+          results=build/integration-logs/results-selfhost-closure.txt
+          cat "$results"
+          for c in test_selfhost_tcc test_selfhost_userland \
+                   test_selfhost_aulink test_selfhost_asm \
+                   test_selfhost_kernel_spike test_selfhost_kernel_tcc \
+                   test_selfhost_kernel_guest test_selfhost_closure; do
+            if ! grep -q "^PASS $c " "$results"; then
+              echo "::error::$c did not PASS -- it skipped or failed, so the self-host arc is not verified"
+              exit 1
+            fi
+          done
+          echo "all 8 selfhost-closure gates ran and passed"
+
+      - name: Assert the selfhost gates really ran (selfhost-img)
+        if: matrix.group == 'selfhost-img'
+        run: |
+          results=build/integration-logs/results-selfhost-img.txt
+          cat "$results"
+          for c in test_selfhost_sha256sum test_selfhost_mkinitrd \
+                   test_selfhost_bootoffsets test_selfhost_mkiso \
+                   test_selfhost_iso; do
+            if ! grep -q "^PASS $c " "$results"; then
+              echo "::error::$c did not PASS -- it skipped or failed, so the self-host arc is not verified"
+              exit 1
+            fi
+          done
+          echo "all 5 selfhost-img gates ran and passed"
 
       # results-<group>.txt names every case PASS/FAIL with duration:
       # step stdout is admin-only on public repos, and serial logs

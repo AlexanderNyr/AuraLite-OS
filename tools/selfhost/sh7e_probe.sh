@@ -31,17 +31,22 @@
 # assembly chain and its receipt.
 
 # ---- stage the /fat worktree the recipe reads ----
+# No `cp` in the AuraLite scripting shell and no /bin/cp binary, so a copy is
+# `cat < src > dst` (the SH6b redirect idiom).  `mkdir` is a builtin that takes
+# ONE path with no `-p`, so each payload directory is created on its own line.
 mkdir /fat/src || true
 cat /tests/sh6f.mk > /fat/Makefile
 cat /tests/build.sh > /fat/build.sh
 
 # ---- stage the assembly inputs (SH7d-proof stand-ins) ----
-cp /bin/init          /fat/KERNEL.ELF
-cp /tests/petest.exe  /fat/BOOTX64.EFI
+cat < /bin/init         > /fat/KERNEL.ELF
+cat < /tests/petest.exe > /fat/BOOTX64.EFI
 # the initrd payload directory the iso recipe packs then splices as INITRD.TAR
-mkdir -p /fat/initrd-payload/bin /fat/initrd-payload/tests
-cp /bin/init  /fat/initrd-payload/bin/
-cp /bin/hello /fat/initrd-payload/bin/
+mkdir /fat/initrd-payload || true
+mkdir /fat/initrd-payload/bin || true
+mkdir /fat/initrd-payload/tests || true
+cat < /bin/init  > /fat/initrd-payload/bin/init
+cat < /bin/hello > /fat/initrd-payload/bin/hello
 
 # ---- S1-S4: the twins self-check, in SH7a-SH7d order ----
 sha256sum --selftest

@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed, and SH8 has **landed** -- the bootstrap closure ran its slow-shard double-loop gate inside the AuraLite guest with no host tool in the loop, printing `[selfhost] FULL LOOP PASS (2/2 clean loops)`; the closure chain tcc₀→tcc₁→tcc₂, the SH3/SH4 linkers, the in-guest generators and the kernel build all rebuilt in-guest, and the host only booted QEMU and drove the serial (it never compiled, linked or packed).  SH9 is **in progress**: its spike is measured (a single tcc is single-target, so the cross-arch toolchains are separate `--cpu=` tcc binaries, not one multi-target compiler) and its CI half is landed (the checker runs in `make test-unit`, the selfhost shard `--check-groups` passes, the slow closure case is in `SLOW_CASES_RE`), but the cross-arch in-guest build+boot remains.
+(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed, and SH8 has **landed** -- the bootstrap closure ran its slow-shard double-loop gate inside the AuraLite guest with no host tool in the loop, printing `[selfhost] FULL LOOP PASS (2/2 clean loops)`; the closure chain tcc₀→tcc₁→tcc₂, the SH3/SH4 linkers, the in-guest generators and the kernel build all rebuilt in-guest, and the host only booted QEMU and drove the serial (it never compiled, linked or packed).  SH9 is **in progress**: its spike is measured (a single tcc is single-target, so the cross-arch toolchains are separate `--cpu=` tcc binaries, not one multi-target compiler) and its CI half is landed (the checker runs in `make test-unit`; `--check-groups` passes with the selfhost arc split into `selfhost-script`/`selfhost-closure`/`selfhost-img`; `test_selfhost_closure` is in `SLOW_CASES_RE`; and the first real selfhost CI run exposed two in-guest probe bugs — `sh7d_probe.sh`'s `\` line continuation and `sh7e_probe.sh`'s `cp`/`mkdir -p` — both now fixed), but the cross-arch in-guest build+boot remains.
 
 | Phase | Result |
 |-------|--------|
@@ -1987,7 +1987,7 @@ drifting.
 **Spike — measured, not assumed.**  The spike question was "can a single
 self-hosted x86_64 tcc emit i386/riscv64/aarch64 code?"  Answer: **no.**
 tcc is single-target per binary.  Reproduce it with
-`tools/selfhost/sh9_spike.sh` (needs only gcc + git + readelf; it builds
+`bash tools/selfhost/sh9_spike.sh` (needs only gcc + git + readelf; it builds
 each `--cpu=` tcc's `tcc` binary and reports the emitted ELF `Machine`).
 In `tcc.c` the reported arch is a
 compile-time `#ifdef TCC_TARGET_I386 / #elif TCC_TARGET_X86_64 / #elif
@@ -2016,14 +2016,34 @@ is wired into `make test-unit` (it runs in the `[unit]` block beside the
 other `check_*_claims.py` tools, with the `--selftest` negative control;
 `make test-unit` calls `check_selfhost_claims.py` + `--selftest` and
 both are green host-side).  The self-host integration cases are
-registered in `tests/integration/run_all.sh` under the existing
-`selfhost` shard (a new shard was not needed — it already exists;
-`--check-groups` passes with every case matching exactly one group, the
-standing answer to `FIX_RTL8139_SHARD`).  The slow closure case now
-goes to the CI shard runner: `test_selfhost_closure` was added to
-`SLOW_CASES_RE`, so `--fast` skips the single slowest case in the suite
-(verified: it is slow, and `test_selfhost_mkiso`/`test_selfhost_tcc` are
-not).
+registered in `tests/integration/run_all.sh`, and the single `selfhost`
+shard that had accumulated all 19 of them (and ran ~56 min serially) was
+**split into three** so the SH8 closure no longer serialises behind the
+scripting cases: `selfhost-script` (SH6 scripting/smake/build, no guest
+toolchain), `selfhost-closure` (SH8 toolchain+kernel, the only one needing
+`/bin/tcc` so the only one that builds the toolchain), and `selfhost-img`
+(SH7 image twins, no guest toolchain).  `--check-groups` passes with every
+case matching exactly one group (the standing answer to
+`FIX_RTL8139_SHARD`); the CI matrix and the per-shard "gates really ran"
+assertion were split to match.  The slow closure case now goes to the CI
+shard runner: `test_selfhost_closure` was added to `SLOW_CASES_RE`, so
+`--fast` skips the single slowest case in the suite (verified: it is slow,
+and `test_selfhost_mkiso`/`test_selfhost_tcc` are not).
+
+**The selfhost shard first CI run surfaced two latent probe bugs, both
+fixed here.**  The SH7d/SH7e gates had been "landed" but never run against
+the real guest shell, so two in-guest probe scripts used constructs the
+AuraLite scripting shell (init.c) does not support:
+- **`sh7d_probe.sh` used a `\` line continuation** inside the `if`
+  conditions.  The shell has no line continuation, so the condition ended at
+  the `\` and the parser reported `expected 'then'` (and the gate failed
+  3/7).  The conditions are now one line (under the shell's `MAX_ARGS` 32 /
+  `INPUT_MAX` 512).
+- **`sh7e_probe.sh` used `cp` and `mkdir -p a b`.**  `cp` is neither a
+  builtin nor a staged binary (`command not found`), and `mkdir` is a
+  builtin that takes ONE path with no `-p` (`cmd_mkdir`, init.c:1084).  The
+  copies are now `cat < src > dst` (the SH6b redirect idiom) and each
+  payload directory is created on its own `mkdir` line (the gate failed 7/10).
 
 **Gate.** `make test-unit` runs the checker; `--check-groups` passes with
 the new shard — both **MET** (verified host-side).  The remaining half is

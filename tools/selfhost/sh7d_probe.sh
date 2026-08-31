@@ -28,11 +28,12 @@ mkiso --selftest
 # kernel/efi/initrd slots are filled with ordinary in-guest files (an ELF for
 # the kernel, a PE .exe for the EFI app); the point is the MBR+GPT+FAT32 the
 # tool lays down, not the payload bytes.
-if mkiso --esp-mb 48 \
-     --mbr /tests/mbr_dual.bin --stage2 /tests/stage2.bin \
-     --kernel /bin/init --efi /tests/petest.exe \
-     --initrd /tests/selftest --kernel32 /bin/hello \
-     $OUT
+#
+# NOTE: the AuraLite scripting shell (init.c) does NOT support a '\' line
+# continuation, so the whole condition is one line (that is what "expected
+# 'then'" on the continued line used to mean).  The condition is also kept
+# under the shell's MAX_ARGS (32) / INPUT_MAX (512).
+if mkiso --esp-mb 48 --mbr /tests/mbr_dual.bin --stage2 /tests/stage2.bin --kernel /bin/init --efi /tests/petest.exe --initrd /tests/selftest --kernel32 /bin/hello $OUT
 then
   echo [selfhost] sh7d: s2-image-assembled
 else
@@ -41,8 +42,7 @@ fi
 
 # S3: a sub-40 MiB ESP (< 65525 data clusters) must be refused, or OVMF would
 # classify the volume as FAT16.  Negative control on the floor guard.
-if mkiso --esp-mb 8 --mbr /tests/mbr_dual.bin \
-     --kernel /bin/init --efi /tests/petest.exe /tmp/sh7d-small.iso
+if mkiso --esp-mb 8 --mbr /tests/mbr_dual.bin --kernel /bin/init --efi /tests/petest.exe /tmp/sh7d-small.iso
 then
   echo [selfhost] sh7d: UNREACHABLE-SMALL-ESP-ACCEPTED
 else

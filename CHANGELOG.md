@@ -20,13 +20,32 @@ Stage 2.5 of D1 (SELFHOST_PLAN.md SH9): keep the self-host loop honest.
 - **`tools/check_selfhost_claims.py` wired into `make test-unit`.**  It runs in
   the `[unit]` block beside the other `check_*_claims.py` tools, with its
   `--selftest` negative control; both are green host-side.
-- **The selfhost shard is already part of `run_all.sh`** and `--check-groups`
-  passes with every case matching exactly one group (the standing answer to the
-  `FIX_RTL8139_SHARD` incident).
+- **The selfhost shard was split into three.**  It had accumulated all 19
+  `test_selfhost_*` cases and ran ~56 min serially, so the SH8 closure serialised
+  behind the scripting cases.  `run_all.sh` now partitions the arc into
+  `selfhost-script` (SH6 scripting/smake/build, no guest toolchain),
+  `selfhost-closure` (SH8 toolchain+kernel, the only one needing `/bin/tcc` so
+  the only one that builds the toolchain), and `selfhost-img` (SH7 image twins,
+  no guest toolchain); `--check-groups` passes with every case matching exactly
+  one group (the standing answer to the `FIX_RTL8139_SHARD` incident), and the
+  CI matrix + per-shard "gates really ran" assertion were split to match.
 - **The slow closure case now goes to the CI shard runner.**  `test_selfhost_closure`
   (SH8's terminal gate) was added to `SLOW_CASES_RE`, so `--fast` skips the single
   slowest case in the suite; verified it is slow and `test_selfhost_mkiso`/`test_selfhost_tcc`
   are not.
+- **The first real selfhost CI run exposed two latent in-guest probe bugs, both
+  fixed.**  SH7d and SH7e had been "landed" but never executed against the real
+  guest shell, so two probes used constructs the AuraLite scripting shell
+  (init.c) does not support:
+  - `sh7d_probe.sh` used a `\` line continuation inside the `if` conditions —
+    the shell has no line continuation, the condition ended at the `\`, and the
+    parser reported `expected 'then'` (the SH7d gate failed 3/7).  Conditions are
+    now one line, under the shell's `MAX_ARGS`/`INPUT_MAX`.
+  - `sh7e_probe.sh` used `cp` (neither a builtin nor a staged binary →
+    `command not found`) and `mkdir -p a b` (`mkdir` is a one-path builtin with
+    no `-p`, init.c:1084) — the SH7e gate failed 7/10.  Copies are now
+    `cat < src > dst` (the SH6b redirect idiom) and each payload directory is a
+    single `mkdir` line.
 
 **Open tail.**  The cross-arch in-guest build+boot (— build the per-arch
 `--cpu=` tcc closure, build the i386/riscv64/aarch64 kernels with those tools in
