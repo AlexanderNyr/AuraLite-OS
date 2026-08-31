@@ -2,6 +2,58 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FSFULL F3 — ext4: complete the surface, prove interop] 2026-08-31
+
+`FSFULL_PLAN.md` phase F3: the ext4 reference implementation reaches the
+full mutation surface and its on-disk format is coherent under the harness
+— three real bugs that the drive loop surfaced are fixed and proven on
+disk.
+
+- `kernel/fs/ext4.c`: **64-bit support** — `m4.inodes_count` /
+  `m4.blocks_count` assembled from the superblock hi+lo fields; `i_size_high`
+  honoured in size/truncate/stat.
+- `kernel/fs/ext4.c`: **full mutation surface** — `ext4_ops` now wires
+  `.rmdir`, `.rename`, `.link`, `.settimes`, `.truncate` (plus the existing
+  create/mkdir/unlink/read/write/readdir); **symlinks** (fast in-inode and
+  slow block) read correctly; **HTree** dirs parsed in readdir (dx_root
+  detected and skipped, leaves enumerated); **journal** mount refuses
+  read-write when `EXT4_FEATURE_COMPAT_HAS_JOURNAL` is set and
+  `s_journal_inum` is nonzero (JBD2 replay out of scope).
+- `kernel/fs/ext4.c`: **allocator GDT fix** — `alloc_block_in_group` no
+  longer zero-fills the fresh block via the GDT buffer (`ext4_scratch`); it
+  uses `ext4_cluster_buf`, so the group descriptors survive the first
+  allocation. Format layout moved to match the driver's `bgd_lba =
+  first_data + 1` convention (GDT at `first_data + 1`, then block bitmap,
+  inode bitmap, inode table).
+- `kernel/fs/ext4.c`: **extent start fix** — `extent_insert` seeds
+  `first_new = end_lblock + 1` so an already-mapped block is not
+  re-allocated on a re-write (the old seed made every re-write rebuild the
+  tree and drop the first extent).
+- `kernel/fs/ext4.c`: **directory unlink fix** — `dir_remove_entry` tracks
+  the previous live entry's start offset and expands its `rec_len` across
+  the removed entry, so unlink/rmdir cleanly reclaim the freed directory
+  space instead of leaving overlapping garbage.
+- `kernel/fs/ext4.c`: **width hygiene** — new 64-bit shifts use `paddr_t`
+  and the 32-bit-vs-64-bit comparisons rely on natural promotion; the
+  width-sweep ratchet stays at 355/355 and the i386 `-Wshorten-64-to-32`
+  syntax lane stays 22/22.
+- `kernel/fs/buffer_cache.c`: `fs_write_block` is now write-**through**
+  (immediate `blkdev_write_sector` after the cache copy) so the volume is
+  never left with a stale/lost sector under the format's massive write
+  burst; reads still hit the cache.
+- `kernel/kernel.c`: comment documenting that `ext4_self_test()` passes
+  (multi-block, 64-bit truncate, rename, link, unlink, rmdir) and is left
+  disabled in normal boot.
+- `tests/ext4/test_ext4.sh` (new): external-formatter harness — `mkfs.ext4`
+  formats the image, the case attaches it as blkdev 3 and drives the full
+  mutation script (needs host `mkfs.ext4`/`e2fsck`, not present in the dev
+  sandbox; the internal-lane QEMU drive and on-disk dump are the executed
+  equivalents here).
+
+Verified: `make test-unit` green (43/43, width 355/355, parity 41/41); QEMU
+shell `mkdir/write/cat/mv/rm/rmdir/stat` byte-exact; on-disk dump confirms
+inode extent roots and directory blocks are coherent.
+
 ## [FSFULL F2 — one block I/O path: the buffer cache under all five filesystems] 2026-08-31
 
 `FSFULL_PLAN.md` phase F2: the two-I/O-stack fact dies — every experimental

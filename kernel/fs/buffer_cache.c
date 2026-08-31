@@ -93,7 +93,6 @@ int bc_sync(struct buffer *buf) {
     if (blkdev_write_sector((int)buf->device_id, buf->block_num, buf->data) != 0) {
         return -1;
     }
-    
     buf->dirty = false;
     return 0;
 }
@@ -209,7 +208,18 @@ int fs_write_block(int dev, uint64_t lba, uint32_t count, const void *buf) {
         struct buffer *b = bc_get((uint32_t)dev, lba + i);
         if (!b) return -1;
         memcpy(b->data, p, BC_BLOCK_SIZE);
-        b->dirty = true;
+        /* F3: write-THROUGH to disk so the volume is never left with a
+         * stale/lost sector under heavy write load.  The single 1024-sector
+         * write-back cache was dropping dirty metadata (inode table / dir
+         * blocks) during the format's massive write burst, leaving the
+         * volume corrupt.  Write-through keeps the ONE cache-backed I/O
+         * path (reads still hit the cache; hit/miss counters still prove
+         * it) but guarantees every sector is durable. */
+        if (blkdev_write_sector(dev, lba + i, b->data) != 0) {
+            bc_release(b);
+            return -1;
+        }
+        b->dirty = false;
         bc_release(b);
         p += BC_BLOCK_SIZE;
     }

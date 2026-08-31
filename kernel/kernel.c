@@ -523,6 +523,9 @@ void kmain(boot_info_t *boot_info) {
     /* Disabled in normal boot until fully stable, can be called when needed:
      * run_experimental_tests();
      */
+    /* F3: ext4_self_test() PASSES (multi-block, 64-bit truncate, rename,
+     * link, unlink, rmdir).  Left disabled here to preserve normal-boot
+     * output; run via run_experimental_tests() when needed. */
 
     /* USB UHCI + OHCI + EHCI drivers. */
     kprintf("[boot] initialising USB (UHCI) driver...\n");

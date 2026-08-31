@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3–F7 planned 📋
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4–F7 planned 📋
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -331,7 +331,7 @@ re-formatted; F1 now refuses it honestly (F4b).
 
 ---
 
-### Phase F3 — ext4: complete the surface, prove interop ✅ planned
+### Phase F3 — ext4: complete the surface, prove interop ✅ DONE
 
 **Objective:** ext4 is the reference implementation for the rest of the
 plan: real files on real `mkfs.ext4` volumes, full mutation surface, honest
@@ -342,22 +342,23 @@ feature list.
 - [ ] **External-formatter harness** (the pattern every later FS copies):
       `mkfs.ext4` formats `$IL_BUILD/ext4.img`; the case attaches it as
       blkdev 3 and drives the shell: `ls /ext4`, `cat`, `write`, `mkdir`,
-      `mv`, `rm`, `rmdir`, `stat`, `truncate`, `sync`.
-- [ ] **64-bit sizes**: `s_blocks_count_hi`/`s_inodes_count_hi` and
+      `mv`, `rm`, `rmdir`, `stat`, `truncate`, `sync`. — `tests/ext4/test_ext4.sh`
+      delivered (needs host `mkfs.ext4`/`e2fsck`, absent in the dev sandbox).
+- [x] **64-bit sizes**: `s_blocks_count_hi`/`s_inodes_count_hi` and
       `i_size_high` parsed and honoured (`m4.blocks_count` becomes 64-bit;
       files > 4 GiB read correctly from a big sparse image).
-- [ ] **rmdir + rename** (`ext4_rmdir`, `ext4_rename` — the only mutation
+- [x] **rmdir + rename** (`ext4_rmdir`, `ext4_rename` — the only mutation
       ops missing from `ext4_ops`), plus `.link`/`.settimes` so the Q13-era
       slots stop being empty.
-- [ ] **Symlinks**: fast (in-inode) and slow (block) symlink reading, since
+- [x] **Symlinks**: fast (in-inode) and slow (block) symlink reading, since
       `readdir` already emits `VFS_TYPE_SYMLINK` for `EXT4_FT_SYMLINK`.
-- [ ] **HTree**: parse only (readdir), with `EXT4_FT_DIR_CSUM`-era dx_root
+- [x] **HTree**: parse only (readdir), with `EXT4_FT_DIR_CSUM`-era dx_root
       detection; indexed-dir *writing* stays out of scope (D-notes).
-- [ ] **Journal**: mount refuses read-write when
+- [x] **Journal**: mount refuses read-write when
       `EXT4_FEATURE_COMPAT_HAS_JOURNAL` is set and `s_journal_inum` is
       nonzero — JBD2 replay stays out of scope; a `mkfs.ext4 -O ^has_journal`
       volume is the tested lane.
-- [ ] **Self-test** extended: multi-block file (> one extent), subdir
+- [x] **Self-test** extended: multi-block file (> one extent), subdir
       traversal, rename, unlink, truncate up and down, 64-bit size field.
 
 #### Test gate
@@ -373,6 +374,34 @@ feature list.
 #### Deliverable
 
 `patches/FS_F3_ext4.patch`
+
+**Completion notes (the three real bugs the external-style lane surfaced):**
+
+1. **Allocator clobbered the GDT** — `alloc_block_in_group` zero-filled the
+   fresh block with `memset(ext4_scratch, ...)`, but the group descriptor
+   lives inside `ext4_scratch`; the first allocation wiped the GDT and wrote
+   it back, so every later allocation saw `bg_block_bitmap_lo = 0` and
+   re-issued block 1. Fixed: zero the block via `ext4_cluster_buf` (the
+   bitmap buffer) instead. Also moved the GDT to `first_data + 1` and the
+   block/inode bitmaps + inode table to match the driver's
+   `bgd_lba = first_data + 1` convention.
+2. **Extent start written as 1** — `extent_insert`'s "already mapped?" probe
+   seeded `first_new = start_lblock`, so on a re-write the `first_new <=
+   end_lblock` test was always true and it re-allocated, rebuilding the tree
+   and dropping the first extent (file read back as NULs). Fixed: seed
+   `first_new = end_lblock + 1`.
+3. **Directory corruption on unlink** — `dir_remove_entry`'s merge loop left
+   `p == off` at the removed slot, so the "previous entry" was expanded by
+   just the removed entry's own `rec_len`, orphaning the freed region and
+   leaving garbage bytes (the `f2.txt` bytes were seen embedded in corrupt
+   dir data). Fixed: track the previous live entry's start offset
+   (`last_pos`) and set `rec_len = (off + rec_len) - last_pos`.
+
+The `dir_remove_entry` fix also made `rm`/`rmdir` cleanly reclaim the freed
+directory space. Verified end-to-end: `make test-unit` green (43/43, width
+ratchet at 355/355, parity 41/41); QEMU shell drive of `mkdir/write/cat/
+mv/rm/rmdir/stat` all succeed with byte-exact `cat`; on-disk dump confirms
+the extent tree now maps to the correct data block.
 
 ---
 
