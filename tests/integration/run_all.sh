@@ -229,11 +229,13 @@ ALL_CASES=(
 # test_doom boots UEFI and reads a 28 MB IWAD; test_ahci_large_read reads
 # 16 MiB.  Both are correctness gates rather than smoke tests, so --fast skips
 # them.
-# test_selfhost_kernel_guest is the slowest case in the suite by design: it
-# compiles 126 kernel C files and assembles 9 more *inside* the guest under
-# TCG, then boots the result.  --fast skips it exactly like the other
-# correctness-over-speed gates above.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$'
+# test_selfhost_kernel_guest is one of the slowest cases in the suite by design:
+# it compiles 126 kernel C files and assembles 9 more *inside* the guest under
+# TCG, then boots the result.  test_selfhost_closure is the SH8 terminal gate and
+# is even slower: it runs the whole closure twice plus the QEMU idle that waits
+# out the closure's fixed budget, so it is the case "--fast" must never carry.
+# --fast skips both exactly like the other correctness-over-speed gates above.
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$|test_selfhost_closure'
 
 # ---- thematic CI shards (2026-08-21) ----
 #

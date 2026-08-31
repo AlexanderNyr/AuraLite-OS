@@ -3,7 +3,7 @@
 ## Status: IN PROGRESS 🚧 — SH0–SH5 landed (SH4 = SH4a–SH4e complete; SH5 = SH5a–SH5d complete): the guest TinyCC now compiles all kernel C sources, guest-built mini-asm emits all x86_64 kernel objects, guest-built aulink links the kernel on `/fat`, and the host has booted that extracted artifact to the Ring 3 shell. SH6 is split into SH6a–SH6f; SH6a (script runner, exit statuses), SH6b
 (redirects, named variables, quote-aware parsing, and the kernel fix that made
 redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
-(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed, and SH8 has **landed** -- the bootstrap closure ran its slow-shard double-loop gate inside the AuraLite guest with no host tool in the loop, printing `[selfhost] FULL LOOP PASS (2/2 clean loops)`; the closure chain tcc₀→tcc₁→tcc₂, the SH3/SH4 linkers, the in-guest generators and the kernel build all rebuilt in-guest, and the host only booted QEMU and drove the serial (it never compiled, linked or packed).  SH9 remains pending.
+(control flow) and SH6e (`shmake`) have landed, and SH6f (`build.sh`) is the SH6 terminal gate.  SH7 is now split into SH7a–SH7e (the C image twins, in dependency order: hash → USTAR → boot-offset header → MBR/GPT/FAT writer → boot the guest ISO); SH7a (in-guest `sha256sum` over the single libatls SHA-256), SH7b (in-guest `mkinitrd` USTAR writer, host-tested vs GNU tar and booted) and SH7c (in-guest `bootoffsets` boot_info_t offset generator/verifier, offsetof parity with the host generator) and SH7d (in-guest `mkiso` MBR+GPT+FAT32 ESP writer, booted on both SeaBIOS and OVMF) and SH7e (`sh build.sh iso` + the host boots the guest ISO) have landed, and SH8 has **landed** -- the bootstrap closure ran its slow-shard double-loop gate inside the AuraLite guest with no host tool in the loop, printing `[selfhost] FULL LOOP PASS (2/2 clean loops)`; the closure chain tcc₀→tcc₁→tcc₂, the SH3/SH4 linkers, the in-guest generators and the kernel build all rebuilt in-guest, and the host only booted QEMU and drove the serial (it never compiled, linked or packed).  SH9 is **in progress**: its spike is measured (a single tcc is single-target, so the cross-arch toolchains are separate `--cpu=` tcc binaries, not one multi-target compiler) and its CI half is landed (the checker runs in `make test-unit`, the selfhost shard `--check-groups` passes, the slow closure case is in `SLOW_CASES_RE`), but the cross-arch in-guest build+boot remains.
 
 | Phase | Result |
 |-------|--------|
@@ -36,7 +36,7 @@ redirected fd 0/1/2 actually work), SH6c (pipes and command lists) and SH6d
 | SH7d — `mkiso`: MBR + GPT + FAT32 ESP writer in C (hybrid image boots BIOS+UEFI) | ✅ landed |
 | SH7e — `sh build.sh iso` + host boots the guest ISO (terminal gate) | ✅ landed |
 | SH8 — bootstrap closure | ✅ landed |
-| SH9 — cross-arch + CI wiring | 🚧 pending |
+| SH9 — cross-arch + CI wiring | 🚧 in progress |
 
 This document answers:
 
@@ -1979,26 +1979,60 @@ recorded risks both resolved on the machine that ran it, without hiding them:
 **Deliverable.** The changes above, in the tree (D9: no
 patch artefact; the `Makefile` staging block is part of the landed change).
 
-### Phase SH9 — cross-arch + CI wiring 🚧 PENDING
+### Phase SH9 — cross-arch + CI wiring 🚧 IN PROGRESS
 
 **Goal.** The self-host loop covers the other three kernels and stops
 drifting.
 
-**Definition of done.** Spike: can the in-guest x86_64 tcc emit
-i386/riscv64/aarch64 code (upstream tcc has the codegens; whether the
-single self-hosted binary carries them is measured, not assumed)? Where
-yes: the four-kernel build closes. Where no: per-arch toolchain binaries
-built on AuraLite by the same closure chain. Regardless of the spike:
-`tools/check_selfhost_claims.py` is wired into `make test-unit`
-(`UNIT_TESTS`), the self-host integration cases are registered in
-`tests/integration/run_all.sh` (a new `selfhost` shard — the
-`FIX_RTL8139_SHARD` incident is the standing precedent for why
-unregistered cases are unacceptable), and the slow closure case goes to
-the CI shard runner.
+**Spike — measured, not assumed.**  The spike question was "can a single
+self-hosted x86_64 tcc emit i386/riscv64/aarch64 code?"  Answer: **no.**
+tcc is single-target per binary.  Reproduce it with
+`tools/selfhost/sh9_spike.sh` (needs only gcc + git + readelf; it builds
+each `--cpu=` tcc's `tcc` binary and reports the emitted ELF `Machine`).
+In `tcc.c` the reported arch is a
+compile-time `#ifdef TCC_TARGET_I386 / #elif TCC_TARGET_X86_64 / #elif
+TCC_TARGET_ARM / #elif TCC_TARGET_ARM64 / #elif TCC_TARGET_RISCV64`
+ladder, so one binary carries one codegen.  Measured with four host
+builds of the same mob source (`./configure --cpu=…; make tcc`):
+
+| `--cpu=` | `tcc -v` reports | emits (readelf `Machine`) |
+|---|---|---|
+| `x86_64` | `x86_64 Linux` | `x86-64` (ELF64) |
+| `i386`   | `i386 Linux`     | `Intel 80386` (ELF32) |
+| `riscv64`| `riscv64 Linux`  | `RISC-V` |
+| `arm64`  | `AArch64 Linux`  | `AArch64` |
+
+And the x86_64 build's `-m32` does **not** emit i386 — it defers to a
+separate `i386-tcc`, i.e. a second binary (`tcc: could not run
+'i386-tcc'`).  Because the codegen is selected at tcc-build time and the
+in-guest tcc is built from the same source as a single x86_64 target,
+the in-guest binary cannot carry the other three either.  So SH9 takes
+the **"where no"** branch: the i386/riscv64/aarch64 toolchains are
+***separate*** tcc binaries, built on AuraLite by the same closure chain
+(a `--cpu=`-parameterised SH8 closure), not one multi-target compiler.
+
+**Definition of done (CI half — landed).**  `tools/check_selfhost_claims.py`
+is wired into `make test-unit` (it runs in the `[unit]` block beside the
+other `check_*_claims.py` tools, with the `--selftest` negative control;
+`make test-unit` calls `check_selfhost_claims.py` + `--selftest` and
+both are green host-side).  The self-host integration cases are
+registered in `tests/integration/run_all.sh` under the existing
+`selfhost` shard (a new shard was not needed — it already exists;
+`--check-groups` passes with every case matching exactly one group, the
+standing answer to `FIX_RTL8139_SHARD`).  The slow closure case now
+goes to the CI shard runner: `test_selfhost_closure` was added to
+`SLOW_CASES_RE`, so `--fast` skips the single slowest case in the suite
+(verified: it is slow, and `test_selfhost_mkiso`/`test_selfhost_tcc` are
+not).
 
 **Gate.** `make test-unit` runs the checker; `--check-groups` passes with
-the new shard; the four-kernel in-guest build produces kernels that boot
-(the a64/rv/i386 boot receipts from `docs/status.md`).
+the new shard — both **MET** (verified host-side).  The remaining half is
+the cross-arch build+boot: `make` the per-arch `--cpu=` tcc closure in
+the SH8 style, build the i386/riscv64/aarch64 kernels with those in
+AuraLite, and boot them to the a64/rv/i386 receipts from
+`docs/status.md`.  That needs `clang`/`lld`/cross-qemu and the persistent
+toolchain, which is what a full CI runner supplies; it is **not yet run
+here** and is the open tail of this phase.
 
 **Deliverable.** The changes above, in the tree (D9: no
 patch artefact).
@@ -2076,7 +2110,7 @@ asserts each row has four fields and that ACCEPTED rows cite a decision.
 | SH-07 | `OPEN_MAX` 64 — adequacy unknown until the spike | limit | CLOSED (tcc ran on 64 fds, SH1) | SH1 |
 | SH-08 | rustc/rsbr not self-hostable in this plan | accepted | ACCEPTED (D1 scope) | — |
 | SH-09 | TinyCC LGPL-2.1 vs Apache-2.0 tree | licensing | ACCEPTED (D8, DOOM precedent) | — |
-| SH-10 | integration runner: new cases must be shard-registered or the runner refuses to start (the RTL8139 incident) | process | OPEN (selfhost shard arrived in SH1; full CI wiring in SH9) | SH9 |
+| SH-10 | integration runner: new cases must be shard-registered or the runner refuses to start (the RTL8139 incident) | process | CLOSED (the selfhost shard self-checks every case matches exactly one group via `--check-groups`; SH9 wired `check_selfhost_claims.py` into `make test-unit` and added the slow closure case to `SLOW_CASES_RE`; the cross-arch build+boot tail of SH9 is separate) | SH9 |
 | SH-11 | boot `__DATE__`/`__TIME__` makes byte-reproducibility impossible | accepted | ACCEPTED (SH8 definition) | SH8 |
 | SH-12 | O6 sizeclass cache parks any ≥4 KiB freed block in the 4 KiB class — heap loses one SPAWN_MAX_IMAGE buffer per spawn (pre-existing) | leak | CLOSED (SH1: payload ≥ 2× largest class falls through to heap_free; test_sizeclass pins it) | SH1 |
 | SH-13 | malloc payloads 8-aligned (24-byte header): clang code in the guest tcc faults on 16-byte movaps (`#GP(0)` compiling libc.c) | align | CLOSED (SH2: 32-byte header, 16-aligned payloads) | SH2 |

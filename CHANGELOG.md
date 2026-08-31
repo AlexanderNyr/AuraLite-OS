@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [SELFHOST SH9 — cross-arch + CI wiring: spike measured, CI half landed] 2026-08-30
+
+Stage 2.5 of D1 (SELFHOST_PLAN.md SH9): keep the self-host loop honest.
+
+- **Spike measured, not assumed.**  A single tcc is **single-target per binary**:
+  the reported arch is a compile-time `#ifdef TCC_TARGET_I386 / #elif
+  TCC_TARGET_X86_64 / #elif TCC_TARGET_ARM / #elif TCC_TARGET_ARM64 / #elif
+  TCC_TARGET_RISCV64` ladder, so one binary carries one codegen.  Measured with
+  four host builds of the same mob source (`./configure --cpu=...; make tcc`):
+  `x86_64` -> `x86-64`; `i386` -> `Intel 80386` (ELF32); `riscv64` -> `RISC-V`;
+  `arm64` -> `AArch64`.  And the x86_64 build's `-m32` does **not** emit i386 —
+  it defers to a separate `i386-tcc` (`tcc: could not run 'i386-tcc'`), i.e. a
+  second binary.  So the in-guest x86_64 tcc cannot carry the other three:
+  SH9 takes the **"where no"** branch — the i386/riscv64/aarch64 toolchains are
+  separate `--cpu=` tcc binaries built on AuraLite by the same closure chain.
+- **`tools/check_selfhost_claims.py` wired into `make test-unit`.**  It runs in
+  the `[unit]` block beside the other `check_*_claims.py` tools, with its
+  `--selftest` negative control; both are green host-side.
+- **The selfhost shard is already part of `run_all.sh`** and `--check-groups`
+  passes with every case matching exactly one group (the standing answer to the
+  `FIX_RTL8139_SHARD` incident).
+- **The slow closure case now goes to the CI shard runner.**  `test_selfhost_closure`
+  (SH8's terminal gate) was added to `SLOW_CASES_RE`, so `--fast` skips the single
+  slowest case in the suite; verified it is slow and `test_selfhost_mkiso`/`test_selfhost_tcc`
+  are not.
+
+**Open tail.**  The cross-arch in-guest build+boot (— build the per-arch
+`--cpu=` tcc closure, build the i386/riscv64/aarch64 kernels with those tools in
+AuraLite, and boot them to the a64/rv/i386 receipts) needs clang/lld/cross-qemu
+and a persistent toolchain; it is the not-yet-run half of the phase.  SH9 remains
+🚧 in progress.
+
 ## [SELFHOST SH8 — bootstrap closure: in-tree wiring, gate LANDED] 2026-08-30
 
 Stage 2 of D1 (SELFHOST_PLAN.md SH8): the toolchain closes on itself.  The
