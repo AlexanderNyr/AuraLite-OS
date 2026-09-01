@@ -31,6 +31,8 @@ int kprintf(const char *fmt, ...) { (void)fmt; return 0; }
 void *kmalloc(size_t n) { return malloc(n); }
 void kfree(void *p) { free(p); }
 
+void spinlock_init(spinlock_t *lock) { (void)lock; }
+
 /* RAM-backed fake buffer cache.  The test fills fake_sector, then
  * bc_get returns a buffer carrying a copy of it (or NULL when
  * fake_read_fails is set). */
@@ -71,6 +73,12 @@ int fs_write_block(int dev, uint64_t lba, uint32_t count, const void *buf) {
 
 int fs_cache_sync(void *fs_data) { (void)fs_data; return 0; }
 
+/* F1 gate stubs: the format knob defaults OFF in the host lane, so a
+ * foreign / blank boot sector is refused rather than auto-formatted. */
+int fs_format_allowed(void) { return 0; }
+void fs_format_set(int allowed, const char *source) { (void)allowed; (void)source; }
+const char *fs_format_source(void) { return "host-test"; }
+
 /* ---- test harness ---- */
 
 static int failures = 0;
@@ -90,6 +98,26 @@ static void clear_sector(void) {
     fake_read_fails = 0;
 }
 
+/* A geometrically plausible exFAT main boot sector, so the F5 driver can
+ * parse it and mount (the old skeleton stopped at the OEM name). */
+static void make_exfat_boot(void) {
+    clear_sector();
+    fake_sector[0] = 0xEB; fake_sector[1] = 0x76; fake_sector[2] = 0x90;
+    memcpy(fake_sector + 3, "EXFAT   ", 8);
+    uint64_t vol = 131072;
+    memcpy(fake_sector + 72, &vol, 8);
+    uint32_t fat_off = 128, fat_len = 128, heap = 256, nclu = 16320, root = 2;
+    memcpy(fake_sector + 80, &fat_off, 4);
+    memcpy(fake_sector + 84, &fat_len, 4);
+    memcpy(fake_sector + 88, &heap, 4);
+    memcpy(fake_sector + 92, &nclu, 4);
+    memcpy(fake_sector + 96, &root, 4);
+    fake_sector[108] = 9;   /* 512 bytes/sector */
+    fake_sector[109] = 3;   /* 8 sectors/cluster = 4 KiB */
+    fake_sector[110] = 1;
+    fake_sector[510] = 0x55; fake_sector[511] = 0xAA;
+}
+
 int main(void) {
     printf("[fs-sigs] foreign boot sector is refused by both drivers\n");
     clear_sector();
@@ -103,8 +131,7 @@ int main(void) {
     CHECK(ntfs_init(6) != 0, "ntfs_init refuses an unreadable sector");
 
     printf("[fs-sigs] correct OEM signatures are accepted\n");
-    clear_sector();
-    memcpy(fake_sector + 3, "EXFAT   ", 8);
+    make_exfat_boot();
     CHECK(exfat_init(2) == 0, "exfat_init accepts the EXFAT OEM name");
     clear_sector();
     memcpy(fake_sector + 3, "NTFS    ", 8);

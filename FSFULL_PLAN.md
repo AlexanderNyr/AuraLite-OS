@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE (F5–F7 planned 📋)
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE (F5b/NTFS + F6–F7 planned 📋)
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -42,7 +42,7 @@ tree, not from the headers.
 | ext4 | `kernel/fs/ext4.c` | 1483 | lookup, create, read, write, readdir, mkdir, unlink, stat, truncate | on-disk superblock/BG-descriptor/inode/extent parsing, extent maps (read + write), delayed-allocation flag, journal-flag superblock, in-kernel formatter | JBD2 journal is **flag-only**; no 64-bit feature (`s_blocks_count_hi`), no flex_bg/indexed (HTree) dirs, no symlinks, no hard links, no rmdir/rename, no timestamps, no error paths |
 | f2fs | `kernel/fs/f2fs.c` | 1357 | lookup, create, read, write, readdir, mkdir, unlink, stat, truncate | superblock/checkpoint/NAT/SIT structs, node walking (inode/direct/indirect), segment allocator, in-kernel formatter | no SSA (segment summary) reconstruction, no cleaning/GC, no NAT/SIT journals, no fsync, no rename/rmdir, no timestamps |
 | btrfs | `kernel/fs/btrfs.c` | 1017 | lookup, create, read, write, readdir, mkdir, unlink, stat | superblock (magic `_BHRfS_M`), B-tree node parse, inline + regular extents, CoW allocate-and-write, in-kernel formatter | no root tree/subvolumes, no chunk tree, no checksums (CRC32C), no tree COW on update, no rename/rmdir/truncate, no fsync |
-| exFAT | `kernel/fs/exfat.c` | 103 | lookup, read, write | boot-region read, single-cluster dir scan by exact name | **skeleton**: no FAT chain walk, no cluster chaining, no readdir, no create/mkdir/unlink/rename/stat, no 64-bit size, no time fields, wrong struct offsets |
+| exFAT | `kernel/fs/exfat.c` | 103→1084 | full mutation surface (lookup, read, write, create, mkdir, unlink, rmdir, rename, truncate, settimes, stat, readdir) | real boot region (12-sector + checksum + backup), FAT cluster chains, allocation bitmap, 0x85+0xC0/0xC1 entry sets | **done (F5)**: exfatprogs-faithful; host `fsck.exfat` reports kernel volumes CLEAN and the kernel reads host `mkfs.exfat` volumes |
 | NTFS | `kernel/fs/ntfs.c` | 79 | lookup, read | boot-sector read, MFT magic check | **skeleton**: lookup returns a fake vnode unconditionally, read returns the MFT buffer, no attributes ($DATA/$FILE_NAME), no runlists, no $MFT/$MFTMirr, no write |
 
 **The two skeletons are worse than absent.** `ntfs_lookup()` succeeds for
@@ -133,7 +133,7 @@ says so in its phases:
 | Maturity | FS | Treatment |
 |---|---|---|
 | Real code, real debt | ext4, f2fs, btrfs | **complete** the surface (F3/F4/F6) against their own on-disk formats |
-| Skeletons | exFAT, NTFS | **replace** with honest minimal implementations (F5) that refuse loudly where they cannot serve, and add the full surface where the format is tractable (exFAT) |
+| Skeletons | NTFS | **replace** with an honest read-only core (F5b) that refuses loudly where it cannot serve |
 | Glue | all five | shared seams first (F2), so the per-FS work is done once |
 
 ### D2. Refuse loudly before the first byte is written
@@ -468,7 +468,7 @@ install; btrfs last: its tooling is the heaviest).
 
 ---
 
-### Phase F5 — exFAT and NTFS: replace the skeletons with honesty ✅ planned
+### Phase F5 — exFAT and NTFS: replace the skeletons with honesty ✅ exFAT DONE (NTFS = F5b)
 
 **Objective:** the two skeletons stop lying, and exFAT reaches the full
 surface because it is a FAT-family format with an in-tree reference
@@ -476,20 +476,26 @@ surface because it is a FAT-family format with an in-tree reference
 
 #### Tasks (exFAT)
 
-- [ ] **Correct on-disk structs**: the current `exfat_boot_region`/
-      `exfat_dir_entry` are a single-cluster approximation; port the real
-      layout from the spec (`exfat_boot_sector`, `exfat_entry_*` set
-      types, 32-bit `fat_length`/`cluster_count` fields the current
-      16-bit fields truncate).
-- [ ] **Cluster-chain walking** via the FAT (fat32.c's chain walk is the
+- [x] **Correct on-disk structs**: the old `exfat_boot_region`/
+      `exfat_dir_entry` single-cluster approximation is replaced with a
+      real exfatprogs-faithful layout (`exfat_boot_sector`,
+      `exfat_entry_*` set types, 64-bit `vol_length`/`data_length`,
+      32-bit `fat_offset`/`fat_length`/`cluster_count`, the fields the
+      16-bit struct truncated), plus a real 12-sector boot region with
+      checksum sector and 12-sector backup.
+- [x] **Cluster-chain walking** via the FAT (fat32.c's chain walk is the
       reference), multi-cluster file reads, `readdir`, `stat` with real
-      sizes.
-- [ ] **create / mkdir / unlink / rename / truncate**, entry-set
-      allocation (0x85 + 0xC0/0xC1 name entries), timestamps via
-      `exfat_settimes`.
-- [ ] `mkfs.exfat` external harness (`test_exfat.sh`); internal-lane check
-      with `fsck.exfat` (exfatprogs).
-- [ ] The format knob (F1) and the cache seam (F2) apply unchanged.
+      sizes, and the allocation bitmap indexed exfatprogs-style
+      (`c - EXFAT_FIRST_CLUSTER`).
+- [x] **create / mkdir / unlink / rename / truncate**, entry-set
+      allocation (0x85 + 0xC0/0xC1 name entries) with the exfatprogs
+      16-bit entry-set checksum and ASCII-upcased name hash, timestamps
+      via `exfat_settimes`.
+- [x] `mkfs.exfat` external harness (`test_exfat.sh`) — three passes
+      (kernel-format + full mutation surface, external host-volume read,
+      persistence remount); internal-lane check with `fsck.exfat`
+      (exfatprogs) reports the kernel volume CLEAN.
+- [x] The format knob (F1) and the cache seam (F2) apply unchanged.
 
 #### Tasks (NTFS)
 
