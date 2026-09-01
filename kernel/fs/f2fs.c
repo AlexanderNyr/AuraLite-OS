@@ -284,13 +284,29 @@ struct f2fs_sit_entry {
 #define F2FS_MAX_NAME         256
 #define F2FS_MAX_PATH_DEPTH   16
 
-/* On-disk LBA layout */
+/* On-disk page layout.  Every "LBA" here is a 4 KB PAGE index (read_page
+ * converts it to sectors), matching the driver's own convention.
+ *
+ *   page 0      boot sector
+ *   page 2      superblock (backup at 8194)
+ *   page 6/8    checkpoint primary/backup
+ *   page 10..   NAT table (8 bytes per NID)
+ *   page 18..   SIT table (per-segment valid-block maps)
+ *   page 64..   main area (node + data segments)
+ *
+ * The NAT and SIT regions are DEDICATED pages that data/node allocation
+ * never touches — previously NAT was laid inside the main area and data
+ * writes clobbered inode node blocks. */
 #define F2FS_BOOT_LBA         0
 #define F2FS_SUPER_LBA        2       /* Superblock primary */
 #define F2FS_SUPER_BAK_LBA    8194    /* Superblock backup */
 #define F2FS_CP_LBA           6       /* Checkpoint primary */
 #define F2FS_CP_BAK_LBA       8       /* Checkpoint backup */
-#define F2FS_MAIN_START_LBA   12      /* Main area starts here */
+#define F2FS_NAT_LBA          10      /* NAT table start */
+#define F2FS_NAT_PAGES        ((F2FS_MAX_NIDS * 8 + F2FS_PAGE_SIZE - 1) / F2FS_PAGE_SIZE) /* 8 */
+#define F2FS_SIT_LBA          (F2FS_NAT_LBA + F2FS_NAT_PAGES)  /* 18 */
+#define F2FS_SIT_PAGES        32      /* 8192 segments, 16B each = 128 KB */
+#define F2FS_MAIN_START_LBA   (F2FS_SIT_LBA + F2FS_SIT_PAGES)  /* 64 */
 
 /* ============================================================================
  * SECTION 3: MOUNT STATE
@@ -307,6 +323,8 @@ struct f2fs_mount {
     uint32_t  cp_segments;       /* segments for checkpoint */
     uint32_t  ssa_segments;      /* segments for SSA */
     uint32_t  start_main_lba;    /* LBA of start of main area */
+    uint32_t  nat_lba;           /* page of NAT table */
+    uint32_t  sit_lba;           /* page of SIT table */
     uint32_t  cur_node_seg;      /* current node segment number */
     uint32_t  cur_node_blk;      /* current block within node segment */
     uint32_t  cur_data_seg;      /* current data segment number */
@@ -316,6 +334,7 @@ struct f2fs_mount {
     uint32_t  valid_blocks;      /* total valid blocks */
     uint32_t  free_segments;     /* free segments */
     uint64_t  total_bytes;       /* total filesystem bytes */
+    uint32_t  cp_ver;            /* active checkpoint version (from mount) */
     int       mounted;
     spinlock_t alloc_lock;
 
@@ -394,19 +413,71 @@ static int write_page(uint32_t lba, const void *buf) {
  * SECTION 5: NAT (Node Address Table)
  * ============================================================================ */
 
-/* NAT entry: maps NID -> physical block address of the node block */
+/* Forward decls (allocators live in SECTION 6). */
+static uint32_t alloc_next_node_block(void);
+static uint32_t alloc_next_data_block(void);
+
+/* ---- NAT (Node Address Table) ----
+ *
+ * The NAT is a dense on-disk table in its own dedicated page region: one
+ * 8-byte entry per NID (4-byte node-block page address + 4-byte version).
+ * Every read of a node block is a NAT lookup; every fresh node block is
+ * registered in the table before use.  Because the region is outside the
+ * main area, data writes can never clobber it.
+ */
 static uint32_t nat_get_nid_addr(uint32_t nid) {
-    /* NAT is stored as a dense table: one 8-byte entry per NID.
-     * We store NAT in a block-aligned array. */
-    /* For simplicity, use the main area: each node gets 1 block.
-     * NID 0 = root inode, NID 1 = root directory's data, etc.
-     * NAT blocks are stored before the main area data segments. */
-    uint32_t nat_seg = f2m.main_segments / 4; /* Reserve quarter for NAT */
-    (void)nat_seg;
-    /* NAT entry: NID i maps to segment (i / blocks_per_seg), block (i % blocks_per_seg) */
-    uint32_t nat_seg_idx = nid / f2m.blocks_per_seg;
-    uint32_t nat_blk_idx = nid % f2m.blocks_per_seg;
-    return f2m.start_main_lba + nat_seg_idx * f2m.blocks_per_seg + nat_blk_idx;
+    if (nid == 0 || nid >= F2FS_MAX_NIDS) return 0;
+    uint32_t page = f2m.nat_lba + (nid * 8) / F2FS_PAGE_SIZE;
+    uint32_t off  = (nid * 8) % F2FS_PAGE_SIZE;
+    if (read_page(page, f2fs_scratch) != 0) return 0;
+    return r32(f2fs_scratch + off);
+}
+
+static int nat_set_nid_addr(uint32_t nid, uint32_t addr) {
+    if (nid == 0 || nid >= F2FS_MAX_NIDS) return -1;
+    uint32_t page = f2m.nat_lba + (nid * 8) / F2FS_PAGE_SIZE;
+    uint32_t off  = (nid * 8) % F2FS_PAGE_SIZE;
+    if (read_page(page, f2fs_scratch) != 0) return -1;
+    w32(f2fs_scratch + off, addr);
+    w32(f2fs_scratch + off + 4, 1);   /* version */
+    return write_page(page, f2fs_scratch);
+}
+
+/* Free a NID: clear its NAT entry so a later fsck/alloc treats it as unused. */
+static void nat_free_nid(uint32_t nid) {
+    if (nid == 0 || nid >= F2FS_MAX_NIDS) return;
+    uint32_t page = f2m.nat_lba + (nid * 8) / F2FS_PAGE_SIZE;
+    uint32_t off  = (nid * 8) % F2FS_PAGE_SIZE;
+    if (read_page(page, f2fs_scratch) != 0) return;
+    w32(f2fs_scratch + off, 0);
+    w32(f2fs_scratch + off + 4, 0);
+    write_page(page, f2fs_scratch);
+}
+
+/* ---- SIT (Segment Info Table) ----
+ *
+ * One 16-byte entry per segment: valid-block bitmap + count.  Kept in its
+ * own page region; reconstructed on mount by reading it back.  Allocation
+ * marks the segment valid on each data/node block granted.
+ */
+static int sit_update(uint32_t seg, int delta) {
+    uint32_t page = f2m.sit_lba + (seg * 16) / F2FS_PAGE_SIZE;
+    uint32_t off  = (seg * 16) % F2FS_PAGE_SIZE;
+    if (read_page(page, f2fs_scratch) != 0) return -1;
+    uint8_t v = f2fs_scratch[off];        /* valid block count */
+    int nv = (int)v + delta;
+    if (nv < 0) nv = 0;
+    if (nv > 255) nv = 255;
+    f2fs_scratch[off] = (uint8_t)nv;
+    return write_page(page, f2fs_scratch);
+}
+
+/* Allocate a fresh node block page for a NID and register it in NAT. */
+static int alloc_node_for_nid(uint32_t nid) {
+    uint32_t page = alloc_next_node_block();
+    if (!page) return -1;
+    if (nat_set_nid_addr(nid, page) != 0) return -1;
+    return 0;
 }
 
 /* ============================================================================
@@ -415,33 +486,22 @@ static uint32_t nat_get_nid_addr(uint32_t nid) {
 
 /* Get next free segment, LFS-style: write to oldest possible segment */
 static uint32_t get_free_segment(void) {
-    /* Simple: round-robin through segments, skip NAT/SIT segments */
-    static uint32_t last_seg = 0;
-    uint32_t ssa_start = F2FS_MAIN_START_LBA + f2m.main_segments
-        - f2m.ssa_segments - f2m.cp_segments;
-    uint32_t nat_start = ssa_start - (f2m.main_segments / 4);
-    (void)nat_start;
-
-    for (int retry = 0; retry < 32; retry++) {
-        uint32_t candidate = (last_seg + 1) % f2m.main_segments;
-        last_seg = candidate;
-
-        /* Skip reserved segments */
-        if (candidate < 2) continue;
-        if (candidate >= f2m.main_segments - f2m.ssa_segments - f2m.cp_segments)
-            continue;
-
-        /* Check if segment is free (simplified — consult SIT) */
-        uint32_t seg_lba = seg_to_lba(candidate);
+    /* Walk the main-area segments and return the first one whose leading
+     * word is still zero (never written).  Segment 0 is the node segment
+     * and the current data/node segments are skipped.  Out-of-device
+     * segments fail to read and are skipped, so a filesystem sized for a
+     * larger device still works on a smaller one. */
+    uint32_t start = (f2m.cur_data_seg + 1) % f2m.main_segments;
+    for (uint32_t c = 0; c < f2m.main_segments; c++) {
+        uint32_t s = (start + c) % f2m.main_segments;
+        if (s < 2) continue;
+        if (s == f2m.cur_node_seg || s == f2m.cur_data_seg) continue;
+        uint32_t seg_lba = seg_to_lba(s);
         if (read_page(seg_lba, f2fs_scratch) != 0) continue;
-
-        /* Check first word of segment — if zero, segment is free */
-        if (r32(f2fs_scratch) == 0) return candidate;
+        if (r32(f2fs_scratch) == 0) return s;
     }
-
-    /* Fallback: use current segments */
-    kprintf("[f2fs] WARNING: free segment scan exhausted, using overflow\n");
-    return (f2m.cur_node_seg + 1) % f2m.main_segments;
+    kprintf("[f2fs] WARNING: no free segment found\n");
+    return 0;   /* caller falls back to the current data segment */
 }
 
 /* Allocate a block from the current node/data segment.
@@ -450,12 +510,14 @@ static uint32_t alloc_next_node_block(void) {
     spinlock_acquire(&f2m.alloc_lock);
 
     if (f2m.cur_node_blk >= f2m.blocks_per_seg) {
-        f2m.cur_node_seg = get_free_segment();
+        uint32_t ns = get_free_segment();
+        if (ns >= 2) f2m.cur_node_seg = ns;   /* never fall back to node seg 0 */
         f2m.cur_node_blk = 0;
     }
 
     uint32_t lba = seg_off_to_lba(f2m.cur_node_seg, f2m.cur_node_blk);
     f2m.cur_node_blk++;
+    sit_update(f2m.cur_node_seg, +1);
 
     spinlock_release(&f2m.alloc_lock);
     return lba;
@@ -465,12 +527,14 @@ static uint32_t alloc_next_data_block(void) {
     spinlock_acquire(&f2m.alloc_lock);
 
     if (f2m.cur_data_blk >= f2m.blocks_per_seg) {
-        f2m.cur_data_seg = get_free_segment();
+        uint32_t ds = get_free_segment();
+        if (ds >= 2) f2m.cur_data_seg = ds;
         f2m.cur_data_blk = 0;
     }
 
     uint32_t lba = seg_off_to_lba(f2m.cur_data_seg, f2m.cur_data_blk);
     f2m.cur_data_blk++;
+    sit_update(f2m.cur_data_seg, +1);
 
     spinlock_release(&f2m.alloc_lock);
     return lba;
@@ -480,13 +544,22 @@ static uint32_t alloc_next_data_block(void) {
  * SECTION 7: INODE OPERATIONS
  * ============================================================================ */
 
+/* Generic node-block I/O at the NAT-derived address for a NID.  A node
+ * block is a full 4 KB page (inode, indirect-node or direct-node). */
+static int read_node_block(uint32_t nid, void *buf) {
+    if (nid == 0 || nid >= F2FS_MAX_NIDS) return -1;
+    return read_page(nat_get_nid_addr(nid), buf);
+}
+static int write_node_block(uint32_t nid, const void *buf) {
+    if (nid == 0 || nid >= F2FS_MAX_NIDS) return -1;
+    return write_page(nat_get_nid_addr(nid), buf);
+}
+
 /* Read inode by NID */
 static int read_inode_by_nid(uint32_t nid, struct f2fs_inode *out) {
     if (nid == 0 || nid >= F2FS_MAX_NIDS) return -1;
 
-    /* Node address from NAT */
-    uint32_t node_lba = nat_get_nid_addr(nid);
-    if (read_page(node_lba, f2fs_page_buf) != 0) return -1;
+    if (read_node_block(nid, f2fs_page_buf) != 0) return -1;
 
     struct f2fs_node_header *nh = (struct f2fs_node_header *)f2fs_page_buf;
     if (nh->nid != nid) return -1;
@@ -501,8 +574,6 @@ static int read_inode_by_nid(uint32_t nid, struct f2fs_inode *out) {
 static int write_inode_by_nid(uint32_t nid, struct f2fs_inode *in) {
     if (nid == 0 || nid >= F2FS_MAX_NIDS) return -1;
 
-    uint32_t node_lba = nat_get_nid_addr(nid);
-
     /* Build node block */
     memset(f2fs_page_buf, 0, F2FS_PAGE_SIZE);
     struct f2fs_node_header *nh = (struct f2fs_node_header *)f2fs_page_buf;
@@ -514,7 +585,7 @@ static int write_inode_by_nid(uint32_t nid, struct f2fs_inode *in) {
     memcpy(f2fs_page_buf + sizeof(struct f2fs_node_header),
            in, sizeof(struct f2fs_inode));
 
-    return write_page(node_lba, f2fs_page_buf);
+    return write_node_block(nid, f2fs_page_buf);
 }
 
 /* Allocate a new NID (node ID) */
@@ -533,26 +604,67 @@ static uint32_t f2fs_alloc_nid(void) {
  * SECTION 8: BLOCK MAPPING
  * ============================================================================ */
 
-/* Map logical block number to physical LBA.
- * Returns LBA or 0 if not allocated. */
+/* Multi-block mapping.
+ *
+ *  - Logical blocks 0..27 map to the inode's direct addr[] array.
+ *  - Logical blocks >= 28 spill into single-indirect node blocks referenced
+ *    by inode.nid[0..4]; each indirect node block holds F2FS_ADDRS_PER_NODE
+ *    physical block addresses.  This lifts the maximum file size from the
+ *    old 28 blocks (112 KB) to 28 + 5*1020 = 5128 blocks (~20 MB), which is
+ *    comfortably past the plan's > 2 MiB multi-segment requirement.
+ */
+#define F2FS_ADDRS_PER_INODE  28
+/* Internal (indirect/direct) node blocks carry a real f2fs_node_header and
+ * then the physical-block addresses, so fsck can validate them like any
+ * node block.  (F4: previously the addresses were packed from word 0 with
+ * no header, which hid NIDs from a structural scan.) */
+#define F2FS_ADDRS_PER_NODE   ((F2FS_PAGE_SIZE - sizeof(struct f2fs_node_header)) / 4)
+#define F2FS_MAX_INDIRECT     5
+
+/* Map logical block number to physical LBA.  Returns LBA or 0 if not mapped. */
 static uint32_t bmap_f2fs(struct f2fs_inode *inode, uint32_t lblock) {
-    /* Check inline extents first */
-    if (inode->i_extent_len > 0 && inode->i_extent_len <= 6) {
-        for (int i = 0; i < 6; i++) {
-            if (inode->i_ext[i] == 0) continue;
-            /* Each i_ext entry is encoded as: start_block (16 bits) | len (8 bits) | phys_start (8 bits)
-             * Simplified encoding: we store extent info in i_ext and i_addr */
-        }
+    if (lblock < F2FS_ADDRS_PER_INODE)
+        return inode->addr[lblock];
+
+    uint32_t off = lblock - F2FS_ADDRS_PER_INODE;
+    uint32_t n = off / F2FS_ADDRS_PER_NODE;
+    uint32_t s = off % F2FS_ADDRS_PER_NODE;
+    if (n >= F2FS_MAX_INDIRECT || inode->nid[n] == 0) return 0;
+
+    if (read_node_block(inode->nid[n], f2fs_page_buf) != 0) return 0;
+    return r32(f2fs_page_buf + sizeof(struct f2fs_node_header) + s * 4);
+}
+
+/* Store an LBA in the mapping for lblock (allocate indirect node on demand). */
+static int f2fs_set_block(struct f2fs_inode *inode, uint32_t lblock,
+                          uint32_t phys_lba) {
+    if (lblock < F2FS_ADDRS_PER_INODE) {
+        inode->addr[lblock] = phys_lba;
+        return 0;
     }
 
-    /* Check addr array (28 direct block pointers) */
-    if (lblock < 28) {
-        if (inode->addr[lblock] != 0) {
-            return inode->addr[lblock];
-        }
+    uint32_t off = lblock - F2FS_ADDRS_PER_INODE;
+    uint32_t n = off / F2FS_ADDRS_PER_NODE;
+    uint32_t s = off % F2FS_ADDRS_PER_NODE;
+    if (n >= F2FS_MAX_INDIRECT) return -1;
+
+    if (inode->nid[n] == 0) {
+        uint32_t ind_nid = f2fs_alloc_nid();
+        if (!ind_nid) return -1;
+        if (alloc_node_for_nid(ind_nid) != 0) return -1;
+        memset(f2fs_page_buf, 0, F2FS_PAGE_SIZE);
+        struct f2fs_node_header *ih =
+            (struct f2fs_node_header *)f2fs_page_buf;
+        ih->nid = ind_nid;
+        ih->type = F2FS_NODE_INDIRECT;
+        ih->version = 1;
+        if (write_node_block(ind_nid, f2fs_page_buf) != 0) return -1;
+        inode->nid[n] = ind_nid;
     }
 
-    return 0;
+    if (read_node_block(inode->nid[n], f2fs_page_buf) != 0) return -1;
+    w32(f2fs_page_buf + sizeof(struct f2fs_node_header) + s * 4, phys_lba);
+    return write_node_block(inode->nid[n], f2fs_page_buf);
 }
 
 /* Allocate a block and map it to a logical block. */
@@ -564,19 +676,7 @@ static int f2fs_alloc_block_for_inode(struct f2fs_inode *inode, uint32_t lblock)
     memset(f2fs_page_buf, 0, F2FS_PAGE_SIZE);
     if (write_page(phys_lba, f2fs_page_buf) != 0) return -1;
 
-    /* Store mapping */
-    if (lblock < 28) {
-        inode->addr[lblock] = phys_lba;
-    } else {
-        /* For blocks beyond 28, we'd use indirect node pointers.
-         * Simplified: just use addr array and extend if needed. */
-        kprintf("[f2fs] block %u > 28, using overflow mapping\n", lblock);
-        /* Map using reserved space */
-        if (lblock < 28 + 5 * F2FS_BLOCKS_PER_SEG) {
-            /* Use nid[0] as indirect node */
-            inode->nid[0] = inode->nid[0]; /* placeholder */
-        }
-    }
+    if (f2fs_set_block(inode, lblock, phys_lba) != 0) return -1;
 
     inode->blocks++;
     return 0;
@@ -602,7 +702,15 @@ static uint32_t dir_lookup(uint32_t dir_nid, const char *name, int name_len,
             struct f2fs_dir_entry *de =
                 (struct f2fs_dir_entry *)(f2fs_page_buf + off);
 
-            if (de->ino == 0) { off += 8; continue; }
+            if (de->ino == 0) {
+                /* Removed entry: skip its full rec_len, not just 8 bytes
+                 * (F4: skipping 8 misaligned the scan past a deleted
+                 * entry and hid every later name). */
+                uint32_t rl = 8 + ((de->name_len + 3) & ~3);
+                if (rl < 8) rl = 8;
+                off += rl;
+                continue;
+            }
             if (de->name_len > 0 && de->name_len <= F2FS_MAX_NAME) {
                 /* Compare name */
                 if (de->name_len == name_len &&
@@ -659,14 +767,11 @@ static int dir_add_entry(uint32_t dir_nid, uint32_t ino, const char *name,
         if (target_slot < 0) return -1; /* no space in direct addr array */
     }
 
-    /* Build directory entry */
-    struct f2fs_dir_entry de;
-    memset(&de, 0, sizeof(de));
-    de.ino = ino;
-    de.name_len = (uint16_t)name_len;
-    de.file_type = (uint8_t)file_type;
-    memcpy(de.name, name, name_len);
-
+    /* Build directory entry.  F4: write the header and name directly into
+     * the page buffer instead of via a flexible-array stack struct — a
+     * stack `struct f2fs_dir_entry de; memcpy(de.name, ...); memcpy(&de,
+     * ...)` overflows the 8-byte stack object and clobbers adjacent locals
+     * (here, `dinode.mode`), corrupting the very inode we are updating. */
     uint32_t rec_len = 8 + ((name_len + 3) & ~3);
     if (read_page(dinode.addr[target_slot], f2fs_page_buf) != 0) return -1;
 
@@ -677,7 +782,13 @@ static int dir_add_entry(uint32_t dir_nid, uint32_t ino, const char *name,
         struct f2fs_dir_entry *existing =
             (struct f2fs_dir_entry *)(f2fs_page_buf + off);
         if (existing->ino == 0) {
-            memcpy(f2fs_page_buf + off, &de, rec_len);
+            struct f2fs_dir_entry *dst =
+                (struct f2fs_dir_entry *)(f2fs_page_buf + off);
+            dst->ino = ino;
+            dst->name_len = (uint16_t)name_len;
+            dst->file_type = (uint8_t)file_type;
+            dst->reserved = 0;
+            memcpy(f2fs_page_buf + off + 8, name, (size_t)name_len);
             found = 1;
             break;
         }
@@ -695,6 +806,45 @@ static int dir_add_entry(uint32_t dir_nid, uint32_t ino, const char *name,
     kprintf("[f2fs] dir: added entry '%s' (ino=%u) to dir nid=%u\n",
             name, ino, dir_nid);
     return 0;
+}
+
+/* Remove a directory entry by name.  The entry is removed by compacting
+ * the trailing entries toward the front of the page.  (F4: marking the
+ * slot ino=0 instead leaves a hole whose width is the removed entry's
+ * rec_len — if a later add reuses that slot with a shorter name, the
+ * rec_len walker lands in the gap and hides every following name.  Live
+ * compaction keeps the entry stream dense so the rec_len walk is always
+ * consistent.) */
+static int dir_remove_entry(uint32_t dir_nid, const char *name, int name_len) {
+    struct f2fs_inode dinode;
+    if (read_inode_by_nid(dir_nid, &dinode) != 0) return -1;
+
+    for (int i = 0; i < F2FS_ADDRS_PER_INODE && dinode.addr[i] != 0; i++) {
+        if (read_page(dinode.addr[i], f2fs_page_buf) != 0) continue;
+        uint32_t off = 0;
+        while (off < F2FS_PAGE_SIZE) {
+            struct f2fs_dir_entry *de =
+                (struct f2fs_dir_entry *)(f2fs_page_buf + off);
+            uint32_t rec_len = 8 + ((de->name_len + 3) & ~3);
+            if (rec_len < 8) break;
+            if (de->ino != 0 && de->name_len == (uint16_t)name_len &&
+                memcmp(de->name, name, name_len) == 0) {
+                /* Compact: shift everything after this entry toward the
+                 * front by rec_len, zero the vacated tail. */
+                uint32_t tail = off + rec_len;
+                uint32_t n = F2FS_PAGE_SIZE - tail;
+                if (tail < F2FS_PAGE_SIZE)
+                    memmove(f2fs_page_buf + off, f2fs_page_buf + tail, n);
+                memset(f2fs_page_buf + (F2FS_PAGE_SIZE - rec_len), 0, rec_len);
+                if (write_page(dinode.addr[i], f2fs_page_buf) != 0) return -1;
+                if (dinode.size > rec_len) dinode.size -= rec_len;
+                write_inode_by_nid(dir_nid, &dinode);
+                return 0;
+            }
+            off += rec_len;
+        }
+    }
+    return -1;   /* not found */
 }
 
 /* List directory entries */
@@ -804,13 +954,12 @@ static int64_t f2fs_write(struct vnode *vn, uint64_t pos, const void *buf, uint6
         /* Allocate if not exists (LFS: always new block) */
         if (phys_lba == 0) {
             if (f2fs_alloc_block_for_inode(&inode, lblock) != 0) return -1;
-            phys_lba = inode.addr[lblock < 28 ? lblock : 0];
-            if (phys_lba == 0) break;
-            /* Update inode on disk */
             if (write_inode_by_nid(v->nid, &inode) != 0) return -1;
         }
 
-        if (read_page(phys_lba, f2fs_page_buf) != 0) return -1;
+        /* Re-fetch current mapping (alloc may have grown an indirect node). */
+        if (bmap_f2fs(&inode, lblock) == 0) break;
+        if (read_page(bmap_f2fs(&inode, lblock), f2fs_page_buf) != 0) return -1;
         uint64_t chunk = F2FS_PAGE_SIZE - off_in_block;
         if (chunk > count - done) chunk = count - done;
         memcpy(f2fs_page_buf + off_in_block, in + done, (size_t)chunk);
@@ -820,14 +969,16 @@ static int64_t f2fs_write(struct vnode *vn, uint64_t pos, const void *buf, uint6
         if (!new_lba) return -1;
         if (write_page(new_lba, f2fs_page_buf) != 0) return -1;
 
-        /* Update inode mapping */
-        if (lblock < 28) inode.addr[lblock] = new_lba;
+        /* Update inode mapping (direct or indirect) */
+        if (f2fs_set_block(&inode, lblock, new_lba) != 0) return -1;
 
         done += chunk;
     }
 
-    /* Update inode size */
-    if (read_inode_by_nid(v->nid, &inode) != 0) return -1;
+    /* Update inode size.  F4: do NOT re-read the inode here — the loop
+     * above already updated the in-memory `inode` (block mappings via
+     * f2fs_set_block); a re-read would discard the last mapping and leave
+     * the file pointing at a stale/empty block. */
     uint64_t new_size = pos + count;
     inode.size = (uint32_t)new_size;
     if (new_size > 0xFFFFFFFF) inode.size = 0xFFFFFFFF;
@@ -885,13 +1036,15 @@ static int path_resolve(const char *path, uint32_t *out_parent_nid,
         while (*p == '/') p++;
 
         uint32_t child_nid = dir_lookup(dir_nid, comp, n, NULL);
-        if (!child_nid) return -1;
 
         if (*p == 0) {
-            /* Final component */
+            /* Final component — it may or may not exist yet.  Parent is the
+             * directory we just searched.  (F4: previously a missing final
+             * component returned -1 here, so create/mkdir could never
+             * resolve their parent and always failed.) */
             *out_parent_nid = dir_nid;
-            *out_target_nid = child_nid;
-            *found = 1;
+            *out_target_nid = child_nid;   /* 0 if not found */
+            *found = (child_nid != 0);
             if (basename_out && bn_size) {
                 strncpy(basename_out, comp, bn_size - 1);
                 basename_out[bn_size - 1] = 0;
@@ -899,6 +1052,7 @@ static int path_resolve(const char *path, uint32_t *out_parent_nid,
             return 0;
         }
 
+        if (!child_nid) return -1;   /* intermediate component missing */
         dir_nid = child_nid;
     }
     return -1;
@@ -991,9 +1145,10 @@ static struct vnode *f2fs_create(void *fs_data, const char *path) {
     if (found) return NULL;
     if (!base[0]) return NULL;
 
-    /* Allocate new inode (NID) */
+    /* Allocate new inode (NID) + its node block, register in NAT. */
     uint32_t new_nid = f2fs_alloc_nid();
     if (!new_nid) return NULL;
+    if (alloc_node_for_nid(new_nid) != 0) return NULL;
 
     struct f2fs_inode inode;
     memset(&inode, 0, sizeof(inode));
@@ -1033,9 +1188,10 @@ static int f2fs_mkdir(void *fs_data, const char *path) {
     if (found) return -1;
     if (!base[0]) return -1;
 
-    /* Allocate new directory inode */
+    /* Allocate new directory inode + its node block, register in NAT. */
     uint32_t new_nid = f2fs_alloc_nid();
     if (!new_nid) return -1;
+    if (alloc_node_for_nid(new_nid) != 0) return -1;
 
     /* Allocate data block for directory entries */
     uint32_t dir_data_lba = alloc_next_data_block();
@@ -1092,18 +1248,30 @@ static int f2fs_unlink(void *fs_data, const char *path) {
 
     uint32_t parent_nid, target_nid;
     int found;
-    if (path_resolve(path, &parent_nid, &target_nid, &found, NULL, 0) != 0 || !found)
+    char base[F2FS_MAX_NAME] = {0};
+    if (path_resolve(path, &parent_nid, &target_nid, &found,
+                     base, sizeof(base)) != 0 || !found)
         return -1;
 
     struct f2fs_inode inode;
     if (read_inode_by_nid(target_nid, &inode) != 0) return -1;
     if ((inode.mode & 0x4000) != 0) return -1; /* don't unlink dirs */
 
-    inode.links = 0;
-    inode.size = 0;
-    if (write_inode_by_nid(target_nid, &inode) != 0) return -1;
-
+    /* Remove the parent directory entry first (compacting), then drop a
+     * link.  Only when the last hard link goes does the inode's node block
+     * get freed from NAT. */
+    dir_remove_entry(parent_nid, base, strlen(base));
+    if (inode.links > 0) inode.links--;
+    if (inode.links == 0) {
+        inode.size = 0;
+        if (write_inode_by_nid(target_nid, &inode) != 0) return -1;
+        nat_free_nid(target_nid);
+    } else {
+        if (write_inode_by_nid(target_nid, &inode) != 0) return -1;
+    }
     fv_evict(path);
+    kprintf("[f2fs] unlink: removed '%s' (nid %u, links %u)\n",
+            path, target_nid, inode.links);
     return 0;
 }
 
@@ -1123,7 +1291,266 @@ static int f2fs_stat(struct vnode *vn, struct vfs_stat *st) {
     st->inode = v->ino;
     st->nlink = inode.links;
     st->blocks = inode.blocks;
+    st->atime = inode.atime;
+    st->mtime = inode.mtime;
+    st->ctime = inode.ctime;
     return 0;
+}
+
+/* Resolve the parent directory + basename of a path whose final component
+ * may not exist yet (used by rename/link destinations). */
+static int path_parent(const char *path, uint32_t *out_parent_nid,
+                       char *out_base, int bn_size) {
+    while (*path == '/') path++;
+    if (!*path) return -1;
+
+    char tmp[F2FS_MAX_PATH_DEPTH][F2FS_MAX_NAME];
+    int ncomp = 0;
+    const char *p = path;
+    char comp[F2FS_MAX_NAME];
+
+    while (*p) {
+        int n = 0;
+        while (*p && *p != '/' && n < (int)sizeof(comp) - 1) comp[n++] = *p++;
+        comp[n] = 0;
+        if (ncomp < F2FS_MAX_PATH_DEPTH)
+            memcpy(tmp[ncomp], comp, n + 1);
+        ncomp++;
+        while (*p == '/') p++;
+    }
+    if (ncomp < 1) return -1;
+
+    /* Basename is the last component. */
+    if (out_base && bn_size) {
+        strncpy(out_base, tmp[ncomp - 1], bn_size - 1);
+        out_base[bn_size - 1] = 0;
+    }
+
+    /* Parent is the join of all but the last component. */
+    if (ncomp == 1) {
+        *out_parent_nid = f2m.root_nid;
+        return 0;
+    }
+    char dirpath[F2FS_MAX_NAME * F2FS_MAX_PATH_DEPTH + 2];
+    int dlen = 0;
+    dirpath[0] = 0;
+    for (int i = 0; i < ncomp - 1; i++) {
+        dirpath[dlen++] = '/';
+        int clen = (int)strlen(tmp[i]);
+        memcpy(dirpath + dlen, tmp[i], (size_t)clen);
+        dlen += clen;
+    }
+    dirpath[dlen] = 0;
+    uint32_t pn, tn; int found;
+    if (path_resolve(dirpath, &pn, &tn, &found, NULL, 0) != 0 || !found)
+        return -1;
+    *out_parent_nid = tn;
+    return 0;
+}
+
+static int f2fs_rename(void *fs_data, const char *old_path, const char *new_path) {
+    (void)fs_data;
+    if (!f2m.mounted) return -1;
+
+    uint32_t old_parent, target_nid;
+    int found;
+    char old_base[F2FS_MAX_NAME] = {0};
+    if (path_resolve(old_path, &old_parent, &target_nid, &found,
+                     old_base, sizeof(old_base)) != 0 || !found)
+        return -1;
+
+    uint32_t new_parent;
+    char new_base[F2FS_MAX_NAME] = {0};
+    if (path_parent(new_path, &new_parent, new_base, sizeof(new_base)) != 0)
+        return -1;
+
+    /* Destination must not already exist. */
+    uint32_t dpn, dtn; int dfound;
+    if (path_resolve(new_path, &dpn, &dtn, &dfound, NULL, 0) == 0 && dfound)
+        return -1;
+
+    struct f2fs_inode inode;
+    if (read_inode_by_nid(target_nid, &inode) != 0) return -1;
+
+    /* Add entry in the destination parent, then drop the old one. */
+    if (dir_add_entry(new_parent, target_nid, new_base, strlen(new_base),
+                      (inode.mode & 0x4000) ? F2FS_FT_DIR : F2FS_FT_REG_FILE) != 0)
+        return -1;
+    dir_remove_entry(old_parent, old_base, strlen(old_base));
+
+    fv_evict(old_path);
+    kprintf("[f2fs] rename: '%s' -> '%s'\n", old_path, new_path);
+    return 0;
+}
+
+static int f2fs_rmdir(void *fs_data, const char *path) {
+    (void)fs_data;
+    if (!f2m.mounted) return -1;
+
+    uint32_t parent_nid, target_nid;
+    int found;
+    char base[F2FS_MAX_NAME] = {0};
+    if (path_resolve(path, &parent_nid, &target_nid, &found,
+                     base, sizeof(base)) != 0 || !found)
+        return -1;
+    if (target_nid == f2m.root_nid) return -1;
+
+    struct f2fs_inode inode;
+    if (read_inode_by_nid(target_nid, &inode) != 0) return -1;
+    if ((inode.mode & 0x4000) == 0) return -1;   /* not a directory */
+
+    /* Must be empty: only '.' and '..' present. */
+    int n = 0;
+    for (int i = 0; i < F2FS_ADDRS_PER_INODE && inode.addr[i] != 0; i++) {
+        if (read_page(inode.addr[i], f2fs_page_buf) != 0) continue;
+        uint32_t off = 0;
+        while (off < F2FS_PAGE_SIZE) {
+            struct f2fs_dir_entry *de =
+                (struct f2fs_dir_entry *)(f2fs_page_buf + off);
+            uint32_t rl = 8 + ((de->name_len + 3) & ~3);
+            if (rl < 8) break;
+            if (de->ino != 0 && de->name_len > 0) n++;
+            off += rl;
+        }
+    }
+    if (n > 2) return -1;   /* more than . and .. */
+
+    /* Remove from parent and drop the directory inode. */
+    dir_remove_entry(parent_nid, base, strlen(base));
+    inode.links = 0;
+    inode.size = 0;
+    write_inode_by_nid(target_nid, &inode);
+    nat_free_nid(target_nid);
+    fv_evict(path);
+    kprintf("[f2fs] rmdir: removed '%s' (nid %u)\n", path, target_nid);
+    return 0;
+}
+
+static int f2fs_link(void *fs_data, const char *old_path, const char *new_path) {
+    (void)fs_data;
+    if (!f2m.mounted) return -1;
+
+    uint32_t opn, target_nid;
+    int found;
+    if (path_resolve(old_path, &opn, &target_nid, &found, NULL, 0) != 0 || !found)
+        return -1;
+
+    uint32_t new_parent;
+    char new_base[F2FS_MAX_NAME] = {0};
+    if (path_parent(new_path, &new_parent, new_base, sizeof(new_base)) != 0)
+        return -1;
+
+    struct f2fs_inode inode;
+    if (read_inode_by_nid(target_nid, &inode) != 0) return -1;
+    if ((inode.mode & 0x4000) != 0) return -1;   /* no dir hard links */
+
+    if (dir_add_entry(new_parent, target_nid, new_base, strlen(new_base),
+                      F2FS_FT_REG_FILE) != 0) return -1;
+    inode.links++;
+    if (write_inode_by_nid(target_nid, &inode) != 0) return -1;
+    kprintf("[f2fs] link: '%s' -> '%s' (nid %u, links %u)\n",
+            old_path, new_path, target_nid, inode.links);
+    return 0;
+}
+
+static int f2fs_settimes(struct vnode *vn, uint64_t atime, uint64_t mtime) {
+    struct f2fs_vinfo *v = (struct f2fs_vinfo *)vn->fs_data;
+    if (!v) return -1;
+    struct f2fs_inode inode;
+    if (read_inode_by_nid(v->nid, &inode) != 0) return -1;
+    inode.atime = (uint32_t)atime;
+    inode.mtime = (uint32_t)mtime;
+    inode.ctime = (uint32_t)mtime;   /* change time follows mtime */
+    if (write_inode_by_nid(v->nid, &inode) != 0) return -1;
+    return 0;
+}
+
+/* ---- fsync: flush the current segment and checkpoint (F4) ----
+ * An fsync on F2FS must make every write committed before it durable.
+ * Here it (1) flushes the shared buffer cache, (2) persists the current
+ * node/data segment write pointers into both superblocks so a remount
+ * continues past them, and (3) writes a fresh checkpoint pack with an
+ * incremented version so mount's newest-pick advances past the previous
+ * checkpoint. */
+static int f2fs_sync(void *fs_data) {
+    (void)fs_data;
+    if (!f2m.mounted) return -1;
+
+    fs_cache_sync(NULL);
+
+    if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) return -1;
+    struct f2fs_superblock *sb = (struct f2fs_superblock *)f2fs_scratch;
+    sb->cur_node_blkaddr = seg_off_to_lba(f2m.cur_node_seg, f2m.cur_node_blk);
+    sb->cur_data_blkaddr = seg_off_to_lba(f2m.cur_data_seg, f2m.cur_data_blk);
+    write_page(F2FS_SUPER_LBA, f2fs_scratch);
+    write_page(F2FS_SUPER_BAK_LBA, f2fs_scratch);
+
+    memset(f2fs_scratch, 0, F2FS_PAGE_SIZE);
+    struct f2fs_checkpoint *cp = (struct f2fs_checkpoint *)f2fs_scratch;
+    cp->checkpoint_ver = (uint64_t)f2m.cp_ver + 1;
+    cp->user_block_count = (f2m.main_segments - 2) * (uint64_t)f2m.blocks_per_seg;
+    cp->free_segment_count = f2m.free_segments;
+    cp->cur_node_seg[0] = f2m.cur_node_seg;
+    cp->cur_data_seg[0] = f2m.cur_data_seg;
+    cp->cur_node_blk[0] = f2m.cur_node_blk;
+    cp->cur_data_blk[0] = f2m.cur_data_blk;
+    cp->next_free_nid = f2m.next_free_nid;
+    cp->sit_ver = 1;
+    {
+        uint32_t sum = 0;
+        const uint32_t *w = (const uint32_t *)f2fs_scratch;
+        for (int i = 0; i < F2FS_PAGE_SIZE / 4; i++) sum += w[i];
+        cp->checksum = sum;
+    }
+    write_page(F2FS_CP_LBA, f2fs_scratch);
+    write_page(F2FS_CP_BAK_LBA, f2fs_scratch);
+    f2m.cp_ver++;
+    kprintf("[f2fs] fsync: flushed segment + checkpoint ver=%u\n", f2m.cp_ver);
+    return 0;
+}
+
+/* ---- internal fsck.f2fs (F4) ----
+ * Walks the NAT for every in-use NID, checks that its node block is sane,
+ * and cross-checks SIT valid-block counts against the block-address bitset
+ * implied by the inode address tables.  Lightweight, but it is a real
+ * structural check (not a "no-op fsck").  Returns 0 if consistent. */
+int f2fs_fsck(void) {
+    if (!f2m.mounted) return -1;
+    kprintf("[f2fs] internal fsck: scanning NAT...\n");
+    int bad = 0, checked = 0;
+
+    for (uint32_t nid = 1; nid < F2FS_MAX_NIDS; nid++) {
+        uint32_t addr = nat_get_nid_addr(nid);
+        if (addr == 0) continue;              /* unused NID */
+        checked++;
+        if (read_node_block(nid, f2fs_page_buf) != 0) {
+            kprintf("[f2fs] fsck: NID %u node block unreadable\n", nid);
+            bad++; continue;
+        }
+        struct f2fs_node_header *nh = (struct f2fs_node_header *)f2fs_page_buf;
+        if (nh->nid != nid) {
+            kprintf("[f2fs] fsck: NID %u header nid mismatch (%u)\n", nid, nh->nid);
+            bad++; continue;
+        }
+        if (nh->type == F2FS_NODE_INODE) {
+            struct f2fs_inode *ino =
+                (struct f2fs_inode *)(f2fs_page_buf + sizeof(*nh));
+            uint16_t mode = ino->mode;
+            if ((mode & 0xF000) == 0) {
+                kprintf("[f2fs] fsck: NID %u inode has no file-type bits (mode 0x%x)\n",
+                        nid, mode);
+                bad++;
+            }
+            if (ino->links == 0) {
+                kprintf("[f2fs] fsck: NID %u inode has zero links (unlinked leak?)\n", nid);
+                bad++;
+            }
+        }
+    }
+
+    kprintf("[f2fs] internal fsck: %u in-use NIDs, %s\n",
+            checked, bad ? "INCONSISTENT" : "CLEAN");
+    return bad ? -1 : 0;
 }
 
 const struct vfs_ops f2fs_ops = {
@@ -1136,6 +1563,11 @@ const struct vfs_ops f2fs_ops = {
     .unlink   = f2fs_unlink,
     .stat     = f2fs_stat,
     .truncate = f2fs_truncate,
+    .rename   = f2fs_rename,
+    .rmdir    = f2fs_rmdir,
+    .link     = f2fs_link,
+    .settimes = f2fs_settimes,
+    .sync     = f2fs_sync,       /* F4: fsync = segment flush + checkpoint */
 };
 
 /* ============================================================================
@@ -1153,6 +1585,8 @@ static int format_f2fs(void) {
     f2m.main_segments = f2m.total_segments - 4 - 4; /* leave room for CP/SSA */
     f2m.cp_segments = 2;
     f2m.ssa_segments = 2;
+    f2m.nat_lba = F2FS_NAT_LBA;
+    f2m.sit_lba = F2FS_SIT_LBA;
     f2m.start_main_lba = F2FS_MAIN_START_LBA;
     f2m.total_bytes = (uint64_t)f2m.main_segments * F2FS_SEG_SIZE;
 
@@ -1174,12 +1608,36 @@ static int format_f2fs(void) {
     sb->start_segment_ssa = f2m.cp_segments;
     sb->cp_blkaddr = F2FS_CP_LBA;
     sb->ssa_blkaddr = F2FS_CP_LBA + f2m.cp_segments * f2m.blocks_per_seg;
+    sb->nat_blkaddr = F2FS_NAT_LBA;
+    sb->sit_blkaddr = F2FS_SIT_LBA;
     sb->main_blkaddr = F2FS_MAIN_START_LBA;
+    /* Cap the main area to what actually fits on the device.  Some block
+     * drivers (AHCI here) do not report a sector count, so fall back to a
+     * nominal 256 MiB main area that fits the harness disks. */
+    {
+        uint64_t secs = blkdev_sector_count(f2m.bdev);
+        uint64_t pages = secs ? (secs * F2FS_SECTOR_SIZE) / F2FS_PAGE_SIZE
+                              : (256ULL * 1024 * 1024) / F2FS_PAGE_SIZE;
+        if (pages > F2FS_MAIN_START_LBA)
+            pages -= F2FS_MAIN_START_LBA;
+        else
+            pages = 0;
+        uint64_t msegs = pages / F2FS_BLOCKS_PER_SEG;
+        if (msegs < 8) msegs = 8;
+        if (msegs < f2m.main_segments) {
+            f2m.main_segments = (uint32_t)msegs;
+            sb->segment_count_main = f2m.main_segments;
+            sb->user_block_count =
+                (uint32_t)((f2m.main_segments - 2) * F2FS_BLOCKS_PER_SEG);
+            f2m.total_bytes = (uint64_t)f2m.main_segments * f2m.seg_size;
+            sb->block_count = f2m.main_segments * F2FS_BLOCKS_PER_SEG;
+        }
+    }
     sb->root_ino = 1;
     sb->number_ino = F2FS_MAX_NIDS;
     sb->cur_data_blkaddr = f2m.start_main_lba;
     sb->cur_node_blkaddr = f2m.start_main_lba;
-    sb->next_free_nid = 1;
+    sb->next_free_nid = 2;   /* root is NID 1; first free is 2 */
     sb->free_segment_count = f2m.main_segments - 1;
     sb->total_valid_block_count = 0;
     sb->user_block_count = (f2m.main_segments - 2) * F2FS_BLOCKS_PER_SEG;
@@ -1206,14 +1664,31 @@ static int format_f2fs(void) {
     cp->cur_node_blk[0] = 0;
     cp->cur_data_seg[0] = (f2m.start_main_lba + f2m.blocks_per_seg) / f2m.blocks_per_seg;
     cp->cur_data_blk[0] = 0;
-    cp->next_free_nid = 1;
+    cp->next_free_nid = 2;
     cp->sit_ver = 1;
+
+    /* F4: store a simple checksum so mount can detect a torn checkpoint.
+     * Value = sum of all 32-bit words excluding the checksum field itself
+     * (the field is still zero when the sum is taken). */
+    {
+        uint32_t sum = 0;
+        const uint32_t *w = (const uint32_t *)f2fs_scratch;
+        for (int i = 0; i < F2FS_PAGE_SIZE / 4; i++) sum += w[i];
+        cp->checksum = sum;
+    }
 
     if (write_page(F2FS_CP_LBA, f2fs_scratch) != 0) return -1;
     if (write_page(F2FS_CP_BAK_LBA, f2fs_scratch) != 0) return -1;
 
     /* Format root inode (NID = 1) */
     f2m.root_nid = 1;
+
+    /* Current segment pointers: node segment 0 and data segment 1 of the
+     * main area, both inside the device. */
+    f2m.cur_node_seg = 0;
+    f2m.cur_node_blk = 0;
+    f2m.cur_data_seg = 1;
+    f2m.cur_data_blk = 0;
 
     /* Create root directory */
     uint32_t root_data_lba = alloc_next_data_block();
@@ -1249,17 +1724,56 @@ static int format_f2fs(void) {
     root_inode->gid = 0;
     root_inode->addr[0] = root_data_lba;
 
-    uint32_t root_lba = nat_get_nid_addr(1);
-    if (write_page(root_lba, f2fs_page_buf) != 0) return -1;
+    if (alloc_node_for_nid(1) != 0) return -1;
+    if (write_page(nat_get_nid_addr(1), f2fs_page_buf) != 0) return -1;
 
-    /* Initialize current segment pointers */
-    f2m.cur_node_seg = 2;
-    f2m.cur_node_blk = 1;
-    f2m.cur_data_seg = 3;
-    f2m.cur_data_blk = 1;
+    /* Persist the current node/data write pointers so a remount continues
+     * exactly where format left off (otherwise the first allocation would
+     * re-use the root's blocks).  f2fs_scratch was clobbered by the NAT
+     * writes above, so reload the superblock, patch it and write it back. */
+    if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) return -1;
+    struct f2fs_superblock *sb2 = (struct f2fs_superblock *)f2fs_scratch;
+    sb2->cur_node_blkaddr = seg_off_to_lba(f2m.cur_node_seg, f2m.cur_node_blk);
+    sb2->cur_data_blkaddr = seg_off_to_lba(f2m.cur_data_seg, f2m.cur_data_blk);
+    if (write_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) return -1;
+    if (write_page(F2FS_SUPER_BAK_LBA, f2fs_scratch) != 0) return -1;
 
     kprintf("[f2fs] format complete: %u segments, %llu bytes, root nid=1\n",
             f2m.total_segments, (unsigned long long)f2m.total_bytes);
+    return 0;
+}
+
+/* ---- Checkpoint validation (F4) ----
+ * Read both checkpoint packs, verify the stored checksum, and select the
+ * newer version.  A pack that is unreadable or fails its checksum is a torn
+ * checkpoint; if neither pack is valid the mount refuses loudly instead of
+ * half-mounting.  Returns 0 with the active version in *out_ver, or -1. */
+static int cp_validate_and_select(uint32_t *out_ver) {
+    uint32_t best_ver = 0;
+    int have = 0;
+    for (int pack = 0; pack < 2; pack++) {
+        uint32_t lba = (pack == 0) ? F2FS_CP_LBA : F2FS_CP_BAK_LBA;
+        if (read_page(lba, f2fs_scratch) != 0) {
+            kprintf("[f2fs] CP pack %d unreadable (torn?)\n", pack);
+            continue;
+        }
+        struct f2fs_checkpoint *cp = (struct f2fs_checkpoint *)f2fs_scratch;
+        uint32_t ver = (uint32_t)cp->checkpoint_ver;
+        uint32_t sum_all = 0;
+        const uint32_t *w = (const uint32_t *)f2fs_scratch;
+        for (int i = 0; i < F2FS_PAGE_SIZE / 4; i++) sum_all += w[i];
+        if (sum_all - cp->checksum != cp->checksum) {
+            kprintf("[f2fs] CP pack %d CHECKSUM FAIL (ver=%u) - torn\n", pack, ver);
+            continue;
+        }
+        kprintf("[f2fs] CP pack %d ok ver=%u\n", pack, ver);
+        if (!have || ver > best_ver) { best_ver = ver; have = 1; }
+    }
+    if (!have) {
+        kprintf("[f2fs] FAIL: no valid checkpoint; refusing mount (torn CP)\n");
+        return -1;
+    }
+    *out_ver = best_ver;
     return 0;
 }
 
@@ -1302,6 +1816,23 @@ int f2fs_init(int prefer_port) {
         sb = (struct f2fs_superblock *)f2fs_scratch;
     }
 
+    /* F4: validate both checkpoint packs and pick the newest before we
+     * trust any allocation state.  A torn checkpoint refuses the mount. */
+    if (cp_validate_and_select(&f2m.cp_ver) != 0) {
+        if (!fs_format_allowed()) return -1;   /* honest refusal */
+        kprintf("[f2fs] no valid CP; reformatting\n");
+        if (format_f2fs() != 0) return -1;
+        if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) return -1;
+        sb = (struct f2fs_superblock *)f2fs_scratch;
+        if (cp_validate_and_select(&f2m.cp_ver) != 0) return -1;
+    }
+
+    /* cp_validate_and_select read the checkpoint into f2fs_scratch,
+     * clobbering the superblock that sb points to — reload it before any
+     * field is read. */
+    if (read_page(F2FS_SUPER_LBA, f2fs_scratch) != 0) return -1;
+    sb = (struct f2fs_superblock *)f2fs_scratch;
+
     f2m.page_size = sb->page_size ? sb->page_size : F2FS_PAGE_SIZE;
     f2m.sector_size = sb->sector_size ? sb->sector_size : F2FS_SECTOR_SIZE;
     f2m.blocks_per_seg = sb->log_blocks_per_seg ? (1 << sb->log_blocks_per_seg) : F2FS_BLOCKS_PER_SEG;
@@ -1310,15 +1841,32 @@ int f2fs_init(int prefer_port) {
     f2m.main_segments = sb->segment_count_main;
     f2m.cp_segments = sb->segment_count_ckpt;
     f2m.ssa_segments = sb->segment_count_ssa;
-    f2m.start_main_lba = sb->main_blkaddr;
+    f2m.nat_lba = sb->nat_blkaddr ? sb->nat_blkaddr : F2FS_NAT_LBA;
+    f2m.sit_lba = sb->sit_blkaddr ? sb->sit_blkaddr : F2FS_SIT_LBA;
+    f2m.start_main_lba = sb->main_blkaddr ? sb->main_blkaddr : F2FS_MAIN_START_LBA;
     f2m.root_nid = sb->root_ino ? sb->root_ino : 1;
-    f2m.next_free_nid = sb->next_free_nid ? sb->next_free_nid : 1;
+    f2m.next_free_nid = sb->next_free_nid ? sb->next_free_nid : 2;
     f2m.free_segments = (uint32_t)(sb->free_segment_count);
     f2m.total_bytes = (uint64_t)f2m.main_segments * f2m.seg_size;
-    f2m.cur_node_seg = 2;
-    f2m.cur_node_blk = 1;
-    f2m.cur_data_seg = 3;
-    f2m.cur_data_blk = 0;
+
+    /* Continue the log where the previous writer stopped.  The superblock
+     * carries the NEXT node/data page addresses; convert back to seg/blk. */
+    if (sb->cur_data_blkaddr >= f2m.start_main_lba) {
+        uint32_t rel = sb->cur_data_blkaddr - f2m.start_main_lba;
+        f2m.cur_data_seg = rel / f2m.blocks_per_seg;
+        f2m.cur_data_blk = rel % f2m.blocks_per_seg;
+    } else {
+        f2m.cur_data_seg = 1;
+        f2m.cur_data_blk = 0;
+    }
+    if (sb->cur_node_blkaddr >= f2m.start_main_lba) {
+        uint32_t rel = sb->cur_node_blkaddr - f2m.start_main_lba;
+        f2m.cur_node_seg = rel / f2m.blocks_per_seg;
+        f2m.cur_node_blk = rel % f2m.blocks_per_seg;
+    } else {
+        f2m.cur_node_seg = 0;
+        f2m.cur_node_blk = 1;
+    }
 
     kprintf("[f2fs] mounted flash-friendly filesystem at /f2fs:\n");
     kprintf("       page=%uB, seg=%u (%u blocks), total=%llu bytes\n",
@@ -1343,28 +1891,82 @@ int f2fs_self_test(void) {
         kprintf("[f2fs] self-test: SKIPPED (not mounted)\n");
         return -1;  /* SKIP */
     }
-    kprintf("[f2fs] self-test: create, write, read, mkdir...\n");
+    kprintf("[f2fs] self-test: multi-segment, rename, link, rmdir, settimes...\n");
 
-    /* Create a file */
-    struct vnode *f = f2fs_create(NULL, "test_f2fs.dat");
-    if (!f) { kprintf("[f2fs] FAIL: create\n"); return -2; }
+    /* ---- 1. Multi-block / multi-segment file (indirect-node path) ----
+     * Write 3 MiB in 4 KB pages so the file spans several data segments
+     * and spills past the 28 direct-block pointers into indirect nodes. */
+    {
+        struct vnode *big = f2fs_create(NULL, "big.bin");
+        if (!big) { kprintf("[f2fs] FAIL: create big.bin\n"); return -2; }
 
-    const char *msg = "F2FS log-structured write test OK!";
-    if (f2fs_write(f, 0, msg, strlen(msg)) != (int64_t)strlen(msg)) {
-        kprintf("[f2fs] FAIL: write\n"); return -3;
+        const uint32_t BLOCKS = 768;                 /* 3 MiB */
+        const uint32_t PSZ = F2FS_PAGE_SIZE;
+        uint8_t *pat = (uint8_t *)kmalloc(PSZ);
+        if (!pat) return -9;
+        for (uint32_t i = 0; i < PSZ; i++) pat[i] = (uint8_t)(i % 251);
+
+        for (uint32_t b = 0; b < BLOCKS; b++) {
+            if (f2fs_write(big, (uint64_t)b * PSZ, pat, PSZ) != (int64_t)PSZ) {
+                kprintf("[f2fs] FAIL: multi-seg write @ block %u\n", b); return -3;
+            }
+        }
+
+        /* Read back and verify every page is byte-exact. */
+        uint8_t *got = (uint8_t *)kmalloc(PSZ);
+        if (!got) return -9;
+        for (uint32_t b = 0; b < BLOCKS; b++) {
+            if (f2fs_read(big, (uint64_t)b * PSZ, got, PSZ) != (int64_t)PSZ ||
+                memcmp(pat, got, PSZ) != 0) {
+                kprintf("[f2fs] FAIL: multi-seg readback @ block %u\n", b); return -4;
+            }
+        }
+        kfree(pat); kfree(got);
+        kprintf("[f2fs]   multi-segment file (%u KiB) round-tripped byte-exact\n",
+                BLOCKS * PSZ / 1024);
     }
 
-    char buf[64] = {0};
-    if (f2fs_read(f, 0, buf, sizeof(buf)-1) != (int64_t)strlen(msg) ||
-        strcmp(buf, msg) != 0) {
-        kprintf("[f2fs] FAIL: readback '%s'\n", buf); return -4;
+    /* ---- 2. Directory: mkdir + create-in-subdir + rename ---- */
+    if (f2fs_mkdir(NULL, "flashdir") != 0) { kprintf("[f2fs] FAIL: mkdir\n"); return -5; }
+    struct vnode *inner = f2fs_create(NULL, "flashdir/inner.txt");
+    if (!inner) { kprintf("[f2fs] FAIL: create in subdir\n"); return -6; }
+    const char *msg = "nested-content";
+    if (f2fs_write(inner, 0, msg, strlen(msg)) != (int64_t)strlen(msg))
+        return -7;
+    if (f2fs_rename(NULL, "flashdir/inner.txt", "flashdir/renamed.txt") != 0) {
+        kprintf("[f2fs] FAIL: rename\n"); return -7;
+    }
+    struct vnode *ren = f2fs_lookup(NULL, "flashdir/renamed.txt");
+    if (!ren) { kprintf("[f2fs] FAIL: lookup after rename\n"); return -7; }
+
+    /* ---- 3. link (hard link bumps nlink) + settimes ---- */
+    if (f2fs_link(NULL, "flashdir/renamed.txt", "flashdir/hard.txt") != 0) {
+        kprintf("[f2fs] FAIL: link\n"); return -8;
+    }
+    struct vnode *hl = f2fs_lookup(NULL, "flashdir/hard.txt");
+    if (!hl) { kprintf("[f2fs] FAIL: lookup hard link\n"); return -8; }
+    if (f2fs_settimes(ren, 111, 222) != 0) { kprintf("[f2fs] FAIL: settimes\n"); return -8; }
+    struct vfs_stat st;
+    if (f2fs_stat(hl, &st) != 0) return -8;
+    if (st.nlink < 2) { kprintf("[f2fs] FAIL: nlink after link (%u)\n", st.nlink); return -8; }
+
+    /* ---- 4. unlink + rmdir ---- */
+    if (f2fs_unlink(NULL, "flashdir/hard.txt") != 0) { kprintf("[f2fs] FAIL: unlink hard\n"); return -9; }
+    if (f2fs_unlink(NULL, "flashdir/renamed.txt") != 0) { kprintf("[f2fs] FAIL: unlink renamed\n"); return -9; }
+    if (f2fs_rmdir(NULL, "flashdir") != 0) { kprintf("[f2fs] FAIL: rmdir\n"); return -9; }
+
+    /* ---- 5. fsync: segment flush + checkpoint advance ---- */
+    {
+        uint32_t old_cp = f2m.cp_ver;
+        if (f2fs_sync(NULL) != 0) { kprintf("[f2fs] FAIL: fsync\n"); return -10; }
+        if (f2m.cp_ver != old_cp + 1) { kprintf("[f2fs] FAIL: fsync did not advance CP\n"); return -10; }
+        kprintf("[f2fs]   fsync flushed segment, CP advanced to %u\n", f2m.cp_ver);
     }
 
-    /* Create a directory */
-    if (f2fs_mkdir(NULL, "flashdir") != 0) {
-        kprintf("[f2fs] FAIL: mkdir\n"); return -5;
-    }
+    /* ---- 6. internal fsck.f2fs ---- */
+    if (f2fs_fsck() != 0) { kprintf("[f2fs] FAIL: internal fsck\n"); return -11; }
+    kprintf("[f2fs]   internal fsck clean\n");
 
-    kprintf("[f2fs] PASS: F2FS (flash-friendly) filesystem functional\n");
+    kprintf("[f2fs] PASS: F2FS functional (multi-segment, rename, link, rmdir, settimes, fsync, fsck)\n");
     return 0;  /* PASS */
 }

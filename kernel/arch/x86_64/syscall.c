@@ -12,6 +12,7 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
 #include "kernel/tty/termios.h"
 #include "kernel/tty/tty.h"
 #include "kernel/net/net.h"
@@ -193,6 +194,7 @@ typedef struct {
 #define SYS_MUNLOCK        150
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 #define SYS_KBD_LAYOUT     601   /* non-standard: select keyboard layout (FIXES_PLAN R8) */
+#define SYS_F2FS_FSCK      602   /* non-standard: internal f2fs structural fsck (F4) */
 
 /* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
@@ -2059,6 +2061,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
      * No vfs_errno() anywhere near this: -ENOENT is -2, but keyboard_set_-
      * layout() may gain -EPERM-class returns later (write protection), and
      * EPERM == 1 == the generic sentinel — return values verbatim. */
+    case SYS_F2FS_FSCK: {   /* 602 */
+        /* F4: run the internal f2fs structural fsck.  Returns 0 if the
+         * volume is consistent, negative otherwise. */
+        return (uint64_t)f2fs_fsck();
+    }
     case SYS_KBD_LAYOUT: {
         if (a1 == 0) {
             if (!a2 || a3 == 0) return (uint64_t)-EINVAL;

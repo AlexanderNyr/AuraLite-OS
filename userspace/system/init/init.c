@@ -27,6 +27,7 @@
 
 #include "sh_expand.h"
 #include "sh_parse.h"
+#include "time.h"   /* struct timespec for cmd_settimes */
 
 /* SELFHOST SH2: INPUT_MAX 256 -> 512 and MAX_ARGS 8 -> 32 so the guest
  * toolchain's link lines fit (a tcc link of the userland names crt0,
@@ -1151,6 +1152,47 @@ static void cmd_touch(const char *path) {
     printf("touch: %s\n", path);
 }
 
+/* F4 shell surface for f2fs: hard link, settimes, fsync, internal fsck. */
+static void cmd_link(int argc, char **argv) {
+    if (argc < 3) { puts("usage: link <old> <new>"); return; }
+    if (link(argv[1], argv[2]) == 0) printf("link: %s -> %s\n", argv[1], argv[2]);
+    else                             printf("link: failed\n");
+    fflush(stdout);
+}
+
+static void cmd_settimes(int argc, char **argv) {
+    if (argc < 4) { puts("usage: settimes <path> <atime> <mtime>"); return; }
+    /* utimensat(dfd, path, times[2], flags): atime + mtime in nsec-epoch. */
+    struct timespec ts[2];
+    ts[0].tv_sec = strtol(argv[2], (char **)NULL, 10); ts[0].tv_nsec = 0;
+    ts[1].tv_sec = strtol(argv[3], (char **)NULL, 10); ts[1].tv_nsec = 0;
+    long rc = syscall(SYS_UTIMENSAT, (uint64_t)AT_FDCWD, (uint64_t)argv[1],
+                      (uint64_t)ts, 0, 0, 0);
+    if (rc == 0)
+        printf("settimes: %s atime=%s mtime=%s\n", argv[1], argv[2], argv[3]);
+    else
+        printf("settimes: failed\n");
+    fflush(stdout);
+}
+
+static void cmd_fsync(const char *path) {
+    if (!path) { puts("fsync: missing path"); return; }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { printf("fsync: cannot open %s\n", path); return; }
+    int rc = fsync(fd);
+    close(fd);
+    if (rc == 0) printf("fsync: %s\n", path);
+    else         printf("fsync: failed\n");
+    fflush(stdout);
+}
+
+static void cmd_f2fsck(void) {
+    int64_t rc = syscall(SYS_F2FS_FSCK, 0, 0, 0, 0, 0, 0);
+    if (rc == 0) printf("f2fsck: clean\n");
+    else         printf("f2fsck: INCONSISTENT (rc=%lld)\n", (long long)rc);
+    fflush(stdout);
+}
+
 static void cmd_apm(int argc, char **argv) {
     /* Arguments are forwarded as arguments (SDK_PLAN phase S3).
      *
@@ -1414,6 +1456,14 @@ static int sh_run_command(int argc)
         cmd_stat(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "touch") == 0) {
         cmd_touch(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "link") == 0) {
+        cmd_link(argc, cmd_argv);
+    } else if (strcmp(cmd, "settimes") == 0) {
+        cmd_settimes(argc, cmd_argv);
+    } else if (strcmp(cmd, "fsync") == 0) {
+        cmd_fsync(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "f2fsck") == 0) {
+        cmd_f2fsck();
     } else if (strcmp(cmd, "apm") == 0) {
         cmd_apm(argc, cmd_argv);
     } else if (strcmp(cmd, "gui") == 0) {

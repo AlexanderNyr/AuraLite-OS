@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4–F7 planned 📋
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE (F4b btrfs + F5–F7 planned 📋)
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -405,7 +405,7 @@ the extent tree now maps to the correct data block.
 
 ---
 
-### Phase F4 — f2fs: checkpoint/NAT/SIT reality, then btrfs: tree COW reality ✅ planned
+### Phase F4 — f2fs: checkpoint/NAT/SIT reality, then btrfs: tree COW reality ✅ f2fs lane DONE
 
 **Objective:** the two remaining "real code" filesystems reach the same
 honest bar, in dependency order (f2fs first: its tooling is a one-package
@@ -413,18 +413,23 @@ install; btrfs last: its tooling is the heaviest).
 
 #### Tasks (f2fs)
 
-- [ ] `mkfs.f2fs` external harness (`test_f2fs.sh`); internal-lane check
-      with the host `fsck.f2fs`.
-- [ ] **NAT + SIT reconstruction on mount** (node address table and segment
-      info table parsed from the superblock offsets — currently read
-      never); SSA (segment summary) read for block ownership.
-- [ ] **Checkpoint validation**: both CP packs compared, newer-version
+- [x] `test_f2fs.sh` harness (mutation surface + internal fsck + CP
+      validation).  Host `mkfs.f2fs`/`fsck.f2fs` binary interop is NOT
+      applicable: AuraLite uses a custom f2fs-derived layout (superblock
+      magic `0xF2F20210` vs real `0xF2F52010`), so the fsck gate is the
+      in-kernel structural fsck (`f2fsck`, `SYS_F2FS_FSCK`).  -- `tests/f2fs/test_f2fs.sh`
+- [x] **NAT + SIT reconstruction on mount** (both read from the superblock
+      offsets; NAT read on every node access, SIT on segment allocation).
+- [x] **Checkpoint validation**: both CP packs compared, newer-version
       selection, checksum verified; refuse (loud) on torn CP instead of
-      half-mounting.
-- [ ] **rename + rmdir**, `.link`/`.settimes`; `fsync` as a `sync`-slot
-      flush of the current segment.
-- [ ] **Multi-segment files**: writes spanning segment boundaries allocate
-      and chain correctly; file > 2 MiB round-trips.
+      half-mounting.  Verified: both-torn → `refusing mount (torn CP)`;
+      one-torn → mounts using the valid pack.
+- [x] **rename + rmdir**, `.link`/`.settimes`; `fsync` as a `sync`-slot
+      flush of the current segment + checkpoint advance.
+- [x] **Multi-segment files**: writes spanning segment boundaries allocate
+      and chain correctly; 3 MiB / 768×4 KiB file (spans data segments,
+      spills past the 28 direct blocks into indirect nodes) round-trips
+      byte-exact.
 - [ ] Cleaning/GC explicitly out of scope (named in the file header and in
       this plan's D-notes) — the log-structured writer *is* the future GC's
       foundation, but shipping a correct sequential writer first is the

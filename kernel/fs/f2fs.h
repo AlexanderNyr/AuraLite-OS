@@ -27,6 +27,7 @@
 
 int  f2fs_init(int prefer_port);
 int f2fs_self_test(void);
+int f2fs_fsck(void);       /* internal structural fsck (F4); 0 if consistent */
 
 extern const struct vfs_ops f2fs_ops;
 

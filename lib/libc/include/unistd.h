@@ -65,6 +65,8 @@ typedef struct {
 #define SYS_SOCKET_CONNECT6 308   /* Y3: connect to a sockaddr_in6 */
 #define SYS_DNS_AAAA        309   /* Y4: resolve AAAA into 16 octets */
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
+#define SYS_F2FS_FSCK      602   /* non-standard: internal f2fs structural fsck (F4) */
+#define SYS_UTIMENSAT      280   /* utimensat(2)/futimens(2) */
 
 /* File-descriptor extensions. */
 #define SYS_DUP    32
