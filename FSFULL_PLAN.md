@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE (F5b/NTFS + F6–F7 planned 📋)
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE; F5b/NTFS ✅ DONE (F6–F7 planned 📋)
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -468,7 +468,7 @@ install; btrfs last: its tooling is the heaviest).
 
 ---
 
-### Phase F5 — exFAT and NTFS: replace the skeletons with honesty ✅ exFAT DONE (NTFS = F5b)
+### Phase F5 — exFAT and NTFS: replace the skeletons with honesty ✅ exFAT DONE; ✅ F5b NTFS DONE
 
 **Objective:** the two skeletons stop lying, and exFAT reaches the full
 surface because it is a FAT-family format with an in-tree reference
@@ -680,6 +680,6 @@ and is out of scope here, named in this plan's D-notes.
 - [ ] F4 f2fs (NAT/SIT/SSA, CP validation, rename/rmdir, multi-segment)
 - [ ] F4b btrfs (tree COW, CRC32C, rename/rmdir/truncate)
 - [ ] F5 exFAT (real structs, chains, full mutation, interop)
-- [ ] F5b NTFS (stop lying, read-only core, runlists, interop)
+- [x] F5b NTFS (stop lying, read-only core, runlists, interop)
 - [ ] F6 headers/claims/docs + `check_fsfull_claims.py`
 - [ ] F7 coverage shard + RES-46 DONE@F7 + baseline move

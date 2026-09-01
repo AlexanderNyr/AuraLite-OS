@@ -508,16 +508,22 @@ void kmain(boot_info_t *boot_info) {
         kprintf("[f2fs] no 6th AHCI disk; /f2fs not mounted\n");
     }
 
-    int dev_ntfs = (blkdev_count() > 6) ? 6 : -1;
+    /* F5b: NTFS is the last experimental filesystem.  A single 6-port ICH9
+     * AHCI controller exposes blkdev 0-5, all assigned to earlier
+     * filesystems, so a fixed NTFS slot at blkdev 6 is unreachable in QEMU.
+     * Auto-detect instead: mount /ntfs on the first reachable device that
+     * carries a genuine NTFS signature.  ntfs_init() is signature-gated, so
+     * it cannot misclaim a dedicated slot (ext2/exfat/ext4/btrfs/f2fs each
+     * refuse the foreign OEM first; diskfs/ext2, which may format their own
+     * slots, only ever see non-NTFS bytes there). */
+    int dev_ntfs = -1;
+    for (int d = 0; d < blkdev_count(); d++) {
+        if (ntfs_init(d) == 0) { dev_ntfs = d; break; }
+    }
     if (dev_ntfs >= 0) {
-        if (ntfs_init(dev_ntfs) == 0) {
-            vfs_mount("/ntfs", &ntfs_ops, NULL);
-        } else {
-            kprintf("[ntfs] foreign volume on device %d; /ntfs not mounted\n",
-                    dev_ntfs);
-        }
+        vfs_mount("/ntfs", &ntfs_ops, NULL);
     } else {
-        kprintf("[ntfs] no 7th AHCI disk; /ntfs not mounted\n");
+        kprintf("[ntfs] no NTFS volume on a reachable device; /ntfs not mounted\n");
     }
 
     /* Disabled in normal boot until fully stable, can be called when needed:
