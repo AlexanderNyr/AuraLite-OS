@@ -1186,6 +1186,23 @@ static void cmd_fsync(const char *path) {
     fflush(stdout);
 }
 
+/* F4b shell surface for btrfs: truncate + internal CoW/CRC self-test. */
+static void cmd_truncate(int argc, char **argv) {
+    if (argc < 3) { puts("usage: truncate <path> <new-size>"); return; }
+    uint64_t nsz = (uint64_t)strtoull(argv[2], (char **)NULL, 10);
+    if (truncate(argv[1], nsz) == 0) printf("truncate: %s -> %llu bytes\n",
+                                            argv[1], (unsigned long long)nsz);
+    else                             printf("truncate: failed\n");
+    fflush(stdout);
+}
+
+static void cmd_btrfsck(void) {
+    int64_t rc = syscall(SYS_BTRFS_SELFTEST, 0, 0, 0, 0, 0, 0);
+    if (rc == 0) printf("btrfsck: clean\n");
+    else         printf("btrfsck: INCONSISTENT (rc=%lld)\n", (long long)rc);
+    fflush(stdout);
+}
+
 static void cmd_f2fsck(void) {
     int64_t rc = syscall(SYS_F2FS_FSCK, 0, 0, 0, 0, 0, 0);
     if (rc == 0) printf("f2fsck: clean\n");
@@ -1462,6 +1479,10 @@ static int sh_run_command(int argc)
         cmd_settimes(argc, cmd_argv);
     } else if (strcmp(cmd, "fsync") == 0) {
         cmd_fsync(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "truncate") == 0) {
+        cmd_truncate(argc, cmd_argv);
+    } else if (strcmp(cmd, "btrfsck") == 0) {
+        cmd_btrfsck();
     } else if (strcmp(cmd, "f2fsck") == 0) {
         cmd_f2fsck();
     } else if (strcmp(cmd, "apm") == 0) {

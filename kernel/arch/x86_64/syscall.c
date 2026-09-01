@@ -13,6 +13,7 @@
 #include "kernel/proc/usercopy.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
+#include "kernel/fs/btrfs.h"  /* SYS_BTRFS_SELFTEST: btrfs CoW/CRC self-test (F4b) */
 #include "kernel/tty/termios.h"
 #include "kernel/tty/tty.h"
 #include "kernel/net/net.h"
@@ -195,6 +196,7 @@ typedef struct {
 #define SYS_MEMINFO        600   /* non-standard: returns pmm_get_free_frames() to userspace */
 #define SYS_KBD_LAYOUT     601   /* non-standard: select keyboard layout (FIXES_PLAN R8) */
 #define SYS_F2FS_FSCK      602   /* non-standard: internal f2fs structural fsck (F4) */
+#define SYS_BTRFS_SELFTEST 603   /* non-standard: btrfs CoW/CRC self-test (F4b) */
 
 /* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
@@ -2065,6 +2067,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         /* F4: run the internal f2fs structural fsck.  Returns 0 if the
          * volume is consistent, negative otherwise. */
         return (uint64_t)f2fs_fsck();
+    }
+    case SYS_BTRFS_SELFTEST: {   /* 603 */
+        /* F4b: run the internal btrfs CoW/CRC structural self-test.
+         * Returns 0 on pass, negative on failure. */
+        return (uint64_t)btrfs_self_test();
     }
     case SYS_KBD_LAYOUT: {
         if (a1 == 0) {

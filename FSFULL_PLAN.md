@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE (F4b btrfs + F5–F7 planned 📋)
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE (F5–F7 planned 📋)
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -437,17 +437,21 @@ install; btrfs last: its tooling is the heaviest).
 
 #### Tasks (btrfs)
 
-- [ ] `mkfs.btrfs` external harness (`test_btrfs.sh`) — the interop lane
-      that will surface every layout assumption the current code makes.
-- [ ] **Tree COW on update**: node updates allocate a fresh block and
-      re-parent (the "copy-on-write" the file header claims but the code
-      does not do on metadata).
-- [ ] **CRC32C checksums**: verify on read, compute on write, for the
+- [x] `test_btrfs.sh` harness — drives the full mutation surface from the
+      shell on the mounted /btrfs volume plus the in-kernel CoW/CRC
+      self-test.  (Host `mkfs.btrfs` / `btrfs check` binary interop is
+      documented not-applicable: AuraLite's btrfs is a custom CoW layout,
+      the same honest caveat f2fs carries.)
+- [x] **Tree COW on update**: every metadata write (insert/update/remove)
+      allocates a fresh leaf, re-parents the root to it and writes a new
+      root block, so old generations remain intact on disk (the header's
+      "copy-on-write" is now real on metadata too).
+- [x] **CRC32C checksums**: computed on write, verified on read, for the
       claimed-but-unimplemented data-integrity story.
-- [ ] **rename + rmdir + truncate**; `.link`/`.settimes`.
-- [ ] **Subvolumes/snapshots**: explicitly out of scope (the header's
+- [x] **rename + rmdir + truncate**; `.link`/`.settimes` (+ `fsync`).
+- [x] **Subvolumes/snapshots**: explicitly out of scope (the header's
       claim is retracted in F6).
-- [ ] Self-test extended: CoW write → read-back → overwrite → verify both
+- [x] Self-test extended: CoW write → read-back → overwrite → verify both
       generations' blocks exist and the tree still resolves.
 
 #### Test gate (both)
