@@ -2,6 +2,30 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L0 — the OpenGL continuation rig] 2026-09-02
+
+`GL2_PLAN.md` phase L0: before any leftover GL feature lands, the tripwire
+that will notice if a later phase and this document disagree.  Nothing
+drew a new pixel in this phase, on purpose.
+
+- `tools/check_gl2_claims.py`: opener facts pinned as live greps
+  (`GL_MAX_TEXTURE_UNITS_IMPL` is 2, `glMatrixMode(GL_TEXTURE)` is
+  `GL_INVALID_OPERATION`, stencil is refused, no `GL_COMBINE` /
+  `glCopyTex` / `glBlitFramebuffer`, VirGL does not implement
+  `DRAW_VBO`, `gl_backend_t` has no `draw` member, `/glcube` and
+  `/glgears` never bind a GLSL program).  Later phases move a pin in
+  the same commit or CI is red.  Deliberately does **not** assert
+  `.patch` files exist (the RINET2 lesson).
+- `tests/unit/test_gl2_claims.sh`: checker + `--selftest` negative
+  control (a planted empty tree must fail), wired into `make test-unit`.
+- `docs/opengl.md`: the virtio-gpu init hang sentence is gone.  RES-40
+  closed at residue R1; the architecture doc had gone stale against
+  `TODO.md`.  L0 is the correction, not a GL feature.
+- Host libgl inventory frozen by name in the checker (17 `test_gl*`
+  binaries in `UNIT_TESTS`); `/gltest` is documented at 373 in-OS
+  checks — that count is recorded in the plan, not gated, so it
+  cannot rot the checker.
+
 ## [FSFULL F3 — ext4: complete the surface, prove interop] 2026-08-31
 
 `FSFULL_PLAN.md` phase F3: the ext4 reference implementation reaches the

@@ -1,0 +1,773 @@
+# AuraLite OS — OpenGL, the second series (the leftovers)
+
+## Status: IN PROGRESS — L0 landed; L1–L7 specified
+
+| Phase | Result | Deliverable |
+|-------|--------|-------------|
+| L0 — the rig | ✅ complete | `patches/GL2_L0_rig.patch` |
+| L1 — stencil buffer | — | 8-bit stencil + FBO attachment, host + `/gltest` |
+| L2 — copies | — | `glCopyTexImage2D` / `glCopyTexSubImage2D` / `glBlitFramebuffer` |
+| L3 — texture leftovers | — | `GL_COMBINE`, `GL_TEXTURE` matrix, 4 units |
+| L4 — per-fragment mipmap LOD | — | derivatives through the edge functions |
+| L5 — shader-path fitness | — | early-Z + `/glshade` |
+| L6 — VirGL `DRAW_VBO` | — | canned TGSI triangle on the G13 seam |
+| L7 — close-out | — | docs, residue, checker, terminal arithmetic |
+
+This document answers:
+
+> *`GL_PLAN.md` G0–G13 + K1 is closed. Of the things it named as leftover,
+> which ones are still the right next work — and what is the honest, measured
+> path, rather than "the rest of OpenGL"?*
+
+It follows `REALINTERNET2_PLAN.md` (continuation series: measured opener,
+D-numbers, phase Results, named non-goals, terminal arithmetic) and the
+original `GL_PLAN.md` (definition of done, test gate, host unit tests first,
+honest docs). A new letter, the Y-series convention: the first series spent
+**G**. Reusing G14+ in a second file would make every grep ambiguous.
+
+**Baseline:** commit `dbc27fe` (HEAD at the time of writing). Every claim
+below was checked against the tree, not assumed. Line numbers will drift;
+the *claims* are what the phases answer to, and L0 pins the ones that
+must not silently rot.
+
+---
+
+## 1. Where this plan comes from
+
+`docs/opengl.md` already has the inventory, under **Not implemented**. This
+plan does not rediscover it. It ranks those rows, drops the ones that are
+still the wrong work, and turns the rest into dependency-ordered phases.
+
+### Fact 1 — The first series finished what it promised, and said so
+
+`GL_PLAN.md` is marked complete: software GL 1.1 + 1.5 VBOs, G10 mipmaps /
+two texture units / 3D / cube maps, G11 GLSL ES 1.0 as an AST interpreter
+(not a JIT), G12 FBOs and `glReadPixels`, G13 VirGL probe / clear / present,
+K1 `SYS_GPU_CALL` 203. D3 still holds: GL is userspace `libgl`; the kernel
+does not interpret a GL command.
+
+The leftover list is therefore a *named* list, not a vibe. Citing
+`docs/opengl.md` lines 140–150:
+
+| Missing | What the tree actually does today |
+|---|---|
+| Geometry / tess / compute | ES 2.0 has VS+FS only — **out of this plan** (§4) |
+| Per-fragment mipmap LOD | Per-triangle (`glraster.c` `triangle_lod`, G10 named follow-up) |
+| `GL_COMBINE` | Four GL 1.1 env modes only; the token is absent from `gl.h` |
+| >2 texture units | `GL_MAX_TEXTURE_UNITS_IMPL` is **2** (`glcontext.h:43`) |
+| Stencil buffer | `glClear` accepts the bit and ignores it (`glstate.c:144`) |
+| Accumulation | Absent — **out of this plan** (§4) |
+| `glCopyTexImage` / `glBlitFramebuffer` | No symbols in `gl.h` or `libgl/src` |
+| Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1 — **out of this plan** (§4) |
+| Evaluators / feedback / selection | Absent — **out of this plan** (§4) |
+| `GL_TEXTURE` matrix mode | Valid enum, `GL_INVALID_OPERATION` (`glmatrix.c:71–76`) |
+| Hardware-accelerated **drawing** | G13 present-only; `DRAW_VBO` named as a later compiler phase |
+
+### Fact 2 — Stencil is an honest hole, not a stub
+
+Three independent refusals, all still live:
+
+- `glstate.c:144` — `GL_STENCIL_BUFFER_BIT` is accepted and has no effect
+  (the spec's "clear of a missing buffer is a no-op").
+- `glfbo.c:30` and `attachment_slot()` — `GL_STENCIL_ATTACHMENT` reports
+  `GL_INVALID_OPERATION` / `GL_FRAMEBUFFER_UNSUPPORTED` rather than
+  pretending.
+- `gl.h` has `GL_STENCIL_BUFFER_BIT` and `GL_STENCIL_ATTACHMENT` and
+  nothing else: no `GL_STENCIL_TEST`, no `GL_KEEP` / `GL_INCR` / `GL_DECR`,
+  no `glStencilFunc`. Compare-func tokens `GL_NEVER`..`GL_ALWAYS` already
+  exist because depth uses them.
+
+A classic GL 1.1 application that enables stencil gets silence, not a
+diagnostic it can grep. That is the G2 texture-matrix shape of honesty
+applied to a buffer that was never allocated.
+
+### Fact 3 — The G10 texture story stopped one layer short of GL 1.3
+
+`GL_MAX_TEXTURE_UNITS_IMPL` is 2, the four GL 1.1 environments
+(`MODULATE` / `REPLACE` / `DECAL` / `BLEND`) work, mipmaps work, and the
+level is chosen **once per triangle** from the texture-space / screen-space
+area ratio (`glraster.c` `triangle_lod`). The comment on that function is
+the follow-up this plan is for:
+
+> Per-fragment LOD is a possible follow-up (carry `du/dx` through the edge
+> functions); it is not free.
+
+`GL_COMBINE` is not a token. `glMatrixMode(GL_TEXTURE)` is a loud error.
+Both are load-bearing for a surprising number of GL 1.2/1.3 demos that
+otherwise look like they should run — they compile against our `gl.h`
+until they hit the env mode or the matrix mode, and then they don't.
+
+Raising the unit count is a `#define`. It is also how G10 blew a 130 KB
+scratch context off the stack (`aglxResize`). Any phase that grows
+per-vertex or per-context state re-measures the context size and keeps
+it off the C stack. That is not optional.
+
+### Fact 4 — Copies are the FBO story with a hole in it
+
+G12 made the rasterizer write through four fields (`color`, `depth`,
+`width`, `height`) and then pointed those fields at a texture. Render-to-
+texture works. Reading back works (`glReadPixels`, six formats). What does
+not work is the thing applications actually type next: copy the window
+into a texture, or blit one framebuffer onto another.
+
+`glCopyTexImage*` and `glBlitFramebuffer` have **zero** hits in
+`lib/libgl`. The documented workaround — "render into the texture with an
+FBO instead" — is correct and also not what `glCopyTexSubImage2D` callers
+do.
+
+### Fact 5 — The shader path is API coverage, and nothing visual uses it
+
+G11c measured, full-screen quad at 320×240:
+
+| Path | ms/frame |
+|---|---|
+| Fixed function | 0.92 |
+| Constant-colour shader | 12.1 |
+| Lambert-lit shader | 53.8 |
+
+Vertex stage alone: 1.2 µs/draw. G11b already said the quiet part:
+**only a JIT moves the needle**, and a JIT is not a phase of a software
+GL plan. What *is* still on the table is the one cheap, correct
+optimisation the interpreter can take without changing the language:
+**early-Z** — do not run the fragment shader on a fragment the depth
+test will reject, when the shader cannot write `gl_FragDepth` and
+cannot `discard`.
+
+And nothing shipped *draws* with it. `userspace/demos/glcube` and
+`glgears` contain no `glCreateShader` / `glUseProgram`. G11's pixels
+exist in `/gltest` and the host tests. A reader of the demos can
+honestly conclude AuraLite has no shaders.
+
+### Fact 6 — The hardware draw seam is missing twice
+
+`libgl/src/glvirgl.c:13–16`, still the file header:
+
+> It does NOT implement `DRAW_VBO`. That is step 5, it needs shaders
+> expressed as TGSI.
+
+That is G13's own leftover, recorded as residue **RES-41** (class S,
+handed off at R12): the *kernel* already emits the 12-dword
+`VIRGL_CCMD_DRAW_VBO` packet (`drivers/gpu/virgl.c:180`) and
+`VIRGL_CCMD_CREATE_OBJECT` for a shader (`virgl.c:310`). The missing
+piece is userspace feeding `CREATE_SHADER` + a vertex buffer +
+`DRAW_VBO` through `SYS_GPU_CALL`.
+
+The seam is also missing one layer up. `GL/glbackend.h` says a backend
+is responsible for "clearing buffers, **drawing a batch of triangles**,
+and presenting a finished frame". The `gl_backend_t` struct has
+`init`, `clear`, `present`, `destroy`. There is no `draw` member.
+G13 slotted into the three pointers that existed. A triangle on the
+GPU has nowhere to hang.
+
+### Fact 7 — `docs/opengl.md` claimed a hang that residue had closed (corrected at L0)
+
+At `dbc27fe` the architecture doc still said:
+
+> **The virtio-gpu driver hangs during initialisation when a device is
+> actually attached.**
+
+`TODO.md` and `docs/residue_ledger.md` RES-40 already said the hang no
+longer reproduces (residue R1). The GL architecture doc was the stale
+one. L0 deleted that sentence and pointed at the ledger; the checker
+pins the absence.
+
+### Fact 8 — SIMD was explicitly deferred *here*
+
+`OPT_PLAN.md` §5, named non-goal:
+
+> User-space SIMD (libgl rasteriser vectorisation, SSE memcpy beyond
+> `rep movsb`). Real wins, but they belong to a userspace/SDK plan —
+> the kernel plan stops at the kernel/libc seam.
+
+G11b's numbers say the fragment interpreter, not the fill, is the
+shader-path cost, and G8's numbers say the per-vertex transform, not
+the fill, is the fixed-function cost. Vectorising the rasterizer
+without a new measuring rig would be the placebo D1 exists to block.
+It is a named non-goal of *this* series too (§4), with the door left
+open if L5's early-Z table says the fill is now the thing.
+
+---
+
+## 2. Decisions
+
+Numbered so later phases can cite them instead of re-arguing.
+`GL_PLAN.md` D1–D5 still apply (ship something real; the subset grows;
+GL is userspace; host tests first; measure every phase). The ones
+below are this series' own.
+
+**D1 — Measure first, in-tree, or it didn't happen.** Every phase's
+gate includes a before/after that a committed tool can see: a host
+check count, a `/gltest` assertion, a ms/frame line, a command-stream
+dword. "Looks better on the cube" is not a deliverable.
+
+**D2 — QEMU/TCG numbers gate nothing hard; a missing GPU is a loud
+skip, not a fail.** VirGL claims run only with a virtio-gpu that
+actually has VirGL (`test_virgl_gpu.sh` already knows this shape).
+Software-path claims run everywhere. TCG timing is recorded and
+human-reviewed, the OPT D2 rule.
+
+**D3 — Behaviour-preserving by construction.** Existing host tests and
+`/gltest` assertions stay green unmodified. New state defaults to
+*off* / *identity* / *the GL 1.1 env mode*. A phase that needs an old
+check edited to go green is changing pixels and must say so in its
+Result.
+
+**D4 — Honest refusal until the feature lands.** Do not add
+`glStencilFunc` as a no-op that returns success. Do not add
+`GL_COMBINE` as a token that falls through to `GL_MODULATE`. The
+G2 texture-matrix pattern (valid enum, `GL_INVALID_OPERATION`, a
+comment that names the follow-up) is the template; this series *is*
+that follow-up, so the refusal comes out in the same commit as the
+implementation.
+
+**D5 — Software is the default and the CI path.** Hardware drawing is
+opt-in behind a GPU. `glGetString(GL_RENDERER)` stays truthful: a
+backend that cannot draw does not get to imply that it did. G13's
+VirGL backend already reports hardware for present-only; L6 does not
+make that worse, and does not claim "GPU triangles" in docs until a
+gate has seen one.
+
+**D6 — The checker judges code and gates, not `.patch` files.**
+`REALINTERNET2_PLAN.md` D6: a file in `patches/` proves a file exists.
+L0's checker pins opener greps and, once a phase is ✅, the seam that
+phase landed. Phase hygiene still holds: `CHANGELOG.md`, this table,
+`docs/opengl.md`'s Not-implemented row, and the checker pins move in
+the **same commit**.
+
+**D7 — No GLSL → TGSI compiler in this series.** L6 is a *canned*
+pass-through shader proving `DRAW_VBO` on the existing syscall.
+Retargeting G11's AST is a compiler back end and a plan in its own
+right; L7 opens that as a named hand-off rather than half-doing it
+here. Claiming otherwise by shipping a draw path that only works for
+one hard-coded triangle *and calling it shaders* would be worse than
+not shipping it — G13's own words, applied one layer down.
+
+**D8 — `glBegin` + a bound program stays `GL_INVALID_OPERATION`.**
+G11d measured the hybrid (fixed-function transform, shader colour)
+and refused it because no real GL produces it. This series does not
+quietly reverse that to make a demo easier.
+
+---
+
+## 3. The phases
+
+Dependency order: the rig first (L0), then the software holes that
+do not need each other but all need the rasterizer (L1 stencil, L2
+copies), then the G10 leftovers that grow per-fragment state (L3
+texture, L4 LOD), then the shader-path win that wants a working
+depth test (L5, after L1 so stencil/depth order is already the
+real one), then hardware drawing on the G13 seam (L6), then the
+docs close-out (L7).
+
+L3 and L4 both touch the fragment loop. They do not parallelise;
+L4 lands second so COMBINE and extra units are already in the
+sampler it has to call.
+
+---
+
+### L0 — The rig
+
+**Status: ✅ COMPLETE** (`patches/GL2_L0_rig.patch`).
+
+**Objective:** make every later claim in this plan checkable by `make`,
+and stop the stale hang sentence being the architecture doc.
+
+Nothing in the tree today will notice if a phase adds `GL_COMBINE` as
+a token and forgets the combiner, or "lands" stencil by deleting the
+refusal comment. This phase builds the tripwire; it implements no
+GL.
+
+Tasks:
+
+- [x] `tools/check_gl2_claims.py` (the `check_rinet2_claims.py` shape:
+      opener facts PINNED as live greps, pins move in the same commit
+      as the phase that takes them). Deliberately does not assert
+      `.patch` existence (D6 / the RINET2 lesson).
+- [x] Opener pins, all live against `dbc27fe`:
+      1. `GL_MAX_TEXTURE_UNITS_IMPL` is 2 (`glcontext.h`).
+      2. `glMatrixMode(GL_TEXTURE)` takes the `GL_INVALID_OPERATION`
+         branch (`glmatrix.c`).
+      3. `glfbo.c` still contains `there is no stencil buffer`.
+      4. `glstate.c` still contains `GL_STENCIL_BUFFER_BIT is accepted
+         but has no effect`.
+      5. `gl.h` has no `GL_COMBINE`, no `glCopyTex`, no
+         `glBlitFramebuffer`.
+      6. `glvirgl.c` still contains `It does NOT implement DRAW_VBO`.
+      7. `gl_backend_t` has no `draw` member (the struct lists
+         `init` / `clear` / `present` / `destroy` only).
+      8. `userspace/demos/glcube` and `glgears` contain neither
+         `glCreateShader` nor `glUseProgram`.
+- [x] `--selftest` negative control: a planted empty tree is caught,
+      or the checker is declared dead. Wired into `make test-unit`
+      via `tests/unit/test_gl2_claims.sh`.
+- [x] Correct `docs/opengl.md` § "Known defect, predating this phase":
+      the virtio-gpu init hang is RES-40 / residue R1, closed. Point
+      at `TODO.md` and the ledger. This is a Y0-style plan correction
+      (the doc was written before the residue series), not a GL
+      feature.
+- [x] Record the live libgl host-test inventory and `/gltest` SUMMARY
+      line into §5 of this document, as the before-column. **Do not
+      freeze a number in the checker that will rot**; freeze the
+      *names* of the `test_gl*` binaries in `UNIT_TESTS`.
+
+**What L0 measured** (host, this machine):
+
+- `sizeof(struct aglx_context)` = **238 568 bytes** (~233 KiB). G10
+  already blew a scratch copy of this off a 64 KB user stack; L1's
+  stencil plane and L3's extra units must not put one on the C stack
+  either. The number is L3's budget.
+- Host libgl inventory, frozen by name: the 17 `test_gl*` binaries
+  listed in `UNIT_TESTS` (see §5). Super-set is allowed; dropping one
+  is a checker failure.
+- `/gltest` is documented at **373** in-OS checks
+  (`docs/opengl.md` Demos table). Not gated — a later phase that adds
+  checks would rot a frozen count.
+- Plan correction: the hang sentence is gone; `docs/opengl.md` now
+  names RES-40.
+
+**Definition of done:** the checker is red if this document and the
+tree disagree about the opener; the hang sentence is gone; `make
+test-unit` runs the selftest. ✓
+
+**Test gate:** `tests/unit/test_gl2_claims.sh` — checker OK on the
+real tree, planted violation caught. ✓
+
+**Result:** 17 claims green, selftest catches an empty tree; hang
+sentence deleted; `sizeof(aglx_context)` = 238 568.
+
+---
+
+### L1 — Stencil buffer
+
+**Status:** not started
+
+**Objective:** give GL 1.1 the buffer it has been loudly refusing.
+
+Stencil is the highest-value missing *fixed-function* feature: shadows,
+portals, UI clipping, the classic two-pass outline. Depth already has
+the eight compare functions and a per-fragment test in the rasterizer;
+stencil is a second plane with a three-way op (sfail / dpfail / dppass).
+
+Design, so the phase does not grow a packed depth-stencil format it
+does not need:
+
+| Area | Rule |
+|---|---|
+| Storage | Separate 8-bit plane, allocated with the window like depth (`aglxCreateContext` / `aglxResize`). Heap, never the C stack (G10). |
+| Default | Test off, func `GL_ALWAYS`, ref 0, mask `0xFF`, ops `GL_KEEP`, writemask `0xFF`, clear value 0. Existing pixels unchanged (D3). |
+| API | `glEnable(GL_STENCIL_TEST)`, `glStencilFunc`, `glStencilOp`, `glStencilMask`, `glClearStencil`; `glClear(GL_STENCIL_BUFFER_BIT)` writes. |
+| Tokens | Add the missing ones to `gl.h`: `GL_STENCIL_TEST`, `GL_KEEP`, `GL_INCR`, `GL_DECR`, `GL_INVERT`, `GL_INCR_WRAP`, `GL_DECR_WRAP`, `GL_STENCIL_FUNC` / `VALUE_MASK` / `REF` / `FAIL` / `PASS_DEPTH_FAIL` / `PASS_DEPTH_PASS` / `WRITEMASK` / `BITS` / `CLEAR_VALUE`. `GL_NEVER`..`GL_ALWAYS` and `GL_ZERO` / `GL_REPLACE` already exist. |
+| Order | Scissor → stencil-sfail → depth → stencil-dpfail/dppass → blend. Matches GL 1.1 §4.1. Matches what L5's early-Z will skip. |
+| FBO | `GL_STENCIL_INDEX8` renderbuffer; `GL_STENCIL_ATTACHMENT` no longer `INVALID_OPERATION`. Completeness requires matching dimensions, same as depth. No packed `D24S8` (non-goal). |
+| Queries | `glGetIntegerv(GL_STENCIL_BITS)` returns 8 when the plane exists, 0 on a context created without it. A new `AGLX_STENCIL` attribute, default **on** for the window context so `/glcube` does not have to opt in — measure the extra allocation; if it blows a 64 KB user stack in a test, default off and say so. |
+| VirGL | `glvirgl_clear` already has a stencil dword of 0. Leave it; the CPU plane is the source of truth until L6. |
+
+Tasks:
+
+- [ ] Tokens + context fields + allocation / free / resize.
+- [ ] Rasterizer test + ops, including wrap vs saturate on `INCR`/`DECR`.
+- [ ] FBO stencil renderbuffer + attachment + completeness.
+- [ ] `glClear` actually writes the plane; the `glstate.c:144` comment
+      comes out in this commit (D4, D6 pin 4).
+- [ ] Host unit test `tests/unit/test_glstencil.c`: func × op matrix
+      against a 8×8 target, two-pass "draw where stencil == 1", FBO
+      attach/complete, clear, `GL_STENCIL_BITS`. Guard canaries around
+      the colour buffer so a stencil write cannot bleed.
+- [ ] `/gltest` assertions for the same two-pass, plus
+      `glGetError` on the old refusal paths now succeeding.
+- [ ] `docs/opengl.md` Not-implemented: drop the stencil row.
+
+**Definition of done:** a two-pass stencil clip produces the expected
+pixels on host and in `/gltest`; old tests unmodified (D3); FBO
+attachment is real; the opener pin about "no stencil buffer" has
+moved.
+
+**Test gate:** `test_glstencil` in `UNIT_TESTS`; `/gltest` stencil
+block green in `test_gl_in_os` (or whatever the current in-OS GL
+case is named — L0 records it); `make test-unit` EXIT 0.
+
+**Result:** —
+
+---
+
+### L2 — Copies: `glCopyTexImage2D`, `glCopyTexSubImage2D`, `glBlitFramebuffer`
+
+**Status:** not started
+
+**Objective:** close the G12 hole. The pixels are already there;
+applications need a way to move them without re-issuing draws.
+
+Design:
+
+| Area | Rule |
+|---|---|
+| Source | The current draw target (window or bound FBO). G12's `glReadPixels` already reads that target; copies share the read path rather than growing a second one. No `glReadBuffer` / `glDrawBuffer` yet — one colour buffer (Fact 1, MRT is a non-goal). |
+| `glCopyTexImage2D` / `SubImage2D` | Colour only, `GL_UNSIGNED_BYTE` effective format matching an existing `glTexImage2D` internal format. Depth copy is a non-goal of the *TexImage* entry points (use blit). |
+| `glBlitFramebuffer` | Colour and/or depth, `GL_NEAREST` only (`GL_LINEAR` → `GL_INVALID_OPERATION` rather than a surprising filter). Y-flip when window ↔ FBO conventions differ (G12's `target_flip_y`). Mask bits the implementation does not have (stencil, before L1 lands; accum) are ignored, matching `glClear`. |
+| Overlap | Same-FBO blit with overlapping boxes is `GL_INVALID_OPERATION` unless the implementation copies through a scratch. Prefer the error: a hidden scratch is a third buffer to leak. |
+| MSAA | None in the tree; no resolve path to invent. |
+
+Tasks:
+
+- [ ] Entry points in `glfbo.c` (they are framebuffer operations,
+      not texture-environment operations).
+- [ ] Host tests in `test_glfbo.c` (do not start a new binary for
+      three functions): window → texture round-trip, FBO → FBO blit,
+      Y-flip window ↔ texture, overlap error, `GL_LINEAR` error.
+- [ ] `/gltest` one visual: render the cube into an FBO, blit a
+      64×48 inset, compare against the G12 render-to-texture panel
+      path (same pixels, fewer draws).
+- [ ] `docs/opengl.md` Not-implemented: drop the copy/blit row.
+
+**Definition of done:** a `glReadPixels` of a blitted region matches
+a `glReadPixels` of the source; host + `/gltest` green; D3 holds.
+
+**Test gate:** extended `test_glfbo`; `/gltest` blit block;
+`make test-unit` EXIT 0.
+
+**Result:** —
+
+---
+
+### L3 — Texture leftovers: `GL_COMBINE`, `GL_TEXTURE` matrix, 4 units
+
+**Status:** not started
+
+**Objective:** finish the G10 texture story up to what GL 1.3
+applications actually type, without raising the unit count so far
+that the context becomes the G10 stack bomb again.
+
+Three sub-deliverables, one phase, because they all land in the
+sampler and the vertex path together. The checker pins move only
+when *all three* are done — a COMBINE token with two units and no
+matrix is not this phase.
+
+Design:
+
+| Area | Rule |
+|---|---|
+| `GL_COMBINE` | GL 1.3 §3.8.13 subset: `COMBINE_RGB` / `COMBINE_ALPHA` modes `REPLACE`, `MODULATE`, `ADD`, `ADD_SIGNED`, `INTERPOLATE`, `SUBTRACT`, `DOT3_RGB`, `DOT3_RGBA`. Sources `TEXTURE`, `CONSTANT`, `PRIMARY_COLOR`, `PREVIOUS`. Operands `SRC_COLOR`, `ONE_MINUS_SRC_COLOR`, `SRC_ALPHA`, `ONE_MINUS_SRC_ALPHA`. Scales 1 / 2 / 4. Missing mode → `GL_INVALID_ENUM`, not a silent `MODULATE` (D4). |
+| Texture matrix | Per **unit** (the GL 1.3 rule), stack depth 2. `glMatrixMode(GL_TEXTURE)` becomes legal. Default identity, so existing UVs are unchanged (D3). Applied to `(s, t, r, q)` in the vertex path *before* clip, so clipping interpolates the post-matrix coords. |
+| Units | `GL_MAX_TEXTURE_UNITS_IMPL` 2 → **4**. Not 8: every vertex already carries `s,t,r` per unit (`glvertex.h`) and G10's 130 KB lesson is in the file header of `aglx`. Measure `sizeof(aglx_context)` before/after and put the numbers in this section's Result. |
+| Context size | No `aglx_context` on the C stack. The L0 pin about unit count moves from 2 to 4 in this commit. |
+
+Tasks:
+
+- [ ] Tokens in `gl.h`; `glTexEnvi` / `glTexEnvfv` COMBINE parameters;
+      combiner in `gltexture.c` (the existing `combine` comment at
+      line 981 is the insertion point).
+- [ ] Per-unit texture matrix stack in `glmatrix.c` /
+      `glcontext.h`; delete the `GL_INVALID_OPERATION` branch.
+- [ ] Raise `GL_MAX_TEXTURE_UNITS_IMPL`; audit every
+      `for (u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL)` — they should
+      already be written against the macro (G10). If any site
+      hard-codes `2`, it is a bug this phase is for.
+- [ ] Host tests: `test_gltex2.c` grows COMBINE cases (MODULATE
+      expressed as COMBINE equals the GL 1.1 path — the D3
+      tripwire), INTERPOLATE, DOT3; matrix translate-then-sample;
+      unit 2 and unit 3 sample independently.
+- [ ] `/gltest` a 3-unit COMBINE and a texture-matrix slide.
+- [ ] `docs/opengl.md` Not-implemented: drop COMBINE, units, texture
+      matrix rows; document the new limits.
+
+**Definition of done:** COMBINE `MODULATE` matches GL 1.1 `MODULATE`
+pixel-for-pixel (D3); `glMatrixMode(GL_TEXTURE)` no longer errors;
+`glGetIntegerv(GL_MAX_TEXTURE_UNITS)` is 4; context size recorded;
+opener pins 1, 2, 5 (COMBINE part) moved.
+
+**Test gate:** `test_gltex2` + `test_glimm` (matrix stacks) green;
+`/gltest`; `make test-unit` EXIT 0.
+
+**Result:** —
+
+---
+
+### L4 — Per-fragment mipmap LOD
+
+**Status:** not started
+
+**Objective:** land the follow-up G10 named and declined.
+
+`triangle_lod` picks one level for the whole primitive. A ground
+plane receding to the horizon gets a single averaged level;
+`/glcube`'s floor works around this by tessellating. Hardware would
+blend several. The comment already names the method: carry `du/dx`
+(and `dv/dy`) through the edge functions.
+
+Design:
+
+| Area | Rule |
+|---|---|
+| Metric | λ = log2(max(√(dudx²+dvdx²), √(dudy²+dvdy²))) on the projected `(s/w, t/w)`, in texels. Standard, one LOD per fragment per unit. |
+| Filters | All four mipmap min-filters already exist; they consume the level they are given. Trilinear stays 2-level. |
+| Cost | G10 said this is "not free". The gate is not "faster"; it is "honest". Record ms/frame of `/glcube`'s floor at 320×240 before (per-triangle, tessellated) and after (per-fragment, *un*tessellated). If per-fragment is more than ~2× the tessellated path, say so in the Result and keep both: tessellation remains legal. |
+| Default | Per-fragment becomes the implementation. No new enum. Applications that tessellated still work (D3: they just spend geometry they no longer need). |
+
+Tasks:
+
+- [ ] Derivatives in `gl_raster_triangle`; `triangle_lod` becomes the
+      fallback for degenerate screenspace (the division-by-zero
+      path it already has).
+- [ ] Host test: an untilted receding quad, sampled at several
+      window-Y rows, shows *increasing* LOD down the screen. A
+      1:1 facing quad stays at level 0. Guard against picking
+      level-0 everywhere (the bug that looks like success in a
+      screenshot).
+- [ ] `/glcube` floor: drop the extra tessellation if the new LOD
+      is visually equivalent; keep it if L4's own numbers say the
+      cost is worse. Either choice is written in the Result.
+- [ ] `docs/opengl.md` Not-implemented: drop the per-fragment LOD
+      row; keep a behaviour note that a scanline rasterizer's
+      derivatives are along the window axes, not along the
+      primitive, which is what everyone else does too.
+
+**Definition of done:** the Y-row LOD test is green; numbers in this
+section; the G10 comment's "possible follow-up" sentence comes out.
+
+**Test gate:** `test_gltex2` LOD block; `/gltest` / `/glcube` still
+green; `make test-unit` EXIT 0.
+
+**Result:** —
+
+---
+
+### L5 — Shader-path fitness: early-Z and `/glshade`
+
+**Status:** not started
+
+**Objective:** make the G11 path something a human can see, and take
+the one optimisation that does not require a new language backend.
+
+G11c's Lambert shader is 53.8 ms at 320×240 because it runs the
+interpreter on every fragment, including those the depth test will
+reject. GL permits early-Z when the fragment shader cannot write
+`gl_FragDepth` and cannot `discard`. G11a's type checker already
+knows about `discard` (it is a diagnostic in the wrong stage); it
+can know about `gl_FragDepth` writes the same way.
+
+`/glshade` is the visual twin of `/glcube`: the same cube, the same
+window chrome, a Lambert (or Blinn–Phong) program instead of
+`glEnable(GL_LIGHTING)`. It exists so the demos stop implying there
+are no shaders (Fact 5, opener pin 8).
+
+Design:
+
+| Area | Rule |
+|---|---|
+| Early-Z | Conservative: only when the bound fragment shader has no `discard` and no `gl_FragDepth` store. Otherwise keep shade-then-depth, because those shaders exist to change the test. |
+| Points / lines | G11d already made shaded points and lines actually shade. Early-Z applies to triangles first; points and lines follow if the same predicate holds. |
+| `/glshade` | New demo, packaged like `/glcube`. Fixed-function fallback is **not** allowed in this binary — if the program fails to link, it prints why and exits. That is the point. |
+| JIT / bytecode | Non-goal (D7's cousin). If early-Z does not move the 53.8 ms number, the Result says so and does not invent a VM to chase it. |
+
+Tasks:
+
+- [ ] Sema flag `may_kill_early_z` on the fragment AST; honour it
+      in the rasterizer before `glsl_run` on the fragment.
+- [ ] Host test: a full-screen shaded quad *behind* an already-drawn
+      opaque quad must not invoke the fragment shader for the hidden
+      pixels (count via a side-channel counter in the interpreter
+      env, test-only). A shader with `discard` must *not* take
+      early-Z (a pixel that would have discarded must stay at the
+      previous colour, which early-Z would have overwritten with
+      depth-fail... wait: discard with depth-fail is subtle). The
+      test is: `discard` shader + early-Z *disabled* produces the
+      G11c pixels; enabling early-Z on a `discard` shader is the
+      bug the predicate exists to prevent.
+- [ ] Re-measure Lambert at 320×240 with a depth-prepass and
+      without; table in this section.
+- [ ] `/glshade` demo + README apps table row + initrd packaging.
+- [ ] Opener pin 8 moves.
+
+**Definition of done:** `/glshade` draws a lit cube from GLSL;
+early-Z predicate is tested, not assumed; Lambert numbers recorded;
+D8 holds (`/glshade` uses attributes, not `glBegin`).
+
+**Test gate:** `test_glprog` / `test_glcoexist` still green;
+`/glshade` packaged; `/gltest` shader block unmodified (D3);
+`make test-unit` EXIT 0.
+
+**Result:** —
+
+---
+
+### L6 — VirGL `DRAW_VBO`, canned TGSI
+
+**Status:** not started
+
+**Objective:** put one triangle on the GPU through the syscall G13
+and K1 already proved, without pretending G11 now emits TGSI (D7).
+
+This is RES-41's userspace half. The kernel validator already knows
+the packet. `glvirgl.c` already knows how to `SUBMIT`. What does not
+exist is a `draw` hook to hang it on, a vertex-buffer resource, and
+a shader object.
+
+Design:
+
+| Area | Rule |
+|---|---|
+| Seam | Add `int (*draw)(struct aglx_context *ctx, const gl_draw_batch_t *batch)` to `gl_backend_t`. NULL means software, which is every backend except VirGL after this phase. The header comment finally matches the struct. |
+| Supported batch | `GL_TRIANGLES`, `glDrawArrays` (not elements), no bound GLSL program (fixed-function *or* a dedicated "use the canned shader" path), position + colour only. Anything else returns non-zero and the software rasterizer draws it. A partial GPU frame mixed with CPU triangles is a tearing bug; if the batch is unsupported, the **whole draw** falls back. |
+| Shader | One canned TGSI vertex shader (pass-through position to `gl_Position`, colour to a varying) and one canned TGSI fragment shader (that varying to `COLOR0`). Built as dword arrays in `glvirgl.c`, host-tested against the kernel encoder, never generated from G11's AST. |
+| Resources | Upload the ARRAY_BUFFER (or a bounce of immediate vertices) as a VirGL vertex-buffer resource; the colour RT already exists from G13. |
+| Present | G13's present (transfer CPU buffer → scanout) is **wrong** for a GPU-drawn frame: it would overwrite the triangle with the CPU's empty buffer. When `draw` handled the frame, present scanouts the GPU RT *without* the CPU transfer. The first draft that forgets this will look exactly like "DRAW_VBO is a no-op". The host test cannot catch it; the QEMU gate must. |
+| Renderer string | Still "AuraLite VirGL (virtio-gpu)" when probe succeeded. Docs (not the string) say drawing is canned-subset until a compiler exists. |
+| Decline | Unchanged: no device, no VirGL, any setup step failed → software. Loud skip in CI without a GPU (D2). |
+
+Tasks:
+
+- [ ] `draw` member; software backend leaves it NULL; dispatch in
+      `glDrawArrays` / the immediate-mode flush.
+- [ ] Canned TGSI + `CREATE_SHADER` + `BIND_SHADER` +
+      `SET_VERTEX_BUFFERS` + `DRAW_VBO` through `GPU_OP_SUBMIT`.
+- [ ] Present fork: GPU-drawn frames do not `TRANSFER` the CPU
+      colour buffer over the RT.
+- [ ] Host `test_glvirgl.c`: packet layouts, the "unsupported batch
+      returns non-zero" matrix, the canned shader dword count.
+      Still no GPU in the room.
+- [ ] `tests/integration/cases/test_virgl_gpu.sh` grows a triangle
+      assertion (scanout hash ≠ clear colour, or a probed
+      `TRANSFER_FROM_HOST` of a known pixel). Loud-skip without
+      virglrenderer. The existing clear/present assertions stay.
+- [ ] Opener pins 6 and 7 move. RES-41 is closed *for the seam*;
+      L7 opens the compiler as a new row rather than leaving
+      RES-41 half-true.
+- [ ] `docs/opengl.md` hardware-drawing row becomes "canned TGSI
+      triangle; GLSL → TGSI is a follow-up".
+
+**Definition of done:** with a VirGL GPU, one `glDrawArrays` triangle
+is visible on the scanout and is **not** in the CPU colour buffer;
+without a GPU, behaviour is bit-identical to G13 (D3); the backend
+struct has `draw`.
+
+**Test gate:** `test_glvirgl` host; `test_virgl_gpu` QEMU (skip-ok);
+`make test-unit` EXIT 0; existing `/glcube` on software unchanged.
+
+**Result:** —
+
+---
+
+### L7 — Close-out: docs, residue, checker, arithmetic
+
+**Status:** not started
+
+**Objective:** make it impossible for this document and the tree to
+disagree about what landed, and hand off what did not.
+
+Tasks:
+
+- [ ] Checker: header `COMPLETE ⇔` L0–L7 all ✅; every moved opener
+      pin has a *post-phase* assertion (stencil tokens present,
+      `GL_MAX_TEXTURE_UNITS_IMPL == 4`, `draw` member exists,
+      `GL_COMBINE` in `gl.h`, `docs/opengl.md` hang sentence
+      absent, `/glshade` packaged). `--selftest` still catches a
+      planted miss.
+- [ ] `docs/opengl.md`: Not-implemented table matches §4 of this
+      plan (the rows this series refused, not the rows it landed).
+      Behaviour notes for stencil order, COMBINE subset, canned
+      TGSI, per-fragment LOD axes.
+- [ ] `docs/status.md` OpenGL cell: this series' headline, not
+      "G0–G9 complete" as if G10–G13 and L* did not happen.
+- [ ] `README.md` documentation map: `GL2_PLAN.md` next to
+      `GL_PLAN.md`. Apps table: `/glshade`.
+- [ ] `CHANGELOG.md` one entry per landed phase (hygiene, same
+      commit as the code — by L7 this is a backstop, not the
+      first mention).
+- [ ] Residue: RES-41 closed (canned `DRAW_VBO` seam). New S-row:
+      GLSL AST → TGSI retarget (the D7 hand-off). SIMD rasteriser
+      re-affirmed deferred unless L5's table reopened it.
+- [ ] §5 of this document filled. Header Status → COMPLETE.
+
+**Definition of done:** CI fails if this file and the tree disagree;
+the leftover table in `docs/opengl.md` is the leftover table in §4;
+RES-41 is not still "the missing piece is a userspace TGSI
+assembler" when that assembler exists and draws a triangle.
+
+**Test gate:** `test_gl2_claims.sh` green; `make test-unit` EXIT 0.
+
+**Result:** —
+
+---
+
+## 4. What this plan deliberately does not do
+
+Named so nobody mistakes absence for oversight.
+
+- **Geometry, tessellation, compute shaders.** ES 2.0 is VS+FS.
+  G11's interpreter has one extra stage in it already (the
+  fragment); a third is a different machine.
+- **Accumulation buffer, evaluators, feedback, selection.** Fixed-
+  function museum pieces. No shipped demo wants them; they do not
+  unblock COMBINE, stencil, or VirGL.
+- **Multiple colour attachments / MRT / `gl_FragData[n]`.** G12
+  sized the loops against `GL_MAX_COLOR_ATTACHMENTS_IMPL` so this
+  can happen without a rewrite; it still needs a shader that writes
+  more than one colour, which is ES 3.0-shaped, and the software
+  fill would pay it twice. Not this series.
+- **GLSL → TGSI compiler, and any JIT.** D7. L6 is the seam; a
+  compiler plan is the successor.
+- **GLSL preprocessor (`#define` / `#ifdef`).** G11a refused it
+  with a diagnostic. Reversing that is language work, not GL work.
+- **`glBegin` with a bound program.** D8, G11d stands.
+- **VAOs, PBOs, transform feedback, `glCopyTexImage3D`, packed
+  depth-stencil, `glFramebufferTexture3D`.** Each is real; none is
+  on the critical path of L1–L6.
+- **User-space SIMD / SSE rasteriser.** Fact 8, OPT's non-goal,
+  re-affirmed. L5's table is the only thing allowed to reopen it.
+- **ES 3.0 / desktop 3.2 core profile.** The subset grows (GL_PLAN
+  D2); it does not jump a generation because a continuation plan
+  felt ambitious.
+- **New kernel syscalls.** `SYS_GPU_CALL` already carries SUBMIT /
+  TRANSFER / RES_CREATE / SET_SCANOUT / FLUSH. L6 uses them.
+- **Re-opening G0–G13.** Complete means complete. Bugs found while
+  landing L* are bugs and get fixed in the phase that found them,
+  not a secret G11e.
+
+---
+
+## 5. Terminal arithmetic (filled at close — D1)
+
+Baseline column is L0's job. Later columns land with their phase.
+
+| Metric | Baseline (`dbc27fe` + L0) | L1 | L2 | L3 | L4 | L5 | L6 |
+|---|---|---|---|---|---|---|---|
+| `GL_MAX_TEXTURE_UNITS_IMPL` | 2 | | | **4** | | | |
+| Stencil | refused | **8-bit** | | | | | |
+| `glMatrixMode(GL_TEXTURE)` | `INVALID_OPERATION` | | | **legal** | | | |
+| `GL_COMBINE` | absent | | | **present** | | | |
+| Mipmap LOD | per-triangle | | | | **per-fragment** | | |
+| Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | (early-Z) | |
+| `/glshade` | absent | | | | | **shipped** | |
+| VirGL draw | present-only | | | | | | **canned Δ** |
+| `sizeof(aglx_context)` | **238 568** | | | (must not stack) | | | |
+| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | | | | | |
+| `/gltest` in-OS checks | 373 (docs; not gated) | | | | | | |
+
+Residue opened at L7 (expected):
+
+| Item | Class | Notes |
+|---|---|---|
+| GLSL AST → TGSI | S | D7 hand-off; successor plan, not a leftover we forgot |
+| SIMD rasteriser | N | re-affirmed unless L5 reopens |
+| Packed D24S8, MRT, VAOs | N | §4 |
+| `docs/opengl.md` hang sentence | — | closed at L0 |
+
+---
+
+## Workflow (mandatory for every phase)
+
+The `GL_PLAN.md` / `HARDENING_PLAN.md` loop, unchanged:
+
+```
+1. READ    — read ALL affected files before writing anything
+2. PLAN    — this file: Status → IN PROGRESS on the phase
+3. DESIGN  — show struct/API changes, list callers; cite a D-number
+             instead of re-arguing
+4. IMPL    — libgl → host test → /gltest → demo → docs
+             compile after every file; fix warnings immediately
+5. BUILD   — make clean && make all  (zero warnings, -Wall -Wextra -Werror)
+6. TEST    — host gate; QEMU gate; existing suites unmodified (D3)
+7. DOCS    — this file's Result + table tick, CHANGELOG.md,
+             docs/opengl.md Not-implemented row, checker pin moved
+             in the SAME commit (D6)
+```

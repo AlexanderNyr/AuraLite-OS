@@ -2867,6 +2867,13 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@python3 tools/check_fsfull_claims.py || exit 1
 	@python3 tools/check_fsfull_claims.py --selftest || exit 1
 
+# GL2_PLAN.md L0: tools/check_gl2_claims.py cannot drift from the tree.
+# Opener facts are pinned as live greps; later phases move the pins in the
+# same commit.  Negative control as usual (a checker that never fails
+# checks nothing).  The shell wrapper is tests/unit/test_gl2_claims.sh.
+	@echo "[unit] running tests/unit/test_gl2_claims.sh"
+	@bash tests/unit/test_gl2_claims.sh || exit 1
+
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
 # control, and the Q-family unit sub-suites.  Skips cleanly when the libc

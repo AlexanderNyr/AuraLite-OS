@@ -678,15 +678,16 @@ costs tens of microseconds, so moving the present is a small fraction of a
 frame. The value is that the seam is proved end to end — a real context, a real
 backed resource, a real command stream — so the remaining work is bounded.
 
-### Known defect, predating this phase
+### The virtio-gpu init hang (RES-40, closed)
 
-**The virtio-gpu driver hangs during initialisation when a device is actually
-attached.** Booting with `-device virtio-gpu-pci` stops after `found modern
-GPU` and never reaches the shell. Bisected to before G11d, so no GL phase
-caused it; it was simply never exercised, because no integration case attached
-a GPU until G13 added one. Details and what has been ruled out are in
-`TODO.md`. `tests/integration/cases/test_virgl_gpu.sh` asserts what holds today
-and has a one-line switch to enable the rest once the driver is fixed.
+G13 recorded a hang: booting with `-device virtio-gpu-pci` stopped after
+`found modern GPU` and never reached the shell. **That hang no longer
+reproduces.** Residue ledger R1 closed RES-40: a current boot answers
+`GET_DISPLAY_INFO`, reaches the shell, and
+`tests/integration/cases/test_virgl_gpu.sh` runs with
+`ENABLE_FULL_ASSERTS=1`. This architecture doc had gone stale against
+`TODO.md`; `GL2_PLAN.md` L0 is the correction. The original trail, and
+what was ruled out, remain in `TODO.md`.
 
 ---
 
