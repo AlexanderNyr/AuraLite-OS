@@ -4,7 +4,22 @@
 #include "kernel/fs/vfs.h"
 #include <stdint.h>
 
-/* exFAT real on-disk structures (FSFULL_PLAN.md F5).
+/* exFAT driver — real exFAT on-disk structures (FSFULL_PLAN.md F5).
+ *
+ * Implemented (full mutation surface through the VFS):
+ *   - real boot region (12-sector + checksum sector + backup), verified on
+ *     mount, byte-compatible with exfatprogs geometry;
+ *   - FAT cluster chains and the allocation bitmap (0x81/0x82/0x83);
+ *   - entry sets: primary FILE (0x85) + STREAM (0xC0) + NAME (0xC1) with the
+ *     exfatprogs 16-bit entry-set checksum and ASCII-upcased name hash;
+ *   - lookup, create, read, write, readdir, mkdir, rmdir, unlink, rename,
+ *     settimes, truncate, stat, sync.
+ *
+ * Interop: host `fsck.exfat` reports kernel-formatted volumes CLEAN and the
+ * kernel mounts/reads host `mkfs.exfat` volumes.
+ *
+ * Honest scope note (FSFULL_PLAN.md F6): the driver upcases ASCII names only;
+ * UTF-16 volume labels and non-ASCII long-name upcasing are out of scope.
  *
  * Main Boot Sector (sector 0, 512 bytes).  Field offsets are the exFAT
  * spec's; `fsname` must read "EXFAT   ".  The fields the old skeleton got

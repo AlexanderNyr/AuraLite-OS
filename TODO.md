@@ -433,6 +433,26 @@ LIVE and each names its ledger row or its class.
   reason. This is worth fixing on its own terms — until it is, path handling
   behaves differently from every POSIX system.
 - **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and FAT date/time stat decoding, and ext2 supports Linux-mkfs images plus in-kernel mkfs with inode timestamps. Crash consistency, journaling, full permission semantics and extensive fsck-style recovery are out of scope.
+- ~~**ext4 / F2FS / Btrfs / exFAT / NTFS were scaffolding.**~~ **Done
+  (`FSFULL_PLAN.md` F3/F4/F4b/F5/F5b → `patches/FS_F3_ext4.patch`,
+  `patches/FS_F4_f2fs.patch`, `patches/FS_F4b_btrfs.patch`,
+  `patches/FS_F5_exfat.patch`, `patches/FS_F5b_ntfs.patch`, harnesses
+  `tests/{ext4,f2fs,btrfs,exfat,ntfs}/test_*.sh`).** Each is now a real
+  on-disk driver behind the VFS: ext4 (extents, per-group bitmaps, own
+  metadata journal, HTree readdir, `fsck.ext4 -n` interop); F2FS
+  (NAT/SIT/SSA, checkpoints, internal `f2fs_fsck`); Btrfs (CoW tree with
+  per-block CRC32C); exFAT (exfatprogs-faithful boot region + entry sets,
+  `fsck.exfat` CLEAN); NTFS (read-only MFT/runlist/$I30 reader, `-EROFS` on
+  every mutation).  Each honors the F1 mount gate (foreign/blank boot sector
+  refused, never auto-formatted) and reads/writes through the F2 buffer-cache
+  seam.  The honest boundaries each driver still claims are stated in the
+  per-FS headers, `docs/status.md` → "Filesystems", and the support matrix in
+  `docs/filesystem.md`.
+- **The on-disk filesystems remain hobby-grade on the edges.** Crash
+  consistency, full permission semantics, JBD2 recovery (ext4), Btrfs
+  subvolumes/snapshots, F2FS GC/hot-cold logging, exFAT/NTFS Unicode name
+  upcasing and NTFS writing are all deliberately out of scope — see the
+  headers and `FSFULL_PLAN.md` F6.
 
 ### Input
 

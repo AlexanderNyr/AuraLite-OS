@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE; F5b/NTFS ✅ DONE (F6–F7 planned 📋)
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE; F5b/NTFS ✅ DONE; F6/docs-claims ✅ DONE (F7 planned 📋)
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -526,23 +526,23 @@ surface because it is a FAT-family format with an in-tree reference
 
 ---
 
-### Phase F6 — Headers, claims and docs catch up with the code ✅ planned
+### Phase F6 — Headers, claims and docs catch up with the code ✅ DONE
 
 **Objective:** nothing in this tree claims more than the code delivers.
 
 #### Tasks
 
-- [ ] `ext4.h`, `f2fs.h`, `btrfs.h`, `exfat.h`, `ntfs.h` rewritten to state
+- [x] `ext4.h`, `f2fs.h`, `btrfs.h`, `exfat.h`, `ntfs.h` rewritten to state
       exactly what each driver implements, what is refused, and what is
       out of scope (the retracted claims: btrfs "subvolumes and snapshots",
       "checksums" until F4b, ext4 "full journaling", "HTree-ready"
       writing).
-- [ ] `docs/status.md` rows for the five move from "Experimental" to the
+- [x] `docs/status.md` rows for the five move from "Experimental" to the
       per-FS capability list with the same honesty bar as the w32 row.
-- [ ] `docs/filesystem.md` gains a "Filesystem support matrix" section
+- [x] `docs/filesystem.md` gains a "Filesystem support matrix" section
       (mount points, read/write/mutation surface, external-tool
       verification status).
-- [ ] `TODO.md` entries for the five are annotated with their F-phase
+- [x] `TODO.md` entries for the five are annotated with their F-phase
       receipts in the file's own style.
 
 #### Test gate

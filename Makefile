@@ -2859,6 +2859,14 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@python3 tools/check_selfhost_claims.py || exit 1
 	@python3 tools/check_selfhost_claims.py --selftest || exit 1
 
+# F6 (FSFULL_PLAN.md): the filesystem plan cannot drift from the tree.  The
+# checker pins each done phase's gate receipts (unit tests, harnesses, the
+# five honest headers, and the docs) and refuses the retracted on-disk
+# claims, with the usual negative control.
+	@echo "[unit] running tools/check_fsfull_claims.py"
+	@python3 tools/check_fsfull_claims.py || exit 1
+	@python3 tools/check_fsfull_claims.py --selftest || exit 1
+
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
 # control, and the Q-family unit sub-suites.  Skips cleanly when the libc

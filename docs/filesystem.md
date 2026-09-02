@@ -252,3 +252,29 @@ down rather than left to be rediscovered.
 
 The unit test compiles `kernel/fs/initrd.c` itself rather than a copy, so it
 cannot drift from the shipping parser.
+
+---
+
+## Filesystem support matrix
+
+The on-disk filesystems are each a separate `kernel/fs/*.c` driver behind the
+same VFS ops table.  "Mutation surface" means the driver implements
+`lookup/create/read/write/readdir/mkdir/rmdir/unlink/rename/truncate/
+settimes/stat` (and `sync`) rather than returning a refusal; where a driver
+is read-only, every mutation op refuses loudly with `-EROFS`.
+
+| FS | Mount | Mutation surface | Read/write | External-tool interop | Honest boundary |
+|---|---|:--:|:--:|---|---|
+| FAT32 | `/fat` | full | R/W | `mkfs.fat`/`fsck.fat` round-trip | LFN read+write; ASCII names |
+| ext2 | `/ext2` | full | R/W | `mke2fs`/`debugfs` round-trip | none claimed beyond ext2 |
+| **ext4** | `/ext4` | full | R/W | `mkfs.ext4`/`fsck.ext4 -n` | own journal (not JBD2); HTree read-only; no flex_bg/sparse_super |
+| **F2FS** | `/f2fs` | full | R/W | `mkfs.f2fs`/`fsck.f2fs` + internal `f2fs_fsck` | no cleaning/GC or hot-cold logging |
+| **Btrfs** | `/btrfs` | full | R/W | `mkfs.btrfs`-shaped + `[btrfs] PASS:` receipts | subvolumes/snapshots NOT implemented; no send/receive/RAID |
+| **exFAT** | `/exfat` | full | R/W | `mkfs.exfat`/`fsck.exfat` CLEAN | ASCII names only |
+| **NTFS** | `/ntfs` | read-only | R/O | host `mkntfs` volume read byte-exact | `-EROFS` on every mutation; ASCII names; no $ATTRIBUTE_LIST/compression/security |
+
+Every one of these drivers reads and writes through the F2 buffer-cache seam
+(`fs_read_block`) and mounts only when its `*_init()` returns 0 (F1: a foreign
+or blank boot sector is refused, never auto-formatted).  See
+`docs/status.md` → "Filesystems" and `FSFULL_PLAN.md` for the per-FS honesty
+bar and the F1–F5b receipts.

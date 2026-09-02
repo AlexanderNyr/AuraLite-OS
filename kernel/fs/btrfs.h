@@ -7,14 +7,16 @@
 /*
  * btrfs.h — Copy-on-write (CoW) Btrfs-style filesystem driver.
  *
- * Capabilities:
- *   - Copy-on-write: every block write allocates a new block (never in-place)
- *   - Checksums for data integrity (CRC32C per block, simplified)
- *   - B-tree metadata: tree root, extent tree, FS tree
- *   - Subvolumes and snapshots (basic root items)
- *   - Extent items for file data allocation
- *   - Directory items with name lookup
- *   - Inode items for file metadata
+ * Implemented (full mutation surface through the VFS):
+ *   - Copy-on-write: every block write allocates a new block (never in-place),
+ *     with tree re-parenting on update;
+ *   - CRC32C checksums on every block, computed on write and verified on read
+ *     (F4b);
+ *   - B-tree metadata: tree root, extent tree and the FS tree;
+ *   - extent items for file data allocation;
+ *   - directory items with name lookup, inode items for metadata;
+ *   - lookup, create, read, write, readdir, mkdir, rmdir, unlink, rename,
+ *     link, settimes, truncate, stat, sync.
  *
  * On-disk layout (LBA-based):
  *   LBA 65536 (64KB)  — Superblock (4KB)
@@ -22,18 +24,17 @@
  *   LBA 192608 (192KB) — Chunk Tree (device/chunk allocation)
  *   Main area: CoW node and data blocks allocated from free space
  *
- * Key IDs:
- *   1 = ROOT_DIR (root directory)
- *   2 = EXTENT_TREE (extent allocation tree)
- *   3 = ROOT_TREE (subvolume/snapshot tree)
- *   4 = CHUNK_TREE (device allocation)
- *   5 = FS_TREE (main filesystem tree)
+ * Honest scope notes (FSFULL_PLAN.md F4b/F6):
+ *   - subvolumes and snapshots are NOT implemented: the driver manages a
+ *     single FS tree and does not create or expose ROOT_TREE subvolumes.
+ *   - checksums are per-block CRC32C (implemented as of F4b); there is no
+ *     full Btrfs send/receive, compression or device RAID handling.
  *
  * Mount point: /btrfs — see kernel.c.
  */
 
 int  btrfs_init(int prefer_port);
-int btrfs_self_test(void);
+int  btrfs_self_test(void);
 
 extern const struct vfs_ops btrfs_ops;
 

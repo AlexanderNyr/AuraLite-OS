@@ -102,11 +102,11 @@ tied to the tree.
 | **FAT32 — full** | ✅ | `/fat`: subdirs, **LFN (UCS-2 read+write)**, mkdir/rmdir/unlink/rename/truncate, FSInfo, FAT date/time stamps decoded through `stat()`. |
 | **ext2 — full** | ✅ | `/ext2`: mounts existing Linux-mkfs images **and** formats blank disks in-kernel. Direct + single/double/triple indirect blocks; mkdir/rmdir/unlink/rename; inode timestamps; cross-OS round-trip verified with `debugfs`. |
 | buffer cache | 🧪 | Buffer cache layer for block I/O caching and synchronization. |
-| exFAT | 🚧 | skeleton |
-| NTFS | 🚧 | skeleton |
-| ext4 | 🚧 | experimental ext4-like |
-| Btrfs | 🚧 | experimental CoW prototype |
-| F2FS | 🚧 | experimental log-structured prototype |
+| **exFAT** | 🧪 | `/exfat`: real exFAT boot region (12-sector + checksum + backup, exfatprogs-faithful), FAT cluster chains, allocation bitmap, FILE/STREAM/NAME entry sets with the exfatprogs checksum. Full mutation surface (lookup/read/write/create/mkdir/unlink/rmdir/rename/truncate/settimes/stat/readdir/sync). Host `fsck.exfat` reports kernel-formatted volumes CLEAN; kernel mounts and reads host `mkfs.exfat` volumes. **Experimental — the gaps are deliberate**: UTF-16 volume labels and long-name upcasing beyond ASCII are not implemented. |
+| **NTFS** | 🧪 | `/ntfs`: a real read-only NTFS reader — MFT `FILE` records with update-sequence-array fixup, attribute walk ($STANDARD_INFORMATION/$FILE_NAME/$DATA/$I30), runlist decode with sparse zero-fill, resident and non-resident reads, root readdir, stat. Mounts a host `mkntfs` volume and reads its files byte-exact; every mutation op prints `[ntfs] … refused: read-only (-EROFS)` and returns `-EROFS`. **Experimental — the gaps are deliberate**: read-only by design, ASCII-only name transcode, no $ATTRIBUTE_LIST/compression/security. |
+| **ext4** | 🧪 | `/ext4`: ext4 on-disk format with extents, per-group block/inode bitmaps, file-type directory entries, an internal metadata journal, and readdir over HTree (dx_root) indexed dirs. Full mutation surface. Interop verified with `mkfs.ext4`/`fsck.ext4`. **Experimental — the gaps are deliberate**: no foreign JBD2 journal recovery, HTree writing is out of scope (created dirs are linear), no delayed allocation/flex_bg/sparse_super. |
+| **Btrfs** | 🧪 | `/btrfs`: CoW B-tree filesystem with per-block CRC32C checksums, extent tree, directory/inode items, full mutation surface. **Experimental — the gaps are deliberate**: subvolumes and snapshots are NOT implemented (single FS tree only); no send/receive, compression or RAID. |
+| **F2FS** | 🧪 | `/f2fs`: log-structured F2FS with NAT/SIT/SSA tables, checkpoints, free-segment allocation, an internal structural fsck, full mutation surface. **Experimental — the gaps are deliberate**: no cleaning/GC or hot-cold multi-head logging (segments come from a free list). |
 
 ## Syscalls
 
