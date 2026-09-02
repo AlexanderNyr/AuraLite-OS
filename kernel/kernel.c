@@ -146,36 +146,40 @@ void test_f2fs_smoke(void) {
     }
 }
 
-void test_exfat_detect(void) {
-    kprintf("[test] test_exfat_detect: running detection test...\n");
-    struct vfs_stat st;
-    if (vfs_stat("/exfat", &st) == 0) {
-        kprintf("[test] test_exfat_detect: /exfat root detected\n");
-        kprintf("[test] test_exfat_detect: PASS\n");
-    } else {
-        kprintf("[test] test_exfat_detect: /exfat not mounted or detected\n");
-    }
+/* F7 (FSFULL_PLAN.md): the five on-disk filesystem self-tests run in the
+ * FULL selftest lane when their volumes are mounted.  Each self-test skips
+ * cleanly when its volume is absent, so normal boot (FAST/OFF) is untouched.
+ * exFAT and NTFS previously only did a mount-detection check; they now run
+ * the real exfat_self_test()/ntfs_self_test() like the other three. */
+void test_exfat_selftest(void) {
+    kprintf("[test] test_exfat_selftest: running self-test...\n");
+    int result = exfat_self_test();
+    if (result == 0)
+        kprintf("[test] test_exfat_selftest: PASS\n");
+    else if (result == -1)
+        kprintf("[test] test_exfat_selftest: SKIP (not mounted)\n");
+    else
+        kprintf("[test] test_exfat_selftest: FAIL (error %d)\n", result);
 }
 
-void test_ntfs_detect(void) {
-    kprintf("[test] test_ntfs_detect: running detection test...\n");
-    struct vfs_stat st;
-    if (vfs_stat("/ntfs", &st) == 0) {
-        kprintf("[test] test_ntfs_detect: /ntfs root detected\n");
-        kprintf("[test] test_ntfs_detect: PASS\n");
-    } else {
-        kprintf("[test] test_ntfs_detect: /ntfs not mounted or detected\n");
-    }
+void test_ntfs_selftest(void) {
+    kprintf("[test] test_ntfs_selftest: running self-test...\n");
+    int result = ntfs_self_test();
+    if (result == 0)
+        kprintf("[test] test_ntfs_selftest: PASS\n");
+    else if (result == -1)
+        kprintf("[test] test_ntfs_selftest: SKIP (not mounted)\n");
+    else
+        kprintf("[test] test_ntfs_selftest: FAIL (error %d)\n", result);
 }
 
-void run_experimental_tests(void) {
-    kprintf("[test] running experimental storage tests...\n");
-    test_buffer_cache();
+void run_fs_selftests(void) {
+    kprintf("[test] running on-disk filesystem self-tests (FULL lane)...\n");
     test_ext4_smoke();
     test_btrfs_smoke();
     test_f2fs_smoke();
-    test_exfat_detect();
-    test_ntfs_detect();
+    test_exfat_selftest();
+    test_ntfs_selftest();
 }
 
 void kmain(boot_info_t *boot_info) {
@@ -526,14 +530,14 @@ void kmain(boot_info_t *boot_info) {
         kprintf("[ntfs] no NTFS volume on a reachable device; /ntfs not mounted\n");
     }
 
-    /* Disabled in normal boot until fully stable, can be called when needed:
-     * run_experimental_tests();
-     */
-    /* F4/f2fs: run_experimental_tests() PASSES (multi-segment, rename,
-     * link, rmdir, settimes, fsync, internal fsck, CP validation).  Left
-     * disabled here to preserve normal-boot output; run when needed.
-     * F3: ext4_self_test() PASSES (multi-block, 64-bit truncate, rename,
-     * link, unlink, rmdir).  Also left disabled. */
+    /* F7 (FSFULL_PLAN.md): the five on-disk filesystem self-tests run in the
+     * FULL selftest lane (-fw_cfg opt/auralite.selftest,string=full, or
+     * make SELFTEST=full) when their volumes are mounted.  Each self-test
+     * SKIPs when its volume is absent, so FAST/OFF normal boot output is
+     * unchanged.  Previously these were wired to a commented-out
+     * experimental-tests gate that never ran. */
+    if (selftest_mode() == SELFTEST_FULL)
+        run_fs_selftests();
 
     /* USB UHCI + OHCI + EHCI drivers. */
     kprintf("[boot] initialising USB (UHCI) driver...\n");

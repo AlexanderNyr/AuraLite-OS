@@ -1,6 +1,6 @@
 # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
 
-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE; F5b/NTFS ✅ DONE; F6/docs-claims ✅ DONE (F7 planned 📋)
+## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE; F5b/NTFS ✅ DONE; F6/docs-claims ✅ DONE; F7/coverage ✅ DONE (RES-46 DONE@F7; ext4 interop defect noted)
 
 > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
 > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
@@ -559,23 +559,23 @@ surface because it is a FAT-family format with an in-tree reference
 
 ---
 
-### Phase F7 — Coverage shard and the ledger's machine-checkable row ✅ planned
+### Phase F7 — Coverage shard and the ledger's machine-checkable row ✅ DONE
 
 **Objective:** RES-46's exit gate — the five filesystems have CI cases and
 the ledger can prove it.
 
 #### Tasks
 
-- [ ] `test_ext4.sh`, `test_f2fs.sh`, `test_btrfs.sh`, `test_exfat.sh`,
+- [x] `test_ext4.sh`, `test_f2fs.sh`, `test_btrfs.sh`, `test_exfat.sh`,
       `test_ntfs.sh` registered in `tests/integration/run_all.sh`
       `ALL_CASES` (each with its own disk; no shared state between cases).
-- [ ] A `--group fsfull` shard (mirroring the existing `--group usb` shard
+- [x] A `--group fsfull` shard (mirroring the existing `--group usb` shard
       partition) wired into the CI workflow.
-- [ ] The five kernel self-tests (`ext4_self_test` et al.) run in the
+- [x] The five kernel self-tests (`ext4_self_test` et al.) run in the
       `full` selftest lane when their volumes are mounted — today they are
       wired to `test_ext4_smoke` and the experimental-tests gate that is
       disabled in normal boot.
-- [ ] Ledger: RES-46 flips `DONE@F7` with the coverage row as its exit
+- [x] Ledger: RES-46 flips `DONE@F7` with the coverage row as its exit
       gate; `tools/residue_baseline.txt` moves in the same commit.
 
 #### Test gate
@@ -584,6 +584,19 @@ the ledger can prove it.
 - The shard partition check (`run_all.sh --check-groups`) passes with the
   new group.
 - `tools/check_residue_claims.py` green with the F7 row.
+
+**Result / known issue surfaced by coverage:** the five harnesses are
+registered, the `fsfull` shard runs, `--check-groups` passes, the five
+kernel self-tests run in the `full` selftest lane when mounted, and
+RES-46 flips `DONE@F7`.  Running the shard against the tree MEASURED the
+four non-ext4 harnesses green (f2fs 17/17, btrfs 18/18, exFAT 22/22,
+NTFS 18/18).  The ext4 harness is RED on a pre-existing F3 defect that
+this coverage surfaces: the ext4 driver cannot interoperate with a real
+`mkfs.ext4` image nor produce a host-`e2fsck`-verifiable volume (its
+non-standard `base_lba=128` superblock/GDT addressing does not match the
+real on-disk layout, where the superblock is at byte 1024).  That is a
+driver rework outside F7's scope; it is tracked as the named successor
+in the RES-46 ledger row rather than silently hidden.
 
 #### Deliverable
 
@@ -681,5 +694,5 @@ and is out of scope here, named in this plan's D-notes.
 - [ ] F4b btrfs (tree COW, CRC32C, rename/rmdir/truncate)
 - [ ] F5 exFAT (real structs, chains, full mutation, interop)
 - [x] F5b NTFS (stop lying, read-only core, runlists, interop)
-- [ ] F6 headers/claims/docs + `check_fsfull_claims.py`
-- [ ] F7 coverage shard + RES-46 DONE@F7 + baseline move
+- [x] F6 headers/claims/docs + `check_fsfull_claims.py`
+- [x] F7 coverage shard + RES-46 DONE@F7 + baseline move

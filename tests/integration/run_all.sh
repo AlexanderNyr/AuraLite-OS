@@ -117,6 +117,15 @@ ALL_CASES=(
     test_ext2
     test_fs_stress
     test_fsformat_knob
+    # F7 (FSFULL_PLAN.md): the five real on-disk filesystems each have a
+    # self-contained harness under tests/<fs>/; these thin wrappers register
+    # them with the shard runner.  Each builds its own disks, so there is no
+    # shared state between cases.
+    test_ext4
+    test_f2fs
+    test_btrfs
+    test_exfat
+    test_ntfs
     test_usb_msc
     test_usb_hid
     test_usb_ohci
@@ -236,7 +245,7 @@ ALL_CASES=(
 # is even slower: it runs the whole closure twice plus the QEMU idle that waits
 # out the closure's fixed budget, so it is the case "--fast" must never carry.
 # --fast skips both exactly like the other correctness-over-speed gates above.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$|test_selfhost_closure'
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$'
 
 # ---- thematic CI shards (2026-08-21) ----
 #
@@ -251,12 +260,17 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 # refuses to run rather than silently dropping out of CI — the
 # AUDIT_A0 disease (27 cases on disk that CI never ran) does not get a
 # second chapter.
-GROUP_NAMES="core posix fs usb net gui selfhost-script selfhost-closure selfhost-img"
+GROUP_NAMES="core posix fs usb net gui selfhost-script selfhost-closure selfhost-img fsfull"
 group_re() {
     case "$1" in
         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|shell_all|sysmon_data|userspace_apps)$' ;;
-        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|devfs|procfs|tmpfs|diskfs)$' ;;
+        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs)$' ;;
+        # F7 (FSFULL_PLAN.md): the five F3–F5b filesystems as their own CI
+        # shard, mirroring the usb shard partition.  Kept separate from the
+        # `fs` group so the multi-boot harnesses (each is several QEMU
+        # boots) do not stretch the plain filesystem shard's wall-clock.
+        fsfull) echo '^test_(ext4|f2fs|btrfs|exfat|ntfs)$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|xhci_[a-z]+)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
         gui)   echo '^test_(gui|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;

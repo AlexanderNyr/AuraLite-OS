@@ -28,6 +28,12 @@ set -u
 cd "$(dirname "$0")/../.."
 . tests/integration/lib/lib.sh
 il_init
+# F7 (FSFULL_PLAN.md): boot in FAST selftest mode so the kernel's
+# destructive on-disk self-tests do not run during this coverage
+# harness's own volume drive (the harness invokes its self-test
+# explicitly where it needs it).  The five self-tests themselves run
+# in the FULL selftest lane (verified by a dedicated full boot).
+IL_SELFTEST=fast
 il_have qemu-system-x86_64
 
 il_section "f2fs (full mutation surface + internal fsck + CP validation)"

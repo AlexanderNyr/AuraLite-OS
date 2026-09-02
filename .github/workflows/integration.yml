@@ -232,7 +232,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img]
+        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img, fsfull]
     steps:
       - uses: actions/checkout@v4
 
@@ -251,6 +251,18 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends \
             mingw-w64 mingw-w64-tools
+
+      # The fsfull shard (FSFULL_PLAN.md F7) drives the F3–F5b harnesses,
+      # whose external-interop lanes call host tools: exFAT needs exfatprogs
+      # (mkfs.exfat/fsck.exfat) and NTFS needs ntfs-3g (mkntfs/ntfscp/ntfsls).
+      # f2fs/btrfs use in-kernel structural fscks (qemu only).  e2fsprogs is
+      # already installed above for the ext4 lane.  The harnesses skip when a
+      # tool is absent; installing here keeps the shard a real gate.
+      - name: Install filesystem interop tools (fsfull only)
+        if: matrix.group == 'fsfull'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            exfatprogs ntfs-3g
 
       - name: Install Rust bare-metal target
         run: |

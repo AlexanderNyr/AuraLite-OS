@@ -73,6 +73,16 @@ ARTEFACTS = {
             "docs/status.md",
             "docs/filesystem.md",
             "TODO.md"],
+    "F7":  ["tests/integration/run_all.sh",
+            "tests/integration/cases/test_ext4.sh",
+            "tests/integration/cases/test_f2fs.sh",
+            "tests/integration/cases/test_btrfs.sh",
+            "tests/integration/cases/test_exfat.sh",
+            "tests/integration/cases/test_ntfs.sh",
+            ".github/workflows/integration.yml",
+            "kernel/kernel.c",
+            "docs/residue_ledger.md",
+            "tools/residue_baseline.txt"],
 }
 
 # Retracted claims that must NOT appear in the on-disk headers.  The F5b
@@ -140,11 +150,22 @@ def check_plan(plan, tree_has_file):
     for sub in ("F4b", "F5b"):
         if sub in done or tree_has_file("patches/FS_F%s.patch" % sub):
             done.add(sub)
-    # F6 must be done once this phase lands; F7 stays planned.
+    # F6 and F7 must be done once the plan's series has landed.
     if "F6" not in done:
         fails.append("F6: phase not marked done (expected ✅ after this phase)")
+    if "F7" not in done:
+        fails.append("F7: phase not marked done (expected ✅ after this phase)")
+
+    # F7's own receipts are pinned as artefacts above; the two structural
+    # ones are machine-checked here: the fsfull shard really exists in
+    # run_all.sh, and the ledger really carries the DONE@F7 row.
     if "F7" in done:
-        fails.append("F7: marked done, but F7 (coverage shard) is planned")
+        run_all = read("tests", "integration", "run_all.sh")
+        if "fsfull" not in run_all or "GROUP_NAMES" not in run_all:
+            fails.append("F7: run_all.sh has no 'fsfull' shard")
+        ledger = read("docs", "residue_ledger.md")
+        if "RES-46" not in ledger or "DONE@F7" not in ledger:
+            fails.append("F7: ledger has no RES-46 DONE@F7 row")
 
     # Each done phase must have its receipts present.
     for phase, arts in ARTEFACTS.items():

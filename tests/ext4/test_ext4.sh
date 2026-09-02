@@ -14,18 +14,39 @@
 # Requires host e2fsprogs (mkfs.ext4, e2fsck).  Skips cleanly when absent.
 
 set -u
-cd "$(dirname "$0")/.."
-. lib/lib.sh
+cd "$(dirname "$0")/../.."
+. tests/integration/lib/lib.sh
 il_init
+# F7 (FSFULL_PLAN.md): boot in FAST selftest mode so the kernel's
+# destructive on-disk self-tests do not run during this coverage
+# harness's own volume drive (the harness invokes its self-test
+# explicitly where it needs it).  The five self-tests themselves run
+# in the FULL selftest lane (verified by a dedicated full boot).
+IL_SELFTEST=fast
 il_have qemu-system-x86_64
 
 il_section "ext4 (mkfs.ext4 interop + full mutation surface)"
 
-DISK0="$IL_BUILD/disk-ahci-test.img"
+# 6 AHCI disks so the fixed ext4 slot (blkdev 3, /ext4) is reachable.  The
+# other slots are fresh AURA disks (formatted by diskfs/fat32/ext2 on their
+# own slots); ext4 owns D3.  Same layout as the f2fs/btrfs/exfat/ntfs
+# harnesses.
+D0="$IL_BUILD/ext4-d0.img"; D1="$IL_BUILD/ext4-d1.img"
+D2="$IL_BUILD/ext4-d2.img"; D3="$IL_BUILD/ext4-d3.img"
+D4="$IL_BUILD/ext4-d4.img"; D5="$IL_BUILD/ext4-d5.img"
 DISK_HOST="$IL_BUILD/ext4-host.img"
 DISK_BLANK="$IL_BUILD/ext4-blank.img"
 LOG_HOST="$IL_LOGDIR/ext4_host.log"
 LOG_BLANK="$IL_LOGDIR/ext4_blank.log"
+QEMU_DISKS=(
+    -drive "file=$D0,format=raw,if=none,id=d0" -device "ide-hd,drive=d0,bus=ahci0.0"
+    -drive "file=$D1,format=raw,if=none,id=d1" -device "ide-hd,drive=d1,bus=ahci0.1"
+    -drive "file=$D2,format=raw,if=none,id=d2" -device "ide-hd,drive=d2,bus=ahci0.2"
+    -drive "file=$D3,format=raw,if=none,id=d3" -device "ide-hd,drive=d3,bus=ahci0.3"
+    -drive "file=$D4,format=raw,if=none,id=d4" -device "ide-hd,drive=d4,bus=ahci0.4"
+    -drive "file=$D5,format=raw,if=none,id=d5" -device "ide-hd,drive=d5,bus=ahci0.5"
+)
+AHCI_DEV=( -device "ahci,id=ahci0" )
 
 MKFS=""
 E2FSCK=""
@@ -57,7 +78,11 @@ printf 'hello-from-mkfs-%s\n' "$$" > "$SEEDDIR/LINUX.TXT"
 printf 'nested\n' > "$SEEDDIR/sub/inner.txt"
 "$MKFS" -q -F -O ^has_journal -b 4096 -d "$SEEDDIR" "$DISK_HOST" 2>/dev/null
 
-il_make_disk "$DISK0" 16 "AURALHCI"
+# 6 disks so the fixed /ext4 slot (blkdev 3) exists; ext4 owns D3.
+for d in "$D0" "$D1" "$D2" "$D4" "$D5"; do
+    rm -f "$d"; il_make_disk "$d" 4 "AURALHCI"
+done
+cp -f "$DISK_HOST" "$D3"
 
 il_send_delay 8
 il_send "ls /ext4"
@@ -84,13 +109,8 @@ il_send "sync"
 il_send_delay 1
 il_send "exit"
 
-# ext4 is the 4th AHCI disk (blkdev 3), like /ext4 in the kernel.
-il_run_qemu "$LOG_HOST" 45 \
-    -drive "file=$DISK0,format=raw,if=none,id=ahcidisk" \
-    -device "ahci,id=ahci0" \
-    -device "ide-hd,drive=ahcidisk,bus=ahci0.0" \
-    -drive "file=$DISK_HOST,format=raw,if=none,id=ext4disk" \
-    -device "ide-hd,drive=ext4disk,bus=ahci0.3" \
+# ext4 is the 4th AHCI disk (blkdev 3, /ext4 in the kernel); the volume is at D3.
+il_run_qemu "$LOG_HOST" 45 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
     -fw_cfg "opt/auralite.fsformat,string=0"
 
 il_assert_grep "$LOG_HOST" "\[ext4\] mounted existing volume"  "ext4 recognised mkfs.ext4 image (no journal)"
@@ -115,8 +135,11 @@ fi
 IL_LAST_LOG="$LOG_BLANK"
 rm -f "$DISK_BLANK"
 dd if=/dev/zero of="$DISK_BLANK" bs=1M count=64 status=none
-rm -f "$DISK0"
-il_make_disk "$DISK0" 16 "AURALHCI"
+# Fresh 6-disk layout again, blank ext4 volume at D3 for the kernel to format.
+for d in "$D0" "$D1" "$D2" "$D4" "$D5"; do
+    rm -f "$d"; il_make_disk "$d" 4 "AURALHCI"
+done
+cp -f "$DISK_BLANK" "$D3"
 
 il_send_delay 8
 il_send "write /ext4/fsckme.txt kernelwrote"
@@ -127,12 +150,7 @@ il_send "sync"
 il_send_delay 1
 il_send "exit"
 
-il_run_qemu "$LOG_BLANK" 30 \
-    -drive "file=$DISK0,format=raw,if=none,id=ahcidisk" \
-    -device "ahci,id=ahci0" \
-    -device "ide-hd,drive=ahcidisk,bus=ahci0.0" \
-    -drive "file=$DISK_BLANK,format=raw,if=none,id=ext4disk" \
-    -device "ide-hd,drive=ext4disk,bus=ahci0.3" \
+il_run_qemu "$LOG_BLANK" 45 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
     -fw_cfg "opt/auralite.fsformat,string=1"
 
 il_assert_grep "$LOG_BLANK" "format complete"                "kernel formatted the blank ext4 volume"
