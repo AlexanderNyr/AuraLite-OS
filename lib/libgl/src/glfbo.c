@@ -1,4 +1,5 @@
-/* libgl/src/glfbo.c — framebuffer objects, renderbuffers and glReadPixels.
+/* libgl/src/glfbo.c — framebuffer objects, renderbuffers, glReadPixels
+ * and the copy/blit entry points (G12 + GL2 L2).
  *
  * Phase G12 of GL_PLAN.md.  GL 3.0 / EXT_framebuffer_object core subset.
  *
@@ -27,9 +28,11 @@
  *   shader path (G11) can raise it without restructuring anything.
  * - Packed depth-stencil (D24S8).  Stencil is a separate 8-bit plane
  *   (GL2 L1); attaching GL_STENCIL_INDEX8 is real.
- * - Multisampling and blitting between framebuffers.
+ * - Multisampling.  There is nothing to resolve, so glBlitFramebuffer is
+ *   a copy (NEAREST only), not a downsample.
  */
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -258,13 +261,92 @@ static GLenum framebuffer_status(struct aglx_context *ctx,
     return GL_FRAMEBUFFER_COMPLETE;
 }
 
+static int is_fb_bind_target(GLenum target) {
+    return target == GL_FRAMEBUFFER ||
+           target == GL_READ_FRAMEBUFFER ||
+           target == GL_DRAW_FRAMEBUFFER;
+}
+
+/* Whole-framebuffer resolve.  Window (name 0) is always complete.  An FBO
+ * is complete only when framebuffer_status says so; callers that need to
+ * sample then look at color/depth/stencil, any of which may still be NULL
+ * (a depth-only FBO is complete and has no colour). */
+typedef struct {
+    int         complete;
+    gl_pixel_t *color;
+    float      *depth;
+    uint8_t    *stencil;
+    GLsizei     width, height;
+    int         flip_y;
+} fb_target_t;
+
+static void resolve_framebuffer(struct aglx_context *ctx, GLuint name,
+                                fb_target_t *out) {
+    out->complete = 0;
+    out->color = (gl_pixel_t *)0;
+    out->depth = (float *)0;
+    out->stencil = (uint8_t *)0;
+    out->width = out->height = 0;
+    out->flip_y = 0;
+
+    if (name == 0) {
+        out->complete = 1;
+        out->color    = ctx->win_color;
+        out->depth    = ctx->win_depth;
+        out->stencil  = ctx->win_stencil;
+        out->width    = ctx->win_width;
+        out->height   = ctx->win_height;
+        out->flip_y   = 1;      /* window stores row 0 at the top */
+        return;
+    }
+
+    gl_framebuffer_t *fb = find_fbo(ctx, name);
+    if (!fb || framebuffer_status(ctx, fb) != GL_FRAMEBUFFER_COMPLETE) return;
+
+    out->complete = 1;
+    out->flip_y   = 0;          /* texture/RBO store row 0 at the bottom */
+
+    resolved_t rc;
+    if (resolve_attachment(ctx, &fb->color[0], &rc) && rc.color) {
+        out->color  = rc.color;
+        out->width  = rc.width;
+        out->height = rc.height;
+    }
+
+    resolved_t rd;
+    if (fb->depth.kind != GL_ATTACH_NONE &&
+        resolve_attachment(ctx, &fb->depth, &rd) && rd.depth) {
+        out->depth = rd.depth;
+        if (!out->color) { out->width = rd.width; out->height = rd.height; }
+    }
+
+    resolved_t rs;
+    if (fb->stencil.kind != GL_ATTACH_NONE &&
+        resolve_attachment(ctx, &fb->stencil, &rs) && rs.stencil) {
+        out->stencil = rs.stencil;
+        if (!out->color && !out->depth) {
+            out->width = rs.width; out->height = rs.height;
+        }
+    }
+}
+
+static GLuint binding_for_target(const struct aglx_context *ctx, GLenum target) {
+    if (target == GL_READ_FRAMEBUFFER) return ctx->read_framebuffer_binding;
+    return ctx->framebuffer_binding;    /* GL_FRAMEBUFFER and GL_DRAW_FRAMEBUFFER */
+}
+
+static size_t fb_row_index(const fb_target_t *t, int y) {
+    return t->flip_y ? (size_t)(t->height - 1 - y) : (size_t)y;
+}
+
 GLenum glCheckFramebufferStatus(GLenum target) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return 0;
-    if (target != GL_FRAMEBUFFER) { gl_set_error(GL_INVALID_ENUM); return 0; }
+    if (!is_fb_bind_target(target)) { gl_set_error(GL_INVALID_ENUM); return 0; }
 
-    if (ctx->framebuffer_binding == 0) return GL_FRAMEBUFFER_COMPLETE;
-    gl_framebuffer_t *fb = find_fbo(ctx, ctx->framebuffer_binding);
+    GLuint name = binding_for_target(ctx, target);
+    if (name == 0) return GL_FRAMEBUFFER_COMPLETE;
+    gl_framebuffer_t *fb = find_fbo(ctx, name);
     if (!fb) return GL_FRAMEBUFFER_UNDEFINED;
     return framebuffer_status(ctx, fb);
 }
@@ -295,19 +377,20 @@ static void gl_fbo_finish_color(struct aglx_context *ctx,
  * bind, and by the attachment entry points when they change the framebuffer
  * that is already bound. */
 static void gl_fbo_apply(struct aglx_context *ctx) {
+    fb_target_t t;
+    resolve_framebuffer(ctx, ctx->framebuffer_binding, &t);
+
     if (ctx->framebuffer_binding == 0) {
-        ctx->color   = ctx->win_color;
-        ctx->depth   = ctx->win_depth;
-        ctx->stencil = ctx->win_stencil;
-        ctx->width   = ctx->win_width;
-        ctx->height  = ctx->win_height;
-        /* The window's framebuffer stores row 0 at the top. */
+        ctx->color   = t.color;
+        ctx->depth   = t.depth;
+        ctx->stencil = t.stencil;
+        ctx->width   = t.width;
+        ctx->height  = t.height;
         ctx->target_flip_y = 1;
         return;
     }
 
-    gl_framebuffer_t *fb = find_fbo(ctx, ctx->framebuffer_binding);
-    if (!fb || framebuffer_status(ctx, fb) != GL_FRAMEBUFFER_COMPLETE) {
+    if (!t.complete) {
         /* An incomplete framebuffer must not render anywhere.  GL says the
          * results of rendering are undefined and glClear/draw generate
          * GL_INVALID_FRAMEBUFFER_OPERATION; this implementation keeps the
@@ -327,41 +410,11 @@ static void gl_fbo_apply(struct aglx_context *ctx) {
      * so no vertical flip applies.  This is what makes a render-to-texture
      * come out the right way up when it is sampled afterwards. */
     ctx->target_flip_y = 0;
-
-    resolved_t rc;
-    if (resolve_attachment(ctx, &fb->color[0], &rc) && rc.color) {
-        ctx->color  = rc.color;
-        ctx->width  = rc.width;
-        ctx->height = rc.height;
-    } else {
-        ctx->color  = (gl_pixel_t *)0;
-        ctx->width  = ctx->height = 0;
-    }
-
-    resolved_t rd;
-    if (fb->depth.kind != GL_ATTACH_NONE &&
-        resolve_attachment(ctx, &fb->depth, &rd) && rd.depth) {
-        ctx->depth = rd.depth;
-        /* A depth-only FBO sets the size from the depth attachment. */
-        if (!ctx->color) { ctx->width = rd.width; ctx->height = rd.height; }
-    } else {
-        /* No depth attachment means no depth buffer, exactly like a context
-         * created without AGLX_DEPTH: the depth test silently does nothing
-         * rather than writing through the window's depth buffer, which would
-         * corrupt it. */
-        ctx->depth = (float *)0;
-    }
-
-    resolved_t rs;
-    if (fb->stencil.kind != GL_ATTACH_NONE &&
-        resolve_attachment(ctx, &fb->stencil, &rs) && rs.stencil) {
-        ctx->stencil = rs.stencil;
-        if (!ctx->color && !ctx->depth) {
-            ctx->width = rs.width; ctx->height = rs.height;
-        }
-    } else {
-        ctx->stencil = (uint8_t *)0;
-    }
+    ctx->color   = t.color;
+    ctx->depth   = t.depth;
+    ctx->stencil = t.stencil;
+    ctx->width   = t.width;
+    ctx->height  = t.height;
 }
 
 /* Is the current draw target usable?  The draw and clear entry points call
@@ -421,6 +474,9 @@ void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) {
             ctx->framebuffer_binding = 0;
             gl_fbo_apply(ctx);
         }
+        if (ctx->read_framebuffer_binding == framebuffers[k]) {
+            ctx->read_framebuffer_binding = 0;
+        }
         fb->used = 0;
         fb->name = 0;
     }
@@ -435,44 +491,46 @@ GLboolean glIsFramebuffer(GLuint framebuffer) {
 void glBindFramebuffer(GLenum target, GLuint framebuffer) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
-    if (target != GL_FRAMEBUFFER) { gl_set_error(GL_INVALID_ENUM); return; }
+    if (!is_fb_bind_target(target)) { gl_set_error(GL_INVALID_ENUM); return; }
 
-    /* Leaving a texture-backed FBO is the moment to fix up its alpha. */
-    if (ctx->framebuffer_binding != 0 &&
+    int bind_draw = (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER);
+    int bind_read = (target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER);
+
+    /* Leaving a texture-backed DRAW FBO is the moment to fix up its alpha. */
+    if (bind_draw && ctx->framebuffer_binding != 0 &&
         ctx->framebuffer_binding != framebuffer) {
         gl_fbo_finish_color(ctx, find_fbo(ctx, ctx->framebuffer_binding));
     }
 
-    if (framebuffer == 0) {
-        ctx->framebuffer_binding = 0;
-        gl_fbo_apply(ctx);
-        return;
-    }
-
-    gl_framebuffer_t *fb = find_fbo(ctx, framebuffer);
-    if (!fb) {
+    if (framebuffer != 0 && !find_fbo(ctx, framebuffer)) {
         /* Like textures and buffers, binding an unused name creates the
          * object (§4.4.1). */
+        gl_framebuffer_t *created = (gl_framebuffer_t *)0;
         for (int i = 0; i < GL_MAX_FRAMEBUFFERS_IMPL; i++) {
             if (ctx->framebuffers[i].used) continue;
-            fb = &ctx->framebuffers[i];
-            fb->used = 1;
-            fb->name = framebuffer;
+            created = &ctx->framebuffers[i];
+            created->used = 1;
+            created->name = framebuffer;
             for (int a = 0; a < GL_MAX_COLOR_ATTACHMENTS_IMPL; a++) {
-                attachment_clear(&fb->color[a]);
+                attachment_clear(&created->color[a]);
             }
-            attachment_clear(&fb->depth);
-            attachment_clear(&fb->stencil);
+            attachment_clear(&created->depth);
+            attachment_clear(&created->stencil);
             if (framebuffer >= ctx->next_framebuffer_name) {
                 ctx->next_framebuffer_name = framebuffer + 1;
             }
             break;
         }
-        if (!fb || !fb->used) { gl_set_error(GL_OUT_OF_MEMORY); return; }
+        if (!created || !created->used) { gl_set_error(GL_OUT_OF_MEMORY); return; }
     }
 
-    ctx->framebuffer_binding = framebuffer;
-    gl_fbo_apply(ctx);
+    if (bind_draw) {
+        ctx->framebuffer_binding = framebuffer;
+        gl_fbo_apply(ctx);
+    }
+    if (bind_read) {
+        ctx->read_framebuffer_binding = framebuffer;
+    }
 }
 
 /* Which attachment slot does this enum name?  NULL for one this
@@ -494,15 +552,16 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment,
                             GLenum textarget, GLuint texture, GLint level) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
-    if (target != GL_FRAMEBUFFER) { gl_set_error(GL_INVALID_ENUM); return; }
+    if (!is_fb_bind_target(target)) { gl_set_error(GL_INVALID_ENUM); return; }
 
     /* Attaching to the default framebuffer is meaningless: the window's
      * storage belongs to the window system. */
-    if (ctx->framebuffer_binding == 0) {
+    GLuint bound = binding_for_target(ctx, target);
+    if (bound == 0) {
         gl_set_error(GL_INVALID_OPERATION);
         return;
     }
-    gl_framebuffer_t *fb = find_fbo(ctx, ctx->framebuffer_binding);
+    gl_framebuffer_t *fb = find_fbo(ctx, bound);
     if (!fb) { gl_set_error(GL_INVALID_OPERATION); return; }
 
     int is_cube_face = (textarget >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
@@ -541,14 +600,15 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
                                GLenum renderbuffertarget, GLuint renderbuffer) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
-    if (target != GL_FRAMEBUFFER)            { gl_set_error(GL_INVALID_ENUM); return; }
+    if (!is_fb_bind_target(target))            { gl_set_error(GL_INVALID_ENUM); return; }
     if (renderbuffertarget != GL_RENDERBUFFER) { gl_set_error(GL_INVALID_ENUM); return; }
 
-    if (ctx->framebuffer_binding == 0) {
+    GLuint bound = binding_for_target(ctx, target);
+    if (bound == 0) {
         gl_set_error(GL_INVALID_OPERATION);
         return;
     }
-    gl_framebuffer_t *fb = find_fbo(ctx, ctx->framebuffer_binding);
+    gl_framebuffer_t *fb = find_fbo(ctx, bound);
     if (!fb) { gl_set_error(GL_INVALID_OPERATION); return; }
 
     GLenum err;
@@ -797,6 +857,32 @@ void glGetRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params) {
  * actually do with it.
  * ==========================================================================*/
 
+/* Resolve the READ framebuffer.  Returns 0 after recording
+ * GL_INVALID_FRAMEBUFFER_OPERATION when the bound read FBO is incomplete. */
+static int resolve_read(struct aglx_context *ctx, fb_target_t *out) {
+    resolve_framebuffer(ctx, ctx->read_framebuffer_binding, out);
+    if (ctx->read_framebuffer_binding != 0 && !out->complete) {
+        gl_set_error(GL_INVALID_FRAMEBUFFER_OPERATION);
+        return 0;
+    }
+    return 1;
+}
+
+static uint32_t fb_get_color(const fb_target_t *t, int x, int y) {
+    if (!t->color || x < 0 || y < 0 || x >= t->width || y >= t->height) return 0;
+    return t->color[fb_row_index(t, y) * (size_t)t->width + (size_t)x];
+}
+
+static float fb_get_depth(const fb_target_t *t, int x, int y) {
+    if (!t->depth || x < 0 || y < 0 || x >= t->width || y >= t->height) return 0.0f;
+    return t->depth[fb_row_index(t, y) * (size_t)t->width + (size_t)x];
+}
+
+static uint8_t fb_get_stencil(const fb_target_t *t, int x, int y) {
+    if (!t->stencil || x < 0 || y < 0 || x >= t->width || y >= t->height) return 0;
+    return t->stencil[fb_row_index(t, y) * (size_t)t->width + (size_t)x];
+}
+
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, GLvoid *pixels) {
     struct aglx_context *ctx = gl_ctx_or_error();
@@ -815,6 +901,9 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
     default: gl_set_error(GL_INVALID_ENUM); return;
     }
 
+    fb_target_t src;
+    if (!resolve_read(ctx, &src)) return;
+
     unsigned char *dst = (unsigned char *)pixels;
 
     if (format == GL_DEPTH_COMPONENT) {
@@ -826,10 +915,9 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
             for (GLsizei col = 0; col < width; col++) {
                 int sx = x + col;
                 unsigned char v = 0;
-                if (ctx->depth && sx >= 0 && sy >= 0 &&
-                    sx < ctx->width && sy < ctx->height) {
-                    const float *drow = gl_depth_row(ctx, sy);
-                    float d = drow[sx];
+                if (src.depth && sx >= 0 && sy >= 0 &&
+                    sx < src.width && sy < src.height) {
+                    float d = fb_get_depth(&src, sx, sy);
                     if (d < 0.0f) d = 0.0f;
                     if (d > 1.0f) d = 1.0f;
                     v = (unsigned char)(d * 255.0f + 0.5f);
@@ -848,11 +936,7 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
 
             /* Pixels outside the framebuffer have undefined values in GL
              * (§4.3.2).  Zero is defined, cheap and never a surprise. */
-            uint32_t v = 0;
-            if (ctx->color && sx >= 0 && sy >= 0 &&
-                sx < ctx->width && sy < ctx->height) {
-                v = gl_fb_row(ctx, sy)[sx];
-            }
+            uint32_t v = fb_get_color(&src, sx, sy);
             unsigned char r = (unsigned char)((v >> 16) & 0xFF);
             unsigned char g = (unsigned char)((v >>  8) & 0xFF);
             unsigned char b = (unsigned char)( v        & 0xFF);
@@ -868,6 +952,179 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
             case GL_ALPHA: p[0] = a; break;
             default: break;
             }
+        }
+    }
+}
+
+/* ============================================================================
+ * Copies (GL2 L2)
+ *
+ * Source is the READ framebuffer — the same resolve glReadPixels uses, so a
+ * CopyTex of a rectangle is defined to equal ReadPixels of that rectangle
+ * followed by TexImage.  There is no second read path.
+ *
+ * glBindFramebuffer(GL_FRAMEBUFFER) still binds both read and draw, so
+ * existing G12 callers are unchanged (D3).  FBO→FBO blit uses the standard
+ * GL_READ_FRAMEBUFFER / GL_DRAW_FRAMEBUFFER split; that is not glReadBuffer
+ * (MRT is still a non-goal).
+ * ==========================================================================*/
+
+static int copytex_internal_ok(GLenum f) {
+    return f == GL_RGB || f == GL_RGBA || f == GL_LUMINANCE ||
+           f == GL_LUMINANCE_ALPHA || f == GL_ALPHA ||
+           f == GL_RGB8 || f == GL_RGBA8;
+}
+
+/* Pack one framebuffer colour pixel as RGBA UNSIGNED_BYTE, matching
+ * glReadPixels(GL_RGBA). */
+static void pack_rgba(const fb_target_t *src, int x, int y, unsigned char *p) {
+    uint32_t v = fb_get_color(src, x, y);
+    p[0] = (unsigned char)((v >> 16) & 0xFF);
+    p[1] = (unsigned char)((v >>  8) & 0xFF);
+    p[2] = (unsigned char)( v        & 0xFF);
+    p[3] = 0xFF;
+}
+
+static unsigned char *read_rgba_rect(struct aglx_context *ctx,
+                                     GLint x, GLint y,
+                                     GLsizei width, GLsizei height) {
+    fb_target_t src;
+    if (!resolve_read(ctx, &src)) return (unsigned char *)0;
+    size_t n = (size_t)width * (size_t)height * 4u;
+    unsigned char *buf = (unsigned char *)malloc(n);
+    if (!buf) { gl_set_error(GL_OUT_OF_MEMORY); return (unsigned char *)0; }
+    for (GLsizei row = 0; row < height; row++) {
+        for (GLsizei col = 0; col < width; col++) {
+            pack_rgba(&src, x + col, y + row,
+                      buf + ((size_t)row * width + col) * 4u);
+        }
+    }
+    return buf;
+}
+
+void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat,
+                      GLint x, GLint y, GLsizei width, GLsizei height,
+                      GLint border) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (width < 0 || height < 0 || border != 0) {
+        gl_set_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!copytex_internal_ok(internalformat)) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (width == 0 || height == 0) {
+        glTexImage2D(target, level, (GLint)internalformat, width, height,
+                     border, GL_RGBA, GL_UNSIGNED_BYTE, (const GLvoid *)0);
+        return;
+    }
+
+    unsigned char *buf = read_rgba_rect(ctx, x, y, width, height);
+    if (!buf) return;
+    glTexImage2D(target, level, (GLint)internalformat, width, height,
+                 border, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    free(buf);
+}
+
+void glCopyTexSubImage2D(GLenum target, GLint level,
+                         GLint xoffset, GLint yoffset,
+                         GLint x, GLint y, GLsizei width, GLsizei height) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (width < 0 || height < 0 || xoffset < 0 || yoffset < 0) {
+        gl_set_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (width == 0 || height == 0) return;
+
+    unsigned char *buf = read_rgba_rect(ctx, x, y, width, height);
+    if (!buf) return;
+    glTexSubImage2D(target, level, xoffset, yoffset, width, height,
+                    GL_RGBA, GL_UNSIGNED_BYTE, buf);
+    free(buf);
+}
+
+static int rects_overlap(GLint ax0, GLint ay0, GLint ax1, GLint ay1,
+                         GLint bx0, GLint by0, GLint bx1, GLint by1) {
+    int a0 = ax0 < ax1 ? ax0 : ax1, a1 = ax0 < ax1 ? ax1 : ax0;
+    int b0 = ay0 < ay1 ? ay0 : ay1, b1 = ay0 < ay1 ? ay1 : ay0;
+    int c0 = bx0 < bx1 ? bx0 : bx1, c1 = bx0 < bx1 ? bx1 : bx0;
+    int d0 = by0 < by1 ? by0 : by1, d1 = by0 < by1 ? by1 : by0;
+    return a0 < c1 && c0 < a1 && b0 < d1 && d0 < b1;
+}
+
+static int blit_map(int p, int p0, int p1, int q0, int q1) {
+    /* floor(q0 + (p + 0.5 - p0) * (q1 - q0) / (p1 - p0)) */
+    int dp = p1 - p0;
+    if (dp == 0) return q0;
+    return (int)floor((double)q0 + ((double)p + 0.5 - (double)p0) *
+                      (double)(q1 - q0) / (double)dp);
+}
+
+void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                       GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
+                       GLbitfield mask, GLenum filter) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+
+    GLbitfield valid = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT |
+                       GL_STENCIL_BUFFER_BIT;
+    if (mask & ~valid) { gl_set_error(GL_INVALID_VALUE); return; }
+
+    if (filter == GL_LINEAR) {
+        /* LINEAR would be a surprising filter on a 1.1-shaped pipeline;
+         * refuse it rather than silently nearest-neighbour. */
+        gl_set_error(GL_INVALID_OPERATION);
+        return;
+    }
+    if (filter != GL_NEAREST) { gl_set_error(GL_INVALID_ENUM); return; }
+
+    fb_target_t src, dst;
+    resolve_framebuffer(ctx, ctx->read_framebuffer_binding, &src);
+    resolve_framebuffer(ctx, ctx->framebuffer_binding, &dst);
+    if ((ctx->read_framebuffer_binding != 0 && !src.complete) ||
+        (ctx->framebuffer_binding != 0 && !dst.complete)) {
+        gl_set_error(GL_INVALID_FRAMEBUFFER_OPERATION);
+        return;
+    }
+
+    int copy_color   = (mask & GL_COLOR_BUFFER_BIT)   && src.color   && dst.color;
+    int copy_depth   = (mask & GL_DEPTH_BUFFER_BIT)   && src.depth   && dst.depth;
+    int copy_stencil = (mask & GL_STENCIL_BUFFER_BIT) && src.stencil && dst.stencil;
+    if (!copy_color && !copy_depth && !copy_stencil) return;
+
+    /* Same-buffer overlapping blit is INVALID_OPERATION.  A hidden scratch
+     * is a third buffer to leak; the error is the honest alternative. */
+    if (rects_overlap(srcX0, srcY0, srcX1, srcY1,
+                      dstX0, dstY0, dstX1, dstY1)) {
+        if ((copy_color   && src.color   == dst.color)   ||
+            (copy_depth   && src.depth   == dst.depth)   ||
+            (copy_stencil && src.stencil == dst.stencil)) {
+            gl_set_error(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
+    int dx0 = dstX0 < dstX1 ? dstX0 : dstX1;
+    int dx1 = dstX0 < dstX1 ? dstX1 : dstX0;
+    int dy0 = dstY0 < dstY1 ? dstY0 : dstY1;
+    int dy1 = dstY0 < dstY1 ? dstY1 : dstY0;
+    if (dx0 == dx1 || dy0 == dy1) return;
+
+    for (int dy = dy0; dy < dy1; dy++) {
+        if (dy < 0 || dy >= dst.height) continue;
+        size_t drow = fb_row_index(&dst, dy) * (size_t)dst.width;
+        for (int dx = dx0; dx < dx1; dx++) {
+            if (dx < 0 || dx >= dst.width) continue;
+            int sx = blit_map(dx, dstX0, dstX1, srcX0, srcX1);
+            int sy = blit_map(dy, dstY0, dstY1, srcY0, srcY1);
+            size_t di = drow + (size_t)dx;
+            if (copy_color)   dst.color[di]   = fb_get_color(&src, sx, sy);
+            if (copy_depth)   dst.depth[di]   = fb_get_depth(&src, sx, sy);
+            if (copy_stencil) dst.stencil[di] = fb_get_stencil(&src, sx, sy);
         }
     }
 }

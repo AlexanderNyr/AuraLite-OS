@@ -453,6 +453,8 @@ void glGetIntegerv(GLenum pname, GLint *params) {
         params[0] = GL_MAX_TEXTURE_UNITS_IMPL; break;
     case GL_FRAMEBUFFER_BINDING:
         params[0] = (GLint)ctx->framebuffer_binding; break;
+    case GL_READ_FRAMEBUFFER_BINDING:
+        params[0] = (GLint)ctx->read_framebuffer_binding; break;
     case GL_RENDERBUFFER_BINDING:
         params[0] = (GLint)ctx->renderbuffer_binding; break;
     case GL_CURRENT_PROGRAM:

@@ -1,6 +1,6 @@
 /*
- * test_glfbo.c — host-side unit tests for framebuffer objects, renderbuffers
- * and glReadPixels (phase G12).
+ * test_glfbo.c — host-side unit tests for framebuffer objects, renderbuffers,
+ * glReadPixels (phase G12) and the copy/blit entry points (GL2 L2).
  *
  * The central claim of this phase is that rendering into a texture and then
  * sampling that texture gives back what was drawn.  The round-trip test is
@@ -983,11 +983,420 @@ static int t_query_limits(void) {
 }
 
 /* ============================================================================
+ * Copies (GL2 L2)
+ *
+ * The definition of done is that a glReadPixels of a blitted (or copied)
+ * region matches a glReadPixels of the source.  Sampling after CopyTex is
+ * the Y-flip check: window storage is top-down, textures are bottom-up, and
+ * a missed flip puts the blue quadrant on the wrong side of the window.
+ * ==========================================================================*/
+
+static GLuint make_color_fbo(GLuint *tex_out, int n) {
+    GLuint fb = 0, tex = make_target_texture(n);
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    if (tex_out) *tex_out = tex;
+    return fb;
+}
+
+/* Paint the current draw target: red background, blue bottom-left quadrant. */
+static void paint_red_blue(int n) {
+    ortho_for(n);
+    glClearColor(1, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColor3f(0, 0, 1);
+    solid_quad(0, 0, n / 2, n / 2);
+}
+
+static int rgb_eq(const unsigned char *p, int r, int g, int b) {
+    return p[0] == r && p[1] == g && p[2] == b;
+}
+
+/* Window → texture via CopyTexImage2D, then sample.  Also byte-compares
+ * glReadPixels of the window against glReadPixels of the resulting texture. */
+static int t_copytex_window_roundtrip(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    paint_red_blue(W);
+
+    unsigned char src[4 * 3];
+    glReadPixels(W / 4, H / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, src);
+    glReadPixels(W * 3 / 4, H * 3 / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, src + 3);
+
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, W, H, 0);
+    int ok = glGetError() == GL_NO_ERROR;
+
+    /* Read the new texture back through an FBO: must match the window read. */
+    GLuint fb = 0;
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    unsigned char dst[4 * 3];
+    glReadPixels(W / 4, H / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, dst);
+    glReadPixels(W * 3 / 4, H * 3 / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, dst + 3);
+    ok = ok && memcmp(src, dst, 6) == 0;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ortho_for(W);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(0, 0, 0);
+    glTexCoord2f(1, 0); glVertex3f(W, 0, 0);
+    glTexCoord2f(1, 1); glVertex3f(W, H, 0);
+    glTexCoord2f(0, 1); glVertex3f(0, H, 0);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+
+    /* Blue stays at the BOTTOM-left.  An inverted copy would put it at the top. */
+    ok = ok && wpx(c, 8,  8)  == 0x000000FFu &&
+               wpx(c, 48, 8)  == 0x00FF0000u &&
+               wpx(c, 8,  48) == 0x00FF0000u &&
+               wpx(c, 48, 48) == 0x00FF0000u;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* CopyTexSubImage2D writes a rectangle into an existing image. */
+static int t_copytex_subimage(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    const int N = 16;
+    unsigned char green[16 * 16 * 3];
+    for (int i = 0; i < N * N; i++) {
+        green[i * 3 + 0] = 0; green[i * 3 + 1] = 255; green[i * 3 + 2] = 0;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, N, N, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, green);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glClearColor(1, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 4, 4, 0, 0, 8, 8);
+    int ok = glGetError() == GL_NO_ERROR;
+
+    GLuint fb = 0;
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    unsigned char p[3];
+    glReadPixels(0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);   /* corner: green */
+    ok = ok && rgb_eq(p, 0, 255, 0);
+    glReadPixels(8, 8, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);   /* centre: red */
+    ok = ok && rgb_eq(p, 255, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* CopyTexImage2D from an FBO, not the window. */
+static int t_copytex_from_fbo(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    const int N = 16;
+    glClearColor(0, 1, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);           /* window green, must stay green */
+
+    GLuint src_tex = 0, fb = make_color_fbo(&src_tex, N);
+    paint_red_blue(N);
+
+    GLuint dst = 0;
+    glGenTextures(1, &dst);
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 0, 0, N, N, 0);
+    int ok = glGetError() == GL_NO_ERROR;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ok = ok && wpx(c, 32, 32) == 0x0000FF00u;   /* window untouched */
+
+    GLuint fb2 = 0;
+    glGenFramebuffers(1, &fb2);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb2);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, dst, 0);
+    unsigned char p[3];
+    glReadPixels(N / 4, N / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 0, 0, 255);
+    glReadPixels(N * 3 / 4, N * 3 / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 255, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    (void)fb;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+static int t_copytex_validation(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    while (glGetError() != GL_NO_ERROR) { }
+
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, 0, 0, 8, 8, 0);
+    int ok = glGetError() == GL_INVALID_ENUM;
+
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, -1, 8, 0);
+    ok = ok && glGetError() == GL_INVALID_VALUE;
+
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, 8, 8, 1);
+    ok = ok && glGetError() == GL_INVALID_VALUE;
+
+    /* SubImage of a texture that has no storage yet. */
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, 4, 4);
+    ok = ok && glGetError() == GL_INVALID_OPERATION;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* FBO → FBO blit: ReadPixels of the dest matches ReadPixels of the source. */
+static int t_blit_fbo_to_fbo(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    const int N = 16;
+    glClearColor(0, 1, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    GLuint src_tex = 0, src = make_color_fbo(&src_tex, N);
+    paint_red_blue(N);
+    unsigned char want[6];
+    glReadPixels(N / 4, N / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, want);
+    glReadPixels(N * 3 / 4, N * 3 / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, want + 3);
+
+    GLuint dst_tex = 0, dst = make_color_fbo(&dst_tex, N);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst);
+    glBlitFramebuffer(0, 0, N, N, 0, 0, N, N, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    int ok = glGetError() == GL_NO_ERROR;
+
+    /* ReadPixels reads the READ framebuffer, so rebind dest as read. */
+    glBindFramebuffer(GL_FRAMEBUFFER, dst);
+    unsigned char got[6];
+    glReadPixels(N / 4, N / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, got);
+    glReadPixels(N * 3 / 4, N * 3 / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, got + 3);
+    ok = ok && memcmp(want, got, 6) == 0;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ok = ok && wpx(c, 32, 32) == 0x0000FF00u;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* Window → FBO blit preserves window-coordinate orientation (Y-flip). */
+static int t_blit_window_to_fbo(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    paint_red_blue(W);
+
+    GLuint tex = 0, fb = make_color_fbo(&tex, W);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb);
+    glBlitFramebuffer(0, 0, W, H, 0, 0, W, H, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    int ok = glGetError() == GL_NO_ERROR;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    unsigned char p[3];
+    glReadPixels(W / 4, H / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 0, 0, 255);
+    glReadPixels(W / 4, H * 3 / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 255, 0, 0);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+static int t_blit_overlap_error(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    const int N = 16;
+    GLuint tex = 0, fb = make_color_fbo(&tex, N);
+    paint_red_blue(N);
+    while (glGetError() != GL_NO_ERROR) { }
+
+    glBlitFramebuffer(0, 0, 8, 8, 4, 4, 12, 12,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    int ok = glGetError() == GL_INVALID_OPERATION;
+
+    /* Non-overlapping boxes on the same FBO are legal. */
+    glBlitFramebuffer(0, 0, 4, 4, 8, 8, 12, 12,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    ok = ok && glGetError() == GL_NO_ERROR;
+    (void)fb;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+static int t_blit_linear_error(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    while (glGetError() != GL_NO_ERROR) { }
+    glBlitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    int ok = glGetError() == GL_INVALID_OPERATION;
+    glBlitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8,
+                      GL_COLOR_BUFFER_BIT, GL_TEXTURE_2D);
+    ok = ok && glGetError() == GL_INVALID_ENUM;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* NEAREST scale: a 2×2 source blown up 2×, each texel covering a 2×2 block. */
+static int t_blit_scale_nearest(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    GLuint src_tex = 0, src = make_color_fbo(&src_tex, 2);
+    ortho_for(2);
+    glClearColor(1, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColor3f(0, 0, 1);
+    solid_quad(0, 0, 1, 1);             /* bottom-left blue */
+
+    GLuint dst_tex = 0, dst = make_color_fbo(&dst_tex, 4);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst);
+    glBlitFramebuffer(0, 0, 2, 2, 0, 0, 4, 4, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    int ok = glGetError() == GL_NO_ERROR;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, dst);
+    unsigned char p[3];
+    glReadPixels(0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 0, 0, 255);
+    glReadPixels(1, 1, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 0, 0, 255);
+    glReadPixels(3, 3, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 255, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* Depth blit: dest depth test then sees the copied values. */
+static int t_blit_depth(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    const int N = 8;
+    GLuint src_tex = 0, src = make_color_fbo(&src_tex, N);
+    GLuint srb = 0;
+    glGenRenderbuffers(1, &srb);
+    glBindRenderbuffer(GL_RENDERBUFFER, srb);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, N, N);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, srb);
+
+    GLuint dst_tex = 0, dst = make_color_fbo(&dst_tex, N);
+    GLuint drb = 0;
+    glGenRenderbuffers(1, &drb);
+    glBindRenderbuffer(GL_RENDERBUFFER, drb);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, N, N);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, drb);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, src);
+    ortho_for(N);
+    glClearColor(1, 0, 0, 1);
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glColor3f(1, 0, 0);
+    /* z=+5 is near under glOrtho. */
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 5); glVertex3f(N, 0, 5);
+    glVertex3f(N, N, 5); glVertex3f(0, N, 5);
+    glEnd();
+
+    unsigned char dsrc = 0;
+    glReadPixels(N / 2, N / 2, 1, 1, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, &dsrc);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, dst);
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, dst);
+    glBlitFramebuffer(0, 0, N, N, 0, 0, N, N, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    int ok = glGetError() == GL_NO_ERROR;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, dst);
+    unsigned char ddst = 0;
+    glReadPixels(N / 2, N / 2, 1, 1, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, &ddst);
+    ok = ok && ddst == dsrc && dsrc < 80;     /* near, not far-plane 255 */
+
+    glDisable(GL_DEPTH_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* GL_FRAMEBUFFER binds both; DRAW/READ can be split.  ReadPixels follows
+ * READ, drawing follows DRAW. */
+static int t_blit_read_draw_split(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    const int N = 8;
+    glClearColor(0, 1, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);           /* window green */
+
+    GLuint tex = 0, fb = make_color_fbo(&tex, N);
+    glClearColor(0, 0, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT);           /* FBO blue */
+    /* make_color_fbo left GL_FRAMEBUFFER = fb, so both bindings are fb. */
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    GLint rd = -1, dr = -1;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &rd);
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &dr);
+    int ok = rd == 0 && dr == (GLint)fb;
+
+    unsigned char p[3];
+    glReadPixels(2, 2, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, p);
+    ok = ok && rgb_eq(p, 0, 255, 0);        /* window, not FBO */
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ok = ok && wpx(c, 32, 32) == 0x0000FF00u;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* A DEPTH bit against a colour-only FBO is ignored, matching glClear. */
+static int t_blit_missing_buffer_ignored(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    const int N = 8;
+    GLuint a_tex = 0, a = make_color_fbo(&a_tex, N);
+    GLuint b_tex = 0, b = make_color_fbo(&b_tex, N);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, a);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, b);
+    while (glGetError() != GL_NO_ERROR) { }
+    glBlitFramebuffer(0, 0, N, N, 0, 0, N, N,
+                      GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    int ok = glGetError() == GL_NO_ERROR;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* ============================================================================
  * Driver
  * ==========================================================================*/
 
 int main(void) {
-    printf("=== test_glfbo: framebuffer objects and glReadPixels (G12) ===\n");
+    printf("=== test_glfbo: framebuffer objects, glReadPixels, copies (G12/L2) ===\n");
 
     printf("--- object management ---\n");
     RUN(t_gen_and_delete); RUN(t_bind_reports_binding);
@@ -1016,6 +1425,14 @@ int main(void) {
     RUN(t_readpixels_formats); RUN(t_readpixels_depth);
     RUN(t_readpixels_out_of_bounds); RUN(t_readpixels_validation);
     RUN(t_readpixels_reads_fbo);
+
+    printf("--- copies (GL2 L2) ---\n");
+    RUN(t_copytex_window_roundtrip); RUN(t_copytex_subimage);
+    RUN(t_copytex_from_fbo); RUN(t_copytex_validation);
+    RUN(t_blit_fbo_to_fbo); RUN(t_blit_window_to_fbo);
+    RUN(t_blit_overlap_error); RUN(t_blit_linear_error);
+    RUN(t_blit_scale_nearest); RUN(t_blit_depth);
+    RUN(t_blit_read_draw_split); RUN(t_blit_missing_buffer_ignored);
 
     printf("--- interplay and regressions ---\n");
     RUN(t_swap_presents_window); RUN(t_resize_while_fbo_bound);

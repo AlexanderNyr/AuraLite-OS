@@ -4,7 +4,8 @@
 GL2_PLAN.md L0: the OpenGL continuation series cannot drift from the
 tree.  The Y0 speciality, applied to libgl: the plan's opener facts are
 PINNED here as live greps — when a later phase moves one (L1 lands
-stencil, L3 raises the unit count, L6 adds a draw hook), the pin moves
+stencil, L2 lands copies, L3 raises the unit count, L6 adds a draw
+hook), the pin moves
 in the same commit or CI is red.
 
 What this checker deliberately does NOT assert
@@ -191,6 +192,25 @@ def claims():
         checks.append((
             "L1: GL_STENCIL_ATTACHMENT is a real FBO slot",
             "there is no stencil buffer" not in glfbo))
+
+    # --- L2: copies (when the plan says it landed) --------------------
+    if l2:
+        checks.append((
+            "L2: glCopyTexImage2D and glBlitFramebuffer are in gl.h",
+            "glCopyTexImage2D" in glh and "glBlitFramebuffer" in glh))
+        checks.append((
+            "L2: GL_READ_FRAMEBUFFER is a bind target",
+            "#define GL_READ_FRAMEBUFFER" in glh))
+        checks.append((
+            "L2: glfbo.c implements glBlitFramebuffer",
+            "void glBlitFramebuffer" in glfbo))
+        checks.append((
+            "L2: test_glfbo.c covers blit",
+            "glBlitFramebuffer" in read("tests", "unit", "test_glfbo.c")))
+        checks.append((
+            "L2: docs/opengl.md no longer lists copy/blit as unimplemented",
+            "Render into the texture directly with an FBO instead"
+            not in opengl))
 
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(

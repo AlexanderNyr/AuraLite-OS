@@ -3299,7 +3299,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I . \
 #   test_gltex    texture objects, sampling, perspective correction, blending,
 #                 the alpha test and fog
 #   test_gltex2   GL 1.2/1.3: mipmaps, multitexturing, 3D textures, cube maps
-#   test_glfbo    framebuffer objects, renderbuffers and glReadPixels
+#   test_glfbo    framebuffer objects, renderbuffers, glReadPixels, copies
 #   test_glstencil 8-bit stencil plane, ops, two-pass clip, FBO attach
 #   test_glsl     the GLSL ES 1.0 front end: lexer, parser, type checker
 #   test_glslexec the GLSL execution engine, checked numerically

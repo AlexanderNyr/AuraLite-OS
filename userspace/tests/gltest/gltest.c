@@ -2972,6 +2972,135 @@ static void test_gl_fbo(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- GL2 L2: glCopyTexImage2D / glBlitFramebuffer ----
+ *
+ * One visual: the G12 red/blue panel is rendered into an FBO once, then
+ * shown twice — once by blit, once by sampling the texture.  Same pixels,
+ * fewer draws.  A glReadPixels of the blit inset must match a glReadPixels
+ * of the source.
+ */
+static void test_gl_copies(int wid) {
+    printf("[gl] --- L2: copies and blit ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "copy_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    #define ORTHO_WH(ww, hh) do {                           \
+        glViewport(0, 0, (ww), (hh));                       \
+        glMatrixMode(GL_PROJECTION); glLoadIdentity();      \
+        glOrtho(0, (ww), 0, (hh), -10, 10);                 \
+        glMatrixMode(GL_MODELVIEW);  glLoadIdentity();      \
+    } while (0)
+
+    const int CW = 64, CH = 48;
+
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, CW, CH, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
+          "copy_fbo_complete");
+
+    /* G12 panel: red background, blue bottom-left quadrant. */
+    ORTHO_WH(CW, CH);
+    glClearColor(1, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColor3f(0, 0, 1);
+    glBegin(GL_QUADS);
+    glVertex3f(0,      0,      0);
+    glVertex3f(CW / 2, 0,      0);
+    glVertex3f(CW / 2, CH / 2, 0);
+    glVertex3f(0,      CH / 2, 0);
+    glEnd();
+
+    unsigned char src_bl[3], src_tr[3];
+    glReadPixels(CW / 4, CH / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, src_bl);
+    glReadPixels(CW * 3 / 4, CH * 3 / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, src_tr);
+    check(src_bl[2] == 255 && src_bl[0] == 0, "copy_src_blue_quadrant");
+    check(src_tr[0] == 255 && src_tr[2] == 0, "copy_src_red_background");
+
+    /* Window black, then blit the 64×48 panel as an inset at (8, 8). */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    ORTHO_WH(GL_W, GL_H);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, CW, CH, 8, 8, 8 + CW, 8 + CH,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    check(glGetError() == GL_NO_ERROR, "copy_blit_ok");
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    unsigned char blit_bl[3], blit_tr[3];
+    glReadPixels(8 + CW / 4, 8 + CH / 4, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, blit_bl);
+    glReadPixels(8 + CW * 3 / 4, 8 + CH * 3 / 4, 1, 1, GL_RGB,
+                 GL_UNSIGNED_BYTE, blit_tr);
+    check(blit_bl[0] == src_bl[0] && blit_bl[1] == src_bl[1] &&
+          blit_bl[2] == src_bl[2], "copy_blit_matches_source_bl");
+    check(blit_tr[0] == src_tr[0] && blit_tr[1] == src_tr[1] &&
+          blit_tr[2] == src_tr[2], "copy_blit_matches_source_tr");
+    check(AT(8 + CW / 4, 8 + CH / 4) == 0x0000FF, "copy_blit_window_blue");
+    check(AT(4, 4) == 0x000000, "copy_blit_outside_untouched");
+
+    /* G12 path: sample the same texture as a second 64×48 panel. */
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glColor3f(1, 1, 1);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex3f(80, 8, 0);
+    glTexCoord2f(1, 0); glVertex3f(80 + CW, 8, 0);
+    glTexCoord2f(1, 1); glVertex3f(80 + CW, 8 + CH, 0);
+    glTexCoord2f(0, 1); glVertex3f(80, 8 + CH, 0);
+    glEnd();
+    glDisable(GL_TEXTURE_2D);
+    check(AT(80 + CW / 4, 8 + CH / 4) == AT(8 + CW / 4, 8 + CH / 4),
+          "copy_texture_path_matches_blit");
+
+    /* CopyTexImage2D from the window inset, then sample: orientation holds. */
+    GLuint copied = 0;
+    glGenTextures(1, &copied);
+    glBindTexture(GL_TEXTURE_2D, copied);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, CW, CH, 0);
+    check(glGetError() == GL_NO_ERROR, "copy_teximage_ok");
+
+    while (glGetError() != GL_NO_ERROR) { }
+    glBlitFramebuffer(0, 0, 8, 8, 0, 0, 8, 8,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    check(glGetError() == GL_INVALID_OPERATION, "copy_linear_refused");
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    while (glGetError() != GL_NO_ERROR) { }
+    glBlitFramebuffer(0, 0, 32, 24, 16, 12, 48, 36,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    check(glGetError() == GL_INVALID_OPERATION, "copy_overlap_refused");
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteTextures(1, &copied);
+    check(glGetError() == GL_NO_ERROR, "copy_no_pending_error");
+
+    #undef ORTHO_WH
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G7: vertex arrays, VBOs, display lists ---- */
 static void test_gl_arrays(int wid) {
     printf("[gl] --- G7: arrays, VBOs, display lists ---\n");

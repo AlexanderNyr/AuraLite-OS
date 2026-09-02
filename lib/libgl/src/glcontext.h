@@ -519,7 +519,8 @@ struct aglx_context {
     gl_renderbuffer_t renderbuffers[GL_MAX_RENDERBUFFERS_IMPL];
     GLuint            next_framebuffer_name;
     GLuint            next_renderbuffer_name;
-    GLuint            framebuffer_binding;   /* 0 = the window              */
+    GLuint            framebuffer_binding;   /* draw FBO; 0 = the window    */
+    GLuint            read_framebuffer_binding; /* read FBO; GL_FRAMEBUFFER sets both */
     GLuint            renderbuffer_binding;
 
     /* ---- glPushAttrib / glPopAttrib (§6.1.2) ----

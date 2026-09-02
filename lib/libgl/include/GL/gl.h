@@ -290,6 +290,10 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_RENDERBUFFER                   0x8D41
 #define GL_FRAMEBUFFER_BINDING            0x8CA6
 #define GL_RENDERBUFFER_BINDING           0x8CA7
+#define GL_READ_FRAMEBUFFER               0x8CA8
+#define GL_DRAW_FRAMEBUFFER               0x8CA9
+#define GL_DRAW_FRAMEBUFFER_BINDING       0x8CA6  /* alias of FRAMEBUFFER_BINDING */
+#define GL_READ_FRAMEBUFFER_BINDING       0x8CAA
 
 /* Attachment points.  GL_COLOR_ATTACHMENTi are consecutive. */
 #define GL_COLOR_ATTACHMENT0              0x8CE0
@@ -542,6 +546,18 @@ void glGetRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params);
 
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, GLvoid *pixels);
+
+/* Copies (GL2 L2).  Colour only for the TexImage entry points; blit also
+ * moves depth (and stencil, when both sides have a plane). */
+void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat,
+                      GLint x, GLint y, GLsizei width, GLsizei height,
+                      GLint border);
+void glCopyTexSubImage2D(GLenum target, GLint level,
+                         GLint xoffset, GLint yoffset,
+                         GLint x, GLint y, GLsizei width, GLsizei height);
+void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                       GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
+                       GLbitfield mask, GLenum filter);
 
 /* ---- Shaders and programs (G11c) ---- */
 GLuint glCreateShader(GLenum type);

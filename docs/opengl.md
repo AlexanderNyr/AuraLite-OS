@@ -129,7 +129,7 @@ frames, so output is tear-free without extra work.
 | State queries | `glGetIntegerv`, `glGetFloatv`, `glGetBooleanv`, `glIsEnabled`, `glGetString`, `glGetError` |
 | Framebuffer objects | `glGenFramebuffers`, `glBindFramebuffer`, `glFramebufferTexture2D` (2D and cube faces, any mipmap level), `glFramebufferRenderbuffer`, `glCheckFramebufferStatus`; render-to-texture |
 | Renderbuffers | `glGenRenderbuffers`, `glBindRenderbuffer`, `glRenderbufferStorage` (colour, depth and `GL_STENCIL_INDEX8`), `glGetRenderbufferParameteriv` |
-| Pixel readback | `glReadPixels` in `GL_RGB`/`RGBA`/`BGR`/`BGRA`/`ALPHA`/`DEPTH_COMPONENT`, from the window or from an FBO |
+| Pixel readback | `glReadPixels` in `GL_RGB`/`RGBA`/`BGR`/`BGRA`/`ALPHA`/`DEPTH_COMPONENT`, from the window or from an FBO; `glCopyTexImage2D` / `glCopyTexSubImage2D` (colour); `glBlitFramebuffer` (colour and/or depth, `GL_NEAREST`) |
 | Attribute stack | `glPushAttrib` / `glPopAttrib`, 16 deep |
 | GLU | `gluPerspective`, `gluLookAt`, `gluOrtho2D`, `gluErrorString`, `gluSphere`, `gluCylinder`, `gluDisk` |
 
@@ -142,7 +142,6 @@ frames, so output is tear-free without extra work.
 | `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
 | More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
 | Accumulation buffer | Not present |
-| `glCopyTexImage` / `glBlitFramebuffer` | Render into the texture directly with an FBO instead |
 | Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
 | Evaluators, feedback, selection | Not present |
 | `GL_TEXTURE` matrix mode | `glMatrixMode(GL_TEXTURE)` reports `GL_INVALID_OPERATION` rather than silently doing nothing |
@@ -177,6 +176,16 @@ saturate; `INCR_WRAP`/`DECR_WRAP` wrap. `glGetIntegerv(GL_STENCIL_BITS)`
 is 8 when the current target has a plane and 0 otherwise. Window contexts
 created with `AGLX_DEFAULT` allocate one; pass `AGLX_DEPTH` alone to skip
 it. `GL_STENCIL_ATTACHMENT` takes a `GL_STENCIL_INDEX8` renderbuffer.
+
+**Copies share `glReadPixels`' read path.** `glCopyTexImage2D` is colour
+only and feeds the existing `glTexImage2D` upload. `glBlitFramebuffer`
+copies colour and/or depth (`GL_NEAREST`; `GL_LINEAR` is
+`GL_INVALID_OPERATION`). `glBindFramebuffer(GL_FRAMEBUFFER)` still binds
+both read and draw, so G12 callers are unchanged; FBO→FBO blit uses
+`GL_READ_FRAMEBUFFER` / `GL_DRAW_FRAMEBUFFER`. Same-buffer overlapping
+boxes are `GL_INVALID_OPERATION` rather than a hidden scratch. Y-flip
+between window and FBO is the G12 `target_flip_y` convention, applied
+per pixel when the rectangle is addressed.
 
 **Texture row 0 is the bottom row**, matching GL's texture coordinate origin.
 No vertical flip is applied at sample time.
@@ -727,7 +736,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 388 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 402 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -803,3 +812,4 @@ twice over — APs run user threads, and the R5 receipt pins it.)
 
 If the program needs a frame limit for CI, read it from a file under `/tmp`
 rather than from `argv`.
+han from `argv`.

@@ -1,12 +1,12 @@
 # AuraLite OS — OpenGL, the second series (the leftovers)
 
-## Status: IN PROGRESS — L0–L1 landed; L2–L7 specified
+## Status: IN PROGRESS — L0–L2 landed; L3–L7 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | L0 — the rig | ✅ complete | `patches/GL2_L0_rig.patch` |
 | L1 — stencil buffer | ✅ complete | `patches/GL2_L1_stencil.patch` |
-| L2 — copies | — | `glCopyTexImage2D` / `glCopyTexSubImage2D` / `glBlitFramebuffer` |
+| L2 — copies | ✅ complete | `patches/GL2_L2_copies.patch` |
 | L3 — texture leftovers | — | `GL_COMBINE`, `GL_TEXTURE` matrix, 4 units |
 | L4 — per-fragment mipmap LOD | — | derivatives through the edge functions |
 | L5 — shader-path fitness | — | early-Z + `/glshade` |
@@ -102,7 +102,7 @@ scratch context off the stack (`aglxResize`). Any phase that grows
 per-vertex or per-context state re-measures the context size and keeps
 it off the C stack. That is not optional.
 
-### Fact 4 — Copies are the FBO story with a hole in it
+### Fact 4 — Copies are the FBO story with a hole in it (closed at L2)
 
 G12 made the rasterizer write through four fields (`color`, `depth`,
 `width`, `height`) and then pointed those fields at a texture. Render-to-
@@ -395,7 +395,7 @@ moved.
 
 ### L2 — Copies: `glCopyTexImage2D`, `glCopyTexSubImage2D`, `glBlitFramebuffer`
 
-**Status:** not started
+**Status: ✅ COMPLETE** (`patches/GL2_L2_copies.patch`).
 
 **Objective:** close the G12 hole. The pixels are already there;
 applications need a way to move them without re-issuing draws.
@@ -412,23 +412,27 @@ Design:
 
 Tasks:
 
-- [ ] Entry points in `glfbo.c` (they are framebuffer operations,
+- [x] Entry points in `glfbo.c` (they are framebuffer operations,
       not texture-environment operations).
-- [ ] Host tests in `test_glfbo.c` (do not start a new binary for
+- [x] Host tests in `test_glfbo.c` (do not start a new binary for
       three functions): window → texture round-trip, FBO → FBO blit,
       Y-flip window ↔ texture, overlap error, `GL_LINEAR` error.
-- [ ] `/gltest` one visual: render the cube into an FBO, blit a
+- [x] `/gltest` one visual: render the cube into an FBO, blit a
       64×48 inset, compare against the G12 render-to-texture panel
       path (same pixels, fewer draws).
-- [ ] `docs/opengl.md` Not-implemented: drop the copy/blit row.
+- [x] `docs/opengl.md` Not-implemented: drop the copy/blit row.
 
 **Definition of done:** a `glReadPixels` of a blitted region matches
 a `glReadPixels` of the source; host + `/gltest` green; D3 holds.
 
 **Test gate:** extended `test_glfbo`; `/gltest` blit block;
-`make test-unit` EXIT 0.
+`make test-unit` EXIT 0. ✓
 
-**Result:** —
+**Result:** `test_glfbo` 36 → **48/48**; existing host suites unmodified
+(D3); `/gltest` +14 → **402**. `sizeof(aglx_context)` stays **239 384**
+(the extra `read_framebuffer_binding` GLuint fit in existing alignment
+padding). Opener pin 5 moved. `GL_FRAMEBUFFER` still binds both read
+and draw.
 
 ---
 
@@ -742,9 +746,9 @@ Baseline column is L0's job. Later columns land with their phase.
 | Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | (early-Z) | |
 | `/glshade` | absent | | | | | **shipped** | |
 | VirGL draw | present-only | | | | | | **canned Δ** |
-| `sizeof(aglx_context)` | **238 568** | **239 384** | | (must not stack) | | | |
-| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | | | | | |
-| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | | | | | |
+| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | (must not stack) | | | |
+| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | | | | |
+| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | | | | |
 
 Residue opened at L7 (expected):
 

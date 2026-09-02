@@ -2,6 +2,27 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L2 — copies] 2026-09-02
+
+`GL2_PLAN.md` phase L2: the pixels were already there; applications
+needed a way to move them without re-issuing draws.
+
+- `glCopyTexImage2D` / `glCopyTexSubImage2D`: colour only, sharing
+  G12's `glReadPixels` path and the existing `glTexImage2D` upload.
+  Depth copy is a blit, not a TexImage.
+- `glBlitFramebuffer`: colour and/or depth, `GL_NEAREST` only
+  (`GL_LINEAR` → `GL_INVALID_OPERATION`). Same-buffer overlapping
+  boxes are `GL_INVALID_OPERATION` rather than a hidden scratch.
+  Missing mask bits are ignored, matching `glClear`.
+- `glBindFramebuffer(GL_FRAMEBUFFER)` still binds both read and draw
+  (G12 callers unchanged, D3). FBO→FBO blit uses
+  `GL_READ_FRAMEBUFFER` / `GL_DRAW_FRAMEBUFFER` — that is not
+  `glReadBuffer` (MRT remains a non-goal).
+- Host `test_glfbo` 36 → 48; `/gltest` +14 → 402. `sizeof(aglx_context)`
+  unchanged at 239 384 (the extra read-binding field fit in padding).
+- `docs/opengl.md`: copy/blit row dropped from Not-implemented.
+  Opener pin 5 moved in `tools/check_gl2_claims.py`.
+
 ## [GL2 L1 — stencil buffer] 2026-09-02
 
 `GL2_PLAN.md` phase L1: the 8-bit stencil plane GL 1.1 has been loudly
