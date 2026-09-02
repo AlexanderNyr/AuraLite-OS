@@ -2,6 +2,28 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L1 — stencil buffer] 2026-09-02
+
+`GL2_PLAN.md` phase L1: the 8-bit stencil plane GL 1.1 has been loudly
+refusing. Heap allocation with the window buffers (never the C stack);
+test off by default so existing pixels are unchanged (D3).
+
+- `aglxCreateContext(..., AGLX_STENCIL)` / `AGLX_DEFAULT` now includes
+  stencil. `sizeof(struct aglx_context)` 238 568 → 239 384; the plane
+  itself is `width*height` bytes on the heap.
+- `glEnable(GL_STENCIL_TEST)`, `glStencilFunc` / `Op` / `Mask`,
+  `glClearStencil`; `glClear(GL_STENCIL_BUFFER_BIT)` writes, honoring
+  the writemask. Tokens in `gl.h` (`GL_KEEP`, `GL_INCR`/`DECR` and the
+  wrap variants, `GL_STENCIL_BITS`, …).
+- Rasterizer: scissor → sfail → depth → dpfail/dppass → blend.
+  Saturate vs wrap covered by host tests.
+- FBO: `GL_STENCIL_INDEX8` renderbuffer; `GL_STENCIL_ATTACHMENT` is a
+  real slot (the old `INVALID_OPERATION` refusal is gone). Completeness
+  requires matching dimensions, same as depth. No packed D24S8.
+- Host `tests/unit/test_glstencil.c` (34) and `/gltest` two-pass + FBO
+  attach. Opener pins 3–4 moved in `tools/check_gl2_claims.py`.
+- `docs/opengl.md`: stencil row dropped from Not-implemented.
+
 ## [GL2 L0 — the OpenGL continuation rig] 2026-09-02
 
 `GL2_PLAN.md` phase L0: before any leftover GL feature lands, the tripwire

@@ -57,6 +57,7 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     ctx->clear_color.b = 0.0f;
     ctx->clear_color.a = 0.0f;
     ctx->clear_depth   = 1.0f;      /* far plane (§4.2.3) */
+    ctx->clear_stencil = 0;
 
     ctx->viewport_x = 0;
     ctx->viewport_y = 0;
@@ -88,6 +89,17 @@ static void ctx_set_defaults(struct aglx_context *ctx) {
     ctx->scissor_w = ctx->width;
     ctx->scissor_h = ctx->height;
 
+    /* Stencil defaults (§4.1.4 / GL2 L1).  Test off, so existing pixels
+     * are unchanged until an application asks. */
+    ctx->stencil_test      = GL_FALSE;
+    ctx->stencil_func      = GL_ALWAYS;
+    ctx->stencil_ref       = 0;
+    ctx->stencil_valuemask = 0xFFu;
+    ctx->stencil_fail      = GL_KEEP;
+    ctx->stencil_zfail     = GL_KEEP;
+    ctx->stencil_zpass     = GL_KEEP;
+    ctx->stencil_writemask = 0xFFu;
+
     ctx->attrib_top = 0;
 
     gl_lighting_set_defaults(ctx);
@@ -118,18 +130,30 @@ static int ctx_alloc_buffers(struct aglx_context *ctx, int w, int h,
         }
     }
 
-    /* The window buffers are the authoritative allocation; color/depth are
-     * the CURRENT render target, which starts out pointing at them and moves
-     * when a framebuffer object is bound (phase G12). */
-    ctx->win_color  = color;
-    ctx->win_depth  = depth;
-    ctx->win_width  = w;
-    ctx->win_height = h;
+    uint8_t *stencil = NULL;
+    if (flags & AGLX_STENCIL) {
+        stencil = (uint8_t *)malloc(pixels);
+        if (!stencil) {
+            free(color);
+            free(depth);
+            return -1;
+        }
+    }
 
-    ctx->color  = color;
-    ctx->depth  = depth;
-    ctx->width  = w;
-    ctx->height = h;
+    /* The window buffers are the authoritative allocation; color/depth/
+     * stencil are the CURRENT render target, which starts out pointing at
+     * them and moves when a framebuffer object is bound (phase G12). */
+    ctx->win_color   = color;
+    ctx->win_depth   = depth;
+    ctx->win_stencil = stencil;
+    ctx->win_width   = w;
+    ctx->win_height  = h;
+
+    ctx->color   = color;
+    ctx->depth   = depth;
+    ctx->stencil = stencil;
+    ctx->width   = w;
+    ctx->height  = h;
     ctx->target_flip_y = 1;      /* the window stores row 0 at the top */
     return 0;
 }
@@ -140,10 +164,13 @@ static void ctx_free_buffers(struct aglx_context *ctx) {
      * does not own. */
     free(ctx->win_color);
     free(ctx->win_depth);
-    ctx->win_color = NULL;
-    ctx->win_depth = NULL;
-    ctx->color = NULL;
-    ctx->depth = NULL;
+    free(ctx->win_stencil);
+    ctx->win_color   = NULL;
+    ctx->win_depth   = NULL;
+    ctx->win_stencil = NULL;
+    ctx->color   = NULL;
+    ctx->depth   = NULL;
+    ctx->stencil = NULL;
 }
 
 aglx_context_t *aglxCreateContext(int wid, int width, int height,
@@ -182,6 +209,9 @@ aglx_context_t *aglxCreateContext(int wid, int width, int height,
         for (size_t i = 0; i < (size_t)width * (size_t)height; i++) {
             ctx->win_depth[i] = 1.0f;
         }
+    }
+    if (ctx->win_stencil) {
+        memset(ctx->win_stencil, 0, (size_t)width * (size_t)height);
     }
 
     return ctx;
@@ -241,11 +271,22 @@ int aglxResize(aglx_context_t *ctx, int width, int height) {
         }
     }
 
+    uint8_t *new_stencil = NULL;
+    if (ctx->flags & AGLX_STENCIL) {
+        new_stencil = (uint8_t *)malloc(pixels);
+        if (!new_stencil) {
+            free(new_color);
+            free(new_depth);
+            return -1;
+        }
+    }
+
     ctx_free_buffers(ctx);
-    ctx->win_color  = new_color;
-    ctx->win_depth  = new_depth;
-    ctx->win_width  = width;
-    ctx->win_height = height;
+    ctx->win_color   = new_color;
+    ctx->win_depth   = new_depth;
+    ctx->win_stencil = new_stencil;
+    ctx->win_width   = width;
+    ctx->win_height  = height;
     /* Follow the new buffers only if framebuffer 0 is bound; an application
      * that resizes while an FBO is current keeps rendering into the FBO. */
     gl_fbo_refresh(ctx);
@@ -267,6 +308,9 @@ int aglxResize(aglx_context_t *ctx, int width, int height) {
         for (size_t i = 0; i < (size_t)width * (size_t)height; i++) {
             ctx->win_depth[i] = 1.0f;
         }
+    }
+    if (ctx->win_stencil) {
+        memset(ctx->win_stencil, 0, (size_t)width * (size_t)height);
     }
     return 0;
 }
@@ -324,4 +368,8 @@ const uint32_t *aglxGetColorBuffer(const aglx_context_t *ctx) {
 
 const float *aglxGetDepthBuffer(const aglx_context_t *ctx) {
     return ctx ? ctx->win_depth : NULL;
+}
+
+const uint8_t *aglxGetStencilBuffer(const aglx_context_t *ctx) {
+    return ctx ? ctx->win_stencil : NULL;
 }

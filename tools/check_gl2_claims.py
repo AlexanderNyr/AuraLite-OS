@@ -32,6 +32,7 @@ LIBGL_HOST = (
     "test_glmath", "test_glstate", "test_glimm", "test_glraster",
     "test_glclip", "test_gllight", "test_gltex", "test_gltex2",
     "test_glarray", "test_glu", "test_glbackend", "test_glfbo",
+    "test_glstencil",
     "test_glsl", "test_glslexec", "test_glprog", "test_glcoexist",
     "test_glvirgl",
 )
@@ -162,6 +163,34 @@ def claims():
             "L0: the plan correction is recorded (hang was stale "
             "against TODO.md / the residue ledger)",
             "RES-40" in plan and "stale" in plan.lower()))
+
+    # --- L1: stencil (when the plan says it landed) -------------------
+    if l1:
+        checks.append((
+            "L1: GL_STENCIL_TEST, GL_KEEP and glStencilFunc are in gl.h",
+            "#define GL_STENCIL_TEST" in glh and
+            "#define GL_KEEP" in glh and
+            "glStencilFunc" in glh))
+        checks.append((
+            "L1: AGLX_STENCIL is a context flag",
+            "AGLX_STENCIL" in read("lib", "libgl", "include", "GL",
+                                   "auraglx.h")))
+        checks.append((
+            "L1: test_glstencil is in UNIT_TESTS",
+            "test_glstencil" in makefile))
+        checks.append((
+            "L1: glClear writes the stencil plane",
+            "mask & GL_STENCIL_BUFFER_BIT" in glstate and
+            "ctx->stencil" in glstate and
+            "GL_STENCIL_BUFFER_BIT is accepted but has no effect"
+            not in glstate))
+        checks.append((
+            "L1: docs/opengl.md no longer lists stencil as unimplemented",
+            "GL_STENCIL_BUFFER_BIT is accepted by `glClear` and ignored"
+            not in opengl))
+        checks.append((
+            "L1: GL_STENCIL_ATTACHMENT is a real FBO slot",
+            "there is no stencil buffer" not in glfbo))
 
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(

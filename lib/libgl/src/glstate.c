@@ -78,6 +78,15 @@ void glClearDepth(GLclampd depth) {
     ctx->clear_depth = gl_clampf((GLfloat)depth);
 }
 
+void glClearStencil(GLint s) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    /* Clamped to the 8-bit plane this implementation has. */
+    if (s < 0) s = 0;
+    if (s > 255) s = 255;
+    ctx->clear_stencil = s;
+}
+
 void glClear(GLbitfield mask) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
@@ -141,9 +150,23 @@ void glClear(GLbitfield mask) {
         }
     }
 
-    /* GL_STENCIL_BUFFER_BIT is accepted but has no effect: AuraLite has no
-     * stencil buffer yet.  Per the specification, clearing a buffer that does
-     * not exist is a no-op rather than an error. */
+    if (mask & GL_STENCIL_BUFFER_BIT) {
+        /* Silently ignored when the context (or bound FBO) has no stencil
+         * plane, matching a 0-bit stencil buffer.  The writemask applies,
+         * as §4.2.3 requires. */
+        if (ctx->stencil) {
+            uint8_t s = (uint8_t)(ctx->clear_stencil & 0xFF);
+            uint8_t m = (uint8_t)(ctx->stencil_writemask & 0xFF);
+            uint8_t *p = ctx->stencil;
+            if (m == 0xFF) {
+                memset(p, (int)s, pixels);
+            } else {
+                for (size_t i = 0; i < pixels; i++) {
+                    p[i] = (uint8_t)((s & m) | (p[i] & (uint8_t)~m));
+                }
+            }
+        }
+    }
 }
 
 /* ============================================================================
@@ -216,6 +239,7 @@ static GLboolean *cap_slot(struct aglx_context *ctx, GLenum cap) {
     case GL_BLEND:          return &ctx->blend;
     case GL_ALPHA_TEST:     return &ctx->alpha_test;
     case GL_FOG:            return &ctx->fog;
+    case GL_STENCIL_TEST:   return &ctx->stencil_test;
     default:                return (GLboolean *)0;
     }
 }
@@ -278,6 +302,57 @@ void glDepthMask(GLboolean flag) {
     /* Any non-zero value means GL_TRUE (§2.1.2). */
     ctx->depth_mask = flag ? GL_TRUE : GL_FALSE;
 }
+
+static int stencil_func_ok(GLenum func) {
+    switch (func) {
+    case GL_NEVER: case GL_LESS: case GL_EQUAL: case GL_LEQUAL:
+    case GL_GREATER: case GL_NOTEQUAL: case GL_GEQUAL: case GL_ALWAYS:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int stencil_op_ok(GLenum op) {
+    switch (op) {
+    case GL_KEEP: case GL_ZERO: case GL_REPLACE:
+    case GL_INCR: case GL_DECR: case GL_INVERT:
+    case GL_INCR_WRAP: case GL_DECR_WRAP:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+void glStencilFunc(GLenum func, GLint ref, GLuint mask) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (!stencil_func_ok(func)) { gl_set_error(GL_INVALID_ENUM); return; }
+    if (ref < 0) ref = 0;
+    if (ref > 255) ref = 255;
+    ctx->stencil_func      = func;
+    ctx->stencil_ref       = ref;
+    ctx->stencil_valuemask = mask;
+}
+
+void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    if (!stencil_op_ok(fail) || !stencil_op_ok(zfail) || !stencil_op_ok(zpass)) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
+    ctx->stencil_fail  = fail;
+    ctx->stencil_zfail = zfail;
+    ctx->stencil_zpass = zpass;
+}
+
+void glStencilMask(GLuint mask) {
+    struct aglx_context *ctx = gl_ctx_or_error();
+    if (!ctx) return;
+    ctx->stencil_writemask = mask;
+}
+
 
 /* ============================================================================
  * Polygon state (§3.5)
@@ -403,6 +478,24 @@ void glGetIntegerv(GLenum pname, GLint *params) {
         params[0] = GL_MODELVIEW_STACK_DEPTH;  break;
     case GL_MAX_PROJECTION_STACK_DEPTH:
         params[0] = GL_PROJECTION_STACK_DEPTH; break;
+    case GL_STENCIL_FUNC:
+        params[0] = (GLint)ctx->stencil_func; break;
+    case GL_STENCIL_VALUE_MASK:
+        params[0] = (GLint)ctx->stencil_valuemask; break;
+    case GL_STENCIL_REF:
+        params[0] = ctx->stencil_ref; break;
+    case GL_STENCIL_FAIL:
+        params[0] = (GLint)ctx->stencil_fail; break;
+    case GL_STENCIL_PASS_DEPTH_FAIL:
+        params[0] = (GLint)ctx->stencil_zfail; break;
+    case GL_STENCIL_PASS_DEPTH_PASS:
+        params[0] = (GLint)ctx->stencil_zpass; break;
+    case GL_STENCIL_WRITEMASK:
+        params[0] = (GLint)ctx->stencil_writemask; break;
+    case GL_STENCIL_CLEAR_VALUE:
+        params[0] = ctx->clear_stencil; break;
+    case GL_STENCIL_BITS:
+        params[0] = ctx->stencil ? 8 : 0; break;
     default:
         gl_set_error(GL_INVALID_ENUM);
         break;
@@ -421,6 +514,9 @@ void glGetFloatv(GLenum pname, GLfloat *params) {
         break;
     case GL_DEPTH_CLEAR_VALUE:
         params[0] = ctx->clear_depth;
+        break;
+    case GL_STENCIL_CLEAR_VALUE:
+        params[0] = (GLfloat)ctx->clear_stencil;
         break;
     case GL_MODELVIEW_MATRIX:
         for (int i = 0; i < 16; i++)
@@ -458,6 +554,7 @@ void glGetBooleanv(GLenum pname, GLboolean *params) {
     case GL_BLEND:           params[0] = ctx->blend;          break;
     case GL_ALPHA_TEST:      params[0] = ctx->alpha_test;     break;
     case GL_FOG:             params[0] = ctx->fog;            break;
+    case GL_STENCIL_TEST:    params[0] = ctx->stencil_test;   break;
     default:
         gl_set_error(GL_INVALID_ENUM);
         break;

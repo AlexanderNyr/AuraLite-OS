@@ -4,12 +4,10 @@
  *
  * WHY THIS PHASE IS SMALL
  *
- * The rasterizer has always written through exactly four fields —
- * ctx->color, ctx->depth, ctx->width, ctx->height — and never asked where
- * they came from.  Render-to-texture is therefore a matter of pointing those
- * four somewhere else and pointing them back afterwards.  Not one line of
- * glraster.c changed to gain this feature, which is the payoff for having
- * kept the target abstract in G3.
+ * The rasterizer writes through ctx->color, ctx->depth, ctx->stencil,
+ * ctx->width and ctx->height, and never asks where they came from.
+ * Render-to-texture is therefore a matter of pointing those somewhere else
+ * and pointing them back afterwards.
  *
  * THE ONE THING THAT MAKES IT NON-TRIVIAL: RESOLUTION TIMING
  *
@@ -27,9 +25,8 @@
  *   colour, so a second attachment would receive nothing.  The loop bounds
  *   are already written against GL_MAX_COLOR_ATTACHMENTS_IMPL so that a
  *   shader path (G11) can raise it without restructuring anything.
- * - Stencil attachments.  There is no stencil buffer anywhere in this
- *   implementation; attaching one reports GL_FRAMEBUFFER_UNSUPPORTED rather
- *   than pretending.
+ * - Packed depth-stencil (D24S8).  Stencil is a separate 8-bit plane
+ *   (GL2 L1); attaching GL_STENCIL_INDEX8 is real.
  * - Multisampling and blitting between framebuffers.
  */
 
@@ -94,6 +91,7 @@ void gl_fbo_set_defaults(struct aglx_context *ctx) {
             attachment_clear(&ctx->framebuffers[i].color[a]);
         }
         attachment_clear(&ctx->framebuffers[i].depth);
+        attachment_clear(&ctx->framebuffers[i].stencil);
     }
     for (int i = 0; i < GL_MAX_RENDERBUFFERS_IMPL; i++) {
         ctx->renderbuffers[i].name   = 0;
@@ -103,6 +101,7 @@ void gl_fbo_set_defaults(struct aglx_context *ctx) {
         ctx->renderbuffers[i].height = 0;
         ctx->renderbuffers[i].color  = (gl_pixel_t *)0;
         ctx->renderbuffers[i].depth  = (float *)0;
+        ctx->renderbuffers[i].stencil = (uint8_t *)0;
     }
     ctx->next_framebuffer_name  = 1;
     ctx->next_renderbuffer_name = 1;
@@ -114,9 +113,11 @@ void gl_fbo_free_all(struct aglx_context *ctx) {
     for (int i = 0; i < GL_MAX_RENDERBUFFERS_IMPL; i++) {
         free(ctx->renderbuffers[i].color);
         free(ctx->renderbuffers[i].depth);
-        ctx->renderbuffers[i].color = (gl_pixel_t *)0;
-        ctx->renderbuffers[i].depth = (float *)0;
-        ctx->renderbuffers[i].used  = 0;
+        free(ctx->renderbuffers[i].stencil);
+        ctx->renderbuffers[i].color   = (gl_pixel_t *)0;
+        ctx->renderbuffers[i].depth   = (float *)0;
+        ctx->renderbuffers[i].stencil = (uint8_t *)0;
+        ctx->renderbuffers[i].used    = 0;
     }
 }
 
@@ -131,13 +132,15 @@ void gl_fbo_free_all(struct aglx_context *ctx) {
 typedef struct {
     gl_pixel_t *color;
     float      *depth;
+    uint8_t    *stencil;
     GLsizei     width, height;
 } resolved_t;
 
 static int resolve_attachment(struct aglx_context *ctx,
                               const gl_attachment_t *a, resolved_t *out) {
-    out->color = (gl_pixel_t *)0;
-    out->depth = (float *)0;
+    out->color   = (gl_pixel_t *)0;
+    out->depth   = (float *)0;
+    out->stencil = (uint8_t *)0;
     out->width = out->height = 0;
 
     if (a->kind == GL_ATTACH_NONE) return 0;
@@ -145,11 +148,12 @@ static int resolve_attachment(struct aglx_context *ctx,
     if (a->kind == GL_ATTACH_RENDERBUFFER) {
         gl_renderbuffer_t *rb = find_rbo(ctx, a->name);
         if (!rb) return 0;
-        if (!rb->color && !rb->depth) return 0;
-        out->color  = rb->color;
-        out->depth  = rb->depth;
-        out->width  = rb->width;
-        out->height = rb->height;
+        if (!rb->color && !rb->depth && !rb->stencil) return 0;
+        out->color   = rb->color;
+        out->depth   = rb->depth;
+        out->stencil = rb->stencil;
+        out->width   = rb->width;
+        out->height  = rb->height;
         return 1;
     }
 
@@ -232,6 +236,19 @@ static GLenum framebuffer_status(struct aglx_context *ctx,
         }
     }
 
+    if (fb->stencil.kind != GL_ATTACH_NONE) {
+        resolved_t r;
+        if (!resolve_attachment(ctx, &fb->stencil, &r)) {
+            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        }
+        if (!r.stencil) return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+
+        if (!have_any) { w = r.width; h = r.height; have_any = 1; }
+        else if (r.width != w || r.height != h) {
+            return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
+        }
+    }
+
     /* An FBO with nothing attached has no pixels to write and is incomplete
      * (§4.4.4) — this catches the common bug of generating and binding an FBO
      * and then forgetting the attachment, which would otherwise render into
@@ -279,10 +296,11 @@ static void gl_fbo_finish_color(struct aglx_context *ctx,
  * that is already bound. */
 static void gl_fbo_apply(struct aglx_context *ctx) {
     if (ctx->framebuffer_binding == 0) {
-        ctx->color  = ctx->win_color;
-        ctx->depth  = ctx->win_depth;
-        ctx->width  = ctx->win_width;
-        ctx->height = ctx->win_height;
+        ctx->color   = ctx->win_color;
+        ctx->depth   = ctx->win_depth;
+        ctx->stencil = ctx->win_stencil;
+        ctx->width   = ctx->win_width;
+        ctx->height  = ctx->win_height;
         /* The window's framebuffer stores row 0 at the top. */
         ctx->target_flip_y = 1;
         return;
@@ -296,10 +314,11 @@ static void gl_fbo_apply(struct aglx_context *ctx) {
          * previous target's dimensions but a NULL colour pointer, and the
          * draw entry points check for that.  Rendering into the window
          * instead would be far worse: the mistake would be invisible. */
-        ctx->color  = (gl_pixel_t *)0;
-        ctx->depth  = (float *)0;
-        ctx->width  = 0;
-        ctx->height = 0;
+        ctx->color   = (gl_pixel_t *)0;
+        ctx->depth   = (float *)0;
+        ctx->stencil = (uint8_t *)0;
+        ctx->width   = 0;
+        ctx->height  = 0;
         return;
     }
 
@@ -331,6 +350,17 @@ static void gl_fbo_apply(struct aglx_context *ctx) {
          * rather than writing through the window's depth buffer, which would
          * corrupt it. */
         ctx->depth = (float *)0;
+    }
+
+    resolved_t rs;
+    if (fb->stencil.kind != GL_ATTACH_NONE &&
+        resolve_attachment(ctx, &fb->stencil, &rs) && rs.stencil) {
+        ctx->stencil = rs.stencil;
+        if (!ctx->color && !ctx->depth) {
+            ctx->width = rs.width; ctx->height = rs.height;
+        }
+    } else {
+        ctx->stencil = (uint8_t *)0;
     }
 }
 
@@ -366,6 +396,7 @@ void glGenFramebuffers(GLsizei n, GLuint *framebuffers) {
             attachment_clear(&fb->color[a]);
         }
         attachment_clear(&fb->depth);
+        attachment_clear(&fb->stencil);
         framebuffers[made++] = fb->name;
     }
     if (made < n) {
@@ -431,6 +462,7 @@ void glBindFramebuffer(GLenum target, GLuint framebuffer) {
                 attachment_clear(&fb->color[a]);
             }
             attachment_clear(&fb->depth);
+            attachment_clear(&fb->stencil);
             if (framebuffer >= ctx->next_framebuffer_name) {
                 ctx->next_framebuffer_name = framebuffer + 1;
             }
@@ -453,11 +485,7 @@ static gl_attachment_t *attachment_slot(gl_framebuffer_t *fb,
         return &fb->color[attachment - GL_COLOR_ATTACHMENT0];
     }
     if (attachment == GL_DEPTH_ATTACHMENT) return &fb->depth;
-    if (attachment == GL_STENCIL_ATTACHMENT) {
-        /* Honest refusal: there is no stencil buffer to attach to. */
-        *err = GL_INVALID_OPERATION;
-        return (gl_attachment_t *)0;
-    }
+    if (attachment == GL_STENCIL_ATTACHMENT) return &fb->stencil;
     *err = GL_INVALID_ENUM;
     return (gl_attachment_t *)0;
 }
@@ -560,8 +588,9 @@ void glGenRenderbuffers(GLsizei n, GLuint *renderbuffers) {
         rb->name   = ctx->next_renderbuffer_name++;
         rb->format = 0;
         rb->width  = rb->height = 0;
-        rb->color  = (gl_pixel_t *)0;
-        rb->depth  = (float *)0;
+        rb->color   = (gl_pixel_t *)0;
+        rb->depth   = (float *)0;
+        rb->stencil = (uint8_t *)0;
         renderbuffers[made++] = rb->name;
     }
     if (made < n) {
@@ -597,12 +626,18 @@ void glDeleteRenderbuffers(GLsizei n, const GLuint *renderbuffers) {
                 fb->depth.name == renderbuffers[k]) {
                 attachment_clear(&fb->depth);
             }
+            if (fb->stencil.kind == GL_ATTACH_RENDERBUFFER &&
+                fb->stencil.name == renderbuffers[k]) {
+                attachment_clear(&fb->stencil);
+            }
         }
 
         free(rb->color);
         free(rb->depth);
-        rb->color = (gl_pixel_t *)0;
-        rb->depth = (float *)0;
+        free(rb->stencil);
+        rb->color   = (gl_pixel_t *)0;
+        rb->depth   = (float *)0;
+        rb->stencil = (uint8_t *)0;
         rb->used  = 0;
         rb->name  = 0;
         if (ctx->renderbuffer_binding == renderbuffers[k]) {
@@ -634,8 +669,9 @@ void glBindRenderbuffer(GLenum target, GLuint renderbuffer) {
             rb->name   = renderbuffer;
             rb->format = 0;
             rb->width  = rb->height = 0;
-            rb->color  = (gl_pixel_t *)0;
-            rb->depth  = (float *)0;
+            rb->color   = (gl_pixel_t *)0;
+            rb->depth   = (float *)0;
+            rb->stencil = (uint8_t *)0;
             if (renderbuffer >= ctx->next_renderbuffer_name) {
                 ctx->next_renderbuffer_name = renderbuffer + 1;
             }
@@ -658,6 +694,10 @@ static int format_is_color(GLenum f) {
     return f == GL_RGBA8 || f == GL_RGB8 || f == GL_RGBA || f == GL_RGB;
 }
 
+static int format_is_stencil(GLenum f) {
+    return f == GL_STENCIL_INDEX8 || f == GL_STENCIL_INDEX;
+}
+
 void glRenderbufferStorage(GLenum target, GLenum internalformat,
                            GLsizei width, GLsizei height) {
     struct aglx_context *ctx = gl_ctx_or_error();
@@ -672,13 +712,18 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat,
     gl_renderbuffer_t *rb = find_rbo(ctx, ctx->renderbuffer_binding);
     if (!rb) { gl_set_error(GL_INVALID_OPERATION); return; }
 
-    int depth_fmt = format_is_depth(internalformat);
-    int color_fmt = format_is_color(internalformat);
-    if (!depth_fmt && !color_fmt) { gl_set_error(GL_INVALID_ENUM); return; }
+    int depth_fmt   = format_is_depth(internalformat);
+    int color_fmt   = format_is_color(internalformat);
+    int stencil_fmt = format_is_stencil(internalformat);
+    if (!depth_fmt && !color_fmt && !stencil_fmt) {
+        gl_set_error(GL_INVALID_ENUM);
+        return;
+    }
 
     /* Re-specifying storage discards the old contents (§4.4.2). */
-    free(rb->color); rb->color = (gl_pixel_t *)0;
-    free(rb->depth); rb->depth = (float *)0;
+    free(rb->color);   rb->color   = (gl_pixel_t *)0;
+    free(rb->depth);   rb->depth   = (float *)0;
+    free(rb->stencil); rb->stencil = (uint8_t *)0;
     rb->format = internalformat;
     rb->width  = width;
     rb->height = height;
@@ -698,6 +743,14 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat,
             return;
         }
         for (size_t i = 0; i < n; i++) rb->depth[i] = 1.0f;
+    } else if (stencil_fmt) {
+        rb->stencil = (uint8_t *)malloc(n);
+        if (!rb->stencil) {
+            rb->width = rb->height = 0;
+            gl_set_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+        memset(rb->stencil, 0, n);
     } else {
         rb->color = (gl_pixel_t *)malloc(n * sizeof(gl_pixel_t));
         if (!rb->color) {

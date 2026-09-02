@@ -83,6 +83,13 @@ static inline float *gl_depth_row(struct aglx_context *ctx, int y) {
     return ctx->depth + gl_row_index(ctx, y) * (size_t)ctx->width;
 }
 
+/* Same, for the stencil plane.  Returns NULL when the context has no stencil
+ * buffer, so callers must check. */
+static inline uint8_t *gl_stencil_row(struct aglx_context *ctx, int y) {
+    if (!ctx->stencil) return (uint8_t *)0;
+    return ctx->stencil + gl_row_index(ctx, y) * (size_t)ctx->width;
+}
+
 /* ---- Rasterizer entry points (libgl/src/glraster.c) ----
  *
  * These take vertices already in window coordinates and are responsible for

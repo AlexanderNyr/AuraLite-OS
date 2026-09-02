@@ -1,11 +1,11 @@
 # AuraLite OS — OpenGL, the second series (the leftovers)
 
-## Status: IN PROGRESS — L0 landed; L1–L7 specified
+## Status: IN PROGRESS — L0–L1 landed; L2–L7 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | L0 — the rig | ✅ complete | `patches/GL2_L0_rig.patch` |
-| L1 — stencil buffer | — | 8-bit stencil + FBO attachment, host + `/gltest` |
+| L1 — stencil buffer | ✅ complete | `patches/GL2_L1_stencil.patch` |
 | L2 — copies | — | `glCopyTexImage2D` / `glCopyTexSubImage2D` / `glBlitFramebuffer` |
 | L3 — texture leftovers | — | `GL_COMBINE`, `GL_TEXTURE` matrix, 4 units |
 | L4 — per-fragment mipmap LOD | — | derivatives through the edge functions |
@@ -63,9 +63,9 @@ The leftover list is therefore a *named* list, not a vibe. Citing
 | `GL_TEXTURE` matrix mode | Valid enum, `GL_INVALID_OPERATION` (`glmatrix.c:71–76`) |
 | Hardware-accelerated **drawing** | G13 present-only; `DRAW_VBO` named as a later compiler phase |
 
-### Fact 2 — Stencil is an honest hole, not a stub
+### Fact 2 — Stencil is an honest hole, not a stub (closed at L1)
 
-Three independent refusals, all still live:
+Three independent refusals, live at `dbc27fe` / L0, closed by L1:
 
 - `glstate.c:144` — `GL_STENCIL_BUFFER_BIT` is accepted and has no effect
   (the spec's "clear of a missing buffer is a no-op").
@@ -339,7 +339,7 @@ sentence deleted; `sizeof(aglx_context)` = 238 568.
 
 ### L1 — Stencil buffer
 
-**Status:** not started
+**Status: ✅ COMPLETE** (`patches/GL2_L1_stencil.patch`).
 
 **Objective:** give GL 1.1 the buffer it has been loudly refusing.
 
@@ -364,18 +364,18 @@ does not need:
 
 Tasks:
 
-- [ ] Tokens + context fields + allocation / free / resize.
-- [ ] Rasterizer test + ops, including wrap vs saturate on `INCR`/`DECR`.
-- [ ] FBO stencil renderbuffer + attachment + completeness.
-- [ ] `glClear` actually writes the plane; the `glstate.c:144` comment
+- [x] Tokens + context fields + allocation / free / resize.
+- [x] Rasterizer test + ops, including wrap vs saturate on `INCR`/`DECR`.
+- [x] FBO stencil renderbuffer + attachment + completeness.
+- [x] `glClear` actually writes the plane; the `glstate.c:144` comment
       comes out in this commit (D4, D6 pin 4).
-- [ ] Host unit test `tests/unit/test_glstencil.c`: func × op matrix
+- [x] Host unit test `tests/unit/test_glstencil.c`: func × op matrix
       against a 8×8 target, two-pass "draw where stencil == 1", FBO
       attach/complete, clear, `GL_STENCIL_BITS`. Guard canaries around
       the colour buffer so a stencil write cannot bleed.
-- [ ] `/gltest` assertions for the same two-pass, plus
+- [x] `/gltest` assertions for the same two-pass, plus
       `glGetError` on the old refusal paths now succeeding.
-- [ ] `docs/opengl.md` Not-implemented: drop the stencil row.
+- [x] `docs/opengl.md` Not-implemented: drop the stencil row.
 
 **Definition of done:** a two-pass stencil clip produces the expected
 pixels on host and in `/gltest`; old tests unmodified (D3); FBO
@@ -383,10 +383,13 @@ attachment is real; the opener pin about "no stencil buffer" has
 moved.
 
 **Test gate:** `test_glstencil` in `UNIT_TESTS`; `/gltest` stencil
-block green in `test_gl_in_os` (or whatever the current in-OS GL
-case is named — L0 records it); `make test-unit` EXIT 0.
+block green in `test_opengl.sh`; `make test-unit` EXIT 0. ✓
 
-**Result:** —
+**Result:** 34/34 `test_glstencil`; existing host suites unmodified
+(D3); `sizeof(aglx_context)` 238 568 → **239 384** (+816 B of fields;
+the plane is heap). `AGLX_DEFAULT` includes `AGLX_STENCIL` — extra
+allocation is `width*height` bytes, not a stack blow. Opener pins 3–4
+moved.
 
 ---
 
@@ -739,9 +742,9 @@ Baseline column is L0's job. Later columns land with their phase.
 | Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | (early-Z) | |
 | `/glshade` | absent | | | | | **shipped** | |
 | VirGL draw | present-only | | | | | | **canned Δ** |
-| `sizeof(aglx_context)` | **238 568** | | | (must not stack) | | | |
+| `sizeof(aglx_context)` | **238 568** | **239 384** | | (must not stack) | | | |
 | libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | | | | | |
-| `/gltest` in-OS checks | 373 (docs; not gated) | | | | | | |
+| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | | | | | |
 
 Residue opened at L7 (expected):
 

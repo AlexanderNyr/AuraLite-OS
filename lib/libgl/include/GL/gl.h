@@ -93,6 +93,24 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_DEPTH_FUNC                     0x0B74
 #define GL_DEPTH_CLEAR_VALUE              0x0B73
 
+/* ---- Stencil buffer (§4.1.4) ---- */
+#define GL_STENCIL_TEST                   0x0B90
+#define GL_STENCIL_CLEAR_VALUE            0x0B91
+#define GL_STENCIL_FUNC                   0x0B92
+#define GL_STENCIL_VALUE_MASK             0x0B93
+#define GL_STENCIL_FAIL                   0x0B94
+#define GL_STENCIL_PASS_DEPTH_FAIL        0x0B95
+#define GL_STENCIL_PASS_DEPTH_PASS        0x0B96
+#define GL_STENCIL_REF                    0x0B97
+#define GL_STENCIL_WRITEMASK              0x0B98
+#define GL_STENCIL_BITS                   0x0D57
+#define GL_KEEP                           0x1E00
+#define GL_INCR                           0x1E02
+#define GL_DECR                           0x1E03
+#define GL_INVERT                         0x150A
+#define GL_INCR_WRAP                      0x8507
+#define GL_DECR_WRAP                      0x8508
+
 /* ---- Face culling (§3.5.1) ---- */
 #define GL_FRONT                          0x0404
 #define GL_BACK                           0x0405
@@ -293,6 +311,8 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_DEPTH_COMPONENT16              0x81A5
 #define GL_DEPTH_COMPONENT24              0x81A6
 #define GL_DEPTH_COMPONENT32F             0x8CAC
+#define GL_STENCIL_INDEX                  0x1901
+#define GL_STENCIL_INDEX8                 0x8D48
 
 /* Renderbuffer queries. */
 #define GL_RENDERBUFFER_WIDTH             0x8D42
@@ -391,6 +411,7 @@ const GLubyte *glGetString(GLenum name);
 void glClear(GLbitfield mask);
 void glClearColor(GLclampf r, GLclampf g, GLclampf b, GLclampf a);
 void glClearDepth(GLclampd depth);
+void glClearStencil(GLint s);
 void glViewport(GLint x, GLint y, GLsizei width, GLsizei height);
 void glFlush(void);
 void glFinish(void);
@@ -436,6 +457,9 @@ void glDisable(GLenum cap);
 GLboolean glIsEnabled(GLenum cap);
 void glDepthFunc(GLenum func);
 void glDepthMask(GLboolean flag);
+void glStencilFunc(GLenum func, GLint ref, GLuint mask);
+void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass);
+void glStencilMask(GLuint mask);
 void glCullFace(GLenum mode);
 void glFrontFace(GLenum mode);
 void glShadeModel(GLenum mode);

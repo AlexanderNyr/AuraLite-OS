@@ -2539,7 +2539,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_gltex $(BUILD_DIR)/test_gltex2 \
                 $(BUILD_DIR)/test_glarray \
                 $(BUILD_DIR)/test_glu $(BUILD_DIR)/test_glbackend \
-                $(BUILD_DIR)/test_glfbo $(BUILD_DIR)/test_glsl \
+                $(BUILD_DIR)/test_glfbo $(BUILD_DIR)/test_glstencil \
+                $(BUILD_DIR)/test_glsl \
                 $(BUILD_DIR)/test_glslexec $(BUILD_DIR)/test_glprog \
                 $(BUILD_DIR)/test_glcoexist $(BUILD_DIR)/test_glvirgl \
                 $(BUILD_DIR)/test_gpu_syscall \
@@ -3299,6 +3300,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I . \
 #                 the alpha test and fog
 #   test_gltex2   GL 1.2/1.3: mipmaps, multitexturing, 3D textures, cube maps
 #   test_glfbo    framebuffer objects, renderbuffers and glReadPixels
+#   test_glstencil 8-bit stencil plane, ops, two-pass clip, FBO attach
 #   test_glsl     the GLSL ES 1.0 front end: lexer, parser, type checker
 #   test_glslexec the GLSL execution engine, checked numerically
 #   test_glprog   the shader pipeline: programs, attributes, uniforms, pixels
@@ -3310,7 +3312,7 @@ LIBGL_TEST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O2 -I . \
 # ag_render_now() -- the code under test is still the real auraglx.c.
 LIBGL_TESTS := test_glstate test_glimm test_glraster test_glclip \
                test_gllight test_gltex test_gltex2 test_glarray test_glu \
-               test_glbackend test_glfbo test_glsl test_glslexec \
+               test_glbackend test_glfbo test_glstencil test_glsl test_glslexec \
                test_glprog test_glcoexist
 
 $(addprefix $(BUILD_DIR)/,$(LIBGL_TESTS)): $(BUILD_DIR)/%: tests/unit/%.c \

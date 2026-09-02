@@ -109,7 +109,7 @@ frames, so output is tear-free without extra work.
 | Area | Detail |
 |---|---|
 | Context | `aglxCreateContext` / `MakeCurrent` / `SwapBuffers` / `Resize` / `DestroyContext` |
-| Buffers | Colour (XRGB8888) and optional depth (float); `glClear`, `glClearColor`, `glClearDepth` |
+| Buffers | Colour (XRGB8888), optional depth (float), optional 8-bit stencil; `glClear`, `glClearColor`, `glClearDepth`, `glClearStencil` |
 | Matrices | `GL_MODELVIEW` (32 deep) and `GL_PROJECTION` (8 deep); `glPushMatrix`/`glPopMatrix`, `glLoadIdentity`, `glLoadMatrixf`, `glMultMatrixf`, `glTranslatef`, `glRotatef`, `glScalef`, `glFrustum`, `glOrtho` |
 | Immediate mode | All ten primitive modes; `glVertex2f/3f/4f(v)`, `glColor3f/4f/3ub/4ub(v)`, `glNormal3f(v)`, `glTexCoord2f(v)`, `glTexCoord3f`, `glMultiTexCoord2f` |
 | Rasterizer | Edge-function triangles with barycentric interpolation, Bresenham lines, points; top-left fill rule |
@@ -122,13 +122,13 @@ frames, so output is tear-free without extra work.
 | Multitexturing | 2 units, `glActiveTexture`, `glClientActiveTexture`, per-unit enables, bindings and environment |
 | 3D textures | `glTexImage3D`, `GL_TEXTURE_3D`, trilinear sampling, `GL_TEXTURE_WRAP_R` |
 | Cube maps | `GL_TEXTURE_CUBE_MAP`, six faces, direction-vector lookup by major axis, mipmapped |
-| Fragment ops | Alpha test, blending (full factor set), fog (`LINEAR`/`EXP`/`EXP2`), scissor |
+| Fragment ops | Alpha test, blending (full factor set), fog (`LINEAR`/`EXP`/`EXP2`), scissor, stencil (`glStencilFunc`/`Op`/`Mask`, eight compares, wrap vs saturate) |
 | Arrays | Vertex/colour/normal/texcoord arrays, arbitrary stride, eight component types; `glDrawArrays`, `glDrawElements`, `glArrayElement` |
 | Buffer objects | GL 1.5 subset: `glGenBuffers`, `glBindBuffer`, `glBufferData`, `glBufferSubData`, `glDeleteBuffers` |
 | Display lists | `GL_COMPILE` and `GL_COMPILE_AND_EXECUTE`, nesting, recompilation |
 | State queries | `glGetIntegerv`, `glGetFloatv`, `glGetBooleanv`, `glIsEnabled`, `glGetString`, `glGetError` |
 | Framebuffer objects | `glGenFramebuffers`, `glBindFramebuffer`, `glFramebufferTexture2D` (2D and cube faces, any mipmap level), `glFramebufferRenderbuffer`, `glCheckFramebufferStatus`; render-to-texture |
-| Renderbuffers | `glGenRenderbuffers`, `glBindRenderbuffer`, `glRenderbufferStorage` (colour and depth), `glGetRenderbufferParameteriv` |
+| Renderbuffers | `glGenRenderbuffers`, `glBindRenderbuffer`, `glRenderbufferStorage` (colour, depth and `GL_STENCIL_INDEX8`), `glGetRenderbufferParameteriv` |
 | Pixel readback | `glReadPixels` in `GL_RGB`/`RGBA`/`BGR`/`BGRA`/`ALPHA`/`DEPTH_COMPONENT`, from the window or from an FBO |
 | Attribute stack | `glPushAttrib` / `glPopAttrib`, 16 deep |
 | GLU | `gluPerspective`, `gluLookAt`, `gluOrtho2D`, `gluErrorString`, `gluSphere`, `gluCylinder`, `gluDisk` |
@@ -141,7 +141,6 @@ frames, so output is tear-free without extra work.
 | Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
 | `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
 | More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
-| Stencil buffer | `GL_STENCIL_BUFFER_BIT` is accepted by `glClear` and ignored; `GL_STENCIL_ATTACHMENT` reports `GL_INVALID_OPERATION` rather than pretending |
 | Accumulation buffer | Not present |
 | `glCopyTexImage` / `glBlitFramebuffer` | Render into the texture directly with an FBO instead |
 | Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
@@ -171,6 +170,13 @@ re-issued when the camera moves.
 **Window coordinates have a bottom-left origin.** The flip to the
 framebuffer's top-left origin happens only when a pixel is addressed, so
 `glScissor` and window coordinates read naturally.
+
+**Stencil is an 8-bit plane, not packed D24S8.** Fragment order is scissor
+→ stencil-sfail → depth → stencil-dpfail/dppass → blend. `INCR`/`DECR`
+saturate; `INCR_WRAP`/`DECR_WRAP` wrap. `glGetIntegerv(GL_STENCIL_BITS)`
+is 8 when the current target has a plane and 0 otherwise. Window contexts
+created with `AGLX_DEFAULT` allocate one; pass `AGLX_DEPTH` alone to skip
+it. `GL_STENCIL_ATTACHMENT` takes a `GL_STENCIL_INDEX8` renderbuffer.
 
 **Texture row 0 is the bottom row**, matching GL's texture coordinate origin.
 No vertical flip is applied at sample time.
@@ -208,11 +214,9 @@ act on the unit selected by `glActiveTexture`; the *client* selector used by
 `glTexCoordPointer` is separate and set by `glClientActiveTexture`. `glTexCoord`
 itself always writes unit 0 — `glActiveTexture` does not redirect it.
 
-**Framebuffer objects redirect four pointers, and nothing else.** The
-rasterizer has only ever known about `ctx->color`, `ctx->depth`, `ctx->width`
-and `ctx->height`. Binding an FBO points those at a texture or renderbuffer;
-binding framebuffer 0 points them back at the window. Not one line of
-`glraster.c` changed to gain render-to-texture.
+**Framebuffer objects redirect the rasterizer's target pointers.** Binding
+an FBO points `ctx->color` / `depth` / `stencil` / `width` / `height` at the
+attached images; binding framebuffer 0 points them back at the window.
 
 Consequences worth knowing:
 
@@ -583,7 +587,7 @@ about mixing them.
 shaded fragment exactly as they do to a fixed-function one:
 
 `GL_DEPTH_TEST` · `glDepthMask` · `GL_CULL_FACE` · `GL_SCISSOR_TEST` ·
-`GL_BLEND` · framebuffer objects · `glReadPixels`
+`GL_STENCIL_TEST` · `GL_BLEND` · framebuffer objects · `glReadPixels`
 
 **Fixed-function shading state is ignored entirely.** None of these reaches a
 shaded fragment, because none has a meaning under ES 2.0:
@@ -723,7 +727,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 373 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 388 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -754,6 +758,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glu.c` | GLU helpers and quadrics, 21 |
 | `tests/unit/test_glbackend.c` | The backend seam and the VirGL candidate, 17 |
 | `tests/unit/test_glfbo.c` | Framebuffer objects, renderbuffers, `glReadPixels`, 36 |
+| `tests/unit/test_glstencil.c` | 8-bit stencil plane, func × op, two-pass clip, FBO attach, 34 |
 | `tests/unit/test_glsl.c` | The GLSL ES 1.0 front end: lexing, parsing, types, diagnostics, 167 |
 | `tests/unit/test_glslexec.c` | The execution engine, checked numerically, 179 |
 | `tests/unit/test_glprog.c` | The shader pipeline, checked against pixels, 107 |
@@ -780,7 +785,7 @@ This section used to record a real corruption: under `-smp 2` roughly one
 limitation: the kernel switched no FPU/SSE state, so a thread migrated
 mid-computation resumed with another CPU's xmm registers.  MATURITY M1 landed
 the cure — eager `fxsave`/`fxrstor` in the context switch with a per-TCB
-512-byte area — and `gltest` passes 373/373 under `-smp 4`; the `IL_SMP=1`
+512-byte area — and `gltest` passes 373/373 under `-smp 4` (L0 count; L1 adds a stencil block); the `IL_SMP=1`
 pin was removed from `test_opengl.sh`, and `test_fpu_smp.sh` stands guard.
 (The old text blamed "TODO.md: scheduling remains BSP-only", which was stale
 twice over — APs run user threads, and the R5 receipt pins it.)

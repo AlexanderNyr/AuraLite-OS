@@ -322,8 +322,10 @@ static int t_incomplete_refuses_draw(void) {
     return ok;
 }
 
-/* Stencil is honestly refused rather than accepted and ignored. */
-static int t_stencil_attachment_refused(void) {
+/* GL2 L1: GL_STENCIL_ATTACHMENT is a real slot.  A colour renderbuffer
+ * attached as stencil is accepted, then diagnosed as incomplete (wrong
+ * type) rather than INVALID_OPERATION. */
+static int t_stencil_attachment_accepted(void) {
     aglx_context_t *c = setup(); if (!c) return 0;
     GLuint fb = 0, rb = 0;
     glGenFramebuffers(1, &fb);
@@ -335,7 +337,9 @@ static int t_stencil_attachment_refused(void) {
 
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
                               GL_RENDERBUFFER, rb);
-    int ok = glGetError() == GL_INVALID_OPERATION;
+    int ok = glGetError() == GL_NO_ERROR
+          && glCheckFramebufferStatus(GL_FRAMEBUFFER)
+             == GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     aglxDestroyContext(c);
@@ -994,7 +998,7 @@ int main(void) {
     RUN(t_status_missing_attachment); RUN(t_status_complete);
     RUN(t_status_unallocated_level); RUN(t_status_dimension_mismatch);
     RUN(t_status_wrong_attachment_type); RUN(t_deleted_texture_incompletes);
-    RUN(t_incomplete_refuses_draw); RUN(t_stencil_attachment_refused);
+    RUN(t_incomplete_refuses_draw); RUN(t_stencil_attachment_accepted);
     RUN(t_attach_to_default_refused);
 
     printf("--- renderbuffers ---\n");

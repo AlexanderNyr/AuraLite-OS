@@ -3394,6 +3394,123 @@ static void test_gl_backend(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- GL2 L1: stencil buffer ---- */
+static void test_gl_stencil(int wid) {
+    printf("[gl] --- L1: stencil buffer ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H,
+                                            AGLX_DEPTH | AGLX_STENCIL);
+    check(ctx != NULL, "st_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    const uint8_t  *sb = aglxGetStencilBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+    #define ST(x, y) sb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    GLint bits = -1;
+    glGetIntegerv(GL_STENCIL_BITS, &bits);
+    check(bits == 8 && sb != NULL, "st_bits_8");
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -1, 1);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glClearStencil(0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+    glEnable(GL_STENCIL_TEST);
+    check(glIsEnabled(GL_STENCIL_TEST) == GL_TRUE, "st_enable");
+
+    /* Two-pass clip: mark a 40×40 box, then paint red where stencil == 1. */
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    glColor3f(0, 0, 0);
+    glBegin(GL_QUADS);
+    glVertex3f(10, 10, 0); glVertex3f(50, 10, 0);
+    glVertex3f(50, 50, 0); glVertex3f(10, 50, 0);
+    glEnd();
+    check(ST(20, 20) == 1, "st_mark_inside");
+    check(ST(80, 80) == 0, "st_mark_outside");
+
+    glStencilFunc(GL_EQUAL, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    glColor3f(1, 0, 0);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);         glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);   glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(AT(20, 20) == 0xFF0000, "st_two_pass_inside");
+    check(AT(80, 80) == 0x000000, "st_two_pass_outside");
+
+    /* NEVER rejects colour, still updates stencil via sfail. */
+    glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glStencilFunc(GL_NEVER, 0, 0xFF);
+    glStencilOp(GL_INCR, GL_KEEP, GL_KEEP);
+    glColor3f(0, 1, 0);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);         glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);   glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(AT(GL_W / 2, GL_H / 2) == 0, "st_never_no_color");
+    check(ST(GL_W / 2, GL_H / 2) == 1, "st_never_sfail");
+
+    /* Wrap vs saturate. */
+    glClearStencil(255);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilFunc(GL_ALWAYS, 0, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);         glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);   glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(ST(4, 4) == 255, "st_incr_saturates");
+    glStencilOp(GL_KEEP, GL_KEEP, GL_INCR_WRAP);
+    glBegin(GL_QUADS);
+    glVertex3f(0, 0, 0);         glVertex3f(GL_W, 0, 0);
+    glVertex3f(GL_W, GL_H, 0);   glVertex3f(0, GL_H, 0);
+    glEnd();
+    check(ST(4, 4) == 0, "st_incr_wraps");
+
+    glDisable(GL_STENCIL_TEST);
+
+    /* Old refusal now succeeding: GL_STENCIL_ATTACHMENT is a real slot. */
+    {
+        GLuint fb = 0, tex = 0, rb = 0;
+        glGenFramebuffers(1, &fb);
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 16, 16, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenRenderbuffers(1, &rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, 16, 16);
+        glBindFramebuffer(GL_FRAMEBUFFER, fb);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, tex, 0);
+        while (glGetError() != GL_NO_ERROR) { }
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
+                                  GL_RENDERBUFFER, rb);
+        check(glGetError() == GL_NO_ERROR, "st_fbo_attach_ok");
+        check(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
+              "st_fbo_complete");
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fb);
+        glDeleteRenderbuffers(1, &rb);
+        glDeleteTextures(1, &tex);
+    }
+
+    check(aglxSwapBuffers(ctx) == 0, "st_swap");
+    check(glGetError() == GL_NO_ERROR, "st_no_pending_error");
+
+    #undef AT
+    #undef ST
+    aglxDestroyContext(ctx);
+}
+
 int main(void) {
     printf("[gl] === AuraLite GL test (phases G0-G9) ===\n");
 
@@ -3490,6 +3607,7 @@ int main(void) {
     test_gl_texture(wid);
     test_gl_texture2(wid);
     test_gl_fbo(wid);
+    test_gl_stencil(wid);
     test_gl_arrays(wid);
     test_gl_glu(wid);
     test_gl_backend(wid);

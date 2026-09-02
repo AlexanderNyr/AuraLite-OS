@@ -38,8 +38,14 @@ extern "C" {
  * glClear(GL_DEPTH_BUFFER_BIT) is a no-op.  Costs width*height*4 bytes. */
 #define AGLX_DEPTH      0x0001
 
-/* Default: colour + depth, which is what almost every 3D application wants. */
-#define AGLX_DEFAULT    (AGLX_DEPTH)
+/* Allocate an 8-bit stencil plane.  Without this GL_STENCIL_TEST is a no-op
+ * and glClear(GL_STENCIL_BUFFER_BIT) does nothing.  Costs width*height bytes,
+ * on the heap with the other buffers — never the C stack. */
+#define AGLX_STENCIL    0x0002
+
+/* Default: colour + depth + stencil, which is what almost every 3D
+ * application wants and what lets /glcube pick stencil up without opting in. */
+#define AGLX_DEFAULT    (AGLX_DEPTH | AGLX_STENCIL)
 
 /* Software rasterisation at high resolutions is slow and memory hungry
  * (colour + depth = width*height*8 bytes), so contexts are capped.  4096 is
@@ -94,6 +100,10 @@ const uint32_t *aglxGetColorBuffer(const aglx_context_t *ctx);
 /* Direct access to the depth buffer, or NULL if the context has none.
  * Values are in window-space depth [0,1], where 1.0 is the far plane. */
 const float *aglxGetDepthBuffer(const aglx_context_t *ctx);
+
+/* Direct access to the window stencil plane, or NULL if the context has none.
+ * One byte per pixel, same row order as the colour buffer. */
+const uint8_t *aglxGetStencilBuffer(const aglx_context_t *ctx);
 
 #ifdef __cplusplus
 }

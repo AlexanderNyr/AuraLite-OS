@@ -155,10 +155,11 @@ typedef struct {
  * depth, and a renderbuffer is that somewhere without pretending to be
  * samplable.
  *
- * Colour renderbuffers store packed gl_pixel_t, depth ones store float, and
- * exactly one of the two pointers is non-NULL.  Keeping them as separate
- * members rather than a union makes the "which is it" question answerable by
- * looking, which matters in the attachment-completeness checks.
+ * Colour renderbuffers store packed gl_pixel_t, depth ones store float,
+ * stencil ones store uint8_t, and exactly one of the three pointers is
+ * non-NULL.  Keeping them as separate members rather than a union makes the
+ * "which is it" question answerable by looking, which matters in the
+ * attachment-completeness checks.
  */
 typedef struct {
     GLuint      name;
@@ -167,6 +168,7 @@ typedef struct {
     GLsizei     width, height;
     gl_pixel_t *color;           /* non-NULL for a colour renderbuffer      */
     float      *depth;           /* non-NULL for a depth renderbuffer       */
+    uint8_t    *stencil;         /* non-NULL for a stencil renderbuffer     */
 } gl_renderbuffer_t;
 
 /* ---- Framebuffer object (§4.4) ----
@@ -199,6 +201,7 @@ typedef struct {
     int             used;
     gl_attachment_t color[GL_MAX_COLOR_ATTACHMENTS_IMPL];
     gl_attachment_t depth;
+    gl_attachment_t stencil;
 } gl_framebuffer_t;
 
 /* ---- Shader and program objects (GL ES 2.0, phase G11c) ----
@@ -372,6 +375,7 @@ struct aglx_context {
     int         height;         /* buffer height in pixels */
     gl_pixel_t *color;          /* width*height, packed XRGB8888, never NULL */
     float      *depth;          /* width*height, or NULL when there is none  */
+    uint8_t    *stencil;        /* width*height, or NULL when there is none  */
 
     /* ---- Row order of the current target ----
      *
@@ -397,6 +401,7 @@ struct aglx_context {
     int         win_width, win_height;
     gl_pixel_t *win_color;
     float      *win_depth;
+    uint8_t    *win_stencil;
 
     /* ---- Window binding ---- */
     int         wid;            /* AuraGUI window id */
@@ -405,6 +410,7 @@ struct aglx_context {
     /* ---- Clear state (§4.2.3) ---- */
     gl_color_t  clear_color;
     GLfloat     clear_depth;    /* clamped to [0,1] */
+    GLint       clear_stencil;  /* masked to 8 bits when used */
 
     /* ---- Viewport (§2.11) ----
      * Stored exactly as glViewport() received it; the transform to window
@@ -436,6 +442,14 @@ struct aglx_context {
     GLboolean   scissor_test;
     GLint       scissor_x, scissor_y;
     GLsizei     scissor_w, scissor_h;
+
+    /* ---- Stencil buffer (§4.1.4), GL2 L1 ---- */
+    GLboolean   stencil_test;
+    GLenum      stencil_func;
+    GLint       stencil_ref;
+    GLuint      stencil_valuemask;
+    GLenum      stencil_fail, stencil_zfail, stencil_zpass;
+    GLuint      stencil_writemask;
 
     /* ---- Lighting (§2.14), phase G5 ---- */
     GLboolean     lighting;

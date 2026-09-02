@@ -16,12 +16,51 @@
 #include "glcontext.h"
 #include "glvertex.h"
 
+/* Stencil compare (§4.1.4).  Same eight functions as depth, on the masked
+ * 8-bit values (ref & mask) FUNC (stored & mask). */
+static int stencil_cmp(GLenum func, GLint ref, GLuint mask, uint8_t stored) {
+    unsigned r = (unsigned)(ref & 0xFF) & (unsigned)(mask & 0xFF);
+    unsigned s = (unsigned)stored & (unsigned)(mask & 0xFF);
+    switch (func) {
+    case GL_NEVER:    return 0;
+    case GL_LESS:     return r <  s;
+    case GL_EQUAL:    return r == s;
+    case GL_LEQUAL:   return r <= s;
+    case GL_GREATER:  return r >  s;
+    case GL_NOTEQUAL: return r != s;
+    case GL_GEQUAL:   return r >= s;
+    case GL_ALWAYS:   return 1;
+    default:          return 0;
+    }
+}
+
+static uint8_t stencil_operate(GLenum op, uint8_t s, GLint ref) {
+    switch (op) {
+    case GL_KEEP:      return s;
+    case GL_ZERO:      return 0;
+    case GL_REPLACE:   return (uint8_t)(ref & 0xFF);
+    case GL_INCR:      return s < 255 ? (uint8_t)(s + 1) : 255;
+    case GL_DECR:      return s > 0 ? (uint8_t)(s - 1) : 0;
+    case GL_INVERT:    return (uint8_t)~s;
+    case GL_INCR_WRAP: return (uint8_t)(s + 1);
+    case GL_DECR_WRAP: return (uint8_t)(s - 1);
+    default:           return s;
+    }
+}
+
+static void stencil_apply(uint8_t *cell, const struct aglx_context *ctx,
+                          GLenum op) {
+    uint8_t neu = stencil_operate(op, *cell, ctx->stencil_ref);
+    uint8_t m = (uint8_t)(ctx->stencil_writemask & 0xFFu);
+    *cell = (uint8_t)((neu & m) | (*cell & (uint8_t)~m));
+}
+
 /* Write one pixel, clipping to the framebuffer and honouring the scissor box.
  *
- * Depth testing is deliberately NOT applied to points and lines in G2: there
- * is no depth buffer content to test against until the triangle rasterizer
- * exists, and applying it here would make wireframe output disappear.  G3
- * routes all three primitive types through a shared depth test.
+ * Depth testing is deliberately NOT applied to points and lines: the triangle
+ * rasterizer owns the depth buffer.  Stencil DOES apply — a stencil clip that
+ * missed points and lines would leak.  With no depth test, a passing stencil
+ * fragment takes the zpass op (as if depth always passed).
  */
 static void put_pixel(struct aglx_context *ctx, int x, int y, gl_pixel_t c) {
     if (x < 0 || y < 0 || x >= ctx->width || y >= ctx->height) return;
@@ -32,6 +71,15 @@ static void put_pixel(struct aglx_context *ctx, int x, int y, gl_pixel_t c) {
             y >= ctx->scissor_y + ctx->scissor_h) {
             return;
         }
+    }
+    if (ctx->stencil_test && ctx->stencil) {
+        uint8_t *cell = &gl_stencil_row(ctx, y)[x];
+        if (!stencil_cmp(ctx->stencil_func, ctx->stencil_ref,
+                         ctx->stencil_valuemask, *cell)) {
+            stencil_apply(cell, ctx, ctx->stencil_fail);
+            return;
+        }
+        stencil_apply(cell, ctx, ctx->stencil_zpass);
     }
     gl_fb_row(ctx, y)[x] = c;
 }
@@ -582,6 +630,8 @@ void gl_raster_triangle(struct aglx_context *ctx,
     int has_depth = (ctx->depth != (float *)0);
     int do_depth_test  = ctx->depth_test && has_depth;
     int do_depth_write = ctx->depth_mask && has_depth;
+    int has_stencil = (ctx->stencil != (uint8_t *)0);
+    int do_stencil  = ctx->stencil_test && has_stencil;
 
     /* Sample at pixel centres: pixel (i,j) is sampled at (i+0.5, j+0.5). */
     GLfloat px0 = (GLfloat)minx + 0.5f;
@@ -598,6 +648,7 @@ void gl_raster_triangle(struct aglx_context *ctx,
 
         gl_pixel_t *crow = gl_fb_row(ctx, y);
         float      *drow = has_depth ? gl_depth_row(ctx, y) : (float *)0;
+        uint8_t    *srow = has_stencil ? gl_stencil_row(ctx, y) : (uint8_t *)0;
 
         for (int x = minx; x <= maxx; x++) {
             /* Inside when every edge function is positive, or zero on an edge
@@ -613,12 +664,30 @@ void gl_raster_triangle(struct aglx_context *ctx,
                 /* Depth interpolates linearly in window space (§3.5.1). */
                 GLfloat z = l0 * v0->win.z + l1 * v1->win.z + l2 * v2->win.z;
 
-                int write = 1;
-                if (do_depth_test) {
-                    if (!depth_passes(ctx->depth_func, z, drow[x])) write = 0;
+                /* Order: scissor (already) → stencil sfail → depth →
+                 * stencil dpfail/dppass → blend (§4.1). */
+                int sfail = 0, zfail = 0;
+                if (do_stencil) {
+                    if (!stencil_cmp(ctx->stencil_func, ctx->stencil_ref,
+                                     ctx->stencil_valuemask, srow[x]))
+                        sfail = 1;
+                }
+                if (!sfail && do_depth_test) {
+                    if (!depth_passes(ctx->depth_func, z, drow[x]))
+                        zfail = 1;
                 }
 
-                if (write) {
+                if (sfail) {
+                    stencil_apply(&srow[x], ctx, ctx->stencil_fail);
+                    goto next_pixel;
+                }
+                if (zfail) {
+                    if (do_stencil)
+                        stencil_apply(&srow[x], ctx, ctx->stencil_zfail);
+                    goto next_pixel;
+                }
+
+                {
                     /* ---- The shader path ----
                      *
                      * A bound program replaces everything from here to the
@@ -647,6 +716,8 @@ void gl_raster_triangle(struct aglx_context *ctx,
                             goto next_pixel;     /* the shader discarded */
                         }
 
+                        if (do_stencil)
+                            stencil_apply(&srow[x], ctx, ctx->stencil_zpass);
                         if (do_depth_write) drow[x] = z;
 
                         if (do_blend) {
@@ -719,8 +790,10 @@ void gl_raster_triangle(struct aglx_context *ctx,
                         goto next_pixel;
                     }
 
-                    /* The depth write happens only once the fragment has
-                     * survived every discarding test. */
+                    /* Stencil zpass and the depth write happen only once
+                     * the fragment has survived every discarding test. */
+                    if (do_stencil)
+                        stencil_apply(&srow[x], ctx, ctx->stencil_zpass);
                     if (do_depth_write) drow[x] = z;
 
                     /* ---- Blending ---- */
