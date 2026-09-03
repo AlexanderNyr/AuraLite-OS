@@ -605,6 +605,22 @@ the advice is unchanged:
   areas, or at a small context size, or accept single-digit frame rates.
 - **The shader path buys API coverage, not frames per second.**
 
+### Early-Z (GL2 phase L5)
+
+The per-fragment stage runs **after** the stencil and depth tests and before
+the depth write, so a fragment the depth test rejects never reaches the
+interpreter. That order is only legal when the fragment shader cannot change
+the tests' outcome — GL lets a shader `discard` (and, one day, write
+`gl_FragDepth`), and a discarded fragment must reach **no** stencil, depth or
+blending operation at all (§4.1.5). So at `glLinkProgram` the fragment AST is
+scanned for `discard`: a shader that cannot discard keeps the early-Z order; a
+shader that can is shaded **first**, and its discard leaves the pixel —
+including its stencil and depth values — exactly as it was. The predicate is
+linked state recomputed on every link; there is no `gl_FragDepth` in the
+language yet, and the scan must learn it the same commit the language does.
+`/glshade` draws with the early-Z path; `test_glprog` proves both orders by
+counting interpreter invocations through a test-only counter.
+
 ---
 
 ## Fixed function and shaders together (phase G11d)
@@ -759,11 +775,12 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** drawn as a single quad — per-fragment LOD (GL2 L4) made the old 16×16 tessellation unnecessary — and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
+| `/glshade` | The `/glcube` cube lit from a **GLSL program**: a per-fragment Lambert shader over generic vertex attributes and `glDrawArrays` (GL2 L5). No fixed-function fallback — if the program fails to compile or link, it prints the info log and exits. |
 | `/gltest` | Regression suite: 411 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
-Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
-`/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
-does not forward `argv`. This follows the convention `/apm` already uses.
+The demos read an optional frame limit from a file — `/tmp/glcube.frames`,
+`/tmp/glshade.frames` and `/tmp/glgears.frames` — because the shell's `run`
+command uses `spawn()`, which does not forward `argv`. This follows the convention `/apm` already uses.
 
 ```text
 auralite# write /tmp/glgears.frames 20

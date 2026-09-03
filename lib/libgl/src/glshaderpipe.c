@@ -373,6 +373,22 @@ int gl_shader_run_vertex(struct aglx_context *ctx, int index,
  * `varyings` are already interpolated and perspective-corrected by the
  * rasterizer.  Returns 1 to keep the fragment, 0 to discard it.
  */
+/* ---- GL2 phase L5: early-Z plumbing ----
+ *
+ * The predicate is linked state; the rasterizer asks it per draw.  The
+ * invocation counter is a test-only side channel: the early-Z gate in
+ * test_glprog proves the optimization by counting interpreter runs, which no
+ * pixel assertion can distinguish. */
+int gl_shader_may_kill_early_z(struct aglx_context *ctx) {
+    gl_program_t *p = gl_program_current(ctx);
+    return p ? p->may_kill_early_z : 0;
+}
+
+static long gl_fs_invocations;
+
+void gl_shader_fs_count_reset(void) { gl_fs_invocations = 0; }
+long gl_shader_fs_count(void)       { return gl_fs_invocations; }
+
 int gl_shader_run_fragment(struct aglx_context *ctx, const float *varyings,
                            float x, float y, float z, int front_facing,
                            gl_color_t *out) {
@@ -381,6 +397,8 @@ int gl_shader_run_fragment(struct aglx_context *ctx, const float *varyings,
 
     glsl_unit_t *fu = (glsl_unit_t *)gl_program_fragment_unit(ctx, p);
     if (!fu) return 0;
+
+    gl_fs_invocations++;
 
     shader_env_t se;
     env_init(&se, ctx, p, 0);

@@ -207,6 +207,18 @@ int  gl_shader_active(struct aglx_context *ctx);
 int  gl_shader_varying_floats(struct aglx_context *ctx);
 int  gl_shader_run_vertex(struct aglx_context *ctx, int index,
                           gl_vertex_t *out);
+/* GL2 phase L5: 1 when the bound program must be shaded BEFORE the stencil
+ * and depth operations (it can discard, or write gl_FragDepth once the
+ * language grows one); 0 -- including the no-program case -- when early-Z is
+ * correct. */
+int  gl_shader_may_kill_early_z(struct aglx_context *ctx);
+
+/* Test-only side channel for the early-Z gate (L5): how many times the
+ * fragment interpreter has actually run since the last reset.  The early-Z
+ * host test counts invocations; production code never reads this. */
+void gl_shader_fs_count_reset(void);
+long gl_shader_fs_count(void);
+
 int  gl_shader_run_fragment(struct aglx_context *ctx, const float *varyings,
                             float x, float y, float z, int front_facing,
                             gl_color_t *out);

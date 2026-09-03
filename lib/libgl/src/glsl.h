@@ -342,6 +342,14 @@ int  glsl_lex(glsl_unit_t *u, const char *source);
 int  glsl_parse(glsl_unit_t *u);
 int  glsl_check(glsl_unit_t *u);
 
+/* GL2 phase L5: conservative early-Z predicate.  Returns 1 when the unit's
+ * AST contains anything that makes running the fragment shader BEFORE the
+ * depth test observable: a `discard` statement today.  (The language has no
+ * `gl_FragDepth` yet; when it gains one, a store to it belongs in this scan
+ * too -- the plan's predicate names both.)  GL permits the depth test to run
+ * before the fragment shader exactly when this returns 0. */
+int  glsl_fragment_may_kill_early_z(const glsl_unit_t *u);
+
 /* Rebuild the info log from the recorded diagnostics.  Called at the end of
  * compilation, and again after a run that recorded a runtime diagnostic. */
 void glsl_build_log(glsl_unit_t *u);

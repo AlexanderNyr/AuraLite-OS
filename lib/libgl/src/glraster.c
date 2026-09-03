@@ -573,6 +573,22 @@ void gl_raster_triangle(struct aglx_context *ctx,
     int nvary = use_shader ? v0->varying_count : 0;
     if (nvary > GL_MAX_VARYING_FLOATS) nvary = GL_MAX_VARYING_FLOATS;
 
+    /* ---- GL2 phase L5: conservative early-Z ----
+     *
+     * GL permits the stencil and depth tests to run BEFORE the fragment
+     * shader exactly when the shader cannot change what those tests see:
+     * no `discard` (and, once the language grows it, no `gl_FragDepth`
+     * store).  For such programs -- and for the fixed-function pipeline --
+     * the tests run first here and a rejected fragment never reaches the
+     * interpreter, which is the one cost G11c measured and could not fix.
+     * A shader that CAN discard exists to change the tests' outcome, so it
+     * is shaded first and the framebuffer operations keep their spec
+     * position after it (shade-then-depth): a discarded fragment must reach
+     * no stencil, depth or blending operation at all (§4.1.5).  The
+     * predicate is per-program linked state, so the decision is made once
+     * per draw, not per pixel. */
+    int shade_then_depth = use_shader && gl_shader_may_kill_early_z(ctx);
+
     /* Varyings interpolate perspective-correctly, exactly like texture
      * coordinates: divided through by w at the vertices and multiplied back
      * per pixel.  Interpolating them linearly in screen space would make a
@@ -729,6 +745,36 @@ void gl_raster_triangle(struct aglx_context *ctx,
                 /* Depth interpolates linearly in window space (§3.5.1). */
                 GLfloat z = l0 * v0->win.z + l1 * v1->win.z + l2 * v2->win.z;
 
+                /* GL2 L5: the shade-then-depth stage of the unsafe-shader
+                 * path.  The colour is computed first; a discarded fragment
+                 * leaves the pixel untouched -- no stencil operation, no
+                 * depth write, no blending.  The interpolated window z stays
+                 * the depth the tests consult: the language has no
+                 * gl_FragDepth, so no shader can disagree with it. */
+                gl_color_t shaded;
+                int shaded_ok = 0;
+                if (shade_then_depth) {
+                    GLfloat inv_w = l0 * w0i + l1 * w1i + l2 * w2i;
+                    GLfloat rw = (inv_w > 1e-20f || inv_w < -1e-20f)
+                               ? 1.0f / inv_w : 0.0f;
+
+                    GLfloat fv[GL_MAX_VARYING_FLOATS];
+                    for (int k = 0; k < nvary; k++) {
+                        fv[k] = (l0 * vary0[k] + l1 * vary1[k]
+                               + l2 * vary2[k]) * rw;
+                    }
+
+                    shaded.r = shaded.g = shaded.b = 0.0f;
+                    shaded.a = 1.0f;
+                    if (!gl_shader_run_fragment(ctx, fv,
+                                                (GLfloat)x + 0.5f,
+                                                (GLfloat)y + 0.5f,
+                                                z, is_front, &shaded)) {
+                        goto next_pixel;     /* the shader discarded */
+                    }
+                    shaded_ok = 1;
+                }
+
                 /* Order: scissor (already) → stencil sfail → depth →
                  * stencil dpfail/dppass → blend (§4.1). */
                 int sfail = 0, zfail = 0;
@@ -761,6 +807,28 @@ void gl_raster_triangle(struct aglx_context *ctx,
                      * comparison.  Blending and the depth write below still
                      * apply, because those are framebuffer operations. */
                     if (use_shader) {
+                        /* GL2 L5: the shade-then-depth path already produced
+                         * a colour (and would have left on discard), so all
+                         * that is left is the framebuffer side. */
+                        if (shaded_ok) {
+                            if (do_stencil)
+                                stencil_apply(&srow[x], ctx,
+                                              ctx->stencil_zpass);
+                            if (do_depth_write) drow[x] = z;
+
+                            if (do_blend) {
+                                uint32_t d = crow[x];
+                                gl_color_t dst;
+                                dst.r = (GLfloat)((d >> 16) & 0xFF) / 255.0f;
+                                dst.g = (GLfloat)((d >>  8) & 0xFF) / 255.0f;
+                                dst.b = (GLfloat)( d        & 0xFF) / 255.0f;
+                                dst.a = 1.0f;
+                                shaded = gl_blend(ctx, shaded, dst);
+                            }
+                            crow[x] = gl_pack_color(shaded);
+                            goto next_pixel;
+                        }
+
                         GLfloat inv_w = l0 * w0i + l1 * w1i + l2 * w2i;
                         GLfloat rw = (inv_w > 1e-20f || inv_w < -1e-20f)
                                    ? 1.0f / inv_w : 0.0f;

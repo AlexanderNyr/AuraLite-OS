@@ -620,6 +620,7 @@ void glLinkProgram(GLuint program) {
     p->uniform_used  = 0;
     p->varying_count = 0;
     p->varying_floats = 0;
+    p->may_kill_early_z = 0;
     memset(p->uniform_data, 0, sizeof p->uniform_data);
 
     /* Attribute bindings requested before linking survive; anything the
@@ -656,6 +657,11 @@ void glLinkProgram(GLuint program) {
     if (!check_varyings_declared(p, fu, vu)) ok = 0;
 
     if (!ok) return;
+
+    /* GL2 phase L5: the early-Z predicate is linked state, read fresh from
+     * the fragment AST on every link so an edited shader re-decides it.  The
+     * rasterizer consults it per draw (see gl_raster_triangle). */
+    p->may_kill_early_z = glsl_fragment_may_kill_early_z(fu);
 
     /* A sampler uniform defaults to unit 0, as GL specifies -- so a shader
      * with one texture works without the application setting anything. */

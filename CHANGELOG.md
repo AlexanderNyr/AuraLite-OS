@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L5 — early-Z + `/glshade`] 2026-09-03
+
+`GL2_PLAN.md` phase L5: the shader path gets the one optimisation that
+needs no new backend, and the demos stop implying there are no shaders.
+
+- Conservative early-Z, made **sound**: the rasterizer already ran the
+  stencil/depth tests before the fragment interpreter (G11c), which is
+  only legal when the shader cannot change the tests' outcome. A
+  whole-tree `discard` scan at `glLinkProgram` (`may_kill_early_z`,
+  per-program linked state, sits in padding — context still 240 304)
+  now decides per draw: safe shaders keep the tests-first order;
+  `discard` shaders shade **first**, and a discarded fragment reaches
+  no stencil, depth or blending operation (§4.1.5). No `gl_FragDepth`
+  in the language yet — the scan's comment binds it to join the scan
+  in the same commit the language grows one. Points/lines: no depth
+  test yet, N/A.
+- Measured, honestly: full-screen Lambert at 320×240 behind a
+  fixed-function wall costs 1.1 ms/frame with **0** interpreter runs
+  (38.9–45.8 ms / 76 800 runs without the prepass; G11c's 53.8 was the
+  same setup on its day). Forcing the predicate off changes nothing —
+  the prepass win was already banked by the draw order; the predicate's
+  purchase is soundness, and the `discard` shader pays all 4 096 runs
+  (64×64 test scene) for it.
+- `test_glprog` 107 → 118: a test-only invocation counter
+  (`gl_shader_fs_count`) proves hidden safe fragments never reach the
+  interpreter, that the wall keeps its colour, that a `discard` shader
+  shades-then-depths (all 4 096, wall green underneath), and that a
+  half-screen quad shades half.
+- **`/glshade`**: the `/glcube` cube lit from a GLSL Lambert program —
+  generic vertex attributes + `glDrawArrays` (D8), own column-major
+  mat4, no fixed-function fallback: a failed compile/link prints the
+  info log and exits non-zero. Packaged (`USER_GL_APPS` +
+  `INITRD_DEMOS`), frame limit via `/tmp/glshade.frames`, README +
+  docs apps rows added.
+- `/gltest` unchanged (411 checks, D3); `make test-unit` EXIT 0.
+  Checker claims 34–39 added (L5 gate); opener pin 8 moved (Fact 5
+  records `/glshade`).
+
 ## [GL2 L4 — per-fragment mipmap LOD] 2026-09-03
 
 `GL2_PLAN.md` phase L4: the follow-up G10 named and declined — the

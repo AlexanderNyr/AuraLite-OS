@@ -1196,6 +1196,234 @@ static void test_realistic(void) {
  * Driver
  * ==========================================================================*/
 
+/* ============================================================================
+ * Early-Z (GL2 phase L5)
+ * ==========================================================================*/
+
+/* The safe Lambert fragment shader of test_realistic(): no discard, so the
+ * depth test may run before it. */
+static const char *ez_safe_fs =
+    "precision mediump float;\n"
+    "varying vec3 vNormal;\n"
+    "uniform vec3 uLightDir;\n"
+    "uniform vec3 uColor;\n"
+    "void main() {\n"
+    "  float ndl = max(dot(normalize(vNormal), normalize(uLightDir)), 0.0);\n"
+    "  gl_FragColor = vec4(uColor * (0.25 + 0.75 * ndl), 1.0);\n"
+    "}\n";
+
+/* A shader that discards the left half of the screen.  Identical geometry
+ * and coverage to the safe case; only the predicate may differ. */
+static const char *ez_discard_fs =
+    "precision mediump float;\n"
+    "varying vec3 vNormal;\n"
+    "void main() {\n"
+    "  if (gl_FragCoord.x < 32.0) discard;\n"
+    "  gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+    "}\n";
+
+static const char *ez_vs =
+    "attribute vec4 aPosition;\n"
+    "attribute vec3 aNormal;\n"
+    "uniform mat4 uMVP;\n"
+    "varying vec3 vNormal;\n"
+    "void main() {\n"
+    "  vNormal = aNormal;\n"
+    "  gl_Position = uMVP * aPosition;\n"
+    "}\n";
+
+/* Full-screen quad at NDC depth +0.5 (behind the wall below; the identity
+ * MVP maps NDC straight into the depth range). */
+static const GLfloat ez_quad_fs[16] = {
+    -1.0f, -1.0f,  0.5f, 1.0f,
+     1.0f, -1.0f,  0.5f, 1.0f,
+     1.0f,  1.0f,  0.5f, 1.0f,
+    -1.0f,  1.0f,  0.5f, 1.0f,
+};
+/* Right half of the screen. */
+static const GLfloat ez_quad_right[16] = {
+     0.0f, -1.0f,  0.5f, 1.0f,
+     1.0f, -1.0f,  0.5f, 1.0f,
+     1.0f,  1.0f,  0.5f, 1.0f,
+     0.0f,  1.0f,  0.5f, 1.0f,
+};
+static const GLfloat ez_normals[12] = {
+    0, 0, 1,  0, 0, 1,  0, 0, 1,  0, 0, 1,
+};
+
+static const GLfloat ez_identity[16] = {
+    1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1
+};
+
+/* Draw a quad from explicit data with the program's aPosition/aNormal. */
+static void ez_draw(GLuint prog, const GLfloat *quad, int n) {
+    GLint lp = glGetAttribLocation(prog, "aPosition");
+    GLint ln = glGetAttribLocation(prog, "aNormal");
+    glEnableVertexAttribArray((GLuint)lp);
+    glVertexAttribPointer((GLuint)lp, 4, GL_FLOAT, GL_FALSE, 0, quad);
+    if (ln >= 0) {
+        glEnableVertexAttribArray((GLuint)ln);
+        glVertexAttribPointer((GLuint)ln, 3, GL_FLOAT, GL_FALSE, 0,
+                              ez_normals);
+    }
+    glDrawArrays(GL_QUADS, 0, n);
+}
+
+static GLuint ez_build(const char *fs_src) {
+    GLint ok = 0;
+    char log[512];
+    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vs, 1, (const char *const *)&ez_vs, NULL);
+    glCompileShader(vs);
+    glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
+    if (!ok) { glGetShaderInfoLog(vs, sizeof log, NULL, log);
+               printf("        [ez] vertex: %s", log); return 0; }
+    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fs, 1, &fs_src, NULL);
+    glCompileShader(fs);
+    glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+    if (!ok) { glGetShaderInfoLog(fs, sizeof log, NULL, log);
+               printf("        [ez] fragment: %s", log); return 0; }
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs);
+    glAttachShader(p, fs);
+    glLinkProgram(p);
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) { glGetProgramInfoLog(p, sizeof log, NULL, log);
+               printf("        [ez] link: %s", log); return 0; }
+    return p;
+}
+
+static void ez_scene(void) {
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+}
+
+/* A shader that cannot discard takes early-Z: a fragment the depth test
+ * rejects never reaches the interpreter.  Proven with the plan's side-channel
+ * counter, because no pixel assertion can tell "shaded and rejected" from
+ * "never shaded". */
+static void test_early_z(void) {
+    printf("--- early-Z (GL2 L5) ---\n");
+    aglx_context_t *c = setup();
+    if (!c) { CHECK(0, "context"); return; }
+
+    /* Sanity of the counting channel itself: an unoccluded full-screen
+     * shaded quad runs the fragment interpreter once per pixel. */
+    GLuint safe = ez_build(ez_safe_fs);
+    CHECK(safe != 0, "the safe (no discard) program links");
+    if (safe) {
+        glUseProgram(safe);
+        glUniformMatrix4fv(glGetUniformLocation(safe, "uMVP"), 1, GL_FALSE,
+                           ez_identity);
+        glUniform3f(glGetUniformLocation(safe, "uLightDir"), 0, 0, 1);
+        glUniform3f(glGetUniformLocation(safe, "uColor"), 1, 1, 1);
+        ez_scene();
+        gl_shader_fs_count_reset();
+        ez_draw(safe, ez_quad_fs, 4);
+        CHECK(gl_shader_fs_count() == (long)W * H,
+              "an unoccluded shaded quad invokes the fragment shader once "
+              "per pixel");
+    }
+
+    /* The gate: the same quad BEHIND an opaque, already-drawn left-half
+     * wall.  Early-Z must reject the hidden half without running the
+     * interpreter: 32 hidden columns x 64 rows skipped. */
+    if (safe) {
+        glUseProgram(0);
+        glColor3f(0, 1, 0);
+        ez_scene();
+        glBegin(GL_QUADS);                       /* the wall, fixed-function,
+                                                    * at NDC z = -0.5: in front */
+        glVertex3f(-1.0f, -1.0f, -0.5f);
+        glVertex3f( 0.0f, -1.0f, -0.5f);
+        glVertex3f( 0.0f,  1.0f, -0.5f);
+        glVertex3f(-1.0f,  1.0f, -0.5f);
+        glEnd();
+
+        glUseProgram(safe);
+        glUniform3f(glGetUniformLocation(safe, "uColor"), 1, 1, 1);
+        gl_shader_fs_count_reset();
+        ez_draw(safe, ez_quad_fs, 4);            /* full-screen, behind */
+        long n = gl_shader_fs_count();
+        CHECK(n == (long)(W - W / 2) * (long)H,
+              "early-Z: hidden pixels never invoke the fragment shader");
+        CHECK(px_is(c, 16, 32, 0, 255, 0, 3),
+              "the wall keeps its colour where the quad was rejected");
+        CHECK(px_is(c, 48, 32, 255, 255, 255, 3),
+              "the visible half is shaded");
+    }
+
+    /* The bug the predicate exists to prevent: a shader that discards must
+     * NOT take early-Z.  It is shaded first, so the interpreter runs for
+     * EVERY fragment of the quad -- including the ones the depth test then
+     * rejects -- and a discarded fragment reaches no framebuffer operation
+     * at all. */
+    {
+        GLuint disc = ez_build(ez_discard_fs);
+        CHECK(disc != 0, "the discarding program links");
+        if (disc) {
+            glUseProgram(0);
+            glColor3f(0, 1, 0);
+            ez_scene();
+            glBegin(GL_QUADS);                   /* the same wall, in front */
+            glVertex3f(-1.0f, -1.0f, -0.5f);
+            glVertex3f( 0.0f, -1.0f, -0.5f);
+            glVertex3f( 0.0f,  1.0f, -0.5f);
+            glVertex3f(-1.0f,  1.0f, -0.5f);
+            glEnd();
+
+            glUseProgram(disc);
+            glUniformMatrix4fv(glGetUniformLocation(disc, "uMVP"), 1,
+                               GL_FALSE, ez_identity);
+            gl_shader_fs_count_reset();
+            ez_draw(disc, ez_quad_fs, 4);
+            CHECK(gl_shader_fs_count() == (long)W * H,
+                  "shade-then-depth: a discarding shader runs for every "
+                  "fragment, depth-rejected ones included");
+            /* G11c pixels: the discarded half left the wall alone; the kept
+             * half is red where it passed the depth test. */
+            CHECK(px_is(c, 16, 32, 0, 255, 0, 3),
+                  "a discarded fragment wrote nothing (the wall survives)");
+            CHECK(px_is(c, 48, 32, 255, 0, 0, 3),
+                  "the kept half shows the shader's colour");
+        }
+    }
+
+    /* And on the safe side, the pixel result of a depth-rejected draw is
+     * unchanged by the optimization: the same scene through the safe
+     * program's right half only. */
+    if (safe) {
+        glUseProgram(0);
+        glColor3f(0, 1, 0);
+        ez_scene();
+        glBegin(GL_QUADS);
+        glVertex3f(-1.0f, -1.0f, -0.5f);
+        glVertex3f( 0.0f, -1.0f, -0.5f);
+        glVertex3f( 0.0f,  1.0f, -0.5f);
+        glVertex3f(-1.0f,  1.0f, -0.5f);
+        glEnd();
+
+        glUseProgram(safe);
+        glUniform3f(glGetUniformLocation(safe, "uColor"), 0, 0, 1);
+        gl_shader_fs_count_reset();
+        ez_draw(safe, ez_quad_right, 4);         /* only the visible half */
+        CHECK(gl_shader_fs_count() == (long)(W - W / 2) * (long)H,
+              "no invocation is spent outside the quad");
+        CHECK(px_is(c, 48, 32, 0, 0, 255, 3),
+              "blue on the visible half");
+    }
+
+    aglxDestroyContext(c);
+}
+
 int main(void) {
     printf("=== test_glprog: the shader pipeline (phase G11c) ===\n");
 
@@ -1207,6 +1435,7 @@ int main(void) {
     test_coexistence();
     test_robustness();
     test_realistic();
+    test_early_z();
 
     printf("\ntest_glprog: %d passed, %d failed (%d total)\n",
            passed, failed, tn);

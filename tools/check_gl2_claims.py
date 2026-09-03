@@ -81,6 +81,7 @@ def claims():
     glcube = read("userspace", "demos", "glcube", "glcube.c")
     glgears = read("userspace", "demos", "glgears", "glgears.c")
     opengl = read("docs", "opengl.md")
+    readme = read("README.md")
     checks = []
 
     l0 = phase_done(plan, "L0")
@@ -268,6 +269,59 @@ def claims():
             "L4: /glcube's floor is one quad (tessellation dropped by "
             "measurement)",
             "FLOOR_TILES" not in glcube))
+
+    # --- L5: early-Z predicate + /glshade (when the plan says it landed) ---
+    if l5:
+        sema = read("lib", "libgl", "src", "glsl_sema.c")
+        pipe = read("lib", "libgl", "src", "glshaderpipe.c")
+        glraster = read("lib", "libgl", "src", "glraster.c")
+        glshader = read("lib", "libgl", "src", "glshader.c")
+        tprog = read("tests", "unit", "test_glprog.c")
+        glshade = read("userspace", "demos", "glshade", "glshade.c")
+        checks.append((
+            "L5: the early-Z predicate is a whole-tree discard scan in "
+            "the sema",
+            "glsl_fragment_may_kill_early_z" in sema and
+            "GLSL_NODE_DISCARD" in sema and
+            "gl_FragDepth" in sema))
+        checks.append((
+            "L5: the predicate is per-program linked state, recomputed "
+            "by glLinkProgram",
+            "may_kill_early_z" in glctx and
+            "p->may_kill_early_z = glsl_fragment_may_kill_early_z"
+                in glshader))
+        checks.append((
+            "L5: the rasterizer branches on it — discard shaders shade "
+            "before the tests, safe shaders keep the early-Z order",
+            "shade_then_depth = use_shader && gl_shader_may_kill_early_z"
+                in glraster and
+            "int gl_shader_may_kill_early_z" in pipe))
+        checks.append((
+            "L5: hidden-fragment skip is proved by counting interpreter "
+            "runs, not assumed",
+            "gl_shader_fs_count" in pipe and
+            "test_early_z" in tprog and
+            "gl_shader_fs_count_reset" in tprog))
+        checks.append((
+            "L5: /glshade draws from attributes and has no fixed-function "
+            "fallback (D8) — a glBegin *call*, not a comment mentioning one",
+            "glDrawArrays(" in glshade and
+            "glBegin(" not in glshade and
+            "no program, no fallback" in glshade))
+        checks.append((
+            "L5: /glshade is packaged (USER_GL_APPS, INITRD_DEMOS, "
+            "README row, docs row)",
+            "glshade.elf" in makefile and
+            "INITRD_DEMOS := guess snake glcube glshade" in makefile and
+            "`/demos/glshade`" in readme and
+            "`/glshade`" in opengl))
+        fact5 = plan.split("### Fact 5")[1].split("### Fact 6")[0] \
+            if "### Fact 5" in plan else ""
+        checks.append((
+            "L5: opener Fact 5 records the /glshade amendment (pin 8 "
+            "moved in the same commit)",
+            "glshade" in fact5 and
+            "honestly conclude AuraLite has no shaders" not in fact5))
 
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(

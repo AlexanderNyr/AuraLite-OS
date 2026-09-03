@@ -1493,3 +1493,38 @@ int glsl_check(glsl_unit_t *u) {
 
     return u->error_count == 0;
 }
+
+/* ---- GL2 phase L5: the conservative early-Z predicate ----
+ *
+ * Same cheap whole-tree scan the missing-gl_FragColor check above uses: a
+ * `discard` statement anywhere makes shade-then-depth the only order whose
+ * observable behaviour matches the spec, because a discarded fragment must
+ * reach no framebuffer operation at all.  Everything else can take early-Z.
+ *
+ * A store to `gl_FragDepth` would belong here for the same reason (the depth
+ * test would consult a value the fragment shader computes), but the language
+ * does not have `gl_FragDepth` yet -- when it gains one, this scan must learn
+ * it in the same commit. */
+int glsl_fragment_may_kill_early_z(const glsl_unit_t *u) {
+    if (!u || !u->root) return 0;
+    for (const glsl_node_t *ext = u->root->list; ext; ext = ext->next) {
+        const glsl_node_t *stack[GLSL_MAX_NEST];
+        int top = 0;
+        stack[top++] = ext;
+        while (top > 0) {
+            const glsl_node_t *cur = stack[--top];
+            if (!cur) continue;
+            if (cur->kind == GLSL_NODE_DISCARD) return 1;
+            const glsl_node_t *kids[5] = { cur->a, cur->b, cur->c,
+                                           cur->d, cur->body };
+            for (int i = 0; i < 5 && top < GLSL_MAX_NEST; i++) {
+                if (kids[i]) stack[top++] = kids[i];
+            }
+            for (const glsl_node_t *st = cur->list;
+                 st && top < GLSL_MAX_NEST; st = st->next) {
+                stack[top++] = st;
+            }
+        }
+    }
+    return 0;
+}

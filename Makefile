@@ -952,7 +952,9 @@ USER_GL_OBJ := $(LIBAGL)
 USER_CFLAGS += -I lib/libgl/include
 
 # GL applications: linked with libgl in addition to libauragui.
+# glshade (GL2_PLAN.md L5): the same cube as glcube, lit from GLSL.
 USER_GL_APPS := $(USER_BUILD)/gltest.elf $(USER_BUILD)/glcube.elf \
+                $(USER_BUILD)/glshade.elf \
                 $(USER_BUILD)/glgears.elf $(USER_BUILD)/glrunner.elf
 
 # ---- libatls (INTERNET_PLAN.md phase N1) ----
@@ -1600,6 +1602,13 @@ $(USER_BUILD)/glcube.o: userspace/demos/glcube/glcube.c lib/libauragui/include/a
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
+$(USER_BUILD)/glshade.o: userspace/demos/glshade/glshade.c \
+                         lib/libauragui/include/auragui.h \
+                         lib/libgl/include/GL/gl.h \
+                         lib/libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
 $(USER_BUILD)/glgears.o: userspace/demos/glgears/glgears.c lib/libauragui/include/auragui.h \
                          lib/libgl/include/GL/gl.h lib/libgl/include/GL/glu.h \
                          lib/libgl/include/GL/auraglx.h $(USER_CFLAGS_INC)
@@ -2115,7 +2124,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest dlltest filesize gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
-INITRD_DEMOS := guess snake glcube glgears glrunner
+INITRD_DEMOS := guess snake glcube glshade glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \

@@ -724,6 +724,7 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/demos/guess` | Number guessing game. |
 | `/demos/snake` | Terminal snake game. |
 | `/demos/glcube` | OpenGL demo: lit, textured, depth-buffered rotating cube over a mipmapped floor, with a render-to-texture inset panel. |
+| `/demos/glshade` | The same cube lit from a GLSL program: a per-fragment Lambert shader over generic vertex attributes and `glDrawArrays` (GL2 L5). No fixed-function fallback — if the program does not link, it says why and exits. |
 | `/demos/glgears` | OpenGL demo: the classic three-gear benchmark. |
 | `/tests/selftest` | Userspace regression checks for usercopy, FD and socket syscalls. |
 | `/tests/gltest` | OpenGL regression checks (prints PASS/FAIL to serial). |

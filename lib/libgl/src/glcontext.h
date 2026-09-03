@@ -268,6 +268,13 @@ typedef struct {
     GLuint   vertex_shader;      /* attached names, 0 when none            */
     GLuint   fragment_shader;
     GLboolean linked;
+    /* GL2 phase L5: 1 when the linked fragment shader contains anything that
+     * makes shade-then-depth the only correct order (a `discard` today; a
+     * `gl_FragDepth` store once the language grows one).  Set by every
+     * glLinkProgram from the fragment AST (glsl_fragment_may_kill_early_z).
+     * Sits in the alignment padding after `linked`, so the context does not
+     * grow. */
+    int      may_kill_early_z;
     char    *log;
 
     /* Linked state.  Rebuilt from scratch by every glLinkProgram, so a

@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL, the second series (the leftovers)
 
-## Status: IN PROGRESS — L0–L4 landed; L5–L7 specified
+## Status: IN PROGRESS — L0–L5 landed; L6–L7 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -9,7 +9,7 @@
 | L2 — copies | ✅ complete | `patches/GL2_L2_copies.patch` |
 | L3 — texture leftovers | ✅ complete | `patches/GL2_L3_texture.patch` |
 | L4 — per-fragment mipmap LOD | ✅ complete | `patches/GL2_L4_lod.patch` |
-| L5 — shader-path fitness | — | early-Z + `/glshade` |
+| L5 — shader-path fitness | ✅ complete | `patches/GL2_L5_earlyz.patch` |
 | L6 — VirGL `DRAW_VBO` | — | canned TGSI triangle on the G13 seam |
 | L7 — close-out | — | docs, residue, checker, terminal arithmetic |
 
@@ -133,10 +133,16 @@ optimisation the interpreter can take without changing the language:
 test will reject, when the shader cannot write `gl_FragDepth` and
 cannot `discard`.
 
-And nothing shipped *draws* with it. `userspace/demos/glcube` and
-`glgears` contain no `glCreateShader` / `glUseProgram`. G11's pixels
-exist in `/gltest` and the host tests. A reader of the demos can
-honestly conclude AuraLite has no shaders.
+And, at the time G11 closed, nothing shipped *drew* with it:
+`userspace/demos/glcube` and `glgears` still contain no
+`glCreateShader` / `glUseProgram`, and G11's pixels existed only in
+`/gltest` and the host tests. GL2 L5 closes the visible half of that
+with `/glshade` — the cube, lit from a Lambert program — and makes the
+interpreter cost smaller where the scene allows it: the conservative
+early-Z predicate (no `discard`, no `gl_FragDepth`) keeps hidden
+fragments out of the shader, and forces shade-then-depth on the
+shaders that would change the tests' outcome. The 53.8 ms full-screen
+number stands; see the L5 Result.
 
 ### Fact 6 — The hardware draw seam is missing twice
 
@@ -583,7 +589,7 @@ span; the demo comment records the measurement and why.
 
 ### L5 — Shader-path fitness: early-Z and `/glshade`
 
-**Status:** not started
+**Status: ✅ COMPLETE** (`patches/GL2_L5_earlyz.patch`).
 
 **Objective:** make the G11 path something a human can see, and take
 the one optimisation that does not require a new language backend.
@@ -611,9 +617,9 @@ Design:
 
 Tasks:
 
-- [ ] Sema flag `may_kill_early_z` on the fragment AST; honour it
+- [x] Sema flag `may_kill_early_z` on the fragment AST; honour it
       in the rasterizer before `glsl_run` on the fragment.
-- [ ] Host test: a full-screen shaded quad *behind* an already-drawn
+- [x] Host test: a full-screen shaded quad *behind* an already-drawn
       opaque quad must not invoke the fragment shader for the hidden
       pixels (count via a side-channel counter in the interpreter
       env, test-only). A shader with `discard` must *not* take
@@ -623,20 +629,82 @@ Tasks:
       test is: `discard` shader + early-Z *disabled* produces the
       G11c pixels; enabling early-Z on a `discard` shader is the
       bug the predicate exists to prevent.
-- [ ] Re-measure Lambert at 320×240 with a depth-prepass and
+- [x] Re-measure Lambert at 320×240 with a depth-prepass and
       without; table in this section.
-- [ ] `/glshade` demo + README apps table row + initrd packaging.
-- [ ] Opener pin 8 moves.
+- [x] `/glshade` demo + README apps table row + initrd packaging.
+- [x] Opener pin 8 moves.
+
+Landed as designed, with one correction to this section's premise and
+one measurement surprise, both recorded here rather than smoothed over.
+
+*The premise.* This phase described early-Z as an optimisation to
+take; in the tree the order was already depth-test-then-shade for
+every shader — G11c had banked the win and shipped an *unsound* version
+of it: a `discard` shader's hidden fragments skipped the interpreter
+and took stencil zfail operations, while §4.1.5 says a discarded
+fragment reaches no framebuffer operation at all. What L5 adds is the
+predicate that makes the order conditional and therefore correct:
+
+| Shader at link time | Order | Why |
+|---|---|---|
+| No `discard` anywhere in the fragment AST | stencil/depth tests first; rejected fragments never reach the interpreter | the shader cannot change the tests' outcome |
+| `discard` present | shaded first; a discarded fragment leaves colour, stencil and depth exactly as they were | §4.1.5 — its whole purpose is to overrule the tests |
+
+The flag is per-program linked state (`may_kill_early_z`, recomputed
+on every `glLinkProgram`), sits in alignment padding so neither
+`gl_program_t` (12152 before and after) nor the context (240 304)
+grows, and the scan is the same whole-tree walk as the
+missing-`gl_FragColor` check. The language has no `gl_FragDepth`; the
+scan's comment binds the future store to join it in the same commit.
+Points and lines: no depth test exists for them yet, so early-Z does
+not apply — N/A, not skipped.
+
+*The test.* `test_glprog` grows a counter (`gl_shader_fs_count`, a
+test-only side channel incremented at the top of the fragment runner)
+and four scenes: a safe full-screen quad alone shades 4 096/4 096
+fragments at 64×64; the same quad behind a fixed-function wall shades
+exactly the visible half (2 048) and the wall keeps its colour; a
+`discard` shader over the same wall shades **all 4 096** —
+shade-then-depth — and the discarded half still leaves the wall's
+green intact; a right-half quad shades 2 048. `test_glprog` 118/118,
+`test_glcoexist` 59, `test_glslexec` 179, `test_glraster` 43,
+`test_glstencil` 34.
+
+*The measurement.* Full-screen Lambert at 320×240, this host,
+24-frame average — the counter reports what actually ran:
+
+| Scene | ms/frame | Interpreter runs/frame |
+|---|---|---|
+| Lambert quad alone (the G11c setup) | 38.9–45.8 run-to-run (G11c recorded 53.8) | 76 800 |
+| Lambert quad behind a full-screen fixed-function wall, predicate live | 1.1 | 0 |
+| Same, predicate forced to 0 | 1.2 | 0 |
+
+The honest reading: the prepass win was **already banked** by G11c's
+draw-call order — forcing the predicate off changes nothing, because
+"off" for a safe shader is the same tests-first order. Early-Z does
+not move the 53.8 ms number; as the JIT/bytecode row above already
+rules, no VM was invented to chase it. What the predicate buys is soundness, and what it costs is
+exactly visible: the `discard` shader behind the same wall pays all
+4 096 interpreter runs where the safe shader pays none — the price of
+a fragment shader that means what it says.
+
+*`/glshade`.* The visual twin of `/glcube`: same window chrome, same
+keys, the cube lit by a Lambert program instead of
+`glEnable(GL_LIGHTING)`. Geometry through generic vertex attributes
+and `glDrawArrays` (D8); its own column-major mat4; uMVP plus a
+pure-rotation uniform for normals. Fixed-function fallback is absent
+by design — a failed compile or link prints the info log and exits
+non-zero. Packaged like `/glcube` (Makefile `USER_GL_APPS` +
+`INITRD_DEMOS`), frame limit via `/tmp/glshade.frames`, README apps
+row added.
 
 **Definition of done:** `/glshade` draws a lit cube from GLSL;
 early-Z predicate is tested, not assumed; Lambert numbers recorded;
-D8 holds (`/glshade` uses attributes, not `glBegin`).
+D8 holds (`/glshade` uses attributes, not `glBegin`). — **met.**
 
 **Test gate:** `test_glprog` / `test_glcoexist` still green;
 `/glshade` packaged; `/gltest` shader block unmodified (D3);
-`make test-unit` EXIT 0.
-
-**Result:** —
+`make test-unit` EXIT 0. — **green.**
 
 ---
 
@@ -786,12 +854,12 @@ Baseline column is L0's job. Later columns land with their phase.
 | `glMatrixMode(GL_TEXTURE)` | `INVALID_OPERATION` | | | **legal** | | | |
 | `GL_COMBINE` | absent | | | **present** | | | |
 | Mipmap LOD | per-triangle | | | **per-fragment** | | | |
-| Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | (early-Z) | |
+| Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | **38.9–45.8; behind a wall 1.1** | |
 | `/glshade` | absent | | | | | **shipped** | |
 | VirGL draw | present-only | | | | | | **canned Δ** |
-| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | **240 304** | **240 304** | | |
-| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | **18** | **18** | | |
-| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | **411** | **411** | | |
+| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | **240 304** | **240 304** | **240 304** | |
+| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | **18** | **18** | **18** | |
+| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | **411** | **411** | **411** | |
 
 Residue opened at L7 (expected):
 
