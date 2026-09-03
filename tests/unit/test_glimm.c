@@ -270,6 +270,74 @@ static int t_ortho_validation(void) {
     return ok;
 }
 
+/* GL2 L3: glMatrixMode(GL_TEXTURE) is legal; the stack starts at identity. */
+static int t_texture_matrix_mode_legal(void) {
+    aglx_context_t *c = aglxCreateContext(1, W, H, AGLX_DEFAULT);
+    if (!c) return 0;
+    aglxMakeCurrent(c);
+    while (glGetError() != GL_NO_ERROR) { }
+    glMatrixMode(GL_TEXTURE);
+    int ok = glGetError() == GL_NO_ERROR && c->matrix_mode == GL_TEXTURE;
+    glm_mat4 id = glm_mat4_identity();
+    glm_mat4 *cur = gl_current_matrix(c);
+    ok = ok && cur != (glm_mat4 *)0;
+    if (cur) {
+        for (int i = 0; i < 16; i++) if (!feq(cur->m[i], id.m[i])) ok = 0;
+    }
+    GLint depth = 0, maxd = 0;
+    glGetIntegerv(GL_TEXTURE_STACK_DEPTH, &depth);
+    glGetIntegerv(GL_MAX_TEXTURE_STACK_DEPTH, &maxd);
+    ok = ok && depth == 1 && maxd == GL_TEXTURE_STACK_DEPTH_IMPL;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* Texture-matrix stack depth is 2: one push works, the next overflows. */
+static int t_texture_matrix_stack(void) {
+    aglx_context_t *c = aglxCreateContext(1, W, H, AGLX_DEFAULT);
+    if (!c) return 0;
+    aglxMakeCurrent(c);
+    glMatrixMode(GL_TEXTURE);
+    glTranslatef(3, 0, 0);
+    glPushMatrix();
+    int ok = glGetError() == GL_NO_ERROR;
+    glTranslatef(1, 0, 0);
+    ok = ok && feq(gl_current_matrix(c)->m[12], 4.0f);
+    glPopMatrix();
+    ok = ok && feq(gl_current_matrix(c)->m[12], 3.0f);
+    glPushMatrix();
+    glPushMatrix();                        /* overflow */
+    ok = ok && glGetError() == GL_STACK_OVERFLOW;
+    ok = ok && feq(gl_current_matrix(c)->m[12], 3.0f);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* Each unit has its own texture matrix. */
+static int t_texture_matrix_per_unit(void) {
+    aglx_context_t *c = aglxCreateContext(1, W, H, AGLX_DEFAULT);
+    if (!c) return 0;
+    aglxMakeCurrent(c);
+    glActiveTexture(GL_TEXTURE0);
+    glMatrixMode(GL_TEXTURE);
+    glLoadIdentity();
+    glTranslatef(2, 0, 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glLoadIdentity();
+    glTranslatef(0, 5, 0);
+
+    GLfloat m0[16], m1[16];
+    glActiveTexture(GL_TEXTURE0);
+    glGetFloatv(GL_TEXTURE_MATRIX, m0);
+    glActiveTexture(GL_TEXTURE1);
+    glGetFloatv(GL_TEXTURE_MATRIX, m1);
+    int ok = feq(m0[12], 2.0f) && feq(m0[13], 0.0f)
+          && feq(m1[12], 0.0f) && feq(m1[13], 5.0f);
+    aglxDestroyContext(c);
+    return ok;
+}
+
 /* ====================================================== immediate mode === */
 
 static int t_begin_end_basic(void) {
@@ -868,6 +936,8 @@ int main(void) {
     RUN(t_load_matrix); RUN(t_load_matrix_null);
     RUN(t_transform_order); RUN(t_rotatef_degrees);
     RUN(t_frustum_validation); RUN(t_ortho_validation);
+    RUN(t_texture_matrix_mode_legal); RUN(t_texture_matrix_stack);
+    RUN(t_texture_matrix_per_unit);
 
     printf("--- immediate mode ---\n");
     RUN(t_begin_end_basic); RUN(t_begin_invalid_mode); RUN(t_nested_begin);

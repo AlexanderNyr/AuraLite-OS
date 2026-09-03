@@ -17,7 +17,10 @@
 /* ---- Limits (GL 1.1 requires at least 32 / 2; we are more generous) ---- */
 #define GL_MODELVIEW_STACK_DEPTH   32
 #define GL_PROJECTION_STACK_DEPTH  8
-#define GL_TEXTURE_STACK_DEPTH     4
+/* Per-unit texture-matrix stack.  Named _IMPL so it does not collide with
+ * the GL query token GL_TEXTURE_STACK_DEPTH (0x0BA5) in gl.h.  Depth 2 is
+ * GL2 L3's budget: enough for a push/pop around a slide, not a nest. */
+#define GL_TEXTURE_STACK_DEPTH_IMPL  2
 
 /* glPushAttrib stack depth.  GL 1.1 requires at least 16. */
 #define GL_ATTRIB_STACK_DEPTH      16
@@ -36,11 +39,11 @@
  */
 #define GL_MAX_MIPMAP_LEVELS       13
 
-/* Texture units for multitexturing (GL 1.3 §3.8.10).  Two is the minimum the
- * specification requires and the number the fixed-function combine path here
- * is written for; raising it costs a sampler call per fragment per unit, which
- * is the single most expensive thing in the inner loop. */
-#define GL_MAX_TEXTURE_UNITS_IMPL  2
+/* Texture units for multitexturing (GL 1.3 §3.8.10).  Four is GL2 L3's
+ * budget: the G10 minimum of two plus room for a lightmap and a detail
+ * layer, without the 8-unit blow-up that put a 130 KB context on the C
+ * stack.  Every extra unit is a sampler call per fragment. */
+#define GL_MAX_TEXTURE_UNITS_IMPL  4
 
 /* Cube map faces, in the order the GL_TEXTURE_CUBE_MAP_* enums are numbered:
  * +X, -X, +Y, -Y, +Z, -Z. */
@@ -144,8 +147,18 @@ typedef struct {
 typedef struct {
     GLboolean  enabled_2d, enabled_3d, enabled_cube;
     GLuint     binding_2d, binding_3d, binding_cube;
-    GLenum     env_mode;         /* MODULATE / REPLACE / DECAL / BLEND      */
+    GLenum     env_mode;         /* MODULATE / REPLACE / DECAL / BLEND / COMBINE */
     gl_color_t env_color;
+    /* GL 1.3 COMBINE (GL2 L3).  Defaults match §3.8.13 so COMBINE+MODULATE
+     * is pixel-identical to the GL 1.1 MODULATE path (D3). */
+    GLenum     combine_rgb, combine_alpha;
+    GLenum     src_rgb[3], src_alpha[3];
+    GLenum     operand_rgb[3], operand_alpha[3];
+    GLfloat    rgb_scale, alpha_scale;
+    /* Per-unit texture matrix (GL 1.3).  Identity default, so existing UVs
+     * are unchanged until an application asks (D3). */
+    glm_mat4   texture_matrix[GL_TEXTURE_STACK_DEPTH_IMPL];
+    int        texture_matrix_top;
 } gl_texunit_t;
 
 /* ---- Renderbuffer object (§4.4.2) ----

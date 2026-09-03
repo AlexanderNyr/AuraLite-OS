@@ -110,16 +110,16 @@ frames, so output is tear-free without extra work.
 |---|---|
 | Context | `aglxCreateContext` / `MakeCurrent` / `SwapBuffers` / `Resize` / `DestroyContext` |
 | Buffers | Colour (XRGB8888), optional depth (float), optional 8-bit stencil; `glClear`, `glClearColor`, `glClearDepth`, `glClearStencil` |
-| Matrices | `GL_MODELVIEW` (32 deep) and `GL_PROJECTION` (8 deep); `glPushMatrix`/`glPopMatrix`, `glLoadIdentity`, `glLoadMatrixf`, `glMultMatrixf`, `glTranslatef`, `glRotatef`, `glScalef`, `glFrustum`, `glOrtho` |
+| Matrices | `GL_MODELVIEW` (32 deep), `GL_PROJECTION` (8 deep) and `GL_TEXTURE` (2 deep, per unit); `glPushMatrix`/`glPopMatrix`, `glLoadIdentity`, `glLoadMatrixf`, `glMultMatrixf`, `glTranslatef`, `glRotatef`, `glScalef`, `glFrustum`, `glOrtho` |
 | Immediate mode | All ten primitive modes; `glVertex2f/3f/4f(v)`, `glColor3f/4f/3ub/4ub(v)`, `glNormal3f(v)`, `glTexCoord2f(v)`, `glTexCoord3f`, `glMultiTexCoord2f` |
 | Rasterizer | Edge-function triangles with barycentric interpolation, Bresenham lines, points; top-left fill rule |
 | Depth | All eight comparison functions, `glDepthMask` |
 | Culling | `glCullFace` (FRONT/BACK/FRONT_AND_BACK), `glFrontFace` (CW/CCW) |
 | Clipping | All six frustum planes, attributes interpolated at the cut |
 | Lighting | 8 lights (positional, directional, spot), Blinn–Phong specular, distance attenuation, front/back materials, `GL_COLOR_MATERIAL`, `GL_NORMALIZE` |
-| Texturing | 2D textures, `GL_RGB`/`RGBA`/`LUMINANCE`/`LUMINANCE_ALPHA`/`ALPHA`, nearest and bilinear, `GL_REPEAT`/`CLAMP`/`CLAMP_TO_EDGE`/`CLAMP_TO_BORDER`, `MODULATE`/`REPLACE`/`DECAL`/`BLEND`, **perspective-correct** interpolation |
+| Texturing | 2D textures, `GL_RGB`/`RGBA`/`LUMINANCE`/`LUMINANCE_ALPHA`/`ALPHA`, nearest and bilinear, `GL_REPEAT`/`CLAMP`/`CLAMP_TO_EDGE`/`CLAMP_TO_BORDER`, `MODULATE`/`REPLACE`/`DECAL`/`BLEND`/`COMBINE` (GL 1.3 §3.8.13 subset), **perspective-correct** interpolation |
 | Mipmaps | Full chains, all four mipmap filters, `glGenerateMipmap`, `gluBuild2DMipmaps`, `GL_TEXTURE_BASE_LEVEL`/`MAX_LEVEL`; **per-triangle** LOD (see below) |
-| Multitexturing | 2 units, `glActiveTexture`, `glClientActiveTexture`, per-unit enables, bindings and environment |
+| Multitexturing | 4 units, `glActiveTexture`, `glClientActiveTexture`, per-unit enables, bindings, environment and texture matrix |
 | 3D textures | `glTexImage3D`, `GL_TEXTURE_3D`, trilinear sampling, `GL_TEXTURE_WRAP_R` |
 | Cube maps | `GL_TEXTURE_CUBE_MAP`, six faces, direction-vector lookup by major axis, mipmapped |
 | Fragment ops | Alpha test, blending (full factor set), fog (`LINEAR`/`EXP`/`EXP2`), scissor, stencil (`glStencilFunc`/`Op`/`Mask`, eight compares, wrap vs saturate) |
@@ -139,12 +139,9 @@ frames, so output is tear-free without extra work.
 |---|---|
 | Geometry/tessellation/compute shaders | ES 2.0 has vertex and fragment stages only |
 | Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
-| `GL_COMBINE` texture environment | The GL 1.3 programmable combiner is absent; the four GL 1.1 modes are present |
-| More than 2 texture units | `GL_MAX_TEXTURE_UNITS` reports the real limit; raise `GL_MAX_TEXTURE_UNITS_IMPL` to change it |
 | Accumulation buffer | Not present |
 | Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
 | Evaluators, feedback, selection | Not present |
-| `GL_TEXTURE` matrix mode | `glMatrixMode(GL_TEXTURE)` reports `GL_INVALID_OPERATION` rather than silently doing nothing |
 | Hardware-accelerated **drawing** | The VirGL backend implements probe, clear and present (G13). `DRAW_VBO` needs the GLSL compiler retargeted to TGSI, which is a compiler back end and a phase in its own right |
 
 ---
@@ -216,12 +213,30 @@ derivative is not, in a rasterizer whose bottleneck is already arithmetic.
 Per-fragment LOD is possible by carrying `du/dx` through the edge functions
 and is the natural follow-up if the per-triangle version proves too coarse.
 
-**Texture units combine in order.** Unit 0's output becomes unit 1's incoming
-fragment colour, so `GL_MODULATE` on both units yields the product of the two
-textures. `glTexEnv`, `glTexParameter`, `glTexImage*` and `glBindTexture` all
-act on the unit selected by `glActiveTexture`; the *client* selector used by
+**Texture units combine in order.** There are four (`GL_MAX_TEXTURE_UNITS`).
+Unit 0's output becomes unit 1's incoming fragment colour, and so on, so
+`GL_MODULATE` on two units yields the product of the two textures. `glTexEnv`,
+`glTexParameter`, `glTexImage*` and `glBindTexture` all act on the unit
+selected by `glActiveTexture`; the *client* selector used by
 `glTexCoordPointer` is separate and set by `glClientActiveTexture`. `glTexCoord`
 itself always writes unit 0 — `glActiveTexture` does not redirect it.
+
+**`GL_COMBINE` is the GL 1.3 combiner, not a silent `MODULATE`.** Sources
+`TEXTURE` / `CONSTANT` / `PRIMARY_COLOR` / `PREVIOUS`; RGB functions
+`REPLACE` / `MODULATE` / `ADD` / `ADD_SIGNED` / `INTERPOLATE` / `SUBTRACT` /
+`DOT3_RGB` / `DOT3_RGBA` (alpha has the same set minus DOT3); operands
+`SRC_COLOR` / `ONE_MINUS_SRC_COLOR` / `SRC_ALPHA` / `ONE_MINUS_SRC_ALPHA`
+(alpha operands are the alpha pair only); scales 1 / 2 / 4. Defaults match
+table 3.22, so COMBINE with no extra setup is pixel-identical to GL 1.1
+`MODULATE`. An unknown function is `GL_INVALID_ENUM`; a scale other than
+1/2/4 is `GL_INVALID_VALUE`. `GL_ADD` as a GL 1.1 *env mode* is still
+refused — it is only a combiner function.
+
+**The texture matrix is per unit, identity by default.** Stack depth 2.
+`glMatrixMode(GL_TEXTURE)` is legal and addresses the active unit's stack.
+The matrix is applied to `(s, t, r, q)` at the vertex, before clip, so
+clipping interpolates the post-matrix coordinates. `GetFloatv(GL_TEXTURE_MATRIX)`
+returns the active unit's top.
 
 **Framebuffer objects redirect the rasterizer's target pointers.** Binding
 an FBO points `ctx->color` / `depth` / `stencil` / `width` / `height` at the
@@ -736,7 +751,7 @@ syscall for 3D submission.
 |---|---|
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
-| `/gltest` | Regression suite: 402 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 411 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 Both demos read an optional frame limit from a file — `/tmp/glcube.frames` and
 `/tmp/glgears.frames` — because the shell's `run` command uses `spawn()`, which
@@ -757,16 +772,16 @@ Both also appear in the `/glaunch` application launcher.
 |---|---|
 | `tests/unit/test_glmath.c` | Vector and matrix math, 37 checks |
 | `tests/unit/test_glstate.c` | Context lifecycle, error contract, clearing, 37 |
-| `tests/unit/test_glimm.c` | Matrix stacks, immediate mode, transform pipeline, 51 |
+| `tests/unit/test_glimm.c` | Matrix stacks, immediate mode, transform pipeline, 54 |
 | `tests/unit/test_glraster.c` | Fill correctness, depth, culling, fill rule, 43 |
 | `tests/unit/test_glclip.c` | Frustum clipping and the attribute stack, 28 |
 | `tests/unit/test_gllight.c` | The lighting equation and materials, 32 |
 | `tests/unit/test_gltex.c` | Texturing, perspective correction, blending, fog, 37 |
-| `tests/unit/test_gltex2.c` | Mipmaps, multitexturing, 3D textures, cube maps, 36 |
+| `tests/unit/test_gltex2.c` | Mipmaps, multitexturing, 3D textures, cube maps, COMBINE / texture matrix / 4 units, 42 |
 | `tests/unit/test_glarray.c` | Arrays, buffer objects, display lists, 36 |
 | `tests/unit/test_glu.c` | GLU helpers and quadrics, 21 |
 | `tests/unit/test_glbackend.c` | The backend seam and the VirGL candidate, 17 |
-| `tests/unit/test_glfbo.c` | Framebuffer objects, renderbuffers, `glReadPixels`, 36 |
+| `tests/unit/test_glfbo.c` | Framebuffer objects, renderbuffers, `glReadPixels`, copies/blit, 48 |
 | `tests/unit/test_glstencil.c` | 8-bit stencil plane, func × op, two-pass clip, FBO attach, 34 |
 | `tests/unit/test_glsl.c` | The GLSL ES 1.0 front end: lexing, parsing, types, diagnostics, 167 |
 | `tests/unit/test_glslexec.c` | The execution engine, checked numerically, 179 |
@@ -812,4 +827,3 @@ twice over — APs run user threads, and the R5 receipt pins it.)
 
 If the program needs a frame limit for CI, read it from a file under `/tmp`
 rather than from `argv`.
-han from `argv`.

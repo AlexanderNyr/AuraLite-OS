@@ -136,8 +136,11 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_SCISSOR_TEST                   0x0C11
 #define GL_MODELVIEW_MATRIX               0x0BA6
 #define GL_PROJECTION_MATRIX              0x0BA7
+#define GL_TEXTURE_MATRIX                 0x0BA8
+#define GL_TEXTURE_STACK_DEPTH            0x0BA5
 #define GL_MAX_MODELVIEW_STACK_DEPTH      0x0D36
 #define GL_MAX_PROJECTION_STACK_DEPTH     0x0D38
+#define GL_MAX_TEXTURE_STACK_DEPTH        0x0D39
 
 /* ---- Lighting (§2.14) ---- */
 #define GL_LIGHTING                       0x0B50
@@ -279,6 +282,36 @@ typedef double         GLclampd;    /* double precision, clamped to [0,1] */
 #define GL_ACTIVE_TEXTURE                 0x84E0
 #define GL_CLIENT_ACTIVE_TEXTURE          0x84E1
 #define GL_MAX_TEXTURE_UNITS              0x84E2
+
+/* Texture environment COMBINE (GL 1.3 section 3.8.13 / GL2 L3).
+ * GL_ADD is the classic 0x0104 token. As a COMBINE function it means
+ * Arg0 + Arg1; it is not a GL 1.1 env mode here. */
+#define GL_ADD                            0x0104
+#define GL_COMBINE                        0x8570
+#define GL_COMBINE_RGB                    0x8571
+#define GL_COMBINE_ALPHA                  0x8572
+#define GL_RGB_SCALE                      0x8573
+#define GL_ADD_SIGNED                     0x8574
+#define GL_INTERPOLATE                    0x8575
+#define GL_CONSTANT                       0x8576
+#define GL_PRIMARY_COLOR                  0x8577
+#define GL_PREVIOUS                       0x8578
+#define GL_SOURCE0_RGB                    0x8580
+#define GL_SOURCE1_RGB                    0x8581
+#define GL_SOURCE2_RGB                    0x8582
+#define GL_SOURCE0_ALPHA                  0x8588
+#define GL_SOURCE1_ALPHA                  0x8589
+#define GL_SOURCE2_ALPHA                  0x858A
+#define GL_OPERAND0_RGB                   0x8590
+#define GL_OPERAND1_RGB                   0x8591
+#define GL_OPERAND2_RGB                   0x8592
+#define GL_OPERAND0_ALPHA                 0x8598
+#define GL_OPERAND1_ALPHA                 0x8599
+#define GL_OPERAND2_ALPHA                 0x859A
+#define GL_ALPHA_SCALE                    0x0D1C
+#define GL_SUBTRACT                       0x84E7
+#define GL_DOT3_RGB                       0x86AE
+#define GL_DOT3_RGBA                      0x86AF
 
 /* ---- Framebuffer objects (GL 3.0 / EXT_framebuffer_object, phase G12) ----
  *

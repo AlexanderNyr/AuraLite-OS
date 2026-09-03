@@ -2,6 +2,31 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L3 — texture leftovers] 2026-09-02
+
+`GL2_PLAN.md` phase L3: finish the G10 texture story — COMBINE, a
+per-unit `GL_TEXTURE` matrix, and four units together. The checker
+pins move only because all three landed.
+
+- `GL_COMBINE` (GL 1.3 §3.8.13 subset): RGB functions REPLACE /
+  MODULATE / ADD / ADD_SIGNED / INTERPOLATE / SUBTRACT / DOT3_RGB /
+  DOT3_RGBA; sources TEXTURE / CONSTANT / PRIMARY_COLOR / PREVIOUS;
+  operands SRC_COLOR / ONE_MINUS_SRC_COLOR / SRC_ALPHA /
+  ONE_MINUS_SRC_ALPHA; scales 1/2/4. Defaults match table 3.22, so
+  COMBINE with no extra setup is pixel-identical to GL 1.1 MODULATE
+  (D3). Unknown function → `GL_INVALID_ENUM`, not a silent MODULATE
+  (D4). `GL_ADD` as a 1.1 env mode is still refused.
+- Texture matrix: per unit, stack depth 2, identity default.
+  `glMatrixMode(GL_TEXTURE)` is legal. Applied to `(s,t,r,q)` at the
+  vertex, before clip.
+- `GL_MAX_TEXTURE_UNITS_IMPL` 2 → **4**. No `aglx_context` on the C
+  stack. `sizeof(aglx_context)` 239 384 → **240 304** (+920 B).
+- Host `test_gltex2` 36 → 42; `test_glimm` 51 → 54. `/gltest` +9 →
+  411. Opener pins 1, 2 and 5-COMBINE moved in
+  `tools/check_gl2_claims.py`.
+- `docs/opengl.md`: COMBINE, units and texture-matrix rows dropped
+  from Not-implemented.
+
 ## [GL2 L2 — copies] 2026-09-02
 
 `GL2_PLAN.md` phase L2: the pixels were already there; applications

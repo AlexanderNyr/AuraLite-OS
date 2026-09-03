@@ -3101,6 +3101,139 @@ static void test_gl_copies(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- GL2 L3: COMBINE, texture matrix, 4 units ---- */
+static void test_gl_tex_l3(int wid) {
+    printf("[gl] --- L3: COMBINE, texture matrix, 4 units ---\n");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, GL_W, GL_H, AGLX_DEPTH);
+    check(ctx != NULL, "l3_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    const uint32_t *cb = aglxGetColorBuffer(ctx);
+    #define AT(x, y) cb[(size_t)(GL_H - 1 - (y)) * GL_W + (x)]
+
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glOrtho(0, GL_W, 0, GL_H, -10, 10);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+    glClearColor(0, 0, 0, 1);
+    glColor3f(1, 1, 1);
+
+    GLint units = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_UNITS, &units);
+    check(units == 4, "l3_units_is_4");
+
+    while (glGetError() != GL_NO_ERROR) { }
+    glMatrixMode(GL_TEXTURE);
+    check(glGetError() == GL_NO_ERROR, "l3_matrix_mode_ok");
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);
+
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+    check(glGetError() == GL_NO_ERROR, "l3_combine_accepted");
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, 0x1234);
+    check(glGetError() == GL_INVALID_ENUM, "l3_combine_unknown_refused");
+
+    /* Three units: REPLACE (64,0,0) then COMBINE ADD (0,64,0) then ADD (0,0,64)
+     * → (64,64,64). */
+    {
+        static const unsigned char c0[3] = { 64, 0, 0 };
+        static const unsigned char c1[3] = { 0, 64, 0 };
+        static const unsigned char c2[3] = { 0, 0, 64 };
+        GLuint t[3] = { 0, 0, 0 };
+        for (int u = 0; u < 3; u++) {
+            const unsigned char *pxl = (u == 0) ? c0 : (u == 1) ? c1 : c2;
+            glActiveTexture((GLenum)(GL_TEXTURE0 + u));
+            glGenTextures(1, &t[u]);
+            glBindTexture(GL_TEXTURE_2D, t[u]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB,
+                         GL_UNSIGNED_BYTE, pxl);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glEnable(GL_TEXTURE_2D);
+            if (u == 0) {
+                glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+            } else {
+                glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+                glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_ADD);
+                glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+                glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PREVIOUS);
+            }
+        }
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glMultiTexCoord2f(GL_TEXTURE1, 0, 0);
+        glMultiTexCoord2f(GL_TEXTURE2, 0, 0);
+        glTexCoord2f(0, 0); glVertex3f(10, 10, 0);
+        glMultiTexCoord2f(GL_TEXTURE1, 1, 0);
+        glMultiTexCoord2f(GL_TEXTURE2, 1, 0);
+        glTexCoord2f(1, 0); glVertex3f(GL_W - 10, 10, 0);
+        glMultiTexCoord2f(GL_TEXTURE1, 1, 1);
+        glMultiTexCoord2f(GL_TEXTURE2, 1, 1);
+        glTexCoord2f(1, 1); glVertex3f(GL_W - 10, GL_H - 10, 0);
+        glMultiTexCoord2f(GL_TEXTURE1, 0, 1);
+        glMultiTexCoord2f(GL_TEXTURE2, 0, 1);
+        glTexCoord2f(0, 1); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        {
+            uint32_t p = AT(GL_W / 2, GL_H / 2);
+            int r = (p >> 16) & 0xFF, g = (p >> 8) & 0xFF, b = p & 0xFF;
+            check(r > 58 && r < 70 && g > 58 && g < 70 && b > 58 && b < 70,
+                  "l3_three_units_combine");
+        }
+        for (int u = 0; u < 3; u++) {
+            glActiveTexture((GLenum)(GL_TEXTURE0 + u));
+            glDisable(GL_TEXTURE_2D);
+            glDeleteTextures(1, &t[u]);
+        }
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    /* Texture-matrix slide: 2-wide red|green, UV 0.25 → red, +0.5 → green. */
+    {
+        static const unsigned char rg[6] = { 255, 0, 0,  0, 255, 0 };
+        GLuint id = 0;
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D, id);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2, 1, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, rg);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glEnable(GL_TEXTURE_2D);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(10, 10, 0);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(GL_W - 10, 10, 0);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(GL_W - 10, GL_H - 10, 0);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        check(AT(GL_W / 2, GL_H / 2) == 0xFF0000, "l3_matrix_slide_before");
+
+        glMatrixMode(GL_TEXTURE);
+        glLoadIdentity();
+        glTranslatef(0.5f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(10, 10, 0);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(GL_W - 10, 10, 0);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(GL_W - 10, GL_H - 10, 0);
+        glTexCoord2f(0.25f, 0.5f); glVertex3f(10, GL_H - 10, 0);
+        glEnd();
+        check(AT(GL_W / 2, GL_H / 2) == 0x00FF00, "l3_matrix_slide_after");
+        glLoadIdentity();
+        glMatrixMode(GL_MODELVIEW);
+        glDisable(GL_TEXTURE_2D);
+        glDeleteTextures(1, &id);
+    }
+
+    check(glGetError() == GL_NO_ERROR, "l3_no_pending_error");
+    #undef AT
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G7: vertex arrays, VBOs, display lists ---- */
 static void test_gl_arrays(int wid) {
     printf("[gl] --- G7: arrays, VBOs, display lists ---\n");
@@ -3736,6 +3869,8 @@ int main(void) {
     test_gl_texture(wid);
     test_gl_texture2(wid);
     test_gl_fbo(wid);
+    test_gl_copies(wid);
+    test_gl_tex_l3(wid);
     test_gl_stencil(wid);
     test_gl_arrays(wid);
     test_gl_glu(wid);

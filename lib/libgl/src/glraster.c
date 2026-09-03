@@ -743,6 +743,7 @@ void gl_raster_triangle(struct aglx_context *ctx,
                         cc.b = l0 * v0->color.b + l1 * v1->color.b + l2 * v2->color.b;
                         cc.a = l0 * v0->color.a + l1 * v1->color.a + l2 * v2->color.a;
                     }
+                    gl_color_t primary = cc;
 
                     /* ---- Texturing, perspective-correct, unit by unit ----
                      *
@@ -766,7 +767,10 @@ void gl_raster_triangle(struct aglx_context *ctx,
                                 gl_color_t tc =
                                     gl_texture_sample_lod(tex[u], ss, tt, rr,
                                                           lod[u]);
-                                cc = gl_texture_env_unit(ctx, u, cc, tc);
+                                /* `primary` is the colour before any unit ran
+                                 * (COMBINE PRIMARY_COLOR / unit-0 PREVIOUS). */
+                                cc = gl_texture_env_unit(ctx, u, cc, tc,
+                                                         primary);
                             }
                         }
                     }

@@ -212,6 +212,29 @@ def claims():
             "Render into the texture directly with an FBO instead"
             not in opengl))
 
+    # --- L3: COMBINE + texture matrix + 4 units -----------------------
+    if l3:
+        checks.append((
+            "L3: GL_MAX_TEXTURE_UNITS_IMPL is 4",
+            re.search(r"#define\s+GL_MAX_TEXTURE_UNITS_IMPL\s+4\b",
+                      glctx) is not None))
+        checks.append((
+            "L3: gl.h defines GL_COMBINE",
+            "#define GL_COMBINE" in glh))
+        checks.append((
+            "L3: glMatrixMode(GL_TEXTURE) is no longer GL_INVALID_OPERATION",
+            "no texture matrix yet" not in glmatrix))
+        checks.append((
+            "L3: test_gltex2.c covers COMBINE",
+            "GL_COMBINE" in read("tests", "unit", "test_gltex2.c")))
+        checks.append((
+            "L3: docs/opengl.md no longer lists COMBINE / units / "
+            "texture matrix as unimplemented",
+            "The GL 1.3 programmable combiner is absent" not in opengl and
+            "More than 2 texture units" not in opengl and
+            "glMatrixMode(GL_TEXTURE)` reports `GL_INVALID_OPERATION`"
+            not in opengl))
+
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(
         r"^\|\s*L\d+\s+—[^|]*\|\s*✅ complete", plan, re.M))

@@ -179,9 +179,12 @@ gl_color_t gl_texture_sample_lod(const gl_texture_t *t,
 gl_color_t gl_texture_sample(const gl_texture_t *t, GLfloat s, GLfloat tc,
                              int magnifying);
 
-/* Apply unit `unit`'s environment to `frag` using `tex`. */
+/* Apply unit `unit`'s environment to `frag` using `tex`.
+ * `primary` is the fragment colour before any texture unit ran — COMBINE's
+ * PRIMARY_COLOR source, and PREVIOUS on unit 0. */
 gl_color_t gl_texture_env_unit(const struct aglx_context *ctx, int unit,
-                               gl_color_t frag, gl_color_t tex);
+                               gl_color_t frag, gl_color_t tex,
+                               gl_color_t primary);
 gl_color_t gl_texture_env(const struct aglx_context *ctx,
                           gl_color_t frag, gl_color_t tex);
 

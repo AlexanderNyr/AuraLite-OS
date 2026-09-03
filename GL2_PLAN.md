@@ -1,13 +1,13 @@
 # AuraLite OS — OpenGL, the second series (the leftovers)
 
-## Status: IN PROGRESS — L0–L2 landed; L3–L7 specified
+## Status: IN PROGRESS — L0–L3 landed; L4–L7 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | L0 — the rig | ✅ complete | `patches/GL2_L0_rig.patch` |
 | L1 — stencil buffer | ✅ complete | `patches/GL2_L1_stencil.patch` |
 | L2 — copies | ✅ complete | `patches/GL2_L2_copies.patch` |
-| L3 — texture leftovers | — | `GL_COMBINE`, `GL_TEXTURE` matrix, 4 units |
+| L3 — texture leftovers | ✅ complete | `patches/GL2_L3_texture.patch` |
 | L4 — per-fragment mipmap LOD | — | derivatives through the edge functions |
 | L5 — shader-path fitness | — | early-Z + `/glshade` |
 | L6 — VirGL `DRAW_VBO` | — | canned TGSI triangle on the G13 seam |
@@ -438,7 +438,7 @@ and draw.
 
 ### L3 — Texture leftovers: `GL_COMBINE`, `GL_TEXTURE` matrix, 4 units
 
-**Status:** not started
+**Status: ✅ COMPLETE** (`patches/GL2_L3_texture.patch`).
 
 **Objective:** finish the G10 texture story up to what GL 1.3
 applications actually type, without raising the unit count so far
@@ -460,21 +460,21 @@ Design:
 
 Tasks:
 
-- [ ] Tokens in `gl.h`; `glTexEnvi` / `glTexEnvfv` COMBINE parameters;
+- [x] Tokens in `gl.h`; `glTexEnvi` / `glTexEnvfv` COMBINE parameters;
       combiner in `gltexture.c` (the existing `combine` comment at
       line 981 is the insertion point).
-- [ ] Per-unit texture matrix stack in `glmatrix.c` /
+- [x] Per-unit texture matrix stack in `glmatrix.c` /
       `glcontext.h`; delete the `GL_INVALID_OPERATION` branch.
-- [ ] Raise `GL_MAX_TEXTURE_UNITS_IMPL`; audit every
+- [x] Raise `GL_MAX_TEXTURE_UNITS_IMPL`; audit every
       `for (u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL)` — they should
       already be written against the macro (G10). If any site
       hard-codes `2`, it is a bug this phase is for.
-- [ ] Host tests: `test_gltex2.c` grows COMBINE cases (MODULATE
+- [x] Host tests: `test_gltex2.c` grows COMBINE cases (MODULATE
       expressed as COMBINE equals the GL 1.1 path — the D3
       tripwire), INTERPOLATE, DOT3; matrix translate-then-sample;
       unit 2 and unit 3 sample independently.
-- [ ] `/gltest` a 3-unit COMBINE and a texture-matrix slide.
-- [ ] `docs/opengl.md` Not-implemented: drop COMBINE, units, texture
+- [x] `/gltest` a 3-unit COMBINE and a texture-matrix slide.
+- [x] `docs/opengl.md` Not-implemented: drop COMBINE, units, texture
       matrix rows; document the new limits.
 
 **Definition of done:** COMBINE `MODULATE` matches GL 1.1 `MODULATE`
@@ -483,9 +483,15 @@ pixel-for-pixel (D3); `glMatrixMode(GL_TEXTURE)` no longer errors;
 opener pins 1, 2, 5 (COMBINE part) moved.
 
 **Test gate:** `test_gltex2` + `test_glimm` (matrix stacks) green;
-`/gltest`; `make test-unit` EXIT 0.
+`/gltest`; `make test-unit` EXIT 0. ✓
 
-**Result:** —
+**Result:** `test_gltex2` 36 → **42/42**; `test_glimm` 51 → **54/54**;
+existing host suites unmodified (D3). `/gltest` +9 → **411** (3-unit
+COMBINE, texture-matrix slide, units=4, unknown mode refused).
+`sizeof(aglx_context)` 239 384 → **240 304** (+920 B; still heap-only).
+`GL_MAX_TEXTURE_UNITS` is 4; COMBINE MODULATE matches GL 1.1 MODULATE
+pixel-for-pixel; `glMatrixMode(GL_TEXTURE)` is legal. Opener pins 1, 2
+and 5-COMBINE moved.
 
 ---
 
@@ -746,9 +752,9 @@ Baseline column is L0's job. Later columns land with their phase.
 | Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | (early-Z) | |
 | `/glshade` | absent | | | | | **shipped** | |
 | VirGL draw | present-only | | | | | | **canned Δ** |
-| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | (must not stack) | | | |
-| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | | | | |
-| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | | | | |
+| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | **240 304** | | | |
+| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | **18** | | | |
+| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | **411** | | | |
 
 Residue opened at L7 (expected):
 

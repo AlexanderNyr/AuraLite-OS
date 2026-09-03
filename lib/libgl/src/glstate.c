@@ -480,6 +480,11 @@ void glGetIntegerv(GLenum pname, GLint *params) {
         params[0] = GL_MODELVIEW_STACK_DEPTH;  break;
     case GL_MAX_PROJECTION_STACK_DEPTH:
         params[0] = GL_PROJECTION_STACK_DEPTH; break;
+    case GL_MAX_TEXTURE_STACK_DEPTH:
+        params[0] = GL_TEXTURE_STACK_DEPTH_IMPL; break;
+    case GL_TEXTURE_STACK_DEPTH:
+        params[0] = ctx->texunits[ctx->active_texture].texture_matrix_top + 1;
+        break;
     case GL_STENCIL_FUNC:
         params[0] = (GLint)ctx->stencil_func; break;
     case GL_STENCIL_VALUE_MASK:
@@ -528,6 +533,12 @@ void glGetFloatv(GLenum pname, GLfloat *params) {
         for (int i = 0; i < 16; i++)
             params[i] = ctx->projection[ctx->projection_top].m[i];
         break;
+    case GL_TEXTURE_MATRIX: {
+        const gl_texunit_t *u = &ctx->texunits[ctx->active_texture];
+        for (int i = 0; i < 16; i++)
+            params[i] = u->texture_matrix[u->texture_matrix_top].m[i];
+        break;
+    }
     default:
         gl_set_error(GL_INVALID_ENUM);
         break;

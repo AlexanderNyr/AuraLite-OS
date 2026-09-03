@@ -35,6 +35,14 @@ static glm_mat4 *stack_for_mode(struct aglx_context *ctx,
         *top_out   = &ctx->projection_top;
         *limit_out = GL_PROJECTION_STACK_DEPTH;
         return ctx->projection;
+    case GL_TEXTURE: {
+        /* Per-unit stack (GL 1.3).  glActiveTexture selects which unit's
+         * matrix subsequent commands operate on. */
+        gl_texunit_t *u = &ctx->texunits[ctx->active_texture];
+        *top_out   = &u->texture_matrix_top;
+        *limit_out = GL_TEXTURE_STACK_DEPTH_IMPL;
+        return u->texture_matrix;
+    }
     default:
         gl_set_error(GL_INVALID_OPERATION);
         return (glm_mat4 *)0;
@@ -66,13 +74,6 @@ void glMatrixMode(GLenum mode) {
 
     if (mode != GL_MODELVIEW && mode != GL_PROJECTION && mode != GL_TEXTURE) {
         gl_set_error(GL_INVALID_ENUM);
-        return;
-    }
-    /* GL_TEXTURE is a valid enum but AuraLite has no texture matrix yet, so
-     * selecting it would silently send subsequent matrix commands nowhere.
-     * Reporting it is more useful than pretending it worked. */
-    if (mode == GL_TEXTURE) {
-        gl_set_error(GL_INVALID_OPERATION);
         return;
     }
     {

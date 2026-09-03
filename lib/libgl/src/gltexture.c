@@ -120,6 +120,19 @@ static void texunit_defaults(gl_texunit_t *u) {
     u->binding_2d = u->binding_3d = u->binding_cube = 0;
     u->env_mode   = GL_MODULATE;
     u->env_color.r = u->env_color.g = u->env_color.b = u->env_color.a = 0.0f;
+    /* COMBINE defaults, GL 1.3 §3.8.13 table 3.22. */
+    u->combine_rgb   = GL_MODULATE;
+    u->combine_alpha = GL_MODULATE;
+    u->src_rgb[0] = GL_TEXTURE;       u->src_alpha[0] = GL_TEXTURE;
+    u->src_rgb[1] = GL_PREVIOUS;      u->src_alpha[1] = GL_PREVIOUS;
+    u->src_rgb[2] = GL_CONSTANT;      u->src_alpha[2] = GL_CONSTANT;
+    u->operand_rgb[0] = GL_SRC_COLOR; u->operand_alpha[0] = GL_SRC_ALPHA;
+    u->operand_rgb[1] = GL_SRC_COLOR; u->operand_alpha[1] = GL_SRC_ALPHA;
+    u->operand_rgb[2] = GL_SRC_ALPHA; u->operand_alpha[2] = GL_SRC_ALPHA;
+    u->rgb_scale = 1.0f;
+    u->alpha_scale = 1.0f;
+    u->texture_matrix[0] = glm_mat4_identity();
+    u->texture_matrix_top = 0;
 }
 
 void gl_texture_set_defaults(struct aglx_context *ctx) {
@@ -683,15 +696,94 @@ void glClientActiveTexture(GLenum texture) {
     ctx->client_active_texture = idx;
 }
 
+static int is_combine_rgb_fn(GLint p) {
+    switch (p) {
+    case GL_REPLACE: case GL_MODULATE: case GL_ADD: case GL_ADD_SIGNED:
+    case GL_INTERPOLATE: case GL_SUBTRACT:
+    case GL_DOT3_RGB: case GL_DOT3_RGBA:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int is_combine_alpha_fn(GLint p) {
+    switch (p) {
+    case GL_REPLACE: case GL_MODULATE: case GL_ADD: case GL_ADD_SIGNED:
+    case GL_INTERPOLATE: case GL_SUBTRACT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int is_combine_src(GLint p) {
+    return p == GL_TEXTURE || p == GL_CONSTANT ||
+           p == GL_PRIMARY_COLOR || p == GL_PREVIOUS;
+}
+
+static int is_combine_operand_rgb(GLint p) {
+    return p == GL_SRC_COLOR || p == GL_ONE_MINUS_SRC_COLOR ||
+           p == GL_SRC_ALPHA || p == GL_ONE_MINUS_SRC_ALPHA;
+}
+
+static int is_combine_operand_alpha(GLint p) {
+    return p == GL_SRC_ALPHA || p == GL_ONE_MINUS_SRC_ALPHA;
+}
+
+static int is_combine_scale(GLint p) {
+    return p == 1 || p == 2 || p == 4;
+}
+
 void glTexEnvi(GLenum target, GLenum pname, GLint param) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
-    if (target != GL_TEXTURE_ENV)      { gl_set_error(GL_INVALID_ENUM); return; }
-    if (pname  != GL_TEXTURE_ENV_MODE) { gl_set_error(GL_INVALID_ENUM); return; }
+    if (target != GL_TEXTURE_ENV) { gl_set_error(GL_INVALID_ENUM); return; }
 
-    switch (param) {
-    case GL_MODULATE: case GL_REPLACE: case GL_DECAL: case GL_BLEND:
-        ctx->texunits[ctx->active_texture].env_mode = (GLenum)param;
+    gl_texunit_t *u = &ctx->texunits[ctx->active_texture];
+    switch (pname) {
+    case GL_TEXTURE_ENV_MODE:
+        switch (param) {
+        case GL_MODULATE: case GL_REPLACE: case GL_DECAL: case GL_BLEND:
+        case GL_COMBINE:
+            u->env_mode = (GLenum)param;
+            break;
+        default:
+            gl_set_error(GL_INVALID_ENUM);
+            break;
+        }
+        break;
+    case GL_COMBINE_RGB:
+        if (!is_combine_rgb_fn(param)) { gl_set_error(GL_INVALID_ENUM); return; }
+        u->combine_rgb = (GLenum)param;
+        break;
+    case GL_COMBINE_ALPHA:
+        if (!is_combine_alpha_fn(param)) { gl_set_error(GL_INVALID_ENUM); return; }
+        u->combine_alpha = (GLenum)param;
+        break;
+    case GL_SOURCE0_RGB: case GL_SOURCE1_RGB: case GL_SOURCE2_RGB:
+        if (!is_combine_src(param)) { gl_set_error(GL_INVALID_ENUM); return; }
+        u->src_rgb[pname - GL_SOURCE0_RGB] = (GLenum)param;
+        break;
+    case GL_SOURCE0_ALPHA: case GL_SOURCE1_ALPHA: case GL_SOURCE2_ALPHA:
+        if (!is_combine_src(param)) { gl_set_error(GL_INVALID_ENUM); return; }
+        u->src_alpha[pname - GL_SOURCE0_ALPHA] = (GLenum)param;
+        break;
+    case GL_OPERAND0_RGB: case GL_OPERAND1_RGB: case GL_OPERAND2_RGB:
+        if (!is_combine_operand_rgb(param)) { gl_set_error(GL_INVALID_ENUM); return; }
+        u->operand_rgb[pname - GL_OPERAND0_RGB] = (GLenum)param;
+        break;
+    case GL_OPERAND0_ALPHA: case GL_OPERAND1_ALPHA: case GL_OPERAND2_ALPHA:
+        if (!is_combine_operand_alpha(param)) { gl_set_error(GL_INVALID_ENUM); return; }
+        u->operand_alpha[pname - GL_OPERAND0_ALPHA] = (GLenum)param;
+        break;
+    case GL_RGB_SCALE:
+        if (!is_combine_scale(param)) { gl_set_error(GL_INVALID_VALUE); return; }
+        u->rgb_scale = (GLfloat)param;
+        break;
+    case GL_ALPHA_SCALE:
+        if (!is_combine_scale(param)) { gl_set_error(GL_INVALID_VALUE); return; }
+        u->alpha_scale = (GLfloat)param;
         break;
     default:
         gl_set_error(GL_INVALID_ENUM);
@@ -711,11 +803,19 @@ void glTexEnvfv(GLenum target, GLenum pname, const GLfloat *params) {
         u->env_color.g = params[1];
         u->env_color.b = params[2];
         u->env_color.a = params[3];
-    } else if (pname == GL_TEXTURE_ENV_MODE) {
-        glTexEnvi(target, pname, (GLint)params[0]);
-    } else {
-        gl_set_error(GL_INVALID_ENUM);
+        return;
     }
+    if (pname == GL_RGB_SCALE || pname == GL_ALPHA_SCALE) {
+        GLfloat s = params[0];
+        if (s != 1.0f && s != 2.0f && s != 4.0f) {
+            gl_set_error(GL_INVALID_VALUE);
+            return;
+        }
+        glTexEnvi(target, pname, (GLint)s);
+        return;
+    }
+    /* Integer pnames (ENV_MODE, COMBINE_*, SOURCE_*, OPERAND_*). */
+    glTexEnvi(target, pname, (GLint)params[0]);
 }
 
 /* ============================================================================
@@ -978,10 +1078,101 @@ gl_color_t gl_texture_sample(const gl_texture_t *t, GLfloat s, GLfloat tc,
     return gl_texture_sample_lod(t, s, tc, 0.0f, magnifying ? 0.0f : 1e-6f);
 }
 
+static GLfloat cl01(GLfloat x) {
+    if (x < 0.0f) return 0.0f;
+    if (x > 1.0f) return 1.0f;
+    return x;
+}
+
+static gl_color_t combine_src_color(GLenum src, gl_color_t tex,
+                                    gl_color_t constant, gl_color_t primary,
+                                    gl_color_t previous) {
+    switch (src) {
+    case GL_TEXTURE:        return tex;
+    case GL_CONSTANT:       return constant;
+    case GL_PRIMARY_COLOR:  return primary;
+    case GL_PREVIOUS:       return previous;
+    default:                return previous;
+    }
+}
+
+static gl_color_t combine_arg_rgb(gl_color_t c, GLenum operand) {
+    gl_color_t a;
+    switch (operand) {
+    case GL_ONE_MINUS_SRC_COLOR:
+        a.r = 1.0f - c.r; a.g = 1.0f - c.g; a.b = 1.0f - c.b; a.a = c.a;
+        return a;
+    case GL_SRC_ALPHA:
+        a.r = a.g = a.b = a.a = c.a;
+        return a;
+    case GL_ONE_MINUS_SRC_ALPHA:
+        a.r = a.g = a.b = a.a = 1.0f - c.a;
+        return a;
+    case GL_SRC_COLOR:
+    default:
+        return c;
+    }
+}
+
+static GLfloat combine_arg_alpha(gl_color_t c, GLenum operand) {
+    if (operand == GL_ONE_MINUS_SRC_ALPHA) return 1.0f - c.a;
+    return c.a;   /* SRC_ALPHA */
+}
+
+static void combine_fn_rgb(GLenum fn, gl_color_t a0, gl_color_t a1,
+                           gl_color_t a2, GLfloat *r, GLfloat *g, GLfloat *b) {
+    switch (fn) {
+    case GL_REPLACE:
+        *r = a0.r; *g = a0.g; *b = a0.b;
+        break;
+    case GL_ADD:
+        *r = a0.r + a1.r; *g = a0.g + a1.g; *b = a0.b + a1.b;
+        break;
+    case GL_ADD_SIGNED:
+        *r = a0.r + a1.r - 0.5f;
+        *g = a0.g + a1.g - 0.5f;
+        *b = a0.b + a1.b - 0.5f;
+        break;
+    case GL_INTERPOLATE:
+        *r = a0.r * a2.r + a1.r * (1.0f - a2.r);
+        *g = a0.g * a2.g + a1.g * (1.0f - a2.g);
+        *b = a0.b * a2.b + a1.b * (1.0f - a2.b);
+        break;
+    case GL_SUBTRACT:
+        *r = a0.r - a1.r; *g = a0.g - a1.g; *b = a0.b - a1.b;
+        break;
+    case GL_DOT3_RGB:
+    case GL_DOT3_RGBA: {
+        GLfloat d = 4.0f * ((a0.r - 0.5f) * (a1.r - 0.5f)
+                          + (a0.g - 0.5f) * (a1.g - 0.5f)
+                          + (a0.b - 0.5f) * (a1.b - 0.5f));
+        *r = *g = *b = d;
+        break;
+    }
+    case GL_MODULATE:
+    default:
+        *r = a0.r * a1.r; *g = a0.g * a1.g; *b = a0.b * a1.b;
+        break;
+    }
+}
+
+static GLfloat combine_fn_alpha(GLenum fn, GLfloat a0, GLfloat a1, GLfloat a2) {
+    switch (fn) {
+    case GL_REPLACE:     return a0;
+    case GL_ADD:         return a0 + a1;
+    case GL_ADD_SIGNED:  return a0 + a1 - 0.5f;
+    case GL_INTERPOLATE: return a0 * a2 + a1 * (1.0f - a2);
+    case GL_SUBTRACT:    return a0 - a1;
+    case GL_MODULATE:
+    default:             return a0 * a1;
+    }
+}
+
 /* Combine the sampled texel with the incoming fragment colour according to the
- * unit's texture environment mode (§3.8.9). */
+ * unit's texture environment mode (§3.8.9, COMBINE in §3.8.13). */
 gl_color_t gl_texture_env_unit(const struct aglx_context *ctx, int unit,
-                               gl_color_t frag, gl_color_t tex) {
+                               gl_color_t frag, gl_color_t tex,
+                               gl_color_t primary) {
     gl_color_t out = frag;
     if (unit < 0 || unit >= GL_MAX_TEXTURE_UNITS_IMPL) return out;
     const gl_texunit_t *u = &ctx->texunits[unit];
@@ -1005,6 +1196,43 @@ gl_color_t gl_texture_env_unit(const struct aglx_context *ctx, int unit,
         out.b = frag.b * (1.0f - tex.b) + u->env_color.b * tex.b;
         out.a = frag.a * tex.a;
         break;
+    case GL_COMBINE: {
+        gl_color_t arg0 = combine_arg_rgb(
+            combine_src_color(u->src_rgb[0], tex, u->env_color, primary, frag),
+            u->operand_rgb[0]);
+        gl_color_t arg1 = combine_arg_rgb(
+            combine_src_color(u->src_rgb[1], tex, u->env_color, primary, frag),
+            u->operand_rgb[1]);
+        gl_color_t arg2 = combine_arg_rgb(
+            combine_src_color(u->src_rgb[2], tex, u->env_color, primary, frag),
+            u->operand_rgb[2]);
+        combine_fn_rgb(u->combine_rgb, arg0, arg1, arg2, &out.r, &out.g, &out.b);
+        out.r = cl01(out.r * u->rgb_scale);
+        out.g = cl01(out.g * u->rgb_scale);
+        out.b = cl01(out.b * u->rgb_scale);
+
+        if (u->combine_rgb == GL_DOT3_RGBA) {
+            /* DOT3_RGBA writes the same scaled, clamped dot into alpha and
+             * ignores COMBINE_ALPHA (§3.8.13). */
+            out.a = out.r;
+        } else {
+            GLfloat a0 = combine_arg_alpha(
+                combine_src_color(u->src_alpha[0], tex, u->env_color,
+                                  primary, frag),
+                u->operand_alpha[0]);
+            GLfloat a1 = combine_arg_alpha(
+                combine_src_color(u->src_alpha[1], tex, u->env_color,
+                                  primary, frag),
+                u->operand_alpha[1]);
+            GLfloat a2 = combine_arg_alpha(
+                combine_src_color(u->src_alpha[2], tex, u->env_color,
+                                  primary, frag),
+                u->operand_alpha[2]);
+            out.a = cl01(combine_fn_alpha(u->combine_alpha, a0, a1, a2)
+                         * u->alpha_scale);
+        }
+        break;
+    }
     case GL_MODULATE:
     default:
         out.r = frag.r * tex.r;
@@ -1018,5 +1246,5 @@ gl_color_t gl_texture_env_unit(const struct aglx_context *ctx, int unit,
 
 gl_color_t gl_texture_env(const struct aglx_context *ctx,
                           gl_color_t frag, gl_color_t tex) {
-    return gl_texture_env_unit(ctx, 0, frag, tex);
+    return gl_texture_env_unit(ctx, 0, frag, tex, frag);
 }

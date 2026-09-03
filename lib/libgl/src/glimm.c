@@ -375,10 +375,25 @@ void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
      * the diffuse term too bright or too dark. */
     if (ctx->normalize) v.normal = glm_vec3_normalize(v.normal);
 
+    /* Texture matrix, per unit, applied to (s, t, r, q=1) *before* clip
+     * (GL 1.3 / GL2 L3).  Identity is a no-op, so existing UVs are
+     * bit-identical (D3).  q is divided out here; clipping then interpolates
+     * the post-matrix coordinates. */
     for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
-        v.s[u] = cur_s[u];
-        v.t[u] = cur_t[u];
-        v.r[u] = cur_r[u];
+        const gl_texunit_t *tu = &ctx->texunits[u];
+        glm_vec4 tc = glm_vec4_make(cur_s[u], cur_t[u], cur_r[u], 1.0f);
+        glm_vec4 x  = glm_mat4_transform4(
+            tu->texture_matrix[tu->texture_matrix_top], tc);
+        if (x.w != 1.0f && (x.w > 1e-20f || x.w < -1e-20f)) {
+            GLfloat iw = 1.0f / x.w;
+            v.s[u] = x.x * iw;
+            v.t[u] = x.y * iw;
+            v.r[u] = x.z * iw;
+        } else {
+            v.s[u] = x.x;
+            v.t[u] = x.y;
+            v.r[u] = x.z;
+        }
     }
 
     if (ctx->lighting) {

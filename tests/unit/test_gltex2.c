@@ -1056,6 +1056,187 @@ static int t_query_limits(void) {
     return ok;
 }
 
+/* ============================================================================\n * GL2 L3: COMBINE, texture matrix, units 2 and 3
+ * ==========================================================================*/
+
+/* COMBINE with the default function (MODULATE, TEXTURE * PREVIOUS) must
+ * match the GL 1.1 MODULATE path pixel-for-pixel (D3 tripwire). */
+static int t_combine_modulate_matches_11(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    glColor3f(0.5f, 1.0f, 0.25f);
+    solid_texture(255, 128, 0);
+    glEnable(GL_TEXTURE_2D);
+
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glClear(GL_COLOR_BUFFER_BIT);
+    quad(8, 8, 56, 56, 1.0f, 1.0f);
+    uint32_t a = px(c, 32, 32);
+
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+    /* Defaults: COMBINE_RGB = MODULATE, SOURCE0 = TEXTURE, SOURCE1 = PREVIOUS. */
+    glClear(GL_COLOR_BUFFER_BIT);
+    quad(8, 8, 56, 56, 1.0f, 1.0f);
+    uint32_t b = px(c, 32, 32);
+
+    int ok = a == b && a != 0;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* INTERPOLATE: Arg0 * Arg2 + Arg1 * (1 - Arg2).  Texture red, constant blue,
+ * primary 0.5 → purple. */
+static int t_combine_interpolate(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    solid_texture(255, 0, 0);
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_INTERPOLATE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_CONSTANT);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE2_RGB, GL_PRIMARY_COLOR);
+    glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND2_RGB, GL_SRC_COLOR);
+    GLfloat env[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+    glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, env);
+    glColor3f(0.5f, 0.5f, 0.5f);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    quad(8, 8, 56, 56, 1.0f, 1.0f);
+    uint32_t p = px(c, 32, 32);
+    int ok = near_u8((p >> 16) & 0xFF, 128, 3) &&
+             near_u8((p >>  8) & 0xFF,   0, 3) &&
+             near_u8( p        & 0xFF, 128, 3);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* DOT3_RGB of (1,0,0) with itself saturates to white; orthogonal (0,1,0)
+ * saturates to black. */
+static int t_combine_dot3(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    solid_texture(255, 0, 0);
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_DOT3_RGB);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_CONSTANT);
+
+    GLfloat parallel[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, parallel);
+    glClear(GL_COLOR_BUFFER_BIT);
+    quad(8, 8, 56, 56, 1.0f, 1.0f);
+    uint32_t white = px(c, 32, 32);
+
+    GLfloat ortho[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+    glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, ortho);
+    glClear(GL_COLOR_BUFFER_BIT);
+    quad(8, 8, 56, 56, 1.0f, 1.0f);
+    uint32_t black = px(c, 32, 32);
+
+    int ok = near_u8((white >> 16) & 0xFF, 255, 2) &&
+             near_u8((white >>  8) & 0xFF, 255, 2) &&
+             near_u8( white        & 0xFF, 255, 2) &&
+             near_u8((black >> 16) & 0xFF,   0, 2) &&
+             near_u8((black >>  8) & 0xFF,   0, 2) &&
+             near_u8( black        & 0xFF,   0, 2);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* Unknown COMBINE function is INVALID_ENUM, not a silent MODULATE (D4). */
+static int t_combine_unknown_mode(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    while (glGetError() != GL_NO_ERROR) { }
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+    int ok = glGetError() == GL_NO_ERROR;
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, 0x1234);
+    ok = ok && glGetError() == GL_INVALID_ENUM;
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_DOT3_RGB);
+    ok = ok && glGetError() == GL_INVALID_ENUM;
+    ok = ok && c->texunits[0].combine_rgb == GL_MODULATE;
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* A 2-wide nearest texture, UV at 0.25, slides to the other texel after
+ * glTranslatef on the texture matrix. */
+static int t_texture_matrix_translate(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    unsigned char rgb[6] = { 255, 0, 0,  0, 255, 0 };
+    GLuint id = 0;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2, 1, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, rgb);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    quad(8, 8, 56, 56, 0.25f, 0.5f);
+    uint32_t before = px(c, 32, 32);
+
+    glMatrixMode(GL_TEXTURE);
+    int ok = glGetError() == GL_NO_ERROR;
+    glLoadIdentity();
+    glTranslatef(0.5f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    quad(8, 8, 56, 56, 0.25f, 0.5f);
+    uint32_t after = px(c, 32, 32);
+
+    ok = ok && before == 0x00FF0000u && after == 0x0000FF00u;
+    glMatrixMode(GL_MODELVIEW);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* Units 2 and 3 must sample independently of unit 0. */
+static int t_units_2_and_3_independent(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+    GLint units = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_UNITS, &units);
+    if (units < 4) { aglxDestroyContext(c); return 0; }
+
+    glActiveTexture(GL_TEXTURE0);
+    solid_texture(255, 0, 0);
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+    glActiveTexture(GL_TEXTURE2);
+    solid_texture(0, 255, 128);
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+    glBegin(GL_QUADS);
+    glMultiTexCoord2f(GL_TEXTURE2, 0, 0); glTexCoord2f(0, 0); glVertex3f(8,  8,  0);
+    glMultiTexCoord2f(GL_TEXTURE2, 1, 0); glTexCoord2f(1, 0); glVertex3f(56, 8,  0);
+    glMultiTexCoord2f(GL_TEXTURE2, 1, 1); glTexCoord2f(1, 1); glVertex3f(56, 56, 0);
+    glMultiTexCoord2f(GL_TEXTURE2, 0, 1); glTexCoord2f(0, 1); glVertex3f(8,  56, 0);
+    glEnd();
+    /* Unit 2 REPLACE overwrites unit 0. */
+    int ok = px(c, 32, 32) == 0x0000FF80u;
+
+    glDisable(GL_TEXTURE_2D);   /* unit 2 still active */
+    glActiveTexture(GL_TEXTURE3);
+    solid_texture(0, 0, 255);
+    glEnable(GL_TEXTURE_2D);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBegin(GL_QUADS);
+    glMultiTexCoord2f(GL_TEXTURE3, 0, 0); glTexCoord2f(0, 0); glVertex3f(8,  8,  0);
+    glMultiTexCoord2f(GL_TEXTURE3, 1, 0); glTexCoord2f(1, 0); glVertex3f(56, 8,  0);
+    glMultiTexCoord2f(GL_TEXTURE3, 1, 1); glTexCoord2f(1, 1); glVertex3f(56, 56, 0);
+    glMultiTexCoord2f(GL_TEXTURE3, 0, 1); glTexCoord2f(0, 1); glVertex3f(8,  56, 0);
+    glEnd();
+    /* Unit 3 REPLACE overwrites unit 0; unit 2 is disabled. */
+    ok = ok && px(c, 32, 32) == 0x000000FFu;
+
+    glActiveTexture(GL_TEXTURE0);
+    aglxDestroyContext(c);
+    return ok;
+}
+
 /* ============================================================================
  * Driver
  * ==========================================================================*/
@@ -1091,6 +1272,11 @@ int main(void) {
     printf("--- clamp to border ---\n");
     RUN(t_clamp_to_border); RUN(t_clamp_to_edge_unchanged);
     RUN(t_border_color_stored);
+
+    printf("--- COMBINE / texture matrix / 4 units (GL2 L3) ---\n");
+    RUN(t_combine_modulate_matches_11); RUN(t_combine_interpolate);
+    RUN(t_combine_dot3); RUN(t_combine_unknown_mode);
+    RUN(t_texture_matrix_translate); RUN(t_units_2_and_3_independent);
 
     printf("--- interplay and regressions ---\n");
     RUN(t_destroy_frees_chains); RUN(t_g6_behaviour_unchanged);
