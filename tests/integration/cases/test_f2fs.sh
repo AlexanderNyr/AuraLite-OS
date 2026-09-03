@@ -10,4 +10,4 @@
 # It was already exercised as a standalone target (patches/FS_F4_f2fs.patch);
 # this file only registers it with the shard runner.
 set -u
-exec "$(dirname "$0")/../../f2fs/test_f2fs.sh"
+exec bash "$(dirname "$0")/../../f2fs/test_f2fs.sh"

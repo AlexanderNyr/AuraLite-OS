@@ -374,7 +374,8 @@ static inline uint16_t r16(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 static inline uint64_t r64(const uint8_t *p) {
-    return (uint64_t)r32(p) | ((uint64_t)r32(p + 4) << 32);
+    uint64_t hi = r32(p + 4);
+    return r32(p) | (hi << 32);
 }
 static inline void w32(uint8_t *p, uint32_t v) {
     p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF;
@@ -1487,8 +1488,8 @@ static int f2fs_sync(void *fs_data) {
 
     memset(f2fs_scratch, 0, F2FS_PAGE_SIZE);
     struct f2fs_checkpoint *cp = (struct f2fs_checkpoint *)f2fs_scratch;
-    cp->checkpoint_ver = (uint64_t)f2m.cp_ver + 1;
-    cp->user_block_count = (f2m.main_segments - 2) * (uint64_t)f2m.blocks_per_seg;
+    cp->checkpoint_ver = f2m.cp_ver + 1ULL;
+    cp->user_block_count = (f2m.main_segments - 2ULL) * f2m.blocks_per_seg;
     cp->free_segment_count = f2m.free_segments;
     cp->cur_node_seg[0] = f2m.cur_node_seg;
     cp->cur_data_seg[0] = f2m.cur_data_seg;
@@ -1588,7 +1589,7 @@ static int format_f2fs(void) {
     f2m.nat_lba = F2FS_NAT_LBA;
     f2m.sit_lba = F2FS_SIT_LBA;
     f2m.start_main_lba = F2FS_MAIN_START_LBA;
-    f2m.total_bytes = (uint64_t)f2m.main_segments * F2FS_SEG_SIZE;
+    f2m.total_bytes = f2m.main_segments * 1ULL * F2FS_SEG_SIZE;
 
     /* Superblock */
     memset(f2fs_scratch, 0, F2FS_PAGE_SIZE);
@@ -1629,7 +1630,7 @@ static int format_f2fs(void) {
             sb->segment_count_main = f2m.main_segments;
             sb->user_block_count =
                 (uint32_t)((f2m.main_segments - 2) * F2FS_BLOCKS_PER_SEG);
-            f2m.total_bytes = (uint64_t)f2m.main_segments * f2m.seg_size;
+            f2m.total_bytes = f2m.main_segments * 1ULL * f2m.seg_size;
             sb->block_count = f2m.main_segments * F2FS_BLOCKS_PER_SEG;
         }
     }
@@ -1847,7 +1848,7 @@ int f2fs_init(int prefer_port) {
     f2m.root_nid = sb->root_ino ? sb->root_ino : 1;
     f2m.next_free_nid = sb->next_free_nid ? sb->next_free_nid : 2;
     f2m.free_segments = (uint32_t)(sb->free_segment_count);
-    f2m.total_bytes = (uint64_t)f2m.main_segments * f2m.seg_size;
+    f2m.total_bytes = f2m.main_segments * 1ULL * f2m.seg_size;
 
     /* Continue the log where the previous writer stopped.  The superblock
      * carries the NEXT node/data page addresses; convert back to seg/blk. */
@@ -1901,13 +1902,13 @@ int f2fs_self_test(void) {
         if (!big) { kprintf("[f2fs] FAIL: create big.bin\n"); return -2; }
 
         const uint32_t BLOCKS = 768;                 /* 3 MiB */
-        const uint32_t PSZ = F2FS_PAGE_SIZE;
+        const uint64_t PSZ = F2FS_PAGE_SIZE;
         uint8_t *pat = (uint8_t *)kmalloc(PSZ);
         if (!pat) return -9;
         for (uint32_t i = 0; i < PSZ; i++) pat[i] = (uint8_t)(i % 251);
 
         for (uint32_t b = 0; b < BLOCKS; b++) {
-            if (f2fs_write(big, (uint64_t)b * PSZ, pat, PSZ) != (int64_t)PSZ) {
+            if (f2fs_write(big, b * PSZ, pat, PSZ) != (int64_t)PSZ) {
                 kprintf("[f2fs] FAIL: multi-seg write @ block %u\n", b); return -3;
             }
         }
@@ -1916,7 +1917,7 @@ int f2fs_self_test(void) {
         uint8_t *got = (uint8_t *)kmalloc(PSZ);
         if (!got) return -9;
         for (uint32_t b = 0; b < BLOCKS; b++) {
-            if (f2fs_read(big, (uint64_t)b * PSZ, got, PSZ) != (int64_t)PSZ ||
+            if (f2fs_read(big, b * PSZ, got, PSZ) != (int64_t)PSZ ||
                 memcmp(pat, got, PSZ) != 0) {
                 kprintf("[f2fs] FAIL: multi-seg readback @ block %u\n", b); return -4;
             }

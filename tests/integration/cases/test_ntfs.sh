@@ -10,4 +10,4 @@
 # It was already exercised as a standalone target (patches/FS_F5b_ntfs.patch);
 # this file only registers it with the shard runner.
 set -u
-exec "$(dirname "$0")/../../ntfs/test_ntfs.sh"
+exec bash "$(dirname "$0")/../../ntfs/test_ntfs.sh"

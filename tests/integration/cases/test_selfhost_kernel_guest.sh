@@ -46,7 +46,7 @@ il_section "self-host kernel (SH5d): build in AuraLite, extract FAT ELF, boot it
 
 # The build itself uses /tmp: the stock FAT formatter intentionally creates a
 # small 4 MiB volume, enough for the final ~1 MiB ELF but not a full object
-# directory.  /tmp has 256 slots, and this job has 126 C + 9 asm objects plus
+# directory.  /tmp has 256 slots, and this job has 127 C + 9 asm objects plus
 # fewer than 20 tools/generated files.  Only the completed kernel crosses the
 # durability boundary, exactly what this phase gates.
 DISK="$IL_BUILD/selfhost-sh5d-fat.img"
@@ -79,8 +79,8 @@ mapfile -t ASM_SRCS < <(
 )
 C_COUNT=${#C_SRCS[@]}
 ASM_COUNT=${#ASM_SRCS[@]}
-if [ "$C_COUNT" -ne 126 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 126 / 9)${C_RESET}"
+if [ "$C_COUNT" -ne 127 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 127 / 9)${C_RESET}"
     exit 2
 fi
 

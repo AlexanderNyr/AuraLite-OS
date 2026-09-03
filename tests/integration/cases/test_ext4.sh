@@ -10,4 +10,4 @@
 # It was already exercised as a standalone target (patches/FS_F3_ext4.patch);
 # this file only registers it with the shard runner.
 set -u
-exec "$(dirname "$0")/../../ext4/test_ext4.sh"
+exec bash "$(dirname "$0")/../../ext4/test_ext4.sh"

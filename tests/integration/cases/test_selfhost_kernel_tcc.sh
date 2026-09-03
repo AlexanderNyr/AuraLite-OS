@@ -3,7 +3,7 @@
 # BOOTS.
 #
 # The link-level half of SH5c is the host gate
-# (tests/unit/test_sh5c_kernel_tcc.sh: 126 tcc objects, aulink link, flag
+# (tests/unit/test_sh5c_kernel_tcc.sh: 127 tcc objects, aulink link, flag
 # audits, packed-layout parity); this case proves the self-host-built kernel
 # actually RUNS: tools/selfhost/build_kernel_tcc.sh builds kernel-tcc.elf
 # (host tcc for C, mini-asm for the .asm files, aulink with the real

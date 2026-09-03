@@ -122,20 +122,20 @@ static int ntfs_parse_runs(const uint8_t *rp, int avail,
 static int64_t ntfs_mft_lcn_for(uint64_t byte_off) {
     uint64_t want = byte_off / ntfs_cluster_size;
     for (int i = 0; i < mft_runs_n; i++) {
-        if (want < (uint64_t)mft_runs_len[i])
+        if ((int64_t)want < mft_runs_len[i])
             return mft_runs_lcn[i] + (int64_t)want;
-        want -= (uint64_t)mft_runs_len[i];
+        want -= mft_runs_len[i];
     }
     return -1;
 }
 
 /* ---- read a whole MFT record, fixup applied ---- */
 static int ntfs_mft_read(uint64_t idx, uint8_t *out, int out_sz) {
-    uint64_t byte_off = idx * (uint64_t)ntfs_file_rec_sz;
+    uint64_t byte_off = idx * ntfs_file_rec_sz;
     int64_t lcn = ntfs_mft_lcn_for(byte_off);
     if (lcn < 0) return -1;
     uint64_t within = byte_off % ntfs_cluster_size;
-    uint64_t sec = (uint64_t)lcn * (uint64_t)ntfs_spc + within / 512;
+    uint64_t sec = lcn * ntfs_spc + within / 512;
     uint32_t boff = (uint32_t)(within % 512);
     int copied = 0;
     if (ntfs_read_sectors(sec, 1, scratch_sec)) return -1;
@@ -233,8 +233,8 @@ static int64_t ntfs_run_read(const uint8_t *attr, int attr_avail,
         int64_t lcn = -1;
         uint64_t cw = clu;
         for (int i = 0; i < nr; i++) {
-            if (cw < (uint64_t)rlen[i]) { lcn = rlcn[i] + (int64_t)cw; break; }
-            cw -= (uint64_t)rlen[i];
+            if ((int64_t)cw < rlen[i]) { lcn = rlcn[i] + (int64_t)cw; break; }
+            cw -= rlen[i];
         }
         if (lcn < 0) return -1;
         if (lcn == 0) {                    /* sparse run: zeros */
@@ -244,7 +244,7 @@ static int64_t ntfs_run_read(const uint8_t *attr, int attr_avail,
             done += z;
             continue;
         }
-        uint64_t sec = (uint64_t)lcn * (uint64_t)ntfs_spc + within / 512;
+        uint64_t sec = lcn * ntfs_spc + within / 512;
         uint32_t boff = (uint32_t)(within % 512);
         if (ntfs_read_sectors(sec, 1, scratch_sec)) return -1;
         uint32_t c = (uint32_t)(512 - boff);
@@ -340,10 +340,10 @@ static int ntfs_dir_enum(uint64_t dir_mft, struct ntfs_dirent *ents, int max) {
     const uint8_t *ia = ntfs_attr(rec, rec_sz, NTFS_AT_INDEX_ALLOCATION, "$I30");
     if (ia && (ia[8] & NTFS_ATTR_NONRESID) && n < max) {
         uint64_t isz = ntfs_attr_nonres_real_size(ia);
-        uint64_t idx_buf_sz = (uint64_t)ntfs_index_buf_sz;
+        uint64_t idx_buf_sz = ntfs_index_buf_sz;
         uint8_t *buf = scratch_idxbuf;
         int ia_avail = rec_sz - (int)(ia - rec);
-        if (idx_buf_sz <= (uint64_t)sizeof(scratch_idxbuf)) {
+        if (idx_buf_sz <= sizeof(scratch_idxbuf)) {
             uint64_t off = 0;
             while (off + idx_buf_sz <= isz && off < 512 * 1024 && n < max) {
                 int64_t got = ntfs_run_read(ia, ia_avail, off, buf, idx_buf_sz);
@@ -611,7 +611,7 @@ int ntfs_init(int device_id) {
     ntfs_dev = device_id;
     ntfs_bps = bps;
     ntfs_spc = spc;
-    ntfs_cluster_size = (uint64_t)bps * (uint64_t)spc;
+    ntfs_cluster_size = bps * 1ULL * spc;
 
     int8_t cpf = (int8_t)s0[0x40];
     if (cpf < 0)      ntfs_file_rec_sz = 1LL << (-cpf);

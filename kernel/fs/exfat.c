@@ -56,7 +56,8 @@ static inline uint32_t r32(const uint8_t *p) {
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 static inline uint64_t r64(const uint8_t *p) {
-    return (uint64_t)r32(p) | ((uint64_t)r32(p + 4) << 32);
+    uint64_t hi = r32(p + 4);
+    return r32(p) | (hi << 32);
 }
 static inline void w16(uint8_t *p, uint16_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF; }
 static inline void w32(uint8_t *p, uint32_t v) {
@@ -128,15 +129,15 @@ static uint32_t exfat_unix_to_u32(uint64_t secs) {
     int year=1970, mon=1;
     for (;;) {
         int leap=(year%4==0&&year%100!=0)||(year%400==0);
-        int dim=365+(leap?1:0);
-        if (d<(uint64_t)dim) break;
-        d-=(uint64_t)dim; year++;
+        uint64_t dim=365+(leap?1:0);
+        if (d<dim) break;
+        d-=dim; year++;
     }
     for (;;) {
         int leap=(year%4==0&&year%100!=0)||(year%400==0);
-        int dim=mdays[mon-1]+((mon==2&&leap)?1:0);
-        if (d<(uint64_t)dim) break;
-        d-=(uint64_t)dim; mon++;
+        uint64_t dim=mdays[mon-1]+((mon==2&&leap)?1:0);
+        if (d<dim) break;
+        d-=dim; mon++;
     }
     int day=(int)d+1;
     if (year<1980) year=1980;
@@ -156,7 +157,7 @@ static uint64_t exfat_u32_to_unix(uint32_t t) {
         int leap=(year%4==0&&year%100!=0)||(year%400==0);
         days+=mdays[m-1]+((m==2&&leap)?1:0);
     }
-    days+=(uint64_t)(day-1);
+    days+=day-1;
     return days*86400 + hr*3600 + min*60 + sec;
 }
 
@@ -165,18 +166,19 @@ static uint64_t exfat_u32_to_unix(uint32_t t) {
  * ============================================================================ */
 
 static uint64_t cluster_to_sector(uint32_t cluster) {
-    return em.heap_offset + (uint64_t)(cluster - 2) * em.spc;
+    uint64_t rel = cluster - 2;
+    return em.heap_offset + rel * em.spc;
 }
 
 static uint32_t fat_get(uint32_t cluster) {
-    uint64_t fs = em.fat_offset + ((uint64_t)cluster * 4) / em.bps;
+    uint64_t fs = em.fat_offset + 4ULL * cluster / em.bps;
     uint32_t off = (cluster * 4) % em.bps;
     uint8_t buf[512];
     if (fs_read_block(em.bdev, fs, 1, buf) != 0) return EXFAT_FAT_EOF;
     return r32(buf + off);
 }
 static int fat_set(uint32_t cluster, uint32_t val) {
-    uint64_t fs = em.fat_offset + ((uint64_t)cluster * 4) / em.bps;
+    uint64_t fs = em.fat_offset + 4ULL * cluster / em.bps;
     uint32_t off = (cluster * 4) % em.bps;
     uint8_t buf[512];
     if (fs_read_block(em.bdev, fs, 1, buf) != 0) return -1;
@@ -504,13 +506,13 @@ static int dir_append_set(uint32_t dir_cluster, const uint8_t *set, uint32_t set
         uint64_t total = chain_len(dir_cluster) * (em.cluster_size / 32);
         idx = (int64_t)total;
     }
-    int rc = dir_write_at(dir_cluster, (uint64_t)idx, set, setlen);
+    int rc = dir_write_at(dir_cluster, idx, set, setlen);
     if (rc == 0) {
         /* place a fresh End-Of-Directory marker right after the new set so
          * a later scan stops after exactly one EOD.  The slot is guaranteed
          * free (dir_ensure_space returned a run of >= need zeros). */
         uint8_t eod = EXFAT_ENTRY_EOD;
-        rc = dir_write_at(dir_cluster, (uint64_t)idx + need, &eod, 32);
+        rc = dir_write_at(dir_cluster, idx + need, &eod, 32);
     }
     kfree(raw);
     return rc;

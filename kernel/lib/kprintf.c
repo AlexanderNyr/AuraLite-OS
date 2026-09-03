@@ -39,15 +39,6 @@ void kputs(const char *s) {
     }
 }
 
-static void print_str(const char *s) {
-    if (s == NULL) {
-        s = "(null)";
-    }
-    while (*s) {
-        kputchar(*s++);
-    }
-}
-
 /*
  * Print an unsigned integer in `base`, optionally left-padded to `width`.
  * When `zero_pad` is set the pad character is '0', otherwise ' '.
@@ -99,10 +90,16 @@ static void kvprintf(const char *fmt, va_list ap) {
             fmt++;
         }
 
-        /* Precision (accepted and ignored). */
+        /* Precision.  Numeric precision is not implemented and is still
+         * discarded; string precision bounds the %s output like libc, so
+         * e.g. "%.8s" never reads past 8 bytes of a non-NUL-terminated
+         * field (exFAT/NTFS OEM name). */
+        int precision = -1;
         if (*fmt == '.') {
             fmt++;
+            precision = 0;
             while (*fmt >= '0' && *fmt <= '9') {
+                precision = precision * 10 + (*fmt - '0');
                 fmt++;
             }
         }
@@ -129,9 +126,17 @@ static void kvprintf(const char *fmt, va_list ap) {
         case 'c':
             kputchar((char)va_arg(ap, int));
             break;
-        case 's':
-            print_str(va_arg(ap, const char *));
+        case 's': {
+            const char *s = va_arg(ap, const char *);
+            if (s == NULL) {
+                s = "(null)";
+                precision = -1;
+            }
+            for (int i = 0; *s && (precision < 0 || i < precision); i++) {
+                kputchar(*s++);
+            }
             break;
+        }
         case 'd': {
             int64_t v;
             if (is_long >= 2) {
@@ -247,9 +252,14 @@ int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
             width = width * 10 + (*fmt - '0');
             fmt++;
         }
+        int precision = -1;
         if (*fmt == '.') {
             fmt++;
-            while (*fmt >= '0' && *fmt <= '9') fmt++;
+            precision = 0;
+            while (*fmt >= '0' && *fmt <= '9') {
+                precision = precision * 10 + (*fmt - '0');
+                fmt++;
+            }
         }
         int is_long = 0;
         while (*fmt == 'l') { is_long++; fmt++; }
@@ -261,7 +271,13 @@ int ksnprintf(char *buf, size_t size, const char *fmt, ...) {
         case 'c': buf_putchar(&buf, &size, (char)va_arg(ap, int)); break;
         case 's': {
             const char *s = va_arg(ap, const char *);
-            buf_puts(&buf, &size, s ? s : "(null)");
+            if (s == NULL) {
+                s = "(null)";
+                precision = -1;
+            }
+            for (int i = 0; *s && (precision < 0 || i < precision); i++) {
+                buf_putchar(&buf, &size, *s++);
+            }
             break;
         }
         case 'd': {

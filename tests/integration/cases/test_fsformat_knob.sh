@@ -7,13 +7,14 @@
 #   be byte-identical after boot (hash before/after).
 #
 #   Lane 2 (fw_cfg opt/auralite.fsformat=1): the same disks are
-#   formatted and mounted by ext4/f2fs/btrfs; exFAT still refuses (it
-#   has no formatter until F5) and the NTFS slot (blkdev 6) is
-#   unreachable from a single 6-port AHCI controller, so the OS says so
-#   honestly.
+#   formatted and mounted by ext4/f2fs/btrfs and exfat (the exFAT
+#   formatter landed in F5), each probed with a shell round-trip; the
+#   NTFS driver probes every reachable device, finds no NTFS volume
+#   among the six disks (a 7th would not fit this single 6-port AHCI
+#   controller) and says so honestly.
 #
-#   Post-mount scope: only /f2fs is touched (ls: its readdir works).
-#   /ext4 trips a PRE-EXISTING kernel bug (KCANARY, even on plain `ls`;
+#   Post-mount scope: /f2fs readdir (ls) plus an /exfat create+readdir
+#   round-trip (touch + ls).  /ext4 trips a PRE-EXISTING kernel bug (KCANARY, even on plain `ls`;
 #   reproduced on pristine origin/main 06be2ab, unrelated to F1) and
 #   /btrfs's VFS create is unimplemented (skeleton, F4b territory), so
 #   exercising them would gate F1 on unrelated breakage.  Format+mount
@@ -115,8 +116,8 @@ il_assert_grep "$LOG" "\[btrfs\].*format disabled" \
     "btrfs refuses the foreign volume (unreadable or bad magic)"
 il_assert_grep "$LOG" "\[f2fs\] not F2FS magic.*format disabled" \
     "f2fs refuses the foreign superblock"
-il_assert_grep "$LOG" "\[ntfs\] no 7th AHCI disk; /ntfs not mounted" \
-    "NTFS slot honestly reports it is unreachable (6-port AHCI)"
+il_assert_grep "$LOG" "\[ntfs\] no NTFS volume on a reachable device; /ntfs not mounted" \
+    "NTFS probes all reachable devices and honestly reports none is NTFS"
 
 # No formatter ran, no mount happened.
 il_assert_no_grep "$LOG" "\[(ext4|f2fs|btrfs)\].*formatting" \
@@ -129,6 +130,8 @@ il_assert_no_grep "$LOG" "mounted '/btrfs'" \
     "/btrfs never mounted"
 il_assert_no_grep "$LOG" "mounted '/f2fs'" \
     "/f2fs never mounted"
+il_assert_no_grep "$LOG" "mounted '/ntfs'" \
+    "/ntfs never mounted"
 
 # The experimental disks are byte-identical: refusal wrote nothing.
 EXP_HASH_AFTER=$(sha256sum "${EXP_DISKS[@]}" | sha256sum | cut -d' ' -f1)
@@ -146,12 +149,12 @@ il_section "Lane 2: fw_cfg fsformat=1 — format and mount"
 LOG2="$IL_LOGDIR/fsformat_enabled.log"
 IL_LAST_LOG="$LOG2"
 
-il_send_delay 6
-il_send "ls /f2fs"
-il_send_delay 1
-il_send "exit"
+il_send_prompt "ls /f2fs"
+il_send_prompt "touch /exfat/hello.txt"
+il_send_prompt "ls /exfat"
+il_send_prompt "exit"
 
-IL_SMP=1 IL_SELFTEST=off il_run_qemu "$LOG2" 120 \
+IL_SMP=1 IL_SELFTEST=off il_run_qemu_prompt "$LOG2" 150 \
     -fw_cfg "name=opt/auralite.fsformat,string=1" "${QARGS[@]}"
 
 il_assert_grep "$LOG2" "\[fsformat\] auto-format: ENABLED \(fw_cfg\)" \
@@ -176,10 +179,19 @@ il_assert_grep "$LOG2" "\[vfs\] mounted '/btrfs'" \
 il_assert_grep "$LOG2" "\.\./" \
     "f2fs root readdir served by the mounted volume (ls /f2fs)"
 
-# exFAT still refuses even with the knob on: it has no formatter (F5).
-il_assert_grep "$LOG2" "\[exfat\] not exFAT signature.*exfat not mounted" \
-    "exFAT still refuses (no formatter until F5)"
-il_assert_no_grep "$LOG2" "mounted '/exfat'" \
-    "/exfat not mounted in the opt-in lane either"
+# exFAT has a formatter since F5: the opt-in lane formats, mounts and
+# round-trips a file through VFS.
+il_assert_grep "$LOG2" "\[exfat\] not exFAT signature, formatting" \
+    "exFAT formatter runs on the foreign volume (opt-in)"
+il_assert_grep "$LOG2" "\[vfs\] mounted '/exfat'" \
+    "/exfat mounted"
+il_assert_grep "$LOG2" "touch: /exfat/hello.txt" \
+    "exFAT create via VFS works (touch /exfat/hello.txt)"
+il_assert_grep "$LOG2" "hello.txt.*bytes" \
+    "exFAT readdir serves the created file (ls /exfat)"
+
+# NTFS has no volume it can reach in either lane and says so.
+il_assert_grep "$LOG2" "\[ntfs\] no NTFS volume on a reachable device; /ntfs not mounted" \
+    "NTFS honestly reports no reachable NTFS volume (opt-in lane)"
 
 il_summary

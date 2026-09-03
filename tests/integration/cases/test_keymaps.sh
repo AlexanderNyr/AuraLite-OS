@@ -9,7 +9,9 @@
 #
 # Asserted, in order of appearance:
 #   us phase (default):   Shift+2      -> '@'  -> "@: command not found"
-#   de phase (`kbd de`):  Shift+2      -> '"'  -> '"\x27: command not found'
+#   de phase (`kbd de`):  Shift+2      -> '"'  -> "sh: unmatched quote"
+#   (the init shell's quote parser rejects a bare '"' command line, which
+#   is an equally unambiguous witness that the '"' byte reached it)
 #                         key y        -> 'z'  (the y/z swap)
 #                         AltGr+8      -> '['  (the AltGr third layer, PS/2)
 #                         AltGr+q      -> '@'  (second '@' line in the log)
@@ -40,7 +42,15 @@ kbd_sendkeys() {   # $1=sock $2..=QKeyCode names/combos
 import socket, sys, time
 sock, keys = sys.argv[1], sys.argv[2:]
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(sock)
+deadline = time.time() + 30
+while True:
+    try:
+        s.connect(sock)
+        break
+    except (FileNotFoundError, ConnectionRefusedError):
+        if time.time() > deadline:
+            raise
+        time.sleep(0.5)
 s.settimeout(5)
 try:
     s.recv(4096)                      # HMP greeting + (qemu) prompt
@@ -110,8 +120,8 @@ il_assert_grep_fixed "$LOG" "[kbd] layout set to 'de'" \
 
 il_assert_grep_fixed "$LOG" "@: command not found" \
     "US phase: PS/2 Shift+2 produced '@'"
-il_assert_grep_fixed "$LOG" "\": command not found" \
-    "DE phase: the same PS/2 Shift+2 now produces '\"' — switching changed what the shell receives"
+il_assert_grep_fixed "$LOG" "sh: unmatched quote" \
+    "DE phase: the same PS/2 Shift+2 now produces '\"' — the shell's quote parser rejects the bare quote"
 il_assert_grep_fixed "$LOG" "z: command not found" \
     "DE phase: the y key produces 'z' (QWERTZ y/z swap)"
 il_assert_grep_fixed "$LOG" "[: command not found" \

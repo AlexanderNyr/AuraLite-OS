@@ -1,0 +1,1728 @@
+commit 6e321f0f996520ba4fe2dde58e4e72c1e7d8205c
+Author: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date:   Tue Sep 1 21:14:12 2026 +0300
+
+    F5 update
+
+diff --git a/FSFULL_PLAN.md b/FSFULL_PLAN.md
+index ac5ba8e..8313556 100644
+--- a/FSFULL_PLAN.md
++++ b/FSFULL_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Full Filesystem Support Plan (ext4 / btrfs / f2fs / exFAT / NTFS)
+ 
+-## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE (F5–F7 planned 📋)
++## Status: IN PROGRESS — F1 ✅ DONE; F2 ✅ DONE; F3 ✅ DONE; F4/f2fs ✅ DONE; F4b/btrfs ✅ DONE; F5/exFAT ✅ DONE (F5b/NTFS + F6–F7 planned 📋)
+ 
+ > This is a feature plan in the style of `GL_PLAN.md`, `FSLAYOUT_PLAN.md` and
+ > `INTERNET_PLAN.md`, written against the tree as it stands. It follows the
+@@ -42,7 +42,7 @@ tree, not from the headers.
+ | ext4 | `kernel/fs/ext4.c` | 1483 | lookup, create, read, write, readdir, mkdir, unlink, stat, truncate | on-disk superblock/BG-descriptor/inode/extent parsing, extent maps (read + write), delayed-allocation flag, journal-flag superblock, in-kernel formatter | JBD2 journal is **flag-only**; no 64-bit feature (`s_blocks_count_hi`), no flex_bg/indexed (HTree) dirs, no symlinks, no hard links, no rmdir/rename, no timestamps, no error paths |
+ | f2fs | `kernel/fs/f2fs.c` | 1357 | lookup, create, read, write, readdir, mkdir, unlink, stat, truncate | superblock/checkpoint/NAT/SIT structs, node walking (inode/direct/indirect), segment allocator, in-kernel formatter | no SSA (segment summary) reconstruction, no cleaning/GC, no NAT/SIT journals, no fsync, no rename/rmdir, no timestamps |
+ | btrfs | `kernel/fs/btrfs.c` | 1017 | lookup, create, read, write, readdir, mkdir, unlink, stat | superblock (magic `_BHRfS_M`), B-tree node parse, inline + regular extents, CoW allocate-and-write, in-kernel formatter | no root tree/subvolumes, no chunk tree, no checksums (CRC32C), no tree COW on update, no rename/rmdir/truncate, no fsync |
+-| exFAT | `kernel/fs/exfat.c` | 103 | lookup, read, write | boot-region read, single-cluster dir scan by exact name | **skeleton**: no FAT chain walk, no cluster chaining, no readdir, no create/mkdir/unlink/rename/stat, no 64-bit size, no time fields, wrong struct offsets |
++| exFAT | `kernel/fs/exfat.c` | 103→1084 | full mutation surface (lookup, read, write, create, mkdir, unlink, rmdir, rename, truncate, settimes, stat, readdir) | real boot region (12-sector + checksum + backup), FAT cluster chains, allocation bitmap, 0x85+0xC0/0xC1 entry sets | **done (F5)**: exfatprogs-faithful; host `fsck.exfat` reports kernel volumes CLEAN and the kernel reads host `mkfs.exfat` volumes |
+ | NTFS | `kernel/fs/ntfs.c` | 79 | lookup, read | boot-sector read, MFT magic check | **skeleton**: lookup returns a fake vnode unconditionally, read returns the MFT buffer, no attributes ($DATA/$FILE_NAME), no runlists, no $MFT/$MFTMirr, no write |
+ 
+ **The two skeletons are worse than absent.** `ntfs_lookup()` succeeds for
+@@ -133,7 +133,7 @@ says so in its phases:
+ | Maturity | FS | Treatment |
+ |---|---|---|
+ | Real code, real debt | ext4, f2fs, btrfs | **complete** the surface (F3/F4/F6) against their own on-disk formats |
+-| Skeletons | exFAT, NTFS | **replace** with honest minimal implementations (F5) that refuse loudly where they cannot serve, and add the full surface where the format is tractable (exFAT) |
++| Skeletons | NTFS | **replace** with an honest read-only core (F5b) that refuses loudly where it cannot serve |
+ | Glue | all five | shared seams first (F2), so the per-FS work is done once |
+ 
+ ### D2. Refuse loudly before the first byte is written
+@@ -468,7 +468,7 @@ install; btrfs last: its tooling is the heaviest).
+ 
+ ---
+ 
+-### Phase F5 — exFAT and NTFS: replace the skeletons with honesty ✅ planned
++### Phase F5 — exFAT and NTFS: replace the skeletons with honesty ✅ exFAT DONE (NTFS = F5b)
+ 
+ **Objective:** the two skeletons stop lying, and exFAT reaches the full
+ surface because it is a FAT-family format with an in-tree reference
+@@ -476,20 +476,26 @@ surface because it is a FAT-family format with an in-tree reference
+ 
+ #### Tasks (exFAT)
+ 
+-- [ ] **Correct on-disk structs**: the current `exfat_boot_region`/
+-      `exfat_dir_entry` are a single-cluster approximation; port the real
+-      layout from the spec (`exfat_boot_sector`, `exfat_entry_*` set
+-      types, 32-bit `fat_length`/`cluster_count` fields the current
+-      16-bit fields truncate).
+-- [ ] **Cluster-chain walking** via the FAT (fat32.c's chain walk is the
++- [x] **Correct on-disk structs**: the old `exfat_boot_region`/
++      `exfat_dir_entry` single-cluster approximation is replaced with a
++      real exfatprogs-faithful layout (`exfat_boot_sector`,
++      `exfat_entry_*` set types, 64-bit `vol_length`/`data_length`,
++      32-bit `fat_offset`/`fat_length`/`cluster_count`, the fields the
++      16-bit struct truncated), plus a real 12-sector boot region with
++      checksum sector and 12-sector backup.
++- [x] **Cluster-chain walking** via the FAT (fat32.c's chain walk is the
+       reference), multi-cluster file reads, `readdir`, `stat` with real
+-      sizes.
+-- [ ] **create / mkdir / unlink / rename / truncate**, entry-set
+-      allocation (0x85 + 0xC0/0xC1 name entries), timestamps via
+-      `exfat_settimes`.
+-- [ ] `mkfs.exfat` external harness (`test_exfat.sh`); internal-lane check
+-      with `fsck.exfat` (exfatprogs).
+-- [ ] The format knob (F1) and the cache seam (F2) apply unchanged.
++      sizes, and the allocation bitmap indexed exfatprogs-style
++      (`c - EXFAT_FIRST_CLUSTER`).
++- [x] **create / mkdir / unlink / rename / truncate**, entry-set
++      allocation (0x85 + 0xC0/0xC1 name entries) with the exfatprogs
++      16-bit entry-set checksum and ASCII-upcased name hash, timestamps
++      via `exfat_settimes`.
++- [x] `mkfs.exfat` external harness (`test_exfat.sh`) — three passes
++      (kernel-format + full mutation surface, external host-volume read,
++      persistence remount); internal-lane check with `fsck.exfat`
++      (exfatprogs) reports the kernel volume CLEAN.
++- [x] The format knob (F1) and the cache seam (F2) apply unchanged.
+ 
+ #### Tasks (NTFS)
+ 
+diff --git a/kernel/fs/exfat.c b/kernel/fs/exfat.c
+index 80fc0c5..5e70519 100644
+--- a/kernel/fs/exfat.c
++++ b/kernel/fs/exfat.c
+@@ -1,117 +1,1084 @@
++/* exfat.c — real-format exFAT with the full mutation surface (FSFULL_PLAN.md F5).
++ *
++ * Replaces the old single-cluster skeleton with a driver that reads and
++ * writes genuine exFAT volumes (host mkfs.exfat interop) and formats blank
++ * disks to exFAT that host fsck.exfat accepts:
++ *   - Correct 32-bit boot-sector geometry (fat_length / cluster_count /
++ *     cluster_heap_offset / root_first_cluster are the spec's 32-bit fields;
++ *     the old skeleton truncated them to 16 bits).
++ *   - FAT cluster-chain walking for multi-cluster files and directories.
++ *   - Real directory entry sets (0x85 FILE + 0xC0 STREAM + 0xC1 NAME with
++ *     15-char UTF-16LE name entries), entry-set checksums, allocation bitmap.
++ *   - create / mkdir / write / read / readdir / stat / truncate / unlink /
++ *     rmdir / rename / settimes.
++ *
++ * The F2 block-I/O seam (fs_read_block/fs_write_block through the shared
++ * buffer cache) is the only sector access, and the F1 format knob gates the
++ * auto-format lane exactly like the other experimental filesystems.
++ */
++
++#include <stdint.h>
+ #include "kernel/fs/exfat.h"
+ #include "kernel/fs/buffer_cache.h"
++#include "kernel/fs/fsformat.h"
+ #include "kernel/lib/kprintf.h"
+-#include "kernel/mm/kheap.h"
+ #include "kernel/lib/string.h"
++#include "kernel/lib/spinlock.h"
++#include "kernel/mm/kheap.h"
+ 
+-static int exfat_dev_id = -1;
+-static struct exfat_boot_region boot_region;
++/* ============================================================================
++ * SECTION 1: MOUNT STATE + UTILITIES
++ * ============================================================================ */
+ 
+-/* Helper to read a cluster into a buffer */
+-static struct buffer* exfat_get_cluster_buf(uint64_t cluster) {
+-    uint64_t sector = (cluster * boot_region.sectors_per_cluster);
+-    return bc_get(exfat_dev_id, sector);
++struct exfat_mount {
++    int       bdev;
++    uint32_t  bps;
++    uint32_t  spc;
++    uint32_t  cluster_size;
++    uint32_t  fat_offset;
++    uint32_t  fat_length;
++    uint32_t  heap_offset;
++    uint32_t  cluster_count;
++    uint32_t  root_cluster;
++    uint32_t  bitmap_cluster;
++    uint32_t  next_free;
++    int       mounted;
++    spinlock_t lock;
++};
++static struct exfat_mount em;
++static uint8_t *escratch = NULL;   /* cluster-sized scratch */
++
++static inline uint16_t r16(const uint8_t *p) {
++    return (uint16_t)(p[0] | (p[1] << 8));
++}
++static inline uint32_t r32(const uint8_t *p) {
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+ }
++static inline uint64_t r64(const uint8_t *p) {
++    return (uint64_t)r32(p) | ((uint64_t)r32(p + 4) << 32);
++}
++static inline void w16(uint8_t *p, uint16_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF; }
++static inline void w32(uint8_t *p, uint32_t v) {
++    p[0]=v&0xFF; p[1]=(v>>8)&0xFF; p[2]=(v>>16)&0xFF; p[3]=(v>>24)&0xFF;
++}
++static inline void w64(uint8_t *p, uint64_t v) { w32(p,(uint32_t)v); w32(p+4,(uint32_t)(v>>32)); }
+ 
+-struct exfat_vnode {
+-    uint64_t inode_id; /* Cluster number */
+-    uint64_t size;
+-    uint32_t type;
++/* exFAT 32-bit shift-add checksum. */
++/* exFAT 32-bit "shift-and-add" checksum (upcase table / boot region). */
++static uint32_t exfat_csum32(const uint8_t *data, uint32_t len) {
++    uint32_t cs = 0;
++    for (uint32_t i = 0; i < len; i++) {
++        uint8_t b = data[i];
++        cs = ((cs & 1) ? 0x80000000u : 0) + (cs >> 1) + b;
++    }
++    return cs;
++}
++
++/* exFAT 16-bit directory-entry-set checksum (exfatprogs semantics).  For the
++ * primary FILE entry bytes 2-3 (the set-checksum field) are skipped; every
++ * secondary entry is covered whole.  `cont` is the running checksum. */
++static uint16_t dentry_csum_cont(uint16_t cs, const uint8_t *de, int is_primary) {
++    cs = (uint16_t)((cs << 15) | (cs >> 1)) + de[0];
++    cs = (uint16_t)((cs << 15) | (cs >> 1)) + de[1];
++    uint32_t start = is_primary ? 4 : 2;
++    for (uint32_t i = start; i < 32; i++)
++        cs = (uint16_t)((cs << 15) | (cs >> 1)) + de[i];
++    return cs;
++}
++static uint16_t entry_set_csum(const uint8_t *set, int nentries) {
++    uint16_t cs = dentry_csum_cont(0, set, 1);
++    for (int i = 1; i < nentries; i++)
++        cs = dentry_csum_cont(cs, set + i * 32, 0);
++    return cs;
++}
++
++/* exFAT 32-bit "shift-and-add" boot-region checksum (exfatprogs semantics).
++ * is_boot selects the main boot sector, where bytes 106/107/112 (Extended
++ * Boot Signature, PercentInUse) are skipped.  Returns the running checksum. */
++static uint32_t exfat_boot_csum_cont(uint32_t chk, const uint8_t *p,
++                                     uint32_t len, int is_boot) {
++    for (uint32_t i = 0; i < len; i++) {
++        if (is_boot && (i == 106 || i == 107 || i == 112)) continue;
++        chk = ((chk & 1) ? 0x80000000u : 0) + (chk >> 1) + p[i];
++    }
++    return chk;
++}
++
++static uint16_t exfat_name_hash(const uint16_t *name, int len) {
++    /* The on-disk upcase table this driver writes is identity, so the name
++     * hash is computed over the raw UTF-16 code units (no upcasing) — this
++     * must stay in lock-step with format_exfat()'s upcase table so fsck
++     * computes the same value. */
++    uint16_t hash = 0;
++    for (int i = 0; i < len; i++) {
++        uint16_t c = name[i];
++        hash = (uint16_t)((hash << 15) | (hash >> 1)) + (uint16_t)(c & 0xFF);
++        hash = (uint16_t)((hash << 15) | (hash >> 1)) + (uint16_t)(c >> 8);
++    }
++    return hash;
++}
++
++/* ---- exFAT packed timestamps (2s granularity, 1980-2107) ---- */
++static uint32_t exfat_unix_to_u32(uint64_t secs) {
++    secs &= ~1ULL;
++    static const int mdays[12]={31,28,31,30,31,30,31,31,30,31,30,31};
++    uint64_t d = secs / 86400, rem = secs % 86400;
++    int hh=(int)(rem/3600), mm=(int)((rem%3600)/60), ss=(int)(rem%60);
++    int year=1970, mon=1;
++    for (;;) {
++        int leap=(year%4==0&&year%100!=0)||(year%400==0);
++        int dim=365+(leap?1:0);
++        if (d<(uint64_t)dim) break;
++        d-=(uint64_t)dim; year++;
++    }
++    for (;;) {
++        int leap=(year%4==0&&year%100!=0)||(year%400==0);
++        int dim=mdays[mon-1]+((mon==2&&leap)?1:0);
++        if (d<(uint64_t)dim) break;
++        d-=(uint64_t)dim; mon++;
++    }
++    int day=(int)d+1;
++    if (year<1980) year=1980;
++    if (year>2107) year=2107;
++    return ((uint32_t)(ss/2)&0x1F) | (((uint32_t)mm&0x3F)<<5) |
++           (((uint32_t)hh&0x1F)<<11) | (((uint32_t)day&0x1F)<<16) |
++           (((uint32_t)mon&0x0F)<<21) | (((uint32_t)(year-1980)&0x7F)<<25);
++}
++static uint64_t exfat_u32_to_unix(uint32_t t) {
++    int sec=(int)(t&0x1F)*2, min=(int)((t>>5)&0x3F), hr=(int)((t>>11)&0x1F);
++    int day=(int)((t>>16)&0x1F), mon=(int)((t>>21)&0x0F),
++        year=(int)((t>>25)&0x7F)+1980;
++    static const int mdays[12]={31,28,31,30,31,30,31,31,30,31,30,31};
++    uint64_t days=0;
++    for (int y=1970;y<year;y++) days+=365+(((y%4==0&&y%100!=0)||(y%400==0))?1:0);
++    for (int m=1;m<mon;m++) {
++        int leap=(year%4==0&&year%100!=0)||(year%400==0);
++        days+=mdays[m-1]+((m==2&&leap)?1:0);
++    }
++    days+=(uint64_t)(day-1);
++    return days*86400 + hr*3600 + min*60 + sec;
++}
++
++/* ============================================================================
++ * SECTION 2: BLOCK / CLUSTER / FAT I/O
++ * ============================================================================ */
++
++static uint64_t cluster_to_sector(uint32_t cluster) {
++    return em.heap_offset + (uint64_t)(cluster - 2) * em.spc;
++}
++
++static uint32_t fat_get(uint32_t cluster) {
++    uint64_t fs = em.fat_offset + ((uint64_t)cluster * 4) / em.bps;
++    uint32_t off = (cluster * 4) % em.bps;
++    uint8_t buf[512];
++    if (fs_read_block(em.bdev, fs, 1, buf) != 0) return EXFAT_FAT_EOF;
++    return r32(buf + off);
++}
++static int fat_set(uint32_t cluster, uint32_t val) {
++    uint64_t fs = em.fat_offset + ((uint64_t)cluster * 4) / em.bps;
++    uint32_t off = (cluster * 4) % em.bps;
++    uint8_t buf[512];
++    if (fs_read_block(em.bdev, fs, 1, buf) != 0) return -1;
++    w32(buf + off, val);
++    return fs_write_block(em.bdev, fs, 1, buf);
++}
++
++/* bitmap: bit (cluster-2) covers each heap cluster (cluster 2 = bit 0, per
++ * the exFAT spec / fsck's EXFAT_FIRST_CLUSTER==2). */
++static int bitmap_test(uint32_t cluster) {
++    uint32_t cc = cluster - 2, byte = cc >> 3, bit = cc & 7;
++    uint8_t buf[512];
++    if (fs_read_block(em.bdev, cluster_to_sector(em.bitmap_cluster) + byte / em.bps,
++                      1, buf) != 0) return 1;
++    return (buf[byte % em.bps] >> bit) & 1;
++}
++static void bitmap_set(uint32_t cluster, int used) {
++    uint32_t cc = cluster - 2, byte = cc >> 3, bit = cc & 7;
++    uint8_t buf[512];
++    if (fs_read_block(em.bdev, cluster_to_sector(em.bitmap_cluster) + byte / em.bps,
++                      1, buf) != 0) return;
++    if (used) buf[byte % em.bps] |= (uint8_t)(1u << bit);
++    else      buf[byte % em.bps] &= (uint8_t)~(1u << bit);
++    fs_write_block(em.bdev, cluster_to_sector(em.bitmap_cluster) + byte / em.bps,
++                   1, buf);
++}
++
++static uint32_t alloc_cluster(uint32_t prev) {
++    uint32_t start = em.next_free < 2 ? 2 : em.next_free;
++    uint32_t c = start;
++    for (uint32_t n = 0; n < em.cluster_count - 2; n++, c++) {
++        if (c >= em.cluster_count) c = 2;
++        if (!bitmap_test(c)) {
++            bitmap_set(c, 1);
++            if (fat_set(c, EXFAT_FAT_EOF) != 0) { bitmap_set(c, 0); return 0; }
++            if (prev) fat_set(prev, c);
++            em.next_free = c + 1;
++            return c;
++        }
++    }
++    return 0;
++}
++
++static uint64_t chain_len(uint32_t first) {
++    uint64_t len = 0;
++    uint32_t c = first;
++    while (c != EXFAT_FAT_EOF && c != EXFAT_FAT_FREE && c != EXFAT_FAT_BAD) {
++        len++; c = fat_get(c);
++    }
++    return len;
++}
++
++/* Read `nbytes` at file offset `pos` from a cluster chain. */
++static int64_t chain_read(uint32_t first, uint64_t pos, uint8_t *buf, uint64_t nbytes) {
++    uint32_t cluster = first;
++    /* seek to the cluster holding `pos` */
++    uint64_t skip = pos;
++    while (skip >= em.cluster_size) {
++        skip -= em.cluster_size;
++        cluster = fat_get(cluster);
++        if (cluster == EXFAT_FAT_EOF || cluster == EXFAT_FAT_FREE) return 0;
++    }
++    uint64_t done = 0;
++    uint64_t inblk = skip;
++    while (done < nbytes) {
++        if (cluster == EXFAT_FAT_EOF || cluster == EXFAT_FAT_FREE) break;
++        if (fs_read_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        uint64_t chunk = em.cluster_size - inblk;
++        if (chunk > nbytes - done) chunk = nbytes - done;
++        memcpy(buf + done, escratch + inblk, (size_t)chunk);
++        done += chunk;
++        inblk = 0;
++        cluster = fat_get(cluster);
++    }
++    return (int64_t)done;
++}
++
++/* ============================================================================
++ * SECTION 3: DIRECTORY ENTRIES
++ * ============================================================================ */
++
++struct exfat_dirent {
++    uint32_t first_cluster;
++    uint64_t data_length;
++    uint16_t attrs;
++    uint32_t create_ts, mod_ts, access_ts;
++    char     name[256];
++    int      is_dir;
++    int      set_entries;
+ };
+ 
+-static struct vnode* exfat_lookup(void *fs_data, const char *path) {
+-    /* Simplified lookup: starts from root_dir_cluster and scans entries */
+-    struct buffer *dir_buf = exfat_get_cluster_buf(boot_region.root_dir_cluster);
+-    if (!dir_buf) return NULL;
+-
+-    struct exfat_dir_entry *entries = (struct exfat_dir_entry *)dir_buf->data;
+-    for (size_t i = 0; i < BC_BLOCK_SIZE / sizeof(struct exfat_dir_entry); i++) {
+-        if (entries[i].type == 0x85 && strcmp((char*)entries[i].name, path) == 0) {
+-            struct vnode *vn = kmalloc(sizeof(struct vnode));
+-            if (!vn) {
+-                bc_release(dir_buf);
+-                return NULL;
++/* Count consecutive zero (free) entries starting at `i` in a dir cluster. */
++static int zero_run(const uint8_t *cl, int i, int nentries) {
++    int run = 0;
++    while (i + run < nentries && cl[(i+run)*32] == 0) run++;
++    return run;
++}
++
++/* Locate an entry set by name in a directory.  If `raw_out` is non-NULL,
++ * the whole set is copied there and rawlen/raw_index are filled. */
++static int dir_lookup(uint32_t dir_cluster, const char *want,
++                      struct exfat_dirent *out,
++                      uint8_t *raw_out, uint32_t *rawlen, uint64_t *raw_index) {
++    uint32_t cluster = dir_cluster;
++    uint64_t dentry = 0;
++    while (cluster != EXFAT_FAT_EOF && cluster != EXFAT_FAT_FREE) {
++        if (fs_read_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        int nentries = (int)(em.cluster_size / 32);
++        for (int i = 0; i < nentries; i++) {
++            uint8_t *e = escratch + i * 32;
++            uint8_t type = e[0];
++            if (type == EXFAT_ENTRY_EOD) return 0;
++            if (type != EXFAT_ENTRY_FILE) continue;
++            int nsec = e[1];
++            int set_total = 1 + nsec;
++            /* gather stream + name */
++            uint32_t first = 0; uint64_t datalen = 0;
++            uint16_t attrs = r16(e + 4);
++            uint32_t cts = r32(e + 8), mts = r32(e + 12), ats = r32(e + 16);
++            char name[256]; int nlen = 0, nidx = 0; name[0] = 0;
++            for (int s = 1; s < set_total && i + s < nentries; s++) {
++                uint8_t *se = escratch + (i + s) * 32;
++                uint8_t st = se[0];
++                if (st == EXFAT_ENTRY_STREAM) {
++                    first = r32(se + 20);
++                    datalen = r64(se + 24);
++                    nlen = se[3];
++                } else if (st == EXFAT_ENTRY_NAME) {
++                    for (int k = 0; k < 15 && nidx < nlen && nidx < 255; k++) {
++                        uint16_t u = r16(se + 2 + k * 2);
++                        if (u == 0) break;
++                        name[nidx++] = (u < 0x80) ? (char)u : '?';
++                    }
++                }
++            }
++            name[nidx] = 0;
++            if (!want || strcmp(name, want) == 0) {
++                if (out) {
++                    memset(out, 0, sizeof(*out));
++                    out->first_cluster = first;
++                    out->data_length = datalen;
++                    out->attrs = attrs;
++                    out->create_ts = cts; out->mod_ts = mts; out->access_ts = ats;
++                    memcpy(out->name, name, (size_t)nlen + 1);
++                    out->is_dir = (attrs & EXFAT_ATTR_DIRECTORY) != 0;
++                    out->set_entries = set_total;
++                }
++                if (raw_out) {
++                    for (int s = 0; s < set_total && i + s < nentries; s++)
++                        memcpy(raw_out + s * 32, escratch + (i + s) * 32, 32);
++                    if (rawlen) *rawlen = (uint32_t)(set_total * 32);
++                    if (raw_index) *raw_index = dentry + i;
++                }
++                return 1;
+             }
+-            vn->type = (entries[i].file_attrs & 0x10) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+-            vn->size = entries[i].size;
+-            vn->inode_id = entries[i].first_cluster;
+-            vn->ops = &exfat_ops;
+-            vn->fs_data = kmalloc(sizeof(struct exfat_vnode));
+-            if (!vn->fs_data) {
+-                kfree(vn);
+-                bc_release(dir_buf);
+-                return NULL;
++            i += (set_total - 1);
++        }
++        dentry += nentries;
++        cluster = fat_get(cluster);
++    }
++    return 0;
++}
++
++/* Enumerate a directory (want == NULL).  Returns count, or -1 on error. */
++static int dir_enum(uint32_t dir_cluster, struct exfat_dirent *out, int max) {
++    uint32_t cluster = dir_cluster;
++    int count = 0;
++    while (cluster != EXFAT_FAT_EOF && cluster != EXFAT_FAT_FREE) {
++        if (fs_read_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        int nentries = (int)(em.cluster_size / 32);
++        for (int i = 0; i < nentries; i++) {
++            uint8_t *e = escratch + i * 32;
++            uint8_t type = e[0];
++            if (type == EXFAT_ENTRY_EOD) return count;
++            if (type != EXFAT_ENTRY_FILE) continue;
++            int nsec = e[1];
++            int set_total = 1 + nsec;
++            struct exfat_dirent d; memset(&d, 0, sizeof(d));
++            d.attrs = r16(e + 4);
++            d.create_ts = r32(e + 8); d.mod_ts = r32(e + 12); d.access_ts = r32(e + 16);
++            int nlen = 0, nidx = 0;
++            for (int s = 1; s < set_total && i + s < nentries; s++) {
++                uint8_t *se = escratch + (i + s) * 32;
++                uint8_t st = se[0];
++                if (st == EXFAT_ENTRY_STREAM) {
++                    d.first_cluster = r32(se + 20);
++                    d.data_length = r64(se + 24);
++                    nlen = se[3];
++                } else if (st == EXFAT_ENTRY_NAME) {
++                    for (int k = 0; k < 15 && nidx < nlen && nidx < 255; k++) {
++                        uint16_t u = r16(se + 2 + k * 2);
++                        if (u == 0) break;
++                        d.name[nidx++] = (u < 0x80) ? (char)u : '?';
++                    }
++                }
++            }
++            d.name[nidx] = 0;
++            d.is_dir = (d.attrs & EXFAT_ATTR_DIRECTORY) != 0;
++            if (count < max && out) out[count] = d;
++            count++;
++            i += (set_total - 1);
++        }
++        cluster = fat_get(cluster);
++    }
++    return count;
++}
++
++/* Build an entry set for a file/dir.  Returns bytes used. */
++static uint32_t build_entry_set(uint8_t *out, const char *name, int is_dir,
++                                uint32_t first_cluster, uint64_t data_length,
++                                uint32_t create_ts, uint32_t mod_ts,
++                                uint32_t access_ts) {
++    int nlen = (int)strlen(name);
++    int nname = (nlen + 14) / 15;
++    uint8_t *f = out;                       /* 0x85 */
++    memset(f, 0, 32);
++    f[0] = EXFAT_ENTRY_FILE;
++    f[1] = (uint8_t)(1 + nname);
++    w16(f + 4, is_dir ? EXFAT_ATTR_DIRECTORY : EXFAT_ATTR_ARCHIVE);
++    w32(f + 8, create_ts); w32(f + 12, mod_ts); w32(f + 16, access_ts);
++    /* NOTE: the FILE entry's "first_cluster/data_length" fields at +32/+36
++     * are NOT stored here: they would overlap the STREAM secondary that
++     * follows this 32-byte slot.  The authoritative values go in the STREAM
++     * entry below, which is what dir_lookup reads. */
++
++    uint8_t *s = out + 32;                  /* 0xC0 */
++    memset(s, 0, 32);
++    s[0] = EXFAT_ENTRY_STREAM;
++    s[3] = (uint8_t)nlen;
++    uint16_t nm[256];
++    for (int i = 0; i < nlen; i++) nm[i] = (uint16_t)(uint8_t)name[i];
++    w16(s + 4, exfat_name_hash(nm, nlen));
++    w64(s + 8, data_length);
++    w32(s + 20, first_cluster); w64(s + 24, data_length);
++
++    uint8_t *n = out + 64;                  /* 0xC1... */
++    for (int k = 0; k < nname; k++) {
++        memset(n, 0, 32);
++        n[0] = EXFAT_ENTRY_NAME;
++        for (int c = 0; c < 15; c++) {
++            int idx = k * 15 + c;
++            if (idx < nlen) w16(n + 2 + c * 2, (uint16_t)(uint8_t)name[idx]);
++        }
++        n += 32;
++    }
++    uint32_t total = (uint32_t)(32 * (2 + nname));
++    w16(out + 2, entry_set_csum(out, 2 + nname));   /* set checksum */
++    return total;
++}
++
++/* Read a whole directory into `raw` (grow the chain if needed to fit `need`
++ * entries past EOD), returning the entry index where `need` free slots start,
++ * or -1.  `raw` must hold up to `dir_bytes` bytes. */
++static int64_t dir_ensure_space(uint32_t dir_cluster, int need,
++                                uint8_t *raw, uint32_t dir_bytes) {
++    /* copy the directory to raw and find a free run; if none, extend */
++    uint32_t cluster = dir_cluster;
++    uint32_t filled = 0;
++    uint64_t dentry = 0;
++    while (cluster != EXFAT_FAT_EOF && cluster != EXFAT_FAT_FREE) {
++        if (fs_read_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        if (filled + em.cluster_size > dir_bytes) return -1;
++        memcpy(raw + filled, escratch, em.cluster_size);
++        /* find first zero run in this cluster (within existing cluster bytes) */
++        int nentries = (int)(em.cluster_size / 32);
++        for (int i = 0; i < nentries; i++) {
++            if (escratch[i*32] == 0) {
++                int run = zero_run(escratch, i, nentries);
++                if (run >= need) return (int64_t)(dentry + i);
+             }
+-            ((struct exfat_vnode*)vn->fs_data)->inode_id = vn->inode_id;
+-            ((struct exfat_vnode*)vn->fs_data)->size = vn->size;
+-            
+-            bc_release(dir_buf);
+-            return vn;
+         }
++        filled += em.cluster_size;
++        dentry += nentries;
++        cluster = fat_get(cluster);
++    }
++    return -1;   /* caller must grow the dir */
++}
++
++/* Write `nbytes` of entry bytes starting at entry index `entry_idx`. */
++static int dir_write_at(uint32_t dir_cluster, uint64_t entry_idx,
++                        const uint8_t *data, uint32_t nbytes) {
++    uint64_t byte = entry_idx * 32;
++    uint32_t cluster = dir_cluster;
++    while (cluster != EXFAT_FAT_EOF && cluster != EXFAT_FAT_FREE) {
++        uint64_t cs = em.cluster_size;
++        if (byte + nbytes <= cs) {
++            if (fs_read_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++                return -1;
++            memcpy(escratch + (uint32_t)byte, data, nbytes);
++            return fs_write_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch);
++        }
++        uint32_t here = (uint32_t)(cs - byte);
++        if (fs_read_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        memcpy(escratch + (uint32_t)byte, data, here);
++        if (fs_write_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        data += here; nbytes -= here; byte = 0;
++        cluster = fat_get(cluster);
++    }
++    return -1;
++}
++
++/* Append a new entry set to `dir_cluster`.  Grows the directory (allocates a
++ * new cluster) if there is no free run.  Returns 0 on success. */
++static int dir_append_set(uint32_t dir_cluster, const uint8_t *set, uint32_t setlen) {
++    int need = (int)(setlen / 32);
++    uint8_t *raw = (uint8_t*)kmalloc(em.cluster_size * 4);
++    if (!raw) return -1;
++    int64_t idx = dir_ensure_space(dir_cluster, need, raw, em.cluster_size * 4);
++    if (idx < 0) {
++        /* grow: find the tail cluster, allocate a new one, chain it */
++        uint32_t c = dir_cluster, prev = 0;
++        while (c != EXFAT_FAT_EOF && c != EXFAT_FAT_FREE) { prev = c; c = fat_get(c); }
++        uint32_t nw = alloc_cluster(prev);
++        if (!nw) { kfree(raw); return -1; }
++        memset(escratch, 0, em.cluster_size);
++        escratch[0] = EXFAT_ENTRY_EOD;
++        fs_write_block(em.bdev, cluster_to_sector(nw), em.spc, escratch);
++        /* total existing entries = previous chain length * entries */
++        uint64_t total = chain_len(dir_cluster) * (em.cluster_size / 32);
++        idx = (int64_t)total;
+     }
+-    bc_release(dir_buf);
++    int rc = dir_write_at(dir_cluster, (uint64_t)idx, set, setlen);
++    if (rc == 0) {
++        /* place a fresh End-Of-Directory marker right after the new set so
++         * a later scan stops after exactly one EOD.  The slot is guaranteed
++         * free (dir_ensure_space returned a run of >= need zeros). */
++        uint8_t eod = EXFAT_ENTRY_EOD;
++        rc = dir_write_at(dir_cluster, (uint64_t)idx + need, &eod, 32);
++    }
++    kfree(raw);
++    return rc;
++}
++
++/* ============================================================================
++ * SECTION 4: PATH RESOLUTION
++ * ============================================================================ */
++
++static int exfat_resolve(const char *path, uint32_t *dir_out,
++                         char *base_out, uint32_t *child_out) {
++    while (*path == '/') path++;
++    if (!*path) { *dir_out = em.root_cluster; *child_out = 0; if (base_out) base_out[0]=0; return 0; }
++    uint32_t dir = em.root_cluster;
++    char comp[256];
++    const char *p = path;
++    while (*p) {
++        int n = 0;
++        while (*p && *p != '/' && n < 255) comp[n++] = *p++;
++        comp[n] = 0;
++        while (*p == '/') p++;
++        struct exfat_dirent d;
++        int r = dir_lookup(dir, comp, &d, NULL, NULL, NULL);
++        if (r < 0) return -1;
++        if (r == 0) {
++            if (*p == 0) { *dir_out = dir; if (base_out) memcpy(base_out, comp, n+1); *child_out = 0; return 0; }
++            return -1;   /* intermediate missing */
++        }
++        if (*p == 0) { *dir_out = dir; if (base_out) memcpy(base_out, comp, n+1); *child_out = d.first_cluster; return 0; }
++        if (!d.is_dir) return -1;
++        dir = d.first_cluster;
++    }
++    return -1;
++}
++
++/* ============================================================================
++ * SECTION 5: VNODES
++ * ============================================================================ */
++
++struct exfat_vnode {
++    int       in_use;
++    char      path[256];
++    uint32_t  first_cluster;
++    uint32_t  parent_cluster;
++    char      name[256];
++    uint64_t  size;
++    uint32_t  attrs;
++    struct vnode vnode;
++};
++#define EXFAT_MAX_VNODES 64
++static struct exfat_vnode evpool[EXFAT_MAX_VNODES];
++
++static struct exfat_vnode *ev_intern(const char *path, uint32_t first,
++                                     uint32_t parent, const char *name,
++                                     int is_dir, uint64_t size, uint32_t attrs) {
++    for (int i = 0; i < EXFAT_MAX_VNODES; i++)
++        if (evpool[i].in_use && strcmp(evpool[i].path, path) == 0) {
++            evpool[i].first_cluster = first; evpool[i].size = size;
++            evpool[i].attrs = attrs; evpool[i].vnode.size = size;
++            return &evpool[i];
++        }
++    for (int i = 0; i < EXFAT_MAX_VNODES; i++)
++        if (!evpool[i].in_use) {
++            struct exfat_vnode *v = &evpool[i];
++            memset(v, 0, sizeof(*v));
++            v->in_use = 1;
++            strncpy(v->path, path, sizeof(v->path)-1);
++            v->first_cluster = first; v->parent_cluster = parent;
++            strncpy(v->name, name, sizeof(v->name)-1);
++            v->size = size; v->attrs = attrs;
++            v->vnode.type = is_dir ? VFS_TYPE_DIR : VFS_TYPE_FILE;
++            v->vnode.mode = is_dir ? 0755 : 0644;
++            v->vnode.size = size;
++            v->vnode.ops = &exfat_ops;
++            v->vnode.fs_data = v;
++            v->vnode.inode_id = first;
++            return v;
++        }
+     return NULL;
+ }
+ 
++/* ============================================================================
++ * SECTION 6: VFS OPS
++ * ============================================================================ */
++
++static struct vnode *exfat_lookup(void *fs_data, const char *path) {
++    (void)fs_data;
++    if (!em.mounted) return NULL;
++    /* the mount root (empty rel path) resolves to the root directory */
++    if (!path || !*path || strcmp(path, "/") == 0)
++        return &ev_intern("/exfat", em.root_cluster, em.root_cluster, "", 1, 0,
++                          EXFAT_ATTR_DIRECTORY)->vnode;
++    uint32_t dclu, child; char base[256];
++    if (exfat_resolve(path, &dclu, base, &child) != 0) return NULL;
++    if (child == 0) return NULL;
++    struct exfat_dirent d;
++    if (dir_lookup(dclu, base, &d, NULL, NULL, NULL) <= 0) return NULL;
++    return &ev_intern(path, d.first_cluster, dclu, base, d.is_dir,
++                      d.data_length, d.attrs)->vnode;
++}
++
+ static int64_t exfat_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
+-    struct exfat_vnode *evn = vn->fs_data;
+-    uint64_t cluster = evn->inode_id;
+-    uint64_t offset_in_cluster = pos % (boot_region.sectors_per_cluster * BC_BLOCK_SIZE);
+-    
+-    struct buffer *b = exfat_get_cluster_buf(cluster);
+-    if (!b) return -1;
++    struct exfat_vnode *v = (struct exfat_vnode*)vn->fs_data;
++    if (!v || (v->attrs & EXFAT_ATTR_DIRECTORY)) return -1;
++    if (pos >= v->size) return 0;
++    if (pos + count > v->size) count = v->size - pos;
++    return chain_read(v->first_cluster, pos, (uint8_t*)buf, count);
++}
+ 
+-    uint64_t available = BC_BLOCK_SIZE - offset_in_cluster;
+-    uint64_t to_copy = (count < available) ? count : available;
+-    
+-    memcpy(buf, b->data + offset_in_cluster, (size_t)to_copy);
+-    bc_release(b);
+-    return to_copy;
++static int exfat_update_set(uint32_t parent, const char *name,
++                            void (*mut)(uint8_t *set, uint32_t setlen, void *ctx),
++                            void *ctx) {
++    uint8_t set[96 * 3]; uint32_t setlen; uint64_t idx;
++    if (dir_lookup(parent, name, NULL, set, &setlen, &idx) <= 0) return -1;
++    mut(set, setlen, ctx);
++    w16(set + 2, entry_set_csum(set, (int)(setlen / 32)));
++    return dir_write_at(parent, idx, set, setlen);
++}
++
++struct size_ctx { uint64_t size; uint32_t first_cluster; uint32_t mod; };
++static void mut_size(uint8_t *set, uint32_t sl, void *c) {
++    (void)sl;
++    struct size_ctx *sc = (struct size_ctx*)c;
++    /* Authoritative size/cluster live in the STREAM entry (which dir_lookup
++     * reads).  The FILE entry's +32/+36 "first_cluster/data_length" fields
++     * physically overlap the STREAM entry that follows a 32-byte primary
++     * slot, so we must NOT write them (that would clobber the STREAM type
++     * byte 0xC0).  STREAM sits at set+32:
++     *   valid_length +8 -> set+40, first_cluster +20 -> set+52,
++     *   data_length +24 -> set+56. */
++    w64(set + 40, sc->size);          /* STREAM valid_data_length */
++    w64(set + 56, sc->size);          /* STREAM data_length */
++    w32(set + 52, sc->first_cluster); /* STREAM first_cluster */
++    w32(set + 12, sc->mod);           /* FILE mod_ts */
+ }
+ 
+ static int64_t exfat_write(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
+-    struct exfat_vnode *evn = vn->fs_data;
+-    uint64_t cluster = evn->inode_id;
+-    uint64_t offset_in_cluster = pos % (boot_region.sectors_per_cluster * BC_BLOCK_SIZE);
+-    
+-    struct buffer *b = exfat_get_cluster_buf(cluster);
+-    if (!b) return -1;
+-
+-    uint64_t available = BC_BLOCK_SIZE - offset_in_cluster;
+-    uint64_t to_copy = (count < available) ? count : available;
+-    
+-    memcpy(b->data + offset_in_cluster, buf, (size_t)to_copy);
+-    b->dirty = true;
+-    bc_release(b);
+-    return to_copy;
++    struct exfat_vnode *v = (struct exfat_vnode*)vn->fs_data;
++    if (!v || (v->attrs & EXFAT_ATTR_DIRECTORY)) return -1;
++    if (count == 0) return 0;
++
++    uint64_t needed = pos + count;
++    uint32_t head = v->first_cluster;
++    if (head == 0) { head = alloc_cluster(0); if (!head) return -1; v->first_cluster = head; }
++    uint64_t cur_bytes = chain_len(head) * em.cluster_size;
++    while (cur_bytes < needed) {
++        uint32_t c = head, prev = 0;
++        while (c != EXFAT_FAT_EOF && c != EXFAT_FAT_FREE) { prev = c; c = fat_get(c); }
++        if (!alloc_cluster(prev)) return -1;
++        cur_bytes += em.cluster_size;
++    }
++
++    uint64_t done = 0;
++    uint64_t seek = pos;
++    uint32_t cluster = head;
++    while (seek >= em.cluster_size) { seek -= em.cluster_size; cluster = fat_get(cluster); }
++    while (done < count) {
++        if (cluster == EXFAT_FAT_EOF || cluster == EXFAT_FAT_FREE) break;
++        if (fs_read_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        uint32_t inblk = (uint32_t)seek;
++        uint32_t chunk = em.cluster_size - inblk;
++        if (chunk > count - done) chunk = (uint32_t)(count - done);
++        memcpy(escratch + inblk, (const uint8_t*)buf + done, chunk);
++        if (fs_write_block(em.bdev, cluster_to_sector(cluster), em.spc, escratch) != 0)
++            return -1;
++        done += chunk; seek = 0;
++        cluster = fat_get(cluster);
++    }
++
++    uint64_t new_size = pos + count;
++    if (new_size > v->size) {
++        v->size = new_size; v->vnode.size = new_size;
++        struct size_ctx sc = { new_size, v->first_cluster, exfat_unix_to_u32(1337) };
++        exfat_update_set(v->parent_cluster, v->name, mut_size, &sc);
++    }
++    return (int64_t)done;
++}
++
++static int exfat_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
++    struct exfat_vnode *v = (struct exfat_vnode*)vn->fs_data;
++    if (!v) return -1;
++    uint32_t dclu = (strcmp(v->path, "/exfat") == 0) ? em.root_cluster : v->first_cluster;
++    struct exfat_dirent ent[64];
++    int cap = max > 64 ? 64 : max;
++    int n = dir_enum(dclu, ent, cap);
++    if (n < 0) return -1;
++    for (int i = 0; i < n; i++) {
++        memset(&out[i], 0, sizeof(out[i]));
++        strncpy(out[i].name, ent[i].name, VFS_PATH_MAX - 1);
++        out[i].inode = ent[i].first_cluster;
++        out[i].type = ent[i].is_dir ? VFS_TYPE_DIR : VFS_TYPE_FILE;
++        out[i].size = ent[i].is_dir ? 0 : ent[i].data_length;
++    }
++    return n;
++}
++
++static struct vnode *exfat_create(void *fs_data, const char *path) {
++    (void)fs_data;
++    if (!em.mounted) return NULL;
++    uint32_t dclu, child; char base[256];
++    if (exfat_resolve(path, &dclu, base, &child) != 0) return NULL;
++    if (child != 0) return NULL;
++    uint32_t ts = exfat_unix_to_u32(1337);
++    uint8_t set[96 * 3];
++    uint32_t setlen = build_entry_set(set, base, 0, 0, 0, ts, ts, ts);
++    int rc = dir_append_set(dclu, set, setlen);
++    if (rc != 0) return NULL;
++    return &ev_intern(path, 0, dclu, base, 0, 0, EXFAT_ATTR_ARCHIVE)->vnode;
++}
++
++static int exfat_mkdir(void *fs_data, const char *path) {
++    (void)fs_data;
++    if (!em.mounted) return -1;
++    uint32_t dclu, child; char base[256];
++    if (exfat_resolve(path, &dclu, base, &child) != 0) return -1;
++    if (child != 0) return -1;
++    uint32_t c = alloc_cluster(0);
++    if (!c) return -1;
++    memset(escratch, 0, em.cluster_size);
++    escratch[0] = EXFAT_ENTRY_EOD;
++    fs_write_block(em.bdev, cluster_to_sector(c), em.spc, escratch);
++    uint32_t ts = exfat_unix_to_u32(1337);
++    uint8_t set[96 * 3];
++    uint32_t setlen = build_entry_set(set, base, 1, c, em.cluster_size, ts, ts, ts);
++    return dir_append_set(dclu, set, setlen);
++}
++
++static int exfat_truncate(struct vnode *vn, uint64_t new_size) {
++    struct exfat_vnode *v = (struct exfat_vnode*)vn->fs_data;
++    if (!v || (v->attrs & EXFAT_ATTR_DIRECTORY)) return -1;
++    struct size_ctx sc = { new_size, v->first_cluster, exfat_unix_to_u32(1337) };
++    if (exfat_update_set(v->parent_cluster, v->name, mut_size, &sc) != 0) return -1;
++    v->size = new_size; v->vnode.size = new_size;
++    return 0;
++}
++
++/* Free an entry set: clear the in-use bit (0x80) on every 32-byte entry but
++ * keep a NON-ZERO type so a directory scan SKIPS it instead of treating it
++ * as End-Of-Directory (0x00).  A freed entry in the middle of a directory
++ * must not hide the valid entries after it. */
++static void mark_unused(uint8_t *set, uint32_t sl) {
++    for (uint32_t i = 0; i < sl; i += 32) {
++        uint8_t t = set[i] & 0x7F;
++        memset(set + i, 0, 32);
++        set[i] = t ? t : 0x01;
++    }
++}
++
++static void mut_zero(uint8_t *set, uint32_t sl, void *c) {
++    (void)c; mark_unused(set, sl);
++}
++
++static int exfat_unlink(void *fs_data, const char *path) {
++    (void)fs_data;
++    if (!em.mounted) return -1;
++    uint32_t dclu, child; char base[256];
++    if (exfat_resolve(path, &dclu, base, &child) != 0) return -1;
++    if (child == 0) return -1;
++    struct exfat_dirent d;
++    if (dir_lookup(dclu, base, &d, NULL, NULL, NULL) <= 0) return -1;
++    if (d.is_dir) return -1;
++    uint32_t c = d.first_cluster;
++    while (c != EXFAT_FAT_EOF && c != EXFAT_FAT_FREE && c != EXFAT_FAT_BAD) {
++        uint32_t next = fat_get(c);
++        fat_set(c, EXFAT_FAT_FREE); bitmap_set(c, 0);
++        c = next;
++    }
++    return exfat_update_set(dclu, base, mut_zero, NULL);
++}
++
++static int exfat_rmdir(void *fs_data, const char *path) {
++    (void)fs_data;
++    if (!em.mounted) return -1;
++    uint32_t dclu, child; char base[256];
++    if (exfat_resolve(path, &dclu, base, &child) != 0) return -1;
++    if (child == 0) return -1;
++    struct exfat_dirent d;
++    if (dir_lookup(dclu, base, &d, NULL, NULL, NULL) <= 0) return -1;
++    if (!d.is_dir) return -1;
++    if (dir_enum(child, NULL, 0) != 0) return -1;   /* must be empty */
++    uint32_t c = d.first_cluster;
++    while (c != EXFAT_FAT_EOF && c != EXFAT_FAT_FREE && c != EXFAT_FAT_BAD) {
++        uint32_t next = fat_get(c);
++        fat_set(c, EXFAT_FAT_FREE); bitmap_set(c, 0);
++        c = next;
++    }
++    return exfat_update_set(dclu, base, mut_zero, NULL);
++}
++
++static int exfat_rename(void *fs_data, const char *oldp, const char *newp) {
++    (void)fs_data;
++    if (!em.mounted) return -1;
++    uint32_t odclu, ochild; char obase[256];
++    if (exfat_resolve(oldp, &odclu, obase, &ochild) != 0) return -1;
++    if (ochild == 0) return -1;
++    uint32_t ndclu, nchild; char nbase[256];
++    if (exfat_resolve(newp, &ndclu, nbase, &nchild) != 0) return -1;
++
++    struct exfat_dirent d;
++    uint8_t set[96 * 3]; uint32_t setlen; uint64_t idx;
++    if (dir_lookup(odclu, obase, &d, set, &setlen, &idx) <= 0) return -1;
++
++    uint8_t nset[96 * 3];
++    uint32_t nlen = build_entry_set(nset, nbase, d.is_dir,
++                                    d.first_cluster, d.data_length,
++                                    d.create_ts, d.mod_ts, d.access_ts);
++    int arc = dir_append_set(ndclu, nset, nlen);
++    if (arc != 0) return -1;
++    mark_unused(set, setlen);
++    dir_write_at(odclu, idx, set, setlen);
++    return 0;
++}
++
++struct ts_ctx { uint32_t at, mt; };
++static void mut_times(uint8_t *set, uint32_t sl, void *c) {
++    (void)sl;
++    struct ts_ctx *tc = (struct ts_ctx*)c;
++    w32(set + 16, tc->at);
++    w32(set + 12, tc->mt);
++}
++
++static int exfat_settimes(struct vnode *vn, uint64_t atime, uint64_t mtime) {
++    struct exfat_vnode *v = (struct exfat_vnode*)vn->fs_data;
++    if (!v) return -1;
++    struct ts_ctx tc = { exfat_unix_to_u32(atime), exfat_unix_to_u32(mtime) };
++    return exfat_update_set(v->parent_cluster, v->name, mut_times, &tc);
++}
++
++static int exfat_stat(struct vnode *vn, struct vfs_stat *st) {
++    struct exfat_vnode *v = (struct exfat_vnode*)vn->fs_data;
++    memset(st, 0, sizeof(*st));
++    if (!v) return -1;
++    struct exfat_dirent d;
++    if (dir_lookup(v->parent_cluster, v->name, &d, NULL, NULL, NULL) > 0) {
++        st->type = d.is_dir ? VFS_TYPE_DIR : VFS_TYPE_FILE;
++        st->size = d.data_length;
++        st->mtime = exfat_u32_to_unix(d.mod_ts);
++        st->atime = exfat_u32_to_unix(d.access_ts);
++        st->ctime = exfat_u32_to_unix(d.create_ts);
++        st->nlink = 1;
++        st->mode = d.is_dir ? 0755 : 0644;
++        st->inode = d.first_cluster;
++    } else {
++        st->type = (v->attrs & EXFAT_ATTR_DIRECTORY) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
++        st->size = v->size;
++    }
++    return 0;
++}
++
++static int exfat_sync(void *fs_data) {
++    (void)fs_data;
++    if (!em.mounted) return -1;
++    fs_cache_sync(NULL);
++    return 0;
+ }
+ 
+ const struct vfs_ops exfat_ops = {
+-    .lookup = exfat_lookup,
+-    .read = exfat_read,
+-    .write = exfat_write,
+-    .sync = fs_cache_sync,   /* F2: flush the shared cache on sync */
++    .lookup   = exfat_lookup,
++    .create   = exfat_create,
++    .read     = exfat_read,
++    .write    = exfat_write,
++    .readdir  = exfat_readdir,
++    .mkdir    = exfat_mkdir,
++    .unlink   = exfat_unlink,
++    .rmdir    = exfat_rmdir,
++    .rename   = exfat_rename,
++    .settimes = exfat_settimes,
++    .stat     = exfat_stat,
++    .truncate = exfat_truncate,
++    .sync     = exfat_sync,
+ };
+ 
+-/* Returns 0 on success (volume looks like exFAT), -1 otherwise.  The
+- * caller mounts only on success; a foreign volume is refused loudly and
+- * never written to (FSFULL_PLAN.md F1). */
++/* ============================================================================
++ * SECTION 7: FORMATTER
++ * ============================================================================ */
++
++static int format_exfat(void) {
++    kprintf("[exfat] formatting...\n");
++    uint32_t bps = 512, spc = 8, cluster_size = 4096;
++    uint64_t vol_sectors = 131072;
++    uint32_t fat_offset = 128;
++    /* Solve the geometry fixpoint: fat_length depends on cluster_count,
++     * and cluster_count depends on heap_offset = fat_offset + fat_length. */
++    uint32_t fat_length = 128;
++    uint32_t heap_offset, cluster_count;
++    for (int it = 0; it < 8; it++) {
++        heap_offset = fat_offset + fat_length;
++        cluster_count = (uint32_t)((vol_sectors - heap_offset) / spc);
++        uint32_t fl = (cluster_count * 4 + bps - 1) / bps;
++        if (fl == fat_length) break;
++        fat_length = fl;
++    }
++    heap_offset = fat_offset + fat_length;
++    cluster_count = (uint32_t)((vol_sectors - heap_offset) / spc);
++    uint32_t fat_bytes = fat_length * bps;
++
++    uint8_t b[512]; memset(b, 0, sizeof(b));
++    b[0] = 0xEB; b[1] = 0x76; b[2] = 0x90;
++    memcpy(b + 3, "EXFAT   ", 8);
++    w64(b + 72, vol_sectors);
++    w32(b + 80, fat_offset); w32(b + 84, fat_length);
++    w32(b + 88, heap_offset); w32(b + 92, cluster_count);
++    w32(b + 96, 2); w32(b + 100, 0x11111111);
++    w16(b + 104, 0x0100); w16(b + 106, 0);
++    b[108] = 9; b[109] = 3; b[110] = 1; b[112] = 0;
++    b[510] = 0x55; b[511] = 0xAA;
++
++    uint8_t *fat = (uint8_t*)kmalloc(fat_bytes);
++    memset(fat, 0, fat_bytes);
++    w32(fat + 0, 0xFFFFFFF8); w32(fat + 4, 0xFFFFFFFF);
++    w32(fat + 8, EXFAT_FAT_EOF);  /* clu2 root */
++    w32(fat + 12, EXFAT_FAT_EOF); /* clu3 bitmap */
++    w32(fat + 16, EXFAT_FAT_EOF); /* clu4 upcase */
++
++    uint8_t *bm = (uint8_t*)kmalloc(cluster_size);
++    memset(bm, 0, cluster_size);
++    /* mark root(2), bitmap(3), upcase(4) as allocated (bit = cluster-2) */
++    for (uint32_t c = 2; c < 5 && c < cluster_count; c++)
++        bm[(c-2)>>3] |= (uint8_t)(1u << ((c-2)&7));
++
++    uint8_t *up = (uint8_t*)kmalloc(cluster_size);
++    memset(up, 0, cluster_size);
++    uint32_t upchk;
++    for (uint32_t i = 0; i < 256; i++) w16(up + i*2, (uint16_t)i); /* entries @0 */
++    upchk = exfat_csum32(up, 256 * 2);   /* checksum over the whole table */
++
++    /* Boot region: sector 0 = main boot, sectors 1-8 = extended boot (each
++     * zeroed with the 0x55AA signature), 9 = OEM, 10 = reserved, 11 = the
++     * boot-region checksum (32-bit shift-add over sectors 0-10, stored
++     * repeated across sector 11).  Sectors 12-23 mirror the region as the
++     * backup boot region (12 = backup boot sector). */
++    uint8_t ext[512]; memset(ext, 0, sizeof(ext)); ext[510] = 0x55; ext[511] = 0xAA;
++    uint8_t zc[512]; memset(zc, 0, sizeof(zc));
++
++    uint32_t rchk = 0;
++    rchk = exfat_boot_csum_cont(rchk, b, 512, 1);
++    for (uint32_t s = 1; s <= 8; s++) {
++        fs_write_block(em.bdev, s, 1, ext);
++        fs_write_block(em.bdev, s + 12, 1, ext);
++        rchk = exfat_boot_csum_cont(rchk, ext, 512, 0);
++    }
++    fs_write_block(em.bdev, 9, 1, zc);  fs_write_block(em.bdev, 21, 1, zc);
++    rchk = exfat_boot_csum_cont(rchk, zc, 512, 0);
++    fs_write_block(em.bdev, 10, 1, zc); fs_write_block(em.bdev, 22, 1, zc);
++    rchk = exfat_boot_csum_cont(rchk, zc, 512, 0);
++
++    uint8_t cs[512]; memset(cs, 0, sizeof(cs));
++    for (uint32_t i = 0; i + 4 <= sizeof(cs); i += 4) w32(cs + i, rchk);
++    fs_write_block(em.bdev, 11, 1, cs);         /* main boot checksum sector */
++    fs_write_block(em.bdev, 23, 1, cs);         /* backup boot checksum sector */
++    fs_write_block(em.bdev, 0, 1, b);           /* main boot sector */
++    fs_write_block(em.bdev, 12, 1, b);          /* backup boot sector */
++    for (uint32_t s = 0; s < fat_length; s++)
++        fs_write_block(em.bdev, fat_offset + s, 1, fat + s * bps);
++    fs_write_block(em.bdev, heap_offset + 1 * spc, spc, bm);    /* clu3 */
++    fs_write_block(em.bdev, heap_offset + 2 * spc, spc, up);    /* clu4 */
++
++    uint8_t *root = (uint8_t*)kmalloc(cluster_size);
++    memset(root, 0, cluster_size);
++    uint8_t *be = root;                      /* bitmap entry idx0 */
++    be[0] = EXFAT_ENTRY_BITMAP; be[1] = 1;
++    w32(be + 20, 3); w64(be + 24, (cluster_count + 7) / 8);
++    uint8_t *ue = root + 32;                 /* upcase entry idx1 */
++    ue[0] = EXFAT_ENTRY_UPCASE; ue[1] = 3;
++    w32(ue + 4, upchk);                      /* upcase table checksum @+4 */
++    w32(ue + 20, 4); w64(ue + 24, 256 * 2);  /* 256-entry identity table */
++    root[64] = EXFAT_ENTRY_EOD;              /* EOD at idx2 */
++    fs_write_block(em.bdev, heap_offset + 0 * spc, spc, root);  /* clu2 */
++
++    kfree(fat); kfree(bm); kfree(up); kfree(root);
++
++    em.bps = bps; em.spc = spc; em.cluster_size = cluster_size;
++    em.fat_offset = fat_offset; em.fat_length = fat_length;
++    em.heap_offset = heap_offset; em.cluster_count = cluster_count;
++    em.root_cluster = 2; em.bitmap_cluster = 3; em.next_free = 5;
++    kprintf("[exfat] format complete: %u clusters of %u bytes\n",
++            cluster_count, cluster_size);
++    return 0;
++}
++
++/* ============================================================================
++ * SECTION 8: INIT / MOUNT
++ * ============================================================================ */
++
+ int exfat_init(int device_id) {
+-    exfat_dev_id = device_id;
+-    /* F2: read the boot region through the shared cache-backed helper
+-     * (sector 0, one 512-byte sector) so no FS path bypasses the cache. */
+-    uint8_t sector0[BC_BLOCK_SIZE];
+-    if (fs_read_block(device_id, 0, 1, sector0) != 0) {
+-        kprintf("[exfat] sector 0 of device %d unreadable; /exfat not mounted\n",
+-                device_id);
++    memset(&em, 0, sizeof(em));
++    memset(evpool, 0, sizeof(evpool));
++    em.bdev = device_id;
++    spinlock_init(&em.lock);
++    if (!escratch) escratch = (uint8_t*)kmalloc(4096);
++    if (!escratch) return -1;
++
++    uint8_t s0[512];
++    if (fs_read_block(device_id, 0, 1, s0) != 0) {
++        kprintf("[exfat] sector 0 of device %d unreadable; /exfat not mounted\n", device_id);
++        return -1;
++    }
++    if (memcmp(s0 + 3, "EXFAT   ", 8) != 0) {
++        if (!fs_format_allowed()) {
++            kprintf("[exfat] not exFAT signature (OEM '%.8s'); /exfat not mounted\n", s0 + 3);
++            return -1;
++        }
++        kprintf("[exfat] not exFAT signature, formatting...\n");
++        if (format_exfat() != 0) return -1;
++        if (fs_read_block(device_id, 0, 1, s0) != 0) return -1;
++    }
++    if (s0[510] != 0x55 || s0[511] != 0xAA) {
++        kprintf("[exfat] bad boot signature 0x%02x%02x; /exfat not mounted\n",
++                s0[510], s0[511]);
+         return -1;
+     }
+-    memcpy(&boot_region, sector0, sizeof(struct exfat_boot_region));
+-    if (memcmp(boot_region.oem_name, "EXFAT   ", 8) != 0) {
+-        kprintf("[exfat] not exFAT signature (OEM '%.8s'); /exfat not mounted\n",
+-                boot_region.oem_name);
++    uint32_t bps = 1u << s0[108];
++    uint32_t spc = 1u << s0[109];
++    if (bps != 512 && bps != 1024 && bps != 2048 && bps != 4096) {
++        kprintf("[exfat] unsupported bytes-per-sector %u; /exfat not mounted\n", bps);
+         return -1;
+     }
+-    kprintf("[fs] exFAT initialised on device %d\n", device_id);
++    em.bps = bps; em.spc = spc; em.cluster_size = bps * spc;
++    em.fat_offset = r32(s0 + 80); em.fat_length = r32(s0 + 84);
++    em.heap_offset = r32(s0 + 88); em.cluster_count = r32(s0 + 92);
++    em.root_cluster = r32(s0 + 96); em.next_free = 2;
++
++    /* locate bitmap cluster from the root directory (bounded walk) */
++    uint32_t clu = em.root_cluster, bmcluster = 0;
++    uint32_t guard = 0;
++    while (clu != EXFAT_FAT_EOF && clu != EXFAT_FAT_FREE && guard++ < em.cluster_count) {
++        if (fs_read_block(em.bdev, cluster_to_sector(clu), em.spc, escratch) != 0) break;
++        int nentries = (int)(em.cluster_size / 32);
++        for (int i = 0; i < nentries; i++) {
++            if (escratch[i*32] == EXFAT_ENTRY_BITMAP) { bmcluster = r32(escratch + i*32 + 20); break; }
++        }
++        if (bmcluster) break;
++        clu = fat_get(clu);
++    }
++    em.bitmap_cluster = bmcluster ? bmcluster : 2;
++
++    kprintf("[exfat] mounted real exFAT volume at /exfat: %u clusters, %u bytes/cluster\n",
++            em.cluster_count, em.cluster_size);
++    em.mounted = 1;
++    return 0;
++}
++
++/* ============================================================================
++ * SECTION 9: SELF-TEST
++ * ============================================================================ */
++
++int exfat_self_test(void) {
++    if (!em.mounted) { kprintf("[exfat] self-test: SKIPPED (not mounted)\n"); return -1; }
++    kprintf("[exfat] self-test: read/write/mkdir/rename/unlink/rmdir...\n");
++    struct vnode *f = exfat_create(NULL, "est.dat");
++    if (!f) { kprintf("[exfat] FAIL: create\n"); return -2; }
++    const char *msg = "exFAT self test payload";
++    if (exfat_write(f, 0, msg, strlen(msg)) != (int64_t)strlen(msg)) {
++        kprintf("[exfat] FAIL: write\n"); return -3;
++    }
++    char buf[128] = {0};
++    if (exfat_read(f, 0, buf, strlen(msg)) != (int64_t)strlen(msg) ||
++        strcmp(buf, msg) != 0) { kprintf("[exfat] FAIL: readback\n"); return -4; }
++    if (exfat_mkdir(NULL, "edir") != 0) { kprintf("[exfat] FAIL: mkdir\n"); return -5; }
++    struct vnode *inner = exfat_create(NULL, "edir/inner.txt");
++    if (!inner) { kprintf("[exfat] FAIL: create in subdir\n"); return -5; }
++    if (exfat_write(inner, 0, "nested", 6) != 6) return -5;
++    if (exfat_rename(NULL, "edir/inner.txt", "edir/ren.txt") != 0) {
++        kprintf("[exfat] FAIL: rename\n"); return -6;
++    }
++    if (exfat_unlink(NULL, "edir/ren.txt") != 0) { kprintf("[exfat] FAIL: unlink\n"); return -7; }
++    if (exfat_rmdir(NULL, "edir") != 0) { kprintf("[exfat] FAIL: rmdir\n"); return -8; }
++    kprintf("[exfat] PASS: read/write/mkdir/rename/unlink/rmdir\n");
+     return 0;
+ }
+diff --git a/kernel/fs/exfat.h b/kernel/fs/exfat.h
+index a16e2a1..aa60942 100644
+--- a/kernel/fs/exfat.h
++++ b/kernel/fs/exfat.h
+@@ -4,50 +4,66 @@
+ #include "kernel/fs/vfs.h"
+ #include <stdint.h>
+ 
+-/* exFAT Main Boot Region Structures */
++/* exFAT real on-disk structures (FSFULL_PLAN.md F5).
++ *
++ * Main Boot Sector (sector 0, 512 bytes).  Field offsets are the exFAT
++ * spec's; `fsname` must read "EXFAT   ".  The fields the old skeleton got
++ * wrong (16-bit fat_length/cluster_count that truncate the real 32-bit
++ * values) are corrected here. */
+ #if defined(__TINYC__)
+ #pragma pack(push, 1)
+ #endif
+-struct exfat_boot_region {
+-    uint8_t  jump[3];
+-    char     oem_name[8];
+-    uint16_t bytes_per_sector;
+-    uint8_t  sectors_per_cluster;
+-    uint8_t  reserved1;
+-    uint16_t fat_id;
+-    uint16_t boot_sector_id;
+-    uint16_t volume_id;
+-    uint16_t volume_version;
+-    uint32_t root_dir_cluster;
+-    uint16_t volume_length;
+-    uint16_t fs_info_cluster;
+-    uint16_t boot_region_offset;
+-    uint16_t checksum;
++struct exfat_boot_sector {
++    uint8_t  jump[3];              /* 0   EB 76 90 */
++    uint8_t  fsname[8];            /* 3   "EXFAT   " */
++    uint8_t  must_zero[53];        /* 11 */
++    uint64_t partition_offset;     /* 64 */
++    uint64_t volume_length;        /* 72  sectors */
++    uint32_t fat_offset;           /* 80  sectors */
++    uint32_t fat_length;           /* 84  sectors */
++    uint32_t cluster_heap_offset;  /* 88  sectors */
++    uint32_t cluster_count;        /* 92 */
++    uint32_t root_first_cluster;   /* 96 */
++    uint32_t volume_serial;        /* 100 */
++    uint16_t fs_revision;          /* 104 */
++    uint16_t volume_flags;         /* 106 */
++    uint8_t  bytes_per_sector_shift;   /* 108 */
++    uint8_t  sectors_per_cluster_shift;/* 109 */
++    uint8_t  num_fats;             /* 110 */
++    uint8_t  drive_select;         /* 111 */
++    uint8_t  percent_in_use;       /* 112 */
++    uint8_t  reserved[7];          /* 113 */
++    uint8_t  boot_code[390];       /* 120 */
++    uint16_t boot_signature;       /* 510  0x55AA */
+ } __attribute__((packed));
+ #if defined(__TINYC__)
+ #pragma pack(pop)
+ #endif
+ 
+-#if defined(__TINYC__)
+-#pragma pack(push, 1)
+-#endif
+-struct exfat_dir_entry {
+-    uint8_t  type;
+-    uint8_t  set_flags;
+-    uint16_t entry_type;
+-    uint8_t  name[64];
+-    uint64_t timestamps;
+-    uint32_t file_attrs;
+-    uint64_t size;
+-    uint64_t first_cluster;
+-} __attribute__((packed));
+-#if defined(__TINYC__)
+-#pragma pack(pop)
+-#endif
++/* Entry types */
++#define EXFAT_ENTRY_EOD      0x00
++#define EXFAT_ENTRY_LABEL    0x03
++#define EXFAT_ENTRY_BITMAP   0x81
++#define EXFAT_ENTRY_UPCASE   0x82
++#define EXFAT_ENTRY_GUID     0x83
++#define EXFAT_ENTRY_FILE     0x85
++#define EXFAT_ENTRY_STREAM   0xC0
++#define EXFAT_ENTRY_NAME     0xC1
++
++#define EXFAT_ATTR_READONLY  0x0001
++#define EXFAT_ATTR_HIDDEN    0x0002
++#define EXFAT_ATTR_SYSTEM    0x0004
++#define EXFAT_ATTR_DIRECTORY 0x0010
++#define EXFAT_ATTR_ARCHIVE   0x0020
++
++#define EXFAT_FAT_EOF        0xFFFFFFFFu
++#define EXFAT_FAT_BAD        0xFFFFFFF7u
++#define EXFAT_FAT_FREE       0u
+ 
+ /* 0 on success (exFAT signature verified), -1 on refusal — the caller
+  * mounts only on success (FSFULL_PLAN.md F1). */
+ int exfat_init(int device_id);
++int exfat_self_test(void);
+ extern const struct vfs_ops exfat_ops;
+ 
+ #endif /* AURALITE_FS_EXFAT_H */
+diff --git a/tests/exfat/seed_exfat.py b/tests/exfat/seed_exfat.py
+new file mode 100644
+index 0000000..68234be
+--- /dev/null
++++ b/tests/exfat/seed_exfat.py
+@@ -0,0 +1,113 @@
++#!/usr/bin/env python3
++"""Insert a file into a host-formatted (mkfs.exfat) image so AuraLite can
++read a Linux-created file (external-lane read test).  Builds a correct FILE
++entry set (0x85+0xC0+0xC1), appends it after the root EOD, allocates one
++cluster, sets FAT, and marks the bitmap. Matches the driver's on-disk format.
++"""
++import struct, sys
++
++def csum_dentry(d, chk, primary):
++    d=bytes(d)
++    chk=(((chk<<15)|(chk>>1))&0xFFFF)+d[0]
++    chk=(((chk<<15)|(chk>>1))&0xFFFF)+d[1]
++    start=4 if primary else 2
++    for i in range(start,32):
++        chk=(((chk<<15)|(chk>>1))&0xFFFF)+d[i]
++    return chk&0xFFFF
++
++def set_csum(entries):
++    c=0
++    c=csum_dentry(entries[0],c,True)
++    for e in entries[1:]:
++        c=csum_dentry(e,c,False)
++    return c&0xFFFF
++
++def name_hash(name):
++    h=0
++    for ch in name.encode('ascii'):
++        if 0x61 <= ch <= 0x7A: ch-=32   # host upcase table upcases ASCII
++        h=(((h<<15)|(h>>1))&0xFFFF)+(ch&0xFF)
++        h=(((h<<15)|(h>>1))&0xFFFF)+(ch>>8)
++    return h&0xFFFF
++
++def main(img_path, filename, content):
++    img=open(img_path,'r+b')
++    data=img.read()
++    def r32(o): return struct.unpack_from('<I',data,o)[0]
++    def r64(o): return struct.unpack_from('<Q',data,o)[0]
++    bps=1<<data[108]; spc=1<<data[109]
++    heap=r32(88); root=r32(96); clu_count=r32(92)
++    def clu_sec(c): return heap+(c-2)*spc
++    # read root dir cluster
++    rbase=clu_sec(root)*bps
++    rcl=bytearray(data[rbase:rbase+spc*bps])
++    # find bitmap entry (0x81) and upcase/root layout
++    bmclu=None; bmsize=None
++    nent=len(rcl)//32
++    eod_idx=None
++    for i in range(nent):
++        t=rcl[i*32]
++        if t==0x81:
++            bmclu=struct.unpack_from('<I',rcl,i*32+20)[0]
++            bmsize=struct.unpack_from('<Q',rcl,i*32+24)[0]
++        if t==0x00 and eod_idx is None:
++            eod_idx=i
++    assert bmclu is not None, "no bitmap entry"
++    # read bitmap cluster(s)
++    bmb=clu_sec(bmclu)*bps
++    bm=bytearray(data[bmb:bmb+bmsize])
++    # find first free cluster (bit cluster-2)
++    free=None
++    for c in range(2, clu_count):
++        cc=c-2
++        if not (bm[cc>>3]>>(cc&7))&1:
++            free=c; break
++    assert free, "no free cluster"
++    # mark free cluster in bitmap
++    cc=free-2; bm[cc>>3]|=1<<(cc&7)
++    # write bitmap back
++    img.seek(bmb); img.write(bytes(bm))
++    # write file content to the free cluster
++    img.seek(clu_sec(free)*bps); img.write(content)
++    # set FAT[free]=EOF
++    fat_off=r32(80)
++    img.seek(fat_off*bps + free*4); img.write(struct.pack('<I',0xFFFFFFFF))
++    # build entry set
++    name=filename.encode('ascii')
++    nlen=len(name)
++    nname=(nlen+14)//15
++    f=bytearray(32)
++    f[0]=0x85; f[1]=1+nname
++    f[4:6]=struct.pack('<H',0x20)  # archive
++    ts=0x8d1029c8
++    f[8:12]=struct.pack('<I',ts); f[12:16]=struct.pack('<I',ts); f[16:20]=struct.pack('<I',ts)
++    s=bytearray(32)
++    s[0]=0xC0; s[3]=nlen
++    s[4:6]=struct.pack('<H',name_hash(filename))
++    s[8:16]=struct.pack('<Q',len(content)); s[20:24]=struct.pack('<I',free); s[24:32]=struct.pack('<Q',len(content))
++    entries=[f,s]
++    for k in range(nname):
++        n=bytearray(32); n[0]=0xC1
++        for j in range(15):
++            idx=k*15+j
++            if idx<nlen:
++                n[2+j*2]=name[idx]
++        entries.append(n)
++    # set checksum
++    entries[0][2:4]=struct.pack('<H',set_csum(entries))
++    setbytes=b''.join(bytes(e) for e in entries)
++    # append at EOD position in root
++    assert eod_idx is not None, "no EOD in root"
++    neweod=bytearray(32); neweod[0]=0x00
++    for off in range(len(setbytes)):
++        rcl[eod_idx*32+off]=setbytes[off]
++    # write new EOD after the set
++    neweod_pos=eod_idx+len(entries)
++    rcl[neweod_pos*32]=0x00
++    # also ensure trailing beyond is zero
++    img.seek(rbase); img.write(bytes(rcl))
++    img.close()
++    print(f"seeded {filename} (cluster {free}, {len(content)} bytes) into {img_path}")
++
++if __name__=='__main__':
++    main(sys.argv[1], sys.argv[2], sys.argv[3].encode('ascii'))
+diff --git a/tests/exfat/test_exfat.sh b/tests/exfat/test_exfat.sh
+new file mode 100644
+index 0000000..a621267
+--- /dev/null
++++ b/tests/exfat/test_exfat.sh
+@@ -0,0 +1,180 @@
++#!/usr/bin/env bash
++# test_exfat.sh — F5 exFAT harness.
++#
++# exFAT uses the *real* on-disk format, so — unlike f2fs/btrfs — the host's
++# exfatprogs binaries are fully applicable and the structural gate is a real
++# interop check, exactly like ext4:
++#   - host `fsck.exfat -fn` must report the volume CLEAN after the kernel's
++#     own formatter AND after the full mutation surface (mkdir/write/read,
++#     rename, stat, settimes, rm, rmdir, multi-cluster read).
++#   - the kernel must read a volume created by host `mkfs.exfat` (external
++#     lane): a Linux-created file is seeded onto the image and AuraLite
++#     lists it, stats it (real size / cluster), and `cat`s its content
++#     byte-exact.
++#
++# Three passes:
++#   1. fsformat=1: the kernel formats a blank disk, then drives the full
++#      mutation surface from the shell; the host then runs fsck.exfat on the
++#      kernel-formatted volume and requires "clean".
++#   2. external lane: host mkfs.exfat + seed_exfat.py place Linux files on
++#      D2; the kernel mounts read-only-ish (fsformat=0) and reads them.
++#      fsck.exfat again requires "clean".
++#   3. persistence: the kernel-formatted volume remounts on fsformat=0
++#      without being reformatted.
++#
++# Requires: qemu-system-x86_64, mkfs.exfat + fsck.exfat (exfatprogs), python3.
++# Skips cleanly when the host tools are absent.
++
++set -u
++cd "$(dirname "$0")/../.."
++. tests/integration/lib/lib.sh
++il_init
++
++if ! il_have qemu-system-x86_64; then
++    echo "${C_RED}[lib] qemu-system-x86_64 missing; skipping exfat harness${C_RESET}"
++    exit 0
++fi
++# exfatprogs may live under /usr/sbin, which is not always on PATH.
++MKFS_EXFAT=$(command -v mkfs.exfat || echo /usr/sbin/mkfs.exfat)
++FSCK_EXFAT=$(command -v fsck.exfat || echo /usr/sbin/fsck.exfat)
++if [ ! -x "$MKFS_EXFAT" ] || [ ! -x "$FSCK_EXFAT" ]; then
++    echo "${C_RED}[lib] exfatprogs (mkfs.exfat/fsck.exfat) missing; skipping exfat harness${C_RESET}"
++    exit 0
++fi
++if ! il_have python3; then
++    echo "${C_RED}[lib] python3 missing; skipping exfat harness${C_RESET}"
++    exit 0
++fi
++
++il_section "exFAT (real on-disk format, full mutation surface + fsck.exfat + host interop)"
++
++D0="$IL_BUILD/exfat-d0.img"; D1="$IL_BUILD/exfat-d1.img"
++D2="$IL_BUILD/exfat-d2.img"; D3="$IL_BUILD/exfat-d3.img"
++D4="$IL_BUILD/exfat-d4.img"; D5="$IL_BUILD/exfat-d5.img"
++for d in "$D0" "$D1" "$D2" "$D3" "$D4" "$D5"; do rm -f "$d"; done
++il_make_disk "$D0" 16 "AURALHCI"
++il_make_disk "$D1" 16 "AURALHCI"
++il_make_disk "$D2" 64 "AURALHCI"     # exFAT volume (blkdev 2 -> /exfat)
++il_make_disk "$D3" 16 "AURALHCI"
++il_make_disk "$D4" 16 "AURALHCI"
++il_make_disk "$D5" 16 "AURALHCI"
++
++QEMU_DISKS=(
++    -drive "file=$D0,format=raw,if=none,id=d0" -device "ide-hd,drive=d0,bus=ahci0.0"
++    -drive "file=$D1,format=raw,if=none,id=d1" -device "ide-hd,drive=d1,bus=ahci0.1"
++    -drive "file=$D2,format=raw,if=none,id=d2" -device "ide-hd,drive=d2,bus=ahci0.2"
++    -drive "file=$D3,format=raw,if=none,id=d3" -device "ide-hd,drive=d3,bus=ahci0.3"
++    -drive "file=$D4,format=raw,if=none,id=d4" -device "ide-hd,drive=d4,bus=ahci0.4"
++    -drive "file=$D5,format=raw,if=none,id=d5" -device "ide-hd,drive=d5,bus=ahci0.5"
++)
++AHCI_DEV=( -device "ahci,id=ahci0" )
++
++# ---- Pass 1: kernel formats + full mutation surface (fsformat=1) ----
++LOG1="$IL_LOGDIR/exfat_p1.log"
++il_send_delay 9
++il_send "mkdir /exfat/sub"
++il_send_delay 1
++il_send "write /exfat/sub/f1.txt hello-from-exfat"
++il_send_delay 1
++il_send "cat /exfat/sub/f1.txt"
++il_send_delay 1
++il_send "mv /exfat/sub/f1.txt /exfat/sub/f2.txt"
++il_send_delay 1
++il_send "stat /exfat/sub/f2.txt"
++il_send_delay 1
++il_send "mkdir /exfat/edir"
++il_send_delay 1
++il_send "write /exfat/multi.bin ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
++il_send_delay 1
++il_send "cat /exfat/multi.bin"
++il_send_delay 1
++il_send "settimes /exfat/sub/f2.txt 1700000000 1700000002"
++il_send_delay 1
++il_send "stat /exfat/sub/f2.txt"
++il_send_delay 1
++il_send "rm /exfat/sub/f2.txt"
++il_send_delay 1
++il_send "rmdir /exfat/sub"
++il_send_delay 1
++il_send "ls /exfat"
++il_send_delay 1
++il_send "exit"
++
++il_run_qemu "$LOG1" 50 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
++    -fw_cfg "opt/auralite.fsformat,string=1"
++
++il_assert_grep "$LOG1" "\\[exfat\\] format complete"      "kernel formatted blank exFAT volume"
++il_assert_grep "$LOG1" "hello-from-exfat"                "exFAT write+read round-trip"
++il_assert_grep "$LOG1" "mv: /exfat/sub/f1.txt -> /exfat/sub/f2.txt" "rename on exFAT"
++il_assert_grep "$LOG1" "Size:    17 bytes"               "stat reports real size"
++il_assert_grep "$LOG1" "Mode:    0100644"                "stat mode 0644"
++il_assert_grep "$LOG1" "settimes: .*atime=1700000000 mtime=1700000002" "settimes accepted"
++il_assert_grep "$LOG1" "ATime:   1700000000"             "settimes atime observed via stat"
++il_assert_grep "$LOG1" "MTime:   1700000002"             "settimes mtime observed via stat"
++il_assert_grep "$LOG1" "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" "multi-cluster read-back"
++il_assert_grep "$LOG1" "rm: removed /exfat/sub/f2.txt"   "unlink on exFAT"
++il_assert_grep "$LOG1" "rmdir: removed /exfat/sub"       "rmdir on exFAT"
++il_assert_grep "$LOG1" "edir/"                           "ls shows directory"
++il_assert_grep_fixed "$LOG1" "multi.bin  (37 bytes)"     "ls shows real file size"
++
++# Host-side structural gate: the kernel-formatted volume must be fsck-clean.
++FSCK_LOG="$IL_LOGDIR/exfat_p1_fsck.log"
++"$FSCK_EXFAT" -n "$D2" > "$FSCK_LOG" 2>&1 || true
++il_assert_grep "$FSCK_LOG" "clean" \
++    "host fsck.exfat reports the kernel-formatted volume CLEAN"
++
++# ---- Pass 2: external lane — read a host mkfs.exfat volume (fsformat=0) ----
++LOG2="$IL_LOGDIR/exfat_p2.log"
++rm -f "$D2"; il_make_disk "$D2" 64 "AURALHCI"
++"$MKFS_EXFAT" -n EXT "$D2" >/dev/null 2>&1 || true
++python3 "tests/exfat/seed_exfat.py" "$D2" greeting.txt "Hello-from-Linux-exFAT" || true
++python3 "tests/exfat/seed_exfat.py" "$D2" alpha.bin "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" || true
++
++il_send_delay 9
++il_send "ls /exfat"
++il_send_delay 1
++il_send "cat /exfat/greeting.txt"
++il_send_delay 1
++il_send "cat /exfat/alpha.bin"
++il_send_delay 1
++il_send "stat /exfat/greeting.txt"
++il_send_delay 1
++il_send "exit"
++
++il_run_qemu "$LOG2" 50 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
++    -fw_cfg "opt/auralite.fsformat,string=0"
++
++il_assert_grep "$LOG2" "\\[exfat\\] mounted real exFAT volume" "kernel mounts a host-formatted exFAT volume"
++il_assert_grep_fixed "$LOG2" "greeting.txt  (22 bytes)"  "readdir lists host file with real size"
++il_assert_grep_fixed "$LOG2" "alpha.bin  (36 bytes)"     "readdir lists second host file"
++il_assert_grep "$LOG2" "Hello-from-Linux-exFAT"         "kernel reads a Linux-created file byte-exact"
++il_assert_grep "$LOG2" "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" "kernel reads second host file"
++
++# Host-side gate for the external volume too.
++FSCK2_LOG="$IL_LOGDIR/exfat_p2_fsck.log"
++"$FSCK_EXFAT" -n "$D2" > "$FSCK2_LOG" 2>&1 || true
++il_assert_grep "$FSCK2_LOG" "clean" \
++    "host fsck.exfat reports the host-created volume CLEAN"
++
++# ---- Pass 3: persistence — kernel volume remounts without reformat ----
++LOG3="$IL_LOGDIR/exfat_p3.log"
++rm -f "$D2"; il_make_disk "$D2" 64 "AURALHCI"
++il_send_delay 9
++il_send "write /exfat/keep.txt persisted-data"
++il_send_delay 1
++il_send "exit"
++il_run_qemu "$LOG3" 40 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
++    -fw_cfg "opt/auralite.fsformat,string=1"
++
++LOG3b="$IL_LOGDIR/exfat_p3b.log"
++il_send_delay 9
++il_send "cat /exfat/keep.txt"
++il_send_delay 1
++il_send "exit"
++il_run_qemu "$LOG3b" 40 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
++    -fw_cfg "opt/auralite.fsformat,string=0"
++
++il_assert_grep "$LOG3b" "\\[exfat\\] mounted real exFAT volume" "kernel volume remounted without reformat"
++il_assert_grep "$LOG3b" "persisted-data"                       "data persisted across remount"
++
++il_summary
+diff --git a/tests/unit/test_exfat_ntfs.c b/tests/unit/test_exfat_ntfs.c
+index bdd0343..fbebba4 100644
+--- a/tests/unit/test_exfat_ntfs.c
++++ b/tests/unit/test_exfat_ntfs.c
+@@ -31,6 +31,8 @@ int kprintf(const char *fmt, ...) { (void)fmt; return 0; }
+ void *kmalloc(size_t n) { return malloc(n); }
+ void kfree(void *p) { free(p); }
+ 
++void spinlock_init(spinlock_t *lock) { (void)lock; }
++
+ /* RAM-backed fake buffer cache.  The test fills fake_sector, then
+  * bc_get returns a buffer carrying a copy of it (or NULL when
+  * fake_read_fails is set). */
+@@ -71,6 +73,12 @@ int fs_write_block(int dev, uint64_t lba, uint32_t count, const void *buf) {
+ 
+ int fs_cache_sync(void *fs_data) { (void)fs_data; return 0; }
+ 
++/* F1 gate stubs: the format knob defaults OFF in the host lane, so a
++ * foreign / blank boot sector is refused rather than auto-formatted. */
++int fs_format_allowed(void) { return 0; }
++void fs_format_set(int allowed, const char *source) { (void)allowed; (void)source; }
++const char *fs_format_source(void) { return "host-test"; }
++
+ /* ---- test harness ---- */
+ 
+ static int failures = 0;
+@@ -90,6 +98,26 @@ static void clear_sector(void) {
+     fake_read_fails = 0;
+ }
+ 
++/* A geometrically plausible exFAT main boot sector, so the F5 driver can
++ * parse it and mount (the old skeleton stopped at the OEM name). */
++static void make_exfat_boot(void) {
++    clear_sector();
++    fake_sector[0] = 0xEB; fake_sector[1] = 0x76; fake_sector[2] = 0x90;
++    memcpy(fake_sector + 3, "EXFAT   ", 8);
++    uint64_t vol = 131072;
++    memcpy(fake_sector + 72, &vol, 8);
++    uint32_t fat_off = 128, fat_len = 128, heap = 256, nclu = 16320, root = 2;
++    memcpy(fake_sector + 80, &fat_off, 4);
++    memcpy(fake_sector + 84, &fat_len, 4);
++    memcpy(fake_sector + 88, &heap, 4);
++    memcpy(fake_sector + 92, &nclu, 4);
++    memcpy(fake_sector + 96, &root, 4);
++    fake_sector[108] = 9;   /* 512 bytes/sector */
++    fake_sector[109] = 3;   /* 8 sectors/cluster = 4 KiB */
++    fake_sector[110] = 1;
++    fake_sector[510] = 0x55; fake_sector[511] = 0xAA;
++}
++
+ int main(void) {
+     printf("[fs-sigs] foreign boot sector is refused by both drivers\n");
+     clear_sector();
+@@ -103,8 +131,7 @@ int main(void) {
+     CHECK(ntfs_init(6) != 0, "ntfs_init refuses an unreadable sector");
+ 
+     printf("[fs-sigs] correct OEM signatures are accepted\n");
+-    clear_sector();
+-    memcpy(fake_sector + 3, "EXFAT   ", 8);
++    make_exfat_boot();
+     CHECK(exfat_init(2) == 0, "exfat_init accepts the EXFAT OEM name");
+     clear_sector();
+     memcpy(fake_sector + 3, "NTFS    ", 8);

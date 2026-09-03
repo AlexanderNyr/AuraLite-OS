@@ -6,7 +6,9 @@
 # BEFORE it starts (the init shell blocks on `run`):
 #   /tmp/gbrowser.url    — the page to load first
 #   /tmp/gbrowser.steps  — "|"-separated actions: "link 0|back|https|
-#                         nav <url>"
+#                         nav <url>"  (the payload must be QUOTED on the
+#                         write line: since SH6c a bare "|" is a shell
+#                         pipeline operator and would truncate the file)
 #
 # The server serves:
 #   /           home page with markers + two links
@@ -106,7 +108,7 @@ sleep 1
 il_send_delay 8
 il_send "write /tmp/gbrowser.url http://10.0.2.2:$PORT/"
 il_send_delay 1
-il_send "write /tmp/gbrowser.steps link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big|nav http://10.0.2.2:$PORT/canvas.html"
+il_send "write /tmp/gbrowser.steps \"link 0|back|https|nav http://10.0.2.2:$PORT/chunked|nav http://10.0.2.2:$PORT/big|nav http://10.0.2.2:$PORT/canvas.html\""
 il_send_delay 1
 il_send "run gbrowser"
 

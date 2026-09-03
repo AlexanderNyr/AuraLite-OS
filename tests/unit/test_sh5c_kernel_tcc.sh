@@ -2,7 +2,7 @@
 # test_sh5c_kernel_tcc.sh -- SELFHOST_PLAN.md SH5c host gate: the kernel,
 # compiled by tcc.
 #
-# Runs tools/selfhost/build_kernel_tcc.sh (tcc compiles the 126 kernel C
+# Runs tools/selfhost/build_kernel_tcc.sh (tcc compiles the 127 kernel C
 # files, mini-asm assembles the 9 asm files, aulink links kernel-tcc.elf
 # against kernel.ld) and then asserts the three parts of the SH5c story:
 #
@@ -60,8 +60,8 @@ if ! bash tools/selfhost/build_kernel_tcc.sh > "$OUT-test.log" 2>&1; then
     sed 's/^/    /' "$OUT-test.log" | tail -15
     exit 1
 fi
-grep -q '^\[sh5c\] tcc compiled 126 kernel C files' "$OUT-test.log" \
-    && ok "tcc compiled all 126 kernel C files" \
+grep -q '^\[sh5c\] tcc compiled 127 kernel C files' "$OUT-test.log" \
+    && ok "tcc compiled all 127 kernel C files" \
     || bad "tcc object count changed (see $OUT-test.log)"
 grep -q '^\[sh5c\] mini-asm assembled 9 kernel asm files' "$OUT-test.log" \
     && ok "mini-asm assembled all 9 kernel asm files" \

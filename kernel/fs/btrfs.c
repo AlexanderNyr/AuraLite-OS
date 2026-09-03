@@ -176,10 +176,10 @@ static int key_cmp(uint64_t aobj, uint32_t atyp, uint64_t aoff,
  * ============================================================================ */
 
 static int btrfs_read_block(uint64_t lba, void *buf) {
-    return fs_read_block(bm.bdev, lba / 512, bm.nodesize / 512, buf);
+    return fs_read_block(bm.bdev, lba / 512, (uint32_t)(bm.nodesize / 512), buf);
 }
 static int btrfs_write_block(uint64_t lba, const void *buf) {
-    return fs_write_block(bm.bdev, lba / 512, bm.nodesize / 512, buf);
+    return fs_write_block(bm.bdev, lba / 512, (uint32_t)(bm.nodesize / 512), buf);
 }
 
 /* Read the superblock with a fixed size: called before bm.nodesize is known. */
@@ -736,7 +736,7 @@ static int64_t btrfs_write(struct vnode *vn, uint64_t pos, const void *buf, uint
         if (old_lba) {
             if (blk_read(old_lba, bdatabuf) != 0) return -1;
         } else {
-            memset(blk, 0, bm.nodesize);
+            memset(blk, 0, (size_t)bm.nodesize);
         }
         memcpy(blk + BTRFS_HDR_SIZE + inblk, in + done, chunk);
         uint64_t new_lba = blk_alloc();

@@ -1122,7 +1122,7 @@ void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
             int sx = blit_map(dx, dstX0, dstX1, srcX0, srcX1);
             int sy = blit_map(dy, dstY0, dstY1, srcY0, srcY1);
             size_t di = drow + (size_t)dx;
-            if (copy_color)   dst.color[di]   = fb_get_color(&src, sx, sy);
+            if (copy_color)   dst.color[di]   = fb_get_color(&src, sx, sy) & 0x00FFFFFFu;
             if (copy_depth)   dst.depth[di]   = fb_get_depth(&src, sx, sy);
             if (copy_stencil) dst.stencil[di] = fb_get_stencil(&src, sx, sy);
         }

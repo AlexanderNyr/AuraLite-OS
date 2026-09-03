@@ -10,4 +10,4 @@
 # It was already exercised as a standalone target (patches/FS_F4b_btrfs.patch);
 # this file only registers it with the shard runner.
 set -u
-exec "$(dirname "$0")/../../btrfs/test_btrfs.sh"
+exec bash "$(dirname "$0")/../../btrfs/test_btrfs.sh"
