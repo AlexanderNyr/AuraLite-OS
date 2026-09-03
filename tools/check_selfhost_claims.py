@@ -90,8 +90,9 @@ def check_plan(plan, tree_has_file):
     for phase, status in rows:
         if phase == "SH0":
             if "✅" in status:
-                if not tree_has_file("SELFHOST_PLAN.md"):
-                    fails.append("SH0: marked ✅ but SELFHOST_PLAN.md missing")
+                if not tree_has_file("docs", "plans", "SELFHOST_PLAN.md"):
+                    fails.append("SH0: marked ✅ but "
+                                 "docs/plans/SELFHOST_PLAN.md missing")
                 if not tree_has_file("tools", "check_selfhost_claims.py"):
                     fails.append("SH0: marked ✅ but checker file missing")
         if phase == "SH5" and "✅" in status:
@@ -276,7 +277,7 @@ def check_plan(plan, tree_has_file):
 
 def main():
     if "--selftest" in sys.argv:
-        plan = read("SELFHOST_PLAN.md")
+        plan = read("docs", "plans", "SELFHOST_PLAN.md")
         # Planted violation 1: SH0 marked ✅ but the checker file "missing".
         fails = check_plan(plan, lambda *p: p[-1] != "check_selfhost_claims.py")
         if not any("SH0: marked ✅ but checker file missing" in f
@@ -312,7 +313,7 @@ def main():
               "caught)")
         return 0
 
-    plan = read("SELFHOST_PLAN.md")
+    plan = read("docs", "plans", "SELFHOST_PLAN.md")
 
     def tree_has_file(*parts):
         return bool(read(*parts))

@@ -35,7 +35,7 @@ def exists(*parts):
 
 
 def claims():
-    plan   = read("HW_PLAN.md")
+    plan   = read("docs", "plans", "HW_PLAN.md")
     makefl = read("Makefile")
 
     checks = [

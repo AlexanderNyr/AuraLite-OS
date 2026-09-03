@@ -39,7 +39,7 @@ def strip_comments(src):
 
 
 def claims():
-    plan = read("FIXES_PLAN.md")
+    plan = read("docs", "plans", "FIXES_PLAN.md")
     runall = read("tests", "integration", "run_all.sh")
 
     tss = strip_comments(read("kernel", "arch", "x86_64", "tss.c"))
@@ -123,7 +123,7 @@ def claims():
 
 
 def main():
-    if not read("FIXES_PLAN.md"):
+    if not read("docs", "plans", "FIXES_PLAN.md"):
         print("check_fixes_claims: FIXES_PLAN.md is missing", file=sys.stderr)
         return 1
 

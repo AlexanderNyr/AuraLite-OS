@@ -69,7 +69,7 @@ def backend_has_draw(glbackend):
 
 
 def claims():
-    plan = read("GL2_PLAN.md")
+    plan = read("docs", "plans", "GL2_PLAN.md")
     makefile = read("Makefile")
     glh = read("lib", "libgl", "include", "GL", "gl.h")
     glctx = read("lib", "libgl", "src", "glcontext.h")

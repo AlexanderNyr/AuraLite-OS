@@ -129,7 +129,7 @@ def count_ahci_in_fs():
 
 
 def claims():
-    plan = read("PARITY_PLAN.md")
+    plan = read("docs", "plans", "PARITY_PLAN.md")
     makefl = read("Makefile")
     checks = []
 
@@ -225,7 +225,7 @@ def claims():
         and "vfs_now" in read("kernel", "arch", "riscv64", "fsglue_rv.c")
         and "sti` at vfs.c:71" in read("kernel", "arch", "riscv64",
                                        "fsglue_rv.c")
-        and "vfs.c:71" in read("PARITY_PLAN.md")))
+        and "vfs.c:71" in read("docs", "plans", "PARITY_PLAN.md")))
     checks.append((
         "P2: the pattern-disk gate survived (the sniff dispatches, "
         "rv_parity_smoke's lane is intact)",

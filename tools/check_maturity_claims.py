@@ -22,7 +22,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PLAN = os.path.join(ROOT, "MATURITY_PLAN.md")
+PLAN = os.path.join(ROOT, "docs", "plans", "MATURITY_PLAN.md")
 
 
 def read(*parts):
@@ -40,7 +40,7 @@ def strip_comments(src):
 
 
 def claims():
-    plan = read("MATURITY_PLAN.md")
+    plan = read("docs", "plans", "MATURITY_PLAN.md")
     tcp = read("kernel", "net", "tcp.c")
     xhci = strip_comments(read("drivers", "usb", "xhci.c"))
     ctx = read("kernel", "proc", "context.asm")
@@ -155,7 +155,7 @@ def claims():
 
 
 def main():
-    if not read("MATURITY_PLAN.md"):
+    if not read("docs", "plans", "MATURITY_PLAN.md"):
         print("check_maturity_claims: MATURITY_PLAN.md is missing",
               file=sys.stderr)
         return 1

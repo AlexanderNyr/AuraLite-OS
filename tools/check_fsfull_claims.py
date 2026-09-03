@@ -13,7 +13,7 @@ Ties the plan to the tree:
   - every phase F1..F7 has a `### Phase Fx` section;
   - done phases (marked ✅ in the heading) are backed by the files the
     phase names in its `**Result:**` gate block and its `**Deliverable**`
-    line, so a status flip cannot outlive the code/harness/patch it
+    line, so a status flip cannot outlive the code and harnesses it
     claims;
   - the five on-disk headers are honest: they must not carry the retracted
     phrases the plan says were pulled back (btrfs "subvolumes and
@@ -21,8 +21,13 @@ Ties the plan to the tree:
     f2fs "multi-head logging"), and must state an honest boundary
     (out-of-scope / refused / read-only).
 
-Deliberately NOT asserted: correctness of the drivers.  That is the job of
-the harnesses (`tests/<fs>/test_*.sh`, `make test-unit`).  This checker
+Deliberately NOT asserted: existence of `patches/*.patch` receipts.  A
+patch file on disk is evidence that a FILE EXISTS, not that code works or
+even that it applies (the RINET2 precedent: six "the patch exists" claims,
+the patches never committed).  Patch files are not CI evidence anywhere in
+this repo.  Also deliberately NOT asserted: correctness of the drivers.
+That is the job of the harnesses (`tests/<fs>/test_*.sh`, `make
+test-unit`).  This checker
 only stops a phase ✅ from being a lie about the tree.
 
 Usage:
@@ -40,29 +45,22 @@ PHASES = ["F%d" % n for n in range(1, 8)]
 
 # Artefacts each phase's `**Result:**`/`**Deliverable**` claims, keyed by
 # phase.  Only phases marked ✅ in the plan heading are checked (F7 stays
-# planned).  We deliberately do NOT pin `patches/FS_F1_mount_safety.patch`:
-# a patch on disk is weak evidence (see check_selfhost_claims.py's rationale
-# for the same choice), and F1's durable receipts are its gate artefacts —
-# the format-knob unit test and the integration case that prove a foreign
-# volume is refused (not auto-formatted) with the knob off and formatted
-# with it on.
+# planned).  Only DURABLE gate artefacts are pinned: the unit tests and
+# integration harnesses that prove a foreign volume is refused (not
+# auto-formatted) with the knob off and formatted with it on.  Patch files
+# under patches/ are deliberately not pinned anywhere (see the module
+# docstring): a `.patch` on disk is weak evidence.
 ARTEFACTS = {
     "F1":  ["tests/unit/test_fsformat.c",
             "tests/integration/cases/test_fsformat_knob.sh"],
-    "F2":  ["patches/FS_F2_bcache_seam.patch",
-            "tests/unit/test_blkdev.c"],
-    "F3":  ["patches/FS_F3_ext4.patch",
-            "tests/ext4/test_ext4.sh",
+    "F2":  ["tests/unit/test_blkdev.c"],
+    "F3":  ["tests/ext4/test_ext4.sh",
             "tests/unit/test_exfat_ntfs.c"],
-    "F4":  ["patches/FS_F4_f2fs.patch",
-            "tests/f2fs/test_f2fs.sh"],
-    "F4b": ["patches/FS_F4b_btrfs.patch",
-            "tests/btrfs/test_btrfs.sh"],
-    "F5":  ["patches/FS_F5_exfat.patch",
-            "tests/exfat/test_exfat.sh",
+    "F4":  ["tests/f2fs/test_f2fs.sh"],
+    "F4b": ["tests/btrfs/test_btrfs.sh"],
+    "F5":  ["tests/exfat/test_exfat.sh",
             "tests/exfat/seed_exfat.py"],
-    "F5b": ["patches/FS_F5b_ntfs.patch",
-            "tests/ntfs/test_ntfs.sh",
+    "F5b": ["tests/ntfs/test_ntfs.sh",
             "tests/unit/test_exfat_ntfs.c"],
     "F6":  ["tools/check_fsfull_claims.py",
             "kernel/fs/ext4.h",
@@ -145,11 +143,12 @@ def check_plan(plan, tree_has_file):
     done = _done_phases(plan)
     # F4b and F5b are sub-phases folded into the F4/F5 section headings (there
     # is no `### Phase F4b/F5b` section), so a standalone heading never marks
-    # them done.  Tie their "done" to the real deliverable patch: the moment
-    # the patch exists the phase's receipts are enforced.
-    for sub in ("F4b", "F5b"):
-        if sub in done or tree_has_file("patches/FS_F%s.patch" % sub):
-            done.add(sub)
+    # them done.  Tie each to its parent phase: when F4/F5 is done, the
+    # sub-phase's durable harness receipts are enforced.
+    if "F4" in done:
+        done.add("F4b")
+    if "F5" in done:
+        done.add("F5b")
     # F6 and F7 must be done once the plan's series has landed.
     if "F6" not in done:
         fails.append("F6: phase not marked done (expected ✅ after this phase)")
@@ -203,12 +202,12 @@ def check_plan(plan, tree_has_file):
 
 
 def main():
-    plan = read("FSFULL_PLAN.md")
+    plan = read("docs", "plans", "FSFULL_PLAN.md")
 
     if "--selftest" in sys.argv:
-        # Planted violation 1: a done phase's patch receipt is missing.
-        fails = check_plan(plan, lambda p: p != "patches/FS_F5b_ntfs.patch")
-        if not any("F5b: marked done but patches/FS_F5b_ntfs.patch missing"
+        # Planted violation 1: a done phase's harness receipt is missing.
+        fails = check_plan(plan, lambda p: p != "tests/ntfs/test_ntfs.sh")
+        if not any("F5b: marked done but tests/ntfs/test_ntfs.sh missing"
                    in f for f in fails):
             print("check_fsfull_claims: SELFTEST FAILED -- planted "
                   "missing-receipt violation not caught")

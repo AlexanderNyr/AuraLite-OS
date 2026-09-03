@@ -49,7 +49,7 @@ def read(*parts):
 
 
 def claims():
-    plan = read("REALINTERNET2_PLAN.md")
+    plan = read("docs", "plans", "REALINTERNET2_PLAN.md")
     tcp = read("kernel", "net", "tcp.c")
     dns = read("kernel", "net", "dns.c")
     tls = read("lib", "libatls", "src", "atls_tls.c")

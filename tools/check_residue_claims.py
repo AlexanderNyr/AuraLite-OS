@@ -51,7 +51,7 @@ def harvest_live():
 
 
 def claims():
-    plan = read("RESIDUE_PLAN.md")
+    plan = read("docs", "plans", "RESIDUE_PLAN.md")
     ledger = read("docs", "residue_ledger.md")
     checks = []
 

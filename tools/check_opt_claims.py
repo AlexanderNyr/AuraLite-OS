@@ -139,7 +139,7 @@ def main():
     if "--selftest" in sys.argv:
         # Plant a violation: one phase row removed from the table.  The
         # checker must fail on it, or the checker itself is dead.
-        plan = read("OPT_PLAN.md")
+        plan = read("docs", "plans", "OPT_PLAN.md")
         fake = re.sub(r"^\| O9 —.*$", "", plan, flags=re.M)
         fails = check_plan(fake)
         if any("expected 10 rows" in f for f in fails):
@@ -149,7 +149,7 @@ def main():
               "was not caught")
         return 1
 
-    plan = read("OPT_PLAN.md")
+    plan = read("docs", "plans", "OPT_PLAN.md")
     if not plan:
         print("check_opt_claims: FAIL -- OPT_PLAN.md missing")
         return 1

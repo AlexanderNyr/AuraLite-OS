@@ -36,7 +36,7 @@ def exists(*parts):
 
 
 def claims():
-    plan   = read("ARM64_PLAN.md")
+    plan   = read("docs", "plans", "ARM64_PLAN.md")
     makefl = read("Makefile")
     boots  = read("kernel", "arch", "aarch64", "boot.S")
     ld     = read("kernel", "arch", "aarch64", "kernela64.ld")

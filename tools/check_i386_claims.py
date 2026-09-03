@@ -37,7 +37,7 @@ def exists(*parts):
 
 
 def claims():
-    plan   = read("I386_PLAN.md")
+    plan   = read("docs", "plans", "I386_PLAN.md")
     stage2 = read("boot", "bios", "stage2", "stage2_start.asm")
     lmchk  = read("boot", "bios", "stage2", "lmcheck.inc")
     mkiso  = read("tools", "mkisoimage_dual.sh")

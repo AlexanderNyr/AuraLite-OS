@@ -32,7 +32,7 @@ EXCLUDE = {"RESIDUE_PLAN.md"}
 
 def plan_counts():
     out = {}
-    for path in sorted(glob.glob(os.path.join(ROOT, "*_PLAN.md"))):
+    for path in sorted(glob.glob(os.path.join(ROOT, "docs", "plans", "*_PLAN.md"))):
         name = os.path.basename(path)
         if name in EXCLUDE:
             continue
