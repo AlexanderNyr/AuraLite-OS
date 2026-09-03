@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL, the second series (the leftovers)
 
-## Status: IN PROGRESS — L0–L3 landed; L4–L7 specified
+## Status: IN PROGRESS — L0–L4 landed; L5–L7 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | L1 — stencil buffer | ✅ complete | `patches/GL2_L1_stencil.patch` |
 | L2 — copies | ✅ complete | `patches/GL2_L2_copies.patch` |
 | L3 — texture leftovers | ✅ complete | `patches/GL2_L3_texture.patch` |
-| L4 — per-fragment mipmap LOD | — | derivatives through the edge functions |
+| L4 — per-fragment mipmap LOD | ✅ complete | `patches/GL2_L4_lod.patch` |
 | L5 — shader-path fitness | — | early-Z + `/glshade` |
 | L6 — VirGL `DRAW_VBO` | — | canned TGSI triangle on the G13 seam |
 | L7 — close-out | — | docs, residue, checker, terminal arithmetic |
@@ -497,7 +497,7 @@ and 5-COMBINE moved.
 
 ### L4 — Per-fragment mipmap LOD
 
-**Status:** not started
+**Status: ✅ COMPLETE** (`patches/GL2_L4_lod.patch`).
 
 **Objective:** land the follow-up G10 named and declined.
 
@@ -518,18 +518,18 @@ Design:
 
 Tasks:
 
-- [ ] Derivatives in `gl_raster_triangle`; `triangle_lod` becomes the
+- [x] Derivatives in `gl_raster_triangle`; `triangle_lod` becomes the
       fallback for degenerate screenspace (the division-by-zero
       path it already has).
-- [ ] Host test: an untilted receding quad, sampled at several
+- [x] Host test: an untilted receding quad, sampled at several
       window-Y rows, shows *increasing* LOD down the screen. A
       1:1 facing quad stays at level 0. Guard against picking
       level-0 everywhere (the bug that looks like success in a
       screenshot).
-- [ ] `/glcube` floor: drop the extra tessellation if the new LOD
+- [x] `/glcube` floor: drop the extra tessellation if the new LOD
       is visually equivalent; keep it if L4's own numbers say the
       cost is worse. Either choice is written in the Result.
-- [ ] `docs/opengl.md` Not-implemented: drop the per-fragment LOD
+- [x] `docs/opengl.md` Not-implemented: drop the per-fragment LOD
       row; keep a behaviour note that a scanline rasterizer's
       derivatives are along the window axes, not along the
       primitive, which is what everyone else does too.
@@ -540,7 +540,44 @@ section; the G10 comment's "possible follow-up" sentence comes out.
 **Test gate:** `test_gltex2` LOD block; `/gltest` / `/glcube` still
 green; `make test-unit` EXIT 0.
 
-**Result:** —
+**Result:** ✅ (2026-09-03). The perspective-correct `(s, t)` at a
+fragment is the quotient of the two functions G6 already interpolates
+(`Ns` from `s/w`, `D` from `1/w`), so the derivatives come from the
+quotient rule with constant plane slopes carried through the edge
+functions (`dE0/dx = -e0dy`, `dE0/dy = +e0dx`, over the signed area):
+`ds/dx = rw * (dNsdx - ss * dDdx)`.
+`lambda = log2(max(|(du/dx, dv/dx)|, |(du/dy, dv/dy)|))` in texels,
+computed per fragment per unit only when the unit's filter consumes
+mipmaps. `triangle_lod` survives exactly as the plan specified: the
+degenerate-screenspace fallback when a slope is non-finite (sliver
+triangles divide by the near-zero area the old guard already had). No
+context growth (`sizeof(aglx_context)` unchanged at 240 304), no new
+state — D3 holds: every existing host test and `/gltest` check stayed
+green unmodified.
+
+Host: `test_gltex2` 42 → 44. `t_lod_increases_toward_horizon` draws
+ONE receding quad (its diagonal deliberately kept away from the sampled
+column) and requires the level to rise monotonically toward the horizon
+with **≥ 4 distinct levels** in one column — the two-triangle step the
+old per-triangle path produces (distinct = 2; verified by compiling the
+test against a fallback-only rasterizer, where the test fails) cannot
+pass it, and neither can level-0-everywhere.
+`t_lod_facing_1x1_stays_zero` pins magnification on the boundary.
+
+`/glcube` floor at 320×240, floor-only `CLOCK_MONOTONIC` over 200
+frames in-guest (TCG — D2: recorded, gates nothing):
+
+| Path | ms/frame |
+|---|---|
+| per-triangle + 16×16 tessellated (baseline `d752846`) | 6.21 |
+| per-fragment + 16×16 tessellated | 6.06 |
+| per-fragment + untessellated (**shipped**) | 0.05 |
+
+Tessellation dropped: the shipped number is 0.8 % of the baseline, far
+inside the plan's ~2× rule — with the level per fragment, the 512-triangle
+grid buys nothing, and vertices (not the derivative arithmetic) dominate
+at this resolution. `/glcube`'s floor is one quad with the same 0..32 UV
+span; the demo comment records the measurement and why.
 
 ---
 
@@ -748,13 +785,13 @@ Baseline column is L0's job. Later columns land with their phase.
 | Stencil | refused | **8-bit** | | | | | |
 | `glMatrixMode(GL_TEXTURE)` | `INVALID_OPERATION` | | | **legal** | | | |
 | `GL_COMBINE` | absent | | | **present** | | | |
-| Mipmap LOD | per-triangle | | | | **per-fragment** | | |
+| Mipmap LOD | per-triangle | | | **per-fragment** | | | |
 | Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | (early-Z) | |
 | `/glshade` | absent | | | | | **shipped** | |
 | VirGL draw | present-only | | | | | | **canned Δ** |
-| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | **240 304** | | | |
-| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | **18** | | | |
-| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | **411** | | | |
+| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | **240 304** | **240 304** | | |
+| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | **18** | **18** | | |
+| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | **411** | **411** | | |
 
 Residue opened at L7 (expected):
 

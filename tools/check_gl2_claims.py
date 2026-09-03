@@ -87,6 +87,7 @@ def claims():
     l1 = phase_done(plan, "L1")
     l2 = phase_done(plan, "L2")
     l3 = phase_done(plan, "L3")
+    l4 = phase_done(plan, "L4")
     l5 = phase_done(plan, "L5")
     l6 = phase_done(plan, "L6")
 
@@ -234,6 +235,39 @@ def claims():
             "More than 2 texture units" not in opengl and
             "glMatrixMode(GL_TEXTURE)` reports `GL_INVALID_OPERATION`"
             not in opengl))
+
+    # --- L4: per-fragment mipmap LOD (when the plan says it landed) ---
+    if l4:
+        glraster = read("lib", "libgl", "src", "glraster.c")
+        checks.append((
+            "L4: the G10 'possible follow-up' sentence is out of "
+            "glraster.c",
+            "Per-fragment LOD is a possible follow-up" not in glraster))
+        checks.append((
+            "L4: glraster.c carries the derivative LOD (slope setup, "
+            "per-fragment flag, texel-space lambda)",
+            "lod_dsdx" in glraster and "lod_pf[" in glraster and
+            "sqrtf(" in glraster))
+        checks.append((
+            "L4: triangle_lod survives only as the degenerate fallback "
+            "(exactly one call site, behind the lod_pf flag)",
+            "lod[u] = triangle_lod" in glraster and
+            glraster.count("triangle_lod(tex") == 1))
+        checks.append((
+            "L4: test_gltex2 covers the LOD ramp and the 1:1 boundary",
+            "t_lod_increases_toward_horizon" in
+                read("tests", "unit", "test_gltex2.c") and
+            "t_lod_facing_1x1_stays_zero" in
+                read("tests", "unit", "test_gltex2.c")))
+        checks.append((
+            "L4: docs/opengl.md no longer lists per-fragment LOD as "
+            "unimplemented and no longer says per-triangle",
+            "Per-fragment mipmap LOD |" not in opengl and
+            "chosen per triangle, not per fragment" not in opengl))
+        checks.append((
+            "L4: /glcube's floor is one quad (tessellation dropped by "
+            "measurement)",
+            "FLOOR_TILES" not in glcube))
 
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(

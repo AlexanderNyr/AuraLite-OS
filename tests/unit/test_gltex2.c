@@ -462,6 +462,157 @@ static int t_filter_validation(void) {
  * ==========================================================================*/
 
 /* Bind a 1x1 texture of the given colour to the currently active unit. */
+/* ============================================================================
+ * Per-fragment mipmap LOD (GL2 phase L4)
+ *============================================================================*/
+
+/* One SOLID colour per mip level: with GL_NEAREST_MIPMAP_NEAREST and
+ * GL_REPLACE, a pixel's colour names the level it was sampled from.  This
+ * is what makes "the level increases toward the horizon" assertable without
+ * reaching into the sampler. */
+static const unsigned char lod_palette[7][3] = {
+    {255,  32,  32},    /* level 0 */
+    { 32, 255,  32},    /* level 1 */
+    { 32,  32, 255},    /* level 2 */
+    {255, 255,  32},    /* level 3 */
+    {255,  32, 255},    /* level 4 */
+    { 32, 255, 255},    /* level 5 */
+    {255, 140,  0},     /* level 6 (deliberately not white: an untextured
+                         * white fragment must never read as a level) */
+};
+
+static void lod_chain_upload(GLuint tex) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    for (int lvl = 0, n = 64; lvl < 7; lvl++, n >>= 1) {
+        unsigned char *img = (unsigned char *)malloc((size_t)n * n * 3);
+        if (!img) return;
+        for (int i = 0; i < n * n; i++) {
+            img[(size_t)i * 3 + 0] = lod_palette[lvl][0];
+            img[(size_t)i * 3 + 1] = lod_palette[lvl][1];
+            img[(size_t)i * 3 + 2] = lod_palette[lvl][2];
+        }
+        glTexImage2D(GL_TEXTURE_2D, lvl, GL_RGB, n, n, 0, GL_RGB,
+                     GL_UNSIGNED_BYTE, img);
+        free(img);
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+}
+
+/* Which mip level this pixel was sampled from, or -1 when it matches none
+ * (background, or a blend the palette cannot name). */
+static int level_of_px(aglx_context_t *c, int x, int y) {
+    uint32_t p = px(c, x, y);
+    int r = (int)((p >> 16) & 0xFF), g = (int)((p >> 8) & 0xFF),
+        b = (int)(p & 0xFF);
+    for (int i = 0; i < 7; i++) {
+        if (near_u8(r, lod_palette[i][0], 12) &&
+            near_u8(g, lod_palette[i][1], 12) &&
+            near_u8(b, lod_palette[i][2], 12)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* An UNTILTED ground quad receding from the eye, drawn as ONE primitive.
+ * The perspective quotient ds/dx, dt/dy grows with distance, so the level
+ * must increase toward the horizon -- varying WITHIN the primitive, which
+ * the old per-triangle area ratio could never do.  This is also the guard
+ * against the bug that looks like success in a screenshot: an
+ * implementation that picks level 0 everywhere fails the `last' assert,
+ * and one that picks a single averaged level fails `last > first'. */
+static int t_lod_increases_toward_horizon(void) {
+    aglx_context_t *c = aglxCreateContext(1, W, H, AGLX_DEPTH);
+    if (!c) return 0;
+    aglxMakeCurrent(c);
+    glClearColor(0, 0, 0, 1);
+    glClearDepth(1.0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glFrustum(-1, 1, -1, 1, 1, 128);
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    lod_chain_upload(t);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glEnable(GL_TEXTURE_2D);
+    glDisable(GL_LIGHTING);
+    glColor3f(1, 1, 1);
+
+    /* Ground at eye height -2, z from -4 (near) to -34 (far): GL's camera
+     * looks down -z.  Kept narrow (|x| <= 3.5) so the whole quad is inside
+     * the frustum at its near edge: the point is one primitive whose LOD
+     * varies with depth, not a clipping exercise. */
+    glBegin(GL_QUADS);
+    glTexCoord2f(0,    2); glVertex3f(-3.5f, -2.0f, -34.0f);
+    glTexCoord2f(0,    0); glVertex3f(-3.5f, -2.0f,  -4.0f);
+    glTexCoord2f(0.5,  0); glVertex3f( 3.5f, -2.0f,  -4.0f);
+    glTexCoord2f(0.5,  2); glVertex3f( 3.5f, -2.0f, -34.0f);
+    glEnd();
+
+    int first = -1, last = -1, prev = -1, monotonic = 1;
+    int distinct = 0;
+    int seen[7] = {0};
+    for (int y = 1; y < H - 1; y++) {
+        int lv = level_of_px(c, W / 2, y);
+        if (lv < 0) continue;
+        if (prev >= 0 && lv < prev) monotonic = 0;
+        prev = lv;
+        if (first < 0) first = lv;
+        last = lv;
+        if (!seen[lv]) { seen[lv] = 1; distinct++; }
+    }
+    /* The discriminator: GL_QUADS is two triangles, so the old per-triangle
+     * area ratio could produce at most a TWO-STEP (one level each).  Four
+     * distinct levels in one column means the level moved inside a single
+     * primitive -- what the derivative computation is for.  A constant or
+     * stepped result, or level 0 everywhere (the bug that looks like
+     * success in a screenshot), fails one of the clauses below. */
+    int ok = monotonic && first >= 0 && first <= 1 && last >= 2
+          && last >= first + 3 && distinct >= 4;
+    if (!ok) {
+        printf("  (lod column: first=%d last=%d monotonic=%d distinct=%d)\n",
+               first, last, monotonic, distinct);
+    }
+    glDeleteTextures(1, &t);
+    aglxMakeCurrent(NULL);
+    aglxDestroyContext(c);
+    return ok;
+}
+
+/* A facing quad mapped 1:1 (64 texels across 64 pixels) is magnification's
+ * boundary: lambda == 0 and every pixel stays on level 0. */
+static int t_lod_facing_1x1_stays_zero(void) {
+    aglx_context_t *c = setup(); if (!c) return 0;
+
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    lod_chain_upload(t);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    glEnable(GL_TEXTURE_2D);
+
+    quad(0, 0, (GLfloat)W, (GLfloat)H, 1.0f, 1.0f);
+
+    int ok = 1;
+    for (int y = 6; y < H - 6 && ok; y += 13) {
+        for (int x = 6; x < W - 6 && ok; x += 13) {
+            int lv = level_of_px(c, x, y);
+            if (lv != 0) {
+                printf("  (1:1 quad at (%d,%d): level %d, want 0)\n",
+                       x, y, lv);
+                ok = 0;
+            }
+        }
+    }
+    glDeleteTextures(1, &t);
+    return ok;
+}
+
 static GLuint solid_texture(unsigned char r, unsigned char g, unsigned char b) {
     unsigned char rgb[3] = { r, g, b };
     GLuint id = 0;
@@ -1253,6 +1404,9 @@ int main(void) {
     RUN(t_mipmap_reduces_aliasing); RUN(t_all_four_mipmap_filters);
     RUN(t_mipmap_filter_without_chain); RUN(t_magnification_ignores_chain);
     RUN(t_max_level_caps_chain); RUN(t_filter_validation);
+
+    printf("--- per-fragment LOD (GL2 L4) ---\n");
+    RUN(t_lod_increases_toward_horizon); RUN(t_lod_facing_1x1_stays_zero);
 
     printf("--- multitexturing ---\n");
     RUN(t_active_texture_selects_unit); RUN(t_active_texture_validation);

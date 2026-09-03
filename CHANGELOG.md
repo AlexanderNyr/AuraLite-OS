@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L4 — per-fragment mipmap LOD] 2026-09-03
+
+`GL2_PLAN.md` phase L4: the follow-up G10 named and declined — the
+mipmap level is now evaluated per fragment from screen-space
+derivatives, not once per triangle from an area ratio.
+
+- The perspective-correct `(s, t)` is the quotient of two functions
+  that are affine in screen space (G6's `s/w` and `1/w`), so the
+  derivatives come from the quotient rule with constant plane slopes
+  carried through the edge functions: `ds/dx = rw * (dNsdx - ss *
+  dDdx)`. `lambda = log2(max(|(du/dx, dv/dx)|, |(du/dy, dv/dy)|))` in
+  texels, per fragment, per unit, only for mipmap-consuming filters.
+- `triangle_lod` survives as the degenerate fallback (non-finite
+  slopes on sliver triangles); it is called from exactly one site.
+- Derivatives are along the window axes — the same convention as
+  hardware; cube maps keep the pre-projection `(s, t)` estimate the
+  area-ratio version also made.
+- `/glcube`'s floor is ONE quad again: with the level per fragment the
+  16×16 tessellation bought nothing and cost vertices. Floor-only
+  timing at 320×240 (in-guest, 200 frames): 6.21 ms (old raster +
+  tessellated) → **0.05 ms** (per-fragment + untessellated).
+- Host `test_gltex2` 42 → 44: `t_lod_increases_toward_horizon`
+  (monotonic ramp, ≥ 4 distinct levels in one column — the
+  two-triangle step of a per-triangle LOD fails it; verified by
+  regression build) and `t_lod_facing_1x1_stays_zero`.
+- `sizeof(aglx_context)` unchanged (240 304). `/gltest` unchanged
+  (411 checks). Checker claims 28–33 added (L4 gate + selftest); opener pins untouched.
+
 ## [GL2 L3 — texture leftovers] 2026-09-02
 
 `GL2_PLAN.md` phase L3: finish the G10 texture story — COMBINE, a

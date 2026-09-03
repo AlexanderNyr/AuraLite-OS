@@ -101,23 +101,25 @@ static GLuint make_checker_texture(void) {
     return id;
 }
 
-/* ---- Mipmapped ground plane (phase G10) ----
+/* ---- Mipmapped ground plane (phase G10, untessellated since GL2 L4) ----
  *
  * A textured floor is the canonical mipmap demonstration: at a grazing angle
  * the texture is minified by a large and rapidly changing factor, which is
  * exactly where point sampling produces the moire shimmer that mipmapping
  * exists to remove.
  *
- * The plane is TESSELLATED into a grid of quads rather than drawn as a single
- * large one.  That is not decoration: this implementation picks one mipmap
- * level per triangle (see the note at the top of libgl/src/gltexture.c), so a
- * single quad stretching to the horizon would get one averaged level across
- * the whole thing -- too blurry near the camera and still aliased far away.
- * Sixteen strips give each piece a level that suits its own depth.
+ * Until GL2 L4 this plane was a 16x16 grid of quads: the G10 rasterizer
+ * picked ONE mipmap level per triangle, so a single quad stretching to the
+ * horizon got one averaged level across the whole thing.  L4 evaluates the
+ * level per fragment from screen-space derivatives, which is exactly the
+ * property tessellation was faking -- and the L4 measurement says the grid
+ * now only costs: 16x16 tiles measured 6.1 ms/frame against 0.05 ms/frame
+ * for this single quad (320x240, in-guest).  Vertices, not fragments,
+ * dominate at this resolution.  One quad, same 0..32 UV span.
  */
 #define FLOOR_TEX_N   64
-#define FLOOR_TILES   16
 #define FLOOR_EXTENT  6.0f
+#define FLOOR_UV      32.0f      /* total texture repeats across the plane */
 #define FLOOR_Y      -1.61f     /* just below the wireframe grid */
 
 static GLuint make_floor_texture(void) {
@@ -153,24 +155,11 @@ static void draw_floor(GLuint floor_tex) {
     glBindTexture(GL_TEXTURE_2D, floor_tex);
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 
-    GLfloat step = 2.0f * FLOOR_EXTENT / (GLfloat)FLOOR_TILES;
-    GLfloat uv_step = 2.0f;             /* texture repeats per tile */
-
     glBegin(GL_QUADS);
-    for (int iz = 0; iz < FLOOR_TILES; iz++) {
-        for (int ix = 0; ix < FLOOR_TILES; ix++) {
-            GLfloat x0 = -FLOOR_EXTENT + (GLfloat)ix * step;
-            GLfloat z0 = -FLOOR_EXTENT + (GLfloat)iz * step;
-            GLfloat x1 = x0 + step, z1 = z0 + step;
-            GLfloat u0 = (GLfloat)ix * uv_step, v0 = (GLfloat)iz * uv_step;
-            GLfloat u1 = u0 + uv_step, v1 = v0 + uv_step;
-
-            glTexCoord2f(u0, v0); glVertex3f(x0, FLOOR_Y, z0);
-            glTexCoord2f(u1, v0); glVertex3f(x1, FLOOR_Y, z0);
-            glTexCoord2f(u1, v1); glVertex3f(x1, FLOOR_Y, z1);
-            glTexCoord2f(u0, v1); glVertex3f(x0, FLOOR_Y, z1);
-        }
-    }
+    glTexCoord2f(0.0f,      0.0f);      glVertex3f(-FLOOR_EXTENT, FLOOR_Y, -FLOOR_EXTENT);
+    glTexCoord2f(FLOOR_UV,  0.0f);      glVertex3f( FLOOR_EXTENT, FLOOR_Y, -FLOOR_EXTENT);
+    glTexCoord2f(FLOOR_UV,  FLOOR_UV);  glVertex3f( FLOOR_EXTENT, FLOOR_Y,  FLOOR_EXTENT);
+    glTexCoord2f(0.0f,      FLOOR_UV);  glVertex3f(-FLOOR_EXTENT, FLOOR_Y,  FLOOR_EXTENT);
     glEnd();
 
     glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);

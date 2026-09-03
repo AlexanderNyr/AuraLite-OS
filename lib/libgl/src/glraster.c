@@ -400,6 +400,14 @@ static int is_top_left(GLfloat dx, GLfloat dy) {
     return (dy == 0.0f && dx < 0.0f) || (dy < 0.0f);
 }
 
+/* GL2 phase L4: the derivative setup divides by the signed screen area, so
+ * a sliver of a triangle can push a slope to infinity, and a NaN can leak
+ * through the arithmetic.  Either makes the area-ratio level of
+ * triangle_lod the honest answer for that triangle. */
+static int lod_finite(GLfloat v) {
+    return v == v && v < 1e30f && v > -1e30f;
+}
+
 /* ---- Per-triangle mipmap level of detail (phase G10) ----
  *
  * Hardware evaluates the LOD per FRAGMENT from dFdx/dFdy of the texture
@@ -412,20 +420,16 @@ static int is_top_left(GLfloat dx, GLfloat dy) {
  * two spaces, so its square root is "texels per pixel" and its base-2
  * logarithm is exactly the mipmap level at which one texel covers one pixel.
  *
- * WHEN THIS IS WRONG, AND WHY IT IS STILL THE RIGHT CHOICE HERE
+ * WHEN THIS IS WRONG, AND WHY IT IS STILL THE RIGHT CHOICE THERE
  *
- * It is exact for a triangle at constant depth, and progressively wrong for a
- * foreshortened one: a ground plane receding to the horizon has a texel/pixel
- * ratio that varies by orders of magnitude across the primitive, and gets a
- * single averaged level where hardware would blend several.  The cure is to
- * tessellate such surfaces -- which is cheap -- rather than to pay a
- * derivative computation on every one of the millions of fragments a software
- * rasterizer already struggles with.  Per-fragment LOD is a possible follow-up
- * (carry du/dx through the edge functions); it is not free.
- *
- * The texture-space area uses the PROJECTED coordinates s/w, t/w rather than
- * the raw ones, so a perspective primitive is measured where it is actually
- * drawn.
+ * GL2 phase L4 evaluates the LOD per fragment from screen-space derivatives
+ * (see gl_raster_triangle), so this path no longer runs for ordinary
+ * triangles.  It survives as the DEGENERATE FALLBACK: when a triangle's
+ * screen area is so small that the derivative slopes overflow, the
+ * derivative computation is meaningless and the area-ratio answer below is
+ * the honest one.  The texture-space area uses the PROJECTED coordinates
+ * s/w, t/w rather than the raw ones, so a perspective primitive is measured
+ * where it is actually drawn.
  */
 static GLfloat triangle_lod(const gl_texture_t *tex,
                             const gl_vertex_t *v0, const gl_vertex_t *v1,
@@ -610,15 +614,76 @@ void gl_raster_triangle(struct aglx_context *ctx,
     GLfloat lod[GL_MAX_TEXTURE_UNITS_IMPL];
     int any_tex = 0;
 
+    /* ---- GL2 phase L4: per-fragment mipmap LOD ----
+     *
+     * Hardware evaluates lambda = log2(max(|du/dx,dv/dx|, |du/dy,dv/dy|))
+     * from the screen-space derivatives of the texture coordinates, in
+     * texels.  A scanline rasterizer has no dFdx, but it does not need one:
+     * the perspective-correct s at a fragment is the quotient
+     *
+     *     ss = Ns(x,y) / D(x,y),
+     *
+     * of two functions that ARE affine in screen space (the same s/w values
+     * G6 interpolates), so its derivatives follow from the quotient rule
+     * with constant plane slopes:
+     *
+     *     ds/dx = rw * (dNsdx - ss * dDdx)
+     *
+     * where rw is the per-fragment 1/D this loop already computes.  The
+     * slopes come straight from the edge functions: dE0/dx = -e0dy and
+     * dE0/dy = +e0dx (and likewise for the other two edges), divided by the
+     * signed area to turn edge values into barycentric weights.  Unlike the
+     * area ratio, the quotient varies across the primitive, which is exactly
+     * what a ground plane receding to the horizon needs: the level now
+     * follows the depth instead of averaging it.
+     *
+     * The derivatives are taken along the WINDOW axes -- the same convention
+     * as every hardware implementation; they are properties of the sampling
+     * neighbourhood, not of the primitive's outline.
+     *
+     * Degenerate screenspace (an area so small the slopes overflow) falls
+     * back to triangle_lod below, whose division-by-zero guard is already
+     * in place. */
+    GLfloat lod_dsdx[GL_MAX_TEXTURE_UNITS_IMPL], lod_dsdy[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat lod_dtdx[GL_MAX_TEXTURE_UNITS_IMPL], lod_dtdy[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat lod_tw[GL_MAX_TEXTURE_UNITS_IMPL],  lod_th[GL_MAX_TEXTURE_UNITS_IMPL];
+    GLfloat lod_dDdx, lod_dDdy;
+    int lod_pf[GL_MAX_TEXTURE_UNITS_IMPL];
+
+    /* dD/dx, dD/dy: the denominator of the quotient, from the per-vertex
+     * 1/w values that G6's interpolation shares. */
+    lod_dDdx = (-e0dy * w0i - e1dy * w1i - e2dy * w2i) * inv_area;
+    lod_dDdy = ( e0dx * w0i + e1dx * w1i + e2dx * w2i) * inv_area;
+
     for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
         tex[u] = gl_texture_unit_source(ctx, u);
         lod[u] = 0.0f;
+        lod_pf[u] = 0;
         s0u[u] = v0->s[u] * w0i; s1u[u] = v1->s[u] * w1i; s2u[u] = v2->s[u] * w2i;
         t0u[u] = v0->t[u] * w0i; t1u[u] = v1->t[u] * w1i; t2u[u] = v2->t[u] * w2i;
         r0u[u] = v0->r[u] * w0i; r1u[u] = v1->r[u] * w1i; r2u[u] = v2->r[u] * w2i;
         if (tex[u]) {
             any_tex = 1;
-            lod[u] = triangle_lod(tex[u], v0, v1, v2, area, u);
+            if (gl_texture_uses_mipmaps(tex[u]) &&
+                gl_texture_base_size(tex[u], &lod_tw[u], &lod_th[u])) {
+                lod_dsdx[u] = (-e0dy * s0u[u] - e1dy * s1u[u] - e2dy * s2u[u])
+                              * inv_area;
+                lod_dsdy[u] = ( e0dx * s0u[u] + e1dx * s1u[u] + e2dx * s2u[u])
+                              * inv_area;
+                lod_dtdx[u] = (-e0dy * t0u[u] - e1dy * t1u[u] - e2dy * t2u[u])
+                              * inv_area;
+                lod_dtdy[u] = ( e0dx * t0u[u] + e1dx * t1u[u] + e2dx * t2u[u])
+                              * inv_area;
+                lod_pf[u] = lod_finite(lod_dDdx) && lod_finite(lod_dDdy)
+                         && lod_finite(lod_dsdx[u]) && lod_finite(lod_dsdy[u])
+                         && lod_finite(lod_dtdx[u]) && lod_finite(lod_dtdy[u]);
+            }
+            if (!lod_pf[u]) {
+                /* Degenerate screenspace: the area-ratio level is the
+                 * honest answer (and costs nothing -- these triangles are
+                 * a sliver of the frame). */
+                lod[u] = triangle_lod(tex[u], v0, v1, v2, area, u);
+            }
         }
     }
     /* Eye-space depth for fog, interpolated the same way. */
@@ -764,9 +829,25 @@ void gl_raster_triangle(struct aglx_context *ctx,
                                             + l2 * t2u[u]) * rw;
                                 GLfloat rr = (l0 * r0u[u] + l1 * r1u[u]
                                             + l2 * r2u[u]) * rw;
+                                GLfloat lam = lod[u];
+                                if (lod_pf[u]) {
+                                    GLfloat dudx = lod_tw[u] * rw
+                                        * (lod_dsdx[u] - ss * lod_dDdx);
+                                    GLfloat dvdx = lod_th[u] * rw
+                                        * (lod_dtdx[u] - tt * lod_dDdx);
+                                    GLfloat dudy = lod_tw[u] * rw
+                                        * (lod_dsdy[u] - ss * lod_dDdy);
+                                    GLfloat dvdy = lod_th[u] * rw
+                                        * (lod_dtdy[u] - tt * lod_dDdy);
+                                    GLfloat fx = sqrtf(dudx * dudx + dvdx * dvdx);
+                                    GLfloat fy = sqrtf(dudy * dudy + dvdy * dvdy);
+                                    GLfloat m = fx > fy ? fx : fy;
+                                    lam = (m > 0.0f) ? log2f(m) : 0.0f;
+                                    if (lam != lam) lam = lod[u];  /* NaN */
+                                }
                                 gl_color_t tc =
                                     gl_texture_sample_lod(tex[u], ss, tt, rr,
-                                                          lod[u]);
+                                                          lam);
                                 /* `primary` is the colour before any unit ran
                                  * (COMBINE PRIMARY_COLOR / unit-0 PREVIOUS). */
                                 cc = gl_texture_env_unit(ctx, u, cc, tc,

@@ -118,7 +118,7 @@ frames, so output is tear-free without extra work.
 | Clipping | All six frustum planes, attributes interpolated at the cut |
 | Lighting | 8 lights (positional, directional, spot), Blinn–Phong specular, distance attenuation, front/back materials, `GL_COLOR_MATERIAL`, `GL_NORMALIZE` |
 | Texturing | 2D textures, `GL_RGB`/`RGBA`/`LUMINANCE`/`LUMINANCE_ALPHA`/`ALPHA`, nearest and bilinear, `GL_REPEAT`/`CLAMP`/`CLAMP_TO_EDGE`/`CLAMP_TO_BORDER`, `MODULATE`/`REPLACE`/`DECAL`/`BLEND`/`COMBINE` (GL 1.3 §3.8.13 subset), **perspective-correct** interpolation |
-| Mipmaps | Full chains, all four mipmap filters, `glGenerateMipmap`, `gluBuild2DMipmaps`, `GL_TEXTURE_BASE_LEVEL`/`MAX_LEVEL`; **per-triangle** LOD (see below) |
+| Mipmaps | Full chains, all four mipmap filters, `glGenerateMipmap`, `gluBuild2DMipmaps`, `GL_TEXTURE_BASE_LEVEL`/`MAX_LEVEL`; **per-fragment** LOD (see below) |
 | Multitexturing | 4 units, `glActiveTexture`, `glClientActiveTexture`, per-unit enables, bindings, environment and texture matrix |
 | 3D textures | `glTexImage3D`, `GL_TEXTURE_3D`, trilinear sampling, `GL_TEXTURE_WRAP_R` |
 | Cube maps | `GL_TEXTURE_CUBE_MAP`, six faces, direction-vector lookup by major axis, mipmapped |
@@ -138,7 +138,6 @@ frames, so output is tear-free without extra work.
 | Missing | Notes |
 |---|---|
 | Geometry/tessellation/compute shaders | ES 2.0 has vertex and fragment stages only |
-| Per-fragment mipmap LOD | The level is chosen per **triangle**, not per fragment (see below) |
 | Accumulation buffer | Not present |
 | Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
 | Evaluators, feedback, selection | Not present |
@@ -187,32 +186,39 @@ per pixel when the rectangle is addressed.
 **Texture row 0 is the bottom row**, matching GL's texture coordinate origin.
 No vertical flip is applied at sample time.
 
-**Mipmap level of detail is chosen per triangle, not per fragment.** This is
-the one place where the implementation knowingly departs from what hardware
-does, so it is worth understanding rather than discovering.
+**Mipmap level of detail is evaluated per fragment, from screen-space
+derivatives** (GL2 phase L4; before L4 it was one level per triangle from an
+area ratio, and large receding surfaces had to be tessellated to look
+right — they no longer need to be).
 
-Hardware evaluates the LOD for every fragment from the screen-space
-derivatives of the texture coordinates. A scanline rasterizer has no `dFdx` or
-`dFdy`, so this implementation computes one level for the whole primitive, at
-setup, from the ratio of its texture-space area to its screen-space area:
+A scanline rasterizer has no `dFdx` or `dFdy` primitive, but it does not
+need one. The perspective-correct texture coordinate at a fragment is the
+quotient of two functions that *are* affine in screen space (the `s/w`, `t/w`
+and `1/w` values the G6 perspective correction already interpolates), so the
+derivatives follow from the quotient rule with constant plane slopes carried
+through the edge functions:
 
 ```
-lod = log2( sqrt( texture-space area / screen-space area ) )
+ds/dx = rw * (d(s/w)/dx - (s/w) * d(1/w)/dx)          lambda =
+  log2( max( |(du/dx, dv/dx)|, |(du/dy, dv/dy)| ) )      in texels
 ```
 
-That is *exact* for a triangle at constant depth, and progressively wrong for
-a strongly foreshortened one. A ground plane stretching to the horizon,
-drawn as a single quad, gets one averaged level for the whole thing — too
-blurry in the foreground and still aliased in the distance.
+The level therefore varies inside a primitive — a ground plane receding to
+the horizon gets low levels near the camera and high levels near the
+horizon, from a single quad (`/glcube`'s floor is one quad again; the L4
+measurement that dropped its 16×16 tessellation is recorded in
+`GL2_PLAN.md` §L4).
 
-**The fix is to tessellate large receding surfaces.** `/glcube`'s floor is
-split into a 16×16 grid for exactly this reason, and the comment in
-`userspace/demos/glcube/glcube.c` says so. Tessellation is cheap; a per-fragment
-derivative is not, in a rasterizer whose bottleneck is already arithmetic.
+**The derivatives are along the window axes**, not along the primitive's
+outline — which is what everyone else does too: they are properties of the
+sampling neighbourhood (the pixel quad in hardware), not of the geometry.
 
-Per-fragment LOD is possible by carrying `du/dx` through the edge functions
-and is the natural follow-up if the per-triangle version proves too coarse.
-
+Two honest boundaries remain. For a triangle so thin that the derivative
+slopes overflow, the implementation falls back to the old per-triangle
+area-ratio level, whose division-by-zero guard already covers the case.
+And for cube maps the derivatives are those of the pre-projection `(s,t)`;
+the face projection is not differentiated — the same approximation the
+area-ratio version made.
 **Texture units combine in order.** There are four (`GL_MAX_TEXTURE_UNITS`).
 Unit 0's output becomes unit 1's incoming fragment colour, and so on, so
 `GL_MODULATE` on two units yields the product of the two textures. `glTexEnv`,
@@ -317,8 +323,10 @@ that. Host figures (native, `-O2`):
 | 10 000 triangles, immediate mode | ~4.5 ms |
 | 10 000 triangles, `glDrawArrays` | ~4.6 ms |
 
-Mipmap filtering cost, measured on a 16×16-tile textured floor at 320×240
-(the `/glcube` ground plane):
+Mipmap filtering cost, measured on the `/glcube` ground plane at 320×240
+when it was still a 16×16 tessellated grid (pre-L4; the floor is a single
+quad since L4, which made the whole floor path ~100× cheaper — vertices,
+not fragments, dominate at this resolution):
 
 | Filter | Cost |
 |---|---|
@@ -749,7 +757,7 @@ syscall for 3D submission.
 
 | Program | What it shows |
 |---|---|
-| `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** tessellated 16×16 to demonstrate per-triangle LOD, and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
+| `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** drawn as a single quad — per-fragment LOD (GL2 L4) made the old 16×16 tessellation unnecessary — and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
 | `/gltest` | Regression suite: 411 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
