@@ -19,8 +19,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-LEDGER_ROWS = 53
-CLASS_PIN = {"W": 34, "M": 6, "N": 4, "S": 9}
+LEDGER_ROWS = 54
+CLASS_PIN = {"W": 34, "M": 6, "N": 4, "S": 10}
 PHASE_ORDER = ["R0", "R1", "R2", "R3", "R4", "R5", "R6",
                "R7", "R8", "R9", "R10", "R11", "R12"]
 
@@ -322,7 +322,9 @@ def claims():
             "measured opener",
             "at R12" not in ledger and
             ledger.count("OPENER, measured") >= 8 and
-            ledger.count("HANDED-OFF@R12") >= 8))
+            # GL2 L7 closed RES-41 (DONE@L7), so seven remain: the R12
+            # count is a floor, not a pin on the exact number.
+            ledger.count("HANDED-OFF@R12") >= 7))
         checks.append((
             "R12: TODO.md is kept IN FULL and annotated — the headline "
             "note names the ledger as the index, the file kept its "

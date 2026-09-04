@@ -82,6 +82,8 @@ def claims():
     glgears = read("userspace", "demos", "glgears", "glgears.c")
     opengl = read("docs", "opengl.md")
     readme = read("README.md")
+    glstatus = read("docs", "status.md")
+    ledger = read("docs", "residue_ledger.md")
     checks = []
 
     l0 = phase_done(plan, "L0")
@@ -91,6 +93,7 @@ def claims():
     l4 = phase_done(plan, "L4")
     l5 = phase_done(plan, "L5")
     l6 = phase_done(plan, "L6")
+    l7 = phase_done(plan, "L7")
 
     # --- opener pins (moved by later phases, in the same commit) ------
     if not l3:
@@ -368,6 +371,50 @@ def claims():
             "in the same commit)",
             "GL2 L6" in fact6 and
             "It does NOT implement DRAW_VBO" not in glvirgl))
+
+    # --- L7: post-phase pin assertions (the pins moved FOR GOOD) -------
+    if l1:
+        checks.append((
+            "L7: post-phase — stencil is accepted (INDEX8 renderbuffer, "
+            "glStencilFunc shipped)",
+            "GL_STENCIL_INDEX8" in glfbo and
+            "glStencilFunc" in glstate and
+            "there is no stencil buffer" not in glfbo))
+    if l2:
+        checks.append((
+            "L7: post-phase — the copies are in the public header",
+            "glCopyTexImage2D" in glh and "glBlitFramebuffer" in glh))
+    if l3:
+        checks.append((
+            "L7: post-phase — four texture units and GL_COMBINE are the "
+            "shipped shape",
+            re.search(r"#define\s+GL_MAX_TEXTURE_UNITS_IMPL\s+4\b",
+                      glctx) is not None and
+            "#define GL_COMBINE" in glh))
+    if l7:
+        checks.append((
+            "L7: the plan header is COMPLETE and every phase row says so",
+            re.search(r"^## Status: COMPLETE", plan, re.M) is not None and
+            all(phase_done(plan, ph) for ph in
+                ["L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7"])))
+        checks.append((
+            "L7: docs/status.md names this series, not just G0–G13",
+            "GL2_PLAN" in glstatus and "L0–L7" in glstatus))
+        checks.append((
+            "L7: the README documentation map points both GL plans at "
+            "docs/plans/",
+            "docs/plans/GL2_PLAN.md" in readme and
+            "docs/plans/GL_PLAN.md" in readme))
+        checks.append((
+            "L7: the ledger closes RES-41 and opens the D7 hand-off as "
+            "RES-54",
+            "| RES-41 | S | DONE@L7 |" in ledger and
+            "| RES-54 | S | OPEN |" in ledger))
+        checks.append((
+            "L7: docs/opengl.md's Not-implemented table enumerates §4",
+            "GLSL preprocessor" in opengl and
+            "transform feedback" in opengl and
+            "SIMD" in opengl))
 
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(

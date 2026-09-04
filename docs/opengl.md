@@ -141,7 +141,12 @@ frames, so output is tear-free without extra work.
 | Accumulation buffer | Not present |
 | Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
 | Evaluators, feedback, selection | Not present |
-| Hardware-accelerated **drawing** beyond the canned triangle | GL2 L6 ships a canned TGSI `DRAW_VBO` path (whole fixed-function `glDrawArrays(GL_TRIANGLES)` batches of clip positions + colours, nothing else). General hardware drawing needs the GLSL compiler retargeted to TGSI — a compiler back end and a successor plan |
+| Hardware-accelerated **drawing** beyond the canned triangle | GL2 L6 ships a canned TGSI `DRAW_VBO` path (whole fixed-function `glDrawArrays(GL_TRIANGLES)` batches of clip positions + colours, nothing else). General hardware drawing needs the GLSL compiler retargeted to TGSI — a compiler back end and a successor plan (ledger RES-54) |
+| GLSL → TGSI compiler, and any JIT | The canned TGSI is hand-written; the AST retarget is the successor plan. A JIT is out of scope for a software GL stack |
+| GLSL preprocessor (`#define`, `#ifdef`) | G11a refuses it with a diagnostic; reversing that is language work, not GL work |
+| VAOs, PBOs, transform feedback, `glCopyTexImage3D`, packed `D24S8`, `glFramebufferTexture3D` | Real APIs; none was on the critical path of GL2 L1–L6 |
+| User-space SIMD/SSE rasteriser | Measured floor stands — GL2 L5's table did not reopen it |
+| ES 3.0 / desktop 3.2 core profile | The subset grows (GL_PLAN); it does not jump a generation |
 
 ---
 
@@ -819,7 +824,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glclip.c` | Frustum clipping and the attribute stack, 28 |
 | `tests/unit/test_gllight.c` | The lighting equation and materials, 32 |
 | `tests/unit/test_gltex.c` | Texturing, perspective correction, blending, fog, 37 |
-| `tests/unit/test_gltex2.c` | Mipmaps, multitexturing, 3D textures, cube maps, COMBINE / texture matrix / 4 units, 42 |
+| `tests/unit/test_gltex2.c` | Mipmaps, multitexturing, 3D textures, cube maps, COMBINE / texture matrix / 4 units, and the per-fragment LOD ramp, 44 |
 | `tests/unit/test_glarray.c` | Arrays, buffer objects, display lists, 36 |
 | `tests/unit/test_glu.c` | GLU helpers and quadrics, 21 |
 | `tests/unit/test_glbackend.c` | The backend seam and the VirGL candidate, 17 |

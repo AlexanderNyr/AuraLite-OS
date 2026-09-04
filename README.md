@@ -783,7 +783,12 @@ Start here:
 - [`docs/trust_store.md`](docs/trust_store.md) — the shipped roots and their
   lifecycle decision.
 - [`PLAN.md`](PLAN.md) — historical phase plan.
-- [`GL_PLAN.md`](GL_PLAN.md) — the OpenGL stack (complete).
+- [`docs/plans/GL_PLAN.md`](docs/plans/GL_PLAN.md) — the OpenGL stack
+  (complete).
+- [`docs/plans/GL2_PLAN.md`](docs/plans/GL2_PLAN.md) — the OpenGL
+  continuation series: stencil, copies, COMBINE/4 units, per-fragment
+  LOD, early-Z + `/glshade`, the canned VirGL triangle (**complete**,
+  L0 – L7). See [`docs/opengl.md`](docs/opengl.md).
 - [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
 - [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
 - [`WIN32_PLAN.md`](WIN32_PLAN.md) — a Win32-compatible personality: PE32+

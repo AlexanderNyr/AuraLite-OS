@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L7 — close-out] 2026-09-03
+
+`GL2_PLAN.md` phase L7 — and with it the **whole series, L0–L7,
+COMPLETE**: the document and the tree are now held together by the
+checker rather than by prose.
+
+- Checker 44 → **52 claims**: post-phase assertions for every pin the
+  series moved (stencil accepted, copies in the header, four units +
+  `GL_COMBINE`), the COMPLETE header ⇔ phase-table agreement, the
+  ledger close/open pair (RES-41 DONE@L7, RES-54 OPEN — the GLSL AST →
+  TGSI retarget, the D7 hand-off), and the docs named below.
+  `--selftest` still catches a planted miss.
+- `docs/opengl.md`'s Not-implemented table enumerates §4 (the TGSI
+  compiler and JIT, the preprocessor, VAOs/PBOs/transform feedback and
+  friends, the SIMD rasteriser whose measured floor stands, ES 3.0);
+  the GL2 phase behaviour notes had accumulated with their phases.
+- `docs/status.md`'s OpenGL cell ends with the GL2 headline
+  (G0–G13 **and** L0–L7; 1064 libgl host checks + 427 in-OS) instead of
+  stopping at G13.
+- README documentation map: both GL plans pointed at `docs/plans/` —
+  fixing a stale root-path link that had survived the L0 move — and
+  the GL2 row added next to GL_PLAN's.
+- Ledger: RES-41 DONE@L7 (the canned DRAW_VBO seam landed in L6); the
+  retarget opens as RES-54 with a measured opener; residue arithmetic
+  53 → 54 rows, S 9 → 10; the terminal R12 gate's HANDED-OFF count is
+  now a floor (≥7).
+- §5 terminal arithmetic filled and grep-backed:
+  `sizeof(aglx_context)` 238 568 → **240 328** across the series.
+- `test_gl2_claims.sh` green; `make test-unit` EXIT 0.
+
 ## [GL2 L6 — VirGL `DRAW_VBO`, canned TGSI] 2026-09-03
 
 `GL2_PLAN.md` phase L6: the userspace half of RES-41 — one triangle on

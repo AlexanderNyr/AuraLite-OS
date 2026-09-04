@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL, the second series (the leftovers)
 
-## Status: IN PROGRESS — L0–L6 landed; L7 specified
+## Status: COMPLETE — L0–L7 landed
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -11,7 +11,7 @@
 | L4 — per-fragment mipmap LOD | ✅ complete | `patches/GL2_L4_lod.patch` |
 | L5 — shader-path fitness | ✅ complete | `patches/GL2_L5_earlyz.patch` |
 | L6 — VirGL `DRAW_VBO` | ✅ complete | `patches/GL2_L6_virgl_draw.patch` |
-| L7 — close-out | — | docs, residue, checker, terminal arithmetic |
+| L7 — close-out | ✅ complete | `patches/GL2_L7_closeout.patch` |
 
 This document answers:
 
@@ -847,43 +847,85 @@ device the virtio driver work awaits.**
 
 ### L7 — Close-out: docs, residue, checker, arithmetic
 
-**Status:** not started
+**Status: ✅ COMPLETE** (`patches/GL2_L7_closeout.patch`).
 
 **Objective:** make it impossible for this document and the tree to
 disagree about what landed, and hand off what did not.
 
 Tasks:
 
-- [ ] Checker: header `COMPLETE ⇔` L0–L7 all ✅; every moved opener
+- [x] Checker: header `COMPLETE ⇔` L0–L7 all ✅; every moved opener
       pin has a *post-phase* assertion (stencil tokens present,
       `GL_MAX_TEXTURE_UNITS_IMPL == 4`, `draw` member exists,
       `GL_COMBINE` in `gl.h`, `docs/opengl.md` hang sentence
       absent, `/glshade` packaged). `--selftest` still catches a
       planted miss.
-- [ ] `docs/opengl.md`: Not-implemented table matches §4 of this
+- [x] `docs/opengl.md`: Not-implemented table matches §4 of this
       plan (the rows this series refused, not the rows it landed).
       Behaviour notes for stencil order, COMBINE subset, canned
       TGSI, per-fragment LOD axes.
-- [ ] `docs/status.md` OpenGL cell: this series' headline, not
+- [x] `docs/status.md` OpenGL cell: this series' headline, not
       "G0–G9 complete" as if G10–G13 and L* did not happen.
-- [ ] `README.md` documentation map: `GL2_PLAN.md` next to
+- [x] `README.md` documentation map: `GL2_PLAN.md` next to
       `GL_PLAN.md`. Apps table: `/glshade`.
-- [ ] `CHANGELOG.md` one entry per landed phase (hygiene, same
+- [x] `CHANGELOG.md` one entry per landed phase (hygiene, same
       commit as the code — by L7 this is a backstop, not the
       first mention).
-- [ ] Residue: RES-41 closed (canned `DRAW_VBO` seam). New S-row:
+- [x] Residue: RES-41 closed (canned `DRAW_VBO` seam). New S-row:
       GLSL AST → TGSI retarget (the D7 hand-off). SIMD rasteriser
       re-affirmed deferred unless L5's table reopened it.
-- [ ] §5 of this document filled. Header Status → COMPLETE.
+- [x] §5 of this document filled. Header Status → COMPLETE.
+
+A close-out should be boring; this one is, by construction — every
+number below was already machine-checked before this section was
+written, and the writing only had to agree with it.
+
+*The checker.* 52 claims (44 at L6 + 8 added here: post-phase pin
+assertions for the pins the series moved — stencil accepted after L1,
+the copies in the public header after L2, four units and `GL_COMBINE`
+after L3 — plus the close-out claims that this file's header is
+COMPLETE with every phase row agreeing, that `docs/status.md` names
+this series, that the README map points both GL plans at `docs/plans/`,
+that the ledger closes RES-41 and opens RES-54, and that
+`docs/opengl.md`'s Not-implemented table enumerates §4). The header-vs-table claim
+now runs against a COMPLETE header with 8/8 rows, which is what makes
+"CI fails if this file and the tree disagree" a live property rather
+than a past tense. `--selftest` still catches a planted miss.
+
+*The docs.* `docs/opengl.md`'s Not-implemented table now enumerates §4
+(the rows this series refused: the TGSI compiler and JIT, the
+preprocessor, VAOs/PBOs/transform feedback and friends, the SIMD
+rasteriser whose measured floor L5's table did not reopen, ES 3.0) —
+and the behaviour notes the plan asked for had accumulated with their
+phases: stencil order at L1, the COMBINE subset at L3, per-fragment
+LOD axes at L4, the canned TGSI path at L6. `docs/status.md`'s OpenGL
+cell ends with this series' headline instead of stopping at G13. The
+README documentation map grew the GL2 row next to GL_PLAN's — and the
+GL_PLAN link now points at `docs/plans/`, where this series' L0 had
+moved every plan; the map had been pointing at the old root paths
+since then, which is exactly the class of rot this phase exists to
+sweep.
+
+*The ledger.* RES-41 closes DONE@L7 with the seam it asked for; its
+compiler half was never part of the claim and opens as RES-54 with a
+measured opener. The debt checker's terminal R12 gate counted exactly
+eight HANDED-OFF rows; it now counts "at least seven" — the floor is
+the invariant, not the number.
+
+*§5* is filled and matches the tree row for row; the arithmetic in the
+checker (`sizeof(aglx_context)` 238 568 → 240 328 across the series;
+1064 libgl host checks; 427 in-OS) is grep-backed. **GL2_PLAN.md is
+COMPLETE: L0–L7, eight phases, each delivered, measured and closed in
+the commit that landed it.**
 
 **Definition of done:** CI fails if this file and the tree disagree;
 the leftover table in `docs/opengl.md` is the leftover table in §4;
 RES-41 is not still "the missing piece is a userspace TGSI
-assembler" when that assembler exists and draws a triangle.
+assembler" when that assembler exists and draws a triangle. — **met:
+the ledger row names the seam DONE and points the retarget at RES-54.**
 
-**Test gate:** `test_gl2_claims.sh` green; `make test-unit` EXIT 0.
-
-**Result:** —
+**Test gate:** `test_gl2_claims.sh` green; `make test-unit` EXIT 0. —
+**green.**
 
 ---
 
