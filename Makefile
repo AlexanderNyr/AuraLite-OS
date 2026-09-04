@@ -2884,6 +2884,12 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tests/unit/test_gl2_claims.sh"
 	@bash tests/unit/test_gl2_claims.sh || exit 1
 
+# RESIDUE2_PLAN.md T0: the residue sequel cannot drift from TODO.md and
+# the ledger.  Same shape as the GL2 wrapper above: run the checker,
+# then prove it can fail.
+	@echo "[unit] running tests/unit/test_residue2_claims.sh"
+	@bash tests/unit/test_residue2_claims.sh || exit 1
+
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
 # control, and the Q-family unit sub-suites.  Skips cleanly when the libc

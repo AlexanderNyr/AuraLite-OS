@@ -6,12 +6,12 @@ known limitations and future work for the post-phase tree. See
 for the feature matrix.
 
 **RESIDUE R12 note — read this first.** The machine-checked INDEX of
-coarse debt is [`docs/residue_ledger.md`](docs/residue_ledger.md) (48
+coarse debt is [`docs/residue_ledger.md`](docs/residue_ledger.md) (54
 rows, class/status arithmetic enforced by
 `tools/check_residue_claims.py`, marker counts ratcheted against
 `tools/residue_baseline.txt`); when this file and the ledger disagree,
 the ledger wins.  This file is kept IN FULL — its fine-grained
-entries and investigation narratives are the detail no 48-row ledger
+entries and investigation narratives are the detail no 54-row ledger
 can carry — but full duplication drifts, and the R12 audit measured
 exactly how much: **thirteen entries below claimed something the tree
 had already closed.**  Each one now carries an inline
@@ -22,6 +22,15 @@ artifacts; seven more by the follow-up audit the user's review
 triggered: uaccess #PF fixup, MAP_SHARED, auxv, posix_spawn, tmpfs
 mkdir, mkdir(mode), tan/fmod/atan).  Unchecked boxes that remain are
 LIVE and each names its ledger row or its class.
+
+**RESIDUE2 note (2026-09-04).** The RESIDUE2 audit re-swept this file
+end to end: every unchecked box now carries the `(RESIDUE2 T#)` tag of
+the [`RESIDUE2_PLAN.md`](docs/plans/RESIDUE2_PLAN.md) phase that
+closes it, and twenty debts that existed only as prose — the MADT
+overrides, the VFS canonicaliser, the lazy-VMAs/MAP_SHARED gap, the
+TLS stack, the e1000 idle drain, the btrfs zero checksums and a dozen
+more — are now boxes.  `tools/check_residue2_claims.py` fails the
+build when a box and the plan disagree.
 
 ---
 
@@ -134,6 +143,9 @@ LIVE and each names its ledger row or its class.
   Interrupt Source Overrides from the MADT, device IRQ waking a
   hlt-ed AP (ledger RES-16), and MSI/MSI-X (ledger RES-36, opener
   measured: the virtio-pci cap walk parses only vendor caps today).
+- [ ] Interrupt Source Overrides from the ACPI MADT (the base address
+  already agrees at RES-37; the overrides are still QEMU-hardcoded).
+  (class: hardware discovery) (RESIDUE2 T2)
 
 #### P10 / POSIX follow-ups
 
@@ -162,8 +174,10 @@ LIVE and each names its ledger row or its class.
   as open until an in-tree test proves the implementations.  `execvp`
   honours `PATH` (default `/bin`) with no per-segment `EACCES` retry
   semantics.
-- **`epoll` is not implemented** (low priority): `poll()` is provided in libc on
-  top of `select()`; `epoll_create1`/`epoll_ctl`/`epoll_wait` are unimplemented.
+- [ ] Prove `execvpe`/`fexecve` with an in-tree test (prototypes exist;
+  open until proven). (class: POSIX) (RESIDUE2 T4)
+- [ ] `epoll` on top of `select()` (low priority). (class: POSIX)
+  (RESIDUE2 T4)
 
 ### Security / syscall robustness
 
@@ -186,6 +200,8 @@ LIVE and each names its ledger row or its class.
   remaining generic `-1`. Still outstanding: push native errno into the **disk
   FS drivers** (fat32/ext2/diskfs — hundreds of internal block-I/O `-1`s,
   mostly EIO) and into `process.c`.
+- [ ] Native errno into the disk FS drivers and `process.c`.
+  (class: libc/errno) (RESIDUE2 T1)
 
 #### P2 / open-flags follow-ups
 - ~~**Per-FD status flags, not shared OFDs.**~~ **Done (P3):** ref-counted
@@ -220,6 +236,12 @@ LIVE and each names its ledger row or its class.
   dedicated stub fix is the proper cure; the M5 signal path works around it
   with a runtime-aligned scratch. test_stopped is also failing for an unrelated
   Ctrl+Z sendkey timing reason (pre-existing, fails on M1 too).
+- [ ] IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (the M5
+  signal path works around it with a runtime-aligned scratch).
+  (class: kernel) (RESIDUE2 T1)
+- [ ] SMP-safety sweep: atomic OFD refcounts, per-vnode write lock for
+  O_APPEND, atomic `sig_pending`, per-CPU SYSCALL state. (class:
+  kernel/SMP) (RESIDUE2 T1)
 - ~~**Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT**~~ **Done (P5):** the
   console stdin path and /dev/tty0 line discipline generate these via ISIG and
   the tty->fg_pgid indirection. Full per-process-group routing arrives in P6.
@@ -257,6 +279,9 @@ LIVE and each names its ledger row or its class.
   of a tab or control char erases a fixed 1–2 columns, not the true width.
 - **VMIN/VTIME timers** are approximated (the syscall layer's yield loop honors
   VMIN counts; VTIME deciseconds timing is not yet wired to the PIT).
+- [ ] TTY/stdio gaps: `scanf`, a readline line editor, `/dev/ttyS0`,
+  true VMIN/VTIME timers, column tracking. (class: POSIX/tty)
+  (RESIDUE2 T4)
 - ~~**FP/SSE state is not saved in the signal frame.**~~ **Done (H7):**
   signal delivery saves a 512-byte FXSAVE frame and `sigreturn` restores it.
 - **Signal state is single-CPU safe only** (guarded by IF-disabled return
@@ -306,6 +331,8 @@ LIVE and each names its ledger row or its class.
   **Partially Done (R12 audit receipt):** `math.h` carries `tan`,
   `fmod`, `atan` and friends today; the accuracy and domain-error
   halves of this entry stay live.
+- [ ] libm accuracy and coverage: last-ULP review, `float` variants,
+  errno domain errors. (class: libc) (RESIDUE2 T4)
 - ~~**`errno` is a single global, not thread-local.**~~ **Done (`FIXES_PLAN.md`
   R3 → `patches/FIX_R3_tls_errno.patch`,`/tests/errnotest`,
   `tests/integration/cases/test_tls_errno.sh`).** `errno` now lives in
@@ -348,13 +375,20 @@ LIVE and each names its ledger row or its class.
   waitpid + reparent-to-init confirmed present.
 - **`fork`, `execve`, `wait4` are simplified.** They are sufficient for the
   bundled demos/tests, but not POSIX-complete.
+- [ ] POSIX-completeness for `fork`/`execve`/`wait4` beyond what the
+  demos need. (class: POSIX/proc) (RESIDUE2 T1)
 - **User VM is still eager/simple.** `brk`, `mmap`, and `munmap` exist, but
   lazy VMAs and true file-backed `MAP_SHARED` remain future work.
+- [ ] Lazy VMAs and true file-backed `MAP_SHARED` write-back.
+  (class: POSIX/VM) (RESIDUE2 T4)
 - **IPC primitives are partial.** Pipes, signals, futexes, wait queues, baseline
   in-memory named FIFOs (`mkfifo`) and baseline in-memory symbolic links
   (`symlink`/`readlink`/`lstat`) exist; shared memory, hard links (`link`),
   persistent per-filesystem FIFO/symlink storage and full symlink path-component
   following remain future work.
+- [ ] IPC completion: shared memory, hard links, persistent per-FS
+  FIFO/symlink storage, full symlink path-component following.
+  (class: POSIX) (RESIDUE2 T4)
 
 ### Security / cryptography
 
@@ -376,6 +410,12 @@ LIVE and each names its ledger row or its class.
   HTTPS client (N6).  Until then there is no HTTPS.  `kernel/fs/btrfs.c`
   still writes its SHA-256 checksum field as zeros (kernel code; it does
   not use libatls, by design D2).
+- [ ] TLS 1.3 handshake + record layer, certificate validation
+  (RSA-PKCS#1v1.5), HTTPS client (INTERNET_PLAN N3–N6). (class:
+  security) (RESIDUE2 T5)
+- [ ] Btrfs on-disk SHA-256 checksums (written as zeros today; D2
+  keeps the kernel off libatls — needs an in-kernel SHA-256).
+  (class: storage) (RESIDUE2 T3)
 
 ### Storage / filesystems
 
@@ -432,6 +472,10 @@ LIVE and each names its ledger row or its class.
   containing a slash. Traversal therefore fails today for an incidental
   reason. This is worth fixing on its own terms — until it is, path handling
   behaves differently from every POSIX system.
+- [ ] VFS path canonicalisation (dot-dot through mounts; traversal
+  fails today for an incidental reason). (class: VFS) (RESIDUE2 T4)
+- [ ] Installation allowlist resolves symlinks through the VFS
+  (`exec_path_canonical` is lexical). (class: security) (RESIDUE2 T4)
 - **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and FAT date/time stat decoding, and ext2 supports Linux-mkfs images plus in-kernel mkfs with inode timestamps. Crash consistency, journaling, full permission semantics and extensive fsck-style recovery are out of scope.
 - ~~**ext4 / F2FS / Btrfs / exFAT / NTFS were scaffolding.**~~ **Done
   (`FSFULL_PLAN.md` F3/F4/F4b/F5/F5b → `patches/FS_F3_ext4.patch`,
@@ -464,6 +508,7 @@ LIVE and each names its ledger row or its class.
   shell command (non-standard `SYS_KBD_LAYOUT` 601) switches/enumerates at
   runtime.  The remaining gap from the old text is unchanged: still no
   dead-key support (the German ´ key emits nothing unshifted).
+- [ ] Keyboard dead keys. (class: input) (RESIDUE2 T4)
 
 ### USB / devices
 
@@ -475,6 +520,8 @@ LIVE and each names its ledger row or its class.
   root files are auto-detected read-only under `/usb/fat`; writable FAT32, ext2
   hotplug automount, isochronous devices and broader hardware recovery paths are
   still future work.
+- [ ] Writable FAT32 on USB, ext2 hotplug automount, isochronous
+  devices. (class: USB) (RESIDUE2 T6)
 - **USB HID generic support is partial.** Boot keyboard/mouse works through UHCI,
   OHCI, high-speed EHCI and xHCI; generic keyboard and mouse/tablet report
   descriptors are parsed for common QEMU-tested layouts. Full HID collections/usages
@@ -505,6 +552,10 @@ LIVE and each names its ledger row or its class.
   integration runs harder to read. The fix is to consume and discard frames
   that no socket claims (or to mask RX interrupts when no consumer exists)
   rather than to silence the message.
+- [ ] e1000 RX ring drains while idle (unsolicited frames drop and
+  flood the serial log today). (class: networking) (RESIDUE2 T5)
+- [ ] Production TCP: sliding windows, congestion control, real
+  packet queues. (class: networking) (RESIDUE2 T5)
 
 ### Graphics / GUI
 
@@ -554,9 +605,12 @@ LIVE and each names its ledger row or its class.
   the user-space half: `libgl/src/glvirgl.c` implements probe, clear and
   present over `SYS_GPU_CALL`, and 3D resources now get guest-side backing so
   transfers actually reach the device (K1 shipped without it — see
-  `CHANGELOG.md`). What remains is `DRAW_VBO`, which needs the GLSL compiler
-  retargeted to TGSI: G11 produces an AST and interprets it, and a TGSI back
-  end is a phase in its own right.
+  `CHANGELOG.md`).  GL2 L6 then landed `DRAW_VBO` as a **canned** path:
+  a hand-written TGSI pipeline taking whole fixed-function
+  `glDrawArrays(GL_TRIANGLES)` batches (clip positions + colours), with
+  the whole-draw software fallback.  What remains is general hardware
+  drawing — the GLSL AST → TGSI retarget, ledger RES-54, a successor
+  compiler plan rather than a TODO-sized fix.
 - **GUI is educational.** The kernel compositor, GUI syscalls and `libauragui`
   are functional in tests, and windows are cleaned up on client exit, but it is
   not yet a protected multi-client production desktop.
@@ -574,9 +628,9 @@ LIVE and each names its ledger row or its class.
 - [x] User `mmap` / `munmap` / `brk` baseline syscalls (eager private mappings; true lazy/shared VMAs remain future work).
 - [x] Slab allocator for common fixed-size kernel objects.
 - [x] Guard pages around kernel/user stacks, with explicit overflow diagnosis in the `#PF` handler (`kernel/proc/guard.c`; kernel-stack hit is fatal, user-stack hit → SIGSEGV). Heap-region guard pages remain future work.
-- [ ] Large-page support for selected kernel mappings.
+- [ ] Large-page support for selected kernel mappings. (RESIDUE2 T1)
 - [x] `paging_free_address_space()` walker (user half) with PMM accounting.
-- [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land.
+- [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land. (RESIDUE2 T1)
 
 ### Scheduling and processes
 
@@ -584,7 +638,7 @@ LIVE and each names its ledger row or its class.
 - [x] Deferred TCB/kernel-stack reaper and missed-wakeup-safe wait notifications.
 - [x] Full address-space/page-table reaping via `paging_free_address_space()` in `thread_reap_zombies()`.
 - [x] BLOCKED state, wait queues and sleepable kernel primitives baseline.
-- [ ] Real parent/child process table and precise `waitpid` semantics.
+- [ ] Real parent/child process table and precise `waitpid` semantics. (RESIDUE2 T1)
 - [x] Basic per-process FD tables.
 - [x] `dup`, `dup2`, `pipe`, `fcntl(F_GETFD/F_SETFD/FD_CLOEXEC)` syscalls + `execve` honouring `FD_CLOEXEC`.
 - [x] `waitpid(pid, *exit_code)` with real exit-code propagation and zombie collection on wait.
@@ -593,11 +647,11 @@ LIVE and each names its ledger row or its class.
 
 ### Filesystems and storage
 
-- [ ] Broaden AHCI compatibility beyond the QEMU test path.
-- [ ] Add fsck/recovery tooling or defensive consistency checks for FAT32/ext2.
+- [ ] Broaden AHCI compatibility beyond the QEMU test path. (RESIDUE2 T3)
+- [ ] Add fsck/recovery tooling or defensive consistency checks for FAT32/ext2. (RESIDUE2 T3)
 - [x] Add baseline file timestamps for VFS stat plus tmpfs, diskfs, ext2 and FAT32. Remaining permission-mode persistence/audit across every experimental FS stays future work.
 - [x] Add symbolic links (**Done:** `kernel/fs/symlink.c`; `test_fifo_symlinks` runs in the posix CI shard).  Richer path handling (canonicalisation) stays live — see the VFS entry above.
-- [ ] Add block cache and writeback policy instead of direct synchronous writes (the LAYER exists on x86_64 — `kernel/fs/buffer_cache.c`, status 🧪; port adoption is ledger RES-07).
+- [ ] Add block cache and writeback policy instead of direct synchronous writes (the LAYER exists on x86_64 — `kernel/fs/buffer_cache.c`, status 🧪; port adoption is ledger RES-07). (RESIDUE2 T3)
 - [x] Add virtio-blk as a modern virtual storage target (**Done:** `drivers/virtio_blk/` on x86_64, virtio-mmio vblk on both DTB tenants, virtio-pci as the second transport at RESIDUE R7).  virtio-scsi / NVMe stay future work (ledger RES-46's neighbourhood).
 
 ### Networking
@@ -606,7 +660,7 @@ LIVE and each names its ledger row or its class.
 - [x] Rewire TCP receive waits to timed IRQ-backed NIC waits.
 - [x] Rewire ARP/DHCP/ICMP and kernel UDP/DNS boot paths to bounded IRQ-backed NIC waits.
 - [x] Add AF_INET/SOCK_DGRAM user sockets with `sendto(44)` / `recvfrom(45)`.
-- [ ] Make remaining socket edge cases fully blocking.
+- [ ] Make remaining socket edge cases fully blocking. (RESIDUE2 T5)
 - [x] Process-owned socket-style client handles (`socket/connect/send/recv/close`).
 - [x] Per-connection TCP state (`tcp_handle_t`, up to `TCP_MAX_CONNS=8`).  Legacy `SYS_NET_*` syscalls are now a thin shim over the per-connection layer and are formally **deprecated**.
 - [x] Full BSD socket ABI baseline including `sockaddr`, `bind`, `listen` and `accept` for AF_INET/SOCK_STREAM.
@@ -615,18 +669,18 @@ LIVE and each names its ledger row or its class.
 - [x] netdev NIC abstraction with boot-time backend selection (e1000 default, virtio-net fallback).
 - [x] virtio-net modern data-path driver (RX/TX virtqueues, 12-byte hdr, MAC from device cfg).
 - [x] virtio-net IRQ-driven RX (**Done, RESIDUE R9 / ledger RES-28:** timed waits sleep in `wq_wait_deadline`, the `RX via IRQ wake` receipt is CI-pinned).
-- [ ] vmxnet3 / e1000e data-path drivers (ledger RES-46; e1000.c is the reference).
+- [ ] vmxnet3 / e1000e data-path drivers (ledger RES-46; e1000.c is the reference). (RESIDUE2 T6)
 
 ### USB and wireless
 
 - [x] Add stable OHCI/EHCI/xHCI control/bulk backend API hooks into `usb_core`.
-- [ ] Complete OHCI ED/TD transfer scheduling. (ledger RES-38; opener measured: uhci.c 555 lines is the complete reference, ohci 709/ehci 865/xhci 1995 with 3 named stubs)
-- [ ] Complete EHCI async/control/bulk qTD transfers and MSC backend. (ledger RES-38)
-- [ ] Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts. (ledger RES-38)
+- [ ] Complete OHCI ED/TD transfer scheduling. (ledger RES-38; opener measured: uhci.c 555 lines is the complete reference, ohci 709/ehci 865/xhci 1995 with 3 named stubs) (RESIDUE2 T6)
+- [ ] Complete EHCI async/control/bulk qTD transfers and MSC backend. (ledger RES-38) (RESIDUE2 T6)
+- [ ] Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts. (ledger RES-38) (RESIDUE2 T6)
 - [x] USB HID keyboard/mouse class drivers for UHCI Boot Protocol devices.
-- [ ] Generic HID report parsing and OHCI/EHCI/xHCI HID transport. (ledger RES-38)
-- [ ] Real Bluetooth USB transport and at least one tested HCI controller path. (ledger RES-39; opener measured: bt.c 215 lines already rides uhci_bulk/control — the missing piece is a non-UHCI controller path, not protocol)
-- [ ] Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer. (ledger RES-39; opener measured: wifi.c 370 lines carries the full open-auth flow over a "registered wireless NIC", of which the tree has zero)
+- [ ] Generic HID report parsing and OHCI/EHCI/xHCI HID transport. (ledger RES-38) (RESIDUE2 T6)
+- [ ] Real Bluetooth USB transport and at least one tested HCI controller path. (ledger RES-39; opener measured: bt.c 215 lines already rides uhci_bulk/control — the missing piece is a non-UHCI controller path, not protocol) (RESIDUE2 T6)
+- [ ] Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer. (ledger RES-39; opener measured: wifi.c 370 lines carries the full open-auth flow over a "registered wireless NIC", of which the tree has zero) (RESIDUE2 T6)
 
 ### GUI and userspace
 
@@ -634,11 +688,11 @@ LIVE and each names its ledger row or its class.
 - [x] Clean up GUI windows when the owning process exits.
 - [x] Basic GUI process ownership enforcement for user-facing window syscalls.
 - [x] Audit every GUI sub-op for out-of-range/negative wid and bad userspace pointers (with integration test).
-- [ ] Stronger compositor/client isolation and permission model for GUI internals. (ledger RES-47; opener measured: gui_syscalls.c ALREADY gates 36 syscall cases behind require_owner/require_icon_owner — the series starts at a clipboard ACL, not at zero)
-- [ ] More complete text input, clipboard and focus behavior. (ledger RES-47)
-- [ ] Persisted user settings/theme. (ledger RES-47)
+- [ ] Stronger compositor/client isolation and permission model for GUI internals. (ledger RES-47; opener measured: gui_syscalls.c ALREADY gates 36 syscall cases behind require_owner/require_icon_owner — the series starts at a clipboard ACL, not at zero) (RESIDUE2 T7)
+- [ ] More complete text input, clipboard and focus behavior. (ledger RES-47) (RESIDUE2 T7)
+- [ ] Persisted user settings/theme. (ledger RES-47) (RESIDUE2 T7)
 - [x] USB Manager GUI (`/gusb`) wired to `/usb` hotplug/storage status.
-- [ ] More GUI apps and richer file editor/terminal behavior.
+- [ ] More GUI apps and richer file editor/terminal behavior. (RESIDUE2 T7)
 - [x] Dynamic user-space allocation (**Done:** `SYS_MMAP` (9) is a live x86_64 syscall; `SYS_BRK` (12) landed on ALL THREE ports at RESIDUE R6 with malloc/stdio on top — `fsio` round-trip ×3).
 
 ### Infrastructure and docs
@@ -651,8 +705,9 @@ LIVE and each names its ledger row or its class.
       width sweep, test registry, residue harvest ratchet — fails the
       build when a doc and the tree disagree.  THIS file's thirteen
       stale rows are the argument.)
-- [ ] Add GDB helper scripts / pretty-printers for kernel structures.
-- [ ] Reduce integration-test timing flakiness around process spawn and serial
+- [ ] CI screenshots artifact. (class: CI) (RESIDUE2 T9)
+- [ ] Add GDB helper scripts / pretty-printers for kernel structures. (RESIDUE2 T9)
+- [ ] Reduce integration-test timing flakiness around process spawn and serial (RESIDUE2 T9)
       input pacing.
 - [x] Add fsck-style FAT32/ext2 churn + reboot regression test case (`test_fs_stress.sh`).
 - [x] Add integration cases for GUI bad-pointer hardening, process-exit GUI cleanup, FD lifecycle.

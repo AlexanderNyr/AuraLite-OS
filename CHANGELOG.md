@@ -2,6 +2,37 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T0 — plan and coverage rig] 2026-09-04
+
+The residue sequel opens: the user asked for everything in the project
+that can be written into TODO, and a plan that closes ALL of it.
+
+- TODO.md swept downwards the way R12 swept upwards: **20 debts that
+  existed only as prose** (epoll, VFS canonicalisation, `execvpe`
+  proof, lazy VMAs + file-backed `MAP_SHARED`, IPC completion, the TTY
+  bundle, libm accuracy, TLS 1.3, OHCI/EHCI/xHCI, BT/Wi-Fi, modern
+  NICs, writable USB, compositor isolation, GDB scripts, test
+  flakiness, CI screenshots, MADT overrides, large pages, zombie
+  reaping, errno in FS drivers, stub alignment, SMP-safety) are now
+  checkboxes.  **40 open boxes, every one tagged `(RESIDUE2 T#)`.**
+- The stale GPU paragraph now tells the truth: the canned DRAW_VBO
+  seam landed in GL2 L6; what remains of RES-41 is RES-54's compiler
+  plan.  The header's ledger count was 48 — it is 54.
+- `docs/plans/RESIDUE2_PLAN.md`: phases T0–T9 (rig, kernel core, IRQ
+  discovery, storage, POSIX/VFS, net/TLS, devices, GUI, ports,
+  tooling/close-out); every OPEN ledger row (RES-02/06/07/16/18/54)
+  assigned or explicitly deferred; the PENDING-USER rows
+  (RES-30/32/33/48) named as user-gated and outside every phase.
+- `tools/check_residue2_claims.py` + `tests/unit/test_residue2_claims.sh`
+  wired into `make test-unit`: **21 claims** pinning the coverage
+  contract — every box tagged, every tag a real phase, every phase
+  tagged or naming its ledger rows, every OPEN row named in the plan,
+  the Status header agreeing with the phase table.  `--selftest`
+  catches a doctored tree; a stripped tag turns the build red.
+- Ratchet baselines moved in the same commit (TODO.md 20 → 40;
+  RESIDUE2_PLAN.md 18); the ledger's closing arithmetic no longer
+  counts RES-26 — DONE@Y4 — among the OPEN rows.
+
 ## [GL2 L7 — close-out] 2026-09-03
 
 `GL2_PLAN.md` phase L7 — and with it the **whole series, L0–L7,

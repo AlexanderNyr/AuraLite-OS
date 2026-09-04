@@ -789,6 +789,10 @@ Start here:
   continuation series: stencil, copies, COMBINE/4 units, per-fragment
   LOD, early-Z + `/glshade`, the canned VirGL triangle (**complete**,
   L0 – L7). See [`docs/opengl.md`](docs/opengl.md).
+- [`docs/plans/RESIDUE2_PLAN.md`](docs/plans/RESIDUE2_PLAN.md) — the
+  residue sequel: every open TODO box and every open ledger row
+  scheduled into phases T0–T9, held to TODO.md by
+  `tools/check_residue2_claims.py` (planned).
 - [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
 - [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
 - [`WIN32_PLAN.md`](WIN32_PLAN.md) — a Win32-compatible personality: PE32+
