@@ -236,6 +236,7 @@ void aglxDestroyContext(aglx_context_t *ctx) {
     gl_array_free_all(ctx);
     gl_fbo_free_all(ctx);
     gl_shader_free_all(ctx);
+    free(ctx->draw_bounce);      /* GL2 L6: the hardware-batch gather buffer */
     ctx_free_buffers(ctx);
     free(ctx);
 }

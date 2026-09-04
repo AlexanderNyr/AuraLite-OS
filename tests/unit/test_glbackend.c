@@ -45,7 +45,7 @@ static int tn = 0, passed = 0, failed = 0;
 /* ---------------------------------------------------------- fake backend -- */
 
 static struct {
-    int init_calls, clear_calls, present_calls, destroy_calls;
+    int init_calls, clear_calls, present_calls, draw_calls, destroy_calls;
     int accept_init;      /* 0 => decline at init() */
     int handle_clear;     /* 0 => report "not handled" */
     int handle_present;
@@ -85,10 +85,19 @@ static void fake_destroy(struct aglx_context *ctx) {
     fake.destroy_calls++;
 }
 
+static int fake_draw(struct aglx_context *ctx,
+                     const gl_draw_batch_t *batch) {
+    (void)ctx; (void)batch;
+    fake.draw_calls++;                       /* counts, and declines: the
+                                              * whole-draw fallback is what
+                                              * the seam promises */
+    return -1;
+}
+
 static const gl_backend_t fake_backend = {
     "Fake Test Backend",
     GL_BACKEND_HARDWARE,
-    fake_init, fake_clear, fake_present, fake_destroy,
+    fake_init, fake_clear, fake_present, fake_draw, fake_destroy,
 };
 
 /* A backend with every optional entry point NULL: the minimum legal one. */
@@ -96,7 +105,9 @@ static int minimal_init(void) { return 0; }
 static const gl_backend_t minimal_backend = {
     "Minimal Backend", GL_BACKEND_HARDWARE,
     minimal_init, (int (*)(struct aglx_context *, GLbitfield))0,
-    (int (*)(struct aglx_context *))0, (void (*)(struct aglx_context *))0,
+    (int (*)(struct aglx_context *))0,
+    (int (*)(struct aglx_context *, const gl_draw_batch_t *))0,
+    (void (*)(struct aglx_context *))0,
 };
 
 static aglx_context_t *setup(void) {
@@ -154,7 +165,9 @@ static int t_register_rejects_garbage(void) {
     static const gl_backend_t nameless = {
         (const char *)0, 0,
         (int (*)(void))0, (int (*)(struct aglx_context *, GLbitfield))0,
-        (int (*)(struct aglx_context *))0, (void (*)(struct aglx_context *))0,
+        (int (*)(struct aglx_context *))0,
+        (int (*)(struct aglx_context *, const gl_draw_batch_t *))0,
+        (void (*)(struct aglx_context *))0,
     };
     gl_backend_register(&nameless);
     aglx_context_t *c = setup(); if (!c) return 0;

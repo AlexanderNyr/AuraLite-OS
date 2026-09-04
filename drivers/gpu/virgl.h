@@ -83,6 +83,16 @@
 #define VIRGL_VELEM_HANDLE     106u
 #define VIRGL_VERTEX_RES       107u
 
+/* GL2 L6: the canned-draw pipeline's object handles (userspace libgl). */
+#define VIRGL_SURFACE_HANDLE   108u
+#define VIRGL_CANNED_VS        109u
+#define VIRGL_CANNED_FS        110u
+#define VIRGL_CANNED_BLEND     111u
+#define VIRGL_CANNED_RASTER    112u
+#define VIRGL_CANNED_DSA       113u
+#define VIRGL_CANNED_VELEM     114u
+#define VIRGL_CANNED_VB_RES    115u
+
 #define VIRGL_CMD0(cmd, obj, len) ((((cmd) & 0xffu) << 24) | (((obj) & 0xffu) << 16) | ((len) & 0xffffu))
 
 #define VIRGL_CMD_MAX_RESOURCES 16u

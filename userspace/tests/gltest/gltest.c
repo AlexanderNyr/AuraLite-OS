@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include "auragui.h"
 #include "GL/gl.h"
+#include "GL/glbackend.h"
 #include "GL/auraglx.h"
 #include "GL/glu.h"
 /* The GLSL front end is internal to libgl, so this reaches into libgl/src.
@@ -2702,6 +2703,124 @@ static void test_gl_virgl(int wid) {
     aglxDestroyContext(ctx);
 }
 
+/* ---- GL2 phase L6: the canned DRAW_VBO path ----
+ *
+ * These checks are deliberately PATH-INDEPENDENT: they assert what the GL
+ * state machine decides, which is the same whether the active backend is the
+ * software rasterizer or VirGL.  A hardware path cannot be pixel-tested from
+ * the guest (a GPU-drawn frame is by definition NOT in the CPU colour
+ * buffer), so the guest asserts eligibility -- which draws may leave for the
+ * hardware at all -- and the integration case with a real device asserts on
+ * the log plus the present behaviour.
+ */
+/* A minimal draw-capable backend for the eligibility screen: the screen's
+ * positive cases ask "would the BACKEND take this draw", and without a GPU
+ * the active backend is software, whose hook is NULL by design.  Forcing a
+ * draw-capable backend makes the matrix deterministic on every path; its
+ * hook declines, so no draw can ever actually take it.
+ *
+ * init() accepts EXACTLY ONCE — the forced activation — and declines every
+ * time after.  That matters: the G13 block below forces the VirGL name and
+ * relies on its decline falling through to software; a permanently-accepting
+ * stand-in registered ahead of software would hijack that fall-through and
+ * win GL_RENDERER. */
+static int l6_init_once(void) {
+    static int accepted;
+    return accepted++ ? -1 : 0;
+}
+static int l6_decline(struct aglx_context *ctx, const gl_draw_batch_t *b) {
+    (void)ctx; (void)b;
+    return -1;
+}
+static const gl_backend_t l6_test_backend = {
+    "gltest canned-screen backend", GL_BACKEND_HARDWARE,
+    l6_init_once, 0, 0, l6_decline, 0,
+};
+
+static void test_gl_l6_canned(int wid) {
+    printf("[gl] --- GL2 L6: canned DRAW_VBO eligibility ---\n");
+
+    /* Remember the honest selection BEFORE forcing: force(NULL) would let
+     * the re-select pick the first non-software backend whose init passes —
+     * this very test backend — and the G13 block after us would then check
+     * GL_RENDERER against a stand-in. */
+    const char *honest_backend = gl_backend_info()->name;
+    gl_backend_register(&l6_test_backend);
+    check(gl_backend_force("gltest canned-screen backend") == 0,
+          "l6_screen_backend_forced");
+
+    aglx_context_t *ctx = aglxCreateContext(wid, 64, 64, 0);
+    check(ctx != NULL, "l6_ctx_create");
+    if (!ctx) return;
+    aglxMakeCurrent(ctx);
+
+    static const GLfloat tri[9]  = { -0.5f, -0.5f, 0.0f,
+                                      0.5f, -0.5f, 0.0f,
+                                      0.0f,  0.5f, 0.0f };
+    static const GLfloat cols[9] = { 1, 0, 0,  0, 1, 0,  0, 0, 1 };
+
+    /* Fresh context, no arrays: nothing to draw at all. */
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
+          "l6_ineligible_without_arrays");
+
+    glVertexPointer(3, GL_FLOAT, 0, tri);
+    glColorPointer(3, GL_FLOAT, 0, cols);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 1,
+          "l6_eligible_whole_triangles");
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 6) == 1,
+          "l6_eligible_two_triangles");
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLE_STRIP, 3) == 0,
+          "l6_ineligible_other_mode");
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 4) == 0,
+          "l6_ineligible_partial_triangle");
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 0) == 0,
+          "l6_ineligible_empty");
+
+    /* Every piece of state the canned pipeline cannot reproduce must take
+     * the draw back to software: the GPU drawing different pixels than the
+     * CPU would have is the one outcome this seam must never produce. */
+    glEnable(GL_DEPTH_TEST);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
+          "l6_ineligible_depth_test");
+    glDisable(GL_DEPTH_TEST);
+
+    glEnable(GL_BLEND);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
+          "l6_ineligible_blend");
+    glDisable(GL_BLEND);
+
+    glEnable(GL_SCISSOR_TEST);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
+          "l6_ineligible_scissor");
+    glDisable(GL_SCISSOR_TEST);
+
+    glEnable(GL_CULL_FACE);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
+          "l6_ineligible_cull");
+    glDisable(GL_CULL_FACE);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
+          "l6_ineligible_polygon_line");
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 1,
+          "l6_eligible_after_state_restored");
+
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glDisableClientState(GL_COLOR_ARRAY);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
+          "l6_ineligible_arrays_disabled");
+
+    check(glGetError() == GL_NO_ERROR, "l6_no_pending_error");
+
+    gl_backend_force(honest_backend);    /* back to the honest selection */
+    aglxDestroyContext(ctx);
+}
+
 /* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
  *
  * The claim under test is that rendering into a texture and then sampling it
@@ -3875,6 +3994,7 @@ int main(void) {
     test_gl_arrays(wid);
     test_gl_glu(wid);
     test_gl_backend(wid);
+    test_gl_l6_canned(wid);
     test_gl_glsl();
     test_gl_glsl_exec();
     test_gl_shader_pipeline(wid);

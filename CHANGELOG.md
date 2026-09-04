@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GL2 L6 — VirGL `DRAW_VBO`, canned TGSI] 2026-09-03
+
+`GL2_PLAN.md` phase L6: the userspace half of RES-41 — one triangle on
+the GPU through the syscall G13 and K1 proved, without pretending G11
+emits TGSI (D7).
+
+- `gl_backend_t` grows the `draw` member the header comment always
+  claimed (`draw(ctx, batch)`; NULL = software, still every backend
+  but VirGL). The batch is whole-vertex clip xyzw + rgba, gathered by
+  `glDrawArrays` through the same `gl_transform_vertex` the immediate
+  path uses — the GPU divides, clips and projects the CPU pipeline's
+  own numbers. Dispatch is DrawArrays-only: the immediate-mode flush
+  is per-primitive, and per-triangle GPU dispatch is exactly the
+  sub-draw tearing the design forbids.
+- `glvirgl.c` carries the canned TGSI (pass-through VS 21 dwords,
+  colour FS 13 — hand-written against Mesa's token format, walked by a
+  tgsi-shaped parser in the host test), a one-time setup stream, and
+  per-draw `RESOURCE_INLINE_WRITE` + `DRAW_VBO` chunks, last one
+  fenced. Not a TGSI compiler; the AST stays interpreted.
+- `gl_backend_draw_eligible()` screens every draw against what the
+  canned pipeline cannot reproduce (depth, stencil, blend, alpha,
+  scissor, cull, polygon mode, fog, textures, other modes, partial
+  triangles, bound programs). Decline = the WHOLE draw in software:
+  half-CPU/half-GPU frames are a tearing bug.
+- Present fork: a frame the GPU drew entirely scanouts the GPU render
+  target with NO `TRANSFER` (transferring would overwrite the triangle
+  with the CPU's empty buffer); mixed frames present the CPU buffer.
+  Context +24 B (240 304 → 240 328: bounce pointer, capacity, two
+  frame flags).
+- Host `test_glvirgl` 44 → 73 (TGSI walk, setup stream vs the kernel
+  validator, dispatch/fallback through a forced backend — which caught
+  a real draft bug: every mode was offered to the hook as "triangles").
+  `/gltest` +16 eligibility checks → **427**, run under a stand-in
+  backend whose init accepts exactly once (so the G13 decline
+  fall-through stays honest); `test_virgl_gpu.sh` greps them. No GPU
+  in the room, as designed.
+- Checker claims 40–44 added (L6 gate); opener pins 6 and 7 moved
+  (Fact 6 records the amendment); RES-41 closed for the seam — the
+  AST→TGSI retarget opens as its own row at L7.
+
 ## [GL2 L5 — early-Z + `/glshade`] 2026-09-03
 
 `GL2_PLAN.md` phase L5: the shader path gets the one optimisation that

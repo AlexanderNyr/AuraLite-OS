@@ -10,6 +10,7 @@
 #ifndef AURALITE_GL_CONTEXT_H
 #define AURALITE_GL_CONTEXT_H
 
+#include <stddef.h>   /* size_t: the GL2 L6 draw-bounce capacity */
 #include <stdint.h>
 #include "GL/gl.h"
 #include "GL/glmath.h"
@@ -422,6 +423,24 @@ struct aglx_context {
     gl_pixel_t *win_color;
     float      *win_depth;
     uint8_t    *win_stencil;
+
+    /* ---- GL2 phase L6: the canned hardware-draw path ----
+     *
+     * `draw_bounce` gathers an eligible glDrawArrays batch into the packed
+     * gl_draw_batch_t layout (clip xyzw + rgba per vertex).  It is allocated
+     * on the first eligible draw and freed with the context; a context that
+     * never draws on the hardware never pays for it.
+     *
+     * The two frame flags decide which side presents (see glvirgl.c): a frame
+     * the GPU drew entirely scanouts the GPU render target WITHOUT the CPU
+     * transfer — transferring would overwrite the triangle with the CPU's
+     * empty buffer, which is exactly the "DRAW_VBO is a no-op" bug.  Any
+     * software rasterization in the same frame marks it mixed and falls back
+     * to the CPU present.  Both reset at present time. */
+    GLfloat    *draw_bounce;
+    size_t      draw_bounce_cap;
+    int         frame_gpu_draw;   /* a backend draw handled a batch this frame */
+    int         frame_sw_raster;  /* the software rasterizer ran this frame    */
 
     /* ---- Window binding ---- */
     int         wid;            /* AuraGUI window id */

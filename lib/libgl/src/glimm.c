@@ -106,15 +106,18 @@ static int        cur_normal_init = 0;
 static void emit_triangle(struct aglx_context *ctx,
                           const gl_vertex_t *a, const gl_vertex_t *b,
                           const gl_vertex_t *c) {
+    ctx->frame_sw_raster = 1;   /* GL2 L6: this frame has CPU pixels */
     gl_clip_and_emit_triangle(ctx, a, b, c, gl_raster_triangle);
 }
 
 static void emit_line(struct aglx_context *ctx,
                       const gl_vertex_t *a, const gl_vertex_t *b) {
+    ctx->frame_sw_raster = 1;
     gl_clip_and_emit_line(ctx, a, b, gl_raster_line);
 }
 
 static void emit_point(struct aglx_context *ctx, const gl_vertex_t *v) {
+    ctx->frame_sw_raster = 1;
     gl_clip_and_emit_point(ctx, v, gl_raster_point);
 }
 
@@ -408,6 +411,12 @@ void glVertex4f(GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
 }
 
 void glVertex3f(GLfloat x, GLfloat y, GLfloat z) { glVertex4f(x, y, z, 1.0f); }
+
+/* GL2 L6: the current colour for the hardware-batch gatherer (glarray.c),
+ * which must latch the same value glArrayElement would have (§2.7). */
+void gl_imm_current_color(gl_color_t *out) {
+    if (out) *out = cur_color;
+}
 void glVertex2f(GLfloat x, GLfloat y)            { glVertex4f(x, y, 0.0f, 1.0f); }
 
 void glVertex3fv(const GLfloat *v) {

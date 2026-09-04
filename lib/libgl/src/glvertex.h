@@ -118,6 +118,9 @@ void gl_transform_vertex(struct aglx_context *ctx,
                          GLfloat x, GLfloat y, GLfloat z, GLfloat w,
                          gl_vertex_t *out);
 
+/* GL2 L6: the current colour (§2.7), for the hardware-batch gatherer. */
+void gl_imm_current_color(gl_color_t *out);
+
 /* ---- Backend dispatch (libgl/src/glbackend.c), phase G9 ----
  *
  * Each returns 0 when the backend handled the operation and non-zero when the

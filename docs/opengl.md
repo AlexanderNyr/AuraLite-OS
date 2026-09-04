@@ -141,7 +141,7 @@ frames, so output is tear-free without extra work.
 | Accumulation buffer | Not present |
 | Multiple colour attachments | `GL_MAX_COLOR_ATTACHMENTS` is 1: the fixed-function pipeline writes one colour, so a second would receive nothing |
 | Evaluators, feedback, selection | Not present |
-| Hardware-accelerated **drawing** | The VirGL backend implements probe, clear and present (G13). `DRAW_VBO` needs the GLSL compiler retargeted to TGSI, which is a compiler back end and a phase in its own right |
+| Hardware-accelerated **drawing** beyond the canned triangle | GL2 L6 ships a canned TGSI `DRAW_VBO` path (whole fixed-function `glDrawArrays(GL_TRIANGLES)` batches of clip positions + colours, nothing else). General hardware drawing needs the GLSL compiler retargeted to TGSI — a compiler back end and a successor plan |
 
 ---
 
@@ -703,10 +703,27 @@ by uploading them and driving `SET_SCANOUT` + `RESOURCE_FLUSH`.
 **Does:** the present. The finished frame goes to the scanout directly instead
 of travelling through the compositor's blit path.
 
-**Does not:** the drawing. `DRAW_VBO` needs shaders expressed as TGSI, and the
-GLSL compiler from G11 produces an AST that it interprets. Retargeting it to
-TGSI is a compiler back end — a phase in its own right, not a corner of this
-one. Shipping a half-working draw path would be worse than not shipping it.
+**Did not (G13):** the drawing. `DRAW_VBO` needs shaders expressed as TGSI,
+and the GLSL compiler from G11 produces an AST that it interprets. Retargeting
+it to TGSI is a compiler back end — a successor plan, not a corner of this one
+(GL2 D7). Shipping a half-working draw path would be worse than not shipping
+it, so G13 shipped none.
+
+**Does (GL2 L6), within a canned subset:** whole fixed-function
+`glDrawArrays(GL_TRIANGLES)` batches, position + colour only, pass through one
+hand-written TGSI pipeline (pass-through clip position and colour — the batch
+carries coordinates the fixed-function matrices already produced, so the GPU
+reproduces the CPU maths exactly). `gl_backend_draw_eligible()` screens every
+draw against the state the canned pipeline cannot reproduce — depth, stencil,
+blend, alpha test, scissor, culling, non-fill polygon mode, fog, texturing,
+strips/fans, partial triangles, bound programs. Anything on that list — or any
+decline from the backend — takes the WHOLE draw back to software: a frame half
+CPU-drawn and half GPU-drawn is a tearing bug. The present forks accordingly:
+a frame the GPU drew entirely scanouts the GPU render target without the CPU
+transfer (transferring would overwrite the triangle with the CPU's empty
+buffer); a mixed frame presents the CPU buffer. This is one canned triangle
+feeder, not a TGSI compiler; `/gltest` asserts the eligibility screen and the
+integration case with a real device asserts the log.
 
 ### It declines rather than half-working
 
@@ -776,7 +793,7 @@ syscall for 3D submission.
 | `/glcube` | Lit, textured, depth-buffered cube. Geometry in a display list, ground grid from a vertex array, a **mipmapped floor** drawn as a single quad — per-fragment LOD (GL2 L4) made the old 16×16 tessellation unnecessary — and an inset **render-to-texture panel** showing a second view of the scene through an FBO. |
 | `/glgears` | The classic three-gear benchmark, ported from real OpenGL sources with no changes to the GL calls. |
 | `/glshade` | The `/glcube` cube lit from a **GLSL program**: a per-fragment Lambert shader over generic vertex attributes and `glDrawArrays` (GL2 L5). No fixed-function fallback — if the program fails to compile or link, it prints the info log and exits. |
-| `/gltest` | Regression suite: 411 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
+| `/gltest` | Regression suite: 427 checks printed to the serial console as `[gl] PASS/FAIL`. Used by `tests/integration/cases/test_opengl.sh`. |
 
 The demos read an optional frame limit from a file — `/tmp/glcube.frames`,
 `/tmp/glshade.frames` and `/tmp/glgears.frames` — because the shell's `run`
@@ -812,7 +829,7 @@ Both also appear in the `/glaunch` application launcher.
 | `tests/unit/test_glslexec.c` | The execution engine, checked numerically, 179 |
 | `tests/unit/test_glprog.c` | The shader pipeline, checked against pixels, 107 |
 | `tests/unit/test_glcoexist.c` | The two paths side by side and their limits, 59 |
-| `tests/unit/test_glvirgl.c` | The VirGL backend: declining cleanly, and the wire format, 44 |
+| `tests/unit/test_glvirgl.c` | The VirGL backend: declining cleanly, the wire format, and the canned DRAW_VBO encoding + dispatch, 73 |
 | `tests/integration/cases/test_opengl.sh` | `/gltest` and `/glcube` under QEMU |
 
 Every unit test links the **real** libgl sources rather than a copy, so a test

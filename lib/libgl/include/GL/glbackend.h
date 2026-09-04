@@ -33,6 +33,8 @@
 #ifndef AURALITE_GL_BACKEND_H
 #define AURALITE_GL_BACKEND_H
 
+#include <stdint.h>
+
 #include "GL/gl.h"
 
 #ifdef __cplusplus
@@ -47,6 +49,19 @@ extern "C" {
 
 /* Opaque to backends; defined in libgl/src/glcontext.h. */
 struct aglx_context;
+
+/* One draw batch handed to a backend's `draw` hook.
+ *
+ * `data` holds `count` vertices of eight floats each: the CLIP-space position
+ * (x, y, z, w — the same values the fixed-function transform stage computes,
+ * so the GPU divides and clips exactly what the CPU rasterizer would have)
+ * followed by the vertex colour (r, g, b, a).  Only whole GL_TRIANGLES
+ * batches are eligible, so `count` is always a multiple of three.
+ */
+typedef struct gl_draw_batch {
+    const GLfloat *data;
+    GLsizei        count;
+} gl_draw_batch_t;
 
 /* One rendering backend.
  *
@@ -70,6 +85,13 @@ typedef struct gl_backend {
     /* Present the finished colour buffer to the window.  Return 0 if handled,
      * non-zero to fall back. */
     int (*present)(struct aglx_context *ctx);
+
+    /* Draw a batch of triangles on the hardware (GL2 L6).  Return 0 if the
+     * batch was submitted — the caller then skips its software rasterizer for
+     * it — non-zero and the WHOLE draw falls back: a frame half CPU-drawn and
+     * half GPU-drawn is a tearing bug, so the fallback unit is the entire
+     * draw call, never one triangle inside it. */
+    int (*draw)(struct aglx_context *ctx, const gl_draw_batch_t *batch);
 
     /* Release backend resources for a context being destroyed. */
     void (*destroy)(struct aglx_context *ctx);
@@ -101,11 +123,38 @@ const gl_backend_info_t *gl_backend_info(void);
  * registered, non-zero otherwise. */
 int gl_backend_force(const char *name);
 
+/* Try the active backend's `draw` hook on one assembled batch (GL2 L6).
+ * Returns 0 only if the backend took the batch; the caller then skips the
+ * software rasterizer for it.  A non-zero return means the whole draw falls
+ * back. */
+int gl_backend_try_draw(struct aglx_context *ctx,
+                        const gl_draw_batch_t *batch);
+
+/* Whether the current GL state would let a fixed-function glDrawArrays batch
+ * take the canned hardware path at all: GL_TRIANGLES, whole triangles, no
+ * bound program, and none of the state the canned pipeline cannot reproduce
+ * (texturing, blending, tests, scissor, culling, non-fill polygon mode, fog).
+ * The canned vertex shader does no transforms of its own — the batch carries
+ * clip coordinates the fixed-function matrices already produced — so no
+ * matrix restriction is needed.  Checked BEFORE any batch data is built, so
+ * declining costs one read of the state vector. */
+int gl_backend_draw_eligible(struct aglx_context *ctx, GLenum mode,
+                             GLsizei count);
+
 /* Register the VirGL hardware backend candidate.  Called automatically at
  * context creation; exposed so tests can register it explicitly.  It declines
  * at init() until the kernel exposes a user-space 3D submission path — see
  * libgl/src/glvirgl.c for what completing it involves. */
 void gl_virgl_register(void);
+
+/* GL2 L6 test seam: the canned pipeline's encoding, exposed so host tests can
+ * walk it against the kernel validator with no device in the room.  The setup
+ * stream is the one-time pipeline submission (objects, shaders, binds,
+ * framebuffer, viewport, vertex-buffer bind); it writes at most `cap` dwords
+ * and returns its length, or -1 when `cap` is too small. */
+const uint32_t *gl_virgl_canned_vs_tokens(int *n);
+const uint32_t *gl_virgl_canned_fs_tokens(int *n);
+int  gl_virgl_canned_setup(uint32_t w, uint32_t h, uint32_t *d, uint32_t cap);
 
 #ifdef __cplusplus
 }

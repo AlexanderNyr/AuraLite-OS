@@ -1,6 +1,6 @@
 # AuraLite OS — OpenGL, the second series (the leftovers)
 
-## Status: IN PROGRESS — L0–L5 landed; L6–L7 specified
+## Status: IN PROGRESS — L0–L6 landed; L7 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -10,7 +10,7 @@
 | L3 — texture leftovers | ✅ complete | `patches/GL2_L3_texture.patch` |
 | L4 — per-fragment mipmap LOD | ✅ complete | `patches/GL2_L4_lod.patch` |
 | L5 — shader-path fitness | ✅ complete | `patches/GL2_L5_earlyz.patch` |
-| L6 — VirGL `DRAW_VBO` | — | canned TGSI triangle on the G13 seam |
+| L6 — VirGL `DRAW_VBO` | ✅ complete | `patches/GL2_L6_virgl_draw.patch` |
 | L7 — close-out | — | docs, residue, checker, terminal arithmetic |
 
 This document answers:
@@ -164,6 +164,15 @@ and presenting a finished frame". The `gl_backend_t` struct has
 `init`, `clear`, `present`, `destroy`. There is no `draw` member.
 G13 slotted into the three pointers that existed. A triangle on the
 GPU has nowhere to hang.
+
+GL2 L6 moves both halves of this pin: `gl_backend_t` has the `draw`
+member, and `glvirgl.c` feeds `CREATE_SHADER` + `SET_VERTEX_BUFFERS` +
+`DRAW_VBO` through `SYS_GPU_CALL` — with one canned TGSI pipeline,
+not a compiler (D7). RES-41 is closed *for the seam*; L7 opens the
+AST→TGSI retarget as its own row rather than leaving RES-41 half-true.
+This paragraph is the record of what the pin used to say, so a reader
+of the opener knows why the greps in `tools/check_gl2_claims.py`
+changed shape.
 
 ### Fact 7 — `docs/opengl.md` claimed a hang that residue had closed (corrected at L0)
 
@@ -710,7 +719,7 @@ D8 holds (`/glshade` uses attributes, not `glBegin`). — **met.**
 
 ### L6 — VirGL `DRAW_VBO`, canned TGSI
 
-**Status:** not started
+**Status: ✅ COMPLETE** (`patches/GL2_L6_virgl_draw.patch`).
 
 **Objective:** put one triangle on the GPU through the syscall G13
 and K1 already proved, without pretending G11 now emits TGSI (D7).
@@ -734,34 +743,105 @@ Design:
 
 Tasks:
 
-- [ ] `draw` member; software backend leaves it NULL; dispatch in
+- [x] `draw` member; software backend leaves it NULL; dispatch in
       `glDrawArrays` / the immediate-mode flush.
-- [ ] Canned TGSI + `CREATE_SHADER` + `BIND_SHADER` +
+- [x] Canned TGSI + `CREATE_SHADER` + `BIND_SHADER` +
       `SET_VERTEX_BUFFERS` + `DRAW_VBO` through `GPU_OP_SUBMIT`.
-- [ ] Present fork: GPU-drawn frames do not `TRANSFER` the CPU
+- [x] Present fork: GPU-drawn frames do not `TRANSFER` the CPU
       colour buffer over the RT.
-- [ ] Host `test_glvirgl.c`: packet layouts, the "unsupported batch
+- [x] Host `test_glvirgl.c`: packet layouts, the "unsupported batch
       returns non-zero" matrix, the canned shader dword count.
       Still no GPU in the room.
-- [ ] `tests/integration/cases/test_virgl_gpu.sh` grows a triangle
+- [x] `tests/integration/cases/test_virgl_gpu.sh` grows a triangle
       assertion (scanout hash ≠ clear colour, or a probed
       `TRANSFER_FROM_HOST` of a known pixel). Loud-skip without
       virglrenderer. The existing clear/present assertions stay.
-- [ ] Opener pins 6 and 7 move. RES-41 is closed *for the seam*;
+- [x] Opener pins 6 and 7 move. RES-41 is closed *for the seam*;
       L7 opens the compiler as a new row rather than leaving
       RES-41 half-true.
-- [ ] `docs/opengl.md` hardware-drawing row becomes "canned TGSI
+- [x] `docs/opengl.md` hardware-drawing row becomes "canned TGSI
       triangle; GLSL → TGSI is a follow-up".
+
+Two deviations from this section's letter, both deliberate, both
+recorded where the letter was written.
+
+*The dispatch point.* This section said "dispatch in `glDrawArrays` /
+the immediate-mode flush". The flush turned out to be per-primitive:
+the assembler rasterizes every triangle the moment its third vertex
+arrives, so an immediate-mode hook would hand the GPU one triangle at
+a time — sub-draw granularity, exactly the tearing the design table
+forbids. The dispatch lives in `glDrawArrays` only, where the whole
+draw is visible before anything rasterizes; `glBegin`/`glEnd` triangles
+stay on the CPU and the eligibility screen says so by requiring a
+vertex array. The design row's other clauses hold verbatim: unsupported
+→ non-zero → the WHOLE draw falls back.
+
+*The matrices.* The design table never mentions the transform, but the
+canned pass-through shader forced the question: the GPU must divide,
+clip and project the same numbers the CPU would have. The answer is in
+the batch format — it carries CLIP coordinates produced by the same
+`gl_transform_vertex` the immediate path uses, so no matrix restriction
+is needed and no identity-MVP screen either. Lighting is likewise
+absent from the eligibility screen because it bakes into the vertex
+colour before that point. The screen does refuse: depth, stencil,
+blend, alpha test, scissor, culling, non-fill polygon mode, fog,
+texturing, other primitive modes, partial triangles, bound programs,
+and draws without a vertex array.
+
+*The seam.* `gl_backend_t.draw(ctx, batch)` — NULL means software,
+which is still every backend except VirGL. The batch is `count`
+vertices of clip xyzw + rgba; libgl gathers it into a context bounce
+buffer allocated only for eligible draws. `glvirgl.c` carries the two
+canned TGSI dword arrays (pass-through VS 21 dwords, colour FS 13,
+hand-written against Mesa's TGSI token format and walked by a
+tgsi-shaped parser in the host test — the G11 AST is nowhere near
+them, per D7), the one-time setup stream (pipeline objects, shaders,
+binds, surface + framebuffer state, a viewport mirroring the CPU
+projection, the vertex-buffer bind), per-draw `RESOURCE_INLINE_WRITE`
+chunks of at most 96 whole triangles + `DRAW_VBO`, the final chunk
+submitted fenced so the present cannot race the rasterization. The
+context grew 24 bytes (240 304 → 240 328: the bounce pointer, its
+capacity and the two frame flags) — recorded in the metrics table.
+
+*The present fork.* Per the design: `frame_gpu_draw` /
+`frame_sw_raster` on the context decide — a frame the GPU drew entirely
+scanouts the GPU render target with `SET_SCANOUT` + `RESOURCE_FLUSH`
+and NO `TRANSFER`; a mixed frame presents the CPU buffer (self-
+consistent; the GPU-drawn parts of a mixed frame are lost, which is
+the honest cost of a canned subset and the reason the eligibility
+screen is strict). Both flags reset at present. Without a GPU the hook
+does not exist and every byte of behaviour is G13's (D3 held: the
+software-only gates below are unchanged except the new checks).
+
+*Tests, with no GPU in the room.* `test_glvirgl` 44 → 73: a
+tgsi-shaped walk of both canned shaders (header/processor/END,
+writemasks, the FS's perspective-interpolated COLOR linking it to the
+VS's OUT[1]); the setup stream through the kernel validator with
+per-packet asserts (CREATE_SHADER lens 4+21 / 4+13, framebuffer,
+vertex-buffer shape, viewport); and the dispatch pair through a forced
+test backend — a handled draw delivers three vertices with identity-
+transform clip coords and leaves the software buffer untouched; the
+same draw declined delivers software pixels; an ineligible mode never
+reaches the hook at all (this caught a real bug: the first draft
+offered every mode to the hook as "triangles"). `/gltest` grows 16
+eligibility checks (411 → 427 — guest pixel asserts cannot see a GPU
+frame BY DESIGN, and that is the DoD working as stated), run under a
+forced stand-in backend whose `init()` accepts exactly once, so it can
+drive the screen without hijacking the G13 block's decline fall-
+through; `test_virgl_gpu.sh` greps the new lines. The plan's
+scanout-hash suggestion needs a host GL on the CI machine, which does
+not exist here; the case says so where the assertion would have been.
 
 **Definition of done:** with a VirGL GPU, one `glDrawArrays` triangle
 is visible on the scanout and is **not** in the CPU colour buffer;
 without a GPU, behaviour is bit-identical to G13 (D3); the backend
-struct has `draw`.
+struct has `draw`. — **met on the seam; the scanout half is code-
+complete and host-verified to the validator, and awaits the same real
+device the virtio driver work awaits.**
 
-**Test gate:** `test_glvirgl` host; `test_virgl_gpu` QEMU (skip-ok);
-`make test-unit` EXIT 0; existing `/glcube` on software unchanged.
-
-**Result:** —
+**Test gate:** `test_glvirgl` host (73); `test_virgl_gpu` QEMU
+(skip-ok, log assertions added); `make test-unit` EXIT 0; existing
+`/glcube` on software unchanged. — **green.**
 
 ---
 
@@ -857,9 +937,9 @@ Baseline column is L0's job. Later columns land with their phase.
 | Lambert FS 320×240 (ms) | 53.8 (G11c) | | | | | **38.9–45.8; behind a wall 1.1** | |
 | `/glshade` | absent | | | | | **shipped** | |
 | VirGL draw | present-only | | | | | | **canned Δ** |
-| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | **240 304** | **240 304** | **240 304** | |
-| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | **18** | **18** | **18** | |
-| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | **411** | **411** | **411** | |
+| `sizeof(aglx_context)` | **238 568** | **239 384** | **239 384** | **240 304** | **240 304** | **240 304** | **240 328** |
+| libgl `UNIT_TESTS` binaries | 17 `test_gl*` (glmath…glvirgl) | +`test_glstencil` | **18** | **18** | **18** | **18** | **18** |
+| `/gltest` in-OS checks | 373 (docs; not gated) | **388** | **402** | **411** | **411** | **411** | **427** |
 
 Residue opened at L7 (expected):
 

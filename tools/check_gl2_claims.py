@@ -323,6 +323,52 @@ def claims():
             "glshade" in fact5 and
             "honestly conclude AuraLite has no shaders" not in fact5))
 
+    # --- L6: canned VirGL DRAW_VBO (when the plan says it landed) ------
+    if l6:
+        glbackend_c = read("lib", "libgl", "src", "glbackend.c")
+        glarray = read("lib", "libgl", "src", "glarray.c")
+        tglvirgl = read("tests", "unit", "test_glvirgl.c")
+        virgl_case = read("tests", "integration", "cases",
+                          "test_virgl_gpu.sh")
+        checks.append((
+            "L6: gl_backend_t has the draw member and the software backend "
+            "leaves it NULL",
+            backend_has_draw(glbackend) and
+            "the software rasterizer IS the fallback" in glbackend_c and
+            "gl_backend_try_draw" in glbackend_c))
+        checks.append((
+            "L6: the canned TGSI lives in glvirgl.c as dword arrays, "
+            "END-terminated, not generated from the AST",
+            "canned_vs_tgsi" in glvirgl and "canned_fs_tgsi" in glvirgl and
+            "0x00075013u" in glvirgl))
+        checks.append((
+            "L6: the eligibility screen guards the dispatch in "
+            "glDrawArrays",
+            "gl_backend_draw_eligible" in glarray and
+            "gl_backend_draw_eligible" in glbackend_c))
+        checks.append((
+            "L6: the present fork — GPU frames scan out without the CPU "
+            "transfer",
+            "frame_gpu_draw" in glctx and "frame_sw_raster" in glctx and
+            "gpu_frame" in glvirgl))
+        checks.append((
+            "L6: the host test walks the TGSI and proves the whole-draw "
+            "fallback",
+            "tgsi_walk_ok" in tglvirgl and
+            "test_canned_dispatch" in tglvirgl))
+        checks.append((
+            "L6: the integration case asserts the eligibility screen and "
+            "docs call the path canned",
+            "l6_eligible_whole_triangles" in virgl_case and
+            "canned TGSI" in opengl))
+        fact6 = plan.split("### Fact 6")[1].split("### Fact 7")[0] \
+            if "### Fact 6" in plan else ""
+        checks.append((
+            "L6: opener Fact 6 records the amendment (pins 6 and 7 moved "
+            "in the same commit)",
+            "GL2 L6" in fact6 and
+            "It does NOT implement DRAW_VBO" not in glvirgl))
+
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(
         r"^\|\s*L\d+\s+—[^|]*\|\s*✅ complete", plan, re.M))

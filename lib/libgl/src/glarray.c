@@ -45,6 +45,7 @@
 #include <string.h>
 
 #include "GL/gl.h"
+#include "GL/glbackend.h"
 #include "GL/glmath.h"
 #include "glcontext.h"
 #include "glvertex.h"
@@ -531,6 +532,62 @@ static int mode_is_valid(GLenum mode) {
     }
 }
 
+/* GL2 L6: gather an eligible fixed-function glDrawArrays batch into the
+ * packed gl_draw_batch_t layout and hand it to the backend.
+ *
+ * The vertices go through the SAME transform the immediate path uses —
+ * gl_transform_vertex, so eye-space and lighting would agree bit for bit —
+ * and the batch carries the resulting CLIP coordinates: the GPU's divide,
+ * clip and viewport then reproduce the CPU pipeline's own maths.  Colour
+ * comes from the colour array when one is enabled, otherwise from the current
+ * colour (§2.8), exactly as glArrayElement would have latched it.
+ *
+ * Returns 0 if the backend took the batch (the caller skips the software
+ * path); non-zero means ineligible or declined and the caller draws it
+ * here — the WHOLE draw, never part of it. */
+static int try_backend_triangles(struct aglx_context *ctx, GLenum mode,
+                                 GLint first, GLsizei count) {
+    if (mode != GL_TRIANGLES) return -1;   /* only whole triangles are canned */
+    if (!gl_backend_draw_eligible(ctx, mode, count)) return -1;
+
+    /* Gather into the context's bounce buffer, growing it once if needed.
+     * read_element applies the array's type/size/stride rules, and a missing
+     * element (buffer too short) is a decline rather than a guess. */
+    size_t need = (size_t)count * 8u * sizeof(GLfloat);
+    if (ctx->draw_bounce_cap < need) {
+        GLfloat *nb = realloc(ctx->draw_bounce, need);
+        if (!nb) return -1;
+        ctx->draw_bounce     = nb;
+        ctx->draw_bounce_cap = need;
+    }
+    GLfloat *out = ctx->draw_bounce;
+    for (GLsizei k = 0; k < count; k++) {
+        GLfloat p[4], c[4];
+        if (!read_element(ctx, &ctx->array_vertex, first + k, p, 0))
+            return -1;
+        if (ctx->array_color.enabled) {
+            if (!read_element(ctx, &ctx->array_color, first + k, c, 1))
+                return -1;
+        } else {
+            gl_color_t cur;
+            gl_imm_current_color(&cur);
+            c[0] = cur.r; c[1] = cur.g; c[2] = cur.b; c[3] = cur.a;
+        }
+        gl_vertex_t v;
+        gl_transform_vertex(ctx, p[0], p[1], p[2],
+                            ctx->array_vertex.size == 4 ? p[3] : 1.0f, &v);
+        out[k * 8 + 0] = v.clip.x; out[k * 8 + 1] = v.clip.y;
+        out[k * 8 + 2] = v.clip.z; out[k * 8 + 3] = v.clip.w;
+        out[k * 8 + 4] = c[0];     out[k * 8 + 5] = c[1];
+        out[k * 8 + 6] = c[2];     out[k * 8 + 7] = c[3];
+    }
+
+    gl_draw_batch_t batch;
+    batch.data  = out;
+    batch.count = count;
+    return gl_backend_try_draw(ctx, &batch);
+}
+
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     struct aglx_context *ctx = gl_ctx_or_error();
     if (!ctx) return;
@@ -545,6 +602,13 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
      * instead, so the fixed-function vertex array is not required -- and
      * demanding it would make every ES 2.0 application draw nothing. */
     if (!gl_shader_active(ctx) && !ctx->array_vertex.enabled) return;
+
+    /* GL2 L6: the canned hardware path sees the WHOLE draw or none of it.
+     * On any decline the normal software path below runs unchanged. */
+    if (!gl_shader_active(ctx) &&
+        try_backend_triangles(ctx, mode, first, count) == 0) {
+        return;
+    }
 
     gl_imm_begin_internal(mode);
     for (GLsizei k = 0; k < count; k++) glArrayElement(first + k);

@@ -57,6 +57,7 @@ static const gl_backend_t software_backend = {
     software_init,
     software_clear,
     software_present,
+    0,                  /* draw: the software rasterizer IS the fallback */
     software_destroy,
 };
 
@@ -172,6 +173,57 @@ int gl_backend_try_present(struct aglx_context *ctx) {
     const gl_backend_t *b = gl_backend_active();
     if (!b || !b->present) return -1;
     return b->present(ctx);
+}
+
+/* GL2 L6: hand one assembled batch to the backend's draw hook.  Returning
+ * non-zero (no hook, or the hook declined) is the whole-draw fallback. */
+int gl_backend_try_draw(struct aglx_context *ctx,
+                        const gl_draw_batch_t *batch) {
+    const gl_backend_t *b = gl_backend_active();
+    if (!b || !b->draw || !batch || batch->count < 3) return -1;
+    return b->draw(ctx, batch);
+}
+
+/* Whether the canned hardware path may take this draw AT ALL.
+ *
+ * The canned pipeline is a fixed-function triangle feeder: one vertex format
+ * (clip position + colour), no textures, no tests, no blending, no
+ * reprojection.  Anything this list does not name would render differently
+ * on the GPU than the software rasterizer would have — and "different but
+ * plausible" is the one outcome this seam must never produce.  Lighting and
+ * normals are deliberately absent from the list: they bake into the vertex
+ * colour before this point, so they change nothing here.
+ *
+ * Note there is no matrix condition: the batch carries clip coordinates the
+ * fixed-function matrices already produced, so the GPU divides and clips
+ * exactly what the CPU path would have. */
+int gl_backend_draw_eligible(struct aglx_context *ctx, GLenum mode,
+                             GLsizei count) {
+    if (!ctx) return 0;
+    const gl_backend_t *b = gl_backend_active();
+    if (!b || !b->draw) return 0;             /* software is the fallback   */
+
+    if (mode != GL_TRIANGLES) return 0;       /* the canned primitive       */
+    if (count < 3 || count % 3 != 0) return 0;/* whole triangles only       */
+    if (!ctx->array_vertex.enabled) return 0; /* position must come from an
+                                               * array (immediate mode keeps
+                                               * its per-primitive flush,
+                                               * which is sub-draw granularity
+                                               * — see the L6 Result)       */
+    if (gl_shader_active(ctx)) return 0;      /* fixed function only        */
+    if (ctx->depth_test) return 0;            /* the canned DSA tests none  */
+    if (ctx->stencil_test) return 0;          /* no stencil surface         */
+    if (ctx->blend) return 0;                 /* no blend state on the GPU  */
+    if (ctx->alpha_test) return 0;
+    if (ctx->scissor_test) return 0;          /* scissored pixels would leak */
+    if (ctx->cull_face) return 0;             /* the GPU would draw both faces */
+    if (ctx->polygon_mode != GL_FILL) return 0;
+    if (ctx->fog) return 0;                   /* fog is a fragment-stage fixup */
+    for (int u = 0; u < GL_MAX_TEXTURE_UNITS_IMPL; u++) {
+        if (ctx->texunits[u].enabled_2d || ctx->texunits[u].enabled_3d ||
+            ctx->texunits[u].enabled_cube) return 0;
+    }
+    return 1;
 }
 
 void gl_backend_notify_destroy(struct aglx_context *ctx) {

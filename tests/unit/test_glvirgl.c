@@ -297,6 +297,210 @@ static void test_abi(void) {
           "the transfer cap admits a full-resolution frame");
 }
 
+
+/* ============================================================================
+ * GL2 phase L6: the canned DRAW_VBO pipeline
+ *
+ * No GPU here either — the value is the same as G13's encoding tests: the
+ * canned shaders and the setup stream are pure bit manipulations, and the
+ * kernel validator is the shipping code they must agree with.  The eligibility
+ * matrix and the dispatch/fallback pair run against a forced test backend so
+ * the whole-draw contract is exercised, not assumed.
+ * ==========================================================================*/
+
+/* Walk one TGSI stream the way tgsi_parse does: a header token (HeaderSize
+ * dwords including itself, BodySize following), a processor token, then
+ * self-sized declaration / immediate / instruction tokens landing exactly on
+ * the end of the buffer.  Returns 0 if the walk is coherent. */
+static int tgsi_walk_ok(const uint32_t *t, int n, uint32_t want_processor) {
+    if (n < 3) return 0;
+    if ((t[0] & 0xFFu) != 2) return 0;            /* HeaderSize is 2        */
+    if ((int)(t[0] >> 8) != n - 2) return 0;      /* BodySize = the rest    */
+    if ((t[1] & 0xFu) != want_processor) return 0;
+    int pos = 2;
+    while (pos < n) {
+        uint32_t type = t[pos] & 0xFu;
+        uint32_t nrt  = (t[pos] >> 4) & 0xFFu;
+        if (type > 3 || nrt == 0) return 0;
+        if (type == 1) {                          /* declaration            */
+            if (((t[pos] >> 16) & 0xFu) != 0xFu) return 0;  /* writemask   */
+            uint32_t flags = t[pos];
+            int expect = 2;
+            if (flags & (1u << 22)) expect++;     /* interp                 */
+            if (flags & (1u << 21)) expect++;     /* semantic               */
+            if ((int)nrt != expect) return 0;
+        }
+        pos += (int)nrt;
+    }
+    if (pos != n) return 0;
+    /* The stream must END: last token an instruction, opcode 117, no regs. */
+    uint32_t last = t[n - 1];
+    return (last & 0xFu) == 3u && ((last >> 4) & 0xFFu) == 1u &&
+           (((last >> 12) & 0xFFu) == 117u);
+}
+
+static void test_canned_shaders(void) {
+    printf("--- GL2 L6: the canned TGSI shaders ---\n");
+
+    int vn = 0, fn = 0;
+    const uint32_t *vs = gl_virgl_canned_vs_tokens(&vn);
+    const uint32_t *fs = gl_virgl_canned_fs_tokens(&fn);
+    CHECK(vs && vn == 21, "the VS is 21 dwords");
+    CHECK(fs && fn == 13, "the FS is 13 dwords");
+
+    CHECK(tgsi_walk_ok(vs, vn, 0), "the VS walks as TGSI and ends with END");
+    CHECK(tgsi_walk_ok(fs, fn, 1), "the FS walks as TGSI and ends with END");
+
+    /* First instruction of each is MOV: opcode 1, one dst, one src. */
+    CHECK(vs && ((vs[14] >> 12) & 0xFFu) == 1u &&
+          ((vs[14] >> 21) & 0x3u) == 1u && ((vs[14] >> 23) & 0xFu) == 1u,
+          "VS instruction 0 is MOV with one dst and one src");
+    CHECK(fs && ((fs[9] >> 12) & 0xFFu) == 1u,
+          "FS instruction 0 is MOV");
+
+    /* The FS input carries the perspective interpolation flag and the COLOR
+     * semantic — that is what links it to the VS's OUT[1]. */
+    CHECK(fs && (fs[2] & (1u << 22)) && (fs[2] & (1u << 21)) &&
+          fs[4] == 2u && fs[5] == 1u,
+          "the FS input is a perspective-interpolated COLOR");
+}
+
+static void test_canned_setup_stream(void) {
+    printf("--- GL2 L6: the canned setup stream vs the kernel validator ---\n");
+
+    uint32_t d[128];
+    int n = gl_virgl_canned_setup(320, 240, d, 128);
+    CHECK(n > 40, "the setup stream is non-trivial");
+    CHECK(gpu_validate_cmd_stream(d, (uint32_t)n) == 0,
+          "the kernel validator accepts the whole setup stream");
+
+    /* Walk the packets and assert the ones the draw depends on. */
+    int shaders = 0, fb = 0, vbufs = 0, viewport = 0, vs_len = 0, fs_len = 0;
+    int i = 0;
+    while (i < n) {
+        uint32_t hdr = d[i];
+        uint32_t cmd = hdr >> 24, obj = (hdr >> 16) & 0xFFu, len = hdr & 0xFFFFu;
+        if (cmd == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_SHADER) {
+            shaders++;
+            if (d[i + 2] == VIRGL_PIPE_SHADER_VERTEX)   vs_len = (int)len;
+            if (d[i + 2] == VIRGL_PIPE_SHADER_FRAGMENT) fs_len = (int)len;
+        }
+        if (cmd == VIRGL_CCMD_SET_FRAMEBUFFER_STATE) fb = (int)len;
+        if (cmd == VIRGL_CCMD_SET_VERTEX_BUFFERS) {
+            vbufs = (int)len;
+            CHECK(d[i + 1] == 0 && d[i + 2] == 1, "one vertex buffer, slot 0");
+            CHECK(d[i + 3] == 32, "the vertex stride is 8 floats");
+        }
+        if (cmd == VIRGL_CCMD_SET_VIEWPORT_STATE) viewport = (int)len;
+        i += 1 + (int)len;
+    }
+    CHECK(i == n, "the packet walk lands on the end");
+    CHECK(shaders == 2, "both canned shaders are created");
+    CHECK(vs_len == 4 + 21, "the VS packet carries 21 token dwords");
+    CHECK(fs_len == 4 + 13, "the FS packet carries 13 token dwords");
+    CHECK(fb == 5, "SET_FRAMEBUFFER_STATE has one colour surface");
+    CHECK(vbufs == 5, "SET_VERTEX_BUFFERS has the 1-buffer shape");
+    CHECK(viewport == 7, "SET_VIEWPORT_STATE has scale and translate");
+}
+
+/* ---- dispatch and the whole-draw fallback, through a forced backend ----- */
+
+static GLint      fake_calls;
+static GLsizei    fake_count;
+static GLfloat    fake_first[8];
+static int        fake_ret;               /* what the hook returns          */
+static int        fake_seen;
+
+static int fake_draw(struct aglx_context *ctx, const gl_draw_batch_t *batch) {
+    (void)ctx;
+    fake_calls++;
+    if (!batch || !batch->data) return -1;
+    fake_count = batch->count;
+    memcpy(fake_first, batch->data, sizeof fake_first);
+    fake_seen = 1;
+    return fake_ret;
+}
+
+static const gl_backend_t fake_backend = {
+    "canned-test-backend",
+    GL_BACKEND_SOFTWARE,
+    0, 0, 0,
+    fake_draw,
+    0,
+};
+
+static void test_canned_dispatch(void) {
+    printf("--- GL2 L6: dispatch and the whole-draw fallback ---\n");
+
+    gl_backend_register(&fake_backend);
+    CHECK(gl_backend_force("canned-test-backend") == 0,
+          "the test backend registers and can be forced active");
+
+    aglx_context_t *c = aglxCreateContext(1, W, H, AGLX_DEPTH);
+    CHECK(c != NULL, "context for the dispatch test");
+    if (!c) return;
+    aglxMakeCurrent(c);
+
+    static const GLfloat tri[9] = { -1.0f, -1.0f, 0.0f,
+                                     1.0f, -1.0f, 0.0f,
+                                     0.0f,  1.0f, 0.0f };
+    static const GLfloat red[9] = { 1, 0, 0,  1, 0, 0,  1, 0, 0 };
+
+    glVertexPointer(3, GL_FLOAT, 0, tri);
+    glColorPointer(3, GL_FLOAT, 0, red);
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_COLOR_ARRAY);
+
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glMatrixMode(GL_PROJECTION); glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);  glLoadIdentity();
+
+    /* Handled: the hook sees the whole draw, with clip coordinates equal to
+     * the object coordinates under the identity matrices, and the software
+     * rasterizer must NOT also draw it. */
+    fake_calls = 0; fake_seen = 0; fake_ret = 0;
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    CHECK(fake_calls == 1 && fake_seen, "an eligible draw reaches the hook");
+    CHECK(fake_count == 3, "the hook receives all three vertices");
+    CHECK(fake_first[0] == -1.0f && fake_first[1] == -1.0f &&
+          fake_first[2] == 0.0f && fake_first[3] == 1.0f,
+          "the batch carries the identity-transform clip position");
+    CHECK(fake_first[4] == 1.0f && fake_first[7] == 1.0f,
+          "the batch carries the vertex colour");
+    {
+        const uint32_t *b = aglxGetColorBuffer(c);
+        CHECK(b[(size_t)(H / 2) * W + W / 2] == 0,
+              "a handled draw leaves the software buffer untouched");
+    }
+
+    /* Declined: the same draw falls back WHOLE to software, and its pixels
+     * appear. */
+    fake_ret = -1;
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    CHECK(fake_calls == 2, "the hook is consulted again");
+    {
+        const uint32_t *b = aglxGetColorBuffer(c);
+        CHECK(b[(size_t)(H / 2) * W + W / 2] != 0,
+              "a declined draw falls back to software and draws");
+    }
+
+    /* Ineligible mode: the hook is never consulted, software draws it. */
+    fake_calls = 0;
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 3);
+    CHECK(fake_calls == 0, "an ineligible mode never reaches the hook");
+    {
+        const uint32_t *b = aglxGetColorBuffer(c);
+        CHECK(b[(size_t)(H - 8) * W + W / 2] != 0,
+              "the ineligible draw still rendered in software");
+    }
+
+    gl_backend_force(NULL);              /* back to the default selection */
+    aglxDestroyContext(c);
+}
+
 /* ============================================================================
  * Driver
  * ==========================================================================*/
@@ -309,6 +513,9 @@ int main(void) {
     test_repeated_lifecycle();
     test_command_encoding();
     test_abi();
+    test_canned_shaders();
+    test_canned_setup_stream();
+    test_canned_dispatch();
 
     printf("\ntest_glvirgl: %d passed, %d failed (%d total)\n",
            passed, failed, tn);

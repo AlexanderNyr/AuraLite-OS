@@ -100,6 +100,20 @@ if [ "$ENABLE_FULL_ASSERTS" = "1" ]; then
                    "repeated presents succeed"
     il_assert_grep "$LOG" "\\[gl\\] PASS vg_present_after_resize" \
                    "presenting after a resize succeeds"
+    # GL2 L6: the canned DRAW_VBO path.  The guest asserts eligibility --
+    # which whole fixed-function glDrawArrays(GL_TRIANGLES) draws MAY leave to
+    # the hardware -- because a GPU-drawn frame is by definition not in the
+    # CPU colour buffer a guest can read.  The scanout-hash assertion the plan
+    # sketched (screendump != flat clear colour) needs a host GL context on
+    # the CI machine; until one exists this log assertion is the honest
+    # available half, and the eligibility screen is what catches a seam that
+    # started drawing state it cannot reproduce.
+    il_assert_grep "$LOG" "\\[gl\\] PASS l6_eligible_whole_triangles" \
+                   "the L6 canned-draw eligibility screen runs"
+    il_assert_grep "$LOG" "\\[gl\\] PASS l6_ineligible_depth_test" \
+                   "tested state still takes the draw back to software"
+    il_assert_grep "$LOG" "\\[gl\\] PASS l6_no_pending_error" \
+                   "the L6 block leaves no GL error"
 else
     if grep -q "auralite#" "$LOG" 2>/dev/null; then
         echo "[virgl] NOTE: the system reached the shell with a GPU attached —"
