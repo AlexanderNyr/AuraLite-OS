@@ -298,10 +298,11 @@ def claims():
             in read("tests", "integration", "a64_boot_smoke.sh") and
             "qemu,fw-cfg-mmio" in read("kernel", "dt", "fdt.c")))
         checks.append((
-            "R11/RES-37: the kernel-side MADT walk exists and the QEMU "
-            "agreement line is pinned in the NULL case",
-            "madt_ioapic_base" in read("kernel", "arch", "x86_64",
-                                       "ioapic.c") and
+            "R11/RES-37 (+RESIDUE2 T2): the kernel-side MADT walk exists "
+            "now with ISO capture, and the QEMU agreement line is pinned "
+            "in the NULL case",
+            "madt_walk" in read("kernel", "arch", "x86_64", "ioapic.c") and
+            "madt_isos" in read("kernel", "arch", "x86_64", "ioapic.c") and
             "MADT agree" in read("tests", "integration", "cases",
                                  "test_metal_null.sh")))
         checks.append((

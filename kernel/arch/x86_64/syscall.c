@@ -14,6 +14,7 @@
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
 #include "kernel/fs/btrfs.h"  /* SYS_BTRFS_SELFTEST: btrfs CoW/CRC self-test (F4b) */
+#include "kernel/arch/x86_64/apwake.h"  /* SYS_IRQ_AP_WAKE: RES-16 receipt */
 #include "kernel/tty/termios.h"
 #include "kernel/tty/tty.h"
 #include "kernel/net/net.h"
@@ -197,6 +198,7 @@ typedef struct {
 #define SYS_KBD_LAYOUT     601   /* non-standard: select keyboard layout (FIXES_PLAN R8) */
 #define SYS_F2FS_FSCK      602   /* non-standard: internal f2fs structural fsck (F4) */
 #define SYS_BTRFS_SELFTEST 603   /* non-standard: btrfs CoW/CRC self-test (F4b) */
+#define SYS_IRQ_AP_WAKE    604   /* non-standard: RESIDUE2 T2 / RES-16 receipt */
 #define SYS_WAITID         247   /* Linux x86-64 number (RESIDUE2 T1) */
 #define SYS_GETPPID        110   /* Linux x86-64 number (RESIDUE2 T1) */
 
@@ -2123,6 +2125,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         /* F4b: run the internal btrfs CoW/CRC structural self-test.
          * Returns 0 on pass, negative on failure. */
         return (uint64_t)btrfs_self_test();
+    }
+    case SYS_IRQ_AP_WAKE: {   /* 604: RESIDUE2 T2 / RES-16 receipt */
+        /* Run the device-IRQ-wakes-hlt-ed-AP selftest: an RTC (GSI8)
+         * device IRQ aimed at cpu 1 must wake its hlt loop.  Prints the
+         * receipt line; returns 0 on pass, negative on failure. */
+        return (uint64_t)smp_irq_ap_wake_selftest();
     }
     case SYS_KBD_LAYOUT: {
         if (a1 == 0) {

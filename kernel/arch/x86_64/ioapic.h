@@ -28,4 +28,11 @@ int  ioapic_init(void);
  * (irq_dispatch then EOI's the Local APIC only, never the 8259). */
 extern volatile int apic_irq_mode;
 
+/* RESIDUE2 T2: point one redirection entry at a chosen APIC ID at runtime
+ * (edge/high/fixed, vector as given, unmasked).  Used by the RES-16 wake
+ * selftest to aim a device IRQ at a hlt-ed AP and restore the pin after.
+ * Returns 0 on success, -1 if the I/O APIC is not up or the GSI is out of
+ * range. */
+int ioapic_route_gsi(int gsi, int vector, uint32_t dest_apic_id);
+
 #endif /* AURALITE_ARCH_X86_64_IOAPIC_H */

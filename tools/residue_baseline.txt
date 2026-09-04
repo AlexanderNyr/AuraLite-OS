@@ -24,5 +24,5 @@ TESTAUDIT_PLAN.md 0
 USB_PLAN.md 11
 WEBVIEW_PLAN.md 1
 WIN32_PLAN.md 8
-TODO.md 40
+TODO.md 38
 status-wip 7

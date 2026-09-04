@@ -13,15 +13,24 @@
  * in the ACPI MADT.
  *
  * RESIDUE R11 (RES-37): the MADT half of that follow-up is in.  Both
- * loaders already publish rsdp_phys; madt_ioapic_base() below walks
+ * loaders already publish rsdp_phys; the MADT walk below reads
  * RSDP -> RSDT/XSDT -> MADT and returns the first type-1 (I/O APIC)
  * entry's address.  The kernel still USES the PC-standard base -- what
  * changed is that the boot now prints whether ACPI agrees with the
  * hardcode ("MADT agree" / "MADT says 0x..., hardcode stands" /
  * "no MADT") -- so the metal receipt package can carry the discovery
  * line, and a machine where the two differ is named on sight instead
- * of silently mis-programmed.  Interrupt Source Overrides remain the
- * recorded residue.
+ * of silently mis-programmed.
+ *
+ * RESIDUE2 T2: the last QEMU-hardcoded piece is gone.  The same walk
+ * now collects the type-2 Interrupt Source Override entries and the
+ * redirection table is programmed FROM THEM (bus source -> GSI, with
+ * the polarity/trigger bits the table carries).  The PC-standard
+ * defaults (PIT on GSI2, everything else identity, edge/high) remain
+ * as the fallback for a machine with no MADT or no ISOs, and every
+ * divergence between the two routings is printed by name at boot --
+ * the RES-37 agree/disagree discipline extended from the base address
+ * to the whole legacy routing.
  *
  * Safety: if no I/O APIC is present (the version register reads as
  * all-zero/all-one), this returns non-zero WITHOUT touching the PIC, so the
@@ -72,20 +81,23 @@ static void io_set_redir(int gsi, uint64_t entry) {
     io_write((uint8_t)(IOAPIC_REDTBL + 2 * gsi),     (uint32_t)(entry));
 }
 
-/* Build a redirection entry for an edge-triggered, active-high, fixed-delivery
- * ISA interrupt aimed (physical destination mode) at the given APIC ID. */
-static uint64_t io_make_isa_entry(int vector, uint32_t dest_apic_id) {
+/* Build a redirection entry for a fixed-delivery ISA interrupt aimed
+ * (physical destination mode) at the given APIC ID, with the polarity and
+ * trigger mode the ACPI table asks for. */
+static uint64_t io_make_entry(int vector, uint32_t dest_apic_id,
+                              int level, int active_low) {
     return ((uint64_t)(vector & 0xFF))            /* [7:0]   vector             */
          | (0ULL << 8)                            /* [10:8]  fixed delivery     */
          | (0ULL << 11)                           /* [11]    physical dest mode */
-         | (0ULL << 13)                           /* [13]    active high        */
-         | (0ULL << 15)                           /* [15]    edge triggered     */
+         | ((active_low ? 1ULL : 0ULL) << 13)     /* [13]    polarity           */
+         | ((level ? 1ULL : 0ULL) << 15)          /* [15]    trigger mode       */
          | (0ULL << 16)                           /* [16]    unmasked           */
          | (((uint64_t)(dest_apic_id & 0xFF)) << 56); /* [63:56] dest APIC ID */
 }
 
 /* ------------------------------------------------------------------ */
-/* MADT walk (R11 / RES-37).  Read-only, boot-time, single-threaded.   */
+/* MADT walk (R11/RES-37 base + RESIDUE2 T2 Interrupt Source Overrides). */
+/* Read-only, boot-time, single-threaded.                              */
 /* ------------------------------------------------------------------ */
 
 /* Map [phys, phys+len) at hhdm+phys and return the pointer.  ACPI
@@ -109,13 +121,41 @@ static uint64_t rd64(const uint8_t *p) {
     return (uint64_t)rd32(p) | ((uint64_t)rd32(p + 4) << 32);
 }
 
-/* First type-1 (I/O APIC) entry's address from the MADT, or 0 when
- * anything on the way is absent/implausible.  Length caps keep a
- * corrupt table from walking us off a cliff. */
-static uint64_t madt_ioapic_base(uint64_t hhdm) {
+/* RESIDUE2 T2: Interrupt Source Overrides (MADT type-2 entries) drive the
+ * redirection table.  Entry layout at +off: [type:1][len:1][bus:1]
+ * [source:1][gsi:4][flags:2]; flags [1:0] polarity (1 = active high,
+ * 3 = active low, 0 = bus default -> high for ISA), [3:2] trigger
+ * (1 = edge, 3 = level, 0 = bus default -> edge for ISA), and GSI
+ * 0xFFFFFFFF marks a disabled source. */
+#define MADT_MAX_ISO 16
+struct madt_iso {
+    uint8_t  bus;
+    uint8_t  source;
+    uint32_t gsi;
+    uint16_t flags;
+};
+
+static uint64_t        madt_ioapic_addr;   /* first type-1 entry, 0 if none */
+static int             madt_iso_count;     /* entries captured below */
+static struct madt_iso madt_isos[MADT_MAX_ISO];
+
+static const struct madt_iso *iso_for(uint8_t bus, uint8_t source) {
+    for (int i = 0; i < madt_iso_count; i++) {
+        if (madt_isos[i].bus == bus && madt_isos[i].source == source) {
+            return &madt_isos[i];
+        }
+    }
+    return NULL;
+}
+
+/* Walk RSDP -> RSDT/XSDT -> MADT once, filling in madt_ioapic_addr and
+ * the ISO table.  Everything absent/implausible simply stays zero/empty;
+ * callers fall back to the PC-standard routing and say so at boot.
+ * Length caps keep a corrupt table from walking us off a cliff. */
+static void madt_walk(uint64_t hhdm) {
     uint64_t rsdp_phys = boot_get_rsdp();
     if (!rsdp_phys) {
-        return 0;
+        return;
     }
     const uint8_t *rsdp = acpi_map(hhdm, rsdp_phys, 36);
 
@@ -133,13 +173,13 @@ static uint64_t madt_ioapic_base(uint64_t hhdm) {
         wide     = 0;
     }
     if (!sdt_phys) {
-        return 0;
+        return;
     }
 
     const uint8_t *sdt = acpi_map(hhdm, sdt_phys, 36);
     uint32_t sdt_len = rd32(sdt + 4);
     if (sdt_len < 36 || sdt_len > 0x10000) {
-        return 0;
+        return;
     }
     sdt = acpi_map(hhdm, sdt_phys, sdt_len);
 
@@ -158,7 +198,7 @@ static uint64_t madt_ioapic_base(uint64_t hhdm) {
         }
         uint32_t tlen = rd32(tbl + 4);
         if (tlen < 44 || tlen > 0x10000) {
-            return 0;
+            return;
         }
         tbl = acpi_map(hhdm, tbl_phys, tlen);
 
@@ -171,12 +211,32 @@ static uint64_t madt_ioapic_base(uint64_t hhdm) {
             if (elen < 2 || off + elen > tlen) {
                 break;                      /* corrupt list: stop, named 0 */
             }
-            if (etype == 1 && elen >= 12) {
-                return rd32(tbl + off + 4);
+            if (etype == 1 && elen >= 12 && madt_ioapic_addr == 0) {
+                madt_ioapic_addr = rd32(tbl + off + 4);
+            } else if (etype == 2 && elen >= 12 &&
+                       madt_iso_count < MADT_MAX_ISO) {
+                madt_isos[madt_iso_count].bus    = tbl[off + 2];
+                madt_isos[madt_iso_count].source = tbl[off + 3];
+                madt_isos[madt_iso_count].gsi    = rd32(tbl + off + 4);
+                madt_isos[madt_iso_count].flags  =
+                    (uint16_t)(tbl[off + 8] | ((uint16_t)tbl[off + 9] << 8));
+                madt_iso_count++;
             }
             off += elen;
         }
     }
+}
+
+int ioapic_route_gsi(int gsi, int vector, uint32_t dest_apic_id) {
+    if (!apic_irq_mode || !ioapic_win) {
+        return -1;
+    }
+    if (gsi < 0 || gsi >= ioapic_count) {
+        return -1;
+    }
+    /* Edge/high/fixed, unmasked -- the ISA shape; the caller restores the
+     * pin when it is done (see the RES-16 wake selftest). */
+    io_set_redir(gsi, io_make_entry(vector, dest_apic_id, 0, 0));
     return 0;
 }
 
@@ -187,11 +247,15 @@ int ioapic_init(void) {
         return -1;
     }
 
-    /* R11 (RES-37): ask the ACPI MADT where the I/O APIC really is and
-     * print the comparison against the PC-standard hardcode.  QEMU is
-     * the NULL test (they agree); a metal machine where they differ is
-     * named at boot -- that line is a receipt slot in the R11 package. */
-    uint64_t madt_base = madt_ioapic_base(hhdm);
+    /* R11 (RES-37) + RESIDUE2 T2: one MADT walk now answers BOTH halves
+     * of the discovery contract -- where the I/O APIC is (printed against
+     * the PC-standard base below, QEMU the NULL test) and how the legacy
+     * IRQs are actually wired (the ISO list programmed further down).
+     * QEMU is the NULL test (they agree); a metal machine where they
+     * differ is named at boot -- that line is a receipt slot in the R11
+     * package. */
+    madt_walk(hhdm);
+    uint64_t madt_base = madt_ioapic_addr;
     if (madt_base == 0) {
         kprintf("[ioapic] base 0x%llx (no MADT I/O APIC entry found)\n",
                 (unsigned long long)IOAPIC_PHYS);
@@ -231,12 +295,16 @@ int ioapic_init(void) {
         io_set_redir(i, 1ULL << 16);              /* masked, everything else 0 */
     }
 
-    /* Step 2: program the 16 legacy ISA IRQs.  ISA IRQ0 (the PIT) is wired to
-     * GSI 2 on every PC-compatible system (the single mandatory ACPI Interrupt
-     * Source Override); every other ISA IRQ is identity-mapped to its GSI.
+    /* Step 2 (RESIDUE2 T2): program the legacy ISA IRQs FROM the MADT's
+     * Interrupt Source Overrides; the PC-standard defaults below are the
+     * fallback for a machine with no MADT (or no ISOs), not the primary
+     * truth.  Every divergence between the two routings is printed by
+     * name -- the RES-37 agree/disagree discipline, extended from the
+     * base address to the routing itself.
+     *
      * Vectors stay at 32 + irq -- exactly the PIC remap offsets -- so every
-     * already-registered handler keeps firing on the same vector.  Destination
-     * is the BSP APIC ID in physical mode.
+     * already-registered handler keeps firing on the same vector.
+     * Destination is the BSP APIC ID in physical mode.
      *
      * IRQ2 must be SKIPPED: it is the 8259 cascade line (no real device sits
      * on it), and in the identity map IRQ2 would land on GSI2 -- the very pin
@@ -244,11 +312,43 @@ int ioapic_init(void) {
      * redirection entry with IRQ2's vector, sending PIT ticks to vector 34 and
      * freezing the timer (and the scheduler) after zero ticks. */
     uint32_t bsp = lapic_read_id();
+    int iso_applied = 0, iso_disagree = 0;
     for (int irq = 0; irq < 16; irq++) {
         if (irq == 2) continue;                   /* cascade; GSI2 is the PIT  */
-        int gsi = (irq == 0) ? 2 : irq;           /* PIT: IRQ0 -> GSI2         */
-        if (gsi >= ioapic_count) continue;
-        io_set_redir(gsi, io_make_isa_entry(32 + irq, bsp));
+        int gsi, level, low;
+        const struct madt_iso *ov = iso_for(0 /* ISA */, (uint8_t)irq);
+        if (ov) {
+            if (ov->gsi == 0xFFFFFFFFu) {
+                kprintf("[ioapic] ISA IRQ%u marked disabled by the MADT; "
+                        "left masked\n", irq);
+                continue;
+            }
+            gsi = (int)ov->gsi;
+            int pol = (ov->flags >> 1) & 3;       /* 0 bus-default, 1 high, 3 low */
+            int trg = (ov->flags >> 3) & 3;       /* 0 bus-default, 1 edge, 3 lvl */
+            low   = (pol == 3);
+            level = (trg == 3);
+            iso_applied++;
+            /* Name the divergence from the PC-standard default, if any. */
+            int dgsi = (irq == 0) ? 2 : irq;
+            if (gsi != dgsi || level || low) {
+                kprintf("[ioapic] override: ISA IRQ%u -> GSI%u %s-%s "
+                        "(PC default GSI%u edge-high)\n",
+                        irq, gsi, level ? "level" : "edge",
+                        low ? "low" : "high", dgsi);
+                iso_disagree++;
+            }
+        } else {
+            gsi   = (irq == 0) ? 2 : irq;         /* PIT: IRQ0 -> GSI2 (MADT absent) */
+            level = 0;
+            low   = 0;
+        }
+        if (gsi >= ioapic_count) {
+            kprintf("[ioapic] ISA IRQ%u -> GSI%u beyond %d entries; "
+                    "left masked\n", irq, gsi, ioapic_count);
+            continue;
+        }
+        io_set_redir(gsi, io_make_entry(32 + irq, bsp, level, low));
     }
 
     /* Step 3: switch the BSP off the PIC.  Mask the 8259 completely and flip
@@ -262,5 +362,16 @@ int ioapic_init(void) {
     kprintf("[ioapic] I/O APIC @0x%llx ver 0x%x, %d redirection entries; "
             "BSP on APIC IRQs (PIT@GSI2, kbd@GSI1)\n",
             (unsigned long long)IOAPIC_PHYS, vlow, ioapic_count);
+    /* RESIDUE2 T2 receipt line: what drove the routing. */
+    if (madt_iso_count > 0) {
+        kprintf("[ioapic] overrides: %d ISO(s) applied from the MADT "
+                "(%d diverge%s from PC defaults) -- MADT drives the "
+                "routing\n",
+                iso_applied, iso_disagree,
+                (iso_disagree == 1) ? "" : "s");
+    } else {
+        kprintf("[ioapic] overrides: none in the MADT; PC-standard "
+                "defaults programmed\n");
+    }
     return 0;
 }

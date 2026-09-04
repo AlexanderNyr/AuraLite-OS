@@ -1,12 +1,12 @@
 # AuraLite OS — RESIDUE2 Plan (close the remainder: every TODO box and every open ledger row, scheduled and machine-checked)
 
-## Status: IN PROGRESS — T0–T1 landed; T2–T9 specified
+## Status: IN PROGRESS — T0–T2 landed; T3–T9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
 | T0 — the rig: the coverage checker | ✅ done (366c850) | `patches/RESIDUE2_T0_rig.patch` |
 | T1 — kernel core (memory, reaping, processes, SMP-safety) | ✅ done | `patches/RESIDUE2_T1_kernel.patch` |
-| T2 — interrupts and discovery (MADT overrides, AP wake) | ⬜ planned | `patches/RESIDUE2_T2_irq.patch` |
+| T2 — interrupts and discovery (MADT overrides, AP wake) | ✅ done | `patches/RESIDUE2_T2_irq.patch` |
 | T3 — storage (AHCI breadth, fsck tooling, block cache, btrfs CRC) | ⬜ planned | `patches/RESIDUE2_T3_storage.patch` |
 | T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ⬜ planned | `patches/RESIDUE2_T4_posix.patch` |
 | T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ⬜ planned | `patches/RESIDUE2_T5_net.patch` |
@@ -147,7 +147,7 @@ entry's signal-check calls ran on a misaligned stack (`fxsave` #GP in
 
 ### T2 — interrupts and discovery
 
-**Status:** not started
+**Status: ✅ COMPLETE**
 
 **Objective:** the machine stops being QEMU-hardcoded where the ACPI
 tables already carry the truth, and the one unproven SMP interrupt
@@ -161,10 +161,10 @@ box names it.
 
 Tasks:
 
-- [ ] Walk RSDP→RSDT/XSDT→MADT ISO entries; program the I/O APIC
+- [x] Walk RSDP→RSDT/XSDT→MADT ISO entries; program the I/O APIC
       redirections from them; keep the QEMU defaults as the fallback
       and print the agree/disagree line the RES-37 check established.
-- [ ] RES-16 receipt: an integration case that parks an AP in `hlt`,
+- [x] RES-16 receipt: an integration case that parks an AP in `hlt`,
       raises a device IRQ targeted at it, and greps the wake.
 
 **Definition of done:** a machine whose MADT disagrees with the PC
@@ -173,7 +173,25 @@ standard boots with the MADT's routing; RES-16 closes with its receipt.
 **Test gate:** existing integration cases unchanged-green; the new AP
 wake case green.
 
-**Result:** —
+**Result:** DONE. `ioapic.c` walks the MADT once for both the I/O APIC
+base (the RES-37 agree line, unchanged) and the type-2 Interrupt Source
+Overrides; the redirection table is programmed from the ISO list with
+the table's polarity/trigger bits, the PC-standard defaults (PIT→GSI2,
+identity, edge-high) remain the fallback, and every divergence prints by
+name at boot (`[ioapic] overrides: ...` summary + per-override lines).
+The RES-16 receipt is `tests/integration/cases/test_irq_ap_wake.sh`:
+`SYS_IRQ_AP_WAKE` (604) parks a `hlt` looper directly on cpu 1's run
+queue, aims the RTC periodic interrupt (ISA IRQ8 → GSI8) at that AP's
+APIC ID via the new `ioapic_route_gsi()`, and the boot log carries
+`[smpwake] PASS: 9 RTC(GSI8) device IRQs delivered to cpu1 (apic id 1);
+hlt looper woken 8 times — RES-16 receipt` (the handler asserts the
+delivery cpu; a stray delivery anywhere else fails the gate). Gates:
+the new case green under `-smp 4`; boot-to-shell smoke, SMP stress
+(5/5), `test_signals`/`test_selftest` unchanged-green; `make test-unit`
+EXIT 0 with the RES-37 checker pin moved to the new walk in the same
+commit. QEMU note: its MADT carries no ISOs, so the NULL machine takes
+the fallback path and prints it — the agree/disagree line names that
+too.
 
 ---
 

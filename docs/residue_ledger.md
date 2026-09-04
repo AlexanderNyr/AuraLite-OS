@@ -27,7 +27,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-13 | W | DONE@R4 | a64 -smp 16 needs GICv3; v2 = 8 ifaces architectural (PARITY P6) | a64_smp_smoke -smp 16 lane: 15 online, IPI 15/15 |
 | RES-14 | W | DONE@R5 | tenant SMP receipts-only — R5: init runs at U-mode/EL0 ON a secondary on BOTH tenants (strictly serialized one-job mailbox; per-hart stvec/VBAR, adopted final translation roots).  Preemptive multi-CPU runqueues on tenants remain the S-class successor, folded into RES-46's hand-off notes | a user thread RUNS on a secondary; receipt counted |
 | RES-15 | W | DONE@R5 | x86 "BSP-only" was the THIRD stale doc row: per-CPU runqueues + least-loaded placement + stealing landed at SMP 3.2 — R5 added the once-printed receipt (`user thread pid=N on AP cpu=M`) and test_fpu_smp pins it | user thread observed scheduled on an AP; case pins it |
-| RES-16 | W | OPEN | device IRQ waking a hlt-ed AP unproven (MATURITY) | receipt line in an SMP case |
+| RES-16 | W | DONE@T2 | device IRQ waking a hlt-ed AP unproven (MATURITY) | receipt line in an SMP case — CLOSED (RESIDUE2 T2): `[smpwake] PASS: 9 RTC(GSI8) device IRQs delivered to cpu1 (apic id 1); hlt looper woken 8 times` pinned by tests/integration/cases/test_irq_ap_wake.sh under -smp 4 |
 | RES-17 | W | DONE@R6 | full libc floor on ports: no malloc/stdio/TLS (RISCV V8 / PARITY P8) | port program mallocs + stdio round-trip, three ports |
 | RES-18 | W | OPEN | PIE loading on ports waits on RES-17 (ARM64 close) | a PIE binary runs on one tenant; receipt |
 | RES-19 | W | DONE@R6 | userspace dynamic allocation needs brk/mmap (TODO.md) | brk/mmap-lite syscalls exist; pins move 11→N |
@@ -78,6 +78,7 @@ Y7: +5 rows (RES-49..53); OPEN was 6 (the five R-series survivors
 plus RES-53).  PSS verify flipped RES-53 → DONE; OPEN back to 5
 (RES-02/06/07/16/18).  PENDING-USER@Y7 1, RE-AFFIRMED@Y7 2,
 HANDED-OFF@Y7 1.
+RESIDUE2 T2: RES-16 → DONE@T2; OPEN then 5 (RES-02/06/07/18/54).  TODO.md unchecked 40 → 38 (the T2 ISO box and the T1 errno box the T1 commit forgot to flip); baseline moved same-commit.
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

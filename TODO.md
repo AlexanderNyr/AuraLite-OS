@@ -143,8 +143,10 @@ build when a box and the plan disagree.
   Interrupt Source Overrides from the MADT, device IRQ waking a
   hlt-ed AP (ledger RES-16), and MSI/MSI-X (ledger RES-36, opener
   measured: the virtio-pci cap walk parses only vendor caps today).
-- [ ] Interrupt Source Overrides from the ACPI MADT (the base address
-  already agrees at RES-37; the overrides are still QEMU-hardcoded).
+- [x] Interrupt Source Overrides from the ACPI MADT (**Done, RESIDUE2 T2:**
+  the redirection table is programmed from the type-2 ISO entries with
+  polarity/trigger, PC-standard defaults remain the fallback, divergences
+  named at boot; RES-16 receipt: `[smpwake] PASS` in test_irq_ap_wake).
   (class: hardware discovery) (RESIDUE2 T2)
 
 #### P10 / POSIX follow-ups
@@ -200,7 +202,9 @@ build when a box and the plan disagree.
   remaining generic `-1`. Still outstanding: push native errno into the **disk
   FS drivers** (fat32/ext2/diskfs — hundreds of internal block-I/O `-1`s,
   mostly EIO) and into `process.c`.
-- [ ] Native errno into the disk FS drivers and `process.c`.
+- [x] Native errno into the disk FS drivers and `process.c`.
+  (**Done, RESIDUE2 T1:** fat32/ext2/diskfs return EIO/EINVAL-class
+  errors; process.c maps its paths natively.)
   (class: libc/errno) (RESIDUE2 T1)
 
 #### P2 / open-flags follow-ups

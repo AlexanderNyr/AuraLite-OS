@@ -239,13 +239,13 @@ def claims():
                                     "test_https6.sh") and
             "test_https6" in read("tests", "integration", "run_all.sh")))
         checks.append((
-            "Y4: RES-26 flipped to DONE@Y4 and the five R-series "
-            "OPEN rows remain named",
+            "Y4: RES-26 flipped to DONE@Y4 and the R-series OPEN rows "
+            "remain named (RES-16 left at RESIDUE2 T2)",
             "| RES-26 | W | DONE@Y4 |" in ledger and
             "| RES-02 | W | OPEN |" in ledger and
             "| RES-06 | W | OPEN |" in ledger and
             "| RES-07 | W | OPEN |" in ledger and
-            "| RES-16 | W | OPEN |" in ledger and
+            "| RES-16 | W | DONE@T2 |" in ledger and
             "| RES-18 | W | OPEN |" in ledger))
 
 
